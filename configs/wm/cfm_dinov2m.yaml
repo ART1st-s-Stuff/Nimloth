@@ -1,0 +1,12 @@
+name: cfm_dinov2m
+hidden_dim: 256
+latent_dim: 128
+action_dim: 6
+history_len: 1
+encoder:
+  name: cfm_dinov2m
+  backbone_name: dinov2_vits14
+  freeze_backbone: true
+  image_size: 224
+  token_strategy: patch_mean
+

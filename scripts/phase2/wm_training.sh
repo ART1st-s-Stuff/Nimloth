@@ -4,6 +4,7 @@ set -euo pipefail
 manifest_path="${WM_MANIFEST_PATH:-}"
 collection_root="${WM_COLLECTION_ROOT:-datasets}"
 dataset_name="${WM_DATASET_NAME:-ai2thor}"
+wm_name="${WM_NAME:-cfm_dinov2m}"
 if [[ -z "${manifest_path}" ]]; then
   manifest_path="$(
     WM_COLLECTION_ROOT="${collection_root}" WM_DATASET_NAME="${dataset_name}" python - <<'PY'
@@ -32,5 +33,5 @@ if [[ -z "${manifest_path}" ]]; then
   exit 1
 fi
 
-python -m src.train.train_wm dataset.manifest_path="${manifest_path}" "$@"
+python -m src.train.train_wm wm="${wm_name}" dataset.manifest_path="${manifest_path}" "$@"
 

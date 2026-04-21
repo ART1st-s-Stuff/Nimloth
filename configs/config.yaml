@@ -4,7 +4,7 @@ defaults:
   - pipeline/calib: default
   - pipeline/rollout: default
   - dataset: ai2thor
-  - wm: cfm
+  - wm: cfm_dinov2m
   - pm: none
   - vlm: none
   - _self_

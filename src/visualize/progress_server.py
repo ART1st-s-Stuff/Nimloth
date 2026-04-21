@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any
 
 import gradio as gr
+from dev.webui.test_zt_st_cot import (
+    list_dev_history,
+    list_rollout_runs,
+    list_task_texts,
+    load_dev_history,
+    run_zt_st_cot_test,
+)
 
 
 def _build_env_context(metadata: dict[str, Any]) -> str:
@@ -219,6 +226,56 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                     fn=lambda: _load_calib_and_rollout_placeholder(models_root=models_root, outputs_root=outputs_root),
                     inputs=[],
                     outputs=[misc_box],
+                )
+            with gr.Tab("Dev/Test z_t-s_t-CoT"):
+                rollout_selector = gr.Dropdown(
+                    choices=list_rollout_runs(dataset_root=f"{dataset_root}/ai2thor"),
+                    value=None,
+                    label="选择 rollout 目录",
+                )
+                task_selector = gr.Dropdown(
+                    choices=list_task_texts(),
+                    value=list_task_texts()[0] if list_task_texts() else None,
+                    label="选择 AI2THOR task 文本",
+                )
+                max_steps = gr.Number(value=10, label="step 数量上限", precision=0)
+                run_btn = gr.Button("执行 z_t/s_t/CoT 测试")
+                refresh_rollout_btn = gr.Button("刷新 rollout 列表")
+                test_summary = gr.Textbox(label="测试摘要", lines=6)
+                test_output_dir = gr.Textbox(label="输出目录", lines=1)
+                test_table = gr.Dataframe(
+                    headers=["episode_id", "step_id", "image_path", "z_t_dino_mean", "z_t_qwen_mean", "s_t_mean"],
+                    label="测试结果预览",
+                )
+                run_btn.click(
+                    fn=run_zt_st_cot_test,
+                    inputs=[rollout_selector, task_selector, max_steps],
+                    outputs=[test_summary, test_table, test_output_dir],
+                )
+                refresh_rollout_btn.click(
+                    fn=lambda: gr.update(choices=list_rollout_runs(dataset_root=f"{dataset_root}/ai2thor")),
+                    inputs=[],
+                    outputs=[rollout_selector],
+                )
+
+                gr.Markdown("### 历史 Dev 输出")
+                history_selector = gr.Dropdown(
+                    choices=list_dev_history(outputs_root=outputs_root),
+                    value=None,
+                    label="选择历史运行目录（outputs/dev/...）",
+                )
+                refresh_history_btn = gr.Button("刷新历史")
+                history_summary = gr.Textbox(label="历史摘要", lines=5)
+                history_json = gr.Textbox(label="result.json", lines=20)
+                refresh_history_btn.click(
+                    fn=lambda: gr.update(choices=list_dev_history(outputs_root=outputs_root)),
+                    inputs=[],
+                    outputs=[history_selector],
+                )
+                history_selector.change(
+                    fn=load_dev_history,
+                    inputs=[history_selector],
+                    outputs=[history_summary, history_json],
                 )
     return app
 

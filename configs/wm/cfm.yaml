@@ -3,4 +3,6 @@ hidden_dim: 256
 latent_dim: 128
 action_dim: 6
 history_len: 1
+encoder:
+  name: none
 

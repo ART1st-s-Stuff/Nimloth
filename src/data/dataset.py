@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 from torch.utils.data import Dataset
+from src.wm.encoders import WMImageEncoder
 
 
 def build_env_context(metadata: dict[str, Any]) -> str:
@@ -33,9 +34,16 @@ def build_env_context(metadata: dict[str, Any]) -> str:
 class WMDataset(Dataset):
     """从 manifest 构造 (z_t, a_t, z_{t+1}) 训练样本。"""
 
-    def __init__(self, manifest_path: str, latent_dim: int, action_dim: int) -> None:
+    def __init__(
+        self,
+        manifest_path: str,
+        latent_dim: int,
+        action_dim: int,
+        image_encoder: WMImageEncoder | None = None,
+    ) -> None:
         self.latent_dim = latent_dim
         self.action_dim = action_dim
+        self.image_encoder = image_encoder
         self.samples = []
         path = Path(manifest_path)
         if path.exists():
@@ -49,9 +57,13 @@ class WMDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         curr = self.samples[idx]
         nxt = self.samples[idx + 1]
-        # 首版使用可复现的伪 latent，后续替换为真实 encoder 输出。
-        z_t = torch.randn(self.latent_dim) * 0.1 + curr["step_id"] * 0.01
-        z_next = torch.randn(self.latent_dim) * 0.1 + nxt["step_id"] * 0.01
+        if self.image_encoder is None:
+            # 无 encoder 时保留可复现的伪 latent，便于最小链路调试。
+            z_t = torch.randn(self.latent_dim) * 0.1 + curr["step_id"] * 0.01
+            z_next = torch.randn(self.latent_dim) * 0.1 + nxt["step_id"] * 0.01
+        else:
+            z_t = self.image_encoder.encode_image_path(str(curr["image_path"])).z
+            z_next = self.image_encoder.encode_image_path(str(nxt["image_path"])).z
         action = torch.zeros(self.action_dim)
         action[int(curr["action_id"]) % self.action_dim] = 1.0
         env_context = build_env_context(curr.get("metadata", {}))

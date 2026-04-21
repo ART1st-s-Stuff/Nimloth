@@ -3,7 +3,7 @@ set -euo pipefail
 
 ckpt_path="${WM_CKPT_PATH:-}"
 wm_model_root="${WM_MODEL_ROOT:-models}"
-wm_model_name="${WM_MODEL_NAME:-cfm}"
+wm_model_name="${WM_MODEL_NAME:-${WM_NAME:-cfm_dinov2m}}"
 if [[ -z "${ckpt_path}" ]]; then
   ckpt_path="$(
     WM_MODEL_ROOT="${wm_model_root}" WM_MODEL_NAME="${wm_model_name}" python - <<'PY'
@@ -63,5 +63,5 @@ if [[ -z "${manifest_path}" ]]; then
   exit 1
 fi
 
-python -m src.train.calibrate_wm pipeline.calib.input_ckpt_path="${ckpt_path}" dataset.manifest_path="${manifest_path}" "$@"
+python -m src.train.calibrate_wm wm="${wm_model_name}" pipeline.calib.input_ckpt_path="${ckpt_path}" dataset.manifest_path="${manifest_path}" "$@"
 

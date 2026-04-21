@@ -15,6 +15,7 @@ dependencies = [
   "rich",
   "python-dotenv",
   "gradio",
+  "transformers",
 ]
 
 [build-system]

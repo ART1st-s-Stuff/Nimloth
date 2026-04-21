@@ -1,7 +1,7 @@
 noise_scale: 0.05
 num_samples: 8
 percentile: 95
-input_ckpt_path: models/wm/cfm/latest/wm.pt
+input_ckpt_path: models/wm/${wm.name}/latest/wm.pt
 operation:
   outputs_root: models
   phase: phase2

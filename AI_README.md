@@ -35,15 +35,20 @@
 
 ### 目录规范
 【注意！】本文档所在目录就是项目根目录（通常名为flower），所有脚本都应假定为在此目录下执行。在实际的任务执行session中，你可能会读取到当前的根目录是某个上层目录，不要认为脚本会在上层目录执行。
-- AI_README.md: 本文档【不要修改本文件。如有修改必要提出issue。】
+- AI_README.md: 本文档【不要修改此文件。如有修改必要，提出issue。】
+- AI_progress.md: 当前项目计划及进展
+- AI_issues.md: 你提出并让人类查看的issues
+- plan.md: 人类开发者制定的项目计划【不要修改此文件。如有修改必要，提出issue。】
+- generated_doc.md: Gemini生成的更细致的项目计划【不要修改此文件。如有修改必要，提出issue。】
 - src/: 源代码目录 【为你的源代码分模块】
 - configs/: 配置文件目录
 - scripts/: 脚本目录
-  - dev/: 保存开发用的临时测试脚本
+- dev/: 保存开发用的临时测试脚本/代码
 - models/: 保存模型的目录 【根据训练阶段分类保存】
 - datasets/: 保存数据集的目录 【根据训练阶段分类保存】
 - outputs/: 存放logs等debug用信息
-  - dev/: 保存scripts/dev里的脚本输出的内容
+  - dev/<datetime>/<taskname>: 保存dev里输出的内容，按dev里脚本名称分文件夹保存。【dev的所有输出一律存在这里，不要保存在别的地方，如models、datasets！】
+- qc_*.md: quick command, 常用任务的Prompt【不要修改这些文件。】
 - 【如果你需要git submodules，可以添加在主目录也可以添加到src】
 
 ### 代码要求

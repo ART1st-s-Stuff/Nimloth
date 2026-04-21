@@ -1,0 +1,12 @@
+name: cfm_qwen25vl_8b_frozen
+hidden_dim: 256
+latent_dim: 128
+action_dim: 6
+history_len: 1
+encoder:
+  name: cfm_qwen25vl_8b_frozen
+  backbone_name: qwen25vl_8b_vision
+  freeze_backbone: true
+  image_size: 448
+  token_strategy: patch_mean
+

@@ -1,0 +1,18 @@
+name: cfm_dinov2m_qwen25vl_8b
+hidden_dim: 256
+latent_dim: 128
+action_dim: 6
+history_len: 1
+encoder:
+  name: cfm_dinov2m_qwen25vl_8b
+  dino_backbone_name: dinov2_vits14
+  qwen_backbone_name: qwen25vl_8b_vision
+  freeze_backbone: true
+  image_size: 448
+  token_strategy: patch_mean
+  aligner:
+    type: light_transformer
+    hidden_dim: 256
+    num_layers: 2
+    num_heads: 4
+

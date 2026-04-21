@@ -16,6 +16,7 @@ from src.utils.env import load_project_env
 from src.utils.io import ensure_dir, write_json
 from src.utils.run_output import build_run_output_dir
 from src.visualize.wandb_tracker import init_tracker
+from src.wm.encoders import build_wm_image_encoder
 from src.wm.model import CFMWorldModel
 from src.wm.uncertainty import estimate_divergence, percentile_threshold
 
@@ -62,14 +63,21 @@ def main(cfg: DictConfig) -> None:
     )
     device = torch.device(str(train_cfg.device))
     resolved_manifest = _resolve_latest_path(str(dataset_cfg.manifest_path))
+    image_encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
     dataset = WMDataset(
         manifest_path=str(resolved_manifest),
         latent_dim=int(dataset_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
+        image_encoder=image_encoder,
     )
     if len(dataset) == 0:
         raise RuntimeError("数据集为空，请先执行 collect_data。")
-    loader = DataLoader(dataset, batch_size=int(train_cfg.batch_size), shuffle=False)
+    loader = DataLoader(
+        dataset,
+        batch_size=int(train_cfg.batch_size),
+        shuffle=False,
+        num_workers=0 if image_encoder is not None else int(train_cfg.num_workers),
+    )
 
     model = CFMWorldModel(
         latent_dim=int(wm_cfg.latent_dim),
