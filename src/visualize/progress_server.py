@@ -10,13 +10,12 @@ from typing import Any
 import gradio as gr
 
 
-def _list_runs(outputs_root: str, phase: str, task: str, required_file: str) -> list[Path]:
-    base = Path(outputs_root) / phase / task
+def _list_runs(base: Path, required_file: str) -> list[Path]:
     if not base.exists():
         return []
     runs = [
         path
-        for path in base.glob("*/*")
+        for path in base.iterdir()
         if path.is_dir() and (path / required_file).exists()
     ]
     return sorted(runs, reverse=True)
@@ -87,7 +86,7 @@ def _select_dataset_run(run_name: str) -> tuple[str, list[list[str]]]:
 
 
 def _list_training_runs(models_root: str = "models") -> list[Path]:
-    return _list_runs(models_root, phase="phase2", task="wm_training", required_file="train_metrics.json")
+    return _list_runs(Path(models_root) / "wm" / "cfm", required_file="train_metrics.json")
 
 
 def _read_train_metrics(metrics_path: Path) -> dict[str, Any]:
@@ -116,7 +115,7 @@ def _build_training_rows(run_dirs: list[Path]) -> list[list[str]]:
 
 def _training_summary(rows: list[list[str]]) -> str:
     if not rows:
-        return "未找到训练运行目录（models/phase2/wm_training/<date>/<time>）。"
+        return "未找到训练运行目录（models/wm/<wm-config-name>/<datetime>）。"
     completed = sum(1 for row in rows if row[3] == "completed")
     incomplete = len(rows) - completed
     return (
@@ -133,8 +132,8 @@ def _load_training_progress(models_root: str = "models") -> tuple[str, list[list
 
 
 def _load_calib_and_rollout_placeholder(models_root: str = "models", outputs_root: str = "outputs") -> str:
-    calib_base = Path(models_root) / "phase2" / "wm_calibration"
-    calib_runs = [p for p in calib_base.glob("*/*") if (p / "theta_div.json").exists()] if calib_base.exists() else []
+    calib_base = Path(models_root) / "wm" / "cfm"
+    calib_runs = [p for p in calib_base.iterdir() if p.is_dir() and (p / "theta_div.json").exists()] if calib_base.exists() else []
     rollout_base = Path(outputs_root) / "phase3" / "rollout"
     rollout_exists = rollout_base.exists()
     return (
@@ -145,12 +144,7 @@ def _load_calib_and_rollout_placeholder(models_root: str = "models", outputs_roo
 
 
 def build_app(dataset_root: str = "datasets", models_root: str = "models", outputs_root: str = "outputs") -> gr.Blocks:
-    runs = _list_runs(
-        outputs_root=dataset_root,
-        phase="phase1",
-        task="wm_data_collection",
-        required_file="manifest.jsonl",
-    )
+    runs = _list_runs(base=Path(dataset_root) / "ai2thor", required_file="manifest.jsonl")
     run_choices = [str(path) for path in runs]
     default_run = run_choices[0] if run_choices else None
     with gr.Blocks(title="Flower Progress Server") as app:
@@ -161,7 +155,7 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                 run_selector = gr.Dropdown(
                     choices=run_choices,
                     value=default_run,
-                    label="选择数据收集运行目录（datasets/phase1/wm_data_collection/...）",
+                    label="选择数据收集运行目录（datasets/<dataset-name>/...）",
                 )
                 dataset_refresh_btn = gr.Button("刷新数据集")
                 stats_box = gr.Textbox(label="统计信息", lines=18)

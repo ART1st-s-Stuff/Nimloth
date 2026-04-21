@@ -3,32 +3,52 @@ set -euo pipefail
 
 ckpt_path="${WM_CKPT_PATH:-}"
 wm_model_root="${WM_MODEL_ROOT:-models}"
-wm_model_phase="${WM_MODEL_PHASE:-phase2}"
-wm_model_task="${WM_MODEL_TASK:-wm_training}"
+wm_model_name="${WM_MODEL_NAME:-cfm}"
 if [[ -z "${ckpt_path}" ]]; then
   ckpt_path="$(
-    WM_MODEL_ROOT="${wm_model_root}" WM_MODEL_PHASE="${wm_model_phase}" WM_MODEL_TASK="${wm_model_task}" python - <<'PY'
+    WM_MODEL_ROOT="${wm_model_root}" WM_MODEL_NAME="${wm_model_name}" python - <<'PY'
 from pathlib import Path
+import json
 import os
-base = Path(os.environ["WM_MODEL_ROOT"]) / os.environ["WM_MODEL_PHASE"] / os.environ["WM_MODEL_TASK"]
-runs = sorted([p for p in base.glob("*/*") if (p / "wm.pt").exists()], reverse=True)
-print((runs[0] / "wm.pt") if runs else "")
+base = Path(os.environ["WM_MODEL_ROOT"]) / "wm" / os.environ["WM_MODEL_NAME"]
+meta = base / "metadata.json"
+latest = None
+if meta.exists():
+    try:
+        latest = json.loads(meta.read_text(encoding="utf-8")).get("latest")
+    except Exception:
+        latest = None
+if latest and (base / latest / "wm.pt").exists():
+    print(base / latest / "wm.pt")
+else:
+    runs = sorted([p for p in base.iterdir() if p.is_dir() and (p / "wm.pt").exists()], reverse=True)
+    print((runs[0] / "wm.pt") if runs else "")
 PY
 )"
 fi
 
 manifest_path="${WM_MANIFEST_PATH:-}"
 collection_root="${WM_COLLECTION_ROOT:-datasets}"
-collection_phase="${WM_COLLECTION_PHASE:-phase1}"
-collection_task="${WM_COLLECTION_TASK:-wm_data_collection}"
+dataset_name="${WM_DATASET_NAME:-ai2thor}"
 if [[ -z "${manifest_path}" ]]; then
   manifest_path="$(
-    WM_COLLECTION_ROOT="${collection_root}" WM_COLLECTION_PHASE="${collection_phase}" WM_COLLECTION_TASK="${collection_task}" python - <<'PY'
+    WM_COLLECTION_ROOT="${collection_root}" WM_DATASET_NAME="${dataset_name}" python - <<'PY'
 from pathlib import Path
+import json
 import os
-base = Path(os.environ["WM_COLLECTION_ROOT"]) / os.environ["WM_COLLECTION_PHASE"] / os.environ["WM_COLLECTION_TASK"]
-runs = sorted([p for p in base.glob("*/*") if (p / "manifest.jsonl").exists()], reverse=True)
-print((runs[0] / "manifest.jsonl") if runs else "")
+base = Path(os.environ["WM_COLLECTION_ROOT"]) / os.environ["WM_DATASET_NAME"]
+meta = base / "metadata.json"
+latest = None
+if meta.exists():
+    try:
+        latest = json.loads(meta.read_text(encoding="utf-8")).get("latest")
+    except Exception:
+        latest = None
+if latest and (base / latest / "manifest.jsonl").exists():
+    print(base / latest / "manifest.jsonl")
+else:
+    runs = sorted([p for p in base.iterdir() if p.is_dir() and (p / "manifest.jsonl").exists()], reverse=True)
+    print((runs[0] / "manifest.jsonl") if runs else "")
 PY
 )"
 fi

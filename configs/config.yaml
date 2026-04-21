@@ -3,7 +3,7 @@ defaults:
   - pipeline/train: default
   - pipeline/calib: default
   - pipeline/rollout: default
-  - dataset: wm_default
+  - dataset: ai2thor
   - wm: cfm
   - pm: none
   - vlm: none

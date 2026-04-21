@@ -3,16 +3,26 @@ set -euo pipefail
 
 manifest_path="${WM_MANIFEST_PATH:-}"
 collection_root="${WM_COLLECTION_ROOT:-datasets}"
-collection_phase="${WM_COLLECTION_PHASE:-phase1}"
-collection_task="${WM_COLLECTION_TASK:-wm_data_collection}"
+dataset_name="${WM_DATASET_NAME:-ai2thor}"
 if [[ -z "${manifest_path}" ]]; then
   manifest_path="$(
-    WM_COLLECTION_ROOT="${collection_root}" WM_COLLECTION_PHASE="${collection_phase}" WM_COLLECTION_TASK="${collection_task}" python - <<'PY'
+    WM_COLLECTION_ROOT="${collection_root}" WM_DATASET_NAME="${dataset_name}" python - <<'PY'
 from pathlib import Path
+import json
 import os
-base = Path(os.environ["WM_COLLECTION_ROOT"]) / os.environ["WM_COLLECTION_PHASE"] / os.environ["WM_COLLECTION_TASK"]
-runs = sorted([p for p in base.glob("*/*") if (p / "manifest.jsonl").exists()], reverse=True)
-print((runs[0] / "manifest.jsonl") if runs else "")
+base = Path(os.environ["WM_COLLECTION_ROOT"]) / os.environ["WM_DATASET_NAME"]
+meta = base / "metadata.json"
+latest = None
+if meta.exists():
+    try:
+        latest = json.loads(meta.read_text(encoding="utf-8")).get("latest")
+    except Exception:
+        latest = None
+if latest and (base / latest / "manifest.jsonl").exists():
+    print(base / latest / "manifest.jsonl")
+else:
+    runs = sorted([p for p in base.iterdir() if p.is_dir() and (p / "manifest.jsonl").exists()], reverse=True)
+    print((runs[0] / "manifest.jsonl") if runs else "")
 PY
 )"
 fi

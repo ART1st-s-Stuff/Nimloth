@@ -1,33 +1,3 @@
-env:
-  backend: ai2thor
-  scenes:
-    - FloorPlan1
-    - FloorPlan2
-    - FloorPlan3
-    - FloorPlan4
-    - FloorPlan5
-    - FloorPlan6
-    - FloorPlan7
-    - FloorPlan8
-    - FloorPlan9
-    - FloorPlan10
-    - FloorPlan201
-    - FloorPlan202
-    - FloorPlan203
-    - FloorPlan204
-    - FloorPlan205
-    - FloorPlan206
-    - FloorPlan207
-    - FloorPlan208
-    - FloorPlan209
-    - FloorPlan210
-  visibility_distance: 1.5
-  grid_size: 0.25
-  render_depth_image: false
-  render_instance_segmentation: false
-  ai2thor_platform: CloudRendering
-  ai2thor_cache_dir: .cache/ai2thor
-
 collect:
   num_episodes_per_scene: 50
   max_steps_per_episode: 50
@@ -36,7 +6,7 @@ collect:
   image_width: 518
   # 顺序对应 ACTION_SPACE:
   # [MoveAhead, RotateLeft, RotateRight, LookUp, LookDown, Done]
-  action_weights: [6.0, 2.0, 2.0, 1.0, 1.0, 0.5]
+  action_weights: [6.0, 1.0, 1.0, 0.5, 0.5, 0.1]
   operation:
     outputs_root: datasets
     phase: phase1

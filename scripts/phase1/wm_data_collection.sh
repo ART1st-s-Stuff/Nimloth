@@ -8,14 +8,13 @@ if [[ "${1:-}" == "clean" ]]; then
     exit 1
   fi
   collection_root="${WM_COLLECTION_ROOT:-datasets}"
-  collection_phase="${WM_COLLECTION_PHASE:-phase1}"
-  collection_task="${WM_COLLECTION_TASK:-wm_data_collection}"
-  WM_COLLECTION_ROOT="${collection_root}" WM_COLLECTION_PHASE="${collection_phase}" WM_COLLECTION_TASK="${collection_task}" python - <<'PY'
+  dataset_name="${WM_DATASET_NAME:-ai2thor}"
+  WM_COLLECTION_ROOT="${collection_root}" WM_DATASET_NAME="${dataset_name}" python - <<'PY'
 from pathlib import Path
 import shutil
 import os
 
-target = Path(os.environ["WM_COLLECTION_ROOT"]) / os.environ["WM_COLLECTION_PHASE"] / os.environ["WM_COLLECTION_TASK"]
+target = Path(os.environ["WM_COLLECTION_ROOT"]) / os.environ["WM_DATASET_NAME"]
 if target.exists():
     shutil.rmtree(target)
 print(f"[ok] 已清理 {target}")

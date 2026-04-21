@@ -18,16 +18,18 @@ def main(cfg: DictConfig) -> None:
     load_project_env()
     set_seed(int(cfg.project.seed))
     collect_pipeline = cfg.pipeline.collect
+    dataset_cfg = cfg.dataset
     run_dir = build_run_output_dir(
-        outputs_root=str(collect_pipeline.collect.operation.outputs_root),
-        phase=str(collect_pipeline.collect.operation.phase),
-        task=str(collect_pipeline.collect.operation.task),
+        path_segments=[
+            str(collect_pipeline.collect.operation.outputs_root),
+            str(dataset_cfg.name),
+        ],
         resume=bool(collect_pipeline.collect.operation.resume),
     )
-    tracker = init_tracker(task_name="collect_data", config={"backend": str(collect_pipeline.env.backend)})
+    tracker = init_tracker(task_name="collect_data", config={"backend": str(dataset_cfg.backend), "dataset": str(dataset_cfg.name)})
     collect_cfg = CollectConfig(
-        backend=str(collect_pipeline.env.backend),
-        scenes=list(collect_pipeline.env.scenes),
+        backend=str(dataset_cfg.backend),
+        scenes=list(dataset_cfg.scenes),
         seed=int(cfg.project.seed),
         output_dir=str(run_dir),
         num_episodes_per_scene=int(collect_pipeline.collect.num_episodes_per_scene),
@@ -36,12 +38,12 @@ def main(cfg: DictConfig) -> None:
         image_height=int(collect_pipeline.collect.image_height),
         image_width=int(collect_pipeline.collect.image_width),
         action_weights=[float(w) for w in collect_pipeline.collect.action_weights],
-        visibility_distance=float(collect_pipeline.env.visibility_distance),
-        grid_size=float(collect_pipeline.env.grid_size),
-        render_depth_image=bool(collect_pipeline.env.render_depth_image),
-        render_instance_segmentation=bool(collect_pipeline.env.render_instance_segmentation),
-        ai2thor_platform=str(collect_pipeline.env.ai2thor_platform),
-        ai2thor_cache_dir=str(collect_pipeline.env.ai2thor_cache_dir),
+        visibility_distance=float(dataset_cfg.visibility_distance),
+        grid_size=float(dataset_cfg.grid_size),
+        render_depth_image=bool(dataset_cfg.render_depth_image),
+        render_instance_segmentation=bool(dataset_cfg.render_instance_segmentation),
+        ai2thor_platform=str(dataset_cfg.ai2thor_platform),
+        ai2thor_cache_dir=str(dataset_cfg.ai2thor_cache_dir),
         resume=bool(collect_pipeline.collect.operation.resume),
     )
     show_kv_table(

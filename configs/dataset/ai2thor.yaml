@@ -1,0 +1,32 @@
+name: ai2thor
+backend: ai2thor
+scenes:
+  - FloorPlan1
+  - FloorPlan2
+  - FloorPlan3
+  - FloorPlan4
+  - FloorPlan5
+  - FloorPlan6
+  - FloorPlan7
+  - FloorPlan8
+  - FloorPlan9
+  - FloorPlan10
+  - FloorPlan201
+  - FloorPlan202
+  - FloorPlan203
+  - FloorPlan204
+  - FloorPlan205
+  - FloorPlan206
+  - FloorPlan207
+  - FloorPlan208
+  - FloorPlan209
+  - FloorPlan210
+visibility_distance: 1.5
+grid_size: 0.25
+render_depth_image: false
+render_instance_segmentation: false
+ai2thor_platform: CloudRendering
+ai2thor_cache_dir: .cache/ai2thor
+manifest_path: datasets/ai2thor/latest/manifest.jsonl
+latent_dim: 128
+action_dim: 6
