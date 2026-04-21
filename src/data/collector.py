@@ -14,7 +14,6 @@ from PIL import Image
 
 from src.data.ai2thor_env import Ai2ThorEnvAdapter, Ai2ThorEnvConfig
 from src.data.env_adapter import EnvAdapter
-from src.data.labeler import build_label_text
 from src.data.mock_env import MockEnvAdapter, MockEnvConfig
 from src.data.schema import FrameState
 from src.utils.io import append_jsonl, ensure_dir
@@ -146,7 +145,6 @@ def _collect_scene(
                 step_result = env.step(action=action, step_id=step_id)
                 metadata: dict[str, Any] = step_result.metadata
                 metadata["scene"] = scene
-                label_text = build_label_text(metadata)
                 image_name = f"{scene_tag}_ep{episode_id:04d}_step{step_id:04d}.png"
                 image_path = img_dir / image_name
                 Image.fromarray(step_result.frame).save(image_path)
@@ -157,7 +155,6 @@ def _collect_scene(
                     action=action,
                     action_id=action_id,
                     metadata=metadata,
-                    label_text=label_text,
                 )
                 append_jsonl(manifest, sample.to_dict())
                 sample_count += 1

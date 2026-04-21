@@ -16,7 +16,6 @@ class FrameState:
     action: str
     action_id: int
     metadata: dict[str, Any]
-    label_text: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

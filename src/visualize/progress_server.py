@@ -10,6 +10,25 @@ from typing import Any
 import gradio as gr
 
 
+def _build_env_context(metadata: dict[str, Any]) -> str:
+    scene = metadata.get("scene")
+    distance = metadata.get("target_distance")
+    collided = metadata.get("collided")
+    grasped = metadata.get("grasped")
+    parts: list[str] = []
+    if scene is not None:
+        parts.append(f"scene={scene}")
+    if isinstance(distance, (int, float)):
+        parts.append(f"target_distance={float(distance):.3f}m")
+    if isinstance(collided, bool):
+        parts.append(f"collided={'yes' if collided else 'no'}")
+    if isinstance(grasped, bool):
+        parts.append(f"grasped={'yes' if grasped else 'no'}")
+    if not parts:
+        return "env=unknown"
+    return " | ".join(parts)
+
+
 def _list_runs(base: Path, required_file: str) -> list[Path]:
     if not base.exists():
         return []
@@ -69,7 +88,7 @@ def _build_rows(samples: list[dict[str, Any]]) -> list[list[str]]:
                 str(sample.get("step_id", "")),
                 str(sample.get("action", "")),
                 str(sample.get("image_path", "")),
-                str(sample.get("label_text", "")),
+                _build_env_context(metadata),
             ]
         )
     return rows
@@ -160,7 +179,7 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                 dataset_refresh_btn = gr.Button("刷新数据集")
                 stats_box = gr.Textbox(label="统计信息", lines=18)
                 sample_table = gr.Dataframe(
-                    headers=["scene", "episode_id", "step_id", "action", "image_path", "label_text"],
+                    headers=["scene", "episode_id", "step_id", "action", "image_path", "env_context"],
                     label="样本预览（最多200条）",
                 )
                 dataset_refresh_btn.click(
