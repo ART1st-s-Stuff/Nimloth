@@ -1,0 +1,3 @@
+# 依赖主入口已切换到 pyproject.toml + uv.lock。
+# 推荐使用：uv sync
+

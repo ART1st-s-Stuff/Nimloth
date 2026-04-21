@@ -1,0 +1,12 @@
+defaults:
+  - data: collect
+  - dataset: default
+  - wm: cfm
+  - train: default
+  - calib: default
+  - _self_
+
+project:
+  name: flower
+  seed: 42
+

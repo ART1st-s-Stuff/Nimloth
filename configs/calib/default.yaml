@@ -1,0 +1,6 @@
+calib:
+  noise_scale: 0.05
+  num_samples: 8
+  percentile: 95
+  output_path: models/phase2/wm/theta_div.json
+

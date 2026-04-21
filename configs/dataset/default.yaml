@@ -1,0 +1,5 @@
+dataset:
+  manifest_path: datasets/phase1/raw/manifest.jsonl
+  latent_dim: 128
+  action_dim: 6
+

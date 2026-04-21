@@ -32,6 +32,7 @@ dist/
 *.log
 tmp/
 temp/
+outputs/
 
 # Model and dataset artifacts (keep directory placeholders)
 models/**
