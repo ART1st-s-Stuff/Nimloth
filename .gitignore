@@ -1,0 +1,40 @@
+# Python caches and bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter / editor / OS files
+.ipynb_checkpoints/
+.DS_Store
+.idea/
+.vscode/
+
+# Local environment files
+.env
+.env.*
+
+# Runtime logs and temp files
+*.log
+tmp/
+temp/
+
+# Model and dataset artifacts (keep directory placeholders)
+models/**
+!models/.gitkeep
+datasets/**
+!datasets/.gitkeep
