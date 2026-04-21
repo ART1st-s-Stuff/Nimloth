@@ -2,5 +2,9 @@ calib:
   noise_scale: 0.05
   num_samples: 8
   percentile: 95
-  output_path: models/phase2/wm/theta_div.json
+  input_ckpt_path: outputs/phase2/wm_training/latest/wm.pt
+  operation:
+    outputs_root: outputs
+    phase: phase2
+    task: wm_calibration
 

@@ -1,5 +1,5 @@
 dataset:
-  manifest_path: datasets/phase1/raw/manifest.jsonl
+  manifest_path: outputs/phase1/wm_data_collection/latest/manifest.jsonl
   latent_dim: 128
   action_dim: 6
 

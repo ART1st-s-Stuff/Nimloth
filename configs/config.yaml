@@ -4,9 +4,17 @@ defaults:
   - wm: cfm
   - train: default
   - calib: default
+  - rollout: default
   - _self_
 
 project:
   name: flower
   seed: 42
+
+hydra:
+  run:
+    dir: outputs/hydra/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: outputs/hydra/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
 

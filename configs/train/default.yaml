@@ -4,5 +4,8 @@ train:
   lr: 0.001
   num_workers: 0
   device: cpu
-  output_dir: models/phase2/wm
+  operation:
+    outputs_root: outputs
+    phase: phase2
+    task: wm_training
 

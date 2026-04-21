@@ -39,3 +39,7 @@ models/**
 !models/.gitkeep
 datasets/**
 !datasets/.gitkeep
+
+# cache
+.uv-cache/
+wandb/

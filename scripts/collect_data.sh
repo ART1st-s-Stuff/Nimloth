@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python -m src.train.collect_data "$@"
+./scripts/phase1/wm_data_collection.sh "$@"
 

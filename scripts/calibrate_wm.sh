@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python -m src.train.calibrate_wm "$@"
+./scripts/phase2/wm_calibration.sh "$@"
 

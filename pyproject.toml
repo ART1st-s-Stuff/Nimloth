@@ -11,6 +11,10 @@ dependencies = [
   "numpy",
   "pillow",
   "ai2thor>=5.0.0",
+  "wandb",
+  "rich",
+  "python-dotenv",
+  "gradio",
 ]
 
 [build-system]
