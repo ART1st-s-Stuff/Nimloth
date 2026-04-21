@@ -86,8 +86,8 @@ def _select_dataset_run(run_name: str) -> tuple[str, list[list[str]]]:
     return stats, rows
 
 
-def _list_training_runs(outputs_root: str = "outputs") -> list[Path]:
-    return _list_runs(outputs_root, phase="phase2", task="wm_training", required_file="train_metrics.json")
+def _list_training_runs(models_root: str = "models") -> list[Path]:
+    return _list_runs(models_root, phase="phase2", task="wm_training", required_file="train_metrics.json")
 
 
 def _read_train_metrics(metrics_path: Path) -> dict[str, Any]:
@@ -116,7 +116,7 @@ def _build_training_rows(run_dirs: list[Path]) -> list[list[str]]:
 
 def _training_summary(rows: list[list[str]]) -> str:
     if not rows:
-        return "未找到训练运行目录（outputs/phase2/wm_training/<date>/<time>）。"
+        return "未找到训练运行目录（models/phase2/wm_training/<date>/<time>）。"
     completed = sum(1 for row in rows if row[3] == "completed")
     incomplete = len(rows) - completed
     return (
@@ -126,14 +126,14 @@ def _training_summary(rows: list[list[str]]) -> str:
     )
 
 
-def _load_training_progress(outputs_root: str = "outputs") -> tuple[str, list[list[str]]]:
-    run_dirs = _list_training_runs(outputs_root=outputs_root)
+def _load_training_progress(models_root: str = "models") -> tuple[str, list[list[str]]]:
+    run_dirs = _list_training_runs(models_root=models_root)
     rows = _build_training_rows(run_dirs)
     return _training_summary(rows), rows
 
 
-def _load_calib_and_rollout_placeholder(outputs_root: str = "outputs") -> str:
-    calib_base = Path(outputs_root) / "phase2" / "wm_calibration"
+def _load_calib_and_rollout_placeholder(models_root: str = "models", outputs_root: str = "outputs") -> str:
+    calib_base = Path(models_root) / "phase2" / "wm_calibration"
     calib_runs = [p for p in calib_base.glob("*/*") if (p / "theta_div.json").exists()] if calib_base.exists() else []
     rollout_base = Path(outputs_root) / "phase3" / "rollout"
     rollout_exists = rollout_base.exists()
@@ -144,9 +144,9 @@ def _load_calib_and_rollout_placeholder(outputs_root: str = "outputs") -> str:
     )
 
 
-def build_app(outputs_root: str = "outputs") -> gr.Blocks:
+def build_app(dataset_root: str = "datasets", models_root: str = "models", outputs_root: str = "outputs") -> gr.Blocks:
     runs = _list_runs(
-        outputs_root=outputs_root,
+        outputs_root=dataset_root,
         phase="phase1",
         task="wm_data_collection",
         required_file="manifest.jsonl",
@@ -161,7 +161,7 @@ def build_app(outputs_root: str = "outputs") -> gr.Blocks:
                 run_selector = gr.Dropdown(
                     choices=run_choices,
                     value=default_run,
-                    label="选择数据收集运行目录（outputs/phase1/wm_data_collection/...）",
+                    label="选择数据收集运行目录（datasets/phase1/wm_data_collection/...）",
                 )
                 dataset_refresh_btn = gr.Button("刷新数据集")
                 stats_box = gr.Textbox(label="统计信息", lines=18)
@@ -184,26 +184,34 @@ def build_app(outputs_root: str = "outputs") -> gr.Blocks:
                     label="训练运行列表",
                 )
                 train_refresh_btn.click(
-                    fn=_load_training_progress,
+                    fn=lambda: _load_training_progress(models_root=models_root),
                     inputs=[],
                     outputs=[train_summary, train_table],
                 )
-                app.load(fn=_load_training_progress, inputs=[], outputs=[train_summary, train_table])
+                app.load(
+                    fn=lambda: _load_training_progress(models_root=models_root),
+                    inputs=[],
+                    outputs=[train_summary, train_table],
+                )
 
             with gr.Tab("校准与Rollout"):
                 misc_refresh_btn = gr.Button("刷新校准/Rollout状态")
                 misc_box = gr.Textbox(label="扩展面板状态", lines=8)
                 misc_refresh_btn.click(
-                    fn=_load_calib_and_rollout_placeholder,
+                    fn=lambda: _load_calib_and_rollout_placeholder(models_root=models_root, outputs_root=outputs_root),
                     inputs=[],
                     outputs=[misc_box],
                 )
-                app.load(fn=_load_calib_and_rollout_placeholder, inputs=[], outputs=[misc_box])
+                app.load(
+                    fn=lambda: _load_calib_and_rollout_placeholder(models_root=models_root, outputs_root=outputs_root),
+                    inputs=[],
+                    outputs=[misc_box],
+                )
     return app
 
 
 def main() -> None:
-    app = build_app(outputs_root="outputs")
+    app = build_app(dataset_root="datasets", models_root="models", outputs_root="outputs")
     app.launch(server_name="0.0.0.0", server_port=7860)
 
 

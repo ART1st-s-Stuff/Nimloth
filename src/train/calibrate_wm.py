@@ -22,10 +22,10 @@ from src.wm.uncertainty import estimate_divergence, percentile_threshold
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     load_project_env()
-    train_cfg = cfg.train.train
-    calib_cfg = cfg.calib.calib
-    dataset_cfg = cfg.dataset.dataset
-    wm_cfg = cfg.wm.wm
+    train_cfg = cfg.pipeline.train
+    calib_cfg = cfg.pipeline.calib
+    dataset_cfg = cfg.dataset
+    wm_cfg = cfg.wm
     run_dir = build_run_output_dir(
         outputs_root=str(calib_cfg.operation.outputs_root),
         phase=str(calib_cfg.operation.phase),

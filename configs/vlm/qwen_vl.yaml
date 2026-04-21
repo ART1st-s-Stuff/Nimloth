@@ -1,0 +1,6 @@
+name: qwen_vl
+enabled: true
+model:
+  provider: dashscope
+  model_name: qwen-vl-max
+  temperature: 0.0

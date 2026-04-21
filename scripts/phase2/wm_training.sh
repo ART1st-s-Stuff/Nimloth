@@ -2,11 +2,15 @@
 set -euo pipefail
 
 manifest_path="${WM_MANIFEST_PATH:-}"
+collection_root="${WM_COLLECTION_ROOT:-datasets}"
+collection_phase="${WM_COLLECTION_PHASE:-phase1}"
+collection_task="${WM_COLLECTION_TASK:-wm_data_collection}"
 if [[ -z "${manifest_path}" ]]; then
   manifest_path="$(
-    python - <<'PY'
+    WM_COLLECTION_ROOT="${collection_root}" WM_COLLECTION_PHASE="${collection_phase}" WM_COLLECTION_TASK="${collection_task}" python - <<'PY'
 from pathlib import Path
-base = Path("outputs/phase1/wm_data_collection")
+import os
+base = Path(os.environ["WM_COLLECTION_ROOT"]) / os.environ["WM_COLLECTION_PHASE"] / os.environ["WM_COLLECTION_TASK"]
 runs = sorted([p for p in base.glob("*/*") if (p / "manifest.jsonl").exists()], reverse=True)
 print((runs[0] / "manifest.jsonl") if runs else "")
 PY
@@ -18,5 +22,5 @@ if [[ -z "${manifest_path}" ]]; then
   exit 1
 fi
 
-python -m src.train.train_wm dataset.dataset.manifest_path="${manifest_path}" "$@"
+python -m src.train.train_wm dataset.manifest_path="${manifest_path}" "$@"
 

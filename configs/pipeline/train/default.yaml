@@ -1,0 +1,9 @@
+batch_size: 16
+epochs: 1
+lr: 0.001
+num_workers: 0
+device: cpu
+operation:
+  outputs_root: models
+  phase: phase2
+  task: wm_training

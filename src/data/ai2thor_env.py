@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover - 运行时依赖
 @dataclass
 class Ai2ThorEnvConfig:
     scene: str
+    seed: int
     image_height: int
     image_width: int
     visibility_distance: float
@@ -57,6 +58,7 @@ class Ai2ThorEnvAdapter:
             renderInstanceSegmentation=cfg.render_instance_segmentation,
             platform=self._resolve_platform(cfg.platform),
         )
+        self._rng = np.random.default_rng(cfg.seed)
 
     def _extract_metadata(self, event: Any) -> dict[str, Any]:
         metadata = event.metadata
@@ -82,8 +84,27 @@ class Ai2ThorEnvAdapter:
         }
 
     def reset(self, episode_id: int) -> StepResult:
-        del episode_id
         event = self.controller.reset(scene=self.cfg.scene)
+        # 每个 episode 随机初始化到可达位置，避免数据集中视角高度重复。
+        reachable = self.controller.step(action="GetReachablePositions")
+        candidates = reachable.metadata.get("actionReturn") or []
+        if candidates:
+            idx = int(self._rng.integers(len(candidates)))
+            position = candidates[idx]
+            yaw = float(self._rng.choice([0.0, 90.0, 180.0, 270.0]))
+            pitch = float(self._rng.choice([-30.0, 0.0, 30.0]))
+            event = self.controller.step(
+                action="TeleportFull",
+                position=position,
+                rotation={"x": 0.0, "y": yaw, "z": 0.0},
+                horizon=pitch,
+                standing=True,
+                forceAction=True,
+            )
+            if not event.metadata.get("lastActionSuccess", False):
+                event = self.controller.step(action="Pass")
+        else:
+            event = self.controller.step(action="Pass")
         frame = np.asarray(event.frame, dtype=np.uint8)
         return StepResult(frame=frame, metadata=self._extract_metadata(event))
 

@@ -1,7 +1,0 @@
-rollout:
-  save_observations: true
-  upload_observations: true
-  upload_prompt: true
-  upload_cot: true
-  artifact_prefix: vlm-rollout
-

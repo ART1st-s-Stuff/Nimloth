@@ -24,9 +24,9 @@ from src.wm.model import CFMWorldModel
 def main(cfg: DictConfig) -> None:
     load_project_env()
     set_seed(int(cfg.project.seed))
-    train_cfg = cfg.train.train
-    dataset_cfg = cfg.dataset.dataset
-    wm_cfg = cfg.wm.wm
+    train_cfg = cfg.pipeline.train
+    dataset_cfg = cfg.dataset
+    wm_cfg = cfg.wm
     run_dir = build_run_output_dir(
         outputs_root=str(train_cfg.operation.outputs_root),
         phase=str(train_cfg.operation.phase),
@@ -38,6 +38,10 @@ def main(cfg: DictConfig) -> None:
             "batch_size": int(train_cfg.batch_size),
             "epochs": int(train_cfg.epochs),
             "lr": float(train_cfg.lr),
+            "dataset": str(cfg.dataset.get("name", "wm_default")),
+            "wm": str(cfg.wm.get("name", "cfm")),
+            "pm": str(cfg.pm.name),
+            "vlm": str(cfg.vlm.name),
         },
     )
     device = torch.device(str(train_cfg.device))

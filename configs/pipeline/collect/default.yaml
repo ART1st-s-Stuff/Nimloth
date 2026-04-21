@@ -25,17 +25,20 @@ env:
   grid_size: 0.25
   render_depth_image: false
   render_instance_segmentation: false
-  ai2thor_platform: Linux64
+  ai2thor_platform: CloudRendering
   ai2thor_cache_dir: .cache/ai2thor
 
 collect:
   num_episodes_per_scene: 50
   max_steps_per_episode: 50
   num_workers: 4
-  image_height: 64
-  image_width: 64
+  image_height: 518
+  image_width: 518
+  # 顺序对应 ACTION_SPACE:
+  # [MoveAhead, RotateLeft, RotateRight, LookUp, LookDown, Done]
+  action_weights: [6.0, 2.0, 2.0, 1.0, 1.0, 0.5]
   operation:
-    outputs_root: outputs
+    outputs_root: datasets
     phase: phase1
     task: wm_data_collection
-
+    resume: true

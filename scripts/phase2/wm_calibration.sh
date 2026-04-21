@@ -2,11 +2,15 @@
 set -euo pipefail
 
 ckpt_path="${WM_CKPT_PATH:-}"
+wm_model_root="${WM_MODEL_ROOT:-models}"
+wm_model_phase="${WM_MODEL_PHASE:-phase2}"
+wm_model_task="${WM_MODEL_TASK:-wm_training}"
 if [[ -z "${ckpt_path}" ]]; then
   ckpt_path="$(
-    python - <<'PY'
+    WM_MODEL_ROOT="${wm_model_root}" WM_MODEL_PHASE="${wm_model_phase}" WM_MODEL_TASK="${wm_model_task}" python - <<'PY'
 from pathlib import Path
-base = Path("outputs/phase2/wm_training")
+import os
+base = Path(os.environ["WM_MODEL_ROOT"]) / os.environ["WM_MODEL_PHASE"] / os.environ["WM_MODEL_TASK"]
 runs = sorted([p for p in base.glob("*/*") if (p / "wm.pt").exists()], reverse=True)
 print((runs[0] / "wm.pt") if runs else "")
 PY
@@ -14,11 +18,15 @@ PY
 fi
 
 manifest_path="${WM_MANIFEST_PATH:-}"
+collection_root="${WM_COLLECTION_ROOT:-datasets}"
+collection_phase="${WM_COLLECTION_PHASE:-phase1}"
+collection_task="${WM_COLLECTION_TASK:-wm_data_collection}"
 if [[ -z "${manifest_path}" ]]; then
   manifest_path="$(
-    python - <<'PY'
+    WM_COLLECTION_ROOT="${collection_root}" WM_COLLECTION_PHASE="${collection_phase}" WM_COLLECTION_TASK="${collection_task}" python - <<'PY'
 from pathlib import Path
-base = Path("outputs/phase1/wm_data_collection")
+import os
+base = Path(os.environ["WM_COLLECTION_ROOT"]) / os.environ["WM_COLLECTION_PHASE"] / os.environ["WM_COLLECTION_TASK"]
 runs = sorted([p for p in base.glob("*/*") if (p / "manifest.jsonl").exists()], reverse=True)
 print((runs[0] / "manifest.jsonl") if runs else "")
 PY
@@ -35,5 +43,5 @@ if [[ -z "${manifest_path}" ]]; then
   exit 1
 fi
 
-python -m src.train.calibrate_wm calib.calib.input_ckpt_path="${ckpt_path}" dataset.dataset.manifest_path="${manifest_path}" "$@"
+python -m src.train.calibrate_wm pipeline.calib.input_ckpt_path="${ckpt_path}" dataset.manifest_path="${manifest_path}" "$@"
 

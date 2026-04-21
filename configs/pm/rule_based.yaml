@@ -1,0 +1,5 @@
+name: rule_based
+enabled: true
+planner:
+  max_depth: 3
+  beam_size: 4

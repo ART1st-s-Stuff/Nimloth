@@ -38,12 +38,22 @@ uv run ./scripts/phase2/wm_training.sh
 uv run ./scripts/phase2/wm_calibration.sh
 ```
 
-所有入口都会在命令行显示 Rich 进度和关键指标，并自动记录 W&B 实验数据。
-
-默认已使用本地 AI2THOR 后端（`Linux64`）。如需切换为 mock：
+组件可替换运行（示例）：
 
 ```bash
-uv run python -m src.train.collect_data data.env.backend=mock
+# 选择替代数据集配置
+uv run ./scripts/phase2/wm_training.sh dataset=wm_default
+
+# 显式指定 WM/PM/VLM 组件
+uv run ./scripts/phase2/wm_training.sh wm=cfm pm=rule_based vlm=qwen_vl
+```
+
+所有入口都会在命令行显示 Rich 进度和关键指标，并自动记录 W&B 实验数据。
+
+默认已使用 AI2THOR 无头后端（`CloudRendering`）。如需切换为 mock：
+
+```bash
+uv run python -m src.train.collect_data pipeline.collect.env.backend=mock
 ```
 
 默认采集规模：
@@ -53,13 +63,29 @@ uv run python -m src.train.collect_data data.env.backend=mock
 - 每个 episode: `max_steps_per_episode=50`
 - 并行采集: `num_workers=4`（按 scene 多进程并行）
 
+采集支持断点续跑（默认 `pipeline.collect.collect.operation.resume=true`），再次执行会复用最近一次 `wm_data_collection` 目录并从已有样本后继续。
+
+如需清空所有 phase1 采集结果后重跑：
+
+```bash
+uv run ./scripts/phase1/wm_data_collection.sh clean
+```
+
 ## 关键输出
 
-- 数据收集：`outputs/phase1/wm_data_collection/<datetime>/manifest.jsonl`
-- 模型训练：`outputs/phase2/wm_training/<datetime>/wm.pt`
-- 训练指标：`outputs/phase2/wm_training/<datetime>/train_metrics.json`
-- 阈值校准：`outputs/phase2/wm_calibration/<datetime>/theta_div.json`
+- 数据收集：`datasets/phase1/wm_data_collection/<datetime>/manifest.jsonl`
+- 模型训练：`models/phase2/wm_training/<datetime>/wm.pt`
+- 训练指标：`models/phase2/wm_training/<datetime>/train_metrics.json`
+- 阈值校准：`models/phase2/wm_calibration/<datetime>/theta_div.json`
 - Hydra 默认：`outputs/hydra/...`
+
+## 配置结构（Hydra 组件组）
+
+- `configs/dataset/`: 训练/校准数据集组件（如 `wm_default`）
+- `configs/wm/`: 世界模型组件（如 `cfm`）
+- `configs/pm/`: 规划器组件（如 `none`、`rule_based`）
+- `configs/vlm/`: 视觉语言模型组件（如 `none`、`qwen_vl`）
+- `configs/pipeline/`: 任务流程参数（`collect/train/calib/rollout`）
 
 启动进度可视化服务：
 
@@ -77,5 +103,5 @@ uv run ./scripts/start_visualization_server.sh
 
 - 采集层采用 adapter 设计：`src/data/mock_env.py` 与 `src/data/ai2thor_env.py` 可插拔。
 - 当 `backend=ai2thor` 但运行环境不可用时，程序会直接报错并终止，不会自动回退。
-- 未来 VLM rollout 默认保存并上传观测图片、Prompt、CoT（见 `configs/rollout/default.yaml`）。
+- 未来 VLM rollout 默认保存并上传观测图片、Prompt、CoT（见 `configs/pipeline/rollout/default.yaml`）。
 
