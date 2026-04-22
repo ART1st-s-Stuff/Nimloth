@@ -1,0 +1,20 @@
+# WM 评估配置（phase2）
+# 读取训练与校准产物，输出 phase2_eval_metrics.json 与 phase2_eval_report.md。
+batch_size: 16
+num_workers: 0
+# 长程 recursive rollout 评估步长
+rollout_steps: 16
+# >0 时仅评估前 N 个 batch（用于快速冒烟）
+max_eval_batches: 0
+# 路径支持 latest 占位
+wm_ckpt_path: models/wm/${wm.name}/latest/wm.pt
+idm_ckpt_path: models/wm/${wm.name}/latest/inverse_dynamics.pt
+action_mapper_ckpt_path: models/wm/${wm.name}/latest/action_mapper.pt
+theta_div_path: models/wm/${wm.name}/latest/theta_div.json
+# 当 theta_div 文件不存在时的兜底阈值
+theta_div_fallback: 0.0
+operation:
+  outputs_root: models
+  phase: phase2
+  task: wm_eval
+
