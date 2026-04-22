@@ -1,5 +1,9 @@
+# 启用规则式 planner
 name: rule_based
+# 是否启用 planner
 enabled: true
 planner:
+  # 搜索最大深度
   max_depth: 3
+  # Beam Search 宽度
   beam_size: 4

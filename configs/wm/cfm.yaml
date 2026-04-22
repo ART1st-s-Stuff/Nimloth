@@ -1,17 +1,32 @@
+# 基础 CFM 世界模型配置（不启用视觉编码器）
+# 适用于纯 latent 输入的调试/基线实验。
+# 配置名（用于目录与日志）
 name: cfm
+# Transformer 隐藏维度
 hidden_dim: 256
+# latent 向量维度
 latent_dim: 128
+# 动作向量维度
 action_dim: 3
+# 历史窗口长度
 history_len: 4
 transformer:
+  # WM Transformer 层数
   num_layers: 4
+  # WM Transformer 注意力头数
   num_heads: 4
+  # Dropout 比例
   dropout: 0.1
 inverse_dynamics:
+  # IDM 隐藏维度
   hidden_dim: 256
+  # IDM Transformer 层数
   num_layers: 3
+  # IDM 注意力头数
   num_heads: 4
+  # IDM Dropout 比例
   dropout: 0.1
 encoder:
+  # 不启用图像编码器（直接使用已有 latent）
   name: none
 

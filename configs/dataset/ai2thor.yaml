@@ -1,4 +1,8 @@
+# AI2-THOR 数据集与采集配置
+# 包含：环境基础参数、数据清单路径、动作维度、采集策略与输出管理。
+# 数据集配置名
 name: ai2thor
+# 后端类型
 backend: ai2thor
 # 采样场景列表：建议混合厨房/客厅等不同布局，提升WM泛化。
 scenes:
@@ -22,16 +26,22 @@ scenes:
   - FloorPlan208
   - FloorPlan209
   - FloorPlan210
+# 可见性距离（米）
 visibility_distance: 1.5
+# 网格步长（米）
 grid_size: 0.25
 # 开启深度图是防卡墙策略的前提。
 render_depth_image: true
+# 是否渲染实例分割图
 render_instance_segmentation: false
+# AI2-THOR 平台
 ai2thor_platform: CloudRendering
+# AI2-THOR 本地缓存目录
 ai2thor_cache_dir: .cache/ai2thor
 # 训练数据读取入口（由采集任务维护 latest 指针）。
 manifest_path: datasets/ai2thor/latest/manifest.jsonl
-latent_dim: 128
+# latent 维度
+latent_dim: 256
 # 连续动作三元组：(move_ahead_distance, delta_yaw, delta_pitch)
 action_dim: 3
 collect:

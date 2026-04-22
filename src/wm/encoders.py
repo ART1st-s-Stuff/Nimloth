@@ -12,6 +12,18 @@ from torch import nn
 from torch.hub import load as torch_hub_load
 
 
+def _ensure_torch_serialization_compat() -> None:
+    """兼容旧权重中对 torch.utils.serialization 的引用。"""
+    import sys
+    import types
+
+    if "torch.utils.serialization" in sys.modules:
+        return
+    serialization_mod = types.ModuleType("torch.utils.serialization")
+    serialization_mod.__dict__.update(torch.serialization.__dict__)
+    sys.modules["torch.utils.serialization"] = serialization_mod
+
+
 def _to_3ch_rgb(image: Image.Image) -> Image.Image:
     if image.mode != "RGB":
         return image.convert("RGB")
@@ -68,6 +80,7 @@ class DinoV2MiniEncoder(WMImageEncoder):
         if not torch.cuda.is_available():
             raise RuntimeError("WM 编码推理要求 CUDA，可用 GPU 不存在或不可用。")
         self.device = torch.device("cuda")
+        _ensure_torch_serialization_compat()
         self.backbone = torch_hub_load("facebookresearch/dinov2", model_name)
         if freeze_backbone:
             for param in self.backbone.parameters():

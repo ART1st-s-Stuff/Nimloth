@@ -1,8 +1,18 @@
+# WM 校准配置（phase2）
+# 用于对训练完成的 WM 做噪声采样统计，生成校准参数。
+# 典型流程：读取 input_ckpt_path -> 执行采样 -> 输出校准结果。
+# 采样噪声强度
 noise_scale: 0.05
+# 每个样本采样次数
 num_samples: 8
+# 统计分位点（用于鲁棒阈值）
 percentile: 95
+# 待校准 WM checkpoint 路径
 input_ckpt_path: models/wm/${wm.name}/latest/wm.pt
 operation:
+  # 输出根目录
   outputs_root: models
+  # 阶段标识
   phase: phase2
+  # 任务标识
   task: wm_calibration

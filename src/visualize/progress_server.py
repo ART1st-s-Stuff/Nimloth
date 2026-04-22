@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,14 @@ _PROGRESS_APP_CSS = """
 """
 _CACHE_ROOT = Path(".cache") / "visualize"
 _FIGURE_CACHE_DIR = _CACHE_ROOT / "figures"
+_GRADIO_TEMP_DIR = Path(".cache") / "gradio"
+
+
+def _configure_gradio_temp_dir() -> None:
+    """将 Gradio 临时目录固定到项目内可写路径。"""
+    gradio_temp = _GRADIO_TEMP_DIR.resolve()
+    gradio_temp.mkdir(parents=True, exist_ok=True)
+    os.environ["GRADIO_TEMP_DIR"] = str(gradio_temp)
 
 
 def _build_env_context(metadata: dict[str, Any]) -> str:
@@ -655,6 +664,7 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
 
 
 def main() -> None:
+    _configure_gradio_temp_dir()
     app = build_app(dataset_root="datasets", models_root="models", outputs_root="outputs")
     app.launch(
         server_name="0.0.0.0",

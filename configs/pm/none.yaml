@@ -1,2 +1,4 @@
+# 关闭 planner 模块
 name: none
+# 是否启用 planner
 enabled: false

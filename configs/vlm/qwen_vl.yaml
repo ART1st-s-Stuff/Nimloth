@@ -1,6 +1,11 @@
+# 启用 Qwen-VL 作为视觉语言模型
 name: qwen_vl
+# 是否启用 VLM
 enabled: true
 model:
+  # 服务提供方
   provider: dashscope
+  # 模型名
   model_name: qwen-vl-max
+  # 采样温度（0.0 更稳定）
   temperature: 0.0

@@ -1,21 +1,37 @@
+# 全局 Hydra 入口配置：
+# - 通过 defaults 组合训练/校准/rollout 与各模块配置
+# - 其余字段定义项目级别基础参数与 Hydra 输出目录
 defaults:
+  # 训练阶段配置
   - pipeline/train: default
+  # 校准阶段配置
   - pipeline/calib: default
+  # rollout 阶段配置
   - pipeline/rollout: default
+  # 数据集配置
   - dataset: ai2thor
+  # 世界模型配置
   - wm: cfm_dinov2m
+  # planner 模块配置
   - pm: none
+  # VLM 模块配置
   - vlm: none
+  # 保留当前文件中的本地字段
   - _self_
 
 project:
+  # 项目名（用于日志与实验标识）
   name: flower
+  # 全局随机种子
   seed: 114514
 
 hydra:
   run:
+    # 单次运行输出目录
     dir: outputs/hydra/${now:%Y-%m-%d}/${now:%H-%M-%S}
   sweep:
+    # 多次 sweep 的根输出目录
     dir: outputs/hydra/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    # 每个 sweep 子任务目录模板
     subdir: ${hydra.job.num}
 

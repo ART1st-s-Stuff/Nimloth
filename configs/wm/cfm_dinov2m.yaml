@@ -1,21 +1,37 @@
+# CFM + DINOv2-M 编码器配置
+# 典型用于 phase2 的 WM 训练基线。
 name: cfm_dinov2m
-hidden_dim: 256
-latent_dim: 128
+hidden_dim: 512
+latent_dim: 256
+# 连续动作三元组维度：(move, yaw, pitch)
 action_dim: 3
+# 历史窗口长度
 history_len: 4
 transformer:
-  num_layers: 4
+  # WM Transformer 层数
+  num_layers: 6
+  # WM Transformer 注意力头数
   num_heads: 4
+  # Dropout 比例
   dropout: 0.1
 inverse_dynamics:
-  hidden_dim: 256
+  # IDM 隐藏维度
+  hidden_dim: 512
+  # IDM 层数
   num_layers: 3
+  # IDM 注意力头数
   num_heads: 4
+  # IDM Dropout
   dropout: 0.1
 encoder:
+  # 编码器配置名
   name: cfm_dinov2m
+  # DINOv2 主干名
   backbone_name: dinov2_vits14
+  # 是否冻结主干（仅训练投影头）
   freeze_backbone: true
+  # 输入图像尺寸（编码阶段会 resize）
   image_size: 224
+  # token 聚合策略
   token_strategy: patch_mean
 

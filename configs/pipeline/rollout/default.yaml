@@ -1,5 +1,12 @@
+# rollout 评估/可视化配置
+# 控制是否保存观测，以及是否上传提示词与推理链等产物。
+# 是否保存 rollout 的观测内容到本地
 save_observations: true
+# 是否上传观测内容到追踪平台
 upload_observations: true
+# 是否上传模型输入 prompt
 upload_prompt: true
+# 是否上传中间推理链（chain-of-thought）
 upload_cot: true
+# 上传产物前缀
 artifact_prefix: vlm-rollout

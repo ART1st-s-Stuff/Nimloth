@@ -1,12 +1,20 @@
+# CFM + Qwen2.5-VL 视觉编码器（冻结主干）配置
+# 适用于显存更稳、训练更快的冻结式实验。
 name: cfm_qwen25vl_8b_frozen
 hidden_dim: 256
 latent_dim: 128
 action_dim: 3
+# 当前配置使用 1 步历史
 history_len: 1
 encoder:
+  # 编码器配置名
   name: cfm_qwen25vl_8b_frozen
+  # 视觉主干名
   backbone_name: qwen25vl_8b_vision
+  # true 表示冻结主干
   freeze_backbone: true
+  # 输入图像尺寸
   image_size: 448
+  # token 聚合策略
   token_strategy: patch_mean
 

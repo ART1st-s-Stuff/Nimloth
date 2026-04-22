@@ -43,6 +43,7 @@ class WMDataset(Dataset):
         latent_dim: int,
         action_dim: int,
         history_len: int,
+        rollout_steps: int = 1,
         image_encoder: WMImageEncoder | None = None,
         latent_cache_path: str | None = None,
         encoder_num_workers: int = 1,
@@ -52,6 +53,7 @@ class WMDataset(Dataset):
         self.latent_dim = latent_dim
         self.action_dim = action_dim
         self.history_len = max(1, history_len)
+        self.rollout_steps = max(1, int(rollout_steps))
         self.image_encoder = image_encoder
         self.latent_cache_path = Path(latent_cache_path) if latent_cache_path else None
         self.encoder_num_workers = max(1, int(encoder_num_workers))
@@ -60,7 +62,7 @@ class WMDataset(Dataset):
         # 训练样本存在大量重叠帧，按 image_path 缓存可显著减少重复编码。
         self._latent_cache: dict[str, torch.Tensor] = {}
         self.samples = []
-        self._index_pairs: list[tuple[int, int]] = []
+        self._training_indices: list[dict[str, list[int]]] = []
         path = Path(manifest_path)
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
@@ -71,14 +73,29 @@ class WMDataset(Dataset):
             episode_id = int(sample.get("episode_id", -1))
             episode_to_indices.setdefault(episode_id, []).append(idx)
         for episode_indices in episode_to_indices.values():
-            for end_idx in range(self.history_len - 1, len(episode_indices) - 1):
-                history_last_global_idx = episode_indices[end_idx]
-                target_global_idx = episode_indices[end_idx + 1]
-                self._index_pairs.append((history_last_global_idx, target_global_idx))
+            min_history_last = self.history_len - 1
+            max_history_last = len(episode_indices) - self.rollout_steps - 1
+            for history_last_local_idx in range(min_history_last, max_history_last + 1):
+                history_start_local_idx = history_last_local_idx - (self.history_len - 1)
+                history_global_indices = episode_indices[history_start_local_idx : history_last_local_idx + 1]
+                future_global_indices = [
+                    episode_indices[history_last_local_idx + step] for step in range(1, self.rollout_steps + 1)
+                ]
+                action_source_indices = [
+                    episode_indices[history_last_local_idx + step - 1]
+                    for step in range(1, self.rollout_steps + 1)
+                ]
+                self._training_indices.append(
+                    {
+                        "history_indices": history_global_indices,
+                        "future_indices": future_global_indices,
+                        "action_source_indices": action_source_indices,
+                    }
+                )
         self._warmup_latent_cache()
 
     def __len__(self) -> int:
-        return len(self._index_pairs)
+        return len(self._training_indices)
 
     def _encode_latent(self, sample: dict[str, Any]) -> torch.Tensor:
         image_path = str(sample["image_path"])
@@ -102,7 +119,15 @@ class WMDataset(Dataset):
         if cache_path is not None and cache_path.exists():
             payload = torch.load(cache_path, map_location="cpu")
             latents = payload.get("latents", {}) if isinstance(payload, dict) else {}
-            if isinstance(latents, dict):
+            cached_latent_dim = payload.get("latent_dim") if isinstance(payload, dict) else None
+            if cached_latent_dim is not None and int(cached_latent_dim) != int(self.latent_dim):
+                logger.warning(
+                    "检测到 latent 缓存维度不匹配，忽略旧缓存: cache_dim=%s, expected_dim=%s, cache=%s",
+                    str(cached_latent_dim),
+                    str(self.latent_dim),
+                    str(cache_path),
+                )
+            elif isinstance(latents, dict):
                 for key, value in latents.items():
                     if isinstance(key, str) and isinstance(value, torch.Tensor):
                         self._latent_cache[key] = value.detach().cpu()
@@ -159,21 +184,24 @@ class WMDataset(Dataset):
         return padded
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        history_last_idx, target_idx = self._index_pairs[idx]
-        curr = self.samples[history_last_idx]
-        nxt = self.samples[target_idx]
-        history_start_idx = history_last_idx - (self.history_len - 1)
-        history_samples = self.samples[history_start_idx : history_last_idx + 1]
+        index_data = self._training_indices[idx]
+        history_samples = [self.samples[i] for i in index_data["history_indices"]]
+        future_samples = [self.samples[i] for i in index_data["future_indices"]]
+        action_source_samples = [self.samples[i] for i in index_data["action_source_indices"]]
         z_history = torch.stack([self._encode_latent(sample) for sample in history_samples], dim=0)
         action_history = torch.stack([self._build_action_vec(sample) for sample in history_samples], dim=0)
-        z_next = self._encode_latent(nxt)
-        gt_action = self._build_action_vec(curr)
-        env_context = build_env_context(curr.get("metadata", {}))
+        z_future = torch.stack([self._encode_latent(sample) for sample in future_samples], dim=0)
+        gt_action_future = torch.stack([self._build_action_vec(sample) for sample in action_source_samples], dim=0)
+        z_next = z_future[0]
+        gt_action = gt_action_future[0]
+        env_context = build_env_context(history_samples[-1].get("metadata", {}))
         return {
             "z_history": z_history,
             "action_history": action_history,
             "z_next": z_next,
             "gt_action": gt_action,
+            "z_future": z_future,
+            "gt_action_future": gt_action_future,
             "env_context": env_context,
         }
 
