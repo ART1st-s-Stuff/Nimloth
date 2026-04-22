@@ -39,7 +39,7 @@
 - AI_progress.md: 当前项目计划及进展
 - AI_issues.md: 你提出并让人类查看的issues
 - plan.md: 人类开发者制定的项目计划【不要修改此文件。如有修改必要，提出issue。】
-- generated_doc.md: Gemini生成的更细致的项目计划【不要修改此文件。如有修改必要，提出issue。】
+- generated_doc.md, generated_overall_plan.md: Gemini生成的更细致的项目说明和项目计划【不要修改此文件。如有修改必要，提出issue。】
 - src/: 源代码目录 【为你的源代码分模块】
 - configs/: 配置文件目录
 - scripts/: 脚本目录
