@@ -49,6 +49,7 @@
 - outputs/: 存放logs等debug用信息
   - dev/<datetime>/<taskname>: 保存dev里输出的内容，按dev里脚本名称分文件夹保存。【dev的所有输出一律存在这里，不要保存在别的地方，如models、datasets！】
 - qc_*.md: quick command, 常用任务的Prompt【不要修改这些文件。】
+- .cache/: 缓存目录
 - 【如果你需要git submodules，可以添加在主目录也可以添加到src】
 
 ### 代码要求

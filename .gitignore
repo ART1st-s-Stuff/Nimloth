@@ -42,4 +42,5 @@ datasets/**
 
 # cache
 .uv-cache/
+.cache/
 wandb/

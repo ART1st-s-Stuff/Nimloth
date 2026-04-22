@@ -5,7 +5,7 @@ description = "HLWM-MTG Phase1+2 minimal pipeline"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "torch",
+  "torch==2.5.1",
   "hydra-core",
   "omegaconf",
   "numpy",
@@ -16,6 +16,9 @@ dependencies = [
   "python-dotenv",
   "gradio",
   "transformers",
+  "umap-learn",
+  "plotly",
+  "xformers>=0.0.29.post1",
 ]
 
 [build-system]

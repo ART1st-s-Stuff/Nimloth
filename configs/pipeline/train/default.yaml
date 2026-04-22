@@ -1,8 +1,10 @@
 batch_size: 16
 epochs: 1
 lr: 0.001
-num_workers: 0
-device: cpu
+num_workers: 8
+encoder_num_workers: 8
+encoder_batch_size: 64
+device: cuda
 training_mode: unsupervised
 semi_supervised_weight: 1.0
 reconstruction_weight: 1.0

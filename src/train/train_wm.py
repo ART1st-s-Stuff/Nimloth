@@ -41,6 +41,11 @@ def _resolve_manifest_path(manifest_path: str) -> Path:
     return candidate
 
 
+def _build_latent_cache_path(manifest_path: Path, wm_name: str) -> Path:
+    stem = manifest_path.stem
+    return manifest_path.parent / f"{stem}.latents.{wm_name}.pt"
+
+
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     load_project_env()
@@ -70,20 +75,28 @@ def main(cfg: DictConfig) -> None:
     device = torch.device(str(train_cfg.device))
     resolved_manifest_path = _resolve_manifest_path(str(dataset_cfg.manifest_path))
     image_encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
+    latent_cache_path = _build_latent_cache_path(resolved_manifest_path, str(wm_cfg.name))
     dataset = WMDataset(
         manifest_path=str(resolved_manifest_path),
         latent_dim=int(dataset_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
         history_len=int(wm_cfg.history_len),
         image_encoder=image_encoder,
+        latent_cache_path=str(latent_cache_path),
+        encoder_num_workers=int(train_cfg.encoder_num_workers),
+        encoder_batch_size=int(train_cfg.encoder_batch_size),
     )
+    # 预编码完成后，训练阶段仅从缓存读取 latent，支持 DataLoader 多进程并行。
+    dataset.disable_encoder_after_warmup()
     if len(dataset) == 0:
         raise RuntimeError("数据集为空，请先执行 collect_data。")
+    loader_num_workers = int(train_cfg.num_workers)
     loader = DataLoader(
         dataset,
         batch_size=int(train_cfg.batch_size),
         shuffle=True,
-        num_workers=0 if image_encoder is not None else int(train_cfg.num_workers),
+        num_workers=loader_num_workers,
+        persistent_workers=loader_num_workers > 0,
     )
     model = CFMWorldModel(
         latent_dim=int(wm_cfg.latent_dim),
@@ -125,11 +138,13 @@ def main(cfg: DictConfig) -> None:
     inverse_dynamics.train()
     action_mapper.train()
     last_loss = None
+    total_epochs = int(train_cfg.epochs)
+    total_batches = max(1, len(loader))
     with progress_context() as progress:
-        task = progress.add_task("training_wm", total=int(train_cfg.epochs))
+        task = progress.add_task("training_wm", total=total_epochs * total_batches)
         for epoch in range(int(train_cfg.epochs)):
             epoch_loss = 0.0
-            for batch in loader:
+            for batch_idx, batch in enumerate(loader, start=1):
                 z_history = batch["z_history"].to(device)
                 action_history = batch["action_history"].to(device)
                 z_next = batch["z_next"].to(device)
@@ -152,7 +167,16 @@ def main(cfg: DictConfig) -> None:
                     float(train_cfg.grad_clip_norm),
                 )
                 optimizer.step()
-                epoch_loss += float(loss.item())
+                batch_loss = float(loss.item())
+                epoch_loss += batch_loss
+                progress.update(
+                    task,
+                    advance=1,
+                    description=(
+                        f"epoch={epoch + 1}/{total_epochs} "
+                        f"batch={batch_idx}/{total_batches} mode={mode} loss={batch_loss:.6f}"
+                    ),
+                )
             last_loss = epoch_loss / max(1, len(loader))
             tracker.log_metrics(
                 {
@@ -163,7 +187,6 @@ def main(cfg: DictConfig) -> None:
                 },
                 step=epoch,
             )
-            progress.update(task, advance=1, description=f"epoch={epoch} mode={mode} loss={last_loss:.6f}")
 
     out_dir = ensure_dir(run_dir)
     ckpt_path = Path(out_dir) / "wm.pt"

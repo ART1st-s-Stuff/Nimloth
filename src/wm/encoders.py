@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 from PIL import Image
@@ -45,6 +45,9 @@ class WMImageEncoder(nn.Module):
     def encode_image_path(self, image_path: str) -> EncoderOutput:
         raise NotImplementedError
 
+    def encode_image_paths(self, image_paths: Sequence[str]) -> list[EncoderOutput]:
+        raise NotImplementedError
+
 
 class DinoV2MiniEncoder(WMImageEncoder):
     """DINOv2 mini + MLP 投影。"""
@@ -62,6 +65,9 @@ class DinoV2MiniEncoder(WMImageEncoder):
         self.model_name = model_name
         self.token_strategy = token_strategy
         self.freeze_backbone = freeze_backbone
+        if not torch.cuda.is_available():
+            raise RuntimeError("WM 编码推理要求 CUDA，可用 GPU 不存在或不可用。")
+        self.device = torch.device("cuda")
         self.backbone = torch_hub_load("facebookresearch/dinov2", model_name)
         if freeze_backbone:
             for param in self.backbone.parameters():
@@ -69,6 +75,8 @@ class DinoV2MiniEncoder(WMImageEncoder):
             self.backbone.eval()
         embed_dim = int(getattr(self.backbone, "embed_dim", 384))
         self.proj = nn.Sequential(nn.Linear(embed_dim, latent_dim), nn.GELU())
+        self.backbone.to(self.device)
+        self.proj.to(self.device)
 
     def _select_tokens(self, pixel_values: torch.Tensor) -> torch.Tensor:
         if hasattr(self.backbone, "forward_features"):
@@ -94,18 +102,33 @@ class DinoV2MiniEncoder(WMImageEncoder):
         return features
 
     def encode_image_path(self, image_path: str) -> EncoderOutput:
-        image = Image.open(image_path)
-        pixel_values = _preprocess_pil(image=image, image_size=self.image_size)
+        return self.encode_image_paths([image_path])[0]
+
+    def encode_image_paths(self, image_paths: Sequence[str]) -> list[EncoderOutput]:
+        if not image_paths:
+            return []
+        tensors: list[torch.Tensor] = []
+        for image_path in image_paths:
+            image = Image.open(image_path)
+            tensors.append(_preprocess_pil(image=image, image_size=self.image_size))
+        pixel_values = torch.cat(tensors, dim=0).to(self.device)
         if self.freeze_backbone:
-            with torch.no_grad():
-                features = self._select_tokens(pixel_values)
+            with torch.inference_mode():
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    features = self._select_tokens(pixel_values)
+                z_batch = self.proj(features).detach().cpu()
         else:
             features = self._select_tokens(pixel_values)
-        z = self.proj(features).squeeze(0).cpu()
-        return EncoderOutput(
-            z=z,
-            aux={"encoder": "dinov2_mini", "image_path": image_path, "token_strategy": self.token_strategy},
-        )
+            z_batch = self.proj(features).detach().cpu()
+        outputs: list[EncoderOutput] = []
+        for image_path, z in zip(image_paths, z_batch, strict=True):
+            outputs.append(
+                EncoderOutput(
+                    z=z,
+                    aux={"encoder": "dinov2_mini", "image_path": image_path, "token_strategy": self.token_strategy},
+                )
+            )
+        return outputs
 
 
 class PlaceholderEncoder(WMImageEncoder):
@@ -116,6 +139,9 @@ class PlaceholderEncoder(WMImageEncoder):
         self.name = name
 
     def encode_image_path(self, image_path: str) -> EncoderOutput:
+        raise NotImplementedError(f"{self.name} 尚未实现，请后续细化该 encoder。")
+
+    def encode_image_paths(self, image_paths: Sequence[str]) -> list[EncoderOutput]:
         raise NotImplementedError(f"{self.name} 尚未实现，请后续细化该 encoder。")
 
 

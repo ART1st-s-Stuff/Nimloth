@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+import umap
 
 from src.wm.encoders import DinoV2MiniEncoder
 
@@ -38,6 +39,8 @@ class StepResult:
 _QWEN_MODEL: Qwen2_5_VLForConditionalGeneration | None = None
 _QWEN_PROCESSOR: AutoProcessor | None = None
 _QWEN_INIT_ERROR: str | None = None
+_CACHE_ROOT = Path(".cache") / "visualize"
+_UMAP_CACHE_DIR = _CACHE_ROOT / "umap"
 
 
 def _deterministic_vector_from_text(text: str, dim: int = 128) -> list[float]:
@@ -183,12 +186,149 @@ def _load_manifest(run_dir: str) -> list[dict[str, Any]]:
     return rows
 
 
-def run_zt_st_cot_test(run_dir: str, task_text: str, max_steps: int = 10, latent_dim: int = 128) -> tuple[str, list[list[Any]], str]:
+def _ensure_cache_dirs() -> None:
+    _UMAP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _umap_cache_key(feature_name: str, points: list[list[float]]) -> str:
+    arr = np.asarray(points, dtype=np.float32)
+    hasher = hashlib.sha256()
+    hasher.update(feature_name.encode("utf-8"))
+    hasher.update(str(arr.shape).encode("utf-8"))
+    hasher.update(arr.tobytes())
+    return hasher.hexdigest()[:24]
+
+
+def _load_umap_cache(feature_name: str, cache_key: str) -> list[list[float]] | None:
+    _ensure_cache_dirs()
+    cache_path = _UMAP_CACHE_DIR / f"{feature_name}_{cache_key}.json"
+    if not cache_path.exists():
+        return None
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    points = payload.get("points", [])
+    if not isinstance(points, list):
+        return None
+    return points
+
+
+def _save_umap_cache(feature_name: str, cache_key: str, embedded: list[list[float]]) -> None:
+    _ensure_cache_dirs()
+    cache_path = _UMAP_CACHE_DIR / f"{feature_name}_{cache_key}.json"
+    payload = {
+        "feature": feature_name,
+        "cache_key": cache_key,
+        "points": embedded,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _compute_umap_3d(points: list[list[float]], feature_name: str) -> tuple[list[list[float]], str | None]:
+    if len(points) < 3:
+        return [], "样本数少于3，跳过 UMAP 三维降维。"
+    cache_key = _umap_cache_key(feature_name=feature_name, points=points)
+    cached = _load_umap_cache(feature_name=feature_name, cache_key=cache_key)
+    if cached is not None:
+        return cached, None
+    arr = np.asarray(points, dtype=np.float32)
+    n_neighbors = min(15, max(2, len(points) - 1))
+    reducer = umap.UMAP(n_components=3, n_neighbors=n_neighbors, random_state=42)
+    embedded = reducer.fit_transform(arr)
+    embedded_list = embedded.astype(np.float32).tolist()
+    _save_umap_cache(feature_name=feature_name, cache_key=cache_key, embedded=embedded_list)
+    return embedded_list, None
+
+
+def _build_umap_payload(
+    feature_name: str,
+    vectors: list[list[float]],
+    results: list[StepResult],
+) -> tuple[dict[str, Any], str | None]:
+    embedded, warning = _compute_umap_3d(vectors, feature_name=feature_name)
+    if not embedded:
+        return {
+            "feature": feature_name,
+            "points": [],
+            "warning": warning or "",
+        }, warning
+    payload_points: list[dict[str, Any]] = []
+    for idx, coords in enumerate(embedded):
+        item = results[idx]
+        payload_points.append(
+            {
+                "x": float(coords[0]),
+                "y": float(coords[1]),
+                "z": float(coords[2]),
+                "episode_id": item.episode_id,
+                "step_id": item.step_id,
+                "image_path": item.image_path,
+            }
+        )
+    return {
+        "feature": feature_name,
+        "points": payload_points,
+        "warning": "",
+    }, None
+
+
+def _build_gallery_items(results: list[StepResult]) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    for item in results[:60]:
+        image_path = item.image_path
+        if not image_path or not Path(image_path).exists():
+            continue
+        caption = f"ep={item.episode_id}, step={item.step_id}"
+        items.append((image_path, caption))
+    return items
+
+
+def build_visual_payload_from_result_json_text(result_json_text: str) -> tuple[list[tuple[str, str]], dict[str, Any], dict[str, Any], dict[str, Any], str]:
+    payload = json.loads(result_json_text)
+    raw_results = payload.get("results", [])
+    restored_results: list[StepResult] = []
+    for row in raw_results:
+        restored_results.append(
+            StepResult(
+                episode_id=int(row.get("episode_id", -1)),
+                step_id=int(row.get("step_id", -1)),
+                image_path=str(row.get("image_path", "")),
+                z_t_dino=list(row.get("z_t_dino", [])),
+                z_t_qwen=list(row.get("z_t_qwen", [])),
+                cot_text=str(row.get("cot_text", "")),
+                s_t=list(row.get("s_t", [])),
+            )
+        )
+    gallery_items = _build_gallery_items(restored_results)
+    umap_payload = payload.get("umap", {})
+    if isinstance(umap_payload, dict) and {"z_t_dino", "z_t_qwen", "s_t"} <= set(umap_payload.keys()):
+        return (
+            gallery_items,
+            dict(umap_payload.get("z_t_dino", {"feature": "z_t_dino", "points": [], "warning": ""})),
+            dict(umap_payload.get("z_t_qwen", {"feature": "z_t_qwen", "points": [], "warning": ""})),
+            dict(umap_payload.get("s_t", {"feature": "s_t", "points": [], "warning": ""})),
+            "",
+        )
+    dino_payload, dino_warning = _build_umap_payload("z_t_dino", [item.z_t_dino for item in restored_results], restored_results)
+    qwen_payload, qwen_warning = _build_umap_payload("z_t_qwen", [item.z_t_qwen for item in restored_results], restored_results)
+    st_payload, st_warning = _build_umap_payload("s_t", [item.s_t for item in restored_results], restored_results)
+    warnings = [msg for msg in [dino_warning, qwen_warning, st_warning] if msg]
+    warning_text = "历史结果无预计算 UMAP，已临时计算。" if not warnings else "历史结果无预计算 UMAP，已临时计算；" + "；".join(sorted(set(warnings)))
+    return gallery_items, dino_payload, qwen_payload, st_payload, warning_text
+
+
+def run_zt_st_cot_test(
+    run_dir: str,
+    task_text: str,
+    max_steps: int = 10,
+    latent_dim: int = 128,
+) -> tuple[str, list[list[Any]], str, dict[str, Any], dict[str, Any], dict[str, Any], list[tuple[str, str]], str]:
     if not run_dir:
-        return "未选择 rollout 目录。", [], ""
+        empty_payload = {"feature": "", "points": [], "warning": ""}
+        return "未选择 rollout 目录。", [], "", empty_payload, empty_payload, empty_payload, [], ""
     rows = _load_manifest(run_dir)
     if not rows:
-        return "manifest 为空，无法执行测试。", [], ""
+        empty_payload = {"feature": "", "points": [], "warning": ""}
+        return "manifest 为空，无法执行测试。", [], "", empty_payload, empty_payload, empty_payload, [], ""
     encoder = DinoV2MiniEncoder(latent_dim=latent_dim, freeze_backbone=True)
     selected_rows = rows[: max(1, int(max_steps))]
     results: list[StepResult] = []
@@ -218,6 +358,28 @@ def run_zt_st_cot_test(run_dir: str, task_text: str, max_steps: int = 10, latent
             )
         )
     out_dir = _save_results(task_text=task_text, run_dir=run_dir, results=results)
+    dino_payload, dino_umap_warning = _build_umap_payload(
+        "z_t_dino",
+        [item.z_t_dino for item in results],
+        results,
+    )
+    qwen_payload, qwen_umap_warning = _build_umap_payload(
+        "z_t_qwen",
+        [item.z_t_qwen for item in results],
+        results,
+    )
+    st_payload, st_umap_warning = _build_umap_payload(
+        "s_t",
+        [item.s_t for item in results],
+        results,
+    )
+    gallery_items = _build_gallery_items(results)
+    _save_umap_payloads(
+        out_dir=out_dir,
+        dino_payload=dino_payload,
+        qwen_payload=qwen_payload,
+        st_payload=st_payload,
+    )
     preview_rows = [
         [
             item.episode_id,
@@ -230,6 +392,9 @@ def run_zt_st_cot_test(run_dir: str, task_text: str, max_steps: int = 10, latent
         for item in results
     ]
     unique_warnings = sorted(set(warning_messages))
+    umap_warnings = [msg for msg in [dino_umap_warning, qwen_umap_warning, st_umap_warning] if msg]
+    if umap_warnings:
+        unique_warnings.extend(sorted(set(umap_warnings)))
     warning_text = ""
     if unique_warnings:
         warning_text = (
@@ -243,7 +408,25 @@ def run_zt_st_cot_test(run_dir: str, task_text: str, max_steps: int = 10, latent
         f"结果目录={out_dir}"
         f"{warning_text}"
     )
-    return summary, preview_rows, str(out_dir)
+    return summary, preview_rows, str(out_dir), dino_payload, qwen_payload, st_payload, gallery_items, ""
+
+
+def _save_umap_payloads(
+    out_dir: Path,
+    dino_payload: dict[str, Any],
+    qwen_payload: dict[str, Any],
+    st_payload: dict[str, Any],
+) -> None:
+    result_path = out_dir / "result.json"
+    if not result_path.exists():
+        return
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    payload["umap"] = {
+        "z_t_dino": dino_payload,
+        "z_t_qwen": qwen_payload,
+        "s_t": st_payload,
+    }
+    result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _save_results(task_text: str, run_dir: str, results: list[StepResult], outputs_root: str = "outputs") -> Path:
@@ -300,10 +483,35 @@ def load_dev_history(run_dir: str) -> tuple[str, str]:
         return f"缺少结果文件: {path}", ""
     text = path.read_text(encoding="utf-8")
     payload = json.loads(text)
+    # 前端仅展示轻量结果，避免把高维向量完整回传导致浏览器卡顿。
+    preview_payload = {
+        "task_text": payload.get("task_text", ""),
+        "rollout_dir": payload.get("rollout_dir", ""),
+        "created_at": payload.get("created_at", ""),
+        "results_total": len(payload.get("results", [])),
+        "results_preview": [],
+    }
+    for item in payload.get("results", [])[:50]:
+        z_t_dino = list(item.get("z_t_dino", []))
+        z_t_qwen = list(item.get("z_t_qwen", []))
+        s_t = list(item.get("s_t", []))
+        preview_payload["results_preview"].append(
+            {
+                "episode_id": item.get("episode_id", -1),
+                "step_id": item.get("step_id", -1),
+                "image_path": item.get("image_path", ""),
+                "cot_text": str(item.get("cot_text", ""))[:200],
+                "z_t_dino_mean": float(np.mean(z_t_dino)) if z_t_dino else 0.0,
+                "z_t_qwen_mean": float(np.mean(z_t_qwen)) if z_t_qwen else 0.0,
+                "s_t_mean": float(np.mean(s_t)) if s_t else 0.0,
+            }
+        )
+    if "umap" in payload:
+        preview_payload["umap"] = payload["umap"]
     summary = (
         f"task={payload.get('task_text', '')}\n"
         f"rollout={payload.get('rollout_dir', '')}\n"
         f"steps={len(payload.get('results', []))}"
     )
-    return summary, text
+    return summary, json.dumps(preview_payload, ensure_ascii=False, indent=2)
 

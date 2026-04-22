@@ -51,6 +51,12 @@ uv run ./scripts/phase2/wm_training.sh wm=cfm pm=rule_based vlm=qwen_vl
 
 所有入口都会在命令行显示 Rich 进度和关键指标，并自动记录 W&B 实验数据。
 
+`wm_training` 默认使用 GPU（`pipeline.train.device=cuda`）。若当前环境无可用 CUDA，可临时覆盖为 CPU：
+
+```bash
+uv run ./scripts/phase2/wm_training.sh pipeline.train.device=cpu
+```
+
 默认已使用 AI2THOR 无头后端（`CloudRendering`）。如需切换为 mock：
 
 ```bash
