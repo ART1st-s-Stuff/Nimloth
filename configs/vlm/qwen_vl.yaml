@@ -2,10 +2,20 @@
 name: qwen_vl
 # 是否启用 VLM
 enabled: true
+fallback_enabled: true
 model:
   # 服务提供方
   provider: dashscope
   # 模型名
   model_name: qwen-vl-max
+  # HuggingFace 本地/远程模型名（Phase3 默认）
+  hf_model_name: Qwen/Qwen2.5-VL-7B-Instruct
   # 采样温度（0.0 更稳定）
   temperature: 0.0
+  # 生成 token 上限
+  max_new_tokens: 128
+semantic_align:
+  # s_t 构造模式：vlm / placeholder
+  st_mode: vlm
+  # 是否把 cot_text 写入训练产物
+  save_cot: true

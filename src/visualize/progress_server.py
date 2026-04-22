@@ -2,24 +2,19 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
+import queue
+import threading
 from typing import Any
 
 import gradio as gr
 import plotly.graph_objects as go
-from dev.webui.test_zt_st_cot import (
-    build_visual_payload_from_result_json_text,
-    list_dev_history,
-    list_rollout_runs,
-    list_task_texts,
-    load_dev_history,
-    run_zt_st_cot_test,
-)
 
 # 侧边栏固定为纵向按钮栈，避免 Radio 在部分主题下呈「胶囊/浮动」观感。
 _PROGRESS_APP_CSS = """
@@ -51,6 +46,14 @@ _PROGRESS_APP_CSS = """
 _CACHE_ROOT = Path(".cache") / "visualize"
 _FIGURE_CACHE_DIR = _CACHE_ROOT / "figures"
 _GRADIO_TEMP_DIR = Path(".cache") / "gradio"
+_OFFLINE_WANDB_HISTORY_CACHE: dict[str, tuple[float, dict[str, list[tuple[float, float]]]]] = {}
+_ZT_ST_COT_TOOLS: dict[str, Any] | None = None
+_WM_TRAJ_TOOLS: dict[str, Any] | None = None
+_DEFAULT_TASK_TEXTS = [
+    "在当前房间里找到出口并接近门口。",
+    "从房间移动到走廊并继续前进到目标点。",
+    "沿走廊移动并最终接近电梯区域。",
+]
 
 
 def _configure_gradio_temp_dir() -> None:
@@ -58,6 +61,38 @@ def _configure_gradio_temp_dir() -> None:
     gradio_temp = _GRADIO_TEMP_DIR.resolve()
     gradio_temp.mkdir(parents=True, exist_ok=True)
     os.environ["GRADIO_TEMP_DIR"] = str(gradio_temp)
+
+
+def _get_zt_st_cot_tools() -> dict[str, Any]:
+    """懒加载 dev.webui.test_zt_st_cot，缩短服务冷启动时间。"""
+    global _ZT_ST_COT_TOOLS
+    if _ZT_ST_COT_TOOLS is not None:
+        return _ZT_ST_COT_TOOLS
+    module = importlib.import_module("dev.webui.test_zt_st_cot")
+    _ZT_ST_COT_TOOLS = {
+        "build_visual_payload_from_result_json_text": module.build_visual_payload_from_result_json_text,
+        "list_dev_history": module.list_dev_history,
+        "list_rollout_runs": module.list_rollout_runs,
+        "list_task_texts": module.list_task_texts,
+        "load_dev_history": module.load_dev_history,
+        "run_zt_st_cot_test": module.run_zt_st_cot_test,
+    }
+    return _ZT_ST_COT_TOOLS
+
+
+def _get_wm_traj_tools() -> dict[str, Any]:
+    """懒加载 dev.webui.test_wm_traj_compare，缩短服务冷启动时间。"""
+    global _WM_TRAJ_TOOLS
+    if _WM_TRAJ_TOOLS is not None:
+        return _WM_TRAJ_TOOLS
+    module = importlib.import_module("dev.webui.test_wm_traj_compare")
+    _WM_TRAJ_TOOLS = {
+        "list_wm_test_runs": module.list_wm_test_runs,
+        "list_wm_traj_history": module.list_wm_traj_history,
+        "load_wm_traj_history": module.load_wm_traj_history,
+        "run_wm_traj_compare_test": module.run_wm_traj_compare_test,
+    }
+    return _WM_TRAJ_TOOLS
 
 
 def _build_env_context(metadata: dict[str, Any]) -> str:
@@ -242,6 +277,277 @@ def _build_umap_figure(payload: dict[str, Any], title: str) -> go.Figure:
     return fig
 
 
+def _build_empty_figure(title: str, note: str) -> go.Figure:
+    fig = go.Figure()
+    fig.update_layout(
+        title=f"{title}（{note}）",
+        margin={"l": 0, "r": 0, "b": 0, "t": 40},
+    )
+    return fig
+
+
+def _extract_rollout_ids(payload: dict[str, Any]) -> list[str]:
+    points = payload.get("points", []) if isinstance(payload, dict) else []
+    rollout_ids = sorted({str(point.get("rollout_id", "")) for point in points if point.get("rollout_id")})
+    return rollout_ids
+
+
+def _color_for_rollout(idx: int) -> str:
+    palette = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+        "#bcbd22",
+        "#17becf",
+    ]
+    return palette[idx % len(palette)]
+
+
+def _build_wm_traj_compare_figure(
+    payload: dict[str, Any],
+    selected_rollouts: list[str] | None,
+    connect_rollout_adjacent: bool,
+    connect_gt_pred: bool,
+) -> go.Figure:
+    points = payload.get("points", []) if isinstance(payload, dict) else []
+    if not points:
+        return _build_empty_figure("WM 轨迹对比", "暂无数据")
+    all_rollouts = _extract_rollout_ids(payload)
+    active_rollouts = set(selected_rollouts) if selected_rollouts else set(all_rollouts)
+    if not active_rollouts:
+        return _build_empty_figure("WM 轨迹对比", "未选择 rollout")
+
+    filtered = [point for point in points if str(point.get("rollout_id", "")) in active_rollouts]
+    if not filtered:
+        return _build_empty_figure("WM 轨迹对比", "当前筛选无数据")
+
+    fig = go.Figure()
+    color_map = {rollout_id: _color_for_rollout(idx) for idx, rollout_id in enumerate(sorted(active_rollouts))}
+    marker_symbol = {"real": "circle", "pred": "diamond"}
+    source_label = {"real": "Encoder(gt)", "pred": "WM(pred)"}
+
+    grouped_by_rollout_source: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    grouped_by_rollout_state: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for point in filtered:
+        rollout_id = str(point.get("rollout_id", "unknown"))
+        source = str(point.get("source", "real"))
+        state_index = int(point.get("state_index", -1))
+        grouped_by_rollout_source.setdefault((rollout_id, source), []).append(point)
+        grouped_by_rollout_state.setdefault((rollout_id, state_index), []).append(point)
+
+    for (rollout_id, source), group_points in sorted(grouped_by_rollout_source.items()):
+        ordered = sorted(group_points, key=lambda x: int(x.get("state_index", -1)))
+        xs = [float(p["x"]) for p in ordered]
+        ys = [float(p["y"]) for p in ordered]
+        zs = [float(p["z"]) for p in ordered]
+        labels = [
+            f"rollout={rollout_id}<br>source={source_label.get(source, source)}<br>step={p.get('step_id', 'N/A')}"
+            for p in ordered
+        ]
+        fig.add_trace(
+            go.Scatter3d(
+                x=xs,
+                y=ys,
+                z=zs,
+                mode="markers",
+                marker={
+                    "size": 6,
+                    "symbol": marker_symbol.get(source, "circle"),
+                    "color": color_map.get(rollout_id, "#1f77b4"),
+                    "opacity": 0.9,
+                },
+                name=f"{rollout_id} / {source_label.get(source, source)}",
+                text=labels,
+                hovertemplate="%{text}<extra></extra>",
+            )
+        )
+        if connect_rollout_adjacent and len(ordered) >= 2:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=xs,
+                    y=ys,
+                    z=zs,
+                    mode="lines",
+                    line={"color": color_map.get(rollout_id, "#1f77b4"), "width": 3},
+                    name=f"{rollout_id} / 相邻状态连线 / {source_label.get(source, source)}",
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+
+    if connect_gt_pred:
+        for (rollout_id, state_index), group_points in sorted(grouped_by_rollout_state.items()):
+            by_source = {str(point.get("source", "")): point for point in group_points}
+            real_point = by_source.get("real")
+            pred_point = by_source.get("pred")
+            # 第一个状态通常只有 ground truth，没有预测点，按需求跳过。
+            if real_point is None or pred_point is None:
+                continue
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[float(real_point["x"]), float(pred_point["x"])],
+                    y=[float(real_point["y"]), float(pred_point["y"])],
+                    z=[float(real_point["z"]), float(pred_point["z"])],
+                    mode="lines",
+                    line={"color": color_map.get(rollout_id, "#1f77b4"), "width": 2, "dash": "dash"},
+                    name=f"{rollout_id} / gt-pred 连线",
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+
+    fig.update_layout(
+        title="WM 轨迹对比（同一映射空间）",
+        scene={"xaxis_title": "UMAP-1", "yaxis_title": "UMAP-2", "zaxis_title": "UMAP-3"},
+        margin={"l": 0, "r": 0, "b": 0, "t": 40},
+        legend={"orientation": "h"},
+    )
+    return fig
+
+
+def _collect_phase2_runs(models_root: str = "models") -> list[Path]:
+    root = Path(models_root) / "wm"
+    if not root.exists():
+        return []
+    run_dirs: list[Path] = []
+    for wm_dir in root.iterdir():
+        if not wm_dir.is_dir():
+            continue
+        for run_dir in wm_dir.iterdir():
+            if run_dir.is_dir() and (run_dir / "phase2_eval_metrics.json").exists():
+                run_dirs.append(run_dir)
+    return sorted(run_dirs, reverse=True)
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _build_divergence_figure(normal_scores: list[float], abnormal_scores: list[float]) -> go.Figure:
+    if not normal_scores and not abnormal_scores:
+        return _build_empty_figure("散度分布", "暂无数据")
+    fig = go.Figure()
+    if normal_scores:
+        fig.add_trace(
+            go.Histogram(
+                x=normal_scores,
+                name="normal",
+                opacity=0.65,
+                nbinsx=35,
+            )
+        )
+    if abnormal_scores:
+        fig.add_trace(
+            go.Histogram(
+                x=abnormal_scores,
+                name="abnormal",
+                opacity=0.65,
+                nbinsx=35,
+            )
+        )
+    fig.update_layout(
+        barmode="overlay",
+        title="散度分布对比",
+        xaxis_title="divergence",
+        yaxis_title="count",
+        margin={"l": 0, "r": 0, "b": 0, "t": 40},
+    )
+    return fig
+
+
+def _build_drift_figure(steps: list[int], fd: list[float], cd: list[float]) -> go.Figure:
+    if not steps:
+        return _build_empty_figure("长程 Drift 曲线", "暂无数据")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=steps, y=fd, mode="lines+markers", name="FD"))
+    fig.add_trace(go.Scatter(x=steps, y=cd, mode="lines+markers", name="CD"))
+    fig.update_layout(
+        title="长程 Drift 曲线",
+        xaxis_title="rollout_step",
+        yaxis_title="distance",
+        margin={"l": 0, "r": 0, "b": 0, "t": 40},
+    )
+    return fig
+
+
+def _phase2_summary(payload: dict[str, Any], run_dir: Path) -> str:
+    kpis = payload.get("kpis", {})
+    threshold = payload.get("threshold_coverage", {})
+    meta = payload.get("meta", {})
+    return (
+        f"run: {run_dir}\n"
+        f"wm: {meta.get('wm_name', 'N/A')}\n"
+        f"samples: {meta.get('num_samples', 'N/A')}\n"
+        f"wm_mse: {kpis.get('wm_mse', 'N/A')}\n"
+        f"latent_fd_mean: {kpis.get('latent_fd_mean', 'N/A')}\n"
+        f"latent_cd_mean: {kpis.get('latent_cd_mean', 'N/A')}\n"
+        f"divergence_auroc: {kpis.get('divergence_auroc', 'N/A')}\n"
+        f"idm_action_mse: {kpis.get('idm_action_mse', 'N/A')}\n"
+        f"theta_div: {threshold.get('theta_div', 'N/A')}\n"
+        f"normal_trigger_rate: {threshold.get('normal_trigger_rate', 'N/A')}\n"
+        f"abnormal_trigger_rate: {threshold.get('abnormal_trigger_rate', 'N/A')}"
+    )
+
+
+def _phase2_compare_rows(run_dirs: list[Path]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for run_dir in run_dirs[:300]:
+        payload = _read_json(run_dir / "phase2_eval_metrics.json")
+        kpis = payload.get("kpis", {})
+        threshold = payload.get("threshold_coverage", {})
+        rows.append(
+            [
+                str(run_dir),
+                str(kpis.get("wm_mse", "N/A")),
+                str(kpis.get("divergence_auroc", "N/A")),
+                str(kpis.get("latent_fd_mean", "N/A")),
+                str(kpis.get("latent_cd_mean", "N/A")),
+                str(kpis.get("idm_action_mse", "N/A")),
+                str(threshold.get("theta_div", "N/A")),
+                str(threshold.get("abnormal_trigger_rate", "N/A")),
+            ]
+        )
+    return rows
+
+
+def _load_phase2_dashboard(selected_run: str, models_root: str = "models") -> tuple[str, list[list[str]], go.Figure, go.Figure, str]:
+    run_dirs = _collect_phase2_runs(models_root=models_root)
+    compare_rows = _phase2_compare_rows(run_dirs)
+    if not run_dirs:
+        empty = _build_empty_figure("Phase2 图表", "未找到 phase2_eval_metrics.json")
+        return "未找到评估结果。请先执行 scripts/phase2/wm_evaluate.sh。", [], empty, empty, ""
+    target = Path(selected_run) if selected_run else run_dirs[0]
+    payload = _read_json(target / "phase2_eval_metrics.json")
+    if not payload:
+        empty = _build_empty_figure("Phase2 图表", "评估文件为空")
+        return f"评估文件不存在或为空: {target}", compare_rows, empty, empty, ""
+    dist = payload.get("divergence_distribution", {})
+    drift = payload.get("drift_curve", {})
+    report_path = target / "phase2_eval_report.md"
+    report_text = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
+    return (
+        _phase2_summary(payload=payload, run_dir=target),
+        compare_rows,
+        _build_divergence_figure(
+            normal_scores=[float(x) for x in dist.get("normal_scores", [])],
+            abnormal_scores=[float(x) for x in dist.get("abnormal_scores", [])],
+        ),
+        _build_drift_figure(
+            steps=[int(x) for x in drift.get("steps", [])],
+            fd=[float(x) for x in drift.get("fd", [])],
+            cd=[float(x) for x in drift.get("cd", [])],
+        ),
+        report_text,
+    )
+
+
 def _select_dataset_run(run_name: str) -> tuple[str, list[list[str]], list[tuple[str, str]], str]:
     if not run_name:
         return "未选择运行目录。", [], [], ""
@@ -255,10 +561,11 @@ def _select_dataset_run(run_name: str) -> tuple[str, list[list[str]], list[tuple
 
 
 def _load_dev_history_light(run_dir: str) -> tuple[str, str, list[tuple[str, str]], str]:
-    summary, result_json_text = load_dev_history(run_dir)
+    zt_tools = _get_zt_st_cot_tools()
+    summary, result_json_text = zt_tools["load_dev_history"](run_dir)
     if not run_dir or not result_json_text:
         return summary, result_json_text, [], ""
-    gallery_items, _, _, _, notice = build_visual_payload_from_result_json_text(result_json_text)
+    gallery_items, _, _, _, notice = zt_tools["build_visual_payload_from_result_json_text"](result_json_text)
     history_json_preview = result_json_text
     if len(history_json_preview) > 25000:
         history_json_preview = history_json_preview[:25000] + "\n...（已截断，完整内容请查看结果目录中的 result.json）"
@@ -269,7 +576,10 @@ def _load_dev_history_umap_plots(result_json_text: str) -> tuple[go.Figure, go.F
     if not result_json_text:
         empty_fig = _build_umap_figure({}, "UMAP 3D")
         return empty_fig, empty_fig, empty_fig, "未选择历史目录。"
-    _, dino_payload, qwen_payload, st_payload, notice = build_visual_payload_from_result_json_text(result_json_text)
+    zt_tools = _get_zt_st_cot_tools()
+    _, dino_payload, qwen_payload, st_payload, notice = zt_tools["build_visual_payload_from_result_json_text"](
+        result_json_text
+    )
     return (
         _build_umap_figure(dino_payload, "z_t_dino UMAP 3D"),
         _build_umap_figure(qwen_payload, "z_t_qwen UMAP 3D"),
@@ -278,17 +588,18 @@ def _load_dev_history_umap_plots(result_json_text: str) -> tuple[go.Figure, go.F
     )
 
 
-def _switch_section(selected: str) -> tuple[gr.update, gr.update, gr.update, gr.update]:
+def _switch_section(selected: str) -> tuple[gr.update, gr.update, gr.update, gr.update, gr.update]:
     return (
         gr.update(visible=selected == "数据集进度"),
         gr.update(visible=selected == "训练进度"),
-        gr.update(visible=selected == "校准与Rollout"),
+        gr.update(visible=selected == "Phase2评估"),
         gr.update(visible=selected == "Dev/Test z_t-s_t-CoT"),
+        gr.update(visible=selected == "WM轨迹对比"),
     )
 
 
-def _nav_labels() -> tuple[str, str, str, str]:
-    return ("数据集进度", "训练进度", "校准与Rollout", "Dev/Test z_t-s_t-CoT")
+def _nav_labels() -> tuple[str, str, str, str, str]:
+    return ("数据集进度", "训练进度", "Phase2评估", "Dev/Test z_t-s_t-CoT", "WM轨迹对比")
 
 
 def _apply_nav(
@@ -302,18 +613,28 @@ def _apply_nav(
     gr.update,
     gr.update,
     gr.update,
+    gr.update,
+    gr.update,
 ]:
-    """侧边栏：切换主面板可见性，并同步四个导航按钮的主次样式。"""
-    d, t, m, dev = _switch_section(selected)
+    """侧边栏：切换主面板可见性，并同步导航按钮的主次样式。"""
+    d, t, m, dev, wm_traj = _switch_section(selected)
     labels = _nav_labels()
     btn_updates = tuple(
         gr.update(variant="primary" if selected == lab else "secondary") for lab in labels
     )
-    return (d, t, m, dev) + btn_updates
+    return (d, t, m, dev, wm_traj) + btn_updates
 
 
 def _list_training_runs(models_root: str = "models") -> list[Path]:
-    return _list_runs(Path(models_root) / "wm" / "cfm", required_file="train_metrics.json")
+    wm_root = Path(models_root) / "wm"
+    if not wm_root.exists():
+        return []
+    run_dirs: list[Path] = []
+    for wm_dir in wm_root.iterdir():
+        if not wm_dir.is_dir():
+            continue
+        run_dirs.extend(_list_runs(wm_dir, required_file="train_metrics.json"))
+    return sorted(run_dirs, reverse=True)
 
 
 def _read_train_metrics(metrics_path: Path) -> dict[str, Any]:
@@ -371,16 +692,122 @@ def _load_training_progress_page(page: float, page_size: float = 100, models_roo
     return summary, page_rows
 
 
-def _load_calib_and_rollout_placeholder(models_root: str = "models", outputs_root: str = "outputs") -> str:
-    calib_base = Path(models_root) / "wm" / "cfm"
-    calib_runs = [p for p in calib_base.iterdir() if p.is_dir() and (p / "theta_div.json").exists()] if calib_base.exists() else []
-    rollout_base = Path(outputs_root) / "phase3" / "rollout"
-    rollout_exists = rollout_base.exists()
-    return (
-        f"校准运行数: {len(calib_runs)}\n"
-        f"rollout 目录存在: {'yes' if rollout_exists else 'no'}\n\n"
-        "后续将在本面板接入 rollout 轨迹、关键帧与不确定度变化曲线。"
+def _list_offline_wandb_runs(wandb_root: str = "wandb") -> list[Path]:
+    """扫描本地离线 W&B 运行目录。"""
+    offline_root = Path(wandb_root) / "wandb"
+    if not offline_root.exists():
+        return []
+    run_dirs = [
+        path
+        for path in offline_root.iterdir()
+        if path.is_dir() and path.name.startswith("offline-run-") and any(path.glob("run-*.wandb"))
+    ]
+    return sorted(run_dirs, reverse=True)
+
+
+def _extract_wandb_offline_history(run_dir: Path) -> dict[str, list[tuple[float, float]]]:
+    """从 run-*.wandb 里提取 history 曲线点，返回 {metric: [(step, value), ...]}。"""
+    wandb_files = sorted(run_dir.glob("run-*.wandb"))
+    if not wandb_files:
+        return {}
+    run_file = wandb_files[0]
+    cache_key = str(run_file.resolve())
+    mtime = float(run_file.stat().st_mtime)
+    cached = _OFFLINE_WANDB_HISTORY_CACHE.get(cache_key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        from wandb.proto import wandb_internal_pb2  # type: ignore
+        from wandb.sdk.internal import datastore  # type: ignore
+    except Exception:
+        return {}
+
+    series: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    data_store = datastore.DataStore()
+    data_store.open_for_scan(str(wandb_files[0]))
+    while True:
+        data = data_store.scan_data()
+        if data is None:
+            break
+        record = wandb_internal_pb2.Record()
+        record.ParseFromString(data)
+        if not record.history.item:
+            continue
+        # W&B 离线记录中 step 可能位于 history.step 或 _step。
+        record_step = float(record.history.step.num) if record.history.step else None
+        for item in record.history.item:
+            metric_key = item.key if item.key else ".".join(item.nested_key)
+            if not metric_key:
+                continue
+            try:
+                value = float(item.value_json)
+            except Exception:
+                continue
+            if metric_key == "_step":
+                continue
+            if metric_key.startswith("_"):
+                continue
+            step = record_step
+            if step is None:
+                # 回退：若本条记录没有显式 step，则用当前序列长度近似。
+                step = float(len(series[metric_key]))
+            series[metric_key].append((step, value))
+    for metric, points in series.items():
+        points.sort(key=lambda x: x[0])
+    parsed = dict(series)
+    _OFFLINE_WANDB_HISTORY_CACHE[cache_key] = (mtime, parsed)
+    return parsed
+
+
+def _build_offline_wandb_curve_figure(
+    run_dir: str,
+    selected_metrics: list[str] | None,
+) -> go.Figure:
+    if not run_dir:
+        return _build_empty_figure("离线 W&B Loss 曲线", "未选择 run")
+    series = _extract_wandb_offline_history(Path(run_dir))
+    if not series:
+        return _build_empty_figure("离线 W&B Loss 曲线", "未读取到离线 history")
+    metric_names = selected_metrics or sorted(series.keys())
+    fig = go.Figure()
+    for metric in metric_names:
+        points = series.get(metric, [])
+        if not points:
+            continue
+        sampled_points = _downsample_points(points)
+        xs = [p[0] for p in sampled_points]
+        ys = [p[1] for p in sampled_points]
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines+markers", name=metric))
+    if not fig.data:
+        return _build_empty_figure("离线 W&B Loss 曲线", "当前指标无有效点")
+    fig.update_layout(
+        title="离线 W&B 指标曲线",
+        xaxis_title="step/epoch",
+        yaxis_title="value",
+        margin={"l": 0, "r": 0, "b": 0, "t": 40},
     )
+    return fig
+
+
+def _offline_wandb_metric_choices(run_dir: str) -> gr.update:
+    if not run_dir:
+        return gr.update(choices=[], value=[])
+    series = _extract_wandb_offline_history(Path(run_dir))
+    metric_candidates = [name for name in sorted(series.keys()) if "loss" in name or name.startswith("train/")]
+    default_values = [name for name in metric_candidates if "loss" in name][:3]
+    return gr.update(choices=metric_candidates, value=default_values or metric_candidates[:3])
+
+
+def _refresh_offline_run_choices() -> gr.update:
+    runs = [str(path) for path in _list_offline_wandb_runs()]
+    return gr.update(choices=runs, value=(runs[0] if runs else None))
+
+
+def _downsample_points(points: list[tuple[float, float]], max_points: int = 1500) -> list[tuple[float, float]]:
+    if len(points) <= max_points:
+        return points
+    stride = max(1, len(points) // max_points)
+    return points[::stride][:max_points]
 
 
 def _run_zt_test_for_ui(
@@ -388,6 +815,7 @@ def _run_zt_test_for_ui(
     task_text: str,
     max_steps: float,
 ) -> tuple[str, list[list[Any]], str, go.Figure, go.Figure, go.Figure, list[tuple[str, str]], str]:
+    zt_tools = _get_zt_st_cot_tools()
     (
         summary,
         table,
@@ -397,7 +825,7 @@ def _run_zt_test_for_ui(
         st_payload,
         gallery_items,
         notice,
-    ) = run_zt_st_cot_test(run_dir=run_dir, task_text=task_text, max_steps=int(max_steps))
+    ) = zt_tools["run_zt_st_cot_test"](run_dir=run_dir, task_text=task_text, max_steps=int(max_steps))
     return (
         summary,
         table,
@@ -410,11 +838,181 @@ def _run_zt_test_for_ui(
     )
 
 
+def _run_wm_traj_test_for_ui(
+    wm_run_dir: str,
+    episodes_per_scene: float,
+    max_steps_per_episode: float,
+    outputs_root: str,
+) -> tuple[str, str, go.Figure, str, float, str, dict[str, Any], gr.update]:
+    wm_tools = _get_wm_traj_tools()
+    (
+        summary,
+        output_dir,
+        real_payload,
+        pred_payload,
+        overlay_payload,
+        notice,
+    ) = wm_tools["run_wm_traj_compare_test"](
+        wm_run_dir=wm_run_dir,
+        episodes_per_scene=int(episodes_per_scene),
+        max_steps_per_episode=int(max_steps_per_episode),
+        outputs_root=outputs_root,
+    )
+    return (
+        summary,
+        output_dir,
+        _build_wm_traj_compare_figure(
+            payload=overlay_payload,
+            selected_rollouts=_extract_rollout_ids(overlay_payload),
+            connect_rollout_adjacent=True,
+            connect_gt_pred=False,
+        ),
+        notice,
+        100.0,
+        "执行完成",
+        overlay_payload,
+        gr.update(choices=_extract_rollout_ids(overlay_payload), value=_extract_rollout_ids(overlay_payload)),
+    )
+
+
+def _run_wm_traj_test_stream_for_ui(
+    wm_run_dir: str,
+    episodes_per_scene: float,
+    max_steps_per_episode: float,
+    outputs_root: str,
+):
+    progress_queue: queue.Queue[tuple[float, str]] = queue.Queue()
+    result_holder: dict[str, Any] = {}
+    error_holder: dict[str, str] = {}
+
+    def _progress_cb(pct: float, status: str) -> None:
+        progress_queue.put((float(pct), str(status)))
+
+    # 用 run_wm_traj_compare_test 的进度回调驱动页面进度条。
+    def _worker_with_progress() -> None:
+        wm_tools = _get_wm_traj_tools()
+        try:
+            summary, output_dir, real_payload, pred_payload, overlay_payload, notice = wm_tools[
+                "run_wm_traj_compare_test"
+            ](
+                wm_run_dir=wm_run_dir,
+                episodes_per_scene=int(episodes_per_scene),
+                max_steps_per_episode=int(max_steps_per_episode),
+                outputs_root=outputs_root,
+                progress_callback=_progress_cb,
+            )
+            rollout_ids = _extract_rollout_ids(overlay_payload)
+            result_holder["value"] = (
+                summary,
+                output_dir,
+                _build_wm_traj_compare_figure(
+                    payload=overlay_payload,
+                    selected_rollouts=rollout_ids,
+                    connect_rollout_adjacent=True,
+                    connect_gt_pred=False,
+                ),
+                notice,
+                100.0,
+                "执行完成",
+                overlay_payload,
+                gr.update(choices=rollout_ids, value=rollout_ids),
+            )
+        except Exception as exc:  # pragma: no cover
+            error_holder["value"] = str(exc)
+
+    worker = threading.Thread(target=_worker_with_progress, daemon=True)
+    worker.start()
+
+    while worker.is_alive() or not progress_queue.empty():
+        try:
+            pct, status = progress_queue.get(timeout=0.2)
+            yield (
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                pct,
+                status,
+                gr.update(),
+                gr.update(),
+            )
+        except queue.Empty:
+            continue
+
+    if "value" in error_holder:
+        yield (
+            f"执行失败: {error_holder['value']}",
+            "",
+            _build_empty_figure("WM 轨迹对比", "执行失败"),
+            "",
+            100.0,
+            "执行失败",
+            {"feature": "wm_traj_shared", "points": [], "warning": ""},
+            gr.update(choices=[], value=[]),
+        )
+        return
+
+    if "value" in result_holder:
+        yield result_holder["value"]
+
+
+def _build_wm_traj_stream_runner(outputs_root: str):
+    def _runner(run_dir: str, episodes: float, steps: float):
+        yield from _run_wm_traj_test_stream_for_ui(
+            wm_run_dir=run_dir,
+            episodes_per_scene=episodes,
+            max_steps_per_episode=steps,
+            outputs_root=outputs_root,
+        )
+
+    return _runner
+
+
+def _load_wm_traj_history_for_ui(run_dir: str) -> tuple[str, str, go.Figure, str, dict[str, Any], gr.update]:
+    wm_tools = _get_wm_traj_tools()
+    summary, preview_json, real_payload, pred_payload, overlay_payload, notice = wm_tools["load_wm_traj_history"](
+        run_dir
+    )
+    rollout_ids = _extract_rollout_ids(overlay_payload)
+    return (
+        summary,
+        preview_json,
+        _build_wm_traj_compare_figure(
+            payload=overlay_payload,
+            selected_rollouts=rollout_ids,
+            connect_rollout_adjacent=True,
+            connect_gt_pred=False,
+        ),
+        notice,
+        overlay_payload,
+        gr.update(choices=rollout_ids, value=rollout_ids),
+    )
+
+
+def _refresh_wm_traj_plot_for_ui(
+    payload: dict[str, Any],
+    selected_rollouts: list[str],
+    connect_rollout_adjacent: bool,
+    connect_gt_pred: bool,
+) -> go.Figure:
+    return _build_wm_traj_compare_figure(
+        payload=payload,
+        selected_rollouts=selected_rollouts,
+        connect_rollout_adjacent=bool(connect_rollout_adjacent),
+        connect_gt_pred=bool(connect_gt_pred),
+    )
+
+
 def build_app(dataset_root: str = "datasets", models_root: str = "models", outputs_root: str = "outputs") -> gr.Blocks:
     runs = _list_runs(base=Path(dataset_root) / "ai2thor", required_file="manifest.jsonl")
     run_choices = [str(path) for path in runs]
     default_run = run_choices[0] if run_choices else None
-    lab_ds, lab_tr, lab_mi, lab_dev = _nav_labels()
+    offline_wandb_runs = _list_offline_wandb_runs()
+    offline_wandb_choices = [str(path) for path in offline_wandb_runs]
+    default_offline_wandb_run = offline_wandb_choices[0] if offline_wandb_choices else None
+    lab_ds, lab_tr, lab_mi, lab_dev, lab_wm_traj = _nav_labels()
+    wm_traj_stream_runner = _build_wm_traj_stream_runner(outputs_root=outputs_root)
+    initial_task_texts = list(_DEFAULT_TASK_TEXTS)
     with gr.Blocks(title="Flower Progress Server") as app:
         with gr.Row(elem_classes=["app-shell"]):
             with gr.Column(elem_classes=["app-sidebar"]):
@@ -424,10 +1022,11 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                     nav_btn_train = gr.Button(lab_tr, variant="secondary", size="lg")
                     nav_btn_misc = gr.Button(lab_mi, variant="secondary", size="lg")
                     nav_btn_dev = gr.Button(lab_dev, variant="secondary", size="lg")
+                    nav_btn_wm_traj = gr.Button(lab_wm_traj, variant="secondary", size="lg")
 
             with gr.Column(elem_classes=["main-content"]):
                 gr.Markdown("# Flower Progress Server")
-                gr.Markdown("数据集、训练进度、校准/Rollout 占位与 Dev 测试集中在同一页面；左侧为分区入口。")
+                gr.Markdown("数据集、训练进度、Phase2 评估与 Dev 测试集中在同一页面；左侧为分区入口。")
 
                 with gr.Group(visible=True) as dataset_panel:
                     gr.Markdown("### 数据集进度")
@@ -443,6 +1042,7 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                     with gr.Accordion("统计信息", open=True):
                         stats_box = gr.Textbox(
                             label="",
+                            value="点击右侧“刷新”后加载。",
                             placeholder="选择目录后显示统计…",
                             lines=16,
                             max_lines=24,
@@ -455,7 +1055,7 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                             wrap=True,
                         )
                     with gr.Accordion("图片：缩略图与大图", open=True):
-                        dataset_gallery_notice = gr.Textbox(label="", lines=1, show_label=False)
+                        dataset_gallery_notice = gr.Textbox(label="", value="尚未加载，点击“刷新”后显示。", lines=1, show_label=False)
                         with gr.Row():
                             with gr.Column(scale=3, min_width=320):
                                 dataset_gallery = gr.Gallery(
@@ -481,11 +1081,6 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                         inputs=[dataset_gallery],
                         outputs=[dataset_large_image],
                     )
-                    app.load(
-                        fn=_select_dataset_run,
-                        inputs=[run_selector],
-                        outputs=[stats_box, sample_table, dataset_gallery, dataset_gallery_notice],
-                    )
 
                 with gr.Group(visible=False) as train_panel:
                     gr.Markdown("### 训练进度")
@@ -505,16 +1100,82 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                         inputs=[train_page],
                         outputs=[train_summary, train_table],
                     )
+                    with gr.Accordion("离线 W&B 曲线", open=False):
+                        offline_run_selector = gr.Dropdown(
+                            choices=offline_wandb_choices,
+                            value=default_offline_wandb_run,
+                            label="离线 W&B run 目录",
+                            allow_custom_value=True,
+                        )
+                        offline_metric_selector = gr.CheckboxGroup(
+                            choices=[],
+                            value=[],
+                            label="指标（建议选择 loss 相关）",
+                        )
+                        with gr.Row():
+                            offline_refresh_runs_btn = gr.Button("刷新 run 列表", variant="secondary")
+                            offline_refresh_metrics_btn = gr.Button("加载指标", variant="secondary")
+                            offline_refresh_curve_btn = gr.Button("刷新曲线", variant="primary")
+                        offline_curve_plot = gr.Plot(label="离线 W&B 曲线")
+                    offline_refresh_runs_btn.click(
+                        fn=_refresh_offline_run_choices,
+                        inputs=[],
+                        outputs=[offline_run_selector],
+                    )
+                    offline_refresh_metrics_btn.click(
+                        fn=_offline_wandb_metric_choices,
+                        inputs=[offline_run_selector],
+                        outputs=[offline_metric_selector],
+                    )
+                    offline_refresh_curve_btn.click(
+                        fn=_build_offline_wandb_curve_figure,
+                        inputs=[offline_run_selector, offline_metric_selector],
+                        outputs=[offline_curve_plot],
+                    )
 
                 with gr.Group(visible=False) as misc_panel:
-                    gr.Markdown("### 校准与 Rollout")
-                    misc_refresh_btn = gr.Button("刷新状态", variant="secondary")
-                    with gr.Accordion("状态说明", open=True):
-                        misc_box = gr.Textbox(label="", lines=10, show_label=False)
-                    misc_refresh_btn.click(
-                        fn=lambda: _load_calib_and_rollout_placeholder(models_root=models_root, outputs_root=outputs_root),
+                    gr.Markdown("### Phase2 评估 Dashboard")
+                    with gr.Row():
+                        phase2_run_selector = gr.Dropdown(
+                            choices=[str(path) for path in _collect_phase2_runs(models_root=models_root)],
+                            value=None,
+                            label="评估运行目录",
+                            scale=5,
+                            allow_custom_value=True,
+                        )
+                        phase2_refresh_btn = gr.Button("刷新评估", variant="secondary", scale=0, min_width=120)
+                    with gr.Accordion("评估摘要", open=True):
+                        phase2_summary_box = gr.Textbox(label="", value="点击“刷新评估”后加载。", lines=12, show_label=False)
+                    with gr.Accordion("多运行对比", open=True):
+                        phase2_compare_table = gr.Dataframe(
+                            headers=[
+                                "run_dir",
+                                "wm_mse",
+                                "divergence_auroc",
+                                "latent_fd_mean",
+                                "latent_cd_mean",
+                                "idm_action_mse",
+                                "theta_div",
+                                "abnormal_trigger_rate",
+                            ],
+                            label="",
+                            wrap=True,
+                        )
+                    with gr.Accordion("散度分布对比", open=True):
+                        phase2_div_plot = gr.Plot(label="normal/abnormal divergence")
+                    with gr.Accordion("长程 Drift 曲线", open=True):
+                        phase2_drift_plot = gr.Plot(label="drift curve")
+                    with gr.Accordion("Markdown 报告", open=False):
+                        phase2_report_box = gr.Textbox(label="", lines=16, max_lines=40, show_label=False)
+                    phase2_refresh_btn.click(
+                        fn=lambda run: _load_phase2_dashboard(selected_run=run, models_root=models_root),
+                        inputs=[phase2_run_selector],
+                        outputs=[phase2_summary_box, phase2_compare_table, phase2_div_plot, phase2_drift_plot, phase2_report_box],
+                    )
+                    phase2_refresh_btn.click(
+                        fn=lambda: gr.update(choices=[str(path) for path in _collect_phase2_runs(models_root=models_root)]),
                         inputs=[],
-                        outputs=[misc_box],
+                        outputs=[phase2_run_selector],
                     )
 
                 with gr.Group(visible=False) as dev_panel:
@@ -522,18 +1183,14 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                     with gr.Accordion("运行参数", open=True):
                         with gr.Row():
                             rollout_selector = gr.Dropdown(
-                                choices=list_rollout_runs(dataset_root=f"{dataset_root}/ai2thor"),
+                                choices=[],
                                 value=None,
                                 label="rollout 目录",
                                 scale=4,
                                 allow_custom_value=True,
                             )
                             refresh_rollout_btn = gr.Button("刷新列表", scale=0, min_width=100)
-                        task_selector = gr.Dropdown(
-                            choices=list_task_texts(),
-                            value=list_task_texts()[0] if list_task_texts() else None,
-                            label="任务文本",
-                        )
+                        task_selector = gr.Dropdown(choices=initial_task_texts, value=initial_task_texts[0], label="任务文本")
                         with gr.Row():
                             max_steps = gr.Number(value=10, label="step 上限", precision=0, minimum=1, scale=1)
                             run_btn = gr.Button("执行测试", variant="primary", scale=0, min_width=120)
@@ -579,7 +1236,7 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                     with gr.Accordion("历史目录与 JSON", open=True):
                         with gr.Row():
                             history_selector = gr.Dropdown(
-                                choices=list_dev_history(outputs_root=outputs_root),
+                                choices=[],
                                 value=None,
                                 label="历史运行目录",
                                 scale=4,
@@ -623,7 +1280,9 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                         outputs=[test_summary, test_table, test_output_dir, dino_plot, qwen_plot, st_plot, test_gallery, test_gallery_notice],
                     )
                     refresh_rollout_btn.click(
-                        fn=lambda: gr.update(choices=list_rollout_runs(dataset_root=f"{dataset_root}/ai2thor")),
+                        fn=lambda: gr.update(
+                            choices=_get_zt_st_cot_tools()["list_rollout_runs"](dataset_root=f"{dataset_root}/ai2thor")
+                        ),
                         inputs=[],
                         outputs=[rollout_selector],
                     )
@@ -634,7 +1293,7 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                     )
 
                     refresh_history_btn.click(
-                        fn=lambda: gr.update(choices=list_dev_history(outputs_root=outputs_root)),
+                        fn=lambda: gr.update(choices=_get_zt_st_cot_tools()["list_dev_history"](outputs_root=outputs_root)),
                         inputs=[],
                         outputs=[history_selector],
                     )
@@ -654,11 +1313,145 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                         outputs=[history_dino_plot, history_qwen_plot, history_st_plot, history_gallery_notice],
                     )
 
-        nav_outputs = [dataset_panel, train_panel, misc_panel, dev_panel, nav_btn_dataset, nav_btn_train, nav_btn_misc, nav_btn_dev]
+                with gr.Group(visible=False) as wm_traj_panel:
+                    gr.Markdown("### WM 轨迹对比测试")
+                    wm_traj_payload_state = gr.State({"feature": "wm_traj_shared", "points": [], "warning": ""})
+                    with gr.Accordion("运行参数（在线采样 FloorPlan1/101/201）", open=True):
+                        with gr.Row():
+                            wm_run_selector = gr.Dropdown(
+                                choices=[],
+                                value=None,
+                                label="WM 运行目录（包含 wm.pt）",
+                                scale=4,
+                                allow_custom_value=True,
+                            )
+                            refresh_wm_run_btn = gr.Button("刷新 WM 列表", scale=0, min_width=120)
+                        with gr.Row():
+                            wm_traj_episodes = gr.Number(value=1, label="每场景 episode 数", precision=0, minimum=1, scale=1)
+                            wm_traj_steps = gr.Number(value=16, label="每 episode step 上限", precision=0, minimum=1, scale=1)
+                            run_wm_traj_btn = gr.Button("执行 WM 轨迹测试", variant="primary", scale=0, min_width=140)
+
+                    with gr.Accordion("本次 WM 轨迹测试输出", open=True):
+                        wm_traj_progress = gr.Slider(
+                            minimum=0,
+                            maximum=100,
+                            value=0,
+                            step=1,
+                            label="执行进度（%）",
+                            interactive=False,
+                        )
+                        wm_traj_progress_text = gr.Textbox(label="进度状态", value="未开始", lines=1)
+                        wm_traj_summary = gr.Textbox(label="摘要", lines=7)
+                        wm_traj_output_dir = gr.Textbox(label="输出目录", lines=1)
+                        wm_traj_notice = gr.Textbox(label="提示", lines=2)
+                        wm_rollout_filter = gr.CheckboxGroup(
+                            choices=[],
+                            value=[],
+                            label="显示 rollout（不同 rollout 不同颜色）",
+                        )
+                        with gr.Row():
+                            wm_connect_rollout_adjacent = gr.Checkbox(
+                                value=True,
+                                label="连接同一 rollout 的相邻状态",
+                            )
+                            wm_connect_gt_pred = gr.Checkbox(
+                                value=False,
+                                label="连接同一状态的 ground truth 与 predicted（首状态无pred）",
+                            )
+                        wm_traj_plot = gr.Plot(label="统一映射可视化（Encoder/WM 同空间）", show_label=True)
+
+                    with gr.Accordion("WM 轨迹测试历史", open=True):
+                        with gr.Row():
+                            wm_traj_history_selector = gr.Dropdown(
+                                choices=[],
+                                value=None,
+                                label="历史运行目录",
+                                scale=4,
+                                allow_custom_value=True,
+                            )
+                            refresh_wm_traj_history_btn = gr.Button("刷新历史", scale=0, min_width=100)
+                        wm_traj_history_summary = gr.Textbox(label="历史摘要", lines=6)
+                        wm_traj_history_preview = gr.Textbox(label="历史预览", lines=10, max_lines=20)
+                        wm_traj_history_notice = gr.Textbox(label="提示", lines=2)
+
+                    refresh_wm_run_btn.click(
+                        fn=lambda: gr.update(choices=_get_wm_traj_tools()["list_wm_test_runs"](models_root=models_root)),
+                        inputs=[],
+                        outputs=[wm_run_selector],
+                    )
+                    run_wm_traj_btn.click(
+                        fn=wm_traj_stream_runner,
+                        inputs=[wm_run_selector, wm_traj_episodes, wm_traj_steps],
+                        outputs=[
+                            wm_traj_summary,
+                            wm_traj_output_dir,
+                            wm_traj_plot,
+                            wm_traj_notice,
+                            wm_traj_progress,
+                            wm_traj_progress_text,
+                            wm_traj_payload_state,
+                            wm_rollout_filter,
+                        ],
+                    )
+                    run_wm_traj_btn.click(
+                        fn=lambda: gr.update(
+                            choices=_get_wm_traj_tools()["list_wm_traj_history"](outputs_root=outputs_root)
+                        ),
+                        inputs=[],
+                        outputs=[wm_traj_history_selector],
+                    )
+                    refresh_wm_traj_history_btn.click(
+                        fn=lambda: gr.update(
+                            choices=_get_wm_traj_tools()["list_wm_traj_history"](outputs_root=outputs_root)
+                        ),
+                        inputs=[],
+                        outputs=[wm_traj_history_selector],
+                    )
+                    wm_traj_history_selector.change(
+                        fn=_load_wm_traj_history_for_ui,
+                        inputs=[wm_traj_history_selector],
+                        outputs=[
+                            wm_traj_history_summary,
+                            wm_traj_history_preview,
+                            wm_traj_plot,
+                            wm_traj_history_notice,
+                            wm_traj_payload_state,
+                            wm_rollout_filter,
+                        ],
+                    )
+                    wm_rollout_filter.change(
+                        fn=_refresh_wm_traj_plot_for_ui,
+                        inputs=[wm_traj_payload_state, wm_rollout_filter, wm_connect_rollout_adjacent, wm_connect_gt_pred],
+                        outputs=[wm_traj_plot],
+                    )
+                    wm_connect_rollout_adjacent.change(
+                        fn=_refresh_wm_traj_plot_for_ui,
+                        inputs=[wm_traj_payload_state, wm_rollout_filter, wm_connect_rollout_adjacent, wm_connect_gt_pred],
+                        outputs=[wm_traj_plot],
+                    )
+                    wm_connect_gt_pred.change(
+                        fn=_refresh_wm_traj_plot_for_ui,
+                        inputs=[wm_traj_payload_state, wm_rollout_filter, wm_connect_rollout_adjacent, wm_connect_gt_pred],
+                        outputs=[wm_traj_plot],
+                    )
+
+        nav_outputs = [
+            dataset_panel,
+            train_panel,
+            misc_panel,
+            dev_panel,
+            wm_traj_panel,
+            nav_btn_dataset,
+            nav_btn_train,
+            nav_btn_misc,
+            nav_btn_dev,
+            nav_btn_wm_traj,
+        ]
         nav_btn_dataset.click(fn=lambda: _apply_nav(lab_ds), inputs=[], outputs=nav_outputs)
         nav_btn_train.click(fn=lambda: _apply_nav(lab_tr), inputs=[], outputs=nav_outputs)
         nav_btn_misc.click(fn=lambda: _apply_nav(lab_mi), inputs=[], outputs=nav_outputs)
         nav_btn_dev.click(fn=lambda: _apply_nav(lab_dev), inputs=[], outputs=nav_outputs)
+        nav_btn_wm_traj.click(fn=lambda: _apply_nav(lab_wm_traj), inputs=[], outputs=nav_outputs)
 
     return app
 

@@ -1,6 +1,6 @@
 # AI项目进展（按Phase）
 
-更新时间：2026-04-22  
+更新时间：2026-04-23  
 统计口径：仅记录可由当前仓库文档与任务进展文件验证的内容；未落地项明确标注为“未开始/规划中”。
 
 ---
@@ -47,6 +47,7 @@
 - WM 主干升级为 Transformer 时序建模。
 - 新增逆动力学模型模块。
 - 训练流程支持 `unsupervised` 与 `semi_supervised` 两种模式，并支持损失权重与梯度裁剪配置。
+- 训练流程新增 `fully_supervised` 模式：WM 训练直接使用真实动作序列，不再依赖 IDM 推断动作。
 - 阈值校准流程已支持并使用散度 95% 分位数生成 `theta_div`。
 
 ### 使用模型
@@ -61,16 +62,34 @@
 - 逆动力学重构（从状态变化推断动作）。
 - 无监督训练范式：使用预测动作驱动 WM 重构下一状态。
 - 半监督训练范式：将预测动作映射到标注动作空间进行监督约束。
+- 全监督训练范式：直接使用标注动作驱动 WM rollout，跳过 IDM 动作推断分支。
 - 基于分位数统计的散度阈值校准（95% quantile）。
 
 ### 当前状态
 - **已完成（最小闭环）**：训练与校准主链路可运行并产出模型与阈值。
-- **进行中（回归验证）**：尚未完成 AI2THOR 在线采集与全量训练回归验证。
+- **进行中（回归验证）**：已完成一轮 4 epoch 训练与校准，评估与对比实验仍在进行中。
+
+### 本次训练参数与结果（2026-04-23）
+- 训练产物目录：`models/wm/cfm_dinov2m/2026-04-23_00-32-53`
+- 校准产物目录：`models/wm/cfm_dinov2m/2026-04-23_01-03-30`
+- 关键训练参数：`training_mode=semi_supervised`、`epochs=4`、`batch_size=16`、`rollout_steps=4`、`temporal_stride=1`、`detach_idm_in_wm=true`
+- SIGReg相关参数：`sigreg.enabled=false`、`sigreg.weight=0.1`、`sigreg.warmup_steps=1000`（本次未启用SIGReg训练）
+- 训练结果（`train_metrics.json`）：
+  - `last_loss=14.851808888121294`
+  - `last_loss_recon=2.919360613880249`
+  - `last_loss_action=11.932448274241043`
+  - `last_latent_var_min=0.39067535393704206`
+  - `last_latent_mean_norm=21.70720508159735`
+  - `last_latent_cov_trace=1100.2921602298052`
+- 校准结果（`theta_div.json`）：
+  - `theta_div=1.043241354636848e-05`
+  - `percentile=95.0`
+  - `num_values=39960`
 
 ### 下一步
-- 在具备 AI2THOR 环境的机器执行采集冒烟与短训练验证（`unsupervised`/`semi_supervised` 各 1 轮）。
-- 根据实验结果调参：防撞概率、NavMesh 占比、半监督损失权重。
-- 补充稳定性与泛化评估，确认阈值与恢复策略联动效果。
+- 在当前改进版配置上执行 `wm_evaluate.sh`，补齐本次 checkpoint 的评估报告与 KPI。
+- 按 `Baseline / fully_supervised / +Stride / +Stride+SIGReg / +Stride+SIGReg+IDM权重调整` 执行对比实验并汇总指标。
+- 根据对比结果调参：`temporal_stride`、`sigreg.weight`、`semi_supervised_weight`，并评估 `fully_supervised` 与 IDM 路径的收敛差异。
 
 ---
 
@@ -79,6 +98,11 @@
 ### 已完成
 - 已在方案层明确目标：以 Qwen-2.5-VL-8B 作为默认 VLM，语义状态 `s_t` 作为“状态变化意图”表示。
 - 已形成候选训练路径：投影层注入、LoRA 微调、InfoNCE 跨模态对齐、时序一致性约束（文档级设计）。
+- 新增 Phase 3 专用数据集 `SemanticAlignDataset`，统一输出 `z_t/z_t_pos/z_t_neg/task_text/env_context/segment_id/view_id` 契约并支持同视频异时段负采样。
+- 新增 `src/vlm` 正式模块：`QwenVLMAdapter` 与 `SemanticStateGenerator`，支持真实 Qwen 推理与 fallback 占位模式统一接口。
+- 新增语义对齐训练入口 `src/train/train_semantic_align.py`，实现 InfoNCE + 时序一致性联合优化并接入 Hydra/W&B 产物记录。
+- 新增语义对齐评估 `src/eval/eval_semantic_align.py`，可输出同意图相似度、异意图分离度与时序平滑指标。
+- 新增 `src/train/export_pm_ready_features.py`，导出 Phase 4 可直接消费的 `state={z_t,s_t,env_context}` 数据与接口契约文档。
 
 ### 使用模型
 - Qwen-2.5-VL-8B（默认规划模型，当前未完成该阶段训练闭环）。
@@ -90,12 +114,12 @@
 - 语义段内时序一致性约束（如相邻 `s_t` 平滑约束）【规划中】。
 
 ### 当前状态
-- **未开始（工程实现）**：当前以方案设计为主，尚未完成可复现实验与训练产物沉淀。
+- **已进入工程实现（高完整度）**：Phase 3 已具备数据构造、训练、评估、导出完整代码路径；待在目标机器执行端到端实验产物回归。
 
 ### 下一步
-- 明确 `s_t` 监督信号来源与标注/构造流程。
-- 先实现最小可运行的投影注入与对齐训练脚本，再做小规模验证。
-- 设定跨场景语义一致性评估指标（同意图跨视角/跨场景相似度）。
+- 在 AI2THOR 数据上执行 `train_semantic_align` 与 `eval_semantic_align`，沉淀首组 checkpoint 与指标基线。
+- 基于评估结果调节 `positive_k/negative_gap/temperature/temporal_weight`。
+- 逐步接入更强监督信号（标注 CoT 或阶段标签）并扩展跨视角一致性测试。
 
 ---
 
@@ -103,6 +127,7 @@
 
 ### 已完成
 - 已形成系统闭环设计：当 WM 散度或 PM 不确定度超阈值时切换到 VLM 深度推理，否则走快速执行路径（设计层）。
+- 已新增 PM-ready 离线特征导出脚本与接口契约，可供下一轮 PM 基线直接消费。
 
 ### 使用模型
 - PM（策略模型，规划为接收 `z_t` 与 `s_t` 的策略网络，具体结构待定）。
@@ -114,7 +139,7 @@
 - 不确定度触发切换逻辑（WM 散度/PM 熵阈值）【规划中】。
 
 ### 当前状态
-- **未开始（训练与集成）**：仅有架构与流程设计，尚无可复现实验闭环。
+- **未开始（训练与集成）**：PM 训练本体尚未落地，但数据接口预埋已完成。
 
 ### 下一步
 - 明确 PM 架构与动作空间对齐方案（与 WM/VLM 输出接口一致）。
