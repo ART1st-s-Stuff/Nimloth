@@ -32,40 +32,72 @@ def build_env_context(metadata: dict[str, Any]) -> str:
 
 
 class WMDataset(Dataset):
-    """从 manifest 构造 (z_t, a_t, z_{t+1}) 训练样本。"""
+    """从 manifest 构造序列训练样本。"""
 
     def __init__(
         self,
         manifest_path: str,
         latent_dim: int,
         action_dim: int,
+        history_len: int,
         image_encoder: WMImageEncoder | None = None,
     ) -> None:
         self.latent_dim = latent_dim
         self.action_dim = action_dim
+        self.history_len = max(1, history_len)
         self.image_encoder = image_encoder
         self.samples = []
+        self._index_pairs: list[tuple[int, int]] = []
         path = Path(manifest_path)
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
                 if line.strip():
                     self.samples.append(json.loads(line))
+        episode_to_indices: dict[int, list[int]] = {}
+        for idx, sample in enumerate(self.samples):
+            episode_id = int(sample.get("episode_id", -1))
+            episode_to_indices.setdefault(episode_id, []).append(idx)
+        for episode_indices in episode_to_indices.values():
+            for end_idx in range(self.history_len - 1, len(episode_indices) - 1):
+                history_last_global_idx = episode_indices[end_idx]
+                target_global_idx = episode_indices[end_idx + 1]
+                self._index_pairs.append((history_last_global_idx, target_global_idx))
 
     def __len__(self) -> int:
-        return max(0, len(self.samples) - 1)
+        return len(self._index_pairs)
+
+    def _encode_latent(self, sample: dict[str, Any]) -> torch.Tensor:
+        if self.image_encoder is None:
+            return torch.randn(self.latent_dim) * 0.1 + float(sample["step_id"]) * 0.01
+        return self.image_encoder.encode_image_path(str(sample["image_path"])).z
+
+    def _build_action_vec(self, sample: dict[str, Any]) -> torch.Tensor:
+        move = float(sample.get("move_ahead_distance", 0.0))
+        yaw = float(sample.get("delta_yaw", 0.0))
+        pitch = float(sample.get("delta_pitch", 0.0))
+        action = torch.tensor([move, yaw, pitch], dtype=torch.float32)
+        if self.action_dim <= 3:
+            return action[: self.action_dim]
+        padded = torch.zeros(self.action_dim, dtype=torch.float32)
+        padded[:3] = action
+        return padded
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        curr = self.samples[idx]
-        nxt = self.samples[idx + 1]
-        if self.image_encoder is None:
-            # 无 encoder 时保留可复现的伪 latent，便于最小链路调试。
-            z_t = torch.randn(self.latent_dim) * 0.1 + curr["step_id"] * 0.01
-            z_next = torch.randn(self.latent_dim) * 0.1 + nxt["step_id"] * 0.01
-        else:
-            z_t = self.image_encoder.encode_image_path(str(curr["image_path"])).z
-            z_next = self.image_encoder.encode_image_path(str(nxt["image_path"])).z
-        action = torch.zeros(self.action_dim)
-        action[int(curr["action_id"]) % self.action_dim] = 1.0
+        history_last_idx, target_idx = self._index_pairs[idx]
+        curr = self.samples[history_last_idx]
+        nxt = self.samples[target_idx]
+        history_start_idx = history_last_idx - (self.history_len - 1)
+        history_samples = self.samples[history_start_idx : history_last_idx + 1]
+        z_history = torch.stack([self._encode_latent(sample) for sample in history_samples], dim=0)
+        action_history = torch.stack([self._build_action_vec(sample) for sample in history_samples], dim=0)
+        z_next = self._encode_latent(nxt)
+        gt_action = self._build_action_vec(curr)
         env_context = build_env_context(curr.get("metadata", {}))
-        return {"z_t": z_t, "action": action, "z_next": z_next, "env_context": env_context}
+        return {
+            "z_history": z_history,
+            "action_history": action_history,
+            "z_next": z_next,
+            "gt_action": gt_action,
+            "env_context": env_context,
+        }
 

@@ -39,7 +39,7 @@ class MockEnvAdapter:
         del episode_id
         return StepResult(frame=self._render(), metadata=self._metadata(step_id=0))
 
-    def step(self, action: str, step_id: int) -> StepResult:
+    def step(self, action: Any, step_id: int) -> StepResult:
         del action
         return StepResult(frame=self._render(), metadata=self._metadata(step_id=step_id))
 

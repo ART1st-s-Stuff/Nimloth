@@ -22,7 +22,7 @@ class EnvAdapter(Protocol):
     def reset(self, episode_id: int) -> StepResult:
         ...
 
-    def step(self, action: str, step_id: int) -> StepResult:
+    def step(self, action: Any, step_id: int) -> StepResult:
         ...
 
     def close(self) -> None:

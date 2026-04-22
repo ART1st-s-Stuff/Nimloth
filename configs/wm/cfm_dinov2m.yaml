@@ -1,8 +1,17 @@
 name: cfm_dinov2m
 hidden_dim: 256
 latent_dim: 128
-action_dim: 6
-history_len: 1
+action_dim: 3
+history_len: 4
+transformer:
+  num_layers: 4
+  num_heads: 4
+  dropout: 0.1
+inverse_dynamics:
+  hidden_dim: 256
+  num_layers: 3
+  num_heads: 4
+  dropout: 0.1
 encoder:
   name: cfm_dinov2m
   backbone_name: dinov2_vits14

@@ -3,6 +3,10 @@ epochs: 1
 lr: 0.001
 num_workers: 0
 device: cpu
+training_mode: unsupervised
+semi_supervised_weight: 1.0
+reconstruction_weight: 1.0
+grad_clip_norm: 1.0
 operation:
   outputs_root: models
   phase: phase2

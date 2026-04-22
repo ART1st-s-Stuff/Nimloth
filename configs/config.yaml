@@ -1,5 +1,4 @@
 defaults:
-  - pipeline/collect: default
   - pipeline/train: default
   - pipeline/calib: default
   - pipeline/rollout: default

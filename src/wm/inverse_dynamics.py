@@ -1,4 +1,4 @@
-"""Transformer 世界模型实现。"""
+"""逆动力学模型。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import torch
 from torch import nn
 
 
-class CFMWorldModel(nn.Module):
-    """输入历史 latent/action 序列，输出下一步 latent。"""
+class InverseDynamicsModel(nn.Module):
+    """从历史latent序列预测当前动作。"""
 
     def __init__(
         self,
@@ -20,8 +20,7 @@ class CFMWorldModel(nn.Module):
         dropout: float,
     ) -> None:
         super().__init__()
-        self.history_len = history_len
-        self.token_proj = nn.Linear(latent_dim + action_dim, hidden_dim)
+        self.token_proj = nn.Linear(latent_dim, hidden_dim)
         self.pos_embedding = nn.Parameter(torch.zeros(1, history_len, hidden_dim))
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -36,12 +35,10 @@ class CFMWorldModel(nn.Module):
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim, latent_dim),
+            nn.Linear(hidden_dim, action_dim),
         )
 
-    def forward(self, z_history: torch.Tensor, action_history: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([z_history, action_history], dim=-1)
-        x = self.token_proj(x) + self.pos_embedding[:, : x.size(1), :]
+    def forward(self, z_history: torch.Tensor) -> torch.Tensor:
+        x = self.token_proj(z_history) + self.pos_embedding[:, : z_history.size(1), :]
         hidden = self.encoder(x)
         return self.head(hidden[:, -1, :])
-

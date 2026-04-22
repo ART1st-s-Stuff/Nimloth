@@ -15,6 +15,15 @@ class FrameState:
     image_path: str
     action: str
     action_id: int
+    move_ahead_distance: float
+    delta_yaw: float
+    delta_pitch: float
+    recovery_active: bool
+    recovery_stage: str
+    near_wall: bool
+    pitch_control_active: bool
+    pitch_over_limit_streak: int
+    agent_horizon: float
     metadata: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:

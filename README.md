@@ -64,7 +64,7 @@ uv run python -m src.train.collect_data dataset.backend=mock
 - 每个 episode: `max_steps_per_episode=50`
 - 并行采集: `num_workers=4`（按 scene 多进程并行）
 
-采集支持断点续跑（默认 `pipeline.collect.collect.operation.resume=true`），再次执行会复用最近一次 `wm_data_collection` 目录并从已有样本后继续。
+采集支持断点续跑（默认 `dataset.collect.operation.resume=true`），再次执行会复用最近一次 `wm_data_collection` 目录并从已有样本后继续。
 
 如需清空所有 phase1 采集结果后重跑：
 

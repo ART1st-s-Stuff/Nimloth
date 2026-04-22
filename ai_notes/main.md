@@ -15,3 +15,4 @@
 - `output_visualize_conventions.md`：输出目录、脚本分层与可视化模块规范。
 - `hydra_component_config_conventions.md`：Hydra 组件化配置约定与旧配置下线结论。
 - `storage_management_conventions.md`：目录新规范、metadata 与存储清理约定。
+- `wm_collection_walk_recovery_conventions.md`：WM 采集随机游走与防卡墙恢复策略约定。

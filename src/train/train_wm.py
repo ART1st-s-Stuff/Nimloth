@@ -18,7 +18,8 @@ from src.utils.run_output import build_run_output_dir
 from src.utils.seed import set_seed
 from src.visualize.wandb_tracker import init_tracker
 from src.wm.encoders import build_wm_image_encoder
-from src.wm.losses import wm_cfm_loss
+from src.wm.inverse_dynamics import InverseDynamicsModel
+from src.wm.losses import action_supervision_loss, wm_reconstruction_loss
 from src.wm.model import CFMWorldModel
 
 
@@ -73,6 +74,7 @@ def main(cfg: DictConfig) -> None:
         manifest_path=str(resolved_manifest_path),
         latent_dim=int(dataset_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
+        history_len=int(wm_cfg.history_len),
         image_encoder=image_encoder,
     )
     if len(dataset) == 0:
@@ -87,8 +89,25 @@ def main(cfg: DictConfig) -> None:
         latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(wm_cfg.action_dim),
         hidden_dim=int(wm_cfg.hidden_dim),
+        history_len=int(wm_cfg.history_len),
+        num_layers=int(wm_cfg.transformer.num_layers),
+        num_heads=int(wm_cfg.transformer.num_heads),
+        dropout=float(wm_cfg.transformer.dropout),
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=float(train_cfg.lr))
+    inverse_dynamics = InverseDynamicsModel(
+        latent_dim=int(wm_cfg.latent_dim),
+        action_dim=int(wm_cfg.action_dim),
+        hidden_dim=int(wm_cfg.inverse_dynamics.hidden_dim),
+        history_len=int(wm_cfg.history_len),
+        num_layers=int(wm_cfg.inverse_dynamics.num_layers),
+        num_heads=int(wm_cfg.inverse_dynamics.num_heads),
+        dropout=float(wm_cfg.inverse_dynamics.dropout),
+    ).to(device)
+    action_mapper = torch.nn.Linear(int(wm_cfg.action_dim), int(dataset_cfg.action_dim)).to(device)
+    optimizer = torch.optim.Adam(
+        list(model.parameters()) + list(inverse_dynamics.parameters()) + list(action_mapper.parameters()),
+        lr=float(train_cfg.lr),
+    )
     show_kv_table(
         "Train WM",
         [
@@ -99,31 +118,64 @@ def main(cfg: DictConfig) -> None:
         ],
     )
 
+    mode = str(train_cfg.training_mode).strip().lower()
+    if mode not in {"unsupervised", "semi_supervised"}:
+        raise ValueError(f"不支持的 training_mode={train_cfg.training_mode}")
     model.train()
+    inverse_dynamics.train()
+    action_mapper.train()
     last_loss = None
     with progress_context() as progress:
         task = progress.add_task("training_wm", total=int(train_cfg.epochs))
         for epoch in range(int(train_cfg.epochs)):
             epoch_loss = 0.0
             for batch in loader:
-                z_t = batch["z_t"].to(device)
-                action = batch["action"].to(device)
+                z_history = batch["z_history"].to(device)
+                action_history = batch["action_history"].to(device)
                 z_next = batch["z_next"].to(device)
+                gt_action = batch["gt_action"].to(device)
                 optimizer.zero_grad()
-                velocity = model(z_t, action)
-                loss = wm_cfm_loss(velocity, z_t, z_next)
+                pred_action = inverse_dynamics(z_history)
+                predicted_action_history = action_history.clone()
+                predicted_action_history[:, -1, :] = pred_action
+                pred_z_next = model(z_history, predicted_action_history)
+                loss_recon = wm_reconstruction_loss(pred_z_next, z_next)
+                loss = float(train_cfg.reconstruction_weight) * loss_recon
+                loss_action = torch.tensor(0.0, device=device)
+                if mode == "semi_supervised":
+                    mapped_action = action_mapper(pred_action)
+                    loss_action = action_supervision_loss(mapped_action, gt_action)
+                    loss = loss + float(train_cfg.semi_supervised_weight) * loss_action
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    list(model.parameters()) + list(inverse_dynamics.parameters()) + list(action_mapper.parameters()),
+                    float(train_cfg.grad_clip_norm),
+                )
                 optimizer.step()
                 epoch_loss += float(loss.item())
             last_loss = epoch_loss / max(1, len(loader))
-            tracker.log_metrics({"train/loss": last_loss, "train/epoch": epoch}, step=epoch)
-            progress.update(task, advance=1, description=f"epoch={epoch} loss={last_loss:.6f}")
+            tracker.log_metrics(
+                {
+                    "train/loss": last_loss,
+                    "train/loss_recon": float(loss_recon.item()),
+                    "train/loss_action": float(loss_action.item()),
+                    "train/epoch": epoch,
+                },
+                step=epoch,
+            )
+            progress.update(task, advance=1, description=f"epoch={epoch} mode={mode} loss={last_loss:.6f}")
 
     out_dir = ensure_dir(run_dir)
     ckpt_path = Path(out_dir) / "wm.pt"
+    idm_ckpt_path = Path(out_dir) / "inverse_dynamics.pt"
+    mapper_ckpt_path = Path(out_dir) / "action_mapper.pt"
     torch.save(model.state_dict(), ckpt_path)
-    write_json(Path(out_dir) / "train_metrics.json", {"last_loss": last_loss})
+    torch.save(inverse_dynamics.state_dict(), idm_ckpt_path)
+    torch.save(action_mapper.state_dict(), mapper_ckpt_path)
+    write_json(Path(out_dir) / "train_metrics.json", {"last_loss": last_loss, "training_mode": mode})
     tracker.log_artifact_path("wm-checkpoint", ckpt_path, artifact_type="model")
+    tracker.log_artifact_path("idm-checkpoint", idm_ckpt_path, artifact_type="model")
+    tracker.log_artifact_path("action-mapper-checkpoint", mapper_ckpt_path, artifact_type="model")
     tracker.log_artifact_path("wm-train-metrics", Path(out_dir) / "train_metrics.json", artifact_type="metrics")
     tracker.finish()
     success(f"训练完成 checkpoint={ckpt_path}")

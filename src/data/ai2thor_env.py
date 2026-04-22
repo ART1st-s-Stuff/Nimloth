@@ -63,6 +63,8 @@ class Ai2ThorEnvAdapter:
     def _extract_metadata(self, event: Any) -> dict[str, Any]:
         metadata = event.metadata
         agent_pos = metadata.get("agent", {}).get("position", {})
+        agent_rot = metadata.get("agent", {}).get("rotation", {})
+        agent_horizon = float(metadata.get("agent", {}).get("cameraHorizon", 0.0))
         visible_objects = [
             obj.get("name", "")
             for obj in metadata.get("objects", [])
@@ -80,8 +82,24 @@ class Ai2ThorEnvAdapter:
             "grasped": any(obj.get("isPickedUp", False) for obj in metadata.get("objects", [])),
             "visible_objects": visible_objects[:20],
             "agent_position": agent_pos,
+            "agent_rotation": agent_rot,
+            "agent_horizon": agent_horizon,
             "last_action": metadata.get("lastAction", ""),
         }
+
+    @staticmethod
+    def _get_center_depth_mean(depth_frame: np.ndarray | None) -> float | None:
+        if depth_frame is None:
+            return None
+        if depth_frame.ndim != 2:
+            return None
+        h, w = depth_frame.shape
+        h0, h1 = int(h * 0.4), int(h * 0.6)
+        w0, w1 = int(w * 0.4), int(w * 0.6)
+        center = depth_frame[h0:h1, w0:w1]
+        if center.size == 0:
+            return None
+        return float(np.nanmean(center))
 
     def reset(self, episode_id: int) -> StepResult:
         event = self.controller.reset(scene=self.cfg.scene)
@@ -110,9 +128,44 @@ class Ai2ThorEnvAdapter:
 
     def step(self, action: str, step_id: int) -> StepResult:
         del step_id
-        event = self.controller.step(action=action)
+        if isinstance(action, dict):
+            move = float(action.get("move_ahead_distance", 0.0))
+            delta_yaw = float(action.get("delta_yaw", 0.0))
+            delta_pitch = float(action.get("delta_pitch", 0.0))
+            move_back = bool(action.get("move_back", False))
+            event = self.controller.step(action="Pass")
+            if abs(move) > 1e-6:
+                if move_back:
+                    event = self.controller.step(action="MoveBack", moveMagnitude=max(0.0, abs(move)))
+                else:
+                    event = self.controller.step(action="MoveAhead", moveMagnitude=max(0.0, move))
+            if abs(delta_yaw) > 1e-6:
+                action_name = "RotateRight" if delta_yaw > 0 else "RotateLeft"
+                event = self.controller.step(action=action_name, degrees=abs(delta_yaw))
+            if abs(delta_pitch) > 1e-6:
+                horizon = float(event.metadata.get("agent", {}).get("cameraHorizon", 0.0))
+                target_horizon = horizon + delta_pitch
+                event = self.controller.step(
+                    action="TeleportFull",
+                    position=event.metadata.get("agent", {}).get("position", {}),
+                    rotation=event.metadata.get("agent", {}).get("rotation", {}),
+                    horizon=target_horizon,
+                    standing=True,
+                    forceAction=True,
+                )
+        else:
+            event = self.controller.step(action=action)
         frame = np.asarray(event.frame, dtype=np.uint8)
-        return StepResult(frame=frame, metadata=self._extract_metadata(event))
+        step_metadata = self._extract_metadata(event)
+        center_depth = self._get_center_depth_mean(getattr(event, "depth_frame", None))
+        if center_depth is not None:
+            step_metadata["center_depth_m"] = center_depth
+        return StepResult(frame=frame, metadata=step_metadata)
+
+    def get_reachable_positions(self) -> list[dict[str, float]]:
+        event = self.controller.step(action="GetReachablePositions")
+        positions = event.metadata.get("actionReturn") or []
+        return [p for p in positions if isinstance(p, dict)]
 
     def close(self) -> None:
         if self.controller is not None:

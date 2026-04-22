@@ -1,5 +1,6 @@
 name: ai2thor
 backend: ai2thor
+# 采样场景列表：建议混合厨房/客厅等不同布局，提升WM泛化。
 scenes:
   - FloorPlan1
   - FloorPlan2
@@ -23,10 +24,97 @@ scenes:
   - FloorPlan210
 visibility_distance: 1.5
 grid_size: 0.25
-render_depth_image: false
+# 开启深度图是防卡墙策略的前提。
+render_depth_image: true
 render_instance_segmentation: false
 ai2thor_platform: CloudRendering
 ai2thor_cache_dir: .cache/ai2thor
+# 训练数据读取入口（由采集任务维护 latest 指针）。
 manifest_path: datasets/ai2thor/latest/manifest.jsonl
 latent_dim: 128
-action_dim: 6
+# 连续动作三元组：(move_ahead_distance, delta_yaw, delta_pitch)
+action_dim: 3
+collect:
+  # 采集规模：总步数 = scene数 * num_episodes_per_scene * max_steps_per_episode
+  num_episodes_per_scene: 10
+  max_steps_per_episode: 200
+  num_workers: 16
+  # 建议与编码器分辨率保持一致，避免后续重采样损失。
+  image_height: 518
+  image_width: 518
+  # 采样模式权重，顺序对应:
+  # [RandomWalk, NavMesh, ForcedRotate, Done]
+  action_weights: [0.55, 0.20, 0.20, 0.05]
+  continuous_action:
+    # 连续动作基础范围（Normal 模式下）。
+    move_ahead_range: [0.5, 1.0]
+    yaw_delta_range: [-5.0, 5.0]
+    pitch_delta_range: [-1.0, 1.0]
+  random_walk:
+    # 目标量范围：每次采样一个总目标，再以匀速小步执行到完成。
+    move_target_range: [0.2, 0.9]
+    yaw_target_range: [8.0, 35.0]
+    pitch_target_range: [1.0, 8.0]
+    # 每步速度范围（单位分别为米/步、度/步、度/步）。
+    move_speed_range: [0.04, 0.12]
+    yaw_speed_range: [2.0, 6.0]
+    pitch_speed_range: [0.5, 2.5]
+    # 轻量随机扰动：作用于目标量和速度，提升数据多样性。
+    target_jitter_ratio: 0.15
+    speed_jitter_ratio: 0.2
+    # 小概率只执行单轴，避免轨迹模式过于固定。
+    single_axis_prob: 0.2
+  anti_collision:
+    # 深度阈值：中心区域小于该值视为“近墙”。
+    depth_threshold_m: 0.5
+    # 近墙时转向躲避概率（其余概率保持随机游走）。
+    avoid_probability: 0.75
+    # 近墙时保留“撞墙后果”样本的概率（建议中低占比）。
+    wall_hit_probability: 0.12
+    # 连续失败动作上限：达到后优先进入强制转向/恢复流程。
+    max_failed_actions: 5
+    min_move_scale_when_near_wall: 0.2
+    rotate_boost_when_near_wall: 0.25
+  recovery:
+    # Recover 状态机：用于连续失败后的脱困。
+    enable: true
+    # 进入 Recover 的两个触发条件。
+    enter_failed_actions: 3
+    enter_low_depth_steps: 2
+    # Recover 总步数上限（避免长期卡在恢复状态）。
+    recover_steps: 16
+    # 第一步后退范围（米）。
+    backoff_distance_range: [0.05, 0.15]
+    # 兼容参数：保留旧恢复逻辑的大转角范围。
+    recover_yaw_range: [60.0, 120.0]
+    # 新恢复逻辑：多次小角度转向（每步角度、连续步数）。
+    small_turn_range: [15.0, 25.0]
+    small_turn_steps_range: [4, 8]
+    # 安全深度阈值：恢复后需达到该距离才视为“脱离墙边”。
+    safe_depth_threshold_m: 0.8
+    # 连续成功步数达到该值可提前退出 Recover。
+    success_exit_steps: 4
+    # Recover 后期由 NavMesh 辅助引导的步数。
+    navmesh_assist_steps: 4
+  pitch_control:
+    # 全流程 pitch 软约束：防止相机长期偏头。
+    enable: true
+    # 绝对俯仰角超过阈值则记为超限。
+    threshold_deg: 30.0
+    # 连续超限步数达到该值触发回正。
+    over_limit_steps: 5
+    # 每步回正角度范围（朝 0 度缓慢拉回）。
+    recenter_step_deg: [2.0, 6.0]
+    # 回到安全带后退出回正状态。
+    safe_band_deg: 10.0
+  navmesh:
+    # 混合 rollout：按比例切换到 NavMesh 引导。
+    rollout_ratio: 0.3
+    target_refresh_steps: 10
+    neighbor_radius: 0.75
+  operation:
+    # 采集输出管理与断点续跑配置。
+    outputs_root: datasets
+    phase: phase1
+    task: wm_data_collection
+    resume: true
