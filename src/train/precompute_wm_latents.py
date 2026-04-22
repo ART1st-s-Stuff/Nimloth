@@ -2,40 +2,24 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import hydra
 from omegaconf import DictConfig
 
-from src.data.dataset import WMDataset
+from src.train.latent_cache import build_latent_cache_path, build_wm_dataset_with_cache, resolve_manifest_path
 from src.utils.console import progress_context, show_kv_table, success
 from src.utils.env import load_project_env
 from src.utils.seed import set_seed
 from src.wm.encoders import build_wm_image_encoder
 
 
-def _resolve_manifest_path(manifest_path: str) -> Path:
-    candidate = Path(manifest_path)
-    if candidate.exists():
-        return candidate
-    parts = candidate.parts
-    if len(parts) >= 3 and parts[-2] == "latest":
-        group_dir = Path(*parts[:-2])
-        meta_path = group_dir / "metadata.json"
-        if meta_path.exists():
-            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-            latest = metadata.get("latest")
-            if isinstance(latest, str):
-                latest_path = group_dir / latest / parts[-1]
-                if latest_path.exists():
-                    return latest_path
-    return candidate
-
-
-def _build_latent_cache_path(manifest_path: Path, wm_name: str) -> Path:
-    stem = manifest_path.stem
-    return manifest_path.parent / f"{stem}.latents.{wm_name}.pt"
+def _resolve_patch_layout(wm_cfg: DictConfig) -> tuple[int, int]:
+    num_patches = int(getattr(wm_cfg.encoder, "num_patches", 0))
+    latent_dim = int(wm_cfg.latent_dim)
+    if num_patches <= 0:
+        return 0, 0
+    if latent_dim % num_patches != 0:
+        raise ValueError(f"wm.latent_dim 必须能被 num_patches 整除: {latent_dim} / {num_patches}")
+    return num_patches, latent_dim // num_patches
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
@@ -45,11 +29,12 @@ def main(cfg: DictConfig) -> None:
     train_cfg = cfg.pipeline.train
     dataset_cfg = cfg.dataset
     wm_cfg = cfg.wm
-    resolved_manifest_path = _resolve_manifest_path(str(dataset_cfg.manifest_path))
+    num_patches, token_dim = _resolve_patch_layout(wm_cfg=wm_cfg)
+    resolved_manifest_path = resolve_manifest_path(str(dataset_cfg.manifest_path))
     image_encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
     if image_encoder is None:
         raise RuntimeError("当前 WM 配置未启用图像编码器，无需执行 latent 预编码。")
-    latent_cache_path = _build_latent_cache_path(resolved_manifest_path, str(wm_cfg.name))
+    latent_cache_path = build_latent_cache_path(resolved_manifest_path, str(wm_cfg.name))
     show_kv_table(
         "WM Latent Precompute",
         [
@@ -73,15 +58,18 @@ def main(cfg: DictConfig) -> None:
                 description=f"precompute_latents {done}/{total}",
             )
 
-        dataset = WMDataset(
-            manifest_path=str(resolved_manifest_path),
+        dataset, latent_cache_path = build_wm_dataset_with_cache(
+            manifest_path=resolved_manifest_path,
+            wm_name=str(wm_cfg.name),
             latent_dim=int(dataset_cfg.latent_dim),
             action_dim=int(dataset_cfg.action_dim),
             history_len=int(wm_cfg.history_len),
+            rollout_steps=1,
             image_encoder=image_encoder,
-            latent_cache_path=str(latent_cache_path),
             encoder_num_workers=int(train_cfg.encoder_num_workers),
             encoder_batch_size=int(train_cfg.encoder_batch_size),
+            expected_num_patches=num_patches,
+            expected_token_dim=token_dim,
             on_latent_progress=_on_latent_progress,
         )
     success(f"latent 预编码完成，缓存文件: {latent_cache_path}，样本数: {len(dataset)}")

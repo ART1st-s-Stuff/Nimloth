@@ -33,5 +33,7 @@ if [[ -z "${manifest_path}" ]]; then
   exit 1
 fi
 
+# 示例：启用全监督 WM 训练（不使用 IDM 推断动作）
+#   ./scripts/phase2/wm_training.sh pipeline.train.training_mode=fully_supervised
 python -m src.train.train_wm wm="${wm_name}" dataset.manifest_path="${manifest_path}" "$@"
 

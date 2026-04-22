@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Sequence
 
 import numpy as np
@@ -69,11 +70,19 @@ class DinoV2MiniEncoder(WMImageEncoder):
         latent_dim: int,
         freeze_backbone: bool = True,
         image_size: int = 224,
+        patch_size: int = 14,
+        num_patches: int | None = None,
         model_name: str = "dinov2_vits14",
         token_strategy: str = "patch_mean",
     ) -> None:
         super().__init__(latent_dim=latent_dim)
         self.image_size = image_size
+        self.patch_size = max(1, int(patch_size))
+        if num_patches is not None and int(num_patches) > 0:
+            self.target_num_patches = int(num_patches)
+        else:
+            grid_size = max(1, int(self.image_size // self.patch_size))
+            self.target_num_patches = grid_size * grid_size
         self.model_name = model_name
         self.token_strategy = token_strategy
         self.freeze_backbone = freeze_backbone
@@ -91,6 +100,23 @@ class DinoV2MiniEncoder(WMImageEncoder):
         self.backbone.to(self.device)
         self.proj.to(self.device)
 
+    def _pool_patch_tokens(self, patch_tokens: torch.Tensor) -> torch.Tensor:
+        if patch_tokens.dim() != 3:
+            raise ValueError(f"patch_tokens 形状不合法: {tuple(patch_tokens.shape)}")
+        token_count = int(patch_tokens.size(1))
+        side = int(round(math.sqrt(token_count)))
+        if side * side != token_count:
+            raise RuntimeError(f"DINO patch token 数不是平方数: {token_count}")
+        target_side = int(round(math.sqrt(self.target_num_patches)))
+        if target_side * target_side != self.target_num_patches:
+            raise RuntimeError(f"目标 patch token 数不是平方数: {self.target_num_patches}")
+        if side == target_side:
+            return patch_tokens
+        token_dim = int(patch_tokens.size(2))
+        grid_tokens = patch_tokens.transpose(1, 2).reshape(patch_tokens.size(0), token_dim, side, side)
+        pooled = torch.nn.functional.adaptive_avg_pool2d(grid_tokens, output_size=(target_side, target_side))
+        return pooled.reshape(patch_tokens.size(0), token_dim, target_side * target_side).transpose(1, 2)
+
     def _select_tokens(self, pixel_values: torch.Tensor) -> torch.Tensor:
         if hasattr(self.backbone, "forward_features"):
             features = self.backbone.forward_features(pixel_values)
@@ -104,11 +130,17 @@ class DinoV2MiniEncoder(WMImageEncoder):
                 if patch_tokens is None:
                     raise RuntimeError("DINOv2 未返回 patch tokens，无法使用 patch token 策略。")
                 return patch_tokens.mean(dim=1)
+            if self.token_strategy == "patch_tokens":
+                if patch_tokens is None:
+                    raise RuntimeError("DINOv2 未返回 patch tokens，无法使用 token_strategy=patch_tokens。")
+                return self._pool_patch_tokens(patch_tokens)
             if self.token_strategy == "patch_attention":
                 raise NotImplementedError("token_strategy=patch_attention 目前为占位，后续实现可学习注意力池化。")
             raise ValueError(f"不支持的 token_strategy: {self.token_strategy}")
         features = self.backbone(pixel_values)
         if features.dim() == 3:
+            if self.token_strategy == "patch_tokens":
+                return self._pool_patch_tokens(features)
             if self.token_strategy == "cls":
                 return features[:, 0, :]
             return features.mean(dim=1)
@@ -129,16 +161,33 @@ class DinoV2MiniEncoder(WMImageEncoder):
             with torch.inference_mode():
                 with torch.autocast(device_type="cuda", dtype=torch.float16):
                     features = self._select_tokens(pixel_values)
-                z_batch = self.proj(features).detach().cpu()
+                if self.token_strategy == "patch_tokens":
+                    z_batch = features.detach().cpu()
+                else:
+                    z_batch = self.proj(features).detach().cpu()
         else:
             features = self._select_tokens(pixel_values)
-            z_batch = self.proj(features).detach().cpu()
+            if self.token_strategy == "patch_tokens":
+                z_batch = features.detach().cpu()
+            else:
+                z_batch = self.proj(features).detach().cpu()
         outputs: list[EncoderOutput] = []
         for image_path, z in zip(image_paths, z_batch, strict=True):
+            if self.token_strategy == "patch_tokens" and int(z.numel()) != int(self.latent_dim):
+                raise RuntimeError(
+                    f"patch token 展平维度与 latent_dim 不一致: got={int(z.numel())}, expected={int(self.latent_dim)}"
+                )
             outputs.append(
                 EncoderOutput(
                     z=z,
-                    aux={"encoder": "dinov2_mini", "image_path": image_path, "token_strategy": self.token_strategy},
+                    aux={
+                        "encoder": "dinov2_mini",
+                        "image_path": image_path,
+                        "token_strategy": self.token_strategy,
+                        "image_size": self.image_size,
+                        "patch_size": self.patch_size,
+                        "num_patches": self.target_num_patches,
+                    },
                 )
             )
         return outputs
@@ -171,6 +220,8 @@ def build_wm_image_encoder(wm_cfg: Any) -> WMImageEncoder | None:
             latent_dim=latent_dim,
             freeze_backbone=bool(getattr(encoder_cfg, "freeze_backbone", True)),
             image_size=int(getattr(encoder_cfg, "image_size", 224)),
+            patch_size=int(getattr(encoder_cfg, "patch_size", 14)),
+            num_patches=int(getattr(encoder_cfg, "num_patches", 0)) or None,
             model_name=str(getattr(encoder_cfg, "backbone_name", "dinov2_vits14")),
             token_strategy=str(getattr(encoder_cfg, "token_strategy", "patch_mean")),
         )

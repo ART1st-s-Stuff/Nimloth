@@ -3,7 +3,7 @@
 # 如需命令行覆盖，可使用：
 #   uv run ... pipeline.train.rollout_steps=4
 batch_size: 16
-epochs: 1
+epochs: 4
 lr: 0.001
 # DataLoader 读取样本的并行 worker 数
 num_workers: 8
@@ -13,10 +13,13 @@ encoder_num_workers: 8
 encoder_batch_size: 64
 # 训练设备（cuda/cpu）
 device: cuda
-# 训练模式：unsupervised 或 semi_supervised
+# 训练模式：unsupervised、semi_supervised 或 fully_supervised
+# fully_supervised: WM 直接使用真实动作训练，不使用 IDM 推断动作
 training_mode: semi_supervised
 # 多步自回归预测步数（=1 时退化为单步）
 rollout_steps: 4
+# 时序采样步长：可填单个整数（固定步长）或区间[min, max]（训练时随机采样）
+temporal_stride: 1
 # 半监督下 IDM loss 的加权系数
 semi_supervised_weight: 1.0
 # WM 重建损失加权系数
@@ -29,6 +32,24 @@ detach_idm_in_wm: true
 wm_lr: null
 # IDM/mapper 学习率（null 时回退到 lr）
 idm_lr: null
+# step 级日志记录间隔（<=0 表示关闭；例如 10 表示每 10 step 记录一次）
+log_every_n_steps: 10
+sigreg:
+  # 是否启用 LeWM 论文风格 SIGReg
+  enabled: false
+  # 正则权重 λ
+  weight: 0.1
+  # 随机投影数 M
+  num_projections: 256
+  # 离散积分节点数 T
+  num_quadrature_points: 16
+  # Epps-Pulley 积分区间
+  t_min: 0.2
+  t_max: 4.0
+  # 高斯权重核带宽
+  kernel_sigma: 1.0
+  # warmup 步数（0 表示不warmup）
+  warmup_steps: 1000
 operation:
   # 输出根目录
   outputs_root: models
@@ -36,3 +57,34 @@ operation:
   phase: phase2
   # 任务标识
   task: wm_training
+semantic_align:
+  # 对齐训练批大小
+  batch_size: 8
+  # 训练轮数
+  epochs: 1
+  # 学习率
+  lr: 0.0005
+  # DataLoader worker
+  num_workers: 4
+  # 正样本时序间隔 k
+  positive_k: 1
+  # 负样本最小时序间隔
+  negative_gap: 6
+  # 温度系数 tau
+  temperature: 0.07
+  # 时序一致性损失权重
+  temporal_weight: 0.2
+  # 是否启用 cot 文本目标字段
+  enable_cot_target: false
+  # 训练设备
+  device: cuda
+  # 是否尝试真实 VLM 生成 s_t；false 时使用占位模式
+  use_vlm_for_st: true
+  # 评估时读取的 projector ckpt（支持 latest 占位路径）
+  eval_ckpt_path: models/semantic_align/qwen_vl/latest/semantic_projector.pt
+  # 导出 PM-ready 特征条数上限
+  export_max_samples: 2000
+  operation:
+    outputs_root: models
+    phase: phase3
+    task: semantic_align

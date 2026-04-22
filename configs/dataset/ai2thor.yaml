@@ -41,7 +41,7 @@ ai2thor_cache_dir: .cache/ai2thor
 # 训练数据读取入口（由采集任务维护 latest 指针）。
 manifest_path: datasets/ai2thor/latest/manifest.jsonl
 # latent 维度
-latent_dim: 256
+latent_dim: 18816
 # 连续动作三元组：(move_ahead_distance, delta_yaw, delta_pitch)
 action_dim: 3
 collect:

@@ -6,6 +6,8 @@ defaults:
   - pipeline/train: default
   # 校准阶段配置
   - pipeline/calib: default
+  # 评估阶段配置
+  - pipeline/eval: default
   # rollout 阶段配置
   - pipeline/rollout: default
   # 数据集配置

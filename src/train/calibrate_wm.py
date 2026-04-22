@@ -10,7 +10,7 @@ import torch
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
-from src.data.dataset import WMDataset
+from src.train.latent_cache import build_wm_dataset_with_cache
 from src.utils.console import progress_context, show_kv_table, success
 from src.utils.env import load_project_env
 from src.utils.io import ensure_dir, write_json
@@ -19,6 +19,16 @@ from src.visualize.wandb_tracker import init_tracker
 from src.wm.encoders import build_wm_image_encoder
 from src.wm.model import CFMWorldModel
 from src.wm.uncertainty import estimate_divergence, percentile_threshold
+
+
+def _resolve_patch_layout(wm_cfg: DictConfig) -> tuple[int, int]:
+    num_patches = int(getattr(wm_cfg.encoder, "num_patches", 0))
+    latent_dim = int(wm_cfg.latent_dim)
+    if num_patches <= 0:
+        raise ValueError("wm.encoder.num_patches 必须为正整数。")
+    if latent_dim % num_patches != 0:
+        raise ValueError(f"wm.latent_dim 必须能被 num_patches 整除: {latent_dim} / {num_patches}")
+    return num_patches, latent_dim // num_patches
 
 
 def _resolve_latest_path(path_text: str) -> Path:
@@ -64,25 +74,46 @@ def main(cfg: DictConfig) -> None:
     device = torch.device(str(train_cfg.device))
     resolved_manifest = _resolve_latest_path(str(dataset_cfg.manifest_path))
     image_encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
-    dataset = WMDataset(
-        manifest_path=str(resolved_manifest),
+    dataset, _ = build_wm_dataset_with_cache(
+        manifest_path=resolved_manifest,
+        wm_name=str(wm_cfg.name),
         latent_dim=int(dataset_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
+        history_len=int(wm_cfg.history_len),
+        rollout_steps=1,
         image_encoder=image_encoder,
+        encoder_num_workers=int(train_cfg.encoder_num_workers),
+        encoder_batch_size=int(train_cfg.encoder_batch_size),
+        expected_num_patches=int(getattr(wm_cfg.encoder, "num_patches", 0)),
+        expected_token_dim=(
+            int(wm_cfg.latent_dim) // int(getattr(wm_cfg.encoder, "num_patches", 1))
+            if int(getattr(wm_cfg.encoder, "num_patches", 0)) > 0
+            else 0
+        ),
     )
+    dataset.disable_encoder_after_warmup()
     if len(dataset) == 0:
         raise RuntimeError("数据集为空，请先执行 collect_data。")
     loader = DataLoader(
         dataset,
         batch_size=int(train_cfg.batch_size),
         shuffle=False,
-        num_workers=0 if image_encoder is not None else int(train_cfg.num_workers),
+        num_workers=int(train_cfg.num_workers),
+        persistent_workers=int(train_cfg.num_workers) > 0,
     )
+    num_patches, token_dim = _resolve_patch_layout(wm_cfg=wm_cfg)
 
     model = CFMWorldModel(
         latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(wm_cfg.action_dim),
         hidden_dim=int(wm_cfg.hidden_dim),
+        history_len=int(wm_cfg.history_len),
+        num_patches=num_patches,
+        token_dim=token_dim,
+        num_layers=int(wm_cfg.transformer.num_layers),
+        num_heads=int(wm_cfg.transformer.num_heads),
+        dropout=float(wm_cfg.transformer.dropout),
+        conditioning_mode=str(getattr(wm_cfg.conditioning, "mode", "adaln")),
     ).to(device)
 
     ckpt_path = _resolve_latest_path(str(calib_cfg.input_ckpt_path))
@@ -105,12 +136,12 @@ def main(cfg: DictConfig) -> None:
         with progress_context() as progress:
             task = progress.add_task("calibrating_wm", total=max(1, len(loader)))
             for batch in loader:
-                z_t = batch["z_t"].to(device)
-                action = batch["action"].to(device)
+                z_history = batch["z_history"].to(device)
+                action_history = batch["action_history"].to(device)
                 div = estimate_divergence(
                     model=model,
-                    z_t=z_t,
-                    action=action,
+                    z_history=z_history,
+                    action_history=action_history,
                     noise_scale=float(calib_cfg.noise_scale),
                     num_samples=int(calib_cfg.num_samples),
                 )

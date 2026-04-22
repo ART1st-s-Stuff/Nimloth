@@ -15,12 +15,22 @@ class InverseDynamicsModel(nn.Module):
         action_dim: int,
         hidden_dim: int,
         history_len: int,
+        num_patches: int,
+        token_dim: int,
         num_layers: int,
         num_heads: int,
         dropout: float,
     ) -> None:
         super().__init__()
-        self.token_proj = nn.Linear(latent_dim, hidden_dim)
+        self.latent_dim = latent_dim
+        self.history_len = history_len
+        self.num_patches = int(num_patches)
+        self.token_dim = int(token_dim)
+        expected_latent_dim = self.num_patches * self.token_dim
+        if int(self.latent_dim) != int(expected_latent_dim):
+            raise ValueError(f"latent_dim 与 patch 配置不一致: {latent_dim} != {expected_latent_dim}")
+        self.patch_token_proj = nn.Linear(self.token_dim, hidden_dim)
+        self.patch_pool = nn.Linear(hidden_dim, hidden_dim)
         self.pos_embedding = nn.Parameter(torch.zeros(1, history_len, hidden_dim))
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -38,7 +48,20 @@ class InverseDynamicsModel(nn.Module):
             nn.Linear(hidden_dim, action_dim),
         )
 
+    def _validate_inputs(self, z_history: torch.Tensor) -> None:
+        if z_history.dim() != 4:
+            raise ValueError(f"z_history 形状不合法，期望 [B,H,P,D]，实际 {tuple(z_history.shape)}")
+        if z_history.size(1) != self.history_len:
+            raise ValueError(f"history_len 不一致: {z_history.size(1)} != {self.history_len}")
+        if z_history.size(2) != self.num_patches:
+            raise ValueError(f"num_patches 不一致: {z_history.size(2)} != {self.num_patches}")
+        if z_history.size(3) != self.token_dim:
+            raise ValueError(f"token_dim 不一致: {z_history.size(3)} != {self.token_dim}")
+
     def forward(self, z_history: torch.Tensor) -> torch.Tensor:
-        x = self.token_proj(z_history) + self.pos_embedding[:, : z_history.size(1), :]
+        self._validate_inputs(z_history=z_history)
+        patch_hidden = self.patch_token_proj(z_history)
+        pooled = self.patch_pool(patch_hidden).mean(dim=2)
+        x = pooled + self.pos_embedding[:, : pooled.size(1), :]
         hidden = self.encoder(x)
         return self.head(hidden[:, -1, :])

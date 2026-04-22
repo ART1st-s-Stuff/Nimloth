@@ -44,20 +44,26 @@ class WMDataset(Dataset):
         action_dim: int,
         history_len: int,
         rollout_steps: int = 1,
+        temporal_stride: int | tuple[int, int] = 1,
         image_encoder: WMImageEncoder | None = None,
         latent_cache_path: str | None = None,
         encoder_num_workers: int = 1,
         encoder_batch_size: int = 32,
+        expected_num_patches: int = 0,
+        expected_token_dim: int = 0,
         on_latent_progress: Callable[[int, int], None] | None = None,
     ) -> None:
         self.latent_dim = latent_dim
         self.action_dim = action_dim
         self.history_len = max(1, history_len)
         self.rollout_steps = max(1, int(rollout_steps))
+        self.temporal_stride_min, self.temporal_stride_max = self._normalize_temporal_stride(temporal_stride)
         self.image_encoder = image_encoder
         self.latent_cache_path = Path(latent_cache_path) if latent_cache_path else None
         self.encoder_num_workers = max(1, int(encoder_num_workers))
         self.encoder_batch_size = max(1, int(encoder_batch_size))
+        self.expected_num_patches = max(0, int(expected_num_patches))
+        self.expected_token_dim = max(0, int(expected_token_dim))
         self.on_latent_progress = on_latent_progress
         # 训练样本存在大量重叠帧，按 image_path 缓存可显著减少重复编码。
         self._latent_cache: dict[str, torch.Tensor] = {}
@@ -74,15 +80,20 @@ class WMDataset(Dataset):
             episode_to_indices.setdefault(episode_id, []).append(idx)
         for episode_indices in episode_to_indices.values():
             min_history_last = self.history_len - 1
-            max_history_last = len(episode_indices) - self.rollout_steps - 1
+            max_history_last = len(episode_indices) - 2
             for history_last_local_idx in range(min_history_last, max_history_last + 1):
+                max_valid_stride = (len(episode_indices) - 1 - history_last_local_idx) // self.rollout_steps
+                if max_valid_stride < self.temporal_stride_min:
+                    continue
+                chosen_stride = self._sample_stride(max_valid_stride=max_valid_stride)
                 history_start_local_idx = history_last_local_idx - (self.history_len - 1)
                 history_global_indices = episode_indices[history_start_local_idx : history_last_local_idx + 1]
                 future_global_indices = [
-                    episode_indices[history_last_local_idx + step] for step in range(1, self.rollout_steps + 1)
+                    episode_indices[history_last_local_idx + step * chosen_stride]
+                    for step in range(1, self.rollout_steps + 1)
                 ]
                 action_source_indices = [
-                    episode_indices[history_last_local_idx + step - 1]
+                    episode_indices[history_last_local_idx + step * chosen_stride - 1]
                     for step in range(1, self.rollout_steps + 1)
                 ]
                 self._training_indices.append(
@@ -90,9 +101,31 @@ class WMDataset(Dataset):
                         "history_indices": history_global_indices,
                         "future_indices": future_global_indices,
                         "action_source_indices": action_source_indices,
+                        "temporal_stride": [chosen_stride],
                     }
                 )
         self._warmup_latent_cache()
+
+    @staticmethod
+    def _normalize_temporal_stride(temporal_stride: int | tuple[int, int]) -> tuple[int, int]:
+        if isinstance(temporal_stride, tuple):
+            if len(temporal_stride) != 2:
+                raise ValueError("temporal_stride 区间配置必须是二元组 (min, max)。")
+            stride_min = int(temporal_stride[0])
+            stride_max = int(temporal_stride[1])
+        else:
+            stride_min = int(temporal_stride)
+            stride_max = int(temporal_stride)
+        stride_min = max(1, stride_min)
+        stride_max = max(stride_min, stride_max)
+        return stride_min, stride_max
+
+    def _sample_stride(self, *, max_valid_stride: int) -> int:
+        hi = min(self.temporal_stride_max, int(max_valid_stride))
+        lo = min(self.temporal_stride_min, hi)
+        if lo >= hi:
+            return lo
+        return int(torch.randint(low=lo, high=hi + 1, size=(1,)).item())
 
     def __len__(self) -> int:
         return len(self._training_indices)
@@ -129,7 +162,17 @@ class WMDataset(Dataset):
                 )
             elif isinstance(latents, dict):
                 for key, value in latents.items():
-                    if isinstance(key, str) and isinstance(value, torch.Tensor):
+                    if not (isinstance(key, str) and isinstance(value, torch.Tensor)):
+                        continue
+                    matches_flat_dim = int(value.numel()) == int(self.latent_dim)
+                    matches_patch_layout = (
+                        self.expected_num_patches > 0
+                        and self.expected_token_dim > 0
+                        and value.dim() == 2
+                        and int(value.size(0)) == int(self.expected_num_patches)
+                        and int(value.size(1)) == int(self.expected_token_dim)
+                    )
+                    if matches_flat_dim or matches_patch_layout:
                         self._latent_cache[key] = value.detach().cpu()
         unique_paths = {str(sample["image_path"]) for sample in self.samples if "image_path" in sample}
         missing_paths = [path for path in unique_paths if path not in self._latent_cache]
@@ -203,5 +246,6 @@ class WMDataset(Dataset):
             "z_future": z_future,
             "gt_action_future": gt_action_future,
             "env_context": env_context,
+            "temporal_stride": torch.tensor(index_data["temporal_stride"], dtype=torch.int64),
         }
 
