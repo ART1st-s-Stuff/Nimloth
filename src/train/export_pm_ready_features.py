@@ -32,7 +32,7 @@ def main(cfg: DictConfig) -> None:
         raise RuntimeError("未启用 WM 图像编码器，无法导出 PM-ready 特征。")
     dataset = SemanticAlignDataset(
         manifest_path=str(dataset_cfg.manifest_path),
-        latent_dim=int(dataset_cfg.latent_dim),
+        latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
         history_len=int(wm_cfg.history_len),
         image_encoder=image_encoder,
@@ -48,7 +48,7 @@ def main(cfg: DictConfig) -> None:
     )
     adapter = QwenVLMAdapter(
         model_name=str(vlm_cfg.model.hf_model_name),
-        latent_dim=int(dataset_cfg.latent_dim),
+        latent_dim=int(wm_cfg.latent_dim),
         enabled=bool(vlm_cfg.enabled and train_cfg.use_vlm_for_st),
         fallback_enabled=bool(vlm_cfg.fallback_enabled),
         max_new_tokens=int(vlm_cfg.model.max_new_tokens),

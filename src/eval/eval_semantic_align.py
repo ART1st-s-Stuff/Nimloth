@@ -52,7 +52,7 @@ def main(cfg: DictConfig) -> None:
         raise RuntimeError("未启用 WM 图像编码器，无法执行语义对齐评估。")
     dataset = SemanticAlignDataset(
         manifest_path=str(dataset_cfg.manifest_path),
-        latent_dim=int(dataset_cfg.latent_dim),
+        latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
         history_len=int(wm_cfg.history_len),
         image_encoder=image_encoder,
@@ -68,7 +68,7 @@ def main(cfg: DictConfig) -> None:
         num_workers=int(train_cfg.num_workers),
         collate_fn=_collate_semantic_batch,
     )
-    model = DeltaProjector(latent_dim=int(dataset_cfg.latent_dim), hidden_dim=int(wm_cfg.hidden_dim)).to(device)
+    model = DeltaProjector(latent_dim=int(wm_cfg.latent_dim), hidden_dim=int(wm_cfg.hidden_dim)).to(device)
     ckpt_path = _resolve_latest_path(str(train_cfg.eval_ckpt_path))
     if not ckpt_path.exists():
         raise RuntimeError(f"未找到 semantic projector checkpoint: {ckpt_path}")
@@ -76,7 +76,7 @@ def main(cfg: DictConfig) -> None:
     model.eval()
     adapter = QwenVLMAdapter(
         model_name=str(vlm_cfg.model.hf_model_name),
-        latent_dim=int(dataset_cfg.latent_dim),
+        latent_dim=int(wm_cfg.latent_dim),
         enabled=bool(vlm_cfg.enabled and train_cfg.use_vlm_for_st),
         fallback_enabled=bool(vlm_cfg.fallback_enabled),
         max_new_tokens=int(vlm_cfg.model.max_new_tokens),
