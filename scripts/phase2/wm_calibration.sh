@@ -7,22 +7,12 @@ wm_model_name="${WM_MODEL_NAME:-${WM_NAME:-cfm_dinov2m}}"
 if [[ -z "${ckpt_path}" ]]; then
   ckpt_path="$(
     WM_MODEL_ROOT="${wm_model_root}" WM_MODEL_NAME="${wm_model_name}" python - <<'PY'
-from pathlib import Path
-import json
 import os
+from pathlib import Path
+from src.utils.model_provider import resolve_latest_model_file
 base = Path(os.environ["WM_MODEL_ROOT"]) / "wm" / os.environ["WM_MODEL_NAME"]
-meta = base / "metadata.json"
-latest = None
-if meta.exists():
-    try:
-        latest = json.loads(meta.read_text(encoding="utf-8")).get("latest")
-    except Exception:
-        latest = None
-if latest and (base / latest / "wm.pt").exists():
-    print(base / latest / "wm.pt")
-else:
-    runs = sorted([p for p in base.iterdir() if p.is_dir() and (p / "wm.pt").exists()], reverse=True)
-    print((runs[0] / "wm.pt") if runs else "")
+resolved = resolve_latest_model_file(base, ["wm_ema.pt", "wm.pt"])
+print(resolved or "")
 PY
 )"
 fi

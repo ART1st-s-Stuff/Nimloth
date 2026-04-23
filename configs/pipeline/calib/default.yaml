@@ -7,8 +7,8 @@ noise_scale: 0.05
 num_samples: 8
 # 统计分位点（用于鲁棒阈值）
 percentile: 95
-# 待校准 WM checkpoint 路径
-input_ckpt_path: models/wm/${wm.name}/latest/wm.pt
+# 待校准 WM checkpoint 路径（默认优先 EMA）
+input_ckpt_path: models/wm/${wm.name}/latest/wm_ema.pt
 operation:
   # 输出根目录
   outputs_root: models

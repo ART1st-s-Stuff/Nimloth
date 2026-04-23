@@ -40,8 +40,6 @@ ai2thor_platform: CloudRendering
 ai2thor_cache_dir: .cache/ai2thor
 # 训练数据读取入口（由采集任务维护 latest 指针）。
 manifest_path: datasets/ai2thor/latest/manifest.jsonl
-# latent 维度
-latent_dim: 18816
 # 连续动作三元组：(move_ahead_distance, delta_yaw, delta_pitch)
 action_dim: 3
 collect:
@@ -50,8 +48,8 @@ collect:
   max_steps_per_episode: 200
   num_workers: 16
   # 建议与编码器分辨率保持一致，避免后续重采样损失。
-  image_height: 518
-  image_width: 518
+  image_height: 224
+  image_width: 224
   # 采样模式权重，顺序对应:
   # [RandomWalk, NavMesh, ForcedRotate, Done]
   action_weights: [0.55, 0.20, 0.20, 0.05]

@@ -32,7 +32,7 @@ class ActionConditioning(nn.Module):
 
 
 class CFMWorldModel(nn.Module):
-    """输入历史 latent/action 序列，输出下一步 latent。"""
+    """输入历史 latent/action 序列，输出下一步残差 latent（delta）。"""
 
     def __init__(
         self,
@@ -46,6 +46,7 @@ class CFMWorldModel(nn.Module):
         num_heads: int,
         dropout: float,
         conditioning_mode: str = "adaln",
+        action_input_mode: str = "explicit_token_concat",
     ) -> None:
         super().__init__()
         self.history_len = history_len
@@ -60,7 +61,19 @@ class CFMWorldModel(nn.Module):
         self.token_proj = nn.Linear(self.token_dim, hidden_dim)
         self.time_embedding = nn.Parameter(torch.zeros(1, history_len, 1, hidden_dim))
         self.patch_embedding = nn.Parameter(torch.zeros(1, 1, self.num_patches, hidden_dim))
+        self.action_input_mode = action_input_mode.strip().lower()
+        if self.action_input_mode not in {"explicit_token_concat", "cross_attention", "modulation"}:
+            raise ValueError(f"不支持的 conditioning.action_input_mode={action_input_mode}")
         self.conditioning = ActionConditioning(hidden_dim=hidden_dim, action_dim=action_dim, mode=conditioning_mode)
+        self.action_token_proj = nn.Linear(action_dim, hidden_dim)
+        self.action_slot_embedding = nn.Parameter(torch.zeros(1, 1, 1, hidden_dim))
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.cross_attention_norm = nn.LayerNorm(hidden_dim)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
             nhead=num_heads,
@@ -94,12 +107,35 @@ class CFMWorldModel(nn.Module):
             raise ValueError("z_history 与 action_history batch 不一致")
 
     def forward(self, z_history: torch.Tensor, action_history: torch.Tensor) -> torch.Tensor:
+        """预测下一步相对当前步的残差 delta_z。"""
         self._validate_inputs(z_history=z_history, action_history=action_history)
         x = self.token_proj(z_history)
         x = x + self.time_embedding[:, : self.history_len, :, :] + self.patch_embedding[:, :, : self.num_patches, :]
-        x = self.conditioning(tokens=x, action_history=action_history)
-        x = x.reshape(x.size(0), self.history_len * self.num_patches, x.size(-1))
-        hidden = self.encoder(x)
-        current_step_tokens = hidden[:, -self.num_patches :, :]
+        if self.action_input_mode == "explicit_token_concat":
+            action_tokens = self.action_token_proj(action_history).unsqueeze(2)
+            action_tokens = action_tokens + self.action_slot_embedding
+            x = torch.cat([x, action_tokens], dim=2)
+            x = x.reshape(x.size(0), self.history_len * (self.num_patches + 1), x.size(-1))
+            hidden = self.encoder(x)
+            hidden = hidden.reshape(hidden.size(0), self.history_len, self.num_patches + 1, hidden.size(-1))
+            current_step_tokens = hidden[:, -1, : self.num_patches, :]
+        elif self.action_input_mode == "cross_attention":
+            x_flat = x.reshape(x.size(0), self.history_len * self.num_patches, x.size(-1))
+            action_tokens = self.action_token_proj(action_history)
+            cross_out, _ = self.cross_attention(query=x_flat, key=action_tokens, value=action_tokens, need_weights=False)
+            x = self.cross_attention_norm(x_flat + cross_out)
+            hidden = self.encoder(x)
+            hidden = hidden.reshape(hidden.size(0), self.history_len, self.num_patches, hidden.size(-1))
+            current_step_tokens = hidden[:, -1, :, :]
+        else:
+            x = self.conditioning(tokens=x, action_history=action_history)
+            x = x.reshape(x.size(0), self.history_len * self.num_patches, x.size(-1))
+            hidden = self.encoder(x)
+            current_step_tokens = hidden[:, -self.num_patches :, :]
         return self.head(current_step_tokens)
+
+    def predict_next(self, z_history: torch.Tensor, action_history: torch.Tensor) -> torch.Tensor:
+        """将残差输出还原为下一步 latent 绝对值。"""
+        delta_z = self.forward(z_history=z_history, action_history=action_history)
+        return z_history[:, -1, :, :] + delta_z
 

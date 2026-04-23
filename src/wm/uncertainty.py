@@ -17,11 +17,11 @@ def estimate_divergence(
     num_samples: int,
 ) -> torch.Tensor:
     """用输入扰动近似散度，返回 batch 级不确定度。"""
-    base = model(z_history, action_history)
+    base = model.predict_next(z_history, action_history)
     diffs = []
     for _ in range(num_samples):
         noise = torch.randn_like(z_history) * noise_scale
-        perturbed = model(z_history + noise, action_history)
+        perturbed = model.predict_next(z_history + noise, action_history)
         diff = (perturbed - base).reshape(perturbed.size(0), -1)
         diffs.append(torch.norm(diff, dim=-1))
     return torch.stack(diffs, dim=0).mean(dim=0)

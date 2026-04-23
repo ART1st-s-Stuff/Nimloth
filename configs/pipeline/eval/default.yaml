@@ -6,8 +6,8 @@ num_workers: 0
 rollout_steps: 16
 # >0 时仅评估前 N 个 batch（用于快速冒烟）
 max_eval_batches: 0
-# 路径支持 latest 占位
-wm_ckpt_path: models/wm/${wm.name}/latest/wm.pt
+# 路径支持 latest 占位（默认优先 EMA）
+wm_ckpt_path: models/wm/${wm.name}/latest/wm_ema.pt
 idm_ckpt_path: models/wm/${wm.name}/latest/inverse_dynamics.pt
 action_mapper_ckpt_path: models/wm/${wm.name}/latest/action_mapper.pt
 theta_div_path: models/wm/${wm.name}/latest/theta_div.json

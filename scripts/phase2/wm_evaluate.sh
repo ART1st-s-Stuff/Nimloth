@@ -5,29 +5,19 @@ wm_model_root="${WM_MODEL_ROOT:-models}"
 wm_model_name="${WM_MODEL_NAME:-${WM_NAME:-cfm_dinov2m}}"
 
 resolve_latest_model_file() {
-  local file_name="$1"
-  WM_MODEL_ROOT="${wm_model_root}" WM_MODEL_NAME="${wm_model_name}" TARGET_FILE="${file_name}" python - <<'PY'
+  local candidates_csv="$1"
+  WM_MODEL_ROOT="${wm_model_root}" WM_MODEL_NAME="${wm_model_name}" TARGET_CANDIDATES="${candidates_csv}" python - <<'PY'
 from pathlib import Path
-import json
 import os
+from src.utils.model_provider import resolve_latest_model_file
 base = Path(os.environ["WM_MODEL_ROOT"]) / "wm" / os.environ["WM_MODEL_NAME"]
-target_file = os.environ["TARGET_FILE"]
-meta = base / "metadata.json"
-latest = None
-if meta.exists():
-    try:
-        latest = json.loads(meta.read_text(encoding="utf-8")).get("latest")
-    except Exception:
-        latest = None
-if latest and (base / latest / target_file).exists():
-    print(base / latest / target_file)
-else:
-    runs = sorted([p for p in base.iterdir() if p.is_dir() and (p / target_file).exists()], reverse=True)
-    print((runs[0] / target_file) if runs else "")
+candidates = [x.strip() for x in os.environ["TARGET_CANDIDATES"].split(",") if x.strip()]
+resolved = resolve_latest_model_file(base, candidates)
+print(resolved or "")
 PY
 }
 
-wm_ckpt_path="${WM_CKPT_PATH:-$(resolve_latest_model_file "wm.pt")}"
+wm_ckpt_path="${WM_CKPT_PATH:-$(resolve_latest_model_file "wm_ema.pt,wm.pt")}"
 idm_ckpt_path="${WM_IDM_CKPT_PATH:-$(resolve_latest_model_file "inverse_dynamics.pt")}"
 mapper_ckpt_path="${WM_MAPPER_CKPT_PATH:-$(resolve_latest_model_file "action_mapper.pt")}"
 theta_div_path="${WM_THETA_DIV_PATH:-$(resolve_latest_model_file "theta_div.json")}"

@@ -17,6 +17,7 @@ import umap
 
 from src.data.collector import CollectConfig, run_collection
 from src.utils.io import ensure_dir
+from src.utils.model_provider import resolve_latest_model_file
 from src.wm.encoders import build_wm_image_encoder
 from src.wm.model import CFMWorldModel
 
@@ -176,6 +177,25 @@ def _resolve_wm_config(wm_name: str) -> Any:
     return OmegaConf.load(target)
 
 
+def _resolve_wm_ckpt_path(wm_run_path: Path) -> Path | None:
+    """优先使用 EMA 权重，不存在时回退普通权重。"""
+    resolved = resolve_latest_model_file(wm_run_path, ["wm_ema.pt", "wm.pt"])
+    if resolved is not None:
+        return resolved
+    # 兼容仅传入单个 run 目录的场景。
+    for name in ["wm_ema.pt", "wm.pt"]:
+        candidate = wm_run_path / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _wm_ckpt_type(ckpt_path: Path) -> str:
+    if ckpt_path.name == "wm_ema.pt":
+        return "ema"
+    return "base"
+
+
 def _build_model(wm_cfg: Any, wm_ckpt_path: Path, device: torch.device) -> CFMWorldModel:
     num_patches = int(getattr(wm_cfg.encoder, "num_patches", 0))
     if num_patches <= 0:
@@ -290,7 +310,9 @@ def list_wm_test_runs(models_root: str = "models") -> list[str]:
         if not wm_dir.is_dir():
             continue
         for run_dir in wm_dir.iterdir():
-            if run_dir.is_dir() and (run_dir / "wm.pt").exists():
+            if not run_dir.is_dir():
+                continue
+            if (run_dir / "wm_ema.pt").exists() or (run_dir / "wm.pt").exists():
                 runs.append(run_dir)
     return [str(path) for path in sorted(runs, reverse=True)]
 
@@ -338,10 +360,10 @@ def run_wm_traj_compare_test(
         empty = {"feature": "", "points": [], "warning": ""}
         return "未选择 WM 运行目录。", "", empty, empty, empty, ""
     wm_run_path = Path(wm_run_dir)
-    wm_ckpt_path = wm_run_path / "wm.pt"
-    if not wm_ckpt_path.exists():
+    wm_ckpt_path = _resolve_wm_ckpt_path(wm_run_path)
+    if wm_ckpt_path is None:
         empty = {"feature": "", "points": [], "warning": ""}
-        return f"缺少 wm.pt: {wm_ckpt_path}", "", empty, empty, empty, ""
+        return f"缺少 WM checkpoint（wm_ema.pt/wm.pt）: {wm_run_path}", "", empty, empty, empty, ""
 
     dataset_cfg = OmegaConf.load(Path("configs/dataset/ai2thor.yaml"))
     wm_name = wm_run_path.parent.name
@@ -447,6 +469,7 @@ def run_wm_traj_compare_test(
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "wm_run_dir": str(wm_run_path),
         "wm_ckpt_path": str(wm_ckpt_path),
+        "wm_ckpt_type": _wm_ckpt_type(wm_ckpt_path),
         "test_scenes": list(TEST_SCENES),
         "collect_manifest_paths": success_manifests,
         "episodes_per_scene": int(episodes_per_scene),

@@ -77,7 +77,7 @@ def main(cfg: DictConfig) -> None:
     dataset, _ = build_wm_dataset_with_cache(
         manifest_path=resolved_manifest,
         wm_name=str(wm_cfg.name),
-        latent_dim=int(dataset_cfg.latent_dim),
+        latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
         history_len=int(wm_cfg.history_len),
         rollout_steps=1,
@@ -114,6 +114,7 @@ def main(cfg: DictConfig) -> None:
         num_heads=int(wm_cfg.transformer.num_heads),
         dropout=float(wm_cfg.transformer.dropout),
         conditioning_mode=str(getattr(wm_cfg.conditioning, "mode", "adaln")),
+        action_input_mode=str(getattr(wm_cfg.conditioning, "action_input_mode", "explicit_token_concat")),
     ).to(device)
 
     ckpt_path = _resolve_latest_path(str(calib_cfg.input_ckpt_path))

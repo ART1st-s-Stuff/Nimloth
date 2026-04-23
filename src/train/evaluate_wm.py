@@ -23,6 +23,7 @@ from src.visualize.wandb_tracker import init_tracker
 from src.wm.encoders import build_wm_image_encoder
 from src.wm.inverse_dynamics import InverseDynamicsModel
 from src.wm.model import CFMWorldModel
+from src.wm.action_mapper import ActionMapper, build_action_mapper
 from src.wm.uncertainty import estimate_divergence
 
 
@@ -173,7 +174,7 @@ def main(cfg: DictConfig) -> None:
     dataset, _ = build_wm_dataset_with_cache(
         manifest_path=manifest_path,
         wm_name=str(wm_cfg.name),
-        latent_dim=int(dataset_cfg.latent_dim),
+        latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
         history_len=int(wm_cfg.history_len),
         rollout_steps=int(eval_cfg.rollout_steps),
@@ -209,13 +210,14 @@ def main(cfg: DictConfig) -> None:
         num_heads=int(wm_cfg.transformer.num_heads),
         dropout=float(wm_cfg.transformer.dropout),
         conditioning_mode=str(getattr(wm_cfg.conditioning, "mode", "adaln")),
+        action_input_mode=str(getattr(wm_cfg.conditioning, "action_input_mode", "explicit_token_concat")),
     ).to(device)
     wm_model.load_state_dict(torch.load(wm_ckpt_path, map_location=device))
     wm_model.eval()
 
     has_idm = idm_ckpt_path.exists() and mapper_ckpt_path.exists()
     idm_model: InverseDynamicsModel | None = None
-    action_mapper: torch.nn.Linear | None = None
+    action_mapper: ActionMapper | None = None
     if has_idm:
         idm_model = InverseDynamicsModel(
             latent_dim=int(wm_cfg.latent_dim),
@@ -228,7 +230,11 @@ def main(cfg: DictConfig) -> None:
             num_heads=int(wm_cfg.inverse_dynamics.num_heads),
             dropout=float(wm_cfg.inverse_dynamics.dropout),
         ).to(device)
-        action_mapper = torch.nn.Linear(int(wm_cfg.action_dim), int(dataset_cfg.action_dim)).to(device)
+        action_mapper = build_action_mapper(
+            input_dim=int(wm_cfg.action_dim),
+            output_dim=int(dataset_cfg.action_dim),
+            hidden_dim=int(wm_cfg.inverse_dynamics.hidden_dim),
+        ).to(device)
         idm_model.load_state_dict(torch.load(idm_ckpt_path, map_location=device))
         action_mapper.load_state_dict(torch.load(mapper_ckpt_path, map_location=device))
         idm_model.eval()
@@ -296,7 +302,7 @@ def main(cfg: DictConfig) -> None:
                     torch.cat([z_history, z_future], dim=1)
                 )
 
-                pred_first = wm_model(z_history, action_history)
+                pred_first = wm_model.predict_next(z_history, action_history)
                 target_first = z_future[:, 0, :]
                 mse_batch = F.mse_loss(pred_first, target_first)
                 fd_batch = torch.norm((pred_first - target_first).reshape(pred_first.size(0), -1), dim=-1).mean()
@@ -312,7 +318,7 @@ def main(cfg: DictConfig) -> None:
                 rollout_z_history = z_history
                 rollout_action_history = action_history.clone()
                 for step_idx in range(int(eval_cfg.rollout_steps)):
-                    pred_z = wm_model(rollout_z_history, rollout_action_history)
+                    pred_z = wm_model.predict_next(rollout_z_history, rollout_action_history)
                     target_z = z_future[:, step_idx, :]
                     step_fd = torch.norm((pred_z - target_z).reshape(pred_z.size(0), -1), dim=-1).mean()
                     step_cd = _cosine_distance(pred_z, target_z).mean()

@@ -61,7 +61,7 @@ def main(cfg: DictConfig) -> None:
         dataset, latent_cache_path = build_wm_dataset_with_cache(
             manifest_path=resolved_manifest_path,
             wm_name=str(wm_cfg.name),
-            latent_dim=int(dataset_cfg.latent_dim),
+            latent_dim=int(wm_cfg.latent_dim),
             action_dim=int(dataset_cfg.action_dim),
             history_len=int(wm_cfg.history_len),
             rollout_steps=1,
