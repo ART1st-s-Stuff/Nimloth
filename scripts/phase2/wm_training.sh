@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+force_new_run="false"
+hydra_args=()
+for arg in "$@"; do
+  if [[ "${arg}" == "--new" ]]; then
+    force_new_run="true"
+  else
+    hydra_args+=("${arg}")
+  fi
+done
+
 manifest_path="${WM_MANIFEST_PATH:-}"
 collection_root="${WM_COLLECTION_ROOT:-datasets}"
 dataset_name="${WM_DATASET_NAME:-ai2thor}"
@@ -35,5 +45,9 @@ fi
 
 # 示例：启用全监督 WM 训练（不使用 IDM 推断动作）
 #   ./scripts/phase2/wm_training.sh pipeline.train.training_mode=fully_supervised
-python -m src.train.train_wm wm="${wm_name}" dataset.manifest_path="${manifest_path}" "$@"
+python -m src.train.train_wm \
+  wm="${wm_name}" \
+  dataset.manifest_path="${manifest_path}" \
+  pipeline.train.operation.force_new_run="${force_new_run}" \
+  "${hydra_args[@]}"
 

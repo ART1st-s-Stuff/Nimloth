@@ -4,7 +4,7 @@
 #   uv run ... pipeline.train.rollout_steps=4
 batch_size: 16
 epochs: 4
-lr: 0.001
+lr: 0.0001
 # DataLoader 读取样本的并行 worker 数
 num_workers: 8
 # 预编码 latent 时使用的并行 worker 数
@@ -15,10 +15,11 @@ encoder_batch_size: 64
 device: cuda
 # 训练模式：unsupervised、semi_supervised 或 fully_supervised
 # fully_supervised: WM 直接使用真实动作训练，不使用 IDM 推断动作
-training_mode: semi_supervised
+training_mode: fully_supervised
 # 多步自回归预测步数（=1 时退化为单步）
 rollout_steps: 4
 # 时序采样步长：可填单个整数（固定步长）或区间[min, max]（训练时随机采样）
+# 先提升到 4 以增强时序变化信号；若仍偏弱可进一步尝试 8
 temporal_stride: 1
 # 半监督下 IDM loss 的加权系数
 semi_supervised_weight: 1.0
@@ -27,18 +28,26 @@ reconstruction_weight: 1.0
 # 梯度裁剪上限（L2 norm）
 grad_clip_norm: 1.0
 # true 时 WM 分支不把梯度反传到 IDM（分离传播）
-detach_idm_in_wm: true
+detach_idm_in_wm: false
 # WM 学习率（null 时回退到 lr）
 wm_lr: null
 # IDM/mapper 学习率（null 时回退到 lr）
 idm_lr: null
+# AdamW 权重衰减
+weight_decay: 0.01
+# 线性学习率 warmup 步数（0 表示关闭）
+lr_warmup_steps: 1000
+# EMA（仅对 WM 主模型）
+ema:
+  enabled: true
+  decay: 0.999
 # step 级日志记录间隔（<=0 表示关闭；例如 10 表示每 10 step 记录一次）
 log_every_n_steps: 10
 sigreg:
   # 是否启用 LeWM 论文风格 SIGReg
   enabled: false
   # 正则权重 λ
-  weight: 0.1
+  weight: 0.01
   # 随机投影数 M
   num_projections: 256
   # 离散积分节点数 T
@@ -53,6 +62,8 @@ sigreg:
 operation:
   # 输出根目录
   outputs_root: models
+  # 默认行为：仅当 latest run 未完成时自动续训；true 时强制新建 run
+  force_new_run: false
   # 阶段标识
   phase: phase2
   # 任务标识
