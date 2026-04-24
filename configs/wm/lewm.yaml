@@ -1,0 +1,27 @@
+# LeWM（Latent Energy World Model）配置（不启用视觉编码器）
+# 适用于纯 latent 输入的调试/基线实验
+# 参考 lucas-maes/le-wm 的 ARPredictor，使用 AdaLN-Zero + 因果注意力 Transformer
+name: lewm
+hidden_dim: 256
+latent_dim: 128
+action_dim: 3
+history_len: 4
+transformer:
+  num_layers: 4
+  num_heads: 4
+  dim_head: 64
+  mlp_ratio: 4.0
+  dropout: 0.1
+inverse_dynamics:
+  hidden_dim: 256
+  num_layers: 3
+  num_heads: 4
+  dropout: 0.1
+encoder:
+  name: none
+lewm:
+  dim_head: 64
+  mlp_ratio: 4.0
+  emb_dropout: 0.0
+  sigreg_knots: 17
+  sigreg_num_proj: 256

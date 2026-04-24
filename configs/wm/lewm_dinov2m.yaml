@@ -1,0 +1,32 @@
+# LeWM（Latent Energy World Model）+ DINOv2-M 编码器配置
+# 参考 lucas-maes/le-wm 的 ARPredictor，使用 AdaLN-Zero + 因果注意力 Transformer
+name: lewm_dinov2m
+hidden_dim: 512
+latent_dim: 6144
+action_dim: 3
+history_len: 4
+transformer:
+  num_layers: 6
+  num_heads: 16
+  dim_head: 64
+  mlp_ratio: 4.0
+  dropout: 0.1
+inverse_dynamics:
+  hidden_dim: 512
+  num_layers: 3
+  num_heads: 4
+  dropout: 0.1
+encoder:
+  name: cfm_dinov2m
+  backbone_name: dinov2_vits14
+  freeze_backbone: true
+  image_size: 224
+  patch_size: 56
+  num_patches: 16
+  token_strategy: patch_tokens
+lewm:
+  dim_head: 64
+  mlp_ratio: 4.0
+  emb_dropout: 0.0
+  sigreg_knots: 17
+  sigreg_num_proj: 256
