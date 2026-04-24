@@ -19,7 +19,7 @@ from src.data.collector import CollectConfig, run_collection
 from src.utils.io import ensure_dir
 from src.utils.model_provider import resolve_latest_model_file
 from src.wm.encoders import build_wm_image_encoder
-from src.wm.model import CFMWorldModel
+from src.wm.factory import build_world_model
 
 TEST_SCENES = ["FloorPlan1", "FloorPlan101", "FloorPlan201"]
 _CACHE_ROOT = Path(".cache") / "visualize"
@@ -196,26 +196,13 @@ def _wm_ckpt_type(ckpt_path: Path) -> str:
     return "base"
 
 
-def _build_model(wm_cfg: Any, wm_ckpt_path: Path, device: torch.device) -> CFMWorldModel:
-    num_patches = int(getattr(wm_cfg.encoder, "num_patches", 0))
-    if num_patches <= 0:
-        raise ValueError("wm.encoder.num_patches 必须为正整数。")
-    latent_dim = int(wm_cfg.latent_dim)
-    if latent_dim % num_patches != 0:
-        raise ValueError(f"wm.latent_dim 必须能被 num_patches 整除: {latent_dim} / {num_patches}")
-    token_dim = latent_dim // num_patches
-    model = CFMWorldModel(
-        latent_dim=latent_dim,
-        action_dim=int(wm_cfg.action_dim),
-        hidden_dim=int(wm_cfg.hidden_dim),
-        history_len=int(wm_cfg.history_len),
-        num_patches=num_patches,
-        token_dim=token_dim,
-        num_layers=int(wm_cfg.transformer.num_layers),
-        num_heads=int(wm_cfg.transformer.num_heads),
-        dropout=float(wm_cfg.transformer.dropout),
-        conditioning_mode=str(getattr(wm_cfg.conditioning, "mode", "adaln")),
-    ).to(device)
+def _build_model(wm_cfg: Any, action_dim: int, wm_ckpt_path: Path, device: torch.device) -> torch.nn.Module:
+    model = build_world_model(
+        wm_cfg=wm_cfg,
+        train_cfg=None,
+        action_dim=int(action_dim),
+        device=device,
+    )
     model.load_state_dict(torch.load(wm_ckpt_path, map_location=device))
     model.eval()
     return model
@@ -405,9 +392,14 @@ def run_wm_traj_compare_test(
 
     _report(45.0, "加载 WM 模型...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = _build_model(wm_cfg=wm_cfg, wm_ckpt_path=wm_ckpt_path, device=device)
+    model = _build_model(
+        wm_cfg=wm_cfg,
+        action_dim=int(dataset_cfg.action_dim),
+        wm_ckpt_path=wm_ckpt_path,
+        device=device,
+    )
     history_len = int(wm_cfg.history_len)
-    action_dim = int(wm_cfg.action_dim)
+    action_dim = int(dataset_cfg.action_dim)
 
     episode_rows = _group_episodes(rows)
     real_points: list[TrajPoint] = []
@@ -442,24 +434,31 @@ def run_wm_traj_compare_test(
             if len(seq_rows) < history_len + 1:
                 continue
             scene_counter[scene] += 1
-            hist_z = torch.stack(latents[:history_len], dim=0).unsqueeze(0).to(device)
-            hist_a = torch.stack([_action_vec(row, action_dim=action_dim) for row in seq_rows[:history_len]], dim=0).unsqueeze(0).to(device)
-            for idx in range(history_len, len(seq_rows)):
-                pred = model(hist_z, hist_a).squeeze(0).float().cpu()
+            # 每步监督后使用 GT latent 校准 history window，避免纯 predicted latent rollout。
+            teacher_z = torch.stack(latents[:history_len], dim=0).unsqueeze(0).to(device)
+            teacher_a = torch.stack([_action_vec(row, action_dim=action_dim) for row in seq_rows[:history_len]], dim=0).unsqueeze(0).to(device)
+            num_steps = len(seq_rows) - history_len
+            for step_idx in range(num_steps):
+                teacher_a[:, -1, :] = _action_vec(seq_rows[history_len + step_idx - 1], action_dim=action_dim).to(device)
+                pred = model.predict_next(teacher_z, teacher_a).squeeze(0).float().cpu()
+                state_index = history_len + step_idx
                 pred_points.append(
                     TrajPoint(
                         scene=scene,
                         episode_id=episode_id,
-                        step_id=int(seq_rows[idx].get("step_id", -1)),
+                        step_id=int(seq_rows[state_index].get("step_id", -1)),
                         rollout_id=rollout_id,
-                        state_index=idx,
+                        state_index=state_index,
                         source="pred",
                         latent=pred.reshape(-1).tolist(),
                     )
                 )
-                hist_z = torch.cat([hist_z[:, 1:, ...], pred.unsqueeze(0).unsqueeze(1).to(device)], dim=1)
-                next_action = _action_vec(seq_rows[idx], action_dim=action_dim).unsqueeze(0).unsqueeze(1).to(device)
-                hist_a = torch.cat([hist_a[:, 1:, :], next_action], dim=1)
+                # history window 向前滑动：使用对应 GT latent 校准
+                gt_next = latents[state_index].to(device)
+                teacher_z = torch.cat([teacher_z[:, 1:, ...], gt_next.unsqueeze(0).unsqueeze(1)], dim=1)
+                if step_idx < num_steps - 1:
+                    next_action = _action_vec(seq_rows[state_index], action_dim=action_dim).unsqueeze(0).unsqueeze(1).to(device)
+                    teacher_a = torch.cat([teacher_a[:, 1:, :], next_action], dim=1)
 
     _report(88.0, "降维可视化（UMAP）处理中...")
     real_payload, pred_payload, overlay_payload, warnings = _build_shared_umap_payloads(real_points, pred_points)

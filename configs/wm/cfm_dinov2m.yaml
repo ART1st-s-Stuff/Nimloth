@@ -39,9 +39,27 @@ encoder:
   # token 聚合策略
   token_strategy: patch_tokens
 conditioning:
-  # 条件注入方式（当 action_input_mode=modulation 时生效）：adaln 或 film
-  mode: film
-  # action 注入方式：explicit_token_concat / cross_attention / modulation
-  # 默认使用调制注入（FiLM）
-  action_input_mode: modulation
+  # 兼容旧字段：ActionConditioning 使用的调制类型（adaln / film）
+  mode: adaln
+action_injection:
+  # action 注入模式：token / film / adaln
+  mode: adaln
+history_injection:
+  # 固定为历史帧 cross-attention 注入
+  mode: cross_attention
+  # 固定方向：Query=x_t，Key/Value=history
+  cross_attention_direction: query_xt_key_history
+flow_matching:
+  # 真正流匹配训练目标：rectified_flow
+  variant: rectified_flow
+  # ODE 起点来源：当前帧 latent
+  x0_source: current_latent
+  # ODE 推理积分器：euler / heun
+  solver: heun
+  # 推理积分步数
+  num_steps: 16
+  # 避免严格从 0 开始的时间边界问题
+  t_eps: 0.001
+  # 保留字段（当 x0_source=current_latent 时不会生效）
+  noise_std: 1.0
 
