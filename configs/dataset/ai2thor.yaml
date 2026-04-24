@@ -5,7 +5,7 @@ name: ai2thor
 # 后端类型
 backend: ai2thor
 # 采样场景列表：建议混合厨房/客厅等不同布局，提升WM泛化。
-scenes:
+train_scenes:
   - FloorPlan1
   - FloorPlan2
   - FloorPlan3
@@ -16,6 +16,16 @@ scenes:
   - FloorPlan8
   - FloorPlan9
   - FloorPlan10
+  - FloorPlan11
+  - FloorPlan12
+  - FloorPlan13
+  - FloorPlan14
+  - FloorPlan15
+  - FloorPlan16
+  - FloorPlan17
+  - FloorPlan18
+  - FloorPlan19
+  - FloorPlan20
   - FloorPlan201
   - FloorPlan202
   - FloorPlan203
@@ -26,6 +36,78 @@ scenes:
   - FloorPlan208
   - FloorPlan209
   - FloorPlan210
+  - FloorPlan211
+  - FloorPlan212
+  - FloorPlan213
+  - FloorPlan214
+  - FloorPlan215
+  - FloorPlan216
+  - FloorPlan217
+  - FloorPlan218
+  - FloorPlan219
+  - FloorPlan220
+  - FloorPlan401
+  - FloorPlan402
+  - FloorPlan403
+  - FloorPlan404
+  - FloorPlan405
+  - FloorPlan406
+  - FloorPlan407
+  - FloorPlan408
+  - FloorPlan409
+  - FloorPlan410
+  - FloorPlan411
+  - FloorPlan412
+  - FloorPlan413
+  - FloorPlan414
+  - FloorPlan415
+  - FloorPlan416
+  - FloorPlan417
+  - FloorPlan418
+  - FloorPlan419
+  - FloorPlan420
+val_scenes:
+  - FloorPlan21
+  - FloorPlan22
+  - FloorPlan23
+  - FloorPlan24
+  - FloorPlan25
+  - FloorPlan221
+  - FloorPlan222
+  - FloorPlan223
+  - FloorPlan224
+  - FloorPlan225
+  - FloorPlan321
+  - FloorPlan322
+  - FloorPlan323
+  - FloorPlan324
+  - FloorPlan325
+  - FloorPlan421
+  - FloorPlan422
+  - FloorPlan423
+  - FloorPlan424
+  - FloorPlan425
+test_scenes:
+  - FloorPlan26
+  - FloorPlan27
+  - FloorPlan28
+  - FloorPlan29
+  - FloorPlan30
+  - FloorPlan226
+  - FloorPlan227
+  - FloorPlan228
+  - FloorPlan229
+  - FloorPlan230
+  - FloorPlan326
+  - FloorPlan327
+  - FloorPlan328
+  - FloorPlan329
+  - FloorPlan330
+  - FloorPlan426
+  - FloorPlan427
+  - FloorPlan428
+  - FloorPlan429
+  - FloorPlan430
 # 可见性距离（米）
 visibility_distance: 1.5
 # 网格步长（米）
@@ -39,12 +121,16 @@ ai2thor_platform: CloudRendering
 # AI2-THOR 本地缓存目录
 ai2thor_cache_dir: .cache/ai2thor
 # 训练数据读取入口（由采集任务维护 latest 指针）。
-manifest_path: datasets/ai2thor/latest/manifest.jsonl
+# 新格式：按 split 指定 run 目录路径，Dataset 会自动读取其中的 manifest_worker_*.jsonl 文件。
+manifests:
+  train: datasets/ai2thor/train
+  val: datasets/ai2thor/val
+  test: datasets/ai2thor/test
 # 连续动作三元组：(move_ahead_distance, delta_yaw, delta_pitch)
 action_dim: 3
 collect:
   # 采集规模：总步数 = scene数 * num_episodes_per_scene * max_steps_per_episode
-  num_episodes_per_scene: 10
+  num_episodes_per_scene: 200
   max_steps_per_episode: 200
   num_workers: 16
   # 建议与编码器分辨率保持一致，避免后续重采样损失。
@@ -55,13 +141,13 @@ collect:
   action_weights: [0.55, 0.20, 0.20, 0.05]
   continuous_action:
     # 连续动作基础范围（Normal 模式下）。
-    move_ahead_range: [0.5, 1.0]
+    move_ahead_range: [0.05, 0.3]
     yaw_delta_range: [-5.0, 5.0]
     pitch_delta_range: [-1.0, 1.0]
   random_walk:
     # 目标量范围：每次采样一个总目标，再以匀速小步执行到完成。
-    move_target_range: [0.2, 0.9]
-    yaw_target_range: [8.0, 35.0]
+    move_target_range: [0.1, 3.0]
+    yaw_target_range: [8.0, 100.0]
     pitch_target_range: [1.0, 8.0]
     # 每步速度范围（单位分别为米/步、度/步、度/步）。
     move_speed_range: [0.04, 0.12]
@@ -126,3 +212,6 @@ collect:
     phase: phase1
     task: wm_data_collection
     resume: true
+    # 每采集完 N 个 episode 后立即合并 worker manifest 并追加到最终 manifest，
+    # 使训练可在此期间提前启动。设为 0 禁用中间合并（仅在全部完成后合并）。
+    merge_interval_episodes: 1
