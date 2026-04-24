@@ -6,9 +6,9 @@ import torch
 from torch import nn
 
 
-def wm_cfm_loss(velocity: torch.Tensor, z_t: torch.Tensor, z_next: torch.Tensor) -> torch.Tensor:
-    target_velocity = z_next - z_t
-    return nn.functional.mse_loss(velocity, target_velocity)
+def wm_cfm_loss(pred_velocity: torch.Tensor, target_velocity: torch.Tensor) -> torch.Tensor:
+    """Flow matching 速度场监督损失。"""
+    return nn.functional.mse_loss(pred_velocity, target_velocity)
 
 
 def wm_reconstruction_loss(pred_z_next: torch.Tensor, z_next: torch.Tensor) -> torch.Tensor:
