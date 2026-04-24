@@ -114,7 +114,26 @@ def _build_env_context(metadata: dict[str, Any]) -> str:
     return " | ".join(parts)
 
 
-def _list_runs(base: Path, required_file: str) -> list[Path]:
+def _list_data_runs(base: Path) -> list[Path]:
+    """列出 base 下的 run 目录（包含 manifest_worker_*.jsonl 文件的目录）。"""
+    import re
+    if not base.exists():
+        return []
+    runs = []
+    for path in base.iterdir():
+        if path.is_dir():
+            # 检查是否包含 manifest_worker_*.jsonl 文件
+            has_worker_manifest = any(
+                re.match(r"^manifest_worker_\d+_.+\.jsonl$", p.name)
+                for p in path.iterdir() if p.is_file()
+            )
+            if has_worker_manifest:
+                runs.append(path)
+    return sorted(runs, reverse=True)
+
+
+def _list_runs_with_file(base: Path, required_file: str) -> list[Path]:
+    """列出 base 下包含指定文件的 run 目录。"""
     if not base.exists():
         return []
     runs = [
@@ -126,18 +145,24 @@ def _list_runs(base: Path, required_file: str) -> list[Path]:
 
 
 def _load_manifest_samples(run_dir: Path, limit: int = 5000) -> list[dict[str, Any]]:
-    manifest_path = run_dir / "manifest.jsonl"
-    if not manifest_path.exists():
-        return []
+    """从 run 目录读取 manifest_worker_*.jsonl 文件。"""
+    import re
     samples: list[dict[str, Any]] = []
-    with manifest_path.open("r", encoding="utf-8") as file:
-        for idx, line in enumerate(file):
-            if idx >= limit:
-                break
-            text = line.strip()
-            if not text:
-                continue
-            samples.append(json.loads(text))
+    worker_files = [
+        p for p in run_dir.iterdir()
+        if p.is_file() and p.suffix == ".jsonl" and re.match(r"^manifest_worker_\d+_.+\.jsonl$", p.name)
+    ]
+    if not worker_files:
+        return []
+    for wf in sorted(worker_files):
+        with wf.open("r", encoding="utf-8") as file:
+            for idx, line in enumerate(file):
+                if len(samples) >= limit:
+                    return samples
+                text = line.strip()
+                if not text:
+                    continue
+                samples.append(json.loads(text))
     return samples
 
 
@@ -633,7 +658,7 @@ def _list_training_runs(models_root: str = "models") -> list[Path]:
     for wm_dir in wm_root.iterdir():
         if not wm_dir.is_dir():
             continue
-        run_dirs.extend(_list_runs(wm_dir, required_file="train_metrics.json"))
+        run_dirs.extend(_list_runs_with_file(wm_dir, required_file="train_metrics.json"))
     return sorted(run_dirs, reverse=True)
 
 
@@ -1004,7 +1029,7 @@ def _refresh_wm_traj_plot_for_ui(
 
 
 def build_app(dataset_root: str = "datasets", models_root: str = "models", outputs_root: str = "outputs") -> gr.Blocks:
-    runs = _list_runs(base=Path(dataset_root) / "ai2thor", required_file="manifest.jsonl")
+    runs = _list_data_runs(base=Path(dataset_root) / "ai2thor")
     run_choices = [str(path) for path in runs]
     default_run = run_choices[0] if run_choices else None
     offline_wandb_runs = _list_offline_wandb_runs()
