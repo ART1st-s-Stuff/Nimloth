@@ -53,5 +53,6 @@ if [[ -z "${manifest_path}" ]]; then
   exit 1
 fi
 
-python -m src.train.calibrate_wm wm="${wm_model_name}" pipeline.calib.input_ckpt_path="${ckpt_path}" dataset.manifest_path="${manifest_path}" "$@"
+calib_split="${WM_CALIB_SPLIT:-val}"
+python -m src.train.calibrate_wm wm="${wm_model_name}" pipeline.calib.input_ckpt_path="${ckpt_path}" "pipeline.calib.split=${calib_split}" "dataset.manifests.${calib_split}=${manifest_path}" "$@"
 

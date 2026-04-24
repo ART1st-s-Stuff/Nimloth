@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 
 from src.data.semantic_dataset import SemanticAlignDataset
 from src.train.train_semantic_align import _collate_semantic_batch
+from src.train.manifest_resolver import resolve_manifest_for_split
 from src.utils.console import progress_context, success
 from src.utils.env import load_project_env
 from src.utils.io import ensure_dir, write_json
@@ -30,8 +31,20 @@ def main(cfg: DictConfig) -> None:
     image_encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
     if image_encoder is None:
         raise RuntimeError("未启用 WM 图像编码器，无法导出 PM-ready 特征。")
+    manifests_cfg = dataset_cfg.get("manifests", {})
+    manifests_cfg = dict(manifests_cfg)
+    export_split = str(train_cfg.get("export_split", "test"))
+
+    def _resolve_export_manifest_path(split: str) -> Path:
+        return resolve_manifest_for_split(
+            manifests_cfg=manifests_cfg,
+            split=split,
+            outputs_root=str(train_cfg.operation.outputs_root),
+            dataset_name=str(dataset_cfg.name),
+        )
+
     dataset = SemanticAlignDataset(
-        manifest_path=str(dataset_cfg.manifest_path),
+        manifest_path=str(_resolve_export_manifest_path(export_split)),
         latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
         history_len=int(wm_cfg.history_len),

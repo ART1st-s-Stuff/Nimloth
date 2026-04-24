@@ -58,17 +58,29 @@ if [[ -z "${manifest_path}" ]]; then
   exit 1
 fi
 
+# 与 configs/dataset 中 manifests 结构一致；默认评估 val split（与 evaluate_wm 默认一致）
+eval_split="${WM_EVAL_SPLIT:-val}"
 cmd=(
   python -m src.train.evaluate_wm
   "wm=${wm_model_name}"
   "pipeline.eval.wm_ckpt_path=${wm_ckpt_path}"
   "pipeline.eval.idm_ckpt_path=${idm_ckpt_path}"
   "pipeline.eval.action_mapper_ckpt_path=${mapper_ckpt_path}"
-  "dataset.manifest_path=${manifest_path}"
+  "pipeline.eval.split=${eval_split}"
+  "dataset.manifests.${eval_split}=${manifest_path}"
 )
 if [[ -n "${theta_div_path}" ]]; then
   cmd+=("pipeline.eval.theta_div_path=${theta_div_path}")
 fi
-cmd+=("$@")
+extra_args=()
+for arg in "$@"; do
+  if [[ "${arg}" == pipeline.eval.rollout_steps=* ]]; then
+    echo "[compat] 检测到废弃参数 ${arg}，自动映射为 pipeline.eval.temporal_stride=${arg#*=}"
+    extra_args+=("pipeline.eval.temporal_stride=${arg#*=}")
+  else
+    extra_args+=("${arg}")
+  fi
+done
+cmd+=("${extra_args[@]}")
 "${cmd[@]}"
 

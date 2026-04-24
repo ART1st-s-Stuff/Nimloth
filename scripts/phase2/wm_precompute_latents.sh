@@ -33,5 +33,6 @@ if [[ -z "${manifest_path}" ]]; then
   exit 1
 fi
 
-python -m src.train.precompute_wm_latents wm="${wm_name}" dataset.manifest_path="${manifest_path}" "$@"
+precompute_split="${WM_PRECOMPUTE_SPLIT:-train}"
+python -m src.train.precompute_wm_latents wm="${wm_name}" "pipeline.train.precompute_split=${precompute_split}" "dataset.manifests.${precompute_split}=${manifest_path}" "$@"
 

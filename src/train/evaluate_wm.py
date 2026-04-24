@@ -14,16 +14,17 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 
-from src.train.calibrate_wm import _resolve_latest_path
 from src.train.latent_cache import build_wm_dataset_with_cache
+from src.train.manifest_resolver import resolve_manifest_for_split
 from src.utils.console import progress_context, show_kv_table, success
 from src.utils.env import load_project_env
 from src.utils.io import ensure_dir, write_json
+from src.utils.path_resolver import resolve_latest_path
 from src.visualize.wandb_tracker import init_tracker
 from src.wm.encoders import build_wm_image_encoder
 from src.wm.inverse_dynamics import InverseDynamicsModel
-from src.wm.model import CFMWorldModel
 from src.wm.action_mapper import ActionMapper, build_action_mapper
+from src.wm.factory import build_world_model, resolve_patch_layout
 from src.wm.uncertainty import estimate_divergence
 
 
@@ -51,14 +52,16 @@ def _latent_dispersion_stats(latents: torch.Tensor) -> tuple[float, float, float
     )
 
 
-def _resolve_patch_layout(wm_cfg: DictConfig) -> tuple[int, int]:
-    num_patches = int(getattr(wm_cfg.encoder, "num_patches", 0))
-    latent_dim = int(wm_cfg.latent_dim)
-    if num_patches <= 0:
-        raise ValueError("wm.encoder.num_patches 必须为正整数。")
-    if latent_dim % num_patches != 0:
-        raise ValueError(f"wm.latent_dim 必须能被 num_patches 整除: {latent_dim} / {num_patches}")
-    return num_patches, latent_dim // num_patches
+def _resolve_supervision_steps(value: object) -> int:
+    if isinstance(value, int):
+        return max(1, int(value))
+    if hasattr(value, "__len__") and hasattr(value, "__getitem__") and not isinstance(value, (str, bytes)):
+        if len(value) != 2:
+            raise ValueError("temporal_stride 区间必须包含两个整数 [min, max]。")
+        low = max(1, int(value[0]))
+        high = max(low, int(value[1]))
+        return high
+    return 1
 
 
 def _binary_auroc(labels: list[int], scores: list[float]) -> float:
@@ -123,7 +126,7 @@ def _build_report(metrics: dict[str, Any]) -> str:
         f"- `abnormal_trigger_rate`: {threshold['abnormal_trigger_rate']:.4f}",
         "",
         "## 长程 Drift",
-        f"- rollout 步长: {len(drift['steps'])}",
+        f"- 监督步数: {len(drift['steps'])}",
         f"- FD 末步: {drift['fd'][-1]:.6f}" if drift["fd"] else "- FD 末步: N/A",
         f"- CD 末步: {drift['cd'][-1]:.6f}" if drift["cd"] else "- CD 末步: N/A",
         "",
@@ -156,13 +159,29 @@ def main(cfg: DictConfig) -> None:
     dataset_cfg = cfg.dataset
     wm_cfg = cfg.wm
     device = torch.device(str(train_cfg.device))
+    eval_temporal_stride = _resolve_supervision_steps(
+        eval_cfg.get("temporal_stride", train_cfg.get("temporal_stride", 1))
+    )
 
     wm_ckpt_path = _resolve_latest_path(str(eval_cfg.wm_ckpt_path))
     idm_ckpt_path = _resolve_latest_path(str(eval_cfg.idm_ckpt_path))
     mapper_ckpt_path = _resolve_latest_path(str(eval_cfg.action_mapper_ckpt_path))
     theta_div_cfg = str(eval_cfg.theta_div_path).strip()
     theta_div_path = _resolve_latest_path(theta_div_cfg) if theta_div_cfg else None
-    manifest_path = _resolve_latest_path(str(dataset_cfg.manifest_path))
+    manifests_cfg = dataset_cfg.get("manifests", {})
+    manifests_cfg = dict(manifests_cfg)
+    eval_split = str(eval_cfg.get("split", "val"))
+
+    def _resolve_eval_manifest_path(split: str) -> Path:
+        outputs_root = str(eval_cfg.get("outputs_root", train_cfg.operation.outputs_root))
+        return resolve_manifest_for_split(
+            manifests_cfg=manifests_cfg,
+            split=split,
+            outputs_root=outputs_root,
+            dataset_name=str(dataset_cfg.name),
+        )
+
+    manifest_path = _resolve_eval_manifest_path(eval_split)
     if not wm_ckpt_path.exists():
         raise RuntimeError(f"未找到 WM checkpoint: {wm_ckpt_path}")
 
@@ -177,7 +196,7 @@ def main(cfg: DictConfig) -> None:
         latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
         history_len=int(wm_cfg.history_len),
-        rollout_steps=int(eval_cfg.rollout_steps),
+        temporal_stride=eval_temporal_stride,
         image_encoder=image_encoder,
         encoder_num_workers=int(train_cfg.encoder_num_workers),
         encoder_batch_size=int(train_cfg.encoder_batch_size),
@@ -197,21 +216,14 @@ def main(cfg: DictConfig) -> None:
         shuffle=False,
         num_workers=max(0, int(eval_cfg.num_workers)),
     )
-    num_patches, token_dim = _resolve_patch_layout(wm_cfg=wm_cfg)
-
-    wm_model = CFMWorldModel(
-        latent_dim=int(wm_cfg.latent_dim),
-        action_dim=int(wm_cfg.action_dim),
-        hidden_dim=int(wm_cfg.hidden_dim),
-        history_len=int(wm_cfg.history_len),
-        num_patches=num_patches,
-        token_dim=token_dim,
-        num_layers=int(wm_cfg.transformer.num_layers),
-        num_heads=int(wm_cfg.transformer.num_heads),
-        dropout=float(wm_cfg.transformer.dropout),
-        conditioning_mode=str(getattr(wm_cfg.conditioning, "mode", "adaln")),
-        action_input_mode=str(getattr(wm_cfg.conditioning, "action_input_mode", "explicit_token_concat")),
-    ).to(device)
+    num_patches, token_dim = resolve_patch_layout(wm_cfg=wm_cfg)
+    flow_cfg = wm_cfg.get("flow_matching", train_cfg.get("flow_matching", {}))
+    wm_model = build_world_model(
+        wm_cfg=wm_cfg,
+        train_cfg=train_cfg,
+        action_dim=int(dataset_cfg.action_dim),
+        device=device,
+    )
     wm_model.load_state_dict(torch.load(wm_ckpt_path, map_location=device))
     wm_model.eval()
 
@@ -221,7 +233,7 @@ def main(cfg: DictConfig) -> None:
     if has_idm:
         idm_model = InverseDynamicsModel(
             latent_dim=int(wm_cfg.latent_dim),
-            action_dim=int(wm_cfg.action_dim),
+            action_dim=int(dataset_cfg.action_dim),
             hidden_dim=int(wm_cfg.inverse_dynamics.hidden_dim),
             history_len=int(wm_cfg.history_len),
             num_patches=num_patches,
@@ -231,7 +243,7 @@ def main(cfg: DictConfig) -> None:
             dropout=float(wm_cfg.inverse_dynamics.dropout),
         ).to(device)
         action_mapper = build_action_mapper(
-            input_dim=int(wm_cfg.action_dim),
+            input_dim=int(dataset_cfg.action_dim),
             output_dim=int(dataset_cfg.action_dim),
             hidden_dim=int(wm_cfg.inverse_dynamics.hidden_dim),
         ).to(device)
@@ -250,7 +262,7 @@ def main(cfg: DictConfig) -> None:
     tracker = init_tracker(
         task_name="evaluate_wm",
         config={
-            "rollout_steps": int(eval_cfg.rollout_steps),
+            "temporal_stride": int(eval_temporal_stride),
             "batch_size": int(eval_cfg.batch_size),
             "num_workers": int(eval_cfg.num_workers),
             "theta_div": theta_div,
@@ -263,7 +275,7 @@ def main(cfg: DictConfig) -> None:
         [
             ("device", str(device)),
             ("dataset_size", str(len(dataset))),
-            ("rollout_steps", str(eval_cfg.rollout_steps)),
+            ("temporal_stride", str(eval_temporal_stride)),
             ("run_dir", str(run_dir)),
             ("wm_ckpt", str(wm_ckpt_path)),
         ],
@@ -279,9 +291,9 @@ def main(cfg: DictConfig) -> None:
     latent_var_min_sum = 0.0
     latent_mean_norm_sum = 0.0
     latent_cov_trace_sum = 0.0
-    drift_fd_sum = np.zeros(int(eval_cfg.rollout_steps), dtype=np.float64)
-    drift_cd_sum = np.zeros(int(eval_cfg.rollout_steps), dtype=np.float64)
-    drift_counts = np.zeros(int(eval_cfg.rollout_steps), dtype=np.int64)
+    drift_fd_sum = np.zeros(int(eval_temporal_stride), dtype=np.float64)
+    drift_cd_sum = np.zeros(int(eval_temporal_stride), dtype=np.float64)
+    drift_counts = np.zeros(int(eval_temporal_stride), dtype=np.int64)
     divergence_scores: list[float] = []
     env_context_list: list[str] = []
     num_samples_total = 0
@@ -315,20 +327,26 @@ def main(cfg: DictConfig) -> None:
                 latent_mean_norm_sum += latent_mean_norm * batch_size
                 latent_cov_trace_sum += latent_cov_trace * batch_size
 
-                rollout_z_history = z_history
-                rollout_action_history = action_history.clone()
-                for step_idx in range(int(eval_cfg.rollout_steps)):
-                    pred_z = wm_model.predict_next(rollout_z_history, rollout_action_history)
+                # 每步监督后用对应 GT latent 校准 history window，避免纯 predicted latent rollout。
+                teacher_z_history = z_history.clone()
+                teacher_action_history = action_history.clone()
+                rollout_horizon = int(z_future.size(1))
+                for step_idx in range(rollout_horizon):
+                    teacher_action_history[:, -1, :] = gt_action_future[:, step_idx, :]
+                    pred_z = wm_model.predict_next(teacher_z_history, teacher_action_history)
                     target_z = z_future[:, step_idx, :]
                     step_fd = torch.norm((pred_z - target_z).reshape(pred_z.size(0), -1), dim=-1).mean()
                     step_cd = _cosine_distance(pred_z, target_z).mean()
                     drift_fd_sum[step_idx] += _safe_float(step_fd) * batch_size
                     drift_cd_sum[step_idx] += _safe_float(step_cd) * batch_size
                     drift_counts[step_idx] += batch_size
-                    rollout_z_history = torch.cat([rollout_z_history[:, 1:, ...], pred_z.unsqueeze(1)], dim=1)
-                    if step_idx < int(eval_cfg.rollout_steps) - 1:
-                        rollout_action_history = torch.cat(
-                            [rollout_action_history[:, 1:, :], gt_action_future[:, step_idx, :].unsqueeze(1)],
+                    teacher_z_history = torch.cat(
+                        [teacher_z_history[:, 1:, ...], z_future[:, step_idx, :].unsqueeze(1)],
+                        dim=1,
+                    )
+                    if step_idx < rollout_horizon - 1:
+                        teacher_action_history = torch.cat(
+                            [teacher_action_history[:, 1:, :], gt_action_future[:, step_idx, :].unsqueeze(1)],
                             dim=1,
                         )
 
@@ -338,6 +356,8 @@ def main(cfg: DictConfig) -> None:
                     action_history=action_history,
                     noise_scale=float(calib_cfg.noise_scale),
                     num_samples=int(calib_cfg.num_samples),
+                    solver=str(getattr(flow_cfg, "solver", "heun")),
+                    num_steps=int(getattr(flow_cfg, "num_steps", 16)),
                 )
                 divergence_scores.extend(div.detach().cpu().tolist())
                 env_context_list.extend([str(x) for x in env_context])
@@ -370,13 +390,13 @@ def main(cfg: DictConfig) -> None:
 
     drift_fd = [
         float(drift_fd_sum[i] / max(1, int(drift_counts[i])))
-        for i in range(int(eval_cfg.rollout_steps))
+        for i in range(int(eval_temporal_stride))
     ]
     drift_cd = [
         float(drift_cd_sum[i] / max(1, int(drift_counts[i])))
-        for i in range(int(eval_cfg.rollout_steps))
+        for i in range(int(eval_temporal_stride))
     ]
-    steps = list(range(1, int(eval_cfg.rollout_steps) + 1))
+    steps = list(range(1, int(eval_temporal_stride) + 1))
 
     metrics: dict[str, Any] = {
         "schema_version": "1.0.0",

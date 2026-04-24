@@ -2,24 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import hydra
 from omegaconf import DictConfig
 
-from src.train.latent_cache import build_latent_cache_path, build_wm_dataset_with_cache, resolve_manifest_path
+from src.train.latent_cache import build_latent_cache_path, build_wm_dataset_with_cache
+from src.train.manifest_resolver import resolve_manifest_for_split
 from src.utils.console import progress_context, show_kv_table, success
 from src.utils.env import load_project_env
 from src.utils.seed import set_seed
+from src.wm.factory import resolve_patch_layout
 from src.wm.encoders import build_wm_image_encoder
-
-
-def _resolve_patch_layout(wm_cfg: DictConfig) -> tuple[int, int]:
-    num_patches = int(getattr(wm_cfg.encoder, "num_patches", 0))
-    latent_dim = int(wm_cfg.latent_dim)
-    if num_patches <= 0:
-        return 0, 0
-    if latent_dim % num_patches != 0:
-        raise ValueError(f"wm.latent_dim 必须能被 num_patches 整除: {latent_dim} / {num_patches}")
-    return num_patches, latent_dim // num_patches
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
@@ -29,8 +23,20 @@ def main(cfg: DictConfig) -> None:
     train_cfg = cfg.pipeline.train
     dataset_cfg = cfg.dataset
     wm_cfg = cfg.wm
-    num_patches, token_dim = _resolve_patch_layout(wm_cfg=wm_cfg)
-    resolved_manifest_path = resolve_manifest_path(str(dataset_cfg.manifest_path))
+    num_patches, token_dim = resolve_patch_layout(wm_cfg=wm_cfg, allow_zero=True)
+    manifests_cfg = dataset_cfg.get("manifests", {})
+    manifests_cfg = dict(manifests_cfg)
+    precompute_split = str(train_cfg.get("precompute_split", "train"))
+
+    def _resolve_precompute_manifest_path(split: str) -> Path:
+        return resolve_manifest_for_split(
+            manifests_cfg=manifests_cfg,
+            split=split,
+            outputs_root=str(train_cfg.operation.outputs_root),
+            dataset_name=str(dataset_cfg.name),
+        )
+
+    resolved_manifest_path = _resolve_precompute_manifest_path(precompute_split)
     image_encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
     if image_encoder is None:
         raise RuntimeError("当前 WM 配置未启用图像编码器，无需执行 latent 预编码。")
@@ -64,7 +70,7 @@ def main(cfg: DictConfig) -> None:
             latent_dim=int(wm_cfg.latent_dim),
             action_dim=int(dataset_cfg.action_dim),
             history_len=int(wm_cfg.history_len),
-            rollout_steps=1,
+            temporal_stride=1,
             image_encoder=image_encoder,
             encoder_num_workers=int(train_cfg.encoder_num_workers),
             encoder_batch_size=int(train_cfg.encoder_batch_size),

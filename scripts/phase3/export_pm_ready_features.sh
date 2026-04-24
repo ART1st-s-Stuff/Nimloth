@@ -34,4 +34,5 @@ if [[ -z "${manifest_path}" ]]; then
   exit 1
 fi
 
-python -m src.train.export_pm_ready_features wm="${wm_name}" dataset.manifest_path="${manifest_path}" "$@"
+export_split="${WM_EXPORT_SPLIT:-test}"
+python -m src.train.export_pm_ready_features wm="${wm_name}" "pipeline.train.semantic_align.export_split=${export_split}" "dataset.manifests.${export_split}=${manifest_path}" "$@"

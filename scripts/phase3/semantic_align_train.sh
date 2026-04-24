@@ -34,4 +34,5 @@ if [[ -z "${manifest_path}" ]]; then
   exit 1
 fi
 
-python -m src.train.train_semantic_align wm="${wm_name}" dataset.manifest_path="${manifest_path}" "$@"
+semantic_split="${WM_SEMANTIC_ALIGN_SPLIT:-train}"
+python -m src.train.train_semantic_align wm="${wm_name}" "pipeline.train.semantic_align.split=${semantic_split}" "dataset.manifests.${semantic_split}=${manifest_path}" "$@"

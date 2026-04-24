@@ -7,45 +7,26 @@ from pathlib import Path
 import hydra
 import torch
 from omegaconf import DictConfig
-from torch import nn
 from torch.utils.data import DataLoader
 
 from src.data.semantic_dataset import SemanticAlignDataset
+from src.train.manifest_resolver import resolve_manifest_for_split
 from src.utils.console import progress_context, show_kv_table, success
 from src.utils.env import load_project_env
 from src.utils.io import ensure_dir, write_json
-from src.utils.run_output import build_run_output_dir
 from src.utils.seed import set_seed
 from src.visualize.wandb_tracker import init_tracker
-from src.vlm.losses import info_nce_loss, temporal_consistency_loss
 from src.vlm.qwen_adapter import QwenVLMAdapter
+from src.vlm.semantic_align import DeltaProjector, SemanticAlignModel
 from src.vlm.semantic_state import SemanticStateGenerator
 from src.wm.encoders import build_wm_image_encoder
 
 
-class DeltaProjector(nn.Module):
-    """h(z_t, z_t+k) 轻量投影器。"""
-
-    def __init__(self, latent_dim: int, hidden_dim: int = 512) -> None:
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(latent_dim * 2, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, latent_dim),
-        )
-
-    def forward(self, z_t: torch.Tensor, z_tp: torch.Tensor) -> torch.Tensor:
-        return self.net(torch.cat([z_t, z_tp], dim=-1))
-
-
 def _collate_semantic_batch(batch: list[dict]) -> dict:
-    z_t = torch.stack([item["z_t"] for item in batch], dim=0)
-    z_t_pos = torch.stack([item["z_t_pos"] for item in batch], dim=0)
-    z_t_neg = torch.stack([item["z_t_neg"] for item in batch], dim=0)
     return {
-        "z_t": z_t,
-        "z_t_pos": z_t_pos,
-        "z_t_neg": z_t_neg,
+        "z_t": torch.stack([item["z_t"] for item in batch], dim=0),
+        "z_t_pos": torch.stack([item["z_t_pos"] for item in batch], dim=0),
+        "z_t_neg": torch.stack([item["z_t_neg"] for item in batch], dim=0),
         "image_path": [str(item["image_path"]) for item in batch],
         "pos_image_path": [str(item["pos_image_path"]) for item in batch],
         "task_text": [str(item["task_text"]) for item in batch],
@@ -62,13 +43,15 @@ def main(cfg: DictConfig) -> None:
     wm_cfg = cfg.wm
     vlm_cfg = cfg.vlm
     device = torch.device(str(train_cfg.device))
-    run_dir = build_run_output_dir(
-        path_segments=[
-            str(train_cfg.operation.outputs_root),
-            "semantic_align",
-            str(vlm_cfg.name),
-        ],
-    )
+    path_segments = [
+        str(train_cfg.operation.outputs_root),
+        "semantic_align",
+        str(vlm_cfg.name),
+    ]
+    force_new_run = bool(getattr(train_cfg.operation, "force_new_run", False))
+    from src.core import FileSystemModelProvider
+    model_provider = FileSystemModelProvider(path_segments=path_segments)
+    run_dir, resumed = model_provider.resolve_run_dir(force_new=force_new_run)
     tracker = init_tracker(
         task_name="train_semantic_align",
         config={
@@ -80,13 +63,28 @@ def main(cfg: DictConfig) -> None:
             "temperature": float(train_cfg.temperature),
             "temporal_weight": float(train_cfg.temporal_weight),
             "use_vlm_for_st": bool(train_cfg.use_vlm_for_st),
+            "run_resumed": resumed,
+            "force_new_run": force_new_run,
         },
     )
     image_encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
     if image_encoder is None:
         raise RuntimeError("未启用 WM 图像编码器，无法构建 Phase 3 对齐数据。")
+    manifests_cfg = dataset_cfg.get("manifests", {})
+    manifests_cfg = dict(manifests_cfg)
+    semantic_align_split = str(train_cfg.get("split", "train"))
+
+    def _resolve_semantic_manifest_path(split: str) -> Path:
+        return resolve_manifest_for_split(
+            manifests_cfg=manifests_cfg,
+            split=split,
+            outputs_root=str(train_cfg.operation.outputs_root),
+            dataset_name=str(dataset_cfg.name),
+        )
+
+    resolved_manifest = _resolve_semantic_manifest_path(semantic_align_split)
     dataset = SemanticAlignDataset(
-        manifest_path=str(dataset_cfg.manifest_path),
+        manifest_path=str(resolved_manifest),
         latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
         history_len=int(wm_cfg.history_len),
@@ -104,16 +102,24 @@ def main(cfg: DictConfig) -> None:
         num_workers=int(train_cfg.num_workers),
         collate_fn=_collate_semantic_batch,
     )
-    adapter = QwenVLMAdapter(
+    vlm_adapter = QwenVLMAdapter(
         model_name=str(vlm_cfg.model.hf_model_name),
         latent_dim=int(wm_cfg.latent_dim),
         enabled=bool(vlm_cfg.enabled and train_cfg.use_vlm_for_st),
         fallback_enabled=bool(vlm_cfg.fallback_enabled),
         max_new_tokens=int(vlm_cfg.model.max_new_tokens),
     )
-    semantic_generator = SemanticStateGenerator(vlm_adapter=adapter)
+    semantic_generator = SemanticStateGenerator(vlm_adapter=vlm_adapter)
     projector = DeltaProjector(latent_dim=int(wm_cfg.latent_dim), hidden_dim=int(wm_cfg.hidden_dim)).to(device)
     optimizer = torch.optim.Adam(projector.parameters(), lr=float(train_cfg.lr))
+    align_model = SemanticAlignModel(
+        projector=projector,
+        semantic_generator=semantic_generator,
+        optimizer=optimizer,
+        device=device,
+        temporal_weight=float(train_cfg.temporal_weight),
+    )
+    align_model._temperature = float(train_cfg.temperature)
     show_kv_table(
         "Train Semantic Align",
         [
@@ -124,77 +130,58 @@ def main(cfg: DictConfig) -> None:
             ("vlm_enabled", str(vlm_cfg.enabled and train_cfg.use_vlm_for_st)),
         ],
     )
-    projector.train()
-    epoch_loss = 0.0
-    epoch_nce = 0.0
-    epoch_temporal = 0.0
-    total_steps = max(1, int(train_cfg.epochs) * len(loader))
-    with progress_context() as progress:
-        task = progress.add_task("training_semantic_align", total=total_steps)
-        for epoch in range(int(train_cfg.epochs)):
-            running_loss = 0.0
-            running_nce = 0.0
-            running_temporal = 0.0
-            for batch_idx, batch in enumerate(loader, start=1):
-                z_t = batch["z_t"].to(device)
-                z_t_pos = batch["z_t_pos"].to(device)
-                z_t_neg = batch["z_t_neg"].to(device)
-                s_t_list: list[torch.Tensor] = []
-                s_tp1_list: list[torch.Tensor] = []
-                for i in range(z_t.size(0)):
-                    output = semantic_generator.infer(
-                        image_path=batch["image_path"][i],
-                        history_image_paths=[batch["image_path"][i]],
-                        task_text=batch["task_text"][i],
-                        env_context=batch["env_context"][i],
+    total_epochs = int(train_cfg.epochs)
+    start_epoch = 0
+    if resumed:
+        checkpoint_state = model_provider.load_checkpoint(run_dir)
+        if checkpoint_state is not None:
+            align_model.load_state(checkpoint_state)
+            start_epoch = int(checkpoint_state.get("epoch", -1)) + 1
+    model_provider.mark_running(run_dir)
+    try:
+        with progress_context() as progress:
+            task = progress.add_task("training_semantic_align", total=total_epochs * len(loader))
+            for epoch in range(start_epoch, total_epochs):
+                running_loss = 0.0
+                running_nce = 0.0
+                running_temporal = 0.0
+                for batch_idx, batch in enumerate(loader, start=1):
+                    step_metrics = align_model.train_step(batch)
+                    running_loss += step_metrics["loss"]
+                    running_nce += step_metrics["loss_nce"]
+                    running_temporal += step_metrics["loss_temporal"]
+                    progress.update(
+                        task,
+                        advance=1,
+                        description=(
+                            f"epoch={epoch + 1}/{total_epochs} "
+                            f"batch={batch_idx}/{len(loader)} loss={step_metrics['loss']:.6f}"
+                        ),
                     )
-                    next_output = semantic_generator.infer(
-                        image_path=batch["pos_image_path"][i],
-                        history_image_paths=[batch["image_path"][i], batch["pos_image_path"][i]],
-                        task_text=batch["task_text"][i],
-                        env_context=batch["env_context"][i],
-                    )
-                    s_t_list.append(output.s_t)
-                    s_tp1_list.append(next_output.s_t)
-                s_t = torch.stack(s_t_list, dim=0).to(device)
-                s_tp1 = torch.stack(s_tp1_list, dim=0).to(device)
-                pred_positive = projector(z_t=z_t, z_tp=z_t_pos)
-                pred_negative = projector(z_t=z_t, z_tp=z_t_neg)
-                loss_nce = info_nce_loss(
-                    anchor=s_t,
-                    positive=pred_positive,
-                    negatives=pred_negative,
-                    temperature=float(train_cfg.temperature),
+                avg_loss = running_loss / max(1, len(loader))
+                avg_nce = running_nce / max(1, len(loader))
+                avg_temporal = running_temporal / max(1, len(loader))
+                tracker.log_metrics(
+                    {
+                        "train/loss": avg_loss,
+                        "train/loss_nce": avg_nce,
+                        "train/loss_temporal": avg_temporal,
+                        "train/epoch": epoch,
+                    },
+                    step=epoch,
                 )
-                loss_temporal = temporal_consistency_loss(s_t=s_t, s_tp1=s_tp1)
-                loss = loss_nce + float(train_cfg.temporal_weight) * loss_temporal
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(projector.parameters(), 1.0)
-                optimizer.step()
-                running_loss += float(loss.item())
-                running_nce += float(loss_nce.item())
-                running_temporal += float(loss_temporal.item())
-                progress.update(
-                    task,
-                    advance=1,
-                    description=(
-                        f"epoch={epoch + 1}/{int(train_cfg.epochs)} "
-                        f"batch={batch_idx}/{len(loader)} loss={float(loss.item()):.6f}"
-                    ),
+                model_provider.save_checkpoint(
+                    run_dir=run_dir,
+                    state={"epoch": epoch, **align_model.get_state()},
                 )
-            epoch_loss = running_loss / max(1, len(loader))
-            epoch_nce = running_nce / max(1, len(loader))
-            epoch_temporal = running_temporal / max(1, len(loader))
-            tracker.log_metrics(
-                {
-                    "train/loss": epoch_loss,
-                    "train/loss_nce": epoch_nce,
-                    "train/loss_temporal": epoch_temporal,
-                    "train/epoch": epoch,
-                },
-                step=epoch,
-            )
+        epoch_loss = avg_loss
+        epoch_nce = avg_nce
+        epoch_temporal = avg_temporal
+        model_provider.mark_completed(run_dir)
+    except Exception as exc:
+        model_provider.mark_failed(run_dir, error=str(exc))
+        raise
+
     out_dir = ensure_dir(run_dir)
     ckpt_path = Path(out_dir) / "semantic_projector.pt"
     torch.save(projector.state_dict(), ckpt_path)
@@ -205,7 +192,7 @@ def main(cfg: DictConfig) -> None:
             "loss": epoch_loss,
             "loss_nce": epoch_nce,
             "loss_temporal": epoch_temporal,
-            "vlm_init_error": adapter.init_error,
+            "vlm_init_error": vlm_adapter.init_error,
         },
     )
     tracker.log_artifact_path("semantic-align-projector", ckpt_path, artifact_type="model")

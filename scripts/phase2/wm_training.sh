@@ -6,6 +6,9 @@ hydra_args=()
 for arg in "$@"; do
   if [[ "${arg}" == "--new" ]]; then
     force_new_run="true"
+  elif [[ "${arg}" == pipeline.train.rollout_steps=* ]]; then
+    echo "[compat] 检测到废弃参数 ${arg}，自动映射为 pipeline.train.temporal_stride=${arg#*=}"
+    hydra_args+=("pipeline.train.temporal_stride=${arg#*=}")
   else
     hydra_args+=("${arg}")
   fi
@@ -47,7 +50,7 @@ fi
 #   ./scripts/phase2/wm_training.sh pipeline.train.training_mode=fully_supervised
 python -m src.train.train_wm \
   wm="${wm_name}" \
-  dataset.manifest_path="${manifest_path}" \
+  dataset.manifests.train="${manifest_path}" \
   pipeline.train.operation.force_new_run="${force_new_run}" \
   "${hydra_args[@]}"
 

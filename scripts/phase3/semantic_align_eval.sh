@@ -6,6 +6,7 @@ collection_root="${WM_COLLECTION_ROOT:-datasets}"
 dataset_name="${WM_DATASET_NAME:-ai2thor}"
 wm_name="${WM_NAME:-cfm_dinov2m}"
 eval_ckpt_path="${SEM_ALIGN_CKPT_PATH:-models/semantic_align/qwen_vl/latest/semantic_projector.pt}"
+semantic_eval_split="${WM_SEMANTIC_ALIGN_EVAL_SPLIT:-val}"
 
 if [[ -z "${manifest_path}" ]]; then
   manifest_path="$(
@@ -37,6 +38,7 @@ fi
 
 python -m src.eval.eval_semantic_align \
   wm="${wm_name}" \
-  dataset.manifest_path="${manifest_path}" \
+  "pipeline.train.semantic_align.eval_split=${semantic_eval_split}" \
+  "dataset.manifests.${semantic_eval_split}=${manifest_path}" \
   pipeline.train.semantic_align.eval_ckpt_path="${eval_ckpt_path}" \
   "$@"

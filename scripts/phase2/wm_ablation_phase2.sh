@@ -55,7 +55,7 @@ run_case() {
   local cmd=(
     python -m src.train.train_wm
     "wm=${wm_name}"
-    "dataset.manifest_path=${manifest_path}"
+    "dataset.manifests.train=${manifest_path}"
     "pipeline.train.epochs=${epochs}"
     "pipeline.train.batch_size=${batch_size}"
     "$@"
