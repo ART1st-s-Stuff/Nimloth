@@ -12,9 +12,18 @@ from src.utils.run_output import read_run_status, resolve_training_run_dir, writ
 class WMDataProvider(DataProvider):
     """为 WM 训练提供 train/val/test 统一访问。"""
 
-    def __init__(self, *, train_loader: Iterable[Any], path_segments: list[str]) -> None:
+    def __init__(
+        self,
+        *,
+        train_loader: Iterable[Any],
+        val_loader: Iterable[Any] | None = None,
+        test_loader: Iterable[Any] | None = None,
+        path_segments: list[str] | None = None,
+    ) -> None:
         self._train_loader = train_loader
-        self._path_segments = path_segments
+        self._val_loader = val_loader if val_loader is not None else ()
+        self._test_loader = test_loader if test_loader is not None else ()
+        self._path_segments = path_segments if path_segments else []
 
     def resolve_run_dir(self, *, force_new: bool = False) -> tuple[Path, bool]:
         return resolve_training_run_dir(path_segments=self._path_segments, force_new=force_new)
@@ -35,7 +44,7 @@ class WMDataProvider(DataProvider):
         return self._train_loader
 
     def val(self) -> Iterable[Any]:
-        return ()
+        return self._val_loader
 
     def test(self) -> Iterable[Any]:
-        return ()
+        return self._test_loader

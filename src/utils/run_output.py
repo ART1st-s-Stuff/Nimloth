@@ -40,8 +40,15 @@ def _read_metadata(meta_path: Path) -> dict:
 def _write_metadata(meta_path: Path, payload: dict) -> None:
     payload["updated_at"] = _now_iso()
     tmp_path = meta_path.with_suffix(".json.tmp")
+    # 确保父目录存在（并发场景下可能已被删除）
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(meta_path)
+    # 使用 replace 原子性替换
+    try:
+        tmp_path.replace(meta_path)
+    except OSError:
+        # 极少数情况下 replace 可能失败，尝试直接写入
+        meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def refresh_run_metadata(parent_dir: str | Path) -> dict:
@@ -113,8 +120,12 @@ def write_run_status(run_dir: str | Path, status: str, **extra: object) -> Path:
     payload = {"status": status, "updated_at": _now_iso(), **extra}
     status_path = run_path / RUN_STATUS_FILE
     tmp_path = status_path.with_suffix(".json.tmp")
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(status_path)
+    try:
+        tmp_path.replace(status_path)
+    except OSError:
+        status_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return status_path
 
 

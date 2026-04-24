@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+import dataclasses as dc
 import json
+from multiprocessing import Queue
 from pathlib import Path
-import threading
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -16,7 +17,7 @@ from src.data.ai2thor_env import Ai2ThorEnvAdapter, Ai2ThorEnvConfig
 from src.data.env_adapter import EnvAdapter
 from src.data.mock_env import MockEnvAdapter, MockEnvConfig
 from src.data.schema import FrameState
-from src.utils.io import append_jsonl, ensure_dir
+from src.utils.io import append_jsonl, ensure_dir, flush_all_buffers
 
 
 @dataclass
@@ -75,6 +76,8 @@ class CollectConfig:
     ai2thor_platform: str
     ai2thor_cache_dir: str
     resume: bool
+    merge_interval_episodes: int = 0
+    ai2thor_gpu_device: int | None = None
 
 
 ACTION_SPACE = ["RandomWalk", "NavMesh", "ForcedRotate", "Done"]
@@ -167,6 +170,7 @@ def _build_env(cfg: CollectConfig) -> EnvAdapter:
                     render_instance_segmentation=cfg.render_instance_segmentation,
                     platform=cfg.ai2thor_platform,
                     cache_dir=cfg.ai2thor_cache_dir,
+                    gpu_device=cfg.ai2thor_gpu_device,
                 )
             )
         except Exception as exc:
@@ -185,7 +189,7 @@ def _collect_scene(
     cfg: CollectConfig,
     scene: str,
     worker_id: int,
-    on_sample: Callable[[], None] | None = None,
+    progress_queue: Queue | None = None,
 ) -> tuple[Path, int]:
     out_dir = ensure_dir(cfg.output_dir)
     img_dir = ensure_dir(out_dir / "images")
@@ -249,14 +253,27 @@ def _collect_scene(
         ai2thor_platform=cfg.ai2thor_platform,
         ai2thor_cache_dir=cfg.ai2thor_cache_dir,
         resume=cfg.resume,
+        ai2thor_gpu_device=cfg.ai2thor_gpu_device,
     )
     env = _build_env(scene_cfg)
     sample_count = 0
+    pending_progress = 0
+    report_interval = 32
     total_samples = cfg.num_episodes_per_scene * cfg.max_steps_per_episode
+    start_episode = min(cfg.num_episodes_per_scene, existing_count // cfg.max_steps_per_episode)
     action_probs = _validate_action_weights(cfg.action_weights)
+
+    def _report_progress(delta: int) -> None:
+        nonlocal pending_progress
+        if progress_queue is None or delta <= 0:
+            return
+        pending_progress += int(delta)
+        if pending_progress >= report_interval:
+            progress_queue.put(pending_progress)
+            pending_progress = 0
     try:
         scene_tag = scene.lower()
-        for episode_id in range(cfg.num_episodes_per_scene):
+        for episode_id in range(start_episode, cfg.num_episodes_per_scene):
             step_result = env.reset(episode_id=episode_id)
             episode_rng = np.random.default_rng(scene_cfg.seed * 1_000_003 + episode_id)
             rw_remaining_move = 0.0
@@ -462,8 +479,7 @@ def _collect_scene(
                     )
                     append_jsonl(manifest, sample.to_dict())
                     sample_count += 1
-                    if on_sample is not None:
-                        on_sample()
+                    _report_progress(1)
                     continue
                 if is_near_wall and mode == "RandomWalk":
                     avoid_draw = float(episode_rng.random())
@@ -552,7 +568,6 @@ def _collect_scene(
                         pos = step_result.metadata.get("agent_position", {})
                         dx = float(nav_target.get("x", 0.0)) - float(pos.get("x", 0.0))
                         dz = float(nav_target.get("z", 0.0)) - float(pos.get("z", 0.0))
-                        # 粗略转为朝向引导，保持实现简单可复用。
                         yaw = _clip_range(float(np.degrees(np.arctan2(dx, dz))), cfg.yaw_delta_range[0], cfg.yaw_delta_range[1])
                         move = max(float(cfg.move_ahead_range[0]), min(float(cfg.move_ahead_range[1]), float(np.hypot(dx, dz))))
                 elif mode == "ForcedRotate":
@@ -581,7 +596,6 @@ def _collect_scene(
                 elif cfg.pitch_control_enable and abs(agent_horizon) <= cfg.pitch_control_safe_band_deg:
                     pitch_control_active = False
                 if sample_index < existing_count:
-                    # 断点续跑时需要回放历史动作以恢复环境状态。
                     step_result = env.step(action=action, step_id=step_id)
                     continue
                 step_result = env.step(action=action, step_id=step_id)
@@ -619,9 +633,15 @@ def _collect_scene(
                 )
                 append_jsonl(manifest, sample.to_dict())
                 sample_count += 1
-                if on_sample is not None:
-                    on_sample()
+                _report_progress(1)
+            # 中间合并：每完成 N 个 episode 追加到最终 manifest。
+            if cfg.merge_interval_episodes > 0 and (episode_id + 1) % cfg.merge_interval_episodes == 0:
+                out_dir = ensure_dir(cfg.output_dir)
+                _append_worker_manifest_to_final(out_dir, manifest, worker_id, scene)
     finally:
+        if progress_queue is not None and pending_progress > 0:
+            progress_queue.put(pending_progress)
+        flush_all_buffers()
         env.close()
     return manifest, min(existing_count + sample_count, total_samples)
 
@@ -638,8 +658,64 @@ def count_existing_samples(cfg: CollectConfig) -> int:
     return total
 
 
-def run_collection(cfg: CollectConfig, on_sample: Callable[[], None] | None = None) -> Path:
-    """执行多场景采集并输出合并 manifest。"""
+def _append_worker_manifest_to_final(out_dir: Path, worker_manifest: Path, worker_id: int, scene: str) -> None:
+    """将 worker manifest 中未合并的 episode 追加到最终 manifest 并更新跟踪文件。"""
+    if not worker_manifest.exists():
+        return
+    track_path = out_dir / f"manifest_merge_track_{worker_id}_{scene}.json"
+    last_ep = -1
+    if track_path.exists():
+        try:
+            last_ep = json.loads(track_path.read_text(encoding="utf-8")).get("last_episode", -1)
+        except Exception:
+            last_ep = -1
+
+    final_manifest = out_dir / "manifest.jsonl"
+    lines_to_append = []
+    max_ep_this_pass = last_ep
+    for line in worker_manifest.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ep = int(record.get("episode_id", -1))
+        if ep > last_ep:
+            lines_to_append.append(line)
+            if ep > max_ep_this_pass:
+                max_ep_this_pass = ep
+
+    if lines_to_append:
+        with final_manifest.open("a", encoding="utf-8") as fout:
+            for ln in lines_to_append:
+                fout.write(ln + "\n")
+        track_path.write_text(
+            json.dumps({"last_episode": max_ep_this_pass}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
+def _collect_scene_for_process(
+    scene_cfg: CollectConfig,
+    scene: str,
+    worker_id: int,
+    progress_queue: Queue | None = None,
+) -> tuple[Path, int]:
+    """独立进程调用的采集入口（顶层函数，可 pickle）。"""
+    return _collect_scene(scene_cfg, scene, worker_id, progress_queue=progress_queue)
+
+
+def run_collection(
+    cfg: CollectConfig,
+    progress_queue: Queue | None = None,
+) -> Path:
+    """执行多场景采集并输出合并 manifest。
+
+    进程池方案：每个 worker 是独立进程，无 GIL 争用。
+    progress_queue 用于向主进程推送采样进度（跨进程安全）。
+    主进程轮询该队列，实时更新进度条。
+    """
     if not cfg.scenes:
         raise RuntimeError("未配置 scene 列表：data.env.scenes 不能为空。")
     _ = _validate_action_weights(cfg.action_weights)
@@ -648,31 +724,44 @@ def run_collection(cfg: CollectConfig, on_sample: Callable[[], None] | None = No
     if final_manifest.exists():
         final_manifest.unlink()
 
-    progress_lock = threading.Lock()
-
-    def _thread_safe_on_sample() -> None:
-        if on_sample is None:
-            return
-        with progress_lock:
-            on_sample()
-
     if cfg.num_workers <= 1 or len(cfg.scenes) == 1:
         partials = [
-            _collect_scene(cfg, scene, idx, on_sample=_thread_safe_on_sample)
+            _collect_scene(cfg, scene, idx, progress_queue=progress_queue)
             for idx, scene in enumerate(cfg.scenes)
         ]
     else:
-        with ThreadPoolExecutor(max_workers=cfg.num_workers) as pool:
-            futures = [
-                pool.submit(_collect_scene, cfg, scene, idx, _thread_safe_on_sample)
-                for idx, scene in enumerate(cfg.scenes)
-            ]
-            partials = [future.result() for future in futures]
+        # 构建每个场景的子配置（排除已覆盖字段）
+        excluded = ("scenes", "seed", "num_workers")
+        fields = {
+            f.name: getattr(cfg, f.name)
+            for f in dc.fields(cfg)
+            if f.name not in excluded
+        }
+        scene_cfgs = [
+            CollectConfig(**fields, scenes=[scene], seed=cfg.seed + idx, num_workers=1)
+            for idx, scene in enumerate(cfg.scenes)
+        ]
 
-    for partial_manifest, _ in partials:
-        for line in partial_manifest.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                append_jsonl(final_manifest, data=json.loads(line))
-        partial_manifest.unlink(missing_ok=True)
+        partials = []
+        with ProcessPoolExecutor(max_workers=cfg.num_workers) as pool:
+            futures = {
+                pool.submit(_collect_scene_for_process, scene_cfgs[i], scene, i, progress_queue): (i, scene)
+                for i, scene in enumerate(cfg.scenes)
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                partials.append(result)
+                del futures[future]
+
+    interval = cfg.merge_interval_episodes
+    if interval > 0:
+        for partial_manifest, _ in partials:
+            partial_manifest.unlink(missing_ok=True)
+    else:
+        for partial_manifest, _ in partials:
+            for line in partial_manifest.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    append_jsonl(final_manifest, data=json.loads(line))
+            partial_manifest.unlink(missing_ok=True)
+        flush_all_buffers()
     return final_manifest
-

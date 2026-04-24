@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import subprocess
 from typing import Any
 
 import numpy as np
@@ -19,6 +20,22 @@ except ImportError:  # pragma: no cover - 运行时依赖
     Linux64 = None
 
 
+def _available_gpu_count() -> int:
+    """通过 nvidia-smi 探测当前可见的 GPU 数量。"""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--list-gpus"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return max(1, result.stdout.count("\n"))
+        return 1
+    except Exception:
+        return 1
+
+
 @dataclass
 class Ai2ThorEnvConfig:
     scene: str
@@ -31,6 +48,7 @@ class Ai2ThorEnvConfig:
     render_instance_segmentation: bool
     platform: str
     cache_dir: str
+    gpu_device: int | None = None
 
 
 class Ai2ThorEnvAdapter:
@@ -57,8 +75,12 @@ class Ai2ThorEnvAdapter:
             renderDepthImage=cfg.render_depth_image,
             renderInstanceSegmentation=cfg.render_instance_segmentation,
             platform=self._resolve_platform(cfg.platform),
+            gpu_device=cfg.gpu_device,
+            server_timeout=60.0,
+            server_start_timeout=120.0,
         )
         self._rng = np.random.default_rng(cfg.seed)
+        self._reachable_cache: list[dict[str, float]] | None = None
 
     def _extract_metadata(self, event: Any) -> dict[str, Any]:
         metadata = event.metadata
@@ -72,7 +94,6 @@ class Ai2ThorEnvAdapter:
         ]
         target_distance = None
         if metadata.get("objects"):
-            # 最小化实现：用首个可见物体距离近似目标距离。
             visible = [obj for obj in metadata["objects"] if obj.get("visible", False)]
             if visible:
                 target_distance = float(visible[0].get("distance", 0.0))
@@ -102,8 +123,14 @@ class Ai2ThorEnvAdapter:
         return float(np.nanmean(center))
 
     def reset(self, episode_id: int) -> StepResult:
+        # GPU 均匀分配：按 episode_id 将 worker 轮转绑定到各 GPU，
+        # 降低 96 workers 同时争抢同一 GPU 的概率，提升初始化速度。
+        if self.cfg.gpu_device is not None:
+            gpu_index = self.cfg.gpu_device
+        else:
+            gpu_index = episode_id % _available_gpu_count()
+        self.controller.gpu_device = gpu_index
         event = self.controller.reset(scene=self.cfg.scene)
-        # 每个 episode 随机初始化到可达位置，避免数据集中视角高度重复。
         reachable = self.controller.step(action="GetReachablePositions")
         candidates = reachable.metadata.get("actionReturn") or []
         if candidates:
@@ -163,11 +190,13 @@ class Ai2ThorEnvAdapter:
         return StepResult(frame=frame, metadata=step_metadata)
 
     def get_reachable_positions(self) -> list[dict[str, float]]:
+        if self._reachable_cache is not None:
+            return self._reachable_cache
         event = self.controller.step(action="GetReachablePositions")
         positions = event.metadata.get("actionReturn") or []
-        return [p for p in positions if isinstance(p, dict)]
+        self._reachable_cache = [p for p in positions if isinstance(p, dict)]
+        return self._reachable_cache
 
     def close(self) -> None:
         if self.controller is not None:
             self.controller.stop()
-
