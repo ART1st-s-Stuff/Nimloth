@@ -44,3 +44,6 @@ datasets/**
 .uv-cache/
 .cache/
 wandb/
+
+# Claude instruction
+CLAUDE.md

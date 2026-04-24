@@ -2,10 +2,12 @@
 # 读取训练与校准产物，输出 phase2_eval_metrics.json 与 phase2_eval_report.md。
 batch_size: 16
 num_workers: 0
-# 长程 recursive rollout 评估步长
-rollout_steps: 16
+# 与训练语义一致：每个样本的监督步数 K（若未显式设置，则回退到 pipeline.train.temporal_stride）
+temporal_stride: 1
 # >0 时仅评估前 N 个 batch（用于快速冒烟）
 max_eval_batches: 0
+# 使用 dataset.manifests 中哪个 split 的 manifest（与 scripts/phase2/wm_evaluate.sh 一致）
+split: val
 # 路径支持 latest 占位（默认优先 EMA）
 wm_ckpt_path: models/wm/${wm.name}/latest/wm_ema.pt
 idm_ckpt_path: models/wm/${wm.name}/latest/inverse_dynamics.pt

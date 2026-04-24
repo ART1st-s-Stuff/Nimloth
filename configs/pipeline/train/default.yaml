@@ -1,7 +1,12 @@
 # WM 训练阶段配置（phase2）
-# 说明：该文件主要控制 batch/优化器/训练模式/多步 rollout 等参数。
+# 说明：该文件主要控制 batch/优化器/训练模式/GT校准监督步数等参数。
 # 如需命令行覆盖，可使用：
-#   uv run ... pipeline.train.rollout_steps=4
+#   uv run ... pipeline.train.temporal_stride=4
+lazy_encoding: true
+# 分块模式：按 episode 分组编码，支持 encoder 与训练并行
+lazy_episode_chunk: true
+# 分块模式下，是否等待第一个 episode 编码完成后再启动训练
+lazy_wait_first_episode: true
 batch_size: 16
 epochs: 4
 lr: 0.0001
@@ -11,22 +16,22 @@ num_workers: 8
 encoder_num_workers: 8
 # 预编码 latent 的批大小
 encoder_batch_size: 64
+# precompute_wm_latents 使用的 manifest split（对应 dataset.manifests.<split>）
+precompute_split: train
 # 训练设备（cuda/cpu）
 device: cuda
 # 训练模式：unsupervised、semi_supervised 或 fully_supervised
 # fully_supervised: WM 直接使用真实动作训练，不使用 IDM 推断动作
 training_mode: fully_supervised
-# 多步自回归预测步数（=1 时退化为单步）
-rollout_steps: 4
-# 时序采样步长：可填单个整数（固定步长）或区间[min, max]（训练时随机采样）
-# 先提升到 4 以增强时序变化信号；若仍偏弱可进一步尝试 8
-temporal_stride: 1
+# 每个样本的监督步数（K）：可填单个整数（固定 K）或区间[min, max]（初始化时采样一个固定 K）
+# 例如 K=2 时，监督 z_{t+history_len} 与 z_{t+history_len+1}
+temporal_stride: 4
 # 半监督下 IDM loss 的加权系数
 semi_supervised_weight: 1.0
 # WM 重建损失加权系数
 reconstruction_weight: 1.0
 # 梯度裁剪上限（L2 norm）
-grad_clip_norm: 1.0
+grad_clip_norm: 5.0
 # true 时 WM 分支不把梯度反传到 IDM（分离传播）
 detach_idm_in_wm: false
 # WM 学习率（null 时回退到 lr）
@@ -37,6 +42,11 @@ idm_lr: null
 weight_decay: 0.01
 # 线性学习率 warmup 步数（0 表示关闭）
 lr_warmup_steps: 1000
+# Cosine Annealing 总步数（0 表示自动推断 = epochs * batches_per_epoch）
+# warmup 完成后从 base_lr 沿余弦曲线下降到 min_lr_ratio * base_lr
+cos_annealing_steps: 0
+# Cosine Annealing 最小学习率比例（最终 lr = base_lr * ratio）
+cos_min_lr_ratio: 0.1
 # EMA（仅对 WM 主模型）
 ema:
   enabled: true
@@ -45,7 +55,7 @@ ema:
 log_every_n_steps: 10
 sigreg:
   # 是否启用 LeWM 论文风格 SIGReg
-  enabled: false
+  enabled: true
   # 正则权重 λ
   weight: 0.01
   # 随机投影数 M
@@ -69,6 +79,12 @@ operation:
   # 任务标识
   task: wm_training
 semantic_align:
+  # 训练/导出默认读取的 manifest split（train_semantic_align / export_pm_ready_features）
+  split: train
+  # eval_semantic_align 默认 manifest split
+  eval_split: val
+  # export_pm_ready_features 默认 manifest split（可与 split 独立配置）
+  export_split: test
   # 对齐训练批大小
   batch_size: 8
   # 训练轮数
@@ -99,3 +115,11 @@ semantic_align:
     outputs_root: models
     phase: phase3
     task: semantic_align
+flow_matching:
+  # 可通过命令行覆盖并映射到 wm.flow_matching.*（便于统一管理）
+  variant: rectified_flow
+  x0_source: current_latent
+  solver: heun
+  num_steps: 16
+  t_eps: 0.001
+  noise_std: 1.0
