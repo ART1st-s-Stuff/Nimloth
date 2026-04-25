@@ -225,7 +225,13 @@ def build_wm_image_encoder(wm_cfg: Any) -> WMImageEncoder | None:
             model_name=str(getattr(encoder_cfg, "backbone_name", "dinov2_vits14")),
             token_strategy=str(getattr(encoder_cfg, "token_strategy", "patch_mean")),
         )
-    if encoder_name in {"cfm_qwen25vl_8b", "cfm_qwen25vl_8b_frozen", "cfm_dinov2m_qwen25vl_8b"}:
+    if encoder_name in {
+        "cfm_qwen25vl_8b",
+        "cfm_qwen25vl_8b_frozen",
+        "cfm_dinov2m_qwen25vl_8b",
+        "lewm_qwen25vl_8b",
+        "lewm_dinov2m_qwen25vl_8b",
+    }:
         return PlaceholderEncoder(latent_dim=latent_dim, name=encoder_name)
     raise ValueError(f"未知 WM encoder 配置: {encoder_name}")
 

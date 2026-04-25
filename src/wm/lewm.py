@@ -27,19 +27,36 @@ from src.core.interfaces import Model
 
 
 class SIGReg(nn.Module):
-    """Sketch Isotropic Gaussian Regularizer（单 GPU）。"""
+    """Sketch Isotropic Gaussian Regularizer（单 GPU）。
 
-    def __init__(self, knots: int = 17, num_proj: int = 256) -> None:
+    参数:
+        num_quadrature_points: 积分节点数量（类似原来的 knots）
+        num_proj: 随机投影数量
+        t_min: Epps-Pulley 积分下界
+        t_max: Epps-Pulley 积分上界
+        kernel_sigma: Gaussian 窗的带宽参数
+    """
+
+    def __init__(
+        self,
+        num_quadrature_points: int = 16,
+        num_proj: int = 256,
+        t_min: float = 0.2,
+        t_max: float = 4.0,
+        kernel_sigma: float = 1.0,
+    ) -> None:
         super().__init__()
         self.num_proj = num_proj
-        t = torch.linspace(0, 3, knots, dtype=torch.float32)
-        dt = 3 / (knots - 1)
+        knots = num_quadrature_points
+        t = torch.linspace(t_min, t_max, knots, dtype=torch.float32)
+        dt = (t_max - t_min) / (knots - 1)
         weights = torch.full((knots,), 2 * dt, dtype=torch.float32)
         weights[[0, -1]] = dt
         window = torch.exp(-t.square() / 2.0)
+        kernel = torch.exp(-t.square() / (2.0 * kernel_sigma * kernel_sigma))
         self.register_buffer("t", t)
         self.register_buffer("phi", window)
-        self.register_buffer("weights", weights * window)
+        self.register_buffer("weights", weights * kernel)
 
     def forward(self, proj: torch.Tensor) -> torch.Tensor:
         """
@@ -218,6 +235,10 @@ class LeWMWorldModel(nn.Module):
         emb_dropout: float = 0.0,
         sigreg_knots: int = 17,
         sigreg_num_proj: int = 256,
+        sigreg_num_quadrature_points: int = 16,
+        sigreg_t_min: float = 0.2,
+        sigreg_t_max: float = 4.0,
+        sigreg_kernel_sigma: float = 1.0,
     ) -> None:
         super().__init__()
         self.history_len = history_len
@@ -257,7 +278,13 @@ class LeWMWorldModel(nn.Module):
             block_class=_LeWMConditionalBlock,
         )
 
-        self.sigreg = SIGReg(knots=sigreg_knots, num_proj=sigreg_num_proj)
+        self.sigreg = SIGReg(
+            num_quadrature_points=sigreg_num_quadrature_points,
+            num_proj=sigreg_num_proj,
+            t_min=sigreg_t_min,
+            t_max=sigreg_t_max,
+            kernel_sigma=sigreg_kernel_sigma,
+        )
 
     def _validate_inputs(
         self, z_history: torch.Tensor, action_history: torch.Tensor
