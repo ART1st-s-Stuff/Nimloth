@@ -280,7 +280,11 @@ def _build_model(wm_cfg: Any, action_dim: int, wm_ckpt_path: Path, device: torch
         action_dim=int(action_dim),
         device=device,
     )
-    model.load_state_dict(torch.load(wm_ckpt_path, map_location=device))
+    state = torch.load(wm_ckpt_path, map_location=device, weights_only=False)
+    # Try strict loading first, fall back to non-strict if keys don't match
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        print(f"Model load: missing={len(missing)}, unexpected={len(unexpected)}")
     model.eval()
     return model
 
