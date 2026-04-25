@@ -83,7 +83,7 @@ def _start_wm_training(
 
     if wm_name in _WM_TRAIN_PROCESS:
         proc_info = _WM_TRAIN_PROCESS[wm_name]
-        if proc_info["process"].is_alive():
+        if proc_info["process"].poll() is None:
             return f"{wm_name} 已在训练中 (PID={proc_info['pid']})", "", _get_active_trainings_table()
 
     # Build command
@@ -174,7 +174,7 @@ def _get_active_trainings_table() -> list[list[str]]:
     rows = []
     for wm_name, info in _WM_TRAIN_PROCESS.items():
         proc = info["process"]
-        status = "running" if proc.is_alive() else "finished"
+        status = "running" if proc.poll() is None else "finished"
         rows.append([
             wm_name,
             info.get("cmd", "").split("wm=")[-1].split()[0] if "wm=" in info.get("cmd", "") else wm_name,
