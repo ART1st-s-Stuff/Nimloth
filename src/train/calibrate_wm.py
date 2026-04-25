@@ -60,7 +60,7 @@ def main(cfg: DictConfig) -> None:
     resolved_manifest = _resolve_calib_manifest_path(calib_split)
     image_encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
     dataset, _ = build_wm_dataset_with_cache(
-        manifest_path=resolved_manifest,
+        run_dir=resolved_manifest,
         wm_name=str(wm_cfg.name),
         latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
