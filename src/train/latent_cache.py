@@ -11,10 +11,36 @@ from src.wm.encoders import WMImageEncoder
 
 
 def resolve_manifest_path(manifest_path: str) -> Path:
-    """解析 manifest 路径，支持 latest 软链接模式。"""
+    """解析 manifest 路径，支持 latest 软链接模式和 metadata.json latest 指针。
+
+    支持以下输入格式：
+    - 指向 run 目录的路径（如 datasets/ai2thor/train/2026-04-24_14-47-16）
+    - 指向 split 目录的路径（如 datasets/ai2thor/train），此时从 metadata.json 获取最新 run
+    - 包含 latest 的路径，自动解析 latest 指向
+    """
     candidate = Path(manifest_path)
+
+    # 如果是目录，检查是否是 run 目录（包含 manifest_worker_*.jsonl）
+    if candidate.is_dir():
+        # 检查是否已经是 run 目录
+        if any(p.match("manifest_worker_*.jsonl") for p in candidate.iterdir()):
+            return candidate
+        # 检查 metadata.json 获取 latest run
+        meta_path = candidate / "metadata.json"
+        if meta_path.exists():
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            latest = metadata.get("latest")
+            if isinstance(latest, str):
+                latest_dir = candidate / latest
+                if latest_dir.is_dir() and latest_dir.exists():
+                    return latest_dir
+        return candidate
+
+    # 如果是文件且存在，直接返回
     if candidate.exists():
         return candidate
+
+    # 处理包含 latest 的路径
     parts = candidate.parts
     if len(parts) >= 3 and parts[-2] == "latest":
         group_dir = Path(*parts[:-2])
