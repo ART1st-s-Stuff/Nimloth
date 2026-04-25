@@ -191,7 +191,7 @@ def main(cfg: DictConfig) -> None:
 
     image_encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
     dataset, _ = build_wm_dataset_with_cache(
-        manifest_path=manifest_path,
+        run_dir=manifest_path,
         wm_name=str(wm_cfg.name),
         latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
