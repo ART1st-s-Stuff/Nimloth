@@ -74,7 +74,7 @@ def _start_wm_training(
     epochs: float,
     batch_size: float,
     overrides_json: str,
-) -> tuple[str, str, list[list[str]]]:
+) -> tuple[float, str, str, go.Figure, list[list[str]]]:
     """启动 WM 训练子进程。"""
     global _WM_TRAIN_PROCESS, _WM_TRAIN_LOGS
 
@@ -93,8 +93,8 @@ def _start_wm_training(
 
     cmd = ["uv", "run", "python", "-m", "src.train.train_wm", f"wm={wm_name}"]
     cmd += [f"dataset.manifests.train=datasets/ai2thor/{split}"]
-    cmd += [f"train.epochs={int(epochs)}"]
-    cmd += [f"train.batch_size={int(batch_size)}"]
+    cmd += [f"pipeline.train.epochs={int(epochs)}"]
+    cmd += [f"pipeline.train.batch_size={int(batch_size)}"]
 
     # Parse overrides
     if overrides_json.strip():
@@ -103,7 +103,7 @@ def _start_wm_training(
             for k, v in overrides.items():
                 cmd.append(f"{k}={v}")
         except json.JSONDecodeError as e:
-            return f"JSON 解析错误: {e}", "", _get_active_trainings_table()
+            return 0.0, f"JSON 解析错误: {e}", "", _build_empty_loss_plot(), _get_active_trainings_table()
 
     # Start subprocess
     log_file = Path(f".cache/visualize/train_{wm_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
@@ -142,20 +142,62 @@ def _start_wm_training(
     thread = threading.Thread(target=_read_log, daemon=True)
     thread.start()
 
-    return f"已启动 {wm_name} (PID={proc.pid})\n命令: {' '.join(cmd)}", "", _get_active_trainings_table()
+    return (
+        0.0,
+        f"已启动 {wm_name} (PID={proc.pid})\n命令: {' '.join(cmd)}\n查看日志: {log_file}",
+        "", _build_empty_loss_plot(), _get_active_trainings_table()
+    )
 
 
-def _stop_wm_training(wm_name: str) -> tuple[str, str, list[list[str]]]:
+def _poll_training_status() -> tuple[float, str, str, go.Figure]:
+    """轮询训练状态，返回进度条、日志和 loss 曲线。"""
+    global _WM_TRAIN_PROCESS, _WM_TRAIN_LOGS
+
+    if not _WM_TRAIN_PROCESS:
+        return 0.0, "无训练进行", "", _build_empty_loss_plot()
+
+    # Find the first active training
+    active_wm = None
+    for wm_name in _WM_TRAIN_PROCESS:
+        if _WM_TRAIN_PROCESS[wm_name]["process"].poll() is None:
+            active_wm = wm_name
+            break
+
+    if not active_wm:
+        return 0.0, "训练已结束", "", _build_empty_loss_plot()
+
+    logs = _WM_TRAIN_LOGS.get(active_wm, [])
+    log_text = "\n".join(logs[-100:]) if logs else ""
+
+    # Parse progress from logs
+    progress = 0.0
+    status_text = f"训练中: {active_wm}"
+
+    for line in reversed(logs):
+        if "global_step" in line.lower() or "step" in line.lower():
+            # Try to extract progress
+            import re
+            match = re.search(r"(\d+)%", line)
+            if match:
+                progress = float(match.group(1))
+                break
+        if "epoch" in line.lower():
+            status_text = line[:100]
+
+    return progress, status_text, log_text, _build_loss_plot_from_logs(logs)
+
+
+def _stop_wm_training(wm_name: str) -> tuple[float, str, str, go.Figure, list[list[str]]]:
     """停止 WM 训练子进程。"""
     global _WM_TRAIN_PROCESS, _WM_TRAIN_LOGS
 
     if wm_name not in _WM_TRAIN_PROCESS:
-        return f"{wm_name} 未在训练", "", _get_active_trainings_table()
+        return 0.0, f"{wm_name} 未在训练", "", _build_empty_loss_plot(), _get_active_trainings_table()
 
     proc_info = _WM_TRAIN_PROCESS[wm_name]
     proc = proc_info["process"]
 
-    if proc.is_alive():
+    if proc.poll() is None:
         proc.terminate()
         try:
             proc.wait(timeout=10)
@@ -166,7 +208,7 @@ def _stop_wm_training(wm_name: str) -> tuple[str, str, list[list[str]]]:
     if wm_name in _WM_TRAIN_LOGS:
         del _WM_TRAIN_LOGS[wm_name]
 
-    return f"已停止 {wm_name}", "", _get_active_trainings_table()
+    return 0.0, f"已停止 {wm_name}", "", _build_empty_loss_plot(), _get_active_trainings_table()
 
 
 def _get_active_trainings_table() -> list[list[str]]:
@@ -183,6 +225,44 @@ def _get_active_trainings_table() -> list[list[str]]:
             str(info["pid"]),
         ])
     return rows
+
+
+def _build_empty_loss_plot() -> go.Figure:
+    """构建空的 Loss 曲线图。"""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[], y=[], mode="markers+lines", name="loss"))
+    fig.update_layout(title="Loss 曲线（等待数据...）", xaxis_title="step", yaxis_title="loss")
+    return fig
+
+
+def _build_loss_plot_from_logs(logs: list[str]) -> go.Figure:
+    """从日志中解析 loss 数据并绘制曲线。"""
+    import re
+
+    fig = go.Figure()
+    steps = []
+    losses = []
+
+    for line in logs:
+        # Try to parse loss values from log lines
+        # Common patterns: "step=X loss=Y" or "loss: X.XX"
+        step_match = re.search(r"(?:global_)?step[=:]?\s*(\d+)", line, re.IGNORECASE)
+        loss_match = re.search(r"(?:loss|loss_recon)[=:]?\s*([0-9.]+)", line, re.IGNORECASE)
+        if step_match and loss_match:
+            steps.append(int(step_match.group(1)))
+            try:
+                losses.append(float(loss_match.group(1)))
+            except ValueError:
+                pass
+
+    if steps and losses:
+        fig.add_trace(go.Scatter(x=steps, y=losses, mode="markers+lines", name="loss"))
+        fig.update_layout(title=f"Loss 曲线（已解析 {len(losses)} 个点）", xaxis_title="step", yaxis_title="loss")
+    else:
+        fig.add_trace(go.Scatter(x=[], y=[], mode="markers+lines", name="loss"))
+        fig.update_layout(title="Loss 曲线（解析中...）", xaxis_title="step", yaxis_title="loss")
+
+    return fig
 
 
 def _configure_gradio_temp_dir() -> None:
@@ -1326,8 +1406,10 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                             stop_train_btn = gr.Button("停止训练", variant="stop", scale=0, min_width=100)
 
                     with gr.Accordion("训练状态", open=True):
-                        train_status = gr.Textbox(label="", value="未开始训练", lines=8, show_label=False)
-                        train_log = gr.Textbox(label="实时日志", value="", lines=12, max_lines=500, show_label=False)
+                        train_progress = gr.Slider(minimum=0, maximum=100, value=0, step=1, label="进度（%）", interactive=False)
+                        train_status = gr.Textbox(label="状态", value="未开始训练", lines=3, show_label=False)
+                        train_log = gr.Textbox(label="实时日志", value="", lines=8, max_lines=500, show_label=False)
+                        train_loss_plot = gr.Plot(label="Loss 曲线")
 
                     with gr.Accordion("已启动的训练", open=False):
                         active_trainings = gr.Dataframe(
@@ -1344,12 +1426,20 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                     start_train_btn.click(
                         fn=_start_wm_training,
                         inputs=[wm_config_selector, train_split_selector, train_epochs, train_batch_size, train_overrides],
-                        outputs=[train_status, train_log, active_trainings],
+                        outputs=[train_progress, train_status, train_log, train_loss_plot, active_trainings],
                     )
                     stop_train_btn.click(
                         fn=_stop_wm_training,
                         inputs=[wm_config_selector],
-                        outputs=[train_status, train_log, active_trainings],
+                        outputs=[train_progress, train_status, train_log, train_loss_plot, active_trainings],
+                    )
+                    # Manual refresh training status
+                    with gr.Row():
+                        refresh_train_btn = gr.Button("刷新状态", variant="secondary", scale=0, min_width=100)
+                    refresh_train_btn.click(
+                        fn=_poll_training_status,
+                        inputs=[],
+                        outputs=[train_progress, train_status, train_log, train_loss_plot],
                     )
 
                 with gr.Group(visible=False) as misc_panel:
