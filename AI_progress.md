@@ -79,10 +79,12 @@
 
 | 配置 | 训练状态 | 校准状态 | 评估状态 | 目录 |
 |------|---------|---------|---------|------|
-| cfm_dinov2m | ✅ 已完成 | 需校准 | 需评估 | 2026-04-23_14-48-14 |
-| lewm_dinov2m | ✅ 已完成 | 需校准 | 需评估 | 2026-04-24_21-57-26 |
-| cfm_dinov2m_qwen25vl_8b | ⏳ 待训练 | - | - | - |
-| lewm_dinov2m_qwen25vl_8b | ⏳ 待训练 | - | - | - |
+| cfm_dinov2m | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 | 2026-04-23_14-48-14 |
+| lewm_dinov2m | ✅ 已完成 | 🔄 校准中 | 需评估 | 2026-04-24_21-57-26 |
+| cfm_dinov2m_qwen25vl_8b | ❌ 训练失败（Qwen encoder未实现） | - | - | - |
+| lewm_dinov2m_qwen25vl_8b | ❌ 训练失败（Qwen encoder未实现） | - | - | - |
+
+**注意**: Qwen-based encoders (cfm_dinov2m_qwen25vl_8b, lewm_dinov2m_qwen25vl_8b) 尚未实现，使用 PlaceholderEncoder 占位。需先实现 Qwen2.5-VL 编码器才能训练这些配置。
 
 ### 已知评估指标（cfm_dinov2m，来自2026-04-23）
 - `wm_mse`: 0.346026
