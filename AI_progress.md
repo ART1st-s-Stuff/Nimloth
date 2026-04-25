@@ -73,7 +73,23 @@
 ### 当前状态
 - **已完成（最小闭环）**：训练与校准主链路可运行并产出模型与阈值。
 - **已完成（LeWM 扩展）**：SIGReg 超参数可配置，支持混合编码器配置。
-- **进行中（对比实验）**：需要训练和比较 4 种配置：cfm_dinov2m、lewm_dinov2m、cfm_dinov2m_qwen25vl_8b、lewm_dinov2m_qwen25vl_8b。
+- **进行中（对比实验）**：训练和比较 4 种配置：cfm_dinov2m、lewm_dinov2m、cfm_dinov2m_qwen25vl_8b、lewm_dinov2m_qwen25vl_8b。
+
+### 4种配置对比实验状态（2026-04-25）
+
+| 配置 | 训练状态 | 校准状态 | 评估状态 | 目录 |
+|------|---------|---------|---------|------|
+| cfm_dinov2m | ✅ 已完成 | 需校准 | 需评估 | 2026-04-23_14-48-14 |
+| lewm_dinov2m | ✅ 已完成 | 需校准 | 需评估 | 2026-04-24_21-57-26 |
+| cfm_dinov2m_qwen25vl_8b | ⏳ 待训练 | - | - | - |
+| lewm_dinov2m_qwen25vl_8b | ⏳ 待训练 | - | - | - |
+
+### 已知评估指标（cfm_dinov2m，来自2026-04-23）
+- `wm_mse`: 0.346026
+- `latent_fd_mean`: 41.345353
+- `latent_cd_mean`: 0.044785
+- `divergence_auroc`: 0.780230
+- `theta_div`: 3.909910
 
 ### 本次训练参数与结果（2026-04-23）
 - 训练产物目录：`models/wm/cfm_dinov2m/2026-04-23_00-32-53`
