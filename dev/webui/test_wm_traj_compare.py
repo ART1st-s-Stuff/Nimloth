@@ -51,16 +51,52 @@ def _resolve_test_dataset_dir() -> Path:
     raise RuntimeError("No valid test dataset found")
 
 
-def _load_test_dataset_rows(limit: int = 0) -> list[dict[str, Any]]:
-    """从 test 数据集加载样本行。"""
-    test_dir = _resolve_test_dataset_dir()
+def _load_test_dataset_rows(split: str = "test", scene_filter: list[str] | None = None, limit: int = 0) -> list[dict[str, Any]]:
+    """从指定 split 的数据集加载样本行。
+
+    Args:
+        split: 数据集 split（test/val/train）
+        scene_filter: scene 过滤列表，None 表示不过滤
+        limit: 最大行数，0 表示不限制
+    """
+    test_base = Path("datasets/ai2thor") / split
+    if not test_base.exists():
+        raise RuntimeError(f"Dataset split not found: {test_base}")
+
+    # 解析数据集目录
+    metadata_path = test_base / "metadata.json"
+    if metadata_path.exists():
+        import json
+        meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+        latest = meta.get("latest")
+        if isinstance(latest, str):
+            latest_dir = test_base / latest
+            if latest_dir.is_dir():
+                dataset_dir = latest_dir
+            else:
+                candidates = [p for p in test_base.iterdir() if p.is_dir() and p.name.startswith("2026")]
+                dataset_dir = max(candidates, key=lambda p: p.stat().st_mtime) if candidates else test_base
+        else:
+            candidates = [p for p in test_base.iterdir() if p.is_dir() and p.name.startswith("2026")]
+            dataset_dir = max(candidates, key=lambda p: p.stat().st_mtime) if candidates else test_base
+    else:
+        candidates = [p for p in test_base.iterdir() if p.is_dir() and p.name.startswith("2026")]
+        dataset_dir = max(candidates, key=lambda p: p.stat().st_mtime) if candidates else test_base
+
     rows: list[dict[str, Any]] = []
-    for manifest_file in sorted(test_dir.glob("manifest_worker_*.jsonl")):
+    for manifest_file in sorted(dataset_dir.glob("manifest_worker_*.jsonl")):
         for line in manifest_file.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                rows.append(json.loads(line))
-                if limit > 0 and len(rows) >= limit:
-                    return rows
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            # 应用 scene 过滤
+            if scene_filter:
+                scene = row.get("metadata", {}).get("scene", "")
+                if scene not in scene_filter:
+                    continue
+            rows.append(row)
+            if limit > 0 and len(rows) >= limit:
+                return rows
     return rows
 
 
@@ -373,8 +409,9 @@ def _build_output_dir(outputs_root: str = "outputs") -> Path:
 
 def run_wm_traj_compare_test(
     wm_run_dir: str,
-    episodes_per_scene: int = 1,
-    max_steps_per_episode: int = 16,
+    split: str = "test",
+    scene_filter: list[str] | None = None,
+    max_rows: int = 10000,
     outputs_root: str = "outputs",
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> tuple[str, str, dict[str, Any], dict[str, Any], dict[str, Any], str]:
@@ -397,19 +434,18 @@ def run_wm_traj_compare_test(
     wm_name = wm_run_path.parent.name
     wm_cfg = _resolve_wm_config(wm_name=wm_name)
     out_dir = _build_output_dir(outputs_root=outputs_root)
-    collect_root = ensure_dir(out_dir / "collection")
-    _report(5.0, "加载 test 数据集...")
+    _report(5.0, f"加载 {split} 数据集...")
     rows: list[dict[str, Any]] = []
     try:
-        rows = _load_test_dataset_rows(limit=0)
+        rows = _load_test_dataset_rows(split=split, scene_filter=scene_filter, limit=max_rows)
         _report(35.0, f"已加载 {len(rows)} 条样本")
     except Exception as exc:
         empty = {"feature": "", "points": [], "warning": ""}
-        return f"加载 test 数据集失败: {exc}", str(out_dir), empty, empty, empty, ""
+        return f"加载 {split} 数据集失败: {exc}", str(out_dir), empty, empty, empty, ""
 
     if not rows:
         empty = {"feature": "", "points": [], "warning": ""}
-        return "test 数据集为空。", str(out_dir), empty, empty, empty, ""
+        return f"{split} 数据集为空（filter={scene_filter}）。", str(out_dir), empty, empty, empty, ""
 
     encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
     if encoder is None:

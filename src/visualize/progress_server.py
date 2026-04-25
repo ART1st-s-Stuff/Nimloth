@@ -902,8 +902,9 @@ def _run_wm_traj_test_for_ui(
 
 def _run_wm_traj_test_stream_for_ui(
     wm_run_dir: str,
-    episodes_per_scene: float,
-    max_steps_per_episode: float,
+    split: str,
+    scene_filter: str,
+    max_rows: float,
     outputs_root: str,
 ):
     progress_queue: queue.Queue[tuple[float, str]] = queue.Queue()
@@ -913,6 +914,9 @@ def _run_wm_traj_test_stream_for_ui(
     def _progress_cb(pct: float, status: str) -> None:
         progress_queue.put((float(pct), str(status)))
 
+    # Parse scene filter
+    scene_filter_list = [s.strip() for s in scene_filter.split(",") if s.strip()] if scene_filter else None
+
     # 用 run_wm_traj_compare_test 的进度回调驱动页面进度条。
     def _worker_with_progress() -> None:
         wm_tools = _get_wm_traj_tools()
@@ -921,8 +925,9 @@ def _run_wm_traj_test_stream_for_ui(
                 "run_wm_traj_compare_test"
             ](
                 wm_run_dir=wm_run_dir,
-                episodes_per_scene=int(episodes_per_scene),
-                max_steps_per_episode=int(max_steps_per_episode),
+                split=split,
+                scene_filter=scene_filter_list,
+                max_rows=int(max_rows) if max_rows > 0 else 0,
                 outputs_root=outputs_root,
                 progress_callback=_progress_cb,
             )
@@ -982,11 +987,12 @@ def _run_wm_traj_test_stream_for_ui(
 
 
 def _build_wm_traj_stream_runner(outputs_root: str):
-    def _runner(run_dir: str, episodes: float, steps: float):
+    def _runner(run_dir: str, split: str, scene_filter: str, max_rows: float):
         yield from _run_wm_traj_test_stream_for_ui(
             wm_run_dir=run_dir,
-            episodes_per_scene=episodes,
-            max_steps_per_episode=steps,
+            split=split,
+            scene_filter=scene_filter,
+            max_rows=max_rows,
             outputs_root=outputs_root,
         )
 
@@ -1341,19 +1347,31 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                 with gr.Group(visible=False) as wm_traj_panel:
                     gr.Markdown("### WM 轨迹对比测试")
                     wm_traj_payload_state = gr.State({"feature": "wm_traj_shared", "points": [], "warning": ""})
-                    with gr.Accordion("运行参数（使用 test 数据集）", open=True):
+                    with gr.Accordion("运行参数", open=True):
                         with gr.Row():
                             wm_run_selector = gr.Dropdown(
                                 choices=[],
                                 value=None,
                                 label="WM 运行目录（包含 wm.pt）",
-                                scale=4,
+                                scale=3,
                                 allow_custom_value=True,
                             )
-                            refresh_wm_run_btn = gr.Button("刷新 WM 列表", scale=0, min_width=120)
+                            refresh_wm_run_btn = gr.Button("刷新", scale=0, min_width=80)
                         with gr.Row():
-                            wm_traj_episodes = gr.Number(value=1, label="每场景 episode 数", precision=0, minimum=1, scale=1)
-                            wm_traj_steps = gr.Number(value=16, label="每 episode step 上限", precision=0, minimum=1, scale=1)
+                            wm_traj_split = gr.Dropdown(
+                                choices=["test", "val", "train"],
+                                value="test",
+                                label="数据集 split",
+                                scale=1,
+                            )
+                            wm_traj_scene_filter = gr.Textbox(
+                                value="",
+                                label="Scene 过滤（如 FloorPlan1,FloorPlan2）",
+                                scale=2,
+                                placeholder="留空表示全部场景",
+                            )
+                        with gr.Row():
+                            wm_traj_max_rows = gr.Number(value=10000, label="最大样本数", precision=0, minimum=1, scale=1)
                             run_wm_traj_btn = gr.Button("执行 WM 轨迹测试", variant="primary", scale=0, min_width=140)
 
                     with gr.Accordion("本次 WM 轨迹测试输出", open=True):
@@ -1406,7 +1424,7 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                     )
                     run_wm_traj_btn.click(
                         fn=wm_traj_stream_runner,
-                        inputs=[wm_run_selector, wm_traj_episodes, wm_traj_steps],
+                        inputs=[wm_run_selector, wm_traj_split, wm_traj_scene_filter, wm_traj_max_rows],
                         outputs=[
                             wm_traj_summary,
                             wm_traj_output_dir,
