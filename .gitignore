@@ -47,3 +47,4 @@ wandb/
 
 # Claude instruction
 CLAUDE.md
+.claude
