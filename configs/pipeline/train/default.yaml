@@ -60,8 +60,8 @@ sigreg:
   weight: 0.01
   # 随机投影数 M
   num_projections: 256
-  # 离散积分节点数 T
-  num_quadrature_points: 16
+  # 离散积分节点数 T（需与模型训练时一致）
+  num_quadrature_points: 17
   # Epps-Pulley 积分区间
   t_min: 0.2
   t_max: 4.0
