@@ -55,6 +55,135 @@ _DEFAULT_TASK_TEXTS = [
     "沿走廊移动并最终接近电梯区域。",
 ]
 
+# WM training subprocess management
+_WM_TRAIN_PROCESS: dict[str, Any] = {}  # wm_name -> process info
+_WM_TRAIN_LOGS: dict[str, list[str]] = {}  # wm_name -> log lines
+
+
+def _list_wm_configs() -> list[str]:
+    """列出所有 WM 配置。"""
+    wm_dir = Path("configs/wm")
+    if not wm_dir.exists():
+        return []
+    return [p.stem for p in wm_dir.glob("*.yaml")]
+
+
+def _start_wm_training(
+    wm_name: str,
+    split: str,
+    epochs: float,
+    batch_size: float,
+    overrides_json: str,
+) -> tuple[str, str, list[list[str]]]:
+    """启动 WM 训练子进程。"""
+    global _WM_TRAIN_PROCESS, _WM_TRAIN_LOGS
+
+    if not wm_name:
+        return "未选择 WM 配置", "", _get_active_trainings_table()
+
+    if wm_name in _WM_TRAIN_PROCESS:
+        proc_info = _WM_TRAIN_PROCESS[wm_name]
+        if proc_info["process"].is_alive():
+            return f"{wm_name} 已在训练中 (PID={proc_info['pid']})", "", _get_active_trainings_table()
+
+    # Build command
+    import json
+    import subprocess
+    import threading
+
+    cmd = ["uv", "run", "python", "-m", "src.train.train_wm", f"wm={wm_name}"]
+    cmd += [f"dataset.manifests.train=datasets/ai2thor/{split}"]
+    cmd += [f"train.epochs={int(epochs)}"]
+    cmd += [f"train.batch_size={int(batch_size)}"]
+
+    # Parse overrides
+    if overrides_json.strip():
+        try:
+            overrides = json.loads(overrides_json)
+            for k, v in overrides.items():
+                cmd.append(f"{k}={v}")
+        except json.JSONDecodeError as e:
+            return f"JSON 解析错误: {e}", "", _get_active_trainings_table()
+
+    # Start subprocess
+    log_file = Path(f".cache/visualize/train_{wm_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(log_file, "w") as f:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=f,
+            stderr=subprocess.STDOUT,
+            cwd=Path.cwd(),
+        )
+
+    _WM_TRAIN_PROCESS[wm_name] = {
+        "process": proc,
+        "pid": proc.pid,
+        "start_time": datetime.now().isoformat(),
+        "log_file": str(log_file),
+        "cmd": " ".join(cmd),
+    }
+    _WM_TRAIN_LOGS[wm_name] = []
+
+    # Start log reader thread
+    def _read_log():
+        with open(log_file, "r") as f:
+            f.seek(0, 2)  # seek to end
+            while proc.poll() is None:
+                line = f.readline()
+                if line:
+                    _WM_TRAIN_LOGS[wm_name].append(line.rstrip())
+                    if len(_WM_TRAIN_LOGS[wm_name]) > 500:
+                        _WM_TRAIN_LOGS[wm_name].pop(0)
+                import time
+                time.sleep(0.5)
+
+    thread = threading.Thread(target=_read_log, daemon=True)
+    thread.start()
+
+    return f"已启动 {wm_name} (PID={proc.pid})\n命令: {' '.join(cmd)}", "", _get_active_trainings_table()
+
+
+def _stop_wm_training(wm_name: str) -> tuple[str, str, list[list[str]]]:
+    """停止 WM 训练子进程。"""
+    global _WM_TRAIN_PROCESS, _WM_TRAIN_LOGS
+
+    if wm_name not in _WM_TRAIN_PROCESS:
+        return f"{wm_name} 未在训练", "", _get_active_trainings_table()
+
+    proc_info = _WM_TRAIN_PROCESS[wm_name]
+    proc = proc_info["process"]
+
+    if proc.is_alive():
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    del _WM_TRAIN_PROCESS[wm_name]
+    if wm_name in _WM_TRAIN_LOGS:
+        del _WM_TRAIN_LOGS[wm_name]
+
+    return f"已停止 {wm_name}", "", _get_active_trainings_table()
+
+
+def _get_active_trainings_table() -> list[list[str]]:
+    """获取当前训练进程表格。"""
+    rows = []
+    for wm_name, info in _WM_TRAIN_PROCESS.items():
+        proc = info["process"]
+        status = "running" if proc.is_alive() else "finished"
+        rows.append([
+            wm_name,
+            info.get("cmd", "").split("wm=")[-1].split()[0] if "wm=" in info.get("cmd", "") else wm_name,
+            info["start_time"],
+            status,
+            str(info["pid"]),
+        ])
+    return rows
+
 
 def _configure_gradio_temp_dir() -> None:
     """将 Gradio 临时目录固定到项目内可写路径。"""
@@ -613,18 +742,19 @@ def _load_dev_history_umap_plots(result_json_text: str) -> tuple[go.Figure, go.F
     )
 
 
-def _switch_section(selected: str) -> tuple[gr.update, gr.update, gr.update, gr.update, gr.update]:
+def _switch_section(selected: str) -> tuple[gr.update, gr.update, gr.update, gr.update, gr.update, gr.update]:
     return (
         gr.update(visible=selected == "数据集进度"),
         gr.update(visible=selected == "训练进度"),
         gr.update(visible=selected == "Phase2评估"),
         gr.update(visible=selected == "Dev/Test z_t-s_t-CoT"),
         gr.update(visible=selected == "WM轨迹对比"),
+        gr.update(visible=selected == "WM训练"),
     )
 
 
-def _nav_labels() -> tuple[str, str, str, str, str]:
-    return ("数据集进度", "训练进度", "Phase2评估", "Dev/Test z_t-s_t-CoT", "WM轨迹对比")
+def _nav_labels() -> tuple[str, str, str, str, str, str]:
+    return ("数据集进度", "训练进度", "Phase2评估", "Dev/Test z_t-s_t-CoT", "WM轨迹对比", "WM训练")
 
 
 def _apply_nav(
@@ -642,12 +772,12 @@ def _apply_nav(
     gr.update,
 ]:
     """侧边栏：切换主面板可见性，并同步导航按钮的主次样式。"""
-    d, t, m, dev, wm_traj = _switch_section(selected)
+    d, t, m, dev, wm_traj, wm_train = _switch_section(selected)
     labels = _nav_labels()
     btn_updates = tuple(
         gr.update(variant="primary" if selected == lab else "secondary") for lab in labels
     )
-    return (d, t, m, dev, wm_traj) + btn_updates
+    return (d, t, m, dev, wm_traj, wm_train) + btn_updates
 
 
 def _list_training_runs(models_root: str = "models") -> list[Path]:
@@ -1041,7 +1171,7 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
     offline_wandb_runs = _list_offline_wandb_runs()
     offline_wandb_choices = [str(path) for path in offline_wandb_runs]
     default_offline_wandb_run = offline_wandb_choices[0] if offline_wandb_choices else None
-    lab_ds, lab_tr, lab_mi, lab_dev, lab_wm_traj = _nav_labels()
+    lab_ds, lab_tr, lab_mi, lab_dev, lab_wm_traj, lab_wm_train = _nav_labels()
     wm_traj_stream_runner = _build_wm_traj_stream_runner(outputs_root=outputs_root)
     initial_task_texts = list(_DEFAULT_TASK_TEXTS)
     with gr.Blocks(title="Flower Progress Server") as app:
@@ -1054,6 +1184,7 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                     nav_btn_misc = gr.Button(lab_mi, variant="secondary", size="lg")
                     nav_btn_dev = gr.Button(lab_dev, variant="secondary", size="lg")
                     nav_btn_wm_traj = gr.Button(lab_wm_traj, variant="secondary", size="lg")
+                    nav_btn_wm_train = gr.Button(lab_wm_train, variant="secondary", size="lg")
 
             with gr.Column(elem_classes=["main-content"]):
                 gr.Markdown("# Flower Progress Server")
@@ -1162,6 +1293,63 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                         fn=_build_offline_wandb_curve_figure,
                         inputs=[offline_run_selector, offline_metric_selector],
                         outputs=[offline_curve_plot],
+                    )
+
+                with gr.Group(visible=False) as wm_train_panel:
+                    gr.Markdown("### WM 训练控制")
+                    with gr.Accordion("快速训练", open=True):
+                        with gr.Row():
+                            wm_config_selector = gr.Dropdown(
+                                choices=_list_wm_configs(),
+                                value="cfm_dinov2m",
+                                label="WM 配置",
+                                scale=2,
+                            )
+                            wm_train_refresh_btn = gr.Button("刷新", scale=0, min_width=80)
+                        with gr.Row():
+                            train_split_selector = gr.Dropdown(
+                                choices=["train", "val"],
+                                value="train",
+                                label="数据集 split",
+                                scale=1,
+                            )
+                            train_epochs = gr.Number(value=4, label="epochs", precision=0, minimum=1, scale=1)
+                            train_batch_size = gr.Number(value=16, label="batch_size", precision=0, minimum=1, scale=1)
+                        train_overrides = gr.Textbox(
+                            label="参数覆盖（JSON格式，如 {\"train.epochs\": 8}）",
+                            value="",
+                            placeholder='{"train.epochs": 8, "train.batch_size": 32}',
+                            lines=2,
+                        )
+                        with gr.Row():
+                            start_train_btn = gr.Button("开始训练", variant="primary", scale=0, min_width=120)
+                            stop_train_btn = gr.Button("停止训练", variant="stop", scale=0, min_width=100)
+
+                    with gr.Accordion("训练状态", open=True):
+                        train_status = gr.Textbox(label="", value="未开始训练", lines=8, show_label=False)
+                        train_log = gr.Textbox(label="实时日志", value="", lines=12, max_lines=500, show_label=False)
+
+                    with gr.Accordion("已启动的训练", open=False):
+                        active_trainings = gr.Dataframe(
+                            headers=["wm_name", "config", "start_time", "status", "pid"],
+                            label="",
+                        )
+
+                    # Training button handlers
+                    wm_train_refresh_btn.click(
+                        fn=lambda: gr.update(choices=_list_wm_configs()),
+                        inputs=[],
+                        outputs=[wm_config_selector],
+                    )
+                    start_train_btn.click(
+                        fn=_start_wm_training,
+                        inputs=[wm_config_selector, train_split_selector, train_epochs, train_batch_size, train_overrides],
+                        outputs=[train_status, train_log, active_trainings],
+                    )
+                    stop_train_btn.click(
+                        fn=_stop_wm_training,
+                        inputs=[wm_config_selector],
+                        outputs=[train_status, train_log, active_trainings],
                     )
 
                 with gr.Group(visible=False) as misc_panel:
@@ -1484,17 +1672,20 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
             misc_panel,
             dev_panel,
             wm_traj_panel,
+            wm_train_panel,
             nav_btn_dataset,
             nav_btn_train,
             nav_btn_misc,
             nav_btn_dev,
             nav_btn_wm_traj,
+            nav_btn_wm_train,
         ]
         nav_btn_dataset.click(fn=lambda: _apply_nav(lab_ds), inputs=[], outputs=nav_outputs)
         nav_btn_train.click(fn=lambda: _apply_nav(lab_tr), inputs=[], outputs=nav_outputs)
         nav_btn_misc.click(fn=lambda: _apply_nav(lab_mi), inputs=[], outputs=nav_outputs)
         nav_btn_dev.click(fn=lambda: _apply_nav(lab_dev), inputs=[], outputs=nav_outputs)
         nav_btn_wm_traj.click(fn=lambda: _apply_nav(lab_wm_traj), inputs=[], outputs=nav_outputs)
+        nav_btn_wm_train.click(fn=lambda: _apply_nav(lab_wm_train), inputs=[], outputs=nav_outputs)
 
     return app
 
