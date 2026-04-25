@@ -26,6 +26,44 @@ _CACHE_ROOT = Path(".cache") / "visualize"
 _UMAP_CACHE_DIR = _CACHE_ROOT / "umap"
 
 
+def _resolve_test_dataset_dir() -> Path:
+    """解析 test 数据集路径，优先使用 latest 软链接。"""
+    test_base = Path("datasets/ai2thor/test")
+    if not test_base.exists():
+        raise RuntimeError(f"Test dataset directory not found: {test_base}")
+
+    # 检查 metadata.json 中的 latest
+    metadata_path = test_base / "metadata.json"
+    if metadata_path.exists():
+        import json
+        meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+        latest = meta.get("latest")
+        if isinstance(latest, str):
+            latest_dir = test_base / latest
+            if latest_dir.is_dir():
+                return latest_dir
+
+    # 回退：取最新目录
+    candidates = [p for p in test_base.iterdir() if p.is_dir() and p.name.startswith("2026")]
+    if candidates:
+        return max(candidates, key=lambda p: p.stat().st_mtime)
+
+    raise RuntimeError("No valid test dataset found")
+
+
+def _load_test_dataset_rows(limit: int = 0) -> list[dict[str, Any]]:
+    """从 test 数据集加载样本行。"""
+    test_dir = _resolve_test_dataset_dir()
+    rows: list[dict[str, Any]] = []
+    for manifest_file in sorted(test_dir.glob("manifest_worker_*.jsonl")):
+        for line in manifest_file.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+                if limit > 0 and len(rows) >= limit:
+                    return rows
+    return rows
+
+
 @dataclass
 class TrajPoint:
     scene: str
@@ -178,15 +216,18 @@ def _resolve_wm_config(wm_name: str) -> Any:
 
 
 def _resolve_wm_ckpt_path(wm_run_path: Path) -> Path | None:
-    """优先使用 EMA 权重，不存在时回退普通权重。"""
-    resolved = resolve_latest_model_file(wm_run_path, ["wm_ema.pt", "wm.pt"])
-    if resolved is not None:
-        return resolved
-    # 兼容仅传入单个 run 目录的场景。
-    for name in ["wm_ema.pt", "wm.pt"]:
+    """优先使用 EMA 权重，其次 checkpoint_final.pt，不存在时回退普通权重。"""
+    # 优先检查 run 目录内是否有模型文件
+    for name in ["wm_ema.pt", "checkpoint_final.pt", "wm.pt"]:
         candidate = wm_run_path / name
         if candidate.exists():
             return candidate
+    # 回退：搜索同类型 run 的最新模型（在父目录搜索）
+    parent = wm_run_path.parent
+    if parent.name != "wm":  # skip if parent is models/wm
+        resolved = resolve_latest_model_file(parent, ["wm_ema.pt", "checkpoint_final.pt", "wm.pt"])
+        if resolved is not None:
+            return resolved
     return None
 
 
@@ -357,33 +398,18 @@ def run_wm_traj_compare_test(
     wm_cfg = _resolve_wm_config(wm_name=wm_name)
     out_dir = _build_output_dir(outputs_root=outputs_root)
     collect_root = ensure_dir(out_dir / "collection")
-    _report(5.0, "开始在线采样（FloorPlan1/101/201）...")
+    _report(5.0, "加载 test 数据集...")
     rows: list[dict[str, Any]] = []
-    scene_errors: dict[str, str] = {}
-    success_manifests: list[str] = []
-    total_scenes = max(1, len(TEST_SCENES))
-    for scene_idx, scene in enumerate(TEST_SCENES, start=1):
-        _report(5.0 + 30.0 * (scene_idx - 1) / total_scenes, f"采样场景 {scene_idx}/{total_scenes}：{scene}")
-        scene_collect_dir = ensure_dir(collect_root / scene)
-        try:
-            collect_cfg = _build_collect_config(
-                dataset_cfg=dataset_cfg,
-                output_dir=scene_collect_dir,
-                scenes=[scene],
-                episodes_per_scene=max(1, int(episodes_per_scene)),
-                max_steps=max(1, int(max_steps_per_episode)),
-            )
-            manifest_path = run_collection(collect_cfg)
-            rows.extend(_load_rows(manifest_path))
-            success_manifests.append(str(manifest_path))
-        except Exception as exc:
-            scene_errors[scene] = str(exc)
-    _report(38.0, "采样完成，准备加载编码器与WM...")
+    try:
+        rows = _load_test_dataset_rows(limit=0)
+        _report(35.0, f"已加载 {len(rows)} 条样本")
+    except Exception as exc:
+        empty = {"feature": "", "points": [], "warning": ""}
+        return f"加载 test 数据集失败: {exc}", str(out_dir), empty, empty, empty, ""
 
     if not rows:
         empty = {"feature": "", "points": [], "warning": ""}
-        error_text = "；".join([f"{scene}: {err}" for scene, err in sorted(scene_errors.items())])
-        return f"采样结果为空。{error_text}", str(out_dir), empty, empty, empty, ""
+        return "test 数据集为空。", str(out_dir), empty, empty, empty, ""
 
     encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
     if encoder is None:
@@ -469,13 +495,9 @@ def run_wm_traj_compare_test(
         "wm_run_dir": str(wm_run_path),
         "wm_ckpt_path": str(wm_ckpt_path),
         "wm_ckpt_type": _wm_ckpt_type(wm_ckpt_path),
-        "test_scenes": list(TEST_SCENES),
-        "collect_manifest_paths": success_manifests,
-        "episodes_per_scene": int(episodes_per_scene),
-        "max_steps_per_episode": int(max_steps_per_episode),
+        "data_source": "test_dataset",
         "rows_total": len(rows),
         "scene_counts": dict(sorted(scene_counter.items())),
-        "scene_errors": scene_errors,
         "real_points_total": len(real_points),
         "pred_points_total": len(pred_points),
         "umap": {
@@ -488,15 +510,12 @@ def run_wm_traj_compare_test(
     (out_dir / "result.json").write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     summary = (
-        f"执行完成：WM轨迹对比测试\n"
+        f"执行完成：WM轨迹对比测试（使用 test 数据集）\n"
         f"wm_run={wm_run_path}\n"
-        f"manifest_count={len(success_manifests)}\n"
         f"rows_total={len(rows)}\n"
         f"real_points={len(real_points)} pred_points={len(pred_points)}\n"
         f"scene_episodes={dict(sorted(scene_counter.items()))}"
     )
-    if scene_errors:
-        summary += "\nscene_errors=" + str(scene_errors)
     _report(100.0, "执行完成")
     return summary, str(out_dir), real_payload, pred_payload, overlay_payload, warning_text
 

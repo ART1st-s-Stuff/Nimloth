@@ -84,7 +84,7 @@ def build_world_model(
             emb_dropout=float(_cfg_get(lewm_cfg, "emb_dropout", 0.0)),
             sigreg_knots=int(_cfg_get(lewm_cfg, "sigreg_knots", 17)),
             sigreg_num_proj=int(_cfg_get(lewm_cfg, "sigreg_num_proj", 256)),
-            sigreg_num_quadrature_points=int(_cfg_get(sigreg_cfg, "num_quadrature_points", 16)),
+            sigreg_num_quadrature_points=int(_cfg_get(sigreg_cfg, "num_quadrature_points", _cfg_get(lewm_cfg, "sigreg_knots", 16))),
             sigreg_t_min=float(_cfg_get(sigreg_cfg, "t_min", 0.2)),
             sigreg_t_max=float(_cfg_get(sigreg_cfg, "t_max", 4.0)),
             sigreg_kernel_sigma=float(_cfg_get(sigreg_cfg, "kernel_sigma", 1.0)),

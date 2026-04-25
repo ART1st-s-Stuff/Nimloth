@@ -1341,7 +1341,7 @@ def build_app(dataset_root: str = "datasets", models_root: str = "models", outpu
                 with gr.Group(visible=False) as wm_traj_panel:
                     gr.Markdown("### WM 轨迹对比测试")
                     wm_traj_payload_state = gr.State({"feature": "wm_traj_shared", "points": [], "warning": ""})
-                    with gr.Accordion("运行参数（在线采样 FloorPlan1/101/201）", open=True):
+                    with gr.Accordion("运行参数（使用 test 数据集）", open=True):
                         with gr.Row():
                             wm_run_selector = gr.Dropdown(
                                 choices=[],
