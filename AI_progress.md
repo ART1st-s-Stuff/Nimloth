@@ -1,7 +1,7 @@
 # AI项目进展（按Phase）
 
-更新时间：2026-04-23  
-统计口径：仅记录可由当前仓库文档与任务进展文件验证的内容；未落地项明确标注为“未开始/规划中”。
+更新时间：2026-04-25
+统计口径：仅记录可由当前仓库文档与任务进展文件验证的内容；未落地项明确标注为”未开始/规划中”。
 
 ---
 
@@ -49,25 +49,31 @@
 - 训练流程支持 `unsupervised` 与 `semi_supervised` 两种模式，并支持损失权重与梯度裁剪配置。
 - 训练流程新增 `fully_supervised` 模式：WM 训练直接使用真实动作序列，不再依赖 IDM 推断动作。
 - 阈值校准流程已支持并使用散度 95% 分位数生成 `theta_div`。
+- LeWM（Latent Energy World Model）实现，支持因果注意力和 SIGReg 正则。
+- SIGReg 正则超参数可配置化：支持 `num_quadrature_points`、`t_min`、`t_max`、`kernel_sigma`。
+- LeWM 支持混合编码器配置：`lewm_qwen25vl_8b`、`lewm_dinov2m_qwen25vl_8b`。
 
 ### 使用模型
 - 编码侧：DINOv2（冻结编码器，按项目文档进行映射使用）。
-- 世界模型：Conditional Flow Matching (CFM) 世界模型。
-- 时序骨干：Transformer。
+- 世界模型：Conditional Flow Matching (CFM) 世界模型、Latent Energy World Model (LeWM)。
+- 时序骨干：Transformer（双向 for CFM，因果 for LeWM）。
 - 动作推断：逆动力学模型（用于无监督/半监督训练范式）。
 
 ### 使用算法
 - Conditional Flow Matching（速度场拟合）。
+- Latent Energy World Model（绝对 latent 预测 + SIGReg 正则）。
 - Transformer 时序建模（多帧历史状态与动作条件建模）。
 - 逆动力学重构（从状态变化推断动作）。
 - 无监督训练范式：使用预测动作驱动 WM 重构下一状态。
 - 半监督训练范式：将预测动作映射到标注动作空间进行监督约束。
 - 全监督训练范式：直接使用标注动作驱动 WM rollout，跳过 IDM 动作推断分支。
 - 基于分位数统计的散度阈值校准（95% quantile）。
+- SIGReg（Sketch Isotropic Gaussian Regularizer）：随机投影 + Epps-Pulley 统计量正则化。
 
 ### 当前状态
 - **已完成（最小闭环）**：训练与校准主链路可运行并产出模型与阈值。
-- **进行中（回归验证）**：已完成一轮 4 epoch 训练与校准，评估与对比实验仍在进行中。
+- **已完成（LeWM 扩展）**：SIGReg 超参数可配置，支持混合编码器配置。
+- **进行中（对比实验）**：需要训练和比较 4 种配置：cfm_dinov2m、lewm_dinov2m、cfm_dinov2m_qwen25vl_8b、lewm_dinov2m_qwen25vl_8b。
 
 ### 本次训练参数与结果（2026-04-23）
 - 训练产物目录：`models/wm/cfm_dinov2m/2026-04-23_00-32-53`
@@ -87,9 +93,9 @@
   - `num_values=39960`
 
 ### 下一步
-- 在当前改进版配置上执行 `wm_evaluate.sh`，补齐本次 checkpoint 的评估报告与 KPI。
-- 按 `Baseline / fully_supervised / +Stride / +Stride+SIGReg / +Stride+SIGReg+IDM权重调整` 执行对比实验并汇总指标。
-- 根据对比结果调参：`temporal_stride`、`sigreg.weight`、`semi_supervised_weight`，并评估 `fully_supervised` 与 IDM 路径的收敛差异。
+- 训练并比较 4 种配置：cfm_dinov2m、lewm_dinov2m、cfm_dinov2m_qwen25vl_8b、lewm_dinov2m_qwen25vl_8b。
+- 使用 `evaluate_wm.py` 评估所有配置的 MSE、FD（ Frobenius Distance）、CD（Cosine Distance）指标。
+- 根据对比结果选择最优配置，并调参优化。
 
 ---
 
