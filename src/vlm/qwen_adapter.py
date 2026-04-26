@@ -103,7 +103,10 @@ class QwenVLMAdapter:
         return torch.cat([vector, torch.zeros(self.latent_dim - vector.numel())], dim=0)
 
     def _pool_patch_tokens(self, patch_tokens: torch.Tensor) -> torch.Tensor:
-        """对 patch tokens 进行池化以匹配目标 num_patches。"""
+        """对 patch tokens 进行池化以匹配目标 num_patches。
+
+        输出形状: [B, target_num_patches, token_dim]
+        """
         if patch_tokens.dim() != 3:
             raise ValueError(f"patch_tokens 形状不合法: {tuple(patch_tokens.shape)}")
         token_count = int(patch_tokens.size(1))
@@ -114,9 +117,11 @@ class QwenVLMAdapter:
         target_side = int(round(math.sqrt(target_num_patches)))
         if target_side * target_side != target_num_patches:
             raise RuntimeError(f"目标 patch token 数不是平方数: {target_num_patches}")
-        if side == target_side:
-            return patch_tokens.reshape(patch_tokens.size(0), -1)
         token_dim = int(patch_tokens.size(2))
+        if side == target_side:
+            # 形状已匹配，保持 3D 形状 [B, num_patches, token_dim]
+            return patch_tokens
+        # 需要池化
         grid_tokens = patch_tokens.transpose(1, 2).reshape(patch_tokens.size(0), token_dim, side, side)
         pooled = torch.nn.functional.adaptive_avg_pool2d(grid_tokens, output_size=(target_side, target_side))
         return pooled.reshape(patch_tokens.size(0), target_num_patches, token_dim)
@@ -128,7 +133,8 @@ class QwenVLMAdapter:
                 raise RuntimeError(f"Qwen 初始化失败且 fallback 关闭: {self._init_error}")
             return self._fallback_visual(image_path=image_path)
         image = Image.open(image_path).convert("RGB")
-        model_inputs = self._processor(images=image, text="请仅进行视觉编码。", return_tensors="pt")
+        # 纯视觉编码不需要 text 参数
+        model_inputs = self._processor(images=image, return_tensors="pt")
         if self._device == "cuda":
             model_inputs = {k: v.to("cuda") for k, v in model_inputs.items()}
         with torch.no_grad():
@@ -139,9 +145,9 @@ class QwenVLMAdapter:
         if vision_features.dim() != 3:
             vision_features = vision_features.unsqueeze(1)
         if self.token_strategy == "patch_tokens":
+            # 输出 [num_patches, token_dim]，展平为 [num_patches * token_dim]
             pooled = self._pool_patch_tokens(vision_features)
-            pooled = pooled.squeeze(0)
-            return self._pad_or_trim(pooled)
+            return pooled.squeeze(0).reshape(-1)  # [latent_dim]
         pooled = vision_features.mean(dim=1)
         return self._pad_or_trim(pooled.squeeze(0))
 

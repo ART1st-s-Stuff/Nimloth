@@ -254,6 +254,25 @@ class WMDataset(Dataset):
     def __len__(self) -> int:
         return len(self._training_indices)
 
+    def _normalize_latent_shape(self, latent: torch.Tensor) -> torch.Tensor:
+        """将 latent 统一到期望形状。
+
+        当配置了 expected_num_patches/expected_token_dim 时，优先返回 [P, D]。
+        """
+        value = latent.detach().cpu()
+        if self.expected_num_patches > 0 and self.expected_token_dim > 0:
+            patch_count = int(self.expected_num_patches)
+            token_dim = int(self.expected_token_dim)
+            target_numel = patch_count * token_dim
+            if value.dim() == 2:
+                if int(value.size(0)) == patch_count and int(value.size(1)) == token_dim:
+                    return value
+                if int(value.numel()) == target_numel:
+                    return value.reshape(patch_count, token_dim)
+            if value.dim() == 1 and int(value.numel()) == target_numel:
+                return value.reshape(patch_count, token_dim)
+        return value
+
     def _get_ready_episode_indices(self) -> list[int]:
         """返回已就绪 episode 的训练样本索引。"""
         if not self._episode_ready:
@@ -480,7 +499,7 @@ class WMDataset(Dataset):
                 with self._cache_lock:
                     for key, value in latents.items():
                         if key not in self._latent_cache and isinstance(value, torch.Tensor):
-                            self._latent_cache[key] = value.detach().cpu()
+                            self._latent_cache[key] = self._normalize_latent_shape(value)
                             loaded += 1
                     # 先拍快照再批量删除，避免迭代同一个 set 时发生 size 变化。
                     resolved_pending = [k for k in self._pending_latents if k in self._latent_cache]
@@ -531,7 +550,7 @@ class WMDataset(Dataset):
         with self._cache_lock:
             cached = self._latent_cache.get(image_path)
         if cached is not None:
-            return cached
+            return self._normalize_latent_shape(cached)
         # 发送请求（只发一次）
         if image_path not in self._pending_latents:
             self._pending_latents.add(image_path)
@@ -556,7 +575,7 @@ class WMDataset(Dataset):
                 cached = self._latent_cache.get(image_path)
             if cached is not None:
                 logger.debug("latent ready after %.1fs: %s", waited, image_path)
-                return cached
+                return self._normalize_latent_shape(cached)
             # 可选：每 10s 重新触发一次请求（防止请求丢失）。
             # 注意必须做边沿触发，避免 10.0~10.9s 期间重复洪泛请求。
             if waited >= next_requeue_at:
@@ -568,10 +587,18 @@ class WMDataset(Dataset):
                     heartbeat_age = max(0.0, time.time() - self._encoder_heartbeat_file.stat().st_mtime)
                 except OSError:
                     heartbeat_age = None
-            if waited >= stall_timeout and (heartbeat_age is None or heartbeat_age > stall_timeout):
-                raise RuntimeError(
-                    "检测到 encoder server 疑似卡死（心跳停滞）。"
-                    f" waited={waited:.1f}s, heartbeat_age={heartbeat_age}, image={image_path}"
+            if waited >= stall_timeout:
+                # 心跳检测：仅在心跳文件存在且可读时才作为卡死依据
+                encoder_alive = True
+                if heartbeat_age is not None and heartbeat_age < stall_timeout:
+                    encoder_alive = True
+                elif heartbeat_age is not None:
+                    encoder_alive = False
+
+                if not encoder_alive:
+                    raise RuntimeError(
+                        "检测到 encoder server 疑似卡死（心跳停滞）。"
+                        f" waited={waited:.1f}s, heartbeat_age={heartbeat_age}, image={image_path}"
                 )
             if waited >= hard_timeout:
                 raise RuntimeError(
@@ -601,7 +628,7 @@ class WMDataset(Dataset):
             if self._episode_ready.get(episode_key, False):
                 latents = self._episode_latent_cache.get(episode_key, {})
                 if image_path in latents:
-                    return latents[image_path].detach().cpu()
+                    return self._normalize_latent_shape(latents[image_path])
 
             # 检查 episode ready marker
             if self._cache_dir is not None:
@@ -611,7 +638,7 @@ class WMDataset(Dataset):
                     self._reload_chunked_cache()
                     latents = self._episode_latent_cache.get(episode_key, {})
                     if image_path in latents:
-                        return latents[image_path].detach().cpu()
+                        return self._normalize_latent_shape(latents[image_path])
 
             time.sleep(poll_interval)
             waited += poll_interval
@@ -628,7 +655,12 @@ class WMDataset(Dataset):
                 except OSError:
                     heartbeat_age = None
 
-            if waited >= stall_timeout and (heartbeat_age is None or heartbeat_age > stall_timeout):
+            # 心跳检测（仅在心跳文件存在且可读时生效）
+            encoder_alive = True
+            if heartbeat_age is not None:
+                encoder_alive = (heartbeat_age < stall_timeout)
+
+            if waited >= stall_timeout and not encoder_alive:
                 raise RuntimeError(
                     f"检测到 encoder server 疑似卡死（心跳停滞）。"
                     f" episode_key={episode_key}, waited={waited:.1f}s, heartbeat_age={heartbeat_age}"
@@ -701,69 +733,103 @@ class WMDataset(Dataset):
         if cache_path is not None and cache_path.is_dir():
             logger.info("latent cache 为分块目录，跳过单文件 warmup，依赖后台线程按需加载。")
             return
-        # 当 latent_cache_path 存在但 image_encoder=None 时，直接从文件加载缓存（用于评估模式）
+        # 当 latent_cache_path 存在且是文件时，尝试加载已有缓存
         if cache_path is not None and cache_path.exists():
-            payload = torch.load(cache_path, map_location="cpu")
-            latents = payload.get("latents", {}) if isinstance(payload, dict) else {}
-            cached_latent_dim = payload.get("latent_dim") if isinstance(payload, dict) else None
-            if cached_latent_dim is not None and int(cached_latent_dim) != int(self.latent_dim):
-                logger.warning(
-                    "检测到 latent 缓存维度不匹配，忽略旧缓存: cache_dim=%s, expected_dim=%s, cache=%s",
-                    str(cached_latent_dim),
-                    str(self.latent_dim),
-                    str(cache_path),
-                )
-            elif isinstance(latents, dict):
-                for key, value in latents.items():
-                    if not (isinstance(key, str) and isinstance(value, torch.Tensor)):
-                        continue
-                    matches_flat_dim = int(value.numel()) == int(self.latent_dim)
-                    matches_patch_layout = (
-                        self.expected_num_patches > 0
-                        and self.expected_token_dim > 0
-                        and value.dim() == 2
-                        and int(value.size(0)) == int(self.expected_num_patches)
-                        and int(value.size(1)) == int(self.expected_token_dim)
+            try:
+                payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+                latents = payload.get("latents", {}) if isinstance(payload, dict) else {}
+                cached_latent_dim = payload.get("latent_dim") if isinstance(payload, dict) else None
+                if cached_latent_dim is not None and int(cached_latent_dim) != int(self.latent_dim):
+                    logger.warning(
+                        "检测到 latent 缓存维度不匹配，忽略旧缓存: cache_dim=%s, expected_dim=%s, cache=%s",
+                        str(cached_latent_dim),
+                        str(self.latent_dim),
+                        str(cache_path),
                     )
-                    if matches_flat_dim or matches_patch_layout:
-                        self._latent_cache[key] = value.detach().cpu()
-            unique_paths = {str(sample["image_path"]) for sample in self.samples if "image_path" in sample}
-            missing_paths = [path for path in unique_paths if path not in self._latent_cache]
-            if not missing_paths:
-                logger.info("latent 缓存已命中: %d 张图像，无需预编码。", len(self._latent_cache))
-                if self.on_latent_progress is not None:
-                    self.on_latent_progress(0, 0)
-                return
-            # 如果 image_encoder=None（评估模式）但有缓存缺失，发出警告
-            if self.image_encoder is None:
-                logger.warning(
-                    "latent 缓存部分缺失（缺失=%d/%d），在评估模式下应使用完整缓存。",
-                    len(missing_paths),
-                    len(unique_paths),
-                )
-            else:
-                # 有 encoder，正常预编码
-                logger.info(
-                    "开始预编码 latent: 总图像=%d, 待编码=%d, workers=%d, batch_size=%d",
-                    len(unique_paths),
-                    len(missing_paths),
-                    self.encoder_num_workers,
-                    self.encoder_batch_size,
-                )
-                flush_every = 500
-                for start in range(0, len(missing_paths), self.encoder_batch_size):
-                    batch_paths = missing_paths[start : start + self.encoder_batch_size]
-                    batch_outputs = self.image_encoder.encode_image_paths(batch_paths)
-                    for image_path, output in zip(batch_paths, batch_outputs, strict=True):
-                        self._latent_cache[image_path] = output.z.detach().cpu()
-                    done = start + len(batch_paths)
+                elif isinstance(latents, dict):
+                    for key, value in latents.items():
+                        if not (isinstance(key, str) and isinstance(value, torch.Tensor)):
+                            continue
+                        matches_flat_dim = int(value.numel()) == int(self.latent_dim)
+                        matches_patch_layout = (
+                            self.expected_num_patches > 0
+                            and self.expected_token_dim > 0
+                            and value.dim() == 2
+                            and int(value.size(0)) == int(self.expected_num_patches)
+                            and int(value.size(1)) == int(self.expected_token_dim)
+                        )
+                        if matches_flat_dim or matches_patch_layout:
+                            self._latent_cache[key] = self._normalize_latent_shape(value)
+                unique_paths = {str(sample["image_path"]) for sample in self.samples if "image_path" in sample}
+                missing_paths = [path for path in unique_paths if path not in self._latent_cache]
+                if not missing_paths:
+                    logger.info("latent 缓存已命中: %d 张图像，无需预编码。", len(self._latent_cache))
                     if self.on_latent_progress is not None:
-                        self.on_latent_progress(done, len(missing_paths))
-                    if done % flush_every == 0:
-                        logger.info("latent 预编码进度: %d/%d", done, len(missing_paths))
-                        self._save_latent_cache(cache_path)
+                        self.on_latent_progress(0, 0)
+                    return
+                # 如果 image_encoder=None（评估模式）但有缓存缺失，发出警告
+                if self.image_encoder is None:
+                    logger.warning(
+                        "latent 缓存部分缺失（缺失=%d/%d），在评估模式下应使用完整缓存。",
+                        len(missing_paths),
+                        len(unique_paths),
+                    )
+                else:
+                    # 有 encoder，正常预编码
+                    logger.info(
+                        "开始预编码 latent: 总图像=%d, 待编码=%d, workers=%d, batch_size=%d",
+                        len(unique_paths),
+                        len(missing_paths),
+                        self.encoder_num_workers,
+                        self.encoder_batch_size,
+                    )
+                    flush_every = 500
+                    missing_paths_list = list(missing_paths)
+                    for start in range(0, len(missing_paths_list), self.encoder_batch_size):
+                        batch_paths = missing_paths_list[start : start + self.encoder_batch_size]
+                        batch_outputs = self.image_encoder.encode_image_paths(batch_paths)
+                        for image_path, output in zip(batch_paths, batch_outputs, strict=True):
+                            self._latent_cache[image_path] = self._normalize_latent_shape(output.z)
+                        done = start + len(batch_paths)
+                        if self.on_latent_progress is not None:
+                            self.on_latent_progress(done, len(missing_paths_list))
+                        if done % flush_every == 0:
+                            logger.info("latent 预编码进度: %d/%d", done, len(missing_paths_list))
+                            self._save_latent_cache(cache_path)
+                    self._save_latent_cache(cache_path)
+                    logger.info("latent 预编码完成: 新增=%d, 缓存总量=%d", len(missing_paths_list), len(self._latent_cache))
+            except Exception as e:
+                logger.warning(f"加载缓存失败，将重新编码: {e}")
+                self._latent_cache.clear()
+                if cache_path is not None:
+                    cache_path = None  # 强制重新编码
+        # cache_path 不存在或加载失败，需要编码
+        if self.image_encoder is None:
+            logger.warning("latent cache 不存在且 image_encoder=None，无法预编码。")
+            return
+        unique_paths = {str(sample["image_path"]) for sample in self.samples if "image_path" in sample}
+        unique_paths_list = list(unique_paths)
+        logger.info(
+            "开始预编码 latent (无缓存): 总图像=%d, 待编码=%d, workers=%d, batch_size=%d",
+            len(unique_paths_list),
+            len(unique_paths_list),
+            self.encoder_num_workers,
+            self.encoder_batch_size,
+        )
+        flush_every = 500
+        for start in range(0, len(unique_paths_list), self.encoder_batch_size):
+            batch_paths = unique_paths_list[start : start + self.encoder_batch_size]
+            batch_outputs = self.image_encoder.encode_image_paths(batch_paths)
+            for image_path, output in zip(batch_paths, batch_outputs, strict=True):
+                self._latent_cache[image_path] = self._normalize_latent_shape(output.z)
+            done = start + len(batch_paths)
+            if self.on_latent_progress is not None:
+                self.on_latent_progress(done, len(unique_paths_list))
+            if done % flush_every == 0:
+                logger.info("latent 预编码进度: %d/%d", done, len(unique_paths_list))
                 self._save_latent_cache(cache_path)
-                logger.info("latent 预编码完成: 新增=%d, 缓存总量=%d", len(missing_paths), len(self._latent_cache))
+        self._save_latent_cache(cache_path)
+        logger.info("latent 预编码完成: 新增=%d, 缓存总量=%d", len(unique_paths_list), len(self._latent_cache))
 
     def _save_latent_cache(self, cache_path: Path | None) -> None:
         if cache_path is None:

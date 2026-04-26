@@ -26,8 +26,11 @@ import json
 import logging
 import os
 import random
+import signal
+import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +39,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Sampler
 from torch.utils.data.dataset import Dataset
+from omegaconf import OmegaConf
 
 import matplotlib
 matplotlib.use('Agg')  # 非交互式后端
@@ -50,7 +54,9 @@ os.chdir(project_root)
 sys.path.insert(0, str(project_root))
 
 from src.data.dataset import WMDataset, read_worker_manifests
+from src.train.encoder_control_server import query_status, register_priority_images, request_shutdown
 from src.train.latent_cache import build_wm_dataset_with_cache
+from src.train.latent_cache import build_latent_cache_dir
 from src.wm.encoder import build_wm_image_encoder
 from src.wm.predictor.lewm import LeWMModel, LeWMWorldModel
 from src.wm.inverse_dynamics import InverseDynamicsModel
@@ -60,6 +66,219 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 OUTPUTS_ROOT = "outputs/dev"
+
+
+def resolve_train_run_dir() -> Path:
+    """解析训练数据路径（优先固定目录，回退到最新目录）。"""
+    train_run_dir = Path("datasets/ai2thor/test/2026-04-24_14-47-16")
+    if train_run_dir.exists():
+        return train_run_dir
+
+    test_root = Path("datasets/ai2thor/test")
+    if not test_root.exists():
+        raise RuntimeError(f"训练数据目录不存在: {test_root}")
+
+    candidates = [p for p in test_root.iterdir() if p.is_dir() and p.name.startswith("2026")]
+    if not candidates:
+        raise RuntimeError(f"未找到可用测试数据 run 目录: {test_root}")
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def start_encoder_server(
+    *,
+    run_dir: Path,
+    wm_name: str,
+    encoder_log_path: Path,
+    encoder_batch_size: int,
+    control_socket_path: str = "",
+) -> subprocess.Popen[str]:
+    """启动 encoder_server 后台进程。"""
+    encoder_log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_fp = open(encoder_log_path, "w", encoding="utf-8")
+    command = [
+        sys.executable,
+        "-m",
+        "src.train.encoder_server",
+        f"dataset.manifests.train={run_dir}",
+        f"wm={wm_name}",
+        "pipeline.train.lazy_episode_chunk=true",
+        "pipeline.train.lazy_wait_first_episode=true",
+        f"pipeline.train.encoder_batch_size={encoder_batch_size}",
+    ]
+    env = os.environ.copy()
+    if control_socket_path:
+        env["ENCODER_CONTROL_SOCKET"] = control_socket_path
+    proc = subprocess.Popen(
+        command,
+        stdout=log_fp,
+        stderr=subprocess.STDOUT,
+        cwd=project_root,
+        start_new_session=True,
+        text=True,
+        env=env,
+    )
+    setattr(proc, "_log_fp", log_fp)
+    return proc
+
+
+def stop_encoder_server(proc: subprocess.Popen[str] | None, timeout_sec: float = 15.0) -> None:
+    """安全停止 encoder_server，避免残留进程。"""
+    if proc is None:
+        return
+
+    log_fp = getattr(proc, "_log_fp", None)
+    if proc.poll() is not None:
+        if log_fp is not None and not log_fp.closed:
+            log_fp.close()
+        return
+
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        if log_fp is not None and not log_fp.closed:
+            log_fp.close()
+        return
+
+    try:
+        proc.wait(timeout=timeout_sec)
+        if log_fp is not None and not log_fp.closed:
+            log_fp.close()
+        return
+    except subprocess.TimeoutExpired:
+        logger.warning("encoder_server 未在 %.1fs 内退出，发送 SIGKILL", timeout_sec)
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        if log_fp is not None and not log_fp.closed:
+            log_fp.close()
+        return
+    proc.wait(timeout=5.0)
+    if log_fp is not None and not log_fp.closed:
+        log_fp.close()
+
+
+def wait_for_first_ready(
+    *,
+    cache_dir: Path,
+    encoder_proc: subprocess.Popen[str],
+    timeout_sec: int,
+    poll_sec: float = 2.0,
+) -> Path:
+    """等待首个 episode ready 文件出现（fail fast）。"""
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if encoder_proc.poll() is not None:
+            raise RuntimeError(
+                f"encoder_server 提前退出，exit_code={encoder_proc.returncode}，请检查日志。"
+            )
+
+        ready_files = sorted(cache_dir.glob("episode_*.ready"))
+        if ready_files:
+            return ready_files[0]
+
+        time.sleep(poll_sec)
+
+    raise TimeoutError(f"等待首个 ready 超时: cache_dir={cache_dir}, timeout={timeout_sec}s")
+
+
+def plan_priority_images(
+    *,
+    run_dir: Path,
+    num_rollouts: int,
+    batch_size: int,
+    priority_batches: int,
+    seed: int = 42,
+) -> list[str]:
+    """按训练采样习惯，规划首批 batch 可能使用的 image_path。"""
+    samples = read_worker_manifests(run_dir)
+    if not samples:
+        return []
+
+    episode_groups: dict[str, list[dict[str, Any]]] = {}
+    for sample in samples:
+        metadata = sample.get("metadata", {})
+        scene = str(metadata.get("scene", "unknown"))
+        episode_id = int(sample.get("episode_id", 0))
+        episode_key = f"{scene}_{episode_id}"
+        episode_groups.setdefault(episode_key, []).append(sample)
+
+    for key in episode_groups:
+        episode_groups[key].sort(key=lambda x: int(x.get("step_id", -1)))
+
+    episode_keys = sorted(episode_groups.keys())
+    rng = random.Random(seed)
+    if num_rollouts <= 0 or num_rollouts >= len(episode_keys):
+        selected_keys = episode_keys
+    else:
+        selected_keys = rng.sample(episode_keys, num_rollouts)
+
+    max_needed = max(1, priority_batches) * max(1, batch_size)
+    out: list[str] = []
+    for ep_key in selected_keys:
+        for sample in episode_groups[ep_key]:
+            image_path = str(sample.get("image_path", ""))
+            if image_path:
+                out.append(image_path)
+            if len(out) >= max_needed:
+                break
+        if len(out) >= max_needed:
+            break
+    return out
+
+
+def wait_priority_queue_drained(socket_path: str, timeout_sec: int = 120, poll_sec: float = 1.0) -> dict[str, Any]:
+    """等待优先队列清空，降低首批 batch 阻塞概率。"""
+    deadline = time.time() + timeout_sec
+    last_status: dict[str, Any] = {}
+    while time.time() < deadline:
+        try:
+            status = query_status(socket_path, timeout_sec=2.0)
+            last_status = status
+            if bool(status.get("ok")) and int(status.get("pending_priority", 0)) <= 0:
+                return status
+        except Exception:
+            pass
+        time.sleep(poll_sec)
+    raise TimeoutError(f"等待优先队列清空超时: socket={socket_path}, last_status={last_status}")
+
+
+def wait_for_control_socket(socket_path: str, timeout_sec: int = 10, poll_sec: float = 0.1) -> None:
+    """等待 encoder control socket 文件就绪。"""
+    deadline = time.time() + timeout_sec
+    sock_path = Path(socket_path)
+    while time.time() < deadline:
+        if sock_path.exists():
+            return
+        time.sleep(poll_sec)
+    raise TimeoutError(f"等待 encoder control socket 超时: {socket_path}")
+
+
+def wait_for_control_socket_with_process(
+    socket_path: str,
+    proc: subprocess.Popen[str],
+    timeout_sec: int = 120,
+    poll_sec: float = 0.2,
+) -> None:
+    """等待 control socket 就绪，并在 encoder 提前退出时快速失败。"""
+    deadline = time.time() + timeout_sec
+    sock_path = Path(socket_path)
+    while time.time() < deadline:
+        if sock_path.exists():
+            return
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"encoder_server 在 control socket 就绪前退出，exit_code={proc.returncode}"
+            )
+        time.sleep(poll_sec)
+    raise TimeoutError(f"等待 encoder control socket 超时: {socket_path}")
+
+
+def build_control_socket_path(run_dir: Path, wm_name: str) -> str:
+    """构建尽量短的 Unix socket 路径，避免超长导致 bind 失败。"""
+    short_wm = wm_name[:24]
+    sock_name = f"encctl_{short_wm}_{run_dir.name}_{uuid.uuid4().hex[:8]}.sock"
+    return str(Path("/tmp") / sock_name)
 
 
 class SubsetSampler(Sampler[int]):
@@ -144,8 +363,13 @@ def load_wm_dataset(
     dataset_cfg: Any,
     temporal_stride: int = 1,
     num_workers: int = 0,
+    max_samples: int | None = None,  # 限制最大样本数用于快速测试
 ) -> tuple[WMDataset, Path]:
-    """加载 WM 数据集。"""
+    """加载 WM 数据集。
+
+    Args:
+        max_samples: 如果设置，则只加载前 max_samples 个训练样本，用于快速测试
+    """
     encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
     dataset, cache_dir = build_wm_dataset_with_cache(
         run_dir=run_dir,
@@ -164,7 +388,15 @@ def load_wm_dataset(
             else 0
         ),
         lazy_mode=False,  # 预编码模式
+        chunk_mode=False,  # 使用单文件模式
     )
+
+    # 限制样本数量（用于快速测试）
+    if max_samples is not None and max_samples > 0:
+        original_len = len(dataset._training_indices)
+        dataset._training_indices = dataset._training_indices[:max_samples]
+        logger.info(f"限制训练样本: {original_len} -> {len(dataset._training_indices)}")
+
     dataset.disable_encoder_after_warmup()
     return dataset, cache_dir
 
@@ -428,6 +660,24 @@ def compute_umap_3d(points: list[torch.Tensor]) -> list[list[float]]:
     except Exception as e:
         logger.warning(f"UMAP 计算失败: {e}")
         return [[float(p.flatten()[0]) if p.numel() > 0 else 0.0 for p in points]]
+
+
+def normalize_latent_for_lewm(latent: torch.Tensor, wm_cfg: Any) -> torch.Tensor:
+    """将 latent 归一化为 LeWM 期望的 [P, D]（若可推断）。"""
+    value = latent.detach().cpu().float()
+    num_patches = int(getattr(wm_cfg.encoder, "num_patches", 0))
+    latent_dim = int(getattr(wm_cfg, "latent_dim", 0))
+    if num_patches > 0 and latent_dim > 0 and latent_dim % num_patches == 0:
+        token_dim = latent_dim // num_patches
+        target_numel = num_patches * token_dim
+        if value.dim() == 2:
+            if int(value.size(0)) == num_patches and int(value.size(1)) == token_dim:
+                return value
+            if int(value.numel()) == target_numel:
+                return value.reshape(num_patches, token_dim)
+        if value.dim() == 1 and int(value.numel()) == target_numel:
+            return value.reshape(num_patches, token_dim)
+    return value
 
 
 def generate_single_rollout_figure(
@@ -772,7 +1022,7 @@ def load_test_data(
                 # 编码图像
                 try:
                     enc_output = encoder.encode_image_path(image_path)
-                    z = enc_output.z.float().cpu()
+                    z = normalize_latent_for_lewm(enc_output.z, wm_cfg)
                 except Exception as e:
                     logger.warning(f"编码失败: {image_path}, error={e}")
                     continue
@@ -803,6 +1053,13 @@ def run_training(
     train_epochs: int,
     outputs_root: str = OUTPUTS_ROOT,
     use_wandb: bool = True,
+    max_samples: int | None = None,
+    parallel_lazy: bool = True,
+    first_ready_timeout_sec: int = 300,
+    encoder_batch_size: int = 64,
+    enable_priority_socket: bool = True,
+    priority_batch_count: int = 8,
+    priority_wait_timeout_sec: int = 180,
 ) -> tuple[Path | None, dict[str, Any]]:
     """运行训练。"""
     from src.utils.env import get_env, load_project_env
@@ -851,90 +1108,169 @@ def run_training(
         )
         wandb_run = wandb.run
 
-    # 解析训练数据路径 - 使用 test 数据集
-    train_run_dir = Path("datasets/ai2thor/test/2026-04-24_14-47-16")
-    if not train_run_dir.exists():
-        train_run_dir = Path("datasets/ai2thor/test")
-        candidates = [p for p in train_run_dir.iterdir() if p.is_dir() and p.name.startswith("2026")]
-        if candidates:
-            train_run_dir = max(candidates, key=lambda p: p.stat().st_mtime)
-
+    train_run_dir = resolve_train_run_dir()
     logger.info(f"训练数据路径: {train_run_dir}")
 
-    # 加载数据集
-    dataset, cache_dir = load_wm_dataset(
-        run_dir=train_run_dir,
-        wm_cfg=wm_cfg,
-        dataset_cfg=dataset_cfg,
-        temporal_stride=1,
-        num_workers=2,
-    )
+    encoder_proc: subprocess.Popen[str] | None = None
+    cache_dir = build_latent_cache_dir(train_run_dir, wm_name)
+    encoder_log_path = run_dir / "encoder_server.log"
+    control_socket_path = build_control_socket_path(run_dir, wm_name) if enable_priority_socket else ""
 
-    # 创建子集采样器
-    sampler = SubsetSampler(dataset, max_rollouts=num_rollouts)
-    num_training_samples = len(sampler)
+    try:
+        if parallel_lazy:
+            logger.info("启用并行 lazy 模式：先启动 encoder_server，再等待首个 episode 就绪")
+            encoder_proc = start_encoder_server(
+                run_dir=train_run_dir,
+                wm_name=wm_name,
+                encoder_log_path=encoder_log_path,
+                encoder_batch_size=encoder_batch_size,
+                control_socket_path=control_socket_path,
+            )
+            if control_socket_path:
+                wait_for_control_socket_with_process(
+                    control_socket_path,
+                    encoder_proc,
+                    timeout_sec=120,
+                    poll_sec=0.2,
+                )
+                priority_images = plan_priority_images(
+                    run_dir=train_run_dir,
+                    num_rollouts=num_rollouts,
+                    batch_size=int(train_cfg.batch_size),
+                    priority_batches=priority_batch_count,
+                    seed=42,
+                )
+                if priority_images:
+                    logger.info("下发优先编码任务: %d 张图像", len(priority_images))
+                    register_resp = register_priority_images(control_socket_path, priority_images, timeout_sec=10.0)
+                    logger.info("优先任务注册结果: %s", register_resp)
+            first_ready = wait_for_first_ready(
+                cache_dir=cache_dir,
+                encoder_proc=encoder_proc,
+                timeout_sec=first_ready_timeout_sec,
+            )
+            logger.info(f"首个 episode 就绪: {first_ready.name}")
+            if control_socket_path:
+                wait_priority_queue_drained(
+                    control_socket_path,
+                    timeout_sec=priority_wait_timeout_sec,
+                    poll_sec=1.0,
+                )
+                logger.info("优先编码队列已清空，开始构建训练数据集")
 
-    # 使用训练配置中的 batch_size
-    batch_size = int(train_cfg.batch_size)
+            dataset, _ = build_wm_dataset_with_cache(
+                run_dir=train_run_dir,
+                wm_name=str(wm_cfg.name),
+                latent_dim=int(wm_cfg.latent_dim),
+                action_dim=int(dataset_cfg.action_dim),
+                history_len=int(wm_cfg.history_len),
+                temporal_stride=1,
+                image_encoder=None,
+                encoder_num_workers=0,
+                encoder_batch_size=encoder_batch_size,
+                expected_num_patches=int(getattr(wm_cfg.encoder, "num_patches", 0)),
+                expected_token_dim=(
+                    int(wm_cfg.latent_dim) // int(getattr(wm_cfg.encoder, "num_patches", 1))
+                    if int(getattr(wm_cfg.encoder, "num_patches", 0)) > 0
+                    else 0
+                ),
+                lazy_mode=True,
+                chunk_mode=True,
+            )
+        else:
+            dataset, cache_dir = load_wm_dataset(
+                run_dir=train_run_dir,
+                wm_cfg=wm_cfg,
+                dataset_cfg=dataset_cfg,
+                temporal_stride=1,
+                num_workers=2,
+                max_samples=max_samples,
+            )
 
-    train_loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=sampler,
-        num_workers=0,
-        persistent_workers=False,
-    )
+        # 限制样本数量（用于快速测试）
+        if max_samples is not None and max_samples > 0:
+            original_len = len(dataset._training_indices)
+            dataset._training_indices = dataset._training_indices[:max_samples]
+            logger.info(f"限制训练样本: {original_len} -> {len(dataset._training_indices)}")
+        if hasattr(dataset, "disable_encoder_after_warmup"):
+            dataset.disable_encoder_after_warmup()
 
-    # 构建设备
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"使用设备: {device}")
-    logger.info(f"batch_size: {batch_size}")
+        # 创建子集采样器
+        sampler = SubsetSampler(dataset, max_rollouts=num_rollouts)
+        num_training_samples = len(sampler)
 
-    # 构建模型
-    wm_model = build_lewm_model(wm_cfg, dataset_cfg, train_cfg, device)
+        # 使用训练配置中的 batch_size
+        batch_size = int(train_cfg.batch_size)
 
-    # 训练
-    start_time = time.time()
-    metrics = train_model(
-        model=wm_model,
-        train_loader=train_loader,
-        num_epochs=train_epochs,
-        log_every_n_steps=20,
-        wandb_run=wandb_run,
-    )
-    elapsed = time.time() - start_time
+        train_loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            num_workers=0,
+            persistent_workers=False,
+        )
 
-    logger.info(f"训练完成，耗时: {elapsed:.1f}秒")
+        # 构建设备
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info(f"使用设备: {device}")
+        logger.info(f"batch_size: {batch_size}")
 
-    # 保存模型
-    wm_ckpt_path = run_dir / "wm_ema.pt"
-    torch.save(wm_model.wm.state_dict(), wm_ckpt_path)
-    logger.info(f"模型保存至: {wm_ckpt_path}")
+        # 构建模型
+        wm_model = build_lewm_model(wm_cfg, dataset_cfg, train_cfg, device)
 
-    # 保存训练指标
-    train_metrics = {
-        "wm_name": wm_name,
-        "num_rollouts": num_rollouts,
-        "train_epochs": train_epochs,
-        "train_time_sec": elapsed,
-        "num_training_samples": num_training_samples,
-        "final_loss": metrics["loss"][-1] if metrics["loss"] else 0.0,
-        "final_recon_loss": metrics["loss_recon"][-1] if metrics["loss_recon"] else 0.0,
-        "loss_history": metrics["loss"][::max(1, len(metrics["loss"]) // 100)],
-    }
-    with open(run_dir / "train_metrics.json", "w") as f:
-        json.dump(train_metrics, f, indent=2)
+        # 训练
+        start_time = time.time()
+        metrics = train_model(
+            model=wm_model,
+            train_loader=train_loader,
+            num_epochs=train_epochs,
+            log_every_n_steps=20,
+            wandb_run=wandb_run,
+        )
+        elapsed = time.time() - start_time
 
-    # 记录到 wandb
-    if wandb_run is not None:
-        wandb_run.log({
-            "train/final_loss": metrics["loss"][-1] if metrics["loss"] else 0.0,
-            "train/final_recon_loss": metrics["loss_recon"][-1] if metrics["loss_recon"] else 0.0,
-            "train/elapsed_sec": elapsed,
-        })
-        wandb_run.finish()
+        logger.info(f"训练完成，耗时: {elapsed:.1f}秒")
 
-    return run_dir, train_metrics
+        # 保存模型
+        wm_ckpt_path = run_dir / "wm_ema.pt"
+        torch.save(wm_model.wm.state_dict(), wm_ckpt_path)
+        logger.info(f"模型保存至: {wm_ckpt_path}")
+
+        # 保存训练指标
+        train_metrics = {
+            "wm_name": wm_name,
+            "num_rollouts": num_rollouts,
+            "train_epochs": train_epochs,
+            "train_time_sec": elapsed,
+            "num_training_samples": num_training_samples,
+            "final_loss": metrics["loss"][-1] if metrics["loss"] else 0.0,
+            "final_recon_loss": metrics["loss_recon"][-1] if metrics["loss_recon"] else 0.0,
+            "loss_history": metrics["loss"][::max(1, len(metrics["loss"]) // 100)],
+            "parallel_lazy": parallel_lazy,
+            "encoder_log": str(encoder_log_path) if parallel_lazy else "",
+            "priority_socket_enabled": bool(control_socket_path),
+            "priority_socket_path": control_socket_path,
+        }
+        with open(run_dir / "train_metrics.json", "w") as f:
+            json.dump(train_metrics, f, indent=2)
+
+        # 记录到 wandb
+        if wandb_run is not None:
+            wandb_run.log({
+                "train/final_loss": metrics["loss"][-1] if metrics["loss"] else 0.0,
+                "train/final_recon_loss": metrics["loss_recon"][-1] if metrics["loss_recon"] else 0.0,
+                "train/elapsed_sec": elapsed,
+            })
+            wandb_run.finish()
+
+        return run_dir, train_metrics
+    finally:
+        if control_socket_path:
+            try:
+                request_shutdown(control_socket_path, timeout_sec=2.0)
+            except Exception:
+                pass
+        stop_encoder_server(encoder_proc)
 
 
 def run_visualization(
@@ -943,6 +1279,7 @@ def run_visualization(
     dataset_cfg: Any,
     num_test_rollouts: int,
     num_steps: int,
+    eval_split: str = "test",
 ) -> dict[str, Any]:
     """对已训练模型运行可视化。"""
     from omegaconf import OmegaConf
@@ -999,18 +1336,21 @@ def run_visualization(
     wm_module.eval()
     wm_module.to(device)
 
-    # 加载测试数据
-    test_run_dir = Path("datasets/ai2thor/test/2026-04-24_14-47-16")
-    if not test_run_dir.exists():
+    # 加载评估数据（默认 test，可切换为 train）
+    split = str(eval_split).strip().lower()
+    if split not in {"test", "train"}:
+        raise ValueError(f"不支持的 eval_split: {eval_split}，仅支持 test/train")
+    eval_run_dir = Path(f"datasets/ai2thor/{split}/2026-04-24_14-47-16")
+    if not eval_run_dir.exists():
         # 回退到 latest 链接
-        latest = Path("datasets/ai2thor/test/latest")
+        latest = Path(f"datasets/ai2thor/{split}/latest")
         if latest.exists() and latest.is_symlink():
-            test_run_dir = latest.resolve()
+            eval_run_dir = latest.resolve()
 
-    if not test_run_dir.exists():
-        raise RuntimeError(f"测试数据目录不存在: {test_run_dir}")
+    if not eval_run_dir.exists():
+        raise RuntimeError(f"评估数据目录不存在: {eval_run_dir}")
 
-    logger.info(f"加载测试数据 from: {test_run_dir}")
+    logger.info(f"加载评估数据 from: {eval_run_dir} (split={split})")
 
     # 获取 history_len
     history_len = int(wm_cfg.history_len)
@@ -1019,7 +1359,7 @@ def run_visualization(
     rollout_data = []
     for rollout_idx in range(num_test_rollouts):
         latents, actions, metadata_list = load_test_data(
-            run_dir=test_run_dir,
+            run_dir=eval_run_dir,
             wm_cfg=wm_cfg,
             num_rollouts=1,  # 每次只加载 1 条
             num_steps=num_steps,
@@ -1103,6 +1443,7 @@ def run_visualization(
     result = {
         "model_run_dir": str(model_run_dir),
         "wm_ckpt_path": str(wm_ckpt_path),
+        "eval_split": split,
         "num_test_rollouts": len(rollout_data),
         "num_steps": num_steps,
         "avg_mse": avg_mse,
@@ -1169,6 +1510,13 @@ def main() -> None:
         help="测试轨迹步数",
     )
     parser.add_argument(
+        "--eval-split",
+        type=str,
+        default="test",
+        choices=["test", "train"],
+        help="可视化评估使用的数据集 split（test 或 train）",
+    )
+    parser.add_argument(
         "--outputs-root",
         type=str,
         default=OUTPUTS_ROOT,
@@ -1178,6 +1526,46 @@ def main() -> None:
         "--no-wandb",
         action="store_true",
         help="禁用 wandb 日志",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="限制训练样本数量（用于快速测试）",
+    )
+    parser.add_argument(
+        "--disable-parallel-lazy",
+        action="store_true",
+        help="禁用并行 lazy 编码（回退到旧的预编码训练路径）",
+    )
+    parser.add_argument(
+        "--first-ready-timeout-sec",
+        type=int,
+        default=300,
+        help="并行模式下等待首个 episode ready 的超时秒数",
+    )
+    parser.add_argument(
+        "--encoder-batch-size",
+        type=int,
+        default=64,
+        help="并行模式下 encoder_server 的批大小",
+    )
+    parser.add_argument(
+        "--disable-priority-socket",
+        action="store_true",
+        help="禁用 priority socket 调度（仅保留原始轮转编码）",
+    )
+    parser.add_argument(
+        "--priority-batch-count",
+        type=int,
+        default=8,
+        help="主线程预先下发给 encoder 的优先 batch 数量",
+    )
+    parser.add_argument(
+        "--priority-wait-timeout-sec",
+        type=int,
+        default=180,
+        help="等待优先队列清空的超时秒数",
     )
 
     args = parser.parse_args()
@@ -1221,6 +1609,7 @@ def main() -> None:
                 dataset_cfg=dataset_cfg,
                 num_test_rollouts=args.num_test_rollouts,
                 num_steps=args.num_steps,
+                eval_split=args.eval_split,
             )
         except Exception as e:
             logger.error(f"可视化失败: {e}")
@@ -1247,6 +1636,13 @@ def main() -> None:
                     train_epochs=args.train_epochs,
                     outputs_root=args.outputs_root,
                     use_wandb=use_wandb,
+                    max_samples=args.max_samples,
+                    parallel_lazy=not args.disable_parallel_lazy,
+                    first_ready_timeout_sec=args.first_ready_timeout_sec,
+                    encoder_batch_size=args.encoder_batch_size,
+                    enable_priority_socket=not args.disable_priority_socket,
+                    priority_batch_count=args.priority_batch_count,
+                    priority_wait_timeout_sec=args.priority_wait_timeout_sec,
                 )
                 results[model_key] = {"train_metrics": train_metrics}
 
@@ -1257,6 +1653,7 @@ def main() -> None:
                         dataset_cfg=dataset_cfg,
                         num_test_rollouts=args.num_test_rollouts,
                         num_steps=args.num_steps,
+                        eval_split=args.eval_split,
                     )
                     results[model_key]["visualization"] = vis_result
 

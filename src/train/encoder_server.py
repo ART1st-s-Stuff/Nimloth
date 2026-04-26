@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+import os
 
 import fcntl
 import logging
@@ -38,6 +39,7 @@ from src.train.latent_cache import (
     build_episode_ready_path,
     list_completed_episodes,
 )
+from src.train.encoder_control_server import EncoderControlServer
 from src.utils.env import load_project_env
 from src.utils.seed import set_seed
 from src.utils.terminal_ui import create_dashboard, LiveDashboard
@@ -253,6 +255,11 @@ def _run_chunk_mode(
     cache_dir.mkdir(parents=True, exist_ok=True)
     heartbeat_path = cache_dir / "encoder_heartbeat"
     done_path = cache_dir / "done"
+    control_socket_path = os.environ.get("ENCODER_CONTROL_SOCKET", "").strip()
+    control_server = EncoderControlServer(control_socket_path)
+
+    # 尽早启动控制面，避免主线程在大模型加载期间等待超时。
+    control_server.start()
 
     device = torch.device("cuda")
     encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
@@ -271,9 +278,26 @@ def _run_chunk_mode(
 
     # 检查已完成的 episode
     completed = list_completed_episodes(cache_dir)
+    encoded_images: set[str] = set()
+    for episode_key in completed:
+        ep_path = build_episode_cache_path(cache_dir, episode_key)
+        if not ep_path.exists():
+            continue
+        try:
+            payload = torch.load(ep_path, map_location="cpu")
+            latents = payload.get("latents", {}) if isinstance(payload, dict) else {}
+            if isinstance(latents, dict):
+                encoded_images.update(str(k) for k in latents.keys())
+        except Exception:
+            continue
 
     # 待编码的 episode（排除已完成的）
     remaining_episodes = [ek for ek in episode_keys if ek not in completed]
+    image_to_episode: dict[str, str] = {}
+    for ep_key, paths in episode_images.items():
+        for image_path in paths:
+            image_to_episode[image_path] = ep_key
+    control_server.mark_encoded(list(encoded_images))
     logger.info(
         "Encoder server 启动（分块模式）: run_dir=%s, cache_dir=%s, latent_dim=%d, batch_size=%d",
         run_dir,
@@ -287,137 +311,107 @@ def _run_chunk_mode(
     dashboard = create_dashboard(title="Encoder Server", show_gpu=True, refresh_rate=0.5)
     dashboard.start()
 
-    # 阶段 1：先编码第一个 episode（用于启动训练）
-    if wait_first_episode and remaining_episodes:
-        first_ep_key = remaining_episodes[0]
-        first_ep_paths = episode_images[first_ep_key]
-        logger.info("阶段 1：预编码 episode %s（%d 张图像）...", first_ep_key, len(first_ep_paths))
+    try:
+        # 构建轮转队列：每个 episode 剩余的图像路径
+        episode_remaining: dict[str, list[str]] = {ek: list(episode_images[ek]) for ek in remaining_episodes}
+        episode_remaining_set: dict[str, set[str]] = {ek: set(episode_images[ek]) for ek in remaining_episodes}
+        encoded_count = len(encoded_images)
+        first_episode_done = len(completed) > 0 or not wait_first_episode
+        if wait_first_episode and remaining_episodes:
+            logger.info("阶段 1：优先保证首个 episode 就绪，再并行编码其余 episode。")
+        logger.info("阶段 2：并行编码剩余 %d 个 episode（轮转 + priority queue）...", len(remaining_episodes))
 
-        for start in range(0, len(first_ep_paths), batch_size):
-            batch = first_ep_paths[start:start + batch_size]
+        while any(episode_remaining.get(ek) for ek in remaining_episodes):
+            if control_server.should_shutdown():
+                logger.info("收到控制面 shutdown 指令，准备退出 encoder server")
+                break
+
+            priority_batch = control_server.pop_priority_batch(batch_size)
+            selected: list[tuple[str, str]] = []
+            if priority_batch:
+                for image_path in priority_batch:
+                    ep_key = image_to_episode.get(image_path, "")
+                    if not ep_key:
+                        continue
+                    rem = episode_remaining_set.get(ep_key)
+                    if rem is None or image_path not in rem:
+                        continue
+                    selected.append((ep_key, image_path))
+                if selected:
+                    logger.info("处理优先编码队列: batch=%d", len(selected))
+
+            if not selected:
+                for ep_key in list(remaining_episodes):
+                    rem_list = episode_remaining.get(ep_key, [])
+                    if not rem_list:
+                        continue
+                    for image_path in rem_list[:batch_size]:
+                        selected.append((ep_key, image_path))
+                    break
+
+            if not selected:
+                time.sleep(0.1)
+                continue
+
+            batch = [x[1] for x in selected]
             heartbeat_path.write_text(str(time.time()), encoding="utf-8")
             with torch.no_grad(), torch.autocast("cuda"):
                 outputs = encoder.encode_image_paths(batch)
-            latents_out = {p: o.z.detach().cpu() for p, o in zip(batch, outputs, strict=True)}
-            _append_episode_latents(cache_dir, first_ep_key, latents_out, latent_dim)
 
-            # 更新仪表板和状态文件
-            total_done = sum(len(episode_images[e]) for e in remaining_episodes[:remaining_episodes.index(first_ep_key)])
-            progress_in_ep = (start + batch_size) / len(first_ep_paths)
+            per_episode_latents: dict[str, dict[str, torch.Tensor]] = defaultdict(dict)
+            for (ep_key, image_path), out in zip(selected, outputs, strict=True):
+                per_episode_latents[ep_key][image_path] = out.z.detach().cpu()
+                rem_set = episode_remaining_set.get(ep_key)
+                if rem_set is not None:
+                    rem_set.discard(image_path)
+                rem_list = episode_remaining.get(ep_key)
+                if rem_list is not None and image_path in rem_list:
+                    rem_list.remove(image_path)
+
+            for ep_key, latents_out in per_episode_latents.items():
+                _append_episode_latents(cache_dir, ep_key, latents_out, latent_dim)
+                if wait_first_episode and not first_episode_done and remaining_episodes and ep_key == remaining_episodes[0]:
+                    if not episode_remaining.get(ep_key):
+                        _mark_episode_ready(cache_dir, ep_key)
+                        first_episode_done = True
+                        logger.info("阶段 1 完成：episode %s 就绪，训练可以开始。", ep_key)
+                elif not episode_remaining.get(ep_key):
+                    _mark_episode_ready(cache_dir, ep_key)
+                    logger.info("Episode %s 完成（%d 张图像）", ep_key, len(episode_images[ep_key]))
+
+            control_server.mark_encoded(batch)
+            encoded_count += len(batch)
+            completed_so_far = len([ek for ek in remaining_episodes if not episode_remaining.get(ek)])
+            current_episode_key = selected[0][0]
+            ep_done = len(episode_images[current_episode_key]) - len(episode_remaining.get(current_episode_key, []))
+
             dashboard.update_encoder(
-                current_episode=first_ep_key,
+                current_episode=current_episode_key,
                 total_episodes=total_episodes,
-                episode_progress=start + batch_size,
-                episode_total=len(first_ep_paths),
-                encoded_images=total_done + start + batch_size,
+                episode_progress=ep_done,
+                episode_total=len(episode_images[current_episode_key]),
+                encoded_images=encoded_count,
                 total_images=total_images,
-                episodes_completed=len(completed),
-                is_first_episode_done=False,
+                episodes_completed=completed_so_far,
+                is_first_episode_done=first_episode_done,
             )
             _write_encoder_state(
                 cache_dir,
-                current_episode_key=first_ep_key,
+                current_episode_key=current_episode_key,
                 total_episodes=total_episodes,
-                episode_progress=start + batch_size,
-                episode_total=len(first_ep_paths),
-                encoded_images=total_done + start + batch_size,
-                total_images=total_images,
-                episodes_completed=len(completed),
-                is_first_episode_done=False,
-            )
-            logger.info("  episode %s 进度: %d / %d", first_ep_key, min(start + batch_size, len(first_ep_paths)), len(first_ep_paths))
-
-        _mark_episode_ready(cache_dir, first_ep_key)
-        dashboard.update_encoder(
-            current_episode=first_ep_key,
-            total_episodes=total_episodes,
-            episode_progress=len(first_ep_paths),
-            episode_total=len(first_ep_paths),
-            encoded_images=len(first_ep_paths),
-            total_images=total_images,
-            episodes_completed=len(completed) + 1,
-            is_first_episode_done=True,
-        )
-        _write_encoder_state(
-            cache_dir,
-            current_episode_key=first_ep_key,
-            total_episodes=total_episodes,
-            episode_progress=len(first_ep_paths),
-            episode_total=len(first_ep_paths),
-            encoded_images=len(first_ep_paths),
-            total_images=total_images,
-            episodes_completed=len(completed) + 1,
-            is_first_episode_done=True,
-        )
-        logger.info("阶段 1 完成：episode %s 就绪，训练可以开始。", first_ep_key)
-
-        # 移除已完成的 episode，继续剩余编码
-        remaining_episodes = remaining_episodes[1:]
-
-    # 阶段 2：编码剩余 episode（与训练并行）
-    # 使用轮转编码策略：每个 episode 轮流取一个 batch
-    # 这样可以确保所有 episode 均匀推进，训练采样时可以覆盖更多 episode
-    logger.info("阶段 2：并行编码剩余 %d 个 episode（轮转策略）...", len(remaining_episodes))
-
-    completed_count = len(completed) + (1 if wait_first_episode and episode_keys else 0)
-
-    # 构建轮转队列：每个 episode 剩余的图像路径
-    episode_remaining: dict[str, list[str]] = {ek: list(episode_images[ek]) for ek in remaining_episodes}
-
-    # 轮转编码直到所有 episode 完成
-    while any(episode_remaining[ek] for ek in remaining_episodes):
-        for ep_key in list(remaining_episodes):
-            if not episode_remaining[ep_key]:
-                continue  # 这个 episode 已经完成，跳过
-
-            # 取一个 batch
-            batch = episode_remaining[ep_key][:batch_size]
-            episode_remaining[ep_key] = episode_remaining[ep_key][batch_size:]
-
-            heartbeat_path.write_text(str(time.time()), encoding="utf-8")
-            with torch.no_grad(), torch.autocast("cuda"):
-                outputs = encoder.encode_image_paths(batch)
-            latents_out = {p: o.z.detach().cpu() for p, o in zip(batch, outputs, strict=True)}
-            _append_episode_latents(cache_dir, ep_key, latents_out, latent_dim)
-
-            # 更新进度
-            total_done = sum(len(episode_images[e]) for e in episode_keys) - sum(len(v) for v in episode_remaining.values())
-            completed_so_far = len([e for e in remaining_episodes if not episode_remaining.get(e, [])])
-
-            dashboard.update_encoder(
-                current_episode=ep_key,
-                total_episodes=total_episodes,
-                episode_progress=len(episode_images[ep_key]) - len(episode_remaining[ep_key]),
-                episode_total=len(episode_images[ep_key]),
-                encoded_images=total_done,
+                episode_progress=ep_done,
+                episode_total=len(episode_images[current_episode_key]),
+                encoded_images=encoded_count,
                 total_images=total_images,
                 episodes_completed=completed_so_far,
-                is_first_episode_done=True,
-            )
-            _write_encoder_state(
-                cache_dir,
-                current_episode_key=ep_key,
-                total_episodes=total_episodes,
-                episode_progress=len(episode_images[ep_key]) - len(episode_remaining[ep_key]),
-                episode_total=len(episode_images[ep_key]),
-                encoded_images=total_done,
-                total_images=total_images,
-                episodes_completed=completed_so_far,
-                is_first_episode_done=True,
+                is_first_episode_done=first_episode_done,
             )
 
-            # 检查这个 episode 是否完成
-            if not episode_remaining[ep_key]:
-                _mark_episode_ready(cache_dir, ep_key)
-                completed_count += 1
-                logger.info("Episode %s 完成（%d 张图像）", ep_key, len(episode_images[ep_key]))
-                del episode_remaining[ep_key]
-
-    # 停止仪表板
-    dashboard.stop()
-
-    done_path.write_text(str(len(episode_keys)))
-    logger.info("Encoder server 完成：所有 %d 个 episode 已编码。", len(episode_keys))
+        done_path.write_text(str(len(episode_keys)))
+        logger.info("Encoder server 完成：已编码 %d/%d 张图像。", encoded_count, total_images)
+    finally:
+        control_server.stop()
+        dashboard.stop()
 
 
 def _run_single_file_mode(

@@ -297,12 +297,57 @@ if [[ -z "${wm_name}" ]]; then
   wm_name="cfm_dinov2m"  # 默认值
 fi
 cache_dir="${dataset_parent}/${cache_stem}.latents.${wm_name}"
-first_episode_ready="${cache_dir}/episode_0000.ready"
+control_socket_path="${ENCODER_CONTROL_SOCKET:-/tmp/encctl_${wm_name}_$(date +%s).sock}"
+expected_first_ready="$(
+  python3 - "${manifest_path}" "${cache_dir}" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+cache_dir = Path(sys.argv[2])
+episode_keys = set()
+
+def iter_lines(path: Path):
+    for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw.strip()
+        if line:
+            yield line
+
+if manifest_path.is_dir():
+    files = sorted(manifest_path.glob("manifest_worker_*.jsonl"))
+else:
+    files = [manifest_path]
+
+for mf in files:
+    for line in iter_lines(mf):
+        try:
+            sample = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        metadata = sample.get("metadata", {}) if isinstance(sample, dict) else {}
+        scene = str(metadata.get("scene", "unknown"))
+        try:
+            episode_id = int(sample.get("episode_id", 0))
+        except Exception:
+            episode_id = 0
+        episode_keys.add(f"{scene}_{episode_id}")
+
+if not episode_keys:
+    print(str(cache_dir / "episode_0000.ready"))
+    raise SystemExit(0)
+
+first_key = sorted(episode_keys)[0]
+safe_key = first_key.replace(" ", "_").replace("/", "_").replace("\\", "_")
+print(str(cache_dir / f"episode_{safe_key}.ready"))
+PY
+)"
 
 # 清理可能存在的旧的 ready marker（如果从中断恢复，需要确认是否需要重新编码）
 # 这里不清理，让 encoder_server 检测已完成 episode
 
-CUDA_VISIBLE_DEVICES="${encoder_gpu}" \
+ENCODER_CONTROL_SOCKET="${control_socket_path}" CUDA_VISIBLE_DEVICES="${encoder_gpu}" \
   python -m src.train.encoder_server \
   dataset.manifests.train="${manifest_path}" \
   pipeline.train.encoder_batch_size=64 \
@@ -312,6 +357,7 @@ CUDA_VISIBLE_DEVICES="${encoder_gpu}" \
   > "${encoder_log}" 2>&1 &
 encoder_pid=$!
 echo "[info] encoder_server.py 启动 (PID=${encoder_pid})，日志: ${encoder_log}"
+echo "[info] encoder control socket: ${control_socket_path}"
 
 # 等待 encoder_server 初始化（约 10s，用于加载 DINOv2 模型）
 echo "[info] 等待 encoder_server 初始化（约 10s）..."
@@ -325,11 +371,19 @@ if ! kill -0 "${encoder_pid}" 2>/dev/null; then
 fi
 echo "[info] encoder_server.py 已就绪，开始等待 episode 0 编码完成..."
 
-# 等待 episode 0 就绪（encoder 完成第一阶段预编码）
+# 等待首个 episode 就绪（encoder 完成第一阶段预编码）
 wait_timeout=300  # 最多等待 5 分钟
 wait_interval=2
 waited=0
-while [[ ! -f "${first_episode_ready}" ]]; do
+while true; do
+  if [[ -f "${expected_first_ready}" ]]; then
+    break
+  fi
+  if compgen -G "${cache_dir}/episode_*.ready" > /dev/null; then
+    echo "[info] 已检测到首个 ready（非预期键），继续训练。"
+    ls "${cache_dir}"/episode_*.ready | head -1 | sed 's/^/[info] 首个ready: /'
+    break
+  fi
   sleep ${wait_interval}
   waited=$((waited + wait_interval))
   # 检查 encoder 是否还在运行
@@ -340,10 +394,12 @@ while [[ ! -f "${first_episode_ready}" ]]; do
   fi
   if [[ ${waited} -ge ${wait_timeout} ]]; then
     echo "[error] 等待 episode 0 就绪超时 (${wait_timeout}s)，查看 encoder 日志: ${encoder_log}"
+    echo "[error] 期望 ready: ${expected_first_ready}"
+    echo "[error] cache_dir: ${cache_dir}"
     tail -30 "${encoder_log}"
     exit 1
   fi
-  echo "  等待 episode 0 就绪... (${waited}s)"
+  echo "  等待首个 episode 就绪... (${waited}s) 目标=${expected_first_ready}"
 done
 
 echo "[step 1/3] Episode 0 就绪，cache_dir=${cache_dir}"
