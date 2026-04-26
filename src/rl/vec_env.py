@@ -91,6 +91,7 @@ class LatentVecEnv:
         self.include_semantic = include_semantic
         self.use_wm_prediction = use_wm_prediction
         self.reward_type = reward_type
+        self._needs_z_history_reinit = False
 
         if seed is not None:
             random.seed(seed)
@@ -142,6 +143,18 @@ class LatentVecEnv:
                 latents = payload.get("latents", {})
                 if isinstance(latents, dict):
                     self._build_episodes_from_latents(latents)
+                    # 自动检测 token_dim
+                    if latents:
+                        sample = list(latents.values())[0]
+                        if sample.dim() == 2:
+                            detected_num_patches, detected_token_dim = sample.shape
+                            if self.num_patches != detected_num_patches or self.token_dim != detected_token_dim:
+                                logger.info("检测到 latent 维度: patches=%d, token_dim=%d (之前配置: patches=%d, token_dim=%d)",
+                                    detected_num_patches, detected_token_dim, self.num_patches, self.token_dim)
+                                self.num_patches = detected_num_patches
+                                self.token_dim = detected_token_dim
+                                # 更新 z_history 形状（延迟初始化，需要在 _reset_envs 后使用）
+                                self._needs_z_history_reinit = True
             except Exception as exc:
                 logger.warning("加载 %s 失败: %s", cache_path, exc)
         elif cache_path.is_dir():
@@ -207,7 +220,7 @@ class LatentVecEnv:
 
         # 当前 step 索引（episode 内的位置）
         self.current_step = torch.zeros(self.num_envs, dtype=torch.long)
-        # 当前 z_history（初始为全零）
+        # 当前 z_history（初始为全零）- 使用当前 num_patches, token_dim
         self.z_history = torch.zeros(
             self.num_envs, self.history_len, self.num_patches, self.token_dim,
             device=self.device, dtype=torch.float32,
@@ -220,6 +233,9 @@ class LatentVecEnv:
         # episode 分配
         self.env_episode_keys = [self.episode_keys[i] for i in episode_indices]
         self.env_step_indices = torch.zeros(self.num_envs, dtype=torch.long)  # episode 内的 index
+        # 如果之前检测到不同的 token_dim，重新初始化
+        if self._needs_z_history_reinit:
+            self._needs_z_history_reinit = False
 
     def _get_latent(self, path_str: str) -> Tensor:
         """获取指定路径的 latent。"""

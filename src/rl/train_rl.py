@@ -158,6 +158,46 @@ def build_models(cfg: RLConfig, env_cfg: EnvConfig, device: str) -> tuple[Policy
     return policy.to(device), value_net.to(device)
 
 
+def build_models_with_env(cfg: RLConfig, env_cfg: EnvConfig, env: LatentVecEnv, device: str) -> tuple[PolicyModel, ValueNetwork]:
+    """构建策略网络和 Value 网络（使用环境的实际维度）。"""
+    from src.rl.vec_env import LatentVecEnv
+
+    # 使用环境的实际 num_patches 和 token_dim
+    actual_patches = env.num_patches
+    actual_token_dim = env.token_dim
+    expected_latent_dim = actual_patches * actual_token_dim
+
+    policy = PolicyModel(
+        latent_dim=expected_latent_dim,
+        action_dim=env_cfg.action_dim,
+        hidden_dim=cfg.hidden_dim,
+        history_len=env_cfg.history_len,
+        num_patches=actual_patches,
+        token_dim=actual_token_dim,
+        num_layers=cfg.num_layers,
+        num_heads=cfg.num_heads,
+        dropout=cfg.dropout,
+        semantic_dim=env_cfg.semantic_dim if cfg.use_vlm else 0,
+        action_std_init=cfg.action_std_init,
+        use_vlm=cfg.use_vlm,
+    )
+
+    value_net = ValueNetwork(
+        latent_dim=expected_latent_dim,
+        hidden_dim=cfg.hidden_dim,
+        history_len=env_cfg.history_len,
+        num_patches=actual_patches,
+        token_dim=actual_token_dim,
+        num_layers=max(2, cfg.num_layers // 2),
+        num_heads=cfg.num_heads,
+        dropout=cfg.dropout,
+        semantic_dim=env_cfg.semantic_dim if cfg.use_vlm else 0,
+        use_vlm=cfg.use_vlm,
+    )
+
+    return policy.to(device), value_net.to(device)
+
+
 def build_environment(cfg: RLConfig, env_cfg: EnvConfig, device: str) -> LatentVecEnv:
     """构建向量化环境。"""
 
@@ -246,8 +286,12 @@ def main(cfg: DictConfig) -> None:
     with open(run_dir / "config.yaml", "w") as f:
         OmegaConf.save(cfg, f)
 
-    # 构建模型
-    policy, value_net = build_models(rl_cfg, env_cfg, device)
+    # 构建环境（先构建，以便获取实际的 num_patches/token_dim）
+    env = build_environment(rl_cfg, env_cfg, device)
+    logger.info("环境检测到 latent 维度: patches=%d, token_dim=%d", env.num_patches, env.token_dim)
+
+    # 构建模型（使用环境的实际维度）
+    policy, value_net = build_models_with_env(rl_cfg, env_cfg, env, device)
     num_params = sum(p.numel() for p in policy.parameters())
     num_value_params = sum(p.numel() for p in value_net.parameters())
     logger.info(
@@ -255,17 +299,14 @@ def main(cfg: DictConfig) -> None:
         num_params, num_value_params
     )
 
-    # 构建环境和存储
-    env = build_environment(rl_cfg, env_cfg, device)
-
     storage = RolloutStorage(
         num_steps=rl_cfg.num_steps,
         num_envs=rl_cfg.num_envs,
         latent_dim=env_cfg.latent_dim,
         action_dim=env_cfg.action_dim,
         semantic_dim=env_cfg.semantic_dim if rl_cfg.use_vlm else 0,
-        num_patches=env_cfg.num_patches or 16,
-        token_dim=env_cfg.token_dim or 32,
+        num_patches=env.num_patches,
+        token_dim=env.token_dim,
         history_len=env_cfg.history_len,
         device=device,
     )
