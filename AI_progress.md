@@ -1,6 +1,6 @@
 # AI项目进展（按Phase）
 
-更新时间：2026-04-25
+更新时间：2026-04-27
 统计口径：仅记录可由当前仓库文档与任务进展文件验证的内容；未落地项明确标注为”未开始/规划中”。
 
 ---
@@ -74,6 +74,15 @@
 - **已完成（最小闭环）**：训练与校准主链路可运行并产出模型与阈值。
 - **已完成（LeWM 扩展）**：SIGReg 超参数可配置，支持混合编码器配置。
 - **进行中（对比实验）**：训练和比较 4 种配置：cfm_dinov2m、lewm_dinov2m、cfm_dinov2m_qwen25vl_8b、lewm_dinov2m_qwen25vl_8b。
+- **进行中（Qwen 并行训练稳定性）**：已引入 encoder control socket 与 priority queue 机制，降低 lazy 编码首批阻塞；仍在持续验证不同数据缓存状态下的稳定性。
+
+### 近期新增（2026-04-27）
+- `dev/test_lewm_phase2.py` 已支持并行 lazy 编排（主线程拉起 encoder server、等待首个 ready、优先队列下发、退出清理）。
+- 新增 `src/train/encoder_control_server.py`，提供本地 Unix socket 控制协议（`register_priority_images`/`status`/`shutdown`）。
+- `src/train/encoder_server.py` 已接入 priority image 编码路径，优先消费主线程下发图像，再回退 episode 轮转。
+- `scripts/phase2/wm_training_lazy.sh` 的首个 ready 等待逻辑已从固定文件名改为动态推断/兜底匹配，修复历史卡住点。
+- 为 Qwen patch token 兼容，`src/data/dataset.py` 与 `dev/test_lewm_phase2.py` 已加入 latent 形状归一化逻辑（优先转为 `[P,D]`）。
+- `dev/test_lewm_phase2.py` 新增 `--eval-split {test,train}`，支持在训练集 rollout 上做可视化对比以排查欠拟合与协议问题。
 
 ### 4种配置对比实验状态（2026-04-25）
 
