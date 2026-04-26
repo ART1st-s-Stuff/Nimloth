@@ -251,9 +251,13 @@ class JointTrainer:
         """更新 EMA 模型。"""
         if self._ema_policy is None:
             self._ema_policy = copy.deepcopy(self.policy)
+            # 确保 EMA 模型不需要梯度
+            for p in self._ema_policy.parameters():
+                p.requires_grad = False
             return
-        for ema_p, p in zip(self._ema_policy.parameters(), self.policy.parameters()):
-            ema_p.mul_(self._ema_decay).add_(p.detach(), alpha=1 - self._ema_decay)
+        with torch.no_grad():
+            for ema_p, p in zip(self._ema_policy.parameters(), self.policy.parameters()):
+                ema_p.mul_(self._ema_decay).add_(p, alpha=1 - self._ema_decay)
 
     def compute_reward(
         self,

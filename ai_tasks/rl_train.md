@@ -397,6 +397,20 @@ configs/rl/
 - [x] `configs/rl_joint.yaml` - 联合训练配置
 - [x] `dev/test_joint_train.py` - 联合训练测试脚本
 
+### Bug 修复记录
+
+1. **patch_pool 维度错误** (`policy_model.py`, `value_network.py`)
+   - 问题: `nn.Linear(hidden_dim, hidden_dim)` 会将输入张量展平为 `[B*H*P, hidden_dim]`，导致后续 `mean(dim=2)` 操作维度错误
+   - 修复: 使用 `torch.einsum("BHPD->BHD", patch_hidden) / float(num_patches)` 保持正确形状
+
+2. **batch 维度不一致** (`train_joint.py`)
+   - 问题: `z_history[:-1]` 使用 T 个元素，但 `advantages` 由 `rewards[:-1]` 计算只有 T-1 个元素
+   - 修复: 统一使用 `[T-1]` 索引确保所有张量维度一致
+
+3. **EMA 更新 in-place 错误** (`joint_trainer.py`)
+   - 问题: 对需要梯度的参数执行 in-place 乘法操作
+   - 修复: 使用 `torch.no_grad()` 包裹 EMA 更新代码
+
 ## 待实现清单
 
 - [ ] `src/rl/grpo_learner.py` - GRPO 训练器

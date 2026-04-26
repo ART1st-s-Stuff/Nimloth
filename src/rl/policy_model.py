@@ -55,7 +55,7 @@ class PolicyModel(nn.Module):
 
         # === 基础 Transformer（处理 z_history） ===
         self.patch_token_proj = nn.Linear(self.token_dim, hidden_dim)
-        self.patch_pool = nn.Linear(hidden_dim, hidden_dim)
+        # 使用 Einstein sum 实现 patch 维度的平均，保持 [B, H, 1, D] 形状
         self.pos_embedding = nn.Parameter(torch.zeros(1, history_len, hidden_dim))
 
         encoder_layer = nn.TransformerEncoderLayer(
@@ -122,7 +122,8 @@ class PolicyModel(nn.Module):
 
         # 1. 处理 latent 历史
         patch_hidden = self.patch_token_proj(z_history)  # [B, H, P, hidden_dim]
-        pooled = self.patch_pool(patch_hidden).mean(dim=2)  # [B, H, hidden_dim]
+        # Patch 维度平均，使用 einsum 保持形状 [B, H, hidden_dim]
+        pooled = torch.einsum("BHPD->BHD", patch_hidden) / float(self.num_patches)  # [B, H, hidden_dim]
         pooled = pooled + self.pos_embedding[:, : pooled.size(1), :]
         hidden = self.encoder(pooled)[:, -1, :]  # [B, hidden_dim]
 

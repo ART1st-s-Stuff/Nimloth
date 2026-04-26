@@ -485,28 +485,24 @@ def main(cfg: DictConfig) -> None:
 
         # 2. 计算优势
         with torch.no_grad():
-            flat_rewards = storage.rewards[:-1].flatten()
-            flat_values = storage.values[:-1].flatten()
-            flat_dones = storage.dones[:-1].flatten()
-            last_values = storage.values[-1].flatten()
-
+            T, B = storage.num_steps, storage.num_envs
             advantages, returns = trainer.compute_advantages(
-                storage.rewards[:-1],
-                storage.values[:-1],
-                storage.dones[:-1],
-                storage.values[-1],
+                storage.rewards[:-1],  # [T-1, B]
+                storage.values[:-1],  # [T, B]
+                storage.dones[:-1],   # [T-1, B]
+                storage.values[-1],  # [B]
             )
 
-            # 展平存储到 batch
-            T, B = storage.num_steps, storage.num_envs
+            # 展平存储到 batch (所有使用 T-1 以保持一致)
+            T_B = (T - 1) * B
             flat_advantages = advantages.flatten()
             flat_returns = returns.flatten()
 
-        # 准备 batch
-        flat_z_history = storage.z_history[:-1].reshape(T * B, env.history_len, env.num_patches, env.token_dim)
-        flat_actions = storage.actions.reshape(T * B, env_cfg.action_dim)
-        flat_old_log_probs = storage.log_probs.reshape(T * B)
-        flat_semantic = storage.semantic[:-1].reshape(T * B, env_cfg.semantic_dim) if storage.semantic is not None else None
+        # 准备 batch (所有使用 T-1 以保持与 advantages 一致)
+        flat_z_history = storage.z_history[:-2].reshape(T_B, env.history_len, env.num_patches, env.token_dim)
+        flat_actions = storage.actions[:-1].reshape(T_B, env_cfg.action_dim)
+        flat_old_log_probs = storage.log_probs[:-1].reshape(T_B)
+        flat_semantic = storage.semantic[:-2].reshape(T_B, env_cfg.semantic_dim) if storage.semantic is not None else None
 
         batch = {
             "z_history": flat_z_history,

@@ -42,7 +42,7 @@ class ValueNetwork(nn.Module):
 
         # === Latent 历史编码 ===
         self.patch_token_proj = nn.Linear(token_dim, hidden_dim)
-        self.patch_pool = nn.Linear(hidden_dim, hidden_dim)
+        self.num_patches = num_patches
         self.pos_embedding = nn.Parameter(torch.zeros(1, history_len, hidden_dim))
 
         encoder_layer = nn.TransformerEncoderLayer(
@@ -98,7 +98,7 @@ class ValueNetwork(nn.Module):
         B = z_history.size(0)
 
         patch_hidden = self.patch_token_proj(z_history)
-        pooled = self.patch_pool(patch_hidden).mean(dim=2)
+        pooled = torch.einsum("BHPD->BHD", patch_hidden) / float(self.num_patches)
         pooled = pooled + self.pos_embedding[:, : pooled.size(1), :]
         hidden = self.encoder(pooled)[:, -1, :]
 
