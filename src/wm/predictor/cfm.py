@@ -1,4 +1,4 @@
-"""世界模型实现：CFM（Transformer+CrossAttn）和 LeWM（AdaLN-Zero 自回归预测器）。"""
+"""CFM（条件流匹配）世界模型实现。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def _update_ema(target: nn.Module, source: nn.Module, decay: float) -> None:
 
 def _cfm_modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """AdaLN 调制：x * (1 + scale) + shift"""
-    return x * (1 + scale) + shift
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
 class _CFMAdaLNZeroBlock(nn.Module):
@@ -31,7 +31,7 @@ class _CFMAdaLNZeroBlock(nn.Module):
         self,
         hidden_dim: int,
         num_heads: int,
-        mlp_dim: int,
+        mlp_dim: float,
         dropout: float,
     ) -> None:
         super().__init__()
@@ -44,13 +44,12 @@ class _CFMAdaLNZeroBlock(nn.Module):
         )
         self.mlp_norm = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
         self.mlp = nn.Sequential(
-            nn.Linear(hidden_dim, mlp_dim),
+            nn.Linear(hidden_dim, int(mlp_dim)),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(mlp_dim, hidden_dim),
+            nn.Linear(int(mlp_dim), hidden_dim),
             nn.Dropout(dropout),
         )
-        # AdaLN-Zero: 6 个调制参数，全部零初始化确保初始为恒等映射
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_dim, 6 * hidden_dim, bias=True),
@@ -62,7 +61,8 @@ class _CFMAdaLNZeroBlock(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
             self.adaLN_modulation(c).chunk(6, dim=-1)
         )
-        # 双向注意力（无 causal mask）
+        gate_msa = gate_msa.unsqueeze(1)
+        gate_mlp = gate_mlp.unsqueeze(1)
         attn_out, _ = self.attn(self.attn_norm(x), self.attn_norm(x), self.attn_norm(x))
         x = x + gate_msa * _cfm_modulate(self.attn_norm(attn_out), shift_msa, scale_msa)
         x = x + gate_mlp * _cfm_modulate(self.mlp_norm(self.mlp(self.mlp_norm(x))), shift_mlp, scale_mlp)
@@ -70,7 +70,7 @@ class _CFMAdaLNZeroBlock(nn.Module):
 
 
 class ActionConditioning(nn.Module):
-    """Film 条件化（AdaLN 保留用于未来扩展）。"""
+    """Film 条件化。"""
 
     def __init__(self, hidden_dim: int, action_dim: int, mode: str) -> None:
         super().__init__()
@@ -92,7 +92,13 @@ class ActionConditioning(nn.Module):
 
 
 class CFMWorldModel(nn.Module):
-    """条件流匹配世界模型：学习速度场 v_theta(x_t, t | history, action)。"""
+    """条件流匹配世界模型：学习速度场 v_theta(x_t, t | history, action)。
+
+    SIGReg 支持（方案1）：
+        - 支持 SIGRegEncoderDecoder 将输入编码到 SIGReg latent space
+        - 在该空间应用 SIGReg 正则化训练 encoder
+        - Decoder 将预测结果映射回原始空间
+    """
 
     def __init__(
         self,
@@ -113,18 +119,53 @@ class CFMWorldModel(nn.Module):
         t_eps: float = 1e-3,
         noise_std: float = 1.0,
         x0_source: str = "current_latent",
+        sigreg_enabled: bool = False,
+        sigreg_latent_dim: int | None = None,
+        sigreg_encoder_hidden_dim: int | None = None,
+        sigreg_encoder_num_layers: int = 2,
+        sigreg_num_quadrature_points: int = 16,
+        sigreg_num_proj: int = 256,
+        sigreg_t_min: float = 0.2,
+        sigreg_t_max: float = 4.0,
+        sigreg_kernel_sigma: float = 1.0,
     ) -> None:
+        from src.wm.sigreg_modules import SIGRegEncoderDecoder, SIGReg
+
         super().__init__()
         self.history_len = history_len
         self.latent_dim = latent_dim
         self.num_patches = int(num_patches)
         self.token_dim = int(token_dim)
+        self.sigreg_enabled = sigreg_enabled
         if self.num_patches <= 0 or self.token_dim <= 0:
             raise ValueError(f"非法 patch 配置: num_patches={self.num_patches}, token_dim={self.token_dim}")
         expected_latent_dim = self.num_patches * self.token_dim
         if int(self.latent_dim) != int(expected_latent_dim):
             raise ValueError(f"latent_dim 与 patch 配置不一致: {latent_dim} != {expected_latent_dim}")
-        self.token_proj = nn.Linear(self.token_dim, hidden_dim)
+
+        self.sigreg_ed: SIGRegEncoderDecoder | None = None
+        self.sigreg: SIGReg | None = None
+        if sigreg_enabled:
+            ed_latent_dim = sigreg_latent_dim or token_dim
+            self.sigreg_ed = SIGRegEncoderDecoder(
+                token_dim=token_dim,
+                sigreg_latent_dim=ed_latent_dim,
+                hidden_dim=sigreg_encoder_hidden_dim,
+                num_layers=sigreg_encoder_num_layers,
+                dropout=dropout,
+            )
+            self.sigreg = SIGReg(
+                num_quadrature_points=sigreg_num_quadrature_points,
+                num_proj=sigreg_num_proj,
+                t_min=sigreg_t_min,
+                t_max=sigreg_t_max,
+                kernel_sigma=sigreg_kernel_sigma,
+            )
+            transformer_token_dim = ed_latent_dim
+        else:
+            transformer_token_dim = token_dim
+
+        self.token_proj = nn.Linear(transformer_token_dim, hidden_dim)
         self.time_embedding = nn.Parameter(torch.zeros(1, history_len, 1, hidden_dim))
         self.patch_embedding = nn.Parameter(torch.zeros(1, 1, self.num_patches, hidden_dim))
         action_mode = action_input_mode.strip().lower()
@@ -151,7 +192,7 @@ class CFMWorldModel(nn.Module):
         self.t_eps = float(t_eps)
         self.fm_noise_std = float(noise_std)
         self.conditioning_film = ActionConditioning(hidden_dim=hidden_dim, action_dim=action_dim, mode="film")
-        self.xt_proj = nn.Linear(self.token_dim, hidden_dim)
+        self.xt_proj = nn.Linear(transformer_token_dim, hidden_dim)
         self.t_embed = nn.Sequential(
             nn.Linear(1, hidden_dim),
             nn.SiLU(),
@@ -166,20 +207,18 @@ class CFMWorldModel(nn.Module):
             batch_first=True,
         )
         self.history_cross_attention_norm = nn.LayerNorm(hidden_dim)
-        # AdaLN-Zero encoder：用自定义 block 替换标准 TransformerEncoder
         mlp_dim = hidden_dim * 4
         self.encoder_layers = nn.ModuleList([
             _CFMAdaLNZeroBlock(hidden_dim, num_heads, mlp_dim, dropout)
             for _ in range(num_layers)
         ])
         self.encoder_norm = nn.LayerNorm(hidden_dim)
-        # 动作条件投影（用于 encoder 内部的 AdaLN-Zero 调制）
         self.action_cond_proj = nn.Linear(action_dim, hidden_dim)
         self.head = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim, self.token_dim),
+            nn.Linear(hidden_dim, transformer_token_dim),
         )
 
     def _validate_inputs(self, z_history: torch.Tensor, action_history: torch.Tensor) -> None:
@@ -210,9 +249,7 @@ class CFMWorldModel(nn.Module):
         if self.history_len <= 1:
             raise ValueError("history_len 必须大于 1，才能进行 history cross-attention。")
         history_tokens = x[:, :-1, :, :].reshape(x.size(0), (self.history_len - 1) * self.num_patches, x.size(-1))
-        # 投影动作条件用于 AdaLN-Zero 调制
         c = self.action_cond_proj(action_cond)
-        # 通过 AdaLN-Zero encoder
         for layer in self.encoder_layers:
             history_tokens = layer(history_tokens, c)
         return self.encoder_norm(history_tokens)
@@ -234,21 +271,25 @@ class CFMWorldModel(nn.Module):
         z_history: torch.Tensor,
         action_history: torch.Tensor,
     ) -> torch.Tensor:
-        """预测连续时间速度场 v_theta(x_t, t | history, action)。"""
+        """预测速度场 v_theta(x_t, t | history, action)。"""
+        if self.sigreg_ed is not None:
+            B, P, D = x_t.shape
+            x_t_encoded = self.sigreg_ed.encode(x_t)
+            z_history_flat = z_history.reshape(B, -1, D)
+            z_history_encoded = self.sigreg_ed.encode(z_history_flat)
+            z_history = z_history_encoded.reshape_as(z_history_flat).reshape_as(z_history)
+        else:
+            x_t_encoded = x_t
+
         action_cond = action_history[:, -1, :]
         history_tokens = self._encode_history_tokens(
             z_history=z_history,
             action_history=action_history,
             action_cond=action_cond,
         )
-        t = self._expand_time(
-            t=t,
-            batch_size=x_t.size(0),
-            device=x_t.device,
-            dtype=x_t.dtype,
-        )
+        t = self._expand_time(t=t, batch_size=x_t.size(0), device=x_t.device, dtype=x_t.dtype)
         t_cond = self.t_embed(t.reshape(x_t.size(0), 1)).unsqueeze(1)
-        query_tokens = self.xt_proj(x_t) + t_cond
+        query_tokens = self.xt_proj(x_t_encoded) + t_cond
         cross_out, _ = self.history_cross_attention(
             query=query_tokens,
             key=history_tokens,
@@ -262,9 +303,33 @@ class CFMWorldModel(nn.Module):
         elif self.action_input_mode == "film":
             conditioned = self.conditioning_film(tokens=conditioned, action_cond=action_cond)
         elif self.action_input_mode == "adaln":
-            # adaln 模式下已由 encoder 的 AdaLN-Zero 处理，此处为 no-op
             pass
-        return self.head(conditioned)
+        output = self.head(conditioned)
+
+        if self.sigreg_ed is not None:
+            output = self.sigreg_ed.decode(output)
+
+        return output
+
+    def compute_sigreg(self, z_sequence: torch.Tensor) -> torch.Tensor:
+        """计算 SIGReg 正则损失。"""
+        if self.sigreg is None or self.sigreg_ed is None:
+            raise RuntimeError("SIGReg 未启用，无法计算 SIGReg 损失")
+
+        if z_sequence.dim() == 4:
+            B, T, P, D = z_sequence.shape
+            z_flat = z_sequence.reshape(B, T * P, D)
+        else:
+            z_flat = z_sequence
+
+        z_encoded = self.sigreg_ed.encode(z_flat)
+
+        if z_sequence.dim() == 4:
+            z_encoded = z_encoded.reshape(T, B, P, -1)
+        else:
+            z_encoded = z_encoded.permute(1, 0, 2)
+
+        return self.sigreg(z_encoded)
 
     def _integrate_next(
         self,
@@ -323,8 +388,8 @@ class WMModel(Model):
         self,
         *,
         wm: CFMWorldModel,
-        inverse_dynamics: InverseDynamicsModel,
-        action_mapper: ActionMapper,
+        inverse_dynamics: Any,
+        action_mapper: Any,
         wm_optimizer: torch.optim.Optimizer,
         idm_optimizer: torch.optim.Optimizer,
         wm_scheduler: Any,
@@ -390,7 +455,6 @@ class WMModel(Model):
         if self.training_mode in {"unsupervised", "semi_supervised"}:
             pred_action = self.idm(z_history.detach() if self.training_mode == "semi_supervised" else z_history)
         rollout_horizon = int(z_future.size(1))
-        # 每步预测后都用对应 GT latent 校准 history window，避免纯预测长链滚动。
         teacher_z = z_history
         teacher_action = action_history.clone()
         loss_recon_steps: list[torch.Tensor] = []
@@ -435,7 +499,6 @@ class WMModel(Model):
         if self.training_mode in {"unsupervised", "semi_supervised"}:
             pred_action = self.idm(z_history.detach() if self.training_mode == "semi_supervised" else z_history)
         rollout_horizon = int(z_future.size(1))
-        # 每步预测后都用对应 GT latent 校准 history window，避免纯预测长链滚动。
         teacher_z = z_history
         teacher_action = action_history.clone()
         loss_recon_steps: list[torch.Tensor] = []
@@ -466,16 +529,21 @@ class WMModel(Model):
         loss_sigreg = torch.tensor(0.0, device=self.device)
         current_sigreg_weight = 0.0
         if self.sigreg_enabled:
-            loss_sigreg = sigreg_loss(
-                latent_for_reg,
-                num_projections=self.sigreg_num_projections,
-                num_quadrature_points=self.sigreg_num_quadrature_points,
-                t_min=self.sigreg_t_min,
-                t_max=self.sigreg_t_max,
-                kernel_sigma=self.sigreg_kernel_sigma,
-            )
+            if hasattr(self.wm, "compute_sigreg") and callable(getattr(self.wm, "compute_sigreg")):
+                loss_sigreg = self.wm.compute_sigreg(latent_for_reg)
+            else:
+                loss_sigreg = sigreg_loss(
+                    latent_for_reg,
+                    num_projections=self.sigreg_num_projections,
+                    num_quadrature_points=self.sigreg_num_quadrature_points,
+                    t_min=self.sigreg_t_min,
+                    t_max=self.sigreg_t_max,
+                    kernel_sigma=self.sigreg_kernel_sigma,
+                )
             if self.sigreg_target_weight > 0.0 and self.sigreg_warmup_steps > 0:
-                current_sigreg_weight = self.sigreg_target_weight * min(1.0, float(self._global_step + 1) / float(self.sigreg_warmup_steps))
+                current_sigreg_weight = self.sigreg_target_weight * min(
+                    1.0, float(self._global_step + 1) / float(self.sigreg_warmup_steps)
+                )
         loss_action = torch.tensor(0.0, device=self.device)
         loss_action_weighted = torch.tensor(0.0, device=self.device)
         shared_backward = self.training_mode == "semi_supervised" and (not self.detach_idm_in_wm)
@@ -570,4 +638,3 @@ class WMModel(Model):
     def reset_step_counter(self) -> None:
         self._epoch = 0
         self._global_step = 0
-

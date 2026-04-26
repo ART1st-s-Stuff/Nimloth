@@ -21,7 +21,7 @@ from src.utils.env import load_project_env
 from src.utils.io import ensure_dir, write_json
 from src.utils.path_resolver import resolve_latest_path
 from src.visualize.wandb_tracker import init_tracker
-from src.wm.encoders import build_wm_image_encoder
+from src.wm.encoder import build_wm_image_encoder
 from src.wm.inverse_dynamics import InverseDynamicsModel
 from src.wm.action_mapper import ActionMapper, build_action_mapper
 from src.wm.factory import build_world_model, resolve_patch_layout

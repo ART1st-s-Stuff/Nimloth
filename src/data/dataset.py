@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 import torch
 from torch.utils.data import Dataset
-from src.wm.encoders import WMImageEncoder
+from src.wm.encoder import WMImageEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -145,10 +145,6 @@ class WMDataset(Dataset):
         self.temporal_stride_steps = self._sample_stride(max_valid_stride=self.temporal_stride_max)
         self.image_encoder = image_encoder
         self.latent_cache_path = Path(latent_cache_path) if latent_cache_path else None
-        # 检测 latent_cache_path 是否为分块目录（而非单 .pt 文件）
-        if self.latent_cache_path and self.latent_cache_path.is_dir():
-            self._chunk_mode = True
-            self._cache_dir = self.latent_cache_path
         self.encoder_num_workers = max(1, int(encoder_num_workers))
         self.encoder_batch_size = max(1, int(encoder_batch_size))
         self.expected_num_patches = max(0, int(expected_num_patches))
@@ -156,9 +152,13 @@ class WMDataset(Dataset):
         self.on_latent_progress = on_latent_progress
         self.lazy_mode = lazy_mode
         self.encoder_queue = encoder_queue
-        # 分块模式相关
+        # 分块模式相关（初始为 False，会在 _init_lazy_mode 中覆盖）
         self._chunk_mode = False
         self._cache_dir: Path | None = None
+        # 如果 latent_cache_path 是目录，在这里提前设置（会被 _init_lazy_mode 再次确认）
+        if self.latent_cache_path and self.latent_cache_path.is_dir():
+            self._chunk_mode = True
+            self._cache_dir = self.latent_cache_path
         self._sample_episode_map: list[int] = []  # 样本索引 -> episode_id
         self._episode_latent_cache: dict[int, dict[str, torch.Tensor]] = {}  # episode_id -> latents
         self._episode_ready: dict[int, bool] = {}  # episode_id -> 是否就绪
@@ -197,7 +197,8 @@ class WMDataset(Dataset):
             scene = metadata.get("scene", "unknown")
             episode_id = int(sample.get("episode_id", -1))
             episode_key = f"{scene}_{episode_id}"
-            self._sample_episode_map.append(episode_id)
+            # 存储完整的 episode_key（包含 scene），用于区分不同 scene 的相同 episode_id
+            self._sample_episode_map.append(episode_key)
             episode_to_indices.setdefault(episode_key, []).append(idx)
         for episode_indices in episode_to_indices.values():
             min_history_last = self.history_len - 1
@@ -331,30 +332,63 @@ class WMDataset(Dataset):
                 )
 
     def _reload_chunked_cache(self) -> None:
-        """从分块 cache 目录加载已完成 episode 的 latents。"""
+        """从分块 cache 目录加载已完成 episode 的 latents。
+
+        支持两种文件命名格式：
+        1. 整数格式：episode_{id:04d}.pt（如 episode_0000.pt）
+        2. 场景格式：episode_{scene}_{id}.pt（如 episode_FloorPlan1_0.pt）
+
+        .ready marker 文件始终使用场景格式（由 encoder 写入）。
+        """
         from src.train.latent_cache import build_episode_ready_path, list_completed_episodes
 
         if self._cache_dir is None:
             return
 
         completed = list_completed_episodes(self._cache_dir)
-        for ep_id in completed:
-            if ep_id in self._episode_ready and self._episode_ready[ep_id]:
+        for episode_key in completed:
+            if episode_key in self._episode_ready and self._episode_ready[episode_key]:
                 continue  # 已加载
 
-            ep_path = self._cache_dir / f"episode_{ep_id:04d}.pt"
-            if not ep_path.exists():
+            # episode_key 格式："{scene}_{episode_id}" 或纯整数（如 "FloorPlan1_0" 或 "42"）
+            # 尝试解析为整数 episode_id
+            try:
+                _, ep_id_str = episode_key.rsplit("_", 1)
+                ep_id = int(ep_id_str)
+            except (ValueError, IndexError):
+                # 如果不是 scene_id 格式，可能是纯整数
+                try:
+                    ep_id = int(episode_key)
+                except ValueError:
+                    ep_id = -1
+
+            # 尝试多种可能的文件名格式
+            possible_paths = []
+            if ep_id >= 0:
+                # 整数格式：episode_0000.pt
+                possible_paths.append(self._cache_dir / f"episode_{ep_id:04d}.pt")
+            # episode_key 格式（保留原始格式）
+            safe_key = episode_key.replace(" ", "_").replace("/", "_").replace("\\", "_")
+            possible_paths.append(self._cache_dir / f"episode_{safe_key}.pt")
+
+            ep_path = None
+            for p in possible_paths:
+                if p.exists():
+                    ep_path = p
+                    break
+
+            if ep_path is None:
                 continue
 
             try:
                 payload = torch.load(ep_path, map_location="cpu")
                 latents = payload.get("latents", {})
                 if isinstance(latents, dict):
-                    self._episode_latent_cache[ep_id] = latents
-                    self._episode_ready[ep_id] = True
-                    logger.debug("加载 episode %d: %d 个 latent", ep_id, len(latents))
+                    self._episode_latent_cache[episode_key] = latents
+                    self._episode_ready[episode_key] = True
+                    logger.debug("加载 episode_key=%s: %d 个 latent", episode_key, len(latents))
             except Exception as exc:
-                logger.warning("加载 episode %d cache 失败: %s", ep_id, exc)
+                logger.warning("加载 episode_key=%s cache 失败: %s", episode_key, exc)
 
     def _poll_chunked_cache(self) -> None:
         """后台线程：定期检查分块 cache 目录，补充 _episode_latent_cache。"""
@@ -374,32 +408,61 @@ class WMDataset(Dataset):
                         current_episode = state.get("current_episode", -1)
                     except Exception:
                         pass
-                    except Exception:
-                        pass
 
                 completed = list_completed_episodes(self._cache_dir)
-                for ep_id in completed:
-                    if ep_id in self._episode_ready and self._episode_ready[ep_id]:
+                for episode_key in completed:
+                    if episode_key in self._episode_ready and self._episode_ready[episode_key]:
                         continue
-                    ep_path = self._cache_dir / f"episode_{ep_id:04d}.pt"
-                    if ep_path.exists():
+                    # 从 episode_key 提取整数 episode_id（格式："{scene}_{episode_id}"）
+                    try:
+                        _, ep_id_str = episode_key.rsplit("_", 1)
+                        ep_id = int(ep_id_str)
+                    except (ValueError, IndexError):
+                        try:
+                            ep_id = int(episode_key)
+                        except ValueError:
+                            ep_id = -1
+
+                    # 尝试多种可能的文件名格式
+                    possible_paths = []
+                    if ep_id >= 0:
+                        possible_paths.append(self._cache_dir / f"episode_{ep_id:04d}.pt")
+                    safe_key = episode_key.replace(" ", "_").replace("/", "_").replace("\\", "_")
+                    possible_paths.append(self._cache_dir / f"episode_{safe_key}.pt")
+
+                    ep_path = None
+                    for p in possible_paths:
+                        if p.exists():
+                            ep_path = p
+                            break
+
+                    if ep_path:
                         try:
                             payload = torch.load(ep_path, map_location="cpu")
                             latents = payload.get("latents", {})
                             if isinstance(latents, dict):
-                                self._episode_latent_cache[ep_id] = latents
-                                self._episode_ready[ep_id] = True
-                                logger.info("检测到 episode %d 就绪（%d latent）", ep_id, len(latents))
+                                self._episode_latent_cache[episode_key] = latents
+                                self._episode_ready[episode_key] = True
+                                logger.info("检测到 episode_key=%s 就绪（%d latent）", episode_key, len(latents))
                         except Exception:
                             pass
 
                 # 检测 encoder 是否卡住（encoder 当前在编码的 episode 远落后于训练需要的）
-                max_ready_ep = max([e for e, r in self._episode_ready.items() if r], default=-1)
-                # 如果 encoder 编码的 episode 落后于已就绪 episode 超过 10 个，发出警告
-                if current_episode >= 0 and max_ready_ep >= 0 and current_episode < max_ready_ep - 10:
+                # 找出最大的已就绪 episode_id
+                max_ready_ep_id = -1
+                for k, ready in self._episode_ready.items():
+                    if ready:
+                        try:
+                            _, ep_str = k.rsplit("_", 1)
+                            ep_num = int(ep_str)
+                            if ep_num > max_ready_ep_id:
+                                max_ready_ep_id = ep_num
+                        except (ValueError, IndexError):
+                            pass
+                if current_episode >= 0 and max_ready_ep_id >= 0 and current_episode < max_ready_ep_id - 10:
                     logger.warning(
                         "encoder 进度落后: encoder 在 episode %d, 已就绪到 episode %d, 差距=%d",
-                        current_episode, max_ready_ep, max_ready_ep - current_episode
+                        current_episode, max_ready_ep_id, max_ready_ep_id - current_episode
                     )
 
             time.sleep(poll_interval)
@@ -633,13 +696,12 @@ class WMDataset(Dataset):
         self.image_encoder = None
 
     def _warmup_latent_cache(self) -> None:
-        if self.image_encoder is None:
-            return
         cache_path = self.latent_cache_path
         # 分块目录模式不通过单文件 warmup 加载，由后台线程按需补充
         if cache_path is not None and cache_path.is_dir():
             logger.info("latent cache 为分块目录，跳过单文件 warmup，依赖后台线程按需加载。")
             return
+        # 当 latent_cache_path 存在但 image_encoder=None 时，直接从文件加载缓存（用于评估模式）
         if cache_path is not None and cache_path.exists():
             payload = torch.load(cache_path, map_location="cpu")
             latents = payload.get("latents", {}) if isinstance(payload, dict) else {}
@@ -665,34 +727,43 @@ class WMDataset(Dataset):
                     )
                     if matches_flat_dim or matches_patch_layout:
                         self._latent_cache[key] = value.detach().cpu()
-        unique_paths = {str(sample["image_path"]) for sample in self.samples if "image_path" in sample}
-        missing_paths = [path for path in unique_paths if path not in self._latent_cache]
-        if not missing_paths:
-            logger.info("latent 缓存已命中: %d 张图像，无需预编码。", len(self._latent_cache))
-            if self.on_latent_progress is not None:
-                self.on_latent_progress(0, 0)
-            return
-        logger.info(
-            "开始预编码 latent: 总图像=%d, 待编码=%d, workers=%d, batch_size=%d",
-            len(unique_paths),
-            len(missing_paths),
-            self.encoder_num_workers,
-            self.encoder_batch_size,
-        )
-        flush_every = 500
-        for start in range(0, len(missing_paths), self.encoder_batch_size):
-            batch_paths = missing_paths[start : start + self.encoder_batch_size]
-            batch_outputs = self.image_encoder.encode_image_paths(batch_paths)
-            for image_path, output in zip(batch_paths, batch_outputs, strict=True):
-                self._latent_cache[image_path] = output.z.detach().cpu()
-            done = start + len(batch_paths)
-            if self.on_latent_progress is not None:
-                self.on_latent_progress(done, len(missing_paths))
-            if done % flush_every == 0:
-                logger.info("latent 预编码进度: %d/%d", done, len(missing_paths))
+            unique_paths = {str(sample["image_path"]) for sample in self.samples if "image_path" in sample}
+            missing_paths = [path for path in unique_paths if path not in self._latent_cache]
+            if not missing_paths:
+                logger.info("latent 缓存已命中: %d 张图像，无需预编码。", len(self._latent_cache))
+                if self.on_latent_progress is not None:
+                    self.on_latent_progress(0, 0)
+                return
+            # 如果 image_encoder=None（评估模式）但有缓存缺失，发出警告
+            if self.image_encoder is None:
+                logger.warning(
+                    "latent 缓存部分缺失（缺失=%d/%d），在评估模式下应使用完整缓存。",
+                    len(missing_paths),
+                    len(unique_paths),
+                )
+            else:
+                # 有 encoder，正常预编码
+                logger.info(
+                    "开始预编码 latent: 总图像=%d, 待编码=%d, workers=%d, batch_size=%d",
+                    len(unique_paths),
+                    len(missing_paths),
+                    self.encoder_num_workers,
+                    self.encoder_batch_size,
+                )
+                flush_every = 500
+                for start in range(0, len(missing_paths), self.encoder_batch_size):
+                    batch_paths = missing_paths[start : start + self.encoder_batch_size]
+                    batch_outputs = self.image_encoder.encode_image_paths(batch_paths)
+                    for image_path, output in zip(batch_paths, batch_outputs, strict=True):
+                        self._latent_cache[image_path] = output.z.detach().cpu()
+                    done = start + len(batch_paths)
+                    if self.on_latent_progress is not None:
+                        self.on_latent_progress(done, len(missing_paths))
+                    if done % flush_every == 0:
+                        logger.info("latent 预编码进度: %d/%d", done, len(missing_paths))
+                        self._save_latent_cache(cache_path)
                 self._save_latent_cache(cache_path)
-        self._save_latent_cache(cache_path)
-        logger.info("latent 预编码完成: 新增=%d, 缓存总量=%d", len(missing_paths), len(self._latent_cache))
+                logger.info("latent 预编码完成: 新增=%d, 缓存总量=%d", len(missing_paths), len(self._latent_cache))
 
     def _save_latent_cache(self, cache_path: Path | None) -> None:
         if cache_path is None:

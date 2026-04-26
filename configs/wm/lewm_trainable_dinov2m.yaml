@@ -1,0 +1,36 @@
+# LeWM（Latent Energy World Model）+ 可微调 DINOv2-M 编码器配置
+# 方案2：图像 encoder 微调 + SIGReg 正则化
+# - DINOv2 backbone 可训练
+# - SIGReg 作为 encoder 输出的约束
+name: lewm_trainable_dinov2m
+hidden_dim: 512
+latent_dim: 6144
+action_dim: 3
+history_len: 4
+transformer:
+  num_layers: 6
+  num_heads: 16
+  dim_head: 64
+  mlp_ratio: 4.0
+  dropout: 0.1
+inverse_dynamics:
+  hidden_dim: 512
+  num_layers: 3
+  num_heads: 4
+  dropout: 0.1
+encoder:
+  # 方案2：可微调 encoder（区分来源：lewm_trainable）
+  name: lewm_trainable_dinov2m
+  backbone_name: dinov2_vits14
+  freeze_backbone: false  # 允许微调
+  image_size: 224
+  patch_size: 56
+  num_patches: 16
+  token_strategy: patch_tokens
+lewm:
+  dim_head: 64
+  mlp_ratio: 4.0
+  emb_dropout: 0.0
+  # SIGReg 统计量参数（由训练配置中的 sigreg.* 控制）
+  sigreg_knots: 17
+  sigreg_num_proj: 256

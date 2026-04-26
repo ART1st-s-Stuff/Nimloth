@@ -19,7 +19,7 @@ from src.utils.path_resolver import resolve_latest_path
 from src.utils.run_output import build_run_output_dir
 from src.vlm.qwen_adapter import QwenVLMAdapter
 from src.vlm.semantic_state import SemanticStateGenerator
-from src.wm.encoders import build_wm_image_encoder
+from src.wm.encoder import build_wm_image_encoder
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
@@ -30,12 +30,13 @@ def main(cfg: DictConfig) -> None:
     wm_cfg = cfg.wm
     vlm_cfg = cfg.vlm
     device = torch.device(str(train_cfg.device))
-    image_encoder = build_wm_image_encoder(wm_cfg=wm_cfg)
+    eval_split = str(train_cfg.get("eval_split", "val"))
+    # Val split 使用单文件 latent cache，不需要 encoder。Train split 使用目录模式缓存。
+    image_encoder = build_wm_image_encoder(wm_cfg=wm_cfg) if eval_split == "train" else None
     if image_encoder is None:
-        raise RuntimeError("未启用 WM 图像编码器，无法执行语义对齐评估。")
+        print("[eval_semantic_align] Val split: encoder disabled, using latent cache only.")
     manifests_cfg = dataset_cfg.get("manifests", {})
     manifests_cfg = dict(manifests_cfg)
-    eval_split = str(train_cfg.get("eval_split", "val"))
 
     def _resolve_eval_manifest_path(split: str) -> Path:
         return resolve_manifest_for_split(
@@ -71,7 +72,11 @@ def main(cfg: DictConfig) -> None:
     ckpt_path = resolve_latest_path(str(train_cfg.eval_ckpt_path))
     if not ckpt_path.exists():
         raise RuntimeError(f"未找到 semantic projector checkpoint: {ckpt_path}")
-    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    if "projector" in ckpt:
+        model.load_state_dict(ckpt["projector"])
+    else:
+        model.load_state_dict(ckpt)
     model.eval()
     vlm_model_name = str(OmegaConf.select(vlm_cfg, "model.hf_model_name", default="Qwen/Qwen2.5-VL-7B-Instruct"))
     vlm_max_new_tokens = int(OmegaConf.select(vlm_cfg, "model.max_new_tokens", default=128))
@@ -86,34 +91,42 @@ def main(cfg: DictConfig) -> None:
     same_intent_sims: list[float] = []
     diff_intent_sims: list[float] = []
     temporal_smooth_values: list[float] = []
+    total_batches = len(loader)
+    # 采样间隔：如果总批次数 > 1000，则每 N 批采样一次以加速评估
+    sample_interval = max(1, total_batches // 1000)
+    sampled_batches = 0
     with torch.no_grad():
         with progress_context() as progress:
-            task = progress.add_task("eval_semantic_align", total=max(1, len(loader)))
-            for batch in loader:
+            task = progress.add_task("eval_semantic_align", total=max(1, total_batches))
+            for batch_idx, batch in enumerate(loader):
+                # 只对采样的批次执行 VLM 推理
+                should_sample = (batch_idx % sample_interval == 0) or (batch_idx < 5)  # 前5个批次必采样
                 z_t = batch["z_t"].to(device)
                 z_t_pos = batch["z_t_pos"].to(device)
                 z_t_neg = batch["z_t_neg"].to(device)
                 pred_pos = model(z_t=z_t, z_tp=z_t_pos)
                 pred_neg = model(z_t=z_t, z_tp=z_t_neg)
-                for i in range(z_t.size(0)):
-                    out_t = semantic_generator.infer(
-                        image_path=batch["image_path"][i],
-                        history_image_paths=[batch["image_path"][i]],
-                        task_text=batch["task_text"][i],
-                        env_context=batch["env_context"][i],
-                    )
-                    out_tp = semantic_generator.infer(
-                        image_path=batch["pos_image_path"][i],
-                        history_image_paths=[batch["image_path"][i], batch["pos_image_path"][i]],
-                        task_text=batch["task_text"][i],
-                        env_context=batch["env_context"][i],
-                    )
-                    s_t = torch.nn.functional.normalize(out_t.s_t, dim=0)
-                    sim_same = torch.sum(s_t * torch.nn.functional.normalize(pred_pos[i].cpu(), dim=0)).item()
-                    sim_diff = torch.sum(s_t * torch.nn.functional.normalize(pred_neg[i].cpu(), dim=0)).item()
-                    same_intent_sims.append(float(sim_same))
-                    diff_intent_sims.append(float(sim_diff))
-                    temporal_smooth_values.append(float(torch.mean((out_t.s_t - out_tp.s_t) ** 2).item()))
+                if should_sample:
+                    sampled_batches += 1
+                    for i in range(z_t.size(0)):
+                        out_t = semantic_generator.infer(
+                            image_path=batch["image_path"][i],
+                            history_image_paths=[batch["image_path"][i]],
+                            task_text=batch["task_text"][i],
+                            env_context=batch["env_context"][i],
+                        )
+                        out_tp = semantic_generator.infer(
+                            image_path=batch["pos_image_path"][i],
+                            history_image_paths=[batch["image_path"][i], batch["pos_image_path"][i]],
+                            task_text=batch["task_text"][i],
+                            env_context=batch["env_context"][i],
+                        )
+                        s_t = torch.nn.functional.normalize(out_t.s_t, dim=0)
+                        sim_same = torch.sum(s_t * torch.nn.functional.normalize(pred_pos[i].cpu(), dim=0)).item()
+                        sim_diff = torch.sum(s_t * torch.nn.functional.normalize(pred_neg[i].cpu(), dim=0)).item()
+                        same_intent_sims.append(float(sim_same))
+                        diff_intent_sims.append(float(sim_diff))
+                        temporal_smooth_values.append(float(torch.mean((out_t.s_t - out_tp.s_t) ** 2).item()))
                 progress.update(task, advance=1)
     run_dir = build_run_output_dir(
         path_segments=[
@@ -128,6 +141,8 @@ def main(cfg: DictConfig) -> None:
         "diff_intent_similarity_mean": float(sum(diff_intent_sims) / max(1, len(diff_intent_sims))),
         "temporal_smooth_mse_mean": float(sum(temporal_smooth_values) / max(1, len(temporal_smooth_values))),
         "sample_count": len(same_intent_sims),
+        "total_batches": total_batches,
+        "sampled_batches": sampled_batches,
         "vlm_init_error": adapter.init_error,
     }
     write_json(Path(out_dir) / "semantic_align_eval_metrics.json", metrics)

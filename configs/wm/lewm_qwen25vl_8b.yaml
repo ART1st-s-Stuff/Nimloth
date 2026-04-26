@@ -20,7 +20,8 @@ encoder:
   backbone_name: qwen25vl_8b_vision
   freeze_backbone: false
   image_size: 448
-  token_strategy: patch_mean
+  num_patches: 16
+  token_strategy: patch_tokens
 lewm:
   dim_head: 64
   mlp_ratio: 4.0

@@ -23,12 +23,12 @@ from src.utils.env import load_project_env
 from src.utils.io import ensure_dir, write_json
 from src.utils.seed import set_seed
 from src.visualize.wandb_tracker import init_tracker
-from src.wm.encoders import build_wm_image_encoder
+from src.wm.encoder import build_wm_image_encoder, build_trainable_image_encoder
+from src.wm.encoder.dino import TrainableDinoV2Encoder
+from src.wm.predictor import WMModel, LeWMModel
 from src.wm.inverse_dynamics import InverseDynamicsModel
-from src.wm.model import WMModel
-from src.wm.lewm import LeWMModel
 from src.wm.action_mapper import build_action_mapper
-from src.wm.factory import build_world_model, resolve_patch_layout, resolve_wm_type
+from src.wm.factory import resolve_patch_layout
 
 
 def _count_trainable_params(module: torch.nn.Module) -> int:
@@ -51,6 +51,93 @@ def _linear_warmup_lambda(step: int, warmup_steps: int) -> float:
     if warmup_steps <= 0:
         return 1.0
     return min(1.0, max(0.0, float(step + 1) / float(warmup_steps)))
+
+
+def _train_step_with_encoder(
+    batch: Any,
+    wm_model: Any,
+    trainable_encoder: TrainableDinoV2Encoder | None,
+    encoder_optimizer: torch.optim.Optimizer | None,
+    encoder_scheduler: Any | None,
+    device: torch.device,
+    sigreg_weight: float,
+    global_step: int,
+    sigreg_warmup_steps: int,
+    grad_clip_norm: float,
+) -> tuple[dict[str, Any], torch.Tensor | None]:
+    """执行带有可微调 encoder 的训练步骤（方案2）。
+
+    Args:
+        batch: 训练数据批次
+        wm_model: WM 模型
+        trainable_encoder: 可微调 encoder（方案2）
+        encoder_optimizer: encoder 优化器
+        encoder_scheduler: encoder 学习率调度器
+        device: 计算设备
+        sigreg_weight: SIGReg 权重
+        global_step: 全局步数
+        sigreg_warmup_steps: SIGReg warmup 步数
+        grad_clip_norm: 梯度裁剪范数
+
+    Returns:
+        (step_metrics, encoder_loss): 训练指标和 encoder 损失
+    """
+    if trainable_encoder is None or encoder_optimizer is None:
+        prepared = {
+            "z_history": batch["z_history"].to(device),
+            "action_history": batch["action_history"].to(device),
+            "z_future": batch["z_future"].to(device),
+            "gt_action_future": batch["gt_action_future"].to(device),
+        }
+        return wm_model.train_step(prepared), None
+
+    # 方案2：需要处理图像 encoder 的前向和反向传播
+    z_history = batch["z_history"].to(device)
+    action_history = batch["action_history"].to(device)
+    z_future = batch["z_future"].to(device)
+    gt_action_future = batch["gt_action_future"].to(device)
+
+    # 计算 SIGReg 权重（带 warmup）
+    current_encoder_sigreg_weight = 0.0
+    if sigreg_weight > 0.0 and sigreg_warmup_steps > 0:
+        current_encoder_sigreg_weight = sigreg_weight * min(
+            1.0, float(global_step + 1) / float(sigreg_warmup_steps)
+        )
+
+    # Encoder 前向：计算 encoder 输出的 SIGReg 损失
+    encoder_sigreg_loss = torch.tensor(0.0, device=device)
+    if trainable_encoder.sigreg_enabled and current_encoder_sigreg_weight > 0.0:
+        # 对 z_history 和 z_future 应用 SIGReg
+        latent_seq = torch.cat([z_history, z_future], dim=1)  # [B, T, P, D]
+        encoder_sigreg_loss = trainable_encoder.compute_sigreg(latent_seq)
+
+    # 正常的 WM 训练步骤（使用缓存的 latent，不需要 encoder 前向）
+    prepared = {
+        "z_history": z_history,
+        "action_history": action_history,
+        "z_future": z_future,
+        "gt_action_future": gt_action_future,
+    }
+    wm_metrics = wm_model.train_step(prepared)
+
+    # 如果有 encoder SIGReg 损失，需要单独更新 encoder
+    if encoder_sigreg_loss > 0.0:
+        encoder_optimizer.zero_grad(set_to_none=True)
+        (current_encoder_sigreg_weight * encoder_sigreg_loss).backward()
+        torch.nn.utils.clip_grad_norm_(trainable_encoder.parameters(), grad_clip_norm)
+        encoder_optimizer.step()
+        # 更新 encoder scheduler（在 optimizer.step() 之后）
+        if encoder_scheduler is not None:
+            encoder_scheduler.step()
+
+        # 更新 encoder SIGReg 损失到 metrics
+        wm_metrics["loss_encoder_sigreg"] = float(encoder_sigreg_loss.item())
+        wm_metrics["encoder_sigreg_weight"] = current_encoder_sigreg_weight
+    else:
+        wm_metrics["loss_encoder_sigreg"] = 0.0
+        wm_metrics["encoder_sigreg_weight"] = 0.0
+
+    return wm_metrics, encoder_sigreg_loss
 
 
 def _cosine_annealing_lambda(
@@ -179,6 +266,36 @@ def main(cfg: DictConfig) -> None:
 
     if train_loader is None:
         raise RuntimeError("训练集 manifest 不存在，请先执行 collect_data。")
+
+    # 方案2：创建可微调 encoder（用于图像 encoder 微调 + SIGReg）
+    trainable_encoder = None
+    encoder_optimizer = None
+    encoder_scheduler = None
+    encoder_lr = float(train_cfg.get("encoder_lr", train_cfg.lr))
+    encoder_sigreg_weight = sigreg_target_weight
+    if sigreg_enabled:
+        trainable_encoder = build_trainable_image_encoder(wm_cfg=wm_cfg, train_cfg=train_cfg)
+        if trainable_encoder is not None:
+            logger.info(
+                "方案2：启用可微调图像 encoder + SIGReg，encoder_lr=%.6f, sigreg_weight=%.4f",
+                encoder_lr,
+                encoder_sigreg_weight,
+            )
+            trainable_encoder = trainable_encoder.to(device)
+            encoder_optimizer = torch.optim.AdamW(
+                trainable_encoder.parameters(), lr=encoder_lr, weight_decay=weight_decay
+            )
+            if cos_annealing_steps > 0:
+                encoder_scheduler = LambdaLR(
+                    encoder_optimizer,
+                    lr_lambda=lambda step: _cosine_annealing_lambda(
+                        step, warmup_steps, cos_annealing_steps, cos_min_lr_ratio
+                    ),
+                )
+            else:
+                encoder_scheduler = LambdaLR(
+                    encoder_optimizer, lr_lambda=lambda step: _linear_warmup_lambda(step, warmup_steps)
+                )
 
     data_provider = WMDataProvider(
         train_loader=train_loader,
@@ -358,31 +475,49 @@ def main(cfg: DictConfig) -> None:
                 epoch_recon_loss = 0.0
                 epoch_action_loss = 0.0
                 epoch_sigreg_loss = 0.0
+                epoch_encoder_sigreg_loss = 0.0
                 for batch_idx, batch in enumerate(data_provider.train(), start=1):
                     global_step += 1
                     wm_model._global_step = global_step
-                    prepared = wm_adapter.train_step(batch)
-                    step_metrics = wm_model.train_step(prepared)
+
+                    # 方案2：使用辅助函数处理 encoder 训练
+                    step_metrics, _ = _train_step_with_encoder(
+                        batch=batch,
+                        wm_model=wm_model,
+                        trainable_encoder=trainable_encoder,
+                        encoder_optimizer=encoder_optimizer,
+                        encoder_scheduler=encoder_scheduler,
+                        device=device,
+                        sigreg_weight=sigreg_target_weight,
+                        global_step=global_step,
+                        sigreg_warmup_steps=sigreg_warmup_steps,
+                        grad_clip_norm=grad_clip_norm,
+                    )
                     batch_loss = step_metrics["loss"]
                     if log_every_n_steps > 0 and (global_step == 1 or global_step % log_every_n_steps == 0):
-                        tracker.log_metrics(
-                            {
-                                "train_step/loss": batch_loss,
-                                "train_step/loss_recon": step_metrics["loss_recon"],
-                                "train_step/loss_action": step_metrics["loss_action"],
-                                "train_step/loss_sigreg": step_metrics["loss_sigreg"],
-                                "train_step/sigreg_weight": step_metrics["sigreg_weight"],
-                                "train_step/global_step": global_step,
-                                "train_step/epoch": epoch,
-                                "train_step/lr_wm": step_metrics["lr_wm"],
-                                "train_step/lr_idm": step_metrics["lr_idm"],
-                            },
-                            step=global_step,
-                        )
+                        log_data = {
+                            "train_step/loss": batch_loss,
+                            "train_step/loss_recon": step_metrics["loss_recon"],
+                            "train_step/loss_action": step_metrics["loss_action"],
+                            "train_step/loss_sigreg": step_metrics["loss_sigreg"],
+                            "train_step/sigreg_weight": step_metrics["sigreg_weight"],
+                            "train_step/global_step": global_step,
+                            "train_step/epoch": epoch,
+                            "train_step/lr_wm": step_metrics["lr_wm"],
+                            "train_step/lr_idm": step_metrics["lr_idm"],
+                        }
+                        # 方案2：添加 encoder 相关指标
+                        if trainable_encoder is not None:
+                            log_data["train_step/loss_encoder_sigreg"] = step_metrics.get("loss_encoder_sigreg", 0.0)
+                            log_data["train_step/encoder_sigreg_weight"] = step_metrics.get("encoder_sigreg_weight", 0.0)
+                            if encoder_scheduler is not None:
+                                log_data["train_step/lr_encoder"] = float(encoder_scheduler.get_last_lr()[0])
+                        tracker.log_metrics(log_data, step=global_step)
                     epoch_loss += batch_loss
                     epoch_recon_loss += step_metrics["loss_recon"]
                     epoch_action_loss += step_metrics["loss_action"]
                     epoch_sigreg_loss += step_metrics["loss_sigreg"]
+                    epoch_encoder_sigreg_loss += step_metrics.get("loss_encoder_sigreg", 0.0)
                     progress.update(
                         task,
                         advance=1,
@@ -395,18 +530,22 @@ def main(cfg: DictConfig) -> None:
                 avg_recon = epoch_recon_loss / max(1, len(train_loader))
                 avg_action = epoch_action_loss / max(1, len(train_loader))
                 avg_sigreg = epoch_sigreg_loss / max(1, len(train_loader))
-                tracker.log_metrics(
-                    {
-                        "train/loss": avg_loss,
-                        "train/loss_recon": avg_recon,
-                        "train/loss_action": avg_action,
-                        "train/loss_sigreg": avg_sigreg,
-                        "train/epoch": epoch,
-                        "train/lr_wm": float(wm_scheduler.get_last_lr()[0]),
-                        "train/lr_idm": float(idm_scheduler.get_last_lr()[0]),
-                    },
-                    step=epoch,
-                )
+                avg_encoder_sigreg = epoch_encoder_sigreg_loss / max(1, len(train_loader))
+                epoch_metrics = {
+                    "train/loss": avg_loss,
+                    "train/loss_recon": avg_recon,
+                    "train/loss_action": avg_action,
+                    "train/loss_sigreg": avg_sigreg,
+                    "train/epoch": epoch,
+                    "train/lr_wm": float(wm_scheduler.get_last_lr()[0]),
+                    "train/lr_idm": float(idm_scheduler.get_last_lr()[0]),
+                }
+                # 方案2：添加 encoder 相关指标
+                if trainable_encoder is not None:
+                    epoch_metrics["train/loss_encoder_sigreg"] = avg_encoder_sigreg
+                    if encoder_scheduler is not None:
+                        epoch_metrics["train/lr_encoder"] = float(encoder_scheduler.get_last_lr()[0])
+                tracker.log_metrics(epoch_metrics, step=epoch)
                 model_provider.save_checkpoint(
                     run_dir=run_dir,
                     state={
@@ -429,11 +568,15 @@ def main(cfg: DictConfig) -> None:
     ema_ckpt_path = Path(out_dir) / "wm_ema.pt"
     idm_ckpt_path = Path(out_dir) / "inverse_dynamics.pt"
     mapper_ckpt_path = Path(out_dir) / "action_mapper.pt"
+    encoder_ckpt_path = Path(out_dir) / "encoder.pt"
     torch.save(wm_module.state_dict(), ckpt_path)
     if wm_model._ema_model is not None:
         torch.save(wm_model._ema_model.state_dict(), ema_ckpt_path)
     torch.save(inverse_dynamics.state_dict(), idm_ckpt_path)
     torch.save(action_mapper.state_dict(), mapper_ckpt_path)
+    # 方案2：保存 encoder
+    if trainable_encoder is not None:
+        torch.save(trainable_encoder.state_dict(), encoder_ckpt_path)
     model_provider.save_checkpoint(
         run_dir=run_dir,
         state={
@@ -470,6 +613,9 @@ def main(cfg: DictConfig) -> None:
         tracker.log_artifact_path("wm-ema-checkpoint", ema_ckpt_path, artifact_type="model")
     tracker.log_artifact_path("idm-checkpoint", idm_ckpt_path, artifact_type="model")
     tracker.log_artifact_path("action-mapper-checkpoint", mapper_ckpt_path, artifact_type="model")
+    # 方案2：保存 encoder checkpoint
+    if trainable_encoder is not None:
+        tracker.log_artifact_path("encoder-checkpoint", encoder_ckpt_path, artifact_type="model")
     tracker.log_artifact_path("wm-train-metrics", Path(out_dir) / "train_metrics.json", artifact_type="metrics")
     tracker.finish()
     success(f"训练完成 checkpoint={ckpt_path}")

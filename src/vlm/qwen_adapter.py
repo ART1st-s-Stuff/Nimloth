@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
 from typing import Any
 
@@ -27,12 +28,16 @@ class QwenVLMAdapter:
         enabled: bool = True,
         fallback_enabled: bool = True,
         max_new_tokens: int = 128,
+        num_patches: int | None = None,
+        token_strategy: str = "patch_mean",
     ) -> None:
         self.model_name = model_name
         self.latent_dim = int(latent_dim)
         self.enabled = bool(enabled)
         self.fallback_enabled = bool(fallback_enabled)
         self.max_new_tokens = int(max_new_tokens)
+        self.num_patches = num_patches
+        self.token_strategy = token_strategy
         self._processor: Any | None = None
         self._model: Any | None = None
         self._init_error: str | None = None
@@ -97,6 +102,25 @@ class QwenVLMAdapter:
             return vector[: self.latent_dim]
         return torch.cat([vector, torch.zeros(self.latent_dim - vector.numel())], dim=0)
 
+    def _pool_patch_tokens(self, patch_tokens: torch.Tensor) -> torch.Tensor:
+        """对 patch tokens 进行池化以匹配目标 num_patches。"""
+        if patch_tokens.dim() != 3:
+            raise ValueError(f"patch_tokens 形状不合法: {tuple(patch_tokens.shape)}")
+        token_count = int(patch_tokens.size(1))
+        side = int(round(math.sqrt(token_count)))
+        if side * side != token_count:
+            raise RuntimeError(f"Qwen patch token 数不是平方数: {token_count}")
+        target_num_patches = int(self.num_patches) if self.num_patches else 16
+        target_side = int(round(math.sqrt(target_num_patches)))
+        if target_side * target_side != target_num_patches:
+            raise RuntimeError(f"目标 patch token 数不是平方数: {target_num_patches}")
+        if side == target_side:
+            return patch_tokens.reshape(patch_tokens.size(0), -1)
+        token_dim = int(patch_tokens.size(2))
+        grid_tokens = patch_tokens.transpose(1, 2).reshape(patch_tokens.size(0), token_dim, side, side)
+        pooled = torch.nn.functional.adaptive_avg_pool2d(grid_tokens, output_size=(target_side, target_side))
+        return pooled.reshape(patch_tokens.size(0), target_num_patches, token_dim)
+
     def extract_visual_embedding(self, image_path: str) -> torch.Tensor:
         self._ensure_model()
         if self._model is None or self._processor is None:
@@ -112,7 +136,13 @@ class QwenVLMAdapter:
                 pixel_values=model_inputs["pixel_values"],
                 image_grid_thw=model_inputs.get("image_grid_thw"),
             )
-        pooled = vision_features.mean(dim=1) if vision_features.dim() == 3 else vision_features
+        if vision_features.dim() != 3:
+            vision_features = vision_features.unsqueeze(1)
+        if self.token_strategy == "patch_tokens":
+            pooled = self._pool_patch_tokens(vision_features)
+            pooled = pooled.squeeze(0)
+            return self._pad_or_trim(pooled)
+        pooled = vision_features.mean(dim=1)
         return self._pad_or_trim(pooled.squeeze(0))
 
     def generate_cot_and_state(

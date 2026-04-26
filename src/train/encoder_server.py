@@ -41,7 +41,7 @@ from src.train.latent_cache import (
 from src.utils.env import load_project_env
 from src.utils.seed import set_seed
 from src.utils.terminal_ui import create_dashboard, LiveDashboard
-from src.wm.encoders import build_wm_image_encoder
+from src.wm.encoder import build_wm_image_encoder
 
 logger = logging.getLogger(__name__)
 

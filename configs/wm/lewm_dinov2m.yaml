@@ -17,16 +17,25 @@ inverse_dynamics:
   num_heads: 4
   dropout: 0.1
 encoder:
-  name: cfm_dinov2m
+  name: frozen_dinov2m
   backbone_name: dinov2_vits14
   freeze_backbone: true
   image_size: 224
   patch_size: 56
   num_patches: 16
   token_strategy: patch_tokens
+  # 方案2：可微调 encoder（设置为 trainable_dinov2 时启用）
+  # name: trainable_dinov2
+  # freeze_backbone: false
 lewm:
   dim_head: 64
   mlp_ratio: 4.0
   emb_dropout: 0.0
+  # SIGReg 统计量参数
   sigreg_knots: 17
   sigreg_num_proj: 256
+  # 方案1：SIGReg Encoder/Decoder 配置
+  # sigreg_enabled 由训练配置中的 sigreg.enabled 控制
+  # sigreg_latent_dim: 0  # 设置为 0 表示使用 token_dim；若设置为其他值则使用指定的维度
+  # sigreg_encoder_hidden_dim: 0  # 设置为 0 表示自动选择；若设置则使用指定的隐藏层维度
+  # sigreg_encoder_num_layers: 2  # Encoder/Decoder 的层数

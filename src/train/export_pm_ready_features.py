@@ -18,7 +18,7 @@ from src.utils.io import ensure_dir, write_json
 from src.utils.run_output import build_run_output_dir
 from src.vlm.qwen_adapter import QwenVLMAdapter
 from src.vlm.semantic_state import SemanticStateGenerator
-from src.wm.encoders import build_wm_image_encoder
+from src.wm.encoder import build_wm_image_encoder
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")

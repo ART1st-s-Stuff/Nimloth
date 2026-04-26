@@ -13,7 +13,7 @@ from src.utils.console import progress_context, show_kv_table, success
 from src.utils.env import load_project_env
 from src.utils.seed import set_seed
 from src.wm.factory import resolve_patch_layout
-from src.wm.encoders import build_wm_image_encoder
+from src.wm.encoder import build_wm_image_encoder
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")

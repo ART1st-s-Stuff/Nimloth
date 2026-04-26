@@ -114,14 +114,25 @@ manifest_path = ""
 if meta.exists():
     latest = json.loads(meta.read_text(encoding="utf-8")).get("latest")
     if latest:
-        path = train_dir / latest / "manifest.jsonl"
-        if path.exists():
-            manifest_path = str(path)
+        run_dir = train_dir / latest
+        # 优先查找 manifest.jsonl（合并后的）
+        merged = run_dir / "manifest.jsonl"
+        if merged.exists():
+            manifest_path = str(merged)
+        # 否则使用 run_dir 本身（dataset.py 会读取 manifest_worker_*.jsonl）
+        elif any(run_dir.glob("manifest_worker_*.jsonl")):
+            manifest_path = str(run_dir)
 
 if not manifest_path:
-    runs = sorted([p for p in train_dir.iterdir() if p.is_dir() and (p / "manifest.jsonl").exists()], reverse=True)
-    if runs:
-        manifest_path = str(runs[0] / "manifest.jsonl")
+    runs = sorted([p for p in train_dir.iterdir() if p.is_dir()], reverse=True)
+    for run in runs:
+        merged = run / "manifest.jsonl"
+        if merged.exists():
+            manifest_path = str(merged)
+            break
+        if any(run.glob("manifest_worker_*.jsonl")):
+            manifest_path = str(run)
+            break
 
 print(manifest_path)
 PY
@@ -135,7 +146,7 @@ fi
 
 echo "[info] 使用 manifest: ${manifest_path}"
 
-# 打印 manifest 中的 episode 信息
+# 打印 manifest 中的 episode 信息（支持 manifest.jsonl 和 manifest_worker_*.jsonl）
 episode_info="$(python3 - "${manifest_path}" 2>&1 <<'PY'
 import json
 import sys
@@ -144,16 +155,35 @@ from pathlib import Path
 manifest_path = sys.argv[1]
 episode_counts = {}
 total = 0
-for line in Path(manifest_path).read_text().splitlines():
-    if line.strip():
-        sample = json.loads(line)
-        ep = int(sample.get("episode_id", 0))
-        episode_counts[ep] = episode_counts.get(ep, 0) + 1
-        total += 1
 
-print(f"总样本数: {total}, Episode 数: {len(episode_counts)}")
-for ep_id in sorted(episode_counts.keys()):
-    print(f"  Episode {ep_id}: {episode_counts[ep_id]} 张图")
+path = Path(manifest_path)
+if path.is_dir():
+    # 读取所有 manifest_worker_*.jsonl
+    files = sorted(path.glob("manifest_worker_*.jsonl"))
+    for wf in files:
+        for line in wf.read_text().splitlines():
+            if line.strip():
+                sample = json.loads(line)
+                ep = int(sample.get("episode_id", 0))
+                episode_counts[ep] = episode_counts.get(ep, 0) + 1
+                total += 1
+else:
+    # 读取 manifest.jsonl
+    for line in path.read_text().splitlines():
+        if line.strip():
+            sample = json.loads(line)
+            ep = int(sample.get("episode_id", 0))
+            episode_counts[ep] = episode_counts.get(ep, 0) + 1
+            total += 1
+
+# 统计每个 episode 的样本数
+if episode_counts:
+    min_ep = min(episode_counts.keys())
+    max_ep = max(episode_counts.keys())
+    # 检查 step_id 范围
+    print(f"总样本数: {total}, Episode 数: {len(episode_counts)}, episode_id 范围: [{min_ep}, {max_ep}]")
+else:
+    print("总样本数: 0")
 PY
 )"
 echo "[info] Manifest 信息:"

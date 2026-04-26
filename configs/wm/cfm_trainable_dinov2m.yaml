@@ -1,0 +1,55 @@
+# CFM + 可微调 DINOv2-M 编码器配置
+# 方案2：图像 encoder 微调 + SIGReg 正则化
+# - DINOv2 backbone 可训练
+# - SIGReg 作为 encoder 输出的约束
+name: cfm_trainable_dinov2m
+hidden_dim: 512
+latent_dim: 6144
+# 连续动作三元组维度：(move, yaw, pitch)
+action_dim: 3
+# 历史窗口长度
+history_len: 4
+transformer:
+  # WM Transformer 层数
+  num_layers: 6
+  # WM Transformer 注意力头数
+  num_heads: 16
+  # Dropout 比例
+  dropout: 0.1
+inverse_dynamics:
+  # IDM 隐藏维度
+  hidden_dim: 512
+  # IDM 层数
+  num_layers: 3
+  # IDM 注意力头数
+  num_heads: 4
+  # IDM Dropout
+  dropout: 0.1
+encoder:
+  # 方案2：可微调 encoder（区分来源：cfm_trainable）
+  name: cfm_trainable_dinov2m
+  backbone_name: dinov2_vits14
+  freeze_backbone: false  # 允许微调
+  image_size: 224
+  patch_size: 56
+  num_patches: 16
+  token_strategy: patch_tokens
+conditioning:
+  mode: adaln
+action_injection:
+  mode: adaln
+history_injection:
+  mode: cross_attention
+  cross_attention_direction: query_xt_key_history
+flow_matching:
+  variant: rectified_flow
+  x0_source: current_latent
+  solver: heun
+  num_steps: 16
+  t_eps: 0.001
+  noise_std: 1.0
+cfm:
+  # SIGReg 统计量参数（由训练配置中的 sigreg.* 控制）
+  sigreg_latent_dim: 0
+  sigreg_encoder_hidden_dim: 0
+  sigreg_encoder_num_layers: 2

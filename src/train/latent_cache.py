@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from src.data.dataset import WMDataset
-from src.wm.encoders import WMImageEncoder
+from src.wm.encoder import WMImageEncoder
 
 
 def resolve_manifest_path(manifest_path: str) -> Path:

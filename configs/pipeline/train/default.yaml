@@ -15,7 +15,7 @@ num_workers: 8
 # 预编码 latent 时使用的并行 worker 数
 encoder_num_workers: 8
 # 预编码 latent 的批大小
-encoder_batch_size: 64
+encoder_batch_size: 128
 # precompute_wm_latents 使用的 manifest split（对应 dataset.manifests.<split>）
 precompute_split: train
 # 训练设备（cuda/cpu）
@@ -92,7 +92,7 @@ semantic_align:
   # 学习率
   lr: 0.0005
   # DataLoader worker
-  num_workers: 4
+  num_workers: 0
   # 正样本时序间隔 k
   positive_k: 1
   # 负样本最小时序间隔

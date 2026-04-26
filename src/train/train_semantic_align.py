@@ -19,7 +19,7 @@ from src.visualize.wandb_tracker import init_tracker
 from src.vlm.qwen_adapter import QwenVLMAdapter
 from src.vlm.semantic_align import DeltaProjector, SemanticAlignModel
 from src.vlm.semantic_state import SemanticStateGenerator
-from src.wm.encoders import build_wm_image_encoder
+from src.wm.encoder import build_wm_image_encoder
 
 
 def _collate_semantic_batch(batch: list[dict]) -> dict:
