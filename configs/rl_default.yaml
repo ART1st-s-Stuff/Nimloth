@@ -1,0 +1,98 @@
+# RL 训练默认配置
+# 使用方式: uv run python src/rl/train_rl.py rl.num_iterations=100
+
+# === RL 算法配置 ===
+rl:
+  # 算法选择: ppo
+  algorithm: ppo
+
+  # === 环境参数 ===
+  # 并行环境数
+  num_envs: 8
+  # 每次收集的步数
+  num_steps: 64
+  # 最大 episode 长度
+  max_episode_length: 50
+
+  # === 数据源 ===
+  # manifest 路径（支持目录或文件）
+  manifest_path: datasets/ai2thor/2026-04-22_14-50-39/manifest.latents.cfm_dinov2m.pt
+  # latent cache 目录
+  latent_cache_dir: datasets/ai2thor/2026-04-22_14-50-39/manifest.latents.cfm_dinov2m.pt
+
+  # === PPO 超参数 ===
+  # 折扣因子
+  gamma: 0.99
+  # GAE lambda
+  gae_lambda: 0.95
+  # PPO 裁剪范围
+  epsilon: 0.2
+  # Value loss 系数
+  value_coef: 0.5
+  # 熵正则系数
+  entropy_coef: 0.01
+  # 学习率
+  lr: 3e-4
+  # 梯度裁剪阈值
+  max_grad_norm: 0.5
+  # 每次收集后的更新轮数
+  num_epochs: 8
+  # Mini batch 大小
+  mini_batch_size: 32
+  # 奖励类型: action_match / latent_dist / combined
+  reward_type: action_match
+
+  # === 模型架构 ===
+  hidden_dim: 256
+  num_layers: 4
+  num_heads: 4
+  dropout: 0.1
+  action_std_init: 0.5
+
+  # === VLM 语义特征 ===
+  use_vlm: false
+  semantic_dim: 0
+
+  # === 训练控制 ===
+  # 总迭代次数
+  num_iterations: 1000
+  # 评估间隔
+  eval_every: 10
+  # 保存间隔
+  save_every: 50
+  # WM freeze 步数（warmup 后再更新 WM）
+  wm_freeze_steps: 1000
+  # 共享编码器
+  shared_encoder: true
+
+  # === 输出 ===
+  outputs_root: models/rl
+  run_name: rl_ppo_default
+
+  # === 设备 ===
+  device: cuda
+
+# === 环境参数 ===
+env:
+  # latent 总维度（扁平化）
+  latent_dim: 512
+  # 动作维度
+  action_dim: 3
+  # latent patch 数（与 token_dim 配套）
+  num_patches: 16
+  # 每个 patch 的 token 维度
+  token_dim: 32
+  # 历史长度
+  history_len: 4
+  # VLM 语义特征维度
+  semantic_dim: 0
+  # 最大 episode 长度
+  max_episode_length: 50
+
+# === WM 配置（用于获取 latent 维度信息）===
+wm:
+  latent_dim: 512
+  num_patches: 16
+  token_dim: 32
+  history_len: 4
+  ckpt_path: null
