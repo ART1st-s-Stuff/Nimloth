@@ -258,11 +258,15 @@ class PPOLearner:
                 new_log_prob, entropy = self.policy.evaluate_actions(
                     batch_z, batch_semantic, batch_action
                 )
-                ratio = torch.exp(new_log_prob - batch_old_log_prob)
+                # Detach old_log_prob and clamp ratio to avoid in-place issues
+                with torch.no_grad():
+                    ratio_clipped = torch.exp(new_log_prob - batch_old_log_prob).clamp(1.0 - self.epsilon, 1.0 + self.epsilon)
+                    ratio_unclipped = torch.exp(new_log_prob - batch_old_log_prob.detach())
+                ratio = ratio_unclipped
 
                 # PPO 裁剪
                 surr1 = ratio * batch_advantages
-                surr2 = ratio.clamp(1.0 - self.epsilon, 1.0 + self.epsilon) * batch_advantages
+                surr2 = ratio_clipped * batch_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
 
                 # 熵正则

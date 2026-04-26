@@ -184,6 +184,7 @@ class RolloutStorage:
             flat_adv = self.advantages.flatten()
             mean = flat_adv.mean()
             std = flat_adv.std()
+            # 使用 clone 避免 in-place 操作
             self.advantages = (self.advantages - mean) / (std + 1e-8)
 
     def get_statistics(self) -> dict[str, float]:

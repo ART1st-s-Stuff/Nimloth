@@ -136,7 +136,8 @@ class PolicyModel(nn.Module):
 
         # 3. 动作分布
         mean = self.mean_head(hidden)
-        std = torch.exp(self.log_std).clamp(min=self.action_std_min)
+        # 使用 clone 避免 in-place 操作问题
+        std = torch.exp(self.log_std).clamp(min=self.action_std_min).clone()
         std = std.unsqueeze(0).expand(B, -1)  # [B, A]
 
         return mean, std
@@ -249,7 +250,7 @@ class PolicyModelFromIDM(InverseDynamicsModel):
             hidden = hidden + s_proj
 
         mean = self.mean_head(hidden)
-        std = torch.exp(self.log_std).clamp(min=0.01)
+        std = torch.exp(self.log_std).clamp(min=0.01).clone()
         std = std.unsqueeze(0).expand(B, -1)
         return mean, std
 

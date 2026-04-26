@@ -383,19 +383,26 @@ configs/rl/
 
 ---
 
+## 已实现清单
+
+- [x] `src/rl/policy_model.py` - PM 策略网络
+- [x] `src/rl/value_network.py` - Value 函数网络
+- [x] `src/rl/ppo_learner.py` - PPO 训练器
+- [x] `src/rl/vec_env.py` - 向量化环境
+- [x] `src/rl/storage.py` - Experience Replay
+- [x] `src/train/train_rl.py` - RL 训练入口
+- [x] `configs/rl_default.yaml` - 默认配置
+- [x] `src/rl/joint_trainer.py` - WM + PM + VLM 联合训练器
+- [x] `src/rl/train_joint.py` - 联合训练入口
+- [x] `configs/rl_joint.yaml` - 联合训练配置
+- [x] `dev/test_joint_train.py` - 联合训练测试脚本
+
 ## 待实现清单
 
-- [ ] `src/rl/policy_model.py` - PM 策略网络
-- [ ] `src/rl/value_network.py` - Value 函数网络
-- [ ] `src/rl/ppo_learner.py` - PPO 训练器
 - [ ] `src/rl/grpo_learner.py` - GRPO 训练器
 - [ ] `src/rl/reward_shaping.py` - 奖励塑形
 - [ ] `src/rl/system_switch.py` - System 1/2 切换
-- [ ] `src/rl/vec_env.py` - 向量化环境
-- [ ] `src/rl/storage.py` - Experience Replay
 - [ ] `src/train/train_pm.py` - PM 行为克隆训练
-- [ ] `src/train/train_rl.py` - RL 联合训练入口
-- [ ] `configs/rl/ppo_default.yaml`
 - [ ] `configs/rl/grpo_default.yaml`
 - [ ] `export_pm_ready_features.py` - 导出 PM-ready 数据
 

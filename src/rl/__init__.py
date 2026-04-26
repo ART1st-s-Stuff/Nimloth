@@ -6,18 +6,24 @@
 - Storage: 经验回放
 - VecEnv: 向量化环境
 - PPOLearner: PPO 训练器
+- JointTrainer: WM + PM + VLM 联合训练器
 """
 
 from src.rl.policy_model import PolicyModel
 from src.rl.value_network import ValueNetwork
 from src.rl.storage import RolloutStorage
-from src.rl.vec_env import LatentVecEnv
+from src.rl.vec_env import LatentVecEnv, DummyVecEnv
 from src.rl.ppo_learner import PPOLearner
+from src.rl.joint_trainer import JointTrainer, RewardCalculator, JointTrainerStats
 
 __all__ = [
     "PolicyModel",
     "ValueNetwork",
     "RolloutStorage",
     "LatentVecEnv",
+    "DummyVecEnv",
     "PPOLearner",
+    "JointTrainer",
+    "RewardCalculator",
+    "JointTrainerStats",
 ]
