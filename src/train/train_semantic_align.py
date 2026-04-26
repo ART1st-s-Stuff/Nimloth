@@ -102,12 +102,14 @@ def main(cfg: DictConfig) -> None:
         num_workers=int(train_cfg.num_workers),
         collate_fn=_collate_semantic_batch,
     )
+    vlm_model_name = str(getattr(vlm_cfg.model, "hf_model_name", "Qwen/Qwen2.5-VL-7B-Instruct"))
+    vlm_max_new_tokens = int(getattr(vlm_cfg.model, "max_new_tokens", 128))
     vlm_adapter = QwenVLMAdapter(
-        model_name=str(vlm_cfg.model.hf_model_name),
+        model_name=vlm_model_name,
         latent_dim=int(wm_cfg.latent_dim),
-        enabled=bool(vlm_cfg.enabled and train_cfg.use_vlm_for_st),
-        fallback_enabled=bool(vlm_cfg.fallback_enabled),
-        max_new_tokens=int(vlm_cfg.model.max_new_tokens),
+        enabled=bool(vlm_cfg.get("enabled", False) and train_cfg.use_vlm_for_st),
+        fallback_enabled=bool(vlm_cfg.get("fallback_enabled", True)),
+        max_new_tokens=vlm_max_new_tokens,
     )
     semantic_generator = SemanticStateGenerator(vlm_adapter=vlm_adapter)
     projector = DeltaProjector(latent_dim=int(wm_cfg.latent_dim), hidden_dim=int(wm_cfg.hidden_dim)).to(device)

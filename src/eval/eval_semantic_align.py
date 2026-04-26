@@ -69,12 +69,14 @@ def main(cfg: DictConfig) -> None:
         raise RuntimeError(f"未找到 semantic projector checkpoint: {ckpt_path}")
     model.load_state_dict(torch.load(ckpt_path, map_location=device))
     model.eval()
+    vlm_model_name = str(getattr(vlm_cfg.model, "hf_model_name", "Qwen/Qwen2.5-VL-7B-Instruct"))
+    vlm_max_new_tokens = int(getattr(vlm_cfg.model, "max_new_tokens", 128))
     adapter = QwenVLMAdapter(
-        model_name=str(vlm_cfg.model.hf_model_name),
+        model_name=vlm_model_name,
         latent_dim=int(wm_cfg.latent_dim),
-        enabled=bool(vlm_cfg.enabled and train_cfg.use_vlm_for_st),
-        fallback_enabled=bool(vlm_cfg.fallback_enabled),
-        max_new_tokens=int(vlm_cfg.model.max_new_tokens),
+        enabled=bool(vlm_cfg.get("enabled", False) and train_cfg.use_vlm_for_st),
+        fallback_enabled=bool(vlm_cfg.get("fallback_enabled", True)),
+        max_new_tokens=vlm_max_new_tokens,
     )
     semantic_generator = SemanticStateGenerator(vlm_adapter=adapter)
     same_intent_sims: list[float] = []

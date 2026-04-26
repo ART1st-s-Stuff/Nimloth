@@ -9,18 +9,23 @@ from typing import Any
 import torch
 from torch.utils.data import Dataset
 
-from src.data.dataset import WMDataset, build_env_context
+from src.data.dataset import WMDataset, build_env_context, read_worker_manifests, resolve_run_dir, _read_jsonl_lines
 
 
 def _read_manifest_rows(manifest_path: str) -> list[dict[str, Any]]:
     path = Path(manifest_path)
     if not path.exists():
         return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    return rows
+    if path.is_file():
+        return _read_jsonl_lines(path)
+    elif path.is_dir():
+        # 目录模式：读取所有 manifest_worker_*.jsonl 文件
+        return read_worker_manifests(path)
+    # 非目录非文件：尝试解析 latest
+    resolved = resolve_run_dir(manifest_path)
+    if resolved is not None:
+        return read_worker_manifests(resolved)
+    return []
 
 
 class SemanticAlignDataset(Dataset):
