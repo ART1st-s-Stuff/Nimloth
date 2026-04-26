@@ -6,7 +6,7 @@ from pathlib import Path
 
 import hydra
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from src.data.semantic_dataset import SemanticAlignDataset
@@ -45,14 +45,18 @@ def main(cfg: DictConfig) -> None:
             dataset_name=str(dataset_cfg.name),
         )
 
+    resolved_eval_manifest = _resolve_eval_manifest_path(eval_split)
+    from src.train.latent_cache import infer_latent_cache_path_from_manifest
+    resolved_cache = infer_latent_cache_path_from_manifest(str(resolved_eval_manifest), str(wm_cfg.name))
     dataset = SemanticAlignDataset(
-        manifest_path=str(_resolve_eval_manifest_path(eval_split)),
+        manifest_path=str(resolved_eval_manifest),
         latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
         history_len=int(wm_cfg.history_len),
         image_encoder=image_encoder,
         positive_k=int(train_cfg.positive_k),
         negative_gap=int(train_cfg.negative_gap),
+        latent_cache_path=str(resolved_cache) if resolved_cache else None,
     )
     if len(dataset) == 0:
         raise RuntimeError("SemanticAlignDataset 为空，无法评估。")
@@ -69,8 +73,8 @@ def main(cfg: DictConfig) -> None:
         raise RuntimeError(f"未找到 semantic projector checkpoint: {ckpt_path}")
     model.load_state_dict(torch.load(ckpt_path, map_location=device))
     model.eval()
-    vlm_model_name = str(getattr(vlm_cfg.model, "hf_model_name", "Qwen/Qwen2.5-VL-7B-Instruct"))
-    vlm_max_new_tokens = int(getattr(vlm_cfg.model, "max_new_tokens", 128))
+    vlm_model_name = str(OmegaConf.select(vlm_cfg, "model.hf_model_name", default="Qwen/Qwen2.5-VL-7B-Instruct"))
+    vlm_max_new_tokens = int(OmegaConf.select(vlm_cfg, "model.max_new_tokens", default=128))
     adapter = QwenVLMAdapter(
         model_name=vlm_model_name,
         latent_dim=int(wm_cfg.latent_dim),

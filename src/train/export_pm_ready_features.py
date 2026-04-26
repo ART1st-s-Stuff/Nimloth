@@ -6,7 +6,7 @@ from pathlib import Path
 
 import hydra
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from src.data.semantic_dataset import SemanticAlignDataset
@@ -43,14 +43,18 @@ def main(cfg: DictConfig) -> None:
             dataset_name=str(dataset_cfg.name),
         )
 
+    resolved_export_manifest = _resolve_export_manifest_path(export_split)
+    from src.train.latent_cache import infer_latent_cache_path_from_manifest
+    resolved_cache = infer_latent_cache_path_from_manifest(str(resolved_export_manifest), str(wm_cfg.name))
     dataset = SemanticAlignDataset(
-        manifest_path=str(_resolve_export_manifest_path(export_split)),
+        manifest_path=str(resolved_export_manifest),
         latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),
         history_len=int(wm_cfg.history_len),
         image_encoder=image_encoder,
         positive_k=int(train_cfg.positive_k),
         negative_gap=int(train_cfg.negative_gap),
+        latent_cache_path=str(resolved_cache) if resolved_cache else None,
     )
     loader = DataLoader(
         dataset,
@@ -60,11 +64,11 @@ def main(cfg: DictConfig) -> None:
         collate_fn=_collate_semantic_batch,
     )
     adapter = QwenVLMAdapter(
-        model_name=str(vlm_cfg.model.hf_model_name),
+        model_name=str(OmegaConf.select(vlm_cfg, "model.hf_model_name", default="Qwen/Qwen2.5-VL-7B-Instruct")),
         latent_dim=int(wm_cfg.latent_dim),
-        enabled=bool(vlm_cfg.enabled and train_cfg.use_vlm_for_st),
-        fallback_enabled=bool(vlm_cfg.fallback_enabled),
-        max_new_tokens=int(vlm_cfg.model.max_new_tokens),
+        enabled=bool(vlm_cfg.get("enabled", False) and train_cfg.use_vlm_for_st),
+        fallback_enabled=bool(vlm_cfg.get("fallback_enabled", True)),
+        max_new_tokens=int(OmegaConf.select(vlm_cfg, "model.max_new_tokens", default=128)),
     )
     semantic_generator = SemanticStateGenerator(vlm_adapter=adapter)
     run_dir = build_run_output_dir(

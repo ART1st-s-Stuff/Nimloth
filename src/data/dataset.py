@@ -145,6 +145,10 @@ class WMDataset(Dataset):
         self.temporal_stride_steps = self._sample_stride(max_valid_stride=self.temporal_stride_max)
         self.image_encoder = image_encoder
         self.latent_cache_path = Path(latent_cache_path) if latent_cache_path else None
+        # 检测 latent_cache_path 是否为分块目录（而非单 .pt 文件）
+        if self.latent_cache_path and self.latent_cache_path.is_dir():
+            self._chunk_mode = True
+            self._cache_dir = self.latent_cache_path
         self.encoder_num_workers = max(1, int(encoder_num_workers))
         self.encoder_batch_size = max(1, int(encoder_batch_size))
         self.expected_num_patches = max(0, int(expected_num_patches))
@@ -632,6 +636,10 @@ class WMDataset(Dataset):
         if self.image_encoder is None:
             return
         cache_path = self.latent_cache_path
+        # 分块目录模式不通过单文件 warmup 加载，由后台线程按需补充
+        if cache_path is not None and cache_path.is_dir():
+            logger.info("latent cache 为分块目录，跳过单文件 warmup，依赖后台线程按需加载。")
+            return
         if cache_path is not None and cache_path.exists():
             payload = torch.load(cache_path, map_location="cpu")
             latents = payload.get("latents", {}) if isinstance(payload, dict) else {}

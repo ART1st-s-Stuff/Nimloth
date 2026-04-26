@@ -6,7 +6,7 @@ from pathlib import Path
 
 import hydra
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from src.data.semantic_dataset import SemanticAlignDataset
@@ -83,6 +83,8 @@ def main(cfg: DictConfig) -> None:
         )
 
     resolved_manifest = _resolve_semantic_manifest_path(semantic_align_split)
+    from src.train.latent_cache import infer_latent_cache_path_from_manifest
+    resolved_cache = infer_latent_cache_path_from_manifest(str(resolved_manifest), str(wm_cfg.name))
     dataset = SemanticAlignDataset(
         manifest_path=str(resolved_manifest),
         latent_dim=int(wm_cfg.latent_dim),
@@ -92,6 +94,7 @@ def main(cfg: DictConfig) -> None:
         positive_k=int(train_cfg.positive_k),
         negative_gap=int(train_cfg.negative_gap),
         enable_cot_target=bool(train_cfg.enable_cot_target),
+        latent_cache_path=str(resolved_cache) if resolved_cache else None,
     )
     if len(dataset) == 0:
         raise RuntimeError("SemanticAlignDataset 为空，请先完成数据采集。")
@@ -102,8 +105,9 @@ def main(cfg: DictConfig) -> None:
         num_workers=int(train_cfg.num_workers),
         collate_fn=_collate_semantic_batch,
     )
-    vlm_model_name = str(getattr(vlm_cfg.model, "hf_model_name", "Qwen/Qwen2.5-VL-7B-Instruct"))
-    vlm_max_new_tokens = int(getattr(vlm_cfg.model, "max_new_tokens", 128))
+    vlm_model_cfg = vlm_cfg.get("model", None) or {}
+    vlm_model_name = str(OmegaConf.select(vlm_cfg, "model.hf_model_name", default="Qwen/Qwen2.5-VL-7B-Instruct"))
+    vlm_max_new_tokens = int(OmegaConf.select(vlm_cfg, "model.max_new_tokens", default=128))
     vlm_adapter = QwenVLMAdapter(
         model_name=vlm_model_name,
         latent_dim=int(wm_cfg.latent_dim),

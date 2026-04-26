@@ -116,6 +116,36 @@ def build_latent_cache_path(manifest_path: Path, wm_name: str) -> Path:
     return manifest_path.parent / f"{stem}.latents.{wm_name}.pt"
 
 
+def infer_latent_cache_path_from_manifest(manifest_path: str, wm_name: str) -> Path | None:
+    """从 manifest 路径自动推断单文件 latent cache 路径。
+
+    规则：
+    - manifest 是目录（run_dir）：cache 在该目录内部，命名 = {run_dir_name}.latents.{wm_name}
+    - 也检查同级的 {stem}.latents.{wm_name}.pt
+
+    如果 cache 文件存在，返回该路径；否则返回 None。
+    """
+    manifest = Path(manifest_path)
+    # 实际文件命名规则：{run_dir}.latents.{wm_name}（无扩展名）或 .pt
+    # 即 datasets/.../train/2026-04-24_14-47-16/2026-04-24_14-47-16.latents.cfm_dinov2m
+    # 但也可能是 .pt 后缀（legacy）
+    candidates = []
+    if manifest.is_dir():
+        # cache 在 run_dir 内部
+        candidates.append(manifest / f"{manifest.name}.latents.{wm_name}")
+        candidates.append(manifest / f"{manifest.name}.latents.{wm_name}.pt")
+    # 父目录平铺
+    candidates.append(manifest.parent / f"{manifest.stem}.latents.{wm_name}")
+    candidates.append(manifest.parent / f"{manifest.stem}.latents.{wm_name}.pt")
+    if manifest.is_dir():
+        candidates.append(manifest.parent / f"{manifest.name}.latents.{wm_name}")
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def build_latent_cache_dir(run_dir: Path, wm_name: str) -> Path:
     """构建分块 latent cache 目录路径。
 

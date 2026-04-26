@@ -62,4 +62,12 @@ flow_matching:
   t_eps: 0.001
   # 保留字段（当 x0_source=current_latent 时不会生效）
   noise_std: 1.0
-
+cfm:
+  # 方案1：SIGReg Encoder/Decoder 配置
+  # sigreg_enabled 由训练配置中的 sigreg.enabled 控制
+  # sigreg_latent_dim: 0  # 设置为 0 表示使用 token_dim；若设置则使用指定的维度
+  # sigreg_encoder_hidden_dim: 0  # 设置为 0 表示自动选择；若设置则使用指定的隐藏层维度
+  # sigreg_encoder_num_layers: 2  # Encoder/Decoder 的层数
+# 可微调 encoder（取消下面注释并注释掉上面的 encoder 部分）
+#   name: trainable_dinov2
+#   freeze_backbone: false
