@@ -1,19 +1,8 @@
+defaults:
+  - lewm_qwen25vl_8b
+  - _self_
+
 name: lewm_qwen25vl_8b_finetune
-hidden_dim: 512
-latent_dim: 9216
-action_dim: 3
-history_len: 4
-transformer:
-  num_layers: 6
-  num_heads: 16
-  dim_head: 64
-  mlp_ratio: 4.0
-  dropout: 0.1
-inverse_dynamics:
-  hidden_dim: 256
-  num_layers: 3
-  num_heads: 4
-  dropout: 0.1
 encoder:
   # 复用冻结 Qwen 编码器，训练时由 pipeline.train.encoder_finetune 控制轻量适配。
   name: frozen_qwen25vl_8b
@@ -22,9 +11,3 @@ encoder:
   image_size: 224
   num_patches: 9
   token_strategy: patch_tokens
-lewm:
-  dim_head: 64
-  mlp_ratio: 4.0
-  emb_dropout: 0.0
-  sigreg_knots: 17
-  sigreg_num_proj: 256

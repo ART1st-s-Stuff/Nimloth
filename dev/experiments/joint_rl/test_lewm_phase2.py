@@ -48,8 +48,8 @@ from mpl_toolkits.mplot3d import Axes3D
 
 import wandb
 
-# 设置项目根目录
-project_root = Path(__file__).parent.parent
+# 设置项目根目录（当前文件位于 dev/experiments/joint_rl/ 下）
+project_root = Path(__file__).resolve().parents[3]
 os.chdir(project_root)
 sys.path.insert(0, str(project_root))
 
@@ -1297,22 +1297,27 @@ def run_visualization(
     num_test_rollouts: int,
     num_steps: int,
     eval_split: str = "test",
+    ckpt_kind: str = "wm",
 ) -> dict[str, Any]:
     """对已训练模型运行可视化。"""
     from omegaconf import OmegaConf
 
-    # 找到模型文件：
-    # 历史口径等价于评估普通权重（旧版本里 wm_ema.pt 实际保存的是普通权重），
-    # 因此这里优先 wm.pt，避免修复命名后评估口径突变。
-    wm_ckpt_path = model_run_dir / "wm.pt"
-    if not wm_ckpt_path.exists():
-        for name in ["wm_ema.pt", "checkpoint_final.pt"]:
-            candidate = model_run_dir / name
-            if candidate.exists():
-                wm_ckpt_path = candidate
-                break
-        if not wm_ckpt_path.exists():
-            raise RuntimeError(f"未找到模型文件: {model_run_dir}")
+    # 显式选择评估权重，避免口径不透明。
+    ckpt_kind_norm = str(ckpt_kind).strip().lower()
+    if ckpt_kind_norm not in {"wm", "ema"}:
+        raise ValueError(f"不支持的 ckpt_kind: {ckpt_kind}，仅支持 wm/ema")
+    if ckpt_kind_norm == "ema":
+        candidates = ["wm_ema.pt", "wm.pt", "checkpoint_final.pt"]
+    else:
+        candidates = ["wm.pt", "wm_ema.pt", "checkpoint_final.pt"]
+    wm_ckpt_path = None
+    for name in candidates:
+        candidate = model_run_dir / name
+        if candidate.exists():
+            wm_ckpt_path = candidate
+            break
+    if wm_ckpt_path is None:
+        raise RuntimeError(f"未找到模型文件: {model_run_dir}")
 
     # 解析 wm_name
     wm_name = model_run_dir.parent.name
@@ -1325,20 +1330,47 @@ def run_visualization(
 
     wm_cfg = OmegaConf.load(Path(wm_cfg_path)) if wm_cfg is None else wm_cfg
     dataset_cfg = OmegaConf.load(Path("configs/dataset/ai2thor.yaml")) if dataset_cfg is None else dataset_cfg
+    train_cfg = OmegaConf.load(Path("configs/pipeline/train/default.yaml"))
+    sigreg_enabled_cfg = bool(getattr(train_cfg, "sigreg", {}).get("enabled", False))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"可视化设备: {device}")
+
+    raw_state = torch.load(wm_ckpt_path, map_location=device, weights_only=False)
+    if isinstance(raw_state, dict) and "model_state_dict" in raw_state:
+        state_dict = raw_state["model_state_dict"]
+    else:
+        state_dict = raw_state
+    if not isinstance(state_dict, dict):
+        raise RuntimeError(f"checkpoint 格式非法: {wm_ckpt_path}")
+
+    has_sigreg_keys = any(
+        str(k).startswith("sigreg.") or str(k).startswith("sigreg_ed.")
+        for k in state_dict.keys()
+    )
+    if has_sigreg_keys != sigreg_enabled_cfg:
+        raise RuntimeError(
+            "可视化模型结构与 checkpoint 不一致："
+            f"train_cfg.sigreg.enabled={sigreg_enabled_cfg}, "
+            f"checkpoint_has_sigreg={has_sigreg_keys}, ckpt={wm_ckpt_path}"
+        )
 
     # 构建模型
     num_patches = int(getattr(wm_cfg.encoder, "num_patches", 16))
     latent_dim = int(wm_cfg.latent_dim)
     token_dim = latent_dim // num_patches
+    history_len = int(wm_cfg.history_len)
+    if num_patches <= 0 or token_dim <= 0 or latent_dim != num_patches * token_dim:
+        raise RuntimeError(
+            "wm 配置非法，无法构建可视化模型: "
+            f"latent_dim={latent_dim}, num_patches={num_patches}, token_dim={token_dim}"
+        )
 
     wm_module = LeWMWorldModel(
         latent_dim=latent_dim,
         action_dim=int(dataset_cfg.action_dim),
         hidden_dim=int(wm_cfg.hidden_dim),
-        history_len=int(wm_cfg.history_len),
+        history_len=history_len,
         num_patches=num_patches,
         token_dim=token_dim,
         num_layers=int(wm_cfg.transformer.num_layers),
@@ -1347,11 +1379,31 @@ def run_visualization(
         mlp_ratio=float(wm_cfg.transformer.get("mlp_ratio", 4.0)),
         dropout=float(wm_cfg.transformer.get("dropout", 0.1)),
         emb_dropout=float(wm_cfg.lewm.get("emb_dropout", 0.0)),
+        sigreg_enabled=sigreg_enabled_cfg,
     )
 
-    # 加载权重
-    state = torch.load(wm_ckpt_path, map_location=device, weights_only=False)
-    wm_module.load_state_dict(state, strict=False)
+    # 关键配置一致性自检（先于权重加载）。
+    if int(getattr(wm_module, "history_len", -1)) != history_len:
+        raise RuntimeError("history_len 不一致，拒绝继续可视化")
+    if int(getattr(wm_module, "num_patches", -1)) != num_patches:
+        raise RuntimeError("num_patches 不一致，拒绝继续可视化")
+    if int(getattr(wm_module, "token_dim", -1)) != token_dim:
+        raise RuntimeError("token_dim 不一致，拒绝继续可视化")
+    if bool(getattr(wm_module, "sigreg_enabled", False)) != sigreg_enabled_cfg:
+        raise RuntimeError("sigreg_enabled 不一致，拒绝继续可视化")
+
+    # 严格加载权重；若失败，给出 missing/unexpected keys 诊断，避免 silent mismatch。
+    try:
+        wm_module.load_state_dict(state_dict, strict=True)
+    except RuntimeError as e:
+        incompatible = wm_module.load_state_dict(state_dict, strict=False)
+        raise RuntimeError(
+            "checkpoint 与可视化模型结构不匹配，已拒绝加载。\n"
+            f"missing_keys={incompatible.missing_keys}\n"
+            f"unexpected_keys={incompatible.unexpected_keys}\n"
+            f"ckpt={wm_ckpt_path}\n"
+            f"原始错误: {e}"
+        ) from e
     wm_module.eval()
     wm_module.to(device)
 
@@ -1462,11 +1514,20 @@ def run_visualization(
     result = {
         "model_run_dir": str(model_run_dir),
         "wm_ckpt_path": str(wm_ckpt_path),
+        "ckpt_kind": ckpt_kind_norm,
         "eval_split": split,
         "num_test_rollouts": len(rollout_data),
         "num_steps": num_steps,
         "avg_mse": avg_mse,
         "avg_prediction_mse": avg_mse,
+        "model_config": {
+            "history_len": history_len,
+            "num_patches": num_patches,
+            "token_dim": token_dim,
+            "latent_dim": latent_dim,
+            "sigreg_enabled_train_cfg": sigreg_enabled_cfg,
+            "sigreg_enabled_ckpt": has_sigreg_keys,
+        },
     }
 
     # 保存 JSON 结果（简化版，不含详细点数据）
@@ -1534,6 +1595,13 @@ def main() -> None:
         default="test",
         choices=["test", "train"],
         help="可视化评估使用的数据集 split（test 或 train）",
+    )
+    parser.add_argument(
+        "--ckpt-kind",
+        type=str,
+        default="wm",
+        choices=["wm", "ema"],
+        help="可视化使用的权重类型（wm 或 ema）",
     )
     parser.add_argument(
         "--outputs-root",
@@ -1629,6 +1697,7 @@ def main() -> None:
                 num_test_rollouts=args.num_test_rollouts,
                 num_steps=args.num_steps,
                 eval_split=args.eval_split,
+                ckpt_kind=args.ckpt_kind,
             )
         except Exception as e:
             logger.error(f"可视化失败: {e}")
@@ -1673,6 +1742,7 @@ def main() -> None:
                         num_test_rollouts=args.num_test_rollouts,
                         num_steps=args.num_steps,
                         eval_split=args.eval_split,
+                        ckpt_kind=args.ckpt_kind,
                     )
                     results[model_key]["visualization"] = vis_result
 
