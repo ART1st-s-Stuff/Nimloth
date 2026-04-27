@@ -6,18 +6,20 @@ from pathlib import Path
 
 import hydra
 import torch
-from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader
+from omegaconf import DictConfig
 
-from src.data.semantic_dataset import SemanticAlignDataset
-from src.train.train_semantic_align import DeltaProjector, _collate_semantic_batch
-from src.train.manifest_resolver import resolve_manifest_for_split
+from src.application.pipelines.semantic.common import (
+    build_qwen_vlm_adapter,
+    build_semantic_dataset,
+    build_semantic_loader,
+    resolve_split_manifest,
+)
+from src.vlm.semantic_align import DeltaProjector
 from src.utils.console import progress_context, show_kv_table, success
 from src.utils.env import load_project_env
 from src.utils.io import ensure_dir, write_json
 from src.utils.path_resolver import resolve_latest_path
 from src.utils.run_output import build_run_output_dir
-from src.vlm.qwen_adapter import QwenVLMAdapter
 from src.vlm.semantic_state import SemanticStateGenerator
 from src.wm.encoder import build_wm_image_encoder
 
@@ -38,35 +40,27 @@ def main(cfg: DictConfig) -> None:
     manifests_cfg = dataset_cfg.get("manifests", {})
     manifests_cfg = dict(manifests_cfg)
 
-    def _resolve_eval_manifest_path(split: str) -> Path:
-        return resolve_manifest_for_split(
-            manifests_cfg=manifests_cfg,
-            split=split,
-            outputs_root=str(train_cfg.operation.outputs_root),
-            dataset_name=str(dataset_cfg.name),
-        )
-
-    resolved_eval_manifest = _resolve_eval_manifest_path(eval_split)
-    from src.train.latent_cache import infer_latent_cache_path_from_manifest
-    resolved_cache = infer_latent_cache_path_from_manifest(str(resolved_eval_manifest), str(wm_cfg.name))
-    dataset = SemanticAlignDataset(
-        manifest_path=str(resolved_eval_manifest),
-        latent_dim=int(wm_cfg.latent_dim),
-        action_dim=int(dataset_cfg.action_dim),
-        history_len=int(wm_cfg.history_len),
+    resolved_eval_manifest = resolve_split_manifest(
+        manifests_cfg=manifests_cfg,
+        split=eval_split,
+        outputs_root=str(train_cfg.operation.outputs_root),
+        dataset_name=str(dataset_cfg.name),
+    )
+    dataset = build_semantic_dataset(
+        manifest_path=resolved_eval_manifest,
+        wm_cfg=wm_cfg,
+        dataset_cfg=dataset_cfg,
         image_encoder=image_encoder,
         positive_k=int(train_cfg.positive_k),
         negative_gap=int(train_cfg.negative_gap),
-        latent_cache_path=str(resolved_cache) if resolved_cache else None,
     )
     if len(dataset) == 0:
         raise RuntimeError("SemanticAlignDataset 为空，无法评估。")
-    loader = DataLoader(
+    loader = build_semantic_loader(
         dataset,
         batch_size=int(train_cfg.batch_size),
         shuffle=False,
         num_workers=int(train_cfg.num_workers),
-        collate_fn=_collate_semantic_batch,
     )
     model = DeltaProjector(latent_dim=int(wm_cfg.latent_dim), hidden_dim=int(wm_cfg.hidden_dim)).to(device)
     ckpt_path = resolve_latest_path(str(train_cfg.eval_ckpt_path))
@@ -78,14 +72,10 @@ def main(cfg: DictConfig) -> None:
     else:
         model.load_state_dict(ckpt)
     model.eval()
-    vlm_model_name = str(OmegaConf.select(vlm_cfg, "model.hf_model_name", default="Qwen/Qwen2.5-VL-7B-Instruct"))
-    vlm_max_new_tokens = int(OmegaConf.select(vlm_cfg, "model.max_new_tokens", default=128))
-    adapter = QwenVLMAdapter(
-        model_name=vlm_model_name,
+    adapter = build_qwen_vlm_adapter(
+        vlm_cfg=vlm_cfg,
+        train_cfg=train_cfg,
         latent_dim=int(wm_cfg.latent_dim),
-        enabled=bool(vlm_cfg.get("enabled", False) and train_cfg.use_vlm_for_st),
-        fallback_enabled=bool(vlm_cfg.get("fallback_enabled", True)),
-        max_new_tokens=vlm_max_new_tokens,
     )
     semantic_generator = SemanticStateGenerator(vlm_adapter=adapter)
     same_intent_sims: list[float] = []

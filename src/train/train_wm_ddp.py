@@ -27,6 +27,8 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.data.dataset import Dataset
 
 from src.core import FileSystemModelProvider, WMDataProvider, WMModelAdapter
+from src.infrastructure.encoding.cache_protocol import write_json_state
+from src.shared.config.training_parsers import linear_warmup_lambda, parse_temporal_stride
 from src.train.latent_cache import (
     build_wm_dataset_with_cache,
 )
@@ -49,24 +51,21 @@ def _write_training_state(
     if cache_dir is None:
         return
     state_file = cache_dir / "training_state.json"
-    try:
-        state_file.write_text(
-            json.dumps({
-                "epoch": epoch,
-                "total_epochs": total_epochs,
-                "step": step,
-                "total_steps": total_steps,
-                "loss": loss,
-                "loss_recon": loss_recon,
-                "loss_action": loss_action,
-                "loss_sigreg": loss_sigreg,
-                "lr": lr,
-                "timestamp": time.time(),
-            }, indent=2),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
+    write_json_state(
+        state_file,
+        {
+            "epoch": epoch,
+            "total_epochs": total_epochs,
+            "step": step,
+            "total_steps": total_steps,
+            "loss": loss,
+            "loss_recon": loss_recon,
+            "loss_action": loss_action,
+            "loss_sigreg": loss_sigreg,
+            "lr": lr,
+            "timestamp": time.time(),
+        },
+    )
 from src.utils.console import progress_context, show_kv_table, success
 from src.utils.env import load_project_env
 from src.utils.io import ensure_dir, write_json
@@ -123,24 +122,6 @@ def _destroy_distributed() -> None:
 
 def _count_trainable_params(module: torch.nn.Module) -> int:
     return sum(p.numel() for p in module.parameters() if p.requires_grad)
-
-
-def _parse_temporal_stride(value: object) -> int | tuple[int, int]:
-    if isinstance(value, int):
-        return max(1, int(value))
-    if hasattr(value, "__len__") and not isinstance(value, (str, bytes)):
-        if len(value) != 2:
-            raise ValueError("pipeline.train.temporal_stride 区间必须包含两个整数 [min, max]。")
-        low = max(1, int(value[0]))
-        high = max(low, int(value[1]))
-        return (low, high)
-    return 1
-
-
-def _linear_warmup_lambda(step: int, warmup_steps: int) -> float:
-    if warmup_steps <= 0:
-        return 1.0
-    return min(1.0, max(0.0, float(step + 1) / float(warmup_steps)))
 
 
 def _build_split_dataset(
@@ -216,7 +197,7 @@ def main(cfg: DictConfig) -> None:
     train_cfg = cfg.pipeline.train
     dataset_cfg = cfg.dataset
     wm_cfg = cfg.wm
-    temporal_stride = _parse_temporal_stride(train_cfg.get("temporal_stride", 1))
+    temporal_stride = parse_temporal_stride(train_cfg.get("temporal_stride", 1))
     sigreg_cfg = train_cfg.get("sigreg", {})
     sigreg_enabled = bool(getattr(sigreg_cfg, "enabled", False))
     sigreg_target_weight = float(getattr(sigreg_cfg, "weight", 0.0))
@@ -433,8 +414,12 @@ def main(cfg: DictConfig) -> None:
         lr=idm_lr,
         weight_decay=weight_decay,
     )
-    wm_scheduler = torch.optim.lr_scheduler.LambdaLR(wm_optimizer, lr_lambda=lambda step: _linear_warmup_lambda(step, warmup_steps))
-    idm_scheduler = torch.optim.lr_scheduler.LambdaLR(idm_optimizer, lr_lambda=lambda step: _linear_warmup_lambda(step, warmup_steps))
+    wm_scheduler = torch.optim.lr_scheduler.LambdaLR(
+        wm_optimizer, lr_lambda=lambda step: linear_warmup_lambda(step, warmup_steps)
+    )
+    idm_scheduler = torch.optim.lr_scheduler.LambdaLR(
+        idm_optimizer, lr_lambda=lambda step: linear_warmup_lambda(step, warmup_steps)
+    )
 
     # ---- DDP 封装（仅 world_size>1） --------------------------------------------------
     if _world_size() > 1:

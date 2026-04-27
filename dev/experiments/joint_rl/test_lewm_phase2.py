@@ -227,18 +227,30 @@ def plan_priority_images(
     return out
 
 
-def wait_priority_queue_drained(socket_path: str, timeout_sec: int = 120, poll_sec: float = 1.0) -> dict[str, Any]:
+def wait_priority_queue_drained(
+    socket_path: str,
+    cache_dir: Path | None = None,
+    timeout_sec: int = 120,
+    poll_sec: float = 1.0,
+) -> dict[str, Any]:
     """等待优先队列清空，降低首批 batch 阻塞概率。"""
     deadline = time.time() + timeout_sec
     last_status: dict[str, Any] = {}
+    done_path = (cache_dir / "done") if cache_dir is not None else None
     while time.time() < deadline:
         try:
             status = query_status(socket_path, timeout_sec=2.0)
             last_status = status
             if bool(status.get("ok")) and int(status.get("pending_priority", 0)) <= 0:
                 return status
+            # encoder 已整体完成时，不再强制等待优先队列清空（常见于缓存全命中）。
+            if done_path is not None and done_path.exists():
+                logger.info("检测到 encoder done 标记，跳过优先队列清空等待: %s", done_path)
+                return status
         except Exception:
-            pass
+            if done_path is not None and done_path.exists():
+                logger.info("控制 socket 不可用且 encoder 已完成，跳过优先队列等待: %s", done_path)
+                return last_status
         time.sleep(poll_sec)
     raise TimeoutError(f"等待优先队列清空超时: socket={socket_path}, last_status={last_status}")
 
@@ -1153,6 +1165,7 @@ def run_training(
             if control_socket_path:
                 wait_priority_queue_drained(
                     control_socket_path,
+                    cache_dir=cache_dir,
                     timeout_sec=priority_wait_timeout_sec,
                     poll_sec=1.0,
                 )
@@ -1231,10 +1244,14 @@ def run_training(
 
         logger.info(f"训练完成，耗时: {elapsed:.1f}秒")
 
-        # 保存模型
-        wm_ckpt_path = run_dir / "wm_ema.pt"
+        # 保存模型：区分当前权重与 EMA 权重，避免文件名与内容不一致
+        wm_ckpt_path = run_dir / "wm.pt"
         torch.save(wm_model.wm.state_dict(), wm_ckpt_path)
         logger.info(f"模型保存至: {wm_ckpt_path}")
+        ema_ckpt_path = run_dir / "wm_ema.pt"
+        if getattr(wm_model, "_ema_model", None) is not None:
+            torch.save(wm_model._ema_model.state_dict(), ema_ckpt_path)
+            logger.info(f"EMA 模型保存至: {ema_ckpt_path}")
 
         # 保存训练指标
         train_metrics = {
@@ -1284,10 +1301,12 @@ def run_visualization(
     """对已训练模型运行可视化。"""
     from omegaconf import OmegaConf
 
-    # 找到模型文件
-    wm_ckpt_path = model_run_dir / "wm_ema.pt"
+    # 找到模型文件：
+    # 历史口径等价于评估普通权重（旧版本里 wm_ema.pt 实际保存的是普通权重），
+    # 因此这里优先 wm.pt，避免修复命名后评估口径突变。
+    wm_ckpt_path = model_run_dir / "wm.pt"
     if not wm_ckpt_path.exists():
-        for name in ["checkpoint_final.pt", "wm.pt"]:
+        for name in ["wm_ema.pt", "checkpoint_final.pt"]:
             candidate = model_run_dir / name
             if candidate.exists():
                 wm_ckpt_path = candidate

@@ -6,32 +6,21 @@ from pathlib import Path
 
 import hydra
 import torch
-from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader
-
-from src.data.semantic_dataset import SemanticAlignDataset
-from src.train.manifest_resolver import resolve_manifest_for_split
+from omegaconf import DictConfig
+from src.application.pipelines.semantic.common import (
+    build_qwen_vlm_adapter,
+    build_semantic_dataset,
+    build_semantic_loader,
+    resolve_split_manifest,
+)
 from src.utils.console import progress_context, show_kv_table, success
 from src.utils.env import load_project_env
 from src.utils.io import ensure_dir, write_json
 from src.utils.seed import set_seed
 from src.visualize.wandb_tracker import init_tracker
-from src.vlm.qwen_adapter import QwenVLMAdapter
 from src.vlm.semantic_align import DeltaProjector, SemanticAlignModel
 from src.vlm.semantic_state import SemanticStateGenerator
 from src.wm.encoder import build_wm_image_encoder
-
-
-def _collate_semantic_batch(batch: list[dict]) -> dict:
-    return {
-        "z_t": torch.stack([item["z_t"] for item in batch], dim=0),
-        "z_t_pos": torch.stack([item["z_t_pos"] for item in batch], dim=0),
-        "z_t_neg": torch.stack([item["z_t_neg"] for item in batch], dim=0),
-        "image_path": [str(item["image_path"]) for item in batch],
-        "pos_image_path": [str(item["pos_image_path"]) for item in batch],
-        "task_text": [str(item["task_text"]) for item in batch],
-        "env_context": [str(item["env_context"]) for item in batch],
-    }
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
@@ -74,46 +63,33 @@ def main(cfg: DictConfig) -> None:
     manifests_cfg = dict(manifests_cfg)
     semantic_align_split = str(train_cfg.get("split", "train"))
 
-    def _resolve_semantic_manifest_path(split: str) -> Path:
-        return resolve_manifest_for_split(
-            manifests_cfg=manifests_cfg,
-            split=split,
-            outputs_root=str(train_cfg.operation.outputs_root),
-            dataset_name=str(dataset_cfg.name),
-        )
-
-    resolved_manifest = _resolve_semantic_manifest_path(semantic_align_split)
-    from src.train.latent_cache import infer_latent_cache_path_from_manifest
-    resolved_cache = infer_latent_cache_path_from_manifest(str(resolved_manifest), str(wm_cfg.name))
-    dataset = SemanticAlignDataset(
-        manifest_path=str(resolved_manifest),
-        latent_dim=int(wm_cfg.latent_dim),
-        action_dim=int(dataset_cfg.action_dim),
-        history_len=int(wm_cfg.history_len),
+    resolved_manifest = resolve_split_manifest(
+        manifests_cfg=manifests_cfg,
+        split=semantic_align_split,
+        outputs_root=str(train_cfg.operation.outputs_root),
+        dataset_name=str(dataset_cfg.name),
+    )
+    dataset = build_semantic_dataset(
+        manifest_path=resolved_manifest,
+        wm_cfg=wm_cfg,
+        dataset_cfg=dataset_cfg,
         image_encoder=image_encoder,
         positive_k=int(train_cfg.positive_k),
         negative_gap=int(train_cfg.negative_gap),
         enable_cot_target=bool(train_cfg.enable_cot_target),
-        latent_cache_path=str(resolved_cache) if resolved_cache else None,
     )
     if len(dataset) == 0:
         raise RuntimeError("SemanticAlignDataset 为空，请先完成数据采集。")
-    loader = DataLoader(
+    loader = build_semantic_loader(
         dataset,
         batch_size=int(train_cfg.batch_size),
-        shuffle=True,
         num_workers=int(train_cfg.num_workers),
-        collate_fn=_collate_semantic_batch,
+        shuffle=True,
     )
-    vlm_model_cfg = vlm_cfg.get("model", None) or {}
-    vlm_model_name = str(OmegaConf.select(vlm_cfg, "model.hf_model_name", default="Qwen/Qwen2.5-VL-7B-Instruct"))
-    vlm_max_new_tokens = int(OmegaConf.select(vlm_cfg, "model.max_new_tokens", default=128))
-    vlm_adapter = QwenVLMAdapter(
-        model_name=vlm_model_name,
+    vlm_adapter = build_qwen_vlm_adapter(
+        vlm_cfg=vlm_cfg,
+        train_cfg=train_cfg,
         latent_dim=int(wm_cfg.latent_dim),
-        enabled=bool(vlm_cfg.get("enabled", False) and train_cfg.use_vlm_for_st),
-        fallback_enabled=bool(vlm_cfg.get("fallback_enabled", True)),
-        max_new_tokens=vlm_max_new_tokens,
     )
     semantic_generator = SemanticStateGenerator(vlm_adapter=vlm_adapter)
     projector = DeltaProjector(latent_dim=int(wm_cfg.latent_dim), hidden_dim=int(wm_cfg.hidden_dim)).to(device)

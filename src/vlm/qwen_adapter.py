@@ -10,12 +10,16 @@ from typing import Any
 import numpy as np
 from PIL import Image
 import torch
+from torch import nn
 
 try:
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 except Exception:  # pragma: no cover
     AutoProcessor = None
     Qwen2_5_VLForConditionalGeneration = None
+
+# Qwen2.5-VL-8B vision encoder output dimension
+QWEN_VISION_EMBED_DIM = 1536
 
 
 class QwenVLMAdapter:
@@ -30,6 +34,7 @@ class QwenVLMAdapter:
         max_new_tokens: int = 128,
         num_patches: int | None = None,
         token_strategy: str = "patch_mean",
+        encoder_embed_dim: int | None = None,
     ) -> None:
         self.model_name = model_name
         self.latent_dim = int(latent_dim)
@@ -42,6 +47,7 @@ class QwenVLMAdapter:
         self._model: Any | None = None
         self._init_error: str | None = None
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._vision_embed_dim = encoder_embed_dim or 1536
 
     @property
     def init_error(self) -> str | None:
@@ -145,9 +151,9 @@ class QwenVLMAdapter:
         if vision_features.dim() != 3:
             vision_features = vision_features.unsqueeze(1)
         if self.token_strategy == "patch_tokens":
-            # 输出 [num_patches, token_dim]，展平为 [num_patches * token_dim]
+            # 输出 [num_patches, vision_dim]，展平后用 _pad_or_trim 匹配 latent_dim
             pooled = self._pool_patch_tokens(vision_features)
-            return pooled.squeeze(0).reshape(-1)  # [latent_dim]
+            return self._pad_or_trim(pooled.squeeze(0).reshape(-1))
         pooled = vision_features.mean(dim=1)
         return self._pad_or_trim(pooled.squeeze(0))
 

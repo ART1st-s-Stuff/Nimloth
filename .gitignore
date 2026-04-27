@@ -33,6 +33,8 @@ dist/
 tmp/
 temp/
 outputs/
+dev/test_joint_train_output/
+dev/artifacts/test_joint_train_output/
 
 # Model and dataset artifacts (keep directory placeholders)
 models/**
