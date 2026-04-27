@@ -1,7 +1,7 @@
 # LeWM + Qwen2.5-VL 视觉编码器配置
 name: lewm_qwen25vl_8b
 hidden_dim: 512
-latent_dim: 6144
+latent_dim: 9216
 action_dim: 3
 history_len: 4
 transformer:
@@ -20,7 +20,7 @@ encoder:
   backbone_name: qwen25vl_8b_vision
   freeze_backbone: true
   image_size: 224
-  num_patches: 16
+  num_patches: 9
   token_strategy: patch_tokens
 lewm:
   dim_head: 64

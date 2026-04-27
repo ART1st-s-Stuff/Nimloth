@@ -79,6 +79,14 @@ class EncoderControlServer:
         with self._lock:
             return len(self._pending_priority)
 
+    def clear_priority_queue(self) -> int:
+        """清空优先队列，返回被清除的待处理数量。"""
+        with self._lock:
+            dropped = len(self._pending_priority)
+            self._priority_queue.clear()
+            self._pending_priority.clear()
+            return dropped
+
     def should_shutdown(self) -> bool:
         return self._shutdown.is_set()
 

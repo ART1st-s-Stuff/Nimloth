@@ -407,6 +407,12 @@ def _run_chunk_mode(
                 is_first_episode_done=first_episode_done,
             )
 
+        # 全量缓存命中时，优先队列中的任务不会进入编码循环，需主动清空避免训练侧等待超时。
+        if not remaining_episodes:
+            dropped = control_server.clear_priority_queue()
+            if dropped > 0:
+                logger.info("待编码 episode 为 0，已清空 %d 条优先编码任务。", dropped)
+
         done_path.write_text(str(len(episode_keys)))
         logger.info("Encoder server 完成：已编码 %d/%d 张图像。", encoded_count, total_images)
     finally:

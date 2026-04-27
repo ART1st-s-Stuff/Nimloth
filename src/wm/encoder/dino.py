@@ -82,10 +82,7 @@ class DinoV2MiniEncoder(WMImageEncoder):
             for param in self.backbone.parameters():
                 param.requires_grad = False
             self.backbone.eval()
-        embed_dim = int(getattr(self.backbone, "embed_dim", 384))
-        self.proj = nn.Sequential(nn.Linear(embed_dim, latent_dim), nn.GELU())
         self.backbone.to(self.device)
-        self.proj.to(self.device)
 
     def _pool_patch_tokens(self, patch_tokens: torch.Tensor) -> torch.Tensor:
         if patch_tokens.dim() != 3:
@@ -147,17 +144,9 @@ class DinoV2MiniEncoder(WMImageEncoder):
         if self.freeze_backbone:
             with torch.inference_mode():
                 with torch.autocast(device_type="cuda", dtype=torch.float16):
-                    features = self._select_tokens(pixel_values)
-                if self.token_strategy == "patch_tokens":
-                    z_batch = features.detach().cpu()
-                else:
-                    z_batch = self.proj(features).detach().cpu()
+                    z_batch = self._select_tokens(pixel_values).detach().cpu()
         else:
-            features = self._select_tokens(pixel_values)
-            if self.token_strategy == "patch_tokens":
-                z_batch = features.detach().cpu()
-            else:
-                z_batch = self.proj(features).detach().cpu()
+            z_batch = self._select_tokens(pixel_values).detach().cpu()
         outputs: list[EncoderOutput] = []
         for image_path, z in zip(image_paths, z_batch, strict=True):
             if self.token_strategy == "patch_tokens" and int(z.numel()) != int(self.latent_dim):
