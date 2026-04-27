@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+import torch
+from torch import nn
 from src.wm.encoder.base import EncoderOutput, WMImageEncoder
 from src.vlm.qwen_adapter import QwenVLMAdapter
 
@@ -20,6 +22,7 @@ class QwenImageEncoder(WMImageEncoder):
         fallback_enabled: bool = True,
         num_patches: int | None = None,
         token_strategy: str = "patch_mean",
+        encoder_embed_dim: int | None = None,
     ) -> None:
         super().__init__(latent_dim=latent_dim)
         self.name = name
@@ -32,6 +35,7 @@ class QwenImageEncoder(WMImageEncoder):
             fallback_enabled=fallback_enabled,
             num_patches=num_patches,
             token_strategy=token_strategy,
+            encoder_embed_dim=encoder_embed_dim,
         )
 
     def encode_image_path(self, image_path: str) -> EncoderOutput:
@@ -48,3 +52,72 @@ class QwenImageEncoder(WMImageEncoder):
 
     def encode_image_paths(self, image_paths: Sequence[str]) -> list[EncoderOutput]:
         return [self.encode_image_path(path) for path in image_paths]
+
+
+class TrainableQwenLatentAdapter(nn.Module):
+    """Qwen latent 轻量微调模块。
+
+    该模块不改动 Qwen backbone，仅在 latent 空间做小参数适配，
+    以便注入物理信息并通过蒸馏约束保持原始语义。
+    """
+
+    def __init__(
+        self,
+        latent_dim: int,
+        hidden_dim: int = 1024,
+        mode: str = "adapter_only",
+        trainable_blocks: int = 0,
+        distill_teacher: str = "frozen_qwen",
+    ) -> None:
+        super().__init__()
+        self.latent_dim = int(latent_dim)
+        self.hidden_dim = max(1, int(hidden_dim))
+        self.mode = str(mode).strip().lower()
+        self.trainable_blocks = max(0, int(trainable_blocks))
+        self.distill_teacher = str(distill_teacher).strip().lower()
+        # 小型残差适配器：z_student = z + f(z)
+        self.adapter = nn.Sequential(
+            nn.LayerNorm(self.latent_dim),
+            nn.Linear(self.latent_dim, self.hidden_dim),
+            nn.GELU(),
+            nn.Linear(self.hidden_dim, self.latent_dim),
+        )
+        # mode 预留：当前仅支持 adapter_only / lora_topk（同样走 adapter）
+        if self.mode not in {"adapter_only", "lora_topk"}:
+            raise ValueError(f"不支持的 encoder_finetune.mode={mode}")
+
+    def forward(self, latents: torch.Tensor) -> torch.Tensor:
+        """输入 shape: [..., latent_dim] 或 [..., P, D]，输出同形状。"""
+        original_shape = latents.shape
+        if latents.size(-1) == self.latent_dim:
+            flat = latents
+            use_reshape_back = False
+        else:
+            if latents.dim() >= 2:
+                last_numel = int(latents[0, 0].numel()) if latents.dim() >= 3 else int(latents[0].numel())
+            else:
+                last_numel = int(latents.numel())
+            if last_numel != self.latent_dim:
+                raise ValueError(
+                    f"latent 维度不匹配: got={tuple(original_shape)}, expected_flat={self.latent_dim}"
+                )
+            if latents.dim() >= 2:
+                flat = latents.reshape(*original_shape[:-2], self.latent_dim)
+            else:
+                flat = latents.reshape(-1, self.latent_dim)
+            use_reshape_back = True
+        delta = self.adapter(flat)
+        adapted = flat + delta
+        if use_reshape_back:
+            return adapted.reshape(original_shape)
+        return adapted
+
+    def teacher_forward(self, latents: torch.Tensor) -> torch.Tensor:
+        """teacher 分支（冻结 Qwen）的等价输出。"""
+        if self.distill_teacher != "frozen_qwen":
+            raise ValueError(f"不支持的 distill.teacher={self.distill_teacher}")
+        return latents.detach()
+
+    def parameter_groups(self) -> dict[str, list[nn.Parameter]]:
+        """暴露参数分组，便于后续扩展不同学习率策略。"""
+        return {"adapter": list(self.adapter.parameters())}

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.wm.encoder.dino import DinoV2MiniEncoder, TrainableDinoV2Encoder
-from src.wm.encoder.qwen import QwenImageEncoder
+from src.wm.encoder.qwen import QwenImageEncoder, TrainableQwenLatentAdapter
 
 
 def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
@@ -56,6 +56,7 @@ def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
             fallback_enabled=fallback_enabled,
             num_patches=num_patches,
             token_strategy=token_strategy,
+            encoder_embed_dim=int(getattr(encoder_cfg, "encoder_embed_dim", 0)) or None,
         )
 
     raise ValueError(f"未知 WM encoder 配置: {encoder_name}")
@@ -79,6 +80,18 @@ def build_trainable_image_encoder(wm_cfg: Any, train_cfg: Any | None = None) -> 
 
     encoder_name = str(getattr(encoder_cfg, "name", "none")).lower()
     latent_dim = int(getattr(wm_cfg, "latent_dim", 128))
+
+    # 可训练 encoder - Qwen latent adapter
+    encoder_finetune_cfg = getattr(train_cfg, "encoder_finetune", {}) if train_cfg else {}
+    encoder_finetune_enabled = bool(getattr(encoder_finetune_cfg, "enabled", False))
+    if encoder_finetune_enabled and "qwen" in encoder_name:
+        return TrainableQwenLatentAdapter(
+            latent_dim=latent_dim,
+            hidden_dim=int(getattr(encoder_finetune_cfg, "adapter_hidden_dim", latent_dim)),
+            mode=str(getattr(encoder_finetune_cfg, "mode", "adapter_only")),
+            trainable_blocks=int(getattr(encoder_finetune_cfg, "trainable_blocks", 0)),
+            distill_teacher=str(getattr(encoder_finetune_cfg, "distill_teacher", "frozen_qwen")),
+        )
 
     # 可训练 encoder - 需要区分来源
     if encoder_name == "cfm_trainable_dinov2m":

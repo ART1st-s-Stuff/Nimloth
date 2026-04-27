@@ -25,6 +25,7 @@ from src.utils.seed import set_seed
 from src.visualize.wandb_tracker import init_tracker
 from src.wm.encoder import build_wm_image_encoder, build_trainable_image_encoder
 from src.wm.encoder.dino import TrainableDinoV2Encoder
+from src.wm.encoder.qwen import TrainableQwenLatentAdapter
 from src.wm.predictor import WMModel, LeWMModel
 from src.wm.inverse_dynamics import InverseDynamicsModel
 from src.wm.action_mapper import build_action_mapper
@@ -53,6 +54,67 @@ def _linear_warmup_lambda(step: int, warmup_steps: int) -> float:
     return min(1.0, max(0.0, float(step + 1) / float(warmup_steps)))
 
 
+def _safe_cosine_mean(x: torch.Tensor, y: torch.Tensor) -> float:
+    x_flat = x.reshape(-1, x.shape[-1]).float()
+    y_flat = y.reshape(-1, y.shape[-1]).float()
+    if x_flat.numel() == 0 or y_flat.numel() == 0:
+        return 0.0
+    cos = torch.nn.functional.cosine_similarity(x_flat, y_flat, dim=-1)
+    return float(cos.mean().item())
+
+
+def _compute_qwen_aux_losses(
+    *,
+    trainable_encoder: TrainableQwenLatentAdapter,
+    z_history: torch.Tensor,
+    z_future: torch.Tensor,
+    action_history: torch.Tensor,
+    physics_weight: float,
+    distill_weight: float,
+    temporal_weight: float,
+) -> tuple[dict[str, float], torch.Tensor, torch.Tensor, torch.Tensor]:
+    """计算 Qwen latent adapter 的辅助损失并返回变换后的 latent。"""
+    z_history_student = trainable_encoder(z_history)
+    z_future_student = trainable_encoder(z_future)
+    z_history_teacher = trainable_encoder.teacher_forward(z_history)
+    z_future_teacher = trainable_encoder.teacher_forward(z_future)
+    distill_loss = torch.tensor(0.0, device=z_history.device)
+    if distill_weight > 0.0:
+        distill_loss = (
+            torch.nn.functional.mse_loss(z_history_student, z_history_teacher)
+            + torch.nn.functional.mse_loss(z_future_student, z_future_teacher)
+        ) * 0.5
+    physics_loss = torch.tensor(0.0, device=z_history.device)
+    if physics_weight > 0.0 and z_history_student.size(1) > 0 and z_future_student.size(1) > 0:
+        delta_pred = z_future_student[:, 0] - z_history_student[:, -1]
+        action_signal = action_history[:, -1].float().norm(dim=-1, keepdim=True)
+        while action_signal.dim() < delta_pred.dim():
+            action_signal = action_signal.unsqueeze(-1)
+        target_delta = action_signal * torch.tanh(z_history_student[:, -1])
+        physics_loss = torch.nn.functional.mse_loss(delta_pred, target_delta)
+    temporal_loss = torch.tensor(0.0, device=z_history.device)
+    if temporal_weight > 0.0:
+        if z_history_student.size(1) > 1:
+            temporal_loss = temporal_loss + torch.nn.functional.mse_loss(
+                z_history_student[:, 1:], z_history_student[:, :-1]
+            )
+        if z_future_student.size(1) > 1:
+            temporal_loss = temporal_loss + torch.nn.functional.mse_loss(
+                z_future_student[:, 1:], z_future_student[:, :-1]
+            )
+    aux_loss = physics_weight * physics_loss + distill_weight * distill_loss + temporal_weight * temporal_loss
+    aux_metrics = {
+        "loss_distill": float(distill_loss.item()),
+        "loss_physics": float(physics_loss.item()),
+        "loss_temporal": float(temporal_loss.item()),
+        "embedding_cosine_to_teacher": _safe_cosine_mean(
+            torch.cat([z_history_student, z_future_student], dim=1),
+            torch.cat([z_history_teacher, z_future_teacher], dim=1),
+        ),
+    }
+    return aux_metrics, aux_loss, z_history_student, z_future_student
+
+
 def _train_step_with_encoder(
     batch: Any,
     wm_model: Any,
@@ -61,6 +123,9 @@ def _train_step_with_encoder(
     encoder_scheduler: Any | None,
     device: torch.device,
     sigreg_weight: float,
+    physics_weight: float,
+    distill_weight: float,
+    temporal_weight: float,
     global_step: int,
     sigreg_warmup_steps: int,
     grad_clip_norm: float,
@@ -96,6 +161,12 @@ def _train_step_with_encoder(
     action_history = batch["action_history"].to(device)
     z_future = batch["z_future"].to(device)
     gt_action_future = batch["gt_action_future"].to(device)
+    aux_metrics = {
+        "loss_distill": 0.0,
+        "loss_physics": 0.0,
+        "loss_temporal": 0.0,
+        "embedding_cosine_to_teacher": 0.0,
+    }
 
     # 计算 SIGReg 权重（带 warmup）
     current_encoder_sigreg_weight = 0.0
@@ -106,10 +177,21 @@ def _train_step_with_encoder(
 
     # Encoder 前向：计算 encoder 输出的 SIGReg 损失
     encoder_sigreg_loss = torch.tensor(0.0, device=device)
-    if trainable_encoder.sigreg_enabled and current_encoder_sigreg_weight > 0.0:
+    if isinstance(trainable_encoder, TrainableDinoV2Encoder) and trainable_encoder.sigreg_enabled and current_encoder_sigreg_weight > 0.0:
         # 对 z_history 和 z_future 应用 SIGReg
         latent_seq = torch.cat([z_history, z_future], dim=1)  # [B, T, P, D]
         encoder_sigreg_loss = trainable_encoder.compute_sigreg(latent_seq)
+    encoder_aux_loss = torch.tensor(0.0, device=device)
+    if isinstance(trainable_encoder, TrainableQwenLatentAdapter):
+        aux_metrics, encoder_aux_loss, z_history, z_future = _compute_qwen_aux_losses(
+            trainable_encoder=trainable_encoder,
+            z_history=z_history,
+            z_future=z_future,
+            action_history=action_history,
+            physics_weight=physics_weight,
+            distill_weight=distill_weight,
+            temporal_weight=temporal_weight,
+        )
 
     # 正常的 WM 训练步骤（使用缓存的 latent，不需要 encoder 前向）
     prepared = {
@@ -121,9 +203,10 @@ def _train_step_with_encoder(
     wm_metrics = wm_model.train_step(prepared)
 
     # 如果有 encoder SIGReg 损失，需要单独更新 encoder
-    if encoder_sigreg_loss > 0.0:
+    total_encoder_loss = current_encoder_sigreg_weight * encoder_sigreg_loss + encoder_aux_loss
+    if total_encoder_loss > 0.0:
         encoder_optimizer.zero_grad(set_to_none=True)
-        (current_encoder_sigreg_weight * encoder_sigreg_loss).backward()
+        total_encoder_loss.backward()
         torch.nn.utils.clip_grad_norm_(trainable_encoder.parameters(), grad_clip_norm)
         encoder_optimizer.step()
         # 更新 encoder scheduler（在 optimizer.step() 之后）
@@ -136,6 +219,7 @@ def _train_step_with_encoder(
     else:
         wm_metrics["loss_encoder_sigreg"] = 0.0
         wm_metrics["encoder_sigreg_weight"] = 0.0
+    wm_metrics.update(aux_metrics)
 
     return wm_metrics, encoder_sigreg_loss
 
@@ -180,6 +264,10 @@ def main(cfg: DictConfig) -> None:
     sigreg_t_min = float(getattr(sigreg_cfg, "t_min", 0.2))
     sigreg_t_max = float(getattr(sigreg_cfg, "t_max", 4.0))
     sigreg_kernel_sigma = float(getattr(sigreg_cfg, "kernel_sigma", 1.0))
+    loss_cfg = train_cfg.get("loss", {})
+    physics_weight = float(getattr(loss_cfg, "physics_weight", 0.0))
+    distill_weight = float(getattr(loss_cfg, "distill_weight", 0.0))
+    temporal_weight = float(getattr(loss_cfg, "temporal_weight", 0.0))
     warmup_steps = int(train_cfg.get("lr_warmup_steps", 0))
     cos_annealing_steps = int(train_cfg.get("cos_annealing_steps", 0))  # 0 表示自动推断
     cos_min_lr_ratio = float(train_cfg.get("cos_min_lr_ratio", 0.1))
@@ -204,6 +292,9 @@ def main(cfg: DictConfig) -> None:
             "temporal_stride": str(temporal_stride),
             "sigreg_enabled": sigreg_enabled,
             "sigreg_weight": sigreg_target_weight,
+            "physics_weight": physics_weight,
+            "distill_weight": distill_weight,
+            "temporal_weight": temporal_weight,
             "log_every_n_steps": int(train_cfg.get("log_every_n_steps", 0)),
             "lr_warmup_steps": warmup_steps,
             "cos_annealing_steps": cos_annealing_steps,
@@ -273,13 +364,16 @@ def main(cfg: DictConfig) -> None:
     encoder_scheduler = None
     encoder_lr = float(train_cfg.get("encoder_lr", train_cfg.lr))
     encoder_sigreg_weight = sigreg_target_weight
-    if sigreg_enabled:
+    encoder_finetune_cfg = train_cfg.get("encoder_finetune", {})
+    encoder_finetune_enabled = bool(getattr(encoder_finetune_cfg, "enabled", False))
+    if sigreg_enabled or encoder_finetune_enabled:
         trainable_encoder = build_trainable_image_encoder(wm_cfg=wm_cfg, train_cfg=train_cfg)
         if trainable_encoder is not None:
             logger.info(
-                "方案2：启用可微调图像 encoder + SIGReg，encoder_lr=%.6f, sigreg_weight=%.4f",
+                "方案2：启用可微调图像 encoder，encoder_lr=%.6f, sigreg_weight=%.4f, encoder_finetune=%s",
                 encoder_lr,
                 encoder_sigreg_weight,
+                str(encoder_finetune_enabled),
             )
             trainable_encoder = trainable_encoder.to(device)
             encoder_optimizer = torch.optim.AdamW(
@@ -476,6 +570,10 @@ def main(cfg: DictConfig) -> None:
                 epoch_action_loss = 0.0
                 epoch_sigreg_loss = 0.0
                 epoch_encoder_sigreg_loss = 0.0
+                epoch_distill_loss = 0.0
+                epoch_physics_loss = 0.0
+                epoch_temporal_loss = 0.0
+                epoch_embedding_cosine_to_teacher = 0.0
                 for batch_idx, batch in enumerate(data_provider.train(), start=1):
                     global_step += 1
                     wm_model._global_step = global_step
@@ -489,6 +587,9 @@ def main(cfg: DictConfig) -> None:
                         encoder_scheduler=encoder_scheduler,
                         device=device,
                         sigreg_weight=sigreg_target_weight,
+                        physics_weight=physics_weight,
+                        distill_weight=distill_weight,
+                        temporal_weight=temporal_weight,
                         global_step=global_step,
                         sigreg_warmup_steps=sigreg_warmup_steps,
                         grad_clip_norm=grad_clip_norm,
@@ -505,6 +606,12 @@ def main(cfg: DictConfig) -> None:
                             "train_step/epoch": epoch,
                             "train_step/lr_wm": step_metrics["lr_wm"],
                             "train_step/lr_idm": step_metrics["lr_idm"],
+                            "train_step/loss_distill": step_metrics.get("loss_distill", 0.0),
+                            "train_step/loss_physics": step_metrics.get("loss_physics", 0.0),
+                            "train_step/loss_temporal": step_metrics.get("loss_temporal", 0.0),
+                            "train_step/embedding_cosine_to_teacher": step_metrics.get(
+                                "embedding_cosine_to_teacher", 0.0
+                            ),
                         }
                         # 方案2：添加 encoder 相关指标
                         if trainable_encoder is not None:
@@ -518,6 +625,12 @@ def main(cfg: DictConfig) -> None:
                     epoch_action_loss += step_metrics["loss_action"]
                     epoch_sigreg_loss += step_metrics["loss_sigreg"]
                     epoch_encoder_sigreg_loss += step_metrics.get("loss_encoder_sigreg", 0.0)
+                    epoch_distill_loss += step_metrics.get("loss_distill", 0.0)
+                    epoch_physics_loss += step_metrics.get("loss_physics", 0.0)
+                    epoch_temporal_loss += step_metrics.get("loss_temporal", 0.0)
+                    epoch_embedding_cosine_to_teacher += step_metrics.get(
+                        "embedding_cosine_to_teacher", 0.0
+                    )
                     progress.update(
                         task,
                         advance=1,
@@ -531,6 +644,10 @@ def main(cfg: DictConfig) -> None:
                 avg_action = epoch_action_loss / max(1, len(train_loader))
                 avg_sigreg = epoch_sigreg_loss / max(1, len(train_loader))
                 avg_encoder_sigreg = epoch_encoder_sigreg_loss / max(1, len(train_loader))
+                avg_distill = epoch_distill_loss / max(1, len(train_loader))
+                avg_physics = epoch_physics_loss / max(1, len(train_loader))
+                avg_temporal = epoch_temporal_loss / max(1, len(train_loader))
+                avg_embed_cos = epoch_embedding_cosine_to_teacher / max(1, len(train_loader))
                 epoch_metrics = {
                     "train/loss": avg_loss,
                     "train/loss_recon": avg_recon,
@@ -539,6 +656,10 @@ def main(cfg: DictConfig) -> None:
                     "train/epoch": epoch,
                     "train/lr_wm": float(wm_scheduler.get_last_lr()[0]),
                     "train/lr_idm": float(idm_scheduler.get_last_lr()[0]),
+                    "train/loss_distill": avg_distill,
+                    "train/loss_physics": avg_physics,
+                    "train/loss_temporal": avg_temporal,
+                    "train/embedding_cosine_to_teacher": avg_embed_cos,
                 }
                 # 方案2：添加 encoder 相关指标
                 if trainable_encoder is not None:
@@ -598,6 +719,9 @@ def main(cfg: DictConfig) -> None:
             "detach_idm_in_wm": detach_idm_in_wm,
             "sigreg_enabled": sigreg_enabled,
             "sigreg_weight": sigreg_target_weight,
+            "physics_weight": physics_weight,
+            "distill_weight": distill_weight,
+            "temporal_weight": temporal_weight,
             "sigreg_warmup_steps": sigreg_warmup_steps,
             "lr_warmup_steps": warmup_steps,
             "cos_annealing_steps": cos_annealing_steps,
