@@ -69,6 +69,24 @@ sigreg:
   kernel_sigma: 1.0
   # warmup 步数（0 表示不warmup）
   warmup_steps: 1000
+encoder_finetune:
+  # 是否启用 encoder 轻量微调（Qwen 默认使用 latent adapter）
+  enabled: false
+  # adapter_only / lora_topk（当前两者均走安全 adapter 路径）
+  mode: adapter_only
+  # 预留字段：LoRA 顶层可训练 block 数
+  trainable_blocks: 0
+  # latent adapter 隐层维度
+  adapter_hidden_dim: 2048
+  # 蒸馏 teacher（当前仅支持 frozen_qwen）
+  distill_teacher: frozen_qwen
+loss:
+  # 物理一致性损失权重
+  physics_weight: 0.0
+  # teacher-student 蒸馏损失权重
+  distill_weight: 0.0
+  # 时序平滑损失权重
+  temporal_weight: 0.0
 operation:
   # 输出根目录
   outputs_root: models
