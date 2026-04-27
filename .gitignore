@@ -35,6 +35,8 @@ temp/
 outputs/
 dev/test_joint_train_output/
 dev/artifacts/test_joint_train_output/
+# Dev 实验产物（checkpoint 等，禁止提交）
+dev/**/*.pt
 
 # Model and dataset artifacts (keep directory placeholders)
 models/**

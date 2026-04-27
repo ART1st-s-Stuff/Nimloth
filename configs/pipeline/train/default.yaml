@@ -55,7 +55,7 @@ ema:
 log_every_n_steps: 10
 sigreg:
   # 是否启用 LeWM 论文风格 SIGReg
-  enabled: true
+  enabled: false
   # 正则权重 λ
   weight: 0.01
   # 随机投影数 M
@@ -96,43 +96,6 @@ operation:
   phase: phase2
   # 任务标识
   task: wm_training
-semantic_align:
-  # 训练/导出默认读取的 manifest split（train_semantic_align / export_pm_ready_features）
-  split: train
-  # eval_semantic_align 默认 manifest split
-  eval_split: val
-  # export_pm_ready_features 默认 manifest split（可与 split 独立配置）
-  export_split: test
-  # 对齐训练批大小
-  batch_size: 8
-  # 训练轮数
-  epochs: 1
-  # 学习率
-  lr: 0.0005
-  # DataLoader worker
-  num_workers: 0
-  # 正样本时序间隔 k
-  positive_k: 1
-  # 负样本最小时序间隔
-  negative_gap: 6
-  # 温度系数 tau
-  temperature: 0.07
-  # 时序一致性损失权重
-  temporal_weight: 0.2
-  # 是否启用 cot 文本目标字段
-  enable_cot_target: false
-  # 训练设备
-  device: cuda
-  # 是否尝试真实 VLM 生成 s_t；false 时使用占位模式
-  use_vlm_for_st: true
-  # 评估时读取的 projector ckpt（支持 latest 占位路径）
-  eval_ckpt_path: models/semantic_align/qwen_vl/latest/semantic_projector.pt
-  # 导出 PM-ready 特征条数上限
-  export_max_samples: 2000
-  operation:
-    outputs_root: models
-    phase: phase3
-    task: semantic_align
 flow_matching:
   # 可通过命令行覆盖并映射到 wm.flow_matching.*（便于统一管理）
   variant: rectified_flow

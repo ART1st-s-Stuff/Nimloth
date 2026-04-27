@@ -244,3 +244,28 @@
 ### 下一步
 - 基于最小样例执行 WM 与语义链路冒烟，确认重构后行为一致。
 - 继续将剩余重复逻辑（如更多训练入口共用构建器）按同样模式收敛。
+
+---
+
+## 配置精简最小拆分记录（2026-04-28）
+
+### 已完成
+- `configs/pipeline/train/default.yaml` 已移除 `semantic_align` 配置块，仅保留 phase2 WM 训练相关字段。
+- 新增 `configs/pipeline/train/semantic_align_phase3.yaml`，承载 phase3 语义对齐配置。
+- `configs/config.yaml` 已通过 defaults 将 `semantic_align_phase3` 挂载到 `pipeline.train.semantic_align`，保持现有调用路径兼容（如 `pipeline.train.semantic_align.*` 覆盖）。
+
+### 疑似无用配置候选（仅标记，不删除）
+- 基于 `src/**` 与 `scripts/**` 的检索，以下配置名暂未发现引用命中：
+  - `configs/wm/cfm_qwen25vl_8b.yaml`
+  - `configs/wm/cfm_qwen25vl_8b_frozen.yaml`
+  - `configs/wm/cfm_dinov2m_qwen25vl_8b.yaml`
+  - `configs/wm/lewm_dinov2m_qwen25vl_8b.yaml`
+  - `configs/wm/lewm_qwen25vl_8b_finetune.yaml`
+- 说明：以上仅为“候选”，可能仍被临时实验命令或外部流程使用；待进一步核验后再决定是否删除。
+
+### WM 配置去重（语义等价）
+- 对以下高度重复配置改为 Hydra 继承，仅保留差异字段，配置语义不变：
+  - `configs/wm/cfm_trainable_dinov2m.yaml` 继承 `configs/wm/cfm_dinov2m.yaml`
+  - `configs/wm/lewm_trainable_dinov2m.yaml` 继承 `configs/wm/lewm_dinov2m.yaml`
+  - `configs/wm/lewm_qwen25vl_8b_finetune.yaml` 继承 `configs/wm/lewm_qwen25vl_8b.yaml`
+- 已通过 compose 校验关键字段（encoder 名称/冻结标记、flow_matching、lewm/cfm 子配置）与预期一致。

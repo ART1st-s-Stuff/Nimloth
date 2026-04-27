@@ -1,0 +1,22 @@
+# Phase 3 语义对齐配置（挂载到 pipeline.train.semantic_align）
+# 说明：保留旧接口路径，便于脚本继续通过 pipeline.train.semantic_align.* 覆盖。
+split: train
+eval_split: val
+export_split: test
+batch_size: 8
+epochs: 1
+lr: 0.0005
+num_workers: 0
+positive_k: 1
+negative_gap: 6
+temperature: 0.07
+temporal_weight: 0.2
+enable_cot_target: false
+device: cuda
+use_vlm_for_st: true
+eval_ckpt_path: models/semantic_align/qwen_vl/latest/semantic_projector.pt
+export_max_samples: 2000
+operation:
+  outputs_root: models
+  phase: phase3
+  task: semantic_align

@@ -4,6 +4,8 @@
 defaults:
   # 训练阶段配置
   - pipeline/train: default
+  # 语义对齐阶段配置（挂载到 pipeline.train.semantic_align，保持旧调用路径兼容）
+  - pipeline/train@pipeline.train.semantic_align: semantic_align_phase3
   # 校准阶段配置
   - pipeline/calib: default
   # 评估阶段配置
