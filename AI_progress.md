@@ -83,6 +83,12 @@
 - `scripts/phase2/wm_training_lazy.sh` 的首个 ready 等待逻辑已从固定文件名改为动态推断/兜底匹配，修复历史卡住点。
 - 为 Qwen patch token 兼容，`src/data/dataset.py` 与 `dev/test_lewm_phase2.py` 已加入 latent 形状归一化逻辑（优先转为 `[P,D]`）。
 - `dev/test_lewm_phase2.py` 新增 `--eval-split {test,train}`，支持在训练集 rollout 上做可视化对比以排查欠拟合与协议问题。
+- 新增 Qwen encoder 物理微调骨架：
+  - `configs/pipeline/train/default.yaml` 增加 `encoder_finetune` 与 `loss.{physics_weight,distill_weight,temporal_weight}` 配置入口。
+  - 新增 `configs/wm/lewm_qwen25vl_8b_finetune.yaml`，用于与基线配置隔离实验。
+  - `src/wm/encoder/qwen.py` 增加 `TrainableQwenLatentAdapter`，提供 adapter 训练分支与 teacher/student 接口。
+  - `src/wm/encoder/factory.py` 已支持在 Qwen 场景按配置构建可训练 adapter。
+  - `src/train/train_wm.py` 接入 `loss_distill/loss_physics/loss_temporal` 与 `embedding_cosine_to_teacher` 日志指标。
 
 ### 4种配置对比实验状态（2026-04-25）
 
