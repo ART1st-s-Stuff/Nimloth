@@ -56,8 +56,9 @@ rl:
   wm_lr: 1e-4
 
   # === 输出 ===
+  # 目录结构: {outputs_root}/{run_name}/{timestamp}
   outputs_root: models/rl_joint
-  run_name: rl_joint_default
+  run_name: joint
 
   # === 设备 ===
   device: cuda

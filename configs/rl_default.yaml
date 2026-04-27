@@ -66,8 +66,9 @@ rl:
   shared_encoder: true
 
   # === 输出 ===
+  # 目录结构: {outputs_root}/{run_name}/{timestamp}
   outputs_root: models/rl
-  run_name: rl_ppo_default
+  run_name: ppo
 
   # === 设备 ===
   device: cuda

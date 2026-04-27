@@ -32,6 +32,14 @@ from src.rl.policy_model import PolicyModel
 from src.rl.storage import RolloutStorage
 from src.rl.value_network import ValueNetwork
 from src.rl.vec_env import LatentVecEnv, DummyVecEnv
+from src.rl.train_utils import (
+    EnvConfig,
+    RLModelConfig,
+    setup_logging,
+    get_device,
+    build_models_with_env,
+    build_environment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,22 +136,6 @@ class JointWMConfig:
     dropout: float = 0.1
     action_dim: int = 3
     ckpt_path: str | None = None
-
-
-def setup_logging(run_name: str, outputs_root: str) -> Path:
-    """设置日志。"""
-    run_dir = Path(outputs_root) / run_name / time.strftime("%Y%m%d_%H%M%S")
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(run_dir / "train.log"),
-        ],
-    )
-    return run_dir
 
 
 def build_reward_calculator(cfg: JointRLConfig) -> RewardCalculator:

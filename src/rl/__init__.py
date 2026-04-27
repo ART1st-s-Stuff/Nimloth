@@ -15,8 +15,19 @@ from src.rl.storage import RolloutStorage
 from src.rl.vec_env import LatentVecEnv, DummyVecEnv
 from src.rl.ppo_learner import PPOLearner
 from src.rl.joint_trainer import JointTrainer, RewardCalculator, JointTrainerStats
+from src.rl.train_utils import (
+    EnvConfig,
+    RLModelConfig,
+    setup_logging,
+    get_device,
+    build_models,
+    build_models_with_env,
+    build_environment,
+    compute_episode_stats,
+)
 
 __all__ = [
+    # 核心组件
     "PolicyModel",
     "ValueNetwork",
     "RolloutStorage",
@@ -26,4 +37,13 @@ __all__ = [
     "JointTrainer",
     "RewardCalculator",
     "JointTrainerStats",
+    # 训练工具
+    "EnvConfig",
+    "RLModelConfig",
+    "setup_logging",
+    "get_device",
+    "build_models",
+    "build_models_with_env",
+    "build_environment",
+    "compute_episode_stats",
 ]
