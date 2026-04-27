@@ -269,3 +269,6 @@
   - `configs/wm/lewm_trainable_dinov2m.yaml` 继承 `configs/wm/lewm_dinov2m.yaml`
   - `configs/wm/lewm_qwen25vl_8b_finetune.yaml` 继承 `configs/wm/lewm_qwen25vl_8b.yaml`
 - 已通过 compose 校验关键字段（encoder 名称/冻结标记、flow_matching、lewm/cfm 子配置）与预期一致。
+
+### 版本控制（不提交实验产物）
+- 曾误将 `dev/artifacts/test_joint_train_output/checkpoint_test.pt` 合入 `ai-main` 的 squash 提交，已撤回该次提交并重新提交为不含该文件；`.gitignore` 已增加 `dev/**/*.pt`，`ai-dev-qwen-joint-training` 已重置为与修正后的 `ai-main` 一致（`f99e686`）。
