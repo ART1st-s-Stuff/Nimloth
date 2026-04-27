@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import math
 from pathlib import Path
 
 import hydra
@@ -16,14 +15,18 @@ from torch.optim.lr_scheduler import LambdaLR
 logger = logging.getLogger(__name__)
 
 from src.core import FileSystemModelProvider, WMDataProvider, WMModelAdapter
-from src.train.latent_cache import build_wm_dataset_with_cache
-from src.train.manifest_resolver import resolve_manifest_for_split
+from src.application.pipelines.wm.common import build_wm_split_loader, resolve_wm_manifest
+from src.shared.config.training_parsers import (
+    cosine_annealing_lambda,
+    linear_warmup_lambda,
+    parse_temporal_stride,
+)
 from src.utils.console import progress_context, show_kv_table, success
 from src.utils.env import load_project_env
 from src.utils.io import ensure_dir, write_json
 from src.utils.seed import set_seed
 from src.visualize.wandb_tracker import init_tracker
-from src.wm.encoder import build_wm_image_encoder, build_trainable_image_encoder
+from src.wm.encoder import build_trainable_image_encoder
 from src.wm.encoder.dino import TrainableDinoV2Encoder
 from src.wm.encoder.qwen import TrainableQwenLatentAdapter
 from src.wm.predictor import WMModel, LeWMModel
@@ -34,24 +37,6 @@ from src.wm.factory import resolve_patch_layout
 
 def _count_trainable_params(module: torch.nn.Module) -> int:
     return sum(p.numel() for p in module.parameters() if p.requires_grad)
-
-
-def _parse_temporal_stride(value: object) -> int | tuple[int, int]:
-    if isinstance(value, int):
-        return max(1, int(value))
-    if hasattr(value, "__len__") and hasattr(value, "__getitem__") and not isinstance(value, (str, bytes)):
-        if len(value) != 2:
-            raise ValueError("pipeline.train.temporal_stride 区间必须包含两个整数 [min, max]。")
-        low = max(1, int(value[0]))
-        high = max(low, int(value[1]))
-        return (low, high)
-    return 1
-
-
-def _linear_warmup_lambda(step: int, warmup_steps: int) -> float:
-    if warmup_steps <= 0:
-        return 1.0
-    return min(1.0, max(0.0, float(step + 1) / float(warmup_steps)))
 
 
 def _safe_cosine_mean(x: torch.Tensor, y: torch.Tensor) -> float:
@@ -224,29 +209,6 @@ def _train_step_with_encoder(
     return wm_metrics, encoder_sigreg_loss
 
 
-def _cosine_annealing_lambda(
-    step: int, warmup_steps: int, total_steps: int, min_lr_ratio: float = 0.1
-) -> float:
-    """warmup + cosine annealing 调度器。
-
-    Args:
-        step: 当前步数
-        warmup_steps: warmup 总步数（warmup 期间 lr 从 0 线性上升到 base_lr）
-        total_steps: 总步数（warmup + annealing）
-        min_lr_ratio: 最终学习率相对于 base_lr 的比例
-    """
-    if step < warmup_steps:
-        # warmup 阶段
-        return float(step + 1) / float(warmup_steps)
-    if total_steps <= warmup_steps:
-        # 没有 annealing，退回到恒定 lr
-        return 1.0
-    # cosine annealing 阶段
-    progress = float(step - warmup_steps) / float(total_steps - warmup_steps)
-    progress = min(1.0, max(0.0, progress))
-    return min_lr_ratio + (1.0 - min_lr_ratio) * (1.0 + math.cos(math.pi * progress)) / 2.0
-
-
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     load_project_env()
@@ -254,7 +216,7 @@ def main(cfg: DictConfig) -> None:
     train_cfg = cfg.pipeline.train
     dataset_cfg = cfg.dataset
     wm_cfg = cfg.wm
-    temporal_stride = _parse_temporal_stride(train_cfg.get("temporal_stride", 1))
+    temporal_stride = parse_temporal_stride(train_cfg.get("temporal_stride", 1))
     sigreg_cfg = train_cfg.get("sigreg", {})
     sigreg_enabled = bool(getattr(sigreg_cfg, "enabled", False))
     sigreg_target_weight = float(getattr(sigreg_cfg, "weight", 0.0))
@@ -312,7 +274,7 @@ def main(cfg: DictConfig) -> None:
     outputs_root = str(train_cfg.operation.outputs_root)
 
     def _build_split_manifest_path(split: str) -> Path:
-        return resolve_manifest_for_split(
+        return resolve_wm_manifest(
             manifests_cfg=manifests_cfg,
             split=split,
             outputs_root=outputs_root,
@@ -320,35 +282,14 @@ def main(cfg: DictConfig) -> None:
         )
 
     def _build_split_loader(split: str, encoder_for_split: Any = None) -> DataLoader | None:
-        manifest_path = _build_split_manifest_path(split)
-        if not manifest_path.exists():
-            return None
-        encoder = encoder_for_split if encoder_for_split is not None else build_wm_image_encoder(wm_cfg=wm_cfg)
-        dataset, _ = build_wm_dataset_with_cache(
-            run_dir=manifest_path,
-            wm_name=str(wm_cfg.name),
-            latent_dim=int(wm_cfg.latent_dim),
-            action_dim=int(dataset_cfg.action_dim),
-            history_len=int(wm_cfg.history_len),
+        return build_wm_split_loader(
+            split=split,
+            manifest_path=_build_split_manifest_path(split),
+            wm_cfg=wm_cfg,
+            dataset_cfg=dataset_cfg,
+            train_cfg=train_cfg,
             temporal_stride=temporal_stride,
-            image_encoder=encoder,
-            encoder_num_workers=int(train_cfg.encoder_num_workers),
-            encoder_batch_size=int(train_cfg.encoder_batch_size),
-            expected_num_patches=int(getattr(wm_cfg.encoder, "num_patches", 0)),
-            expected_token_dim=(
-                int(wm_cfg.latent_dim) // int(getattr(wm_cfg.encoder, "num_patches", 1))
-                if int(getattr(wm_cfg.encoder, "num_patches", 0)) > 0
-                else 0
-            ),
-        )
-        dataset.disable_encoder_after_warmup()
-        num_workers = int(train_cfg.num_workers)
-        return DataLoader(
-            dataset,
-            batch_size=int(train_cfg.batch_size),
-            shuffle=(split == "train"),
-            num_workers=num_workers,
-            persistent_workers=num_workers > 0,
+            encoder_for_split=encoder_for_split,
         )
 
     train_loader = _build_split_loader("train")
@@ -382,13 +323,13 @@ def main(cfg: DictConfig) -> None:
             if cos_annealing_steps > 0:
                 encoder_scheduler = LambdaLR(
                     encoder_optimizer,
-                    lr_lambda=lambda step: _cosine_annealing_lambda(
+                    lr_lambda=lambda step: cosine_annealing_lambda(
                         step, warmup_steps, cos_annealing_steps, cos_min_lr_ratio
                     ),
                 )
             else:
                 encoder_scheduler = LambdaLR(
-                    encoder_optimizer, lr_lambda=lambda step: _linear_warmup_lambda(step, warmup_steps)
+                    encoder_optimizer, lr_lambda=lambda step: linear_warmup_lambda(step, warmup_steps)
                 )
 
     data_provider = WMDataProvider(
@@ -446,20 +387,20 @@ def main(cfg: DictConfig) -> None:
         )
         wm_scheduler = LambdaLR(
             wm_optimizer,
-            lr_lambda=lambda step: _cosine_annealing_lambda(
+            lr_lambda=lambda step: cosine_annealing_lambda(
                 step, warmup_steps, cos_annealing_steps, cos_min_lr_ratio
             ),
         )
         idm_scheduler = LambdaLR(
             idm_optimizer,
-            lr_lambda=lambda step: _cosine_annealing_lambda(
+            lr_lambda=lambda step: cosine_annealing_lambda(
                 step, warmup_steps, cos_annealing_steps, cos_min_lr_ratio
             ),
         )
     else:
         logger.info("使用线性 warmup 调度器: warmup=%d", warmup_steps)
-        wm_scheduler = LambdaLR(wm_optimizer, lr_lambda=lambda step: _linear_warmup_lambda(step, warmup_steps))
-        idm_scheduler = LambdaLR(idm_optimizer, lr_lambda=lambda step: _linear_warmup_lambda(step, warmup_steps))
+        wm_scheduler = LambdaLR(wm_optimizer, lr_lambda=lambda step: linear_warmup_lambda(step, warmup_steps))
+        idm_scheduler = LambdaLR(idm_optimizer, lr_lambda=lambda step: linear_warmup_lambda(step, warmup_steps))
     mode = str(train_cfg.training_mode).strip().lower()
     if mode not in {"unsupervised", "semi_supervised", "fully_supervised"}:
         raise ValueError(f"不支持的 training_mode={train_cfg.training_mode}")

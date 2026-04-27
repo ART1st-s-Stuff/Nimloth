@@ -21,18 +21,22 @@ import json
 from collections import defaultdict
 import os
 
-import fcntl
 import logging
 import signal
 import time
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 
 import torch
 import hydra
 from omegaconf import DictConfig
 
 from src.train.manifest_resolver import resolve_manifest_for_split
+from src.infrastructure.encoding.cache_protocol import (
+    append_episode_latents as append_episode_latents_file,
+    append_single_file_latents,
+    write_json_state,
+)
 from src.train.latent_cache import (
     build_latent_cache_dir,
     build_episode_cache_path,
@@ -48,29 +52,6 @@ from src.wm.encoder import build_wm_image_encoder
 logger = logging.getLogger(__name__)
 
 
-def _acquire_lock(lock_path: Path, *, timeout_sec: float = 30.0, poll_sec: float = 0.2) -> TextIO:
-    """获取独占文件锁（非阻塞重试），返回文件描述符。"""
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = open(lock_path, "w")
-    start = time.time()
-    while True:
-        try:
-            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return fd
-        except BlockingIOError:
-            waited = time.time() - start
-            if waited >= timeout_sec:
-                fd.close()
-                raise TimeoutError(f"获取缓存锁超时: lock={lock_path}, waited={waited:.1f}s, timeout={timeout_sec:.1f}s")
-            time.sleep(poll_sec)
-
-
-def _release_lock(fd: TextIO) -> None:
-    """释放文件锁。"""
-    fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
-    fd.close()
-
-
 def _append_episode_latents(
     cache_dir: Path,
     episode_key: str,
@@ -79,26 +60,12 @@ def _append_episode_latents(
 ) -> None:
     """将新 latents 追加到 episode 分块文件（先写临时文件再 rename）。"""
     episode_path = build_episode_cache_path(cache_dir, episode_key)
-    lock_path = episode_path.with_suffix(".lock")
-    lock_fd: TextIO | None = None
-    try:
-        try:
-            lock_fd = _acquire_lock(lock_path, timeout_sec=30.0, poll_sec=0.2)
-        except TimeoutError as exc:
-            logger.warning("episode %s 缓存锁超时，回退为无锁写入: %s", episode_key, exc)
-
-        if episode_path.exists():
-            payload = torch.load(episode_path, map_location="cpu")
-            existing: dict[str, torch.Tensor] = payload.get("latents", {}) if isinstance(payload, dict) else {}
-        else:
-            existing = {}
-        existing.update(new_latents)
-        tmp = episode_path.with_suffix(".tmp")
-        torch.save({"latent_dim": latent_dim, "episode_key": episode_key, "latents": existing}, tmp)
-        tmp.rename(episode_path)
-    finally:
-        if lock_fd is not None:
-            _release_lock(lock_fd)
+    append_episode_latents_file(
+        episode_path=episode_path,
+        episode_key=episode_key,
+        new_latents=new_latents,
+        latent_dim=latent_dim,
+    )
 
 
 def _mark_episode_ready(cache_dir: Path, episode_key: str) -> None:
@@ -160,26 +127,7 @@ def _parse_manifest_episodes(manifest_path: Path) -> dict[str, list[str]]:
 
 def _append_latents_to_cache(cache_path: Path, new_latents: dict[str, torch.Tensor], latent_dim: int) -> None:
     """将新 latents 原子追加到 cache 文件（先写临时文件再 rename）- 单文件模式。"""
-    lock_path = cache_path.with_suffix(".lock")
-    lock_fd: TextIO | None = None
-    try:
-        try:
-            lock_fd = _acquire_lock(lock_path, timeout_sec=30.0, poll_sec=0.2)
-        except TimeoutError as exc:
-            logger.warning("缓存锁超时，回退为无锁写入: %s", exc)
-
-        if cache_path.exists():
-            payload = torch.load(cache_path, map_location="cpu")
-            existing: dict[str, torch.Tensor] = payload.get("latents", {}) if isinstance(payload, dict) else {}
-        else:
-            existing = {}
-        existing.update(new_latents)
-        tmp = cache_path.with_suffix(".tmp")
-        torch.save({"latent_dim": latent_dim, "latents": existing}, tmp)
-        tmp.rename(cache_path)
-    finally:
-        if lock_fd is not None:
-            _release_lock(lock_fd)
+    append_single_file_latents(cache_path, new_latents, latent_dim)
 
 
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
@@ -224,23 +172,20 @@ def _write_encoder_state(
 ) -> None:
     """写入 encoder 状态到共享文件。"""
     state_file = cache_dir / "encoder_state.json"
-    try:
-        state_file.write_text(
-            json.dumps({
-                "current_episode_key": current_episode_key,
-                "total_episodes": total_episodes,
-                "episode_progress": episode_progress,
-                "episode_total": episode_total,
-                "encoded_images": encoded_images,
-                "total_images": total_images,
-                "episodes_completed": episodes_completed,
-                "is_first_episode_done": is_first_episode_done,
-                "timestamp": time.time(),
-            }, indent=2),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass  # 非关键操作，失败不影响主流程
+    write_json_state(
+        state_file,
+        {
+            "current_episode_key": current_episode_key,
+            "total_episodes": total_episodes,
+            "episode_progress": episode_progress,
+            "episode_total": episode_total,
+            "encoded_images": encoded_images,
+            "total_images": total_images,
+            "episodes_completed": episodes_completed,
+            "is_first_episode_done": is_first_episode_done,
+            "timestamp": time.time(),
+        },
+    )
 
 
 def _run_chunk_mode(

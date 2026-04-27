@@ -15,6 +15,7 @@ from omegaconf import OmegaConf
 import torch
 import umap
 
+from dev._shared.umap_cache import compute_umap_3d
 from src.data.collector import CollectConfig, run_collection
 from src.utils.io import ensure_dir
 from src.utils.model_provider import resolve_latest_model_file
@@ -111,60 +112,11 @@ class TrajPoint:
     latent: list[float]
 
 
-def _ensure_cache_dirs() -> None:
-    _UMAP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _umap_cache_key(feature_name: str, points: list[list[float]]) -> str:
-    arr = np.asarray(points, dtype=np.float32)
-    hasher = hashlib.sha256()
-    hasher.update(feature_name.encode("utf-8"))
-    hasher.update(str(arr.shape).encode("utf-8"))
-    hasher.update(arr.tobytes())
-    return hasher.hexdigest()[:24]
-
-
-def _load_umap_cache(feature_name: str, cache_key: str) -> list[list[float]] | None:
-    _ensure_cache_dirs()
-    cache_path = _UMAP_CACHE_DIR / f"{feature_name}_{cache_key}.json"
-    if not cache_path.exists():
-        return None
-    payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    points = payload.get("points", [])
-    if not isinstance(points, list):
-        return None
-    return points
-
-
-def _save_umap_cache(feature_name: str, cache_key: str, embedded: list[list[float]]) -> None:
-    _ensure_cache_dirs()
-    cache_path = _UMAP_CACHE_DIR / f"{feature_name}_{cache_key}.json"
-    payload = {
-        "feature": feature_name,
-        "cache_key": cache_key,
-        "points": embedded,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 def _compute_umap_3d(points: list[list[float]], feature_name: str) -> tuple[list[list[float]], str | None]:
-    if len(points) < 3:
-        return [], "样本数少于3，跳过 UMAP 三维降维。"
-    cache_key = _umap_cache_key(feature_name=feature_name, points=points)
-    cached = _load_umap_cache(feature_name=feature_name, cache_key=cache_key)
-    if cached is not None:
-        return cached, None
-    arr = np.asarray(points, dtype=np.float32)
-    n_neighbors = min(15, max(2, len(points) - 1))
-    reducer = umap.UMAP(n_components=3, n_neighbors=n_neighbors, random_state=42)
     try:
-        embedded = reducer.fit_transform(arr)
+        return compute_umap_3d(cache_dir=_UMAP_CACHE_DIR, points=points, feature_name=feature_name)
     except Exception as exc:
         return [], f"UMAP 计算失败: {exc}"
-    embedded_list = embedded.astype(np.float32).tolist()
-    _save_umap_cache(feature_name=feature_name, cache_key=cache_key, embedded=embedded_list)
-    return embedded_list, None
 
 
 def _load_rows(manifest_path: Path) -> list[dict[str, Any]]:

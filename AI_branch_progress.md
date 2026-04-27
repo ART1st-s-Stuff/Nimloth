@@ -216,3 +216,31 @@
 ### 下一步
 - 在 `ai-dev-phase2` 上继续 Phase2 实验与稳定性修复。
 - 每次代码变更后更新本文件并提交，保持分支进展可追踪。
+
+---
+
+## 结构化重构阶段记录（2026-04-28）
+
+### 已完成
+- `src` 新增公共模块，合并训练/评估重复逻辑：
+  - `src/shared/config/training_parsers.py`
+  - `src/application/pipelines/wm/common.py`
+  - `src/application/pipelines/semantic/common.py`
+  - `src/infrastructure/encoding/cache_protocol.py`
+- 入口脚本已接入公共模块，减少跨脚本重复实现：
+  - `src/train/train_wm.py`
+  - `src/train/train_wm_ddp.py`
+  - `src/train/train_semantic_align.py`
+  - `src/eval/eval_semantic_align.py`
+  - `src/train/export_pm_ready_features.py`
+  - `src/train/encoder_server.py`
+- `dev` 目录已结构化：
+  - 新增 `smoke/debug/benchmark/experiments/_shared/artifacts` 分层
+  - 新增 `dev/README.md` 作为索引
+  - `test_eval_*` 合并为 `dev/experiments/semantic_align/eval_smoke.py`
+  - `test_dataloader*` 合并为 `dev/smoke/dataloader_smoke.py`
+  - 产物从脚本层移至 `dev/artifacts/`
+
+### 下一步
+- 基于最小样例执行 WM 与语义链路冒烟，确认重构后行为一致。
+- 继续将剩余重复逻辑（如更多训练入口共用构建器）按同样模式收敛。
