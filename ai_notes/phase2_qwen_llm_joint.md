@@ -77,9 +77,11 @@ lewm:
 - [x] 修改 `get_image_hidden_state`：让 vision tokens 通过 LLM backbone，返回 hidden state
 - [x] 新增 `use_vision_only` 参数（只用 Vision Encoder，不经过 LLM）
 - [x] 新增 `llm_backbone_trainable` 参数（预留接口）
+- [x] `_set_llm_backbone_trainable()` 方法：冻结/解冻 LLM backbone
+- [x] **验证通过**：Vision Encoder (390 params) 可通过 LLM hidden state loss 反传获取梯度
 
 ### 待完成
-- [ ] 完整训练测试
+- [ ] 完整训练测试（需要 GPU 显存足够）
 
 ## 状态
 - [x] 实现 `get_image_hidden_state()` （通过 LLM backbone）
