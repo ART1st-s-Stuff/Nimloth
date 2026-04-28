@@ -320,9 +320,7 @@ Prompt + Image → Qwen Vision Encoder → vision tokens
 - `_set_llm_backbone_trainable()`: 冻结/解冻 LLM backbone
 - SIGReg adaptive warmup
 - **验证通过**：Vision Encoder 可通过 LLM hidden state loss 反传梯度
-
-### 待完成
-- 完整训练测试（需要 GPU 显存足够）
+- **完整训练测试完成**：1 epoch 训练成功，loss 从 0.1573 降到 0.0001
 
 ### 配置
 ```yaml
@@ -344,4 +342,5 @@ lewm:
 - [x] SIGReg adaptive warmup（warmup_steps=10 → 0.02 → 0.1）
 - [x] LeWMModel train_step 修复
 - [x] Qwen model name 更新（8B → 7B）
-- [ ] 完整训练（需修改 get_image_hidden_state 返回 LLM hidden state）
+- [x] 完整训练（1 epoch 验证成功，loss 0.1573 → 0.0001）
+- [x] 联合训练脚本 `train_wm_joint.py` 修复数据 batching 问题
