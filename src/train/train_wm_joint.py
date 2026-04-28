@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import hydra
@@ -133,7 +134,8 @@ def main(cfg: DictConfig) -> None:
 
     # 数据集
     json_path = "datasets/EB-Nav/eb-nav_dataset_single_step.json"
-    images_base_dir = "datasets/EB-Nav/images"
+    # json 中的路径是相对于 datasets/EB-Nav 的，所以 base_dir 是 datasets/EB-Nav
+    images_base_dir = "datasets/EB-Nav"
 
     dataset = EBNavSequenceDataset(
         json_path=json_path,
@@ -246,6 +248,25 @@ def main(cfg: DictConfig) -> None:
                 print(f"Epoch {epoch+1} | Step {batch_idx}/{len(dataloader)} | Loss: {loss.item():.4f}")
 
         success(f"Epoch {epoch+1}/{epochs} 完成")
+
+    # 保存 checkpoint
+    checkpoint_dir = Path("models/wm/joint_qwen")
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    checkpoint_path = checkpoint_dir / f"checkpoint_{timestamp}.pt"
+
+    torch.save({
+        "epoch": epoch + 1,
+        "global_step": global_step,
+        "vision_encoder_state": qwen_adapter._model.state_dict(),
+        "wm_state": wm_model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "config": {
+            "latent_dim": latent_dim,
+            "model_name": model_name,
+        }
+    }, checkpoint_path)
+    success(f"Checkpoint saved to {checkpoint_path}")
 
     tracker.finish()
     success("训练完成")
