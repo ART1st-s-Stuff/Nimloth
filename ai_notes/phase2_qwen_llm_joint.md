@@ -45,9 +45,10 @@ Prompt + Image → Qwen Vision Encoder → vision tokens
 
 | 文件 | 修改内容 |
 |------|---------|
-| `src/vlm/qwen_adapter.py` | `get_image_hidden_state()` 需要修改为返回 LLM hidden state |
-| `src/wm/encoder/qwen.py` | `QwenLLMLatentEncoder` 类 |
-| `src/wm/encoder/factory.py` | 支持 `qwen_llm` encoder 类型 |
+| `src/vlm/qwen_adapter.py` | `get_image_hidden_state()` 已修改为返回 LLM hidden state |
+| `src/wm/encoder/qwen.py` | `QwenLLMLatentEncoder` 已更新，新增 `use_vision_only` 和 `llm_backbone_trainable` 参数 |
+| `src/wm/encoder/factory.py` | 支持新参数 |
+| `configs/wm/lewm_qwen_llm_joint.yaml` | 训练配置 |
 | `configs/wm/lewm_qwen_llm_joint.yaml` | 训练配置 |
 
 ## 配置
@@ -73,18 +74,22 @@ lewm:
 - [x] `qwen_llm` encoder 类型支持
 - [x] 训练配置 `lewm_qwen_llm_joint.yaml`
 - [x] SIGReg adaptive warmup
+- [x] 修改 `get_image_hidden_state`：让 vision tokens 通过 LLM backbone，返回 hidden state
+- [x] 新增 `use_vision_only` 参数（只用 Vision Encoder，不经过 LLM）
+- [x] 新增 `llm_backbone_trainable` 参数（预留接口）
 
 ### 待完成
-- [ ] 修改 `get_image_hidden_state`：让 vision tokens 通过 LLM backbone，返回 hidden state
 - [ ] 完整训练测试
 
 ## 状态
-- [x] 实现 `get_image_hidden_state()` （需要修改）
+- [x] 实现 `get_image_hidden_state()` （通过 LLM backbone）
 - [x] 实现 `QwenLLMLatentEncoder`
 - [x] 创建训练配置
 - [x] 支持 SIGReg 在 encoded latent 上应用
 - [x] 修复 LeWMModel SIGReg warmup bug
-- [ ] 完整训练（需要修改 get_image_hidden_state 返回 LLM hidden state）
+- [x] LLM backbone hidden state 获取
+- [ ] 完整训练（需要 Qwen 模型）
+
 
 ## EB-Nav 数据集信息
 
