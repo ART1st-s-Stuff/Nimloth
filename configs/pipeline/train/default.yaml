@@ -38,6 +38,8 @@ detach_idm_in_wm: false
 wm_lr: null
 # IDM/mapper 学习率（null 时回退到 lr）
 idm_lr: null
+# 最大样本数（0 表示不限制，用于快速调试）
+max_samples: 0
 # AdamW 权重衰减
 weight_decay: 0.01
 # 线性学习率 warmup 步数（0 表示关闭）

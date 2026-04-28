@@ -145,6 +145,13 @@ def main(cfg: DictConfig) -> None:
         history_len=int(wm_cfg.history_len),
     )
 
+    # 限制数据集大小（加速调试）
+    max_samples = int(train_cfg.get("max_samples", 0))
+    if max_samples > 0:
+        # 使用前 max_samples 个样本
+        dataset.sequences = dataset.sequences[:max_samples]
+        print(f"Limited dataset to {max_samples} samples")
+
     dataloader = DataLoader(
         dataset,
         batch_size=int(train_cfg.batch_size),

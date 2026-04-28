@@ -136,6 +136,8 @@ def main():
     parser.add_argument("--history-len", type=int, default=4)
     parser.add_argument("--rollout-steps", type=int, default=5)
     parser.add_argument("--output-dir", type=str, default="outputs/dev/visualization")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to trained checkpoint")
     args = parser.parse_args()
 
     from hydra import compose, initialize_config_dir
@@ -175,7 +177,7 @@ def main():
         llm_backbone_trainable=False,
     )
 
-    # 加载 WM
+    # 加载 WM - 启用 SIGReg（与训练时一致）
     wm_model = LeWMWorldModel(
         latent_dim=latent_dim,
         action_dim=3,
@@ -189,8 +191,22 @@ def main():
         mlp_ratio=float(getattr(cfg.wm.transformer, "mlp_ratio", 4.0)),
         dropout=float(getattr(cfg.wm.transformer, "dropout", 0.1)),
         emb_dropout=0.0,
+        sigreg_enabled=bool(getattr(cfg.wm.lewm, "sigreg_enabled", False)),
+        sigreg_latent_dim=int(getattr(cfg.wm.lewm, "sigreg_latent_dim", latent_dim)),
     ).to(device)
     wm_model.eval()
+
+    # 加载训练好的权重（如果指定了 checkpoint）
+    if args.checkpoint:
+        checkpoint_path = Path(args.checkpoint)
+        if checkpoint_path.exists():
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            qwen_adapter._model.load_state_dict(checkpoint["vision_encoder_state"])
+            wm_model.load_state_dict(checkpoint["wm_state"])
+            logger.info(f"Loaded checkpoint from {checkpoint_path}")
+            logger.info(f"Checkpoint epoch: {checkpoint.get('epoch', 'N/A')}")
+        else:
+            logger.warning(f"Checkpoint not found: {checkpoint_path}")
 
     # 加载数据集
     from src.data.eb_nav_dataset import EBNavSequenceDataset
