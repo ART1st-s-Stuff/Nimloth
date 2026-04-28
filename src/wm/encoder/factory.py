@@ -43,7 +43,7 @@ def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
 
     # Qwen encoder - 基于 QwenVLMAdapter
     if "qwen" in encoder_name:
-        model_name = str(getattr(encoder_cfg, "model_name", "Qwen/Qwen2.5-VL-8B-Instruct"))
+        model_name = str(getattr(encoder_cfg, "model_name", "Qwen/Qwen2.5-VL-7B-Instruct"))
         enabled = bool(getattr(encoder_cfg, "enabled", True))
         fallback_enabled = bool(getattr(encoder_cfg, "fallback_enabled", True))
         num_patches = int(getattr(encoder_cfg, "num_patches", 0)) or None

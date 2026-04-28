@@ -13,11 +13,13 @@ from src.vlm.qwen_adapter import QwenVLMAdapter
 class QwenImageEncoder(WMImageEncoder):
     """Qwen encoder 实现，封装 QwenVLMAdapter。"""
 
+    DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-VL-7B-Instruct"
+
     def __init__(
         self,
         latent_dim: int,
         name: str,
-        model_name: str = "Qwen/Qwen2.5-VL-8B-Instruct",
+        model_name: str = QwenImageEncoder.DEFAULT_MODEL_NAME,
         enabled: bool = True,
         fallback_enabled: bool = True,
         num_patches: int | None = None,
@@ -134,11 +136,11 @@ class QwenLLMLatentEncoder(WMImageEncoder):
     - WM 需要适配 [B, 1, 1, D] 的输入格式
     """
 
-    def __init__(
+    DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-VL-7B-Instruct"
         self,
         latent_dim: int,
         name: str = "qwen_llm",
-        model_name: str = "Qwen/Qwen2.5-VL-8B-Instruct",
+        model_name: str = QwenLLMLatentEncoder.DEFAULT_MODEL_NAME,
         enabled: bool = True,
         fallback_enabled: bool = True,
         prompt_template: str | None = None,
