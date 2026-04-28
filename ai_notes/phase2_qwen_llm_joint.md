@@ -1,28 +1,54 @@
-# Phase 2 Qwen LLM Joint Training
+# Phase 2 Qwen Vision Encoder Joint Training
 
-## 概述
+## 架构澄清（2026-04-28）
 
-在 `ai-dev-qwen-joint-training` 分支上实现，使用 Qwen LLM 的 vision embedding 作为 WM 的 latent space。
+### 背景
+- 之前的测试表明 Qwen vision encoder 不能很好地保留物理信息
+- DINO 可以保留物理信息，但用户不想用（contribution 不大）
+- Phase 2 主要目的是训练 WM，同时也要训练 vision encoder
+- 担忧：vision encoder 训练后输出可能偏移，导致 LLM backbone 无法理解
 
-## 架构
+### 正确的架构
 
 ```
-Image → Qwen Vision Encoder → vision_embedding (last patch)
-                                      ↓
-                         LeWM(latent, action) → next latent prediction
-                                      ↓
-                              SIGReg (adaptive warmup)
+Prompt + Image → Qwen Vision Encoder → vision tokens
+                                            ↓
+                            Qwen LLM backbone (FROZEN)
+                                            ↓
+                                   [optional CoT]
+                                            ↓
+                                latent token embedding
+                                            ↓
+                            WM(latent, action) → next latent prediction
+                                            ↓
+                                        Loss 反传
+                                            ↓
+                    更新 Vision Encoder + WM
+                    (LLM backbone FROZEN，不更新)
 ```
+
+### 组件状态
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| Qwen LLM backbone | **FROZEN** | 固定不动，保持语义理解能力 |
+| Qwen Vision Encoder | **可训练** | 联合训练，学习物理信息 |
+| WM | **可训练** | Phase 2 主要目标 |
+
+### 为什么 LLM backbone 要 frozen
+
+1. **防止输出偏移**：Vision Encoder 训练时输出可能偏移，FROZEN LLM 保证 latent space 与预训练对齐
+2. **防止 mode collapse**：有 LLM backbone 约束
+3. **保持语义理解**：Vision Encoder 学到的物理信息可以被 LLM 理解
 
 ## 关键文件
 
 | 文件 | 修改内容 |
 |------|---------|
-| `src/vlm/qwen_adapter.py` | 新增 `get_image_hidden_state()` 方法 |
-| `src/wm/encoder/qwen.py` | 新增 `QwenLLMLatentEncoder` 类 |
+| `src/vlm/qwen_adapter.py` | `get_image_hidden_state()` 需要修改为返回 LLM hidden state |
+| `src/wm/encoder/qwen.py` | `QwenLLMLatentEncoder` 类 |
 | `src/wm/encoder/factory.py` | 支持 `qwen_llm` encoder 类型 |
-| `src/wm/predictor/factory.py` | 支持 `num_patches=1, token_dim=4096` 配置 |
-| `configs/wm/lewm_qwen_llm_joint.yaml` | 新建训练配置 |
+| `configs/wm/lewm_qwen_llm_joint.yaml` | 训练配置 |
 
 ## 配置
 
@@ -34,33 +60,31 @@ wm:
   token_dim: 4096
   encoder:
     name: qwen_llm
+    model_name: Qwen/Qwen2.5-VL-7B-Instruct
+lewm:
+  sigreg_enabled: true
+  sigreg_latent_dim: 4096
 ```
 
-## SIGReg 配置
+## 当前实现状态
 
-- 在 `lewm.*.sigreg_*` 字段配置
-- `sigreg_enabled: true`
-- `sigreg_latent_dim: 4096`
-- `warmup_steps: 1000` (adaptive warmup)
+### 已完成
+- [x] `QwenLLMLatentEncoder` 类
+- [x] `qwen_llm` encoder 类型支持
+- [x] 训练配置 `lewm_qwen_llm_joint.yaml`
+- [x] SIGReg adaptive warmup
 
-## 训练命令（待测试）
-
-```bash
-uv run python src/train/train_wm.py \
-    config=wm/lewm_qwen_llm_joint \
-    pipeline.train.sigreg.enabled=true \
-    pipeline.train.sigreg.weight=0.1 \
-    pipeline.train.sigreg.warmup_steps=1000
-```
+### 待完成
+- [ ] 修改 `get_image_hidden_state`：让 vision tokens 通过 LLM backbone，返回 hidden state
+- [ ] 完整训练测试
 
 ## 状态
-
-- [x] 实现 `get_image_hidden_state()`
+- [x] 实现 `get_image_hidden_state()` （需要修改）
 - [x] 实现 `QwenLLMLatentEncoder`
 - [x] 创建训练配置
 - [x] 支持 SIGReg 在 encoded latent 上应用
 - [x] 修复 LeWMModel SIGReg warmup bug
-- [x] 测试验证训练流程
+- [ ] 完整训练（需要修改 get_image_hidden_state 返回 LLM hidden state）
 
 ## EB-Nav 数据集信息
 
@@ -110,10 +134,6 @@ uv run python src/train/train_wm.py \
 - 每个步骤的 CoT（reasoning_and_reflection）
 - 图像（images/）
 - 动作标签
-
-**用于**：
-- Phase 3 Value Head 训练（提供 instruction + CoT）
-- 验证 LLM 对物理场景的理解
 
 ## 数据集适配器
 
