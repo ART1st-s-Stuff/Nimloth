@@ -15,7 +15,7 @@ dependencies = [
   "rich",
   "python-dotenv",
   "gradio",
-  "transformers",
+  "transformers>=4.40,<4.50",
   "umap-learn",
   "plotly",
   "xformers>=0.0.29.post1",

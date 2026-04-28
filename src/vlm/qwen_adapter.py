@@ -74,6 +74,27 @@ class QwenVLMAdapter:
             "建议: 保持朝向一致，优先避免碰撞并接近目标区域。"
         )
 
+    def _set_llm_backbone_trainable(self, trainable: bool = False) -> None:
+        """设置 LLM backbone 的可训练状态。
+
+        用于联合训练：冻结 LLM backbone，只训练 Vision Encoder。
+
+        Args:
+            trainable: True = LLM backbone 可训练，False = LLM backbone 冻结
+        """
+        if self._model is None:
+            return
+        # 冻结/解冻 LLM backbone
+        # Vision Encoder 的参数名以 'visual.' 开头
+        # LLM backbone 的参数名以 'model.' 开头（model.layers, model.embed_tokens 等）
+        for name, param in self._model.named_parameters():
+            # Vision Encoder (visual.*) 始终可训练
+            if name.startswith("visual."):
+                param.requires_grad = True
+            else:
+                # LLM backbone 冻结或解冻
+                param.requires_grad = trainable
+
     def _ensure_model(self) -> None:
         if not self.enabled:
             self._init_error = "QwenVLMAdapter disabled by config."
@@ -246,21 +267,29 @@ class QwenVLMAdapter:
         image = Image.open(image_path).convert("RGB")
 
         # 构建输入
+        # Qwen2.5-VL 需要使用 chat template 来正确处理图像
         if prompt:
             messages = [
                 {
                     "role": "user",
-                    "content": [{"type": "image", "image": image_path}, {"type": "text", "text": prompt}],
+                    "content": [{"type": "image", "image": image}, {"type": "text", "text": prompt}],
                 }
             ]
-            text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            inputs = self._processor(
-                text=[text],
-                images=[image],
-                return_tensors="pt",
-            )
         else:
-            inputs = self._processor(images=image, return_tensors="pt")
+            messages = [
+                {
+                    "role": "user",
+                    "content": [{"type": "image", "image": image}],
+                }
+            ]
+
+        # 使用 processor 处理完整输入
+        text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = self._processor(
+            text=[text],
+            images=[image],
+            return_tensors="pt",
+        )
 
         if self._device == "cuda":
             inputs = {k: v.to("cuda") for k, v in inputs.items()}
@@ -289,22 +318,21 @@ class QwenVLMAdapter:
         image_grid_thw = inputs.get("image_grid_thw")
 
         if input_ids is not None and pixel_values is not None:
-            # 完整的 LLM forward（带图像输入）
-            # 需要先获取 vision features，然后构建完整输入
-            with torch.no_grad():
-                # 获取 vision tokens
-                image_embeds = self._model.vision_embed_tokens(pixel_values)
+            # 联合训练模式：
+            # - Vision Encoder: 需要梯度（llm_backbone_trainable=False 时训练 Vision Encoder）
+            # - LLM backbone: 冻结（requires_grad=False），保持 latent space 对齐
 
-            # 使用 LLM backbone forward，获取 hidden states
-            # 需要将 vision tokens 放入正确的位置
-            # Qwen2.5-VL 的输入格式：input_ids 包含 image_token_id
-            with torch.no_grad():
-                outputs = self._model.model(
-                    input_ids=input_ids,
-                    pixel_values=pixel_values,
-                    image_grid_thw=image_grid_thw,
-                    output_hidden_states=True,
-                )
+            # 冻结/解冻 LLM backbone
+            self._set_llm_backbone_trainable(llm_backbone_trainable)
+
+            # 使用完整模型的 forward，但保留梯度控制
+            # Qwen2.5-VLForConditionalGeneration 接受 pixel_values 参数
+            outputs = self._model(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                output_hidden_states=True,
+            )
             hidden_states = outputs.hidden_states
 
             # 选择指定层的 hidden state

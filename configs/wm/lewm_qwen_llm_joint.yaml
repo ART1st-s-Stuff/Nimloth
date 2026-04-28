@@ -27,7 +27,7 @@ inverse_dynamics:
   dropout: 0.1
 encoder:
   name: qwen_llm
-  model_name: ${qwen.model_name:Qwen/Qwen2.5-VL-7B-Instruct}
+  model_name: Qwen/Qwen2.5-VL-7B-Instruct
   enabled: true  # 启用 Qwen 模型
   fallback_enabled: true
   use_fallback: false  # 使用真实模型
