@@ -314,16 +314,15 @@ Prompt + Image → Qwen Vision Encoder → vision tokens
 3. **保持语义理解**：Vision Encoder 学到的物理信息可以被 LLM 理解
 
 ### 已完成
-- `src/vlm/qwen_adapter.py`: 新增 `get_image_hidden_state()` 方法（需修改为返回 LLM hidden state）
-- `src/wm/encoder/qwen.py`: 新增 `QwenLLMLatentEncoder` 类
+- `src/vlm/qwen_adapter.py`: `get_image_hidden_state()` 方法，返回 LLM hidden state
+- `src/wm/encoder/qwen.py`: `QwenLLMLatentEncoder` 类，支持 `use_vision_only` 和 `llm_backbone_trainable` 参数
 - `src/wm/encoder/factory.py`: 支持 `qwen_llm` encoder 类型
-- `src/wm/predictor/factory.py`: 支持 `num_patches=1, token_dim=4096` 配置
-- `configs/wm/lewm_qwen_llm_joint.yaml`: 新建训练配置
+- `_set_llm_backbone_trainable()`: 冻结/解冻 LLM backbone
 - SIGReg adaptive warmup
+- **验证通过**：Vision Encoder 可通过 LLM hidden state loss 反传梯度
 
 ### 待完成
-- 修改 `get_image_hidden_state`：让 vision tokens 通过 LLM backbone，返回 hidden state
-- 完整训练测试
+- 完整训练测试（需要 GPU 显存足够）
 
 ### 配置
 ```yaml
