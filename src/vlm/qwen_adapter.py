@@ -221,10 +221,10 @@ class QwenVLMAdapter:
             image_path: 图像路径
             prompt: 可选的文本 prompt（用于引导 LLM 理解图像）
             layer: 返回哪层 hidden state（-1 = 最后一层）
-            return_last_token_only: True = 返回 last token 的 hidden state，False = 返回所有 token
+            return_last_token_only: True = 返回 last token 的 hidden state
 
         Returns:
-            hidden_state: [D] (last token) 或 [seq_len, D] (所有 token)
+            hidden_state: [D] (last token)
         """
         self._ensure_model()
         if self._model is None or self._processor is None:
@@ -234,6 +234,7 @@ class QwenVLMAdapter:
 
         image = Image.open(image_path).convert("RGB")
 
+        # 构建输入
         if prompt:
             messages = [
                 {
@@ -253,98 +254,24 @@ class QwenVLMAdapter:
         if self._device == "cuda":
             inputs = {k: v.to("cuda") for k, v in inputs.items()}
 
-        # 手动构建 forward，捕获 hidden states
-        input_ids = inputs["input_ids"]
-        attention_mask = inputs.get("attention_mask")
         pixel_values = inputs.get("pixel_values")
         image_grid_thw = inputs.get("image_grid_thw")
 
-        # 获取 vision features
+        # 方案1：直接用 vision embedding 作为 latent
+        # 这是最直接的方式，返回 vision encoder 的输出
         if pixel_values is not None:
-            vision_features = self._model.get_image_features(
+            vision_emb = self._model.get_image_features(
                 pixel_values=pixel_values,
                 image_grid_thw=image_grid_thw,
             )
-            # Qwen2.5-VL: vision features 会被 expand 到 sequence 中
-            # 这里我们只做简单的 vision encoding，然后用 LLM 处理
-            image_embeds = self._model.vision_gen_tokens(
-                pixel_values=pixel_values,
-                image_grid_thw=image_grid_thw,
-            )
+            # vision_emb: [1, num_patches, vision_dim]
+            if vision_emb.dim() == 3:
+                vision_emb = vision_emb.squeeze(0)
+            # 返回 mean pooling 或最后一层
+            if return_last_token_only:
+                # 返回最后一个 vision token 的 embedding
+                return self._pad_or_trim(vision_emb[-1, :])
+            else:
+                return self._pad_or_trim(vision_emb.mean(dim=0))
 
-        # 简单方案：直接用 vision embedding 作为 hidden state
-        # 如果有 prompt，还需要经过 LLM 的 projection 层
-        if prompt and hasattr(self._model, "visual"):
-            # 经过 LLM 的 vision-language projection
-            vision_data = self._model.visual(inputs_=[(pixel_values, image_grid_thw)])
-            # 使用 vision output 作为 context
-            # 构建 input_ids 用于获取 LLM hidden states
-            with torch.no_grad():
-                forward_out = self._model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    pixel_values=pixel_values,
-                    image_grid_thw=image_grid_thw,
-                    output_hidden_states=True,
-                )
-            hidden_states = forward_out.hidden_states
-            if layer < 0:
-                layer = len(hidden_states) + layer
-            hs = hidden_states[layer]
-        elif hasattr(self._model, "model") and hasattr(self._model.model, "embed_tokens"):
-            # Qwen2.5-VL 结构：直接获取 LLM embedding
-            with torch.no_grad():
-                # 使用 vision encoder 获取图像 embedding
-                if pixel_values is not None:
-                    img_emb = self._model.get_image_features(
-                        pixel_values=pixel_values,
-                        image_grid_thw=image_grid_thw,
-                    )
-                    # 获取文本 embedding 作为 prompt（如果有）
-                    text_emb = None
-                    if prompt:
-                        text_inputs = self._processor(text=[prompt], return_tensors="pt")
-                        if self._device == "cuda":
-                            text_inputs = {k: v.to("cuda") for k, v in text_inputs.items()}
-                        text_emb = self._model.model.embed_tokens(text_inputs["input_ids"])
-
-                    # 组合 image + text embedding
-                    if text_emb is not None:
-                        # 获取 vision token 位置
-                        vision_len = img_emb.size(1)
-                        # 在 vision tokens 后面添加 text tokens
-                        combined_emb = torch.cat([img_emb, text_emb], dim=1)
-                    else:
-                        combined_emb = img_emb
-
-                    # 简单处理：直接返回 vision embedding 的 mean 或 last token
-                    if return_last_token_only:
-                        return self._pad_or_trim(combined_emb[0, -1, :])
-                    else:
-                        return self._pad_or_trim(combined_emb[0])
-                else:
-                    # fallback：只有文本
-                    text_inputs = self._processor(text=[prompt or ""], return_tensors="pt")
-                    if self._device == "cuda":
-                        text_inputs = {k: v.to("cuda") for k, v in text_inputs.items()}
-                    text_emb = self._model.model.embed_tokens(text_inputs["input_ids"])
-                    if return_last_token_only:
-                        return self._pad_or_trim(text_emb[0, -1, :])
-                    else:
-                        return self._pad_or_trim(text_emb[0])
-        else:
-            # 最后 fallback：使用 vision features
-            if pixel_values is not None:
-                img_emb = self._model.get_image_features(
-                    pixel_values=pixel_values,
-                    image_grid_thw=image_grid_thw,
-                )
-                if img_emb.dim() > 2:
-                    img_emb = img_emb.squeeze(0)
-                return self._pad_or_trim(img_emb.mean(dim=0) if img_emb.size(0) > 1 else img_emb.squeeze(0))
-            return self._fallback_visual(image_path=image_path)
-
-        if return_last_token_only:
-            return self._pad_or_trim(hs[0, -1, :])
-        else:
-            return self._pad_or_trim(hs[0])
+        return self._fallback_visual(image_path=image_path)
