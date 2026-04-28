@@ -18,6 +18,12 @@ except Exception:  # pragma: no cover
     AutoProcessor = None
     Qwen2_5_VLForConditionalGeneration = None
 
+try:
+    from peft import LoraConfig, get_peft_model
+except Exception:  # pragma: no cover
+    LoraConfig = None
+    get_peft_model = None
+
 # Qwen2.5-VL-8B vision encoder output dimension
 QWEN_VISION_EMBED_DIM = 1536
 
@@ -89,11 +95,67 @@ class QwenVLMAdapter:
         # LLM backbone 的参数名以 'model.' 开头（model.layers, model.embed_tokens 等）
         for name, param in self._model.named_parameters():
             # Vision Encoder (visual.*) 始终可训练
-            if name.startswith("visual."):
+            if self._is_visual_param(name):
                 param.requires_grad = True
             else:
                 # LLM backbone 冻结或解冻
                 param.requires_grad = trainable
+
+    @staticmethod
+    def _is_visual_param(name: str) -> bool:
+        return name.startswith("visual.") or ".visual." in name
+
+    def enable_visual_lora(
+        self,
+        *,
+        r: int,
+        alpha: int,
+        dropout: float,
+        target_modules: list[str] | None = None,
+    ) -> int:
+        """仅在 visual encoder 上挂 LoRA。返回可训练参数数量。"""
+        self._ensure_model()
+        if self._model is None:
+            raise RuntimeError(f"Qwen 模型未加载: {self._init_error}")
+        if LoraConfig is None or get_peft_model is None:
+            raise RuntimeError("未安装 peft，无法启用 LoRA（请安装 peft 依赖）。")
+
+        # 先冻结全部参数，后续只打开 visual LoRA 参数。
+        for _, param in self._model.named_parameters():
+            param.requires_grad = False
+
+        module_names = [name for name, _ in self._model.named_modules() if self._is_visual_param(name)]
+        visual_targets: list[str]
+        if target_modules:
+            visual_targets = [t for t in target_modules if any(t in name for name in module_names)]
+            if not visual_targets:
+                raise RuntimeError(
+                    f"LoRA target_modules 未匹配到 visual 模块: requested={target_modules}"
+                )
+        else:
+            # 常见线性层命名回退，避免 silent no-op
+            candidates = ["q_proj", "k_proj", "v_proj", "o_proj", "qkv", "proj", "fc1", "fc2"]
+            visual_targets = [c for c in candidates if any(c in name for name in module_names)]
+            if not visual_targets:
+                raise RuntimeError("自动探测 visual LoRA target_modules 失败，请显式配置。")
+
+        lora_cfg = LoraConfig(
+            r=max(1, int(r)),
+            lora_alpha=max(1, int(alpha)),
+            lora_dropout=float(max(0.0, dropout)),
+            target_modules=visual_targets,
+            bias="none",
+        )
+        self._model = get_peft_model(self._model, lora_cfg)
+
+        trainable = 0
+        for name, param in self._model.named_parameters():
+            if "lora_" in name and self._is_visual_param(name):
+                param.requires_grad = True
+                trainable += int(param.numel())
+            else:
+                param.requires_grad = False
+        return trainable
 
     def _ensure_model(self) -> None:
         if not self.enabled:
@@ -175,6 +237,45 @@ class QwenVLMAdapter:
             return self._pad_or_trim(pooled.squeeze(0).reshape(-1))
         pooled = vision_features.mean(dim=1)
         return self._pad_or_trim(pooled.squeeze(0))
+
+    def extract_vision_tokens(
+        self,
+        image_path: str,
+        *,
+        requires_grad: bool = False,
+    ) -> torch.Tensor:
+        """返回 vision tokens，形状 [num_tokens, vision_dim]。"""
+        self._ensure_model()
+        if self._model is None or self._processor is None:
+            if not self.fallback_enabled:
+                raise RuntimeError(f"Qwen 初始化失败且 fallback 关闭: {self._init_error}")
+            fallback = self._fallback_visual(image_path=image_path)
+            return fallback.unsqueeze(0)
+        if not Path(image_path).exists():
+            fallback = self._fallback_visual(image_path=image_path)
+            return fallback.unsqueeze(0)
+
+        image = Image.open(image_path).convert("RGB")
+        model_inputs = self._processor(images=image, return_tensors="pt")
+        if self._device == "cuda":
+            model_inputs = {k: v.to("cuda") for k, v in model_inputs.items()}
+
+        if requires_grad:
+            features = self._model.get_image_features(
+                pixel_values=model_inputs["pixel_values"],
+                image_grid_thw=model_inputs.get("image_grid_thw"),
+            )
+        else:
+            with torch.no_grad():
+                features = self._model.get_image_features(
+                    pixel_values=model_inputs["pixel_values"],
+                    image_grid_thw=model_inputs.get("image_grid_thw"),
+                )
+        if features.dim() == 3:
+            return features.squeeze(0)
+        if features.dim() == 2:
+            return features
+        return features.reshape(features.shape[0], -1)
 
     def generate_cot_and_state(
         self,

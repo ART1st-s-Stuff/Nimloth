@@ -20,6 +20,10 @@ encoder_batch_size: 128
 precompute_split: train
 # 训练设备（cuda/cpu）
 device: cuda
+# 两阶段训练入口：
+# - stage1_wm_vision: 训练 WM + vision encoder
+# - stage2_value_head: 预留占位（当前不执行）
+stage: stage1_wm_vision
 # 训练模式：unsupervised、semi_supervised 或 fully_supervised
 # fully_supervised: WM 直接使用真实动作训练，不使用 IDM 推断动作
 training_mode: fully_supervised
@@ -55,6 +59,35 @@ ema:
   decay: 0.999
 # step 级日志记录间隔（<=0 表示关闭；例如 10 表示每 10 step 记录一次）
 log_every_n_steps: 10
+# 训练后可视化：在 test split 上采样 rollout 生成轨迹图并上传 wandb
+post_visualization_enabled: true
+post_visualization_rollouts: 3
+post_visualization_steps: 50
+# 是否额外可视化 LeWM 内部 encoder（SIGReg 前）空间轨迹
+post_visualization_include_sigreg_encoder_space: true
+# Qwen visual encoder 训练策略
+qwen_encoder:
+  # full: visual 全参数训练；lora: 仅训练 visual LoRA 参数
+  train_mode: full
+  lora:
+    r: 8
+    alpha: 16
+    dropout: 0.05
+    # 若为空，将自动探测 visual 模块常见线性层名
+    target_modules: []
+  kl:
+    # teacher-student 的 vision token 级 KL
+    enabled: false
+    weight: 0.01
+    temperature: 1.0
+    # 每个 batch 最多抽取多少张图计算 KL，避免显存暴涨
+    max_images_per_batch: 8
+  ema:
+    # 是否为 Qwen visual encoder 维护 EMA
+    enabled: false
+    decay: 0.999
+    # 训练后可视化是否使用 visual EMA 权重
+    use_ema_for_eval: true
 sigreg:
   # 是否启用 LeWM 论文风格 SIGReg
   enabled: false
