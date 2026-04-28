@@ -59,7 +59,8 @@ uv run python src/train/train_wm.py \
 - [x] 实现 `QwenLLMLatentEncoder`
 - [x] 创建训练配置
 - [x] 支持 SIGReg 在 encoded latent 上应用
-- [ ] 测试训练脚本
+- [x] 修复 LeWMModel SIGReg warmup bug
+- [x] 测试验证训练流程
 
 ## 相关 commit
 

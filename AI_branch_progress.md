@@ -312,7 +312,8 @@ lewm:
   sigreg_latent_dim: 4096
 ```
 
-### 待测试
-- 训练命令：待测试
-- SIGReg adaptive warmup
-- Latent 质量验证
+### 已验证
+- [x] 训练命令测试（fallback 模式）
+- [x] SIGReg adaptive warmup（warmup_steps=10 → 0.02 → 0.1）
+- [x] LeWMModel train_step 修复
+- [ ] 完整训练（需要 Qwen 模型或预计算 latents）
