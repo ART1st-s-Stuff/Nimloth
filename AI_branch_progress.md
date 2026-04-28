@@ -344,3 +344,36 @@ lewm:
 - [x] Qwen model name 更新（8B → 7B）
 - [x] 完整训练（1 epoch 验证成功，loss 0.1573 → 0.0001）
 - [x] 联合训练脚本 `train_wm_joint.py` 修复数据 batching 问题
+
+---
+
+## Qwen 联合训练口径对齐与策略扩展（2026-04-28）
+
+### 已完成
+- `src/train/train_wm_joint.py` 已将训练主循环从手写单步 MSE 对齐到 `LeWMModel.train_step`，与 DINOv2 路径在损失编排口径一致（多步重建 + 可选 action + SIGReg）。
+- SIGReg loss 开关与权重来源已统一到 `pipeline.train.sigreg.*`，并新增 `loss_recon/loss_action/loss_sigreg/sigreg_weight` 等关键日志。
+- 联合训练场景下保留 Qwen visual encoder 参与训练，同时继续冻结 LLM backbone。
+- 训练后可视化已接入 wandb 上传：默认输出 rollout 对比图，并可在 test split 上回放。
+- 新增 Qwen visual encoder 训练策略配置：
+  - `pipeline.train.qwen_encoder.train_mode`: `full|lora`
+  - `pipeline.train.qwen_encoder.lora`: `r/alpha/dropout/target_modules`
+  - `pipeline.train.qwen_encoder.kl`: vision token 级 KL（teacher-student）
+  - `pipeline.train.qwen_encoder.ema`: visual encoder EMA 开关与衰减
+- 训练后可视化新增 LeWM 内部 encoder（SIGReg 前）空间轨迹图，并上传至 wandb 的独立命名空间。
+- checkpoint 已补充保存联合训练所需状态：
+  - `vision_encoder_state`
+  - `vision_encoder_ema_state`（可选）
+  - `wm/idm/action_mapper` 及其优化器状态
+  - `vision_train_mode/lora_cfg/kl_cfg/ema_cfg` 配置快照
+
+### 已验证
+- 语法与 lint 校验通过（`train_wm_joint.py`、`qwen_adapter.py`）。
+- smoke 验证通过：
+  - `full + KL off + EMA off`
+  - `lora + KL on + EMA off`
+  - `lora + KL on + EMA on`
+- stage2 占位入口回归正常：`pipeline.train.stage=stage2_value_head` 可直接退出。
+
+### 说明
+- 当前 LoRA 策略仅覆盖 Qwen visual encoder（按当前阶段目标），不扩展到 LLM backbone。
+- KL 采用 vision token 级别，默认关闭，通过配置显式开启。

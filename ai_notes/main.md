@@ -16,3 +16,4 @@
 - `hydra_component_config_conventions.md`：Hydra 组件化配置约定与旧配置下线结论。
 - `storage_management_conventions.md`：目录新规范、metadata 与存储清理约定。
 - `wm_collection_walk_recovery_conventions.md`：WM 采集随机游走与防卡墙恢复策略约定。
+- `qwen_joint_training_conventions.md`：Qwen 联合训练口径、LoRA/KL/EMA 与可视化约定。

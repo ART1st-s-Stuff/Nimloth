@@ -1,134 +1,131 @@
-# Flower (Phase 1 + Phase 2 最小闭环)
+# Flower
 
-本版本实现以下流程：
+面向世界模型与多阶段智能体训练的实验仓库。
 
-1. 采集轨迹（支持 `mock` 与 `ai2thor` 后端）并生成 `manifest.jsonl`
-2. 训练 CFM 世界模型（最小实现）
-3. 计算散度阈值 `theta_div`（95% 分位）
+当前主线聚焦：
 
-## 环境依赖（uv）
+- AI2THOR 轨迹采集
+- Phase2 世界模型训练（含 LeWM / SIGReg）
+- Qwen visual encoder 联合训练（支持 full / LoRA / 可选 KL / 可选 EMA）
 
-- Python 3.10+
-- 使用 `uv` 管理虚拟环境与依赖
+## 快速开始
 
-初始化环境：
+### 1) 安装环境
 
 ```bash
 uv sync
-```
-
-配置环境变量（建议）：
-
-```bash
 cp .env.example .env
 ```
 
-其中：
+建议在 `.env` 配置：
 
-- `WANDB_MODE=online` 默认在线上传；若未提供 `WANDB_API_KEY`，程序会明确告警并切到 offline。
-- 可在 `.env` 中配置 `WANDB_PROJECT/WANDB_ENTITY/WANDB_RUN_PREFIX`。
+- `WANDB_MODE=online|offline`
+- `WANDB_API_KEY`（在线模式）
+- `WANDB_PROJECT` / `WANDB_ENTITY` / `WANDB_RUN_PREFIX`
 
-## 运行步骤
-
-在项目根目录执行：
+### 2) 数据采集（Phase1）
 
 ```bash
 uv run ./scripts/phase1/wm_data_collection.sh
+```
+
+### 3) 世界模型训练（Phase2）
+
+```bash
 uv run ./scripts/phase2/wm_training.sh
+```
+
+### 4) 阈值校准
+
+```bash
 uv run ./scripts/phase2/wm_calibration.sh
 ```
 
-组件可替换运行（示例）：
+## Qwen 联合训练（重点）
+
+训练入口：
+
+- `src/train/train_wm_joint.py`
+
+两阶段开关：
+
+- `pipeline.train.stage=stage1_wm_vision`：训练 WM + Qwen visual encoder
+- `pipeline.train.stage=stage2_value_head`：占位，不执行训练
+
+示例（小规模冒烟）：
 
 ```bash
-# 选择替代数据集配置
-uv run ./scripts/phase1/wm_data_collection.sh dataset=ai2thor
-uv run ./scripts/phase2/wm_training.sh dataset=ai2thor
-
-# 显式指定 WM/PM/VLM 组件
-uv run ./scripts/phase2/wm_training.sh wm=cfm pm=rule_based vlm=qwen_vl
+CUDA_VISIBLE_DEVICES=0 uv run python -m src.train.train_wm_joint \
+  wm=lewm_qwen_llm_joint \
+  pipeline.train.stage=stage1_wm_vision \
+  pipeline.train.epochs=1 \
+  pipeline.train.batch_size=2 \
+  pipeline.train.max_samples=128 \
+  pipeline.train.temporal_stride=1 \
+  pipeline.train.device=cuda
 ```
 
-所有入口都会在命令行显示 Rich 进度和关键指标，并自动记录 W&B 实验数据。
+## Qwen visual encoder 训练策略配置
 
-`wm_training` 默认使用 GPU（`pipeline.train.device=cuda`）。若当前环境无可用 CUDA，可临时覆盖为 CPU：
+配置路径：`configs/pipeline/train/default.yaml` 下的 `qwen_encoder`。
 
-```bash
-uv run ./scripts/phase2/wm_training.sh pipeline.train.device=cpu
-```
+### 训练模式
 
-默认已使用 AI2THOR 无头后端（`CloudRendering`）。如需切换为 mock：
+- `qwen_encoder.train_mode=full`：visual 全参数训练
+- `qwen_encoder.train_mode=lora`：仅训练 visual LoRA 参数
 
-```bash
-uv run python -m src.train.collect_data dataset.backend=mock
-```
+LoRA 参数：
 
-默认采集规模：
+- `qwen_encoder.lora.r`
+- `qwen_encoder.lora.alpha`
+- `qwen_encoder.lora.dropout`
+- `qwen_encoder.lora.target_modules`
 
-- scenes: `FloorPlan1-10` 与 `FloorPlan201-210`
-- 每个 scene: `num_episodes_per_scene=50`
-- 每个 episode: `max_steps_per_episode=50`
-- 并行采集: `num_workers=4`（按 scene 多进程并行）
+### KL 蒸馏（可选）
 
-采集支持断点续跑（默认 `dataset.collect.operation.resume=true`），再次执行会复用最近一次 `wm_data_collection` 目录并从已有样本后继续。
+- `qwen_encoder.kl.enabled=true|false`
+- `qwen_encoder.kl.weight`
+- `qwen_encoder.kl.temperature`
+- `qwen_encoder.kl.max_images_per_batch`
 
-如需清空所有 phase1 采集结果后重跑：
+说明：当前 KL 为 vision token 级 teacher-student KL（teacher 为冻结原始 Qwen visual encoder）。
 
-```bash
-uv run ./scripts/phase1/wm_data_collection.sh clean
-```
+### Qwen visual EMA（可选）
 
-## 关键输出
+- `qwen_encoder.ema.enabled=true|false`
+- `qwen_encoder.ema.decay`
+- `qwen_encoder.ema.use_ema_for_eval`
 
-- 数据收集：`datasets/<dataset-name>/<datetime>/manifest.jsonl`
-- 数据集索引：`datasets/<dataset-name>/metadata.json`
-- 模型训练：`models/wm/<wm-config-name>/<datetime>/wm.pt`
-- 训练指标：`models/wm/<wm-config-name>/<datetime>/train_metrics.json`
-- 阈值校准：`models/wm/<wm-config-name>/<datetime>/theta_div.json`
-- 模型索引：`models/<wm|pm|vlm>/<model-config-name>/metadata.json`
-- Hydra 默认：`outputs/hydra/...`
+## 训练后可视化
 
-## 配置结构（Hydra 组件组）
+`train_wm_joint.py` 训练后可在 test split 生成 rollout 图并上传 wandb。
 
-- `configs/dataset/`: 按数据来源组织的数据集组件（如 `ai2thor`，后续可扩展 `minecraft`）
-- `configs/wm/`: 世界模型组件（如 `cfm`）
-- `configs/pm/`: 规划器组件（如 `none`、`rule_based`）
-- `configs/vlm/`: 视觉语言模型组件（如 `none`、`qwen_vl`）
-- `configs/pipeline/`: 任务流程参数（`collect/train/calib/rollout`）
+可视化配置：
 
-## 磁盘空间管理
+- `pipeline.train.post_visualization_enabled`
+- `pipeline.train.post_visualization_rollouts`
+- `pipeline.train.post_visualization_steps`
+- `pipeline.train.post_visualization_include_sigreg_encoder_space`
 
-统一入口：
+其中最后一项用于额外输出 LeWM 内部 encoder（SIGReg 前）空间轨迹图。
 
-```bash
-uv run ./scripts/storage.sh <command> [targets ...] [args]
-```
+## 关键输出目录
 
-- `targets`：`models`、`datasets`、`outputs`（可多选；省略时默认全部）
-- `command=trim`：默认每组仅保留最近 1 个；支持 `--before <datetime>`、`--keep-last <number>`
-- `command=discard`：删除最近若干；支持 `--after <datetime>`、`--num <number>`
-- `command=reset`：删除全部（需要二次确认，或加 `--yes-i-know-what-i-am-doing`）
+- 采集数据：`datasets/`
+- 训练模型：`models/wm/`
+- 可视化产物：`outputs/dev/visualization/joint_rollout/`
+- Hydra 运行产物：`outputs/hydra/`
+- W&B 本地缓存：`wandb/`
 
-安全约束：
+## 常用脚本
 
-- `trim` / `discard` 不允许把任一分组删空（至少保留 1 个）
-- 处理 VLM 时会读取 LoRA 的 `base_weight_ref.json`，若基础权重仍被引用则不会删除
+- `scripts/phase1/wm_data_collection.sh`
+- `scripts/phase2/wm_training.sh`
+- `scripts/phase2/wm_calibration.sh`
+- `scripts/storage.sh`（清理 models/datasets/outputs）
 
-启动进度可视化服务：
+## 备注
 
-```bash
-uv run ./scripts/start_visualization_server.sh
-```
-
-可视化服务器是单服务整合页，包含：
-
-- 数据集进度：采集样本统计与样本预览
-- 训练进度：`wm_training` 运行列表、`last_loss`、checkpoint 状态
-- 校准与 Rollout：当前状态探测与后续扩展占位
-
-## 说明
-
-- 采集层采用 adapter 设计：`src/data/mock_env.py` 与 `src/data/ai2thor_env.py` 可插拔。
-- 当 `backend=ai2thor` 但运行环境不可用时，程序会直接报错并终止，不会自动回退。
-- 未来 VLM rollout 默认保存并上传观测图片、Prompt、CoT（见 `configs/pipeline/rollout/default.yaml`）。
+- 默认训练设备为 `cuda`，如需 CPU 请显式覆盖 `pipeline.train.device=cpu`。
+- AI2THOR 不可用时会直接报错，不自动回退。
 
