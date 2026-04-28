@@ -112,5 +112,25 @@ uv run python src/train/train_wm.py \
 - 动作标签
 
 **用于**：
-- Phase 3 Value Head 训练
+- Phase 3 Value Head 训练（提供 instruction + CoT）
 - 验证 LLM 对物理场景的理解
+
+## 数据集适配器
+
+**文件**：`src/data/eb_nav_dataset.py`
+
+**类**：
+- `EBNavDataset`：单帧数据集，返回 (image_path, action, instruction, cot)
+- `EBNavSequenceDataset`：序列数据集，返回历史帧和未来预测目标
+
+**动作映射**：
+- 0: Move forward → [0.25, 0, 0]
+- 1: Move backward → [-0.25, 0, 0]
+- 2: Move right → [0, 0, -0.25]
+- 3: Move left → [0, 0, 0.25]
+- 4: Rotate right 90° → [0, -90, 0]
+- 5: Rotate left 90° → [0, 90, 0]
+
+**测试结果**：
+- 单帧数据集：56,920 样本
+- 序列数据集：43,720 样本
