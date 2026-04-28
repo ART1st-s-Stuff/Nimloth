@@ -62,10 +62,8 @@ class QwenVLMAdapter:
         return torch.tensor(values, dtype=torch.float32)
 
     def _fallback_visual(self, image_path: str) -> torch.Tensor:
-        image = Image.open(image_path).convert("RGB").resize((64, 64))
-        arr = np.asarray(image).astype("float32") / 255.0
-        pooled = arr.mean(axis=(0, 1))
-        token = f"{image_path}|{pooled[0]:.4f}|{pooled[1]:.4f}|{pooled[2]:.4f}|fallback_visual"
+        # 文件不存在时，使用基于路径的确定性向量
+        token = f"{image_path}|fallback_visual"
         return self._deterministic_vector(token)
 
     def _fallback_cot(self, task_text: str, env_context: str) -> str:
@@ -226,6 +224,12 @@ class QwenVLMAdapter:
         Returns:
             hidden_state: [D] (last token)
         """
+        # 检查文件是否存在
+        if not Path(image_path).exists():
+            if not self.fallback_enabled:
+                raise FileNotFoundError(f"图像文件不存在: {image_path}")
+            return self._fallback_visual(image_path=image_path)
+
         self._ensure_model()
         if self._model is None or self._processor is None:
             if not self.fallback_enabled:
