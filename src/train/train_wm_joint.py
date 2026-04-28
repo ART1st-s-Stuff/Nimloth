@@ -9,22 +9,36 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
+import select
+import subprocess
+import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
+from collections import deque
 
 import hydra
 import numpy as np
+from PIL import Image
 import torch
 import wandb
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LambdaLR
+from rich.console import Console, Group
+from rich.live import Live
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.table import Table
+from rich.panel import Panel
 
 from src.data.dataset import read_worker_manifests, resolve_run_dir
+from src.data.eb_nav_dataset import EBNavSequenceDataset
 from src.vlm.qwen_adapter import QwenVLMAdapter
 from src.wm.encoder.qwen import QwenLLMLatentEncoder
 from src.wm.predictor.lewm import LeWMModel, LeWMWorldModel
@@ -36,6 +50,54 @@ from src.utils.seed import set_seed
 from src.visualize.wandb_tracker import init_tracker
 
 logger = logging.getLogger(__name__)
+console = Console()
+
+
+class _TUIController:
+    """轻量键盘控制：1-4 切 tab，p 暂停并保存退出。"""
+
+    def __init__(self) -> None:
+        self.active_tab = 0
+        self.pause_requested = False
+        self._stop = False
+        self._thread: threading.Thread | None = None
+        self._old_term = None
+
+    def start(self) -> None:
+        if not sys.stdin.isatty() or os.name != "posix":
+            return
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop = True
+        if self._thread is not None:
+            self._thread.join(timeout=0.2)
+        if self._old_term is not None:
+            import termios
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_term)
+            self._old_term = None
+
+    def _loop(self) -> None:
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        self._old_term = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+        try:
+            while not self._stop:
+                r, _, _ = select.select([sys.stdin], [], [], 0.2)
+                if not r:
+                    continue
+                ch = sys.stdin.read(1)
+                if ch in {"1", "2", "3", "4"}:
+                    self.active_tab = int(ch) - 1
+                elif ch in {"p", "P"}:
+                    self.pause_requested = True
+        finally:
+            if self._old_term is not None:
+                termios.tcsetattr(fd, termios.TCSADRAIN, self._old_term)
+                self._old_term = None
 
 def _count_trainable_params(module: torch.nn.Module) -> int:
     return sum(p.numel() for p in module.parameters() if p.requires_grad)
@@ -104,16 +166,27 @@ class AI2ThorJointSequenceDataset(torch.utils.data.Dataset):
 
 
 def _joint_collate_fn(batch: list[dict[str, object]]) -> dict[str, object]:
-    return {
+    result: dict[str, object] = {
         "history_images": [item["history_images"] for item in batch],
         "future_images": [item["future_images"] for item in batch],
         "history_actions": torch.stack(
-            [torch.stack(item["history_actions"]) for item in batch], dim=0
+            [torch.as_tensor(item["history_actions"], dtype=torch.float32) for item in batch], dim=0
         ),
         "future_actions": torch.stack(
-            [torch.stack(item["future_actions"]) for item in batch], dim=0
+            [torch.as_tensor(item["future_actions"], dtype=torch.float32) for item in batch], dim=0
         ),
     }
+    if "future_rewards" in batch[0]:
+        result["future_rewards"] = torch.stack(
+            [torch.as_tensor(item["future_rewards"], dtype=torch.float32) for item in batch], dim=0
+        )
+    if "future_action_ids" in batch[0]:
+        result["future_action_ids"] = torch.stack(
+            [torch.as_tensor(item["future_action_ids"], dtype=torch.long) for item in batch], dim=0
+        )
+    if "instruction" in batch[0]:
+        result["instructions"] = [item.get("instruction", "") for item in batch]
+    return result
 
 
 def _resolve_ai2thor_run_dir(manifest_base: str, split: str) -> Path:
@@ -157,6 +230,29 @@ def _normalize_patch_latent(latent: torch.Tensor, num_patches: int, token_dim: i
         f"latent 形状无法匹配 num_patches/token_dim: latent_shape={tuple(latent.shape)},"
         f" num_patches={num_patches}, token_dim={token_dim}"
     )
+
+
+def _load_image_tensor(path: str, image_size: int, device: torch.device) -> torch.Tensor:
+    if not path or not Path(path).exists():
+        return torch.zeros(3, image_size, image_size, device=device)
+    image = Image.open(path).convert("RGB").resize((image_size, image_size), Image.BILINEAR)
+    arr = np.asarray(image, dtype=np.float32) / 255.0
+    tensor = torch.from_numpy(arr).permute(2, 0, 1).contiguous()
+    return tensor.to(device=device)
+
+
+def _build_planner_latent_prompt(instruction: str) -> str:
+    return (
+        "You are an embodied navigation planner. Given the navigation instruction and current "
+        "egocentric image, output the fixed planner JSON with cot, planner_trigger, "
+        'latent_state="<LATENT_STATE>", and action_prior probabilities for action ids 0..7.\n\n'
+        f"Instruction:\n{instruction}"
+    )
+
+
+def _wandb_image_from_tensor(tensor: torch.Tensor) -> wandb.Image:
+    image = tensor.detach().float().clamp(0.0, 1.0).permute(1, 2, 0).cpu().numpy()
+    return wandb.Image(image)
 
 
 def _is_visual_param_name(name: str) -> bool:
@@ -247,6 +343,118 @@ def _compute_vision_token_kl(
     if not kl_values:
         return torch.tensor(0.0, device=device)
     return torch.stack(kl_values).mean()
+
+
+def _unwrap_module(module: torch.nn.Module) -> torch.nn.Module:
+    if hasattr(module, "module"):
+        return module.module  # type: ignore[return-value]
+    return module
+
+
+def _build_loss_table(
+    *,
+    epoch: int,
+    epochs: int,
+    step: int,
+    total_steps: int,
+    global_step: int,
+    step_loss: float,
+    step_recon: float,
+    step_action: float,
+    step_sigreg: float,
+    step_sigreg_w: float,
+    step_kl: float,
+    step_reward: float,
+    step_image_recon: float,
+    step_perceptual: float,
+    step_total_with_kl: float,
+    lr_wm: float,
+    lr_idm: float,
+) -> Table:
+    table = Table(title="训练指标（实时）", expand=True)
+    table.add_column("Key", style="cyan", no_wrap=True)
+    table.add_column("Value", style="white")
+    table.add_row("epoch", f"{epoch}/{epochs}")
+    table.add_row("step", f"{step}/{total_steps}")
+    table.add_row("global_step", str(global_step))
+    table.add_row("loss", f"{step_loss:.6f}")
+    table.add_row("loss_recon", f"{step_recon:.6f}")
+    table.add_row("loss_action", f"{step_action:.6f}")
+    table.add_row("loss_sigreg", f"{step_sigreg:.6f}")
+    table.add_row("sigreg_weight", f"{step_sigreg_w:.6f}")
+    table.add_row("loss_kl", f"{step_kl:.6f}")
+    table.add_row("loss_reward", f"{step_reward:.6f}")
+    table.add_row("loss_image_recon", f"{step_image_recon:.6f}")
+    table.add_row("loss_perceptual", f"{step_perceptual:.6f}")
+    table.add_row("loss_total_with_kl", f"{step_total_with_kl:.6f}")
+    table.add_row("lr_wm", f"{lr_wm:.8f}")
+    table.add_row("lr_idm", f"{lr_idm:.8f}")
+    return table
+
+
+def _build_gpu_table() -> Table:
+    table = Table(title="GPU 负载", expand=True)
+    table.add_column("GPU")
+    table.add_column("Util(%)")
+    table.add_column("MemUsed(MB)")
+    table.add_column("MemTotal(MB)")
+    try:
+        res = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,utilization.gpu,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            for line in res.stdout.strip().splitlines():
+                parts = [x.strip() for x in line.split(",")]
+                if len(parts) == 4:
+                    table.add_row(parts[0], parts[1], parts[2], parts[3])
+            return table
+    except Exception:
+        pass
+    table.add_row("-", "N/A", "N/A", "N/A")
+    return table
+
+
+def _build_recent_loss_table(items: deque[dict[str, float]]) -> Table:
+    table = Table(title="最近 Loss 列表", expand=True)
+    table.add_column("gstep")
+    table.add_column("loss")
+    table.add_column("recon")
+    table.add_column("action")
+    table.add_column("sigreg")
+    table.add_column("kl")
+    table.add_column("reward")
+    table.add_column("perceptual")
+    for it in list(items)[-10:]:
+        table.add_row(
+            str(int(it["gstep"])),
+            f"{it['loss']:.4f}",
+            f"{it['recon']:.4f}",
+            f"{it['action']:.4f}",
+            f"{it['sigreg']:.4f}",
+            f"{it['kl']:.4f}",
+            f"{it['reward']:.4f}",
+            f"{it['perceptual']:.4f}",
+        )
+    if len(items) == 0:
+        table.add_row("-", "-", "-", "-", "-", "-", "-", "-")
+    return table
+
+
+def _build_control_panel(active_tab: int) -> Panel:
+    text = (
+        f"当前Tab: {active_tab + 1}\n"
+        "快捷键: [1]Step指标 [2]GPU [3]最近Loss [4]控制\n"
+        "按 [p] 暂停任务并保存断点后退出"
+    )
+    return Panel(text, title="控制", expand=True)
 
 
 def _compute_umap_3d(points: list[torch.Tensor]) -> np.ndarray:
@@ -496,7 +704,18 @@ def main(cfg: DictConfig) -> None:
     if stage != "stage1_wm_vision":
         raise ValueError(f"不支持的 pipeline.train.stage={stage}")
 
+    dataset_source = str(train_cfg.get("dataset_source", "eb_nav")).strip().lower()
+    if dataset_source not in {"ai2thor", "eb_nav"}:
+        raise ValueError(f"不支持的 pipeline.train.dataset_source={dataset_source}")
+
     device = torch.device(str(train_cfg.device))
+    multi_gpu_cfg = getattr(train_cfg, "multi_gpu", {})
+    multi_gpu_enabled = bool(getattr(multi_gpu_cfg, "enabled", False))
+    multi_gpu_devices_raw = str(getattr(multi_gpu_cfg, "device_ids", "")).strip()
+    if multi_gpu_devices_raw:
+        multi_gpu_device_ids = [int(x.strip()) for x in multi_gpu_devices_raw.split(",") if x.strip()]
+    else:
+        multi_gpu_device_ids = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
 
     # 构建 Vision Encoder
     model_name = str(getattr(wm_cfg.encoder, "model_name", "Qwen/Qwen2.5-VL-7B-Instruct"))
@@ -515,6 +734,14 @@ def main(cfg: DictConfig) -> None:
     if qwen_adapter._model is None:
         raise RuntimeError(f"Failed to load Qwen model: {qwen_adapter.init_error}")
 
+    planner_lora_cfg = getattr(train_cfg, "qwen_planner_lora", {})
+    planner_lora_enabled = bool(getattr(planner_lora_cfg, "enabled", False))
+    planner_lora_checkpoint = str(getattr(planner_lora_cfg, "checkpoint_path", "")).strip()
+    if planner_lora_enabled:
+        if not planner_lora_checkpoint:
+            raise ValueError("pipeline.train.qwen_planner_lora.enabled=true 但 checkpoint_path 为空")
+        qwen_adapter.load_lora_adapter(planner_lora_checkpoint, trainable=False)
+
     qwen_cfg = getattr(train_cfg, "qwen_encoder", {})
     train_mode = str(getattr(qwen_cfg, "train_mode", "full")).strip().lower()
     lora_cfg = getattr(qwen_cfg, "lora", {})
@@ -529,6 +756,11 @@ def main(cfg: DictConfig) -> None:
     vision_ema_use_for_eval = bool(getattr(ema_cfg, "use_ema_for_eval", False))
 
     lora_trainable_params = 0
+    if planner_lora_enabled and train_mode == "lora":
+        raise ValueError(
+            "当前实现不同时叠加 planner language LoRA 与 visual LoRA；"
+            "请使用 qwen_encoder.train_mode=full 或关闭 qwen_planner_lora。"
+        )
     if train_mode == "full":
         # 全参数训练 visual encoder，冻结 LLM backbone
         qwen_adapter._set_llm_backbone_trainable(trainable=False)
@@ -565,12 +797,27 @@ def main(cfg: DictConfig) -> None:
         qwen_adapter=qwen_adapter,
         use_vision_only=False,
         llm_backbone_trainable=False,
+        latent_anchor_mode="planner_marker" if planner_lora_enabled else "last_token",
     )
 
     sigreg_cfg = getattr(train_cfg, "sigreg", {})
     sigreg_enabled = bool(getattr(sigreg_cfg, "enabled", False))
     sigreg_weight = float(getattr(sigreg_cfg, "weight", 0.0))
     sigreg_warmup_steps = int(getattr(sigreg_cfg, "warmup_steps", 0))
+    wm_lewm_cfg = getattr(wm_cfg, "lewm", {})
+    top_lewm_cfg = getattr(cfg, "lewm", {})
+    reward_cfg = getattr(wm_lewm_cfg, "reward", getattr(top_lewm_cfg, "reward", {}))
+    perceptual_cfg = getattr(wm_lewm_cfg, "perceptual", getattr(top_lewm_cfg, "perceptual", {}))
+    reward_enabled = bool(getattr(reward_cfg, "enabled", False))
+    reward_weight = float(getattr(reward_cfg, "weight", 1.0))
+    reward_loss_type = str(getattr(reward_cfg, "loss_type", "mse"))
+    reward_hidden_dim = int(getattr(reward_cfg, "hidden_dim", max(128, int(getattr(wm_cfg, "hidden_dim", 512)) // 2)))
+    perceptual_enabled = bool(getattr(perceptual_cfg, "enabled", False))
+    perceptual_weight = float(getattr(perceptual_cfg, "weight", 0.1))
+    image_recon_weight = float(getattr(perceptual_cfg, "image_recon_weight", 0.1))
+    perceptual_image_size = int(getattr(perceptual_cfg, "image_size", 128))
+    perceptual_use_predicted_latent = bool(getattr(perceptual_cfg, "use_predicted_latent", True))
+    image_decoder_hidden_channels = int(getattr(perceptual_cfg, "decoder_hidden_channels", 128))
 
     # 构建 LeWM World Model（结构参数）
     wm_module = LeWMWorldModel(
@@ -593,6 +840,11 @@ def main(cfg: DictConfig) -> None:
         sigreg_t_min=float(getattr(sigreg_cfg, "t_min", 0.2)),
         sigreg_t_max=float(getattr(sigreg_cfg, "t_max", 4.0)),
         sigreg_kernel_sigma=float(getattr(sigreg_cfg, "kernel_sigma", 1.0)),
+        reward_enabled=reward_enabled,
+        reward_hidden_dim=reward_hidden_dim,
+        image_decoder_enabled=perceptual_enabled,
+        image_decoder_hidden_channels=image_decoder_hidden_channels,
+        image_size=perceptual_image_size,
     )
     wm_module = wm_module.to(device)
     wm_module.train()
@@ -613,6 +865,16 @@ def main(cfg: DictConfig) -> None:
         output_dim=3,
         hidden_dim=int(wm_cfg.inverse_dynamics.hidden_dim),
     ).to(device)
+
+    if (
+        multi_gpu_enabled
+        and torch.cuda.is_available()
+        and len(multi_gpu_device_ids) >= 2
+    ):
+        logger.info("启用 DataParallel 多卡训练: device_ids=%s", multi_gpu_device_ids)
+        wm_module = torch.nn.DataParallel(wm_module, device_ids=multi_gpu_device_ids)
+        inverse_dynamics = torch.nn.DataParallel(inverse_dynamics, device_ids=multi_gpu_device_ids)
+        action_mapper = torch.nn.DataParallel(action_mapper, device_ids=multi_gpu_device_ids)
 
     # 优化器：保留 Qwen encoder + WM 联训；IDM/mapper 使用独立优化器
     lr = float(train_cfg.lr)
@@ -653,6 +915,12 @@ def main(cfg: DictConfig) -> None:
         sigreg_enabled=sigreg_enabled,
         sigreg_target_weight=sigreg_weight,
         sigreg_warmup_steps=sigreg_warmup_steps,
+        reward_enabled=reward_enabled,
+        reward_weight=reward_weight,
+        reward_loss_type=reward_loss_type,
+        perceptual_enabled=perceptual_enabled,
+        perceptual_weight=perceptual_weight,
+        image_recon_weight=image_recon_weight,
     )
 
     # 打印参数数量
@@ -668,6 +936,8 @@ def main(cfg: DictConfig) -> None:
         ("batch_size", str(int(train_cfg.batch_size))),
         ("epochs", str(int(train_cfg.epochs))),
         ("device", str(device)),
+        ("multi_gpu_enabled", str(multi_gpu_enabled)),
+        ("multi_gpu_device_ids", str(multi_gpu_device_ids)),
         ("vision_params", f"{vision_params:,}"),
         ("vision_train_mode", train_mode),
         ("vision_lora_params", f"{lora_trainable_params:,}"),
@@ -677,6 +947,14 @@ def main(cfg: DictConfig) -> None:
         ("sigreg_enabled", str(sigreg_enabled)),
         ("sigreg_weight", f"{sigreg_weight:.6f}"),
         ("sigreg_warmup_steps", str(sigreg_warmup_steps)),
+        ("dataset_source", dataset_source),
+        ("planner_lora_enabled", str(planner_lora_enabled)),
+        ("reward_enabled", str(reward_enabled)),
+        ("reward_weight", f"{reward_weight:.6f}"),
+        ("perceptual_enabled", str(perceptual_enabled)),
+        ("perceptual_weight", f"{perceptual_weight:.6f}"),
+        ("image_recon_weight", f"{image_recon_weight:.6f}"),
+        ("perceptual_image_size", str(perceptual_image_size)),
         ("vision_kl_enabled", str(kl_enabled and kl_weight > 0.0)),
         ("vision_kl_weight", f"{kl_weight:.6f}"),
         ("vision_ema_enabled", str(vision_ema_enabled)),
@@ -685,8 +963,9 @@ def main(cfg: DictConfig) -> None:
     ])
 
     # 初始化 tracker
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     tracker = init_tracker(
-        task_name="train_wm_joint",
+        task_name=f"train_wm_joint_{run_timestamp}",
         config={
             "batch_size": int(train_cfg.batch_size),
             "epochs": int(train_cfg.epochs),
@@ -706,30 +985,62 @@ def main(cfg: DictConfig) -> None:
             "vision_kl_temperature": kl_temperature,
             "vision_ema_enabled": vision_ema_enabled,
             "vision_ema_decay": vision_ema_decay,
+            "dataset_source": dataset_source,
+            "planner_lora_enabled": planner_lora_enabled,
+            "planner_lora_checkpoint": planner_lora_checkpoint,
+            "reward_enabled": reward_enabled,
+            "reward_weight": reward_weight,
+            "reward_loss_type": reward_loss_type,
+            "perceptual_enabled": perceptual_enabled,
+            "perceptual_weight": perceptual_weight,
+            "image_recon_weight": image_recon_weight,
+            "perceptual_image_size": perceptual_image_size,
+            "perceptual_use_predicted_latent": perceptual_use_predicted_latent,
+            "hydra_full_config": OmegaConf.to_container(cfg, resolve=True),
+            "multi_gpu_enabled": multi_gpu_enabled,
+            "multi_gpu_device_ids": multi_gpu_device_ids,
         },
     )
     vision_ema_state: dict[str, torch.Tensor] | None = None
     if vision_ema_enabled:
         vision_ema_state = _build_visual_ema_state(qwen_adapter._model)
 
-    # 数据集：优先自动解析 AI2-THOR train run_dir，失败则回退固定路径。
-    train_manifest_base = str(
-        getattr(getattr(cfg.dataset, "manifests", {}), "train", "datasets/ai2thor/train")
-    )
-    test_manifest_base = str(
-        getattr(getattr(cfg.dataset, "manifests", {}), "test", "datasets/ai2thor/test")
-    )
-    train_run_dir = _resolve_ai2thor_run_dir(train_manifest_base, split="train")
-    test_run_dir = _resolve_ai2thor_run_dir(test_manifest_base, split="test")
-
     max_samples = int(train_cfg.get("max_samples", 0))
     temporal_stride = int(train_cfg.get("temporal_stride", 1))
-    dataset = AI2ThorJointSequenceDataset(
-        run_dir=train_run_dir,
-        history_len=int(wm_cfg.history_len),
-        temporal_stride=temporal_stride,
-        max_samples=max_samples,
-    )
+    if dataset_source == "ai2thor":
+        train_manifest_base = str(
+            getattr(getattr(cfg.dataset, "manifests", {}), "train", "datasets/ai2thor/train")
+        )
+        test_manifest_base = str(
+            getattr(getattr(cfg.dataset, "manifests", {}), "test", "datasets/ai2thor/test")
+        )
+        train_run_dir = _resolve_ai2thor_run_dir(train_manifest_base, split="train")
+        test_run_dir = _resolve_ai2thor_run_dir(test_manifest_base, split="test")
+        dataset = AI2ThorJointSequenceDataset(
+            run_dir=train_run_dir,
+            history_len=int(wm_cfg.history_len),
+            temporal_stride=temporal_stride,
+            max_samples=max_samples,
+        )
+    else:
+        eb_nav_cfg = getattr(train_cfg, "eb_nav", {})
+        eb_dataset_path = str(getattr(eb_nav_cfg, "dataset_path", "datasets/EB-Nav/eb-nav_dataset_single_step.json"))
+        eb_images_base_dir = str(getattr(eb_nav_cfg, "images_base_dir", "datasets/EB-Nav"))
+        eb_reward_cache_path = str(getattr(eb_nav_cfg, "reward_cache_path", ""))
+        train_run_dir = Path(eb_dataset_path)
+        test_run_dir = Path(eb_dataset_path)
+        dataset = EBNavSequenceDataset(
+            json_path=eb_dataset_path,
+            images_base_dir=eb_images_base_dir,
+            latent_dim=latent_dim,
+            action_dim=3,
+            history_len=int(wm_cfg.history_len),
+            temporal_stride=temporal_stride,
+            split="train",
+            reward_cache_path=eb_reward_cache_path if eb_reward_cache_path else None,
+        )
+        if max_samples > 0:
+            dataset.sequences = dataset.sequences[:max_samples]
 
     dataloader = DataLoader(
         dataset,
@@ -741,6 +1052,7 @@ def main(cfg: DictConfig) -> None:
 
     show_kv_table("Dataset", [
         ("stage", stage),
+        ("dataset_source", dataset_source),
         ("train_run_dir", str(train_run_dir)),
         ("test_run_dir", str(test_run_dir)),
         ("samples", str(len(dataset))),
@@ -748,116 +1060,308 @@ def main(cfg: DictConfig) -> None:
         ("steps_per_epoch", str(len(dataloader))),
     ])
 
+    checkpoint_dir = Path("models/wm/joint_qwen")
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # 可视化配置：支持训练中按固定步数触发
+    vis_enabled = bool(train_cfg.get("post_visualization_enabled", True))
+    vis_every_n_steps = int(train_cfg.get("post_visualization_every_n_steps", 10))
+    vis_rollouts = int(train_cfg.get("post_visualization_rollouts", 3))
+    vis_steps = int(train_cfg.get("post_visualization_steps", 50))
+    vis_include_sigreg_encoder = bool(train_cfg.get("post_visualization_include_sigreg_encoder_space", True))
+
+    def _run_visualization_once(step_value: int) -> None:
+        if not vis_enabled or dataset_source != "ai2thor":
+            return
+        backup_state: dict[str, torch.Tensor] | None = None
+        if vision_ema_state is not None and vision_ema_use_for_eval:
+            backup_state = _apply_visual_state(qwen_adapter._model, vision_ema_state)
+        try:
+            _run_post_training_visualization(
+                wm_model=_unwrap_module(lewm_model.wm),
+                vision_encoder=vision_encoder,
+                run_dir=test_run_dir,
+                history_len=int(wm_cfg.history_len),
+                num_patches=num_patches,
+                token_dim=token_dim,
+                device=device,
+                tracker=tracker,
+                global_step=step_value,
+                num_rollouts=vis_rollouts,
+                num_steps=vis_steps,
+                include_sigreg_encoder_space=vis_include_sigreg_encoder,
+            )
+        finally:
+            if backup_state is not None:
+                _apply_visual_state(qwen_adapter._model, backup_state)
+
     # 训练循环
     epochs = int(train_cfg.epochs)
     global_step = 0
+    recent_losses: deque[dict[str, float]] = deque(maxlen=50)
+    tui = _TUIController()
+    tui.start()
 
     for epoch in range(epochs):
         lewm_model.wm.train()
         lewm_model.idm.train()
         lewm_model.action_mapper.train()
 
-        for batch_idx, batch in enumerate(dataloader):
-            history_images = batch["history_images"]  # [B, H]
-            future_images = batch["future_images"]  # [B, T]
-            history_actions = batch["history_actions"].float().to(device)  # [B, H, A]
+        progress = Progress(
+            TextColumn("[bold cyan]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TextColumn("step={task.fields[step_time]}s"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+            transient=False,
+        )
+        task_id = progress.add_task(f"Epoch {epoch + 1}/{epochs}", total=len(dataloader), step_time="0.000")
+        loss_table = _build_loss_table(
+            epoch=epoch + 1,
+            epochs=epochs,
+            step=0,
+            total_steps=len(dataloader),
+            global_step=global_step,
+            step_loss=0.0,
+            step_recon=0.0,
+            step_action=0.0,
+            step_sigreg=0.0,
+            step_sigreg_w=0.0,
+            step_kl=0.0,
+            step_reward=0.0,
+            step_image_recon=0.0,
+            step_perceptual=0.0,
+            step_total_with_kl=0.0,
+            lr_wm=float(wm_optimizer.param_groups[0]["lr"]),
+            lr_idm=float(idm_optimizer.param_groups[0]["lr"]),
+        )
+        with Live(Group(loss_table, progress), console=console, refresh_per_second=4, transient=False) as live:
+            for batch_idx, batch in enumerate(dataloader):
+                if tui.pause_requested:
+                    pause_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    pause_ckpt = checkpoint_dir / f"checkpoint_pause_{pause_ts}.pt"
+                    torch.save({
+                        "epoch": epoch + 1,
+                        "global_step": global_step,
+                        "vision_encoder_state": qwen_adapter._model.state_dict(),
+                        "vision_encoder_ema_state": vision_ema_state,
+                        "wm_state": _unwrap_module(lewm_model.wm).state_dict(),
+                        "idm_state": _unwrap_module(lewm_model.idm).state_dict(),
+                        "action_mapper_state": _unwrap_module(lewm_model.action_mapper).state_dict(),
+                        "wm_optimizer_state": lewm_model.wm_optimizer.state_dict(),
+                        "idm_optimizer_state": lewm_model.idm_optimizer.state_dict(),
+                    }, pause_ckpt)
+                    success(f"已暂停并保存断点: {pause_ckpt}")
+                    tui.stop()
+                    tracker.finish()
+                    return
+                step_t0 = time.perf_counter()
+                history_images = batch["history_images"]  # [B, H]
+                future_images = batch["future_images"]  # [B, T]
+                instructions = batch.get("instructions", [""] * len(history_images))
+                history_actions = batch["history_actions"].float().to(device)  # [B, H, A]
 
-            # 编码历史图像
-            z_history_list = []
-            for img_paths in history_images:
-                step_latents = []
-                for path in img_paths:
-                    if path and Path(path).exists():
-                        latent = vision_encoder.encode_image_path(path).z.to(device)
-                        latent = _normalize_patch_latent(
-                            latent,
-                            num_patches=num_patches,
-                            token_dim=token_dim,
-                        )
-                    else:
-                        latent = torch.zeros(num_patches, token_dim, device=device)
-                    step_latents.append(latent)
-                z_history_list.append(torch.stack(step_latents))
-            z_history = torch.stack(z_history_list)  # [B, H, P, D]
+                # 编码历史图像
+                z_history_list = []
+                for row_idx, img_paths in enumerate(history_images):
+                    prompt_override = (
+                        _build_planner_latent_prompt(str(instructions[row_idx]))
+                        if planner_lora_enabled
+                        else None
+                    )
+                    step_latents = []
+                    for path in img_paths:
+                        if path and Path(path).exists():
+                            latent = vision_encoder.encode_image_path_with_prompt(
+                                str(path),
+                                prompt_override=prompt_override,
+                            ).z.to(device)
+                            latent = _normalize_patch_latent(
+                                latent,
+                                num_patches=num_patches,
+                                token_dim=token_dim,
+                            )
+                        else:
+                            latent = torch.zeros(num_patches, token_dim, device=device)
+                        step_latents.append(latent)
+                    z_history_list.append(torch.stack(step_latents))
+                z_history = torch.stack(z_history_list)  # [B, H, P, D]
 
-            # 编码未来图像
-            z_future_list = []
-            for img_paths in future_images:
-                step_latents = []
-                for path in img_paths:
-                    if path and Path(path).exists():
-                        latent = vision_encoder.encode_image_path(path).z.to(device)
-                        latent = _normalize_patch_latent(
-                            latent,
-                            num_patches=num_patches,
-                            token_dim=token_dim,
-                        )
-                    else:
-                        latent = torch.zeros(num_patches, token_dim, device=device)
-                    step_latents.append(latent)
-                z_future_list.append(torch.stack(step_latents))
-            z_future = torch.stack(z_future_list)  # [B, T, P, D]
+                # 编码未来图像
+                z_future_list = []
+                for row_idx, img_paths in enumerate(future_images):
+                    prompt_override = (
+                        _build_planner_latent_prompt(str(instructions[row_idx]))
+                        if planner_lora_enabled
+                        else None
+                    )
+                    step_latents = []
+                    for path in img_paths:
+                        if path and Path(path).exists():
+                            latent = vision_encoder.encode_image_path_with_prompt(
+                                str(path),
+                                prompt_override=prompt_override,
+                            ).z.to(device)
+                            latent = _normalize_patch_latent(
+                                latent,
+                                num_patches=num_patches,
+                                token_dim=token_dim,
+                            )
+                        else:
+                            latent = torch.zeros(num_patches, token_dim, device=device)
+                        step_latents.append(latent)
+                    z_future_list.append(torch.stack(step_latents))
+                z_future = torch.stack(z_future_list)  # [B, T, P, D]
 
-            gt_action_future = batch["future_actions"].float().to(device)
-            batch_device = {
-                "z_history": z_history,
-                "action_history": history_actions,
-                "z_future": z_future,
-                "gt_action_future": gt_action_future,
-            }
-            lewm_model._global_step = global_step
-            step_metrics = lewm_model.train_step(batch_device)
-            loss_kl = torch.tensor(0.0, device=device)
-            if teacher_adapter is not None and kl_enabled and kl_weight > 0.0:
-                wm_optimizer.zero_grad(set_to_none=True)
-                loss_kl = _compute_vision_token_kl(
-                    teacher_adapter=teacher_adapter,
-                    student_adapter=qwen_adapter,
-                    history_images=history_images,
-                    future_images=future_images,
-                    temperature=kl_temperature,
-                    max_images=kl_max_images,
-                    device=device,
-                )
-                if torch.isfinite(loss_kl):
-                    (kl_weight * loss_kl).backward()
-                    torch.nn.utils.clip_grad_norm_(qwen_adapter._model.parameters(), float(getattr(train_cfg, "grad_clip_norm", 5.0)))
-                    wm_optimizer.step()
-            if vision_ema_state is not None:
-                _update_visual_ema_state(vision_ema_state, qwen_adapter._model, vision_ema_decay)
-
-            # 记录
-            if global_step % int(train_cfg.get("log_every_n_steps", 10)) == 0:
-                log_dict = {
-                    "loss": float(step_metrics.get("loss", 0.0)),
-                    "loss_recon": float(step_metrics.get("loss_recon", 0.0)),
-                    "loss_action": float(step_metrics.get("loss_action", 0.0)),
-                    "loss_sigreg": float(step_metrics.get("loss_sigreg", 0.0)),
-                    "sigreg_weight": float(step_metrics.get("sigreg_weight", 0.0)),
-                    "lr_wm": float(step_metrics.get("lr_wm", wm_optimizer.param_groups[0]["lr"])),
-                    "lr_idm": float(step_metrics.get("lr_idm", idm_optimizer.param_groups[0]["lr"])),
-                    "loss_kl": float(loss_kl.item()),
-                    "loss_total_with_kl": float(step_metrics.get("loss", 0.0)) + float(kl_weight * loss_kl.item()),
-                    "epoch": epoch + 1,
+                gt_action_future = batch["future_actions"].float().to(device)
+                batch_device = {
+                    "z_history": z_history,
+                    "action_history": history_actions,
+                    "z_future": z_future,
+                    "gt_action_future": gt_action_future,
                 }
-                tracker.log_metrics(log_dict, step=global_step)
+                if "future_rewards" in batch:
+                    batch_device["reward_target"] = batch["future_rewards"].float().to(device)
+                if perceptual_enabled:
+                    target_image_batches = []
+                    for img_paths in future_images:
+                        target_image_batches.append(
+                            torch.stack(
+                                [
+                                    _load_image_tensor(str(path), perceptual_image_size, device)
+                                    for path in img_paths
+                                ],
+                                dim=0,
+                            )
+                        )
+                    batch_device["target_images"] = torch.stack(target_image_batches, dim=0)
+                lewm_model._global_step = global_step
+                step_metrics = lewm_model.train_step(batch_device)
+                loss_kl = torch.tensor(0.0, device=device)
+                if teacher_adapter is not None and kl_enabled and kl_weight > 0.0:
+                    wm_optimizer.zero_grad(set_to_none=True)
+                    loss_kl = _compute_vision_token_kl(
+                        teacher_adapter=teacher_adapter,
+                        student_adapter=qwen_adapter,
+                        history_images=history_images,
+                        future_images=future_images,
+                        temperature=kl_temperature,
+                        max_images=kl_max_images,
+                        device=device,
+                    )
+                    if torch.isfinite(loss_kl):
+                        (kl_weight * loss_kl).backward()
+                        torch.nn.utils.clip_grad_norm_(qwen_adapter._model.parameters(), float(getattr(train_cfg, "grad_clip_norm", 5.0)))
+                        wm_optimizer.step()
+                if vision_ema_state is not None:
+                    _update_visual_ema_state(vision_ema_state, qwen_adapter._model, vision_ema_decay)
 
-            global_step += 1
-            lewm_model._global_step = global_step
+                # 记录
+                if global_step % int(train_cfg.get("log_every_n_steps", 10)) == 0:
+                    log_dict = {
+                        "loss": float(step_metrics.get("loss", 0.0)),
+                        "loss_recon": float(step_metrics.get("loss_recon", 0.0)),
+                        "loss_action": float(step_metrics.get("loss_action", 0.0)),
+                        "loss_sigreg": float(step_metrics.get("loss_sigreg", 0.0)),
+                        "loss_reward": float(step_metrics.get("loss_reward", 0.0)),
+                        "loss_image_recon": float(step_metrics.get("loss_image_recon", 0.0)),
+                        "loss_perceptual": float(step_metrics.get("loss_perceptual", 0.0)),
+                        "reward_pred_mean": float(step_metrics.get("reward_pred_mean", 0.0)),
+                        "reward_target_mean": float(step_metrics.get("reward_target_mean", 0.0)),
+                        "sigreg_weight": float(step_metrics.get("sigreg_weight", 0.0)),
+                        "lr_wm": float(step_metrics.get("lr_wm", wm_optimizer.param_groups[0]["lr"])),
+                        "lr_idm": float(step_metrics.get("lr_idm", idm_optimizer.param_groups[0]["lr"])),
+                        "loss_kl": float(loss_kl.item()),
+                        "loss_total_with_kl": float(step_metrics.get("loss", 0.0)) + float(kl_weight * loss_kl.item()),
+                        "epoch": epoch + 1,
+                    }
+                    if perceptual_enabled and "target_images" in batch_device:
+                        with torch.no_grad():
+                            teacher_action_vis = history_actions.clone()
+                            teacher_action_vis[:, -1, :] = gt_action_future[:, 0, :]
+                            _, aux_vis = _unwrap_module(lewm_model.wm).predict_next_with_aux(
+                                z_history,
+                                teacher_action_vis,
+                                reconstruct_image=True,
+                            )
+                        if "image_recon" in aux_vis:
+                            log_dict["perceptual/target_image"] = _wandb_image_from_tensor(
+                                batch_device["target_images"][0, 0]
+                            )
+                            log_dict["perceptual/recon_image"] = _wandb_image_from_tensor(
+                                aux_vis["image_recon"][0]
+                            )
+                    tracker.log_metrics(log_dict, step=global_step)
 
-            if batch_idx % 100 == 0:
-                print(
-                    f"Epoch {epoch+1} | Step {batch_idx}/{len(dataloader)} | "
-                    f"Loss: {float(step_metrics.get('loss', 0.0)):.4f} | "
-                    f"Recon: {float(step_metrics.get('loss_recon', 0.0)):.4f} | "
-                    f"SigReg: {float(step_metrics.get('loss_sigreg', 0.0)):.4f} | "
-                    f"KL: {float(loss_kl.item()):.4f}"
+                # Rich 面板内实时更新各项 loss
+                step_loss = float(step_metrics.get("loss", 0.0))
+                step_recon = float(step_metrics.get("loss_recon", 0.0))
+                step_action = float(step_metrics.get("loss_action", 0.0))
+                step_sigreg = float(step_metrics.get("loss_sigreg", 0.0))
+                step_sigreg_w = float(step_metrics.get("sigreg_weight", 0.0))
+                step_kl = float(loss_kl.item())
+                step_reward = float(step_metrics.get("loss_reward", 0.0))
+                step_image_recon = float(step_metrics.get("loss_image_recon", 0.0))
+                step_perceptual = float(step_metrics.get("loss_perceptual", 0.0))
+                step_total_with_kl = step_loss + float(kl_weight * step_kl)
+                lr_wm_cur = float(step_metrics.get("lr_wm", wm_optimizer.param_groups[0]["lr"]))
+                lr_idm_cur = float(step_metrics.get("lr_idm", idm_optimizer.param_groups[0]["lr"]))
+                recent_losses.append(
+                    {
+                        "gstep": float(global_step),
+                        "loss": step_loss,
+                        "recon": step_recon,
+                        "action": step_action,
+                        "sigreg": step_sigreg,
+                        "kl": step_kl,
+                        "reward": step_reward,
+                        "perceptual": step_perceptual,
+                    }
                 )
+                loss_table = _build_loss_table(
+                    epoch=epoch + 1,
+                    epochs=epochs,
+                    step=batch_idx + 1,
+                    total_steps=len(dataloader),
+                    global_step=global_step,
+                    step_loss=step_loss,
+                    step_recon=step_recon,
+                    step_action=step_action,
+                    step_sigreg=step_sigreg,
+                    step_sigreg_w=step_sigreg_w,
+                    step_kl=step_kl,
+                    step_reward=step_reward,
+                    step_image_recon=step_image_recon,
+                    step_perceptual=step_perceptual,
+                    step_total_with_kl=step_total_with_kl,
+                    lr_wm=lr_wm_cur,
+                    lr_idm=lr_idm_cur,
+                )
+                step_dt = max(1e-6, time.perf_counter() - step_t0)
+                progress.update(task_id, advance=1, step_time=f"{step_dt:.3f}")
+                tab = max(0, min(3, tui.active_tab))
+                if tab == 0:
+                    top_panel = loss_table
+                elif tab == 1:
+                    top_panel = _build_gpu_table()
+                elif tab == 2:
+                    top_panel = _build_recent_loss_table(recent_losses)
+                else:
+                    top_panel = _build_control_panel(tab)
+                live.update(Group(top_panel, progress))
+
+                global_step += 1
+                lewm_model._global_step = global_step
+                if vis_enabled and vis_every_n_steps > 0 and (global_step % vis_every_n_steps == 0):
+                    _run_visualization_once(global_step)
+
+            progress.stop_task(task_id)
 
         success(f"Epoch {epoch+1}/{epochs} 完成")
 
     # 保存 checkpoint
-    checkpoint_dir = Path("models/wm/joint_qwen")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     checkpoint_path = checkpoint_dir / f"checkpoint_{timestamp}.pt"
@@ -867,21 +1371,38 @@ def main(cfg: DictConfig) -> None:
         "global_step": global_step,
         "vision_encoder_state": qwen_adapter._model.state_dict(),
         "vision_encoder_ema_state": vision_ema_state,
-        "wm_state": lewm_model.wm.state_dict(),
-        "idm_state": lewm_model.idm.state_dict(),
-        "action_mapper_state": lewm_model.action_mapper.state_dict(),
+        "wm_state": _unwrap_module(lewm_model.wm).state_dict(),
+        "idm_state": _unwrap_module(lewm_model.idm).state_dict(),
+        "action_mapper_state": _unwrap_module(lewm_model.action_mapper).state_dict(),
         "wm_optimizer_state": lewm_model.wm_optimizer.state_dict(),
         "idm_optimizer_state": lewm_model.idm_optimizer.state_dict(),
         "config": {
             "latent_dim": latent_dim,
             "model_name": model_name,
             "stage": stage,
+            "dataset_source": dataset_source,
             "train_run_dir": str(train_run_dir),
             "test_run_dir": str(test_run_dir),
             "temporal_stride": temporal_stride,
+            "planner_lora_enabled": planner_lora_enabled,
+            "planner_lora_checkpoint": planner_lora_checkpoint,
             "sigreg_enabled": sigreg_enabled,
             "sigreg_weight": sigreg_weight,
             "sigreg_warmup_steps": sigreg_warmup_steps,
+            "reward": {
+                "enabled": reward_enabled,
+                "weight": reward_weight,
+                "loss_type": reward_loss_type,
+                "hidden_dim": reward_hidden_dim,
+            },
+            "perceptual": {
+                "enabled": perceptual_enabled,
+                "weight": perceptual_weight,
+                "image_recon_weight": image_recon_weight,
+                "image_size": perceptual_image_size,
+                "use_predicted_latent": perceptual_use_predicted_latent,
+                "decoder_hidden_channels": image_decoder_hidden_channels,
+            },
             "vision_train_mode": train_mode,
             "lora_cfg": {
                 "r": int(getattr(lora_cfg, "r", 8)),
@@ -904,32 +1425,10 @@ def main(cfg: DictConfig) -> None:
     }, checkpoint_path)
     success(f"Checkpoint saved to {checkpoint_path}")
 
-    # 训练后可视化：在 test split 上采样 rollout 生成轨迹图并上传到 wandb。
-    vis_enabled = bool(train_cfg.get("post_visualization_enabled", True))
-    if vis_enabled:
-        backup_state: dict[str, torch.Tensor] | None = None
-        if vision_ema_state is not None and vision_ema_use_for_eval:
-            backup_state = _apply_visual_state(qwen_adapter._model, vision_ema_state)
-        vis_rollouts = int(train_cfg.get("post_visualization_rollouts", 3))
-        vis_steps = int(train_cfg.get("post_visualization_steps", 50))
-        vis_include_sigreg_encoder = bool(train_cfg.get("post_visualization_include_sigreg_encoder_space", True))
-        _run_post_training_visualization(
-            wm_model=lewm_model.wm,
-            vision_encoder=vision_encoder,
-            run_dir=test_run_dir,
-            history_len=int(wm_cfg.history_len),
-            num_patches=num_patches,
-            token_dim=token_dim,
-            device=device,
-            tracker=tracker,
-            global_step=global_step,
-            num_rollouts=vis_rollouts,
-            num_steps=vis_steps,
-            include_sigreg_encoder_space=vis_include_sigreg_encoder,
-        )
-        if backup_state is not None:
-            _apply_visual_state(qwen_adapter._model, backup_state)
+    # 训练结束后再补一次可视化（即使中途已按步触发）。
+    _run_visualization_once(global_step)
 
+    tui.stop()
     tracker.finish()
     success("训练完成")
 

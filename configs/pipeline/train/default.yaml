@@ -24,6 +24,12 @@ device: cuda
 # - stage1_wm_vision: 训练 WM + vision encoder
 # - stage2_value_head: 预留占位（当前不执行）
 stage: stage1_wm_vision
+# 在线联合训练数据源：ai2thor 或 eb_nav
+dataset_source: eb_nav
+eb_nav:
+  dataset_path: datasets/EB-Nav/eb-nav_dataset_single_step.json
+  images_base_dir: datasets/EB-Nav
+  reward_cache_path: datasets/EB-Nav/phase2_reward_cache.jsonl
 # 训练模式：unsupervised、semi_supervised 或 fully_supervised
 # fully_supervised: WM 直接使用真实动作训练，不使用 IDM 推断动作
 training_mode: fully_supervised
@@ -61,6 +67,8 @@ ema:
 log_every_n_steps: 10
 # 训练后可视化：在 test split 上采样 rollout 生成轨迹图并上传 wandb
 post_visualization_enabled: true
+# 训练中每 N step 触发一次可视化并上传（<=0 关闭训练中触发）
+post_visualization_every_n_steps: 10
 post_visualization_rollouts: 3
 post_visualization_steps: 50
 # 是否额外可视化 LeWM 内部 encoder（SIGReg 前）空间轨迹
@@ -88,6 +96,16 @@ qwen_encoder:
     decay: 0.999
     # 训练后可视化是否使用 visual EMA 权重
     use_ema_for_eval: true
+# Phase 2 前置 planner LoRA adapter
+qwen_planner_lora:
+  enabled: false
+  checkpoint_path: ""
+# 多卡配置（仅训练阶段）
+multi_gpu:
+  # true 时在可用 2+ GPU 上对 WM/IDM/mapper 启用 DataParallel
+  enabled: false
+  # 逗号分隔的设备 id，留空时自动使用全部可见 GPU（如 CUDA_VISIBLE_DEVICES=0,1）
+  device_ids: ""
 sigreg:
   # 是否启用 LeWM 论文风格 SIGReg
   enabled: false

@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "torch==2.5.1",
+  "torchvision==0.20.1",
   "hydra-core",
   "omegaconf",
   "numpy",
@@ -28,4 +29,3 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
-

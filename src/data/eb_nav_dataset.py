@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from torch.utils.data import Dataset
 
-from src.wm.encoder import WMImageEncoder
+if TYPE_CHECKING:
+    from src.wm.encoder import WMImageEncoder
 
 
 # 动作映射
@@ -25,6 +26,139 @@ ACTION_MAP = {
     6: [0, 0, 0],           # Tilt up (俯仰，可能不用)
     7: [0, 0, 0],           # Tilt down (俯仰，可能不用)
 }
+
+ACTION_NAMES = {
+    0: "Move forward by 0.25",
+    1: "Move backward by 0.25",
+    2: "Move rightward by 0.25",
+    3: "Move leftward by 0.25",
+    4: "Rotate to the right by 90 degrees",
+    5: "Rotate to the left by 90 degrees",
+    6: "Tilt the camera upward by 30 degrees",
+    7: "Tilt the camera downward by 30 degrees",
+}
+
+LATENT_STATE_MARKER = "<LATENT_STATE>"
+
+
+def resolve_eb_nav_image_path(img_path: str, images_base_dir: str | Path) -> str:
+    """Resolve an EB-Nav image path while preserving absolute paths."""
+    if not img_path:
+        return ""
+    path = Path(img_path)
+    if path.is_absolute():
+        return str(path)
+    base = Path(images_base_dir)
+    candidate = base / path
+    if candidate.exists():
+        return str(candidate)
+    if base.name == "images" and path.parts and path.parts[0] == "images":
+        return str(base.parent / path)
+    return str(candidate)
+
+
+def get_eb_nav_action_id(plan: dict[str, Any]) -> int:
+    action = plan.get("action", [0, ""])
+    if isinstance(action, list) and action:
+        try:
+            return int(action[0])
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def build_action_prior(action_id: int, smoothing: float = 0.05) -> list[float]:
+    """Build an 8-way label-smoothed expert action prior."""
+    num_actions = len(ACTION_NAMES)
+    action_id = int(action_id)
+    smoothing = min(max(float(smoothing), 0.0), 1.0)
+    if action_id not in ACTION_NAMES:
+        return [1.0 / num_actions for _ in range(num_actions)]
+    off_value = smoothing / float(num_actions - 1) if num_actions > 1 else 0.0
+    values = [off_value for _ in range(num_actions)]
+    values[action_id] = 1.0 - smoothing
+    return values
+
+
+def build_planner_response(
+    *,
+    cot: str,
+    action_id: int,
+    smoothing: float = 0.05,
+) -> dict[str, Any]:
+    """Build the fixed Qwen planner response schema used by the SFT stage."""
+    probabilities = build_action_prior(action_id=action_id, smoothing=smoothing)
+    sorted_actions = sorted(
+        (
+            {
+                "action_id": int(idx),
+                "name": ACTION_NAMES[int(idx)],
+                "score": float(score),
+            }
+            for idx, score in enumerate(probabilities)
+        ),
+        key=lambda item: item["score"],
+        reverse=True,
+    )
+    return {
+        "cot": cot or "",
+        "planner_trigger": True,
+        "latent_state": LATENT_STATE_MARKER,
+        "action_prior": {
+            "probabilities": probabilities,
+            "top_actions": sorted_actions[:3],
+        },
+    }
+
+
+def compute_eb_nav_reward(
+    *,
+    action_success: bool,
+    env_feedback: str = "",
+    is_terminal: bool = False,
+    episode_success: bool | float | int = False,
+    step_cost: float = -0.01,
+    success_action_reward: float = 0.05,
+    failed_action_reward: float = -0.20,
+    terminal_success_reward: float = 1.0,
+    terminal_failure_reward: float = -0.5,
+) -> float:
+    """Default EB-Nav step reward from available success/failure fields."""
+    feedback = str(env_feedback or "").lower()
+    success = bool(action_success)
+    reward = float(step_cost)
+    if success and "invalid" not in feedback and "blocking" not in feedback:
+        reward += float(success_action_reward)
+    else:
+        reward += float(failed_action_reward)
+    if is_terminal:
+        reward += float(terminal_success_reward if bool(episode_success) else terminal_failure_reward)
+    return float(reward)
+
+
+def load_reward_cache(reward_cache_path: str | Path | None) -> dict[tuple[int, int, int], float]:
+    """Load a JSON/JSONL reward cache keyed by (episode_idx, trajectory_step_idx, plan_idx)."""
+    if not reward_cache_path:
+        return {}
+    path = Path(reward_cache_path)
+    if not path.exists():
+        return {}
+    records: list[dict[str, Any]] = []
+    if path.suffix == ".jsonl":
+        with open(path) as f:
+            records = [json.loads(line) for line in f if line.strip()]
+    else:
+        loaded = json.load(open(path))
+        records = loaded.get("records", loaded) if isinstance(loaded, dict) else loaded
+    cache: dict[tuple[int, int, int], float] = {}
+    for item in records:
+        key = (
+            int(item.get("episode_idx", 0)),
+            int(item.get("trajectory_step_idx", item.get("step_idx", 0))),
+            int(item.get("plan_idx", 0)),
+        )
+        cache[key] = float(item.get("reward", 0.0))
+    return cache
 
 
 class EBNavDataset(Dataset):
@@ -68,6 +202,7 @@ class EBNavDataset(Dataset):
         history_len: int = 4,
         image_encoder: WMImageEncoder | None = None,
         split: str = "train",
+        reward_cache_path: str | None = None,
     ) -> None:
         self.json_path = Path(json_path)
         self.images_base_dir = Path(images_base_dir) if images_base_dir else self.json_path.parent / "images"
@@ -76,6 +211,7 @@ class EBNavDataset(Dataset):
         self.history_len = history_len
         self.image_encoder = image_encoder
         self.split = split
+        self.reward_cache = load_reward_cache(reward_cache_path)
 
         # 加载数据
         with open(self.json_path) as f:
@@ -96,6 +232,25 @@ class EBNavDataset(Dataset):
         action_vec = ACTION_MAP.get(action_id, [0, 0, 0])
         return action_vec[: self.action_dim]
 
+    def _get_reward(
+        self,
+        *,
+        ep_idx: int,
+        step_idx: int,
+        plan_idx: int,
+        plan: dict[str, Any],
+        episode: dict[str, Any],
+    ) -> float:
+        cached = self.reward_cache.get((ep_idx, step_idx, plan_idx))
+        if cached is not None:
+            return cached
+        return compute_eb_nav_reward(
+            action_success=bool(plan.get("action_success", False)),
+            env_feedback=str(plan.get("env_feedback", "")),
+            is_terminal=step_idx == len(episode.get("trajectory", [])) - 1,
+            episode_success=episode.get("success", 0),
+        )
+
     def __getitem__(self, idx: int) -> dict[str, Any]:
         ep_idx, step_idx = self.samples[idx]
         episode = self.data[ep_idx]
@@ -104,16 +259,28 @@ class EBNavDataset(Dataset):
         # 获取图像路径
         plan = step["executable_plan"][0] if step["executable_plan"] else {}
         img_path = plan.get("img_path", step.get("input_image_path", ""))
-        if img_path and not img_path.startswith("/"):
-            img_path = str(self.images_base_dir / img_path)
+        img_path = resolve_eb_nav_image_path(img_path, self.images_base_dir)
 
         # 获取动作
         action_list = plan.get("action", [0, ""])
         action = self._parse_action(action_list)
+        action_id = get_eb_nav_action_id(plan)
+        reward = self._get_reward(
+            ep_idx=ep_idx,
+            step_idx=step_idx,
+            plan_idx=0,
+            plan=plan,
+            episode=episode,
+        )
 
         return {
             "image_path": img_path,
             "action": action,
+            "action_id": action_id,
+            "action_text": ACTION_NAMES.get(action_id, action_list[1] if len(action_list) > 1 else ""),
+            "action_success": bool(plan.get("action_success", False)),
+            "env_feedback": str(plan.get("env_feedback", "")),
+            "reward": reward,
             "instruction": episode.get("instruction", ""),
             "cot": step.get("reasoning_and_reflection", ""),
             "visual_description": step.get("visual_description", ""),
@@ -141,6 +308,7 @@ class EBNavSequenceDataset(Dataset):
         temporal_stride: int = 1,
         image_encoder: WMImageEncoder | None = None,
         split: str = "train",
+        reward_cache_path: str | None = None,
     ) -> None:
         self.json_path = Path(json_path)
         self.images_base_dir = Path(images_base_dir) if images_base_dir else self.json_path.parent / "images"
@@ -150,6 +318,7 @@ class EBNavSequenceDataset(Dataset):
         self.temporal_stride = temporal_stride
         self.image_encoder = image_encoder
         self.split = split
+        self.reward_cache = load_reward_cache(reward_cache_path)
 
         # 加载数据
         with open(self.json_path) as f:
@@ -171,8 +340,7 @@ class EBNavSequenceDataset(Dataset):
                 for step in history_steps:
                     plan = step["executable_plan"][0] if step["executable_plan"] else {}
                     img_path = plan.get("img_path", step.get("input_image_path", ""))
-                    if img_path and not img_path.startswith("/"):
-                        img_path = str(self.images_base_dir / img_path)
+                    img_path = resolve_eb_nav_image_path(img_path, self.images_base_dir)
                     history_images.append(img_path)
                     action_list = plan.get("action", [0, ""])
                     action_vec = [0, 0, 0]
@@ -182,25 +350,40 @@ class EBNavSequenceDataset(Dataset):
 
                 future_images = []
                 future_actions = []
-                for step in future_steps:
+                future_rewards = []
+                future_action_ids = []
+                for future_offset, step in enumerate(future_steps):
+                    absolute_step_idx = start + history_len + future_offset
                     plan = step["executable_plan"][0] if step["executable_plan"] else {}
                     img_path = plan.get("img_path", step.get("input_image_path", ""))
-                    if img_path and not img_path.startswith("/"):
-                        img_path = str(self.images_base_dir / img_path)
+                    img_path = resolve_eb_nav_image_path(img_path, self.images_base_dir)
                     future_images.append(img_path)
                     action_list = plan.get("action", [0, ""])
                     action_vec = [0, 0, 0]
                     action_id = action_list[0] if isinstance(action_list, list) else 0
                     action_vec = ACTION_MAP.get(action_id, [0, 0, 0])
                     future_actions.append(action_vec[:action_dim])
+                    future_action_ids.append(int(action_id))
+                    cached = self.reward_cache.get((ep_idx, absolute_step_idx, 0))
+                    if cached is None:
+                        cached = compute_eb_nav_reward(
+                            action_success=bool(plan.get("action_success", False)),
+                            env_feedback=str(plan.get("env_feedback", "")),
+                            is_terminal=absolute_step_idx == num_steps - 1,
+                            episode_success=episode.get("success", 0),
+                        )
+                    future_rewards.append(float(cached))
 
                 self.sequences.append({
                     "episode_idx": ep_idx,
+                    "episode_id": episode.get("episode_id", str(ep_idx)),
                     "instruction": episode.get("instruction", ""),
                     "history_images": history_images,
                     "history_actions": history_actions,
                     "future_images": future_images,
                     "future_actions": future_actions,
+                    "future_action_ids": future_action_ids,
+                    "future_rewards": future_rewards,
                     "model_name": episode.get("model_name", ""),
                     "success": episode.get("success", 0),
                 })

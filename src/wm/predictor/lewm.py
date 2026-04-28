@@ -16,6 +16,11 @@ from torch.nn import functional as F
 from src.core.interfaces import Model
 from src.wm.sigreg_modules import SIGReg, SIGRegEncoderDecoder
 
+try:
+    from torchvision.models import vgg16
+except Exception:  # pragma: no cover
+    vgg16 = None
+
 
 def _update_ema(target: nn.Module, source: nn.Module, decay: float) -> None:
     for ema_p, src_p in zip(target.parameters(), source.parameters()):
@@ -144,6 +149,85 @@ class _LeWMTransformer(nn.Module):
         return self.output_proj(self.norm(x))
 
 
+class LatentImageDecoder(nn.Module):
+    """Small decoder from latent tokens to an RGB image in [0, 1]."""
+
+    def __init__(
+        self,
+        *,
+        token_dim: int,
+        num_patches: int,
+        image_size: int = 128,
+        hidden_channels: int = 128,
+    ) -> None:
+        super().__init__()
+        self.num_patches = int(num_patches)
+        self.token_dim = int(token_dim)
+        self.image_size = int(image_size)
+        self.hidden_channels = max(64, ((int(hidden_channels) + 63) // 64) * 64)
+        self.fc = nn.Sequential(
+            nn.LayerNorm(self.token_dim),
+            nn.Linear(self.token_dim, self.hidden_channels * 8 * 8),
+            nn.GELU(),
+        )
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(self.hidden_channels, self.hidden_channels, 4, stride=2, padding=1),
+            nn.GroupNorm(8, self.hidden_channels),
+            nn.GELU(),
+            nn.ConvTranspose2d(self.hidden_channels, self.hidden_channels // 2, 4, stride=2, padding=1),
+            nn.GroupNorm(8, self.hidden_channels // 2),
+            nn.GELU(),
+            nn.ConvTranspose2d(self.hidden_channels // 2, self.hidden_channels // 4, 4, stride=2, padding=1),
+            nn.GroupNorm(8, self.hidden_channels // 4),
+            nn.GELU(),
+            nn.ConvTranspose2d(self.hidden_channels // 4, self.hidden_channels // 8, 4, stride=2, padding=1),
+            nn.GELU(),
+            nn.Conv2d(self.hidden_channels // 8, 3, kernel_size=3, padding=1),
+        )
+
+    def forward(self, latent: torch.Tensor) -> torch.Tensor:
+        if latent.dim() != 3:
+            raise ValueError(f"latent 形状不合法，期望 [B,P,D]，实际 {tuple(latent.shape)}")
+        pooled = latent.mean(dim=1)
+        x = self.fc(pooled).reshape(latent.size(0), self.hidden_channels, 8, 8)
+        image = torch.sigmoid(self.decoder(x))
+        if int(image.size(-1)) != self.image_size or int(image.size(-2)) != self.image_size:
+            image = F.interpolate(image, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
+        return image
+
+
+class VGGPerceptualLoss(nn.Module):
+    """Frozen VGG16 feature L1 loss with an L1 fallback when torchvision is unavailable."""
+
+    def __init__(self, device: torch.device) -> None:
+        super().__init__()
+        self.features: nn.Module | None = None
+        if vgg16 is not None:
+            model = vgg16(weights=None).features[:16].eval()
+            for param in model.parameters():
+                param.requires_grad_(False)
+            self.features = model.to(device)
+        self.register_buffer(
+            "mean",
+            torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(1, 3, 1, 1),
+            persistent=False,
+        )
+        self.register_buffer(
+            "std",
+            torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(1, 3, 1, 1),
+            persistent=False,
+        )
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        pred = pred.clamp(0.0, 1.0)
+        target = target.clamp(0.0, 1.0)
+        if self.features is None:
+            return F.l1_loss(pred, target)
+        pred_norm = (pred - self.mean.to(pred.device)) / self.std.to(pred.device)
+        target_norm = (target - self.mean.to(target.device)) / self.std.to(target.device)
+        return F.l1_loss(self.features(pred_norm), self.features(target_norm).detach())
+
+
 class LeWMWorldModel(nn.Module):
     """LeWM 自回归世界模型。
 
@@ -179,12 +263,19 @@ class LeWMWorldModel(nn.Module):
         sigreg_t_min: float = 0.2,
         sigreg_t_max: float = 4.0,
         sigreg_kernel_sigma: float = 1.0,
+        reward_enabled: bool = False,
+        reward_hidden_dim: int | None = None,
+        image_decoder_enabled: bool = False,
+        image_decoder_hidden_channels: int = 128,
+        image_size: int = 128,
     ) -> None:
         super().__init__()
         self.history_len = history_len
         self.num_patches = int(num_patches)
         self.token_dim = int(token_dim)
         self.sigreg_enabled = sigreg_enabled
+        self.reward_enabled = bool(reward_enabled)
+        self.image_decoder_enabled = bool(image_decoder_enabled)
         expected_latent_dim = self.num_patches * self.token_dim
         if int(latent_dim) != int(expected_latent_dim):
             raise ValueError(f"latent_dim 与 patch 配置不一致: {latent_dim} != {expected_latent_dim}")
@@ -242,6 +333,25 @@ class LeWMWorldModel(nn.Module):
                 kernel_sigma=sigreg_kernel_sigma,
             )
 
+        reward_hidden = int(reward_hidden_dim or max(128, hidden_dim // 2))
+        self.reward_head: nn.Module | None = None
+        if self.reward_enabled:
+            self.reward_head = nn.Sequential(
+                nn.LayerNorm(token_dim),
+                nn.Linear(token_dim, reward_hidden),
+                nn.GELU(),
+                nn.Linear(reward_hidden, 1),
+            )
+
+        self.image_decoder: LatentImageDecoder | None = None
+        if self.image_decoder_enabled:
+            self.image_decoder = LatentImageDecoder(
+                token_dim=token_dim,
+                num_patches=num_patches,
+                image_size=image_size,
+                hidden_channels=image_decoder_hidden_channels,
+            )
+
     def _validate_inputs(
         self, z_history: torch.Tensor, action_history: torch.Tensor
     ) -> None:
@@ -297,6 +407,31 @@ class LeWMWorldModel(nn.Module):
         """返回预测的下一时刻绝对 latent"""
         return self.forward(z_history=z_history, action_history=action_history)
 
+    def predict_reward(self, pred_z: torch.Tensor) -> torch.Tensor:
+        if self.reward_head is None:
+            raise RuntimeError("reward_head 未启用")
+        return self.reward_head(pred_z.mean(dim=1)).squeeze(-1)
+
+    def decode_image(self, latent: torch.Tensor) -> torch.Tensor:
+        if self.image_decoder is None:
+            raise RuntimeError("image_decoder 未启用")
+        return self.image_decoder(latent)
+
+    def predict_next_with_aux(
+        self,
+        z_history: torch.Tensor,
+        action_history: torch.Tensor,
+        *,
+        reconstruct_image: bool = False,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        pred_z = self.predict_next(z_history=z_history, action_history=action_history)
+        aux: dict[str, torch.Tensor] = {}
+        if self.reward_head is not None:
+            aux["reward_pred"] = self.predict_reward(pred_z)
+        if reconstruct_image and self.image_decoder is not None:
+            aux["image_recon"] = self.decode_image(pred_z)
+        return pred_z, aux
+
     def compute_sigreg(self, z_sequence: torch.Tensor) -> torch.Tensor:
         """计算 SIGReg 正则损失。"""
         if self.sigreg is None or self.sigreg_ed is None:
@@ -342,6 +477,12 @@ class LeWMModel(Model):
         sigreg_enabled: bool = False,
         sigreg_target_weight: float = 0.0,
         sigreg_warmup_steps: int = 0,
+        reward_enabled: bool = False,
+        reward_weight: float = 1.0,
+        reward_loss_type: str = "mse",
+        perceptual_enabled: bool = False,
+        perceptual_weight: float = 0.1,
+        image_recon_weight: float = 0.1,
     ) -> None:
         super().__init__()
         self.wm = wm.to(device)
@@ -360,6 +501,15 @@ class LeWMModel(Model):
         self.sigreg_enabled = sigreg_enabled
         self.sigreg_target_weight = sigreg_target_weight
         self.sigreg_warmup_steps = sigreg_warmup_steps
+        self.reward_enabled = bool(reward_enabled)
+        self.reward_weight = float(reward_weight)
+        self.reward_loss_type = str(reward_loss_type).strip().lower()
+        self.perceptual_enabled = bool(perceptual_enabled)
+        self.perceptual_weight = float(perceptual_weight)
+        self.image_recon_weight = float(image_recon_weight)
+        self.perceptual_loss_fn: VGGPerceptualLoss | None = None
+        if self.perceptual_enabled:
+            self.perceptual_loss_fn = VGGPerceptualLoss(device=device)
         self._ema_model: nn.Module | None = None
         self._ema_decay = ema_decay
         self._epoch = 0
@@ -388,12 +538,34 @@ class LeWMModel(Model):
                 )
         return loss_recon, loss_sigreg, current_sigreg_weight
 
+    def _wm_core(self) -> LeWMWorldModel:
+        """兼容 DataParallel，返回底层 LeWMWorldModel。"""
+        if hasattr(self.wm, "module"):
+            return self.wm.module  # type: ignore[return-value]
+        return self.wm
+
+    def _compute_reward_loss(
+        self,
+        reward_pred: torch.Tensor,
+        reward_target: torch.Tensor,
+    ) -> torch.Tensor:
+        reward_target = reward_target.to(device=reward_pred.device, dtype=reward_pred.dtype)
+        if self.reward_loss_type == "l1":
+            return F.l1_loss(reward_pred, reward_target)
+        return F.mse_loss(reward_pred, reward_target)
+
     @torch.no_grad()
     def eval_step(self, batch: Any) -> dict[str, Any]:
         z_history = batch["z_history"].to(self.device)
         action_history = batch["action_history"].to(self.device)
         z_future = batch["z_future"].to(self.device)
         gt_action_future = batch["gt_action_future"].to(self.device)
+        reward_targets = batch.get("reward_target")
+        if reward_targets is not None:
+            reward_targets = reward_targets.to(self.device)
+        target_images = batch.get("target_images")
+        if target_images is not None:
+            target_images = target_images.to(self.device)
 
         pred_action = None
         if self.training_mode in {"unsupervised", "semi_supervised"}:
@@ -406,14 +578,32 @@ class LeWMModel(Model):
         teacher_z = z_history
         teacher_action = action_history.clone()
         loss_recon_steps: list[torch.Tensor] = []
+        loss_reward_steps: list[torch.Tensor] = []
+        loss_image_recon_steps: list[torch.Tensor] = []
+        loss_perceptual_steps: list[torch.Tensor] = []
 
+        wm_core = self._wm_core()
         for step_idx in range(rollout_horizon):
             teacher_action[:, -1, :] = gt_action_future[:, step_idx, :]
 
-            pred_z = self.wm.predict_next(teacher_z, teacher_action)
+            pred_z, aux = wm_core.predict_next_with_aux(
+                teacher_z,
+                teacher_action,
+                reconstruct_image=bool(self.perceptual_enabled and target_images is not None),
+            )
             target_z = z_future[:, step_idx, :, :]
             step_loss = F.mse_loss(pred_z, target_z)
             loss_recon_steps.append(step_loss)
+            if self.reward_enabled and reward_targets is not None and "reward_pred" in aux:
+                reward_target_step = reward_targets[:, step_idx] if reward_targets.dim() > 1 else reward_targets
+                loss_reward_steps.append(
+                    self._compute_reward_loss(aux["reward_pred"], reward_target_step)
+                )
+            if self.perceptual_enabled and target_images is not None and "image_recon" in aux:
+                image_target = target_images[:, step_idx, :, :, :]
+                loss_image_recon_steps.append(F.l1_loss(aux["image_recon"], image_target))
+                if self.perceptual_loss_fn is not None:
+                    loss_perceptual_steps.append(self.perceptual_loss_fn(aux["image_recon"], image_target))
 
             teacher_z = torch.cat([teacher_z[:, 1:, ...], z_future[:, step_idx, :, :].unsqueeze(1)], dim=1)
             if step_idx < rollout_horizon - 1:
@@ -423,15 +613,39 @@ class LeWMModel(Model):
                 )
 
         loss_recon = torch.stack(loss_recon_steps).mean()
+        loss_reward = (
+            torch.stack(loss_reward_steps).mean()
+            if loss_reward_steps
+            else torch.tensor(0.0, device=self.device)
+        )
+        loss_image_recon = (
+            torch.stack(loss_image_recon_steps).mean()
+            if loss_image_recon_steps
+            else torch.tensor(0.0, device=self.device)
+        )
+        loss_perceptual = (
+            torch.stack(loss_perceptual_steps).mean()
+            if loss_perceptual_steps
+            else torch.tensor(0.0, device=self.device)
+        )
         loss_action = torch.tensor(0.0, device=self.device)
         if self.training_mode == "semi_supervised":
             mapped_action = self.action_mapper(pred_action)
             loss_action = F.mse_loss(mapped_action, gt_action_future[:, 0, :])
 
         return {
-            "loss": float(loss_recon.item()) + self.semi_supervised_weight * float(loss_action.item()),
+            "loss": (
+                float(loss_recon.item())
+                + self.reward_weight * float(loss_reward.item())
+                + self.image_recon_weight * float(loss_image_recon.item())
+                + self.perceptual_weight * float(loss_perceptual.item())
+                + self.semi_supervised_weight * float(loss_action.item())
+            ),
             "loss_recon": float(loss_recon.item()),
             "loss_action": float(loss_action.item()),
+            "loss_reward": float(loss_reward.item()),
+            "loss_image_recon": float(loss_image_recon.item()),
+            "loss_perceptual": float(loss_perceptual.item()),
         }
 
     def train_step(self, batch: Any) -> dict[str, Any]:
@@ -439,6 +653,12 @@ class LeWMModel(Model):
         action_history = batch["action_history"].to(self.device)
         z_future = batch["z_future"].to(self.device)
         gt_action_future = batch["gt_action_future"].to(self.device)
+        reward_targets = batch.get("reward_target")
+        if reward_targets is not None:
+            reward_targets = reward_targets.to(self.device)
+        target_images = batch.get("target_images")
+        if target_images is not None:
+            target_images = target_images.to(self.device)
 
         pred_action = None
         if self.training_mode in {"unsupervised", "semi_supervised"}:
@@ -451,14 +671,34 @@ class LeWMModel(Model):
         teacher_z = z_history
         teacher_action = action_history.clone()
         loss_recon_steps: list[torch.Tensor] = []
+        loss_reward_steps: list[torch.Tensor] = []
+        loss_image_recon_steps: list[torch.Tensor] = []
+        loss_perceptual_steps: list[torch.Tensor] = []
+        reward_pred_values: list[torch.Tensor] = []
 
+        wm_core = self._wm_core()
         for step_idx in range(rollout_horizon):
             teacher_action[:, -1, :] = gt_action_future[:, step_idx, :]
 
-            pred_z = self.wm.predict_next(teacher_z, teacher_action)
+            pred_z, aux = wm_core.predict_next_with_aux(
+                teacher_z,
+                teacher_action,
+                reconstruct_image=bool(self.perceptual_enabled and target_images is not None),
+            )
             target_z = z_future[:, step_idx, :, :]
             step_loss = F.mse_loss(pred_z, target_z)
             loss_recon_steps.append(step_loss)
+            if self.reward_enabled and reward_targets is not None and "reward_pred" in aux:
+                reward_pred_values.append(aux["reward_pred"].detach())
+                reward_target_step = reward_targets[:, step_idx] if reward_targets.dim() > 1 else reward_targets
+                loss_reward_steps.append(
+                    self._compute_reward_loss(aux["reward_pred"], reward_target_step)
+                )
+            if self.perceptual_enabled and target_images is not None and "image_recon" in aux:
+                image_target = target_images[:, step_idx, :, :, :]
+                loss_image_recon_steps.append(F.l1_loss(aux["image_recon"], image_target))
+                if self.perceptual_loss_fn is not None:
+                    loss_perceptual_steps.append(self.perceptual_loss_fn(aux["image_recon"], image_target))
 
             teacher_z = torch.cat([teacher_z[:, 1:, ...], z_future[:, step_idx, :, :].unsqueeze(1)], dim=1)
             if step_idx < rollout_horizon - 1:
@@ -469,12 +709,30 @@ class LeWMModel(Model):
 
         loss_recon = torch.stack(loss_recon_steps).mean()
         loss_recon_weighted = self.reconstruction_weight * loss_recon
+        loss_reward = (
+            torch.stack(loss_reward_steps).mean()
+            if loss_reward_steps
+            else torch.tensor(0.0, device=self.device)
+        )
+        loss_reward_weighted = self.reward_weight * loss_reward
+        loss_image_recon = (
+            torch.stack(loss_image_recon_steps).mean()
+            if loss_image_recon_steps
+            else torch.tensor(0.0, device=self.device)
+        )
+        loss_image_recon_weighted = self.image_recon_weight * loss_image_recon
+        loss_perceptual = (
+            torch.stack(loss_perceptual_steps).mean()
+            if loss_perceptual_steps
+            else torch.tensor(0.0, device=self.device)
+        )
+        loss_perceptual_weighted = self.perceptual_weight * loss_perceptual
 
         latent_for_reg = torch.cat([z_history, z_future], dim=1)
         loss_sigreg = torch.tensor(0.0, device=self.device)
         current_sigreg_weight = 0.0
         if self.sigreg_enabled:
-            loss_sigreg = self.wm.compute_sigreg(latent_for_reg)
+            loss_sigreg = wm_core.compute_sigreg(latent_for_reg)
             if self.sigreg_target_weight > 0.0 and self.sigreg_warmup_steps > 0:
                 current_sigreg_weight = self.sigreg_target_weight * min(
                     1.0, float(self._global_step + 1) / float(self.sigreg_warmup_steps)
@@ -498,7 +756,13 @@ class LeWMModel(Model):
                 self.idm_optimizer.step()
 
         self.wm_optimizer.zero_grad(set_to_none=True)
-        loss_wm_total = loss_recon_weighted + current_sigreg_weight * loss_sigreg
+        loss_wm_total = (
+            loss_recon_weighted
+            + current_sigreg_weight * loss_sigreg
+            + loss_reward_weighted
+            + loss_image_recon_weighted
+            + loss_perceptual_weighted
+        )
 
         if shared_backward:
             total_loss = loss_wm_total + loss_action_weighted
@@ -532,11 +796,22 @@ class LeWMModel(Model):
             if self.training_mode == "semi_supervised"
             else 0.0
         )
+        reward_pred_mean = (
+            float(torch.cat(reward_pred_values).mean().item()) if reward_pred_values else 0.0
+        )
+        reward_target_mean = (
+            float(reward_targets.mean().item()) if reward_targets is not None else 0.0
+        )
         return {
             "loss": batch_loss,
             "loss_recon": float(loss_recon.item()),
             "loss_action": float(loss_action.item()),
             "loss_sigreg": float(loss_sigreg.item()),
+            "loss_reward": float(loss_reward.item()),
+            "loss_image_recon": float(loss_image_recon.item()),
+            "loss_perceptual": float(loss_perceptual.item()),
+            "reward_pred_mean": reward_pred_mean,
+            "reward_target_mean": reward_target_mean,
             "sigreg_weight": current_sigreg_weight,
             "lr_wm": float(self.wm_scheduler.get_last_lr()[0]),
             "lr_idm": float(self.idm_scheduler.get_last_lr()[0]),

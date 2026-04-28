@@ -9,20 +9,6 @@
 - losses.py: 损失函数
 """
 
-from src.wm.encoder import (
-    build_trainable_image_encoder,
-    build_wm_image_encoder,
-    EncoderOutput,
-    WMImageEncoder,
-)
-from src.wm.predictor import (
-    CFMWorldModel,
-    WMModel,
-    LeWMModel,
-    LeWMWorldModel,
-)
-from src.wm.predictor.factory import build_world_model, resolve_patch_layout, resolve_wm_type
-
 __all__ = [
     # Encoder
     "WMImageEncoder",
@@ -39,3 +25,24 @@ __all__ = [
     "resolve_patch_layout",
     "resolve_wm_type",
 ]
+
+
+def __getattr__(name: str):
+    if name in {
+        "WMImageEncoder",
+        "EncoderOutput",
+        "build_wm_image_encoder",
+        "build_trainable_image_encoder",
+    }:
+        from src.wm import encoder
+
+        return getattr(encoder, name)
+    if name in {"CFMWorldModel", "WMModel", "LeWMWorldModel", "LeWMModel"}:
+        from src.wm import predictor
+
+        return getattr(predictor, name)
+    if name in {"build_world_model", "resolve_patch_layout", "resolve_wm_type"}:
+        from src.wm.predictor import factory
+
+        return getattr(factory, name)
+    raise AttributeError(name)

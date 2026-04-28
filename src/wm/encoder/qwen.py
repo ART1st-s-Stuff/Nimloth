@@ -158,6 +158,7 @@ class QwenLLMLatentEncoder(WMImageEncoder):
         use_fallback: bool = False,
         use_vision_only: bool = False,
         llm_backbone_trainable: bool = False,
+        latent_anchor_mode: str = "last_token",
     ) -> None:
         super().__init__(latent_dim=latent_dim)
         self.name = name
@@ -165,6 +166,9 @@ class QwenLLMLatentEncoder(WMImageEncoder):
         self.use_fallback = use_fallback
         self.use_vision_only = use_vision_only
         self.llm_backbone_trainable = llm_backbone_trainable
+        self.latent_anchor_mode = str(latent_anchor_mode).strip().lower()
+        if self.latent_anchor_mode not in {"last_token", "planner_marker"}:
+            raise ValueError(f"不支持的 latent_anchor_mode={latent_anchor_mode}")
         # 复用已有的 adapter 或创建新的
         if qwen_adapter is not None:
             self._adapter = qwen_adapter
@@ -184,26 +188,38 @@ class QwenLLMLatentEncoder(WMImageEncoder):
                 fallback_enabled=fallback_enabled,
             )
 
-    def encode_image_path(self, image_path: str) -> EncoderOutput:
+    def encode_image_path_with_prompt(self, image_path: str, prompt_override: str | None = None) -> EncoderOutput:
         """返回 [D] 维 latent（last token hidden state）"""
-        z = self._adapter.get_image_hidden_state(
-            image_path=image_path,
-            prompt=self.prompt_template,
-            return_last_token_only=True,
-            use_vision_only=self.use_vision_only,
-            llm_backbone_trainable=self.llm_backbone_trainable,
-        )
+        prompt = prompt_override if prompt_override is not None else self.prompt_template
+        if self.latent_anchor_mode == "planner_marker":
+            z = self._adapter.get_planner_marker_hidden_state(
+                image_path=image_path,
+                prompt=prompt or "",
+                llm_backbone_trainable=self.llm_backbone_trainable,
+            )
+        else:
+            z = self._adapter.get_image_hidden_state(
+                image_path=image_path,
+                prompt=prompt,
+                return_last_token_only=True,
+                use_vision_only=self.use_vision_only,
+                llm_backbone_trainable=self.llm_backbone_trainable,
+            )
         return EncoderOutput(
             z=z,
             aux={
                 "encoder": self.name,
                 "image_path": image_path,
-                "prompt": self.prompt_template,
+                "prompt": prompt,
                 "llm_hidden_state": not self.use_vision_only,
                 "use_vision_only": self.use_vision_only,
                 "llm_backbone_trainable": self.llm_backbone_trainable,
+                "latent_anchor_mode": self.latent_anchor_mode,
             },
         )
+
+    def encode_image_path(self, image_path: str) -> EncoderOutput:
+        return self.encode_image_path_with_prompt(image_path=image_path)
 
     def encode_image_paths(self, image_paths: Sequence[str]) -> list[EncoderOutput]:
         return [self.encode_image_path(path) for path in image_paths]

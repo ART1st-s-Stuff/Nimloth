@@ -55,6 +55,7 @@ def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
             use_fallback = bool(getattr(encoder_cfg, "use_fallback", False))
             use_vision_only = bool(getattr(encoder_cfg, "use_vision_only", False))
             llm_backbone_trainable = bool(getattr(encoder_cfg, "llm_backbone_trainable", False))
+            latent_anchor_mode = str(getattr(encoder_cfg, "latent_anchor_mode", "last_token"))
             return QwenLLMLatentEncoder(
                 latent_dim=latent_dim,
                 name=encoder_name,
@@ -65,6 +66,7 @@ def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
                 use_fallback=use_fallback,
                 use_vision_only=use_vision_only,
                 llm_backbone_trainable=llm_backbone_trainable,
+                latent_anchor_mode=latent_anchor_mode,
             )
 
         return QwenImageEncoder(

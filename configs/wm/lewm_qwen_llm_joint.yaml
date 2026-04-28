@@ -33,6 +33,7 @@ encoder:
   use_fallback: false  # 使用真实模型
   use_vision_only: false  # 通过 LLM backbone 获取 hidden state
   llm_backbone_trainable: false  # LLM backbone 固定不动
+  latent_anchor_mode: last_token  # planner LoRA 接入时 train_wm_joint 会切到 planner_marker
   prompt_template: ""  # 空字符串表示纯视觉输入
 lewm:
   dim_head: 64
@@ -43,3 +44,16 @@ lewm:
   # SIGReg 在 encoded latent 上应用
   sigreg_enabled: true
   sigreg_latent_dim: 4096
+  reward:
+    enabled: true
+    weight: 1.0
+    loss_type: mse
+    hidden_dim: 512
+  perceptual:
+    enabled: true
+    weight: 0.1
+    image_recon_weight: 0.1
+    backbone: vgg16
+    image_size: 128
+    use_predicted_latent: true
+    decoder_hidden_channels: 128

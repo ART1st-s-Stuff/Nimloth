@@ -19,9 +19,10 @@ except Exception:  # pragma: no cover
     Qwen2_5_VLForConditionalGeneration = None
 
 try:
-    from peft import LoraConfig, get_peft_model
+    from peft import LoraConfig, PeftModel, get_peft_model
 except Exception:  # pragma: no cover
     LoraConfig = None
+    PeftModel = None
     get_peft_model = None
 
 # Qwen2.5-VL-8B vision encoder output dimension
@@ -157,6 +158,61 @@ class QwenVLMAdapter:
                 param.requires_grad = False
         return trainable
 
+    def enable_language_lora(
+        self,
+        *,
+        r: int,
+        alpha: int,
+        dropout: float,
+        target_modules: list[str] | None = None,
+    ) -> int:
+        """Attach LoRA to language-side modules and keep visual/base parameters frozen."""
+        self._ensure_model()
+        if self._model is None:
+            raise RuntimeError(f"Qwen 模型未加载: {self._init_error}")
+        if LoraConfig is None or get_peft_model is None:
+            raise RuntimeError("未安装 peft，无法启用 LoRA（请安装 peft 依赖）。")
+
+        for _, param in self._model.named_parameters():
+            param.requires_grad = False
+
+        language_module_names = [
+            name for name, _ in self._model.named_modules() if not self._is_visual_param(name)
+        ]
+        language_targets = target_modules or ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        matched_targets = [t for t in language_targets if any(t in name for name in language_module_names)]
+        if not matched_targets:
+            raise RuntimeError(f"LoRA target_modules 未匹配到 language 模块: requested={language_targets}")
+
+        lora_cfg = LoraConfig(
+            r=max(1, int(r)),
+            lora_alpha=max(1, int(alpha)),
+            lora_dropout=float(max(0.0, dropout)),
+            target_modules=matched_targets,
+            bias="none",
+        )
+        self._model = get_peft_model(self._model, lora_cfg)
+
+        trainable = 0
+        for name, param in self._model.named_parameters():
+            if "lora_" in name and not self._is_visual_param(name):
+                param.requires_grad = True
+                trainable += int(param.numel())
+            else:
+                param.requires_grad = False
+        return trainable
+
+    def load_lora_adapter(self, adapter_path: str, *, trainable: bool = False) -> None:
+        """Load a PEFT LoRA adapter checkpoint into the Qwen model."""
+        self._ensure_model()
+        if self._model is None:
+            raise RuntimeError(f"Qwen 模型未加载: {self._init_error}")
+        if PeftModel is None:
+            raise RuntimeError("未安装 peft，无法加载 LoRA adapter。")
+        self._model = PeftModel.from_pretrained(self._model, adapter_path, is_trainable=trainable)
+        for _, param in self._model.named_parameters():
+            param.requires_grad = bool(trainable and param.requires_grad)
+
     def _ensure_model(self) -> None:
         if not self.enabled:
             self._init_error = "QwenVLMAdapter disabled by config."
@@ -182,12 +238,77 @@ class QwenVLMAdapter:
             self._init_error = str(exc)
 
     def _pad_or_trim(self, vector: torch.Tensor) -> torch.Tensor:
-        vector = vector.float().detach().cpu()
+        vector = vector.float()
         if vector.numel() == self.latent_dim:
             return vector
         if vector.numel() > self.latent_dim:
             return vector[: self.latent_dim]
-        return torch.cat([vector, torch.zeros(self.latent_dim - vector.numel())], dim=0)
+        pad = torch.zeros(
+            self.latent_dim - vector.numel(),
+            dtype=vector.dtype,
+            device=vector.device,
+        )
+        return torch.cat([vector, pad], dim=0)
+
+    def get_planner_marker_hidden_state(
+        self,
+        image_path: str,
+        prompt: str,
+        response: str | None = None,
+        layer: int = -1,
+        llm_backbone_trainable: bool = False,
+    ) -> torch.Tensor:
+        """Get hidden state at the ``<LATENT_STATE>`` marker in a teacher-forced planner response."""
+        marker = "<LATENT_STATE>"
+        if response is None:
+            response = (
+                '{"cot":"","planner_trigger":true,"latent_state":"<LATENT_STATE>",'
+                '"action_prior":{"probabilities":[0.125,0.125,0.125,0.125,0.125,0.125,0.125,0.125],'
+                '"top_actions":[]}}'
+            )
+        if not Path(image_path).exists():
+            if not self.fallback_enabled:
+                raise FileNotFoundError(f"图像文件不存在: {image_path}")
+            return self._fallback_visual(image_path=image_path)
+        self._ensure_model()
+        if self._model is None or self._processor is None:
+            if not self.fallback_enabled:
+                raise RuntimeError(f"Qwen 初始化失败且 fallback 关闭: {self._init_error}")
+            return self._fallback_visual(image_path=image_path)
+
+        image = Image.open(image_path).convert("RGB")
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "image", "image": image}, {"type": "text", "text": prompt}],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": response}]},
+        ]
+        text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+        inputs = self._processor(text=[text], images=[image], return_tensors="pt")
+        if self._device == "cuda":
+            inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+        marker_ids = self._processor.tokenizer(marker, add_special_tokens=False).input_ids
+        input_ids = inputs["input_ids"][0].tolist()
+        marker_end_idx = None
+        marker_len = len(marker_ids)
+        for idx in range(0, len(input_ids) - marker_len + 1):
+            if input_ids[idx : idx + marker_len] == marker_ids:
+                marker_end_idx = idx + marker_len - 1
+        if marker_end_idx is None:
+            raise RuntimeError(f"无法在 planner response 中定位 latent marker: {marker}")
+
+        self._set_llm_backbone_trainable(llm_backbone_trainable)
+        outputs = self._model(
+            input_ids=inputs.get("input_ids"),
+            pixel_values=inputs.get("pixel_values"),
+            image_grid_thw=inputs.get("image_grid_thw"),
+            output_hidden_states=True,
+        )
+        hidden_states = outputs.hidden_states
+        selected = hidden_states[layer if -len(hidden_states) <= layer < len(hidden_states) else -1]
+        return self._pad_or_trim(selected[0, marker_end_idx, :])
 
     def _pool_patch_tokens(self, patch_tokens: torch.Tensor) -> torch.Tensor:
         """对 patch tokens 进行池化以匹配目标 num_patches。
@@ -256,21 +377,46 @@ class QwenVLMAdapter:
             return fallback.unsqueeze(0)
 
         image = Image.open(image_path).convert("RGB")
-        model_inputs = self._processor(images=image, return_tensors="pt")
+        # Qwen2.5-VL processor 需要 text + image 的 chat template 输入，
+        # 否则在内部处理 image_token 时会因 text=None 报错。
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "image", "image": image}],
+            }
+        ]
+        text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        model_inputs = self._processor(
+            text=[text],
+            images=[image],
+            return_tensors="pt",
+        )
         if self._device == "cuda":
             model_inputs = {k: v.to("cuda") for k, v in model_inputs.items()}
 
+        pixel_values = model_inputs["pixel_values"]
+        image_grid_thw = model_inputs.get("image_grid_thw")
+
+        def _extract_features() -> torch.Tensor:
+            # 兼容不同 transformers 版本：
+            # - 新版本可能提供 get_image_features
+            # - 当前环境版本通过 self.visual(...) 提取图像 token
+            if hasattr(self._model, "get_image_features"):
+                return self._model.get_image_features(
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                )
+            visual_module = getattr(self._model, "visual", None)
+            if visual_module is None:
+                raise RuntimeError("Qwen model 不包含 visual 模块，无法提取 vision tokens。")
+            visual_dtype = getattr(visual_module, "dtype", pixel_values.dtype)
+            return visual_module(pixel_values.type(visual_dtype), grid_thw=image_grid_thw)
+
         if requires_grad:
-            features = self._model.get_image_features(
-                pixel_values=model_inputs["pixel_values"],
-                image_grid_thw=model_inputs.get("image_grid_thw"),
-            )
+            features = _extract_features()
         else:
             with torch.no_grad():
-                features = self._model.get_image_features(
-                    pixel_values=model_inputs["pixel_values"],
-                    image_grid_thw=model_inputs.get("image_grid_thw"),
-                )
+                features = _extract_features()
         if features.dim() == 3:
             return features.squeeze(0)
         if features.dim() == 2:
