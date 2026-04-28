@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.wm.encoder.dino import DinoV2MiniEncoder, TrainableDinoV2Encoder
-from src.wm.encoder.qwen import QwenImageEncoder, TrainableQwenLatentAdapter
+from src.wm.encoder.qwen import QwenImageEncoder, TrainableQwenLatentAdapter, QwenLLMLatentEncoder
 
 
 def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
@@ -48,6 +48,19 @@ def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
         fallback_enabled = bool(getattr(encoder_cfg, "fallback_enabled", True))
         num_patches = int(getattr(encoder_cfg, "num_patches", 0)) or None
         token_strategy = str(getattr(encoder_cfg, "token_strategy", "patch_mean"))
+
+        # Qwen LLM hidden state encoder
+        if encoder_name == "qwen_llm":
+            prompt_template = str(getattr(encoder_cfg, "prompt_template", "") or "")
+            return QwenLLMLatentEncoder(
+                latent_dim=latent_dim,
+                name=encoder_name,
+                model_name=model_name,
+                enabled=enabled,
+                fallback_enabled=fallback_enabled,
+                prompt_template=prompt_template if prompt_template else None,
+            )
+
         return QwenImageEncoder(
             latent_dim=latent_dim,
             name=encoder_name,

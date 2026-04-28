@@ -121,3 +121,67 @@ class TrainableQwenLatentAdapter(nn.Module):
     def parameter_groups(self) -> dict[str, list[nn.Parameter]]:
         """暴露参数分组，便于后续扩展不同学习率策略。"""
         return {"adapter": list(self.adapter.parameters())}
+
+
+class QwenLLMLatentEncoder(WMImageEncoder):
+    """使用 Qwen LLM hidden state 作为 latent 的 encoder。
+
+    用于 Phase 2 WM 训练，让 WM 直接在 Qwen LLM 的 embedding space 中学习 dynamics。
+
+    特点：
+    - 直接返回 Qwen LLM 的 last token hidden state
+    - Latent 格式：[B, D]，其中 D = Qwen hidden dim (通常 4096)
+    - WM 需要适配 [B, 1, 1, D] 的输入格式
+    """
+
+    def __init__(
+        self,
+        latent_dim: int,
+        name: str = "qwen_llm",
+        model_name: str = "Qwen/Qwen2.5-VL-8B-Instruct",
+        enabled: bool = True,
+        fallback_enabled: bool = True,
+        prompt_template: str | None = None,
+        qwen_adapter: QwenVLMAdapter | None = None,
+    ) -> None:
+        super().__init__(latent_dim=latent_dim)
+        self.name = name
+        self.prompt_template = prompt_template
+        # 复用已有的 adapter 或创建新的
+        if qwen_adapter is not None:
+            self._adapter = qwen_adapter
+        else:
+            self._adapter = QwenVLMAdapter(
+                model_name=model_name,
+                latent_dim=latent_dim,
+                enabled=enabled,
+                fallback_enabled=fallback_enabled,
+            )
+
+    def encode_image_path(self, image_path: str) -> EncoderOutput:
+        """返回 [D] 维 latent（last token hidden state）"""
+        z = self._adapter.get_image_hidden_state(
+            image_path=image_path,
+            prompt=self.prompt_template,
+            return_last_token_only=True,
+        )
+        return EncoderOutput(
+            z=z,
+            aux={
+                "encoder": self.name,
+                "image_path": image_path,
+                "prompt": self.prompt_template,
+                "llm_hidden_state": True,
+            },
+        )
+
+    def encode_image_paths(self, image_paths: Sequence[str]) -> list[EncoderOutput]:
+        return [self.encode_image_path(path) for path in image_paths]
+
+    def get_latent_batch(self, image_paths: list[str]) -> torch.Tensor:
+        """批量获取 latents，返回 [B, D]"""
+        latents = []
+        for path in image_paths:
+            output = self.encode_image_path(path)
+            latents.append(output.z)
+        return torch.stack(latents)

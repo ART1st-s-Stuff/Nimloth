@@ -18,14 +18,21 @@ def build_world_model(wm_cfg: Any) -> Any:
     from src.wm.predictor.lewm import LeWMWorldModel
 
     wm_type = resolve_wm_type(wm_cfg)
+    latent_dim = int(getattr(wm_cfg, "latent_dim", 128))
+    # 从配置读取 num_patches 和 token_dim（Qwen LLM 模式可能设置为 1）
+    num_patches = int(getattr(wm_cfg, "num_patches", 0)) or int(getattr(wm_cfg.encoder, "num_patches", 16))
+    token_dim = int(getattr(wm_cfg, "token_dim", 0))
+    if token_dim <= 0:
+        token_dim = latent_dim // num_patches
     if wm_type == "cfm":
+        sigreg_cfg = getattr(wm_cfg, "sigreg", {})
         return CFMWorldModel(
-            latent_dim=int(getattr(wm_cfg, "latent_dim", 128)),
+            latent_dim=latent_dim,
             action_dim=int(getattr(wm_cfg, "action_dim", 3)),
             hidden_dim=int(getattr(wm_cfg, "hidden_dim", 256)),
             history_len=int(getattr(wm_cfg, "history_len", 4)),
-            num_patches=int(getattr(wm_cfg, "encoder", {}).get("num_patches", 16)),
-            token_dim=int(getattr(wm_cfg, "latent_dim", 128)) // int(getattr(wm_cfg, "encoder", {}).get("num_patches", 16)),
+            num_patches=num_patches,
+            token_dim=token_dim,
             num_layers=int(getattr(wm_cfg, "transformer", {}).get("num_layers", 4)),
             num_heads=int(getattr(wm_cfg, "transformer", {}).get("num_heads", 4)),
             dropout=float(getattr(wm_cfg, "transformer", {}).get("dropout", 0.1)),
@@ -35,29 +42,29 @@ def build_world_model(wm_cfg: Any) -> Any:
             solver=str(getattr(wm_cfg, "flow_matching", {}).get("solver", "heun")),
             num_integration_steps=int(getattr(wm_cfg, "flow_matching", {}).get("num_steps", 16)),
             t_eps=float(getattr(wm_cfg, "flow_matching", {}).get("t_eps", 0.001)),
-            sigreg_enabled=bool(getattr(wm_cfg, "sigreg", {}).get("enabled", False)),
-            sigreg_latent_dim=int(getattr(wm_cfg, "sigreg", {}).get("latent_dim", 0)) or None,
-            sigreg_encoder_hidden_dim=int(getattr(wm_cfg, "sigreg", {}).get("encoder_hidden_dim", 0)) or None,
-            sigreg_encoder_num_layers=int(getattr(wm_cfg, "sigreg", {}).get("encoder_num_layers", 2)),
+            sigreg_enabled=bool(getattr(sigreg_cfg, "enabled", False)),
+            sigreg_latent_dim=int(getattr(sigreg_cfg, "latent_dim", 0)) or None,
+            sigreg_encoder_hidden_dim=int(getattr(sigreg_cfg, "encoder_hidden_dim", 0)) or None,
+            sigreg_encoder_num_layers=int(getattr(sigreg_cfg, "encoder_num_layers", 2)),
         )
     elif wm_type == "lewm":
         return LeWMWorldModel(
-            latent_dim=int(getattr(wm_cfg, "latent_dim", 128)),
+            latent_dim=latent_dim,
             action_dim=int(getattr(wm_cfg, "action_dim", 3)),
             hidden_dim=int(getattr(wm_cfg, "hidden_dim", 256)),
             history_len=int(getattr(wm_cfg, "history_len", 4)),
-            num_patches=int(getattr(wm_cfg, "encoder", {}).get("num_patches", 16)),
-            token_dim=int(getattr(wm_cfg, "latent_dim", 128)) // int(getattr(wm_cfg, "encoder", {}).get("num_patches", 16)),
+            num_patches=num_patches,
+            token_dim=token_dim,
             num_layers=int(getattr(wm_cfg, "transformer", {}).get("num_layers", 4)),
             num_heads=int(getattr(wm_cfg, "transformer", {}).get("num_heads", 4)),
             dim_head=int(getattr(wm_cfg, "transformer", {}).get("dim_head", 64)),
             mlp_ratio=float(getattr(wm_cfg, "lewm", {}).get("mlp_ratio", 4.0)),
             dropout=float(getattr(wm_cfg, "transformer", {}).get("dropout", 0.1)),
             emb_dropout=float(getattr(wm_cfg, "lewm", {}).get("emb_dropout", 0.0)),
-            sigreg_enabled=bool(getattr(wm_cfg, "sigreg", {}).get("enabled", False)),
-            sigreg_latent_dim=int(getattr(wm_cfg, "sigreg", {}).get("latent_dim", 0)) or None,
-            sigreg_encoder_hidden_dim=int(getattr(wm_cfg, "sigreg", {}).get("encoder_hidden_dim", 0)) or None,
-            sigreg_encoder_num_layers=int(getattr(wm_cfg, "sigreg", {}).get("encoder_num_layers", 2)),
+            sigreg_enabled=bool(getattr(wm_cfg, "lewm", {}).get("sigreg_enabled", False)),
+            sigreg_latent_dim=int(getattr(wm_cfg, "lewm", {}).get("sigreg_latent_dim", 0)) or None,
+            sigreg_encoder_hidden_dim=int(getattr(wm_cfg, "lewm", {}).get("sigreg_encoder_hidden_dim", 0)) or None,
+            sigreg_encoder_num_layers=int(getattr(wm_cfg, "lewm", {}).get("sigreg_encoder_num_layers", 2)),
         )
     else:
         raise ValueError(f"未知的 WM 类型: {wm_type}")

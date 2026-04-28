@@ -1,0 +1,42 @@
+# LeWM + Qwen LLM Hidden State 配置
+# 使用 Qwen LLM 的 last token hidden state 作为 WM 的 latent space
+# SIGReg 在 encoded latent 上进行正则化
+defaults:
+  - lewm_dinov2m
+  - _self_
+
+name: lewm_qwen_llm_joint
+hidden_dim: 512
+# Qwen2.5-VL-8B LLM hidden dim = 4096, 单个 patch
+latent_dim: 4096
+# num_patches=1 表示 latent 是单一的 LLM hidden state（不是多个 patch tokens）
+num_patches: 1
+token_dim: 4096
+action_dim: 3
+history_len: 4
+transformer:
+  num_layers: 6
+  num_heads: 16
+  dim_head: 64
+  mlp_ratio: 4.0
+  dropout: 0.1
+inverse_dynamics:
+  hidden_dim: 512
+  num_layers: 3
+  num_heads: 4
+  dropout: 0.1
+encoder:
+  name: qwen_llm
+  model_name: Qwen/Qwen2.5-VL-8B-Instruct
+  enabled: true
+  fallback_enabled: true
+  prompt_template: ""  # 空字符串表示纯视觉输入
+lewm:
+  dim_head: 64
+  mlp_ratio: 4.0
+  emb_dropout: 0.0
+  sigreg_knots: 17
+  sigreg_num_proj: 256
+  # SIGReg 在 encoded latent 上应用
+  sigreg_enabled: true
+  sigreg_latent_dim: 4096

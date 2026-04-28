@@ -204,3 +204,147 @@ class QwenVLMAdapter:
             forward_out = self._model(input_ids=output_ids, output_hidden_states=True)
         s_t = forward_out.hidden_states[-1][:, -1, :].squeeze(0)
         return cot_text, self._pad_or_trim(s_t)
+
+    def get_image_hidden_state(
+        self,
+        image_path: str,
+        prompt: str | None = None,
+        layer: int = -1,
+        return_last_token_only: bool = True,
+    ) -> torch.Tensor:
+        """获取图像在 Qwen LLM space 中的 hidden state 表征。
+
+        不生成文本，直接 forward 获取 hidden states。
+        这是为了让 WM 直接使用 LLM 的 embedding space 作为 latent。
+
+        Args:
+            image_path: 图像路径
+            prompt: 可选的文本 prompt（用于引导 LLM 理解图像）
+            layer: 返回哪层 hidden state（-1 = 最后一层）
+            return_last_token_only: True = 返回 last token 的 hidden state，False = 返回所有 token
+
+        Returns:
+            hidden_state: [D] (last token) 或 [seq_len, D] (所有 token)
+        """
+        self._ensure_model()
+        if self._model is None or self._processor is None:
+            if not self.fallback_enabled:
+                raise RuntimeError(f"Qwen 初始化失败且 fallback 关闭: {self._init_error}")
+            return self._fallback_visual(image_path=image_path)
+
+        image = Image.open(image_path).convert("RGB")
+
+        if prompt:
+            messages = [
+                {
+                    "role": "user",
+                    "content": [{"type": "image", "image": image_path}, {"type": "text", "text": prompt}],
+                }
+            ]
+            text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = self._processor(
+                text=[text],
+                images=[image],
+                return_tensors="pt",
+            )
+        else:
+            inputs = self._processor(images=image, return_tensors="pt")
+
+        if self._device == "cuda":
+            inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+        # 手动构建 forward，捕获 hidden states
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs.get("attention_mask")
+        pixel_values = inputs.get("pixel_values")
+        image_grid_thw = inputs.get("image_grid_thw")
+
+        # 获取 vision features
+        if pixel_values is not None:
+            vision_features = self._model.get_image_features(
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+            )
+            # Qwen2.5-VL: vision features 会被 expand 到 sequence 中
+            # 这里我们只做简单的 vision encoding，然后用 LLM 处理
+            image_embeds = self._model.vision_gen_tokens(
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+            )
+
+        # 简单方案：直接用 vision embedding 作为 hidden state
+        # 如果有 prompt，还需要经过 LLM 的 projection 层
+        if prompt and hasattr(self._model, "visual"):
+            # 经过 LLM 的 vision-language projection
+            vision_data = self._model.visual(inputs_=[(pixel_values, image_grid_thw)])
+            # 使用 vision output 作为 context
+            # 构建 input_ids 用于获取 LLM hidden states
+            with torch.no_grad():
+                forward_out = self._model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                    output_hidden_states=True,
+                )
+            hidden_states = forward_out.hidden_states
+            if layer < 0:
+                layer = len(hidden_states) + layer
+            hs = hidden_states[layer]
+        elif hasattr(self._model, "model") and hasattr(self._model.model, "embed_tokens"):
+            # Qwen2.5-VL 结构：直接获取 LLM embedding
+            with torch.no_grad():
+                # 使用 vision encoder 获取图像 embedding
+                if pixel_values is not None:
+                    img_emb = self._model.get_image_features(
+                        pixel_values=pixel_values,
+                        image_grid_thw=image_grid_thw,
+                    )
+                    # 获取文本 embedding 作为 prompt（如果有）
+                    text_emb = None
+                    if prompt:
+                        text_inputs = self._processor(text=[prompt], return_tensors="pt")
+                        if self._device == "cuda":
+                            text_inputs = {k: v.to("cuda") for k, v in text_inputs.items()}
+                        text_emb = self._model.model.embed_tokens(text_inputs["input_ids"])
+
+                    # 组合 image + text embedding
+                    if text_emb is not None:
+                        # 获取 vision token 位置
+                        vision_len = img_emb.size(1)
+                        # 在 vision tokens 后面添加 text tokens
+                        combined_emb = torch.cat([img_emb, text_emb], dim=1)
+                    else:
+                        combined_emb = img_emb
+
+                    # 简单处理：直接返回 vision embedding 的 mean 或 last token
+                    if return_last_token_only:
+                        return self._pad_or_trim(combined_emb[0, -1, :])
+                    else:
+                        return self._pad_or_trim(combined_emb[0])
+                else:
+                    # fallback：只有文本
+                    text_inputs = self._processor(text=[prompt or ""], return_tensors="pt")
+                    if self._device == "cuda":
+                        text_inputs = {k: v.to("cuda") for k, v in text_inputs.items()}
+                    text_emb = self._model.model.embed_tokens(text_inputs["input_ids"])
+                    if return_last_token_only:
+                        return self._pad_or_trim(text_emb[0, -1, :])
+                    else:
+                        return self._pad_or_trim(text_emb[0])
+        else:
+            # 最后 fallback：使用 vision features
+            if pixel_values is not None:
+                img_emb = self._model.get_image_features(
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                )
+                if img_emb.dim() > 2:
+                    img_emb = img_emb.squeeze(0)
+                return self._pad_or_trim(img_emb.mean(dim=0) if img_emb.size(0) > 1 else img_emb.squeeze(0))
+            return self._fallback_visual(image_path=image_path)
+
+        if return_last_token_only:
+            return self._pad_or_trim(hs[0, -1, :])
+        else:
+            return self._pad_or_trim(hs[0])
