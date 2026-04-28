@@ -80,8 +80,10 @@ lewm:
 - [x] `_set_llm_backbone_trainable()` 方法：冻结/解冻 LLM backbone
 - [x] **验证通过**：Vision Encoder (390 params) 可通过 LLM hidden state loss 反传获取梯度
 
-### 待完成
-- [ ] 完整训练测试（需要 GPU 显存足够）
+### 完整训练测试
+- [x] **已完成**：1 epoch 训练成功，loss 从 0.1573 降到 0.0001
+- 训练参数：batch_size=2, lr=1e-5, 21860 steps
+- Vision Encoder (676M) + WM (127M) 联合训练成功
 
 ## 状态
 - [x] 实现 `get_image_hidden_state()` （通过 LLM backbone）
@@ -90,7 +92,7 @@ lewm:
 - [x] 支持 SIGReg 在 encoded latent 上应用
 - [x] 修复 LeWMModel SIGReg warmup bug
 - [x] LLM backbone hidden state 获取
-- [ ] 完整训练（需要 Qwen 模型）
+- [x] 完整训练（1 epoch 验证成功，loss 0.1573 → 0.0001）
 
 
 ## EB-Nav 数据集信息
