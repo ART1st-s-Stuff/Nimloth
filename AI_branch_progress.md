@@ -307,6 +307,7 @@ wm:
   token_dim: 4096
   encoder:
     name: qwen_llm
+    model_name: Qwen/Qwen2.5-VL-7B-Instruct  # 8B 不存在，使用 7B
 lewm:
   sigreg_enabled: true
   sigreg_latent_dim: 4096
@@ -316,4 +317,5 @@ lewm:
 - [x] 训练命令测试（fallback 模式）
 - [x] SIGReg adaptive warmup（warmup_steps=10 → 0.02 → 0.1）
 - [x] LeWMModel train_step 修复
+- [x] Qwen model name 更新（8B → 7B）
 - [ ] 完整训练（需要 Qwen 模型或预计算 latents）
