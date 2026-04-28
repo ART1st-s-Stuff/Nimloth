@@ -1,5 +1,5 @@
-# LeWM + Qwen LLM Hidden State 配置
-# 使用 Qwen LLM 的 last token hidden state 作为 WM 的 latent space
+# LeWM + Qwen Vision Encoder Joint Training 配置
+# 架构：Image → Vision Encoder → vision tokens → LLM backbone (FROZEN) → hidden state
 # SIGReg 在 encoded latent 上进行正则化
 defaults:
   - lewm_dinov2m
@@ -7,7 +7,7 @@ defaults:
 
 name: lewm_qwen_llm_joint
 hidden_dim: 512
-# Qwen2.5-VL-8B LLM hidden dim = 4096, 单个 patch
+# Qwen2.5-VL-7B LLM hidden dim = 4096, 单个 patch
 latent_dim: 4096
 # num_patches=1 表示 latent 是单一的 LLM hidden state（不是多个 patch tokens）
 num_patches: 1
@@ -28,9 +28,11 @@ inverse_dynamics:
 encoder:
   name: qwen_llm
   model_name: ${qwen.model_name:Qwen/Qwen2.5-VL-7B-Instruct}
-  enabled: false  # 暂时使用 fallback
+  enabled: true  # 启用 Qwen 模型
   fallback_enabled: true
-  use_fallback: true  # 直接使用 fallback 跳过模型加载
+  use_fallback: false  # 使用真实模型
+  use_vision_only: false  # 通过 LLM backbone 获取 hidden state
+  llm_backbone_trainable: false  # LLM backbone 固定不动
   prompt_template: ""  # 空字符串表示纯视觉输入
 lewm:
   dim_head: 64

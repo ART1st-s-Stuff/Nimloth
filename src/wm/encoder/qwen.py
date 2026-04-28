@@ -19,7 +19,7 @@ class QwenImageEncoder(WMImageEncoder):
         self,
         latent_dim: int,
         name: str,
-        model_name: str = QwenImageEncoder.DEFAULT_MODEL_NAME,
+        model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct",
         enabled: bool = True,
         fallback_enabled: bool = True,
         num_patches: int | None = None,
@@ -128,29 +128,43 @@ class TrainableQwenLatentAdapter(nn.Module):
 class QwenLLMLatentEncoder(WMImageEncoder):
     """使用 Qwen LLM hidden state 作为 latent 的 encoder。
 
+    架构：
+        Image → Vision Encoder → vision tokens → LLM backbone (FROZEN) → hidden state
+
     用于 Phase 2 WM 训练，让 WM 直接在 Qwen LLM 的 embedding space 中学习 dynamics。
 
     特点：
-    - 直接返回 Qwen LLM 的 last token hidden state
+    - Vision Encoder 可训练
+    - LLM backbone 固定（FROZEN），保持语义理解能力
     - Latent 格式：[B, D]，其中 D = Qwen hidden dim (通常 4096)
     - WM 需要适配 [B, 1, 1, D] 的输入格式
+
+    参数：
+    - llm_backbone_trainable: 预留接口，True 时 LLM backbone 也参与训练
     """
 
     DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-VL-7B-Instruct"
+    _DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-VL-7B-Instruct"  # 用于默认值
+
+    def __init__(
         self,
         latent_dim: int,
         name: str = "qwen_llm",
-        model_name: str = QwenLLMLatentEncoder.DEFAULT_MODEL_NAME,
+        model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct",
         enabled: bool = True,
         fallback_enabled: bool = True,
         prompt_template: str | None = None,
         qwen_adapter: QwenVLMAdapter | None = None,
         use_fallback: bool = False,
+        use_vision_only: bool = False,
+        llm_backbone_trainable: bool = False,
     ) -> None:
         super().__init__(latent_dim=latent_dim)
         self.name = name
         self.prompt_template = prompt_template
         self.use_fallback = use_fallback
+        self.use_vision_only = use_vision_only
+        self.llm_backbone_trainable = llm_backbone_trainable
         # 复用已有的 adapter 或创建新的
         if qwen_adapter is not None:
             self._adapter = qwen_adapter
@@ -176,6 +190,8 @@ class QwenLLMLatentEncoder(WMImageEncoder):
             image_path=image_path,
             prompt=self.prompt_template,
             return_last_token_only=True,
+            use_vision_only=self.use_vision_only,
+            llm_backbone_trainable=self.llm_backbone_trainable,
         )
         return EncoderOutput(
             z=z,
@@ -183,7 +199,9 @@ class QwenLLMLatentEncoder(WMImageEncoder):
                 "encoder": self.name,
                 "image_path": image_path,
                 "prompt": self.prompt_template,
-                "llm_hidden_state": True,
+                "llm_hidden_state": not self.use_vision_only,
+                "use_vision_only": self.use_vision_only,
+                "llm_backbone_trainable": self.llm_backbone_trainable,
             },
         )
 

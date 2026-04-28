@@ -53,6 +53,8 @@ def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
         if encoder_name == "qwen_llm":
             prompt_template = str(getattr(encoder_cfg, "prompt_template", "") or "")
             use_fallback = bool(getattr(encoder_cfg, "use_fallback", False))
+            use_vision_only = bool(getattr(encoder_cfg, "use_vision_only", False))
+            llm_backbone_trainable = bool(getattr(encoder_cfg, "llm_backbone_trainable", False))
             return QwenLLMLatentEncoder(
                 latent_dim=latent_dim,
                 name=encoder_name,
@@ -61,6 +63,8 @@ def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
                 fallback_enabled=fallback_enabled,
                 prompt_template=prompt_template if prompt_template else None,
                 use_fallback=use_fallback,
+                use_vision_only=use_vision_only,
+                llm_backbone_trainable=llm_backbone_trainable,
             )
 
         return QwenImageEncoder(

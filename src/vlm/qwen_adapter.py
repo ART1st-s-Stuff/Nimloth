@@ -209,20 +209,27 @@ class QwenVLMAdapter:
         prompt: str | None = None,
         layer: int = -1,
         return_last_token_only: bool = True,
+        use_vision_only: bool = False,
+        llm_backbone_trainable: bool = False,
     ) -> torch.Tensor:
         """获取图像在 Qwen LLM space 中的 hidden state 表征。
 
-        不生成文本，直接 forward 获取 hidden states。
-        这是为了让 WM 直接使用 LLM 的 embedding space 作为 latent。
+        架构：
+            Image → Vision Encoder → vision tokens → LLM backbone → hidden state
+
+        默认使用 LLM backbone 的 hidden state，保证 latent space 与预训练对齐。
+        如果 use_vision_only=True，则只使用 Vision Encoder 输出（不使用 LLM）。
 
         Args:
             image_path: 图像路径
             prompt: 可选的文本 prompt（用于引导 LLM 理解图像）
             layer: 返回哪层 hidden state（-1 = 最后一层）
             return_last_token_only: True = 返回 last token 的 hidden state
+            use_vision_only: True = 只用 Vision Encoder，False = 通过 LLM backbone
+            llm_backbone_trainable: True = LLM backbone 可训练（当前保留接口）
 
         Returns:
-            hidden_state: [D] (last token)
+            hidden_state: [D] (last token 的 hidden state)
         """
         # 检查文件是否存在
         if not Path(image_path).exists():
@@ -258,22 +265,74 @@ class QwenVLMAdapter:
         if self._device == "cuda":
             inputs = {k: v.to("cuda") for k, v in inputs.items()}
 
+        # 模式1：只用 Vision Encoder（不使用 LLM backbone）
+        if use_vision_only:
+            pixel_values = inputs.get("pixel_values")
+            image_grid_thw = inputs.get("image_grid_thw")
+            if pixel_values is not None:
+                vision_emb = self._model.get_image_features(
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                )
+                # vision_emb: [1, num_patches, vision_dim]
+                if vision_emb.dim() == 3:
+                    vision_emb = vision_emb.squeeze(0)
+                if return_last_token_only:
+                    return self._pad_or_trim(vision_emb[-1, :])
+                else:
+                    return self._pad_or_trim(vision_emb.mean(dim=0))
+
+        # 模式2：通过 LLM backbone 获取 hidden state
+        # 关键：使用 output_hidden_states=True 获取 LLM 各层 hidden states
+        input_ids = inputs.get("input_ids")
         pixel_values = inputs.get("pixel_values")
         image_grid_thw = inputs.get("image_grid_thw")
 
-        # 方案1：直接用 vision embedding 作为 latent
-        # 这是最直接的方式，返回 vision encoder 的输出
+        if input_ids is not None and pixel_values is not None:
+            # 完整的 LLM forward（带图像输入）
+            # 需要先获取 vision features，然后构建完整输入
+            with torch.no_grad():
+                # 获取 vision tokens
+                image_embeds = self._model.vision_embed_tokens(pixel_values)
+
+            # 使用 LLM backbone forward，获取 hidden states
+            # 需要将 vision tokens 放入正确的位置
+            # Qwen2.5-VL 的输入格式：input_ids 包含 image_token_id
+            with torch.no_grad():
+                outputs = self._model.model(
+                    input_ids=input_ids,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                    output_hidden_states=True,
+                )
+            hidden_states = outputs.hidden_states
+
+            # 选择指定层的 hidden state
+            if layer == -1:
+                # 最后一层
+                selected = hidden_states[-1]
+            elif 0 <= layer < len(hidden_states):
+                selected = hidden_states[layer]
+            else:
+                selected = hidden_states[-1]
+
+            # 返回 last token 的 hidden state
+            if return_last_token_only:
+                return self._pad_or_trim(selected[0, -1, :])
+            else:
+                return self._pad_or_trim(selected[0].mean(dim=0))
+
+        # 回退到 vision embedding
+        pixel_values = inputs.get("pixel_values")
+        image_grid_thw = inputs.get("image_grid_thw")
         if pixel_values is not None:
             vision_emb = self._model.get_image_features(
                 pixel_values=pixel_values,
                 image_grid_thw=image_grid_thw,
             )
-            # vision_emb: [1, num_patches, vision_dim]
             if vision_emb.dim() == 3:
                 vision_emb = vision_emb.squeeze(0)
-            # 返回 mean pooling 或最后一层
             if return_last_token_only:
-                # 返回最后一个 vision token 的 embedding
                 return self._pad_or_trim(vision_emb[-1, :])
             else:
                 return self._pad_or_trim(vision_emb.mean(dim=0))
