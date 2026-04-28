@@ -471,9 +471,14 @@ class LeWMModel(Model):
         loss_recon_weighted = self.reconstruction_weight * loss_recon
 
         latent_for_reg = torch.cat([z_history, z_future], dim=1)
-        loss_sigreg, current_sigreg_weight = torch.tensor(0.0, device=self.device), 0.0
+        loss_sigreg = torch.tensor(0.0, device=self.device)
+        current_sigreg_weight = 0.0
         if self.sigreg_enabled:
             loss_sigreg = self.wm.compute_sigreg(latent_for_reg)
+            if self.sigreg_target_weight > 0.0 and self.sigreg_warmup_steps > 0:
+                current_sigreg_weight = self.sigreg_target_weight * min(
+                    1.0, float(self._global_step + 1) / float(self.sigreg_warmup_steps)
+                )
 
         loss_action = torch.tensor(0.0, device=self.device)
         loss_action_weighted = torch.tensor(0.0, device=self.device)
