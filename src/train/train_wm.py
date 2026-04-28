@@ -32,7 +32,7 @@ from src.wm.encoder.qwen import TrainableQwenLatentAdapter
 from src.wm.predictor import WMModel, LeWMModel
 from src.wm.inverse_dynamics import InverseDynamicsModel
 from src.wm.action_mapper import build_action_mapper
-from src.wm.factory import resolve_patch_layout
+from src.wm import resolve_patch_layout
 
 
 def _count_trainable_params(module: torch.nn.Module) -> int:

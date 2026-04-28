@@ -52,6 +52,7 @@ def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
         # Qwen LLM hidden state encoder
         if encoder_name == "qwen_llm":
             prompt_template = str(getattr(encoder_cfg, "prompt_template", "") or "")
+            use_fallback = bool(getattr(encoder_cfg, "use_fallback", False))
             return QwenLLMLatentEncoder(
                 latent_dim=latent_dim,
                 name=encoder_name,
@@ -59,6 +60,7 @@ def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
                 enabled=enabled,
                 fallback_enabled=fallback_enabled,
                 prompt_template=prompt_template if prompt_template else None,
+                use_fallback=use_fallback,
             )
 
         return QwenImageEncoder(

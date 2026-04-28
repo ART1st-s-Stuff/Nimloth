@@ -87,12 +87,23 @@ def resolve_wm_type(wm_cfg: Any) -> str:
     return "cfm"
 
 
-def resolve_patch_layout(num_patches: int, latent_dim: int) -> tuple[int, int]:
+def resolve_patch_layout(
+    num_patches: int | None = None,
+    latent_dim: int | None = None,
+    wm_cfg: Any = None,
+    allow_zero: bool = False,
+) -> tuple[int, int]:
     """验证并返回 patch 布局。
+
+    支持两种调用方式：
+    1. resolve_patch_layout(num_patches=4, latent_dim=4096)
+    2. resolve_patch_layout(wm_cfg=cfg) - 从配置对象读取
 
     Args:
         num_patches: patch 数量
         latent_dim: latent 总维度
+        wm_cfg: 配置对象（从中读取 num_patches 和 latent_dim）
+        allow_zero: 是否允许 num_patches=0（返回默认值）
 
     Returns:
         (num_patches, token_dim)
@@ -100,9 +111,26 @@ def resolve_patch_layout(num_patches: int, latent_dim: int) -> tuple[int, int]:
     Raises:
         ValueError: 如果配置不合法
     """
+    if wm_cfg is not None:
+        num_patches = int(getattr(wm_cfg, "num_patches", 0)) or int(getattr(wm_cfg.encoder, "num_patches", 0)) if hasattr(wm_cfg, "encoder") else int(getattr(wm_cfg, "num_patches", 0))
+        latent_dim = int(getattr(wm_cfg, "latent_dim", 0))
+
+    if num_patches is None:
+        num_patches = 0
+    if latent_dim is None:
+        latent_dim = 0
+
+    num_patches = int(num_patches)
+    latent_dim = int(latent_dim)
+
     if num_patches <= 0:
-        raise ValueError(f"num_patches 必须为正数: {num_patches}")
+        if allow_zero:
+            num_patches = 1
+        else:
+            raise ValueError(f"num_patches 必须为正数: {num_patches}")
     if latent_dim <= 0:
+        if allow_zero:
+            return num_patches, 0
         raise ValueError(f"latent_dim 必须为正数: {latent_dim}")
     if latent_dim % num_patches != 0:
         raise ValueError(f"latent_dim 必须能被 num_patches 整除: {latent_dim} % {num_patches} != 0")

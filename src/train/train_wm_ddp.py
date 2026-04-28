@@ -75,7 +75,7 @@ from src.utils.seed import set_seed
 from src.wm.inverse_dynamics import InverseDynamicsModel
 from src.wm.predictor import WMModel, LeWMModel
 from src.wm.action_mapper import build_action_mapper
-from src.wm.factory import build_world_model, resolve_patch_layout, resolve_wm_type
+from src.wm import build_world_model, resolve_patch_layout, resolve_wm_type
 
 logger = logging.getLogger(__name__)
 

@@ -24,7 +24,7 @@ from src.visualize.wandb_tracker import init_tracker
 from src.wm.encoder import build_wm_image_encoder
 from src.wm.inverse_dynamics import InverseDynamicsModel
 from src.wm.action_mapper import ActionMapper, build_action_mapper
-from src.wm.factory import build_world_model, resolve_patch_layout
+from src.wm import build_world_model, resolve_patch_layout
 from src.wm.uncertainty import estimate_divergence
 
 

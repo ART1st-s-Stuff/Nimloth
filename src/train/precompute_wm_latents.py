@@ -12,7 +12,7 @@ from src.train.manifest_resolver import resolve_manifest_for_split
 from src.utils.console import progress_context, show_kv_table, success
 from src.utils.env import load_project_env
 from src.utils.seed import set_seed
-from src.wm.factory import resolve_patch_layout
+from src.wm import resolve_patch_layout
 from src.wm.encoder import build_wm_image_encoder
 
 

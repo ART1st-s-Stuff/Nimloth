@@ -18,7 +18,7 @@ from src.utils.path_resolver import resolve_latest_path
 from src.utils.run_output import build_run_output_dir
 from src.visualize.wandb_tracker import init_tracker
 from src.wm.encoder import build_wm_image_encoder
-from src.wm.factory import build_world_model
+from src.wm import build_world_model
 from src.wm.uncertainty import estimate_divergence, percentile_threshold
 
 

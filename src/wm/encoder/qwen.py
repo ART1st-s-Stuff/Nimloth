@@ -143,13 +143,23 @@ class QwenLLMLatentEncoder(WMImageEncoder):
         fallback_enabled: bool = True,
         prompt_template: str | None = None,
         qwen_adapter: QwenVLMAdapter | None = None,
+        use_fallback: bool = False,
     ) -> None:
         super().__init__(latent_dim=latent_dim)
         self.name = name
         self.prompt_template = prompt_template
+        self.use_fallback = use_fallback
         # 复用已有的 adapter 或创建新的
         if qwen_adapter is not None:
             self._adapter = qwen_adapter
+        elif use_fallback:
+            # 直接使用 fallback，不尝试加载模型
+            self._adapter = QwenVLMAdapter(
+                model_name=model_name,
+                latent_dim=latent_dim,
+                enabled=False,  # 禁用模型加载
+                fallback_enabled=True,
+            )
         else:
             self._adapter = QwenVLMAdapter(
                 model_name=model_name,

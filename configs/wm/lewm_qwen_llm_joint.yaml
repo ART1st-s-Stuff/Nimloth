@@ -28,8 +28,9 @@ inverse_dynamics:
 encoder:
   name: qwen_llm
   model_name: Qwen/Qwen2.5-VL-8B-Instruct
-  enabled: true
+  enabled: false  # 暂时使用 fallback
   fallback_enabled: true
+  use_fallback: true  # 直接使用 fallback 跳过模型加载
   prompt_template: ""  # 空字符串表示纯视觉输入
 lewm:
   dim_head: 64
