@@ -272,3 +272,47 @@
 
 ### 版本控制（不提交实验产物）
 - 曾误将 `dev/artifacts/test_joint_train_output/checkpoint_test.pt` 合入 `ai-main` 的 squash 提交，已撤回该次提交并重新提交为不含该文件；`.gitignore` 已增加 `dev/**/*.pt`，`ai-dev-qwen-joint-training` 已重置为与修正后的 `ai-main` 一致（`f99e686`）。
+
+---
+
+## Qwen LLM Joint Training（2026-04-28）
+
+### 目标
+- 使用 Qwen LLM 的 vision embedding 作为 WM 的 latent space
+- WM 在 LLM embedding space 中学习 dynamics
+- SIGReg 在 encoded latent 上进行正则化（adaptive warmup）
+
+### 架构
+```
+Image → Qwen Vision Encoder → vision_embedding (last patch)
+                                      ↓
+                         LeWM(latent, action) → next latent prediction
+                                      ↓
+                              SIGReg (adaptive warmup)
+```
+
+### 已完成
+- `src/vlm/qwen_adapter.py`: 新增 `get_image_hidden_state()` 方法
+- `src/wm/encoder/qwen.py`: 新增 `QwenLLMLatentEncoder` 类
+- `src/wm/encoder/factory.py`: 支持 `qwen_llm` encoder 类型
+- `src/wm/predictor/factory.py`: 支持 `num_patches=1, token_dim=4096` 配置
+- `configs/wm/lewm_qwen_llm_joint.yaml`: 新建训练配置
+
+### 配置
+```yaml
+wm:
+  name: lewm_qwen_llm_joint
+  latent_dim: 4096
+  num_patches: 1
+  token_dim: 4096
+  encoder:
+    name: qwen_llm
+lewm:
+  sigreg_enabled: true
+  sigreg_latent_dim: 4096
+```
+
+### 待测试
+- 训练命令：待测试
+- SIGReg adaptive warmup
+- Latent 质量验证
