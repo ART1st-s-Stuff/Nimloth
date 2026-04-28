@@ -62,7 +62,55 @@ uv run python src/train/train_wm.py \
 - [x] 修复 LeWMModel SIGReg warmup bug
 - [x] 测试验证训练流程
 
-## 相关 commit
+## EB-Nav 数据集信息
 
-- `e056427`: feat: add Qwen LLM hidden state as WM latent space
-- `03aecb8`: refactor: simplify get_image_hidden_state
+下载自：https://huggingface.co/datasets/EmbodiedBench/EB-Nav_trajectory_dataset
+
+**文件结构**：
+- `datasets/EB-Nav/eb-nav_dataset_single_step.json` - 单步数据 (~97MB)
+- `datasets/EB-Nav/eb-nav_dataset_multi_step.json` - 多步数据 (~58MB)
+- `datasets/EB-Nav/images.zip` - 图像 (~14GB, 已解压)
+
+**数据格式**：
+```json
+{
+  "model_name": "claude-3-5-sonnet-20241022_additional_nav_no_c_h",
+  "instruction": "navigate to the Bread in the room and be as close as possible to it",
+  "trajectory": [
+    {
+      "visual_description": "I can see a kitchen environment...",
+      "reasoning_and_reflection": "...",
+      "language_plan": "1. Move forward...",
+      "executable_plan": [
+        {
+          "step_id": 1,
+          "img_path": "images/.../episode_1_step_1.png",
+          "action": [0, "Move forward by 0.25"],
+          "action_success": true,
+          "env_feedback": "Last action MoveAhead executed successfully."
+        }
+      ]
+    }
+  ]
+}
+```
+
+**动作空间**：8 个离散动作
+- 0: Move forward by 0.25
+- 1: Move backward by 0.25
+- 2: Move rightward by 0.25
+- 3: Move leftward by 0.25
+- 4: Rotate to the right by 90 degrees
+- 5: Rotate to the left by 90 degrees
+- 6: Tilt the camera upward by 30 degrees
+- 7: Tilt the camera downward by 30 degrees
+
+**包含内容**：
+- 导航指令（instruction）
+- 每个步骤的 CoT（reasoning_and_reflection）
+- 图像（images/）
+- 动作标签
+
+**用于**：
+- Phase 3 Value Head 训练
+- 验证 LLM 对物理场景的理解
