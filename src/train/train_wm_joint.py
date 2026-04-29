@@ -255,6 +255,51 @@ def _wandb_image_from_tensor(tensor: torch.Tensor) -> wandb.Image:
     return wandb.Image(image)
 
 
+def _resolve_joint_resume_checkpoint(path: str, checkpoint_dir: Path) -> Path | None:
+    raw = str(path or "").strip()
+    if not raw:
+        return None
+    if raw != "latest":
+        ckpt = Path(raw)
+        return ckpt if ckpt.exists() else None
+    candidates = sorted(checkpoint_dir.glob("checkpoint*.pt"))
+    return candidates[-1] if candidates else None
+
+
+def _save_joint_checkpoint(
+    *,
+    path: Path,
+    epoch: int,
+    batch_idx: int,
+    global_step: int,
+    qwen_adapter: QwenVLMAdapter,
+    vision_ema_state: dict[str, torch.Tensor] | None,
+    lewm_model: LeWMModel,
+    wm_scheduler: torch.optim.lr_scheduler.LRScheduler,
+    idm_scheduler: torch.optim.lr_scheduler.LRScheduler,
+    config: dict[str, object] | None = None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "epoch": int(epoch),
+            "batch_idx": int(batch_idx),
+            "global_step": int(global_step),
+            "vision_encoder_state": qwen_adapter._model.state_dict(),
+            "vision_encoder_ema_state": vision_ema_state,
+            "wm_state": _unwrap_module(lewm_model.wm).state_dict(),
+            "idm_state": _unwrap_module(lewm_model.idm).state_dict(),
+            "action_mapper_state": _unwrap_module(lewm_model.action_mapper).state_dict(),
+            "wm_optimizer_state": lewm_model.wm_optimizer.state_dict(),
+            "idm_optimizer_state": lewm_model.idm_optimizer.state_dict(),
+            "wm_scheduler_state": wm_scheduler.state_dict(),
+            "idm_scheduler_state": idm_scheduler.state_dict(),
+            "config": config or {},
+        },
+        path,
+    )
+
+
 def _is_visual_param_name(name: str) -> bool:
     return name.startswith("visual.") or ".visual." in name
 
@@ -1062,6 +1107,43 @@ def main(cfg: DictConfig) -> None:
 
     checkpoint_dir = Path("models/wm/joint_qwen")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    resume_checkpoint = _resolve_joint_resume_checkpoint(
+        str(train_cfg.get("resume_from_checkpoint", "")),
+        checkpoint_dir,
+    )
+    resume_epoch = 0
+    resume_batch_idx = -1
+    resume_global_step = 0
+    if resume_checkpoint is not None:
+        state = torch.load(resume_checkpoint, map_location=device)
+        if "vision_encoder_state" in state:
+            qwen_adapter._model.load_state_dict(state["vision_encoder_state"], strict=False)
+        if state.get("vision_encoder_ema_state") is not None:
+            vision_ema_state = state.get("vision_encoder_ema_state")
+        if "wm_state" in state:
+            _unwrap_module(lewm_model.wm).load_state_dict(state["wm_state"], strict=False)
+        if "idm_state" in state:
+            _unwrap_module(lewm_model.idm).load_state_dict(state["idm_state"], strict=False)
+        if "action_mapper_state" in state:
+            _unwrap_module(lewm_model.action_mapper).load_state_dict(state["action_mapper_state"], strict=False)
+        if "wm_optimizer_state" in state:
+            lewm_model.wm_optimizer.load_state_dict(state["wm_optimizer_state"])
+        if "idm_optimizer_state" in state:
+            lewm_model.idm_optimizer.load_state_dict(state["idm_optimizer_state"])
+        if "wm_scheduler_state" in state:
+            wm_scheduler.load_state_dict(state["wm_scheduler_state"])
+        if "idm_scheduler_state" in state:
+            idm_scheduler.load_state_dict(state["idm_scheduler_state"])
+        resume_epoch = int(state.get("epoch", 0))
+        resume_batch_idx = int(state.get("batch_idx", -1))
+        resume_global_step = int(state.get("global_step", 0))
+        logger.info(
+            "从 checkpoint 续训: path=%s epoch=%s batch_idx=%s global_step=%s",
+            resume_checkpoint,
+            resume_epoch,
+            resume_batch_idx,
+            resume_global_step,
+        )
 
     # 可视化配置：支持训练中按固定步数触发
     vis_enabled = bool(train_cfg.get("post_visualization_enabled", True))
@@ -1097,12 +1179,13 @@ def main(cfg: DictConfig) -> None:
 
     # 训练循环
     epochs = int(train_cfg.epochs)
-    global_step = 0
+    global_step = resume_global_step
+    save_every_steps = int(train_cfg.get("save_every_steps", 500))
     recent_losses: deque[dict[str, float]] = deque(maxlen=50)
     tui = _TUIController()
     tui.start()
 
-    for epoch in range(epochs):
+    for epoch in range(resume_epoch, epochs):
         lewm_model.wm.train()
         lewm_model.idm.train()
         lewm_model.action_mapper.train()
@@ -1139,20 +1222,23 @@ def main(cfg: DictConfig) -> None:
         )
         with Live(Group(loss_table, progress), console=console, refresh_per_second=4, transient=False) as live:
             for batch_idx, batch in enumerate(dataloader):
+                if epoch == resume_epoch and batch_idx <= resume_batch_idx:
+                    progress.update(task_id, advance=1, step_time="skip")
+                    continue
                 if tui.pause_requested:
                     pause_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                     pause_ckpt = checkpoint_dir / f"checkpoint_pause_{pause_ts}.pt"
-                    torch.save({
-                        "epoch": epoch + 1,
-                        "global_step": global_step,
-                        "vision_encoder_state": qwen_adapter._model.state_dict(),
-                        "vision_encoder_ema_state": vision_ema_state,
-                        "wm_state": _unwrap_module(lewm_model.wm).state_dict(),
-                        "idm_state": _unwrap_module(lewm_model.idm).state_dict(),
-                        "action_mapper_state": _unwrap_module(lewm_model.action_mapper).state_dict(),
-                        "wm_optimizer_state": lewm_model.wm_optimizer.state_dict(),
-                        "idm_optimizer_state": lewm_model.idm_optimizer.state_dict(),
-                    }, pause_ckpt)
+                    _save_joint_checkpoint(
+                        path=pause_ckpt,
+                        epoch=epoch,
+                        batch_idx=batch_idx,
+                        global_step=global_step,
+                        qwen_adapter=qwen_adapter,
+                        vision_ema_state=vision_ema_state,
+                        lewm_model=lewm_model,
+                        wm_scheduler=wm_scheduler,
+                        idm_scheduler=idm_scheduler,
+                    )
                     success(f"已暂停并保存断点: {pause_ckpt}")
                     tui.stop()
                     tracker.finish()
@@ -1356,6 +1442,19 @@ def main(cfg: DictConfig) -> None:
                 lewm_model._global_step = global_step
                 if vis_enabled and vis_every_n_steps > 0 and (global_step % vis_every_n_steps == 0):
                     _run_visualization_once(global_step)
+                if save_every_steps > 0 and global_step > 0 and global_step % save_every_steps == 0:
+                    step_ckpt = checkpoint_dir / f"checkpoint_step_{global_step:08d}.pt"
+                    _save_joint_checkpoint(
+                        path=step_ckpt,
+                        epoch=epoch,
+                        batch_idx=batch_idx,
+                        global_step=global_step,
+                        qwen_adapter=qwen_adapter,
+                        vision_ema_state=vision_ema_state,
+                        lewm_model=lewm_model,
+                        wm_scheduler=wm_scheduler,
+                        idm_scheduler=idm_scheduler,
+                    )
 
             progress.stop_task(task_id)
 

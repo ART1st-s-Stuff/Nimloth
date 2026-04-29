@@ -441,6 +441,7 @@ name = "flower"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "accelerate" },
     { name = "ai2thor" },
     { name = "gradio" },
     { name = "hydra-core" },
@@ -462,6 +463,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "accelerate" },
     { name = "ai2thor", specifier = ">=5.0.0" },
     { name = "gradio" },
     { name = "hydra-core" },

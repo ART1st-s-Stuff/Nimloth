@@ -12,6 +12,8 @@ from PIL import Image
 import torch
 from torch import nn
 
+from src.vlm.qwen_planner import find_marker_token_end_index
+
 try:
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 except Exception:  # pragma: no cover
@@ -42,6 +44,7 @@ class QwenVLMAdapter:
         num_patches: int | None = None,
         token_strategy: str = "patch_mean",
         encoder_embed_dim: int | None = None,
+        device_map: str | None = "auto",
     ) -> None:
         self.model_name = model_name
         self.latent_dim = int(latent_dim)
@@ -50,6 +53,7 @@ class QwenVLMAdapter:
         self.max_new_tokens = int(max_new_tokens)
         self.num_patches = num_patches
         self.token_strategy = token_strategy
+        self.device_map = device_map
         self._processor: Any | None = None
         self._model: Any | None = None
         self._init_error: str | None = None
@@ -227,7 +231,7 @@ class QwenVLMAdapter:
         try:
             self._processor = AutoProcessor.from_pretrained(self.model_name)
             dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-            device_map = "auto" if torch.cuda.is_available() else None
+            device_map = self.device_map if torch.cuda.is_available() else None
             self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 self.model_name,
                 torch_dtype=dtype,
@@ -289,15 +293,8 @@ class QwenVLMAdapter:
         if self._device == "cuda":
             inputs = {k: v.to("cuda") for k, v in inputs.items()}
 
-        marker_ids = self._processor.tokenizer(marker, add_special_tokens=False).input_ids
         input_ids = inputs["input_ids"][0].tolist()
-        marker_end_idx = None
-        marker_len = len(marker_ids)
-        for idx in range(0, len(input_ids) - marker_len + 1):
-            if input_ids[idx : idx + marker_len] == marker_ids:
-                marker_end_idx = idx + marker_len - 1
-        if marker_end_idx is None:
-            raise RuntimeError(f"无法在 planner response 中定位 latent marker: {marker}")
+        marker_end_idx = find_marker_token_end_index(input_ids, self._processor.tokenizer, marker)
 
         self._set_llm_backbone_trainable(llm_backbone_trainable)
         outputs = self._model(

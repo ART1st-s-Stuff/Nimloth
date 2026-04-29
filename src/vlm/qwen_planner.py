@@ -66,6 +66,34 @@ def build_qwen_messages(image: Image.Image | str, prompt: str, response: str | N
     return messages
 
 
+def find_marker_token_end_index(input_ids: list[int], tokenizer: Any, marker: str) -> int:
+    """Find marker end token index, accounting for BPE merges around JSON quotes."""
+    candidates = [
+        marker,
+        f'"{marker}"',
+        f': "{marker}"',
+        f'"latent_state": "{marker}"',
+        f'"latent_state":"{marker}"',
+    ]
+    for candidate in candidates:
+        candidate_ids = tokenizer(candidate, add_special_tokens=False).input_ids
+        if not candidate_ids:
+            continue
+        for idx in range(0, len(input_ids) - len(candidate_ids) + 1):
+            if input_ids[idx : idx + len(candidate_ids)] != candidate_ids:
+                continue
+            decoded_pieces = [tokenizer.decode([tok]) for tok in candidate_ids]
+            marker_token_offsets = [
+                offset
+                for offset, piece in enumerate(decoded_pieces)
+                if marker in piece or any(part in piece for part in ("LATENT", "STATE"))
+            ]
+            if marker_token_offsets:
+                return idx + marker_token_offsets[-1]
+            return idx + len(candidate_ids) - 1
+    raise ValueError(f"marker not found in tokenized response: {marker}")
+
+
 def generate_planner_response(
     *,
     model: Any,
@@ -105,17 +133,8 @@ def extract_latent_marker_hidden_state(
     inputs = processor(text=[text], images=[image], return_tensors="pt")
     device = next(model.parameters()).device
     inputs = {k: v.to(device) for k, v in inputs.items()}
-    marker_ids = processor.tokenizer(marker, add_special_tokens=False).input_ids
-    if not marker_ids:
-        raise ValueError(f"marker tokenization is empty: {marker}")
     input_ids = inputs["input_ids"][0].tolist()
-    marker_end_idx = None
-    marker_len = len(marker_ids)
-    for idx in range(0, len(input_ids) - marker_len + 1):
-        if input_ids[idx : idx + marker_len] == marker_ids:
-            marker_end_idx = idx + marker_len - 1
-    if marker_end_idx is None:
-        raise ValueError(f"marker not found in tokenized response: {marker}")
+    marker_end_idx = find_marker_token_end_index(input_ids, processor.tokenizer, marker)
     with torch.no_grad():
         outputs = model(**inputs, output_hidden_states=True)
     hidden_states = outputs.hidden_states

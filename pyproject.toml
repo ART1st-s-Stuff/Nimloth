@@ -17,6 +17,7 @@ dependencies = [
   "python-dotenv",
   "gradio",
   "transformers>=4.40,<4.50",
+  "accelerate",
   "peft",
   "umap-learn",
   "plotly",
