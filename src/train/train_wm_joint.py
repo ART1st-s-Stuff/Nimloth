@@ -928,6 +928,8 @@ def _format_failure_debug_summary(
                 "loss_wm_total",
                 "loss_image_recon",
                 "loss_perceptual",
+                "loss_sigreg",
+                "loss_sigreg_weighted",
                 "z_history",
                 "z_future",
             }
@@ -965,6 +967,7 @@ def _build_loss_table(
     step_action: float,
     step_sigreg: float,
     step_sigreg_w: float,
+    step_sigreg_weighted: float,
     step_kl: float,
     step_reward: float,
     step_image_recon: float,
@@ -984,6 +987,7 @@ def _build_loss_table(
     table.add_row("loss_action", f"{step_action:.6f}")
     table.add_row("loss_sigreg", f"{step_sigreg:.6f}")
     table.add_row("sigreg_weight", f"{step_sigreg_w:.6f}")
+    table.add_row("loss_sigreg_weighted", f"{step_sigreg_weighted:.6f}")
     table.add_row("loss_kl", f"{step_kl:.6f}")
     table.add_row("loss_reward", f"{step_reward:.6f}")
     table.add_row("loss_image_recon", f"{step_image_recon:.6f}")
@@ -1031,6 +1035,7 @@ def _build_recent_loss_table(items: deque[dict[str, float]]) -> Table:
     table.add_column("recon")
     table.add_column("action")
     table.add_column("sigreg")
+    table.add_column("sigreg_w")
     table.add_column("kl")
     table.add_column("reward")
     table.add_column("perceptual")
@@ -1041,12 +1046,13 @@ def _build_recent_loss_table(items: deque[dict[str, float]]) -> Table:
             f"{it['recon']:.4f}",
             f"{it['action']:.4f}",
             f"{it['sigreg']:.4f}",
+            f"{it.get('sigreg_weighted', 0.0):.4f}",
             f"{it['kl']:.4f}",
             f"{it['reward']:.4f}",
             f"{it['perceptual']:.4f}",
         )
     if len(items) == 0:
-        table.add_row("-", "-", "-", "-", "-", "-", "-", "-")
+        table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "-")
     return table
 
 
@@ -1453,11 +1459,16 @@ def main(cfg: DictConfig) -> None:
     )
 
     sigreg_cfg = getattr(train_cfg, "sigreg", {})
-    sigreg_enabled = bool(getattr(sigreg_cfg, "enabled", False))
-    sigreg_weight = float(getattr(sigreg_cfg, "weight", 0.0))
-    sigreg_warmup_steps = int(getattr(sigreg_cfg, "warmup_steps", 0))
     wm_lewm_cfg = getattr(wm_cfg, "lewm", {})
     top_lewm_cfg = getattr(cfg, "lewm", {})
+    sigreg_enabled_cfg = getattr(sigreg_cfg, "enabled", None)
+    sigreg_enabled = (
+        bool(getattr(wm_lewm_cfg, "sigreg_enabled", False))
+        if sigreg_enabled_cfg is None
+        else bool(sigreg_enabled_cfg)
+    )
+    sigreg_weight = float(getattr(sigreg_cfg, "weight", 0.0))
+    sigreg_warmup_steps = int(getattr(sigreg_cfg, "warmup_steps", 0))
     reward_cfg = getattr(wm_lewm_cfg, "reward", getattr(top_lewm_cfg, "reward", {}))
     perceptual_cfg = getattr(wm_lewm_cfg, "perceptual", getattr(top_lewm_cfg, "perceptual", {}))
     reward_enabled = bool(getattr(reward_cfg, "enabled", False))
@@ -1973,6 +1984,7 @@ def main(cfg: DictConfig) -> None:
             step_action=0.0,
             step_sigreg=0.0,
             step_sigreg_w=0.0,
+            step_sigreg_weighted=0.0,
             step_kl=0.0,
             step_reward=0.0,
             step_image_recon=0.0,
@@ -2054,6 +2066,7 @@ def main(cfg: DictConfig) -> None:
                         "loss_recon": float(step_metrics.get("loss_recon", 0.0)),
                         "loss_action": float(step_metrics.get("loss_action", 0.0)),
                         "loss_sigreg": float(step_metrics.get("loss_sigreg", 0.0)),
+                        "loss_sigreg_weighted": float(step_metrics.get("loss_sigreg_weighted", 0.0)),
                         "loss_reward": float(step_metrics.get("loss_reward", 0.0)),
                         "loss_image_recon": float(step_metrics.get("loss_image_recon", 0.0)),
                         "loss_perceptual": float(step_metrics.get("loss_perceptual", 0.0)),
@@ -2092,6 +2105,7 @@ def main(cfg: DictConfig) -> None:
                 step_action = float(step_metrics.get("loss_action", 0.0))
                 step_sigreg = float(step_metrics.get("loss_sigreg", 0.0))
                 step_sigreg_w = float(step_metrics.get("sigreg_weight", 0.0))
+                step_sigreg_weighted = float(step_metrics.get("loss_sigreg_weighted", 0.0))
                 step_kl = float(loss_kl.item())
                 step_reward = float(step_metrics.get("loss_reward", 0.0))
                 step_image_recon = float(step_metrics.get("loss_image_recon", 0.0))
@@ -2106,6 +2120,7 @@ def main(cfg: DictConfig) -> None:
                         "recon": step_recon,
                         "action": step_action,
                         "sigreg": step_sigreg,
+                        "sigreg_weighted": step_sigreg_weighted,
                         "kl": step_kl,
                         "reward": step_reward,
                         "perceptual": step_perceptual,
@@ -2122,6 +2137,7 @@ def main(cfg: DictConfig) -> None:
                     step_action=step_action,
                     step_sigreg=step_sigreg,
                     step_sigreg_w=step_sigreg_w,
+                    step_sigreg_weighted=step_sigreg_weighted,
                     step_kl=step_kl,
                     step_reward=step_reward,
                     step_image_recon=step_image_recon,

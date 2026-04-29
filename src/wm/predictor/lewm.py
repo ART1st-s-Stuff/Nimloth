@@ -434,23 +434,27 @@ class LeWMWorldModel(nn.Module):
         return pred_z, aux
 
     def compute_sigreg(self, z_sequence: torch.Tensor) -> torch.Tensor:
-        """计算 SIGReg 正则损失。"""
+        """计算 SIGReg 正则损失。
+
+        SIGReg 期望输入为 [time, batch, dim]。WM latent 通常是
+        [B,T,P,D]，这里将时间和 patch 合并为 time 维，并保留 batch
+        维用于估计 batch 分布。
+        """
         if self.sigreg is None or self.sigreg_ed is None:
             raise RuntimeError("SIGReg 未启用，无法计算 SIGReg 损失")
 
         if z_sequence.dim() == 4:
             B, T, P, D = z_sequence.shape
             z_flat = z_sequence.reshape(B, T * P, D)
-        else:
-            T, B, D = z_sequence.shape
+            z_encoded = self.sigreg_ed.encode(z_flat)
+            z_encoded = z_encoded.permute(1, 0, 2).contiguous()  # [T*P, B, E]
+        elif z_sequence.dim() == 3:
+            B, T, D = z_sequence.shape
             z_flat = z_sequence.reshape(B, T, D)
-
-        z_encoded = self.sigreg_ed.encode(z_flat)
-
-        if z_sequence.dim() == 4:
-            z_encoded = z_encoded.reshape(T, B, P, -1)
+            z_encoded = self.sigreg_ed.encode(z_flat)
+            z_encoded = z_encoded.permute(1, 0, 2).contiguous()  # [T, B, E]
         else:
-            z_encoded = z_encoded.permute(1, 0, 2)
+            raise ValueError(f"SIGReg z_sequence 形状不合法: {tuple(z_sequence.shape)}")
 
         return self.sigreg(z_encoded)
 
@@ -529,6 +533,16 @@ class LeWMModel(Model):
             for p in self._ema_model.parameters():
                 p.requires_grad_(False)
 
+    def _current_sigreg_weight(self) -> float:
+        if not self.sigreg_enabled or self.sigreg_target_weight <= 0.0:
+            return 0.0
+        if self.sigreg_warmup_steps <= 0:
+            return float(self.sigreg_target_weight)
+        return float(self.sigreg_target_weight) * min(
+            1.0,
+            float(self._global_step + 1) / float(self.sigreg_warmup_steps),
+        )
+
     def _compute_wm_loss(
         self,
         pred_z: torch.Tensor,
@@ -541,10 +555,7 @@ class LeWMModel(Model):
         current_sigreg_weight = 0.0
         if self.sigreg_enabled:
             loss_sigreg = self.wm.compute_sigreg(z_sequence)
-            if self.sigreg_target_weight > 0.0 and self.sigreg_warmup_steps > 0:
-                current_sigreg_weight = self.sigreg_target_weight * min(
-                    1.0, float(self._global_step + 1) / float(self.sigreg_warmup_steps)
-                )
+            current_sigreg_weight = self._current_sigreg_weight()
         return loss_recon, loss_sigreg, current_sigreg_weight
 
     def _wm_core(self) -> LeWMWorldModel:
@@ -690,6 +701,12 @@ class LeWMModel(Model):
             if loss_perceptual_steps
             else torch.tensor(0.0, device=self.device)
         )
+        latent_for_reg = torch.cat([z_history, z_future], dim=1)
+        loss_sigreg = torch.tensor(0.0, device=self.device)
+        current_sigreg_weight = 0.0
+        if self.sigreg_enabled:
+            loss_sigreg = wm_core.compute_sigreg(latent_for_reg)
+            current_sigreg_weight = self._current_sigreg_weight()
         loss_action = torch.tensor(0.0, device=self.device)
         if self.training_mode == "semi_supervised":
             mapped_action = self.action_mapper(pred_action)
@@ -701,10 +718,14 @@ class LeWMModel(Model):
                 + self.reward_weight * float(loss_reward.item())
                 + self.image_recon_weight * float(loss_image_recon.item())
                 + self.perceptual_weight * float(loss_perceptual.item())
+                + current_sigreg_weight * float(loss_sigreg.item())
                 + self.semi_supervised_weight * float(loss_action.item())
             ),
             "loss_recon": float(loss_recon.item()),
             "loss_action": float(loss_action.item()),
+            "loss_sigreg": float(loss_sigreg.item()),
+            "loss_sigreg_weighted": current_sigreg_weight * float(loss_sigreg.item()),
+            "sigreg_weight": current_sigreg_weight,
             "loss_reward": float(loss_reward.item()),
             "loss_image_recon": float(loss_image_recon.item()),
             "loss_perceptual": float(loss_perceptual.item()),
@@ -843,10 +864,8 @@ class LeWMModel(Model):
         current_sigreg_weight = 0.0
         if self.sigreg_enabled:
             loss_sigreg = wm_core.compute_sigreg(latent_for_reg)
-            if self.sigreg_target_weight > 0.0 and self.sigreg_warmup_steps > 0:
-                current_sigreg_weight = self.sigreg_target_weight * min(
-                    1.0, float(self._global_step + 1) / float(self.sigreg_warmup_steps)
-                )
+            current_sigreg_weight = self._current_sigreg_weight()
+        loss_sigreg_weighted = current_sigreg_weight * loss_sigreg
         self._last_debug_tensors.update(
             {
                 "loss_recon": loss_recon.detach(),
@@ -854,6 +873,7 @@ class LeWMModel(Model):
                 "loss_image_recon": loss_image_recon.detach(),
                 "loss_perceptual": loss_perceptual.detach(),
                 "loss_sigreg": loss_sigreg.detach(),
+                "loss_sigreg_weighted": loss_sigreg_weighted.detach(),
             }
         )
         if self.fail_on_nonfinite:
@@ -862,6 +882,7 @@ class LeWMModel(Model):
             self._check_finite("loss_image_recon", loss_image_recon)
             self._check_finite("loss_perceptual", loss_perceptual)
             self._check_finite("loss_sigreg", loss_sigreg)
+            self._check_finite("loss_sigreg_weighted", loss_sigreg_weighted)
 
         loss_action = torch.tensor(0.0, device=self.device)
         loss_action_weighted = torch.tensor(0.0, device=self.device)
@@ -883,7 +904,7 @@ class LeWMModel(Model):
         self.wm_optimizer.zero_grad(set_to_none=True)
         loss_wm_total = (
             loss_recon_weighted
-            + current_sigreg_weight * loss_sigreg
+            + loss_sigreg_weighted
             + loss_reward_weighted
             + loss_image_recon_weighted
             + loss_perceptual_weighted
@@ -937,6 +958,7 @@ class LeWMModel(Model):
             "loss_recon": float(loss_recon.item()),
             "loss_action": float(loss_action.item()),
             "loss_sigreg": float(loss_sigreg.item()),
+            "loss_sigreg_weighted": float(loss_sigreg_weighted.item()),
             "loss_reward": float(loss_reward.item()),
             "loss_image_recon": float(loss_image_recon.item()),
             "loss_perceptual": float(loss_perceptual.item()),
