@@ -24,12 +24,31 @@ device: cuda
 # - stage1_wm_vision: 训练 WM + vision encoder
 # - stage2_value_head: 预留占位（当前不执行）
 stage: stage1_wm_vision
-# 在线联合训练数据源：ai2thor 或 eb_nav
+# 在线联合训练数据源：ai2thor、eb_nav 或 custom
 dataset_source: eb_nav
+ai2thor:
+  # planner LoRA 联训时必须提供非空 prompt；可使用这些字段：
+  # scene, episode_id, step_id, move_ahead_distance, delta_yaw, delta_pitch,
+  # agent_horizon, target_distance, center_depth_m, action_mode, near_wall,
+  # recovery_active, recovery_stage
+  prompt_template: |-
+    You are an embodied navigation planner in AI2-THOR.
+    Given the current egocentric image, produce the latent planning state for world-model prediction.
+    Scene: {scene}
+    Episode: {episode_id}
+    Step: {step_id}
+    Motion command: move={move_ahead_distance}, yaw={delta_yaw}, pitch={delta_pitch}.
 eb_nav:
   dataset_path: datasets/EB-Nav/eb-nav_dataset_single_step.json
   images_base_dir: datasets/EB-Nav
   reward_cache_path: datasets/EB-Nav/phase2_reward_cache.jsonl
+custom:
+  # JSON/JSONL manifest，支持预切好的 sequence、episode steps 或 flat steps
+  manifest_path: ""
+  # 相对图像路径的根目录；留空时使用 manifest 所在目录
+  images_base_dir: ""
+  # planner LoRA 启用时默认要求 prompt/input 非空
+  require_prompt: false
 # 训练模式：unsupervised、semi_supervised 或 fully_supervised
 # fully_supervised: WM 直接使用真实动作训练，不使用 IDM 推断动作
 training_mode: fully_supervised
@@ -50,6 +69,12 @@ wm_lr: null
 idm_lr: null
 # 最大样本数（0 表示不限制，用于快速调试）
 max_samples: 0
+# test split 最大评估样本数（<=0 表示不限制；AI2-THOR 默认可用 datasets/ai2thor/test）
+test_max_samples: 64
+# test split batch size（<=0 时使用 batch_size）
+test_batch_size: 0
+# 每 N 个 epoch 后在 test split 上跑 eval_step（<=0 关闭）
+test_every_n_epochs: 1
 # 断点续训：填 checkpoint 路径，或 latest 自动选择 models/wm/joint_qwen 下最新 checkpoint
 resume_from_checkpoint: ""
 # 每 N step 保存训练断点（<=0 关闭周期保存）
@@ -67,8 +92,8 @@ cos_min_lr_ratio: 0.1
 ema:
   enabled: true
   decay: 0.999
-# step 级日志记录间隔（<=0 表示关闭；例如 10 表示每 10 step 记录一次）
-log_every_n_steps: 10
+# step 级日志记录间隔（<=0 表示关闭；1 表示每个 step 都记录到 W&B）
+log_every_n_steps: 1
 # 训练后可视化：在 test split 上采样 rollout 生成轨迹图并上传 wandb
 post_visualization_enabled: true
 # 训练中每 N step 触发一次可视化并上传（<=0 关闭训练中触发）
@@ -79,8 +104,21 @@ post_visualization_steps: 50
 post_visualization_include_sigreg_encoder_space: true
 # Qwen visual encoder 训练策略
 qwen_encoder:
-  # full: visual 全参数训练；lora: 仅训练 visual LoRA 参数
+  # freeze: 加载 planner LoRA 但冻结 Qwen；full: visual 全参数训练；lora: 仅训练 visual LoRA 参数
   train_mode: full
+  # Qwen 前向 dtype。auto 会在支持时优先使用 bf16；fp16 容易让 planner hidden state 溢出成 NaN。
+  dtype: auto
+  # Qwen trainable params 使用独立低学习率，避免和 WM 共用 1e-4 导致 NaN。
+  lr: 0.000001
+  # true 时 LLM backbone 也参与 joint training；显存/优化难度会明显增加。
+  llm_backbone_trainable: false
+  # target latent 默认 stop-gradient，避免 encoder 同时追逐 moving target。
+  detach_target_latents: true
+  # 遇到 NaN/Inf 时直接报出具体张量名和统计。
+  fail_on_nonfinite: true
+  # joint training 在线抽 planner latent 时，每次送入 Qwen 的图像/文本条数。
+  # 调大可提速但更吃显存；OOM 时降到 1/2/4。
+  encode_micro_batch_size: 8
   lora:
     r: 8
     alpha: 16
@@ -104,6 +142,13 @@ qwen_encoder:
 qwen_planner_lora:
   enabled: false
   checkpoint_path: ""
+  # true 时 planner language LoRA/token rows 也跟随 WM 联训。
+  trainable: false
+  # anchor: 不调用 generate，teacher-force 固定 special-token response 抽 latent；
+  # generate: 先生成 planner response，再抽 latent（更慢且要求格式稳定）。
+  response_mode: anchor
+  anchor_cot: ""
+  anchor_action_id: 0
 # 多卡配置（仅训练阶段）
 multi_gpu:
   # true 时在可用 2+ GPU 上对 WM/IDM/mapper 启用 DataParallel

@@ -7,11 +7,11 @@ defaults:
 
 name: lewm_qwen_llm_joint
 hidden_dim: 512
-# Qwen2.5-VL-7B LLM hidden dim = 4096, 单个 patch
-latent_dim: 4096
+# Qwen2.5-VL-7B LLM hidden dim = 3584, 单个 planner special-token latent
+latent_dim: 3584
 # num_patches=1 表示 latent 是单一的 LLM hidden state（不是多个 patch tokens）
 num_patches: 1
-token_dim: 4096
+token_dim: 3584
 action_dim: 3
 history_len: 4
 transformer:
@@ -33,7 +33,7 @@ encoder:
   use_fallback: false  # 使用真实模型
   use_vision_only: false  # 通过 LLM backbone 获取 hidden state
   llm_backbone_trainable: false  # LLM backbone 固定不动
-  latent_anchor_mode: last_token  # planner LoRA 接入时 train_wm_joint 会切到 planner_marker
+  latent_anchor_mode: last_token  # planner LoRA 接入时 train_wm_joint 会切到 planner_special
   prompt_template: ""  # 空字符串表示纯视觉输入
 lewm:
   dim_head: 64
@@ -43,7 +43,7 @@ lewm:
   sigreg_num_proj: 256
   # SIGReg 在 encoded latent 上应用
   sigreg_enabled: true
-  sigreg_latent_dim: 4096
+  sigreg_latent_dim: 3584
   reward:
     enabled: true
     weight: 1.0
