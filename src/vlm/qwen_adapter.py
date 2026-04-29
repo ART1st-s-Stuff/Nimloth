@@ -12,7 +12,12 @@ from PIL import Image
 import torch
 from torch import nn
 
-from src.vlm.qwen_planner import find_marker_token_end_index
+from src.vlm.qwen_planner import (
+    extract_planner_special_outputs,
+    extract_planner_special_outputs_batch,
+    planner_trainable_token_layers,
+    register_planner_special_tokens,
+)
 
 try:
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
@@ -45,6 +50,7 @@ class QwenVLMAdapter:
         token_strategy: str = "patch_mean",
         encoder_embed_dim: int | None = None,
         device_map: str | None = "auto",
+        model_dtype: str | torch.dtype | None = "auto",
     ) -> None:
         self.model_name = model_name
         self.latent_dim = int(latent_dim)
@@ -54,11 +60,14 @@ class QwenVLMAdapter:
         self.num_patches = num_patches
         self.token_strategy = token_strategy
         self.device_map = device_map
+        self.model_dtype = model_dtype
         self._processor: Any | None = None
         self._model: Any | None = None
         self._init_error: str | None = None
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
         self._vision_embed_dim = encoder_embed_dim or 1536
+        self._planner_tokens_registered = False
+        self._planner_lora_trainable = False
 
     @property
     def init_error(self) -> str | None:
@@ -71,6 +80,25 @@ class QwenVLMAdapter:
             byte_value = digest[index % len(digest)]
             values.append((float(byte_value) / 255.0) * 2.0 - 1.0)
         return torch.tensor(values, dtype=torch.float32)
+
+    @staticmethod
+    def _resolve_model_dtype(dtype: str | torch.dtype | None) -> torch.dtype:
+        if isinstance(dtype, torch.dtype):
+            return dtype
+        value = str(dtype or "auto").strip().lower()
+        if value in {"auto", ""}:
+            if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+                return torch.bfloat16
+            if torch.cuda.is_available():
+                return torch.float16
+            return torch.float32
+        if value in {"bf16", "bfloat16", "torch.bfloat16"}:
+            return torch.bfloat16
+        if value in {"fp16", "float16", "half", "torch.float16"}:
+            return torch.float16
+        if value in {"fp32", "float32", "full", "torch.float32"}:
+            return torch.float32
+        raise ValueError(f"Unsupported Qwen model dtype: {dtype!r}")
 
     def _fallback_visual(self, image_path: str) -> torch.Tensor:
         # 文件不存在时，使用基于路径的确定性向量
@@ -105,10 +133,71 @@ class QwenVLMAdapter:
             else:
                 # LLM backbone 冻结或解冻
                 param.requires_grad = trainable
+        self._apply_planner_lora_trainable()
 
     @staticmethod
     def _is_visual_param(name: str) -> bool:
         return name.startswith("visual.") or ".visual." in name
+
+    @classmethod
+    def _is_planner_lora_param(cls, name: str) -> bool:
+        lowered = name.lower()
+        return (
+            (("lora_" in lowered) and not cls._is_visual_param(name))
+            or "trainable_tokens_delta" in lowered
+        )
+
+    def _apply_planner_lora_trainable(self) -> None:
+        if self._model is None:
+            return
+        for name, param in self._model.named_parameters():
+            if self._is_planner_lora_param(name):
+                param.requires_grad = bool(self._planner_lora_trainable)
+
+    def get_language_hidden_size(self) -> int | None:
+        """Return Qwen language hidden size when available."""
+        if self._model is None:
+            return None
+        candidates = [self._model]
+        if hasattr(self._model, "get_base_model"):
+            try:
+                candidates.append(self._model.get_base_model())
+            except Exception:
+                pass
+        base_model = getattr(self._model, "base_model", None)
+        if base_model is not None:
+            candidates.append(base_model)
+        for model in candidates:
+            config = getattr(model, "config", None)
+            hidden_size = getattr(config, "hidden_size", None)
+            if hidden_size is not None:
+                return int(hidden_size)
+            text_config = getattr(config, "text_config", None)
+            hidden_size = getattr(text_config, "hidden_size", None)
+            if hidden_size is not None:
+                return int(hidden_size)
+        return None
+
+    def set_planner_lora_trainable(self, trainable: bool) -> int:
+        """Set trainability for loaded planner LoRA adapter/token rows."""
+        self._planner_lora_trainable = bool(trainable)
+        self._apply_planner_lora_trainable()
+        if self._model is None:
+            return 0
+        return sum(
+            int(param.numel())
+            for name, param in self._model.named_parameters()
+            if self._is_planner_lora_param(name) and param.requires_grad
+        )
+
+    def ensure_planner_special_tokens(self) -> None:
+        self._ensure_model()
+        if self._model is None or self._processor is None:
+            raise RuntimeError(f"Qwen 模型未加载: {self._init_error}")
+        if self._planner_tokens_registered:
+            return
+        register_planner_special_tokens(self._model, self._processor)
+        self._planner_tokens_registered = True
 
     def enable_visual_lora(
         self,
@@ -177,6 +266,9 @@ class QwenVLMAdapter:
         if LoraConfig is None or get_peft_model is None:
             raise RuntimeError("未安装 peft，无法启用 LoRA（请安装 peft 依赖）。")
 
+        self.ensure_planner_special_tokens()
+        token_layers = planner_trainable_token_layers(self._model, self._processor.tokenizer)
+
         for _, param in self._model.named_parameters():
             param.requires_grad = False
 
@@ -194,12 +286,16 @@ class QwenVLMAdapter:
             lora_dropout=float(max(0.0, dropout)),
             target_modules=matched_targets,
             bias="none",
+            trainable_token_indices=token_layers,
         )
         self._model = get_peft_model(self._model, lora_cfg)
 
         trainable = 0
         for name, param in self._model.named_parameters():
-            if "lora_" in name and not self._is_visual_param(name):
+            if (
+                ("lora_" in name and not self._is_visual_param(name))
+                or "trainable_tokens_delta" in name
+            ):
                 param.requires_grad = True
                 trainable += int(param.numel())
             else:
@@ -213,9 +309,12 @@ class QwenVLMAdapter:
             raise RuntimeError(f"Qwen 模型未加载: {self._init_error}")
         if PeftModel is None:
             raise RuntimeError("未安装 peft，无法加载 LoRA adapter。")
+        self.ensure_planner_special_tokens()
         self._model = PeftModel.from_pretrained(self._model, adapter_path, is_trainable=trainable)
+        self._planner_lora_trainable = bool(trainable)
         for _, param in self._model.named_parameters():
             param.requires_grad = bool(trainable and param.requires_grad)
+        self._apply_planner_lora_trainable()
 
     def _ensure_model(self) -> None:
         if not self.enabled:
@@ -230,7 +329,7 @@ class QwenVLMAdapter:
             return
         try:
             self._processor = AutoProcessor.from_pretrained(self.model_name)
-            dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+            dtype = self._resolve_model_dtype(self.model_dtype)
             device_map = self.device_map if torch.cuda.is_available() else None
             self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 self.model_name,
@@ -254,58 +353,91 @@ class QwenVLMAdapter:
         )
         return torch.cat([vector, pad], dim=0)
 
-    def get_planner_marker_hidden_state(
+    def _pad_or_trim_batch(self, vectors: torch.Tensor) -> torch.Tensor:
+        vectors = vectors.float()
+        if vectors.size(-1) == self.latent_dim:
+            return vectors
+        if vectors.size(-1) > self.latent_dim:
+            return vectors[..., : self.latent_dim]
+        pad_shape = (*vectors.shape[:-1], self.latent_dim - int(vectors.size(-1)))
+        pad = torch.zeros(pad_shape, dtype=vectors.dtype, device=vectors.device)
+        return torch.cat([vectors, pad], dim=-1)
+
+    def get_planner_latent_and_action_prior(
         self,
         image_path: str,
         prompt: str,
         response: str | None = None,
         layer: int = -1,
         llm_backbone_trainable: bool = False,
-    ) -> torch.Tensor:
-        """Get hidden state at the ``<LATENT_STATE>`` marker in a teacher-forced planner response."""
-        marker = "<LATENT_STATE>"
-        if response is None:
-            response = (
-                '{"cot":"","planner_trigger":true,"latent_state":"<LATENT_STATE>",'
-                '"action_prior":{"probabilities":[0.125,0.125,0.125,0.125,0.125,0.125,0.125,0.125],'
-                '"top_actions":[]}}'
-            )
-        if not Path(image_path).exists():
-            if not self.fallback_enabled:
-                raise FileNotFoundError(f"图像文件不存在: {image_path}")
-            return self._fallback_visual(image_path=image_path)
+        max_new_tokens: int | None = None,
+    ) -> dict[str, torch.Tensor | str]:
+        """Extract planner latent and action prior from the special-token planner output."""
+        if not image_path or not Path(image_path).is_file():
+            raise FileNotFoundError(f"图像文件不存在: {image_path}")
+        if not str(prompt).strip():
+            raise ValueError("planner prompt 不能为空")
         self._ensure_model()
         if self._model is None or self._processor is None:
-            if not self.fallback_enabled:
-                raise RuntimeError(f"Qwen 初始化失败且 fallback 关闭: {self._init_error}")
-            return self._fallback_visual(image_path=image_path)
-
-        image = Image.open(image_path).convert("RGB")
-        messages = [
-            {
-                "role": "user",
-                "content": [{"type": "image", "image": image}, {"type": "text", "text": prompt}],
-            },
-            {"role": "assistant", "content": [{"type": "text", "text": response}]},
-        ]
-        text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-        inputs = self._processor(text=[text], images=[image], return_tensors="pt")
-        if self._device == "cuda":
-            inputs = {k: v.to("cuda") for k, v in inputs.items()}
-
-        input_ids = inputs["input_ids"][0].tolist()
-        marker_end_idx = find_marker_token_end_index(input_ids, self._processor.tokenizer, marker)
-
+            raise RuntimeError(f"Qwen 初始化失败: {self._init_error}")
+        self.ensure_planner_special_tokens()
         self._set_llm_backbone_trainable(llm_backbone_trainable)
-        outputs = self._model(
-            input_ids=inputs.get("input_ids"),
-            pixel_values=inputs.get("pixel_values"),
-            image_grid_thw=inputs.get("image_grid_thw"),
-            output_hidden_states=True,
+        extracted = extract_planner_special_outputs(
+            model=self._model,
+            processor=self._processor,
+            image_path=image_path,
+            prompt=prompt,
+            response=response,
+            max_new_tokens=int(max_new_tokens or self.max_new_tokens),
+            layer=layer,
         )
-        hidden_states = outputs.hidden_states
-        selected = hidden_states[layer if -len(hidden_states) <= layer < len(hidden_states) else -1]
-        return self._pad_or_trim(selected[0, marker_end_idx, :])
+        return {
+            "text": extracted.text,
+            "latent": self._pad_or_trim(extracted.latent),
+            "action_logits": extracted.action_logits,
+            "action_prior": extracted.action_prior,
+        }
+
+    def get_planner_latent_and_action_prior_batch(
+        self,
+        image_paths: list[str],
+        prompts: list[str],
+        responses: list[str | None] | None = None,
+        layer: int = -1,
+        llm_backbone_trainable: bool = False,
+        max_new_tokens: int | None = None,
+    ) -> dict[str, torch.Tensor | list[str]]:
+        """Batched planner latent/action prior extraction."""
+        if len(image_paths) != len(prompts):
+            raise ValueError(f"image_paths/prompts length mismatch: {len(image_paths)} != {len(prompts)}")
+        if responses is not None and len(responses) != len(image_paths):
+            raise ValueError(f"responses/image_paths length mismatch: {len(responses)} != {len(image_paths)}")
+        for image_path in image_paths:
+            if not image_path or not Path(image_path).is_file():
+                raise FileNotFoundError(f"图像文件不存在: {image_path}")
+        for prompt in prompts:
+            if not str(prompt).strip():
+                raise ValueError("planner prompt 不能为空")
+        self._ensure_model()
+        if self._model is None or self._processor is None:
+            raise RuntimeError(f"Qwen 初始化失败: {self._init_error}")
+        self.ensure_planner_special_tokens()
+        self._set_llm_backbone_trainable(llm_backbone_trainable)
+        extracted = extract_planner_special_outputs_batch(
+            model=self._model,
+            processor=self._processor,
+            image_paths=image_paths,
+            prompts=prompts,
+            responses=responses,
+            max_new_tokens=int(max_new_tokens or self.max_new_tokens),
+            layer=layer,
+        )
+        return {
+            "text": extracted.texts,
+            "latent": self._pad_or_trim_batch(extracted.latents),
+            "action_logits": extracted.action_logits,
+            "action_prior": extracted.action_prior,
+        }
 
     def _pool_patch_tokens(self, patch_tokens: torch.Tensor) -> torch.Tensor:
         """对 patch tokens 进行池化以匹配目标 num_patches。

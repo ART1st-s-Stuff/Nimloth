@@ -38,9 +38,6 @@ ACTION_NAMES = {
     7: "Tilt the camera downward by 30 degrees",
 }
 
-LATENT_STATE_MARKER = "<LATENT_STATE>"
-
-
 def resolve_eb_nav_image_path(img_path: str, images_base_dir: str | Path) -> str:
     """Resolve an EB-Nav image path while preserving absolute paths."""
     if not img_path:
@@ -65,50 +62,6 @@ def get_eb_nav_action_id(plan: dict[str, Any]) -> int:
         except (TypeError, ValueError):
             return 0
     return 0
-
-
-def build_action_prior(action_id: int, smoothing: float = 0.05) -> list[float]:
-    """Build an 8-way label-smoothed expert action prior."""
-    num_actions = len(ACTION_NAMES)
-    action_id = int(action_id)
-    smoothing = min(max(float(smoothing), 0.0), 1.0)
-    if action_id not in ACTION_NAMES:
-        return [1.0 / num_actions for _ in range(num_actions)]
-    off_value = smoothing / float(num_actions - 1) if num_actions > 1 else 0.0
-    values = [off_value for _ in range(num_actions)]
-    values[action_id] = 1.0 - smoothing
-    return values
-
-
-def build_planner_response(
-    *,
-    cot: str,
-    action_id: int,
-    smoothing: float = 0.05,
-) -> dict[str, Any]:
-    """Build the fixed Qwen planner response schema used by the SFT stage."""
-    probabilities = build_action_prior(action_id=action_id, smoothing=smoothing)
-    sorted_actions = sorted(
-        (
-            {
-                "action_id": int(idx),
-                "name": ACTION_NAMES[int(idx)],
-                "score": float(score),
-            }
-            for idx, score in enumerate(probabilities)
-        ),
-        key=lambda item: item["score"],
-        reverse=True,
-    )
-    return {
-        "cot": cot or "",
-        "planner_trigger": True,
-        "latent_state": LATENT_STATE_MARKER,
-        "action_prior": {
-            "probabilities": probabilities,
-            "top_actions": sorted_actions[:3],
-        },
-    }
 
 
 def compute_eb_nav_reward(
@@ -282,6 +235,7 @@ class EBNavDataset(Dataset):
             "env_feedback": str(plan.get("env_feedback", "")),
             "reward": reward,
             "instruction": episode.get("instruction", ""),
+            "prompt": episode["input"],
             "cot": step.get("reasoning_and_reflection", ""),
             "visual_description": step.get("visual_description", ""),
             "language_plan": step.get("language_plan", ""),
@@ -378,6 +332,7 @@ class EBNavSequenceDataset(Dataset):
                     "episode_idx": ep_idx,
                     "episode_id": episode.get("episode_id", str(ep_idx)),
                     "instruction": episode.get("instruction", ""),
+                    "prompt": episode["input"],
                     "history_images": history_images,
                     "history_actions": history_actions,
                     "future_images": future_images,

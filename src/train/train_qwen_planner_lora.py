@@ -1,4 +1,4 @@
-"""LoRA SFT for Qwen planner JSON/action-prior output."""
+"""LoRA SFT for Qwen planner special-token output."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from src.visualize.wandb_tracker import init_tracker
+from src.train.validate_qwen_planner_lora import _validate_record_schema, _validate_records
 from src.vlm.qwen_adapter import QwenVLMAdapter
 from src.vlm.qwen_planner import load_jsonl
 
@@ -33,7 +34,11 @@ console = Console()
 class PlannerSFTDataset(Dataset):
     def __init__(self, jsonl_path: str, limit: int = 0) -> None:
         records = load_jsonl(jsonl_path, limit=limit)
-        self.records = [item for item in records if Path(str(item.get("image", ""))).exists()]
+        for idx, item in enumerate(records):
+            _validate_record_schema(item, idx)
+            if not str(item.get("response", "")).strip():
+                raise ValueError(f"{item.get('id', idx)} missing required response")
+        self.records = records
 
     def __len__(self) -> int:
         return len(self.records)
@@ -97,6 +102,7 @@ def _build_train_table(
     lr: float,
     trainable_params: int,
     samples: int,
+    last_validation: dict[str, float] | None = None,
 ) -> Table:
     table = Table(title="Qwen Planner LoRA SFT", expand=True)
     table.add_column("Metric", style="cyan", no_wrap=True)
@@ -107,7 +113,47 @@ def _build_train_table(
     table.add_row("lr", f"{lr:.8f}")
     table.add_row("samples", str(samples))
     table.add_row("trainable_params", f"{trainable_params:,}")
+    if last_validation:
+        table.add_row("val_format_rate", f"{float(last_validation.get('format_rate', 0.0)):.4f}")
+        table.add_row("val_action_top1", f"{float(last_validation.get('action_prior_top1', 0.0)):.4f}")
+        table.add_row("val_action_top3", f"{float(last_validation.get('action_prior_top3', 0.0)):.4f}")
+        latent_rate = last_validation.get("latent_extract_rate")
+        if latent_rate is not None:
+            table.add_row("val_latent_rate", f"{float(latent_rate):.4f}")
     return table
+
+
+def _load_validation_records(path: str, limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    records = load_jsonl(path, limit=limit)
+    for idx, item in enumerate(records):
+        _validate_record_schema(item, idx)
+    return records
+
+
+def _run_inline_validation(
+    *,
+    model,
+    processor,
+    records: list[dict[str, Any]],
+    max_new_tokens: int,
+    extract_latent: bool,
+) -> dict[str, Any]:
+    was_training = bool(model.training)
+    model.eval()
+    try:
+        return _validate_records(
+            records=records,
+            model=model,
+            processor=processor,
+            max_new_tokens=max_new_tokens,
+            extract_latent=extract_latent,
+            show_progress=False,
+        )
+    finally:
+        if was_training:
+            model.train()
 
 
 def _resolve_resume_checkpoint(path: str, checkpoint_dir: Path) -> Path | None:
@@ -158,6 +204,11 @@ def main() -> None:
     parser.add_argument("--checkpoint-dir", default="")
     parser.add_argument("--save-every-steps", type=int, default=500)
     parser.add_argument("--resume-from-checkpoint", default="", help="Checkpoint dir or 'latest'.")
+    parser.add_argument("--validate-every-steps", type=int, default=0, help="Run planner validation every N optimizer steps. 0 disables inline validation.")
+    parser.add_argument("--validation-jsonl", default="", help="Validation JSONL. Defaults to --sft-jsonl.")
+    parser.add_argument("--validation-limit", type=int, default=32, help="Number of validation samples for each inline validation run.")
+    parser.add_argument("--validation-max-new-tokens", type=int, default=512)
+    parser.add_argument("--validation-extract-latent", action="store_true")
     parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--ddp-backend",
@@ -263,6 +314,11 @@ def main() -> None:
                 "num_processes": int(accelerator.num_processes if accelerator is not None else 1),
                 "ddp_backend": str(args.ddp_backend),
                 "gradient_checkpointing": bool(args.gradient_checkpointing),
+                "validate_every_steps": int(args.validate_every_steps),
+                "validation_jsonl": str(args.validation_jsonl or args.sft_jsonl),
+                "validation_limit": int(args.validation_limit),
+                "validation_max_new_tokens": int(args.validation_max_new_tokens),
+                "validation_extract_latent": bool(args.validation_extract_latent),
             },
         )
 
@@ -276,6 +332,16 @@ def main() -> None:
     total_steps = epochs * len(dataloader)
     log_every = max(1, int(args.log_every))
     save_every_steps = max(0, int(args.save_every_steps))
+    validate_every_steps = max(0, int(args.validate_every_steps))
+    validation_records: list[dict[str, Any]] = []
+    if is_main_process and validate_every_steps > 0:
+        validation_records = _load_validation_records(
+            str(args.validation_jsonl or args.sft_jsonl),
+            limit=max(1, int(args.validation_limit)),
+        )
+        if not validation_records:
+            raise RuntimeError(f"No valid validation records found in {args.validation_jsonl or args.sft_jsonl}")
+        console.print(f"inline_validation_samples={len(validation_records)}")
     checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else Path(args.output_dir) / "checkpoints"
     global_step = 0
     resume_checkpoint = _resolve_resume_checkpoint(str(args.resume_from_checkpoint), checkpoint_dir)
@@ -306,6 +372,7 @@ def main() -> None:
     )
     task_id = progress.add_task("Training Qwen planner LoRA", total=total_steps)
     loss_value = 0.0
+    last_validation: dict[str, Any] | None = None
     train_table = _build_train_table(
         epoch=0,
         epochs=epochs,
@@ -314,6 +381,7 @@ def main() -> None:
         lr=float(args.lr),
         trainable_params=trainable,
         samples=len(dataset),
+        last_validation=last_validation,
     )
     live_context = (
         Live(Group(train_table, progress), console=console, refresh_per_second=4)
@@ -375,8 +443,57 @@ def main() -> None:
                         lr=float(optimizer.param_groups[0]["lr"]),
                         trainable_params=trainable,
                         samples=len(dataset),
+                        last_validation=last_validation,
                     )
                     live_context.update(Group(train_table, progress))
+                if (
+                    validate_every_steps > 0
+                    and global_step > 0
+                    and global_step % validate_every_steps == 0
+                ):
+                    if accelerator is not None:
+                        accelerator.wait_for_everyone()
+                    if is_main_process:
+                        model_for_validation = accelerator.unwrap_model(model) if accelerator is not None else model
+                        if live_context is not None:
+                            live_context.update(Group(train_table, progress))
+                        last_validation = _run_inline_validation(
+                            model=model_for_validation,
+                            processor=processor,
+                            records=validation_records,
+                            max_new_tokens=int(args.validation_max_new_tokens),
+                            extract_latent=bool(args.validation_extract_latent),
+                        )
+                        console.print(
+                            "validation "
+                            f"step={global_step} "
+                            f"format_rate={float(last_validation.get('format_rate', 0.0)):.4f} "
+                            f"top1={float(last_validation.get('action_prior_top1', 0.0)):.4f} "
+                            f"top3={float(last_validation.get('action_prior_top3', 0.0)):.4f}"
+                        )
+                        if tracker is not None:
+                            tracker.log_metrics(
+                                {
+                                    f"validation/{key}": value
+                                    for key, value in last_validation.items()
+                                    if isinstance(value, (int, float)) and value is not None
+                                },
+                                step=global_step,
+                            )
+                        train_table = _build_train_table(
+                            epoch=epoch + 1,
+                            epochs=epochs,
+                            global_step=global_step,
+                            loss=loss_value,
+                            lr=float(optimizer.param_groups[0]["lr"]),
+                            trainable_params=trainable,
+                            samples=len(dataset),
+                            last_validation=last_validation,
+                        )
+                        if live_context is not None:
+                            live_context.update(Group(train_table, progress))
+                    if accelerator is not None:
+                        accelerator.wait_for_everyone()
                 if (
                     save_every_steps > 0
                     and global_step > 0

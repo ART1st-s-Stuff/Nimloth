@@ -15,34 +15,26 @@ from rich.table import Table
 
 from src.data.eb_nav_dataset import (
     ACTION_NAMES,
-    build_planner_response,
     compute_eb_nav_reward,
     get_eb_nav_action_id,
     resolve_eb_nav_image_path,
 )
 from src.visualize.wandb_tracker import init_tracker
+from src.vlm.qwen_planner import (
+    PLANNER_ACTION_END_TOKEN,
+    PLANNER_ACTION_START_TOKEN,
+    PLANNER_ACTION_TOKENS,
+    PLANNER_LATENT_TOKEN,
+    build_planner_special_response,
+)
 
 console = Console()
-
-PLANNER_PROMPT = """You are an embodied navigation planner.
-Given the navigation instruction and current egocentric image, output exactly one JSON object with:
-- cot: concise reasoning for the current step
-- planner_trigger: boolean
-- latent_state: the literal string "<LATENT_STATE>"
-- action_prior.probabilities: 8 probabilities for action ids 0..7
-- action_prior.top_actions: the highest scoring candidate actions
-
-Instruction:
-{instruction}
-"""
-
 
 def _iter_records(
     *,
     dataset_path: Path,
     images_base_dir: Path,
     limit_episodes: int,
-    label_smoothing: float,
     show_progress: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     with open(dataset_path) as f:
@@ -68,6 +60,9 @@ def _iter_records(
     try:
         for ep_idx, episode in enumerate(data):
             trajectory = episode.get("trajectory", [])
+            if "input" not in episode or not str(episode["input"]).strip():
+                raise ValueError(f"episode_{ep_idx} missing required raw prompt field: input")
+            prompt = str(episode["input"])
             instruction = str(episode.get("instruction", ""))
             episode_success = episode.get("success", 0)
             for step_idx, step in enumerate(trajectory):
@@ -76,19 +71,22 @@ def _iter_records(
                     action_id = get_eb_nav_action_id(plan)
                     img_path = str(plan.get("img_path", step.get("input_image_path", "")))
                     image_path = resolve_eb_nav_image_path(img_path, images_base_dir)
-                    cot = str(step.get("reasoning_and_reflection", ""))
-                    response_obj = build_planner_response(
+                    if not image_path or not Path(image_path).is_file():
+                        raise FileNotFoundError(f"image file not found for episode_{ep_idx}_step_{step_idx}: {image_path}")
+                    if "reasoning_and_reflection" not in step:
+                        raise ValueError(f"episode_{ep_idx}_step_{step_idx} missing reasoning_and_reflection")
+                    cot = str(step["reasoning_and_reflection"])
+                    response = build_planner_special_response(
                         cot=cot,
                         action_id=action_id,
-                        smoothing=label_smoothing,
                     )
                     record_id = f"episode_{ep_idx}_step_{step_idx}_plan_{plan_idx}"
                     sft_records.append(
                         {
                             "id": record_id,
                             "image": image_path,
-                            "prompt": PLANNER_PROMPT.format(instruction=instruction),
-                            "response": json.dumps(response_obj, ensure_ascii=False),
+                            "prompt": prompt,
+                            "response": response,
                             "instruction": instruction,
                             "cot": cot,
                             "action_id": action_id,
@@ -155,13 +153,20 @@ def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
 
 def _validate_sft_records(records: list[dict[str, Any]]) -> None:
     for record in records:
-        response = json.loads(record["response"])
-        probs = response["action_prior"]["probabilities"]
         action_id = int(record["action_id"])
-        if len(probs) != 8:
-            raise ValueError(f"{record['id']} action_prior length must be 8, got {len(probs)}")
         if action_id < 0 or action_id > 7:
             raise ValueError(f"{record['id']} invalid action_id={action_id}")
+        if not str(record.get("prompt", "")).strip():
+            raise ValueError(f"{record['id']} prompt is empty")
+        expected_tail = (
+            f"{PLANNER_LATENT_TOKEN}{PLANNER_ACTION_START_TOKEN}"
+            f"{PLANNER_ACTION_TOKENS[action_id]}{PLANNER_ACTION_END_TOKEN}"
+        )
+        response = str(record["response"])
+        if not response.startswith("<think>") or not response.endswith(expected_tail):
+            raise ValueError(f"{record['id']} invalid special-token planner response")
+        if "<LATENT_STATE>" in response or "action_prior" in response or "planner_trigger" in response:
+            raise ValueError(f"{record['id']} contains deprecated JSON planner fields")
 
 
 def _build_stats(reward_records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -189,7 +194,6 @@ def main() -> None:
     parser.add_argument("--reward-output", default="datasets/EB-Nav/phase2_reward_cache.jsonl")
     parser.add_argument("--stats-output", default="datasets/EB-Nav/phase2_reward_stats.json")
     parser.add_argument("--limit-episodes", type=int, default=0)
-    parser.add_argument("--label-smoothing", type=float, default=0.05)
     parser.add_argument("--no-progress", action="store_true", help="Disable Rich TUI/progress output.")
     parser.add_argument("--disable-wandb", action="store_true", help="Disable W&B logging for this script.")
     args = parser.parse_args()
@@ -205,7 +209,6 @@ def main() -> None:
                 "reward_output": args.reward_output,
                 "stats_output": args.stats_output,
                 "limit_episodes": int(args.limit_episodes),
-                "label_smoothing": float(args.label_smoothing),
             },
         )
 
@@ -213,7 +216,6 @@ def main() -> None:
         dataset_path=Path(args.dataset),
         images_base_dir=Path(args.images_base_dir),
         limit_episodes=int(args.limit_episodes),
-        label_smoothing=float(args.label_smoothing),
         show_progress=not bool(args.no_progress),
     )
     _validate_sft_records(sft_records)

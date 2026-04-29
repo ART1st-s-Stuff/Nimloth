@@ -1,4 +1,4 @@
-"""Validate Qwen planner LoRA JSON format, action prior, and latent marker extraction."""
+"""Validate Qwen planner LoRA special-token format, action prior, and latent extraction."""
 
 from __future__ import annotations
 
@@ -16,26 +16,25 @@ import torch
 from src.visualize.wandb_tracker import init_tracker
 from src.vlm.qwen_adapter import QwenVLMAdapter
 from src.vlm.qwen_planner import (
-    extract_latent_marker_hidden_state,
+    extract_planner_special_outputs,
     generate_planner_response,
     load_jsonl,
-    parse_planner_json,
-    validate_planner_output,
+    validate_planner_special_output,
 )
 
 console = Console()
 
 
-def _topk_contains(probs: list[float], target: int, k: int) -> bool:
-    ranked = sorted(range(len(probs)), key=lambda idx: float(probs[idx]), reverse=True)
-    return int(target) in ranked[:k]
+def _topk_contains(probs: torch.Tensor, target: int, k: int) -> bool:
+    ranked = torch.argsort(probs.float(), descending=True).tolist()
+    return int(target) in [int(x) for x in ranked[:k]]
 
 
 def _build_metrics_table(
     *,
     total: int,
     processed: int,
-    parse_ok: int,
+    format_ok: int,
     top1: int,
     top3: int,
     latent_ok: int,
@@ -47,15 +46,15 @@ def _build_metrics_table(
     table.add_column("Metric", style="cyan", no_wrap=True)
     table.add_column("Value", style="white")
     denominator_total = max(1, processed)
-    denominator_parse = max(1, parse_ok)
+    denominator_format = max(1, format_ok)
     table.add_row("processed", f"{processed}/{total}")
     table.add_row("current_id", current_id or "-")
-    table.add_row("parse_ok", str(parse_ok))
-    table.add_row("parse_rate", f"{parse_ok / denominator_total:.4f}")
-    table.add_row("action_prior_top1", f"{top1 / denominator_parse:.4f}")
-    table.add_row("action_prior_top3", f"{top3 / denominator_parse:.4f}")
+    table.add_row("format_ok", str(format_ok))
+    table.add_row("format_rate", f"{format_ok / denominator_total:.4f}")
+    table.add_row("action_prior_top1", f"{top1 / denominator_format:.4f}")
+    table.add_row("action_prior_top3", f"{top3 / denominator_format:.4f}")
     if extract_latent:
-        table.add_row("latent_extract_rate", f"{latent_ok / denominator_parse:.4f}")
+        table.add_row("latent_extract_rate", f"{latent_ok / denominator_format:.4f}")
     table.add_row("failures", str(failures))
     return table
 
@@ -70,6 +69,19 @@ def _build_failure_panel(failures: list[dict[str, str]]) -> Panel:
     return Panel("\n".join(lines), title="最近失败", expand=True)
 
 
+def _validate_record_schema(item: dict, idx: int) -> None:
+    item_id = str(item.get("id", idx))
+    if not str(item.get("prompt", "")).strip():
+        raise ValueError(f"{item_id} missing required prompt")
+    raw_image = str(item.get("image", ""))
+    image_path = Path(raw_image)
+    if not raw_image.strip() or not image_path.is_file():
+        raise FileNotFoundError(f"{item_id} image file not found: {image_path}")
+    action_id = int(item["action_id"])
+    if action_id < 0 or action_id > 7:
+        raise ValueError(f"{item_id} invalid action_id={action_id}")
+
+
 def _validate_records(
     *,
     records: list[dict],
@@ -79,7 +91,7 @@ def _validate_records(
     extract_latent: bool,
     show_progress: bool,
 ) -> dict:
-    parse_ok = 0
+    format_ok = 0
     top1 = 0
     top3 = 0
     latent_ok = 0
@@ -99,7 +111,7 @@ def _validate_records(
     metrics_table = _build_metrics_table(
         total=total,
         processed=0,
-        parse_ok=0,
+        format_ok=0,
         top1=0,
         top3=0,
         latent_ok=0,
@@ -118,32 +130,35 @@ def _validate_records(
     try:
         for idx, item in enumerate(records):
             item_id = str(item.get("id", idx))
-            text = generate_planner_response(
-                model=model,
-                processor=processor,
-                image_path=str(item["image"]),
-                prompt=str(item["prompt"]),
-                max_new_tokens=max_new_tokens,
-            )
+            text = ""
             try:
-                obj = parse_planner_json(text)
-                valid, reason = validate_planner_output(obj)
+                _validate_record_schema(item, idx)
+                text = generate_planner_response(
+                    model=model,
+                    processor=processor,
+                    image_path=str(item["image"]),
+                    prompt=str(item["prompt"]),
+                    max_new_tokens=max_new_tokens,
+                )
+                valid, reason, _generated_action = validate_planner_special_output(text)
                 if not valid:
                     raise ValueError(reason)
-                parse_ok += 1
-                probs = [float(x) for x in obj["action_prior"]["probabilities"]]
-                action_id = int(item["action_id"])
-                top1 += int(_topk_contains(probs, action_id, 1))
-                top3 += int(_topk_contains(probs, action_id, 3))
-                if extract_latent:
-                    hidden = extract_latent_marker_hidden_state(
+                format_ok += 1
+
+                with torch.no_grad():
+                    extracted = extract_planner_special_outputs(
                         model=model,
                         processor=processor,
                         image_path=str(item["image"]),
                         prompt=str(item["prompt"]),
-                        response=json.dumps(obj, ensure_ascii=False),
+                        response=text,
+                        max_new_tokens=max_new_tokens,
                     )
-                    latent_ok += int(torch.isfinite(hidden).all().item())
+                action_id = int(item["action_id"])
+                top1 += int(_topk_contains(extracted.action_prior, action_id, 1))
+                top3 += int(_topk_contains(extracted.action_prior, action_id, 3))
+                if extract_latent:
+                    latent_ok += int(torch.isfinite(extracted.latent).all().item())
             except Exception as exc:
                 failures.append({"id": item_id, "error": str(exc), "text": text[:300]})
 
@@ -153,7 +168,7 @@ def _validate_records(
                 metrics_table = _build_metrics_table(
                     total=total,
                     processed=processed,
-                    parse_ok=parse_ok,
+                    format_ok=format_ok,
                     top1=top1,
                     top3=top3,
                     latent_ok=latent_ok,
@@ -168,10 +183,10 @@ def _validate_records(
 
     return {
         "num_records": total,
-        "parse_rate": parse_ok / max(1, total),
-        "action_prior_top1": top1 / max(1, parse_ok),
-        "action_prior_top3": top3 / max(1, parse_ok),
-        "latent_extract_rate": latent_ok / max(1, parse_ok) if extract_latent else None,
+        "format_rate": format_ok / max(1, total),
+        "action_prior_top1": top1 / max(1, format_ok),
+        "action_prior_top3": top3 / max(1, format_ok),
+        "latent_extract_rate": latent_ok / max(1, format_ok) if extract_latent else None,
         "num_failures": len(failures),
         "failures": failures[:5],
     }
@@ -190,9 +205,10 @@ def main() -> None:
     args = parser.parse_args()
 
     records = load_jsonl(args.sft_jsonl, limit=int(args.limit))
-    records = [item for item in records if Path(str(item.get("image", ""))).exists()]
     if not records:
-        raise RuntimeError(f"No valid validation records found in {args.sft_jsonl}")
+        raise RuntimeError(f"No validation records found in {args.sft_jsonl}")
+    for idx, item in enumerate(records):
+        _validate_record_schema(item, idx)
 
     adapter = QwenVLMAdapter(
         model_name=args.model_name,
@@ -205,6 +221,8 @@ def main() -> None:
         raise RuntimeError(f"Failed to load Qwen model: {adapter.init_error}")
     if args.adapter_path:
         adapter.load_lora_adapter(args.adapter_path, trainable=False)
+    else:
+        adapter.ensure_planner_special_tokens()
     model = adapter._model
     processor = adapter._processor
     model.eval()

@@ -167,7 +167,7 @@ class QwenLLMLatentEncoder(WMImageEncoder):
         self.use_vision_only = use_vision_only
         self.llm_backbone_trainable = llm_backbone_trainable
         self.latent_anchor_mode = str(latent_anchor_mode).strip().lower()
-        if self.latent_anchor_mode not in {"last_token", "planner_marker"}:
+        if self.latent_anchor_mode not in {"last_token", "planner_special"}:
             raise ValueError(f"不支持的 latent_anchor_mode={latent_anchor_mode}")
         # 复用已有的 adapter 或创建新的
         if qwen_adapter is not None:
@@ -188,15 +188,22 @@ class QwenLLMLatentEncoder(WMImageEncoder):
                 fallback_enabled=fallback_enabled,
             )
 
-    def encode_image_path_with_prompt(self, image_path: str, prompt_override: str | None = None) -> EncoderOutput:
+    def encode_image_path_with_prompt(
+        self,
+        image_path: str,
+        prompt_override: str | None = None,
+        response_override: str | None = None,
+    ) -> EncoderOutput:
         """返回 [D] 维 latent（last token hidden state）"""
         prompt = prompt_override if prompt_override is not None else self.prompt_template
-        if self.latent_anchor_mode == "planner_marker":
-            z = self._adapter.get_planner_marker_hidden_state(
+        if self.latent_anchor_mode == "planner_special":
+            planner = self._adapter.get_planner_latent_and_action_prior(
                 image_path=image_path,
                 prompt=prompt or "",
+                response=response_override,
                 llm_backbone_trainable=self.llm_backbone_trainable,
             )
+            z = planner["latent"]
         else:
             z = self._adapter.get_image_hidden_state(
                 image_path=image_path,
@@ -211,6 +218,7 @@ class QwenLLMLatentEncoder(WMImageEncoder):
                 "encoder": self.name,
                 "image_path": image_path,
                 "prompt": prompt,
+                "response_override": response_override,
                 "llm_hidden_state": not self.use_vision_only,
                 "use_vision_only": self.use_vision_only,
                 "llm_backbone_trainable": self.llm_backbone_trainable,
