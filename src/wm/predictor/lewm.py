@@ -59,6 +59,7 @@ class _LeWMAttention(nn.Module):
         super().__init__()
         inner_dim = dim_head * heads
         self.heads = heads
+        self.dim_head = dim_head
         self.scale = dim_head**-0.5
         self.dropout_p = dropout
         self.norm = nn.LayerNorm(dim)
@@ -73,7 +74,7 @@ class _LeWMAttention(nn.Module):
         x = self.norm(x)
         qkv = self.to_qkv(x).chunk(3, dim=-1)
         q, k, v = (
-            t.reshape(x.size(0), -1, self.heads, x.size(-1) // self.heads).transpose(1, 2)
+            t.reshape(x.size(0), -1, self.heads, self.dim_head).transpose(1, 2)
             for t in qkv
         )
         drop = self.dropout_p if self.training else 0.0
@@ -483,6 +484,9 @@ class LeWMModel(Model):
         perceptual_enabled: bool = False,
         perceptual_weight: float = 0.1,
         image_recon_weight: float = 0.1,
+        detach_target_latents: bool = True,
+        fail_on_nonfinite: bool = True,
+        wm_extra_clip_params: list[torch.nn.Parameter] | None = None,
     ) -> None:
         super().__init__()
         self.wm = wm.to(device)
@@ -507,6 +511,8 @@ class LeWMModel(Model):
         self.perceptual_enabled = bool(perceptual_enabled)
         self.perceptual_weight = float(perceptual_weight)
         self.image_recon_weight = float(image_recon_weight)
+        self.detach_target_latents = bool(detach_target_latents)
+        self.fail_on_nonfinite = bool(fail_on_nonfinite)
         self.perceptual_loss_fn: VGGPerceptualLoss | None = None
         if self.perceptual_enabled:
             self.perceptual_loss_fn = VGGPerceptualLoss(device=device)
@@ -514,6 +520,9 @@ class LeWMModel(Model):
         self._ema_decay = ema_decay
         self._epoch = 0
         self._global_step = 0
+        self._last_debug_tensors: dict[str, Any] = {}
+        self._wm_clip_params = list(self.wm.parameters()) + list(wm_extra_clip_params or [])
+        self._last_wm_grad_norm = 0.0
         if self._ema_decay > 0:
             self._ema_model = copy.deepcopy(self.wm).to(device)
             self._ema_model.eval()
@@ -544,6 +553,27 @@ class LeWMModel(Model):
             return self.wm.module  # type: ignore[return-value]
         return self.wm
 
+    def _check_finite(self, name: str, tensor: torch.Tensor) -> None:
+        if torch.isfinite(tensor).all():
+            return
+        finite = tensor[torch.isfinite(tensor)]
+        if finite.numel() > 0:
+            stats = (
+                f"finite_min={float(finite.min().item()):.6g} "
+                f"finite_max={float(finite.max().item()):.6g} "
+                f"finite_mean={float(finite.mean().item()):.6g}"
+            )
+        else:
+            stats = "no finite values"
+        nan_count = int(torch.isnan(tensor).sum().item())
+        inf_count = int(torch.isinf(tensor).sum().item())
+        message = (
+            f"non-finite tensor detected: {name} shape={tuple(tensor.shape)} "
+            f"nan={nan_count} inf={inf_count} {stats}"
+        )
+        if self.fail_on_nonfinite:
+            raise FloatingPointError(message)
+
     def _compute_reward_loss(
         self,
         reward_pred: torch.Tensor,
@@ -560,12 +590,36 @@ class LeWMModel(Model):
         action_history = batch["action_history"].to(self.device)
         z_future = batch["z_future"].to(self.device)
         gt_action_future = batch["gt_action_future"].to(self.device)
+        if self.fail_on_nonfinite:
+            self._check_finite("z_history", z_history)
+            self._check_finite("z_future", z_future)
+            self._check_finite("action_history", action_history)
+            self._check_finite("gt_action_future", gt_action_future)
         reward_targets = batch.get("reward_target")
         if reward_targets is not None:
             reward_targets = reward_targets.to(self.device)
         target_images = batch.get("target_images")
         if target_images is not None:
             target_images = target_images.to(self.device)
+        self._last_debug_tensors = {
+            "z_history": z_history.detach(),
+            "z_future": z_future.detach(),
+            "action_history": action_history.detach(),
+            "gt_action_future": gt_action_future.detach(),
+        }
+        if reward_targets is not None:
+            self._last_debug_tensors["reward_target"] = reward_targets.detach()
+        if target_images is not None:
+            self._last_debug_tensors["target_images"] = target_images.detach()
+        if self.fail_on_nonfinite:
+            self._check_finite("z_history", z_history)
+            self._check_finite("z_future", z_future)
+            self._check_finite("action_history", action_history)
+            self._check_finite("gt_action_future", gt_action_future)
+            if reward_targets is not None:
+                self._check_finite("reward_target", reward_targets)
+            if target_images is not None:
+                self._check_finite("target_images", target_images)
 
         pred_action = None
         if self.training_mode in {"unsupervised", "semi_supervised"}:
@@ -592,6 +646,11 @@ class LeWMModel(Model):
                 reconstruct_image=bool(self.perceptual_enabled and target_images is not None),
             )
             target_z = z_future[:, step_idx, :, :]
+            if self.detach_target_latents:
+                target_z = target_z.detach()
+            if self.fail_on_nonfinite:
+                self._check_finite(f"pred_z[{step_idx}]", pred_z)
+                self._check_finite(f"target_z[{step_idx}]", target_z)
             step_loss = F.mse_loss(pred_z, target_z)
             loss_recon_steps.append(step_loss)
             if self.reward_enabled and reward_targets is not None and "reward_pred" in aux:
@@ -605,7 +664,10 @@ class LeWMModel(Model):
                 if self.perceptual_loss_fn is not None:
                     loss_perceptual_steps.append(self.perceptual_loss_fn(aux["image_recon"], image_target))
 
-            teacher_z = torch.cat([teacher_z[:, 1:, ...], z_future[:, step_idx, :, :].unsqueeze(1)], dim=1)
+            next_teacher_z = z_future[:, step_idx, :, :]
+            if self.detach_target_latents:
+                next_teacher_z = next_teacher_z.detach()
+            teacher_z = torch.cat([teacher_z[:, 1:, ...], next_teacher_z.unsqueeze(1)], dim=1)
             if step_idx < rollout_horizon - 1:
                 teacher_action = torch.cat(
                     [teacher_action[:, 1:, :], gt_action_future[:, step_idx, :].unsqueeze(1)],
@@ -659,6 +721,25 @@ class LeWMModel(Model):
         target_images = batch.get("target_images")
         if target_images is not None:
             target_images = target_images.to(self.device)
+        self._last_debug_tensors = {
+            "z_history": z_history.detach(),
+            "z_future": z_future.detach(),
+            "action_history": action_history.detach(),
+            "gt_action_future": gt_action_future.detach(),
+        }
+        if reward_targets is not None:
+            self._last_debug_tensors["reward_target"] = reward_targets.detach()
+        if target_images is not None:
+            self._last_debug_tensors["target_images"] = target_images.detach()
+        if self.fail_on_nonfinite:
+            self._check_finite("z_history", z_history)
+            self._check_finite("z_future", z_future)
+            self._check_finite("action_history", action_history)
+            self._check_finite("gt_action_future", gt_action_future)
+            if reward_targets is not None:
+                self._check_finite("reward_target", reward_targets)
+            if target_images is not None:
+                self._check_finite("target_images", target_images)
 
         pred_action = None
         if self.training_mode in {"unsupervised", "semi_supervised"}:
@@ -686,21 +767,50 @@ class LeWMModel(Model):
                 reconstruct_image=bool(self.perceptual_enabled and target_images is not None),
             )
             target_z = z_future[:, step_idx, :, :]
+            if self.detach_target_latents:
+                target_z = target_z.detach()
+            self._last_debug_tensors[f"pred_z[{step_idx}]"] = pred_z.detach()
+            self._last_debug_tensors[f"target_z[{step_idx}]"] = target_z.detach()
+            if self.fail_on_nonfinite:
+                self._check_finite(f"pred_z[{step_idx}]", pred_z)
+                self._check_finite(f"target_z[{step_idx}]", target_z)
             step_loss = F.mse_loss(pred_z, target_z)
+            self._last_debug_tensors[f"loss_recon_step[{step_idx}]"] = step_loss.detach()
+            if self.fail_on_nonfinite:
+                self._check_finite(f"loss_recon_step[{step_idx}]", step_loss)
             loss_recon_steps.append(step_loss)
             if self.reward_enabled and reward_targets is not None and "reward_pred" in aux:
                 reward_pred_values.append(aux["reward_pred"].detach())
                 reward_target_step = reward_targets[:, step_idx] if reward_targets.dim() > 1 else reward_targets
-                loss_reward_steps.append(
-                    self._compute_reward_loss(aux["reward_pred"], reward_target_step)
-                )
+                reward_loss_step = self._compute_reward_loss(aux["reward_pred"], reward_target_step)
+                self._last_debug_tensors[f"reward_pred[{step_idx}]"] = aux["reward_pred"].detach()
+                self._last_debug_tensors[f"loss_reward_step[{step_idx}]"] = reward_loss_step.detach()
+                if self.fail_on_nonfinite:
+                    self._check_finite(f"reward_pred[{step_idx}]", aux["reward_pred"])
+                    self._check_finite(f"loss_reward_step[{step_idx}]", reward_loss_step)
+                loss_reward_steps.append(reward_loss_step)
             if self.perceptual_enabled and target_images is not None and "image_recon" in aux:
                 image_target = target_images[:, step_idx, :, :, :]
-                loss_image_recon_steps.append(F.l1_loss(aux["image_recon"], image_target))
+                image_loss_step = F.l1_loss(aux["image_recon"], image_target)
+                self._last_debug_tensors[f"image_recon[{step_idx}]"] = aux["image_recon"].detach()
+                self._last_debug_tensors[f"image_target[{step_idx}]"] = image_target.detach()
+                self._last_debug_tensors[f"loss_image_recon_step[{step_idx}]"] = image_loss_step.detach()
+                if self.fail_on_nonfinite:
+                    self._check_finite(f"image_recon[{step_idx}]", aux["image_recon"])
+                    self._check_finite(f"image_target[{step_idx}]", image_target)
+                    self._check_finite(f"loss_image_recon_step[{step_idx}]", image_loss_step)
+                loss_image_recon_steps.append(image_loss_step)
                 if self.perceptual_loss_fn is not None:
-                    loss_perceptual_steps.append(self.perceptual_loss_fn(aux["image_recon"], image_target))
+                    perceptual_loss_step = self.perceptual_loss_fn(aux["image_recon"], image_target)
+                    self._last_debug_tensors[f"loss_perceptual_step[{step_idx}]"] = perceptual_loss_step.detach()
+                    if self.fail_on_nonfinite:
+                        self._check_finite(f"loss_perceptual_step[{step_idx}]", perceptual_loss_step)
+                    loss_perceptual_steps.append(perceptual_loss_step)
 
-            teacher_z = torch.cat([teacher_z[:, 1:, ...], z_future[:, step_idx, :, :].unsqueeze(1)], dim=1)
+            next_teacher_z = z_future[:, step_idx, :, :]
+            if self.detach_target_latents:
+                next_teacher_z = next_teacher_z.detach()
+            teacher_z = torch.cat([teacher_z[:, 1:, ...], next_teacher_z.unsqueeze(1)], dim=1)
             if step_idx < rollout_horizon - 1:
                 teacher_action = torch.cat(
                     [teacher_action[:, 1:, :], gt_action_future[:, step_idx, :].unsqueeze(1)],
@@ -737,6 +847,21 @@ class LeWMModel(Model):
                 current_sigreg_weight = self.sigreg_target_weight * min(
                     1.0, float(self._global_step + 1) / float(self.sigreg_warmup_steps)
                 )
+        self._last_debug_tensors.update(
+            {
+                "loss_recon": loss_recon.detach(),
+                "loss_reward": loss_reward.detach(),
+                "loss_image_recon": loss_image_recon.detach(),
+                "loss_perceptual": loss_perceptual.detach(),
+                "loss_sigreg": loss_sigreg.detach(),
+            }
+        )
+        if self.fail_on_nonfinite:
+            self._check_finite("loss_recon", loss_recon)
+            self._check_finite("loss_reward", loss_reward)
+            self._check_finite("loss_image_recon", loss_image_recon)
+            self._check_finite("loss_perceptual", loss_perceptual)
+            self._check_finite("loss_sigreg", loss_sigreg)
 
         loss_action = torch.tensor(0.0, device=self.device)
         loss_action_weighted = torch.tensor(0.0, device=self.device)
@@ -763,11 +888,15 @@ class LeWMModel(Model):
             + loss_image_recon_weighted
             + loss_perceptual_weighted
         )
+        self._last_debug_tensors["loss_wm_total"] = loss_wm_total.detach()
+        if self.fail_on_nonfinite:
+            self._check_finite("loss_wm_total", loss_wm_total)
 
         if shared_backward:
             total_loss = loss_wm_total + loss_action_weighted
             total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.wm.parameters(), self.grad_clip_norm)
+            wm_grad_norm = torch.nn.utils.clip_grad_norm_(self._wm_clip_params, self.grad_clip_norm)
+            self._last_wm_grad_norm = float(wm_grad_norm.item())
             torch.nn.utils.clip_grad_norm_(
                 list(self.idm.parameters()) + list(self.action_mapper.parameters()),
                 self.grad_clip_norm,
@@ -776,7 +905,8 @@ class LeWMModel(Model):
             self.idm_optimizer.step()
         else:
             loss_wm_total.backward()
-            torch.nn.utils.clip_grad_norm_(self.wm.parameters(), self.grad_clip_norm)
+            wm_grad_norm = torch.nn.utils.clip_grad_norm_(self._wm_clip_params, self.grad_clip_norm)
+            self._last_wm_grad_norm = float(wm_grad_norm.item())
             self.wm_optimizer.step()
 
         if self.training_mode == "unsupervised":
@@ -813,7 +943,11 @@ class LeWMModel(Model):
             "reward_pred_mean": reward_pred_mean,
             "reward_target_mean": reward_target_mean,
             "sigreg_weight": current_sigreg_weight,
+            "grad_norm_wm": self._last_wm_grad_norm,
             "lr_wm": float(self.wm_scheduler.get_last_lr()[0]),
+            "lr_qwen": float(self.wm_scheduler.get_last_lr()[1])
+            if len(self.wm_scheduler.get_last_lr()) > 1
+            else 0.0,
             "lr_idm": float(self.idm_scheduler.get_last_lr()[0]),
         }
 

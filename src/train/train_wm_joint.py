@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import os
 import select
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from collections import deque
@@ -40,6 +42,7 @@ from rich.panel import Panel
 from src.data.dataset import read_worker_manifests, resolve_run_dir
 from src.data.eb_nav_dataset import EBNavSequenceDataset
 from src.vlm.qwen_adapter import QwenVLMAdapter
+from src.vlm.qwen_planner import build_planner_special_response
 from src.wm.encoder.qwen import QwenLLMLatentEncoder
 from src.wm.predictor.lewm import LeWMModel, LeWMWorldModel
 from src.wm.inverse_dynamics import InverseDynamicsModel
@@ -103,6 +106,39 @@ def _count_trainable_params(module: torch.nn.Module) -> int:
     return sum(p.numel() for p in module.parameters() if p.requires_grad)
 
 
+def _format_ai2thor_prompt(prompt_template: str, sample: dict) -> str | None:
+    template = str(prompt_template or "").strip()
+    if not template:
+        return None
+    metadata = sample.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    fields: dict[str, object] = {
+        "episode_id": sample.get("episode_id", ""),
+        "step_id": sample.get("step_id", ""),
+        "action": sample.get("action", ""),
+        "action_id": sample.get("action_id", ""),
+        "move_ahead_distance": sample.get("move_ahead_distance", 0.0),
+        "delta_yaw": sample.get("delta_yaw", 0.0),
+        "delta_pitch": sample.get("delta_pitch", 0.0),
+        "scene": metadata.get("scene", sample.get("scene", "")),
+        "agent_horizon": sample.get("agent_horizon", metadata.get("agent_horizon", "")),
+        "target_distance": metadata.get("target_distance", ""),
+        "center_depth_m": metadata.get("center_depth_m", ""),
+        "action_mode": metadata.get("action_mode", ""),
+        "near_wall": sample.get("near_wall", metadata.get("near_wall", "")),
+        "recovery_active": sample.get("recovery_active", metadata.get("recovery_active", "")),
+        "recovery_stage": sample.get("recovery_stage", metadata.get("recovery_stage", "")),
+    }
+    try:
+        return template.format(**fields)
+    except KeyError as exc:
+        raise ValueError(
+            f"AI2-THOR prompt_template unknown field {exc.args[0]!r}. "
+            f"Available fields: {sorted(fields)}"
+        ) from exc
+
+
 class AI2ThorJointSequenceDataset(torch.utils.data.Dataset):
     """从 AI2-THOR manifests 构造联合训练样本（仅返回路径与动作，不预编码）。"""
 
@@ -112,15 +148,23 @@ class AI2ThorJointSequenceDataset(torch.utils.data.Dataset):
         history_len: int,
         temporal_stride: int = 1,
         max_samples: int = 0,
+        prompt_template: str = "",
+        require_prompt: bool = False,
     ) -> None:
         self.run_dir = run_dir
         self.history_len = max(1, int(history_len))
         self.temporal_stride = max(1, int(temporal_stride))
+        self.prompt_template = str(prompt_template or "").strip()
+        self.require_prompt = bool(require_prompt)
+        if self.require_prompt and not self.prompt_template:
+            raise ValueError("AI2-THOR planner LoRA enabled requires pipeline.train.ai2thor.prompt_template")
         self.samples = read_worker_manifests(run_dir)
         self.sequences: list[dict[str, object]] = []
         self._build_sequences()
         if max_samples > 0:
             self.sequences = self.sequences[:max_samples]
+        if not self.sequences:
+            raise RuntimeError(f"AI2-THOR run produced no joint-training sequences: {run_dir}")
 
     @staticmethod
     def _build_action_vec(sample: dict) -> torch.Tensor:
@@ -128,6 +172,9 @@ class AI2ThorJointSequenceDataset(torch.utils.data.Dataset):
         yaw = float(sample.get("delta_yaw", 0.0))
         pitch = float(sample.get("delta_pitch", 0.0))
         return torch.tensor([move, yaw, pitch], dtype=torch.float32)
+
+    def _build_prompt(self, sample: dict) -> str | None:
+        return _format_ai2thor_prompt(self.prompt_template, sample)
 
     def _build_sequences(self) -> None:
         episode_to_samples: dict[str, list[dict]] = {}
@@ -148,15 +195,19 @@ class AI2ThorJointSequenceDataset(torch.utils.data.Dataset):
                 future_items = episode_items[
                     history_last_idx + 1 : history_last_idx + 1 + self.temporal_stride
                 ]
-                self.sequences.append(
-                    {
-                        "history_images": [str(x.get("image_path", "")) for x in history_items],
-                        "history_actions": [self._build_action_vec(x) for x in history_items],
-                        "future_images": [str(x.get("image_path", "")) for x in future_items],
-                        # 下一时刻动作来源于上一时刻状态（与现有 WM 训练定义一致）
-                        "future_actions": [self._build_action_vec(x) for x in future_items],
-                    }
-                )
+                sequence: dict[str, object] = {
+                    "history_images": [str(x.get("image_path", "")) for x in history_items],
+                    "history_actions": [self._build_action_vec(x) for x in history_items],
+                    "future_images": [str(x.get("image_path", "")) for x in future_items],
+                    # 下一时刻动作来源于上一时刻状态（与现有 WM 训练定义一致）
+                    "future_actions": [self._build_action_vec(x) for x in future_items],
+                }
+                prompt = self._build_prompt(history_items[-1])
+                if prompt is not None:
+                    sequence["prompt"] = prompt
+                elif self.require_prompt:
+                    raise ValueError("AI2-THOR sequence missing prompt while planner LoRA is enabled")
+                self.sequences.append(sequence)
 
     def __len__(self) -> int:
         return len(self.sequences)
@@ -165,15 +216,234 @@ class AI2ThorJointSequenceDataset(torch.utils.data.Dataset):
         return self.sequences[idx]
 
 
+class CustomJointSequenceDataset(torch.utils.data.Dataset):
+    """Generic joint-training dataset from JSON/JSONL manifests.
+
+    Supported records:
+    1. Pre-built sequence:
+       {
+         "history_images": [...],
+         "history_actions": [[move, yaw, pitch], ...],
+         "future_images": [...],
+         "future_actions": [[move, yaw, pitch], ...],
+         "prompt": "...",                 # required when planner LoRA is enabled
+         "future_rewards": [...],          # optional
+         "future_action_ids": [...]        # optional
+       }
+
+    2. Episode trajectory:
+       {"episode_id": "...", "prompt": "...", "steps": [{"image": "...", "action": [...]}, ...]}
+
+    3. Flat step records:
+       {"episode_id": "...", "step_id": 0, "image": "...", "action": [...], "prompt": "..."}
+    """
+
+    def __init__(
+        self,
+        manifest_path: str | Path,
+        images_base_dir: str | Path | None,
+        history_len: int,
+        temporal_stride: int = 1,
+        action_dim: int = 3,
+        max_samples: int = 0,
+        require_prompt: bool = False,
+    ) -> None:
+        self.manifest_path = Path(manifest_path)
+        if not self.manifest_path.is_file():
+            raise FileNotFoundError(f"custom manifest not found: {self.manifest_path}")
+        self.images_base_dir = Path(images_base_dir) if images_base_dir else self.manifest_path.parent
+        self.history_len = max(1, int(history_len))
+        self.temporal_stride = max(1, int(temporal_stride))
+        self.action_dim = max(1, int(action_dim))
+        self.require_prompt = bool(require_prompt)
+        self.sequences: list[dict[str, object]] = []
+
+        records = self._load_records(self.manifest_path)
+        if records and all("history_images" in item for item in records):
+            self.sequences = [self._normalize_sequence(item, idx) for idx, item in enumerate(records)]
+        elif records and all("steps" in item for item in records):
+            self._build_from_episodes(records)
+        else:
+            self._build_from_flat_steps(records)
+
+        if max_samples > 0:
+            self.sequences = self.sequences[:max_samples]
+        if not self.sequences:
+            raise RuntimeError(f"custom manifest produced no training sequences: {self.manifest_path}")
+
+    @staticmethod
+    def _load_records(path: Path) -> list[dict]:
+        if path.suffix == ".jsonl":
+            with open(path) as f:
+                return [json.loads(line) for line in f if line.strip()]
+        with open(path) as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            for key in ("records", "sequences", "episodes", "data"):
+                if key in loaded:
+                    loaded = loaded[key]
+                    break
+        if not isinstance(loaded, list):
+            raise ValueError(f"custom manifest must contain a list of records: {path}")
+        return loaded
+
+    def _resolve_image(self, value: object, record_id: str) -> str:
+        raw = str(value or "")
+        if not raw:
+            raise ValueError(f"{record_id} missing image path")
+        path = Path(raw)
+        if not path.is_absolute():
+            path = self.images_base_dir / path
+        if not path.is_file():
+            raise FileNotFoundError(f"{record_id} image file not found: {path}")
+        return str(path)
+
+    def _parse_action(self, value: object, record_id: str) -> list[float]:
+        if not isinstance(value, (list, tuple)) or len(value) < self.action_dim:
+            raise ValueError(f"{record_id} action must be a list with at least {self.action_dim} values")
+        return [float(x) for x in value[: self.action_dim]]
+
+    def _step_image(self, step: dict, record_id: str) -> str:
+        for key in ("image", "image_path", "img_path", "input_image_path"):
+            if key in step:
+                return self._resolve_image(step[key], record_id)
+        raise ValueError(f"{record_id} missing image/image_path")
+
+    def _step_action(self, step: dict, record_id: str) -> list[float]:
+        for key in ("action", "action_vec", "continuous_action"):
+            if key in step:
+                return self._parse_action(step[key], record_id)
+        raise ValueError(f"{record_id} missing action/action_vec")
+
+    def _record_prompt(self, item: dict, record_id: str) -> str | None:
+        prompt = item.get("prompt", item.get("input", None))
+        if prompt is None:
+            if self.require_prompt:
+                raise ValueError(f"{record_id} missing prompt/input required by planner LoRA")
+            return None
+        prompt = str(prompt)
+        if self.require_prompt and not prompt.strip():
+            raise ValueError(f"{record_id} prompt/input is empty")
+        return prompt
+
+    def _normalize_sequence(self, item: dict, idx: int) -> dict[str, object]:
+        record_id = str(item.get("id", f"sequence_{idx}"))
+        history_images = [self._resolve_image(path, f"{record_id}.history_images[{i}]") for i, path in enumerate(item["history_images"])]
+        future_images = [self._resolve_image(path, f"{record_id}.future_images[{i}]") for i, path in enumerate(item["future_images"])]
+        history_actions = [self._parse_action(action, f"{record_id}.history_actions[{i}]") for i, action in enumerate(item["history_actions"])]
+        future_actions = [self._parse_action(action, f"{record_id}.future_actions[{i}]") for i, action in enumerate(item["future_actions"])]
+        if len(history_images) != self.history_len or len(history_actions) != self.history_len:
+            raise ValueError(f"{record_id} history length must equal history_len={self.history_len}")
+        if len(future_images) != self.temporal_stride or len(future_actions) != self.temporal_stride:
+            raise ValueError(f"{record_id} future length must equal temporal_stride={self.temporal_stride}")
+        seq: dict[str, object] = {
+            "history_images": history_images,
+            "history_actions": history_actions,
+            "future_images": future_images,
+            "future_actions": future_actions,
+        }
+        prompt = self._record_prompt(item, record_id)
+        if prompt is not None:
+            seq["prompt"] = prompt
+        if "instruction" in item:
+            seq["instruction"] = str(item["instruction"])
+        if "planner_response" in item:
+            seq["planner_response"] = str(item["planner_response"])
+        if "future_rewards" in item:
+            rewards = [float(x) for x in item["future_rewards"]]
+            if len(rewards) != self.temporal_stride:
+                raise ValueError(f"{record_id} future_rewards length must equal temporal_stride={self.temporal_stride}")
+            seq["future_rewards"] = rewards
+        if "future_action_ids" in item:
+            action_ids = [int(x) for x in item["future_action_ids"]]
+            if len(action_ids) != self.temporal_stride:
+                raise ValueError(f"{record_id} future_action_ids length must equal temporal_stride={self.temporal_stride}")
+            seq["future_action_ids"] = action_ids
+        return seq
+
+    def _build_from_episodes(self, episodes: list[dict]) -> None:
+        for ep_idx, episode in enumerate(episodes):
+            record_id = str(episode.get("episode_id", f"episode_{ep_idx}"))
+            prompt = self._record_prompt(episode, record_id)
+            steps = episode.get("steps")
+            if not isinstance(steps, list):
+                raise ValueError(f"{record_id} steps must be a list")
+            self._append_sequences_from_steps(record_id, steps, prompt, str(episode.get("instruction", "")))
+
+    def _build_from_flat_steps(self, steps: list[dict]) -> None:
+        grouped: dict[str, list[dict]] = {}
+        for idx, step in enumerate(steps):
+            episode_id = str(step.get("episode_id", "default"))
+            grouped.setdefault(episode_id, []).append({**step, "_flat_idx": idx})
+        for episode_id, episode_steps in grouped.items():
+            episode_steps.sort(key=lambda x: int(x.get("step_id", x.get("timestep", x.get("_flat_idx", 0)))))
+            prompt = self._record_prompt(episode_steps[0], episode_id)
+            instruction = str(episode_steps[0].get("instruction", ""))
+            self._append_sequences_from_steps(episode_id, episode_steps, prompt, instruction)
+
+    def _append_sequences_from_steps(
+        self,
+        episode_id: str,
+        steps: list[dict],
+        prompt: str | None,
+        instruction: str,
+    ) -> None:
+        max_history_last = len(steps) - 1 - self.temporal_stride
+        for history_last_idx in range(self.history_len - 1, max_history_last + 1):
+            history_start_idx = history_last_idx - (self.history_len - 1)
+            history_steps = steps[history_start_idx : history_last_idx + 1]
+            future_steps = steps[history_last_idx + 1 : history_last_idx + 1 + self.temporal_stride]
+            seq_id = f"{episode_id}_{history_start_idx}_{history_last_idx}"
+            seq: dict[str, object] = {
+                "history_images": [
+                    self._step_image(step, f"{seq_id}.history[{idx}]") for idx, step in enumerate(history_steps)
+                ],
+                "history_actions": [
+                    self._step_action(step, f"{seq_id}.history[{idx}]") for idx, step in enumerate(history_steps)
+                ],
+                "future_images": [
+                    self._step_image(step, f"{seq_id}.future[{idx}]") for idx, step in enumerate(future_steps)
+                ],
+                "future_actions": [
+                    self._step_action(step, f"{seq_id}.future[{idx}]") for idx, step in enumerate(future_steps)
+                ],
+            }
+            if prompt is not None:
+                seq["prompt"] = prompt
+            if instruction:
+                seq["instruction"] = instruction
+            if all("planner_response" in step for step in future_steps):
+                seq["planner_response"] = str(future_steps[0]["planner_response"])
+            if all("reward" in step for step in future_steps):
+                seq["future_rewards"] = [float(step["reward"]) for step in future_steps]
+            if all("action_id" in step for step in future_steps):
+                seq["future_action_ids"] = [int(step["action_id"]) for step in future_steps]
+            self.sequences.append(seq)
+
+    def __len__(self) -> int:
+        return len(self.sequences)
+
+    def __getitem__(self, idx: int) -> dict[str, object]:
+        return self.sequences[idx]
+
+
+def _stack_action_sequence(actions: object, *, dtype: torch.dtype) -> torch.Tensor:
+    if isinstance(actions, torch.Tensor):
+        return actions.to(dtype=dtype)
+    if not isinstance(actions, (list, tuple)):
+        raise ValueError(f"actions must be a tensor/list/tuple, got {type(actions).__name__}")
+    return torch.stack([torch.as_tensor(action, dtype=dtype) for action in actions], dim=0)
+
+
 def _joint_collate_fn(batch: list[dict[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {
         "history_images": [item["history_images"] for item in batch],
         "future_images": [item["future_images"] for item in batch],
         "history_actions": torch.stack(
-            [torch.as_tensor(item["history_actions"], dtype=torch.float32) for item in batch], dim=0
+            [_stack_action_sequence(item["history_actions"], dtype=torch.float32) for item in batch], dim=0
         ),
         "future_actions": torch.stack(
-            [torch.as_tensor(item["future_actions"], dtype=torch.float32) for item in batch], dim=0
+            [_stack_action_sequence(item["future_actions"], dtype=torch.float32) for item in batch], dim=0
         ),
     }
     if "future_rewards" in batch[0]:
@@ -186,6 +456,10 @@ def _joint_collate_fn(batch: list[dict[str, object]]) -> dict[str, object]:
         )
     if "instruction" in batch[0]:
         result["instructions"] = [item.get("instruction", "") for item in batch]
+    if "prompt" in batch[0]:
+        result["prompts"] = [item.get("prompt", "") for item in batch]
+    if "planner_response" in batch[0]:
+        result["planner_responses"] = [item.get("planner_response", "") for item in batch]
     return result
 
 
@@ -193,26 +467,9 @@ def _resolve_ai2thor_run_dir(manifest_base: str, split: str) -> Path:
     resolved = resolve_run_dir(manifest_base)
     if resolved is not None and resolved.exists():
         return resolved
-
-    fallback_candidates = []
-    if split == "train":
-        fallback_candidates.append(Path("datasets/ai2thor/train/2026-04-24_14-47-16"))
-    else:
-        fallback_candidates.append(Path("datasets/ai2thor/test/2026-04-24_14-47-16"))
-    # TODO: 自动 run_dir 解析失败时临时兜底；后续修复统一数据发现接口后可删除。
-    fallback_candidates.append(Path("datasets/ai2thor/test/2026-04-24_14-47-16"))
-
-    for candidate in fallback_candidates:
-        if candidate.exists():
-            logger.warning(
-                "自动解析 %s run_dir 失败，临时回退到固定路径: %s",
-                split,
-                candidate,
-            )
-            return candidate
-
     raise RuntimeError(
-        f"无法解析 {split} run_dir: manifest_base={manifest_base}, fallback_candidates={fallback_candidates}"
+        f"无法解析 AI2-THOR {split} run_dir: manifest_base={manifest_base}. "
+        "请传入包含 manifest_worker_*.jsonl 的 run 目录，或包含 metadata.json latest 字段的 split 目录。"
     )
 
 
@@ -241,13 +498,170 @@ def _load_image_tensor(path: str, image_size: int, device: torch.device) -> torc
     return tensor.to(device=device)
 
 
-def _build_planner_latent_prompt(instruction: str) -> str:
-    return (
-        "You are an embodied navigation planner. Given the navigation instruction and current "
-        "egocentric image, output the fixed planner JSON with cot, planner_trigger, "
-        'latent_state="<LATENT_STATE>", and action_prior probabilities for action ids 0..7.\n\n'
-        f"Instruction:\n{instruction}"
-    )
+def _encode_planner_latents_batched(
+    *,
+    vision_encoder: QwenLLMLatentEncoder,
+    image_paths: list[str],
+    prompts: list[str],
+    responses: list[str | None],
+    device: torch.device,
+    num_patches: int,
+    token_dim: int,
+    micro_batch_size: int,
+) -> torch.Tensor:
+    if not image_paths:
+        raise ValueError("empty planner latent batch")
+    if len(image_paths) != len(prompts) or len(image_paths) != len(responses):
+        raise ValueError(
+            "planner latent batch length mismatch: "
+            f"images={len(image_paths)} prompts={len(prompts)} responses={len(responses)}"
+        )
+    chunk_size = max(1, int(micro_batch_size))
+    latents: list[torch.Tensor] = []
+    adapter = vision_encoder._adapter
+    for start in range(0, len(image_paths), chunk_size):
+        end = min(len(image_paths), start + chunk_size)
+        extracted = adapter.get_planner_latent_and_action_prior_batch(
+            image_paths=image_paths[start:end],
+            prompts=prompts[start:end],
+            responses=responses[start:end],
+            llm_backbone_trainable=vision_encoder.llm_backbone_trainable,
+        )
+        latent_batch = extracted["latent"]
+        if not isinstance(latent_batch, torch.Tensor):
+            raise TypeError("planner batch extraction did not return tensor latents")
+        for latent in latent_batch:
+            latents.append(
+                _normalize_patch_latent(
+                    latent.to(device),
+                    num_patches=num_patches,
+                    token_dim=token_dim,
+                )
+            )
+    return torch.stack(latents, dim=0)
+
+
+def _encode_joint_batch(
+    *,
+    batch: dict[str, object],
+    vision_encoder: QwenLLMLatentEncoder,
+    device: torch.device,
+    num_patches: int,
+    token_dim: int,
+    planner_lora_enabled: bool,
+    planner_anchor_response: str | None,
+    encoder_micro_batch_size: int,
+    perceptual_enabled: bool,
+    perceptual_image_size: int,
+) -> dict[str, torch.Tensor]:
+    history_images = batch["history_images"]  # [B, H]
+    future_images = batch["future_images"]  # [B, T]
+    prompts = batch.get("prompts")
+    if planner_lora_enabled and prompts is None:
+        raise ValueError("planner LoRA enabled requires raw prompts in batch['prompts']")
+    planner_responses = batch.get("planner_responses")
+    history_actions = batch["history_actions"].float().to(device)  # [B, H, A]
+
+    if planner_lora_enabled:
+        flat_paths: list[str] = []
+        flat_prompts: list[str] = []
+        flat_responses: list[str | None] = []
+        history_count = 0
+        for row_idx, img_paths in enumerate(history_images):
+            prompt_override = str(prompts[row_idx])
+            response_override = (
+                str(planner_responses[row_idx]) if planner_responses is not None else planner_anchor_response
+            )
+            for path in img_paths:
+                if not path or not Path(str(path)).is_file():
+                    raise FileNotFoundError(f"planner LoRA image file not found: {path}")
+                flat_paths.append(str(path))
+                flat_prompts.append(prompt_override)
+                flat_responses.append(response_override)
+                history_count += 1
+        for row_idx, img_paths in enumerate(future_images):
+            prompt_override = str(prompts[row_idx])
+            response_override = (
+                str(planner_responses[row_idx]) if planner_responses is not None else planner_anchor_response
+            )
+            for path in img_paths:
+                if not path or not Path(str(path)).is_file():
+                    raise FileNotFoundError(f"planner LoRA image file not found: {path}")
+                flat_paths.append(str(path))
+                flat_prompts.append(prompt_override)
+                flat_responses.append(response_override)
+        flat_latents = _encode_planner_latents_batched(
+            vision_encoder=vision_encoder,
+            image_paths=flat_paths,
+            prompts=flat_prompts,
+            responses=flat_responses,
+            device=device,
+            num_patches=num_patches,
+            token_dim=token_dim,
+            micro_batch_size=encoder_micro_batch_size,
+        )
+        batch_size = len(history_images)
+        history_len = len(history_images[0]) if history_images else 0
+        future_len = len(future_images[0]) if future_images else 0
+        z_history = flat_latents[:history_count].reshape(batch_size, history_len, num_patches, token_dim)
+        z_future = flat_latents[history_count:].reshape(batch_size, future_len, num_patches, token_dim)
+    else:
+        z_history_list = []
+        for img_paths in history_images:
+            step_latents = []
+            for path in img_paths:
+                if path and Path(path).is_file():
+                    latent = vision_encoder.encode_image_path_with_prompt(str(path)).z.to(device)
+                    latent = _normalize_patch_latent(
+                        latent,
+                        num_patches=num_patches,
+                        token_dim=token_dim,
+                    )
+                else:
+                    latent = torch.zeros(num_patches, token_dim, device=device)
+                step_latents.append(latent)
+            z_history_list.append(torch.stack(step_latents))
+        z_history = torch.stack(z_history_list)  # [B, H, P, D]
+
+        z_future_list = []
+        for img_paths in future_images:
+            step_latents = []
+            for path in img_paths:
+                if path and Path(path).is_file():
+                    latent = vision_encoder.encode_image_path_with_prompt(str(path)).z.to(device)
+                    latent = _normalize_patch_latent(
+                        latent,
+                        num_patches=num_patches,
+                        token_dim=token_dim,
+                    )
+                else:
+                    latent = torch.zeros(num_patches, token_dim, device=device)
+                step_latents.append(latent)
+            z_future_list.append(torch.stack(step_latents))
+        z_future = torch.stack(z_future_list)  # [B, T, P, D]
+
+    batch_device: dict[str, torch.Tensor] = {
+        "z_history": z_history,
+        "action_history": history_actions,
+        "z_future": z_future,
+        "gt_action_future": batch["future_actions"].float().to(device),
+    }
+    if "future_rewards" in batch:
+        batch_device["reward_target"] = batch["future_rewards"].float().to(device)
+    if perceptual_enabled:
+        target_image_batches = []
+        for img_paths in future_images:
+            target_image_batches.append(
+                torch.stack(
+                    [
+                        _load_image_tensor(str(path), perceptual_image_size, device)
+                        for path in img_paths
+                    ],
+                    dim=0,
+                )
+            )
+        batch_device["target_images"] = torch.stack(target_image_batches, dim=0)
+    return batch_device
 
 
 def _wandb_image_from_tensor(tensor: torch.Tensor) -> wandb.Image:
@@ -394,6 +808,149 @@ def _unwrap_module(module: torch.nn.Module) -> torch.nn.Module:
     if hasattr(module, "module"):
         return module.module  # type: ignore[return-value]
     return module
+
+
+def _tensor_debug_stats(name: str, tensor: torch.Tensor) -> dict[str, object]:
+    detached = tensor.detach()
+    finite_mask = torch.isfinite(detached)
+    finite = detached[finite_mask]
+    stats: dict[str, object] = {
+        "name": name,
+        "shape": list(detached.shape),
+        "dtype": str(detached.dtype),
+        "device": str(detached.device),
+        "numel": int(detached.numel()),
+        "finite": bool(finite_mask.all().item()),
+        "nan_count": int(torch.isnan(detached).sum().item()),
+        "inf_count": int(torch.isinf(detached).sum().item()),
+    }
+    if finite.numel() > 0:
+        finite_float = finite.float()
+        stats.update(
+            {
+                "finite_min": float(finite_float.min().item()),
+                "finite_max": float(finite_float.max().item()),
+                "finite_mean": float(finite_float.mean().item()),
+                "finite_std": float(finite_float.std(unbiased=False).item())
+                if finite_float.numel() > 1
+                else 0.0,
+            }
+        )
+    return stats
+
+
+def _summarize_debug_object(value: object, *, max_items: int = 12) -> object:
+    if isinstance(value, torch.Tensor):
+        return _tensor_debug_stats("tensor", value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        out: dict[str, object] = {}
+        for key, item in list(value.items())[:max_items]:
+            out[str(key)] = _summarize_debug_object(item, max_items=max_items)
+        if len(value) > max_items:
+            out["_truncated_items"] = len(value) - max_items
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_summarize_debug_object(item, max_items=max_items) for item in list(value)[:max_items]]
+    return repr(value)
+
+
+def _write_training_failure_report(
+    *,
+    exc: BaseException,
+    epoch: int,
+    batch_idx: int,
+    global_step: int,
+    batch: object | None,
+    batch_device: object | None,
+    model_debug: object | None,
+    step_metrics: object | None,
+) -> Path:
+    report_dir = Path("outputs/dev/joint_training_failures")
+    report_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = report_dir / f"failure_step_{global_step:08d}_{timestamp}.txt"
+    payload = {
+        "timestamp": timestamp,
+        "epoch": int(epoch),
+        "batch_idx": int(batch_idx),
+        "global_step": int(global_step),
+        "exception_type": type(exc).__name__,
+        "exception": str(exc),
+        "batch": _summarize_debug_object(batch),
+        "batch_device": _summarize_debug_object(batch_device),
+        "model_debug": _summarize_debug_object(model_debug, max_items=64),
+        "step_metrics": _summarize_debug_object(step_metrics),
+        "traceback": traceback.format_exc(),
+    }
+    report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return report_path
+
+
+def _format_tensor_debug_line(name: str, stats: object) -> str:
+    if not isinstance(stats, dict):
+        return f"{name}: {stats}"
+    shape = stats.get("shape", "?")
+    finite = stats.get("finite", "?")
+    nan_count = stats.get("nan_count", "?")
+    inf_count = stats.get("inf_count", "?")
+    min_v = stats.get("finite_min", "n/a")
+    max_v = stats.get("finite_max", "n/a")
+    mean_v = stats.get("finite_mean", "n/a")
+    std_v = stats.get("finite_std", "n/a")
+    def _fmt(value: object) -> str:
+        return f"{value:.6g}" if isinstance(value, float) else str(value)
+    return (
+        f"{name}: shape={shape} finite={finite} nan={nan_count} inf={inf_count} "
+        f"min={_fmt(min_v)} max={_fmt(max_v)} mean={_fmt(mean_v)} std={_fmt(std_v)}"
+    )
+
+
+def _format_failure_debug_summary(
+    *,
+    batch_device: object | None,
+    model_debug: object | None,
+) -> str:
+    lines = ["关键张量统计:"]
+    model_summary = _summarize_debug_object(model_debug, max_items=64)
+    batch_summary = _summarize_debug_object(batch_device, max_items=64)
+    printed = set()
+    if isinstance(model_summary, dict):
+        priority_names = [
+            key
+            for key in model_summary.keys()
+            if key.startswith("pred_z[")
+            or key.startswith("target_z[")
+            or key.startswith("loss_recon_step[")
+            or key in {
+                "loss_recon",
+                "loss_wm_total",
+                "loss_image_recon",
+                "loss_perceptual",
+                "z_history",
+                "z_future",
+            }
+        ]
+        priority_names.sort(
+            key=lambda key: (
+                0 if key.startswith("pred_z[") else
+                1 if key.startswith("target_z[") else
+                2 if key.startswith("loss_recon_step[") else
+                3,
+                key,
+            )
+        )
+        for key in priority_names[:24]:
+            lines.append(_format_tensor_debug_line(key, model_summary[key]))
+            printed.add(key)
+    if isinstance(batch_summary, dict):
+        for key in ("z_history", "z_future", "action_history", "gt_action_future", "target_images"):
+            if key in batch_summary and key not in printed:
+                lines.append(_format_tensor_debug_line(f"batch_device.{key}", batch_summary[key]))
+    if len(lines) == 1:
+        lines.append("没有捕获到 batch_device/model_debug；请查看 traceback。")
+    return "\n".join(lines)
 
 
 def _build_loss_table(
@@ -567,6 +1124,8 @@ def _load_rollout_from_run_dir(
     token_dim: int,
     num_rollouts: int,
     num_steps: int,
+    prompt_template: str = "",
+    planner_anchor_response: str | None = None,
 ) -> list[tuple[str, list[torch.Tensor], list[torch.Tensor]]]:
     samples = read_worker_manifests(run_dir)
     episode_groups: dict[str, list[dict]] = {}
@@ -588,7 +1147,12 @@ def _load_rollout_from_run_dir(
             img_path = str(item.get("image_path", ""))
             if not img_path or not Path(img_path).exists():
                 continue
-            latent = vision_encoder.encode_image_path(img_path).z
+            prompt = _format_ai2thor_prompt(prompt_template, item)
+            latent = vision_encoder.encode_image_path_with_prompt(
+                img_path,
+                prompt_override=prompt,
+                response_override=planner_anchor_response,
+            ).z
             latent = _normalize_patch_latent(latent, num_patches=num_patches, token_dim=token_dim)
             latents.append(latent.detach().cpu())
             move = float(item.get("move_ahead_distance", 0.0))
@@ -667,6 +1231,8 @@ def _run_post_training_visualization(
     num_rollouts: int,
     num_steps: int,
     include_sigreg_encoder_space: bool,
+    prompt_template: str = "",
+    planner_anchor_response: str | None = None,
 ) -> None:
     rollout_data = _load_rollout_from_run_dir(
         run_dir=run_dir,
@@ -675,6 +1241,8 @@ def _run_post_training_visualization(
         token_dim=token_dim,
         num_rollouts=num_rollouts,
         num_steps=num_steps,
+        prompt_template=prompt_template,
+        planner_anchor_response=planner_anchor_response,
     )
     if not rollout_data:
         logger.warning("可视化跳过：test run_dir 中未找到可用 rollout。")
@@ -750,7 +1318,7 @@ def main(cfg: DictConfig) -> None:
         raise ValueError(f"不支持的 pipeline.train.stage={stage}")
 
     dataset_source = str(train_cfg.get("dataset_source", "eb_nav")).strip().lower()
-    if dataset_source not in {"ai2thor", "eb_nav"}:
+    if dataset_source not in {"ai2thor", "eb_nav", "custom"}:
         raise ValueError(f"不支持的 pipeline.train.dataset_source={dataset_source}")
 
     device = torch.device(str(train_cfg.device))
@@ -767,6 +1335,8 @@ def main(cfg: DictConfig) -> None:
     latent_dim = int(wm_cfg.latent_dim)
     num_patches = int(getattr(wm_cfg, "num_patches", 1))
     token_dim = int(getattr(wm_cfg, "token_dim", latent_dim))
+    qwen_cfg = getattr(train_cfg, "qwen_encoder", {})
+    qwen_dtype = str(getattr(qwen_cfg, "dtype", "auto"))
 
     # 创建 Qwen Adapter
     qwen_adapter = QwenVLMAdapter(
@@ -774,6 +1344,7 @@ def main(cfg: DictConfig) -> None:
         latent_dim=latent_dim,
         enabled=True,
         fallback_enabled=False,
+        model_dtype=qwen_dtype,
     )
     qwen_adapter._ensure_model()
     if qwen_adapter._model is None:
@@ -782,13 +1353,41 @@ def main(cfg: DictConfig) -> None:
     planner_lora_cfg = getattr(train_cfg, "qwen_planner_lora", {})
     planner_lora_enabled = bool(getattr(planner_lora_cfg, "enabled", False))
     planner_lora_checkpoint = str(getattr(planner_lora_cfg, "checkpoint_path", "")).strip()
+    planner_lora_trainable = bool(getattr(planner_lora_cfg, "trainable", False))
+    planner_response_mode = str(getattr(planner_lora_cfg, "response_mode", "anchor")).strip().lower()
+    if planner_response_mode not in {"anchor", "generate"}:
+        raise ValueError(f"不支持的 pipeline.train.qwen_planner_lora.response_mode={planner_response_mode}")
+    planner_anchor_response: str | None = None
+    if planner_lora_enabled and planner_response_mode == "anchor":
+        planner_anchor_response = build_planner_special_response(
+            cot=str(getattr(planner_lora_cfg, "anchor_cot", "")),
+            action_id=int(getattr(planner_lora_cfg, "anchor_action_id", 0)),
+        )
     if planner_lora_enabled:
         if not planner_lora_checkpoint:
             raise ValueError("pipeline.train.qwen_planner_lora.enabled=true 但 checkpoint_path 为空")
-        qwen_adapter.load_lora_adapter(planner_lora_checkpoint, trainable=False)
+        qwen_adapter.load_lora_adapter(planner_lora_checkpoint, trainable=planner_lora_trainable)
 
-    qwen_cfg = getattr(train_cfg, "qwen_encoder", {})
+    qwen_hidden_size = qwen_adapter.get_language_hidden_size()
+    if planner_lora_enabled and num_patches == 1 and qwen_hidden_size is not None and token_dim != qwen_hidden_size:
+        raise ValueError(
+            "planner special latent 维度与 WM 配置不一致: "
+            f"Qwen hidden_size={qwen_hidden_size}, wm.token_dim={token_dim}, wm.latent_dim={latent_dim}. "
+            "请把 configs/wm/lewm_qwen_llm_joint.yaml 中 latent_dim/token_dim/sigreg_latent_dim "
+            "设为该 Qwen hidden_size，避免隐式 pad/trim。"
+        )
     train_mode = str(getattr(qwen_cfg, "train_mode", "full")).strip().lower()
+    encoder_micro_batch_size = int(getattr(qwen_cfg, "encode_micro_batch_size", 8))
+    qwen_lr = float(getattr(qwen_cfg, "lr", 1e-6))
+    detach_target_latents = bool(getattr(qwen_cfg, "detach_target_latents", True))
+    fail_on_nonfinite = bool(getattr(qwen_cfg, "fail_on_nonfinite", True))
+    llm_backbone_trainable = bool(
+        getattr(
+            qwen_cfg,
+            "llm_backbone_trainable",
+            getattr(wm_cfg.encoder, "llm_backbone_trainable", False),
+        )
+    )
     lora_cfg = getattr(qwen_cfg, "lora", {})
     kl_cfg = getattr(qwen_cfg, "kl", {})
     ema_cfg = getattr(qwen_cfg, "ema", {})
@@ -806,9 +1405,16 @@ def main(cfg: DictConfig) -> None:
             "当前实现不同时叠加 planner language LoRA 与 visual LoRA；"
             "请使用 qwen_encoder.train_mode=full 或关闭 qwen_planner_lora。"
         )
-    if train_mode == "full":
-        # 全参数训练 visual encoder，冻结 LLM backbone
-        qwen_adapter._set_llm_backbone_trainable(trainable=False)
+    if train_mode == "freeze":
+        for _, param in qwen_adapter._model.named_parameters():
+            param.requires_grad = False
+        if planner_lora_enabled:
+            qwen_adapter.set_planner_lora_trainable(False)
+    elif train_mode == "full":
+        # 全参数训练 visual encoder；LLM backbone 是否训练由 qwen_encoder.llm_backbone_trainable 控制。
+        qwen_adapter._set_llm_backbone_trainable(trainable=llm_backbone_trainable)
+        if planner_lora_enabled:
+            qwen_adapter.set_planner_lora_trainable(planner_lora_trainable)
     elif train_mode == "lora":
         lora_targets = list(getattr(lora_cfg, "target_modules", []))
         lora_trainable_params = qwen_adapter.enable_visual_lora(
@@ -828,6 +1434,7 @@ def main(cfg: DictConfig) -> None:
             latent_dim=latent_dim,
             enabled=True,
             fallback_enabled=False,
+            model_dtype=qwen_dtype,
         )
         teacher_adapter._ensure_model()
         if teacher_adapter._model is None:
@@ -841,8 +1448,8 @@ def main(cfg: DictConfig) -> None:
         latent_dim=latent_dim,
         qwen_adapter=qwen_adapter,
         use_vision_only=False,
-        llm_backbone_trainable=False,
-        latent_anchor_mode="planner_marker" if planner_lora_enabled else "last_token",
+        llm_backbone_trainable=llm_backbone_trainable,
+        latent_anchor_mode="planner_special" if planner_lora_enabled else "last_token",
     )
 
     sigreg_cfg = getattr(train_cfg, "sigreg", {})
@@ -928,8 +1535,14 @@ def main(cfg: DictConfig) -> None:
     weight_decay = float(train_cfg.get("weight_decay", 0.01))
     warmup_steps = int(train_cfg.get("lr_warmup_steps", 1000))
 
-    wm_params_with_qwen = list(qwen_adapter._model.parameters()) + list(wm_module.parameters())
-    wm_optimizer = torch.optim.AdamW(wm_params_with_qwen, lr=wm_lr, weight_decay=weight_decay)
+    qwen_trainable_params = [param for param in qwen_adapter._model.parameters() if param.requires_grad]
+    wm_trainable_params = [param for param in wm_module.parameters() if param.requires_grad]
+    wm_param_groups: list[dict[str, object]] = [
+        {"params": wm_trainable_params, "lr": wm_lr, "name": "wm"},
+    ]
+    if qwen_trainable_params:
+        wm_param_groups.append({"params": qwen_trainable_params, "lr": qwen_lr, "name": "qwen"})
+    wm_optimizer = torch.optim.AdamW(wm_param_groups, lr=wm_lr, weight_decay=weight_decay)
     idm_optimizer = torch.optim.AdamW(
         list(inverse_dynamics.parameters()) + list(action_mapper.parameters()),
         lr=idm_lr,
@@ -966,6 +1579,9 @@ def main(cfg: DictConfig) -> None:
         perceptual_enabled=perceptual_enabled,
         perceptual_weight=perceptual_weight,
         image_recon_weight=image_recon_weight,
+        detach_target_latents=detach_target_latents,
+        fail_on_nonfinite=fail_on_nonfinite,
+        wm_extra_clip_params=qwen_trainable_params,
     )
 
     # 打印参数数量
@@ -974,6 +1590,11 @@ def main(cfg: DictConfig) -> None:
     wm_params = sum(p.numel() for p in wm_module.parameters() if p.requires_grad)
     idm_params = sum(p.numel() for p in inverse_dynamics.parameters() if p.requires_grad)
     mapper_params = sum(p.numel() for p in action_mapper.parameters() if p.requires_grad)
+    max_samples = int(train_cfg.get("max_samples", 0))
+    test_max_samples = int(train_cfg.get("test_max_samples", 64))
+    test_batch_size = int(train_cfg.get("test_batch_size", 0)) or int(train_cfg.batch_size)
+    test_every_n_epochs = int(train_cfg.get("test_every_n_epochs", 1))
+    temporal_stride = int(train_cfg.get("temporal_stride", 1))
 
     show_kv_table("Joint Training Config", [
         ("model", model_name),
@@ -985,6 +1606,13 @@ def main(cfg: DictConfig) -> None:
         ("multi_gpu_device_ids", str(multi_gpu_device_ids)),
         ("vision_params", f"{vision_params:,}"),
         ("vision_train_mode", train_mode),
+        ("qwen_dtype", qwen_dtype),
+        ("qwen_hidden_size", str(qwen_hidden_size) if qwen_hidden_size is not None else "unknown"),
+        ("qwen_lr", f"{qwen_lr:.8f}"),
+        ("llm_backbone_trainable", str(llm_backbone_trainable)),
+        ("detach_target_latents", str(detach_target_latents)),
+        ("fail_on_nonfinite", str(fail_on_nonfinite)),
+        ("encode_micro_batch_size", str(encoder_micro_batch_size)),
         ("vision_lora_params", f"{lora_trainable_params:,}"),
         ("wm_params", f"{wm_params:,}"),
         ("idm_params", f"{idm_params:,}"),
@@ -994,6 +1622,11 @@ def main(cfg: DictConfig) -> None:
         ("sigreg_warmup_steps", str(sigreg_warmup_steps)),
         ("dataset_source", dataset_source),
         ("planner_lora_enabled", str(planner_lora_enabled)),
+        ("planner_lora_trainable", str(planner_lora_trainable)),
+        ("planner_response_mode", planner_response_mode),
+        ("max_samples", str(max_samples)),
+        ("test_max_samples", str(test_max_samples)),
+        ("test_every_n_epochs", str(test_every_n_epochs)),
         ("reward_enabled", str(reward_enabled)),
         ("reward_weight", f"{reward_weight:.6f}"),
         ("perceptual_enabled", str(perceptual_enabled)),
@@ -1018,6 +1651,13 @@ def main(cfg: DictConfig) -> None:
             "model": model_name,
             "vision_params": vision_params,
             "vision_train_mode": train_mode,
+            "qwen_dtype": qwen_dtype,
+            "qwen_hidden_size": qwen_hidden_size,
+            "qwen_lr": qwen_lr,
+            "llm_backbone_trainable": llm_backbone_trainable,
+            "detach_target_latents": detach_target_latents,
+            "fail_on_nonfinite": fail_on_nonfinite,
+            "encode_micro_batch_size": encoder_micro_batch_size,
             "vision_lora_params": lora_trainable_params,
             "wm_params": wm_params,
             "idm_params": idm_params,
@@ -1033,6 +1673,11 @@ def main(cfg: DictConfig) -> None:
             "dataset_source": dataset_source,
             "planner_lora_enabled": planner_lora_enabled,
             "planner_lora_checkpoint": planner_lora_checkpoint,
+            "planner_lora_trainable": planner_lora_trainable,
+            "planner_response_mode": planner_response_mode,
+            "test_max_samples": test_max_samples,
+            "test_batch_size": max(1, test_batch_size),
+            "test_every_n_epochs": test_every_n_epochs,
             "reward_enabled": reward_enabled,
             "reward_weight": reward_weight,
             "reward_loss_type": reward_loss_type,
@@ -1050,9 +1695,10 @@ def main(cfg: DictConfig) -> None:
     if vision_ema_enabled:
         vision_ema_state = _build_visual_ema_state(qwen_adapter._model)
 
-    max_samples = int(train_cfg.get("max_samples", 0))
-    temporal_stride = int(train_cfg.get("temporal_stride", 1))
+    test_dataset = None
     if dataset_source == "ai2thor":
+        ai2thor_train_cfg = getattr(train_cfg, "ai2thor", {})
+        ai2thor_prompt_template = str(getattr(ai2thor_train_cfg, "prompt_template", ""))
         train_manifest_base = str(
             getattr(getattr(cfg.dataset, "manifests", {}), "train", "datasets/ai2thor/train")
         )
@@ -1066,8 +1712,18 @@ def main(cfg: DictConfig) -> None:
             history_len=int(wm_cfg.history_len),
             temporal_stride=temporal_stride,
             max_samples=max_samples,
+            prompt_template=ai2thor_prompt_template,
+            require_prompt=planner_lora_enabled,
         )
-    else:
+        test_dataset = AI2ThorJointSequenceDataset(
+            run_dir=test_run_dir,
+            history_len=int(wm_cfg.history_len),
+            temporal_stride=temporal_stride,
+            max_samples=test_max_samples,
+            prompt_template=ai2thor_prompt_template,
+            require_prompt=planner_lora_enabled,
+        )
+    elif dataset_source == "eb_nav":
         eb_nav_cfg = getattr(train_cfg, "eb_nav", {})
         eb_dataset_path = str(getattr(eb_nav_cfg, "dataset_path", "datasets/EB-Nav/eb-nav_dataset_single_step.json"))
         eb_images_base_dir = str(getattr(eb_nav_cfg, "images_base_dir", "datasets/EB-Nav"))
@@ -1086,6 +1742,24 @@ def main(cfg: DictConfig) -> None:
         )
         if max_samples > 0:
             dataset.sequences = dataset.sequences[:max_samples]
+    else:
+        custom_cfg = getattr(train_cfg, "custom", {})
+        custom_manifest_path = str(getattr(custom_cfg, "manifest_path", "")).strip()
+        if not custom_manifest_path:
+            raise ValueError("pipeline.train.dataset_source=custom requires pipeline.train.custom.manifest_path")
+        custom_images_base_dir = str(getattr(custom_cfg, "images_base_dir", "")).strip()
+        custom_require_prompt = bool(getattr(custom_cfg, "require_prompt", planner_lora_enabled))
+        train_run_dir = Path(custom_manifest_path)
+        test_run_dir = Path(custom_manifest_path)
+        dataset = CustomJointSequenceDataset(
+            manifest_path=custom_manifest_path,
+            images_base_dir=custom_images_base_dir or None,
+            history_len=int(wm_cfg.history_len),
+            temporal_stride=temporal_stride,
+            action_dim=3,
+            max_samples=max_samples,
+            require_prompt=custom_require_prompt,
+        )
 
     dataloader = DataLoader(
         dataset,
@@ -1094,6 +1768,17 @@ def main(cfg: DictConfig) -> None:
         num_workers=0,  # 在线 Qwen 编码不使用多进程 DataLoader
         collate_fn=_joint_collate_fn,
     )
+    test_dataloader = (
+        DataLoader(
+            test_dataset,
+            batch_size=max(1, test_batch_size),
+            shuffle=False,
+            num_workers=0,
+            collate_fn=_joint_collate_fn,
+        )
+        if test_dataset is not None
+        else None
+    )
 
     show_kv_table("Dataset", [
         ("stage", stage),
@@ -1101,8 +1786,11 @@ def main(cfg: DictConfig) -> None:
         ("train_run_dir", str(train_run_dir)),
         ("test_run_dir", str(test_run_dir)),
         ("samples", str(len(dataset))),
+        ("test_samples", str(len(test_dataset)) if test_dataset is not None else "disabled"),
         ("batch_size", str(int(train_cfg.batch_size))),
+        ("test_batch_size", str(max(1, test_batch_size)) if test_dataloader is not None else "disabled"),
         ("steps_per_epoch", str(len(dataloader))),
+        ("test_steps", str(len(test_dataloader)) if test_dataloader is not None else "disabled"),
     ])
 
     checkpoint_dir = Path("models/wm/joint_qwen")
@@ -1172,15 +1860,88 @@ def main(cfg: DictConfig) -> None:
                 num_rollouts=vis_rollouts,
                 num_steps=vis_steps,
                 include_sigreg_encoder_space=vis_include_sigreg_encoder,
+                prompt_template=ai2thor_prompt_template if dataset_source == "ai2thor" else "",
+                planner_anchor_response=planner_anchor_response,
             )
         finally:
             if backup_state is not None:
                 _apply_visual_state(qwen_adapter._model, backup_state)
 
+    def _run_test_eval(epoch_value: int, step_value: int) -> dict[str, float]:
+        if test_dataloader is None:
+            return {}
+        qwen_was_training = bool(qwen_adapter._model.training) if qwen_adapter._model is not None else False
+        wm_was_training = bool(lewm_model.wm.training)
+        idm_was_training = bool(lewm_model.idm.training)
+        mapper_was_training = bool(lewm_model.action_mapper.training)
+        qwen_adapter._model.eval()
+        lewm_model.wm.eval()
+        lewm_model.idm.eval()
+        lewm_model.action_mapper.eval()
+
+        sums: dict[str, float] = {}
+        count = 0
+        progress = Progress(
+            TextColumn("[bold magenta]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+            transient=True,
+        )
+        task_id = progress.add_task(f"Test eval epoch {epoch_value}", total=len(test_dataloader))
+        try:
+            with progress:
+                for batch in test_dataloader:
+                    with torch.no_grad():
+                        batch_device = _encode_joint_batch(
+                            batch=batch,
+                            vision_encoder=vision_encoder,
+                            device=device,
+                            num_patches=num_patches,
+                            token_dim=token_dim,
+                            planner_lora_enabled=planner_lora_enabled,
+                            planner_anchor_response=planner_anchor_response,
+                            encoder_micro_batch_size=encoder_micro_batch_size,
+                            perceptual_enabled=perceptual_enabled,
+                            perceptual_image_size=perceptual_image_size,
+                        )
+                        metrics = lewm_model.eval_step(batch_device)
+                    batch_size_eval = int(batch_device["z_history"].size(0))
+                    count += batch_size_eval
+                    for key, value in metrics.items():
+                        if isinstance(value, (int, float)):
+                            sums[key] = sums.get(key, 0.0) + float(value) * batch_size_eval
+                    progress.update(task_id, advance=1)
+        finally:
+            if qwen_was_training:
+                qwen_adapter._model.train()
+            if wm_was_training:
+                lewm_model.wm.train()
+            if idm_was_training:
+                lewm_model.idm.train()
+            if mapper_was_training:
+                lewm_model.action_mapper.train()
+
+        averaged = {f"test/{key}": value / max(1, count) for key, value in sums.items()}
+        averaged["test/num_samples"] = float(count)
+        averaged["test/epoch"] = float(epoch_value)
+        tracker.log_metrics(averaged, step=step_value)
+        success(
+            "Test eval "
+            f"epoch={epoch_value} "
+            f"samples={count} "
+            f"loss={averaged.get('test/loss', 0.0):.6f} "
+            f"loss_recon={averaged.get('test/loss_recon', 0.0):.6f}"
+        )
+        return averaged
+
     # 训练循环
     epochs = int(train_cfg.epochs)
     global_step = resume_global_step
     save_every_steps = int(train_cfg.get("save_every_steps", 500))
+    log_every_n_steps = int(train_cfg.get("log_every_n_steps", 1))
     recent_losses: deque[dict[str, float]] = deque(maxlen=50)
     tui = _TUIController()
     tui.start()
@@ -1220,7 +1981,11 @@ def main(cfg: DictConfig) -> None:
             lr_wm=float(wm_optimizer.param_groups[0]["lr"]),
             lr_idm=float(idm_optimizer.param_groups[0]["lr"]),
         )
-        with Live(Group(loss_table, progress), console=console, refresh_per_second=4, transient=False) as live:
+        live = Live(Group(loss_table, progress), console=console, refresh_per_second=4, transient=False)
+        live_started = False
+        live.start()
+        live_started = True
+        try:
             for batch_idx, batch in enumerate(dataloader):
                 if epoch == resume_epoch and batch_idx <= resume_batch_idx:
                     progress.update(task_id, advance=1, step_time="skip")
@@ -1246,83 +2011,21 @@ def main(cfg: DictConfig) -> None:
                 step_t0 = time.perf_counter()
                 history_images = batch["history_images"]  # [B, H]
                 future_images = batch["future_images"]  # [B, T]
-                instructions = batch.get("instructions", [""] * len(history_images))
                 history_actions = batch["history_actions"].float().to(device)  # [B, H, A]
-
-                # 编码历史图像
-                z_history_list = []
-                for row_idx, img_paths in enumerate(history_images):
-                    prompt_override = (
-                        _build_planner_latent_prompt(str(instructions[row_idx]))
-                        if planner_lora_enabled
-                        else None
-                    )
-                    step_latents = []
-                    for path in img_paths:
-                        if path and Path(path).exists():
-                            latent = vision_encoder.encode_image_path_with_prompt(
-                                str(path),
-                                prompt_override=prompt_override,
-                            ).z.to(device)
-                            latent = _normalize_patch_latent(
-                                latent,
-                                num_patches=num_patches,
-                                token_dim=token_dim,
-                            )
-                        else:
-                            latent = torch.zeros(num_patches, token_dim, device=device)
-                        step_latents.append(latent)
-                    z_history_list.append(torch.stack(step_latents))
-                z_history = torch.stack(z_history_list)  # [B, H, P, D]
-
-                # 编码未来图像
-                z_future_list = []
-                for row_idx, img_paths in enumerate(future_images):
-                    prompt_override = (
-                        _build_planner_latent_prompt(str(instructions[row_idx]))
-                        if planner_lora_enabled
-                        else None
-                    )
-                    step_latents = []
-                    for path in img_paths:
-                        if path and Path(path).exists():
-                            latent = vision_encoder.encode_image_path_with_prompt(
-                                str(path),
-                                prompt_override=prompt_override,
-                            ).z.to(device)
-                            latent = _normalize_patch_latent(
-                                latent,
-                                num_patches=num_patches,
-                                token_dim=token_dim,
-                            )
-                        else:
-                            latent = torch.zeros(num_patches, token_dim, device=device)
-                        step_latents.append(latent)
-                    z_future_list.append(torch.stack(step_latents))
-                z_future = torch.stack(z_future_list)  # [B, T, P, D]
-
-                gt_action_future = batch["future_actions"].float().to(device)
-                batch_device = {
-                    "z_history": z_history,
-                    "action_history": history_actions,
-                    "z_future": z_future,
-                    "gt_action_future": gt_action_future,
-                }
-                if "future_rewards" in batch:
-                    batch_device["reward_target"] = batch["future_rewards"].float().to(device)
-                if perceptual_enabled:
-                    target_image_batches = []
-                    for img_paths in future_images:
-                        target_image_batches.append(
-                            torch.stack(
-                                [
-                                    _load_image_tensor(str(path), perceptual_image_size, device)
-                                    for path in img_paths
-                                ],
-                                dim=0,
-                            )
-                        )
-                    batch_device["target_images"] = torch.stack(target_image_batches, dim=0)
+                batch_device = _encode_joint_batch(
+                    batch=batch,
+                    vision_encoder=vision_encoder,
+                    device=device,
+                    num_patches=num_patches,
+                    token_dim=token_dim,
+                    planner_lora_enabled=planner_lora_enabled,
+                    planner_anchor_response=planner_anchor_response,
+                    encoder_micro_batch_size=encoder_micro_batch_size,
+                    perceptual_enabled=perceptual_enabled,
+                    perceptual_image_size=perceptual_image_size,
+                )
+                z_history = batch_device["z_history"]
+                gt_action_future = batch_device["gt_action_future"]
                 lewm_model._global_step = global_step
                 step_metrics = lewm_model.train_step(batch_device)
                 loss_kl = torch.tensor(0.0, device=device)
@@ -1345,7 +2048,7 @@ def main(cfg: DictConfig) -> None:
                     _update_visual_ema_state(vision_ema_state, qwen_adapter._model, vision_ema_decay)
 
                 # 记录
-                if global_step % int(train_cfg.get("log_every_n_steps", 10)) == 0:
+                if log_every_n_steps > 0 and global_step % log_every_n_steps == 0:
                     log_dict = {
                         "loss": float(step_metrics.get("loss", 0.0)),
                         "loss_recon": float(step_metrics.get("loss_recon", 0.0)),
@@ -1358,9 +2061,11 @@ def main(cfg: DictConfig) -> None:
                         "reward_target_mean": float(step_metrics.get("reward_target_mean", 0.0)),
                         "sigreg_weight": float(step_metrics.get("sigreg_weight", 0.0)),
                         "lr_wm": float(step_metrics.get("lr_wm", wm_optimizer.param_groups[0]["lr"])),
+                        "lr_qwen": float(step_metrics.get("lr_qwen", 0.0)),
                         "lr_idm": float(step_metrics.get("lr_idm", idm_optimizer.param_groups[0]["lr"])),
                         "loss_kl": float(loss_kl.item()),
                         "loss_total_with_kl": float(step_metrics.get("loss", 0.0)) + float(kl_weight * loss_kl.item()),
+                        "grad_norm_wm": float(step_metrics.get("grad_norm_wm", 0.0)),
                         "epoch": epoch + 1,
                     }
                     if perceptual_enabled and "target_images" in batch_device:
@@ -1457,8 +2162,51 @@ def main(cfg: DictConfig) -> None:
                     )
 
             progress.stop_task(task_id)
+        except BaseException as exc:
+            if live_started:
+                live.stop()
+                live_started = False
+            tui.stop()
+            model_debug = getattr(lewm_model, "_last_debug_tensors", None)
+            report_path = _write_training_failure_report(
+                exc=exc,
+                epoch=epoch + 1,
+                batch_idx=int(locals().get("batch_idx", -1)),
+                global_step=global_step,
+                batch=locals().get("batch"),
+                batch_device=locals().get("batch_device"),
+                model_debug=model_debug,
+                step_metrics=locals().get("step_metrics"),
+            )
+            debug_summary = _format_failure_debug_summary(
+                batch_device=locals().get("batch_device"),
+                model_debug=model_debug,
+            )
+            console.print()
+            console.print(
+                Panel(
+                    "[bold red]Joint training failed[/bold red]\n"
+                    f"type: {type(exc).__name__}\n"
+                    f"message: {exc}\n"
+                    f"epoch: {epoch + 1}\n"
+                    f"batch_idx: {int(locals().get('batch_idx', -1))}\n"
+                    f"global_step: {global_step}\n"
+                    f"debug_report: {report_path}\n\n"
+                    f"{debug_summary}",
+                    title="Training Error",
+                    border_style="red",
+                    expand=False,
+                )
+            )
+            tracker.finish()
+            raise
+        finally:
+            if live_started:
+                live.stop()
 
         success(f"Epoch {epoch+1}/{epochs} 完成")
+        if test_dataloader is not None and test_every_n_epochs > 0 and ((epoch + 1) % test_every_n_epochs == 0):
+            _run_test_eval(epoch_value=epoch + 1, step_value=global_step)
 
     # 保存 checkpoint
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -1482,9 +2230,14 @@ def main(cfg: DictConfig) -> None:
             "dataset_source": dataset_source,
             "train_run_dir": str(train_run_dir),
             "test_run_dir": str(test_run_dir),
+            "test_max_samples": test_max_samples,
+            "test_batch_size": max(1, test_batch_size),
+            "test_every_n_epochs": test_every_n_epochs,
             "temporal_stride": temporal_stride,
             "planner_lora_enabled": planner_lora_enabled,
             "planner_lora_checkpoint": planner_lora_checkpoint,
+            "planner_lora_trainable": planner_lora_trainable,
+            "planner_response_mode": planner_response_mode,
             "sigreg_enabled": sigreg_enabled,
             "sigreg_weight": sigreg_weight,
             "sigreg_warmup_steps": sigreg_warmup_steps,
@@ -1503,6 +2256,13 @@ def main(cfg: DictConfig) -> None:
                 "decoder_hidden_channels": image_decoder_hidden_channels,
             },
             "vision_train_mode": train_mode,
+            "qwen_dtype": qwen_dtype,
+            "qwen_hidden_size": qwen_hidden_size,
+            "qwen_lr": qwen_lr,
+            "llm_backbone_trainable": llm_backbone_trainable,
+            "detach_target_latents": detach_target_latents,
+            "fail_on_nonfinite": fail_on_nonfinite,
+            "encode_micro_batch_size": encoder_micro_batch_size,
             "lora_cfg": {
                 "r": int(getattr(lora_cfg, "r", 8)),
                 "alpha": int(getattr(lora_cfg, "alpha", 16)),
