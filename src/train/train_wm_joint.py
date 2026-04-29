@@ -25,6 +25,7 @@ import hydra
 import numpy as np
 from PIL import Image
 import torch
+import torch.distributed as dist
 import wandb
 import matplotlib
 matplotlib.use("Agg")
@@ -32,6 +33,8 @@ import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel
 from torch.optim.lr_scheduler import LambdaLR
 from rich.console import Console, Group
 from rich.live import Live
@@ -101,6 +104,85 @@ class _TUIController:
             if self._old_term is not None:
                 termios.tcsetattr(fd, termios.TCSADRAIN, self._old_term)
                 self._old_term = None
+
+
+class _NoopTracker:
+    def log_metrics(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    def finish(self) -> None:
+        return None
+
+
+class _NoopProgress:
+    def add_task(self, *args: object, **kwargs: object) -> int:
+        return 0
+
+    def update(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    def stop_task(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+class _NoopLive:
+    def start(self) -> None:
+        return None
+
+    def stop(self) -> None:
+        return None
+
+    def update(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+def _init_distributed_if_needed(config_device: str) -> tuple[bool, int, int, int, torch.device]:
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    distributed = world_size > 1
+    if distributed:
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        if not dist.is_initialized():
+            dist.init_process_group(backend=backend)
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+            device = torch.device("cuda", local_rank)
+        else:
+            device = torch.device("cpu")
+    else:
+        device = torch.device(str(config_device))
+    return distributed, rank, local_rank, world_size, device
+
+
+def _cleanup_distributed() -> None:
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def _broadcast_main_bool(value: bool, *, distributed: bool, device: torch.device) -> bool:
+    if not distributed:
+        return bool(value)
+    tensor_device = device if device.type == "cuda" else torch.device("cpu")
+    flag = torch.tensor([1 if value else 0], dtype=torch.int64, device=tensor_device)
+    dist.broadcast(flag, src=0)
+    return bool(flag.item())
+
+
+def _ddp_wrap(
+    module: torch.nn.Module,
+    *,
+    distributed: bool,
+    device: torch.device,
+    find_unused_parameters: bool,
+) -> torch.nn.Module:
+    if not distributed:
+        return module
+    kwargs: dict[str, object] = {"find_unused_parameters": bool(find_unused_parameters)}
+    if device.type == "cuda":
+        kwargs.update({"device_ids": [device.index], "output_device": device.index})
+    return DistributedDataParallel(module, **kwargs)
+
 
 def _count_trainable_params(module: torch.nn.Module) -> int:
     return sum(p.numel() for p in module.parameters() if p.requires_grad)
@@ -699,7 +781,7 @@ def _save_joint_checkpoint(
             "epoch": int(epoch),
             "batch_idx": int(batch_idx),
             "global_step": int(global_step),
-            "vision_encoder_state": qwen_adapter._model.state_dict(),
+            "vision_encoder_state": _unwrap_module(qwen_adapter._model).state_dict(),
             "vision_encoder_ema_state": vision_ema_state,
             "wm_state": _unwrap_module(lewm_model.wm).state_dict(),
             "idm_state": _unwrap_module(lewm_model.idm).state_dict(),
@@ -859,6 +941,7 @@ def _summarize_debug_object(value: object, *, max_items: int = 12) -> object:
 def _write_training_failure_report(
     *,
     exc: BaseException,
+    rank: int,
     epoch: int,
     batch_idx: int,
     global_step: int,
@@ -870,9 +953,10 @@ def _write_training_failure_report(
     report_dir = Path("outputs/dev/joint_training_failures")
     report_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = report_dir / f"failure_step_{global_step:08d}_{timestamp}.txt"
+    report_path = report_dir / f"failure_rank_{int(rank):03d}_step_{global_step:08d}_{timestamp}.txt"
     payload = {
         "timestamp": timestamp,
+        "rank": int(rank),
         "epoch": int(epoch),
         "batch_idx": int(batch_idx),
         "global_step": int(global_step),
@@ -1308,9 +1392,13 @@ def _run_post_training_visualization(
 @hydra.main(version_base=None, config_path="../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     load_project_env()
-    set_seed(int(cfg.project.seed))
-
     train_cfg = cfg.pipeline.train
+    distributed_enabled, rank, local_rank, world_size, device = _init_distributed_if_needed(
+        str(train_cfg.device)
+    )
+    is_main_process = rank == 0
+    set_seed(int(cfg.project.seed) + rank)
+
     wm_cfg = cfg.wm
 
     stage = str(train_cfg.get("stage", "stage1_wm_vision")).strip().lower()
@@ -1319,6 +1407,7 @@ def main(cfg: DictConfig) -> None:
             "当前为 stage2_value_head。该阶段需要 EB_navigation 成功轨迹 value 标注，"
             "本次仅保留占位，暂不执行训练。"
         )
+        _cleanup_distributed()
         return
     if stage != "stage1_wm_vision":
         raise ValueError(f"不支持的 pipeline.train.stage={stage}")
@@ -1327,7 +1416,6 @@ def main(cfg: DictConfig) -> None:
     if dataset_source not in {"ai2thor", "eb_nav", "custom"}:
         raise ValueError(f"不支持的 pipeline.train.dataset_source={dataset_source}")
 
-    device = torch.device(str(train_cfg.device))
     multi_gpu_cfg = getattr(train_cfg, "multi_gpu", {})
     multi_gpu_enabled = bool(getattr(multi_gpu_cfg, "enabled", False))
     multi_gpu_devices_raw = str(getattr(multi_gpu_cfg, "device_ids", "")).strip()
@@ -1343,6 +1431,8 @@ def main(cfg: DictConfig) -> None:
     token_dim = int(getattr(wm_cfg, "token_dim", latent_dim))
     qwen_cfg = getattr(train_cfg, "qwen_encoder", {})
     qwen_dtype = str(getattr(qwen_cfg, "dtype", "auto"))
+    ddp_find_unused_parameters = bool(getattr(multi_gpu_cfg, "find_unused_parameters", True))
+    qwen_device_map = None if distributed_enabled else "auto"
 
     # 创建 Qwen Adapter
     qwen_adapter = QwenVLMAdapter(
@@ -1351,10 +1441,13 @@ def main(cfg: DictConfig) -> None:
         enabled=True,
         fallback_enabled=False,
         model_dtype=qwen_dtype,
+        device_map=qwen_device_map,
     )
     qwen_adapter._ensure_model()
     if qwen_adapter._model is None:
         raise RuntimeError(f"Failed to load Qwen model: {qwen_adapter.init_error}")
+    if distributed_enabled:
+        qwen_adapter._model.to(device)
 
     planner_lora_cfg = getattr(train_cfg, "qwen_planner_lora", {})
     planner_lora_enabled = bool(getattr(planner_lora_cfg, "enabled", False))
@@ -1363,6 +1456,8 @@ def main(cfg: DictConfig) -> None:
     planner_response_mode = str(getattr(planner_lora_cfg, "response_mode", "anchor")).strip().lower()
     if planner_response_mode not in {"anchor", "generate"}:
         raise ValueError(f"不支持的 pipeline.train.qwen_planner_lora.response_mode={planner_response_mode}")
+    if distributed_enabled and planner_response_mode == "generate":
+        raise ValueError("DDP joint training 暂不支持 qwen_planner_lora.response_mode=generate，请使用 anchor。")
     planner_anchor_response: str | None = None
     if planner_lora_enabled and planner_response_mode == "anchor":
         planner_anchor_response = build_planner_special_response(
@@ -1398,6 +1493,8 @@ def main(cfg: DictConfig) -> None:
     kl_cfg = getattr(qwen_cfg, "kl", {})
     ema_cfg = getattr(qwen_cfg, "ema", {})
     kl_enabled = bool(getattr(kl_cfg, "enabled", False))
+    if distributed_enabled and kl_enabled:
+        raise ValueError("DDP joint training 暂不支持 qwen_encoder.kl.enabled=true。")
     kl_weight = float(getattr(kl_cfg, "weight", 0.0))
     kl_temperature = float(getattr(kl_cfg, "temperature", 1.0))
     kl_max_images = int(getattr(kl_cfg, "max_images_per_batch", 8))
@@ -1441,10 +1538,13 @@ def main(cfg: DictConfig) -> None:
             enabled=True,
             fallback_enabled=False,
             model_dtype=qwen_dtype,
+            device_map=qwen_device_map,
         )
         teacher_adapter._ensure_model()
         if teacher_adapter._model is None:
             raise RuntimeError(f"KL teacher Qwen 加载失败: {teacher_adapter.init_error}")
+        if distributed_enabled:
+            teacher_adapter._model.to(device)
         for _, param in teacher_adapter._model.named_parameters():
             param.requires_grad = False
         teacher_adapter._model.eval()
@@ -1529,7 +1629,39 @@ def main(cfg: DictConfig) -> None:
         hidden_dim=int(wm_cfg.inverse_dynamics.hidden_dim),
     ).to(device)
 
-    if (
+    if distributed_enabled:
+        logger.info(
+            "启用 DDP 多进程训练: rank=%s local_rank=%s world_size=%s find_unused_parameters=%s",
+            rank,
+            local_rank,
+            world_size,
+            ddp_find_unused_parameters,
+        )
+        qwen_adapter._model = _ddp_wrap(
+            qwen_adapter._model,
+            distributed=True,
+            device=device,
+            find_unused_parameters=ddp_find_unused_parameters,
+        )
+        wm_module = _ddp_wrap(
+            wm_module,
+            distributed=True,
+            device=device,
+            find_unused_parameters=ddp_find_unused_parameters,
+        )
+        inverse_dynamics = _ddp_wrap(
+            inverse_dynamics,
+            distributed=True,
+            device=device,
+            find_unused_parameters=ddp_find_unused_parameters,
+        )
+        action_mapper = _ddp_wrap(
+            action_mapper,
+            distributed=True,
+            device=device,
+            find_unused_parameters=ddp_find_unused_parameters,
+        )
+    elif (
         multi_gpu_enabled
         and torch.cuda.is_available()
         and len(multi_gpu_device_ids) >= 2
@@ -1607,55 +1739,60 @@ def main(cfg: DictConfig) -> None:
     test_every_n_epochs = int(train_cfg.get("test_every_n_epochs", 1))
     temporal_stride = int(train_cfg.get("temporal_stride", 1))
 
-    show_kv_table("Joint Training Config", [
-        ("model", model_name),
-        ("latent_dim", str(latent_dim)),
-        ("batch_size", str(int(train_cfg.batch_size))),
-        ("epochs", str(int(train_cfg.epochs))),
-        ("device", str(device)),
-        ("multi_gpu_enabled", str(multi_gpu_enabled)),
-        ("multi_gpu_device_ids", str(multi_gpu_device_ids)),
-        ("vision_params", f"{vision_params:,}"),
-        ("vision_train_mode", train_mode),
-        ("qwen_dtype", qwen_dtype),
-        ("qwen_hidden_size", str(qwen_hidden_size) if qwen_hidden_size is not None else "unknown"),
-        ("qwen_lr", f"{qwen_lr:.8f}"),
-        ("llm_backbone_trainable", str(llm_backbone_trainable)),
-        ("detach_target_latents", str(detach_target_latents)),
-        ("fail_on_nonfinite", str(fail_on_nonfinite)),
-        ("encode_micro_batch_size", str(encoder_micro_batch_size)),
-        ("vision_lora_params", f"{lora_trainable_params:,}"),
-        ("wm_params", f"{wm_params:,}"),
-        ("idm_params", f"{idm_params:,}"),
-        ("mapper_params", f"{mapper_params:,}"),
-        ("sigreg_enabled", str(sigreg_enabled)),
-        ("sigreg_weight", f"{sigreg_weight:.6f}"),
-        ("sigreg_warmup_steps", str(sigreg_warmup_steps)),
-        ("dataset_source", dataset_source),
-        ("planner_lora_enabled", str(planner_lora_enabled)),
-        ("planner_lora_trainable", str(planner_lora_trainable)),
-        ("planner_response_mode", planner_response_mode),
-        ("max_samples", str(max_samples)),
-        ("test_max_samples", str(test_max_samples)),
-        ("test_every_n_epochs", str(test_every_n_epochs)),
-        ("reward_enabled", str(reward_enabled)),
-        ("reward_weight", f"{reward_weight:.6f}"),
-        ("perceptual_enabled", str(perceptual_enabled)),
-        ("perceptual_weight", f"{perceptual_weight:.6f}"),
-        ("image_recon_weight", f"{image_recon_weight:.6f}"),
-        ("perceptual_image_size", str(perceptual_image_size)),
-        ("vision_kl_enabled", str(kl_enabled and kl_weight > 0.0)),
-        ("vision_kl_weight", f"{kl_weight:.6f}"),
-        ("vision_ema_enabled", str(vision_ema_enabled)),
-        ("vision_ema_decay", f"{vision_ema_decay:.6f}"),
-        ("total_params", f"{vision_params + wm_params + idm_params + mapper_params:,}"),
-    ])
+    if is_main_process:
+        show_kv_table("Joint Training Config", [
+            ("model", model_name),
+            ("latent_dim", str(latent_dim)),
+            ("batch_size_per_rank", str(int(train_cfg.batch_size))),
+            ("epochs", str(int(train_cfg.epochs))),
+            ("device", str(device)),
+            ("distributed_enabled", str(distributed_enabled)),
+            ("rank/world_size", f"{rank}/{world_size}"),
+            ("multi_gpu_enabled", str(multi_gpu_enabled)),
+            ("multi_gpu_device_ids", str(multi_gpu_device_ids)),
+            ("ddp_find_unused_parameters", str(ddp_find_unused_parameters)),
+            ("vision_params", f"{vision_params:,}"),
+            ("vision_train_mode", train_mode),
+            ("qwen_dtype", qwen_dtype),
+            ("qwen_hidden_size", str(qwen_hidden_size) if qwen_hidden_size is not None else "unknown"),
+            ("qwen_lr", f"{qwen_lr:.8f}"),
+            ("llm_backbone_trainable", str(llm_backbone_trainable)),
+            ("detach_target_latents", str(detach_target_latents)),
+            ("fail_on_nonfinite", str(fail_on_nonfinite)),
+            ("encode_micro_batch_size", str(encoder_micro_batch_size)),
+            ("vision_lora_params", f"{lora_trainable_params:,}"),
+            ("wm_params", f"{wm_params:,}"),
+            ("idm_params", f"{idm_params:,}"),
+            ("mapper_params", f"{mapper_params:,}"),
+            ("sigreg_enabled", str(sigreg_enabled)),
+            ("sigreg_weight", f"{sigreg_weight:.6f}"),
+            ("sigreg_warmup_steps", str(sigreg_warmup_steps)),
+            ("dataset_source", dataset_source),
+            ("planner_lora_enabled", str(planner_lora_enabled)),
+            ("planner_lora_trainable", str(planner_lora_trainable)),
+            ("planner_response_mode", planner_response_mode),
+            ("max_samples", str(max_samples)),
+            ("test_max_samples", str(test_max_samples)),
+            ("test_every_n_epochs", str(test_every_n_epochs)),
+            ("reward_enabled", str(reward_enabled)),
+            ("reward_weight", f"{reward_weight:.6f}"),
+            ("perceptual_enabled", str(perceptual_enabled)),
+            ("perceptual_weight", f"{perceptual_weight:.6f}"),
+            ("image_recon_weight", f"{image_recon_weight:.6f}"),
+            ("perceptual_image_size", str(perceptual_image_size)),
+            ("vision_kl_enabled", str(kl_enabled and kl_weight > 0.0)),
+            ("vision_kl_weight", f"{kl_weight:.6f}"),
+            ("vision_ema_enabled", str(vision_ema_enabled)),
+            ("vision_ema_decay", f"{vision_ema_decay:.6f}"),
+            ("total_params", f"{vision_params + wm_params + idm_params + mapper_params:,}"),
+        ])
 
     # 初始化 tracker
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    tracker = init_tracker(
-        task_name=f"train_wm_joint_{run_timestamp}",
-        config={
+    tracker = (
+        init_tracker(
+            task_name=f"train_wm_joint_{run_timestamp}",
+            config={
             "batch_size": int(train_cfg.batch_size),
             "epochs": int(train_cfg.epochs),
             "lr": lr,
@@ -1698,13 +1835,21 @@ def main(cfg: DictConfig) -> None:
             "perceptual_image_size": perceptual_image_size,
             "perceptual_use_predicted_latent": perceptual_use_predicted_latent,
             "hydra_full_config": OmegaConf.to_container(cfg, resolve=True),
+            "distributed_enabled": distributed_enabled,
+            "rank": rank,
+            "world_size": world_size,
+            "local_rank": local_rank,
+            "ddp_find_unused_parameters": ddp_find_unused_parameters,
             "multi_gpu_enabled": multi_gpu_enabled,
             "multi_gpu_device_ids": multi_gpu_device_ids,
-        },
+            },
+        )
+        if is_main_process
+        else _NoopTracker()
     )
     vision_ema_state: dict[str, torch.Tensor] | None = None
     if vision_ema_enabled:
-        vision_ema_state = _build_visual_ema_state(qwen_adapter._model)
+        vision_ema_state = _build_visual_ema_state(_unwrap_module(qwen_adapter._model))
 
     test_dataset = None
     if dataset_source == "ai2thor":
@@ -1772,10 +1917,34 @@ def main(cfg: DictConfig) -> None:
             require_prompt=custom_require_prompt,
         )
 
+    train_sampler = (
+        DistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            drop_last=False,
+        )
+        if distributed_enabled
+        else None
+    )
+    test_sampler = (
+        DistributedSampler(
+            test_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            drop_last=False,
+        )
+        if distributed_enabled and test_dataset is not None
+        else None
+    )
+
     dataloader = DataLoader(
         dataset,
         batch_size=int(train_cfg.batch_size),
-        shuffle=True,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
         num_workers=0,  # 在线 Qwen 编码不使用多进程 DataLoader
         collate_fn=_joint_collate_fn,
     )
@@ -1784,6 +1953,7 @@ def main(cfg: DictConfig) -> None:
             test_dataset,
             batch_size=max(1, test_batch_size),
             shuffle=False,
+            sampler=test_sampler,
             num_workers=0,
             collate_fn=_joint_collate_fn,
         )
@@ -1791,18 +1961,19 @@ def main(cfg: DictConfig) -> None:
         else None
     )
 
-    show_kv_table("Dataset", [
-        ("stage", stage),
-        ("dataset_source", dataset_source),
-        ("train_run_dir", str(train_run_dir)),
-        ("test_run_dir", str(test_run_dir)),
-        ("samples", str(len(dataset))),
-        ("test_samples", str(len(test_dataset)) if test_dataset is not None else "disabled"),
-        ("batch_size", str(int(train_cfg.batch_size))),
-        ("test_batch_size", str(max(1, test_batch_size)) if test_dataloader is not None else "disabled"),
-        ("steps_per_epoch", str(len(dataloader))),
-        ("test_steps", str(len(test_dataloader)) if test_dataloader is not None else "disabled"),
-    ])
+    if is_main_process:
+        show_kv_table("Dataset", [
+            ("stage", stage),
+            ("dataset_source", dataset_source),
+            ("train_run_dir", str(train_run_dir)),
+            ("test_run_dir", str(test_run_dir)),
+            ("samples", str(len(dataset))),
+            ("test_samples", str(len(test_dataset)) if test_dataset is not None else "disabled"),
+            ("batch_size_per_rank", str(int(train_cfg.batch_size))),
+            ("test_batch_size_per_rank", str(max(1, test_batch_size)) if test_dataloader is not None else "disabled"),
+            ("steps_per_epoch_per_rank", str(len(dataloader))),
+            ("test_steps_per_rank", str(len(test_dataloader)) if test_dataloader is not None else "disabled"),
+        ])
 
     checkpoint_dir = Path("models/wm/joint_qwen")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -1816,7 +1987,7 @@ def main(cfg: DictConfig) -> None:
     if resume_checkpoint is not None:
         state = torch.load(resume_checkpoint, map_location=device)
         if "vision_encoder_state" in state:
-            qwen_adapter._model.load_state_dict(state["vision_encoder_state"], strict=False)
+            _unwrap_module(qwen_adapter._model).load_state_dict(state["vision_encoder_state"], strict=False)
         if state.get("vision_encoder_ema_state") is not None:
             vision_ema_state = state.get("vision_encoder_ema_state")
         if "wm_state" in state:
@@ -1852,11 +2023,11 @@ def main(cfg: DictConfig) -> None:
     vis_include_sigreg_encoder = bool(train_cfg.get("post_visualization_include_sigreg_encoder_space", True))
 
     def _run_visualization_once(step_value: int) -> None:
-        if not vis_enabled or dataset_source != "ai2thor":
+        if not is_main_process or distributed_enabled or not vis_enabled or dataset_source != "ai2thor":
             return
         backup_state: dict[str, torch.Tensor] | None = None
         if vision_ema_state is not None and vision_ema_use_for_eval:
-            backup_state = _apply_visual_state(qwen_adapter._model, vision_ema_state)
+            backup_state = _apply_visual_state(_unwrap_module(qwen_adapter._model), vision_ema_state)
         try:
             _run_post_training_visualization(
                 wm_model=_unwrap_module(lewm_model.wm),
@@ -1876,9 +2047,15 @@ def main(cfg: DictConfig) -> None:
             )
         finally:
             if backup_state is not None:
-                _apply_visual_state(qwen_adapter._model, backup_state)
+                _apply_visual_state(_unwrap_module(qwen_adapter._model), backup_state)
 
     def _run_test_eval(epoch_value: int, step_value: int) -> dict[str, float]:
+        if distributed_enabled:
+            if is_main_process:
+                success("DDP 模式下跳过在线 test eval；如需评估，请用保存的 checkpoint 单进程运行评估。")
+            return {}
+        if not is_main_process:
+            return {}
         if test_dataloader is None:
             return {}
         qwen_was_training = bool(qwen_adapter._model.training) if qwen_adapter._model is not None else False
@@ -1955,45 +2132,53 @@ def main(cfg: DictConfig) -> None:
     log_every_n_steps = int(train_cfg.get("log_every_n_steps", 1))
     recent_losses: deque[dict[str, float]] = deque(maxlen=50)
     tui = _TUIController()
-    tui.start()
+    if is_main_process:
+        tui.start()
 
     for epoch in range(resume_epoch, epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         lewm_model.wm.train()
         lewm_model.idm.train()
         lewm_model.action_mapper.train()
 
-        progress = Progress(
-            TextColumn("[bold cyan]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-            TextColumn("step={task.fields[step_time]}s"),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-            console=console,
-            transient=False,
-        )
-        task_id = progress.add_task(f"Epoch {epoch + 1}/{epochs}", total=len(dataloader), step_time="0.000")
-        loss_table = _build_loss_table(
-            epoch=epoch + 1,
-            epochs=epochs,
-            step=0,
-            total_steps=len(dataloader),
-            global_step=global_step,
-            step_loss=0.0,
-            step_recon=0.0,
-            step_action=0.0,
-            step_sigreg=0.0,
-            step_sigreg_w=0.0,
-            step_sigreg_weighted=0.0,
-            step_kl=0.0,
-            step_reward=0.0,
-            step_image_recon=0.0,
-            step_perceptual=0.0,
-            step_total_with_kl=0.0,
-            lr_wm=float(wm_optimizer.param_groups[0]["lr"]),
-            lr_idm=float(idm_optimizer.param_groups[0]["lr"]),
-        )
-        live = Live(Group(loss_table, progress), console=console, refresh_per_second=4, transient=False)
+        if is_main_process:
+            progress = Progress(
+                TextColumn("[bold cyan]{task.description}"),
+                BarColumn(),
+                TextColumn("{task.completed}/{task.total}"),
+                TextColumn("step={task.fields[step_time]}s"),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                console=console,
+                transient=False,
+            )
+            task_id = progress.add_task(f"Epoch {epoch + 1}/{epochs}", total=len(dataloader), step_time="0.000")
+            loss_table = _build_loss_table(
+                epoch=epoch + 1,
+                epochs=epochs,
+                step=0,
+                total_steps=len(dataloader),
+                global_step=global_step,
+                step_loss=0.0,
+                step_recon=0.0,
+                step_action=0.0,
+                step_sigreg=0.0,
+                step_sigreg_w=0.0,
+                step_sigreg_weighted=0.0,
+                step_kl=0.0,
+                step_reward=0.0,
+                step_image_recon=0.0,
+                step_perceptual=0.0,
+                step_total_with_kl=0.0,
+                lr_wm=float(wm_optimizer.param_groups[0]["lr"]),
+                lr_idm=float(idm_optimizer.param_groups[0]["lr"]),
+            )
+            live = Live(Group(loss_table, progress), console=console, refresh_per_second=4, transient=False)
+        else:
+            progress = _NoopProgress()
+            task_id = 0
+            live = _NoopLive()
         live_started = False
         live.start()
         live_started = True
@@ -2002,23 +2187,32 @@ def main(cfg: DictConfig) -> None:
                 if epoch == resume_epoch and batch_idx <= resume_batch_idx:
                     progress.update(task_id, advance=1, step_time="skip")
                     continue
-                if tui.pause_requested:
+                pause_requested = _broadcast_main_bool(
+                    bool(tui.pause_requested) if is_main_process else False,
+                    distributed=distributed_enabled,
+                    device=device,
+                )
+                if pause_requested:
                     pause_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                     pause_ckpt = checkpoint_dir / f"checkpoint_pause_{pause_ts}.pt"
-                    _save_joint_checkpoint(
-                        path=pause_ckpt,
-                        epoch=epoch,
-                        batch_idx=batch_idx,
-                        global_step=global_step,
-                        qwen_adapter=qwen_adapter,
-                        vision_ema_state=vision_ema_state,
-                        lewm_model=lewm_model,
-                        wm_scheduler=wm_scheduler,
-                        idm_scheduler=idm_scheduler,
-                    )
-                    success(f"已暂停并保存断点: {pause_ckpt}")
+                    if is_main_process:
+                        _save_joint_checkpoint(
+                            path=pause_ckpt,
+                            epoch=epoch,
+                            batch_idx=batch_idx,
+                            global_step=global_step,
+                            qwen_adapter=qwen_adapter,
+                            vision_ema_state=vision_ema_state,
+                            lewm_model=lewm_model,
+                            wm_scheduler=wm_scheduler,
+                            idm_scheduler=idm_scheduler,
+                        )
+                        success(f"已暂停并保存断点: {pause_ckpt}")
+                    if distributed_enabled:
+                        dist.barrier()
                     tui.stop()
                     tracker.finish()
+                    _cleanup_distributed()
                     return
                 step_t0 = time.perf_counter()
                 history_images = batch["history_images"]  # [B, H]
@@ -2057,10 +2251,14 @@ def main(cfg: DictConfig) -> None:
                         torch.nn.utils.clip_grad_norm_(qwen_adapter._model.parameters(), float(getattr(train_cfg, "grad_clip_norm", 5.0)))
                         wm_optimizer.step()
                 if vision_ema_state is not None:
-                    _update_visual_ema_state(vision_ema_state, qwen_adapter._model, vision_ema_decay)
+                    _update_visual_ema_state(
+                        vision_ema_state,
+                        _unwrap_module(qwen_adapter._model),
+                        vision_ema_decay,
+                    )
 
                 # 记录
-                if log_every_n_steps > 0 and global_step % log_every_n_steps == 0:
+                if is_main_process and log_every_n_steps > 0 and global_step % log_every_n_steps == 0:
                     log_dict = {
                         "loss": float(step_metrics.get("loss", 0.0)),
                         "loss_recon": float(step_metrics.get("loss_recon", 0.0)),
@@ -2113,51 +2311,52 @@ def main(cfg: DictConfig) -> None:
                 step_total_with_kl = step_loss + float(kl_weight * step_kl)
                 lr_wm_cur = float(step_metrics.get("lr_wm", wm_optimizer.param_groups[0]["lr"]))
                 lr_idm_cur = float(step_metrics.get("lr_idm", idm_optimizer.param_groups[0]["lr"]))
-                recent_losses.append(
-                    {
-                        "gstep": float(global_step),
-                        "loss": step_loss,
-                        "recon": step_recon,
-                        "action": step_action,
-                        "sigreg": step_sigreg,
-                        "sigreg_weighted": step_sigreg_weighted,
-                        "kl": step_kl,
-                        "reward": step_reward,
-                        "perceptual": step_perceptual,
-                    }
-                )
-                loss_table = _build_loss_table(
-                    epoch=epoch + 1,
-                    epochs=epochs,
-                    step=batch_idx + 1,
-                    total_steps=len(dataloader),
-                    global_step=global_step,
-                    step_loss=step_loss,
-                    step_recon=step_recon,
-                    step_action=step_action,
-                    step_sigreg=step_sigreg,
-                    step_sigreg_w=step_sigreg_w,
-                    step_sigreg_weighted=step_sigreg_weighted,
-                    step_kl=step_kl,
-                    step_reward=step_reward,
-                    step_image_recon=step_image_recon,
-                    step_perceptual=step_perceptual,
-                    step_total_with_kl=step_total_with_kl,
-                    lr_wm=lr_wm_cur,
-                    lr_idm=lr_idm_cur,
-                )
                 step_dt = max(1e-6, time.perf_counter() - step_t0)
-                progress.update(task_id, advance=1, step_time=f"{step_dt:.3f}")
-                tab = max(0, min(3, tui.active_tab))
-                if tab == 0:
-                    top_panel = loss_table
-                elif tab == 1:
-                    top_panel = _build_gpu_table()
-                elif tab == 2:
-                    top_panel = _build_recent_loss_table(recent_losses)
-                else:
-                    top_panel = _build_control_panel(tab)
-                live.update(Group(top_panel, progress))
+                if is_main_process:
+                    recent_losses.append(
+                        {
+                            "gstep": float(global_step),
+                            "loss": step_loss,
+                            "recon": step_recon,
+                            "action": step_action,
+                            "sigreg": step_sigreg,
+                            "sigreg_weighted": step_sigreg_weighted,
+                            "kl": step_kl,
+                            "reward": step_reward,
+                            "perceptual": step_perceptual,
+                        }
+                    )
+                    loss_table = _build_loss_table(
+                        epoch=epoch + 1,
+                        epochs=epochs,
+                        step=batch_idx + 1,
+                        total_steps=len(dataloader),
+                        global_step=global_step,
+                        step_loss=step_loss,
+                        step_recon=step_recon,
+                        step_action=step_action,
+                        step_sigreg=step_sigreg,
+                        step_sigreg_w=step_sigreg_w,
+                        step_sigreg_weighted=step_sigreg_weighted,
+                        step_kl=step_kl,
+                        step_reward=step_reward,
+                        step_image_recon=step_image_recon,
+                        step_perceptual=step_perceptual,
+                        step_total_with_kl=step_total_with_kl,
+                        lr_wm=lr_wm_cur,
+                        lr_idm=lr_idm_cur,
+                    )
+                    progress.update(task_id, advance=1, step_time=f"{step_dt:.3f}")
+                    tab = max(0, min(3, tui.active_tab))
+                    if tab == 0:
+                        top_panel = loss_table
+                    elif tab == 1:
+                        top_panel = _build_gpu_table()
+                    elif tab == 2:
+                        top_panel = _build_recent_loss_table(recent_losses)
+                    else:
+                        top_panel = _build_control_panel(tab)
+                    live.update(Group(top_panel, progress))
 
                 global_step += 1
                 lewm_model._global_step = global_step
@@ -2165,17 +2364,20 @@ def main(cfg: DictConfig) -> None:
                     _run_visualization_once(global_step)
                 if save_every_steps > 0 and global_step > 0 and global_step % save_every_steps == 0:
                     step_ckpt = checkpoint_dir / f"checkpoint_step_{global_step:08d}.pt"
-                    _save_joint_checkpoint(
-                        path=step_ckpt,
-                        epoch=epoch,
-                        batch_idx=batch_idx,
-                        global_step=global_step,
-                        qwen_adapter=qwen_adapter,
-                        vision_ema_state=vision_ema_state,
-                        lewm_model=lewm_model,
-                        wm_scheduler=wm_scheduler,
-                        idm_scheduler=idm_scheduler,
-                    )
+                    if is_main_process:
+                        _save_joint_checkpoint(
+                            path=step_ckpt,
+                            epoch=epoch,
+                            batch_idx=batch_idx,
+                            global_step=global_step,
+                            qwen_adapter=qwen_adapter,
+                            vision_ema_state=vision_ema_state,
+                            lewm_model=lewm_model,
+                            wm_scheduler=wm_scheduler,
+                            idm_scheduler=idm_scheduler,
+                        )
+                    if distributed_enabled:
+                        dist.barrier()
 
             progress.stop_task(task_id)
         except BaseException as exc:
@@ -2186,6 +2388,7 @@ def main(cfg: DictConfig) -> None:
             model_debug = getattr(lewm_model, "_last_debug_tensors", None)
             report_path = _write_training_failure_report(
                 exc=exc,
+                rank=rank,
                 epoch=epoch + 1,
                 batch_idx=int(locals().get("batch_idx", -1)),
                 global_step=global_step,
@@ -2198,114 +2401,123 @@ def main(cfg: DictConfig) -> None:
                 batch_device=locals().get("batch_device"),
                 model_debug=model_debug,
             )
-            console.print()
-            console.print(
-                Panel(
-                    "[bold red]Joint training failed[/bold red]\n"
-                    f"type: {type(exc).__name__}\n"
-                    f"message: {exc}\n"
-                    f"epoch: {epoch + 1}\n"
-                    f"batch_idx: {int(locals().get('batch_idx', -1))}\n"
-                    f"global_step: {global_step}\n"
-                    f"debug_report: {report_path}\n\n"
-                    f"{debug_summary}",
-                    title="Training Error",
-                    border_style="red",
-                    expand=False,
+            if is_main_process:
+                console.print()
+                console.print(
+                    Panel(
+                        "[bold red]Joint training failed[/bold red]\n"
+                        f"type: {type(exc).__name__}\n"
+                        f"message: {exc}\n"
+                        f"epoch: {epoch + 1}\n"
+                        f"batch_idx: {int(locals().get('batch_idx', -1))}\n"
+                        f"global_step: {global_step}\n"
+                        f"debug_report: {report_path}\n\n"
+                        f"{debug_summary}",
+                        title="Training Error",
+                        border_style="red",
+                        expand=False,
+                    )
                 )
-            )
             tracker.finish()
             raise
         finally:
             if live_started:
                 live.stop()
 
-        success(f"Epoch {epoch+1}/{epochs} 完成")
+        if is_main_process:
+            success(f"Epoch {epoch+1}/{epochs} 完成")
         if test_dataloader is not None and test_every_n_epochs > 0 and ((epoch + 1) % test_every_n_epochs == 0):
             _run_test_eval(epoch_value=epoch + 1, step_value=global_step)
 
     # 保存 checkpoint
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    checkpoint_path = checkpoint_dir / f"checkpoint_{timestamp}.pt"
+    if is_main_process:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        checkpoint_path = checkpoint_dir / f"checkpoint_{timestamp}.pt"
 
-    torch.save({
-        "epoch": epoch + 1,
-        "global_step": global_step,
-        "vision_encoder_state": qwen_adapter._model.state_dict(),
-        "vision_encoder_ema_state": vision_ema_state,
-        "wm_state": _unwrap_module(lewm_model.wm).state_dict(),
-        "idm_state": _unwrap_module(lewm_model.idm).state_dict(),
-        "action_mapper_state": _unwrap_module(lewm_model.action_mapper).state_dict(),
-        "wm_optimizer_state": lewm_model.wm_optimizer.state_dict(),
-        "idm_optimizer_state": lewm_model.idm_optimizer.state_dict(),
-        "config": {
-            "latent_dim": latent_dim,
-            "model_name": model_name,
-            "stage": stage,
-            "dataset_source": dataset_source,
-            "train_run_dir": str(train_run_dir),
-            "test_run_dir": str(test_run_dir),
-            "test_max_samples": test_max_samples,
-            "test_batch_size": max(1, test_batch_size),
-            "test_every_n_epochs": test_every_n_epochs,
-            "temporal_stride": temporal_stride,
-            "planner_lora_enabled": planner_lora_enabled,
-            "planner_lora_checkpoint": planner_lora_checkpoint,
-            "planner_lora_trainable": planner_lora_trainable,
-            "planner_response_mode": planner_response_mode,
-            "sigreg_enabled": sigreg_enabled,
-            "sigreg_weight": sigreg_weight,
-            "sigreg_warmup_steps": sigreg_warmup_steps,
-            "reward": {
-                "enabled": reward_enabled,
-                "weight": reward_weight,
-                "loss_type": reward_loss_type,
-                "hidden_dim": reward_hidden_dim,
-            },
-            "perceptual": {
-                "enabled": perceptual_enabled,
-                "weight": perceptual_weight,
-                "image_recon_weight": image_recon_weight,
-                "image_size": perceptual_image_size,
-                "use_predicted_latent": perceptual_use_predicted_latent,
-                "decoder_hidden_channels": image_decoder_hidden_channels,
-            },
-            "vision_train_mode": train_mode,
-            "qwen_dtype": qwen_dtype,
-            "qwen_hidden_size": qwen_hidden_size,
-            "qwen_lr": qwen_lr,
-            "llm_backbone_trainable": llm_backbone_trainable,
-            "detach_target_latents": detach_target_latents,
-            "fail_on_nonfinite": fail_on_nonfinite,
-            "encode_micro_batch_size": encoder_micro_batch_size,
-            "lora_cfg": {
-                "r": int(getattr(lora_cfg, "r", 8)),
-                "alpha": int(getattr(lora_cfg, "alpha", 16)),
-                "dropout": float(getattr(lora_cfg, "dropout", 0.05)),
-                "target_modules": list(getattr(lora_cfg, "target_modules", [])),
-            },
-            "kl_cfg": {
-                "enabled": kl_enabled,
-                "weight": kl_weight,
-                "temperature": kl_temperature,
-                "max_images_per_batch": kl_max_images,
-            },
-            "ema_cfg": {
-                "enabled": vision_ema_enabled,
-                "decay": vision_ema_decay,
-                "use_ema_for_eval": vision_ema_use_for_eval,
-            },
-        }
-    }, checkpoint_path)
-    success(f"Checkpoint saved to {checkpoint_path}")
+        torch.save({
+            "epoch": epoch + 1,
+            "global_step": global_step,
+            "vision_encoder_state": _unwrap_module(qwen_adapter._model).state_dict(),
+            "vision_encoder_ema_state": vision_ema_state,
+            "wm_state": _unwrap_module(lewm_model.wm).state_dict(),
+            "idm_state": _unwrap_module(lewm_model.idm).state_dict(),
+            "action_mapper_state": _unwrap_module(lewm_model.action_mapper).state_dict(),
+            "wm_optimizer_state": lewm_model.wm_optimizer.state_dict(),
+            "idm_optimizer_state": lewm_model.idm_optimizer.state_dict(),
+            "config": {
+                "latent_dim": latent_dim,
+                "model_name": model_name,
+                "stage": stage,
+                "dataset_source": dataset_source,
+                "train_run_dir": str(train_run_dir),
+                "test_run_dir": str(test_run_dir),
+                "test_max_samples": test_max_samples,
+                "test_batch_size": max(1, test_batch_size),
+                "test_every_n_epochs": test_every_n_epochs,
+                "temporal_stride": temporal_stride,
+                "distributed_enabled": distributed_enabled,
+                "world_size": world_size,
+                "planner_lora_enabled": planner_lora_enabled,
+                "planner_lora_checkpoint": planner_lora_checkpoint,
+                "planner_lora_trainable": planner_lora_trainable,
+                "planner_response_mode": planner_response_mode,
+                "sigreg_enabled": sigreg_enabled,
+                "sigreg_weight": sigreg_weight,
+                "sigreg_warmup_steps": sigreg_warmup_steps,
+                "reward": {
+                    "enabled": reward_enabled,
+                    "weight": reward_weight,
+                    "loss_type": reward_loss_type,
+                    "hidden_dim": reward_hidden_dim,
+                },
+                "perceptual": {
+                    "enabled": perceptual_enabled,
+                    "weight": perceptual_weight,
+                    "image_recon_weight": image_recon_weight,
+                    "image_size": perceptual_image_size,
+                    "use_predicted_latent": perceptual_use_predicted_latent,
+                    "decoder_hidden_channels": image_decoder_hidden_channels,
+                },
+                "vision_train_mode": train_mode,
+                "qwen_dtype": qwen_dtype,
+                "qwen_hidden_size": qwen_hidden_size,
+                "qwen_lr": qwen_lr,
+                "llm_backbone_trainable": llm_backbone_trainable,
+                "detach_target_latents": detach_target_latents,
+                "fail_on_nonfinite": fail_on_nonfinite,
+                "encode_micro_batch_size": encoder_micro_batch_size,
+                "lora_cfg": {
+                    "r": int(getattr(lora_cfg, "r", 8)),
+                    "alpha": int(getattr(lora_cfg, "alpha", 16)),
+                    "dropout": float(getattr(lora_cfg, "dropout", 0.05)),
+                    "target_modules": list(getattr(lora_cfg, "target_modules", [])),
+                },
+                "kl_cfg": {
+                    "enabled": kl_enabled,
+                    "weight": kl_weight,
+                    "temperature": kl_temperature,
+                    "max_images_per_batch": kl_max_images,
+                },
+                "ema_cfg": {
+                    "enabled": vision_ema_enabled,
+                    "decay": vision_ema_decay,
+                    "use_ema_for_eval": vision_ema_use_for_eval,
+                },
+            }
+        }, checkpoint_path)
+        success(f"Checkpoint saved to {checkpoint_path}")
+    if distributed_enabled:
+        dist.barrier()
 
     # 训练结束后再补一次可视化（即使中途已按步触发）。
     _run_visualization_once(global_step)
 
     tui.stop()
     tracker.finish()
-    success("训练完成")
+    if is_main_process:
+        success("训练完成")
+    _cleanup_distributed()
 
 
 if __name__ == "__main__":

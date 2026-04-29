@@ -151,10 +151,15 @@ qwen_planner_lora:
   anchor_action_id: 0
 # 多卡配置（仅训练阶段）
 multi_gpu:
-  # true 时在可用 2+ GPU 上对 WM/IDM/mapper 启用 DataParallel
+  # 推荐用 torchrun 启动 DDP：
+  #   torchrun --nproc_per_node=4 -m src.train.train_wm_joint ...
+  # torchrun 多进程时会自动对 Qwen/WM/IDM/mapper 启用 DDP。
+  # true 仅保留旧单进程 DataParallel fallback；它不会并行 Qwen。
   enabled: false
   # 逗号分隔的设备 id，留空时自动使用全部可见 GPU（如 CUDA_VISIBLE_DEVICES=0,1）
   device_ids: ""
+  # Qwen LoRA/token rows 可能存在不参与 loss 的参数，DDP 默认开启 unused 参数检测。
+  find_unused_parameters: true
 sigreg:
   # 是否启用 LeWM 论文风格 SIGReg；null 表示跟随 wm.lewm.sigreg_enabled
   enabled: null
