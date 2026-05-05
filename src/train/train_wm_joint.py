@@ -2517,7 +2517,10 @@ def main(cfg: DictConfig) -> None:
             _run_test_eval(epoch_value=epoch + 1, step_value=global_step)
 
     # 保存 checkpoint
-    if is_main_process:
+    save_final_checkpoint = bool(train_cfg.get("save_final_checkpoint", True))
+    if is_main_process and not save_final_checkpoint:
+        console.print("[yellow]跳过最终 checkpoint 保存：pipeline.train.save_final_checkpoint=false[/yellow]")
+    if is_main_process and save_final_checkpoint:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         checkpoint_path = checkpoint_dir / f"checkpoint_{timestamp}.pt"
