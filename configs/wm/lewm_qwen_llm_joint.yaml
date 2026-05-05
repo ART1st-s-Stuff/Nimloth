@@ -12,7 +12,7 @@ latent_dim: 3584
 # num_patches=1 表示 latent 是单一的 LLM hidden state（不是多个 patch tokens）
 num_patches: 1
 token_dim: 3584
-action_dim: 3
+action_dim: 8
 history_len: 4
 transformer:
   num_layers: 6

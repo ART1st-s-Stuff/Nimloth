@@ -24,7 +24,8 @@
 set -euo pipefail
 
 # ---- NCCL 环境健壮性检查 ---------------------------------------------------------
-# 某些集群会预置 NCCL_TOPO_FILE，但文件并非 NCCL XML（例如 nvidia-smi topo 文本表格），
+# 某些集群会预置 NCCL_TOPO_FILE，但文件并非 NCCL native topo XML
+#（例如 nvidia-smi topo 文本表格或 hwloc.xml），
 # 会在 dist.barrier 时触发 "XML Parse error" 并导致 DDP 初始化失败。
 if [[ -n "${NCCL_TOPO_FILE:-}" ]]; then
   if [[ ! -f "${NCCL_TOPO_FILE}" ]]; then
@@ -36,10 +37,14 @@ from pathlib import Path
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8", errors="ignore")
 stripped = text.lstrip()
-sys.exit(0 if stripped.startswith("<") else 1)
+if not stripped.startswith("<"):
+    sys.exit(1)
+if stripped.startswith("<?xml") or stripped.startswith("<!DOCTYPE") or stripped.startswith("<topology"):
+    sys.exit(1)
+sys.exit(0 if stripped.startswith("<system") else 1)
 PY
   then
-    echo "[warn] NCCL_TOPO_FILE 不是 XML，已自动禁用以避免 NCCL 解析失败: ${NCCL_TOPO_FILE}"
+    echo "[warn] NCCL_TOPO_FILE 不是 NCCL native topo XML，已自动禁用以避免 NCCL 解析失败: ${NCCL_TOPO_FILE}"
     unset NCCL_TOPO_FILE
   fi
 fi

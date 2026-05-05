@@ -377,3 +377,19 @@ lewm:
 ### 说明
 - 当前 LoRA 策略仅覆盖 Qwen visual encoder（按当前阶段目标），不扩展到 LLM backbone。
 - KL 采用 vision token 级别，默认关闭，通过配置显式开启。
+
+---
+
+## Phase 2 改进：EB-Nav 动作对齐与离散动作（2026-05-05）
+
+### 本次更新
+- 将 EB-Nav WM 监督目标修正为：使用到达当前 `future input_image` 的上一条动作作为 `gt_action_future`，即用 `history_last action` 预测当前 future observation。
+- EB-Nav 动作在 `action_dim >= 8` 时改为 8 类 one-hot 离散动作，避免连续动作尺度与语义混用问题。
+- `lewm_qwen_llm_joint` 的 `action_dim` 更新为 8，联合训练入口、checkpoint config 与 EB-Nav 可视化/评估脚本改为读取配置中的动作维度。
+
+### 验证
+- 通过 `python3 -m compileall -q src/data/eb_nav_dataset.py src/train/train_wm_joint.py src/train/visualize_eb_nav_rollout.py scripts/evaluate_eb_nav_value_head_actions.py`。
+- 通过轻量数据集断言：`EBNavSequenceDataset(action_dim=8, history_len=4, temporal_stride=4)` 的首个 future action id 等于原始轨迹第 3 步动作，并输出 8 维 one-hot。
+
+### 注意
+- 当前分支创建时已有若干未提交改动和未跟踪产物；提交时应避免混入压缩包与无关临时输出。

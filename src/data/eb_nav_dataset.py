@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 from torch.utils.data import Dataset
 
+from src.vlm.qwen_planner import build_planner_special_response
+
 if TYPE_CHECKING:
     from src.wm.encoder import WMImageEncoder
 
@@ -37,6 +39,21 @@ ACTION_NAMES = {
     6: "Tilt the camera upward by 30 degrees",
     7: "Tilt the camera downward by 30 degrees",
 }
+
+EB_NAV_DISCRETE_ACTION_DIM = len(ACTION_MAP)
+
+
+def encode_eb_nav_action(action_id: int, action_dim: int) -> list[float]:
+    """Encode EB-Nav action as one-hot when action_dim covers the discrete space."""
+    action_id = int(action_id)
+    action_dim = int(action_dim)
+    if action_dim >= EB_NAV_DISCRETE_ACTION_DIM:
+        action_vec = [0.0] * action_dim
+        if action_id in ACTION_MAP:
+            action_vec[action_id] = 1.0
+        return action_vec
+    continuous = ACTION_MAP.get(action_id, [0, 0, 0])
+    return [float(x) for x in continuous[:action_dim]]
 
 def resolve_eb_nav_image_path(img_path: str, images_base_dir: str | Path) -> str:
     """Resolve an EB-Nav image path while preserving absolute paths."""
@@ -180,10 +197,9 @@ class EBNavDataset(Dataset):
         return len(self.samples)
 
     def _parse_action(self, action: list) -> list[float]:
-        """将动作转换为连续动作向量 [move, yaw, pitch]"""
+        """将动作转换为训练用向量；action_dim>=8 时使用离散 one-hot。"""
         action_id = action[0]
-        action_vec = ACTION_MAP.get(action_id, [0, 0, 0])
-        return action_vec[: self.action_dim]
+        return encode_eb_nav_action(int(action_id), self.action_dim)
 
     def _get_reward(
         self,
@@ -211,7 +227,7 @@ class EBNavDataset(Dataset):
 
         # 获取图像路径
         plan = step["executable_plan"][0] if step["executable_plan"] else {}
-        img_path = plan.get("img_path", step.get("input_image_path", ""))
+        img_path = step.get("input_image_path", plan.get("img_path", ""))
         img_path = resolve_eb_nav_image_path(img_path, self.images_base_dir)
 
         # 获取动作
@@ -291,39 +307,62 @@ class EBNavSequenceDataset(Dataset):
                 # 构建历史和未来的图像路径、动作
                 history_images = []
                 history_actions = []
+                history_planner_responses = []
                 for step in history_steps:
                     plan = step["executable_plan"][0] if step["executable_plan"] else {}
-                    img_path = plan.get("img_path", step.get("input_image_path", ""))
+                    # `input_image_path` is the observation before this step's
+                    # action; `plan.img_path` is the post-action frame.  The WM
+                    # convention matches AI2-THOR: state_t paired with action_t
+                    # predicts state_{t+1}.
+                    img_path = step.get("input_image_path", plan.get("img_path", ""))
                     img_path = resolve_eb_nav_image_path(img_path, self.images_base_dir)
                     history_images.append(img_path)
                     action_list = plan.get("action", [0, ""])
-                    action_vec = [0, 0, 0]
                     action_id = action_list[0] if isinstance(action_list, list) else 0
-                    action_vec = ACTION_MAP.get(action_id, [0, 0, 0])
-                    history_actions.append(action_vec[:action_dim])
+                    history_actions.append(encode_eb_nav_action(int(action_id), action_dim))
+                    history_planner_responses.append(
+                        build_planner_special_response(
+                            cot=str(step.get("reasoning_and_reflection", "")),
+                            action_id=int(action_id),
+                        )
+                    )
 
                 future_images = []
                 future_actions = []
                 future_rewards = []
                 future_action_ids = []
+                future_planner_responses = []
                 for future_offset, step in enumerate(future_steps):
                     absolute_step_idx = start + history_len + future_offset
                     plan = step["executable_plan"][0] if step["executable_plan"] else {}
-                    img_path = plan.get("img_path", step.get("input_image_path", ""))
+                    img_path = step.get("input_image_path", plan.get("img_path", ""))
                     img_path = resolve_eb_nav_image_path(img_path, self.images_base_dir)
                     future_images.append(img_path)
-                    action_list = plan.get("action", [0, ""])
-                    action_vec = [0, 0, 0]
-                    action_id = action_list[0] if isinstance(action_list, list) else 0
-                    action_vec = ACTION_MAP.get(action_id, [0, 0, 0])
-                    future_actions.append(action_vec[:action_dim])
-                    future_action_ids.append(int(action_id))
-                    cached = self.reward_cache.get((ep_idx, absolute_step_idx, 0))
+
+                    # 当前 future input_image 是上一条 executable_plan 执行动作后的观测。
+                    # 因此监督 (state_t, action_t) -> state_{t+1} 时，目标动作必须来自上一 step。
+                    source_step_idx = absolute_step_idx - 1
+                    source_step = trajectory[source_step_idx]
+                    source_plan = source_step["executable_plan"][0] if source_step["executable_plan"] else {}
+                    source_action_list = source_plan.get("action", [0, ""])
+                    source_action_id = source_action_list[0] if isinstance(source_action_list, list) else 0
+                    future_actions.append(encode_eb_nav_action(int(source_action_id), action_dim))
+                    future_action_ids.append(int(source_action_id))
+
+                    current_action_list = plan.get("action", [0, ""])
+                    current_action_id = current_action_list[0] if isinstance(current_action_list, list) else 0
+                    future_planner_responses.append(
+                        build_planner_special_response(
+                            cot=str(step.get("reasoning_and_reflection", "")),
+                            action_id=int(current_action_id),
+                        )
+                    )
+                    cached = self.reward_cache.get((ep_idx, source_step_idx, 0))
                     if cached is None:
                         cached = compute_eb_nav_reward(
-                            action_success=bool(plan.get("action_success", False)),
-                            env_feedback=str(plan.get("env_feedback", "")),
-                            is_terminal=absolute_step_idx == num_steps - 1,
+                            action_success=bool(source_plan.get("action_success", False)),
+                            env_feedback=str(source_plan.get("env_feedback", "")),
+                            is_terminal=source_step_idx == num_steps - 1,
                             episode_success=episode.get("success", 0),
                         )
                     future_rewards.append(float(cached))
@@ -335,9 +374,11 @@ class EBNavSequenceDataset(Dataset):
                     "prompt": episode["input"],
                     "history_images": history_images,
                     "history_actions": history_actions,
+                    "history_planner_responses": history_planner_responses,
                     "future_images": future_images,
                     "future_actions": future_actions,
                     "future_action_ids": future_action_ids,
+                    "future_planner_responses": future_planner_responses,
                     "future_rewards": future_rewards,
                     "model_name": episode.get("model_name", ""),
                     "success": episode.get("success", 0),

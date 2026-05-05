@@ -110,6 +110,10 @@ qwen_encoder:
   dtype: auto
   # Qwen trainable params 使用独立低学习率，避免和 WM 共用 1e-4 导致 NaN。
   lr: 0.000001
+  # 开启 Qwen activation checkpointing，显著降低联合训练显存占用，但会牺牲速度。
+  gradient_checkpointing: true
+  # DDP + 同一 Qwen 多次 micro-batch forward 时必须用 non-reentrant，避免参数 ready twice。
+  gradient_checkpointing_use_reentrant: false
   # true 时 LLM backbone 也参与 joint training；显存/优化难度会明显增加。
   llm_backbone_trainable: false
   # target latent 默认 stop-gradient，避免 encoder 同时追逐 moving target。
@@ -145,8 +149,11 @@ qwen_planner_lora:
   # true 时 planner language LoRA/token rows 也跟随 WM 联训。
   trainable: false
   # anchor: 不调用 generate，teacher-force 固定 special-token response 抽 latent；
+  # dataset: 使用数据集里逐步 CoT/action 构造的 special-token response；
   # generate: 先生成 planner response，再抽 latent（更慢且要求格式稳定）。
   response_mode: anchor
+  # generate 模式单次最多生成 token 数；太大会显著增加训练时间和显存。
+  max_new_tokens: 64
   anchor_cot: ""
   anchor_action_id: 0
 # 多卡配置（仅训练阶段）

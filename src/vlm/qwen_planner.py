@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 import json
 from pathlib import Path
 from typing import Any, Sequence
@@ -211,6 +212,44 @@ def _raise_if_nonfinite_tensor(name: str, tensor: torch.Tensor) -> None:
     )
 
 
+def _base_model_for_lm_head(model: Any) -> Any:
+    if hasattr(model, "get_base_model"):
+        try:
+            return model.get_base_model()
+        except Exception:
+            pass
+    return model
+
+
+@contextmanager
+def _hidden_logits_mode(model: Any):
+    """Temporarily make CausalLM forward return final hidden states as logits."""
+    base_model = _base_model_for_lm_head(model)
+    if not hasattr(base_model, "lm_head"):
+        raise RuntimeError("Qwen model has no lm_head attribute for low-memory extraction.")
+    original_lm_head = base_model.lm_head
+    base_model.lm_head = torch.nn.Identity()
+    try:
+        yield original_lm_head
+    finally:
+        base_model.lm_head = original_lm_head
+
+
+def _action_logits_from_hidden(
+    hidden_at_action_start: torch.Tensor,
+    output_embedding: Any,
+    action_token_ids: Sequence[int],
+) -> torch.Tensor:
+    action_indices = torch.tensor(action_token_ids, dtype=torch.long, device=hidden_at_action_start.device)
+    weight = output_embedding.weight.to(hidden_at_action_start.device)
+    action_weight = weight.index_select(0, action_indices)
+    logits = hidden_at_action_start.matmul(action_weight.transpose(0, 1))
+    bias = getattr(output_embedding, "bias", None)
+    if bias is not None:
+        logits = logits + bias.to(hidden_at_action_start.device).index_select(0, action_indices)
+    return logits
+
+
 def generate_planner_response(
     *,
     model: Any,
@@ -230,14 +269,15 @@ def generate_planner_response(
     inputs = processor(text=[text], images=[image], return_tensors="pt")
     device = next(model.parameters()).device
     inputs = {k: v.to(device) for k, v in inputs.items()}
-    was_training = bool(model.training)
-    model.eval()
+    generation_model = getattr(model, "module", model)
+    was_training = bool(generation_model.training)
+    generation_model.eval()
     try:
         with torch.no_grad():
-            output_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
+            output_ids = generation_model.generate(**inputs, max_new_tokens=max_new_tokens)
     finally:
         if was_training:
-            model.train()
+            generation_model.train()
     prompt_len = int(inputs["input_ids"].shape[1])
     generated_ids = output_ids[:, prompt_len:]
     decoded = processor.batch_decode(generated_ids, skip_special_tokens=False)
@@ -253,6 +293,7 @@ def extract_planner_special_outputs(
     response: str | None = None,
     max_new_tokens: int = 512,
     layer: int = -1,
+    low_memory: bool = False,
 ) -> PlannerExtraction:
     if response is None:
         response = generate_planner_response(
@@ -286,12 +327,25 @@ def extract_planner_special_outputs(
         raise ValueError(f"{PLANNER_LATENT_TOKEN} cannot be the first token")
     action_start_pos = _find_token_index(input_ids, action_start_id, start=latent_pos + 1)
 
-    outputs = model(**inputs, output_hidden_states=True)
-    hidden_states = outputs.hidden_states
-    selected = hidden_states[layer if -len(hidden_states) <= layer < len(hidden_states) else -1]
-    latent = selected[0, latent_pos - 1, :]
-    action_indices = torch.tensor(action_token_ids, dtype=torch.long, device=outputs.logits.device)
-    action_logits = outputs.logits[0, action_start_pos, :].index_select(0, action_indices)
+    if low_memory:
+        if layer != -1:
+            raise ValueError("low_memory planner extraction only supports layer=-1")
+        with _hidden_logits_mode(model) as output_embedding:
+            outputs = model(**inputs, output_hidden_states=False)
+        selected = outputs.logits
+        latent = selected[0, latent_pos - 1, :]
+        action_logits = _action_logits_from_hidden(
+            selected[0, action_start_pos, :],
+            output_embedding,
+            action_token_ids,
+        )
+    else:
+        outputs = model(**inputs, output_hidden_states=True)
+        hidden_states = outputs.hidden_states
+        selected = hidden_states[layer if -len(hidden_states) <= layer < len(hidden_states) else -1]
+        latent = selected[0, latent_pos - 1, :]
+        action_indices = torch.tensor(action_token_ids, dtype=torch.long, device=outputs.logits.device)
+        action_logits = outputs.logits[0, action_start_pos, :].index_select(0, action_indices)
     _raise_if_nonfinite_tensor("planner_latent", latent)
     _raise_if_nonfinite_tensor("planner_action_logits", action_logits)
     action_prior = torch.softmax(action_logits.float(), dim=-1)
@@ -315,6 +369,7 @@ def extract_planner_special_outputs_batch(
     responses: Sequence[str | None] | None = None,
     max_new_tokens: int = 512,
     layer: int = -1,
+    low_memory: bool = False,
 ) -> PlannerBatchExtraction:
     """Batched variant of planner special-token latent/action extraction."""
     if len(image_paths) != len(prompts):
@@ -373,9 +428,16 @@ def extract_planner_special_outputs_batch(
         latent_positions.append(latent_pos)
         action_start_positions.append(action_start_pos)
 
-    outputs = model(**inputs, output_hidden_states=True)
-    hidden_states = outputs.hidden_states
-    selected = hidden_states[layer if -len(hidden_states) <= layer < len(hidden_states) else -1]
+    if low_memory and layer != -1:
+        raise ValueError("low_memory planner extraction only supports layer=-1")
+    if low_memory:
+        with _hidden_logits_mode(model) as output_embedding:
+            outputs = model(**inputs, output_hidden_states=False)
+        selected = outputs.logits
+    else:
+        outputs = model(**inputs, output_hidden_states=True)
+        hidden_states = outputs.hidden_states
+        selected = hidden_states[layer if -len(hidden_states) <= layer < len(hidden_states) else -1]
     row_indices = torch.arange(len(image_paths), dtype=torch.long, device=selected.device)
     latent_indices = torch.tensor(
         [pos - 1 for pos in latent_positions],
@@ -385,10 +447,18 @@ def extract_planner_special_outputs_batch(
     latents = selected[row_indices, latent_indices, :]
     _raise_if_nonfinite_tensor("planner_latents", latents)
 
-    action_start_indices = torch.tensor(action_start_positions, dtype=torch.long, device=outputs.logits.device)
-    logits_at_action_start = outputs.logits[row_indices.to(outputs.logits.device), action_start_indices, :]
-    action_indices = torch.tensor(action_token_ids, dtype=torch.long, device=outputs.logits.device)
-    action_logits = logits_at_action_start.index_select(1, action_indices)
+    action_start_indices = torch.tensor(action_start_positions, dtype=torch.long, device=selected.device)
+    hidden_at_action_start = selected[row_indices, action_start_indices, :]
+    if low_memory:
+        action_logits = _action_logits_from_hidden(
+            hidden_at_action_start,
+            output_embedding,
+            action_token_ids,
+        )
+    else:
+        logits_at_action_start = outputs.logits[row_indices.to(outputs.logits.device), action_start_indices.to(outputs.logits.device), :]
+        action_indices = torch.tensor(action_token_ids, dtype=torch.long, device=outputs.logits.device)
+        action_logits = logits_at_action_start.index_select(1, action_indices)
     _raise_if_nonfinite_tensor("planner_action_logits", action_logits)
     action_prior = torch.softmax(action_logits.float(), dim=-1)
     _raise_if_nonfinite_tensor("planner_action_prior", action_prior)
