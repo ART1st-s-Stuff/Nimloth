@@ -142,6 +142,7 @@ def _init_distributed_if_needed(config_device: str) -> tuple[bool, int, int, int
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     distributed = world_size > 1
     if distributed:
+        _sanitize_nccl_topo_file_env(rank=rank)
         backend = "nccl" if torch.cuda.is_available() else "gloo"
         if not dist.is_initialized():
             dist.init_process_group(backend=backend)
@@ -153,6 +154,42 @@ def _init_distributed_if_needed(config_device: str) -> tuple[bool, int, int, int
     else:
         device = torch.device(str(config_device))
     return distributed, rank, local_rank, world_size, device
+
+
+def _sanitize_nccl_topo_file_env(*, rank: int) -> None:
+    """Drop NCCL_TOPO_FILE values that are not native NCCL topology XML.
+
+    NCCL_TOPO_FILE is commonly confused with hwloc XML or `nvidia-smi topo -m`
+    text output. NCCL's parser expects its own topology XML format and can fail
+    with an opaque "XML Parse" error before DDP reports a useful stack trace.
+    """
+    topo_path = os.environ.get("NCCL_TOPO_FILE", "").strip()
+    if not topo_path:
+        return
+    path = Path(topo_path)
+    reason = ""
+    if not path.is_file():
+        reason = "file does not exist"
+    else:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore").lstrip()
+        except OSError as exc:
+            reason = f"cannot read file: {exc}"
+        else:
+            if not text.startswith("<"):
+                reason = "not an XML file"
+            elif text.startswith("<?xml") or text.startswith("<!DOCTYPE") or text.startswith("<topology"):
+                reason = "looks like hwloc XML, not NCCL topology XML"
+            elif not text.startswith("<system"):
+                reason = "does not look like NCCL topology XML"
+    if reason:
+        os.environ.pop("NCCL_TOPO_FILE", None)
+        if rank == 0:
+            print(
+                f"[warn] Ignoring NCCL_TOPO_FILE={topo_path!r}: {reason}. "
+                "Unset it or use NCCL_TOPO_DUMP_FILE-generated XML.",
+                file=sys.stderr,
+            )
 
 
 def _cleanup_distributed() -> None:
@@ -542,6 +579,10 @@ def _joint_collate_fn(batch: list[dict[str, object]]) -> dict[str, object]:
         result["prompts"] = [item.get("prompt", "") for item in batch]
     if "planner_response" in batch[0]:
         result["planner_responses"] = [item.get("planner_response", "") for item in batch]
+    if "history_planner_responses" in batch[0]:
+        result["history_planner_responses"] = [item.get("history_planner_responses", []) for item in batch]
+    if "future_planner_responses" in batch[0]:
+        result["future_planner_responses"] = [item.get("future_planner_responses", []) for item in batch]
     return result
 
 
@@ -631,6 +672,7 @@ def _encode_joint_batch(
     num_patches: int,
     token_dim: int,
     planner_lora_enabled: bool,
+    planner_response_mode: str,
     planner_anchor_response: str | None,
     encoder_micro_batch_size: int,
     perceptual_enabled: bool,
@@ -642,6 +684,14 @@ def _encode_joint_batch(
     if planner_lora_enabled and prompts is None:
         raise ValueError("planner LoRA enabled requires raw prompts in batch['prompts']")
     planner_responses = batch.get("planner_responses")
+    history_planner_responses = batch.get("history_planner_responses")
+    future_planner_responses = batch.get("future_planner_responses")
+    if planner_lora_enabled and planner_response_mode == "dataset":
+        if history_planner_responses is None or future_planner_responses is None:
+            raise ValueError(
+                "qwen_planner_lora.response_mode=dataset requires "
+                "history_planner_responses and future_planner_responses in the batch"
+            )
     history_actions = batch["history_actions"].float().to(device)  # [B, H, A]
 
     if planner_lora_enabled:
@@ -651,27 +701,35 @@ def _encode_joint_batch(
         history_count = 0
         for row_idx, img_paths in enumerate(history_images):
             prompt_override = str(prompts[row_idx])
-            response_override = (
-                str(planner_responses[row_idx]) if planner_responses is not None else planner_anchor_response
+            row_history_responses = (
+                history_planner_responses[row_idx] if history_planner_responses is not None else None
             )
-            for path in img_paths:
+            response_override = str(planner_responses[row_idx]) if planner_responses is not None else planner_anchor_response
+            for step_idx, path in enumerate(img_paths):
                 if not path or not Path(str(path)).is_file():
                     raise FileNotFoundError(f"planner LoRA image file not found: {path}")
                 flat_paths.append(str(path))
                 flat_prompts.append(prompt_override)
-                flat_responses.append(response_override)
+                if row_history_responses is not None:
+                    flat_responses.append(str(row_history_responses[step_idx]))
+                else:
+                    flat_responses.append(response_override)
                 history_count += 1
         for row_idx, img_paths in enumerate(future_images):
             prompt_override = str(prompts[row_idx])
-            response_override = (
-                str(planner_responses[row_idx]) if planner_responses is not None else planner_anchor_response
+            row_future_responses = (
+                future_planner_responses[row_idx] if future_planner_responses is not None else None
             )
-            for path in img_paths:
+            response_override = str(planner_responses[row_idx]) if planner_responses is not None else planner_anchor_response
+            for step_idx, path in enumerate(img_paths):
                 if not path or not Path(str(path)).is_file():
                     raise FileNotFoundError(f"planner LoRA image file not found: {path}")
                 flat_paths.append(str(path))
                 flat_prompts.append(prompt_override)
-                flat_responses.append(response_override)
+                if row_future_responses is not None:
+                    flat_responses.append(str(row_future_responses[step_idx]))
+                else:
+                    flat_responses.append(response_override)
         flat_latents = _encode_planner_latents_batched(
             vision_encoder=vision_encoder,
             image_paths=flat_paths,
@@ -1431,6 +1489,10 @@ def main(cfg: DictConfig) -> None:
     token_dim = int(getattr(wm_cfg, "token_dim", latent_dim))
     qwen_cfg = getattr(train_cfg, "qwen_encoder", {})
     qwen_dtype = str(getattr(qwen_cfg, "dtype", "auto"))
+    qwen_gradient_checkpointing = bool(getattr(qwen_cfg, "gradient_checkpointing", True))
+    qwen_gradient_checkpointing_use_reentrant = bool(
+        getattr(qwen_cfg, "gradient_checkpointing_use_reentrant", False)
+    )
     ddp_find_unused_parameters = bool(getattr(multi_gpu_cfg, "find_unused_parameters", True))
     qwen_device_map = None if distributed_enabled else "auto"
 
@@ -1446,6 +1508,20 @@ def main(cfg: DictConfig) -> None:
     qwen_adapter._ensure_model()
     if qwen_adapter._model is None:
         raise RuntimeError(f"Failed to load Qwen model: {qwen_adapter.init_error}")
+    if qwen_gradient_checkpointing:
+        if hasattr(qwen_adapter._model, "config"):
+            qwen_adapter._model.config.use_cache = False
+        if hasattr(qwen_adapter._model, "gradient_checkpointing_enable"):
+            try:
+                qwen_adapter._model.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={
+                        "use_reentrant": qwen_gradient_checkpointing_use_reentrant,
+                    }
+                )
+            except TypeError:
+                qwen_adapter._model.gradient_checkpointing_enable()
+        if hasattr(qwen_adapter._model, "enable_input_require_grads"):
+            qwen_adapter._model.enable_input_require_grads()
     if distributed_enabled:
         qwen_adapter._model.to(device)
 
@@ -1454,10 +1530,10 @@ def main(cfg: DictConfig) -> None:
     planner_lora_checkpoint = str(getattr(planner_lora_cfg, "checkpoint_path", "")).strip()
     planner_lora_trainable = bool(getattr(planner_lora_cfg, "trainable", False))
     planner_response_mode = str(getattr(planner_lora_cfg, "response_mode", "anchor")).strip().lower()
-    if planner_response_mode not in {"anchor", "generate"}:
+    planner_max_new_tokens = int(getattr(planner_lora_cfg, "max_new_tokens", qwen_adapter.max_new_tokens))
+    qwen_adapter.max_new_tokens = max(1, planner_max_new_tokens)
+    if planner_response_mode not in {"anchor", "generate", "dataset"}:
         raise ValueError(f"不支持的 pipeline.train.qwen_planner_lora.response_mode={planner_response_mode}")
-    if distributed_enabled and planner_response_mode == "generate":
-        raise ValueError("DDP joint training 暂不支持 qwen_planner_lora.response_mode=generate，请使用 anchor。")
     planner_anchor_response: str | None = None
     if planner_lora_enabled and planner_response_mode == "anchor":
         planner_anchor_response = build_planner_special_response(
@@ -1756,6 +1832,8 @@ def main(cfg: DictConfig) -> None:
             ("qwen_dtype", qwen_dtype),
             ("qwen_hidden_size", str(qwen_hidden_size) if qwen_hidden_size is not None else "unknown"),
             ("qwen_lr", f"{qwen_lr:.8f}"),
+            ("qwen_gradient_checkpointing", str(qwen_gradient_checkpointing)),
+            ("qwen_checkpoint_use_reentrant", str(qwen_gradient_checkpointing_use_reentrant)),
             ("llm_backbone_trainable", str(llm_backbone_trainable)),
             ("detach_target_latents", str(detach_target_latents)),
             ("fail_on_nonfinite", str(fail_on_nonfinite)),
@@ -1771,6 +1849,7 @@ def main(cfg: DictConfig) -> None:
             ("planner_lora_enabled", str(planner_lora_enabled)),
             ("planner_lora_trainable", str(planner_lora_trainable)),
             ("planner_response_mode", planner_response_mode),
+            ("planner_max_new_tokens", str(qwen_adapter.max_new_tokens)),
             ("max_samples", str(max_samples)),
             ("test_max_samples", str(test_max_samples)),
             ("test_every_n_epochs", str(test_every_n_epochs)),
@@ -1802,6 +1881,8 @@ def main(cfg: DictConfig) -> None:
             "qwen_dtype": qwen_dtype,
             "qwen_hidden_size": qwen_hidden_size,
             "qwen_lr": qwen_lr,
+            "qwen_gradient_checkpointing": qwen_gradient_checkpointing,
+            "qwen_gradient_checkpointing_use_reentrant": qwen_gradient_checkpointing_use_reentrant,
             "llm_backbone_trainable": llm_backbone_trainable,
             "detach_target_latents": detach_target_latents,
             "fail_on_nonfinite": fail_on_nonfinite,
@@ -1823,6 +1904,7 @@ def main(cfg: DictConfig) -> None:
             "planner_lora_checkpoint": planner_lora_checkpoint,
             "planner_lora_trainable": planner_lora_trainable,
             "planner_response_mode": planner_response_mode,
+            "planner_max_new_tokens": qwen_adapter.max_new_tokens,
             "test_max_samples": test_max_samples,
             "test_batch_size": max(1, test_batch_size),
             "test_every_n_epochs": test_every_n_epochs,
@@ -2090,6 +2172,7 @@ def main(cfg: DictConfig) -> None:
                             num_patches=num_patches,
                             token_dim=token_dim,
                             planner_lora_enabled=planner_lora_enabled,
+                            planner_response_mode=planner_response_mode,
                             planner_anchor_response=planner_anchor_response,
                             encoder_micro_batch_size=encoder_micro_batch_size,
                             perceptual_enabled=perceptual_enabled,
@@ -2225,6 +2308,7 @@ def main(cfg: DictConfig) -> None:
                     num_patches=num_patches,
                     token_dim=token_dim,
                     planner_lora_enabled=planner_lora_enabled,
+                    planner_response_mode=planner_response_mode,
                     planner_anchor_response=planner_anchor_response,
                     encoder_micro_batch_size=encoder_micro_batch_size,
                     perceptual_enabled=perceptual_enabled,
@@ -2462,6 +2546,7 @@ def main(cfg: DictConfig) -> None:
                 "planner_lora_checkpoint": planner_lora_checkpoint,
                 "planner_lora_trainable": planner_lora_trainable,
                 "planner_response_mode": planner_response_mode,
+                "planner_max_new_tokens": qwen_adapter.max_new_tokens,
                 "sigreg_enabled": sigreg_enabled,
                 "sigreg_weight": sigreg_weight,
                 "sigreg_warmup_steps": sigreg_warmup_steps,
@@ -2483,6 +2568,8 @@ def main(cfg: DictConfig) -> None:
                 "qwen_dtype": qwen_dtype,
                 "qwen_hidden_size": qwen_hidden_size,
                 "qwen_lr": qwen_lr,
+                "qwen_gradient_checkpointing": qwen_gradient_checkpointing,
+                "qwen_gradient_checkpointing_use_reentrant": qwen_gradient_checkpointing_use_reentrant,
                 "llm_backbone_trainable": llm_backbone_trainable,
                 "detach_target_latents": detach_target_latents,
                 "fail_on_nonfinite": fail_on_nonfinite,

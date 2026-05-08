@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 from torch.utils.data import Dataset
 
+from src.vlm.qwen_planner import build_planner_special_response
+
 if TYPE_CHECKING:
     from src.wm.encoder import WMImageEncoder
 
@@ -211,7 +213,7 @@ class EBNavDataset(Dataset):
 
         # 获取图像路径
         plan = step["executable_plan"][0] if step["executable_plan"] else {}
-        img_path = plan.get("img_path", step.get("input_image_path", ""))
+        img_path = step.get("input_image_path", plan.get("img_path", ""))
         img_path = resolve_eb_nav_image_path(img_path, self.images_base_dir)
 
         # 获取动作
@@ -291,9 +293,14 @@ class EBNavSequenceDataset(Dataset):
                 # 构建历史和未来的图像路径、动作
                 history_images = []
                 history_actions = []
+                history_planner_responses = []
                 for step in history_steps:
                     plan = step["executable_plan"][0] if step["executable_plan"] else {}
-                    img_path = plan.get("img_path", step.get("input_image_path", ""))
+                    # `input_image_path` is the observation before this step's
+                    # action; `plan.img_path` is the post-action frame.  The WM
+                    # convention matches AI2-THOR: state_t paired with action_t
+                    # predicts state_{t+1}.
+                    img_path = step.get("input_image_path", plan.get("img_path", ""))
                     img_path = resolve_eb_nav_image_path(img_path, self.images_base_dir)
                     history_images.append(img_path)
                     action_list = plan.get("action", [0, ""])
@@ -301,15 +308,22 @@ class EBNavSequenceDataset(Dataset):
                     action_id = action_list[0] if isinstance(action_list, list) else 0
                     action_vec = ACTION_MAP.get(action_id, [0, 0, 0])
                     history_actions.append(action_vec[:action_dim])
+                    history_planner_responses.append(
+                        build_planner_special_response(
+                            cot=str(step.get("reasoning_and_reflection", "")),
+                            action_id=int(action_id),
+                        )
+                    )
 
                 future_images = []
                 future_actions = []
                 future_rewards = []
                 future_action_ids = []
+                future_planner_responses = []
                 for future_offset, step in enumerate(future_steps):
                     absolute_step_idx = start + history_len + future_offset
                     plan = step["executable_plan"][0] if step["executable_plan"] else {}
-                    img_path = plan.get("img_path", step.get("input_image_path", ""))
+                    img_path = step.get("input_image_path", plan.get("img_path", ""))
                     img_path = resolve_eb_nav_image_path(img_path, self.images_base_dir)
                     future_images.append(img_path)
                     action_list = plan.get("action", [0, ""])
@@ -318,6 +332,12 @@ class EBNavSequenceDataset(Dataset):
                     action_vec = ACTION_MAP.get(action_id, [0, 0, 0])
                     future_actions.append(action_vec[:action_dim])
                     future_action_ids.append(int(action_id))
+                    future_planner_responses.append(
+                        build_planner_special_response(
+                            cot=str(step.get("reasoning_and_reflection", "")),
+                            action_id=int(action_id),
+                        )
+                    )
                     cached = self.reward_cache.get((ep_idx, absolute_step_idx, 0))
                     if cached is None:
                         cached = compute_eb_nav_reward(
@@ -335,9 +355,11 @@ class EBNavSequenceDataset(Dataset):
                     "prompt": episode["input"],
                     "history_images": history_images,
                     "history_actions": history_actions,
+                    "history_planner_responses": history_planner_responses,
                     "future_images": future_images,
                     "future_actions": future_actions,
                     "future_action_ids": future_action_ids,
+                    "future_planner_responses": future_planner_responses,
                     "future_rewards": future_rewards,
                     "model_name": episode.get("model_name", ""),
                     "success": episode.get("success", 0),

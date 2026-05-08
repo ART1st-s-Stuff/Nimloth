@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import math
 from pathlib import Path
+import sys
+import types
 from typing import Any
 
 import numpy as np
@@ -34,6 +37,31 @@ except Exception:  # pragma: no cover
 
 # Qwen2.5-VL-8B vision encoder output dimension
 QWEN_VISION_EMBED_DIM = 1536
+
+
+def _ensure_peft_tensor_parallel_compat() -> None:
+    """Provide a narrow PEFT compatibility shim for older Transformers.
+
+    PEFT 0.19 imports ``transformers.integrations.tensor_parallel`` while
+    loading adapters even when the model is not using HF tensor parallelism.
+    Transformers 4.49 does not ship that module.  The empty classes below are
+    enough for PEFT's no-TP path, where no module has ``_hf_tp_plan`` and the
+    imported symbols are never instantiated.
+    """
+    module_name = "transformers.integrations.tensor_parallel"
+    if module_name in sys.modules or importlib.util.find_spec(module_name) is not None:
+        return
+
+    compat_module = types.ModuleType(module_name)
+
+    class _NoTensorParallelStyle:
+        pass
+
+    compat_module.ALL_PARALLEL_STYLES = ()
+    compat_module.ColwiseParallel = _NoTensorParallelStyle
+    compat_module.EmbeddingParallel = _NoTensorParallelStyle
+    compat_module.RowwiseParallel = _NoTensorParallelStyle
+    sys.modules[module_name] = compat_module
 
 
 class QwenVLMAdapter:
@@ -68,6 +96,8 @@ class QwenVLMAdapter:
         self._vision_embed_dim = encoder_embed_dim or 1536
         self._planner_tokens_registered = False
         self._planner_lora_trainable = False
+        self.planner_low_memory = False
+        self.planner_inference_mode = False
 
     @property
     def init_error(self) -> str | None:
@@ -310,6 +340,7 @@ class QwenVLMAdapter:
         if PeftModel is None:
             raise RuntimeError("未安装 peft，无法加载 LoRA adapter。")
         self.ensure_planner_special_tokens()
+        _ensure_peft_tensor_parallel_compat()
         self._model = PeftModel.from_pretrained(self._model, adapter_path, is_trainable=trainable)
         self._planner_lora_trainable = bool(trainable)
         for _, param in self._model.named_parameters():
@@ -381,16 +412,20 @@ class QwenVLMAdapter:
         if self._model is None or self._processor is None:
             raise RuntimeError(f"Qwen 初始化失败: {self._init_error}")
         self.ensure_planner_special_tokens()
-        self._set_llm_backbone_trainable(llm_backbone_trainable)
-        extracted = extract_planner_special_outputs(
-            model=self._model,
-            processor=self._processor,
-            image_path=image_path,
-            prompt=prompt,
-            response=response,
-            max_new_tokens=int(max_new_tokens or self.max_new_tokens),
-            layer=layer,
-        )
+        if not self.planner_inference_mode:
+            self._set_llm_backbone_trainable(llm_backbone_trainable)
+        context = torch.no_grad() if self.planner_inference_mode else torch.enable_grad()
+        with context:
+            extracted = extract_planner_special_outputs(
+                model=self._model,
+                processor=self._processor,
+                image_path=image_path,
+                prompt=prompt,
+                response=response,
+                max_new_tokens=int(max_new_tokens or self.max_new_tokens),
+                layer=layer,
+                low_memory=bool(self.planner_low_memory),
+            )
         return {
             "text": extracted.text,
             "latent": self._pad_or_trim(extracted.latent),
@@ -422,16 +457,20 @@ class QwenVLMAdapter:
         if self._model is None or self._processor is None:
             raise RuntimeError(f"Qwen 初始化失败: {self._init_error}")
         self.ensure_planner_special_tokens()
-        self._set_llm_backbone_trainable(llm_backbone_trainable)
-        extracted = extract_planner_special_outputs_batch(
-            model=self._model,
-            processor=self._processor,
-            image_paths=image_paths,
-            prompts=prompts,
-            responses=responses,
-            max_new_tokens=int(max_new_tokens or self.max_new_tokens),
-            layer=layer,
-        )
+        if not self.planner_inference_mode:
+            self._set_llm_backbone_trainable(llm_backbone_trainable)
+        context = torch.no_grad() if self.planner_inference_mode else torch.enable_grad()
+        with context:
+            extracted = extract_planner_special_outputs_batch(
+                model=self._model,
+                processor=self._processor,
+                image_paths=image_paths,
+                prompts=prompts,
+                responses=responses,
+                max_new_tokens=int(max_new_tokens or self.max_new_tokens),
+                layer=layer,
+                low_memory=bool(self.planner_low_memory),
+            )
         return {
             "text": extracted.texts,
             "latent": self._pad_or_trim_batch(extracted.latents),
