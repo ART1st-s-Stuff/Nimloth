@@ -854,6 +854,31 @@ def _save_joint_checkpoint(
     )
 
 
+def _prune_step_checkpoints(checkpoint_dir: Path, *, keep_last: int) -> None:
+    if keep_last < 0:
+        return
+    candidates: list[tuple[int, float, Path]] = []
+    for checkpoint_path in checkpoint_dir.glob("checkpoint_step_*.pt"):
+        try:
+            step = int(checkpoint_path.stem.rsplit("_", 1)[-1])
+        except ValueError:
+            step = -1
+        try:
+            mtime = checkpoint_path.stat().st_mtime
+        except OSError as exc:
+            logger.warning("无法读取 checkpoint 状态，跳过清理: %s (%s)", checkpoint_path, exc)
+            continue
+        candidates.append((step, mtime, checkpoint_path))
+    candidates.sort(key=lambda item: (item[0], item[1], str(item[2])))
+    stale_candidates = candidates if keep_last == 0 else candidates[:-keep_last]
+    for _, _, stale_path in stale_candidates:
+        try:
+            stale_path.unlink()
+            logger.info("已删除旧 step checkpoint: %s", stale_path)
+        except OSError as exc:
+            logger.warning("删除旧 step checkpoint 失败: %s (%s)", stale_path, exc)
+
+
 def _is_visual_param_name(name: str) -> bool:
     return name.startswith("visual.") or ".visual." in name
 
@@ -2215,6 +2240,7 @@ def main(cfg: DictConfig) -> None:
     epochs = int(train_cfg.epochs)
     global_step = resume_global_step
     save_every_steps = int(train_cfg.get("save_every_steps", 500))
+    keep_last_step_checkpoints = int(train_cfg.get("keep_last_step_checkpoints", 2))
     log_every_n_steps = int(train_cfg.get("log_every_n_steps", 1))
     recent_losses: deque[dict[str, float]] = deque(maxlen=50)
     tui = _TUIController()
@@ -2452,6 +2478,8 @@ def main(cfg: DictConfig) -> None:
                 if save_every_steps > 0 and global_step > 0 and global_step % save_every_steps == 0:
                     step_ckpt = checkpoint_dir / f"checkpoint_step_{global_step:08d}.pt"
                     if is_main_process:
+                        if keep_last_step_checkpoints == 1:
+                            _prune_step_checkpoints(checkpoint_dir, keep_last=0)
                         _save_joint_checkpoint(
                             path=step_ckpt,
                             epoch=epoch,
@@ -2462,6 +2490,10 @@ def main(cfg: DictConfig) -> None:
                             lewm_model=lewm_model,
                             wm_scheduler=wm_scheduler,
                             idm_scheduler=idm_scheduler,
+                        )
+                        _prune_step_checkpoints(
+                            checkpoint_dir,
+                            keep_last=keep_last_step_checkpoints,
                         )
                     if distributed_enabled:
                         dist.barrier()

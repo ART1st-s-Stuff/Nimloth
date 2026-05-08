@@ -79,6 +79,8 @@ test_every_n_epochs: 1
 resume_from_checkpoint: ""
 # 每 N step 保存训练断点（<=0 关闭周期保存）
 save_every_steps: 500
+# 仅保留最新 N 个按 step 保存的 checkpoint；<=0 表示不清理。
+keep_last_step_checkpoints: 1
 # 训练结束后是否保存最终 checkpoint；LLM backbone 全参训练时 checkpoint 很大，可在实验 smoke 中关闭。
 save_final_checkpoint: true
 # AdamW 权重衰减
