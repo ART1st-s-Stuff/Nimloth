@@ -1139,6 +1139,8 @@ def _build_loss_table(
     step_reward: float,
     step_image_recon: float,
     step_perceptual: float,
+    step_negative_action: float,
+    step_negative_action_weighted: float,
     step_total_with_kl: float,
     lr_wm: float,
     lr_idm: float,
@@ -1159,6 +1161,8 @@ def _build_loss_table(
     table.add_row("loss_reward", f"{step_reward:.6f}")
     table.add_row("loss_image_recon", f"{step_image_recon:.6f}")
     table.add_row("loss_perceptual", f"{step_perceptual:.6f}")
+    table.add_row("loss_negative_action", f"{step_negative_action:.6f}")
+    table.add_row("loss_negative_action_weighted", f"{step_negative_action_weighted:.6f}")
     table.add_row("loss_total_with_kl", f"{step_total_with_kl:.6f}")
     table.add_row("lr_wm", f"{lr_wm:.8f}")
     table.add_row("lr_idm", f"{lr_idm:.8f}")
@@ -1676,6 +1680,11 @@ def main(cfg: DictConfig) -> None:
     reward_weight = float(getattr(reward_cfg, "weight", 1.0))
     reward_loss_type = str(getattr(reward_cfg, "loss_type", "mse"))
     reward_hidden_dim = int(getattr(reward_cfg, "hidden_dim", max(128, int(getattr(wm_cfg, "hidden_dim", 512)) // 2)))
+    negative_action_cfg = getattr(train_cfg, "negative_action_contrastive", {})
+    negative_action_contrastive_enabled = bool(getattr(negative_action_cfg, "enabled", False))
+    negative_action_contrastive_weight = float(getattr(negative_action_cfg, "weight", 0.0))
+    negative_action_contrastive_margin = float(getattr(negative_action_cfg, "margin", 0.05))
+    negative_action_contrastive_num_negatives = int(getattr(negative_action_cfg, "num_negatives", 1))
     perceptual_enabled = bool(getattr(perceptual_cfg, "enabled", False))
     perceptual_weight = float(getattr(perceptual_cfg, "weight", 0.1))
     image_recon_weight = float(getattr(perceptual_cfg, "image_recon_weight", 0.1))
@@ -1822,6 +1831,10 @@ def main(cfg: DictConfig) -> None:
         reward_enabled=reward_enabled,
         reward_weight=reward_weight,
         reward_loss_type=reward_loss_type,
+        negative_action_contrastive_enabled=negative_action_contrastive_enabled,
+        negative_action_contrastive_weight=negative_action_contrastive_weight,
+        negative_action_contrastive_margin=negative_action_contrastive_margin,
+        negative_action_contrastive_num_negatives=negative_action_contrastive_num_negatives,
         perceptual_enabled=perceptual_enabled,
         perceptual_weight=perceptual_weight,
         image_recon_weight=image_recon_weight,
@@ -2282,6 +2295,8 @@ def main(cfg: DictConfig) -> None:
                 step_reward=0.0,
                 step_image_recon=0.0,
                 step_perceptual=0.0,
+                step_negative_action=0.0,
+                step_negative_action_weighted=0.0,
                 step_total_with_kl=0.0,
                 lr_wm=float(wm_optimizer.param_groups[0]["lr"]),
                 lr_idm=float(idm_optimizer.param_groups[0]["lr"]),
@@ -2381,6 +2396,9 @@ def main(cfg: DictConfig) -> None:
                         "loss_reward": float(step_metrics.get("loss_reward", 0.0)),
                         "loss_image_recon": float(step_metrics.get("loss_image_recon", 0.0)),
                         "loss_perceptual": float(step_metrics.get("loss_perceptual", 0.0)),
+                        "loss_negative_action": float(step_metrics.get("loss_negative_action", 0.0)),
+                        "loss_negative_action_weighted": float(step_metrics.get("loss_negative_action_weighted", 0.0)),
+                        "negative_action_dist_mean": float(step_metrics.get("negative_action_dist_mean", 0.0)),
                         "reward_pred_mean": float(step_metrics.get("reward_pred_mean", 0.0)),
                         "reward_target_mean": float(step_metrics.get("reward_target_mean", 0.0)),
                         "sigreg_weight": float(step_metrics.get("sigreg_weight", 0.0)),
@@ -2421,6 +2439,8 @@ def main(cfg: DictConfig) -> None:
                 step_reward = float(step_metrics.get("loss_reward", 0.0))
                 step_image_recon = float(step_metrics.get("loss_image_recon", 0.0))
                 step_perceptual = float(step_metrics.get("loss_perceptual", 0.0))
+                step_negative_action = float(step_metrics.get("loss_negative_action", 0.0))
+                step_negative_action_weighted = float(step_metrics.get("loss_negative_action_weighted", 0.0))
                 step_total_with_kl = step_loss + float(kl_weight * step_kl)
                 lr_wm_cur = float(step_metrics.get("lr_wm", wm_optimizer.param_groups[0]["lr"]))
                 lr_idm_cur = float(step_metrics.get("lr_idm", idm_optimizer.param_groups[0]["lr"]))
@@ -2437,6 +2457,7 @@ def main(cfg: DictConfig) -> None:
                             "kl": step_kl,
                             "reward": step_reward,
                             "perceptual": step_perceptual,
+                            "negative_action": step_negative_action,
                         }
                     )
                     loss_table = _build_loss_table(
@@ -2455,6 +2476,8 @@ def main(cfg: DictConfig) -> None:
                         step_reward=step_reward,
                         step_image_recon=step_image_recon,
                         step_perceptual=step_perceptual,
+                        step_negative_action=step_negative_action,
+                        step_negative_action_weighted=step_negative_action_weighted,
                         step_total_with_kl=step_total_with_kl,
                         lr_wm=lr_wm_cur,
                         lr_idm=lr_idm_cur,

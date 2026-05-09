@@ -393,3 +393,23 @@ lewm:
 
 ### 注意
 - 当前分支创建时已有若干未提交改动和未跟踪产物；提交时应避免混入压缩包与无关临时输出。
+
+---
+
+## Phase 2 调优：负样本动作对比损失（2026-05-09）
+
+### 本次更新
+- 新增 `pipeline.train.negative_action_contrastive` 配置，用于启用负样本动作对比损失。
+- 在同一 `teacher_z` 下，用真实动作预测 `pred_z`，再替换为确定性负动作预测 `neg_pred_z`。
+- 新增 hinge-style loss：`relu(margin + MSE(pred_z, target_z) - MSE(neg_pred_z, target_z))`。
+- one-hot 动作空间中按 `(action_id + offset) % action_dim` 构造负动作；连续动作 fallback 使用 `torch.roll`。
+- W&B/Rich TUI 新增 `loss_negative_action`、`loss_negative_action_weighted`、`negative_action_dist_mean`。
+
+### 验证
+- 通过 `.venv/bin/python` 的 dummy `LeWMModel.train_step` + `eval_step` smoke。
+- 通过真实 `train_wm_joint` EB-Nav/Qwen 1-sample 训练主链路 smoke。
+- 通过 `python3 -m py_compile src/wm/predictor/lewm.py src/train/train_wm_joint.py`。
+- 通过 `git diff --check`。
+
+### 注意
+- 当前 smoke 覆盖训练主链路；EB-Nav test split 在该入口显示 `test_samples disabled`，未覆盖 test dataloader。

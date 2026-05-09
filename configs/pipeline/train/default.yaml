@@ -59,6 +59,13 @@ temporal_stride: 4
 semi_supervised_weight: 1.0
 # WM 重建损失加权系数
 reconstruction_weight: 1.0
+# 负样本动作对比损失：同一历史状态下，真实动作预测应比负动作预测更接近 target latent。
+negative_action_contrastive:
+  enabled: true
+  weight: 0.1
+  margin: 0.05
+  # one-hot 动作空间中按 action_id 偏移构造确定性负样本；1 表示每个 step 取一个负动作。
+  num_negatives: 1
 # 梯度裁剪上限（L2 norm）
 grad_clip_norm: 5.0
 # true 时 WM 分支不把梯度反传到 IDM（分离传播）

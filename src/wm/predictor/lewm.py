@@ -485,6 +485,10 @@ class LeWMModel(Model):
         reward_enabled: bool = False,
         reward_weight: float = 1.0,
         reward_loss_type: str = "mse",
+        negative_action_contrastive_enabled: bool = False,
+        negative_action_contrastive_weight: float = 0.0,
+        negative_action_contrastive_margin: float = 0.05,
+        negative_action_contrastive_num_negatives: int = 1,
         perceptual_enabled: bool = False,
         perceptual_weight: float = 0.1,
         image_recon_weight: float = 0.1,
@@ -512,6 +516,10 @@ class LeWMModel(Model):
         self.reward_enabled = bool(reward_enabled)
         self.reward_weight = float(reward_weight)
         self.reward_loss_type = str(reward_loss_type).strip().lower()
+        self.negative_action_contrastive_enabled = bool(negative_action_contrastive_enabled)
+        self.negative_action_contrastive_weight = float(negative_action_contrastive_weight)
+        self.negative_action_contrastive_margin = float(negative_action_contrastive_margin)
+        self.negative_action_contrastive_num_negatives = max(1, int(negative_action_contrastive_num_negatives))
         self.perceptual_enabled = bool(perceptual_enabled)
         self.perceptual_weight = float(perceptual_weight)
         self.image_recon_weight = float(image_recon_weight)
@@ -595,6 +603,58 @@ class LeWMModel(Model):
             return F.l1_loss(reward_pred, reward_target)
         return F.mse_loss(reward_pred, reward_target)
 
+    def _negative_action_candidates(self, true_actions: torch.Tensor) -> list[torch.Tensor]:
+        action_dim = int(true_actions.size(-1))
+        if action_dim < 2:
+            return []
+        candidates: list[torch.Tensor] = []
+        if torch.all((true_actions >= 0.0) & (true_actions <= 1.0)):
+            action_ids = torch.argmax(true_actions, dim=-1)
+            for offset in range(1, min(self.negative_action_contrastive_num_negatives, action_dim - 1) + 1):
+                neg_ids = (action_ids + offset) % action_dim
+                candidates.append(
+                    F.one_hot(neg_ids, num_classes=action_dim).to(
+                        device=true_actions.device,
+                        dtype=true_actions.dtype,
+                    )
+                )
+        else:
+            for offset in range(1, self.negative_action_contrastive_num_negatives + 1):
+                candidates.append(torch.roll(true_actions, shifts=offset, dims=-1))
+        return candidates
+
+    def _compute_negative_action_contrastive_loss(
+        self,
+        *,
+        wm_core: LeWMWorldModel,
+        teacher_z: torch.Tensor,
+        teacher_action: torch.Tensor,
+        true_action: torch.Tensor,
+        pred_z: torch.Tensor,
+        target_z: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if (
+            not self.negative_action_contrastive_enabled
+            or self.negative_action_contrastive_weight <= 0.0
+        ):
+            zero = torch.tensor(0.0, device=self.device)
+            return zero, zero
+        negative_actions = self._negative_action_candidates(true_action)
+        if not negative_actions:
+            zero = torch.tensor(0.0, device=self.device)
+            return zero, zero
+        pos_dist = F.mse_loss(pred_z, target_z, reduction="none").flatten(1).mean(dim=1)
+        losses: list[torch.Tensor] = []
+        neg_dists: list[torch.Tensor] = []
+        for neg_action in negative_actions:
+            neg_teacher_action = teacher_action.clone()
+            neg_teacher_action[:, -1, :] = neg_action
+            neg_pred_z = wm_core.predict_next(teacher_z, neg_teacher_action)
+            neg_dist = F.mse_loss(neg_pred_z, target_z, reduction="none").flatten(1).mean(dim=1)
+            losses.append(F.relu(self.negative_action_contrastive_margin + pos_dist - neg_dist).mean())
+            neg_dists.append(neg_dist.mean())
+        return torch.stack(losses).mean(), torch.stack(neg_dists).mean()
+
     @torch.no_grad()
     def eval_step(self, batch: Any) -> dict[str, Any]:
         z_history = batch["z_history"].to(self.device)
@@ -646,6 +706,8 @@ class LeWMModel(Model):
         loss_reward_steps: list[torch.Tensor] = []
         loss_image_recon_steps: list[torch.Tensor] = []
         loss_perceptual_steps: list[torch.Tensor] = []
+        loss_negative_action_steps: list[torch.Tensor] = []
+        negative_action_dist_values: list[torch.Tensor] = []
 
         wm_core = self._wm_core()
         for step_idx in range(rollout_horizon):
@@ -664,6 +726,19 @@ class LeWMModel(Model):
                 self._check_finite(f"target_z[{step_idx}]", target_z)
             step_loss = F.mse_loss(pred_z, target_z)
             loss_recon_steps.append(step_loss)
+            negative_loss_step, negative_dist_step = self._compute_negative_action_contrastive_loss(
+                wm_core=wm_core,
+                teacher_z=teacher_z,
+                teacher_action=teacher_action,
+                true_action=gt_action_future[:, step_idx, :],
+                pred_z=pred_z,
+                target_z=target_z,
+            )
+            self._last_debug_tensors[f"loss_negative_action_step[{step_idx}]"] = negative_loss_step.detach()
+            if self.fail_on_nonfinite:
+                self._check_finite(f"loss_negative_action_step[{step_idx}]", negative_loss_step)
+            loss_negative_action_steps.append(negative_loss_step)
+            negative_action_dist_values.append(negative_dist_step.detach())
             if self.reward_enabled and reward_targets is not None and "reward_pred" in aux:
                 reward_target_step = reward_targets[:, step_idx] if reward_targets.dim() > 1 else reward_targets
                 loss_reward_steps.append(
@@ -701,6 +776,17 @@ class LeWMModel(Model):
             if loss_perceptual_steps
             else torch.tensor(0.0, device=self.device)
         )
+        loss_negative_action = (
+            torch.stack(loss_negative_action_steps).mean()
+            if loss_negative_action_steps
+            else torch.tensor(0.0, device=self.device)
+        )
+        loss_negative_action_weighted = self.negative_action_contrastive_weight * loss_negative_action
+        negative_action_dist_mean = (
+            float(torch.stack(negative_action_dist_values).mean().item())
+            if negative_action_dist_values
+            else 0.0
+        )
         latent_for_reg = torch.cat([z_history, z_future], dim=1)
         loss_sigreg = torch.tensor(0.0, device=self.device)
         current_sigreg_weight = 0.0
@@ -718,6 +804,7 @@ class LeWMModel(Model):
                 + self.reward_weight * float(loss_reward.item())
                 + self.image_recon_weight * float(loss_image_recon.item())
                 + self.perceptual_weight * float(loss_perceptual.item())
+                + float(loss_negative_action_weighted.item())
                 + current_sigreg_weight * float(loss_sigreg.item())
                 + self.semi_supervised_weight * float(loss_action.item())
             ),
@@ -729,6 +816,9 @@ class LeWMModel(Model):
             "loss_reward": float(loss_reward.item()),
             "loss_image_recon": float(loss_image_recon.item()),
             "loss_perceptual": float(loss_perceptual.item()),
+            "loss_negative_action": float(loss_negative_action.item()),
+            "loss_negative_action_weighted": float(loss_negative_action_weighted.item()),
+            "negative_action_dist_mean": negative_action_dist_mean,
         }
 
     def train_step(self, batch: Any) -> dict[str, Any]:
@@ -776,6 +866,8 @@ class LeWMModel(Model):
         loss_reward_steps: list[torch.Tensor] = []
         loss_image_recon_steps: list[torch.Tensor] = []
         loss_perceptual_steps: list[torch.Tensor] = []
+        loss_negative_action_steps: list[torch.Tensor] = []
+        negative_action_dist_values: list[torch.Tensor] = []
         reward_pred_values: list[torch.Tensor] = []
 
         wm_core = self._wm_core()
@@ -800,6 +892,19 @@ class LeWMModel(Model):
             if self.fail_on_nonfinite:
                 self._check_finite(f"loss_recon_step[{step_idx}]", step_loss)
             loss_recon_steps.append(step_loss)
+            negative_loss_step, negative_dist_step = self._compute_negative_action_contrastive_loss(
+                wm_core=wm_core,
+                teacher_z=teacher_z,
+                teacher_action=teacher_action,
+                true_action=gt_action_future[:, step_idx, :],
+                pred_z=pred_z,
+                target_z=target_z,
+            )
+            self._last_debug_tensors[f"loss_negative_action_step[{step_idx}]"] = negative_loss_step.detach()
+            if self.fail_on_nonfinite:
+                self._check_finite(f"loss_negative_action_step[{step_idx}]", negative_loss_step)
+            loss_negative_action_steps.append(negative_loss_step)
+            negative_action_dist_values.append(negative_dist_step.detach())
             if self.reward_enabled and reward_targets is not None and "reward_pred" in aux:
                 reward_pred_values.append(aux["reward_pred"].detach())
                 reward_target_step = reward_targets[:, step_idx] if reward_targets.dim() > 1 else reward_targets
@@ -858,6 +963,12 @@ class LeWMModel(Model):
             else torch.tensor(0.0, device=self.device)
         )
         loss_perceptual_weighted = self.perceptual_weight * loss_perceptual
+        loss_negative_action = (
+            torch.stack(loss_negative_action_steps).mean()
+            if loss_negative_action_steps
+            else torch.tensor(0.0, device=self.device)
+        )
+        loss_negative_action_weighted = self.negative_action_contrastive_weight * loss_negative_action
 
         latent_for_reg = torch.cat([z_history, z_future], dim=1)
         loss_sigreg = torch.tensor(0.0, device=self.device)
@@ -872,6 +983,8 @@ class LeWMModel(Model):
                 "loss_reward": loss_reward.detach(),
                 "loss_image_recon": loss_image_recon.detach(),
                 "loss_perceptual": loss_perceptual.detach(),
+                "loss_negative_action": loss_negative_action.detach(),
+                "loss_negative_action_weighted": loss_negative_action_weighted.detach(),
                 "loss_sigreg": loss_sigreg.detach(),
                 "loss_sigreg_weighted": loss_sigreg_weighted.detach(),
             }
@@ -881,6 +994,8 @@ class LeWMModel(Model):
             self._check_finite("loss_reward", loss_reward)
             self._check_finite("loss_image_recon", loss_image_recon)
             self._check_finite("loss_perceptual", loss_perceptual)
+            self._check_finite("loss_negative_action", loss_negative_action)
+            self._check_finite("loss_negative_action_weighted", loss_negative_action_weighted)
             self._check_finite("loss_sigreg", loss_sigreg)
             self._check_finite("loss_sigreg_weighted", loss_sigreg_weighted)
 
@@ -908,6 +1023,7 @@ class LeWMModel(Model):
             + loss_reward_weighted
             + loss_image_recon_weighted
             + loss_perceptual_weighted
+            + loss_negative_action_weighted
         )
         self._last_debug_tensors["loss_wm_total"] = loss_wm_total.detach()
         if self.fail_on_nonfinite:
@@ -953,6 +1069,11 @@ class LeWMModel(Model):
         reward_target_mean = (
             float(reward_targets.mean().item()) if reward_targets is not None else 0.0
         )
+        negative_action_dist_mean = (
+            float(torch.stack(negative_action_dist_values).mean().item())
+            if negative_action_dist_values
+            else 0.0
+        )
         return {
             "loss": batch_loss,
             "loss_recon": float(loss_recon.item()),
@@ -962,6 +1083,9 @@ class LeWMModel(Model):
             "loss_reward": float(loss_reward.item()),
             "loss_image_recon": float(loss_image_recon.item()),
             "loss_perceptual": float(loss_perceptual.item()),
+            "loss_negative_action": float(loss_negative_action.item()),
+            "loss_negative_action_weighted": float(loss_negative_action_weighted.item()),
+            "negative_action_dist_mean": negative_action_dist_mean,
             "reward_pred_mean": reward_pred_mean,
             "reward_target_mean": reward_target_mean,
             "sigreg_weight": current_sigreg_weight,
