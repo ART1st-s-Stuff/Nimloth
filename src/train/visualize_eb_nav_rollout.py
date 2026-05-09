@@ -61,6 +61,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--encode-micro-batch-size", type=int, default=1)
     parser.add_argument("--projection", choices=["pca", "umap"], default="pca")
     parser.add_argument(
+        "--latent-space",
+        choices=["vlm", "wm"],
+        default="vlm",
+        help="vlm: plot decoded/original VLM latent space; wm: plot LeWM SIGReg encoder latent space.",
+    )
+    parser.add_argument(
         "--disable-low-memory-planner",
         action="store_true",
         help="Use the regular planner extraction path with full hidden_states/logits.",
@@ -201,6 +207,66 @@ def _build_wm(cfg, checkpoint_config: dict, device: torch.device) -> LeWMWorldMo
     return model
 
 
+
+def _encode_traj_with_wm_latent(
+    traj: list[torch.Tensor],
+    wm_model: LeWMWorldModel,
+    device: torch.device,
+) -> list[torch.Tensor]:
+    """Map [P, D] trajectory points into LeWM internal SIGReg encoder space."""
+    if not traj:
+        return []
+    if wm_model.sigreg_ed is None:
+        return [x.detach().cpu() for x in traj]
+    stacked = torch.stack([x.detach().to(device) for x in traj], dim=0)
+    n, p, d = stacked.shape
+    with torch.no_grad():
+        encoded = wm_model.sigreg_ed.encode(stacked.reshape(1, n * p, d)).reshape(n, p, -1)
+    return [encoded[i].detach().cpu() for i in range(n)]
+
+
+def _encode_branch_preds_with_wm_latent(
+    branch_preds: list[list[torch.Tensor]],
+    wm_model: LeWMWorldModel,
+    device: torch.device,
+) -> list[list[torch.Tensor]]:
+    if not branch_preds:
+        return []
+    flat: list[torch.Tensor] = []
+    lengths: list[int] = []
+    for step_preds in branch_preds:
+        lengths.append(len(step_preds))
+        flat.extend(step_preds)
+    encoded_flat = _encode_traj_with_wm_latent(flat, wm_model, device)
+    out: list[list[torch.Tensor]] = []
+    offset = 0
+    for length in lengths:
+        out.append(encoded_flat[offset : offset + length])
+        offset += length
+    return out
+
+
+def _action_branch_true_action_mse(
+    real_traj: list[torch.Tensor],
+    branch_preds: list[list[torch.Tensor]],
+    branch_action_ids: list[int],
+    gt_action_ids_per_step: list[int],
+) -> float:
+    values: list[float] = []
+    for step_idx, real_z in enumerate(real_traj):
+        if step_idx >= len(branch_preds):
+            continue
+        try:
+            action_pos = branch_action_ids.index(gt_action_ids_per_step[step_idx])
+        except ValueError:
+            continue
+        if action_pos >= len(branch_preds[step_idx]):
+            continue
+        pred_z = branch_preds[step_idx][action_pos]
+        values.append(float(torch.mean((real_z.float() - pred_z.float()) ** 2).item()))
+    return float(sum(values) / max(1, len(values)))
+
+
 def _plot_one_rollout(
     *,
     wm_model: LeWMWorldModel,
@@ -209,6 +275,7 @@ def _plot_one_rollout(
     rollout_idx: int,
     device: torch.device,
     projection: str,
+    latent_space: str,
 ) -> float:
     z_history = batch_device["z_history"][:1].to(device)
     action_history = batch_device["action_history"][:1].to(device)
@@ -228,6 +295,9 @@ def _plot_one_rollout(
             real_traj.append(_normalize_patch_latent(real_z.squeeze(0).detach().cpu(), z_future.size(2), z_future.size(3)))
             z_history = torch.cat([z_history[:, 1:, ...], real_z.unsqueeze(1)], dim=1)
             teacher_action = torch.cat([teacher_action[:, 1:, :], future_actions[:, step_idx, :].unsqueeze(1)], dim=1)
+    if latent_space == "wm":
+        real_traj = _encode_traj_with_wm_latent(real_traj, wm_model, device)
+        pred_traj = _encode_traj_with_wm_latent(pred_traj, wm_model, device)
     if projection == "umap":
         return _save_rollout_figure(
             real_traj=real_traj,
@@ -298,6 +368,7 @@ def _plot_one_rollout_action_branching(
     projection: str,
     branch_action_ids: list[int],
     future_action_ids: torch.Tensor | None,
+    latent_space: str,
 ) -> float:
     """Teacher-forced rollout; each step predicts next latent under each candidate discrete action."""
     z_history = batch_device["z_history"][:1].to(device)
@@ -366,6 +437,13 @@ def _plot_one_rollout_action_branching(
             gt_action_ids_per_step.append(
                 _nearest_action_id(future_actions[0, step_idx], action_dim=int(future_actions.size(-1)))
             )
+
+    if latent_space == "wm":
+        real_traj = _encode_traj_with_wm_latent(real_traj, wm_model, device)
+        branch_preds = _encode_branch_preds_with_wm_latent(branch_preds, wm_model, device)
+        avg_mse = _action_branch_true_action_mse(
+            real_traj, branch_preds, branch_action_ids, gt_action_ids_per_step
+        )
 
     if projection == "umap":
         return _save_action_branch_umap_figure(
@@ -653,6 +731,12 @@ def main() -> None:
     checkpoint_config = checkpoint.get("config", {})
 
     wm_state = checkpoint["wm_state"]
+    action_embed_weight = wm_state.get("action_embed_conv.weight")
+    if action_embed_weight is not None and getattr(action_embed_weight, "ndim", 0) >= 2:
+        inferred_action_dim = int(action_embed_weight.shape[1])
+        if isinstance(checkpoint_config, dict):
+            checkpoint_config["action_dim"] = inferred_action_dim
+
     checkpoint.pop("wm_optimizer_state", None)
     checkpoint.pop("idm_optimizer_state", None)
     checkpoint.pop("wm_scheduler_state", None)
@@ -769,6 +853,7 @@ def main() -> None:
                 "num_steps": args.num_steps,
                 "temporal_stride": args.temporal_stride,
                 "projection": args.projection,
+                "latent_space": args.latent_space,
                 "action_branching": bool(args.action_branching),
                 "branch_action_ids": branch_action_ids,
             },
@@ -789,7 +874,7 @@ def main() -> None:
             f"{int(batch_device['z_future'].size(1))}, requested_num_steps={args.num_steps}"
         )
         if args.action_branching:
-            fig_path = output_dir / f"eb_nav_rollout_{rollout_idx + 1:03d}_action_branch.png"
+            fig_path = output_dir / f"eb_nav_rollout_{rollout_idx + 1:03d}_action_branch_{args.latent_space}.png"
             mse = _plot_one_rollout_action_branching(
                 wm_model=wm_model,
                 batch_device=batch_device,
@@ -799,10 +884,11 @@ def main() -> None:
                 projection=args.projection,
                 branch_action_ids=branch_action_ids,
                 future_action_ids=future_action_id_rows[rollout_idx],
+                latent_space=str(args.latent_space),
             )
-            wandb_image_key = "eb_nav_visualization/rollout_action_branch"
+            wandb_image_key = f"eb_nav_visualization/rollout_action_branch_{args.latent_space}"
         else:
-            fig_path = output_dir / f"eb_nav_rollout_{rollout_idx + 1:03d}.png"
+            fig_path = output_dir / f"eb_nav_rollout_{rollout_idx + 1:03d}_{args.latent_space}.png"
             mse = _plot_one_rollout(
                 wm_model=wm_model,
                 batch_device=batch_device,
@@ -810,8 +896,9 @@ def main() -> None:
                 rollout_idx=rollout_idx,
                 device=device,
                 projection=args.projection,
+                latent_space=str(args.latent_space),
             )
-            wandb_image_key = "eb_nav_visualization/rollout"
+            wandb_image_key = f"eb_nav_visualization/rollout_{args.latent_space}"
         mse_values.append(float(mse))
         print(f"saved {fig_path} mse={mse:.6f}")
         if tracker is not None:
