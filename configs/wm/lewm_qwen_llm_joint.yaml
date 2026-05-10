@@ -43,6 +43,10 @@ lewm:
   sigreg_num_proj: 256
   # Number of independent transition predictors sharing the VLM/SIGReg encoder-decoder.
   ensemble_size: 1
+  # 默认保持旧 absolute-last-token 行为；诊断确认后可开启 next_query + delta。
+  use_next_query: false
+  prediction_mode: absolute
+  delta_scale: 1.0
   # SIGReg 在 encoded latent 上应用
   sigreg_enabled: true
   sigreg_latent_dim: 3584

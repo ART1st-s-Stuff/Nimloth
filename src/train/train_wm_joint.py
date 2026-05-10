@@ -1141,6 +1141,9 @@ def _build_loss_table(
     step_perceptual: float,
     step_negative_action: float,
     step_negative_action_weighted: float,
+    step_copy_last_mse: float,
+    step_model_mean_mse: float,
+    step_action_sensitivity: float,
     step_total_with_kl: float,
     lr_wm: float,
     lr_idm: float,
@@ -1163,6 +1166,9 @@ def _build_loss_table(
     table.add_row("loss_perceptual", f"{step_perceptual:.6f}")
     table.add_row("loss_negative_action", f"{step_negative_action:.6f}")
     table.add_row("loss_negative_action_weighted", f"{step_negative_action_weighted:.6f}")
+    table.add_row("copy_last_mse", f"{step_copy_last_mse:.6f}")
+    table.add_row("model_mean_mse", f"{step_model_mean_mse:.6f}")
+    table.add_row("action_sensitivity", f"{step_action_sensitivity:.6f}")
     table.add_row("loss_total_with_kl", f"{step_total_with_kl:.6f}")
     table.add_row("lr_wm", f"{lr_wm:.8f}")
     table.add_row("lr_idm", f"{lr_idm:.8f}")
@@ -1692,6 +1698,13 @@ def main(cfg: DictConfig) -> None:
     perceptual_use_predicted_latent = bool(getattr(perceptual_cfg, "use_predicted_latent", True))
     image_decoder_hidden_channels = int(getattr(perceptual_cfg, "decoder_hidden_channels", 128))
     ensemble_size = int(getattr(wm_lewm_cfg, "ensemble_size", 1))
+    use_next_query = bool(getattr(wm_lewm_cfg, "use_next_query", False))
+    prediction_mode = str(getattr(wm_lewm_cfg, "prediction_mode", "absolute"))
+    delta_scale = float(getattr(wm_lewm_cfg, "delta_scale", 1.0))
+    copy_margin_cfg = getattr(train_cfg, "copy_margin", {})
+    copy_margin_enabled = bool(getattr(copy_margin_cfg, "enabled", False))
+    copy_margin_weight = float(getattr(copy_margin_cfg, "weight", 0.0))
+    copy_margin = float(getattr(copy_margin_cfg, "margin", 0.0))
 
     action_dim = int(getattr(wm_cfg, "action_dim", 3))
 
@@ -1722,6 +1735,9 @@ def main(cfg: DictConfig) -> None:
         image_decoder_hidden_channels=image_decoder_hidden_channels,
         image_size=perceptual_image_size,
         ensemble_size=ensemble_size,
+        use_next_query=use_next_query,
+        prediction_mode=prediction_mode,
+        delta_scale=delta_scale,
     )
     wm_module = wm_module.to(device)
     wm_module.train()
@@ -1837,6 +1853,9 @@ def main(cfg: DictConfig) -> None:
         negative_action_contrastive_weight=negative_action_contrastive_weight,
         negative_action_contrastive_margin=negative_action_contrastive_margin,
         negative_action_contrastive_num_negatives=negative_action_contrastive_num_negatives,
+        copy_margin_enabled=copy_margin_enabled,
+        copy_margin_weight=copy_margin_weight,
+        copy_margin=copy_margin,
         perceptual_enabled=perceptual_enabled,
         perceptual_weight=perceptual_weight,
         image_recon_weight=image_recon_weight,
@@ -2402,11 +2421,23 @@ def main(cfg: DictConfig) -> None:
                         "loss_perceptual": float(step_metrics.get("loss_perceptual", 0.0)),
                         "loss_negative_action": float(step_metrics.get("loss_negative_action", 0.0)),
                         "loss_negative_action_weighted": float(step_metrics.get("loss_negative_action_weighted", 0.0)),
+                        "loss_copy_margin": float(step_metrics.get("loss_copy_margin", 0.0)),
+                        "loss_copy_margin_weighted": float(step_metrics.get("loss_copy_margin_weighted", 0.0)),
                         "negative_action_dist_mean": float(step_metrics.get("negative_action_dist_mean", 0.0)),
+                        "copy_last_mse": float(step_metrics.get("copy_last_mse", 0.0)),
+                        "model_mean_mse": float(step_metrics.get("model_mean_mse", 0.0)),
+                        "target_delta_norm": float(step_metrics.get("target_delta_norm", 0.0)),
+                        "pred_delta_norm": float(step_metrics.get("pred_delta_norm", 0.0)),
+                        "delta_cosine": float(step_metrics.get("delta_cosine", 0.0)),
+                        "action_sensitivity": float(step_metrics.get("action_sensitivity", 0.0)),
+                        "ensemble_mean_mse": float(step_metrics.get("ensemble_mean_mse", 0.0)),
+                        "ensemble_member_mse": float(step_metrics.get("ensemble_member_mse", 0.0)),
                         "ensemble_uncertainty_mean": float(step_metrics.get("ensemble_uncertainty_mean", 0.0)),
                         "ensemble_size": float(step_metrics.get("ensemble_size", ensemble_size)),
                         "reward_pred_mean": float(step_metrics.get("reward_pred_mean", 0.0)),
                         "reward_target_mean": float(step_metrics.get("reward_target_mean", 0.0)),
+                        "reward_pred_on_copy_mean": float(step_metrics.get("reward_pred_on_copy_mean", 0.0)),
+                        "reward_pred_on_target_mean": float(step_metrics.get("reward_pred_on_target_mean", 0.0)),
                         "sigreg_weight": float(step_metrics.get("sigreg_weight", 0.0)),
                         "lr_wm": float(step_metrics.get("lr_wm", wm_optimizer.param_groups[0]["lr"])),
                         "lr_qwen": float(step_metrics.get("lr_qwen", 0.0)),
@@ -2447,6 +2478,9 @@ def main(cfg: DictConfig) -> None:
                 step_perceptual = float(step_metrics.get("loss_perceptual", 0.0))
                 step_negative_action = float(step_metrics.get("loss_negative_action", 0.0))
                 step_negative_action_weighted = float(step_metrics.get("loss_negative_action_weighted", 0.0))
+                step_copy_last_mse = float(step_metrics.get("copy_last_mse", 0.0))
+                step_model_mean_mse = float(step_metrics.get("model_mean_mse", 0.0))
+                step_action_sensitivity = float(step_metrics.get("action_sensitivity", 0.0))
                 step_total_with_kl = step_loss + float(kl_weight * step_kl)
                 lr_wm_cur = float(step_metrics.get("lr_wm", wm_optimizer.param_groups[0]["lr"]))
                 lr_idm_cur = float(step_metrics.get("lr_idm", idm_optimizer.param_groups[0]["lr"]))
@@ -2484,6 +2518,9 @@ def main(cfg: DictConfig) -> None:
                         step_perceptual=step_perceptual,
                         step_negative_action=step_negative_action,
                         step_negative_action_weighted=step_negative_action_weighted,
+                        step_copy_last_mse=step_copy_last_mse,
+                        step_model_mean_mse=step_model_mean_mse,
+                        step_action_sensitivity=step_action_sensitivity,
                         step_total_with_kl=step_total_with_kl,
                         lr_wm=lr_wm_cur,
                         lr_idm=lr_idm_cur,

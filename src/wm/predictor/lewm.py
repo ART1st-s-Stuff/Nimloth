@@ -270,6 +270,9 @@ class LeWMWorldModel(nn.Module):
         image_decoder_hidden_channels: int = 128,
         image_size: int = 128,
         ensemble_size: int = 1,
+        use_next_query: bool = False,
+        prediction_mode: str = "absolute",
+        delta_scale: float = 1.0,
     ) -> None:
         super().__init__()
         self.history_len = history_len
@@ -279,6 +282,11 @@ class LeWMWorldModel(nn.Module):
         self.reward_enabled = bool(reward_enabled)
         self.image_decoder_enabled = bool(image_decoder_enabled)
         self.ensemble_size = max(1, int(ensemble_size))
+        self.use_next_query = bool(use_next_query)
+        self.prediction_mode = str(prediction_mode).strip().lower()
+        if self.prediction_mode not in {"absolute", "delta"}:
+            raise ValueError(f"不支持的 prediction_mode={prediction_mode}")
+        self.delta_scale = float(delta_scale)
         expected_latent_dim = self.num_patches * self.token_dim
         if int(latent_dim) != int(expected_latent_dim):
             raise ValueError(f"latent_dim 与 patch 配置不一致: {latent_dim} != {expected_latent_dim}")
@@ -313,6 +321,7 @@ class LeWMWorldModel(nn.Module):
         )
 
         self.patch_proj = nn.Linear(transformer_input_dim, hidden_dim)
+        self.next_query = nn.Parameter(torch.randn(1, self.num_patches, hidden_dim) * 0.02)
 
         self.transformer = _LeWMTransformer(
             input_dim=transformer_input_dim,
@@ -419,14 +428,40 @@ class LeWMWorldModel(nn.Module):
             pred_z_flat = out
         return pred_z_flat.reshape(B, H, P, D)[:, -1, :, :]
 
+    def _decode_query_output(self, out: torch.Tensor) -> torch.Tensor:
+        if self.sigreg_ed is not None:
+            return self.sigreg_ed.decode(out)
+        return out
+
+    def _run_transformer_member(
+        self,
+        transformer: _LeWMTransformer,
+        x: torch.Tensor,
+        c: torch.Tensor,
+        shape: tuple[int, int, int, int],
+        last_z: torch.Tensor,
+    ) -> torch.Tensor:
+        B, H, P, _ = shape
+        if self.use_next_query:
+            query = self.next_query.expand(B, -1, -1)
+            c_query = c.reshape(B, H, P, -1)[:, -1, :, :]
+            out = transformer(torch.cat([x, query], dim=1), torch.cat([c, c_query], dim=1))
+            pred = self._decode_query_output(out[:, -P:, :])
+        else:
+            pred = self._decode_output(transformer(x, c), shape)
+        if self.prediction_mode == "delta":
+            pred = last_z + self.delta_scale * pred
+        return pred
+
     def predict_next_ensemble(
         self, z_history: torch.Tensor, action_history: torch.Tensor
     ) -> torch.Tensor:
         """Return per-member next-latent predictions: [K, B, P, D]."""
         x, c, shape = self._encode_inputs(z_history=z_history, action_history=action_history)
-        preds = [self._decode_output(self.transformer(x, c), shape)]
+        last_z = z_history[:, -1, :, :]
+        preds = [self._run_transformer_member(self.transformer, x, c, shape, last_z)]
         for transformer in self.ensemble_transformers:
-            preds.append(self._decode_output(transformer(x, c), shape))
+            preds.append(self._run_transformer_member(transformer, x, c, shape, last_z))
         return torch.stack(preds, dim=0)
 
     def forward(self, z_history: torch.Tensor, action_history: torch.Tensor) -> torch.Tensor:
@@ -524,6 +559,9 @@ class LeWMModel(Model):
         negative_action_contrastive_weight: float = 0.0,
         negative_action_contrastive_margin: float = 0.05,
         negative_action_contrastive_num_negatives: int = 1,
+        copy_margin_enabled: bool = False,
+        copy_margin_weight: float = 0.0,
+        copy_margin: float = 0.0,
         perceptual_enabled: bool = False,
         perceptual_weight: float = 0.1,
         image_recon_weight: float = 0.1,
@@ -555,6 +593,9 @@ class LeWMModel(Model):
         self.negative_action_contrastive_weight = float(negative_action_contrastive_weight)
         self.negative_action_contrastive_margin = float(negative_action_contrastive_margin)
         self.negative_action_contrastive_num_negatives = max(1, int(negative_action_contrastive_num_negatives))
+        self.copy_margin_enabled = bool(copy_margin_enabled)
+        self.copy_margin_weight = float(copy_margin_weight)
+        self.copy_margin = float(copy_margin)
         self.perceptual_enabled = bool(perceptual_enabled)
         self.perceptual_weight = float(perceptual_weight)
         self.image_recon_weight = float(image_recon_weight)
@@ -690,6 +731,70 @@ class LeWMModel(Model):
             neg_dists.append(neg_dist.mean())
         return torch.stack(losses).mean(), torch.stack(neg_dists).mean()
 
+    def _compute_transition_diagnostics(
+        self,
+        *,
+        pred_z: torch.Tensor,
+        target_z: torch.Tensor,
+        last_z: torch.Tensor,
+        ensemble_preds: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        pred_delta = pred_z - last_z
+        target_delta = target_z - last_z
+        metrics: dict[str, torch.Tensor] = {
+            "copy_last_mse": F.mse_loss(last_z, target_z),
+            "model_mean_mse": F.mse_loss(pred_z, target_z),
+            "target_delta_norm": target_delta.flatten(1).norm(dim=1).mean(),
+            "pred_delta_norm": pred_delta.flatten(1).norm(dim=1).mean(),
+            "delta_cosine": F.cosine_similarity(pred_delta.flatten(1), target_delta.flatten(1), dim=1, eps=1e-8).mean(),
+        }
+        if ensemble_preds is not None:
+            expanded_target = target_z.unsqueeze(0).expand_as(ensemble_preds)
+            metrics["ensemble_mean_mse"] = F.mse_loss(ensemble_preds.mean(dim=0), target_z)
+            metrics["ensemble_member_mse"] = F.mse_loss(ensemble_preds, expanded_target)
+        else:
+            metrics["ensemble_mean_mse"] = metrics["model_mean_mse"]
+            metrics["ensemble_member_mse"] = metrics["model_mean_mse"]
+        return metrics
+
+    def _compute_action_sensitivity(
+        self,
+        *,
+        wm_core: LeWMWorldModel,
+        teacher_z: torch.Tensor,
+        teacher_action: torch.Tensor,
+    ) -> torch.Tensor:
+        action_dim = int(teacher_action.size(-1))
+        if action_dim < 2:
+            return torch.tensor(0.0, device=self.device)
+        preds: list[torch.Tensor] = []
+        with torch.no_grad():
+            for action_id in range(action_dim):
+                action = F.one_hot(
+                    torch.full((teacher_action.size(0),), action_id, device=teacher_action.device),
+                    num_classes=action_dim,
+                ).to(dtype=teacher_action.dtype)
+                candidate_action = teacher_action.clone()
+                candidate_action[:, -1, :] = action
+                preds.append(wm_core.predict_next(teacher_z, candidate_action))
+        stacked = torch.stack(preds, dim=0)
+        diffs = stacked.unsqueeze(0) - stacked.unsqueeze(1)
+        mask = ~torch.eye(action_dim, dtype=torch.bool, device=teacher_action.device)
+        return diffs.pow(2).flatten(2).mean(dim=2)[mask].mean()
+
+    def _compute_copy_margin_loss(
+        self,
+        *,
+        pred_z: torch.Tensor,
+        target_z: torch.Tensor,
+        last_z: torch.Tensor,
+    ) -> torch.Tensor:
+        if not self.copy_margin_enabled or self.copy_margin_weight <= 0.0:
+            return torch.tensor(0.0, device=self.device)
+        pred_dist = F.mse_loss(pred_z, target_z, reduction="none").flatten(1).mean(dim=1)
+        copy_dist = F.mse_loss(last_z, target_z, reduction="none").flatten(1).mean(dim=1)
+        return F.relu(self.copy_margin + pred_dist - copy_dist).mean()
+
     @torch.no_grad()
     def eval_step(self, batch: Any) -> dict[str, Any]:
         z_history = batch["z_history"].to(self.device)
@@ -742,8 +847,13 @@ class LeWMModel(Model):
         loss_image_recon_steps: list[torch.Tensor] = []
         loss_perceptual_steps: list[torch.Tensor] = []
         loss_negative_action_steps: list[torch.Tensor] = []
+        loss_copy_margin_steps: list[torch.Tensor] = []
         negative_action_dist_values: list[torch.Tensor] = []
         ensemble_uncertainty_values: list[torch.Tensor] = []
+        transition_diag_values: dict[str, list[torch.Tensor]] = {}
+        action_sensitivity_values: list[torch.Tensor] = []
+        reward_pred_on_copy_values: list[torch.Tensor] = []
+        reward_pred_on_target_values: list[torch.Tensor] = []
 
         wm_core = self._wm_core()
         for step_idx in range(rollout_horizon):
@@ -757,6 +867,7 @@ class LeWMModel(Model):
             target_z = z_future[:, step_idx, :, :]
             if self.detach_target_latents:
                 target_z = target_z.detach()
+            last_z = teacher_z[:, -1, :, :]
             if self.fail_on_nonfinite:
                 self._check_finite(f"pred_z[{step_idx}]", pred_z)
                 self._check_finite(f"target_z[{step_idx}]", target_z)
@@ -767,6 +878,21 @@ class LeWMModel(Model):
                 )
             else:
                 step_loss = F.mse_loss(pred_z, target_z)
+            diag = self._compute_transition_diagnostics(
+                pred_z=pred_z,
+                target_z=target_z,
+                last_z=last_z,
+                ensemble_preds=ensemble_preds if isinstance(ensemble_preds, torch.Tensor) else None,
+            )
+            for key, value in diag.items():
+                transition_diag_values.setdefault(key, []).append(value.detach())
+            action_sensitivity_values.append(
+                self._compute_action_sensitivity(
+                    wm_core=wm_core,
+                    teacher_z=teacher_z,
+                    teacher_action=teacher_action,
+                ).detach()
+            )
             uncertainty_step = aux.get("ensemble_uncertainty")
             if isinstance(uncertainty_step, torch.Tensor):
                 ensemble_uncertainty_values.append(uncertainty_step.mean())
@@ -784,11 +910,17 @@ class LeWMModel(Model):
                 self._check_finite(f"loss_negative_action_step[{step_idx}]", negative_loss_step)
             loss_negative_action_steps.append(negative_loss_step)
             negative_action_dist_values.append(negative_dist_step.detach())
+            loss_copy_margin_steps.append(
+                self._compute_copy_margin_loss(pred_z=pred_z, target_z=target_z, last_z=last_z)
+            )
             if self.reward_enabled and reward_targets is not None and "reward_pred" in aux:
                 reward_target_step = reward_targets[:, step_idx] if reward_targets.dim() > 1 else reward_targets
                 loss_reward_steps.append(
                     self._compute_reward_loss(aux["reward_pred"], reward_target_step)
                 )
+                if wm_core.reward_head is not None:
+                    reward_pred_on_copy_values.append(wm_core.predict_reward(last_z).detach())
+                    reward_pred_on_target_values.append(wm_core.predict_reward(target_z).detach())
             if self.perceptual_enabled and target_images is not None and "image_recon" in aux:
                 image_target = target_images[:, step_idx, :, :, :]
                 loss_image_recon_steps.append(F.l1_loss(aux["image_recon"], image_target))
@@ -827,6 +959,12 @@ class LeWMModel(Model):
             else torch.tensor(0.0, device=self.device)
         )
         loss_negative_action_weighted = self.negative_action_contrastive_weight * loss_negative_action
+        loss_copy_margin = (
+            torch.stack(loss_copy_margin_steps).mean()
+            if loss_copy_margin_steps
+            else torch.tensor(0.0, device=self.device)
+        )
+        loss_copy_margin_weighted = self.copy_margin_weight * loss_copy_margin
         negative_action_dist_mean = (
             float(torch.stack(negative_action_dist_values).mean().item())
             if negative_action_dist_values
@@ -835,6 +973,26 @@ class LeWMModel(Model):
         ensemble_uncertainty_mean = (
             float(torch.stack(ensemble_uncertainty_values).mean().item())
             if ensemble_uncertainty_values
+            else 0.0
+        )
+        transition_diag_means = {
+            key: float(torch.stack(values).mean().item())
+            for key, values in transition_diag_values.items()
+            if values
+        }
+        action_sensitivity_mean = (
+            float(torch.stack(action_sensitivity_values).mean().item())
+            if action_sensitivity_values
+            else 0.0
+        )
+        reward_pred_on_copy_mean = (
+            float(torch.cat(reward_pred_on_copy_values).mean().item())
+            if reward_pred_on_copy_values
+            else 0.0
+        )
+        reward_pred_on_target_mean = (
+            float(torch.cat(reward_pred_on_target_values).mean().item())
+            if reward_pred_on_target_values
             else 0.0
         )
         latent_for_reg = torch.cat([z_history, z_future], dim=1)
@@ -855,6 +1013,7 @@ class LeWMModel(Model):
                 + self.image_recon_weight * float(loss_image_recon.item())
                 + self.perceptual_weight * float(loss_perceptual.item())
                 + float(loss_negative_action_weighted.item())
+                + float(loss_copy_margin_weighted.item())
                 + current_sigreg_weight * float(loss_sigreg.item())
                 + self.semi_supervised_weight * float(loss_action.item())
             ),
@@ -868,9 +1027,15 @@ class LeWMModel(Model):
             "loss_perceptual": float(loss_perceptual.item()),
             "loss_negative_action": float(loss_negative_action.item()),
             "loss_negative_action_weighted": float(loss_negative_action_weighted.item()),
+            "loss_copy_margin": float(loss_copy_margin.item()),
+            "loss_copy_margin_weighted": float(loss_copy_margin_weighted.item()),
             "negative_action_dist_mean": negative_action_dist_mean,
             "ensemble_uncertainty_mean": ensemble_uncertainty_mean,
+            "action_sensitivity": action_sensitivity_mean,
+            "reward_pred_on_copy_mean": reward_pred_on_copy_mean,
+            "reward_pred_on_target_mean": reward_pred_on_target_mean,
             "ensemble_size": float(wm_core.ensemble_size),
+            **transition_diag_means,
         }
 
     def train_step(self, batch: Any) -> dict[str, Any]:
@@ -919,9 +1084,14 @@ class LeWMModel(Model):
         loss_image_recon_steps: list[torch.Tensor] = []
         loss_perceptual_steps: list[torch.Tensor] = []
         loss_negative_action_steps: list[torch.Tensor] = []
+        loss_copy_margin_steps: list[torch.Tensor] = []
         negative_action_dist_values: list[torch.Tensor] = []
         ensemble_uncertainty_values: list[torch.Tensor] = []
+        transition_diag_values: dict[str, list[torch.Tensor]] = {}
+        action_sensitivity_values: list[torch.Tensor] = []
         reward_pred_values: list[torch.Tensor] = []
+        reward_pred_on_copy_values: list[torch.Tensor] = []
+        reward_pred_on_target_values: list[torch.Tensor] = []
 
         wm_core = self._wm_core()
         for step_idx in range(rollout_horizon):
@@ -935,6 +1105,7 @@ class LeWMModel(Model):
             target_z = z_future[:, step_idx, :, :]
             if self.detach_target_latents:
                 target_z = target_z.detach()
+            last_z = teacher_z[:, -1, :, :]
             self._last_debug_tensors[f"pred_z[{step_idx}]"] = pred_z.detach()
             self._last_debug_tensors[f"target_z[{step_idx}]"] = target_z.detach()
             if self.fail_on_nonfinite:
@@ -947,6 +1118,21 @@ class LeWMModel(Model):
                 )
             else:
                 step_loss = F.mse_loss(pred_z, target_z)
+            diag = self._compute_transition_diagnostics(
+                pred_z=pred_z,
+                target_z=target_z,
+                last_z=last_z,
+                ensemble_preds=ensemble_preds if isinstance(ensemble_preds, torch.Tensor) else None,
+            )
+            for key, value in diag.items():
+                transition_diag_values.setdefault(key, []).append(value.detach())
+            action_sensitivity_values.append(
+                self._compute_action_sensitivity(
+                    wm_core=wm_core,
+                    teacher_z=teacher_z,
+                    teacher_action=teacher_action,
+                ).detach()
+            )
             uncertainty_step = aux.get("ensemble_uncertainty")
             if isinstance(uncertainty_step, torch.Tensor):
                 ensemble_uncertainty_values.append(uncertainty_step.mean())
@@ -967,6 +1153,11 @@ class LeWMModel(Model):
                 self._check_finite(f"loss_negative_action_step[{step_idx}]", negative_loss_step)
             loss_negative_action_steps.append(negative_loss_step)
             negative_action_dist_values.append(negative_dist_step.detach())
+            copy_margin_step = self._compute_copy_margin_loss(pred_z=pred_z, target_z=target_z, last_z=last_z)
+            self._last_debug_tensors[f"loss_copy_margin_step[{step_idx}]"] = copy_margin_step.detach()
+            if self.fail_on_nonfinite:
+                self._check_finite(f"loss_copy_margin_step[{step_idx}]", copy_margin_step)
+            loss_copy_margin_steps.append(copy_margin_step)
             if self.reward_enabled and reward_targets is not None and "reward_pred" in aux:
                 reward_pred_values.append(aux["reward_pred"].detach())
                 reward_target_step = reward_targets[:, step_idx] if reward_targets.dim() > 1 else reward_targets
@@ -977,6 +1168,9 @@ class LeWMModel(Model):
                     self._check_finite(f"reward_pred[{step_idx}]", aux["reward_pred"])
                     self._check_finite(f"loss_reward_step[{step_idx}]", reward_loss_step)
                 loss_reward_steps.append(reward_loss_step)
+                if wm_core.reward_head is not None:
+                    reward_pred_on_copy_values.append(wm_core.predict_reward(last_z).detach())
+                    reward_pred_on_target_values.append(wm_core.predict_reward(target_z).detach())
             if self.perceptual_enabled and target_images is not None and "image_recon" in aux:
                 image_target = target_images[:, step_idx, :, :, :]
                 image_loss_step = F.l1_loss(aux["image_recon"], image_target)
@@ -1031,6 +1225,12 @@ class LeWMModel(Model):
             else torch.tensor(0.0, device=self.device)
         )
         loss_negative_action_weighted = self.negative_action_contrastive_weight * loss_negative_action
+        loss_copy_margin = (
+            torch.stack(loss_copy_margin_steps).mean()
+            if loss_copy_margin_steps
+            else torch.tensor(0.0, device=self.device)
+        )
+        loss_copy_margin_weighted = self.copy_margin_weight * loss_copy_margin
 
         latent_for_reg = torch.cat([z_history, z_future], dim=1)
         loss_sigreg = torch.tensor(0.0, device=self.device)
@@ -1047,6 +1247,8 @@ class LeWMModel(Model):
                 "loss_perceptual": loss_perceptual.detach(),
                 "loss_negative_action": loss_negative_action.detach(),
                 "loss_negative_action_weighted": loss_negative_action_weighted.detach(),
+                "loss_copy_margin": loss_copy_margin.detach(),
+                "loss_copy_margin_weighted": loss_copy_margin_weighted.detach(),
                 "loss_sigreg": loss_sigreg.detach(),
                 "loss_sigreg_weighted": loss_sigreg_weighted.detach(),
             }
@@ -1058,6 +1260,8 @@ class LeWMModel(Model):
             self._check_finite("loss_perceptual", loss_perceptual)
             self._check_finite("loss_negative_action", loss_negative_action)
             self._check_finite("loss_negative_action_weighted", loss_negative_action_weighted)
+            self._check_finite("loss_copy_margin", loss_copy_margin)
+            self._check_finite("loss_copy_margin_weighted", loss_copy_margin_weighted)
             self._check_finite("loss_sigreg", loss_sigreg)
             self._check_finite("loss_sigreg_weighted", loss_sigreg_weighted)
 
@@ -1086,6 +1290,7 @@ class LeWMModel(Model):
             + loss_image_recon_weighted
             + loss_perceptual_weighted
             + loss_negative_action_weighted
+            + loss_copy_margin_weighted
         )
         self._last_debug_tensors["loss_wm_total"] = loss_wm_total.detach()
         if self.fail_on_nonfinite:
@@ -1141,6 +1346,26 @@ class LeWMModel(Model):
             if ensemble_uncertainty_values
             else 0.0
         )
+        transition_diag_means = {
+            key: float(torch.stack(values).mean().item())
+            for key, values in transition_diag_values.items()
+            if values
+        }
+        action_sensitivity_mean = (
+            float(torch.stack(action_sensitivity_values).mean().item())
+            if action_sensitivity_values
+            else 0.0
+        )
+        reward_pred_on_copy_mean = (
+            float(torch.cat(reward_pred_on_copy_values).mean().item())
+            if reward_pred_on_copy_values
+            else 0.0
+        )
+        reward_pred_on_target_mean = (
+            float(torch.cat(reward_pred_on_target_values).mean().item())
+            if reward_pred_on_target_values
+            else 0.0
+        )
         return {
             "loss": batch_loss,
             "loss_recon": float(loss_recon.item()),
@@ -1152,11 +1377,16 @@ class LeWMModel(Model):
             "loss_perceptual": float(loss_perceptual.item()),
             "loss_negative_action": float(loss_negative_action.item()),
             "loss_negative_action_weighted": float(loss_negative_action_weighted.item()),
+            "loss_copy_margin": float(loss_copy_margin.item()),
+            "loss_copy_margin_weighted": float(loss_copy_margin_weighted.item()),
             "negative_action_dist_mean": negative_action_dist_mean,
             "ensemble_uncertainty_mean": ensemble_uncertainty_mean,
+            "action_sensitivity": action_sensitivity_mean,
             "ensemble_size": float(wm_core.ensemble_size),
             "reward_pred_mean": reward_pred_mean,
             "reward_target_mean": reward_target_mean,
+            "reward_pred_on_copy_mean": reward_pred_on_copy_mean,
+            "reward_pred_on_target_mean": reward_pred_on_target_mean,
             "sigreg_weight": current_sigreg_weight,
             "grad_norm_wm": self._last_wm_grad_norm,
             "lr_wm": float(self.wm_scheduler.get_last_lr()[0]),
@@ -1164,6 +1394,7 @@ class LeWMModel(Model):
             if len(self.wm_scheduler.get_last_lr()) > 1
             else 0.0,
             "lr_idm": float(self.idm_scheduler.get_last_lr()[0]),
+            **transition_diag_means,
         }
 
     def get_state(self) -> dict[str, Any]:
@@ -1181,7 +1412,7 @@ class LeWMModel(Model):
 
     def load_state(self, state: dict[str, Any], *, start_epoch: int = 0, global_step: int = 0) -> None:
         if "model_state_dict" in state:
-            self.wm.load_state_dict(state["model_state_dict"])
+            self.wm.load_state_dict(state["model_state_dict"], strict=False)
         if "inverse_dynamics_state_dict" in state:
             self.idm.load_state_dict(state["inverse_dynamics_state_dict"])
         if "action_mapper_state_dict" in state:

@@ -431,3 +431,33 @@ lewm:
 
 ### 注意
 - 从旧 checkpoint 恢复到 `ensemble_size>1` 可能缺少新增 predictor 参数；当前 ensemble 实验应从头训练。
+
+---
+
+## Phase 2 调优：WM 物理/语义诊断与 next-query delta 开关（2026-05-10）
+
+### 本次更新
+- 新建分支 `ai-dev-wm-semantic-physical-split`，用于处理 WM 是否承载语义、latent 是否物理敏感、以及 transition 是否忽略 action 的问题。
+- `LeWMWorldModel` 新增兼容性结构开关：
+  - `use_next_query`：追加 learnable next-state query token，从 query 输出预测下一步 latent。
+  - `prediction_mode: absolute|delta`：支持 `pred_z = last_z + delta_scale * pred_delta`。
+  - `delta_scale`：控制 delta 输出尺度。
+- `LeWMModel` 新增 copy-baseline margin loss 配置：`pipeline.train.copy_margin.enabled/weight/margin`。
+- 训练和评估新增诊断指标：
+  - `copy_last_mse`、`model_mean_mse`
+  - `target_delta_norm`、`pred_delta_norm`、`delta_cosine`
+  - `action_sensitivity`
+  - `ensemble_mean_mse`、`ensemble_member_mse`
+  - `reward_pred_on_copy_mean`、`reward_pred_on_target_mean`
+- W&B 日志和 Rich TUI 已接入关键诊断指标；默认配置保持旧 absolute-last-token 行为，不改变既有实验语义。
+- `LeWMModel.load_state` 对 WM state dict 使用 `strict=False`，避免新增 `next_query` 参数阻断旧 checkpoint 诊断加载。
+
+### 验证
+- 通过 `python3 -m py_compile src/wm/predictor/lewm.py src/train/train_wm_joint.py`。
+- 通过 `git diff --check`。
+- 通过 `.venv/bin/python` dummy `LeWMWorldModel` smoke：覆盖旧 `absolute` 路径和新 `next_query + delta` 路径。
+- 通过 `.venv/bin/python` dummy `LeWMModel.train_step` + `eval_step` smoke：覆盖新增 metrics、copy-margin loss 和 reward shortcut 指标。
+
+### 注意
+- `action_sensitivity` 每个 rollout step 会额外枚举 action_dim 次 WM forward；用于诊断较重，长训练可根据日志开销后续改成采样式或配置开关。
+- 当前改动尚未真正拆分 `z_world/z_context/z_policy` 数据结构；本轮先落地诊断与可选 transition 结构，为后续 latent 解耦实验提供指标。

@@ -66,6 +66,11 @@ negative_action_contrastive:
   margin: 0.05
   # one-hot 动作空间中按 action_id 偏移构造确定性负样本；1 表示每个 step 取一个负动作。
   num_negatives: 1
+# copy-baseline margin loss：要求模型预测比 copy-last 更接近 target latent。
+copy_margin:
+  enabled: false
+  weight: 0.0
+  margin: 0.0
 # 梯度裁剪上限（L2 norm）
 grad_clip_norm: 5.0
 # true 时 WM 分支不把梯度反传到 IDM（分离传播）
