@@ -413,3 +413,21 @@ lewm:
 
 ### 注意
 - 当前 smoke 覆盖训练主链路；EB-Nav test split 在该入口显示 `test_samples disabled`，未覆盖 test dataloader。
+
+---
+
+## Phase 2 调优：LeWM ensemble 不确定度（2026-05-10）
+
+### 本次更新
+- `LeWMWorldModel` 新增 `ensemble_size`，共享 VLM/SIGReg encoder-decoder、位置/动作投影与 WM latent 映射。
+- 主 predictor 保持为 `self.transformer`，额外 ensemble 成员保存在 `ensemble_transformers`，每个成员独立预测下一步 WM latent。
+- `predict_next_ensemble` 返回 `[K,B,P,D]`；`predict_next`/`forward` 返回 ensemble mean，兼容现有 rollout、reward head、image decoder 和 value 选择流程。
+- 训练与评估时 recon loss 对所有成员分别监督到同一个 target latent，并记录 `ensemble_uncertainty_mean`（成员间 latent 方差均值）与 `ensemble_size`。
+- `configs/wm/lewm_qwen_llm_joint.yaml` 默认 `ensemble_size=1`，实验时通过 Hydra override 显式开启。
+
+### 验证
+- 通过 `.venv/bin/python -m py_compile src/train/train_wm_joint.py src/wm/predictor/lewm.py`。
+- 通过 dummy LeWMWorldModel ensemble smoke：`ensemble_size=3` 时 `pred=(2,3,8)`、`ensemble=(3,2,3,8)`、`uncertainty=(2,)`，三个 predictor 均有梯度。
+
+### 注意
+- 从旧 checkpoint 恢复到 `ensemble_size>1` 可能缺少新增 predictor 参数；当前 ensemble 实验应从头训练。

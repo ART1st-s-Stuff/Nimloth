@@ -269,6 +269,7 @@ class LeWMWorldModel(nn.Module):
         image_decoder_enabled: bool = False,
         image_decoder_hidden_channels: int = 128,
         image_size: int = 128,
+        ensemble_size: int = 1,
     ) -> None:
         super().__init__()
         self.history_len = history_len
@@ -277,6 +278,7 @@ class LeWMWorldModel(nn.Module):
         self.sigreg_enabled = sigreg_enabled
         self.reward_enabled = bool(reward_enabled)
         self.image_decoder_enabled = bool(image_decoder_enabled)
+        self.ensemble_size = max(1, int(ensemble_size))
         expected_latent_dim = self.num_patches * self.token_dim
         if int(latent_dim) != int(expected_latent_dim):
             raise ValueError(f"latent_dim 与 patch 配置不一致: {latent_dim} != {expected_latent_dim}")
@@ -322,6 +324,22 @@ class LeWMWorldModel(nn.Module):
             mlp_dim=mlp_dim,
             dropout=dropout,
             block_class=_LeWMConditionalBlock,
+        )
+        self.ensemble_transformers = nn.ModuleList(
+            [
+                _LeWMTransformer(
+                    input_dim=transformer_input_dim,
+                    hidden_dim=hidden_dim,
+                    output_dim=transformer_output_dim,
+                    depth=num_layers,
+                    heads=num_heads,
+                    dim_head=dim_head,
+                    mlp_dim=mlp_dim,
+                    dropout=dropout,
+                    block_class=_LeWMConditionalBlock,
+                )
+                for _ in range(self.ensemble_size - 1)
+            ]
         )
 
         self.sigreg: SIGReg | None = None
@@ -369,10 +387,10 @@ class LeWMWorldModel(nn.Module):
         if action_history.size(1) != self.history_len:
             raise ValueError(f"action_history history_len 不一致: {action_history.size(1)} != {self.history_len}")
 
-    def forward(self, z_history: torch.Tensor, action_history: torch.Tensor) -> torch.Tensor:
-        """返回预测的下一时刻 latent 序列：[B, P, D]"""
+    def _encode_inputs(
+        self, z_history: torch.Tensor, action_history: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int, int, int]]:
         self._validate_inputs(z_history=z_history, action_history=action_history)
-
         B, H, P, D = z_history.shape
 
         if self.sigreg_ed is not None:
@@ -381,7 +399,7 @@ class LeWMWorldModel(nn.Module):
         else:
             x = z_history.reshape(B, H * P, D)
 
-        x = x + self.pos_embedding[:, :H * P, :]
+        x = x + self.pos_embedding[:, : H * P, :]
         x = self.dropout(x)
 
         x_conv = self.action_embed_conv(action_history.transpose(1, 2))
@@ -389,18 +407,31 @@ class LeWMWorldModel(nn.Module):
         x_conv = x_conv.permute(0, 2, 1).reshape(B2 * H2, C)
         act_emb = self.action_embed_mlp(x_conv).reshape(B2, H2, C)
         c = act_emb.unsqueeze(2).expand(-1, -1, P, -1).reshape(B, H * P, -1)
+        return self.patch_proj(x), c, (B, H, P, D)
 
-        x = self.patch_proj(x)
-
-        out = self.transformer(x, c)
-
+    def _decode_output(
+        self, out: torch.Tensor, shape: tuple[int, int, int, int]
+    ) -> torch.Tensor:
+        B, H, P, D = shape
         if self.sigreg_ed is not None:
             pred_z_flat = self.sigreg_ed.decode(out)
         else:
             pred_z_flat = out
+        return pred_z_flat.reshape(B, H, P, D)[:, -1, :, :]
 
-        pred_z = pred_z_flat.reshape(B, H, P, D)[:, -1, :, :]
-        return pred_z
+    def predict_next_ensemble(
+        self, z_history: torch.Tensor, action_history: torch.Tensor
+    ) -> torch.Tensor:
+        """Return per-member next-latent predictions: [K, B, P, D]."""
+        x, c, shape = self._encode_inputs(z_history=z_history, action_history=action_history)
+        preds = [self._decode_output(self.transformer(x, c), shape)]
+        for transformer in self.ensemble_transformers:
+            preds.append(self._decode_output(transformer(x, c), shape))
+        return torch.stack(preds, dim=0)
+
+    def forward(self, z_history: torch.Tensor, action_history: torch.Tensor) -> torch.Tensor:
+        """返回预测的下一时刻 latent 序列：[B, P, D]"""
+        return self.predict_next_ensemble(z_history, action_history).mean(dim=0)
 
     def predict_next(
         self, z_history: torch.Tensor, action_history: torch.Tensor
@@ -425,8 +456,12 @@ class LeWMWorldModel(nn.Module):
         *,
         reconstruct_image: bool = False,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        pred_z = self.predict_next(z_history=z_history, action_history=action_history)
-        aux: dict[str, torch.Tensor] = {}
+        ensemble_preds = self.predict_next_ensemble(z_history=z_history, action_history=action_history)
+        pred_z = ensemble_preds.mean(dim=0)
+        aux: dict[str, torch.Tensor] = {"ensemble_preds": ensemble_preds}
+        if int(ensemble_preds.size(0)) > 1:
+            member_var = ensemble_preds.float().var(dim=0, unbiased=False)
+            aux["ensemble_uncertainty"] = member_var.flatten(1).mean(dim=1)
         if self.reward_head is not None:
             aux["reward_pred"] = self.predict_reward(pred_z)
         if reconstruct_image and self.image_decoder is not None:
@@ -708,6 +743,7 @@ class LeWMModel(Model):
         loss_perceptual_steps: list[torch.Tensor] = []
         loss_negative_action_steps: list[torch.Tensor] = []
         negative_action_dist_values: list[torch.Tensor] = []
+        ensemble_uncertainty_values: list[torch.Tensor] = []
 
         wm_core = self._wm_core()
         for step_idx in range(rollout_horizon):
@@ -724,7 +760,16 @@ class LeWMModel(Model):
             if self.fail_on_nonfinite:
                 self._check_finite(f"pred_z[{step_idx}]", pred_z)
                 self._check_finite(f"target_z[{step_idx}]", target_z)
-            step_loss = F.mse_loss(pred_z, target_z)
+            ensemble_preds = aux.get("ensemble_preds")
+            if isinstance(ensemble_preds, torch.Tensor):
+                step_loss = F.mse_loss(
+                    ensemble_preds, target_z.unsqueeze(0).expand_as(ensemble_preds)
+                )
+            else:
+                step_loss = F.mse_loss(pred_z, target_z)
+            uncertainty_step = aux.get("ensemble_uncertainty")
+            if isinstance(uncertainty_step, torch.Tensor):
+                ensemble_uncertainty_values.append(uncertainty_step.mean())
             loss_recon_steps.append(step_loss)
             negative_loss_step, negative_dist_step = self._compute_negative_action_contrastive_loss(
                 wm_core=wm_core,
@@ -787,6 +832,11 @@ class LeWMModel(Model):
             if negative_action_dist_values
             else 0.0
         )
+        ensemble_uncertainty_mean = (
+            float(torch.stack(ensemble_uncertainty_values).mean().item())
+            if ensemble_uncertainty_values
+            else 0.0
+        )
         latent_for_reg = torch.cat([z_history, z_future], dim=1)
         loss_sigreg = torch.tensor(0.0, device=self.device)
         current_sigreg_weight = 0.0
@@ -819,6 +869,8 @@ class LeWMModel(Model):
             "loss_negative_action": float(loss_negative_action.item()),
             "loss_negative_action_weighted": float(loss_negative_action_weighted.item()),
             "negative_action_dist_mean": negative_action_dist_mean,
+            "ensemble_uncertainty_mean": ensemble_uncertainty_mean,
+            "ensemble_size": float(wm_core.ensemble_size),
         }
 
     def train_step(self, batch: Any) -> dict[str, Any]:
@@ -868,6 +920,7 @@ class LeWMModel(Model):
         loss_perceptual_steps: list[torch.Tensor] = []
         loss_negative_action_steps: list[torch.Tensor] = []
         negative_action_dist_values: list[torch.Tensor] = []
+        ensemble_uncertainty_values: list[torch.Tensor] = []
         reward_pred_values: list[torch.Tensor] = []
 
         wm_core = self._wm_core()
@@ -887,7 +940,16 @@ class LeWMModel(Model):
             if self.fail_on_nonfinite:
                 self._check_finite(f"pred_z[{step_idx}]", pred_z)
                 self._check_finite(f"target_z[{step_idx}]", target_z)
-            step_loss = F.mse_loss(pred_z, target_z)
+            ensemble_preds = aux.get("ensemble_preds")
+            if isinstance(ensemble_preds, torch.Tensor):
+                step_loss = F.mse_loss(
+                    ensemble_preds, target_z.unsqueeze(0).expand_as(ensemble_preds)
+                )
+            else:
+                step_loss = F.mse_loss(pred_z, target_z)
+            uncertainty_step = aux.get("ensemble_uncertainty")
+            if isinstance(uncertainty_step, torch.Tensor):
+                ensemble_uncertainty_values.append(uncertainty_step.mean())
             self._last_debug_tensors[f"loss_recon_step[{step_idx}]"] = step_loss.detach()
             if self.fail_on_nonfinite:
                 self._check_finite(f"loss_recon_step[{step_idx}]", step_loss)
@@ -1074,6 +1136,11 @@ class LeWMModel(Model):
             if negative_action_dist_values
             else 0.0
         )
+        ensemble_uncertainty_mean = (
+            float(torch.stack(ensemble_uncertainty_values).mean().item())
+            if ensemble_uncertainty_values
+            else 0.0
+        )
         return {
             "loss": batch_loss,
             "loss_recon": float(loss_recon.item()),
@@ -1086,6 +1153,8 @@ class LeWMModel(Model):
             "loss_negative_action": float(loss_negative_action.item()),
             "loss_negative_action_weighted": float(loss_negative_action_weighted.item()),
             "negative_action_dist_mean": negative_action_dist_mean,
+            "ensemble_uncertainty_mean": ensemble_uncertainty_mean,
+            "ensemble_size": float(wm_core.ensemble_size),
             "reward_pred_mean": reward_pred_mean,
             "reward_target_mean": reward_target_mean,
             "sigreg_weight": current_sigreg_weight,

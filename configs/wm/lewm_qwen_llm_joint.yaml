@@ -41,6 +41,8 @@ lewm:
   emb_dropout: 0.0
   sigreg_knots: 17
   sigreg_num_proj: 256
+  # Number of independent transition predictors sharing the VLM/SIGReg encoder-decoder.
+  ensemble_size: 1
   # SIGReg 在 encoded latent 上应用
   sigreg_enabled: true
   sigreg_latent_dim: 3584

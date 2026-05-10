@@ -1691,6 +1691,7 @@ def main(cfg: DictConfig) -> None:
     perceptual_image_size = int(getattr(perceptual_cfg, "image_size", 128))
     perceptual_use_predicted_latent = bool(getattr(perceptual_cfg, "use_predicted_latent", True))
     image_decoder_hidden_channels = int(getattr(perceptual_cfg, "decoder_hidden_channels", 128))
+    ensemble_size = int(getattr(wm_lewm_cfg, "ensemble_size", 1))
 
     action_dim = int(getattr(wm_cfg, "action_dim", 3))
 
@@ -1720,6 +1721,7 @@ def main(cfg: DictConfig) -> None:
         image_decoder_enabled=perceptual_enabled,
         image_decoder_hidden_channels=image_decoder_hidden_channels,
         image_size=perceptual_image_size,
+        ensemble_size=ensemble_size,
     )
     wm_module = wm_module.to(device)
     wm_module.train()
@@ -1885,6 +1887,7 @@ def main(cfg: DictConfig) -> None:
             ("sigreg_enabled", str(sigreg_enabled)),
             ("sigreg_weight", f"{sigreg_weight:.6f}"),
             ("sigreg_warmup_steps", str(sigreg_warmup_steps)),
+            ("wm_ensemble_size", str(ensemble_size)),
             ("dataset_source", dataset_source),
             ("planner_lora_enabled", str(planner_lora_enabled)),
             ("planner_lora_trainable", str(planner_lora_trainable)),
@@ -1935,6 +1938,7 @@ def main(cfg: DictConfig) -> None:
             "sigreg_enabled": sigreg_enabled,
             "sigreg_weight": sigreg_weight,
             "sigreg_warmup_steps": sigreg_warmup_steps,
+            "wm_ensemble_size": ensemble_size,
             "vision_kl_enabled": bool(kl_enabled and kl_weight > 0.0),
             "vision_kl_weight": kl_weight,
             "vision_kl_temperature": kl_temperature,
@@ -2399,6 +2403,8 @@ def main(cfg: DictConfig) -> None:
                         "loss_negative_action": float(step_metrics.get("loss_negative_action", 0.0)),
                         "loss_negative_action_weighted": float(step_metrics.get("loss_negative_action_weighted", 0.0)),
                         "negative_action_dist_mean": float(step_metrics.get("negative_action_dist_mean", 0.0)),
+                        "ensemble_uncertainty_mean": float(step_metrics.get("ensemble_uncertainty_mean", 0.0)),
+                        "ensemble_size": float(step_metrics.get("ensemble_size", ensemble_size)),
                         "reward_pred_mean": float(step_metrics.get("reward_pred_mean", 0.0)),
                         "reward_target_mean": float(step_metrics.get("reward_target_mean", 0.0)),
                         "sigreg_weight": float(step_metrics.get("sigreg_weight", 0.0)),
