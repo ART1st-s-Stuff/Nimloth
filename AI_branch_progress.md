@@ -461,3 +461,33 @@ lewm:
 ### 注意
 - `action_sensitivity` 每个 rollout step 会额外枚举 action_dim 次 WM forward；用于诊断较重，长训练可根据日志开销后续改成采样式或配置开关。
 - 当前改动尚未真正拆分 `z_world/z_context/z_policy` 数据结构；本轮先落地诊断与可选 transition 结构，为后续 latent 解耦实验提供指标。
+
+---
+
+## WM 物理/语义诊断实验启动记录（2026-05-11）
+
+### 本次更新
+- 修复 `_build_loss_table` 初始化调用缺少新增诊断字段的问题；此前训练启动前 Rich TUI 初始化会报 `step_copy_last_mse/step_model_mean_mse/step_action_sensitivity` 参数缺失。
+- 启动并完成首批小样本诊断实验，均使用 EB-Nav、Qwen frozen、planner LoRA adapter、`save_final_checkpoint=false`。
+
+### 实验结果
+- `outputs/dev/20260510_wm_semantic_physical_anchor_delta_smoke/train_retry.log`
+  - 设置：`anchor` response，`next_query + delta`，32 samples，1 epoch，含 reward/perceptual/SIGReg/negative/copy-margin。
+  - 结果：`model_mean_mse=0.213010`，`copy_last_mse=0.077474`，`delta_cosine=-0.00048`，`action_sensitivity=0.02978`。
+- `outputs/dev/20260510_wm_semantic_physical_dataset_delta_smoke/train.log`
+  - 设置：`dataset` response，其余同 anchor delta smoke。
+  - 结果与 anchor smoke 完全一致；需要后续确认 dataset planner response 是否实际改变 special-token latent。
+- `outputs/dev/20260510_wm_semantic_physical_anchor_absolute_smoke/train.log`
+  - 设置：`anchor` response，旧 `absolute`/last-token 结构，32 samples，1 epoch。
+  - 结果：`model_mean_mse=21.068886`，`copy_last_mse=0.080189`，说明旧 absolute 初始化短训严重劣于 copy baseline。
+- `outputs/dev/20260510_wm_semantic_physical_tiny_overfit_delta_anchor/train.log`
+  - 设置：32 samples，5 epochs，`next_query + delta`，关闭 reward/perceptual/SIGReg/negative/copy-margin，但保留默认 1000-step warmup。
+  - 结果：最终 `model_mean_mse=0.51867`，`copy_last_mse=0.24667`，未过 copy；该实验主要暴露默认 warmup 太长。
+- `outputs/dev/20260510_wm_semantic_physical_tiny_overfit8_delta_anchor_fastlr/train.log`
+  - 设置：8 samples，20 epochs，`wm_lr=1e-3`，`lr_warmup_steps=0`，`dropout=0`，关闭所有辅助 loss。
+  - 结果：最终 summary `model_mean_mse=0.0924`，`copy_last_mse=0.10299`，`delta_cosine=0.15507`，说明 WM 在强 overfit 条件下可以略优于 copy，但 `action_sensitivity=0.00042` 仍很低。
+
+### 初步判断
+- 当前 planner latent 的 copy baseline 很强，短训模型默认不能自然超过 copy。
+- `next_query + delta` 明显优于旧 absolute 初始化，但仍需要更合适的优化设置和更强 action-sensitive 约束。
+- dataset/anchor 对照目前没有差异，下一步应直接检查两种 response 下抽出的 latent 是否真的不同。
