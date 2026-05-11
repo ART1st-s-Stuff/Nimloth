@@ -472,3 +472,12 @@ lewm:
 - `train_seen`：16 rollouts，logged_success_rate=`0.3125`，offline_replay_success_rate=`0.0`，mean_action_accuracy=`0.0110`，mean_prefix_match_ratio=`0.00368`，evaluated_steps=`261`。
 - `heldout_tail`：16 rollouts，logged_success_rate=`0.1875`，offline_replay_success_rate=`0.0`，mean_action_accuracy=`0.0`，mean_prefix_match_ratio=`0.0`，evaluated_steps=`264`。
 - 该结果继续支持此前 value-head action collapse 观察：reward-head policy 几乎不能恢复日志动作，因此离线 replay success 为 0。
+
+### 真实 simulator 结果：EB-Navigation 8x8（EmbodiedBench）
+- 已部署 `EmbodiedBench` 的 `EB-Navigation`，并通过 `EBNavigationEnv.reset()` smoke 验证。
+- 新增 `dev/evaluate_eb_nav_simulator_success.py`：使用 `flower` 的 WM reward head 选动作，并在真实 `EBNavigationEnv` 中执行 rollout。
+- 注意：当前 `train_seen` / `heldout_tail` 只对应 flower 历史 sequence split 的 record-level 标记；由于同一 simulator task 在轨迹数据中有多个 model trajectory，300 个任务都会同时出现在两侧，不能把它解释为 unseen-task generalization。
+- 输出目录：`outputs/dev/20260512_eb_nav_sim_8x8/`。
+- `heldout_tail`：8 rollouts，success_rate=`0.0`，mean_steps=`20.0`，mean_first_step_match=`0.0`，mean_action_accuracy=`0.01875`。
+- `train_seen`：8 rollouts，success_rate=`0.0`，mean_steps=`20.0`，mean_first_step_match=`0.0`，mean_action_accuracy=`0.0625`。
+- 预测动作分布：`5` 出现 `298` 次，`7` 出现 `22` 次；与此前 offline value-head collapse 一致，真实 simulator 中同样无法到达成功。
