@@ -448,3 +448,21 @@ lewm:
 
 ### 注意
 - 该 split 是 sequence index 级尾部切分，和本次训练的 `dataset.sequences[:max_samples]` 逻辑严格对齐；如果后续改为 episode-level 随机切分，需要单独生成固定 split manifest。
+
+---
+
+## Phase 2 评估：EB-Nav rollout success offline replay（2026-05-12）
+
+### 本次更新
+- 新增 `dev/evaluate_eb_nav_rollout_success.py`，用于从 EB-Nav sequence split 中抽取 `train_seen` 与 `heldout_tail` rollouts，并用 WM reward/value head 作为 agent policy 选择离散动作。
+- 当前仓库环境有 `ai2thor`，但未安装可用的 `embodiedbench`；`/home/jincai_guo/objectnav_smoke_test/EmbodiedBench` 仅有空目录骨架，暂不能配置真实 EB-Nav 交互模拟器。
+- 因此脚本当前提供 `offline_replay` backend：按日志 observation 严格回放，agent 一旦选择动作与日志动作不同就无法继续反事实模拟；`offline_replay_success_rate` 表示完整匹配日志动作后且原日志 episode 成功的比例，不等同于真实 simulator success rate。
+- 默认 split 与已停止训练对齐：`train_max_samples=22528`、`temporal_stride=4`，heldout tail 为 sequence index `22528:`。
+
+### 验证
+- 通过 `.venv/bin/python -m py_compile dev/evaluate_eb_nav_rollout_success.py`。
+- 通过 `--help` 与抽样检查：`total_sequences=33820`、train=`22528`、heldout_tail=`11292`。
+- 通过 1 条 train_seen + 1 条 heldout_tail、每条 1 step 的 smoke run；输出写入 `outputs/dev/20260511_eb_nav_rollout_success_smoke/summary.json`。
+
+### 注意
+- 要得到真正 rollout success rate，仍需可初始化 EB-Nav episode 的 EmbodiedBench simulator（scene、初始 pose、目标对象/成功判定等）；当前 JSON 只有日志轨迹和图像，不能支持 counterfactual action 后的下一状态。
