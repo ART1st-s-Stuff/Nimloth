@@ -42,6 +42,8 @@ eb_nav:
   dataset_path: datasets/EB-Nav/eb-nav_dataset_single_step.json
   images_base_dir: datasets/EB-Nav
   reward_cache_path: datasets/EB-Nav/phase2_reward_cache.jsonl
+  # 若 max_samples 截断训练集，则使用剩余尾部未训练 sequence 构建 EB-Nav test set。
+  use_heldout_tail_as_test: true
 custom:
   # JSON/JSONL manifest，支持预切好的 sequence、episode steps 或 flat steps
   manifest_path: ""

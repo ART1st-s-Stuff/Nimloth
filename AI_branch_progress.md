@@ -431,3 +431,20 @@ lewm:
 
 ### 注意
 - 从旧 checkpoint 恢复到 `ensemble_size>1` 可能缺少新增 predictor 参数；当前 ensemble 实验应从头训练。
+
+---
+
+## Phase 2 数据切分：EB-Nav heldout-tail test set（2026-05-12）
+
+### 本次更新
+- 按要求停止正在运行的 5-GPU EB-Nav temporal_stride=4 训练；保留最后已保存的 `models/wm/joint_qwen/checkpoint_step_00002000.pt`。
+- `train_wm_joint.py` 的 EB-Nav 分支新增 heldout-tail test set：当 `pipeline.train.max_samples > 0` 且 `pipeline.train.eb_nav.use_heldout_tail_as_test=true` 时，训练集使用前 `max_samples` 条 sequence，test set 使用剩余未训练尾部 sequence。
+- 新增配置 `pipeline.train.eb_nav.use_heldout_tail_as_test: true`。
+
+### 验证
+- 通过 `python3 -m py_compile src/train/train_wm_joint.py`。
+- 通过 `git diff --check`。
+- 轻量数据检查：`temporal_stride=4` 时 EB-Nav 共 `33820` 条 sequence；当前训练配置 `max_samples=22528` 后，train=`22528`，完整 heldout tail=`11292`，默认 `test_max_samples=64` 时 test=`64`。
+
+### 注意
+- 该 split 是 sequence index 级尾部切分，和本次训练的 `dataset.sequences[:max_samples]` 逻辑严格对齐；如果后续改为 episode-level 随机切分，需要单独生成固定 split manifest。

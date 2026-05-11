@@ -2011,6 +2011,7 @@ def main(cfg: DictConfig) -> None:
         eb_dataset_path = str(getattr(eb_nav_cfg, "dataset_path", "datasets/EB-Nav/eb-nav_dataset_single_step.json"))
         eb_images_base_dir = str(getattr(eb_nav_cfg, "images_base_dir", "datasets/EB-Nav"))
         eb_reward_cache_path = str(getattr(eb_nav_cfg, "reward_cache_path", ""))
+        eb_use_heldout_tail = bool(getattr(eb_nav_cfg, "use_heldout_tail_as_test", True))
         train_run_dir = Path(eb_dataset_path)
         test_run_dir = Path(eb_dataset_path)
         dataset = EBNavSequenceDataset(
@@ -2023,6 +2024,13 @@ def main(cfg: DictConfig) -> None:
             split="train",
             reward_cache_path=eb_reward_cache_path if eb_reward_cache_path else None,
         )
+        if eb_use_heldout_tail and max_samples > 0 and len(dataset.sequences) > max_samples:
+            test_dataset = copy.copy(dataset)
+            test_dataset.split = "test"
+            test_sequences = list(dataset.sequences[max_samples:])
+            if test_max_samples > 0:
+                test_sequences = test_sequences[:test_max_samples]
+            test_dataset.sequences = test_sequences
         if max_samples > 0:
             dataset.sequences = dataset.sequences[:max_samples]
     else:
