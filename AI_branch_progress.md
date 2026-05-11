@@ -481,3 +481,12 @@ lewm:
 - `heldout_tail`：8 rollouts，success_rate=`0.0`，mean_steps=`20.0`，mean_first_step_match=`0.0`，mean_action_accuracy=`0.01875`。
 - `train_seen`：8 rollouts，success_rate=`0.0`，mean_steps=`20.0`，mean_first_step_match=`0.0`，mean_action_accuracy=`0.0625`。
 - 预测动作分布：`5` 出现 `298` 次，`7` 出现 `22` 次；与此前 offline value-head collapse 一致，真实 simulator 中同样无法到达成功。
+
+### 真实 simulator 结果：EB-Navigation 16x16 + W&B rollout 明细（EmbodiedBench）
+- 为支持逐条 rollout 审查，`dev/evaluate_eb_nav_simulator_success.py` 新增 W&B 记录与截图落盘：每步保存 `step_screenshots/*.png`，并把 `task_key`、step screenshot、pred/logged action、reward、task_success、distance 上传到 W&B `step_details` table；每条 rollout 聚合上传到 `rollout_summary` table。
+- 先跑 `1x1` smoke 验证 W&B 上传链路，成功 run：`waux8ru5`（`eb-nav-sim-smoke-1x1b`）。
+- 正式 `16x16` run：`robf88vr`（`eb-nav-sim-16x16`）。输出目录：`outputs/dev/20260511_eb_nav_sim_16x16/`。
+- `heldout_tail`：16 rollouts，success_rate=`0.0`，mean_steps=`20.0`，mean_first_step_match=`0.0`，mean_action_accuracy=`0.0125`。
+- `train_seen`：16 rollouts，success_rate=`0.0`，mean_steps=`20.0`，mean_first_step_match=`0.0`，mean_action_accuracy=`0.046875`。
+- 预测动作分布：`5` 出现 `615` 次，`7` 出现 `24` 次，`4` 出现 `1` 次；总计 `640` 个 step screenshot 已写入本地输出目录，并作为 W&B table artifact 上传。
+- 结论未变：reward-head policy 在真实 simulator 中仍表现为近乎单动作 collapse，成功率为 0，且 train_seen 与 heldout_tail 都没有出现首步匹配恢复。

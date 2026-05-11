@@ -14,6 +14,7 @@ import argparse
 import csv
 import gc
 import json
+import os
 import random
 import shutil
 import sys
@@ -23,6 +24,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import wandb
 from PIL import Image
 
 from scripts.evaluate_eb_nav_value_head_actions import _action_tensor
@@ -56,6 +58,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-max-steps", type=int, default=20)
     parser.add_argument("--resolution", type=int, default=500)
     parser.add_argument("--fov", type=int, default=100)
+    parser.add_argument("--wandb-project", default="")
+    parser.add_argument("--wandb-entity", default="")
+    parser.add_argument("--wandb-run-name", default="")
+    parser.add_argument("--disable-wandb", action="store_true")
     parser.add_argument("--keep-image-cache", action="store_true")
     return parser.parse_args()
 
@@ -247,6 +253,96 @@ def _aggregate_rollouts(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _init_wandb(args: argparse.Namespace, selected: list[dict[str, Any]], split_info: dict[str, Any]) -> wandb.sdk.wandb_run.Run | None:
+    if args.disable_wandb:
+        return None
+    project = args.wandb_project or os.getenv("WANDB_PROJECT", "flower")
+    entity = args.wandb_entity or os.getenv("WANDB_ENTITY")
+    run_name = args.wandb_run_name or f"eb-nav-sim-{args.num_train_rollouts}x{args.num_test_rollouts}"
+    config = {
+        "checkpoint": args.checkpoint,
+        "dataset": args.dataset,
+        "embodiedbench_root": args.embodiedbench_root,
+        "train_max_samples": int(args.train_max_samples),
+        "temporal_stride": int(args.temporal_stride),
+        "num_train_rollouts": int(args.num_train_rollouts),
+        "num_test_rollouts": int(args.num_test_rollouts),
+        "seed": int(args.seed),
+        "env_max_steps": int(args.env_max_steps),
+        "selected_rollout_count": len(selected),
+        **split_info,
+    }
+    return wandb.init(project=project, entity=entity, name=run_name, config=config)
+
+
+def _log_wandb_tables(
+    *,
+    run: wandb.sdk.wandb_run.Run | None,
+    rollout_rows: list[dict[str, Any]],
+    step_rows: list[dict[str, Any]],
+) -> None:
+    if run is None:
+        return
+    rollout_columns = [
+        "rollout_index",
+        "split",
+        "eval_set",
+        "task_key",
+        "episode_record_idx",
+        "episode_id",
+        "model_name",
+        "instruction",
+        "task_success",
+        "num_steps",
+        "first_step_match",
+        "action_accuracy",
+    ]
+    rollout_table = wandb.Table(columns=rollout_columns)
+    for row in rollout_rows:
+        rollout_table.add_data(*[row.get(col, "") for col in rollout_columns])
+
+    step_columns = [
+        "rollout_index",
+        "split",
+        "eval_set",
+        "task_key",
+        "episode_record_idx",
+        "model_name",
+        "step_index",
+        "screenshot",
+        "pred_action_id",
+        "pred_action_name",
+        "logged_action_id",
+        "logged_action_name",
+        "reward",
+        "task_success",
+        "last_action_success",
+        "distance",
+    ]
+    step_table = wandb.Table(columns=step_columns)
+    for row in step_rows:
+        image_obj = wandb.Image(row["screenshot_path"], caption=f"{row['task_key']} step {row['step_index']}")
+        step_table.add_data(
+            row["rollout_index"],
+            row["split"],
+            row["eval_set"],
+            row["task_key"],
+            row["episode_record_idx"],
+            row["model_name"],
+            row["step_index"],
+            image_obj,
+            row["pred_action_id"],
+            row["pred_action_name"],
+            row["logged_action_id"],
+            row["logged_action_name"],
+            row["reward"],
+            row["task_success"],
+            row["last_action_success"],
+            row["distance"],
+        )
+    run.log({"rollout_summary": rollout_table, "step_details": step_table})
+
+
 def main() -> None:
     load_project_env()
     args = parse_args()
@@ -319,7 +415,10 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     tmp_image_dir = output_dir / "tmp_obs"
+    screenshot_dir = output_dir / "step_screenshots"
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
     anchor_response = build_planner_special_response(cot="", action_id=int(args.anchor_action_id))
+    wandb_run = _init_wandb(args, selected, split_info)
 
     rollout_rows: list[dict[str, Any]] = []
     step_rows: list[dict[str, Any]] = []
@@ -358,6 +457,8 @@ def main() -> None:
                 info: dict[str, Any] = {}
                 task_key = str(item["task_key"])
                 while not done and total_steps < int(args.env_max_steps):
+                    screenshot_path = screenshot_dir / f"rollout_{rollout_index:03d}_step_{total_steps:02d}.png"
+                    Image.fromarray(np.asarray(obs["head_rgb"])).save(screenshot_path)
                     latent = _encode_observation_latent(
                         qwen_adapter=qwen_adapter,
                         image_array=np.asarray(obs["head_rgb"]),
@@ -407,9 +508,11 @@ def main() -> None:
                         "pred_action_name": ACTION_NAMES.get(int(pred_action), ""),
                         "logged_action_id": int(logged_action),
                         "logged_action_name": ACTION_NAMES.get(int(logged_action), "") if logged_action >= 0 else "",
+                        "reward": float(reward),
                         "task_success": float(info["task_success"]),
                         "last_action_success": int(info["last_action_success"]),
                         "distance": float(info["distance"]),
+                        "screenshot_path": str(screenshot_path),
                     }
                     step_row.update({f"score_a{aid}": scores.get(aid, "") for aid in sorted(ACTION_MAP.keys())})
                     step_rows.append(step_row)
@@ -466,14 +569,23 @@ def main() -> None:
             "All 300 simulator tasks appear in both pools because the trajectory dataset contains multiple model trajectories per task."
         ),
         "metrics_by_split": _aggregate_rollouts(rollout_rows),
-        "pred_action_distribution": dict(Counter(int(row["pred_action_id"]) for row in step_rows)),
+        "pred_action_distribution": {
+            str(action_id): count for action_id, count in Counter(int(row["pred_action_id"]) for row in step_rows).items()
+        },
         "outputs": {
             "rollout_summary_csv": str(rollout_csv),
             "step_predictions_csv": str(step_csv),
+            "step_screenshots_dir": str(screenshot_dir),
         },
     }
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    if wandb_run is not None:
+        wandb_run.summary.update(summary["metrics_by_split"])
+        wandb_run.summary["pred_action_distribution"] = summary["pred_action_distribution"]
+        wandb_run.summary["output_dir"] = str(output_dir)
+        _log_wandb_tables(run=wandb_run, rollout_rows=rollout_rows, step_rows=step_rows)
+        wandb_run.finish()
     print(json.dumps(summary["metrics_by_split"], indent=2, ensure_ascii=False))
     print(f"wrote {summary_path}")
 
