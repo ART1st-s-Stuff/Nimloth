@@ -466,3 +466,9 @@ lewm:
 
 ### 注意
 - 要得到真正 rollout success rate，仍需可初始化 EB-Nav episode 的 EmbodiedBench simulator（scene、初始 pose、目标对象/成功判定等）；当前 JSON 只有日志轨迹和图像，不能支持 counterfactual action 后的下一状态。
+
+### 16x16 offline replay 结果
+- 命令输出目录：`outputs/dev/20260511_eb_nav_rollout_success_16x16/`。
+- `train_seen`：16 rollouts，logged_success_rate=`0.3125`，offline_replay_success_rate=`0.0`，mean_action_accuracy=`0.0110`，mean_prefix_match_ratio=`0.00368`，evaluated_steps=`261`。
+- `heldout_tail`：16 rollouts，logged_success_rate=`0.1875`，offline_replay_success_rate=`0.0`，mean_action_accuracy=`0.0`，mean_prefix_match_ratio=`0.0`，evaluated_steps=`264`。
+- 该结果继续支持此前 value-head action collapse 观察：reward-head policy 几乎不能恢复日志动作，因此离线 replay success 为 0。
