@@ -490,3 +490,8 @@ lewm:
 - `train_seen`：16 rollouts，success_rate=`0.0`，mean_steps=`20.0`，mean_first_step_match=`0.0`，mean_action_accuracy=`0.046875`。
 - 预测动作分布：`5` 出现 `615` 次，`7` 出现 `24` 次，`4` 出现 `1` 次；总计 `640` 个 step screenshot 已写入本地输出目录，并作为 W&B table artifact 上传。
 - 结论未变：reward-head policy 在真实 simulator 中仍表现为近乎单动作 collapse，成功率为 0，且 train_seen 与 heldout_tail 都没有出现首步匹配恢复。
+
+### 当前收尾状态（2026-05-12 UTC）
+- 代码与进度文件已同步提交到分支 `ai-dev-phase2-improve`，最近一次提交将包含本条状态记录。
+- 真实 simulator + W&B rollout 明细评估产物已落盘到 `outputs/dev/20260511_eb_nav_sim_16x16/`，W&B run 为 `robf88vr`。
+- 当前工作区仅剩未跟踪运行目录 `data/`、`running/`；按仓库约定继续不提交这些运行期目录。
