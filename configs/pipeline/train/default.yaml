@@ -129,6 +129,12 @@ qwen_encoder:
   gradient_checkpointing_use_reentrant: false
   # true 时 LLM backbone 也参与 joint training；显存/优化难度会明显增加。
   llm_backbone_trainable: false
+  # true 时 joint training 直接使用 Qwen visual encoder latent，不经过 LLM backbone。
+  use_vision_only: false
+  # visual-only latent 池化方式：last 或 mean。
+  visual_pooling: last
+  # visual_pooling=tokens 时输出固定数量的 visual tokens。
+  visual_num_tokens: 1
   # target latent 默认 stop-gradient，避免 encoder 同时追逐 moving target。
   detach_target_latents: true
   # 遇到 NaN/Inf 时直接报出具体张量名和统计。

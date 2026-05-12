@@ -157,6 +157,9 @@ class QwenLLMLatentEncoder(WMImageEncoder):
         qwen_adapter: QwenVLMAdapter | None = None,
         use_fallback: bool = False,
         use_vision_only: bool = False,
+        visual_pooling: str = "last",
+        visual_num_tokens: int | None = None,
+        cache_latents: bool = False,
         llm_backbone_trainable: bool = False,
         latent_anchor_mode: str = "last_token",
     ) -> None:
@@ -165,6 +168,12 @@ class QwenLLMLatentEncoder(WMImageEncoder):
         self.prompt_template = prompt_template
         self.use_fallback = use_fallback
         self.use_vision_only = use_vision_only
+        self.visual_pooling = str(visual_pooling).strip().lower()
+        if self.visual_pooling not in {"last", "mean", "tokens"}:
+            raise ValueError(f"不支持的 visual_pooling={visual_pooling}")
+        self.visual_num_tokens = int(visual_num_tokens) if visual_num_tokens is not None else None
+        self.cache_latents = bool(cache_latents)
+        self._latent_cache: dict[tuple[str, str | None, str | None, bool, str, int | None, str], torch.Tensor] = {}
         self.llm_backbone_trainable = llm_backbone_trainable
         self.latent_anchor_mode = str(latent_anchor_mode).strip().lower()
         if self.latent_anchor_mode not in {"last_token", "planner_special"}:
@@ -196,6 +205,33 @@ class QwenLLMLatentEncoder(WMImageEncoder):
     ) -> EncoderOutput:
         """返回 [D] 维 latent（last token hidden state）"""
         prompt = prompt_override if prompt_override is not None else self.prompt_template
+        cache_key = (
+            str(image_path),
+            prompt,
+            response_override,
+            bool(self.use_vision_only),
+            self.visual_pooling,
+            self.visual_num_tokens,
+            self.latent_anchor_mode,
+        )
+        if self.cache_latents and cache_key in self._latent_cache:
+            z = self._latent_cache[cache_key].clone()
+            return EncoderOutput(
+                z=z,
+                aux={
+                    "encoder": self.name,
+                    "image_path": image_path,
+                    "prompt": prompt,
+                    "response_override": response_override,
+                    "llm_hidden_state": not self.use_vision_only,
+                    "use_vision_only": self.use_vision_only,
+                    "visual_pooling": self.visual_pooling,
+                    "visual_num_tokens": self.visual_num_tokens,
+                    "llm_backbone_trainable": self.llm_backbone_trainable,
+                    "latent_anchor_mode": self.latent_anchor_mode,
+                    "cache_hit": True,
+                },
+            )
         if self.latent_anchor_mode == "planner_special":
             planner = self._adapter.get_planner_latent_and_action_prior(
                 image_path=image_path,
@@ -208,10 +244,14 @@ class QwenLLMLatentEncoder(WMImageEncoder):
             z = self._adapter.get_image_hidden_state(
                 image_path=image_path,
                 prompt=prompt,
-                return_last_token_only=True,
+                return_last_token_only=self.visual_pooling != "mean",
                 use_vision_only=self.use_vision_only,
+                return_visual_tokens=self.visual_pooling == "tokens",
+                visual_num_tokens=self.visual_num_tokens,
                 llm_backbone_trainable=self.llm_backbone_trainable,
             )
+        if self.cache_latents:
+            self._latent_cache[cache_key] = z.detach().cpu()
         return EncoderOutput(
             z=z,
             aux={
@@ -221,6 +261,8 @@ class QwenLLMLatentEncoder(WMImageEncoder):
                 "response_override": response_override,
                 "llm_hidden_state": not self.use_vision_only,
                 "use_vision_only": self.use_vision_only,
+                "visual_pooling": self.visual_pooling,
+                "visual_num_tokens": self.visual_num_tokens,
                 "llm_backbone_trainable": self.llm_backbone_trainable,
                 "latent_anchor_mode": self.latent_anchor_mode,
             },

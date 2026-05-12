@@ -1,0 +1,12 @@
+# LeWM + frozen Qwen visual tokens + residual delta prediction.
+# The predictor starts at copy-last when zero_init_delta_head=true and learns
+# action-conditioned residuals: pred_z = last_z + delta_scale * delta.
+defaults:
+  - lewm_qwen_visual_tokens_frozen
+  - _self_
+
+name: lewm_qwen_visual_tokens_delta_frozen
+lewm:
+  predict_delta: true
+  delta_scale: 1.0
+  zero_init_delta_head: true

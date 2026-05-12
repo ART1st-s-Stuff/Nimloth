@@ -54,6 +54,9 @@ def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
             prompt_template = str(getattr(encoder_cfg, "prompt_template", "") or "")
             use_fallback = bool(getattr(encoder_cfg, "use_fallback", False))
             use_vision_only = bool(getattr(encoder_cfg, "use_vision_only", False))
+            visual_pooling = str(getattr(encoder_cfg, "visual_pooling", "last"))
+            visual_num_tokens = getattr(encoder_cfg, "visual_num_tokens", None)
+            cache_latents = bool(getattr(encoder_cfg, "cache_latents", False))
             llm_backbone_trainable = bool(getattr(encoder_cfg, "llm_backbone_trainable", False))
             latent_anchor_mode = str(getattr(encoder_cfg, "latent_anchor_mode", "last_token"))
             return QwenLLMLatentEncoder(
@@ -65,6 +68,9 @@ def build_wm_image_encoder(wm_cfg: Any) -> Any | None:
                 prompt_template=prompt_template if prompt_template else None,
                 use_fallback=use_fallback,
                 use_vision_only=use_vision_only,
+                visual_pooling=visual_pooling,
+                visual_num_tokens=int(visual_num_tokens) if visual_num_tokens is not None else None,
+                cache_latents=cache_latents,
                 llm_backbone_trainable=llm_backbone_trainable,
                 latent_anchor_mode=latent_anchor_mode,
             )

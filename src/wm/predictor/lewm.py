@@ -270,6 +270,9 @@ class LeWMWorldModel(nn.Module):
         image_decoder_hidden_channels: int = 128,
         image_size: int = 128,
         ensemble_size: int = 1,
+        predict_delta: bool = False,
+        delta_scale: float = 1.0,
+        zero_init_delta_head: bool = True,
     ) -> None:
         super().__init__()
         self.history_len = history_len
@@ -279,6 +282,8 @@ class LeWMWorldModel(nn.Module):
         self.reward_enabled = bool(reward_enabled)
         self.image_decoder_enabled = bool(image_decoder_enabled)
         self.ensemble_size = max(1, int(ensemble_size))
+        self.predict_delta = bool(predict_delta)
+        self.delta_scale = float(delta_scale)
         expected_latent_dim = self.num_patches * self.token_dim
         if int(latent_dim) != int(expected_latent_dim):
             raise ValueError(f"latent_dim 与 patch 配置不一致: {latent_dim} != {expected_latent_dim}")
@@ -341,6 +346,10 @@ class LeWMWorldModel(nn.Module):
                 for _ in range(self.ensemble_size - 1)
             ]
         )
+        if self.predict_delta and bool(zero_init_delta_head):
+            self._zero_init_transformer_output(self.transformer)
+            for transformer in self.ensemble_transformers:
+                self._zero_init_transformer_output(transformer)
 
         self.sigreg: SIGReg | None = None
         if sigreg_enabled:
@@ -370,6 +379,14 @@ class LeWMWorldModel(nn.Module):
                 image_size=image_size,
                 hidden_channels=image_decoder_hidden_channels,
             )
+
+    @staticmethod
+    def _zero_init_transformer_output(transformer: _LeWMTransformer) -> None:
+        output_proj = transformer.output_proj
+        if isinstance(output_proj, nn.Linear):
+            nn.init.zeros_(output_proj.weight)
+            if output_proj.bias is not None:
+                nn.init.zeros_(output_proj.bias)
 
     def _validate_inputs(
         self, z_history: torch.Tensor, action_history: torch.Tensor
@@ -410,23 +427,29 @@ class LeWMWorldModel(nn.Module):
         return self.patch_proj(x), c, (B, H, P, D)
 
     def _decode_output(
-        self, out: torch.Tensor, shape: tuple[int, int, int, int]
+        self, out: torch.Tensor, shape: tuple[int, int, int, int], last_z: torch.Tensor
     ) -> torch.Tensor:
         B, H, P, D = shape
         if self.sigreg_ed is not None:
             pred_z_flat = self.sigreg_ed.decode(out)
         else:
             pred_z_flat = out
-        return pred_z_flat.reshape(B, H, P, D)[:, -1, :, :]
+        pred_z = pred_z_flat.reshape(B, H, P, D)[:, -1, :, :]
+        if self.predict_delta:
+            # The transformer output is interpreted as an action-conditioned residual.
+            # With zero-initialized output projection, this starts exactly at copy-last.
+            pred_z = last_z + self.delta_scale * pred_z
+        return pred_z
 
     def predict_next_ensemble(
         self, z_history: torch.Tensor, action_history: torch.Tensor
     ) -> torch.Tensor:
         """Return per-member next-latent predictions: [K, B, P, D]."""
         x, c, shape = self._encode_inputs(z_history=z_history, action_history=action_history)
-        preds = [self._decode_output(self.transformer(x, c), shape)]
+        last_z = z_history[:, -1, :, :]
+        preds = [self._decode_output(self.transformer(x, c), shape, last_z)]
         for transformer in self.ensemble_transformers:
-            preds.append(self._decode_output(transformer(x, c), shape))
+            preds.append(self._decode_output(transformer(x, c), shape, last_z))
         return torch.stack(preds, dim=0)
 
     def forward(self, z_history: torch.Tensor, action_history: torch.Tensor) -> torch.Tensor:
@@ -744,6 +767,11 @@ class LeWMModel(Model):
         loss_negative_action_steps: list[torch.Tensor] = []
         negative_action_dist_values: list[torch.Tensor] = []
         ensemble_uncertainty_values: list[torch.Tensor] = []
+        copy_last_mse_steps: list[torch.Tensor] = []
+        ensemble_mean_mse_steps: list[torch.Tensor] = []
+        pred_delta_l2_steps: list[torch.Tensor] = []
+        target_delta_l2_steps: list[torch.Tensor] = []
+        delta_cos_steps: list[torch.Tensor] = []
 
         wm_core = self._wm_core()
         for step_idx in range(rollout_horizon):
@@ -767,6 +795,16 @@ class LeWMModel(Model):
                 )
             else:
                 step_loss = F.mse_loss(pred_z, target_z)
+            last_z = teacher_z[:, -1, :, :]
+            ensemble_mean_mse_steps.append(F.mse_loss(pred_z, target_z).detach())
+            copy_last_mse_steps.append(F.mse_loss(last_z, target_z).detach())
+            pred_delta = pred_z - last_z
+            target_delta = target_z - last_z
+            pred_delta_l2_steps.append(pred_delta.flatten(1).norm(p=2, dim=1).mean().detach())
+            target_delta_l2_steps.append(target_delta.flatten(1).norm(p=2, dim=1).mean().detach())
+            delta_cos_steps.append(
+                F.cosine_similarity(pred_delta.flatten(1), target_delta.flatten(1), dim=1).mean().detach()
+            )
             uncertainty_step = aux.get("ensemble_uncertainty")
             if isinstance(uncertainty_step, torch.Tensor):
                 ensemble_uncertainty_values.append(uncertainty_step.mean())
@@ -837,6 +875,11 @@ class LeWMModel(Model):
             if ensemble_uncertainty_values
             else 0.0
         )
+        copy_last_mse = float(torch.stack(copy_last_mse_steps).mean().item()) if copy_last_mse_steps else 0.0
+        ensemble_mean_mse = float(torch.stack(ensemble_mean_mse_steps).mean().item()) if ensemble_mean_mse_steps else 0.0
+        pred_delta_l2_mean = float(torch.stack(pred_delta_l2_steps).mean().item()) if pred_delta_l2_steps else 0.0
+        target_delta_l2_mean = float(torch.stack(target_delta_l2_steps).mean().item()) if target_delta_l2_steps else 0.0
+        delta_cos_mean = float(torch.stack(delta_cos_steps).mean().item()) if delta_cos_steps else 0.0
         latent_for_reg = torch.cat([z_history, z_future], dim=1)
         loss_sigreg = torch.tensor(0.0, device=self.device)
         current_sigreg_weight = 0.0
@@ -870,6 +913,12 @@ class LeWMModel(Model):
             "loss_negative_action_weighted": float(loss_negative_action_weighted.item()),
             "negative_action_dist_mean": negative_action_dist_mean,
             "ensemble_uncertainty_mean": ensemble_uncertainty_mean,
+            "ensemble_mean_mse": ensemble_mean_mse,
+            "copy_last_mse": copy_last_mse,
+            "pred_vs_copy_mse_margin": ensemble_mean_mse - copy_last_mse,
+            "pred_delta_l2_mean": pred_delta_l2_mean,
+            "target_delta_l2_mean": target_delta_l2_mean,
+            "delta_cos_mean": delta_cos_mean,
             "ensemble_size": float(wm_core.ensemble_size),
         }
 
@@ -922,6 +971,11 @@ class LeWMModel(Model):
         negative_action_dist_values: list[torch.Tensor] = []
         ensemble_uncertainty_values: list[torch.Tensor] = []
         reward_pred_values: list[torch.Tensor] = []
+        copy_last_mse_steps: list[torch.Tensor] = []
+        ensemble_mean_mse_steps: list[torch.Tensor] = []
+        pred_delta_l2_steps: list[torch.Tensor] = []
+        target_delta_l2_steps: list[torch.Tensor] = []
+        delta_cos_steps: list[torch.Tensor] = []
 
         wm_core = self._wm_core()
         for step_idx in range(rollout_horizon):
@@ -947,6 +1001,16 @@ class LeWMModel(Model):
                 )
             else:
                 step_loss = F.mse_loss(pred_z, target_z)
+            last_z = teacher_z[:, -1, :, :]
+            ensemble_mean_mse_steps.append(F.mse_loss(pred_z, target_z).detach())
+            copy_last_mse_steps.append(F.mse_loss(last_z, target_z).detach())
+            pred_delta = pred_z - last_z
+            target_delta = target_z - last_z
+            pred_delta_l2_steps.append(pred_delta.flatten(1).norm(p=2, dim=1).mean().detach())
+            target_delta_l2_steps.append(target_delta.flatten(1).norm(p=2, dim=1).mean().detach())
+            delta_cos_steps.append(
+                F.cosine_similarity(pred_delta.flatten(1), target_delta.flatten(1), dim=1).mean().detach()
+            )
             uncertainty_step = aux.get("ensemble_uncertainty")
             if isinstance(uncertainty_step, torch.Tensor):
                 ensemble_uncertainty_values.append(uncertainty_step.mean())
@@ -1141,6 +1205,11 @@ class LeWMModel(Model):
             if ensemble_uncertainty_values
             else 0.0
         )
+        copy_last_mse = float(torch.stack(copy_last_mse_steps).mean().item()) if copy_last_mse_steps else 0.0
+        ensemble_mean_mse = float(torch.stack(ensemble_mean_mse_steps).mean().item()) if ensemble_mean_mse_steps else 0.0
+        pred_delta_l2_mean = float(torch.stack(pred_delta_l2_steps).mean().item()) if pred_delta_l2_steps else 0.0
+        target_delta_l2_mean = float(torch.stack(target_delta_l2_steps).mean().item()) if target_delta_l2_steps else 0.0
+        delta_cos_mean = float(torch.stack(delta_cos_steps).mean().item()) if delta_cos_steps else 0.0
         return {
             "loss": batch_loss,
             "loss_recon": float(loss_recon.item()),
@@ -1154,6 +1223,12 @@ class LeWMModel(Model):
             "loss_negative_action_weighted": float(loss_negative_action_weighted.item()),
             "negative_action_dist_mean": negative_action_dist_mean,
             "ensemble_uncertainty_mean": ensemble_uncertainty_mean,
+            "ensemble_mean_mse": ensemble_mean_mse,
+            "copy_last_mse": copy_last_mse,
+            "pred_vs_copy_mse_margin": ensemble_mean_mse - copy_last_mse,
+            "pred_delta_l2_mean": pred_delta_l2_mean,
+            "target_delta_l2_mean": target_delta_l2_mean,
+            "delta_cos_mean": delta_cos_mean,
             "ensemble_size": float(wm_core.ensemble_size),
             "reward_pred_mean": reward_pred_mean,
             "reward_target_mean": reward_target_mean,

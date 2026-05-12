@@ -394,6 +394,39 @@ class QwenVLMAdapter:
         pad = torch.zeros(pad_shape, dtype=vectors.dtype, device=vectors.device)
         return torch.cat([vectors, pad], dim=-1)
 
+    def _get_visual_features(self, pixel_values: torch.Tensor, image_grid_thw: torch.Tensor | None) -> torch.Tensor:
+        if self._model is None:
+            raise RuntimeError("Qwen model is not initialized")
+        if hasattr(self._model, "get_image_features"):
+            return self._model.get_image_features(
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+            )
+        visual = getattr(self._model, "visual", None)
+        if visual is None:
+            raise AttributeError("Qwen model exposes neither get_image_features nor visual")
+        if image_grid_thw is None:
+            raise ValueError("image_grid_thw is required for Qwen visual forward")
+        return visual(pixel_values, grid_thw=image_grid_thw)
+
+    @staticmethod
+    def _resize_visual_tokens(vision_emb: torch.Tensor, num_tokens: int) -> torch.Tensor:
+        if vision_emb.dim() == 3:
+            vision_emb = vision_emb.squeeze(0)
+        if vision_emb.dim() != 2:
+            raise ValueError(f"Qwen visual features must be [N,D], got {tuple(vision_emb.shape)}")
+        target_tokens = max(1, int(num_tokens))
+        if int(vision_emb.size(0)) == target_tokens:
+            return vision_emb.float()
+        tokens = vision_emb.float().transpose(0, 1).unsqueeze(0)
+        resized = torch.nn.functional.interpolate(
+            tokens,
+            size=target_tokens,
+            mode="linear",
+            align_corners=False,
+        )
+        return resized.squeeze(0).transpose(0, 1).contiguous()
+
     def get_planner_latent_and_action_prior(
         self,
         image_path: str,
@@ -646,6 +679,8 @@ class QwenVLMAdapter:
         layer: int = -1,
         return_last_token_only: bool = True,
         use_vision_only: bool = False,
+        return_visual_tokens: bool = False,
+        visual_num_tokens: int | None = None,
         llm_backbone_trainable: bool = False,
     ) -> torch.Tensor:
         """获取图像在 Qwen LLM space 中的 hidden state 表征。
@@ -662,6 +697,8 @@ class QwenVLMAdapter:
             layer: 返回哪层 hidden state（-1 = 最后一层）
             return_last_token_only: True = 返回 last token 的 hidden state
             use_vision_only: True = 只用 Vision Encoder，False = 通过 LLM backbone
+            return_visual_tokens: True = visual-only 时返回固定数量的 visual tokens [P,D]
+            visual_num_tokens: return_visual_tokens=True 时输出 token 数
             llm_backbone_trainable: True = LLM backbone 可训练（当前保留接口）
 
         Returns:
@@ -714,13 +751,15 @@ class QwenVLMAdapter:
             pixel_values = inputs.get("pixel_values")
             image_grid_thw = inputs.get("image_grid_thw")
             if pixel_values is not None:
-                vision_emb = self._model.get_image_features(
-                    pixel_values=pixel_values,
-                    image_grid_thw=image_grid_thw,
-                )
+                vision_emb = self._get_visual_features(pixel_values, image_grid_thw)
                 # vision_emb: [1, num_patches, vision_dim]
                 if vision_emb.dim() == 3:
                     vision_emb = vision_emb.squeeze(0)
+                if return_visual_tokens:
+                    return self._resize_visual_tokens(
+                        vision_emb,
+                        visual_num_tokens or self.num_patches or int(vision_emb.size(0)),
+                    )
                 if return_last_token_only:
                     return self._pad_or_trim(vision_emb[-1, :])
                 else:
@@ -769,10 +808,7 @@ class QwenVLMAdapter:
         pixel_values = inputs.get("pixel_values")
         image_grid_thw = inputs.get("image_grid_thw")
         if pixel_values is not None:
-            vision_emb = self._model.get_image_features(
-                pixel_values=pixel_values,
-                image_grid_thw=image_grid_thw,
-            )
+            vision_emb = self._get_visual_features(pixel_values, image_grid_thw)
             if vision_emb.dim() == 3:
                 vision_emb = vision_emb.squeeze(0)
             if return_last_token_only:

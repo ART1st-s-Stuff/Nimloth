@@ -1,0 +1,58 @@
+# LeWM + frozen Qwen visual encoder baseline.
+# This intentionally bypasses the LLM backbone and uses mean-pooled visual tokens
+# as a first physics-oriented latent source for WM tiny-overfit diagnostics.
+defaults:
+  - lewm_dinov2m
+  - _self_
+
+name: lewm_qwen_visual_frozen
+hidden_dim: 512
+latent_dim: 1536
+num_patches: 1
+token_dim: 1536
+action_dim: 8
+history_len: 4
+transformer:
+  num_layers: 6
+  num_heads: 16
+  dim_head: 64
+  mlp_ratio: 4.0
+  dropout: 0.1
+inverse_dynamics:
+  hidden_dim: 512
+  num_layers: 3
+  num_heads: 4
+  dropout: 0.1
+encoder:
+  name: qwen_llm
+  model_name: Qwen/Qwen2.5-VL-7B-Instruct
+  enabled: true
+  fallback_enabled: false
+  use_fallback: false
+  use_vision_only: true
+  visual_pooling: mean
+  llm_backbone_trainable: false
+  latent_anchor_mode: last_token
+  prompt_template: ""
+lewm:
+  dim_head: 64
+  mlp_ratio: 4.0
+  emb_dropout: 0.0
+  sigreg_knots: 17
+  sigreg_num_proj: 256
+  ensemble_size: 1
+  sigreg_enabled: false
+  sigreg_latent_dim: 1536
+  reward:
+    enabled: false
+    weight: 0.0
+    loss_type: mse
+    hidden_dim: 512
+  perceptual:
+    enabled: false
+    weight: 0.0
+    image_recon_weight: 0.0
+    backbone: vgg16
+    image_size: 128
+    use_predicted_latent: true
+    decoder_hidden_channels: 128

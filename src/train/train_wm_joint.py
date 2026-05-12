@@ -1594,6 +1594,18 @@ def main(cfg: DictConfig) -> None:
             getattr(wm_cfg.encoder, "llm_backbone_trainable", False),
         )
     )
+    qwen_use_vision_only = bool(
+        getattr(qwen_cfg, "use_vision_only", getattr(wm_cfg.encoder, "use_vision_only", False))
+    )
+    qwen_visual_pooling = str(
+        getattr(qwen_cfg, "visual_pooling", getattr(wm_cfg.encoder, "visual_pooling", "last"))
+    )
+    qwen_visual_num_tokens_raw = getattr(
+        qwen_cfg,
+        "visual_num_tokens",
+        getattr(wm_cfg.encoder, "visual_num_tokens", num_patches),
+    )
+    qwen_visual_num_tokens = int(qwen_visual_num_tokens_raw) if qwen_visual_num_tokens_raw is not None else None
     lora_cfg = getattr(qwen_cfg, "lora", {})
     kl_cfg = getattr(qwen_cfg, "kl", {})
     ema_cfg = getattr(qwen_cfg, "ema", {})
@@ -1633,7 +1645,10 @@ def main(cfg: DictConfig) -> None:
         )
     else:
         raise ValueError(f"不支持的 qwen_encoder.train_mode={train_mode}")
-    qwen_adapter._model.train()  # 不调用 .to(device)，accelerate 已处理
+    if train_mode == "freeze":
+        qwen_adapter._model.eval()
+    else:
+        qwen_adapter._model.train()  # 不调用 .to(device)，accelerate 已处理
 
     teacher_adapter: QwenVLMAdapter | None = None
     if kl_enabled and kl_weight > 0.0:
@@ -1658,7 +1673,10 @@ def main(cfg: DictConfig) -> None:
     vision_encoder = QwenLLMLatentEncoder(
         latent_dim=latent_dim,
         qwen_adapter=qwen_adapter,
-        use_vision_only=False,
+        use_vision_only=qwen_use_vision_only,
+        visual_pooling=qwen_visual_pooling,
+        visual_num_tokens=qwen_visual_num_tokens,
+        cache_latents=train_mode == "freeze",
         llm_backbone_trainable=llm_backbone_trainable,
         latent_anchor_mode="planner_special" if planner_lora_enabled else "last_token",
     )
@@ -1722,6 +1740,9 @@ def main(cfg: DictConfig) -> None:
         image_decoder_hidden_channels=image_decoder_hidden_channels,
         image_size=perceptual_image_size,
         ensemble_size=ensemble_size,
+        predict_delta=bool(getattr(wm_cfg.lewm, "predict_delta", False)),
+        delta_scale=float(getattr(wm_cfg.lewm, "delta_scale", 1.0)),
+        zero_init_delta_head=bool(getattr(wm_cfg.lewm, "zero_init_delta_head", True)),
     )
     wm_module = wm_module.to(device)
     wm_module.train()
@@ -2257,7 +2278,11 @@ def main(cfg: DictConfig) -> None:
             f"epoch={epoch_value} "
             f"samples={count} "
             f"loss={averaged.get('test/loss', 0.0):.6f} "
-            f"loss_recon={averaged.get('test/loss_recon', 0.0):.6f}"
+            f"loss_recon={averaged.get('test/loss_recon', 0.0):.6f} "
+            f"copy_last_mse={averaged.get('test/copy_last_mse', 0.0):.6f} "
+            f"ensemble_mean_mse={averaged.get('test/ensemble_mean_mse', 0.0):.6f} "
+            f"pred_vs_copy_mse_margin={averaged.get('test/pred_vs_copy_mse_margin', 0.0):.6f} "
+            f"delta_cos_mean={averaged.get('test/delta_cos_mean', 0.0):.6f}"
         )
         return averaged
 
@@ -2412,6 +2437,12 @@ def main(cfg: DictConfig) -> None:
                         "loss_negative_action_weighted": float(step_metrics.get("loss_negative_action_weighted", 0.0)),
                         "negative_action_dist_mean": float(step_metrics.get("negative_action_dist_mean", 0.0)),
                         "ensemble_uncertainty_mean": float(step_metrics.get("ensemble_uncertainty_mean", 0.0)),
+                        "ensemble_mean_mse": float(step_metrics.get("ensemble_mean_mse", 0.0)),
+                        "copy_last_mse": float(step_metrics.get("copy_last_mse", 0.0)),
+                        "pred_vs_copy_mse_margin": float(step_metrics.get("pred_vs_copy_mse_margin", 0.0)),
+                        "pred_delta_l2_mean": float(step_metrics.get("pred_delta_l2_mean", 0.0)),
+                        "target_delta_l2_mean": float(step_metrics.get("target_delta_l2_mean", 0.0)),
+                        "delta_cos_mean": float(step_metrics.get("delta_cos_mean", 0.0)),
                         "ensemble_size": float(step_metrics.get("ensemble_size", ensemble_size)),
                         "reward_pred_mean": float(step_metrics.get("reward_pred_mean", 0.0)),
                         "reward_target_mean": float(step_metrics.get("reward_target_mean", 0.0)),
