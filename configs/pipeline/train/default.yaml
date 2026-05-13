@@ -53,6 +53,10 @@ custom:
   images_base_dir: ""
   # test manifest 的图像根目录；留空时复用 images_base_dir。
   test_images_base_dir: ""
+  # 额外 test manifest 列表，用于同一 checkpoint/model 做 multi-test eval。
+  extra_test_manifest_paths: []
+  # 额外 test manifest 名称；为空时自动命名 extra0/extra1...
+  extra_test_names: []
   # planner LoRA 启用时默认要求 prompt/input 非空
   require_prompt: false
   # 若 max_samples 截断 custom train manifest，则用剩余尾部作为 custom test split。

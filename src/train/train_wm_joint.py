@@ -2000,6 +2000,7 @@ def main(cfg: DictConfig) -> None:
         vision_ema_state = _build_visual_ema_state(_unwrap_module(qwen_adapter._model))
 
     test_dataset = None
+    extra_test_datasets: list[tuple[str, torch.utils.data.Dataset]] = []
     if dataset_source == "ai2thor":
         ai2thor_train_cfg = getattr(train_cfg, "ai2thor", {})
         ai2thor_prompt_template = str(getattr(ai2thor_train_cfg, "prompt_template", ""))
@@ -2062,6 +2063,8 @@ def main(cfg: DictConfig) -> None:
         custom_test_manifest_path = str(getattr(custom_cfg, "test_manifest_path", "")).strip()
         custom_images_base_dir = str(getattr(custom_cfg, "images_base_dir", "")).strip()
         custom_test_images_base_dir = str(getattr(custom_cfg, "test_images_base_dir", "")).strip()
+        custom_extra_test_manifest_paths = list(getattr(custom_cfg, "extra_test_manifest_paths", []) or [])
+        custom_extra_test_names = list(getattr(custom_cfg, "extra_test_names", []) or [])
         custom_require_prompt = bool(getattr(custom_cfg, "require_prompt", planner_lora_enabled))
         custom_use_heldout_tail = bool(getattr(custom_cfg, "use_heldout_tail_as_test", True))
         train_run_dir = Path(custom_manifest_path)
@@ -2101,6 +2104,25 @@ def main(cfg: DictConfig) -> None:
                 if test_max_samples > 0:
                     test_sequences = test_sequences[:test_max_samples]
                 test_dataset.sequences = test_sequences
+        for extra_idx, extra_manifest_path_raw in enumerate(custom_extra_test_manifest_paths):
+            extra_manifest_path = str(extra_manifest_path_raw).strip()
+            if not extra_manifest_path:
+                continue
+            extra_name = (
+                str(custom_extra_test_names[extra_idx]).strip()
+                if extra_idx < len(custom_extra_test_names) and str(custom_extra_test_names[extra_idx]).strip()
+                else f"extra{extra_idx}"
+            )
+            extra_dataset = CustomJointSequenceDataset(
+                manifest_path=extra_manifest_path,
+                images_base_dir=custom_test_images_base_dir or custom_images_base_dir or None,
+                history_len=int(wm_cfg.history_len),
+                temporal_stride=temporal_stride,
+                action_dim=action_dim,
+                max_samples=test_max_samples,
+                require_prompt=custom_require_prompt,
+            )
+            extra_test_datasets.append((extra_name, extra_dataset))
 
     train_sampler = (
         DistributedSampler(
@@ -2145,6 +2167,19 @@ def main(cfg: DictConfig) -> None:
         if test_dataset is not None
         else None
     )
+    extra_test_dataloaders: list[tuple[str, DataLoader]] = [
+        (
+            name,
+            DataLoader(
+                extra_dataset,
+                batch_size=max(1, test_batch_size),
+                shuffle=False,
+                num_workers=0,
+                collate_fn=_joint_collate_fn,
+            ),
+        )
+        for name, extra_dataset in extra_test_datasets
+    ]
 
     if is_main_process:
         show_kv_table("Dataset", [
@@ -2158,6 +2193,7 @@ def main(cfg: DictConfig) -> None:
             ("test_batch_size_per_rank", str(max(1, test_batch_size)) if test_dataloader is not None else "disabled"),
             ("steps_per_epoch_per_rank", str(len(dataloader))),
             ("test_steps_per_rank", str(len(test_dataloader)) if test_dataloader is not None else "disabled"),
+            ("extra_test_splits", ", ".join(name for name, _ in extra_test_dataloaders) or "disabled"),
         ])
 
     checkpoint_dir = Path("models/wm/joint_qwen")
@@ -2234,14 +2270,21 @@ def main(cfg: DictConfig) -> None:
             if backup_state is not None:
                 _apply_visual_state(_unwrap_module(qwen_adapter._model), backup_state)
 
-    def _run_test_eval(epoch_value: int, step_value: int) -> dict[str, float]:
+    def _run_test_eval(
+        epoch_value: int,
+        step_value: int,
+        *,
+        dataloader: DataLoader | None = None,
+        split_name: str = "test",
+    ) -> dict[str, float]:
         if distributed_enabled:
             if is_main_process:
                 success("DDP 模式下跳过在线 test eval；如需评估，请用保存的 checkpoint 单进程运行评估。")
             return {}
         if not is_main_process:
             return {}
-        if test_dataloader is None:
+        eval_dataloader = dataloader if dataloader is not None else test_dataloader
+        if eval_dataloader is None:
             return {}
         qwen_was_training = bool(qwen_adapter._model.training) if qwen_adapter._model is not None else False
         wm_was_training = bool(lewm_model.wm.training)
@@ -2263,10 +2306,10 @@ def main(cfg: DictConfig) -> None:
             console=console,
             transient=True,
         )
-        task_id = progress.add_task(f"Test eval epoch {epoch_value}", total=len(test_dataloader))
+        task_id = progress.add_task(f"Test eval {split_name} epoch {epoch_value}", total=len(eval_dataloader))
         try:
             with progress:
-                for batch in test_dataloader:
+                for batch in eval_dataloader:
                     with torch.no_grad():
                         batch_device = _encode_joint_batch(
                             batch=batch,
@@ -2298,20 +2341,22 @@ def main(cfg: DictConfig) -> None:
             if mapper_was_training:
                 lewm_model.action_mapper.train()
 
-        averaged = {f"test/{key}": value / max(1, count) for key, value in sums.items()}
-        averaged["test/num_samples"] = float(count)
-        averaged["test/epoch"] = float(epoch_value)
+        prefix = "test" if split_name == "test" else f"test/{split_name}"
+        averaged = {f"{prefix}/{key}": value / max(1, count) for key, value in sums.items()}
+        averaged[f"{prefix}/num_samples"] = float(count)
+        averaged[f"{prefix}/epoch"] = float(epoch_value)
         tracker.log_metrics(averaged, step=step_value)
         success(
             "Test eval "
+            f"split={split_name} "
             f"epoch={epoch_value} "
             f"samples={count} "
-            f"loss={averaged.get('test/loss', 0.0):.6f} "
-            f"loss_recon={averaged.get('test/loss_recon', 0.0):.6f} "
-            f"copy_last_mse={averaged.get('test/copy_last_mse', 0.0):.6f} "
-            f"ensemble_mean_mse={averaged.get('test/ensemble_mean_mse', 0.0):.6f} "
-            f"pred_vs_copy_mse_margin={averaged.get('test/pred_vs_copy_mse_margin', 0.0):.6f} "
-            f"delta_cos_mean={averaged.get('test/delta_cos_mean', 0.0):.6f}"
+            f"loss={averaged.get(f'{prefix}/loss', 0.0):.6f} "
+            f"loss_recon={averaged.get(f'{prefix}/loss_recon', 0.0):.6f} "
+            f"copy_last_mse={averaged.get(f'{prefix}/copy_last_mse', 0.0):.6f} "
+            f"ensemble_mean_mse={averaged.get(f'{prefix}/ensemble_mean_mse', 0.0):.6f} "
+            f"pred_vs_copy_mse_margin={averaged.get(f'{prefix}/pred_vs_copy_mse_margin', 0.0):.6f} "
+            f"delta_cos_mean={averaged.get(f'{prefix}/delta_cos_mean', 0.0):.6f}"
         )
         return averaged
 
@@ -2644,6 +2689,13 @@ def main(cfg: DictConfig) -> None:
             success(f"Epoch {epoch+1}/{epochs} 完成")
         if test_dataloader is not None and test_every_n_epochs > 0 and ((epoch + 1) % test_every_n_epochs == 0):
             _run_test_eval(epoch_value=epoch + 1, step_value=global_step)
+            for extra_split_name, extra_dataloader in extra_test_dataloaders:
+                _run_test_eval(
+                    epoch_value=epoch + 1,
+                    step_value=global_step,
+                    dataloader=extra_dataloader,
+                    split_name=extra_split_name,
+                )
 
     # 保存 checkpoint
     save_final_checkpoint = bool(train_cfg.get("save_final_checkpoint", True))
