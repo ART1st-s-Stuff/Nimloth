@@ -47,10 +47,16 @@ eb_nav:
 custom:
   # JSON/JSONL manifest，支持预切好的 sequence、episode steps 或 flat steps
   manifest_path: ""
+  # 可选 test manifest；留空时可用 use_heldout_tail_as_test 从 train manifest 尾部切分。
+  test_manifest_path: ""
   # 相对图像路径的根目录；留空时使用 manifest 所在目录
   images_base_dir: ""
+  # test manifest 的图像根目录；留空时复用 images_base_dir。
+  test_images_base_dir: ""
   # planner LoRA 启用时默认要求 prompt/input 非空
   require_prompt: false
+  # 若 max_samples 截断 custom train manifest，则用剩余尾部作为 custom test split。
+  use_heldout_tail_as_test: true
 # 训练模式：unsupervised、semi_supervised 或 fully_supervised
 # fully_supervised: WM 直接使用真实动作训练，不使用 IDM 推断动作
 training_mode: fully_supervised

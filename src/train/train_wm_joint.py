@@ -2059,10 +2059,13 @@ def main(cfg: DictConfig) -> None:
         custom_manifest_path = str(getattr(custom_cfg, "manifest_path", "")).strip()
         if not custom_manifest_path:
             raise ValueError("pipeline.train.dataset_source=custom requires pipeline.train.custom.manifest_path")
+        custom_test_manifest_path = str(getattr(custom_cfg, "test_manifest_path", "")).strip()
         custom_images_base_dir = str(getattr(custom_cfg, "images_base_dir", "")).strip()
+        custom_test_images_base_dir = str(getattr(custom_cfg, "test_images_base_dir", "")).strip()
         custom_require_prompt = bool(getattr(custom_cfg, "require_prompt", planner_lora_enabled))
+        custom_use_heldout_tail = bool(getattr(custom_cfg, "use_heldout_tail_as_test", True))
         train_run_dir = Path(custom_manifest_path)
-        test_run_dir = Path(custom_manifest_path)
+        test_run_dir = Path(custom_test_manifest_path or custom_manifest_path)
         dataset = CustomJointSequenceDataset(
             manifest_path=custom_manifest_path,
             images_base_dir=custom_images_base_dir or None,
@@ -2072,6 +2075,32 @@ def main(cfg: DictConfig) -> None:
             max_samples=max_samples,
             require_prompt=custom_require_prompt,
         )
+        if custom_test_manifest_path:
+            test_dataset = CustomJointSequenceDataset(
+                manifest_path=custom_test_manifest_path,
+                images_base_dir=custom_test_images_base_dir or custom_images_base_dir or None,
+                history_len=int(wm_cfg.history_len),
+                temporal_stride=temporal_stride,
+                action_dim=action_dim,
+                max_samples=test_max_samples,
+                require_prompt=custom_require_prompt,
+            )
+        elif custom_use_heldout_tail and max_samples > 0:
+            full_custom_dataset = CustomJointSequenceDataset(
+                manifest_path=custom_manifest_path,
+                images_base_dir=custom_images_base_dir or None,
+                history_len=int(wm_cfg.history_len),
+                temporal_stride=temporal_stride,
+                action_dim=action_dim,
+                max_samples=0,
+                require_prompt=custom_require_prompt,
+            )
+            if len(full_custom_dataset.sequences) > max_samples:
+                test_dataset = copy.copy(full_custom_dataset)
+                test_sequences = list(full_custom_dataset.sequences[max_samples:])
+                if test_max_samples > 0:
+                    test_sequences = test_sequences[:test_max_samples]
+                test_dataset.sequences = test_sequences
 
     train_sampler = (
         DistributedSampler(
