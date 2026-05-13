@@ -22,6 +22,7 @@ dependencies = [
   "umap-learn",
   "plotly",
   "xformers>=0.0.29.post1",
+  "matplotlib>=3.10.9",
 ]
 
 [build-system]
