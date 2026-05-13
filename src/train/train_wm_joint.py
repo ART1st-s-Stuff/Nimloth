@@ -2329,7 +2329,11 @@ def main(cfg: DictConfig) -> None:
                     count += batch_size_eval
                     for key, value in metrics.items():
                         if isinstance(value, (int, float)):
-                            sums[key] = sums.get(key, 0.0) + float(value) * batch_size_eval
+                            value_float = float(value)
+                            if key.startswith("action_") and (key.endswith("_sum") or key.endswith("_count")):
+                                sums[key] = sums.get(key, 0.0) + value_float
+                            else:
+                                sums[key] = sums.get(key, 0.0) + value_float * batch_size_eval
                     progress.update(task_id, advance=1)
         finally:
             if qwen_was_training:
@@ -2342,7 +2346,12 @@ def main(cfg: DictConfig) -> None:
                 lewm_model.action_mapper.train()
 
         prefix = "test" if split_name == "test" else f"test/{split_name}"
-        averaged = {f"{prefix}/{key}": value / max(1, count) for key, value in sums.items()}
+        averaged = {}
+        for key, value in sums.items():
+            if key.startswith("action_") and (key.endswith("_sum") or key.endswith("_count")):
+                averaged[f"{prefix}/{key}"] = value
+            else:
+                averaged[f"{prefix}/{key}"] = value / max(1, count)
         averaged[f"{prefix}/num_samples"] = float(count)
         averaged[f"{prefix}/epoch"] = float(epoch_value)
         tracker.log_metrics(averaged, step=step_value)
@@ -2358,6 +2367,20 @@ def main(cfg: DictConfig) -> None:
             f"pred_vs_copy_mse_margin={averaged.get(f'{prefix}/pred_vs_copy_mse_margin', 0.0):.6f} "
             f"delta_cos_mean={averaged.get(f'{prefix}/delta_cos_mean', 0.0):.6f}"
         )
+        per_action_parts = []
+        for action_id in range(action_dim):
+            count_key = f"{prefix}/action_{action_id}_count"
+            count_value = averaged.get(count_key, 0.0)
+            if count_value <= 0:
+                continue
+            mse_value = averaged.get(f"{prefix}/action_{action_id}_ensemble_mean_mse_sum", 0.0) / count_value
+            copy_value = averaged.get(f"{prefix}/action_{action_id}_copy_last_mse_sum", 0.0) / count_value
+            cos_value = averaged.get(f"{prefix}/action_{action_id}_delta_cos_sum", 0.0) / count_value
+            per_action_parts.append(
+                f"a{action_id}:n={count_value:.0f},mse={mse_value:.6f},copy={copy_value:.6f},margin={mse_value-copy_value:.6f},cos={cos_value:.6f}"
+            )
+        if per_action_parts:
+            success(f"Test eval split={split_name} per_action " + "; ".join(per_action_parts))
         return averaged
 
     # 训练循环

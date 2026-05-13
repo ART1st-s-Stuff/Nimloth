@@ -772,6 +772,10 @@ class LeWMModel(Model):
         pred_delta_l2_steps: list[torch.Tensor] = []
         target_delta_l2_steps: list[torch.Tensor] = []
         delta_cos_steps: list[torch.Tensor] = []
+        per_action_mse_sum: dict[int, float] = {}
+        per_action_copy_mse_sum: dict[int, float] = {}
+        per_action_delta_cos_sum: dict[int, float] = {}
+        per_action_count: dict[int, int] = {}
 
         wm_core = self._wm_core()
         for step_idx in range(rollout_horizon):
@@ -802,9 +806,17 @@ class LeWMModel(Model):
             target_delta = target_z - last_z
             pred_delta_l2_steps.append(pred_delta.flatten(1).norm(p=2, dim=1).mean().detach())
             target_delta_l2_steps.append(target_delta.flatten(1).norm(p=2, dim=1).mean().detach())
-            delta_cos_steps.append(
-                F.cosine_similarity(pred_delta.flatten(1), target_delta.flatten(1), dim=1).mean().detach()
-            )
+            delta_cos_per_sample = F.cosine_similarity(pred_delta.flatten(1), target_delta.flatten(1), dim=1)
+            delta_cos_steps.append(delta_cos_per_sample.mean().detach())
+            sample_mse = (pred_z - target_z).pow(2).flatten(1).mean(dim=1).detach()
+            sample_copy_mse = (last_z - target_z).pow(2).flatten(1).mean(dim=1).detach()
+            action_ids = gt_action_future[:, step_idx, :].argmax(dim=1).detach().cpu().tolist()
+            for sample_idx, action_id in enumerate(action_ids):
+                action_id_int = int(action_id)
+                per_action_mse_sum[action_id_int] = per_action_mse_sum.get(action_id_int, 0.0) + float(sample_mse[sample_idx].item())
+                per_action_copy_mse_sum[action_id_int] = per_action_copy_mse_sum.get(action_id_int, 0.0) + float(sample_copy_mse[sample_idx].item())
+                per_action_delta_cos_sum[action_id_int] = per_action_delta_cos_sum.get(action_id_int, 0.0) + float(delta_cos_per_sample[sample_idx].detach().item())
+                per_action_count[action_id_int] = per_action_count.get(action_id_int, 0) + 1
             uncertainty_step = aux.get("ensemble_uncertainty")
             if isinstance(uncertainty_step, torch.Tensor):
                 ensemble_uncertainty_values.append(uncertainty_step.mean())
@@ -891,6 +903,15 @@ class LeWMModel(Model):
             mapped_action = self.action_mapper(pred_action)
             loss_action = F.mse_loss(mapped_action, gt_action_future[:, 0, :])
 
+        per_action_metrics: dict[str, float] = {}
+        for action_id, count_value in sorted(per_action_count.items()):
+            if count_value <= 0:
+                continue
+            per_action_metrics[f"action_{action_id}_count"] = float(count_value)
+            per_action_metrics[f"action_{action_id}_ensemble_mean_mse_sum"] = float(per_action_mse_sum.get(action_id, 0.0))
+            per_action_metrics[f"action_{action_id}_copy_last_mse_sum"] = float(per_action_copy_mse_sum.get(action_id, 0.0))
+            per_action_metrics[f"action_{action_id}_delta_cos_sum"] = float(per_action_delta_cos_sum.get(action_id, 0.0))
+
         return {
             "loss": (
                 float(loss_recon.item())
@@ -920,6 +941,7 @@ class LeWMModel(Model):
             "target_delta_l2_mean": target_delta_l2_mean,
             "delta_cos_mean": delta_cos_mean,
             "ensemble_size": float(wm_core.ensemble_size),
+            **per_action_metrics,
         }
 
     def train_step(self, batch: Any) -> dict[str, Any]:
