@@ -817,3 +817,14 @@ class QwenVLMAdapter:
                 return self._pad_or_trim(vision_emb.mean(dim=0))
 
         return self._fallback_visual(image_path=image_path)
+
+
+class QwenVLM(QwenVLMAdapter):
+    """Clear public name for the Qwen-VL wrapper used by value/planner heads.
+
+    Backward compatibility: QwenVLMAdapter remains unchanged for existing code and
+    checkpoints. This subclass only provides clearer naming; it does not add state.
+    """
+
+    pass
+

@@ -172,10 +172,16 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
 
     with open(output_path, "w", encoding="utf-8") as out_f:
         for rollout_id, rollout_rows in grouped.items():
-            for idx, row in enumerate(rollout_rows):
-                if not _image_ok(row.image_t, args.allow_missing_images) or not _image_ok(
-                    row.image_next, args.allow_missing_images
-                ):
+            future_len = int(args.future_len)
+            max_start = len(rollout_rows) - future_len + 1
+            for idx, row in enumerate(rollout_rows[:max(0, max_start)]):
+                future_rows = rollout_rows[idx : idx + future_len]
+                if len(future_rows) != future_len:
+                    continue
+                if not _image_ok(row.image_t, args.allow_missing_images):
+                    skipped_missing_images += 1
+                    continue
+                if any(not _image_ok(future_row.image_next, args.allow_missing_images) for future_row in future_rows):
                     skipped_missing_images += 1
                     continue
 
@@ -187,15 +193,14 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
                     history_mode=str(args.history_mode),
                 )
 
-                action_vec = _one_hot(row.sampled_action_id, int(args.action_dim))
-                future_len = int(args.future_len)
+                future_action_ids = [int(future_row.sampled_action_id) for future_row in future_rows]
                 record: dict[str, Any] = {
                     "history_images": history_images,
                     "history_actions": history_actions,
-                    "future_images": [row.image_next] * future_len,
-                    "future_actions": [action_vec] * future_len,
-                    "future_action_ids": [int(row.sampled_action_id)] * future_len,
-                    "future_rewards": [float(row.reward)] * future_len,
+                    "future_images": [future_row.image_next for future_row in future_rows],
+                    "future_actions": [_one_hot(action_id, int(args.action_dim)) for action_id in future_action_ids],
+                    "future_action_ids": future_action_ids,
+                    "future_rewards": [float(future_row.reward) for future_row in future_rows],
                     "instruction": row.instruction,
                     "prompt": row.instruction,
                     "rollout_id": rollout_id,
@@ -203,11 +208,13 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
                         "source_file": row.source_file,
                         "source_line": row.source_line,
                         "step": row.step,
+                        "future_source_lines": [future_row.source_line for future_row in future_rows],
+                        "future_steps": [future_row.step for future_row in future_rows],
                     },
                 }
                 out_f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 output_rows += 1
-                action_counts[row.sampled_action_id] += 1
+                action_counts[future_action_ids[0]] += 1
 
     summary_path = Path(args.summary_json) if str(args.summary_json).strip() else output_path.with_name("summary.json")
     summary = {

@@ -281,3 +281,36 @@ class QwenLLMLatentEncoder(WMImageEncoder):
             output = self.encode_image_path(path)
             latents.append(output.z)
         return torch.stack(latents)
+
+
+class QwenVisualTokenEncoder(QwenLLMLatentEncoder):
+    """Explicit Qwen visual-token encoder for WM visual latents.
+
+    This is a naming-compatible wrapper around QwenLLMLatentEncoder configured for
+    the existing frozen Qwen visual-token path. It has no parameters of its own, so
+    existing checkpoints and state_dict keys remain valid.
+    """
+
+    def __init__(
+        self,
+        latent_dim: int = 57344,
+        *,
+        name: str = "qwen_visual_tokens",
+        model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct",
+        qwen_adapter=None,
+        cache_latents: bool = True,
+        visual_num_tokens: int = 16,
+        **kwargs,
+    ) -> None:
+        super().__init__(
+            latent_dim=latent_dim,
+            name=name,
+            model_name=model_name,
+            qwen_adapter=qwen_adapter,
+            use_vision_only=True,
+            visual_pooling="tokens",
+            visual_num_tokens=visual_num_tokens,
+            cache_latents=cache_latents,
+            **kwargs,
+        )
+

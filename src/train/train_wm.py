@@ -30,6 +30,7 @@ from src.wm.encoder import build_trainable_image_encoder
 from src.wm.encoder.dino import TrainableDinoV2Encoder
 from src.wm.encoder.qwen import TrainableQwenLatentAdapter
 from src.wm.predictor import WMModel, LeWMModel
+from src.wm.predictor.factory import build_world_model, resolve_wm_type
 from src.wm.inverse_dynamics import InverseDynamicsModel
 from src.wm.action_mapper import build_action_mapper
 from src.wm import resolve_patch_layout
@@ -340,12 +341,7 @@ def main(cfg: DictConfig) -> None:
     )
     num_patches, token_dim = resolve_patch_layout(wm_cfg=wm_cfg)
     wm_type = resolve_wm_type(wm_cfg)
-    wm_module = build_world_model(
-        wm_cfg=wm_cfg,
-        train_cfg=train_cfg,
-        action_dim=int(dataset_cfg.action_dim),
-        device=device,
-    )
+    wm_module = build_world_model(wm_cfg=wm_cfg)
     inverse_dynamics = InverseDynamicsModel(
         latent_dim=int(wm_cfg.latent_dim),
         action_dim=int(dataset_cfg.action_dim),

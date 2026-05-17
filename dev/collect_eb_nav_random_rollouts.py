@@ -221,6 +221,12 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _append_jsonl(path: Path, row: dict[str, Any]) -> None:
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        f.flush()
+
+
 def main() -> None:
     args = parse_args()
     rng = random.Random(int(args.seed))
@@ -233,6 +239,9 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.save_screenshots:
         screenshot_dir.mkdir(parents=True, exist_ok=True)
+    if not args.dry_run:
+        transitions_path.write_text("", encoding="utf-8")
+        episodes_path.write_text("", encoding="utf-8")
 
     records = json.load(open(args.dataset, encoding="utf-8"))
     if not isinstance(records, list):
@@ -351,13 +360,13 @@ def main() -> None:
                         "seed": int(args.seed),
                     }
                     transitions.append(transition)
+                    _append_jsonl(transitions_path, transition)
                     episode_reward += float(transition["reward"])
                     prev_action = action_id
                     obs = next_obs
                     step_idx += 1
 
-                episodes.append(
-                    {
+                episode_row = {
                         "rollout_id": int(rollout_id),
                         "record_idx": int(item.get("record_idx", -1)),
                         "episode_id": int(item.get("episode_id", -1)),
@@ -372,7 +381,8 @@ def main() -> None:
                         "final_distance": _safe_float(info.get("distance", -1.0), -1.0),
                         "seed": int(args.seed),
                     }
-                )
+                episodes.append(episode_row)
+                _append_jsonl(episodes_path, episode_row)
                 print(
                     f"[{rollout_id}/{len(selected)}] eval_set={item.get('eval_set','')} "
                     f"task={item.get('task_key','')} success={_safe_float(info.get('task_success',0.0),0.0):.0f} "

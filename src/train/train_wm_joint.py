@@ -1698,6 +1698,11 @@ def main(cfg: DictConfig) -> None:
     reward_weight = float(getattr(reward_cfg, "weight", 1.0))
     reward_loss_type = str(getattr(reward_cfg, "loss_type", "mse"))
     reward_hidden_dim = int(getattr(reward_cfg, "hidden_dim", max(128, int(getattr(wm_cfg, "hidden_dim", 512)) // 2)))
+    multi_step_cfg = getattr(train_cfg, "multi_step", {})
+    multi_step_free_running_cfg = getattr(multi_step_cfg, "free_running", {})
+    multi_step_train_mode = "free_running" if bool(getattr(multi_step_free_running_cfg, "enabled", False)) else "teacher_forcing"
+    multi_step_free_run_start = int(getattr(multi_step_free_running_cfg, "start_step", 1))
+    multi_step_detach_rollout = bool(getattr(multi_step_free_running_cfg, "detach_rollout", False))
     negative_action_cfg = getattr(train_cfg, "negative_action_contrastive", {})
     negative_action_contrastive_enabled = bool(getattr(negative_action_cfg, "enabled", False))
     negative_action_contrastive_weight = float(getattr(negative_action_cfg, "weight", 0.0))
@@ -1854,6 +1859,9 @@ def main(cfg: DictConfig) -> None:
         reward_enabled=reward_enabled,
         reward_weight=reward_weight,
         reward_loss_type=reward_loss_type,
+        multi_step_train_mode=multi_step_train_mode,
+        multi_step_free_run_start=multi_step_free_run_start,
+        multi_step_detach_rollout=multi_step_detach_rollout,
         negative_action_contrastive_enabled=negative_action_contrastive_enabled,
         negative_action_contrastive_weight=negative_action_contrastive_weight,
         negative_action_contrastive_margin=negative_action_contrastive_margin,
@@ -1919,6 +1927,9 @@ def main(cfg: DictConfig) -> None:
             ("test_every_n_epochs", str(test_every_n_epochs)),
             ("reward_enabled", str(reward_enabled)),
             ("reward_weight", f"{reward_weight:.6f}"),
+            ("multi_step_train_mode", multi_step_train_mode),
+            ("multi_step_free_run_start", str(multi_step_free_run_start)),
+            ("multi_step_detach_rollout", str(multi_step_detach_rollout)),
             ("perceptual_enabled", str(perceptual_enabled)),
             ("perceptual_weight", f"{perceptual_weight:.6f}"),
             ("image_recon_weight", f"{image_recon_weight:.6f}"),

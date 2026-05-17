@@ -543,6 +543,9 @@ class LeWMModel(Model):
         reward_enabled: bool = False,
         reward_weight: float = 1.0,
         reward_loss_type: str = "mse",
+        multi_step_train_mode: str = "teacher_forcing",
+        multi_step_free_run_start: int = 1,
+        multi_step_detach_rollout: bool = False,
         negative_action_contrastive_enabled: bool = False,
         negative_action_contrastive_weight: float = 0.0,
         negative_action_contrastive_margin: float = 0.05,
@@ -574,6 +577,14 @@ class LeWMModel(Model):
         self.reward_enabled = bool(reward_enabled)
         self.reward_weight = float(reward_weight)
         self.reward_loss_type = str(reward_loss_type).strip().lower()
+        self.multi_step_train_mode = str(multi_step_train_mode).strip().lower()
+        self.multi_step_free_run_start = max(1, int(multi_step_free_run_start))
+        self.multi_step_detach_rollout = bool(multi_step_detach_rollout)
+        if self.multi_step_train_mode not in {"teacher_forcing", "free_running"}:
+            raise ValueError(
+                "multi_step_train_mode must be 'teacher_forcing' or 'free_running', "
+                f"got {self.multi_step_train_mode!r}"
+            )
         self.negative_action_contrastive_enabled = bool(negative_action_contrastive_enabled)
         self.negative_action_contrastive_weight = float(negative_action_contrastive_weight)
         self.negative_action_contrastive_margin = float(negative_action_contrastive_margin)
@@ -1081,8 +1092,15 @@ class LeWMModel(Model):
                         self._check_finite(f"loss_perceptual_step[{step_idx}]", perceptual_loss_step)
                     loss_perceptual_steps.append(perceptual_loss_step)
 
-            next_teacher_z = z_future[:, step_idx, :, :]
-            if self.detach_target_latents:
+            use_free_running = (
+                self.multi_step_train_mode == "free_running"
+                and rollout_horizon > 1
+                and (step_idx + 1) >= self.multi_step_free_run_start
+            )
+            next_teacher_z = pred_z if use_free_running else z_future[:, step_idx, :, :]
+            if use_free_running and self.multi_step_detach_rollout:
+                next_teacher_z = next_teacher_z.detach()
+            elif (not use_free_running) and self.detach_target_latents:
                 next_teacher_z = next_teacher_z.detach()
             teacher_z = torch.cat([teacher_z[:, 1:, ...], next_teacher_z.unsqueeze(1)], dim=1)
             if step_idx < rollout_horizon - 1:

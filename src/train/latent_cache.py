@@ -154,9 +154,12 @@ def build_latent_cache_dir(run_dir: Path, wm_name: str) -> Path:
             episode_{scene}_{id}.pt
             episode_{scene}_{id}.ready
             ...
+
+    兼容传入 manifest.jsonl 文件路径：此时以其父目录作为 cache 根。
     """
-    stem = run_dir.name  # 使用 run 目录名作为 stem
-    return run_dir / f"{stem}.latents.{wm_name}"
+    root_dir = run_dir.parent if run_dir.is_file() or run_dir.suffix == ".jsonl" else run_dir
+    stem = root_dir.name  # 使用 run 目录名作为 stem
+    return root_dir / f"{stem}.latents.{wm_name}"
 
 
 def build_episode_cache_path(cache_dir: Path, episode_key: str) -> Path:
@@ -218,8 +221,9 @@ def build_wm_dataset_with_cache(
         wm_name: world model 名称，用于构建 cache 目录名
         ...
     """
+    root_dir = run_dir.parent if run_dir.is_file() or run_dir.suffix == ".jsonl" else run_dir
     if chunk_mode:
-        latent_cache_dir = build_latent_cache_dir(run_dir, wm_name)
+        latent_cache_dir = build_latent_cache_dir(root_dir, wm_name)
         # 分块模式：latent_cache_path 指向分块目录本身
         # Dataset 会检测这个路径是目录还是文件
         dataset = WMDataset(
@@ -240,7 +244,7 @@ def build_wm_dataset_with_cache(
         )
         return dataset, latent_cache_dir
     else:
-        latent_cache_path = run_dir / f"{run_dir.name}.latents.{wm_name}.pt"
+        latent_cache_path = root_dir / f"{root_dir.name}.latents.{wm_name}.pt"
         dataset = WMDataset(
             manifest_path=str(run_dir),
             latent_dim=latent_dim,
