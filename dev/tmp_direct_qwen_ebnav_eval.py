@@ -196,6 +196,27 @@ def select_records(records: list[dict[str, Any]], split: str, num_episodes: int,
     return metas[: int(num_episodes)]
 
 
+def episode_key(row: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            str(row.get("eval_set", "")),
+            str(row.get("episode_id", "")),
+            str(row.get("task_key", "")),
+        ]
+    )
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                rows.append(json.loads(line))
+    return rows
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Direct SFT-Qwen closed-loop EB-Nav eval without WM/value head.")
     p.add_argument("--dataset", default="datasets/EB-Nav/eb-nav_dataset_single_step.json")
@@ -214,6 +235,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device-map", default="auto")
     p.add_argument("--max-new-tokens", type=int, default=256)
     p.add_argument("--prompt-variant", choices=sorted(PROMPT_TEMPLATES), default="baseline")
+    p.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Resume from existing transitions.jsonl/episodes.jsonl in output-dir. Enabled by default; use --no-resume for a fresh run.",
+    )
     return p.parse_args()
 
 
@@ -248,21 +275,43 @@ def main() -> None:
     adapter._model.eval()
 
     EBNavigationEnv = _import_eb_navigation_env(args.embodiedbench_root)
-    transitions = []
-    episodes = []
-    action_counts = Counter()
-    planner_failures = 0
-    blocked_forward_count = 0
-    blocked_forward_repeat_count = 0
-    repeated_action_steps = 0
-    longest_repeat_streak = 0
-    rollout_id = 0
     trans_path = out / "transitions.jsonl"
     eps_path = out / "episodes.jsonl"
-    trans_path.write_text("")
-    eps_path.write_text("")
+    transitions = read_jsonl(trans_path) if bool(args.resume) else []
+    episodes = read_jsonl(eps_path) if bool(args.resume) else []
+    completed_keys = {episode_key(row) for row in episodes}
+    action_counts = Counter()
+    planner_failures = sum(1 for row in transitions if not bool(row.get("planner_valid", True)))
+    blocked_forward_count = sum(1 for row in transitions if int(row.get("sampled_action_id", -1)) == 0 and int(row.get("last_action_success", 1)) == 0)
+    blocked_forward_repeat_count = sum(1 for row in transitions if int(row.get("sampled_action_id", -1)) == 0 and bool(row.get("prev_forward_failed", False)))
+    repeated_action_steps = sum(1 for row in transitions if int(row.get("repeat_streak", 1)) > 1)
+    longest_repeat_streak = max([int(row.get("repeat_streak", 0)) for row in transitions] or [0])
+    rollout_id = len(episodes)
+    for row in transitions:
+        try:
+            action_counts[int(row.get("sampled_action_id", -1))] += 1
+        except Exception:
+            pass
+    if not bool(args.resume):
+        trans_path.write_text("")
+        eps_path.write_text("")
+    if completed_keys:
+        print(
+            json.dumps(
+                {
+                    "resume": True,
+                    "completed_episodes": len(completed_keys),
+                    "existing_transitions": len(transitions),
+                    "output_dir": str(out),
+                }
+            ),
+            flush=True,
+        )
 
     for eval_set, items in sorted(by_eval.items()):
+        items = [item for item in items if episode_key(item) not in completed_keys]
+        if not items:
+            continue
         env = EBNavigationEnv(
             eval_set=eval_set,
             exp_name=f"{args.exp_name}_{eval_set}",
@@ -378,6 +427,7 @@ def main() -> None:
                     "final_distance": _safe_float(info.get("distance", -1.0), -1.0),
                 }
                 episodes.append(ep)
+                completed_keys.add(episode_key(ep))
                 with eps_path.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(ep, ensure_ascii=False) + "\n")
                     f.flush()

@@ -220,6 +220,28 @@ def load_gate_config(path: str) -> dict[str, float]:
     return out
 
 
+def episode_key(row: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            str(row.get("eval_set", "")),
+            str(row.get("episode_id", "")),
+            str(row.get("task_key", "")),
+        ]
+    )
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            rows.append(json.loads(line))
+    return rows
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset", default="datasets/EB-Nav/eb-nav_dataset_single_step.json")
@@ -253,6 +275,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--override-max-value-std", type=float, default=0.03)
     p.add_argument("--override-max-pred-uncertainty", type=float, default=0.08)
     p.add_argument("--gate-config", default="", help="Optional JSON from calibrate_eb_nav_gate_from_forks.py.")
+    p.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Resume from existing transitions.jsonl/episodes.jsonl in output-dir. Enabled by default; use --no-resume for a fresh run.",
+    )
     return p.parse_args()
 
 
@@ -328,18 +356,42 @@ def main() -> None:
         by_eval[str(item["eval_set"])].append(item)
 
     EBNavigationEnv = _import_eb_navigation_env(args.embodiedbench_root)
-    transitions: list[dict[str, Any]] = []
-    episodes: list[dict[str, Any]] = []
-    action_counts: Counter[int] = Counter()
-    override_counts: Counter[str] = Counter()
-    planner_failures = 0
-    rollout_id = 0
     trans_path = out / "transitions.jsonl"
     eps_path = out / "episodes.jsonl"
-    trans_path.write_text("", encoding="utf-8")
-    eps_path.write_text("", encoding="utf-8")
+    transitions: list[dict[str, Any]] = read_jsonl(trans_path) if bool(args.resume) else []
+    episodes: list[dict[str, Any]] = read_jsonl(eps_path) if bool(args.resume) else []
+    completed_keys = {episode_key(row) for row in episodes}
+    action_counts: Counter[int] = Counter()
+    override_counts: Counter[str] = Counter()
+    planner_failures = sum(1 for row in transitions if not bool(row.get("qwen_valid", True)))
+    rollout_id = len(episodes)
+    for row in transitions:
+        try:
+            action_counts[int(row.get("sampled_action_id", -1))] += 1
+        except Exception:
+            pass
+        if "override_reason" in row:
+            override_counts[str(row["override_reason"])] += 1
+    if not bool(args.resume):
+        trans_path.write_text("", encoding="utf-8")
+        eps_path.write_text("", encoding="utf-8")
+    if completed_keys:
+        print(
+            json.dumps(
+                {
+                    "resume": True,
+                    "completed_episodes": len(completed_keys),
+                    "existing_transitions": len(transitions),
+                    "output_dir": str(out),
+                }
+            ),
+            flush=True,
+        )
 
     for eval_set, items in sorted(by_eval.items()):
+        items = [item for item in items if episode_key(item) not in completed_keys]
+        if not items:
+            continue
         env = EBNavigationEnv(
             eval_set=eval_set,
             exp_name=f"{args.exp_name}_{eval_set}",
@@ -482,6 +534,7 @@ def main() -> None:
                     "final_distance": _safe_float(info.get("distance", -1.0), -1.0),
                 }
                 episodes.append(ep)
+                completed_keys.add(episode_key(ep))
                 with eps_path.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(ep, ensure_ascii=False) + "\n")
                     f.flush()

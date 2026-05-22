@@ -20,7 +20,7 @@ source .venv/bin/activate
 : "${WM_CHECKPOINT:?Set WM_CHECKPOINT to the trained WM checkpoint path.}"
 : "${VALUE_CHECKPOINTS:?Set VALUE_CHECKPOINTS to one or more value checkpoint paths.}"
 : "${PLANNER_LORA:=models/qwen_planner_lora_preaction_leakfree_8192_step00008000}"
-: "${ROOT_OUT:=outputs/superpod/qwen_gate_nonregression_$(date +%Y%m%d_%H%M%S)}"
+: "${ROOT_OUT:=outputs/superpod/qwen_gate_nonregression_${SLURM_JOB_ID:-manual}}"
 : "${NUM_EPISODES:=20}"
 : "${MAX_STEPS:=20}"
 : "${SPLIT:=test}"
@@ -35,6 +35,9 @@ source .venv/bin/activate
 : "${OVERRIDE_MAX_PRED_UNCERTAINTY:=0.08}"
 : "${GATE_CONFIG:=}"
 : "${FORK_JSONL_FOR_GATE:=}"
+: "${MIN_SUCCESS_DELTA:=0.0}"
+: "${MAX_COLLISION_DELTA:=0.0}"
+: "${MAX_PLANNER_FAILURE_DELTA:=0.0}"
 
 mkdir -p "${ROOT_OUT}"
 
@@ -85,4 +88,7 @@ python dev/evaluate_eb_nav_qwen_override_rollout.py \
 python dev/compare_eb_nav_gate_nonregression.py \
   --baseline-summary "${ROOT_OUT}/direct_qwen/summary.json" \
   --gate-summary "${ROOT_OUT}/qwen_gate/summary.json" \
-  --output-json "${ROOT_OUT}/nonregression.json"
+  --output-json "${ROOT_OUT}/nonregression.json" \
+  --min-success-delta "${MIN_SUCCESS_DELTA}" \
+  --max-collision-delta "${MAX_COLLISION_DELTA}" \
+  --max-planner-failure-delta "${MAX_PLANNER_FAILURE_DELTA}"
