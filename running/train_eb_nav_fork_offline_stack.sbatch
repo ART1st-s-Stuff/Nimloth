@@ -62,6 +62,7 @@ if [[ "$TRAIN_WM" == "1" ]]; then
     --fork-jsonl ${FORK_JSONL} \
     --wm-checkpoint "$BASE_WM_CHECKPOINT" \
     --output-dir "$RUN_ROOT/wm" \
+    --max-samples "${WM_MAX_SAMPLES:-0}" \
     --epochs "${WM_EPOCHS:-1}" \
     --batch-size "${WM_BATCH_SIZE:-8}" \
     --lr "${WM_LR:-1e-5}" \
@@ -87,6 +88,7 @@ if [[ "$TRAIN_VALUE" == "1" ]]; then
     --wm-checkpoint "$VALUE_WM_CHECKPOINT" \
     --output-dir "$RUN_ROOT/value" \
     --target-field "${VALUE_TARGET_FIELD:-continuation_reward}" \
+    --max-samples "${VALUE_MAX_SAMPLES:-0}" \
     --epochs "${VALUE_EPOCHS:-3}" \
     --batch-size "${VALUE_BATCH_SIZE:-8}" \
     --lr "${VALUE_LR:-3e-4}" \
