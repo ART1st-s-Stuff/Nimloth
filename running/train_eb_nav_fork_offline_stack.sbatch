@@ -55,6 +55,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 mkdir -p "$RUN_ROOT"
 export RUN_ROOT FORK_JSONL
+python dev/verify_eb_nav_fork_pipeline.py --quiet
 
 if [[ "$TRAIN_WM" == "1" ]]; then
   python dev/train_eb_nav_wm_from_forks.py \
