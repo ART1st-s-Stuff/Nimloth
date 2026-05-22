@@ -13,7 +13,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -44,6 +44,18 @@ class ForkBatch:
     value: torch.Tensor
     sample_weight: torch.Tensor
     group_keys: list[str]
+
+
+def group_key(row: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            str(row.get("rollout_id", "")),
+            str(row.get("episode_id", "")),
+            str(row.get("eval_set", "")),
+            str(row.get("task_key", "")),
+            str(row.get("step", "")),
+        ]
+    )
 
 
 class ForkDataset(Dataset[dict[str, Any]]):
@@ -99,15 +111,7 @@ def make_collate(*, visual_encoder: Any, semantic_encoder: QwenLLMLatentEncoder,
         value = torch.tensor([float(r.get(target_field, 0.0)) * float(target_scale) for r in items], dtype=torch.float32, device=device)
         sample_weight = torch.tensor([max(0.0, float(r.get("effective_lr_scale", 1.0))) for r in items], dtype=torch.float32, device=device)
         group_keys = [
-            "|".join(
-                [
-                    str(r.get("rollout_id", "")),
-                    str(r.get("episode_id", "")),
-                    str(r.get("eval_set", "")),
-                    str(r.get("task_key", "")),
-                    str(r.get("step", "")),
-                ]
-            )
+            group_key(r)
             for r in items
         ]
         return ForkBatch(semantic=semantic, z_current=z_current, z_next=z_next, action=action, value=value, sample_weight=sample_weight, group_keys=group_keys)
@@ -125,6 +129,35 @@ def grouped_pairwise_rank_loss(pred: torch.Tensor, target: torch.Tensor, group_k
     if not losses:
         return pred.new_tensor(0.0)
     return torch.stack(losses).mean()
+
+
+def grouped_batch_indices(rows: list[dict[str, Any]], *, test_ratio: float, batch_size: int, seed: int) -> tuple[list[list[int]], list[list[int]]]:
+    rng = random.Random(int(seed))
+    by_group: dict[str, list[int]] = {}
+    for idx, row in enumerate(rows):
+        by_group.setdefault(group_key(row), []).append(idx)
+    groups = list(by_group.items())
+    rng.shuffle(groups)
+    if len(groups) < 2:
+        return _pack_groups(groups, batch_size=batch_size), _pack_groups([], batch_size=batch_size)
+    test_group_count = max(1, min(len(groups) - 1, int(round(len(groups) * float(test_ratio)))))
+    test_groups = groups[:test_group_count]
+    train_groups = groups[test_group_count:]
+    return _pack_groups(train_groups, batch_size=batch_size), _pack_groups(test_groups, batch_size=batch_size)
+
+
+def _pack_groups(groups: list[tuple[str, list[int]]], *, batch_size: int) -> list[list[int]]:
+    batches: list[list[int]] = []
+    current: list[int] = []
+    limit = max(1, int(batch_size))
+    for _, indices in groups:
+        if current and len(current) + len(indices) > limit:
+            batches.append(current)
+            current = []
+        current.extend(indices)
+    if current:
+        batches.append(current)
+    return batches
 
 
 def parse_args() -> argparse.Namespace:
@@ -186,11 +219,17 @@ def main() -> None:
         ds.rows = [r for r in ds.rows if float(r.get("effective_lr_scale", 1.0)) >= float(args.min_effective_lr_scale)]
     if len(ds) < 2:
         raise RuntimeError(f"not enough fork samples: {len(ds)}")
-    test_n = max(1, int(len(ds) * float(args.test_ratio))); train_n = max(1, len(ds) - test_n)
-    train_ds, test_ds = random_split(ds, [train_n, len(ds) - train_n], generator=torch.Generator().manual_seed(int(args.seed)))
     collate = make_collate(visual_encoder=visual_encoder, semantic_encoder=semantic_encoder, wm=wm, device=device, visual_dim=visual_dim, target_field=args.target_field, target_scale=float(args.target_scale))
-    train_loader = DataLoader(train_ds, batch_size=int(args.batch_size), shuffle=False, num_workers=0, collate_fn=collate)
-    test_loader = DataLoader(test_ds, batch_size=int(args.batch_size), shuffle=False, num_workers=0, collate_fn=collate)
+    train_batches, test_batches = grouped_batch_indices(
+        ds.rows,
+        test_ratio=float(args.test_ratio),
+        batch_size=int(args.batch_size),
+        seed=int(args.seed),
+    )
+    if not train_batches:
+        raise RuntimeError("not enough fork groups for train split")
+    train_loader = DataLoader(ds, batch_sampler=train_batches, num_workers=0, collate_fn=collate)
+    test_loader = DataLoader(ds, batch_sampler=test_batches, num_workers=0, collate_fn=collate)
     opt = torch.optim.AdamW(model.heads.parameters(), lr=float(args.lr), weight_decay=float(args.weight_decay))
     reg_loss_fn = nn.SmoothL1Loss(reduction="none")
     best = {"test_mse": float("inf"), "epoch": -1}
