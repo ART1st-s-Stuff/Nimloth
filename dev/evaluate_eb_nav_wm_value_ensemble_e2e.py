@@ -22,6 +22,14 @@ from src.vlm.qwen_adapter import QwenVLM  # noqa: E402
 from src.wm.encoder.qwen import QwenLLMLatentEncoder  # noqa: E402
 
 
+def _entropy_from_probs(probs: torch.Tensor) -> float:
+    p = probs.float().flatten()
+    if p.numel() == 0:
+        return 0.0
+    p = p / p.sum().clamp_min(1e-12)
+    return float((-(p * p.clamp_min(1e-12).log()).sum()).item())
+
+
 def _build_meta(record: dict[str, Any], idx: int) -> dict[str, Any]:
     eval_set = str(record.get("eval_set", "unknown"))
     episode_id = _safe_int(record.get("episode_id", idx + 1), default=idx + 1)
@@ -95,11 +103,25 @@ def choose_action(*, image_history: list[str], action_history: list[int], prompt
             vals.append(float(head(semantic, z_current, z_next, action_vec).item()))
         t=torch.tensor(vals, dtype=torch.float32)
         all_scores.append(vals); mean_scores.append(float(t.mean().item())); std_scores.append(float(t.std(unbiased=False).item()))
+    has_planner_prior = bool(mode in {"planner", "hybrid"} and not planner_failed and prior.numel() > 0 and float(prior.float().abs().sum().item()) > 0.0)
+    if has_planner_prior:
+        prior_probs = torch.softmax(prior.float().reshape(-1), dim=0)
+        planner_prior = [float(x) for x in prior_probs.detach().cpu().tolist()]
+        planner_order = sorted(range(len(planner_prior)), key=lambda i: planner_prior[i], reverse=True)
+        planner_top1 = int(planner_order[0]) if planner_order else -1
+        planner_top2 = int(planner_order[1]) if len(planner_order) > 1 else -1
+        planner_margin = float(planner_prior[planner_top1] - planner_prior[planner_top2]) if planner_top1 >= 0 and planner_top2 >= 0 else 0.0
+        planner_entropy = _entropy_from_probs(prior_probs)
+    else:
+        planner_prior = []
+        planner_top1 = -1
+        planner_margin = 0.0
+        planner_entropy = 0.0
     policy_scores=[m - risk_lambda*s for m,s in zip(mean_scores,std_scores)]
     best = int(max(range(8), key=lambda i: policy_scores[i]))
     order=sorted(range(8), key=lambda i: policy_scores[i], reverse=True)
     margin=float(policy_scores[order[0]]-policy_scores[order[1]]) if len(order)>1 else 0.0
-    return best, {"score_mean":mean_scores,"score_std":std_scores,"score_all":all_scores,"policy_scores":policy_scores,"top1_margin":margin,"selected_score_mean":mean_scores[best],"selected_score_std":std_scores[best],"selected_pred_uncertainty":pred_unc[best],"pred_uncertainty_by_action":pred_unc,"planner_failed":planner_failed,"planner_error":planner_error,"planner_text":planner_text}
+    return best, {"score_mean":mean_scores,"score_std":std_scores,"score_all":all_scores,"policy_scores":policy_scores,"top1_margin":margin,"selected_score_mean":mean_scores[best],"selected_score_std":std_scores[best],"selected_pred_uncertainty":pred_unc[best],"pred_uncertainty_by_action":pred_unc,"planner_failed":planner_failed,"planner_error":planner_error,"planner_text":planner_text,"planner_action_prior":planner_prior,"planner_entropy":planner_entropy,"planner_top1_action":planner_top1,"planner_top1_prob":float(planner_prior[planner_top1]) if planner_top1 >= 0 else 0.0,"planner_top1_margin":planner_margin,"planner_value_conflict":bool(planner_top1 >= 0 and planner_top1 != best),"planner_value_gap":float(policy_scores[best] - policy_scores[planner_top1]) if planner_top1 >= 0 else 0.0}
 
 
 def parse_args() -> argparse.Namespace:

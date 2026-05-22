@@ -275,12 +275,40 @@ def shaped_fork_target(
     )
 
 
+def trigger_metrics(dbg: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    reasons: list[str] = []
+    value_margin = float(dbg.get("top1_margin", 1e9))
+    value_std = float(dbg.get("selected_score_std", 0.0))
+    pred_unc = float(dbg.get("selected_pred_uncertainty", 0.0))
+    planner_entropy = float(dbg.get("planner_entropy", 0.0))
+    planner_margin = float(dbg.get("planner_top1_margin", 1e9))
+    value_gap = abs(float(dbg.get("planner_value_gap", 0.0)))
+    if value_margin < float(args.fork_margin_threshold):
+        reasons.append("value_margin_low")
+    if value_std > float(args.fork_value_std_threshold):
+        reasons.append("value_uncertainty_high")
+    if pred_unc > float(args.fork_pred_uncertainty_threshold):
+        reasons.append("wm_uncertainty_high")
+    if planner_entropy > float(args.fork_planner_entropy_threshold):
+        reasons.append("planner_entropy_high")
+    if planner_margin < float(args.fork_planner_margin_threshold):
+        reasons.append("planner_margin_low")
+    if bool(dbg.get("planner_value_conflict", False)) and value_gap > float(args.fork_planner_value_gap_threshold):
+        reasons.append("planner_value_conflict")
+    return {
+        "triggered": bool(reasons),
+        "trigger_reasons": reasons,
+        "value_margin": value_margin,
+        "value_uncertainty": value_std,
+        "wm_uncertainty": pred_unc,
+        "planner_entropy": planner_entropy,
+        "planner_margin": planner_margin,
+        "planner_value_gap": value_gap,
+    }
+
+
 def triggered(dbg: dict[str, Any], args: argparse.Namespace) -> bool:
-    return (
-        float(dbg.get("top1_margin", 1e9)) < float(args.fork_margin_threshold)
-        or float(dbg.get("selected_score_std", 0.0)) > float(args.fork_value_std_threshold)
-        or float(dbg.get("selected_pred_uncertainty", 0.0)) > float(args.fork_pred_uncertainty_threshold)
-    )
+    return bool(trigger_metrics(dbg, args)["triggered"])
 
 
 def _parse_action_allowlist(spec: str) -> set[int] | None:
@@ -301,45 +329,118 @@ def _parse_action_allowlist(spec: str) -> set[int] | None:
     return {a for a in allowed if 0 <= a < 8}
 
 
-def candidate_actions(dbg: dict[str, Any], selected: int, spec: str, rng: random.Random, *, ucb_beta: float = 1.0, allowed_actions: set[int] | None = None) -> list[int]:
+def candidate_actions_with_sources(dbg: dict[str, Any], selected: int, spec: str, rng: random.Random, *, ucb_beta: float = 1.0, allowed_actions: set[int] | None = None) -> tuple[list[int], dict[int, list[str]]]:
     scores = list(dbg.get("policy_scores", []))
     order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True) if scores else [selected]
+    prior = list(dbg.get("planner_action_prior", []))
+    prior_order = sorted(range(len(prior)), key=lambda i: prior[i], reverse=True) if prior else []
     means = list(dbg.get("score_mean", []))
     stds = list(dbg.get("score_std", []))
+    pred_unc = list(dbg.get("pred_uncertainty_by_action", []))
     if len(means) >= 8 and len(stds) >= 8:
         ucb_scores = [float(means[i]) + float(ucb_beta) * float(stds[i]) for i in range(8)]
     else:
         ucb_scores = scores
     ucb_order = sorted(range(len(ucb_scores)), key=lambda i: ucb_scores[i], reverse=True) if ucb_scores else order
+    unc_order = sorted(range(len(pred_unc)), key=lambda i: pred_unc[i], reverse=True) if pred_unc else []
     out: list[int] = []
-    def add(a: int) -> None:
+    sources: dict[int, list[str]] = {}
+    def add(a: int, source: str) -> None:
         if allowed_actions is not None and int(a) not in allowed_actions:
             return
         if 0 <= int(a) < 8 and int(a) not in out:
             out.append(int(a))
+        if 0 <= int(a) < 8:
+            sources.setdefault(int(a), [])
+            if source not in sources[int(a)]:
+                sources[int(a)].append(source)
     for token in [x.strip() for x in spec.split(',') if x.strip()]:
         if token == "selected":
-            add(selected)
+            add(selected, "selected")
         elif token == "top1" and order:
-            add(order[0])
+            add(order[0], "value_top1")
         elif token == "top2":
-            for a in order[:2]: add(a)
+            for a in order[:2]: add(a, "value_top2")
+        elif token == "planner_top1" and prior_order:
+            add(prior_order[0], "planner_top1")
+        elif token == "planner_top2":
+            for a in prior_order[:2]: add(a, "planner_top2")
+        elif token.startswith("unc"):
+            suffix = token[3:]
+            n = int(suffix) if suffix.isdigit() else 1
+            for a in unc_order[:max(1, n)]: add(a, f"unc{max(1, n)}")
         elif token.startswith("ucb"):
             suffix = token[3:]
             if suffix.isdigit() and ucb_order:
                 # ucb1 = best-UCB action, ucb2 = second-best-UCB action.
                 idx = max(0, int(suffix) - 1)
                 if idx < len(ucb_order):
-                    add(ucb_order[idx])
+                    add(ucb_order[idx], token)
         elif token == "random_rare":
-            add(rng.choice(RARE_ACTIONS))
+            add(rng.choice(RARE_ACTIONS), "random_rare")
+        elif token == "random":
+            add(rng.randrange(8), "random")
         elif token.startswith("a") and token[1:].isdigit():
-            add(int(token[1:]))
+            add(int(token[1:]), token)
     if not out:
-        add(selected)
+        add(selected, "fallback_selected")
     if not out and allowed_actions:
-        out.append(sorted(allowed_actions)[0])
-    return out
+        fallback = sorted(allowed_actions)[0]
+        out.append(fallback)
+        sources.setdefault(fallback, ["fallback_allowed"])
+    return out, sources
+
+
+def candidate_actions(dbg: dict[str, Any], selected: int, spec: str, rng: random.Random, *, ucb_beta: float = 1.0, allowed_actions: set[int] | None = None) -> list[int]:
+    return candidate_actions_with_sources(dbg, selected, spec, rng, ucb_beta=ucb_beta, allowed_actions=allowed_actions)[0]
+
+
+def build_fork_context(dbg: dict[str, Any], selected: int, cands: list[int], candidate_sources: dict[int, list[str]], trigger: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "fork_triggered": bool(trigger.get("triggered", False)),
+        "fork_trigger_reasons": list(trigger.get("trigger_reasons", [])),
+        "candidate_actions": [int(a) for a in cands],
+        "candidate_action_sources": {str(k): list(v) for k, v in sorted(candidate_sources.items())},
+        "qwen_proposed_action_id": int(dbg.get("planner_top1_action", -1)),
+        "qwen_action_prior": dbg.get("planner_action_prior", []),
+        "qwen_action_entropy": trigger.get("planner_entropy"),
+        "qwen_action_top1_margin": trigger.get("planner_margin"),
+        "qwen_raw_response": dbg.get("planner_text", ""),
+        "qwen_planner_failed": bool(dbg.get("planner_failed", False)),
+        "qwen_planner_error": str(dbg.get("planner_error", "")),
+        "wm_uncertainty_by_action": dbg.get("pred_uncertainty_by_action", []),
+        "value_mean_by_action": dbg.get("score_mean", []),
+        "value_std_by_action": dbg.get("score_std", []),
+        "value_policy_score_by_action": dbg.get("policy_scores", []),
+        "selected_action_id": int(selected),
+        "selected_value_uncertainty": dbg.get("selected_score_std"),
+        "selected_wm_uncertainty": dbg.get("selected_pred_uncertainty"),
+        "value_margin": trigger.get("value_margin"),
+        "planner_value_gap": trigger.get("planner_value_gap"),
+    }
+
+
+def adaptive_training_metadata(rec: dict[str, Any]) -> dict[str, Any]:
+    skipped = bool(rec.get("skipped", False))
+    restore_ok = bool(rec.get("restore_ok", False))
+    continuation_steps = len(rec.get("continuation_action_ids", []) or [])
+    value_std = _safe_float(rec.get("candidate_predicted_value_std", 0.0), 0.0)
+    wm_unc = _safe_float(rec.get("candidate_pred_uncertainty", 0.0), 0.0)
+    reasons = list(rec.get("fork_trigger_reasons", []) or [])
+    reliability = 0.0 if skipped else 1.0
+    if not restore_ok:
+        reliability *= 0.25
+    if continuation_steps <= 1:
+        reliability *= 0.75
+    novelty = min(1.0, 0.5 + 0.5 * min(1.0, (value_std + wm_unc) / 0.1))
+    learnability = 0.5 + 0.1 * min(5, len(reasons))
+    return {
+        "sample_reliability": float(reliability),
+        "sample_novelty": float(novelty),
+        "sample_learnability": float(min(1.0, learnability)),
+        "effective_lr_scale": float(reliability * novelty * min(1.0, learnability)),
+        "skip_for_training": bool(reliability <= 0.0),
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -357,7 +458,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fork-margin-threshold", type=float, default=0.01)
     p.add_argument("--fork-value-std-threshold", type=float, default=0.05)
     p.add_argument("--fork-pred-uncertainty-threshold", type=float, default=1e9)
-    p.add_argument("--fork-actions", default="selected,top2,random_rare")
+    p.add_argument("--fork-planner-entropy-threshold", type=float, default=1e9, help="Fork when Qwen/planner action prior entropy is above this threshold.")
+    p.add_argument("--fork-planner-margin-threshold", type=float, default=-1.0, help="Fork when Qwen/planner top1-top2 prior margin is below this threshold.")
+    p.add_argument("--fork-planner-value-gap-threshold", type=float, default=1e9, help="Fork when Qwen top action conflicts with value top action by at least this policy-score gap.")
+    p.add_argument("--fork-actions", default="selected,top2,planner_top2,ucb1,unc1,random")
     p.add_argument("--fork-action-allowlist", default="", help="Optional comma/range action allowlist such as '0-5' to exclude camera-only actions.")
     p.add_argument("--ucb-beta", type=float, default=1.0, help="UCB score = predicted_value_mean + beta * predicted_value_std for ucb1/ucb2 fork actions.")
     p.add_argument("--split", choices=["all", "train", "test"], default="all")
@@ -615,9 +719,11 @@ def main() -> None:
                     snap = snapshot_agent(env)
                     action_id, dbg = choose_action(image_history=image_hist, action_history=action_hist, prompt=prompt, visual_encoder=visual_encoder, no_cot_encoder=no_cot_encoder, planner_adapter=planner_adapter, wm=wm, heads=cast(list[SemanticWMValueHead], heads), device=device, mode=args.mode, max_new_tokens=int(args.max_new_tokens), visual_dim=visual_dim, risk_lambda=float(args.risk_lambda), semantic_dim=QWEN_VISUAL_DIM)
                     restart_required = False
-                    if ep_forks < int(args.max_forks_per_episode) and triggered(dbg, args):
+                    trigger = trigger_metrics(dbg, args)
+                    if ep_forks < int(args.max_forks_per_episode) and bool(trigger["triggered"]):
                         ep_forks += 1
-                        cands = candidate_actions(dbg, action_id, args.fork_actions, rng, ucb_beta=float(args.ucb_beta), allowed_actions=allowed_fork_actions)
+                        cands, candidate_sources = candidate_actions_with_sources(dbg, action_id, args.fork_actions, rng, ucb_beta=float(args.ucb_beta), allowed_actions=allowed_fork_actions)
+                        fork_context = build_fork_context(dbg, action_id, cands, candidate_sources, trigger)
                         start_success, start_distance = measure_task_distance(env)
                         ranks = {a: r + 1 for r, a in enumerate(sorted(range(len(dbg.get("policy_scores", []))), key=lambda i: dbg["policy_scores"][i], reverse=True))} if dbg.get("policy_scores") else {}
                         for cand in cands:
@@ -638,6 +744,8 @@ def main() -> None:
                                     "candidate_action_name": ACTION_NAMES.get(cand, f"action_{cand}"),
                                     "selected_action_id": action_id,
                                     "selected_action_name": ACTION_NAMES.get(action_id, f"action_{action_id}"),
+                                    "candidate_sources": candidate_sources.get(cand, []),
+                                    **fork_context,
                                     "restore_ok": False,
                                     "skipped": True,
                                     "skip_reason": "same-state restore unavailable for non-selected candidate",
@@ -647,6 +755,7 @@ def main() -> None:
                                     "start_distance": start_distance,
                                     "start_success": start_success,
                                 }
+                                rec.update(adaptive_training_metadata(rec))
                                 with fork_path.open("a", encoding="utf-8") as f:
                                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                                 fork_count += 1
@@ -668,6 +777,8 @@ def main() -> None:
                                     "candidate_action_name": ACTION_NAMES.get(cand, f"action_{cand}"),
                                     "selected_action_id": action_id,
                                     "selected_action_name": ACTION_NAMES.get(action_id, f"action_{action_id}"),
+                                    "candidate_sources": candidate_sources.get(cand, []),
+                                    **fork_context,
                                     "restore_ok": bool(can_restore),
                                     "skipped": True,
                                     "skip_reason": f"fork_step_failed: {_error_text(first_step_exc)}",
@@ -677,6 +788,7 @@ def main() -> None:
                                     "start_distance": start_distance,
                                     "start_success": start_success,
                                 }
+                                rec.update(adaptive_training_metadata(rec))
                                 with fork_path.open("a", encoding="utf-8") as f:
                                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                                 fork_count += 1
@@ -714,6 +826,8 @@ def main() -> None:
                                         "candidate_action_name": ACTION_NAMES.get(cand, f"action_{cand}"),
                                         "selected_action_id": action_id,
                                         "selected_action_name": ACTION_NAMES.get(action_id, f"action_{action_id}"),
+                                        "candidate_sources": candidate_sources.get(cand, []),
+                                        **fork_context,
                                         "restore_ok": bool(can_restore),
                                         "skipped": True,
                                         "skip_reason": f"fork_cont_failed_h{h+1}: {_error_text(cont_step_exc)}",
@@ -723,6 +837,7 @@ def main() -> None:
                                         "start_distance": start_distance,
                                         "start_success": start_success,
                                     }
+                                    rec.update(adaptive_training_metadata(rec))
                                     with fork_path.open("a", encoding="utf-8") as f:
                                         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                                     fork_count += 1
@@ -767,6 +882,8 @@ def main() -> None:
                                 "candidate_action_name": ACTION_NAMES.get(cand, f"action_{cand}"),
                                 "selected_action_id": action_id,
                                 "selected_action_name": ACTION_NAMES.get(action_id, f"action_{action_id}"),
+                                "candidate_sources": candidate_sources.get(cand, []),
+                                **fork_context,
                                 "restore_ok": bool(can_restore),
                                 "skipped": False,
                                 "policy_rank": ranks.get(cand),
@@ -798,6 +915,7 @@ def main() -> None:
                                 "shaped_fork_target": shaped_target,
                                 "raw_info": _jsonable(cont_info),
                             }
+                            rec.update(adaptive_training_metadata(rec))
                             with fork_path.open("a", encoding="utf-8") as f:
                                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                             fork_count += 1
