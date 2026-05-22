@@ -27,7 +27,7 @@ if str(REPO_ROOT) not in sys.path:
 from dev.collect_eb_nav_random_rollouts import _extract_rgb, _import_eb_navigation_env, _matches_split, _safe_float, _safe_int, _save_rgb  # noqa: E402
 from dev.evaluate_eb_nav_wm_value_ensemble_e2e import choose_action, select_records  # noqa: E402
 from dev.train_eb_nav_value_head_ensemble_rpe import RPEValueEnsemble  # noqa: E402
-from dev.train_eb_nav_value_head_predicted import NUM_PATCHES, QWEN_VISUAL_DIM, SemanticWMValueHead, build_visual_encoder, build_wm_from_checkpoint, resolve_repo_path  # noqa: E402
+from dev.train_eb_nav_value_head_predicted import NUM_PATCHES, QWEN_VISUAL_DIM, SemanticWMValueHead, build_visual_encoder, build_wm_from_checkpoint, encode_many, resolve_repo_path  # noqa: E402
 from dev.train_eb_nav_joint_wm_value import freeze_qwen  # noqa: E402
 from src.data.eb_nav_dataset import ACTION_NAMES  # noqa: E402
 from src.vlm.qwen_adapter import QwenVLM  # noqa: E402
@@ -420,6 +420,53 @@ def build_fork_context(dbg: dict[str, Any], selected: int, cands: list[int], can
     }
 
 
+@torch.no_grad()
+def wm_first_step_diagnostics(
+    *,
+    visual_encoder: Any,
+    wm: torch.nn.Module,
+    image_history: list[str],
+    action_history: list[int],
+    candidate_action: int,
+    first_step_image: str,
+    device: torch.device,
+    visual_dim: int,
+) -> dict[str, Any]:
+    hist_len = len(image_history)
+    z_hist = encode_many(visual_encoder, image_history, None, device).reshape(1, hist_len, NUM_PATCHES, visual_dim)
+    z_current = z_hist[:, -1]
+    z_observed = encode_many(visual_encoder, [first_step_image], None, device).reshape(1, NUM_PATCHES, visual_dim)
+    teacher_action = torch.zeros(1, hist_len, 8, dtype=torch.float32, device=device)
+    for i, action_id in enumerate(action_history[-hist_len:]):
+        if 0 <= int(action_id) < 8:
+            teacher_action[0, i, int(action_id)] = 1.0
+    if 0 <= int(candidate_action) < 8:
+        teacher_action[0, -1, int(candidate_action)] = 1.0
+
+    if hasattr(wm, "predict_next_ensemble"):
+        pred_members = wm.predict_next_ensemble(z_hist, teacher_action)
+        z_pred = pred_members.mean(dim=0)
+        ensemble_uncertainty = float(pred_members.float().var(dim=0, unbiased=False).flatten(1).mean().item())
+    else:
+        z_pred = wm.predict_next(z_hist, teacher_action)
+        ensemble_uncertainty = 0.0
+    residual = (z_pred - z_observed).float()
+    pred_delta = (z_pred - z_current).float().flatten(1)
+    observed_delta = (z_observed - z_current).float().flatten(1)
+    pred_norm = float(pred_delta.pow(2).sum(dim=1).sqrt().mean().item())
+    observed_norm = float(observed_delta.pow(2).sum(dim=1).sqrt().mean().item())
+    cosine = torch.nn.functional.cosine_similarity(pred_delta, observed_delta, dim=1, eps=1e-8)
+    return {
+        "first_step_image": first_step_image,
+        "wm_pred_first_latent_mse": float(residual.pow(2).flatten(1).mean().item()),
+        "wm_pred_first_latent_mae": float(residual.abs().flatten(1).mean().item()),
+        "wm_pred_delta_norm": pred_norm,
+        "observed_delta_norm": observed_norm,
+        "wm_pred_observed_delta_cosine": float(cosine.mean().item()),
+        "wm_pred_ensemble_uncertainty": ensemble_uncertainty,
+    }
+
+
 def adaptive_training_metadata(rec: dict[str, Any]) -> dict[str, Any]:
     skipped = bool(rec.get("skipped", False))
     restore_ok = bool(rec.get("restore_ok", False))
@@ -434,6 +481,9 @@ def adaptive_training_metadata(rec: dict[str, Any]) -> dict[str, Any]:
         reliability *= 0.75
     novelty = min(1.0, 0.5 + 0.5 * min(1.0, (value_std + wm_unc) / 0.1))
     learnability = 0.5 + 0.1 * min(5, len(reasons))
+    pred_residual = _safe_float(rec.get("wm_pred_first_latent_mse", 0.0), 0.0)
+    if pred_residual > 0.0:
+        learnability = max(learnability, min(1.0, 0.5 + min(0.5, pred_residual * 10.0)))
     return {
         "sample_reliability": float(reliability),
         "sample_novelty": float(novelty),
@@ -810,8 +860,19 @@ def main() -> None:
                             cont_info = dict(first_info)
                             continuation_action_ids = [int(cand)]
                             fork_img = _save_rgb(shots / f"rollout_{rollout_id:04d}_step_{step_idx:03d}_fork_a{cand}_first.png", _extract_rgb(first_obs))
+                            first_step_wm_diag = wm_first_step_diagnostics(
+                                visual_encoder=visual_encoder,
+                                wm=wm,
+                                image_history=image_hist,
+                                action_history=action_hist,
+                                candidate_action=cand,
+                                first_step_image=fork_img,
+                                device=device,
+                                visual_dim=visual_dim,
+                            )
                             fhist = (image_hist + [fork_img])[-int(args.history_len):]
                             fahist = (action_hist + [cand])[-int(args.history_len):]
+                            continuation_image_paths = [fork_img]
                             for h in range(max(0, int(args.fork_horizon) - 1)):
                                 if cont_done:
                                     break
@@ -854,6 +915,7 @@ def main() -> None:
                                 cont_info = dict(i2 or {})
                                 continuation_action_ids.append(int(fa))
                                 p2 = _save_rgb(shots / f"rollout_{rollout_id:04d}_step_{step_idx:03d}_fork_a{cand}_h{h+1}.png", _extract_rgb(o2))
+                                continuation_image_paths.append(p2)
                                 fhist = (fhist + [p2])[-int(args.history_len):]
                                 fahist = (fahist + [fa])[-int(args.history_len):]
                             if restart_required:
@@ -902,6 +964,7 @@ def main() -> None:
                                 "start_success": start_success,
                                 "start_distance": start_distance,
                                 "first_step_reward": _safe_float(first_reward, 0.0),
+                                **first_step_wm_diag,
                                 "first_step_done": bool(first_done),
                                 "first_step_success": first_success,
                                 "first_step_collision": first_collision,
@@ -909,6 +972,7 @@ def main() -> None:
                                 "first_step_distance": first_distance,
                                 "first_step_distance_delta": first_step_distance_delta,
                                 "continuation_action_ids": continuation_action_ids,
+                                "continuation_image_paths": continuation_image_paths,
                                 "continuation_reward": cont_reward,
                                 "continuation_done": cont_done,
                                 "continuation_success": continuation_success,
