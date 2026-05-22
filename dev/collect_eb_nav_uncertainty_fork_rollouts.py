@@ -480,7 +480,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mode", choices=["fast", "planner", "hybrid"], default="hybrid")
     p.add_argument("--max-new-tokens", type=int, default=128)
     p.add_argument("--risk-lambda", type=float, default=0.0)
-    p.add_argument("--progress-weight", type=float, default=1.0, help="Weight for start_distance - final_distance in shaped_fork_target.")
+    p.add_argument(
+        "--progress-weight",
+        type=float,
+        default=0.0,
+        help="Weight for start_distance - final_distance in shaped_fork_target. Disabled by default; distance is diagnostic only unless explicitly enabled.",
+    )
     p.add_argument("--success-bonus", type=float, default=1.0, help="Bonus added to shaped_fork_target when the continuation succeeds.")
     p.add_argument("--collision-penalty", type=float, default=0.1, help="Penalty subtracted from shaped_fork_target on continuation collision.")
     p.add_argument("--reward-weight", type=float, default=1.0, help="Weight for raw simulator continuation_reward in shaped_fork_target.")

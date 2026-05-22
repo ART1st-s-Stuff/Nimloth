@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--fork-jsonl", nargs="+", required=True, help="fork_samples.jsonl files, globs, or directories.")
     p.add_argument("--output-json", required=True)
-    p.add_argument("--target-field", default="shaped_fork_target")
+    p.add_argument("--target-field", default="continuation_reward")
     p.add_argument("--fallback-target-field", default="continuation_reward")
     p.add_argument("--min-outcome-delta", type=float, default=0.02)
     p.add_argument("--min-effective-lr-scale", type=float, default=0.0)

@@ -5,7 +5,9 @@
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=180G
-#SBATCH --time=08:00:00
+#SBATCH --time=12:00:00
+#SBATCH --exclude=dgx-16
+#SBATCH --requeue
 #SBATCH --output=/project/peilab/atst/flower/running/slurm_logs/%x-%j.out
 #SBATCH --error=/project/peilab/atst/flower/running/slurm_logs/%x-%j.err
 
@@ -31,8 +33,9 @@ export HOME=/project/peilab/atst
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
-export TMPDIR=/project/peilab/atst/flower/.tmp
+export TMPDIR=/tmp/ai2thor-fork-${USER}-${SLURM_JOB_ID}
 mkdir -p "$TMPDIR"
+trap 'rm -rf "$TMPDIR"' EXIT
 
 source running/setup_ai2thor_env.sh
 
@@ -46,7 +49,6 @@ python dev/collect_eb_nav_uncertainty_fork_rollouts.py \
   --value-checkpoints outputs/superpod/qwen_value_rpe_headens8_rank_8192_5ep/fork_refine/best_value_ensemble.pt \
   --planner-lora models/qwen_planner_lora_preaction_leakfree_8192_step00008000 \
   --output-dir "$OUT" \
-  --no-resume \
   --num-episodes 20 \
   --max-steps 30 \
   --fork-horizon 20 \
