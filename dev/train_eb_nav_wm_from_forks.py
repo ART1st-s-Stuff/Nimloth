@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import json
 import random
 import sys
@@ -77,24 +78,25 @@ def group_key(row: dict[str, Any]) -> str:
 
 
 class ForkWMDataset(Dataset[dict[str, Any]]):
-    def __init__(self, path: str | Path, *, max_samples: int = 0) -> None:
+    def __init__(self, paths: list[str | Path], *, max_samples: int = 0) -> None:
         rows: list[dict[str, Any]] = []
-        for line in Path(path).read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if row.get("skipped"):
-                continue
-            if row.get("skip_for_training"):
-                continue
-            if "history_images" not in row or "candidate_action_id" not in row or "image_t" not in row:
-                continue
-            target = resolve_repo_path(target_image_for(row))
-            if not target.exists():
-                continue
-            row = dict(row)
-            row["target_image"] = str(target)
-            rows.append(row)
+        for path in expand_fork_jsonl(paths):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if row.get("skipped"):
+                    continue
+                if row.get("skip_for_training"):
+                    continue
+                if "history_images" not in row or "candidate_action_id" not in row or "image_t" not in row:
+                    continue
+                target = resolve_repo_path(target_image_for(row))
+                if not target.exists():
+                    continue
+                row = dict(row)
+                row["target_image"] = str(target)
+                rows.append(row)
         self.rows = rows[: int(max_samples)] if int(max_samples) > 0 else rows
 
     def __len__(self) -> int:
@@ -102,6 +104,29 @@ class ForkWMDataset(Dataset[dict[str, Any]]):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         return self.rows[idx]
+
+
+def expand_fork_jsonl(inputs: list[str | Path]) -> list[Path]:
+    out: list[Path] = []
+    for item in inputs:
+        raw = str(item)
+        p = resolve_repo_path(raw)
+        if p.is_dir():
+            out.extend(sorted(p.glob("**/fork_samples.jsonl")))
+            continue
+        matches = sorted(glob.glob(str(p)))
+        if matches:
+            out.extend(Path(m) for m in matches)
+        else:
+            out.append(p)
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for path in out:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            uniq.append(path)
+    return uniq
 
 
 def make_collate(*, visual_encoder: Any, device: torch.device, visual_dim: int) -> Any:
@@ -220,7 +245,7 @@ def _pack_groups(groups: list[tuple[str, list[int]]], *, batch_size: int) -> lis
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--fork-jsonl", required=True)
+    p.add_argument("--fork-jsonl", nargs="+", required=True, help="fork_samples.jsonl files, globs, or directories.")
     p.add_argument("--wm-checkpoint", required=True)
     p.add_argument("--output-dir", required=True)
     p.add_argument("--max-samples", type=int, default=0)
@@ -268,7 +293,7 @@ def main() -> None:
     for param in wm.parameters():
         param.requires_grad = True
 
-    ds = ForkWMDataset(resolve_repo_path(args.fork_jsonl), max_samples=int(args.max_samples))
+    ds = ForkWMDataset(args.fork_jsonl, max_samples=int(args.max_samples))
     if float(args.min_effective_lr_scale) > 0.0:
         ds.rows = [r for r in ds.rows if float(r.get("effective_lr_scale", 1.0)) >= float(args.min_effective_lr_scale)]
     if len(ds) < 2:
