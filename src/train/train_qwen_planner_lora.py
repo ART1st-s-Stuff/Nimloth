@@ -194,6 +194,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sft-jsonl", default="datasets/EB-Nav/phase2_qwen_planner_sft.jsonl")
     parser.add_argument("--model-name", default="Qwen/Qwen2.5-VL-7B-Instruct")
+    parser.add_argument("--init-adapter-path", default="", help="Existing planner LoRA adapter to continue SFT from.")
     parser.add_argument("--output-dir", default="models/qwen_planner_lora")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -261,12 +262,16 @@ def main() -> None:
     adapter._ensure_model()
     if adapter._model is None or adapter._processor is None:
         raise RuntimeError(f"Failed to load Qwen model: {adapter.init_error}")
-    trainable = adapter.enable_language_lora(
-        r=args.lora_r,
-        alpha=args.lora_alpha,
-        dropout=args.lora_dropout,
-        target_modules=list(args.target_modules),
-    )
+    if str(args.init_adapter_path).strip():
+        adapter.load_lora_adapter(str(args.init_adapter_path), trainable=True)
+        trainable = adapter.set_planner_lora_trainable(True)
+    else:
+        trainable = adapter.enable_language_lora(
+            r=args.lora_r,
+            alpha=args.lora_alpha,
+            dropout=args.lora_dropout,
+            target_modules=list(args.target_modules),
+        )
     model = adapter._model
     processor = adapter._processor
     if bool(args.gradient_checkpointing):
@@ -298,6 +303,7 @@ def main() -> None:
             config={
                 "sft_jsonl": args.sft_jsonl,
                 "model_name": args.model_name,
+                "init_adapter_path": str(args.init_adapter_path),
                 "output_dir": args.output_dir,
                 "epochs": int(args.epochs),
                 "batch_size": int(args.batch_size),
