@@ -17,6 +17,29 @@ mkdir -p running/slurm_logs
 source running/setup_ai2thor_env.sh
 source .venv/bin/activate
 
+: "${OFFLINE_STACK_SUMMARY:=}"
+if [[ -n "${OFFLINE_STACK_SUMMARY}" ]]; then
+  eval "$(python - <<'PY'
+import json
+import os
+import shlex
+from pathlib import Path
+
+summary = json.loads(Path(os.environ["OFFLINE_STACK_SUMMARY"]).read_text(encoding="utf-8"))
+mapping = {
+    "WM_CHECKPOINT": summary.get("wm_checkpoint", ""),
+    "VALUE_CHECKPOINTS": summary.get("value_checkpoint", ""),
+    "PLANNER_LORA": summary.get("qwen_adapter", ""),
+    "GATE_CONFIG": summary.get("gate_config", ""),
+    "FORK_JSONL_FOR_GATE": summary.get("fork_jsonl", ""),
+}
+for key, value in mapping.items():
+    if value and not os.environ.get(key):
+        print(f"export {key}={shlex.quote(str(value))}")
+PY
+)"
+fi
+
 : "${WM_CHECKPOINT:?Set WM_CHECKPOINT to the trained WM checkpoint path.}"
 : "${VALUE_CHECKPOINTS:?Set VALUE_CHECKPOINTS to one or more value checkpoint paths.}"
 : "${PLANNER_LORA:=models/qwen_planner_lora_preaction_leakfree_8192_step00008000}"

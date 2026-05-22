@@ -143,6 +143,7 @@ fi
 python - <<'PY'
 import json
 import os
+import shlex
 from pathlib import Path
 
 root = Path(os.environ["RUN_ROOT"])
@@ -153,7 +154,23 @@ summary = {
     "value_checkpoint": str(root / "value" / "best_value_ensemble.pt"),
     "qwen_adapter": str(root / "qwen_adapter"),
     "gate_config": str(root / "gate_config.json"),
+    "next_eval_sbatch": "running/eval_qwen_gate_nonregression.sbatch",
 }
 (root / "offline_stack_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+(root / "next_eval_env.sh").write_text(
+    "\n".join(
+        [
+            f"export OFFLINE_STACK_SUMMARY={shlex.quote(str(root / 'offline_stack_summary.json'))}",
+            f"export WM_CHECKPOINT={shlex.quote(summary['wm_checkpoint'])}",
+            f"export VALUE_CHECKPOINTS={shlex.quote(summary['value_checkpoint'])}",
+            f"export PLANNER_LORA={shlex.quote(summary['qwen_adapter'])}",
+            f"export GATE_CONFIG={shlex.quote(summary['gate_config'])}",
+            f"export FORK_JSONL_FOR_GATE={shlex.quote(summary['fork_jsonl'])}",
+            'sbatch running/eval_qwen_gate_nonregression.sbatch',
+            "",
+        ]
+    ),
+    encoding="utf-8",
+)
 print(json.dumps(summary), flush=True)
 PY
