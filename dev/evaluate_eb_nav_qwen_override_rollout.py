@@ -201,6 +201,25 @@ def should_override(
     }
 
 
+def load_gate_config(path: str) -> dict[str, float]:
+    if not str(path).strip():
+        return {}
+    with Path(path).open(encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, dict):
+        raise ValueError(f"gate config must be a JSON object: {path}")
+    out: dict[str, float] = {}
+    mapping = {
+        "override_margin": "override_margin",
+        "override_max_value_std": "override_max_value_std",
+        "override_max_pred_uncertainty": "override_max_pred_uncertainty",
+    }
+    for src, dst in mapping.items():
+        if src in raw:
+            out[dst] = float(raw[src])
+    return out
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset", default="datasets/EB-Nav/eb-nav_dataset_single_step.json")
@@ -233,6 +252,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--override-margin", type=float, default=0.05)
     p.add_argument("--override-max-value-std", type=float, default=0.03)
     p.add_argument("--override-max-pred-uncertainty", type=float, default=0.08)
+    p.add_argument("--gate-config", default="", help="Optional JSON from calibrate_eb_nav_gate_from_forks.py.")
     return p.parse_args()
 
 
@@ -242,6 +262,11 @@ def main() -> None:
     shots = out / "step_screenshots"
     out.mkdir(parents=True, exist_ok=True)
     shots.mkdir(parents=True, exist_ok=True)
+    gate_cfg = load_gate_config(str(args.gate_config))
+    if gate_cfg:
+        args.override_margin = float(gate_cfg["override_margin"])
+        args.override_max_value_std = float(gate_cfg["override_max_value_std"])
+        args.override_max_pred_uncertainty = float(gate_cfg["override_max_pred_uncertainty"])
     value_paths = expand_checkpoints(args.value_checkpoints)
     (out / "args.json").write_text(
         json.dumps(vars(args) | {"expanded_value_checkpoints": [str(p) for p in value_paths]}, indent=2),

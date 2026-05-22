@@ -33,8 +33,21 @@ source .venv/bin/activate
 : "${OVERRIDE_MARGIN:=0.05}"
 : "${OVERRIDE_MAX_VALUE_STD:=0.03}"
 : "${OVERRIDE_MAX_PRED_UNCERTAINTY:=0.08}"
+: "${GATE_CONFIG:=}"
+: "${FORK_JSONL_FOR_GATE:=}"
 
 mkdir -p "${ROOT_OUT}"
+
+GATE_ARGS=()
+if [[ -n "${FORK_JSONL_FOR_GATE}" ]]; then
+  python dev/calibrate_eb_nav_gate_from_forks.py \
+    --fork-jsonl ${FORK_JSONL_FOR_GATE} \
+    --output-json "${ROOT_OUT}/gate_config.json"
+  GATE_CONFIG="${ROOT_OUT}/gate_config.json"
+fi
+if [[ -n "${GATE_CONFIG}" ]]; then
+  GATE_ARGS=(--gate-config "${GATE_CONFIG}")
+fi
 
 python dev/tmp_direct_qwen_ebnav_eval.py \
   --planner-lora "${PLANNER_LORA}" \
@@ -64,6 +77,7 @@ python dev/evaluate_eb_nav_qwen_override_rollout.py \
   --device-map "${DEVICE_MAP}" \
   --max-new-tokens "${MAX_NEW_TOKENS}" \
   --qwen-prompt-format special_token \
+  "${GATE_ARGS[@]}" \
   --override-margin "${OVERRIDE_MARGIN}" \
   --override-max-value-std "${OVERRIDE_MAX_VALUE_STD}" \
   --override-max-pred-uncertainty "${OVERRIDE_MAX_PRED_UNCERTAINTY}"
