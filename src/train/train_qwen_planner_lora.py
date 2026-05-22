@@ -32,13 +32,17 @@ console = Console()
 
 
 class PlannerSFTDataset(Dataset):
-    def __init__(self, jsonl_path: str, limit: int = 0) -> None:
+    def __init__(self, jsonl_path: str, limit: int = 0, *, min_sample_weight: float = 0.0) -> None:
         records = load_jsonl(jsonl_path, limit=limit)
+        filtered_records = []
         for idx, item in enumerate(records):
             _validate_record_schema(item, idx)
             if not str(item.get("response", "")).strip():
                 raise ValueError(f"{item.get('id', idx)} missing required response")
-        self.records = records
+            if float(item.get("effective_lr_scale", item.get("sample_weight", 1.0)) or 0.0) < float(min_sample_weight):
+                continue
+            filtered_records.append(item)
+        self.records = filtered_records
 
     def __len__(self) -> int:
         return len(self.records)
@@ -84,6 +88,10 @@ def _build_collate_fn(processor: Any):
         if pad_id is not None:
             labels[inputs["input_ids"] == pad_id] = -100
         inputs["labels"] = labels
+        inputs["sample_weight"] = torch.tensor(
+            [max(0.0, float(item.get("effective_lr_scale", item.get("sample_weight", 1.0)) or 0.0)) for item in batch],
+            dtype=torch.float32,
+        )
         return inputs
 
     return _collate
@@ -91,6 +99,27 @@ def _build_collate_fn(processor: Any):
 
 def _move_to_device(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
     return {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+
+
+def _weighted_lm_loss(logits: torch.Tensor, labels: torch.Tensor, sample_weight: torch.Tensor | None) -> torch.Tensor:
+    if sample_weight is None:
+        return torch.nn.functional.cross_entropy(
+            logits[..., :-1, :].contiguous().view(-1, logits.size(-1)),
+            labels[..., 1:].contiguous().view(-1),
+            ignore_index=-100,
+        )
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+    token_loss = torch.nn.functional.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+        ignore_index=-100,
+        reduction="none",
+    ).view(shift_labels.shape)
+    token_mask = (shift_labels != -100).float()
+    weights = sample_weight.to(device=shift_logits.device, dtype=shift_logits.dtype).view(-1, 1)
+    denom = (token_mask * weights).sum().clamp_min(1e-6)
+    return (token_loss * token_mask * weights).sum() / denom
 
 
 def _build_train_table(
@@ -210,6 +239,7 @@ def main() -> None:
     parser.add_argument("--validation-limit", type=int, default=32, help="Number of validation samples for each inline validation run.")
     parser.add_argument("--validation-max-new-tokens", type=int, default=512)
     parser.add_argument("--validation-extract-latent", action="store_true")
+    parser.add_argument("--min-sample-weight", type=float, default=0.0, help="Skip SFT records whose effective_lr_scale/sample_weight is below this value.")
     parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--ddp-backend",
@@ -285,7 +315,7 @@ def main() -> None:
     if is_main_process:
         console.print(f"language_lora_trainable_params={trainable}")
 
-    dataset = PlannerSFTDataset(args.sft_jsonl, limit=args.limit)
+    dataset = PlannerSFTDataset(args.sft_jsonl, limit=args.limit, min_sample_weight=float(args.min_sample_weight))
     if len(dataset) == 0:
         raise RuntimeError(f"No valid SFT records found in {args.sft_jsonl}")
     dataloader = DataLoader(
@@ -325,6 +355,7 @@ def main() -> None:
                 "validation_limit": int(args.validation_limit),
                 "validation_max_new_tokens": int(args.validation_max_new_tokens),
                 "validation_extract_latent": bool(args.validation_extract_latent),
+                "min_sample_weight": float(args.min_sample_weight),
             },
         )
 
@@ -407,8 +438,9 @@ def main() -> None:
                     continue
                 if accelerator is None:
                     batch = _move_to_device(batch, device)
+                    sample_weight = batch.pop("sample_weight", None)
                     outputs = model(**batch)
-                    loss = outputs.loss / float(accum)
+                    loss = _weighted_lm_loss(outputs.logits, batch["labels"], sample_weight) / float(accum)
                     loss.backward()
                     loss_value = float(loss.item() * accum)
                     if (batch_idx + 1) % accum == 0:
@@ -417,8 +449,9 @@ def main() -> None:
                     should_update_progress = True
                 else:
                     with accelerator.accumulate(model):
+                        sample_weight = batch.pop("sample_weight", None)
                         outputs = model(**batch)
-                        loss = outputs.loss
+                        loss = _weighted_lm_loss(outputs.logits, batch["labels"], sample_weight)
                         accelerator.backward(loss)
                         optimizer.step()
                         optimizer.zero_grad(set_to_none=True)
