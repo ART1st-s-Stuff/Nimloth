@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+TMP_DIR="/tmp/nimloth_skill_cli"
+mkdir -p "$TMP_DIR"
+MEMORY_CLI="$ROOT/.agents/skills/memory/bin/memory.py"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./skill memory <command> [args...]
+  ./skill human memory-approve
+
+AI-allowed memory commands:
+  ./skill memory add <title> <content>
+  ./skill memory set <id> <field=value> ...
+  ./skill memory search <keyword-regex> [filters]
+  ./skill memory get <id>
+  ./skill memory upvote <id>
+  ./skill memory human-verify <id>
+
+Human-only commands:
+  ./skill human memory-approve
+EOF
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 2
+fi
+
+namespace="$1"
+shift
+
+case "$namespace" in
+  memory)
+    if [[ $# -lt 1 ]]; then
+      usage
+      exit 2
+    fi
+    cp "$MEMORY_CLI" "$TMP_DIR/memory.py"
+    exec env NIMLOTH_ROOT="$ROOT" python -B "$TMP_DIR/memory.py" "$@"
+    ;;
+  human)
+    if [[ $# -lt 1 ]]; then
+      usage
+      exit 2
+    fi
+    human_cmd="$1"
+    shift
+    case "$human_cmd" in
+      memory-approve)
+        cp "$MEMORY_CLI" "$TMP_DIR/memory.py"
+        exec env NIMLOTH_ROOT="$ROOT" python -B "$TMP_DIR/memory.py" verify-ai-memory "$@"
+        ;;
+      *)
+        echo "Unknown human command: $human_cmd" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    echo "Unknown skill namespace: $namespace" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
