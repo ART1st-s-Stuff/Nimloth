@@ -1,0 +1,3 @@
+[submodule "external/VAGEN"]
+	path = external/VAGEN
+	url = https://github.com/mll-lab-nu/VAGEN.git
