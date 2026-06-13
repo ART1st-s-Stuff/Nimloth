@@ -10,6 +10,7 @@
    - `03_experiments_and_data.md`
    - `04_code_and_repo.md`
    - `05_flower_reference.md`
+3. 当任务触发特定事件时，还必须阅读并执行 `events/` 下对应事件规则。
 
 ## 规则优先级
 
@@ -18,7 +19,7 @@
 1. 人类当前直接 prompt；
 2. `AGENTS.md`；
 3. `ai_rules/`；
-4. `AI_branch_progress.md`、`ai_notes/`、任务文件；
+4. `AI_branch_progress.md`、memory skill、任务文件；
 5. 代码和历史上下文；
 6. AI 工具私有记忆。
 

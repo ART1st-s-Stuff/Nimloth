@@ -55,3 +55,6 @@ experiments/**/runs/
 experiments/navigation_baseline/*_host.txt
 experiments/navigation_baseline/*_jobs.txt
 *.pid
+
+# Server usage
+SERVER.md
