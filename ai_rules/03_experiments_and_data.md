@@ -27,7 +27,9 @@
 
 ## 输出与恢复
 
-- 实验输出应写入 `outputs/experiments/<name>/` 或人类指定路径。
+- 每一个实验必须有一个实验说明文件，保存为何开始本次实验，本次实验是否依赖其他实验等必要信息；实验结束后，把初步分析结果也写在这里。
+- 开始实验前，确保工作区的修改都已经提交，并在实验说明文件里保存当前git commit hash。
+- 实验输出应写入 `outputs/experiments/<name>/<date>` 或人类指定路径，每一次实验都必须独占一个目录。
 - 输出目录应包含 README 或 metadata，说明命令、配置、数据、checkpoint 和结果。
 - 训练类实验应提供 step 级日志，如 `train_step_log.csv`。
 - 长时间或可抢占任务必须 checkpoint/resume。

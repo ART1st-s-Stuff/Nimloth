@@ -42,4 +42,16 @@ data/
 
 # Misc
 *.log
+*.out
+*.err
 .env
+
+# Local runtime / workspace state
+.ai2thor-home/
+.cache/
+.home/
+.local/
+experiments/**/runs/
+experiments/navigation_baseline/*_host.txt
+experiments/navigation_baseline/*_jobs.txt
+*.pid
