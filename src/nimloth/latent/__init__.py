@@ -9,6 +9,8 @@ from nimloth.latent.extraction import (
     extract_action_prior,
     extract_latent_state,
     find_extraction_positions,
+    find_last_latent_state_index,
+    last_hidden_state,
     special_token_ids,
 )
 
@@ -21,5 +23,7 @@ __all__ = [
     "extract_action_prior",
     "extract_latent_state",
     "find_extraction_positions",
+    "find_last_latent_state_index",
+    "last_hidden_state",
     "special_token_ids",
 ]
