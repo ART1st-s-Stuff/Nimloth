@@ -180,7 +180,7 @@ def evaluate(
     for i, batch_samples in enumerate(loader):
         if max_batches > 0 and i >= max_batches:
             break
-        items = collate_transition_batch(batch_samples)
+        items = batch_samples
         enc = build_qwen_batch(items, processor, max_length=max_length)
         latent_hidden = extract_batch_latent_hidden(model, enc, token_id_map, device)
         action_indices = torch.tensor([it["action_index"] for it in items], device=device)
@@ -339,7 +339,7 @@ def main() -> int:
         micro = 0
 
         for batch_samples in train_loader:
-            items = collate_transition_batch(batch_samples)
+            items = batch_samples
             enc = build_qwen_batch(items, processor, args.max_length)
             latent_hidden = extract_batch_latent_hidden(model, enc, token_id_map, device)
             action_indices = torch.tensor([it["action_index"] for it in items], device=device)
