@@ -83,11 +83,28 @@ def collate_transition_batch(batch: list[TransitionSample]) -> list[dict[str, An
     return transition_collate_for_qwen(batch)
 
 
+def assistant_char_spans(messages: list[dict[str, Any]], processor: AutoProcessor) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for i, msg in enumerate(messages):
+        if msg["role"] != "assistant":
+            continue
+        prev_gen = processor.apply_chat_template(messages[:i], tokenize=False, add_generation_prompt=True)
+        cur = processor.apply_chat_template(messages[: i + 1], tokenize=False, add_generation_prompt=False)
+        start = len(prev_gen)
+        end = len(cur)
+        if start < end:
+            spans.append((start, end))
+    return spans
+
+
 def build_qwen_batch(items: list[dict[str, Any]], processor: AutoProcessor, max_length: int) -> dict[str, torch.Tensor]:
     texts: list[str] = []
+    spans_per_item: list[list[tuple[int, int]]] = []
     all_images: list[list[Image.Image]] = []
     for item in items:
-        texts.append(processor.apply_chat_template(item["messages"], tokenize=False, add_generation_prompt=False))
+        text = processor.apply_chat_template(item["messages"], tokenize=False, add_generation_prompt=False)
+        texts.append(text)
+        spans_per_item.append(assistant_char_spans(item["messages"], processor))
         imgs: list[Image.Image] = []
         for msg in item["messages"]:
             content = msg.get("content")
@@ -97,7 +114,7 @@ def build_qwen_batch(items: list[dict[str, Any]], processor: AutoProcessor, max_
                         imgs.append(Image.open(part["image"]).convert("RGB"))
         all_images.append(imgs)
 
-    return processor(
+    enc = processor(
         text=texts,
         images=all_images,
         padding=True,
@@ -105,6 +122,50 @@ def build_qwen_batch(items: list[dict[str, Any]], processor: AutoProcessor, max_
         max_length=max_length,
         return_tensors="pt",
     )
+    offset_batch = processor.tokenizer(
+        texts,
+        padding=True,
+        truncation=True,
+        max_length=max_length,
+        return_offsets_mapping=True,
+        add_special_tokens=False,
+        return_tensors="pt",
+    )["offset_mapping"]
+    labels = enc["input_ids"].clone()
+    labels[:] = -100
+    usable = min(labels.shape[1], offset_batch.shape[1])
+    for row, spans in enumerate(spans_per_item):
+        for tok_idx in range(usable):
+            start = int(offset_batch[row, tok_idx, 0])
+            end = int(offset_batch[row, tok_idx, 1])
+            if end <= start:
+                continue
+            if any(start < span_end and end > span_start for span_start, span_end in spans):
+                labels[row, tok_idx] = enc["input_ids"][row, tok_idx]
+    enc["labels"] = labels
+    return enc
+
+
+def forward_qwen_step(
+    model,
+    enc: dict[str, torch.Tensor],
+    token_id_map: dict[str, int],
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Single Qwen forward returning latent hidden states and LM loss."""
+
+    model_inputs = {k: v.to(device) for k, v in enc.items()}
+    output = model(**model_inputs, output_hidden_states=True, return_dict=True)
+    hidden = last_hidden_state(output)
+    tokens = LatentActionTokens()
+    rows: list[torch.Tensor] = []
+    for row in range(hidden.shape[0]):
+        latent_index = find_last_latent_state_index(enc["input_ids"][row], token_id_map, tokens)
+        rows.append(extract_latent_state(hidden[row : row + 1], latent_index))
+    lm_loss = output.loss
+    if lm_loss is None:
+        raise ValueError("model did not return loss; labels may be empty for this batch")
+    return torch.stack(rows, dim=0), lm_loss
 
 
 def extract_batch_latent_hidden(
@@ -182,7 +243,7 @@ def evaluate(
             break
         items = batch_samples
         enc = build_qwen_batch(items, processor, max_length=max_length)
-        latent_hidden = extract_batch_latent_hidden(model, enc, token_id_map, device)
+        latent_hidden, _ = forward_qwen_step(model, enc, token_id_map, device)
         action_indices = torch.tensor([it["action_index"] for it in items], device=device)
         next_pixels = load_pixel_batch(items, image_transform, device, current=False)
 
@@ -224,7 +285,8 @@ def main() -> int:
     ap.add_argument("--state-proj-lr", type=float, default=1e-4)
     ap.add_argument("--lewm-lr", type=float, default=3e-4, help="LeWM LR in --end-to-end mode")
     ap.add_argument("--weight-decay", type=float, default=0.01)
-    ap.add_argument("--max-length", type=int, default=20000)
+    ap.add_argument("--max-length", type=int, default=12000)
+    ap.add_argument("--max-pixels", type=int, default=602112)
     ap.add_argument("--img-size", type=int, default=96)
     ap.add_argument("--emb-dim", type=int, default=128)
     ap.add_argument("--max-train-records", type=int, default=-1)
@@ -249,6 +311,8 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
+    processor.image_processor.min_pixels = 3136
+    processor.image_processor.max_pixels = args.max_pixels
     add_special_tokens(processor.tokenizer)
     token_id_map = special_token_ids(processor.tokenizer)
 
@@ -342,21 +406,16 @@ def main() -> int:
         for batch_samples in train_loader:
             items = batch_samples
             enc = build_qwen_batch(items, processor, args.max_length)
-            latent_hidden = extract_batch_latent_hidden(model, enc, token_id_map, device)
+            latent_hidden, lm_loss = forward_qwen_step(model, enc, token_id_map, device)
             action_indices = torch.tensor([it["action_index"] for it in items], device=device)
             next_pixels = load_pixel_batch(items, image_transform, device, current=False)
             current_pixels = load_pixel_batch(items, image_transform, device, current=True)
-
             lambda_wm = wm_loss_weight_schedule(
                 global_step,
                 total_steps,
                 start=args.lambda_wm_start,
                 end=args.lambda_wm_end,
             )
-
-            model_inputs = {k: v.to(device) for k, v in enc.items()}
-            lm_out = model(**model_inputs)
-            lm_loss = lm_out.loss
 
             if args.end_to_end:
                 loss, metrics = compute_end_to_end_step_loss(

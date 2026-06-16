@@ -67,7 +67,8 @@ PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NGPUS} \
   --lambda-lewm 1.0 \
   --lambda-wm-start 0.1 \
   --lambda-wm-end 1.0 \
-  --max-length 20000 \
+  --max-length 12000 \
+  --max-pixels 602112 \
   --img-size 96 \
   --emb-dim 128 \
   --gradient-checkpointing \
