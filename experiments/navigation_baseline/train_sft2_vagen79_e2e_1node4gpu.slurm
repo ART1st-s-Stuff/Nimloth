@@ -19,7 +19,7 @@ SCRIPTDIR=${ROOT}/experiments/navigation_baseline
 RECORDS_ROOT=${SCRIPTDIR}/runs/sft1_sft_records_vagen79_nimloth_format
 SFT1_BEST=${SCRIPTDIR}/runs/sft1_train_vagen79_qwen25vl/best
 TRAIN_OUT=${SCRIPTDIR}/runs/sft2_e2e_vagen79_qwen25vl
-LOG=${TRAIN_OUT}/sft2_e2e_vagen79.log
+LOG=${TRAIN_OUT}/sft2_e2e_vagen79_${SLURM_JOB_ID:-local}.log
 NGPUS=4
 
 mkdir -p "${TRAIN_OUT}" "${ROOT}/outputs/experiments/navigation_baseline/slurm"

@@ -295,7 +295,8 @@ def main() -> int:
         lewm.freeze()
 
     hidden_size = model.config.hidden_size
-    state_proj = StateProjector(hidden_size, lewm.emb_dim).to(device)
+    model_dtype = next(model.parameters()).dtype
+    state_proj = StateProjector(hidden_size, lewm.emb_dim).to(device=device, dtype=model_dtype)
 
     if world > 1:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)

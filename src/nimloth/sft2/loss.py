@@ -26,7 +26,8 @@ class StateProjector(nn.Module):
             )
 
     def forward(self, hidden: torch.Tensor) -> torch.Tensor:
-        return self.net(hidden)
+        weight = self.net.weight if hasattr(self.net, "weight") else self.net[0].weight
+        return self.net(hidden.to(dtype=weight.dtype))
 
 
 def compute_wm_alignment_loss(
@@ -39,7 +40,7 @@ def compute_wm_alignment_loss(
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """WM predictor MSE with gradients through state_proj and qwen_hidden."""
 
-    state_emb = state_proj(qwen_hidden_at_latent)
+    state_emb = state_proj(qwen_hidden_at_latent).float()
     loss, metrics = lewm.alignment_loss(state_emb, action_indices, next_pixels)
     return loss, metrics
 
