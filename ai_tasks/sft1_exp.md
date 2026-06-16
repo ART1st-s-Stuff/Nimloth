@@ -3,7 +3,7 @@
 --------
 
 # 第一阶段SFT实验
-目前我们已经具有了50 global step的VAGEN baseline。
+目前我们已经具有了训练过的VAGEN baseline。
 
 第一阶段SFT在VAGEN baseline的基础上对格式进行SFT，使用 ../DESIGN_DOCS.md 里描述的prompt方案。
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=vagen-hold-3nodes-envprobe
-#SBATCH --output=%x_%j.out
-#SBATCH --error=%x_%j.err
+#SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/navigation_baseline/slurm/%x_%j.out
+#SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/navigation_baseline/slurm/%x_%j.err
 #SBATCH --time=12:00:00
 #SBATCH --account=peilab
 #SBATCH --partition=preempt

@@ -8,6 +8,7 @@ build/
 
 # Virtual environments
 .venv/
+.venv_vllm/
 venv/
 env/
 
@@ -35,6 +36,7 @@ Thumbs.db
 *.pkl
 *.joblib
 wandb/
+# Runtime experiment outputs (keep out of git; reduce git/IDE scans over sshfs)
 outputs/
 logs/
 checkpoints/
@@ -58,3 +60,4 @@ experiments/navigation_baseline/*_jobs.txt
 
 # Server usage
 SERVER.md
+check_node_resources.sh

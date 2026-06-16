@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=vagen-probe-mixed-env2
-#SBATCH --output=%x_%j_%N.out
-#SBATCH --error=%x_%j_%N.err
+#SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/navigation_baseline/slurm/%x_%j_%N.out
+#SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/navigation_baseline/slurm/%x_%j_%N.err
 #SBATCH --time=00:30:00
 #SBATCH --account=peilab
 #SBATCH --partition=preempt
