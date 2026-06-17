@@ -1,0 +1,14 @@
+outputs/
+.cache/
+.ai2thor-home/
+.home/
+.local/
+wandb/
+external/
+experiments/**/runs/
+**/step_screenshots/
+**/screenshots/
+**/slurm_logs/
+**/__pycache__/
+.venv/
+node_modules/

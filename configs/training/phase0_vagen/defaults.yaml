@@ -1,0 +1,16 @@
+# Phase 0 — VAGEN navigation defaults (Nimloth-side mirrors).
+# Full VAGEN configs remain under external/VAGEN; this file documents Nimloth slurm defaults.
+
+task: navigation
+prompt_format: nimloth
+
+rollout:
+  # Reference: experiments/navigation_baseline/sft1_rollouts_*.slurm
+  world_size_hint: 8
+  split_policy: train_for_collection  # verify split before any collection job
+
+paths:
+  records_root: experiments/navigation_baseline/runs/sft1_sft_records_vagen79_nimloth_format
+  vagen_root: external/VAGEN
+
+# TODO: extract per-cluster node/gpu templates from active slurm scripts.

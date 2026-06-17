@@ -2,26 +2,26 @@ from __future__ import annotations
 
 import torch
 
-from nimloth.sft2.loss import StateProjector, compute_combined_loss, compute_wm_alignment_loss, wm_loss_weight_schedule
-from nimloth.wm.lewm import LeWMConfig, LeWMWrapper
+from nimloth.training.sft2.loss import StateProjector, compute_combined_loss, compute_wm_latent_loss, wm_loss_weight_schedule
+from nimloth.training.sft2.predictor import LatentWMPredictor
+from nimloth.wm.lewm import LeWMConfig
 
 
-def test_wm_alignment_loss_backprops_to_state_proj() -> None:
+def test_wm_latent_loss_backprops_to_state_proj() -> None:
     cfg = LeWMConfig(emb_dim=16, action_emb_dim=8, predictor_hidden_dim=16, predictor_mlp_dim=32)
-    lewm = LeWMWrapper.create(cfg)
-    lewm.freeze()
+    wm_predictor = LatentWMPredictor.create(cfg)
 
     state_proj = StateProjector(qwen_hidden_dim=32, lewm_emb_dim=cfg.emb_dim)
     qwen_hidden = torch.randn(2, 32, requires_grad=True)
+    qwen_next_hidden = torch.randn(2, 32)
     actions = torch.tensor([0, 3])
-    next_pixels = torch.randn(2, 3, cfg.img_size, cfg.img_size)
 
-    loss, metrics = compute_wm_alignment_loss(
+    loss, metrics = compute_wm_latent_loss(
         qwen_hidden_at_latent=qwen_hidden,
+        qwen_hidden_at_next_latent=qwen_next_hidden,
         action_indices=actions,
-        next_pixels=next_pixels,
         state_proj=state_proj,
-        lewm=lewm,
+        wm_predictor=wm_predictor,
     )
     loss.backward()
 
@@ -41,7 +41,7 @@ def test_wm_loss_weight_schedule_warms_up() -> None:
 def test_compute_combined_loss() -> None:
     wm = torch.tensor(2.0)
     lm = torch.tensor(3.0)
-    total, metrics = compute_combined_loss(wm_loss=wm, lm_loss=lm, lambda_wm=0.5, lambda_ce=1.0)
+    total, metrics = compute_combined_loss(wm_loss=wm, value_loss=None, lm_loss=lm, lambda_wm=0.5, lambda_ce=1.0)
     assert total.item() == 4.0
     assert metrics["total_loss"] == 4.0
     assert metrics["lm_ce"] == 3.0

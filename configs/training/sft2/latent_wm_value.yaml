@@ -1,0 +1,44 @@
+# SFT2 — latent WM + Value head (defaults per sft2_exp.md)
+
+init:
+  sft1_checkpoint: null
+  wm_predictor_checkpoint: null
+
+data:
+  train_jsonl: train_all.jsonl
+  val_jsonl: val_all.jsonl
+  include_failed_rollouts: true
+
+tuning:
+  llm_tune: freeze
+  vision_tune: full
+  vision_ema: true
+  vision_ema_decay: 0.999
+  lora_r: 64
+  lora_alpha: 128
+
+train:
+  epochs: 10
+  batch_size: 1
+  grad_accum: 8
+  lr_qwen_start: 1.0e-8
+  lr_qwen_peak: 5.0e-7
+  state_proj_lr: 1.0e-4
+  wm_predictor_lr: 3.0e-4
+  value_head_lr: 3.0e-4
+  train_wm_predictor: true
+  max_length: 12000
+  max_pixels: 602112
+  emb_dim: 128
+
+loss:
+  lambda_wm_start: 0.1
+  lambda_wm_end: 1.0
+  lambda_ce: 1.0
+  lambda_value: 1.0
+  value_rank_margin: 0.1
+  value_rank_lambda: 1.0
+
+monitor:
+  wandb: true
+  early_stop_metric: val_success_rate

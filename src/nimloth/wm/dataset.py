@@ -10,6 +10,23 @@ from typing import Any, Iterator
 # Matches vagen.envs.navigation.utils.nimloth_format.ACTION_NAMES length.
 NUM_NAVIGATION_ACTIONS = 8
 
+DEFAULT_VALUE_GAMMA = 0.99
+
+
+def discounted_action_value_targets(record: dict[str, Any], *, gamma: float = DEFAULT_VALUE_GAMMA) -> list[float]:
+    """Discounted Monte Carlo return for each taken action in a trajectory.
+
+    Uses trajectory-level ``reward`` as terminal return (sparse). Step ``t`` receives
+    ``reward * gamma ** (T - 1 - t)`` where ``T`` is the number of actions.
+    """
+
+    action_indices = list(record.get("action_indices", []))
+    n = len(action_indices)
+    if n == 0:
+        return []
+    terminal = float(record.get("reward", 0.0) or 0.0)
+    return [terminal * (gamma ** (n - 1 - t)) for t in range(n)]
+
 
 @dataclass(frozen=True)
 class TransitionSample:
@@ -22,6 +39,9 @@ class TransitionSample:
     action_index: int
     current_image_path: str
     next_image_path: str
+    next_prefix_messages: list[dict[str, Any]] | None = None
+    next_prefix_image_paths: list[str] | None = None
+    action_value_target: float = 0.0
     success: bool = True
     split: str = "train"
 
@@ -57,8 +77,12 @@ def expand_record_transitions(record: dict[str, Any]) -> list[TransitionSample]:
     if not messages or not image_paths or not action_indices:
         return []
 
+    value_targets = discounted_action_value_targets(record)
     transitions: list[TransitionSample] = []
     assistant_turn = 0
+    assistant_msg_indices: list[int] = [
+        i for i, msg in enumerate(messages) if msg.get("role") == "assistant"
+    ]
     for msg_index, msg in enumerate(messages):
         if msg.get("role") != "assistant":
             continue
@@ -74,6 +98,14 @@ def expand_record_transitions(record: dict[str, Any]) -> list[TransitionSample]:
                 f"out of range [0, {NUM_NAVIGATION_ACTIONS})"
             )
 
+        next_prefix_messages: list[dict[str, Any]] | None = None
+        next_prefix_image_paths: list[str] | None = None
+        if assistant_turn + 1 < len(assistant_msg_indices):
+            next_msg_index = assistant_msg_indices[assistant_turn + 1]
+            if assistant_turn + 2 < len(image_paths):
+                next_prefix_messages = [dict(m) for m in messages[: next_msg_index + 1]]
+                next_prefix_image_paths = [str(p) for p in image_paths[: assistant_turn + 2]]
+
         transitions.append(
             TransitionSample(
                 record_id=record_id,
@@ -83,6 +115,9 @@ def expand_record_transitions(record: dict[str, Any]) -> list[TransitionSample]:
                 action_index=action_index,
                 current_image_path=str(image_paths[assistant_turn]),
                 next_image_path=str(image_paths[assistant_turn + 1]),
+                next_prefix_messages=next_prefix_messages,
+                next_prefix_image_paths=next_prefix_image_paths,
+                action_value_target=float(value_targets[assistant_turn]),
                 success=success,
                 split=split,
             )

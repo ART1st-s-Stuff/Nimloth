@@ -28,7 +28,7 @@ RUN_DIR=${SCRIPTDIR}/runs/${EXPERIMENT_NAME}
 CONTROL_DIR=${RUN_DIR}/slurm_${SLURM_JOB_ID}_control
 RAY_CMD=${ROOT}/.venv/bin/ray
 TRAIN_GPUS_PER_NODE=2
-RAY_PORT=6379
+RAY_PORT=$((6380 + SLURM_JOB_ID % 200))
 VAL_BATCH_SIZE=24
 AGENT_NUM_WORKERS=8
 AGENT_MAX_CONCURRENT_TRAJECTORIES=8
@@ -51,6 +51,20 @@ wait_for_env() {
     if [ -f "${ENV_CONTROL_DIR}/failed" ]; then
       echo "ERROR external env failed" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
       exit 4
+    fi
+    if [ -s "${ENV_URL_FILE}" ]; then
+      local ok=1 url
+      while read -r url; do
+        [ -z "$url" ] && continue
+        if ! curl -fsS --max-time 10 "${url}/health" >/dev/null 2>&1; then
+          ok=0
+          break
+        fi
+      done < "${ENV_URL_FILE}"
+      if [ "$ok" -eq 1 ]; then
+        touch "${ENV_CONTROL_DIR}/ready"
+        return 0
+      fi
     fi
     if [ -f "${ENV_CONTROL_DIR}/ready" ] && [ -s "${ENV_URL_FILE}" ]; then
       return 0
@@ -313,7 +327,7 @@ done < "${ENV_URL_FILE}"
 
 local_ip=$(hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
 if [ -z "${local_ip}" ]; then local_ip=$(hostname -I | awk '{print $1}'); fi
-bash -lc "${COMMON_ENV}; ${RAY_CMD} stop --force >/dev/null 2>&1 || true; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK:-56}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+bash -lc "${COMMON_ENV}; ${RAY_CMD} stop --force >/dev/null 2>&1 || true; rm -rf \"\${RAY_TMPDIR}\"; mkdir -p \"\${RAY_TMPDIR}\"; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK:-56}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 sleep 15
 bash -lc "${COMMON_ENV}; export RAY_ADDRESS=${local_ip}:${RAY_PORT}; python -c \"import ray; ray.init(); print(ray.available_resources())\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 

@@ -93,8 +93,10 @@ fi
 : > "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids"
 cleanup() {
   set +e
-  xargs -r kill < "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids" 2>/dev/null || true
-  rm -f "${CONTROL_DIR}/ready"
+  if [ -f "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids" ]; then
+    xargs -r kill < "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids" 2>/dev/null || true
+  fi
+  # Do not remove shared ready/urls: other eval jobs may still depend on them.
 }
 trap cleanup EXIT
 
@@ -123,6 +125,7 @@ for env_i in 0 1 2 3; do
 done
 
 touch "${CONTROL_DIR}/ready"
+echo "${SLURM_JOB_ID}" > "${CONTROL_DIR}/ready_job_id"
 echo "=== env ready ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 cat "${CONTROL_DIR}/env_urls.txt" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 wait $(cat "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids")

@@ -1,164 +1,263 @@
 --------
-本文为 AI 起草、供人类审阅。如需修改需要得到人类同意。
+本文为 AI 起草、供人类审阅。人类已要求按 `ai_tasks/sft2_exp.md` 更新本计划（2026-06-17）。
 --------
 
-# SFT2 阶段 2 实现计划（Qwen ↔ LeWM 对齐）
+# Training 模块与 Phase 2（SFT2）实现计划
 
-对应任务：`ai_tasks/sft2_exp.md`
+对应人类规格：`ai_tasks/sft2_exp.md`  
+关联规格：`ai_tasks/sft1_exp.md`（Phase 1）
 
-## 目标
+## 0. 架构原则（2026-06-17 修订）
 
-在 SFT1 checkpoint 基础上，让 Qwen 在 `<|latent_state|>` 位置的 hidden state 含有足够信息，使 **冻结的 LeWM predictor** 能预测下一步 state embedding。主 loss 为 predictor MSE；同时保留 Qwen 的格式与任务能力。
+**SFT2 不再作为独立顶层模块。** 所有阶段性训练逻辑归入统一 `training` 模块，按 **phase** 划分子包、配置与实验入口。
 
-## 总体阶段
-
-| 阶段 | 内容 | 代码位置（计划） |
-|------|------|------------------|
-| 1 | 在 navigation rollout 像素数据上预训练 LeWM | `src/nimloth/wm/` + `experiments/navigation_baseline/pretrain_lewm_navigation.py` |
-| 2 | 冻结 LeWM，用 WM MSE + 辅助 CE 训练 Qwen + `state_proj` | `src/nimloth/sft2/` + `experiments/navigation_baseline/train_sft2_qwen25vl.py` |
-| 3（可选，暂缓） | 极小 LR 联合微调 LeWM 子模块 | 待阶段 2 指标稳定后再定 |
-
-**原则：新逻辑尽量放在 `src/nimloth/`，`external/VAGEN` 仅保留 eval/rollout 必需的最小改动。**
-
-## 阶段 1：LeWM 预训练（navigation）
-
-### 数据
-
-- 来源：SFT1 rollout 转换后的 train split（`convert_sft1_rollouts_to_nimloth.py` 产物）。
-- 样本单位：transition `(o_t, a_t, o_{t+1})`。
-  - `o_t`, `o_{t+1}`：`image_paths` 中相邻观测帧（LeWM 专用 resize/normalize）。
-  - `a_t`：`action_indices[t]`，8 类离散动作 → 固定 one-hot `[8]`（与阶段 2 一致）。
-- Split：仅 train split；是否与 SFT1 一样只用 successful trajectory 待人类确认（默认可做 ablation）。
-
-### 模型与 loss
-
-- 架构：LeWM JEPA（`encoder` + `ARPredictor` + `action_encoder` + `projector`/`pred_proj`）。
-- Loss（标准 LeWM）：
-  - `pred_loss = MSE(predictor(z_t, φ(a_t)), z_{t+1})`
-  - `sigreg_loss = SIGReg(encoder outputs)`
-  - `loss = pred_loss + λ * sigreg_loss`
-- 产物：`checkpoints/lewm_navigation/` 下完整 JEPA object checkpoint + config。
-
-### 实现要点
-
-- LeWM 代码可作为 `external/le-wm` submodule 或 vendored 最小子集；封装入口在 `src/nimloth/wm/lewm.py`。
-- 图像预处理与 Qwen processor 分离，不共用 tensor pipeline。
-
-## 阶段 2：Qwen 对齐（本计划重点）
-
-### 初始化
-
-- Qwen：`SFT1 best` checkpoint（`experiments/navigation_baseline/runs/.../best`）。
-- LeWM：阶段 1 checkpoint，**全部 freeze**（`requires_grad=False`）。
-- 新增可训练模块：`state_proj: ℝ^{d_qwen} → ℝ^{d_lewm}`（Linear 或小型 MLP）。
-
-### 数据
-
-- 同样从 rollout jsonl 展开 transition 三元组：
-  - `prefix_messages`：到第 t 步 assistant 为止的多模态历史；
-  - `action_index`；
-  - `next_image_path`。
-- 可选 replay：同一 batch 混合完整 trajectory（算 CE）与 transition（算 WM MSE）。
-
-### 前向
-
-1. Qwen2.5-VL forward，`output_hidden_states=True`。
-2. 用 `nimloth.latent.extraction` 定位 `<|latent_state|>` index，取最后层 hidden `h_t`。
-3. `z_t = state_proj(h_t)`，shape 对齐 LeWM embedding dim。
-4. `act_emb = lewm.action_encoder(one_hot(a_t))`。
-5. `pred_emb = lewm.predict(ctx_emb=z_t, act_emb)`（首版 `history_size=1`）。
-6. `tgt_emb = stopgrad(lewm.encode(next_image))`。
-
-### Loss
-
-```text
-wm_mse  = MSE(pred_emb, tgt_emb)
-lm_ce   = assistant-span CE（与 SFT1 相同 mask 逻辑）
-total   = λ_wm * wm_mse + λ_ce * lm_ce + λ_kl * KL(π_θ || π_sft1)   # KL 可选
-```
-
-**权重策略（默认）：**
-
-- 起始：`λ_ce=1.0`, `λ_wm=0.1`
-- 前 30% steps 将 `λ_wm` cosine 提升到 `1.0`
-- 不对 Qwen latent 使用 LeWM 的 SIGReg
-
-### 保能力措施
-
-1. 必须从 SFT1 best 初始化。
-2. 默认 **LoRA**（LLM 部分，`r=8~16`）+ 全参 `state_proj`；vision tower 首轮冻结。
-3. 辅助 CE + 可选 trajectory replay。
-4. 可选 KL anchor 到 SFT1（action token 位置）。
-5. LR 不超过 SFT1；`state_proj` 可用略高 LR。
-
-### 监控与 checkpoint
-
-训练日志（CSV / wandb）至少包含：
-
-| 指标 | 含义 |
+| 原则 | 说明 |
 |------|------|
-| `train_wm_mse` / `val_wm_mse` | predictor 对齐 |
-| `train_lm_ce` / `val_lm_ce` | 格式/语言 |
-| `val_success_rate` | VAGEN `prompt_format=nimloth` eval（与 SFT1 同流程） |
+| 单一 `training` 模块 | `src/nimloth/training/` 承载 Phase 0/1/2 的训练逻辑；`sft2/` 等旧包迁移后删除 |
+| Phase 分目录 | `experiments/training/phase{0,1,2}_*/` 放各阶段 Slurm/提交脚本；`configs/training/phase{0,1,2}_*/` 放默认超参 |
+| 薄实验层 | 实验目录只保留 argparse、Slurm、submit；核心 loss/dataset/tuning 在 `src/` |
+| VAGEN 边界 | `external/VAGEN` 仍跑 rollout/RL；**默认参数与 Nimloth 封装** 可放在 `configs/training/phase0_vagen/` |
+| 渐进迁移 | `experiments/navigation_baseline/` 保留至各 phase 脚本迁完；旧路径用 README 指向新位置 |
 
-**早停规则：** `val_success_rate` 下降超过阈值或 `val_lm_ce` 持续恶化时，降低 `λ_wm` 或停止。
-
-Best checkpoint 按 `val_success_rate` 选取（MSE 仅作辅助）。
-
-## `src/nimloth/` 模块划分（计划）
+### 目标目录树（计划）
 
 ```text
-src/nimloth/
-  latent/          # 已有：latent state / action prior 提取
-  wm/
-    __init__.py
-    lewm.py        # LeWM 封装：load, encode, predict, freeze
-    dataset.py     # TransitionDataset from nimloth jsonl
-    preprocess.py  # LeWM 图像预处理
-  sft2/
-    __init__.py
-    loss.py        # compute_sft2_wm_loss, combined loss
-    collate.py     # Qwen VL batch + transition metadata
-    metrics.py     # MSE / CE logging helpers
+src/nimloth/training/
+  __init__.py
+  common/                 # 跨 phase：qwen_tuning, schedules, metrics, wandb helpers
+  phase0_vagen/           # VAGEN 相关 Nimloth 封装（默认配置加载、rollout 后处理钩子）
+  phase1_sft/             # SFT1：LM CE、assistant mask、LoRA 保存
+  phase2_align/           # SFT2：WM predictor、Value head、组合 loss、collate
+
+configs/training/
+  phase0_vagen/
+    defaults.yaml         # VAGEN navigation 默认 env/train 参数（从现有 slurm 提炼）
+  phase1_sft/
+    qwen25vl_lora.yaml
+    qwen25vl_full.yaml
+  phase2_align/
+    latent_wm_value.yaml  # 默认：LLM freeze + vision full + vision EMA
+
+experiments/training/
+  phase0_vagen/           # rollout / VAGEN train slurm（自 navigation_baseline 迁入）
+  phase1_sft/             # train_sft1_*, convert_rollouts, eval slurm
+  phase2_align/           # train phase2, pretrain predictor init, eval slurm
+
+tests/
+  training/
+    phase1_sft/
+    phase2_align/
 ```
 
-`experiments/navigation_baseline/` 仅保留薄封装脚本（argparse、DDP launch、Slurm 入口），调用 `src/nimloth`。
+### 自 `navigation_baseline` 迁移映射（计划，未一次性搬完）
 
-## 与 VAGEN 的边界
+| 现路径 | 目标 |
+|--------|------|
+| `train_sft1_qwen25vl.py` | `experiments/training/phase1_sft/train.py` |
+| `train_sft2_qwen25vl.py` | `experiments/training/phase2_align/train.py` |
+| `pretrain_lewm_navigation.py` | `experiments/training/phase2_align/pretrain_predictor.py`（可选 init） |
+| `convert_sft1_rollouts_to_nimloth.py` | `experiments/training/phase1_sft/convert_rollouts.py` |
+| `sft1_rollouts_*.slurm`, `train_sft1_*.slurm` | `experiments/training/phase1_sft/` |
+| `train_sft2_*.slurm`, `submit_sft2_*.sh` | `experiments/training/phase2_align/` |
+| `resume_retry2_*.slurm`, `dgx*_train_*.slurm` | `experiments/training/phase0_vagen/` |
+| `src/nimloth/sft2/*` | `src/nimloth/training/phase2_align/*` + `common/qwen_tuning.py` |
 
-| 放在 Nimloth `src/` | 留在 VAGEN（已有/最小改动） |
-|----------------------|------------------------------|
-| LeWM 封装、transition dataset、SFT2 loss | `nimloth_format.py` prompt 格式 |
-| `state_proj`、LoRA 训练逻辑 | eval/rollout `prompt_format=nimloth` |
-| latent extraction（已有） | success rate eval slurm 脚本 |
+---
 
-阶段 2 **不**在 VAGEN 训练 loop 内嵌 WM loss；独立 `train_sft2_qwen25vl.py` 调用 `src/nimloth`。
+## 1. Phase 2 目标（对齐 `sft2_exp.md`）
 
-## 实验脚本（计划新增）
+在 **Phase 1 SFT1 checkpoint** 上继续训练，使：
 
-- `experiments/navigation_baseline/pretrain_lewm_navigation.py`
-- `experiments/navigation_baseline/pretrain_lewm_navigation.slurm`
-- `experiments/navigation_baseline/train_sft2_qwen25vl.py`
-- `experiments/navigation_baseline/train_sft2_vagen79.slurm`（或复用 SFT1 资源模板）
-- `experiments/navigation_baseline/eval_sft2_valtest.slurm`（复用 SFT1 eval，换 checkpoint 路径）
+1. **`<|latent_state|>` hidden** 含有足够信息，供 **LeWM ARPredictor**（仅用 predictor，不用 pixel encoder）预测 **下一步 Qwen latent**。
+2. **Value head**：输入当前 state embedding，输出 **所有 action 的 value**。
+3. **数据**：train split rollout，**包含失败 trajectory**（先对齐 Qwen 偏好；性能优化留给后续 RL）。
+4. **监控**：WM predictor 曲线 + val success rate 曲线（CSV / wandb）。
 
-## 测试（计划）
+### 与旧计划差异（必须遵守人类规格）
 
-- `tests/test_wm_transition_dataset.py`：jsonl → transition 展开、action/image 对齐。
-- `tests/test_sft2_loss.py`：fake Qwen hidden + fake LeWM，验证 MSE 梯度回传到 `state_proj`。
-- 复用 `tests/test_latent_extraction.py`。
+| 旧实现/计划 | 现行规格 |
+|-------------|----------|
+| `src/nimloth/sft2/` 独立包 | 迁入 `training/phase2_align/` |
+| LeWM encoder 作 WM target | **禁止**；target = 下一步 **Qwen latent**（`state_proj` 后 stop-grad） |
+| `pretrain_step` / pixel JEPA loss | **移除**；仅 predictor + value losses |
+| 仅 success rollout | **train 含失败 run** |
+| 无 Value head | **新增** Value head + 排序损失 |
+| LLM LoRA + vision 冻结 | **3×3**：LLM / vision 各 `freeze \| lora \| full`；vision 可选 **EMA** |
+| 默认 LoRA LLM | **默认：LLM 冻结；vision 全量微调 + EMA** |
 
-## 风险与待确认
+---
 
-1. **LeWM 预训练数据量**：6060 条 rollout 展开 transitions 是否足够；可能需要数据增强或更长训练。
-2. **Successful-only vs all train**：SFT1 训练用 success-only；SFT2 文档仅写 train set。
-3. **显存**：每 transition 一次 Qwen forward；需 `grad_accum` 或 trajectory 级 batch 优化。
-4. **阶段 3 联合微调**：默认不做，避免 LeWM 目标漂移。
+## 2. Phase 2 模型与前向
 
-## 实现顺序
+### 2.1 模块
 
-1. `src/nimloth/wm/dataset.py` + tests
-2. `src/nimloth/wm/lewm.py` + `pretrain_lewm_navigation.py`
-3. `src/nimloth/sft2/loss.py` + `collate.py`
-4. `train_sft2_qwen25vl.py` + Slurm
-5. 接入现有 val success eval
+| 模块 | 来源 | 训练默认 |
+|------|------|----------|
+| Qwen2.5-VL | Phase 1 init | 见 §3 参数矩阵 |
+| `state_proj` | `ℝ^{d_qwen} → ℝ^{d_wm}` | 全参 |
+| `LatentWMPredictor` | LeWM **ARPredictor** 子集 | 可训（可从 phase2 pretrain init） |
+| `ValueHead` | 新建 `ℝ^{d_wm} → ℝ^{|A|}` | 全参 |
+
+### 2.2 WM 前向（latent 空间）
+
+1. Qwen forward（current prefix）→ `h_t` @ `<|latent_state|>`。
+2. `s_t = state_proj(h_t)`。
+3. `pred_{t+1} = WM_predictor(s_t, a_t)`。
+4. Qwen forward（next prefix，`no_grad`）→ `h_{t+1}` → `target = stopgrad(state_proj(h_{t+1}))`。
+5. `L_wm = MSE(pred_{t+1}, target)`。
+
+仅当 transition 存在 **下一 assistant turn**（`next_prefix_messages`）时计算 `L_wm`。
+
+### 2.3 Value head 前向与监督（待实现）
+
+1. `v = ValueHead(s_t)`，shape `(B, |A|)`。
+2. **监督 (1)**：真值 action value（来自 rollout reward / MC return；字段与归一化待人类确认）。
+3. **监督 (2)**：排序损失 — Qwen 在 step `t` 选择的 `a_t` 的 value 应高于同 step 未选 action：
+   - `L_rank = Σ_{a' ≠ a_t} max(0, margin + v[a'] - v[a_t])`（或 pairwise CE）。
+4. `L_value = L_reg + λ_rank * L_rank`（`L_reg` 形式待确认：MSE to target value 或 Huber）。
+
+### 2.4 辅助 CE
+
+- Assistant-span LM CE（与 Phase 1 相同 mask），权重 `λ_ce`，防止格式遗忘。
+
+### 2.5 总 loss
+
+```text
+L = λ_wm * L_wm + λ_value * L_value + λ_ce * L_lm_ce
+```
+
+`λ_wm`：cosine ramp（0.1 → 1.0，前 30% steps），与现实现一致。
+
+---
+
+## 3. Phase 2 参数矩阵（`sft2_exp.md`）
+
+### 3.1 Qwen 子模块
+
+| | freeze | lora | full |
+|---|--------|------|------|
+| **LLM backbone** | ✓ 默认 | 可选 | 可选 |
+| **Vision encoder** | 可选 | 可选 | ✓ 默认 |
+
+- 实现：`training/common/qwen_tuning.py`（自 `sft2/qwen_tuning.py` 迁入）。
+- **Vision EMA**（仅当 vision 可训时）：shadow weights `θ_ema ← τ θ_ema + (1-τ) θ`；推理 / target 可选走 EMA（细节待实现时定）。
+
+### 3.2 默认配置（`configs/training/phase2_align/latent_wm_value.yaml`）
+
+```yaml
+llm_tune: freeze
+vision_tune: full
+vision_ema: true
+vision_ema_decay: 0.999
+train_wm_predictor: true
+include_failed_rollouts: true
+lambda_wm_start: 0.1
+lambda_wm_end: 1.0
+lambda_ce: 1.0
+lambda_value: 1.0
+```
+
+---
+
+## 4. Phase 2 数据
+
+- 来源：Phase 1 收集并转换的 Nimloth jsonl（`convert_rollouts` 产物）。
+- Split：**train** 用于训练（**含失败**）；**val** 用于 success rate / WM / value 监控。
+- Transition 展开：`wm/dataset.py`（共用）；`next_prefix_*` 供 next latent。
+- Collate：`training/phase2_align/collate.py`。
+
+---
+
+## 5. 各 Phase 摘要
+
+### Phase 0 — VAGEN baseline & rollout
+
+- 人类流程见 `sft1_exp.md` 步骤 1。
+- Nimloth 侧：`configs/training/phase0_vagen/defaults.yaml` 收录 navigation 默认 env、并行度、checkpoint 路径模板。
+- 脚本：`experiments/training/phase0_vagen/`（从 `resume_retry2_*`, rollout slurm 迁入）。
+
+### Phase 1 — 格式 SFT（SFT1）
+
+- 人类流程见 `sft1_exp.md`。
+- 逻辑：`training/phase1_sft/`（LM CE、checkpoint、LoRA merge 钩子）。
+- 脚本：`experiments/training/phase1_sft/`。
+- 配置：`configs/training/phase1_sft/*.yaml`。
+
+### Phase 2 — WM + Value 对齐（SFT2）
+
+- 人类流程见 `sft2_exp.md`。
+- 逻辑：`training/phase2_align/`（predictor、value head、loss、collate）。
+- 脚本：`experiments/training/phase2_align/`。
+- 配置：`configs/training/phase2_align/*.yaml`。
+
+### Phase 2 前置：Predictor 初始化（可选）
+
+- 历史 `pretrain_lewm_navigation.py`（pixel JEPA）**不再作为 SFT2 主路径**。
+- 仅可作为 `LatentWMPredictor` 权重 warm-start；SFT2 监督均在 Qwen latent 空间。
+
+---
+
+## 6. 监控、checkpoint、早停
+
+| 指标 | 用途 |
+|------|------|
+| `train/val wm_mse` | WM predictor 对齐 |
+| `train/val lm_ce` | 格式保持 |
+| `train/val value_*` | Value regression / ranking |
+| `val_success_rate` | VAGEN `prompt_format=nimloth` eval |
+
+- Best checkpoint：**优先 `val_success_rate`**（MSE 为辅）。
+- 日志：CSV + wandb；Phase 2 上传脚本归 `experiments/training/phase2_align/`。
+- Checkpoint 内容：`adapter/full HF`、`state_proj.pt`、`wm_predictor/`、`value_head.pt`、`training_state.pt`。
+
+---
+
+## 7. 实现状态（2026-06-17，收尾更新）
+
+| 项 | 状态 |
+|----|------|
+| Qwen latent WM loss（无 encoder） | ✅ `training/sft2/loss.py` + `predictor.py` |
+| LLM / vision 分调 `freeze\|lora\|full` | ✅ `training/common/qwen_tuning.py` |
+| `next_prefix` transition | ✅ `wm/dataset.py` |
+| Value head + ranking loss | ✅ `training/sft2/value_head.py` + `loss.py` |
+| Vision EMA | ✅ `training/common/vision_ema.py` |
+| 含失败 rollout 训练 | ✅ 默认 `train_all.jsonl`，`--success-only` 可选 |
+| YAML 配置加载 | ✅ `configs/training/sft2/latent_wm_value.yaml` + `cli.py` |
+| wandb 训练内日志 | ✅ `training/common/wandb_logging.py` |
+| best checkpoint 按 val_success_rate | ✅ `val_rollout_success_rate` + `early_stop_metric` |
+| 脚本迁出 `navigation_baseline` | ✅ `experiments/training/sft2/`（旧路径 wrapper） |
+| VAGEN 在线 val eval | ⏸ 离线 jsonl 成功率已接入；在线 VAGEN greedy eval 沿用 SFT1 slurm，可按需 wrapper |
+| `training/phase2_align` 命名 | ✅ 统一为 `training/sft2` |
+
+---
+
+## 8. 实现顺序（修订）
+
+1. **目录与配置骨架**：`src/nimloth/training/`、`configs/training/`、`experiments/training/`（本计划步骤）。
+2. **代码迁移**：`sft2/*` → `training/phase2_align/` + `common/qwen_tuning.py`；更新 import 与测试。
+3. **Value head**：`phase2_align/value_head.py` + loss + tests。
+4. **Vision EMA**：`common/vision_ema.py` + config 开关。
+5. **数据**：`include_failed_rollouts`；确认 value 标签字段。
+6. **实验脚本迁移**：`train_sft2` → `experiments/training/phase2_align/train.py`；Slurm/submit 同步迁。
+7. **Phase 1 脚本迁移**（可并行）：`train_sft1` → `phase1_sft/`。
+8. **Phase 0 默认配置**：从现有 VAGEN slurm 提炼 `phase0_vagen/defaults.yaml`。
+9. Val success eval 接入 Phase 2 训练循环 / watcher。
+
+---
+
+## 9. 风险与待人类确认
+
+1. **真值 action value** 定义：step reward、折扣回报、还是 VAGEN 内部 value？字段名？
+2. **失败 rollout** 是否与 success 混采比例需要上限？
+3. **Vision EMA**：仅 encoder 还是含 merger？target 网络是否必须用 EMA？
+4. **Phase 0 配置**：`defaults.yaml` 是否覆盖现有全部 retry2 slurm 变体，还是只文档化核心子集？
+5. **迁移窗口**：`navigation_baseline` 旧路径保留多久、是否加 deprecation shim？
+
+---
+
+## 10. 测试（计划）
+
+- `tests/training/phase2_align/test_wm_latent_loss.py`（自 `test_sft2_loss.py` 迁）
+- `tests/training/phase2_align/test_value_ranking_loss.py`（新）
+- `tests/test_wm_transition_dataset.py`（保留，测 `next_prefix`）
+- `tests/training/common/test_qwen_tuning.py`

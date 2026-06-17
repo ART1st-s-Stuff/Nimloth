@@ -47,10 +47,11 @@ if [ ! -s "${RECORDS_ROOT}/train_success.jsonl" ]; then
   exit 1
 fi
 
-echo "=== torchrun ${NGPUS}-GPU DDP end-to-end SFT2 ===" | tee -a "${LOG}"
+echo "=== torchrun ${NGPUS}-GPU DDP SFT2 ===" | tee -a "${LOG}"
 PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NGPUS} \
   "${SCRIPTDIR}/train_sft2_qwen25vl.py" \
-  --end-to-end \
+  --llm-tune full \
+  --vision-tune freeze \
   --model "${SFT1_BEST}" \
   --train-jsonl "${RECORDS_ROOT}/train_success.jsonl" \
   --val-jsonl "${RECORDS_ROOT}/val_all.jsonl" \
@@ -62,14 +63,11 @@ PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NGPUS} \
   --lr-qwen-peak 5e-7 \
   --qwen-lr-warmup-ratio 0.15 \
   --state-proj-lr 1e-4 \
-  --lewm-lr 3e-4 \
   --lambda-ce 1.0 \
-  --lambda-lewm 1.0 \
   --lambda-wm-start 0.1 \
   --lambda-wm-end 1.0 \
   --max-length 12000 \
   --max-pixels 602112 \
-  --img-size 96 \
   --emb-dim 128 \
   --gradient-checkpointing \
   --seed 42 \

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from nimloth.wm.dataset import NUM_NAVIGATION_ACTIONS, TransitionSample, expand_record_transitions
+import pytest
+
+from nimloth.wm.dataset import NUM_NAVIGATION_ACTIONS, TransitionSample, discounted_action_value_targets, expand_record_transitions
 
 
 def _make_record(num_steps: int = 2) -> dict:
@@ -28,6 +30,7 @@ def _make_record(num_steps: int = 2) -> dict:
         "messages": messages,
         "image_paths": image_paths,
         "action_indices": action_indices,
+        "reward": 1.0,
     }
 
 
@@ -43,12 +46,16 @@ def test_expand_record_transitions_alignment() -> None:
     assert t0.action_index == 0
     assert len(t0.prefix_image_paths) == 1
     assert t0.prefix_messages[-1]["role"] == "assistant"
+    assert t0.next_prefix_messages is not None
+    assert len(t0.next_prefix_image_paths) == 2
+    assert t0.action_value_target == pytest.approx(0.99 ** 2)
 
     t2 = transitions[2]
     assert t2.current_image_path == "/tmp/img_2.png"
     assert t2.next_image_path == "/tmp/img_3.png"
     assert len(t2.prefix_image_paths) == 3
     assert len(t2.prefix_messages) == 7  # system + 3*(user+assistant)
+    assert t2.next_prefix_messages is None
 
 
 def test_expand_skips_when_no_next_image() -> None:
@@ -66,3 +73,11 @@ def test_expand_rejects_invalid_action_index() -> None:
     except ValueError:
         raised = True
     assert raised
+
+
+def test_discounted_action_value_targets() -> None:
+    record = {"action_indices": [0, 1, 2], "reward": 1.0}
+    values = discounted_action_value_targets(record, gamma=0.9)
+    assert len(values) == 3
+    assert values[0] == pytest.approx(0.9 ** 2)
+    assert values[2] == pytest.approx(1.0)
