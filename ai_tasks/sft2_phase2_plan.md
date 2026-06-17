@@ -27,7 +27,7 @@ src/nimloth/training/
   common/                 # 跨 phase：qwen_tuning, schedules, metrics, wandb helpers
   phase0_vagen/           # VAGEN 相关 Nimloth 封装（默认配置加载、rollout 后处理钩子）
   phase1_sft/             # SFT1：LM CE、assistant mask、LoRA 保存
-  phase2_align/           # SFT2：WM predictor、Value head、组合 loss、collate
+  sft2/                   # SFT2：WM predictor、Value head、组合 loss、collate
 
 configs/training/
   phase0_vagen/
@@ -35,18 +35,18 @@ configs/training/
   phase1_sft/
     qwen25vl_lora.yaml
     qwen25vl_full.yaml
-  phase2_align/
+  sft2/
     latent_wm_value.yaml  # 默认：LLM freeze + vision full + vision EMA
 
 experiments/training/
   phase0_vagen/           # rollout / VAGEN train slurm（自 navigation_baseline 迁入）
   phase1_sft/             # train_sft1_*, convert_rollouts, eval slurm
-  phase2_align/           # train phase2, pretrain predictor init, eval slurm
+  sft2/                   # train SFT2, pretrain predictor init, eval slurm
 
 tests/
   training/
     phase1_sft/
-    phase2_align/
+    sft2/
 ```
 
 ### 自 `navigation_baseline` 迁移映射（计划，未一次性搬完）
@@ -54,13 +54,13 @@ tests/
 | 现路径 | 目标 |
 |--------|------|
 | `train_sft1_qwen25vl.py` | `experiments/training/phase1_sft/train.py` |
-| `train_sft2_qwen25vl.py` | `experiments/training/phase2_align/train.py` |
-| `pretrain_lewm_navigation.py` | `experiments/training/phase2_align/pretrain_predictor.py`（可选 init） |
+| `train_sft2_qwen25vl.py` | `experiments/training/sft2/train.py` |
+| `pretrain_lewm_navigation.py` | `experiments/training/sft2/pretrain_predictor.py`（可选 init） |
 | `convert_sft1_rollouts_to_nimloth.py` | `experiments/training/phase1_sft/convert_rollouts.py` |
 | `sft1_rollouts_*.slurm`, `train_sft1_*.slurm` | `experiments/training/phase1_sft/` |
-| `train_sft2_*.slurm`, `submit_sft2_*.sh` | `experiments/training/phase2_align/` |
+| `train_sft2_*.slurm`, `submit_sft2_*.sh` | `experiments/training/sft2/` |
 | `resume_retry2_*.slurm`, `dgx*_train_*.slurm` | `experiments/training/phase0_vagen/` |
-| `src/nimloth/sft2/*` | `src/nimloth/training/phase2_align/*` + `common/qwen_tuning.py` |
+| `src/nimloth/sft2/*` | `src/nimloth/training/sft2/*` + `common/qwen_tuning.py`（**已删除** shim） |
 
 ---
 
@@ -77,7 +77,7 @@ tests/
 
 | 旧实现/计划 | 现行规格 |
 |-------------|----------|
-| `src/nimloth/sft2/` 独立包 | 迁入 `training/phase2_align/` |
+| `src/nimloth/sft2/` 独立包 | 迁入 `training/sft2/`（**已删除** 旧包） |
 | LeWM encoder 作 WM target | **禁止**；target = 下一步 **Qwen latent**（`state_proj` 后 stop-grad） |
 | `pretrain_step` / pixel JEPA loss | **移除**；仅 predictor + value losses |
 | 仅 success rollout | **train 含失败 run** |
@@ -225,7 +225,7 @@ lambda_value: 1.0
 | YAML 配置加载 | ✅ `configs/training/sft2/latent_wm_value.yaml` + `cli.py` |
 | wandb 训练内日志 | ✅ `training/common/wandb_logging.py` |
 | best checkpoint 按 val_success_rate | ✅ `val_rollout_success_rate` + `early_stop_metric` |
-| 脚本迁出 `navigation_baseline` | ✅ `experiments/training/sft2/`（旧路径 wrapper） |
+| 脚本迁出 `navigation_baseline` | ✅ `experiments/training/sft2/`（**已删除** navigation_baseline 内 SFT2 冗余脚本/shim） |
 | VAGEN 在线 val eval | ⏸ 离线 jsonl 成功率已接入；在线 VAGEN greedy eval 沿用 SFT1 slurm，可按需 wrapper |
 | `training/phase2_align` 命名 | ✅ 统一为 `training/sft2` |
 
@@ -233,15 +233,15 @@ lambda_value: 1.0
 
 ## 8. 实现顺序（修订）
 
-1. **目录与配置骨架**：`src/nimloth/training/`、`configs/training/`、`experiments/training/`（本计划步骤）。
-2. **代码迁移**：`sft2/*` → `training/phase2_align/` + `common/qwen_tuning.py`；更新 import 与测试。
-3. **Value head**：`phase2_align/value_head.py` + loss + tests。
-4. **Vision EMA**：`common/vision_ema.py` + config 开关。
+1. **目录与配置骨架**：`src/nimloth/training/`、`configs/training/`、`experiments/training/`（✅）。
+2. **代码迁移**：`sft2/*` → `training/sft2/` + `common/`；更新 import 与测试（✅）。
+3. **Value head**：`sft2/value_head.py` + loss + tests（✅）。
+4. **Vision EMA**：`common/vision_ema.py` + config 开关（✅）。
 5. **数据**：`include_failed_rollouts`；确认 value 标签字段。
-6. **实验脚本迁移**：`train_sft2` → `experiments/training/phase2_align/train.py`；Slurm/submit 同步迁。
+6. **实验脚本迁移**：`train_sft2` → `experiments/training/sft2/train.py`；Slurm/submit 同步迁（✅）。
 7. **Phase 1 脚本迁移**（可并行）：`train_sft1` → `phase1_sft/`。
 8. **Phase 0 默认配置**：从现有 VAGEN slurm 提炼 `phase0_vagen/defaults.yaml`。
-9. Val success eval 接入 Phase 2 训练循环 / watcher。
+9. Val success eval 接入 Phase 2 训练循环 / watcher（离线已接入）。
 
 ---
 
@@ -251,13 +251,14 @@ lambda_value: 1.0
 2. **失败 rollout** 是否与 success 混采比例需要上限？
 3. **Vision EMA**：仅 encoder 还是含 merger？target 网络是否必须用 EMA？
 4. **Phase 0 配置**：`defaults.yaml` 是否覆盖现有全部 retry2 slurm 变体，还是只文档化核心子集？
-5. **迁移窗口**：`navigation_baseline` 旧路径保留多久、是否加 deprecation shim？
+5. **迁移窗口**：`navigation_baseline` 内 SFT2 脚本已清理；SFT1/VAGEN 脚本仍保留至 phase0/1 迁移完成。
 
 ---
 
 ## 10. 测试（计划）
 
-- `tests/training/phase2_align/test_wm_latent_loss.py`（自 `test_sft2_loss.py` 迁）
-- `tests/training/phase2_align/test_value_ranking_loss.py`（新）
+- `tests/training/sft2/test_sft2_loss.py`（自 `test_sft2_loss.py` 迁）
+- `tests/training/sft2/test_value_ranking_loss.py`（新）
+- `tests/training/common/test_schedules.py`（自 `test_sft2_schedules.py` 迁）
 - `tests/test_wm_transition_dataset.py`（保留，测 `next_prefix`）
 - `tests/training/common/test_qwen_tuning.py`

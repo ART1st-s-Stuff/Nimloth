@@ -7,5 +7,3 @@
 | `sft2/latent_wm_value.yaml` | **SFT2** WM + Value | `experiments/training/sft2/train.py --config` |
 
 SFT2 defaults per `ai_tasks/sft2_exp.md`: LLM freeze, vision full + EMA, include failed rollouts.
-
-Legacy `phase2_align/` → see `phase2_align/README.md` (merged into `sft2/`).

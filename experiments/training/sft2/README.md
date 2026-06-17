@@ -18,4 +18,4 @@ Config: `configs/training/sft2/latent_wm_value.yaml`
 
 Library: `src/nimloth/training/sft2/`
 
-Legacy wrappers remain under `experiments/navigation_baseline/` (see `SFT2_DEPRECATED.md`).
+SFT1 checkpoints and rollout records stay under `experiments/navigation_baseline/runs/`.
