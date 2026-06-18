@@ -1,5 +1,7 @@
 # Training experiments (by phase)
 
+**实验规则入口：** [`ai_rules/03_experiments_and_data.md`](../../ai_rules/03_experiments_and_data.md) · [`experiments/README.md`](../README.md)
+
 | Directory | Phase | Description |
 |-----------|-------|-------------|
 | `phase0_vagen/` | 0 | VAGEN rollout & RL collection |

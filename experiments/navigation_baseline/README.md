@@ -1,5 +1,11 @@
 # Navigation Baseline with VAGEN
 
+> **遗留反模式（待清理）**  
+> 本目录含大量一次性 Slurm/submit 脚本，不符合当前实验目录规范。  
+> **不要在此新增** `dgx*` / `retry*` / 节点名写死的脚本。  
+> 新实验请遵循 [`experiments/README.md`](../README.md) 与 [`ai_rules/03_experiments_and_data.md`](../../ai_rules/03_experiments_and_data.md)；目标入口为 `experiments/training/` + `configs/training/`。  
+> 下文保留作历史参考，迁移状态见 `ai_tasks/sft2_phase2_plan.md`。
+
 基于 VAGEN (NeurIPS 2025) 的 Navigation 环境 baseline 训练。
 
 ## 架构
