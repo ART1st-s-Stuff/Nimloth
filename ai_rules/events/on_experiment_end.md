@@ -10,4 +10,4 @@
 4. 写入初步分析结果：关键指标、异常现象、失败原因、是否达到目的、后续建议。
 5. 若实验可恢复，记录 resume 方法和最近 checkpoint；若不可恢复，记录原因。
 6. 根据 `ai_rules/events/on_progress.md` 判断是否需要新增 memory，并评估本实验中使用过的 memory。
-7. 同步更新必要的进度文件，尤其是 `AI_branch_progress.md` 或对应 `ai_tasks/ai_progress/` 文件。
+7. 同步更新必要的进度文件，包括 `AI_branch_progress.md` 、 `ai_tasks/ai_progress/` 文件 （如有）和`output/experiments/<name>/progress.md`
