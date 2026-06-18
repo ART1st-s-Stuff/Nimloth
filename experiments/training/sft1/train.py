@@ -541,6 +541,28 @@ def save_checkpoint(
         merge_peft_checkpoint(base_model_path, ckpt, ckpt / "hf_merged", processor)
 
 
+def find_latest_resume_dir(output_dir: Path) -> Path | None:
+    """Return the newest epoch_* checkpoint dir, else best/ if present."""
+    latest_epoch = -1
+    latest_dir: Path | None = None
+    for p in output_dir.glob("epoch_*"):
+        if not (p / "training_state.pt").is_file():
+            continue
+        try:
+            ep = int(p.name.split("_")[-1])
+        except ValueError:
+            continue
+        if ep > latest_epoch:
+            latest_epoch = ep
+            latest_dir = p
+    if latest_dir is not None:
+        return latest_dir
+    best = output_dir / "best"
+    if (best / "training_state.pt").is_file():
+        return best
+    return None
+
+
 def is_peft_model(model: torch.nn.Module) -> bool:
     return hasattr(model, "peft_config") or model.__class__.__name__ == "PeftModel"
 
@@ -908,11 +930,11 @@ def main() -> int:
     )
 
     base_model_path = args.model
-    resume_dir = args.output_dir / "best"
-    resume_ckpt = resume_dir / "training_state.pt"
+    resume_dir: Path | None = find_latest_resume_dir(args.output_dir) if args.resume else None
+    resume_ckpt = resume_dir / "training_state.pt" if resume_dir is not None else None
     load_path = args.model
     resume_lora = False
-    if args.resume and resume_ckpt.exists():
+    if args.resume and resume_ckpt is not None and resume_ckpt.exists():
         state_peek = torch.load(resume_ckpt, map_location="cpu")
         resume_lora = bool(state_peek.get("lora")) or (resume_dir / "adapter_config.json").exists()
         if resume_lora:
@@ -920,7 +942,17 @@ def main() -> int:
         elif (resume_dir / "config.json").exists():
             load_path = str(resume_dir)
         if is_main():
-            print(json.dumps({"resume_load_path": load_path, "resume_lora": resume_lora}))
+            print(
+                json.dumps(
+                    {
+                        "resume_load_path": load_path,
+                        "resume_lora": resume_lora,
+                        "resume_dir": str(resume_dir),
+                    }
+                )
+            )
+    elif args.resume and is_main():
+        print(json.dumps({"warning": "--resume set but no checkpoint found under output_dir"}))
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         load_path,
@@ -932,7 +964,7 @@ def main() -> int:
         model.gradient_checkpointing_enable()
     model.resize_token_embeddings(len(processor.tokenizer))
 
-    if args.resume and resume_ckpt.exists() and resume_lora:
+    if args.resume and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
         if not args.lora:
             raise ValueError("--resume with LoRA adapter requires --lora")
         model = apply_lora(model, args)
@@ -982,7 +1014,7 @@ def main() -> int:
     global_step = 0
     best_val = float("inf")
     start_epoch = 1
-    if args.resume and resume_ckpt.exists():
+    if args.resume and resume_ckpt is not None and resume_ckpt.exists():
         state = torch.load(resume_ckpt, map_location="cpu")
         global_step = int(state.get("step", 0))
         best_val = float(state.get("best_val", float("inf")))
@@ -1009,6 +1041,7 @@ def main() -> int:
                 json.dumps(
                     {
                         "resume": True,
+                        "resume_dir": str(resume_dir),
                         "resume_ckpt": str(resume_ckpt),
                         "start_epoch": start_epoch,
                         "global_step": global_step,
@@ -1025,24 +1058,28 @@ def main() -> int:
         accum_loss = 0.0
         micro_accum = 0
 
-        def optimizer_step() -> None:
+        def optimizer_step(*, micro_count: int) -> None:
             nonlocal global_step, accum_loss
+            for p in model.parameters():
+                if p.grad is not None:
+                    p.grad.div_(micro_count)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             global_step += 1
+            step_loss = accum_loss / micro_count
             if is_main():
                 with log_path.open("a", newline="") as f:
                     csv.writer(f).writerow(
-                        [time.time(), epoch, global_step, accum_loss, "", "", scheduler.get_last_lr()[0]]
+                        [time.time(), epoch, global_step, step_loss, "", "", scheduler.get_last_lr()[0]]
                     )
                 if wandb_run is not None:
                     import wandb
 
                     wandb.log(
                         {
-                            "train/loss": accum_loss,
+                            "train/loss": step_loss,
                             "train/lr": scheduler.get_last_lr()[0],
                             "train/embedding_lr": scheduler.get_last_lr()[1]
                             if len(scheduler.get_last_lr()) > 1
@@ -1055,15 +1092,15 @@ def main() -> int:
 
         for batch in train_loader:
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
-            loss = model(**batch).loss / args.grad_accum
+            loss = model(**batch).loss
             loss.backward()
             accum_loss += loss.detach().float().item()
             micro_accum += 1
             if micro_accum % args.grad_accum == 0:
-                optimizer_step()
+                optimizer_step(micro_count=micro_accum)
                 micro_accum = 0
         if micro_accum > 0:
-            optimizer_step()
+            optimizer_step(micro_count=micro_accum)
 
         distributed_barrier()
         if torch.cuda.is_available():

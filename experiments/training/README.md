@@ -11,5 +11,5 @@
 
 SFT2 `train.py` 为薄入口，调用 `nimloth.training.sft2.trainer`；WM 在 `wm/`；Qwen 调参在 `backbone/`；离线 eval 在 `eval/`。
 
-VAGEN baseline → `experiments/training/baseline/`；SFT1 → `experiments/training/sft1/`。  
+VAGEN baseline → `experiments/training/baseline/`；SFT1 → `experiments/training/sft1/`。
 `navigation_baseline/` 为遗留目录（runs 数据暂留），勿新增脚本。

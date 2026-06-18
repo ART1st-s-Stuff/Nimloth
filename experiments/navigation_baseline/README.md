@@ -1,9 +1,9 @@
 # Navigation Baseline with VAGEN
 
-> **遗留目录（已冻结）**  
-> 规范入口：VAGEN baseline → [`experiments/training/baseline/`](../training/baseline/README.md)；SFT1 → [`experiments/training/sft1/`](../training/sft1/README.md)。  
-> **不要在此新增**任何 Slurm / submit 脚本。  
-> 本目录仅保留历史 runs 与旧 Slurm 副本；新实验见 `outputs/experiments/training/`。  
+> **遗留目录（已冻结）**
+> 规范入口：VAGEN baseline → [`experiments/training/baseline/`](../training/baseline/README.md)；SFT1 → [`experiments/training/sft1/`](../training/sft1/README.md)。
+> **不要在此新增**任何 Slurm / submit 脚本。
+> 本目录仅保留历史 runs 与旧 Slurm 副本；新实验见 `outputs/experiments/training/`。
 > 下文保留作历史参考。
 
 基于 VAGEN (NeurIPS 2025) 的 Navigation 环境 baseline 训练。
