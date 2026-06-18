@@ -45,5 +45,5 @@
 - `04_code_and_repo.md`: 代码与repo规则。写代码之前必读
 - `events/on_progress.md`: 任务有进展时需要做的事
 
-## 服务器连接方法
-项目根目录`SERVER.md`
+## 服务器使用规范
+参考根目录`SERVER.md`
