@@ -15,7 +15,7 @@
 - resume/checkpoint 策略；
 - 预期监控指标。
 
-如果任一项不清楚，停止询问人类。
+如果任一项不清楚，停止并询问人类。
 
 ## Dataset split 硬规则
 
@@ -51,3 +51,8 @@
 - 预计资源消耗。
 
 未经确认，不要启动昂贵任务。
+
+## Event Hooks
+实验开始前，阅读`events/on_experiment_start.md`。
+
+实验结束后（任何时候你查到实验结束了都算，可能开始实验的时候不在当前会话），阅读`events/on_experiment_end.md`。

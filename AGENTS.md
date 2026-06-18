@@ -43,4 +43,4 @@
 - `02_memory_and_progress.md`: 记忆系统，执行所有任务前必读
 - `03_experiments_and_data.md`: 实验相关行为准则。做实验、更改实验代码前必读
 - `04_code_and_repo.md`: 代码与repo规则。写代码之前必读
-3. 当任务触发特定事件时，还必须阅读并执行 `events/` 下对应事件规则。
+- `events/on_progress.md`: 任务有进展时需要做的事
