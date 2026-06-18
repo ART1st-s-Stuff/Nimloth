@@ -441,3 +441,9 @@
 - SFT2 合并脚本路径更新为 `experiments/training/sft1/merge_lora_ckpt.py`
 - SFT2 默认 `TRAIN_OUT` 迁至 `outputs/experiments/training/sft2/<date>/<name>/`（`common_env.sh`）
 
+
+## 2026-06-18：SFT2 DDP resume correction should live in local repo
+
+- Human corrected workflow: local repo is the source of truth; server-side code may be overwritten. The SFT2 DDP/checkpoint resume fixes originally committed on the server must be reflected locally.
+- Local repo now carries the relevant code changes in `src/nimloth/training/sft2/trainer.py`: non-reentrant Qwen gradient checkpointing, DDP `find_unused_parameters=False`, and full HF checkpoint resume reloading `best/` before optimizer construction.
+- Remote run status at the time of correction: `sft2_latentwm_default_8gpu` resumed from `best/` (`start_epoch=2`, `global_step=855`) and progressed to at least `global_step=876` without the prior DDP ready-twice error.

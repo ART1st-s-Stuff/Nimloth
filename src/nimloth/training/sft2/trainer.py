@@ -113,7 +113,11 @@ def train_sft2(args=None) -> int:
         trust_remote_code=True,
     )
     if args.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
+        # DDP + reentrant activation checkpointing can fire reducer hooks for the
+        # same trainable Qwen parameter twice when the training step uses Qwen
+        # hidden states in several downstream losses.  The non-reentrant variant
+        # is the PyTorch-recommended checkpointing mode for DDP.
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.resize_token_embeddings(len(processor.tokenizer))
 
     if args.resume and resume_state_path.exists() and resume_adapter.exists():
@@ -132,6 +136,19 @@ def train_sft2(args=None) -> int:
             raise ValueError("cannot --resume full HF checkpoint with lora tuning")
         if is_main():
             print(json.dumps({"resume_full": str(resume_ckpt_dir)}))
+        # Full-finetune checkpoints save the Qwen weights under best/.  Reload
+        # them before constructing the optimizer, then re-apply tuning flags so
+        # the trainable parameter set matches the saved optimizer groups.
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            resume_ckpt_dir,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            attn_implementation=args.attn_implementation,
+            trust_remote_code=True,
+        )
+        if args.gradient_checkpointing:
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        model.resize_token_embeddings(len(processor.tokenizer))
+        model = configure_qwen_tuning(model, args)
     else:
         model = configure_qwen_tuning(model, args)
         if is_main():
@@ -157,13 +174,16 @@ def train_sft2(args=None) -> int:
         load_aux_checkpoint(resume_ckpt_dir, state_proj, wm_predictor, value_head, device)
 
     if world > 1:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+        # Every trainable branch is exercised on every rank (terminal-only WM
+        # batches use dummy aux forwards), so unused-parameter graph traversal is
+        # unnecessary and interacts badly with multi-forward/checkpointed steps.
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
         if uses_lora(args):
             model._set_static_graph()
-        state_proj = DDP(state_proj, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
-        value_head = DDP(value_head, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+        state_proj = DDP(state_proj, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+        value_head = DDP(value_head, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
         if train_wm_predictor:
-            wm_predictor = DDP(wm_predictor, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+            wm_predictor = DDP(wm_predictor, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
     vision_ema: VisionEncoderEMA | None = None
     if vision_ema_enabled:
