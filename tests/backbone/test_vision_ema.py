@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from nimloth.training.common.vision_ema import VisionEncoderEMA, iter_trainable_vision_params
+from nimloth.backbone.vision_ema import VisionEncoderEMA, iter_trainable_vision_params
 
 
 class _FakeVisual(nn.Linear):

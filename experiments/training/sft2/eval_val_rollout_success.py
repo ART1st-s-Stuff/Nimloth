@@ -7,7 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
-from nimloth.training.sft2.metrics import val_rollout_success_rate
+from nimloth.eval.rollout import val_rollout_success_rate
 
 
 def main() -> int:

@@ -1,4 +1,4 @@
-"""Configure Qwen2.5-VL LLM / vision tuning modes for training."""
+"""Qwen2.5-VL backbone: LLM / vision tuning modes."""
 
 from __future__ import annotations
 
@@ -61,8 +61,8 @@ def configure_qwen_tuning(
     for param in model.parameters():
         param.requires_grad = False
 
-    uses_lora = llm_tune == "lora" or vision_tune == "lora"
-    if uses_lora:
+    uses_lora_flag = llm_tune == "lora" or vision_tune == "lora"
+    if uses_lora_flag:
         from peft import LoraConfig, get_peft_model
 
         modules_to_save: list[str] = []

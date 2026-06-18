@@ -8,7 +8,7 @@ import torch
 
 from nimloth.training.common.metrics import MetricAccumulator
 from nimloth.training.common.qwen_batch import build_qwen_batch
-from nimloth.training.common.vision_ema import VisionEncoderEMA
+from nimloth.backbone.vision_ema import VisionEncoderEMA
 from nimloth.training.sft2.metrics import batch_step_success_rate
 from nimloth.training.sft2.qwen_latent import extract_qwen_latents
 from nimloth.training.sft2.step import compute_step_value_loss, compute_step_wm_loss

@@ -399,13 +399,21 @@
 - LeWM：`wm/_vendor_lewm.py` 最小 vendoring；移除 `wm/model.py`、pixel JEPA pretrain；`LatentWMPredictor` 在 `wm/predictor.py`。
 - WM 模型组件迁入 `wm/`：`state_proj.py`、`value_head.py`、`collate.py`；新增 `wm/README.md`。
 - SFT2 训练逻辑下沉 `training/sft2/`：`trainer.py`（主循环）、`step.py`、`checkpoint.py`、`evaluate.py`、`dataset.py`、`qwen_latent.py`。
-- 跨 phase 工具：`training/common/dist.py`、`qwen_batch.py`；`qwen_tuning.uses_lora()`。
+- 跨 phase 工具：`training/common/dist.py`、`qwen_batch.py`。
 - `experiments/training/sft2/train.py` 改为薄入口（调用 `nimloth.training.sft2.trainer`）。
 - 文档同步：`ai_tasks/sft2_phase2_plan.md`、`CHANGELOG.md`、`configs/training/README.md`、`experiments/training/README.md`。
 
+### 第二轮拆分（2026-06-18）
+
+- `qwen_tuning` / `vision_ema` → `src/nimloth/backbone/`；新增 `backbone/README.md`。
+- 离线指标 `val_rollout_success_rate` → `src/nimloth/eval/rollout.py`；`training/sft2/metrics.py` 仅保留 batch 内指标。
+- 测试迁至 `tests/backbone/`、`tests/eval/`。
+
 ### 目录约定（SFT2）
 
+- **骨干 / 调参**：`src/nimloth/backbone/`
 - **模型 / 数据**：`src/nimloth/wm/`
+- **离线评估**：`src/nimloth/eval/`
 - **训练编排**：`src/nimloth/training/sft2/`
 - **实验入口**：`experiments/training/sft2/`（Slurm/submit 不变）
 

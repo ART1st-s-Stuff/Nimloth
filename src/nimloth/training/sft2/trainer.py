@@ -20,16 +20,16 @@ from nimloth.training.common.config import merge_cli_over_yaml
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.common.metrics import MetricAccumulator
 from nimloth.training.common.qwen_batch import build_qwen_batch
-from nimloth.training.common.qwen_tuning import configure_qwen_tuning, resolve_tune_modes, uses_lora
+from nimloth.backbone.qwen_tuning import configure_qwen_tuning, resolve_tune_modes, uses_lora
+from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema
 from nimloth.training.common.schedules import qwen_lr_schedule, set_optimizer_group_lr
-from nimloth.training.common.vision_ema import VisionEncoderEMA, resolve_vision_ema
 from nimloth.training.common.wandb_logging import log_train_step, log_val_epoch, maybe_init_wandb
 from nimloth.training.sft2.checkpoint import load_aux_checkpoint, load_lora_adapter_state, save_checkpoint
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
 from nimloth.training.sft2.evaluate import evaluate
 from nimloth.training.sft2.loss import compute_combined_loss, wm_loss_weight_schedule
-from nimloth.training.sft2.metrics import val_rollout_success_rate
+from nimloth.eval.rollout import val_rollout_success_rate
 from nimloth.training.sft2.qwen_latent import extract_qwen_latents
 from nimloth.training.sft2.step import compute_step_value_loss, compute_step_wm_loss
 from nimloth.wm import LeWMConfig, LatentWMPredictor, StateProjector, ValueHead

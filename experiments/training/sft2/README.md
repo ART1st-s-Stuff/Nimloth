@@ -16,6 +16,6 @@ Canonical location for SFT2 per `ai_tasks/sft2_exp.md`.
 
 Config: `configs/training/sft2/latent_wm_value.yaml`
 
-Library: `src/nimloth/training/sft2/` (`trainer.py`, `step.py`, `checkpoint.py`, …); WM models in `src/nimloth/wm/`.
+Library: `src/nimloth/training/sft2/`；WM 在 `wm/`；Qwen 调参在 `backbone/`；离线 eval 在 `eval/`。
 
 SFT1 checkpoints and rollout records stay under `experiments/navigation_baseline/runs/`.

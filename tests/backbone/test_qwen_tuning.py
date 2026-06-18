@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 
-from nimloth.training.common.qwen_tuning import resolve_tune_modes
-from nimloth.training.common.vision_ema import resolve_vision_ema, vision_is_trainable
+from nimloth.backbone.qwen_tuning import resolve_tune_modes
+from nimloth.backbone.vision_ema import resolve_vision_ema, vision_is_trainable
 
 
 def test_resolve_tune_modes_legacy_lora() -> None:

@@ -9,7 +9,7 @@ from typing import Iterator
 import torch
 from torch import nn
 
-from nimloth.training.common.qwen_tuning import TuneMode, is_vision_param
+from nimloth.backbone.qwen_tuning import TuneMode, is_vision_param
 
 
 def vision_is_trainable(vision_tune: TuneMode) -> bool:

@@ -22,6 +22,12 @@
 ### 目标目录树（计划）
 
 ```text
+src/nimloth/backbone/
+  qwen_tuning.py, vision_ema.py
+
+src/nimloth/eval/
+  rollout.py
+
 src/nimloth/wm/
   dataset.py, collate.py
   predictor.py, state_proj.py, value_head.py
@@ -29,7 +35,7 @@ src/nimloth/wm/
 
 src/nimloth/training/
   __init__.py
-  common/                 # dist, qwen_batch, qwen_tuning, schedules, metrics, wandb
+  common/                 # dist, qwen_batch, schedules, metrics, wandb
   phase0_vagen/           # VAGEN 相关 Nimloth 封装
   phase1_sft/             # SFT1：LM CE、checkpoint、LoRA merge 钩子
   sft2/                   # trainer, step, checkpoint, evaluate, loss, cli
@@ -49,6 +55,8 @@ experiments/training/
   sft2/                   # train.py（薄入口）, slurm, submit
 
 tests/
+  backbone/
+  eval/
   training/
     phase1_sft/
     sft2/
@@ -65,7 +73,7 @@ tests/
 | `sft1_rollouts_*.slurm`, `train_sft1_*.slurm` | `experiments/training/phase1_sft/` |
 | `train_sft2_*.slurm`, `submit_sft2_*.sh` | `experiments/training/sft2/` |
 | `resume_retry2_*.slurm`, `dgx*_train_*.slurm` | `experiments/training/phase0_vagen/` |
-| `src/nimloth/sft2/*` | `src/nimloth/training/sft2/*` + `common/qwen_tuning.py`（**已删除** shim） |
+| `src/nimloth/sft2/*` | `src/nimloth/training/sft2/*`；Qwen 调参在 `backbone/`（**已删除** 旧 shim） |
 
 ---
 
@@ -144,7 +152,7 @@ L = λ_wm * L_wm + λ_value * L_value + λ_ce * L_lm_ce
 | **LLM backbone** | ✓ 默认 | 可选 | 可选 |
 | **Vision encoder** | 可选 | 可选 | ✓ 默认 |
 
-- 实现：`training/common/qwen_tuning.py`（自 `sft2/qwen_tuning.py` 迁入）。
+- 实现：`backbone/qwen_tuning.py`。
 - **Vision EMA**（仅当 vision 可训时）：shadow weights `θ_ema ← τ θ_ema + (1-τ) θ`；推理 / target 可选走 EMA（细节待实现时定）。
 
 ### 3.2 默认配置（`configs/training/sft2/latent_wm_value.yaml`）
@@ -223,16 +231,16 @@ lambda_value: 1.0
 | 项 | 状态 |
 |----|------|
 | Qwen latent WM loss（无 encoder） | ✅ `wm/predictor.py` + `training/sft2/loss.py` |
-| LLM / vision 分调 `freeze\|lora\|full` | ✅ `training/common/qwen_tuning.py` |
+| LLM / vision 分调 `freeze\|lora\|full` | ✅ `backbone/qwen_tuning.py` |
 | `next_prefix` transition | ✅ `wm/dataset.py` |
 | Value head + ranking loss | ✅ `wm/value_head.py` + `training/sft2/loss.py` |
 | State projector | ✅ `wm/state_proj.py` |
 | Transition collate | ✅ `wm/collate.py` |
-| Vision EMA | ✅ `training/common/vision_ema.py` |
+| Vision EMA | ✅ `backbone/vision_ema.py` |
 | 含失败 rollout 训练 | ✅ 默认 `train_all.jsonl`，`--success-only` 可选 |
 | YAML 配置加载 | ✅ `configs/training/sft2/latent_wm_value.yaml` + `cli.py` |
 | wandb 训练内日志 | ✅ `training/common/wandb_logging.py` |
-| best checkpoint 按 val_success_rate | ✅ `val_rollout_success_rate` + `early_stop_metric` |
+| best checkpoint 按 val_success_rate | ✅ `eval/rollout.py` + `early_stop_metric` |
 | 训练循环下沉 src | ✅ `training/sft2/trainer.py`；`experiments/.../train.py` 薄入口 |
 | LeWM vendoring | ✅ `wm/_vendor_lewm.py`；pixel JEPA / `wm/model.py` 已移除 |
 | 脚本迁出 `navigation_baseline` | ✅ `experiments/training/sft2/` |

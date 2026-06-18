@@ -9,7 +9,7 @@ import torch
 from transformers import AutoProcessor
 
 from nimloth.training.common.qwen_batch import build_qwen_batch
-from nimloth.training.common.vision_ema import VisionEncoderEMA
+from nimloth.backbone.vision_ema import VisionEncoderEMA
 from nimloth.training.sft2.loss import compute_value_loss, compute_wm_latent_loss
 from nimloth.training.sft2.qwen_latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor

@@ -9,7 +9,7 @@ from typing import Any
 import torch
 
 from nimloth.training.common.dist import is_main
-from nimloth.training.common.vision_ema import VisionEncoderEMA
+from nimloth.backbone.vision_ema import VisionEncoderEMA
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
