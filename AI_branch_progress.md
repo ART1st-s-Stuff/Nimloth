@@ -447,3 +447,13 @@
 - Human corrected workflow: local repo is the source of truth; server-side code may be overwritten. The SFT2 DDP/checkpoint resume fixes originally committed on the server must be reflected locally.
 - Local repo now carries the relevant code changes in `src/nimloth/training/sft2/trainer.py`: non-reentrant Qwen gradient checkpointing, DDP `find_unused_parameters=False`, and full HF checkpoint resume reloading `best/` before optimizer construction.
 - Remote run status at the time of correction: `sft2_latentwm_default_8gpu` resumed from `best/` (`start_epoch=2`, `global_step=855`) and progressed to at least `global_step=876` without the prior DDP ready-twice error.
+
+## 2026-06-19：SFT2 action token mismatch 修正与重启
+
+- 发现 SFT2 使用 `nimloth.latent.add_special_tokens()` 时仍会添加旧 `<|act_moveahead|>...` action tokens；实际 VAGEN/Nimloth SFT 数据和 parser 使用 `<|action_(0)|>...<|action_(7)|>`。
+- 已在本地修正并提交：`src/nimloth/latent/extraction.py` 改为 `<|action_(idx)|>`；嵌套 submodule `external/VAGEN/verl/verl/workers/rollout/latent_action.py` 默认 action tokens 同步改为 `<|action_(idx)|>`。
+- 本地提交：root `47b3295`；VAGEN submodule `b7420be`；verl nested submodule `d8e52104`。本地 pytest 环境不可用，`python -m py_compile` 通过；远程 `.venv` 验证 `tests/test_latent_extraction.py` 与 `external/VAGEN/verl/tests/workers/rollout/test_latent_action.py` 均通过。
+- 远程同步并提交：root `f58d6fcd2114a6c56967c4278d18ed3825d43787`；VAGEN submodule `6cbb529`；verl nested submodule `8bc3f7f0`。
+- 已停止污染的远程实验 `outputs/experiments/training/sft2/2026-06-18/sft2_latentwm_default_8gpu`，并在该目录 `README.md` 记录失败原因：旧 token 被加入 tokenizer，checkpoint vocab/metadata 被污染，不应作为最终 SFT2 结果。
+- 已用 fresh output 重启 SFT2：`outputs/experiments/training/sft2/2026-06-19/sft2_latentwm_default_8gpu_tokenfix`，复用 hold job `456005`，从干净 SFT1 merged checkpoint 初始化，LLM freeze、vision full+EMA，训练 state_proj / LatentWMPredictor / ValueHead。
+- 重启健康检查：新 run `add_special_tokens` 对 SFT1 tokenizer 返回 `added=0` 且无旧 `<|act_*>`；日志未出现 new embeddings/lm_head resize warning；`train_step_log.csv` 已写到至少 `global_step=5`。
