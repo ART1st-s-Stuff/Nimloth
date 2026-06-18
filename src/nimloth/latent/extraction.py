@@ -14,16 +14,7 @@ class LatentActionTokens:
     latent_state: str = "<|latent_state|>"
     action_start: str = "<|action_start|>"
     action_end: str = "<|action_end|>"
-    action_tokens: tuple[str, ...] = (
-        "<|act_moveahead|>",
-        "<|act_moveback|>",
-        "<|act_moveright|>",
-        "<|act_moveleft|>",
-        "<|act_rotateright|>",
-        "<|act_rotateleft|>",
-        "<|act_lookup|>",
-        "<|act_lookdown|>",
-    )
+    action_tokens: tuple[str, ...] = tuple(f"<|action_({idx})|>" for idx in range(8))
 
     @property
     def all_special_tokens(self) -> tuple[str, ...]:
