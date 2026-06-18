@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print side-by-side val/test success rates from summarize_sft1_eval_rollouts JSON."""
+"""Print side-by-side val/test success rates from summarize_eval_rollouts JSON."""
 
 from __future__ import annotations
 

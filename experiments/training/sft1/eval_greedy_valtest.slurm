@@ -339,7 +339,7 @@ export RAY_ADDRESS="${local_ip}:${RAY_PORT}"
 run_split_shard val shard_1081_1200 1081 1200
 run_split_shard test shard_001_060 1 60
 
-python3 "${SCRIPTDIR}/summarize_sft1_eval_rollouts.py" \
+python3 "${SCRIPTDIR}/summarize_eval_rollouts.py" \
   --root "${RUN_DIR}" \
   --step "${JSONL_STEP}" \
   | tee "${RUN_DIR}/summary_${JSONL_STEP}.json"

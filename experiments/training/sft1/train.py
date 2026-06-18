@@ -333,6 +333,11 @@ def is_main() -> bool:
     return int(os.environ.get("RANK", "0")) == 0
 
 
+def distributed_barrier() -> None:
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+
+
 def setup_dist() -> tuple[int, int, int, torch.device]:
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         rank = int(os.environ["RANK"])
@@ -902,8 +907,23 @@ def main() -> int:
         **loader_kwargs,
     )
 
+    base_model_path = args.model
+    resume_dir = args.output_dir / "best"
+    resume_ckpt = resume_dir / "training_state.pt"
+    load_path = args.model
+    resume_lora = False
+    if args.resume and resume_ckpt.exists():
+        state_peek = torch.load(resume_ckpt, map_location="cpu")
+        resume_lora = bool(state_peek.get("lora")) or (resume_dir / "adapter_config.json").exists()
+        if resume_lora:
+            load_path = state_peek.get("base_model_path", args.model)
+        elif (resume_dir / "config.json").exists():
+            load_path = str(resume_dir)
+        if is_main():
+            print(json.dumps({"resume_load_path": load_path, "resume_lora": resume_lora}))
+
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        args.model,
+        load_path,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
@@ -912,16 +932,11 @@ def main() -> int:
         model.gradient_checkpointing_enable()
     model.resize_token_embeddings(len(processor.tokenizer))
 
-    base_model_path = args.model
-    resume_ckpt = args.output_dir / "best" / "training_state.pt"
-    resume_adapter = args.output_dir / "best"
-    if args.resume and resume_ckpt.exists() and (resume_adapter / "adapter_config.json").exists():
-        if is_main():
-            print(json.dumps({"resume_lora_adapter": str(resume_adapter)}))
+    if args.resume and resume_ckpt.exists() and resume_lora:
         if not args.lora:
             raise ValueError("--resume with LoRA adapter requires --lora")
         model = apply_lora(model, args)
-        load_lora_adapter_state(model, resume_adapter)
+        load_lora_adapter_state(model, resume_dir)
         if args.gradient_checkpointing:
             model.enable_input_require_grads()
     elif args.lora:
@@ -1008,39 +1023,49 @@ def main() -> int:
             train_sampler.set_epoch(epoch)
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
-        accum = 0
+        micro_accum = 0
+
+        def optimizer_step() -> None:
+            nonlocal global_step, accum_loss
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
+            global_step += 1
+            if is_main():
+                with log_path.open("a", newline="") as f:
+                    csv.writer(f).writerow(
+                        [time.time(), epoch, global_step, accum_loss, "", "", scheduler.get_last_lr()[0]]
+                    )
+                if wandb_run is not None:
+                    import wandb
+
+                    wandb.log(
+                        {
+                            "train/loss": accum_loss,
+                            "train/lr": scheduler.get_last_lr()[0],
+                            "train/embedding_lr": scheduler.get_last_lr()[1]
+                            if len(scheduler.get_last_lr()) > 1
+                            else scheduler.get_last_lr()[0],
+                            "global_step": global_step,
+                        },
+                        step=global_step,
+                    )
+            accum_loss = 0.0
+
         for batch in train_loader:
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
             loss = model(**batch).loss / args.grad_accum
             loss.backward()
             accum_loss += loss.detach().float().item()
-            accum += 1
-            if accum % args.grad_accum == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
-                global_step += 1
-                if is_main():
-                    with log_path.open("a", newline="") as f:
-                        csv.writer(f).writerow(
-                            [time.time(), epoch, global_step, accum_loss, "", "", scheduler.get_last_lr()[0]]
-                        )
-                    if wandb_run is not None:
-                        import wandb
+            micro_accum += 1
+            if micro_accum % args.grad_accum == 0:
+                optimizer_step()
+                micro_accum = 0
+        if micro_accum > 0:
+            optimizer_step()
 
-                        wandb.log(
-                            {
-                                "train/loss": accum_loss,
-                                "train/lr": scheduler.get_last_lr()[0],
-                                "train/embedding_lr": scheduler.get_last_lr()[1]
-                                if len(scheduler.get_last_lr()) > 1
-                                else scheduler.get_last_lr()[0],
-                                "global_step": global_step,
-                            },
-                            step=global_step,
-                        )
-                accum_loss = 0.0
+        distributed_barrier()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         val_loss = evaluate(model, val_loader, device, args.max_val_batches)
@@ -1104,6 +1129,7 @@ def main() -> int:
                         "epoch": epoch,
                     },
                 )
+        distributed_barrier()
 
     if is_main():
         save_checkpoint(

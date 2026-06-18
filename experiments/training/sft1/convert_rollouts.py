@@ -11,10 +11,10 @@ The converter preserves split boundaries, rewrites VAGEN assistant actions from
 `<action>move_forward</action>` into the Nimloth prompt/action format described
 in DESIGN_DOCS.md, and stores exact image paths for every `<image>` placeholder.
 
-Training policy for sft1_exp step 3: only successful train rollouts are emitted
-into `train_success.jsonl`. Validation/test records are emitted separately and
-include both successful and failed rollouts so downstream eval can decide what to
-measure without contaminating training.
+Training policy: both `train_all.jsonl` and `train_success.jsonl` are emitted.
+`train_all.jsonl` is the default SFT train file (all train-split rollouts, including
+failed trajectories). `train_success.jsonl` is a success-only subset for ablations.
+Validation/test records include both successful and failed rollouts for held-out eval.
 """
 
 from __future__ import annotations
@@ -358,8 +358,9 @@ def main() -> int:
         "special_tokens": SPECIAL_TOKENS,
         "format": "Nimloth SFT v1: assistant=<think>...</think><|latent_state|><|action_start|><|action_(idx)|><|action_end|>",
         "split_policy": {
-            "train_success": "only split=train records with traj_success >= 1.0 and no validation issues",
-            "val_all/test_all": "all rollout records for held-out validation/test auditing/eval",
+            "train_all": "all train-split rollouts; default SFT train file (success + failed)",
+            "train_success": "train-split rollouts with traj_success >= 1.0 and no validation issues; optional ablation",
+            "val_all/test_all": "all rollout records for held-out validation/test eval",
         },
     }
 
@@ -421,7 +422,7 @@ def main() -> int:
     manifest_path = out / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    readme = f"""# SFT1 converted rollout records\n\nSource: `{manifest['input_root']}`\n\nCheckpoint HF init for SFT: `{manifest['checkpoint_hf']}`\n\nFormat: `{manifest['format']}`\n\nFiles:\n\n- `train_success.jsonl`: successful training-split rollouts only; intended SFT train file.\n- `train_all.jsonl`: all training-split rollouts for audit.\n- `val_all.jsonl`: validation split, held out from SFT train.\n- `test_all.jsonl`: test split, held out from SFT train.\n- `manifest.json`: action mapping, counts, and conversion metadata.\n\nCounts:\n\n```json\n{json.dumps(counts, indent=2)}\n```\n\nSplit stats:\n\n```json\n{json.dumps(split_stats, indent=2)}\n```\n"""
+    readme = f"""# SFT1 converted rollout records\n\nSource: `{manifest['input_root']}`\n\nCheckpoint HF init for SFT: `{manifest['checkpoint_hf']}`\n\nFormat: `{manifest['format']}`\n\nFiles:\n\n- `train_all.jsonl`: all training-split rollouts; **default SFT train file** (includes failed trajectories).\n- `train_success.jsonl`: successful training-split rollouts only; optional ablation / audit.\n- `val_all.jsonl`: validation split, held out from SFT train.\n- `test_all.jsonl`: test split, held out from SFT train.\n- `manifest.json`: action mapping, counts, and conversion metadata.\n\nCounts:\n\n```json\n{json.dumps(counts, indent=2)}\n```\n\nSplit stats:\n\n```json\n{json.dumps(split_stats, indent=2)}\n```\n"""
     (out / "README.md").write_text(readme, encoding="utf-8")
 
     print(json.dumps({"output_root": str(out), "counts": counts, "split_stats": split_stats}, indent=2))
