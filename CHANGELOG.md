@@ -2,7 +2,7 @@
 
 ## 2026-06-18
 
-- **LeWM 清理**：`wm/_vendor_lewm.py` 最小 vendoring；移除 pixel JEPA（`wm/model.py`、`pretrain_lewm_navigation.py`）；`LatentWMPredictor` 在 `wm/predictor.py`
+- **LeWM 清理**：`wm/_vendor_lewm.py` 最小 vendoring；移除 pixel JEPA（`wm/model.py`、`pretrain_lewm_navigation.py`）；`LatentWMPredictor` 在 `wm/predictor.py`；不支持旧 `model.pt` warm-start
 - **Training / experiments 结构（第一轮）**：
   - WM 组件迁入 `wm/`（`state_proj`、`value_head`、`collate`）
   - 训练逻辑下沉 `training/sft2/`（`trainer.py`、`step.py`、`checkpoint.py`、`evaluate.py` 等）

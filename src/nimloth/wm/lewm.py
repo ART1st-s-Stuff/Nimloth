@@ -8,16 +8,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from nimloth.wm._vendor_lewm import ARPredictor, Embedder, JEPA, MLP, SIGReg
+from nimloth.wm._vendor_lewm import ARPredictor, Embedder, MLP
 from nimloth.wm.dataset import NUM_NAVIGATION_ACTIONS
 
 __all__ = [
     "ARPredictor",
     "Embedder",
-    "JEPA",
     "LeWMConfig",
     "MLP",
-    "SIGReg",
     "action_one_hot",
 ]
 

@@ -13,9 +13,6 @@ from torch import nn
 from nimloth.wm._vendor_lewm import ARPredictor, Embedder, MLP
 from nimloth.wm.lewm import LeWMConfig, action_one_hot
 
-_PREDICTOR_STATE_PREFIXES = ("predictor.", "action_encoder.", "pred_proj.")
-
-
 class LatentWMPredictor(nn.Module):
     """LeWM ARPredictor + action encoder for Qwen-latent dynamics."""
 
@@ -74,9 +71,4 @@ class LatentWMPredictor(nn.Module):
             module.load_state_dict(state)
             return module
 
-        jepa_path = path / "model.pt"
-        if jepa_path.is_file():
-            jepa_state = torch.load(jepa_path, map_location=map_location, weights_only=True)
-            subset = {k: v for k, v in jepa_state.items() if k.startswith(_PREDICTOR_STATE_PREFIXES)}
-            module.load_state_dict(subset, strict=False)
-        return module
+        raise FileNotFoundError(f"missing LatentWMPredictor checkpoint: {state_path}")

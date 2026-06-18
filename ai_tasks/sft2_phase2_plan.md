@@ -68,7 +68,7 @@ tests/
 |--------|------|
 | `train_sft1_qwen25vl.py` | `experiments/training/phase1_sft/train.py` |
 | `train_sft2_qwen25vl.py` | `experiments/training/sft2/train.py`（薄入口 → `training/sft2/trainer.py`） |
-| `pretrain_lewm_navigation.py` | **已移除**（pixel JEPA 非 SFT2 主路径；predictor 可从旧 `model.pt` warm-start） |
+| `pretrain_lewm_navigation.py` | **已移除**（pixel JEPA 非 SFT2 主路径；不保留旧 `model.pt` warm-start） |
 | `convert_sft1_rollouts_to_nimloth.py` | `experiments/training/phase1_sft/convert_rollouts.py` |
 | `sft1_rollouts_*.slurm`, `train_sft1_*.slurm` | `experiments/training/phase1_sft/` |
 | `train_sft2_*.slurm`, `submit_sft2_*.sh` | `experiments/training/sft2/` |
@@ -108,7 +108,7 @@ tests/
 |------|------|----------|
 | Qwen2.5-VL | Phase 1 init | 见 §3 参数矩阵 |
 | `state_proj` | `wm/state_proj.py` | 全参 |
-| `LatentWMPredictor` | `wm/predictor.py`（LeWM ARPredictor 子集） | 可训（可从旧 JEPA checkpoint warm-start） |
+| `LatentWMPredictor` | `wm/predictor.py`（LeWM ARPredictor 子集） | 可训（不加载旧 JEPA checkpoint） |
 | `ValueHead` | `wm/value_head.py` | 全参 |
 
 ### 2.2 WM 前向（latent 空间）
@@ -204,10 +204,10 @@ lambda_value: 1.0
 - 脚本：`experiments/training/sft2/`（`train.py` 为薄入口）。
 - 配置：`configs/training/sft2/*.yaml`。
 
-### Phase 2 前置：Predictor warm-start（可选）
+### Phase 2 前置：Predictor 初始化
 
 - pixel JEPA pretrain（`pretrain_lewm_navigation.py`）**已移除**，非 SFT2 主路径。
-- 可从旧 LeWM `model.pt` 抽取 predictor 权重；SFT2 监督均在 Qwen latent 空间。
+- 项目从未使用内置 LeWM 实现训练过；不支持从旧 LeWM `model.pt` warm-start。SFT2 的 `LatentWMPredictor` 使用自身 `predictor.pt` checkpoint 或随机初始化，并在 Qwen latent 空间监督训练。
 
 ---
 

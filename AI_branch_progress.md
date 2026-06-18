@@ -417,3 +417,10 @@
 - **训练编排**：`src/nimloth/training/sft2/`
 - **实验入口**：`experiments/training/sft2/`（Slurm/submit 不变）
 
+### 2026-06-18 审阅后修正
+
+- 人类确认 `AGENTS.md` 变更由人类本人修改，无需回退。
+- 人类确认项目从未使用内置 LeWM 实现训练；已删除 `LatentWMPredictor.load_checkpoint` 中旧 LeWM `model.pt` warm-start fallback。
+- `_vendor_lewm.py` 不再导入/导出 `JEPA`、`SIGReg`，仅保留 SFT2 predictor 需要的 `ARPredictor`、`Embedder`、`MLP`。
+- `ai_tasks/sft2_phase2_plan.md` 与 `CHANGELOG.md` 已同步：SFT2 predictor 仅支持自身 `predictor.pt` checkpoint 或随机初始化，不支持旧 JEPA checkpoint warm-start。
+

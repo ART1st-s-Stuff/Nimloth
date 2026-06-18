@@ -40,12 +40,9 @@ def _load_lewm_file(module_name: str, filename: str) -> ModuleType:
 
 
 _module = _load_lewm_file("module", "module.py")
-_jepa = _load_lewm_file("jepa", "jepa.py")
 
 ARPredictor = _module.ARPredictor
 Embedder = _module.Embedder
 MLP = _module.MLP
-SIGReg = _module.SIGReg
-JEPA = _jepa.JEPA
 
-__all__ = ["ARPredictor", "Embedder", "JEPA", "MLP", "SIGReg", "lewm_root"]
+__all__ = ["ARPredictor", "Embedder", "MLP", "lewm_root"]
