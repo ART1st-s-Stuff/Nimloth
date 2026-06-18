@@ -5,7 +5,7 @@ set -euo pipefail
 : "${SFT1_RUN:?SFT1_RUN required}"
 : "${BASE_HF:?BASE_HF required}"
 SCRIPTDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NB="$(cd "${SCRIPTDIR}/../../navigation_baseline" && pwd)"
+SFT1="$(cd "${SCRIPTDIR}/../sft1" && pwd)"
 RUNS_ROOT="$(dirname "${SFT1_RUN}")"
 EVAL_TAG_PREFIX="${EVAL_TAG_PREFIX:-alltrain_8gpu_lora_cache}"
 PICK_MARGIN="${PICK_MARGIN:-0.0}"
@@ -35,7 +35,7 @@ if [ ! -f "${SFT1_BEST}/config.json" ]; then
     exit 1
   fi
   echo "=== Merge SFT1 adapter ${SFT1_ADAPTER} -> hf_merged ===" >&2
-  python3 "${NB}/merge_sft1_lora_ckpt.py" \
+  python3 "${SFT1}/merge_lora_ckpt.py" \
     --base-model "${BASE_HF}" \
     --adapter-dir "${SFT1_ADAPTER}" \
     --out-dir "${SFT1_BEST}"

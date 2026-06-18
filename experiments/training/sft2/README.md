@@ -18,4 +18,6 @@ Config: `configs/training/sft2/latent_wm_value.yaml`
 
 Library: `src/nimloth/training/sft2/`；WM 在 `wm/`；Qwen 调参在 `backbone/`；离线 eval 在 `eval/`。
 
-SFT1 checkpoints and rollout records stay under `experiments/navigation_baseline/runs/`.
+SFT1 checkpoints and rollout records stay under `experiments/navigation_baseline/runs/` (legacy); SFT1 scripts are in `experiments/training/sft1/`.
+
+**Outputs:** train checkpoints/logs → `outputs/experiments/training/sft2/<YYYY-MM-DD>/<experiment_name>/`; Slurm logs → `outputs/experiments/training/sft2/slurm/`. Legacy SFT2 runs under `experiments/navigation_baseline/runs/` are not overwritten; resume via `TRAIN_OUT_OVERRIDE`.

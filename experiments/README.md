@@ -19,22 +19,18 @@
 
 ---
 
-## 反模式：`navigation_baseline/`（待清理）
+## 反模式：`navigation_baseline/`（遗留，勿扩展）
 
-`experiments/navigation_baseline/` 是当前仓库的**历史遗留反模式**，计划在迁移完成后收缩或删除：
+`experiments/navigation_baseline/` 是历史遗留反模式目录（节点名 / retry 编号写死在文件名里）。
 
-- 大量 **一次性** Slurm / submit 脚本（节点名、job id、retry 编号写死在文件名里）
-- 同一流程的多种副本（`resume_retry2_*`、`dgx*_train_*`、`submit_sft1_*` …）
-- 实验细节散落在数十个脚本中，难以维护，也容易误导后续 AI 复制错误路径
+**VAGEN navigation baseline 的规范入口** 已迁至 `experiments/training/baseline/` + `configs/training/baseline/` + `outputs/experiments/training/baseline/`。
 
-**不要**在此基础上继续新增「再写一个 `train_foo_dgx42.slurm`」类文件。
-
-新工作应：
+**不要**在 `navigation_baseline/` 新增脚本。新工作应：
 
 1. 把可复用逻辑放进 `src/nimloth/`；
 2. 把参数放进 `configs/training/`；
-3. 在 `experiments/training/phase{0,1,2}_*/` 放**少量通用模板**（通过环境变量或 yaml 区分变体）；
-4. 把该次运行的具体命令、commit、结果写入 `outputs/experiments/<实验组>/` 下的说明，而不是写进 git 跟踪的脚本名。
+3. 在 `experiments/training/baseline/`（或 phase 子目录）放**少量通用模板**（环境变量 / yaml 区分变体）；
+4. 把单次运行的命令、commit、结果写入 `outputs/experiments/<实验组>/`，而不是写进 git 脚本名。
 
 迁移映射见 `ai_tasks/sft2_phase2_plan.md` 与 `experiments/training/README.md`。
 

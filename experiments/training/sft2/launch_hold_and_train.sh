@@ -9,11 +9,13 @@ SCANCEL=/cm/shared/apps/slurm/current/bin/scancel
 SQUEUE=/cm/shared/apps/slurm/current/bin/squeue
 export SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 
-NODE=${SFT2_NODE:-dgx-28}
+NODE=${SFT2_NODE:?set SFT2_NODE for hold+train}
 SFT1_EPOCH=${SFT1_EPOCH:-2}
 SFT2_LLM_TUNE=${SFT2_LLM_TUNE:-freeze}
 SFT2_VISION_TUNE=${SFT2_VISION_TUNE:-full}
-TRAIN_OUT=${TRAIN_OUT:-${REPO}/experiments/navigation_baseline/runs/sft2_latentwm_default_dgx28_8gpu}
+RUN_DATE=${RUN_DATE:-$(date +%Y-%m-%d)}
+EXPERIMENT_NAME=${EXPERIMENT_NAME:-sft2_latentwm_default_8gpu}
+TRAIN_OUT=${TRAIN_OUT:-${REPO}/outputs/experiments/training/sft2/${RUN_DATE}/${EXPERIMENT_NAME}}
 
 echo "=== Hold + SFT2 launch ==="
 echo "node: ${NODE}"
@@ -57,7 +59,7 @@ sleep 3
 
 TRAIN_JOB=$($SLURM --account=peilab --partition=normal --nodelist="${NODE}" \
   --job-name="sft2-default-8g" \
-  --export=ALL,SFT2_LLM_TUNE="${SFT2_LLM_TUNE}",SFT2_VISION_TUNE="${SFT2_VISION_TUNE}",NGPUS=8,SFT1_EPOCH="${SFT1_EPOCH}",SKIP_SFT1_DONE=1,TRAIN_OUT_OVERRIDE="${TRAIN_OUT}" \
+  --export=ALL,SFT2_LLM_TUNE="${SFT2_LLM_TUNE}",SFT2_VISION_TUNE="${SFT2_VISION_TUNE}",NGPUS=8,SFT1_EPOCH="${SFT1_EPOCH}",SKIP_SFT1_DONE=1,TRAIN_OUT_OVERRIDE="${TRAIN_OUT}",EXPERIMENT_NAME="${EXPERIMENT_NAME}",RUN_DATE="${RUN_DATE}" \
   "${ROOT}/train_vagen79_default.slurm" | awk '{print $NF}')
 
 echo "sft2 train job: ${TRAIN_JOB}"

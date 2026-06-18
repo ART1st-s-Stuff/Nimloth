@@ -424,3 +424,20 @@
 - `_vendor_lewm.py` 不再导入/导出 `JEPA`、`SIGReg`，仅保留 SFT2 predictor 需要的 `ARPredictor`、`Embedder`、`MLP`。
 - `ai_tasks/sft2_phase2_plan.md` 与 `CHANGELOG.md` 已同步：SFT2 predictor 仅支持自身 `predictor.pt` checkpoint 或随机初始化，不支持旧 JEPA checkpoint warm-start。
 
+### 2026-06-18 baseline 实验目录迁移
+
+- 分支：`refactor/experiments-training-baseline`
+- 新增规范入口：`experiments/training/baseline/`（通用 Slurm + submit，无节点/retry 命名）
+- 配置：`configs/training/baseline/{train,val,defaults}.yaml`
+- 远程已初始化：`outputs/experiments/training/baseline/`（`README.md`、`progress.md`、`slurm/`、`runtime/`）；旧 `outputs/experiments/navigation_baseline/` 保留
+- 参考最新有效 VAGEN RL run：legacy `retry2`，`global_step_93`
+- `experiments/navigation_baseline/` 标记为冻结遗留，勿新增脚本
+
+### 2026-06-18 SFT1 脚本迁移
+
+- 规范入口：`experiments/training/sft1/` + `configs/training/sft1/`
+- 远程已初始化：`outputs/experiments/training/sft1/`（README、progress.md、slurm/）
+- legacy runs 暂留 `experiments/navigation_baseline/runs/`（`SFT1_RUNS_ROOT` 可覆盖）
+- SFT2 合并脚本路径更新为 `experiments/training/sft1/merge_lora_ckpt.py`
+- SFT2 默认 `TRAIN_OUT` 迁至 `outputs/experiments/training/sft2/<date>/<name>/`（`common_env.sh`）
+

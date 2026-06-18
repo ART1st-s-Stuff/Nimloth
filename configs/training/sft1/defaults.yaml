@@ -1,0 +1,28 @@
+# SFT1 default hyperparameters (reference)
+
+model: Qwen2.5-VL-3B
+init_checkpoint: null  # default: VAGEN retry2 global_step_79 actor HF
+
+data:
+  records_root: experiments/navigation_baseline/runs/sft1_sft_records_vagen79_nimloth_format
+  train_jsonl: train_all.jsonl
+  val_jsonl: val_all.jsonl
+
+tuning:
+  mode: lora  # lora | embedlr
+  lora_r: 64
+  lora_alpha: 128
+
+train:
+  gpus: 8
+  epochs: 20
+  batch_size: 1
+  grad_accum: 8
+  lr: 2.0e-4          # lora
+  embedding_lr: 5.0e-4  # lora
+  max_length: 20000
+  max_pixels: 602112
+
+paths:
+  legacy_runs_root: experiments/navigation_baseline/runs
+  outputs_root: outputs/experiments/training/sft1

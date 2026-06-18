@@ -1,10 +1,7 @@
-# Phase 1 — format SFT (SFT1)
+# Phase 1 — SFT1 (redirect)
 
-Migrate from `experiments/navigation_baseline/`:
-- `train_sft1_qwen25vl.py` → `train.py`
-- `train_sft1_*.slurm`, `submit_sft1_*.sh`
-- `convert_sft1_rollouts_to_nimloth.py` → `convert_rollouts.py`
-- eval / watcher scripts
+Canonical SFT1 scripts moved to [`../sft1/README.md`](../sft1/README.md).
+
+Configs: `configs/training/sft1/`
 
 Library: `src/nimloth/training/phase1_sft/`
-Configs: `configs/training/phase1_sft/`

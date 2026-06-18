@@ -16,17 +16,14 @@ set -euo pipefail
 
 REPO=/project/peilab/atst/nimloth
 SCRIPTDIR=${REPO}/experiments/training/sft2
-NB=${REPO}/experiments/navigation_baseline
-RECORDS_ROOT=${RECORDS_ROOT:-${NB}/runs/sft1_sft_records_vagen79_nimloth_format}
-SFT1_RUN=${SFT1_RUN:-${NB}/runs/sft1_train_vagen79_qwen25vl_alltrain_8gpu_lora}
-BASE_HF=${BASE_HF:-${NB}/runs/vagen_nav_dgx31_49train_dgx36env_3node_16train8env_original_base_common_resp20k_single_action_promptfix_retry2/checkpoints/global_step_79/actor/huggingface}
+# shellcheck disable=SC1091
+source "${SCRIPTDIR}/common_env.sh"
 CONFIG=${CONFIG:-${REPO}/configs/training/sft2/latent_wm_value.yaml}
 
 SFT2_LLM_TUNE=${SFT2_LLM_TUNE:-freeze}
 SFT2_VISION_TUNE=${SFT2_VISION_TUNE:-full}
 SFT2_MODE=${SFT2_MODE:-default}
 EVAL_TAG_PREFIX=${EVAL_TAG_PREFIX:-alltrain_8gpu_lora_cache}
-TRAIN_OUT=${TRAIN_OUT:-${NB}/runs/sft2_latentwm_default}
 if [ -n "${TRAIN_OUT_OVERRIDE:-}" ]; then
   TRAIN_OUT="${TRAIN_OUT_OVERRIDE}"
 fi
@@ -48,7 +45,7 @@ ensure_sft1_merged() {
     exit 1
   fi
   echo "=== Merge SFT1 LoRA ${SFT1_ADAPTER} -> hf_merged ===" | tee -a "${LOG}"
-  python3 "${NB}/merge_sft1_lora_ckpt.py" \
+  python3 "${SFT1}/merge_lora_ckpt.py" \
     --base-model "${BASE_HF}" \
     --adapter-dir "${SFT1_ADAPTER}" \
     --out-dir "${SFT1_BEST}"

@@ -1,0 +1,25 @@
+# Phase 1 — SFT1 default hyperparameters
+
+model: Qwen2.5-VL-3B
+init_checkpoint: null  # set per run (e.g. VAGEN global_step_79 actor HF)
+
+data:
+  train_jsonl: train_success.jsonl  # or train_all.jsonl per experiment
+  val_jsonl: val_all.jsonl
+
+tuning:
+  lora: true
+  lora_r: 64
+  lora_alpha: 128
+
+train:
+  epochs: 20
+  batch_size: 1
+  grad_accum: 8
+  lr: 1.0e-6
+  embedding_lr: 5.0e-6
+  max_length: 12000
+  max_pixels: 602112
+
+eval:
+  val_success_rate: true
