@@ -1,16 +1,14 @@
-"""World-model utilities for Nimloth (LeWM-style JEPA on navigation rollouts)."""
+"""World-model utilities for Nimloth."""
 
 from nimloth.wm.dataset import TransitionSample, expand_record_transitions, load_jsonl_records
-from nimloth.wm.lewm import LeWMConfig, LeWMWrapper, build_lewm, freeze_module
-from nimloth.wm.preprocess import LeWMImageTransform, default_image_transform
+from nimloth.wm.lewm import LeWMConfig, action_one_hot, freeze_module
+from nimloth.wm.predictor import LatentWMPredictor
 
 __all__ = [
+    "LatentWMPredictor",
     "LeWMConfig",
-    "LeWMWrapper",
-    "LeWMImageTransform",
     "TransitionSample",
-    "build_lewm",
-    "default_image_transform",
+    "action_one_hot",
     "expand_record_transitions",
     "freeze_module",
     "load_jsonl_records",

@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from nimloth.training.sft2.predictor import LatentWMPredictor
+from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.training.sft2.value_head import ValueHead
 
 

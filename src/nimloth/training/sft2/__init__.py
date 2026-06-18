@@ -10,7 +10,7 @@ from nimloth.training.sft2.loss import (
     compute_wm_latent_loss,
     wm_loss_weight_schedule,
 )
-from nimloth.training.sft2.predictor import LatentWMPredictor
+from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.training.sft2.value_head import ValueHead
 
 __all__ = [

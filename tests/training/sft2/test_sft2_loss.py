@@ -3,12 +3,12 @@ from __future__ import annotations
 import torch
 
 from nimloth.training.sft2.loss import StateProjector, compute_combined_loss, compute_wm_latent_loss, wm_loss_weight_schedule
-from nimloth.training.sft2.predictor import LatentWMPredictor
+from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.lewm import LeWMConfig
 
 
 def test_wm_latent_loss_backprops_to_state_proj() -> None:
-    cfg = LeWMConfig(emb_dim=16, action_emb_dim=8, predictor_hidden_dim=16, predictor_mlp_dim=32)
+    cfg = LeWMConfig(emb_dim=16, predictor_hidden_dim=16, predictor_mlp_dim=32)
     wm_predictor = LatentWMPredictor.create(cfg)
 
     state_proj = StateProjector(qwen_hidden_dim=32, lewm_emb_dim=cfg.emb_dim)
