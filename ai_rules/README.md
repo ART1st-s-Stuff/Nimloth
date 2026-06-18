@@ -9,7 +9,6 @@
    - `02_memory_and_progress.md`
    - `03_experiments_and_data.md`
    - `04_code_and_repo.md`
-   - `05_flower_reference.md`
 3. 当任务触发特定事件时，还必须阅读并执行 `events/` 下对应事件规则。
 
 ## 规则优先级

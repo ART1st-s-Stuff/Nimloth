@@ -1,9 +1,6 @@
 # Nimloth
 
 Nimloth is a Python machine-learning project for building a **World Model Agent**.
-
-This repository is a reboot inspired by `../flower`, but it should evolve with explicit, verified design choices rather than blindly copying the old project.
-
 ## Current status
 
 Project initialization is focused on AI collaboration prompts and rules.

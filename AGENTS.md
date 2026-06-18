@@ -11,7 +11,6 @@
 - 项目名：Nimloth
 - 目标：World Model Agent
 - 技术栈：Python 机器学习
-- 性质：参考 `../flower` 的重制项目，但不盲目复制 flower。
 
 ## 项目身份
 
@@ -19,7 +18,6 @@
 - 目标：**World Model Agent**
 - 技术栈：**Python 机器学习**
 - 当前阶段：vibe coding 项目初始化 / prompt 与协作规则建设。
-- 参考项目：`../flower`。Nimloth 是重制项目，不是 flower 的直接复制。
 
 ## 指令优先级
 所有 AI 必须按以下优先级执行：

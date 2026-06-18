@@ -13,8 +13,6 @@
 - 项目名称：Nimloth
 - 项目目标：World Model Agent
 - 技术栈：Python 机器学习
-- 目录位置：当前目录 `/workspace/remote/superpod-csejzhang/nimloth`
-- 参考项目：`../flower`
 - 当前重点：建立 AI 友好的轻量 memory/task 管理方式。
 - Memory 设计原则：短小、可搜索、由人类审批、以文件段 evidence 为依据，不写长篇总结。
 
@@ -61,8 +59,6 @@
 ---
 
 ## 失效/注意
-
-- 旧项目 flower 中的实现只能作为参考；不能默认视为 Nimloth 的目标实现。
 - 当前阶段不要擅自创建业务代码结构、训练脚本或实验目录。
 
 ---
