@@ -49,6 +49,11 @@ class LatentWMPredictor(nn.Module):
         preds = rearrange(preds, "(b t) d -> b t d", b=b, t=t)
         return preds[:, -1]
 
+    def forward(self, state_emb: torch.Tensor, action_indices: torch.Tensor) -> torch.Tensor:
+        """DDP-compatible entrypoint for next-latent prediction."""
+
+        return self.predict_next_emb(state_emb, action_indices)
+
     def save_checkpoint(self, path: Path) -> None:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)

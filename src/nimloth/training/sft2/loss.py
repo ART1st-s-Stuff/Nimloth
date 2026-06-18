@@ -33,7 +33,9 @@ def compute_wm_latent_loss(
     state_emb = state_proj(qwen_hidden_at_latent).float()
     with torch.no_grad():
         target_emb = state_proj(qwen_hidden_at_next_latent).float()
-    pred = wm_predictor.predict_next_emb(state_emb, action_indices)
+    # Call forward instead of a custom method so DDP-wrapped predictors
+    # participate in gradient synchronization.
+    pred = wm_predictor(state_emb, action_indices)
     mse = F.mse_loss(pred, target_emb)
     return mse, {"wm_mse": float(mse.detach().item())}
 
