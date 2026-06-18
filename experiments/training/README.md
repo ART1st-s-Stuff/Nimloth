@@ -6,5 +6,7 @@
 | `phase1_sft/` | 1 | Format SFT (SFT1) |
 | `sft2/` | 2 | WM + Value alignment (SFT2) |
 
+SFT2 `train.py` 为薄入口，调用 `nimloth.training.sft2.trainer`；WM 模型在 `src/nimloth/wm/`。
+
 SFT1 and VAGEN rollout scripts remain in `experiments/navigation_baseline/`.
 See `ai_tasks/sft2_phase2_plan.md` for the migration map.

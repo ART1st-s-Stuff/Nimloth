@@ -4,7 +4,7 @@ Canonical location for SFT2 per `ai_tasks/sft2_exp.md`.
 
 | File | Purpose |
 |------|---------|
-| `train.py` | Main training entry |
+| `train.py` | Thin experiment entry → `nimloth.training.sft2.trainer` |
 | `train_vagen79_default.slurm` | 8-GPU Slurm job (reads yaml config) |
 | `submit_default_8gpu.sh` | Default: LLM freeze + vision full |
 | `submit_llmvis_lora_8gpu.sh` | LLM+Vision LoRA variant |
@@ -16,6 +16,6 @@ Canonical location for SFT2 per `ai_tasks/sft2_exp.md`.
 
 Config: `configs/training/sft2/latent_wm_value.yaml`
 
-Library: `src/nimloth/training/sft2/`
+Library: `src/nimloth/training/sft2/` (`trainer.py`, `step.py`, `checkpoint.py`, …); WM models in `src/nimloth/wm/`.
 
 SFT1 checkpoints and rollout records stay under `experiments/navigation_baseline/runs/`.

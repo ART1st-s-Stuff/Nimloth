@@ -31,6 +31,11 @@ def resolve_tune_modes(args: argparse.Namespace) -> tuple[TuneMode, TuneMode]:
     return getattr(args, "llm_tune", "freeze"), getattr(args, "vision_tune", "freeze")
 
 
+def uses_lora(args: argparse.Namespace) -> bool:
+    llm_tune, vision_tune = resolve_tune_modes(args)
+    return llm_tune == "lora" or vision_tune == "lora"
+
+
 def _lora_target_modules(llm_tune: TuneMode, vision_tune: TuneMode) -> list[str]:
     targets: list[str] = []
     if llm_tune == "lora":

@@ -2,7 +2,6 @@
 
 from nimloth.training.common.metrics import MetricAccumulator
 from nimloth.training.common.schedules import qwen_lr_schedule, set_optimizer_group_lr
-from nimloth.training.sft2.collate import messages_with_image_paths, transition_collate_for_qwen
 from nimloth.training.sft2.loss import (
     StateProjector,
     compute_combined_loss,
@@ -10,8 +9,9 @@ from nimloth.training.sft2.loss import (
     compute_wm_latent_loss,
     wm_loss_weight_schedule,
 )
+from nimloth.wm.collate import messages_with_image_paths, transition_collate_for_qwen
 from nimloth.wm.predictor import LatentWMPredictor
-from nimloth.training.sft2.value_head import ValueHead
+from nimloth.wm.value_head import ValueHead
 
 __all__ = [
     "LatentWMPredictor",

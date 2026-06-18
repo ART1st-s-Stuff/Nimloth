@@ -1,0 +1,73 @@
+"""SFT2 validation loop."""
+
+from __future__ import annotations
+
+import contextlib
+
+import torch
+
+from nimloth.training.common.metrics import MetricAccumulator
+from nimloth.training.common.qwen_batch import build_qwen_batch
+from nimloth.training.common.vision_ema import VisionEncoderEMA
+from nimloth.training.sft2.metrics import batch_step_success_rate
+from nimloth.training.sft2.qwen_latent import extract_qwen_latents
+from nimloth.training.sft2.step import compute_step_value_loss, compute_step_wm_loss
+
+
+@torch.no_grad()
+def evaluate(
+    model,
+    state_proj,
+    wm_predictor,
+    value_head,
+    loader,
+    processor,
+    token_id_map,
+    device,
+    *,
+    max_batches: int = -1,
+    max_length: int = 20000,
+    vision_ema: VisionEncoderEMA | None = None,
+) -> dict[str, float]:
+    model.eval()
+    state_proj.eval()
+    wm_predictor.eval()
+    value_head.eval()
+    acc = MetricAccumulator()
+    ema_ctx = vision_ema.use_ema_weights(model) if vision_ema is not None else contextlib.nullcontext()
+    with ema_ctx:
+        for i, batch_samples in enumerate(loader):
+            if max_batches > 0 and i >= max_batches:
+                break
+            items = batch_samples
+            enc = build_qwen_batch(items, processor, max_length=max_length)
+            latent_hidden, _ = extract_qwen_latents(model, enc, token_id_map, device)
+            _, wm_metrics = compute_step_wm_loss(
+                model,
+                items,
+                latent_hidden,
+                processor,
+                token_id_map,
+                device,
+                state_proj,
+                wm_predictor,
+                max_length,
+                vision_ema=vision_ema,
+            )
+            _, value_metrics = compute_step_value_loss(
+                latent_hidden,
+                items,
+                state_proj,
+                value_head,
+                device,
+                rank_margin=0.0,
+                lambda_rank=0.0,
+            )
+            success_rate = batch_step_success_rate(items)
+            acc.update({**wm_metrics, **value_metrics, "success_rate": success_rate})
+
+    model.train()
+    state_proj.train()
+    wm_predictor.train()
+    value_head.train()
+    return acc.averages()

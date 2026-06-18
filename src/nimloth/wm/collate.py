@@ -1,4 +1,4 @@
-"""Collate helpers for SFT2 transition batches."""
+"""Collate helpers for WM transition batches fed to Qwen."""
 
 from __future__ import annotations
 

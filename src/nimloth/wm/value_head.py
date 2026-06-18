@@ -1,4 +1,4 @@
-"""Value head for SFT2: state embedding -> per-action values."""
+"""Value head: WM state embedding -> per-action values."""
 
 from __future__ import annotations
 

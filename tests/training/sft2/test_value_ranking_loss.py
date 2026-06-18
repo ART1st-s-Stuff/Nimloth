@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 
 from nimloth.training.sft2.loss import compute_value_loss
-from nimloth.training.sft2.value_head import ValueHead
+from nimloth.wm.value_head import ValueHead
 
 
 def _bias_only_head(bias: torch.Tensor) -> ValueHead:
