@@ -17,6 +17,9 @@
 
 如果任一项不清楚，停止并询问人类。
 
+## 输出目录
+输出目录为`outputs/`，**该目录仅在服务器上有**
+
 ## Dataset split 硬规则
 
 - 必须从实际 dataset/config/code/metadata 核实 split 语义。

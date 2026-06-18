@@ -44,3 +44,6 @@
 - `03_experiments_and_data.md`: 实验相关行为准则。做实验、更改实验代码前必读
 - `04_code_and_repo.md`: 代码与repo规则。写代码之前必读
 - `events/on_progress.md`: 任务有进展时需要做的事
+
+## 服务器连接方法
+项目根目录`SERVER.md`
