@@ -33,8 +33,11 @@ Requires VAGEN submodule on branch `fix/env-reproduction` (or newer) with:
 
 - stable trajectory `uid` derived from `(data_source, env_seed, eval_set)`
 - rollout/validation jsonl fields: `env_seed`, `data_source`, `eval_set`, `env_name`, `uid`
-- validation dump sorted by env identity; runtime assert `navigation_base=60`, `navigation_common=60`
+- validation dump sorted by env identity; runtime assert enabled **only via baseline Slurm CLI**
+- assert checks `count` **and** `eval_set` per `data_source` (blocks train-split pollution)
 - `data.seed=42`, `data.base_seed=42`, `data.validation_shuffle=False` via `vagen_env_repro_cli.inc.sh`
+
+VAGEN default: `trainer.assert_val_env_composition=False` (opt-in from Nimloth scripts).
 
 After a val step, verify:
 

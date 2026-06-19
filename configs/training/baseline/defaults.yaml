@@ -9,6 +9,13 @@ reproduction:
   base_seed: 42
   validation_shuffle: false
   assert_val_env_composition: true
+  val_env_composition:
+    navigation_base:
+      count: 60
+      eval_set: base
+    navigation_common:
+      count: 60
+      eval_set: common_sense
 
 training:
   actor_lr: 1.0e-6

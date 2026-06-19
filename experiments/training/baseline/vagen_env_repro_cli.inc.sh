@@ -10,4 +10,6 @@ VAGEN_ENV_REPRO_ARGS=(
   "+data.base_seed=${VAGEN_BASE_SEED}"
   "data.validation_shuffle=False"
   "trainer.assert_val_env_composition=True"
+  '+trainer.val_env_composition.navigation_base={count:60,eval_set:base}'
+  '+trainer.val_env_composition.navigation_common={count:60,eval_set:common_sense}'
 )
