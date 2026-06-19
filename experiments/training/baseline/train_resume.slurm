@@ -155,6 +155,7 @@ $SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
   REPO='${REPO}'
   # shellcheck disable=SC1091
   source '${SCRIPTDIR}/common_env.sh'
+  cd '${BASEDIR}'
   PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     --config-path='${BASEDIR}/vagen/configs' \
     --config-name='vagen_multiturn' \
