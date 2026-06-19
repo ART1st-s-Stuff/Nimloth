@@ -107,6 +107,9 @@ cp "${CONFIG_DIR}/val.yaml" "${TMP_CONFIG_DIR}/val.yaml"
 sed -i "s|ENV_URL_FILE|${ENV_URL_FILE}|g" "${TMP_CONFIG_DIR}/train.yaml"
 sed -i "s|ENV_URL_FILE|${ENV_URL_FILE}|g" "${TMP_CONFIG_DIR}/val.yaml"
 
+# shellcheck disable=SC1091
+source "${SCRIPTDIR}/vagen_env_repro_cli.inc.sh"
+
 for node in "${NODES[@]}"; do
   $SL/srun --overlap --nodes=1 --ntasks=1 -w "$node" bash -lc "
     REPO='${REPO}'
@@ -159,6 +162,10 @@ $SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
     data.val_files='${TMP_CONFIG_DIR}/val.yaml' \
     data.train_batch_size=${TRAIN_BATCH_SIZE} \
     data.val_batch_size=${VAL_BATCH_SIZE} \
+    data.seed=${VAGEN_DATA_SEED} \
+    +data.base_seed=${VAGEN_BASE_SEED} \
+    data.validation_shuffle=False \
+    trainer.assert_val_env_composition=True \
     data.max_prompt_length=3000 \
     data.max_response_length=20000 \
     algorithm.adv_estimator=gae \

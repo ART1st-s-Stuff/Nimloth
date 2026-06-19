@@ -28,6 +28,7 @@ MODEL_PATH=${MODEL_PATH:-Qwen/Qwen2.5-VL-3B-Instruct}
 TOTAL_STEPS=${TOTAL_STEPS:-50}
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-128}
 PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-32}
+VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-24}
 RUNTIME_DIR=${RUNTIME_DIR:-${REPO}/outputs/experiments/training/baseline/runtime}
 
 mkdir -p "${RUN_DIR}" "${REPO}/outputs/experiments/training/baseline/slurm"
@@ -67,6 +68,8 @@ trap 'rm -rf "$TMPDIR_CFG" "$TMPDIR"' EXIT
 
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
+# shellcheck disable=SC1091
+source "${SCRIPTDIR}/vagen_env_repro_cli.inc.sh"
 cd "${BASEDIR}"
 
 NODES=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
@@ -106,6 +109,8 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     data.train_files="${TMPDIR_CFG}/train.yaml" \
     data.val_files="${TMPDIR_CFG}/val.yaml" \
     data.train_batch_size=${TRAIN_BATCH_SIZE} \
+    data.val_batch_size=${VAL_BATCH_SIZE} \
+    "${VAGEN_ENV_REPRO_ARGS[@]}" \
     data.max_prompt_length=4096 \
     data.max_response_length=16384 \
     algorithm.adv_estimator=gae \

@@ -20,10 +20,28 @@ Canonical scripts for VAGEN navigation RL baseline per `ai_rules/03_experiments_
 | `slurm_gpu_resources.py` | Cluster GPU inventory helper |
 | `submit_env_external_4gpu.sh` | Thin sbatch wrapper for external env |
 | `submit_train_resume.sh` | Thin sbatch wrapper for resume train |
+| `vagen_env_repro_cli.inc.sh` | Shared Hydra overrides for reproducible env sampling |
+| `verify_validation_jsonl.py` | Post-hoc check: val jsonl has seed metadata + 60/60 split |
 
 Config: `configs/training/baseline/` (`train.yaml`, `val.yaml`, `defaults.yaml`).
 
 Outputs: `outputs/experiments/training/baseline/` (Slurm logs, per-run dirs, `progress.md`).
+
+## Env reproduction (`fix/env-reproduction`)
+
+Requires VAGEN submodule on branch `fix/env-reproduction` (or newer) with:
+
+- stable trajectory `uid` derived from `(data_source, env_seed, eval_set)`
+- rollout/validation jsonl fields: `env_seed`, `data_source`, `eval_set`, `env_name`, `uid`
+- validation dump sorted by env identity; runtime assert `navigation_base=60`, `navigation_common=60`
+- `data.seed=42`, `data.base_seed=42`, `data.validation_shuffle=False` via `vagen_env_repro_cli.inc.sh`
+
+After a val step, verify:
+
+```bash
+python3 experiments/training/baseline/verify_validation_jsonl.py \
+  outputs/experiments/training/baseline/<date>/<run>/validation/0.jsonl
+```
 
 ## Latest valid reference run (2026-06)
 

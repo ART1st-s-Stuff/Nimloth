@@ -3,6 +3,13 @@
 
 model: Qwen/Qwen2.5-VL-3B-Instruct
 
+# Reproducible env sampling for train/val (passed to VAGEN Hydra as data.seed / data.base_seed).
+reproduction:
+  data_seed: 42
+  base_seed: 42
+  validation_shuffle: false
+  assert_val_env_composition: true
+
 training:
   actor_lr: 1.0e-6
   critic_lr: 1.0e-5
