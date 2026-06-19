@@ -473,3 +473,13 @@
 - `training/sft2/trainer.py` 在 gradient accumulation 非同步 micro-step 上对 DDP 模块使用 `no_sync()`，只在 accumulation 边界或 epoch 尾部同步梯度。
 - SFT2 配置/CLI 增加性能旋钮：YAML 可设置 `attn_implementation`、`gradient_checkpointing`；CLI 的 `--gradient-checkpointing/--no-gradient-checkpointing` 可切换；默认配置改为 `flash_attention_2` 且保持 gradient checkpointing 开启以降低 OOM 风险。
 - 验证：`python -m py_compile` 覆盖相关源码和新增测试通过；当前本地 Python 缺 `pytest`，手动导入测试因缺 `PIL` 未能运行。
+
+## 2026-06-19：SFT2 dev 分支同步服务器并重跑
+
+- 本地 `../nimloth-dev` 已提交并推送 dev 分支：`682448d Optimize SFT2 training throughput`，随后修正 VAGEN submodule 指针到服务器已有/已推送的 tokenfix commit：`80d65a0 Use pushed VAGEN tokenfix submodule commit`。
+- 服务器 `/project/peilab/atst/nimloth` 已切到 `dev` 并 reset 到 `origin/dev` commit `80d65a05c36620d3ab9e0eaa6e879a93d20b2d95`；服务器工作区清洁。
+- 服务器验证通过：`PYTHONPATH=src .venv/bin/python -m pytest -q tests/training/common/test_qwen_batch.py tests/training/sft2/test_qwen_latent.py` -> `3 passed in 63.94s`。
+- 已取消旧慢速 SFT2 hold/train job `456285`，保留 hold job `456454`（`dgx-28`）用于重跑。
+- 新 run 输出目录：`outputs/experiments/training/sft2/2026-06-19/sft2_latentwm_default_8gpu_tokenfix_opt`；README 记录 commit、数据、init checkpoint、训练/冻结模块与监控项。
+- 第一次 launcher 因 login shell 未 load Slurm module 未启动；第二次 launcher 误设 `EVAL_TAG_PREFIX=alltrain_8gpu_lora_cache_opt`，被及时 kill，未进入训练。第三次使用正确 `EVAL_TAG_PREFIX=alltrain_8gpu_lora_cache` 启动。
+- 当前新 run 已健康启动：从 SFT1 `epoch_004/hf_merged` 初始化，`train_step_log.csv` 已写到至少 `global_step=13`；最近 10 step 中位约 `6.36s/step`（旧 run 最近 200 step 中位约 `7.55s/step`），GPU 显存约 47GB/80GB。
