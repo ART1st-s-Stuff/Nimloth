@@ -50,6 +50,13 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--gradient-checkpointing", action="store_true", default=True)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument(
+        "--resume-from",
+        type=Path,
+        default=None,
+        help="Checkpoint dir to resume from (under output-dir if relative). "
+        "Default with --resume: latest epoch_* or best/ by saved step.",
+    )
     ap.add_argument("--train-wm-predictor", action="store_true", default=True)
     ap.add_argument("--freeze-wm-predictor", action="store_true")
     ap.add_argument("--llm-tune", choices=("freeze", "lora", "full"), default="freeze")

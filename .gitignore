@@ -61,3 +61,4 @@ experiments/navigation_baseline/*_jobs.txt
 # Server usage
 SERVER.md
 check_node_resources.sh
+NODES.md

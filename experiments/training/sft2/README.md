@@ -11,6 +11,7 @@ Canonical location for SFT2 per `ai_tasks/sft2_exp.md`.
 | `submit_llmvis_lora_preempt6g_dgx11.sh` | Preempt 6-GPU variant |
 | `eval_val_rollout_success.py` | Offline val trajectory success rate |
 | `upload_sft2_wandb_from_csv.py` | Retroactive wandb upload from CSV |
+| `upload_sft2_eval_wandb.py` | Upload VAGEN greedy rollout eval per-ckpt metrics to wandb |
 | `pick_sft1_ckpt_for_sft2.py` | SFT1 init checkpoint picker |
 | `resolve_sft1_init_for_sft2.sh` | Merge SFT1 LoRA → hf_merged for SFT2 |
 

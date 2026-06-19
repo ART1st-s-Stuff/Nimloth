@@ -24,7 +24,12 @@ from nimloth.backbone.qwen_tuning import configure_qwen_tuning, resolve_tune_mod
 from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema
 from nimloth.training.common.schedules import qwen_lr_schedule, set_optimizer_group_lr
 from nimloth.training.common.wandb_logging import log_train_step, log_val_epoch, maybe_init_wandb
-from nimloth.training.sft2.checkpoint import load_aux_checkpoint, load_lora_adapter_state, save_checkpoint
+from nimloth.training.sft2.checkpoint import (
+    load_aux_checkpoint,
+    load_lora_adapter_state,
+    resolve_resume_checkpoint_dir,
+    save_checkpoint,
+)
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
 from nimloth.training.sft2.evaluate import evaluate
@@ -54,9 +59,13 @@ def train_sft2(args=None) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     wandb_run = maybe_init_wandb(args)
 
-    resume_ckpt_dir = args.output_dir / "best"
-    resume_state_path = resume_ckpt_dir / "training_state.pt"
-    resume_adapter = resume_ckpt_dir / "adapter_config.json"
+    resume_ckpt_dir: Path | None = None
+    if args.resume:
+        resume_ckpt_dir = resolve_resume_checkpoint_dir(args.output_dir, args.resume_from)
+    resume_state_path = (
+        resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir is not None else None
+    )
+    resume_adapter = resume_ckpt_dir / "adapter_config.json" if resume_ckpt_dir is not None else None
 
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
@@ -74,6 +83,7 @@ def train_sft2(args=None) -> int:
                     "vision_ema_decay": args.vision_ema_decay,
                     "train_wm_predictor": train_wm_predictor,
                     "resume": args.resume,
+                    "resume_from": str(resume_ckpt_dir) if resume_ckpt_dir is not None else None,
                     "init_model": str(args.model),
                     "wm_predictor_checkpoint": str(args.wm_predictor_checkpoint) if args.wm_predictor_checkpoint else None,
                     "output_dir": str(args.output_dir),
@@ -120,7 +130,7 @@ def train_sft2(args=None) -> int:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.resize_token_embeddings(len(processor.tokenizer))
 
-    if args.resume and resume_state_path.exists() and resume_adapter.exists():
+    if args.resume and resume_state_path is not None and resume_state_path.exists() and resume_adapter.exists():
         saved = torch.load(resume_state_path, map_location="cpu", weights_only=False)
         if not uses_lora(args):
             raise ValueError("--resume with LoRA adapter requires llm_tune and/or vision_tune lora")
@@ -131,7 +141,12 @@ def train_sft2(args=None) -> int:
             print(json.dumps({"resume_lora_adapter": str(resume_ckpt_dir), "base_model_path": str(base_model_path)}))
         model = configure_qwen_tuning(model, args)
         load_lora_adapter_state(model, resume_ckpt_dir)
-    elif args.resume and resume_state_path.exists() and (resume_ckpt_dir / "config.json").exists():
+    elif (
+        args.resume
+        and resume_state_path is not None
+        and resume_state_path.exists()
+        and (resume_ckpt_dir / "config.json").exists()
+    ):
         if uses_lora(args):
             raise ValueError("cannot --resume full HF checkpoint with lora tuning")
         if is_main():
@@ -170,7 +185,7 @@ def train_sft2(args=None) -> int:
     state_proj = StateProjector(hidden_size, wm_predictor.emb_dim).to(device=device, dtype=model_dtype)
     value_head = ValueHead(wm_predictor.emb_dim).to(device=device, dtype=model_dtype)
 
-    if args.resume and resume_state_path.exists():
+    if args.resume and resume_state_path is not None and resume_state_path.exists():
         load_aux_checkpoint(resume_ckpt_dir, state_proj, wm_predictor, value_head, device)
 
     if world > 1:
@@ -189,8 +204,8 @@ def train_sft2(args=None) -> int:
     if vision_ema_enabled:
         vision_ema = VisionEncoderEMA(decay=args.vision_ema_decay)
         vision_ema.reset(model)
-        ema_path = resume_ckpt_dir / "vision_ema.pt"
-        if args.resume and ema_path.is_file():
+        ema_path = resume_ckpt_dir / "vision_ema.pt" if resume_ckpt_dir is not None else None
+        if args.resume and ema_path is not None and ema_path.is_file():
             loaded_ema = VisionEncoderEMA.load_checkpoint(ema_path, map_location=device)
             vision_ema.decay = loaded_ema.decay
             vision_ema.shadow = {k: v.to(device) for k, v in loaded_ema.shadow.items()}
@@ -236,7 +251,7 @@ def train_sft2(args=None) -> int:
     best_val_success_rate = -1.0
     best_val_wm_mse = float("inf")
     start_epoch = 1
-    if args.resume and resume_state_path.exists():
+    if args.resume and resume_state_path is not None and resume_state_path.exists():
         state = torch.load(resume_state_path, map_location="cpu", weights_only=False)
         global_step = int(state.get("step", 0))
         best_val_success_rate = float(state.get("best_val_success_rate", -1.0))

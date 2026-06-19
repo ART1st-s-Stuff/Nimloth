@@ -78,16 +78,18 @@ bash "${SCRIPTDIR}/resolve_sft1_init_for_sft2.sh" | tee -a "${LOG}"
 source "${SFT1_RUN}/.sft2_init_env"
 
 MODEL_PATH="${SFT1_BEST}"
-RESUME_ARGS=()
 TUNE_ARGS=(--llm-tune "${SFT2_LLM_TUNE}" --vision-tune "${SFT2_VISION_TUNE}")
 if [ "${SFT2_LLM_TUNE}" = "lora" ] || [ "${SFT2_VISION_TUNE}" = "lora" ]; then
   TUNE_ARGS+=(--lora-r "${LORA_R:-64}" --lora-alpha "${LORA_ALPHA:-128}")
 fi
-if [ -f "${TRAIN_OUT}/best/training_state.pt" ]; then
-  if [ -f "${TRAIN_OUT}/best/adapter_config.json" ] || [ -f "${TRAIN_OUT}/best/config.json" ]; then
-    RESUME_ARGS=(--resume)
-    echo "=== Resume SFT2 from ${TRAIN_OUT}/best ===" | tee -a "${LOG}"
-  fi
+RESUME_ARGS=()
+if [ -n "${RESUME_FROM:-}" ]; then
+  RESUME_ARGS=(--resume --resume-from "${RESUME_FROM}")
+  echo "=== Resume SFT2 from ${RESUME_FROM} ===" | tee -a "${LOG}"
+elif compgen -G "${TRAIN_OUT}/epoch_*/training_state.pt" > /dev/null \
+  || [ -f "${TRAIN_OUT}/best/training_state.pt" ]; then
+  RESUME_ARGS=(--resume)
+  echo "=== Resume SFT2 from latest checkpoint under ${TRAIN_OUT} ===" | tee -a "${LOG}"
 fi
 
 WM_PRED_ARGS=()

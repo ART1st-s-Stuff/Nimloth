@@ -15,6 +15,48 @@ from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
 
 
+def read_checkpoint_step(ckpt_dir: Path) -> int:
+    state_path = ckpt_dir / "training_state.pt"
+    if not state_path.is_file():
+        return -1
+    state = torch.load(state_path, map_location="cpu", weights_only=False)
+    return int(state.get("step", -1))
+
+
+def is_trainable_checkpoint_dir(ckpt_dir: Path) -> bool:
+    if not (ckpt_dir / "training_state.pt").is_file():
+        return False
+    return (ckpt_dir / "config.json").is_file() or (ckpt_dir / "adapter_config.json").is_file()
+
+
+def find_resume_checkpoint(output_dir: Path) -> Path | None:
+    """Pick the saved checkpoint with the highest step (latest progress)."""
+    candidates: list[tuple[int, Path]] = []
+    for name in ("best",):
+        ckpt_dir = output_dir / name
+        if is_trainable_checkpoint_dir(ckpt_dir):
+            candidates.append((read_checkpoint_step(ckpt_dir), ckpt_dir))
+    for epoch_dir in sorted(output_dir.glob("epoch_*")):
+        if is_trainable_checkpoint_dir(epoch_dir):
+            candidates.append((read_checkpoint_step(epoch_dir), epoch_dir))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def resolve_resume_checkpoint_dir(output_dir: Path, resume_from: Path | None) -> Path:
+    if resume_from is not None:
+        ckpt_dir = resume_from if resume_from.is_absolute() else output_dir / resume_from
+    else:
+        found = find_resume_checkpoint(output_dir)
+        if found is None:
+            raise FileNotFoundError(f"no trainable checkpoint under {output_dir}")
+        ckpt_dir = found
+    if not is_trainable_checkpoint_dir(ckpt_dir):
+        raise FileNotFoundError(f"incomplete checkpoint dir: {ckpt_dir}")
+    return ckpt_dir
+
+
 def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
     adapter_file = adapter_dir / "adapter_model.safetensors"
     if adapter_file.is_file():
