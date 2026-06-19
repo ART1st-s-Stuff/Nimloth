@@ -30,6 +30,11 @@ train:
   max_length: 12000
   max_pixels: 602112
   emb_dim: 128
+  # Performance knobs: remote H800 environment has flash_attn installed; keep
+  # gradient checkpointing enabled by default for memory safety, but CLI now
+  # supports --no-gradient-checkpointing for profiling.
+  attn_implementation: flash_attention_2
+  gradient_checkpointing: true
 
 loss:
   lambda_wm_start: 0.1

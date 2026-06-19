@@ -457,3 +457,19 @@
 - 已停止污染的远程实验 `outputs/experiments/training/sft2/2026-06-18/sft2_latentwm_default_8gpu`，并在该目录 `README.md` 记录失败原因：旧 token 被加入 tokenizer，checkpoint vocab/metadata 被污染，不应作为最终 SFT2 结果。
 - 已用 fresh output 重启 SFT2：`outputs/experiments/training/sft2/2026-06-19/sft2_latentwm_default_8gpu_tokenfix`，复用 hold job `456005`，从干净 SFT1 merged checkpoint 初始化，LLM freeze、vision full+EMA，训练 state_proj / LatentWMPredictor / ValueHead。
 - 重启健康检查：新 run `add_special_tokens` 对 SFT1 tokenizer 返回 `added=0` 且无旧 `<|act_*>`；日志未出现 new embeddings/lm_head resize warning；`train_step_log.csv` 已写到至少 `global_step=5`。
+
+## 2026-06-19：SFT2 CE last-span 调整（dev worktree）
+
+- 按人类要求在 `../nimloth-dev` worktree 修改，尚未同步服务器。
+- `training/common/qwen_batch.py` 的 SFT2 CE mask 现在只覆盖 prefix 中最后一个 assistant span，避免 transition 展开后重复监督早期 assistant turns。
+- SFT2 next-prefix WM target forward 与 validation latent forward 会移除 `labels`，避免不使用 CE 时仍让 Qwen 计算 loss。
+- 已新增 `tests/training/common/test_qwen_batch.py` 覆盖 last-span 行为；本地依赖不完整，`python -m py_compile` 通过，`pytest` 因当前 Python 无 pytest、手动导入测试因缺 PIL 未能运行。
+
+## 2026-06-19：SFT2 慢速后续优化（dev worktree）
+
+- 在 `../nimloth-dev` 继续修复慢速诊断剩余项，未启动新的服务器训练。
+- `training/common/qwen_batch.py` 增加 per-process chat-template、token offset 与 RGB image decode LRU cache（图片 cache 限制为 8192，避免过高 CPU 内存占用）；同时 last-span 计算只渲染最后 assistant 相关 prefix，减少 transition 展开后的重复模板渲染/图片打开/offset tokenization 开销。
+- `training/sft2/qwen_latent.py` 改为通过 Qwen final norm forward hook 捕获 last hidden，不再用 `output_hidden_states=True` 返回所有层 hidden states；新增 `tests/training/sft2/test_qwen_latent.py` 覆盖该行为。
+- `training/sft2/trainer.py` 在 gradient accumulation 非同步 micro-step 上对 DDP 模块使用 `no_sync()`，只在 accumulation 边界或 epoch 尾部同步梯度。
+- SFT2 配置/CLI 增加性能旋钮：YAML 可设置 `attn_implementation`、`gradient_checkpointing`；CLI 的 `--gradient-checkpointing/--no-gradient-checkpointing` 可切换；默认配置改为 `flash_attention_2` 且保持 gradient checkpointing 开启以降低 OOM 风险。
+- 验证：`python -m py_compile` 覆盖相关源码和新增测试通过；当前本地 Python 缺 `pytest`，手动导入测试因缺 `PIL` 未能运行。

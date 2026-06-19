@@ -42,6 +42,8 @@ def compute_step_wm_loss(
     else:
         next_items = [{"messages": items[0]["messages"]}]
     next_enc = build_qwen_batch(next_items, processor, max_length)
+    # Next-prefix latent is a stop-grad WM target; do not ask Qwen to compute CE.
+    next_enc.pop("labels", None)
     ema_ctx = vision_ema.use_ema_weights(model) if vision_ema is not None else contextlib.nullcontext()
     with torch.no_grad(), ema_ctx:
         next_latent, _ = extract_qwen_latents(model, next_enc, token_id_map, device)

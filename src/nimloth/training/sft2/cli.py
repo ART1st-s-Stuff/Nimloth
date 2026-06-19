@@ -47,7 +47,7 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--lambda-wm-start", type=float, default=0.1)
     ap.add_argument("--lambda-wm-end", type=float, default=1.0)
     ap.add_argument("--attn-implementation", default="sdpa")
-    ap.add_argument("--gradient-checkpointing", action="store_true", default=True)
+    ap.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument(

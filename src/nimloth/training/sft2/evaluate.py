@@ -41,6 +41,8 @@ def evaluate(
                 break
             items = batch_samples
             enc = build_qwen_batch(items, processor, max_length=max_length)
+            # Validation only needs latents/metrics here; CE loss is not consumed.
+            enc.pop("labels", None)
             latent_hidden, _ = extract_qwen_latents(model, enc, token_id_map, device)
             _, wm_metrics = compute_step_wm_loss(
                 model,

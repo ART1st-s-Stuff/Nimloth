@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
 import math
@@ -42,6 +43,17 @@ from nimloth.wm import LeWMConfig, LatentWMPredictor, StateProjector, ValueHead
 
 def _unwrap(module):
     return module.module if hasattr(module, "module") else module
+
+
+def _no_sync_if_needed(modules, *, enabled: bool):
+    if not enabled:
+        return contextlib.nullcontext()
+    stack = contextlib.ExitStack()
+    for module in modules:
+        no_sync = getattr(module, "no_sync", None)
+        if no_sync is not None:
+            stack.enter_context(no_sync())
+    return stack
 
 
 def train_sft2(args=None) -> int:
@@ -324,58 +336,62 @@ def train_sft2(args=None) -> int:
         accum = MetricAccumulator()
         micro = 0
 
-        for batch_samples in train_loader:
-            items = batch_samples
-            enc = build_qwen_batch(items, processor, args.max_length)
-            latent_hidden, lm_loss = extract_qwen_latents(model, enc, token_id_map, device)
-            lambda_wm = wm_loss_weight_schedule(
-                global_step,
-                total_steps,
-                start=args.lambda_wm_start,
-                end=args.lambda_wm_end,
-            )
+        num_micro_batches = len(train_loader)
+        ddp_modules = [model, state_proj, value_head]
+        if train_wm_predictor:
+            ddp_modules.append(wm_predictor)
 
-            wm_loss, wm_metrics = compute_step_wm_loss(
-                model,
-                items,
-                latent_hidden,
-                processor,
-                token_id_map,
-                device,
-                state_proj,
-                wm_predictor,
-                args.max_length,
-                vision_ema=vision_ema,
-            )
-            value_loss, value_metrics = compute_step_value_loss(
-                latent_hidden,
-                items,
-                state_proj,
-                value_head,
-                device,
-                rank_margin=args.value_rank_margin,
-                lambda_rank=args.value_rank_lambda,
-            )
-            loss, metrics = compute_combined_loss(
-                wm_loss=wm_loss,
-                value_loss=value_loss,
-                lm_loss=lm_loss,
-                lambda_wm=lambda_wm if wm_loss is not None else 0.0,
-                lambda_value=args.lambda_value,
-                lambda_ce=args.lambda_ce,
-            )
-            metrics.update(wm_metrics)
-            metrics.update(value_metrics)
+        for micro_idx, batch_samples in enumerate(train_loader, start=1):
+            sync_gradients = (micro_idx % args.grad_accum == 0) or (micro_idx == num_micro_batches)
+            with _no_sync_if_needed(ddp_modules, enabled=world > 1 and not sync_gradients):
+                items = batch_samples
+                enc = build_qwen_batch(items, processor, args.max_length)
+                latent_hidden, lm_loss = extract_qwen_latents(model, enc, token_id_map, device)
+                lambda_wm = wm_loss_weight_schedule(
+                    global_step,
+                    total_steps,
+                    start=args.lambda_wm_start,
+                    end=args.lambda_wm_end,
+                )
 
-            (loss / args.grad_accum).backward()
+                wm_loss, wm_metrics = compute_step_wm_loss(
+                    model,
+                    items,
+                    latent_hidden,
+                    processor,
+                    token_id_map,
+                    device,
+                    state_proj,
+                    wm_predictor,
+                    args.max_length,
+                    vision_ema=vision_ema,
+                )
+                value_loss, value_metrics = compute_step_value_loss(
+                    latent_hidden,
+                    items,
+                    state_proj,
+                    value_head,
+                    device,
+                    rank_margin=args.value_rank_margin,
+                    lambda_rank=args.value_rank_lambda,
+                )
+                loss, metrics = compute_combined_loss(
+                    wm_loss=wm_loss,
+                    value_loss=value_loss,
+                    lm_loss=lm_loss,
+                    lambda_wm=lambda_wm if wm_loss is not None else 0.0,
+                    lambda_value=args.lambda_value,
+                    lambda_ce=args.lambda_ce,
+                )
+                metrics.update(wm_metrics)
+                metrics.update(value_metrics)
+
+                (loss / args.grad_accum).backward()
             accum.update(metrics)
             micro += 1
 
-            if micro % args.grad_accum == 0:
+            if sync_gradients:
                 _optimizer_step(epoch, lambda_wm=lambda_wm)
-
-        if micro % args.grad_accum != 0:
-            _optimizer_step(epoch, lambda_wm=lambda_wm)
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
