@@ -166,7 +166,7 @@ $SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
     data.seed=${VAGEN_DATA_SEED} \
     +data.base_seed=${VAGEN_BASE_SEED} \
     data.validation_shuffle=False \
-    trainer.assert_val_env_composition=True \
+    +trainer.assert_val_env_composition=True \
     '+trainer.val_env_composition.navigation_base={count:60,eval_set:base}' \
     '+trainer.val_env_composition.navigation_common={count:60,eval_set:common_sense}' \
     data.max_prompt_length=3000 \
