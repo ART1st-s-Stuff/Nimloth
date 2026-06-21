@@ -27,6 +27,9 @@ def strip_ansi(s: str) -> str:
 
 def parse_value(v: str) -> float | None:
     v = v.strip().rstrip(",")
+    np_m = re.match(r"^np\.(?:float64|float32|int32|int64)\((.+)\)$", v)
+    if np_m:
+        v = np_m.group(1).strip()
     if not NUM_RE.match(v):
         return None
     try:

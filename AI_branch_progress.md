@@ -457,3 +457,11 @@
 - 已停止污染的远程实验 `outputs/experiments/training/sft2/2026-06-18/sft2_latentwm_default_8gpu`，并在该目录 `README.md` 记录失败原因：旧 token 被加入 tokenizer，checkpoint vocab/metadata 被污染，不应作为最终 SFT2 结果。
 - 已用 fresh output 重启 SFT2：`outputs/experiments/training/sft2/2026-06-19/sft2_latentwm_default_8gpu_tokenfix`，复用 hold job `456005`，从干净 SFT1 merged checkpoint 初始化，LLM freeze、vision full+EMA，训练 state_proj / LatentWMPredictor / ValueHead。
 - 重启健康检查：新 run `add_special_tokens` 对 SFT1 tokenizer 返回 `added=0` 且无旧 `<|act_*>`；日志未出现 new embeddings/lm_head resize warning；`train_step_log.csv` 已写到至少 `global_step=5`。
+
+## 2026-06-21：fix/env-reproduction 接收 baseline env/prompt 修正
+
+- 人类确认 baseline/env reproduction 相关新改动应进入 `fix/env-reproduction` worktree，而不是 `dev`；`dev` 保持 SFT2 旧 checkpoint 测试状态，暂不同步 prompt_format 新修正。
+- 已在 `external/VAGEN/verl` 提交 `869ff12b Improve navigation val wandb metrics`，用于 wandb 中展开 navigation validation 指标。
+- 已在 `external/VAGEN` 提交 `7c0ccaa Add Nimloth WM navigation prompt format`，包含 `nimloth_wm` prompt/parser 与 nested `verl` 指针更新。
+- root `fix/env-reproduction` 同步 baseline train/val prompt_format 修正、vLLM rollout/backend 脚本、checkpoint pruning policy、wandb val watcher/launcher、以及 VAGEN submodule 指针。
+- 已从 `../nimloth-dev` 回退此前误放入的 baseline/env reproduction 文件；dev 仅保留原有 SFT2 speedup 相关未提交改动。

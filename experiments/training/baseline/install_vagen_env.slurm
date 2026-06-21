@@ -45,6 +45,7 @@ which python
 
 echo "=== Install core VERL/VAGEN runtime dependencies ==="
 uv pip install --prerelease=allow --python "$VENV/bin/python" \
+  "vllm>=0.8.0" \
   "sglang[all]==0.5.3.post3" \
   "transformers[hf_xet]>=4.51.0" \
   accelerate datasets peft hf-transfer \
@@ -79,7 +80,7 @@ python -m vagen.envs.navigation.pre_download_scenes || echo "WARNING: scene pre-
 echo "=== Verify packages ==="
 python - <<'PY'
 import importlib
-for name in ['vagen', 'verl', 'sglang', 'ray', 'ai2thor', 'torch']:
+for name in ['vagen', 'verl', 'vllm', 'sglang', 'ray', 'ai2thor', 'torch']:
     m = importlib.import_module(name)
     print(name, getattr(m, '__version__', 'no_version'), getattr(m, '__file__', 'builtin'))
 PY
