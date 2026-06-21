@@ -39,6 +39,7 @@ def cache_fingerprint(
     max_pixels: int,
     min_pixels: int,
     vocab_size: int,
+    value_gamma: float = 1.0,
 ) -> str:
     stat = jsonl_path.stat()
     payload = "|".join(
@@ -50,6 +51,7 @@ def cache_fingerprint(
             str(max_pixels),
             str(min_pixels),
             str(vocab_size),
+            str(value_gamma),
             CE_MASK_VERSION,
             TRANSITION_EXPANSION_VERSION,
         ]
@@ -231,11 +233,13 @@ def build_transition_preprocess_cache(
     success_only: bool = False,
     preprocess_workers: int = 4,
     force: bool = False,
+    value_gamma: float = 1.0,
 ) -> None:
     samples = TransitionJsonlDataset(
         jsonl_path,
         max_records=max_records,
         success_only=success_only,
+        value_gamma=value_gamma,
     ).samples
     fingerprint = cache_fingerprint(
         jsonl_path,
@@ -243,6 +247,7 @@ def build_transition_preprocess_cache(
         max_pixels=max_pixels,
         min_pixels=min_pixels,
         vocab_size=len(processor.tokenizer),
+        value_gamma=value_gamma,
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = cache_dir / "manifest.json"
@@ -313,6 +318,7 @@ def build_transition_preprocess_cache(
                 "max_length": max_length,
                 "max_pixels": max_pixels,
                 "min_pixels": min_pixels,
+                "value_gamma": value_gamma,
                 "ce_mask_version": CE_MASK_VERSION,
                 "transition_expansion_version": TRANSITION_EXPANSION_VERSION,
                 "dir": str(cache_dir),

@@ -32,7 +32,7 @@ def is_trainable_checkpoint_dir(ckpt_dir: Path) -> bool:
 def find_resume_checkpoint(output_dir: Path) -> Path | None:
     """Pick the saved checkpoint with the highest step (latest progress)."""
     candidates: list[tuple[int, Path]] = []
-    for name in ("best",):
+    for name in ("latest", "best"):
         ckpt_dir = output_dir / name
         if is_trainable_checkpoint_dir(ckpt_dir):
             candidates.append((read_checkpoint_step(ckpt_dir), ckpt_dir))

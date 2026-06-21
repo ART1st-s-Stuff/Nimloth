@@ -16,6 +16,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.training.common.qwen_batch import encode_qwen_item
 from nimloth.training.sft2.qwen_latent import extract_qwen_latents, reset_model_rope_state
+from nimloth.training.sft2.qwen_monkey_patch import apply_qwen25vl_force_explicit_causal_mask_patch
 from nimloth.training.sft2.trajectory_forward import _batch_enc
 from nimloth.training.sft2.trajectory_once import (
     encode_full_trajectory,
@@ -222,6 +223,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--record-index", type=int, default=0)
     ap.add_argument("--max-length", type=int, default=12000)
     ap.add_argument("--max-pixels", type=int, default=602112)
+    ap.add_argument("--attn-implementation", default="sdpa")
+    ap.add_argument(
+        "--qwen-monkey-patch",
+        choices=("none", "force_explicit_causal_mask"),
+        default="none",
+    )
     return ap.parse_args()
 
 
@@ -240,9 +247,24 @@ def main() -> int:
     token_id_map = special_token_ids(processor.tokenizer)
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        args.model, torch_dtype=torch.bfloat16, attn_implementation="sdpa", trust_remote_code=True
+        args.model,
+        torch_dtype=torch.bfloat16,
+        attn_implementation=args.attn_implementation,
+        trust_remote_code=True,
     )
     model.resize_token_embeddings(len(processor.tokenizer))
+    if args.qwen_monkey_patch == "force_explicit_causal_mask":
+        applied = apply_qwen25vl_force_explicit_causal_mask_patch(model)
+        print(
+            json.dumps(
+                {
+                    "qwen_monkey_patch": args.qwen_monkey_patch,
+                    "attn_implementation": args.attn_implementation,
+                    "applied": applied,
+                }
+            ),
+            flush=True,
+        )
     model.to(device).eval()
 
     reports: list[dict] = []

@@ -38,6 +38,7 @@ train:
   # supports --no-gradient-checkpointing for profiling.
   attn_implementation: flash_attention_2
   gradient_checkpointing: true
+  checkpoint_interval_minutes: 20.0
 
 loss:
   lambda_wm_start: 0.1

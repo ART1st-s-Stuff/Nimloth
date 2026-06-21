@@ -119,6 +119,22 @@ if [ "${TRAJECTORY_AWARE_BATCHING:-0}" = "1" ]; then
   TRAJECTORY_BATCH_ARGS=(--trajectory-aware-batching)
 fi
 
+if [ -n "${PREPROCESS_CACHE_DIR:-}" ]; then
+  echo "=== prebuild preprocess cache ===" | tee -a "${LOG}"
+  PYTHONUNBUFFERED=1 python "${SCRIPTDIR}/build_preprocess_cache.py" \
+    --config "${CONFIG}" \
+    "${TUNE_ARGS[@]}" \
+    "${RESUME_ARGS[@]}" \
+    "${WM_PRED_ARGS[@]}" \
+    "${PREPROCESS_ARGS[@]}" \
+    "${PACKED_ARGS[@]}" \
+    --model "${MODEL_PATH}" \
+    --train-jsonl "${RECORDS_ROOT}/train_all.jsonl" \
+    --val-jsonl "${RECORDS_ROOT}/val_all.jsonl" \
+    --output-dir "${TRAIN_OUT}" \
+    2>&1 | tee -a "${LOG}"
+fi
+
 echo "=== torchrun ${NGPUS}-GPU SFT2 ===" | tee -a "${LOG}"
 PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NGPUS} \
   "${SCRIPTDIR}/train.py" \
@@ -130,6 +146,10 @@ PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NGPUS} \
   "${TIMING_ARGS[@]}" \
   "${PACKED_ARGS[@]}" \
   "${TRAJECTORY_BATCH_ARGS[@]}" \
+  --epochs "${SFT2_EPOCHS:-10}" \
+  --value-gamma "${VALUE_GAMMA:-1.0}" \
+  --checkpoint-interval-steps "${CHECKPOINT_INTERVAL_STEPS:-0}" \
+  --checkpoint-keep-last "${CHECKPOINT_KEEP_LAST:-0}" \
   --model "${MODEL_PATH}" \
   --train-jsonl "${RECORDS_ROOT}/train_all.jsonl" \
   --val-jsonl "${RECORDS_ROOT}/val_all.jsonl" \

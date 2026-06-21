@@ -7,6 +7,7 @@ import csv
 import json
 import math
 import random
+import shutil
 import time
 from functools import partial
 from pathlib import Path
@@ -154,6 +155,7 @@ def _prepare_transition_datasets(args, processor):
         min_pixels=min_pixels,
         preprocess_workers=args.preprocess_workers,
         force=args.force_rebuild_cache,
+        value_gamma=args.value_gamma,
     )
     if is_main():
         build_transition_preprocess_cache(
@@ -511,6 +513,21 @@ def train_sft2(args=None) -> int:
                 )
             )
 
+    def _prune_step_checkpoints() -> None:
+        keep = int(getattr(args, "checkpoint_keep_last", 0) or 0)
+        if keep <= 0:
+            return
+        ckpts = sorted(
+            (
+                (read_checkpoint_step(path), path)
+                for path in args.output_dir.glob("step_*")
+                if path.is_dir() and path.name.startswith("step_") and (path / "training_state.pt").is_file()
+            ),
+            key=lambda item: item[0],
+        )
+        for _, path in ckpts[:-keep]:
+            shutil.rmtree(path, ignore_errors=True)
+
     def _optimizer_step(epoch: int, *, lambda_wm: float) -> None:
         nonlocal global_step
         qwen_lr = qwen_lr_schedule(
@@ -556,6 +573,7 @@ def train_sft2(args=None) -> int:
 
     step_timer = StepTimer(enabled=args.step_timing, log_interval=args.step_timing_interval)
     pad_token_id = processor.tokenizer.pad_token_id
+    last_periodic_ckpt_time = time.monotonic()
 
     for epoch in range(start_epoch, args.epochs + 1):
         if train_batch_sampler is not None:
@@ -683,6 +701,70 @@ def train_sft2(args=None) -> int:
                 _optimizer_step(epoch, lambda_wm=lambda_wm)
                 step_timer.stop("optimizer", t0)
                 step_timer.on_optimizer_step(global_step=global_step, epoch=epoch)
+
+                should_save_step = bool(
+                    args.checkpoint_interval_steps
+                    and args.checkpoint_interval_steps > 0
+                    and global_step % args.checkpoint_interval_steps == 0
+                )
+                should_save_latest = False
+                if args.checkpoint_interval_minutes > 0:
+                    if is_main() and (time.monotonic() - last_periodic_ckpt_time) >= args.checkpoint_interval_minutes * 60.0:
+                        should_save_latest = True
+                    if dist.is_available() and dist.is_initialized():
+                        flag = torch.tensor([1 if should_save_latest else 0], device=device, dtype=torch.int32)
+                        dist.broadcast(flag, src=0)
+                        should_save_latest = bool(flag.item())
+                if should_save_latest:
+                    if dist.is_available() and dist.is_initialized():
+                        dist.barrier()
+                    if is_main():
+                        save_checkpoint(
+                            model,
+                            state_proj,
+                            processor,
+                            args.output_dir / "latest",
+                            wm_predictor=_unwrap(wm_predictor),
+                            value_head=_unwrap(value_head),
+                            vision_ema=vision_ema,
+                            optimizer=optimizer,
+                            step=global_step,
+                            epoch=epoch,
+                            best_val_success_rate=best_val_success_rate,
+                            best_val_wm_mse=best_val_wm_mse,
+                            lora=uses_lora(args),
+                            base_model_path=base_model_path,
+                            llm_tune=llm_tune,
+                            vision_tune=vision_tune,
+                        )
+                        last_periodic_ckpt_time = time.monotonic()
+                    if dist.is_available() and dist.is_initialized():
+                        dist.barrier()
+                if should_save_step:
+                    if dist.is_available() and dist.is_initialized():
+                        dist.barrier()
+                    if is_main():
+                        save_checkpoint(
+                            model,
+                            state_proj,
+                            processor,
+                            args.output_dir / f"step_{global_step:06d}",
+                            wm_predictor=_unwrap(wm_predictor),
+                            value_head=_unwrap(value_head),
+                            vision_ema=vision_ema,
+                            optimizer=optimizer,
+                            step=global_step,
+                            epoch=epoch,
+                            best_val_success_rate=best_val_success_rate,
+                            best_val_wm_mse=best_val_wm_mse,
+                            lora=uses_lora(args),
+                            base_model_path=base_model_path,
+                            llm_tune=llm_tune,
+                            vision_tune=vision_tune,
+                        )
+                        _prune_step_checkpoints()
+                    if dist.is_available() and dist.is_initialized():
+                        dist.barrier()
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()

@@ -131,7 +131,7 @@ def compute_step_wm_loss(
         dummy_state_emb = state_proj(current_latent[:1])
         with torch.no_grad():
             dummy_target_emb = state_proj(next_latent[:1])
-        dummy_actions = torch.zeros((dummy_state_emb.shape[0],), device=device, dtype=torch.long)
+        dummy_actions = torch.zeros((dummy_state_emb.shape[0],), device=dummy_state_emb.device, dtype=torch.long)
         dummy_pred = wm_predictor(dummy_state_emb, dummy_actions)
         return (dummy_state_emb.sum() + dummy_target_emb.sum() + dummy_pred.sum()) * 0.0, {}
     action_indices = torch.tensor([items[i]["action_index"] for i in indices], device=current_latent.device)
@@ -199,6 +199,6 @@ def compute_trajectory_wm_loss(
     dummy_state_emb = state_proj(current_latents[:1])
     with torch.no_grad():
         dummy_target_emb = state_proj(current_latents[:1])
-    dummy_actions = torch.zeros((dummy_state_emb.shape[0],), device=device, dtype=torch.long)
+    dummy_actions = torch.zeros((dummy_state_emb.shape[0],), device=dummy_state_emb.device, dtype=torch.long)
     dummy_pred = wm_predictor(dummy_state_emb, dummy_actions)
     return (dummy_state_emb.sum() + dummy_target_emb.sum() + dummy_pred.sum()) * 0.0, {}

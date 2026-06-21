@@ -101,6 +101,24 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Log step timings every N optimizer steps when --step-timing is set.",
     )
     ap.add_argument(
+        "--checkpoint-interval-minutes",
+        type=float,
+        default=20.0,
+        help="Save resumable latest checkpoint every N minutes during training.",
+    )
+    ap.add_argument(
+        "--checkpoint-interval-steps",
+        type=int,
+        default=0,
+        help="Save resumable step_NNNNNN checkpoints every N optimizer steps (0 disables).",
+    )
+    ap.add_argument(
+        "--checkpoint-keep-last",
+        type=int,
+        default=0,
+        help="Keep only the last N step_NNNNNN checkpoints when step checkpointing is enabled (0 keeps all).",
+    )
+    ap.add_argument(
         "--trajectory-aware-batching",
         action=argparse.BooleanOptionalAction,
         default=False,

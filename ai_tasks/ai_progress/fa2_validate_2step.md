@@ -1,0 +1,242 @@
+# fa2_validate_2step
+
+- goal: compare sdpa vs flash_attention_2 for SFT2 validate_2step packed-forward equivalence probe
+- plan:
+  1. sync FA2-parametrized validate scripts to server
+  2. run sdpa and FA2 validate_2step jobs on server
+  3. compare synthetic text/image and real-record latent diffs
+- local changes touched:
+  - experiments/training/sft2/validate_trajectory_once_2step.py
+  - experiments/training/sft2/validate_2step.slurm
+
+- server runs:
+  - synced the two files to `/project/peilab/atst/nimloth`
+  - submitted normal jobs `457343/457344` first, then preempt jobs `457345(sdpa)` and `457346(flash_attention_2)` for faster turnaround; cancelled pending normal jobs after preempt jobs completed
+
+- results:
+  - `457345` (`sdpa`): text `0/0`; synthetic image step0 `0.40625`, step1 `0`; real record step0 `10.0`, step1 `7.5`
+  - `457346` (`flash_attention_2`): text `0/0`; synthetic image step0 `0.78125`, step1 `0`; real record step0 `9.625`, step1 `7.375`
+  - all alignment checks still passed in both jobs: `input_ids`, `attention_mask`, `image_grid_thw`, `pixel_values`, `image_features_prefix_max_diff=0.0`, `position_ids_eq_full_prefix=true`
+
+- conclusion:
+  - switching from `sdpa` to `flash_attention_2` does **not** restore packed-forward equivalence
+  - on the synthetic image 2-step case FA2 is actually worse than sdpa; on the real record it is only marginally smaller on step0/step1 and still very large
+
+- follow-up (monkey patch probe):
+  - added experimental monkey patch utility `src/nimloth/training/sft2/qwen_monkey_patch.py`
+  - patch target: HF `Qwen2_5_VLTextModel.forward` on multimodal no-cache 3D-position forwards
+  - patch behavior: for `sdpa`/`eager`, bypass HF mask-builder skip path and force an explicit 4D lower-triangular causal mask
+  - `experiments/training/sft2/validate_trajectory_once_2step.py` now accepts `--qwen-monkey-patch {none,force_explicit_causal_mask}` and applies the patch before validation
+  - `experiments/training/sft2/validate_2step.slurm` now logs/passes `QWEN_MONKEY_PATCH`
+  - local verification: `./.venv/bin/python -m py_compile src/nimloth/training/sft2/qwen_monkey_patch.py experiments/training/sft2/validate_trajectory_once_2step.py`
+  - synced files to `/project/peilab/atst/nimloth`
+  - first preempt job `457378` failed quickly because the patched decoder loop assumed each decoder layer returned a tensor; on this HF stack it may return a tuple under the wrapper path
+  - fixed the patch to unwrap tuple layer outputs and resubmitted preempt job `457380`
+  - `457380` (`sdpa` + `force_explicit_causal_mask`) results:
+    - text `0/0`
+    - synthetic image step0 `0.4375`, step1 `0`
+    - real record step0 `10.0`, step1 `7.375`
+  - interpretation: forcing an explicit 4D causal mask does **not** restore packed-forward equivalence; synthetic image is slightly worse than baseline sdpa (`0.40625 -> 0.4375`), real record step1 is only marginally smaller (`7.5 -> 7.375`) while step0 is unchanged (`10.0`)
+
+- deeper localization probe:
+  - added `experiments/training/sft2/probe_qwen_decoder_prefix_invariance.py` and matching Slurm launcher
+  - goal: compare prefix/full **per-layer hidden diffs** for two paths:
+    1. normal HF wrapper forward
+    2. decoder-only forward with manually prepared identical `inputs_embeds` + `position_ids`
+  - server run: preempt job `457410`
+  - result: for both synthetic image and real record step0, wrapper path and decoder-only path produced **identical 36-layer diff curves**
+  - in both cases, `first_nonzero_layer = 0` (the first decoder layer output already differs)
+  - implication at that stage: the mismatch survives when bypassing the outer wrapper into decoder-only forward, so the root cause is not limited to the final wrapper call boundary
+
+- first-layer attention probe:
+  - added `experiments/training/sft2/probe_qwen_first_layer_attention.py` and matching Slurm launcher
+  - after a few compatibility fixes across local/server HF versions, successful server run: job `457430`
+  - key results:
+    - `position_ids_prefix_max_diff = 0.0`
+    - first-layer `cos_prefix_max_diff = 0.0`, `sin_prefix_max_diff = 0.0`
+    - but manually prepared `inputs_embeds` already differ before the first decoder layer:
+      - synthetic image: `0.25`
+      - real record step0: `0.39453125`
+    - corresponding first-layer pre-attn / projection diffs are also already nonzero:
+      - synthetic: `attn_input 0.03125`, `q_proj 0.0625`, `k_proj 0.125`, `v_proj 0.01171875`
+      - real: `attn_input 0.28125`, `q_proj 0.375`, `k_proj 0.5`, `v_proj 0.06640625`
+  - refined interpretation:
+    - mismatch is **not** explained by `position_ids` or first-layer rotary tables
+    - current strongest suspicion shifts earlier than attention backend itself: multimodal `inputs_embeds` assembly / image-embed replacement is already prefix-non-invariant under the full vs prefix paths, even though prior `pixel_values`, `image_grid_thw`, and `get_image_features()` prefix checks looked aligned
+
+- embed scatter probe:
+  - added `experiments/training/sft2/probe_qwen_embed_scatter.py` and matching Slurm launcher
+  - successful server run: job `457475`
+  - key results:
+    - `text_embeds` prefix diff is exactly `0.0`
+    - `image_mask_prefix_equal = true` and placeholder positions match exactly between prefix and full
+    - but `image_embeds` prefix diff is nonzero:
+      - synthetic image: `0.25`
+      - real record: `0.39453125`
+    - `scattered_embeds` differ only at the image placeholder token positions; text token positions remain unchanged
+  - strongest current interpretation:
+    - earliest observed divergence is in the image embeddings themselves (or their flatten/concat organization), not in text token embeddings, placeholder mask positions, position ids, or first-layer rotary tables
+    - this appeared to conflict with an earlier `image_features_prefix_max_diff=0.0` check, so the next debugging target became reconciling the actual `get_image_features()` return path
+
+- image feature structure probe:
+  - added `experiments/training/sft2/probe_qwen_image_feature_structure.py` and matching Slurm launcher
+  - successful server run: job `457479`
+  - server-specific finding: in the current HF environment, `model.model.get_image_features(...)` returns a **tuple** directly (not an object with `.pooler_output`)
+    - prefix case: tuple length 1
+    - full case: tuple length 2
+  - after flattening by `torch.cat(...)`, the prefix image feature still differs from the first image feature in the full batched call:
+    - synthetic image: `0.25`
+    - real record: `0.39453125`
+  - refined interpretation:
+    - the earliest confirmed divergence is already inside the image feature extraction call itself when the same prefix image is processed alone vs together with a later image in the same multimodal batch
+    - therefore, under the current server/HF stack, vision feature extraction can no longer be treated as eliminated; it is now the strongest earliest suspect
+
+- vision layer probe:
+  - added `experiments/training/sft2/probe_qwen_vision_layers.py` and matching Slurm launcher
+  - successful server run: job `457482`
+  - key results:
+    - `patch_embed_prefix_max_diff = 0.0` for both synthetic and real cases
+    - divergence starts immediately at vision block 0 output:
+      - synthetic: block0 `0.0078125`
+      - real: block0 `0.125`
+    - subsequent block diffs grow steadily and propagate through merger/pooler to the final image embeddings
+  - strongest current interpretation:
+    - the bug is no longer just “somewhere in get_image_features” in a broad sense; it has been narrowed to **inside the first Qwen2.5-VL vision transformer block or its surrounding routing logic**, not patch embedding and not the later text decoder path
+
+- candidate patch validation attempt:
+  - added local experimental validator `experiments/training/sft2/validate_per_image_vision_cache.py` and Slurm launcher
+  - goal: validate the candidate correctness-preserving acceleration path: extract each image feature independently, scatter those features into the full trajectory, then run the text decoder once
+  - local `py_compile` passed
+  - remote sync/compile was initially blocked by SSH banner timeout, then completed after network recovered
+  - per-image vision cache validation:
+    - job `457499` (`sdpa`, no explicit mask patch): text `0/0`; synthetic image step0 latent diff `1.375`; real step0/step1 `9.875/7.75`
+    - job `457503` (`sdpa` + explicit causal mask patch): text `0/0`; synthetic image step0 `1.625`; real step0/step1 `9.75/7.625`
+    - job `457504` added diagnostics and confirmed per-image vision cache makes `inputs_embeds` and `position_ids` prefix diffs `0.0`, yet synthetic image hidden/latent diffs remain nonzero
+    - job `457506` (`flash_attention_2`) also kept `inputs_embeds`/`position_ids` diffs at `0.0` but synthetic image step0 latent diff remained `0.625`
+  - conclusion: per-image vision cache fixes the batched vision-feature non-invariance, but does not make single full decoder prefill prefix-invariant; full-packed has at least a second decoder-side non-invariance for image-style sequences
+
+- KV incremental probe:
+  - added `experiments/training/sft2/probe_kv_incremental_trajectory.py` and Slurm launcher
+  - first run `457511` failed due full `/home/csejzhang/.triton/cache`; Slurm now sets `TRITON_CACHE_DIR=/project/peilab/atst/.cache/triton` and `TORCHINDUCTOR_CACHE_DIR=/project/peilab/atst/.cache/torchinductor`
+  - run `457512` (`flash_attention_2`) completed
+  - cache behavior: synthetic step lengths `98 -> 190`, past seq len `98 -> 190`; real `606 -> 765`, past seq len `606 -> 765`
+  - max latent diff vs per-prefix recompute reference is nonzero at step1 (`0.3125` synthetic, `0.375` real), but step0 matches exactly; this is expected as a semantic difference between incremental causal cache and recomputing the full prefix with all current images
+  - eval/no-grad peak memory on 1 GPU was small (~7.8–8.3 GiB) for 2-step smoke; backward/trainable-parameter memory remains untested
+
+- KV chunk-invariance correctness probe:
+  - added `experiments/training/sft2/probe_kv_chunk_invariance.py` and Slurm launcher
+  - first Slurm attempt `457514` failed due missing exported `SFT1_RUN`; launcher fixed
+  - job `457515` (`flash_attention_2`, 3D multimodal position ids) completed but **failed chunk invariance**:
+    - synthetic: one-chunk vs two-chunk latent1 diff `0.3125`
+    - real: one-chunk vs two-chunk latent1 diff `0.375`
+    - cache lengths were correct (`190` synthetic, `765` real), latent0 repeat diff `0.0`
+  - attempted to switch the probe to generation-style `[4, batch, seq]` position ids; job `457516` failed because this server HF text-model forward path expects 3D position ids at `rotary_emb`, raising shape mismatch `3` vs `4`
+  - conclusion: KV cache execution is runnable, but **KV semantic correctness is not yet verified**; current manual incremental call path is chunk-boundary sensitive, likely due position/mask/cache API mismatch rather than model weights alone
+  - generation-prepare follow-up:
+    - added `experiments/training/sft2/probe_kv_chunk_invariance_generation_prepare.py` and Slurm launcher to reuse HF `prepare_inputs_for_generation`
+    - early jobs `457519/457521` exposed API compatibility issues (`cache_position` required; `is_first_iteration` returned by prepare but not accepted by forward); script patched accordingly
+    - job `457522` completed but still failed chunk invariance:
+      - synthetic latent1 one-vs-two chunk diff `0.625`
+      - real latent1 one-vs-two chunk diff `0.25`
+    - important finding: HF `prepare_inputs_for_generation` drops `pixel_values` after the first cached iteration (`has_pixel_values=false` for step1 chunks), so the stock generation prepare path is not directly valid for trajectories where new images appear after an existing KV cache
+  - custom decoder follow-up:
+    - added `experiments/training/sft2/probe_kv_chunk_invariance_custom_decoder.py` and Slurm launcher to bypass HF multimodal wrapper/generation prepare: construct `inputs_embeds` with per-image features, then call `model.model.language_model` with cache
+    - early jobs `457525/457526` exposed server-version compatibility issues (`get_placeholder_mask` not available on model/model.model); script patched to build image token mask directly from `image_token_id`
+    - job `457527` completed with `flash_attention_2`; `inputs_embeds_prefix_diff=0.0`, `position_ids_prefix_diff=0.0`, and cache lengths correct, but chunk invariance still failed:
+      - synthetic latent1 one-vs-two chunk diff `0.3125`
+      - real latent1 one-vs-two chunk diff `0.375`
+    - conclusion: even a clean custom decoder KV path is still chunk-boundary sensitive under current call semantics; KV cache correctness remains unverified
+  - layer-diff follow-up:
+    - added `experiments/training/sft2/probe_kv_layer_diff_custom_decoder.py` and Slurm launcher
+    - job `457528` completed and localized one-vs-two chunk divergence:
+      - for both synthetic and real, latent query **layer0 input diff = 0.0** but **layer0 output diff is nonzero** (`0.0009765625` synthetic, `0.015625` real)
+      - first input diff appears only at layer1, as propagation from layer0 output
+      - final hidden diff matches previous chunk-invariance failure scale (`0.3125` synthetic, `0.375` real)
+    - implication: chunk-boundary sensitivity originates inside the **first text decoder layer attention/forward under cached execution**, not from inputs_embeds, position_ids, or cache length preparation
+  - version note after human reminder:
+    - server `.venv` is now `transformers==4.52.4`, `torch==2.8.0+cu128`; this is older than the local inspected generated source path and lacks `Qwen2_5_VLModel.compute_3d_position_ids` / `get_placeholder_mask`
+    - server Qwen text decoder layer/attention uses legacy `past_key_value` API and explicit `cache_position`; later probes must be adapted to this API rather than assuming newer `past_key_values` signatures
+  - layer0 attention internal probe:
+    - fixed `probe_kv_layer0_attn_custom_decoder.py` for server legacy attention API and reran as job `457531`
+    - one-chunk and two-chunk differ in q length/past length as expected (`92 vs 6` synthetic, `159 vs 6` real; past before target `98 vs 184` synthetic, `606 vs 759` real)
+    - attention mask passed to layer0 attention is `None` in both cases under FA2, so causal behavior is delegated to the FA2/cached attention path
+    - target latent token's layer0 input and q/k/v projections are identical (`0.0`) in both synthetic and real
+    - layer0 self-attention output for the target is `0.0` diff in synthetic and small in real (`0.00390625`), while final hidden diff remains large (`0.3125` synthetic, `0.375` real)
+    - implication: target-token q/k/v are not the cause; chunk sensitivity likely enters through cached K/V for prior suffix tokens and/or deeper-layer cache contents, i.e. tokens before the latent are represented differently when computed in a larger chunk vs cached from an earlier chunk
+  - pre-latent token cache follow-up:
+    - added `experiments/training/sft2/probe_kv_prelatent_token_cache.py` and launcher; first job `457535` exposed server `DynamicCache.key_cache/value_cache` API and was fixed
+    - rerun `457536` compared the token immediately before `<|latent_state|>` between one-chunk and the mid chunk
+    - results:
+      - synthetic: layer0 output diff `0.00048828125`, but cached layer0 K/V for that token diff `0.0/0.0`; final hidden for that token by the end of one-chunk vs mid differs `0.5`
+      - real: layer0 output diff `0.0`, cached layer0 K/V diff `0.0/0.0`, final hidden diff `0.0`
+    - interpretation: this specific pre-latent token does not show an obvious layer0 cached-K/V mismatch; synthetic shows a tiny layer0 output drift without K/V drift, while the real case suggests the problematic cached differences may lie in earlier suffix tokens and/or deeper-layer cache contents rather than the token immediately before latent
+  - first-bad-token/layer scan:
+    - added `experiments/training/sft2/probe_kv_first_bad_token_layer.py` and launcher
+    - job `457537` scanned the full pre-latent step1 suffix token range comparing one-chunk vs corresponding mid-chunk outputs/caches
+    - strongest result: the **very first suffix token after step0 boundary** is already the first bad token in both synthetic and real cases
+      - synthetic:
+        - first hidden diff: token abs `98` / rel `0`, layer `1`, diff `0.00390625`
+        - first K diff: same token, layer `2`, diff `0.03125`
+        - first V diff: same token, layer `2`, diff `0.001953125`
+      - real:
+        - first hidden diff: token abs `606` / rel `0`, layer `0`, diff `0.015625`
+        - first K diff: same token, layer `1`, diff `0.015625`
+        - first V diff: same token, layer `1`, diff `0.001953125`
+    - later pre-latent tokens show rapidly amplified hidden/K/V divergence into multi-unit and double-digit scales
+    - implication: the shared root is **not localized near the latent token**; divergence begins immediately at the chunk boundary on the first newly decoded suffix token, then propagates through deeper layers and cached K/V
+  - first-suffix-token internal probe:
+    - added `experiments/training/sft2/probe_kv_first_suffix_attn_internal.py` and launcher
+    - job `457538` reran the first suffix token as a **single-token chunk** on both paths and found no differences at layer0/layer1 internals in either synthetic or real:
+      - hidden/q/k/v/attn_output diffs all `0.0`
+      - identical `cache_position` (`[98]` synthetic / `[606]` real), identical 3D `position_ids`, identical past lengths, FA2 still receives `attention_mask=None`
+      - final hidden diff `0.0`
+    - interpretation: this confirms the bug is **not** “the first suffix token is intrinsically unstable under cache”. The divergence seen in `457537` depends on **how that token is packaged inside a larger chunk** (one-chunk long suffix vs progressively grown mid chunk), i.e. packaging/context-sensitive execution rather than single-token cached decoding alone
+  - single-token vs long-chunk first suffix probe:
+    - added `experiments/training/sft2/probe_kv_single_vs_long_first_suffix.py` and launcher
+    - job `457539` directly compared the first suffix token as a single-token cached extend vs the first token of a long cached suffix chunk (`q_len=86` synthetic, `q_len=153` real)
+    - results:
+      - synthetic: layer0 target hidden/q/k/v/attn output all `0.0`, but final target hidden diff after full model is `0.25`; first nonzero internal diff appears at layer1 attention output (`0.001953125`), then layer2 hidden/q/k/v become nonzero
+      - real: layer0 target hidden/q/k/v all `0.0`, but layer0 attention output already differs `0.00390625`; final target hidden diff `0.765625`; layer1/2 target hidden/q/k/v then differ
+      - metadata: target position ids are identical; target starts at same cache position; `attention_mask=None` in FA2 for both; only key distinction is cached extend `q_len=1` vs multi-token cached extend `q_len>1`
+    - inspected server HF 4.52.4 Qwen2.5-VL FA2 code: `Qwen2_5_VLFlashAttention2.forward()` calls `_flash_attention_forward(..., attention_mask, q_len, is_causal=self.is_causal, use_top_left_mask=self._flash_attn_uses_top_left_mask)` after cache update; source comment warns that flash-attn <2.1 top-left causal mask is wrong for `q_seqlen != k_seqlen` except `q_seqlen == 1`
+    - strongest current hypothesis: the unresolved KV/full-packed decoder packaging sensitivity is caused by multi-token cached FA2 causal masking/routing semantics for `q_len>1` with past KV and no explicit mask; single-token cached decode is invariant, but multi-token cached extend is not
+  - backend A/B on single-token vs long-chunk first suffix:
+    - ran same probe under `sdpa` job `457540` and `eager` job `457541`
+    - result: the final hidden mismatch persists under both backends, so it is **not FA2-only**
+      - `sdpa`: final first-token hidden diff `0.53125` synthetic, `0.625` real; layer0 attention output already differs (`0.00390625` synthetic, `0.0078125` real); long chunk receives explicit 4D mask but single-token chunk has `attention_mask=None`
+      - `eager`: final first-token hidden diff `0.625` synthetic, `0.71875` real; early layer0/1 attention diffs are mostly zero, with first visible internal diff by layer2 in real (`0.001953125` attn output); explicit 4D masks exist for both single and long chunks
+    - interpretation: multi-token cached extend non-invariance is a broader HF Qwen2.5-VL cached causal/mask/position path issue in this 4.52.4 stack, not just FA2 top-left mask. FA2 remains suspicious for no-mask multi-token cached extend, but disabling FA2 does not make the long-chunk path semantically equivalent to single-token cached decode
+  - environment correction and 4.55.4 implementation inspection:
+    - human clarified that target stack should be `transformers==4.55.4`; the server `.venv` was upgraded from mistaken `4.52.4` to `4.55.4`
+    - inspected installed Qwen2.5-VL 4.55.4 implementation:
+      - attention is unified in `Qwen2_5_VLAttention.forward`, selecting `ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]` instead of separate FA2/SDPA classes
+      - text model now builds `causal_mask_mapping` via `create_causal_mask` / `create_sliding_window_causal_mask` and passes **text-only position ids** into mask construction; there is explicit comment that packed masking needs `[4, bs, seq]` position ids when no attention mask is used
+      - `prepare_inputs_for_generation` still drops `pixel_values` and `pixel_values_videos` whenever `cache_position[0] != 0`, so stock generation prepare remains unsuitable for trajectories where new images appear after cache creation
+    - implication: earlier 4.52.4 numeric probes are still useful for the class of failure, but should be rerun on 4.55.4 before final patch decisions; 4.55.4 introduces important packed-mask/text-position handling that may change the exact failure mode
+  - 4.55.4 position-id mode A/B on single-vs-long first suffix:
+    - modified `probe_kv_single_vs_long_first_suffix.py` to support `--position-id-mode {3d,4d_text_prefix}` and updated launcher
+    - first rerun jobs `457544`/`457545` showed the hook needed to handle 2D text-only `position_ids` passed into attention in 4.55.4; fixed hook
+    - rerun jobs: `457547` (`3d`) and `457548` (`4d_text_prefix`)
+      - `3d` mode failed on real long-chunk FA2 with CUDA illegal memory access; this is consistent with 4.55.4 source warning that packed/mask construction needs text-only positions and raw 3D positions are invalid for packed-style attention paths
+      - `4d_text_prefix` completed, and attention receives text-only positions (`posS=[98]/[606]`, `posL=[98]/[606]`) with `attention_mask=None` under FA2
+      - but single-vs-long mismatch remains: synthetic final target diff `0.25`; real final target diff `0.375`; layer0/1/2 attention output diffs remain nonzero (real layer0 `0.0009765625`, layer1 `0.00390625`)
+    - interpretation: adding the required text-position prefix fixes the invalid raw-3D path and aligns Qwen 4.55.4's intended API, but **does not restore multi-token cached extend chunk-invariance** under FA2. The remaining mismatch is not solely due to missing 4D position ids.
+  - 4.55.4 `4d_text_prefix` backend A/B:
+    - ran `sdpa` job `457549` and `eager` job `457550` with `POSITION_ID_MODE=4d_text_prefix`
+    - mismatch persists under both backends:
+      - `sdpa`: final first-token diff `0.53125` synthetic, `1.0` real; layer0 attention output already differs (`0.00390625`, `0.0078125`); long chunk has explicit 4D mask but single-token chunk has `attention_mask=None`
+      - `eager`: final first-token diff `0.625` synthetic, `0.875` real; layer0/layer1 internals are equal or near-zero, but mismatch still appears by later layers (real layer2 attn diff `0.001953125`); explicit masks exist for both single and long chunks
+    - conclusion: on the corrected 4.55.4 stack with correct 4D text-prefixed positions, single-token cached extend vs multi-token cached extend remains non-invariant across `flash_attention_2`, `sdpa`, and `eager`. This strongly argues against a simple FA2-only or missing-text-position explanation.
+  - full-packed repaired-candidate validation on 4.55.4:
+    - modified `validate_per_image_vision_cache.py`/launcher to support `--position-id-mode {3d,4d_text_prefix}`
+    - tested candidate: no-cache full forward with per-image vision features and 4D text-prefixed position ids
+    - jobs:
+      - `457551`: `flash_attention_2`, `4d_text_prefix`
+      - `457553`: `eager`, `4d_text_prefix` (rerun after initial Slurm/env failure `457552`)
+      - `457554`: `sdpa`, `4d_text_prefix`
+    - results: candidate still fails image full-prefix equivalence even though `inputs_embeds` and `position_ids` prefix diffs are `0.0`
+      - FA2: synthetic image step0 latent diff `0.625`, hidden prefix diff `6.15625`; text `0/0`
+      - SDPA: synthetic image step0 latent diff `1.375`, hidden prefix diff `4.875`; text `0/0`
+      - Eager: synthetic image step0 latent diff `0.59375`, hidden prefix diff `17.25`; notably synthetic text step0 also drifted (`0.75`) under this 4D mode and should be treated as a separate caution/possible mode mismatch
+      - real record remains large, with known latent-index complications in real full trajectory (`full_latent_pos` not matching prefix positions)
+    - implication: full-packed repair by only adding per-image vision cache + 4D text-prefixed position ids is **not sufficient**. Decoder-side no-cache full-prefix non-invariance remains for image cases across FA2/SDPA/Eager on 4.55.4.

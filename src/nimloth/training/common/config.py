@@ -37,6 +37,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "dataloader_workers"): "dataloader_workers",
     ("train", "step_timing"): "step_timing",
     ("train", "step_timing_interval"): "step_timing_interval",
+    ("train", "checkpoint_interval_minutes"): "checkpoint_interval_minutes",
     ("loss", "lambda_wm_start"): "lambda_wm_start",
     ("loss", "lambda_wm_end"): "lambda_wm_end",
     ("loss", "lambda_ce"): "lambda_ce",

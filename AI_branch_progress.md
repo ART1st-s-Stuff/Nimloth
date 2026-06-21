@@ -4,6 +4,87 @@
 
 ---
 
+## 2026-06-21：Qwen2.5-VL packed-forward monkey patch probe
+
+### 已完成
+
+- 新增实验性 monkey patch：`src/nimloth/training/sft2/qwen_monkey_patch.py`
+  - 目标是 HF `Qwen2_5_VLTextModel.forward` 的 multimodal/no-cache/3D-position decoder 路径。
+  - 当前 patch 仅在 `sdpa`/`eager` 且无 sliding-attention 层时生效。
+  - patch 做法：绕过 HF mask-builder 的 skip path，直接向 decoder layers 传显式 4D 下三角 causal mask。
+- `experiments/training/sft2/validate_trajectory_once_2step.py` 新增参数：
+  - `--qwen-monkey-patch {none,force_explicit_causal_mask}`
+  - 保留 `--attn-implementation` 方便与 `sdpa`/`flash_attention_2` 区分。
+- `experiments/training/sft2/validate_2step.slurm` 新增 `QWEN_MONKEY_PATCH` 透传与日志。
+- 本地 `py_compile` 通过，并已同步到服务器 `/project/peilab/atst/nimloth`。
+- 服务器验证：
+  - 首次 job `457378` 失败，暴露 patch 与当前 HF `capture_outputs`/layer return 形式的兼容性问题：patched loop 假设 decoder layer 返回 tensor，实际需要兼容 tuple。
+  - 修正后重新提交 job `457380`（`sdpa` + `QWEN_MONKEY_PATCH=force_explicit_causal_mask`）并完成。
+- `457380` 结果：
+  - text `0/0`
+  - synthetic image step0 `0.4375`, step1 `0`
+  - real record step0 `10.0`, step1 `7.375`
+- 结论：**强制显式 4D causal mask 也不能恢复** Qwen2.5-VL packed-forward image prefix 的等价性；与未 patch `sdpa` 相比只出现很小波动，不能视为修复。
+
+### 进一步定位（decoder probe）
+
+- 新增诊断脚本：`experiments/training/sft2/probe_qwen_decoder_prefix_invariance.py` 与对应 Slurm。
+- 服务器 job `457410`（`sdpa`）比较了两条路径的逐层 prefix/full hidden diff：
+  1. 正常 wrapper：`Qwen2_5_VLForConditionalGeneration.forward`
+  2. decoder-only：手工准备 decoder 输入后直接调用 `model.model.language_model`
+- 结果：synthetic image 与真实 record 上，两条路径的 **36 层逐层 diff 完全一致**，且都从 **第 0 层（第一层 decoder layer 输出）** 就开始出现非零差异。
+- 但后续更细 probe（job `457430`）显示：
+  - `position_ids_prefix_max_diff = 0.0`
+  - 第一层 `cos/sin` prefix diff 也为 `0.0`
+  - **可是在进入第一层 attention 之前，手工准备的 `inputs_embeds` prefix 已经非零不同**：
+    - synthetic image: `0.25`
+    - real record: `0.39453125`
+  - 第一层 `attn_input` / `q_proj` / `k_proj` / `v_proj` 的非零 diff 与此一致地继续传播。
+- 这把当前怀疑点进一步收窄为：
+  - 不是 `position_ids` / rotary tables；
+  - 也还不能把锅直接甩给第一层 attention backend；
+  - **更像是 multimodal `inputs_embeds` 组装/替换本身在 prefix vs full 下已经不一致**（即 image placeholder → image embeds 注入后的结果已经变了）。
+- 再进一步的 scatter probe（job `457475`）表明：
+  - `text_embeds` prefix 完全一致（`max_diff = 0.0`）
+  - `image_mask` prefix 也完全一致，替换位置没有漂移
+  - 但 `image_embeds` prefix 本身非零不同：
+    - synthetic image: `0.25`
+    - real record: `0.39453125`
+  - `scattered_embeds` 的 diff 只出现在 image placeholder 覆盖的那些 token 位置上；text token 位置不变
+- 这意味着当前最强证据指向：
+  - **真正先发生不一致的是 image embeds 本身，而不是 text embeds、placeholder mask、position ids 或第一层 rotary tables。**
+  - 也就是说，prefix/full mismatch 的最早可观测源头已被收窄到 `get_image_features()` 输出或其 flatten/concat 组织方式。
+- 再进一步的 image-feature structure probe（job `457479`）给出更明确证据：
+  - 在服务器当前 HF 环境里，`model.model.get_image_features(...)` 返回的不是带 `.pooler_output` 的对象，而是一个 tuple：prefix case 长度 1，full case 长度 2。
+  - 将 full case 返回的前一张图特征与 prefix case 的单图特征直接比较，仍然非零不同：
+    - synthetic image: `0.25`
+    - real record: `0.39453125`
+- 因此，当前最早已确认的分叉点就是：
+  - **同一张前缀图片在“单图调用 get_image_features”与“和后续图片一起 batched 调用 get_image_features”时，输出特征本身就不同。**
+- 继续深入到 vision tower 内部层（job `457482`）后，结论进一步收紧：
+  - `patch_embed` 前缀完全一致（synthetic/real 都是 `0.0`）
+  - 但 **第 0 个 vision block 的输出就已经开始非零分叉**：
+    - synthetic: block0 diff `0.0078125`
+    - real: block0 diff `0.125`
+  - 后续 block diff 持续放大，最终传到 merger / pooler 输出。
+- 这说明：
+  - 问题不在 patchify / patch embedding；
+  - **问题最早进入点在 vision transformer 的第一个 block 内部**（attention / norm / MLP / window/full routing 之一），而不是更后面的 merger 或 text decoder。
+- 这也意味着我需要修正更早的一个判断：在当前服务器/HF 路径上，不能再说“vision feature extraction 已被排除”；相反，最新证据显示它正是目前最早能观测到的不等价来源，而且已经缩到 **vision block 0**。
+- 候选 per-image vision cache patch 验证：
+  - 新增 `experiments/training/sft2/validate_per_image_vision_cache.py` / `.slurm`，验证“每张图独立提 vision features，再 scatter 到 full trajectory 后只跑一次 text decoder”。
+  - job `457504` (`sdpa`) 与 `457506` (`flash_attention_2`) 均显示：per-image vision cache 能把 `inputs_embeds` 和 `position_ids` 的 prefix diff 打到 `0.0`，但 image case 的 hidden/latent diff 仍不为 0。
+  - synthetic image：`sdpa` latent diff step0 `1.375`；FA2 latent diff step0 `0.625`。
+  - real record 的 latent index 诊断还暴露当前 real-case index 对齐需进一步核查，但 synthetic case 已足够说明：仅修 vision features 不足以恢复 full/prefix 等价。
+- 因此最新状态：
+  - full packed 失败至少包含两个层面：1) batched vision feature 非不变；2) 即使将 vision/input_embeds/position_ids 对齐，image-style multimodal decoder full forward 仍非 prefix-invariant。
+  - 目前还**不能**确信可以写出一个“单次 full forward + fast attention”的正确 patch。
+
+### 风险 / 当前判断
+
+- 该 patch 只是定向试探，结果为否；还不能据此声称根因已精确定位到某一行 mask-builder 代码。
+- 当前没有把该 patch 接入默认 trainer 主路径；也不应默认启用。
+
 ## 当前阶段：项目初始化 / memory skill
 
 日期：2026-06-10
@@ -575,6 +656,16 @@
 ## 2026-06-21：SFT2 no-packed epoch_001 rollout eval 明显低于 baseline
 
 - 训练 run：`outputs/experiments/training/sft2/2026-06-20/sft2_latentwm_default_8gpu_vllm_nopacked`。
+
+## 2026-06-21：FA2 不能修复 SFT2 packed-forward 多图不等价
+
+- 为了验证 `sdpa` 是否是 packed-forward 不等价的主因，给 `validate_trajectory_once_2step.py` 与 `validate_2step.slurm` 增加了 `--attn-implementation` / `ATTN_IMPLEMENTATION` 参数化，允许直接对比 `sdpa` 与 `flash_attention_2`。
+- 已同步到服务器 `/project/peilab/atst/nimloth`，并运行 preempt jobs：`457345`（`sdpa`）与 `457346`（`flash_attention_2`）；pending normal jobs `457343/457344` 已取消。
+- 结果：
+  - `sdpa` (`457345`): text `0/0`; synthetic image step0 `0.40625`, step1 `0`; real record `train/shard_001_180/000000` step0 `10.0`, step1 `7.5`。
+  - `flash_attention_2` (`457346`): text `0/0`; synthetic image step0 `0.78125`, step1 `0`; real record step0 `9.625`, step1 `7.375`。
+- 两个 job 的 alignment 诊断完全一致且全部通过：`input_ids`、`attention_mask`、`image_grid_thw`、`pixel_values`、`position_ids_eq_full_prefix=true`、`image_features_prefix_max_diff=0.0`。
+- 结论：把 attention backend 从 `sdpa` 切到 `flash_attention_2` **不能恢复** Qwen2.5-VL packed-forward 的 prefix-equivalence；问题不只是 `sdpa` 的已知精度/实现问题。FA2 在 synthetic image 2-step 上甚至更差，真实 record 也仍保持很大的 latent diff。
 - 按人类要求在超过 1 epoch 后停止；停止时训练已到 `epoch=2`, `global_step=959`，但用于对比的是已完整落盘的 `epoch_001` checkpoint。
 - `epoch_001` rollout eval 最终通过复用 env job `456981` 的 external env 跑通；结果文件：
   - `outputs/experiments/training/sft2/2026-06-20/sft2_latentwm_default_8gpu_vllm_nopacked/eval_rollouts/sft2_eval_nopacked_epoch_001/summary_0.json`
@@ -608,3 +699,13 @@
   - settings: `llm_tune=lora`, `vision_tune=full`, `lora_r=64`, `lora_alpha=128`, packed-forward off, trajectory-aware batching off, `NGPUS=4`, `NIMLOTH_DDP_GPU_STRIDE=2`。
   - 健康启动证据：日志显示 LoRA 注入、`qwen_pair_parallel=true`, `rank0_pair=[0,1]`, vision EMA `shadow_params=582`；`train_step_log.csv` 已写到至少 `global_step=20`，无 OOM/ChildFailedError。
 - 注意：一次后提交的重复 job `457216` 因资源 pending 被取消；实际健康运行的是 `457209`。
+
+## 2026-06-21：FA2 不能修复 SFT2 packed-forward 多图不等价
+
+- 给 `validate_trajectory_once_2step.py` 与 `validate_2step.slurm` 增加了 `--attn-implementation` / `ATTN_IMPLEMENTATION` 参数化，允许直接对比 `sdpa` 与 `flash_attention_2`。
+- 已同步到服务器 `/project/peilab/atst/nimloth`，提交 normal jobs `457343/457344` 后又补提 preempt jobs `457345`（`sdpa`）与 `457346`（`flash_attention_2`）以加速验证；normal pending jobs 随后已取消。
+- 结果：
+  - `457345` (`sdpa`): text `0/0`; synthetic image step0 `0.40625`, step1 `0`; real record `train/shard_001_180/000000` step0 `10.0`, step1 `7.5`。
+  - `457346` (`flash_attention_2`): text `0/0`; synthetic image step0 `0.78125`, step1 `0`; real record step0 `9.625`, step1 `7.375`。
+- 两个 job 的 alignment 诊断都通过：`input_ids`、`attention_mask`、`image_grid_thw`、`pixel_values`、`position_ids_eq_full_prefix=true`、`image_features_prefix_max_diff=0.0`。
+- 结论：把 attention backend 从 `sdpa` 切到 `flash_attention_2` **不能恢复** Qwen2.5-VL packed-forward 的 prefix-equivalence；问题不只是 `sdpa` 的已知精度/实现问题。FA2 在 synthetic image 2-step 上反而更差，真实 record 上也仍保持很大的 latent diff。
