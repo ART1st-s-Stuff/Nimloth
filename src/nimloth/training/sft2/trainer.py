@@ -8,6 +8,7 @@ import json
 import math
 import random
 import time
+from functools import partial
 from pathlib import Path
 
 import torch
@@ -20,7 +21,6 @@ from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.training.common.config import merge_cli_over_yaml
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.common.metrics import MetricAccumulator
-from nimloth.training.common.qwen_batch import build_qwen_batch
 from nimloth.backbone.qwen_tuning import configure_qwen_tuning, resolve_tune_modes, uses_lora
 from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema
 from nimloth.training.common.schedules import qwen_lr_schedule, set_optimizer_group_lr
@@ -32,17 +32,174 @@ from nimloth.training.sft2.checkpoint import (
     save_checkpoint,
 )
 from nimloth.training.sft2.cli import parse_sft2_args
-from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
+from nimloth.training.sft2.dataset import (
+    TrajectoryRecordDataset,
+    TransitionQwenDataset,
+    collate_packed_trajectory_batch,
+    collate_trajectory_record_batch,
+    collate_transition_batch,
+)
 from nimloth.training.sft2.evaluate import evaluate
 from nimloth.training.sft2.loss import compute_combined_loss, wm_loss_weight_schedule
+from nimloth.training.sft2.preprocess_cache import (
+    CachedTransitionDataset,
+    build_transition_preprocess_cache,
+    collate_cached_transition_batch,
+    unpack_transition_batch,
+)
+from nimloth.training.sft2.profiling import StepTimer
 from nimloth.eval.rollout import val_rollout_success_rate
 from nimloth.training.sft2.qwen_latent import extract_qwen_latents
-from nimloth.training.sft2.step import compute_step_value_loss, compute_step_wm_loss
+from nimloth.training.sft2.step import (
+    compute_step_value_loss,
+    compute_step_wm_loss,
+    compute_trajectory_wm_loss,
+)
+from nimloth.training.sft2.trajectory_batching import assert_packed_batch
+from nimloth.training.sft2.trajectory_once import forward_trajectory_once
+from nimloth.training.sft2.trajectory_sampler import TrajectoryAwareBatchSampler
 from nimloth.wm import LeWMConfig, LatentWMPredictor, StateProjector, ValueHead
+from nimloth.wm.dataset import TransitionJsonlDataset, TransitionSample
 
 
 def _unwrap(module):
     return module.module if hasattr(module, "module") else module
+
+
+def _resolve_dataloader_workers(args) -> int:
+    if args.dataloader_workers >= 0:
+        return args.dataloader_workers
+    return 4 if args.preprocess_cache_dir is not None else 0
+
+
+def _prepare_transition_datasets(args, processor):
+    train_samples = TransitionJsonlDataset(
+        args.train_jsonl,
+        max_records=args.max_train_records,
+        success_only=args.success_only,
+        value_gamma=args.value_gamma,
+    ).samples
+    val_samples = TransitionJsonlDataset(
+        args.val_jsonl,
+        max_records=args.max_val_records,
+        value_gamma=args.value_gamma,
+    ).samples
+
+    if args.preprocess_cache_dir is None:
+        if args.packed_forward:
+            train_ds = TrajectoryRecordDataset(train_samples)
+            val_ds = TrajectoryRecordDataset(val_samples)
+            train_collate = collate_trajectory_record_batch
+            val_collate = collate_trajectory_record_batch
+        else:
+            train_ds = TransitionQwenDataset.from_samples(train_samples)
+            val_ds = TransitionQwenDataset.from_samples(val_samples)
+            train_collate = collate_transition_batch
+            val_collate = collate_transition_batch
+        return train_ds, val_ds, train_collate, val_collate, train_samples, val_samples
+
+    if args.packed_forward:
+        cache_root = args.preprocess_cache_dir
+        train_cache_dir = cache_root / "train_trajectory"
+        val_cache_dir = cache_root / "val_trajectory"
+        min_pixels = 3136
+        build_kwargs = dict(
+            model_path=args.model,
+            processor=processor,
+            max_length=args.max_length,
+            max_pixels=args.max_pixels,
+            min_pixels=min_pixels,
+            preprocess_workers=args.preprocess_workers,
+            force=args.force_rebuild_cache,
+        )
+        if is_main():
+            from nimloth.training.sft2.preprocess_cache import build_trajectory_preprocess_cache
+
+            build_trajectory_preprocess_cache(
+                jsonl_path=args.train_jsonl,
+                cache_dir=train_cache_dir,
+                max_records=args.max_train_records,
+                success_only=args.success_only,
+                **build_kwargs,
+            )
+            build_trajectory_preprocess_cache(
+                jsonl_path=args.val_jsonl,
+                cache_dir=val_cache_dir,
+                max_records=args.max_val_records,
+                success_only=False,
+                **build_kwargs,
+            )
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
+        from nimloth.training.sft2.preprocess_cache import CachedTrajectoryDataset
+
+        return (
+            CachedTrajectoryDataset(train_cache_dir, train_samples),
+            CachedTrajectoryDataset(val_cache_dir, val_samples),
+            collate_trajectory_record_batch,
+            collate_trajectory_record_batch,
+            train_samples,
+            val_samples,
+        )
+
+    cache_root = args.preprocess_cache_dir
+    train_cache_dir = cache_root / "train"
+    val_cache_dir = cache_root / "val"
+    min_pixels = 3136
+    build_kwargs = dict(
+        model_path=args.model,
+        processor=processor,
+        max_length=args.max_length,
+        max_pixels=args.max_pixels,
+        min_pixels=min_pixels,
+        preprocess_workers=args.preprocess_workers,
+        force=args.force_rebuild_cache,
+    )
+    if is_main():
+        build_transition_preprocess_cache(
+            jsonl_path=args.train_jsonl,
+            cache_dir=train_cache_dir,
+            max_records=args.max_train_records,
+            success_only=args.success_only,
+            **build_kwargs,
+        )
+        build_transition_preprocess_cache(
+            jsonl_path=args.val_jsonl,
+            cache_dir=val_cache_dir,
+            max_records=args.max_val_records,
+            success_only=False,
+            **build_kwargs,
+        )
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+    pad_token_id = processor.tokenizer.pad_token_id
+    cached_collate = partial(collate_cached_transition_batch, pad_token_id=pad_token_id)
+    return (
+        CachedTransitionDataset(train_cache_dir, train_samples),
+        CachedTransitionDataset(val_cache_dir, val_samples),
+        cached_collate,
+        cached_collate,
+        train_samples,
+        val_samples,
+    )
+
+
+def _unpack_train_batch(batch, processor, max_length: int, *, packed_forward: bool, pad_token_id: int):
+    if isinstance(batch, dict) and "transition_samples" in batch:
+        return (
+            batch["items"],
+            None,
+            None,
+            batch["transition_samples"],
+            batch.get("full_enc"),
+        )
+    items, enc, next_rows = unpack_transition_batch(
+        batch,
+        processor,
+        max_length,
+        pad_token_id=pad_token_id,
+    )
+    return items, enc, next_rows, None, None
 
 
 def _no_sync_if_needed(modules, *, enabled: bool):
@@ -99,40 +256,94 @@ def train_sft2(args=None) -> int:
                     "init_model": str(args.model),
                     "wm_predictor_checkpoint": str(args.wm_predictor_checkpoint) if args.wm_predictor_checkpoint else None,
                     "output_dir": str(args.output_dir),
+                    "packed_forward": args.packed_forward,
+                    "trajectory_aware_batching": args.trajectory_aware_batching,
                 }
             )
         )
 
-    train_ds = TransitionQwenDataset(args.train_jsonl, max_records=args.max_train_records, success_only=args.success_only)
-    val_ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_val_records)
-    train_sampler = DistributedSampler(train_ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed) if world > 1 else None
-    val_sampler = DistributedSampler(val_ds, num_replicas=world, rank=rank, shuffle=False) if world > 1 else None
+    if args.packed_forward and not args.allow_approx_trajectory_once:
+        raise ValueError(
+            "--packed-forward trajectory-once is not semantic-equivalent for default multi-image Qwen-VL SFT2; "
+            "pass --allow-approx-trajectory-once only for research/profiling."
+        )
+    if args.trajectory_aware_batching and args.packed_forward:
+        raise ValueError("--trajectory-aware-batching is for legacy per-prefix batching; do not combine with --packed-forward")
 
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        sampler=train_sampler,
-        shuffle=train_sampler is None,
-        num_workers=0,
-        pin_memory=True,
-        collate_fn=collate_transition_batch,
+    train_ds, val_ds, train_collate, val_collate, train_samples, val_samples = _prepare_transition_datasets(
+        args, processor
     )
+    dataloader_workers = _resolve_dataloader_workers(args)
+    loader_kwargs: dict = {
+        "num_workers": dataloader_workers,
+        "pin_memory": True,
+    }
+    if dataloader_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+
+    train_sampler = None
+    train_batch_sampler = None
+    val_sampler = None
+    if args.trajectory_aware_batching:
+        train_batch_sampler = TrajectoryAwareBatchSampler(
+            train_samples,
+            batch_size=args.batch_size,
+            num_replicas=world,
+            rank=rank,
+            shuffle=True,
+            seed=args.seed,
+        )
+    elif world > 1:
+        train_sampler = DistributedSampler(train_ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed)
+    if world > 1:
+        val_sampler = DistributedSampler(val_ds, num_replicas=world, rank=rank, shuffle=False)
+
+    if train_batch_sampler is not None:
+        train_loader = DataLoader(
+            train_ds,
+            batch_sampler=train_batch_sampler,
+            collate_fn=train_collate,
+            **loader_kwargs,
+        )
+    else:
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=1 if args.packed_forward else args.batch_size,
+            sampler=train_sampler,
+            shuffle=train_sampler is None and not args.packed_forward,
+            collate_fn=train_collate,
+            **loader_kwargs,
+        )
     val_loader = DataLoader(
         val_ds,
-        batch_size=args.batch_size,
+        batch_size=1 if args.packed_forward else args.batch_size,
         sampler=val_sampler,
         shuffle=False,
-        num_workers=0,
-        pin_memory=True,
-        collate_fn=collate_transition_batch,
+        collate_fn=val_collate,
+        **loader_kwargs,
     )
 
+    qwen_gpu_stride = int(__import__("os").environ.get("NIMLOTH_DDP_GPU_STRIDE", "1"))
+    qwen_pair_parallel = qwen_gpu_stride > 1 and torch.cuda.is_available()
+    qwen_load_kwargs = {}
+    if qwen_pair_parallel:
+        primary_idx = int(str(device).split(":")[-1])
+        pair = [primary_idx + i for i in range(qwen_gpu_stride)]
+        qwen_load_kwargs = {
+            "device_map": "auto",
+            "max_memory": {i: "74GiB" for i in pair} | {"cpu": "64GiB"},
+            "low_cpu_mem_usage": True,
+        }
+        if is_main():
+            print(json.dumps({"qwen_pair_parallel": True, "gpu_stride": qwen_gpu_stride, "rank0_pair": pair}))
     base_model_path = args.model
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         args.model,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
+        **qwen_load_kwargs,
     )
     if args.gradient_checkpointing:
         # DDP + reentrant activation checkpointing can fire reducer hooks for the
@@ -171,6 +382,7 @@ def train_sft2(args=None) -> int:
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
             attn_implementation=args.attn_implementation,
             trust_remote_code=True,
+            **qwen_load_kwargs,
         )
         if args.gradient_checkpointing:
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
@@ -181,7 +393,8 @@ def train_sft2(args=None) -> int:
         if is_main():
             print(json.dumps({"init": "configured_tuning", "base_model_path": str(base_model_path)}))
 
-    model.to(device)
+    if not qwen_pair_parallel:
+        model.to(device)
 
     wm_cfg = LeWMConfig(emb_dim=args.emb_dim)
     if args.wm_predictor_checkpoint is not None:
@@ -194,8 +407,16 @@ def train_sft2(args=None) -> int:
 
     hidden_size = model.config.hidden_size
     model_dtype = next(model.parameters()).dtype
-    state_proj = StateProjector(hidden_size, wm_predictor.emb_dim).to(device=device, dtype=model_dtype)
-    value_head = ValueHead(wm_predictor.emb_dim).to(device=device, dtype=model_dtype)
+    aux_device = device
+    if qwen_pair_parallel:
+        device_map = getattr(model, "hf_device_map", {}) or {}
+        mapped = device_map.get("lm_head") or device_map.get("model.language_model.norm")
+        if mapped is not None:
+            aux_device = torch.device(f"cuda:{mapped}")
+    if qwen_pair_parallel:
+        wm_predictor = wm_predictor.to(aux_device)
+    state_proj = StateProjector(hidden_size, wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
+    value_head = ValueHead(wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
 
     if args.resume and resume_state_path is not None and resume_state_path.exists():
         load_aux_checkpoint(resume_ckpt_dir, state_proj, wm_predictor, value_head, device)
@@ -204,13 +425,17 @@ def train_sft2(args=None) -> int:
         # Every trainable branch is exercised on every rank (terminal-only WM
         # batches use dummy aux forwards), so unused-parameter graph traversal is
         # unnecessary and interacts badly with multi-forward/checkpointed steps.
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
-        if uses_lora(args):
+        if qwen_pair_parallel:
+            model = DDP(model, device_ids=None, output_device=None, find_unused_parameters=False)
+        else:
+            model = DDP(model, device_ids=[int(str(device).split(":")[-1])], output_device=int(str(device).split(":")[-1]), find_unused_parameters=False)
+        if uses_lora(args) and not qwen_pair_parallel:
             model._set_static_graph()
-        state_proj = DDP(state_proj, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
-        value_head = DDP(value_head, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+        aux_idx = int(str(aux_device).split(":")[-1])
+        state_proj = DDP(state_proj, device_ids=[aux_idx], output_device=aux_idx, find_unused_parameters=False)
+        value_head = DDP(value_head, device_ids=[aux_idx], output_device=aux_idx, find_unused_parameters=False)
         if train_wm_predictor:
-            wm_predictor = DDP(wm_predictor, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+            wm_predictor = DDP(wm_predictor, device_ids=[aux_idx], output_device=aux_idx, find_unused_parameters=False)
 
     vision_ema: VisionEncoderEMA | None = None
     if vision_ema_enabled:
@@ -329,8 +554,13 @@ def train_sft2(args=None) -> int:
             accum.reset()
             log_train_step(wandb_run, global_step, avg)
 
+    step_timer = StepTimer(enabled=args.step_timing, log_interval=args.step_timing_interval)
+    pad_token_id = processor.tokenizer.pad_token_id
+
     for epoch in range(start_epoch, args.epochs + 1):
-        if train_sampler is not None:
+        if train_batch_sampler is not None:
+            train_batch_sampler.set_epoch(epoch)
+        elif train_sampler is not None:
             train_sampler.set_epoch(epoch)
         optimizer.zero_grad(set_to_none=True)
         accum = MetricAccumulator()
@@ -341,12 +571,48 @@ def train_sft2(args=None) -> int:
         if train_wm_predictor:
             ddp_modules.append(wm_predictor)
 
-        for micro_idx, batch_samples in enumerate(train_loader, start=1):
+        train_iter = iter(train_loader)
+        micro_idx = 0
+        while True:
+            t0 = step_timer.start("dataloader")
+            try:
+                batch_samples = next(train_iter)
+            except StopIteration:
+                break
+            step_timer.stop("dataloader", t0)
+            micro_idx += 1
             sync_gradients = (micro_idx % args.grad_accum == 0) or (micro_idx == num_micro_batches)
-            with _no_sync_if_needed(ddp_modules, enabled=world > 1 and not sync_gradients):
-                items = batch_samples
-                enc = build_qwen_batch(items, processor, args.max_length)
-                latent_hidden, lm_loss = extract_qwen_latents(model, enc, token_id_map, device)
+            with _no_sync_if_needed(ddp_modules, enabled=world > 1 and not sync_gradients and not qwen_pair_parallel):
+                t0 = step_timer.start("batch_prep")
+                items, enc, next_enc_rows, transition_samples, full_enc = _unpack_train_batch(
+                    batch_samples,
+                    processor,
+                    args.max_length,
+                    packed_forward=args.packed_forward,
+                    pad_token_id=pad_token_id,
+                )
+                step_timer.stop("batch_prep", t0)
+
+                t0 = step_timer.start("current_forward")
+                if args.packed_forward:
+                    assert transition_samples is not None
+                    assert_packed_batch(transition_samples)
+                    traj = forward_trajectory_once(
+                        model,
+                        transition_samples,
+                        processor,
+                        token_id_map,
+                        device,
+                        max_length=args.max_length,
+                        vision_ema=vision_ema,
+                        full_enc=full_enc,
+                    )
+                    latent_hidden = traj.current_latents
+                    lm_loss = traj.lm_loss
+                else:
+                    latent_hidden, lm_loss = extract_qwen_latents(model, enc, token_id_map, device)
+                step_timer.stop("current_forward", t0)
+
                 lambda_wm = wm_loss_weight_schedule(
                     global_step,
                     total_steps,
@@ -354,18 +620,34 @@ def train_sft2(args=None) -> int:
                     end=args.lambda_wm_end,
                 )
 
-                wm_loss, wm_metrics = compute_step_wm_loss(
-                    model,
-                    items,
-                    latent_hidden,
-                    processor,
-                    token_id_map,
-                    device,
-                    state_proj,
-                    wm_predictor,
-                    args.max_length,
-                    vision_ema=vision_ema,
-                )
+                t0 = step_timer.start("next_forward")
+                if args.packed_forward:
+                    wm_loss, wm_metrics = compute_trajectory_wm_loss(
+                        items,
+                        latent_hidden,
+                        traj.next_latents,
+                        state_proj,
+                        wm_predictor,
+                        device,
+                    )
+                else:
+                    wm_loss, wm_metrics = compute_step_wm_loss(
+                        model,
+                        items,
+                        latent_hidden,
+                        processor,
+                        token_id_map,
+                        device,
+                        state_proj,
+                        wm_predictor,
+                        args.max_length,
+                        vision_ema=vision_ema,
+                        next_enc_rows=next_enc_rows,
+                        pad_token_id=pad_token_id,
+                    )
+                step_timer.stop("next_forward", t0)
+
+                t0 = step_timer.start("value_loss")
                 value_loss, value_metrics = compute_step_value_loss(
                     latent_hidden,
                     items,
@@ -375,6 +657,9 @@ def train_sft2(args=None) -> int:
                     rank_margin=args.value_rank_margin,
                     lambda_rank=args.value_rank_lambda,
                 )
+                step_timer.stop("value_loss", t0)
+
+                t0 = step_timer.start("loss_combine")
                 loss, metrics = compute_combined_loss(
                     wm_loss=wm_loss,
                     value_loss=value_loss,
@@ -385,13 +670,19 @@ def train_sft2(args=None) -> int:
                 )
                 metrics.update(wm_metrics)
                 metrics.update(value_metrics)
+                step_timer.stop("loss_combine", t0)
 
+                t0 = step_timer.start("backward")
                 (loss / args.grad_accum).backward()
+                step_timer.stop("backward", t0)
             accum.update(metrics)
             micro += 1
 
             if sync_gradients:
+                t0 = step_timer.start("optimizer")
                 _optimizer_step(epoch, lambda_wm=lambda_wm)
+                step_timer.stop("optimizer", t0)
+                step_timer.on_optimizer_step(global_step=global_step, epoch=epoch)
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
@@ -408,6 +699,8 @@ def train_sft2(args=None) -> int:
             max_batches=args.max_val_batches,
             max_length=args.max_length,
             vision_ema=vision_ema,
+            pad_token_id=pad_token_id,
+            packed_forward=args.packed_forward,
         )
         val_wm = val_metrics.get("wm_mse", float("inf"))
         val_success = val_metrics.get("success_rate", 0.0)

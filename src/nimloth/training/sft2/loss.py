@@ -103,21 +103,22 @@ def compute_combined_loss(
         "lambda_value": float(lambda_value),
         "lambda_ce": float(lambda_ce),
     }
-    device = None
-    for candidate in (wm_loss, value_loss, lm_loss):
-        if candidate is not None:
-            device = candidate.device
-            break
+    device = lm_loss.device if lm_loss is not None else None
+    if device is None:
+        for candidate in (wm_loss, value_loss):
+            if candidate is not None:
+                device = candidate.device
+                break
     total = torch.zeros((), device=device or "cpu")
 
     if wm_loss is not None:
-        total = total + lambda_wm * wm_loss
+        total = total + lambda_wm * wm_loss.to(total.device)
         metrics["wm_mse"] = float(wm_loss.detach().item())
     if value_loss is not None:
-        total = total + lambda_value * value_loss
+        total = total + lambda_value * value_loss.to(total.device)
         metrics["value_total"] = float(value_loss.detach().item())
     if lm_loss is not None:
-        total = total + lambda_ce * lm_loss
+        total = total + lambda_ce * lm_loss.to(total.device)
         metrics["lm_ce"] = float(lm_loss.detach().item())
     metrics["total_loss"] = float(total.detach().item())
     return total, metrics

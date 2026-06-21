@@ -17,9 +17,11 @@ def setup_dist() -> tuple[int, int, int, torch.device]:
         rank = int(os.environ["RANK"])
         world = int(os.environ["WORLD_SIZE"])
         local = int(os.environ.get("LOCAL_RANK", "0"))
-        torch.cuda.set_device(local)
+        gpu_stride = int(os.environ.get("NIMLOTH_DDP_GPU_STRIDE", "1"))
+        primary = local * gpu_stride
+        torch.cuda.set_device(primary)
         dist.init_process_group(backend="nccl")
-        return rank, world, local, torch.device(f"cuda:{local}")
+        return rank, world, local, torch.device(f"cuda:{primary}")
     return 0, 1, 0, torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 

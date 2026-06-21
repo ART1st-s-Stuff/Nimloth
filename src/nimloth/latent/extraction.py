@@ -133,12 +133,23 @@ def find_last_latent_state_index(
 ) -> int:
     """Return the index of the last `<|latent_state|>` token (multi-turn prefixes)."""
 
+    indices = find_all_latent_state_indices(input_ids, token_ids, tokens)
+    return indices[-1]
+
+
+def find_all_latent_state_indices(
+    input_ids: Tensor | Sequence[int],
+    token_ids: Mapping[str, int],
+    tokens: LatentActionTokens = LatentActionTokens(),
+) -> list[int]:
+    """Return indices of every `<|latent_state|>` token in order."""
+
     ids = _as_1d_input_ids(input_ids)
     latent_id = token_ids[tokens.latent_state]
     latent_matches = torch.nonzero(ids == latent_id, as_tuple=False).flatten()
     if latent_matches.numel() == 0:
         raise ValueError(f"Expected at least one {tokens.latent_state} token, found 0.")
-    return int(latent_matches[-1].item())
+    return [int(i.item()) for i in latent_matches]
 
 
 def last_hidden_state(model_output) -> Tensor:

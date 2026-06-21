@@ -19,8 +19,11 @@ tuning:
 
 train:
   epochs: 10
-  batch_size: 1
-  grad_accum: 8
+  # P2: per-rank batch 2 x grad_accum 4 keeps effective batch 64 on 8 GPUs.
+  # Packed-forward (--packed-forward): micro-batch = 1 trajectory (~T steps/rank);
+  # tune grad_accum so world * grad_accum * avg_T ≈ 64, or verify loss curves vs legacy.
+  batch_size: 2
+  grad_accum: 4
   lr_qwen_start: 1.0e-8
   lr_qwen_peak: 5.0e-7
   state_proj_lr: 1.0e-4
@@ -43,6 +46,7 @@ loss:
   lambda_value: 1.0
   value_rank_margin: 0.1
   value_rank_lambda: 1.0
+  value_gamma: 1.0
 
 monitor:
   wandb: true

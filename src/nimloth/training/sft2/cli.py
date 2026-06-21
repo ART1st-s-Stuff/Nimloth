@@ -24,8 +24,8 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--val-jsonl", type=Path, required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--epochs", type=int, default=10)
-    ap.add_argument("--batch-size", type=int, default=1)
-    ap.add_argument("--grad-accum", type=int, default=8)
+    ap.add_argument("--batch-size", type=int, default=2)
+    ap.add_argument("--grad-accum", type=int, default=4)
     ap.add_argument("--lr-qwen-start", type=float, default=1e-8)
     ap.add_argument("--lr-qwen-peak", type=float, default=5e-7)
     ap.add_argument("--qwen-lr-warmup-ratio", type=float, default=0.15)
@@ -44,6 +44,7 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--lambda-value", type=float, default=1.0)
     ap.add_argument("--value-rank-margin", type=float, default=0.1)
     ap.add_argument("--value-rank-lambda", type=float, default=1.0)
+    ap.add_argument("--value-gamma", type=float, default=1.0)
     ap.add_argument("--lambda-wm-start", type=float, default=0.1)
     ap.add_argument("--lambda-wm-end", type=float, default=1.0)
     ap.add_argument("--attn-implementation", default="sdpa")
@@ -73,6 +74,50 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         "--early-stop-metric",
         choices=("val_success_rate", "val_wm_mse"),
         default="val_success_rate",
+    )
+    ap.add_argument(
+        "--preprocess-cache-dir",
+        type=Path,
+        default=None,
+        help="Disk cache for transition prefix processor outputs (enables DataLoader workers).",
+    )
+    ap.add_argument("--preprocess-workers", type=int, default=4, help="Workers for building preprocess cache.")
+    ap.add_argument("--force-rebuild-cache", action="store_true")
+    ap.add_argument(
+        "--dataloader-workers",
+        type=int,
+        default=-1,
+        help="DataLoader workers (-1: 0 without cache, 4 with cache).",
+    )
+    ap.add_argument(
+        "--step-timing",
+        action="store_true",
+        help="Log rolling-average per-section step timings (profiling only).",
+    )
+    ap.add_argument(
+        "--step-timing-interval",
+        type=int,
+        default=50,
+        help="Log step timings every N optimizer steps when --step-timing is set.",
+    )
+    ap.add_argument(
+        "--trajectory-aware-batching",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Batch consecutive prefixes from the same trajectory as independent rows. "
+            "This improves padding/next-target locality without full-trajectory forward."
+        ),
+    )
+    ap.add_argument(
+        "--packed-forward",
+        action="store_true",
+        help="Use full-trajectory single forward (research-only; not semantic-equivalent for default Qwen-VL SFT2).",
+    )
+    ap.add_argument(
+        "--allow-approx-trajectory-once",
+        action="store_true",
+        help="Explicitly allow non-equivalent trajectory-once packed forward for research/profiling only.",
     )
     return ap
 

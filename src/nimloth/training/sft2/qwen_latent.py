@@ -14,6 +14,13 @@ def _unwrap_model(model):
     return model.module if hasattr(model, "module") else model
 
 
+def reset_model_rope_state(model) -> None:
+    root = _unwrap_model(model)
+    inner = getattr(root, "model", root)
+    if hasattr(inner, "rope_deltas"):
+        inner.rope_deltas = None
+
+
 def _get_attr_path(obj: Any, path: str) -> Any | None:
     cur = obj
     for name in path.split("."):
@@ -66,6 +73,14 @@ def _capture_last_hidden(model, model_inputs: dict[str, torch.Tensor]):
     if hidden is None:
         raise RuntimeError("Qwen final norm hook did not capture last hidden states.")
     return hidden, output
+
+
+def forward_qwen_last_hidden(model, enc: dict[str, torch.Tensor], device: torch.device) -> torch.Tensor:
+    """Run Qwen forward and return last-layer hidden states ``[batch, seq, dim]``."""
+
+    model_inputs = {k: v.to(device) for k, v in enc.items()}
+    hidden, _ = _capture_last_hidden(model, model_inputs)
+    return hidden
 
 
 def extract_qwen_latents(

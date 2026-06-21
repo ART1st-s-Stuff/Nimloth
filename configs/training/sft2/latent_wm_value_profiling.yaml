@@ -1,0 +1,44 @@
+# SFT2 profiling / speedup knobs (diagnostic only — not default experiment semantics)
+# Use for short runs to quantify vision tuning, batching, attention, and cache impact.
+
+init:
+  sft1_checkpoint: null
+  wm_predictor_checkpoint: null
+
+data:
+  train_jsonl: train_all.jsonl
+  val_jsonl: val_all.jsonl
+  include_failed_rollouts: true
+
+tuning:
+  llm_tune: freeze
+  vision_tune: full
+  vision_ema: true
+  vision_ema_decay: 0.999
+
+train:
+  epochs: 1
+  # P2: same effective batch (64 transitions on 8 GPUs) with fewer grad-accum steps
+  batch_size: 2
+  grad_accum: 4
+  max_length: 12000
+  max_pixels: 602112
+  emb_dim: 128
+  attn_implementation: flash_attention_2
+  gradient_checkpointing: true
+  preprocess_cache_dir: null
+  preprocess_workers: 4
+  dataloader_workers: 4
+  step_timing: true
+  step_timing_interval: 10
+
+loss:
+  lambda_wm_start: 0.1
+  lambda_wm_end: 1.0
+  lambda_ce: 1.0
+  lambda_value: 1.0
+  value_gamma: 1.0
+
+monitor:
+  wandb: false
+  early_stop_metric: val_success_rate

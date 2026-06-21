@@ -1,0 +1,35 @@
+# SFT2 vision-freeze profiling (P6 diagnostic — not default experiment)
+
+init:
+  wm_predictor_checkpoint: null
+
+data:
+  train_jsonl: train_all.jsonl
+  val_jsonl: val_all.jsonl
+  include_failed_rollouts: true
+
+tuning:
+  llm_tune: freeze
+  vision_tune: freeze
+  vision_ema: false
+
+train:
+  epochs: 1
+  batch_size: 2
+  grad_accum: 4
+  max_length: 12000
+  max_pixels: 602112
+  attn_implementation: sdpa
+  gradient_checkpointing: true
+  step_timing: true
+  step_timing_interval: 10
+
+loss:
+  lambda_wm_start: 0.1
+  lambda_wm_end: 1.0
+  lambda_ce: 1.0
+  lambda_value: 1.0
+
+monitor:
+  wandb: false
+  early_stop_metric: val_success_rate

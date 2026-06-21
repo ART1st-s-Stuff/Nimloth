@@ -48,7 +48,7 @@ def test_expand_record_transitions_alignment() -> None:
     assert t0.prefix_messages[-1]["role"] == "assistant"
     assert t0.next_prefix_messages is not None
     assert len(t0.next_prefix_image_paths) == 2
-    assert t0.action_value_target == pytest.approx(0.99 ** 2)
+    assert t0.action_value_target == pytest.approx(1.0)
 
     t2 = transitions[2]
     assert t2.current_image_path == "/tmp/img_2.png"
@@ -73,6 +73,13 @@ def test_expand_rejects_invalid_action_index() -> None:
     except ValueError:
         raised = True
     assert raised
+
+
+def test_expand_record_transitions_configurable_value_gamma() -> None:
+    record = _make_record(num_steps=3)
+    transitions = expand_record_transitions(record, value_gamma=0.9)
+    assert transitions[0].action_value_target == pytest.approx(0.9 ** 2)
+    assert transitions[2].action_value_target == pytest.approx(1.0)
 
 
 def test_discounted_action_value_targets() -> None:

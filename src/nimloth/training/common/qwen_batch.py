@@ -6,6 +6,7 @@ import json
 from functools import lru_cache
 from typing import Any
 
+import torch
 from PIL import Image
 from transformers import AutoProcessor
 
@@ -109,6 +110,86 @@ def assistant_char_spans(messages: list[dict[str, Any]], processor: AutoProcesso
     return [(start, end)] if start < end else []
 
 
+def _collect_message_images(messages: list[dict[str, Any]]) -> list[Image.Image]:
+    imgs: list[Image.Image] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if part.get("type") == "image":
+                    # Return a copy so downstream processors may safely mutate
+                    # without corrupting the cached decoded RGB image.
+                    imgs.append(_load_rgb_image(str(part["image"])).copy())
+    return imgs
+
+
+def _labels_for_text_rows(
+    processor: AutoProcessor,
+    enc_input_ids: torch.Tensor,
+    texts: list[str],
+    spans_per_item: list[list[tuple[int, int]]],
+    max_length: int,
+) -> torch.Tensor:
+    offset_cache = _offset_cache(processor)
+    offset_rows = [offset_cache.offsets(text, max_length) for text in texts]
+    labels = enc_input_ids.clone()
+    labels[:] = -100
+    for row, spans in enumerate(spans_per_item):
+        usable = min(labels.shape[1], len(offset_rows[row]))
+        for tok_idx in range(usable):
+            start, end = offset_rows[row][tok_idx]
+            if end <= start:
+                continue
+            if any(start < span_end and end > span_start for span_start, span_end in spans):
+                labels[row, tok_idx] = enc_input_ids[row, tok_idx]
+    return labels
+
+
+def encode_qwen_item(
+    messages: list[dict[str, Any]],
+    processor: AutoProcessor,
+    max_length: int,
+    *,
+    include_labels: bool = True,
+) -> dict[str, Any]:
+    """Encode one prefix with the same semantics as ``build_qwen_batch``."""
+
+    cache = _template_cache(processor)
+    cache_key = _message_cache_key(messages)
+    text = cache.render(cache_key, False)
+    images = _collect_message_images(messages)
+    enc = processor(
+        text=[text],
+        images=[images] if images else None,
+        padding=False,
+        truncation=True,
+        max_length=max_length,
+        return_tensors="pt",
+    )
+    out: dict[str, Any] = {}
+    for key, value in enc.items():
+        if hasattr(value, "squeeze"):
+            squeezed = value.squeeze(0)
+            if key == "image_grid_thw" and hasattr(squeezed, "ndim") and squeezed.ndim == 1:
+                squeezed = squeezed.unsqueeze(0)
+            if hasattr(squeezed, "contiguous"):
+                out[key] = squeezed.contiguous()
+            else:
+                out[key] = squeezed
+        else:
+            out[key] = value
+    if include_labels:
+        labels = _labels_for_text_rows(
+            processor,
+            enc["input_ids"],
+            [text],
+            [assistant_char_spans(messages, processor)],
+            max_length,
+        )
+        out["labels"] = labels.squeeze(0).contiguous()
+    return out
+
+
 def build_qwen_batch(items: list[dict[str, Any]], processor: AutoProcessor, max_length: int) -> dict[str, Any]:
     texts: list[str] = []
     spans_per_item: list[list[tuple[int, int]]] = []
@@ -119,16 +200,7 @@ def build_qwen_batch(items: list[dict[str, Any]], processor: AutoProcessor, max_
         text = cache.render(cache_key, False)
         texts.append(text)
         spans_per_item.append(assistant_char_spans(item["messages"], processor))
-        imgs: list[Image.Image] = []
-        for msg in item["messages"]:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for part in content:
-                    if part.get("type") == "image":
-                        # Return a copy so downstream processors may safely mutate
-                        # without corrupting the cached decoded RGB image.
-                        imgs.append(_load_rgb_image(str(part["image"])).copy())
-        all_images.append(imgs)
+        all_images.append(_collect_message_images(item["messages"]))
 
     enc = processor(
         text=texts,
@@ -138,17 +210,5 @@ def build_qwen_batch(items: list[dict[str, Any]], processor: AutoProcessor, max_
         max_length=max_length,
         return_tensors="pt",
     )
-    offset_cache = _offset_cache(processor)
-    offset_rows = [offset_cache.offsets(text, max_length) for text in texts]
-    labels = enc["input_ids"].clone()
-    labels[:] = -100
-    for row, spans in enumerate(spans_per_item):
-        usable = min(labels.shape[1], len(offset_rows[row]))
-        for tok_idx in range(usable):
-            start, end = offset_rows[row][tok_idx]
-            if end <= start:
-                continue
-            if any(start < span_end and end > span_start for span_start, span_end in spans):
-                labels[row, tok_idx] = enc["input_ids"][row, tok_idx]
-    enc["labels"] = labels
+    enc["labels"] = _labels_for_text_rows(processor, enc["input_ids"], texts, spans_per_item, max_length)
     return enc

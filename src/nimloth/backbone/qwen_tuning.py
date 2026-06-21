@@ -65,6 +65,16 @@ def configure_qwen_tuning(
     if uses_lora_flag:
         from peft import LoraConfig, get_peft_model
 
+        try:
+            import peft.tuners.lora.model as peft_lora_model
+
+            def _dispatch_torchao_disabled(*args, **kwargs):
+                return None
+
+            peft_lora_model.dispatch_torchao = _dispatch_torchao_disabled
+        except Exception:
+            pass
+
         modules_to_save: list[str] = []
         if llm_tune == "lora":
             modules_to_save.extend(["embed_tokens", "lm_head"])

@@ -59,6 +59,8 @@ ensure_sft1_merged() {
   echo "Init HF: ${SFT1_BEST}"
   echo "Train jsonl: ${RECORDS_ROOT}/train_all.jsonl"
   echo "Output: ${TRAIN_OUT}"
+  echo "Packed forward: ${PACKED_FORWARD:-0}"
+  echo "Trajectory-aware batching: ${TRAJECTORY_AWARE_BATCHING:-0}"
 } | tee -a "${LOG}"
 
 eval "${COMMON_ENV}"
@@ -97,6 +99,26 @@ if [ -n "${WM_PREDICTOR_CHECKPOINT:-}" ]; then
   WM_PRED_ARGS=(--wm-predictor-checkpoint "${WM_PREDICTOR_CHECKPOINT}")
 fi
 
+PREPROCESS_ARGS=()
+if [ -n "${PREPROCESS_CACHE_DIR:-}" ]; then
+  PREPROCESS_ARGS=(--preprocess-cache-dir "${PREPROCESS_CACHE_DIR}")
+fi
+TIMING_ARGS=()
+if [ "${STEP_TIMING:-0}" = "1" ]; then
+  TIMING_ARGS=(--step-timing --step-timing-interval "${STEP_TIMING_INTERVAL:-50}")
+fi
+PACKED_ARGS=()
+if [ "${PACKED_FORWARD:-0}" = "1" ]; then
+  PACKED_ARGS=(--packed-forward)
+  if [ "${ALLOW_APPROX_TRAJECTORY_ONCE:-0}" = "1" ]; then
+    PACKED_ARGS+=(--allow-approx-trajectory-once)
+  fi
+fi
+TRAJECTORY_BATCH_ARGS=()
+if [ "${TRAJECTORY_AWARE_BATCHING:-0}" = "1" ]; then
+  TRAJECTORY_BATCH_ARGS=(--trajectory-aware-batching)
+fi
+
 echo "=== torchrun ${NGPUS}-GPU SFT2 ===" | tee -a "${LOG}"
 PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NGPUS} \
   "${SCRIPTDIR}/train.py" \
@@ -104,6 +126,10 @@ PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NGPUS} \
   "${TUNE_ARGS[@]}" \
   "${RESUME_ARGS[@]}" \
   "${WM_PRED_ARGS[@]}" \
+  "${PREPROCESS_ARGS[@]}" \
+  "${TIMING_ARGS[@]}" \
+  "${PACKED_ARGS[@]}" \
+  "${TRAJECTORY_BATCH_ARGS[@]}" \
   --model "${MODEL_PATH}" \
   --train-jsonl "${RECORDS_ROOT}/train_all.jsonl" \
   --val-jsonl "${RECORDS_ROOT}/val_all.jsonl" \

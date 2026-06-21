@@ -10,7 +10,7 @@ from typing import Any, Iterator
 # Matches vagen.envs.navigation.utils.nimloth_format.ACTION_NAMES length.
 NUM_NAVIGATION_ACTIONS = 8
 
-DEFAULT_VALUE_GAMMA = 0.99
+DEFAULT_VALUE_GAMMA = 1.0
 
 
 def discounted_action_value_targets(record: dict[str, Any], *, gamma: float = DEFAULT_VALUE_GAMMA) -> list[float]:
@@ -59,7 +59,7 @@ def load_jsonl_records(path: Path, max_records: int = -1) -> list[dict[str, Any]
     return records
 
 
-def expand_record_transitions(record: dict[str, Any]) -> list[TransitionSample]:
+def expand_record_transitions(record: dict[str, Any], *, value_gamma: float = DEFAULT_VALUE_GAMMA) -> list[TransitionSample]:
     """Expand one Nimloth jsonl record into per-step transitions.
 
     Alignment convention (matches convert_sft1_rollouts_to_nimloth):
@@ -77,7 +77,7 @@ def expand_record_transitions(record: dict[str, Any]) -> list[TransitionSample]:
     if not messages or not image_paths or not action_indices:
         return []
 
-    value_targets = discounted_action_value_targets(record)
+    value_targets = discounted_action_value_targets(record, gamma=value_gamma)
     transitions: list[TransitionSample] = []
     assistant_turn = 0
     assistant_msg_indices: list[int] = [
@@ -133,13 +133,14 @@ def iter_transitions_from_jsonl(
     max_records: int = -1,
     success_only: bool = False,
     split: str | None = None,
+    value_gamma: float = DEFAULT_VALUE_GAMMA,
 ) -> Iterator[TransitionSample]:
     for record in load_jsonl_records(path, max_records=max_records):
         if success_only and not record.get("success", False):
             continue
         if split is not None and str(record.get("split", "")) != split:
             continue
-        yield from expand_record_transitions(record)
+        yield from expand_record_transitions(record, value_gamma=value_gamma)
 
 
 class TransitionJsonlDataset:
@@ -152,6 +153,7 @@ class TransitionJsonlDataset:
         max_records: int = -1,
         success_only: bool = False,
         split: str | None = None,
+        value_gamma: float = DEFAULT_VALUE_GAMMA,
     ) -> None:
         self.samples = list(
             iter_transitions_from_jsonl(
@@ -159,6 +161,7 @@ class TransitionJsonlDataset:
                 max_records=max_records,
                 success_only=success_only,
                 split=split,
+                value_gamma=value_gamma,
             )
         )
 
