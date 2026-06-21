@@ -9,7 +9,11 @@ export UV_PYTHON_INSTALL_DIR="${REPO}/.local/python"
 export XDG_CACHE_HOME="${REPO}/.cache"
 export HOME="${REPO}/.home"
 export FLASHINFER_WORKSPACE_DIR="${REPO}/.cache/flashinfer"
-mkdir -p "$HOME" "$FLASHINFER_WORKSPACE_DIR"
+export WANDB_DIR="${REPO}/.cache/wandb"
+# Triton/torch compile caches on local /tmp avoid NFS stale-file-handle crashes.
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/triton_cache_${SLURM_JOB_ID:-local}_$(hostname)}"
+export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/tmp/torch_ext_${SLURM_JOB_ID:-local}_$(hostname)}"
+mkdir -p "$HOME" "$FLASHINFER_WORKSPACE_DIR" "$WANDB_DIR" "$TRITON_CACHE_DIR" "$TORCH_EXTENSIONS_DIR"
 export PATH="${REPO}/.venv/bin:${REPO}/.local/bin:$PATH"
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface
@@ -31,6 +35,7 @@ fi
 # shellcheck disable=SC1091
 source "${REPO}/.venv/bin/activate"
 
+export VLLM_USE_FLASHINFER_SAMPLER=0
 export TOKENIZERS_PARALLELISM=true
 export RAY_DEDUP_LOGS=0
 export HYDRA_FULL_ERROR=1

@@ -457,3 +457,18 @@
 - 已停止污染的远程实验 `outputs/experiments/training/sft2/2026-06-18/sft2_latentwm_default_8gpu`，并在该目录 `README.md` 记录失败原因：旧 token 被加入 tokenizer，checkpoint vocab/metadata 被污染，不应作为最终 SFT2 结果。
 - 已用 fresh output 重启 SFT2：`outputs/experiments/training/sft2/2026-06-19/sft2_latentwm_default_8gpu_tokenfix`，复用 hold job `456005`，从干净 SFT1 merged checkpoint 初始化，LLM freeze、vision full+EMA，训练 state_proj / LatentWMPredictor / ValueHead。
 - 重启健康检查：新 run `add_special_tokens` 对 SFT1 tokenizer 返回 `added=0` 且无旧 `<|act_*>`；日志未出现 new embeddings/lm_head resize warning；`train_step_log.csv` 已写到至少 `global_step=5`。
+
+## 2026-06-21：VAGEN Nimloth 改动移植到 upstream vagen-legacy
+
+- 人类指出 VAGEN main 分支无法复现原文效果，应使用 upstream `vagen-legacy`。
+- 已在 `external/VAGEN` 从 `mll-lab-nu/VAGEN` fetch `vagen-legacy`，创建本地分支 `nimloth/vagen-legacy`。
+- 已移植近期 Nimloth/VAGEN 关键改动到 legacy 代码结构：
+  - 新增 `vagen/env/navigation/nimloth_format.py`，使用 `<|latent_state|><|action_start|><|action_(idx)|><|action_end|>`。
+  - `vagen/env/utils/parse_utils.py` 支持 `prompt_format=nimloth` 与 `nimloth_wm`。
+  - `vagen/env/navigation/prompt.py` 支持 Nimloth 单动作 prompt，并禁止 Nimloth 格式多动作。
+  - `vagen/env/navigation/env.py` 同时接受 legacy action 名与 Nimloth action 名（如 `move_forward`）。
+  - `vagen/trainer/ppo/ray_trainer.py` 加入稳定 env uid、validation metadata dump/sort、可选 validation composition guard。
+  - legacy `.gitmodules` 恢复 `verl` submodule，指向 `ART1st-s-Stuff/verl` 的 `nimloth/main`（当前 gitlink `869ff12b`）。
+- 已提交 VAGEN 子仓库 commit：`01c4566 Port Nimloth changes to VAGEN legacy`。
+- 验证：`python -m py_compile vagen/env/navigation/nimloth_format.py vagen/env/utils/parse_utils.py vagen/env/navigation/prompt.py vagen/env/navigation/env_config.py vagen/env/navigation/env.py vagen/trainer/ppo/ray_trainer.py` 通过。未运行训练/rollout。
+- 注意：root 仓库仍有大量既有未提交改动；本次只在 `external/VAGEN` 子仓库提交，root submodule 指针显示 modified，尚未提交。

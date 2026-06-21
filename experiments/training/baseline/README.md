@@ -11,40 +11,24 @@ Canonical scripts for VAGEN navigation RL baseline per `ai_rules/03_experiments_
 | `install_vagen_env.slurm` | One-time uv/VAGEN/AI2-THOR install |
 | `setup_ai2thor_env.sh` | Vulkan + AI2-THOR runtime |
 | `launch_env_servers.sh` + `env_server.slurm` | Preempt env servers (2×4 GPU) for fresh training |
+| `hold_preempt.slurm` + `launch_preempt_training.sh` + `run_preempt_training.sh` | Co-located env+train on 2 preempt nodes (when normal queue unavailable) |
+| `launch_val_wandb_watcher.sh` + `val_wandb_watcher.slurm` | Poll training checkpoints, run val_only, upload val curves to wandb |
 | `env_external_4gpu.slurm` | Normal-partition external env (4 processes) |
 | `train.slurm` | Fresh 2-node×8 GPU PPO training |
 | `train_resume.slurm` | Resume multinode training (`trainer.resume_mode=auto`) |
+| `vagen_paper_ppo_cli.inc.sh` | Shared Table-23-aligned Hydra CLI overrides |
+| `vagen_rollout_vllm_cli.inc.sh` | Shared vLLM rollout Hydra overrides (default backend; avoid sglang) |
+| `vagen_env_repro_cli.inc.sh` | Reproducible env sampling + val composition assert |
 | `convert_checkpoint_world_size.slurm` | HF → FSDP shard conversion |
-| `prune_checkpoints.py` | Keep last N + best validation step |
+| `prune_checkpoints.py` + `prune_checkpoints_policy.sh` | Keep latest + every 10th step + best val checkpoint |
 | `convert_vagen_*_to_world_size.py` | Conversion entrypoints |
 | `slurm_gpu_resources.py` | Cluster GPU inventory helper |
 | `submit_env_external_4gpu.sh` | Thin sbatch wrapper for external env |
 | `submit_train_resume.sh` | Thin sbatch wrapper for resume train |
-| `vagen_env_repro_cli.inc.sh` | Shared Hydra overrides for reproducible env sampling |
-| `verify_validation_jsonl.py` | Post-hoc check: val jsonl has seed metadata + 60/60 split |
 
 Config: `configs/training/baseline/` (`train.yaml`, `val.yaml`, `defaults.yaml`).
 
 Outputs: `outputs/experiments/training/baseline/` (Slurm logs, per-run dirs, `progress.md`).
-
-## Env reproduction (`fix/env-reproduction`)
-
-Requires VAGEN submodule on branch `fix/env-reproduction` (or newer) with:
-
-- stable trajectory `uid` derived from `(data_source, env_seed, eval_set)`
-- rollout/validation jsonl fields: `env_seed`, `data_source`, `eval_set`, `env_name`, `uid`
-- validation dump sorted by env identity; runtime assert enabled **only via baseline Slurm CLI**
-- assert checks `count` **and** `eval_set` per `data_source` (blocks train-split pollution)
-- `data.seed=42`, `data.base_seed=42`, `data.validation_shuffle=False` via `vagen_env_repro_cli.inc.sh`
-
-VAGEN default: `trainer.assert_val_env_composition=False` (opt-in from Nimloth scripts).
-
-After a val step, verify:
-
-```bash
-python3 experiments/training/baseline/verify_validation_jsonl.py \
-  outputs/experiments/training/baseline/<date>/<run>/validation/0.jsonl
-```
 
 ## Latest valid reference run (2026-06)
 
@@ -67,6 +51,25 @@ sbatch experiments/training/baseline/install_vagen_env.slurm   # once
 bash experiments/training/baseline/launch_env_servers.sh
 sbatch experiments/training/baseline/train.slurm
 ```
+
+## Preempt co-located training (env + train on held nodes)
+
+Use when `normal` partition has no whole nodes. **Do not** add node- or run-named scripts; pass parameters via env and record the exact command in `outputs/.../README.md`.
+
+```bash
+cd /project/peilab/atst/nimloth
+export SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
+
+# Optional: pick idle nodes — document choice in outputs README, not in repo filenames
+# NODELIST=dgx-47,dgx-55 \
+EXPERIMENT_NAME=vagen_nav_wm_fresh \
+RUN_DATE=$(date +%Y-%m-%d) \
+bash experiments/training/baseline/launch_preempt_training.sh
+```
+
+Defaults match `configs/training/baseline/defaults.yaml` (`prompt_format=wm` in train/val yaml, 50 steps, batch 128/32, `test_freq=10`). Override with `TOTAL_STEPS`, `TRAIN_BATCH_SIZE`, `NODELIST`, etc.
+
+Outputs: `outputs/experiments/training/baseline/<date>/<EXPERIMENT_NAME>/` plus group-level `progress.md`.
 
 ## Resume (external env + train)
 

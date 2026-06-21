@@ -1,41 +1,41 @@
 # VAGEN navigation baseline — Nimloth-side defaults.
 # VAGEN Hydra configs remain under external/VAGEN/vagen/configs.
+# Paper-aligned RL hyperparameters: arxiv 2510.16907 Table 23.
+# Nimloth overrides (kept): longer sequences + max_actions_per_step=1 + max_turns=20.
 
 model: Qwen/Qwen2.5-VL-3B-Instruct
 
-# Reproducible env sampling for train/val (passed to VAGEN Hydra as data.seed / data.base_seed).
-reproduction:
-  data_seed: 42
-  base_seed: 42
-  validation_shuffle: false
-  assert_val_env_composition: true
-  val_env_composition:
-    navigation_base:
-      count: 60
-      eval_set: base
-    navigation_common:
-      count: 60
-      eval_set: common_sense
+# Nimloth length / env interaction overrides (not Table 12 defaults).
+sequence:
+  max_prompt_length: 3000
+  max_response_length: 20000
+  response_length_per_turn: 512
+  max_turns: 20
+  max_actions_per_step: 1
 
+# Table 23 multi-turn RL training hyperparameters.
 training:
   actor_lr: 1.0e-6
   critic_lr: 1.0e-5
   train_batch_size: 128
   ppo_mini_batch_size: 32
   val_batch_size: 24
+  rollout_temperature: 0.7
+  rollout_top_p: 0.95
+  adv_estimator: gae  # paper: masked_gae; verl/vagen equivalent
+  gamma: 1.0
+  lam: 1.0
+  use_kl_in_reward: true
+  kl_coef: 0.001
   total_training_steps: 50
   save_freq: 1
   test_freq: 10
-  max_actions_per_step: 1
-  max_turns: 20
-  checkpoint_keep_last: 10
+  checkpoint_keep_every: 10  # retain steps 10,20,... plus best val + latest (see prune_checkpoints.py)
 
 resume:
   # Reference valid run (2026-06): retry2 reached global_step 93.
   total_training_steps: 100
   test_freq: 1
-  use_kl_in_reward: true
-  kl_coef: 0.001
   use_fused_kernels: false
   agent_num_workers: 8
   agent_max_concurrent_trajectories: 12
@@ -44,5 +44,6 @@ paths:
   vagen_root: external/VAGEN
   train_data: configs/training/baseline/train.yaml
   val_data: configs/training/baseline/val.yaml
+  paper_ppo_cli: experiments/training/baseline/vagen_paper_ppo_cli.inc.sh
   # Legacy checkpoints / rollouts may still live under navigation_baseline/runs/.
   legacy_runs_root: experiments/navigation_baseline/runs

@@ -42,9 +42,37 @@ VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-24}
 AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-8}
 AGENT_MAX_CONCURRENT_TRAJECTORIES=${AGENT_MAX_CONCURRENT_TRAJECTORIES:-12}
 TRAIN_GPUS_PER_NODE=${TRAIN_GPUS_PER_NODE:-8}
+TRAIN_NODES=${TRAIN_NODES:-2}
+TEST_FREQ=${TEST_FREQ:-10}
+ENABLE_WANDB=${ENABLE_WANDB:-0}
+if [ "${ENABLE_WANDB}" = "1" ]; then
+  LOGGER_HYDRA="['console','wandb']"
+else
+  LOGGER_HYDRA="['console']"
+fi
+RESUME_FROM_STEP=${RESUME_FROM_STEP:-}
+PRUNE_CHECKPOINTS=${PRUNE_CHECKPOINTS:-0}
 RAY_PORT=${RAY_PORT:-6379}
 
+RESUME_MODE=auto
+RESUME_FROM_PATH=""
+RESUME_PATH_ARG=""
+if [ -n "${RESUME_FROM_STEP}" ]; then
+  RESUME_MODE=resume_path
+  RESUME_FROM_PATH="${SAVE_CHECKPOINT_DIR}/global_step_${RESUME_FROM_STEP}"
+  RESUME_PATH_ARG="trainer.resume_from_path='${RESUME_FROM_PATH}'"
+fi
+
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${REPO}/outputs/experiments/training/baseline/slurm"
+
+if [ "${ENABLE_WANDB}" = "1" ]; then
+  WANDB_ID_FILE="${RUN_DIR}/wandb_run_id.txt"
+  if [ -f "${WANDB_ID_FILE}" ]; then
+    export WANDB_RUN_ID
+    WANDB_RUN_ID="$(tr -d '[:space:]' < "${WANDB_ID_FILE}")"
+    export WANDB_RESUME=allow
+  fi
+fi
 
 cleanup() {
   set +e
@@ -62,7 +90,10 @@ trap cleanup EXIT
   echo "Train nodes: ${SLURM_JOB_NODELIST}"
   echo "RUN_DIR: ${RUN_DIR}"
   echo "External env URL file: ${ENV_URL_FILE}"
-  echo "Resume: trainer.resume_mode=auto from ${SAVE_CHECKPOINT_DIR}"
+  echo "Resume: trainer.resume_mode=${RESUME_MODE} from ${SAVE_CHECKPOINT_DIR}"
+  if [ -n "${RESUME_FROM_PATH}" ]; then
+    echo "Resume checkpoint: ${RESUME_FROM_PATH}"
+  fi
   echo "Batch: train=${TRAIN_BATCH_SIZE}, ppo_mini=${PPO_MINI_BATCH_SIZE}, val=${VAL_BATCH_SIZE}, total_steps=${TOTAL_STEPS}"
 } | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 
@@ -85,8 +116,12 @@ echo "=== External env URLs ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 cat "${ENV_URL_FILE}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 
 NODES=($($SL/scontrol show hostnames "$SLURM_JOB_NODELIST"))
+if [ "${#NODES[@]}" -lt "${TRAIN_NODES}" ]; then
+  echo "ERROR: need ${TRAIN_NODES} nodes, got ${#NODES[@]}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  exit 3
+fi
 HEAD_NODE=${NODES[0]}
-WORKER_NODE=${NODES[1]}
+WORKER_NODE=${NODES[1]:-}
 HEAD_IP=$($SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
 if [ -z "$HEAD_IP" ]; then HEAD_IP=$($SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname -I | awk '{print $1}'); fi
 IP_HEAD=${HEAD_IP}:${RAY_PORT}
@@ -116,7 +151,7 @@ for node in "${NODES[@]}"; do
   # shellcheck disable=SC1091
   source '${SCRIPTDIR}/common_env.sh'
   ray stop --force >/dev/null 2>&1 || true
-  pkill -u \$USER -f 'sglang|SGLangHttpServer|sglang_server|torch/_inductor/compile_worker' >/dev/null 2>&1 || true
+  pkill -u \$USER -f 'vllm|VLLM|sglang|SGLangHttpServer|sglang_server|torch/_inductor/compile_worker' >/dev/null 2>&1 || true
   " || true
 done
 sleep 10
@@ -136,17 +171,50 @@ $SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
 " > "${RUN_DIR}/ray_head_${SLURM_JOB_ID}_${HEAD_NODE}.log" 2>&1 &
 sleep 20
 
-$SL/srun --overlap --nodes=1 --ntasks=1 -w "$WORKER_NODE" bash -lc "
-  set -euo pipefail
-  REPO='${REPO}'
-  # shellcheck disable=SC1091
-  source '${SCRIPTDIR}/common_env.sh'
-  CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ray start --address='${IP_HEAD}' \
-    --num-cpus=160 \
-    --num-gpus=${TRAIN_GPUS_PER_NODE} \
-    --block
-" > "${RUN_DIR}/ray_worker_${SLURM_JOB_ID}_${WORKER_NODE}.log" 2>&1 &
-sleep 25
+if [ "${TRAIN_NODES}" -ge 2 ] && [ -n "${WORKER_NODE}" ]; then
+  $SL/srun --overlap --nodes=1 --ntasks=1 -w "$WORKER_NODE" bash -lc "
+    set -euo pipefail
+    REPO='${REPO}'
+    # shellcheck disable=SC1091
+    source '${SCRIPTDIR}/common_env.sh'
+    CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ray start --address='${IP_HEAD}' \
+      --num-cpus=160 \
+      --num-gpus=${TRAIN_GPUS_PER_NODE} \
+      --block
+  " > "${RUN_DIR}/ray_worker_${SLURM_JOB_ID}_${WORKER_NODE}.log" 2>&1 &
+  sleep 25
+fi
+
+NEED_GPUS=$((TRAIN_GPUS_PER_NODE * TRAIN_NODES))
+echo "=== Waiting for Ray cluster (${NEED_GPUS} GPUs) ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+ray_ready=0
+for i in $(seq 1 60); do
+  ray_gpus=$($SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
+    REPO='${REPO}'
+    # shellcheck disable=SC1091
+    source '${SCRIPTDIR}/common_env.sh'
+    python3 - <<'PY'
+import ray
+try:
+    ray.init(address='auto', ignore_reinit_error=True, logging_level='ERROR')
+    print(int(ray.cluster_resources().get('GPU', 0)))
+finally:
+    ray.shutdown()
+PY
+  " 2>/dev/null | tail -1 || true)
+  if [ -n "${ray_gpus}" ]; then
+    echo "ray gpu check ${i}: ${ray_gpus} (need ${NEED_GPUS})" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+    if [ "${ray_gpus:-0}" -ge "${NEED_GPUS}" ]; then
+      ray_ready=1
+      break
+    fi
+  fi
+  sleep 5
+done
+if [ "${ray_ready}" -ne 1 ]; then
+  echo "ERROR: Ray cluster did not reach ${NEED_GPUS} GPUs" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  exit 4
+fi
 
 echo "=== Launching resumed multinode VAGEN training ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 set +e
@@ -155,12 +223,17 @@ $SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
   REPO='${REPO}'
   # shellcheck disable=SC1091
   source '${SCRIPTDIR}/common_env.sh'
+  # shellcheck disable=SC1091
+  source '${SCRIPTDIR}/vagen_rollout_vllm_cli.inc.sh'
+  # shellcheck disable=SC1091
+  source '${SCRIPTDIR}/vagen_paper_ppo_cli.inc.sh'
   cd '${BASEDIR}'
   PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     --config-path='${BASEDIR}/vagen/configs' \
     --config-name='vagen_multiturn' \
     data.train_files='${TMP_CONFIG_DIR}/train.yaml' \
     data.val_files='${TMP_CONFIG_DIR}/val.yaml' \
+    data.custom_cls.path='${REPO}/external/VAGEN/vagen/gym_agent_dataset.py' \
     data.train_batch_size=${TRAIN_BATCH_SIZE} \
     data.val_batch_size=${VAL_BATCH_SIZE} \
     data.seed=${VAGEN_DATA_SEED} \
@@ -169,13 +242,7 @@ $SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
     +trainer.assert_val_env_composition=True \
     '+trainer.val_env_composition.navigation_base={count:60,eval_set:base}' \
     '+trainer.val_env_composition.navigation_common={count:60,eval_set:common_sense}' \
-    data.max_prompt_length=3000 \
-    data.max_response_length=20000 \
-    algorithm.adv_estimator=gae \
-    algorithm.use_kl_in_reward=True \
-    algorithm.kl_ctrl.kl_coef=0.001 \
-    algorithm.gamma=1.0 \
-    algorithm.lam=1.0 \
+    \"\${VAGEN_PAPER_PPO_ARGS[@]}\" \
     actor_rollout_ref.model.path=${MODEL_PATH} \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.use_fused_kernels=False \
@@ -194,36 +261,24 @@ $SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=1 \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
-    actor_rollout_ref.actor.fsdp_config.use_torch_compile=False \
-    actor_rollout_ref.actor.fsdp_config.sync_module_states=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-    actor_rollout_ref.rollout.name=sglang \
-    actor_rollout_ref.rollout.mode=async \
-    actor_rollout_ref.rollout.n=1 \
-    actor_rollout_ref.rollout.max_num_batched_tokens=24000 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
-    actor_rollout_ref.rollout.enforce_eager=True \
-    actor_rollout_ref.rollout.free_cache_engine=True \
-    actor_rollout_ref.rollout.enable_chunked_prefill=True \
-    actor_rollout_ref.rollout.multi_turn.enable=True \
+    \"\${VAGEN_ROLLOUT_VLLM_ARGS[@]}\" \
     actor_rollout_ref.rollout.agent.agent_loop_config_path='${BASEDIR}/vagen/configs/agent.yaml' \
     actor_rollout_ref.rollout.agent.num_workers=${AGENT_NUM_WORKERS} \
     actor_rollout_ref.rollout.agent.max_concurrent_trajectories=${AGENT_MAX_CONCURRENT_TRAJECTORIES} \
     actor_rollout_ref.rollout.disable_log_stats=False \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    actor_rollout_ref.ref.fsdp_config.use_torch_compile=False \
-    actor_rollout_ref.ref.fsdp_config.sync_module_states=False \
     trainer.critic_warmup=0 \
-    trainer.logger=['console'] \
+    trainer.logger=${LOGGER_HYDRA} \
     trainer.val_before_train=True \
     trainer.n_gpus_per_node=${TRAIN_GPUS_PER_NODE} \
-    trainer.nnodes=2 \
+    trainer.nnodes=${TRAIN_NODES} \
     trainer.save_freq=1 \
-    trainer.test_freq=1 \
-    trainer.max_actor_ckpt_to_keep=50 \
-    trainer.max_critic_ckpt_to_keep=50 \
+    trainer.test_freq=${TEST_FREQ} \
+    trainer.max_actor_ckpt_to_keep=null \
+    trainer.max_critic_ckpt_to_keep=null \
     trainer.project_name=nimloth_navigation \
     trainer.experiment_name=${EXPERIMENT_NAME} \
     trainer.default_local_dir='${SAVE_CHECKPOINT_DIR}' \
@@ -231,7 +286,8 @@ $SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
     trainer.rollout_data_dir='${RUN_DIR}/rollout_data' \
     trainer.log_val_generations=32 \
     trainer.total_training_steps=${TOTAL_STEPS} \
-    trainer.resume_mode=auto \
+    trainer.resume_mode=${RESUME_MODE} \
+    ${RESUME_PATH_ARG} \
     critic.optim.lr=1e-5 \
     critic.model.use_remove_padding=True \
     critic.model.path=${MODEL_PATH} \
@@ -240,13 +296,21 @@ $SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
     critic.ppo_max_token_len_per_gpu=32768 \
     critic.model.fsdp_config.param_offload=True \
     critic.model.fsdp_config.optimizer_offload=True \
-    critic.model.fsdp_config.use_torch_compile=False \
-    critic.model.fsdp_config.sync_module_states=False \
     huggingface_hub.hf_save_freq=null \
     +ray_kwargs.ray_init.address=auto
 " 2>&1 | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 TRAIN_EXIT=${PIPESTATUS[0]}
 set -e
+
+if [ "${PRUNE_CHECKPOINTS}" = "1" ]; then
+  python3 "${SCRIPTDIR}/prune_checkpoints.py" \
+    --checkpoint-dir "${SAVE_CHECKPOINT_DIR}" \
+    --validation-dir "${RUN_DIR}/validation" \
+    --val-curve "${RUN_DIR}/val_wandb_watcher/val_curve.jsonl" \
+    --val-run-dir "${RUN_DIR}/val_wandb_watcher" \
+    --keep-every 10 \
+    2>&1 | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log" || true
+fi
 
 echo "=== Resumed training finished rc=${TRAIN_EXIT} at $(date) ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 exit ${TRAIN_EXIT}
