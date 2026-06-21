@@ -483,3 +483,128 @@
 - 新 run 输出目录：`outputs/experiments/training/sft2/2026-06-19/sft2_latentwm_default_8gpu_tokenfix_opt`；README 记录 commit、数据、init checkpoint、训练/冻结模块与监控项。
 - 第一次 launcher 因 login shell 未 load Slurm module 未启动；第二次 launcher 误设 `EVAL_TAG_PREFIX=alltrain_8gpu_lora_cache_opt`，被及时 kill，未进入训练。第三次使用正确 `EVAL_TAG_PREFIX=alltrain_8gpu_lora_cache` 启动。
 - 当前新 run 已健康启动：从 SFT1 `epoch_004/hf_merged` 初始化，`train_step_log.csv` 已写到至少 `global_step=13`；最近 10 step 中位约 `6.36s/step`（旧 run 最近 200 step 中位约 `7.55s/step`），GPU 显存约 47GB/80GB。
+
+## 2026-06-19：SFT2 speedup 续作（batch 默认 + smoke + P4 原型）
+
+- 人类批准增大 batch_size：默认 yaml/CLI 改为 `batch_size=2`, `grad_accum=4`（8 卡 effective batch 仍为 64）。
+- P4 原型：`trajectory_forward.py` + `forward_qwen_last_hidden()`；**尚未接入 trainer**。
+- 新增 GPU smoke：`experiments/training/sft2/smoke_speedup.py` + `smoke_speedup.slurm`。
+- `train_vagen79_default.slurm` 支持 `PREPROCESS_CACHE_DIR`、`STEP_TIMING` 环境变量。
+- 服务器 smoke（dgx-28）：P1 cache/micro_loss 通过；P4 trajectory latent 等价性在真实数据上未通过（max_abs_diff≈14），暂不集成 packed forward。
+
+## 2026-06-20：trajectory-once packed forward review/fix
+
+- Review 远程 probe 日志 `outputs/experiments/training/sft2/smoke/once_probe_456667.{log,err}`：3 条真实 train trajectory 的 trajectory-once full forward 均未通过 legacy per-prefix 等价，`latent_max_diff≈15.75-16.25`，`total_diff≈0.09-0.18`。
+- 结论：full-trajectory single forward 对当前 Qwen-VL navigation 多图轨迹不是可接受的默认 SFT2 语义等价优化；可能由未来图片/多模态 position/vision 批处理等实现细节导致，不能把该路径产物当作默认 SFT2 结果。
+- 安全修复：`trainer.py` 现在在 `--packed-forward` 未同时传 `--allow-approx-trajectory-once` 时直接报错，防止误用非等价路径；Slurm wrapper 仅在 `ALLOW_APPROX_TRAJECTORY_ONCE=1` 时附加 override。
+- 文档同步：`experiments/training/sft2/README.md` 记录 once_probe_456667 的失败结论，并说明 packed-forward 仅可用于 research/profiling，生产默认不得启用。
+- 本地验证：相关 Python 文件 `py_compile` 通过；本地环境缺 torch，无法运行 pytest/import 级测试。
+
+## 2026-06-20：trajectory-once 编码修复 + 2-step GPU 验收（进行中）
+
+- **根因（debug job 456704）**：debug 合成数据 messages 未交错 assistant（`[u0,u1,a1]` 缺 a0）；真实数据须用 `expand_record_transitions` 结构。VL 多图时 standalone prefix encode 与 full encode 的 token prefix 可能不一致（prefix instability）。`find_step_latent_indices_in_full`（char span）在 Qwen-VL 上不可靠。
+- **编码修复（已完成，本地+服务器已同步）**：
+  - `encode_full_trajectory` + `verify_prefix_tokenization`（text 级 + token 级 prefix 检查）
+  - `find_step_latent_indices()`：`find_latent_index_in_last_assistant_span()`（VL offset 失败时回退 `find_last`，与 legacy 一致）；不再用 `find_all(full)[:N]`
+  - `forward_trajectory_once` 改用上述索引；forward 前 `reset_model_rope_state`（`qwen_latent.py`）
+  - `trajectory_forward.py` full encode 改为用 `steps[-1]` 的 prefix
+  - 修复 `test_trajectory_prefix_encoding.py` 的 `max_length` 变量 bug
+- **新增**：`experiments/training/sft2/validate_trajectory_once_2step.py` + `validate_2step.slurm`；synthetic 2-step 必须通过；real record 前 2 step 若 prefix verify 失败则单独报告（不 silent fallback）。
+- **服务器 job 456711 失败**：`find_step_latent_indices_in_full` 在 synthetic step0 找不到 latent（verify 已通过）；已改为 `find_step_latent_indices()`。
+- **GPU 验收 job 456802**（最终，dgx-21）：
+  - `synthetic_2step_text`：latent diff **0/0** ✅ → **encoding 修复 GPU 验证通过**
+  - `synthetic_2step_image`：prefix verify ✅；step0 **0.406** / step1 **0** → index/encoding OK，**VL 一次 forward hidden 仍不等价**
+  - `real_record .../000000` 前 2 step：prefix verify ✅（span 定位；step0 曾有 3 个 token-id 误匹配 `[293,520,600]`）；latent diff **10 / 7.5** → 同为 forward 语义问题
+- **结论**：encoding/index 层修复完成；navigation 多图 **trajectory-once 单 forward 不可当作 legacy 等价**；**不得默认 `PACKED_FORWARD=1`**
+
+## 2026-06-20：trajectory-once 多图不等价定位到 Qwen-VL forward 语义
+
+- 按人类要求改用空闲/可抢占节点重跑验证；取消 normal pending job，提交并完成：`456832`（preempt `dgx-36`, validate）与 `456833`（preempt `dgx-47`, debug）。
+- `validate_trajectory_once_2step.py` 增加 alignment 诊断：`input_ids`、`attention_mask`、`image_grid_thw`、`pixel_values`、Qwen `position_ids`、以及 `get_image_features()` 前缀 diff。
+- 结果：
+  - synthetic 2-step text：diff `0/0`，且 position ids 对齐。
+  - synthetic 2-step image：step0 latent diff `0.40625`，step1 `0`；但 step0 的 input ids、attention mask、pixel values、image grid、position ids 全部与 full 前缀一致，`image_features_prefix_max_diff=0.0`。
+  - real record `train/shard_001_180/000000` 前 2 step：diff `10.0/7.5`；两步的输入、图片张量、grid、position ids、image features 前缀也全部对齐。
+- `debug_trajectory_once.py` 修复 synthetic 2-step 构造为真实 user/assistant 交错轨迹；GPU job `456833` 证实 text 2-step hidden/logits/latent 都完全一致，而 fake image step0 即使所有编码/图片/position 对齐，prefix region hidden max diff 仍为 `2.0`、logits diff `0.5`、latent diff `0.625`。
+- 结论更新：早期 mismatch/index 问题是实现 bug，现已排除；剩余多图不等价发生在 Qwen-VL language-model full sequence forward 中，而不是 tokenization、latent index、vision feature 或 position id 对齐错误。trajectory-once/full-trajectory 对当前多图 SFT2 仍不得作为默认语义等价优化。
+
+## 2026-06-20：SFT2 语义安全 trajectory-aware batching 原型
+
+- 根据 trajectory-once 不等价结论，改为实现不改变语义的 batching 优化：新增 `src/nimloth/training/sft2/trajectory_sampler.py`，按 record 将连续 step indices 放入同一 micro-batch，但每个 prefix 仍是 DataLoader batch 中的独立 row，Qwen 仍执行 legacy per-prefix forward，不做 full-trajectory single forward。
+- `trainer.py` 新增 `--trajectory-aware-batching` 路径：非 packed-forward 时可使用 `TrajectoryAwareBatchSampler`；DDP 下按 batch index 切分并补齐，使各 rank micro-batch 数一致；每 epoch 调用 `set_epoch()` 保持确定性 shuffle。
+- `cli.py` 增加 `--trajectory-aware-batching/--no-trajectory-aware-batching`；`train_vagen79_default.slurm` 支持环境变量 `TRAJECTORY_AWARE_BATCHING=1` 传参。
+- 新增 `tests/training/sft2/test_trajectory_sampler.py` 覆盖连续 step 分组和 DDP rank 切分。
+- 本地验证：`python -m py_compile` 覆盖新 sampler、trainer、cli、测试与 slurm 相关改动通过；本地缺 torch/pytest，不能运行 pytest。尝试同步服务器做 .venv pytest/smoke 时 SSH banner exchange timeout，尚未完成远程验证。
+
+## 2026-06-20：trajectory-aware batching 远程 smoke 验证
+
+- 服务器 SSH 恢复后，已同步 `src/nimloth/training/sft2/*.py`、相关 common 文件、Slurm 与 tests 到 `/project/peilab/atst/nimloth`；远程 `.venv` 验证：`PYTHONPATH=src .venv/bin/python -m pytest -q tests/training/sft2/test_trajectory_sampler.py tests/training/sft2/test_cli.py` -> `4 passed`。
+- 恢复并强化 packed-forward 安全阀：`--packed-forward` 必须同时传 `--allow-approx-trajectory-once`，Slurm 只有在 `ALLOW_APPROX_TRAJECTORY_ONCE=1` 时才追加 override；避免同步过程中丢失 guard。
+- 新增 1-GPU smoke 脚本 `outputs/experiments/training/sft2/smoke/trajectory_batch_smoke.slurm`（服务器临时脚本），对比 `TRAJECTORY_AWARE_BATCHING=0/1`，使用 `max_train_records=2`、`batch_size=2`、`grad_accum=1`、`vision_tune=freeze`、无 EMA，验证训练 loop 可跑通。
+- smoke 结果：
+  - baseline job `456857`（preempt `dgx-05`）：跑完 1 epoch，`global_step=19`，val 正常输出。
+  - trajectory-aware job `456858`（preempt `dgx-36`）：跑完 1 epoch，`global_step=20`，val 正常输出。
+  - 两者均非 packed-forward，仍执行 legacy per-prefix Qwen forward；初步 step timing 显示 trajectory-aware 当前 forward 累计均值更低，但该对比跨节点且样本顺序/step 数不同，只能说明功能可用，不能作为严格速度结论。
+- 下一步若要决定是否默认启用，应在同一 8GPU/同一配置下做 A/B：`TRAJECTORY_AWARE_BATCHING=0/1` + `STEP_TIMING=1`，最好配合 preprocess cache 与相同 max_records，比较 epoch wall time、current_forward、next_forward、batch_prep。
+
+## 2026-06-20：8GPU trajectory-aware batching A/B 与缓存终端 batch bug 修复
+
+- 在 8GPU preempt 节点上做了实际 A/B 执行。
+- 过程中发现 `trajectory-aware-batching + preprocess cache + DDP` 暴露一个真实 bug：某些 rank 收到 terminal-only cached micro-batch 时，`compute_step_wm_loss()` 的 dummy next-forward 回退访问 `items[0]["messages"]`，但 cached items 之前未保留 `messages`，导致 `KeyError: 'messages'`。已在 `preprocess_cache.py` 修复：`CachedTransitionDataset.__getitem__()` 现在把当前 `messages` 注入 entry，`collate_cached_transition_batch()` 也把它传入 items。
+- 修复后，8GPU no-checkpoint A/B job `456886`（warm cache partially unfair）与更公平的 cache-hit A/B job `456888`（同节点 `dgx-47`，shared cache hit）均跑通。
+- 公平对比 job `456888` 配置：`max_train_records=8`, `batch_size=2`, `grad_accum=4`, `llm_tune=freeze`, `vision_tune=full`, `vision_ema=true`, 8GPU DDP，checkpoint monkeypatch 为 no-op 以避免保存时间污染。
+- `456888` 结果：
+  - off: `elapsed=59s`
+  - on (`--trajectory-aware-batching`): `elapsed=57s`
+  - 两者 preprocess cache 均为 hit。
+  - 从 `train_step_log.csv` 看，首个 optimizer step 前启动/加载阶段：off 约 `43.6s`，on 约 `40.2s`；首个 step 到 val 结束的活跃训练阶段：off 约 `8.44s`，on 约 `10.04s`。
+- 当前结论：trajectory-aware batching **功能正确且 DDP/cached 路径已修复**，但在这组小规模 8GPU cache-hit A/B 中 **没有明确训练阶段加速，甚至活跃训练阶段略慢**；end-to-end 仅有约 `2s` 改善，更像启动抖动而非稳定吞吐提升。暂不建议默认启用，应视作可选实验开关。
+
+## 2026-06-20：vLLM prefix-invariance probe 跑通
+
+- 目标：验证 Qwen2.5-VL full trajectory 中“同一 image prefix 单独前向 vs 作为 full trajectory 前缀部分”输出不一致，是否只存在于 HF `transformers`。
+- 远程 probe 路径：`outputs/experiments/training/sft2/smoke/probe_vllm_prefix_invariance.py`。
+- 解决 vLLM 启动环境问题：将 HOME/cache 重定向到项目目录；加载 `nvhpc-hpcx-cuda12/23.11`；设置 `CUDA_HOME=/cm/shared/apps/nvhpc/23.11/Linux_x86_64/23.11/cuda/12.3`；最终使用系统 `gcc/g++` 作为 `CC/CXX`，避免 flashinfer/Triton 编译器冲突。
+- job `456934` 跑通，日志：`outputs/experiments/training/sft2/smoke/vllm_prefix_456934.log`：
+  - `2step_text`: `input_ids_prefix_match=true`, `max_abs_prompt_logprob_diff=0.0`。
+  - `2step_image`: `input_ids_prefix_match=true`, `max_abs_prompt_logprob_diff=0.280426025390625`, `mean_abs_prompt_logprob_diff=0.049253354532205314`。
+- 控制实验 job `456937` 关闭 vLLM prefix caching 后结果不变，日志：`outputs/experiments/training/sft2/smoke/vllm_prefix_nocache_456937.log`：
+  - text 仍为 `0.0`；image 仍为 `0.280426025390625`。
+- 结论：该 prefix non-invariance 不是 HF `transformers` 独有；vLLM 的 prompt logprob 层面也复现了 image prefix 非不变性。它也不像 vLLM prefix cache 造成。默认 SFT2 仍不能启用 full-trajectory/packed-forward 近似路径，除非另有严格等价证明。
+
+## 2026-06-21：SFT2 no-packed epoch_001 rollout eval 明显低于 baseline
+
+- 训练 run：`outputs/experiments/training/sft2/2026-06-20/sft2_latentwm_default_8gpu_vllm_nopacked`。
+- 按人类要求在超过 1 epoch 后停止；停止时训练已到 `epoch=2`, `global_step=959`，但用于对比的是已完整落盘的 `epoch_001` checkpoint。
+- `epoch_001` rollout eval 最终通过复用 env job `456981` 的 external env 跑通；结果文件：
+  - `outputs/experiments/training/sft2/2026-06-20/sft2_latentwm_default_8gpu_vllm_nopacked/eval_rollouts/sft2_eval_nopacked_epoch_001/summary_0.json`
+- `epoch_001` 结果：
+  - val: `14/360`, `success_rate=0.03888888888888889`
+  - test: `15/300`, `success_rate=0.05`
+- baseline 对比使用同流程下先前 `init` 评估（SFT1 merged init，来自 `2026-06-19/sft2_latentwm_default_8gpu_tokenfix/eval_rollouts/sft2_eval_tokenfix_init/summary_0.json`）：
+  - val baseline: `0.3277777777777778`
+  - test baseline: `0.22333333333333333`
+- 结论：当前这条 SFT2 no-packed run 在 `epoch_001` 时 rollout success rate **显著低于 baseline**：
+  - val 下降 `0.2888888888888889`
+  - test 下降 `0.17333333333333334`
+- 备注：为了拿到该结果，经历了多次 env server 失败/不可达；最终可用的是 baseline 任务 `456981` 对应 external env。结论本身有效，但本次 eval 基础设施不稳定，后续最好固定一个可复用的健康 env 入口。
+
+## 2026-06-21：SFT2 value gamma 可配置 + LLM LoRA/vision-full pair2 训练健康启动
+
+- 将 SFT2 value target 的折扣因子改为可配置：
+  - `src/nimloth/wm/dataset.py`: `DEFAULT_VALUE_GAMMA` 从 `0.99` 改为 `1.0`；`expand_record_transitions()` / `iter_transitions_from_jsonl()` / `TransitionJsonlDataset` 接受 `value_gamma`。
+  - `src/nimloth/training/sft2/dataset.py`: `TransitionQwenDataset` 透传 `value_gamma`。
+  - `src/nimloth/training/sft2/cli.py`: 新增 `--value-gamma`，默认 `1.0`。
+  - `src/nimloth/training/common/config.py`: 支持 YAML `loss.value_gamma`。
+  - `configs/training/sft2/latent_wm_value.yaml` 与 profiling config 显式设置 `value_gamma: 1.0`。
+  - `tests/test_wm_transition_dataset.py` 更新默认 target 期望，并新增显式 `value_gamma=0.9` 覆盖。
+- 本地 `python -m py_compile` 通过相关 Python 文件；远程 pytest 由于环境/导入耗时卡住未拿到完整结果，需后续补跑。
+- 为继续保留 vision full tune 同时打开 Qwen LLM LoRA，修复 PEFT LoRA 在当前环境中误走旧 `torchao=0.9.0` dispatcher 的问题：在 `configure_qwen_tuning()` 内让 `dispatch_torchao` 返回 `None`，绕过不兼容 torchao 分支。
+- 尝试 `llm_tune=lora + vision_tune=full` 单卡/8DDP replica 时发生 OOM；随后启用实验性 pair2：`NGPUS=4`, `NIMLOTH_DDP_GPU_STRIDE=2`，每个 DDP rank 的 Qwen 副本通过 HF `device_map=auto` 分到两张 GPU。
+- pair2 smoke 已证明可跑多个 optimizer step，无 OOM/通信崩溃；随后启动正式 1 epoch 训练：
+  - job: `457209` on `dgx-47`
+  - output: `outputs/experiments/training/sft2/2026-06-21/sft2_latentwm_llmlora64a128_vfull_pair2_ep1`
+  - config: `latent_wm_value_epoch1.yaml`（未显式写 `value_gamma`，但已同步代码默认 `--value-gamma=1.0`）
+  - settings: `llm_tune=lora`, `vision_tune=full`, `lora_r=64`, `lora_alpha=128`, packed-forward off, trajectory-aware batching off, `NGPUS=4`, `NIMLOTH_DDP_GPU_STRIDE=2`。
+  - 健康启动证据：日志显示 LoRA 注入、`qwen_pair_parallel=true`, `rank0_pair=[0,1]`, vision EMA `shadow_params=582`；`train_step_log.csv` 已写到至少 `global_step=20`，无 OOM/ChildFailedError。
+- 注意：一次后提交的重复 job `457216` 因资源 pending 被取消；实际健康运行的是 `457209`。
