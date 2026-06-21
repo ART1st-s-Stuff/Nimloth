@@ -146,6 +146,7 @@ PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NGPUS} \
   "${TIMING_ARGS[@]}" \
   "${PACKED_ARGS[@]}" \
   "${TRAJECTORY_BATCH_ARGS[@]}" \
+  ${EXTRA_TRAIN_ARGS:-} \
   --epochs "${SFT2_EPOCHS:-10}" \
   --value-gamma "${VALUE_GAMMA:-1.0}" \
   --checkpoint-interval-steps "${CHECKPOINT_INTERVAL_STEPS:-0}" \
