@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hold 1x8GPU + external env, then srun train resume (SERVER.md pattern).
+# Hold 1x8GPU + external env, then srun train resume (.local/SERVER.md pattern).
 #
 # Hold 占住节点后默认不释放（KEEP_HOLD=1），env/训练失败时可换 NODELIST_ENV 重试：
 #   USE_EXISTING_HOLD=<hold_job_id> RUN_DIR=... NODELIST_ENV=dgx-12 bash launch_hold_train_resume.sh

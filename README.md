@@ -10,17 +10,19 @@ Project initialization is focused on AI collaboration prompts and rules.
 All AI assistants must read [`AGENTS.md`](AGENTS.md). For durable memory, use the memory skill:
 
 ```bash
-./skill memory search <regex>
-./skill memory get <id>
+./skill memory search --store all <regex>
+./skill memory get --store repo <id>
 ./skill memory add <title> <content>
-./skill memory set <id> 'evidence=[{"filename":"...","line_start":1,"total_lines":10}]' 'tags=["..."]'
-./skill memory upvote <id>
+./skill memory add --store local <title> <content>
+./skill memory set --store repo <id> 'evidence=[{"filename":"...","line_start":1,"total_lines":10}]' 'tags=["..."]'
+./skill memory upvote --store repo <id>
 ```
 
 Human approval of AI-created memories:
 
 ```bash
 ./skill human memory-approve
+./skill human memory-approve --store local
 ```
 
 ## Important note

@@ -47,7 +47,7 @@
 | 类型 | 存放位置 | 说明 |
 |------|----------|------|
 | 法则与硬性流程 | `ai_rules/03_experiments_and_data.md` | split 核实、输出、resume、昂贵任务审批 |
-| 稳定、高频、可复用的操作模板 | 专用 markdown（如 `experiments/training/*/README.md`、`SERVER.md`） | 经人类确认后写入；写通用步骤，不写单次 job 参数 |
+| 稳定、高频、可复用的操作模板 | 专用 markdown（如 `experiments/training/*/README.md`、`.local/SERVER.md`） | 经人类确认后写入；写通用步骤，不写单次 job 参数 |
 | 有效期短的环境/集群经验 | **memory skill**（`./skill memory`） | 例如某分区资源查询习惯、SSH 重试策略；需经常更新，过期则 archive |
 | 单次实验的过程与结论 | `outputs/experiments/<name>/` + `progress.md` | 不提交到 `experiments/` 脚本树 |
 | 架构与模块边界 | `src/nimloth/*/README.md`、`ai_tasks/*_exp.md` | 设计与 phase 规格 |

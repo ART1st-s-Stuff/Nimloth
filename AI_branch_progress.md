@@ -16,6 +16,12 @@
 - 当前重点：建立 AI 友好的轻量 memory/task 管理方式。
 - Memory 设计原则：短小、可搜索、由人类审批、以文件段 evidence 为依据，不写长篇总结。
 
+### 2026-06-21：本地/仓库记忆分流与 .local 迁移
+
+- 已将服务器说明移至 `.local/SERVER.md`，并更新 `AGENTS.md` / 其他引用。
+- memory CLI 现支持 repo/local 两个存储：repo 记忆仍在 `.memory/`，环境相关记忆写入 `.local/memory/`。
+- 新增 `.local/scripts/query-resources.sh`，用于展示 superpod 各节点剩余资源。
+
 ### Memory skill/CLI 已创建
 
 - `.agents/skills/memory/SKILL.md`：memory skill 操作协议，已添加 Agent Skills frontmatter。

@@ -11,6 +11,11 @@ Use this skill when you need to create, search, inspect, correct, or upvote dura
 
 The memory system is a lightweight, human-approved, searchable store of short project lessons extracted from real work.
 
+It has two stores:
+
+- repo memory: `.memory/memories.jsonl` for environment-independent lessons that should be committed with the repo;
+- local memory: `.local/memory/memories.jsonl` for environment/server/workspace-specific lessons.
+
 Memory should be:
 
 - short;
@@ -29,17 +34,20 @@ Use the repository skill wrapper commands:
 
 ```bash
 ./skill memory add <title> <content>
+./skill memory add --store local <title> <content>
 ./skill memory set <id> <field=value> [field=value ...]
-./skill memory search <keyword-regex> [--field all|title|content|evidence.filename|tags] [--tag TAG] [--level LEVEL] [--include-archived]
-./skill memory get <id>
-./skill memory upvote <id>
-./skill memory human-verify <id>
+./skill memory set --store local <id> <field=value> [field=value ...]
+./skill memory search <keyword-regex> [--store all|repo|local] [--field all|title|content|evidence.filename|tags] [--tag TAG] [--level LEVEL] [--include-archived]
+./skill memory get --store repo|local <id>
+./skill memory upvote --store repo|local <id>
+./skill memory human-verify --store repo|local <id>
 ```
 
 Human-only approval command:
 
 ```bash
 ./skill human memory-approve
+./skill human memory-approve --store local
 ```
 
 AI agents must never run `./skill human ...` commands.
@@ -54,7 +62,7 @@ Each memory has `id`, `title`, `content`, `evidence`, `tags`, `level`, timestamp
 
 ## Rules for AI agents
 
-1. Do not manually edit `.memory/memories.jsonl`.
+1. Do not manually edit `.memory/memories.jsonl` or `.local/memory/memories.jsonl`.
 2. Do not create long memories. Prefer one compact, searchable lesson per memory.
 3. Do not store transient progress, TODOs, task logs, or experiment summaries in memory.
 4. Do not create memory that merely repeats rules, file lists, command help, or documentation already easy to find.
@@ -65,7 +73,7 @@ Each memory has `id`, `title`, `content`, `evidence`, `tags`, `level`, timestamp
 9. Before relying on a memory, run `./skill memory get <id>`, inspect the evidence file segment, and verify that the memory still matches the referenced file.
 10. Only after verification and confirming it helped the current task, run `./skill memory upvote <id>`.
 11. If a memory is wrong, correct it with `./skill memory set ...`; if obsolete, let stale archive rules handle it or ask the human.
-12. Human approval is done with `./skill human memory-approve`, not by AI.
+12. Human approval is done with `./skill human memory-approve` (or `--store local` for local memories), not by AI.
 
 ## Human approval flow
 

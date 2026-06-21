@@ -52,6 +52,7 @@ data/
 .ai2thor-home/
 .cache/
 .home/
+.local
 .local/
 experiments/**/runs/
 experiments/navigation_baseline/*_host.txt
@@ -60,4 +61,5 @@ experiments/navigation_baseline/*_jobs.txt
 
 # Server usage
 SERVER.md
+.local/SERVER.md
 check_node_resources.sh

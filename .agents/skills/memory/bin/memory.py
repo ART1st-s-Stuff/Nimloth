@@ -15,8 +15,16 @@ if os.environ.get("NIMLOTH_ROOT"):
     ROOT = Path(os.environ["NIMLOTH_ROOT"]).resolve()
 else:
     ROOT = Path(__file__).resolve().parents[4]
-STORE_DIR = ROOT / ".memory"
-STORE_PATH = STORE_DIR / "memories.jsonl"
+
+STORE_REPO = "repo"
+STORE_LOCAL = "local"
+STORE_ALL = "all"
+VALID_STORE_CHOICES = {STORE_REPO, STORE_LOCAL, STORE_ALL}
+STORE_DIRS = {
+    STORE_REPO: ROOT / ".memory",
+    STORE_LOCAL: ROOT / ".local" / "memory",
+}
+STORE_PATHS = {scope: store_dir / "memories.jsonl" for scope, store_dir in STORE_DIRS.items()}
 LEVEL_PENDING = "pending-human-verification"
 LEVEL_VERIFIED = "verified"
 LEVEL_ARCHIVED = "archived"
@@ -38,29 +46,49 @@ def parse_time(value: str | None) -> datetime | None:
         return None
 
 
-def load_memories() -> list[dict[str, Any]]:
-    STORE_DIR.mkdir(parents=True, exist_ok=True)
-    if not STORE_PATH.exists():
+def store_dir(scope: str) -> Path:
+    if scope not in STORE_DIRS:
+        raise SystemExit(f"Unsupported store: {scope}")
+    return STORE_DIRS[scope]
+
+
+def store_path(scope: str) -> Path:
+    return STORE_PATHS[scope]
+
+
+def resolve_single_store(scope: str) -> str:
+    if scope == STORE_ALL:
+        raise SystemExit("This command requires --store repo or --store local.")
+    if scope not in {STORE_REPO, STORE_LOCAL}:
+        raise SystemExit(f"Unsupported store: {scope}")
+    return scope
+
+
+def load_memories(scope: str) -> list[dict[str, Any]]:
+    path = store_path(scope)
+    store_dir(scope).mkdir(parents=True, exist_ok=True)
+    if not path.exists():
         return []
     out: list[dict[str, Any]] = []
-    with STORE_PATH.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8") as f:
         for line_no, line in enumerate(f, 1):
             line = line.strip()
             if line:
                 try:
                     out.append(json.loads(line))
                 except json.JSONDecodeError as exc:
-                    raise SystemExit(f"Invalid JSON in {STORE_PATH}:{line_no}: {exc}")
+                    raise SystemExit(f"Invalid JSON in {path}:{line_no}: {exc}")
     return out
 
 
-def save_memories(memories: list[dict[str, Any]]) -> None:
-    STORE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STORE_PATH.with_suffix(".jsonl.tmp")
+def save_memories(scope: str, memories: list[dict[str, Any]]) -> None:
+    path = store_path(scope)
+    store_dir(scope).mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".jsonl.tmp")
     with tmp.open("w", encoding="utf-8") as f:
         for mem in memories:
             f.write(json.dumps(mem, ensure_ascii=False, sort_keys=True) + "\n")
-    os.replace(tmp, STORE_PATH)
+    os.replace(tmp, path)
 
 
 def next_id(memories: list[dict[str, Any]]) -> str:
@@ -134,10 +162,11 @@ def lazy_archive(memories: list[dict[str, Any]]) -> bool:
     return changed
 
 
-def compact(mem: dict[str, Any]) -> str:
+def compact(mem: dict[str, Any], scope: str | None = None) -> str:
     tags = ",".join(mem.get("tags", []))
     suffix = f" tags=[{tags}]" if tags else ""
-    return f"{mem.get('id')} [{mem.get('level')}] {mem.get('title')}{suffix}"
+    prefix = f"[{scope}] " if scope else ""
+    return f"{prefix}{mem.get('id')} [{mem.get('level')}] {mem.get('title')}{suffix}"
 
 
 def evidence_text(mem: dict[str, Any]) -> str:
@@ -145,7 +174,8 @@ def evidence_text(mem: dict[str, Any]) -> str:
 
 
 def cmd_add(args: argparse.Namespace) -> int:
-    memories = load_memories()
+    scope = resolve_single_store(args.store)
+    memories = load_memories(scope)
     lazy_archive(memories)
     ts = now_iso()
     mem = {
@@ -163,9 +193,9 @@ def cmd_add(args: argparse.Namespace) -> int:
         "archive_reason": None,
     }
     memories.append(mem)
-    save_memories(memories)
-    print(compact(mem))
-    print("Created pending memory. Add evidence/tags with ./skill memory set, then ask human to approve via ./skill human memory-approve.")
+    save_memories(scope, memories)
+    print(compact(mem, scope))
+    print(f"Created pending {scope} memory. Add evidence/tags with ./skill memory set --store {scope}, then ask human to approve via ./skill human memory-approve --store {scope}.")
     return 0
 
 
@@ -180,7 +210,8 @@ def parse_assignment(raw: str) -> tuple[str, str]:
 
 
 def cmd_set(args: argparse.Namespace) -> int:
-    memories = load_memories()
+    scope = resolve_single_store(args.store)
+    memories = load_memories(scope)
     lazy_archive(memories)
     mem = find_memory(memories, args.id)
     for raw in args.assignments:
@@ -196,8 +227,8 @@ def cmd_set(args: argparse.Namespace) -> int:
         else:
             raise SystemExit(f"Unsupported field: {key}. Use title, content, evidence, or tags.")
     mem["updated_at"] = now_iso()
-    save_memories(memories)
-    print(compact(mem))
+    save_memories(scope, memories)
+    print(compact(mem, scope))
     return 0
 
 
@@ -211,30 +242,38 @@ def searchable_blob(mem: dict[str, Any], field: str) -> str:
     if field == "tags":
         return " ".join(mem.get("tags", []))
     if field == "all":
-        return "\n".join([searchable_blob(mem, "title"), searchable_blob(mem, "content"), searchable_blob(mem, "evidence.filename"), searchable_blob(mem, "tags")])
+        return "\n".join([
+            searchable_blob(mem, "title"),
+            searchable_blob(mem, "content"),
+            searchable_blob(mem, "evidence.filename"),
+            searchable_blob(mem, "tags"),
+        ])
     raise SystemExit(f"Unsupported field: {field}")
 
 
 def cmd_search(args: argparse.Namespace) -> int:
-    memories = load_memories()
-    if lazy_archive(memories):
-        save_memories(memories)
+    scopes = [STORE_REPO, STORE_LOCAL] if args.store == STORE_ALL else [resolve_single_store(args.store)]
+    records: list[tuple[str, dict[str, Any]]] = []
     try:
         regex = re.compile(args.regex, re.IGNORECASE)
     except re.error as exc:
         raise SystemExit(f"Invalid regex: {exc}")
-    results = []
-    for mem in memories:
-        if mem.get("level") == LEVEL_ARCHIVED and not args.include_archived:
-            continue
-        if args.level and mem.get("level") != args.level:
-            continue
-        if args.tag and args.tag not in mem.get("tags", []):
-            continue
-        if regex.search(searchable_blob(mem, args.field)):
-            results.append(mem)
-    for mem in results:
-        print(compact(mem))
+    for scope in scopes:
+        memories = load_memories(scope)
+        if lazy_archive(memories):
+            save_memories(scope, memories)
+        for mem in memories:
+            if mem.get("level") == LEVEL_ARCHIVED and not args.include_archived:
+                continue
+            if args.level and mem.get("level") != args.level:
+                continue
+            if args.tag and args.tag not in mem.get("tags", []):
+                continue
+            if regex.search(searchable_blob(mem, args.field)):
+                records.append((scope, mem))
+    records.sort(key=lambda item: (item[0], item[1].get("id", "")))
+    for scope, mem in records:
+        print(compact(mem, scope))
         print(f"  {mem.get('content')}")
         suggestions = mem.get("human_suggestions") or []
         if suggestions:
@@ -244,24 +283,26 @@ def cmd_search(args: argparse.Namespace) -> int:
         ev = evidence_text(mem)
         if ev:
             print(f"  evidence: {ev}")
-    if not results:
+    if not records:
         print("No memories found.")
     return 0
 
 
 def cmd_get(args: argparse.Namespace) -> int:
-    memories = load_memories()
+    scope = resolve_single_store(args.store)
+    memories = load_memories(scope)
     changed = lazy_archive(memories)
     mem = find_memory(memories, args.id)
     print(json.dumps(mem, ensure_ascii=False, indent=2, sort_keys=True))
-    print("\nBefore relying on this memory, inspect each evidence file segment. If it is useful after verification, run: ./skill memory upvote", mem.get("id"))
+    print(f"\nBefore relying on this memory, inspect each evidence file segment. If it is useful after verification, run: ./skill memory upvote --store {scope} {mem.get('id')}")
     if changed:
-        save_memories(memories)
+        save_memories(scope, memories)
     return 0
 
 
 def cmd_upvote(args: argparse.Namespace) -> int:
-    memories = load_memories()
+    scope = resolve_single_store(args.store)
+    memories = load_memories(scope)
     lazy_archive(memories)
     mem = find_memory(memories, args.id)
     if mem.get("level") != LEVEL_VERIFIED:
@@ -270,38 +311,40 @@ def cmd_upvote(args: argparse.Namespace) -> int:
     mem["last_triggered_verification_at"] = ts
     mem["last_upvoted_at"] = ts
     mem["updated_at"] = ts
-    save_memories(memories)
-    print(compact(mem))
+    save_memories(scope, memories)
+    print(compact(mem, scope))
     print("Upvoted: evidence was verified and the memory was useful for the current task.")
     return 0
 
 
 def cmd_human_verify(args: argparse.Namespace) -> int:
-    memories = load_memories()
+    scope = resolve_single_store(args.store)
+    memories = load_memories(scope)
     lazy_archive(memories)
     mem = find_memory(memories, args.id)
     if mem.get("level") == LEVEL_ARCHIVED:
         raise SystemExit("Archived memory cannot be submitted for human verification. Create or correct a pending memory instead.")
     mem["level"] = LEVEL_PENDING
     mem["updated_at"] = now_iso()
-    save_memories(memories)
-    print(compact(mem))
-    print("Submitted for human verification. Human should run: ./skill human memory-approve")
+    save_memories(scope, memories)
+    print(compact(mem, scope))
+    print(f"Submitted {scope} memory for human verification. Human should run: ./skill human memory-approve --store {scope}")
     return 0
 
 
 def cmd_verify_ai_memory(args: argparse.Namespace) -> int:
+    scope = resolve_single_store(args.store)
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise SystemExit("Human-only memory approval requires an interactive TTY. AI agents must not run this command.")
     print("HUMAN-ONLY COMMAND: AI agents must not run memory approval.")
     phrase = "I am the human developer"
     if input(f"Type exactly '{phrase}' to continue: ") != phrase:
         raise SystemExit("Confirmation phrase mismatch; aborting.")
-    memories = load_memories()
+    memories = load_memories(scope)
     lazy_archive(memories)
     pending = [m for m in memories if m.get("level") == LEVEL_PENDING]
     if not pending:
-        save_memories(memories)
+        save_memories(scope, memories)
         print("No pending memories.")
         return 0
     print("Human memory verification. Choose: a=approve, r=reject/delete, s=skip, q=quit")
@@ -313,7 +356,7 @@ def cmd_verify_ai_memory(args: argparse.Namespace) -> int:
             continue
         while True:
             print("\n" + "=" * 72)
-            print(compact(mem))
+            print(compact(mem, scope))
             print(mem.get("content"))
             ev = evidence_text(mem)
             if ev:
@@ -351,7 +394,7 @@ def cmd_verify_ai_memory(args: argparse.Namespace) -> int:
                 for rest in memories:
                     if rest.get("id") not in seen:
                         kept.append(rest)
-                save_memories(kept)
+                save_memories(scope, kept)
                 print("Quit.")
                 return 0
             mem.setdefault("human_suggestions", []).append({"text": raw_choice, "created_at": now_iso()})
@@ -360,26 +403,57 @@ def cmd_verify_ai_memory(args: argparse.Namespace) -> int:
             kept.append(mem)
             print("Added human suggestion; memory remains pending human approval.")
             break
-    save_memories(kept)
+    save_memories(scope, kept)
     return 0
+
+
+def add_store_arg(parser: argparse.ArgumentParser, *, default: str, allow_all: bool = False, help_suffix: str = "") -> None:
+    choices = [STORE_REPO, STORE_LOCAL]
+    if allow_all:
+        choices.append(STORE_ALL)
+    parser.add_argument(
+        "--store",
+        default=default,
+        choices=choices,
+        help=f"Memory store ({', '.join(choices)}). {help_suffix}".strip(),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="memory", description="Nimloth lightweight memory CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("add", help="add pending memory")
-    a.add_argument("title"); a.add_argument("content"); a.set_defaults(func=cmd_add)
+    add_store_arg(a, default=STORE_REPO, help_suffix="Default is repo.")
+    a.add_argument("title")
+    a.add_argument("content")
+    a.set_defaults(func=cmd_add)
     s = sub.add_parser("set", help="set title/content/evidence/tags")
-    s.add_argument("id"); s.add_argument("assignments", nargs="+"); s.set_defaults(func=cmd_set)
+    add_store_arg(s, default=STORE_REPO, help_suffix="Default is repo.")
+    s.add_argument("id")
+    s.add_argument("assignments", nargs="+")
+    s.set_defaults(func=cmd_set)
     se = sub.add_parser("search", help="regex search title/content/evidence filename/tags")
-    se.add_argument("regex"); se.add_argument("--field", default="all", choices=["all", "title", "content", "evidence.filename", "tags"]); se.add_argument("--tag"); se.add_argument("--level", choices=sorted(VALID_LEVELS)); se.add_argument("--include-archived", action="store_true"); se.set_defaults(func=cmd_search)
+    add_store_arg(se, default=STORE_ALL, allow_all=True, help_suffix="Default is all stores.")
+    se.add_argument("regex")
+    se.add_argument("--field", default="all", choices=["all", "title", "content", "evidence.filename", "tags"])
+    se.add_argument("--tag")
+    se.add_argument("--level", choices=sorted(VALID_LEVELS))
+    se.add_argument("--include-archived", action="store_true")
+    se.set_defaults(func=cmd_search)
     g = sub.add_parser("get", help="show full memory")
-    g.add_argument("id"); g.set_defaults(func=cmd_get)
+    add_store_arg(g, default=STORE_REPO, help_suffix="Default is repo.")
+    g.add_argument("id")
+    g.set_defaults(func=cmd_get)
     u = sub.add_parser("upvote", help="mark verified memory as verified-and-useful for current task")
-    u.add_argument("id"); u.set_defaults(func=cmd_upvote)
+    add_store_arg(u, default=STORE_REPO, help_suffix="Default is repo.")
+    u.add_argument("id")
+    u.set_defaults(func=cmd_upvote)
     hv = sub.add_parser("human-verify", help="submit memory for human verification")
-    hv.add_argument("id"); hv.set_defaults(func=cmd_human_verify)
+    add_store_arg(hv, default=STORE_REPO, help_suffix="Default is repo.")
+    hv.add_argument("id")
+    hv.set_defaults(func=cmd_human_verify)
     vai = sub.add_parser("verify-ai-memory", help="human-only interactive approval UI")
+    add_store_arg(vai, default=STORE_REPO, help_suffix="Default is repo.")
     vai.set_defaults(func=cmd_verify_ai_memory)
     return p
 
