@@ -69,6 +69,24 @@ def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
             raise FileNotFoundError(f"missing adapter weights in {adapter_dir}")
         state = torch.load(bin_file, map_location="cpu", weights_only=True)
     incompatible = model.load_state_dict(state, strict=False)
+    vision_full_path = adapter_dir / "vision_full_state.pt"
+    vision_loaded = False
+    if vision_full_path.is_file():
+        root = model.module if hasattr(model, "module") else model
+        visual = None
+        for path in ("base_model.model.model.visual", "base_model.model.visual", "model.visual", "visual"):
+            cur = root
+            for name in path.split("."):
+                cur = getattr(cur, name, None)
+                if cur is None:
+                    break
+            if isinstance(cur, torch.nn.Module):
+                visual = cur
+                break
+        if visual is None:
+            raise RuntimeError(f"vision_full_state.pt exists but could not locate visual module in {type(root)}")
+        visual.load_state_dict(torch.load(vision_full_path, map_location="cpu", weights_only=True))
+        vision_loaded = True
     if is_main():
         print(
             json.dumps(
@@ -77,6 +95,7 @@ def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
                         "adapter_dir": str(adapter_dir),
                         "missing_keys": len(incompatible.missing_keys),
                         "unexpected_keys": len(incompatible.unexpected_keys),
+                        "vision_full_state_loaded": vision_loaded,
                     }
                 }
             )
@@ -116,6 +135,21 @@ def save_checkpoint(
         head.save_checkpoint(out_dir / "value_head")
     if vision_ema is not None and vision_ema.shadow:
         vision_ema.save_checkpoint(out_dir / "vision_ema.pt")
+    if lora and vision_tune == "full":
+        root = module
+        visual = None
+        for path in ("base_model.model.model.visual", "base_model.model.visual", "model.visual", "visual"):
+            cur = root
+            for name in path.split("."):
+                cur = getattr(cur, name, None)
+                if cur is None:
+                    break
+            if isinstance(cur, torch.nn.Module):
+                visual = cur
+                break
+        if visual is None:
+            raise RuntimeError(f"vision_tune=full requested but could not locate visual module in {type(root)}")
+        torch.save(visual.state_dict(), out_dir / "vision_full_state.pt")
     state: dict[str, Any] = {
         "step": step,
         "epoch": epoch,
