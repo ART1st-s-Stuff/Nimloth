@@ -22,7 +22,9 @@ mkdir -p "${OUT_DIR}"
 python3 "${REPO}/experiments/training/sft2/export_lora_visionfull_checkpoint.py" \
   --checkpoint "${CHECKPOINT}" \
   --out-dir "${OUT_DIR}" \
-  --attn-implementation "${ATTN_IMPLEMENTATION:-sdpa}"
+  --attn-implementation "${ATTN_IMPLEMENTATION:-sdpa}" \
+  ${REQUIRE_VISION_FULL_STATE:+--require-vision-full-state} \
+  ${NO_REQUIRE_VISION_FULL_STATE:+--no-require-vision-full-state}
 python3 - <<PY
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 p = "${OUT_DIR}"
