@@ -354,6 +354,9 @@ def train_sft2(args=None) -> int:
         # is the PyTorch-recommended checkpointing mode for DDP.
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.resize_token_embeddings(len(processor.tokenizer))
+    model.config.vocab_size = len(processor.tokenizer)
+    if hasattr(model, "generation_config"):
+        model.generation_config.vocab_size = len(processor.tokenizer)
 
     if args.resume and resume_state_path is not None and resume_state_path.exists() and resume_adapter.exists():
         saved = torch.load(resume_state_path, map_location="cpu", weights_only=False)
@@ -389,6 +392,9 @@ def train_sft2(args=None) -> int:
         if args.gradient_checkpointing:
             model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         model.resize_token_embeddings(len(processor.tokenizer))
+        model.config.vocab_size = len(processor.tokenizer)
+        if hasattr(model, "generation_config"):
+            model.generation_config.vocab_size = len(processor.tokenizer)
         model = configure_qwen_tuning(model, args)
     else:
         model = configure_qwen_tuning(model, args)
