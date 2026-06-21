@@ -135,8 +135,10 @@ if [ -n "${PREPROCESS_CACHE_DIR:-}" ]; then
     2>&1 | tee -a "${LOG}"
 fi
 
-echo "=== torchrun ${NGPUS}-GPU SFT2 ===" | tee -a "${LOG}"
-PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NGPUS} \
+export NIMLOTH_DDP_GPU_STRIDE="${NIMLOTH_DDP_GPU_STRIDE:-1}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-${NGPUS}}"
+echo "=== torchrun ${NGPUS}-GPU SFT2 (nproc=${NPROC_PER_NODE}, gpu_stride=${NIMLOTH_DDP_GPU_STRIDE}) ===" | tee -a "${LOG}"
+PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NPROC_PER_NODE} \
   "${SCRIPTDIR}/train.py" \
   --config "${CONFIG}" \
   "${TUNE_ARGS[@]}" \
