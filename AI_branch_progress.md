@@ -465,3 +465,10 @@
 - 已在 `external/VAGEN` 提交 `7c0ccaa Add Nimloth WM navigation prompt format`，包含 `nimloth_wm` prompt/parser 与 nested `verl` 指针更新。
 - root `fix/env-reproduction` 同步 baseline train/val prompt_format 修正、vLLM rollout/backend 脚本、checkpoint pruning policy、wandb val watcher/launcher、以及 VAGEN submodule 指针。
 - 已从 `../nimloth-dev` 回退此前误放入的 baseline/env reproduction 文件；dev 仅保留原有 SFT2 speedup 相关未提交改动。
+
+## 2026-06-21：同步 AGENTS 合规的未提交工作区改动
+
+- 按人类要求，将当前工作区中符合 AGENTS 规则、且与 baseline env reproduction 工作流相关的剩余改动同步到 `fix/env-reproduction` worktree。
+- 同步内容：`ai_rules/03_experiments_and_data.md` 昂贵任务阈值澄清、`experiments/README.md` VAGEN 论文超参数说明、`experiments/training/baseline/launch_hold_train_resume.sh` 的 hold-job 复用/保留逻辑。
+- 未同步 `.memory/memories.jsonl`，因为 AGENTS 规定不得手动编辑 memory 存储；该改动仅保留在 archive 分支。
+- 其余未整理的大批 baseline 脚本改动已在 `archived/2026-06-21-baseline-unsorted` 分支保留，不进入本 worktree 主线提交。
