@@ -464,6 +464,20 @@
 - 已用 fresh output 重启 SFT2：`outputs/experiments/training/sft2/2026-06-19/sft2_latentwm_default_8gpu_tokenfix`，复用 hold job `456005`，从干净 SFT1 merged checkpoint 初始化，LLM freeze、vision full+EMA，训练 state_proj / LatentWMPredictor / ValueHead。
 - 重启健康检查：新 run `add_special_tokens` 对 SFT1 tokenizer 返回 `added=0` 且无旧 `<|act_*>`；日志未出现 new embeddings/lm_head resize warning；`train_step_log.csv` 已写到至少 `global_step=5`。
 
+## 2026-06-21：baseline env reproduction 改动整理到 fix/env-reproduction
+
+- 人类确认 baseline/env reproduction 相关新改动应进入 `fix/env-reproduction` worktree，而不是 `dev`；`dev` 保持 SFT2 旧 checkpoint 测试状态，暂不同步 prompt_format 新修正。
+- 已在 `external/VAGEN/verl` 提交 `869ff12b Improve navigation val wandb metrics`，用于 wandb 中展开 navigation validation 指标。
+- root `fix/env-reproduction` 同步 baseline train/val prompt_format 修正、vLLM rollout/backend 脚本、checkpoint pruning policy、wandb val watcher/launcher、以及 VAGEN submodule 指针。
+- 已从 `../nimloth-dev` 回退此前误放入的 baseline/env reproduction 文件；dev 仅保留原有 SFT2 speedup 相关未提交改动。
+
+## 2026-06-21：同步 AGENTS 合规的未提交工作区改动
+
+- 按人类要求，将当前工作区中符合 AGENTS 规则、且与 baseline env reproduction 工作流相关的剩余改动同步到 `fix/env-reproduction` worktree。
+- 同步内容：`ai_rules/03_experiments_and_data.md` 昂贵任务阈值澄清、`experiments/README.md` VAGEN 论文超参数说明、`experiments/training/baseline/launch_hold_train_resume.sh` 的 hold-job 复用/保留逻辑。
+- 未同步 `.memory/memories.jsonl`，因为 AGENTS 规定不得手动编辑 memory 存储；该改动仅保留在 archive 分支。
+- 其余未整理的大批 baseline 脚本改动已在 `archived/2026-06-21-baseline-unsorted` 分支保留，不进入本 worktree 主线提交。
+
 ## 2026-06-21：VAGEN Nimloth 改动移植到 upstream vagen-legacy
 
 - 人类指出 VAGEN main 分支无法复现原文效果，应使用 upstream `vagen-legacy`。
