@@ -29,6 +29,7 @@ from nimloth.training.common.wandb_logging import log_train_step, log_val_epoch,
 from nimloth.training.sft2.checkpoint import (
     load_aux_checkpoint,
     load_lora_adapter_state,
+    read_checkpoint_step,
     resolve_resume_checkpoint_dir,
     save_checkpoint,
 )
