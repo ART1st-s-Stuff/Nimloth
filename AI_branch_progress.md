@@ -492,3 +492,15 @@
 - 已提交 VAGEN 子仓库 commit：`01c4566 Port Nimloth changes to VAGEN legacy`。
 - 验证：`python -m py_compile vagen/env/navigation/nimloth_format.py vagen/env/utils/parse_utils.py vagen/env/navigation/prompt.py vagen/env/navigation/env_config.py vagen/env/navigation/env.py vagen/trainer/ppo/ray_trainer.py` 通过。未运行训练/rollout。
 - 注意：root 仓库仍有大量既有未提交改动；本次只在 `external/VAGEN` 子仓库提交，root submodule 指针显示 modified，尚未提交。
+
+## 2026-06-21：VAGEN legacy reproduction 适配准备
+
+- 已将 `fix/env-reproduction` rebase 到 `origin/main`；解决 `train_resume.slurm` 冲突时保留 `main` 的 `cd ${BASEDIR}` Hydra 修复和 fix 分支的 shared CLI includes。
+- 已在 VAGEN legacy 子仓库新增提交 `acc0e75 Add wm alias for legacy navigation format`：legacy navigation parser/prompt 支持 `prompt_format=wm` 作为 `worldmodeling` alias。
+- 新增 legacy reproduction 专用配置：
+  - `configs/training/baseline/legacy_train.yaml`：navigation `base` + `common_sense`，`prompt_format=wm`，`max_actions_per_step=1`，`use_state_reward=false`，每类 `train_size=10000`。
+  - `configs/training/baseline/legacy_val.yaml`：同 split 的 held-out validation，每类 `test_size=60`。
+- 新增 legacy 运行入口：
+  - `experiments/training/baseline/run_legacy_reproduction.sh`：调用 `python -m vagen.env.create_dataset` 生成 parquet，并调用 legacy `python -m vagen.trainer.main_ppo`，设置 `algorithm.adv_estimator=bi_level_gae`、`rollout_manager.use_multi_turn_reward=True`、`use_loss_mask=True`、`use_gae_mask=True`、`reward_model.enable=False`、`rollout_manager.max_turns=20`。
+  - `experiments/training/baseline/legacy_preempt_reproduction.slurm`：2 个 preempt 节点，每节点 2 GPU env / 4 GPU train，在 head node 启 legacy `vagen.server.server`，再启动 Ray + legacy PPO。
+- 验证：`bash -n` 通过；未启动昂贵 Slurm 训练，等待人类确认资源/输出方案。

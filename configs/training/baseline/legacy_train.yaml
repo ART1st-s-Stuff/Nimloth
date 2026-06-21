@@ -1,0 +1,26 @@
+# VAGEN legacy navigation training dataset config.
+# Generated with external/VAGEN/vagen/env/create_dataset.py.
+# Nimloth-required overrides: prompt_format=wm, max_turns=20 in rollout manager,
+# max_actions_per_step=1, and no LLM-as-a-judge state reward.
+
+navigation_base:
+  env_name: navigation
+  env_config:
+    render_mode: vision
+    prompt_format: wm
+    use_state_reward: false
+    eval_set: base
+    max_actions_per_step: 1
+  train_size: 10000
+  test_size: 0
+
+navigation_common:
+  env_name: navigation
+  env_config:
+    render_mode: vision
+    prompt_format: wm
+    use_state_reward: false
+    eval_set: common_sense
+    max_actions_per_step: 1
+  train_size: 10000
+  test_size: 0

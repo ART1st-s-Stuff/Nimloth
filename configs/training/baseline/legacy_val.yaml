@@ -1,0 +1,24 @@
+# VAGEN legacy navigation validation dataset config.
+# Held-out eval_set values match the VAGEN legacy navigation assets.
+
+navigation_base:
+  env_name: navigation
+  env_config:
+    render_mode: vision
+    prompt_format: wm
+    use_state_reward: false
+    eval_set: base
+    max_actions_per_step: 1
+  train_size: 0
+  test_size: 60
+
+navigation_common:
+  env_name: navigation
+  env_config:
+    render_mode: vision
+    prompt_format: wm
+    use_state_reward: false
+    eval_set: common_sense
+    max_actions_per_step: 1
+  train_size: 0
+  test_size: 60
