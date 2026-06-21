@@ -14,7 +14,7 @@ export WANDB_DIR="${REPO}/.cache/wandb"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/triton_cache_${SLURM_JOB_ID:-local}_$(hostname)}"
 export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-/tmp/torch_ext_${SLURM_JOB_ID:-local}_$(hostname)}"
 mkdir -p "$HOME" "$FLASHINFER_WORKSPACE_DIR" "$WANDB_DIR" "$TRITON_CACHE_DIR" "$TORCH_EXTENSIONS_DIR"
-export PATH="${REPO}/.venv/bin:${REPO}/.local/bin:$PATH"
+export PATH="${REPO}/.local/bin:$PATH"
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
@@ -32,9 +32,7 @@ elif [ -f /project/peilab/atst/.env ]; then
   set +a
 fi
 
-# shellcheck disable=SC1091
-source "${REPO}/.venv/bin/activate"
-
+# Python environment must be activated by the caller before sourcing this file.
 export VLLM_USE_FLASHINFER_SAMPLER=0
 export TOKENIZERS_PARALLELISM=true
 export RAY_DEDUP_LOGS=0
