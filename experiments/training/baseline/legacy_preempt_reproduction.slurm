@@ -31,9 +31,12 @@ TRAIN_NODES=${TRAIN_NODES:-2}
 TOTAL_NODES_NEEDED=$((TRAIN_NODES + 1))
 SERVICE_PORT=${SERVICE_PORT:-5000}
 RAY_PORT=${RAY_PORT:-6379}
+PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv}
 
 mkdir -p "${RUN_DIR}" "${REPO}/outputs/experiments/training/baseline/slurm"
 
+# shellcheck disable=SC1091
+source "${PYTHON_ENV}/bin/activate"
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
 # shellcheck disable=SC1091
@@ -60,6 +63,7 @@ cleanup() {
   for node in "${NODES[@]}"; do
     srun --overlap --nodes=1 --ntasks=1 -w "${node}" bash -lc "
       REPO='${REPO}'
+      source '${PYTHON_ENV}/bin/activate'
       source '${SCRIPTDIR}/common_env.sh'
       ray stop --force >/dev/null 2>&1 || true
       pkill -u \$USER -f 'vagen.server.server|vllm|VLLM|torch/_inductor/compile_worker' >/dev/null 2>&1 || true
@@ -79,6 +83,7 @@ trap cleanup EXIT
 for node in "${NODES[@]}"; do
   srun --overlap --nodes=1 --ntasks=1 -w "${node}" bash -lc "
     REPO='${REPO}'
+    source '${PYTHON_ENV}/bin/activate'
     source '${SCRIPTDIR}/common_env.sh'
     ray stop --force >/dev/null 2>&1 || true
     pkill -u \$USER -f 'vagen.server.server|vllm|VLLM|torch/_inductor/compile_worker' >/dev/null 2>&1 || true
@@ -99,6 +104,7 @@ echo "=== Starting legacy env service on ${ENV_NODE}, CUDA=${ENV_CUDA}, devices=
 srun --overlap --nodes=1 --ntasks=1 -w "${ENV_NODE}" bash -lc "
   set -euo pipefail
   REPO='${REPO}'
+  source '${PYTHON_ENV}/bin/activate'
   source '${SCRIPTDIR}/common_env.sh'
   source '${SCRIPTDIR}/setup_ai2thor_env.sh'
   cd '${BASEDIR}'
@@ -137,6 +143,7 @@ echo "=== Starting Ray head ${HEAD_NODE} CUDA=${TRAIN_CUDA} ===" | tee -a "${LOG
 srun --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" bash -lc "
   set -euo pipefail
   REPO='${REPO}'
+  source '${PYTHON_ENV}/bin/activate'
   source '${SCRIPTDIR}/common_env.sh'
   CUDA_VISIBLE_DEVICES='${TRAIN_CUDA}' ray start --head \
     --port=${RAY_PORT} --num-cpus=96 --num-gpus=${TRAIN_GPUS_PER_NODE} \
@@ -149,6 +156,7 @@ for node in "${TRAIN_NODES_LIST[@]:1}"; do
   srun --overlap --nodes=1 --ntasks=1 -w "${node}" bash -lc "
     set -euo pipefail
     REPO='${REPO}'
+    source '${PYTHON_ENV}/bin/activate'
     source '${SCRIPTDIR}/common_env.sh'
     CUDA_VISIBLE_DEVICES='${TRAIN_CUDA}' ray start --address='${IP_HEAD}' \
       --num-cpus=96 --num-gpus=${TRAIN_GPUS_PER_NODE} --block
@@ -160,6 +168,7 @@ ray_ready=0
 for i in $(seq 1 60); do
   ray_gpus=$(srun --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" bash -lc "
     REPO='${REPO}'
+    source '${PYTHON_ENV}/bin/activate'
     source '${SCRIPTDIR}/common_env.sh'
     python3 - <<'PY'
 import ray
