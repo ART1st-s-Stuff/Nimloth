@@ -25,8 +25,11 @@ TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-128}
 PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-32}
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-24}
 TOTAL_STEPS=${TOTAL_STEPS:-50}
+TOTAL_EPOCHS=${TOTAL_EPOCHS:-30}
 TEST_FREQ=${TEST_FREQ:-10}
 SAVE_FREQ=${SAVE_FREQ:-1}
+ALGORITHM_GAMMA=${ALGORITHM_GAMMA:-1.0}
+HIGH_LEVEL_GAMMA=${HIGH_LEVEL_GAMMA:-0.95}
 TRAIN_GPUS_PER_NODE=${TRAIN_GPUS_PER_NODE:-4}
 TRAIN_NODES=${TRAIN_NODES:-2}
 SERVICE_BASE_URL=${SERVICE_BASE_URL:-http://127.0.0.1:5000}
@@ -60,6 +63,7 @@ cd "${BASEDIR}"
   echo "val_config=${VAL_CONFIG}"
   echo "service_base_url=${SERVICE_BASE_URL}"
   echo "adv_estimator=bi_level_gae prompt_format=wm use_state_reward=false reward_model.enable=false"
+  echo "gamma=${ALGORITHM_GAMMA} high_level_gamma=${HIGH_LEVEL_GAMMA} total_steps=${TOTAL_STEPS} total_epochs=${TOTAL_EPOCHS} save_freq=${SAVE_FREQ} test_freq=${TEST_FREQ}"
   echo "resources train_nodes=${TRAIN_NODES} train_gpus_per_node=${TRAIN_GPUS_PER_NODE}"
 } | tee -a "${LOG_FILE}"
 
@@ -82,8 +86,8 @@ PYTHONUNBUFFERED=1 python -m vagen.env.create_dataset \
 set +e
 PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
   algorithm.adv_estimator=bi_level_gae \
-  algorithm.high_level_gamma=0.95 \
-  algorithm.gamma=1.0 \
+  algorithm.high_level_gamma="${HIGH_LEVEL_GAMMA}" \
+  algorithm.gamma="${ALGORITHM_GAMMA}" \
   algorithm.lam=1.0 \
   algorithm.kl_ctrl.kl_coef=0.001 \
   data.train_files="${TRAIN_PARQUET}" \
@@ -137,6 +141,7 @@ PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
   trainer.nnodes="${TRAIN_NODES}" \
   trainer.save_freq="${SAVE_FREQ}" \
   trainer.test_freq="${TEST_FREQ}" \
+  trainer.total_epochs="${TOTAL_EPOCHS}" \
   trainer.total_training_steps="${TOTAL_STEPS}" \
   trainer.default_local_dir="${SAVE_CHECKPOINT_DIR}" \
   trainer.val_before_train=True \

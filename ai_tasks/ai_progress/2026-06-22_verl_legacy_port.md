@@ -35,7 +35,7 @@
 ## 验证命令和结果
 - 本地：`python -m py_compile external/VAGEN/verl/verl/workers/rollout/latent_action.py external/VAGEN/verl/verl/workers/fsdp_workers.py external/VAGEN/verl/verl/workers/rollout/vllm_rollout/vllm_rollout_spmd.py external/VAGEN/verl/verl/workers/critic/dp_critic.py external/VAGEN/verl/verl/utils/tracking.py`：通过。
 - 服务器 dgx-40（通过既有 hold job `457147`）：同一组 `py_compile` 命令通过，输出 `PY_COMPILE_OK`。
-- 服务器 dgx-40 import smoke：因服务器默认 Python 环境 pandas/numpy 不兼容失败（`pandas` 要求 `numpy>=1.22.4`，当前为 `1.21.5`），未能作为代码验证结论；不是本次改动引入的语法错误。
+- 服务器 dgx-40 import smoke：默认 `/usr/bin/python` 因 pandas/numpy 版本不兼容失败；改用项目环境 `/project/peilab/atst/nimloth/.venv/bin/python` 后，`PYTHONPATH=. python ../../../import_test.py` 成功导入 `verl.workers.rollout.latent_action` 与 `verl.utils.tracking`。
 - `git -C external/VAGEN/verl diff --stat`：提交前显示 6 个修改文件 + 1 个新增文件。
 
 ## 待确认问题
