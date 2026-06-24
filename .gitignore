@@ -63,3 +63,6 @@ experiments/navigation_baseline/*_jobs.txt
 SERVER.md
 .local/SERVER.md
 check_node_resources.sh
+
+# VAGEN worktree (qwen bug repro)
+external/VAGEN.qwen-bug-repro/
