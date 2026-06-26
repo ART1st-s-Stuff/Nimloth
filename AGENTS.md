@@ -49,10 +49,30 @@
 - `02_memory_and_progress.md`: 记忆系统，执行所有任务前必读
 - `03_experiments_and_data.md`: 实验相关行为准则。做实验、更改实验代码前必读
 - `04_code_and_repo.md`: 代码与repo规则。动代码之前必读
-- `events/on_progress.md`: 任务有进展时需要做的事
+- `events/on_progress.md`: 完成子任务/修复关键问题/确认重要设计后必读
+- `events/on_experiment_start.md`: 任何实验性任务开始前必读
+- `events/on_experiment_end.md`: 任何实验性任务结束后必读
+
+## 事件触发器（Event Hooks）
+
+AI 在以下时刻必须立即暂停当前工作，去读取并执行对应事件文件。这不是"选读"，而是硬性触发条件。
+
+| 触发条件 | 必须读取 |
+|---------|---------|
+| 完成一个子任务 / 修复一个关键 bug / 确认一个重要设计决策 / 改变项目规则 / 发现旧结论失效 | `ai_rules/events/on_progress.md` |
+| 任何训练、评估、采集、校准、rollout-train、远程长任务、Slurm 任务、或其他需要 GPU/长时间运行的计算任务开始前 | `ai_rules/events/on_experiment_start.md` |
+| 任何上述实验性任务结束、失败、取消或暂停后（无论任务是否由当前会话启动） | `ai_rules/events/on_experiment_end.md` |
+
+### 触发机制说明
+
+- 上述触发条件绑定到 AI 的**具体动作**上，不是抽象概念。AI 不需要自己判断"我是不是取得了阶段性进展"——当你完成了上面描述的具体动作时，就触发。
+- 事件文件读完后，必须**逐条执行其中列出的步骤**，不得跳过。
+- 如果事件文件中要求你"评估 memory"或"更新进度文件"，你必须在当前对话中完成，不能推迟。
 
 ## Git worktree
 在本地修改代码时，你应该使用../nimloth-<branch-name> （分支名的`/`在文件夹名称内使用`-`），不要直接在main分支修改，除非Prompt里有显式说明。
 
 ## 服务器使用规范
-参考 `.local/SERVER.md`
+在连接服务器以前，你必须阅读并参考 `.local/SERVER.md`
+
+任何服务器上的代码都是不可靠的，禁止在服务器上修改代码，所有代码都必须先在本地更改后使用git同步

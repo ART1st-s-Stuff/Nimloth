@@ -493,6 +493,23 @@
 - 验证：`python -m py_compile vagen/env/navigation/nimloth_format.py vagen/env/utils/parse_utils.py vagen/env/navigation/prompt.py vagen/env/navigation/env_config.py vagen/env/navigation/env.py vagen/trainer/ppo/ray_trainer.py` 通过。未运行训练/rollout。
 - 注意：root 仓库仍有大量既有未提交改动；本次只在 `external/VAGEN` 子仓库提交，root submodule 指针显示 modified，尚未提交。
 
+## 2026-06-26：事件触发器（Event Hooks）机制落地
+
+### 已完成
+
+- 核心问题：此前 `ai_rules/events/` 下的事件规则文件存在但缺少硬触发器。AI 不会主动判断"我正处在事件 X"然后去读对应文件。
+- 修改 `AGENTS.md`：
+  - "项目规则目录"段补全了三个事件文件的说明（`on_progress`、`on_experiment_start`、`on_experiment_end`）。
+  - 新增"事件触发器（Event Hooks）"章节，将触发条件绑定到 AI 的具体动作上（完成子任务/修复 bug/确认设计 → `on_progress`；实验开始前 → `on_experiment_start`；实验结束后 → `on_experiment_end`）。
+  - 明确要求事件文件读完后逐条执行步骤，不能推迟。
+- 本次修改本身触发了 `on_progress`，已按规则更新本进度文件。
+
+### 待人类确认
+
+- 无。
+
+---
+
 ## 2026-06-21：VAGEN legacy reproduction 适配准备
 
 - 已将 `fix/env-reproduction` rebase 到 `origin/main`；解决 `train_resume.slurm` 冲突时保留 `main` 的 `cd ${BASEDIR}` Hydra 修复和 fix 分支的 shared CLI includes。
