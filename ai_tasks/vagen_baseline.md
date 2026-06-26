@@ -43,3 +43,5 @@ Eval frequency: 1
 | Critic Learning Rate | 1e-5 | Learning rate for the critic network |
 | Train Batch Size | 128 | Total batch size for training |
 | PPO Mini Batch Size | 32 | Mini-batch size for PPO updates |
+
+需要比较entropy coeff = 0.05和默认值的performance diff.
