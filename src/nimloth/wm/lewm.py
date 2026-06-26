@@ -30,7 +30,7 @@ class LeWMConfig:
     predictor_heads: int = 4
     predictor_mlp_dim: int = 256
     predictor_hidden_dim: int = 128
-    history_size: int = 1
+    history_size: int = 4
 
 
 def action_one_hot(indices: torch.Tensor, num_actions: int = NUM_NAVIGATION_ACTIONS) -> torch.Tensor:

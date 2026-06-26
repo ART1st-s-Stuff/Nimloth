@@ -1,0 +1,41 @@
+# Online RL training defaults
+
+# --- Qwen ---
+qwen:
+  model: Qwen/Qwen2.5-VL-3B-Instruct
+  attn_implementation: flash_attention_2
+  max_pixels: 3136
+
+# --- Freeze strategy ---
+freeze:
+  qwen: true
+  state_proj: true
+
+# --- Predictor ---
+predictor:
+  lr: 1e-3
+  emb_dim: 128           # WM embedding dimension
+  history_size: 4        # ARPredictor context frames
+  rollout_steps: 1       # training rollout steps (start with single-step)
+
+# --- Value head ---
+value_head:
+  lr: 1e-3
+  rank_margin: 0.1     # margin for ranking loss (0 → regression only)
+  lambda_rank: 0.0     # 0 = pure regression; set > 0 for ranking term
+
+# --- RL loop ---
+rl:
+  iterations: 1000
+  envs_per_iteration: 8     # episodes collected per iteration
+  max_steps_per_episode: 20
+  gamma: 0.99
+  batch_size: 32
+  train_steps_per_iteration: 10
+
+# --- Training / output ---
+training:
+  seed: 42
+  log_interval: 10
+  save_interval: 50        # iterations between checkpoints
+  output_dir: null          # set via CLI --output-dir
