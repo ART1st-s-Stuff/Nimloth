@@ -144,7 +144,7 @@ CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 python3 -m nimloth.training.rl.cli \
     --state-proj-checkpoint "${SFT2_CHECKPOINT}/state_proj.pt" \
     --value-head-checkpoint "${SFT2_CHECKPOINT}/value_head" \
     --env-url "${ENV_URL}" \
-    --attn-implementation flash_attention_2 \
+    --attn-implementation sdpa \
     --max-pixels 3136 \
     --output-dir "${TRAIN_OUT}" \
     >> "${TRAIN_LOG}" 2>&1
