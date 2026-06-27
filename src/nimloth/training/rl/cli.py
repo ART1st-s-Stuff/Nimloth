@@ -157,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         if is_main():
             print(json.dumps({"warm_start": "state_proj", "source": str(args.state_proj_checkpoint)}))
     if args.value_head_checkpoint is not None:
-        loaded_vh = ValueHead.load_checkpoint(args.value_head_checkpoint, emb_dim=wm_config.emb_dim)
+        loaded_vh = ValueHead.load_checkpoint(args.value_head_checkpoint, emb_dim=emb_dim)
         value_head.load_state_dict(loaded_vh.state_dict())
         if is_main():
             print(json.dumps({"warm_start": "value_head", "source": str(args.value_head_checkpoint)}))
