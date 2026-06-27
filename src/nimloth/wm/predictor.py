@@ -55,7 +55,11 @@ class LatentWMPredictor(nn.Module):
         Returns:
             (B, emb_dim) -- predicted next state after the last context step.
         """
-        actions = action_one_hot(action_ctx, self.config.action_dim)
+        # action_one_hot adds an extra unsqueeze(1) designed for (B,) input;
+        # for multi-step (B, T) we use one_hot directly to get (B, T, num_actions).
+        actions = torch.nn.functional.one_hot(
+            action_ctx, num_classes=self.config.action_dim
+        ).float()
         act_emb = self.action_encoder(actions)
         preds = self.predictor(state_ctx, act_emb)
         b, t, _ = preds.shape
