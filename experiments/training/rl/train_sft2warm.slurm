@@ -45,24 +45,8 @@ export TOKENIZERS_PARALLELISM=true
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
-# Vulkan / AI2-THOR
-VULKAN_ROOT=/project/peilab/atst/flower/.local-vulkan
-VULKAN_LIB_DIR=${VULKAN_ROOT}/extracted/usr/lib/x86_64-linux-gnu
-VULKAN_RUNTIME_DIR=${VULKAN_ROOT}/runtime/extracted/usr/lib/x86_64-linux-gnu
-VULKAN_TOOLS_DIR=${VULKAN_ROOT}/tools/extracted/usr/bin
-AI2THOR_HOME_ROOT=/project/peilab/atst/flower/.ai2thor-home
-
-mkdir -p "${AI2THOR_HOME_ROOT}"
-if [ -f "${VULKAN_LIB_DIR}/libvulkan.so.1" ]; then
-    ln -sf libvulkan.so.1 "${VULKAN_LIB_DIR}/libvulkan.so" 2>/dev/null || true
-    export LD_LIBRARY_PATH="${VULKAN_LIB_DIR}:${VULKAN_RUNTIME_DIR}:${LD_LIBRARY_PATH:-}"
-    export LIBRARY_PATH="${VULKAN_LIB_DIR}:${VULKAN_RUNTIME_DIR}:${LIBRARY_PATH:-}"
-    export PATH="${VULKAN_TOOLS_DIR}:${PATH}"
-    export HOME="${AI2THOR_HOME_ROOT}"
-    export VK_ICD_FILENAMES="${VULKAN_ROOT}/icd.d/nvidia_icd.json"
-    export VK_DRIVER_FILES="${VK_ICD_FILENAMES}"
-    rm -f ${HOME}/.ai2thor/cuda-vulkan-mapping.json 2>/dev/null || true
-fi
+# Vulkan / AI2-THOR — delegate to verified setup script
+source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh"
 
 # ------------------------------------------------------------------
 # Log header
