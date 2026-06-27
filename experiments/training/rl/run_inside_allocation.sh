@@ -40,8 +40,11 @@ mkdir -p "${AI2THOR_HOME_ROOT}"
 if [ -f "${VULKAN_LIB_DIR}/libvulkan.so.1" ]; then
     ln -sf libvulkan.so.1 "${VULKAN_LIB_DIR}/libvulkan.so" 2>/dev/null || true
     export LD_LIBRARY_PATH="${VULKAN_LIB_DIR}:${VULKAN_RUNTIME_DIR}:${LD_LIBRARY_PATH:-}"
+    export LIBRARY_PATH="${VULKAN_LIB_DIR}:${VULKAN_RUNTIME_DIR}:${LIBRARY_PATH:-}"
+    export PATH="${VULKAN_TOOLS_DIR}:${PATH}"
     export HOME="${AI2THOR_HOME_ROOT}"
     export VK_ICD_FILENAMES="${VULKAN_ROOT}/icd.d/nvidia_icd.json"
+    export VK_DRIVER_FILES="${VK_ICD_FILENAMES}"
     rm -f ${HOME}/.ai2thor/cuda-vulkan-mapping.json 2>/dev/null || true
 fi
 
