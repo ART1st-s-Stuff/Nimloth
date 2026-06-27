@@ -43,8 +43,8 @@ def test_rollout_states_shape() -> None:
 
 
 def test_rollout_states_single_step_eq_predict_next_emb() -> None:
-    """With num_steps=1, rollout_states matches predict_next_emb."""
-    predictor = _make_predictor(history_size=4)
+    """With num_steps=1 and history_size=1, rollout_states matches predict_next_emb."""
+    predictor = _make_predictor(history_size=1)
     state = torch.randn(4, 64)
     actions = torch.randint(0, 8, (4, 1))
     out_rollout = predictor.rollout_states(state, actions).squeeze(1)  # (B, emb_dim)

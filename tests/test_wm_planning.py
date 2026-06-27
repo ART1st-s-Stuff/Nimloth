@@ -58,9 +58,9 @@ def test_beam_search_single_state() -> None:
     state = torch.randn(64)
     actions, scores = beam_search_action(state, predictor, value_head,
                                          beam_width=2, rollout_depth=3)
-    assert actions.shape == (1,)
-    assert scores.shape == (1,)
-    assert 0 <= actions[0].item() < 8
+    assert actions.ndim == 0  # scalar for single input
+    assert scores.ndim == 0
+    assert 0 <= actions.item() < 8
 
 
 def test_beam_search_batch() -> None:

@@ -97,6 +97,11 @@ def beam_search_action(
           - action: (B,) int64 — first action of the best sequence.
           - score:  (B,) float32 — total value of the best sequence.
     """
+    # Handle (emb_dim,) single-state input gracefully.
+    single = state_emb.ndim == 1
+    if single:
+        state_emb = state_emb.unsqueeze(0)  # (1, emb_dim)
+
     B = state_emb.shape[0]
     device = state_emb.device
 
@@ -158,6 +163,10 @@ def beam_search_action(
     best_actions = beam_seqs.reshape(B, beam_width, rollout_depth)[
         torch.arange(B, device=device), best_idx, 0
     ]  # (B,)
+
+    if single:
+        best_actions = best_actions.squeeze(0)
+        best_scores = best_scores.squeeze(0)
     return best_actions, best_scores
 
 
