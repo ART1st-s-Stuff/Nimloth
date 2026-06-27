@@ -5,12 +5,12 @@
 #SBATCH --time=12:00:00
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --nodelist=dgx-21
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:2
 #SBATCH --mem=128G
+## Use --nodelist=<node> to pin; omit for auto-assignment.
 
 set -euo pipefail
 
