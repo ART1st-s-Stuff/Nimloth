@@ -176,13 +176,26 @@ class EnvRolloutCollector:
         max_steps_per_episode: int = 20,
         output_dir: Path | None = None,
     ) -> list[RolloutTrajectory]:
-        import numpy as np
 
         out_dir = output_dir or Path(".")
         out_dir.mkdir(parents=True, exist_ok=True)
-        # Save images under output_dir/images/
         img_dir = out_dir / "images"
         img_dir.mkdir(parents=True, exist_ok=True)
+        print(json.dumps({"rl_collect": "start", "num_episodes": num_episodes,
+                          "output": str(out_dir)}), flush=True)
+
+        # --- lazy-init client -------------------------------------------------
+        if self._client is None:
+            print(json.dumps({"rl_collect": "init_client", "url": self._env_url}), flush=True)
+            try:
+                from vagen.server.client import BatchEnvClient
+                self._client = BatchEnvClient(base_url=self._env_url, timeout=1200)
+                print(json.dumps({"rl_collect": "client_created"}), flush=True)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                print(json.dumps({"rl_collect": "client_init_failed"}), flush=True)
+                raise
 
         trajectories: list[RolloutTrajectory] = []
 
@@ -191,9 +204,9 @@ class EnvRolloutCollector:
             self._ep_counter += 1
             seed = self._ep_counter * 13 + 7
             t0 = time.time()
-
-            # Choose eval_set: alternate between base and common_sense
             eval_set = "base" if (ep_i % 2 == 0) else "common_sense"
+
+            print(json.dumps({"rl_ep": ep_i, "id": ep_id, "eval_set": eval_set}), flush=True)
 
             env_config = {
                 "env_name": "navigation",
@@ -212,13 +225,46 @@ class EnvRolloutCollector:
                     "gpu_device": 0,
                 },
             }
-            self.client.create_environments_batch({ep_id: env_config})
-            prompts = self.client.get_system_prompts_batch([ep_id])
-            nav_instruction = prompts.get(ep_id, "Navigate to the target object.")
 
-            # Reset
-            results = self.client.reset_batch({ep_id: seed})
-            obs, info = results[ep_id]
+            # --- create env on server ---
+            print(json.dumps({"rl_ep": ep_i, "step": "create_env"}), flush=True)
+            try:
+                self._client.create_environments_batch({ep_id: env_config})
+                print(json.dumps({"rl_ep": ep_i, "step": "create_env_done"}), flush=True)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                print(json.dumps({"rl_ep": ep_i, "step": "create_env_failed",
+                                  "error": str(traceback.format_exc())}), flush=True)
+                continue
+
+            # --- get system prompt ---
+            print(json.dumps({"rl_ep": ep_i, "step": "get_prompt"}), flush=True)
+            try:
+                prompts = self._client.get_system_prompts_batch([ep_id])
+                nav_instruction = prompts.get(ep_id, "Navigate to the target object.")
+                print(json.dumps({"rl_ep": ep_i, "step": "get_prompt_done"}), flush=True)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                nav_instruction = "Navigate to the target object."
+
+            # --- reset ---
+            print(json.dumps({"rl_ep": ep_i, "step": "reset", "seed": seed}), flush=True)
+            try:
+                results = self._client.reset_batch({ep_id: seed})
+                obs, info = results[ep_id]
+                print(json.dumps({"rl_ep": ep_i, "step": "reset_done"}), flush=True)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                print(json.dumps({"rl_ep": ep_i, "step": "reset_failed",
+                                  "error": str(traceback.format_exc())}), flush=True)
+                try:
+                    self._client.close_batch([ep_id])
+                except Exception:
+                    pass
+                continue
 
             action_names: list[str] = []
             action_indices: list[int] = []
@@ -228,29 +274,39 @@ class EnvRolloutCollector:
             success = False
 
             for step in range(max_steps_per_episode):
-                # Extract image from observation
-                img = _obs_to_pil(obs)
+                print(json.dumps({"rl_ep": ep_i, "step": f"action_{step}", "history_len": len(action_names)}), flush=True)
 
-                # Save image
+                # --- image ---
+                try:
+                    img = _obs_to_pil(obs)
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                    break
+
+                # --- save image ---
                 img_path = img_dir / f"{ep_id}_step{step:02d}.png"
                 img.save(str(img_path))
                 image_paths.append(str(img_path))
 
-                # Qwen greedy action selection (VAGEN text format)
+                # --- qwen action selection ---
                 try:
                     action_name, action_idx = _select_action_vagen(
                         self._model, self._processor, img,
                         nav_instruction, action_names,
                     )
+                    print(json.dumps({"rl_ep": ep_i, "action_selected": action_name,
+                                      "action_idx": action_idx}), flush=True)
                 except Exception:
                     import traceback
                     traceback.print_exc()
                     action_name, action_idx = "moveahead", 0
 
-                # Step env
+                # --- env step ---
                 try:
-                    step_results = self.client.step_batch({ep_id: action_name})
+                    step_results = self._client.step_batch({ep_id: action_name})
                     obs, r, done, info = step_results[ep_id]
+                    print(json.dumps({"rl_ep": ep_i, "env_step_done": True, "done": done}), flush=True)
                 except Exception:
                     import traceback
                     traceback.print_exc()
@@ -262,23 +318,21 @@ class EnvRolloutCollector:
                 if done:
                     break
 
-            # Compute reward
+            # --- compute reward ---
             try:
-                reward = float(self.client.compute_reward(ep_id))
+                reward = float(self._client.compute_reward(ep_id))
                 success = reward >= 10.0
             except Exception:
                 reward = 0.0
                 success = False
 
-            # Close env
+            # --- close env ---
             try:
-                self.client.close_batch([ep_id])
+                self._client.close_batch([ep_id])
             except Exception:
                 pass
 
-            # Build messages
             messages = _build_vagen_messages(nav_instruction, len(action_names), action_names)
-
             trajectories.append(RolloutTrajectory(
                 record_id=ep_id,
                 image_paths=image_paths,
@@ -290,15 +344,15 @@ class EnvRolloutCollector:
             ))
 
             elapsed = time.time() - t0
-            if int(ep_i) % max(1, num_episodes // 4) == 0:
-                print(json.dumps({
-                    "rl_rollout_ep": f"{ep_i + 1}/{num_episodes}",
-                    "steps": len(action_names),
-                    "success": success,
-                    "reward": round(reward, 2),
-                    "elapsed_s": round(elapsed, 1),
-                }), flush=True)
+            print(json.dumps({
+                "rl_ep": ep_i, "done": True,
+                "steps": len(action_names),
+                "success": success,
+                "reward": round(reward, 2),
+                "elapsed_s": round(elapsed, 1),
+            }), flush=True)
 
+        print(json.dumps({"rl_collect": "done", "trajectories": len(trajectories)}), flush=True)
         return trajectories
 
 
