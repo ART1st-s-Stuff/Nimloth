@@ -101,6 +101,7 @@ def merge_config_overrides(args: argparse.Namespace, config: dict[str, Any]) -> 
 
 def main(argv: list[str] | None = None) -> int:
     """Parse args, load config, build modules, and launch RL training."""
+    import torch
     from nimloth.training.common.dist import is_main
     from nimloth.training.rl.rollout import JSONLRolloutCollector, VAGENRolloutCollector
     from nimloth.training.rl.trainer import train_rl
