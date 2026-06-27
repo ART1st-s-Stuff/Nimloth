@@ -28,7 +28,6 @@ from nimloth.backbone.qwen_tuning import (
 from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema
 from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
-from nimloth.training.common.metrics import MetricAccumulator
 from nimloth.training.rl.checkpoint import (
     load_lora_adapter_state,
     load_rl_wm_checkpoint,
@@ -167,6 +166,7 @@ def train_rl(
     freeze_cfg: dict = config.get("freeze", {})
     pred_cfg: dict = config.get("predictor", {})
     vh_cfg: dict = config.get("value_head", {})
+    val_cfg: dict = config.get("validation", {})
     train_cfg: dict = config.get("training", {})
 
     iterations: int = rl_cfg.get("iterations", 1000)
@@ -174,7 +174,7 @@ def train_rl(
     max_steps_per_ep: int = rl_cfg.get("max_steps_per_episode", 20)
     gamma: float = rl_cfg.get("gamma", 0.99)
     batch_size: int = rl_cfg.get("batch_size", 32)
-    train_steps_per_iter: int = rl_cfg.get("train_steps_per_iteration", 10)
+    # One optimizer step per iteration → 1 iteration = 1 global_step.
 
     pred_lr: float = pred_cfg.get("lr", 1e-3)
     vh_lr: float = vh_cfg.get("lr", 1e-3)
@@ -187,6 +187,9 @@ def train_rl(
 
     log_interval: int = train_cfg.get("log_interval", 10)
     save_interval: int = train_cfg.get("save_interval", 50)
+    val_enabled: bool = val_cfg.get("enabled", True)
+    val_interval: int = val_cfg.get("interval", 50)
+    val_envs: int = val_cfg.get("envs", 16)
     seed: int = train_cfg.get("seed", 42)
 
     # --- tuning modes --------------------------------------------------------
@@ -340,6 +343,8 @@ def train_rl(
             csv.writer(f).writerow([
                 "time", "iteration", "global_step",
                 "wm_mse", "value_loss", "total_loss",
+                "num_rollouts", "num_transitions", "success_rate",
+                "val_success_rate", "val_avg_reward", "val_avg_steps",
             ])
 
     # --- main loop ------------------------------------------------------------
@@ -377,73 +382,107 @@ def train_rl(
                 }))
             continue
 
-        # 3. Train predictor + value head ----------------------------------------
-        iter_losses = MetricAccumulator()
-        for _ in range(train_steps_per_iter):
-            indices = torch.randperm(len(transitions))[:batch_size]
-            batch = [transitions[i] for i in indices]
+        # 3. Train predictor + value head (1 step per iteration) ---------------
+        indices = torch.randperm(len(transitions))[:batch_size]
+        batch = [transitions[i] for i in indices]
 
-            hidden_cur = torch.stack([b["qwen_hidden_current"] for b in batch]).to(device)
-            hidden_next = torch.stack([b["qwen_hidden_next"] for b in batch]).to(device)
-            actions = torch.stack([b["action_index"] for b in batch]).to(device)
-            value_targets = torch.stack([b["value_target"] for b in batch]).to(device)
+        hidden_cur = torch.stack([b["qwen_hidden_current"] for b in batch]).to(device)
+        hidden_next = torch.stack([b["qwen_hidden_next"] for b in batch]).to(device)
+        actions = torch.stack([b["action_index"] for b in batch]).to(device)
+        value_targets = torch.stack([b["value_target"] for b in batch]).to(device)
 
-            pred_loss, pred_metrics = compute_predictor_loss(
-                qwen_hidden_current=hidden_cur,
-                qwen_hidden_next=hidden_next,
-                action_indices=actions,
-                state_proj=state_proj,
-                wm_predictor=wm_predictor,
+        pred_loss, pred_metrics = compute_predictor_loss(
+            qwen_hidden_current=hidden_cur,
+            qwen_hidden_next=hidden_next,
+            action_indices=actions,
+            state_proj=state_proj,
+            wm_predictor=wm_predictor,
+        )
+
+        sp = _unwrap(state_proj)
+        wm_state = sp(hidden_cur).float().detach()
+        val_loss, val_metrics = compute_value_loss(
+            state_emb=wm_state,
+            action_indices=actions,
+            action_value_targets=value_targets,
+            value_head=value_head,
+            rank_margin=rank_margin,
+            lambda_rank=lambda_rank,
+        )
+
+        total_loss = pred_loss + val_loss
+        optimizer.zero_grad(set_to_none=True)
+        total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            [p for group in optimizer.param_groups for p in group["params"]], 1.0,
+        )
+        optimizer.step()
+        if vision_ema is not None:
+            vision_ema.update(model)
+
+        global_step += 1
+        iter_metrics: dict[str, float] = {
+            "wm_mse": float(pred_metrics.get("wm_mse", 0.0)),
+            "value_loss": float(val_metrics.get("value_loss",
+                                                val_metrics.get("value_total", 0.0))),
+            "total_loss": float(total_loss.detach().item()),
+            "num_rollouts": float(len(trajectories)),
+            "num_transitions": float(len(transitions)),
+            "success_rate": float(
+                sum(1 for t in trajectories if t.success) / max(1, len(trajectories))
+            ),
+        }
+
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
+
+        # --- validation rollout -------------------------------------------------
+        if val_enabled and iteration % val_interval == 0:
+            val_trajectories = collector.collect(
+                num_episodes=val_envs,
+                max_steps_per_episode=max_steps_per_ep,
+                output_dir=output_dir / f"rollouts/val_{iteration:04d}",
             )
-
-            sp = _unwrap(state_proj)
-            wm_state = sp(hidden_cur).float().detach()
-            val_loss, val_metrics = compute_value_loss(
-                state_emb=wm_state,
-                action_indices=actions,
-                action_value_targets=value_targets,
-                value_head=value_head,
-                rank_margin=rank_margin,
-                lambda_rank=lambda_rank,
-            )
-
-            total_loss = pred_loss + val_loss
-            optimizer.zero_grad(set_to_none=True)
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                [p for group in optimizer.param_groups for p in group["params"]], 1.0,
-            )
-            optimizer.step()
-            if vision_ema is not None:
-                vision_ema.update(model)
-
-            global_step += 1
-            iter_losses.update({
-                "wm_mse": pred_metrics.get("wm_mse", 0.0),
-                "value_loss": val_metrics.get("value_loss",
-                                              val_metrics.get("value_total", 0.0)),
-                "total_loss": float(total_loss.detach().item()),
-            })
+            if val_trajectories:
+                val_success = sum(1 for t in val_trajectories if t.success) / len(val_trajectories)
+                val_avg_reward = sum(t.reward for t in val_trajectories) / len(val_trajectories)
+                val_avg_steps = sum(t.num_steps for t in val_trajectories) / len(val_trajectories)
+                iter_metrics["val_success_rate"] = float(val_success)
+                iter_metrics["val_avg_reward"] = float(val_avg_reward)
+                iter_metrics["val_avg_steps"] = float(val_avg_steps)
+                if is_main():
+                    print(json.dumps({
+                        "iteration": iteration,
+                        "val_success_rate": val_success,
+                        "val_avg_reward": val_avg_reward,
+                        "val_num_episodes": len(val_trajectories),
+                    }))
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
 
         # --- logging -----------------------------------------------------------
-        avg = iter_losses.averages()
-        current_val = avg.get("value_loss", float("inf"))
+        current_val = iter_metrics.get("value_loss", float("inf"))
 
         if is_main() and (iteration % log_interval == 0 or iteration == 1):
             with log_path.open("a", newline="") as f:
                 csv.writer(f).writerow([
                     time.time(), iteration, global_step,
-                    avg.get("wm_mse", ""), avg.get("value_loss", ""),
-                    avg.get("total_loss", ""),
+                    iter_metrics.get("wm_mse", ""),
+                    iter_metrics.get("value_loss", ""),
+                    iter_metrics.get("total_loss", ""),
+                    iter_metrics.get("num_rollouts", ""),
+                    iter_metrics.get("num_transitions", ""),
+                    iter_metrics.get("success_rate", ""),
+                    iter_metrics.get("val_success_rate", ""),
+                    iter_metrics.get("val_avg_reward", ""),
+                    iter_metrics.get("val_avg_steps", ""),
                 ])
             elapsed = time.time() - iter_start
             print(json.dumps({
                 "iteration": iteration,
                 "global_step": global_step,
-                "metrics": avg,
+                "metrics": iter_metrics,
                 "elapsed_s": round(elapsed, 1),
             }))
 

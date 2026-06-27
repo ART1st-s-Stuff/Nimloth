@@ -1,0 +1,78 @@
+# RL experiment: 60 iterations, val every 5, save every 10
+# Dataset config matches VAGEN baseline (navigation base + common_sense).
+
+# --- Qwen ---
+qwen:
+  model: Qwen/Qwen2.5-VL-3B-Instruct
+  attn_implementation: flash_attention_2
+  max_pixels: 3136
+
+# --- Freeze strategy ---
+freeze:
+  qwen: true
+  state_proj: true
+
+# --- Predictor (warm-start from SFT2 best/wm_predictor/) ---
+predictor:
+  lr: 1e-4
+  emb_dim: 128
+  history_size: 4
+  rollout_steps: 1
+
+# --- Value head (warm-start from SFT2 best/value_head/) ---
+value_head:
+  lr: 1e-4
+  rank_margin: 0.1
+  lambda_rank: 1.0
+
+# --- RL loop: 1 iteration = 1 global_step = 1 optimizer step ---
+rl:
+  iterations: 60
+  envs_per_iteration: 8
+  max_steps_per_episode: 20
+  gamma: 0.99
+  batch_size: 32
+
+# --- Validation ---
+validation:
+  enabled: true
+  interval: 5               # run val rollout every 5 iterations
+  envs: 16                  # 16 val episodes
+
+# --- Training ---
+training:
+  seed: 42
+  log_interval: 1           # log every iteration
+  save_interval: 10         # checkpoint every 10 iterations
+
+# --- VAGEN dataset config (matches baseline) ---
+dataset:
+  train:
+    - env_name: navigation
+      env_config:
+        render_mode: vision
+        prompt_format: wm
+        use_state_reward: false
+        eval_set: base
+        max_actions_per_step: 1
+      train_size: 10000
+      test_size: 0
+    - env_name: navigation
+      env_config:
+        render_mode: vision
+        prompt_format: wm
+        use_state_reward: false
+        eval_set: common_sense
+        max_actions_per_step: 1
+      train_size: 10000
+      test_size: 0
+  val:
+    - env_name: navigation
+      env_config:
+        render_mode: vision
+        prompt_format: wm
+        use_state_reward: false
+        eval_set: base
+        max_actions_per_step: 1
+      train_size: 0
+      test_size: 60

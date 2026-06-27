@@ -24,18 +24,23 @@ value_head:
   rank_margin: 0.1     # margin for ranking loss (0 → regression only)
   lambda_rank: 0.0     # 0 = pure regression; set > 0 for ranking term
 
-# --- RL loop ---
+# --- RL loop (1 iteration = 1 global_step = 1 optimizer step) ---
 rl:
   iterations: 1000
   envs_per_iteration: 8     # episodes collected per iteration
   max_steps_per_episode: 20
   gamma: 0.99
   batch_size: 32
-  train_steps_per_iteration: 10
+
+# --- Validation ---
+validation:
+  enabled: true
+  interval: 50              # run validation every N iterations
+  envs: 16                  # number of envs for validation rollout
 
 # --- Training / output ---
 training:
   seed: 42
-  log_interval: 10
-  save_interval: 50        # iterations between checkpoints
+  log_interval: 1           # log every iteration
+  save_interval: 50         # iterations between checkpoints
   output_dir: null          # set via CLI --output-dir
