@@ -427,6 +427,10 @@ def _select_action_vagen(model, processor, image, nav_instruction: str,
     """
     import torch
 
+    # We use the same current image for every user turn (Qwen expects an image
+    # per vision block in the chat template, even if they are identical).
+    num_images = 1 + len(action_history)
+
     # Build messages: system + initial image + history
     messages = [{"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]}]
 
@@ -454,7 +458,7 @@ def _select_action_vagen(model, processor, image, nav_instruction: str,
 
     # Apply template
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = processor(text=[text], images=[image], return_tensors="pt", padding=True)
+    inputs = processor(text=[text], images=[image] * num_images, return_tensors="pt", padding=True)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
