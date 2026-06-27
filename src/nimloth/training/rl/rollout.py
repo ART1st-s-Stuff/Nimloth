@@ -362,21 +362,60 @@ class EnvRolloutCollector:
 
 
 def _obs_to_pil(obs) -> "Image.Image":
-    """Convert env server observation to PIL Image."""
+    """Convert env server observation to PIL Image.
+
+    Handles VAGEN env server's multi_modal_data format where images are
+    stored as ``{"multi_modal_data": {"image": [PIL.Image, ...]}, ...}``.
+    """
     from PIL import Image
 
     if isinstance(obs, Image.Image):
         return obs
+
     if isinstance(obs, dict):
+        # Standard direct image keys
         for key in ("image", "rgb", "pixels"):
             if key in obs:
                 val = obs[key]
+                if isinstance(val, Image.Image):
+                    return val
                 if hasattr(val, "shape"):
                     return Image.fromarray(val)
-                return val
+                if isinstance(val, dict) and "__pil_image__" in val:
+                    from vagen.server.serial import deserialize_pil_image
+                    return deserialize_pil_image(val)
+
+        # VAGEN env server: multi_modal_data
+        if "multi_modal_data" in obs:
+            mm_data = obs["multi_modal_data"]
+            # mm_data is a dict of lists, e.g. {"image": [PIL.Image], ...}
+            for key in ("image", "images", "rgb", "pixels"):
+                if key in mm_data:
+                    values = mm_data[key]
+                    if values and len(values) > 0:
+                        val = values[0]
+                        if isinstance(val, Image.Image):
+                            return val
+                        if hasattr(val, "shape"):  # numpy array
+                            return Image.fromarray(val)
+                        if isinstance(val, dict) and "__pil_image__" in val:
+                            from vagen.server.serial import deserialize_pil_image
+                            return deserialize_pil_image(val)
+
+            # Try first available key
+            for key, values in mm_data.items():
+                if values and len(values) > 0:
+                    val = values[0]
+                    if isinstance(val, Image.Image):
+                        return val
+                    if hasattr(val, "shape"):
+                        return Image.fromarray(val)
+
         raise ValueError(f"Cannot extract image from obs dict with keys {list(obs.keys())}")
+
     if hasattr(obs, "shape"):
         return Image.fromarray(obs)
+
     raise ValueError(f"Unknown obs type: {type(obs)}")
 
 
