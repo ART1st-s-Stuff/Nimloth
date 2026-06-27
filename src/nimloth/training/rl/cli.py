@@ -131,21 +131,24 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- WM modules ----------------------------------------------------------
     from nimloth.wm.lewm import LeWMConfig
-    pred_cfg = config.get("predictor", {})
-    wm_config = LeWMConfig(
-        emb_dim=pred_cfg.get("emb_dim", 128),
-        history_size=pred_cfg.get("history_size", 4),
-    )
-    wm_predictor = LatentWMPredictor.create(wm_config)
-    state_proj = StateProjector(qwen_hidden_dim=2048, lewm_emb_dim=wm_config.emb_dim)
-    value_head = ValueHead(emb_dim=wm_config.emb_dim)
 
-    # --- Warm-start WM from checkpoints --------------------------------------
     if args.wm_checkpoint is not None:
-        loaded = LatentWMPredictor.load_checkpoint(args.wm_checkpoint)
-        wm_predictor.load_state_dict(loaded.state_dict())
+        # Load from checkpoint — use its config to avoid shape mismatches
+        wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_checkpoint)
         if is_main():
-            print(json.dumps({"warm_start": "wm_predictor", "source": str(args.wm_checkpoint)}))
+            print(json.dumps({"warm_start": "wm_predictor", "source": str(args.wm_checkpoint),
+                              "history_size": wm_predictor.config.history_size}))
+    else:
+        pred_cfg = config.get("predictor", {})
+        wm_config = LeWMConfig(
+            emb_dim=pred_cfg.get("emb_dim", 128),
+            history_size=pred_cfg.get("history_size", 4),
+        )
+        wm_predictor = LatentWMPredictor.create(wm_config)
+
+    emb_dim = wm_predictor.config.emb_dim
+    state_proj = StateProjector(qwen_hidden_dim=2048, lewm_emb_dim=emb_dim)
+    value_head = ValueHead(emb_dim=emb_dim)
     if args.state_proj_checkpoint is not None:
         state_proj.load_state_dict(
             torch.load(args.state_proj_checkpoint, map_location="cpu", weights_only=True)

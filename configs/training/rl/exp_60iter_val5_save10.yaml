@@ -16,7 +16,7 @@ freeze:
 predictor:
   lr: 1e-4
   emb_dim: 128
-  history_size: 4
+  history_size: 1   # must match SFT2 checkpoint (trained with history_size=1)
   rollout_steps: 1
 
 # --- Value head (warm-start from SFT2 best/value_head/) ---
