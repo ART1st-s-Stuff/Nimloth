@@ -8,6 +8,7 @@ Each trajectory is later encoded into WM latent states by the trainer.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -89,14 +90,7 @@ class RolloutCollector(Protocol):
 class VAGENRolloutCollector:
     """Collect trajectories by running VAGEN in validation-only mode.
 
-    This is a thin wrapper that delegates to VAGEN's existing rollout
-    infrastructure.  It expects a VAGEN config and a running environment
-    server (AI2-THOR).  The Qwen model loaded by VAGEN is used as the
-    behaviour policy — its action prior (``<|action_start|>`` logits argmax)
-    selects actions.
-
-    The output JSONL written by VAGEN is parsed into ``RolloutTrajectory``
-    objects for the trainer to encode and train on.
+    Legacy placeholder — use ``EnvRolloutCollector`` for direct env interaction.
     """
 
     def __init__(
@@ -109,6 +103,72 @@ class VAGENRolloutCollector:
         self._vagen_checkpoint_dir = vagen_checkpoint_dir
         self._output_root = output_root
 
+    def collect(self, *, num_episodes, max_steps_per_episode=20, output_dir=None):
+        raise NotImplementedError(
+            "VAGENRolloutCollector is not implemented. Use EnvRolloutCollector with --env-url."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Env-backed collector (direct env server interaction using trainer's Qwen)
+# ---------------------------------------------------------------------------
+
+# Map VAGEN text action names → numeric indices (aligned with ACTION_NAMES order)
+ACTION_NAME_MAP: dict[str, int] = {
+    "moveahead": 0,
+    "moveback": 1,
+    "moveright": 2,
+    "moveleft": 3,
+    "rotateright": 4,
+    "rotateleft": 5,
+    "lookup": 6,
+    "lookdown": 7,
+}
+ACTION_NAMES: list[str] = [
+    "moveahead", "moveback", "moveright", "moveleft",
+    "rotateright", "rotateleft", "lookup", "lookdown",
+]
+ACTION_NAME_TO_IDX: dict[str, int] = {name: idx for idx, name in enumerate(ACTION_NAMES)}
+
+_NAV_SYSTEM_TEXT = (
+    "You are a home robot and perform navigation tasks according to instructions.\n"
+    "Actions you can take: moveahead, moveback, moveright, moveleft, "
+    "rotateright, rotateleft, lookup, lookdown.\n"
+    "Rewards: Format correct: +0.5. Achieve the human instruction: +10.0.\n"
+    "Look at the image carefully and navigate to complete the instruction."
+)
+
+
+class EnvRolloutCollector:
+    """Collect trajectories by running Qwen policy against the VAGEN env server.
+
+    Reuses the trainer's Qwen model (no subprocess/model-reloading).
+    Each ``collect()`` call creates envs on the server, runs Qwen-based
+    greedy action selection, and returns ``RolloutTrajectory`` objects.
+    """
+
+    def __init__(
+        self,
+        qwen_model,
+        processor,
+        env_url: str,
+        device,
+        seed_offset: int = 0,
+    ) -> None:
+        self._model = qwen_model
+        self._processor = processor
+        self._env_url = env_url.rstrip("/")
+        self._device = device
+        self._ep_counter = seed_offset
+        self._client = None  # lazy init
+
+    @property
+    def client(self):
+        if self._client is None:
+            from vagen.server.client import BatchEnvClient
+            self._client = BatchEnvClient(base_url=self._env_url, timeout=1200)
+        return self._client
+
     def collect(
         self,
         *,
@@ -116,58 +176,246 @@ class VAGENRolloutCollector:
         max_steps_per_episode: int = 20,
         output_dir: Path | None = None,
     ) -> list[RolloutTrajectory]:
-        """Run VAGEN val_only rollout and parse the resulting JSONL.
+        import numpy as np
 
-        .. note::
-            This method shells out to VAGEN's training CLI.  In production the
-            VAGEN rollout is typically launched via Slurm; for interactive /
-            single-node RL training the collector is called directly from the
-            trainer process.
-        """
-        out_dir = output_dir or self._output_root
-        jsonl_path = out_dir / "0.jsonl"  # val_only writes 0.jsonl
+        out_dir = output_dir or Path(".")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Save images under output_dir/images/
+        img_dir = out_dir / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
 
-        # Delegate to VAGEN trainer (val_only=True, single validation step).
-        # The VAGEN trainer handles Qwen loading, env connection, and rollout.
-        _run_vagen_rollout(
-            config_path=self._vagen_config_path,
-            checkpoint_dir=self._vagen_checkpoint_dir,
-            output_dir=out_dir,
-            num_episodes=num_episodes,
-            max_steps=max_steps_per_episode,
-        )
-
-        # Parse resulting JSONL into RolloutTrajectory objects.
         trajectories: list[RolloutTrajectory] = []
-        if jsonl_path.exists():
-            with jsonl_path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    trajectories.append(RolloutTrajectory.from_record(json.loads(line)))
+
+        for ep_i in range(num_episodes):
+            ep_id = f"rl_{self._ep_counter:06d}"
+            self._ep_counter += 1
+            seed = self._ep_counter * 13 + 7
+            t0 = time.time()
+
+            # Choose eval_set: alternate between base and common_sense
+            eval_set = "base" if (ep_i % 2 == 0) else "common_sense"
+
+            env_config = {
+                "env_name": "navigation",
+                "env_config": {
+                    "render_mode": "vision",
+                    "prompt_format": "wm",
+                    "use_state_reward": False,
+                    "eval_set": eval_set,
+                    "max_actions_per_step": 1,
+                    "max_action_penalty": -0.1,
+                    "format_reward": 0.5,
+                    "success_threshold": 1.5,
+                    "step_length": 0.5,
+                    "grounding_reward_weight": 0.5,
+                    "worldmodeling_reward_weight": 0.5,
+                    "gpu_device": 0,
+                },
+            }
+            self.client.create_environments_batch({ep_id: env_config})
+            prompts = self.client.get_system_prompts_batch([ep_id])
+            nav_instruction = prompts.get(ep_id, "Navigate to the target object.")
+
+            # Reset
+            results = self.client.reset_batch({ep_id: seed})
+            obs, info = results[ep_id]
+
+            action_names: list[str] = []
+            action_indices: list[int] = []
+            image_paths: list[str] = []
+            done = False
+            reward = 0.0
+            success = False
+
+            for step in range(max_steps_per_episode):
+                # Extract image from observation
+                img = _obs_to_pil(obs)
+
+                # Save image
+                img_path = img_dir / f"{ep_id}_step{step:02d}.png"
+                img.save(str(img_path))
+                image_paths.append(str(img_path))
+
+                # Qwen greedy action selection (VAGEN text format)
+                try:
+                    action_name, action_idx = _select_action_vagen(
+                        self._model, self._processor, img,
+                        nav_instruction, action_names,
+                    )
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                    action_name, action_idx = "moveahead", 0
+
+                # Step env
+                try:
+                    step_results = self.client.step_batch({ep_id: action_name})
+                    obs, r, done, info = step_results[ep_id]
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                    break
+
+                action_names.append(action_name)
+                action_indices.append(action_idx)
+
+                if done:
+                    break
+
+            # Compute reward
+            try:
+                reward = float(self.client.compute_reward(ep_id))
+                success = reward >= 10.0
+            except Exception:
+                reward = 0.0
+                success = False
+
+            # Close env
+            try:
+                self.client.close_batch([ep_id])
+            except Exception:
+                pass
+
+            # Build messages
+            messages = _build_vagen_messages(nav_instruction, len(action_names), action_names)
+
+            trajectories.append(RolloutTrajectory(
+                record_id=ep_id,
+                image_paths=image_paths,
+                action_indices=action_indices,
+                success=success,
+                reward=reward,
+                split="train",
+                messages=messages,
+            ))
+
+            elapsed = time.time() - t0
+            if int(ep_i) % max(1, num_episodes // 4) == 0:
+                print(json.dumps({
+                    "rl_rollout_ep": f"{ep_i + 1}/{num_episodes}",
+                    "steps": len(action_names),
+                    "success": success,
+                    "reward": round(reward, 2),
+                    "elapsed_s": round(elapsed, 1),
+                }), flush=True)
+
         return trajectories
 
 
-def _run_vagen_rollout(
-    config_path: Path,
-    checkpoint_dir: Path,
-    output_dir: Path,
-    num_episodes: int,
-    max_steps: int,
-) -> None:
-    """Invoke VAGEN's ``main_ppo`` in val_only mode as a subprocess.
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-    This function is a placeholder — the actual integration depends on the
-    VAGEN codebase and the runtime environment (Slurm, Ray, etc.).  In the
-    first iteration we reuse the existing ``experiments/training/baseline/``
-    Slurm scripts; this function is filled in once we move to inline
-    single-process RL training.
+
+def _obs_to_pil(obs) -> "Image.Image":
+    """Convert env server observation to PIL Image."""
+    from PIL import Image
+
+    if isinstance(obs, Image.Image):
+        return obs
+    if isinstance(obs, dict):
+        for key in ("image", "rgb", "pixels"):
+            if key in obs:
+                val = obs[key]
+                if hasattr(val, "shape"):
+                    return Image.fromarray(val)
+                return val
+        raise ValueError(f"Cannot extract image from obs dict with keys {list(obs.keys())}")
+    if hasattr(obs, "shape"):
+        return Image.fromarray(obs)
+    raise ValueError(f"Unknown obs type: {type(obs)}")
+
+
+def _select_action_vagen(model, processor, image, nav_instruction: str,
+                         action_history: list[str]) -> tuple[str, int]:
+    """Qwen greedy action selection using VAGEN text action tokens.
+
+    Returns (action_name, action_index).
     """
+    import torch
+
+    # Build messages: system + initial image + history
+    messages = [{"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]}]
+
+    # Initial user turn
+    messages.append({"role": "user", "content": [
+        {"type": "image", "image": image},
+        {"type": "text", "text": (
+            f"[Initial Observation]:\n{nav_instruction}\nDecide your next action(s)."
+        )},
+    ]})
+
+    for act_name in action_history:
+        messages.append({"role": "assistant", "content": [
+            {"type": "text", "text": f"<think>Reasoning.</think><answer>{act_name}</answer>"}
+        ]})
+        messages.append({"role": "user", "content": [
+            {"type": "image", "image": image},
+            {"type": "text", "text": (
+                f"After your answer, the extracted valid action is {act_name}.\n"
+                f"The environment feedback is: Last action executed successfully.\n"
+                f"After that, the observation is:\n{nav_instruction}\n"
+                f"Decide your next action(s)."
+            )},
+        ]})
+
+    # Apply template
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = processor(text=[text], images=[image], return_tensors="pt", padding=True)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    logits = outputs.logits[0, -1, :]  # last token position
+
+    # Score each action name by its first token logit
+    scores: dict[str, float] = {}
+    for name in ACTION_NAMES:
+        tok_ids = processor.tokenizer.encode(name, add_special_tokens=False)
+        if tok_ids:
+            scores[name] = float(logits[tok_ids[0]].item())
+        else:
+            scores[name] = -float("inf")
+
+    best_name = max(scores, key=scores.get)
+    best_idx = ACTION_NAME_TO_IDX[best_name]
+    return best_name, best_idx
+
+
+def _build_vagen_messages(nav_instruction: str, num_steps: int,
+                          action_names: list[str]) -> list[dict]:
+    """Build conversation messages for the trajectory record."""
+    messages: list[dict] = [
+        {"role": "system", "content": _NAV_SYSTEM_TEXT},
+    ]
+    messages.append({"role": "user", "content": (
+        f"[Initial Observation]:\n{nav_instruction}\nDecide your next action(s)."
+    )})
+    for i, act_name in enumerate(action_names):
+        messages.append({"role": "assistant",
+                         "content": f"<think>Reasoning.</think><answer>{act_name}</answer>"})
+        if i + 1 < num_steps:
+            messages.append({"role": "user", "content": (
+                f"After your answer, the extracted valid action is {act_name}.\n"
+                f"The environment feedback is: Last action executed successfully.\n"
+                f"After that, the observation is:\n{nav_instruction}\n"
+                f"Decide your next action(s)."
+            )})
+    return messages
+
+
+# ---------------------------------------------------------------------------
+# Legacy placeholder
+# ---------------------------------------------------------------------------
+
+
+def _run_vagen_rollout(
+    config_path: Path, checkpoint_dir: Path, output_dir: Path,
+    num_episodes: int, max_steps: int,
+) -> None:
     raise NotImplementedError(
-        "VAGEN subprocess rollout is not yet implemented. "
-        "Use the existing Slurm-based rollout scripts in experiments/training/baseline/ "
-        "for the first iteration, or call VAGEN's trainer Python API directly."
+        "Use EnvRolloutCollector with --env-url instead of VAGEN subprocess."
     )
 
 

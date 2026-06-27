@@ -271,6 +271,15 @@ def train_rl(
 
     model.to(device)
 
+    # --- Wire up EnvRolloutCollector with loaded model -----------------------
+    from nimloth.training.rl.rollout import EnvRolloutCollector
+    if isinstance(collector, EnvRolloutCollector):
+        collector._model = model
+        collector._processor = processor
+        collector._device = device
+        if is_main():
+            print(json.dumps({"env_collector": "wired", "device": str(device)}))
+
     # --- freeze WM-encoding pathway if requested -----------------------------
     if freeze_qwen and llm_tune == "freeze" and vision_tune == "freeze":
         _freeze(model)

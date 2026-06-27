@@ -54,6 +54,8 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
                     help="Warm-start ValueHead checkpoint dir")
 
     # ---- Rollout ------------------------------------------------------------
+    ap.add_argument("--env-url", default=None,
+                    help="VAGEN env server URL for online rollout collection")
     ap.add_argument("--vagen-config", type=Path, default=None,
                     help="VAGEN YAML config for inline rollout (optional)")
     ap.add_argument("--vagen-checkpoint", type=Path, default=None,
@@ -157,7 +159,17 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"warm_start": "value_head", "source": str(args.value_head_checkpoint)}))
 
     # --- Rollout collector ---------------------------------------------------
-    if args.use_jsonl_rollout or (args.vagen_config is None):
+    if args.env_url:
+        from nimloth.training.rl.rollout import EnvRolloutCollector
+        collector = EnvRolloutCollector(
+            qwen_model=None,  # filled in by trainer after model loading
+            processor=None,   # filled in by trainer
+            env_url=args.env_url,
+            device=None,      # filled in by trainer
+        )
+        if is_main():
+            print(json.dumps({"rollout_mode": "env", "env_url": args.env_url}))
+    elif args.use_jsonl_rollout or (args.vagen_config is None):
         collector = JSONLRolloutCollector()
         if is_main():
             print(json.dumps({"rollout_mode": "jsonl"}))
