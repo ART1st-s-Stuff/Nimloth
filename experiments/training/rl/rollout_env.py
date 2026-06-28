@@ -249,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     model, processor = load_qwen(args.model, args.attn_implementation)
 
     # --- Connect to env server -----------------------------------------------
-    client = BatchEnvClient(base_url=args.env_url, timeout=1200)
+    client = BatchEnvClient(base_url=args.env_url, timeout=300)
     if not client.wait_for_server(max_retries=60, retry_delay=2.0):
         print(json.dumps({"error": "env_server_not_available"}), flush=True)
         return 1
