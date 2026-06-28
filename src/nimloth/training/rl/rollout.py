@@ -291,7 +291,7 @@ class EnvRolloutCollector:
 
                 # --- qwen action selection ---
                 try:
-                    action_name, action_idx = _select_action_vagen(
+                    action_name, action_idx = _select_action_nimloth(
                         self._model, self._processor, img,
                         nav_instruction, action_names,
                     )
@@ -428,64 +428,74 @@ def _obs_to_pil(obs) -> "Image.Image":
     raise ValueError(f"Unknown obs type: {type(obs)}")
 
 
-def _select_action_vagen(model, processor, image, nav_instruction: str,
-                         action_history: list[str]) -> tuple[str, int]:
-    """Qwen greedy action selection using VAGEN text action tokens.
+def _select_action_nimloth(model, processor, image, nav_instruction: str,
+                           action_history: list[str]) -> tuple[str, int]:
+    """Qwen greedy action selection using Nimloth action tokens.
+
+    The SFT2 model was trained with ``<|action_(0)|>`` … ``<|action_(7)|>``
+    special tokens.  We build a Nimloth-format prompt (ending with
+    ``<|action_start|>``), run Qwen forward, and extract the logits at
+    ``<|action_start|>`` to pick the most likely action token index.
 
     Returns (action_name, action_index).
     """
     import torch
+    from nimloth.latent.extraction import (
+        LatentActionTokens,
+        extract_action_prior,
+        special_token_ids,
+    )
 
-    # We use the same current image for every user turn (Qwen expects an image
-    # per vision block in the chat template, even if they are identical).
+    tokens = LatentActionTokens()
+    token_ids = special_token_ids(processor.tokenizer, tokens)
+    action_token_ids = [token_ids[t] for t in tokens.action_tokens]
+
+    # Build Nimloth-format messages.
+    # The assistant response includes <|latent_state|> and <|action_start|>.
+    # The model will predict the next token (one of <|action_(N)|>).
     num_images = 1 + len(action_history)
+    messages: list[dict] = [
+        {"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]},
+    ]
 
-    # Build messages: system + initial image + history
-    messages = [{"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]}]
-
-    # Initial user turn
+    # Initial observation
     messages.append({"role": "user", "content": [
         {"type": "image", "image": image},
-        {"type": "text", "text": (
-            f"[Initial Observation]:\n{nav_instruction}\nDecide your next action(s)."
-        )},
+        {"type": "text", "text": f"Observe the scene. {nav_instruction}"},
     ]})
 
+    # History turns: user shows image, assistant says what it did + latent + action_start
     for act_name in action_history:
         messages.append({"role": "assistant", "content": [
-            {"type": "text", "text": f"<think>Reasoning.</think><answer>{act_name}</answer>"}
+            {"type": "text", "text": (
+                f"<think>Navigating.</think>"
+                f"<|latent_state|><|action_start|><|action_({ACTION_NAME_TO_IDX[act_name]})|><|action_end|>"
+            )},
         ]})
         messages.append({"role": "user", "content": [
             {"type": "image", "image": image},
-            {"type": "text", "text": (
-                f"After your answer, the extracted valid action is {act_name}.\n"
-                f"The environment feedback is: Last action executed successfully.\n"
-                f"After that, the observation is:\n{nav_instruction}\n"
-                f"Decide your next action(s)."
-            )},
+            {"type": "text", "text": f"Observe the scene after {act_name}. {nav_instruction}"},
         ]})
 
-    # Apply template
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # Current turn: we want the model to predict the next action
+    messages.append({"role": "assistant", "content": [
+        {"type": "text", "text": "<think>What should I do next?</think><|latent_state|><|action_start|>"},
+    ]})
+
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
     inputs = processor(text=[text], images=[image] * num_images, return_tensors="pt", padding=True)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
-        outputs = model(**inputs)
+        outputs = model(**inputs, output_hidden_states=True, return_dict=True)
 
-    logits = outputs.logits[0, -1, :]  # last token position
-
-    # Score each action name by its first token logit
-    scores: dict[str, float] = {}
-    for name in ACTION_NAMES:
-        tok_ids = processor.tokenizer.encode(name, add_special_tokens=False)
-        if tok_ids:
-            scores[name] = float(logits[tok_ids[0]].item())
-        else:
-            scores[name] = -float("inf")
-
-    best_name = max(scores, key=scores.get)
-    best_idx = ACTION_NAME_TO_IDX[best_name]
+    logits = outputs.logits[0, -1, :]
+    # Extract action prior at the <|action_start|> position
+    # The <|action_start|> token is at position -1 (last token), and its logits
+    # predict the next token. Score only the 8 action tokens.
+    action_logits = logits[action_token_ids]
+    best_idx = int(action_logits.argmax().item())
+    best_name = ACTION_NAMES[best_idx]
     return best_name, best_idx
 
 
