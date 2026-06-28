@@ -318,6 +318,15 @@ class EnvRolloutCollector:
                 if done:
                     break
 
+            # Save final observation (so image_paths has len = num_steps + 1)
+            try:
+                final_img = _obs_to_pil(obs)
+                img_path = img_dir / f"{ep_id}_step{len(action_names):02d}.png"
+                final_img.save(str(img_path))
+                image_paths.append(str(img_path))
+            except Exception:
+                pass
+
             # --- compute reward ---
             try:
                 reward = float(self._client.compute_reward(ep_id))
