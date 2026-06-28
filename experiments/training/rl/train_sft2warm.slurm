@@ -72,7 +72,7 @@ CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 python3 -m vagen.server.server \
     server.port=${ENV_PORT} \
     use_state_reward=False \
     navigation.devices=[0] \
-    navigation.max_workers=16 \
+    navigation.max_workers=4 \
     > "${ENV_LOG}" 2>&1 &
 
 ENV_PID=$!
