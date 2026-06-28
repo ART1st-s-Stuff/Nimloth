@@ -69,17 +69,26 @@ def encode_trajectory_hiddens(
     states: list[torch.Tensor] = []
     tokens = LatentActionTokens()
 
-    for image_path in trajectory.image_paths:
-        item = {
-            "prefix_messages": trajectory.messages[:1],  # system prompt only
-            "prefix_image_paths": [],
-            "current_image_path": image_path,
-            "next_image_path": image_path,
-            "action_index": 0,
-            "action_value_target": 0.0,
-            "success": trajectory.success,
-            "split": trajectory.split,
-        }
+    # System message from trajectory
+    system_msg = trajectory.messages[0] if trajectory.messages else {
+        "role": "system", "content": "You are a navigation agent."
+    }
+
+    for i, image_path in enumerate(trajectory.image_paths):
+        # Build messages: system + image observation + brief assistant
+        # so Qwen encodes the conversation context including <|latent_state|>.
+        messages = [
+            system_msg,
+            {"role": "user", "content": [
+                {"type": "image", "image": image_path},
+                {"type": "text", "text": "Observe the scene from the current viewpoint."},
+            ]},
+            # Include <|latent_state|> in assistant so we can extract it
+            {"role": "assistant", "content": [
+                {"type": "text", "text": f"<|latent_state|>"},
+            ]},
+        ]
+        item = {"messages": messages}
         enc = build_qwen_batch([item], processor, max_length=2048)
         model_inputs = {k: v.to(device) for k, v in enc.items()}
         with torch.no_grad():
