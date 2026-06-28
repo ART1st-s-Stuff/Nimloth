@@ -185,8 +185,8 @@ def train_rl(
     batch_size: int = rl_cfg.get("batch_size", 32)
     # One optimizer step per iteration → 1 iteration = 1 global_step.
 
-    pred_lr: float = pred_cfg.get("lr", 1e-3)
-    vh_lr: float = vh_cfg.get("lr", 1e-3)
+    pred_lr: float = float(pred_cfg.get("lr", 1e-3))
+    vh_lr: float = float(vh_cfg.get("lr", 1e-3))
     rank_margin: float = vh_cfg.get("rank_margin", 0.1)
     lambda_rank: float = vh_cfg.get("lambda_rank", 1.0)
 

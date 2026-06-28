@@ -14,14 +14,14 @@ freeze:
 
 # --- Predictor (warm-start from SFT2 best/wm_predictor/) ---
 predictor:
-  lr: 1e-4          # lower LR since already trained
+  lr: 0.0001          # lower LR since already trained
   emb_dim: 128
   history_size: 1   # must match SFT2 checkpoint
   rollout_steps: 1
 
 # --- Value head (warm-start from SFT2 best/value_head/) ---
 value_head:
-  lr: 1e-4
+  lr: 0.0001
   rank_margin: 0.1
   lambda_rank: 1.0
 
