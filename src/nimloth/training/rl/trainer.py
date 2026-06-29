@@ -233,34 +233,32 @@ def compute_new_log_probs_for_batch(
         imgs = [Image.open(image_path).convert("RGB")] * num_images
         all_images.append(imgs)
 
-    enc = processor(
-        text=texts, images=all_images, padding=True,
-        truncation=True, max_length=2048, return_tensors="pt",
-    )
-    model_inputs = {k: v.to(device) for k, v in enc.items()}
-
-    outputs = model(**model_inputs, output_hidden_states=False, return_dict=True)
-    logits = outputs.logits  # (B, seq_len, vocab)
-
-    # Extract action logits at <|action_start|> for each batch item
-    action_logits_batch = []
+    # Process items individually — variable image counts per item prevent batching.
+    new_log_probs_list = []
+    action_logits_list = []
     for i in range(len(ppo_items)):
-        input_ids = enc["input_ids"][i]
+        enc_i = processor(
+            text=[texts[i]], images=[all_images[i]], padding=True,
+            truncation=True, max_length=2048, return_tensors="pt",
+        )
+        model_inputs_i = {k: v.to(device) for k, v in enc_i.items()}
+        outputs_i = model(**model_inputs_i, output_hidden_states=False, return_dict=True)
+        logits_i = outputs_i.logits  # (1, seq_len, vocab)
+
+        input_ids = enc_i["input_ids"][0]
         as_positions = (input_ids == token_id_map[tokens.action_start]).nonzero(as_tuple=True)[0]
         if as_positions.numel() == 0:
             raise RuntimeError("<|action_start|> token not found in PPO prompt")
         pos = int(as_positions[-1].item())
-        act_ids = torch.tensor(action_token_ids, device=logits.device)
-        action_logits_batch.append(logits[i, pos, act_ids])
+        act_ids = torch.tensor(action_token_ids, device=logits_i.device)
+        action_logits_list.append(logits_i[0, pos, act_ids])
 
-    action_logits = torch.stack(action_logits_batch)  # (B, 8)
+        taken_idx = ppo_items[i]["taken_action_idx"]
+        log_probs_i = torch.log_softmax(action_logits_list[-1].float(), dim=-1)
+        new_log_probs_list.append(log_probs_i[taken_idx])
 
-    taken_actions = torch.tensor(
-        [item["taken_action_idx"] for item in ppo_items],
-        device=action_logits.device, dtype=torch.long,
-    )
-    log_probs = torch.log_softmax(action_logits.float(), dim=-1)
-    new_log_probs = log_probs.gather(1, taken_actions.unsqueeze(1)).squeeze(1)
+    action_logits = torch.stack(action_logits_list)  # (B, 8)
+    new_log_probs = torch.stack(new_log_probs_list)  # (B,)
 
     return new_log_probs, action_logits
 
