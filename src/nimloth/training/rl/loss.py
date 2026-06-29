@@ -12,6 +12,9 @@ from nimloth.wm.value_head import ValueHead
 __all__ = [
     "compute_predictor_loss",
     "compute_value_loss",
+    "compute_advantages",
+    "compute_actor_loss",
+    "compute_action_entropy",
 ]
 
 
@@ -74,3 +77,61 @@ def compute_value_loss(
         }
 
     return reg_loss, {"value_loss": float(reg_loss.detach().item())}
+
+
+def compute_advantages(
+    *,
+    value_targets: torch.Tensor,
+    predicted_values: torch.Tensor,
+) -> torch.Tensor:
+    """TD residual advantages: A = G_t - V(s_t, a_t), normalized to mean=0 std=1.
+
+    Returns advantages detached from the computation graph.
+    """
+    advantages = value_targets - predicted_values.detach()
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    return advantages
+
+
+def compute_actor_loss(
+    *,
+    new_log_probs: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    clip_ratio: float = 0.2,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """PPO clipped policy gradient for per-step discrete actions.
+
+    Args:
+        new_log_probs: (B,) log-prob of taken actions under current policy.
+        old_log_probs:  (B,) log-prob of taken actions under rollout policy.
+        advantages:     (B,) detached advantages.
+        clip_ratio:      PPO clipping epsilon.
+
+    Returns:
+        (loss, metrics_dict)
+    """
+    ratio = torch.exp(new_log_probs - old_log_probs)
+    clipped_ratio = torch.clamp(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio)
+    surrogate = -torch.min(ratio * advantages, clipped_ratio * advantages)
+    loss = surrogate.mean()
+
+    with torch.no_grad():
+        clip_frac = (ratio.abs() - 1.0).abs().gt(clip_ratio).float().mean()
+
+    return loss, {
+        "actor_loss": float(loss.detach().item()),
+        "clip_fraction": float(clip_frac.item()),
+        "mean_ratio": float(ratio.mean().item()),
+    }
+
+
+def compute_action_entropy(action_logits: torch.Tensor) -> torch.Tensor:
+    """Mean categorical entropy over 8 action tokens.
+
+    Returns a scalar tensor (0 to ~2.08 for 8 actions).
+    """
+    probs = torch.softmax(action_logits.float(), dim=-1)
+    log_probs = torch.log_softmax(action_logits.float(), dim=-1)
+    entropy = -(probs * log_probs).sum(dim=-1).mean()
+    return entropy

@@ -8,8 +8,14 @@ qwen:
 
 # --- Freeze strategy ---
 freeze:
-  qwen: true
+  qwen: true       # override to false to enable PPO
   state_proj: true
+
+# --- Actor (Qwen PPO) ---
+actor:
+  lr: 1e-6
+  entropy_coeff: 0.0   # 0 = no entropy bonus (backward compatible)
+  clip_ratio: 0.2
 
 # --- Predictor ---
 predictor:

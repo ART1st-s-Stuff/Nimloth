@@ -130,6 +130,10 @@ def build_rl_transitions(
         value_targets = discounted_action_value_targets(record, gamma=gamma)
 
         for t in range(traj.num_steps):
+            # old_log_prob for the taken action at step t
+            log_probs = traj.action_log_probs[t] if t < len(traj.action_log_probs) else []
+            old_lp = float(log_probs[traj.action_indices[t]]) if len(log_probs) > traj.action_indices[t] else 0.0
+
             transitions.append({
                 "qwen_hidden_current": hiddens[t],
                 "qwen_hidden_next": hiddens[t + 1],
@@ -138,9 +142,127 @@ def build_rl_transitions(
                     value_targets[t] if t < len(value_targets) else 0.0,
                     dtype=torch.float32,
                 ),
+                "old_log_prob": old_lp,
+                "nav_instruction": traj.nav_instruction,
+                "action_history_names": traj.action_names[:t],
+                "image_path": traj.image_paths[t],
             })
 
     return transitions
+
+
+# ---------------------------------------------------------------------------
+# PPO forward pass (Qwen with gradients)
+# ---------------------------------------------------------------------------
+
+# Action token name → index map (copied from rollout.py to avoid circular import)
+_ACTION_NAME_TO_IDX = {
+    "moveahead": 0, "moveback": 1, "moveright": 2, "moveleft": 3,
+    "rotateright": 4, "rotateleft": 5, "lookup": 6, "lookdown": 7,
+}
+_NAV_SYSTEM_TEXT = (
+    "You are a home robot and perform navigation tasks according to instructions.\n"
+    "Actions you can take: moveahead, moveback, moveright, moveleft, "
+    "rotateright, rotateleft, lookup, lookdown.\n"
+    "Rewards: Format correct: +0.5. Achieve the human instruction: +10.0.\n"
+    "Look at the image carefully and navigate to complete the instruction."
+)
+
+
+def compute_new_log_probs_for_batch(
+    ppo_items: list[dict],
+    model,
+    processor,
+    token_id_map: dict[str, int],
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run Qwen forward WITH gradients, returning new log-probs and action logits.
+
+    Each ppo_item must have:
+        - "image_path": path to the observation image
+        - "nav_instruction": navigation instruction
+        - "action_history_names": list of VAGEN text action names before this step
+        - "taken_action_idx": the action that was actually taken
+
+    Returns (new_log_probs, action_logits) where:
+        new_log_probs: (B,) log-prob of taken actions under current policy
+        action_logits: (B, 8) raw logits for all 8 actions
+    """
+    import torch
+    from PIL import Image
+    from nimloth.latent.extraction import LatentActionTokens
+
+    tokens = LatentActionTokens()
+    action_token_ids = [token_id_map[t] for t in tokens.action_tokens]
+
+    texts = []
+    all_images = []
+    for item in ppo_items:
+        # Build the same Nimloth prompt as _select_action_nimloth
+        image_path = item["image_path"]
+        nav_instruction = item["nav_instruction"]
+        action_history = item["action_history_names"]
+        num_images = 1 + len(action_history)
+
+        messages = [
+            {"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]},
+            {"role": "user", "content": [
+                {"type": "image", "image": image_path},
+                {"type": "text", "text": f"Observe the scene. {nav_instruction}"},
+            ]},
+        ]
+        for act_name in action_history:
+            act_idx = _ACTION_NAME_TO_IDX.get(act_name, 0)
+            messages.append({"role": "assistant", "content": [
+                {"type": "text", "text": (
+                    f"<think>Navigating.</think>"
+                    f"<|latent_state|><|action_start|><|action_({act_idx})|><|action_end|>"
+                )},
+            ]})
+            messages.append({"role": "user", "content": [
+                {"type": "image", "image": image_path},
+                {"type": "text", "text": f"Observe the scene after {act_name}. {nav_instruction}"},
+            ]})
+        messages.append({"role": "assistant", "content": [
+            {"type": "text", "text": "<think>What should I do next?</think><|latent_state|><|action_start|>"},
+        ]})
+
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        texts.append(text)
+
+        imgs = [Image.open(image_path).convert("RGB")] * num_images
+        all_images.append(imgs)
+
+    enc = processor(
+        text=texts, images=all_images, padding=True,
+        truncation=True, max_length=2048, return_tensors="pt",
+    )
+    model_inputs = {k: v.to(device) for k, v in enc.items()}
+
+    outputs = model(**model_inputs, output_hidden_states=False, return_dict=True)
+    logits = outputs.logits  # (B, seq_len, vocab)
+
+    # Extract action logits at <|action_start|> for each batch item
+    action_logits_batch = []
+    for i in range(len(ppo_items)):
+        input_ids = enc["input_ids"][i]
+        as_positions = (input_ids == token_id_map[tokens.action_start]).nonzero(as_tuple=True)[0]
+        if as_positions.numel() == 0:
+            raise RuntimeError("<|action_start|> token not found in PPO prompt")
+        pos = int(as_positions[-1].item())
+        act_ids = torch.tensor(action_token_ids, device=logits.device)
+        action_logits_batch.append(logits[i, pos, act_ids])
+
+    action_logits = torch.stack(action_logits_batch)  # (B, 8)
+
+    taken_actions = torch.tensor(
+        [item["taken_action_idx"] for item in ppo_items],
+        device=action_logits.device, dtype=torch.long,
+    )
+    log_probs = torch.log_softmax(action_logits.float(), dim=-1)
+    new_log_probs = log_probs.gather(1, taken_actions.unsqueeze(1)).squeeze(1)
+
+    return new_log_probs, action_logits
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +311,13 @@ def train_rl(
     vh_lr: float = float(vh_cfg.get("lr", 1e-3))
     rank_margin: float = vh_cfg.get("rank_margin", 0.1)
     lambda_rank: float = vh_cfg.get("lambda_rank", 1.0)
+
+    # Actor (Qwen PPO) config
+    actor_cfg: dict = config.get("actor", {})
+    actor_enabled: bool = bool(actor_cfg) and not freeze_cfg.get("qwen", True)
+    actor_lr: float = float(actor_cfg.get("lr", 1e-6))
+    entropy_coeff: float = float(actor_cfg.get("entropy_coeff", 0.0))
+    clip_ratio: float = float(actor_cfg.get("clip_ratio", 0.2))
 
     # Config-controlled freeze is advisory — actual tuning is via --llm-tune / --vision-tune
     freeze_qwen: bool = freeze_cfg.get("qwen", True)
@@ -329,7 +458,7 @@ def train_rl(
 
     # --- optimizer ------------------------------------------------------------
     param_groups = [
-        {"params": [p for p in model.parameters() if p.requires_grad], "lr": 1e-8, "name": "qwen"},
+        {"params": [p for p in model.parameters() if p.requires_grad], "lr": actor_lr, "name": "qwen"},
         {"params": state_proj.parameters(), "lr": pred_lr, "name": "state_proj"},
         {"params": value_head.parameters(), "lr": vh_lr, "name": "value_head"},
         {"params": wm_predictor.parameters(), "lr": pred_lr, "name": "wm_predictor"},
@@ -363,6 +492,7 @@ def train_rl(
                 "wm_mse", "value_loss", "total_loss",
                 "num_rollouts", "num_transitions", "success_rate",
                 "val_success_rate", "val_avg_reward", "val_avg_steps",
+                "actor_loss", "entropy", "clip_fraction", "mean_advantage",
             ])
 
     # --- main loop ------------------------------------------------------------
@@ -428,7 +558,52 @@ def train_rl(
             lambda_rank=lambda_rank,
         )
 
-        total_loss = pred_loss + val_loss
+        # --- PPO actor loss (Qwen update) ---
+        actor_metrics: dict[str, float] = {}
+        if actor_enabled:
+            from nimloth.training.rl.loss import compute_actor_loss, compute_action_entropy
+
+            # advantages from value head
+            with torch.no_grad():
+                all_values = value_head(wm_state).float()
+                chosen_values = all_values.gather(1, actions.unsqueeze(1)).squeeze(1)
+            advantages = (value_targets.to(device=chosen_values.device, dtype=chosen_values.dtype)
+                          - chosen_values.detach())
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+            # Build PPO items
+            ppo_items = []
+            for i in range(len(batch)):
+                b = batch[i]
+                ppo_items.append({
+                    "image_path": b["image_path"],
+                    "nav_instruction": b["nav_instruction"],
+                    "action_history_names": b["action_history_names"],
+                    "taken_action_idx": int(b["action_index"].item()),
+                })
+
+            # Qwen forward with gradients
+            new_log_probs, action_logits = compute_new_log_probs_for_batch(
+                ppo_items, model, processor, token_id_map, device,
+            )
+            old_log_probs = torch.tensor(
+                [b["old_log_prob"] for b in batch],
+                device=new_log_probs.device, dtype=new_log_probs.dtype,
+            )
+
+            actor_loss, actor_metrics = compute_actor_loss(
+                new_log_probs=new_log_probs,
+                old_log_probs=old_log_probs,
+                advantages=advantages.to(device=new_log_probs.device, dtype=new_log_probs.dtype),
+                clip_ratio=clip_ratio,
+            )
+            entropy = compute_action_entropy(action_logits)
+            total_loss = pred_loss + val_loss + actor_loss - entropy_coeff * entropy
+            actor_metrics["entropy"] = float(entropy.detach().item())
+            actor_metrics["mean_advantage"] = float(advantages.mean().item())
+        else:
+            total_loss = pred_loss + val_loss
+
         optimizer.zero_grad(set_to_none=True)
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(
@@ -450,6 +625,8 @@ def train_rl(
                 sum(1 for t in trajectories if t.success) / max(1, len(trajectories))
             ),
         }
+        iter_metrics.update({k: v for k, v in actor_metrics.items() if k != "actor_loss"})
+        iter_metrics["actor_loss"] = float(actor_metrics.get("actor_loss", 0.0))
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
@@ -495,6 +672,10 @@ def train_rl(
                     iter_metrics.get("val_success_rate", ""),
                     iter_metrics.get("val_avg_reward", ""),
                     iter_metrics.get("val_avg_steps", ""),
+                    iter_metrics.get("actor_loss", ""),
+                    iter_metrics.get("entropy", ""),
+                    iter_metrics.get("clip_fraction", ""),
+                    iter_metrics.get("mean_advantage", ""),
                 ])
             elapsed = time.time() - iter_start
             print(json.dumps({

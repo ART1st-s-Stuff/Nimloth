@@ -9,8 +9,14 @@ qwen:
 
 # --- Freeze strategy ---
 freeze:
-  qwen: true
+  qwen: false     # Qwen gets PPO updates
   state_proj: true
+
+# --- Actor (Qwen PPO) ---
+actor:
+  lr: 1e-6             # 2 orders of magnitude below predictor LR
+  entropy_coeff: 0.01  # 10× VAGEN default, counteracts current moveahead bias
+  clip_ratio: 0.2
 
 # --- Predictor (warm-start from SFT2 best/wm_predictor/) ---
 predictor:

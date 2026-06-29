@@ -28,6 +28,12 @@ class RolloutTrajectory:
     """image_paths[t] = observation *before* taking action t."""
     action_indices: list[int] = field(default_factory=list)
     """action_indices[t] = action taken at step t (0..7)."""
+    action_names: list[str] = field(default_factory=list)
+    """action_names[t] = VAGEN text name of action at step t."""
+    action_log_probs: list[list[float]] = field(default_factory=list)
+    """action_log_probs[t] = [log_prob(a0), ..., log_prob(a7)] at step t (log-softmax)."""
+    nav_instruction: str = ""
+    """Navigation instruction from env server."""
     success: bool = False
     reward: float = 0.0
     split: str = "train"
@@ -48,6 +54,9 @@ class RolloutTrajectory:
             "messages": self.messages,
             "image_paths": self.image_paths,
             "action_indices": self.action_indices,
+            "action_names": self.action_names,
+            "action_log_probs": self.action_log_probs,
+            "nav_instruction": self.nav_instruction,
         }
 
     @classmethod
@@ -56,6 +65,9 @@ class RolloutTrajectory:
             record_id=str(record.get("id", "")),
             image_paths=list(record.get("image_paths", [])),
             action_indices=list(record.get("action_indices", [])),
+            action_names=list(record.get("action_names", [])),
+            action_log_probs=list(record.get("action_log_probs", [])),
+            nav_instruction=str(record.get("nav_instruction", "")),
             success=bool(record.get("success", False)),
             reward=float(record.get("reward", 0.0)),
             split=str(record.get("split", "train")),
@@ -291,7 +303,7 @@ class EnvRolloutCollector:
 
                 # --- qwen action selection ---
                 try:
-                    action_name, action_idx = _select_action_nimloth(
+                    action_name, action_idx, log_probs_list = _select_action_nimloth(
                         self._model, self._processor, img,
                         nav_instruction, action_names,
                     )
@@ -300,7 +312,7 @@ class EnvRolloutCollector:
                 except Exception:
                     import traceback
                     traceback.print_exc()
-                    action_name, action_idx = "moveahead", 0
+                    action_name, action_idx, log_probs_list = "moveahead", 0, [0.0] * 8
 
                 # --- env step ---
                 try:
@@ -314,6 +326,10 @@ class EnvRolloutCollector:
 
                 action_names.append(action_name)
                 action_indices.append(action_idx)
+                # Lazy init list for log_probs
+                if not hasattr(self, '_ep_log_probs'):
+                    self._ep_log_probs: list[list[float]] = []
+                self._ep_log_probs.append(log_probs_list)
 
                 if done:
                     break
@@ -341,16 +357,21 @@ class EnvRolloutCollector:
             except Exception:
                 pass
 
+            ep_log_probs = list(getattr(self, '_ep_log_probs', []))
             messages = _build_vagen_messages(nav_instruction, len(action_names), action_names)
             trajectories.append(RolloutTrajectory(
                 record_id=ep_id,
                 image_paths=image_paths,
                 action_indices=action_indices,
+                action_names=list(action_names),
+                action_log_probs=ep_log_probs,
+                nav_instruction=nav_instruction,
                 success=success,
                 reward=reward,
                 split="train",
                 messages=messages,
             ))
+            self._ep_log_probs = []
 
             elapsed = time.time() - t0
             print(json.dumps({
@@ -429,7 +450,7 @@ def _obs_to_pil(obs) -> "Image.Image":
 
 
 def _select_action_nimloth(model, processor, image, nav_instruction: str,
-                           action_history: list[str]) -> tuple[str, int]:
+                           action_history: list[str]) -> tuple[str, int, list[float]]:
     """Qwen greedy action selection using Nimloth action tokens.
 
     The SFT2 model was trained with ``<|action_(0)|>`` … ``<|action_(7)|>``
@@ -437,7 +458,8 @@ def _select_action_nimloth(model, processor, image, nav_instruction: str,
     ``<|action_start|>``), run Qwen forward, and extract the logits at
     ``<|action_start|>`` to pick the most likely action token index.
 
-    Returns (action_name, action_index).
+    Returns (action_name, action_index, action_log_probs) where
+    action_log_probs is the log-softmax over all 8 actions.
     """
     import torch
     from nimloth.latent.extraction import (
@@ -498,9 +520,10 @@ def _select_action_nimloth(model, processor, image, nav_instruction: str,
     action_start_pos = int(as_positions[-1].item())  # use the last one
     logits = outputs.logits[0, action_start_pos, :]
     action_logits = logits[action_token_ids]
+    action_log_probs = torch.log_softmax(action_logits.float(), dim=-1)
     best_idx = int(action_logits.argmax().item())
     best_name = ACTION_NAMES[best_idx]
-    return best_name, best_idx
+    return best_name, best_idx, action_log_probs.cpu().tolist()
 
 
 def _build_vagen_messages(nav_instruction: str, num_steps: int,
