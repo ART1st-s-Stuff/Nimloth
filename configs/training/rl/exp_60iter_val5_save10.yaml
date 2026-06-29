@@ -38,6 +38,8 @@ rl:
   max_steps_per_episode: 20
   gamma: 0.99
   batch_size: 32
+  temperature: 0.7   # action sampling temperature
+  top_p: 0.95         # nucleus sampling
 
 # --- Validation ---
 validation:

@@ -166,14 +166,19 @@ def main(argv: list[str] | None = None) -> int:
     # --- Rollout collector ---------------------------------------------------
     if args.env_url:
         from nimloth.training.rl.rollout import EnvRolloutCollector
+        rl_cfg = config.get("rl", {})
         collector = EnvRolloutCollector(
             qwen_model=None,  # filled in by trainer after model loading
             processor=None,   # filled in by trainer
             env_url=args.env_url,
             device=None,      # filled in by trainer
+            temperature=float(rl_cfg.get("temperature", 1.0)),
+            top_p=float(rl_cfg.get("top_p", 1.0)),
         )
         if is_main():
-            print(json.dumps({"rollout_mode": "env", "env_url": args.env_url}))
+            print(json.dumps({"rollout_mode": "env", "env_url": args.env_url,
+                              "temperature": rl_cfg.get("temperature", 1.0),
+                              "top_p": rl_cfg.get("top_p", 1.0)}))
     elif args.use_jsonl_rollout or (args.vagen_config is None):
         collector = JSONLRolloutCollector()
         if is_main():

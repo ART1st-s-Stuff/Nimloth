@@ -166,6 +166,8 @@ class EnvRolloutCollector:
         env_url: str,
         device,
         seed_offset: int = 0,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
     ) -> None:
         self._model = qwen_model
         self._processor = processor
@@ -173,6 +175,8 @@ class EnvRolloutCollector:
         self._device = device
         self._ep_counter = seed_offset
         self._client = None  # lazy init
+        self._temperature = temperature
+        self._top_p = top_p
 
     @property
     def client(self):
@@ -307,6 +311,8 @@ class EnvRolloutCollector:
                     action_name, action_idx, log_probs_list = _select_action_nimloth(
                         self._model, self._processor, img,
                         nav_instruction, action_names,
+                        temperature=self._temperature,
+                        top_p=self._top_p,
                     )
                     print(json.dumps({"rl_ep": ep_i, "action_selected": action_name,
                                       "action_idx": action_idx}), flush=True)
@@ -459,13 +465,15 @@ def _obs_to_pil(obs) -> "Image.Image":
 
 
 def _select_action_nimloth(model, processor, image, nav_instruction: str,
-                           action_history: list[str]) -> tuple[str, int, list[float]]:
-    """Qwen greedy action selection using Nimloth action tokens.
+                           action_history: list[str],
+                           temperature: float = 1.0,
+                           top_p: float = 1.0) -> tuple[str, int, list[float]]:
+    """Sampled action selection using Nimloth action tokens.
 
     The SFT2 model was trained with ``<|action_(0)|>`` … ``<|action_(7)|>``
     special tokens.  We build a Nimloth-format prompt (ending with
     ``<|action_start|>``), run Qwen forward, and extract the logits at
-    ``<|action_start|>`` to pick the most likely action token index.
+    ``<|action_start|>``.  Sampling with temperature + nucleus (top-p).
 
     Returns (action_name, action_index, action_log_probs) where
     action_log_probs is the log-softmax over all 8 actions.
@@ -530,9 +538,26 @@ def _select_action_nimloth(model, processor, image, nav_instruction: str,
     logits = outputs.logits[0, action_start_pos, :]
     action_logits = logits[action_token_ids]
     action_log_probs = torch.log_softmax(action_logits.float(), dim=-1)
-    best_idx = int(action_logits.argmax().item())
-    best_name = ACTION_NAMES[best_idx]
-    return best_name, best_idx, action_log_probs.cpu().tolist()
+
+    # Sample with temperature
+    if temperature > 0:
+        scaled_logits = action_logits.float() / temperature
+        if top_p < 1.0:
+            # Nucleus (top-p) sampling
+            sorted_logits, sorted_indices = torch.sort(scaled_logits, descending=True)
+            cum_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+            keep = cum_probs <= top_p
+            keep[0] = True  # Always keep top token
+            keep_mask = torch.zeros_like(scaled_logits, dtype=torch.bool)
+            keep_mask[sorted_indices[keep]] = True
+            scaled_logits[~keep_mask] = float("-inf")
+        probs = torch.softmax(scaled_logits, dim=-1)
+        chosen_idx = int(torch.multinomial(probs, 1).item())
+    else:
+        chosen_idx = int(action_logits.argmax().item())
+
+    best_name = ACTION_NAMES[chosen_idx]
+    return best_name, chosen_idx, action_log_probs.cpu().tolist()
 
 
 def _build_vagen_messages(nav_instruction: str, num_steps: int,
