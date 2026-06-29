@@ -54,6 +54,7 @@ exec python3 -m nimloth.training.rl.cli \
     --model "${SFT2_MODEL}" \
     --llm-tune lora \
     --vision-tune freeze \
+    --gradient-checkpointing \
     --wm-checkpoint "${SFT2_CHECKPOINT}/wm_predictor" \
     --state-proj-checkpoint "${SFT2_CHECKPOINT}/state_proj.pt" \
     --value-head-checkpoint "${SFT2_CHECKPOINT}/value_head" \
