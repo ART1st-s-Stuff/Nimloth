@@ -280,9 +280,10 @@ class EnvRolloutCollector:
 
             action_names: list[str] = []
             action_indices: list[int] = []
+            action_log_probs_list: list[list[float]] = []
             image_paths: list[str] = []
             done = False
-            reward = 0.0
+            step_rewards: list[float] = []
             success = False
 
             for step in range(max_steps_per_episode):
@@ -324,7 +325,8 @@ class EnvRolloutCollector:
                 try:
                     step_results = self._client.step_batch({ep_id: vagen_response})
                     obs, r, done, info = step_results[ep_id]
-                    print(json.dumps({"rl_ep": ep_i, "env_step_done": True, "done": done}), flush=True)
+                    step_rewards.append(float(r))
+                    print(json.dumps({"rl_ep": ep_i, "env_step_done": True, "done": done, "step_reward": r}), flush=True)
                 except Exception:
                     import traceback
                     traceback.print_exc()
@@ -349,13 +351,9 @@ class EnvRolloutCollector:
             except Exception:
                 pass
 
-            # --- compute reward ---
-            try:
-                reward = float(self._client.compute_reward(ep_id))
-                success = reward >= 10.0
-            except Exception:
-                reward = 0.0
-                success = False
+            # --- compute success from per-step rewards ---
+            reward = sum(step_rewards)
+            success = any(r >= 10.0 for r in step_rewards)
 
             # --- close env ---
             try:

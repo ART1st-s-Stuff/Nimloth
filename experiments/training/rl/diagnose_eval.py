@@ -402,15 +402,9 @@ def main(argv: list[str] | None = None) -> int:
             if done:
                 break
 
-        # Compute final VAGEN reward (terminal success check)
-        try:
-            ep_reward = float(client.compute_reward(ep_id))
-            success = ep_reward >= 10.0
-        except Exception:
-            import traceback
-            traceback.print_exc()
-            ep_reward = sum(step_rewards) if step_rewards else 0.0
-            success = False
+        # Compute final reward and success from step rewards
+        ep_reward = sum(step_rewards) if step_rewards else 0.0
+        success = any(r >= 10.0 for r in step_rewards)  # 10 = success reward in VAGEN
 
         total_success += int(success)
         print(json.dumps({"episode": ep, "steps": len(action_history),
