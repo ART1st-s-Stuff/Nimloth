@@ -341,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         obs, info = results[ep_id]
 
         action_history: list[str] = []
-        ep_reward = 0.0
+        step_rewards: list[float] = []
         success = False
 
         for step in range(args.max_steps):
@@ -359,30 +359,34 @@ def main(argv: list[str] | None = None) -> int:
             action_idx = diag["action_idx"]
 
             # Step env
+            step_ok = False
             try:
                 step_results = client.step_batch({ep_id: action_name})
                 obs, r, done, info = step_results[ep_id]
+                step_rewards.append(float(r))
+                step_ok = True
+                print(json.dumps({"rl_ep": ep, "step": step, "action": action_name,
+                                  "reward": r, "done": done, "obs_keys": list(obs.keys()) if isinstance(obs, dict) else str(type(obs))}), flush=True)
             except Exception:
+                import traceback
+                traceback.print_exc()
+                print(json.dumps({"rl_ep": ep, "step": step, "error": "step_batch_failed"}), flush=True)
                 break
 
             # Build table row
+            vm_outputs = None
+            if value_head is not None and diag["value_head_outputs"] is not None:
+                vm_outputs = {ACTION_NAMES[i]: round(float(diag["value_head_outputs"][i]), 3)
+                              for i in range(8)}
             row = [
                 ep, step,
                 diag["prompt"],
                 json.dumps(diag["action_logits"], indent=2),
                 f"{action_name} (idx={action_idx})",
                 wandb.Image(str(img_path)),
-                "",  # reward filled at end
+                float(r),  # per-step reward from env
+                json.dumps(vm_outputs) if vm_outputs is not None else "N/A",
             ]
-            if diag["wm_predicted_next"] is not None:
-                row.append(json.dumps({
-                    "wm_state": diag["wm_state"],
-                    "wm_pred_next": diag["wm_predicted_next"],
-                    "value_head": {ACTION_NAMES[i]: round(diag["value_head_outputs"][i], 3)
-                                   for i in range(8)},
-                }))
-            else:
-                row.append("N/A")
             table_rows.append(row)
 
             action_history.append(action_name)
@@ -390,21 +394,20 @@ def main(argv: list[str] | None = None) -> int:
             if done:
                 break
 
-        # Compute final reward
+        # Compute final VAGEN reward (terminal success check)
         try:
             ep_reward = float(client.compute_reward(ep_id))
             success = ep_reward >= 10.0
         except Exception:
-            ep_reward = 0.0
+            import traceback
+            traceback.print_exc()
+            ep_reward = sum(step_rewards) if step_rewards else 0.0
             success = False
-
-        # Fill reward in all rows for this episode
-        for r in table_rows[-len(action_history):]:
-            r[6] = f"{ep_reward} (success={success})"
 
         total_success += int(success)
         print(json.dumps({"episode": ep, "steps": len(action_history),
-                          "success": success, "reward": ep_reward}), flush=True)
+                          "success": success, "terminal_reward": ep_reward,
+                          "step_rewards": step_rewards}), flush=True)
 
         try:
             client.close_batch([ep_id])
@@ -413,9 +416,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- Build and upload table ---
     columns = ["episode", "step", "prompt", "action_logits", "action_chosen",
-               "image", "reward"]
-    if args.wm_checkpoint:
-        columns.append("wm_and_value_outputs")
+               "image", "step_reward", "value_head_outputs"]
 
     table = wandb.Table(columns=columns, data=table_rows)
     wandb.log({
