@@ -37,7 +37,7 @@ messages = [
         {"type": "text", "text": "<think>What should I do?</think><|latent_state|><|action_start|>"},
     ]},
 ]
-text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 enc = processor(text=[text], images=[img], return_tensors="pt")
 input_ids = enc["input_ids"][0]
 last_20 = input_ids[-20:].tolist()
@@ -88,7 +88,7 @@ messages2 = [
         {"type": "text", "text": "<think>Next action.</think><|latent_state|><|action_start|>"},
     ]},
 ]
-text2 = processor.apply_chat_template(messages2, tokenize=False, add_generation_prompt=False)
+text2 = processor.apply_chat_template(messages2, tokenize=False, add_generation_prompt=True)
 enc2 = processor(text=[text2], images=[img_past, img2], return_tensors="pt")
 
 with torch.no_grad():

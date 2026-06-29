@@ -482,17 +482,19 @@ def _select_action_nimloth(model, processor, image, nav_instruction: str,
         {"type": "text", "text": "<think>What should I do next?</think><|latent_state|><|action_start|>"},
     ]})
 
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+    # Use add_generation_prompt=True so the template ends with the assistant
+    # header and <|action_start|> is the LAST token (no trailing <|im_end|>).
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = processor(text=[text], images=[image] * num_images, return_tensors="pt", padding=True)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
         outputs = model(**inputs, output_hidden_states=True, return_dict=True)
 
+    # Logits at position P predict token P+1.
+    # <|action_start|> is the last token; its logits predict the next token
+    # (one of <|action_(0)|> … <|action_(7)|>).
     logits = outputs.logits[0, -1, :]
-    # Extract action prior at the <|action_start|> position
-    # The <|action_start|> token is at position -1 (last token), and its logits
-    # predict the next token. Score only the 8 action tokens.
     action_logits = logits[action_token_ids]
     best_idx = int(action_logits.argmax().item())
     best_name = ACTION_NAMES[best_idx]
