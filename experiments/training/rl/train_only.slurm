@@ -28,6 +28,10 @@ TRAIN_LOG=${TRAIN_OUT}/rl_train.log
 
 mkdir -p "${TRAIN_OUT}"
 
+# Wandb credentials
+source /project/peilab/atst/flower/.env 2>/dev/null || true
+export WANDB_DIR="${REPO}/.cache/wandb"
+
 export PATH=/project/peilab/atst/nimloth/.venv-vagen-main/bin:$PATH
 export PYTHONPATH=${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/le-wm:${REPO}/external/VAGEN/verl:${PYTHONPATH:-}
 export TOKENIZERS_PARALLELISM=true
@@ -48,7 +52,7 @@ cd "${REPO}"
 exec python3 -m nimloth.training.rl.cli \
     --config configs/training/rl/exp_60iter_val5_save10.yaml \
     --model "${SFT2_MODEL}" \
-    --llm-tune freeze \
+    --llm-tune lora \
     --vision-tune freeze \
     --wm-checkpoint "${SFT2_CHECKPOINT}/wm_predictor" \
     --state-proj-checkpoint "${SFT2_CHECKPOINT}/state_proj.pt" \

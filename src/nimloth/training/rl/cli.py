@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -192,6 +193,17 @@ def main(argv: list[str] | None = None) -> int:
             "status": "cli_ready",
             "note": "Qwen model loading handled inside train_rl() via configure_qwen_tuning",
         }))
+        # Init wandb if API key is available
+        if os.environ.get("WANDB_API_KEY"):
+            import wandb
+            wandb.init(
+                project=os.environ.get("WANDB_PROJECT", "nimloth"),
+                entity=os.environ.get("WANDB_ENTITY"),
+                name=os.environ.get("WANDB_RUN_NAME") or args.experiment_name,
+                config=config,
+                dir=os.environ.get("WANDB_DIR"),
+            )
+            print(json.dumps({"wandb": "initialized"}))
 
     return train_rl(
         args=args,
