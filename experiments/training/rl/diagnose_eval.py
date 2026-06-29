@@ -329,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
                 "render_mode": "vision", "prompt_format": "wm",
                 "use_state_reward": False, "eval_set": eval_set,
                 "max_actions_per_step": 1, "max_action_penalty": -0.1,
-                "format_reward": 0.5, "success_threshold": 1.5,
+                "format_reward": 0.0, "success_threshold": 1.5,
                 "step_length": 0.5, "grounding_reward_weight": 0.5,
                 "worldmodeling_reward_weight": 0.5, "gpu_device": 0,
             },
@@ -368,13 +368,14 @@ def main(argv: list[str] | None = None) -> int:
             )
 
             # Step env
+            action_ok = True
             try:
                 step_results = client.step_batch({ep_id: vagen_response})
                 obs, r, done, info = step_results[ep_id]
                 step_rewards.append(float(r))
-                step_ok = True
+                action_ok = info.get("last_action_success", True) if isinstance(info, dict) else True
                 print(json.dumps({"rl_ep": ep, "step": step, "action": action_name,
-                                  "reward": r, "done": done, "obs_keys": list(obs.keys()) if isinstance(obs, dict) else str(type(obs))}), flush=True)
+                                  "reward": r, "done": done, "action_ok": action_ok}), flush=True)
             except Exception:
                 import traceback
                 traceback.print_exc()
@@ -393,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{action_name} (idx={action_idx})",
                 wandb.Image(str(img_path)),
                 float(r),  # per-step reward from env
+                str(action_ok),  # whether AI2-THOR executed the action
                 json.dumps(vm_outputs) if vm_outputs is not None else "N/A",
             ]
             table_rows.append(row)
@@ -418,7 +420,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- Build and upload table ---
     columns = ["episode", "step", "prompt", "action_logits", "action_chosen",
-               "image", "step_reward", "value_head_outputs"]
+               "image", "step_reward", "action_success", "value_head_outputs"]
 
     table = wandb.Table(columns=columns, data=table_rows)
     wandb.log({

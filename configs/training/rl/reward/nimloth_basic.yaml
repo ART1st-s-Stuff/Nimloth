@@ -1,0 +1,10 @@
+# Nimloth RL reward config
+# We do NOT reuse VAGEN's reward strategy. Instead:
+#   - No format reward (we control the response format)
+#   - Penalty for failed actions (agent hits wall / invalid move)
+#   - Success reward for reaching the goal
+
+format_reward: 0.0             # No reward for correct format
+failure_penalty: -0.1          # Penalty when action fails to execute
+success_reward: 10.0           # Reward for reaching the goal
+success_threshold: 1.5         # Distance threshold for success (meters)

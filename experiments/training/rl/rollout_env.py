@@ -270,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
                 "eval_set": args.eval_set,
                 "max_actions_per_step": 1,
                 "max_action_penalty": -0.1,
-                "format_reward": 0.5,
+                "format_reward": 0.0,  # Nimloth: no format reward
                 "success_threshold": 1.5,
                 "step_length": 0.5,
                 "grounding_reward_weight": 0.5,

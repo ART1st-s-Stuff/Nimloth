@@ -229,7 +229,7 @@ class EnvRolloutCollector:
                     "eval_set": eval_set,
                     "max_actions_per_step": 1,
                     "max_action_penalty": -0.1,
-                    "format_reward": 0.5,
+                    "format_reward": 0.0,  # Nimloth: no format reward (we control the format)
                     "success_threshold": 1.5,
                     "step_length": 0.5,
                     "grounding_reward_weight": 0.5,
@@ -325,8 +325,13 @@ class EnvRolloutCollector:
                 try:
                     step_results = self._client.step_batch({ep_id: vagen_response})
                     obs, r, done, info = step_results[ep_id]
+                    # Apply failure penalty if action didn't execute
+                    action_ok = info.get("last_action_success", True) if isinstance(info, dict) else True
+                    if not action_ok:
+                        r = float(r) - 0.1  # failure_penalty
                     step_rewards.append(float(r))
-                    print(json.dumps({"rl_ep": ep_i, "env_step_done": True, "done": done, "step_reward": r}), flush=True)
+                    print(json.dumps({"rl_ep": ep_i, "env_step_done": True, "done": done,
+                                      "step_reward": r, "action_ok": action_ok}), flush=True)
                 except Exception:
                     import traceback
                     traceback.print_exc()
