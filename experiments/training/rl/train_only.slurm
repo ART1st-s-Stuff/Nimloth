@@ -8,8 +8,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --gres=gpu:1
-#SBATCH --mem=128G
+#SBATCH --gres=gpu:2
+#SBATCH --mem=256G
 ## --- Set ENV_URL before submitting, e.g.:
 ##   ENV_URL=http://10.23.x.x:5000 sbatch experiments/training/rl/train_only.slurm
 
@@ -60,6 +60,6 @@ exec python3 -m nimloth.training.rl.cli \
     --value-head-checkpoint "${SFT2_CHECKPOINT}/value_head" \
     --env-url "${ENV_URL}" \
     --attn-implementation sdpa \
-    --max-pixels 3136 \
+    --max-pixels 784 \
     --output-dir "${TRAIN_OUT}" \
     2>&1 | tee -a "${TRAIN_LOG}"

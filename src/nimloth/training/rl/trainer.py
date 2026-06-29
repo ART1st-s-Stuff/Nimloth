@@ -520,6 +520,8 @@ def train_rl(
         transitions = build_rl_transitions(
             trajectories, model, processor, token_id_map, device, gamma=gamma,
         )
+        # Free GPU memory before PPO forward (Qwen+LoRA+gradients needs extra VRAM)
+        torch.cuda.empty_cache()
         if len(transitions) < batch_size:
             if is_main():
                 print(json.dumps({
