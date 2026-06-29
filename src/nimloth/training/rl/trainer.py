@@ -239,7 +239,7 @@ def compute_new_log_probs_for_batch(
     for i in range(len(ppo_items)):
         enc_i = processor(
             text=[texts[i]], images=all_images[i], padding=True,
-            truncation=True, max_length=2048, return_tensors="pt",
+            return_tensors="pt",
         )
         model_inputs_i = {k: v.to(device) for k, v in enc_i.items()}
         outputs_i = model(**model_inputs_i, output_hidden_states=False, return_dict=True)
