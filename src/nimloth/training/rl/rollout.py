@@ -315,8 +315,14 @@ class EnvRolloutCollector:
                     action_name, action_idx, log_probs_list = "moveahead", 0, [0.0] * 8
 
                 # --- env step ---
+                # Build VAGEN wm-format response so parse_worldmodeling succeeds.
+                vagen_response = (
+                    f"<think><reasoning>Navigating toward target.</reasoning>"
+                    f"<prediction>Moving.</prediction></think>"
+                    f"<answer>{action_name}</answer>"
+                )
                 try:
-                    step_results = self._client.step_batch({ep_id: action_name})
+                    step_results = self._client.step_batch({ep_id: vagen_response})
                     obs, r, done, info = step_results[ep_id]
                     print(json.dumps({"rl_ep": ep_i, "env_step_done": True, "done": done}), flush=True)
                 except Exception:

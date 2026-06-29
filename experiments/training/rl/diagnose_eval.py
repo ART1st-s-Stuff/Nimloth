@@ -358,10 +358,18 @@ def main(argv: list[str] | None = None) -> int:
             action_name = diag["action_name"]
             action_idx = diag["action_idx"]
 
+            # Build VAGEN wm-format response for the env to parse
+            # The env's parse_worldmodeling requires:
+            # <think><reasoning>...</reasoning><prediction>...</prediction></think><answer>action</answer>
+            vagen_response = (
+                f"<think><reasoning>Navigating toward target.</reasoning>"
+                f"<prediction>Moving forward.</prediction></think>"
+                f"<answer>{action_name}</answer>"
+            )
+
             # Step env
-            step_ok = False
             try:
-                step_results = client.step_batch({ep_id: action_name})
+                step_results = client.step_batch({ep_id: vagen_response})
                 obs, r, done, info = step_results[ep_id]
                 step_rewards.append(float(r))
                 step_ok = True

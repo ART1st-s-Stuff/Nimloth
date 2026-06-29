@@ -329,9 +329,14 @@ def main(argv: list[str] | None = None) -> int:
                 action_idx = 0
                 action_name = "moveahead"
 
-            # Step env
+            # Step env (must pass VAGEN wm-format response, not raw action name)
+            vagen_response = (
+                f"<think><reasoning>Navigating.</reasoning>"
+                f"<prediction>Moving.</prediction></think>"
+                f"<answer>{action_name}</answer>"
+            )
             try:
-                step_results = client.step_batch({ep_id: action_name})
+                step_results = client.step_batch({ep_id: vagen_response})
                 obs, reward, done, info = step_results[ep_id]
             except Exception as e:
                 print(json.dumps({"warning": f"env_step_failed", "ep": ep, "step": step,
