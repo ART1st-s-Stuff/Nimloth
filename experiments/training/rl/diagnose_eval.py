@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -273,6 +274,17 @@ def obs_to_pil(obs):
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+
+    # Load wandb credentials from flower's .env (the user's actual wandb account)
+    _env_path = Path("/project/peilab/atst/flower/.env")
+    if _env_path.is_file():
+        with _env_path.open() as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _key, _val = _line.split("=", 1)
+                    if _key.startswith("WANDB") and _key not in os.environ:
+                        os.environ[_key] = _val.strip('"').strip("'")
 
     sys.path.insert(0, "/project/peilab/atst/nimloth-feat-rl/src")
     sys.path.insert(0, "/project/peilab/atst/nimloth-feat-rl/external/VAGEN")
