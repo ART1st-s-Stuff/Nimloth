@@ -15,7 +15,7 @@ freeze:
 # --- Actor (Qwen PPO) ---
 actor:
   lr: 1e-6             # 2 orders of magnitude below predictor LR
-  entropy_coeff: 0.01  # 10× VAGEN default, counteracts current moveahead bias
+  entropy_coeff: 0.05  # baseline value for comparison
   clip_ratio: 0.2
 
 # --- Predictor (warm-start from SFT2 best/wm_predictor/) ---
@@ -44,14 +44,14 @@ rl:
 # --- Validation ---
 validation:
   enabled: true
-  interval: 5               # run val rollout every 5 iterations
+  interval: 1               # run val rollout every iteration
   envs: 16                  # 16 val episodes
 
 # --- Training ---
 training:
   seed: 42
   log_interval: 1           # log every iteration
-  save_interval: 10         # checkpoint every 10 iterations
+  save_interval: 5          # checkpoint every 5 iterations
 
 # --- VAGEN dataset config (matches baseline) ---
 dataset:
