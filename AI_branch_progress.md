@@ -767,3 +767,12 @@
 - 合并冲突处理：保留当前 dev 的 `.memory/memories.jsonl` 与 `AI_branch_progress.md` 主体，避免覆盖当前进度/手工合并 memory；`external/VAGEN` 指向 feature 分支 pointer `93c1124aeaa7850098f46f2b708ee224ba894861`；`qwen_tuning.py` 同时保留 torchao workaround 与 RL 的空 `modules_to_save`。
 - 验证：`python -m py_compile` 覆盖新增 RL/environment/agent/reconstruction/wm/eval 源码与相关测试文件通过；`bash -n` 覆盖新增/修改 shell/slurm 脚本通过；pytest 未通过环境验证（系统 Python 无 pytest，`.venv` torch import 缺 `libstdc++.so.6`）。
 - 归档进度文件：`ai_tasks/ai_progress/archives/2026-06-30/merge_feat_reconstruct_rl.md`。
+
+### 2026-06-30 review follow-up for fix/fsdp
+
+- 主 Agent review 后追加修复：
+  - `JSONLRolloutCollector` 声明支持 `*.jsonl.gz`，现已实际支持 gzip 读取，并新增测试覆盖。
+  - RL CLI 支持 config `rollout.jsonl_sources` / `rl.jsonl_sources`，并在 JSONL 模式缺少 source 时提前报错。
+  - 新增 `--experiment-name`，避免启用 wandb 时引用不存在的 `args.experiment_name`。
+  - distributed JSONL/FSDP 模式下，从 rank0 广播非 FSDP 小模块 `state_proj`、`wm_predictor`、`value_head` 初始 state，配合同步 JSONL 数据和确定性 batch，避免本地副本初始参数分叉。
+- 验证：`python -m py_compile src/nimloth/training/rl/*.py tests/training/rl/test_rollout_jsonl.py experiments/training/rl/rollout_env.py` 通过；`bash -n experiments/training/rl/run_inside_allocation.sh experiments/training/rl/*.slurm` 通过；pytest 仍受本地环境限制，系统 Python 无 pytest，复用 dev `.venv` 时 torch import 缺 `libstdc++.so.6`。
