@@ -55,34 +55,49 @@ fi
     echo "Output: ${TRAIN_OUT}"
 } | tee "${TRAIN_LOG}"
 
-# --- Start env server on GPU 0 ---
-echo "=== Starting env server ===" | tee -a "${TRAIN_LOG}"
-
-cd "${REPO}/external/VAGEN"
-
-CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 python3 -m vagen.server.server \
-    server.host=0.0.0.0 \
-    server.port=${ENV_PORT} \
-    use_state_reward=False \
-    navigation.devices=[0] \
-    navigation.max_workers=4 \
-    > "${ENV_LOG}" 2>&1 &
-
-ENV_PID=$!
-echo "Env server PID: ${ENV_PID}" | tee -a "${TRAIN_LOG}"
-
-ENV_URL="http://127.0.0.1:${ENV_PORT}"
-for i in $(seq 1 60); do
-    if curl -s "${ENV_URL}/health" > /dev/null 2>&1; then
-        echo "Env server ready after ${i}s" | tee -a "${TRAIN_LOG}"
-        break
+# --- Env server ---
+if [[ -n "${EXTERNAL_ENV_URL:-}" ]]; then
+    echo "=== Using external env: ${EXTERNAL_ENV_URL} ===" | tee -a "${TRAIN_LOG}"
+    ENV_URL="${EXTERNAL_ENV_URL}"
+    for i in $(seq 1 30); do
+        if curl -s "${ENV_URL}/health" > /dev/null 2>&1; then
+            echo "External env ready after ${i}s" | tee -a "${TRAIN_LOG}"
+            break
+        fi
+        sleep 2
+    done
+    if ! curl -s "${ENV_URL}/health" > /dev/null 2>&1; then
+        echo "FATAL: external env unreachable: ${ENV_URL}" | tee -a "${TRAIN_LOG}"
+        exit 1
     fi
-    sleep 1
-done
-if ! curl -s "${ENV_URL}/health" > /dev/null 2>&1; then
-    echo "FATAL: env server failed to start" | tee -a "${TRAIN_LOG}"
-    kill ${ENV_PID} 2>/dev/null || true
-    exit 1
+else
+    echo "=== Starting env server ===" | tee -a "${TRAIN_LOG}"
+    cd "${REPO}/external/VAGEN"
+
+    CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 python3 -m vagen.server.server \
+        server.host=0.0.0.0 \
+        server.port=${ENV_PORT} \
+        use_state_reward=False \
+        navigation.devices=[0] \
+        navigation.max_workers=4 \
+        > "${ENV_LOG}" 2>&1 &
+
+    ENV_PID=$!
+    echo "Env server PID: ${ENV_PID}" | tee -a "${TRAIN_LOG}"
+
+    ENV_URL="http://127.0.0.1:${ENV_PORT}"
+    for i in $(seq 1 60); do
+        if curl -s "${ENV_URL}/health" > /dev/null 2>&1; then
+            echo "Env server ready after ${i}s" | tee -a "${TRAIN_LOG}"
+            break
+        fi
+        sleep 1
+    done
+    if ! curl -s "${ENV_URL}/health" > /dev/null 2>&1; then
+        echo "FATAL: env server failed to start" | tee -a "${TRAIN_LOG}"
+        kill ${ENV_PID} 2>/dev/null || true
+        exit 1
+    fi
 fi
 
 # --- RL Training on GPUs 1-2 (torchrun+FSDP) ---
@@ -111,8 +126,10 @@ CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7 /project/peilab/atst/nimloth/.venv-vagen-main
 
 TRAIN_EXIT=$?
 
-kill ${ENV_PID} 2>/dev/null || true
-wait ${ENV_PID} 2>/dev/null || true
+if [[ -n "${ENV_PID:-}" ]]; then
+    kill ${ENV_PID} 2>/dev/null || true
+    wait ${ENV_PID} 2>/dev/null || true
+fi
 
 echo "=== RL training finished exit=${TRAIN_EXIT} at $(date) ===" | tee -a "${TRAIN_LOG}"
 exit ${TRAIN_EXIT}
