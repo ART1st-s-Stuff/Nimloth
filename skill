@@ -13,11 +13,12 @@ Usage:
 
 AI-allowed memory commands:
   ./skill memory add <title> <content>
-  ./skill memory set <id> <field=value> ...
-  ./skill memory search <keyword-regex> [filters]
-  ./skill memory get <id>
-  ./skill memory upvote <id>
-  ./skill memory human-verify <id>
+  ./skill memory add --store local <title> <content>
+  ./skill memory set --store repo|local <id> <field=value> ...
+  ./skill memory search --store all|repo|local <keyword-regex> [filters]
+  ./skill memory get --store repo|local <id>
+  ./skill memory upvote --store repo|local <id>
+  ./skill memory human-verify --store repo|local <id>
 
 Human-only commands:
   ./skill human memory-approve

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-24
+
+- **AGENTS.md**: 新增「语言规范」规则（语言清晰、一致性、说人话）
+- **Rollout 配置（VAGEN + verl）**: `limit_mm_per_prompt` 提升至 20（支持导航多步图像），启用 `max_response_per_turn=2048`（防止无效长生成拖慢验证）
+- **`run_legacy_reproduction.sh`**: 新增 `limit_mm_per_prompt=20` 和 `max_response_per_turn=2048` 参数
+- **进度文档**: `ai_tasks/ai_progress/2026-06-23_legacy_retry13.md` — legacy retry14 实验状态记录
+- **external/VAGEN**: 更新子模块指针（含 verl 子模块 rollout 配置改动）
+- **`.gitignore`**: 忽略 `external/VAGEN.qwen-bug-repro/` worktree 产物
+
 ## 2026-06-18
 
 - **LeWM 清理**：`wm/_vendor_lewm.py` 最小 vendoring；移除 pixel JEPA（`wm/model.py`、`pretrain_lewm_navigation.py`）；`LatentWMPredictor` 在 `wm/predictor.py`；不支持旧 `model.pt` warm-start

@@ -5,7 +5,7 @@
 - `AI_branch_progress.md`：当前阶段/分支的权威进展、计划、失效记忆和待确认事项。
 - `ai_tasks/ai_progress/`：长任务或系统性任务的实时进度记录。
 - `AI_issues.md`：需要人类确认、批准或决策的问题。
-- memory SKILL：长期记忆入口。使用 `.agents/skills/memory/SKILL.md` 中定义的协议，通过 `./skill memory ...` 创建、搜索、检查、修正、upvote 记忆；禁止手动编辑 `.memory/memories.jsonl`。Memory 只保存从项目工作中提取的短小有效经验，不复制规则文档、进度文件、实验说明或源码文档。
+- memory SKILL：长期记忆入口。使用 `.agents/skills/memory/SKILL.md` 中定义的协议，通过 `./skill memory ...` 创建、搜索、检查、修正、upvote 记忆；repo 记忆写入 `.memory/memories.jsonl`，本地/环境相关记忆写入 `.local/memory/memories.jsonl`；都禁止手动编辑。Memory 只保存从项目工作中提取的短小有效经验，不复制规则文档、进度文件、实验说明或源码文档。
 
 ## 何时更新
 
@@ -17,7 +17,7 @@
 - 提出需要人类决策的问题；
 - 人类明确要求“更新进度/记忆”。
 
-任务过程中，AI 可以随时通过 memory SKILL 查询或更新记忆。创建或依赖记忆时必须遵守 `.agents/skills/memory/SKILL.md`：AI 创建的 memory 默认为 `pending-human-verification`；依赖既有 memory 前必须 `get` 并检查 evidence 指向的文件段；只有确认该 memory 对当前任务有帮助后才可以 upvote。
+任务过程中，AI 可以随时通过 memory SKILL 查询或更新记忆。创建或依赖记忆时必须遵守 `.agents/skills/memory/SKILL.md`：AI 创建的 memory 默认为 `pending-human-verification`；依赖既有 memory 前必须 `get` 并检查 evidence 指向的文件段；只有确认该 memory 对当前任务有帮助后才可以 upvote。repo 记忆默认面向环境无关经验；本地记忆默认面向当前服务器/工作区相关经验。
 
 Memory 的使用规范：
 

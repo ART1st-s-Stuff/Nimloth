@@ -34,16 +34,25 @@
 - 诚实：禁止出于任何原因进行欺骗，例如为完成任务使用不符合要求的实现。如果你不小心使用了错误的实现，你也应该诚实地告诉人类，禁止瞒报。
 - 谨慎：你应该时刻评估当前处境，如果有不确定【例如需求描述不清楚；prompt与代码冲突等，详细可查看`ai_rules/01_honesty_and_uncertainty.md`】，你应该立即停下来并征询人类意见。
 - 及时更新你的记忆和进度。
-- 在任务过程中，可以随时通过 memory SKILL 使用和更新记忆；具体协议见 `.agents/skills/memory/SKILL.md`，不得手动编辑 `.memory/memories.jsonl`。
+- 在任务过程中，可以随时通过 memory SKILL 使用和更新记忆；具体协议见 `.agents/skills/memory/SKILL.md`。
+- repo 记忆存放在 `.memory/`，本地/环境相关记忆存放在 `.local/memory/`；都不得手动编辑对应的 `memories.jsonl`。
 - 严格遵守禁令，禁止越权做明确声明了禁止agent做、只允许人类做的事。
+
+## 语言规范
+- 语言清晰：你的所有解释/概念必须清晰明确，禁止充斥看不明白的专业术语，绝对严禁自己发明新词
+- 一致性：在整个项目里相同的概念必须具有相同的名字
+- 说人话：禁止充斥"不是……而是……"这种AI slop，除非真的有一个错误的东西需要你澄清
 
 ## 项目规则目录
 所有文件均位于`ai_rules`下，你可以根据你的任务来阅读：
 - `01_honesty_and_uncertainty.md`: AI行为准则，执行所有任务前必读
 - `02_memory_and_progress.md`: 记忆系统，执行所有任务前必读
 - `03_experiments_and_data.md`: 实验相关行为准则。做实验、更改实验代码前必读
-- `04_code_and_repo.md`: 代码与repo规则。写代码之前必读
+- `04_code_and_repo.md`: 代码与repo规则。动代码之前必读
 - `events/on_progress.md`: 任务有进展时需要做的事
 
+## Git worktree
+在本地修改代码时，你应该使用../nimloth-<branch-name> （分支名的`/`在文件夹名称内使用`-`），不要直接在main分支修改，除非Prompt里有显式说明。
+
 ## 服务器使用规范
-参考根目录`SERVER.md`
+参考 `.local/SERVER.md`

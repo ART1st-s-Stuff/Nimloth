@@ -39,15 +39,101 @@ class LatentWMPredictor(nn.Module):
     def emb_dim(self) -> int:
         return self.config.emb_dim
 
-    def predict_next_emb(self, state_emb: torch.Tensor, action_indices: torch.Tensor) -> torch.Tensor:
-        ctx = state_emb.unsqueeze(1)
-        actions = action_one_hot(action_indices, self.config.action_dim)
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _predict_from_context(
+        self, state_ctx: torch.Tensor, action_ctx: torch.Tensor
+    ) -> torch.Tensor:
+        """Predict next state from a (possibly multi-step) context window.
+
+        Args:
+            state_ctx:  (B, T, emb_dim)  -- T states (most recent at position T-1).
+            action_ctx: (B, T) int64     -- T action indices (paired element-wise with states).
+
+        Returns:
+            (B, emb_dim) -- predicted next state after the last context step.
+        """
+        # action_one_hot adds an extra unsqueeze(1) designed for (B,) input;
+        # for multi-step (B, T) we use one_hot directly to get (B, T, num_actions).
+        actions = torch.nn.functional.one_hot(
+            action_ctx, num_classes=self.config.action_dim
+        ).float()
         act_emb = self.action_encoder(actions)
-        preds = self.predictor(ctx, act_emb)
+        preds = self.predictor(state_ctx, act_emb)
         b, t, _ = preds.shape
         preds = self.pred_proj(rearrange(preds, "b t d -> (b t) d"))
         preds = rearrange(preds, "(b t) d -> b t d", b=b, t=t)
         return preds[:, -1]
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def predict_next_emb(
+        self, state_emb: torch.Tensor, action_indices: torch.Tensor
+    ) -> torch.Tensor:
+        """Single-step next-latent prediction.
+
+        Args:
+            state_emb:      (B, emb_dim)   -- current WM state.
+            action_indices: (B,) int64     -- action taken at current step.
+
+        Returns:
+            (B, emb_dim) -- predicted next WM state.
+        """
+        return self._predict_from_context(
+            state_emb.unsqueeze(1),   # (B, 1, emb_dim)
+            action_indices.unsqueeze(1),  # (B, 1)
+        )
+
+    def rollout_states(
+        self,
+        state_emb: torch.Tensor,
+        action_sequences: torch.Tensor,
+    ) -> torch.Tensor:
+        """Autoregressive multi-step rollout (purely in WM latent space, no Qwen).
+
+        Args:
+            state_emb:        (B, emb_dim)       -- initial WM state (from Qwen slow path).
+            action_sequences: (B, num_steps)     -- action indices for each step.
+
+        Returns:
+            (B, num_steps, emb_dim) -- predicted states s₁ … s_num_steps.
+        """
+        B = state_emb.shape[0]
+        num_steps = action_sequences.shape[1]
+        H = self.config.history_size
+        device = state_emb.device
+
+        # all_s grows from (B, 1, emb_dim) to (B, num_steps + 1, emb_dim).
+        all_s = state_emb.unsqueeze(1)
+        zero_action = torch.zeros(B, dtype=torch.long, device=device)
+
+        for t in range(num_steps):
+            s_ctx_list: list[torch.Tensor] = []
+            a_ctx_list: list[torch.Tensor] = []
+
+            for h in range(H):
+                s_idx = t - H + 1 + h  # state index into s₀…s_t
+                if s_idx < 0:
+                    s_ctx_list.append(state_emb)
+                    a_ctx_list.append(zero_action)
+                elif s_idx == 0:
+                    s_ctx_list.append(state_emb)
+                    a_ctx_list.append(action_sequences[:, s_idx])
+                else:
+                    s_ctx_list.append(all_s[:, s_idx, :])
+                    a_ctx_list.append(action_sequences[:, s_idx])
+
+            s_ctx = torch.stack(s_ctx_list, dim=1)  # (B, H, emb_dim)
+            a_ctx = torch.stack(a_ctx_list, dim=1)  # (B, H)
+
+            next_s = self._predict_from_context(s_ctx, a_ctx)  # (B, emb_dim)
+            all_s = torch.cat([all_s, next_s.unsqueeze(1)], dim=1)
+
+        return all_s[:, 1:, :]  # drop s₀
 
     def forward(self, state_emb: torch.Tensor, action_indices: torch.Tensor) -> torch.Tensor:
         """DDP-compatible entrypoint for next-latent prediction."""

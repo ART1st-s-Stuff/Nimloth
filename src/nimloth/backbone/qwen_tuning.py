@@ -75,9 +75,8 @@ def configure_qwen_tuning(
         except Exception:
             pass
 
+        # Keep empty: RL FSDP+LoRA experiments hit conflicts with modules_to_save.
         modules_to_save: list[str] = []
-        if llm_tune == "lora":
-            modules_to_save.extend(["embed_tokens", "lm_head"])
         lora_config = LoraConfig(
             r=args.lora_r,
             lora_alpha=args.lora_alpha,
