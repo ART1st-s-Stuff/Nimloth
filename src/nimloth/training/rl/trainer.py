@@ -467,15 +467,8 @@ def train_rl(
             sync_module_states=True,
             use_orig_params=True,
         )
-        state_proj = FSDP(state_proj, device_id=torch.cuda.current_device(),
-                          sharding_strategy=ShardingStrategy.FULL_SHARD,
-                          sync_module_states=True, use_orig_params=True)
-        wm_predictor = FSDP(wm_predictor, device_id=torch.cuda.current_device(),
-                            sharding_strategy=ShardingStrategy.FULL_SHARD,
-                            sync_module_states=True, use_orig_params=True)
-        value_head = FSDP(value_head, device_id=torch.cuda.current_device(),
-                          sharding_strategy=ShardingStrategy.FULL_SHARD,
-                          sync_module_states=True, use_orig_params=True)
+        # Small modules — no need for FSDP (minimal memory), avoid dtype conflicts
+        pass
         if is_main():
             print(json.dumps({"fsdp": "wrapped", "world_size": world}))
     # FSDP handles multi-GPU; small modules stay on device if world==1.
