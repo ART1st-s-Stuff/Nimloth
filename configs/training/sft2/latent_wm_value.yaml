@@ -32,7 +32,7 @@ train:
   train_wm_predictor: true
   max_length: 12000
   max_pixels: 602112
-  emb_dim: 128
+  emb_dim: 1024
   # Performance knobs: remote H800 environment has flash_attn installed; keep
   # gradient checkpointing enabled by default for memory safety, but CLI now
   # supports --no-gradient-checkpointing for profiling.

@@ -73,11 +73,11 @@ CMD=(
   --max-train-records 64
   --max-val-records 32
   --max-val-batches 2
-  --image-size 128
-  --patch-size 16
-  --hidden-dim 128
-  --depth 1
-  --heads 4
+  --image-size 255
+  --patch-size 15
+  --hidden-dim 1024
+  --depth 4
+  --heads 16
   --lr 1e-4
   --loss l1
   --log-interval 1

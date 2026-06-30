@@ -35,7 +35,7 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--max-length", type=int, default=12000)
     ap.add_argument("--max-pixels", type=int, default=602112)
-    ap.add_argument("--emb-dim", type=int, default=128)
+    ap.add_argument("--emb-dim", type=int, default=1024)
     ap.add_argument("--max-train-records", type=int, default=-1)
     ap.add_argument("--max-val-records", type=int, default=-1)
     ap.add_argument("--max-val-batches", type=int, default=-1)

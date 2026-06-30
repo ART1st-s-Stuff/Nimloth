@@ -22,14 +22,19 @@ __all__ = [
 
 @dataclass
 class LeWMConfig:
-    """Predictor hyper-parameters for Qwen-latent dynamics (no pixel encoder)."""
+    """Predictor hyper-parameters for Qwen-latent dynamics (no pixel encoder).
 
-    emb_dim: int = 128
+    Scaled to match Qwen-scale latent: the embed dimension is the bridge between
+    Qwen hidden states (~3584 dim) and the WM predictor.  Predictor capacity
+    follows LeWM paper defaults (ViT-S scale): 6 layers, 16 heads, 10M params.
+    """
+
+    emb_dim: int = 1024
     action_dim: int = NUM_NAVIGATION_ACTIONS
-    predictor_depth: int = 2
-    predictor_heads: int = 4
-    predictor_mlp_dim: int = 256
-    predictor_hidden_dim: int = 128
+    predictor_depth: int = 6
+    predictor_heads: int = 16
+    predictor_mlp_dim: int = 4096
+    predictor_hidden_dim: int = 1024
     history_size: int = 4
 
 

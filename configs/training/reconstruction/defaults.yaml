@@ -6,11 +6,11 @@ model:
   attn_implementation: sdpa
 
 decoder:
-  image_size: 128
-  patch_size: 16
-  hidden_dim: 256
-  depth: 2
-  heads: 4
+  image_size: 255
+  patch_size: 15
+  hidden_dim: 1024
+  depth: 4
+  heads: 16
 
 train:
   epochs: 5

@@ -18,14 +18,18 @@ from torch import nn
 
 @dataclass
 class WMImageDecoderConfig:
-    """Configuration for a lightweight patch decoder."""
+    """Configuration for a patch decoder (cross-attention from a single latent vector).
 
-    emb_dim: int = 128
-    image_size: int = 128
-    patch_size: int = 16
-    hidden_dim: int = 256
-    depth: int = 2
-    heads: int = 4
+    Scaled to match Qwen-latent dimension: 1024-dim input, 255x255 output,
+    multiple cross-attention layers (following LeWM paper decoder description).
+    """
+
+    emb_dim: int = 1024
+    image_size: int = 255  # matches VAGEN navigation render resolution
+    patch_size: int = 15
+    hidden_dim: int = 1024
+    depth: int = 4
+    heads: int = 16
     mlp_ratio: int = 4
 
     def __post_init__(self) -> None:
@@ -61,11 +65,11 @@ class _DecoderBlock(nn.Module):
 
 
 class WMImageDecoder(nn.Module):
-    """Decode a compact WM state embedding into an RGB image.
+    """Decode a WM state embedding into an RGB image.
 
-    This mirrors the LeWM paper's diagnostic decoder at a small scale: learned
-    patch queries cross-attend to a single global latent vector and are projected
-    to RGB patches.  It should be trained post-hoc with frozen Qwen/WM modules.
+    Mirrors the LeWM paper's diagnostic decoder: learned patch queries
+    cross-attend to a single global latent vector and are projected to
+    RGB patches.  Trained post-hoc with frozen Qwen/WM modules.
     """
 
     def __init__(self, config: WMImageDecoderConfig | None = None) -> None:
