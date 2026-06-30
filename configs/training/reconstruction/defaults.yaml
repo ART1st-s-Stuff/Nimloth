@@ -1,0 +1,27 @@
+# Post-hoc reconstruction decoder defaults
+# This decoder is diagnostic-only; it is not part of SFT2/RL loss.
+
+model:
+  max_pixels: 602112
+  attn_implementation: sdpa
+
+decoder:
+  image_size: 128
+  patch_size: 16
+  hidden_dim: 256
+  depth: 2
+  heads: 4
+
+train:
+  epochs: 5
+  batch_size: 4
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  loss: l1
+  max_length: 12000
+  success_only: false
+  log_interval: 10
+
+eval:
+  max_val_batches: -1
+  save_samples: 16
