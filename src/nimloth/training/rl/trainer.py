@@ -473,7 +473,6 @@ def train_rl(
         from torch.distributed.fsdp import (
             FullyShardedDataParallel as FSDP,
             ShardingStrategy,
-            MixedPrecision,
         )
 
         # FULL_SHARD splits the embedding across ranks. If the padding_idx
@@ -487,17 +486,10 @@ def train_rl(
             if is_main():
                 print(json.dumps({"cleared_padding_idx": True}))
 
-        mp = MixedPrecision(
-            param_dtype=torch.bfloat16,
-            reduce_dtype=torch.float32,
-            buffer_dtype=torch.float32,
-        )
-
         model = FSDP(
             model,
             device_id=torch.cuda.current_device(),
             sharding_strategy=ShardingStrategy.FULL_SHARD,
-            mixed_precision=mp,
             sync_module_states=True,
             use_orig_params=True,
         )
