@@ -350,12 +350,17 @@ def train_rl(
     resume_adapter = resume_ckpt_dir / "adapter_config.json"
     base_model_path = str(args.model)
 
+    # Use device_map="auto" to split model across available GPUs
+    device_map = "auto" if torch.cuda.device_count() > 1 else None
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         args.model,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
+        device_map=device_map,
     )
+    if is_main():
+        print(json.dumps({"device_map": device_map, "n_gpus": torch.cuda.device_count()}))
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
@@ -406,7 +411,8 @@ def train_rl(
                               "llm_tune": llm_tune,
                               "vision_tune": vision_tune}))
 
-    model.to(device)
+    if device_map is None:
+        model.to(device)
 
     # --- Wire up EnvRolloutCollector with loaded model -----------------------
     from nimloth.training.rl.rollout import EnvRolloutCollector
@@ -442,45 +448,9 @@ def train_rl(
                               "shadow_params": len(vision_ema.shadow),
                               "decay": vision_ema.decay}))
 
-    # --- FSDP wrap ------------------------------------------------------------
-    if world > 1:
-        from torch.distributed.fsdp import (
-            FullyShardedDataParallel as FSDP,
-            ShardingStrategy,
-            MixedPrecision,
-            CPUOffload,
-        )
-        from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
-
-        mp = MixedPrecision(
-            param_dtype=torch.bfloat16,
-            reduce_dtype=torch.float32,
-            buffer_dtype=torch.float32,
-        )
-        wrap_policy = size_based_auto_wrap_policy(min_num_params=0)
-
-        model = FSDP(
-            model,
-            auto_wrap_policy=wrap_policy,
-            device_id=torch.cuda.current_device(),
-            sharding_strategy=ShardingStrategy.FULL_SHARD,
-            mixed_precision=mp,
-            sync_module_states=True,
-            use_orig_params=True,
-            forward_prefetch=False,
-        )
-        # Small modules: wrap individually without sub-module policy
-        state_proj = FSDP(state_proj, device_id=torch.cuda.current_device(),
-                          sharding_strategy=ShardingStrategy.FULL_SHARD,
-                          sync_module_states=True, use_orig_params=True)
-        wm_predictor = FSDP(wm_predictor, device_id=torch.cuda.current_device(),
-                            sharding_strategy=ShardingStrategy.FULL_SHARD,
-                            sync_module_states=True, use_orig_params=True)
-        value_head = FSDP(value_head, device_id=torch.cuda.current_device(),
-                          sharding_strategy=ShardingStrategy.FULL_SHARD,
-                          sync_module_states=True, use_orig_params=True)
-        if is_main():
-            print(json.dumps({"fsdp": "wrapped", "world_size": world}))
+    # --- No multi-process DDP/FSDP (single process with multi-GPU) -----------
+    # We use HuggingFace's device_map="auto" for Qwen, loaded below.
+    # Small modules (state_proj, etc.) stay on device.
 
     # --- optimizer ------------------------------------------------------------
     param_groups = [
