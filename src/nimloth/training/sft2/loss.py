@@ -120,8 +120,14 @@ def compute_wm_latent_loss(
       pair-wise stack (backward compatible, used by tests and legacy callers).
     """
 
-    state_emb = state_proj(qwen_hidden_at_latent).float()
-    target_emb = state_proj(qwen_hidden_at_next_latent).float()
+    # Concatenate current+next hidden to run state_proj once, avoiding
+    # SafeBatchNorm1d running-buffer inplace conflict when called twice
+    # within the same autograd context.
+    cat_hidden = torch.cat([qwen_hidden_at_latent, qwen_hidden_at_next_latent], dim=0)
+    cat_emb = state_proj(cat_hidden).float()
+    B = qwen_hidden_at_latent.shape[0]
+    state_emb = cat_emb[:B]
+    target_emb = cat_emb[B:]
 
     pred = wm_predictor(state_emb, action_indices)
     mse = F.mse_loss(pred, target_emb)

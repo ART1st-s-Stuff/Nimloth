@@ -44,7 +44,29 @@ class SafeBatchNorm1d(nn.BatchNorm1d):
                 momentum=self.momentum,
                 eps=self.eps,
             )
-        return super().forward(input)
+        if self.training:
+            # Use scratch buffers so the inplace EMA update inside torch.batch_norm
+            # does not corrupt the autograd graph when this module is called
+            # multiple times before backward (e.g. state_emb + target_emb in
+            # compute_wm_latent_loss).
+            scratch_mean = input.new_empty(self.running_mean.shape)
+            scratch_var = input.new_empty(self.running_var.shape)
+            out = F.batch_norm(
+                input, scratch_mean, scratch_var,
+                self.weight, self.bias, training=True,
+                momentum=self.momentum, eps=self.eps,
+            )
+            # scratch_mean / scratch_var now hold the EMA-updated stats.
+            # Commit them to the real buffers outside the autograd graph.
+            with torch.no_grad():
+                self.running_mean.copy_(scratch_mean)
+                self.running_var.copy_(scratch_var)
+            return out
+        return F.batch_norm(
+            input, self.running_mean, self.running_var,
+            self.weight, self.bias, training=False,
+            momentum=self.momentum, eps=self.eps,
+        )
 
 
 @dataclass
