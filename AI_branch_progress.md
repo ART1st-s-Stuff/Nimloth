@@ -514,3 +514,12 @@
 - 新增 `configs/training/reconstruction/{defaults,eval}.yaml` 和基础单元测试文件。
 - 验证：当前容器无 `torch`/`pytest`，无法运行 pytest；已运行 `PYTHONPATH=src python -m compileall -q ...` 通过。
 - 未启动训练、评估、rollout、Slurm 或任何昂贵任务。
+
+## 2026-07-01 Reconstruction full decoder training paused
+
+- User observed reconstruction visual quality is very poor and requested pausing the reconstruction training.
+- Stopped Slurm job `462610` on `dgx-03`; confirmed no `nimloth.training.reconstruction.cli` process remains.
+- Latest preserved checkpoints in output dir: `step_000068000`, `step_000068500`.
+- Output dir: `/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-06-30/reconstruct_decoder_sft2_full_4epoch`.
+- Remote output README and `outputs/experiments/training/reconstruction/progress.md` were updated with pause status, command/config summary, latest checkpoint, and suggested diagnosis areas.
+- Next step before any resume: diagnose why reconstructions are poor; likely areas include decoder target/input normalization, Qwen image hidden extraction alignment, state_proj / WM predictor latent scale, and whether predicted next-state latent is the correct decoder input.

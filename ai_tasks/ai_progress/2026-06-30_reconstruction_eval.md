@@ -40,3 +40,10 @@
 ## 待确认问题
 - 是否要继续把 reconstruction metrics 接入 SFT2/RL 主 validation logging。
 - 是否要继续实现多步 open-loop rollout reconstruction。
+
+## 暂停（2026-07-01）
+- 用户观察到 reconstruction 效果非常差，要求先暂停训练。
+- 已取消 `dgx-03` 上的 Slurm job `462610`，确认无 reconstruction 训练进程残留。
+- 最新保留 checkpoint：`step_000068000`、`step_000068500`。
+- 远程输出 README 与 `outputs/experiments/training/reconstruction/progress.md` 已记录暂停状态和 resume/诊断建议。
+- 后续不要直接 resume；应先排查 decoder 输入/目标、图像归一化、latent 对齐和 WM predictor 输出语义。
