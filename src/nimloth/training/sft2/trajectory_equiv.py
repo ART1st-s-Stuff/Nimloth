@@ -40,14 +40,18 @@ def legacy_record_losses(
             lm_tokens += n
     current = torch.stack(latents, dim=0)
     lm_loss_batch = lm_total / lm_tokens if lm_tokens else None
-    wm_loss, _ = compute_step_wm_loss(
+    wm_loss, sigreg_loss, _ = compute_step_wm_loss(
         model, items, current, processor, token_id_map, device, state_proj, wm_predictor, max_length
     )
     value_loss, _ = compute_step_value_loss(
         current, items, state_proj, value_head, device, rank_margin=0.1, lambda_rank=1.0
     )
     total, _ = compute_combined_loss(
-        wm_loss=wm_loss, value_loss=value_loss, lm_loss=lm_loss_batch, lambda_wm=1.0
+        wm_loss=wm_loss,
+        sigreg_loss=sigreg_loss,
+        value_loss=value_loss,
+        lm_loss=lm_loss_batch,
+        lambda_wm=1.0,
     )
     return {
         "current": current,
@@ -78,20 +82,24 @@ def packed_record_losses(
         assert traj.next_latents is not None
         next_rows = torch.stack([traj.next_latents[i] for i in indices], dim=0)
         action_indices = torch.tensor([items[i]["action_index"] for i in indices], device=device)
-        wm_loss, _ = compute_wm_latent_loss(
+        wm_items = [items[i] for i in indices]
+        wm_loss, sigreg_loss, _ = compute_wm_latent_loss(
             qwen_hidden_at_latent=traj.current_latents[indices],
             qwen_hidden_at_next_latent=next_rows,
             action_indices=action_indices,
             state_proj=state_proj,
             wm_predictor=wm_predictor,
+            items=wm_items,
         )
     else:
         wm_loss = torch.zeros((), device=device)
+        sigreg_loss = None
     value_loss, _ = compute_step_value_loss(
         traj.current_latents, items, state_proj, value_head, device, rank_margin=0.1, lambda_rank=1.0
     )
     total, _ = compute_combined_loss(
         wm_loss=wm_loss,
+        sigreg_loss=sigreg_loss,
         value_loss=value_loss,
         lm_loss=traj.lm_loss,
         lambda_wm=1.0,

@@ -28,7 +28,23 @@ Profiling / speedup (see `ai_tasks/sft2_speedup_plan.md`):
 | `latent_wm_value_profiling.yaml` | `batch_size=2`, `grad_accum=4`, `--step-timing` |
 | `latent_wm_value_vision_freeze_profiling.yaml` | P6 vision-freeze diagnostic |
 
-CLI knobs (default off unless set): `--preprocess-cache-dir`, `--step-timing`, `--dataloader-workers`, `--packed-forward`.
+CLI knobs: `--preprocess-cache-dir`, `--step-timing`, `--dataloader-workers`, `--packed-forward`.  `--full-trajectory-batching` is **enabled by default**; use `--no-full-trajectory-batching` to disable.
+
+### `--full-trajectory-batching` (方案 B, 默认启用)
+
+Each micro-batch = one complete trajectory (all transitions for one record).
+Qwen still sees each prefix as independent rows (per-prefix forward), not
+packed-forward.  This lets SIGReg access the full trajectory's projected
+embeddings without violating Qwen-VL prefix non-invariance.
+
+- Distinct from `--packed-forward` (which fuses all steps into one sequence).
+- **Cannot** combine with `--packed-forward` or `--trajectory-aware-batching`.
+- Micro-batch size = trajectory length (variable).  Tune `--grad-accum` so
+  `world * grad_accum * avg_trajectories_per_rank` matches your target effective
+  batch size.
+- Validation loader remains regular per-prefix transition batching (no
+  full-trajectory grouping).  This is intentional: eval correctness only
+  requires per-prefix WM MSE, which is independent of batch composition.
 
 ### `--packed-forward` prerequisites
 

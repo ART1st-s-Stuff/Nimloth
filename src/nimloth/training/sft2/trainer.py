@@ -43,6 +43,7 @@ from nimloth.training.sft2.dataset import (
 )
 from nimloth.training.sft2.evaluate import evaluate
 from nimloth.training.sft2.loss import compute_combined_loss, wm_loss_weight_schedule
+from nimloth.training.sft2.loss import SIGReg as SIGRegModule
 from nimloth.training.sft2.preprocess_cache import (
     CachedTransitionDataset,
     build_transition_preprocess_cache,
@@ -261,6 +262,7 @@ def train_sft2(args=None) -> int:
                     "output_dir": str(args.output_dir),
                     "packed_forward": args.packed_forward,
                     "trajectory_aware_batching": args.trajectory_aware_batching,
+                    "full_trajectory_batching": args.full_trajectory_batching,
                 }
             )
         )
@@ -272,6 +274,16 @@ def train_sft2(args=None) -> int:
         )
     if args.trajectory_aware_batching and args.packed_forward:
         raise ValueError("--trajectory-aware-batching is for legacy per-prefix batching; do not combine with --packed-forward")
+    if args.full_trajectory_batching and args.packed_forward:
+        raise ValueError(
+            "--full-trajectory-batching guarantees per-prefix Qwen forward semantics; "
+            "do NOT combine with --packed-forward (which does full-trajectory single forward)."
+        )
+    if args.full_trajectory_batching and args.trajectory_aware_batching:
+        raise ValueError(
+            "--full-trajectory-batching is a strict superset of --trajectory-aware-batching. "
+            "Use only one."
+        )
 
     train_ds, val_ds, train_collate, val_collate, train_samples, val_samples = _prepare_transition_datasets(
         args, processor
@@ -288,7 +300,17 @@ def train_sft2(args=None) -> int:
     train_sampler = None
     train_batch_sampler = None
     val_sampler = None
-    if args.trajectory_aware_batching:
+    if args.full_trajectory_batching:
+        train_batch_sampler = TrajectoryAwareBatchSampler(
+            train_samples,
+            batch_size=args.batch_size,  # ignored when full_trajectory=True
+            num_replicas=world,
+            rank=rank,
+            shuffle=True,
+            seed=args.seed,
+            full_trajectory=True,
+        )
+    elif args.trajectory_aware_batching:
         train_batch_sampler = TrajectoryAwareBatchSampler(
             train_samples,
             batch_size=args.batch_size,
@@ -426,6 +448,8 @@ def train_sft2(args=None) -> int:
         wm_predictor = wm_predictor.to(aux_device)
     state_proj = StateProjector(hidden_size, wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
     value_head = ValueHead(wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
+    sigreg = SIGRegModule(knots=args.sigreg_knots, num_proj=args.sigreg_num_proj).to(device=aux_device)
+    lambda_sigreg_val = args.lambda_sigreg
 
     if args.resume and resume_state_path is not None and resume_state_path.exists():
         load_aux_checkpoint(resume_ckpt_dir, state_proj, wm_predictor, value_head, device)
@@ -482,11 +506,13 @@ def train_sft2(args=None) -> int:
                     "global_step",
                     "total_loss",
                     "wm_mse",
+                    "sigreg_loss",
                     "value_total",
                     "value_reg",
                     "value_rank",
                     "lm_ce",
                     "lambda_wm",
+                    "lambda_sigreg",
                     "qwen_lr",
                     "val_wm_mse",
                     "val_success_rate",
@@ -535,7 +561,7 @@ def train_sft2(args=None) -> int:
         for _, path in ckpts[:-keep]:
             shutil.rmtree(path, ignore_errors=True)
 
-    def _optimizer_step(epoch: int, *, lambda_wm: float) -> None:
+    def _optimizer_step(epoch: int, *, lambda_wm: float, lambda_sigreg: float) -> None:
         nonlocal global_step
         qwen_lr = qwen_lr_schedule(
             global_step,
@@ -565,11 +591,13 @@ def train_sft2(args=None) -> int:
                         global_step,
                         avg.get("total_loss", ""),
                         avg.get("wm_mse", ""),
+                        avg.get("sigreg_loss", ""),
                         avg.get("value_total", ""),
                         avg.get("value_reg", ""),
                         avg.get("value_rank", ""),
                         avg.get("lm_ce", ""),
                         lambda_wm,
+                        lambda_sigreg,
                         qwen_lr,
                         "",
                         "",
@@ -647,16 +675,17 @@ def train_sft2(args=None) -> int:
 
                 t0 = step_timer.start("next_forward")
                 if args.packed_forward:
-                    wm_loss, wm_metrics = compute_trajectory_wm_loss(
+                    wm_loss, sigreg_loss, wm_metrics = compute_trajectory_wm_loss(
                         items,
                         latent_hidden,
                         traj.next_latents,
                         state_proj,
                         wm_predictor,
                         device,
+                        sigreg_module=sigreg,
                     )
                 else:
-                    wm_loss, wm_metrics = compute_step_wm_loss(
+                    wm_loss, sigreg_loss, wm_metrics = compute_step_wm_loss(
                         model,
                         items,
                         latent_hidden,
@@ -669,6 +698,7 @@ def train_sft2(args=None) -> int:
                         vision_ema=vision_ema,
                         next_enc_rows=next_enc_rows,
                         pad_token_id=pad_token_id,
+                        sigreg_module=sigreg,
                     )
                 step_timer.stop("next_forward", t0)
 
@@ -690,6 +720,8 @@ def train_sft2(args=None) -> int:
                     value_loss=value_loss,
                     lm_loss=lm_loss,
                     lambda_wm=lambda_wm if wm_loss is not None else 0.0,
+                    sigreg_loss=sigreg_loss,
+                    lambda_sigreg=lambda_sigreg_val,
                     lambda_value=args.lambda_value,
                     lambda_ce=args.lambda_ce,
                 )
@@ -705,7 +737,7 @@ def train_sft2(args=None) -> int:
 
             if sync_gradients:
                 t0 = step_timer.start("optimizer")
-                _optimizer_step(epoch, lambda_wm=lambda_wm)
+                _optimizer_step(epoch, lambda_wm=lambda_wm, lambda_sigreg=lambda_sigreg_val)
                 step_timer.stop("optimizer", t0)
                 step_timer.on_optimizer_step(global_step=global_step, epoch=epoch)
 
@@ -790,6 +822,7 @@ def train_sft2(args=None) -> int:
             vision_ema=vision_ema,
             pad_token_id=pad_token_id,
             packed_forward=args.packed_forward,
+            sigreg_module=sigreg,
         )
         val_wm = val_metrics.get("wm_mse", float("inf"))
         val_success = val_metrics.get("success_rate", 0.0)
@@ -814,9 +847,11 @@ def train_sft2(args=None) -> int:
                         global_step,
                         "",
                         val_metrics.get("wm_mse", ""),
+                        val_metrics.get("sigreg_loss", ""),
                         val_metrics.get("value_total", ""),
                         val_metrics.get("value_reg", ""),
                         val_metrics.get("value_rank", ""),
+                        "",
                         "",
                         "",
                         "",

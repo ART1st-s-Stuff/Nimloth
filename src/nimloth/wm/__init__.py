@@ -3,6 +3,7 @@
 from nimloth.wm.collate import messages_with_image_paths, transition_collate_for_qwen
 from nimloth.wm.dataset import TransitionSample, expand_record_transitions, load_jsonl_records
 from nimloth.wm.lewm import LeWMConfig, action_one_hot, freeze_module
+from nimloth.wm._vendor_lewm import SIGReg
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.reconstruction import WMImageDecoder, WMImageDecoderConfig
 from nimloth.wm.state_proj import StateProjector
@@ -11,6 +12,7 @@ from nimloth.wm.value_head import ValueHead
 __all__ = [
     "LatentWMPredictor",
     "LeWMConfig",
+    "SIGReg",
     "StateProjector",
     "TransitionSample",
     "ValueHead",

@@ -106,7 +106,7 @@ def run_micro_training_loss(
         meta = items
 
     latent_hidden, lm_loss = extract_qwen_latents(model, enc, token_id_map, device)
-    wm_loss, _ = compute_step_wm_loss(
+    wm_loss, sigreg_loss, _ = compute_step_wm_loss(
         model,
         meta,
         latent_hidden,

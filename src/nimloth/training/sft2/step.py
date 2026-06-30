@@ -11,7 +11,7 @@ from transformers import AutoProcessor
 from nimloth.training.common.qwen_batch import _message_cache_key, build_qwen_batch
 from nimloth.training.sft2.preprocess_cache import collate_cached_encodings
 from nimloth.backbone.vision_ema import VisionEncoderEMA
-from nimloth.training.sft2.loss import compute_value_loss, compute_wm_latent_loss
+from nimloth.training.sft2.loss import SIGReg, compute_value_loss, compute_wm_latent_loss
 from nimloth.training.sft2.qwen_latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
@@ -100,7 +100,8 @@ def compute_step_wm_loss(
     vision_ema: VisionEncoderEMA | None = None,
     next_enc_rows: list[dict[str, torch.Tensor] | None] | None = None,
     pad_token_id: int | None = None,
-) -> tuple[torch.Tensor | None, dict[str, float]]:
+    sigreg_module: SIGReg | None = None,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, dict[str, float]]:
     indices = wm_eligible_indices(items)
     # Every rank must enter the same number of DDP model forwards; terminal steps have no
     # next prefix, so use the current prefix as a throwaway forward on those ranks.
@@ -133,14 +134,17 @@ def compute_step_wm_loss(
             dummy_target_emb = state_proj(next_latent[:1])
         dummy_actions = torch.zeros((dummy_state_emb.shape[0],), device=dummy_state_emb.device, dtype=torch.long)
         dummy_pred = wm_predictor(dummy_state_emb, dummy_actions)
-        return (dummy_state_emb.sum() + dummy_target_emb.sum() + dummy_pred.sum()) * 0.0, {}
+        return (dummy_state_emb.sum() + dummy_target_emb.sum() + dummy_pred.sum()) * 0.0, None, {}
     action_indices = torch.tensor([items[i]["action_index"] for i in indices], device=current_latent.device)
+    wm_items = [items[i] for i in indices]
     return compute_wm_latent_loss(
         qwen_hidden_at_latent=current_latent[indices],
         qwen_hidden_at_next_latent=next_latent,
         action_indices=action_indices,
         state_proj=state_proj,
         wm_predictor=wm_predictor,
+        sigreg_module=sigreg_module,
+        items=wm_items,
     )
 
 
@@ -179,7 +183,9 @@ def compute_trajectory_wm_loss(
     state_proj: StateProjector,
     wm_predictor: LatentWMPredictor,
     device: torch.device,
-) -> tuple[torch.Tensor | None, dict[str, float]]:
+    *,
+    sigreg_module: SIGReg | None = None,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, dict[str, float]]:
     """WM loss from precomputed trajectory latents (no extra Qwen forward)."""
 
     indices = wm_eligible_indices(items)
@@ -188,12 +194,15 @@ def compute_trajectory_wm_loss(
             raise ValueError("next_latents required for WM-eligible trajectory steps")
         next_rows = torch.stack([next_latents[i] for i in indices], dim=0)
         action_indices = torch.tensor([items[i]["action_index"] for i in indices], device=device)
+        wm_items = [items[i] for i in indices]
         return compute_wm_latent_loss(
             qwen_hidden_at_latent=current_latents[indices],
             qwen_hidden_at_next_latent=next_rows,
             action_indices=action_indices,
             state_proj=state_proj,
             wm_predictor=wm_predictor,
+            sigreg_module=sigreg_module,
+            items=wm_items,
         )
 
     dummy_state_emb = state_proj(current_latents[:1])
@@ -201,4 +210,4 @@ def compute_trajectory_wm_loss(
         dummy_target_emb = state_proj(current_latents[:1])
     dummy_actions = torch.zeros((dummy_state_emb.shape[0],), device=dummy_state_emb.device, dtype=torch.long)
     dummy_pred = wm_predictor(dummy_state_emb, dummy_actions)
-    return (dummy_state_emb.sum() + dummy_target_emb.sum() + dummy_pred.sum()) * 0.0, {}
+    return (dummy_state_emb.sum() + dummy_target_emb.sum() + dummy_pred.sum()) * 0.0, None, {}

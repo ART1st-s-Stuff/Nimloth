@@ -1,25 +1,50 @@
-"""Map Qwen hidden states into WM predictor embedding space."""
+"""Map Qwen hidden states into WM predictor embedding space.
+
+Uses LeWM MLP projection (Linear → BatchNorm1d → GELU → Linear) for a
+normalized, non-linear bridge from Qwen's hidden state to the WM embedding.
+A SafeBatchNorm1d wrapper preserves LeWM behavior for normal batches while
+avoiding PyTorch BatchNorm singleton-batch failures.
+"""
 
 from __future__ import annotations
 
+import torch
 from torch import nn
+
+from nimloth.wm._vendor_lewm import MLP
+from nimloth.wm.lewm import SafeBatchNorm1d
 
 
 class StateProjector(nn.Module):
-    """Linear (or MLP) bridge: Qwen latent dim -> LeWM emb dim."""
+    """LeWM-style MLP bridge: Qwen latent dim -> WM emb dim.
 
-    def __init__(self, qwen_hidden_dim: int, lewm_emb_dim: int, hidden_dim: int | None = None) -> None:
+    Uses LeWM MLP with BatchNorm1d, matching the LeWM paper's projection
+    structure.  Default ``projector_hidden_dim=2048`` provides reasonable
+    capacity for the qwen_hidden_dim→emb_dim mapping.
+    """
+
+    def __init__(
+        self,
+        qwen_hidden_dim: int,
+        lewm_emb_dim: int,
+        projector_hidden_dim: int = 2048,
+    ) -> None:
         super().__init__()
-        hidden = hidden_dim or lewm_emb_dim
-        if hidden == lewm_emb_dim:
-            self.net = nn.Linear(qwen_hidden_dim, lewm_emb_dim)
-        else:
-            self.net = nn.Sequential(
-                nn.Linear(qwen_hidden_dim, hidden),
-                nn.GELU(),
-                nn.Linear(hidden, lewm_emb_dim),
-            )
+        self.net = MLP(
+            qwen_hidden_dim,
+            projector_hidden_dim,
+            lewm_emb_dim,
+            norm_fn=SafeBatchNorm1d,
+        )
 
-    def forward(self, hidden):
-        weight = self.net.weight if hasattr(self.net, "weight") else self.net[0].weight
-        return self.net(hidden.to(dtype=weight.dtype))
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        """Project Qwen hidden state to WM embedding space.
+
+        Args:
+            hidden: (B, qwen_hidden_dim) in any dtype.
+
+        Returns:
+            (B, lewm_emb_dim) in network weight dtype.
+        """
+        target_dtype = next(self.parameters()).dtype
+        return self.net(hidden.to(dtype=target_dtype))

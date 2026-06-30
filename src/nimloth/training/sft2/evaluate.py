@@ -31,6 +31,8 @@ def evaluate(
     vision_ema: VisionEncoderEMA | None = None,
     pad_token_id: int | None = None,
     packed_forward: bool = False,
+    sigreg_module=None,
+    lambda_sigreg: float = 0.0,
 ) -> dict[str, float]:
     model.eval()
     state_proj.eval()
@@ -57,13 +59,14 @@ def evaluate(
                     full_enc=batch_samples.get("full_enc"),
                 )
                 latent_hidden = traj.current_latents
-                wm_loss, wm_metrics = compute_trajectory_wm_loss(
+                wm_loss, sigreg_loss, wm_metrics = compute_trajectory_wm_loss(
                     items,
                     latent_hidden,
                     traj.next_latents,
                     state_proj,
                     wm_predictor,
                     device,
+                    sigreg_module=sigreg_module,
                 )
             else:
                 items, enc, next_enc_rows = unpack_transition_batch(
@@ -74,7 +77,7 @@ def evaluate(
                 )
                 enc.pop("labels", None)
                 latent_hidden, _ = extract_qwen_latents(model, enc, token_id_map, device)
-                wm_loss, wm_metrics = compute_step_wm_loss(
+                wm_loss, sigreg_loss, wm_metrics = compute_step_wm_loss(
                     model,
                     items,
                     latent_hidden,
@@ -87,6 +90,7 @@ def evaluate(
                     vision_ema=vision_ema,
                     next_enc_rows=next_enc_rows,
                     pad_token_id=pad_token_id,
+                    sigreg_module=sigreg_module,
                 )
             _, value_metrics = compute_step_value_loss(
                 latent_hidden,

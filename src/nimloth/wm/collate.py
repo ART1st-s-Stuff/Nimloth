@@ -53,6 +53,8 @@ def transition_collate_for_qwen(batch: list[TransitionSample]) -> list[dict[str,
     for sample in batch:
         item = {
             "id": f"{sample.record_id}:{sample.step_index}",
+            "record_id": sample.record_id,
+            "step_index": sample.step_index,
             "messages": prefix_messages_with_images(sample),
             "action_index": sample.action_index,
             "action_value_target": sample.action_value_target,

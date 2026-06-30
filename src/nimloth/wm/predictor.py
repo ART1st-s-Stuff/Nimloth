@@ -11,10 +11,15 @@ from einops import rearrange
 from torch import nn
 
 from nimloth.wm._vendor_lewm import ARPredictor, Embedder, MLP
-from nimloth.wm.lewm import LeWMConfig, action_one_hot
+from nimloth.wm.lewm import LeWMConfig, SafeBatchNorm1d, action_one_hot
 
 class LatentWMPredictor(nn.Module):
-    """LeWM ARPredictor + action encoder for Qwen-latent dynamics."""
+    """LeWM ARPredictor + action encoder for Qwen-latent dynamics.
+
+    Mirrors the LeWM paper predictor structure:
+    - ARPredictor outputs into ``predictor_hidden_dim`` (not directly ``emb_dim``).
+    - ``pred_proj`` (LeWM MLP with BatchNorm1d) maps predictor hidden to ``emb_dim``.
+    """
 
     def __init__(self, config: LeWMConfig) -> None:
         super().__init__()
@@ -31,9 +36,15 @@ class LatentWMPredictor(nn.Module):
             mlp_dim=config.predictor_mlp_dim,
             input_dim=config.emb_dim,
             hidden_dim=config.predictor_hidden_dim,
-            output_dim=config.emb_dim,
+            output_dim=config.predictor_hidden_dim,  # LeWM style: not directly emb_dim
         )
-        self.pred_proj = MLP(config.emb_dim, config.emb_dim, config.emb_dim)
+        # LeWM-style projection: predictor_hidden_dim -> hidden -> emb_dim, with BatchNorm
+        self.pred_proj = MLP(
+            config.predictor_hidden_dim,
+            config.predictor_hidden_dim,
+            config.emb_dim,
+            norm_fn=SafeBatchNorm1d,
+        )
 
     @property
     def emb_dim(self) -> int:

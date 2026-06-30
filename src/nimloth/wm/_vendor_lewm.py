@@ -44,5 +44,6 @@ _module = _load_lewm_file("module", "module.py")
 ARPredictor = _module.ARPredictor
 Embedder = _module.Embedder
 MLP = _module.MLP
+SIGReg = _module.SIGReg
 
-__all__ = ["ARPredictor", "Embedder", "MLP", "lewm_root"]
+__all__ = ["ARPredictor", "Embedder", "MLP", "SIGReg", "lewm_root"]

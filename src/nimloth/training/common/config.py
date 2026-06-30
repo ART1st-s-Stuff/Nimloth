@@ -30,6 +30,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "max_length"): "max_length",
     ("train", "max_pixels"): "max_pixels",
     ("train", "emb_dim"): "emb_dim",
+    ("train", "full_trajectory_batching"): "full_trajectory_batching",
     ("train", "attn_implementation"): "attn_implementation",
     ("train", "gradient_checkpointing"): "gradient_checkpointing",
     ("train", "preprocess_cache_dir"): "preprocess_cache_dir",
@@ -45,6 +46,9 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("loss", "value_rank_margin"): "value_rank_margin",
     ("loss", "value_rank_lambda"): "value_rank_lambda",
     ("loss", "value_gamma"): "value_gamma",
+    ("loss", "lambda_sigreg"): "lambda_sigreg",
+    ("loss", "sigreg_num_proj"): "sigreg_num_proj",
+    ("loss", "sigreg_knots"): "sigreg_knots",
     ("monitor", "wandb"): "wandb_enabled",
     ("monitor", "early_stop_metric"): "early_stop_metric",
 }

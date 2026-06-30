@@ -70,6 +70,8 @@ def encode_transition_item(
         next_enc = encode_qwen_item(item["next_messages"], processor, max_length, include_labels=False)
     return {
         "id": item["id"],
+        "record_id": item.get("record_id", ""),
+        "step_index": item.get("step_index", 0),
         "action_index": item["action_index"],
         "action_value_target": item["action_value_target"],
         "success": item["success"],
@@ -124,6 +126,8 @@ def collate_cached_transition_batch(
         items.append(
             {
                 "id": entry["id"],
+                "record_id": entry.get("record_id", ""),
+                "step_index": entry.get("step_index", 0),
                 "action_index": entry["action_index"],
                 "action_value_target": entry["action_value_target"],
                 "success": entry["success"],

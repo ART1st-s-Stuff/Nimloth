@@ -58,7 +58,7 @@ def test_terminal_only_wm_loss_runs_dummy_aux_forwards(monkeypatch) -> None:
     state_proj = CountingStateProj()
     wm_predictor = CountingWMPredictor()
     current_latent = torch.randn(2, 3, requires_grad=True)
-    loss, metrics = compute_step_wm_loss(
+    loss, sigreg_loss, metrics = compute_step_wm_loss(
         model=torch.nn.Identity(),
         items=[
             {
@@ -76,6 +76,7 @@ def test_terminal_only_wm_loss_runs_dummy_aux_forwards(monkeypatch) -> None:
         max_length=16,
     )
 
+    assert sigreg_loss is None
     assert metrics == {}
     assert float(loss.detach()) == 0.0
     assert state_proj.calls == 2  # current grad path + no-grad target path, matching real WM path

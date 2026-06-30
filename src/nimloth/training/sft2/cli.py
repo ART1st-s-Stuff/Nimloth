@@ -45,6 +45,9 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--value-rank-margin", type=float, default=0.1)
     ap.add_argument("--value-rank-lambda", type=float, default=1.0)
     ap.add_argument("--value-gamma", type=float, default=1.0)
+    ap.add_argument("--lambda-sigreg", type=float, default=0.1)
+    ap.add_argument("--sigreg-num-proj", type=int, default=1024)
+    ap.add_argument("--sigreg-knots", type=int, default=17)
     ap.add_argument("--lambda-wm-start", type=float, default=0.1)
     ap.add_argument("--lambda-wm-end", type=float, default=1.0)
     ap.add_argument("--attn-implementation", default="sdpa")
@@ -125,6 +128,19 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help=(
             "Batch consecutive prefixes from the same trajectory as independent rows. "
             "This improves padding/next-target locality without full-trajectory forward."
+        ),
+    )
+    ap.add_argument(
+        "--full-trajectory-batching",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Each micro-batch is one complete trajectory (all transitions for one record). "
+            "Qwen still sees per-prefix independent rows (NOT packed-forward). "
+            "This lets SIGReg access the full trajectory's projected embeddings "
+            "while respecting Qwen-VL prefix non-invariance. "
+            "Micro-batch size = trajectory length (variable). "
+            "Do NOT combine with --packed-forward."
         ),
     )
     ap.add_argument(
