@@ -182,7 +182,7 @@ class EnvRolloutCollector:
     def client(self):
         if self._client is None:
             from vagen.server.client import BatchEnvClient
-            self._client = BatchEnvClient(base_url=self._env_url, timeout=300)
+            self._client = BatchEnvClient(base_url=self._env_url, timeout=600)
         return self._client
 
     def collect(
@@ -205,7 +205,7 @@ class EnvRolloutCollector:
             print(json.dumps({"rl_collect": "init_client", "url": self._env_url}), flush=True)
             try:
                 from vagen.server.client import BatchEnvClient
-                self._client = BatchEnvClient(base_url=self._env_url, timeout=300)
+                self._client = BatchEnvClient(base_url=self._env_url, timeout=600)
                 print(json.dumps({"rl_collect": "client_created"}), flush=True)
             except Exception:
                 import traceback
