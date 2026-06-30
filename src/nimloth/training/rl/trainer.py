@@ -467,35 +467,34 @@ def train_rl(
             ShardingStrategy,
             MixedPrecision,
         )
-        from functools import partial
-        from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-        from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLDecoderLayer
 
         mp = MixedPrecision(
             param_dtype=torch.bfloat16,
             reduce_dtype=torch.float32,
             buffer_dtype=torch.float32,
         )
-        # Only wrap decoder layers — embedding & lm_head stay local
-        # (FULL_SHARD of embedding would break padding_idx assertion)
-        auto_wrap = partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls={Qwen2_5_VLDecoderLayer},
-        )
+
+        # Exclude embedding and lm_head from FSDP sharding so padding_idx
+        # doesn't break (embedding shard may not contain the padding row).
+        ignored = []
+        for name, child in model.named_children():
+            if "embed" in name.lower() or "lm_head" in name.lower():
+                ignored.append(child)
+        if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
+            ignored.append(model.model.embed_tokens)
 
         model = FSDP(
             model,
-            auto_wrap_policy=auto_wrap,
+            ignored_modules=ignored if ignored else None,
             device_id=torch.cuda.current_device(),
             sharding_strategy=ShardingStrategy.FULL_SHARD,
             mixed_precision=mp,
             sync_module_states=True,
             use_orig_params=True,
         )
-        # Small modules — no need for FSDP (minimal memory), avoid dtype conflicts
-        pass
         if is_main():
-            print(json.dumps({"fsdp": "wrapped", "world_size": world}))
+            print(json.dumps({"fsdp": "wrapped", "world_size": world,
+                              "ignored_modules": len(ignored)}))
     # FSDP handles multi-GPU; small modules stay on device if world==1.
 
     # --- optimizer ------------------------------------------------------------
