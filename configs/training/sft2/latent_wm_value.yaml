@@ -38,7 +38,9 @@ train:
   # (per-prefix semantics preserved).  Distinct from --packed-forward.
   # Micro-batch size = trajectory length (variable).  Tune --grad-accum
   # accordingly so effective steps match: world * grad_accum * avg_records_per_rank.
+  # --max-steps-per-trajectory (default 8) caps chunk size for GPU memory.
   full_trajectory_batching: true
+  max_steps_per_trajectory: 8
   # Performance knobs: remote H800 environment has flash_attn installed; keep
   # gradient checkpointing enabled by default for memory safety, but CLI now
   # supports --no-gradient-checkpointing for profiling.

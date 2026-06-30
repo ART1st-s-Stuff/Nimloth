@@ -31,6 +31,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "max_pixels"): "max_pixels",
     ("train", "emb_dim"): "emb_dim",
     ("train", "full_trajectory_batching"): "full_trajectory_batching",
+    ("train", "max_steps_per_trajectory"): "max_steps_per_trajectory",
     ("train", "attn_implementation"): "attn_implementation",
     ("train", "gradient_checkpointing"): "gradient_checkpointing",
     ("train", "preprocess_cache_dir"): "preprocess_cache_dir",

@@ -309,6 +309,7 @@ def train_sft2(args=None) -> int:
             shuffle=True,
             seed=args.seed,
             full_trajectory=True,
+            max_steps_per_trajectory=args.max_steps_per_trajectory,
         )
     elif args.trajectory_aware_batching:
         train_batch_sampler = TrajectoryAwareBatchSampler(

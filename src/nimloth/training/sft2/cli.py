@@ -144,6 +144,16 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         ),
     )
     ap.add_argument(
+        "--max-steps-per-trajectory",
+        type=int,
+        default=8,
+        help=(
+            "When --full-trajectory-batching is enabled, chunk records longer "
+            "than this number of steps into multiple micro-batches.  Default 8 "
+            "keeps GPU memory bounded while benefiting SIGReg with long runs."
+        ),
+    )
+    ap.add_argument(
         "--packed-forward",
         action="store_true",
         help="Use full-trajectory single forward (research-only; not semantic-equivalent for default Qwen-VL SFT2).",

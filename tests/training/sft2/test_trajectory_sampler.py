@@ -37,7 +37,7 @@ def test_trajectory_aware_sampler_partitions_batches_across_ranks() -> None:
 
 
 def test_full_trajectory_sampler_each_record_is_one_batch() -> None:
-    """When full_trajectory=True, every batch contains ALL transitions for one record."""
+    """With default max_steps_per_trajectory=8, short records span a single batch."""
     samples = [
         _sample("a", 0), _sample("a", 1), _sample("a", 2),
         _sample("b", 0), _sample("b", 1),
@@ -82,10 +82,25 @@ def test_full_trajectory_sampler_ddp_partitions_evenly() -> None:
 
 
 def test_full_trajectory_sampler_ignores_batch_size() -> None:
-    """batch_size is irrelevant when full_trajectory=True."""
+    """batch_size irrelevant when full_trajectory=True; max_steps_per_trajectory controls chunking."""
     samples = [_sample("a", 0), _sample("a", 1)]
-    # batch_size=1 should not truncate the trajectory.
     sampler = TrajectoryAwareBatchSampler(
         samples, batch_size=1, shuffle=False, full_trajectory=True,
     )
-    assert len(list(sampler)[0]) == 2  # both steps in one batch
+    assert len(list(sampler)[0]) == 2  # both steps in one batch (below max=8)
+
+
+def test_full_trajectory_chunks_long_trajectories() -> None:
+    """Records longer than max_steps_per_trajectory are split into multiple chunks."""
+    samples = [_sample("a", i) for i in range(12)]  # 12-step record
+    sampler = TrajectoryAwareBatchSampler(
+        samples, batch_size=1, shuffle=False, full_trajectory=True,
+        max_steps_per_trajectory=5,
+    )
+    batches = list(sampler)
+    assert len(batches) == 3  # 5 + 5 + 2
+    assert [len(b) for b in batches] == [5, 5, 2]
+    # Check indices are consecutive and sorted
+    for b in batches:
+        assert sorted(b) == b
+        assert all(samples[i].record_id == "a" for i in b)

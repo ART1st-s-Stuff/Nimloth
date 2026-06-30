@@ -27,9 +27,10 @@ class TrajectoryAwareBatchSampler(Sampler[list[int]]):
     - **Chunked** (``full_trajectory=False``, default): each batch is up to
       ``batch_size`` consecutive steps from one record.  Keeps micro-batch size
       bounded but does not guarantee a complete trajectory in one batch.
-    - **Full trajectory** (``full_trajectory=True``): each batch contains
-      **all** transitions for one record.  Micro-batch size equals trajectory
-      length.  When ``batch_size`` is passed it is ignored.
+    - **Full trajectory** (``full_trajectory=True``): each batch contains at
+      most ``max_steps_per_trajectory`` consecutive steps from one record.
+      Longer records are chunked.  SIGReg still sees long contiguous runs
+      while GPU memory stays bounded.  Default max is 8 steps.
 
     For distributed training, batches are partitioned by batch index after
     optional deterministic shuffling.  When ``drop_last`` is false, shorter
@@ -48,6 +49,7 @@ class TrajectoryAwareBatchSampler(Sampler[list[int]]):
         seed: int = 0,
         drop_last: bool = False,
         full_trajectory: bool = False,
+        max_steps_per_trajectory: int = 8,
     ) -> None:
         if num_replicas <= 0:
             raise ValueError("num_replicas must be positive")
@@ -55,6 +57,8 @@ class TrajectoryAwareBatchSampler(Sampler[list[int]]):
             raise ValueError(f"rank {rank} out of range for num_replicas={num_replicas}")
         if not full_trajectory and batch_size <= 0:
             raise ValueError("batch_size must be positive (ignored when full_trajectory=True)")
+        if full_trajectory and max_steps_per_trajectory <= 0:
+            raise ValueError("max_steps_per_trajectory must be positive when full_trajectory=True")
         self.samples = samples
         self.batch_size = batch_size
         self.num_replicas = num_replicas
@@ -63,9 +67,11 @@ class TrajectoryAwareBatchSampler(Sampler[list[int]]):
         self.seed = seed
         self.drop_last = drop_last
         self.full_trajectory = full_trajectory
+        self.max_steps_per_trajectory = max_steps_per_trajectory
         self.epoch = 0
         self._base_batches = self._build_base_batches(
             samples, batch_size, drop_last=drop_last, full_trajectory=full_trajectory,
+            max_steps_per_trajectory=max_steps_per_trajectory,
         )
         if drop_last:
             self.num_batches = len(self._base_batches) // num_replicas
@@ -80,6 +86,7 @@ class TrajectoryAwareBatchSampler(Sampler[list[int]]):
         *,
         drop_last: bool,
         full_trajectory: bool = False,
+        max_steps_per_trajectory: int = 8,
     ) -> list[list[int]]:
         by_record: dict[str, list[int]] = defaultdict(list)
         for idx, sample in enumerate(samples):
@@ -89,9 +96,11 @@ class TrajectoryAwareBatchSampler(Sampler[list[int]]):
         for _record_id, indices in by_record.items():
             indices.sort(key=lambda i: samples[i].step_index)
             if full_trajectory:
-                # One batch = entire record (all steps).
-                if indices:
-                    batches.append(indices)
+                # Chunk into slices of at most max_steps_per_trajectory.
+                for start in range(0, len(indices), max_steps_per_trajectory):
+                    chunk = indices[start : start + max_steps_per_trajectory]
+                    if chunk and (not drop_last or len(chunk) >= max_steps_per_trajectory):
+                        batches.append(chunk)
             else:
                 for start in range(0, len(indices), batch_size):
                     batch = indices[start : start + batch_size]
