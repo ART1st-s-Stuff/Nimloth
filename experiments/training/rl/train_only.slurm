@@ -60,6 +60,6 @@ exec /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 -m torch.distribu
     --value-head-checkpoint "${SFT2_CHECKPOINT}/value_head" \
     --env-url "${ENV_URL}" \
     --attn-implementation sdpa \
-    --max-pixels 784 \
+    --max-pixels 3136 \
     --output-dir "${TRAIN_OUT}" \
     2>&1 | tee -a "${TRAIN_LOG}"

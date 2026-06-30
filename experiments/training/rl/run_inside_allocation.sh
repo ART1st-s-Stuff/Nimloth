@@ -105,7 +105,7 @@ CUDA_VISIBLE_DEVICES=1,2 /project/peilab/atst/nimloth/.venv-vagen-main/bin/pytho
     --value-head-checkpoint "${SFT2_CHECKPOINT}/value_head" \
     --env-url "${ENV_URL}" \
     --attn-implementation sdpa \
-    --max-pixels 784 \
+    --max-pixels 3136 \
     --output-dir "${TRAIN_OUT}" \
     >> "${TRAIN_LOG}" 2>&1
 
