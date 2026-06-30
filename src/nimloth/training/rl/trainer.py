@@ -342,8 +342,9 @@ def train_rl(
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = args.max_pixels
-    add_special_tokens(processor.tokenizer)
+    n_added = add_special_tokens(processor.tokenizer)
     token_id_map = special_token_ids(processor.tokenizer)
+    tokenizer_vocab = len(processor.tokenizer)
 
     resume_ckpt_dir = output_dir / "best"
     resume_state_path = resume_ckpt_dir / "rl_state.pt"
@@ -356,11 +357,28 @@ def train_rl(
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
     )
+    model_vocab_before = model.get_input_embeddings().weight.shape[0]
+    # Log model embedding info before resize
+    embed = model.get_input_embeddings()
+    pad_idx = getattr(embed, "padding_idx", None)
+    print(json.dumps({
+        "rank": rank,
+        "model_vocab_before": model_vocab_before,
+        "tokenizer_vocab": tokenizer_vocab,
+        "n_added": n_added,
+        "padding_idx": pad_idx,
+        "embed_weight_shape": list(embed.weight.shape),
+    }), flush=True)
+
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
-    model.resize_token_embeddings(len(processor.tokenizer))
+    if n_added > 0:
+        model.resize_token_embeddings(tokenizer_vocab)
+        model_vocab_after = model.get_input_embeddings().weight.shape[0]
+        print(json.dumps({"rank": rank, "resized": True,
+                          "model_vocab_after": model_vocab_after}), flush=True)
 
     # Resume branches
     resume_aux_ckpt: Path | None = None  # for loading WM + optimizer later
