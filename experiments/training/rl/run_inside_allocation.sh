@@ -92,8 +92,8 @@ cd "${REPO}"
 source /project/peilab/atst/flower/.env 2>/dev/null || true
 export WANDB_DIR="${REPO}/.cache/wandb"
 
-CUDA_VISIBLE_DEVICES=1,2 /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
-    -m torch.distributed.run --nproc_per_node=2 -- \
+CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7 /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
+    -m torch.distributed.run --nproc_per_node=7 -- \
     -m nimloth.training.rl.cli \
     --config configs/training/rl/exp_60iter_val5_save10.yaml \
     --model "${SFT2_MODEL}" \
