@@ -85,22 +85,27 @@ if ! curl -s "${ENV_URL}/health" > /dev/null 2>&1; then
     exit 1
 fi
 
-# --- RL Training on GPU 1 ---
+# --- RL Training on GPUs 1-2 (torchrun+FSDP) ---
 echo "=== Launching RL training ===" | tee -a "${TRAIN_LOG}"
 
 cd "${REPO}"
+source /project/peilab/atst/flower/.env 2>/dev/null || true
+export WANDB_DIR="${REPO}/.cache/wandb"
 
-CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 python3 -m nimloth.training.rl.cli \
+CUDA_VISIBLE_DEVICES=1,2 /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
+    -m torch.distributed.run --nproc_per_node=2 -- \
+    -m nimloth.training.rl.cli \
     --config configs/training/rl/exp_60iter_val5_save10.yaml \
     --model "${SFT2_MODEL}" \
-    --llm-tune freeze \
+    --llm-tune lora \
     --vision-tune freeze \
+    --gradient-checkpointing \
     --wm-checkpoint "${SFT2_CHECKPOINT}/wm_predictor" \
     --state-proj-checkpoint "${SFT2_CHECKPOINT}/state_proj.pt" \
     --value-head-checkpoint "${SFT2_CHECKPOINT}/value_head" \
     --env-url "${ENV_URL}" \
     --attn-implementation sdpa \
-    --max-pixels 3136 \
+    --max-pixels 784 \
     --output-dir "${TRAIN_OUT}" \
     >> "${TRAIN_LOG}" 2>&1
 
