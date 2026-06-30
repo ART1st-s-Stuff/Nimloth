@@ -110,14 +110,28 @@ def _tensor_to_hwc_uint8(image: torch.Tensor) -> np.ndarray:
 
 
 def _fixed_val_preview_items(val_ds, max_items: int) -> list[dict]:
-    items: list[dict] = []
+    """Pick fixed preview transitions from different rollout records.
+
+    Transition datasets are expanded per step, so adjacent indices usually belong
+    to the same scene/rollout.  For visual monitoring we first keep one eligible
+    transition per record, then take evenly spaced records across the val set.
+    """
+
+    by_record: dict[str, dict] = {}
     for idx in range(len(val_ds)):
         item = collate_transition_batch([val_ds[idx]])[0]
-        if item.get("next_messages"):
-            items.append(item)
-        if len(items) >= max_items:
-            break
-    return items
+        if not item.get("next_messages"):
+            continue
+        record_id = str(item.get("id", idx)).split(":", 1)[0]
+        by_record.setdefault(record_id, item)
+
+    candidates = list(by_record.values())
+    if len(candidates) <= max_items:
+        return candidates
+    if max_items <= 1:
+        return candidates[:max_items]
+    indices = torch.linspace(0, len(candidates) - 1, steps=max_items).round().long().tolist()
+    return [candidates[i] for i in indices]
 
 
 @torch.no_grad()
@@ -154,20 +168,21 @@ def _log_wandb_val_images(
     actions = torch.tensor([item["action_index"] for item in items], device=device, dtype=torch.long)
     pred_next = decoder(wm_predictor(s_cur, actions).float())
 
-    images = []
+    table = wandb.Table(
+        columns=["sample_id", "current_gt", "current_recon", "next_gt", "pred_next_recon"]
+    )
     for i, item in enumerate(items):
         cur_gt = image_to_tensor(item["current_image_path"], image_size=args.image_size, device=device)
         next_gt = image_to_tensor(item["next_image_path"], image_size=args.image_size, device=device)
         sample_id = str(item.get("id", i))
-        images.extend(
-            [
-                wandb.Image(_tensor_to_hwc_uint8(cur_gt), caption=f"{sample_id} current_gt"),
-                wandb.Image(_tensor_to_hwc_uint8(cur_recon[i]), caption=f"{sample_id} current_recon"),
-                wandb.Image(_tensor_to_hwc_uint8(next_gt), caption=f"{sample_id} next_gt"),
-                wandb.Image(_tensor_to_hwc_uint8(pred_next[i]), caption=f"{sample_id} pred_next_recon"),
-            ]
+        table.add_data(
+            sample_id,
+            wandb.Image(_tensor_to_hwc_uint8(cur_gt), caption="current_gt"),
+            wandb.Image(_tensor_to_hwc_uint8(cur_recon[i]), caption="current_recon"),
+            wandb.Image(_tensor_to_hwc_uint8(next_gt), caption="next_gt"),
+            wandb.Image(_tensor_to_hwc_uint8(pred_next[i]), caption="pred_next_recon"),
         )
-    wandb_run.log({"reconstruction/val_preview_images": images}, step=step)
+    wandb_run.log({"reconstruction/val_preview_table": table}, step=step)
     decoder.train()
 
 
