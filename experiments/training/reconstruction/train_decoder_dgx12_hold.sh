@@ -96,5 +96,5 @@ CMD=(
 cd "${REPO}"
 export PYTHONPATH="${REPO}/src:${REPO}/external/le-wm:${PYTHONPATH:-}"
 
-exec srun --jobid="${HOLD_JOB}" --overlap --gres=gpu:1 --cpus-per-task=4 --mem=16G \
+exec srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 --gres=gpu:1 --cpus-per-task=4 --mem=16G \
   bash -lc "cd '${REPO}' && CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 ${CMD[*]} 2>&1 | tee -a '${LOG}'"
