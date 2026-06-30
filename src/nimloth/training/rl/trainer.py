@@ -460,7 +460,7 @@ def train_rl(
             device_id=torch.cuda.current_device(),
             sharding_strategy=ShardingStrategy.FULL_SHARD,
             mixed_precision=mp,
-            sync_module_states=False,  # False: each rank loads independently (LoRA compat)
+            sync_module_states=True,
             use_orig_params=True,
         )
         # Small modules — no need for FSDP (minimal memory), avoid dtype conflicts
