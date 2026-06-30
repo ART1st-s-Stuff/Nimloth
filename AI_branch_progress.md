@@ -24,18 +24,20 @@
   - 初始化：SFT1 `epoch_002/hf_merged`
   - checkpoint：每 100 step，keep last 2
   - packed-forward off, trajectory-aware batching off
-- 健康启动证据：`train_step_log.csv` 已写到至少 `global_step=13`，GPU 显存约 59–64GB/H800，无 OOM；W&B run id `ubd9pyyr`。
+- 健康启动证据：`train_step_log.csv` 曾写到至少 `global_step=21`，GPU 显存约 59–65GB/H800，无 OOM；W&B run id `ubd9pyyr`。
 
-### 失败/修正
+### 失败/修正/停止
 
 - 初次输出目录 `sft2_1024_llmlora_vfull_pair2_ep1_dgx56` 失败在模型加载前：实际 `torchrun` 解析到了 `.venv`，触发 transformers/Qwen2.5-VL `GenerationConfig` 的 `dict.to_dict` 错误。
-- retry1 改为显式 `/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 -m torch.distributed.run`，已健康运行。
-- 远程 `.worktree/dev/external/VAGEN` 子模块因 GitHub SSH 权限未初始化；SFT2 不 import VAGEN，未阻塞。
+- retry1 改为显式 `/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 -m torch.distributed.run`，曾健康进入训练。
+- 2026-07-01：人类指出先前代码实现/设计“绝对错误”，要求立即停止当前训练。已 kill retry1 launcher 与 dgx-56 hold job `462499` 内训练子进程，保留 hold job；停止后 dgx-56 8 张 GPU 均为 0 MiB 显存占用。
+- 当前 run 不得 resume；已有输出/checkpoint 不能用于结论。继续实验前必须重新审查并确认正确设计。
+- 远程 `.worktree/dev/external/VAGEN` 子模块因 GitHub SSH 权限未初始化；SFT2 不 import VAGEN，未阻塞启动。
 
 ### 待跟进
 
-- 继续观察是否达到 step 100 checkpoint、是否完成 epoch 和 validation。
-- 结束后触发 on-experiment-end，记录指标、checkpoint 和是否需要 reconstruction decoder 训练。
+- 先诊断并修正被人类指出的错误设计/实现，得到明确确认后再启动新的 SFT2。
+- 若重新开始实验，必须新建输出目录，不复用当前 retry1。 
 
 ## 2026-06-30：fix/fsdp — RL FSDP safety refactor（方案 A 实现完成）
 
