@@ -66,6 +66,12 @@ def encode_trajectory_hiddens(
     )
     from nimloth.training.common.qwen_batch import build_qwen_batch
 
+    # FSDP FULL_SHARD has issues with embedding during no_grad in train mode.
+    # Switch to eval during encoding to avoid 'weight must be 2-D' errors.
+    was_training = qwen_model.training
+    if was_training:
+        qwen_model.eval()
+
     states: list[torch.Tensor] = []
     tokens = LatentActionTokens()
 
@@ -100,6 +106,8 @@ def encode_trajectory_hiddens(
         latent = extract_latent_state(hidden[0:1], latent_idx)  # (1, hidden_dim)
         states.append(latent.squeeze(0).detach().cpu())
 
+    if was_training:
+        qwen_model.train()
     return states
 
 
