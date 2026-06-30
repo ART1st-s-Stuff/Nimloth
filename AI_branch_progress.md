@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-07-01：SFT2 1024-dim latent WM on dgx-56 已健康启动
+
+### 已完成
+
+- 本地将 SFT2 WM latent / predictor 扩大并提交到 `origin/dev`：
+  - commit `d554e17 config: scale latent wm and reconstruction`
+  - `emb_dim=1024`
+  - predictor: depth=6, heads=16, hidden_dim=1024, mlp_dim=4096
+  - reconstruction decoder: image_size=255, patch_size=15, hidden_dim=1024, depth=4, heads=16
+- 进度文件提交：`c126b88 docs: track sft2 1024 dgx56 run`
+- 服务器 worktree：`/project/peilab/atst/nimloth/.worktree/dev`，同步到 `c126b88efc28edd19385e12cf796a7675edba5a5`。
+- split 核实：
+  - `train_all.jsonl`: 3240 records, 全部 `split=train`, 54,702 transitions
+  - `val_all.jsonl`: 360 records, 全部 `split=val`, 5,468 transitions
+- dgx-56 hold job `462499` 上启动 SFT2：
+  - 有效输出目录：`/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-07-01/sft2_1024_llmlora_vfull_pair2_ep1_dgx56_retry1`
+  - 配置：1 epoch, `llm_tune=lora`, `vision_tune=full`, `lora_r=64`, `lora_alpha=128`, `NIMLOTH_DDP_GPU_STRIDE=2`, 4 DDP ranks over 8 H800
+  - 初始化：SFT1 `epoch_002/hf_merged`
+  - checkpoint：每 100 step，keep last 2
+  - packed-forward off, trajectory-aware batching off
+- 健康启动证据：`train_step_log.csv` 已写到至少 `global_step=13`，GPU 显存约 59–64GB/H800，无 OOM；W&B run id `ubd9pyyr`。
+
+### 失败/修正
+
+- 初次输出目录 `sft2_1024_llmlora_vfull_pair2_ep1_dgx56` 失败在模型加载前：实际 `torchrun` 解析到了 `.venv`，触发 transformers/Qwen2.5-VL `GenerationConfig` 的 `dict.to_dict` 错误。
+- retry1 改为显式 `/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 -m torch.distributed.run`，已健康运行。
+- 远程 `.worktree/dev/external/VAGEN` 子模块因 GitHub SSH 权限未初始化；SFT2 不 import VAGEN，未阻塞。
+
+### 待跟进
+
+- 继续观察是否达到 step 100 checkpoint、是否完成 epoch 和 validation。
+- 结束后触发 on-experiment-end，记录指标、checkpoint 和是否需要 reconstruction decoder 训练。
+
 ## 2026-06-30：fix/fsdp — RL FSDP safety refactor（方案 A 实现完成）
 
 ### 已完成
