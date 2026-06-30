@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 from pathlib import Path
@@ -113,6 +114,18 @@ def test_jsonl_collector_multiple_source_files(tmp_path: Path) -> None:
 
     result = collector.collect(num_episodes=10)
     assert len(result) == 10
+
+
+def test_jsonl_collector_reads_gzip_files(tmp_path: Path) -> None:
+    """Directory expansion advertises .jsonl.gz, so loading must support gzip."""
+    gz_path = tmp_path / "compressed.jsonl.gz"
+    trajs = [_make_traj(f"gz_{i:03d}") for i in range(4)]
+    with gzip.open(gz_path, "wt", encoding="utf-8") as f:
+        for traj in trajs:
+            f.write(json.dumps(traj.to_record(), ensure_ascii=False) + "\n")
+
+    collector = JSONLRolloutCollector(sources=[tmp_path])
+    assert collector.total_trajectories == 4
 
 
 # ---------------------------------------------------------------------------

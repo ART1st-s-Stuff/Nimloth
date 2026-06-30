@@ -279,6 +279,22 @@ def _freeze(module: torch.nn.Module) -> None:
         p.requires_grad = False
 
 
+def _broadcast_module_state(module: torch.nn.Module, src: int = 0) -> None:
+    """Synchronize a small non-FSDP module across ranks.
+
+    JSONL/FSDP mode intentionally makes every rank consume identical data so the
+    small WM/value modules can remain local replicas.  This only works if their
+    initial parameters are identical; CLI construction happens before
+    ``setup_dist()``, so we explicitly broadcast rank-0 state after device setup.
+    """
+
+    if not (dist.is_available() and dist.is_initialized()):
+        return
+    for tensor in module.state_dict().values():
+        if torch.is_tensor(tensor):
+            dist.broadcast(tensor, src=src)
+
+
 def train_rl(
     *,
     args: argparse.Namespace,
@@ -452,6 +468,12 @@ def train_rl(
     state_proj.to(device)
     wm_predictor.to(device)
     value_head.to(device)
+    if world > 1:
+        _broadcast_module_state(state_proj)
+        _broadcast_module_state(wm_predictor)
+        _broadcast_module_state(value_head)
+        if is_main():
+            print(json.dumps({"synced_local_wm_modules": True, "world_size": world}))
 
     # --- Vision EMA -----------------------------------------------------------
     vision_ema: VisionEncoderEMA | None = None

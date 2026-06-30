@@ -20,7 +20,7 @@
 1. ~~`src/nimloth/training/rl/trainer.py` 的多 GPU 训练同步语义不完整。~~ **✅ 已在 fix/fsdp 修复（方案 A）**
    - ~~`world > 1` 时只把 Qwen 包成 FSDP，但 `state_proj`、`wm_predictor`、`value_head` 仍是普通本地模块，并且参与同一个 optimizer（约在 `trainer.py:481-499`）。这些模块的梯度不会跨 rank all-reduce，可能导致各 rank 参数分叉。~~
    - ~~同一训练循环中每个 rank 都会调用 `collector.collect()`（约 `trainer.py:535-543`），没有只在 main rank 收集并广播，也没有明确按 rank 分片环境/输出目录；多 rank 可能重复或竞争环境与 rollout 输出。~~
-   - **修复**：分布式 + `EnvRolloutCollector` 直接 raise RuntimeError；`JSONLRolloutCollector` 重写支持 CLI 指定多源 JSONL 文件/目录按 iteration 轮转读取，所有 rank 确定性返回相同轨迹；batch 选择使用 `seed+iteration` 确定性 generator。
+   - **修复**：分布式 + `EnvRolloutCollector` 直接 raise RuntimeError；`JSONLRolloutCollector` 重写支持 CLI/config 指定多源 JSONL 文件/目录按 iteration 轮转读取，所有 rank 确定性返回相同轨迹；batch 选择使用 `seed+iteration` 确定性 generator；非 FSDP 的 `state_proj`、`wm_predictor`、`value_head` 在 distributed setup 后从 rank0 广播初始参数，确保本地副本起点一致。
 
 2. ~~`src/nimloth/training/rl/trainer.py` 的 PPO advantage 标准化在 batch 很小时有 NaN 风险。~~ **✅ 已修复**
    - ~~`advantages.std()` 默认是 unbiased 估计；当 batch size 为 1 时结果为 NaN（约 `trainer.py:608-610`）。若配置或可用 transition 数导致单样本 batch，会污染 actor loss。~~

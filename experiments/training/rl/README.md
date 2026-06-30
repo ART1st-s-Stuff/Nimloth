@@ -42,12 +42,13 @@ python -m nimloth.training.rl.cli \
   --output-dir outputs/experiments/training/rl/test
 ```
 
-`--jsonl-sources` 接受一个或多个 JSONL 文件或目录（目录下递归搜索 `*.jsonl`）。训练时轮转消费所有轨迹；数据耗尽时自动回到开头（loop）。
+`--jsonl-sources` 接受一个或多个 JSONL 文件或目录（目录下递归搜索 `*.jsonl` / `*.jsonl.gz`）。也可以在 config 中设置 `rollout.jsonl_sources`。训练时轮转消费所有轨迹；数据耗尽时自动回到开头（loop）。
 
 ### 分布式安全说明
 
 - `JSONLRolloutCollector` 在所有 rank 上返回相同轨迹序列（确定性轮转），保证 FSDP forward 次数一致。
 - Batch 选择使用 per-iteration 确定性 generator（`seed + iteration`），不依赖全局 RNG 状态同步。
+- 非 FSDP 的 `state_proj`、`wm_predictor`、`value_head` 会在 distributed setup 后从 rank0 广播初始参数；因为所有 rank 消费相同数据，它们的本地副本会保持同步。
 - 所有 rank 必须调用相同的 `collect()` 次数——训练循环已保证这一点。
 
 ## 输出
