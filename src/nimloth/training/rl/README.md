@@ -2,6 +2,17 @@
 
 在线 RL 训练：Qwen policy 与环境交互采集轨迹 → Qwen 编码 latent state → 训练 WM predictor + value head。
 
+## 运行模式
+
+| 模式 | `--env-url` | `--use-jsonl-rollout` | 适用 |
+|------|-------------|----------------------|------|
+| 单 GPU 在线 | 需要 | 否 | `world == 1` 调试 |
+| JSONL 离线 | 不需要 | 是 | 分布式 FSDP；独立 rollout 生成 JSONL |
+
+**分布式/FSDP (`world > 1`) 训练禁止使用 `EnvRolloutCollector`**。trainer 会在启动时检测并报错，要求使用 `--use-jsonl-rollout --jsonl-sources <路径>`。
+
+JSONL collector 支持从指定文件/目录读取轨迹，按 iteration 轮转消费（数据耗尽自动循环），所有 rank 得到相同轨迹序列，保证 FSDP forward 触碰次数一致。Batch 选择使用 per-iteration 确定性 generator (`seed + iteration`)。
+
 ## 总览
 
 ```
@@ -184,11 +195,11 @@ agent.act(current_image):   # called at each env step
 
 | 文件 | 职责 |
 |------|------|
-| `rollout.py` | `RolloutTrajectory` 数据结构，`VAGENRolloutCollector` / `JSONLRolloutCollector` |
-| `loss.py` | `compute_predictor_loss`（MSE dynamics），`compute_value_loss`（MSE + ranking） |
-| `trainer.py` | `train_rl` — 在线 RL 主循环，含 Qwen 加载、DDP、resume |
+| `rollout.py` | `RolloutTrajectory` 数据结构，`EnvRolloutCollector`（单 GPU 在线），`JSONLRolloutCollector`（离线/分布式，支持多源文件轮转） |
+| `loss.py` | `compute_predictor_loss`（MSE dynamics），`compute_value_loss`（MSE + ranking），`compute_advantages`（unbiased=False，避免 batch size=1 NaN），`compute_actor_loss`（PPO clipped） |
+| `trainer.py` | `train_rl` — 在线 RL 主循环，含 Qwen 加载、FSDP/DDP、resume、分布式 guard |
 | `checkpoint.py` | `save_rl_checkpoint` / `load_rl_wm_checkpoint` / `load_lora_adapter_state` |
-| `cli.py` | 命令行入口，`--llm-tune` / `--vision-tune` / `--resume` 等参数 |
+| `cli.py` | 命令行入口，`--llm-tune` / `--vision-tune` / `--resume` / `--jsonl-sources` 等参数 |
 
 ## 入口
 

@@ -89,7 +89,8 @@ def compute_advantages(
     Returns advantages detached from the computation graph.
     """
     advantages = value_targets - predicted_values.detach()
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    # unbiased=False 避免 batch size=1 时 std 产生 NaN（单样本下 unbiased std 分母为 0）
+    advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
     return advantages
 
 
