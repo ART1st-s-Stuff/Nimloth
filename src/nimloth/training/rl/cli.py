@@ -63,6 +63,8 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
                     help="VAGEN model checkpoint dir for inline rollout (optional)")
     ap.add_argument("--use-jsonl-rollout", action="store_true",
                     help="Read trajectories from pre-existing JSONL (external rollout)")
+    ap.add_argument("--jsonl-sources", type=Path, nargs="+", default=None,
+                    help="JSONL 文件或目录列表，用于 JSONL rollout collector（与 --use-jsonl-rollout 配合）")
 
     # ---- Training control ---------------------------------------------------
     ap.add_argument("--resume", action="store_true",
@@ -179,10 +181,13 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"rollout_mode": "env", "env_url": args.env_url,
                               "temperature": rl_cfg.get("temperature", 1.0),
                               "top_p": rl_cfg.get("top_p", 1.0)}))
-    elif args.use_jsonl_rollout or (args.vagen_config is None):
-        collector = JSONLRolloutCollector()
+    elif args.use_jsonl_rollout or (args.vagen_config is None and not args.env_url):
+        jsonl_sources = args.jsonl_sources or []
+        collector = JSONLRolloutCollector(sources=jsonl_sources)
         if is_main():
-            print(json.dumps({"rollout_mode": "jsonl"}))
+            print(json.dumps({"rollout_mode": "jsonl",
+                              "num_sources": len(jsonl_sources),
+                              "sources": [str(s) for s in jsonl_sources]}))
     else:
         collector = VAGENRolloutCollector(
             vagen_config_path=args.vagen_config,

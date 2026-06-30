@@ -602,15 +602,71 @@ def _run_vagen_rollout(
 
 
 class JSONLRolloutCollector:
-    """Read trajectories from pre-existing JSONL files.
+    """Read trajectories from pre-existing JSONL files/directories.
 
-    Used when VAGEN rollout is run externally (e.g. via Slurm) and the RL
-    trainer consumes the resulting JSONL files.  Each call to ``collect``
-    reads the given output directory's JSONL and returns parsed trajectories.
+    用于外部 rollout（如 Slurm 上的 rollout_env.py）生成 JSONL 后，RL trainer
+    从 JSONL 消费轨迹的离线场景。
+
+    支持：
+    - 指定一个或多个 JSONL 文件或目录（目录下递归搜索 ``*.jsonl`` 和 ``*.jsonl.gz``）
+    - 按 iteration 循环读取（数据轮转，不会终止训练）
+    - 分布式环境下所有 rank 调用 ``collect()`` 得到相同结果（确定性轮转）
+
+    数据轮转策略：
+    - 首次调用 ``collect()`` 时加载所有 JSONL 文件中的所有轨迹并 shuffle
+    - 每次调用返回 ``num_episodes`` 条，内部指针前进
+    - 指针到达末尾时自动回到开头（loop=True）
+    - 所有 rank 同时调用、相同调用次数 → 得到相同轨迹序列
     """
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, sources: list[Path] | None = None, loop: bool = True) -> None:
+        self._sources: list[Path] = list(sources) if sources else []
+        self._loop = loop
+        self._all_trajectories: list[RolloutTrajectory] | None = None
+        self._cursor: int = 0
+        self._call_count: int = 0  # 外部 collect 调用次数（用于分布式调试）
+
+    def _load_all(self) -> list[RolloutTrajectory]:
+        """首次调用时加载所有 JSONL 源文件中的轨迹并 shuffle。"""
+        all_trajs: list[RolloutTrajectory] = []
+        files = self._expand_sources()
+        if not files:
+            raise FileNotFoundError(
+                f"JSONLRolloutCollector: 未找到任何 JSONL 文件，sources={self._sources}"
+            )
+        for fpath in files:
+            try:
+                loaded = load_trajectories(fpath)
+                all_trajs.extend(loaded)
+            except Exception as e:
+                print(json.dumps({"jsonl_load_warning": str(fpath), "error": str(e)}),
+                      flush=True)
+        if not all_trajs:
+            raise ValueError(
+                f"JSONLRolloutCollector: 从 {len(files)} 个 JSONL 文件中未读到任何有效轨迹"
+            )
+        # shuffle 一次保证数据不按原始顺序；分布式下所有 rank 读同一 shuffle 结果
+        import random
+        rng = random.Random(42)
+        rng.shuffle(all_trajs)
+        return all_trajs
+
+    def _expand_sources(self) -> list[Path]:
+        """展开 sources 中的目录 → 所有 .jsonl / .jsonl.gz 文件。"""
+        files: list[Path] = []
+        for src in self._sources:
+            if src.is_dir():
+                for pat in ("**/*.jsonl", "**/*.jsonl.gz"):
+                    files.extend(sorted(src.glob(pat)))
+            elif src.exists():
+                files.append(src)
+        return files
+
+    @property
+    def total_trajectories(self) -> int:
+        if self._all_trajectories is None:
+            self._all_trajectories = self._load_all()
+        return len(self._all_trajectories)
 
     def collect(
         self,
@@ -619,12 +675,33 @@ class JSONLRolloutCollector:
         max_steps_per_episode: int = 20,
         output_dir: Path | None = None,
     ) -> list[RolloutTrajectory]:
-        if output_dir is None:
+        """返回 ``num_episodes`` 条轨迹，从已加载的源数据中轮转读取。
+
+        所有 rank 调用时都会拿到相同的轨迹序列（确定性），保证 FSDP 训练一致性。
+        """
+        self._call_count += 1
+        if self._all_trajectories is None:
+            self._all_trajectories = self._load_all()
+
+        total = len(self._all_trajectories)
+        if total == 0:
             return []
-        jsonl_path = output_dir / "trajectories.jsonl"
-        if not jsonl_path.exists():
-            return []
-        return load_trajectories(jsonl_path)[:num_episodes]
+
+        result: list[RolloutTrajectory] = []
+        needed = num_episodes
+        while needed > 0:
+            remaining = total - self._cursor
+            take = min(needed, remaining)
+            if take > 0:
+                result.extend(self._all_trajectories[self._cursor:self._cursor + take])
+                self._cursor += take
+                needed -= take
+            if self._cursor >= total:
+                if self._loop:
+                    self._cursor = 0
+                else:
+                    break  # 不循环，剩余不足
+        return result
 
 
 # ---------------------------------------------------------------------------

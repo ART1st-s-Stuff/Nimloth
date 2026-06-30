@@ -429,6 +429,14 @@ def train_rl(
     # --- Wire up EnvRolloutCollector with loaded model -----------------------
     from nimloth.training.rl.rollout import EnvRolloutCollector
     if isinstance(collector, EnvRolloutCollector):
+        if world > 1:
+            raise RuntimeError(
+                "分布式/FSDP trainer 不能直接让 EnvRolloutCollector 使用 FSDP-wrapped Qwen "
+                "做动态 env rollout。各 rank 的 episode 长度、图片数、失败时机不同，会导致 "
+                "FSDP forward 触碰次数和形状不一致，可能 deadlock 或错误训练。\n"
+                "请先使用独立 rollout backend（如 experiments/training/rl/rollout_env.py）"
+                "生成 JSONL 文件，再用 --use-jsonl-rollout --jsonl-sources 指定 JSONL 路径训练。"
+            )
         collector._model = model
         collector._processor = processor
         collector._device = device
@@ -566,7 +574,11 @@ def train_rl(
             continue
 
         # 3. Train predictor + value head (1 step per iteration) ---------------
-        indices = torch.randperm(len(transitions))[:batch_size]
+        # 使用 per-iteration 确定性 generator 保证所有 rank 选同一 batch，
+        # 不依赖全局 RNG 状态同步（FSDP 等可能引入细微信号差异）。
+        g = torch.Generator(device="cpu")
+        g.manual_seed(seed + iteration)
+        indices = torch.randperm(len(transitions), generator=g)[:batch_size]
         batch = [transitions[i] for i in indices]
 
         hidden_cur = torch.stack([b["qwen_hidden_current"] for b in batch]).to(device)
@@ -607,7 +619,8 @@ def train_rl(
                 chosen_values = all_values.gather(1, actions.unsqueeze(1)).squeeze(1)
             advantages = (value_targets.to(device=chosen_values.device, dtype=chosen_values.dtype)
                           - chosen_values.detach())
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            # unbiased=False 避免 batch size=1 时 std 产生 NaN
+            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
 
             # Build PPO items
             ppo_items = []
