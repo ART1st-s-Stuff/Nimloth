@@ -171,18 +171,30 @@ def _log_wandb_val_images(
     table = wandb.Table(
         columns=["sample_id", "current_gt", "current_recon", "next_gt", "pred_next_recon"]
     )
+    log_payload = {}
     for i, item in enumerate(items):
         cur_gt = image_to_tensor(item["current_image_path"], image_size=args.image_size, device=device)
         next_gt = image_to_tensor(item["next_image_path"], image_size=args.image_size, device=device)
         sample_id = str(item.get("id", i))
+        cur_gt_np = _tensor_to_hwc_uint8(cur_gt)
+        cur_recon_np = _tensor_to_hwc_uint8(cur_recon[i])
+        next_gt_np = _tensor_to_hwc_uint8(next_gt)
+        pred_next_np = _tensor_to_hwc_uint8(pred_next[i])
         table.add_data(
             sample_id,
-            wandb.Image(_tensor_to_hwc_uint8(cur_gt), caption="current_gt"),
-            wandb.Image(_tensor_to_hwc_uint8(cur_recon[i]), caption="current_recon"),
-            wandb.Image(_tensor_to_hwc_uint8(next_gt), caption="next_gt"),
-            wandb.Image(_tensor_to_hwc_uint8(pred_next[i]), caption="pred_next_recon"),
+            wandb.Image(cur_gt_np, caption="current_gt"),
+            wandb.Image(cur_recon_np, caption="current_recon"),
+            wandb.Image(next_gt_np, caption="next_gt"),
+            wandb.Image(pred_next_np, caption="pred_next_recon"),
         )
-    wandb_run.log({"reconstruction/val_preview_table": table}, step=step)
+        composite = np.concatenate([cur_gt_np, cur_recon_np, next_gt_np, pred_next_np], axis=1)
+        log_payload[f"reconstruction/preview_{i:02d}"] = wandb.Image(
+            composite,
+            caption=f"{sample_id}: current_gt | current_recon | next_gt | pred_next_recon",
+        )
+    log_payload["reconstruction/val_preview_table"] = table
+    wandb_run.log(log_payload, step=step)
+    print(json.dumps({"wandb_val_preview_logged": True, "step": step, "num_items": len(items)}))
     decoder.train()
 
 
@@ -298,6 +310,20 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
         optimizer=optimizer,
         device=device,
     )
+    if wandb_run is not None and val_preview_items:
+        _log_wandb_val_images(
+            wandb_run=wandb_run,
+            model=model,
+            processor=processor,
+            token_id_map=token_id_map,
+            state_proj=state_proj,
+            wm_predictor=wm_predictor,
+            decoder=decoder,
+            items=val_preview_items,
+            device=device,
+            args=args,
+            step=step,
+        )
     best_val = float("inf")
     for epoch in range(start_epoch, args.epochs + 1):
         decoder.train()
