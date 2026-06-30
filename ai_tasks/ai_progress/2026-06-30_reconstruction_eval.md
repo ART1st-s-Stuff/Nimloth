@@ -30,6 +30,13 @@
 - `python -m pytest ...` 未运行成功：当前容器没有 `pytest`。
 - 无法执行 torch runtime smoke test：当前容器没有 `torch`。
 
+## 运行进展（2026-06-30 晚）
+- reconstruction full decoder 训练已多次 resume，当前有效运行切换到 `dgx-03`，Slurm job `462610`。
+- 因用户指出不能使用 `dgx-56`，已取消 `dgx-56` 上 reconstruction step；`dgx-56` 只剩 hold job，不再跑本训练。
+- 当前从 `/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-06-30/reconstruct_decoder_sft2_full_4epoch/step_000021000` resume。
+- 最新确认日志已继续输出到约 `step=21450`，W&B project 强制为 `nimloth`。
+- W&B preview logging 已改为同时上传 `reconstruction/val_preview_table` 与独立 chart keys `reconstruction/preview_00` ... `reconstruction/preview_04`；val previews 按不同 rollout record 均匀取样。
+
 ## 待确认问题
 - 是否要继续把 reconstruction metrics 接入 SFT2/RL 主 validation logging。
 - 是否要继续实现多步 open-loop rollout reconstruction。
