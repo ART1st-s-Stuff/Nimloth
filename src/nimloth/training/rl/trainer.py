@@ -467,10 +467,6 @@ def train_rl(
             sync_module_states=True,
             use_orig_params=True,
         )
-        if uses_lora(args):
-            from torch.distributed.fsdp import _set_static_graph
-            # FSDP handles LoRA fine without static graph
-
         state_proj = FSDP(state_proj, device_id=torch.cuda.current_device(),
                           sharding_strategy=ShardingStrategy.FULL_SHARD,
                           sync_module_states=True, use_orig_params=True)
