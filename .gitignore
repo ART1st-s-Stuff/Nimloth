@@ -67,3 +67,12 @@ NODES.md
 
 # VAGEN worktree (qwen bug repro)
 external/VAGEN.qwen-bug-repro/
+
+# Local-only agent skills (per-skill gitignore; see .agents/skills/README.md)
+.agents/skills/slurm/
+.agents/skills/slurm
+.agents/skills/git-worktree/
+.agents/skills/git-worktree
+
+# worktree
+.worktree

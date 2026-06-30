@@ -15,6 +15,7 @@ LeWM 核心算子来自 `external/le-wm`，经 `wm/_vendor_lewm.py` 以最小子
 | `predictor.py` | `LatentWMPredictor`（Qwen-latent 动力学，无 pixel encoder） |
 | `state_proj.py` | `StateProjector`：Qwen hidden → WM emb |
 | `value_head.py` | `ValueHead`：state emb → 每 action 的 value |
+| `reconstruction.py` | `WMImageDecoder`：post-hoc reconstruction diagnostic decoder（不参与 SFT2/RL loss） |
 
 ## 与 training 的边界
 

@@ -5,5 +5,6 @@
 | 文件 | 内容 |
 |------|------|
 | `rollout.py` | Nimloth jsonl 轨迹级成功率等 |
+| `reconstruction.py` | WM reconstruction diagnostic：oracle / predicted / copy / shuffled-action 对比 |
 
 实验入口示例：`experiments/training/sft2/eval_val_rollout_success.py`。
