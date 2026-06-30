@@ -97,7 +97,7 @@ CUDA_VISIBLE_DEVICES=1,2 /project/peilab/atst/nimloth/.venv-vagen-main/bin/pytho
     -m nimloth.training.rl.cli \
     --config configs/training/rl/exp_60iter_val5_save10.yaml \
     --model "${SFT2_MODEL}" \
-    --llm-tune lora \
+    --llm-tune full \
     --vision-tune freeze \
     --gradient-checkpointing \
     --wm-checkpoint "${SFT2_CHECKPOINT}/wm_predictor" \

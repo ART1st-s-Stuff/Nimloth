@@ -504,3 +504,10 @@
   - `experiments/training/baseline/run_legacy_reproduction.sh`：调用 `python -m vagen.env.create_dataset` 生成 parquet，并调用 legacy `python -m vagen.trainer.main_ppo`，设置 `algorithm.adv_estimator=bi_level_gae`、`rollout_manager.use_multi_turn_reward=True`、`use_loss_mask=True`、`use_gae_mask=True`、`reward_model.enable=False`、`rollout_manager.max_turns=20`。
   - `experiments/training/baseline/legacy_preempt_reproduction.slurm`：2 个 preempt 节点，每节点 2 GPU env / 4 GPU train，在 head node 启 legacy `vagen.server.server`，再启动 Ray + legacy PPO。
 - 验证：`bash -n` 通过；未启动昂贵 Slurm 训练，等待人类确认资源/输出方案。
+- **已知 Bug: FSDP + PEFT LoRA `_is_root` assertion 冲突.**
+  PyTorch FSDP (`torch.distributed.fsdp.FullyShardedDataParallel`) 与 PEFT 的 `get_peft_model` 不兼容。
+  即使移除 `modules_to_save=["embed_tokens","lm_head"]`，`LoraConfig` 注入的 LoRA 层仍会触发
+  `AssertionError: Non-root FSDP instance's _is_root should not have been set yet`。
+  相关 upstream issues: [EasyR1#650](https://github.com/hiyouga/EasyR1/pull/650), [Accelerate#3258](https://github.com/huggingface/accelerate/issues/3258)。
+  临时方案：切换到 `--llm-tune full`（全参数训练），避开 PEFT LoRA。
+  后续需要：升级 PyTorch 或手动实现 LoRA 以避开 `get_peft_model` 的模块包装。
