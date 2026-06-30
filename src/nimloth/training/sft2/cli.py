@@ -146,11 +146,20 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument(
         "--max-steps-per-trajectory",
         type=int,
-        default=8,
+        default=16,
         help=(
-            "When --full-trajectory-batching is enabled, chunk records longer "
-            "than this number of steps into multiple micro-batches.  Default 8 "
-            "keeps GPU memory bounded while benefiting SIGReg with long runs."
+            "When --full-trajectory-batching is enabled, hard ceiling on steps "
+            "per micro-batch (default 16).  The primary limit is --max-images-per-batch."
+        ),
+    )
+    ap.add_argument(
+        "--max-images-per-batch",
+        type=int,
+        default=32,
+        help=(
+            "When --full-trajectory-batching is enabled, cap total cumulative "
+            "prefix images per micro-batch (default 32).  Prevents CUDA OOM "
+            "from long trajectories with large image prefixes."
         ),
     )
     ap.add_argument(
