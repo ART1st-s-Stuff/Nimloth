@@ -89,7 +89,7 @@ def encode_trajectory_hiddens(
             ]},
         ]
         item = {"messages": messages}
-        enc = build_qwen_batch([item], processor, max_length=2048)
+        enc = build_qwen_batch([item], processor, max_length=8192)
         model_inputs = {k: v.to(device) for k, v in enc.items()}
         with torch.no_grad():
             output = qwen_model(**model_inputs, output_hidden_states=True, return_dict=True)
