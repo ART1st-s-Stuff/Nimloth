@@ -559,6 +559,9 @@ def train_rl(
         # --- PPO actor loss (Qwen update) ---
         actor_metrics: dict[str, float] = {}
         if actor_enabled:
+            import gc
+            torch.cuda.empty_cache()
+            gc.collect()
             from nimloth.training.rl.loss import compute_actor_loss, compute_action_entropy
 
             # advantages from value head
