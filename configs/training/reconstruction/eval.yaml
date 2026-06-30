@@ -1,0 +1,11 @@
+# Offline reconstruction diagnostic eval defaults
+# Use with: python -m nimloth.eval.reconstruction ...
+
+eval:
+  batch_size: 1
+  max_records: -1
+  max_batches: -1
+  max_length: 12000
+  max_pixels: 602112
+  save_samples: 16
+  attn_implementation: sdpa

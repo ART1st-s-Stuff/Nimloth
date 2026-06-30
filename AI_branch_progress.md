@@ -504,3 +504,13 @@
   - `experiments/training/baseline/run_legacy_reproduction.sh`：调用 `python -m vagen.env.create_dataset` 生成 parquet，并调用 legacy `python -m vagen.trainer.main_ppo`，设置 `algorithm.adv_estimator=bi_level_gae`、`rollout_manager.use_multi_turn_reward=True`、`use_loss_mask=True`、`use_gae_mask=True`、`reward_model.enable=False`、`rollout_manager.max_turns=20`。
   - `experiments/training/baseline/legacy_preempt_reproduction.slurm`：2 个 preempt 节点，每节点 2 GPU env / 4 GPU train，在 head node 启 legacy `vagen.server.server`，再启动 Ray + legacy PPO。
 - 验证：`bash -n` 通过；未启动昂贵 Slurm 训练，等待人类确认资源/输出方案。
+
+## 2026-06-30：feat/reconstruct post-hoc reconstruction diagnostic 初版
+
+- 在 `feat/reconstruct` worktree 开始实现 WM reconstruction diagnostic；目标是 post-hoc 评估，不接入 SFT2/RL 主 loss。
+- 新增 `src/nimloth/wm/reconstruction.py`：`WMImageDecoder` patch-query cross-attention decoder，输入 WM state embedding，输出 RGB image。
+- 新增 `src/nimloth/training/reconstruction/`：独立 decoder 训练 CLI/trainer/README。训练时冻结 Qwen、`StateProjector`、`LatentWMPredictor`，只训练 decoder。
+- 新增 `src/nimloth/eval/reconstruction.py`：offline eval，比较 `oracle=decoder(s_next)`、`pred=decoder(wm_predictor(s_t,a_t))`、`copy=decoder(s_t)`、`shuffled_action`，输出 CSV/summary/sample images。
+- 新增 `configs/training/reconstruction/{defaults,eval}.yaml` 和基础单元测试文件。
+- 验证：当前容器无 `torch`/`pytest`，无法运行 pytest；已运行 `PYTHONPATH=src python -m compileall -q ...` 通过。
+- 未启动训练、评估、rollout、Slurm 或任何昂贵任务。
