@@ -201,7 +201,8 @@ def compute_new_log_probs_for_batch(
         # Build the same Nimloth prompt as _select_action_nimloth
         image_path = item["image_path"]
         nav_instruction = item["nav_instruction"]
-        action_history = item["action_history_names"]
+        # Limit history to last 4 steps to keep image count low (≤5)
+        action_history = item["action_history_names"][-4:]
         num_images = 1 + len(action_history)
 
         messages = [
@@ -441,18 +442,45 @@ def train_rl(
                               "shadow_params": len(vision_ema.shadow),
                               "decay": vision_ema.decay}))
 
-    # --- DDP wrap -------------------------------------------------------------
+    # --- FSDP wrap ------------------------------------------------------------
     if world > 1:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank,
-                     find_unused_parameters=False)
-        if uses_lora(args):
-            model._set_static_graph()
-        state_proj = DDP(state_proj, device_ids=[local_rank], output_device=local_rank,
-                         find_unused_parameters=False)
-        wm_predictor = DDP(wm_predictor, device_ids=[local_rank], output_device=local_rank,
-                           find_unused_parameters=False)
-        value_head = DDP(value_head, device_ids=[local_rank], output_device=local_rank,
-                         find_unused_parameters=False)
+        from torch.distributed.fsdp import (
+            FullyShardedDataParallel as FSDP,
+            ShardingStrategy,
+            MixedPrecision,
+            CPUOffload,
+        )
+        from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+
+        mp = MixedPrecision(
+            param_dtype=torch.bfloat16,
+            reduce_dtype=torch.float32,
+            buffer_dtype=torch.float32,
+        )
+        wrap_policy = size_based_auto_wrap_policy(min_num_params=0)
+
+        model = FSDP(
+            model,
+            auto_wrap_policy=wrap_policy,
+            device_id=torch.cuda.current_device(),
+            sharding_strategy=ShardingStrategy.FULL_SHARD,
+            mixed_precision=mp,
+            sync_module_states=True,
+            use_orig_params=True,
+            forward_prefetch=False,
+        )
+        # Small modules: wrap individually without sub-module policy
+        state_proj = FSDP(state_proj, device_id=torch.cuda.current_device(),
+                          sharding_strategy=ShardingStrategy.FULL_SHARD,
+                          sync_module_states=True, use_orig_params=True)
+        wm_predictor = FSDP(wm_predictor, device_id=torch.cuda.current_device(),
+                            sharding_strategy=ShardingStrategy.FULL_SHARD,
+                            sync_module_states=True, use_orig_params=True)
+        value_head = FSDP(value_head, device_id=torch.cuda.current_device(),
+                          sharding_strategy=ShardingStrategy.FULL_SHARD,
+                          sync_module_states=True, use_orig_params=True)
+        if is_main():
+            print(json.dumps({"fsdp": "wrapped", "world_size": world}))
 
     # --- optimizer ------------------------------------------------------------
     param_groups = [
