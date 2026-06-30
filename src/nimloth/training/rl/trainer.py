@@ -449,6 +449,7 @@ def train_rl(
             ShardingStrategy,
             MixedPrecision,
         )
+        from functools import partial
         from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 
         mp = MixedPrecision(
@@ -459,7 +460,7 @@ def train_rl(
 
         model = FSDP(
             model,
-            auto_wrap_policy=size_based_auto_wrap_policy(min_num_params=0),
+            auto_wrap_policy=partial(size_based_auto_wrap_policy, min_num_params=0),
             device_id=torch.cuda.current_device(),
             sharding_strategy=ShardingStrategy.FULL_SHARD,
             mixed_precision=mp,
