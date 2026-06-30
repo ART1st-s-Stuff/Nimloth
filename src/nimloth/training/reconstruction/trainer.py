@@ -35,6 +35,21 @@ def _encode_states(model, processor, token_id_map, items, state_proj, device, ma
     return state_proj(hidden).float()
 
 
+def _maybe_init_wandb(args: argparse.Namespace, meta: dict) -> object | None:
+    if getattr(args, "no_wandb", False):
+        return None
+    try:
+        import wandb
+    except Exception:
+        return None
+    return wandb.init(
+        project="nimloth",
+        name=getattr(args, "wandb_run_name", None),
+        config=meta,
+        dir=str(args.output_dir),
+    )
+
+
 def train_reconstruction_decoder(args: argparse.Namespace) -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -101,6 +116,7 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
         "decoder_config": decoder.config.__dict__,
     }
     (args.output_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    wandb_run = _maybe_init_wandb(args, meta)
 
     log_path = args.output_dir / "train_step_log.csv"
     with log_path.open("w", newline="") as f:
@@ -125,9 +141,12 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
             step += 1
 
             if step % args.log_interval == 0:
+                loss_value = float(loss.detach().item())
                 with log_path.open("a", newline="") as f:
-                    csv.writer(f).writerow([time.time(), epoch, step, float(loss.detach().item()), "", ""])
-                print(json.dumps({"epoch": epoch, "step": step, "loss": float(loss.detach().item())}))
+                    csv.writer(f).writerow([time.time(), epoch, step, loss_value, "", ""])
+                if wandb_run is not None:
+                    wandb_run.log({"reconstruction/train_loss": loss_value, "epoch": epoch}, step=step)
+                print(json.dumps({"epoch": epoch, "step": step, "loss": loss_value}))
 
         val_metrics = evaluate_reconstruction(
             model=model,
@@ -148,6 +167,11 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
             csv.writer(f).writerow([
                 time.time(), epoch, step, "", val_pred, val_metrics.get("oracle_mse", "")
             ])
+        if wandb_run is not None:
+            wandb_run.log(
+                {f"reconstruction/val_{key}": value for key, value in val_metrics.items()},
+                step=step,
+            )
         decoder.save_checkpoint(args.output_dir / f"epoch_{epoch:03d}")
         if val_pred < best_val:
             best_val = val_pred
@@ -155,4 +179,6 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
         print(json.dumps({"epoch": epoch, "val_metrics": val_metrics, "best_val_pred_mse": best_val}))
 
     decoder.save_checkpoint(args.output_dir / "final")
+    if wandb_run is not None:
+        wandb_run.finish()
     return 0

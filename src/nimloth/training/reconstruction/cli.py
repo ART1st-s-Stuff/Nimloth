@@ -35,6 +35,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--save-samples", type=int, default=16)
     ap.add_argument("--log-interval", type=int, default=10)
     ap.add_argument("--attn-implementation", default="sdpa")
+    ap.add_argument("--wandb-run-name", default=None)
+    ap.add_argument("--no-wandb", action="store_true")
     return ap
 
 
