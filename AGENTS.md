@@ -50,6 +50,7 @@
 - `03_experiments_and_data.md`: 实验相关行为准则。做实验、更改实验代码前必读
 - `04_code_and_repo.md`: 代码与repo规则。动代码之前必读
 - `events/on_progress.md`: 任务有进展时需要做的事
+- `known_errors/`: 已发生且应避免重复的错误列表；当你发现人类明确指出了你的错误，或你已确认某类误判实际发生过时，应在此登记
 
 ## Git worktree
 在本地修改代码时，你应该使用../nimloth-<branch-name> （分支名的`/`在文件夹名称内使用`-`），不要直接在main分支修改，除非Prompt里有显式说明。
