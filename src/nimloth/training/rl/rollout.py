@@ -7,6 +7,7 @@ Each trajectory is later encoded into WM latent states by the trainer.
 
 from __future__ import annotations
 
+import gzip
 import json
 import time
 from dataclasses import dataclass, field
@@ -720,9 +721,10 @@ def save_trajectories(trajectories: list[RolloutTrajectory], output_dir: Path) -
 
 
 def load_trajectories(jsonl_path: Path) -> list[RolloutTrajectory]:
-    """Read trajectories from a Nimloth JSONL file."""
+    """Read trajectories from a Nimloth JSONL or JSONL.GZ file."""
     trajectories: list[RolloutTrajectory] = []
-    with jsonl_path.open("r", encoding="utf-8") as f:
+    opener = gzip.open if jsonl_path.suffix == ".gz" else Path.open
+    with opener(jsonl_path, "rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:

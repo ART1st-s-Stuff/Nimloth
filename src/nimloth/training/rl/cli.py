@@ -66,6 +66,10 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--jsonl-sources", type=Path, nargs="+", default=None,
                     help="JSONL 文件或目录列表，用于 JSONL rollout collector（与 --use-jsonl-rollout 配合）")
 
+    # ---- Logging ------------------------------------------------------------
+    ap.add_argument("--experiment-name", default=None,
+                    help="Optional run name used for wandb if WANDB_RUN_NAME is not set")
+
     # ---- Training control ---------------------------------------------------
     ap.add_argument("--resume", action="store_true",
                     help="Resume from --output-dir/best/")
@@ -182,7 +186,16 @@ def main(argv: list[str] | None = None) -> int:
                               "temperature": rl_cfg.get("temperature", 1.0),
                               "top_p": rl_cfg.get("top_p", 1.0)}))
     elif args.use_jsonl_rollout or (args.vagen_config is None and not args.env_url):
-        jsonl_sources = args.jsonl_sources or []
+        cfg_sources = (
+            config.get("rollout", {}).get("jsonl_sources")
+            or config.get("rl", {}).get("jsonl_sources")
+            or []
+        )
+        jsonl_sources = args.jsonl_sources or [Path(p) for p in cfg_sources]
+        if not jsonl_sources:
+            raise ValueError(
+                "JSONL rollout mode requires --jsonl-sources or rollout.jsonl_sources in config"
+            )
         collector = JSONLRolloutCollector(sources=jsonl_sources)
         if is_main():
             print(json.dumps({"rollout_mode": "jsonl",
