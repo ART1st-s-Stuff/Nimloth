@@ -709,3 +709,18 @@
   - `457346` (`flash_attention_2`): text `0/0`; synthetic image step0 `0.78125`, step1 `0`; real record step0 `9.625`, step1 `7.375`。
 - 两个 job 的 alignment 诊断都通过：`input_ids`、`attention_mask`、`image_grid_thw`、`pixel_values`、`position_ids_eq_full_prefix=true`、`image_features_prefix_max_diff=0.0`。
 - 结论：把 attention backend 从 `sdpa` 切到 `flash_attention_2` **不能恢复** Qwen2.5-VL packed-forward 的 prefix-equivalence；问题不只是 `sdpa` 的已知精度/实现问题。FA2 在 synthetic image 2-step 上反而更差，真实 record 上也仍保持很大的 latent diff。
+
+## 2026-06-30：squash 合并 feat/rl 与 feat/reconstruct 到 dev
+
+- 按人类要求审查并 squash 合并 `feat/rl` 与 `feat/reconstruct` 到当前本地 `dev`（本地未发现 `feat/dev` 分支和 `Jun21-SFT2` tag）。
+- 合并提交：
+  - `240f6bc feat(rl): squash online RL training pipeline`
+  - `e95757f config: squash RL and baseline launch parameters`
+  - `b78b3ee feat(reconstruction): squash decoder training and diagnostics`
+  - `c9291a4 config: add reconstruction training parameters`
+  - `c617da8 docs: record merge review issues`
+- 参数/config 变更已拆为 RL/baseline 与 reconstruction 两个 config 提交；代码与诊断/文档变更分别在 RL、reconstruction squash 提交中。
+- 审查发现的问题已记录到 `ai_tasks/merge_dev.md`，本轮未修复。
+- 合并冲突处理：保留当前 dev 的 `.memory/memories.jsonl` 与 `AI_branch_progress.md` 主体，避免覆盖当前进度/手工合并 memory；`external/VAGEN` 指向 feature 分支 pointer `93c1124aeaa7850098f46f2b708ee224ba894861`；`qwen_tuning.py` 同时保留 torchao workaround 与 RL 的空 `modules_to_save`。
+- 验证：`python -m py_compile` 覆盖新增 RL/environment/agent/reconstruction/wm/eval 源码与相关测试文件通过；`bash -n` 覆盖新增/修改 shell/slurm 脚本通过；pytest 未通过环境验证（系统 Python 无 pytest，`.venv` torch import 缺 `libstdc++.so.6`）。
+- 归档进度文件：`ai_tasks/ai_progress/archives/2026-06-30/merge_feat_reconstruct_rl.md`。
