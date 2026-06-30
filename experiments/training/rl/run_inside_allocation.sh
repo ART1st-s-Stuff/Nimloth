@@ -92,11 +92,14 @@ cd "${REPO}"
 source /project/peilab/atst/flower/.env 2>/dev/null || true
 export WANDB_DIR="${REPO}/.cache/wandb"
 
-CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 python3 -m nimloth.training.rl.cli \
+CUDA_VISIBLE_DEVICES=1,2 /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
+    -m torch.distributed.run --nproc_per_node=2 -- \
+    -m nimloth.training.rl.cli \
     --config configs/training/rl/exp_60iter_val5_save10.yaml \
     --model "${SFT2_MODEL}" \
-    --llm-tune freeze \
+    --llm-tune lora \
     --vision-tune freeze \
+    --gradient-checkpointing \
     --wm-checkpoint "${SFT2_CHECKPOINT}/wm_predictor" \
     --state-proj-checkpoint "${SFT2_CHECKPOINT}/state_proj.pt" \
     --value-head-checkpoint "${SFT2_CHECKPOINT}/value_head" \

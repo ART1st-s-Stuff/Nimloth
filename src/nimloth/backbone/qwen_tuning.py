@@ -65,9 +65,7 @@ def configure_qwen_tuning(
     if uses_lora_flag:
         from peft import LoraConfig, get_peft_model
 
-        modules_to_save: list[str] = []
-        if llm_tune == "lora":
-            modules_to_save.extend(["embed_tokens", "lm_head"])
+        modules_to_save: list[str] = []  # must be empty: FSDP conflicts with modules_to_save
         lora_config = LoraConfig(
             r=args.lora_r,
             lora_alpha=args.lora_alpha,
