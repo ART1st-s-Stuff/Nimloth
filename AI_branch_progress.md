@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-06-30：fix/fsdp — RL FSDP safety refactor（方案 A 实现完成）
+
+### 已完成
+
+- `src/nimloth/training/rl/trainer.py`:
+  - 分布式 guard：`world > 1` + `EnvRolloutCollector` → `RuntimeError`，清晰报错
+  - 确定性 batch：per-iteration generator (`seed+iteration`) 代替全局 RNG
+  - PPO advantage: `std(unbiased=False)` 避免 batch size=1 NaN
+
+- `src/nimloth/training/rl/rollout.py`:
+  - `JSONLRolloutCollector` 重写：支持 `sources: list[Path]`（文件/目录）
+  - 首次加载 shuffle，轮转循环，所有 rank 确定性相同结果
+  - 空源/无效路径报错
+
+- `src/nimloth/training/rl/cli.py`:
+  - 新增 `--jsonl-sources` (nargs="+")
+  - 非 `--env-url` 且非 `--vagen-config` 时默认走 JSONL
+
+- `src/nimloth/training/rl/loss.py`:
+  - `compute_advantages()`: `std(unbiased=False)`
+
+- `tests/training/rl/test_rollout_jsonl.py`: 新增 10 项测试
+  - JSONL 加载、轮转、目录展开、多文件、确定性、空源报错
+  - advantage 单样本 NaN、多样本 normalization
+
+- 文档更新: `ai_tasks/merge_dev.md`、`experiments/training/rl/README.md`、`src/nimloth/training/rl/README.md`
+
+- 提交: `d6e1c1f` on `fix/fsdp`
+
+### 验证
+
+- `py_compile` 全部通过 (src/nimloth/training/rl/*.py, experiments/training/rl/*.py, tests/training/rl/*.py)
+- `bash -n` 全部通过
+- 本地无 torch/pytest 环境，无法运行测试
+
+### 风险
+
+- `JSONLRolloutCollector` shuffle 使用固定 seed(42)，不同 run 数据顺序相同（可改）
+- `world > 1` 时 small modules (state_proj, wm_predictor, value_head) 仍不跨 rank all-reduce — 梯度可能分叉。短期方案：这些模块参与 FSDP optimizer 但梯度在每 rank 上独立更新。对训练稳定性影响未知，需要真实多 GPU 训练验证。
+- 未实现 vLLM rollout backend（按计划允许）
+
+---
+
 ## 2026-06-21：Qwen2.5-VL packed-forward monkey patch probe
 
 ### 已完成
