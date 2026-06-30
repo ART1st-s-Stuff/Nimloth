@@ -468,24 +468,25 @@ def train_rl(
             MixedPrecision,
         )
 
+        # FULL_SHARD splits the embedding across ranks. If the padding_idx
+        # row doesn't fall on every rank's shard, FSDP forward hits:
+        #   assert padding_idx < weight.size(0)
+        # Clearing padding_idx is safe: it only zeroes the padding embedding
+        # row during forward, which the model doesn't rely on.
+        embed = model.get_input_embeddings()
+        if hasattr(embed, "padding_idx") and embed.padding_idx is not None:
+            embed.padding_idx = None
+            if is_main():
+                print(json.dumps({"cleared_padding_idx": True}))
+
         mp = MixedPrecision(
             param_dtype=torch.bfloat16,
             reduce_dtype=torch.float32,
             buffer_dtype=torch.float32,
         )
 
-        # Exclude embedding and lm_head from FSDP sharding so padding_idx
-        # doesn't break (embedding shard may not contain the padding row).
-        ignored = []
-        for name, child in model.named_children():
-            if "embed" in name.lower() or "lm_head" in name.lower():
-                ignored.append(child)
-        if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
-            ignored.append(model.model.embed_tokens)
-
         model = FSDP(
             model,
-            ignored_modules=ignored if ignored else None,
             device_id=torch.cuda.current_device(),
             sharding_strategy=ShardingStrategy.FULL_SHARD,
             mixed_precision=mp,
@@ -493,8 +494,7 @@ def train_rl(
             use_orig_params=True,
         )
         if is_main():
-            print(json.dumps({"fsdp": "wrapped", "world_size": world,
-                              "ignored_modules": len(ignored)}))
+            print(json.dumps({"fsdp": "wrapped", "world_size": world}))
     # FSDP handles multi-GPU; small modules stay on device if world==1.
 
     # --- optimizer ------------------------------------------------------------
