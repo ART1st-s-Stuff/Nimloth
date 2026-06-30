@@ -96,9 +96,11 @@ CMD=(
   --heads 4
   --lr 1e-4
   --loss l1
-  --log-interval 50
+  --log-interval 500
   --save-interval 500
   --keep-last-checkpoints 2
+  --wandb-image-samples 5
+  --wandb-image-interval 500
   --wandb-run-name "${WANDB_RUN_NAME}"
   --attn-implementation sdpa
 )

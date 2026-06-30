@@ -11,6 +11,7 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+import numpy as np
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.eval.reconstruction import evaluate_reconstruction, image_to_tensor
@@ -103,6 +104,73 @@ def _maybe_resume(
     return epoch, step_in_epoch, global_step
 
 
+def _tensor_to_hwc_uint8(image: torch.Tensor) -> np.ndarray:
+    image = image.detach().clamp(0, 1).mul(255).byte().cpu()
+    return image.permute(1, 2, 0).numpy()
+
+
+def _fixed_val_preview_items(val_ds, max_items: int) -> list[dict]:
+    items: list[dict] = []
+    for idx in range(len(val_ds)):
+        item = collate_transition_batch([val_ds[idx]])[0]
+        if item.get("next_messages"):
+            items.append(item)
+        if len(items) >= max_items:
+            break
+    return items
+
+
+@torch.no_grad()
+def _log_wandb_val_images(
+    *,
+    wandb_run,
+    model,
+    processor,
+    token_id_map: dict[str, int],
+    state_proj: StateProjector,
+    wm_predictor: LatentWMPredictor,
+    decoder: WMImageDecoder,
+    items: list[dict],
+    device: torch.device,
+    args: argparse.Namespace,
+    step: int,
+) -> None:
+    if wandb_run is None or not items:
+        return
+    try:
+        import wandb
+    except Exception:
+        return
+    model.eval()
+    state_proj.eval()
+    wm_predictor.eval()
+    decoder.eval()
+
+    cur_enc = build_qwen_batch(items, processor, max_length=args.max_length)
+    cur_hidden, _ = extract_qwen_latents(model, cur_enc, token_id_map, device)
+    s_cur = state_proj(cur_hidden).float()
+    cur_recon = decoder(s_cur)
+
+    actions = torch.tensor([item["action_index"] for item in items], device=device, dtype=torch.long)
+    pred_next = decoder(wm_predictor(s_cur, actions).float())
+
+    images = []
+    for i, item in enumerate(items):
+        cur_gt = image_to_tensor(item["current_image_path"], image_size=args.image_size, device=device)
+        next_gt = image_to_tensor(item["next_image_path"], image_size=args.image_size, device=device)
+        sample_id = str(item.get("id", i))
+        images.extend(
+            [
+                wandb.Image(_tensor_to_hwc_uint8(cur_gt), caption=f"{sample_id} current_gt"),
+                wandb.Image(_tensor_to_hwc_uint8(cur_recon[i]), caption=f"{sample_id} current_recon"),
+                wandb.Image(_tensor_to_hwc_uint8(next_gt), caption=f"{sample_id} next_gt"),
+                wandb.Image(_tensor_to_hwc_uint8(pred_next[i]), caption=f"{sample_id} pred_next_recon"),
+            ]
+        )
+    wandb_run.log({"reconstruction/val_preview_images": images}, step=step)
+    decoder.train()
+
+
 def _make_train_loader(args: argparse.Namespace, train_ds, epoch: int):
     generator = torch.Generator()
     generator.manual_seed(int(args.seed) + int(epoch))
@@ -188,6 +256,7 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
         pin_memory=True,
         collate_fn=collate_transition_batch,
     )
+    val_preview_items = _fixed_val_preview_items(val_ds, args.wandb_image_samples)
 
     meta = {
         "model": str(args.model),
@@ -245,6 +314,25 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
                     step_in_epoch=step_in_epoch,
                     global_step=step,
                     keep_last=args.keep_last_checkpoints,
+                )
+
+            if (
+                wandb_run is not None
+                and args.wandb_image_interval > 0
+                and step % args.wandb_image_interval == 0
+            ):
+                _log_wandb_val_images(
+                    wandb_run=wandb_run,
+                    model=model,
+                    processor=processor,
+                    token_id_map=token_id_map,
+                    state_proj=state_proj,
+                    wm_predictor=wm_predictor,
+                    decoder=decoder,
+                    items=val_preview_items,
+                    device=device,
+                    args=args,
+                    step=step,
                 )
 
             if step % args.log_interval == 0:

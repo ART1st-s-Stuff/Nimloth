@@ -36,6 +36,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--log-interval", type=int, default=10)
     ap.add_argument("--save-interval", type=int, default=500)
     ap.add_argument("--keep-last-checkpoints", type=int, default=2)
+    ap.add_argument("--wandb-image-samples", type=int, default=5)
+    ap.add_argument("--wandb-image-interval", type=int, default=500)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--attn-implementation", default="sdpa")
