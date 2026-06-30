@@ -467,14 +467,25 @@ def train_rl(
             ShardingStrategy,
             MixedPrecision,
         )
+        from functools import partial
+        from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+        from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLDecoderLayer
+
         mp = MixedPrecision(
             param_dtype=torch.bfloat16,
             reduce_dtype=torch.float32,
             buffer_dtype=torch.float32,
         )
+        # Only wrap decoder layers — embedding & lm_head stay local
+        # (FULL_SHARD of embedding would break padding_idx assertion)
+        auto_wrap = partial(
+            transformer_auto_wrap_policy,
+            transformer_layer_cls={Qwen2_5_VLDecoderLayer},
+        )
 
         model = FSDP(
             model,
+            auto_wrap_policy=auto_wrap,
             device_id=torch.cuda.current_device(),
             sharding_strategy=ShardingStrategy.FULL_SHARD,
             mixed_precision=mp,
