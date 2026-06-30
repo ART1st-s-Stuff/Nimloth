@@ -28,6 +28,7 @@ MODEL_PATH=${MODEL_PATH:-Qwen/Qwen2.5-VL-3B-Instruct}
 TOTAL_STEPS=${TOTAL_STEPS:-50}
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-128}
 PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-32}
+VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-24}
 RUNTIME_DIR=${RUNTIME_DIR:-${REPO}/outputs/experiments/training/baseline/runtime}
 
 mkdir -p "${RUN_DIR}" "${REPO}/outputs/experiments/training/baseline/slurm"
@@ -67,6 +68,10 @@ trap 'rm -rf "$TMPDIR_CFG" "$TMPDIR"' EXIT
 
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
+# shellcheck disable=SC1091
+source "${SCRIPTDIR}/vagen_paper_ppo_cli.inc.sh"
+# shellcheck disable=SC1091
+source "${SCRIPTDIR}/vagen_rollout_vllm_cli.inc.sh"
 cd "${BASEDIR}"
 
 NODES=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
@@ -106,38 +111,22 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     data.train_files="${TMPDIR_CFG}/train.yaml" \
     data.val_files="${TMPDIR_CFG}/val.yaml" \
     data.train_batch_size=${TRAIN_BATCH_SIZE} \
-    data.max_prompt_length=4096 \
-    data.max_response_length=16384 \
-    algorithm.adv_estimator=gae \
-    algorithm.kl_ctrl.kl_coef=0.0 \
-    algorithm.gamma=1.0 \
-    algorithm.lam=1.0 \
+    data.val_batch_size=${VAL_BATCH_SIZE} \
+    "${VAGEN_PAPER_PPO_ARGS[@]}" \
     actor_rollout_ref.model.path=${MODEL_PATH} \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.use_fused_kernels=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.actor.ppo_mini_batch_size=${PPO_MINI_BATCH_SIZE} \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
-    actor_rollout_ref.actor.use_kl_loss=False \
-    actor_rollout_ref.actor.kl_loss_coef=0.0 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
-    actor_rollout_ref.actor.entropy_coeff=0.0 \
     actor_rollout_ref.actor.checkpoint.save_contents=['model','hf_model','optimizer','extra'] \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=1 \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-    actor_rollout_ref.rollout.name=sglang \
-    actor_rollout_ref.rollout.mode=async \
-    actor_rollout_ref.rollout.n=1 \
-    actor_rollout_ref.rollout.max_num_batched_tokens=10000 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
-    actor_rollout_ref.rollout.enforce_eager=True \
-    actor_rollout_ref.rollout.free_cache_engine=True \
-    actor_rollout_ref.rollout.enable_chunked_prefill=True \
-    actor_rollout_ref.rollout.multi_turn.enable=True \
+    "${VAGEN_ROLLOUT_VLLM_ARGS[@]}" \
     actor_rollout_ref.rollout.agent.agent_loop_config_path="${BASEDIR}/vagen/configs/agent.yaml" \
     actor_rollout_ref.rollout.disable_log_stats=False \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
@@ -149,8 +138,8 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     trainer.nnodes=${NUM_NODES} \
     trainer.save_freq=1 \
     trainer.test_freq=10 \
-    trainer.max_actor_ckpt_to_keep=50 \
-    trainer.max_critic_ckpt_to_keep=50 \
+    trainer.max_actor_ckpt_to_keep=null \
+    trainer.max_critic_ckpt_to_keep=null \
     trainer.project_name=${PROJECT_NAME} \
     trainer.experiment_name=${EXPERIMENT_NAME} \
     trainer.default_local_dir=${SAVE_CHECKPOINT_DIR} \
@@ -159,7 +148,6 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     trainer.log_val_generations=32 \
     trainer.total_training_steps=${TOTAL_STEPS} \
     trainer.resume_mode=auto \
-    critic.optim.lr=1e-5 \
     critic.model.use_remove_padding=True \
     critic.model.path=${MODEL_PATH} \
     critic.model.enable_gradient_checkpointing=True \
@@ -172,11 +160,15 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
 TRAIN_EXIT=${PIPESTATUS[0]}
 set -e
 
+if [ "${PRUNE_CHECKPOINTS:-0}" = "1" ]; then
 python3 "${SCRIPTDIR}/prune_checkpoints.py" \
     --checkpoint-dir "${SAVE_CHECKPOINT_DIR}" \
     --validation-dir "${RUN_DIR}/validation" \
-    --keep-last 10 \
+    --val-curve "${RUN_DIR}/val_wandb_watcher/val_curve.jsonl" \
+    --val-run-dir "${RUN_DIR}/val_wandb_watcher" \
+    --keep-every 10 \
     2>&1 | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log" || true
+fi
 
 for node in "${NODES[@]}"; do
     srun --nodes=1 --ntasks=1 --nodelist="$node" ray stop 2>/dev/null || true

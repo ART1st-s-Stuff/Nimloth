@@ -91,7 +91,7 @@ for node in "${NODES[@]}"; do
     # shellcheck disable=SC1091
     source '${SCRIPTDIR}/common_env.sh'
     ray stop --force >/dev/null 2>&1 || true
-    pkill -u \$USER -f 'sglang|SGLangHttpServer|torch/_inductor/compile_worker' >/dev/null 2>&1 || true
+    pkill -u \$USER -f 'vllm|VLLM|sglang|SGLangHttpServer|torch/_inductor/compile_worker' >/dev/null 2>&1 || true
   " || true
 done
 sleep 10
@@ -130,6 +130,8 @@ $SL/srun --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" bash -lc "
   REPO='${REPO}'
   # shellcheck disable=SC1091
   source '${SCRIPTDIR}/common_env.sh'
+  # shellcheck disable=SC1091
+  source '${SCRIPTDIR}/vagen_rollout_vllm_cli.inc.sh'
   PYTHONUNBUFFERED=1 python3 ${CONVERT_PY} \
     --config-path='${BASEDIR}/vagen/configs' \
     --config-name='vagen_multiturn' \
@@ -164,16 +166,8 @@ $SL/srun --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" bash -lc "
     +actor_rollout_ref.actor.fsdp_config.sync_module_states=False \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-    actor_rollout_ref.rollout.name=sglang \
-    actor_rollout_ref.rollout.mode=async \
-    actor_rollout_ref.rollout.n=1 \
+    \"\${VAGEN_ROLLOUT_VLLM_ARGS[@]}\" \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
-    actor_rollout_ref.rollout.max_num_batched_tokens=24000 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
-    actor_rollout_ref.rollout.enforce_eager=True \
-    actor_rollout_ref.rollout.free_cache_engine=True \
-    actor_rollout_ref.rollout.enable_chunked_prefill=True \
-    actor_rollout_ref.rollout.multi_turn.enable=True \
     actor_rollout_ref.rollout.agent.agent_loop_config_path='${BASEDIR}/vagen/configs/agent.yaml' \
     actor_rollout_ref.rollout.agent.num_workers=1 \
     actor_rollout_ref.rollout.agent.max_concurrent_trajectories=1 \

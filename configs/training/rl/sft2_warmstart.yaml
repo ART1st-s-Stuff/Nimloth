@@ -1,0 +1,42 @@
+# RL training warm-started from SFT2 checkpoint
+# sft2_llmlora_visionfull_1epoch_gamma1_ckpt100_keep2_stride2
+
+# --- Qwen model (SFT2 LoRA+vision checkpoint) ---
+qwen:
+  model: Qwen/Qwen2.5-VL-3B-Instruct  # base HF model
+  attn_implementation: flash_attention_2
+  max_pixels: 3136
+
+# --- Freeze: Qwen is frozen, only predictor + value_head trained ---
+freeze:
+  qwen: true
+  state_proj: true
+
+# --- Predictor (warm-start from SFT2 best/wm_predictor/) ---
+predictor:
+  lr: 0.0001          # lower LR since already trained
+  emb_dim: 128
+  history_size: 1   # must match SFT2 checkpoint
+  rollout_steps: 1
+
+# --- Value head (warm-start from SFT2 best/value_head/) ---
+value_head:
+  lr: 0.0001
+  rank_margin: 0.1
+  lambda_rank: 1.0
+
+# --- RL loop ---
+rl:
+  iterations: 100
+  envs_per_iteration: 4
+  max_steps_per_episode: 20
+  gamma: 0.99
+  batch_size: 32
+  train_steps_per_iteration: 10
+
+# --- Training / output ---
+training:
+  seed: 42
+  log_interval: 1         # log every iteration
+  save_interval: 10       # checkpoint every 10 iterations
+  output_dir: null        # set via CLI
