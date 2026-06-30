@@ -49,7 +49,7 @@ export HOME=/project/peilab/atst/nimloth/.home
 } | tee "${TRAIN_LOG}"
 
 cd "${REPO}"
-exec python3 -m nimloth.training.rl.cli \
+exec torchrun --nproc_per_node=2 -m nimloth.training.rl.cli \
     --config configs/training/rl/exp_60iter_val5_save10.yaml \
     --model "${SFT2_MODEL}" \
     --llm-tune lora \
