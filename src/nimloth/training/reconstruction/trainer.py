@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import time
 from pathlib import Path
 
@@ -33,6 +34,87 @@ def _encode_states(model, processor, token_id_map, items, state_proj, device, ma
     enc = build_qwen_batch(items, processor, max_length=max_length)
     hidden, _ = extract_qwen_latents(model, enc, token_id_map, device)
     return state_proj(hidden).float()
+
+
+def _step_checkpoint_number(path: Path) -> int:
+    match = re.fullmatch(r"step_(\d+)", path.name)
+    return int(match.group(1)) if match else -1
+
+
+def _latest_step_checkpoint(output_dir: Path) -> Path | None:
+    candidates = [p for p in output_dir.glob("step_*") if p.is_dir() and _step_checkpoint_number(p) >= 0]
+    if not candidates:
+        return None
+    return max(candidates, key=_step_checkpoint_number)
+
+
+def _save_step_checkpoint(
+    *,
+    output_dir: Path,
+    decoder: WMImageDecoder,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    step_in_epoch: int,
+    global_step: int,
+    keep_last: int,
+) -> None:
+    ckpt = output_dir / f"step_{global_step:09d}"
+    decoder.save_checkpoint(ckpt)
+    torch.save(
+        {
+            "optimizer": optimizer.state_dict(),
+            "epoch": int(epoch),
+            "step_in_epoch": int(step_in_epoch),
+            "global_step": int(global_step),
+        },
+        ckpt / "training_state.pt",
+    )
+    step_ckpts = sorted(
+        [p for p in output_dir.glob("step_*") if p.is_dir() and _step_checkpoint_number(p) >= 0],
+        key=_step_checkpoint_number,
+    )
+    for old in step_ckpts[: max(0, len(step_ckpts) - keep_last)]:
+        import shutil
+
+        shutil.rmtree(old)
+
+
+def _maybe_resume(
+    *,
+    args: argparse.Namespace,
+    decoder: WMImageDecoder,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+) -> tuple[int, int, int]:
+    if not getattr(args, "resume", False):
+        return 1, 0, 0
+    ckpt = _latest_step_checkpoint(args.output_dir)
+    if ckpt is None:
+        return 1, 0, 0
+    loaded = WMImageDecoder.load_checkpoint(ckpt, map_location=device)
+    decoder.load_state_dict(loaded.state_dict())
+    state_path = ckpt / "training_state.pt"
+    state = torch.load(state_path, map_location=device, weights_only=False)
+    optimizer.load_state_dict(state["optimizer"])
+    epoch = int(state.get("epoch", 1))
+    step_in_epoch = int(state.get("step_in_epoch", 0))
+    global_step = int(state.get("global_step", _step_checkpoint_number(ckpt)))
+    print(json.dumps({"resume_checkpoint": str(ckpt), "epoch": epoch, "step_in_epoch": step_in_epoch, "global_step": global_step}))
+    return epoch, step_in_epoch, global_step
+
+
+def _make_train_loader(args: argparse.Namespace, train_ds, epoch: int):
+    generator = torch.Generator()
+    generator.manual_seed(int(args.seed) + int(epoch))
+    return torch.utils.data.DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        generator=generator,
+        num_workers=0,
+        pin_memory=True,
+        collate_fn=collate_transition_batch,
+    )
 
 
 def _maybe_init_wandb(args: argparse.Namespace, meta: dict) -> object | None:
@@ -114,19 +196,33 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
         "train_jsonl": str(args.train_jsonl),
         "val_jsonl": str(args.val_jsonl),
         "decoder_config": decoder.config.__dict__,
+        "epochs": args.epochs,
+        "save_interval": args.save_interval,
+        "keep_last_checkpoints": args.keep_last_checkpoints,
     }
     (args.output_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     wandb_run = _maybe_init_wandb(args, meta)
 
     log_path = args.output_dir / "train_step_log.csv"
-    with log_path.open("w", newline="") as f:
-        csv.writer(f).writerow(["time", "epoch", "step", "loss", "val_pred_mse", "val_oracle_mse"])
+    if not log_path.exists() or not args.resume:
+        with log_path.open("w", newline="") as f:
+            csv.writer(f).writerow(["time", "epoch", "step", "loss", "val_pred_mse", "val_oracle_mse"])
 
-    step = 0
+    start_epoch, resume_step_in_epoch, step = _maybe_resume(
+        args=args,
+        decoder=decoder,
+        optimizer=optimizer,
+        device=device,
+    )
     best_val = float("inf")
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         decoder.train()
+        train_loader = _make_train_loader(args, train_ds, epoch)
+        step_in_epoch = 0
         for items in train_loader:
+            step_in_epoch += 1
+            if epoch == start_epoch and step_in_epoch <= resume_step_in_epoch:
+                continue
             states = _encode_states(model, processor, token_id_map, items, state_proj, device, args.max_length)
             targets = torch.stack([
                 image_to_tensor(item["current_image_path"], image_size=args.image_size, device=device)
@@ -139,6 +235,17 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
             torch.nn.utils.clip_grad_norm_(decoder.parameters(), 1.0)
             optimizer.step()
             step += 1
+
+            if args.save_interval > 0 and step % args.save_interval == 0:
+                _save_step_checkpoint(
+                    output_dir=args.output_dir,
+                    decoder=decoder,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    step_in_epoch=step_in_epoch,
+                    global_step=step,
+                    keep_last=args.keep_last_checkpoints,
+                )
 
             if step % args.log_interval == 0:
                 loss_value = float(loss.detach().item())
