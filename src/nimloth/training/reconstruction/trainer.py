@@ -9,13 +9,17 @@ import re
 import time
 from pathlib import Path
 
-import torch
-import torch.nn.functional as F
 import numpy as np
+import torch
+import torch.distributed as dist
+import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.eval.reconstruction import evaluate_reconstruction, image_to_tensor
 from nimloth.latent import add_special_tokens, special_token_ids
+from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.common.qwen_batch import build_qwen_batch
 from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
 from nimloth.training.sft2.qwen_latent import extract_qwen_latents
@@ -213,7 +217,7 @@ def _make_train_loader(args: argparse.Namespace, train_ds, epoch: int):
 
 
 def _maybe_init_wandb(args: argparse.Namespace, meta: dict) -> object | None:
-    if getattr(args, "no_wandb", False):
+    if getattr(args, "no_wandb", False) or not is_main():
         return None
     try:
         import wandb
@@ -227,194 +231,239 @@ def _maybe_init_wandb(args: argparse.Namespace, meta: dict) -> object | None:
     )
 
 
+def _unwrap_decoder(decoder: WMImageDecoder | DDP) -> WMImageDecoder:
+    return decoder.module if isinstance(decoder, DDP) else decoder
+
+
+def _reduce_mean_scalar(value: torch.Tensor, world: int) -> float:
+    scalar = value.detach().float()
+    if world > 1 and dist.is_available() and dist.is_initialized():
+        dist.all_reduce(scalar, op=dist.ReduceOp.SUM)
+        scalar /= world
+    return float(scalar.item())
+
+
 def train_reconstruction_decoder(args: argparse.Namespace) -> int:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    rank, world, local_rank, device = setup_dist()
+    try:
+        if torch.cuda.is_available():
+            torch.manual_seed(int(args.seed) + rank)
+        args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
-    processor.image_processor.min_pixels = 3136
-    processor.image_processor.max_pixels = args.max_pixels
-    add_special_tokens(processor.tokenizer)
-    token_id_map = special_token_ids(processor.tokenizer)
+        processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
+        processor.image_processor.min_pixels = 3136
+        processor.image_processor.max_pixels = args.max_pixels
+        add_special_tokens(processor.tokenizer)
+        token_id_map = special_token_ids(processor.tokenizer)
 
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        attn_implementation=args.attn_implementation,
-        trust_remote_code=True,
-    )
-    model.resize_token_embeddings(len(processor.tokenizer))
-    model.to(device)
-    _freeze(model)
-
-    wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_checkpoint, map_location=device).to(device)
-    _freeze(wm_predictor)
-    state_proj = StateProjector(model.config.hidden_size, wm_predictor.emb_dim).to(device)
-    state_proj.load_state_dict(torch.load(args.state_proj_checkpoint, map_location=device, weights_only=True))
-    _freeze(state_proj)
-
-    decoder = WMImageDecoder(
-        WMImageDecoderConfig(
-            emb_dim=wm_predictor.emb_dim,
-            image_size=args.image_size,
-            patch_size=args.patch_size,
-            hidden_dim=args.hidden_dim,
-            depth=args.depth,
-            heads=args.heads,
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            args.model,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            attn_implementation=args.attn_implementation,
+            trust_remote_code=True,
         )
-    ).to(device)
-    optimizer = torch.optim.AdamW(decoder.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        model.resize_token_embeddings(len(processor.tokenizer))
+        model.to(device)
+        _freeze(model)
 
-    train_ds = TransitionQwenDataset(args.train_jsonl, max_records=args.max_train_records, success_only=args.success_only)
-    val_ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_val_records)
-    train_loader = torch.utils.data.DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=0,
-        pin_memory=True,
-        collate_fn=collate_transition_batch,
-    )
-    val_loader = torch.utils.data.DataLoader(
-        val_ds,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=True,
-        collate_fn=collate_transition_batch,
-    )
-    val_preview_items = _fixed_val_preview_items(val_ds, args.wandb_image_samples)
+        wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_checkpoint, map_location=device).to(device)
+        _freeze(wm_predictor)
+        state_proj = StateProjector(model.config.hidden_size, wm_predictor.emb_dim).to(device)
+        state_proj.load_state_dict(torch.load(args.state_proj_checkpoint, map_location=device, weights_only=True))
+        _freeze(state_proj)
 
-    meta = {
-        "model": str(args.model),
-        "state_proj_checkpoint": str(args.state_proj_checkpoint),
-        "wm_checkpoint": str(args.wm_checkpoint),
-        "train_jsonl": str(args.train_jsonl),
-        "val_jsonl": str(args.val_jsonl),
-        "decoder_config": decoder.config.__dict__,
-        "epochs": args.epochs,
-        "save_interval": args.save_interval,
-        "keep_last_checkpoints": args.keep_last_checkpoints,
-    }
-    (args.output_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    wandb_run = _maybe_init_wandb(args, meta)
+        decoder = WMImageDecoder(
+            WMImageDecoderConfig(
+                emb_dim=wm_predictor.emb_dim,
+                image_size=args.image_size,
+                patch_size=args.patch_size,
+                hidden_dim=args.hidden_dim,
+                depth=args.depth,
+                heads=args.heads,
+            )
+        ).to(device)
+        optimizer = torch.optim.AdamW(decoder.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    log_path = args.output_dir / "train_step_log.csv"
-    if not log_path.exists() or not args.resume:
-        with log_path.open("w", newline="") as f:
-            csv.writer(f).writerow(["time", "epoch", "step", "loss", "val_pred_mse", "val_oracle_mse"])
+        train_ds = TransitionQwenDataset(args.train_jsonl, max_records=args.max_train_records, success_only=args.success_only)
+        val_ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_val_records)
+        train_sampler = DistributedSampler(train_ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed) if world > 1 else None
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=args.batch_size,
+            sampler=train_sampler,
+            shuffle=train_sampler is None,
+            num_workers=0,
+            pin_memory=True,
+            collate_fn=collate_transition_batch,
+        )
+        val_loader = None
+        val_preview_items: list[dict] = []
+        if is_main():
+            val_loader = DataLoader(
+                val_ds,
+                batch_size=args.batch_size,
+                shuffle=False,
+                num_workers=0,
+                pin_memory=True,
+                collate_fn=collate_transition_batch,
+            )
+            val_preview_items = _fixed_val_preview_items(val_ds, args.wandb_image_samples)
 
-    start_epoch, resume_step_in_epoch, step = _maybe_resume(
-        args=args,
-        decoder=decoder,
-        optimizer=optimizer,
-        device=device,
-    )
-    if wandb_run is not None and val_preview_items:
-        _log_wandb_val_images(
-            wandb_run=wandb_run,
-            model=model,
-            processor=processor,
-            token_id_map=token_id_map,
-            state_proj=state_proj,
-            wm_predictor=wm_predictor,
-            decoder=decoder,
-            items=val_preview_items,
-            device=device,
+        meta = {
+            "model": str(args.model),
+            "state_proj_checkpoint": str(args.state_proj_checkpoint),
+            "wm_checkpoint": str(args.wm_checkpoint),
+            "train_jsonl": str(args.train_jsonl),
+            "val_jsonl": str(args.val_jsonl),
+            "decoder_config": decoder.config.__dict__,
+            "epochs": args.epochs,
+            "save_interval": args.save_interval,
+            "keep_last_checkpoints": args.keep_last_checkpoints,
+            "world_size": world,
+            "per_rank_batch_size": args.batch_size,
+            "effective_batch_size": args.batch_size * world,
+        }
+        if is_main():
+            (args.output_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        wandb_run = _maybe_init_wandb(args, meta)
+
+        log_path = args.output_dir / "train_step_log.csv"
+        if is_main() and (not log_path.exists() or not args.resume):
+            with log_path.open("w", newline="") as f:
+                csv.writer(f).writerow(["time", "epoch", "step", "loss", "val_pred_mse", "val_oracle_mse"])
+
+        start_epoch, resume_step_in_epoch, step = _maybe_resume(
             args=args,
-            step=step,
+            decoder=decoder,
+            optimizer=optimizer,
+            device=device,
         )
-    best_val = float("inf")
-    for epoch in range(start_epoch, args.epochs + 1):
-        decoder.train()
-        train_loader = _make_train_loader(args, train_ds, epoch)
-        step_in_epoch = 0
-        for items in train_loader:
-            step_in_epoch += 1
-            if epoch == start_epoch and step_in_epoch <= resume_step_in_epoch:
-                continue
-            states = _encode_states(model, processor, token_id_map, items, state_proj, device, args.max_length)
-            targets = torch.stack([
-                image_to_tensor(item["current_image_path"], image_size=args.image_size, device=device)
-                for item in items
-            ])
-            pred = decoder(states)
-            loss = F.l1_loss(pred, targets) if args.loss == "l1" else F.mse_loss(pred, targets)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(decoder.parameters(), 1.0)
-            optimizer.step()
-            step += 1
+        if world > 1:
+            decoder = DDP(decoder, device_ids=[device.index], output_device=device.index, find_unused_parameters=False)
 
-            if args.save_interval > 0 and step % args.save_interval == 0:
-                _save_step_checkpoint(
-                    output_dir=args.output_dir,
-                    decoder=decoder,
-                    optimizer=optimizer,
-                    epoch=epoch,
-                    step_in_epoch=step_in_epoch,
-                    global_step=step,
-                    keep_last=args.keep_last_checkpoints,
-                )
+        if wandb_run is not None and val_preview_items:
+            _log_wandb_val_images(
+                wandb_run=wandb_run,
+                model=model,
+                processor=processor,
+                token_id_map=token_id_map,
+                state_proj=state_proj,
+                wm_predictor=wm_predictor,
+                decoder=_unwrap_decoder(decoder),
+                items=val_preview_items,
+                device=device,
+                args=args,
+                step=step,
+            )
+        best_val = float("inf")
+        for epoch in range(start_epoch, args.epochs + 1):
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+            decoder.train()
+            step_in_epoch = 0
+            for items in train_loader:
+                step_in_epoch += 1
+                if epoch == start_epoch and step_in_epoch <= resume_step_in_epoch:
+                    continue
+                states = _encode_states(model, processor, token_id_map, items, state_proj, device, args.max_length)
+                targets = torch.stack([
+                    image_to_tensor(item["current_image_path"], image_size=args.image_size, device=device)
+                    for item in items
+                ])
+                pred = decoder(states)
+                loss = F.l1_loss(pred, targets) if args.loss == "l1" else F.mse_loss(pred, targets)
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(_unwrap_decoder(decoder).parameters(), 1.0)
+                optimizer.step()
+                step += 1
 
-            if (
-                wandb_run is not None
-                and args.wandb_image_interval > 0
-                and step % args.wandb_image_interval == 0
-            ):
-                _log_wandb_val_images(
-                    wandb_run=wandb_run,
+                if args.save_interval > 0 and step % args.save_interval == 0:
+                    if world > 1 and dist.is_available() and dist.is_initialized():
+                        dist.barrier()
+                    if is_main():
+                        _save_step_checkpoint(
+                            output_dir=args.output_dir,
+                            decoder=_unwrap_decoder(decoder),
+                            optimizer=optimizer,
+                            epoch=epoch,
+                            step_in_epoch=step_in_epoch,
+                            global_step=step,
+                            keep_last=args.keep_last_checkpoints,
+                        )
+                    if world > 1 and dist.is_available() and dist.is_initialized():
+                        dist.barrier()
+
+                if (
+                    wandb_run is not None
+                    and args.wandb_image_interval > 0
+                    and step % args.wandb_image_interval == 0
+                ):
+                    _log_wandb_val_images(
+                        wandb_run=wandb_run,
+                        model=model,
+                        processor=processor,
+                        token_id_map=token_id_map,
+                        state_proj=state_proj,
+                        wm_predictor=wm_predictor,
+                        decoder=_unwrap_decoder(decoder),
+                        items=val_preview_items,
+                        device=device,
+                        args=args,
+                        step=step,
+                    )
+
+                if step % args.log_interval == 0:
+                    loss_value = _reduce_mean_scalar(loss, world)
+                    if is_main():
+                        with log_path.open("a", newline="") as f:
+                            csv.writer(f).writerow([time.time(), epoch, step, loss_value, "", ""])
+                        if wandb_run is not None:
+                            wandb_run.log({"reconstruction/train_loss": loss_value, "epoch": epoch}, step=step)
+                        print(json.dumps({"epoch": epoch, "step": step, "loss": loss_value, "world_size": world}))
+
+            if world > 1 and dist.is_available() and dist.is_initialized():
+                dist.barrier()
+            val_metrics = None
+            if is_main() and val_loader is not None:
+                val_metrics = evaluate_reconstruction(
                     model=model,
                     processor=processor,
                     token_id_map=token_id_map,
                     state_proj=state_proj,
                     wm_predictor=wm_predictor,
-                    decoder=decoder,
-                    items=val_preview_items,
+                    decoder=_unwrap_decoder(decoder),
+                    loader=val_loader,
                     device=device,
-                    args=args,
-                    step=step,
+                    output_dir=args.output_dir / f"val_epoch_{epoch:03d}",
+                    max_batches=args.max_val_batches,
+                    max_length=args.max_length,
+                    save_samples=args.save_samples,
                 )
-
-            if step % args.log_interval == 0:
-                loss_value = float(loss.detach().item())
+                val_pred = float(val_metrics.get("pred_mse", float("inf")))
                 with log_path.open("a", newline="") as f:
-                    csv.writer(f).writerow([time.time(), epoch, step, loss_value, "", ""])
+                    csv.writer(f).writerow([
+                        time.time(), epoch, step, "", val_pred, val_metrics.get("oracle_mse", "")
+                    ])
                 if wandb_run is not None:
-                    wandb_run.log({"reconstruction/train_loss": loss_value, "epoch": epoch}, step=step)
-                print(json.dumps({"epoch": epoch, "step": step, "loss": loss_value}))
+                    wandb_run.log(
+                        {f"reconstruction/val_{key}": value for key, value in val_metrics.items()},
+                        step=step,
+                    )
+                _unwrap_decoder(decoder).save_checkpoint(args.output_dir / f"epoch_{epoch:03d}")
+                if val_pred < best_val:
+                    best_val = val_pred
+                    _unwrap_decoder(decoder).save_checkpoint(args.output_dir / "best")
+                print(json.dumps({"epoch": epoch, "val_metrics": val_metrics, "best_val_pred_mse": best_val}))
+            if world > 1 and dist.is_available() and dist.is_initialized():
+                dist.barrier()
 
-        val_metrics = evaluate_reconstruction(
-            model=model,
-            processor=processor,
-            token_id_map=token_id_map,
-            state_proj=state_proj,
-            wm_predictor=wm_predictor,
-            decoder=decoder,
-            loader=val_loader,
-            device=device,
-            output_dir=args.output_dir / f"val_epoch_{epoch:03d}",
-            max_batches=args.max_val_batches,
-            max_length=args.max_length,
-            save_samples=args.save_samples,
-        )
-        val_pred = float(val_metrics.get("pred_mse", float("inf")))
-        with log_path.open("a", newline="") as f:
-            csv.writer(f).writerow([
-                time.time(), epoch, step, "", val_pred, val_metrics.get("oracle_mse", "")
-            ])
-        if wandb_run is not None:
-            wandb_run.log(
-                {f"reconstruction/val_{key}": value for key, value in val_metrics.items()},
-                step=step,
-            )
-        decoder.save_checkpoint(args.output_dir / f"epoch_{epoch:03d}")
-        if val_pred < best_val:
-            best_val = val_pred
-            decoder.save_checkpoint(args.output_dir / "best")
-        print(json.dumps({"epoch": epoch, "val_metrics": val_metrics, "best_val_pred_mse": best_val}))
-
-    decoder.save_checkpoint(args.output_dir / "final")
-    if wandb_run is not None:
-        wandb_run.finish()
-    return 0
+        if is_main():
+            _unwrap_decoder(decoder).save_checkpoint(args.output_dir / "final")
+            if wandb_run is not None:
+                wandb_run.finish()
+        if world > 1 and dist.is_available() and dist.is_initialized():
+            dist.barrier()
+        return 0
+    finally:
+        cleanup_dist()
