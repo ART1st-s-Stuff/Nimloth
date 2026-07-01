@@ -18,10 +18,11 @@ from torch import nn
 
 @dataclass
 class WMImageDecoderConfig:
-    """Configuration for a patch decoder (cross-attention from a single latent vector).
+    """Configuration for a self-attention patch decoder.
 
-    Scaled to match Qwen-latent dimension: 1024-dim input, 255x255 output,
-    multiple cross-attention layers (following LeWM paper decoder description).
+    The 1024-dim state vector is linearly expanded to all patch positions,
+    added to learnable positional embeddings, then processed through
+    self-attention layers before being projected to RGB patches.
     """
 
     emb_dim: int = 1024
@@ -39,37 +40,34 @@ class WMImageDecoderConfig:
             raise ValueError("hidden_dim must be divisible by heads")
 
 
-class _DecoderBlock(nn.Module):
+class _SelfAttentionBlock(nn.Module):
+    """Standard ViT block: self-attention + MLP with pre-norm residuals."""
+
     def __init__(self, hidden_dim: int, heads: int, mlp_ratio: int) -> None:
         super().__init__()
-        self.norm_q = nn.LayerNorm(hidden_dim)
-        self.norm_kv = nn.LayerNorm(hidden_dim)
-        self.cross_attn = nn.MultiheadAttention(hidden_dim, heads, batch_first=True)
-        self.norm_mlp = nn.LayerNorm(hidden_dim)
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.self_attn = nn.MultiheadAttention(hidden_dim, heads, batch_first=True)
+        self.norm2 = nn.LayerNorm(hidden_dim)
         self.mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim * mlp_ratio),
             nn.GELU(),
             nn.Linear(hidden_dim * mlp_ratio, hidden_dim),
         )
 
-    def forward(self, query: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
-        attn, _ = self.cross_attn(
-            self.norm_q(query),
-            self.norm_kv(memory),
-            self.norm_kv(memory),
-            need_weights=False,
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        attn, _ = self.self_attn(
+            self.norm1(x), self.norm1(x), self.norm1(x), need_weights=False
         )
-        query = query + attn
-        query = query + self.mlp(self.norm_mlp(query))
-        return query
+        x = x + attn
+        x = x + self.mlp(self.norm2(x))
+        return x
 
 
 class WMImageDecoder(nn.Module):
     """Decode a WM state embedding into an RGB image.
 
-    Mirrors the LeWM paper's diagnostic decoder: learned patch queries
-    cross-attend to a single global latent vector and are projected to
-    RGB patches.  Trained post-hoc with frozen Qwen/WM modules.
+    Architecture: state vector -> linear expand to all patches ->
+    positional encoding -> self-attention layers -> RGB patch projection.
     """
 
     def __init__(self, config: WMImageDecoderConfig | None = None) -> None:
@@ -78,10 +76,10 @@ class WMImageDecoder(nn.Module):
         cfg = self.config
         grid = cfg.image_size // cfg.patch_size
         self.num_patches = grid * grid
-        self.state_proj = nn.Linear(cfg.emb_dim, cfg.hidden_dim)
-        self.query = nn.Parameter(torch.randn(self.num_patches, cfg.hidden_dim) * 0.02)
+        self.state_expand = nn.Linear(cfg.emb_dim, self.num_patches * cfg.hidden_dim)
+        self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches, cfg.hidden_dim) * 0.02)
         self.blocks = nn.ModuleList(
-            [_DecoderBlock(cfg.hidden_dim, cfg.heads, cfg.mlp_ratio) for _ in range(cfg.depth)]
+            [_SelfAttentionBlock(cfg.hidden_dim, cfg.heads, cfg.mlp_ratio) for _ in range(cfg.depth)]
         )
         self.norm = nn.LayerNorm(cfg.hidden_dim)
         self.patch_head = nn.Linear(cfg.hidden_dim, cfg.patch_size * cfg.patch_size * 3)
@@ -93,11 +91,12 @@ class WMImageDecoder(nn.Module):
             raise ValueError(f"state_emb must have shape (B, D), got {tuple(state_emb.shape)}")
         cfg = self.config
         b = state_emb.shape[0]
-        memory = self.state_proj(state_emb).unsqueeze(1)
-        query = self.query.unsqueeze(0).expand(b, -1, -1)
+        x = self.state_expand(state_emb)  # (B, num_patches * hidden_dim)
+        x = x.view(b, self.num_patches, cfg.hidden_dim)  # (B, N, D)
+        x = x + self.pos_embed
         for block in self.blocks:
-            query = block(query, memory)
-        patches = self.patch_head(self.norm(query))
+            x = block(x)
+        patches = self.patch_head(self.norm(x))
         grid = cfg.image_size // cfg.patch_size
         images = rearrange(
             patches,
