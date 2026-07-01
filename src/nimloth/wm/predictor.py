@@ -11,7 +11,7 @@ from einops import rearrange
 from torch import nn
 
 from nimloth.wm._vendor_lewm import ARPredictor, Embedder, MLP
-from nimloth.wm.lewm import LeWMConfig, SafeBatchNorm1d, action_one_hot
+from nimloth.wm.lewm import LeWMConfig, action_one_hot
 
 class LatentWMPredictor(nn.Module):
     """LeWM ARPredictor + action encoder for Qwen-latent dynamics.
@@ -43,7 +43,7 @@ class LatentWMPredictor(nn.Module):
             config.predictor_hidden_dim,
             config.predictor_hidden_dim,
             config.emb_dim,
-            norm_fn=SafeBatchNorm1d,
+            norm_fn=nn.LayerNorm,  # default in LeWM MLP; avoids BN inplace conflicts
         )
 
     @property

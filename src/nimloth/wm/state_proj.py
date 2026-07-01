@@ -1,9 +1,9 @@
 """Map Qwen hidden states into WM predictor embedding space.
 
-Uses LeWM MLP projection (Linear → BatchNorm1d → GELU → Linear) for a
-normalized, non-linear bridge from Qwen's hidden state to the WM embedding.
-A SafeBatchNorm1d wrapper preserves LeWM behavior for normal batches while
-avoiding PyTorch BatchNorm singleton-batch failures.
+Uses LeWM MLP projection (Linear → LayerNorm → GELU → Linear) for a
+stable, non-linear bridge from Qwen's hidden state to the WM embedding.
+LayerNorm avoids inplace running-buffer conflicts that BatchNorm causes
+when called multiple times before backward.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import torch
 from torch import nn
 
 from nimloth.wm._vendor_lewm import MLP
-from nimloth.wm.lewm import SafeBatchNorm1d
 
 
 class StateProjector(nn.Module):
@@ -30,11 +29,13 @@ class StateProjector(nn.Module):
         projector_hidden_dim: int = 2048,
     ) -> None:
         super().__init__()
+        # LayerNorm avoids inplace running-buffer conflicts when state_proj is
+        # called multiple times before backward (e.g. WM + value losses).
         self.net = MLP(
             qwen_hidden_dim,
             projector_hidden_dim,
             lewm_emb_dim,
-            norm_fn=SafeBatchNorm1d,
+            norm_fn=nn.LayerNorm,
         )
 
     def forward(self, hidden: torch.Tensor) -> torch.Tensor:
