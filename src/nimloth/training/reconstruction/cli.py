@@ -20,6 +20,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
+    ap.add_argument("--lr-warmup-steps", type=int, default=0)
     ap.add_argument("--loss", choices=("l1", "mse"), default="l1")
     ap.add_argument("--image-size", type=int, default=255)
     ap.add_argument("--patch-size", type=int, default=15)

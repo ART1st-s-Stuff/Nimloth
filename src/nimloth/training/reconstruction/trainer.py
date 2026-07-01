@@ -243,6 +243,16 @@ def _reduce_mean_scalar(value: torch.Tensor, world: int) -> float:
     return float(scalar.item())
 
 
+def _set_decoder_lr(optimizer: torch.optim.Optimizer, *, base_lr: float, global_step: int, warmup_steps: int) -> float:
+    if warmup_steps <= 0:
+        lr = base_lr
+    else:
+        lr = base_lr * min(1.0, max(global_step, 1) / float(warmup_steps))
+    for group in optimizer.param_groups:
+        group["lr"] = lr
+    return lr
+
+
 def train_reconstruction_decoder(args: argparse.Namespace) -> int:
     rank, world, local_rank, device = setup_dist()
     try:
@@ -322,6 +332,8 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
             "world_size": world,
             "per_rank_batch_size": args.batch_size,
             "effective_batch_size": args.batch_size * world,
+            "lr": args.lr,
+            "lr_warmup_steps": args.lr_warmup_steps,
         }
         if is_main():
             (args.output_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -330,7 +342,7 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
         log_path = args.output_dir / "train_step_log.csv"
         if is_main() and (not log_path.exists() or not args.resume):
             with log_path.open("w", newline="") as f:
-                csv.writer(f).writerow(["time", "epoch", "step", "loss", "val_pred_mse", "val_oracle_mse"])
+                csv.writer(f).writerow(["time", "epoch", "step", "loss", "lr", "val_pred_mse", "val_oracle_mse"])
 
         start_epoch, resume_step_in_epoch, step = _maybe_resume(
             args=args,
@@ -338,6 +350,7 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
             optimizer=optimizer,
             device=device,
         )
+        _set_decoder_lr(optimizer, base_lr=args.lr, global_step=step, warmup_steps=args.lr_warmup_steps)
         if world > 1:
             decoder = DDP(decoder, device_ids=[device.index], output_device=device.index, find_unused_parameters=False)
 
@@ -377,6 +390,12 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
                 torch.nn.utils.clip_grad_norm_(_unwrap_decoder(decoder).parameters(), 1.0)
                 optimizer.step()
                 step += 1
+                current_lr = _set_decoder_lr(
+                    optimizer,
+                    base_lr=args.lr,
+                    global_step=step,
+                    warmup_steps=args.lr_warmup_steps,
+                )
 
                 if args.save_interval > 0 and step % args.save_interval == 0:
                     if world > 1 and dist.is_available() and dist.is_initialized():
@@ -417,10 +436,10 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
                     loss_value = _reduce_mean_scalar(loss, world)
                     if is_main():
                         with log_path.open("a", newline="") as f:
-                            csv.writer(f).writerow([time.time(), epoch, step, loss_value, "", ""])
+                            csv.writer(f).writerow([time.time(), epoch, step, loss_value, current_lr, "", ""])
                         if wandb_run is not None:
-                            wandb_run.log({"reconstruction/train_loss": loss_value, "epoch": epoch}, step=step)
-                        print(json.dumps({"epoch": epoch, "step": step, "loss": loss_value, "world_size": world}))
+                            wandb_run.log({"reconstruction/train_loss": loss_value, "reconstruction/lr": current_lr, "epoch": epoch}, step=step)
+                        print(json.dumps({"epoch": epoch, "step": step, "loss": loss_value, "lr": current_lr, "world_size": world}))
 
             if world > 1 and dist.is_available() and dist.is_initialized():
                 dist.barrier()
@@ -443,7 +462,7 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
                 val_pred = float(val_metrics.get("pred_mse", float("inf")))
                 with log_path.open("a", newline="") as f:
                     csv.writer(f).writerow([
-                        time.time(), epoch, step, "", val_pred, val_metrics.get("oracle_mse", "")
+                        time.time(), epoch, step, "", optimizer.param_groups[0]["lr"], val_pred, val_metrics.get("oracle_mse", "")
                     ])
                 if wandb_run is not None:
                     wandb_run.log(
