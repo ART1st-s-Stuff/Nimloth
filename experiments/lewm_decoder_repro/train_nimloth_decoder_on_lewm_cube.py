@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decoder-mlp-ratio", type=int, default=4)
     parser.add_argument("--save-preview-batches", type=int, default=1)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--strict-weights", action="store_true", help="Require exact LeWM checkpoint state_dict match.")
+    parser.add_argument("--allow-nonstrict-weights", action="store_true", help="Debug only: allow non-exact LeWM checkpoint state_dict load.")
     return parser.parse_args()
 
 
@@ -84,7 +84,8 @@ def _stablewm_home(args: argparse.Namespace) -> Path:
 
 
 def prepare_dataset(args: argparse.Namespace, stablewm_home: Path) -> None:
-    h5_path = stablewm_home / args.dataset_name
+    # stable_worldmodel resolves datasets under get_cache_dir(sub_folder="datasets").
+    h5_path = stablewm_home / "datasets" / args.dataset_name
     root_fallback = stablewm_home / Path(args.dataset_name).name
     if h5_path.exists():
         return
@@ -117,7 +118,7 @@ def prepare_dataset(args: argparse.Namespace, stablewm_home: Path) -> None:
     )
 
 
-def instantiate_lewm(weights_path: Path, config_path: Path, device: torch.device, *, strict: bool) -> JEPA:
+def instantiate_lewm(weights_path: Path, config_path: Path, device: torch.device, *, allow_nonstrict: bool) -> JEPA:
     import stable_pretraining as spt
 
     cfg = json.loads(config_path.read_text(encoding="utf-8"))
@@ -165,11 +166,11 @@ def instantiate_lewm(weights_path: Path, config_path: Path, device: torch.device
         state = state["state_dict"]
     if isinstance(state, dict):
         state = {k.removeprefix("model.").removeprefix("module."): v for k, v in state.items()}
-    missing, unexpected = model.load_state_dict(state, strict=strict)
+    missing, unexpected = model.load_state_dict(state, strict=False)
     if missing or unexpected:
         print(json.dumps({"checkpoint_load_missing": missing, "checkpoint_load_unexpected": unexpected}, indent=2))
-        if strict:
-            raise RuntimeError("strict LeWM checkpoint load failed")
+        if not allow_nonstrict:
+            raise RuntimeError("LeWM checkpoint did not load exactly; refusing to train on random or partial weights")
     model.to(device)
     model.eval()
     for p in model.parameters():
@@ -326,7 +327,7 @@ def main() -> int:
     weights, config = download_model_files(args.model_repo, args.output_dir)
 
     device = torch.device(args.device)
-    lewm = instantiate_lewm(weights, config, device, strict=args.strict_weights)
+    lewm = instantiate_lewm(weights, config, device, allow_nonstrict=args.allow_nonstrict_weights)
     dataset = build_dataset(args, stablewm_home)
     train_set, val_set = random_split(
         dataset,
