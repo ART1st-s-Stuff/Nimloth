@@ -30,6 +30,14 @@ train:
   success_only: false
   resume: false
 
+state_cache:
+  dir: null
+  build: false
+  compression: gzip
+  dtype: float16
+  shard_size: 4096
+  build_batch_size: 1
+
 wandb:
   project: nimloth
   run_name: null

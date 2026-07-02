@@ -48,8 +48,15 @@ python -m nimloth.training.reconstruction.rcdm_sft2 \
   --train-jsonl /path/to/train.jsonl \
   --val-jsonl /path/to/val.jsonl \
   --output-dir outputs/experiments/training/reconstruction/<date>/<rcdm_name> \
-  --wandb-run-name <rcdm_name>
+  --wandb-run-name <rcdm_name> \
+  --state-cache-dir outputs/experiments/training/reconstruction/cache/<cache_name> \
+  --build-state-cache
 ```
+
+`--state-cache-dir` stores compressed shards of `StateProjector(Qwen
+<|latent_state|>)` plus image paths.  This is the preferred full-run path: after
+cache build, RCDM training no longer loads or runs Qwen.  The cache defaults to
+`float16` state embeddings and `gzip` compression.
 
 Resume the latest RCDM checkpoint in the same output directory:
 

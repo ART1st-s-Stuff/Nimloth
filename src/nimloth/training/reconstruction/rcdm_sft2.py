@@ -30,6 +30,12 @@ from nimloth.rcdm.checkpoint import (
 )
 from nimloth.rcdm.config import RCDMConfig, create_model_and_diffusion, rcdm_config_from_args
 from nimloth.rcdm.image_utils import image_to_diffusion_tensor
+from nimloth.rcdm.state_cache import (
+    RCDMStateCacheDataset,
+    build_rcdm_state_cache,
+    collate_rcdm_state_cache_batch,
+    state_cache_ready,
+)
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.common.qwen_batch import build_qwen_batch
 from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
@@ -212,6 +218,11 @@ def _build_metadata(args: argparse.Namespace, rcdm_config: RCDMConfig, cond_dim:
             "target": "current_image_from_current_sft2_state",
             "resume": bool(args.resume or args.resume_checkpoint is not None),
             "resume_checkpoint": str(args.resume_checkpoint) if args.resume_checkpoint is not None else None,
+            "state_cache_dir": str(args.state_cache_dir) if args.state_cache_dir is not None else None,
+            "build_state_cache": args.build_state_cache,
+            "state_cache_shard_size": args.state_cache_shard_size,
+            "state_cache_compression": args.state_cache_compression,
+            "state_cache_dtype": args.state_cache_dtype,
         },
         "wandb": {
             "project": args.wandb_project,
@@ -224,6 +235,40 @@ def _build_metadata(args: argparse.Namespace, rcdm_config: RCDMConfig, cond_dim:
 
 
 @torch.no_grad()
+def _batch_states_and_images(
+    *,
+    batch,
+    qwen_model,
+    processor,
+    token_id_map: dict[str, int] | None,
+    state_proj: StateProjector | None,
+    device: torch.device,
+    image_size: int,
+    max_length: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if isinstance(batch, dict) and "state_emb" in batch:
+        states = batch["state_emb"].to(device=device, dtype=torch.float32)
+        paths = batch["current_image_path"]
+    else:
+        if token_id_map is None or state_proj is None:
+            raise ValueError("online Qwen state extraction requires token_id_map and state_proj")
+        states = _encode_states(
+            model=qwen_model,
+            processor=processor,
+            token_id_map=token_id_map,
+            items=batch,
+            state_proj=state_proj,
+            device=device,
+            max_length=max_length,
+        )
+        paths = [item["current_image_path"] for item in batch]
+    images = torch.stack([
+        image_to_diffusion_tensor(path, image_size=image_size, device=device)
+        for path in paths
+    ])
+    return states, images
+
+
 def _evaluate_loss(
     *,
     model,
@@ -231,8 +276,8 @@ def _evaluate_loss(
     loader,
     qwen_model,
     processor,
-    token_id_map: dict[str, int],
-    state_proj: StateProjector,
+    token_id_map: dict[str, int] | None,
+    state_proj: StateProjector | None,
     device: torch.device,
     image_size: int,
     max_length: int,
@@ -243,19 +288,16 @@ def _evaluate_loss(
     for batch_idx, items in enumerate(loader):
         if max_batches > 0 and batch_idx >= max_batches:
             break
-        states = _encode_states(
-            model=qwen_model,
+        states, images = _batch_states_and_images(
+            batch=items,
+            qwen_model=qwen_model,
             processor=processor,
             token_id_map=token_id_map,
-            items=items,
             state_proj=state_proj,
             device=device,
+            image_size=image_size,
             max_length=max_length,
         )
-        images = torch.stack([
-            image_to_diffusion_tensor(item["current_image_path"], image_size=image_size, device=device)
-            for item in items
-        ])
         t = torch.randint(0, diffusion.num_timesteps, (images.shape[0],), device=device)
         loss = diffusion.training_losses(model, images, t, model_kwargs={"feat": states})["loss"].mean()
         losses.append(float(loss.detach().cpu().item()))
@@ -269,7 +311,79 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
         args.output_dir.mkdir(parents=True, exist_ok=True)
         torch.manual_seed(int(args.seed) + rank)
 
-        processor, token_id_map, qwen_model, state_proj, wm_predictor = _load_frozen_sft2_modules(args, device)
+        qwen_model = None
+        processor = None
+        token_id_map: dict[str, int] | None = None
+        state_proj: StateProjector | None = None
+        cond_dim: int
+
+        if args.state_cache_dir is not None:
+            train_cache_dir = args.state_cache_dir / "train"
+            val_cache_dir = args.state_cache_dir / "val"
+            need_cache_build = (
+                args.build_state_cache
+                or args.force_rebuild_state_cache
+                or not state_cache_ready(train_cache_dir)
+                or not state_cache_ready(val_cache_dir)
+            )
+            if is_main() and need_cache_build:
+                processor, token_id_map, qwen_model, state_proj, wm_predictor = _load_frozen_sft2_modules(args, device)
+                build_kwargs = dict(
+                    model_path=args.model,
+                    state_proj_checkpoint=args.state_proj_checkpoint,
+                    wm_checkpoint=args.wm_checkpoint,
+                    processor=processor,
+                    qwen_model=qwen_model,
+                    token_id_map=token_id_map,
+                    state_proj=state_proj,
+                    device=device,
+                    max_length=args.max_length,
+                    max_pixels=args.max_pixels,
+                    min_pixels=3136,
+                    batch_size=args.state_cache_build_batch_size,
+                    shard_size=args.state_cache_shard_size,
+                    compression=args.state_cache_compression,
+                    state_dtype=args.state_cache_dtype,
+                    force=args.force_rebuild_state_cache,
+                )
+                build_rcdm_state_cache(
+                    jsonl_path=args.train_jsonl,
+                    cache_dir=train_cache_dir,
+                    split_name="train",
+                    max_records=args.max_train_records,
+                    success_only=args.success_only,
+                    **build_kwargs,
+                )
+                build_rcdm_state_cache(
+                    jsonl_path=args.val_jsonl,
+                    cache_dir=val_cache_dir,
+                    split_name="val",
+                    max_records=args.max_val_records,
+                    success_only=False,
+                    **build_kwargs,
+                )
+                del qwen_model, state_proj, wm_predictor
+                qwen_model = None
+                state_proj = None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            if world > 1 and dist.is_available() and dist.is_initialized():
+                dist.barrier()
+            train_ds = RCDMStateCacheDataset(train_cache_dir)
+            val_ds = RCDMStateCacheDataset(val_cache_dir)
+            cond_dim = train_ds.manifest.cond_dim
+            if val_ds.manifest.cond_dim != cond_dim:
+                raise ValueError("train/val state cache cond_dim mismatch")
+            train_collate = collate_rcdm_state_cache_batch
+            val_collate = collate_rcdm_state_cache_batch
+        else:
+            processor, token_id_map, qwen_model, state_proj, wm_predictor = _load_frozen_sft2_modules(args, device)
+            cond_dim = wm_predictor.emb_dim
+            train_ds = TransitionQwenDataset(args.train_jsonl, max_records=args.max_train_records, success_only=args.success_only)
+            val_ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_val_records)
+            train_collate = collate_transition_batch
+            val_collate = collate_transition_batch
+
         rcdm_config = rcdm_config_from_args(args)
         if rcdm_config.use_fp16:
             raise ValueError("RCDM use_fp16 is not supported by this Nimloth training loop yet")
@@ -278,7 +392,7 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
 
         rcdm_model, diffusion = create_model_and_diffusion(
             rcdm_config,
-            cond_dim=wm_predictor.emb_dim,
+            cond_dim=cond_dim,
             rcdm_root=str(args.rcdm_root) if args.rcdm_root is not None else None,
         )
         rcdm_model.to(device)
@@ -286,8 +400,6 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
         ema_rates = parse_ema_rates(args.ema_rate)
         ema_states = {rate: init_ema_state(rcdm_model) for rate in ema_rates}
 
-        train_ds = TransitionQwenDataset(args.train_jsonl, max_records=args.max_train_records, success_only=args.success_only)
-        val_ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_val_records)
         train_sampler = DistributedSampler(train_ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed) if world > 1 else None
         train_loader = DataLoader(
             train_ds,
@@ -296,7 +408,7 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
             shuffle=train_sampler is None,
             num_workers=0,
             pin_memory=True,
-            collate_fn=collate_transition_batch,
+            collate_fn=train_collate,
         )
         val_loader = None
         if is_main():
@@ -306,10 +418,10 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
                 shuffle=False,
                 num_workers=0,
                 pin_memory=True,
-                collate_fn=collate_transition_batch,
+                collate_fn=val_collate,
             )
 
-        metadata = _build_metadata(args, rcdm_config, wm_predictor.emb_dim, world)
+        metadata = _build_metadata(args, rcdm_config, cond_dim, world)
         if is_main():
             (args.output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
             log_path = args.output_dir / "train_step_log.csv"
@@ -343,19 +455,16 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
                     continue
                 last_epoch = epoch
                 last_step_in_epoch = step_in_epoch
-                states = _encode_states(
-                    model=qwen_model,
+                states, images = _batch_states_and_images(
+                    batch=items,
+                    qwen_model=qwen_model,
                     processor=processor,
                     token_id_map=token_id_map,
-                    items=items,
                     state_proj=state_proj,
                     device=device,
+                    image_size=args.image_size,
                     max_length=args.max_length,
                 )
-                images = torch.stack([
-                    image_to_diffusion_tensor(item["current_image_path"], image_size=args.image_size, device=device)
-                    for item in items
-                ])
                 t = torch.randint(0, diffusion.num_timesteps, (images.shape[0],), device=device)
                 losses = diffusion.training_losses(train_model, images, t, model_kwargs={"feat": states})
                 loss = losses["loss"].mean()
@@ -476,6 +585,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--wandb-id", default=None)
     ap.add_argument("--wandb-resume", choices=("allow", "must", "never", "auto"), default="allow")
     ap.add_argument("--no-wandb", action="store_true")
+
+    ap.add_argument(
+        "--state-cache-dir",
+        type=Path,
+        default=None,
+        help="Compressed cache root for precomputed StateProjector(Qwen latent) embeddings",
+    )
+    ap.add_argument("--build-state-cache", action="store_true", help="Build missing RCDM state cache before training")
+    ap.add_argument("--force-rebuild-state-cache", action="store_true")
+    ap.add_argument("--state-cache-build-batch-size", type=int, default=1)
+    ap.add_argument("--state-cache-shard-size", type=int, default=4096)
+    ap.add_argument("--state-cache-compression", choices=("gzip", "none"), default="gzip")
+    ap.add_argument("--state-cache-dtype", choices=("float16", "bfloat16", "float32"), default="float16")
 
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--max-steps", type=int, default=-1)
