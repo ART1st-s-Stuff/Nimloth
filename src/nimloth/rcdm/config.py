@@ -61,6 +61,16 @@ def create_model_and_diffusion(config: RCDMConfig, *, cond_dim: int, rcdm_root: 
     """
 
     ensure_rcdm_importable(rcdm_root)
+
+    # Upstream RCDM targets older PyTorch versions where torch._C.has_mkldnn
+    # exists.  PyTorch 2.8 removed that symbol, but RCDM only imports it and
+    # does not use it in the Nimloth UNet path.  Add a compatibility attribute
+    # before importing guided_diffusion_rcdm.unet.
+    import torch
+
+    if not hasattr(torch._C, "has_mkldnn"):
+        setattr(torch._C, "has_mkldnn", False)
+
     from guided_diffusion_rcdm.script_util import create_model_and_diffusion as _create
 
     cfg = config.to_metadata()
