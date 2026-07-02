@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-02：nimloth-lewm-repro 分支已建立 LeWM Cube latent → Nimloth decoder 复现入口
+
+- 用户已更改任务定义：目标不是复现 LeWM 原文 cross-attention decoder，而是验证 Nimloth `WMImageDecoder` 在适配 LeWM 原文 latent 规模后，能否从官方 LeWM OGBench-Cube 192-dim `[CLS]` latent 重建原图。
+- 已创建本地 worktree `/workspace/remote2/nimloth-nimloth-lewm-repro`，分支 `nimloth-lewm-repro`。
+- 已初始化官方 `external/le-wm` submodule。
+- 新增实验入口并提交：
+  - `8ccfebe feat: add lewm cube decoder repro`
+  - `dea79f6 docs: track lewm decoder repro setup`
+- 新增文件：`experiments/lewm_decoder_repro/train_nimloth_decoder_on_lewm_cube.py`、`README.md`、`setup_remote_env.sh`、`run_smoke.slurm`。
+- 设计：加载 HF `quentinll/lewm-cube` 官方 checkpoint，冻结 LeWM encoder；decoder 使用 Nimloth `WMImageDecoder(emb_dim=192, image_size=224, patch_size=16)`；训练模块只有 decoder。
+- 已验证：`py_compile` 和 `bash -n` 通过。
+- 尚未下载 46GB Cube dataset，尚未启动 GPU 训练；启动前需按实验规则确认资源与输出目录。
+
 ## 2026-07-01：SFT2 1024-dim latent WM on dgx-56 已健康启动
 
 ### 已完成
