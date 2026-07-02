@@ -18,7 +18,17 @@
 - 设计：加载 HF `quentinll/lewm-cube` 官方 checkpoint，冻结 LeWM encoder；decoder 使用 Nimloth `WMImageDecoder(emb_dim=192, image_size=224, patch_size=16)`；训练模块只有 decoder。
 - 已验证：`py_compile` 和 `bash -n` 通过。
 - 已 push 到 `origin/nimloth-lewm-repro`，并在服务器创建/同步 worktree `/project/peilab/atst/nimloth/.worktree/nimloth-lewm-repro`。
-- 尚未下载 46GB Cube dataset，尚未启动 GPU 训练；启动前需按实验规则确认资源与输出目录。
+- 服务器环境已建立为 `.venv-lewm`；为 exact load 官方 HF weights，需 pin `transformers==4.55.4`，并安装 `hdf5plugin`。
+- 失败修正：
+  - job `464080` 失败于 archive 解压路径与脚本预期不一致。
+  - job `464086` 失败于 `stable_worldmodel` 实际使用 `$STABLEWM_HOME/datasets/`，且 transformers 5.x ViT key 与官方 weights 不匹配。
+  - job `464090` 失败于 HDF5 reader 未注册/缺 `hdf5plugin`。
+- 有效 smoke run `464091` 已完成：
+  - 输出：`/project/peilab/atst/nimloth/outputs/experiments/lewm_repro/2026-07-02/nimloth_decoder_cube_smoke_464091`
+  - 资源：preempt / dgx-39 / 1 GPU，00:01:55，COMPLETED 0:0
+  - 数据：官方 Cube HDF5，random_split 0.9 后 smoke subset `train_limit=2048`, `val_limit=256`；4 frames/sequence，val metrics 覆盖 1024 images
+  - 最终 epoch5：train_loss=0.0377573，val_l1=0.0376028，val_mse=0.00990812
+  - preview：`previews/best.png`；视觉上已有粗布局/机械臂/方块区域，但仍明显 blocky，未达到论文展示质量。建议下一步扩大训练子集并训练更久再判断上限。
 
 ## 2026-07-01：SFT2 1024-dim latent WM on dgx-56 已健康启动
 

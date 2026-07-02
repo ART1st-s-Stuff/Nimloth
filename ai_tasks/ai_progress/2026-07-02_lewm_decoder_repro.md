@@ -37,8 +37,17 @@
 - 后续提交：`dea79f6 docs: track lewm decoder repro setup`、`7864edd docs: summarize lewm decoder repro branch`、`0fdc9b5 fix: allow lewm env setup without uv`。
 - 已 push 到 `origin/nimloth-lewm-repro`，并在服务器创建/同步 worktree `/project/peilab/atst/nimloth/.worktree/nimloth-lewm-repro`。
 - job `464080` 首次 smoke 已启动但失败于训练前：HF archive 解压出 `$STABLEWM_HOME/cube_single_expert.h5`，脚本按 LeWM config-style dataset name 期待 `$STABLEWM_HOME/ogbench/cube_single_expert.h5`，因此 `FileNotFoundError`。无有效 metrics/checkpoint。
-- 已更新远程失败输出 README 和 `outputs/experiments/lewm_repro/progress.md`。
-- 已修复 `prepare_dataset()`：若 root fallback h5 存在，自动创建 `ogbench/cube_single_expert.h5` symlink。
+- job `464086` 失败于训练前：`stable_worldmodel` 实际在 `$STABLEWM_HOME/datasets/` 下解析 dataset；同时 transformers 5.x 的 ViT key 与官方 HF weights 不匹配。无有效 metrics/checkpoint。
+- job `464090` 失败于训练前：HDF5 reader 未自动注册且缺 `hdf5plugin`。无有效 metrics/checkpoint。
+- 已修复：
+  - `prepare_dataset()` 创建 `$STABLEWM_HOME/datasets/ogbench/cube_single_expert.h5` symlink。
+  - setup pin `transformers==4.55.4`，确保官方 LeWM weights exact load；脚本现在默认拒绝非 exact checkpoint load。
+  - 显式注册 HDF5 reader，并安装 `hdf5plugin`。
+- job `464091` 完成：`/project/peilab/atst/nimloth/outputs/experiments/lewm_repro/2026-07-02/nimloth_decoder_cube_smoke_464091`。
+  - 资源：preempt / dgx-39 / 1 GPU，运行 00:01:55，COMPLETED 0:0。
+  - 数据：官方 Cube HDF5，random_split 0.9 后 smoke subset `train_limit=2048`, `val_limit=256`；4 frames/sequence，因此 val metrics 覆盖 1024 images。
+  - 最终 epoch5：train_loss=0.0377573，val_l1=0.0376028，val_mse=0.00990812。
+  - preview `previews/best.png`：粗场景布局、光照块、机械臂/方块区域可见，但仍明显 blocky，尚未达到论文展示质量。
 
 ## 待确认问题
 
