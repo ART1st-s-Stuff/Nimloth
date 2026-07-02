@@ -26,7 +26,7 @@
 - 新建本进度文件。
 - 新增 `experiments/lewm_decoder_repro/train_nimloth_decoder_on_lewm_cube.py`：加载官方 LeWM Cube checkpoint，冻结 encoder，训练 Nimloth `WMImageDecoder(emb_dim=192, image_size=224, patch_size=16)`。
 - 新增 `experiments/lewm_decoder_repro/README.md`：记录目标、边界、命令和输出。
-- 新增 `experiments/lewm_decoder_repro/setup_remote_env.sh`：按 LeWM README 安装 `stable-worldmodel[train,env]` 等依赖。
+- 新增 `experiments/lewm_decoder_repro/setup_remote_env.sh`：安装 `stable-worldmodel[train]`、`transformers==4.55.4`、`hdf5plugin` 等依赖。
 - 新增 `experiments/lewm_decoder_repro/run_smoke.slurm`：单 GPU smoke launcher。
 
 ## 验证命令和结果
@@ -51,4 +51,4 @@
 
 ## 待确认问题
 
-- 下载 HF Cube dataset 约 46GB，训练 decoder 需要 GPU；启动前需向用户确认资源与输出目录。
+- 当前 2048 sequence / 5 epoch smoke 尚未达到论文展示质量；是否扩大子集并训练更久需要用户确认。
