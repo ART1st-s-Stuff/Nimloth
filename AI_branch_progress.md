@@ -35,6 +35,12 @@
   - smoke cache 使用 `max_train_records=1` / `max_val_records=1`，实际各展开 19 transitions；train cache `40034` bytes，val cache `40015` bytes，`cond_dim=1024`，`state_dtype=float16`，`compression=gzip`。
   - 已验证：首次运行 build cache 并到 step1；第二次 `--resume` 命中 `rcdm_state_cache=hit`，复用 W&B run，加载 step1 checkpoint，跳过已处理 step，跑到 global step2。
   - 指标：step1 train loss `1.0068888664`, val loss `1.0182050467`；step2 train loss `1.0024071932`, val loss `1.0164903402`。
+- 2026-07-02 已启动 full-scale RCDM 一轮实验（按用户确认）：
+  - 代码 commit：`821ae811e112b77aeb4ec3f85021f5161660cff9`。
+  - 先跑 1GPU 压缩 state cache build job `464168`，输出：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-07-02/rcdm_sft2_state_cache_build_step1000_1024_f16_gzip`，cache：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/cache/rcdm_sft2_step1000_trainval_1024_f16_gzip`。
+  - full train job `464169` 已以 `afterok:464168` dependency 提交，8GPU DDP，输出：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-07-02/rcdm_sft2_full_step1000_128px_cache_8g`。
+  - full train 配置：RCDM 128px upstream default (`num_channels=256`, `num_res_blocks=2`, attention `32,16,8`, `learn_sigma=true`)，per-rank batch size 4，1 epoch，save interval 500，W&B run name `rcdm_sft2_full_step1000_128px_cache_8g`。
+  - 启动健康检查：`464168` 在 `dgx-39` 运行，`CUDA_VISIBLE_DEVICES=0`，GPU0 约 `62345 MiB`、util `52%`；`464169` pending on dependency。
 - 两个失败重试已记录在服务器输出 README / `outputs/experiments/training/reconstruction/progress.md`：`464106` 缺少 `external/le-wm` submodule；`464107` 命中 `torch._C.has_mkldnn` 兼容问题。
 
 ## 2026-07-02：已重新上传 LeWM reconstruction 所用 SFT2 source run 的训练曲线到 W&B
