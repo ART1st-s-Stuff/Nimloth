@@ -199,6 +199,7 @@ def build_dataset(args: argparse.Namespace, stablewm_home: Path):
         args.dataset_name,
         transform=None,
         cache_dir=str(stablewm_home),
+        format="hdf5",
         num_steps=args.num_steps,
         frameskip=args.frameskip,
         keys_to_load=["pixels"],
