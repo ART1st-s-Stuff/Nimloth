@@ -5,3 +5,6 @@
 [submodule "external/le-wm"]
 	path = external/le-wm
 	url = https://github.com/lucas-maes/le-wm.git
+[submodule "external/RCDM"]
+	path = external/RCDM
+	url = https://github.com/facebookresearch/RCDM.git

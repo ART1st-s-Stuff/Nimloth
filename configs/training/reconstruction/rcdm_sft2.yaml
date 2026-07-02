@@ -1,0 +1,42 @@
+# RCDM post-hoc visualization for SFT2 latent states.
+# Use via python -m nimloth.training.reconstruction.rcdm_sft2 with equivalent CLI flags.
+# RCDM trains only the diffusion UNet; Qwen, StateProjector and WM predictor are frozen.
+
+model:
+  max_pixels: 602112
+  attn_implementation: sdpa
+
+rcdm:
+  image_size: 128
+  num_channels: 256
+  num_res_blocks: 2
+  num_heads: 4
+  attention_resolutions: "32,16,8"
+  learn_sigma: true
+  diffusion_steps: 1000
+  noise_schedule: linear
+  resblock_updown: true
+  use_scale_shift_norm: true
+
+train:
+  epochs: 1
+  batch_size: 1
+  lr: 1.0e-4
+  weight_decay: 0.0
+  ema_rate: "0.9999"
+  log_interval: 10
+  save_interval: 1000
+  max_length: 12000
+  success_only: false
+  resume: false
+
+wandb:
+  project: nimloth
+  run_name: null
+  resume: allow
+  enabled: true
+
+eval:
+  max_val_batches: 8
+  timestep_respacing: "100"
+  num_items: 8
