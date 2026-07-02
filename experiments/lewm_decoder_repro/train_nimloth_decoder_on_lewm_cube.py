@@ -191,6 +191,7 @@ def download_model_files(repo: str, output_dir: Path) -> tuple[Path, Path]:
 def build_dataset(args: argparse.Namespace, stablewm_home: Path):
     import stable_pretraining as spt
     import stable_worldmodel as swm
+    import stable_worldmodel.data.formats.hdf5  # noqa: F401 - register HDF5 reader
 
     # Import the official LeWM preprocessing from the checked-out upstream repo.
     from utils import get_img_preprocessor
