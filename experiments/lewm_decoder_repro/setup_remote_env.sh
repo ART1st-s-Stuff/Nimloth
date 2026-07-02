@@ -13,7 +13,7 @@ else
   "${PYTHON_BIN}" -m venv "${VENV}"
 fi
 "${VENV}/bin/python" -m pip install --upgrade pip
-"${VENV}/bin/python" -m pip install 'stable-worldmodel[train,env]' pillow huggingface_hub einops
+"${VENV}/bin/python" -m pip install 'stable-worldmodel[train]' pillow huggingface_hub einops h5py zstandard
 "${VENV}/bin/python" - <<'PY'
 import torch
 import stable_worldmodel
