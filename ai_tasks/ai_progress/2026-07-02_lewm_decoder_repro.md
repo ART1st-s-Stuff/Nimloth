@@ -58,7 +58,16 @@
   - `step_*` checkpoint 保存 decoder + optimizer + global_step，可用 `--resume-checkpoint` 恢复（dataloader 会从 epoch 开头重启）。
   - `--wandb-project/--wandb-name` 上传 train/eval metrics 和 preview。
 - 新增 `experiments/lewm_decoder_repro/run_full_wandb.slurm`。
-- 计划启动 full train：`train_limit=0` 使用完整 train split；`epochs=1`；`eval_every_steps=1000`；`val_limit=4096`（每次 eval 16,384 张图，避免每 1k step 做完整 10% val split 的巨大开销）。
+- full train 配置：`train_limit=0` 使用完整 train split；`epochs=1`；`eval_every_steps=1000`；`val_limit=4096`（每次 eval 16,384 张图，避免每 1k step 做完整 10% val split 的巨大开销）。
+- full train 首次提交情况：
+  - `464102` normal job 启动但训练前失败：旧 `.venv-lewm` 装了 torch 2.12.1/cu130，集群 driver 12080 无法 CUDA init。无有效 train/eval。
+  - `464103` preempt backup 因避免重复 full run 被取消。无有效 train/eval。
+  - 已修复环境：pin/reinstall `torch==2.8.0`, `torchvision==0.23.0`；远程 import check 为 torch 2.8.0+cu128、torchvision 0.23.0+cu128、stable_worldmodel OK。
+- 当前有效 full train job：`464108`。
+  - 资源：normal / dgx-14 / 1 GPU / 12h。
+  - 输出：`/project/peilab/atst/nimloth/outputs/experiments/lewm_repro/2026-07-02/nimloth_decoder_cube_full_ep1_eval1k_464108`。
+  - W&B：`https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/flower/runs/imos5pbx`。
+  - 已健康启动并完成 step 1000 eval：val_l1=0.0364008，val_mse=0.00961381，val_num_images=16384；training 已继续到至少 step 1215。
 
 ## 待确认问题
 

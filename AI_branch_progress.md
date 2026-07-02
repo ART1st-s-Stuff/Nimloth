@@ -29,6 +29,14 @@
   - 数据：官方 Cube HDF5，random_split 0.9 后 smoke subset `train_limit=2048`, `val_limit=256`；4 frames/sequence，val metrics 覆盖 1024 images
   - 最终 epoch5：train_loss=0.0377573，val_l1=0.0376028，val_mse=0.00990812
   - preview：`previews/best.png`；视觉上已有粗布局/机械臂/方块区域，但仍明显 blocky，未达到论文展示质量。建议下一步扩大训练子集并训练更久再判断上限。
+- 用户要求直接开始全规模训练、每 1k step eval 并上传 W&B；已新增并 push `run_full_wandb.slurm` 与 step-eval/W&B/checkpoint 支持。
+- full train 配置：完整 train split (`train_limit=0`)，1 epoch，每 1000 optimizer steps eval；eval 使用 `val_limit=4096` sequences（16,384 images），避免每 1k step 跑完整 10% val split。
+- full train job 状态：
+  - `464102` 失败于训练前：torch 2.12.1/cu130 与集群 driver 12080 不兼容；无有效指标。
+  - `464103` preempt backup 已取消，避免重复 full run。
+  - 已修复 `.venv-lewm`：torch 2.8.0+cu128、torchvision 0.23.0+cu128、stable_worldmodel import OK。
+  - 当前有效 job `464108`：normal / dgx-14 / 1 GPU / 12h，输出 `/project/peilab/atst/nimloth/outputs/experiments/lewm_repro/2026-07-02/nimloth_decoder_cube_full_ep1_eval1k_464108`，W&B `https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/flower/runs/imos5pbx`。
+  - `464108` 已健康启动并完成 step 1000 eval：val_l1=0.0364008，val_mse=0.00961381，val_num_images=16384；训练已继续到至少 step 1215。
 
 ## 2026-07-01：SFT2 1024-dim latent WM on dgx-56 已健康启动
 
