@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=lewm-dec-smoke
+#SBATCH --account=peilab
 #SBATCH --partition=preempt
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
