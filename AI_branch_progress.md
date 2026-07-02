@@ -12,9 +12,12 @@
 - 新增实验入口并提交：
   - `8ccfebe feat: add lewm cube decoder repro`
   - `dea79f6 docs: track lewm decoder repro setup`
+  - `7864edd docs: summarize lewm decoder repro branch`
+  - `0fdc9b5 fix: allow lewm env setup without uv`
 - 新增文件：`experiments/lewm_decoder_repro/train_nimloth_decoder_on_lewm_cube.py`、`README.md`、`setup_remote_env.sh`、`run_smoke.slurm`。
 - 设计：加载 HF `quentinll/lewm-cube` 官方 checkpoint，冻结 LeWM encoder；decoder 使用 Nimloth `WMImageDecoder(emb_dim=192, image_size=224, patch_size=16)`；训练模块只有 decoder。
 - 已验证：`py_compile` 和 `bash -n` 通过。
+- 已 push 到 `origin/nimloth-lewm-repro`，并在服务器创建/同步 worktree `/project/peilab/atst/nimloth/.worktree/nimloth-lewm-repro`。
 - 尚未下载 46GB Cube dataset，尚未启动 GPU 训练；启动前需按实验规则确认资源与输出目录。
 
 ## 2026-07-01：SFT2 1024-dim latent WM on dgx-56 已健康启动

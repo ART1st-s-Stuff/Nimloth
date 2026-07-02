@@ -34,6 +34,8 @@
 - `python -m py_compile experiments/lewm_decoder_repro/train_nimloth_decoder_on_lewm_cube.py`：通过。
 - `bash -n experiments/lewm_decoder_repro/run_smoke.slurm experiments/lewm_decoder_repro/setup_remote_env.sh`：通过。
 - 已提交：`8ccfebe feat: add lewm cube decoder repro`。
+- 后续提交：`dea79f6 docs: track lewm decoder repro setup`、`7864edd docs: summarize lewm decoder repro branch`、`0fdc9b5 fix: allow lewm env setup without uv`。
+- 已 push 到 `origin/nimloth-lewm-repro`，并在服务器创建/同步 worktree `/project/peilab/atst/nimloth/.worktree/nimloth-lewm-repro`。
 - 尚未下载完整 Cube dataset，尚未启动 GPU 训练。
 
 ## 待确认问题
