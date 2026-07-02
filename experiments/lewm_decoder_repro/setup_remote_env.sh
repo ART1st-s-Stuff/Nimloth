@@ -14,6 +14,8 @@ else
 fi
 "${VENV}/bin/python" -m pip install --upgrade pip
 "${VENV}/bin/python" -m pip install 'stable-worldmodel[train]' 'transformers==4.55.4' pillow huggingface_hub einops h5py hdf5plugin zstandard imageio
+# The cluster driver is CUDA 12.8-era; newer PyPI torch/cu130 fails at CUDA init.
+"${VENV}/bin/python" -m pip install --force-reinstall 'torch==2.8.0' 'torchvision==0.23.0'
 "${VENV}/bin/python" - <<'PY'
 import torch
 import stable_worldmodel
