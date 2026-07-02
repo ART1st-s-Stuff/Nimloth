@@ -70,6 +70,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decoder-heads", type=int, default=3)
     parser.add_argument("--decoder-mlp-ratio", type=int, default=4)
     parser.add_argument("--save-preview-batches", type=int, default=1)
+    parser.add_argument("--eval-every-steps", type=int, default=0, help="Run validation every N optimizer steps; <=0 disables step eval.")
+    parser.add_argument("--resume-checkpoint", type=Path, default=None, help="Resume decoder/optimizer/global_step from a checkpoint directory.")
+    parser.add_argument("--wandb-project", default=None, help="If set, upload train/eval metrics and previews to W&B.")
+    parser.add_argument("--wandb-entity", default=None)
+    parser.add_argument("--wandb-name", default=None)
+    parser.add_argument("--wandb-mode", default="online")
+    parser.add_argument("--wandb-preview-images", type=int, default=8)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--allow-nonstrict-weights", action="store_true", help="Debug only: allow non-exact LeWM checkpoint state_dict load.")
     return parser.parse_args()
@@ -276,7 +283,7 @@ def tensor_to_pil(x: torch.Tensor) -> Image.Image:
 
 
 @torch.no_grad()
-def save_preview(model: JEPA, decoder: WMImageDecoder, loader: DataLoader, device: torch.device, out_path: Path, *, max_images: int = 12) -> None:
+def save_preview(model: JEPA, decoder: WMImageDecoder, loader: DataLoader, device: torch.device, out_path: Path, *, max_images: int = 12) -> Path:
     decoder.eval()
     batch = next(iter(loader))
     pixels = batch_to_pixels(batch).to(device).float()
@@ -296,6 +303,60 @@ def save_preview(model: JEPA, decoder: WMImageDecoder, loader: DataLoader, devic
         canvas.paste(tensor_to_pil(pred[i]), (cell_w, y + label_h))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path)
+    return out_path
+
+
+def save_training_checkpoint(
+    decoder: WMImageDecoder,
+    optimizer: torch.optim.Optimizer,
+    path: Path,
+    *,
+    global_step: int,
+    epoch: int,
+    best_val: float,
+) -> None:
+    decoder.save_checkpoint(path)
+    torch.save(
+        {
+            "optimizer": optimizer.state_dict(),
+            "global_step": global_step,
+            "epoch": epoch,
+            "best_val": best_val,
+        },
+        path / "trainer_state.pt",
+    )
+
+
+def maybe_resume_training(
+    decoder: WMImageDecoder,
+    optimizer: torch.optim.Optimizer,
+    resume_checkpoint: Path | None,
+    device: torch.device,
+) -> tuple[int, float]:
+    if resume_checkpoint is None:
+        return 0, float("inf")
+    loaded = WMImageDecoder.load_checkpoint(resume_checkpoint, map_location=device)
+    decoder.load_state_dict(loaded.state_dict())
+    state_path = resume_checkpoint / "trainer_state.pt"
+    if not state_path.exists():
+        return 0, float("inf")
+    state = torch.load(state_path, map_location="cpu", weights_only=False)
+    optimizer.load_state_dict(state["optimizer"])
+    return int(state.get("global_step", 0)), float(state.get("best_val", float("inf")))
+
+
+def init_wandb(args: argparse.Namespace, metadata: dict[str, Any]):
+    if not args.wandb_project:
+        return None
+    import wandb
+
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_name or args.output_dir.name,
+        mode=args.wandb_mode,
+        config=metadata,
+    )
 
 
 def main() -> int:
@@ -320,8 +381,10 @@ def main() -> int:
         "Checkpoint init: HF model `quentinll/lewm-cube`; LeWM encoder/predictor/action/projectors are loaded "
         "for the official model, but only the frozen encoder/projector path is used for reconstruction latents.\n\n"
         "Trainable modules: Nimloth `WMImageDecoder` only. Frozen modules: official LeWM model.\n\n"
-        "Resume: no automatic resume for this smoke run; epoch checkpoints are saved for inspection.\n\n"
-        "Metrics: step-level training loss in `train_step_log.csv`; epoch-level train/val loss, MSE, L1 in `train_log.csv`; previews under `previews/`.\n",
+        "Resume: pass `--resume-checkpoint <checkpoint_dir>` to restore decoder, optimizer and global_step; "
+        "the dataloader restarts from the beginning of an epoch.\n\n"
+        "Metrics: step-level training loss in `train_step_log.csv`; eval metrics in `eval_log.csv`; "
+        "epoch-level train/val loss, MSE, L1 in `train_log.csv`; previews under `previews/`; optional W&B upload.\n",
         encoding="utf-8",
     )
 
@@ -352,16 +415,23 @@ def main() -> int:
     )
     decoder = WMImageDecoder(decoder_cfg).to(device)
     opt = torch.optim.AdamW(decoder.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    global_step, best_val = maybe_resume_training(decoder, opt, args.resume_checkpoint, device)
+    wandb_run = init_wandb(args, metadata)
 
-    global_step = 0
     with (args.output_dir / "train_log.csv").open("w", newline="", encoding="utf-8") as f, (
         args.output_dir / "train_step_log.csv"
-    ).open("w", newline="", encoding="utf-8") as step_f:
+    ).open("w", newline="", encoding="utf-8") as step_f, (args.output_dir / "eval_log.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as eval_f:
         writer = csv.DictWriter(f, fieldnames=["epoch", "train_loss", "val_loss", "val_mse", "val_l1", "val_num_images"])
         step_writer = csv.DictWriter(step_f, fieldnames=["global_step", "epoch", "batch_idx", "train_loss", "num_images"])
+        eval_writer = csv.DictWriter(
+            eval_f,
+            fieldnames=["global_step", "epoch", "batch_idx", "val_loss", "val_mse", "val_l1", "val_num_images"],
+        )
         writer.writeheader()
         step_writer.writeheader()
-        best_val = float("inf")
+        eval_writer.writeheader()
         for epoch in range(1, args.epochs + 1):
             decoder.train()
             total = 0.0
@@ -392,6 +462,59 @@ def main() -> int:
                     }
                 )
                 step_f.flush()
+                if wandb_run is not None:
+                    wandb_run.log({"train/loss": loss_value, "train/num_images": n, "epoch": epoch}, step=global_step)
+
+                if args.eval_every_steps > 0 and global_step % args.eval_every_steps == 0:
+                    val = evaluate(lewm, decoder, val_loader, device, args.loss)
+                    eval_row = {
+                        "global_step": global_step,
+                        "epoch": epoch,
+                        "batch_idx": batch_idx,
+                        "val_loss": val["loss"],
+                        "val_mse": val["mse"],
+                        "val_l1": val["l1"],
+                        "val_num_images": int(val["num_images"]),
+                    }
+                    eval_writer.writerow(eval_row)
+                    eval_f.flush()
+                    print(json.dumps({"eval": eval_row}), flush=True)
+                    ckpt_dir = args.output_dir / f"step_{global_step:09d}"
+                    save_training_checkpoint(decoder, opt, ckpt_dir, global_step=global_step, epoch=epoch, best_val=best_val)
+                    preview_path = save_preview(
+                        lewm,
+                        decoder,
+                        val_loader,
+                        device,
+                        args.output_dir / "previews" / f"step_{global_step:09d}.png",
+                        max_images=args.wandb_preview_images,
+                    )
+                    if val["loss"] < best_val:
+                        best_val = val["loss"]
+                        save_training_checkpoint(decoder, opt, args.output_dir / "best", global_step=global_step, epoch=epoch, best_val=best_val)
+                        save_preview(
+                            lewm,
+                            decoder,
+                            val_loader,
+                            device,
+                            args.output_dir / "previews" / "best.png",
+                            max_images=args.wandb_preview_images,
+                        )
+                    if wandb_run is not None:
+                        import wandb
+
+                        wandb_run.log(
+                            {
+                                "eval/loss": val["loss"],
+                                "eval/mse": val["mse"],
+                                "eval/l1": val["l1"],
+                                "eval/num_images": val["num_images"],
+                                "eval/preview": wandb.Image(str(preview_path)),
+                                "epoch": epoch,
+                            },
+                            step=global_step,
+                        )
+                    decoder.train()
             val = evaluate(lewm, decoder, val_loader, device, args.loss)
             row = {
                 "epoch": epoch,
@@ -404,13 +527,28 @@ def main() -> int:
             writer.writerow(row)
             f.flush()
             print(json.dumps(row), flush=True)
-            decoder.save_checkpoint(args.output_dir / f"epoch_{epoch:03d}")
-            save_preview(lewm, decoder, val_loader, device, args.output_dir / "previews" / f"epoch_{epoch:03d}.png")
+            save_training_checkpoint(decoder, opt, args.output_dir / f"epoch_{epoch:03d}", global_step=global_step, epoch=epoch, best_val=best_val)
+            preview_path = save_preview(lewm, decoder, val_loader, device, args.output_dir / "previews" / f"epoch_{epoch:03d}.png")
             if val["loss"] < best_val:
                 best_val = val["loss"]
-                decoder.save_checkpoint(args.output_dir / "best")
+                save_training_checkpoint(decoder, opt, args.output_dir / "best", global_step=global_step, epoch=epoch, best_val=best_val)
                 save_preview(lewm, decoder, val_loader, device, args.output_dir / "previews" / "best.png")
-    decoder.save_checkpoint(args.output_dir / "final")
+            if wandb_run is not None:
+                import wandb
+
+                wandb_run.log(
+                    {
+                        "epoch_eval/loss": val["loss"],
+                        "epoch_eval/mse": val["mse"],
+                        "epoch_eval/l1": val["l1"],
+                        "epoch_eval/preview": wandb.Image(str(preview_path)),
+                        "epoch": epoch,
+                    },
+                    step=global_step,
+                )
+    save_training_checkpoint(decoder, opt, args.output_dir / "final", global_step=global_step, epoch=args.epochs, best_val=best_val)
+    if wandb_run is not None:
+        wandb_run.finish()
     return 0
 
 

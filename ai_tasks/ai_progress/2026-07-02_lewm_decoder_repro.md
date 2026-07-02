@@ -49,6 +49,17 @@
   - 最终 epoch5：train_loss=0.0377573，val_l1=0.0376028，val_mse=0.00990812。
   - preview `previews/best.png`：粗场景布局、光照块、机械臂/方块区域可见，但仍明显 blocky，尚未达到论文展示质量。
 
+## 当前新阶段：full train + W&B
+
+- 用户要求直接开始全规模训练，每 1k step eval 并上传 W&B。
+- 已新增 step-eval / W&B / checkpoint 支持：
+  - `--eval-every-steps` 每 N optimizer steps 跑 eval。
+  - `eval_log.csv` 记录 step-level eval。
+  - `step_*` checkpoint 保存 decoder + optimizer + global_step，可用 `--resume-checkpoint` 恢复（dataloader 会从 epoch 开头重启）。
+  - `--wandb-project/--wandb-name` 上传 train/eval metrics 和 preview。
+- 新增 `experiments/lewm_decoder_repro/run_full_wandb.slurm`。
+- 计划启动 full train：`train_limit=0` 使用完整 train split；`epochs=1`；`eval_every_steps=1000`；`val_limit=4096`（每次 eval 16,384 张图，避免每 1k step 做完整 10% val split 的巨大开销）。
+
 ## 待确认问题
 
-- 当前 2048 sequence / 5 epoch smoke 尚未达到论文展示质量；是否扩大子集并训练更久需要用户确认。
+- 若需要“每次 eval 都覆盖完整 val split”，需另行确认；这会非常昂贵。

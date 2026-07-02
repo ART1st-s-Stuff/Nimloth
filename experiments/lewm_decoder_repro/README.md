@@ -12,6 +12,14 @@
 
 `cube_single_expert.tar.zst` 约 46GB。解压后默认放到 `$STABLEWM_HOME/ogbench/cube_single_expert.h5`。
 
+## Full train with W&B
+
+Uses the full train split (`--train-limit 0`), evaluates every 1000 optimizer steps on a bounded validation subset by default (`VAL_LIMIT=4096` sequences = 16,384 images), and uploads metrics/previews to W&B.
+
+```bash
+sbatch experiments/lewm_decoder_repro/run_full_wandb.slurm
+```
+
 ## Smoke run
 
 ```bash
