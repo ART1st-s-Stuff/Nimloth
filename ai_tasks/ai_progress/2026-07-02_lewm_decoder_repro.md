@@ -36,7 +36,9 @@
 - 已提交：`8ccfebe feat: add lewm cube decoder repro`。
 - 后续提交：`dea79f6 docs: track lewm decoder repro setup`、`7864edd docs: summarize lewm decoder repro branch`、`0fdc9b5 fix: allow lewm env setup without uv`。
 - 已 push 到 `origin/nimloth-lewm-repro`，并在服务器创建/同步 worktree `/project/peilab/atst/nimloth/.worktree/nimloth-lewm-repro`。
-- 尚未下载完整 Cube dataset，尚未启动 GPU 训练。
+- job `464080` 首次 smoke 已启动但失败于训练前：HF archive 解压出 `$STABLEWM_HOME/cube_single_expert.h5`，脚本按 LeWM config-style dataset name 期待 `$STABLEWM_HOME/ogbench/cube_single_expert.h5`，因此 `FileNotFoundError`。无有效 metrics/checkpoint。
+- 已更新远程失败输出 README 和 `outputs/experiments/lewm_repro/progress.md`。
+- 已修复 `prepare_dataset()`：若 root fallback h5 存在，自动创建 `ogbench/cube_single_expert.h5` symlink。
 
 ## 待确认问题
 

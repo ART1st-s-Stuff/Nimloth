@@ -85,7 +85,12 @@ def _stablewm_home(args: argparse.Namespace) -> Path:
 
 def prepare_dataset(args: argparse.Namespace, stablewm_home: Path) -> None:
     h5_path = stablewm_home / args.dataset_name
+    root_fallback = stablewm_home / Path(args.dataset_name).name
     if h5_path.exists():
+        return
+    if root_fallback.exists():
+        h5_path.parent.mkdir(parents=True, exist_ok=True)
+        h5_path.symlink_to(root_fallback)
         return
     if not args.download_dataset:
         raise FileNotFoundError(
@@ -101,8 +106,15 @@ def prepare_dataset(args: argparse.Namespace, stablewm_home: Path) -> None:
         local_dir=stablewm_home / "hf_downloads" / "lewm-cube",
     )
     subprocess.run(["tar", "--zstd", "-xvf", archive, "-C", str(stablewm_home)], check=True)
-    if not h5_path.exists():
-        raise FileNotFoundError(f"Dataset extraction finished but {h5_path} still does not exist")
+    if h5_path.exists():
+        return
+    if root_fallback.exists():
+        h5_path.parent.mkdir(parents=True, exist_ok=True)
+        h5_path.symlink_to(root_fallback)
+        return
+    raise FileNotFoundError(
+        f"Dataset extraction finished but neither {h5_path} nor {root_fallback} exists"
+    )
 
 
 def instantiate_lewm(weights_path: Path, config_path: Path, device: torch.device, *, strict: bool) -> JEPA:
