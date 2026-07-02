@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
+
+- 已将 `https://github.com/facebookresearch/RCDM.git` 作为 git submodule 添加到 `external/RCDM`。
+- 当前锁定 commit：`71daaf10a73bb2012864f0827c68d209fc92b0a5`（`heads/main`，`Update RCDM file`）。
+- 新增 Nimloth RCDM adapter，不修改 upstream submodule：
+  - `src/nimloth/rcdm/`：定位 `external/RCDM`、RCDM config/factory、guided-diffusion image normalization、checkpoint/EMA helper。
+  - `src/nimloth/training/reconstruction/rcdm_sft2.py`：训练 RCDM UNet，使其以 `StateProjector(Qwen <|latent_state|>)` 为条件重建当前观测；Qwen / `StateProjector` / `LatentWMPredictor` 全部冻结；已接入 W&B train/val loss logging 与 `wandb_run_id.txt` 续跑；已接入 `--resume`/`--resume-checkpoint` 恢复 model、optimizer、global step、epoch 内位置和 EMA。
+  - `src/nimloth/eval/rcdm_reconstruction.py`：从 true current state 与 `wm_predictor(s_t, a_t)` predicted-next state 采样，保存 `current_gt | current_sample | next_gt | pred_next_sample` strip。
+  - `configs/training/reconstruction/rcdm_sft2.yaml`：记录默认训练/采样参数参考。
+- 已验证：`git submodule status external/RCDM` 正常，`external/RCDM` 内部工作区干净；`PYTHONPATH=src .venv/bin/python -m pytest tests/test_rcdm_adapter.py -q` 通过。
+- 服务器 smoke：
+  - 工作树：`/project/peilab/atst/nimloth/.worktree/rcdm-smoke-e96fc7e`，最终 commit `f3b56b17d0b6b0d3eb87ecbf26deb20bfce4063b`。
+  - 输出：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-07-02/rcdm_sft2_smoke_f3b56b1_retry2`。
+  - Slurm job `464109` 在 `dgx-39` 完成，`COMPLETED 0:0`，elapsed `00:00:54`。
+  - W&B run：`https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth/runs/8aud5u4r`。
+  - smoke 配置：tiny RCDM (`image_size=64`, `num_channels=32`, `num_res_blocks=1`, `num_heads=1`)，`max_train_records=1`，先跑到 step1，再用 `--resume` 跑到 step2。
+  - 已验证：RCDM SFT2 adapter 可以加载 Qwen/state_proj/wm_predictor 与 upstream RCDM；W&B train/val loss logging 正常；保存 `model_*.pt` / `training_state_*.pt` / `ema_*.pt` 正常；`--resume` 从 step1 恢复到 global step2，并复用 `wandb_run_id.txt` 中的 run id。
+  - 指标：step1 train loss `1.0068888664`, val loss `1.0184571743`；step2 train loss `1.0024118423`, val loss `1.0169651508`。
+- smoke 期间修复：upstream RCDM 在 torch 2.8 下 import `torch._C.has_mkldnn` 失败；已在 `src/nimloth/rcdm/config.py` 添加兼容补丁并提交 `f3b56b1 fix(rcdm): patch torch mkldnn import compatibility`。
+- 已按用户建议新增压缩 state cache，并提交 `42c0e72 feat(rcdm): add compressed state cache`：
+  - `src/nimloth/rcdm/state_cache.py`：gzip/none shard cache，默认保存 `float16` 的 `StateProjector(Qwen <|latent_state|>)` 与 image paths，不保存 Qwen `pixel_values`，避免旧 SFT2 preprocess cache 体积过大。
+  - `rcdm_sft2.py` 新增 `--state-cache-dir` / `--build-state-cache` / `--force-rebuild-state-cache` / `--state-cache-compression` / `--state-cache-dtype` / shard 参数；cache ready 后训练路径不再加载或运行 Qwen。
+  - 旧服务器 SFT2 preprocess cache 确认存在：`/project/peilab/atst/nimloth/outputs/experiments/training/sft2/cache/sft2_llmlora64a128_vfull_pair2_gamma1`，约 `1.3T`，但只有 `train/`、约 `42048` 个 `.pt`、无 manifest/val，且缓存的是 Qwen processor 输出而不是 latent state，因此不建议复用于 RCDM full run。
+- 压缩 state cache smoke 已完成：
+  - 输出：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-07-02/rcdm_sft2_statecache_smoke_42c0e72`。
+  - cache：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/cache/rcdm_sft2_statecache_smoke_42c0e72`。
+  - Slurm job `464115` 在 `dgx-39` 完成，`COMPLETED 0:0`，elapsed `00:00:43`。
+  - W&B run：`https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth/runs/jg4cf47s`。
+  - smoke cache 使用 `max_train_records=1` / `max_val_records=1`，实际各展开 19 transitions；train cache `40034` bytes，val cache `40015` bytes，`cond_dim=1024`，`state_dtype=float16`，`compression=gzip`。
+  - 已验证：首次运行 build cache 并到 step1；第二次 `--resume` 命中 `rcdm_state_cache=hit`，复用 W&B run，加载 step1 checkpoint，跳过已处理 step，跑到 global step2。
+  - 指标：step1 train loss `1.0068888664`, val loss `1.0182050467`；step2 train loss `1.0024071932`, val loss `1.0164903402`。
+- 两个失败重试已记录在服务器输出 README / `outputs/experiments/training/reconstruction/progress.md`：`464106` 缺少 `external/le-wm` submodule；`464107` 命中 `torch._C.has_mkldnn` 兼容问题。
+
+## 2026-07-02：已重新上传 LeWM reconstruction 所用 SFT2 source run 的训练曲线到 W&B
+
+- 已确认 LeWM reconstruction 使用的 SFT2 source checkpoint 来自：`/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-07-01/sft2_lejepa_align_fn1_dgx56/`。
+- 已从该 run 的 `train_step_log.csv` 重新上传训练曲线到 W&B：`https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/flower/runs/9zjhf36z`。
+- 上传 run 名：`sft2_source_for_lewm_ckpt_sft2_lejepa_align_fn1_dgx56_reupload`；包含 1710 条 train step 和 1 条 validation row；CSV 也已保存到 W&B run files。
+
 ## 2026-07-01：SFT2 1024-dim latent WM on dgx-56 已健康启动
 
 ### 已完成
@@ -34,10 +73,74 @@
 - 当前 run 不得 resume；已有输出/checkpoint 不能用于结论。继续实验前必须重新审查并确认正确设计。
 - 远程 `.worktree/dev/external/VAGEN` 子模块因 GitHub SSH 权限未初始化；SFT2 不 import VAGEN，未阻塞启动。
 
+### 2026-07-01 LayerNorm fix smoke (commit 13ea39d) verified ✅
+
+- Commit: 13ea39d (fix(wm): use LayerNorm instead of BatchNorm in projectors)
+- 在 dgx-56 hold job 462499 上跑 SFT2 smoke (4 GPU pair-2, 64 train / 32 val transitions)
+- 结果：36 train steps + validation, 无任何错误
+  - val_wm_mse: 0.00481
+  - sigreg_loss: 0.42179
+  - val_rollout_success_rate: 0.1875
+- 结论：LayerNorm 替代 BatchNorm 后无 inplace running-buffer 冲突，DDP 训练稳定
+- 输出：`outputs/experiments/training/sft2/smoke/lejepa_align_lnorm/`
+
 ### 待跟进
 
 - 先诊断并修正被人类指出的错误设计/实现，得到明确确认后再启动新的 SFT2。
 - 若重新开始实验，必须新建输出目录，不复用当前 retry1。 
+
+## 2026-07-01：lejepa reconstruction 已切到 step1000 source checkpoint，并启动低 LR + warmup 调参 run
+
+- 用户指定 SFT2 checkpoint：先是 `.../ckpt_step400_preserved`，后明确希望 reconstruction 改为从 `.../ckpt_step1000_preserved` 这个 **SFT2 source checkpoint** 开始。
+- 已核实这两个目录都是 LoRA adapter checkpoint，不是完整 HF model；因此 reconstruction 前需要先导出 merged/full model。
+- 服务器使用干净 detached worktree：`/project/peilab/atst/nimloth/.worktree/recon-step400-20260701`；先后同步过：
+  - `13ea39d71e19b57c1eea6fe60d2204f8a5b222c2`（初始 LayerNorm fix）
+  - `f73ccac2fbbdf79208ba4685a45511d28a8d0101`（reconstruction DDP）
+  - `2d96ff758ac5a492fb0db86f00312950ea2181c1`（reconstruction LR warmup）
+- 服务器侧初始化问题已修复：`git submodule update --init external/le-wm`，否则 reconstruction import 会因缺少 `external/le-wm/module.py` 失败。
+- 单卡 / 4 卡第一轮运行轨迹：
+  - `463525`：单卡 step400 reconstruction 曾健康启动于 `dgx-29`，W&B run `e7c2vd5m`，后按用户要求取消。
+  - `463537`：4GPU DDP run 曾健康运行于 `dgx-18`，W&B run `ulpstk1x`，用户根据“图几乎纯色”要求暂停并调参。
+  - `463585`：4GPU DDP 改到 `ckpt_step1000_preserved` source checkpoint，W&B run `yohr0763`；loss 带宽大致 `0.11–0.18`，但用户判断图仍接近纯色，因此暂停。
+- 本地新增 reconstruction DDP 支持并 push 到 `origin/dev`：`f73ccac feat(reconstruction): add decoder DDP training`
+  - 训练集使用 `DistributedSampler`
+  - 只对 `WMImageDecoder` 做 DDP；Qwen / StateProjector / WM predictor 仍为每 rank 冻结副本
+  - 只由 rank0 做 W&B / val eval / checkpoint / CSV logging
+- 本地新增更保守的优化选项并 push：`2d96ff7 tune(reconstruction): add decoder lr warmup`
+  - 新增 CLI 参数 `--lr-warmup-steps`
+  - `train_step_log.csv` / W&B 额外记录 decoder 当前 lr
+- 当前有效调参 run：`463623`
+  - 输出目录：`outputs/experiments/training/reconstruction/2026-07-01/reconstruct_decoder_sft2_lejepa_align_fn1_step1000_dgx12g4_preempt_lr5e5_wu1500/`
+  - 资源：`preempt / dgx-12 / gpu:4 / 4h`
+  - source checkpoint：`.../ckpt_step1000_preserved`
+  - 复用 step1000 run 已导出的 full HF model：`...step1000_dgx18g4_ddp4/export_best_hf`
+  - 调参内容：`lr 1e-4 -> 5e-5`，新增 `lr_warmup_steps=1500`，其余保持不变
+  - 当前 W&B run：`https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth/runs/bpfk4266`
+- `463623` 已在 `dgx-12` 健康启动；日志显示 4 个 rank 成功启动并完成 Qwen shard 加载，且 rank0 已完成 W&B 登录并写出 `step=0` preview。接下来重点是观察前几个 step logging 点和 preview 图像是否比暂停前 run 更快摆脱纯色解。
+
+### 2026-07-02 reconstruction decoder 架构修复与 full run 结果
+
+- 已确认先前关于 LeWM decoder 具体结构的说法没有论文/代码证据；LeWM repo 配置中 JEPA 模型只包含 ViT encoder、ARPredictor、action encoder、projector、pred_proj，未包含显式 image decoder。
+- 已修复 `WMImageDecoder` 的结构性问题并 push：`a3eab99 fix(reconstruction): replace broken cross-attn decoder with self-attn ViT decoder`。
+  - 旧结构：learned patch queries cross-attend 到单个 memory token，单样本 overfit 卡在均值解。
+  - 新结构：state vector 线性展开为 patch tokens + learnable positional embedding + self-attention blocks + RGB patch head。
+- 单样本 overfit 诊断 `463770` 完成，输出：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-07-01/overfit_test2`。
+  - target_std=0.1625，最终 pred_std=0.1620，final_loss=8.84e-06。
+  - 结论：新 decoder 本身可以完全拟合单样本；旧 decoder 的均值图问题已被架构修复。
+- 基于新 decoder 启动并完成全量 reconstruction training `463782`：
+  - 输出目录：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-07-01/reconstruct_decoder_fix_sa_step1000_dgx06g4_lr5e5_wu1500`
+  - 资源：`preempt / dgx-06 / gpu:4`，运行 05:27:51，状态 `COMPLETED 0:0`
+  - W&B run：`irtwhtxd`
+  - source checkpoint：`ckpt_step1000_preserved`，复用 full HF export：`.../reconstruct_decoder_sft2_lejepa_align_fn1_step1000_dgx18g4_ddp4/export_best_hf`
+  - 配置：4 epochs，4-rank DDP，per-rank batch size 1，`lr=5e-5`，`lr_warmup_steps=1500`，L1 loss。
+- 全量 run 仍失败于视觉质量：用户观察 50k+ step 后仍为明暗色块。
+  - epoch1：pred_mse=0.04056，oracle_mse=0.03617，copy_mse=0.03634。
+  - epoch4：pred_mse=0.09397，oracle_mse=0.03390，copy_mse=0.03410。
+  - oracle 几乎只达到 copy baseline，pred 还随 epoch 变差；说明“decoder 不能单样本拟合”的问题已排除，但当前 `state_proj(Qwen <latent_state>)` / WM predicted state 对全数据集并未给出足够可重建的视觉结构，或当前训练目标/表示选择不适合作为 reconstruction source。
+- 下一步建议先做诊断而不是继续同配方加长训练：
+  1. 用 `best` checkpoint 分别在 train subset 与 val subset 保存样图，区分 underfit 与泛化失败。
+  2. 做 latent/image retrieval 或线性 probe，确认 1024-dim state 与图像外观是否相关。
+  3. 若目标是可视化 latent 中的视觉信息，考虑改 decoder 输入为 Qwen visual patch tokens / earlier hidden states，或改成 spatial bottleneck + CNN/VAE-style decoder；单纯 Diffusion/Flow Matching 对当前信息瓶颈不划算。
 
 ## 2026-06-30：fix/fsdp — RL FSDP safety refactor（方案 A 实现完成）
 
