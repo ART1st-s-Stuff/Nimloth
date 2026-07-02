@@ -295,6 +295,20 @@ def main() -> int:
     metadata["stablewm_home"] = str(stablewm_home)
     metadata["git_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=_repo_root(), text=True).strip()
     (args.output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2, default=str), encoding="utf-8")
+    (args.output_dir / "README.md").write_text(
+        "# LeWM Cube latent → Nimloth decoder smoke\n\n"
+        "Purpose: test whether Nimloth `WMImageDecoder`, configured for LeWM's 192-dim "
+        "projected CLS latent, can reconstruct OGBench-Cube images from the official LeWM encoder.\n\n"
+        f"Git commit: `{metadata['git_commit']}`\n\n"
+        "Data: HF dataset `quentinll/lewm-cube`, loaded as `ogbench/cube_single_expert.h5`; "
+        "split follows official LeWM training code random_split with train_split=0.9.\n\n"
+        "Checkpoint init: HF model `quentinll/lewm-cube`; LeWM encoder/predictor/action/projectors are loaded "
+        "for the official model, but only the frozen encoder/projector path is used for reconstruction latents.\n\n"
+        "Trainable modules: Nimloth `WMImageDecoder` only. Frozen modules: official LeWM model.\n\n"
+        "Resume: no automatic resume for this smoke run; epoch checkpoints are saved for inspection.\n\n"
+        "Metrics: step-level training loss in `train_step_log.csv`; epoch-level train/val loss, MSE, L1 in `train_log.csv`; previews under `previews/`.\n",
+        encoding="utf-8",
+    )
 
     prepare_dataset(args, stablewm_home)
     weights, config = download_model_files(args.model_repo, args.output_dir)
@@ -324,15 +338,20 @@ def main() -> int:
     decoder = WMImageDecoder(decoder_cfg).to(device)
     opt = torch.optim.AdamW(decoder.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    with (args.output_dir / "train_log.csv").open("w", newline="", encoding="utf-8") as f:
+    global_step = 0
+    with (args.output_dir / "train_log.csv").open("w", newline="", encoding="utf-8") as f, (
+        args.output_dir / "train_step_log.csv"
+    ).open("w", newline="", encoding="utf-8") as step_f:
         writer = csv.DictWriter(f, fieldnames=["epoch", "train_loss", "val_loss", "val_mse", "val_l1", "val_num_images"])
+        step_writer = csv.DictWriter(step_f, fieldnames=["global_step", "epoch", "batch_idx", "train_loss", "num_images"])
         writer.writeheader()
+        step_writer.writeheader()
         best_val = float("inf")
         for epoch in range(1, args.epochs + 1):
             decoder.train()
             total = 0.0
             count = 0
-            for batch in train_loader:
+            for batch_idx, batch in enumerate(train_loader):
                 pixels = batch_to_pixels(batch).to(device, non_blocking=True).float()
                 target = denormalize_imagenet(pixels).reshape(-1, 3, 224, 224)
                 with torch.no_grad():
@@ -344,8 +363,20 @@ def main() -> int:
                 torch.nn.utils.clip_grad_norm_(decoder.parameters(), 1.0)
                 opt.step()
                 n = target.shape[0]
-                total += float(loss.detach()) * n
+                loss_value = float(loss.detach())
+                total += loss_value * n
                 count += n
+                global_step += 1
+                step_writer.writerow(
+                    {
+                        "global_step": global_step,
+                        "epoch": epoch,
+                        "batch_idx": batch_idx,
+                        "train_loss": loss_value,
+                        "num_images": n,
+                    }
+                )
+                step_f.flush()
             val = evaluate(lewm, decoder, val_loader, device, args.loss)
             row = {
                 "epoch": epoch,
