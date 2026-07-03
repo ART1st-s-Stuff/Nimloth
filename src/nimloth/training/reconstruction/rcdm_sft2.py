@@ -437,6 +437,17 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
             ema_states=ema_states,
             device=device,
         )
+        if resume_step_in_epoch >= len(train_loader):
+            if is_main():
+                print(json.dumps({
+                    "resume_epoch_boundary": True,
+                    "checkpoint_epoch": start_epoch,
+                    "checkpoint_step_in_epoch": resume_step_in_epoch,
+                    "train_batches_per_epoch": len(train_loader),
+                    "next_epoch": start_epoch + 1,
+                }))
+            start_epoch += 1
+            resume_step_in_epoch = 0
         if world > 1 and dist.is_available() and dist.is_initialized():
             dist.barrier()
 
