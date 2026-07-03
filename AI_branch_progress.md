@@ -40,7 +40,11 @@
   - 先跑 1GPU 压缩 state cache build job `464168`，输出：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-07-02/rcdm_sft2_state_cache_build_step1000_1024_f16_gzip`，cache：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/cache/rcdm_sft2_step1000_trainval_1024_f16_gzip`。
   - full train job `464169` 已以 `afterok:464168` dependency 提交，8GPU DDP，输出：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-07-02/rcdm_sft2_full_step1000_128px_cache_8g`。
   - full train 配置：RCDM 128px upstream default (`num_channels=256`, `num_res_blocks=2`, attention `32,16,8`, `learn_sigma=true`)，per-rank batch size 4，1 epoch，save interval 500，W&B run name `rcdm_sft2_full_step1000_128px_cache_8g`。
-  - 启动健康检查：`464168` 在 `dgx-39` 运行，`CUDA_VISIBLE_DEVICES=0`，GPU0 约 `62345 MiB`、util `52%`；`464169` pending on dependency。
+  - 结果：cache job `464168` 在 `dgx-39` 完成，`COMPLETED 0:0`，elapsed `03:22:13`；train cache `54,702` transitions / `105,721,670` bytes / 14 shards，val cache `5,468` transitions / `10,568,698` bytes / 2 shards，均为 `cond_dim=1024`, `float16`, `gzip`。
+  - 结果：full train job `464169` 在 `dgx-39` 完成，`COMPLETED 0:0`，elapsed `00:41:21`；W&B run：`https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth/runs/1wyohgq9`。
+  - full train 完成 1 epoch / `1710` optimizer steps；最后 train log：step 1700 loss `0.0037919884`；val at step 1710 loss `0.0111865337`。
+  - checkpoint：`model_*.pt` / `training_state_*.pt` / `ema_0.9999_*.pt` at steps `500`, `1000`, `1500`, final `1710`。resume 可用 `training_state_000001710.pt`。
+  - 尚未生成 RCDM reconstruction sample images；下一步需要用 `nimloth.eval.rcdm_reconstruction` 对 final EMA/model checkpoint 采样可视化。
 - 两个失败重试已记录在服务器输出 README / `outputs/experiments/training/reconstruction/progress.md`：`464106` 缺少 `external/le-wm` submodule；`464107` 命中 `torch._C.has_mkldnn` 兼容问题。
 
 ## 2026-07-02：已重新上传 LeWM reconstruction 所用 SFT2 source run 的训练曲线到 W&B
