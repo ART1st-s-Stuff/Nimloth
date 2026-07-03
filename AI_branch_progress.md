@@ -47,6 +47,7 @@
   - W&B 初始不足：用户指出 full run 的 W&B 没有上传有效可视化信息；确认为训练时只记录了 scalar loss，没有图像/table。
   - 已补救：Slurm job `464487` 用 `ema_0.9999_000001710.pt` 对 val 采样 12 个 DDIM-50 strips，输出：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-07-02/rcdm_sft2_full_step1000_128px_cache_8g/eval_samples_step1710_ddim50`。
   - 已将 sample strips/table/files 回传到原 W&B run `1wyohgq9`：`https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth/runs/1wyohgq9`。第一次按 step 1710 上传被 W&B step monotonicity 忽略，随后按 step 1712 重新上传成功；可见 key 包括 `rcdm_samples_visible/table`、`rcdm_samples_visible/strip_*`、`rcdm_samples/num_items=12`。
+  - 用户指出 EMA 可视化全是雪花后，已改用 raw `model_000001710.pt` + DDIM-250 重新采样 8 个 strips；Slurm job `464497` 完成，输出：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-07-02/rcdm_sft2_full_step1000_128px_cache_8g/eval_samples_step1710_raw_ddim250`。已上传到同一 W&B run `1wyohgq9` step 1714，key 包括 `rcdm_samples_raw_ddim250/table`、`rcdm_samples_raw_ddim250/strip_*`、`rcdm_samples_raw_ddim250/num_items=8`。
 - 两个失败重试已记录在服务器输出 README / `outputs/experiments/training/reconstruction/progress.md`：`464106` 缺少 `external/le-wm` submodule；`464107` 命中 `torch._C.has_mkldnn` 兼容问题。
 
 ## 2026-07-02：已重新上传 LeWM reconstruction 所用 SFT2 source run 的训练曲线到 W&B
