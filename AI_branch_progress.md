@@ -44,7 +44,9 @@
   - 结果：full train job `464169` 在 `dgx-39` 完成，`COMPLETED 0:0`，elapsed `00:41:21`；W&B run：`https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth/runs/1wyohgq9`。
   - full train 完成 1 epoch / `1710` optimizer steps；最后 train log：step 1700 loss `0.0037919884`；val at step 1710 loss `0.0111865337`。
   - checkpoint：`model_*.pt` / `training_state_*.pt` / `ema_0.9999_*.pt` at steps `500`, `1000`, `1500`, final `1710`。resume 可用 `training_state_000001710.pt`。
-  - 尚未生成 RCDM reconstruction sample images；下一步需要用 `nimloth.eval.rcdm_reconstruction` 对 final EMA/model checkpoint 采样可视化。
+  - W&B 初始不足：用户指出 full run 的 W&B 没有上传有效可视化信息；确认为训练时只记录了 scalar loss，没有图像/table。
+  - 已补救：Slurm job `464487` 用 `ema_0.9999_000001710.pt` 对 val 采样 12 个 DDIM-50 strips，输出：`/project/peilab/atst/nimloth/outputs/experiments/training/reconstruction/2026-07-02/rcdm_sft2_full_step1000_128px_cache_8g/eval_samples_step1710_ddim50`。
+  - 已将 sample strips/table/files 回传到原 W&B run `1wyohgq9`：`https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth/runs/1wyohgq9`。第一次按 step 1710 上传被 W&B step monotonicity 忽略，随后按 step 1712 重新上传成功；可见 key 包括 `rcdm_samples_visible/table`、`rcdm_samples_visible/strip_*`、`rcdm_samples/num_items=12`。
 - 两个失败重试已记录在服务器输出 README / `outputs/experiments/training/reconstruction/progress.md`：`464106` 缺少 `external/le-wm` submodule；`464107` 命中 `torch._C.has_mkldnn` 兼容问题。
 
 ## 2026-07-02：已重新上传 LeWM reconstruction 所用 SFT2 source run 的训练曲线到 W&B
