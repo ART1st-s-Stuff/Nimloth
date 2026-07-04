@@ -70,6 +70,26 @@ Use `--resume-checkpoint outputs/.../training_state_000001000.pt` to resume a
 specific checkpoint. W&B uses `wandb_run_id.txt` in the output directory when
 `--resume` is set.
 
+Train the Qwen visual-feature comparison baseline:
+
+```bash
+python -m nimloth.training.reconstruction.rcdm_qwen_vision \
+  --model /path/to/export_best_hf \
+  --train-jsonl /path/to/train.jsonl \
+  --val-jsonl /path/to/val.jsonl \
+  --output-dir outputs/experiments/training/reconstruction/<date>/<qwen_vision_rcdm_name> \
+  --qwen-vision-cache-dir outputs/experiments/training/reconstruction/cache/<qwen_vision_cache_name> \
+  --build-qwen-vision-cache \
+  --image-role current \
+  --wandb-run-name <qwen_vision_rcdm_name>
+```
+
+This baseline freezes Qwen and trains only RCDM, but conditions on a
+mean-pooled Qwen visual-encoder feature from the target image instead of
+`StateProjector(Qwen <|latent_state|>)`.  It is intended for diagnosing whether
+bad RCDM reconstructions come from the SFT2 latent vector or from the diffusion
+reconstruction setup.
+
 Sample from a trained RCDM checkpoint:
 
 ```bash

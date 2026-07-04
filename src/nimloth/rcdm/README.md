@@ -15,6 +15,7 @@ Key files:
 - `image_utils.py`: image normalization helpers for guided-diffusion tensors.
 - `checkpoint.py`: checkpoint save/load helpers for Nimloth-trained RCDM models.
 - `state_cache.py`: compressed shard cache for `StateProjector(Qwen <|latent_state|>)` embeddings.
+- `qwen_vision_cache.py`: compressed shard cache for mean-pooled frozen Qwen visual-encoder image features, used as an oracle-image-feature reconstruction baseline.
 
 Training CLI:
 
@@ -48,6 +49,25 @@ python -m nimloth.training.reconstruction.rcdm_sft2 \
 The cache stores only state embeddings and image paths, not image tensors.  A
 1024-dim `float16` state costs roughly 2 KB per transition before gzip, much
 smaller than the old SFT2 preprocess cache that stored Qwen image tensors.
+
+Qwen visual-feature comparison baseline:
+
+```bash
+python -m nimloth.training.reconstruction.rcdm_qwen_vision \
+  --model /path/to/sft2/export_best_hf \
+  --train-jsonl /path/to/train_all.jsonl \
+  --val-jsonl /path/to/val_all.jsonl \
+  --output-dir outputs/experiments/training/reconstruction/<date>/<qwen_vision_run> \
+  --qwen-vision-cache-dir outputs/experiments/training/reconstruction/cache/<qwen_vision_cache> \
+  --build-qwen-vision-cache \
+  --image-role current \
+  --wandb-run-name <qwen_vision_run>
+```
+
+This baseline freezes Qwen and trains only the RCDM UNet, but conditions on
+mean-pooled Qwen visual features of the target image instead of SFT2 latent
+state vectors. It tests whether poor latent-state reconstructions come from the
+RCDM decoder itself or from the SFT2 state representation.
 
 Sampling CLI:
 
