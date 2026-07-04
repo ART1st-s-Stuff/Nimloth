@@ -66,8 +66,12 @@ def _select_even_records(jsonl: Path, split: str, n: int) -> list[Any]:
     records = sorted(by_record)
     if not records:
         return []
+    if n <= 0:
+        return []
     if len(records) <= n:
         chosen_records = records
+    elif n == 1:
+        chosen_records = [records[len(records) // 2]]
     else:
         idxs = [round(i * (len(records) - 1) / (n - 1)) for i in range(n)]
         chosen_records = []
