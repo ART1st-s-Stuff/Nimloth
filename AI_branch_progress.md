@@ -15,7 +15,7 @@
   - `configs/eval/representation_ablation/`：baseline A 的 value/predictor 与 reconstruction eval config 模板；支持 `init.sft2_checkpoint` 自动推导标准 SFT2 checkpoint 下的 qwen/state_proj/wm_predictor/value_head 路径。
   - `tests/representation_ablation/`：config 与 metrics 单元测试。
 - code-review 子 agent 发现 blocking 风险：若 `value_head/value_head.pt` 缺失，旧 `ValueHead.load_checkpoint()` 会返回随机初始化 head。已在 representation ablation validator/loader 中修复：value metrics 需要真实 `value_head_checkpoint/value_head.pt`，否则报错，避免随机 head 产出看似真实指标。
-- 最新代码已 push 到 `origin/exp/latent-repr-ablation`，当前本地 HEAD `6cc11e5 feat: derive ablation paths from sft2 checkpoint`（待提交上述 value-head checkpoint fix）。
+- 最新代码已 push 到 `origin/exp/latent-repr-ablation`，当前本地 HEAD `df0b12c fix: require real value head checkpoint`。
 - 本地验证：config tests 通过；新增 YAML 模板可解析；`py_compile` 通过。完整 tests 本地因当前环境缺少 `libstdc++.so.6` 导致 torch import 失败，需要服务器/可用 torch 环境 smoke。
 - 未修改 submodule 代码；如后续需要改 submodule，必须给对应 submodule 创建 `nimloth/exp/...` 分支。
 
