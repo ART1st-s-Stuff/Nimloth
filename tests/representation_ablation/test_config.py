@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from nimloth.representation_ablation.config import load_ablation_config, validate_phase1_config
+from nimloth.representation_ablation.config import load_ablation_config, validate_eval_config, validate_phase1_config
 
 
 def _make_value_head_dir(path: Path) -> Path:
@@ -94,24 +94,56 @@ def test_config_rejects_unknown_keys(tmp_path: Path) -> None:
         load_ablation_config(cfg_path)
 
 
-def test_phase1_rejects_future_representation(tmp_path: Path) -> None:
-    cfg_path = tmp_path / "future.yaml"
+def test_eval_accepts_qwen_multi_latent_token_set(tmp_path: Path) -> None:
+    pred_dir = tmp_path / "token_predictor"
+    value_dir = tmp_path / "token_value"
+    pred_dir.mkdir()
+    value_dir.mkdir()
+    (pred_dir / "predictor.pt").write_bytes(b"not-loaded-by-config-tests")
+    (pred_dir / "config.json").write_text("{}", encoding="utf-8")
+    (value_dir / "value_head.pt").write_bytes(b"not-loaded-by-config-tests")
+    cfg_path = tmp_path / "multi.yaml"
     cfg_path.write_text(
         f"""
 init:
   qwen_checkpoint: {tmp_path / "qwen"}
-  state_proj_checkpoint: {tmp_path / "qwen" / "state_proj.pt"}
-  wm_predictor_checkpoint: {tmp_path / "qwen" / "wm_predictor"}
+  wm_predictor_checkpoint: {pred_dir}
+  value_head_checkpoint: {value_dir}
 data:
   val_jsonl: {tmp_path / "val.jsonl"}
 representation:
   type: qwen_multi_latent
   num_tokens: 4
+predictor:
+  type: token_transformer
+value_head:
+  type: pooled_mlp
+eval:
+  metrics: [value_topk, predictor_multistep]
+""",
+        encoding="utf-8",
+    )
+    cfg = load_ablation_config(cfg_path)
+    validate_eval_config(cfg)
+    validate_phase1_config(cfg)
+
+
+def test_eval_rejects_unimplemented_representation(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "future.yaml"
+    cfg_path.write_text(
+        f"""
+init:
+  qwen_checkpoint: {tmp_path / "qwen"}
+data:
+  val_jsonl: {tmp_path / "val.jsonl"}
+representation:
+  type: qwen_vision_tokens
+  num_tokens: 64
 eval:
   metrics: [predictor_multistep]
 """,
         encoding="utf-8",
     )
     cfg = load_ablation_config(cfg_path)
-    with pytest.raises(NotImplementedError, match="qwen_multi_latent"):
-        validate_phase1_config(cfg)
+    with pytest.raises(NotImplementedError, match="qwen_vision_tokens"):
+        validate_eval_config(cfg)

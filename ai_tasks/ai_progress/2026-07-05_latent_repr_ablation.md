@@ -39,8 +39,9 @@
 - 人类指出 step79 记忆中应基于 `vagen_legacy`。复查服务器 VAGEN remote：`origin/nimloth/vagen-legacy` HEAD 为 `acc0e7550f73da71b66c80f0762fbfcff3905213`（2026-06-21, `Add wm alias for legacy navigation format`, `verl=869ff12...`）；`origin/vagen-legacy` HEAD 为 `787c7e2d36822ad2348255c2e838159327eb320c`；`origin/nimloth/vagen-legacy-dev` HEAD 为 `93c1124aeaa7850098f46f2b708ee224ba894861`。`629c270...` 被 `main`/`nimloth/main` 包含且 tree 中有旧 `vagen/envs/navigation/serve.py`。因此前述 reflog 推断只可作为 medium-confidence 线索，不能作为已确认 provenance。
 - 人类确认其判断 step79 大概率来自 `origin/nimloth/vagen-legacy-dev`；后续 Plan B 如果需要选择 VAGEN legacy 路线，直接使用 `origin/nimloth/vagen-legacy-dev` / commit `93c1124aeaa7850098f46f2b708ee224ba894861` 作为工作假设。
 - 已修复 Plan B 脚本对 `nimloth/vagen-legacy-dev` API 的兼容性：`env_external_4gpu.slurm` 现在检测旧 `vagen.envs.navigation.serve`，若不存在则使用统一 Hydra server `python -m vagen.server.server server.port=... navigation.devices='[0]' navigation.max_workers=48`；`convert_rollouts.py` 兼容从 `vagen.env.navigation.nimloth_format` 导入 Nimloth action format。
-- 已开始 Phase 2 基础实现（尚未接入正式训练/eval 主路径）：新增多 latent marker 展开与 latent token-set extraction helper；新增 token-set WM predictor 和 token-set value head，支持 `(B, K, D)` 输入/输出、rollout、checkpoint save/load，并配套单元测试。
+- 已开始 Phase 2 基础实现：新增多 latent marker 展开与 latent token-set extraction helper；新增 token-set WM predictor 和 token-set value head，支持 `(B, K, D)` 输入/输出、rollout、checkpoint save/load，并配套单元测试。
 - Phase 2 token-set 服务器轻量 smoke 已通过：server worktree commit `09b1b09`，`python -m pytest tests/representation_ablation -q -p no:cacheprovider` 通过 `15 passed, 3 warnings`；`py_compile` 通过；`import nimloth.representation_ablation.qwen_tokens` 与 `token_set` 通过且不要求 LeWM 初始化。该 smoke 验证的是 token-set 模块本身；后续 `21694a3` 只改 Plan B rollout 脚本。
+- Phase 2 multi latent 已初步接入离线 eval 主路径：`validate_eval_config` 支持 `qwen_multi_latent` + `token_transformer` + `pooled_mlp`；`eval.py` 会展开 K 个 latent markers，提取 `(B,K,D)` hidden token set，可选对每个 token 复用 `StateProjector`，加载 `TokenSetWMPredictor` / `TokenSetValueHead` 后计算 value 与 predictor 指标。新增 K=4/8/16 eval YAML 模板。尚未实现 token-set training、reconstruction、fastpath、vision-token/compressed-token 路线。
 - Plan B retry 在 env ready 后 rollout array 仍于 Ray startup 前被 SIGTERM，未生成 records/training；子 agent 取消了 downstream jobs。已修复可疑点：移除 rollout array 中 user-wide `ray stop` / `pkill -f ray::`，改为 per-array-job `RAY_PORT` 和 `RAY_TMPDIR`，避免同节点并发 array tasks 互相杀 Ray。
 - Plan B retry7 失败诊断完成：env job `465783` 在 `dgx-56` ready，rollout array `465785` 已启动 Ray 并打印 resources，但仍无 shard JSONL；downstream conversion/SFT1/SFT2 未提交。根因是 rollout command 仍调用旧 VAGEN 布局（`vagen.main_ppo` + `vagen/configs/vagen_multiturn`），而当前 legacy-dev VAGEN 使用 `vagen.trainer.main_ppo` + `vagen/trainer/config/ppo_trainer.yaml`，并要求 parquet dataset row 的 `extra_info.env_name/env_config/seed`。
 - 已更新 Plan B rollout 脚本：为每个 shard 同时写 legacy YAML 与新 parquet；检测到 `vagen.trainer.main_ppo` 时使用新入口、`rollout_manager.use_service=True`、按 array task 选择一个 env server URL；旧入口保留 fallback。提交/Slurm 脚本现在支持通过 `REPO=/project/peilab/atst/nimloth/.worktree/exp-latent-repr-ablation` 使用服务器 worktree，避免硬编码主 worktree。
@@ -65,6 +66,9 @@
 - `configs/eval/representation_ablation/a_qwen_latent_reconstruction.yaml`
 - `configs/eval/representation_ablation/diagnostic_low_success_sft2_step1000_value_predictor.yaml`
 - `configs/eval/representation_ablation/diagnostic_low_success_sft2_step1000_value_predictor_smoke.yaml`
+- `configs/eval/representation_ablation/b_qwen_multi_latent_k4_value_predictor.yaml`
+- `configs/eval/representation_ablation/b_qwen_multi_latent_k8_value_predictor.yaml`
+- `configs/eval/representation_ablation/b_qwen_multi_latent_k16_value_predictor.yaml`
 - `tests/representation_ablation/test_config.py`
 - `tests/representation_ablation/test_metrics.py`
 - `tests/representation_ablation/test_token_set.py`
@@ -104,6 +108,7 @@
 - Phase 2 token-set 基础模块实现后运行 `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/representation_ablation/token_set.py src/nimloth/representation_ablation/qwen_tokens.py tests/representation_ablation/test_token_set.py`：通过。
 - Phase 2 token-set 基础模块实现后运行 `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q`：通过，5 passed。
 - Phase 2 token-set 服务器轻量 smoke：commit `09b1b09`，`python -m pytest tests/representation_ablation -q -p no:cacheprovider` 通过，15 passed；`py_compile` 通过；qwen_tokens/token_set import 通过。
+- Phase 2 multi latent eval 接入后本地验证：`PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q` 通过，6 passed；`py_compile` 覆盖 `config.py` / `modules.py` / `eval.py` / `test_config.py` 通过；K=4/8/16 YAML load 通过。本地完整 token-set pytest 仍受 torch import 缺 `libstdc++.so.6` 限制，需服务器 smoke 验证。
 - A 线服务器诊断 eval smoke：job `465669` completed，exit 0；关键 summary 见“已完成步骤”。
 - B 线 Plan B jobs：env/rollout failed，dependent conversion/SFT1/SFT2 cancelled；blocking 为 VAGEN module path/API mismatch，未产生 records/training。
 - 旧 step79 VAGEN provenance 只读溯源完成：artifact 无直接 provenance；reflog 重建结论见“已完成步骤”。

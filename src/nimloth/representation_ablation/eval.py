@@ -17,7 +17,7 @@ from nimloth.representation_ablation.config import (
     AblationConfig,
     default_output_dir,
     load_ablation_config,
-    validate_phase1_config,
+    validate_eval_config,
 )
 from nimloth.representation_ablation.metrics import (
     EncodedTransition,
@@ -30,6 +30,8 @@ from nimloth.representation_ablation.modules import (
     load_predictor,
     load_qwen_processor_and_model,
     load_state_projector,
+    load_token_set_predictor,
+    load_token_set_value_head,
     load_value_head,
     module_metadata,
     qwen_hidden_size,
@@ -64,6 +66,14 @@ def _save_image(tensor: torch.Tensor, path: Path) -> None:
     Image.fromarray(arr).save(path)
 
 
+def _value_metrics_requested(cfg: AblationConfig) -> bool:
+    return any(name in cfg.eval.metrics for name in ("value_topk", "value_ranking", "value_calibration"))
+
+
+def _predictor_metrics_requested(cfg: AblationConfig) -> bool:
+    return any(name in cfg.eval.metrics for name in ("predictor_1step", "predictor_multistep"))
+
+
 def _save_reconstruction_strip(
     *,
     decoder: "WMImageDecoder",
@@ -85,7 +95,7 @@ def _save_reconstruction_strip(
 
 @torch.no_grad()
 def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, float]:
-    validate_phase1_config(cfg)
+    validate_eval_config(cfg)
     out_dir = output_dir or default_output_dir(cfg)
     out_dir.mkdir(parents=True, exist_ok=False)
     sample_dir = out_dir / "samples"
@@ -100,18 +110,48 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     processor, token_id_map, model = load_qwen_processor_and_model(cfg, device)
-    predictor = load_predictor(cfg, device)
-    state_proj = load_state_projector(
-        cfg,
-        qwen_hidden_size=qwen_hidden_size(model),
-        emb_dim=predictor.emb_dim,
-        device=device,
-    )
-    value_head = load_value_head(cfg, emb_dim=predictor.emb_dim, device=device)
+    hidden_size = qwen_hidden_size(model)
     decoder = load_decoder(cfg, device=device)
 
+    if cfg.representation.type == "qwen_latent":
+        predictor = load_predictor(cfg, device)
+        state_proj = load_state_projector(
+            cfg,
+            qwen_hidden_size=hidden_size,
+            emb_dim=predictor.emb_dim,
+            device=device,
+        )
+        value_head = load_value_head(cfg, emb_dim=predictor.emb_dim, device=device)
+        token_set_state_proj = None
+    elif cfg.representation.type == "qwen_multi_latent":
+        predictor = load_token_set_predictor(cfg, device) if _predictor_metrics_requested(cfg) else None
+        if predictor is None:
+            raise ValueError(
+                "qwen_multi_latent eval currently requires predictor metrics and a token_transformer checkpoint"
+            )
+        if cfg.init.state_proj_checkpoint is not None:
+            token_set_state_proj = load_state_projector(
+                cfg,
+                qwen_hidden_size=hidden_size,
+                emb_dim=predictor.emb_dim,
+                device=device,
+            )
+            token_emb_dim = predictor.emb_dim
+        else:
+            token_set_state_proj = None
+            token_emb_dim = hidden_size
+            if token_emb_dim != predictor.emb_dim:
+                raise ValueError(
+                    "qwen_multi_latent without state_proj_checkpoint requires Qwen hidden size to match "
+                    f"predictor emb_dim; got hidden_size={token_emb_dim}, predictor.emb_dim={predictor.emb_dim}"
+                )
+        value_head = load_token_set_value_head(cfg, emb_dim=predictor.emb_dim, device=device)
+    else:  # validate_eval_config should catch this before module loading.
+        raise NotImplementedError(f"unsupported representation.type={cfg.representation.type!r}")
+
+    from nimloth.representation_ablation.qwen_tokens import expand_latent_markers_in_messages, extract_latent_token_set
     from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
-    from nimloth.training.sft2.qwen_latent import extract_qwen_latents
+    from nimloth.training.sft2.qwen_latent import extract_qwen_latents, forward_qwen_last_hidden
 
     if cfg.data.val_jsonl is None:
         raise ValueError("data.val_jsonl is required")
@@ -148,27 +188,61 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
             if not eligible:
                 continue
 
-            cur_enc = build_qwen_batch(eligible, processor, max_length=cfg.eval.max_length)
-            next_items = [{"messages": item["next_messages"]} for item in eligible]
-            next_enc = build_qwen_batch(next_items, processor, max_length=cfg.eval.max_length)
-            cur_hidden, _ = extract_qwen_latents(model, cur_enc, token_id_map, device)
-            next_hidden, _ = extract_qwen_latents(model, next_enc, token_id_map, device)
+            if cfg.representation.type == "qwen_latent":
+                cur_enc = build_qwen_batch(eligible, processor, max_length=cfg.eval.max_length)
+                next_items = [{"messages": item["next_messages"]} for item in eligible]
+                next_enc = build_qwen_batch(next_items, processor, max_length=cfg.eval.max_length)
+                cur_hidden, _ = extract_qwen_latents(model, cur_enc, token_id_map, device)
+                next_hidden, _ = extract_qwen_latents(model, next_enc, token_id_map, device)
+                s_cur = state_proj(cur_hidden).float()
+                s_next = state_proj(next_hidden).float()
+            else:
+                token_count = cfg.representation.num_tokens
+                cur_items = [
+                    {**item, "messages": expand_latent_markers_in_messages(item["messages"], token_count)}
+                    for item in eligible
+                ]
+                next_items = [
+                    {"messages": expand_latent_markers_in_messages(item["next_messages"], token_count)}
+                    for item in eligible
+                ]
+                cur_enc = build_qwen_batch(cur_items, processor, max_length=cfg.eval.max_length)
+                next_enc = build_qwen_batch(next_items, processor, max_length=cfg.eval.max_length)
+                cur_hidden = forward_qwen_last_hidden(model, cur_enc, device)
+                next_hidden = forward_qwen_last_hidden(model, next_enc, device)
+                s_cur = extract_latent_token_set(
+                    cur_hidden,
+                    cur_enc["input_ids"].detach().cpu(),
+                    token_id_map,
+                    num_tokens=token_count,
+                )
+                s_next = extract_latent_token_set(
+                    next_hidden,
+                    next_enc["input_ids"].detach().cpu(),
+                    token_id_map,
+                    num_tokens=token_count,
+                )
+                if token_set_state_proj is not None:
+                    s_cur = token_set_state_proj(s_cur.reshape(-1, s_cur.shape[-1])).view(
+                        s_cur.shape[0], token_count, -1
+                    )
+                    s_next = token_set_state_proj(s_next.reshape(-1, s_next.shape[-1])).view(
+                        s_next.shape[0], token_count, -1
+                    )
+                s_cur = s_cur.float()
+                s_next = s_next.float()
 
             actions = torch.tensor([item["action_index"] for item in eligible], dtype=torch.long, device=device)
             targets = torch.tensor([item["action_value_target"] for item in eligible], dtype=torch.float32, device=device)
             successes = torch.tensor([bool(item["success"]) for item in eligible], dtype=torch.bool, device=device)
 
-            s_cur = state_proj(cur_hidden).float()
-            s_next = state_proj(next_hidden).float()
             s_pred = predictor(s_cur, actions).float()
 
             if "predictor_multistep" in cfg.eval.metrics or "predictor_1step" in cfg.eval.metrics:
                 one_step_preds.append(s_pred.detach().cpu())
                 one_step_targets.append(s_next.detach().cpu())
             values = None
-            if value_head is not None and any(
-                name in cfg.eval.metrics for name in ("value_topk", "value_ranking", "value_calibration")
-            ):
+            if value_head is not None and _value_metrics_requested(cfg):
                 values = value_head(s_cur).float()
                 value_batches.append(values.detach().cpu())
                 value_action_batches.append(actions.detach().cpu())

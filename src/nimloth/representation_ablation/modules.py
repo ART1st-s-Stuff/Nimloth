@@ -14,6 +14,7 @@ from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.representation_ablation.config import AblationConfig
 
 if TYPE_CHECKING:
+    from nimloth.representation_ablation.token_set import TokenSetValueHead, TokenSetWMPredictor
     from nimloth.wm.predictor import LatentWMPredictor
     from nimloth.wm.reconstruction import WMImageDecoder
     from nimloth.wm.state_proj import StateProjector
@@ -142,6 +143,35 @@ def load_value_head(cfg: AblationConfig, *, emb_dim: int, device: torch.device) 
         hidden_dim=cfg.value_head.hidden_dim,
         map_location=device,
     ).to(device)
+    return freeze_module(value_head)  # type: ignore[return-value]
+
+
+def load_token_set_predictor(cfg: AblationConfig, device: torch.device) -> TokenSetWMPredictor:
+    from nimloth.representation_ablation.token_set import TokenSetWMPredictor
+
+    if cfg.init.wm_predictor_checkpoint is None:
+        raise ValueError("init.wm_predictor_checkpoint is required")
+    predictor = TokenSetWMPredictor.load_checkpoint(cfg.init.wm_predictor_checkpoint, map_location=device).to(device)
+    if predictor.num_tokens != cfg.representation.num_tokens:
+        raise ValueError(
+            f"token predictor checkpoint has num_tokens={predictor.num_tokens}, "
+            f"but config requests {cfg.representation.num_tokens}"
+        )
+    return freeze_module(predictor)  # type: ignore[return-value]
+
+
+def load_token_set_value_head(cfg: AblationConfig, *, emb_dim: int, device: torch.device) -> TokenSetValueHead | None:
+    from nimloth.representation_ablation.token_set import TokenSetValueHead
+
+    if cfg.init.value_head_checkpoint is None:
+        return None
+    value_head = TokenSetValueHead.load_checkpoint(cfg.init.value_head_checkpoint, map_location=device).to(device)
+    if value_head.num_tokens != cfg.representation.num_tokens or value_head.emb_dim != emb_dim:
+        raise ValueError(
+            "token value head checkpoint shape does not match config/predictor: "
+            f"head=(K={value_head.num_tokens}, D={value_head.emb_dim}), "
+            f"expected=(K={cfg.representation.num_tokens}, D={emb_dim})"
+        )
     return freeze_module(value_head)  # type: ignore[return-value]
 
 

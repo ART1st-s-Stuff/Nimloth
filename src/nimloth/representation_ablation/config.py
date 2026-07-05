@@ -247,31 +247,32 @@ def _value_metrics_requested(cfg: AblationConfig) -> bool:
     return any(name in cfg.eval.metrics for name in ("value_topk", "value_ranking", "value_calibration"))
 
 
-def validate_phase1_config(cfg: AblationConfig) -> None:
-    """Validate implemented Phase-1 single-latent config.
+def _predictor_metrics_requested(cfg: AblationConfig) -> bool:
+    return any(name in cfg.eval.metrics for name in ("predictor_1step", "predictor_multistep"))
 
-    Unsupported settings fail loudly; they are future Phase work, not placeholders.
-    """
 
-    if cfg.representation.type != "qwen_latent":
-        raise NotImplementedError(
-            f"representation.type={cfg.representation.type!r} is not implemented in Phase 1"
+def _require_paths(required: dict[str, Path | None], *, context: str) -> None:
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        raise ValueError(f"missing required config paths for {context}: {missing}")
+
+
+def _require_value_head_file(path: Path) -> None:
+    value_state = path / "value_head.pt"
+    if not value_state.is_file():
+        raise FileNotFoundError(
+            "value metrics require a real value_head.pt checkpoint; "
+            f"missing {value_state}. Refusing to evaluate random-initialized value head."
         )
+
+
+def _validate_qwen_latent_config(cfg: AblationConfig) -> None:
     if cfg.representation.num_tokens != 1:
-        raise NotImplementedError("Phase 1 supports only representation.num_tokens=1")
+        raise NotImplementedError("qwen_latent supports only representation.num_tokens=1")
     if cfg.predictor.type != "lewm_ar":
-        raise NotImplementedError(f"predictor.type={cfg.predictor.type!r} is not implemented")
+        raise NotImplementedError(f"qwen_latent requires predictor.type='lewm_ar', got {cfg.predictor.type!r}")
     if cfg.value_head.type != "mlp":
-        raise NotImplementedError(f"value_head.type={cfg.value_head.type!r} is not implemented")
-    if cfg.value_head.use_semantic_embedding:
-        raise NotImplementedError("semantic-conditioned value heads start in a later Phase")
-    if cfg.reconstruction.enabled and cfg.reconstruction.type != "simple_decoder":
-        raise NotImplementedError(
-            f"reconstruction.type={cfg.reconstruction.type!r} is not implemented in this entry"
-        )
-    if "fastpath_success" in cfg.eval.metrics:
-        raise NotImplementedError("environment fastpath_success is reserved for Phase 5")
-
+        raise NotImplementedError(f"qwen_latent requires value_head.type='mlp', got {cfg.value_head.type!r}")
     required = {
         "qwen_checkpoint": cfg.init.qwen_checkpoint,
         "state_proj_checkpoint": cfg.init.state_proj_checkpoint,
@@ -280,17 +281,77 @@ def validate_phase1_config(cfg: AblationConfig) -> None:
     }
     if _value_metrics_requested(cfg):
         required["value_head_checkpoint"] = cfg.init.value_head_checkpoint
-    if cfg.reconstruction.enabled or "reconstruction_strips" in cfg.eval.metrics:
-        required["decoder_checkpoint"] = cfg.init.decoder_checkpoint
-    missing = [name for name, value in required.items() if value is None]
-    if missing:
-        raise ValueError(f"missing required config paths for Phase-1 eval: {missing}")
-
+    _require_paths(required, context="qwen_latent eval")
     if _value_metrics_requested(cfg):
         assert cfg.init.value_head_checkpoint is not None
-        value_state = cfg.init.value_head_checkpoint / "value_head.pt"
-        if not value_state.is_file():
+        _require_value_head_file(cfg.init.value_head_checkpoint)
+
+
+def _validate_qwen_multi_latent_config(cfg: AblationConfig) -> None:
+    if cfg.representation.num_tokens <= 1:
+        raise ValueError("qwen_multi_latent requires representation.num_tokens > 1")
+    if cfg.predictor.type != "token_transformer":
+        raise NotImplementedError(
+            f"qwen_multi_latent requires predictor.type='token_transformer', got {cfg.predictor.type!r}"
+        )
+    if cfg.value_head.type != "pooled_mlp":
+        raise NotImplementedError(
+            f"qwen_multi_latent requires value_head.type='pooled_mlp', got {cfg.value_head.type!r}"
+        )
+    if cfg.reconstruction.enabled or "reconstruction_strips" in cfg.eval.metrics:
+        raise NotImplementedError("reconstruction for token-set representations is not implemented yet")
+    required = {
+        "qwen_checkpoint": cfg.init.qwen_checkpoint,
+        "val_jsonl": cfg.data.val_jsonl,
+    }
+    if _predictor_metrics_requested(cfg):
+        required["wm_predictor_checkpoint"] = cfg.init.wm_predictor_checkpoint
+    if _value_metrics_requested(cfg):
+        required["value_head_checkpoint"] = cfg.init.value_head_checkpoint
+    _require_paths(required, context="qwen_multi_latent eval")
+    if _predictor_metrics_requested(cfg):
+        assert cfg.init.wm_predictor_checkpoint is not None
+        predictor_state = cfg.init.wm_predictor_checkpoint / "predictor.pt"
+        predictor_config = cfg.init.wm_predictor_checkpoint / "config.json"
+        if not predictor_state.is_file() or not predictor_config.is_file():
             raise FileNotFoundError(
-                "value metrics require a real ValueHead checkpoint; "
-                f"missing {value_state}. Refusing to evaluate random-initialized value head."
+                "token_transformer predictor metrics require predictor.pt and config.json under "
+                f"{cfg.init.wm_predictor_checkpoint}"
             )
+    if _value_metrics_requested(cfg):
+        assert cfg.init.value_head_checkpoint is not None
+        _require_value_head_file(cfg.init.value_head_checkpoint)
+
+
+def validate_eval_config(cfg: AblationConfig) -> None:
+    """Validate implemented offline-eval representation ablation configs.
+
+    Unsupported settings fail loudly; they are future Phase work, not placeholders.
+    """
+
+    if cfg.value_head.use_semantic_embedding:
+        raise NotImplementedError("semantic-conditioned value heads start in a later Phase")
+    if cfg.reconstruction.enabled and cfg.reconstruction.type != "simple_decoder":
+        raise NotImplementedError(
+            f"reconstruction.type={cfg.reconstruction.type!r} is not implemented in this entry"
+        )
+    if "fastpath_success" in cfg.eval.metrics:
+        raise NotImplementedError("environment fastpath_success is reserved for Phase 5")
+    if cfg.representation.type == "qwen_latent":
+        _validate_qwen_latent_config(cfg)
+    elif cfg.representation.type == "qwen_multi_latent":
+        _validate_qwen_multi_latent_config(cfg)
+    else:
+        raise NotImplementedError(
+            f"representation.type={cfg.representation.type!r} is not implemented in offline eval"
+        )
+    if (
+        cfg.reconstruction.enabled or "reconstruction_strips" in cfg.eval.metrics
+    ) and cfg.init.decoder_checkpoint is None:
+        raise ValueError("missing required config paths for reconstruction eval: ['decoder_checkpoint']")
+
+
+def validate_phase1_config(cfg: AblationConfig) -> None:
+    """Backward-compatible alias for the offline eval validator."""
+
+    validate_eval_config(cfg)
