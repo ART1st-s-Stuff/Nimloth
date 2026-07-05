@@ -33,13 +33,24 @@ _VAGEN_ROOT = Path(__file__).resolve().parents[3] / "external" / "VAGEN"
 if _VAGEN_ROOT.is_dir() and str(_VAGEN_ROOT) not in sys.path:
     sys.path.insert(0, str(_VAGEN_ROOT))
 
-from vagen.envs.navigation.utils.nimloth_format import (
-    ACTION_NAMES,
-    ACTION_TO_IDX,
-    ACTION_TOKEN,
-    NIMLOTH_FORMAT_INSTRUCTION,
-    SPECIAL_TOKENS,
-)
+try:
+    from vagen.envs.navigation.utils.nimloth_format import (
+        ACTION_NAMES,
+        ACTION_TO_IDX,
+        ACTION_TOKEN,
+        NIMLOTH_FORMAT_INSTRUCTION,
+        SPECIAL_TOKENS,
+    )
+except ModuleNotFoundError:
+    # nimloth/vagen-legacy-dev moved navigation helpers from
+    # vagen.envs.navigation.* to vagen.env.navigation.*.
+    from vagen.env.navigation.nimloth_format import (
+        ACTION_NAMES,
+        ACTION_TO_IDX,
+        ACTION_TOKEN,
+        NIMLOTH_FORMAT_INSTRUCTION,
+        SPECIAL_TOKENS,
+    )
 
 ACTION_NAMES = list(ACTION_NAMES)
 ACTION_TO_IDX = dict(ACTION_TO_IDX)

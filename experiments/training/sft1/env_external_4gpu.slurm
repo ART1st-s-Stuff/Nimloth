@@ -107,10 +107,22 @@ for env_i in 0 1 2 3; do
   phys="${GOOD_PHYS[$env_i]}"
   port=$((PORT_BASE + env_i))
   echo "http://${NODE_IP}:${port}" >> "${CONTROL_DIR}/env_urls.txt"
-  CUDA_VISIBLE_DEVICES="$phys" PYTHONUNBUFFERED=1 python -m vagen.envs.navigation.serve \
-    --port "$port" --devices='[0]' --max_envs 48 --max_inflight 48 \
-    --thread_pool_size 48 --session_timeout 7200.0 \
-    > "${RUN_DIR}/env_server_${SLURM_JOB_ID}_${NODE}_${env_i}.log" 2>&1 &
+  if python - <<'PY' >/dev/null 2>&1
+import importlib.util
+raise SystemExit(0 if importlib.util.find_spec("vagen.envs.navigation.serve") else 1)
+PY
+  then
+    # Older VAGEN layout used a navigation-specific server module.
+    CUDA_VISIBLE_DEVICES="$phys" PYTHONUNBUFFERED=1 python -m vagen.envs.navigation.serve \
+      --port "$port" --devices='[0]' --max_envs 48 --max_inflight 48 \
+      --thread_pool_size 48 --session_timeout 7200.0 \
+      > "${RUN_DIR}/env_server_${SLURM_JOB_ID}_${NODE}_${env_i}.log" 2>&1 &
+  else
+    # nimloth/vagen-legacy-dev exposes the unified Hydra server.
+    CUDA_VISIBLE_DEVICES="$phys" PYTHONUNBUFFERED=1 python -m vagen.server.server \
+      server.port="$port" navigation.devices='[0]' navigation.max_workers=48 \
+      > "${RUN_DIR}/env_server_${SLURM_JOB_ID}_${NODE}_${env_i}.log" 2>&1 &
+  fi
   echo $! >> "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids"
 done
 

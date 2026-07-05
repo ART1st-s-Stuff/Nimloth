@@ -38,6 +38,7 @@
 - 子 agent 已只读溯源旧 step79 VAGEN 来源。直接 artifact 未记录训练时 branch/commit/dirty status；基于远程 Git reflog 重建，最可能来源为 Nimloth `main` commit `2f683f5de25c5eaf0b804f1fbadc507697c336a6`，`external/VAGEN` branch `main` commit `629c270cf069680c70282f615e7f1b83a45684ab`，嵌套 `verl` commit `6360bfe706a00b4ece9105285776b5727ee449b7`。confidence=medium；不能排除当时有未提交改动。W&B retro commit `3342f0cc...` 是事后上传脚本，不是训练 provenance。
 - 人类指出 step79 记忆中应基于 `vagen_legacy`。复查服务器 VAGEN remote：`origin/nimloth/vagen-legacy` HEAD 为 `acc0e7550f73da71b66c80f0762fbfcff3905213`（2026-06-21, `Add wm alias for legacy navigation format`, `verl=869ff12...`）；`origin/vagen-legacy` HEAD 为 `787c7e2d36822ad2348255c2e838159327eb320c`；`origin/nimloth/vagen-legacy-dev` HEAD 为 `93c1124aeaa7850098f46f2b708ee224ba894861`。`629c270...` 被 `main`/`nimloth/main` 包含且 tree 中有旧 `vagen/envs/navigation/serve.py`。因此前述 reflog 推断只可作为 medium-confidence 线索，不能作为已确认 provenance。
 - 人类确认其判断 step79 大概率来自 `origin/nimloth/vagen-legacy-dev`；后续 Plan B 如果需要选择 VAGEN legacy 路线，直接使用 `origin/nimloth/vagen-legacy-dev` / commit `93c1124aeaa7850098f46f2b708ee224ba894861` 作为工作假设。
+- 已修复 Plan B 脚本对 `nimloth/vagen-legacy-dev` API 的兼容性：`env_external_4gpu.slurm` 现在检测旧 `vagen.envs.navigation.serve`，若不存在则使用统一 Hydra server `python -m vagen.server.server server.port=... navigation.devices='[0]' navigation.max_workers=48`；`convert_rollouts.py` 兼容从 `vagen.env.navigation.nimloth_format` 导入 Nimloth action format。
 
 ## 文件修改
 
@@ -55,6 +56,8 @@
 - `tests/representation_ablation/test_config.py`
 - `tests/representation_ablation/test_metrics.py`
 - `experiments/training/sft1/rollouts_greedy_parallel.slurm`
+- `experiments/training/sft1/env_external_4gpu.slurm`
+- `experiments/training/sft1/convert_rollouts.py`
 - 本进度文件。
 
 ## 验证命令和结果
@@ -80,6 +83,8 @@
 - 新增 SFT2 adapter-only eval 加载与 Plan B rollout override 后运行 `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/representation_ablation/modules.py src/nimloth/representation_ablation/eval.py tests/representation_ablation/*.py`：通过。
 - 新增诊断 smoke config 后运行 YAML load：`diagnostic_low_success_sft2_step1000_value_predictor*.yaml` 均可解析。
 - `bash -n experiments/training/sft1/rollouts_greedy_parallel.slurm`：通过。
+- 修复 Plan B VAGEN API 兼容后运行 `bash -n experiments/training/sft1/env_external_4gpu.slurm experiments/training/sft1/convert_rollouts.py experiments/training/sft1/rollouts_greedy_parallel.slurm`：通过。
+- 修复 Plan B VAGEN API 兼容后运行 `../nimloth-dev/.venv/bin/python -m py_compile experiments/training/sft1/convert_rollouts.py`：通过。
 - A 线服务器诊断 eval smoke：job `465669` completed，exit 0；关键 summary 见“已完成步骤”。
 - B 线 Plan B jobs：env/rollout failed，dependent conversion/SFT1/SFT2 cancelled；blocking 为 VAGEN module path/API mismatch，未产生 records/training。
 - 旧 step79 VAGEN provenance 只读溯源完成：artifact 无直接 provenance；reflog 重建结论见“已完成步骤”。
