@@ -9,7 +9,7 @@
 - 新分支/worktree：`exp/latent-repr-ablation` / `/workspace/remote2/nimloth-exp-latent-repr-ablation`。
 - 已提交计划：`76b0625 docs: plan latent representation ablation`、`2e20222 docs: phase representation ablation plan`。
 - 已新增实时进度文件：`ai_tasks/ai_progress/2026-07-05_latent_repr_ablation.md`。
-- 当前已实现 Phase 1 single `qwen_latent` baseline 的配置驱动离线评估基础设施（待服务器 torch smoke）：
+- 当前已实现 Phase 1 single `qwen_latent` baseline 的配置驱动离线评估基础设施（服务器轻量 smoke 已通过）：
   - `src/nimloth/representation_ablation/`：严格 YAML schema、Phase-1 validator、module loader、value/predictor metrics、config-driven eval CLI；value/ranking/calibration 与 one-step predictor 指标按全体 encoded transitions 汇总。
   - `src/nimloth/eval/representation_ablation.py`：兼容入口 `python -m nimloth.eval.representation_ablation --config <yaml>`。
   - `configs/eval/representation_ablation/`：baseline A 的 value/predictor 与 reconstruction eval config 模板；支持 `init.sft2_checkpoint` 自动推导标准 SFT2 checkpoint 下的 qwen/state_proj/wm_predictor/value_head 路径。
@@ -18,7 +18,8 @@
 - server-smoke 子 agent 在服务器 `4058702` 上发现两点问题：`test_metrics.py` 对 float32 做精确相等导致 1 个测试失败；`import nimloth.representation_ablation.eval` 在未初始化 `external/le-wm` 的 worktree 中失败。已修复：测试改用 `pytest.approx`；heavy WM 模块导入改为 loader 函数内 lazy import。
 - 第二次 server smoke 在 `85a1c80` 上确认 unit tests / py_compile / YAML load 通过，但 import 仍因顶层 `training.sft2.dataset` 与 `wm.reconstruction` 导入触发 `nimloth.wm.__init__`。已进一步把这些导入延迟到 `evaluate()` 内或 `TYPE_CHECKING`。
 - 第三次 server smoke 在 `0b6fee3` 上确认 `import nimloth.representation_ablation.eval` 通过，但 `import nimloth.eval.representation_ablation` 仍因 `nimloth.eval.__init__` eager import rollout 触发 le-wm 依赖。已将 `nimloth.eval.__init__` 改为 lazy `__getattr__`，避免导入 eval 子模块时加载 rollout。
-- 最新代码已 push 到 `origin/exp/latent-repr-ablation`，当前本地 HEAD `b479453 fix: make eval package imports lazy`。
+- 第四次 server smoke 在 `7e1aa45` 上通过：`tests/representation_ablation` 9 passed；`py_compile` 通过；两个 representation ablation YAML 可加载；`import nimloth.representation_ablation.eval` 和 `import nimloth.eval.representation_ablation` 在 `external/le-wm` 未初始化时通过。额外验证 `from nimloth.eval import val_rollout_success_rate` 仍因缺少 `external/le-wm/module.py` 失败，此项符合预期且非本次 blocking。
+- 服务器验证的最新代码 commit：`7e1aa45 docs: record eval lazy import fix`（`origin/exp/latent-repr-ablation` 当时 HEAD）。
 - 本地验证：config tests 通过；新增 YAML 模板可解析；`py_compile` 通过。完整 tests 本地因当前环境缺少 `libstdc++.so.6` 导致 torch import 失败，需要服务器/可用 torch 环境 smoke。
 - 未修改 submodule 代码；如后续需要改 submodule，必须给对应 submodule 创建 `nimloth/exp/...` 分支。
 
