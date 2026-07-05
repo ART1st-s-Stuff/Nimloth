@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.representation_ablation.config import AblationConfig
-from nimloth.wm.predictor import LatentWMPredictor
-from nimloth.wm.reconstruction import WMImageDecoder
-from nimloth.wm.state_proj import StateProjector
-from nimloth.wm.value_head import ValueHead
+
+if TYPE_CHECKING:
+    from nimloth.wm.predictor import LatentWMPredictor
+    from nimloth.wm.reconstruction import WMImageDecoder
+    from nimloth.wm.state_proj import StateProjector
+    from nimloth.wm.value_head import ValueHead
 
 
 def freeze_module(module: torch.nn.Module) -> torch.nn.Module:
@@ -47,6 +49,8 @@ def load_qwen_processor_and_model(cfg: AblationConfig, device: torch.device):
 
 
 def load_predictor(cfg: AblationConfig, device: torch.device) -> LatentWMPredictor:
+    from nimloth.wm.predictor import LatentWMPredictor
+
     if cfg.init.wm_predictor_checkpoint is None:
         raise ValueError("init.wm_predictor_checkpoint is required")
     predictor = LatentWMPredictor.load_checkpoint(cfg.init.wm_predictor_checkpoint, map_location=device).to(device)
@@ -54,6 +58,8 @@ def load_predictor(cfg: AblationConfig, device: torch.device) -> LatentWMPredict
 
 
 def load_state_projector(cfg: AblationConfig, *, qwen_hidden_size: int, emb_dim: int, device: torch.device) -> StateProjector:
+    from nimloth.wm.state_proj import StateProjector
+
     if cfg.init.state_proj_checkpoint is None:
         raise ValueError("init.state_proj_checkpoint is required")
     state_proj = StateProjector(qwen_hidden_size, emb_dim).to(device)
@@ -62,6 +68,8 @@ def load_state_projector(cfg: AblationConfig, *, qwen_hidden_size: int, emb_dim:
 
 
 def load_value_head(cfg: AblationConfig, *, emb_dim: int, device: torch.device) -> ValueHead | None:
+    from nimloth.wm.value_head import ValueHead
+
     if cfg.init.value_head_checkpoint is None:
         return None
     value_state = cfg.init.value_head_checkpoint / "value_head.pt"
@@ -80,6 +88,8 @@ def load_value_head(cfg: AblationConfig, *, emb_dim: int, device: torch.device) 
 
 
 def load_decoder(cfg: AblationConfig, device: torch.device) -> WMImageDecoder | None:
+    from nimloth.wm.reconstruction import WMImageDecoder
+
     if cfg.init.decoder_checkpoint is None:
         return None
     decoder = WMImageDecoder.load_checkpoint(cfg.init.decoder_checkpoint, map_location=device).to(device)

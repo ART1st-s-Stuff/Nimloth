@@ -1,5 +1,6 @@
 import math
 
+import pytest
 import torch
 
 from nimloth.representation_ablation.metrics import (
@@ -27,8 +28,8 @@ def test_value_head_metrics_topk_and_auc() -> None:
     targets = torch.tensor([1.0, 0.0, 1.0])
     successes = torch.tensor([True, False, True])
     metrics = value_head_metrics(values, actions, targets, successes)
-    assert metrics["value_top1_action_acc"] == 2 / 3
-    assert metrics["value_top2_action_acc"] == 2 / 3
+    assert metrics["value_top1_action_acc"] == pytest.approx(2 / 3)
+    assert metrics["value_top2_action_acc"] == pytest.approx(2 / 3)
     assert 0.0 <= metrics["value_success_ranking_auc"] <= 1.0
     assert "value_calib_bin0_success_rate" in metrics
 
