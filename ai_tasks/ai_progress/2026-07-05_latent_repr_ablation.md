@@ -40,6 +40,7 @@
 - 人类确认其判断 step79 大概率来自 `origin/nimloth/vagen-legacy-dev`；后续 Plan B 如果需要选择 VAGEN legacy 路线，直接使用 `origin/nimloth/vagen-legacy-dev` / commit `93c1124aeaa7850098f46f2b708ee224ba894861` 作为工作假设。
 - 已修复 Plan B 脚本对 `nimloth/vagen-legacy-dev` API 的兼容性：`env_external_4gpu.slurm` 现在检测旧 `vagen.envs.navigation.serve`，若不存在则使用统一 Hydra server `python -m vagen.server.server server.port=... navigation.devices='[0]' navigation.max_workers=48`；`convert_rollouts.py` 兼容从 `vagen.env.navigation.nimloth_format` 导入 Nimloth action format。
 - 已开始 Phase 2 基础实现（尚未接入正式训练/eval 主路径）：新增多 latent marker 展开与 latent token-set extraction helper；新增 token-set WM predictor 和 token-set value head，支持 `(B, K, D)` 输入/输出、rollout、checkpoint save/load，并配套单元测试。
+- Phase 2 token-set 服务器轻量 smoke 已通过：server worktree commit `09b1b09`，`python -m pytest tests/representation_ablation -q -p no:cacheprovider` 通过 `15 passed, 3 warnings`；`py_compile` 通过；`import nimloth.representation_ablation.qwen_tokens` 与 `token_set` 通过且不要求 LeWM 初始化。该 smoke 验证的是 token-set 模块本身；后续 `21694a3` 只改 Plan B rollout 脚本。
 - Plan B retry 在 env ready 后 rollout array 仍于 Ray startup 前被 SIGTERM，未生成 records/training；子 agent 取消了 downstream jobs。已修复可疑点：移除 rollout array 中 user-wide `ray stop` / `pkill -f ray::`，改为 per-array-job `RAY_PORT` 和 `RAY_TMPDIR`，避免同节点并发 array tasks 互相杀 Ray。
 
 ## 文件修改
@@ -92,7 +93,8 @@
 - 修复 Plan B VAGEN API 兼容后运行 `../nimloth-dev/.venv/bin/python -m py_compile experiments/training/sft1/convert_rollouts.py`：通过。
 - 修复 rollout Ray 并发 cleanup 后运行 `bash -n experiments/training/sft1/rollouts_greedy_parallel.slurm`：通过。
 - Phase 2 token-set 基础模块实现后运行 `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/representation_ablation/token_set.py src/nimloth/representation_ablation/qwen_tokens.py tests/representation_ablation/test_token_set.py`：通过。
-- Phase 2 token-set 基础模块实现后运行 `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q`：通过，5 passed。完整 token-set tests 需服务器 torch 环境验证。
+- Phase 2 token-set 基础模块实现后运行 `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q`：通过，5 passed。
+- Phase 2 token-set 服务器轻量 smoke：commit `09b1b09`，`python -m pytest tests/representation_ablation -q -p no:cacheprovider` 通过，15 passed；`py_compile` 通过；qwen_tokens/token_set import 通过。
 - A 线服务器诊断 eval smoke：job `465669` completed，exit 0；关键 summary 见“已完成步骤”。
 - B 线 Plan B jobs：env/rollout failed，dependent conversion/SFT1/SFT2 cancelled；blocking 为 VAGEN module path/API mismatch，未产生 records/training。
 - 旧 step79 VAGEN provenance 只读溯源完成：artifact 无直接 provenance；reflog 重建结论见“已完成步骤”。
