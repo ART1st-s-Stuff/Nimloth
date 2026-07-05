@@ -35,6 +35,7 @@
 - A 线诊断 eval smoke 已完成：Slurm job `465669` 在 `dgx-04` `COMPLETED`，elapsed `00:02:23`，输出 `/project/peilab/atst/nimloth/outputs/experiments/representation_ablation/2026-07-05/diagnostic_low_success_sft2_step1000_smoke_a0a1446`。真实加载 checkpoint 成功，日志含 `vision_full_state_loaded=true`，产出 `summary.json` / `per_item_metrics.csv` / README / metadata。关键 smoke 指标：`num_encoded_transitions=2`，`predictor_1step_mse=0.0015321865`，`predictor_1step_cosine=0.6884475350`，`value_top1_action_acc=1.0`，`value_top2_action_acc=1.0`，`value_chosen_mse=0.0159209650`；AUC 和 depth4/8 为 NaN 是样本太小。
 - B 线 Plan B 未能健康启动，已取消后续依赖任务且无 active jobs：Attempt 1 env job `465666` 在 `dgx-24` 失败（AI2-THOR smoke 仅 1/4 GPU 通过）；Attempt 2 env job `465677` 在 `dgx-56` AI2-THOR smoke 4/4 通过但 env server 失败：`No module named vagen.envs.navigation.serve`。rollout arrays `465667` / `465678` 失败，conversion/SFT1/SFT2 dependent jobs `465670-465672`、`465682-465684` 取消。
 - B 线 blocking：当前服务器 `/project/peilab/atst/nimloth/external/VAGEN` commit `93c1124...` 有 `vagen.server.server`、`vagen.env.navigation.*`，但没有旧脚本需要的 `vagen.envs.navigation.serve` 和 `vagen.envs.navigation.utils.nimloth_format`。继续 Plan B 需要修改脚本/imports 或选用兼容 VAGEN checkout；本轮没有修改 repo code 或 submodule code。
+- 子 agent 已只读溯源旧 step79 VAGEN 来源。直接 artifact 未记录训练时 branch/commit/dirty status；基于远程 Git reflog 重建，最可能来源为 Nimloth `main` commit `2f683f5de25c5eaf0b804f1fbadc507697c336a6`，`external/VAGEN` branch `main` commit `629c270cf069680c70282f615e7f1b83a45684ab`，嵌套 `verl` commit `6360bfe706a00b4ece9105285776b5727ee449b7`。confidence=medium；不能排除当时有未提交改动。W&B retro commit `3342f0cc...` 是事后上传脚本，不是训练 provenance。
 
 ## 文件修改
 
@@ -79,6 +80,7 @@
 - `bash -n experiments/training/sft1/rollouts_greedy_parallel.slurm`：通过。
 - A 线服务器诊断 eval smoke：job `465669` completed，exit 0；关键 summary 见“已完成步骤”。
 - B 线 Plan B jobs：env/rollout failed，dependent conversion/SFT1/SFT2 cancelled；blocking 为 VAGEN module path/API mismatch，未产生 records/training。
+- 旧 step79 VAGEN provenance 只读溯源完成：artifact 无直接 provenance；reflog 重建结论见“已完成步骤”。
 
 ## 待确认问题
 
