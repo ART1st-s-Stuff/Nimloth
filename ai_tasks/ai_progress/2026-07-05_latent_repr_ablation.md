@@ -31,7 +31,10 @@
 - 已修复 representation ablation eval 加载 SFT2 adapter-only checkpoint 的问题：若 `qwen_checkpoint` 是 LoRA adapter dir，则从 `adapter_config.json` 读取 base model，配置 LoRA + 加载 adapter 和 `vision_full_state.pt`。
 - 已为 Plan B rollout 脚本新增 `ROLLOUT_MODEL_PATH` override，允许直接使用高成功率 step300 HF actor 路径。
 - 子 agent 已溯源 SFT2/SFT1 参数：SFT2 使用 SFT1 `epoch_002/hf_merged` 初始化，数据为 vagen79 converted records，SFT2 成功 run 使用 `--no-full-trajectory-batching`、4 DDP ranks over 8 H800、`NIMLOTH_DDP_GPU_STRIDE=2`、LLM LoRA + vision full + EMA。
-- 子 agent 已提出基于高成功率 VAGEN step300 的 SFT1+SFT2 重跑计划，但启动前需要人类决定是复用旧 vagen79 records 还是重新采集高成功率 step300 records。
+- 子 agent 已提出基于高成功率 VAGEN step300 的 SFT1+SFT2 重跑计划。人类确认并行执行：A 线用 low-success step1000 debug；B 线执行 Plan B（高成功率 step300 重新采集/转换数据，再跑 SFT1+SFT2）。
+- A 线诊断 eval smoke 已完成：Slurm job `465669` 在 `dgx-04` `COMPLETED`，elapsed `00:02:23`，输出 `/project/peilab/atst/nimloth/outputs/experiments/representation_ablation/2026-07-05/diagnostic_low_success_sft2_step1000_smoke_a0a1446`。真实加载 checkpoint 成功，日志含 `vision_full_state_loaded=true`，产出 `summary.json` / `per_item_metrics.csv` / README / metadata。关键 smoke 指标：`num_encoded_transitions=2`，`predictor_1step_mse=0.0015321865`，`predictor_1step_cosine=0.6884475350`，`value_top1_action_acc=1.0`，`value_top2_action_acc=1.0`，`value_chosen_mse=0.0159209650`；AUC 和 depth4/8 为 NaN 是样本太小。
+- B 线 Plan B 未能健康启动，已取消后续依赖任务且无 active jobs：Attempt 1 env job `465666` 在 `dgx-24` 失败（AI2-THOR smoke 仅 1/4 GPU 通过）；Attempt 2 env job `465677` 在 `dgx-56` AI2-THOR smoke 4/4 通过但 env server 失败：`No module named vagen.envs.navigation.serve`。rollout arrays `465667` / `465678` 失败，conversion/SFT1/SFT2 dependent jobs `465670-465672`、`465682-465684` 取消。
+- B 线 blocking：当前服务器 `/project/peilab/atst/nimloth/external/VAGEN` commit `93c1124...` 有 `vagen.server.server`、`vagen.env.navigation.*`，但没有旧脚本需要的 `vagen.envs.navigation.serve` 和 `vagen.envs.navigation.utils.nimloth_format`。继续 Plan B 需要修改脚本/imports 或选用兼容 VAGEN checkout；本轮没有修改 repo code 或 submodule code。
 
 ## 文件修改
 
@@ -74,10 +77,12 @@
 - 新增 SFT2 adapter-only eval 加载与 Plan B rollout override 后运行 `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/representation_ablation/modules.py src/nimloth/representation_ablation/eval.py tests/representation_ablation/*.py`：通过。
 - 新增诊断 smoke config 后运行 YAML load：`diagnostic_low_success_sft2_step1000_value_predictor*.yaml` 均可解析。
 - `bash -n experiments/training/sft1/rollouts_greedy_parallel.slurm`：通过。
+- A 线服务器诊断 eval smoke：job `465669` completed，exit 0；关键 summary 见“已完成步骤”。
+- B 线 Plan B jobs：env/rollout failed，dependent conversion/SFT1/SFT2 cancelled；blocking 为 VAGEN module path/API mismatch，未产生 records/training。
 
 ## 待确认问题
 
-- 诊断 eval 小规模 smoke 可使用 `diagnostic_low_success_sft2_step1000_value_predictor.yaml`，但启动前仍需按实验规则确认输出目录、资源和命令。
-- 高成功率 VAGEN 重跑需要人类决策：Plan A 复用旧 vagen79 converted records，只换 SFT1 初始化为 step300；Plan B 先用 step300 重新采集/转换 train/val/test records，再走 SFT1+SFT2。Plan B 更干净但成本更高。
-- SFT2 初始化 checkpoint：是否继续为可比性强制使用 SFT1 `epoch_002/hf_merged`，还是改为 SFT1 `best/hf_merged`。
+- A 线下一步：是否运行 full low-success step1000 diagnostic eval（使用非 smoke config、完整 val split），或先根据 smoke 结果调整指标/输出格式。
+- B 线下一步需要决策：修旧脚本以适配当前 VAGEN API（`vagen.server.server` / `vagen.env.navigation.*`），还是切到包含 `vagen.envs.navigation.serve` / `nimloth_format` 的兼容 VAGEN checkout。若修改 submodule，需要按用户要求在 submodule 创建 `nimloth/exp/...` 分支。
+- B 线 SFT2 初始化 checkpoint策略仍需确认：继续为可比性强制使用 SFT1 `epoch_002/hf_merged`，还是改为 SFT1 `best/hf_merged`。
 - 若后续需要启动超过 3 分钟的训练/评估，会按实验规则再次向人类确认。
