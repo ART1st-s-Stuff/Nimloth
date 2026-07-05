@@ -30,7 +30,10 @@ ENV_URL_FILE=${ENV_CONTROL_DIR}/env_urls.txt
 CONTROL_DIR=${RUN_DIR}/slurm_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_control
 MODEL_PATH=${ROLLOUT_MODEL_PATH:-${CHECKPOINT_DIR}/global_step_${CHECKPOINT_STEP}/actor/huggingface}
 TRAIN_GPUS_PER_NODE=2
-RAY_PORT=$((6379 + SLURM_ARRAY_TASK_ID))
+# Use a per-array-job port/temp dir. Do not use global `ray stop`/`pkill`:
+# concurrent array tasks can share a node, and user-wide Ray cleanup kills siblings.
+RAY_PORT=${RAY_PORT:-$((20000 + (SLURM_ARRAY_JOB_ID % 20000) + SLURM_ARRAY_TASK_ID))}
+RAY_TMPDIR=${CONTROL_DIR}/ray_tmp
 RAY_CMD=${ROOT}/.venv/bin/ray
 VAL_BATCH_SIZE=24
 AGENT_NUM_WORKERS=12
@@ -42,8 +45,9 @@ mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${RUN_DIR}/validation" "${RUN_DIR}/check
 COMMON_ENV='export UV_CACHE_DIR=/project/peilab/atst/nimloth/.cache/uv; export HOME=/project/peilab/atst/nimloth/.home; export FLASHINFER_WORKSPACE_DIR=/project/peilab/atst/nimloth/.cache/flashinfer; export TRITON_CACHE_DIR=/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname); export XDG_CACHE_HOME=/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname); export TORCH_EXTENSIONS_DIR=/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname); mkdir -p "$HOME" "$FLASHINFER_WORKSPACE_DIR" "$TORCH_EXTENSIONS_DIR" "$TRITON_CACHE_DIR" "$XDG_CACHE_HOME"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; export PATH=/project/peilab/atst/nimloth/.venv/bin:/project/peilab/atst/nimloth/.local/bin:$PATH; export HF_HOME=/project/peilab/atst/.cache/huggingface; export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface; export TORCH_HOME=/project/peilab/atst/flower/.cache/torch; export PYTHONPATH=/project/peilab/atst/nimloth/external/VAGEN:/project/peilab/atst/nimloth/external/VAGEN/verl:${PYTHONPATH:-}; source /project/peilab/atst/nimloth/.venv/bin/activate; if [ -f /project/peilab/atst/flower/.env ]; then set -a; source /project/peilab/atst/flower/.env; set +a; elif [ -f /project/peilab/atst/.env ]; then set -a; source /project/peilab/atst/.env; set +a; fi; cd /project/peilab/atst/nimloth/external/VAGEN; export TOKENIZERS_PARALLELISM=true; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1; export NCCL_DEBUG=WARN; export NCCL_IB_DISABLE=1'
 
 cleanup() {
-  set +e
-  bash -lc "${COMMON_ENV}; ${RAY_CMD} stop --force >/dev/null 2>&1 || true"
+  # Slurm cgroups clean up this task's child processes. Avoid user-wide Ray
+  # cleanup here because rollout array tasks may run concurrently on one node.
+  true
 }
 trap cleanup EXIT
 
@@ -359,7 +363,9 @@ main() {
 
   local_ip=$(hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
   if [ -z "$local_ip" ]; then local_ip=$(hostname -I | awk '{print $1}'); fi
-  bash -lc "${COMMON_ENV}; ${RAY_CMD} stop --force >/dev/null 2>&1 || true; pkill -u \$(whoami) -f 'ray::' >/dev/null 2>&1 || true; sleep 2; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  mkdir -p "${RAY_TMPDIR}"
+  echo "Starting isolated Ray head port=${RAY_PORT} temp=${RAY_TMPDIR}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  bash -lc "${COMMON_ENV}; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --temp-dir='${RAY_TMPDIR}' --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   sleep 20
   bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; python -c \"import ray; ray.init(); print(ray.available_resources())\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 
