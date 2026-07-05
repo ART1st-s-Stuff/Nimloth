@@ -22,6 +22,7 @@
 - 根据 server-smoke 子 agent 结果，已修复 `test_metrics.py` 对 float32 结果精确相等的问题，改用 `pytest.approx`。
 - 根据 server-smoke 子 agent 结果，已把 `LatentWMPredictor` / `StateProjector` / `ValueHead` / decoder 导入移入 loader 函数，避免 `import nimloth.representation_ablation.eval` 在未初始化 `external/le-wm` 时失败；真正评估加载 predictor 时仍会要求真实依赖存在。
 - 第二次 server smoke 发现 import 仍会经由 `training.sft2.dataset` 和 `nimloth.wm.reconstruction` 触发 `nimloth.wm.__init__`；已进一步把 `TransitionQwenDataset` / `collate_transition_batch` / `extract_qwen_latents` 和 `WMImageDecoder` 导入延迟到评估函数内或 TYPE_CHECKING。
+- 第三次 server smoke 确认 `import nimloth.representation_ablation.eval` 已通过，但 `import nimloth.eval.representation_ablation` 仍因 `nimloth.eval.__init__` eager import rollout 触发 le-wm 依赖；已将 `nimloth.eval.__init__` 改为 lazy `__getattr__`。
 - 已新增 baseline A 的两个 eval config 模板：value/predictor 与 reconstruction strips。
 
 ## 文件修改
@@ -55,6 +56,8 @@
 - 修复 server smoke 问题后运行 `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/representation_ablation/*.py tests/representation_ablation/*.py src/nimloth/eval/representation_ablation.py`：通过。
 - 第二次修复 import 问题后运行 `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q`：通过，5 passed。
 - 第二次修复 import 问题后运行 `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/representation_ablation/*.py tests/representation_ablation/*.py src/nimloth/eval/representation_ablation.py`：通过。
+- 修复 `nimloth.eval.__init__` eager import 后运行 `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/eval/__init__.py src/nimloth/eval/representation_ablation.py src/nimloth/representation_ablation/*.py tests/representation_ablation/*.py`：通过。
+- 修复 `nimloth.eval.__init__` eager import 后运行 `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q`：通过，5 passed。
 - `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation -q`：本地失败在 torch import，原因是当前本地环境缺少 `libstdc++.so.6`，不是测试断言失败；需要服务器/可用 torch 环境 smoke。
 
 ## 待确认问题
