@@ -25,6 +25,10 @@
 - 第三次 server smoke 确认 `import nimloth.representation_ablation.eval` 已通过，但 `import nimloth.eval.representation_ablation` 仍因 `nimloth.eval.__init__` eager import rollout 触发 le-wm 依赖；已将 `nimloth.eval.__init__` 改为 lazy `__getattr__`。
 - 第四次 server smoke 在未初始化 `external/le-wm` / `external/VAGEN`、禁用 GPU/W&B 的条件下通过：representation ablation tests、py_compile、YAML load、`import nimloth.representation_ablation.eval`、`import nimloth.eval.representation_ablation` 均通过。
 - 已新增 baseline A 的两个 eval config 模板：value/predictor 与 reconstruction strips。
+- 子 agent 已只读溯源 low-success-source SFT2 run：step≈1000 checkpoint 选用 `.../sft2_lejepa_align_fn1_dgx56/ckpt_step1000_preserved`；该 checkpoint 是 LoRA adapter + `vision_full_state.pt`，包含 `state_proj.pt`、`wm_predictor/predictor.pt`、`value_head/value_head.pt`，可用于诊断 eval。
+- 已新增诊断 eval config：`configs/eval/representation_ablation/diagnostic_low_success_sft2_step1000_value_predictor.yaml`，指向上述 step1000 checkpoint 与 `sft1_sft_records_vagen79_nimloth_format/val_all.jsonl`。
+- 子 agent 已溯源 SFT2/SFT1 参数：SFT2 使用 SFT1 `epoch_002/hf_merged` 初始化，数据为 vagen79 converted records，SFT2 成功 run 使用 `--no-full-trajectory-batching`、4 DDP ranks over 8 H800、`NIMLOTH_DDP_GPU_STRIDE=2`、LLM LoRA + vision full + EMA。
+- 子 agent 已提出基于高成功率 VAGEN step300 的 SFT1+SFT2 重跑计划，但启动前需要人类决定是复用旧 vagen79 records 还是重新采集高成功率 step300 records。
 
 ## 文件修改
 
@@ -37,6 +41,7 @@
 - `src/nimloth/eval/representation_ablation.py`
 - `configs/eval/representation_ablation/a_qwen_latent_value_predictor.yaml`
 - `configs/eval/representation_ablation/a_qwen_latent_reconstruction.yaml`
+- `configs/eval/representation_ablation/diagnostic_low_success_sft2_step1000_value_predictor.yaml`
 - `tests/representation_ablation/test_config.py`
 - `tests/representation_ablation/test_metrics.py`
 - 本进度文件。
@@ -64,4 +69,7 @@
 
 ## 待确认问题
 
-- 暂无。若后续需要启动超过 3 分钟的训练/评估，会按实验规则再次向人类确认。
+- 诊断 eval 小规模 smoke 可使用 `diagnostic_low_success_sft2_step1000_value_predictor.yaml`，但启动前仍需按实验规则确认输出目录、资源和命令。
+- 高成功率 VAGEN 重跑需要人类决策：Plan A 复用旧 vagen79 converted records，只换 SFT1 初始化为 step300；Plan B 先用 step300 重新采集/转换 train/val/test records，再走 SFT1+SFT2。Plan B 更干净但成本更高。
+- SFT2 初始化 checkpoint：是否继续为可比性强制使用 SFT1 `epoch_002/hf_merged`，还是改为 SFT1 `best/hf_merged`。
+- 若后续需要启动超过 3 分钟的训练/评估，会按实验规则再次向人类确认。
