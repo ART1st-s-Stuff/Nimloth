@@ -1,0 +1,92 @@
+# Phase-2 B training template: K=4 multi latent token-set predictor/value head.
+# Fill qwen checkpoint and train/val JSONL paths before launching a real run.
+
+experiment:
+  group: representation_ablation
+  name: b_qwen_multi_latent_k4_predictor_value
+  output_dir: null
+  seed: 0
+
+init:
+  vagen_checkpoint: /project/peilab/hligb/vagen-navigation/checkpoints/vagen_navigation_repro/navigation_base_8gpu_paper_repro_20260621/global_step_300
+  sft2_checkpoint: null
+  qwen_checkpoint: null
+  # Optional: reuse a single-token StateProjector independently on each latent token.
+  # If null, token predictor/value emb_dim is Qwen hidden_size.
+  state_proj_checkpoint: null
+  wm_predictor_checkpoint: null
+  value_head_checkpoint: null
+  decoder_checkpoint: null
+
+data:
+  train_jsonl: null
+  val_jsonl: null
+  split_policy: explicit_train_val
+  include_failed_rollouts: true
+  value_gamma: 1.0
+  max_records: -1
+
+representation:
+  type: qwen_multi_latent
+  num_tokens: 4
+  dim: 1024
+  source: qwen
+  projector: linear
+  compressor: null
+  semantic_embedding:
+    enabled: false
+    source: instruction
+    pooling: mean
+
+predictor:
+  type: token_transformer
+  train: true
+  history_size: 4
+  depth: 4
+  heads: 8
+  hidden_dim: 1024
+
+value_head:
+  type: pooled_mlp
+  train: true
+  use_semantic_embedding: false
+  hidden_dim: null
+
+reconstruction:
+  enabled: false
+  type: simple_decoder
+  condition_source: true_and_predicted
+  image_size: 255
+  upload_wandb_images: false
+  save_samples: 0
+
+train:
+  target: predictor_value
+  epochs: 1
+  batch_size: 1
+  lr: 1.0e-4
+  resume: false
+  save_interval: 500
+  max_length: 14000
+  max_pixels: 602112
+  attn_implementation: sdpa
+
+eval:
+  metrics:
+    - value_topk
+    - value_ranking
+    - value_calibration
+    - predictor_multistep
+  rollout_depths: [1, 2, 4, 8]
+  planner: beam_search
+  batch_size: 1
+  max_batches: -1
+  max_length: 14000
+  max_pixels: 602112
+  save_samples: 0
+  attn_implementation: sdpa
+
+wandb:
+  enabled: false
+  project: nimloth
+  run_name: null
