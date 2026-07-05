@@ -19,8 +19,8 @@
 - 第二次 server smoke 在 `85a1c80` 上确认 unit tests / py_compile / YAML load 通过，但 import 仍因顶层 `training.sft2.dataset` 与 `wm.reconstruction` 导入触发 `nimloth.wm.__init__`。已进一步把这些导入延迟到 `evaluate()` 内或 `TYPE_CHECKING`。
 - 第三次 server smoke 在 `0b6fee3` 上确认 `import nimloth.representation_ablation.eval` 通过，但 `import nimloth.eval.representation_ablation` 仍因 `nimloth.eval.__init__` eager import rollout 触发 le-wm 依赖。已将 `nimloth.eval.__init__` 改为 lazy `__getattr__`，避免导入 eval 子模块时加载 rollout。
 - 第四次 server smoke 在 `7e1aa45` 上通过：`tests/representation_ablation` 9 passed；`py_compile` 通过；两个 representation ablation YAML 可加载；`import nimloth.representation_ablation.eval` 和 `import nimloth.eval.representation_ablation` 在 `external/le-wm` 未初始化时通过。额外验证 `from nimloth.eval import val_rollout_success_rate` 仍因缺少 `external/le-wm/module.py` 失败，此项符合预期且非本次 blocking。
-- 服务器验证的最新代码 commit：`7e1aa45 docs: record eval lazy import fix`（`origin/exp/latent-repr-ablation` 当时 HEAD）。
-- 本地验证：config tests 通过；新增 YAML 模板可解析；`py_compile` 通过。完整 tests 本地因当前环境缺少 `libstdc++.so.6` 导致 torch import 失败，需要服务器/可用 torch 环境 smoke。
+- 服务器验证的最新代码 commit：`7e1aa45 docs: record eval lazy import fix`（`origin/exp/latent-repr-ablation` 当时 HEAD）；后续仅补充 smoke 结果文档。
+- 本地验证：config tests 通过；新增 YAML 模板可解析；`py_compile` 通过。完整 tests 本地因当前环境缺少 `libstdc++.so.6` 导致 torch import 失败；服务器可用 torch 环境 smoke 已通过。
 - 未修改 submodule 代码；如后续需要改 submodule，必须给对应 submodule 创建 `nimloth/exp/...` 分支。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
