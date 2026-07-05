@@ -11,6 +11,7 @@
 - 已新增实时进度文件：`ai_tasks/ai_progress/2026-07-05_latent_repr_ablation.md`。
 - 当前已实现 Phase 1 single `qwen_latent` baseline 的配置驱动离线评估基础设施（待服务器 torch smoke）：
   - `src/nimloth/representation_ablation/`：严格 YAML schema、Phase-1 validator、module loader、value/predictor metrics、config-driven eval CLI。
+  - `src/nimloth/eval/representation_ablation.py`：兼容入口 `python -m nimloth.eval.representation_ablation --config <yaml>`。
   - `configs/eval/representation_ablation/`：baseline A 的 value/predictor 与 reconstruction eval config 模板。
   - `tests/representation_ablation/`：config 与 metrics 单元测试。
 - 本地验证：config tests 通过；新增 YAML 模板可解析；`py_compile` 通过。完整 tests 本地因当前环境缺少 `libstdc++.so.6` 导致 torch import 失败，需要服务器/可用 torch 环境 smoke。

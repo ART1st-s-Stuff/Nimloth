@@ -26,6 +26,7 @@
 - `src/nimloth/representation_ablation/modules.py`
 - `src/nimloth/representation_ablation/metrics.py`
 - `src/nimloth/representation_ablation/eval.py`
+- `src/nimloth/eval/representation_ablation.py`
 - `configs/eval/representation_ablation/a_qwen_latent_value_predictor.yaml`
 - `configs/eval/representation_ablation/a_qwen_latent_reconstruction.yaml`
 - `tests/representation_ablation/test_config.py`
@@ -37,6 +38,7 @@
 - `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q`：通过，3 passed。
 - `PYTHONPATH=src ../nimloth-dev/.venv/bin/python - <<'PY' ... load_ablation_config(...)`：两个新增 YAML 模板均可解析。
 - `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/representation_ablation/*.py tests/representation_ablation/*.py`：通过。
+- `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/eval/representation_ablation.py`：通过。
 - `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation -q`：本地失败在 torch import，原因是当前本地环境缺少 `libstdc++.so.6`，不是测试断言失败；需要服务器/可用 torch 环境 smoke。
 
 ## 待确认问题
