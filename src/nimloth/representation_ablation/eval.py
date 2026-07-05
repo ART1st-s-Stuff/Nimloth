@@ -32,6 +32,7 @@ from nimloth.representation_ablation.modules import (
     load_state_projector,
     load_value_head,
     module_metadata,
+    qwen_hidden_size,
 )
 from nimloth.training.common.qwen_batch import build_qwen_batch
 
@@ -102,7 +103,7 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
     predictor = load_predictor(cfg, device)
     state_proj = load_state_projector(
         cfg,
-        qwen_hidden_size=model.config.hidden_size,
+        qwen_hidden_size=qwen_hidden_size(model),
         emb_dim=predictor.emb_dim,
         device=device,
     )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,27 +27,83 @@ def freeze_module(module: torch.nn.Module) -> torch.nn.Module:
     return module
 
 
+def _adapter_base_model_path(checkpoint: Path) -> Path | None:
+    adapter_config = checkpoint / "adapter_config.json"
+    if not adapter_config.is_file():
+        return None
+    data = json.loads(adapter_config.read_text(encoding="utf-8"))
+    base = data.get("base_model_name_or_path")
+    return Path(base) if base else None
+
+
+def _lora_args_from_adapter(checkpoint: Path) -> argparse.Namespace:
+    data = json.loads((checkpoint / "adapter_config.json").read_text(encoding="utf-8"))
+    return argparse.Namespace(
+        lora=False,
+        llm_tune="lora",
+        vision_tune="full" if (checkpoint / "vision_full_state.pt").is_file() else "freeze",
+        lora_r=int(data.get("r", 64)),
+        lora_alpha=int(data.get("lora_alpha", 128)),
+        lora_dropout=float(data.get("lora_dropout", 0.0)),
+        gradient_checkpointing=False,
+    )
+
+
 def load_qwen_processor_and_model(cfg: AblationConfig, device: torch.device):
-    """Load frozen Qwen checkpoint for Phase-1 `qwen_latent` extraction."""
+    """Load frozen Qwen checkpoint for Phase-1 `qwen_latent` extraction.
+
+    Supports both full HF checkpoints and SFT2 LoRA+vision-full checkpoint dirs.
+    Adapter-only checkpoints are loaded by first loading their recorded base model,
+    then applying the adapter and `vision_full_state.pt`.
+    """
+
+    from nimloth.backbone.qwen_tuning import configure_qwen_tuning
+    from nimloth.training.sft2.checkpoint import load_lora_adapter_state
 
     if cfg.init.qwen_checkpoint is None:
         raise ValueError("init.qwen_checkpoint is required")
-    processor = AutoProcessor.from_pretrained(cfg.init.qwen_checkpoint, trust_remote_code=True)
+    qwen_checkpoint = cfg.init.qwen_checkpoint
+    adapter_base = _adapter_base_model_path(qwen_checkpoint)
+    model_path = adapter_base or qwen_checkpoint
+    if adapter_base is not None and not model_path.is_dir():
+        raise FileNotFoundError(f"adapter base_model_name_or_path does not exist: {model_path}")
+
+    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = cfg.eval.max_pixels
     add_special_tokens(processor.tokenizer)
     token_id_map = special_token_ids(processor.tokenizer)
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        cfg.init.qwen_checkpoint,
+        model_path,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         attn_implementation=cfg.eval.attn_implementation,
         trust_remote_code=True,
     )
     model.resize_token_embeddings(len(processor.tokenizer))
+    model.config.vocab_size = len(processor.tokenizer)
+    if hasattr(model, "generation_config"):
+        model.generation_config.vocab_size = len(processor.tokenizer)
+    if adapter_base is not None:
+        model = configure_qwen_tuning(model, _lora_args_from_adapter(qwen_checkpoint))
+        load_lora_adapter_state(model, qwen_checkpoint)
     model.to(device)
     freeze_module(model)
     return processor, token_id_map, model
+
+
+def qwen_hidden_size(model) -> int:
+    config = getattr(model, "config", None)
+    hidden = getattr(config, "hidden_size", None)
+    if hidden is not None:
+        return int(hidden)
+    base = getattr(model, "base_model", None)
+    base_model = getattr(base, "model", None)
+    base_config = getattr(base_model, "config", None)
+    hidden = getattr(base_config, "hidden_size", None)
+    if hidden is not None:
+        return int(hidden)
+    raise AttributeError(f"could not resolve Qwen hidden_size from {type(model)}")
 
 
 def load_predictor(cfg: AblationConfig, device: torch.device) -> LatentWMPredictor:

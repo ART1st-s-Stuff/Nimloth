@@ -27,6 +27,9 @@
 - 已新增 baseline A 的两个 eval config 模板：value/predictor 与 reconstruction strips。
 - 子 agent 已只读溯源 low-success-source SFT2 run：step≈1000 checkpoint 选用 `.../sft2_lejepa_align_fn1_dgx56/ckpt_step1000_preserved`；该 checkpoint 是 LoRA adapter + `vision_full_state.pt`，包含 `state_proj.pt`、`wm_predictor/predictor.pt`、`value_head/value_head.pt`，可用于诊断 eval。
 - 已新增诊断 eval config：`configs/eval/representation_ablation/diagnostic_low_success_sft2_step1000_value_predictor.yaml`，指向上述 step1000 checkpoint 与 `sft1_sft_records_vagen79_nimloth_format/val_all.jsonl`。
+- 已新增诊断 eval smoke config：`configs/eval/representation_ablation/diagnostic_low_success_sft2_step1000_value_predictor_smoke.yaml`，限制 `max_records=2` / `max_batches=2`。
+- 已修复 representation ablation eval 加载 SFT2 adapter-only checkpoint 的问题：若 `qwen_checkpoint` 是 LoRA adapter dir，则从 `adapter_config.json` 读取 base model，配置 LoRA + 加载 adapter 和 `vision_full_state.pt`。
+- 已为 Plan B rollout 脚本新增 `ROLLOUT_MODEL_PATH` override，允许直接使用高成功率 step300 HF actor 路径。
 - 子 agent 已溯源 SFT2/SFT1 参数：SFT2 使用 SFT1 `epoch_002/hf_merged` 初始化，数据为 vagen79 converted records，SFT2 成功 run 使用 `--no-full-trajectory-batching`、4 DDP ranks over 8 H800、`NIMLOTH_DDP_GPU_STRIDE=2`、LLM LoRA + vision full + EMA。
 - 子 agent 已提出基于高成功率 VAGEN step300 的 SFT1+SFT2 重跑计划，但启动前需要人类决定是复用旧 vagen79 records 还是重新采集高成功率 step300 records。
 
@@ -42,8 +45,10 @@
 - `configs/eval/representation_ablation/a_qwen_latent_value_predictor.yaml`
 - `configs/eval/representation_ablation/a_qwen_latent_reconstruction.yaml`
 - `configs/eval/representation_ablation/diagnostic_low_success_sft2_step1000_value_predictor.yaml`
+- `configs/eval/representation_ablation/diagnostic_low_success_sft2_step1000_value_predictor_smoke.yaml`
 - `tests/representation_ablation/test_config.py`
 - `tests/representation_ablation/test_metrics.py`
+- `experiments/training/sft1/rollouts_greedy_parallel.slurm`
 - 本进度文件。
 
 ## 验证命令和结果
@@ -66,6 +71,9 @@
 - 修复 `nimloth.eval.__init__` eager import 后运行 `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q`：通过，5 passed。
 - 服务器轻量 smoke（commit `7e1aa45`，未初始化 submodules，`CUDA_VISIBLE_DEVICES=""`，W&B disabled）：`python -m pytest tests/representation_ablation -q -p no:cacheprovider` 通过，9 passed；`py_compile` 通过；两个 YAML load 通过；`import nimloth.representation_ablation.eval` 和 `import nimloth.eval.representation_ablation` 均通过。
 - `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation -q`：本地失败在 torch import，原因是当前本地环境缺少 `libstdc++.so.6`；服务器可用 torch 环境 smoke 已通过。
+- 新增 SFT2 adapter-only eval 加载与 Plan B rollout override 后运行 `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/representation_ablation/modules.py src/nimloth/representation_ablation/eval.py tests/representation_ablation/*.py`：通过。
+- 新增诊断 smoke config 后运行 YAML load：`diagnostic_low_success_sft2_step1000_value_predictor*.yaml` 均可解析。
+- `bash -n experiments/training/sft1/rollouts_greedy_parallel.slurm`：通过。
 
 ## 待确认问题
 

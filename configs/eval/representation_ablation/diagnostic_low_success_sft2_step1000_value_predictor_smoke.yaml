@@ -1,0 +1,87 @@
+# Small real-checkpoint smoke for diagnostic low-success SFT2 step1000 eval.
+# Same checkpoint/data as diagnostic_low_success_sft2_step1000_value_predictor.yaml,
+# but bounded to a few records/batches for launch validation.
+
+experiment:
+  group: representation_ablation
+  name: diagnostic_low_success_sft2_step1000_value_predictor_smoke
+  output_dir: null
+  seed: 0
+
+init:
+  vagen_checkpoint: /project/peilab/atst/nimloth/experiments/navigation_baseline/runs/vagen_nav_dgx31_49train_dgx36env_3node_16train8env_original_base_common_resp20k_single_action_promptfix_retry2/checkpoints/global_step_79/actor/huggingface
+  sft2_checkpoint: /project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-07-01/sft2_lejepa_align_fn1_dgx56/ckpt_step1000_preserved
+  qwen_checkpoint: null
+  state_proj_checkpoint: null
+  wm_predictor_checkpoint: null
+  value_head_checkpoint: null
+  decoder_checkpoint: null
+
+data:
+  train_jsonl: /project/peilab/atst/nimloth/experiments/navigation_baseline/runs/sft1_sft_records_vagen79_nimloth_format/train_all.jsonl
+  val_jsonl: /project/peilab/atst/nimloth/experiments/navigation_baseline/runs/sft1_sft_records_vagen79_nimloth_format/val_all.jsonl
+  split_policy: explicit_train_val
+  include_failed_rollouts: true
+  value_gamma: 1.0
+  max_records: 2
+
+representation:
+  type: qwen_latent
+  num_tokens: 1
+  dim: 1024
+  source: qwen
+  projector: linear
+  compressor: null
+  semantic_embedding:
+    enabled: false
+    source: instruction
+    pooling: mean
+
+predictor:
+  type: lewm_ar
+  train: false
+  history_size: 4
+  depth: 6
+  heads: 16
+  hidden_dim: 1024
+
+value_head:
+  type: mlp
+  train: false
+  use_semantic_embedding: false
+  hidden_dim: null
+
+reconstruction:
+  enabled: false
+  type: simple_decoder
+  condition_source: true_and_predicted
+  image_size: 255
+  upload_wandb_images: false
+  save_samples: 0
+
+train:
+  target: eval_only
+  batch_size: 1
+  max_length: 12000
+  max_pixels: 602112
+  attn_implementation: sdpa
+
+eval:
+  metrics:
+    - value_topk
+    - value_ranking
+    - value_calibration
+    - predictor_multistep
+  rollout_depths: [1, 2, 4, 8]
+  planner: beam_search
+  batch_size: 1
+  max_batches: 2
+  max_length: 12000
+  max_pixels: 602112
+  save_samples: 0
+  attn_implementation: sdpa
+
+wandb:
+  enabled: false
+  project: nimloth
+  run_name: null
