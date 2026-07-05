@@ -47,6 +47,7 @@
 - Plan B retry8（Nimloth `aa09f1a`，VAGEN `93c1124`）已完成失败诊断：远程 worktree初始 clean、HEAD 正确、脚本 `bash -n` 通过；env job `465811` 在 `dgx-56`/`preempt` ports `19130-19133` ready，后已取消。rollout job `465813` 先因 retry8 长输出路径导致 Ray `AF_UNIX path length cannot exceed 107 bytes`；用 `/tmp/hs8` symlink wrapper 重交 `465818` 后确认真正进入 `vagen.trainer.main_ppo`，使用 parquet + `rollout_manager.use_service=True`，但在 `RayPPOTrainer._validate_config` 失败：缺少 `actor_rollout_ref.rollout.micro_batch_size` 或 `actor_rollout_ref.rollout.micro_batch_size_per_gpu`（配置中 rollout log-prob micro batch 字段为 `None`）。另见一个 array task 的 Ray worker grpc port `10003` 冲突。没有 env reset 证据，没有 `validation/*/shard_*/300.jsonl`，未做 conversion/SFT1/SFT2。远程 README 已更新：`/project/peilab/atst/nimloth/experiments/navigation_baseline/runs/sft1_rollouts_highsuccess_step300_greedy_parallel_retry8/README_retry8.md`。
 - 已修复 retry8 暴露的 Nimloth rollout 脚本问题（未改 submodule）：新 `vagen.trainer.main_ppo` 路径加入 `actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1`；Ray temp dir 默认改短到 `/tmp/ray_sft1_${USER}_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}`，避免 AF_UNIX path limit；显式隔离 Ray node/object/dashboard/client/metrics/worker ports，并将 `RAY_ADDRESS` 固定为当前 array task 的 Ray head 地址，降低同节点并发串线风险。
 - B 线 Plan B retry9 失败诊断完成：远程 worktree clean、HEAD=`8041689`、VAGEN=`93c1124`、脚本 `bash -n` 通过；env job `465938` 在 `dgx-56`/`preempt` ports `19130-19133` ready，后已取消。rollout array `465940_[0-3]` 全部在 Ray startup 前失败：`ray start` 因 `--ray-client-server-port` 要求 `ray[client]`，而服务器 venv 只有 minimal Ray。未进入 `vagen.trainer.main_ppo` / `_validate_config`，无 env reset 证据，无 `validation/*/shard_*/300.jsonl`，未做 conversion/SFT1/SFT2。远程 README/metadata 已更新：`/project/peilab/atst/nimloth/experiments/navigation_baseline/runs/sft1_rollouts_highsuccess_step300_greedy_parallel_retry9/README_retry9.md`、`metadata_retry9.json`。
+- 已修复 retry9 暴露的 Ray client 依赖问题：`rollouts_greedy_parallel.slurm` 移除未使用的 `--ray-client-server-port` 和 `RAY_CLIENT_SERVER_PORT`，保留其他 Ray port 隔离；本地 `bash -n` 通过。
 
 ## 文件修改
 
@@ -113,6 +114,6 @@
 ## 待确认问题
 
 - A 线下一步：是否运行 full low-success step1000 diagnostic eval（使用非 smoke config、完整 val split），或先根据 smoke 结果调整指标/输出格式。
-- B 线下一步：修复/规避 `ray start --ray-client-server-port` 对 `ray[client]` 的依赖（优先移除未使用的 client server port flag），再开新输出目录重试 Plan B；重点确认是否越过 Ray startup、是否进入 `vagen.trainer.main_ppo` 和 config validation、是否发生 env reset、是否写出真实 `validation/*/shard_*/300.jsonl`。若后续发现必须修改 submodule，必须先停止并请求人类确认。
+- B 线下一步：用新输出目录重试 Plan B；重点确认是否越过 Ray startup、是否进入 `vagen.trainer.main_ppo` 和 config validation、是否发生 env reset、是否写出真实 `validation/*/shard_*/300.jsonl`。若后续发现必须修改 submodule，必须先停止并请求人类确认。
 - B 线 SFT2 初始化 checkpoint策略仍需确认：继续为可比性强制使用 SFT1 `epoch_002/hf_merged`，还是改为 SFT1 `best/hf_merged`。
 - 若后续需要启动超过 3 分钟的训练/评估，会按实验规则再次向人类确认。

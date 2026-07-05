@@ -40,7 +40,6 @@ RAY_TMPDIR=${RAY_TMPDIR:-/tmp/ray_sft1_${USER}_${SLURM_ARRAY_JOB_ID}_${SLURM_ARR
 RAY_NODE_MANAGER_PORT=${RAY_NODE_MANAGER_PORT:-$((RAY_PORT + 100))}
 RAY_OBJECT_MANAGER_PORT=${RAY_OBJECT_MANAGER_PORT:-$((RAY_PORT + 200))}
 RAY_DASHBOARD_PORT=${RAY_DASHBOARD_PORT:-$((RAY_PORT + 300))}
-RAY_CLIENT_SERVER_PORT=${RAY_CLIENT_SERVER_PORT:-$((RAY_PORT + 400))}
 RAY_METRICS_EXPORT_PORT=${RAY_METRICS_EXPORT_PORT:-$((RAY_PORT + 500))}
 RAY_WORKER_MIN_PORT=${RAY_WORKER_MIN_PORT:-$((30000 + (SLURM_ARRAY_JOB_ID % 20) * 1000 + SLURM_ARRAY_TASK_ID * 100))}
 RAY_WORKER_MAX_PORT=${RAY_WORKER_MAX_PORT:-$((RAY_WORKER_MIN_PORT + 99))}
@@ -522,7 +521,7 @@ main() {
   RAY_ADDRESS_VALUE="${local_ip}:${RAY_PORT}"
   export RAY_ADDRESS_VALUE
   echo "Starting isolated Ray head address=${RAY_ADDRESS_VALUE} temp=${RAY_TMPDIR} worker_ports=${RAY_WORKER_MIN_PORT}-${RAY_WORKER_MAX_PORT}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
-  bash -lc "${COMMON_ENV}; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --temp-dir='${RAY_TMPDIR}' --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK} --node-manager-port=${RAY_NODE_MANAGER_PORT} --object-manager-port=${RAY_OBJECT_MANAGER_PORT} --dashboard-port=${RAY_DASHBOARD_PORT} --ray-client-server-port=${RAY_CLIENT_SERVER_PORT} --metrics-export-port=${RAY_METRICS_EXPORT_PORT} --min-worker-port=${RAY_WORKER_MIN_PORT} --max-worker-port=${RAY_WORKER_MAX_PORT}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  bash -lc "${COMMON_ENV}; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --temp-dir='${RAY_TMPDIR}' --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK} --node-manager-port=${RAY_NODE_MANAGER_PORT} --object-manager-port=${RAY_OBJECT_MANAGER_PORT} --dashboard-port=${RAY_DASHBOARD_PORT} --metrics-export-port=${RAY_METRICS_EXPORT_PORT} --min-worker-port=${RAY_WORKER_MIN_PORT} --max-worker-port=${RAY_WORKER_MAX_PORT}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   sleep 20
   bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS_VALUE}'; python -c \"import ray; ray.init(address='${RAY_ADDRESS_VALUE}'); print(ray.available_resources())\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 
