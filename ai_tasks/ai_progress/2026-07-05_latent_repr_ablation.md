@@ -43,7 +43,8 @@
 - Phase 2 token-set 服务器轻量 smoke 已通过：server worktree commit `09b1b09`，`python -m pytest tests/representation_ablation -q -p no:cacheprovider` 通过 `15 passed, 3 warnings`；`py_compile` 通过；`import nimloth.representation_ablation.qwen_tokens` 与 `token_set` 通过且不要求 LeWM 初始化。该 smoke 验证的是 token-set 模块本身；后续 `21694a3` 只改 Plan B rollout 脚本。
 - Plan B retry 在 env ready 后 rollout array 仍于 Ray startup 前被 SIGTERM，未生成 records/training；子 agent 取消了 downstream jobs。已修复可疑点：移除 rollout array 中 user-wide `ray stop` / `pkill -f ray::`，改为 per-array-job `RAY_PORT` 和 `RAY_TMPDIR`，避免同节点并发 array tasks 互相杀 Ray。
 - Plan B retry7 失败诊断完成：env job `465783` 在 `dgx-56` ready，rollout array `465785` 已启动 Ray 并打印 resources，但仍无 shard JSONL；downstream conversion/SFT1/SFT2 未提交。根因是 rollout command 仍调用旧 VAGEN 布局（`vagen.main_ppo` + `vagen/configs/vagen_multiturn`），而当前 legacy-dev VAGEN 使用 `vagen.trainer.main_ppo` + `vagen/trainer/config/ppo_trainer.yaml`，并要求 parquet dataset row 的 `extra_info.env_name/env_config/seed`。
-- 已更新 Plan B rollout 脚本：为每个 shard 同时写 legacy YAML 与新 parquet；检测到 `vagen.trainer.main_ppo` 时使用新入口、`rollout_manager.use_service=True`、按 array task 选择一个 env server URL；旧入口保留 fallback。提交/Slurm 脚本现在支持通过 `REPO=/project/peilab/atst/nimloth/.worktree/exp-latent-repr-ablation` 使用服务器 worktree，避免硬编码主 worktree。尚未提交新的 Slurm retry。
+- 已更新 Plan B rollout 脚本：为每个 shard 同时写 legacy YAML 与新 parquet；检测到 `vagen.trainer.main_ppo` 时使用新入口、`rollout_manager.use_service=True`、按 array task 选择一个 env server URL；旧入口保留 fallback。提交/Slurm 脚本现在支持通过 `REPO=/project/peilab/atst/nimloth/.worktree/exp-latent-repr-ablation` 使用服务器 worktree，避免硬编码主 worktree。
+- Plan B retry8（Nimloth `aa09f1a`，VAGEN `93c1124`）已完成失败诊断：远程 worktree初始 clean、HEAD 正确、脚本 `bash -n` 通过；env job `465811` 在 `dgx-56`/`preempt` ports `19130-19133` ready，后已取消。rollout job `465813` 先因 retry8 长输出路径导致 Ray `AF_UNIX path length cannot exceed 107 bytes`；用 `/tmp/hs8` symlink wrapper 重交 `465818` 后确认真正进入 `vagen.trainer.main_ppo`，使用 parquet + `rollout_manager.use_service=True`，但在 `RayPPOTrainer._validate_config` 失败：缺少 `actor_rollout_ref.rollout.micro_batch_size` 或 `actor_rollout_ref.rollout.micro_batch_size_per_gpu`（配置中 rollout log-prob micro batch 字段为 `None`）。另见一个 array task 的 Ray worker grpc port `10003` 冲突。没有 env reset 证据，没有 `validation/*/shard_*/300.jsonl`，未做 conversion/SFT1/SFT2。远程 README 已更新：`/project/peilab/atst/nimloth/experiments/navigation_baseline/runs/sft1_rollouts_highsuccess_step300_greedy_parallel_retry8/README_retry8.md`。
 
 ## 文件修改
 
@@ -103,10 +104,11 @@
 - B 线 Plan B jobs：env/rollout failed，dependent conversion/SFT1/SFT2 cancelled；blocking 为 VAGEN module path/API mismatch，未产生 records/training。
 - 旧 step79 VAGEN provenance 只读溯源完成：artifact 无直接 provenance；reflog 重建结论见“已完成步骤”。
 - 新 VAGEN rollout command 验证：本地 `bash -n experiments/training/sft1/{submit_env_external_4gpu.sh,submit_rollouts_greedy.sh,env_external_4gpu.slurm,rollouts_greedy_parallel.slurm}` 通过；远程 `/project/peilab/atst/nimloth/.worktree/exp-latent-repr-ablation/external/VAGEN` 执行 `python -m vagen.trainer.main_ppo --cfg job ...`，确认新增 Hydra overrides（parquet files、`rollout_manager.base_url/use_service`、`trainer.val_only`、`max_response_per_turn` 等）可解析；远程用 `datasets.Dataset.from_list(...).to_parquet` 写入并用 pandas 读回 parquet smoke 通过。
+- Plan B retry8 服务器验证/诊断：`git status --short --branch` clean、HEAD=`aa09f1a`、`git submodule status external/VAGEN`=`93c1124...`；`bash -n experiments/training/sft1/{submit_env_external_4gpu.sh,env_external_4gpu.slurm,submit_rollouts_greedy.sh,rollouts_greedy_parallel.slurm}` 通过。Slurm env `465811` ready；rollout `465813` failed at Ray socket path length; wrapper rollout `465818` reached `vagen.trainer.main_ppo` then failed config validation (`actor_rollout_ref.rollout` missing micro batch override). `find .../validation -name '*.jsonl'` returned no shard JSONL.
 
 ## 待确认问题
 
 - A 线下一步：是否运行 full low-success step1000 diagnostic eval（使用非 smoke config、完整 val split），或先根据 smoke 结果调整指标/输出格式。
-- B 线下一步：按人类确认，若需要走 VAGEN legacy 路线，优先使用 `origin/nimloth/vagen-legacy-dev`（`93c1124...`）作为工作假设；仍需处理当前脚本/API mismatch。若修改 submodule，需要按用户要求在 submodule 创建 `nimloth/exp/...` 分支。
+- B 线下一步：若继续 Plan B，需要先修 Nimloth rollout 脚本（不要改 submodule）：为新 `vagen.trainer.main_ppo` 路线补 `actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu` 或等价 micro batch override，并解决 Ray temp path过长与同节点并发 worker port 冲突；之后用新输出目录重试。若后续发现必须修改 submodule，必须先停止并请求人类确认。
 - B 线 SFT2 初始化 checkpoint策略仍需确认：继续为可比性强制使用 SFT1 `epoch_002/hf_merged`，还是改为 SFT1 `best/hf_merged`。
 - 若后续需要启动超过 3 分钟的训练/评估，会按实验规则再次向人类确认。
