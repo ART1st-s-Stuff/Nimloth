@@ -39,6 +39,7 @@
 - 人类指出 step79 记忆中应基于 `vagen_legacy`。复查服务器 VAGEN remote：`origin/nimloth/vagen-legacy` HEAD 为 `acc0e7550f73da71b66c80f0762fbfcff3905213`（2026-06-21, `Add wm alias for legacy navigation format`, `verl=869ff12...`）；`origin/vagen-legacy` HEAD 为 `787c7e2d36822ad2348255c2e838159327eb320c`；`origin/nimloth/vagen-legacy-dev` HEAD 为 `93c1124aeaa7850098f46f2b708ee224ba894861`。`629c270...` 被 `main`/`nimloth/main` 包含且 tree 中有旧 `vagen/envs/navigation/serve.py`。因此前述 reflog 推断只可作为 medium-confidence 线索，不能作为已确认 provenance。
 - 人类确认其判断 step79 大概率来自 `origin/nimloth/vagen-legacy-dev`；后续 Plan B 如果需要选择 VAGEN legacy 路线，直接使用 `origin/nimloth/vagen-legacy-dev` / commit `93c1124aeaa7850098f46f2b708ee224ba894861` 作为工作假设。
 - 已修复 Plan B 脚本对 `nimloth/vagen-legacy-dev` API 的兼容性：`env_external_4gpu.slurm` 现在检测旧 `vagen.envs.navigation.serve`，若不存在则使用统一 Hydra server `python -m vagen.server.server server.port=... navigation.devices='[0]' navigation.max_workers=48`；`convert_rollouts.py` 兼容从 `vagen.env.navigation.nimloth_format` 导入 Nimloth action format。
+- 已开始 Phase 2 基础实现（尚未接入正式训练/eval 主路径）：新增多 latent marker 展开与 latent token-set extraction helper；新增 token-set WM predictor 和 token-set value head，支持 `(B, K, D)` 输入/输出、rollout、checkpoint save/load，并配套单元测试。
 
 ## 文件修改
 
@@ -48,6 +49,8 @@
 - `src/nimloth/representation_ablation/modules.py`
 - `src/nimloth/representation_ablation/metrics.py`
 - `src/nimloth/representation_ablation/eval.py`
+- `src/nimloth/representation_ablation/qwen_tokens.py`
+- `src/nimloth/representation_ablation/token_set.py`
 - `src/nimloth/eval/representation_ablation.py`
 - `configs/eval/representation_ablation/a_qwen_latent_value_predictor.yaml`
 - `configs/eval/representation_ablation/a_qwen_latent_reconstruction.yaml`
@@ -55,6 +58,7 @@
 - `configs/eval/representation_ablation/diagnostic_low_success_sft2_step1000_value_predictor_smoke.yaml`
 - `tests/representation_ablation/test_config.py`
 - `tests/representation_ablation/test_metrics.py`
+- `tests/representation_ablation/test_token_set.py`
 - `experiments/training/sft1/rollouts_greedy_parallel.slurm`
 - `experiments/training/sft1/env_external_4gpu.slurm`
 - `experiments/training/sft1/convert_rollouts.py`
@@ -85,6 +89,8 @@
 - `bash -n experiments/training/sft1/rollouts_greedy_parallel.slurm`：通过。
 - 修复 Plan B VAGEN API 兼容后运行 `bash -n experiments/training/sft1/env_external_4gpu.slurm experiments/training/sft1/convert_rollouts.py experiments/training/sft1/rollouts_greedy_parallel.slurm`：通过。
 - 修复 Plan B VAGEN API 兼容后运行 `../nimloth-dev/.venv/bin/python -m py_compile experiments/training/sft1/convert_rollouts.py`：通过。
+- Phase 2 token-set 基础模块实现后运行 `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/representation_ablation/token_set.py src/nimloth/representation_ablation/qwen_tokens.py tests/representation_ablation/test_token_set.py`：通过。
+- Phase 2 token-set 基础模块实现后运行 `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q`：通过，5 passed。完整 token-set tests 需服务器 torch 环境验证。
 - A 线服务器诊断 eval smoke：job `465669` completed，exit 0；关键 summary 见“已完成步骤”。
 - B 线 Plan B jobs：env/rollout failed，dependent conversion/SFT1/SFT2 cancelled；blocking 为 VAGEN module path/API mismatch，未产生 records/training。
 - 旧 step79 VAGEN provenance 只读溯源完成：artifact 无直接 provenance；reflog 重建结论见“已完成步骤”。
