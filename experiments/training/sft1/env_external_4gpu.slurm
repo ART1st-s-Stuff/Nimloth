@@ -14,8 +14,8 @@
 
 set -euo pipefail
 
-ROOT=/project/peilab/atst/nimloth
-SCRIPTDIR=${ROOT}/experiments/training/sft1
+ROOT=${REPO:-${ROOT:-/project/peilab/atst/nimloth}}
+SCRIPTDIR=${SCRIPTDIR:-${ROOT}/experiments/training/sft1}
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
 BASEDIR=${ROOT}/external/VAGEN

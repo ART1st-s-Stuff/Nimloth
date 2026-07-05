@@ -15,9 +15,9 @@
 
 set -euo pipefail
 
-ROOT=/project/peilab/atst/nimloth
+ROOT=${REPO:-${ROOT:-/project/peilab/atst/nimloth}}
 SL=/cm/shared/apps/slurm/current/bin
-SCRIPTDIR=${ROOT}/experiments/training/sft1
+SCRIPTDIR=${SCRIPTDIR:-${ROOT}/experiments/training/sft1}
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
 BASEDIR=${ROOT}/external/VAGEN
@@ -42,7 +42,7 @@ VAL_N=1
 
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${RUN_DIR}/validation" "${RUN_DIR}/checkpoints_rollout"
 
-COMMON_ENV='export UV_CACHE_DIR=/project/peilab/atst/nimloth/.cache/uv; export HOME=/project/peilab/atst/nimloth/.home; export FLASHINFER_WORKSPACE_DIR=/project/peilab/atst/nimloth/.cache/flashinfer; export TRITON_CACHE_DIR=/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname); export XDG_CACHE_HOME=/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname); export TORCH_EXTENSIONS_DIR=/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname); mkdir -p "$HOME" "$FLASHINFER_WORKSPACE_DIR" "$TORCH_EXTENSIONS_DIR" "$TRITON_CACHE_DIR" "$XDG_CACHE_HOME"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; export PATH=/project/peilab/atst/nimloth/.venv/bin:/project/peilab/atst/nimloth/.local/bin:$PATH; export HF_HOME=/project/peilab/atst/.cache/huggingface; export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface; export TORCH_HOME=/project/peilab/atst/flower/.cache/torch; export PYTHONPATH=/project/peilab/atst/nimloth/external/VAGEN:/project/peilab/atst/nimloth/external/VAGEN/verl:${PYTHONPATH:-}; source /project/peilab/atst/nimloth/.venv/bin/activate; if [ -f /project/peilab/atst/flower/.env ]; then set -a; source /project/peilab/atst/flower/.env; set +a; elif [ -f /project/peilab/atst/.env ]; then set -a; source /project/peilab/atst/.env; set +a; fi; cd /project/peilab/atst/nimloth/external/VAGEN; export TOKENIZERS_PARALLELISM=true; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1; export NCCL_DEBUG=WARN; export NCCL_IB_DISABLE=1'
+COMMON_ENV="export UV_CACHE_DIR=${ROOT}/.cache/uv; export HOME=${ROOT}/.home; export FLASHINFER_WORKSPACE_DIR=${ROOT}/.cache/flashinfer; export TRITON_CACHE_DIR=/tmp/triton_cache_\${SLURM_JOB_ID}_\$(hostname); export XDG_CACHE_HOME=/tmp/xdg_cache_\${SLURM_JOB_ID}_\$(hostname); export TORCH_EXTENSIONS_DIR=/tmp/torch_ext_\${SLURM_JOB_ID}_\$(hostname); mkdir -p \"\$HOME\" \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; export PATH=${ROOT}/.venv/bin:${ROOT}/.local/bin:\$PATH; export HF_HOME=/project/peilab/atst/.cache/huggingface; export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface; export TORCH_HOME=/project/peilab/atst/flower/.cache/torch; export PYTHONPATH=${ROOT}/external/VAGEN:${ROOT}/external/VAGEN/verl:\${PYTHONPATH:-}; source ${ROOT}/.venv/bin/activate; if [ -f /project/peilab/atst/flower/.env ]; then set -a; source /project/peilab/atst/flower/.env; set +a; elif [ -f /project/peilab/atst/.env ]; then set -a; source /project/peilab/atst/.env; set +a; fi; cd ${ROOT}/external/VAGEN; export TOKENIZERS_PARALLELISM=true; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1; export NCCL_DEBUG=WARN; export NCCL_IB_DISABLE=1"
 
 cleanup() {
   # Slurm cgroups clean up this task's child processes. Avoid user-wide Ray
@@ -229,6 +229,71 @@ envs: []
 YAML
 }
 
+write_split_parquet() {
+  local split_name=$1
+  local out_parquet=$2
+  local seed_start=$3
+  local seed_end=$4
+  PYTHONUNBUFFERED=1 python - "$split_name" "$out_parquet" "$seed_start" "$seed_end" <<'PY'
+import sys
+from pathlib import Path
+
+from datasets import Dataset
+
+split_name, out_parquet, seed_start, seed_end = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+
+def specs(split):
+    if split == "train":
+        return [
+            ("navigation_base_train", "base_train"),
+            ("navigation_common_train", "common_sense_train"),
+            ("navigation_long_horizon_train", "long_horizon_train"),
+        ]
+    if split == "val":
+        return [
+            ("navigation_base_val_from_train", "base_train"),
+            ("navigation_common_val_from_train", "common_sense_train"),
+            ("navigation_long_horizon_val_from_train", "long_horizon_train"),
+        ]
+    if split == "test":
+        return [
+            ("navigation_base_test", "base"),
+            ("navigation_common_test", "common_sense"),
+            ("navigation_complex_instruction_test", "complex_instruction"),
+            ("navigation_visual_appearance_test", "visual_appearance"),
+            ("navigation_long_horizon_test", "long_horizon"),
+        ]
+    raise ValueError(f"unknown split {split}")
+
+rows = []
+idx = 0
+for data_source, eval_set in specs(split_name):
+    for seed in range(seed_start, seed_end + 1):
+        env_config = {
+            "eval_set": eval_set,
+            "prompt_format": "eval_mode",
+            "max_actions_per_step": 1,
+            "render_mode": "vision",
+        }
+        rows.append({
+            "data_source": data_source,
+            "prompt": [{"role": "user", "content": ""}],
+            "extra_info": {
+                "index": idx,
+                "split": split_name,
+                "data_source": data_source,
+                "env_name": "navigation",
+                "env_config": env_config,
+                "seed": seed,
+            },
+        })
+        idx += 1
+out_parquet.parent.mkdir(parents=True, exist_ok=True)
+Dataset.from_list(rows).to_parquet(str(out_parquet))
+print({"parquet": str(out_parquet), "rows": len(rows)})
+PY
+}
+
 run_shard() {
   local split_name=$1
   local shard_name=$2
@@ -243,9 +308,88 @@ run_shard() {
   fi
   local val_yaml="${CONTROL_DIR}/${split_name}_${shard_name}.yaml"
   local dummy_train="${CONTROL_DIR}/${split_name}_${shard_name}_dummy.yaml"
+  local val_parquet="${CONTROL_DIR}/${split_name}_${shard_name}.parquet"
   write_split_yaml "${split_name}" "${val_yaml}" "${seed_start}" "${seed_end}"
   write_dummy_train_yaml "${dummy_train}"
+  write_split_parquet "${split_name}" "${val_parquet}" "${seed_start}" "${seed_end}"
   echo "=== array=${SLURM_ARRAY_TASK_ID} split=${split_name} shard=${shard_name} seeds=${seed_start}-${seed_end} greedy n=${VAL_N} ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  if python - <<'PY' >/dev/null 2>&1
+import importlib.util
+raise SystemExit(0 if importlib.util.find_spec("vagen.trainer.main_ppo") else 1)
+PY
+  then
+    local env_url_count
+    env_url_count=$(grep -cve '^$' "${ENV_URL_FILE}")
+    local env_url_index=$((SLURM_ARRAY_TASK_ID % env_url_count + 1))
+    local active_env_url
+    active_env_url=$(sed -n "${env_url_index}p" "${ENV_URL_FILE}")
+    echo "Using VAGEN trainer main_ppo with service URL ${active_env_url}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+    bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
+      data.train_files='${val_parquet}' \
+      data.val_files='${val_parquet}' \
+      data.train_batch_size=${VAL_BATCH_SIZE} \
+      data.val_batch_size=${VAL_BATCH_SIZE} \
+      data.max_prompt_length=3000 \
+      data.max_response_length=20000 \
+      data.max_trajectory_length=24000 \
+      data.shuffle=False \
+      algorithm.adv_estimator=reinforce_plus_plus \
+      actor_rollout_ref.model.path='${MODEL_PATH}' \
+      actor_rollout_ref.model.use_remove_padding=False \
+      actor_rollout_ref.actor.optim.lr=1e-6 \
+      actor_rollout_ref.actor.ppo_mini_batch_size=24 \
+      actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+      actor_rollout_ref.actor.ppo_max_token_len_per_gpu=24576 \
+      actor_rollout_ref.actor.use_kl_loss=False \
+      actor_rollout_ref.actor.kl_loss_coef=0.0 \
+      actor_rollout_ref.actor.entropy_coeff=0.0 \
+      actor_rollout_ref.actor.fsdp_config.param_offload=True \
+      actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
+      actor_rollout_ref.rollout.name=vllm \
+      actor_rollout_ref.rollout.n=1 \
+      +actor_rollout_ref.rollout.val_kwargs.n=${VAL_N} \
+      +actor_rollout_ref.rollout.val_kwargs.do_sample=False \
+      +actor_rollout_ref.rollout.val_kwargs.temperature=0 \
+      actor_rollout_ref.rollout.do_sample=False \
+      actor_rollout_ref.rollout.temperature=0 \
+      actor_rollout_ref.rollout.max_response_per_turn=512 \
+      actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+      actor_rollout_ref.rollout.max_model_len=24000 \
+      actor_rollout_ref.rollout.max_num_batched_tokens=24000 \
+      actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+      actor_rollout_ref.rollout.enforce_eager=True \
+      actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+      actor_rollout_ref.ref.fsdp_config.param_offload=True \
+      rollout_manager.use_service=True \
+      rollout_manager.base_url='${active_env_url}' \
+      rollout_manager.timeout=1200 \
+      rollout_manager.max_workers=${AGENT_NUM_WORKERS} \
+      rollout_manager.max_turns=20 \
+      rollout_manager.window_size=20 \
+      rollout_manager.n_trajectory=1 \
+      critic.optim.lr=1e-5 \
+      critic.model.path='${MODEL_PATH}' \
+      critic.model.use_remove_padding=False \
+      critic.model.fsdp_config.param_offload=True \
+      critic.model.fsdp_config.optimizer_offload=True \
+      critic.ppo_micro_batch_size_per_gpu=1 \
+      critic.ppo_max_token_len_per_gpu=24576 \
+      trainer.val_only=True \
+      trainer.val_before_train=True \
+      trainer.validation_data_dir='${split_dir}' \
+      trainer.total_training_steps=1 \
+      trainer.total_epochs=1 \
+      trainer.logger=['console'] \
+      trainer.project_name=nimloth_navigation \
+      trainer.experiment_name=${EXPERIMENT_NAME}_a${SLURM_ARRAY_TASK_ID}_${split_name}_${shard_name} \
+      trainer.default_local_dir='${RUN_DIR}/checkpoints_rollout' \
+      trainer.resume_mode=disable \
+      trainer.n_gpus_per_node=${TRAIN_GPUS_PER_NODE} \
+      trainer.nnodes=1 \
+      trainer.save_freq=-1 \
+      trainer.test_freq=0" 2>&1 | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+    return ${PIPESTATUS[0]}
+  fi
   bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; PYTHONUNBUFFERED=1 python -m vagen.main_ppo \
       --config-path='${BASEDIR}/vagen/configs' \
       --config-name='vagen_multiturn' \

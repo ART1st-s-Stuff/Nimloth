@@ -42,6 +42,8 @@
 - 已开始 Phase 2 基础实现（尚未接入正式训练/eval 主路径）：新增多 latent marker 展开与 latent token-set extraction helper；新增 token-set WM predictor 和 token-set value head，支持 `(B, K, D)` 输入/输出、rollout、checkpoint save/load，并配套单元测试。
 - Phase 2 token-set 服务器轻量 smoke 已通过：server worktree commit `09b1b09`，`python -m pytest tests/representation_ablation -q -p no:cacheprovider` 通过 `15 passed, 3 warnings`；`py_compile` 通过；`import nimloth.representation_ablation.qwen_tokens` 与 `token_set` 通过且不要求 LeWM 初始化。该 smoke 验证的是 token-set 模块本身；后续 `21694a3` 只改 Plan B rollout 脚本。
 - Plan B retry 在 env ready 后 rollout array 仍于 Ray startup 前被 SIGTERM，未生成 records/training；子 agent 取消了 downstream jobs。已修复可疑点：移除 rollout array 中 user-wide `ray stop` / `pkill -f ray::`，改为 per-array-job `RAY_PORT` 和 `RAY_TMPDIR`，避免同节点并发 array tasks 互相杀 Ray。
+- Plan B retry7 失败诊断完成：env job `465783` 在 `dgx-56` ready，rollout array `465785` 已启动 Ray 并打印 resources，但仍无 shard JSONL；downstream conversion/SFT1/SFT2 未提交。根因是 rollout command 仍调用旧 VAGEN 布局（`vagen.main_ppo` + `vagen/configs/vagen_multiturn`），而当前 legacy-dev VAGEN 使用 `vagen.trainer.main_ppo` + `vagen/trainer/config/ppo_trainer.yaml`，并要求 parquet dataset row 的 `extra_info.env_name/env_config/seed`。
+- 已更新 Plan B rollout 脚本：为每个 shard 同时写 legacy YAML 与新 parquet；检测到 `vagen.trainer.main_ppo` 时使用新入口、`rollout_manager.use_service=True`、按 array task 选择一个 env server URL；旧入口保留 fallback。提交/Slurm 脚本现在支持通过 `REPO=/project/peilab/atst/nimloth/.worktree/exp-latent-repr-ablation` 使用服务器 worktree，避免硬编码主 worktree。尚未提交新的 Slurm retry。
 
 ## 文件修改
 
@@ -63,6 +65,8 @@
 - `tests/representation_ablation/test_token_set.py`
 - `experiments/training/sft1/rollouts_greedy_parallel.slurm`
 - `experiments/training/sft1/env_external_4gpu.slurm`
+- `experiments/training/sft1/submit_env_external_4gpu.sh`
+- `experiments/training/sft1/submit_rollouts_greedy.sh`
 - `experiments/training/sft1/convert_rollouts.py`
 - 本进度文件。
 
@@ -98,6 +102,7 @@
 - A 线服务器诊断 eval smoke：job `465669` completed，exit 0；关键 summary 见“已完成步骤”。
 - B 线 Plan B jobs：env/rollout failed，dependent conversion/SFT1/SFT2 cancelled；blocking 为 VAGEN module path/API mismatch，未产生 records/training。
 - 旧 step79 VAGEN provenance 只读溯源完成：artifact 无直接 provenance；reflog 重建结论见“已完成步骤”。
+- 新 VAGEN rollout command 验证：本地 `bash -n experiments/training/sft1/{submit_env_external_4gpu.sh,submit_rollouts_greedy.sh,env_external_4gpu.slurm,rollouts_greedy_parallel.slurm}` 通过；远程 `/project/peilab/atst/nimloth/.worktree/exp-latent-repr-ablation/external/VAGEN` 执行 `python -m vagen.trainer.main_ppo --cfg job ...`，确认新增 Hydra overrides（parquet files、`rollout_manager.base_url/use_service`、`trainer.val_only`、`max_response_per_turn` 等）可解析；远程用 `datasets.Dataset.from_list(...).to_parquet` 写入并用 pandas 读回 parquet smoke 通过。
 
 ## 待确认问题
 
