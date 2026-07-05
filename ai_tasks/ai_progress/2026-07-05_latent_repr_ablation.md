@@ -18,6 +18,7 @@
 - 已实现 Phase 1 single `qwen_latent` baseline 的配置驱动离线评估基础设施：严格 YAML schema、Phase-1 validator、module loader、value/predictor metrics、config-driven eval CLI。
 - 已修正 eval 汇总逻辑：value/ranking/calibration 和 one-step predictor 指标按全体 encoded transitions 汇总，避免 batch size=1 时 calibration/AUC 失真。
 - 已新增 `init.sft2_checkpoint` 便利配置；设置标准 SFT2 checkpoint dir 后可自动推导 qwen/state_proj/wm_predictor/value_head 路径。
+- 根据 code-review 子 agent 的 blocking finding，已修复 value head checkpoint 缺失时可能静默使用随机初始化权重的问题：Phase-1 validator 和 loader 现在要求 `value_head_checkpoint/value_head.pt` 真实存在，否则报错。
 - 已新增 baseline A 的两个 eval config 模板：value/predictor 与 reconstruction strips。
 
 ## 文件修改
@@ -45,6 +46,8 @@
 - 修正 eval 汇总后再次运行 `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q`：通过，3 passed。
 - 新增 `init.sft2_checkpoint` 后运行 `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q`：通过，4 passed。
 - 新增 `init.sft2_checkpoint` 后两个 eval YAML 模板仍可解析。
+- 修复 value head checkpoint 缺失风险后运行 `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation/test_config.py -q`：通过，5 passed。
+- 修复 value head checkpoint 缺失风险后运行 `../nimloth-dev/.venv/bin/python -m py_compile src/nimloth/representation_ablation/config.py src/nimloth/representation_ablation/modules.py tests/representation_ablation/test_config.py`：通过。
 - `PYTHONPATH=src ../nimloth-dev/.venv/bin/python -m pytest tests/representation_ablation -q`：本地失败在 torch import，原因是当前本地环境缺少 `libstdc++.so.6`，不是测试断言失败；需要服务器/可用 torch 环境 smoke。
 
 ## 待确认问题

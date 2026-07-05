@@ -243,6 +243,10 @@ def default_output_dir(cfg: AblationConfig) -> Path:
     return Path("outputs") / "experiments" / cfg.experiment.group / cfg.experiment.name
 
 
+def _value_metrics_requested(cfg: AblationConfig) -> bool:
+    return any(name in cfg.eval.metrics for name in ("value_topk", "value_ranking", "value_calibration"))
+
+
 def validate_phase1_config(cfg: AblationConfig) -> None:
     """Validate implemented Phase-1 single-latent config.
 
@@ -274,10 +278,19 @@ def validate_phase1_config(cfg: AblationConfig) -> None:
         "wm_predictor_checkpoint": cfg.init.wm_predictor_checkpoint,
         "val_jsonl": cfg.data.val_jsonl,
     }
-    if "value_topk" in cfg.eval.metrics or "value_ranking" in cfg.eval.metrics or "value_calibration" in cfg.eval.metrics:
+    if _value_metrics_requested(cfg):
         required["value_head_checkpoint"] = cfg.init.value_head_checkpoint
     if cfg.reconstruction.enabled or "reconstruction_strips" in cfg.eval.metrics:
         required["decoder_checkpoint"] = cfg.init.decoder_checkpoint
     missing = [name for name, value in required.items() if value is None]
     if missing:
         raise ValueError(f"missing required config paths for Phase-1 eval: {missing}")
+
+    if _value_metrics_requested(cfg):
+        assert cfg.init.value_head_checkpoint is not None
+        value_state = cfg.init.value_head_checkpoint / "value_head.pt"
+        if not value_state.is_file():
+            raise FileNotFoundError(
+                "value metrics require a real ValueHead checkpoint; "
+                f"missing {value_state}. Refusing to evaluate random-initialized value head."
+            )

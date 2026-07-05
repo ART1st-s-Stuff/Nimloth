@@ -64,6 +64,12 @@ def load_state_projector(cfg: AblationConfig, *, qwen_hidden_size: int, emb_dim:
 def load_value_head(cfg: AblationConfig, *, emb_dim: int, device: torch.device) -> ValueHead | None:
     if cfg.init.value_head_checkpoint is None:
         return None
+    value_state = cfg.init.value_head_checkpoint / "value_head.pt"
+    if not value_state.is_file():
+        raise FileNotFoundError(
+            "value_head_checkpoint must contain value_head.pt; "
+            f"missing {value_state}. Refusing to use random-initialized ValueHead."
+        )
     value_head = ValueHead.load_checkpoint(
         cfg.init.value_head_checkpoint,
         emb_dim=emb_dim,
