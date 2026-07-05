@@ -33,7 +33,17 @@ TRAIN_GPUS_PER_NODE=2
 # Use a per-array-job port/temp dir. Do not use global `ray stop`/`pkill`:
 # concurrent array tasks can share a node, and user-wide Ray cleanup kills siblings.
 RAY_PORT=${RAY_PORT:-$((20000 + (SLURM_ARRAY_JOB_ID % 20000) + SLURM_ARRAY_TASK_ID))}
-RAY_TMPDIR=${CONTROL_DIR}/ray_tmp
+# Keep Ray sockets under a short path. Long run/control paths can exceed the
+# AF_UNIX socket path limit before VAGEN starts.
+RAY_TMPDIR=${RAY_TMPDIR:-/tmp/ray_sft1_${USER}_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}}
+# Isolate per-array Ray ports. Concurrent array tasks may share a node.
+RAY_NODE_MANAGER_PORT=${RAY_NODE_MANAGER_PORT:-$((RAY_PORT + 100))}
+RAY_OBJECT_MANAGER_PORT=${RAY_OBJECT_MANAGER_PORT:-$((RAY_PORT + 200))}
+RAY_DASHBOARD_PORT=${RAY_DASHBOARD_PORT:-$((RAY_PORT + 300))}
+RAY_CLIENT_SERVER_PORT=${RAY_CLIENT_SERVER_PORT:-$((RAY_PORT + 400))}
+RAY_METRICS_EXPORT_PORT=${RAY_METRICS_EXPORT_PORT:-$((RAY_PORT + 500))}
+RAY_WORKER_MIN_PORT=${RAY_WORKER_MIN_PORT:-$((30000 + (SLURM_ARRAY_JOB_ID % 20) * 1000 + SLURM_ARRAY_TASK_ID * 100))}
+RAY_WORKER_MAX_PORT=${RAY_WORKER_MAX_PORT:-$((RAY_WORKER_MIN_PORT + 99))}
 RAY_CMD=${ROOT}/.venv/bin/ray
 VAL_BATCH_SIZE=24
 AGENT_NUM_WORKERS=12
@@ -324,7 +334,7 @@ PY
     local active_env_url
     active_env_url=$(sed -n "${env_url_index}p" "${ENV_URL_FILE}")
     echo "Using VAGEN trainer main_ppo with service URL ${active_env_url}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
-    bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
+    bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS_VALUE:-auto}'; PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
       data.train_files='${val_parquet}' \
       data.val_files='${val_parquet}' \
       data.train_batch_size=${VAL_BATCH_SIZE} \
@@ -358,6 +368,7 @@ PY
       actor_rollout_ref.rollout.max_num_batched_tokens=24000 \
       actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
       actor_rollout_ref.rollout.enforce_eager=True \
+      actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
       actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
       actor_rollout_ref.ref.fsdp_config.param_offload=True \
       rollout_manager.use_service=True \
@@ -390,7 +401,7 @@ PY
       trainer.test_freq=0" 2>&1 | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
     return ${PIPESTATUS[0]}
   fi
-  bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; PYTHONUNBUFFERED=1 python -m vagen.main_ppo \
+  bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS_VALUE:-auto}'; PYTHONUNBUFFERED=1 python -m vagen.main_ppo \
       --config-path='${BASEDIR}/vagen/configs' \
       --config-name='vagen_multiturn' \
       data.train_files='${val_yaml}' \
@@ -508,10 +519,12 @@ main() {
   local_ip=$(hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
   if [ -z "$local_ip" ]; then local_ip=$(hostname -I | awk '{print $1}'); fi
   mkdir -p "${RAY_TMPDIR}"
-  echo "Starting isolated Ray head port=${RAY_PORT} temp=${RAY_TMPDIR}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
-  bash -lc "${COMMON_ENV}; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --temp-dir='${RAY_TMPDIR}' --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  RAY_ADDRESS_VALUE="${local_ip}:${RAY_PORT}"
+  export RAY_ADDRESS_VALUE
+  echo "Starting isolated Ray head address=${RAY_ADDRESS_VALUE} temp=${RAY_TMPDIR} worker_ports=${RAY_WORKER_MIN_PORT}-${RAY_WORKER_MAX_PORT}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  bash -lc "${COMMON_ENV}; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --temp-dir='${RAY_TMPDIR}' --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK} --node-manager-port=${RAY_NODE_MANAGER_PORT} --object-manager-port=${RAY_OBJECT_MANAGER_PORT} --dashboard-port=${RAY_DASHBOARD_PORT} --ray-client-server-port=${RAY_CLIENT_SERVER_PORT} --metrics-export-port=${RAY_METRICS_EXPORT_PORT} --min-worker-port=${RAY_WORKER_MIN_PORT} --max-worker-port=${RAY_WORKER_MAX_PORT}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   sleep 20
-  bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; python -c \"import ray; ray.init(); print(ray.available_resources())\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS_VALUE}'; python -c \"import ray; ray.init(address='${RAY_ADDRESS_VALUE}'); print(ray.available_resources())\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 
   case "${SLURM_ARRAY_TASK_ID}" in
     0)
