@@ -10,10 +10,11 @@
 - 已提交计划：`76b0625 docs: plan latent representation ablation`、`2e20222 docs: phase representation ablation plan`。
 - 已新增实时进度文件：`ai_tasks/ai_progress/2026-07-05_latent_repr_ablation.md`。
 - 当前已实现 Phase 1 single `qwen_latent` baseline 的配置驱动离线评估基础设施（待服务器 torch smoke）：
-  - `src/nimloth/representation_ablation/`：严格 YAML schema、Phase-1 validator、module loader、value/predictor metrics、config-driven eval CLI。
+  - `src/nimloth/representation_ablation/`：严格 YAML schema、Phase-1 validator、module loader、value/predictor metrics、config-driven eval CLI；value/ranking/calibration 与 one-step predictor 指标按全体 encoded transitions 汇总。
   - `src/nimloth/eval/representation_ablation.py`：兼容入口 `python -m nimloth.eval.representation_ablation --config <yaml>`。
-  - `configs/eval/representation_ablation/`：baseline A 的 value/predictor 与 reconstruction eval config 模板。
+  - `configs/eval/representation_ablation/`：baseline A 的 value/predictor 与 reconstruction eval config 模板；支持 `init.sft2_checkpoint` 自动推导标准 SFT2 checkpoint 下的 qwen/state_proj/wm_predictor/value_head 路径。
   - `tests/representation_ablation/`：config 与 metrics 单元测试。
+- 最新代码已 push 到 `origin/exp/latent-repr-ablation`，当前本地 HEAD `6cc11e5 feat: derive ablation paths from sft2 checkpoint`。
 - 本地验证：config tests 通过；新增 YAML 模板可解析；`py_compile` 通过。完整 tests 本地因当前环境缺少 `libstdc++.so.6` 导致 torch import 失败，需要服务器/可用 torch 环境 smoke。
 - 未修改 submodule 代码；如后续需要改 submodule，必须给对应 submodule 创建 `nimloth/exp/...` 分支。
 
