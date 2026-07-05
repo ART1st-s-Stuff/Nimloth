@@ -36,6 +36,7 @@
 - B 线 Plan B 未能健康启动，已取消后续依赖任务且无 active jobs：Attempt 1 env job `465666` 在 `dgx-24` 失败（AI2-THOR smoke 仅 1/4 GPU 通过）；Attempt 2 env job `465677` 在 `dgx-56` AI2-THOR smoke 4/4 通过但 env server 失败：`No module named vagen.envs.navigation.serve`。rollout arrays `465667` / `465678` 失败，conversion/SFT1/SFT2 dependent jobs `465670-465672`、`465682-465684` 取消。
 - B 线 blocking：当前服务器 `/project/peilab/atst/nimloth/external/VAGEN` commit `93c1124...` 有 `vagen.server.server`、`vagen.env.navigation.*`，但没有旧脚本需要的 `vagen.envs.navigation.serve` 和 `vagen.envs.navigation.utils.nimloth_format`。继续 Plan B 需要修改脚本/imports 或选用兼容 VAGEN checkout；本轮没有修改 repo code 或 submodule code。
 - 子 agent 已只读溯源旧 step79 VAGEN 来源。直接 artifact 未记录训练时 branch/commit/dirty status；基于远程 Git reflog 重建，最可能来源为 Nimloth `main` commit `2f683f5de25c5eaf0b804f1fbadc507697c336a6`，`external/VAGEN` branch `main` commit `629c270cf069680c70282f615e7f1b83a45684ab`，嵌套 `verl` commit `6360bfe706a00b4ece9105285776b5727ee449b7`。confidence=medium；不能排除当时有未提交改动。W&B retro commit `3342f0cc...` 是事后上传脚本，不是训练 provenance。
+- 人类指出 step79 记忆中应基于 `vagen_legacy`。复查服务器 VAGEN remote：`origin/nimloth/vagen-legacy` HEAD 为 `acc0e7550f73da71b66c80f0762fbfcff3905213`（2026-06-21, `Add wm alias for legacy navigation format`, `verl=869ff12...`）；`origin/vagen-legacy` HEAD 为 `787c7e2d36822ad2348255c2e838159327eb320c`；`origin/nimloth/vagen-legacy-dev` HEAD 为 `93c1124aeaa7850098f46f2b708ee224ba894861`。`629c270...` 被 `main`/`nimloth/main` 包含且 tree 中有旧 `vagen/envs/navigation/serve.py`。因此前述 reflog 推断只可作为 medium-confidence 线索，不能作为已确认 provenance。
 
 ## 文件修改
 
