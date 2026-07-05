@@ -8,7 +8,7 @@ import json
 import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from PIL import Image
@@ -34,9 +34,9 @@ from nimloth.representation_ablation.modules import (
     module_metadata,
 )
 from nimloth.training.common.qwen_batch import build_qwen_batch
-from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
-from nimloth.training.sft2.qwen_latent import extract_qwen_latents
-from nimloth.wm.reconstruction import WMImageDecoder
+
+if TYPE_CHECKING:
+    from nimloth.wm.reconstruction import WMImageDecoder
 
 
 def _json_default(obj: Any) -> Any:
@@ -65,7 +65,7 @@ def _save_image(tensor: torch.Tensor, path: Path) -> None:
 
 def _save_reconstruction_strip(
     *,
-    decoder: WMImageDecoder,
+    decoder: "WMImageDecoder",
     item: dict[str, Any],
     s_cur: torch.Tensor,
     s_next: torch.Tensor,
@@ -108,6 +108,9 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
     )
     value_head = load_value_head(cfg, emb_dim=predictor.emb_dim, device=device)
     decoder = load_decoder(cfg, device=device)
+
+    from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
+    from nimloth.training.sft2.qwen_latent import extract_qwen_latents
 
     if cfg.data.val_jsonl is None:
         raise ValueError("data.val_jsonl is required")

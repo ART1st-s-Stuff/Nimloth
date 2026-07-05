@@ -16,7 +16,8 @@
   - `tests/representation_ablation/`：config 与 metrics 单元测试。
 - code-review 子 agent 发现 blocking 风险：若 `value_head/value_head.pt` 缺失，旧 `ValueHead.load_checkpoint()` 会返回随机初始化 head。已在 representation ablation validator/loader 中修复：value metrics 需要真实 `value_head_checkpoint/value_head.pt`，否则报错，避免随机 head 产出看似真实指标。
 - server-smoke 子 agent 在服务器 `4058702` 上发现两点问题：`test_metrics.py` 对 float32 做精确相等导致 1 个测试失败；`import nimloth.representation_ablation.eval` 在未初始化 `external/le-wm` 的 worktree 中失败。已修复：测试改用 `pytest.approx`；heavy WM 模块导入改为 loader 函数内 lazy import。
-- 最新代码已 push 到 `origin/exp/latent-repr-ablation`，当前本地 HEAD `01f16d1 fix: unblock ablation smoke imports`。
+- 第二次 server smoke 在 `85a1c80` 上确认 unit tests / py_compile / YAML load 通过，但 import 仍因顶层 `training.sft2.dataset` 与 `wm.reconstruction` 导入触发 `nimloth.wm.__init__`。已进一步把这些导入延迟到 `evaluate()` 内或 `TYPE_CHECKING`。
+- 最新代码已 push 到 `origin/exp/latent-repr-ablation`，当前本地 HEAD `01f16d1 fix: unblock ablation smoke imports`（待提交第二次 import fix）。
 - 本地验证：config tests 通过；新增 YAML 模板可解析；`py_compile` 通过。完整 tests 本地因当前环境缺少 `libstdc++.so.6` 导致 torch import 失败，需要服务器/可用 torch 环境 smoke。
 - 未修改 submodule 代码；如后续需要改 submodule，必须给对应 submodule 创建 `nimloth/exp/...` 分支。
 
