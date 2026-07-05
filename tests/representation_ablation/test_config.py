@@ -33,6 +33,27 @@ eval:
     validate_phase1_config(cfg)
 
 
+def test_sft2_checkpoint_fills_standard_aux_paths(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(
+        """
+init:
+  sft2_checkpoint: /tmp/sft2/latest
+data:
+  val_jsonl: /tmp/val.jsonl
+eval:
+  metrics: [value_topk, predictor_multistep]
+""",
+        encoding="utf-8",
+    )
+    cfg = load_ablation_config(cfg_path)
+    assert cfg.init.qwen_checkpoint == Path("/tmp/sft2/latest")
+    assert cfg.init.state_proj_checkpoint == Path("/tmp/sft2/latest/state_proj.pt")
+    assert cfg.init.wm_predictor_checkpoint == Path("/tmp/sft2/latest/wm_predictor")
+    assert cfg.init.value_head_checkpoint == Path("/tmp/sft2/latest/value_head")
+    validate_phase1_config(cfg)
+
+
 def test_config_rejects_unknown_keys(tmp_path: Path) -> None:
     cfg_path = tmp_path / "bad.yaml"
     cfg_path.write_text("unknown_section: {}\n", encoding="utf-8")

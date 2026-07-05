@@ -18,6 +18,9 @@ class ExperimentConfig:
 @dataclass
 class InitConfig:
     vagen_checkpoint: Path | None = None
+    # Optional convenience root for a standard SFT2 checkpoint directory.
+    # Missing qwen/state_proj/wm/value paths are derived from this directory.
+    sft2_checkpoint: Path | None = None
     qwen_checkpoint: Path | None = None
     state_proj_checkpoint: Path | None = None
     wm_predictor_checkpoint: Path | None = None
@@ -134,6 +137,7 @@ T = TypeVar("T")
 _PATH_FIELDS = {
     "output_dir",
     "vagen_checkpoint",
+    "sft2_checkpoint",
     "qwen_checkpoint",
     "state_proj_checkpoint",
     "wm_predictor_checkpoint",
@@ -201,7 +205,7 @@ def load_ablation_config(path: Path) -> AblationConfig:
     unknown = sorted(set(raw) - known)
     if unknown:
         raise ValueError(f"unknown top-level config sections: {unknown}")
-    return AblationConfig(
+    cfg = AblationConfig(
         experiment=_from_dict(ExperimentConfig, raw.get("experiment")),
         init=_from_dict(InitConfig, raw.get("init")),
         data=_from_dict(DataConfig, raw.get("data")),
@@ -213,6 +217,24 @@ def load_ablation_config(path: Path) -> AblationConfig:
         eval=_from_dict(EvalConfig, raw.get("eval")),
         wandb=_from_dict(WandbConfig, raw.get("wandb")),
     )
+    apply_sft2_checkpoint_defaults(cfg)
+    return cfg
+
+
+def apply_sft2_checkpoint_defaults(cfg: AblationConfig) -> None:
+    """Fill standard aux paths from `init.sft2_checkpoint` when provided."""
+
+    root = cfg.init.sft2_checkpoint
+    if root is None:
+        return
+    if cfg.init.qwen_checkpoint is None:
+        cfg.init.qwen_checkpoint = root
+    if cfg.init.state_proj_checkpoint is None:
+        cfg.init.state_proj_checkpoint = root / "state_proj.pt"
+    if cfg.init.wm_predictor_checkpoint is None:
+        cfg.init.wm_predictor_checkpoint = root / "wm_predictor"
+    if cfg.init.value_head_checkpoint is None:
+        cfg.init.value_head_checkpoint = root / "value_head"
 
 
 def default_output_dir(cfg: AblationConfig) -> Path:

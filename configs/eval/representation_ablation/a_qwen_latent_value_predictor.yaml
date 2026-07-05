@@ -9,6 +9,8 @@ experiment:
 
 init:
   vagen_checkpoint: /project/peilab/hligb/vagen-navigation/checkpoints/vagen_navigation_repro/navigation_base_8gpu_paper_repro_20260621/global_step_300
+  # Optional: set this to a standard SFT2 checkpoint dir to derive qwen/state_proj/wm/value paths.
+  sft2_checkpoint: null
   qwen_checkpoint: null
   state_proj_checkpoint: null
   wm_predictor_checkpoint: null
