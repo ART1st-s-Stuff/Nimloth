@@ -21,7 +21,6 @@ from nimloth.representation_ablation.config import (
 )
 from nimloth.representation_ablation.metrics import (
     EncodedTransition,
-    mean_metrics,
     predictor_multistep_metrics,
     predictor_one_step_metrics,
     value_head_metrics,
@@ -127,7 +126,12 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
     )
 
     encoded_rows: list[EncodedTransition] = []
-    batch_metric_rows: list[dict[str, float]] = []
+    one_step_preds: list[torch.Tensor] = []
+    one_step_targets: list[torch.Tensor] = []
+    value_batches: list[torch.Tensor] = []
+    value_action_batches: list[torch.Tensor] = []
+    value_target_batches: list[torch.Tensor] = []
+    value_success_batches: list[torch.Tensor] = []
     per_item_csv = out_dir / "per_item_metrics.csv"
     csv_writer = None
     saved_samples = 0
@@ -154,15 +158,18 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
             s_next = state_proj(next_hidden).float()
             s_pred = predictor(s_cur, actions).float()
 
-            batch_metrics: dict[str, float] = {}
             if "predictor_multistep" in cfg.eval.metrics or "predictor_1step" in cfg.eval.metrics:
-                batch_metrics.update(predictor_one_step_metrics(s_pred, s_next))
+                one_step_preds.append(s_pred.detach().cpu())
+                one_step_targets.append(s_next.detach().cpu())
+            values = None
             if value_head is not None and any(
                 name in cfg.eval.metrics for name in ("value_topk", "value_ranking", "value_calibration")
             ):
                 values = value_head(s_cur).float()
-                batch_metrics.update(value_head_metrics(values, actions, targets, successes))
-            batch_metric_rows.append(batch_metrics)
+                value_batches.append(values.detach().cpu())
+                value_action_batches.append(actions.detach().cpu())
+                value_target_batches.append(targets.detach().cpu())
+                value_success_batches.append(successes.detach().cpu())
 
             for i, item in enumerate(eligible):
                 encoded_rows.append(
@@ -187,10 +194,8 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
                     "success": int(bool(item.get("success", False))),
                     **predictor_one_step_metrics(s_pred[i : i + 1], s_next[i : i + 1]),
                 }
-                if value_head is not None and any(
-                    name in cfg.eval.metrics for name in ("value_topk", "value_ranking", "value_calibration")
-                ):
-                    values_i = value_head(s_cur[i : i + 1]).float()
+                if values is not None:
+                    values_i = values[i : i + 1]
                     chosen = values_i[0, int(item["action_index"])].detach().cpu().item()
                     row["value_chosen"] = chosen
                     row["value_argmax"] = int(values_i.argmax(dim=-1).item())
@@ -216,7 +221,16 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
                     )
                     saved_samples += 1
 
-    summary = mean_metrics(batch_metric_rows)
+    summary: dict[str, float] = {}
+    if one_step_preds:
+        summary.update(predictor_one_step_metrics(torch.cat(one_step_preds, dim=0), torch.cat(one_step_targets, dim=0)))
+    if value_batches:
+        summary.update(value_head_metrics(
+            torch.cat(value_batches, dim=0),
+            torch.cat(value_action_batches, dim=0),
+            torch.cat(value_target_batches, dim=0),
+            torch.cat(value_success_batches, dim=0),
+        ))
     if "predictor_multistep" in cfg.eval.metrics:
         summary.update(predictor_multistep_metrics(predictor, encoded_rows, cfg.eval.rollout_depths, device=device))
     summary["num_encoded_transitions"] = float(len(encoded_rows))
