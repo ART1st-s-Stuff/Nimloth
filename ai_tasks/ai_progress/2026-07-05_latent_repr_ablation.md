@@ -123,7 +123,7 @@
 - Phase 2 multi latent 服务器 smoke：服务器 worktree `/project/peilab/atst/nimloth/.worktree/exp-latent-repr-ablation` 已同步到 `b656d16`。服务器 venv 当前无 pytest（`No module named pytest`），所以改跑等价 smoke：`py_compile` 覆盖 `src/nimloth/representation_ablation/*.py`、`tests/representation_ablation/*.py`、`src/nimloth/eval/representation_ablation.py`；Python smoke 覆盖 marker 展开、token-set hidden 提取、`TokenSetWMPredictor`/`TokenSetValueHead` forward、K=4/8/16 YAML load + `validate_eval_config`。结果通过，输出 `phase2_multi_latent_smoke=ok`。
 - Phase 2 multi latent train 接入后本地验证：`py_compile` 覆盖 `src/nimloth/representation_ablation/train.py` 与 wrapper；K=4/8/16 training YAML load 通过。
 - Phase 2 multi latent train 服务器 smoke：服务器 worktree同步到 `3b5b3a9`；`py_compile` 覆盖 train entry/wrapper；`python -m nimloth.training.representation_ablation.train --help` 通过；K=4/8/16 training YAML load 通过；输出 `phase2_multi_latent_train_smoke=ok`。尚未启动真实训练。
-- Vision-token predictor diagnostic 本地验证：`py_compile` 覆盖 `vision_tokens.py`、`train.py`、`config.py`；1-step / rollout4 YAML load 通过。尚需服务器同步和 smoke。
+- Vision-token predictor diagnostic 本地验证：`py_compile` 覆盖 `vision_tokens.py`、`train.py`、`config.py`；1-step / rollout4 YAML load 通过。服务器 worktree 已同步到 `9afe0d2`；server smoke `py_compile` 通过，1-step / rollout4 YAML load 通过，输出 `vision_token_predictor_config_smoke=ok`。尚未启动真实训练；RCDM 直拼接 vision tokens 的训练/采样入口尚未接入。
 - A 线服务器诊断 eval smoke：job `465669` completed，exit 0；关键 summary 见“已完成步骤”。
 - B 线 Plan B jobs：env/rollout failed，dependent conversion/SFT1/SFT2 cancelled；blocking 为 VAGEN module path/API mismatch，未产生 records/training。
 - 旧 step79 VAGEN provenance 只读溯源完成：artifact 无直接 provenance；reflog 重建结论见“已完成步骤”。
