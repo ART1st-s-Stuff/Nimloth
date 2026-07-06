@@ -366,7 +366,7 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
         params.extend(predictor.parameters())
     if value_head is not None:
         params.extend(value_head.parameters())
-    optimizer = torch.optim.AdamW(params, lr=cfg.train.lr)
+    optimizer = torch.optim.AdamW(params, lr=cfg.train.lr, weight_decay=cfg.train.weight_decay)
 
     from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
     from nimloth.wm.collate import transition_collate_for_qwen
@@ -439,6 +439,8 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
                         metrics["sigreg_loss"] = float(sigreg_loss.detach().cpu().item())
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
+                    if cfg.train.grad_clip > 0.0:
+                        torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
                     optimizer.step()
                     metrics["loss"] = float(loss.detach().cpu().item())
                 else:
@@ -471,6 +473,8 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
                         targets=targets,
                     )
                     loss.backward()
+                    if cfg.train.grad_clip > 0.0:
+                        torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
                     optimizer.step()
                 step += 1
                 last_metrics = {"step": float(step), "epoch": float(epoch), **metrics}

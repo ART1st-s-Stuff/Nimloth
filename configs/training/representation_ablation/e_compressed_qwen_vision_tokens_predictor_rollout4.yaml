@@ -65,8 +65,10 @@ reconstruction:
 train:
   target: predictor
   epochs: 1
-  batch_size: 32
+  batch_size: 128
   lr: 5.0e-5
+  weight_decay: 1.0e-3
+  grad_clip: 1.0
   resume: false
   save_interval: 500
   rollout_steps: 4

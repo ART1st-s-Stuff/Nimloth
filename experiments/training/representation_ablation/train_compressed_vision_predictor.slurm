@@ -28,9 +28,11 @@ RECORDS_ROOT=${RECORDS_ROOT:-/project/peilab/atst/nimloth/experiments/navigation
 TRAIN_JSONL=${TRAIN_JSONL:-${RECORDS_ROOT}/train_all.jsonl}
 VAL_JSONL=${VAL_JSONL:-${RECORDS_ROOT}/val_all.jsonl}
 MAX_RECORDS=${MAX_RECORDS:--1}
-BATCH_SIZE=${BATCH_SIZE:-32}
+BATCH_SIZE=${BATCH_SIZE:-128}
 EPOCHS=${EPOCHS:-1}
 LR=${LR:-5.0e-5}
+WEIGHT_DECAY=${WEIGHT_DECAY:-1.0e-3}
+GRAD_CLIP=${GRAD_CLIP:-1.0}
 LAMBDA_SIGREG=${LAMBDA_SIGREG:-0.09}
 SAVE_INTERVAL=${SAVE_INTERVAL:-500}
 RUN_EVAL=${RUN_EVAL:-1}
@@ -109,6 +111,8 @@ cfg["data"]["max_records"] = int("${MAX_RECORDS}")
 cfg["train"]["batch_size"] = int("${BATCH_SIZE}")
 cfg["train"]["epochs"] = int("${EPOCHS}")
 cfg["train"]["lr"] = float("${LR}")
+cfg["train"]["weight_decay"] = float("${WEIGHT_DECAY}")
+cfg["train"]["grad_clip"] = float("${GRAD_CLIP}")
 cfg["train"]["lambda_sigreg"] = float("${LAMBDA_SIGREG}")
 cfg["train"]["save_interval"] = int("${SAVE_INTERVAL}")
 out.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
@@ -137,7 +141,7 @@ PY
   echo "output=${OUT_DIR}"
   echo "qwen_checkpoint=${QWEN_CHECKPOINT}"
   echo "train_jsonl=${TRAIN_JSONL} max_records=${MAX_RECORDS} batch_size=${BATCH_SIZE} epochs=${EPOCHS}"
-  echo "lambda_sigreg=${LAMBDA_SIGREG} run_eval=${RUN_EVAL}"
+  echo "lr=${LR} weight_decay=${WEIGHT_DECAY} grad_clip=${GRAD_CLIP} lambda_sigreg=${LAMBDA_SIGREG} run_eval=${RUN_EVAL}"
 } | tee -a "${LOG}"
 
 "${PYTHON_BIN}" -m nimloth.training.representation_ablation.train \

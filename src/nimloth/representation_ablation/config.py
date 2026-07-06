@@ -94,6 +94,8 @@ class TrainConfig:
     epochs: int = 1
     batch_size: int = 1
     lr: float = 1.0e-4
+    weight_decay: float = 1.0e-3
+    grad_clip: float = 1.0
     resume: bool = False
     save_interval: int = 500
     rollout_steps: int = 1
