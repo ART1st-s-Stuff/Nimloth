@@ -25,6 +25,7 @@ class InitConfig:
     state_proj_checkpoint: Path | None = None
     wm_predictor_checkpoint: Path | None = None
     value_head_checkpoint: Path | None = None
+    compressor_checkpoint: Path | None = None
     decoder_checkpoint: Path | None = None
 
 
@@ -50,6 +51,8 @@ class RepresentationConfig:
     type: str = "qwen_latent"
     num_tokens: int = 1
     dim: int = 1024
+    input_dim: int | None = None
+    input_tokens: int | None = None
     source: str = "qwen"
     projector: str = "linear"
     compressor: str | None = None
@@ -93,6 +96,9 @@ class TrainConfig:
     resume: bool = False
     save_interval: int = 500
     rollout_steps: int = 1
+    lambda_sigreg: float = 0.0
+    sigreg_num_proj: int = 1024
+    sigreg_knots: int = 17
     max_length: int = 12000
     max_pixels: int = 602112
     attn_implementation: str = "sdpa"
@@ -143,6 +149,7 @@ _PATH_FIELDS = {
     "state_proj_checkpoint",
     "wm_predictor_checkpoint",
     "value_head_checkpoint",
+    "compressor_checkpoint",
     "decoder_checkpoint",
     "train_jsonl",
     "val_jsonl",

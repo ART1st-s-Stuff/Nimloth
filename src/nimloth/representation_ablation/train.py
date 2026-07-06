@@ -18,6 +18,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from nimloth.representation_ablation.compressor import AttentionTokenCompressor, AttentionTokenCompressorConfig
 from nimloth.representation_ablation.config import AblationConfig, default_output_dir, load_ablation_config
 from nimloth.representation_ablation.modules import (
     freeze_module,
@@ -44,14 +45,14 @@ def _write_json(path: Path, data: Any) -> None:
 
 
 def _validate_train_config(cfg: AblationConfig) -> None:
-    if cfg.representation.type not in {"qwen_multi_latent", "qwen_vision_tokens"}:
+    if cfg.representation.type not in {"qwen_multi_latent", "qwen_vision_tokens", "compressed_vision_tokens"}:
         raise NotImplementedError(
-            "this training entry currently supports qwen_multi_latent and qwen_vision_tokens"
+            "this training entry currently supports qwen_multi_latent, qwen_vision_tokens, and compressed_vision_tokens"
         )
     if cfg.representation.type == "qwen_multi_latent" and cfg.representation.num_tokens <= 1:
         raise ValueError("qwen_multi_latent training requires representation.num_tokens > 1")
-    if cfg.representation.type == "qwen_vision_tokens" and cfg.train.target != "predictor":
-        raise ValueError("qwen_vision_tokens diagnostic trains only the predictor; set train.target=predictor")
+    if cfg.representation.type in {"qwen_vision_tokens", "compressed_vision_tokens"} and cfg.train.target != "predictor":
+        raise ValueError("vision-token diagnostics train only the predictor; set train.target=predictor")
     if cfg.predictor.type != "token_transformer":
         raise NotImplementedError("token-set training requires predictor.type=token_transformer")
     if cfg.representation.type == "qwen_multi_latent" and cfg.value_head.type != "pooled_mlp":
@@ -88,6 +89,29 @@ def _make_predictor(
         heads=cfg.predictor.heads,
     )
     return TokenSetWMPredictor(config).to(device)
+
+
+def _make_compressor(
+    cfg: AblationConfig,
+    *,
+    input_dim: int,
+    input_tokens: int,
+    device: torch.device,
+) -> AttentionTokenCompressor:
+    if cfg.train.resume and cfg.init.compressor_checkpoint is not None:
+        return AttentionTokenCompressor.load_checkpoint(cfg.init.compressor_checkpoint, map_location=device).to(device)
+    if cfg.representation.compressor not in {"perceiver", "attention"}:
+        raise NotImplementedError("compressed_vision_tokens requires representation.compressor=perceiver")
+    return AttentionTokenCompressor(
+        AttentionTokenCompressorConfig(
+            input_dim=input_dim,
+            output_dim=cfg.representation.dim,
+            input_tokens=input_tokens,
+            num_output_tokens=cfg.representation.num_tokens,
+            depth=2,
+            heads=cfg.predictor.heads,
+        )
+    ).to(device)
 
 
 def _make_value_head(cfg: AblationConfig, *, emb_dim: int, device: torch.device) -> TokenSetValueHead:
@@ -257,9 +281,28 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     processor, token_id_map, model = load_qwen_processor_and_model(cfg, device)
     hidden_size = qwen_hidden_size(model)
+    compressor: AttentionTokenCompressor | None = None
+    vision_input_tokens = cfg.representation.num_tokens
     if cfg.representation.type == "qwen_vision_tokens":
-        emb_dim = hidden_size
+        emb_dim = cfg.representation.dim
         num_tokens = cfg.representation.num_tokens
+        state_proj = None
+    elif cfg.representation.type == "compressed_vision_tokens":
+        if cfg.representation.input_dim is None:
+            raise ValueError("compressed_vision_tokens requires representation.input_dim for raw Qwen vision tokens")
+        # The input token count is the raw Qwen visual token count; the output
+        # token count is representation.num_tokens.
+        if cfg.representation.input_tokens is None:
+            raise ValueError("compressed_vision_tokens requires representation.input_tokens")
+        vision_input_tokens = cfg.representation.input_tokens
+        compressor = _make_compressor(
+            cfg,
+            input_dim=cfg.representation.input_dim,
+            input_tokens=vision_input_tokens,
+            device=device,
+        )
+        emb_dim = compressor.emb_dim
+        num_tokens = compressor.num_tokens
         state_proj = None
     elif cfg.init.state_proj_checkpoint is not None:
         # Reuse an existing single-token projector independently for each latent token.
@@ -284,8 +327,18 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
         predictor.train(True)
     if value_head is not None:
         value_head.train(True)
+    if compressor is not None:
+        compressor.train(True)
+
+    sigreg = None
+    if compressor is not None and cfg.train.lambda_sigreg > 0.0:
+        from nimloth.wm._vendor_lewm import SIGReg
+
+        sigreg = SIGReg(knots=cfg.train.sigreg_knots, num_proj=cfg.train.sigreg_num_proj).to(device)
 
     params: list[torch.nn.Parameter] = []
+    if compressor is not None:
+        params.extend(compressor.parameters())
     if predictor is not None:
         params.extend(predictor.parameters())
     if value_head is not None:
@@ -302,7 +355,7 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
         success_only=not cfg.data.include_failed_rollouts,
         value_gamma=cfg.data.value_gamma,
     )
-    if cfg.representation.type == "qwen_vision_tokens":
+    if cfg.representation.type in {"qwen_vision_tokens", "compressed_vision_tokens"}:
         sequence_ds = TransitionSequenceDataset(ds.samples, rollout_steps=cfg.train.rollout_steps)
         loader = torch.utils.data.DataLoader(
             sequence_ds,
@@ -327,29 +380,44 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
         writer: csv.DictWriter | None = None
         for epoch in range(cfg.train.epochs):
             for batch in loader:
-                if cfg.representation.type == "qwen_vision_tokens":
+                if cfg.representation.type in {"qwen_vision_tokens", "compressed_vision_tokens"}:
                     sequences = [transition_collate_for_qwen(seq) for seq in batch]
                     s_cur, s_targets, action_seq, targets = _encode_vision_sequence(
                         model=model,
                         processor=processor,
                         sequences=sequences,
                         rollout_steps=cfg.train.rollout_steps,
-                        num_tokens=num_tokens,
+                        num_tokens=vision_input_tokens,
                         max_pixels=cfg.train.max_pixels,
                         device=device,
                     )
                     if predictor is None:
                         raise RuntimeError("vision-token training requires predictor")
-                    s_pred_seq = predictor.rollout_states(s_cur, action_seq)
-                    pred_loss = F.mse_loss(s_pred_seq.float(), s_targets.float())
-                    optimizer.zero_grad(set_to_none=True)
-                    pred_loss.backward()
-                    optimizer.step()
+                    if compressor is not None:
+                        bsz, rollout_steps, raw_tokens, raw_dim = s_targets.shape
+                        z_cur = compressor(s_cur)
+                        z_targets = compressor(s_targets.reshape(bsz * rollout_steps, raw_tokens, raw_dim)).view(
+                            bsz, rollout_steps, num_tokens, emb_dim
+                        )
+                    else:
+                        z_cur = s_cur
+                        z_targets = s_targets
+                    s_pred_seq = predictor.rollout_states(z_cur, action_seq)
+                    pred_loss = F.mse_loss(s_pred_seq.float(), z_targets.float())
+                    loss = pred_loss
                     metrics = {
-                        "loss": float(pred_loss.detach().cpu().item()),
                         "predictor_rollout_mse": float(pred_loss.detach().cpu().item()),
                         "rollout_steps": float(cfg.train.rollout_steps),
                     }
+                    if sigreg is not None:
+                        sigreg_input = torch.cat([z_cur.unsqueeze(1), z_targets], dim=1).flatten(2).transpose(0, 1)
+                        sigreg_loss = sigreg(sigreg_input)
+                        loss = loss + cfg.train.lambda_sigreg * sigreg_loss
+                        metrics["sigreg_loss"] = float(sigreg_loss.detach().cpu().item())
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    optimizer.step()
+                    metrics["loss"] = float(loss.detach().cpu().item())
                 else:
                     items = batch
                     eligible = [item for item in items if item.get("next_messages")]
@@ -388,11 +456,15 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
                     writer.writeheader()
                 writer.writerow(last_metrics)
                 if cfg.train.save_interval > 0 and step % cfg.train.save_interval == 0:
+                    if compressor is not None:
+                        compressor.save_checkpoint(out_dir / f"compressor_step{step:06d}")
                     if predictor is not None:
                         predictor.save_checkpoint(out_dir / f"wm_predictor_step{step:06d}")
                     if value_head is not None:
                         value_head.save_checkpoint(out_dir / f"value_head_step{step:06d}")
 
+    if compressor is not None:
+        compressor.save_checkpoint(out_dir / "compressor")
     if predictor is not None:
         predictor.save_checkpoint(out_dir / "wm_predictor")
     if value_head is not None:

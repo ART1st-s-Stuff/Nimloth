@@ -1,16 +1,17 @@
-# Predictor capacity diagnostic E1: direct Qwen vision encoder tokens, one-step predictor.
-# Qwen is frozen. Only TokenSetWMPredictor is trained.
-# For 255x255 navigation frames with current Qwen processor settings, image_grid_thw=(1,18,18)
-# and Qwen visual spatial merge gives K=81 output vision tokens.
+# Predictor capacity diagnostic E1-compressed: direct Qwen vision encoder tokens
+# compressed by a trainable attention compressor, one-step predictor.
+# Qwen is frozen. Trainable: attention compressor + TokenSetWMPredictor.
+# Loss: LeWM-style predictor MSE + lambda * SIGReg(compressed tokens). No reconstruction loss.
 
 experiment:
   group: representation_ablation
-  name: e_qwen_vision_tokens_predictor_1step
+  name: e_compressed_qwen_vision_tokens_predictor_1step_k16d512_sigreg
   output_dir: null
   seed: 0
 
 init:
   qwen_checkpoint: null
+  compressor_checkpoint: null
   wm_predictor_checkpoint: null
   value_head_checkpoint: null
   state_proj_checkpoint: null
@@ -24,12 +25,15 @@ data:
   max_records: -1
 
 representation:
-  type: qwen_vision_tokens
-  num_tokens: 81
-  dim: 2048
+  type: compressed_vision_tokens
+  # Output compressed tokens. Raw Qwen vision tokens are currently K=81, input_dim=2048.
+  num_tokens: 16
+  dim: 512
+  input_dim: 2048
+  input_tokens: 81
   source: qwen
   projector: none
-  compressor: null
+  compressor: perceiver
   semantic_embedding:
     enabled: false
     source: instruction
@@ -41,7 +45,7 @@ predictor:
   history_size: 1
   depth: 4
   heads: 8
-  hidden_dim: 1024
+  hidden_dim: 512
 
 value_head:
   type: pooled_mlp
@@ -65,6 +69,9 @@ train:
   resume: false
   save_interval: 500
   rollout_steps: 1
+  lambda_sigreg: 0.1
+  sigreg_num_proj: 1024
+  sigreg_knots: 17
   max_length: 12000
   max_pixels: 602112
   attn_implementation: sdpa
