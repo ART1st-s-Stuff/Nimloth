@@ -271,10 +271,31 @@ def _batch_loss(
     return total, metrics
 
 
+def _prepare_train_output_dir(out_dir: Path, *, resume: bool) -> None:
+    if out_dir.exists() and not resume:
+        # Slurm launchers may pre-create the directory to store README and the
+        # run-specific YAML before training starts.  Refuse to reuse a directory
+        # that already contains training artifacts.
+        protected = [
+            "train_step_log.csv",
+            "summary.json",
+            "compressor",
+            "wm_predictor",
+            "value_head",
+        ]
+        existing = [name for name in protected if (out_dir / name).exists()]
+        existing.extend(p.name for p in out_dir.glob("*_step[0-9]*"))
+        if existing:
+            raise FileExistsError(
+                f"output_dir already contains training artifacts and resume=false: {out_dir}; existing={existing}"
+            )
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+
 def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, float]:
     _validate_train_config(cfg)
     out_dir = output_dir or default_output_dir(cfg)
-    out_dir.mkdir(parents=True, exist_ok=False)
+    _prepare_train_output_dir(out_dir, resume=cfg.train.resume)
     _write_json(out_dir / "config.resolved.json", cfg)
     _write_json(out_dir / "metadata.json", {"argv": sys.argv, "phase": "phase2_qwen_multi_latent_train"})
 
