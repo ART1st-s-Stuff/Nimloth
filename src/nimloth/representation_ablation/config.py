@@ -295,6 +295,26 @@ def _validate_qwen_latent_config(cfg: AblationConfig) -> None:
         _require_value_head_file(cfg.init.value_head_checkpoint)
 
 
+def _validate_token_predictor_checkpoint(path: Path) -> None:
+    predictor_state = path / "predictor.pt"
+    predictor_config = path / "config.json"
+    if not predictor_state.is_file() or not predictor_config.is_file():
+        raise FileNotFoundError(
+            "token_transformer predictor metrics require predictor.pt and config.json under "
+            f"{path}"
+        )
+
+
+def _validate_compressor_checkpoint(path: Path) -> None:
+    compressor_state = path / "compressor.pt"
+    compressor_config = path / "config.json"
+    if not compressor_state.is_file() or not compressor_config.is_file():
+        raise FileNotFoundError(
+            "compressed_vision_tokens eval requires compressor.pt and config.json under "
+            f"{path}"
+        )
+
+
 def _validate_qwen_multi_latent_config(cfg: AblationConfig) -> None:
     if cfg.representation.num_tokens <= 1:
         raise ValueError("qwen_multi_latent requires representation.num_tokens > 1")
@@ -319,16 +339,42 @@ def _validate_qwen_multi_latent_config(cfg: AblationConfig) -> None:
     _require_paths(required, context="qwen_multi_latent eval")
     if _predictor_metrics_requested(cfg):
         assert cfg.init.wm_predictor_checkpoint is not None
-        predictor_state = cfg.init.wm_predictor_checkpoint / "predictor.pt"
-        predictor_config = cfg.init.wm_predictor_checkpoint / "config.json"
-        if not predictor_state.is_file() or not predictor_config.is_file():
-            raise FileNotFoundError(
-                "token_transformer predictor metrics require predictor.pt and config.json under "
-                f"{cfg.init.wm_predictor_checkpoint}"
-            )
+        _validate_token_predictor_checkpoint(cfg.init.wm_predictor_checkpoint)
     if _value_metrics_requested(cfg):
         assert cfg.init.value_head_checkpoint is not None
         _require_value_head_file(cfg.init.value_head_checkpoint)
+
+
+def _validate_qwen_vision_tokens_config(cfg: AblationConfig) -> None:
+    if cfg.predictor.type != "token_transformer":
+        raise NotImplementedError(
+            f"vision-token eval requires predictor.type='token_transformer', got {cfg.predictor.type!r}"
+        )
+    if cfg.value_head.type != "pooled_mlp":
+        raise NotImplementedError(
+            f"vision-token eval requires value_head.type='pooled_mlp', got {cfg.value_head.type!r}"
+        )
+    if _value_metrics_requested(cfg):
+        raise NotImplementedError("value metrics for vision-token diagnostics are not implemented")
+    if cfg.reconstruction.enabled or "reconstruction_strips" in cfg.eval.metrics:
+        raise NotImplementedError("RCDM visualization for vision-token diagnostics is not implemented in this eval entry")
+    required = {
+        "qwen_checkpoint": cfg.init.qwen_checkpoint,
+        "wm_predictor_checkpoint": cfg.init.wm_predictor_checkpoint,
+        "val_jsonl": cfg.data.val_jsonl,
+    }
+    if cfg.representation.type == "compressed_vision_tokens":
+        required["compressor_checkpoint"] = cfg.init.compressor_checkpoint
+        if cfg.representation.input_dim is None:
+            raise ValueError("compressed_vision_tokens eval requires representation.input_dim")
+        if cfg.representation.input_tokens is None:
+            raise ValueError("compressed_vision_tokens eval requires representation.input_tokens")
+    _require_paths(required, context=f"{cfg.representation.type} eval")
+    assert cfg.init.wm_predictor_checkpoint is not None
+    _validate_token_predictor_checkpoint(cfg.init.wm_predictor_checkpoint)
+    if cfg.representation.type == "compressed_vision_tokens":
+        assert cfg.init.compressor_checkpoint is not None
+        _validate_compressor_checkpoint(cfg.init.compressor_checkpoint)
 
 
 def validate_eval_config(cfg: AblationConfig) -> None:
@@ -349,6 +395,8 @@ def validate_eval_config(cfg: AblationConfig) -> None:
         _validate_qwen_latent_config(cfg)
     elif cfg.representation.type == "qwen_multi_latent":
         _validate_qwen_multi_latent_config(cfg)
+    elif cfg.representation.type in {"qwen_vision_tokens", "compressed_vision_tokens"}:
+        _validate_qwen_vision_tokens_config(cfg)
     else:
         raise NotImplementedError(
             f"representation.type={cfg.representation.type!r} is not implemented in offline eval"

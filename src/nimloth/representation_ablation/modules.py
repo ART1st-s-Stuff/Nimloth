@@ -14,6 +14,7 @@ from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.representation_ablation.config import AblationConfig
 
 if TYPE_CHECKING:
+    from nimloth.representation_ablation.compressor import AttentionTokenCompressor
     from nimloth.representation_ablation.token_set import TokenSetValueHead, TokenSetWMPredictor
     from nimloth.wm.predictor import LatentWMPredictor
     from nimloth.wm.reconstruction import WMImageDecoder
@@ -157,7 +158,36 @@ def load_token_set_predictor(cfg: AblationConfig, device: torch.device) -> Token
             f"token predictor checkpoint has num_tokens={predictor.num_tokens}, "
             f"but config requests {cfg.representation.num_tokens}"
         )
+    if cfg.representation.dim > 0 and predictor.emb_dim != cfg.representation.dim:
+        raise ValueError(
+            f"token predictor checkpoint has emb_dim={predictor.emb_dim}, "
+            f"but config requests {cfg.representation.dim}"
+        )
     return freeze_module(predictor)  # type: ignore[return-value]
+
+
+def load_attention_token_compressor(cfg: AblationConfig, device: torch.device) -> AttentionTokenCompressor:
+    from nimloth.representation_ablation.compressor import AttentionTokenCompressor
+
+    if cfg.init.compressor_checkpoint is None:
+        raise ValueError("init.compressor_checkpoint is required")
+    compressor = AttentionTokenCompressor.load_checkpoint(cfg.init.compressor_checkpoint, map_location=device).to(device)
+    if compressor.num_tokens != cfg.representation.num_tokens or compressor.emb_dim != cfg.representation.dim:
+        raise ValueError(
+            "compressor checkpoint shape does not match config: "
+            f"compressor=(K={compressor.num_tokens}, D={compressor.emb_dim}), "
+            f"config=(K={cfg.representation.num_tokens}, D={cfg.representation.dim})"
+        )
+    if cfg.representation.input_dim is not None and compressor.config.input_dim != cfg.representation.input_dim:
+        raise ValueError(
+            f"compressor input_dim={compressor.config.input_dim}, config input_dim={cfg.representation.input_dim}"
+        )
+    if cfg.representation.input_tokens is not None and compressor.config.input_tokens != cfg.representation.input_tokens:
+        raise ValueError(
+            f"compressor input_tokens={compressor.config.input_tokens}, "
+            f"config input_tokens={cfg.representation.input_tokens}"
+        )
+    return freeze_module(compressor)  # type: ignore[return-value]
 
 
 def load_token_set_value_head(cfg: AblationConfig, *, emb_dim: int, device: torch.device) -> TokenSetValueHead | None:

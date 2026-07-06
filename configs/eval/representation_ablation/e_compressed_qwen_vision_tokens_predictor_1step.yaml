@@ -1,0 +1,76 @@
+# Eval for compressed Qwen-vision-token predictor diagnostic.
+# Fill qwen_checkpoint, compressor_checkpoint, wm_predictor_checkpoint, and val_jsonl
+# from a completed training run before use.
+
+experiment:
+  group: representation_ablation
+  name: e_compressed_qwen_vision_tokens_predictor_1step_eval
+  output_dir: null
+  seed: 0
+
+init:
+  qwen_checkpoint: null
+  compressor_checkpoint: null
+  wm_predictor_checkpoint: null
+  value_head_checkpoint: null
+  state_proj_checkpoint: null
+  decoder_checkpoint: null
+
+data:
+  train_jsonl: null
+  val_jsonl: null
+  split_policy: explicit_train_val
+  include_failed_rollouts: true
+  value_gamma: 1.0
+  max_records: -1
+
+representation:
+  type: compressed_vision_tokens
+  num_tokens: 16
+  dim: 512
+  input_dim: 2048
+  input_tokens: 81
+  source: qwen
+  projector: none
+  compressor: perceiver
+  semantic_embedding:
+    enabled: false
+    source: instruction
+    pooling: mean
+
+predictor:
+  type: token_transformer
+  train: false
+  history_size: 1
+  depth: 4
+  heads: 8
+  hidden_dim: 512
+
+value_head:
+  type: pooled_mlp
+  train: false
+  use_semantic_embedding: false
+  hidden_dim: null
+
+reconstruction:
+  enabled: false
+  type: simple_decoder
+  condition_source: true_and_predicted
+  image_size: 128
+  upload_wandb_images: false
+  save_samples: 0
+
+eval:
+  metrics: [predictor_1step, predictor_multistep]
+  rollout_depths: [1]
+  batch_size: 1
+  max_batches: -1
+  max_length: 12000
+  max_pixels: 602112
+  save_samples: 0
+  attn_implementation: sdpa
+
+wandb:
+  enabled: false
+  project: nimloth
+  run_name: null

@@ -19,6 +19,7 @@ from nimloth.representation_ablation.config import (
     load_ablation_config,
     validate_eval_config,
 )
+from nimloth.representation_ablation.vision_tokens import extract_qwen_vision_tokens
 from nimloth.representation_ablation.metrics import (
     EncodedTransition,
     predictor_multistep_metrics,
@@ -26,6 +27,7 @@ from nimloth.representation_ablation.metrics import (
     value_head_metrics,
 )
 from nimloth.representation_ablation.modules import (
+    load_attention_token_compressor,
     load_decoder,
     load_predictor,
     load_qwen_processor_and_model,
@@ -146,6 +148,27 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
                     f"predictor emb_dim; got hidden_size={token_emb_dim}, predictor.emb_dim={predictor.emb_dim}"
                 )
         value_head = load_token_set_value_head(cfg, emb_dim=predictor.emb_dim, device=device)
+        compressor = None
+    elif cfg.representation.type == "qwen_vision_tokens":
+        predictor = load_token_set_predictor(cfg, device) if _predictor_metrics_requested(cfg) else None
+        if predictor is None:
+            raise ValueError("qwen_vision_tokens eval requires predictor metrics and a token_transformer checkpoint")
+        token_set_state_proj = None
+        value_head = None
+        compressor = None
+    elif cfg.representation.type == "compressed_vision_tokens":
+        predictor = load_token_set_predictor(cfg, device) if _predictor_metrics_requested(cfg) else None
+        if predictor is None:
+            raise ValueError("compressed_vision_tokens eval requires predictor metrics and a token_transformer checkpoint")
+        compressor = load_attention_token_compressor(cfg, device=device)
+        if predictor.emb_dim != compressor.emb_dim or predictor.num_tokens != compressor.num_tokens:
+            raise ValueError(
+                "predictor checkpoint shape must match compressor output: "
+                f"predictor=(K={predictor.num_tokens}, D={predictor.emb_dim}), "
+                f"compressor=(K={compressor.num_tokens}, D={compressor.emb_dim})"
+            )
+        token_set_state_proj = None
+        value_head = None
     else:  # validate_eval_config should catch this before module loading.
         raise NotImplementedError(f"unsupported representation.type={cfg.representation.type!r}")
 
@@ -196,7 +219,7 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
                 next_hidden, _ = extract_qwen_latents(model, next_enc, token_id_map, device)
                 s_cur = state_proj(cur_hidden).float()
                 s_next = state_proj(next_hidden).float()
-            else:
+            elif cfg.representation.type == "qwen_multi_latent":
                 token_count = cfg.representation.num_tokens
                 cur_items = [
                     {**item, "messages": expand_latent_markers_in_messages(item["messages"], token_count)}
@@ -231,6 +254,31 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
                     )
                 s_cur = s_cur.float()
                 s_next = s_next.float()
+            elif cfg.representation.type in {"qwen_vision_tokens", "compressed_vision_tokens"}:
+                raw_token_count = cfg.representation.input_tokens or cfg.representation.num_tokens
+                cur_paths = [item["current_image_path"] for item in eligible]
+                next_paths = [item["next_image_path"] for item in eligible]
+                s_cur = extract_qwen_vision_tokens(
+                    model,
+                    processor,
+                    cur_paths,
+                    device=device,
+                    max_pixels=cfg.eval.max_pixels,
+                    expected_num_tokens=raw_token_count,
+                ).float()
+                s_next = extract_qwen_vision_tokens(
+                    model,
+                    processor,
+                    next_paths,
+                    device=device,
+                    max_pixels=cfg.eval.max_pixels,
+                    expected_num_tokens=raw_token_count,
+                ).float()
+                if compressor is not None:
+                    s_cur = compressor(s_cur).float()
+                    s_next = compressor(s_next).float()
+            else:
+                raise NotImplementedError(f"unsupported representation.type={cfg.representation.type!r}")
 
             actions = torch.tensor([item["action_index"] for item in eligible], dtype=torch.long, device=device)
             targets = torch.tensor([item["action_value_target"] for item in eligible], dtype=torch.float32, device=device)
