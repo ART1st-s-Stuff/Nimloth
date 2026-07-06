@@ -16,8 +16,9 @@ set -euo pipefail
 
 REPO=${REPO:-/project/peilab/atst/nimloth/.worktree/exp-latent-repr-ablation}
 # Adapter-backed SFT2 checkpoints need the newer transformers stack in .venv-vagen-main;
-# the repository code is still provided through PYTHONPATH below.
-VENV=${VENV:-/project/peilab/atst/nimloth/.venv-vagen-main}
+# the repository code is still provided through PYTHONPATH below.  Use PY_VENV
+# rather than VENV because some cluster shells export VENV already.
+PY_VENV=${PY_VENV:-/project/peilab/atst/nimloth/.venv-vagen-main}
 RUN_KIND=${RUN_KIND:-rollout4}  # one of: 1step, rollout4
 OUTPUT_SUFFIX=${OUTPUT_SUFFIX:-manual}
 DATE_TAG=${DATE_TAG:-$(date +%F)}
@@ -90,9 +91,9 @@ export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
 export TOKENIZERS_PARALLELISM=true
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTHONPATH=${REPO}/src:${REPO}/external/le-wm
-export PATH=${VENV}/bin:${PATH}
+export PATH=${PY_VENV}/bin:${PATH}
 # shellcheck disable=SC1091
-source "${VENV}/bin/activate"
+source "${PY_VENV}/bin/activate"
 
 python - <<PY
 from pathlib import Path
@@ -131,6 +132,7 @@ PY
   echo "=== compressed vision predictor train $(date) ==="
   echo "job=${SLURM_JOB_ID:-local} node=${SLURM_JOB_NODELIST:-local}"
   echo "repo=${REPO} commit=${COMMIT}"
+  echo "python=$(which python) py_venv=${PY_VENV}"
   echo "template=${TEMPLATE}"
   echo "train_config=${TRAIN_CONFIG}"
   echo "output=${OUT_DIR}"
