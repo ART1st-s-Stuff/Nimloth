@@ -7,9 +7,9 @@
 #SBATCH --partition=normal
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=112
+#SBATCH --cpus-per-task=64
 #SBATCH --gres=gpu:4
-#SBATCH --mem=900G
+#SBATCH --mem=300G
 #SBATCH --requeue
 
 set -euo pipefail
