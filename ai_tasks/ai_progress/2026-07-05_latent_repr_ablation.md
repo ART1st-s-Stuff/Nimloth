@@ -67,7 +67,8 @@
 - 按人类指示没有把 VAGEN 切到 `nimloth/main`，而是在 legacy-dev 工作线上补 train split：VAGEN commit `6be3088ce87a8e40c700c6f5411c1c659a968ef2` 添加 `base_train/common_sense_train/long_horizon_train` dataset JSON 与 `ValidEvalSets`；VAGEN commit `375e6ef498999ebf8f145cc3a27efb3849323bd8` 添加 legacy VAGEN 的 `eval_mode` prompt/parser 支持；Nimloth 父提交更新到 `a4fc1ee`，VAGEN 分支推到 `nimloth/exp/latent-repr-ablation-train-splits`。
 - Plan B retry14 smoke（env job `466322` on `dgx-05`，ports `19530-19533`；manual overlap rollout PID `1101711`，array task 3）已越过 train split / `eval_mode` / checkpoint / vLLM 初始化：生成 `val_shard_1081_1200.parquet`（360 rows），env server 有 `base_train` initialize 日志，config validation 和 checkpoint load 成功。随后在第一次 vLLM generation 失败：`ValueError: You set image=1 (or defaulted to 1) in --limit-mm-per-prompt, but passed 2 image items in the same prompt.`；`srun` exit code 1，manual PID 已退出，没有 `validation/**/300.jsonl`。本轮没有可估算 ETA。
 - 已修复 retry14 暴露的多图限制问题：nested `external/VAGEN/verl` commit `cf4f50ad7ec451e17c272309924f2997abc47240` 不再靠 checkpoint path 是否包含 `Qwen2.5-VL` 来决定是否传 `limit_mm_per_prompt`，而是只要 rollout config 有该字段就传给 vLLM；VAGEN pointer commit `a9bec3f6bc8300c9dd45918d928cb35c2bef0724`；Nimloth rollout 脚本显式 override `actor_rollout_ref.rollout.limit_mm_per_prompt=20`。
-- Plan B retry15 smoke 已完成：复用 retry14 env job `466322`（`dgx-05`, ports `19530-19533`），新 run dir `/project/peilab/atst/nimloth/experiments/navigation_baseline/runs/sft1_rollouts_highsuccess_step300_greedy_parallel_retry15`，manual `srun --overlap` array task 3 PID `1284150` 已退出。输出文件为 VAGEN validation-only 的 global step 0：`validation/val/shard_1081_1200/0.jsonl`（360 rows, 7,146,574 bytes）和 `validation/test/shard_001_060/0.jsonl`（300 rows, 6,306,984 bytes）。retry15 log 无 `Traceback` / `ValueError` / `srun error`，确认 retry14 多图 vLLM blocker 已清除。Env job `466322` 仍在运行，需决定是复用跑 train shards 0-2 还是取消释放资源。
+- Plan B retry15 smoke 已完成：复用 retry14 env job `466322`（`dgx-05`, ports `19530-19533`），新 run dir `/project/peilab/atst/nimloth/experiments/navigation_baseline/runs/sft1_rollouts_highsuccess_step300_greedy_parallel_retry15`，manual `srun --overlap` array task 3 PID `1284150` 已退出。输出文件为 VAGEN validation-only 的 global step 0：`validation/val/shard_1081_1200/0.jsonl`（360 rows, 7,146,574 bytes）和 `validation/test/shard_001_060/0.jsonl`（300 rows, 6,306,984 bytes）。retry15 log 无 `Traceback` / `ValueError` / `srun error`，确认 retry14 多图 vLLM blocker 已清除。
+- 人类允许使用更多资源跑 train shards 后，retry15 train array `466453` 已提交并运行：`--array=0-2%3`，每个 task 请求 2 GPU / 56 CPU / 180G，节点 `dgx-27`、`dgx-29`、`dgx-24`，复用 env job `466322`。三个任务均启动 Ray、生成 540-row parquet、进入 `vagen.trainer.main_ppo` 并开始 validation/generation；尚无 train JSONL 输出，尚无新错误。预期输出：`validation/train/shard_{001_180,181_360,361_540,541_720,721_900,901_1080}/0.jsonl`。
 
 ## 文件修改
 
@@ -169,6 +170,6 @@
 ## 待确认问题
 
 - A 线下一步：是否运行 full low-success step1000 diagnostic eval（使用非 smoke config、完整 val split），或先根据 smoke 结果调整指标/输出格式。
-- B 线下一步：retry15 smoke 已成功。需要人类决定：复用仍在运行的 env job `466322` 启动 train shards 0-2，或取消 env job 释放资源；不得把 heldout `base` / `common_sense` / `long_horizon` 当成 SFT train 数据。
+- B 线下一步：继续监控 retry15 train array `466453_[0-2]`，直到六个 train shard JSONL 写出或出现新失败；不得把 heldout `base` / `common_sense` / `long_horizon` 当成 SFT train 数据。
 - B 线 SFT2 初始化 checkpoint策略仍需确认：继续为可比性强制使用 SFT1 `epoch_002/hf_merged`，还是改为 SFT1 `best/hf_merged`。
 - 若后续需要启动超过 3 分钟的训练/评估，会按实验规则再次向人类确认。
