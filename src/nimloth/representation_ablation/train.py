@@ -87,6 +87,7 @@ def _make_predictor(
         hidden_dim=cfg.predictor.hidden_dim,
         depth=cfg.predictor.depth,
         heads=cfg.predictor.heads,
+        dropout=cfg.predictor.dropout,
     )
     return TokenSetWMPredictor(config).to(device)
 
@@ -110,6 +111,7 @@ def _make_compressor(
             num_output_tokens=cfg.representation.num_tokens,
             depth=2,
             heads=cfg.predictor.heads,
+            dropout=cfg.predictor.dropout,
         )
     ).to(device)
 

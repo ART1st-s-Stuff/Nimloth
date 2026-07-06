@@ -43,9 +43,10 @@ predictor:
   type: token_transformer
   train: true
   history_size: 1
-  depth: 4
+  depth: 6
   heads: 8
   hidden_dim: 512
+  dropout: 0.1
 
 value_head:
   type: pooled_mlp
@@ -64,12 +65,12 @@ reconstruction:
 train:
   target: predictor
   epochs: 1
-  batch_size: 1
-  lr: 1.0e-4
+  batch_size: 32
+  lr: 5.0e-5
   resume: false
   save_interval: 500
   rollout_steps: 1
-  lambda_sigreg: 0.1
+  lambda_sigreg: 0.09
   sigreg_num_proj: 1024
   sigreg_knots: 17
   max_length: 12000

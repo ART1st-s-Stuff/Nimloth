@@ -67,6 +67,7 @@ class PredictorConfig:
     depth: int = 6
     heads: int = 16
     hidden_dim: int = 1024
+    dropout: float = 0.0
 
 
 @dataclass
