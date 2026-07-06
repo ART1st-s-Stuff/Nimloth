@@ -15,7 +15,9 @@
 set -euo pipefail
 
 REPO=${REPO:-/project/peilab/atst/nimloth/.worktree/exp-latent-repr-ablation}
-VENV=${VENV:-/project/peilab/atst/nimloth/.worktree/exp-latent-repr-ablation/.venv}
+# Adapter-backed SFT2 checkpoints need the newer transformers stack in .venv-vagen-main;
+# the repository code is still provided through PYTHONPATH below.
+VENV=${VENV:-/project/peilab/atst/nimloth/.venv-vagen-main}
 RUN_KIND=${RUN_KIND:-rollout4}  # one of: 1step, rollout4
 OUTPUT_SUFFIX=${OUTPUT_SUFFIX:-manual}
 DATE_TAG=${DATE_TAG:-$(date +%F)}
