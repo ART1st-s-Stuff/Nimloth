@@ -365,6 +365,7 @@ PY
       actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
       actor_rollout_ref.rollout.max_model_len=24000 \
       actor_rollout_ref.rollout.max_num_batched_tokens=24000 \
+      actor_rollout_ref.rollout.limit_mm_per_prompt=20 \
       actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
       actor_rollout_ref.rollout.enforce_eager=True \
       actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
