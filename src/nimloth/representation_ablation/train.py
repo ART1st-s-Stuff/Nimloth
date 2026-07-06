@@ -27,6 +27,7 @@ from nimloth.representation_ablation.modules import (
 )
 from nimloth.representation_ablation.qwen_tokens import expand_latent_markers_in_messages, extract_latent_token_set
 from nimloth.representation_ablation.token_set import TokenSetPredictorConfig, TokenSetValueHead, TokenSetWMPredictor
+from nimloth.representation_ablation.vision_tokens import extract_qwen_vision_tokens
 from nimloth.training.common.qwen_batch import build_qwen_batch
 
 
@@ -43,32 +44,44 @@ def _write_json(path: Path, data: Any) -> None:
 
 
 def _validate_train_config(cfg: AblationConfig) -> None:
-    if cfg.representation.type != "qwen_multi_latent":
-        raise NotImplementedError("this training entry currently supports only representation.type=qwen_multi_latent")
-    if cfg.representation.num_tokens <= 1:
+    if cfg.representation.type not in {"qwen_multi_latent", "qwen_vision_tokens"}:
+        raise NotImplementedError(
+            "this training entry currently supports qwen_multi_latent and qwen_vision_tokens"
+        )
+    if cfg.representation.type == "qwen_multi_latent" and cfg.representation.num_tokens <= 1:
         raise ValueError("qwen_multi_latent training requires representation.num_tokens > 1")
+    if cfg.representation.type == "qwen_vision_tokens" and cfg.train.target != "predictor":
+        raise ValueError("qwen_vision_tokens diagnostic trains only the predictor; set train.target=predictor")
     if cfg.predictor.type != "token_transformer":
-        raise NotImplementedError("qwen_multi_latent training requires predictor.type=token_transformer")
-    if cfg.value_head.type != "pooled_mlp":
+        raise NotImplementedError("token-set training requires predictor.type=token_transformer")
+    if cfg.representation.type == "qwen_multi_latent" and cfg.value_head.type != "pooled_mlp":
         raise NotImplementedError("qwen_multi_latent training requires value_head.type=pooled_mlp")
     if cfg.train.target not in {"predictor", "value", "predictor_value"}:
         raise ValueError("train.target must be predictor, value, or predictor_value for token-set training")
+    if cfg.train.rollout_steps <= 0:
+        raise ValueError("train.rollout_steps must be positive")
     missing = []
     if cfg.init.qwen_checkpoint is None:
         missing.append("qwen_checkpoint")
     if cfg.data.train_jsonl is None:
         missing.append("train_jsonl")
     if missing:
-        raise ValueError(f"missing required config paths for qwen_multi_latent train: {missing}")
+        raise ValueError(f"missing required config paths for token-set train: {missing}")
     if cfg.value_head.use_semantic_embedding:
         raise NotImplementedError("semantic-conditioned token-set value training is not implemented yet")
 
 
-def _make_predictor(cfg: AblationConfig, *, emb_dim: int, device: torch.device) -> TokenSetWMPredictor:
+def _make_predictor(
+    cfg: AblationConfig,
+    *,
+    emb_dim: int,
+    num_tokens: int,
+    device: torch.device,
+) -> TokenSetWMPredictor:
     if cfg.train.resume and cfg.init.wm_predictor_checkpoint is not None:
         return TokenSetWMPredictor.load_checkpoint(cfg.init.wm_predictor_checkpoint, map_location=device).to(device)
     config = TokenSetPredictorConfig(
-        num_tokens=cfg.representation.num_tokens,
+        num_tokens=num_tokens,
         emb_dim=emb_dim,
         hidden_dim=cfg.predictor.hidden_dim,
         depth=cfg.predictor.depth,
@@ -131,6 +144,74 @@ def _encode_token_states(
     return s_cur.float(), s_next.float()
 
 
+class TransitionSequenceDataset(torch.utils.data.Dataset):
+    """Consecutive transition windows from one trajectory record."""
+
+    def __init__(self, samples: list[Any], *, rollout_steps: int) -> None:
+        self.samples = samples
+        by_record: dict[str, list[int]] = {}
+        for idx, sample in enumerate(samples):
+            by_record.setdefault(str(sample.record_id), []).append(idx)
+        self.windows: list[list[int]] = []
+        for indices in by_record.values():
+            indices.sort(key=lambda i: int(samples[i].step_index))
+            by_step = {int(samples[i].step_index): i for i in indices}
+            for start_idx in indices:
+                start_step = int(samples[start_idx].step_index)
+                window = [by_step.get(start_step + offset) for offset in range(rollout_steps)]
+                if all(i is not None for i in window):
+                    self.windows.append([int(i) for i in window if i is not None])
+
+    def __len__(self) -> int:
+        return len(self.windows)
+
+    def __getitem__(self, index: int) -> list[Any]:
+        return [self.samples[i] for i in self.windows[index]]
+
+
+def _collate_sequence_batch(batch: list[list[Any]]) -> list[list[Any]]:
+    return batch
+
+
+@torch.no_grad()
+def _encode_vision_sequence(
+    *,
+    model,
+    processor,
+    sequences: list[list[dict[str, Any]]],
+    rollout_steps: int,
+    num_tokens: int,
+    max_pixels: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    start_paths = [seq[0]["current_image_path"] for seq in sequences]
+    s0 = extract_qwen_vision_tokens(
+        model,
+        processor,
+        start_paths,
+        device=device,
+        max_pixels=max_pixels,
+        expected_num_tokens=num_tokens,
+    ).float()
+    target_paths = [item["next_image_path"] for seq in sequences for item in seq]
+    target_tokens = extract_qwen_vision_tokens(
+        model,
+        processor,
+        target_paths,
+        device=device,
+        max_pixels=max_pixels,
+        expected_num_tokens=num_tokens,
+    ).float()
+    targets = target_tokens.view(len(sequences), rollout_steps, num_tokens, -1)
+    actions = torch.tensor(
+        [[item["action_index"] for item in seq] for seq in sequences], dtype=torch.long, device=device
+    )
+    value_targets = torch.tensor(
+        [seq[0]["action_value_target"] for seq in sequences], dtype=torch.float32, device=device
+    )
+    return s0, targets, actions, value_targets
+
+
 def _batch_loss(
     *,
     cfg: AblationConfig,
@@ -176,18 +257,28 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     processor, token_id_map, model = load_qwen_processor_and_model(cfg, device)
     hidden_size = qwen_hidden_size(model)
-    if cfg.init.state_proj_checkpoint is not None:
+    if cfg.representation.type == "qwen_vision_tokens":
+        emb_dim = hidden_size
+        num_tokens = cfg.representation.num_tokens
+        state_proj = None
+    elif cfg.init.state_proj_checkpoint is not None:
         # Reuse an existing single-token projector independently for each latent token.
         emb_dim = cfg.representation.dim
+        num_tokens = cfg.representation.num_tokens
         state_proj = load_state_projector(cfg, qwen_hidden_size=hidden_size, emb_dim=emb_dim, device=device)
     else:
         emb_dim = hidden_size
+        num_tokens = cfg.representation.num_tokens
         state_proj = None
     freeze_module(model)
     if state_proj is not None:
         freeze_module(state_proj)
 
-    predictor = _make_predictor(cfg, emb_dim=emb_dim, device=device) if cfg.train.target in {"predictor", "predictor_value"} else None
+    predictor = (
+        _make_predictor(cfg, emb_dim=emb_dim, num_tokens=num_tokens, device=device)
+        if cfg.train.target in {"predictor", "predictor_value"}
+        else None
+    )
     value_head = _make_value_head(cfg, emb_dim=emb_dim, device=device) if cfg.train.target in {"value", "predictor_value"} else None
     if predictor is not None:
         predictor.train(True)
@@ -202,6 +293,7 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
     optimizer = torch.optim.AdamW(params, lr=cfg.train.lr)
 
     from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
+    from nimloth.wm.collate import transition_collate_for_qwen
 
     assert cfg.data.train_jsonl is not None
     ds = TransitionQwenDataset(
@@ -210,13 +302,23 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
         success_only=not cfg.data.include_failed_rollouts,
         value_gamma=cfg.data.value_gamma,
     )
-    loader = torch.utils.data.DataLoader(
-        ds,
-        batch_size=cfg.train.batch_size,
-        shuffle=True,
-        num_workers=0,
-        collate_fn=collate_transition_batch,
-    )
+    if cfg.representation.type == "qwen_vision_tokens":
+        sequence_ds = TransitionSequenceDataset(ds.samples, rollout_steps=cfg.train.rollout_steps)
+        loader = torch.utils.data.DataLoader(
+            sequence_ds,
+            batch_size=cfg.train.batch_size,
+            shuffle=True,
+            num_workers=0,
+            collate_fn=_collate_sequence_batch,
+        )
+    else:
+        loader = torch.utils.data.DataLoader(
+            ds,
+            batch_size=cfg.train.batch_size,
+            shuffle=True,
+            num_workers=0,
+            collate_fn=collate_transition_batch,
+        )
 
     log_path = out_dir / "train_step_log.csv"
     step = 0
@@ -224,36 +326,61 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
     with log_path.open("w", newline="", encoding="utf-8") as f:
         writer: csv.DictWriter | None = None
         for epoch in range(cfg.train.epochs):
-            for items in loader:
-                eligible = [item for item in items if item.get("next_messages")]
-                if not eligible:
-                    continue
-                s_cur, s_next = _encode_token_states(
-                    model=model,
-                    processor=processor,
-                    token_id_map=token_id_map,
-                    items=eligible,
-                    num_tokens=cfg.representation.num_tokens,
-                    max_length=cfg.train.max_length,
-                    device=device,
-                    state_proj=state_proj,
-                )
-                actions = torch.tensor([item["action_index"] for item in eligible], dtype=torch.long, device=device)
-                targets = torch.tensor(
-                    [item["action_value_target"] for item in eligible], dtype=torch.float32, device=device
-                )
-                optimizer.zero_grad(set_to_none=True)
-                loss, metrics = _batch_loss(
-                    cfg=cfg,
-                    predictor=predictor,
-                    value_head=value_head,
-                    s_cur=s_cur,
-                    s_next=s_next,
-                    actions=actions,
-                    targets=targets,
-                )
-                loss.backward()
-                optimizer.step()
+            for batch in loader:
+                if cfg.representation.type == "qwen_vision_tokens":
+                    sequences = [transition_collate_for_qwen(seq) for seq in batch]
+                    s_cur, s_targets, action_seq, targets = _encode_vision_sequence(
+                        model=model,
+                        processor=processor,
+                        sequences=sequences,
+                        rollout_steps=cfg.train.rollout_steps,
+                        num_tokens=num_tokens,
+                        max_pixels=cfg.train.max_pixels,
+                        device=device,
+                    )
+                    if predictor is None:
+                        raise RuntimeError("vision-token training requires predictor")
+                    s_pred_seq = predictor.rollout_states(s_cur, action_seq)
+                    pred_loss = F.mse_loss(s_pred_seq.float(), s_targets.float())
+                    optimizer.zero_grad(set_to_none=True)
+                    pred_loss.backward()
+                    optimizer.step()
+                    metrics = {
+                        "loss": float(pred_loss.detach().cpu().item()),
+                        "predictor_rollout_mse": float(pred_loss.detach().cpu().item()),
+                        "rollout_steps": float(cfg.train.rollout_steps),
+                    }
+                else:
+                    items = batch
+                    eligible = [item for item in items if item.get("next_messages")]
+                    if not eligible:
+                        continue
+                    s_cur, s_next = _encode_token_states(
+                        model=model,
+                        processor=processor,
+                        token_id_map=token_id_map,
+                        items=eligible,
+                        num_tokens=cfg.representation.num_tokens,
+                        max_length=cfg.train.max_length,
+                        device=device,
+                        state_proj=state_proj,
+                    )
+                    actions = torch.tensor([item["action_index"] for item in eligible], dtype=torch.long, device=device)
+                    targets = torch.tensor(
+                        [item["action_value_target"] for item in eligible], dtype=torch.float32, device=device
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    loss, metrics = _batch_loss(
+                        cfg=cfg,
+                        predictor=predictor,
+                        value_head=value_head,
+                        s_cur=s_cur,
+                        s_next=s_next,
+                        actions=actions,
+                        targets=targets,
+                    )
+                    loss.backward()
+                    optimizer.step()
                 step += 1
                 last_metrics = {"step": float(step), "epoch": float(epoch), **metrics}
                 if writer is None:

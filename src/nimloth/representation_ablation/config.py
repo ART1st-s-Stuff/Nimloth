@@ -92,6 +92,7 @@ class TrainConfig:
     lr: float = 1.0e-4
     resume: bool = False
     save_interval: int = 500
+    rollout_steps: int = 1
     max_length: int = 12000
     max_pixels: int = 602112
     attn_implementation: str = "sdpa"
