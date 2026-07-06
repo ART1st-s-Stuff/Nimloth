@@ -91,11 +91,10 @@ export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
 export TOKENIZERS_PARALLELISM=true
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTHONPATH=${REPO}/src:${REPO}/external/le-wm
+PYTHON_BIN=${PYTHON_BIN:-${PY_VENV}/bin/python}
 export PATH=${PY_VENV}/bin:${PATH}
-# shellcheck disable=SC1091
-source "${PY_VENV}/bin/activate"
 
-python - <<PY
+"${PYTHON_BIN}" - <<PY
 from pathlib import Path
 import yaml
 
@@ -132,7 +131,7 @@ PY
   echo "=== compressed vision predictor train $(date) ==="
   echo "job=${SLURM_JOB_ID:-local} node=${SLURM_JOB_NODELIST:-local}"
   echo "repo=${REPO} commit=${COMMIT}"
-  echo "python=$(which python) py_venv=${PY_VENV}"
+  echo "python_bin=${PYTHON_BIN} py_venv=${PY_VENV}"
   echo "template=${TEMPLATE}"
   echo "train_config=${TRAIN_CONFIG}"
   echo "output=${OUT_DIR}"
@@ -141,13 +140,13 @@ PY
   echo "lambda_sigreg=${LAMBDA_SIGREG} run_eval=${RUN_EVAL}"
 } | tee -a "${LOG}"
 
-python -m nimloth.training.representation_ablation.train \
+"${PYTHON_BIN}" -m nimloth.training.representation_ablation.train \
   --config "${TRAIN_CONFIG}" \
   --output-dir "${OUT_DIR}" 2>&1 | tee -a "${LOG}"
 
 if [ "${RUN_EVAL}" = "1" ]; then
   echo "=== eval $(date) ===" | tee -a "${LOG}"
-  python -m nimloth.eval.representation_ablation \
+  "${PYTHON_BIN}" -m nimloth.eval.representation_ablation \
     --config "${EVAL_CONFIG}" \
     --output-dir "${OUT_DIR}/eval" 2>&1 | tee -a "${LOG}"
 fi
