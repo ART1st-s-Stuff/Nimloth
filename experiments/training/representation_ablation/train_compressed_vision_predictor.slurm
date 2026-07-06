@@ -27,6 +27,7 @@ QWEN_CHECKPOINT=${QWEN_CHECKPOINT:-/project/peilab/atst/nimloth/outputs/experime
 RECORDS_ROOT=${RECORDS_ROOT:-/project/peilab/atst/nimloth/experiments/navigation_baseline/runs/sft1_sft_records_vagen79_nimloth_format}
 TRAIN_JSONL=${TRAIN_JSONL:-${RECORDS_ROOT}/train_all.jsonl}
 VAL_JSONL=${VAL_JSONL:-${RECORDS_ROOT}/val_all.jsonl}
+VISION_TOKEN_CACHE_DIR=${VISION_TOKEN_CACHE_DIR:-/project/peilab/atst/nimloth/outputs/experiments/representation_ablation/cache/qwen_vision_sft2step1000_vagen79_trainall_valall_k81d2048}
 MAX_RECORDS=${MAX_RECORDS:--1}
 BATCH_SIZE=${BATCH_SIZE:-128}
 EPOCHS=${EPOCHS:-1}
@@ -76,6 +77,7 @@ cat > "${OUT_DIR}/README.md" <<README
 - qwen_checkpoint: ${QWEN_CHECKPOINT}
 - train_jsonl: ${TRAIN_JSONL}
 - val_jsonl: ${VAL_JSONL}
+- vision_token_cache_dir: ${VISION_TOKEN_CACHE_DIR}
 - split_semantics: train_all is training split; val_all is held-out validation split, per sft1_sft_records_vagen79_nimloth_format/README.md and manifest.json.
 - trainable_modules: AttentionTokenCompressor, TokenSetWMPredictor
 - frozen_modules: Qwen2.5-VL checkpoint including vision encoder
@@ -107,6 +109,7 @@ cfg["experiment"]["output_dir"] = "${OUT_DIR}"
 cfg["init"]["qwen_checkpoint"] = "${QWEN_CHECKPOINT}"
 cfg["data"]["train_jsonl"] = "${TRAIN_JSONL}"
 cfg["data"]["val_jsonl"] = "${VAL_JSONL}"
+cfg["data"]["vision_token_cache_dir"] = "${VISION_TOKEN_CACHE_DIR}"
 cfg["data"]["max_records"] = int("${MAX_RECORDS}")
 cfg["train"]["batch_size"] = int("${BATCH_SIZE}")
 cfg["train"]["epochs"] = int("${EPOCHS}")
@@ -125,6 +128,7 @@ ecfg["init"]["qwen_checkpoint"] = "${QWEN_CHECKPOINT}"
 ecfg["init"]["compressor_checkpoint"] = str(Path("${OUT_DIR}") / "compressor")
 ecfg["init"]["wm_predictor_checkpoint"] = str(Path("${OUT_DIR}") / "wm_predictor")
 ecfg["data"]["val_jsonl"] = "${VAL_JSONL}"
+ecfg["data"]["vision_token_cache_dir"] = "${VISION_TOKEN_CACHE_DIR}"
 ecfg["data"]["max_records"] = int("${EVAL_MAX_RECORDS}")
 ecfg["eval"]["batch_size"] = int("${EVAL_BATCH_SIZE}")
 ecfg["experiment"]["output_dir"] = str(Path("${OUT_DIR}") / "eval")
@@ -141,6 +145,7 @@ PY
   echo "output=${OUT_DIR}"
   echo "qwen_checkpoint=${QWEN_CHECKPOINT}"
   echo "train_jsonl=${TRAIN_JSONL} max_records=${MAX_RECORDS} batch_size=${BATCH_SIZE} epochs=${EPOCHS}"
+  echo "vision_token_cache_dir=${VISION_TOKEN_CACHE_DIR}"
   echo "lr=${LR} weight_decay=${WEIGHT_DECAY} grad_clip=${GRAD_CLIP} lambda_sigreg=${LAMBDA_SIGREG} run_eval=${RUN_EVAL}"
 } | tee -a "${LOG}"
 

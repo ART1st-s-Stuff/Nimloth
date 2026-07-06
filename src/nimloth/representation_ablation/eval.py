@@ -19,6 +19,7 @@ from nimloth.representation_ablation.config import (
     load_ablation_config,
     validate_eval_config,
 )
+from nimloth.representation_ablation.vision_token_cache import VisionTokenCache, build_vision_token_cache
 from nimloth.representation_ablation.vision_tokens import extract_qwen_vision_tokens
 from nimloth.representation_ablation.metrics import (
     EncodedTransition,
@@ -114,6 +115,7 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
     processor, token_id_map, model = load_qwen_processor_and_model(cfg, device)
     hidden_size = qwen_hidden_size(model)
     decoder = load_decoder(cfg, device=device)
+    eval_vision_cache: VisionTokenCache | None = None
 
     if cfg.representation.type == "qwen_latent":
         predictor = load_predictor(cfg, device)
@@ -191,6 +193,30 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
         num_workers=0,
         collate_fn=collate_transition_batch,
     )
+    if cfg.representation.type in {"qwen_vision_tokens", "compressed_vision_tokens"} and cfg.data.vision_token_cache_dir is not None:
+        if cfg.init.qwen_checkpoint is None:
+            raise ValueError("vision-token cache requires init.qwen_checkpoint")
+        raw_token_count = cfg.representation.input_tokens or cfg.representation.num_tokens
+        cache_dir = cfg.data.vision_token_cache_dir / "val"
+        build_vision_token_cache(
+            jsonl_path=cfg.data.val_jsonl,
+            cache_dir=cache_dir,
+            split_name="val",
+            qwen_checkpoint=cfg.init.qwen_checkpoint,
+            model=model,
+            processor=processor,
+            device=device,
+            max_pixels=cfg.eval.max_pixels,
+            expected_num_tokens=raw_token_count,
+            token_dim=cfg.representation.input_dim or cfg.representation.dim,
+            max_records=cfg.data.max_records,
+            success_only=not cfg.data.include_failed_rollouts,
+            batch_size=cfg.eval.batch_size,
+            shard_size=1024,
+            dtype="float16",
+            force=False,
+        )
+        eval_vision_cache = VisionTokenCache(cache_dir, device=device)
 
     encoded_rows: list[EncodedTransition] = []
     one_step_preds: list[torch.Tensor] = []
@@ -258,22 +284,26 @@ def evaluate(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str
                 raw_token_count = cfg.representation.input_tokens or cfg.representation.num_tokens
                 cur_paths = [item["current_image_path"] for item in eligible]
                 next_paths = [item["next_image_path"] for item in eligible]
-                s_cur = extract_qwen_vision_tokens(
-                    model,
-                    processor,
-                    cur_paths,
-                    device=device,
-                    max_pixels=cfg.eval.max_pixels,
-                    expected_num_tokens=raw_token_count,
-                ).float()
-                s_next = extract_qwen_vision_tokens(
-                    model,
-                    processor,
-                    next_paths,
-                    device=device,
-                    max_pixels=cfg.eval.max_pixels,
-                    expected_num_tokens=raw_token_count,
-                ).float()
+                if eval_vision_cache is not None:
+                    s_cur = eval_vision_cache.get_many(cur_paths).to(device=device).float()
+                    s_next = eval_vision_cache.get_many(next_paths).to(device=device).float()
+                else:
+                    s_cur = extract_qwen_vision_tokens(
+                        model,
+                        processor,
+                        cur_paths,
+                        device=device,
+                        max_pixels=cfg.eval.max_pixels,
+                        expected_num_tokens=raw_token_count,
+                    ).float()
+                    s_next = extract_qwen_vision_tokens(
+                        model,
+                        processor,
+                        next_paths,
+                        device=device,
+                        max_pixels=cfg.eval.max_pixels,
+                        expected_num_tokens=raw_token_count,
+                    ).float()
                 if compressor is not None:
                     s_cur = compressor(s_cur).float()
                     s_next = compressor(s_next).float()

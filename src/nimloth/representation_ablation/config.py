@@ -33,6 +33,7 @@ class InitConfig:
 class DataConfig:
     train_jsonl: Path | None = None
     val_jsonl: Path | None = None
+    vision_token_cache_dir: Path | None = None
     split_policy: str = "explicit_train_val"
     include_failed_rollouts: bool = True
     value_gamma: float = 1.0
@@ -102,6 +103,11 @@ class TrainConfig:
     lambda_sigreg: float = 0.0
     sigreg_num_proj: int = 1024
     sigreg_knots: int = 17
+    build_vision_token_cache: bool = True
+    force_rebuild_vision_token_cache: bool = False
+    vision_token_cache_batch_size: int = 32
+    vision_token_cache_shard_size: int = 1024
+    vision_token_cache_dtype: str = "float16"
     max_length: int = 12000
     max_pixels: int = 602112
     attn_implementation: str = "sdpa"
@@ -156,6 +162,7 @@ _PATH_FIELDS = {
     "decoder_checkpoint",
     "train_jsonl",
     "val_jsonl",
+    "vision_token_cache_dir",
 }
 
 

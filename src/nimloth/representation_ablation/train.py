@@ -28,6 +28,7 @@ from nimloth.representation_ablation.modules import (
 )
 from nimloth.representation_ablation.qwen_tokens import expand_latent_markers_in_messages, extract_latent_token_set
 from nimloth.representation_ablation.token_set import TokenSetPredictorConfig, TokenSetValueHead, TokenSetWMPredictor
+from nimloth.representation_ablation.vision_token_cache import VisionTokenCache, build_vision_token_cache
 from nimloth.representation_ablation.vision_tokens import extract_qwen_vision_tokens
 from nimloth.training.common.qwen_batch import build_qwen_batch
 
@@ -209,25 +210,32 @@ def _encode_vision_sequence(
     num_tokens: int,
     max_pixels: int,
     device: torch.device,
+    vision_cache: VisionTokenCache | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     start_paths = [seq[0]["current_image_path"] for seq in sequences]
-    s0 = extract_qwen_vision_tokens(
-        model,
-        processor,
-        start_paths,
-        device=device,
-        max_pixels=max_pixels,
-        expected_num_tokens=num_tokens,
-    ).float()
+    if vision_cache is not None:
+        s0 = vision_cache.get_many(start_paths).to(device=device).float()
+    else:
+        s0 = extract_qwen_vision_tokens(
+            model,
+            processor,
+            start_paths,
+            device=device,
+            max_pixels=max_pixels,
+            expected_num_tokens=num_tokens,
+        ).float()
     target_paths = [item["next_image_path"] for seq in sequences for item in seq]
-    target_tokens = extract_qwen_vision_tokens(
-        model,
-        processor,
-        target_paths,
-        device=device,
-        max_pixels=max_pixels,
-        expected_num_tokens=num_tokens,
-    ).float()
+    if vision_cache is not None:
+        target_tokens = vision_cache.get_many(target_paths).to(device=device).float()
+    else:
+        target_tokens = extract_qwen_vision_tokens(
+            model,
+            processor,
+            target_paths,
+            device=device,
+            max_pixels=max_pixels,
+            expected_num_tokens=num_tokens,
+        ).float()
     targets = target_tokens.view(len(sequences), rollout_steps, num_tokens, -1)
     actions = torch.tensor(
         [[item["action_index"] for item in seq] for seq in sequences], dtype=torch.long, device=device
@@ -340,6 +348,33 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
     if state_proj is not None:
         freeze_module(state_proj)
 
+    train_vision_cache: VisionTokenCache | None = None
+    if cfg.representation.type in {"qwen_vision_tokens", "compressed_vision_tokens"} and cfg.data.vision_token_cache_dir is not None:
+        if cfg.init.qwen_checkpoint is None:
+            raise ValueError("vision-token cache requires init.qwen_checkpoint")
+        cache_dir = cfg.data.vision_token_cache_dir / "train"
+        if cfg.train.build_vision_token_cache:
+            assert cfg.data.train_jsonl is not None
+            build_vision_token_cache(
+                jsonl_path=cfg.data.train_jsonl,
+                cache_dir=cache_dir,
+                split_name="train",
+                qwen_checkpoint=cfg.init.qwen_checkpoint,
+                model=model,
+                processor=processor,
+                device=device,
+                max_pixels=cfg.train.max_pixels,
+                expected_num_tokens=vision_input_tokens,
+                token_dim=cfg.representation.input_dim or cfg.representation.dim,
+                max_records=cfg.data.max_records,
+                success_only=not cfg.data.include_failed_rollouts,
+                batch_size=cfg.train.vision_token_cache_batch_size,
+                shard_size=cfg.train.vision_token_cache_shard_size,
+                dtype=cfg.train.vision_token_cache_dtype,  # type: ignore[arg-type]
+                force=cfg.train.force_rebuild_vision_token_cache,
+            )
+        train_vision_cache = VisionTokenCache(cache_dir, device=device)
+
     predictor = (
         _make_predictor(cfg, emb_dim=emb_dim, num_tokens=num_tokens, device=device)
         if cfg.train.target in {"predictor", "predictor_value"}
@@ -413,6 +448,7 @@ def train(cfg: AblationConfig, *, output_dir: Path | None = None) -> dict[str, f
                         num_tokens=vision_input_tokens,
                         max_pixels=cfg.train.max_pixels,
                         device=device,
+                        vision_cache=train_vision_cache,
                     )
                     if predictor is None:
                         raise RuntimeError("vision-token training requires predictor")

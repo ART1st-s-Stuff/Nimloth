@@ -19,6 +19,7 @@ init:
 data:
   train_jsonl: null
   val_jsonl: null
+  vision_token_cache_dir: null
   split_policy: explicit_train_val
   include_failed_rollouts: true
   value_gamma: 1.0
@@ -75,6 +76,11 @@ train:
   lambda_sigreg: 0.09
   sigreg_num_proj: 1024
   sigreg_knots: 17
+  build_vision_token_cache: true
+  force_rebuild_vision_token_cache: false
+  vision_token_cache_batch_size: 32
+  vision_token_cache_shard_size: 1024
+  vision_token_cache_dtype: float16
   max_length: 12000
   max_pixels: 602112
   attn_implementation: sdpa

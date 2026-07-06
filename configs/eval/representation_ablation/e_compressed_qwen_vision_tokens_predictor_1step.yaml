@@ -19,6 +19,7 @@ init:
 data:
   train_jsonl: null
   val_jsonl: null
+  vision_token_cache_dir: null
   split_policy: explicit_train_val
   include_failed_rollouts: true
   value_gamma: 1.0
