@@ -310,8 +310,9 @@ run_shard() {
   local seed_end=$4
   local split_dir="${RUN_DIR}/validation/${split_name}/${shard_name}"
   local out_jsonl="${split_dir}/${CHECKPOINT_STEP}.jsonl"
+  local val_only_jsonl="${split_dir}/0.jsonl"
   mkdir -p "${split_dir}"
-  if [ -s "${out_jsonl}" ]; then
+  if [ -s "${out_jsonl}" ] || [ -s "${val_only_jsonl}" ]; then
     echo "[skip] ${split_name}/${shard_name} already done" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
     return 0
   fi
