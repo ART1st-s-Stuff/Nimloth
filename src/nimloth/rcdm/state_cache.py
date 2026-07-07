@@ -313,7 +313,7 @@ class RCDMStateCacheDataset(Dataset):
     def __len__(self) -> int:
         return len(self.index)
 
-    @lru_cache(maxsize=4)
+    @lru_cache(maxsize=64)
     def _load_shard(self, shard_idx: int) -> dict[str, Any]:
         shard = self.manifest.shards[shard_idx]
         return _load_payload(self.cache_dir / str(shard["file"]))

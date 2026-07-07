@@ -28,8 +28,10 @@ VAL_JSONL=${VAL_JSONL:-${RECORDS_ROOT}/val_all.jsonl}
 STATE_CACHE_DIR=${STATE_CACHE_DIR:-/project/peilab/atst/nimloth/outputs/experiments/representation_ablation/cache/rcdm_gt_compressed_rollout4_b128_current}
 EPOCHS=${EPOCHS:-5}
 PER_RANK_BATCH_SIZE=${PER_RANK_BATCH_SIZE:-8}
-SAVE_INTERVAL=${SAVE_INTERVAL:-1000}
+SAVE_INTERVAL=${SAVE_INTERVAL:-500}
 MAX_VAL_BATCHES=${MAX_VAL_BATCHES:-32}
+RESUME=${RESUME:-0}
+RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-}
 WANDB_ENTITY=${WANDB_ENTITY:-art2nd-hong-kong-university-of-science-and-technology}
 WANDB_PROJECT=${WANDB_PROJECT:-nimloth}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-${RUN_NAME}_${SLURM_JOB_ID:-local}}
@@ -80,8 +82,16 @@ cat > "${OUT_DIR}/README.md" <<README
 - wandb_entity: ${WANDB_ENTITY}
 - wandb_project: ${WANDB_PROJECT}
 - wandb_run_name: ${WANDB_RUN_NAME}
-- resume: use \`--resume --output-dir ${OUT_DIR}\` or \`--resume-checkpoint ${OUT_DIR}/training_state_*.pt\` with the same cache.
+- resume: use \`RESUME=1 OUT_DIR=${OUT_DIR}\` or \`RESUME_CHECKPOINT=${OUT_DIR}/training_state_*.pt OUT_DIR=${OUT_DIR}\` with the same cache.
 README
+
+RESUME_ARGS=()
+if [[ "${RESUME}" == "1" ]]; then
+  RESUME_ARGS+=(--resume)
+fi
+if [[ -n "${RESUME_CHECKPOINT}" ]]; then
+  RESUME_ARGS+=(--resume-checkpoint "${RESUME_CHECKPOINT}")
+fi
 
 {
   echo "=== RCDM 4GPU GT compressed train $(date) ==="
@@ -89,7 +99,8 @@ README
   echo "python_bin=${PYTHON_BIN}"
   echo "out=${OUT_DIR}"
   echo "state_cache=${STATE_CACHE_DIR}"
-  echo "epochs=${EPOCHS} per_rank_batch=${PER_RANK_BATCH_SIZE} effective_batch=$((PER_RANK_BATCH_SIZE * 4))"
+  echo "epochs=${EPOCHS} per_rank_batch=${PER_RANK_BATCH_SIZE} effective_batch=$((PER_RANK_BATCH_SIZE * 4)) save_interval=${SAVE_INTERVAL}"
+  echo "resume=${RESUME} resume_checkpoint=${RESUME_CHECKPOINT}"
   echo "wandb_entity=${WANDB_ENTITY} wandb_project=${WANDB_PROJECT}"
 } | tee -a "${LOG}"
 
@@ -111,6 +122,7 @@ README
   --weight-decay 0.0 \
   --grad-clip 1.0 \
   --save-interval "${SAVE_INTERVAL}" \
+  "${RESUME_ARGS[@]}" \
   --max-val-batches "${MAX_VAL_BATCHES}" \
   --wandb-project "${WANDB_PROJECT}" \
   --wandb-run-name "${WANDB_RUN_NAME}" 2>&1 | tee -a "${LOG}"
