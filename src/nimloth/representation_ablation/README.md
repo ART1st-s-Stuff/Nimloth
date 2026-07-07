@@ -13,6 +13,12 @@
 - vision-token predictor diagnostic 使用 Qwen vision encoder 的直接输出，不使用 `<|image_pad|>` 的 LLM hidden states；目前支持 1-step 与 4-step autoregressive predictor 训练配置。
 - compressed-vision predictor diagnostic 使用 attention/Perceiver-style compressor 将 raw Qwen vision tokens 压到 K 个 tokens，再用 LeWM-style predictor loss + SIGReg 训练 compressor/predictor；offline eval 支持 one-step 与 multistep token metrics；不使用 reconstruction loss。RCDM direct-concat visualization 尚未接入。
 
+## 2026-07-07 Reconstruction diagnostic status
+
+- GT compressed-token deterministic tiny overfit shows the compressed tokens contain enough image information to reconstruct train samples, so the main observed bottleneck is decoder/reconstruction design rather than total compressor information loss.
+- Full token-conditioned CFM gives the clearest current held-out rollout visualization, but flow-loss condition sensitivity is weak (`~1.05x` shuffled/correct).
+- Continuing full CFM with condition dropout `0.15` and CFG did not materially improve sensitivity (`~1.04x` shuffled/correct; unconditional MSE not worse than correct). CFG scale `2.0` visually sharpens samples but can hallucinate structure, so it should be treated as qualitative visualization only.
+
 Phase 2 基础模块：
 
 - `qwen_tokens.py`：多 latent marker 展开、最后一组连续 latent token hidden 提取。
