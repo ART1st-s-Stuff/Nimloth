@@ -32,8 +32,8 @@ SAVE_INTERVAL=${SAVE_INTERVAL:-500}
 MAX_VAL_BATCHES=${MAX_VAL_BATCHES:-32}
 RESUME=${RESUME:-0}
 RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-}
-WANDB_ENTITY=${WANDB_ENTITY:-art2nd-hong-kong-university-of-science-and-technology}
-WANDB_PROJECT=${WANDB_PROJECT:-nimloth}
+REQUESTED_WANDB_ENTITY=${WANDB_ENTITY:-art2nd-hong-kong-university-of-science-and-technology}
+REQUESTED_WANDB_PROJECT=${WANDB_PROJECT:-nimloth}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:-${RUN_NAME}_${SLURM_JOB_ID:-local}}
 
 cd "${REPO}"
@@ -50,14 +50,14 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTHONPATH=${REPO}/src:${REPO}/external/le-wm
 export PATH=${PY_VENV}/bin:${PATH}
 export WANDB_DIR=${OUT_DIR}/wandb
-export WANDB_ENTITY=${WANDB_ENTITY}
 if [[ -f /project/peilab/atst/flower/.env ]]; then
   set -a
   # shellcheck disable=SC1091
   source /project/peilab/atst/flower/.env
   set +a
-  export WANDB_ENTITY=${WANDB_ENTITY}
 fi
+export WANDB_ENTITY=${REQUESTED_WANDB_ENTITY}
+export WANDB_PROJECT=${REQUESTED_WANDB_PROJECT}
 export OMP_NUM_THREADS=8
 
 cat > "${OUT_DIR}/README.md" <<README
@@ -79,8 +79,8 @@ cat > "${OUT_DIR}/README.md" <<README
 - lr: 1e-4
 - RCDM flags: upstream 128px flags from RCDM README.
 - output_dir: ${OUT_DIR}
-- wandb_entity: ${WANDB_ENTITY}
-- wandb_project: ${WANDB_PROJECT}
+- wandb_entity: ${REQUESTED_WANDB_ENTITY}
+- wandb_project: ${REQUESTED_WANDB_PROJECT}
 - wandb_run_name: ${WANDB_RUN_NAME}
 - resume: use \`RESUME=1 OUT_DIR=${OUT_DIR}\` or \`RESUME_CHECKPOINT=${OUT_DIR}/training_state_*.pt OUT_DIR=${OUT_DIR}\` with the same cache.
 README
@@ -101,7 +101,7 @@ fi
   echo "state_cache=${STATE_CACHE_DIR}"
   echo "epochs=${EPOCHS} per_rank_batch=${PER_RANK_BATCH_SIZE} effective_batch=$((PER_RANK_BATCH_SIZE * 4)) save_interval=${SAVE_INTERVAL}"
   echo "resume=${RESUME} resume_checkpoint=${RESUME_CHECKPOINT}"
-  echo "wandb_entity=${WANDB_ENTITY} wandb_project=${WANDB_PROJECT}"
+  echo "wandb_entity=${REQUESTED_WANDB_ENTITY} wandb_project=${REQUESTED_WANDB_PROJECT}"
 } | tee -a "${LOG}"
 
 "${PYTHON_BIN}" -m torch.distributed.run \
@@ -124,7 +124,7 @@ fi
   --save-interval "${SAVE_INTERVAL}" \
   "${RESUME_ARGS[@]}" \
   --max-val-batches "${MAX_VAL_BATCHES}" \
-  --wandb-project "${WANDB_PROJECT}" \
+  --wandb-project "${REQUESTED_WANDB_PROJECT}" \
   --wandb-run-name "${WANDB_RUN_NAME}" 2>&1 | tee -a "${LOG}"
 
 echo "=== done $(date) output=${OUT_DIR} ===" | tee -a "${LOG}"
