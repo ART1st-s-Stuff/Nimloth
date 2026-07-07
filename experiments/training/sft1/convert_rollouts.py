@@ -56,6 +56,28 @@ ACTION_NAMES = list(ACTION_NAMES)
 ACTION_TO_IDX = dict(ACTION_TO_IDX)
 ACTION_TOKEN = dict(ACTION_TOKEN)
 SPECIAL_TOKENS = list(SPECIAL_TOKENS)
+ACTION_ALIASES = {
+    "moveahead": "move_forward",
+    "moveforward": "move_forward",
+    "move_forward": "move_forward",
+    "moveback": "move_backward",
+    "movebackward": "move_backward",
+    "move_backward": "move_backward",
+    "moveright": "move_right",
+    "move_right": "move_right",
+    "moveleft": "move_left",
+    "move_left": "move_left",
+    "rotateright": "turn_right",
+    "turnright": "turn_right",
+    "turn_right": "turn_right",
+    "rotateleft": "turn_left",
+    "turnleft": "turn_left",
+    "turn_left": "turn_left",
+    "lookup": "look_up",
+    "look_up": "look_up",
+    "lookdown": "look_down",
+    "look_down": "look_down",
+}
 
 IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"
@@ -64,7 +86,10 @@ ASSISTANT_RE = re.compile(r"<\|im_start\|>assistant\n(.*?)(?:<\|im_end\|>|\Z)", 
 USER_RE = re.compile(r"<\|im_start\|>user\n(.*?)(?:<\|im_end\|>|\Z)", re.S)
 SYSTEM_RE = re.compile(r"<\|im_start\|>system\n(.*?)(?:<\|im_end\|>|\Z)", re.S)
 ACTION_RE = re.compile(r"<action>\s*([^<]+?)\s*</action>", re.S)
+PLAIN_ACTION_RE = re.compile(r"(?:^|\n)\s*action\s*[:：]?\s*([^\n<|]+)", re.I)
+NIMLOTH_ACTION_RE = re.compile(r"<\|action_\((\d+)\)\|>")
 THINK_RE = re.compile(r"<think>(.*?)</think>", re.S)
+PLAIN_THINK_RE = re.compile(r"(?:^|\n)\s*think\s*[:：]?\s*(.*?)(?=(?:\n\s*action\s*[:：]?)|$)", re.I | re.S)
 
 
 @dataclass(frozen=True)
@@ -157,28 +182,50 @@ def parse_output_messages(text: str) -> list[dict[str, str]]:
     return messages
 
 
-def extract_action(text: str) -> str | None:
-    m = ACTION_RE.search(text)
-    if not m:
-        return None
-    raw = m.group(1).strip()
+def _normalize_action(raw: str) -> str | None:
+    raw = raw.strip().lower()
     # VAGEN parse accepts separators in some prompts; SFT1 single-action design
     # uses the first extracted primitive.
-    for sep in [",", ";", "\n", " and "]:
+    for sep in [",", ";", "\n", " and ", "|"]:
         if sep in raw:
             raw = raw.split(sep)[0].strip()
-    raw = raw.strip(" []'\"")
-    if raw in ACTION_TO_IDX:
-        return raw
-    for name in ACTION_NAMES:
-        if name in raw:
+    raw = raw.strip(" []'\".，。")
+    raw_compact = raw.replace(" ", "_").replace("-", "_")
+    if raw_compact in ACTION_ALIASES:
+        return ACTION_ALIASES[raw_compact]
+    if raw_compact in ACTION_TO_IDX:
+        return raw_compact
+    for alias, name in ACTION_ALIASES.items():
+        if alias in raw_compact:
             return name
+    for name in ACTION_NAMES:
+        if name in raw_compact:
+            return name
+    return None
+
+
+def extract_action(text: str) -> str | None:
+    m_tok = NIMLOTH_ACTION_RE.search(text)
+    if m_tok:
+        idx = int(m_tok.group(1))
+        if 0 <= idx < len(ACTION_NAMES):
+            return ACTION_NAMES[idx]
+    for regex in (ACTION_RE, PLAIN_ACTION_RE):
+        m = regex.search(text)
+        if m:
+            action = _normalize_action(m.group(1))
+            if action is not None:
+                return action
     return None
 
 
 def convert_assistant(content: str) -> tuple[str, str | None, str | None]:
     think_m = THINK_RE.search(content)
-    think = think_m.group(1).strip() if think_m else ""
+    if think_m:
+        think = think_m.group(1).strip()
+    else:
+        plain_think_m = PLAIN_THINK_RE.search(content)
+        think = plain_think_m.group(1).strip() if plain_think_m else ""
     action = extract_action(content)
     if action is None:
         # Keep malformed/non-action responses auditable but not trainable.
@@ -195,42 +242,31 @@ def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], 
     thinks: list[str] = []
     warnings: list[str] = []
 
-    input_messages = parse_im_messages(obj.get("input", ""))
-    output_messages = parse_output_messages(obj.get("output", ""))
+    if "output_str" in obj and not (obj.get("input") or obj.get("output")):
+        raw_messages = parse_im_messages(obj.get("output_str", ""))
+        if raw_messages and raw_messages[-1]["role"] == "assistant" and not raw_messages[-1]["content"].strip():
+            raw_messages = raw_messages[:-1]
+        if not raw_messages:
+            warnings.append("missing_output_str_messages")
+    else:
+        input_messages = parse_im_messages(obj.get("input", ""))
+        output_messages = parse_output_messages(obj.get("output", ""))
+        # VAGEN input stores the assistant generation prompt as an empty trailing
+        # assistant message. It is not a supervised response and must be dropped.
+        if input_messages and input_messages[-1]["role"] == "assistant" and not input_messages[-1]["content"].strip():
+            input_messages = input_messages[:-1]
+        if not input_messages:
+            warnings.append("missing_input_messages")
+        raw_messages = input_messages + output_messages
 
-    # VAGEN input stores the assistant generation prompt as an empty trailing
-    # assistant message. It is not a supervised response and must be dropped.
-    if input_messages and input_messages[-1]["role"] == "assistant" and not input_messages[-1]["content"].strip():
-        input_messages = input_messages[:-1]
-
-    if not input_messages:
-        warnings.append("missing_input_messages")
-    for msg in input_messages:
+    for msg in raw_messages:
         if msg["role"] == "assistant":
             converted, action, think = convert_assistant(msg["content"])
             msg = {"role": "assistant", "content": converted}
             if action:
                 actions.append(action)
             else:
-                warnings.append("missing_action_in_input_assistant")
-            if think is not None:
-                thinks.append(think)
-        else:
-            msg = {"role": msg["role"], "content": rewrite_prompt_instruction(msg["content"])}
-        messages.append(msg)
-
-    # `output` starts with the first assistant response and then alternates
-    # user/assistant for later turns. Drop any duplicate leading messages already
-    # present in input if VAGEN ever changes the split point; current dumps have
-    # input = system+initial user only.
-    for msg in output_messages:
-        if msg["role"] == "assistant":
-            converted, action, think = convert_assistant(msg["content"])
-            msg = {"role": "assistant", "content": converted}
-            if action:
-                actions.append(action)
-            else:
-                warnings.append("missing_action_in_output_assistant")
+                warnings.append("missing_action_in_assistant")
             if think is not None:
                 thinks.append(think)
         else:
@@ -248,7 +284,11 @@ def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], 
     return deduped, actions, thinks, warnings
 
 
-def image_paths_for(source_jsonl: Path, step: int, record_idx: int) -> list[str]:
+def image_paths_for(source_jsonl: Path, step: int, record_idx: int, payload: dict[str, Any] | None = None) -> list[str]:
+    if payload:
+        explicit = payload.get("image_paths")
+        if isinstance(explicit, list) and explicit:
+            return [str(Path(p).resolve()) for p in explicit]
     image_dir = source_jsonl.parent / f"image_{step}" / f"images_{record_idx}"
     if not image_dir.exists():
         return []
@@ -295,11 +335,13 @@ def validate_record(messages: list[dict[str, str]], image_paths: list[str], acti
 
 def convert_one(src: SourceRecord) -> dict[str, Any]:
     obj = src.payload
+    metrics = obj.get("metrics", {}) if isinstance(obj.get("metrics"), dict) else {}
     step = int(obj.get("step", 50))
     messages, actions, thinks, warnings = split_messages(src)
-    image_paths = image_paths_for(src.jsonl_path, step, src.line_index)
+    image_paths = image_paths_for(src.jsonl_path, step, src.line_index, obj)
     issues = validate_record(messages, image_paths, actions)
-    success = float(obj.get("traj_success", 0.0) or 0.0) >= 1.0
+    traj_success = obj.get("traj_success", metrics.get("success", 0.0))
+    success = bool(traj_success) if isinstance(traj_success, bool) else float(traj_success or 0.0) >= 1.0
     return {
         "id": f"{src.split}/{src.shard}/{src.line_index:06d}",
         "split": src.split,
@@ -308,9 +350,9 @@ def convert_one(src: SourceRecord) -> dict[str, Any]:
         "source_line_index": src.line_index,
         "step": step,
         "success": success,
-        "traj_success": float(obj.get("traj_success", 0.0) or 0.0),
-        "reward": float(obj.get("reward", obj.get("score", 0.0)) or 0.0),
-        "score": float(obj.get("score", 0.0) or 0.0),
+        "traj_success": float(traj_success or 0.0),
+        "reward": float(obj.get("reward", obj.get("score", metrics.get("score", 0.0))) or 0.0),
+        "score": float(obj.get("score", metrics.get("score", 0.0)) or 0.0),
         "messages": messages,
         "image_paths": image_paths,
         "actions": actions,
