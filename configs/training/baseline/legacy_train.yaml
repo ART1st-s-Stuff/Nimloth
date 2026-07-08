@@ -9,9 +9,9 @@ navigation_base:
     render_mode: vision
     prompt_format: wm
     use_state_reward: false
-    eval_set: base
+    eval_set: base_train
     max_actions_per_step: 1
-  train_size: 10000
+  train_size: 1200
   test_size: 0
 
 navigation_common:
@@ -20,7 +20,7 @@ navigation_common:
     render_mode: vision
     prompt_format: wm
     use_state_reward: false
-    eval_set: common_sense
+    eval_set: common_sense_train
     max_actions_per_step: 1
-  train_size: 10000
+  train_size: 1200
   test_size: 0

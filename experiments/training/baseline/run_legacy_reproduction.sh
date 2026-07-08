@@ -33,6 +33,8 @@ HIGH_LEVEL_GAMMA=${HIGH_LEVEL_GAMMA:-0.95}
 TRAIN_GPUS_PER_NODE=${TRAIN_GPUS_PER_NODE:-4}
 TRAIN_NODES=${TRAIN_NODES:-2}
 SERVICE_BASE_URL=${SERVICE_BASE_URL:-http://127.0.0.1:5000}
+RESUME_MODE=${RESUME_MODE:-auto}
+RESUME_FROM_PATH=${RESUME_FROM_PATH:-}
 AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-8}
 VAGEN_MAX_PROMPT_LENGTH=${VAGEN_MAX_PROMPT_LENGTH:-3000}
 VAGEN_MAX_RESPONSE_LENGTH=${VAGEN_MAX_RESPONSE_LENGTH:-20000}
@@ -45,6 +47,11 @@ if [ "${ENABLE_WANDB}" = "1" ]; then
   LOGGER_HYDRA="['console','wandb']"
 else
   LOGGER_HYDRA="['console']"
+fi
+
+RESUME_ARGS=("trainer.resume_mode=${RESUME_MODE}")
+if [ -n "${RESUME_FROM_PATH}" ]; then
+  RESUME_ARGS+=("trainer.resume_from_path=${RESUME_FROM_PATH}")
 fi
 
 mkdir -p "${RUN_DIR}" "${DATA_DIR}" "${SAVE_CHECKPOINT_DIR}"
@@ -67,6 +74,7 @@ cd "${BASEDIR}"
   echo "service_base_url=${SERVICE_BASE_URL}"
   echo "adv_estimator=bi_level_gae prompt_format=wm use_state_reward=false reward_model.enable=false"
   echo "gamma=${ALGORITHM_GAMMA} high_level_gamma=${HIGH_LEVEL_GAMMA} total_steps=${TOTAL_STEPS} total_epochs=${TOTAL_EPOCHS} save_freq=${SAVE_FREQ} test_freq=${TEST_FREQ}"
+  echo "resume_mode=${RESUME_MODE} resume_from_path=${RESUME_FROM_PATH:-<auto-from-default_local_dir>}"
   echo "resources train_nodes=${TRAIN_NODES} train_gpus_per_node=${TRAIN_GPUS_PER_NODE}"
 } | tee -a "${LOG_FILE}"
 
@@ -149,6 +157,7 @@ PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
   trainer.total_epochs="${TOTAL_EPOCHS}" \
   trainer.total_training_steps="${TOTAL_STEPS}" \
   trainer.default_local_dir="${SAVE_CHECKPOINT_DIR}" \
+  "${RESUME_ARGS[@]}" \
   trainer.val_before_train=True \
   trainer.val_generations_to_log_to_wandb=8 \
   trainer.validation_data_dir="${RUN_DIR}/validation" \

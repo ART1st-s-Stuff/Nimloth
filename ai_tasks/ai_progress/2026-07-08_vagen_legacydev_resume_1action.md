@@ -11,7 +11,7 @@
 2. 提交并 push `exp/vagen-1action`。
 3. 在 superpod 创建对应远程 worktree，同步到该 commit，初始化 submodule。
 4. 新建服务器输出目录与 README；把 `/project/peilab/atst/vagen_ckpt` 以 `global_step_300` 的形式挂到新 run 的 `checkpoints/` 下。
-5. 提交外部 env + 训练 job（优先用当前空闲的 preempt 资源），并监控到健康启动。
+5. 使用 **legacy service** 路径（`legacy_preempt_reproduction.slurm` + `run_legacy_reproduction.sh`）启动 1 env node + 1 train node 的 resume 训练，并监控到健康启动。
 
 ## Current status
 - 已确认本地新 worktree：`/workspace/remote2/nimloth-exp-vagen-1action`
@@ -24,12 +24,19 @@
 - 已在 superpod 创建远程 worktree：`/project/peilab/atst/nimloth/.worktree/exp-vagen-1action`。
 - 已确认 superpod 直接 `python3` 缺少 `gym`，不能直接跑当前 VAGEN；因此为 `env_external_4gpu.slurm` 和 `train_resume.slurm` 补上显式 `source /project/peilab/atst/nimloth/.venv/bin/activate`。
 - 已在远程 worktree 用 `.venv` 成功 import `vagen.env.navigation.env.NavigationEnv`，并确认 `ValidEvalSets` 包含 `base_train`。
+- 已验证 `vagen.server.server` 与 `vagen.trainer.main_ppo` 在远程 worktree + `.venv` 下可导入，说明 legacy service 路径可用。
+- 已确认之前尝试直接复用 `train_resume.slurm` / `env_external_4gpu.slurm` 不适配 legacy-dev：
+  - `vagen.envs.navigation.serve` 模块不存在；
+  - `vagen/gym_agent_dataset.py` 文件不存在；
+  - 因此已决定改走 legacy service 方案，而不是继续补现代 external-env 路径。
 
 ## Files modified
 - `.gitmodules`
 - `external/VAGEN` (submodule pointer)
+- `configs/training/baseline/legacy_train.yaml`
 - `experiments/training/baseline/env_external_4gpu.slurm`
 - `experiments/training/baseline/train_resume.slurm`
+- `experiments/training/baseline/run_legacy_reproduction.sh`
 - `ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`
 
 ## Validation so far
@@ -39,8 +46,11 @@
 - 服务器 `torch.load('/project/peilab/atst/vagen_ckpt/actor/extra_state_world_size_8_rank_0.pt', weights_only=False)`
 - `./.local/scripts/query-resources.sh --only-free-gpu`
 - `bash -n experiments/training/baseline/train_resume.slurm experiments/training/baseline/env_external_4gpu.slurm`
+- `bash -n experiments/training/baseline/run_legacy_reproduction.sh experiments/training/baseline/legacy_preempt_reproduction.slurm`
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
+- 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
 
 ## Open questions / assumptions
 - 当前按“再训练 30 个 global step”解释为 **300 -> 330**。若人类实际想要别的终点，需要改 `trainer.total_training_steps`。
-- 当前 normal 分区没有整块 8-GPU 空闲节点，因此计划优先用 `preempt`：1 个 4-GPU env 节点 + 1 个 8-GPU train 节点。
+- 当前 normal 分区没有整块 8-GPU 空闲节点，因此计划优先用 `preempt`：1 个 env 节点 + 1 个 8-GPU train 节点。
+- `dgx-11` 只有 2 张 AI2-THOR-good GPU（physical 2/3）；若沿用该节点做 env，需要把 env 进程数设为 2。
