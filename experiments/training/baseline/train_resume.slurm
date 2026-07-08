@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-REPO=/project/peilab/atst/nimloth
+REPO=${REPO:-/project/peilab/atst/nimloth}
 SL=/cm/shared/apps/slurm/current/bin
 SCRIPTDIR=${REPO}/experiments/training/baseline
 CONFIG_DIR=${REPO}/configs/training/baseline

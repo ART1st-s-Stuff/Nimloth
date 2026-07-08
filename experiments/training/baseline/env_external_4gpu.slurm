@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-REPO=/project/peilab/atst/nimloth
+REPO=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${REPO}/experiments/training/baseline
 BASEDIR=${REPO}/external/VAGEN
 PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv}
