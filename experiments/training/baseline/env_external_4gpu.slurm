@@ -16,6 +16,7 @@ set -euo pipefail
 REPO=/project/peilab/atst/nimloth
 SCRIPTDIR=${REPO}/experiments/training/baseline
 BASEDIR=${REPO}/external/VAGEN
+PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv}
 RUN_DATE=${RUN_DATE:-$(date +%Y-%m-%d)}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-vagen_nav_baseline}
 RUN_DIR=${RUN_DIR:-${REPO}/outputs/experiments/training/baseline/${RUN_DATE}/${EXPERIMENT_NAME}}
@@ -32,6 +33,8 @@ rm -f "${CONTROL_DIR}/ready" "${CONTROL_DIR}/failed"
 export TMPDIR=/tmp/vagen-env-ext4-${USER}-${SLURM_JOB_ID}
 mkdir -p "$TMPDIR"
 
+# shellcheck disable=SC1091
+source "${PYTHON_ENV}/bin/activate"
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
 # shellcheck disable=SC1091

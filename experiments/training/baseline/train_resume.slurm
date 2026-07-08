@@ -19,6 +19,7 @@ SL=/cm/shared/apps/slurm/current/bin
 SCRIPTDIR=${REPO}/experiments/training/baseline
 CONFIG_DIR=${REPO}/configs/training/baseline
 BASEDIR=${REPO}/external/VAGEN
+PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv}
 
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-vagen_nav_baseline}
 RUN_DATE=${RUN_DATE:-}
@@ -65,6 +66,9 @@ fi
 
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${REPO}/outputs/experiments/training/baseline/slurm"
 
+# shellcheck disable=SC1091
+source "${PYTHON_ENV}/bin/activate"
+
 if [ "${ENABLE_WANDB}" = "1" ]; then
   WANDB_ID_FILE="${RUN_DIR}/wandb_run_id.txt"
   if [ -f "${WANDB_ID_FILE}" ]; then
@@ -79,7 +83,7 @@ cleanup() {
   echo "=== resume train cleanup at $(date) ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   NODES=($($SL/scontrol show hostnames "$SLURM_JOB_NODELIST" 2>/dev/null || true))
   for node in "${NODES[@]:-}"; do
-    $SL/srun --overlap --nodes=1 --ntasks=1 -w "$node" bash -lc 'ray stop --force >/dev/null 2>&1 || true' >/dev/null 2>&1 || true
+    $SL/srun --overlap --nodes=1 --ntasks=1 -w "$node" bash -lc "source '${PYTHON_ENV}/bin/activate'; ray stop --force >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
   done
 }
 trap cleanup EXIT
@@ -148,9 +152,11 @@ source "${SCRIPTDIR}/vagen_env_repro_cli.inc.sh"
 for node in "${NODES[@]}"; do
   $SL/srun --overlap --nodes=1 --ntasks=1 -w "$node" bash -lc "
     REPO='${REPO}'
-  # shellcheck disable=SC1091
-  source '${SCRIPTDIR}/common_env.sh'
-  ray stop --force >/dev/null 2>&1 || true
+    # shellcheck disable=SC1091
+    source '${PYTHON_ENV}/bin/activate'
+    # shellcheck disable=SC1091
+    source '${SCRIPTDIR}/common_env.sh'
+    ray stop --force >/dev/null 2>&1 || true
   pkill -u \$USER -f 'vllm|VLLM|sglang|SGLangHttpServer|sglang_server|torch/_inductor/compile_worker' >/dev/null 2>&1 || true
   " || true
 done
@@ -159,6 +165,8 @@ sleep 10
 $SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
   set -euo pipefail
   REPO='${REPO}'
+  # shellcheck disable=SC1091
+  source '${PYTHON_ENV}/bin/activate'
   # shellcheck disable=SC1091
   source '${SCRIPTDIR}/common_env.sh'
   CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ray start --head \
@@ -176,6 +184,8 @@ if [ "${TRAIN_NODES}" -ge 2 ] && [ -n "${WORKER_NODE}" ]; then
     set -euo pipefail
     REPO='${REPO}'
     # shellcheck disable=SC1091
+    source '${PYTHON_ENV}/bin/activate'
+    # shellcheck disable=SC1091
     source '${SCRIPTDIR}/common_env.sh'
     CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 ray start --address='${IP_HEAD}' \
       --num-cpus=160 \
@@ -191,6 +201,8 @@ ray_ready=0
 for i in $(seq 1 60); do
   ray_gpus=$($SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
     REPO='${REPO}'
+    # shellcheck disable=SC1091
+    source '${PYTHON_ENV}/bin/activate'
     # shellcheck disable=SC1091
     source '${SCRIPTDIR}/common_env.sh'
     python3 - <<'PY'
@@ -221,6 +233,8 @@ set +e
 $SL/srun --overlap --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
   set -euo pipefail
   REPO='${REPO}'
+  # shellcheck disable=SC1091
+  source '${PYTHON_ENV}/bin/activate'
   # shellcheck disable=SC1091
   source '${SCRIPTDIR}/common_env.sh'
   # shellcheck disable=SC1091
