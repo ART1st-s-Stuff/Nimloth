@@ -48,6 +48,14 @@ VAL_BATCH_SIZE=24
 AGENT_NUM_WORKERS=12
 AGENT_MAX_CONCURRENT_TRAJECTORIES=12
 VAL_N=1
+ROLLOUT_PROMPT_FORMAT=${ROLLOUT_PROMPT_FORMAT:-eval_mode}
+ROLLOUT_MAX_ACTIONS_PER_STEP=${ROLLOUT_MAX_ACTIONS_PER_STEP:-1}
+ROLLOUT_ACTION_SEP=${ROLLOUT_ACTION_SEP:-,}
+
+if ! [[ "${ROLLOUT_MAX_ACTIONS_PER_STEP}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR ROLLOUT_MAX_ACTIONS_PER_STEP must be a positive integer, got '${ROLLOUT_MAX_ACTIONS_PER_STEP}'" >&2
+  exit 2
+fi
 
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${RUN_DIR}/validation" "${RUN_DIR}/checkpoints_rollout"
 
@@ -81,8 +89,9 @@ envs:
       timeout: 120
       retries: 6
       eval_set: base_train
-      prompt_format: eval_mode
-      max_actions_per_step: 1
+      prompt_format: "${ROLLOUT_PROMPT_FORMAT}"
+      max_actions_per_step: ${ROLLOUT_MAX_ACTIONS_PER_STEP}
+      action_sep: "${ROLLOUT_ACTION_SEP}"
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_common_train
@@ -94,8 +103,9 @@ envs:
       timeout: 120
       retries: 6
       eval_set: common_sense_train
-      prompt_format: eval_mode
-      max_actions_per_step: 1
+      prompt_format: "${ROLLOUT_PROMPT_FORMAT}"
+      max_actions_per_step: ${ROLLOUT_MAX_ACTIONS_PER_STEP}
+      action_sep: "${ROLLOUT_ACTION_SEP}"
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_long_horizon_train
@@ -107,8 +117,9 @@ envs:
       timeout: 120
       retries: 6
       eval_set: long_horizon_train
-      prompt_format: eval_mode
-      max_actions_per_step: 1
+      prompt_format: "${ROLLOUT_PROMPT_FORMAT}"
+      max_actions_per_step: ${ROLLOUT_MAX_ACTIONS_PER_STEP}
+      action_sep: "${ROLLOUT_ACTION_SEP}"
 YAML
       ;;
     val)
@@ -125,8 +136,9 @@ envs:
       timeout: 120
       retries: 6
       eval_set: base_train
-      prompt_format: eval_mode
-      max_actions_per_step: 1
+      prompt_format: "${ROLLOUT_PROMPT_FORMAT}"
+      max_actions_per_step: ${ROLLOUT_MAX_ACTIONS_PER_STEP}
+      action_sep: "${ROLLOUT_ACTION_SEP}"
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_common_val_from_train
@@ -138,8 +150,9 @@ envs:
       timeout: 120
       retries: 6
       eval_set: common_sense_train
-      prompt_format: eval_mode
-      max_actions_per_step: 1
+      prompt_format: "${ROLLOUT_PROMPT_FORMAT}"
+      max_actions_per_step: ${ROLLOUT_MAX_ACTIONS_PER_STEP}
+      action_sep: "${ROLLOUT_ACTION_SEP}"
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_long_horizon_val_from_train
@@ -151,8 +164,9 @@ envs:
       timeout: 120
       retries: 6
       eval_set: long_horizon_train
-      prompt_format: eval_mode
-      max_actions_per_step: 1
+      prompt_format: "${ROLLOUT_PROMPT_FORMAT}"
+      max_actions_per_step: ${ROLLOUT_MAX_ACTIONS_PER_STEP}
+      action_sep: "${ROLLOUT_ACTION_SEP}"
 YAML
       ;;
     test)
@@ -169,8 +183,9 @@ envs:
       timeout: 120
       retries: 6
       eval_set: base
-      prompt_format: eval_mode
-      max_actions_per_step: 1
+      prompt_format: "${ROLLOUT_PROMPT_FORMAT}"
+      max_actions_per_step: ${ROLLOUT_MAX_ACTIONS_PER_STEP}
+      action_sep: "${ROLLOUT_ACTION_SEP}"
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_common_test
@@ -182,8 +197,9 @@ envs:
       timeout: 120
       retries: 6
       eval_set: common_sense
-      prompt_format: eval_mode
-      max_actions_per_step: 1
+      prompt_format: "${ROLLOUT_PROMPT_FORMAT}"
+      max_actions_per_step: ${ROLLOUT_MAX_ACTIONS_PER_STEP}
+      action_sep: "${ROLLOUT_ACTION_SEP}"
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_complex_instruction_test
@@ -195,8 +211,9 @@ envs:
       timeout: 120
       retries: 6
       eval_set: complex_instruction
-      prompt_format: eval_mode
-      max_actions_per_step: 1
+      prompt_format: "${ROLLOUT_PROMPT_FORMAT}"
+      max_actions_per_step: ${ROLLOUT_MAX_ACTIONS_PER_STEP}
+      action_sep: "${ROLLOUT_ACTION_SEP}"
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_visual_appearance_test
@@ -208,8 +225,9 @@ envs:
       timeout: 120
       retries: 6
       eval_set: visual_appearance
-      prompt_format: eval_mode
-      max_actions_per_step: 1
+      prompt_format: "${ROLLOUT_PROMPT_FORMAT}"
+      max_actions_per_step: ${ROLLOUT_MAX_ACTIONS_PER_STEP}
+      action_sep: "${ROLLOUT_ACTION_SEP}"
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_long_horizon_test
@@ -221,8 +239,9 @@ envs:
       timeout: 120
       retries: 6
       eval_set: long_horizon
-      prompt_format: eval_mode
-      max_actions_per_step: 1
+      prompt_format: "${ROLLOUT_PROMPT_FORMAT}"
+      max_actions_per_step: ${ROLLOUT_MAX_ACTIONS_PER_STEP}
+      action_sep: "${ROLLOUT_ACTION_SEP}"
 YAML
       ;;
     *)
@@ -243,13 +262,20 @@ write_split_parquet() {
   local out_parquet=$2
   local seed_start=$3
   local seed_end=$4
-  PYTHONUNBUFFERED=1 python - "$split_name" "$out_parquet" "$seed_start" "$seed_end" <<'PY'
+  PYTHONUNBUFFERED=1 python - "$split_name" "$out_parquet" "$seed_start" "$seed_end" \
+    "${ROLLOUT_PROMPT_FORMAT}" "${ROLLOUT_MAX_ACTIONS_PER_STEP}" "${ROLLOUT_ACTION_SEP}" <<'PY'
 import sys
 from pathlib import Path
 
 from datasets import Dataset
 
-split_name, out_parquet, seed_start, seed_end = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+split_name = sys.argv[1]
+out_parquet = Path(sys.argv[2])
+seed_start = int(sys.argv[3])
+seed_end = int(sys.argv[4])
+prompt_format = sys.argv[5]
+max_actions_per_step = int(sys.argv[6])
+action_sep = sys.argv[7]
 
 def specs(split):
     if split == "train":
@@ -280,8 +306,9 @@ for data_source, eval_set in specs(split_name):
     for seed in range(seed_start, seed_end + 1):
         env_config = {
             "eval_set": eval_set,
-            "prompt_format": "eval_mode",
-            "max_actions_per_step": 1,
+            "prompt_format": prompt_format,
+            "max_actions_per_step": max_actions_per_step,
+            "action_sep": action_sep,
             "render_mode": "vision",
         }
         rows.append({
@@ -322,7 +349,7 @@ run_shard() {
   write_split_yaml "${split_name}" "${val_yaml}" "${seed_start}" "${seed_end}"
   write_dummy_train_yaml "${dummy_train}"
   write_split_parquet "${split_name}" "${val_parquet}" "${seed_start}" "${seed_end}"
-  echo "=== array=${SLURM_ARRAY_TASK_ID} split=${split_name} shard=${shard_name} seeds=${seed_start}-${seed_end} greedy n=${VAL_N} ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  echo "=== array=${SLURM_ARRAY_TASK_ID} split=${split_name} shard=${shard_name} seeds=${seed_start}-${seed_end} greedy n=${VAL_N} prompt_format=${ROLLOUT_PROMPT_FORMAT} max_actions_per_step=${ROLLOUT_MAX_ACTIONS_PER_STEP} action_sep='${ROLLOUT_ACTION_SEP}' ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   if python - <<'PY' >/dev/null 2>&1
 import importlib.util
 raise SystemExit(0 if importlib.util.find_spec("vagen.trainer.main_ppo") else 1)
@@ -507,6 +534,7 @@ main() {
   echo "=== ${EXPERIMENT_NAME} array_task=${SLURM_ARRAY_TASK_ID} job=${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} node=${SLURM_JOB_NODELIST} ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   echo "MODEL_PATH=${MODEL_PATH}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   echo "Eval-consistent: greedy do_sample=False temperature=0 n=${VAL_N}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  echo "Rollout env: prompt_format=${ROLLOUT_PROMPT_FORMAT} max_actions_per_step=${ROLLOUT_MAX_ACTIONS_PER_STEP} action_sep='${ROLLOUT_ACTION_SEP}'" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   if [ ! -d "${MODEL_PATH}" ]; then
     echo "ERROR missing model ${MODEL_PATH}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
     exit 3

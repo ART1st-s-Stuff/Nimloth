@@ -38,7 +38,8 @@ import re
 
 NIMLOTH_FORMAT_RE = re.compile(
     r"<think>.*?</think>\s*"
-    r"<\|latent_state\|>\s*<\|action_start\|>\s*<\|action_\(\d+\)\|\>\s*<\|action_end\|>",
+    r"<\|latent_state\|>\s*<\|action_start\|>\s*"
+    r"(?:<\|action_\(\d+\)\|\>\s*)+<\|action_end\|>",
     re.S,
 )
 

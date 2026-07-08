@@ -8,8 +8,10 @@ Input layout is the rollout-only validation tree produced by
     validation/{train,val,test}/shard_*/image_{step}/images_<record_idx>/*.png
 
 The converter preserves split boundaries, rewrites VAGEN assistant actions from
-`<action>move_forward</action>` into the Nimloth prompt/action format described
-in DESIGN_DOCS.md, and stores exact image paths for every `<image>` placeholder.
+`<action>move_forward</action>` / `<answer>moveahead, moveleft</answer>` into the
+Nimloth prompt/action format described in DESIGN_DOCS.md, and stores exact image
+paths for every `<image>` placeholder. Multi-action turns are represented by
+multiple Nimloth action tokens inside one action block.
 
 Training policy: both `train_all.jsonl` and `train_success.jsonl` are emitted.
 `train_all.jsonl` is the default SFT train file (all train-split rollouts, including
@@ -20,6 +22,7 @@ Validation/test records include both successful and failed rollouts for held-out
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import shutil
@@ -43,14 +46,19 @@ try:
     )
 except ModuleNotFoundError:
     # nimloth/vagen-legacy-dev moved navigation helpers from
-    # vagen.envs.navigation.* to vagen.env.navigation.*.
-    from vagen.env.navigation.nimloth_format import (
-        ACTION_NAMES,
-        ACTION_TO_IDX,
-        ACTION_TOKEN,
-        NIMLOTH_FORMAT_INSTRUCTION,
-        SPECIAL_TOKENS,
-    )
+    # vagen.envs.navigation.* to vagen.env.navigation.*. Load the constants
+    # by file path to avoid importing vagen.env.__init__ and its optional env deps.
+    _NIMLOTH_FORMAT_PATH = _VAGEN_ROOT / "vagen" / "env" / "navigation" / "nimloth_format.py"
+    _spec = importlib.util.spec_from_file_location("nimloth_navigation_format", _NIMLOTH_FORMAT_PATH)
+    if _spec is None or _spec.loader is None:
+        raise
+    _nimloth_format = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_nimloth_format)
+    ACTION_NAMES = _nimloth_format.ACTION_NAMES
+    ACTION_TO_IDX = _nimloth_format.ACTION_TO_IDX
+    ACTION_TOKEN = _nimloth_format.ACTION_TOKEN
+    NIMLOTH_FORMAT_INSTRUCTION = _nimloth_format.NIMLOTH_FORMAT_INSTRUCTION
+    SPECIAL_TOKENS = _nimloth_format.SPECIAL_TOKENS
 
 ACTION_NAMES = list(ACTION_NAMES)
 ACTION_TO_IDX = dict(ACTION_TO_IDX)
@@ -86,6 +94,7 @@ ASSISTANT_RE = re.compile(r"<\|im_start\|>assistant\n(.*?)(?:<\|im_end\|>|\Z)", 
 USER_RE = re.compile(r"<\|im_start\|>user\n(.*?)(?:<\|im_end\|>|\Z)", re.S)
 SYSTEM_RE = re.compile(r"<\|im_start\|>system\n(.*?)(?:<\|im_end\|>|\Z)", re.S)
 ACTION_RE = re.compile(r"<action>\s*([^<]+?)\s*</action>", re.S)
+ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.S)
 PLAIN_ACTION_RE = re.compile(r"(?:^|\n)\s*action\s*[:：]?\s*([^\n<|]+)", re.I)
 NIMLOTH_ACTION_RE = re.compile(r"<\|action_\((\d+)\)\|>")
 THINK_RE = re.compile(r"<think>(.*?)</think>", re.S)
@@ -110,31 +119,64 @@ def iter_jsonl(path: Path) -> Iterable[tuple[int, dict[str, Any]]]:
             yield i, json.loads(line)
 
 
-def rewrite_prompt_instruction(content: str) -> str:
+def nimloth_action_block_for_instruction(max_actions_per_step: int = 1) -> str:
+    if max_actions_per_step <= 1:
+        return "<|latent_state|><|action_start|><|action_(idx)|><|action_end|>"
+    return "<|latent_state|><|action_start|><|action_(idx)|>[<|action_(idx)|>...]<|action_end|>"
+
+
+def nimloth_format_instruction(max_actions_per_step: int = 1) -> str:
+    if max_actions_per_step <= 1:
+        return NIMLOTH_FORMAT_INSTRUCTION
+    legend = ", ".join(f"{idx}={name}" for idx, name in enumerate(ACTION_NAMES))
+    return (
+        "Respond in this format:\n"
+        f"<think>...</think>{nimloth_action_block_for_instruction(max_actions_per_step)}\n"
+        f"Output 1 to {max_actions_per_step} action token(s) in execution order; "
+        f"each idx is one of: {legend}."
+    )
+
+
+def rewrite_prompt_instruction(content: str, max_actions_per_step: int = 1) -> str:
     """Rewrite VAGEN action-format instructions into Nimloth format."""
+    target_instruction = nimloth_format_instruction(max_actions_per_step)
+    target_action_block = nimloth_action_block_for_instruction(max_actions_per_step)
     replacements = [
         (
             "You can optionally think first, then give your action. Respond in this format:\n"
             "<think>...</think><action>some_action</action>",
-            "You can optionally think first, then give your action. " + NIMLOTH_FORMAT_INSTRUCTION,
+            "You can optionally think first, then give your action. " + target_instruction,
         ),
         (
             "Respond in this format:\n<think>...</think><action>some_action</action>",
-            NIMLOTH_FORMAT_INSTRUCTION,
+            target_instruction,
         ),
         (
             "<think>...</think><action>some_action</action>",
-            "<think>...</think><|latent_state|><|action_start|><|action_(idx)|><|action_end|>",
+            f"<think>...</think>{target_action_block}",
+        ),
+        (
+            "<think>...</think><answer>some_action</answer>",
+            f"<think>...</think>{target_action_block}",
         ),
         (
             "<action>{action_example}</action>",
-            "<|action_start|><|action_(idx)|><|action_end|>",
+            "<|action_start|><|action_(idx)|><|action_end|>" if max_actions_per_step <= 1 else "<|action_start|><|action_(idx)|>[<|action_(idx)|>...]<|action_end|>",
         ),
     ]
     for old, new in replacements:
         content = content.replace(old, new)
-    # Avoid stale XML-action wording in instructions where possible.
-    content = content.replace("<action>...</action>", "<|action_start|><|action_(idx)|><|action_end|>")
+    if max_actions_per_step > 1:
+        content = re.sub(
+            r"You can take up to \d+ action\(s\) at a time, separated by '[^']*'\.",
+            f"You can take up to {max_actions_per_step} action(s) at a time. Output them as ordered action index tokens inside the Nimloth action block.",
+            content,
+        )
+    # Avoid stale XML-action wording in instructions and examples where possible.
+    content = content.replace("<action>...</action>", target_action_block)
+    content = content.replace("<answer>...</answer>", target_action_block)
+    content = re.sub(r"<action>[^<]*</action>", target_action_block, content)
+    content = re.sub(r"<answer>[^<]*</answer>", target_action_block, content)
     return content
 
 
@@ -184,11 +226,6 @@ def parse_output_messages(text: str) -> list[dict[str, str]]:
 
 def _normalize_action(raw: str) -> str | None:
     raw = raw.strip().lower()
-    # VAGEN parse accepts separators in some prompts; SFT1 single-action design
-    # uses the first extracted primitive.
-    for sep in [",", ";", "\n", " and ", "|"]:
-        if sep in raw:
-            raw = raw.split(sep)[0].strip()
     raw = raw.strip(" []'\".，。")
     raw_compact = raw.replace(" ", "_").replace("-", "_")
     if raw_compact in ACTION_ALIASES:
@@ -204,41 +241,73 @@ def _normalize_action(raw: str) -> str | None:
     return None
 
 
-def extract_action(text: str) -> str | None:
-    m_tok = NIMLOTH_ACTION_RE.search(text)
-    if m_tok:
+def _split_action_candidates(raw: str) -> list[str]:
+    raw = raw.replace("，", ",").replace("；", ";")
+    return [part.strip() for part in re.split(r"\s*(?:,|;|\||\n|\band\b)\s*", raw, flags=re.I) if part.strip()]
+
+
+def _normalize_actions(raw: str, max_actions: int | None = None) -> list[str]:
+    actions: list[str] = []
+    for part in _split_action_candidates(raw):
+        action = _normalize_action(part)
+        if action is None:
+            continue
+        actions.append(action)
+        if max_actions is not None and len(actions) >= max_actions:
+            break
+    return actions
+
+
+def extract_actions(text: str, max_actions: int | None = None) -> list[str]:
+    token_actions: list[str] = []
+    for m_tok in NIMLOTH_ACTION_RE.finditer(text):
         idx = int(m_tok.group(1))
         if 0 <= idx < len(ACTION_NAMES):
-            return ACTION_NAMES[idx]
-    for regex in (ACTION_RE, PLAIN_ACTION_RE):
-        m = regex.search(text)
-        if m:
-            action = _normalize_action(m.group(1))
-            if action is not None:
-                return action
-    return None
+            token_actions.append(ACTION_NAMES[idx])
+            if max_actions is not None and len(token_actions) >= max_actions:
+                break
+    if token_actions:
+        return token_actions
+
+    for regex in (ACTION_RE, ANSWER_RE, PLAIN_ACTION_RE):
+        actions: list[str] = []
+        for m in regex.finditer(text):
+            remaining = None if max_actions is None else max_actions - len(actions)
+            if remaining is not None and remaining <= 0:
+                break
+            actions.extend(_normalize_actions(m.group(1), remaining))
+        if actions:
+            return actions
+    return []
 
 
-def convert_assistant(content: str) -> tuple[str, str | None, str | None]:
+def convert_assistant(content: str, max_actions_per_turn: int | None = None) -> tuple[str, list[str], str | None]:
     think_m = THINK_RE.search(content)
     if think_m:
         think = think_m.group(1).strip()
     else:
         plain_think_m = PLAIN_THINK_RE.search(content)
         think = plain_think_m.group(1).strip() if plain_think_m else ""
-    action = extract_action(content)
-    if action is None:
+    actions = extract_actions(content, max_actions=max_actions_per_turn)
+    if not actions:
         # Keep malformed/non-action responses auditable but not trainable.
         converted = f"<think>{think}</think><|latent_state|><|action_start|><|action_end|>"
-        return converted, None, think
-    converted = f"<think>{think}</think><|latent_state|><|action_start|>{ACTION_TOKEN[action]}<|action_end|>"
-    return converted, action, think
+        return converted, [], think
+    action_tokens = "".join(ACTION_TOKEN[action] for action in actions)
+    converted = f"<think>{think}</think><|latent_state|><|action_start|>{action_tokens}<|action_end|>"
+    return converted, actions, think
 
 
-def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], list[str], list[str]]:
+def split_messages(
+    src: SourceRecord,
+    *,
+    target_max_actions_per_step: int = 1,
+    max_actions_per_turn: int | None = None,
+) -> tuple[list[dict[str, str]], list[str], list[list[str]], list[str], list[str]]:
     obj = src.payload
     messages: list[dict[str, str]] = []
     actions: list[str] = []
+    action_groups: list[list[str]] = []
     thinks: list[str] = []
     warnings: list[str] = []
 
@@ -261,16 +330,23 @@ def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], 
 
     for msg in raw_messages:
         if msg["role"] == "assistant":
-            converted, action, think = convert_assistant(msg["content"])
+            converted, turn_actions, think = convert_assistant(
+                msg["content"],
+                max_actions_per_turn=max_actions_per_turn,
+            )
             msg = {"role": "assistant", "content": converted}
-            if action:
-                actions.append(action)
+            if turn_actions:
+                action_groups.append(turn_actions)
+                actions.extend(turn_actions)
             else:
                 warnings.append("missing_action_in_assistant")
             if think is not None:
                 thinks.append(think)
         else:
-            msg = {"role": msg["role"], "content": rewrite_prompt_instruction(msg["content"])}
+            msg = {
+                "role": msg["role"],
+                "content": rewrite_prompt_instruction(msg["content"], target_max_actions_per_step),
+            }
         messages.append(msg)
 
     # Remove accidental adjacent duplicate system+user prefix if present.
@@ -281,7 +357,7 @@ def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], 
             continue
         deduped.append(msg)
 
-    return deduped, actions, thinks, warnings
+    return deduped, actions, action_groups, thinks, warnings
 
 
 def image_paths_for(source_jsonl: Path, step: int, record_idx: int, payload: dict[str, Any] | None = None) -> list[str]:
@@ -302,17 +378,17 @@ def image_paths_for(source_jsonl: Path, step: int, record_idx: int, payload: dic
     return [str(p.resolve()) for p in sorted(image_dir.glob("*.png"), key=key)]
 
 
-def validate_record(messages: list[dict[str, str]], image_paths: list[str], actions: list[str]) -> list[str]:
+def validate_record(messages: list[dict[str, str]], image_paths: list[str], action_groups: list[list[str]]) -> list[str]:
     issues: list[str] = []
     if not messages or messages[0].get("role") != "system":
         issues.append("first_message_not_system")
     if not any(m.get("role") == "assistant" for m in messages):
         issues.append("no_assistant_messages")
-    if not actions:
+    if not action_groups:
         issues.append("no_parsed_actions")
     assistant_count = sum(1 for m in messages if m.get("role") == "assistant")
-    if assistant_count != len(actions):
-        issues.append(f"assistant_action_count_mismatch:{assistant_count}!={len(actions)}")
+    if assistant_count != len(action_groups):
+        issues.append(f"assistant_action_group_count_mismatch:{assistant_count}!={len(action_groups)}")
     image_placeholders = sum(str(m.get("content", "")).count("<image>") for m in messages)
     if image_placeholders != len(image_paths):
         issues.append(f"image_count_mismatch:{image_placeholders}!={len(image_paths)}")
@@ -322,24 +398,38 @@ def validate_record(messages: list[dict[str, str]], image_paths: list[str], acti
             if "<|latent_state|>" not in c or "<|action_start|>" not in c or "<|action_end|>" not in c:
                 issues.append("assistant_missing_nimloth_tokens")
                 break
-            if "<action>" in c or "</action>" in c:
+            if "<action>" in c or "</action>" in c or "<answer>" in c or "</answer>" in c:
                 issues.append("assistant_still_has_vagen_action_xml")
                 break
         else:
             c = m.get("content", "")
-            if "<action>some_action</action>" in c or "<think>...</think><action>" in c:
+            if (
+                "<action>some_action</action>" in c
+                or "<think>...</think><action>" in c
+                or "<answer>some_action</answer>" in c
+                or "<think>...</think><answer>" in c
+            ):
                 issues.append("prompt_still_has_vagen_action_instruction")
                 break
     return issues
 
 
-def convert_one(src: SourceRecord) -> dict[str, Any]:
+def convert_one(
+    src: SourceRecord,
+    *,
+    target_max_actions_per_step: int = 1,
+    max_actions_per_turn: int | None = None,
+) -> dict[str, Any]:
     obj = src.payload
     metrics = obj.get("metrics", {}) if isinstance(obj.get("metrics"), dict) else {}
     step = int(obj.get("step", 50))
-    messages, actions, thinks, warnings = split_messages(src)
+    messages, actions, action_groups, thinks, warnings = split_messages(
+        src,
+        target_max_actions_per_step=target_max_actions_per_step,
+        max_actions_per_turn=max_actions_per_turn,
+    )
     image_paths = image_paths_for(src.jsonl_path, step, src.line_index, obj)
-    issues = validate_record(messages, image_paths, actions)
+    issues = validate_record(messages, image_paths, action_groups)
     traj_success = obj.get("traj_success", metrics.get("success", 0.0))
     success = bool(traj_success) if isinstance(traj_success, bool) else float(traj_success or 0.0) >= 1.0
     return {
@@ -357,6 +447,8 @@ def convert_one(src: SourceRecord) -> dict[str, Any]:
         "image_paths": image_paths,
         "actions": actions,
         "action_indices": [ACTION_TO_IDX[a] for a in actions],
+        "action_groups": action_groups,
+        "action_indices_by_turn": [[ACTION_TO_IDX[a] for a in group] for group in action_groups],
         "think_texts": thinks,
         "warnings": warnings,
         "validation_issues": issues,
@@ -390,8 +482,26 @@ def main() -> int:
     ap.add_argument("--checkpoint-hf", type=Path, required=True)
     ap.add_argument("--checkpoint-step", type=int, default=50)
     ap.add_argument("--splits", nargs="+", default=["train", "val", "test"])
+    ap.add_argument(
+        "--target-max-actions-per-step",
+        type=int,
+        default=1,
+        help="Prompt rewrite capacity for Nimloth target records; use >1 for multi-action SFT prompts.",
+    )
+    ap.add_argument(
+        "--max-actions-per-turn",
+        type=int,
+        default=0,
+        help="Optional converter-side truncation; 0 preserves all parsed actions in each assistant turn.",
+    )
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
+
+    if args.target_max_actions_per_step < 1:
+        raise SystemExit("--target-max-actions-per-step must be >= 1")
+    if args.max_actions_per_turn < 0:
+        raise SystemExit("--max-actions-per-turn must be >= 0")
+    max_actions_per_turn = args.max_actions_per_turn or None
 
     out = args.output_root
     if out.exists():
@@ -409,7 +519,9 @@ def main() -> int:
         "action_names": ACTION_NAMES,
         "action_to_idx": ACTION_TO_IDX,
         "special_tokens": SPECIAL_TOKENS,
-        "format": "Nimloth SFT v1: assistant=<think>...</think><|latent_state|><|action_start|><|action_(idx)|><|action_end|>",
+        "target_max_actions_per_step": args.target_max_actions_per_step,
+        "max_actions_per_turn": max_actions_per_turn,
+        "format": "Nimloth SFT v1: assistant=<think>...</think>" + nimloth_action_block_for_instruction(args.target_max_actions_per_step),
         "split_policy": {
             "train_all": "all train-split rollouts; default SFT train file (success + failed)",
             "train_success": "train-split rollouts with traj_success >= 1.0 and no validation issues; optional ablation",
@@ -431,7 +543,11 @@ def main() -> int:
         for jsonl_path in jsonl_paths:
             shard = jsonl_path.parent.name
             for line_index, payload in iter_jsonl(jsonl_path):
-                rec = convert_one(SourceRecord(split, shard, jsonl_path, line_index, payload))
+                rec = convert_one(
+                    SourceRecord(split, shard, jsonl_path, line_index, payload),
+                    target_max_actions_per_step=args.target_max_actions_per_step,
+                    max_actions_per_turn=max_actions_per_turn,
+                )
                 all_by_split[split].append(rec)
 
     train_success = [r for r in all_by_split.get("train", []) if r["success"] and not r["validation_issues"]]
@@ -459,6 +575,7 @@ def main() -> int:
 
     split_stats: dict[str, Any] = {}
     for split, records in all_by_split.items():
+        group_lengths = [len(group) for r in records for group in r["action_groups"]]
         split_stats[split] = {
             "records": len(records),
             "success": sum(1 for r in records if r["success"]),
@@ -467,6 +584,9 @@ def main() -> int:
             "image_placeholders": sum(sum(m["content"].count("<image>") for m in r["messages"]) for r in records),
             "image_paths": sum(len(r["image_paths"]) for r in records),
             "assistant_turns": sum(sum(1 for m in r["messages"] if m["role"] == "assistant") for r in records),
+            "action_groups": len(group_lengths),
+            "multi_action_groups": sum(1 for n in group_lengths if n > 1),
+            "max_actions_per_group": max(group_lengths, default=0),
             "actions": sum(len(r["actions"]) for r in records),
         }
 

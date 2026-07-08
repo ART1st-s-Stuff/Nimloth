@@ -38,9 +38,16 @@ cd /project/peilab/atst/nimloth
 # Train (LoRA, 8 GPU)
 SFT1_TUNE_MODE=lora NODELIST=dgx-52 bash experiments/training/sft1/submit_train_8gpu.sh
 
-# Rollout collection
+# Rollout collection, default single-action eval_mode
 ENV_NODE=dgx-13 bash experiments/training/sft1/submit_env_external_4gpu.sh
 bash experiments/training/sft1/submit_rollouts_greedy.sh
+
+# Multi-action rollout collection, e.g. legacy VAGEN-style up to 5 actions/turn
+ROLLOUT_PROMPT_FORMAT=grounding_worldmodeling ROLLOUT_MAX_ACTIONS_PER_STEP=5 \
+  bash experiments/training/sft1/submit_rollouts_greedy.sh
+
+# Convert multi-action rollouts while keeping multiple action tokens per assistant turn
+python experiments/training/sft1/convert_rollouts.py ... --target-max-actions-per-step 5
 
 # Per-epoch eval watcher
 TRAIN_OUT=.../sft1_train_lora BASE_MODEL=.../global_step_79/actor/huggingface \

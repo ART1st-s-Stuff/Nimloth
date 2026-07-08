@@ -1003,3 +1003,13 @@
   - 新增 `--experiment-name`，避免启用 wandb 时引用不存在的 `args.experiment_name`。
   - distributed JSONL/FSDP 模式下，从 rank0 广播非 FSDP 小模块 `state_proj`、`wm_predictor`、`value_head` 初始 state，配合同步 JSONL 数据和确定性 batch，避免本地副本初始参数分叉。
 - 验证：`python -m py_compile src/nimloth/training/rl/*.py tests/training/rl/test_rollout_jsonl.py experiments/training/rl/rollout_env.py` 通过；`bash -n experiments/training/rl/run_inside_allocation.sh experiments/training/rl/*.slurm` 通过；pytest 仍受本地环境限制，系统 Python 无 pytest，复用 dev `.venv` 时 torch import 缺 `libstdc++.so.6`。
+
+## 2026-07-08：SFT1 rollout/转换支持 multi-action per step
+
+- 已按当前请求添加 multi-action 支持，未启动任何 Slurm/GPU 实验。
+- `experiments/training/sft1/rollouts_greedy_parallel.slurm` 支持通过环境变量配置 rollout 动作格式：`ROLLOUT_PROMPT_FORMAT`（默认 `eval_mode`）、`ROLLOUT_MAX_ACTIONS_PER_STEP`（默认 `1`）、`ROLLOUT_ACTION_SEP`（默认 `,`）；YAML fallback 和新 VAGEN parquet 路径都会写入这些 env config，并在日志打印。
+- `experiments/training/sft1/convert_rollouts.py` 会保留单个 assistant turn 内的多个 primitive actions：支持 `<action>...</action>`、legacy `<answer>moveahead, moveleft</answer>`、plain action、以及多个 Nimloth action token；输出新增 `action_groups` / `action_indices_by_turn`，同时保留 flat `actions` / `action_indices`；`--target-max-actions-per-step` 用于把 prompt rewrite 成 multi-action Nimloth 目标格式。
+- `external/VAGEN` submodule 的 `vagen/env/navigation/prompt.py` 已允许 `prompt_format=nimloth` / `nimloth_wm` 搭配 `max_actions_per_step>1`，提示模型在一个 action block 内输出多个 action index token；legacy literal-action prompt 仍按 `action_sep` 分隔。
+- `experiments/training/sft1/train.py` 的 Nimloth format metric regex 已允许一个 action block 内有多个 action token。
+- 文档/提交入口已在 `experiments/training/sft1/README.md` 与 `submit_rollouts_greedy.sh` 记录示例：如 `ROLLOUT_PROMPT_FORMAT=grounding_worldmodeling ROLLOUT_MAX_ACTIONS_PER_STEP=5 ...`，转换时传 `--target-max-actions-per-step 5`。
+- 本地验证：`python -m py_compile experiments/training/sft1/convert_rollouts.py experiments/training/sft1/train.py external/VAGEN/vagen/env/navigation/prompt.py external/VAGEN/vagen/env/utils/parse_utils.py` 通过；`bash -n experiments/training/sft1/rollouts_greedy_parallel.slurm experiments/training/sft1/submit_rollouts_greedy.sh` 通过；系统 Python 无 `pytest`，已用直接函数调用跑新增 converter multi-action 测试，并用临时 JSONL 做完整 conversion smoke，均通过。
