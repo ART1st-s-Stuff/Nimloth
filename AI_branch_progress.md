@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-08：VAGEN legacy-dev 1-action / 20-turn / step300→330 resume 分支进展
+
+- 本地分支：`exp/vagen-1action`，当前 Nimloth commit `717176d`；远程 worktree：`/project/peilab/atst/nimloth/.worktree/exp-vagen-1action`。
+- 已把 `external/VAGEN` 切到 `nimloth/vagen-legacy-dev`，当前 VAGEN commit `fbfd48f680208d84f43fdf98177d49507337ad18`；其嵌套 `verl` 当前 commit `1acd5b6b4da3acf27b1e6e1092568b055d049374`。
+- 已确认源 checkpoint 为 `/project/peilab/atst/vagen_ckpt`，按 `actor/extra_state_world_size_8_rank_0.pt` 的 lr scheduler 元数据解释为 `global_step_300`。
+- 已确认 superpod 上 current/modern external-env 路径不适配 legacy-dev：缺少 `vagen.envs.navigation.serve` 和 `vagen/gym_agent_dataset.py`，因此改走 legacy service 路径：`legacy_preempt_reproduction.slurm` + `run_legacy_reproduction.sh`。
+- legacy train split 已改到 `base_train` / `common_sense_train`（`configs/training/baseline/legacy_train.yaml`），保持 `max_actions_per_step=1`；`run_legacy_reproduction.sh` 维持 `rollout_manager.max_turns=20`，并新增 resume 参数与独立 `CRITIC_MODEL_PATH`。
+- 两次服务器启动失败已定位并修正：
+  1. `467798`：critic init 错把 actor HF export 当成 critic HF export；已改为 `/project/peilab/atst/vagen_ckpt/critic/huggingface`。
+  2. `467799`：legacy `verl` 只靠 `"Qwen2.5-VL" in local_path` 判断 Qwen2.5-VL critic，local checkpoint 目录不会命中；已在 `external/VAGEN/verl/verl/workers/fsdp_workers.py` 改为按 `critic_model_config.model_type == "qwen2_5_vl"` 判断，并已 push 到 `VAGEN` / `verl` 远端后更新 Nimloth submodule pointer。
+- 服务器当前待运行 job：`467812`，目标 run：`outputs/experiments/training/baseline/2026-07-08/vagen_legacydev_service_resume300_to330_1action_turn20_ws8`。当前状态：`PENDING (Resources)`；需要 `dgx-11`（env，2 张 AI2-THOR-good GPU）和 `dgx-44`（train，8 GPU）同时可用。
+- 相关实时记录：`ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`；服务器输出 README / `outputs/experiments/training/baseline/progress.md` 已同步失败重试和 pending 状态。
+
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
 
 - 已将 `https://github.com/facebookresearch/RCDM.git` 作为 git submodule 添加到 `external/RCDM`。
