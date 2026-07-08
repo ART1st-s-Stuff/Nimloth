@@ -42,8 +42,11 @@ SFT1_TUNE_MODE=lora NODELIST=dgx-52 bash experiments/training/sft1/submit_train_
 ENV_NODE=dgx-13 bash experiments/training/sft1/submit_env_external_4gpu.sh
 bash experiments/training/sft1/submit_rollouts_greedy.sh
 
-# Multi-action rollout collection, e.g. legacy VAGEN-style up to 5 actions/turn
+# Multi-action rollout collection, e.g. legacy VAGEN-style up to 5 actions/turn.
+# answer_fallback keeps the original VAGEN action extraction behavior for
+# non-SFT2 models whose WM tags may be imperfect but whose <answer> actions are usable.
 ROLLOUT_PROMPT_FORMAT=grounding_worldmodeling ROLLOUT_MAX_ACTIONS_PER_STEP=5 \
+ROLLOUT_ACTION_EXTRACTION_MODE=answer_fallback \
   bash experiments/training/sft1/submit_rollouts_greedy.sh
 
 # Convert multi-action rollouts while keeping multiple action tokens per assistant turn

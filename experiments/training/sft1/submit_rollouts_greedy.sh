@@ -9,8 +9,9 @@ mkdir -p "${REPO}/outputs/experiments/training/sft1/slurm"
 
 # Greedy rollout collection (array 0-3). Start env first:
 #   ENV_NODE=dgx-13 bash submit_env_external_4gpu.sh
-# Optional multi-action collection:
-#   ROLLOUT_PROMPT_FORMAT=grounding_worldmodeling ROLLOUT_MAX_ACTIONS_PER_STEP=5 bash submit_rollouts_greedy.sh
+# Optional legacy VAGEN multi-action collection:
+#   ROLLOUT_PROMPT_FORMAT=grounding_worldmodeling ROLLOUT_MAX_ACTIONS_PER_STEP=5 \
+#   ROLLOUT_ACTION_EXTRACTION_MODE=answer_fallback bash submit_rollouts_greedy.sh
 ENV_NODE=${ENV_NODE:-}
 NODELIST=${NODELIST:-}
 
