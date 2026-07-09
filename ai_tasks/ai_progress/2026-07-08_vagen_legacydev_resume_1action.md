@@ -95,14 +95,15 @@
   - 训练主流程成功从这个 ws4 checkpoint **resume 到 global_step_300**；
   - 已进入 **validation at global step 300**，并连续完成多轮 vLLM generation / env-service rollout。
 - 之后再次核实时发现：前面这次 held `srun` **并没有真的死掉**。它继续作为 Slurm job step `468852.8` 挂在 `dgx-27` 上运行，并且实际从 `global_step_300` 推进到了 `global_step_308`。
-- 这次 ws4 hold-first fallback 的当前最终状态：
-  - `validation at global step 300` 已完整结束，并写出 `validation/300.jsonl`；
-  - 日志持续出现 `[DEBUG] step 301 rollout ends` 到 `[DEBUG] step 308 rollout ends`；
-  - `checkpoints/global_step_301` 到 `global_step_308` 都已存在；`latest_checkpointed_iteration.txt` 当前是 `308`；
-  - 但这条训练在 `21:02:48 HKT` 失败退出，`468852.8` job step 已消失，训练进程和训练 GPU 占用都已清空；
-  - 直接失败信号是：Ray worker `WorkerDict`（pid `2151591`）在 `external/VAGEN/verl/verl/workers/fsdp_workers.py:492 generate_sequences` 路径里触发 **`Fatal Python error: none_dealloc: deallocating None`**，随后主任务报 `ray.exceptions.ActorDiedError`；
-  - 当前没有证据足以把这次失败断定为 OOM，更像是 Python / Ray / vLLM / torch 扩展侧的底层崩溃；
-  - 好消息是：hold job `468852` 本身仍在 `RUNNING`，所以如果人类要继续，可以直接在同一 held node 上从 `global_step_308` 续跑，而不必重做 ws4 conversion。
+- 这次 ws4 hold-first fallback 的阶段性历史与当前状态：
+  - 首次 held train step `468852.8` 已在 `21:02:48 HKT` 失败退出；它在退出前完成了 `validation@300`，并把 checkpoint 推进到 `global_step_308`；
+  - 直接失败信号仍然是：Ray worker `WorkerDict`（pid `2151591`）在 `external/VAGEN/verl/verl/workers/fsdp_workers.py:492 generate_sequences` 路径里触发 **`Fatal Python error: none_dealloc: deallocating None`**，随后主任务报 `ray.exceptions.ActorDiedError`；当前没有证据足以把它断定为 OOM；
+  - 按用户要求继续跑时，又发现一个 launcher 侧细节：如果仍用 `SOURCE_CHECKPOINT_STEP=300` 重启，`legacy_train_external_service.slurm` 会在“ws checkpoint already present; skip conversion”分支里把 `latest_checkpointed_iteration.txt` 重写回 `300`，导致 `resume_mode=auto` 错误地再次从 `global_step_300` 起跑；
+  - 为避免浪费资源，我已主动取消那次误从 `300` 重启的新 step；
+  - 之后改用 **`SOURCE_CHECKPOINT_STEP=308`** 再次拉起 held step，当前新的 train step 是 **`468852.23`**；
+  - 这次已经确认：`latest_checkpointed_iteration.txt` 保持为 `308`，日志明确写出 `Found checkpoint ... global_step_308`、`Setting global step to 308`、`Resuming from .../global_step_308`；
+  - 最新监控结果里，日志已出现 `[DEBUG] validation at global step 308 begins`；
+  - 当前 `468852.23` 仍在 `RUNNING`，`python -m vagen.trainer.main_ppo` 进程存活，训练 GPU 已重新占用；当前真实状态是：**已从 308 正确恢复，并正在继续监控是否再次命中同一个底层崩溃**。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
 - 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
 
@@ -112,4 +113,4 @@
 - normal fallback 的关键限制：虽然 run 会从 `global_step_300` 形式继续到 `330`，但 ws7 checkpoint 是从 actor/critic HF export 新生成的，因此 **optimizer / lr scheduler 状态不会严格继承 ws8 step300 checkpoint**。
 - `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
 - 当前要验证的新点：strict ws8 external-env resume 在 `dgx-39` 可用时，是否能直接跳过 conversion、从 symlinked `global_step_300` checkpoint 成功 load actor/critic shards 并进入 val-before-train。
-- 当前阻塞已经变化：不是拿不到 4GPU 节点，也不是前台 `srun` 立刻消失；而是这条 ws4 held 训练虽然成功推进到 `global_step_308`，却在 rollout worker 里触发 `Fatal Python error: none_dealloc: deallocating None` 后崩掉。下一步重点变成：是否在保留当前 hold 的前提下，从 `global_step_308` 重启并复现/绕过这个底层崩溃。
+- 当前阻塞再次变化：已经证明可以在保留当前 hold 的前提下从 `global_step_308` 正确重启；下一步重点变成：这次正确从 `308` 恢复后的 run 能否稳定继续，还是会再次命中同一个 `none_dealloc` 底层崩溃。

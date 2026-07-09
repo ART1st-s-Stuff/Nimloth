@@ -35,14 +35,15 @@
       3. 从 ws4 checkpoint resume 到 `global_step_300`；
       4. 进入 validation，并持续完成多轮 vLLM generation / env-service rollout。
     - 之后再次核实时发现：前面那次 held `srun` **并没有真的被杀掉**，而是继续以 Slurm job step `468852.8` 挂在 `dgx-27` 上运行；随后它实际从 `global_step_300` 一路推进到了 `global_step_308`。
-    - 这次 ws4 held run 的当前最终状态：
-      1. `validation at global step 300` 已完整结束，并写出 `validation/300.jsonl`；
-      2. 日志持续出现 `[DEBUG] step 301 rollout ends` 到 `[DEBUG] step 308 rollout ends`；
-      3. `checkpoints/global_step_301` 到 `global_step_308` 都已存在；`latest_checkpointed_iteration.txt` 当前是 `308`；
-      4. 但这条训练在 `21:02:48 HKT` 失败退出，`468852.8` job step 已消失，`dgx-27` 上训练进程和训练 GPU 占用都已清空；
-      5. 日志中的直接失败点是：Ray worker `WorkerDict`（pid `2151591`）在 `external/VAGEN/verl/verl/workers/fsdp_workers.py:492 generate_sequences` 路径里触发 **`Fatal Python error: none_dealloc: deallocating None`**，随后主任务报 `ray.exceptions.ActorDiedError`；
-      6. 目前没有证据能把这次失败确定为 OOM；更像是 Python / Ray / vLLM / torch 扩展侧的底层崩溃；
-      7. 好消息是：hold job `468852` 本身仍在 `RUNNING`，而且最近可恢复 checkpoint 已经推进到 `global_step_308`，所以如果用户要继续，可以直接在同一个 held node 上从 `308` 续跑，不必重做 ws4 conversion。
+    - 这次 ws4 held run 的阶段性历史与当前状态：
+      1. 首次 held train step `468852.8` 已在 `21:02:48 HKT` 失败退出；它在退出前完成了 `validation@300`，并把 checkpoint 推进到 `global_step_308`；
+      2. 直接失败点仍然是：Ray worker `WorkerDict`（pid `2151591`）在 `external/VAGEN/verl/verl/workers/fsdp_workers.py:492 generate_sequences` 路径里触发 **`Fatal Python error: none_dealloc: deallocating None`**，随后主任务报 `ray.exceptions.ActorDiedError`；目前没有证据能把它确定为 OOM；
+      3. 随后按用户要求继续跑时，又发现一个 launcher 侧细节：如果仍用 `SOURCE_CHECKPOINT_STEP=300` 重启，`legacy_train_external_service.slurm` 会在“跳过 conversion”分支里把 `latest_checkpointed_iteration.txt` 重写回 `300`，导致 `resume_mode=auto` 错误地再次从 `global_step_300` 起跑；
+      4. 为避免错误续跑，我已主动取消那次误从 `300` 重启的新 step；
+      5. 之后改用 **`SOURCE_CHECKPOINT_STEP=308`** 再次拉起 held step，当前新的 train step 是 **`468852.23`**；
+      6. 这次已经确认：`latest_checkpointed_iteration.txt` 保持为 `308`，日志明确写出 `Found checkpoint ... global_step_308`、`Setting global step to 308`、`Resuming from .../global_step_308`，说明现在确实是从最新 checkpoint 正确续跑；
+      7. 当前 `468852.23` 仍在 `RUNNING`，`python -m vagen.trainer.main_ppo` 进程存活，训练 GPU 已重新占用；
+      8. 最新监控结果里，日志已出现 `[DEBUG] validation at global step 308 begins`，说明这次正确恢复后的 run 已经通过 checkpoint load，正在继续进入新的 val-before-train 阶段；当前状态是：**已从 308 正确恢复，并正在继续监控是否再次命中同一个底层崩溃**。
 - 相关实时记录：`ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`；服务器 run README 已写明这是 non-strict ws7 fallback。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
