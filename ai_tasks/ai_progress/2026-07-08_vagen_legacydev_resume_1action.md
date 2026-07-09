@@ -109,6 +109,12 @@
     - `Resuming from .../global_step_300`
     - `[DEBUG] validation at global step 300 begins`
 - 因此，当前 ws4 hold-first fallback 已经从“validation smoke”升级为**真实在跑的 held-node train step**，而不是已停止的前台试跑。
+- 本轮新核实到的前进信号：
+  - `[DEBUG] validation at global step 300 ends` 已出现在日志里；
+  - 随后日志出现 `[DEBUG] step 301 rollout ends`；
+  - `checkpoints/global_step_301/` 已经存在，并开始写出 actor / critic 的 ws4 shard文件；
+  - `legacy_train.log` 最近修改时间仍在持续前进；
+  - 但 `latest_checkpointed_iteration.txt` 暂时仍停在 `300`，`train_step_log.csv` 也还没出现，所以当前更像是“301 checkpoint 正在/刚完成写出”，而不是训练停在 300。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
 - 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
 

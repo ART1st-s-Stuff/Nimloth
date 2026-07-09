@@ -41,6 +41,11 @@
       3. `legacy_train.log` 仍持续增长；
       4. 日志已明确写出 `Found checkpoint ... global_step_300`、`Setting global step to 300`、`Resuming from .../global_step_300`、`validation at global step 300 begins`。
     - 因此当前 ws4 fallback 已不再只是 smoke，而是一个**正在运行中的 held-node train step**；当前 server worktree / code 版本为 Nimloth `6baabf6`、VAGEN `cefb982`、verl `65316156`。
+    - 最新进展（本轮新核实）：
+      1. `validation at global step 300` 已结束；
+      2. 日志已出现 `[DEBUG] step 301 rollout ends`；
+      3. `checkpoints/global_step_301/` 已开始写出 actor/critic shard，说明训练已经真正越过 resume 起点；
+      4. 但 `latest_checkpointed_iteration.txt` 暂时仍是 `300`，且 `train_step_log.csv` 还没出现；这更像是 checkpoint marker / step log 还没刷新完，而不是训练已停止。
 - 相关实时记录：`ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`；服务器 run README 已写明这是 non-strict ws7 fallback。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
