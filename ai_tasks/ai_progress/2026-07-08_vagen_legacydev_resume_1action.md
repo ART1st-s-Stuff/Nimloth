@@ -102,8 +102,10 @@
   - 为避免浪费资源，我已主动取消那次误从 `300` 重启的新 step；
   - 之后改用 **`SOURCE_CHECKPOINT_STEP=308`** 再次拉起 held step，当前新的 train step 是 **`468852.23`**；
   - 这次已经确认：`latest_checkpointed_iteration.txt` 保持为 `308`，日志明确写出 `Found checkpoint ... global_step_308`、`Setting global step to 308`、`Resuming from .../global_step_308`；
-  - 最新监控结果里，日志已出现 `[DEBUG] validation at global step 308 begins`；
-  - 当前 `468852.23` 仍在 `RUNNING`，`python -m vagen.trainer.main_ppo` 进程存活，训练 GPU 已重新占用；当前真实状态是：**已从 308 正确恢复，并正在继续监控是否再次命中同一个底层崩溃**。
+  - 后续监控已确认它继续完成了 `validation@308`，并把训练推进到 `global_step_312`；
+  - 目前已写出 `validation/308.jsonl`、`validation/310.jsonl`，并生成 `checkpoints/global_step_309`、`global_step_310`、`global_step_311`、`global_step_312`；`latest_checkpointed_iteration.txt` 当前是 `312`；
+  - 日志里已经出现 `[DEBUG] step 309 rollout ends`、`[DEBUG] step 310 rollout ends`、`[DEBUG] validation at global step 310 begins/ends`、`[DEBUG] step 311 rollout ends`、`[DEBUG] step 312 rollout ends`；
+  - 当前 `468852.23` 仍在 `RUNNING`，`python -m vagen.trainer.main_ppo` 进程存活；到目前为止，这次正确从 `308` 恢复后的 run 已经稳定越过旧崩溃点，并且**还没有再次出现新的 `none_dealloc` / `ActorDiedError`**。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
 - 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
 
@@ -113,4 +115,4 @@
 - normal fallback 的关键限制：虽然 run 会从 `global_step_300` 形式继续到 `330`，但 ws7 checkpoint 是从 actor/critic HF export 新生成的，因此 **optimizer / lr scheduler 状态不会严格继承 ws8 step300 checkpoint**。
 - `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
 - 当前要验证的新点：strict ws8 external-env resume 在 `dgx-39` 可用时，是否能直接跳过 conversion、从 symlinked `global_step_300` checkpoint 成功 load actor/critic shards 并进入 val-before-train。
-- 当前阻塞再次变化：已经证明可以在保留当前 hold 的前提下从 `global_step_308` 正确重启；下一步重点变成：这次正确从 `308` 恢复后的 run 能否稳定继续，还是会再次命中同一个 `none_dealloc` 底层崩溃。
+- 当前阻塞再次变化：已经证明可以在保留当前 hold 的前提下从 `global_step_308` 正确重启，并稳定推进到 `global_step_312`；下一步重点变成：它能否继续长期稳定跑到 `330`，还是会在更后面的 rollout/validation 阶段再次命中同一个 `none_dealloc` 底层崩溃。

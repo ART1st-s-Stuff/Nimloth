@@ -43,7 +43,9 @@
       5. 之后改用 **`SOURCE_CHECKPOINT_STEP=308`** 再次拉起 held step，当前新的 train step 是 **`468852.23`**；
       6. 这次已经确认：`latest_checkpointed_iteration.txt` 保持为 `308`，日志明确写出 `Found checkpoint ... global_step_308`、`Setting global step to 308`、`Resuming from .../global_step_308`，说明现在确实是从最新 checkpoint 正确续跑；
       7. 当前 `468852.23` 仍在 `RUNNING`，`python -m vagen.trainer.main_ppo` 进程存活，训练 GPU 已重新占用；
-      8. 最新监控结果里，日志已出现 `[DEBUG] validation at global step 308 begins`，说明这次正确恢复后的 run 已经通过 checkpoint load，正在继续进入新的 val-before-train 阶段；当前状态是：**已从 308 正确恢复，并正在继续监控是否再次命中同一个底层崩溃**。
+      8. 最新监控结果里，日志先后出现 `[DEBUG] validation at global step 308 begins/ends`、`[DEBUG] step 309 rollout ends`、`[DEBUG] step 310 rollout ends`、`[DEBUG] validation at global step 310 begins/ends`、`[DEBUG] step 311 rollout ends`、`[DEBUG] step 312 rollout ends`；
+      9. 当前 `validation/308.jsonl`、`validation/310.jsonl` 已写出，`checkpoints/global_step_309` 到 `global_step_312` 已存在，`latest_checkpointed_iteration.txt = 312`；
+      10. 到目前为止，这次正确从 `308` 恢复后的 run 已经稳定越过旧的崩溃点并继续推进到 `312`，暂时还没有再次出现新的 `none_dealloc` / `ActorDiedError`。
 - 相关实时记录：`ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`；服务器 run README 已写明这是 non-strict ws7 fallback。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
