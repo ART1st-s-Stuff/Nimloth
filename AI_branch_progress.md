@@ -45,7 +45,9 @@
       1. `validation at global step 300` 已结束；
       2. 日志已出现 `[DEBUG] step 301 rollout ends`；
       3. `checkpoints/global_step_301/` 已开始写出 actor/critic shard，说明训练已经真正越过 resume 起点；
-      4. 但 `latest_checkpointed_iteration.txt` 暂时仍是 `300`，且 `train_step_log.csv` 还没出现；这更像是 checkpoint marker / step log 还没刷新完，而不是训练已停止。
+      4. 现在 `latest_checkpointed_iteration.txt` 已刷新到 `301`；
+      5. `train_step_log.csv` 仍未出现，但 run 还在继续，当前更像是该 legacy 栈的 step-log 写出时机较晚，而不是训练停住。
+      6. 从日志时间看，当前可观测节奏大致是：`validation@300` 从 `18:26:23` 持续到 `18:43:50`，`step 301 rollout ends` 在 `18:54:32`，而 `global_step_301` 目录内最新文件写到约 `18:58:38`。
 - 相关实时记录：`ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`；服务器 run README 已写明这是 non-strict ws7 fallback。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
