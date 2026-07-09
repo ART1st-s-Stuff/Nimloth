@@ -16,6 +16,7 @@ set -euo pipefail
 
 REPO=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${REPO}/experiments/training/baseline
+CONFIG_DIR=${REPO}/configs/training/baseline
 BASEDIR=${REPO}/external/VAGEN
 PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv}
 CONVERT_PY=${CONVERT_PY:-${SCRIPTDIR}/convert_legacy_vagen_hf_to_world_size.py}
@@ -26,6 +27,8 @@ LOG_FILE=${LOG_FILE:-${RUN_DIR}/${EXPERIMENT_NAME}.log}
 CONTROL_DIR=${CONTROL_DIR:-${RUN_DIR}/legacy_env_service}
 SAVE_CHECKPOINT_DIR=${SAVE_CHECKPOINT_DIR:-${RUN_DIR}/checkpoints}
 SERVICE_BASE_URL=${SERVICE_BASE_URL:-}
+TRAIN_CONFIG=${TRAIN_CONFIG:-${CONFIG_DIR}/legacy_train.yaml}
+VAL_CONFIG=${VAL_CONFIG:-${CONFIG_DIR}/legacy_val.yaml}
 ACTOR_MODEL_PATH=${ACTOR_MODEL_PATH:?set ACTOR_MODEL_PATH}
 CRITIC_MODEL_PATH=${CRITIC_MODEL_PATH:?set CRITIC_MODEL_PATH}
 SOURCE_CHECKPOINT_STEP=${SOURCE_CHECKPOINT_STEP:-300}
@@ -40,6 +43,8 @@ ENABLE_WANDB=${ENABLE_WANDB:-1}
 RAY_PORT=${RAY_PORT:-6379}
 RAY_NUM_CPUS=${RAY_NUM_CPUS:-96}
 CONVERT_DIR=${CONVERT_DIR:-${RUN_DIR}/ws${TRAIN_GPUS_PER_NODE}_convert}
+CONVERT_TRAIN_PARQUET=${CONVERT_TRAIN_PARQUET:-${CONVERT_DIR}/train.parquet}
+CONVERT_VAL_PARQUET=${CONVERT_VAL_PARQUET:-${CONVERT_DIR}/val.parquet}
 
 mkdir -p "${RUN_DIR}" "${SAVE_CHECKPOINT_DIR}" "${CONVERT_DIR}" "${REPO}/outputs/experiments/training/baseline/slurm"
 
@@ -159,30 +164,29 @@ ensure_ws_checkpoint() {
     return
   fi
 
-  cat > "${CONVERT_DIR}/dummy.yaml" <<YAML
-envs:
-  - name: RemoteEnv
-    n_envs: 12
-    data_source: navigation_base_train
-    seed: [1, 12, 1]
-    max_turns: 1
-    response_length_per_turn: 16
-    config:
-      base_urls: "http://127.0.0.1:9"
-      timeout: 1
-      retries: 0
-      eval_set: base_train
-      prompt_format: eval_mode
-      max_actions_per_step: 1
-YAML
+  echo "=== Preparing real parquet data for ws${TRAIN_GPUS_PER_NODE} conversion ===" | tee -a "${LOG_FILE}"
+  PYTHONUNBUFFERED=1 python -m vagen.env.create_dataset \
+    --yaml_path "${TRAIN_CONFIG}" \
+    --force_gen \
+    --seed "${VAGEN_DATA_SEED}" \
+    --train_path "${CONVERT_TRAIN_PARQUET}" \
+    --test_path "${CONVERT_DIR}/train_unused_test.parquet" \
+    2>&1 | tee -a "${LOG_FILE}"
+  PYTHONUNBUFFERED=1 python -m vagen.env.create_dataset \
+    --yaml_path "${VAL_CONFIG}" \
+    --force_gen \
+    --seed "${VAGEN_DATA_SEED}" \
+    --train_path "${CONVERT_DIR}/val_unused_train.parquet" \
+    --test_path "${CONVERT_VAL_PARQUET}" \
+    2>&1 | tee -a "${LOG_FILE}"
 
   echo "=== Converting actor/critic HF exports to ws${TRAIN_GPUS_PER_NODE} checkpoint at global_step_${SOURCE_CHECKPOINT_STEP} ===" | tee -a "${LOG_FILE}"
   echo "NOTE: this conversion preserves model weights only; optimizer/lr scheduler are freshly initialized for ws${TRAIN_GPUS_PER_NODE}." | tee -a "${LOG_FILE}"
   # shellcheck disable=SC1091
   source "${SCRIPTDIR}/vagen_rollout_vllm_cli.inc.sh"
   PYTHONUNBUFFERED=1 python3 "${CONVERT_PY}" \
-    data.train_files="${CONVERT_DIR}/dummy.yaml" \
-    data.val_files="${CONVERT_DIR}/dummy.yaml" \
+    data.train_files="${CONVERT_TRAIN_PARQUET}" \
+    data.val_files="${CONVERT_VAL_PARQUET}" \
     data.train_batch_size=${TRAIN_GPUS_PER_NODE} \
     data.val_batch_size=${TRAIN_GPUS_PER_NODE} \
     data.max_prompt_length=3000 \
