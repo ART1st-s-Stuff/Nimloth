@@ -94,29 +94,15 @@
   - `latest_checkpointed_iteration.txt = 300`；
   - 训练主流程成功从这个 ws4 checkpoint **resume 到 global_step_300**；
   - 已进入 **validation at global step 300**，并连续完成多轮 vLLM generation / env-service rollout。
-- 之后再次核实时发现：前面这次 held `srun` **并没有真的死掉**。它继续作为 Slurm job step `468852.8` 挂在 `dgx-27` 上运行。
-- 当前可验证状态：
-  - compute node `dgx-27` 上仍存在活跃进程：
-    - `bash .../legacy_train_external_service.slurm`
-    - `ray start --head --num-gpus=4`
-    - `bash .../run_legacy_reproduction.sh`
-    - `python -m vagen.trainer.main_ppo ... trainer.total_training_steps=330 ... rollout_manager.base_url=http://10.23.1.45:5000`
-  - `nvidia-smi` 显示 4 张训练 GPU 仍被占用，显存大致 `39.5G / 38.8G / 2.4G / 38.8G`，util 仍有波动；
-  - `legacy_train.log` 仍在持续增长；
-  - 日志已明确写出：
-    - `Found checkpoint: .../checkpoints/global_step_300`
-    - `Setting global step to 300`
-    - `Resuming from .../global_step_300`
-    - `[DEBUG] validation at global step 300 begins`
-- 因此，当前 ws4 hold-first fallback 已经从“validation smoke”升级为**真实在跑的 held-node train step**，而不是已停止的前台试跑。
-- 本轮新核实到的前进信号：
-  - `[DEBUG] validation at global step 300 ends` 已出现在日志里；
-  - 随后日志出现 `[DEBUG] step 301 rollout ends`；
-  - `checkpoints/global_step_301/` 已经存在，并开始写出 actor / critic 的 ws4 shard文件；
-  - `latest_checkpointed_iteration.txt` 现已刷新到 `301`；
-  - `legacy_train.log` 最近修改时间仍在持续前进；
-  - `train_step_log.csv` 仍未出现，所以当前更像是这个 legacy 栈的 step-log 文件会比 checkpoint marker 更晚落盘，而不是训练停在 301。
-  - 当前从日志能读到的粗略节奏：`validation@300` 约为 `18:26:23 -> 18:43:50`，`step 301 rollout ends` 在 `18:54:32`，而 `global_step_301` 目录内最新文件时间约为 `18:58:38`。
+- 之后再次核实时发现：前面这次 held `srun` **并没有真的死掉**。它继续作为 Slurm job step `468852.8` 挂在 `dgx-27` 上运行，并且实际从 `global_step_300` 推进到了 `global_step_308`。
+- 这次 ws4 hold-first fallback 的当前最终状态：
+  - `validation at global step 300` 已完整结束，并写出 `validation/300.jsonl`；
+  - 日志持续出现 `[DEBUG] step 301 rollout ends` 到 `[DEBUG] step 308 rollout ends`；
+  - `checkpoints/global_step_301` 到 `global_step_308` 都已存在；`latest_checkpointed_iteration.txt` 当前是 `308`；
+  - 但这条训练在 `21:02:48 HKT` 失败退出，`468852.8` job step 已消失，训练进程和训练 GPU 占用都已清空；
+  - 直接失败信号是：Ray worker `WorkerDict`（pid `2151591`）在 `external/VAGEN/verl/verl/workers/fsdp_workers.py:492 generate_sequences` 路径里触发 **`Fatal Python error: none_dealloc: deallocating None`**，随后主任务报 `ray.exceptions.ActorDiedError`；
+  - 当前没有证据足以把这次失败断定为 OOM，更像是 Python / Ray / vLLM / torch 扩展侧的底层崩溃；
+  - 好消息是：hold job `468852` 本身仍在 `RUNNING`，所以如果人类要继续，可以直接在同一 held node 上从 `global_step_308` 续跑，而不必重做 ws4 conversion。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
 - 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
 
@@ -126,4 +112,4 @@
 - normal fallback 的关键限制：虽然 run 会从 `global_step_300` 形式继续到 `330`，但 ws7 checkpoint 是从 actor/critic HF export 新生成的，因此 **optimizer / lr scheduler 状态不会严格继承 ws8 step300 checkpoint**。
 - `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
 - 当前要验证的新点：strict ws8 external-env resume 在 `dgx-39` 可用时，是否能直接跳过 conversion、从 symlinked `global_step_300` checkpoint 成功 load actor/critic shards 并进入 val-before-train。
-- 当前不再被“拿不到 4GPU 节点”或“前台 `srun` 会立刻死掉”这两件事阻塞。真正剩下的监控点变成：这条正在运行的 ws4 held train step 能否顺利走完 val-before-train，并产出第一个 `>300` 的训练后 checkpoint / step 级日志。
+- 当前阻塞已经变化：不是拿不到 4GPU 节点，也不是前台 `srun` 立刻消失；而是这条 ws4 held 训练虽然成功推进到 `global_step_308`，却在 rollout worker 里触发 `Fatal Python error: none_dealloc: deallocating None` 后崩掉。下一步重点变成：是否在保留当前 hold 的前提下，从 `global_step_308` 重启并复现/绕过这个底层崩溃。

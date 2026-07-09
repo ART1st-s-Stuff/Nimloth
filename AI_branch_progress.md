@@ -34,20 +34,15 @@
       2. 完成 ws4 actor/critic checkpoint conversion（`global_step_300`）；
       3. 从 ws4 checkpoint resume 到 `global_step_300`；
       4. 进入 validation，并持续完成多轮 vLLM generation / env-service rollout。
-    - 之后再次核实时发现：前面那次 held `srun` **并没有真的被杀掉**，而是继续以 Slurm job step `468852.8` 挂在 `dgx-27` 上运行。
-    - 当前可验证状态：
-      1. `legacy_train_external_service.slurm` / `run_legacy_reproduction.sh` / `python -m vagen.trainer.main_ppo` 进程都还在；
-      2. `nvidia-smi` 显示 4 张训练 GPU 仍被占用（约 38–39 GiB / 2.4 GiB / 38 GiB / 38 GiB）；
-      3. `legacy_train.log` 仍持续增长；
-      4. 日志已明确写出 `Found checkpoint ... global_step_300`、`Setting global step to 300`、`Resuming from .../global_step_300`、`validation at global step 300 begins`。
-    - 因此当前 ws4 fallback 已不再只是 smoke，而是一个**正在运行中的 held-node train step**；当前 server worktree / code 版本为 Nimloth `6baabf6`、VAGEN `cefb982`、verl `65316156`。
-    - 最新进展（本轮新核实）：
-      1. `validation at global step 300` 已结束；
-      2. 日志已出现 `[DEBUG] step 301 rollout ends`；
-      3. `checkpoints/global_step_301/` 已开始写出 actor/critic shard，说明训练已经真正越过 resume 起点；
-      4. 现在 `latest_checkpointed_iteration.txt` 已刷新到 `301`；
-      5. `train_step_log.csv` 仍未出现，但 run 还在继续，当前更像是该 legacy 栈的 step-log 写出时机较晚，而不是训练停住。
-      6. 从日志时间看，当前可观测节奏大致是：`validation@300` 从 `18:26:23` 持续到 `18:43:50`，`step 301 rollout ends` 在 `18:54:32`，而 `global_step_301` 目录内最新文件写到约 `18:58:38`。
+    - 之后再次核实时发现：前面那次 held `srun` **并没有真的被杀掉**，而是继续以 Slurm job step `468852.8` 挂在 `dgx-27` 上运行；随后它实际从 `global_step_300` 一路推进到了 `global_step_308`。
+    - 这次 ws4 held run 的当前最终状态：
+      1. `validation at global step 300` 已完整结束，并写出 `validation/300.jsonl`；
+      2. 日志持续出现 `[DEBUG] step 301 rollout ends` 到 `[DEBUG] step 308 rollout ends`；
+      3. `checkpoints/global_step_301` 到 `global_step_308` 都已存在；`latest_checkpointed_iteration.txt` 当前是 `308`；
+      4. 但这条训练在 `21:02:48 HKT` 失败退出，`468852.8` job step 已消失，`dgx-27` 上训练进程和训练 GPU 占用都已清空；
+      5. 日志中的直接失败点是：Ray worker `WorkerDict`（pid `2151591`）在 `external/VAGEN/verl/verl/workers/fsdp_workers.py:492 generate_sequences` 路径里触发 **`Fatal Python error: none_dealloc: deallocating None`**，随后主任务报 `ray.exceptions.ActorDiedError`；
+      6. 目前没有证据能把这次失败确定为 OOM；更像是 Python / Ray / vLLM / torch 扩展侧的底层崩溃；
+      7. 好消息是：hold job `468852` 本身仍在 `RUNNING`，而且最近可恢复 checkpoint 已经推进到 `global_step_308`，所以如果用户要继续，可以直接在同一个 held node 上从 `308` 续跑，不必重做 ws4 conversion。
 - 相关实时记录：`ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`；服务器 run README 已写明这是 non-strict ws7 fallback。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
