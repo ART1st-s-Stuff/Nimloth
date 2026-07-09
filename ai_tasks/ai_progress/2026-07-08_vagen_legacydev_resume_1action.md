@@ -33,9 +33,10 @@
   - `experiments/training/baseline/legacy_env_service.slurm`：单独起 2-GPU legacy BatchEnvServer，并把 `base_url.txt` / `ready` / `failed` 写进 control dir。
   - `experiments/training/baseline/legacy_train_external_service.slurm`：等待 legacy env，先把 actor/critic HF export 转成 **ws7 fresh checkpoint at global_step_300**，再用 `run_legacy_reproduction.sh` 从这个 ws7 checkpoint 继续跑到 step330。
 - strict ws8 preempt job `467812` 已取消，避免后续和 normal fallback 重复占资源。
-- 当前最新服务器提交 job：
-  - `468531`：`vagen-legacy-env`，normal，目标是 `dgx-37` 上 2-GPU legacy env service；当前 `PENDING (Priority)`。
+- 当前 latest normal fallback jobs：
+  - `468531`：`vagen-legacy-env`，normal，已在 `dgx-37` 启动并通过 health check；当前 legacy service URL：`http://10.23.1.45:5000`。
   - `468532`：`vagen-legacy-train`，normal，目标是任意 1 个 7-GPU normal 节点；当前 `PENDING (Priority)`。
+- 当前 normal 侧已经成功占住 `2 env` 资源，但训练侧仍缺整块 `7 GPU` 节点；最新资源快照下 normal 只剩 `dgx-21/dgx-46/dgx-54` 各 1 张空闲 GPU，因此 train job 还没法启动。
 - 当前 normal fallback run dir：`/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-07-09/vagen_legacydev_non_strict_resume300_to330_ws7_1action_turn20_normal2env`
 - 已确认之前尝试直接复用 `train_resume.slurm` / `env_external_4gpu.slurm` 不适配 legacy-dev：
   - `vagen.envs.navigation.serve` 模块不存在；
@@ -67,7 +68,8 @@
 - superpod `467812` 在切换到 normal fallback 方案前已取消。
 - `bash -n experiments/training/baseline/legacy_env_service.slurm experiments/training/baseline/legacy_train_external_service.slurm`
 - superpod 已写入 new run README：`2026-07-09/vagen_legacydev_non_strict_resume300_to330_ws7_1action_turn20_normal2env/README.md`
-- superpod `468531` / `468532` 已提交；当前都处于 `PENDING (Priority)`。
+- superpod `468531` 已在 `dgx-37` 跑起，并记录：allocated `CUDA_VISIBLE_DEVICES=0,1`、AI2-THOR smoke `rc=0` / `rc=0`、legacy env service health OK after 6 checks。
+- superpod `468532` 仍在 `PENDING (Priority)`。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
 - 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
 
@@ -75,4 +77,4 @@
 - 当前按“再训练 30 个 global step”解释为 **300 -> 330**。若人类实际想要别的终点，需要改 `trainer.total_training_steps`。
 - strict ws8 resume 仍然是语义最干净的方案；但当前已转向用户确认过的 normal fallback（接受 non-strict resume）。
 - normal fallback 的关键限制：虽然 run 会从 `global_step_300` 形式继续到 `330`，但 ws7 checkpoint 是从 actor/critic HF export 新生成的，因此 **optimizer / lr scheduler 状态不会严格继承 ws8 step300 checkpoint**。
-- `468531` 目前固定请求 `dgx-37` 的 2 GPU；是否能真正起跑，取决于该节点当时分到的 2 张 GPU 是否都能通过 AI2-THOR smoke。
+- `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
