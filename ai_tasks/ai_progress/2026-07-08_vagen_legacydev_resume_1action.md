@@ -37,6 +37,7 @@
   - `468531`：`vagen-legacy-env`，normal，已在 `dgx-37` 启动并通过 health check；当前 legacy service URL：`http://10.23.1.45:5000`。
   - `468532`：`vagen-legacy-train`，曾在 normal `dgx-26` 实际启动，但很快失败；失败点不是资源，而是 conversion helper 误用了现代 `vagen.main_ppo` import，报 `ModuleNotFoundError: No module named 'vagen.main_ppo'`。
 - 因用户后续要求，train 已改投到 **preempt `dgx-39`**，仍沿用当前 non-strict ws7 fallback 语义（external legacy env + ws7 fresh checkpoint conversion + step300→330）。
+- 最新 preempt train job：`468756`。当前状态：`PENDING (Priority)`；`squeue -w dgx-39` 显示该节点此刻正被别的 preempt job `468754 psigprof50` 占着 `4 GPU`，所以即使当前 train 改到了 `dgx-39`，也还没法立即起跑。
 - 当前 normal fallback run dir：`/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-07-09/vagen_legacydev_non_strict_resume300_to330_ws7_1action_turn20_normal2env`
 - 已确认之前尝试直接复用 `train_resume.slurm` / `env_external_4gpu.slurm` 不适配 legacy-dev：
   - `vagen.envs.navigation.serve` 模块不存在；
@@ -71,7 +72,8 @@
 - superpod 已写入 new run README：`2026-07-09/vagen_legacydev_non_strict_resume300_to330_ws7_1action_turn20_normal2env/README.md`
 - superpod `468531` 已在 `dgx-37` 跑起，并记录：allocated `CUDA_VISIBLE_DEVICES=0,1`、AI2-THOR smoke `rc=0` / `rc=0`、legacy env service health OK after 6 checks。
 - superpod `468532` failure log：Ray 7 GPU startup 正常，但 conversion helper 在 `convert_vagen_actor_only_to_world_size.py` 报 `ModuleNotFoundError: No module named 'vagen.main_ppo'`。
-- 本地已新增 legacy 专用 conversion helper `convert_legacy_vagen_hf_to_world_size.py`，并把 `legacy_train_external_service.slurm` 的默认 `CONVERT_PY` 切到该 helper。
+- 本地已新增 legacy 专用 conversion helper `convert_legacy_vagen_hf_to_world_size.py`，并把 `legacy_train_external_service.slurm` 的默认 `CONVERT_PY` 切到该 helper；相关 Nimloth commit：`1947043`。
+- superpod worktree 已 reset 到 `1947043`，并重新提交 preempt train job `468756` 到 `dgx-39`。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
 - 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
 
@@ -81,3 +83,4 @@
 - normal fallback 的关键限制：虽然 run 会从 `global_step_300` 形式继续到 `330`，但 ws7 checkpoint 是从 actor/critic HF export 新生成的，因此 **optimizer / lr scheduler 状态不会严格继承 ws8 step300 checkpoint**。
 - `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
 - 当前要验证的新点：legacy 专用 ws7 conversion helper 在 preempt `dgx-39` 上是否能成功产出 `global_step_300/{actor,critic}/model_world_size_7_rank_6.pt`。
+- 当前阻塞不在代码，而在 `dgx-39` 暂时没有空出 7 GPU。
