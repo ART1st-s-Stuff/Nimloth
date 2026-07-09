@@ -75,7 +75,11 @@
 - superpod `468532` failure log：Ray 7 GPU startup 正常，但 conversion helper 在 `convert_vagen_actor_only_to_world_size.py` 报 `ModuleNotFoundError: No module named 'vagen.main_ppo'`。
 - 本地已新增 legacy 专用 conversion helper `convert_legacy_vagen_hf_to_world_size.py`，并把 `legacy_train_external_service.slurm` 的默认 `CONVERT_PY` 切到该 helper；相关 Nimloth code commit：`1947043`。
 - superpod `468756` 在 `dgx-39` 真正启动后，新 helper 又失败于 Hydra main config path：`MissingConfigException: Primary config directory not found`，它错误拼成了 `experiments/external/VAGEN/vagen/trainer/config`。
+- 本地随后已修复两点：
+  - `convert_legacy_vagen_hf_to_world_size.py` 的 Hydra `config_path` 改为正确的 `../../../external/VAGEN/vagen/trainer/config`。
+  - `legacy_train_external_service.slurm` 新增 `RAY_NUM_CPUS` 参数化，便于后续在碎片 4-GPU normal allocation 上把 Ray head CPU 数降到当前 allocation 能承受的范围。
 - 随后转为 strict ws8 路线：superpod worktree 已 reset 到 repo head `e8afb68`，新建 strict run dir `2026-07-09/vagen_legacydev_strict_resume300_to330_1action_turn20_ws8_extenv_dgx37_dgx39`，并提交 train job `468767`。
+- 又尝试按用户要求抢 `dgx-27` 做 4-GPU bash hold：最初看到它有 4 张空闲 GPU，但在 hold job 真正运行前该节点碎片资源已被别的任务吃掉；当前服务器已没有任何 4-GPU 整块空闲 normal 节点，因此暂时无法在 held 4-GPU allocation 上继续 ws4 fallback。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
 - 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
 
@@ -85,4 +89,6 @@
 - normal fallback 的关键限制：虽然 run 会从 `global_step_300` 形式继续到 `330`，但 ws7 checkpoint 是从 actor/critic HF export 新生成的，因此 **optimizer / lr scheduler 状态不会严格继承 ws8 step300 checkpoint**。
 - `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
 - 当前要验证的新点：strict ws8 external-env resume 在 `dgx-39` 可用时，是否能直接跳过 conversion、从 symlinked `global_step_300` checkpoint 成功 load actor/critic shards 并进入 val-before-train。
-- 当前阻塞不在训练逻辑，而在 Slurm 节点可用性：`dgx-39` 当前是 `planned`，因此 strict train job `468767` 无法被调度。
+- 当前阻塞不在训练逻辑，而在 Slurm 节点可用性：
+  - strict ws8：`dgx-39` 仍未可分配时，`468767` 无法启动；
+  - ws4 fallback：当前 normal 也没有可立即占住的 4-GPU 节点。

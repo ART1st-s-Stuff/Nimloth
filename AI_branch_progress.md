@@ -24,8 +24,9 @@
   - 首个 train job `468532` 虽然拿到 normal `dgx-26` 的 7 GPU 并通过 env health + Ray 7 GPU 检查，但在 ws7 conversion 阶段失败：`convert_vagen_actor_only_to_world_size.py` 误用了现代 `vagen.main_ppo` import，而 legacy-dev 只有 `vagen.trainer.main_ppo`。
   - 为此已新增 `experiments/training/baseline/convert_legacy_vagen_hf_to_world_size.py`，并把 `legacy_train_external_service.slurm` 默认切到这个 legacy conversion helper。
   - 用户随后要求把 train 改投到 preempt `dgx-39`。non-strict ws7 fallback 的 preempt train `468756` 后来确实在 `dgx-39` 启动了，但又失败在新的 legacy conversion helper Hydra config path 写错：它去找了不存在的 `experiments/external/VAGEN/vagen/trainer/config`。
+  - 该问题现已在本地修复：`convert_legacy_vagen_hf_to_world_size.py` 的 Hydra `config_path` 改成了正确的 `../../../external/VAGEN/vagen/trainer/config`；`legacy_train_external_service.slurm` 也新增了 `RAY_NUM_CPUS` 参数化，方便后续在碎片 4-GPU allocation 上降低 Ray 头节点 CPU 数。
   - 随后已切回更干净的 **strict ws8 dgx-39 external-env resume**：新 run 为 `outputs/experiments/training/baseline/2026-07-09/vagen_legacydev_strict_resume300_to330_1action_turn20_ws8_extenv_dgx37_dgx39`，把 `/project/peilab/atst/vagen_ckpt` 作为 `checkpoints/global_step_300` 挂进新 run。
-  - strict train job `468767` 已提交到 `dgx-39`，但当前 `sinfo -n dgx-39` 显示该节点状态是 `planned`，所以 job 处于 `PENDING (ReqNodeNotAvail,_UnavailableNodes:dgx-39)`。
+  - strict train job `468767` 仍在排队；同时还尝试过按用户要求去占 `dgx-27` 的 4-GPU normal 节点做 ws4 fallback，但该碎片资源在 hold 真正运行前已经消失。当前既没有可立即占住的 4-GPU normal 节点，也没有可立即分配的 `dgx-39`。
 - 相关实时记录：`ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`；服务器 run README 已写明这是 non-strict ws7 fallback。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化

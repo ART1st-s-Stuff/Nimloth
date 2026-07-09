@@ -38,6 +38,7 @@ TRAIN_NODES=${TRAIN_NODES:-1}
 VAGEN_DATA_SEED=${VAGEN_DATA_SEED:-42}
 ENABLE_WANDB=${ENABLE_WANDB:-1}
 RAY_PORT=${RAY_PORT:-6379}
+RAY_NUM_CPUS=${RAY_NUM_CPUS:-96}
 CONVERT_DIR=${CONVERT_DIR:-${RUN_DIR}/ws${TRAIN_GPUS_PER_NODE}_convert}
 
 mkdir -p "${RUN_DIR}" "${SAVE_CHECKPOINT_DIR}" "${CONVERT_DIR}" "${REPO}/outputs/experiments/training/baseline/slurm"
@@ -111,10 +112,10 @@ start_ray_head() {
   ray stop --force >/dev/null 2>&1 || true
   pkill -u "$USER" -f 'vllm|VLLM|torch/_inductor/compile_worker' >/dev/null 2>&1 || true
   sleep 10
-  echo "=== Starting Ray head CUDA=${TRAIN_CUDA} ip=${HEAD_IP} port=${RAY_PORT} ===" | tee -a "${LOG_FILE}"
+  echo "=== Starting Ray head CUDA=${TRAIN_CUDA} ip=${HEAD_IP} port=${RAY_PORT} cpus=${RAY_NUM_CPUS} ===" | tee -a "${LOG_FILE}"
   CUDA_VISIBLE_DEVICES="${TRAIN_CUDA}" ray start --head \
     --port="${RAY_PORT}" \
-    --num-cpus=96 \
+    --num-cpus="${RAY_NUM_CPUS}" \
     --num-gpus="${TRAIN_GPUS_PER_NODE}" \
     --node-ip-address="${HEAD_IP}" \
     --include-dashboard=false \

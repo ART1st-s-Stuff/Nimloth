@@ -113,7 +113,7 @@ def convert_task(config):
     print("Legacy converted checkpoint save finished")
 
 
-@hydra.main(config_path="../../external/VAGEN/vagen/trainer/config", config_name="ppo_trainer", version_base=None)
+@hydra.main(config_path="../../../external/VAGEN/vagen/trainer/config", config_name="ppo_trainer", version_base=None)
 def main(config):
     if not ray.is_initialized():
         ray.init(address='auto', runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
