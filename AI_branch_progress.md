@@ -21,8 +21,9 @@
   - `experiments/training/baseline/legacy_train_external_service.slurm`：等待 env、把 actor/critic HF export 转成 ws7 fresh checkpoint、再用 `run_legacy_reproduction.sh` 开始训练。
 - 当前 normal fallback run：`outputs/experiments/training/baseline/2026-07-09/vagen_legacydev_non_strict_resume300_to330_ws7_1action_turn20_normal2env`
   - env job `468531`：`vagen-legacy-env`，已在 `dgx-37` 占住 2 GPU 并健康启动；service URL `http://10.23.1.45:5000`；本次 allocation 的 physical GPU `0/1` 都通过了 AI2-THOR smoke。
-  - train job `468532`：`vagen-legacy-train`，normal 任意单节点 7 GPU，当前 `PENDING (Priority)`。
-  - 最新资源快照下 normal 只剩 `dgx-21/dgx-46/dgx-54` 各 1 张空闲 GPU，所以 train 还没有可用的整块 7-GPU 节点。
+  - 首个 train job `468532` 虽然拿到 normal `dgx-26` 的 7 GPU 并通过 env health + Ray 7 GPU 检查，但在 ws7 conversion 阶段失败：`convert_vagen_actor_only_to_world_size.py` 误用了现代 `vagen.main_ppo` import，而 legacy-dev 只有 `vagen.trainer.main_ppo`。
+  - 为此已新增 `experiments/training/baseline/convert_legacy_vagen_hf_to_world_size.py`，并把 `legacy_train_external_service.slurm` 默认切到这个 legacy conversion helper。
+  - 用户随后要求把 train 改投到 preempt `dgx-39`；当前保持同一 non-strict ws7 fallback 语义，只切换 train 分区/节点。
 - 相关实时记录：`ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`；服务器 run README 已写明这是 non-strict ws7 fallback。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
