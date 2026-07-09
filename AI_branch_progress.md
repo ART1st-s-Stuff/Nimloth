@@ -45,7 +45,9 @@
       7. 当前 `468852.23` 仍在 `RUNNING`，`python -m vagen.trainer.main_ppo` 进程存活，训练 GPU 已重新占用；
       8. 最新监控结果里，日志先后出现 `[DEBUG] validation at global step 308 begins/ends`、`[DEBUG] step 309 rollout ends`、`[DEBUG] step 310 rollout ends`、`[DEBUG] validation at global step 310 begins/ends`、`[DEBUG] step 311 rollout ends`、`[DEBUG] step 312 rollout ends`；
       9. 当前 `validation/308.jsonl`、`validation/310.jsonl` 已写出，`checkpoints/global_step_309` 到 `global_step_312` 已存在，`latest_checkpointed_iteration.txt = 312`；
-      10. 到目前为止，这次正确从 `308` 恢复后的 run 已经稳定越过旧的崩溃点并继续推进到 `312`，暂时还没有再次出现新的 `none_dealloc` / `ActorDiedError`。
+      10. 到目前为止，这次正确从 `308` 恢复后的 run 已经稳定越过旧的崩溃点并继续推进到 `312`，暂时还没有再次出现新的 `none_dealloc` / `ActorDiedError`；
+      11. 按 repo 里的 wandb 说明补查后，已确认 canonical baseline 的 wandb 入口主要有两类：训练时直接 `trainer.logger=['console','wandb']`，以及 `launch_val_wandb_watcher.sh` / `upload_val_curve_wandb.py` 这种额外 val-curve 上传链路；考虑到当前 run 已在训练中且不想再额外占新资源，我没有新起 watcher，而是直接用 repo 现成的 `experiments/navigation_baseline/upload_retry2_wandb_from_log.py --mode online` 把当前 `legacy_train.log` 的累计 console metrics 回传到一个新的 retrospective wandb run；
+      12. 这次 retrospective 上传成功生成 wandb run **`jimkqsm6`**（`vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_hold4g_console_retro`），覆盖 `global_step_300..312` 共 13 个 step；它与训练过程中自动产生的 run 分开存在，作用是把多次 resume/重启后的进度统一到一个更容易查看的曲线上。
 - 相关实时记录：`ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`；服务器 run README 已写明这是 non-strict ws7 fallback。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化

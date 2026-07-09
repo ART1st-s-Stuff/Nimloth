@@ -106,6 +106,17 @@
   - 目前已写出 `validation/308.jsonl`、`validation/310.jsonl`，并生成 `checkpoints/global_step_309`、`global_step_310`、`global_step_311`、`global_step_312`；`latest_checkpointed_iteration.txt` 当前是 `312`；
   - 日志里已经出现 `[DEBUG] step 309 rollout ends`、`[DEBUG] step 310 rollout ends`、`[DEBUG] validation at global step 310 begins/ends`、`[DEBUG] step 311 rollout ends`、`[DEBUG] step 312 rollout ends`；
   - 当前 `468852.23` 仍在 `RUNNING`，`python -m vagen.trainer.main_ppo` 进程存活；到目前为止，这次正确从 `308` 恢复后的 run 已经稳定越过旧崩溃点，并且**还没有再次出现新的 `none_dealloc` / `ActorDiedError`**。
+- 我随后按 repo 里的 wandb 说明补查了 canonical 路径：
+  - `experiments/training/baseline/README.md` 把 `launch_val_wandb_watcher.sh` + `val_wandb_watcher.slurm` 定义为“轮询 checkpoint、跑 val_only、把 val curve 上传到 wandb”的规范链路；
+  - `experiments/training/baseline/common_env.sh` 会从 `flower/.env` / `.env` 导入 `WANDB_API_KEY`，并把 `WANDB_DIR` 设到 repo cache；
+  - 当前 legacy run 本身已经通过 `trainer.logger=['console','wandb']` 自动在线同步，但每次重启都会新开一个 wandb run；
+  - 为了在**不额外新占 val watcher 资源**的前提下把当前累计进度上传出去，我直接用了 repo 现成的 `experiments/navigation_baseline/upload_retry2_wandb_from_log.py --mode online`，把 `legacy_train.log` 里的累计 console metrics 追溯上传成一个 retrospective wandb run。
+- retrospective 上传结果：
+  - 新 run 名：`vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_hold4g_console_retro`
+  - wandb run id：`jimkqsm6`
+  - 覆盖 step：`300..312`（共 13 个 parsed step）
+  - 输出文件：`wandb_retro/metrics_from_console.csv`、`wandb_retro/metrics_from_console.json`
+  - 用途：把多次 resume/重启切碎的自动 wandb run 重新汇总成一条更完整的进度曲线，方便人类直接看当前累计进展。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
 - 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
 
