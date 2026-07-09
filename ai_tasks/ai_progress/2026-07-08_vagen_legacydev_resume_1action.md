@@ -80,8 +80,21 @@
   - `legacy_train_external_service.slurm` 新增 `RAY_NUM_CPUS` 参数化，便于后续在碎片 4-GPU normal allocation 上把 Ray head CPU 数降到当前 allocation 能承受的范围。
 - 随后转为 strict ws8 路线：superpod worktree 已 reset 到 repo head `d658e41`，新建 strict run dir `2026-07-09/vagen_legacydev_strict_resume300_to330_1action_turn20_ws8_extenv_dgx37_dgx39`，并提交 train job `468767`；但因用户随后明确要求优先走 4-GPU hold 方案，该 strict job 已取消，避免与 ws4 fallback 并发。
 - 又尝试按用户要求抢 `dgx-27` 做 4-GPU bash hold：最初看到它有 4 张空闲 GPU，但在 hold job 真正运行前该节点碎片资源已被别的任务吃掉；当前服务器已没有任何 **立刻可用** 的 4-GPU 整块 normal 节点。
-- 为了继续按“先占节点、再修、再 `srun`”的要求推进，已改为提交一个通用 normal 4-GPU hold：`468852 hold-1n4g`，资源请求为 `1 node / 4 GPU / 80 CPU / 160G mem`。当前状态：`PENDING (Priority)`；Slurm 当前给出的候选 `SchedNodeList=dgx-18`。
-- 已为后续 ws4 fallback 预写 run dir README：`2026-07-09/vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_hold4g`。
+- 为了继续按“先占节点、再修、再 `srun`”的要求推进，已改为提交一个通用 normal 4-GPU hold：`468852 hold-1n4g`，资源请求为 `1 node / 4 GPU / 80 CPU / 160G mem`。它随后实际落在 `dgx-27`，当前仍在 `RUNNING`。
+- 已为 ws4 fallback 建好 run dir：`2026-07-09/vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_hold4g`，并在 held node `dgx-27` 上多次 `srun` 迭代修复后重新拉起。
+- 迄今在 ws4 held run 上已依次修掉：
+  1. legacy conversion helper 的 Hydra config path；
+  2. legacy config 中缺失字段需要 `+actor_rollout_ref.rollout.agent.*` / `+actor_rollout_ref.ref.use_ref=False`；
+  3. conversion 不能用假 `dummy.yaml` 冒充 parquet，已改为先用 `legacy_train.yaml` / `legacy_val.yaml` 真实生成 parquet；
+  4. `/project/peilab/atst/vagen_ckpt/critic/huggingface` 没有模型权重文件，ws4 fallback 现改为用 actor HF export 初始化 critic；
+  5. legacy `FSDPCheckpointManager.load_checkpoint` 在 torch 2.6+ 下需要 `weights_only=False` 才能读回 `extra_state`；
+  6. legacy `vLLMRollout` 对 Qwen2.5-VL local checkpoint 也要按 `model_hf_config.model_type == "qwen2_5_vl"` 走 `limit_mm_per_prompt={"image": ...}`，不能只看路径字符串。
+- 最新一次 held `srun` 已经达到：
+  - ws4 actor/critic checkpoint conversion 成功，生成 `checkpoints/global_step_300/{actor,critic}/model_world_size_4_rank_{0..3}.pt`；
+  - `latest_checkpointed_iteration.txt = 300`；
+  - 训练主流程成功从这个 ws4 checkpoint **resume 到 global_step_300**；
+  - 已进入 **validation at global step 300**，并连续完成多轮 vLLM generation / env-service rollout。
+- 但当前没有活跃 train 进程：这次 `srun` 是前台跑的，被当前会话的命令超时截断；因此这是一次“已证明能健康推进到 validation”的 held-run smoke，而不是仍在持续运行的训练作业。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
 - 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
 
@@ -91,4 +104,4 @@
 - normal fallback 的关键限制：虽然 run 会从 `global_step_300` 形式继续到 `330`，但 ws7 checkpoint 是从 actor/critic HF export 新生成的，因此 **optimizer / lr scheduler 状态不会严格继承 ws8 step300 checkpoint**。
 - `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
 - 当前要验证的新点：strict ws8 external-env resume 在 `dgx-39` 可用时，是否能直接跳过 conversion、从 symlinked `global_step_300` checkpoint 成功 load actor/critic shards 并进入 val-before-train。
-- 当前阻塞不在训练逻辑，而在 Slurm 节点可用性：当前 ws4 fallback 只差 hold job `468852` 真正跑起来；在此之前还不能对 held node 执行 `srun` 新任务。
+- 当前阻塞已从“拿不到 4GPU 节点”变成“如何在 held node 上持续挂住长时间 `srun` 训练而不被当前交互会话超时打断”。就训练逻辑本身而言，ws4 fallback 已经证明能走到 validation。

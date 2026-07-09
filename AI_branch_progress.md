@@ -27,9 +27,14 @@
   - 该问题现已在本地修复（当前 Nimloth commit `d658e41`）：`convert_legacy_vagen_hf_to_world_size.py` 的 Hydra `config_path` 改成了正确的 `../../../external/VAGEN/vagen/trainer/config`；`legacy_train_external_service.slurm` 也新增了 `RAY_NUM_CPUS` 参数化，方便后续在碎片 4-GPU allocation 上降低 Ray 头节点 CPU 数。
   - 随后曾切回更干净的 **strict ws8 dgx-39 external-env resume** 并提交 `468767`，但因为用户又明确要求优先走“先 bash 占 4GPU 节点，再 `srun` 新任务”的路线，该 strict job 已取消，避免并发。
   - 当前 ws4 fallback 的最新状态：
-    - 已提交通用 normal 4-GPU hold `468852 hold-1n4g`（`1 node / 4 GPU / 80 CPU / 160G mem`），当前 `PENDING (Priority)`，Slurm 当前给的 `SchedNodeList=dgx-18`。
-    - 已预写 ws4 run README：`outputs/experiments/training/baseline/2026-07-09/vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_hold4g`。
-    - env `468531` 继续在 `dgx-37` 健康运行；一旦 `468852` 真正跑起来，就会在 held node 上 `srun` 启动 ws4 non-strict fallback。
+    - 通用 normal 4-GPU hold `468852 hold-1n4g` 已实际落在 `dgx-27`，并持续运行中。
+    - env `468531` 继续在 `dgx-37` 健康运行。
+    - ws4 held run `outputs/experiments/training/baseline/2026-07-09/vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_hold4g` 已通过多轮迭代修补，现已成功：
+      1. 生成真实 parquet；
+      2. 完成 ws4 actor/critic checkpoint conversion（`global_step_300`）；
+      3. 从 ws4 checkpoint resume 到 `global_step_300`；
+      4. 进入 validation，并持续完成多轮 vLLM generation / env-service rollout。
+    - 当前没有活跃 train 进程的唯一原因是：这次 `srun` 是前台跑的，被当前交互会话命令超时截断；不是因为训练逻辑再次在 validation 前崩掉。
 - 相关实时记录：`ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`；服务器 run README 已写明这是 non-strict ws7 fallback。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
