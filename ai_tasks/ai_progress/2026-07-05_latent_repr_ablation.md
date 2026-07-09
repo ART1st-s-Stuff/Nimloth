@@ -84,6 +84,7 @@
 - 已按人类指令启动正式采集：输出 `/project/peilab/atst/nimloth/outputs/experiments/training/sft1/2026-07-08/step300_legacy_multi_action_answer_fallback_full_26df7f7`，env job `468284`，rollout array `468285_[0-3%2]` dependency `after:468284`。代码为 Nimloth `26df7f7` / VAGEN `7908040` / verl `cf4f50a`；checkpoint `/project/peilab/atst/vagen_ckpt/actor/huggingface`；配置 `grounding_worldmodeling` + `max_actions_per_step=5` + `action_extraction_mode=answer_fallback`。split 已核实：train 使用三个 train JSON seeds 1..1080，val-from-train 使用 train JSON seeds 1081..1200，test 使用五个 heldout/eval JSON seeds 1..60。提交时 env job 因 priority/resource pending，rollout 因 dependency pending；等待资源后需监控 env ready 和 JSONL 生成。
 - 正式采集首轮失败但可恢复：env job `468284` 在 `dgx-21` 失败，原因是 AI2-THOR 4GPU preflight 只有 2/4 GPU 通过（`ERROR need 4 good GPUs, got 2`）；rollout array `468285_0..3` 随后因 `external_env_4gpu/failed` 立即失败，没有 JSONL/image/conversion。远程 README/metadata/progress 已更新。恢复建议：换一个有 4 张 AI2-THOR-good GPU 的节点/健康 allocation 重启 env，并用 `afterok` 或等 env ready 后再提交 rollout。
 - 按人类指示用 `dgx-44` 3 张卡恢复：Nimloth `4614934` 让 env job 支持 `ENV_SERVICE_COUNT=3` 和 hostname URL；env job `468509` 在 `dgx-44`/`preempt` 已 ready，URLs 为 `http://dgx-44:20530-20532`；rollout array `468513` 启动后完成两个 train shard：`shard_001_180/0.jsonl` 540 rows / 8734 image paths，`shard_361_540/0.jsonl` 540 rows / 8576 image paths。随后 env job `468509` PREEMPTED，active rollout 在下一 shard 遇到 connection refused，task 2/3 因 stale env ready/URLs 立即失败。当前无 active jobs；恢复时重启 env 并在同一输出目录重跑，脚本会跳过已完成 shard。
+- 人类同意用 normal `dgx-18` 后，已提交 4GPU env job `468759`，`ENV_SERVICE_COUNT=4`，`ENV_URL_HOST=dgx-18`，`PORT_BASE=20630`；当前 pending priority，Slurm 预估 start `2026-07-09T23:21:38`。本轮 rollout 尚未提交，需等 env ready 后再提交。
 
 ## 文件修改
 
@@ -185,6 +186,7 @@
 - Formal answer_fallback collection submission：远程 worktree同步到 Nimloth `26df7f7`，VAGEN `7908040`，verl `cf4f50a`；`bash -n` 覆盖 env/rollout Slurm；HF checkpoint safetensors direct open 通过；VAGEN dataset count 验证 train JSON 各 1200 tasks、eval JSON 各 60 tasks；Slurm jobs `468284`/`468285` 已提交，初始状态 pending。
 - Formal collection first attempt result：`468284` `FAILED 2:0` on `dgx-21` after AI2-THOR smoke found only 2/4 good GPUs; `468285_0..3` `FAILED 4:0` immediately with `ERROR external env failed`; no rollout JSONL produced.
 - dgx-44 3GPU recovery: local `bash -n` passed after making env service count configurable; server worktree synced to `4614934`; env job `468509` ready; rollout job `468513_0/1` produced two train shard JSONLs before env preemption; `468513_2/3` failed immediately after stale env URLs.
+- dgx-18 4GPU recovery env submission: server worktree synced to `1316699`; env job `468759` submitted to normal `dgx-18`, pending priority; rollout intentionally not submitted until env ready.
 
 ## 待确认问题
 
