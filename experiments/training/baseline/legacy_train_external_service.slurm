@@ -181,14 +181,14 @@ YAML
   # shellcheck disable=SC1091
   source "${SCRIPTDIR}/vagen_rollout_vllm_cli.inc.sh"
   PYTHONUNBUFFERED=1 python3 "${CONVERT_PY}" \
-    data.train_files='${CONVERT_DIR}/dummy.yaml' \
-    data.val_files='${CONVERT_DIR}/dummy.yaml' \
+    data.train_files="${CONVERT_DIR}/dummy.yaml" \
+    data.val_files="${CONVERT_DIR}/dummy.yaml" \
     data.train_batch_size=${TRAIN_GPUS_PER_NODE} \
     data.val_batch_size=${TRAIN_GPUS_PER_NODE} \
     data.max_prompt_length=3000 \
     data.max_response_length=20000 \
     algorithm.adv_estimator=gae \
-    actor_rollout_ref.model.path='${ACTOR_MODEL_PATH}' \
+    actor_rollout_ref.model.path="${ACTOR_MODEL_PATH}" \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
@@ -206,7 +206,7 @@ YAML
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     critic.optim.lr=1e-5 \
-    critic.model.path='${CRITIC_MODEL_PATH}' \
+    critic.model.path="${CRITIC_MODEL_PATH}" \
     critic.model.use_remove_padding=True \
     critic.model.enable_gradient_checkpointing=True \
     critic.ppo_micro_batch_size_per_gpu=1 \
@@ -222,7 +222,7 @@ YAML
     trainer.test_freq=0 \
     trainer.total_epochs=1 \
     trainer.total_training_steps=1 \
-    trainer.default_local_dir='${SAVE_CHECKPOINT_DIR}' \
+    trainer.default_local_dir="${SAVE_CHECKPOINT_DIR}" \
     trainer.resume_mode=disable \
     +trainer.convert_global_step=${SOURCE_CHECKPOINT_STEP} \
     rollout_manager.max_turns=1 \
