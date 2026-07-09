@@ -94,7 +94,21 @@
   - `latest_checkpointed_iteration.txt = 300`；
   - 训练主流程成功从这个 ws4 checkpoint **resume 到 global_step_300**；
   - 已进入 **validation at global step 300**，并连续完成多轮 vLLM generation / env-service rollout。
-- 但当前没有活跃 train 进程：这次 `srun` 是前台跑的，被当前会话的命令超时截断；因此这是一次“已证明能健康推进到 validation”的 held-run smoke，而不是仍在持续运行的训练作业。
+- 之后再次核实时发现：前面这次 held `srun` **并没有真的死掉**。它继续作为 Slurm job step `468852.8` 挂在 `dgx-27` 上运行。
+- 当前可验证状态：
+  - compute node `dgx-27` 上仍存在活跃进程：
+    - `bash .../legacy_train_external_service.slurm`
+    - `ray start --head --num-gpus=4`
+    - `bash .../run_legacy_reproduction.sh`
+    - `python -m vagen.trainer.main_ppo ... trainer.total_training_steps=330 ... rollout_manager.base_url=http://10.23.1.45:5000`
+  - `nvidia-smi` 显示 4 张训练 GPU 仍被占用，显存大致 `39.5G / 38.8G / 2.4G / 38.8G`，util 仍有波动；
+  - `legacy_train.log` 仍在持续增长；
+  - 日志已明确写出：
+    - `Found checkpoint: .../checkpoints/global_step_300`
+    - `Setting global step to 300`
+    - `Resuming from .../global_step_300`
+    - `[DEBUG] validation at global step 300 begins`
+- 因此，当前 ws4 hold-first fallback 已经从“validation smoke”升级为**真实在跑的 held-node train step**，而不是已停止的前台试跑。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
 - 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
 
@@ -104,4 +118,4 @@
 - normal fallback 的关键限制：虽然 run 会从 `global_step_300` 形式继续到 `330`，但 ws7 checkpoint 是从 actor/critic HF export 新生成的，因此 **optimizer / lr scheduler 状态不会严格继承 ws8 step300 checkpoint**。
 - `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
 - 当前要验证的新点：strict ws8 external-env resume 在 `dgx-39` 可用时，是否能直接跳过 conversion、从 symlinked `global_step_300` checkpoint 成功 load actor/critic shards 并进入 val-before-train。
-- 当前阻塞已从“拿不到 4GPU 节点”变成“如何在 held node 上持续挂住长时间 `srun` 训练而不被当前交互会话超时打断”。就训练逻辑本身而言，ws4 fallback 已经证明能走到 validation。
+- 当前不再被“拿不到 4GPU 节点”或“前台 `srun` 会立刻死掉”这两件事阻塞。真正剩下的监控点变成：这条正在运行的 ws4 held train step 能否顺利走完 val-before-train，并产出第一个 `>300` 的训练后 checkpoint / step 级日志。

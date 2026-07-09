@@ -34,7 +34,13 @@
       2. 完成 ws4 actor/critic checkpoint conversion（`global_step_300`）；
       3. 从 ws4 checkpoint resume 到 `global_step_300`；
       4. 进入 validation，并持续完成多轮 vLLM generation / env-service rollout。
-    - 当前没有活跃 train 进程的唯一原因是：这次 `srun` 是前台跑的，被当前交互会话命令超时截断；不是因为训练逻辑再次在 validation 前崩掉。
+    - 之后再次核实时发现：前面那次 held `srun` **并没有真的被杀掉**，而是继续以 Slurm job step `468852.8` 挂在 `dgx-27` 上运行。
+    - 当前可验证状态：
+      1. `legacy_train_external_service.slurm` / `run_legacy_reproduction.sh` / `python -m vagen.trainer.main_ppo` 进程都还在；
+      2. `nvidia-smi` 显示 4 张训练 GPU 仍被占用（约 38–39 GiB / 2.4 GiB / 38 GiB / 38 GiB）；
+      3. `legacy_train.log` 仍持续增长；
+      4. 日志已明确写出 `Found checkpoint ... global_step_300`、`Setting global step to 300`、`Resuming from .../global_step_300`、`validation at global step 300 begins`。
+    - 因此当前 ws4 fallback 已不再只是 smoke，而是一个**正在运行中的 held-node train step**；当前 server worktree / code 版本为 Nimloth `6baabf6`、VAGEN `cefb982`、verl `65316156`。
 - 相关实时记录：`ai_tasks/ai_progress/2026-07-08_vagen_legacydev_resume_1action.md`；服务器 run README 已写明这是 non-strict ws7 fallback。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
