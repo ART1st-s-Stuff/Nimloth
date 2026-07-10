@@ -15,7 +15,7 @@ set -euo pipefail
 : "${TRAIN_OUT:?TRAIN_OUT required}"
 : "${BASE_MODEL:?BASE_MODEL required}"
 
-ROOT=/project/peilab/atst/nimloth
+ROOT=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${ROOT}/experiments/training/sft1
 EVAL_NODE=${EVAL_NODE:-}
 EVAL_TAG_PREFIX=${EVAL_TAG_PREFIX:-alltrain_8gpu_lora}

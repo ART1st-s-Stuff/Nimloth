@@ -3,7 +3,7 @@
 # (LLM freeze, vision full + EMA). Override via SFT2_LLM_TUNE / SFT2_VISION_TUNE.
 set -euo pipefail
 
-REPO=/project/peilab/atst/nimloth
+REPO=${REPO:-/project/peilab/atst/nimloth}
 ROOT=${REPO}/experiments/training/sft2
 SLURM=/cm/shared/apps/slurm/current/bin/sbatch
 export SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf

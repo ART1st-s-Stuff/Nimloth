@@ -13,6 +13,7 @@
 - 详细进度见 `ai_tasks/ai_progress/2026-07-09_multi_latent_query_tokens.md`。RL / reconstruction / agent inference 多 token 同步仍留作后续阶段。
 - 已新增后续实验任务 `ai_tasks/vagen_legacy_wm_k8_sft_pipeline.md`：使用 `vagen_legacy_wm_entropy01_kl001_60step_2env4train` checkpoint，按 rollout → SFT1 → SFT2 顺序执行，并统一取 `latent_token_count=8`。
 - 已开始代码/数据准备：SFT1 训练入口、cache、checkpoint、Slurm wrapper 支持 `LATENT_TOKEN_COUNT`；SFT2 Slurm wrapper 可透传 `LATENT_TOKEN_COUNT`；新增 k=8 参考配置与 runbook `experiments/training/vagen_legacy_wm_k8/README.md`。已通过 py_compile、bash -n、compileall 与相关 SFT2 pytest（27 passed）。尚未启动任何 rollout/训练。
+- 2026-07-10 执行前核查：源为 `.../checkpoints/global_step_60/actor/huggingface` 完整 HF export，W&B `i2cjhi24`；源 tokenizer 无 Nimloth tokens，rollout 应沿用 `eval_mode`，转换时再加入 k=8。实际 dataset 核实 train/val task index 不重叠且 test scenes 与 train scenes 无交集。当前 `/project` 仅余约 744G，而旧 SFT2 cache 占 1.3T，新 full cache 无法直接构建；等待人类确认清理/替代存储、test、epochs/early-stop 与 GPU 方案。详细见 `ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
 

@@ -1,7 +1,7 @@
 # vagen_legacy_wm k=8 rollout → SFT1 → SFT2 任务
 
 日期：2026-07-09
-状态：代码/数据准备阶段；尚未开始 rollout、训练或远程实验
+状态：实验前核查阶段；代码已提交，尚未启动 rollout 或训练
 
 ## 目标
 
@@ -123,12 +123,12 @@
   - `configs/training/sft2/latent_wm_value_k8.yaml`
 - 新增 runbook：`experiments/training/vagen_legacy_wm_k8/README.md`。
 - VAGEN Nimloth prompt helper 已支持通过 `NIMLOTH_LATENT_TOKEN_COUNT` / `LATENT_TOKEN_COUNT` 生成多 latent query token 格式；parser 可保留 action block 前的 extra latent query tokens。
-- 本地快速查找未找到 `vagen_legacy_wm_entropy01_kl001_60step_2env4train` 路径；启动前仍需在服务器输出目录中确认准确 checkpoint 路径。
+- 已确认源 checkpoint：`/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-06-24/vagen_legacy_wm_entropy01_kl001_60step_2env4train/checkpoints/global_step_60/actor/huggingface`，是完整四分片 HF actor export。
+- 源 tokenizer 没有 Nimloth latent/action tokens；rollout 必须沿用源模型训练时的 legacy `eval_mode`，转换阶段再生成 k=8 Nimloth block。
 - 验证：py_compile、bash -n、compileall 与相关 SFT2 pytest 均通过；详细命令见 `ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 待确认问题
 
-1. `vagen_legacy_wm_entropy01_kl001_60step_2env4train` checkpoint 的准确服务器路径。
-2. SFT1 是否应在执行前补齐 k=8 代码支持；当前已知 SFT2 主路径已有 k 配置，但 SFT1 需要单独核查。
-3. rollout 是否必须包含 test split，或只做 train/val 后再单独评测。
-4. SFT1/SFT2 的具体资源配置、训练轮数和 early-stop 标准。
+1. rollout 是否包含 test split；当前执行方案建议同时采 test。
+2. SFT1/SFT2 的具体资源配置、训练轮数和 early-stop 标准。
+3. `/project` 当前仅余约 744G，而旧 SFT2 preprocess cache 占约 1.3T；完整新 cache 预计无法在现有剩余空间内构建，需要人类批准清理旧 cache 或批准替代方案。

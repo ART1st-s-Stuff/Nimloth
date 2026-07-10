@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO=/project/peilab/atst/nimloth
+REPO=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${REPO}/experiments/training/sft1
 SLURM=/cm/shared/apps/slurm/current/bin/sbatch
 export SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf

@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-ROOT=/project/peilab/atst/nimloth
+ROOT=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${ROOT}/experiments/training/sft1
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
@@ -107,9 +107,9 @@ for env_i in 0 1 2 3; do
   phys="${GOOD_PHYS[$env_i]}"
   port=$((PORT_BASE + env_i))
   echo "http://${NODE_IP}:${port}" >> "${CONTROL_DIR}/env_urls.txt"
-  CUDA_VISIBLE_DEVICES="$phys" PYTHONUNBUFFERED=1 python -m vagen.envs.navigation.serve \
-    --port "$port" --devices='[0]' --max_envs 48 --max_inflight 48 \
-    --thread_pool_size 48 --session_timeout 7200.0 \
+  CUDA_VISIBLE_DEVICES="$phys" PYTHONUNBUFFERED=1 python -m vagen.server.server \
+    server.host=0.0.0.0 server.port="$port" use_state_reward=False \
+    navigation.devices='[0]' navigation.max_workers=48 \
     > "${RUN_DIR}/env_server_${SLURM_JOB_ID}_${NODE}_${env_i}.log" 2>&1 &
   echo $! >> "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids"
 done

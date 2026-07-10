@@ -9,27 +9,41 @@ This directory is a runbook/template for the rollout → SFT1 → SFT2 pipeline 
 Set these on the server before launching jobs:
 
 ```bash
-export REPO=/project/peilab/atst/nimloth
-export SFT1_RUNS_ROOT=${REPO}/experiments/navigation_baseline/runs
+# REPO must be the clean server worktree at the committed pipeline revision.
+export REPO=/project/peilab/atst/nimloth/.worktree/vagen-legacy-wm-k8-aada0bf
 export SOURCE_RUN_NAME=vagen_legacy_wm_entropy01_kl001_60step_2env4train
-export SOURCE_RUN_DIR=${SFT1_RUNS_ROOT}/${SOURCE_RUN_NAME}
-
-# Fill after locating the exact checkpoint/export.
-export INIT_HF=${SOURCE_RUN_DIR}/checkpoints/<global_step>/actor/huggingface
+export SOURCE_RUN_DIR=/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-06-24/${SOURCE_RUN_NAME}
+export SOURCE_CHECKPOINT_STEP=60
+export INIT_HF=${SOURCE_RUN_DIR}/checkpoints/global_step_${SOURCE_CHECKPOINT_STEP}/actor/huggingface
 
 export RUN_DATE=$(date +%Y-%m-%d)
+export SFT1_OUTPUT_DATE_ROOT=/project/peilab/atst/nimloth/outputs/experiments/training/sft1/${RUN_DATE}
+export SFT1_RUNS_ROOT=${SFT1_OUTPUT_DATE_ROOT}
 export LATENT_TOKEN_COUNT=8
 export MASK_LATENT_QUERY_LABELS=1
 ```
 
-Before launching, verify `INIT_HF` exists and contains a HF model/tokenizer.
-If the source checkpoint is still a VAGEN/verl sharded checkpoint, export/convert it to HF first.
+Verified source: `global_step_60/actor/huggingface` contains a complete four-shard HF model.
+Its tokenizer has no Nimloth latent/action tokens, so source-policy rollout must stay on the
+legacy `eval_mode` prompt; k=8 tokens are introduced by conversion/SFT, not by source rollout.
 
 ## 1. Rollout collection
 
-Use the source checkpoint to collect train/val/test rollouts. For the initial rollout from the
-legacy source checkpoint, keep `LATENT_TOKEN_COUNT=1` unless that checkpoint already has the k=8
-extra tokens; the SFT scripts can normalize the collected single-token records to k=8 later.
+Use the source checkpoint to collect train/val/test rollouts with the legacy `eval_mode` prompt.
+The rollout-only HF load disables VAGEN resume, so generated dumps are named `0.jsonl` even though
+the source policy is checkpoint step 60.
+
+```bash
+export ROLLOUT_RUN_NAME=rollout_${SOURCE_RUN_NAME}_k8
+export ROLLOUT_RUN_DIR=${SFT1_OUTPUT_DATE_ROOT}/${ROLLOUT_RUN_NAME}
+export ROLLOUT_DUMP_STEP=0
+export BASELINE_RUN_NAME=${SOURCE_RUN_NAME}
+export INIT_HF_STEP=${SOURCE_CHECKPOINT_STEP}
+export LATENT_TOKEN_COUNT=1
+
+# Optionally set ENV_NODE/NODELIST; the rollout array waits for the env ready flag.
+bash ${REPO}/experiments/training/sft1/submit_rollouts_greedy.sh
+```
 
 After collection, convert rollouts with `experiments/training/sft1/convert_rollouts.py` and record:
 
@@ -41,7 +55,14 @@ After collection, convert rollouts with `experiments/training/sft1/convert_rollo
 Recommended converted records variable for later phases:
 
 ```bash
-export RECORDS_ROOT=${SFT1_RUNS_ROOT}/sft_records_${SOURCE_RUN_NAME}_nimloth_format
+export RECORDS_ROOT=${SFT1_OUTPUT_DATE_ROOT}/records_${SOURCE_RUN_NAME}_k8
+export NIMLOTH_LATENT_TOKEN_COUNT=8
+python ${REPO}/experiments/training/sft1/convert_rollouts.py \
+  --input-root ${ROLLOUT_RUN_DIR}/validation \
+  --output-root ${RECORDS_ROOT} \
+  --checkpoint-hf ${INIT_HF} \
+  --checkpoint-step ${SOURCE_CHECKPOINT_STEP} \
+  --rollout-step ${ROLLOUT_DUMP_STEP}
 ```
 
 ## 2. SFT1 k=8
@@ -52,7 +73,7 @@ export MASK_LATENT_QUERY_LABELS=1
 export BASELINE_RUN_NAME=${SOURCE_RUN_NAME}
 export EXPERIMENT_NAME=sft1_${SOURCE_RUN_NAME}_k8
 export WANDB_RUN_NAME=${EXPERIMENT_NAME}
-export TRAIN_OUT=${REPO}/outputs/experiments/training/sft1/${RUN_DATE}/${EXPERIMENT_NAME}
+export TRAIN_OUT=${SFT1_OUTPUT_DATE_ROOT}/${EXPERIMENT_NAME}
 export TRAIN_JSONL=${RECORDS_ROOT}/train_success.jsonl
 export VAL_JSONL=${RECORDS_ROOT}/val_all.jsonl
 
@@ -71,7 +92,7 @@ export MASK_LATENT_QUERY_LABELS=1
 export SFT1_RUN=${TRAIN_OUT}
 export BASE_HF=${INIT_HF}
 export EXPERIMENT_NAME=sft2_${SOURCE_RUN_NAME}_k8
-export TRAIN_OUT=${REPO}/outputs/experiments/training/sft2/${RUN_DATE}/${EXPERIMENT_NAME}
+export TRAIN_OUT=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/${RUN_DATE}/${EXPERIMENT_NAME}
 export CONFIG=${REPO}/configs/training/sft2/latent_wm_value_k8.yaml
 
 bash experiments/training/sft2/submit_default_8gpu.sh

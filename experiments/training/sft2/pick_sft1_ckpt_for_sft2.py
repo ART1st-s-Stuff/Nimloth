@@ -81,26 +81,38 @@ def test_success_for_eval_root(eval_root: Path, step: str = "0") -> dict | None:
     }
 
 
+def eval_run_patterns(eval_tag_prefix: str) -> tuple[str, ...]:
+    """Support current generic eval names and historical vagen79-prefixed runs."""
+    return (
+        f"sft1_eval_{eval_tag_prefix}_epoch*",
+        f"sft1_eval_vagen79_{eval_tag_prefix}_epoch*",
+    )
+
+
 def collect_epoch_metrics(runs_root: Path, eval_tag_prefix: str) -> list[dict]:
     rows: list[dict] = []
-    pattern = f"sft1_eval_vagen79_{eval_tag_prefix}_epoch*"
-    for eval_dir in sorted(runs_root.glob(pattern)):
-        ep = _epoch_from_name(eval_dir.name)
-        if ep is None:
-            continue
-        val = val_success_for_eval_root(eval_dir)
-        if val is None:
-            continue
-        test = test_success_for_eval_root(eval_dir)
-        rows.append(
-            {
-                "epoch": ep,
-                "eval_dir": str(eval_dir),
-                "val": val,
-                "test": test,
-            }
-        )
-    return rows
+    seen: set[Path] = set()
+    for pattern in eval_run_patterns(eval_tag_prefix):
+        for eval_dir in sorted(runs_root.glob(pattern)):
+            if eval_dir in seen:
+                continue
+            seen.add(eval_dir)
+            ep = _epoch_from_name(eval_dir.name)
+            if ep is None:
+                continue
+            val = val_success_for_eval_root(eval_dir)
+            if val is None:
+                continue
+            test = test_success_for_eval_root(eval_dir)
+            rows.append(
+                {
+                    "epoch": ep,
+                    "eval_dir": str(eval_dir),
+                    "val": val,
+                    "test": test,
+                }
+            )
+    return sorted(rows, key=lambda row: row["epoch"])
 
 
 def pick_earlystop(rows: list[dict], margin: float) -> dict:
@@ -150,7 +162,7 @@ def main() -> int:
                     {
                         "error": "no rollout val success data",
                         "hint": "fix SFT1 env eval or pass --force-epoch N",
-                        "searched": str(runs_root / f"sft1_eval_vagen79_{args.eval_tag_prefix}_epoch*"),
+                        "searched": [str(runs_root / pattern) for pattern in eval_run_patterns(args.eval_tag_prefix)],
                     }
                 ),
                 file=sys.stderr,

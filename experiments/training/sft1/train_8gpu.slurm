@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-REPO=/project/peilab/atst/nimloth
+REPO=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${REPO}/experiments/training/sft1
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"

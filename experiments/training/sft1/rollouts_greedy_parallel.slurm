@@ -15,20 +15,20 @@
 
 set -euo pipefail
 
-ROOT=/project/peilab/atst/nimloth
+ROOT=${REPO:-/project/peilab/atst/nimloth}
 SL=/cm/shared/apps/slurm/current/bin
 SCRIPTDIR=${ROOT}/experiments/training/sft1
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
 BASEDIR=${ROOT}/external/VAGEN
-CHECKPOINT_DIR=${SFT1_RUNS_ROOT}/${BASELINE_RUN_NAME}/checkpoints
 CHECKPOINT_STEP=${INIT_HF_STEP}
+ROLLOUT_DUMP_STEP=${ROLLOUT_DUMP_STEP:-0}
 EXPERIMENT_NAME=${ROLLOUT_RUN_NAME}
 RUN_DIR=${ROLLOUT_RUN_DIR}
 ENV_CONTROL_DIR=${RUN_DIR}/external_env_4gpu
 ENV_URL_FILE=${ENV_CONTROL_DIR}/env_urls.txt
 CONTROL_DIR=${RUN_DIR}/slurm_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_control
-MODEL_PATH=${CHECKPOINT_DIR}/global_step_${CHECKPOINT_STEP}/actor/huggingface
+MODEL_PATH=${INIT_HF}
 TRAIN_GPUS_PER_NODE=2
 RAY_PORT=$((6379 + SLURM_ARRAY_TASK_ID))
 RAY_CMD=${ROOT}/.venv/bin/ray
@@ -39,7 +39,7 @@ VAL_N=1
 
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${RUN_DIR}/validation" "${RUN_DIR}/checkpoints_rollout"
 
-COMMON_ENV='export UV_CACHE_DIR=/project/peilab/atst/nimloth/.cache/uv; export HOME=/project/peilab/atst/nimloth/.home; export FLASHINFER_WORKSPACE_DIR=/project/peilab/atst/nimloth/.cache/flashinfer; export TRITON_CACHE_DIR=/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname); export XDG_CACHE_HOME=/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname); export TORCH_EXTENSIONS_DIR=/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname); mkdir -p "$HOME" "$FLASHINFER_WORKSPACE_DIR" "$TORCH_EXTENSIONS_DIR" "$TRITON_CACHE_DIR" "$XDG_CACHE_HOME"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; export PATH=/project/peilab/atst/nimloth/.venv/bin:/project/peilab/atst/nimloth/.local/bin:$PATH; export HF_HOME=/project/peilab/atst/.cache/huggingface; export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface; export TORCH_HOME=/project/peilab/atst/flower/.cache/torch; export PYTHONPATH=/project/peilab/atst/nimloth/external/VAGEN:/project/peilab/atst/nimloth/external/VAGEN/verl:${PYTHONPATH:-}; source /project/peilab/atst/nimloth/.venv/bin/activate; if [ -f /project/peilab/atst/flower/.env ]; then set -a; source /project/peilab/atst/flower/.env; set +a; elif [ -f /project/peilab/atst/.env ]; then set -a; source /project/peilab/atst/.env; set +a; fi; cd /project/peilab/atst/nimloth/external/VAGEN; export TOKENIZERS_PARALLELISM=true; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1; export NCCL_DEBUG=WARN; export NCCL_IB_DISABLE=1'
+COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname)'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
 
 cleanup() {
   set +e
@@ -231,7 +231,7 @@ run_shard() {
   local seed_start=$3
   local seed_end=$4
   local split_dir="${RUN_DIR}/validation/${split_name}/${shard_name}"
-  local out_jsonl="${split_dir}/${CHECKPOINT_STEP}.jsonl"
+  local out_jsonl="${split_dir}/${ROLLOUT_DUMP_STEP}.jsonl"
   mkdir -p "${split_dir}"
   if [ -s "${out_jsonl}" ]; then
     echo "[skip] ${split_name}/${shard_name} already done" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
@@ -346,6 +346,7 @@ wait_for_env() {
 main() {
   echo "=== ${EXPERIMENT_NAME} array_task=${SLURM_ARRAY_TASK_ID} job=${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} node=${SLURM_JOB_NODELIST} ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   echo "MODEL_PATH=${MODEL_PATH}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  echo "SOURCE_CHECKPOINT_STEP=${CHECKPOINT_STEP} ROLLOUT_DUMP_STEP=${ROLLOUT_DUMP_STEP}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   echo "Eval-consistent: greedy do_sample=False temperature=0 n=${VAL_N}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   if [ ! -d "${MODEL_PATH}" ]; then
     echo "ERROR missing model ${MODEL_PATH}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"

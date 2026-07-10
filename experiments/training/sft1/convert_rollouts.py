@@ -75,6 +75,7 @@ class SourceRecord:
     shard: str
     jsonl_path: Path
     line_index: int
+    rollout_step: int
     payload: dict[str, Any]
 
 
@@ -297,7 +298,7 @@ def validate_record(messages: list[dict[str, str]], image_paths: list[str], acti
 
 def convert_one(src: SourceRecord) -> dict[str, Any]:
     obj = src.payload
-    step = int(obj.get("step", 50))
+    step = int(obj.get("step", src.rollout_step))
     messages, actions, thinks, warnings = split_messages(src)
     image_paths = image_paths_for(src.jsonl_path, step, src.line_index)
     issues = validate_record(messages, image_paths, actions)
@@ -348,10 +349,18 @@ def main() -> int:
     ap.add_argument("--input-root", type=Path, required=True)
     ap.add_argument("--output-root", type=Path, required=True)
     ap.add_argument("--checkpoint-hf", type=Path, required=True)
-    ap.add_argument("--checkpoint-step", type=int, default=50)
+    ap.add_argument("--checkpoint-step", type=int, default=50, help="Source policy checkpoint step.")
+    ap.add_argument(
+        "--rollout-step",
+        type=int,
+        default=None,
+        help="Rollout dump/image step filename; defaults to --checkpoint-step for legacy resumed rollouts.",
+    )
     ap.add_argument("--splits", nargs="+", default=["train", "val", "test"])
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
+
+    rollout_step = args.checkpoint_step if args.rollout_step is None else args.rollout_step
 
     out = args.output_root
     if out.exists():
@@ -365,6 +374,7 @@ def main() -> int:
         "output_root": str(out.resolve()),
         "checkpoint_hf": str(args.checkpoint_hf.resolve()),
         "checkpoint_step": args.checkpoint_step,
+        "rollout_step": rollout_step,
         "splits": list(args.splits),
         "action_names": ACTION_NAMES,
         "action_to_idx": ACTION_TO_IDX,
@@ -383,15 +393,15 @@ def main() -> int:
         split_dir = args.input_root / split
         if not split_dir.exists():
             raise SystemExit(f"missing split dir: {split_dir}")
-        jsonl_paths = sorted(split_dir.glob(f"shard_*/{args.checkpoint_step}.jsonl"))
+        jsonl_paths = sorted(split_dir.glob(f"shard_*/{rollout_step}.jsonl"))
         if not jsonl_paths:
             raise SystemExit(
-                f"no rollout jsonl found for split={split} step={args.checkpoint_step} under {split_dir}"
+                f"no rollout jsonl found for split={split} rollout_step={rollout_step} under {split_dir}"
             )
         for jsonl_path in jsonl_paths:
             shard = jsonl_path.parent.name
             for line_index, payload in iter_jsonl(jsonl_path):
-                rec = convert_one(SourceRecord(split, shard, jsonl_path, line_index, payload))
+                rec = convert_one(SourceRecord(split, shard, jsonl_path, line_index, rollout_step, payload))
                 all_by_split[split].append(rec)
 
     train_success = [r for r in all_by_split.get("train", []) if r["success"] and not r["validation_issues"]]
@@ -435,7 +445,7 @@ def main() -> int:
     manifest_path = out / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    readme = f"""# SFT1 converted rollout records\n\nSource: `{manifest['input_root']}`\n\nCheckpoint HF init for SFT: `{manifest['checkpoint_hf']}`\n\nFormat: `{manifest['format']}`\n\nFiles:\n\n- `train_all.jsonl`: all training-split rollouts; **default SFT train file** (includes failed trajectories).\n- `train_success.jsonl`: successful training-split rollouts only; optional ablation / audit.\n- `val_all.jsonl`: validation split, held out from SFT train.\n- `test_all.jsonl`: test split, held out from SFT train.\n- `manifest.json`: action mapping, counts, and conversion metadata.\n\nCounts:\n\n```json\n{json.dumps(counts, indent=2)}\n```\n\nSplit stats:\n\n```json\n{json.dumps(split_stats, indent=2)}\n```\n"""
+    readme = f"""# SFT1 converted rollout records\n\nSource: `{manifest['input_root']}`\n\nCheckpoint HF init for SFT: `{manifest['checkpoint_hf']}`\n\nSource checkpoint step: `{manifest['checkpoint_step']}`; rollout dump step: `{manifest['rollout_step']}`.\n\nFormat: `{manifest['format']}`\n\nFiles:\n\n- `train_all.jsonl`: all training-split rollouts; **default SFT train file** (includes failed trajectories).\n- `train_success.jsonl`: successful training-split rollouts only; optional ablation / audit.\n- `val_all.jsonl`: validation split, held out from SFT train.\n- `test_all.jsonl`: test split, held out from SFT train.\n- `manifest.json`: action mapping, counts, and conversion metadata.\n\nCounts:\n\n```json\n{json.dumps(counts, indent=2)}\n```\n\nSplit stats:\n\n```json\n{json.dumps(split_stats, indent=2)}\n```\n"""
     (out / "README.md").write_text(readme, encoding="utf-8")
 
     print(json.dumps({"output_root": str(out), "counts": counts, "split_stats": split_stats}, indent=2))
