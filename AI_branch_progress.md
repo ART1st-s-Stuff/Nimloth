@@ -23,7 +23,7 @@
 - 远程真实 processor CPU smoke 通过：首/末 prefix 的 input IDs、labels、grid 完全一致，compact pixels 等于在线 pixels 转 BF16；1 record 19 transitions cache 为 15.49 MB，image reuse 10x。按现有同规模 train+val 60,170 unique images 外推 full compact cache 约 45.67 GiB（最终以正式 manifest 为准），较旧 1.3 TiB 约减少 97%。SFT1 train/val 各1 record 的 BF16 cache smoke 也通过。
 - 未启动 GPU、Slurm、rollout、正式 cache 或训练；真实 DataLoader→GPU 利用率仍待训练前 benchmark。
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
-- Rollout attempt 9 已通过；converter 经 schema + legacy action aliases 修复（`33a09b9`）后严格通过：1 success、9 actions、10 images、k8 完整、无 warnings/issues。SFT1 BF16 cache-only 通过，但首个2-GPU labeled forward 发现 resize 后 Qwen top-level vocab metadata 仍旧，logits151954 vs config151936 reshape 失败；无 backward/checkpoint。已统一同步 top/text/generation vocab，并覆盖 LoRA merge/export。
+- Rollout 与 converter gates 已通过。SFT1 vocab 修复 `1b31dcc` 后 epoch1 2-GPU forward/backward/optimizer/val/checkpoint 通过（step1/val_loss5.03155）。Resume attempt 虽跑到 step2，但 raw `model.load_state_dict(strict=False)` 对 PEFT checkpoint 出现700 unexpected keys，故 epoch2/final 已隔离为 invalid。已切换 `set_peft_model_state_dict`，并对保存的702个 LoRA+embedding tensors 做 key/shape/value 完全一致验证后才允许 resume。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现

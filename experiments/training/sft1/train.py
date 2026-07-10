@@ -796,15 +796,34 @@ def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
         if not bin_file.is_file():
             raise FileNotFoundError(f"missing adapter weights in {adapter_dir}")
         state = torch.load(bin_file, map_location="cpu", weights_only=True)
-    incompatible = model.load_state_dict(state, strict=False)
+    from peft import get_peft_model_state_dict, set_peft_model_state_dict
+
+    incompatible = set_peft_model_state_dict(model, dict(state), adapter_name="default")
+    loaded_state = get_peft_model_state_dict(model, adapter_name="default", save_embedding_layers=True)
+    missing_saved = sorted(set(state) - set(loaded_state))
+    shape_mismatches = sorted(
+        key for key in state.keys() & loaded_state.keys() if state[key].shape != loaded_state[key].shape
+    )
+    value_mismatches = sorted(
+        key
+        for key in state.keys() & loaded_state.keys()
+        if state[key].shape == loaded_state[key].shape and not torch.equal(state[key], loaded_state[key].cpu())
+    )
+    if missing_saved or shape_mismatches or value_mismatches or incompatible.unexpected_keys:
+        raise RuntimeError(
+            "PEFT resume adapter verification failed: "
+            f"missing_saved={missing_saved[:3]} shape={shape_mismatches[:3]} "
+            f"values={value_mismatches[:3]} unexpected={incompatible.unexpected_keys[:3]}"
+        )
     if is_main():
         print(
             json.dumps(
                 {
                     "resume_load": {
                         "adapter_dir": str(adapter_dir),
-                        "missing_keys": len(incompatible.missing_keys),
-                        "unexpected_keys": len(incompatible.unexpected_keys),
+                        "saved_tensors_verified": len(state),
+                        "missing_base_keys": len(incompatible.missing_keys),
+                        "unexpected_keys": 0,
                     }
                 }
             )

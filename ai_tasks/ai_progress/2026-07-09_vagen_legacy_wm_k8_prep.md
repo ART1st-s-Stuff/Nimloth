@@ -110,7 +110,9 @@
 - Converter schema 修复 `796fff3` 后，conversion attempt 2 已正确恢复 success/score、20 messages、9 assistant turns、10 images，并移除 prompt XML examples；严格检查又发现 eval_mode 输出 legacy actions（`moveahead`/`rotateright` 等），而 token map 只接受 canonical underscore names，9 个 action 全变为空 block。
 - Legacy action alias 修复 `33a09b9` 后 conversion attempt 3 严格通过：1 success record、20 messages、9 assistant/actions/concrete tokens、10 placeholders/images、全部 k=8 tokens、无 XML prompt action、warnings/issues 为空。
 - SFT1 BF16 cache-only 已通过（target train 1 + heldout val 1）。2-GPU DDP attempt 1 在首个 labeled forward 失败：resize 后 logits vocab=151954，但 Qwen2.5-VL top-level `config.vocab_size` 仍151936，loss reshape 报错；无 backward/checkpoint，GPU 已清零。
-- 已新增统一 resize helper，同步 top-level config、nested text config 与 generation config；训练初始化及 LoRA merge/export 共用。提交后复用已建 cache 重试。
+- Vocab metadata 修复 `1b31dcc` 后 SFT1 epoch1 2-GPU gate 通过：forward/backward/optimizer/val/checkpoint，step1、val_loss5.03155，checkpoint k8/mask/LoRA metadata 和 BF16 cache 正确。
+- Resume attempt 1 虽从 epoch1 metadata/optimizer/global_step1 进入 epoch2 并完成 step2，但日志有1521 missing/700 unexpected adapter keys。确认 raw `model.load_state_dict(strict=False)` 不会恢复 PEFT 保存时去掉的 adapter-name keys，因此该 epoch2/final 已隔离为 invalid，resume gate 判失败。
+- 已改用 `set_peft_model_state_dict`，并用 `get_peft_model_state_dict(save_embedding_layers=True)` 对保存的702个 LoRA+embedding tensors 做 key/shape/value 完全一致验证；unexpected keys 非空即失败。提交后从保留的有效 epoch1 重试。
 
 ## 待确认问题
 
