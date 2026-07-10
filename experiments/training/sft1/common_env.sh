@@ -23,9 +23,8 @@ export UV_CACHE_DIR="${REPO}/.cache/uv"
 export HOME="${REPO}/.home"
 export WANDB_DIR="${REPO}/.cache/wandb"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-PYTHON_ENV="${PYTHON_ENV:-${REPO}/.venv}"
-export PYTHON_ENV
-export PATH="${PYTHON_ENV}/bin:${REPO}/.local/bin:$PATH"
+NIMLOTH_PYTHON_ENV="${PYTHON_ENV:-${REPO}/.venv}"
+export PATH="${NIMLOTH_PYTHON_ENV}/bin:${REPO}/.local/bin:$PATH"
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
@@ -44,6 +43,11 @@ elif [ -f /project/peilab/atst/.env ]; then
   set +a
 fi
 
+# The shared credential file may define PYTHON_ENV; preserve the caller's
+# explicitly selected runtime for this job.
+PYTHON_ENV="${NIMLOTH_PYTHON_ENV}"
+export PYTHON_ENV
+export PATH="${PYTHON_ENV}/bin:${REPO}/.local/bin:$PATH"
 # shellcheck disable=SC1091
 source "${PYTHON_ENV}/bin/activate"
 export TOKENIZERS_PARALLELISM=true
