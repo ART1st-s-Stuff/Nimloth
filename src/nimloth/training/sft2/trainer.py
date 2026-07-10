@@ -616,16 +616,45 @@ def train_sft2(args=None) -> int:
         # batches use dummy aux forwards), so unused-parameter graph traversal is
         # unnecessary and interacts badly with multi-forward/checkpointed steps.
         if qwen_pair_parallel:
-            model = DDP(model, device_ids=None, output_device=None, find_unused_parameters=False)
+            model = DDP(
+                model,
+                device_ids=None,
+                output_device=None,
+                find_unused_parameters=False,
+                static_graph=True,
+            )
         else:
-            model = DDP(model, device_ids=[int(str(device).split(":")[-1])], output_device=int(str(device).split(":")[-1]), find_unused_parameters=False)
-        if uses_lora(args) and not qwen_pair_parallel:
-            model._set_static_graph()
+            device_idx = int(str(device).split(":")[-1])
+            model = DDP(
+                model,
+                device_ids=[device_idx],
+                output_device=device_idx,
+                find_unused_parameters=False,
+                static_graph=True,
+            )
         aux_idx = int(str(aux_device).split(":")[-1])
-        state_proj = DDP(state_proj, device_ids=[aux_idx], output_device=aux_idx, find_unused_parameters=False)
-        value_head = DDP(value_head, device_ids=[aux_idx], output_device=aux_idx, find_unused_parameters=False)
+        state_proj = DDP(
+            state_proj,
+            device_ids=[aux_idx],
+            output_device=aux_idx,
+            find_unused_parameters=False,
+            static_graph=True,
+        )
+        value_head = DDP(
+            value_head,
+            device_ids=[aux_idx],
+            output_device=aux_idx,
+            find_unused_parameters=False,
+            static_graph=True,
+        )
         if train_wm_predictor:
-            wm_predictor = DDP(wm_predictor, device_ids=[aux_idx], output_device=aux_idx, find_unused_parameters=False)
+            wm_predictor = DDP(
+                wm_predictor,
+                device_ids=[aux_idx],
+                output_device=aux_idx,
+                find_unused_parameters=False,
+                static_graph=True,
+            )
 
     vision_ema: VisionEncoderEMA | None = None
     if vision_ema_enabled:

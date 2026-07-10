@@ -23,7 +23,7 @@
 - 远程真实 processor CPU smoke 通过：首/末 prefix 的 input IDs、labels、grid 完全一致，compact pixels 等于在线 pixels 转 BF16；1 record 19 transitions cache 为 15.49 MB，image reuse 10x。按现有同规模 train+val 60,170 unique images 外推 full compact cache 约 45.67 GiB（最终以正式 manifest 为准），较旧 1.3 TiB 约减少 97%。SFT1 train/val 各1 record 的 BF16 cache smoke 也通过。
 - 未启动 GPU、Slurm、rollout、正式 cache 或训练；真实 DataLoader→GPU 利用率仍待训练前 benchmark。
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
-- Rollout/converter、SFT1全部gate通过。SFT2正式grid22/max_pixels100352+budget12最长19-prefix压力完成8步，峰值51.12/52.17GiB，cache非瓶颈；epoch resume通过。`2ded494` partial step5恢复能同epochskip5/8并完成step6-8，但与uninterrupted metrics不完全相同，定位为SIGReg等RNG未续接；已加入counter-based micro RNG与seed/world/gradaccum/loader/RNG-version checkpoint invariants，待重跑并逐tensor比较。
+- Rollout/converter、SFT1全部gate通过。SFT2正式grid22/max_pixels100352+budget12最长19-prefix完成8步，峰值51.12/52.17GiB，cache非瓶颈；epoch resume通过。Partial step5同epochskip5/8正常；counter RNG后resume step6 pre-update metrics已与uninterrupted完全一致，但optimizer后有极小分叉（Qwen max3.58e-7），定位DDP新进程bucket rebuild。所有model/aux DDP改为构造时static_graph，待最后exact gate。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现

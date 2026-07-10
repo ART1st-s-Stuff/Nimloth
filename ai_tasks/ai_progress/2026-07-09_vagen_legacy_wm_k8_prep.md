@@ -124,7 +124,8 @@
 - 正式 k8 配置进一步采用 max_pixels100352（约grid22/308px）与 aggregate image budget12，使最长20-image prefix的视觉patch规模接近已通过的9-image/grid32；仍需最长轨迹压力门禁。
 - `2ded494` 最长轨迹压力gate通过：真实20-frame heldout轨迹仅为显存测试上采样到512，正式cap得到19 transitions/grid22/final prefix19 images/seq4359；2-GPU full vision+EMA完成8步，rank0峰值51.12GiB allocated/52.17GiB reserved，稳态cache wait不构成瓶颈。
 - periodic partial resume 位置协议通过真实step5/8 gate：恢复full model/aux/EMA/493-entry optimizer，同epoch精确skip5/8后只完成step6-8。但 uninterrupted与resume val metrics有差异，确认原因是SIGReg等随机流未恢复，不能宣称bit-exact。
-- 追加 counter-based per-micro RNG（base seed/epoch/micro/rank），checkpoint严格记录/核对 seed、world、grad_accum、micro-batch count、RNG version；将重跑step5 source/resume并逐tensor比较 uninterrupted/resumed final。新增 E0011。
+- counter RNG retry 后，resume step6 的全部 pre-update metrics 与 uninterrupted 完全一致，证明模型/aux/EMA/optimizer/data/RNG已恢复；但step6 optimizer后step7开始微小分叉。最终Qwen max diff3.58e-7、state projector2.44e-4，定位为新DDP进程首轮bucket warmup/rebuild使all-reduce次序不同。
+- 所有Qwen/aux DDP改为构造时 `static_graph=True`，固定 uninterrupted/resume reduction buckets；将做最后一次step5 exact gate。checkpoint invariants继续严格核对 seed/world/grad_accum/loader/RNG version。E0011已补充DDP bucket要求。
 
 ## 待确认问题
 
