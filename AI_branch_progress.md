@@ -23,7 +23,7 @@
 - 远程真实 processor CPU smoke 通过：首/末 prefix 的 input IDs、labels、grid 完全一致，compact pixels 等于在线 pixels 转 BF16；1 record 19 transitions cache 为 15.49 MB，image reuse 10x。按现有同规模 train+val 60,170 unique images 外推 full compact cache 约 45.67 GiB（最终以正式 manifest 为准），较旧 1.3 TiB 约减少 97%。SFT1 train/val 各1 record 的 BF16 cache smoke 也通过。
 - 未启动 GPU、Slurm、rollout、正式 cache 或训练；真实 DataLoader→GPU 利用率仍待训练前 benchmark。
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
-- Rollout preflight attempt 1 在模型加载前 exit 143，定位并修复 worktree HOME `.ssh` 初始化与 `pkill -f 'ray::'` 自匹配（`82770ca`）。Attempt 2 修复旧 module entry（`52739b4`）；attempt 3 确认并适配 pinned VAGEN 的内置 `ppo_trainer.yaml` + deterministic parquet + `rollout_manager` API（`3c4de98`）。Attempt 4 已通过 parquet/Hydra/tokenizer/Ray main，在静态 batch divisibility 检查停止（train batch1 不能用于2 GPU）；已改为 train batch2/val batch1。均未生成 JSONL/checkpoint。
+- Rollout preflight 已依次修复 startup 自终止（`82770ca`）、旧 module entry（`52739b4`）、pinned VAGEN config/parquet/service API（`3c4de98`）和2-GPU batch invariant（`fe31696`）。Attempt 5 又确认 pinned trainer 在 ref disabled 时仍静态要求 ref log-prob micro-batch；已补 `per_gpu=1`。截至 attempt 5 均在模型权重加载前停止，未生成 JSONL/checkpoint。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现

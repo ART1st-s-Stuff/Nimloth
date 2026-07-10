@@ -103,7 +103,7 @@
 - common env / Ray cleanup 修复提交 `82770ca` 后，attempt 2 已成功启动本地 Ray（2 GPU / 56 CPU），但在模型加载前失败：canonical wrapper 仍调用当前 VAGEN 不存在的 `vagen.main_ppo`；实际入口为 `vagen.trainer.main_ppo`。没有生成 JSONL/checkpoint。
 - module entry 修复 `52739b4` 后 attempt 3 进入 Hydra，但 pinned VAGEN 已没有旧 `vagen/configs/vagen_multiturn`；它使用内置 `vagen/trainer/config/ppo_trainer.yaml`、parquet env rows 与 `rollout_manager.use_service/base_url` API，因此仍在模型加载前失败，没有 JSONL/checkpoint。
 - pinned API 适配 `3c4de98` 的 remote Hydra composition 通过。Attempt 4 随后通过 deterministic parquet、Hydra、tokenizer/processor 与 Ray main task，在 trainer static invariant 处停止：val-only 仍要求 train batch size 能被 2 GPUs 整除，smoke 设为 1 不合法；未加载模型权重或生成 JSONL/checkpoint。
-- 已拆分 train/val batch：2-GPU smoke 用 train/mini-batch=2、val batch=1；提交后继续。
+- train/val batch 修复 `fe31696` 后 attempt 5 通过首个 invariant，但 pinned trainer 即使 `ref.use_ref=false` 也要求 ref log-prob micro-batch field；仍在静态配置检查停止，未加载模型权重/生成 JSONL。已显式设置 `actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1`，其余 REINFORCE++/no-ref 分支的 `_validate_config` 字段已逐项核查。
 
 ## 待确认问题
 

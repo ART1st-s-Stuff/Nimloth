@@ -368,6 +368,7 @@ run_shard() {
       actor_rollout_ref.rollout.max_response_per_turn=512 \
       actor_rollout_ref.rollout.disable_log_stats=False \
       +actor_rollout_ref.ref.use_ref=False \
+      actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
       trainer.logger=['console'] \
       trainer.val_before_train=True \
       trainer.val_only=True \
