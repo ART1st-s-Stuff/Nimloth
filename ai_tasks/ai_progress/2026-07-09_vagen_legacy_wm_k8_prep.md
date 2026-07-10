@@ -126,7 +126,8 @@
 - periodic partial resume 位置协议通过真实step5/8 gate：恢复full model/aux/EMA/493-entry optimizer，同epoch精确skip5/8后只完成step6-8。但 uninterrupted与resume val metrics有差异，确认原因是SIGReg等随机流未恢复，不能宣称bit-exact。
 - counter RNG retry 后，resume step6 的全部 pre-update metrics 与 uninterrupted 完全一致，证明模型/aux/EMA/optimizer/data/RNG已恢复；但step6 optimizer后step7开始微小分叉。最终Qwen max diff3.58e-7、state projector2.44e-4，定位为新DDP进程首轮bucket warmup/rebuild使all-reduce次序不同。
 - `096c576` 最终 partial-resume gate通过：step5 metadata/invariants正确，严格skip5/8，只执行step6-8；首个resumed step的全部pre-update losses与uninterrupted逐值相同。static DDP后跨进程最终仍非bit-identical：Qwen max3.58e-7、StateProjector2.44e-4、WM9.71e-5、value4.88e-4、EMA1.49e-8，属于极小/BF16量级；optimizer moment max0.00572。明确只宣称有界数值复现，不宣称bit-exact NCCL continuation。
-- SFT2 GPU/prebuilt-cache/full-vision+EMA/WM/value/CE/SIGReg/val/epoch+partial resume/timing/longest-prefix gates现均通过；GPU清零。正式full-scale仍未启动，需向人类单独确认。
+- SFT2 GPU/prebuilt-cache/full-vision+EMA/WM/value/CE/SIGReg/val/epoch+partial resume/timing/longest-prefix gates现均通过；GPU清零。
+- 人类已确认full-scale。独占输出 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97` 已记录commit/source/splits/resources/resume。环境job471020（normal/dgx-16/4GPU）提交后因Priority等待；policy array471026（0-3%2/2GPU/task）使用`after:471020`依赖，当前Dependency等待，避免环境未启动时浪费policy GPU。尚无full rollout shard生成。
 
 ## 待确认问题
 
