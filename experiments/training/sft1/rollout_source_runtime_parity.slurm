@@ -11,10 +11,12 @@
 #SBATCH --gres=gpu:6
 #SBATCH --mem=180G
 
-# Replays the historical step-60 validation with its source VAGEN/runtime stack.
+# Replays the historical step-60 validation with its source VAGEN/package stack.
 # This is intentionally separate from the pinned legacy rollout path: source
 # validation used VAGEN f7aefd3 + verl d8e5210, torch 2.6, transformers 4.49,
-# and vLLM 0.8.2. Production rollout must remain blocked until this gate passes.
+# and vLLM 0.8.2. The original Python 3.12 env was replaced after training; the
+# retained env has the same core package versions on Python 3.10. Production
+# rollout must remain blocked until this statistical gate passes.
 set -euo pipefail
 
 ROOT=${REPO:-/project/peilab/atst/nimloth/.worktree/vagen-legacy-wm-k8}
@@ -48,7 +50,15 @@ rm -rf "${VALIDATION_DIR}/image_0"
 }
 
 export PATH="${PYTHON_ENV}/bin:${PATH}"
-export PYTHONPATH="${SOURCE_VAGEN_DIR}:${SOURCE_VAGEN_DIR}/verl:${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+RUNTIME_STUB_DIR=${CONTROL_DIR}/runtime_stubs
+mkdir -p "${RUNTIME_STUB_DIR}"
+# fire was present in the original env but is absent from the retained env.
+# serve.py imports it only for its __main__ CLI; this replay calls main directly.
+cat > "${RUNTIME_STUB_DIR}/fire.py" <<'PY'
+def Fire(*args, **kwargs):
+    raise RuntimeError("runtime stub must not be used as a CLI")
+PY
+export PYTHONPATH="${RUNTIME_STUB_DIR}:${SOURCE_VAGEN_DIR}:${SOURCE_VAGEN_DIR}/verl:${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
@@ -70,7 +80,7 @@ expected = {
     "vllm": "0.8.2",
 }
 actual = {name: m.version(name).split("+")[0] for name in expected}
-print(f"python={sys.executable} versions={actual}", flush=True)
+print(f"python={sys.executable} version={sys.version.split()[0]} packages={actual}", flush=True)
 if actual != expected:
     raise SystemExit(f"source runtime mismatch: expected={expected} actual={actual}")
 PY
@@ -115,17 +125,22 @@ trap cleanup EXIT
 for env_i in 0 1; do
   phys=${ALLOCATED_GPUS[$env_i]}
   port=$((8400 + env_i))
-  CUDA_VISIBLE_DEVICES="${phys}" "${PYTHON_ENV}/bin/python" -m vagen.envs.navigation.serve \
-    --port "${port}" --devices='[0]' --max_envs=48 --max_inflight=48 \
-    --thread_pool_size=48 --session_timeout=7200.0 \
+  CUDA_VISIBLE_DEVICES="${phys}" "${PYTHON_ENV}/bin/python" -c \
+    "from vagen.envs.navigation.serve import main; main(port=${port}, devices=[0], max_envs=48, max_inflight=48, thread_pool_size=48, session_timeout=7200.0)" \
     > "${RUN_DIR}/source_env_${env_i}.log" 2>&1 &
   ENV_PIDS+=("$!")
 done
 
-for port in 8400 8401; do
+for env_i in 0 1; do
+  port=$((8400 + env_i))
   ready=0
   for _ in $(seq 1 120); do
     if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then ready=1; break; fi
+    if ! kill -0 "${ENV_PIDS[$env_i]}" >/dev/null 2>&1; then
+      echo "source env process ${env_i} exited" | tee -a "${LOG_FILE}"
+      tail -100 "${RUN_DIR}/source_env_${env_i}.log" | tee -a "${LOG_FILE}" || true
+      exit 3
+    fi
     sleep 2
   done
   [ "${ready}" -eq 1 ] || { echo "source env port ${port} failed" | tee -a "${LOG_FILE}"; exit 3; }
