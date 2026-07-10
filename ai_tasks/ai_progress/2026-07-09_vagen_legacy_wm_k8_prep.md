@@ -100,7 +100,8 @@
 - 新增 production rollout 入口的 `ROLLOUT_SMOKE=1` / `ROLLOUT_SMOKE_SEED`：只跑 array task 0、一个 `base_train` seed，batch/agent worker/concurrency 均为 1；提交 `29cd068`。
 - 计划复用已有 normal allocation `468852`（dgx-27，4 GPU）和 env service `468531`（dgx-37，2 GPU），不新占 GPU：rollout 用 2 GPU；之后顺序执行 SFT1 2-GPU LoRA+embedding 2–5 step/resume 与 SFT2 2-GPU vision+WM/value 2–5 step/resume。所有 smoke 禁用 W&B并使用独占 preflight 输出目录。
 - 网络恢复后已同步服务器并复用 hold `468852` / env `468531`。rollout smoke attempt 1 在模型加载前 exit 143：nested login shell 的 worktree HOME 缺少 `.ssh`，且 `pkill -f 'ray::'` 可能匹配包含该字面量的父 shell 命令。没有生成 JSONL/checkpoint。
-- 已修复为 common env 创建 `$HOME/.ssh`，Ray cleanup 使用安全 pattern `[r]ay::`；修复提交后在同一独占 preflight 输出重试。
+- common env / Ray cleanup 修复提交 `82770ca` 后，attempt 2 已成功启动本地 Ray（2 GPU / 56 CPU），但在模型加载前失败：canonical wrapper 仍调用当前 VAGEN 不存在的 `vagen.main_ppo`；实际入口为 `vagen.trainer.main_ppo`。没有生成 JSONL/checkpoint。
+- 已同步修复 SFT1 rollout、SFT1 eval 与 SFT2 eval canonical wrappers 的 module entry；提交后继续同一 smoke。
 
 ## 待确认问题
 

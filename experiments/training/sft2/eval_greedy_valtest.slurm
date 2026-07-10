@@ -227,7 +227,7 @@ run_split_shard() {
   fi
 
   echo "=== eval split=${split_name} shard=${shard_name} seeds=${seed_start}-${seed_end} at $(date) ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
-  PYTHONUNBUFFERED=1 python -m vagen.main_ppo \
+  PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
       --config-path="${BASEDIR}/vagen/configs" \
       --config-name='vagen_multiturn' \
       data.train_files="${split_yaml}" \

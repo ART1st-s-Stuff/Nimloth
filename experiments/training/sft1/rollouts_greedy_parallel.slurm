@@ -274,7 +274,7 @@ run_shard() {
   fi
   write_dummy_train_yaml "${dummy_train}"
   echo "=== array=${SLURM_ARRAY_TASK_ID} split=${split_name} shard=${shard_name} seeds=${seed_start}-${seed_end} greedy n=${VAL_N} ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
-  bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; PYTHONUNBUFFERED=1 python -m vagen.main_ppo \
+  bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
       --config-path='${BASEDIR}/vagen/configs' \
       --config-name='vagen_multiturn' \
       data.train_files='${val_yaml}' \
