@@ -50,6 +50,15 @@ export LATENT_TOKEN_COUNT=1
 bash ${REPO}/experiments/training/sft1/submit_rollouts_greedy.sh
 ```
 
+Preflight can exercise the exact production rollout entry with one `base_train` task:
+
+```bash
+export ROLLOUT_SMOKE=1 ROLLOUT_SMOKE_SEED=1
+bash ${REPO}/experiments/training/sft1/submit_rollouts_greedy.sh
+```
+
+The smoke wrapper overrides the Slurm array to task 0 and reduces rollout workers/batch size to one. Use a separate `ROLLOUT_RUN_DIR`; never point smoke at the full-run output.
+
 After collection, convert rollouts with `experiments/training/sft1/convert_rollouts.py` and record:
 
 - raw rollout directory

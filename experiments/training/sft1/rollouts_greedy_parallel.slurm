@@ -32,10 +32,17 @@ MODEL_PATH=${INIT_HF}
 TRAIN_GPUS_PER_NODE=2
 RAY_PORT=$((6379 + SLURM_ARRAY_TASK_ID))
 RAY_CMD="${PYTHON_ENV}/bin/python3 ${PYTHON_ENV}/bin/ray"
-VAL_BATCH_SIZE=24
-AGENT_NUM_WORKERS=12
-AGENT_MAX_CONCURRENT_TRAJECTORIES=12
-VAL_N=1
+ROLLOUT_SMOKE=${ROLLOUT_SMOKE:-0}
+ROLLOUT_SMOKE_SEED=${ROLLOUT_SMOKE_SEED:-1}
+VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-24}
+AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-12}
+AGENT_MAX_CONCURRENT_TRAJECTORIES=${AGENT_MAX_CONCURRENT_TRAJECTORIES:-12}
+VAL_N=${VAL_N:-1}
+if [ "${ROLLOUT_SMOKE}" = "1" ]; then
+  VAL_BATCH_SIZE=1
+  AGENT_NUM_WORKERS=1
+  AGENT_MAX_CONCURRENT_TRAJECTORIES=1
+fi
 
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${RUN_DIR}/validation" "${RUN_DIR}/checkpoints_rollout"
 
@@ -219,6 +226,27 @@ YAML
   esac
 }
 
+write_smoke_yaml() {
+  local out_yaml=$1
+  local seed=$2
+  cat > "${out_yaml}" <<YAML
+envs:
+  - name: RemoteEnv
+    n_envs: 1
+    data_source: navigation_base_train_smoke
+    seed: [${seed}, ${seed}, 1]
+    max_turns: 20
+    response_length_per_turn: 512
+    config:
+      url_file: "${ENV_URL_FILE}"
+      timeout: 120
+      retries: 6
+      eval_set: base_train
+      prompt_format: eval_mode
+      max_actions_per_step: 1
+YAML
+}
+
 write_dummy_train_yaml() {
   cat > "$1" <<'YAML'
 envs: []
@@ -239,7 +267,11 @@ run_shard() {
   fi
   local val_yaml="${CONTROL_DIR}/${split_name}_${shard_name}.yaml"
   local dummy_train="${CONTROL_DIR}/${split_name}_${shard_name}_dummy.yaml"
-  write_split_yaml "${split_name}" "${val_yaml}" "${seed_start}" "${seed_end}"
+  if [ "${ROLLOUT_SMOKE}" = "1" ]; then
+    write_smoke_yaml "${val_yaml}" "${seed_start}"
+  else
+    write_split_yaml "${split_name}" "${val_yaml}" "${seed_start}" "${seed_end}"
+  fi
   write_dummy_train_yaml "${dummy_train}"
   echo "=== array=${SLURM_ARRAY_TASK_ID} split=${split_name} shard=${shard_name} seeds=${seed_start}-${seed_end} greedy n=${VAL_N} ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; PYTHONUNBUFFERED=1 python -m vagen.main_ppo \
@@ -363,6 +395,15 @@ main() {
   bash -lc "${COMMON_ENV}; ${RAY_CMD} stop --force >/dev/null 2>&1 || true; pkill -u \$(whoami) -f 'ray::' >/dev/null 2>&1 || true; sleep 2; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   sleep 20
   bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; python -c \"import ray; ray.init(); print(ray.available_resources())\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+
+  if [ "${ROLLOUT_SMOKE}" = "1" ]; then
+    if [ "${SLURM_ARRAY_TASK_ID}" != "0" ]; then
+      echo "ROLLOUT_SMOKE=1 only supports array task 0" >&2
+      exit 2
+    fi
+    run_shard train "smoke_seed_${ROLLOUT_SMOKE_SEED}" "${ROLLOUT_SMOKE_SEED}" "${ROLLOUT_SMOKE_SEED}"
+    return 0
+  fi
 
   case "${SLURM_ARRAY_TASK_ID}" in
     0)

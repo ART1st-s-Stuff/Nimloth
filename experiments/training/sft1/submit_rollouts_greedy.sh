@@ -17,6 +17,9 @@ if [ -n "${ENV_NODE}" ]; then
 fi
 
 SBATCH_ARGS=(--parsable)
+if [ "${ROLLOUT_SMOKE:-0}" = "1" ]; then
+  SBATCH_ARGS+=(--array=0 --job-name=sft1-rollout-smoke)
+fi
 if [ -n "${NODELIST}" ]; then
   SBATCH_ARGS+=(--nodelist="${NODELIST}")
 fi
