@@ -29,7 +29,7 @@ export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
 export PYTHONPATH="${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${PYTHONPATH:-}"
-mkdir -p "$HOME" "$WANDB_DIR"
+mkdir -p "$HOME/.ssh" "$WANDB_DIR"
 
 if [ -f /project/peilab/atst/flower/.env ]; then
   set -a
