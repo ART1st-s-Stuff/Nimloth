@@ -104,7 +104,8 @@
 - module entry 修复 `52739b4` 后 attempt 3 进入 Hydra，但 pinned VAGEN 已没有旧 `vagen/configs/vagen_multiturn`；它使用内置 `vagen/trainer/config/ppo_trainer.yaml`、parquet env rows 与 `rollout_manager.use_service/base_url` API，因此仍在模型加载前失败，没有 JSONL/checkpoint。
 - pinned API 适配 `3c4de98` 的 remote Hydra composition 通过。Attempt 4 随后通过 deterministic parquet、Hydra、tokenizer/processor 与 Ray main task，在 trainer static invariant 处停止：val-only 仍要求 train batch size 能被 2 GPUs 整除，smoke 设为 1 不合法；未加载模型权重或生成 JSONL/checkpoint。
 - train/val batch 修复 `fe31696` 后 attempt 5 暴露 ref-disabled 仍需 micro-batch 字段，已由 `9055477` 补齐。Attempt 6 随后通过所有 trainer config checks，并成功解析 train/val parquet；但 val-only 仍构建 drop-last train loader，1 row / batch2 得到零 batches 并 assert。未初始化 worker/model或生成 JSONL。
-- 已让 smoke 生成独立 2-row deterministic train placeholder 仅满足 loader；validation parquet 仍严格只有 `base_train` seed1，val-only 只 rollout 该行。
+- 2-row placeholder 修复 `3708b14` 后 attempt 7 通过全部 config/data/dataloader checks，两个 FSDP workers 完整加载 source checkpoint 4 shards，并进入 vLLM 0.11 engine 初始化；随后因继承 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 与 vLLM sleep-mode CuMemAllocator 不兼容而失败。退出后 4 GPU 均为 0 MiB，未生成 JSONL/checkpoint。
+- 已在 rollout/Ray env 局部 unset allocator config（不影响 SFT training），并给 Ray 使用显式 local address / 独立 dashboard port，避免同用户跨节点 Ray auto-discovery；提交后继续。
 
 ## 待确认问题
 

@@ -31,6 +31,7 @@ CONTROL_DIR=${RUN_DIR}/slurm_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_contro
 MODEL_PATH=${INIT_HF}
 TRAIN_GPUS_PER_NODE=2
 RAY_PORT=$((6379 + SLURM_ARRAY_TASK_ID))
+RAY_DASHBOARD_PORT=$((18265 + SLURM_ARRAY_TASK_ID))
 RAY_CMD="${PYTHON_ENV}/bin/python3 ${PYTHON_ENV}/bin/ray"
 ROLLOUT_SMOKE=${ROLLOUT_SMOKE:-0}
 ROLLOUT_SMOKE_SEED=${ROLLOUT_SMOKE_SEED:-1}
@@ -48,7 +49,7 @@ fi
 
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${RUN_DIR}/validation" "${RUN_DIR}/checkpoints_rollout"
 
-COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname)'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
+COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; unset PYTORCH_CUDA_ALLOC_CONF; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname)'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
 
 cleanup() {
   set +e
@@ -331,7 +332,7 @@ run_shard() {
   local service_base_url
   service_base_url=$(head -n 1 "${ENV_URL_FILE}")
   echo "=== array=${SLURM_ARRAY_TASK_ID} split=${split_name} shard=${shard_name} seeds=${seed_start}-${seed_end} greedy n=${VAL_N} ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
-  bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
+  bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS}'; PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
       data.train_files='${train_parquet}' \
       data.val_files='${val_parquet}' \
       data.train_batch_size=${TRAIN_BATCH_SIZE} \
@@ -436,9 +437,10 @@ main() {
 
   local_ip=$(hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
   if [ -z "$local_ip" ]; then local_ip=$(hostname -I | awk '{print $1}'); fi
-  bash -lc "${COMMON_ENV}; ${RAY_CMD} stop --force >/dev/null 2>&1 || true; pkill -u \$(whoami) -f '[r]ay::' >/dev/null 2>&1 || true; sleep 2; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  bash -lc "${COMMON_ENV}; ${RAY_CMD} stop --force >/dev/null 2>&1 || true; pkill -u \$(whoami) -f '[r]ay::' >/dev/null 2>&1 || true; sleep 2; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --dashboard-port=${RAY_DASHBOARD_PORT} --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   sleep 20
-  bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; python -c \"import ray; ray.init(); print(ray.available_resources())\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  export RAY_ADDRESS="${local_ip}:${RAY_PORT}"
+  bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS}'; python -c \"import ray; ray.init(); print(ray.available_resources())\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 
   if [ "${ROLLOUT_SMOKE}" = "1" ]; then
     if [ "${SLURM_ARRAY_TASK_ID}" != "0" ]; then

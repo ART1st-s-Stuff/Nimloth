@@ -39,7 +39,7 @@ JSONL_STEP=0
 
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${RUN_DIR}/validation"
 
-COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname)'; export RAY_TMPDIR='/tmp/ray_${SLURM_JOB_ID}'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\" \"\$RAY_TMPDIR\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
+COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; unset PYTORCH_CUDA_ALLOC_CONF; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname)'; export RAY_TMPDIR='/tmp/ray_${SLURM_JOB_ID}'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\" \"\$RAY_TMPDIR\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
 
 cleanup() {
   set +e
