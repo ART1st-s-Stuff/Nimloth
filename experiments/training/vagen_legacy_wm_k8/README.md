@@ -59,6 +59,12 @@ bash ${REPO}/experiments/training/sft1/submit_rollouts_greedy.sh
 
 The smoke wrapper overrides the Slurm array to task 0 and reduces rollout workers/batch size to one. Use a separate `ROLLOUT_RUN_DIR`; never point smoke at the full-run output.
 
+When a human explicitly approves a six-GPU preempt fallback, `rollout_full_6gpu_preempt.slurm`
+uses four GPUs for the external environment and two GPUs for one policy shard task at a time.
+It runs array task IDs 0–3 sequentially inside one allocation and retains the normal shard-level
+skip/resume behavior. Do not run it concurrently with another environment using the same
+`ROLLOUT_RUN_DIR`.
+
 After collection, convert rollouts with `experiments/training/sft1/convert_rollouts.py` and record:
 
 - raw rollout directory
