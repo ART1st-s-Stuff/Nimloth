@@ -116,15 +116,24 @@ ENV_GPUS=$(IFS=,; echo "${SELECTED_ENV[*]}")
 POLICY_GPUS=$(IFS=,; echo "${SELECTED_POLICY[*]}")
 echo "selected env_gpus=${ENV_GPUS} policy_gpus=${POLICY_GPUS}" | tee -a "${LOG}"
 
+CONTROL_DIR=${RUN_DIR}/external_env_4gpu
+READY=${CONTROL_DIR}/ready
+FAILED=${CONTROL_DIR}/failed
+URLS=${CONTROL_DIR}/env_urls.txt
+mkdir -p "${CONTROL_DIR}"
+# The parent can observe a marker left by an earlier failed attempt before the
+# child launcher gets scheduled and clears it. Clear attempt-scoped markers in
+# the parent before spawning to remove that startup race.
+rm -f "${READY}" "${FAILED}"
+: > "${CONTROL_DIR}/env_hosts.txt"
+: > "${URLS}"
+
 (
   export CUDA_VISIBLE_DEVICES="${ENV_GPUS}"
   exec bash "${SCRIPTDIR}/env_external_4gpu.slurm"
 ) >> "${LOG}" 2>&1 &
 ENV_PID=$!
 
-READY=${RUN_DIR}/external_env_4gpu/ready
-FAILED=${RUN_DIR}/external_env_4gpu/failed
-URLS=${RUN_DIR}/external_env_4gpu/env_urls.txt
 for _ in $(seq 1 180); do
   if [ -f "${FAILED}" ]; then
     echo "ERROR external environment marked failed" | tee -a "${LOG}"

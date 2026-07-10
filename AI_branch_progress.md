@@ -23,7 +23,7 @@
 - 远程真实 processor CPU smoke 通过：首/末 prefix 的 input IDs、labels、grid 完全一致，compact pixels 等于在线 pixels 转 BF16；1 record 19 transitions cache 为 15.49 MB，image reuse 10x。按现有同规模 train+val 60,170 unique images 外推 full compact cache 约 45.67 GiB（最终以正式 manifest 为准），较旧 1.3 TiB 约减少 97%。SFT1 train/val 各1 record 的 BF16 cache smoke 也通过。
 - 未启动 GPU、Slurm、rollout、正式 cache 或训练；真实 DataLoader→GPU 利用率仍待训练前 benchmark。
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
-- full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。人类批准dgx-11 preempt6并保留normal fallback。首次471135在policy前失败：固定env GPU0-3中GPU0 AI2-THOR smoke失败，1-3通过，无server/shard；afternotok normal fallback471136已激活Priority等待。现修复6卡orchestrator：先smoke全部6卡，任选4张AI2-THOR-good做env，余2张做CUDA policy；少于4张good才失败，待提交retry。
+- full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。按人类更新先占IDLE节点：hold471146已占dgx-38的6GPU/168CPU/180GB，srun step471146.0启动后取消normal471140。dgx-38全部6卡AI2-THOR通过，但step在child前误读旧attempt的`failed` marker而exit4，无server/shard，hold仍在。已修复父进程spawn child前清ready/failed并重置control files，待同allocation retry。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
