@@ -202,7 +202,7 @@ CUDA_VISIBLE_DEVICES="${POLICY_GPUS}" "${PYTHON_ENV}/bin/python" -m vagen.main_p
   data.train_files="${CONTROL_DIR}/source_val.yaml" \
   data.val_files="${CONTROL_DIR}/source_val.yaml" \
   data.custom_cls.path="${SOURCE_VAGEN_DIR}/vagen/gym_agent_dataset.py" \
-  data.train_batch_size=24 data.val_batch_size=24 \
+  data.train_batch_size=128 data.val_batch_size=24 \
   data.seed=42 +data.base_seed=42 data.validation_shuffle=False \
   data.max_prompt_length=3000 data.max_response_length=20000 \
   +trainer.assert_val_env_composition=True \
