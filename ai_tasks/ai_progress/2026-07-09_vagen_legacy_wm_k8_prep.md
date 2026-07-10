@@ -112,7 +112,8 @@
 - SFT1 BF16 cache-only 已通过（target train 1 + heldout val 1）。2-GPU DDP attempt 1 在首个 labeled forward 失败：resize 后 logits vocab=151954，但 Qwen2.5-VL top-level `config.vocab_size` 仍151936，loss reshape 报错；无 backward/checkpoint，GPU 已清零。
 - Vocab metadata 修复 `1b31dcc` 后 SFT1 epoch1 2-GPU gate 通过：forward/backward/optimizer/val/checkpoint，step1、val_loss5.03155，checkpoint k8/mask/LoRA metadata 和 BF16 cache 正确。
 - Resume attempt 1 虽从 epoch1 metadata/optimizer/global_step1 进入 epoch2 并完成 step2，但日志有1521 missing/700 unexpected adapter keys。确认 raw `model.load_state_dict(strict=False)` 不会恢复 PEFT 保存时去掉的 adapter-name keys，因此该 epoch2/final 已隔离为 invalid，resume gate 判失败。
-- 已改用 `set_peft_model_state_dict`，并用 `get_peft_model_state_dict(save_embedding_layers=True)` 对保存的702个 LoRA+embedding tensors 做 key/shape/value 完全一致验证；unexpected keys 非空即失败。提交后从保留的有效 epoch1 重试。
+- `set_peft_model_state_dict` 修复 `a0c5187` 的 resume attempt 2 在 adapter load 前失败：server PEFT 版本试图从 Transformers4.55.4 导入不存在的 `EmbeddingParallel`。源模型没有 TP plan，已添加窄范围 missing-class sentinel，使 PEFT lazy import 可完成但 TP branch 仍不可达；702 tensor exact verification 保留。
+- 同时发现共享 hold `468852` 在 18:06 被另一个 Beren 4-GPU srun 占满；该进程不属于本任务且不得终止。代码提交/同步后，GPU retry 必须等待该作业释放或另找经确认资源。
 
 ## 待确认问题
 

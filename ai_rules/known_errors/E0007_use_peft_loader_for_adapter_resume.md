@@ -13,3 +13,5 @@ SFT1 resume 对 `adapter_model.safetensors` 直接执行 `model.load_state_dict(
 - unexpected keys 为空。
 
 不能因为 `strict=False` 没有抛异常就声称 resume 成功。无效 checkpoint 必须明确隔离，不能继续作为 latest 使用。
+
+当前服务器 PEFT 还会从 Transformers 4.55.4 导入不存在的 `EmbeddingParallel`。对明确没有 tensor-parallel plan 的模型，可在调用 PEFT loader 前添加缺失类 sentinel；不得假装真正的 TP 模型也兼容。

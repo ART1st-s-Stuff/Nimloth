@@ -796,6 +796,17 @@ def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
         if not bin_file.is_file():
             raise FileNotFoundError(f"missing adapter weights in {adapter_dir}")
         state = torch.load(bin_file, map_location="cpu", weights_only=True)
+    # The server's PEFT expects a newer Transformers TP symbol. This model has
+    # no tensor-parallel plan, so a sentinel only satisfies PEFT's lazy import;
+    # the TP sharding branch remains unreachable.
+    import transformers.integrations.tensor_parallel as transformers_tp
+
+    if not hasattr(transformers_tp, "EmbeddingParallel"):
+        class _EmbeddingParallelSentinel:
+            pass
+
+        transformers_tp.EmbeddingParallel = _EmbeddingParallelSentinel
+
     from peft import get_peft_model_state_dict, set_peft_model_state_dict
 
     incompatible = set_peft_model_state_dict(model, dict(state), adapter_name="default")
