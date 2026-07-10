@@ -75,6 +75,21 @@ def _unwrap(module):
     return module.module if hasattr(module, "module") else module
 
 
+def _training_micro_seed(base_seed: int, epoch: int, micro_step: int, rank: int) -> int:
+    """Counter-based RNG seed so an exact resume does not need skipped RNG state."""
+
+    return int((base_seed + epoch * 1_000_003 + micro_step * 10_007 + rank) % (2**63 - 1))
+
+
+def _seed_training_micro_step(base_seed: int, epoch: int, micro_step: int, rank: int) -> int:
+    seed = _training_micro_seed(base_seed, epoch, micro_step, rank)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+    return seed
+
+
 def _resolve_dataloader_workers(args) -> int:
     if args.dataloader_workers >= 0:
         return args.dataloader_workers
@@ -637,6 +652,14 @@ def train_sft2(args=None) -> int:
     steps_per_epoch = max(1, math.ceil(len(train_loader) / args.grad_accum))
     total_steps = steps_per_epoch * args.epochs
     qwen_warmup_steps = max(1, int(total_steps * args.qwen_lr_warmup_ratio))
+    checkpoint_invariants = {
+        "seed": int(args.seed),
+        "world_size": int(world),
+        "grad_accum": int(args.grad_accum),
+        "train_micro_batches": int(len(train_loader)),
+        "rng_schedule_version": "epoch_micro_rank_v1",
+    }
+    _save_checkpoint = partial(save_checkpoint, training_invariants=checkpoint_invariants)
 
     log_path = args.output_dir / "train_step_log.csv"
     if is_main() and not log_path.exists():
@@ -671,6 +694,15 @@ def train_sft2(args=None) -> int:
         global_step = int(state.get("step", 0))
         best_val_success_rate = float(state.get("best_val_success_rate", -1.0))
         best_val_wm_mse = float(state.get("best_val_wm_mse", state.get("best_val", float("inf"))))
+        saved_invariants = state.get("training_invariants")
+        if saved_invariants is not None:
+            mismatches = {
+                key: (saved_invariants.get(key), value)
+                for key, value in checkpoint_invariants.items()
+                if saved_invariants.get(key) != value
+            }
+            if mismatches:
+                raise ValueError(f"resume training invariants mismatch: {mismatches}")
         if "epoch" in state:
             start_epoch, resume_micro_step = resume_epoch_and_micro_step(state)
         if state.get("optimizer") is not None:
@@ -806,6 +838,7 @@ def train_sft2(args=None) -> int:
                 break
             step_timer.stop("dataloader", t0)
             micro_idx += 1
+            _seed_training_micro_step(args.seed, epoch, micro_idx, rank)
             sync_gradients = (micro_idx % args.grad_accum == 0) or (micro_idx == num_micro_batches)
             with _no_sync_if_needed(ddp_modules, enabled=world > 1 and not sync_gradients and not qwen_pair_parallel):
                 t0 = step_timer.start("batch_prep")
@@ -941,7 +974,7 @@ def train_sft2(args=None) -> int:
                     if dist.is_available() and dist.is_initialized():
                         dist.barrier()
                     if is_main():
-                        save_checkpoint(
+                        _save_checkpoint(
                             model,
                             state_proj,
                             processor,
@@ -968,7 +1001,7 @@ def train_sft2(args=None) -> int:
                     if dist.is_available() and dist.is_initialized():
                         dist.barrier()
                     if is_main():
-                        save_checkpoint(
+                        _save_checkpoint(
                             model,
                             state_proj,
                             processor,
@@ -1058,7 +1091,7 @@ def train_sft2(args=None) -> int:
                 improved = True
             if val_wm < best_val_wm_mse:
                 best_val_wm_mse = val_wm
-            save_checkpoint(
+            _save_checkpoint(
                 model,
                 state_proj,
                 processor,
@@ -1077,7 +1110,7 @@ def train_sft2(args=None) -> int:
                 vision_tune=vision_tune,
             )
             if improved:
-                save_checkpoint(
+                _save_checkpoint(
                     model,
                     state_proj,
                     processor,
@@ -1115,7 +1148,7 @@ def train_sft2(args=None) -> int:
             dist.barrier()
 
     if is_main():
-        save_checkpoint(
+        _save_checkpoint(
             model,
             state_proj,
             processor,

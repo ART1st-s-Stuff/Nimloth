@@ -138,6 +138,7 @@ def save_checkpoint(
     vision_tune: str = "freeze",
     epoch_complete: bool = True,
     micro_step_in_epoch: int = 0,
+    training_invariants: dict[str, Any] | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     module = model.module if hasattr(model, "module") else model
@@ -188,6 +189,8 @@ def save_checkpoint(
         "epoch_complete": bool(epoch_complete),
         "micro_step_in_epoch": int(micro_step_in_epoch),
     }
+    if training_invariants is not None:
+        state["training_invariants"] = dict(training_invariants)
     if base_model_path is not None:
         state["base_model_path"] = str(base_model_path)
     if optimizer is not None:

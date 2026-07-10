@@ -122,7 +122,9 @@
 - budget12 可完成前两步，但 native grid36/504px 的 prefix9 在第三次 backward 稳定 OOM；禁用step checkpoint仍完全复现，排除保存泄漏。max_pixels200704 将 production images降为grid32/448px后 epoch1 3 steps、val、epoch/best/final gate通过；稳态 DataLoader明显低于计算时间。
 - 从 valid epoch_001 的 full HF + aux + EMA + 493-entry/4-group optimizer 恢复成功：日志 start_epoch2/global_step3，完成step4-6、val及epoch2/final。
 - 正式 k8 配置进一步采用 max_pixels100352（约grid22/308px）与 aggregate image budget12，使最长20-image prefix的视觉patch规模接近已通过的9-image/grid32；仍需最长轨迹压力门禁。
-- 修复 periodic partial-epoch resume：checkpoint记录 `epoch_complete=false` + `micro_step_in_epoch`，resume同epoch deterministic skip并校验 optimizer boundary；epoch checkpoint改为在更新best metrics后保存。同步 profiling CUDA boundary并记录峰值显存。新增 helper tests和 E0010。
+- `2ded494` 最长轨迹压力gate通过：真实20-frame heldout轨迹仅为显存测试上采样到512，正式cap得到19 transitions/grid22/final prefix19 images/seq4359；2-GPU full vision+EMA完成8步，rank0峰值51.12GiB allocated/52.17GiB reserved，稳态cache wait不构成瓶颈。
+- periodic partial resume 位置协议通过真实step5/8 gate：恢复full model/aux/EMA/493-entry optimizer，同epoch精确skip5/8后只完成step6-8。但 uninterrupted与resume val metrics有差异，确认原因是SIGReg等随机流未恢复，不能宣称bit-exact。
+- 追加 counter-based per-micro RNG（base seed/epoch/micro/rank），checkpoint严格记录/核对 seed、world、grad_accum、micro-batch count、RNG version；将重跑step5 source/resume并逐tensor比较 uninterrupted/resumed final。新增 E0011。
 
 ## 待确认问题
 
