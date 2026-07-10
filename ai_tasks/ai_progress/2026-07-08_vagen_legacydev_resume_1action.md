@@ -102,10 +102,13 @@
   - 为避免浪费资源，我已主动取消那次误从 `300` 重启的新 step；
   - 之后改用 **`SOURCE_CHECKPOINT_STEP=308`** 再次拉起 held step，当前新的 train step 是 **`468852.23`**；
   - 这次已经确认：`latest_checkpointed_iteration.txt` 保持为 `308`，日志明确写出 `Found checkpoint ... global_step_308`、`Setting global step to 308`、`Resuming from .../global_step_308`；
-  - 后续监控已确认它继续完成了 `validation@308`，并把训练推进到 `global_step_312`；
-  - 目前已写出 `validation/308.jsonl`、`validation/310.jsonl`，并生成 `checkpoints/global_step_309`、`global_step_310`、`global_step_311`、`global_step_312`；`latest_checkpointed_iteration.txt` 当前是 `312`；
-  - 日志里已经出现 `[DEBUG] step 309 rollout ends`、`[DEBUG] step 310 rollout ends`、`[DEBUG] validation at global step 310 begins/ends`、`[DEBUG] step 311 rollout ends`、`[DEBUG] step 312 rollout ends`；
-  - 当前 `468852.23` 仍在 `RUNNING`，`python -m vagen.trainer.main_ppo` 进程存活；到目前为止，这次正确从 `308` 恢复后的 run 已经稳定越过旧崩溃点，并且**还没有再次出现新的 `none_dealloc` / `ActorDiedError`**。
+  - 后续监控已确认它继续完成了 `validation@308`，并把训练从 `global_step_309` 一路推进到 `global_step_314`；
+  - 目前已写出 `validation/308.jsonl`、`validation/310.jsonl`，并生成 `checkpoints/global_step_309`、`global_step_310`、`global_step_311`、`global_step_312`、`global_step_313`、`global_step_314`；`latest_checkpointed_iteration.txt` 当前是 `314`；
+  - 日志里已经出现 `[DEBUG] step 309 rollout ends`、`[DEBUG] step 310 rollout ends`、`[DEBUG] validation at global step 310 begins/ends`、`[DEBUG] step 311 rollout ends`、`[DEBUG] step 312 rollout ends`、`[DEBUG] step 313 rollout ends`、`[DEBUG] step 314 rollout ends`；
+  - 但这条正确从 `308` 恢复后的 held step `468852.23` 最终还是在 `23:53:35 HKT` 失败退出；当前该 step 已消失，训练进程和训练 GPU 占用都已清空；
+  - 直接失败信号再次是：Ray worker `WorkerDict`（pid `2404024`）触发 **`Fatal Python error: none_dealloc: deallocating None`**，随后主任务 `pid 2403561` 报 `ray.exceptions.ActorDiedError`；
+  - 这说明从 `308` 正确恢复并继续推进到 `314` 是可行的，但同一个底层崩溃并没有根治，只是延后复发了；
+  - 好消息是：hold `468852` 与 env `468531` 都还在，因此如果人类要继续，依然可以直接从 `global_step_314` 再次续跑，不必重做 ws4 conversion。
 - 我随后按 repo 里的 wandb 说明补查了 canonical 路径：
   - `experiments/training/baseline/README.md` 把 `launch_val_wandb_watcher.sh` + `val_wandb_watcher.slurm` 定义为“轮询 checkpoint、跑 val_only、把 val curve 上传到 wandb”的规范链路；
   - `experiments/training/baseline/common_env.sh` 会从 `flower/.env` / `.env` 导入 `WANDB_API_KEY`，并把 `WANDB_DIR` 设到 repo cache；
@@ -114,7 +117,7 @@
 - retrospective 上传结果：
   - 新 run 名：`vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_hold4g_console_retro`
   - wandb run id：`jimkqsm6`
-  - 覆盖 step：`300..312`（共 13 个 parsed step）
+  - 覆盖 step：`300..312`（共 13 个 parsed step；注意这是上传当时的截面，尚未自动包含后续新推进到的 `313/314`）
   - 输出文件：`wandb_retro/metrics_from_console.csv`、`wandb_retro/metrics_from_console.json`
   - 用途：把多次 resume/重启切碎的自动 wandb run 重新汇总成一条更完整的进度曲线，方便人类直接看当前累计进展。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
@@ -126,4 +129,4 @@
 - normal fallback 的关键限制：虽然 run 会从 `global_step_300` 形式继续到 `330`，但 ws7 checkpoint 是从 actor/critic HF export 新生成的，因此 **optimizer / lr scheduler 状态不会严格继承 ws8 step300 checkpoint**。
 - `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
 - 当前要验证的新点：strict ws8 external-env resume 在 `dgx-39` 可用时，是否能直接跳过 conversion、从 symlinked `global_step_300` checkpoint 成功 load actor/critic shards 并进入 val-before-train。
-- 当前阻塞再次变化：已经证明可以在保留当前 hold 的前提下从 `global_step_308` 正确重启，并稳定推进到 `global_step_312`；下一步重点变成：它能否继续长期稳定跑到 `330`，还是会在更后面的 rollout/validation 阶段再次命中同一个 `none_dealloc` 底层崩溃。
+- 当前阻塞再次变化：已经证明可以在保留当前 hold 的前提下从 `global_step_308` 正确重启，并继续推进到 `global_step_314`；但同一个 `none_dealloc` 底层崩溃再次复发了。下一步重点变成：是否要直接从 `global_step_314` 再次续跑，以及在续跑前是否需要先做更强的规避/诊断。
