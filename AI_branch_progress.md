@@ -23,7 +23,7 @@
 - 远程真实 processor CPU smoke 通过：首/末 prefix 的 input IDs、labels、grid 完全一致，compact pixels 等于在线 pixels 转 BF16；1 record 19 transitions cache 为 15.49 MB，image reuse 10x。按现有同规模 train+val 60,170 unique images 外推 full compact cache 约 45.67 GiB（最终以正式 manifest 为准），较旧 1.3 TiB 约减少 97%。SFT1 train/val 各1 record 的 BF16 cache smoke 也通过。
 - 未启动 GPU、Slurm、rollout、正式 cache 或训练；真实 DataLoader→GPU 利用率仍待训练前 benchmark。
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
-- Rollout preflight 经 startup/API/val-only/allocator/Ray port 修复后，attempt 9（`7f6ccee`）完整通过：source step60、2 FSDP/vLLM workers、external env、greedy eval_mode、JSONL/10 PNG dump与 cleanup；`base_train` seed1 success=true、score14.5、9 steps、action validity1.0，退出后 GPU 0 MiB。随后 converter 检出 smoke shard 缺少约定的 `shard_*` 前缀；已修正命名，raw rollout 本身有效。
+- Rollout preflight attempt 9（`7f6ccee`）完整通过：source step60、2 FSDP/vLLM workers、external env、greedy eval_mode、JSONL/10 PNG与 cleanup；seed1 success=true、score14.5、9 steps、action validity1.0，GPU 清零。`4d51769` 修正 smoke `shard_*` 命名后，converter 又暴露 pinned dump `output_str`/`metrics` schema 不受支持，错误产出空 messages/actions 和 false success；正在补 schema 与 prompt XML example 改写。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现

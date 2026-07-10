@@ -111,8 +111,10 @@ def rewrite_prompt_instruction(content: str) -> str:
     ]
     for old, new in replacements:
         content = content.replace(old, new)
-    # Avoid stale XML-action wording in instructions where possible.
-    content = content.replace("<action>...</action>", "<|action_start|><|action_(idx)|><|action_end|>")
+    # Current VAGEN output_str includes concrete XML examples such as
+    # <action>moveahead</action>; every prompt-side XML action example must be
+    # rewritten or it teaches the opposite format from the SFT target.
+    content = ACTION_RE.sub(NIMLOTH_ACTION_BLOCK, content)
     return content
 
 
@@ -200,6 +202,10 @@ def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], 
 
     input_messages = parse_im_messages(obj.get("input", ""))
     output_messages = parse_output_messages(obj.get("output", ""))
+    if not input_messages and not output_messages and obj.get("output_str"):
+        # Pinned VAGEN ppo_trainer dumps the complete system/user/assistant
+        # transcript in output_str instead of the legacy input/output pair.
+        input_messages = parse_im_messages(str(obj["output_str"]))
 
     # VAGEN input stores the assistant generation prompt as an empty trailing
     # assistant message. It is not a supervised response and must be dropped.
@@ -300,9 +306,14 @@ def convert_one(src: SourceRecord) -> dict[str, Any]:
     obj = src.payload
     step = int(obj.get("step", src.rollout_step))
     messages, actions, thinks, warnings = split_messages(src)
-    image_paths = image_paths_for(src.jsonl_path, step, src.line_index)
+    dumped_image_paths = [str(Path(path).resolve()) for path in obj.get("image_paths", [])]
+    image_paths = dumped_image_paths or image_paths_for(src.jsonl_path, step, src.line_index)
     issues = validate_record(messages, image_paths, actions)
-    success = float(obj.get("traj_success", 0.0) or 0.0) >= 1.0
+    metrics = obj.get("metrics", {}) if isinstance(obj.get("metrics"), dict) else {}
+    traj_success = float(obj.get("traj_success", metrics.get("success", 0.0)) or 0.0)
+    success = traj_success >= 1.0
+    score = float(obj.get("score", metrics.get("score", 0.0)) or 0.0)
+    reward = float(obj.get("reward", score) or 0.0)
     return {
         "id": f"{src.split}/{src.shard}/{src.line_index:06d}",
         "split": src.split,
@@ -311,9 +322,13 @@ def convert_one(src: SourceRecord) -> dict[str, Any]:
         "source_line_index": src.line_index,
         "step": step,
         "success": success,
-        "traj_success": float(obj.get("traj_success", 0.0) or 0.0),
-        "reward": float(obj.get("reward", obj.get("score", 0.0)) or 0.0),
-        "score": float(obj.get("score", 0.0) or 0.0),
+        "traj_success": traj_success,
+        "reward": reward,
+        "score": score,
+        "env_seed": obj.get("env_seed"),
+        "eval_set": obj.get("eval_set"),
+        "data_source": obj.get("data_source"),
+        "uid": obj.get("uid"),
         "messages": messages,
         "image_paths": image_paths,
         "actions": actions,
