@@ -105,7 +105,8 @@
 - pinned API 适配 `3c4de98` 的 remote Hydra composition 通过。Attempt 4 随后通过 deterministic parquet、Hydra、tokenizer/processor 与 Ray main task，在 trainer static invariant 处停止：val-only 仍要求 train batch size 能被 2 GPUs 整除，smoke 设为 1 不合法；未加载模型权重或生成 JSONL/checkpoint。
 - train/val batch 修复 `fe31696` 后 attempt 5 暴露 ref-disabled 仍需 micro-batch 字段，已由 `9055477` 补齐。Attempt 6 随后通过所有 trainer config checks，并成功解析 train/val parquet；但 val-only 仍构建 drop-last train loader，1 row / batch2 得到零 batches 并 assert。未初始化 worker/model或生成 JSONL。
 - 2-row placeholder 修复 `3708b14` 后 attempt 7 通过全部 config/data/dataloader checks，两个 FSDP workers 完整加载 source checkpoint 4 shards，并进入 vLLM 0.11 engine 初始化；随后因继承 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 与 vLLM sleep-mode CuMemAllocator 不兼容而失败。退出后 4 GPU 均为 0 MiB，未生成 JSONL/checkpoint。
-- allocator/Ray address 修复 `6aaf684` 后 attempt 8 在 Ray start 前发现所选 dashboard 18265 落入 Ray worker port 10002..19999，未进入数据/模型；已改为 8266+array task（避开残留 8265且不与 worker range 重叠）。
+- allocator/Ray address 修复 `6aaf684` 后 attempt 8 发现 dashboard port overlap，`7f6ccee` 改为 8266+task。Attempt 9 随后完整通过 production rollout gate：2 FSDP/vLLM workers、source step60、external env、greedy eval_mode、JSONL/PNG dump与 cleanup；1 条 `base_train` seed1 trajectory success=true、score14.5、9 steps、10 images、action validity1.0，退出后 GPU 0 MiB。
+- Conversion attempt 1 暴露 smoke shard 名 `smoke_seed_1` 不符合 converter 的 `shard_*` 明确约定。Raw rollout 有效；已把 smoke 命名修为 `shard_smoke_seed_1`，提交后在独占输出内 rename 并重跑 converter。
 
 ## 待确认问题
 

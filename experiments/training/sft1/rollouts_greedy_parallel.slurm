@@ -447,7 +447,7 @@ main() {
       echo "ROLLOUT_SMOKE=1 only supports array task 0" >&2
       exit 2
     fi
-    run_shard train "smoke_seed_${ROLLOUT_SMOKE_SEED}" "${ROLLOUT_SMOKE_SEED}" "${ROLLOUT_SMOKE_SEED}"
+    run_shard train "shard_smoke_seed_${ROLLOUT_SMOKE_SEED}" "${ROLLOUT_SMOKE_SEED}" "${ROLLOUT_SMOKE_SEED}"
     return 0
   fi
 
