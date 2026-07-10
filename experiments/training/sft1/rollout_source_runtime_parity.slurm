@@ -239,7 +239,7 @@ CUDA_VISIBLE_DEVICES="${POLICY_GPUS}" "${PYTHON_ENV}/bin/python" -m vagen.main_p
   critic.model.use_remove_padding=True critic.model.enable_gradient_checkpointing=True \
   critic.ppo_micro_batch_size_per_gpu=1 critic.ppo_max_token_len_per_gpu=32768 \
   critic.model.fsdp_config.param_offload=True critic.model.fsdp_config.optimizer_offload=True \
-  trainer.logger='[console]' trainer.val_before_train=True +trainer.val_only=True \
+  trainer.logger='[console]' trainer.val_before_train=True trainer.val_only=True \
   trainer.n_gpus_per_node=4 trainer.nnodes=1 trainer.save_freq=-1 trainer.test_freq=-1 \
   trainer.project_name=nimloth_navigation trainer.experiment_name="${RUN_NAME}" \
   trainer.default_local_dir="${RUN_DIR}/checkpoints_rollout" \
