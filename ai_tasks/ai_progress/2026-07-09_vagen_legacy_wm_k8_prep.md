@@ -150,4 +150,4 @@
 - 精确重放源 validation composition 120条：当前 source-compatible legacy stack为86/120=71.67%（base44/60=73.33%，common42/60=70%），源 step60为72/120=60%（base33/60=55%，common39/60=65%）；canonical actions only、action validity1.0。
 - 两次重放分别使用2和4 policy workers，aggregate成功数相同；轨迹并非全部逐字相同。进一步确认源历史日志使用VAGEN `f7aefd3`风格async stack、torch2.6/Transformers4.49/vLLM0.8.2，而当前生产是pinned legacy VAGEN与torch2.8/Transformers4.55/vLLM0.11。
 - 人类明确目标是优质训练数据，接受高于源的成功率；原“必须落入源统计±容差”门禁已撤销。仍要求prompt/env/action/reward语义一致、真实 transcript、完整JSON/image和split隔离。
-- 已在hold471146上从0/3900启动正式生产：clean Nimloth `02a156b172abcfc99c73714a8fb28bd8e08bcdd6`、VAGEN `e7cc2d01584abcab1e49ba4a6b18ba2067fb6762`、`.venv-vagen-main`，2 env +4 policy GPU、workers4。按非空有效shard恢复；hold剩余时间不足时需新allocation继续。
+- 正式生产attempt1使用clean Nimloth `02a156b172abcfc99c73714a8fb28bd8e08bcdd6`、VAGEN `e7cc2d01584abcab1e49ba4a6b18ba2067fb6762`、`.venv-vagen-main`，2 env +4 policy GPU、workers4；在首个540-row `train/shard_001_180`创建环境时，四个manager worker向单个legacy service提交的大批量POST超过120s并失败。尚未generation/dump，仍为0/3900、0 JSONL/PNG；GPU清零、hold471146保留且无可恢复shard。建议保持已验证workers4并缩小shard，使每worker环境创建量不超过120-row质量重放，而非提高并发改变门禁条件。
