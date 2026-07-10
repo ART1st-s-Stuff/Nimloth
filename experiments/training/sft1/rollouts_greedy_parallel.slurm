@@ -34,11 +34,13 @@ RAY_PORT=$((6379 + SLURM_ARRAY_TASK_ID))
 RAY_CMD="${PYTHON_ENV}/bin/python3 ${PYTHON_ENV}/bin/ray"
 ROLLOUT_SMOKE=${ROLLOUT_SMOKE:-0}
 ROLLOUT_SMOKE_SEED=${ROLLOUT_SMOKE_SEED:-1}
+TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-24}
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-24}
 AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-12}
 AGENT_MAX_CONCURRENT_TRAJECTORIES=${AGENT_MAX_CONCURRENT_TRAJECTORIES:-12}
 VAL_N=${VAL_N:-1}
 if [ "${ROLLOUT_SMOKE}" = "1" ]; then
+  TRAIN_BATCH_SIZE=${TRAIN_GPUS_PER_NODE}
   VAL_BATCH_SIZE=1
   AGENT_NUM_WORKERS=1
   AGENT_MAX_CONCURRENT_TRAJECTORIES=1
@@ -325,7 +327,7 @@ run_shard() {
   bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
       data.train_files='${val_parquet}' \
       data.val_files='${val_parquet}' \
-      data.train_batch_size=${VAL_BATCH_SIZE} \
+      data.train_batch_size=${TRAIN_BATCH_SIZE} \
       data.val_batch_size=${VAL_BATCH_SIZE} \
       data.max_prompt_length=3000 \
       data.max_response_length=20000 \
@@ -340,7 +342,7 @@ run_shard() {
       actor_rollout_ref.model.use_remove_padding=False \
       actor_rollout_ref.model.enable_gradient_checkpointing=True \
       actor_rollout_ref.actor.optim.lr=1e-6 \
-      actor_rollout_ref.actor.ppo_mini_batch_size=${VAL_BATCH_SIZE} \
+      actor_rollout_ref.actor.ppo_mini_batch_size=${TRAIN_BATCH_SIZE} \
       actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
       actor_rollout_ref.actor.ppo_max_token_len_per_gpu=24576 \
       actor_rollout_ref.actor.use_kl_loss=False \
