@@ -127,7 +127,7 @@
 - counter RNG retry 后，resume step6 的全部 pre-update metrics 与 uninterrupted 完全一致，证明模型/aux/EMA/optimizer/data/RNG已恢复；但step6 optimizer后step7开始微小分叉。最终Qwen max diff3.58e-7、state projector2.44e-4，定位为新DDP进程首轮bucket warmup/rebuild使all-reduce次序不同。
 - `096c576` 最终 partial-resume gate通过：step5 metadata/invariants正确，严格skip5/8，只执行step6-8；首个resumed step的全部pre-update losses与uninterrupted逐值相同。static DDP后跨进程最终仍非bit-identical：Qwen max3.58e-7、StateProjector2.44e-4、WM9.71e-5、value4.88e-4、EMA1.49e-8，属于极小/BF16量级；optimizer moment max0.00572。明确只宣称有界数值复现，不宣称bit-exact NCCL continuation。
 - SFT2 GPU/prebuilt-cache/full-vision+EMA/WM/value/CE/SIGReg/val/epoch+partial resume/timing/longest-prefix gates现均通过；GPU清零。
-- 人类已确认full-scale。独占输出 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97` 已记录commit/source/splits/resources/resume。环境job471020（normal/dgx-16/4GPU）提交后因Priority等待；policy array471026（0-3%2/2GPU/task）使用`after:471020`依赖，当前Dependency等待，避免环境未启动时浪费policy GPU。尚无full rollout shard生成。
+- 人类已确认full-scale。独占输出 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97` 已记录commit/source/splits/resources/resume。初始471020/471026未运行且无输出；按人类指出的dgx-26空闲4GPU取消并原样重提为env471093（normal/dgx-26/4GPU）与`after:471093` array471094（0-3%2/2GPU/task）。当前Priority/Dependency等待，尚无full rollout shard。
 
 ## 待确认问题
 

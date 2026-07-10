@@ -1,7 +1,7 @@
 # vagen_legacy_wm k=8 rollout → SFT1 → SFT2 任务
 
 日期：2026-07-09
-状态：人类已确认 full-scale；rollout 环境与policy array已提交，当前等待normal分区Priority调度
+状态：full-scale rollout已按人类指示迁移到dgx-26；新环境与policy array等待normal分区Priority调度
 
 ## 目标
 
@@ -137,7 +137,7 @@
 - 正式 k8 SFT2 配置使用 `max_pixels=100352`（production 512px screenshot约grid22/308px）和 `max_images_per_batch=12`。真实20-frame轨迹压力测试完成19 transitions/8 optimizer steps，rank0峰值51.12GiB allocated、52.17GiB reserved；compact DataLoader稳态等待不是瓶颈。
 - Partial resume 严格恢复step5并skip 5/8 micro-batches，首个resumed pre-update losses与uninterrupted逐值一致。跨进程NCCL最终只宣称有界数值复现（Qwen max abs `3.58e-7`，aux为BF16量级），不宣称bit-exact。
 - 最终 preflight 代码：`096c576`；输出根：`outputs/experiments/vagen_legacy_wm_k8_preflight/2026-07-10/preflight_a94c96b`。
-- Full-scale独占根：`outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。环境job `471020`（normal/dgx-16/4GPU）已提交；policy array `471026`（0-3%2、2GPU/task）以`after:471020`依赖提交。当前分别为Priority/Dependency等待，尚无shard输出。
+- Full-scale独占根：`outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。旧471020/471026确认未运行且无输出后取消；当前环境job `471093`（normal/dgx-26/4GPU）与`after:471093` policy array `471094`（0-3%2、2GPU/task）分别为Priority/Dependency等待，尚无shard输出。
 
 ## 待确认问题
 
