@@ -134,7 +134,7 @@
 - 是否同时采集 test；当前建议包含 test。
 - 是否采用配置默认的 SFT1 20 epochs、SFT2 10 epochs，并按每个 SFT1 epoch 的 greedy val success 选择最早达到最高值的 checkpoint。
 - GPU 方案：等待 normal 8-GPU 单节点，或由人类指定可接受的 preempt/较少 GPU 配置。
-- full-scale rollout 已暂停：必须先对齐源 step60 的 prompt/action vocabulary、0.3m step、1.0m threshold和reward feedback，并通过同 seed parity smoke；当前没有有效 shard。
+- full-scale rollout 已按2026-07-11人类批准的质量门禁重启；当前仍从0个有效 shard开始，只有非空且完整验证的新 shard可恢复。
 
 ## 2026-07-11 full-scale rollout prompt/env mismatch
 
@@ -142,5 +142,12 @@
 - Sampling 与源 validation 已确认一致：greedy、temperature0、top_p1、top_k-1、n1、512 tokens/turn、20 turns、1 action/turn。
 - 源 step60 transcript 的 prompt/action/reward feedback与 VAGEN `f7aefd3` 逐字匹配；当前 pinned legacy VAGEN `44be18c` 的 prompt/action aliases和reward feedback已确认不一致，几何默认值也分别为0.3m/1.0m和0.5m/1.5m。源 W&B 未记录 commit，几何参数仍需同 seed parity smoke确认；`prompt_format=eval_mode` 同名不足以证明等价。
 - invalid shard assistant actions（排除 prompt placeholders）共9239：moveahead61.08%、moveleft13.94%、rotateright11.21%、`rotatelleft`4.33%。源 step60 validation为 move_forward56.69%、move_left19.72%、move_right17.91%、turn_right0.90%。
-- 已把完成540 records和 partial next shard隔离到 `rollout/invalid_attempt_dafbd30_prompt_env_mismatch/`，有效 rollout count回到0；不能用于 conversion/SFT。
-- 下一步：实现并提交 source-compatible mode，做 transcript/config exact check和相同 seed smoke后重启 shard001-180。
+- 原完成540 records和 partial next shard曾隔离到 `rollout/invalid_attempt_dafbd30_prompt_env_mismatch/`；随后按人类要求永久删除其中 validation 数据（9241 files，约3.9GB），有效 rollout count回到0，不能用于 conversion/SFT。
+- 已实现独立 `source_eval_mode`：canonical actions、prompt/role boundary/reward feedback逐字对齐源，显式0.3m step、1.0m threshold、0.01 per-turn reward、success reward1；VAGEN提交 `e7cc2d0`。
+
+## 2026-07-11 人类批准以高成功率作为 rollout 质量门禁
+
+- 精确重放源 validation composition 120条：当前 source-compatible legacy stack为86/120=71.67%（base44/60=73.33%，common42/60=70%），源 step60为72/120=60%（base33/60=55%，common39/60=65%）；canonical actions only、action validity1.0。
+- 两次重放分别使用2和4 policy workers，aggregate成功数相同；轨迹并非全部逐字相同。进一步确认源历史日志使用VAGEN `f7aefd3`风格async stack、torch2.6/Transformers4.49/vLLM0.8.2，而当前生产是pinned legacy VAGEN与torch2.8/Transformers4.55/vLLM0.11。
+- 人类明确目标是优质训练数据，接受高于源的成功率；原“必须落入源统计±容差”门禁已撤销。仍要求prompt/env/action/reward语义一致、真实 transcript、完整JSON/image和split隔离。
+- 已在hold471146上从0/3900启动正式生产：clean Nimloth `02a156b172abcfc99c73714a8fb28bd8e08bcdd6`、VAGEN `e7cc2d01584abcab1e49ba4a6b18ba2067fb6762`、`.venv-vagen-main`，2 env +4 policy GPU、workers4。按非空有效shard恢复；hold剩余时间不足时需新allocation继续。

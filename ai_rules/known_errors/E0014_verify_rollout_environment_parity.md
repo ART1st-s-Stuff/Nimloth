@@ -10,7 +10,7 @@
 
 ## 正确做法
 
-从旧 checkpoint 收集 rollout 前，必须逐项对照真实 transcript 和环境实现：system/init/action prompt、action vocabulary/parser、step length、success threshold、reward feedback、max turns/actions及 generation kwargs。full-scale 前必须做相同 seed 的 source-compatible parity smoke，不能只核对配置字段名称或正常退出。
+从旧 checkpoint 收集 rollout 前，必须逐项对照真实 transcript 和环境实现：system/init/action prompt、chat role boundary空白、action vocabulary/parser、step length、success threshold、reward feedback、max turns/actions及 generation kwargs。full-scale 前必须重放源 validation composition并对比统计指标；单个 seed、配置字段名称或正常退出都不足以证明等价。
 
 ## 证据
 
