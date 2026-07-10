@@ -23,7 +23,7 @@
 - 远程真实 processor CPU smoke 通过：首/末 prefix 的 input IDs、labels、grid 完全一致，compact pixels 等于在线 pixels 转 BF16；1 record 19 transitions cache 为 15.49 MB，image reuse 10x。按现有同规模 train+val 60,170 unique images 外推 full compact cache 约 45.67 GiB（最终以正式 manifest 为准），较旧 1.3 TiB 约减少 97%。SFT1 train/val 各1 record 的 BF16 cache smoke 也通过。
 - 未启动 GPU、Slurm、rollout、正式 cache 或训练；真实 DataLoader→GPU 利用率仍待训练前 benchmark。
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
-- Rollout/converter、SFT1/SFT2全部preflight gate通过；partial resume有界数值复现，不宣称bit-exact。full-scale独占根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。人类指出dgx-26空闲4GPU后，确认旧env471020/array471026均未启动且无输出，已取消并原样重提env471093（normal/dgx-26/4GPU）及`after:471093` array471094（0-3%2/2GPU）；当前Priority/Dependency等待，尚无rollout shard。
+- Rollout/converter、SFT1/SFT2全部preflight gate通过；partial resume有界数值复现，不宣称bit-exact。full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。按人类最新指示，确认471093/471094仍pending且无输出后取消；现只提交unpin normal4h env job471114（4GPU/112CPU/512GB），Priority等待、预计2026-07-11 08:37启动。Policy array待env RUNNING+healthy后再投，尚无rollout shard。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
