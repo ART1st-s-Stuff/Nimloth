@@ -820,11 +820,17 @@ def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
         for key in state.keys() & loaded_state.keys()
         if state[key].shape == loaded_state[key].shape and not torch.equal(state[key], loaded_state[key].cpu())
     )
-    if missing_saved or shape_mismatches or value_mismatches or incompatible.unexpected_keys:
+    allowed_modules_to_save_keys = {
+        key
+        for key in incompatible.unexpected_keys
+        if key in state and key.endswith(".modules_to_save.weight")
+    }
+    unexplained_unexpected = sorted(set(incompatible.unexpected_keys) - allowed_modules_to_save_keys)
+    if missing_saved or shape_mismatches or value_mismatches or unexplained_unexpected:
         raise RuntimeError(
             "PEFT resume adapter verification failed: "
             f"missing_saved={missing_saved[:3]} shape={shape_mismatches[:3]} "
-            f"values={value_mismatches[:3]} unexpected={incompatible.unexpected_keys[:3]}"
+            f"values={value_mismatches[:3]} unexpected={unexplained_unexpected[:3]}"
         )
     if is_main():
         print(
@@ -834,6 +840,7 @@ def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
                         "adapter_dir": str(adapter_dir),
                         "saved_tensors_verified": len(state),
                         "missing_base_keys": len(incompatible.missing_keys),
+                        "verified_modules_to_save_compat_keys": len(allowed_modules_to_save_keys),
                         "unexpected_keys": 0,
                     }
                 }

@@ -23,7 +23,7 @@
 - 远程真实 processor CPU smoke 通过：首/末 prefix 的 input IDs、labels、grid 完全一致，compact pixels 等于在线 pixels 转 BF16；1 record 19 transitions cache 为 15.49 MB，image reuse 10x。按现有同规模 train+val 60,170 unique images 外推 full compact cache 约 45.67 GiB（最终以正式 manifest 为准），较旧 1.3 TiB 约减少 97%。SFT1 train/val 各1 record 的 BF16 cache smoke 也通过。
 - 未启动 GPU、Slurm、rollout、正式 cache 或训练；真实 DataLoader→GPU 利用率仍待训练前 benchmark。
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
-- Rollout/converter 和 SFT1 epoch1 gates 已通过。首个 resume 的 raw PEFT load 无效，epoch2/final 已隔离。切换 `set_peft_model_state_dict` 后又发现 server PEFT 期待 Transformers4.55.4 缺失的 `EmbeddingParallel`；源模型无 TP plan，已加 narrow sentinel并保留702 tensor exact verification。共享 hold `468852` 随后被另一个 Beren 4-GPU srun 占满，本任务不得终止它，GPU retry 待资源释放/另行分配。
+- Rollout/converter 和 SFT1 epoch1 gates 已通过。无效 raw-PEFT resume outputs 已隔离。PEFT loader + Transformers sentinel 修复后，resume attempt3 已验证702个 saved tensors key/shape/value 全部一致；仅 PEFT 把2个已保存的 `.modules_to_save.weight` source keys 同时报为 unexpected。已窄化为只允许这两个经过 exact verification 的 wrapper兼容 keys，其他 unexpected 仍失败；误占用 hold 已释放。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
