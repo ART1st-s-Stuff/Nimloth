@@ -125,7 +125,8 @@
 - `2ded494` 最长轨迹压力gate通过：真实20-frame heldout轨迹仅为显存测试上采样到512，正式cap得到19 transitions/grid22/final prefix19 images/seq4359；2-GPU full vision+EMA完成8步，rank0峰值51.12GiB allocated/52.17GiB reserved，稳态cache wait不构成瓶颈。
 - periodic partial resume 位置协议通过真实step5/8 gate：恢复full model/aux/EMA/493-entry optimizer，同epoch精确skip5/8后只完成step6-8。但 uninterrupted与resume val metrics有差异，确认原因是SIGReg等随机流未恢复，不能宣称bit-exact。
 - counter RNG retry 后，resume step6 的全部 pre-update metrics 与 uninterrupted 完全一致，证明模型/aux/EMA/optimizer/data/RNG已恢复；但step6 optimizer后step7开始微小分叉。最终Qwen max diff3.58e-7、state projector2.44e-4，定位为新DDP进程首轮bucket warmup/rebuild使all-reduce次序不同。
-- 所有Qwen/aux DDP改为构造时 `static_graph=True`，固定 uninterrupted/resume reduction buckets；将做最后一次step5 exact gate。checkpoint invariants继续严格核对 seed/world/grad_accum/loader/RNG version。E0011已补充DDP bucket要求。
+- `096c576` 最终 partial-resume gate通过：step5 metadata/invariants正确，严格skip5/8，只执行step6-8；首个resumed step的全部pre-update losses与uninterrupted逐值相同。static DDP后跨进程最终仍非bit-identical：Qwen max3.58e-7、StateProjector2.44e-4、WM9.71e-5、value4.88e-4、EMA1.49e-8，属于极小/BF16量级；optimizer moment max0.00572。明确只宣称有界数值复现，不宣称bit-exact NCCL continuation。
+- SFT2 GPU/prebuilt-cache/full-vision+EMA/WM/value/CE/SIGReg/val/epoch+partial resume/timing/longest-prefix gates现均通过；GPU清零。正式full-scale仍未启动，需向人类单独确认。
 
 ## 待确认问题
 

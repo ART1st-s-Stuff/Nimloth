@@ -116,7 +116,12 @@ bash experiments/training/sft2/submit_cache_then_train.sh
 ```
 
 SFT2 checkpoints should record `latent_token_count=8`, `qwen_hidden_dim`, and
-`state_proj_input_dim=8*qwen_hidden_dim`.
+`state_proj_input_dim=8*qwen_hidden_dim`. The validated k=8 config caps new
+512px rollout screenshots at `max_pixels=100352` (about grid22/308px) and uses
+`max_images_per_batch=12`; a real 20-frame stress trajectory peaked at 51.12GiB
+allocated on an H800. Do not raise either value without repeating the longest-prefix
+full-vision backward gate. Partial-epoch resume requires the checkpoint invariants
+introduced by preflight commit `096c576`.
 
 ## Notes
 

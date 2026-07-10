@@ -1,7 +1,7 @@
 # vagen_legacy_wm k=8 rollout → SFT1 → SFT2 任务
 
 日期：2026-07-09
-状态：实验前核查与 compact cache 优化已完成；代码已提交，尚未启动 rollout、正式 cache 或训练
+状态：最小端到端 preflight 全部门禁通过；full-scale rollout → SFT1 → SFT2 尚未启动，等待人类确认
 
 ## 目标
 
@@ -128,6 +128,15 @@
 - compact cache 优化提交 `0ffcf1e`：唯一图像 BF16 mmap shards + transition token/index shards，保持独立 per-prefix 语义；SFT1/SFT2 cache 均可在 CPU Slurm job 预建，再以 `afterok` 启动 GPU job。
 - 远程真实 processor smoke 已确认 compact 与在线编码的首/末 prefix input IDs、labels、grid 完全一致，pixels 在 BF16 后完全一致；按现有同规模 60,170 unique images 外推，完整 SFT2 train+val compact cache 约 45.67 GiB。
 - 验证：py_compile、bash -n、compileall 与相关 SFT2 pytest（31 passed）均通过；详细命令见 `ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
+
+## 2026-07-10 preflight 结果
+
+- Production rollout：源 step60、2-GPU FSDP/vLLM、external env、legacy greedy eval gate 通过；转换得到严格 k=8 Nimloth record。
+- SFT1：BF16 compact cache、2-GPU epoch、PEFT 702 tensors exact resume、optimizer/scheduler、merge/reload gates 通过。
+- SFT2：CPU-only k=8 BF16 compact cache、2-GPU full vision+EMA+WM/value/CE/SIGReg、validation、epoch resume 与 partial-epoch resume gates 通过。
+- 正式 k8 SFT2 配置使用 `max_pixels=100352`（production 512px screenshot约grid22/308px）和 `max_images_per_batch=12`。真实20-frame轨迹压力测试完成19 transitions/8 optimizer steps，rank0峰值51.12GiB allocated、52.17GiB reserved；compact DataLoader稳态等待不是瓶颈。
+- Partial resume 严格恢复step5并skip 5/8 micro-batches，首个resumed pre-update losses与uninterrupted逐值一致。跨进程NCCL最终只宣称有界数值复现（Qwen max abs `3.58e-7`，aux为BF16量级），不宣称bit-exact。
+- 最终 preflight 代码：`096c576`；输出根：`outputs/experiments/vagen_legacy_wm_k8_preflight/2026-07-10/preflight_a94c96b`。
 
 ## 待确认问题
 
