@@ -320,12 +320,19 @@ run_shard() {
     return 0
   fi
   local val_parquet="${CONTROL_DIR}/${split_name}_${shard_name}.parquet"
+  local train_parquet="${val_parquet}"
   write_split_parquet "${split_name}" "${val_parquet}" "${seed_start}" "${seed_end}"
+  if [ "${ROLLOUT_SMOKE}" = "1" ]; then
+    # val-only still builds a drop-last train loader. Two deterministic rows
+    # satisfy the 2-GPU batch invariant; only val_parquet is rolled out.
+    train_parquet="${CONTROL_DIR}/${split_name}_${shard_name}_train_placeholder.parquet"
+    write_split_parquet "${split_name}" "${train_parquet}" "${seed_start}" "$((seed_start + TRAIN_GPUS_PER_NODE - 1))"
+  fi
   local service_base_url
   service_base_url=$(head -n 1 "${ENV_URL_FILE}")
   echo "=== array=${SLURM_ARRAY_TASK_ID} split=${split_name} shard=${shard_name} seeds=${seed_start}-${seed_end} greedy n=${VAL_N} ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   bash -lc "${COMMON_ENV}; export RAY_ADDRESS=auto; PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
-      data.train_files='${val_parquet}' \
+      data.train_files='${train_parquet}' \
       data.val_files='${val_parquet}' \
       data.train_batch_size=${TRAIN_BATCH_SIZE} \
       data.val_batch_size=${VAL_BATCH_SIZE} \
