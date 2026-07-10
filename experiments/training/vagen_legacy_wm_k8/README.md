@@ -10,7 +10,7 @@ Set these on the server before launching jobs:
 
 ```bash
 # REPO must be the clean server worktree at the committed pipeline revision.
-export REPO=/project/peilab/atst/nimloth/.worktree/vagen-legacy-wm-k8-2513d79
+export REPO=/project/peilab/atst/nimloth/.worktree/vagen-legacy-wm-k8
 export SOURCE_RUN_NAME=vagen_legacy_wm_entropy01_kl001_60step_2env4train
 export SOURCE_RUN_DIR=/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-06-24/${SOURCE_RUN_NAME}
 export SOURCE_CHECKPOINT_STEP=60
