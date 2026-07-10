@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import torch
+
 from nimloth.training.common.dist import is_main
 
 
@@ -21,14 +23,21 @@ class StepTimer:
     _counts: dict[str, int] = field(default_factory=dict)
     _optimizer_steps: int = 0
 
+    @staticmethod
+    def _sync_cuda() -> None:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
     def start(self, name: str) -> float:
         if not self.enabled:
             return 0.0
+        self._sync_cuda()
         return time.perf_counter()
 
     def stop(self, name: str, started_at: float) -> None:
         if not self.enabled:
             return
+        self._sync_cuda()
         self._sections[name] = self._sections.get(name, 0.0) + (time.perf_counter() - started_at)
 
     def on_optimizer_step(self, *, global_step: int, epoch: int) -> None:
@@ -42,22 +51,31 @@ class StepTimer:
         self._sections.clear()
         if self.log_interval <= 0 or self._optimizer_steps % self.log_interval != 0:
             return
+        cuda_memory = None
+        if torch.cuda.is_available():
+            gib = 1024**3
+            cuda_memory = {
+                "allocated_gib": torch.cuda.memory_allocated() / gib,
+                "reserved_gib": torch.cuda.memory_reserved() / gib,
+                "peak_allocated_gib": torch.cuda.max_memory_allocated() / gib,
+                "peak_reserved_gib": torch.cuda.max_memory_reserved() / gib,
+            }
+            torch.cuda.reset_peak_memory_stats()
         if not is_main():
             return
         averages = {
             name: self._totals[name] / max(self._counts[name], 1)
             for name in sorted(self._totals)
         }
-        print(
-            json.dumps(
-                {
-                    "step_timing": averages,
-                    "epoch": epoch,
-                    "global_step": global_step,
-                    "optimizer_steps_logged": self._optimizer_steps,
-                }
-            )
-        )
+        payload: dict[str, Any] = {
+            "step_timing": averages,
+            "epoch": epoch,
+            "global_step": global_step,
+            "optimizer_steps_logged": self._optimizer_steps,
+        }
+        if cuda_memory is not None:
+            payload["cuda_memory"] = cuda_memory
+        print(json.dumps(payload))
 
     def snapshot(self) -> dict[str, float]:
         if not self.enabled:

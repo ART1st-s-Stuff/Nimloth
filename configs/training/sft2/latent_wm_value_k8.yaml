@@ -31,17 +31,21 @@ train:
   value_head_lr: 3.0e-4
   train_wm_predictor: true
   max_length: 12000
-  max_pixels: 602112
+  # Full-vision H800 smoke: native 504px/grid36 prefixes OOM at 9 images.
+  # 100352 caps new 512px rollout screenshots near 308px/grid22, making a
+  # 20-image prefix comparable to the validated 9-image/grid32 workload.
+  max_pixels: 100352
   emb_dim: 1024
   # Full-trajectory batching (--full-trajectory-batching): each micro-batch is
   # one complete trajectory; Qwen still forward each prefix as independent row
   # (per-prefix semantics preserved).  Distinct from --packed-forward.
   # Micro-batch size = trajectory length (variable).  Tune --grad-accum
   # accordingly so effective steps match: world * grad_accum * avg_records_per_rank.
-  # --max-images-per-batch (default 32) caps cumulative prefix images per batch;
-  # --max-steps-per-trajectory (default 16) provides a hard step ceiling.
+  # Keep multi-row chunks below the validated H800 activation envelope. A
+  # single longer prefix is still emitted as a one-row batch (never dropped).
+  # --max-steps-per-trajectory provides an independent hard step ceiling.
   full_trajectory_batching: true
-  max_images_per_batch: 32
+  max_images_per_batch: 12
   max_steps_per_trajectory: 16
   # Performance knobs: remote H800 environment has flash_attn installed; keep
   # gradient checkpointing enabled by default for memory safety, but CLI now

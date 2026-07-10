@@ -23,6 +23,22 @@ def read_checkpoint_step(ckpt_dir: Path) -> int:
     return int(state.get("step", -1))
 
 
+def resume_epoch_and_micro_step(state: dict[str, Any]) -> tuple[int, int]:
+    """Return the epoch and consumed micro-batches to use when resuming.
+
+    Old checkpoints did not record within-epoch position and are treated as
+    epoch-complete for backward compatibility.
+    """
+
+    epoch = int(state.get("epoch", 0))
+    if bool(state.get("epoch_complete", True)):
+        return epoch + 1, 0
+    micro_step = int(state.get("micro_step_in_epoch", 0))
+    if micro_step < 0:
+        raise ValueError(f"invalid micro_step_in_epoch: {micro_step}")
+    return max(epoch, 1), micro_step
+
+
 def is_trainable_checkpoint_dir(ckpt_dir: Path) -> bool:
     if not (ckpt_dir / "training_state.pt").is_file():
         return False
@@ -120,6 +136,8 @@ def save_checkpoint(
     base_model_path: Path | None = None,
     llm_tune: str = "freeze",
     vision_tune: str = "freeze",
+    epoch_complete: bool = True,
+    micro_step_in_epoch: int = 0,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     module = model.module if hasattr(model, "module") else model
@@ -167,6 +185,8 @@ def save_checkpoint(
         "llm_tune": llm_tune,
         "vision_tune": vision_tune,
         "vision_ema": vision_ema is not None and bool(vision_ema.shadow),
+        "epoch_complete": bool(epoch_complete),
+        "micro_step_in_epoch": int(micro_step_in_epoch),
     }
     if base_model_path is not None:
         state["base_model_path"] = str(base_model_path)

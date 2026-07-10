@@ -119,7 +119,10 @@
 - SFT2 compact-cache attempt1 的 shards 结构/体积正常（train9 transitions 27.98MB；val19 transitions15.45MB），但 manifest 检出 `latent_token_count=1`，因此已隔离为 invalid。根因是 YAML defaults 在 argparse arguments 注册前 set，后续每个 `add_argument(default=...)` 把 YAML 全部覆盖。
 - YAML parser 修复 `7811c32` 后 compact cache attempt2 通过：train9 transitions/9 images/45 refs/27.99MB，val19/19/190/15.49MB，manifest 均 k=8/BF16/masked。
 - SFT2 2-GPU attempt1 通过 init/k8 fingerprint/compact mmap loader/DDP/tuning/vision EMA，但在首个 current forward OOM：默认 image budget32 形成最多28 cumulative refs，full vision activations 用满79GB；无 backward/checkpoint，GPU清零，失败 run已隔离。
-- 计划用 `max_images_per_batch=12` 重试，保持每个 prefix 独立 row，仅缩小同批连续 steps。并修复 sampler 边界：单 prefix 本身超过 budget 时强制 one-row batch推进，避免旧实现 empty chunk 无限循环；新增回归测试。
+- budget12 可完成前两步，但 native grid36/504px 的 prefix9 在第三次 backward 稳定 OOM；禁用step checkpoint仍完全复现，排除保存泄漏。max_pixels200704 将 production images降为grid32/448px后 epoch1 3 steps、val、epoch/best/final gate通过；稳态 DataLoader明显低于计算时间。
+- 从 valid epoch_001 的 full HF + aux + EMA + 493-entry/4-group optimizer 恢复成功：日志 start_epoch2/global_step3，完成step4-6、val及epoch2/final。
+- 正式 k8 配置进一步采用 max_pixels100352（约grid22/308px）与 aggregate image budget12，使最长20-image prefix的视觉patch规模接近已通过的9-image/grid32；仍需最长轨迹压力门禁。
+- 修复 periodic partial-epoch resume：checkpoint记录 `epoch_complete=false` + `micro_step_in_epoch`，resume同epoch deterministic skip并校验 optimizer boundary；epoch checkpoint改为在更新best metrics后保存。同步 profiling CUDA boundary并记录峰值显存。新增 helper tests和 E0010。
 
 ## 待确认问题
 

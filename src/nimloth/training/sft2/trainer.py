@@ -31,6 +31,7 @@ from nimloth.training.sft2.checkpoint import (
     load_lora_adapter_state,
     read_checkpoint_step,
     resolve_resume_checkpoint_dir,
+    resume_epoch_and_micro_step,
     save_checkpoint,
 )
 from nimloth.training.sft2.cli import parse_sft2_args
@@ -664,13 +665,14 @@ def train_sft2(args=None) -> int:
     best_val_success_rate = -1.0
     best_val_wm_mse = float("inf")
     start_epoch = 1
+    resume_micro_step = 0
     if args.resume and resume_state_path is not None and resume_state_path.exists():
         state = torch.load(resume_state_path, map_location="cpu", weights_only=False)
         global_step = int(state.get("step", 0))
         best_val_success_rate = float(state.get("best_val_success_rate", -1.0))
         best_val_wm_mse = float(state.get("best_val_wm_mse", state.get("best_val", float("inf"))))
         if "epoch" in state:
-            start_epoch = int(state["epoch"]) + 1
+            start_epoch, resume_micro_step = resume_epoch_and_micro_step(state)
         if state.get("optimizer") is not None:
             optimizer.load_state_dict(state["optimizer"])
         if is_main():
@@ -681,6 +683,7 @@ def train_sft2(args=None) -> int:
                         "resume_ckpt": str(resume_ckpt_dir),
                         "start_epoch": start_epoch,
                         "global_step": global_step,
+                        "resume_micro_step": resume_micro_step,
                         "best_val_success_rate": best_val_success_rate,
                         "best_val_wm_mse": best_val_wm_mse,
                     }
@@ -767,6 +770,34 @@ def train_sft2(args=None) -> int:
 
         train_iter = iter(train_loader)
         micro_idx = 0
+        if epoch == start_epoch and resume_micro_step:
+            if resume_micro_step > num_micro_batches:
+                raise ValueError(
+                    "checkpoint micro_step_in_epoch exceeds current DataLoader length: "
+                    f"{resume_micro_step} > {num_micro_batches}"
+                )
+            if resume_micro_step % args.grad_accum != 0 and resume_micro_step != num_micro_batches:
+                raise ValueError(
+                    "partial-epoch checkpoint was not saved at an optimizer boundary: "
+                    f"micro_step={resume_micro_step}, grad_accum={args.grad_accum}"
+                )
+            for _ in range(resume_micro_step):
+                next(train_iter)
+            micro_idx = resume_micro_step
+            micro = resume_micro_step
+            if is_main():
+                print(
+                    json.dumps(
+                        {
+                            "resume_data_position": {
+                                "epoch": epoch,
+                                "skipped_micro_batches": resume_micro_step,
+                                "total_micro_batches": num_micro_batches,
+                            }
+                        }
+                    )
+                )
+
         while True:
             t0 = step_timer.start("dataloader")
             try:
@@ -927,6 +958,8 @@ def train_sft2(args=None) -> int:
                             base_model_path=base_model_path,
                             llm_tune=llm_tune,
                             vision_tune=vision_tune,
+                            epoch_complete=False,
+                            micro_step_in_epoch=micro_idx,
                         )
                         last_periodic_ckpt_time = time.monotonic()
                     if dist.is_available() and dist.is_initialized():
@@ -952,6 +985,8 @@ def train_sft2(args=None) -> int:
                             base_model_path=base_model_path,
                             llm_tune=llm_tune,
                             vision_tune=vision_tune,
+                            epoch_complete=False,
+                            micro_step_in_epoch=micro_idx,
                         )
                         _prune_step_checkpoints()
                     if dist.is_available() and dist.is_initialized():
@@ -1013,6 +1048,16 @@ def train_sft2(args=None) -> int:
                         val_rollout_success,
                     ]
                 )
+            improved = False
+            if args.early_stop_metric == "val_success_rate":
+                if val_rollout_success > best_val_success_rate:
+                    best_val_success_rate = val_rollout_success
+                    improved = True
+            elif val_wm < best_val_wm_mse:
+                best_val_wm_mse = val_wm
+                improved = True
+            if val_wm < best_val_wm_mse:
+                best_val_wm_mse = val_wm
             save_checkpoint(
                 model,
                 state_proj,
@@ -1031,16 +1076,6 @@ def train_sft2(args=None) -> int:
                 llm_tune=llm_tune,
                 vision_tune=vision_tune,
             )
-            improved = False
-            if args.early_stop_metric == "val_success_rate":
-                if val_rollout_success > best_val_success_rate:
-                    best_val_success_rate = val_rollout_success
-                    improved = True
-            elif val_wm < best_val_wm_mse:
-                best_val_wm_mse = val_wm
-                improved = True
-            if val_wm < best_val_wm_mse:
-                best_val_wm_mse = val_wm
             if improved:
                 save_checkpoint(
                     model,
