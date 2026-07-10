@@ -560,22 +560,41 @@ main() {
     return 0
   fi
 
+  # Keep each VAGEN invocation at no more than 120 rows, matching the
+  # accepted source-compatible quality replay. With max_workers=4 this caps
+  # initial environment creation at 30 configs per manager worker and avoids
+  # the 120-second create timeout seen with the former 540-row train shards.
   case "${SLURM_ARRAY_TASK_ID}" in
     0)
-      run_shard train shard_001_180 1 180
-      run_shard train shard_181_360 181 360
+      for seed_start in $(seq 1 40 360); do
+        seed_end=$((seed_start + 39))
+        printf -v shard_name 'shard_%03d_%03d' "${seed_start}" "${seed_end}"
+        run_shard train "${shard_name}" "${seed_start}" "${seed_end}"
+      done
       ;;
     1)
-      run_shard train shard_361_540 361 540
-      run_shard train shard_541_720 541 720
+      for seed_start in $(seq 361 40 720); do
+        seed_end=$((seed_start + 39))
+        printf -v shard_name 'shard_%03d_%03d' "${seed_start}" "${seed_end}"
+        run_shard train "${shard_name}" "${seed_start}" "${seed_end}"
+      done
       ;;
     2)
-      run_shard train shard_721_900 721 900
-      run_shard train shard_901_1080 901 1080
+      for seed_start in $(seq 721 40 1080); do
+        seed_end=$((seed_start + 39))
+        printf -v shard_name 'shard_%03d_%03d' "${seed_start}" "${seed_end}"
+        run_shard train "${shard_name}" "${seed_start}" "${seed_end}"
+      done
       ;;
     3)
-      run_shard val shard_1081_1200 1081 1200
-      run_shard test shard_001_060 1 60
+      for seed_start in 1081 1121 1161; do
+        seed_end=$((seed_start + 39))
+        printf -v shard_name 'shard_%03d_%03d' "${seed_start}" "${seed_end}"
+        run_shard val "${shard_name}" "${seed_start}" "${seed_end}"
+      done
+      run_shard test shard_001_024 1 24
+      run_shard test shard_025_048 25 48
+      run_shard test shard_049_060 49 60
       ;;
     *)
       echo "unknown array task ${SLURM_ARRAY_TASK_ID}" >&2
