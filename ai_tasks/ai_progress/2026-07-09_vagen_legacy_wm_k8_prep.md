@@ -115,7 +115,9 @@
 - `set_peft_model_state_dict` 修复 `a0c5187` 的 resume attempt 2 在 adapter load 前失败：server PEFT 版本试图从 Transformers4.55.4 导入不存在的 `EmbeddingParallel`。源模型没有 TP plan，已添加窄范围 missing-class sentinel，使 PEFT lazy import 可完成但 TP branch 仍不可达；702 tensor exact verification 保留。
 - PEFT compatibility 修复 `3029e77` 后 resume attempt 3 已证明702个保存 tensors 的 key/shape/value 全部完全一致；但 gate 对 PEFT 返回的两个 `modules_to_save.weight` source keys 仍判 unexpected。这两个 keys 本身在 saved state 中，且 wrapper 映射后的 exact verification 已通过。
 - `modules_to_save` 过滤修复 `f076b3a` 后 SFT1 resume attempt 4 通过：702 tensors exact、2个 verified wrapper keys、0 unexplained unexpected；恢复 step1 后完成 epoch2 step2、val 与 valid epoch2/final/best checkpoints。SFT1 cache/train/checkpoint/resume gate 完成。
-- Merge/export 脚本也存在未同步 vocab 与同一 PEFT/Transformers 兼容风险；已加入 top/text/generation vocab sync、no-TP sentinel、adapter saved-vs-loaded exact verification，再 merge/unload。提交后以 valid `best` 导出独占 `hf_merged` 并做 reload/tokenizer smoke。
+- Merge/export 修复 `37878e0` 后 gate 通过：702 tensors exact 后 merge，reload 的 tokenizer/top/text vocab 均151683、8 latent IDs唯一、2 shards，作为 SFT2 init。
+- SFT2 compact-cache attempt1 的 shards 结构/体积正常（train9 transitions 27.98MB；val19 transitions15.45MB），但 manifest 检出 `latent_token_count=1`，因此已隔离为 invalid。根因是 YAML defaults 在 argparse arguments 注册前 set，后续每个 `add_argument(default=...)` 把 YAML 全部覆盖。
+- 已改为参数全部注册后再 apply YAML，并新增 k8 defaults 与 CLI-over-YAML 两个回归测试；提交后重建并要求 manifest k=8。
 
 ## 待确认问题
 

@@ -23,7 +23,7 @@
 - 远程真实 processor CPU smoke 通过：首/末 prefix 的 input IDs、labels、grid 完全一致，compact pixels 等于在线 pixels 转 BF16；1 record 19 transitions cache 为 15.49 MB，image reuse 10x。按现有同规模 train+val 60,170 unique images 外推 full compact cache 约 45.67 GiB（最终以正式 manifest 为准），较旧 1.3 TiB 约减少 97%。SFT1 train/val 各1 record 的 BF16 cache smoke 也通过。
 - 未启动 GPU、Slurm、rollout、正式 cache 或训练；真实 DataLoader→GPU 利用率仍待训练前 benchmark。
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
-- Rollout/converter gates 通过；SFT1 epoch1 与 resume attempt4（`f076b3a`）均通过：BF16 prebuilt cache、2-GPU DDP、step1 checkpoint，PEFT 702 tensors exact restore，再完成step2/val/valid checkpoints。无效旧 resume outputs 已隔离。Merge/export 脚本同步补 vocab metadata、PEFT no-TP兼容和 saved-vs-loaded exact verification，待导出后进入 SFT2 gate。
+- Rollout/converter、SFT1 epoch1/resume、merge gates 均通过：PEFT702 tensors exact restore/merge，hf_merged reload vocab151683/k8 IDs/2 shards正确。SFT2 compact cache attempt1 结构正常但 manifest 检出 k=1；确认 YAML defaults 在 argparse 参数注册前应用后被 `add_argument(default=...)` 全部覆盖。错误cache已隔离；已把 YAML 应用移到注册后并增加 k8/CLI优先级测试。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现

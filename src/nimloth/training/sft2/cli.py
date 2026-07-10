@@ -210,6 +210,10 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         action="store_true",
         help="Explicitly allow non-equivalent trajectory-once packed forward for research/profiling only.",
     )
+    # set_defaults must run after add_argument: registering an argument with an
+    # explicit default otherwise overwrites the YAML value set earlier.
+    apply_yaml_defaults(ap, applied_config)
+    ap.set_defaults(config=applied_config)
     return ap
 
 
