@@ -17,6 +17,13 @@ REPO=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${REPO}/experiments/training/sft1
 RUN_DIR=${ROLLOUT_RUN_DIR:?ROLLOUT_RUN_DIR required}
 LOG=${RUN_DIR}/preempt_6gpu_${SLURM_JOB_ID}.log
+# The copied source-checkpoint runtime has the required Transformers version;
+# the worktree-local .venv is older and cannot instantiate this checkpoint.
+export PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv-vagen-main}
+if [ ! -x "${PYTHON_ENV}/bin/python3" ]; then
+  echo "ERROR missing rollout interpreter ${PYTHON_ENV}/bin/python3" >&2
+  exit 3
+fi
 mkdir -p "${RUN_DIR}" "${REPO}/outputs/experiments/training/sft1/slurm"
 
 IFS=',' read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES:?CUDA_VISIBLE_DEVICES required}"
@@ -45,6 +52,7 @@ trap on_signal TERM INT
   echo "=== full rollout 6-GPU preempt orchestration ==="
   echo "time=$(date -Is) job=${SLURM_JOB_ID} node=${SLURM_JOB_NODELIST}"
   echo "commit=$(git -C "${REPO}" rev-parse HEAD)"
+  echo "python_env=${PYTHON_ENV}"
   echo "allocated_gpus=${CUDA_VISIBLE_DEVICES}"
   echo "run_dir=${RUN_DIR} init_hf=${INIT_HF} source_step=${INIT_HF_STEP} dump_step=${ROLLOUT_DUMP_STEP:-0}"
 } | tee -a "${LOG}"
