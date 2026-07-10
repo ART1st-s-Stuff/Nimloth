@@ -35,6 +35,7 @@ RAY_DASHBOARD_PORT=$((8266 + SLURM_ARRAY_TASK_ID))
 RAY_CMD="${PYTHON_ENV}/bin/python3 ${PYTHON_ENV}/bin/ray"
 ROLLOUT_SMOKE=${ROLLOUT_SMOKE:-0}
 ROLLOUT_SMOKE_SEED=${ROLLOUT_SMOKE_SEED:-1}
+export ROLLOUT_SMOKE_EVAL_SET=${ROLLOUT_SMOKE_EVAL_SET:-base_train}
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-24}
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-24}
 AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-12}
@@ -78,8 +79,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: base_train
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_common_train
@@ -91,8 +99,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: common_sense_train
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_long_horizon_train
@@ -104,8 +119,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: long_horizon_train
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
 YAML
       ;;
     val)
@@ -122,8 +144,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: base_train
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_common_val_from_train
@@ -135,8 +164,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: common_sense_train
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_long_horizon_val_from_train
@@ -148,8 +184,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: long_horizon_train
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
 YAML
       ;;
     test)
@@ -166,8 +209,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: base
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_common_test
@@ -179,8 +229,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: common_sense
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_complex_instruction_test
@@ -192,8 +249,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: complex_instruction
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_visual_appearance_test
@@ -205,8 +269,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: visual_appearance
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
   - name: RemoteEnv
     n_envs: ${n_envs}
     data_source: navigation_long_horizon_test
@@ -218,8 +289,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: long_horizon
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
 YAML
       ;;
     *)
@@ -245,8 +323,15 @@ envs:
       timeout: 120
       retries: 6
       eval_set: base_train
-      prompt_format: eval_mode
+      prompt_format: source_eval_mode
       max_actions_per_step: 1
+      action_sep: "|"
+      example_count: 0
+      step_length: 0.3
+      success_threshold: 1.0
+      format_reward: 0.0
+      per_turn_format_reward: 0.01
+      success_reward: 1.0
 YAML
 }
 
@@ -283,7 +368,8 @@ specs = {
 rows = []
 selected_specs = specs[split_name]
 if bool(int(__import__("os").environ.get("ROLLOUT_SMOKE", "0"))):
-    selected_specs = selected_specs[:1]
+    smoke_eval_set = __import__("os").environ.get("ROLLOUT_SMOKE_EVAL_SET", "base_train")
+    selected_specs = [(f"navigation_{smoke_eval_set}_source_parity_smoke", smoke_eval_set)]
 for data_source, eval_set in selected_specs:
     for seed in range(seed_start, seed_end + 1):
         rows.append(
@@ -295,8 +381,15 @@ for data_source, eval_set in selected_specs:
                     "env_name": "navigation",
                     "env_config": {
                         "eval_set": eval_set,
-                        "prompt_format": "eval_mode",
+                        "prompt_format": "source_eval_mode",
                         "max_actions_per_step": 1,
+                        "action_sep": "|",
+                        "example_count": 0,
+                        "step_length": 0.3,
+                        "success_threshold": 1.0,
+                        "format_reward": 0.0,
+                        "per_turn_format_reward": 0.01,
+                        "success_reward": 1.0,
                     },
                     "seed": seed,
                 },
