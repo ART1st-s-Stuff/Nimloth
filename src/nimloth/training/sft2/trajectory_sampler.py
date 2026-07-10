@@ -117,9 +117,13 @@ class TrajectoryAwareBatchSampler(Sampler[list[int]]):
                         end += 1
                         if end - start >= max_steps_per_trajectory:
                             break
+                    if end == start:
+                        # A single late prefix can exceed the aggregate image
+                        # budget by itself. It still needs a one-row batch;
+                        # otherwise start never advances and the sampler loops.
+                        end = start + 1
                     chunk = indices[start:end]
-                    if chunk:
-                        batches.append(chunk)
+                    batches.append(chunk)
                     start = end
             else:
                 for start in range(0, len(indices), batch_size):

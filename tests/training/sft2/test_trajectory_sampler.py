@@ -106,6 +106,19 @@ def test_full_trajectory_chunks_by_image_count() -> None:
     assert [len(b) for b in batches] == [7, 1]
 
 
+def test_full_trajectory_single_prefix_can_exceed_image_budget() -> None:
+    samples = [_sample("a", i) for i in range(5)]
+    sampler = TrajectoryAwareBatchSampler(
+        samples,
+        batch_size=1,
+        shuffle=False,
+        full_trajectory=True,
+        max_images_per_batch=3,
+    )
+    batches = list(sampler)
+    assert batches == [[0, 1], [2], [3], [4]]
+
+
 def test_full_trajectory_hard_step_ceiling() -> None:
     """max_steps_per_trajectory acts as a hard ceiling even if images are below limit."""
     samples = [_sample("a", i) for i in range(20)]  # step 0..19, each has only step_index+1 images

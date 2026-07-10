@@ -117,7 +117,9 @@
 - `modules_to_save` 过滤修复 `f076b3a` 后 SFT1 resume attempt 4 通过：702 tensors exact、2个 verified wrapper keys、0 unexplained unexpected；恢复 step1 后完成 epoch2 step2、val 与 valid epoch2/final/best checkpoints。SFT1 cache/train/checkpoint/resume gate 完成。
 - Merge/export 修复 `37878e0` 后 gate 通过：702 tensors exact 后 merge，reload 的 tokenizer/top/text vocab 均151683、8 latent IDs唯一、2 shards，作为 SFT2 init。
 - SFT2 compact-cache attempt1 的 shards 结构/体积正常（train9 transitions 27.98MB；val19 transitions15.45MB），但 manifest 检出 `latent_token_count=1`，因此已隔离为 invalid。根因是 YAML defaults 在 argparse arguments 注册前 set，后续每个 `add_argument(default=...)` 把 YAML 全部覆盖。
-- 已改为参数全部注册后再 apply YAML，并新增 k8 defaults 与 CLI-over-YAML 两个回归测试；提交后重建并要求 manifest k=8。
+- YAML parser 修复 `7811c32` 后 compact cache attempt2 通过：train9 transitions/9 images/45 refs/27.99MB，val19/19/190/15.49MB，manifest 均 k=8/BF16/masked。
+- SFT2 2-GPU attempt1 通过 init/k8 fingerprint/compact mmap loader/DDP/tuning/vision EMA，但在首个 current forward OOM：默认 image budget32 形成最多28 cumulative refs，full vision activations 用满79GB；无 backward/checkpoint，GPU清零，失败 run已隔离。
+- 计划用 `max_images_per_batch=12` 重试，保持每个 prefix 独立 row，仅缩小同批连续 steps。并修复 sampler 边界：单 prefix 本身超过 budget 时强制 one-row batch推进，避免旧实现 empty chunk 无限循环；新增回归测试。
 
 ## 待确认问题
 
