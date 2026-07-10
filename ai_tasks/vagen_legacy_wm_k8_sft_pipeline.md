@@ -1,7 +1,7 @@
 # vagen_legacy_wm k=8 rollout → SFT1 → SFT2 任务
 
 日期：2026-07-09
-状态：full-scale仅提交unpin normal 4h环境job471114；policy array待环境健康后提交
+状态：dgx-11 preempt6首次因1张AI2-THOR坏卡在policy前失败；normal fallback排队，6卡动态选4张环境卡修复待重试
 
 ## 目标
 
@@ -137,7 +137,7 @@
 - 正式 k8 SFT2 配置使用 `max_pixels=100352`（production 512px screenshot约grid22/308px）和 `max_images_per_batch=12`。真实20-frame轨迹压力测试完成19 transitions/8 optimizer steps，rank0峰值51.12GiB allocated、52.17GiB reserved；compact DataLoader稳态等待不是瓶颈。
 - Partial resume 严格恢复step5并skip 5/8 micro-batches，首个resumed pre-update losses与uninterrupted逐值一致。跨进程NCCL最终只宣称有界数值复现（Qwen max abs `3.58e-7`，aux为BF16量级），不宣称bit-exact。
 - 最终 preflight 代码：`096c576`；输出根：`outputs/experiments/vagen_legacy_wm_k8_preflight/2026-07-10/preflight_a94c96b`。
-- Full-scale独占根：`outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。471093/471094确认未运行且无输出后按人类指示取消；当前仅有环境job `471114`（normal、不限节点、4GPU/112CPU/512GB、4h）Priority等待，Slurm预计2026-07-11 08:37启动。Policy array待环境RUNNING且4服务健康后再提交，尚无shard输出。
+- Full-scale独占根：`outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。dgx-11 preempt6 job471135运行3m06s后在policy前失败：固定env GPU0的AI2-THOR smoke失败，GPU1-3通过，无server/shard；normal `afternotok` fallback471136已转为Priority等待。orchestrator已改为先smoke全部6卡、任选4张good做env、余2张做policy，待commit后retry。
 
 ## 待确认问题
 

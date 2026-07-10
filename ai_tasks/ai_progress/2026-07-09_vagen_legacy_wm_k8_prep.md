@@ -127,7 +127,7 @@
 - counter RNG retry 后，resume step6 的全部 pre-update metrics 与 uninterrupted 完全一致，证明模型/aux/EMA/optimizer/data/RNG已恢复；但step6 optimizer后step7开始微小分叉。最终Qwen max diff3.58e-7、state projector2.44e-4，定位为新DDP进程首轮bucket warmup/rebuild使all-reduce次序不同。
 - `096c576` 最终 partial-resume gate通过：step5 metadata/invariants正确，严格skip5/8，只执行step6-8；首个resumed step的全部pre-update losses与uninterrupted逐值相同。static DDP后跨进程最终仍非bit-identical：Qwen max3.58e-7、StateProjector2.44e-4、WM9.71e-5、value4.88e-4、EMA1.49e-8，属于极小/BF16量级；optimizer moment max0.00572。明确只宣称有界数值复现，不宣称bit-exact NCCL continuation。
 - SFT2 GPU/prebuilt-cache/full-vision+EMA/WM/value/CE/SIGReg/val/epoch+partial resume/timing/longest-prefix gates现均通过；GPU清零。
-- 人类已确认full-scale。独占输出 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97` 已记录commit/source/splits/resources/resume。按最新指示确认471093/471094仍pending且无输出后取消；当前只提交unpin normal4h env job471114（4GPU/112CPU/512GB），Priority等待、预计2026-07-11 08:37启动。Policy array待4服务健康后再提交，尚无full rollout shard。
+- 人类已确认full-scale。dgx-11 preempt6首次job471135在policy前失败：固定给env的GPU0 AI2-THOR smoke失败、GPU1-3通过，无server/shard；afternotok normal fallback471136已激活Priority等待。已修复orchestrator为smoke allocation全部6卡，任选4张AI2-THOR-good运行env、剩余2张运行CUDA policy，少于4张good才失败；新增E0012，待commit/sync后重试。
 
 ## 待确认问题
 
