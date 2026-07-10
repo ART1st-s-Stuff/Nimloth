@@ -169,7 +169,7 @@ done < "${URLS}"
 
 # One 2-GPU policy task runs at a time. Completed non-empty shards are skipped
 # by rollouts_greedy_parallel.slurm, so a later retry preserves shard progress.
-if [ "${ROLLOUT_SMOKE:-0}" = "1" ]; then
+if [ "${ROLLOUT_SMOKE:-0}" = "1" ] || [ "${ROLLOUT_SOURCE_PARITY:-0}" = "1" ]; then
   TASK_IDS=(0)
 else
   TASK_IDS=(0 1 2 3)
@@ -189,6 +189,9 @@ done
 if [ "${ROLLOUT_SMOKE:-0}" = "1" ]; then
   touch "${RUN_DIR}/preempt_6gpu_smoke_done.flag"
   echo "=== rollout smoke completed at $(date -Is) ===" | tee -a "${LOG}"
+elif [ "${ROLLOUT_SOURCE_PARITY:-0}" = "1" ]; then
+  touch "${RUN_DIR}/preempt_6gpu_source_parity_done.flag"
+  echo "=== source validation parity replay completed at $(date -Is) ===" | tee -a "${LOG}"
 else
   touch "${RUN_DIR}/preempt_6gpu_rollout_done.flag"
   echo "=== all rollout tasks completed at $(date -Is) ===" | tee -a "${LOG}"
