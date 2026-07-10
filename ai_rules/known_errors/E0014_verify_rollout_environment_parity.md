@@ -6,7 +6,7 @@
 
 ## 原因
 
-同名格式来自两套不同的 navigation 实现。源 step60 transcript / VAGEN `f7aefd3` 使用 canonical underscore actions、0.3m step、1.0m success threshold、0.01 per-turn format reward；本次 VAGEN `44be18c` legacy 实现使用 compact action aliases、不同 prompt、0.5m step、1.5m threshold、0.5 format reward和10.0 success reward。生成采样参数相同也不能消除这些差异。
+同名格式来自两套不同的 navigation 实现。源 step60 transcript 的 prompt/action/reward feedback 与 VAGEN `f7aefd3` 实现逐字匹配；该实现配置为 canonical underscore actions、0.3m step、1.0m success threshold、0.01 per-turn format reward。本次 VAGEN `44be18c` legacy 实现使用 compact action aliases、不同 prompt、0.5m step、1.5m threshold、0.5 format reward和10.0 success reward。源 W&B 没有 git commit，因此几何参数仍须由 parity smoke 最终确认；生成采样参数相同不能消除已确认的 transcript 差异。
 
 ## 正确做法
 

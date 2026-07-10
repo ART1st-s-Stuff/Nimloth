@@ -958,7 +958,7 @@
 
 - 人类指出首 shard success 明显低于源 step60 eval 后，已取消 hold `471146` 内的 orchestration step `471146.1`；外层 hold 暂时保留，6 张 GPU 当前空闲。
 - 生成采样参数实际一致：源 validation 与当前均为 `do_sample=false`、`temperature=0`、`top_p=1`、`top_k=-1`、`n=1`、每轮最多512 tokens、20 turns、每轮1 action。
-- 确认真正原因是 navigation 实现不一致。源 step60 transcript 对应 VAGEN `f7aefd3` 行为：canonical underscore actions、无 reward legend/example 的 system prompt、`After your action`、step length0.3m、success threshold1.0m、per-turn format reward0.01、success reward1.0。当前 VAGEN `44be18c` legacy rollout 使用 compact aliases、reward legend/example、`After your answer`、0.5m、1.5m、0.5、10.0。
+- 确认 navigation 实现不一致。源 step60 transcript 的 prompt/action/reward feedback与 VAGEN `f7aefd3` 逐字匹配：canonical underscore actions、无 reward legend/example、`After your action`、reward0.01；该实现配置0.3m step、1.0m threshold、success reward1.0。当前 VAGEN `44be18c` legacy rollout 使用 compact aliases、reward legend/example、`After your answer`、0.5m、1.5m、0.5、10.0。源 W&B 未记录 git commit，因此几何参数还须同 seed parity smoke最终确认。
 - 清除 prompt 占位符后，无效 shard 的9239个 assistant actions 中：moveahead61.08%、moveleft13.94%、rotateright11.21%、无效 `rotatelleft`4.33%；源 step60 validation 为 move_forward56.69%、move_left19.72%、move_right17.91%、turn_right0.90%。
 - 已将540-record完成 shard和未完成的下一 shard移到 `rollout/invalid_attempt_dafbd30_prompt_env_mismatch/`；active validation path 不再有 dump，防止 retry 错误跳过。此前40.19%仅是无效尝试的真实指标，当前有效 full-scale rollout 记录数为0。
 - 输出 README/progress 已记录取消状态、实际配置、数据、checkpoint、commit、分析与 resume blocker；新增 known error `E0014_verify_rollout_environment_parity.md`。

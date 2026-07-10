@@ -140,7 +140,7 @@
 
 - 因人类指出 success rate 异常，取消 orchestration step `471146.1`；hold `471146` 暂时保留且 GPU 空闲。
 - Sampling 与源 validation 已确认一致：greedy、temperature0、top_p1、top_k-1、n1、512 tokens/turn、20 turns、1 action/turn。
-- 源 step60 实际对应 VAGEN `f7aefd3` navigation semantics；当前 pinned legacy VAGEN `44be18c` 的 prompt/action aliases、0.5m dynamics、1.5m threshold和 reward feedback 均不一致。`prompt_format=eval_mode` 同名不足以证明等价。
+- 源 step60 transcript 的 prompt/action/reward feedback与 VAGEN `f7aefd3` 逐字匹配；当前 pinned legacy VAGEN `44be18c` 的 prompt/action aliases和reward feedback已确认不一致，几何默认值也分别为0.3m/1.0m和0.5m/1.5m。源 W&B 未记录 commit，几何参数仍需同 seed parity smoke确认；`prompt_format=eval_mode` 同名不足以证明等价。
 - invalid shard assistant actions（排除 prompt placeholders）共9239：moveahead61.08%、moveleft13.94%、rotateright11.21%、`rotatelleft`4.33%。源 step60 validation为 move_forward56.69%、move_left19.72%、move_right17.91%、turn_right0.90%。
 - 已把完成540 records和 partial next shard隔离到 `rollout/invalid_attempt_dafbd30_prompt_env_mismatch/`，有效 rollout count回到0；不能用于 conversion/SFT。
 - 下一步：实现并提交 source-compatible mode，做 transcript/config exact check和相同 seed smoke后重启 shard001-180。
