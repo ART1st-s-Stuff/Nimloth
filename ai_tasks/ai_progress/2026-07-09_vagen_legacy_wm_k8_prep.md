@@ -94,6 +94,13 @@
 - SFT1 真实 processor cache-only smoke（train/val 各 1 record）通过：2 个 cache record 共 `20,711,104` bytes，`pixel_values` 均为 BF16，manifest 记录 k=8/dtype。
 - 以上 smoke 均在登录节点 CPU、`/tmp` 临时目录完成并已清理。没有启动 GPU、Slurm、rollout、正式 cache 或训练；仍未做真实训练 DataLoader→GPU 利用率 benchmark。
 
+## 2026-07-10 端到端 preflight 准备
+
+- 人类已批准在 full-scale 前执行 rollout、SFT1、SFT2 最小端到端检查。
+- 新增 production rollout 入口的 `ROLLOUT_SMOKE=1` / `ROLLOUT_SMOKE_SEED`：只跑 array task 0、一个 `base_train` seed，batch/agent worker/concurrency 均为 1；提交 `29cd068`。
+- 计划复用已有 normal allocation `468852`（dgx-27，4 GPU）和 env service `468531`（dgx-37，2 GPU），不新占 GPU：rollout 用 2 GPU；之后顺序执行 SFT1 2-GPU LoRA+embedding 2–5 step/resume 与 SFT2 2-GPU vision+WM/value 2–5 step/resume。所有 smoke 禁用 W&B并使用独占 preflight 输出目录。
+- 提交同步前 SSH 连续返回 `Connection closed by UNKNOWN port 65535`；按服务器规则停止重试。尚未创建远程输出或启动任何 preflight 计算。
+
 ## 待确认问题
 
 - 是否同时采集 test；当前建议包含 test。
