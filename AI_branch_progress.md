@@ -19,7 +19,9 @@
 - 加载路径使用 mmap shard LRU、persistent DataLoader workers、prefetch、pinned memory 与 non-blocking GPU transfer；next-state encoding 在 worker 中复用相邻 current row 并预组成去重 batch。
 - builder 加入 model/data/config/image file fingerprint、atomic shard/manifest、可恢复 build state、bounded multiprocessing queue 与 shard 校验；GPU 训练可强制 `--require-prebuilt-cache`。
 - SFT1 cache pixel tensor 同步改为默认 BF16。SFT1/SFT2 均新增 CPU cache Slurm job与 `afterok` 训练 wrapper，避免 cache preprocessing 占用 GPU allocation。
-- 本地相关 pytest `31 passed`，compile、bash syntax 与 diff check 通过。尚未运行远程真实 processor 数值等价和存储/吞吐 smoke；未启动 rollout、正式 cache、训练。
+- 本地相关 pytest `31 passed`，compile、bash syntax 与 diff check 通过；实现提交并推送 `0ffcf1e`。
+- 远程真实 processor CPU smoke 通过：首/末 prefix 的 input IDs、labels、grid 完全一致，compact pixels 等于在线 pixels 转 BF16；1 record 19 transitions cache 为 15.49 MB，image reuse 10x。按现有同规模 train+val 60,170 unique images 外推 full compact cache 约 45.67 GiB（最终以正式 manifest 为准），较旧 1.3 TiB 约减少 97%。SFT1 train/val 各1 record 的 BF16 cache smoke 也通过。
+- 未启动 GPU、Slurm、rollout、正式 cache 或训练；真实 DataLoader→GPU 利用率仍待训练前 benchmark。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现

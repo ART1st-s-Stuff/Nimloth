@@ -88,7 +88,11 @@
 - SFT1 cache 的 `pixel_values` 默认改为 BF16；fingerprint 加入 dtype 与 processor source。新增 `--cache-only` / `--require-prebuilt-cache`。
 - SFT1/SFT2 均新增 CPU-only cache Slurm job与 `afterok` dependency wrapper；推荐入口分别为 `submit_cache_then_train_8gpu.sh`、`submit_cache_then_train.sh`，避免 cache build 期间占用 GPU。
 - 本地验证：相关 pytest `31 passed`；Python compile、所有新增/修改 shell 的 `bash -n`、`git diff --check` 均通过。
-- 尚未运行远程真实 processor 数值等价 smoke、存储/吞吐 benchmark，也未提交正式 cache build、rollout 或训练作业。
+- 代码已提交并推送：`0ffcf1e22cbfa70637edea35135adf6142d179d6`。
+- 远程真实 Qwen2.5-VL processor CPU smoke（1 record / 19 transitions）通过：compact 与在线编码在首/末 prefix 的 `input_ids`、`labels`、`image_grid_thw` 完全一致；compact BF16 pixels 与在线 FP32 pixels 转 BF16 后逐元素完全一致。cache 为 19 unique images / 190 cumulative refs（10x reuse），images `14,486,220` bytes、tokens `998,375` bytes、合计 `15,488,826` bytes；末 prefix 热 collate 平均 `0.0688s`。
+- 从现有同规模 3240 train + 360 val 记录统计：60,170 transitions/unique images、571,042 cumulative image refs；按真实 smoke 的 bytes/image 与 bytes/transition 外推，完整 compact train+val 约 `45.67 GiB`，相对旧 1.3 TiB cache 约减少 97%。这是外推值，正式 build manifest 才是最终实测。
+- SFT1 真实 processor cache-only smoke（train/val 各 1 record）通过：2 个 cache record 共 `20,711,104` bytes，`pixel_values` 均为 BF16，manifest 记录 k=8/dtype。
+- 以上 smoke 均在登录节点 CPU、`/tmp` 临时目录完成并已清理。没有启动 GPU、Slurm、rollout、正式 cache 或训练；仍未做真实训练 DataLoader→GPU 利用率 benchmark。
 
 ## 待确认问题
 
