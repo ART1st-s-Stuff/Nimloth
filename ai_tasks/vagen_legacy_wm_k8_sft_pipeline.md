@@ -1,7 +1,7 @@
 # vagen_legacy_wm k=8 rollout → SFT1 → SFT2 任务
 
 日期：2026-07-09
-状态：hold471146/dgx-38上的retry step471146.1健康运行，task0首个540-record train shard rollout中
+状态：首个540-record train shard已完成并严格验证；task0正在train seeds181-360
 
 ## 目标
 
@@ -137,7 +137,7 @@
 - 正式 k8 SFT2 配置使用 `max_pixels=100352`（production 512px screenshot约grid22/308px）和 `max_images_per_batch=12`。真实20-frame轨迹压力测试完成19 transitions/8 optimizer steps，rank0峰值51.12GiB allocated、52.17GiB reserved；compact DataLoader稳态等待不是瓶颈。
 - Partial resume 严格恢复step5并skip 5/8 micro-batches，首个resumed pre-update losses与uninterrupted逐值一致。跨进程NCCL最终只宣称有界数值复现（Qwen max abs `3.58e-7`，aux为BF16量级），不宣称bit-exact。
 - 最终 preflight 代码：`096c576`；输出根：`outputs/experiments/vagen_legacy_wm_k8_preflight/2026-07-10/preflight_a94c96b`。
-- Full-scale独占根：`outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。hold471146先占IDLE dgx-38六卡，normal471140在step启动后取消。dafbd30 retry step471146.1已通过健康门禁：6/6 AI2-THOR、env0-3四HTTP endpoints、policy4-5 source step60四shards/vLLM初始化均通过；task0 train seeds1-180三类共540 records正在12 concurrent request真实rollout，policy GPU约92/99%利用率，尚待首个0.jsonl。
+- Full-scale独占根：`outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。hold471146/dgx-38、step471146.1健康。`train/shard_001_180/0.jsonl`已完成：540 records（base/common/long各180）、217 success=40.19%、9240 image refs且无missing、无坏JSON/空output，action validity0.9625；task0已进入seeds181-360。首shard成为preempt可跳过的durable恢复点。
 
 ## 待确认问题
 

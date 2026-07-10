@@ -23,7 +23,7 @@
 - 远程真实 processor CPU smoke 通过：首/末 prefix 的 input IDs、labels、grid 完全一致，compact pixels 等于在线 pixels 转 BF16；1 record 19 transitions cache 为 15.49 MB，image reuse 10x。按现有同规模 train+val 60,170 unique images 外推 full compact cache 约 45.67 GiB（最终以正式 manifest 为准），较旧 1.3 TiB 约减少 97%。SFT1 train/val 各1 record 的 BF16 cache smoke 也通过。
 - 未启动 GPU、Slurm、rollout、正式 cache 或训练；真实 DataLoader→GPU 利用率仍待训练前 benchmark。
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
-- full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。hold471146占IDLE dgx-38六卡；normal471140已按人类指示在step启动后取消。dafbd30 retry step471146.1健康：6/6 AI2-THOR通过，env0-3四端口健康，policy4-5加载source step60，task0 train seeds1-180三类共540 records正在真实12-request rollout（~8.6 tok/s/engine，policy GPU92/99%）；尚待首shard dump。
+- full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。hold471146/dgx-38、retry step471146.1健康。首个durable `train/shard_001_180/0.jsonl`通过：540 records（3类各180）、217 success=40.19%、9240 existing images、无坏JSON/空output/missing image、action_valid0.9625；task0已进入train181-360。Preempt后可跳过已完成首shard。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
