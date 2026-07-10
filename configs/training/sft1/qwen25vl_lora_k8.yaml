@@ -1,0 +1,30 @@
+# Phase 1 — SFT1 k=8 latent-query run defaults
+# Train script is CLI-driven; use this file as the run manifest/reference.
+
+model: Qwen2.5-VL-3B
+init_checkpoint: null  # set to vagen_legacy_wm_entropy01_kl001_60step_2env4train HF export
+
+data:
+  train_jsonl: train_success.jsonl
+  val_jsonl: val_all.jsonl
+
+latent:
+  token_count: 8
+  mask_query_labels: true
+
+tuning:
+  lora: true
+  lora_r: 64
+  lora_alpha: 128
+
+train:
+  epochs: 20
+  batch_size: 1
+  grad_accum: 8
+  lr: 2.0e-4
+  embedding_lr: 5.0e-4
+  max_length: 12000
+  max_pixels: 602112
+
+eval:
+  val_success_rate: true

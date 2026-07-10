@@ -59,6 +59,8 @@ ensure_sft1_merged() {
   echo "Init HF: ${SFT1_BEST}"
   echo "Train jsonl: ${RECORDS_ROOT}/train_all.jsonl"
   echo "Output: ${TRAIN_OUT}"
+  echo "Latent token count: ${LATENT_TOKEN_COUNT}"
+  echo "Mask latent query labels: ${MASK_LATENT_QUERY_LABELS}"
   echo "Packed forward: ${PACKED_FORWARD:-0}"
   echo "Trajectory-aware batching: ${TRAJECTORY_AWARE_BATCHING:-0}"
 } | tee -a "${LOG}"
@@ -118,6 +120,10 @@ TRAJECTORY_BATCH_ARGS=()
 if [ "${TRAJECTORY_AWARE_BATCHING:-0}" = "1" ]; then
   TRAJECTORY_BATCH_ARGS=(--trajectory-aware-batching)
 fi
+LATENT_ARGS=(--latent-token-count "${LATENT_TOKEN_COUNT}")
+if [ "${MASK_LATENT_QUERY_LABELS}" = "0" ]; then
+  LATENT_ARGS+=(--no-mask-latent-query-labels)
+fi
 
 if [ -n "${PREPROCESS_CACHE_DIR:-}" ]; then
   echo "=== prebuild preprocess cache ===" | tee -a "${LOG}"
@@ -128,6 +134,7 @@ if [ -n "${PREPROCESS_CACHE_DIR:-}" ]; then
     "${WM_PRED_ARGS[@]}" \
     "${PREPROCESS_ARGS[@]}" \
     "${PACKED_ARGS[@]}" \
+    "${LATENT_ARGS[@]}" \
     --model "${MODEL_PATH}" \
     --train-jsonl "${RECORDS_ROOT}/train_all.jsonl" \
     --val-jsonl "${RECORDS_ROOT}/val_all.jsonl" \
@@ -148,6 +155,7 @@ PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NPROC_PER
   "${TIMING_ARGS[@]}" \
   "${PACKED_ARGS[@]}" \
   "${TRAJECTORY_BATCH_ARGS[@]}" \
+  "${LATENT_ARGS[@]}" \
   ${EXTRA_TRAIN_ARGS:-} \
   --epochs "${SFT2_EPOCHS:-10}" \
   --value-gamma "${VALUE_GAMMA:-1.0}" \

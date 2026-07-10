@@ -18,7 +18,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-from nimloth.latent import add_special_tokens, special_token_ids
+from nimloth.latent import add_special_tokens, initialize_extra_latent_token_embeddings, special_token_ids
 from nimloth.training.common.config import merge_cli_over_yaml
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.common.metrics import MetricAccumulator
@@ -114,6 +114,8 @@ def _prepare_transition_datasets(args, processor):
             min_pixels=min_pixels,
             preprocess_workers=args.preprocess_workers,
             force=args.force_rebuild_cache,
+            latent_token_count=args.latent_token_count,
+            mask_latent_query_labels=args.mask_latent_query_labels,
         )
         if is_main():
             from nimloth.training.sft2.preprocess_cache import build_trajectory_preprocess_cache
@@ -158,6 +160,8 @@ def _prepare_transition_datasets(args, processor):
         preprocess_workers=args.preprocess_workers,
         force=args.force_rebuild_cache,
         value_gamma=args.value_gamma,
+        latent_token_count=args.latent_token_count,
+        mask_latent_query_labels=args.mask_latent_query_labels,
     )
     if is_main():
         build_transition_preprocess_cache(
@@ -188,7 +192,16 @@ def _prepare_transition_datasets(args, processor):
     )
 
 
-def _unpack_train_batch(batch, processor, max_length: int, *, packed_forward: bool, pad_token_id: int):
+def _unpack_train_batch(
+    batch,
+    processor,
+    max_length: int,
+    *,
+    packed_forward: bool,
+    pad_token_id: int,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
+):
     if isinstance(batch, dict) and "transition_samples" in batch:
         return (
             batch["items"],
@@ -202,6 +215,8 @@ def _unpack_train_batch(batch, processor, max_length: int, *, packed_forward: bo
         processor,
         max_length,
         pad_token_id=pad_token_id,
+        latent_token_count=latent_token_count,
+        mask_latent_query_labels=mask_latent_query_labels,
     )
     return items, enc, next_rows, None, None
 
@@ -221,6 +236,10 @@ def train_sft2(args=None) -> int:
     if args is None:
         args = parse_sft2_args()
     merge_cli_over_yaml(args, args.config)
+    args.latent_token_count = int(getattr(args, "latent_token_count", 1))
+    args.mask_latent_query_labels = bool(getattr(args, "mask_latent_query_labels", True))
+    if args.latent_token_count < 1:
+        raise ValueError(f"--latent-token-count must be >= 1, got {args.latent_token_count}")
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     vision_ema_enabled = resolve_vision_ema(args, vision_tune)
@@ -243,8 +262,11 @@ def train_sft2(args=None) -> int:
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = args.max_pixels
-    add_special_tokens(processor.tokenizer)
-    token_id_map = special_token_ids(processor.tokenizer)
+    added_special_token_count = add_special_tokens(
+        processor.tokenizer,
+        latent_token_count=args.latent_token_count,
+    )
+    token_id_map = special_token_ids(processor.tokenizer, latent_token_count=args.latent_token_count)
 
     if is_main():
         print(
@@ -263,6 +285,8 @@ def train_sft2(args=None) -> int:
                     "packed_forward": args.packed_forward,
                     "trajectory_aware_batching": args.trajectory_aware_batching,
                     "full_trajectory_batching": args.full_trajectory_batching,
+                    "latent_token_count": args.latent_token_count,
+                    "mask_latent_query_labels": args.mask_latent_query_labels,
                 }
             )
         )
@@ -379,6 +403,12 @@ def train_sft2(args=None) -> int:
         # is the PyTorch-recommended checkpointing mode for DDP.
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.resize_token_embeddings(len(processor.tokenizer))
+    if added_special_token_count > 0:
+        initialize_extra_latent_token_embeddings(
+            model,
+            token_id_map,
+            latent_token_count=args.latent_token_count,
+        )
     model.config.vocab_size = len(processor.tokenizer)
     if hasattr(model, "generation_config"):
         model.generation_config.vocab_size = len(processor.tokenizer)
@@ -448,7 +478,11 @@ def train_sft2(args=None) -> int:
             aux_device = torch.device(f"cuda:{mapped}")
     if qwen_pair_parallel:
         wm_predictor = wm_predictor.to(aux_device)
-    state_proj = StateProjector(hidden_size, wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
+    state_proj = StateProjector(
+        hidden_size,
+        wm_predictor.emb_dim,
+        latent_token_count=args.latent_token_count,
+    ).to(device=aux_device, dtype=model_dtype)
     value_head = ValueHead(wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
     sigreg = SIGRegModule(knots=args.sigreg_knots, num_proj=args.sigreg_num_proj).to(device=aux_device)
     lambda_sigreg_val = args.lambda_sigreg
@@ -645,6 +679,8 @@ def train_sft2(args=None) -> int:
                     args.max_length,
                     packed_forward=args.packed_forward,
                     pad_token_id=pad_token_id,
+                    latent_token_count=args.latent_token_count,
+                    mask_latent_query_labels=args.mask_latent_query_labels,
                 )
                 step_timer.stop("batch_prep", t0)
 
@@ -661,11 +697,19 @@ def train_sft2(args=None) -> int:
                         max_length=args.max_length,
                         vision_ema=vision_ema,
                         full_enc=full_enc,
+                        latent_token_count=args.latent_token_count,
+                        mask_latent_query_labels=args.mask_latent_query_labels,
                     )
                     latent_hidden = traj.current_latents
                     lm_loss = traj.lm_loss
                 else:
-                    latent_hidden, lm_loss = extract_qwen_latents(model, enc, token_id_map, device)
+                    latent_hidden, lm_loss = extract_qwen_latents(
+                        model,
+                        enc,
+                        token_id_map,
+                        device,
+                        latent_token_count=args.latent_token_count,
+                    )
                 step_timer.stop("current_forward", t0)
 
                 lambda_wm = wm_loss_weight_schedule(
@@ -701,6 +745,7 @@ def train_sft2(args=None) -> int:
                         next_enc_rows=next_enc_rows,
                         pad_token_id=pad_token_id,
                         sigreg_module=sigreg,
+                        latent_token_count=args.latent_token_count,
                     )
                 step_timer.stop("next_forward", t0)
 
@@ -825,6 +870,8 @@ def train_sft2(args=None) -> int:
             pad_token_id=pad_token_id,
             packed_forward=args.packed_forward,
             sigreg_module=sigreg,
+            latent_token_count=args.latent_token_count,
+            mask_latent_query_labels=args.mask_latent_query_labels,
         )
         val_wm = val_metrics.get("wm_mse", float("inf"))
         val_success = val_metrics.get("success_rate", 0.0)

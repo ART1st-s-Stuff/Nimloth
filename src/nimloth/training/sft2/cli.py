@@ -36,6 +36,18 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--max-length", type=int, default=12000)
     ap.add_argument("--max-pixels", type=int, default=602112)
     ap.add_argument("--emb-dim", type=int, default=1024)
+    ap.add_argument(
+        "--latent-token-count",
+        type=int,
+        default=1,
+        help="Number of latent query tokens per step (1 keeps legacy single-token behavior).",
+    )
+    ap.add_argument(
+        "--mask-latent-query-labels",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Mask latent query tokens from CE labels; they are state query slots, not text targets.",
+    )
     ap.add_argument("--max-train-records", type=int, default=-1)
     ap.add_argument("--max-val-records", type=int, default=-1)
     ap.add_argument("--max-val-batches", type=int, default=-1)

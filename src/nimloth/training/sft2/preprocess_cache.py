@@ -40,6 +40,8 @@ def cache_fingerprint(
     min_pixels: int,
     vocab_size: int,
     value_gamma: float = 1.0,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> str:
     stat = jsonl_path.stat()
     payload = "|".join(
@@ -52,6 +54,8 @@ def cache_fingerprint(
             str(min_pixels),
             str(vocab_size),
             str(value_gamma),
+            str(latent_token_count),
+            str(mask_latent_query_labels),
             CE_MASK_VERSION,
             TRANSITION_EXPANSION_VERSION,
         ]
@@ -63,11 +67,28 @@ def encode_transition_item(
     item: dict[str, Any],
     processor: AutoProcessor,
     max_length: int,
+    *,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> dict[str, Any]:
-    current_enc = encode_qwen_item(item["messages"], processor, max_length, include_labels=True)
+    current_enc = encode_qwen_item(
+        item["messages"],
+        processor,
+        max_length,
+        include_labels=True,
+        latent_token_count=latent_token_count,
+        mask_latent_query_labels=mask_latent_query_labels,
+    )
     next_enc = None
     if item.get("next_messages"):
-        next_enc = encode_qwen_item(item["next_messages"], processor, max_length, include_labels=False)
+        next_enc = encode_qwen_item(
+            item["next_messages"],
+            processor,
+            max_length,
+            include_labels=False,
+            latent_token_count=latent_token_count,
+            mask_latent_query_labels=mask_latent_query_labels,
+        )
     return {
         "id": item["id"],
         "record_id": item.get("record_id", ""),
@@ -151,6 +172,8 @@ def unpack_transition_batch(
     max_length: int,
     *,
     pad_token_id: int | None = None,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, Any],
@@ -164,7 +187,13 @@ def unpack_transition_batch(
         next_rows = batch.get("next_enc_rows")
         return items, enc, next_rows
     items = batch
-    enc = build_qwen_batch(items, processor, max_length)
+    enc = build_qwen_batch(
+        items,
+        processor,
+        max_length,
+        latent_token_count=latent_token_count,
+        mask_latent_query_labels=mask_latent_query_labels,
+    )
     return items, enc, None
 
 
@@ -199,23 +228,40 @@ class CachedTransitionDataset(Dataset):
 
 _CACHE_PROCESSOR: AutoProcessor | None = None
 _CACHE_MAX_LENGTH = 0
+_CACHE_LATENT_TOKEN_COUNT = 1
+_CACHE_MASK_LATENT_QUERY_LABELS = True
 
 
-def _init_cache_worker(model_path: str, min_pixels: int, max_pixels: int, max_length: int) -> None:
-    global _CACHE_PROCESSOR, _CACHE_MAX_LENGTH
+def _init_cache_worker(
+    model_path: str,
+    min_pixels: int,
+    max_pixels: int,
+    max_length: int,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
+) -> None:
+    global _CACHE_PROCESSOR, _CACHE_MAX_LENGTH, _CACHE_LATENT_TOKEN_COUNT, _CACHE_MASK_LATENT_QUERY_LABELS
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     processor.image_processor.min_pixels = min_pixels
     processor.image_processor.max_pixels = max_pixels
-    add_special_tokens(processor.tokenizer)
+    add_special_tokens(processor.tokenizer, latent_token_count=latent_token_count)
     _CACHE_PROCESSOR = processor
     _CACHE_MAX_LENGTH = max_length
+    _CACHE_LATENT_TOKEN_COUNT = int(latent_token_count)
+    _CACHE_MASK_LATENT_QUERY_LABELS = bool(mask_latent_query_labels)
 
 
 def _cache_one_transition(task: tuple[dict[str, Any], str]) -> tuple[str, bool, str]:
     item, out_path = task
     try:
         assert _CACHE_PROCESSOR is not None
-        encoded = encode_transition_item(item, _CACHE_PROCESSOR, _CACHE_MAX_LENGTH)
+        encoded = encode_transition_item(
+            item,
+            _CACHE_PROCESSOR,
+            _CACHE_MAX_LENGTH,
+            latent_token_count=_CACHE_LATENT_TOKEN_COUNT,
+            mask_latent_query_labels=_CACHE_MASK_LATENT_QUERY_LABELS,
+        )
         path = Path(out_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(encoded, path)
@@ -238,6 +284,8 @@ def build_transition_preprocess_cache(
     preprocess_workers: int = 4,
     force: bool = False,
     value_gamma: float = 1.0,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> None:
     samples = TransitionJsonlDataset(
         jsonl_path,
@@ -252,6 +300,8 @@ def build_transition_preprocess_cache(
         min_pixels=min_pixels,
         vocab_size=len(processor.tokenizer),
         value_gamma=value_gamma,
+        latent_token_count=latent_token_count,
+        mask_latent_query_labels=mask_latent_query_labels,
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = cache_dir / "manifest.json"
@@ -300,7 +350,14 @@ def build_transition_preprocess_cache(
         with ProcessPoolExecutor(
             max_workers=workers,
             initializer=_init_cache_worker,
-            initargs=(str(model_path), min_pixels, max_pixels, max_length),
+            initargs=(
+                str(model_path),
+                min_pixels,
+                max_pixels,
+                max_length,
+                latent_token_count,
+                mask_latent_query_labels,
+            ),
         ) as pool:
             futures = [pool.submit(_cache_one_transition, task) for task in tasks]
             for fut in as_completed(futures):
@@ -323,6 +380,8 @@ def build_transition_preprocess_cache(
                 "max_pixels": max_pixels,
                 "min_pixels": min_pixels,
                 "value_gamma": value_gamma,
+                "latent_token_count": latent_token_count,
+                "mask_latent_query_labels": mask_latent_query_labels,
                 "ce_mask_version": CE_MASK_VERSION,
                 "transition_expansion_version": TRANSITION_EXPANSION_VERSION,
                 "dir": str(cache_dir),
@@ -338,13 +397,22 @@ def encode_trajectory_record(
     record: dict[str, Any],
     processor: AutoProcessor,
     max_length: int,
+    *,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> dict[str, Any]:
     from nimloth.training.sft2.trajectory_once import encode_full_trajectory
 
     steps = expand_record_transitions(record)
     if not steps:
         raise ValueError(f"record {record.get('id')!r} produced no transitions")
-    full_enc, _text = encode_full_trajectory(steps, processor, max_length)
+    full_enc, _text = encode_full_trajectory(
+        steps,
+        processor,
+        max_length,
+        latent_token_count=latent_token_count,
+        mask_latent_query_labels=mask_latent_query_labels,
+    )
     return {
         "record_id": str(record.get("id", "")),
         "num_steps": len(steps),
@@ -385,7 +453,13 @@ def _cache_one_trajectory(task: tuple[dict[str, Any], str]) -> tuple[str, bool, 
     record, out_path = task
     try:
         assert _CACHE_PROCESSOR is not None
-        encoded = encode_trajectory_record(record, _CACHE_PROCESSOR, _CACHE_MAX_LENGTH)
+        encoded = encode_trajectory_record(
+            record,
+            _CACHE_PROCESSOR,
+            _CACHE_MAX_LENGTH,
+            latent_token_count=_CACHE_LATENT_TOKEN_COUNT,
+            mask_latent_query_labels=_CACHE_MASK_LATENT_QUERY_LABELS,
+        )
         path = Path(out_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(encoded, path)
@@ -407,6 +481,8 @@ def build_trajectory_preprocess_cache(
     success_only: bool = False,
     preprocess_workers: int = 4,
     force: bool = False,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> None:
     records = load_jsonl_records(jsonl_path, max_records=max_records)
     if success_only:
@@ -417,6 +493,8 @@ def build_trajectory_preprocess_cache(
         max_pixels=max_pixels,
         min_pixels=min_pixels,
         vocab_size=len(processor.tokenizer),
+        latent_token_count=latent_token_count,
+        mask_latent_query_labels=mask_latent_query_labels,
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = cache_dir / "manifest.json"
@@ -461,7 +539,14 @@ def build_trajectory_preprocess_cache(
         with ProcessPoolExecutor(
             max_workers=workers,
             initializer=_init_cache_worker,
-            initargs=(str(model_path), min_pixels, max_pixels, max_length),
+            initargs=(
+                str(model_path),
+                min_pixels,
+                max_pixels,
+                max_length,
+                latent_token_count,
+                mask_latent_query_labels,
+            ),
         ) as pool:
             futures = [pool.submit(_cache_one_trajectory, task) for task in tasks]
             for fut in as_completed(futures):
@@ -481,6 +566,8 @@ def build_trajectory_preprocess_cache(
                 "max_length": max_length,
                 "max_pixels": max_pixels,
                 "min_pixels": min_pixels,
+                "latent_token_count": latent_token_count,
+                "mask_latent_query_labels": mask_latent_query_labels,
                 "ce_mask_version": CE_MASK_VERSION,
                 "transition_expansion_version": TRANSITION_EXPANSION_VERSION,
                 "dir": str(cache_dir),

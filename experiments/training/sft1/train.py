@@ -20,7 +20,11 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-_VAGEN_ROOT = Path(__file__).resolve().parents[3] / "external" / "VAGEN"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_SRC_ROOT = _REPO_ROOT / "src"
+if _SRC_ROOT.is_dir() and str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+_VAGEN_ROOT = _REPO_ROOT / "external" / "VAGEN"
 if _VAGEN_ROOT.is_dir() and str(_VAGEN_ROOT) not in sys.path:
     sys.path.insert(0, str(_VAGEN_ROOT))
 
@@ -32,15 +36,25 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration, get_cosine_schedule_with_warmup
 
-from vagen.envs.navigation.utils.nimloth_format import SPECIAL_TOKENS
+from nimloth.latent import (
+    add_special_tokens,
+    initialize_extra_latent_token_embeddings,
+    latent_state_tokens,
+    normalize_latent_state_blocks,
+    special_token_ids,
+)
 
 import re
 
-NIMLOTH_FORMAT_RE = re.compile(
-    r"<think>.*?</think>\s*"
-    r"<\|latent_state\|>\s*<\|action_start\|>\s*<\|action_\(\d+\)\|\>\s*<\|action_end\|>",
-    re.S,
-)
+
+def _nimloth_format_re(latent_token_count: int = 1) -> re.Pattern[str]:
+    latent_block = r"\s*".join(re.escape(token) for token in latent_state_tokens(latent_token_count))
+    return re.compile(
+        r"<think>.*?</think>\s*"
+        + latent_block
+        + r"\s*<\|action_start\|>\s*<\|action_\(\d+\)\|\>\s*<\|action_end\|>",
+        re.S,
+    )
 
 
 def collect_images(messages: list[dict[str, Any]]) -> list[Image.Image]:
@@ -55,6 +69,24 @@ def collect_images(messages: list[dict[str, Any]]) -> list[Image.Image]:
     return imgs
 
 
+def _mask_latent_query_labels(
+    labels: torch.Tensor,
+    input_ids: torch.Tensor,
+    processor: AutoProcessor,
+    *,
+    latent_token_count: int,
+) -> torch.Tensor:
+    if not hasattr(processor.tokenizer, "convert_tokens_to_ids"):
+        return labels
+    for token in latent_state_tokens(latent_token_count):
+        token_id = processor.tokenizer.convert_tokens_to_ids(token)
+        unk_id = getattr(processor.tokenizer, "unk_token_id", None)
+        if token_id is None or token_id == unk_id:
+            continue
+        labels = labels.masked_fill(input_ids == int(token_id), -100)
+    return labels
+
+
 def _encode_input_ids(
     processor: AutoProcessor,
     messages: list[dict[str, Any]],
@@ -62,12 +94,14 @@ def _encode_input_ids(
     max_length: int,
     *,
     add_generation_prompt: bool,
+    latent_token_count: int = 1,
 ) -> list[int]:
     text = processor.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=add_generation_prompt,
     )
+    text = normalize_latent_state_blocks(text, latent_token_count)
     enc = processor(
         text=[text],
         images=images or None,
@@ -91,11 +125,18 @@ def assistant_token_spans(
     messages: list[dict[str, Any]],
     processor: AutoProcessor,
     max_length: int,
+    *,
+    latent_token_count: int = 1,
 ) -> list[tuple[int, int]]:
     """Return assistant token spans aligned to a single full multimodal encoding."""
     images = collect_images(messages)
     full_ids = _encode_input_ids(
-        processor, messages, images, max_length, add_generation_prompt=False
+        processor,
+        messages,
+        images,
+        max_length,
+        add_generation_prompt=False,
+        latent_token_count=latent_token_count,
     )
     spans: list[tuple[int, int]] = []
     for i, msg in enumerate(messages):
@@ -104,10 +145,20 @@ def assistant_token_spans(
         prefix_images = collect_images(messages[:i])
         through_images = collect_images(messages[: i + 1])
         prefix_ids = _encode_input_ids(
-            processor, messages[:i], prefix_images, max_length, add_generation_prompt=True
+            processor,
+            messages[:i],
+            prefix_images,
+            max_length,
+            add_generation_prompt=True,
+            latent_token_count=latent_token_count,
         )
         through_ids = _encode_input_ids(
-            processor, messages[: i + 1], through_images, max_length, add_generation_prompt=False
+            processor,
+            messages[: i + 1],
+            through_images,
+            max_length,
+            add_generation_prompt=False,
+            latent_token_count=latent_token_count,
         )
         start = len(prefix_ids)
         end = len(through_ids)
@@ -130,15 +181,30 @@ def assistant_token_spans(
     return spans
 
 
-def collate_fn(batch: list[dict[str, Any]], processor: AutoProcessor, max_length: int) -> dict[str, torch.Tensor]:
+def collate_fn(
+    batch: list[dict[str, Any]],
+    processor: AutoProcessor,
+    max_length: int,
+    *,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
+) -> dict[str, torch.Tensor]:
     texts: list[str] = []
     spans_per_item: list[list[tuple[int, int]]] = []
     all_images: list[list[Image.Image]] = []
     for item in batch:
         messages = item["messages"]
         text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+        text = normalize_latent_state_blocks(text, latent_token_count)
         texts.append(text)
-        spans_per_item.append(assistant_token_spans(messages, processor, max_length))
+        spans_per_item.append(
+            assistant_token_spans(
+                messages,
+                processor,
+                max_length,
+                latent_token_count=latent_token_count,
+            )
+        )
         all_images.append(collect_images(messages))
 
     enc = processor(
@@ -158,6 +224,13 @@ def collate_fn(batch: list[dict[str, Any]], processor: AutoProcessor, max_length
             if start >= end:
                 continue
             labels[row, start:end] = enc["input_ids"][row, start:end]
+        if mask_latent_query_labels:
+            labels[row] = _mask_latent_query_labels(
+                labels[row],
+                enc["input_ids"][row],
+                processor,
+                latent_token_count=latent_token_count,
+            )
         trained = labels[row][labels[row] != -100]
         if trained.numel() and image_pad_id is not None:
             if (trained == image_pad_id).any().item():
@@ -179,6 +252,8 @@ def cache_fingerprint(
     min_pixels: int,
     vocab_size: int,
     max_images_per_record: int,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> str:
     stat = jsonl_path.stat()
     payload = "|".join(
@@ -191,7 +266,9 @@ def cache_fingerprint(
             str(min_pixels),
             str(vocab_size),
             str(max_images_per_record),
-            "v2",
+            str(latent_token_count),
+            str(mask_latent_query_labels),
+            "v3",
         ]
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
@@ -201,9 +278,13 @@ def encode_sample_with_labels(
     messages: list[dict[str, Any]],
     processor: AutoProcessor,
     max_length: int,
+    *,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> dict[str, torch.Tensor]:
     images = collect_images(messages)
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+    text = normalize_latent_state_blocks(text, latent_token_count)
     enc = processor(
         text=[text],
         images=images or None,
@@ -215,11 +296,23 @@ def encode_sample_with_labels(
     labels = enc["input_ids"].clone()
     labels[:] = -100
     image_pad_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
-    for start, end in assistant_token_spans(messages, processor, max_length):
+    for start, end in assistant_token_spans(
+        messages,
+        processor,
+        max_length,
+        latent_token_count=latent_token_count,
+    ):
         end = min(end, labels.shape[1])
         if start >= end:
             continue
         labels[0, start:end] = enc["input_ids"][0, start:end]
+    if mask_latent_query_labels:
+        labels[0] = _mask_latent_query_labels(
+            labels[0],
+            enc["input_ids"][0],
+            processor,
+            latent_token_count=latent_token_count,
+        )
     trained = labels[0][labels[0] != -100]
     if trained.numel() and image_pad_id is not None and (trained == image_pad_id).any().item():
         raise ValueError("supervised labels include <|image_pad|> tokens")
@@ -255,23 +348,40 @@ def collate_cached_fn(batch: list[dict[str, torch.Tensor]], pad_token_id: int) -
 
 _CACHE_PROCESSOR: AutoProcessor | None = None
 _CACHE_MAX_LENGTH = 0
+_CACHE_LATENT_TOKEN_COUNT = 1
+_CACHE_MASK_LATENT_QUERY_LABELS = True
 
 
-def _init_cache_worker(model_path: str, min_pixels: int, max_pixels: int, max_length: int) -> None:
-    global _CACHE_PROCESSOR, _CACHE_MAX_LENGTH
+def _init_cache_worker(
+    model_path: str,
+    min_pixels: int,
+    max_pixels: int,
+    max_length: int,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
+) -> None:
+    global _CACHE_PROCESSOR, _CACHE_MAX_LENGTH, _CACHE_LATENT_TOKEN_COUNT, _CACHE_MASK_LATENT_QUERY_LABELS
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     processor.image_processor.min_pixels = min_pixels
     processor.image_processor.max_pixels = max_pixels
-    processor.tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
+    add_special_tokens(processor.tokenizer, latent_token_count=latent_token_count)
     _CACHE_PROCESSOR = processor
     _CACHE_MAX_LENGTH = max_length
+    _CACHE_LATENT_TOKEN_COUNT = int(latent_token_count)
+    _CACHE_MASK_LATENT_QUERY_LABELS = bool(mask_latent_query_labels)
 
 
 def _cache_one_sample(task: tuple[str, list[dict[str, Any]], str]) -> tuple[str, bool, str]:
     record_id, messages, out_path = task
     try:
         assert _CACHE_PROCESSOR is not None
-        encoded = encode_sample_with_labels(messages, _CACHE_PROCESSOR, _CACHE_MAX_LENGTH)
+        encoded = encode_sample_with_labels(
+            messages,
+            _CACHE_PROCESSOR,
+            _CACHE_MAX_LENGTH,
+            latent_token_count=_CACHE_LATENT_TOKEN_COUNT,
+            mask_latent_query_labels=_CACHE_MASK_LATENT_QUERY_LABELS,
+        )
         path = Path(out_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(encoded, path)
@@ -280,8 +390,8 @@ def _cache_one_sample(task: tuple[str, list[dict[str, Any]], str]) -> tuple[str,
         return record_id, False, str(exc)
 
 
-def nimloth_format_correct(text: str) -> bool:
-    return bool(NIMLOTH_FORMAT_RE.search(text))
+def nimloth_format_correct(text: str, *, latent_token_count: int = 1) -> bool:
+    return bool(_nimloth_format_re(latent_token_count).search(text))
 
 
 def prompt_messages_before_first_assistant(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -300,6 +410,8 @@ def evaluate_format(
     dataset: NimlothVLSFTDataset,
     device: torch.device,
     max_samples: int = 32,
+    *,
+    latent_token_count: int = 1,
 ) -> float:
     if dist.is_available() and dist.is_initialized() and not is_main():
         return 0.0
@@ -316,13 +428,14 @@ def evaluate_format(
             continue
         images = collect_images(prompt_msgs)
         text = processor.apply_chat_template(prompt_msgs, tokenize=False, add_generation_prompt=True)
+        text = normalize_latent_state_blocks(text, latent_token_count)
         inputs = processor(text=[text], images=images or None, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
         output_ids = module.generate(**inputs, max_new_tokens=128, do_sample=False)
         new_ids = output_ids[0, inputs["input_ids"].shape[1] :]
         decoded = processor.decode(new_ids, skip_special_tokens=False)
         total += 1
-        if nimloth_format_correct(decoded):
+        if nimloth_format_correct(decoded, latent_token_count=latent_token_count):
             correct += 1
     if was_training:
         module.train()
@@ -446,12 +559,21 @@ def build_preprocess_cache(
     max_pixels: int,
     preprocess_workers: int,
     force: bool = False,
+    *,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> None:
+    del processor
     cache_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = cache_dir / "manifest.json"
     if not force and manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text())
-        if manifest.get("count") == len(dataset) and manifest.get("max_length") == max_length:
+        if (
+            manifest.get("count") == len(dataset)
+            and manifest.get("max_length") == max_length
+            and int(manifest.get("latent_token_count", 1)) == int(latent_token_count)
+            and bool(manifest.get("mask_latent_query_labels", True)) == bool(mask_latent_query_labels)
+        ):
             missing = 0
             for rec in dataset.records:
                 if not dataset.cache_path_for_id(rec["id"]).is_file():
@@ -477,14 +599,21 @@ def build_preprocess_cache(
                     "total": len(dataset),
                     "to_build": len(tasks),
                     "workers": preprocess_workers,
+                    "latent_token_count": latent_token_count,
+                    "mask_latent_query_labels": mask_latent_query_labels,
                 }
             )
         )
 
+    manifest = {
+        "count": len(dataset),
+        "max_length": max_length,
+        "latent_token_count": latent_token_count,
+        "mask_latent_query_labels": mask_latent_query_labels,
+        "dir": str(cache_dir),
+    }
     if not tasks:
-        manifest_path.write_text(
-            json.dumps({"count": len(dataset), "max_length": max_length, "dir": str(cache_dir)}, indent=2)
-        )
+        manifest_path.write_text(json.dumps(manifest, indent=2))
         return
 
     workers = max(1, preprocess_workers)
@@ -492,7 +621,14 @@ def build_preprocess_cache(
     with ProcessPoolExecutor(
         max_workers=workers,
         initializer=_init_cache_worker,
-        initargs=(str(model_path), min_pixels, max_pixels, max_length),
+        initargs=(
+            str(model_path),
+            min_pixels,
+            max_pixels,
+            max_length,
+            latent_token_count,
+            mask_latent_query_labels,
+        ),
     ) as pool:
         futures = [pool.submit(_cache_one_sample, task) for task in tasks]
         for fut in as_completed(futures):
@@ -503,9 +639,7 @@ def build_preprocess_cache(
     if failures:
         raise RuntimeError(f"preprocess cache failed for {len(failures)} samples; first={failures[0]}")
 
-    manifest_path.write_text(
-        json.dumps({"count": len(dataset), "max_length": max_length, "dir": str(cache_dir)}, indent=2)
-    )
+    manifest_path.write_text(json.dumps(manifest, indent=2))
     if is_main():
         print(json.dumps({"preprocess_cache": "done", "dir": str(cache_dir), "count": len(dataset)}))
 
@@ -523,13 +657,22 @@ def save_checkpoint(
     lora: bool = False,
     base_model_path: Path | None = None,
     merge_for_eval: bool = False,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> None:
     ckpt = out_dir / name
     ckpt.mkdir(parents=True, exist_ok=True)
     module = model.module if hasattr(model, "module") else model
     module.save_pretrained(ckpt, safe_serialization=True)
     processor.save_pretrained(ckpt)
-    state = {"step": step, "epoch": epoch, "best_val": best_val, "lora": lora}
+    state = {
+        "step": step,
+        "epoch": epoch,
+        "best_val": best_val,
+        "lora": lora,
+        "latent_token_count": int(latent_token_count),
+        "mask_latent_query_labels": bool(mask_latent_query_labels),
+    }
     if base_model_path is not None:
         state["base_model_path"] = str(base_model_path)
     if optimizer is not None:
@@ -715,6 +858,8 @@ def maybe_init_wandb(args: argparse.Namespace) -> Any | None:
             "num_workers": args.num_workers,
             "preprocess_workers": args.preprocess_workers,
             "use_cache": not args.no_cache,
+            "latent_token_count": args.latent_token_count,
+            "mask_latent_query_labels": args.mask_latent_query_labels,
         },
     )
     # Train charts use global_step; val/eval charts use epoch (one point per epoch).
@@ -767,6 +912,18 @@ def main() -> int:
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--warmup-ratio", type=float, default=0.05)
     ap.add_argument("--max-length", type=int, default=20000)
+    ap.add_argument(
+        "--latent-token-count",
+        type=int,
+        default=int(os.environ.get("LATENT_TOKEN_COUNT", "1")),
+        help="Number of latent query tokens per action block; 1 keeps legacy SFT1 behavior.",
+    )
+    ap.add_argument(
+        "--mask-latent-query-labels",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Mask latent query tokens from SFT CE labels.",
+    )
     ap.add_argument("--max-train-records", type=int, default=-1)
     ap.add_argument("--max-val-records", type=int, default=-1)
     ap.add_argument("--max-val-batches", type=int, default=-1)
@@ -811,6 +968,9 @@ def main() -> int:
     ap.add_argument("--no-cache", action="store_true", help="Disable preprocess cache and use online collate.")
     ap.add_argument("--rebuild-cache", action="store_true", help="Force rebuild preprocess cache.")
     args = ap.parse_args()
+    args.latent_token_count = int(args.latent_token_count)
+    if args.latent_token_count < 1:
+        raise ValueError(f"--latent-token-count must be >= 1, got {args.latent_token_count}")
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -820,13 +980,16 @@ def main() -> int:
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
     processor.image_processor.min_pixels = args.min_pixels
     processor.image_processor.max_pixels = args.max_pixels
-    added = processor.tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
+    added = add_special_tokens(processor.tokenizer, latent_token_count=args.latent_token_count)
+    token_id_map = special_token_ids(processor.tokenizer, latent_token_count=args.latent_token_count)
     if is_main():
         print(
             json.dumps(
                 {
-                    "special_tokens_requested": len(SPECIAL_TOKENS),
+                    "special_tokens_requested": len(token_id_map),
                     "special_tokens_newly_added": added,
+                    "latent_token_count": args.latent_token_count,
+                    "mask_latent_query_labels": args.mask_latent_query_labels,
                     "lr": args.lr,
                     "embedding_lr": args.embedding_lr if args.embedding_lr is not None else args.lr,
                     "lora": args.lora,
@@ -847,6 +1010,8 @@ def main() -> int:
         args.min_pixels,
         len(processor.tokenizer),
         args.max_images_per_record,
+        args.latent_token_count,
+        args.mask_latent_query_labels,
     )
     train_cache_dir = cache_root / f"train_{args.train_jsonl.stem}_{fp}" if use_cache else None
     val_fp = cache_fingerprint(
@@ -856,6 +1021,8 @@ def main() -> int:
         args.min_pixels,
         len(processor.tokenizer),
         args.max_images_per_record,
+        args.latent_token_count,
+        args.mask_latent_query_labels,
     )
     val_cache_dir = cache_root / f"val_{args.val_jsonl.stem}_{val_fp}" if use_cache else None
 
@@ -878,6 +1045,8 @@ def main() -> int:
                 args.max_pixels,
                 args.preprocess_workers,
                 force=args.rebuild_cache,
+                latent_token_count=args.latent_token_count,
+                mask_latent_query_labels=args.mask_latent_query_labels,
             )
             build_preprocess_cache(
                 val_ds,
@@ -889,6 +1058,8 @@ def main() -> int:
                 args.max_pixels,
                 args.preprocess_workers,
                 force=args.rebuild_cache,
+                latent_token_count=args.latent_token_count,
+                mask_latent_query_labels=args.mask_latent_query_labels,
             )
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
@@ -900,7 +1071,15 @@ def main() -> int:
     train_collate = (
         (lambda b: collate_cached_fn(b, pad_token_id))
         if use_cache
-        else (lambda b: collate_fn(b, processor, args.max_length))
+        else (
+            lambda b: collate_fn(
+                b,
+                processor,
+                args.max_length,
+                latent_token_count=args.latent_token_count,
+                mask_latent_query_labels=args.mask_latent_query_labels,
+            )
+        )
     )
     loader_workers = args.num_workers if use_cache else 0
     loader_kwargs: dict[str, Any] = {
@@ -963,6 +1142,12 @@ def main() -> int:
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
     model.resize_token_embeddings(len(processor.tokenizer))
+    if added > 0:
+        initialize_extra_latent_token_embeddings(
+            model,
+            token_id_map,
+            latent_token_count=args.latent_token_count,
+        )
 
     if args.resume and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
         if not args.lora:
@@ -1004,7 +1189,13 @@ def main() -> int:
         if use_cache:
             probe = collate_cached_fn([train_ds[0]], pad_token_id)
         else:
-            probe = collate_fn([train_ds[0]], processor, args.max_length)
+            probe = collate_fn(
+                [train_ds[0]],
+                processor,
+                args.max_length,
+                latent_token_count=args.latent_token_count,
+                mask_latent_query_labels=args.mask_latent_query_labels,
+            )
         trained = probe["labels"][0][probe["labels"][0] != -100]
         decoded = processor.decode(trained.tolist(), skip_special_tokens=False)
         print(json.dumps({"mask_probe": decoded[:500]}))
@@ -1106,7 +1297,14 @@ def main() -> int:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         val_loss = evaluate(model, val_loader, device, args.max_val_batches)
-        format_rate = evaluate_format(model, processor, val_ds, device, args.format_eval_samples)
+        format_rate = evaluate_format(
+            model,
+            processor,
+            val_ds,
+            device,
+            args.format_eval_samples,
+            latent_token_count=args.latent_token_count,
+        )
         if is_main():
             with log_path.open("a", newline="") as f:
                 csv.writer(f).writerow(
@@ -1125,6 +1323,8 @@ def main() -> int:
                 lora=args.lora,
                 base_model_path=base_model_path,
                 merge_for_eval=False,
+                latent_token_count=args.latent_token_count,
+                mask_latent_query_labels=args.mask_latent_query_labels,
             )
             if val_loss < best_val:
                 best_val = val_loss
@@ -1141,6 +1341,8 @@ def main() -> int:
                     lora=args.lora,
                     base_model_path=base_model_path,
                     merge_for_eval=False,
+                    latent_token_count=args.latent_token_count,
+                    mask_latent_query_labels=args.mask_latent_query_labels,
                 )
             print(
                 json.dumps(
@@ -1182,6 +1384,8 @@ def main() -> int:
             lora=args.lora,
             base_model_path=base_model_path,
             merge_for_eval=False,
+            latent_token_count=args.latent_token_count,
+            mask_latent_query_labels=args.mask_latent_query_labels,
         )
         if wandb_run is not None:
             import wandb

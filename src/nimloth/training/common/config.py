@@ -30,6 +30,8 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "max_length"): "max_length",
     ("train", "max_pixels"): "max_pixels",
     ("train", "emb_dim"): "emb_dim",
+    ("latent", "token_count"): "latent_token_count",
+    ("latent", "mask_query_labels"): "mask_latent_query_labels",
     ("train", "full_trajectory_batching"): "full_trajectory_batching",
     ("train", "max_images_per_batch"): "max_images_per_batch",
     ("train", "max_steps_per_trajectory"): "max_steps_per_trajectory",

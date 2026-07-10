@@ -9,7 +9,15 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoProcessor
 
-from nimloth.latent import extract_latent_state, find_all_latent_state_indices, find_last_latent_state_index
+from nimloth.latent import (
+    extract_latent_state,
+    extract_latent_state_block,
+    find_all_latent_state_indices,
+    find_last_latent_state_block,
+    find_last_latent_state_index,
+    latent_state_tokens,
+    normalize_latent_state_blocks,
+)
 from nimloth.latent.extraction import LatentActionTokens
 from nimloth.training.common.qwen_batch import (
     _message_cache_key,
@@ -31,10 +39,29 @@ class TrajectoryOnceForward:
     lm_loss: torch.Tensor | None
     latent_indices: list[int]
     num_steps: int
+    latent_blocks: list[list[int]] | None = None
 
 
 def supervised_token_count(labels: torch.Tensor) -> int:
     return int((labels != -100).sum().item())
+
+
+def _mask_latent_query_labels(
+    labels: torch.Tensor,
+    input_ids: torch.Tensor,
+    processor: AutoProcessor,
+    *,
+    latent_token_count: int,
+) -> torch.Tensor:
+    if not hasattr(processor.tokenizer, "convert_tokens_to_ids"):
+        return labels
+    for token in latent_state_tokens(latent_token_count, LatentActionTokens()):
+        token_id = processor.tokenizer.convert_tokens_to_ids(token)
+        unk_id = getattr(processor.tokenizer, "unk_token_id", None)
+        if token_id is None or token_id == unk_id:
+            continue
+        labels = labels.masked_fill(input_ids == int(token_id), -100)
+    return labels
 
 
 def labels_for_trajectory_steps(
@@ -43,6 +70,9 @@ def labels_for_trajectory_steps(
     steps: list[TransitionSample],
     processor: AutoProcessor,
     max_length: int,
+    *,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> torch.Tensor:
     """Build full-sequence labels supervising each step's last-assistant span only."""
 
@@ -51,13 +81,24 @@ def labels_for_trajectory_steps(
     offset_rows = _offset_cache(processor).offsets(full_text, max_length)
     usable = min(labels.shape[0], len(offset_rows))
     for sample in steps:
-        spans = assistant_char_spans(prefix_messages_with_images(sample), processor)
+        spans = assistant_char_spans(
+            prefix_messages_with_images(sample),
+            processor,
+            latent_token_count=latent_token_count,
+        )
         for tok_idx in range(usable):
             start, end = offset_rows[tok_idx]
             if end <= start:
                 continue
             if any(start < span_end and end > span_start for span_start, span_end in spans):
                 labels[tok_idx] = full_input_ids[tok_idx]
+    if mask_latent_query_labels:
+        labels = _mask_latent_query_labels(
+            labels,
+            full_input_ids,
+            processor,
+            latent_token_count=latent_token_count,
+        )
     return labels
 
 
@@ -113,10 +154,15 @@ def assert_packed_steps(steps: list[TransitionSample]) -> None:
             )
 
 
-def _render_messages(processor: AutoProcessor, messages: list[dict]) -> str:
+def _render_messages(
+    processor: AutoProcessor,
+    messages: list[dict],
+    *,
+    latent_token_count: int = 1,
+) -> str:
     cache = _template_cache(processor)
     cache_key = _message_cache_key(messages)
-    return cache.render(cache_key, False)
+    return normalize_latent_state_blocks(cache.render(cache_key, False), latent_token_count)
 
 
 def _input_ids_list(input_ids: torch.Tensor | list[int]) -> list[int]:
@@ -130,6 +176,60 @@ def _input_ids_list(input_ids: torch.Tensor | list[int]) -> list[int]:
     return flat.tolist()
 
 
+def _latent_id_sequence(token_id_map: dict[str, int], latent_token_count: int) -> list[int]:
+    return [int(token_id_map[token]) for token in latent_state_tokens(latent_token_count, LatentActionTokens())]
+
+
+def find_latent_block_in_last_assistant_span(
+    input_ids: torch.Tensor | list[int],
+    prefix_messages: list[dict],
+    processor: AutoProcessor,
+    token_id_map: dict[str, int],
+    max_length: int,
+    *,
+    latent_token_count: int = 1,
+) -> list[int]:
+    """Locate the configured latent token block inside the last assistant span."""
+
+    spans = assistant_char_spans(
+        prefix_messages,
+        processor,
+        latent_token_count=latent_token_count,
+    )
+    if not spans:
+        raise ValueError("no assistant span for latent lookup")
+    span_start, span_end = spans[-1]
+    text = _render_messages(processor, prefix_messages, latent_token_count=latent_token_count)
+    offset_rows = _offset_cache(processor).offsets(text, max_length)
+    ids = _input_ids_list(input_ids)
+    latent_ids = _latent_id_sequence(token_id_map, latent_token_count)
+    matches: list[list[int]] = []
+    for tok_idx, (start, end) in enumerate(offset_rows):
+        if tok_idx >= len(ids):
+            break
+        if end <= start:
+            continue
+        if not (start < span_end and end > span_start and ids[tok_idx] == latent_ids[0]):
+            continue
+        block_end = tok_idx + len(latent_ids)
+        if block_end <= len(ids) and ids[tok_idx:block_end] == latent_ids:
+            matches.append(list(range(tok_idx, block_end)))
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) == 0:
+        # Qwen-VL vision tokens may break char-offset alignment; match legacy find-last semantics.
+        return find_last_latent_state_block(
+            input_ids,
+            token_id_map,
+            LatentActionTokens(),
+            latent_token_count=latent_token_count,
+        )
+    raise ValueError(
+        "expected exactly one latent-state block in last assistant span, "
+        f"found {len(matches)} at {matches}"
+    )
+
+
 def find_latent_index_in_last_assistant_span(
     input_ids: torch.Tensor | list[int],
     prefix_messages: list[dict],
@@ -137,34 +237,16 @@ def find_latent_index_in_last_assistant_span(
     token_id_map: dict[str, int],
     max_length: int,
 ) -> int:
-    """Locate the single ``<|latent_state|>`` token inside the last assistant span."""
+    """Locate the single legacy ``<|latent_state|>`` token inside the last assistant span."""
 
-    tokens = LatentActionTokens()
-    latent_id = token_id_map[tokens.latent_state]
-    spans = assistant_char_spans(prefix_messages, processor)
-    if not spans:
-        raise ValueError("no assistant span for latent lookup")
-    span_start, span_end = spans[-1]
-    text = _render_messages(processor, prefix_messages)
-    offset_rows = _offset_cache(processor).offsets(text, max_length)
-    ids = _input_ids_list(input_ids)
-    matches: list[int] = []
-    for tok_idx, (start, end) in enumerate(offset_rows):
-        if tok_idx >= len(ids):
-            break
-        if end <= start:
-            continue
-        if start < span_end and end > span_start and ids[tok_idx] == latent_id:
-            matches.append(tok_idx)
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) == 0:
-        # Qwen-VL vision tokens may break char-offset alignment; match legacy find_last.
-        return find_last_latent_state_index(input_ids, token_id_map, tokens)
-    raise ValueError(
-        "expected exactly one <|latent_state|> in last assistant span, "
-        f"found {len(matches)} at {matches}"
-    )
+    return find_latent_block_in_last_assistant_span(
+        input_ids,
+        prefix_messages,
+        processor,
+        token_id_map,
+        max_length,
+        latent_token_count=1,
+    )[0]
 
 
 def verify_prefix_tokenization(
@@ -175,18 +257,31 @@ def verify_prefix_tokenization(
     *,
     full_text: str | None = None,
     token_id_map: dict[str, int] | None = None,
+    latent_token_count: int = 1,
 ) -> None:
     """Ensure each step's legacy prefix encoding matches the full trajectory prefix."""
 
     full_ids = _input_ids_list(full_enc["input_ids"])
     rendered_full = full_text if full_text is not None else _render_messages(
-        processor, prefix_messages_with_images(steps[-1])
+        processor,
+        prefix_messages_with_images(steps[-1]),
+        latent_token_count=latent_token_count,
     )
     for sample in steps:
         prefix_messages = prefix_messages_with_images(sample)
-        prefix_enc = encode_qwen_item(prefix_messages, processor, max_length, include_labels=False)
+        prefix_enc = encode_qwen_item(
+            prefix_messages,
+            processor,
+            max_length,
+            include_labels=False,
+            latent_token_count=latent_token_count,
+        )
         prefix_ids = _input_ids_list(prefix_enc["input_ids"])
-        rendered_prefix = _render_messages(processor, prefix_messages)
+        rendered_prefix = _render_messages(
+            processor,
+            prefix_messages,
+            latent_token_count=latent_token_count,
+        )
         if not rendered_full.startswith(rendered_prefix):
             raise ValueError(
                 f"record {sample.record_id!r} step {sample.step_index}: chat template text is not a "
@@ -203,12 +298,13 @@ def verify_prefix_tokenization(
             )
         if token_id_map is None:
             continue
-        find_latent_index_in_last_assistant_span(
+        find_latent_block_in_last_assistant_span(
             prefix_enc["input_ids"],
             prefix_messages,
             processor,
             token_id_map,
             max_length,
+            latent_token_count=latent_token_count,
         )
 
 
@@ -219,33 +315,61 @@ def find_step_latent_indices(
     token_id_map: dict[str, int],
     max_length: int,
 ) -> list[int]:
-    """Return each step's latent index in the full trajectory encoding.
+    """Return each step's legacy latent index in the full trajectory encoding."""
+
+    return [block[0] for block in find_step_latent_blocks(
+        steps,
+        full_enc,
+        processor,
+        token_id_map,
+        max_length,
+        latent_token_count=1,
+    )]
+
+
+def find_step_latent_blocks(
+    steps: list[TransitionSample],
+    full_enc: dict[str, torch.Tensor],
+    processor: AutoProcessor,
+    token_id_map: dict[str, int],
+    max_length: int,
+    *,
+    latent_token_count: int = 1,
+) -> list[list[int]]:
+    """Return each step's configured latent query block in the full encoding.
 
     Requires ``verify_prefix_tokenization`` to have passed: each legacy prefix
     encoding must be an exact token prefix of the full trajectory encoding.
     """
 
     full_ids = _input_ids_list(full_enc["input_ids"])
-    indices: list[int] = []
+    blocks: list[list[int]] = []
     for sample in steps:
         prefix_messages = prefix_messages_with_images(sample)
-        prefix_enc = encode_qwen_item(prefix_messages, processor, max_length, include_labels=False)
+        prefix_enc = encode_qwen_item(
+            prefix_messages,
+            processor,
+            max_length,
+            include_labels=False,
+            latent_token_count=latent_token_count,
+        )
         prefix_ids = _input_ids_list(prefix_enc["input_ids"])
         if full_ids[: len(prefix_ids)] != prefix_ids:
             raise ValueError(
                 f"record {sample.record_id!r} step {sample.step_index}: prefix tokenization is not a "
                 "prefix of full trajectory encoding"
             )
-        indices.append(
-            find_latent_index_in_last_assistant_span(
+        blocks.append(
+            find_latent_block_in_last_assistant_span(
                 prefix_enc["input_ids"],
                 prefix_messages,
                 processor,
                 token_id_map,
                 max_length,
+                latent_token_count=latent_token_count,
             )
         )
-    return indices
+    return blocks
 
 
 def find_step_latent_indices_in_full(
@@ -256,7 +380,7 @@ def find_step_latent_indices_in_full(
     token_id_map: dict[str, int],
     max_length: int,
 ) -> list[int]:
-    """Locate each step's <|latent_state|> token via assistant char spans (CPU/fake tests)."""
+    """Locate each step's legacy <|latent_state|> token via assistant char spans (CPU/fake tests)."""
 
     tokens = LatentActionTokens()
     latent_id = token_id_map[tokens.latent_state]
@@ -292,19 +416,43 @@ def encode_full_trajectory(
     max_length: int,
     *,
     token_id_map: dict[str, int] | None = None,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> tuple[dict[str, torch.Tensor], str]:
     if not steps:
         raise ValueError("encode_full_trajectory requires at least one step")
     assert_packed_steps(steps)
     full_messages = prefix_messages_with_images(steps[-1])
-    cache = _template_cache(processor)
-    cache_key = _message_cache_key(full_messages)
-    full_text = cache.render(cache_key, False)
-    enc = encode_qwen_item(full_messages, processor, max_length, include_labels=False)
-    verify_prefix_tokenization(
-        steps, enc, processor, max_length, full_text=full_text, token_id_map=token_id_map
+    full_text = _render_messages(
+        processor,
+        full_messages,
+        latent_token_count=latent_token_count,
     )
-    enc["labels"] = labels_for_trajectory_steps(enc["input_ids"], full_text, steps, processor, max_length)
+    enc = encode_qwen_item(
+        full_messages,
+        processor,
+        max_length,
+        include_labels=False,
+        latent_token_count=latent_token_count,
+    )
+    verify_prefix_tokenization(
+        steps,
+        enc,
+        processor,
+        max_length,
+        full_text=full_text,
+        token_id_map=token_id_map,
+        latent_token_count=latent_token_count,
+    )
+    enc["labels"] = labels_for_trajectory_steps(
+        enc["input_ids"],
+        full_text,
+        steps,
+        processor,
+        max_length,
+        latent_token_count=latent_token_count,
+        mask_latent_query_labels=mask_latent_query_labels,
+    )
     return enc, full_text
 
 
@@ -313,6 +461,19 @@ def _extract_latents_at_indices(
     indices: list[int],
 ) -> torch.Tensor:
     return torch.stack([extract_latent_state(hidden_row.unsqueeze(0), pos) for pos in indices], dim=0)
+
+
+def _extract_latents_at_blocks(
+    hidden_row: torch.Tensor,
+    blocks: list[list[int]],
+    *,
+    latent_token_count: int = 1,
+) -> torch.Tensor:
+    rows = [extract_latent_state_block(hidden_row.unsqueeze(0), block) for block in blocks]
+    stacked = torch.stack(rows, dim=0)  # (steps, k, hidden)
+    if latent_token_count == 1:
+        return stacked[:, 0, :]
+    return stacked
 
 
 def forward_trajectory_once(
@@ -325,18 +486,35 @@ def forward_trajectory_once(
     max_length: int,
     vision_ema=None,
     full_enc: dict[str, torch.Tensor] | None = None,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> TrajectoryOnceForward:
     """One Qwen forward over the full trajectory; extract per-step latents + CE."""
 
     if full_enc is None:
         enc, full_text = encode_full_trajectory(
-            steps, processor, max_length, token_id_map=token_id_map
+            steps,
+            processor,
+            max_length,
+            token_id_map=token_id_map,
+            latent_token_count=latent_token_count,
+            mask_latent_query_labels=mask_latent_query_labels,
         )
     else:
         enc = full_enc
-        full_text = _render_messages(processor, prefix_messages_with_images(steps[-1]))
+        full_text = _render_messages(
+            processor,
+            prefix_messages_with_images(steps[-1]),
+            latent_token_count=latent_token_count,
+        )
         verify_prefix_tokenization(
-            steps, enc, processor, max_length, full_text=full_text, token_id_map=token_id_map
+            steps,
+            enc,
+            processor,
+            max_length,
+            full_text=full_text,
+            token_id_map=token_id_map,
+            latent_token_count=latent_token_count,
         )
 
     batch = _batch_enc(enc)
@@ -344,7 +522,15 @@ def forward_trajectory_once(
     reset_model_rope_state(model)
     hidden, output = _capture_last_hidden(model, model_inputs)
     logits = output.logits
-    latent_indices = find_step_latent_indices(steps, enc, processor, token_id_map, max_length)
+    latent_blocks = find_step_latent_blocks(
+        steps,
+        enc,
+        processor,
+        token_id_map,
+        max_length,
+        latent_token_count=latent_token_count,
+    )
+    latent_indices = [block[0] for block in latent_blocks]
     all_latent_indices = find_all_latent_state_indices(
         enc["input_ids"], token_id_map, LatentActionTokens()
     )
@@ -353,10 +539,14 @@ def forward_trajectory_once(
             f"expected {len(steps)} latent tokens, found {len(all_latent_indices)} in full trajectory"
         )
 
-    current_latents = _extract_latents_at_indices(hidden[0], latent_indices)
+    current_latents = _extract_latents_at_blocks(
+        hidden[0],
+        latent_blocks,
+        latent_token_count=latent_token_count,
+    )
 
     next_latents: torch.Tensor | None = None
-    if len(latent_indices) > 1:
+    if len(latent_blocks) > 1:
         ema_ctx = vision_ema.use_ema_weights(model) if vision_ema is not None else contextlib.nullcontext()
         with torch.no_grad(), ema_ctx:
             if vision_ema is not None:
@@ -364,7 +554,11 @@ def forward_trajectory_once(
                 target_row = target_hidden[0]
             else:
                 target_row = hidden[0]
-            next_latents = _extract_latents_at_indices(target_row, latent_indices[1:])
+            next_latents = _extract_latents_at_blocks(
+                target_row,
+                latent_blocks[1:],
+                latent_token_count=latent_token_count,
+            )
 
     labels = enc["labels"].to(device)
     lm_loss = ce_loss_from_logits(logits[0], labels)
@@ -375,4 +569,5 @@ def forward_trajectory_once(
         lm_loss=lm_loss,
         latent_indices=latent_indices,
         num_steps=len(steps),
+        latent_blocks=latent_blocks,
     )

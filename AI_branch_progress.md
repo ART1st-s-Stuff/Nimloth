@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
+
+- 目标：把单个 Qwen `<|latent_state|>` 扩展为配置可控的 k 个 latent query token，扩大 Qwen 原始导出状态容量；先保持 SFT2 主训练路径可用，k=1 兼容。
+- 本地已实现：`latent.token_count` / `--latent-token-count`、`latent.mask_query_labels` / `--[no-]mask-latent-query-labels`；slot0 继续使用 `<|latent_state|>`，额外 slot 使用 `<|latent_state_i|>`；渲染后自动规范 latent block；Qwen extraction k=1 返回 `[B,H]`、k>1 返回 `[B,k,H]`；`StateProjector` 对 k>1 flatten 到 `[B,k*H]` 后投影。
+- 已接入 SFT2 `trainer/evaluate/step/preprocess_cache/trajectory_once`；checkpoint metadata 记录并检查 `latent_token_count`、`qwen_hidden_dim`、`state_proj_input_dim`。
+- 已通过 `python -m compileall -q src/nimloth tests`；相关 pytest 通过：`27 passed`（用 nix-shell 提供 `einops` / gcc runtime，并初始化 `external/le-wm` submodule）。
+- 详细进度见 `ai_tasks/ai_progress/2026-07-09_multi_latent_query_tokens.md`。RL / reconstruction / agent inference 多 token 同步仍留作后续阶段。
+- 已新增后续实验任务 `ai_tasks/vagen_legacy_wm_k8_sft_pipeline.md`：使用 `vagen_legacy_wm_entropy01_kl001_60step_2env4train` checkpoint，按 rollout → SFT1 → SFT2 顺序执行，并统一取 `latent_token_count=8`。
+- 已开始代码/数据准备：SFT1 训练入口、cache、checkpoint、Slurm wrapper 支持 `LATENT_TOKEN_COUNT`；SFT2 Slurm wrapper 可透传 `LATENT_TOKEN_COUNT`；新增 k=8 参考配置与 runbook `experiments/training/vagen_legacy_wm_k8/README.md`。已通过 py_compile、bash -n、compileall 与相关 SFT2 pytest（27 passed）。尚未启动任何 rollout/训练。
+
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
 
 - 已将 `https://github.com/facebookresearch/RCDM.git` 作为 git submodule 添加到 `external/RCDM`。

@@ -12,6 +12,10 @@ tuning:
   lora_r: 64
   lora_alpha: 128
 
+latent:
+  token_count: 1
+  mask_query_labels: true
+
 train:
   epochs: 20
   batch_size: 1

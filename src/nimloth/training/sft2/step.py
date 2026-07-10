@@ -52,6 +52,7 @@ def _forward_next_latents(
     vision_ema: VisionEncoderEMA | None,
     next_enc_rows: list[dict[str, torch.Tensor] | None] | None,
     pad_token_id: int | None,
+    latent_token_count: int = 1,
 ) -> torch.Tensor:
     if not indices:
         raise ValueError("indices must be non-empty")
@@ -72,12 +73,29 @@ def _forward_next_latents(
         next_enc = _collate_next_enc_rows(next_enc_rows, unique_indices, pad_token_id=pad_token_id)
     else:
         next_items = [{"messages": items[i]["next_messages"]} for i in unique_indices]
-        next_enc = build_qwen_batch(next_items, processor, max_length)
+        if latent_token_count == 1:
+            next_enc = build_qwen_batch(next_items, processor, max_length)
+        else:
+            next_enc = build_qwen_batch(
+                next_items,
+                processor,
+                max_length,
+                latent_token_count=latent_token_count,
+            )
 
     next_enc.pop("labels", None)
     ema_ctx = vision_ema.use_ema_weights(model) if vision_ema is not None else contextlib.nullcontext()
     with torch.no_grad(), ema_ctx:
-        next_latent_unique, _ = extract_qwen_latents(model, next_enc, token_id_map, device)
+        if latent_token_count == 1:
+            next_latent_unique, _ = extract_qwen_latents(model, next_enc, token_id_map, device)
+        else:
+            next_latent_unique, _ = extract_qwen_latents(
+                model,
+                next_enc,
+                token_id_map,
+                device,
+                latent_token_count=latent_token_count,
+            )
 
     rows: list[torch.Tensor] = []
     for i in indices:
@@ -101,6 +119,7 @@ def compute_step_wm_loss(
     next_enc_rows: list[dict[str, torch.Tensor] | None] | None = None,
     pad_token_id: int | None = None,
     sigreg_module: SIGReg | None = None,
+    latent_token_count: int = 1,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, dict[str, float]]:
     indices = wm_eligible_indices(items)
     # Every rank must enter the same number of DDP model forwards; terminal steps have no
@@ -117,14 +136,32 @@ def compute_step_wm_loss(
             vision_ema=vision_ema,
             next_enc_rows=next_enc_rows,
             pad_token_id=pad_token_id,
+            latent_token_count=latent_token_count,
         )
     else:
         next_items = [{"messages": items[0]["messages"]}]
-        next_enc = build_qwen_batch(next_items, processor, max_length)
+        if latent_token_count == 1:
+            next_enc = build_qwen_batch(next_items, processor, max_length)
+        else:
+            next_enc = build_qwen_batch(
+                next_items,
+                processor,
+                max_length,
+                latent_token_count=latent_token_count,
+            )
         next_enc.pop("labels", None)
         ema_ctx = vision_ema.use_ema_weights(model) if vision_ema is not None else contextlib.nullcontext()
         with torch.no_grad(), ema_ctx:
-            next_latent, _ = extract_qwen_latents(model, next_enc, token_id_map, device)
+            if latent_token_count == 1:
+                next_latent, _ = extract_qwen_latents(model, next_enc, token_id_map, device)
+            else:
+                next_latent, _ = extract_qwen_latents(
+                    model,
+                    next_enc,
+                    token_id_map,
+                    device,
+                    latent_token_count=latent_token_count,
+                )
     if not indices:
         # DDP-wrapped aux modules must also be called on terminal-only ranks.
         # A parameter-tied zero without DDP forward leaves other ranks waiting

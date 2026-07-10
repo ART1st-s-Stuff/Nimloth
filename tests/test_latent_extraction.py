@@ -10,6 +10,10 @@ from nimloth.latent.extraction import (
     extract_action_prior,
     extract_latent_state,
     find_extraction_positions,
+    find_last_latent_state_block,
+    latent_state_block,
+    latent_state_tokens,
+    normalize_latent_state_blocks,
 )
 
 
@@ -53,6 +57,29 @@ def test_extract_latent_state_reads_latent_token_hidden_state() -> None:
     latent = extract_latent_state(hidden, latent_state_index=2)
 
     torch.testing.assert_close(latent, hidden[0, 2])
+
+
+def test_latent_state_block_expands_and_normalizes() -> None:
+    assert latent_state_tokens(3) == ("<|latent_state|>", "<|latent_state_1|>", "<|latent_state_2|>")
+    assert latent_state_block(2) == "<|latent_state|><|latent_state_1|>"
+    text = "a<|latent_state|><|action_start|>b"
+    normalized = "a<|latent_state|><|latent_state_1|><|latent_state_2|><|action_start|>b"
+    assert normalize_latent_state_blocks(text, 3) == normalized
+    assert normalize_latent_state_blocks(normalize_latent_state_blocks(text, 3), 3) == normalized
+
+
+def test_find_last_latent_state_block_multi_token() -> None:
+    tokens = LatentActionTokens()
+    all_tokens = (*latent_state_tokens(3), tokens.action_start, tokens.action_end, *tokens.action_tokens)
+    token_id_map = {token: i + 10 for i, token in enumerate(all_tokens)}
+    ids = torch.tensor([
+        1,
+        token_id_map[tokens.latent_state],
+        token_id_map["<|latent_state_1|>"],
+        token_id_map["<|latent_state_2|>"],
+        2,
+    ])
+    assert find_last_latent_state_block(ids, token_id_map, latent_token_count=3) == [1, 2, 3]
 
 
 def test_extract_action_prior_uses_action_start_causal_logits() -> None:

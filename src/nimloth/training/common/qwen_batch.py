@@ -10,6 +10,8 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor
 
+from nimloth.latent import LatentActionTokens, latent_state_tokens, normalize_latent_state_blocks
+
 
 def _message_cache_key(messages: list[dict[str, Any]]) -> str:
     """Stable key for repeated trajectory prefixes within/across epochs."""
@@ -84,7 +86,25 @@ def _offset_cache(processor: AutoProcessor) -> _OffsetCache:
     return cache
 
 
-def assistant_char_spans(messages: list[dict[str, Any]], processor: AutoProcessor) -> list[tuple[int, int]]:
+def _render_messages(
+    messages: list[dict[str, Any]],
+    processor: AutoProcessor,
+    *,
+    add_generation_prompt: bool,
+    latent_token_count: int = 1,
+) -> str:
+    cache = _template_cache(processor)
+    cache_key = _message_cache_key(messages)
+    text = cache.render(cache_key, add_generation_prompt)
+    return normalize_latent_state_blocks(text, latent_token_count)
+
+
+def assistant_char_spans(
+    messages: list[dict[str, Any]],
+    processor: AutoProcessor,
+    *,
+    latent_token_count: int = 1,
+) -> list[tuple[int, int]]:
     """Return the current transition's assistant span for CE supervision.
 
     SFT2 expands one trajectory into many prefix transitions.  Supervising every
@@ -100,11 +120,18 @@ def assistant_char_spans(messages: list[dict[str, Any]], processor: AutoProcesso
     if last_assistant_index is None:
         return []
 
-    cache = _template_cache(processor)
-    prev_key = _message_cache_key(messages[:last_assistant_index])
-    cur_key = _message_cache_key(messages[: last_assistant_index + 1])
-    prev_gen = cache.render(prev_key, True)
-    cur = cache.render(cur_key, False)
+    prev_gen = _render_messages(
+        messages[:last_assistant_index],
+        processor,
+        add_generation_prompt=True,
+        latent_token_count=latent_token_count,
+    )
+    cur = _render_messages(
+        messages[: last_assistant_index + 1],
+        processor,
+        add_generation_prompt=False,
+        latent_token_count=latent_token_count,
+    )
     start = len(prev_gen)
     end = len(cur)
     return [(start, end)] if start < end else []
@@ -123,12 +150,36 @@ def _collect_message_images(messages: list[dict[str, Any]]) -> list[Image.Image]
     return imgs
 
 
+def _mask_latent_query_labels(
+    labels: torch.Tensor,
+    enc_input_ids: torch.Tensor,
+    processor: AutoProcessor,
+    *,
+    latent_token_count: int,
+) -> torch.Tensor:
+    if not hasattr(processor.tokenizer, "convert_tokens_to_ids"):
+        return labels
+    latent_ids: list[int] = []
+    for token in latent_state_tokens(latent_token_count, LatentActionTokens()):
+        token_id = processor.tokenizer.convert_tokens_to_ids(token)
+        unk_id = getattr(processor.tokenizer, "unk_token_id", None)
+        if token_id is None or token_id == unk_id:
+            continue
+        latent_ids.append(int(token_id))
+    for token_id in latent_ids:
+        labels = labels.masked_fill(enc_input_ids == token_id, -100)
+    return labels
+
+
 def _labels_for_text_rows(
     processor: AutoProcessor,
     enc_input_ids: torch.Tensor,
     texts: list[str],
     spans_per_item: list[list[tuple[int, int]]],
     max_length: int,
+    *,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> torch.Tensor:
     offset_cache = _offset_cache(processor)
     offset_rows = [offset_cache.offsets(text, max_length) for text in texts]
@@ -142,6 +193,13 @@ def _labels_for_text_rows(
                 continue
             if any(start < span_end and end > span_start for span_start, span_end in spans):
                 labels[row, tok_idx] = enc_input_ids[row, tok_idx]
+    if mask_latent_query_labels:
+        labels = _mask_latent_query_labels(
+            labels,
+            enc_input_ids,
+            processor,
+            latent_token_count=latent_token_count,
+        )
     return labels
 
 
@@ -151,12 +209,17 @@ def encode_qwen_item(
     max_length: int,
     *,
     include_labels: bool = True,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> dict[str, Any]:
     """Encode one prefix with the same semantics as ``build_qwen_batch``."""
 
-    cache = _template_cache(processor)
-    cache_key = _message_cache_key(messages)
-    text = cache.render(cache_key, False)
+    text = _render_messages(
+        messages,
+        processor,
+        add_generation_prompt=False,
+        latent_token_count=latent_token_count,
+    )
     images = _collect_message_images(messages)
     enc = processor(
         text=[text],
@@ -183,23 +246,41 @@ def encode_qwen_item(
             processor,
             enc["input_ids"],
             [text],
-            [assistant_char_spans(messages, processor)],
+            [assistant_char_spans(messages, processor, latent_token_count=latent_token_count)],
             max_length,
+            latent_token_count=latent_token_count,
+            mask_latent_query_labels=mask_latent_query_labels,
         )
         out["labels"] = labels.squeeze(0).contiguous()
     return out
 
 
-def build_qwen_batch(items: list[dict[str, Any]], processor: AutoProcessor, max_length: int) -> dict[str, Any]:
+def build_qwen_batch(
+    items: list[dict[str, Any]],
+    processor: AutoProcessor,
+    max_length: int,
+    *,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
+) -> dict[str, Any]:
     texts: list[str] = []
     spans_per_item: list[list[tuple[int, int]]] = []
     all_images: list[list[Image.Image]] = []
-    cache = _template_cache(processor)
     for item in items:
-        cache_key = _message_cache_key(item["messages"])
-        text = cache.render(cache_key, False)
+        text = _render_messages(
+            item["messages"],
+            processor,
+            add_generation_prompt=False,
+            latent_token_count=latent_token_count,
+        )
         texts.append(text)
-        spans_per_item.append(assistant_char_spans(item["messages"], processor))
+        spans_per_item.append(
+            assistant_char_spans(
+                item["messages"],
+                processor,
+                latent_token_count=latent_token_count,
+            )
+        )
         all_images.append(_collect_message_images(item["messages"]))
 
     enc = processor(
@@ -210,5 +291,13 @@ def build_qwen_batch(items: list[dict[str, Any]], processor: AutoProcessor, max_
         max_length=max_length,
         return_tensors="pt",
     )
-    enc["labels"] = _labels_for_text_rows(processor, enc["input_ids"], texts, spans_per_item, max_length)
+    enc["labels"] = _labels_for_text_rows(
+        processor,
+        enc["input_ids"],
+        texts,
+        spans_per_item,
+        max_length,
+        latent_token_count=latent_token_count,
+        mask_latent_query_labels=mask_latent_query_labels,
+    )
     return enc

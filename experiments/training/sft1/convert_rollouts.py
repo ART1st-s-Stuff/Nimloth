@@ -33,13 +33,26 @@ _VAGEN_ROOT = Path(__file__).resolve().parents[3] / "external" / "VAGEN"
 if _VAGEN_ROOT.is_dir() and str(_VAGEN_ROOT) not in sys.path:
     sys.path.insert(0, str(_VAGEN_ROOT))
 
-from vagen.envs.navigation.utils.nimloth_format import (
-    ACTION_NAMES,
-    ACTION_TO_IDX,
-    ACTION_TOKEN,
-    NIMLOTH_FORMAT_INSTRUCTION,
-    SPECIAL_TOKENS,
-)
+try:
+    from vagen.envs.navigation.utils.nimloth_format import (
+        ACTION_NAMES,
+        ACTION_TO_IDX,
+        ACTION_TOKEN,
+        LATENT_STATE_BLOCK,
+        NIMLOTH_ACTION_BLOCK,
+        NIMLOTH_FORMAT_INSTRUCTION,
+        SPECIAL_TOKENS,
+    )
+except ModuleNotFoundError:
+    from vagen.env.navigation.nimloth_format import (
+        ACTION_NAMES,
+        ACTION_TO_IDX,
+        ACTION_TOKEN,
+        LATENT_STATE_BLOCK,
+        NIMLOTH_ACTION_BLOCK,
+        NIMLOTH_FORMAT_INSTRUCTION,
+        SPECIAL_TOKENS,
+    )
 
 ACTION_NAMES = list(ACTION_NAMES)
 ACTION_TO_IDX = dict(ACTION_TO_IDX)
@@ -88,7 +101,7 @@ def rewrite_prompt_instruction(content: str) -> str:
         ),
         (
             "<think>...</think><action>some_action</action>",
-            "<think>...</think><|latent_state|><|action_start|><|action_(idx)|><|action_end|>",
+            f"<think>...</think>{NIMLOTH_ACTION_BLOCK}",
         ),
         (
             "<action>{action_example}</action>",
@@ -171,9 +184,9 @@ def convert_assistant(content: str) -> tuple[str, str | None, str | None]:
     action = extract_action(content)
     if action is None:
         # Keep malformed/non-action responses auditable but not trainable.
-        converted = f"<think>{think}</think><|latent_state|><|action_start|><|action_end|>"
+        converted = f"<think>{think}</think>{LATENT_STATE_BLOCK}<|action_start|><|action_end|>"
         return converted, None, think
-    converted = f"<think>{think}</think><|latent_state|><|action_start|>{ACTION_TOKEN[action]}<|action_end|>"
+    converted = f"<think>{think}</think>{LATENT_STATE_BLOCK}<|action_start|>{ACTION_TOKEN[action]}<|action_end|>"
     return converted, action, think
 
 
@@ -356,7 +369,7 @@ def main() -> int:
         "action_names": ACTION_NAMES,
         "action_to_idx": ACTION_TO_IDX,
         "special_tokens": SPECIAL_TOKENS,
-        "format": "Nimloth SFT v1: assistant=<think>...</think><|latent_state|><|action_start|><|action_(idx)|><|action_end|>",
+        "format": f"Nimloth SFT v1: assistant=<think>...</think>{NIMLOTH_ACTION_BLOCK}",
         "split_policy": {
             "train_all": "all train-split rollouts; default SFT train file (success + failed)",
             "train_success": "train-split rollouts with traj_success >= 1.0 and no validation issues; optional ablation",

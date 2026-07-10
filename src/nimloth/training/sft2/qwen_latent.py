@@ -6,7 +6,12 @@ from typing import Any
 
 import torch
 
-from nimloth.latent import extract_latent_state, find_last_latent_state_index
+from nimloth.latent import (
+    extract_latent_state,
+    extract_latent_state_block,
+    find_last_latent_state_block,
+    find_last_latent_state_index,
+)
 from nimloth.latent.extraction import LatentActionTokens
 
 
@@ -34,8 +39,8 @@ def _final_norm_module(model) -> torch.nn.Module:
     """Resolve the final text-model norm used to produce last hidden states.
 
     Calling Qwen with ``output_hidden_states=True`` returns every layer's hidden
-    states.  For SFT2 we only need the last-layer activations at
-    ``<|latent_state|>``, so we capture the output of the final decoder norm.
+    states.  For SFT2 we only need the last-layer activations at the configured
+    latent query tokens, so we capture the output of the final decoder norm.
     The candidate paths cover current HF Qwen2.5-VL naming and older variants.
     """
 
@@ -88,13 +93,30 @@ def extract_qwen_latents(
     enc: dict[str, torch.Tensor],
     token_id_map: dict[str, int],
     device: torch.device,
+    *,
+    latent_token_count: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Extract configured latent query hidden states from a Qwen batch.
+
+    Returns ``[B, H]`` for the legacy single-token case and ``[B, k, H]`` when
+    ``latent_token_count > 1``.
+    """
+
     model_inputs = {k: v.to(device) for k, v in enc.items()}
     hidden, output = _capture_last_hidden(model, model_inputs)
     tokens = LatentActionTokens()
     rows: list[torch.Tensor] = []
     input_ids = enc["input_ids"].detach().cpu()
     for row in range(hidden.shape[0]):
-        latent_index = find_last_latent_state_index(input_ids[row], token_id_map, tokens)
-        rows.append(extract_latent_state(hidden[row : row + 1], latent_index))
+        if latent_token_count == 1:
+            latent_index = find_last_latent_state_index(input_ids[row], token_id_map, tokens)
+            rows.append(extract_latent_state(hidden[row : row + 1], latent_index))
+        else:
+            latent_block = find_last_latent_state_block(
+                input_ids[row],
+                token_id_map,
+                tokens,
+                latent_token_count=latent_token_count,
+            )
+            rows.append(extract_latent_state_block(hidden[row : row + 1], latent_block))
     return torch.stack(rows, dim=0), output.loss

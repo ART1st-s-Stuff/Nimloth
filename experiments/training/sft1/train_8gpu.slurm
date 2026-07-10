@@ -30,6 +30,10 @@ WANDB_RUN_NAME=${WANDB_RUN_NAME:-sft1-${SFT1_TUNE_MODE}-8gpu}
 EPOCHS=${EPOCHS:-20}
 GRAD_ACCUM=${GRAD_ACCUM:-8}
 MAX_LENGTH=${MAX_LENGTH:-20000}
+LATENT_TOKEN_COUNT=${LATENT_TOKEN_COUNT:-1}
+MASK_LATENT_QUERY_LABELS=${MASK_LATENT_QUERY_LABELS:-1}
+TRAIN_JSONL=${TRAIN_JSONL:-${RECORDS_ROOT}/train_all.jsonl}
+VAL_JSONL=${VAL_JSONL:-${RECORDS_ROOT}/val_all.jsonl}
 
 mkdir -p "${TRAIN_OUT}" "${REPO}/outputs/experiments/training/sft1/slurm"
 
@@ -37,24 +41,28 @@ mkdir -p "${TRAIN_OUT}" "${REPO}/outputs/experiments/training/sft1/slurm"
   echo "=== SFT1 8GPU train (${SFT1_TUNE_MODE}) starting at $(date) ==="
   echo "Job ID: ${SLURM_JOB_ID} node: ${SLURM_JOB_NODELIST}"
   echo "Init HF: ${INIT_HF}"
-  echo "Train: ${RECORDS_ROOT}/train_all.jsonl"
+  echo "Train: ${TRAIN_JSONL}"
+  echo "Val: ${VAL_JSONL}"
   echo "Output: ${TRAIN_OUT}"
+  echo "Latent token count: ${LATENT_TOKEN_COUNT}"
+  echo "Mask latent query labels: ${MASK_LATENT_QUERY_LABELS}"
 } | tee -a "${LOG}"
 
-if [ ! -s "${RECORDS_ROOT}/train_all.jsonl" ]; then
-  echo "ERROR missing train_all.jsonl" | tee -a "${LOG}"
+if [ ! -s "${TRAIN_JSONL}" ]; then
+  echo "ERROR missing train jsonl: ${TRAIN_JSONL}" | tee -a "${LOG}"
   exit 1
 fi
 
 TRAIN_ARGS=(
   --model "${INIT_HF}"
-  --train-jsonl "${RECORDS_ROOT}/train_all.jsonl"
-  --val-jsonl "${RECORDS_ROOT}/val_all.jsonl"
+  --train-jsonl "${TRAIN_JSONL}"
+  --val-jsonl "${VAL_JSONL}"
   --output-dir "${TRAIN_OUT}"
   --epochs "${EPOCHS}"
   --batch-size 1
   --grad-accum "${GRAD_ACCUM}"
   --max-length "${MAX_LENGTH}"
+  --latent-token-count "${LATENT_TOKEN_COUNT}"
   --max-pixels 602112
   --format-eval-samples 32
   --num-workers 8
@@ -64,6 +72,9 @@ TRAIN_ARGS=(
   --wandb-run-name "${WANDB_RUN_NAME}"
   --seed 42
 )
+if [ "${MASK_LATENT_QUERY_LABELS}" = "0" ]; then
+  TRAIN_ARGS+=(--no-mask-latent-query-labels)
+fi
 
 case "${SFT1_TUNE_MODE}" in
   lora)

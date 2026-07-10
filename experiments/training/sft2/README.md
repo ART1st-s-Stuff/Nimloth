@@ -28,7 +28,9 @@ Profiling / speedup (see `ai_tasks/sft2_speedup_plan.md`):
 | `latent_wm_value_profiling.yaml` | `batch_size=2`, `grad_accum=4`, `--step-timing` |
 | `latent_wm_value_vision_freeze_profiling.yaml` | P6 vision-freeze diagnostic |
 
-CLI knobs: `--preprocess-cache-dir`, `--step-timing`, `--dataloader-workers`, `--packed-forward`.  `--full-trajectory-batching` is **enabled by default**; use `--no-full-trajectory-batching` to disable.
+CLI knobs: `--preprocess-cache-dir`, `--step-timing`, `--dataloader-workers`, `--packed-forward`, `--latent-token-count`, `--[no-]mask-latent-query-labels`.  `--full-trajectory-batching` is **enabled by default**; use `--no-full-trajectory-batching` to disable.
+
+For k=8 latent-query runs, either use `configs/training/sft2/latent_wm_value_k8.yaml` or set `LATENT_TOKEN_COUNT=8` in Slurm wrappers.
 
 ### `--full-trajectory-batching` (方案 B, 默认启用)
 

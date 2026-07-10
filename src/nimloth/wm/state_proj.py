@@ -15,11 +15,12 @@ from nimloth.wm._vendor_lewm import MLP
 
 
 class StateProjector(nn.Module):
-    """LeWM-style MLP bridge: Qwen latent dim -> WM emb dim.
+    """LeWM-style MLP bridge from Qwen latent query states to WM emb.
 
-    Uses LeWM MLP with BatchNorm1d, matching the LeWM paper's projection
-    structure.  Default ``projector_hidden_dim=2048`` provides reasonable
-    capacity for the qwen_hidden_dim→emb_dim mapping.
+    ``latent_token_count`` controls how many Qwen hidden vectors form one raw
+    state.  For ``latent_token_count > 1`` the input ``(B, k, H)`` is flattened to
+    ``(B, k*H)`` before projection, increasing the raw Qwen-exported state
+    capacity while keeping downstream WM state size unchanged.
     """
 
     def __init__(
@@ -27,25 +28,52 @@ class StateProjector(nn.Module):
         qwen_hidden_dim: int,
         lewm_emb_dim: int,
         projector_hidden_dim: int = 2048,
+        *,
+        latent_token_count: int = 1,
     ) -> None:
         super().__init__()
+        if latent_token_count < 1:
+            raise ValueError(f"latent_token_count must be >= 1, got {latent_token_count}")
+        self.qwen_hidden_dim = int(qwen_hidden_dim)
+        self.latent_token_count = int(latent_token_count)
+        self.input_dim = self.qwen_hidden_dim * self.latent_token_count
         # LayerNorm avoids inplace running-buffer conflicts when state_proj is
         # called multiple times before backward (e.g. WM + value losses).
         self.net = MLP(
-            qwen_hidden_dim,
+            self.input_dim,
             projector_hidden_dim,
             lewm_emb_dim,
             norm_fn=nn.LayerNorm,
         )
 
+    def _flatten_hidden(self, hidden: torch.Tensor) -> torch.Tensor:
+        if hidden.ndim == 2:
+            if hidden.shape[-1] != self.input_dim:
+                if self.latent_token_count == 1 and hidden.shape[-1] == self.qwen_hidden_dim:
+                    return hidden
+                raise ValueError(
+                    f"StateProjector expected last dim {self.input_dim}, got {tuple(hidden.shape)}"
+                )
+            return hidden
+        if hidden.ndim == 3:
+            if hidden.shape[1] != self.latent_token_count or hidden.shape[2] != self.qwen_hidden_dim:
+                raise ValueError(
+                    "StateProjector expected hidden shape "
+                    f"(B, {self.latent_token_count}, {self.qwen_hidden_dim}), got {tuple(hidden.shape)}"
+                )
+            return hidden.reshape(hidden.shape[0], self.input_dim)
+        raise ValueError(f"hidden must have shape (B, D) or (B, k, D), got {tuple(hidden.shape)}")
+
     def forward(self, hidden: torch.Tensor) -> torch.Tensor:
-        """Project Qwen hidden state to WM embedding space.
+        """Project Qwen hidden state(s) to WM embedding space.
 
         Args:
-            hidden: (B, qwen_hidden_dim) in any dtype.
+            hidden: ``(B, qwen_hidden_dim)`` for k=1, or
+                ``(B, latent_token_count, qwen_hidden_dim)`` for k>1.
 
         Returns:
-            (B, lewm_emb_dim) in network weight dtype.
+            ``(B, lewm_emb_dim)`` in network weight dtype.
         """
+        hidden = self._flatten_hidden(hidden)
         target_dtype = next(self.parameters()).dtype
         return self.net(hidden.to(dtype=target_dtype))

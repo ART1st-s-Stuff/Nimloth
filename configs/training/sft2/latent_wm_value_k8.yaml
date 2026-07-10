@@ -1,4 +1,4 @@
-# SFT2 — latent WM + Value head (defaults per sft2_exp.md)
+# SFT2 — latent WM + Value head, k=8 latent query tokens
 
 init:
   sft1_checkpoint: null
@@ -51,7 +51,7 @@ train:
   checkpoint_interval_minutes: 20.0
 
 latent:
-  token_count: 1
+  token_count: 8
   mask_query_labels: true
 
 loss:

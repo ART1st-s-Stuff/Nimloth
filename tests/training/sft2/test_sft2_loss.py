@@ -13,6 +13,16 @@ from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.lewm import LeWMConfig
 
 
+def test_state_projector_accepts_multi_latent_block() -> None:
+    state_proj = StateProjector(qwen_hidden_dim=8, lewm_emb_dim=4, projector_hidden_dim=16, latent_token_count=3)
+    qwen_hidden = torch.randn(2, 3, 8)
+
+    out = state_proj(qwen_hidden)
+
+    assert out.shape == (2, 4)
+    assert state_proj.input_dim == 24
+
+
 def test_wm_latent_loss_no_detach_grad_to_state_proj() -> None:
     """MSE target is NOT detached; state_proj gets gradient from both sides."""
     cfg = LeWMConfig(emb_dim=16, predictor_hidden_dim=16, predictor_mlp_dim=32)

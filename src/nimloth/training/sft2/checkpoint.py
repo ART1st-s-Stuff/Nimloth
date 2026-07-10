@@ -150,9 +150,16 @@ def save_checkpoint(
         if visual is None:
             raise RuntimeError(f"vision_tune=full requested but could not locate visual module in {type(root)}")
         torch.save(visual.state_dict(), out_dir / "vision_full_state.pt")
+    state_proj_input_dim = getattr(proj, "input_dim", None)
+    if state_proj_input_dim is None:
+        net_layers = getattr(getattr(proj, "net", None), "net", None)
+        state_proj_input_dim = getattr(net_layers[0], "in_features", -1) if net_layers else -1
     state: dict[str, Any] = {
         "step": step,
         "epoch": epoch,
+        "latent_token_count": int(getattr(proj, "latent_token_count", 1)),
+        "qwen_hidden_dim": int(getattr(proj, "qwen_hidden_dim", -1)),
+        "state_proj_input_dim": int(state_proj_input_dim),
         "best_val_success_rate": best_val_success_rate,
         "best_val_wm_mse": best_val_wm_mse,
         "best_val": best_val_wm_mse,
@@ -178,6 +185,27 @@ def load_aux_checkpoint(
     sp_path = ckpt_dir / "state_proj.pt"
     if sp_path.is_file():
         proj = state_proj.module if hasattr(state_proj, "module") else state_proj
+        state_path = ckpt_dir / "training_state.pt"
+        if state_path.is_file():
+            training_state = torch.load(state_path, map_location="cpu", weights_only=False)
+            saved_k = training_state.get("latent_token_count")
+            if saved_k is not None and int(saved_k) != int(getattr(proj, "latent_token_count", 1)):
+                raise ValueError(
+                    "checkpoint latent_token_count mismatch: "
+                    f"checkpoint={saved_k}, current={getattr(proj, 'latent_token_count', 1)}"
+                )
+            saved_hidden_dim = training_state.get("qwen_hidden_dim")
+            if saved_hidden_dim is not None and int(saved_hidden_dim) != int(getattr(proj, "qwen_hidden_dim", -1)):
+                raise ValueError(
+                    "checkpoint qwen_hidden_dim mismatch: "
+                    f"checkpoint={saved_hidden_dim}, current={getattr(proj, 'qwen_hidden_dim', -1)}"
+                )
+            saved_input_dim = training_state.get("state_proj_input_dim")
+            if saved_input_dim is not None and int(saved_input_dim) != int(getattr(proj, "input_dim", -1)):
+                raise ValueError(
+                    "checkpoint state_proj_input_dim mismatch: "
+                    f"checkpoint={saved_input_dim}, current={getattr(proj, 'input_dim', -1)}"
+                )
         proj.load_state_dict(torch.load(sp_path, map_location=device, weights_only=True))
     pred_path = ckpt_dir / "wm_predictor"
     if pred_path.is_dir():

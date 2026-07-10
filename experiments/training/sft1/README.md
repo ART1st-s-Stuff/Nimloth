@@ -17,7 +17,9 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 | `compare_eval_summaries.py` | Compare eval summary CSVs |
 | `submit_*.sh` | Thin sbatch wrappers (no hardcoded nodes by default) |
 
-Config: `configs/training/sft1/qwen25vl_lora.yaml`
+Config: `configs/training/sft1/qwen25vl_lora.yaml`; k=8 run manifest: `configs/training/sft1/qwen25vl_lora_k8.yaml`.
+
+Latent query token count can be set with `LATENT_TOKEN_COUNT=<k>` in Slurm wrappers or `--latent-token-count <k>` in `train.py`. For k>1, SFT1 normalizes rendered `<|latent_state|>` blocks to distinct latent query tokens and masks latent query token labels by default.
 
 Library (planned): `src/nimloth/training/phase1_sft/`
 

@@ -33,6 +33,8 @@ def evaluate(
     packed_forward: bool = False,
     sigreg_module=None,
     lambda_sigreg: float = 0.0,
+    latent_token_count: int = 1,
+    mask_latent_query_labels: bool = True,
 ) -> dict[str, float]:
     model.eval()
     state_proj.eval()
@@ -57,6 +59,8 @@ def evaluate(
                     max_length=max_length,
                     vision_ema=vision_ema,
                     full_enc=batch_samples.get("full_enc"),
+                    latent_token_count=latent_token_count,
+                    mask_latent_query_labels=mask_latent_query_labels,
                 )
                 latent_hidden = traj.current_latents
                 wm_loss, sigreg_loss, wm_metrics = compute_trajectory_wm_loss(
@@ -74,9 +78,17 @@ def evaluate(
                     processor,
                     max_length=max_length,
                     pad_token_id=pad_token_id,
+                    latent_token_count=latent_token_count,
+                    mask_latent_query_labels=mask_latent_query_labels,
                 )
                 enc.pop("labels", None)
-                latent_hidden, _ = extract_qwen_latents(model, enc, token_id_map, device)
+                latent_hidden, _ = extract_qwen_latents(
+                    model,
+                    enc,
+                    token_id_map,
+                    device,
+                    latent_token_count=latent_token_count,
+                )
                 wm_loss, sigreg_loss, wm_metrics = compute_step_wm_loss(
                     model,
                     items,
@@ -91,6 +103,7 @@ def evaluate(
                     next_enc_rows=next_enc_rows,
                     pad_token_id=pad_token_id,
                     sigreg_module=sigreg_module,
+                    latent_token_count=latent_token_count,
                 )
             _, value_metrics = compute_step_value_loss(
                 latent_hidden,

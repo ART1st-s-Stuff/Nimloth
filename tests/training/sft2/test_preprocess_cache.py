@@ -102,6 +102,30 @@ def test_encode_transition_item_roundtrip_collate() -> None:
     assert torch.equal(batch["current_enc"]["labels"][0], online_current["labels"][0])
 
 
+def test_cache_fingerprint_changes_with_latent_token_count(tmp_path) -> None:
+    jsonl = tmp_path / "data.jsonl"
+    jsonl.write_text('{"id":"a"}\n', encoding="utf-8")
+
+    fp1 = cache_fingerprint(
+        jsonl,
+        max_length=100,
+        max_pixels=1000,
+        min_pixels=100,
+        vocab_size=50000,
+        latent_token_count=1,
+    )
+    fp2 = cache_fingerprint(
+        jsonl,
+        max_length=100,
+        max_pixels=1000,
+        min_pixels=100,
+        vocab_size=50000,
+        latent_token_count=3,
+    )
+
+    assert fp1 != fp2
+
+
 def test_cache_fingerprint_changes_when_jsonl_changes(tmp_path) -> None:
     jsonl = tmp_path / "data.jsonl"
     jsonl.write_text('{"id":"a"}\n', encoding="utf-8")

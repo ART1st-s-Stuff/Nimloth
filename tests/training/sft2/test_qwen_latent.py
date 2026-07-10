@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 
-from nimloth.latent.extraction import LatentActionTokens
+from nimloth.latent.extraction import LatentActionTokens, latent_state_tokens
 from nimloth.training.sft2.qwen_latent import extract_qwen_latents
 
 
@@ -45,3 +45,33 @@ def test_extract_qwen_latents_uses_final_norm_hook_without_all_hidden_states() -
         torch.arange(1 * 3 * 4, dtype=torch.float32).reshape(1, 3, 4)
     )[0, 1]
     torch.testing.assert_close(latent, expected.unsqueeze(0))
+
+
+def test_extract_qwen_latents_can_return_multi_token_block() -> None:
+    tokens = LatentActionTokens()
+    all_tokens = (*latent_state_tokens(3), tokens.action_start, tokens.action_end, *tokens.action_tokens)
+    token_id_map = {token: i + 10 for i, token in enumerate(all_tokens)}
+    input_ids = torch.tensor([
+        [
+            1,
+            token_id_map[tokens.latent_state],
+            token_id_map["<|latent_state_1|>"],
+            token_id_map["<|latent_state_2|>"],
+            2,
+        ]
+    ])
+    model = _FakeQwen()
+
+    latent, _loss = extract_qwen_latents(
+        model,
+        {"input_ids": input_ids},
+        token_id_map,
+        torch.device("cpu"),
+        latent_token_count=3,
+    )
+
+    expected_hidden = model.model.language_model.norm(
+        torch.arange(1 * 5 * 4, dtype=torch.float32).reshape(1, 5, 4)
+    )[0, 1:4]
+    assert latent.shape == (1, 3, 4)
+    torch.testing.assert_close(latent[0], expected_hidden)

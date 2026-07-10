@@ -24,9 +24,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
+    args.latent_token_count = int(getattr(args, "latent_token_count", 1))
+    args.mask_latent_query_labels = bool(getattr(args, "mask_latent_query_labels", True))
     processor.image_processor.min_pixels = DEFAULT_MIN_PIXELS
     processor.image_processor.max_pixels = args.max_pixels
-    add_special_tokens(processor.tokenizer)
+    add_special_tokens(processor.tokenizer, latent_token_count=args.latent_token_count)
 
     cache_root = Path(args.preprocess_cache_dir)
     build_kwargs = dict(
@@ -37,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
         min_pixels=DEFAULT_MIN_PIXELS,
         preprocess_workers=args.preprocess_workers,
         force=args.force_rebuild_cache,
+        latent_token_count=args.latent_token_count,
+        mask_latent_query_labels=args.mask_latent_query_labels,
     )
 
     if args.packed_forward:
