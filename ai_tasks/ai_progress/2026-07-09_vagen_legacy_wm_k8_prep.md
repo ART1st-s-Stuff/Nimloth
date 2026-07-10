@@ -134,3 +134,13 @@
 - 是否同时采集 test；当前建议包含 test。
 - 是否采用配置默认的 SFT1 20 epochs、SFT2 10 epochs，并按每个 SFT1 epoch 的 greedy val success 选择最早达到最高值的 checkpoint。
 - GPU 方案：等待 normal 8-GPU 单节点，或由人类指定可接受的 preempt/较少 GPU 配置。
+- full-scale rollout 已暂停：必须先对齐源 step60 的 prompt/action vocabulary、0.3m step、1.0m threshold和reward feedback，并通过同 seed parity smoke；当前没有有效 shard。
+
+## 2026-07-11 full-scale rollout prompt/env mismatch
+
+- 因人类指出 success rate 异常，取消 orchestration step `471146.1`；hold `471146` 暂时保留且 GPU 空闲。
+- Sampling 与源 validation 已确认一致：greedy、temperature0、top_p1、top_k-1、n1、512 tokens/turn、20 turns、1 action/turn。
+- 源 step60 实际对应 VAGEN `f7aefd3` navigation semantics；当前 pinned legacy VAGEN `44be18c` 的 prompt/action aliases、0.5m dynamics、1.5m threshold和 reward feedback 均不一致。`prompt_format=eval_mode` 同名不足以证明等价。
+- invalid shard assistant actions（排除 prompt placeholders）共9239：moveahead61.08%、moveleft13.94%、rotateright11.21%、`rotatelleft`4.33%。源 step60 validation为 move_forward56.69%、move_left19.72%、move_right17.91%、turn_right0.90%。
+- 已把完成540 records和 partial next shard隔离到 `rollout/invalid_attempt_dafbd30_prompt_env_mismatch/`，有效 rollout count回到0；不能用于 conversion/SFT。
+- 下一步：实现并提交 source-compatible mode，做 transcript/config exact check和相同 seed smoke后重启 shard001-180。

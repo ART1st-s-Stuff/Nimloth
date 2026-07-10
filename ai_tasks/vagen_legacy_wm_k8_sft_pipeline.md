@@ -131,13 +131,13 @@
 
 ## 2026-07-10 preflight 结果
 
-- Production rollout：源 step60、2-GPU FSDP/vLLM、external env、legacy greedy eval gate 通过；转换得到严格 k=8 Nimloth record。
+- Production rollout 的机械 gate 曾通过源 step60、2-GPU FSDP/vLLM、external env、greedy generation和严格 k=8 conversion；但该 gate 没有核对源 navigation prompt/dynamics/reward parity，2026-07-11 已判定不足，必须在修正后重做。
 - SFT1：BF16 compact cache、2-GPU epoch、PEFT 702 tensors exact resume、optimizer/scheduler、merge/reload gates 通过。
 - SFT2：CPU-only k=8 BF16 compact cache、2-GPU full vision+EMA+WM/value/CE/SIGReg、validation、epoch resume 与 partial-epoch resume gates 通过。
 - 正式 k8 SFT2 配置使用 `max_pixels=100352`（production 512px screenshot约grid22/308px）和 `max_images_per_batch=12`。真实20-frame轨迹压力测试完成19 transitions/8 optimizer steps，rank0峰值51.12GiB allocated、52.17GiB reserved；compact DataLoader稳态等待不是瓶颈。
 - Partial resume 严格恢复step5并skip 5/8 micro-batches，首个resumed pre-update losses与uninterrupted逐值一致。跨进程NCCL最终只宣称有界数值复现（Qwen max abs `3.58e-7`，aux为BF16量级），不宣称bit-exact。
 - 最终 preflight 代码：`096c576`；输出根：`outputs/experiments/vagen_legacy_wm_k8_preflight/2026-07-10/preflight_a94c96b`。
-- Full-scale独占根：`outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。hold471146/dgx-38、step471146.1健康。`train/shard_001_180/0.jsonl`已完成：540 records（base/common/long各180）、217 success=40.19%、9240 image refs且无missing、无坏JSON/空output，action validity0.9625；task0已进入seeds181-360。首shard成为preempt可跳过的durable恢复点。
+- Full-scale独占根：`outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。step471146.1因源环境不一致取消：sampling确实与源 validation 相同，但当前 legacy VAGEN 使用不同 prompt/action aliases、0.5m step、1.5m threshold和reward feedback。首个540-record shard已隔离到 `rollout/invalid_attempt_dafbd30_prompt_env_mismatch/`，不能用于训练；当前有效 rollout count为0。hold471146暂时保留，修正并做同 seed parity smoke前禁止恢复 full-scale。
 
 ## 待确认问题
 
