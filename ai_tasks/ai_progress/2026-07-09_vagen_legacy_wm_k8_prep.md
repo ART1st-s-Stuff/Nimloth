@@ -70,11 +70,17 @@
 - 服务器环境复核：`.venv` 为 Python 3.10 / Transformers 4.49.0 / PyTorch 2.6.0 / vLLM 0.8.2；`.venv-vagen-main` 为 Python 3.12 / Transformers 4.55.4 / PyTorch 2.8.0 / vLLM 0.11.0。源 checkpoint 的 config 由 Transformers 4.55.4 保存，因此本流水线显式使用 `.venv-vagen-main`。进一步发现该复制 venv 的 `activate` 和 console-script shebang 仍错误指向 `.venv`；wrapper 已改为显式调用 `.venv-vagen-main/bin/python3`（含 torch distributed / Ray CLI），不再 source activate；修复提交为 `c425c03d904bfa962301ab467def33b6207736ca`。
 - 服务器 worktree `/project/peilab/atst/nimloth/.worktree/vagen-legacy-wm-k8` 已建立并保持 clean；VAGEN=`44be18c`、verl=`65316156`、le-wm=`8edfeb3`。远程 smoke 已确认 `.venv-vagen-main` 实际加载 Transformers 4.55.4 / PyTorch 2.8.0 / vLLM 0.11.0，可读取源 processor；k=8 tokenizer 注册新增 18 tokens，8 个 latent ids 唯一；converter 的 source step60 / rollout step0 / k=8 小样本转换通过。
 - 资源快照：normal 仅 3 张空闲 GPU（单节点最多 2），preempt 19 张空闲 GPU（单节点最多 6）；当前没有空闲 8-GPU 单节点，SFT1/SFT2 full job 会等待或需要不同资源方案。
-- 存储阻塞：`/project` 仅余约 744G；旧 `outputs/experiments/training/sft2/cache/sft2_llmlora64a128_vfull_pair2_gamma1` 占约 1.3T。相近规模的新 preprocess cache 预计约 1.3T，当前无法完整构建，且未经人类批准不得删除旧 cache。
+- 原存储阻塞：`/project` 在本次清理前仅余约 245 GiB；旧 `outputs/experiments/training/sft2/cache/sft2_llmlora64a128_vfull_pair2_gamma1` 占 1.3 TiB。相近规模的新 preprocess cache 预计约 1.3 TiB，当时无法完整构建。
+
+## 2026-07-10 存储清理
+
+- 人类批准删除上述旧 SFT2 cache；删除前核实其仅包含 `train/` 下 42,048 个 `.pt`，没有 manifest 或 val，大小 1.3 TiB。删除后已确认路径不存在。
+- 人类同时批准裁剪 `outputs/experiments/training/baseline/2026-07-09/vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_hold4g/checkpoints`：保留 step300、验证最佳 step314、最新可恢复 step320，删除 step301..313 和 step315..319 共 18 个 checkpoints（1.8 TiB）。
+- 删除前两项目标合计 3.0 TiB；删除后检查仅剩 `global_step_{300,314,320}`，`latest_checkpointed_iteration.txt=320`，配额可用空间约 2.9 TiB（95% used）。
+- 新 full SFT2 preprocess cache 的原容量阻塞已解除；仍不得覆盖现有输出，并须使用新的独占 cache/output 路径。
 
 ## 待确认问题
 
 - 是否同时采集 test；当前建议包含 test。
 - 是否采用配置默认的 SFT1 20 epochs、SFT2 10 epochs，并按每个 SFT1 epoch 的 greedy val success 选择最早达到最高值的 checkpoint。
-- 存储方案：批准删除上述旧 1.3T cache，或批准只做小规模 cache fingerprint smoke、SFT2 full training 改为 on-the-fly preprocess；也可以由人类指定其他存储路径。
 - GPU 方案：等待 normal 8-GPU 单节点，或由人类指定可接受的 preempt/较少 GPU 配置。

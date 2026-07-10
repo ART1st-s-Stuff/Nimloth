@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-07-10：服务器实验磁盘审计与授权清理
+
+- `/project` 的 50 TiB 配额在清理前仅余约 245 GiB；实验目录主要大户为历史 VAGEN/SFT1 checkpoints、当前 legacy-dev ws4 checkpoints 和旧 SFT2 preprocess cache。
+- 人类批准删除旧 SFT2 cache `outputs/experiments/training/sft2/cache/sft2_llmlora64a128_vfull_pair2_gamma1`（1.3 TiB；仅 42,048 个 train `.pt`，无 manifest/val）。
+- 人类批准裁剪 `vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_hold4g`：保留 `global_step_{300,314,320}`，删除 `301..313` 与 `315..319` 共 18 个 checkpoints（1.8 TiB）；`latest_checkpointed_iteration.txt` 仍为 `320`。
+- 两项删除前统计合计 3.0 TiB；删除后验证目标均不存在/保留项完整，配额可用空间约 2.9 TiB（95% used）。
+- 该 VAGEN run 已从 314 推进并保存 step320，但随后在下一轮 rollout 再次因 `Fatal Python error: none_dealloc` / `ActorDiedError` 失败，目标 step330 未达到。最新可恢复 checkpoint 为 step320；验证合计 success 在 step314 为 55.00%，step320 为 50.83%。
+- 清理时 hold `468852` 与 env `468531` 仍在运行，但 hold 内没有活动训练 step；未取消这些 allocation。
+
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
 
 - 目标：把单个 Qwen `<|latent_state|>` 扩展为配置可控的 k 个 latent query token，扩大 Qwen 原始导出状态容量；先保持 SFT2 主训练路径可用，k=1 兼容。
@@ -13,7 +22,7 @@
 - 详细进度见 `ai_tasks/ai_progress/2026-07-09_multi_latent_query_tokens.md`。RL / reconstruction / agent inference 多 token 同步仍留作后续阶段。
 - 已新增后续实验任务 `ai_tasks/vagen_legacy_wm_k8_sft_pipeline.md`：使用 `vagen_legacy_wm_entropy01_kl001_60step_2env4train` checkpoint，按 rollout → SFT1 → SFT2 顺序执行，并统一取 `latent_token_count=8`。
 - 已开始代码/数据准备：SFT1 训练入口、cache、checkpoint、Slurm wrapper 支持 `LATENT_TOKEN_COUNT`；SFT2 Slurm wrapper 可透传 `LATENT_TOKEN_COUNT`；新增 k=8 参考配置与 runbook `experiments/training/vagen_legacy_wm_k8/README.md`。已通过 py_compile、bash -n、compileall 与相关 SFT2 pytest（27 passed）。尚未启动任何 rollout/训练。
-- 2026-07-10 执行前核查：源为 `.../checkpoints/global_step_60/actor/huggingface` 完整 HF export，W&B `i2cjhi24`；源 tokenizer 无 Nimloth tokens，rollout 应沿用 `eval_mode`，转换时再加入 k=8。实际 dataset 核实 train/val task index 不重叠且 test scenes 与 train scenes 无交集。当前 `/project` 仅余约 744G，而旧 SFT2 cache 占 1.3T，新 full cache 无法直接构建；等待人类确认清理/替代存储、test、epochs/early-stop 与 GPU 方案。详细见 `ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
+- 2026-07-10 执行前核查：源为 `.../checkpoints/global_step_60/actor/huggingface` 完整 HF export，W&B `i2cjhi24`；源 tokenizer 无 Nimloth tokens，rollout 应沿用 `eval_mode`，转换时再加入 k=8。实际 dataset 核实 train/val task index 不重叠且 test scenes 与 train scenes 无交集。旧 SFT2 cache 已经人类批准删除，并同时裁剪当前 legacy-dev ws4 run 的 18 个中间 checkpoints；清理后 `/project` 可用约 2.9 TiB，新 full cache 的原存储阻塞已解除。test、epochs/early-stop 与 GPU 方案仍待确认。详细见 `ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 2026-07-02：external/RCDM 已初始化并适配到 SFT2 latent state reconstruction 可视化
 
