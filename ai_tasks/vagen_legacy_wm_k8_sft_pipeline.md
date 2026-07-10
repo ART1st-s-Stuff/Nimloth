@@ -1,7 +1,7 @@
 # vagen_legacy_wm k=8 rollout → SFT1 → SFT2 任务
 
 日期：2026-07-09
-状态：实验前核查阶段；代码已提交，尚未启动 rollout 或训练
+状态：实验前核查与 compact cache 优化已完成；代码已提交，尚未启动 rollout、正式 cache 或训练
 
 ## 目标
 
@@ -99,7 +99,7 @@
 
 ### 验收
 
-- SFT2 能正常构建 preprocess cache，cache fingerprint 包含 `latent_token_count=8`。
+- SFT2 使用 CPU-only compact preprocess cache build；cache fingerprint 包含 `latent_token_count=8`、processor source、dtype 与数据源信息，GPU job 强制使用 prebuilt cache。
 - `StateProjector` 输入维度为 `8 * qwen_hidden_dim`。
 - 训练日志包含 WM MSE、value loss、CE loss、SIGReg、val success rate。
 - 保存 best/latest checkpoint，并能用 metadata 检查 k=8 配置。
@@ -125,10 +125,12 @@
 - VAGEN Nimloth prompt helper 已支持通过 `NIMLOTH_LATENT_TOKEN_COUNT` / `LATENT_TOKEN_COUNT` 生成多 latent query token 格式；parser 可保留 action block 前的 extra latent query tokens。
 - 已确认源 checkpoint：`/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-06-24/vagen_legacy_wm_entropy01_kl001_60step_2env4train/checkpoints/global_step_60/actor/huggingface`，是完整四分片 HF actor export。
 - 源 tokenizer 没有 Nimloth latent/action tokens；rollout 必须沿用源模型训练时的 legacy `eval_mode`，转换阶段再生成 k=8 Nimloth block。
-- 验证：py_compile、bash -n、compileall 与相关 SFT2 pytest 均通过；详细命令见 `ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
+- compact cache 优化提交 `0ffcf1e`：唯一图像 BF16 mmap shards + transition token/index shards，保持独立 per-prefix 语义；SFT1/SFT2 cache 均可在 CPU Slurm job 预建，再以 `afterok` 启动 GPU job。
+- 远程真实 processor smoke 已确认 compact 与在线编码的首/末 prefix input IDs、labels、grid 完全一致，pixels 在 BF16 后完全一致；按现有同规模 60,170 unique images 外推，完整 SFT2 train+val compact cache 约 45.67 GiB。
+- 验证：py_compile、bash -n、compileall 与相关 SFT2 pytest（31 passed）均通过；详细命令见 `ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
 
 ## 待确认问题
 
 1. rollout 是否包含 test split；当前执行方案建议同时采 test。
 2. SFT1/SFT2 的具体资源配置、训练轮数和 early-stop 标准。
-3. `/project` 当前仅余约 744G，而旧 SFT2 preprocess cache 占约 1.3T；完整新 cache 预计无法在现有剩余空间内构建，需要人类批准清理旧 cache 或批准替代方案。
+3. GPU 资源仍待确认；cache 存储阻塞已解除：旧 1.3 TiB cache 已经人类批准删除，新 compact cache 当前外推约 45.67 GiB，正式大小以 CPU build manifest 为准。
