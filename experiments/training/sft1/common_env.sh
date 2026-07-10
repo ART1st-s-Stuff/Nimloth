@@ -23,7 +23,9 @@ export UV_CACHE_DIR="${REPO}/.cache/uv"
 export HOME="${REPO}/.home"
 export WANDB_DIR="${REPO}/.cache/wandb"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export PATH="${REPO}/.venv/bin:${REPO}/.local/bin:$PATH"
+PYTHON_ENV="${PYTHON_ENV:-${REPO}/.venv}"
+export PYTHON_ENV
+export PATH="${PYTHON_ENV}/bin:${REPO}/.local/bin:$PATH"
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
@@ -43,7 +45,7 @@ elif [ -f /project/peilab/atst/.env ]; then
 fi
 
 # shellcheck disable=SC1091
-source "${REPO}/.venv/bin/activate"
+source "${PYTHON_ENV}/bin/activate"
 export TOKENIZERS_PARALLELISM=true
 export NCCL_DEBUG=WARN
 export NCCL_IB_DISABLE=1

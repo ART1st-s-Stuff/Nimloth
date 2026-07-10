@@ -17,5 +17,6 @@ SFT1_RUN="${SFT1_RUN:-${SFT1_RUNS}/sft1_train_vagen79_qwen25vl_alltrain_8gpu_lor
 BASE_HF="${BASE_HF:-${SFT1_RUNS}/vagen_nav_dgx31_49train_dgx36env_3node_16train8env_original_base_common_resp20k_single_action_promptfix_retry2/checkpoints/global_step_79/actor/huggingface}"
 LATENT_TOKEN_COUNT="${LATENT_TOKEN_COUNT:-1}"
 MASK_LATENT_QUERY_LABELS="${MASK_LATENT_QUERY_LABELS:-1}"
-export LATENT_TOKEN_COUNT MASK_LATENT_QUERY_LABELS
+PYTHON_ENV="${PYTHON_ENV:-${REPO}/.venv}"
+export LATENT_TOKEN_COUNT MASK_LATENT_QUERY_LABELS PYTHON_ENV
 export NIMLOTH_LATENT_TOKEN_COUNT="${LATENT_TOKEN_COUNT}"

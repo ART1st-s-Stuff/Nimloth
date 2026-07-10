@@ -33,7 +33,7 @@ export XDG_CACHE_HOME=${ROOT}/.cache
 export HOME=${ROOT}/.home
 export FLASHINFER_WORKSPACE_DIR=${ROOT}/.cache/flashinfer
 mkdir -p "$HOME" "$FLASHINFER_WORKSPACE_DIR"
-export PATH=${ROOT}/.venv/bin:${ROOT}/.local/bin:$PATH
+export PATH=${PYTHON_ENV}/bin:${ROOT}/.local/bin:$PATH
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
@@ -45,7 +45,7 @@ if [ -f /project/peilab/atst/flower/.env ]; then
 elif [ -f /project/peilab/atst/.env ]; then
   set -a; source /project/peilab/atst/.env; set +a
 fi
-source ${ROOT}/.venv/bin/activate
+source "${PYTHON_ENV}/bin/activate"
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/../baseline/setup_ai2thor_env.sh"
 cd "$BASEDIR"

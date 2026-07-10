@@ -11,6 +11,7 @@ Set these on the server before launching jobs:
 ```bash
 # REPO must be the clean server worktree at the committed pipeline revision.
 export REPO=/project/peilab/atst/nimloth/.worktree/vagen-legacy-wm-k8
+export PYTHON_ENV=/project/peilab/atst/nimloth/.venv-vagen-main
 export SOURCE_RUN_NAME=vagen_legacy_wm_entropy01_kl001_60step_2env4train
 export SOURCE_RUN_DIR=/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-06-24/${SOURCE_RUN_NAME}
 export SOURCE_CHECKPOINT_STEP=60
@@ -26,6 +27,8 @@ export MASK_LATENT_QUERY_LABELS=1
 Verified source: `global_step_60/actor/huggingface` contains a complete four-shard HF model.
 Its tokenizer has no Nimloth latent/action tokens, so source-policy rollout must stay on the
 legacy `eval_mode` prompt; k=8 tokens are introduced by conversion/SFT, not by source rollout.
+Use `.venv-vagen-main` (Transformers 4.55.4 / PyTorch 2.8.0); the server `.venv` has
+Transformers 4.49.0 and is not compatible with this 4.55-format checkpoint/export path.
 
 ## 1. Rollout collection
 

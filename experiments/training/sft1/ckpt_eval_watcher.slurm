@@ -25,8 +25,9 @@ SLURM=/cm/shared/apps/slurm/current/bin/sbatch
 SQUEUE=/cm/shared/apps/slurm/current/bin/squeue
 export SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 
-export PATH=${ROOT}/.venv/bin:${ROOT}/.local/bin:$PATH
-source ${ROOT}/.venv/bin/activate
+PYTHON_ENV=${PYTHON_ENV:-${ROOT}/.venv}
+export PATH=${PYTHON_ENV}/bin:${ROOT}/.local/bin:$PATH
+source "${PYTHON_ENV}/bin/activate"
 
 log() { echo "[$(date -Iseconds)] $*"; }
 
