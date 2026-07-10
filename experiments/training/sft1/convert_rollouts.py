@@ -68,6 +68,17 @@ SYSTEM_RE = re.compile(r"<\|im_start\|>system\n(.*?)(?:<\|im_end\|>|\Z)", re.S)
 ACTION_RE = re.compile(r"<action>\s*([^<]+?)\s*</action>", re.S)
 THINK_RE = re.compile(r"<think>(.*?)</think>", re.S)
 
+LEGACY_ACTION_ALIASES = {
+    "moveahead": "move_forward",
+    "moveback": "move_backward",
+    "moveright": "move_right",
+    "moveleft": "move_left",
+    "rotateright": "turn_right",
+    "rotateleft": "turn_left",
+    "lookup": "look_up",
+    "lookdown": "look_down",
+}
+
 
 @dataclass(frozen=True)
 class SourceRecord:
@@ -175,9 +186,14 @@ def extract_action(text: str) -> str | None:
     raw = raw.strip(" []'\"")
     if raw in ACTION_TO_IDX:
         return raw
+    if raw in LEGACY_ACTION_ALIASES:
+        return LEGACY_ACTION_ALIASES[raw]
     for name in ACTION_NAMES:
         if name in raw:
             return name
+    for alias, canonical in LEGACY_ACTION_ALIASES.items():
+        if alias in raw:
+            return canonical
     return None
 
 

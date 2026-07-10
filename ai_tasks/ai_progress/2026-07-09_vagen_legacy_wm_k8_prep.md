@@ -107,7 +107,8 @@
 - 2-row placeholder 修复 `3708b14` 后 attempt 7 通过全部 config/data/dataloader checks，两个 FSDP workers 完整加载 source checkpoint 4 shards，并进入 vLLM 0.11 engine 初始化；随后因继承 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 与 vLLM sleep-mode CuMemAllocator 不兼容而失败。退出后 4 GPU 均为 0 MiB，未生成 JSONL/checkpoint。
 - allocator/Ray address 修复 `6aaf684` 后 attempt 8 发现 dashboard port overlap，`7f6ccee` 改为 8266+task。Attempt 9 随后完整通过 production rollout gate：2 FSDP/vLLM workers、source step60、external env、greedy eval_mode、JSONL/PNG dump与 cleanup；1 条 `base_train` seed1 trajectory success=true、score14.5、9 steps、10 images、action validity1.0，退出后 GPU 0 MiB。
 - Conversion attempt 1 暴露 smoke shard 名不符合 `shard_*` 约定，`4d51769` 已修。重试后进一步发现 pinned VAGEN dump schema 是完整 transcript `output_str` + `metrics` + `image_paths`，而 converter 只支持 legacy `input`/`output` + top-level success/score，导致错误产出无 messages/actions 且 success=false。
-- 正在扩展 converter：解析完整 `output_str`，读取 metrics/image paths/metadata，prompt 中所有具体 XML action examples 也改写为 k=8 Nimloth block；提交后强制重建 smoke records并严格检查 messages/actions/images/tokens/success。
+- Converter schema 修复 `796fff3` 后，conversion attempt 2 已正确恢复 success/score、20 messages、9 assistant turns、10 images，并移除 prompt XML examples；严格检查又发现 eval_mode 输出 legacy actions（`moveahead`/`rotateright` 等），而 token map 只接受 canonical underscore names，9 个 action 全变为空 block。
+- 已增加 8 个 legacy→canonical action aliases；提交后再次 force rebuild，并要求9个具体 action tokens、无 warnings/issues。
 
 ## 待确认问题
 
