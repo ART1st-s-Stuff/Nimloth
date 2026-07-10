@@ -208,8 +208,8 @@ CUDA_VISIBLE_DEVICES="${POLICY_GPUS}" "${PYTHON_ENV}/bin/python" -m vagen.main_p
   +trainer.assert_val_env_composition=True \
   '+trainer.val_env_composition.navigation_base={count:60,eval_set:base}' \
   '+trainer.val_env_composition.navigation_common={count:60,eval_set:common_sense}' \
-  algorithm.adv_estimator=gae algorithm.use_kl_in_reward=True \
-  algorithm.kl_ctrl.kl_coef=0.001 algorithm.gamma=1.0 algorithm.lam=1.0 \
+  algorithm.adv_estimator=reinforce_plus_plus algorithm.use_kl_in_reward=False \
+  algorithm.kl_ctrl.kl_coef=0.0 algorithm.gamma=1.0 algorithm.lam=1.0 \
   actor_rollout_ref.model.path="${MODEL_PATH}" \
   actor_rollout_ref.model.use_remove_padding=True actor_rollout_ref.model.use_fused_kernels=False \
   actor_rollout_ref.model.enable_gradient_checkpointing=True \
@@ -217,8 +217,8 @@ CUDA_VISIBLE_DEVICES="${POLICY_GPUS}" "${PYTHON_ENV}/bin/python" -m vagen.main_p
   actor_rollout_ref.actor.optim.lr=1e-6 actor_rollout_ref.actor.ppo_mini_batch_size=32 \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
   actor_rollout_ref.actor.ppo_max_token_len_per_gpu=32768 \
-  actor_rollout_ref.actor.use_kl_loss=True actor_rollout_ref.actor.kl_loss_coef=0.001 \
-  actor_rollout_ref.actor.kl_loss_type=low_var_kl actor_rollout_ref.actor.entropy_coeff=0.01 \
+  actor_rollout_ref.actor.use_kl_loss=False actor_rollout_ref.actor.kl_loss_coef=0.0 \
+  actor_rollout_ref.actor.kl_loss_type=low_var_kl actor_rollout_ref.actor.entropy_coeff=0.0 \
   actor_rollout_ref.actor.ulysses_sequence_parallel_size=1 \
   actor_rollout_ref.actor.fsdp_config.param_offload=True \
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
