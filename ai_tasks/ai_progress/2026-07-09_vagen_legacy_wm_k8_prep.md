@@ -101,7 +101,8 @@
 - 计划复用已有 normal allocation `468852`（dgx-27，4 GPU）和 env service `468531`（dgx-37，2 GPU），不新占 GPU：rollout 用 2 GPU；之后顺序执行 SFT1 2-GPU LoRA+embedding 2–5 step/resume 与 SFT2 2-GPU vision+WM/value 2–5 step/resume。所有 smoke 禁用 W&B并使用独占 preflight 输出目录。
 - 网络恢复后已同步服务器并复用 hold `468852` / env `468531`。rollout smoke attempt 1 在模型加载前 exit 143：nested login shell 的 worktree HOME 缺少 `.ssh`，且 `pkill -f 'ray::'` 可能匹配包含该字面量的父 shell 命令。没有生成 JSONL/checkpoint。
 - common env / Ray cleanup 修复提交 `82770ca` 后，attempt 2 已成功启动本地 Ray（2 GPU / 56 CPU），但在模型加载前失败：canonical wrapper 仍调用当前 VAGEN 不存在的 `vagen.main_ppo`；实际入口为 `vagen.trainer.main_ppo`。没有生成 JSONL/checkpoint。
-- 已同步修复 SFT1 rollout、SFT1 eval 与 SFT2 eval canonical wrappers 的 module entry；提交后继续同一 smoke。
+- module entry 修复 `52739b4` 后 attempt 3 进入 Hydra，但 pinned VAGEN 已没有旧 `vagen/configs/vagen_multiturn`；它使用内置 `vagen/trainer/config/ppo_trainer.yaml`、parquet env rows 与 `rollout_manager.use_service/base_url` API，因此仍在模型加载前失败，没有 JSONL/checkpoint。
+- 正在把 production rollout wrapper 适配到 pinned VAGEN API：按已核实的 split/data_source/eval_set/seed 直接生成 deterministic parquet，移除不存在的旧 config/agent-loop overrides；提交后先做 Hydra composition，再重试 GPU smoke。
 
 ## 待确认问题
 
