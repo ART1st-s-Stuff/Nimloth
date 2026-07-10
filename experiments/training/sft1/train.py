@@ -728,6 +728,18 @@ def is_peft_model(model: torch.nn.Module) -> bool:
     return hasattr(model, "peft_config") or model.__class__.__name__ == "PeftModel"
 
 
+def resize_token_embeddings_and_sync_vocab(model: torch.nn.Module, vocab_size: int) -> None:
+    model.resize_token_embeddings(vocab_size)
+    config = model.config
+    config.vocab_size = vocab_size
+    text_config = getattr(config, "text_config", None)
+    if text_config is not None:
+        text_config.vocab_size = vocab_size
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is not None:
+        generation_config.vocab_size = vocab_size
+
+
 def merge_peft_checkpoint(
     base_model_path: Path,
     adapter_path: Path,
@@ -742,7 +754,7 @@ def merge_peft_checkpoint(
         torch_dtype=dtype,
         trust_remote_code=True,
     )
-    base.resize_token_embeddings(len(processor.tokenizer))
+    resize_token_embeddings_and_sync_vocab(base, len(processor.tokenizer))
     merged = PeftModel.from_pretrained(base, adapter_path).merge_and_unload()
     out_path.mkdir(parents=True, exist_ok=True)
     merged.save_pretrained(out_path, safe_serialization=True)
@@ -1192,7 +1204,7 @@ def main() -> int:
     )
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
-    model.resize_token_embeddings(len(processor.tokenizer))
+    resize_token_embeddings_and_sync_vocab(model, len(processor.tokenizer))
     if added > 0:
         initialize_extra_latent_token_embeddings(
             model,
