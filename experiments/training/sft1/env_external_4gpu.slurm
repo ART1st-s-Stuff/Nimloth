@@ -56,8 +56,13 @@ NODE_IP=$(hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
 if [ -z "${NODE_IP}" ]; then NODE_IP=$(hostname -I | awk '{print $1}'); fi
 IFS=',' read -r -a GPU_IDS <<< "${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 PORT_BASE=${PORT_BASE:-8400}
+ENV_SERVICE_COUNT=${ENV_SERVICE_COUNT:-4}
+if [ "${ENV_SERVICE_COUNT}" -lt 1 ] || [ "${ENV_SERVICE_COUNT}" -gt "${#GPU_IDS[@]}" ]; then
+  echo "ERROR ENV_SERVICE_COUNT=${ENV_SERVICE_COUNT} incompatible with allocated GPUs ${CUDA_VISIBLE_DEVICES:-}" >&2
+  exit 2
+fi
 
-echo "=== SFT1 vagen79 4-GPU env job starting ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+echo "=== SFT1 vagen79 ${ENV_SERVICE_COUNT}-GPU env job starting ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 echo "job=${SLURM_JOB_ID} node=${NODE} ip=${NODE_IP}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 
 declare -a GOOD_PHYS=()
@@ -88,8 +93,8 @@ PY
   if [ "$rc" -eq 0 ]; then GOOD_PHYS+=("$phys"); fi
 done
 
-if [ "${#GOOD_PHYS[@]}" -lt 4 ]; then
-  echo "ERROR need 4 good GPUs, got ${#GOOD_PHYS[@]}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+if [ "${#GOOD_PHYS[@]}" -lt "${ENV_SERVICE_COUNT}" ]; then
+  echo "ERROR need ${ENV_SERVICE_COUNT} good GPUs, got ${#GOOD_PHYS[@]}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   touch "${CONTROL_DIR}/failed"
   exit 2
 fi
@@ -104,7 +109,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for env_i in 0 1 2 3; do
+for env_i in $(seq 0 $((ENV_SERVICE_COUNT - 1))); do
   phys="${GOOD_PHYS[$env_i]}"
   port=$((PORT_BASE + env_i))
   echo "http://${NODE_IP}:${port}" >> "${CONTROL_DIR}/env_urls.txt"
@@ -115,7 +120,7 @@ for env_i in 0 1 2 3; do
   echo $! >> "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids"
 done
 
-for env_i in 0 1 2 3; do
+for env_i in $(seq 0 $((ENV_SERVICE_COUNT - 1))); do
   port=$((PORT_BASE + env_i))
   ok=0
   for i in $(seq 1 120); do

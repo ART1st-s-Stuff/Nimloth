@@ -34,6 +34,12 @@ fi
 ENV_GPUS=""
 POLICY_GPUS=""
 ENV_PID=""
+ENV_GPU_COUNT=${ENV_GPU_COUNT:-2}
+POLICY_GPU_COUNT=$((6 - ENV_GPU_COUNT))
+if [ "${ENV_GPU_COUNT}" -lt 1 ] || [ "${POLICY_GPU_COUNT}" -lt 1 ]; then
+  echo "ERROR invalid ENV_GPU_COUNT=${ENV_GPU_COUNT}" >&2
+  exit 2
+fi
 
 cleanup() {
   set +e
@@ -58,8 +64,8 @@ trap on_signal TERM INT
 } | tee -a "${LOG}"
 
 # AI2-THOR needs working Vulkan/CloudRendering GPUs, while policy vLLM only
-# needs CUDA. Probe all six first so one bad Vulkan mapping does not reject an
-# otherwise usable six-GPU allocation.
+# needs CUDA. Probe all six first, then use two env GPUs and four policy GPUs by
+# default to reproduce the source checkpoint's four-worker validation topology.
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
 # shellcheck disable=SC1091
@@ -102,11 +108,11 @@ PY
     echo "WARN gpu=${gpu} unsuitable for AI2-THOR rc=${rc}; reserve for CUDA policy" | tee -a "${LOG}"
   fi
 done
-if [ "${#GOOD_ENV_GPUS[@]}" -lt 4 ]; then
-  echo "ERROR need at least four AI2-THOR-good GPUs among six, got ${#GOOD_ENV_GPUS[@]}" | tee -a "${LOG}"
+if [ "${#GOOD_ENV_GPUS[@]}" -lt "${ENV_GPU_COUNT}" ]; then
+  echo "ERROR need at least ${ENV_GPU_COUNT} AI2-THOR-good GPUs among six, got ${#GOOD_ENV_GPUS[@]}" | tee -a "${LOG}"
   exit 4
 fi
-SELECTED_ENV=("${GOOD_ENV_GPUS[@]:0:4}")
+SELECTED_ENV=("${GOOD_ENV_GPUS[@]:0:${ENV_GPU_COUNT}}")
 declare -a SELECTED_POLICY=()
 for gpu in "${ALLOCATED_GPUS[@]}"; do
   gpu=$(echo "${gpu}" | xargs)
@@ -116,8 +122,8 @@ for gpu in "${ALLOCATED_GPUS[@]}"; do
   done
   if [ "${selected}" -eq 0 ]; then SELECTED_POLICY+=("${gpu}"); fi
 done
-if [ "${#SELECTED_POLICY[@]}" -ne 2 ]; then
-  echo "ERROR expected two policy GPUs after env selection, got ${#SELECTED_POLICY[@]}" | tee -a "${LOG}"
+if [ "${#SELECTED_POLICY[@]}" -ne "${POLICY_GPU_COUNT}" ]; then
+  echo "ERROR expected ${POLICY_GPU_COUNT} policy GPUs after env selection, got ${#SELECTED_POLICY[@]}" | tee -a "${LOG}"
   exit 4
 fi
 ENV_GPUS=$(IFS=,; echo "${SELECTED_ENV[*]}")
@@ -138,6 +144,7 @@ rm -f "${READY}" "${FAILED}"
 
 (
   export CUDA_VISIBLE_DEVICES="${ENV_GPUS}"
+  export ENV_SERVICE_COUNT="${ENV_GPU_COUNT}"
   exec bash "${SCRIPTDIR}/env_external_4gpu.slurm"
 ) >> "${LOG}" 2>&1 &
 ENV_PID=$!
@@ -181,6 +188,7 @@ for task_id in "${TASK_IDS[@]}"; do
     export SLURM_ARRAY_JOB_ID="${SLURM_JOB_ID}"
     export SLURM_ARRAY_TASK_ID="${task_id}"
     export SLURM_CPUS_PER_TASK=112
+    export POLICY_GPU_COUNT="${POLICY_GPU_COUNT}"
     exec bash "${SCRIPTDIR}/rollouts_greedy_parallel.slurm"
   ) >> "${LOG}" 2>&1
   echo "=== completed rollout task ${task_id} at $(date -Is) ===" | tee -a "${LOG}"
