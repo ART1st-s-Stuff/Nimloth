@@ -93,7 +93,8 @@ case "${SFT1_TUNE_MODE}" in
     ;;
 esac
 
-PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NGPUS} \
+PYTHONUNBUFFERED=1 "${PYTHON_ENV}/bin/python3" -m torch.distributed.run \
+  --standalone --nnodes=1 --nproc_per_node=${NGPUS} \
   "${SCRIPTDIR}/train.py" \
   "${TRAIN_ARGS[@]}" \
   2>&1 | tee -a "${LOG}"

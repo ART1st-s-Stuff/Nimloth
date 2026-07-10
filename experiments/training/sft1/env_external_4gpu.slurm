@@ -45,7 +45,8 @@ if [ -f /project/peilab/atst/flower/.env ]; then
 elif [ -f /project/peilab/atst/.env ]; then
   set -a; source /project/peilab/atst/.env; set +a
 fi
-source "${PYTHON_ENV}/bin/activate"
+export VIRTUAL_ENV=${PYTHON_ENV}
+hash -r
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/../baseline/setup_ai2thor_env.sh"
 cd "$BASEDIR"

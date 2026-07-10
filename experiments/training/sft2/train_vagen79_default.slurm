@@ -34,7 +34,7 @@ SFT1_BEST=""
 
 mkdir -p "${TRAIN_OUT}" "${REPO}/outputs/experiments/training/sft2/slurm"
 
-COMMON_ENV="export UV_CACHE_DIR='${REPO}/.cache/uv'; export HOME='${REPO}/.home'; export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True; export TORCH_NCCL_ASYNC_ERROR_HANDLING=1; export NCCL_ASYNC_ERROR_HANDLING=1; export PATH='${PYTHON_ENV}/bin:${REPO}/.local/bin':\$PATH; export HF_HOME=/project/peilab/atst/.cache/huggingface; export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface; export TORCH_HOME=/project/peilab/atst/flower/.cache/torch; export PYTHONPATH='${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/le-wm'; source '${PYTHON_ENV}/bin/activate'; if [ -f /project/peilab/atst/flower/.env ]; then set -a; source /project/peilab/atst/flower/.env; set +a; elif [ -f /project/peilab/atst/.env ]; then set -a; source /project/peilab/atst/.env; set +a; fi; export TOKENIZERS_PARALLELISM=true; export NCCL_DEBUG=WARN; export NCCL_IB_DISABLE=1"
+COMMON_ENV="export UV_CACHE_DIR='${REPO}/.cache/uv'; export HOME='${REPO}/.home'; export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True; export TORCH_NCCL_ASYNC_ERROR_HANDLING=1; export NCCL_ASYNC_ERROR_HANDLING=1; export PATH='${PYTHON_ENV}/bin:${REPO}/.local/bin':\$PATH; export HF_HOME=/project/peilab/atst/.cache/huggingface; export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface; export TORCH_HOME=/project/peilab/atst/flower/.cache/torch; export PYTHONPATH='${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/le-wm'; export VIRTUAL_ENV='${PYTHON_ENV}'; hash -r; if [ -f /project/peilab/atst/flower/.env ]; then set -a; source /project/peilab/atst/flower/.env; set +a; elif [ -f /project/peilab/atst/.env ]; then set -a; source /project/peilab/atst/.env; set +a; fi; export TOKENIZERS_PARALLELISM=true; export NCCL_DEBUG=WARN; export NCCL_IB_DISABLE=1"
 
 ensure_sft1_merged() {
   if [ -f "${SFT1_BEST}/config.json" ]; then
@@ -144,8 +144,9 @@ fi
 
 export NIMLOTH_DDP_GPU_STRIDE="${NIMLOTH_DDP_GPU_STRIDE:-1}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-${NGPUS}}"
-echo "=== torchrun ${NGPUS}-GPU SFT2 (nproc=${NPROC_PER_NODE}, gpu_stride=${NIMLOTH_DDP_GPU_STRIDE}) ===" | tee -a "${LOG}"
-PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node=${NPROC_PER_NODE} \
+echo "=== torch.distributed.run ${NGPUS}-GPU SFT2 (nproc=${NPROC_PER_NODE}, gpu_stride=${NIMLOTH_DDP_GPU_STRIDE}) ===" | tee -a "${LOG}"
+PYTHONUNBUFFERED=1 "${PYTHON_ENV}/bin/python3" -m torch.distributed.run \
+  --standalone --nnodes=1 --nproc_per_node=${NPROC_PER_NODE} \
   "${SCRIPTDIR}/train.py" \
   --config "${CONFIG}" \
   "${TUNE_ARGS[@]}" \

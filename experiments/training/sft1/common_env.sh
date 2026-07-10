@@ -48,8 +48,10 @@ fi
 PYTHON_ENV="${NIMLOTH_PYTHON_ENV}"
 export PYTHON_ENV
 export PATH="${PYTHON_ENV}/bin:${REPO}/.local/bin:$PATH"
-# shellcheck disable=SC1091
-source "${PYTHON_ENV}/bin/activate"
+# The copied server venv activation script has a stale VIRTUAL_ENV path; use
+# its interpreter directly through PATH instead of sourcing activate.
+export VIRTUAL_ENV="${PYTHON_ENV}"
+hash -r
 export TOKENIZERS_PARALLELISM=true
 export NCCL_DEBUG=WARN
 export NCCL_IB_DISABLE=1

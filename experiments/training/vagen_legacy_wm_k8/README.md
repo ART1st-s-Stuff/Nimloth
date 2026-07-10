@@ -29,6 +29,8 @@ Its tokenizer has no Nimloth latent/action tokens, so source-policy rollout must
 legacy `eval_mode` prompt; k=8 tokens are introduced by conversion/SFT, not by source rollout.
 Use `.venv-vagen-main` (Transformers 4.55.4 / PyTorch 2.8.0); the server `.venv` has
 Transformers 4.49.0 and is not compatible with this 4.55-format checkpoint/export path.
+The copied `.venv-vagen-main` activation/console-script shebangs point at `.venv`, so wrappers
+invoke its Python interpreter explicitly instead of sourcing `bin/activate` or calling `torchrun` directly.
 
 ## 1. Rollout collection
 

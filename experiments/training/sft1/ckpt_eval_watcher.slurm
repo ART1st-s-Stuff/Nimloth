@@ -27,7 +27,8 @@ export SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 
 PYTHON_ENV=${PYTHON_ENV:-${ROOT}/.venv}
 export PATH=${PYTHON_ENV}/bin:${ROOT}/.local/bin:$PATH
-source "${PYTHON_ENV}/bin/activate"
+export VIRTUAL_ENV=${PYTHON_ENV}
+hash -r
 
 log() { echo "[$(date -Iseconds)] $*"; }
 
