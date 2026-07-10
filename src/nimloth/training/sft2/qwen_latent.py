@@ -83,7 +83,7 @@ def _capture_last_hidden(model, model_inputs: dict[str, torch.Tensor]):
 def forward_qwen_last_hidden(model, enc: dict[str, torch.Tensor], device: torch.device) -> torch.Tensor:
     """Run Qwen forward and return last-layer hidden states ``[batch, seq, dim]``."""
 
-    model_inputs = {k: v.to(device) for k, v in enc.items()}
+    model_inputs = {k: v.to(device, non_blocking=True) for k, v in enc.items()}
     hidden, _ = _capture_last_hidden(model, model_inputs)
     return hidden
 
@@ -102,7 +102,7 @@ def extract_qwen_latents(
     ``latent_token_count > 1``.
     """
 
-    model_inputs = {k: v.to(device) for k, v in enc.items()}
+    model_inputs = {k: v.to(device, non_blocking=True) for k, v in enc.items()}
     hidden, output = _capture_last_hidden(model, model_inputs)
     tokens = LatentActionTokens()
     rows: list[torch.Tensor] = []

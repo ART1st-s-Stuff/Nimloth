@@ -34,7 +34,7 @@ SFT1_BEST=""
 
 mkdir -p "${TRAIN_OUT}" "${REPO}/outputs/experiments/training/sft2/slurm"
 
-COMMON_ENV="export UV_CACHE_DIR='${REPO}/.cache/uv'; export HOME='${REPO}/.home'; export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True; export TORCH_NCCL_ASYNC_ERROR_HANDLING=1; export NCCL_ASYNC_ERROR_HANDLING=1; export PATH='${PYTHON_ENV}/bin:${REPO}/.local/bin':\$PATH; export HF_HOME=/project/peilab/atst/.cache/huggingface; export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface; export TORCH_HOME=/project/peilab/atst/flower/.cache/torch; export PYTHONPATH='${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/le-wm'; export VIRTUAL_ENV='${PYTHON_ENV}'; hash -r; if [ -f /project/peilab/atst/flower/.env ]; then set -a; source /project/peilab/atst/flower/.env; set +a; elif [ -f /project/peilab/atst/.env ]; then set -a; source /project/peilab/atst/.env; set +a; fi; export TOKENIZERS_PARALLELISM=true; export NCCL_DEBUG=WARN; export NCCL_IB_DISABLE=1"
+COMMON_ENV="export UV_CACHE_DIR='${REPO}/.cache/uv'; export HOME='${REPO}/.home'; export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True; export TORCH_NCCL_ASYNC_ERROR_HANDLING=1; export NCCL_ASYNC_ERROR_HANDLING=1; export PATH='${PYTHON_ENV}/bin:${REPO}/.local/bin':\$PATH; export HF_HOME=/project/peilab/atst/.cache/huggingface; export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface; export TORCH_HOME=/project/peilab/atst/flower/.cache/torch; export PYTHONPATH='${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/le-wm'; export VIRTUAL_ENV='${PYTHON_ENV}'; hash -r; if [ -f /project/peilab/atst/flower/.env ]; then set -a; source /project/peilab/atst/flower/.env; set +a; elif [ -f /project/peilab/atst/.env ]; then set -a; source /project/peilab/atst/.env; set +a; fi; export PATH='${PYTHON_ENV}/bin:${REPO}/.local/bin':\$PATH; export VIRTUAL_ENV='${PYTHON_ENV}'; export PYTHONPATH='${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/le-wm'; hash -r; export TOKENIZERS_PARALLELISM=true; export NCCL_DEBUG=WARN; export NCCL_IB_DISABLE=1"
 
 ensure_sft1_merged() {
   if [ -f "${SFT1_BEST}/config.json" ]; then
@@ -103,7 +103,18 @@ fi
 
 PREPROCESS_ARGS=()
 if [ -n "${PREPROCESS_CACHE_DIR:-}" ]; then
-  PREPROCESS_ARGS=(--preprocess-cache-dir "${PREPROCESS_CACHE_DIR}")
+  PREPROCESS_ARGS=(
+    --preprocess-cache-dir "${PREPROCESS_CACHE_DIR}"
+    --preprocess-cache-format "${PREPROCESS_CACHE_FORMAT:-compact}"
+    --preprocess-cache-image-dtype "${PREPROCESS_CACHE_IMAGE_DTYPE:-bfloat16}"
+    --preprocess-cache-image-shard-size "${PREPROCESS_CACHE_IMAGE_SHARD_SIZE:-128}"
+    --preprocess-cache-transition-shard-size "${PREPROCESS_CACHE_TRANSITION_SHARD_SIZE:-256}"
+    --preprocess-cache-shard-lru "${PREPROCESS_CACHE_SHARD_LRU:-2}"
+    --dataloader-prefetch-factor "${DATALOADER_PREFETCH_FACTOR:-2}"
+  )
+  if [ "${REQUIRE_PREBUILT_CACHE:-0}" = "1" ]; then
+    PREPROCESS_ARGS+=(--require-prebuilt-cache)
+  fi
 fi
 TIMING_ARGS=()
 if [ "${STEP_TIMING:-0}" = "1" ]; then
@@ -125,8 +136,8 @@ if [ "${MASK_LATENT_QUERY_LABELS}" = "0" ]; then
   LATENT_ARGS+=(--no-mask-latent-query-labels)
 fi
 
-if [ -n "${PREPROCESS_CACHE_DIR:-}" ]; then
-  echo "=== prebuild preprocess cache ===" | tee -a "${LOG}"
+if [ -n "${PREPROCESS_CACHE_DIR:-}" ] && [ "${REQUIRE_PREBUILT_CACHE:-0}" != "1" ]; then
+  echo "=== prebuild preprocess cache inside training allocation ===" | tee -a "${LOG}"
   PYTHONUNBUFFERED=1 python "${SCRIPTDIR}/build_preprocess_cache.py" \
     --config "${CONFIG}" \
     "${TUNE_ARGS[@]}" \
@@ -140,6 +151,14 @@ if [ -n "${PREPROCESS_CACHE_DIR:-}" ]; then
     --val-jsonl "${RECORDS_ROOT}/val_all.jsonl" \
     --output-dir "${TRAIN_OUT}" \
     2>&1 | tee -a "${LOG}"
+elif [ -n "${PREPROCESS_CACHE_DIR:-}" ]; then
+  for split in train val; do
+    if [ ! -s "${PREPROCESS_CACHE_DIR}/${split}/manifest.json" ]; then
+      echo "ERROR required prebuilt cache missing ${PREPROCESS_CACHE_DIR}/${split}/manifest.json" | tee -a "${LOG}"
+      exit 1
+    fi
+  done
+  echo "=== using required prebuilt preprocess cache ${PREPROCESS_CACHE_DIR} ===" | tee -a "${LOG}"
 fi
 
 export NIMLOTH_DDP_GPU_STRIDE="${NIMLOTH_DDP_GPU_STRIDE:-1}"

@@ -49,6 +49,14 @@ train:
   attn_implementation: flash_attention_2
   gradient_checkpointing: true
   checkpoint_interval_minutes: 20.0
+  preprocess_cache_format: compact
+  preprocess_cache_image_dtype: bfloat16
+  preprocess_cache_image_shard_size: 128
+  preprocess_cache_transition_shard_size: 256
+  preprocess_cache_shard_lru: 2
+  preprocess_workers: 16
+  dataloader_workers: 4
+  dataloader_prefetch_factor: 2
 
 latent:
   token_count: 1

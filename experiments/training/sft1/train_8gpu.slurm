@@ -65,8 +65,9 @@ TRAIN_ARGS=(
   --latent-token-count "${LATENT_TOKEN_COUNT}"
   --max-pixels 602112
   --format-eval-samples 32
-  --num-workers 8
-  --preprocess-workers 16
+  --cache-pixel-dtype "${CACHE_PIXEL_DTYPE:-bfloat16}"
+  --num-workers "${NUM_WORKERS:-4}"
+  --preprocess-workers "${PREPROCESS_WORKERS:-16}"
   --prefetch-factor 2
   --resume
   --wandb-run-name "${WANDB_RUN_NAME}"
@@ -74,6 +75,9 @@ TRAIN_ARGS=(
 )
 if [ "${MASK_LATENT_QUERY_LABELS}" = "0" ]; then
   TRAIN_ARGS+=(--no-mask-latent-query-labels)
+fi
+if [ "${REQUIRE_PREBUILT_CACHE:-0}" = "1" ]; then
+  TRAIN_ARGS+=(--require-prebuilt-cache)
 fi
 
 case "${SFT1_TUNE_MODE}" in

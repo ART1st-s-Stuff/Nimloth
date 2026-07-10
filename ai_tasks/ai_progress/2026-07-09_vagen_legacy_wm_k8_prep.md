@@ -79,6 +79,17 @@
 - 删除前两项目标合计 3.0 TiB；删除后检查仅剩 `global_step_{300,314,320}`，`latest_checkpointed_iteration.txt=320`，配额可用空间约 2.9 TiB（95% used）。
 - 新 full SFT2 preprocess cache 的原容量阻塞已解除；仍不得覆盖现有输出，并须使用新的独占 cache/output 路径。
 
+## 2026-07-10 preprocess cache 重构（尚未启动正式作业）
+
+- SFT2 新增 `compact` cache 格式：每个唯一 resolved image path 只保存一次 processor `pixel_values` / `image_grid_thw`，默认 BF16；每个 transition shard 仅保存 input IDs、labels、grid 与紧凑 image index。训练时按 per-prefix image 顺序重组 tensor，因此不改变独立 prefix forward 语义。
+- image/transition 均改为中等大小 `torch.save` shard；Dataset worker 用 `torch.load(..., mmap=True)` + 小型 LRU，避免 4 万多个小文件反序列化。DataLoader 使用 persistent workers、可配置 prefetch、pinned memory；GPU transfer 改为 non-blocking。
+- WM next-state cache 在 DataLoader worker 内按 message key 去重并预先组成 batch，复用相邻 transition 的 current encoding，主进程不再逐行反序列化/拼接 next prefix。
+- compact builder 使用原子 shard/manifest 写入、构建中 fingerprint state、受限 pending multiprocessing futures、完整 shard/index 验证；fingerprint 包含 model/processor source、JSONL、token/label 参数、dtype、image file stats 与 shard 参数。训练 `--require-prebuilt-cache` 会检查 model/data/config base fingerprint 和 count。
+- SFT1 cache 的 `pixel_values` 默认改为 BF16；fingerprint 加入 dtype 与 processor source。新增 `--cache-only` / `--require-prebuilt-cache`。
+- SFT1/SFT2 均新增 CPU-only cache Slurm job与 `afterok` dependency wrapper；推荐入口分别为 `submit_cache_then_train_8gpu.sh`、`submit_cache_then_train.sh`，避免 cache build 期间占用 GPU。
+- 本地验证：相关 pytest `31 passed`；Python compile、所有新增/修改 shell 的 `bash -n`、`git diff --check` 均通过。
+- 尚未运行远程真实 processor 数值等价 smoke、存储/吞吐 benchmark，也未提交正式 cache build、rollout 或训练作业。
+
 ## 待确认问题
 
 - 是否同时采集 test；当前建议包含 test。

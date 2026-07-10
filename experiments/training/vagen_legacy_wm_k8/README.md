@@ -82,10 +82,11 @@ export TRAIN_OUT=${SFT1_OUTPUT_DATE_ROOT}/${EXPERIMENT_NAME}
 export TRAIN_JSONL=${RECORDS_ROOT}/train_success.jsonl
 export VAL_JSONL=${RECORDS_ROOT}/val_all.jsonl
 
-bash experiments/training/sft1/submit_train_8gpu.sh
+# CPU cache job first; 8-GPU training starts only after it succeeds.
+bash experiments/training/sft1/submit_cache_then_train_8gpu.sh
 ```
 
-SFT1 code normalizes rendered latent blocks to k=8 and masks latent query token labels by default.
+SFT1 code normalizes rendered latent blocks to k=8 and masks latent query token labels by default. Cached image tensors use BF16 by default, and `REQUIRE_PREBUILT_CACHE=1` prevents GPU-side cache rebuilding.
 
 ## 3. SFT2 k=8
 
@@ -99,8 +100,10 @@ export BASE_HF=${INIT_HF}
 export EXPERIMENT_NAME=sft2_${SOURCE_RUN_NAME}_k8
 export TRAIN_OUT=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/${RUN_DATE}/${EXPERIMENT_NAME}
 export CONFIG=${REPO}/configs/training/sft2/latent_wm_value_k8.yaml
+export PREPROCESS_CACHE_DIR=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/cache/${EXPERIMENT_NAME}_compact
 
-bash experiments/training/sft2/submit_default_8gpu.sh
+# CPU compact-cache job first; 8-GPU training has an afterok dependency.
+bash experiments/training/sft2/submit_cache_then_train.sh
 ```
 
 SFT2 checkpoints should record `latent_token_count=8`, `qwen_hidden_dim`, and

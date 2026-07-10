@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
+from nimloth.training.common.qwen_batch import _message_cache_key
 from nimloth.training.sft2.step import _forward_next_latents, wm_eligible_indices
 
 
@@ -61,3 +62,39 @@ def test_forward_next_latents_dedups_identical_next_prefixes() -> None:
     assert captured_batch_sizes == [1]
     assert next_latent.shape == (2, 1)
     assert torch.allclose(next_latent[0], next_latent[1])
+
+
+def test_forward_next_latents_uses_worker_prebatched_cache() -> None:
+    next_messages = [{"role": "user", "content": "next"}]
+    items = [{"next_messages": next_messages}]
+    key = _message_cache_key(next_messages)
+    bundle = {
+        "keys": [key],
+        "enc": {
+            "input_ids": torch.ones((1, 3), dtype=torch.long),
+            "attention_mask": torch.ones((1, 3), dtype=torch.long),
+        },
+    }
+
+    def fake_extract(_model, enc, _token_id_map, _device):
+        assert enc["input_ids"].shape == (1, 3)
+        return torch.tensor([[7.0]]), None
+
+    with (
+        patch("nimloth.training.sft2.step.build_qwen_batch") as build,
+        patch("nimloth.training.sft2.step.extract_qwen_latents", side_effect=fake_extract),
+    ):
+        next_latent = _forward_next_latents(
+            MagicMock(),
+            items,
+            [0],
+            MagicMock(),
+            {"latent_state": 1},
+            torch.device("cpu"),
+            max_length=32,
+            vision_ema=None,
+            next_enc_rows=bundle,
+            pad_token_id=0,
+        )
+    build.assert_not_called()
+    assert torch.equal(next_latent, torch.tensor([[7.0]]))

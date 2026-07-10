@@ -12,6 +12,7 @@ from nimloth.latent import add_special_tokens
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.preprocess_cache import (
     DEFAULT_MIN_PIXELS,
+    build_compact_transition_preprocess_cache,
     build_trajectory_preprocess_cache,
     build_transition_preprocess_cache,
 )
@@ -59,21 +60,37 @@ def main(argv: list[str] | None = None) -> int:
             **build_kwargs,
         )
     else:
-        build_transition_preprocess_cache(
+        builder = (
+            build_compact_transition_preprocess_cache
+            if args.preprocess_cache_format == "compact"
+            else build_transition_preprocess_cache
+        )
+        compact_kwargs = (
+            {
+                "image_dtype": args.preprocess_cache_image_dtype,
+                "image_shard_size": args.preprocess_cache_image_shard_size,
+                "transition_shard_size": args.preprocess_cache_transition_shard_size,
+            }
+            if args.preprocess_cache_format == "compact"
+            else {}
+        )
+        builder(
             jsonl_path=Path(args.train_jsonl),
             cache_dir=cache_root / "train",
             max_records=args.max_train_records,
             success_only=args.success_only,
             value_gamma=args.value_gamma,
             **build_kwargs,
+            **compact_kwargs,
         )
-        build_transition_preprocess_cache(
+        builder(
             jsonl_path=Path(args.val_jsonl),
             cache_dir=cache_root / "val",
             max_records=args.max_val_records,
             success_only=False,
             value_gamma=args.value_gamma,
             **build_kwargs,
+            **compact_kwargs,
         )
     print(json.dumps({"preprocess_cache": "ready", "dir": str(cache_root)}))
     return 0

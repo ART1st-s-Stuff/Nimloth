@@ -13,6 +13,15 @@
 - 该 VAGEN run 已从 314 推进并保存 step320，但随后在下一轮 rollout 再次因 `Fatal Python error: none_dealloc` / `ActorDiedError` 失败，目标 step330 未达到。最新可恢复 checkpoint 为 step320；验证合计 success 在 step314 为 55.00%，step320 为 50.83%。
 - 清理时 hold `468852` 与 env `468531` 仍在运行，但 hold 内没有活动训练 step；未取消这些 allocation。
 
+## 2026-07-10：SFT1/SFT2 preprocess cache 存储与加载重构
+
+- 针对旧 SFT2 cache 1.3 TiB 的 cumulative-prefix image tensor 重复，新增 compact cache：唯一图像 BF16 shard + transition token/index shard，保持每个 prefix 独立编码/forward，不使用 placeholder 训练语义。
+- 加载路径使用 mmap shard LRU、persistent DataLoader workers、prefetch、pinned memory 与 non-blocking GPU transfer；next-state encoding 在 worker 中复用相邻 current row 并预组成去重 batch。
+- builder 加入 model/data/config/image file fingerprint、atomic shard/manifest、可恢复 build state、bounded multiprocessing queue 与 shard 校验；GPU 训练可强制 `--require-prebuilt-cache`。
+- SFT1 cache pixel tensor 同步改为默认 BF16。SFT1/SFT2 均新增 CPU cache Slurm job与 `afterok` 训练 wrapper，避免 cache preprocessing 占用 GPU allocation。
+- 本地相关 pytest `31 passed`，compile、bash syntax 与 diff check 通过。尚未运行远程真实 processor 数值等价和存储/吞吐 smoke；未启动 rollout、正式 cache、训练。
+- 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`。
+
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
 
 - 目标：把单个 Qwen `<|latent_state|>` 扩展为配置可控的 k 个 latent query token，扩大 Qwen 原始导出状态容量；先保持 SFT2 主训练路径可用，k=1 兼容。

@@ -45,8 +45,13 @@ from nimloth.training.sft2.evaluate import evaluate
 from nimloth.training.sft2.loss import compute_combined_loss, wm_loss_weight_schedule
 from nimloth.training.sft2.loss import SIGReg as SIGRegModule
 from nimloth.training.sft2.preprocess_cache import (
+    COMPACT_CACHE_FORMAT,
+    LEGACY_CACHE_FORMAT,
     CachedTransitionDataset,
+    CompactCachedTransitionCollator,
+    build_compact_transition_preprocess_cache,
     build_transition_preprocess_cache,
+    cache_fingerprint,
     collate_cached_transition_batch,
     unpack_transition_batch,
 )
@@ -117,7 +122,7 @@ def _prepare_transition_datasets(args, processor):
             latent_token_count=args.latent_token_count,
             mask_latent_query_labels=args.mask_latent_query_labels,
         )
-        if is_main():
+        if is_main() and not args.require_prebuilt_cache:
             from nimloth.training.sft2.preprocess_cache import build_trajectory_preprocess_cache
 
             build_trajectory_preprocess_cache(
@@ -136,6 +141,27 @@ def _prepare_transition_datasets(args, processor):
             )
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
+        trajectory_specs = (
+            (train_cache_dir, args.train_jsonl, len({sample.record_id for sample in train_samples})),
+            (val_cache_dir, args.val_jsonl, len({sample.record_id for sample in val_samples})),
+        )
+        for required_dir, jsonl_path, expected_count in trajectory_specs:
+            manifest_path = required_dir / "manifest.json"
+            if not manifest_path.is_file():
+                raise FileNotFoundError(f"required trajectory preprocess cache missing manifest: {manifest_path}")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            expected_fingerprint = cache_fingerprint(
+                jsonl_path,
+                max_length=args.max_length,
+                max_pixels=args.max_pixels,
+                min_pixels=min_pixels,
+                vocab_size=len(processor.tokenizer),
+                latent_token_count=args.latent_token_count,
+                mask_latent_query_labels=args.mask_latent_query_labels,
+                processor_source=str(Path(args.model).resolve()),
+            )
+            if manifest.get("fingerprint") != expected_fingerprint or int(manifest.get("count", -1)) != expected_count:
+                raise ValueError(f"trajectory preprocess cache fingerprint/count mismatch: {required_dir}")
         from nimloth.training.sft2.preprocess_cache import CachedTrajectoryDataset
 
         return (
@@ -163,30 +189,106 @@ def _prepare_transition_datasets(args, processor):
         latent_token_count=args.latent_token_count,
         mask_latent_query_labels=args.mask_latent_query_labels,
     )
-    if is_main():
-        build_transition_preprocess_cache(
+    if is_main() and not args.require_prebuilt_cache:
+        builder = (
+            build_compact_transition_preprocess_cache
+            if args.preprocess_cache_format == "compact"
+            else build_transition_preprocess_cache
+        )
+        compact_kwargs = (
+            {
+                "image_dtype": args.preprocess_cache_image_dtype,
+                "image_shard_size": args.preprocess_cache_image_shard_size,
+                "transition_shard_size": args.preprocess_cache_transition_shard_size,
+            }
+            if args.preprocess_cache_format == "compact"
+            else {}
+        )
+        builder(
             jsonl_path=args.train_jsonl,
             cache_dir=train_cache_dir,
             max_records=args.max_train_records,
             success_only=args.success_only,
             **build_kwargs,
+            **compact_kwargs,
         )
-        build_transition_preprocess_cache(
+        builder(
             jsonl_path=args.val_jsonl,
             cache_dir=val_cache_dir,
             max_records=args.max_val_records,
             success_only=False,
             **build_kwargs,
+            **compact_kwargs,
         )
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
+    cache_format_id = COMPACT_CACHE_FORMAT if args.preprocess_cache_format == "compact" else LEGACY_CACHE_FORMAT
+    image_dtype = args.preprocess_cache_image_dtype if args.preprocess_cache_format == "compact" else "float32"
+    cache_specs = (
+        (train_cache_dir, args.train_jsonl, len(train_samples)),
+        (val_cache_dir, args.val_jsonl, len(val_samples)),
+    )
+    for required_dir, jsonl_path, expected_count in cache_specs:
+        manifest_path = required_dir / "manifest.json"
+        if not manifest_path.is_file():
+            mode = "required prebuilt" if args.require_prebuilt_cache else "built"
+            raise FileNotFoundError(f"{mode} preprocess cache missing manifest: {required_dir}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected_fingerprint = cache_fingerprint(
+            jsonl_path,
+            max_length=args.max_length,
+            max_pixels=args.max_pixels,
+            min_pixels=min_pixels,
+            vocab_size=len(processor.tokenizer),
+            value_gamma=args.value_gamma,
+            latent_token_count=args.latent_token_count,
+            mask_latent_query_labels=args.mask_latent_query_labels,
+            cache_format=cache_format_id,
+            image_dtype=image_dtype,
+            processor_source=str(Path(args.model).resolve()),
+        )
+        actual_fingerprint = (
+            manifest.get("base_fingerprint")
+            if args.preprocess_cache_format == "compact"
+            else manifest.get("fingerprint")
+        )
+        if actual_fingerprint != expected_fingerprint or int(manifest.get("count", -1)) != expected_count:
+            raise ValueError(
+                f"preprocess cache fingerprint/count mismatch: {required_dir}; "
+                "rebuild the CPU cache for this model, dataset, and config"
+            )
     pad_token_id = processor.tokenizer.pad_token_id
-    cached_collate = partial(collate_cached_transition_batch, pad_token_id=pad_token_id)
+    train_ds = CachedTransitionDataset(
+        train_cache_dir,
+        train_samples,
+        max_open_shards=args.preprocess_cache_shard_lru,
+    )
+    val_ds = CachedTransitionDataset(
+        val_cache_dir,
+        val_samples,
+        max_open_shards=args.preprocess_cache_shard_lru,
+    )
+    if train_ds.is_compact != val_ds.is_compact:
+        raise ValueError("train/val preprocess cache formats differ")
+    if train_ds.is_compact:
+        train_collate = CompactCachedTransitionCollator(
+            train_cache_dir,
+            pad_token_id=pad_token_id,
+            max_open_shards=args.preprocess_cache_shard_lru,
+        )
+        val_collate = CompactCachedTransitionCollator(
+            val_cache_dir,
+            pad_token_id=pad_token_id,
+            max_open_shards=args.preprocess_cache_shard_lru,
+        )
+    else:
+        train_collate = partial(collate_cached_transition_batch, pad_token_id=pad_token_id)
+        val_collate = partial(collate_cached_transition_batch, pad_token_id=pad_token_id)
     return (
-        CachedTransitionDataset(train_cache_dir, train_samples),
-        CachedTransitionDataset(val_cache_dir, val_samples),
-        cached_collate,
-        cached_collate,
+        train_ds,
+        val_ds,
+        train_collate,
+        val_collate,
         train_samples,
         val_samples,
     )
@@ -287,6 +389,9 @@ def train_sft2(args=None) -> int:
                     "full_trajectory_batching": args.full_trajectory_batching,
                     "latent_token_count": args.latent_token_count,
                     "mask_latent_query_labels": args.mask_latent_query_labels,
+                    "preprocess_cache_format": args.preprocess_cache_format,
+                    "preprocess_cache_image_dtype": args.preprocess_cache_image_dtype,
+                    "require_prebuilt_cache": args.require_prebuilt_cache,
                 }
             )
         )
@@ -319,7 +424,7 @@ def train_sft2(args=None) -> int:
     }
     if dataloader_workers > 0:
         loader_kwargs["persistent_workers"] = True
-        loader_kwargs["prefetch_factor"] = 2
+        loader_kwargs["prefetch_factor"] = max(1, int(args.dataloader_prefetch_factor))
 
     train_sampler = None
     train_batch_sampler = None

@@ -50,7 +50,7 @@ def _forward_next_latents(
     max_length: int,
     *,
     vision_ema: VisionEncoderEMA | None,
-    next_enc_rows: list[dict[str, torch.Tensor] | None] | None,
+    next_enc_rows: Any,
     pad_token_id: int | None,
     latent_token_count: int = 1,
 ) -> torch.Tensor:
@@ -67,7 +67,15 @@ def _forward_next_latents(
 
     unique_indices = [indices[key_to_unique_row[key]] for key in unique_keys]
 
-    if next_enc_rows is not None:
+    if isinstance(next_enc_rows, dict) and "enc" in next_enc_rows:
+        cached_keys = list(next_enc_rows.get("keys", []))
+        if cached_keys != unique_keys:
+            raise ValueError(
+                "prebatched cached next rows do not match WM next-message order: "
+                f"{len(cached_keys)} != {len(unique_keys)}"
+            )
+        next_enc = next_enc_rows["enc"]
+    elif next_enc_rows is not None:
         if pad_token_id is None:
             raise ValueError("pad_token_id required when using cached next_enc_rows")
         next_enc = _collate_next_enc_rows(next_enc_rows, unique_indices, pad_token_id=pad_token_id)
@@ -116,7 +124,7 @@ def compute_step_wm_loss(
     max_length: int,
     *,
     vision_ema: VisionEncoderEMA | None = None,
-    next_enc_rows: list[dict[str, torch.Tensor] | None] | None = None,
+    next_enc_rows: Any = None,
     pad_token_id: int | None = None,
     sigreg_module: SIGReg | None = None,
     latent_token_count: int = 1,

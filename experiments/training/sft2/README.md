@@ -6,6 +6,9 @@ Canonical location for SFT2 per `ai_tasks/sft2_exp.md`.
 |------|---------|
 | `train.py` | Thin experiment entry → `nimloth.training.sft2.trainer` |
 | `train_vagen79_default.slurm` | 8-GPU Slurm job (reads yaml config) |
+| `build_compact_cache.slurm` | CPU-only compact preprocess-cache build |
+| `submit_compact_cache.sh` | Submit only the CPU cache build |
+| `submit_cache_then_train.sh` | Submit cache, then dependency-gated 8-GPU training |
 | `submit_default_8gpu.sh` | Default: LLM freeze + vision full |
 | `submit_packed_forward_8gpu.sh` | Opt-in packed-forward (`PACKED_FORWARD=1` after GPU equiv) |
 | `submit_llmvis_lora_8gpu.sh` | LLM+Vision LoRA variant |
@@ -28,7 +31,28 @@ Profiling / speedup (see `ai_tasks/sft2_speedup_plan.md`):
 | `latent_wm_value_profiling.yaml` | `batch_size=2`, `grad_accum=4`, `--step-timing` |
 | `latent_wm_value_vision_freeze_profiling.yaml` | P6 vision-freeze diagnostic |
 
-CLI knobs: `--preprocess-cache-dir`, `--step-timing`, `--dataloader-workers`, `--packed-forward`, `--latent-token-count`, `--[no-]mask-latent-query-labels`.  `--full-trajectory-batching` is **enabled by default**; use `--no-full-trajectory-batching` to disable.
+CLI knobs: `--preprocess-cache-dir`, `--preprocess-cache-format`, `--preprocess-cache-image-dtype`, `--require-prebuilt-cache`, `--dataloader-workers`, `--dataloader-prefetch-factor`, `--packed-forward`, `--latent-token-count`, `--[no-]mask-latent-query-labels`.  `--full-trajectory-batching` is **enabled by default**; use `--no-full-trajectory-batching` to disable.
+
+### Compact preprocess cache (default)
+
+`preprocess_cache_format: compact` preserves independent per-prefix Qwen rows while removing on-disk image-prefix duplication:
+
+- processor image tensors are stored once per unique resolved image path, in BF16 by default;
+- input IDs, labels, image grids, and compact image indices are stored in transition shards;
+- worker-local `torch.load(..., mmap=True)` shard LRUs avoid thousands of tiny-file decodes;
+- DataLoader workers reconstruct the exact per-prefix image batch, including next-state rows, before pinned-memory/non-blocking GPU transfer.
+
+Build the cache on CPU first and make GPU training fail rather than rebuild it:
+
+```bash
+export PREPROCESS_CACHE_DIR=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/cache/<run>
+export SFT1_RUN=/path/to/sft1_run
+export BASE_HF=/path/to/source_hf
+export RECORDS_ROOT=/path/to/records
+bash experiments/training/sft2/submit_cache_then_train.sh
+```
+
+The training job is submitted with `afterok:<cache_job>` and `REQUIRE_PREBUILT_CACHE=1`; no GPU is held during PIL/processor preprocessing. Compact cache is for the standard per-prefix forward path, including full-trajectory batch sampling. Packed-forward keeps its separate trajectory cache until packed semantics are accepted.
 
 For k=8 latent-query runs, either use `configs/training/sft2/latent_wm_value_k8.yaml` or set `LATENT_TOKEN_COUNT=8` in Slurm wrappers.
 

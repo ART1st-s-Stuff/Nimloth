@@ -97,12 +97,38 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Disk cache for transition prefix processor outputs (enables DataLoader workers).",
     )
     ap.add_argument("--preprocess-workers", type=int, default=4, help="Workers for building preprocess cache.")
+    ap.add_argument(
+        "--preprocess-cache-format",
+        choices=("compact", "legacy"),
+        default="compact",
+        help="compact deduplicates images into mmap shards; legacy stores full pixels per prefix.",
+    )
+    ap.add_argument(
+        "--preprocess-cache-image-dtype",
+        choices=("bfloat16", "float16", "float32"),
+        default="bfloat16",
+        help="On-disk compact image tensor dtype; bfloat16 matches GPU Qwen visual dtype.",
+    )
+    ap.add_argument("--preprocess-cache-image-shard-size", type=int, default=128)
+    ap.add_argument("--preprocess-cache-transition-shard-size", type=int, default=256)
+    ap.add_argument("--preprocess-cache-shard-lru", type=int, default=2)
+    ap.add_argument(
+        "--require-prebuilt-cache",
+        action="store_true",
+        help="Refuse to build cache inside the GPU training job.",
+    )
     ap.add_argument("--force-rebuild-cache", action="store_true")
     ap.add_argument(
         "--dataloader-workers",
         type=int,
         default=-1,
         help="DataLoader workers (-1: 0 without cache, 4 with cache).",
+    )
+    ap.add_argument(
+        "--dataloader-prefetch-factor",
+        type=int,
+        default=2,
+        help="Batches prefetched per persistent DataLoader worker when cache is enabled.",
     )
     ap.add_argument(
         "--step-timing",

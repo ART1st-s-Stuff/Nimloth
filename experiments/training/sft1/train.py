@@ -254,6 +254,8 @@ def cache_fingerprint(
     max_images_per_record: int,
     latent_token_count: int = 1,
     mask_latent_query_labels: bool = True,
+    cache_pixel_dtype: str = "bfloat16",
+    processor_source: str = "",
 ) -> str:
     stat = jsonl_path.stat()
     payload = "|".join(
@@ -268,7 +270,9 @@ def cache_fingerprint(
             str(max_images_per_record),
             str(latent_token_count),
             str(mask_latent_query_labels),
-            "v3",
+            cache_pixel_dtype,
+            processor_source,
+            "v5",
         ]
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
@@ -350,6 +354,7 @@ _CACHE_PROCESSOR: AutoProcessor | None = None
 _CACHE_MAX_LENGTH = 0
 _CACHE_LATENT_TOKEN_COUNT = 1
 _CACHE_MASK_LATENT_QUERY_LABELS = True
+_CACHE_PIXEL_DTYPE = "bfloat16"
 
 
 def _init_cache_worker(
@@ -359,8 +364,9 @@ def _init_cache_worker(
     max_length: int,
     latent_token_count: int = 1,
     mask_latent_query_labels: bool = True,
+    cache_pixel_dtype: str = "bfloat16",
 ) -> None:
-    global _CACHE_PROCESSOR, _CACHE_MAX_LENGTH, _CACHE_LATENT_TOKEN_COUNT, _CACHE_MASK_LATENT_QUERY_LABELS
+    global _CACHE_PROCESSOR, _CACHE_MAX_LENGTH, _CACHE_LATENT_TOKEN_COUNT, _CACHE_MASK_LATENT_QUERY_LABELS, _CACHE_PIXEL_DTYPE
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     processor.image_processor.min_pixels = min_pixels
     processor.image_processor.max_pixels = max_pixels
@@ -369,6 +375,7 @@ def _init_cache_worker(
     _CACHE_MAX_LENGTH = max_length
     _CACHE_LATENT_TOKEN_COUNT = int(latent_token_count)
     _CACHE_MASK_LATENT_QUERY_LABELS = bool(mask_latent_query_labels)
+    _CACHE_PIXEL_DTYPE = cache_pixel_dtype
 
 
 def _cache_one_sample(task: tuple[str, list[dict[str, Any]], str]) -> tuple[str, bool, str]:
@@ -382,6 +389,13 @@ def _cache_one_sample(task: tuple[str, list[dict[str, Any]], str]) -> tuple[str,
             latent_token_count=_CACHE_LATENT_TOKEN_COUNT,
             mask_latent_query_labels=_CACHE_MASK_LATENT_QUERY_LABELS,
         )
+        if "pixel_values" in encoded:
+            pixel_dtypes = {
+                "bfloat16": torch.bfloat16,
+                "float16": torch.float16,
+                "float32": torch.float32,
+            }
+            encoded["pixel_values"] = encoded["pixel_values"].to(pixel_dtypes[_CACHE_PIXEL_DTYPE])
         path = Path(out_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(encoded, path)
@@ -562,6 +576,7 @@ def build_preprocess_cache(
     *,
     latent_token_count: int = 1,
     mask_latent_query_labels: bool = True,
+    cache_pixel_dtype: str = "bfloat16",
 ) -> None:
     del processor
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -573,6 +588,7 @@ def build_preprocess_cache(
             and manifest.get("max_length") == max_length
             and int(manifest.get("latent_token_count", 1)) == int(latent_token_count)
             and bool(manifest.get("mask_latent_query_labels", True)) == bool(mask_latent_query_labels)
+            and manifest.get("cache_pixel_dtype", "float32") == cache_pixel_dtype
         ):
             missing = 0
             for rec in dataset.records:
@@ -610,6 +626,7 @@ def build_preprocess_cache(
         "max_length": max_length,
         "latent_token_count": latent_token_count,
         "mask_latent_query_labels": mask_latent_query_labels,
+        "cache_pixel_dtype": cache_pixel_dtype,
         "dir": str(cache_dir),
     }
     if not tasks:
@@ -628,6 +645,7 @@ def build_preprocess_cache(
             max_length,
             latent_token_count,
             mask_latent_query_labels,
+            cache_pixel_dtype,
         ),
     ) as pool:
         futures = [pool.submit(_cache_one_sample, task) for task in tasks]
@@ -966,7 +984,19 @@ def main() -> int:
         help="Root dir for preprocess cache (default: <output-dir>/preprocess_cache).",
     )
     ap.add_argument("--no-cache", action="store_true", help="Disable preprocess cache and use online collate.")
+    ap.add_argument("--cache-only", action="store_true", help="Build/validate preprocess cache and exit before model load.")
+    ap.add_argument(
+        "--require-prebuilt-cache",
+        action="store_true",
+        help="Refuse to build cache inside the GPU training job.",
+    )
     ap.add_argument("--rebuild-cache", action="store_true", help="Force rebuild preprocess cache.")
+    ap.add_argument(
+        "--cache-pixel-dtype",
+        choices=("bfloat16", "float16", "float32"),
+        default="bfloat16",
+        help="On-disk cached pixel dtype; bfloat16 matches the GPU visual encoder dtype.",
+    )
     args = ap.parse_args()
     args.latent_token_count = int(args.latent_token_count)
     if args.latent_token_count < 1:
@@ -993,15 +1023,20 @@ def main() -> int:
                     "lr": args.lr,
                     "embedding_lr": args.embedding_lr if args.embedding_lr is not None else args.lr,
                     "lora": args.lora,
+                    "cache_pixel_dtype": args.cache_pixel_dtype,
                 }
             )
         )
 
-    wandb_run = maybe_init_wandb(args)
-    if wandb_run is not None:
-        upload_dataset_artifact(wandb_run, args.train_jsonl, args.val_jsonl)
+    wandb_run = None
+    if not args.cache_only:
+        wandb_run = maybe_init_wandb(args)
+        if wandb_run is not None:
+            upload_dataset_artifact(wandb_run, args.train_jsonl, args.val_jsonl)
 
     use_cache = not args.no_cache
+    if args.cache_only and not use_cache:
+        raise ValueError("--cache-only cannot be combined with --no-cache")
     cache_root = args.cache_dir or (args.output_dir / "preprocess_cache")
     fp = cache_fingerprint(
         args.train_jsonl,
@@ -1012,6 +1047,8 @@ def main() -> int:
         args.max_images_per_record,
         args.latent_token_count,
         args.mask_latent_query_labels,
+        args.cache_pixel_dtype,
+        str(Path(args.model).resolve()),
     )
     train_cache_dir = cache_root / f"train_{args.train_jsonl.stem}_{fp}" if use_cache else None
     val_fp = cache_fingerprint(
@@ -1023,6 +1060,8 @@ def main() -> int:
         args.max_images_per_record,
         args.latent_token_count,
         args.mask_latent_query_labels,
+        args.cache_pixel_dtype,
+        str(Path(args.model).resolve()),
     )
     val_cache_dir = cache_root / f"val_{args.val_jsonl.stem}_{val_fp}" if use_cache else None
 
@@ -1034,7 +1073,7 @@ def main() -> int:
     )
 
     if use_cache:
-        if is_main():
+        if is_main() and not args.require_prebuilt_cache:
             build_preprocess_cache(
                 train_ds,
                 processor,
@@ -1047,6 +1086,7 @@ def main() -> int:
                 force=args.rebuild_cache,
                 latent_token_count=args.latent_token_count,
                 mask_latent_query_labels=args.mask_latent_query_labels,
+                cache_pixel_dtype=args.cache_pixel_dtype,
             )
             build_preprocess_cache(
                 val_ds,
@@ -1060,9 +1100,20 @@ def main() -> int:
                 force=args.rebuild_cache,
                 latent_token_count=args.latent_token_count,
                 mask_latent_query_labels=args.mask_latent_query_labels,
+                cache_pixel_dtype=args.cache_pixel_dtype,
             )
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
+        for required_dir in (train_cache_dir, val_cache_dir):
+            manifest_path = required_dir / "manifest.json"
+            if not manifest_path.is_file():
+                mode = "required prebuilt" if args.require_prebuilt_cache else "built"
+                raise FileNotFoundError(f"{mode} SFT1 preprocess cache missing manifest: {manifest_path}")
+        if args.cache_only:
+            if is_main():
+                print(json.dumps({"preprocess_cache": "cache_only_done", "root": str(cache_root)}))
+            cleanup_dist()
+            return 0
 
     pad_token_id = processor.tokenizer.pad_token_id
     if pad_token_id is None:

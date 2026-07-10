@@ -6,6 +6,8 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 |------|---------|
 | `train.py` | Qwen2.5-VL SFT on Nimloth rollout records |
 | `train_8gpu.slurm` | 8-GPU DDP train (`SFT1_TUNE_MODE=lora\|embedlr`) |
+| `build_preprocess_cache.slurm` | CPU-only BF16 preprocess-cache build |
+| `submit_cache_then_train_8gpu.sh` | Submit cache, then dependency-gated training |
 | `convert_rollouts.py` | VAGEN rollout JSONL → Nimloth SFT records |
 | `merge_lora_ckpt.py` | LoRA adapter → `hf_merged` for VAGEN eval / SFT2 init |
 | `rollouts_greedy_parallel.slurm` | Greedy rollout collection (Slurm array) |
@@ -37,8 +39,9 @@ Default init checkpoint: VAGEN `retry2` `global_step_79` actor HF export.
 ```bash
 cd /project/peilab/atst/nimloth
 
-# Train (LoRA, 8 GPU)
-SFT1_TUNE_MODE=lora NODELIST=dgx-52 bash experiments/training/sft1/submit_train_8gpu.sh
+# Recommended: build cache on CPU, then start LoRA training after cache succeeds.
+# TRAIN_OUT, TRAIN_JSONL, VAL_JSONL, and INIT_HF must be exported.
+SFT1_TUNE_MODE=lora bash experiments/training/sft1/submit_cache_then_train_8gpu.sh
 
 # Rollout collection
 ENV_NODE=dgx-13 bash experiments/training/sft1/submit_env_external_4gpu.sh
@@ -48,6 +51,8 @@ bash experiments/training/sft1/submit_rollouts_greedy.sh
 TRAIN_OUT=.../sft1_train_lora BASE_MODEL=.../global_step_79/actor/huggingface \
   bash experiments/training/sft1/submit_ckpt_eval_watcher.sh
 ```
+
+SFT1 stores cached `pixel_values` as BF16 by default (`CACHE_PIXEL_DTYPE=bfloat16`), which matches the GPU visual encoder input dtype and halves their disk/read bandwidth versus FP32. The dependency-gated wrapper sets `REQUIRE_PREBUILT_CACHE=1`, so the GPU allocation never performs image preprocessing.
 
 ## Legacy
 
