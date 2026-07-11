@@ -269,4 +269,15 @@
   - runtime log 已确认 cap/context 预算与 `truncation=error`；
   - `validation@300` 完成：base action-valid/success `0.950/0.383`，common_sense action-valid/success `0.967/0.433`；新 env prompt 与 1024 cap 下 action validity 正常；
   - step301/302 已完成并保存，checkpoint marker=`302`，当前 step303 active；
-  - step302 已越过旧 reward-position mismatch 失败点，两个 train split action-valid 都为 `1.000`，base/common_sense success=`0.118/0.150`；截至此处未见异常。
+  - step302 已越过旧 reward-position mismatch 失败点，两个 train split action-valid 都为 `1.000`，base/common_sense success=`0.118/0.150`。
+- `472159` 随后完成并保存 step303-306，但在 step307 启动时失败：
+  - Slurm `FAILED`, elapsed `01:49:00`；
+  - 最新完整 checkpoint / marker：`global_step_306`；
+  - 失败签名：`Fatal Python error: none_dealloc: deallocating None`，随后 Ray ActorDiedError；
+  - 未出现 reward-position mismatch，env `472153` 仍健康。
+- 已自动启动 strict ws8 retry `472287`：
+  - node：preempt `dgx-38`；
+  - source：`global_step_306`；
+  - 保留 actor/critic 模型、optimizer、lr-scheduler 与 global step；
+  - `RESTORE_DATALOADER_STATE=true`，因为这是延续同一 fresh retrain 数据流；
+  - rank0-7 checkpoint load 已成功，并开始 `validation@306`。

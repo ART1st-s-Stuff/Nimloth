@@ -105,7 +105,10 @@
   - runtime 已确认：`max_response_per_turn=1024`、`max_turns=20`、`max_trajectory_length=32000`、生成预算 `20480`、reserve `11000`、`truncation=error`；模型 `max_position_embeddings=128000`，足以支持 32000 context；
   - `validation@300` 已完成：base action-valid/success=`0.950/0.383`，common_sense=`0.967/0.433`；action validity 恢复健康；
   - step301 与 step302 均已完成并保存，marker=`302`，当前正在 step303；这已越过旧 reward-position mismatch 失败点；
-  - step302 两个 train split 的 action-valid 都为 `1.000`，base/common_sense success=`0.118/0.150`；截至该里程碑未出现 traceback、reward-position mismatch、OOM、ActorDiedError 或 none_dealloc。
+  - step302 两个 train split 的 action-valid 都为 `1.000`，base/common_sense success=`0.118/0.150`；
+  - 原 job `472159` 后续完成并保存到 step306，但在 step307 启动时再次出现 `Fatal Python error: none_dealloc: deallocating None` / Ray ActorDiedError，Slurm 最终 `FAILED`，elapsed `01:49:00`；本轮没有复发 reward-position mismatch；
+  - env `472153` 保持健康；已从最新完整 strict ws8 `global_step_306` 启动 retry `472287`（preempt `dgx-38`），恢复 actor/critic 模型、optimizer、lr-scheduler、global step，并设置 `restore_dataloader_state=true` 延续同一 fresh-run 数据流；
+  - `472287` 已成功加载 rank0-7 checkpoint 并开始 `validation@306`。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 
