@@ -30,6 +30,7 @@
 - 已建立服务器 detached validation worktree：`/project/peilab/atst/nimloth/.worktree/feat-rl-validation`，commit `bb029e4`；其 VAGEN/le-wm submodule 已按 root gitlink 初始化。
 - 已核实当前 `feat/rl` 所指 VAGEN `93c1124` 只包含 `base/common_sense/...` eval datasets，没有 `*_train` datasets；因此不能直接用当前 env collector 生成训练数据做 GPU train smoke。
 - 已核实服务器已有 SFT2 warm-start checkpoint 完整，但现有 SFT1 train JSONL 是多动作转换格式，缺少 RL collector 所需的 `action_names/action_log_probs/nav_instruction`，且 action 数与观测图片数不一，不能直接冒充 RL trajectory。
+- 进一步审查发现 `experiments/training/rl/rollout_env.py` 也不能作为修复后两阶段管线的数据生产端：它没有保存 final observation、`action_log_probs` 或 `nav_instruction`，输出会出现 `len(image_paths) == num_steps`，而 trainer 要求 `num_steps + 1`；其动作选择仍取普通 action-name token 的末位置 logits，没有使用当前 Nimloth `<|action_start|>`/`<|action_(idx)|>` policy 语义。因此不能用该脚本的输出声称 JSONL→FSDP 管线已验证。
 
 ## 文件修改
 
@@ -49,7 +50,7 @@
 ## 待确认问题
 
 - 真实 GPU smoke 预计需要加载 Qwen/SFT2 checkpoint 并连接 AI2-THOR env，预计超过 3 分钟；提交前需要按实验规则向人类说明资源、数据、checkpoint、输出和 resume 策略。
-- 满足 training-split 硬规则需要选择路线：
-  1. 使用已有 `exp/vagen-1action` VAGEN commit `e699e0b` 的 `base_train/common_sense_train` 启外部 env，再让本分支 `rollout_env.py` 采集 RL JSONL；这要求给脚本增加 train eval-set 选项并明确跨 worktree 依赖。
+- 满足 training-split 硬规则并验证真实管线需要选择路线：
+  1. 修复/替换 `rollout_env.py`，使其复用 `EnvRolloutCollector` 的 Nimloth action policy，输出完整兼容 JSONL；使用已有 `exp/vagen-1action` VAGEN commit `e699e0b` 的 `base_train/common_sense_train` 启外部 env。这会新增 train split 参数并形成明确的跨 worktree env 依赖。
   2. 只做不更新参数的 eval rollout + synthetic/离线 trainer smoke；它只能分别验证组件，不能证明真实端到端 RL 管线。
 - FSDP full-tune 的 checkpoint 保存/resume 仍缺少独立端到端验证；GPU smoke 应至少验证 final checkpoint 可读取，若要验证 resume 需再跑一个恢复 step。
