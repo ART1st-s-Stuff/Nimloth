@@ -199,3 +199,16 @@
   1. 用新代码链（VAGEN `4607097` / VERL `c94fc88d`）重新同步服务器 worktree；
   2. 重新提交 strict ws8 preempt 训练，但显式设置 `RESTORE_DATALOADER_STATE=false`；
   3. 继续观察它是否能顺利越过 `validation@300` 进入 `global_step_301`。
+- 上述下一步现已执行：
+  - strict ws8 retry job：`471869`
+  - node：`dgx-48`
+  - run dir：`/project/peilab/atst/nimloth/.worktree/exp-vagen-1action/outputs/experiments/training/baseline/2026-07-11/vagen_legacydev_strict_resume300_to330_ws8_1action_turn20_groundingwm_extenv_preempt_skipdlstate`
+  - env：继续复用 `468531` / `http://10.23.1.45:5000`
+  - 关键启动参数：`RESTORE_DATALOADER_STATE=false`
+- 当前 retry `471869` 的已验证状态：
+  - env health OK；
+  - Ray head 达到 `8/8` GPUs；
+  - strict ws8 checkpoint 仍被识别为 `global_step_300`，launcher 继续 skip conversion；
+  - 日志已经明确打印 `Skipping dataloader state restore from .../data.pt because trainer.restore_dataloader_state=False`；
+  - 日志已进入 `validation@300`；
+  - 截至 `2026-07-11 18:02 HKT`，该 run 仍在活跃运行，还没有失败；但也尚未进入 `global_step_301`，所以还不能说修复已经完全验证通过。
