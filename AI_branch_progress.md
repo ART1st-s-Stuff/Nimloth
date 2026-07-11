@@ -115,7 +115,12 @@
   - 只匹配精确的 `Fatal Python error: none_dealloc: deallocating None`，其他错误会停止，不会掩盖新故障；
   - 重启前会读取最新 marker，验证 ws8 actor/critic 的 model/optimizer/extra-state rank0-7 shard，并在恢复 dataloader 时验证 `data.pt`；
   - 每次创建独立 retry run dir，并递归挂载下一代 watchdog，最多 `MAX_AUTO_RETRIES`；
-  - 当前 watchdog job `472304` 已挂到 train `472287`，状态为 `PENDING (Dependency)`，cpu partition 1CPU/2G；若 `472287` 正常完成则不会触发，若再次出现 exact none_dealloc 则从最新完整 checkpoint 自动提交 preempt ws8 retry。
+  - watchdog job `472304` 挂到 train `472287` 后，`472287` 完成并保存 step307/308，但在 step309 reset 的 `POST /environments` 上等待 1200 秒后触发 `requests.exceptions.ReadTimeout`；最新完整 marker=`308`；
+  - `472304` 正确识别这不是 exact none_dealloc，记录 `STOP ... failed without exact none_dealloc signature` 后退出，没有盲目重启；
+  - 当时旧 env `472153` health endpoint 仍响应，但保留 48 active environments，判断需要重启 env，而不是仅重启 train；
+  - 已取消 `472153`，在 `dgx-37` 启动 fresh env `472364`（port5002）并通过 smoke/health；
+  - 已从 strict ws8 `global_step_308` 启动 train retry `472366`（preempt `dgx-47`，restore dataloader state=true），并挂载新 exact-none_dealloc watcher `472367`；
+  - 后续监控期间 SSH/VPN 再次断开，当前无法确认 `472366` 的最新状态，需要恢复连接后继续核验。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 

@@ -288,3 +288,9 @@
   - 只在 predecessor log 含精确 `Fatal Python error: none_dealloc: deallocating None` 时重启；
   - 自动选择 predecessor 的最新完整 marker，验证 strict ws8 actor/critic 全 shard 与 `data.pt`，建立独立 retry dir，恢复 optimizer/lr-scheduler/dataloader state，并递归挂下一代 watchdog；
   - unrelated error、checkpoint 不完整或超过 8 次 retry 时立即停止并留下 state log。
+- 自动恢复启用后的实际验证：
+  - `472287` 完成并保存 step307/308，随后在 step309 reset 时失败于 env `POST /environments` 的 1200 秒 `requests.exceptions.ReadTimeout`；marker=`308`；
+  - watcher `472304` 正确判断这不是 exact none_dealloc，留下 stop state 并退出，没有错误地重启 train；
+  - 旧 env `472153` health 仍响应但保留 48 active environments，因此取消旧 env 并在 `dgx-37` 启动 fresh env `472364`，URL `http://10.23.1.45:5002`，smoke/health 已通过；
+  - strict ws8 train retry `472366` 已在 preempt `dgx-47` 从 `global_step_308` 启动，`RESTORE_DATALOADER_STATE=true`；watchdog `472367` 已挂载；
+  - 随后的启动监控遇到 SSH/VPN 断开，尚未确认 checkpoint load/validation 的最新状态。
