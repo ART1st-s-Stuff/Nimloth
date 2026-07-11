@@ -158,12 +158,26 @@
   - 后来为 ws4 fallback 提交的 hold-first 4-GPU job `471789` 也已在切换到 preempt 后主动取消；
   - env `468531` 仍在 `dgx-37` 健康运行；
   - 新 train job `471797` 已在 preempt `dgx-22` 上启动，资源形状 `1 node x 8 GPU`。
-- 当前 strict ws8 run 的已验证健康状态：
+- 当前 strict ws8 run 的实际结果已经明确：
   - env health OK；
   - Ray head 已达到 `8/8` GPUs；
   - `checkpoints/global_step_300 -> /project/peilab/atst/vagen_ckpt` 已被识别，launcher 日志明确写出 `ws8 checkpoint already present; skip conversion`；
   - `run_legacy_reproduction.sh` 已启动，并打印 `prompt_format=grounding_worldmodeling use_state_reward=false`；
-  - train parquet 已成功开始生成，运行日志已经打印 `NavigationEnvConfig(...max_actions_per_step=1)`。
+  - train/val parquet 都已成功生成；
+  - 严格从 `global_step_300` 恢复成功：日志明确写出 `Found checkpoint ... global_step_300`、`Setting global step to 300`、`Resuming from .../global_step_300`；
+  - `validation@300` 已完整结束，并写出 `validation/300.jsonl` 与 `validation/image_300/`；
+  - 初始验证结果：
+    - `base success = 0.200`（12/60）
+    - `common_sense success = 0.0833`（5/60）
+    - 粗合并总 success 约 `14.2%`（17/120）
+  - 但训练**没有**进入 `global_step_301`：`latest_checkpointed_iteration.txt` 仍是 `300`，没有 `train_step_log.csv`，没有新 checkpoint。
+- 这次 strict ws8 run 的真实失败点：
+  - 失败时间：`2026-07-11 16:33:56 HKT`
+  - Slurm：`471797 FAILED`, elapsed `00:32:38`
+  - 失败签名不是旧的 `none_dealloc`，而是：
+    - `ray.exceptions.RayTaskError(StopIteration)`
+    - 栈落在 `torchdata.stateful_dataloader`：`load_state_dict(...) -> next(self.sampler_iter) -> StopIteration`
+  - 当前高置信判断：strict resume 从旧 ws8 checkpoint 恢复时，连带恢复了**原始 run 的 dataloader/sampler iterator state**；这与“从 ckpt300 重新开始 fresh retrain”的语义冲突，所以在 `validation@300` 结束后、第一次进入 train dataloader 时直接炸掉。
 - 这次 strict ws8 run 的一个实现细节：
   - `critic_init_path` 没再用 `/project/peilab/atst/vagen_ckpt/critic/huggingface`，因为那个目录缺少 model shards；
   - 当前改用 `actor/huggingface` 作为 **critic 初始化 scaffold**，然后再从 strict ws8 checkpoint 覆盖真正 critic 权重。
@@ -173,4 +187,6 @@
 - 当前人类最新意图已经变成：**从 ckpt300 重训**，并且允许直接使用 preempt 8 GPU。
 - 这次主线已经重新切回 **strict ws8**；如果后续人类要求 `>8` GPU，则又会重新落回 non-strict world-size conversion 语义。
 - `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
-- 当前最新待观察点已经不再是“怎么拿资源”，而是：这条 fresh `grounding_worldmodeling` strict ws8 retrain 是否能顺利从 `global_step_300` 进入 validation / PPO step，并且是否仍会复现旧的 `none_dealloc` 底层崩溃。
+- 当前最新阻塞点已经变化：不是 `none_dealloc`，也不是资源不足，而是 **strict ws8 fresh retrain 会在 train dataloader state restore 处直接 `StopIteration`**。下一步应优先决定：
+  1. 修补 / 绕过 checkpoint 中的 dataloader/sampler state 恢复；或
+  2. 改回 non-strict fresh conversion 路线，只恢复模型权重和必要训练状态。

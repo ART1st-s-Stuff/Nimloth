@@ -37,13 +37,21 @@
   - `latest_checkpointed_iteration.txt = 300`
   - actor init path：`/project/peilab/atst/vagen_ckpt/actor/huggingface`
   - critic init scaffold：也临时使用 `actor/huggingface`，原因是 `/project/peilab/atst/vagen_ckpt/critic/huggingface` 缺少 model shards；strict resume 仍会从 ws8 checkpoint 覆盖真正 critic 权重。
-- 当前健康启动证据已经有：
-  - env health OK；
-  - Ray head 已到 `8/8` GPUs；
-  - launcher 识别到 `ws8 checkpoint already present; skip conversion`；
-  - `run_legacy_reproduction.sh` 已启动，并明确打印 `prompt_format=grounding_worldmodeling use_state_reward=false`；
-  - fresh train parquet 已开始生成，日志已打印 `NavigationEnvConfig(...max_actions_per_step=1)`。
-- 注意：`legacy_train_external_service.slurm` 里的旧 banner 文字仍会打印 `non-strict`，但这次实际走的是 **strict ws8 skip-conversion path**，以 run README 和 mounted `global_step_300` 为准。
+- `471797` 的实际结果：
+  - 先健康启动：env health OK、Ray head 到 `8/8` GPUs、launcher 识别到 `ws8 checkpoint already present; skip conversion`、`run_legacy_reproduction.sh` 正常启动并明确打印 `prompt_format=grounding_worldmodeling use_state_reward=false`；
+  - fresh train/val parquet 成功生成；
+  - 成功从 `global_step_300` 恢复，日志明确写出 `Found checkpoint ... global_step_300`、`Setting global step to 300`、`Resuming from .../global_step_300`；
+  - 成功完整跑完 `validation@300`，写出 `validation/300.jsonl` 与 `validation/image_300/`；
+  - 但在进入**第一个训练 dataloader** 时失败，尚未产生 `global_step_301`，`latest_checkpointed_iteration.txt` 仍停在 `300`。
+- 这次失败签名与旧的 `none_dealloc` **不同**：
+  - 主任务报 `ray.exceptions.RayTaskError(StopIteration)`；
+  - 栈落在 `torchdata.stateful_dataloader` 的 sampler state 恢复路径：`load_state_dict(...) -> next(self.sampler_iter) -> StopIteration`；
+  - 当前高置信判断：strict resume 从旧 ws8 checkpoint 恢复时，把**原始 run 的 dataloader/sampler 状态**也一并恢复了，这与“从 ckpt300 重新开始 fresh retrain”语义冲突，所以在 `validation@300` 结束、首次进入训练迭代器时直接炸掉。
+- 当前这条 strict ws8 run 的直接结论：
+  - 它已经证明 `grounding_worldmodeling + 1 action` 配置、env service、Ray、strict ws8 checkpoint load、以及 `validation@300` 都能走通；
+  - 但**还不能**直接给出到 `301/330` 的 ETA，因为当前没有进入任何训练 step，就已经在 dataloader state restore 处失败了；
+  - 若要继续这条 strict ws8 fresh retrain，下一步应优先修补 / 绕过 dataloader resume state（例如只恢复模型/optimizer/global step，不恢复旧 sampler iterator state），而不是单纯再次 auto-resume。
+- 注意：`legacy_train_external_service.slurm` 里的旧 banner 文字仍会打印 `non-strict`，但 `471797` 实际走的是 **strict ws8 skip-conversion path**；它失败的真正阻塞点也不是 banner，而是上面的 dataloader `StopIteration`。
 
 ## 2026-07-08：VAGEN legacy-dev 1-action / 20-turn / step300→330 resume 分支进展
 
