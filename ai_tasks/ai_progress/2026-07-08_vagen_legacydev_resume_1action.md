@@ -293,4 +293,7 @@
   - watcher `472304` 正确判断这不是 exact none_dealloc，留下 stop state 并退出，没有错误地重启 train；
   - 旧 env `472153` health 仍响应但保留 48 active environments，因此取消旧 env 并在 `dgx-37` 启动 fresh env `472364`，URL `http://10.23.1.45:5002`，smoke/health 已通过；
   - strict ws8 train retry `472366` 已在 preempt `dgx-47` 从 `global_step_308` 启动，`RESTORE_DATALOADER_STATE=true`；watchdog `472367` 已挂载；
-  - 随后的启动监控遇到 SSH/VPN 断开，尚未确认 checkpoint load/validation 的最新状态。
+  - VPN 恢复后确认：step308 strict ws8 load 与 `validation@308` 均完成，step309 完成并保存，marker=`309`，step310 active；
+  - validation@308 base/common_sense success=`0.433/0.433`，action-valid=`0.983/1.000`；
+  - step309 train base/common_sense success=`0.143/0.169`，action-valid=`0.984/0.985`；
+  - env `472364` health 正常、48 active environments，watchdog `472367` armed。

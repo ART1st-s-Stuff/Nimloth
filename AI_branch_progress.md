@@ -120,7 +120,9 @@
   - 当时旧 env `472153` health endpoint 仍响应，但保留 48 active environments，判断需要重启 env，而不是仅重启 train；
   - 已取消 `472153`，在 `dgx-37` 启动 fresh env `472364`（port5002）并通过 smoke/health；
   - 已从 strict ws8 `global_step_308` 启动 train retry `472366`（preempt `dgx-47`，restore dataloader state=true），并挂载新 exact-none_dealloc watcher `472367`；
-  - 后续监控期间 SSH/VPN 再次断开，当前无法确认 `472366` 的最新状态，需要恢复连接后继续核验。
+  - VPN 恢复后已确认 `472366` 健康：strict ws8 step308 load 与 `validation@308` 完成，step309 完成并保存，marker=`309`，当前 step310 active；
+  - validation@308 base/common_sense success=`0.433/0.433`，action-valid=`0.983/1.000`；step309 train success=`0.143/0.169`，action-valid=`0.984/0.985`；
+  - env `472364` 当前 health 正常、48 active environments；watchdog `472367` 保持 armed。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 
