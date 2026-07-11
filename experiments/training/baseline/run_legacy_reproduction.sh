@@ -41,6 +41,10 @@ AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-8}
 VAGEN_MAX_PROMPT_LENGTH=${VAGEN_MAX_PROMPT_LENGTH:-3000}
 VAGEN_MAX_RESPONSE_LENGTH=${VAGEN_MAX_RESPONSE_LENGTH:-20000}
 ROLLOUT_MAX_TRAJECTORY_LENGTH=${ROLLOUT_MAX_TRAJECTORY_LENGTH:-23000}
+ROLLOUT_MAX_TURNS=${ROLLOUT_MAX_TURNS:-20}
+VLLM_MAX_RESPONSE_PER_TURN=${VLLM_MAX_RESPONSE_PER_TURN:-256}
+VAGEN_NON_RESPONSE_TOKEN_RESERVE=${VAGEN_NON_RESPONSE_TOKEN_RESERVE:-14000}
+VAGEN_TRAJECTORY_TRUNCATION=${VAGEN_TRAJECTORY_TRUNCATION:-error}
 VLLM_TENSOR_MODEL_PARALLEL_SIZE=${VLLM_TENSOR_MODEL_PARALLEL_SIZE:-1}
 VLLM_GPU_MEMORY_UTILIZATION=${VLLM_GPU_MEMORY_UTILIZATION:-0.6}
 PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv}
@@ -49,6 +53,12 @@ if [ "${ENABLE_WANDB}" = "1" ]; then
   LOGGER_HYDRA="['console','wandb']"
 else
   LOGGER_HYDRA="['console']"
+fi
+
+MAX_GENERATED_TOKEN_BUDGET=$((ROLLOUT_MAX_TURNS * VLLM_MAX_RESPONSE_PER_TURN))
+if [ $((MAX_GENERATED_TOKEN_BUDGET + VAGEN_NON_RESPONSE_TOKEN_RESERVE)) -gt "${ROLLOUT_MAX_TRAJECTORY_LENGTH}" ]; then
+  echo "ERROR trajectory token budget exceeds max: generated=${MAX_GENERATED_TOKEN_BUDGET} reserve=${VAGEN_NON_RESPONSE_TOKEN_RESERVE} max=${ROLLOUT_MAX_TRAJECTORY_LENGTH}" >&2
+  exit 2
 fi
 
 RESUME_ARGS=("trainer.resume_mode=${RESUME_MODE}")
@@ -88,6 +98,7 @@ PY
   echo "adv_estimator=bi_level_gae ${TRAIN_CONFIG_SUMMARY} reward_model.enable=false"
   echo "gamma=${ALGORITHM_GAMMA} high_level_gamma=${HIGH_LEVEL_GAMMA} total_steps=${TOTAL_STEPS} total_epochs=${TOTAL_EPOCHS} save_freq=${SAVE_FREQ} test_freq=${TEST_FREQ}"
   echo "resume_mode=${RESUME_MODE} resume_from_path=${RESUME_FROM_PATH:-<auto-from-default_local_dir>} restore_dataloader_state=${RESTORE_DATALOADER_STATE}"
+  echo "trajectory max_turns=${ROLLOUT_MAX_TURNS} max_response_per_turn=${VLLM_MAX_RESPONSE_PER_TURN} max_trajectory_length=${ROLLOUT_MAX_TRAJECTORY_LENGTH} truncation=${VAGEN_TRAJECTORY_TRUNCATION} max_generated_budget=${MAX_GENERATED_TOKEN_BUDGET} non_response_reserve=${VAGEN_NON_RESPONSE_TOKEN_RESERVE}"
   echo "resources train_nodes=${TRAIN_NODES} train_gpus_per_node=${TRAIN_GPUS_PER_NODE}"
 } | tee -a "${LOG_FILE}"
 
@@ -122,7 +133,7 @@ PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
   data.max_response_length="${VAGEN_MAX_RESPONSE_LENGTH}" \
   data.max_trajectory_length="${ROLLOUT_MAX_TRAJECTORY_LENGTH}" \
   data.image_key=images \
-  data.truncation=left \
+  data.truncation="${VAGEN_TRAJECTORY_TRUNCATION}" \
   +data.seed="${VAGEN_DATA_SEED}" \
   data.shuffle=True \
   actor_rollout_ref.model.path="${MODEL_PATH}" \
@@ -147,8 +158,8 @@ PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
   actor_rollout_ref.rollout.n=1 \
   actor_rollout_ref.rollout.top_p=0.95 \
   actor_rollout_ref.rollout.temperature=0.7 \
-  actor_rollout_ref.rollout.limit_mm_per_prompt=20 \
-  actor_rollout_ref.rollout.max_response_per_turn=2048 \
+  actor_rollout_ref.rollout.limit_mm_per_prompt="${ROLLOUT_MAX_TURNS}" \
+  actor_rollout_ref.rollout.max_response_per_turn="${VLLM_MAX_RESPONSE_PER_TURN}" \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
   actor_rollout_ref.ref.fsdp_config.param_offload=True \
   critic.optim.lr=1e-5 \
@@ -175,7 +186,7 @@ PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
   trainer.val_before_train=True \
   trainer.val_generations_to_log_to_wandb=8 \
   trainer.validation_data_dir="${RUN_DIR}/validation" \
-  rollout_manager.max_turns=20 \
+  rollout_manager.max_turns="${ROLLOUT_MAX_TURNS}" \
   rollout_manager.window_size=5 \
   rollout_manager.n_trajectory=1 \
   rollout_manager.use_service=True \

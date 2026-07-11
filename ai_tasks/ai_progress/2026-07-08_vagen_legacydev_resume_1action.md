@@ -220,3 +220,15 @@
   - 路径：`rollout_manager_service.py::_generate_input_for_uptate`，由 `generate_batch_for_update()` 调用
   - 这证明 `restore_dataloader_state=False` 修补已经有效越过旧 `StopIteration`；当前最新阻塞变为 reward / reward-position 对齐。
 - 当前最新可恢复 checkpoint：`global_step_301`。
+- 人类随后建议压缩单轮输出上限，确保 20-turn trajectory 不会再被超长 generation 撑爆；当前已按该建议修补：
+  - `run_legacy_reproduction.sh` 新增参数：
+    - `ROLLOUT_MAX_TURNS`（默认 `20`）
+    - `VLLM_MAX_RESPONSE_PER_TURN`（默认 `256`，替代原硬编码 `2048`）
+    - `VAGEN_NON_RESPONSE_TOKEN_RESERVE`（默认 `14000`）
+    - `VAGEN_TRAJECTORY_TRUNCATION`（默认 `error`）
+  - 20-turn 最大生成预算现在为 `20 * 256 = 5120 tokens`；加上 `14000` non-response reserve 后为 `19120 < 23000`；如果参数组合超预算，launcher 会在启动前失败。
+  - `data.truncation` 从 silent `left` 改为默认 `error`；若仍存在未覆盖的超长轨迹，会暴露明确长度错误，而不是先删掉 response marker 再触发 reward-position mismatch。
+  - legacy external-service / preempt launchers 已透传上述参数。
+  - `grounding_worldmodeling` 单动作 prompt 新增“每个字段简洁、不要重复、answer 后停止”要求。
+  - 新 VAGEN commit：`bb26c0d`。
+- 下一步：同步新代码后，从 `global_step_301` 恢复 strict ws8 训练，并继续监控单轮长度及 step302。

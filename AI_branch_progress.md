@@ -77,7 +77,13 @@
   - 新失败签名：`AssertionError: Number of rewards does not match number of reward positions`；
   - 栈落在 `rollout_manager_service.py::_generate_input_for_uptate`，由 `generate_batch_for_update()` 调用；
   - 这与此前的 dataloader `StopIteration` 和 `none_dealloc` 都是不同故障族。
-- 当前最新可恢复点是 `global_step_301`。若继续，应先修复 step302 rollout assembly 中 reward / reward-position 数量不一致的问题，再从 `301` 恢复。
+- 当前最新可恢复点是 `global_step_301`。针对 step302 的 reward-position mismatch，人类建议限制每轮输出长度，保证 20-turn trajectory 不再因超长输出被左截断；当前已完成对应修补：
+  - `VLLM_MAX_RESPONSE_PER_TURN` 默认从硬编码 `2048` 降到 `256`；20 turn 最大生成预算变为 `5120 tokens`；
+  - 保留 `14000 tokens` 的 non-response 预算（20 张约 512px 图像、system/user 文本与 chat template），总保守预算 `19120 < 23000`；launcher 会在预算超限时启动前直接报错；
+  - `data.truncation` 默认改为 `error`，若预算估计仍失效，会明确报告真实 sequence length，而不是 silent left-truncation 后破坏 reward alignment；
+  - `ROLLOUT_MAX_TURNS`、`VLLM_MAX_RESPONSE_PER_TURN`、`VAGEN_NON_RESPONSE_TOKEN_RESERVE`、`VAGEN_TRAJECTORY_TRUNCATION` 都已参数化并透传 legacy launchers；
+  - `grounding_worldmodeling` 单动作 prompt 也新增 concise / no repetition / stop after answer 要求；
+  - VAGEN 当前推进到 `bb26c0d`，下一步应从 `global_step_301` 严格恢复并继续到 step330。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但 `471797` / `471869` 实际走的都是 **strict ws8 skip-conversion path**；真正差异在于是否恢复 dataloader state。
 
 ## 2026-07-08：VAGEN legacy-dev 1-action / 20-turn / step300→330 resume 分支进展
