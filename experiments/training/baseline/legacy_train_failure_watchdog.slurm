@@ -4,7 +4,7 @@
 #SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/training/baseline/slurm/%x_%j.err
 #SBATCH --time=00:10:00
 #SBATCH --account=peilab
-#SBATCH --partition=normal
+#SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
