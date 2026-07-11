@@ -314,7 +314,9 @@ best/
 ├── wm_predictor/                # LatentWMPredictor (predictor.pt + config.json)
 ├── value_head/                  # ValueHead (value_head.pt)
 ├── vision_ema.pt                # VisionEncoderEMA shadow (可选)
-├── rl_state.pt                  # {iteration, global_step, best_value_loss, optimizer}
+├── rl_state.pt                  # iteration/global_step/best/tune metadata
+├── optimizer_rank_00000.pt      # FSDP rank-local optimizer shard（分布式时）
+├── optimizer_rank_00001.pt      # resume 要求相同 world size
 └── processor/                   # tokenizer + image processor files
 ```
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as dist
 
 from nimloth.training.common.dist import is_main
 from nimloth.wm.predictor import LatentWMPredictor
@@ -20,6 +21,22 @@ from nimloth.wm.value_head import ValueHead
 
 def _unwrap(module: torch.nn.Module) -> torch.nn.Module:
     return module.module if hasattr(module, "module") else module
+
+
+def _is_fsdp(module: torch.nn.Module | None) -> bool:
+    if module is None:
+        return False
+    try:
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    except ImportError:
+        return False
+    return isinstance(module, FSDP)
+
+
+def _rank_world() -> tuple[int, int]:
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank(), dist.get_world_size()
+    return 0, 1
 
 
 # ---------------------------------------------------------------------------
@@ -49,43 +66,77 @@ def save_rl_checkpoint(
     vision_tune: str = "freeze",
     base_model_path: str = "",
 ) -> None:
-    if not is_main():
-        return
-    out_dir.mkdir(parents=True, exist_ok=True)
+    rank, world = _rank_world()
+    fsdp_model = _is_fsdp(model)
 
-    # WM modules
-    torch.save(_unwrap(state_proj).state_dict(), out_dir / "state_proj.pt")
-    _unwrap(wm_predictor).save_checkpoint(out_dir / "wm_predictor")
-    _unwrap(value_head).save_checkpoint(out_dir / "value_head")
+    if rank == 0:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    if world > 1:
+        dist.barrier()
 
-    # Qwen model
-    if model is not None:
-        m = _unwrap(model)
-        m.save_pretrained(out_dir, safe_serialization=True)
-    if processor is not None:
-        processor.save_pretrained(out_dir)
-    if vision_ema is not None:
-        ema = _unwrap(vision_ema) if hasattr(vision_ema, "module") else vision_ema
-        if hasattr(ema, "save_checkpoint"):
-            ema.save_checkpoint(out_dir / "vision_ema.pt")
-        elif hasattr(ema, "shadow") and ema.shadow:
-            torch.save({"shadow": {k: v.cpu() for k, v in ema.shadow.items()}},
-                       out_dir / "vision_ema.pt")
+    # FSDP full-state collection is collective: every rank must enter it.
+    full_model_state = None
+    if fsdp_model:
+        from torch.distributed.fsdp import (
+            FullStateDictConfig,
+            FullyShardedDataParallel as FSDP,
+            StateDictType,
+        )
 
-    # Training state
-    state: dict[str, Any] = {
-        "iteration": iteration,
-        "global_step": global_step,
-        "best_value_loss": best_value_loss,
-        "lora": lora,
-        "llm_tune": llm_tune,
-        "vision_tune": vision_tune,
-    }
-    if base_model_path:
-        state["base_model_path"] = str(base_model_path)
-    if optimizer is not None:
-        state["optimizer"] = optimizer.state_dict()
-    torch.save(state, out_dir / "rl_state.pt")
+        policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, policy):
+            full_model_state = model.state_dict()
+
+    # Raw optimizer states are rank-local FSDP shards. Saving one file per rank
+    # supports exact same-world-size resume while also covering the local WM heads.
+    if optimizer is not None and fsdp_model:
+        torch.save(optimizer.state_dict(), out_dir / f"optimizer_rank_{rank:05d}.pt")
+
+    if rank == 0:
+        # WM modules
+        torch.save(_unwrap(state_proj).state_dict(), out_dir / "state_proj.pt")
+        _unwrap(wm_predictor).save_checkpoint(out_dir / "wm_predictor")
+        _unwrap(value_head).save_checkpoint(out_dir / "value_head")
+
+        # Qwen model
+        if model is not None:
+            m = _unwrap(model)
+            if fsdp_model:
+                m.save_pretrained(
+                    out_dir,
+                    state_dict=full_model_state,
+                    safe_serialization=True,
+                )
+            else:
+                m.save_pretrained(out_dir, safe_serialization=True)
+        if processor is not None:
+            processor.save_pretrained(out_dir)
+        if vision_ema is not None:
+            ema = _unwrap(vision_ema) if hasattr(vision_ema, "module") else vision_ema
+            if hasattr(ema, "save_checkpoint"):
+                ema.save_checkpoint(out_dir / "vision_ema.pt")
+            elif hasattr(ema, "shadow") and ema.shadow:
+                torch.save({"shadow": {k: v.cpu() for k, v in ema.shadow.items()}},
+                           out_dir / "vision_ema.pt")
+
+        # Training state
+        state: dict[str, Any] = {
+            "iteration": iteration,
+            "global_step": global_step,
+            "best_value_loss": best_value_loss,
+            "lora": lora,
+            "llm_tune": llm_tune,
+            "vision_tune": vision_tune,
+            "optimizer_world_size": world if fsdp_model else 1,
+        }
+        if base_model_path:
+            state["base_model_path"] = str(base_model_path)
+        if optimizer is not None and not fsdp_model:
+            state["optimizer"] = optimizer.state_dict()
+        torch.save(state, out_dir / "rl_state.pt")
+
+    if world > 1:
+        dist.barrier()
 
 
 # ---------------------------------------------------------------------------

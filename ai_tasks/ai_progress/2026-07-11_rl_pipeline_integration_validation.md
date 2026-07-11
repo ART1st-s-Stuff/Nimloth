@@ -78,4 +78,9 @@
 - 提交 hold job `471933`：preempt、单节点 2 GPU、48 CPU、160G，分配到 `dgx-44` 并进入 RUNNING。
 - 在 hold allocation 中启动 `run_e2e_smoke.sh`；实际 commit `5f7ca3f`，env VAGEN `4607097`，env URL `http://10.23.1.101:8500`。
 - 最后一次成功监控：env server health 正常，registered env 包含 navigation；rollout 进程已加载 2 个 Qwen checkpoint shards，GPU1 memory 增长到约 4.5 GiB，处于模型加载阶段；尚未确认首条 trajectory。
-- 随后连续两次 SSH 均失败并返回 `Connection closed by UNKNOWN port 65535`。按项目远程网络规则停止重试，需要人类恢复 VPN/SSH 后继续监控。当前不能确认 job 后续是继续、完成还是失败。
+- 随后连续两次 SSH 均失败并返回 `Connection closed by UNKNOWN port 65535`；人类确认可能是网络波动，之后连接恢复。
+- Rollout 成功：`base_train` seeds 1..4，共 4 trajectories / 8 transitions；每条均有 3 images、2 actions、2 组 8-way log-probs，schema guard 返回 `ALL_OK`。
+- 首个 2-rank FSDP iteration 成功：`global_step=1`，`wm_mse=4.96267`、`value_loss=0.63232`、`actor_loss=0.0`、`entropy=0.64507`、`elapsed=8.3s`。
+- Resume 失败：`best/model.safetensors` 中 Linear weight 被保存为 shape `[0]`，重新加载期望 `[151676,2048]`。原因是旧 `save_rl_checkpoint` 只让 rank0 对 FSDP underlying module 调用 `save_pretrained`，没有让所有 rank 参加 full-state gather；`rl_state.pt` 也只保存 rank0 optimizer shard。
+- retry1 状态：失败、不可从其 checkpoint resume；rollout JSONL 可复用，但按输出隔离规则下一次使用全新 `post_fsdp_fix_e2e_smoke_retry2`。
+- 本地修复中：FSDP checkpoint 改为所有 rank 进入 `FULL_STATE_DICT` collective，rank0 写完整 HF model；optimizer 按 rank 保存，resume 强制相同 world size 并加载对应 rank shard；trainer 的 periodic/best/final save 改为所有 rank 调用。
