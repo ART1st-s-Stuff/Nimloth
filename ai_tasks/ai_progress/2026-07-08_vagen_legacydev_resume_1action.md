@@ -267,4 +267,6 @@
   - train job `472159` 已在 preempt `dgx-22` 从原始 step300 strict ws8 checkpoint 重启；
   - run dir：`.../vagen_legacydev_strict_retrain300_to330_ws8_1action_turn20_groundingwm_cap1024_freshenv`；
   - runtime log 已确认 cap/context 预算与 `truncation=error`；
-  - `validation@300` 完成：base action-valid/success `0.950/0.383`，common_sense action-valid/success `0.967/0.433`；新 env prompt 与 1024 cap 下 action validity 正常，训练继续运行。
+  - `validation@300` 完成：base action-valid/success `0.950/0.383`，common_sense action-valid/success `0.967/0.433`；新 env prompt 与 1024 cap 下 action validity 正常；
+  - step301/302 已完成并保存，checkpoint marker=`302`，当前 step303 active；
+  - step302 已越过旧 reward-position mismatch 失败点，两个 train split action-valid 都为 `1.000`，base/common_sense success=`0.118/0.150`；截至此处未见异常。

@@ -103,7 +103,9 @@
   - 随后取消旧 env `468531`，并在已知 AI2-THOR 可用的 `dgx-37` 启动 fresh env job `472153`，新 URL `http://10.23.1.45:5001`，进程已加载最新 prompt code；
   - strict ws8 train job `472159` 已在 preempt `dgx-22` 从原始 `global_step_300` 重启，未使用 invalid 301/302/303；
   - runtime 已确认：`max_response_per_turn=1024`、`max_turns=20`、`max_trajectory_length=32000`、生成预算 `20480`、reserve `11000`、`truncation=error`；模型 `max_position_embeddings=128000`，足以支持 32000 context；
-  - `validation@300` 已完成：base action-valid/success=`0.950/0.383`，common_sense=`0.967/0.433`；action validity 恢复健康，train job 当前继续运行。
+  - `validation@300` 已完成：base action-valid/success=`0.950/0.383`，common_sense=`0.967/0.433`；action validity 恢复健康；
+  - step301 与 step302 均已完成并保存，marker=`302`，当前正在 step303；这已越过旧 reward-position mismatch 失败点；
+  - step302 两个 train split 的 action-valid 都为 `1.000`，base/common_sense success=`0.118/0.150`；截至该里程碑未出现 traceback、reward-position mismatch、OOM、ActorDiedError 或 none_dealloc。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 
