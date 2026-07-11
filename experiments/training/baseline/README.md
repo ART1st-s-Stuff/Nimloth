@@ -25,6 +25,7 @@ Canonical scripts for VAGEN navigation RL baseline per `ai_rules/03_experiments_
 | `slurm_gpu_resources.py` | Cluster GPU inventory helper |
 | `submit_env_external_4gpu.sh` | Thin sbatch wrapper for external env |
 | `submit_train_resume.sh` | Thin sbatch wrapper for resume train |
+| `submit_legacy_train_failure_watchdog.sh` + `legacy_train_failure_watchdog.slurm` | Exact-signature `none_dealloc` auto-resume with strict latest-checkpoint validation and fresh retry directories |
 
 Config: `configs/training/baseline/` (`train.yaml`, `val.yaml`, `defaults.yaml`).
 
@@ -82,6 +83,25 @@ RUN_DIR=/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-
 RUN_DIR=... EXPERIMENT_NAME=my_run NODELIST=dgx-32,dgx-37 \
   bash experiments/training/baseline/submit_train_resume.sh
 ```
+
+## Legacy `none_dealloc` auto-resume
+
+Attach the watchdog to an already running legacy train job with
+`submit_legacy_train_failure_watchdog.sh`. The watchdog is scheduled with
+`afternotok:<train-job-id>`, so it consumes no resources while training is
+healthy. On failure it restarts only when the run log contains the exact
+`Fatal Python error: none_dealloc: deallocating None` signature.
+
+Before submitting a successor it:
+
+- reads `latest_checkpointed_iteration.txt`;
+- verifies all actor/critic model, optimizer, and extra-state ws8 shards;
+- verifies `data.pt` when dataloader restore is enabled;
+- creates a new retry run directory and links the latest complete checkpoint;
+- submits the next watchdog recursively, up to `MAX_AUTO_RETRIES`.
+
+It deliberately stops on unrelated failures, missing/incomplete checkpoints,
+or retry-limit exhaustion instead of hiding a new error.
 
 ## Legacy
 
