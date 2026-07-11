@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-07-11：grounding_worldmodeling 单动作 fresh retrain（从 ckpt300 重新开始）
+
+- 人类已明确改计划：**不要**继续旧的 `wm` run 从 `global_step_320` 往后续，而是新开一条 **fresh retrain**，从 `/project/peilab/atst/vagen_ckpt`（按 metadata 解释为 `global_step_300`）重新开始。
+- 新 retrain 仍保持 Nimloth 约束：`max_actions_per_step=1`、`max_turns=20`、`use_state_reward=false`；但 prompt 改为更接近论文语义的 `grounding_worldmodeling`。
+- 本地代码现已提交并 push：Nimloth `b48ca25f881912045e1f38baae8ff32af65f17dd`；`external/VAGEN` 已推进到 `e699e0b2ea957c8570c33c157043bdf555a7646a`；nested `verl` 仍为 `65316156d1011d71d62e0542e4b954f9499e872e`。
+- prompt 改动：`external/VAGEN/vagen/env/navigation/prompt.py`
+  - 为 `worldmodeling` / `grounding_worldmodeling` 增加 single-action 专用描述；
+  - 当 `max_actions_per_step<=1` 时，system prompt 与 format prompt 会显式要求“**恰好一个 action**”，并禁止逗号 / pipe / 多动作输出；
+  - 已在 superpod `.venv` 下实际打印 prompt，确认 `grounding_worldmodeling` 现在会要求 `observation + reasoning + prediction + exactly one <answer>action</answer>`。
+- 新增 fresh retrain 配置：
+  - `configs/training/baseline/legacy_train_grounding_worldmodeling_1action.yaml`
+  - `configs/training/baseline/legacy_val_grounding_worldmodeling_1action.yaml`
+  - 两者都固定 `prompt_format: grounding_worldmodeling`、`max_actions_per_step: 1`；train 仍用 `base_train/common_sense_train`，val 仍用 `base/common_sense`。
+- launcher 侧补充了一个小修正：
+  - `legacy_train_external_service.slurm` 现在会把 `TRAIN_CONFIG` / `VAL_CONFIG` export 给 `run_legacy_reproduction.sh`；
+  - `run_legacy_reproduction.sh` 不再把 `prompt_format=wm` 硬编码写进日志，而是从 YAML 读取并打印真实 `prompt_format` / `use_state_reward` 摘要，避免误导后续排查。
+- 新的服务器 fresh run dir 已建立：
+  - `/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-07-11/vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_groundingwm_hold4g`
+  - README 已写明：这是 **从 ckpt300 重训** 的新 run，不复用旧的 `...step320` run dir。
+- 资源状态已变化：
+  - 旧 4-GPU hold `468852` 实际已在 `2026-07-10 19:34:16 HKT` 结束 / `CANCELLED`，因此“仍可直接在 468852 上续跑”的旧结论已失效；
+  - env job `468531` 仍在 `dgx-37` 健康运行，service URL 仍是 `http://10.23.1.45:5000`；
+  - 已按同样的 hold-first 策略重新提交 normal 4-GPU hold `471789`，当前状态是 `PENDING (Priority)`。
+- 远程 worktree 已同步到 Nimloth `b48ca25`；由于 cluster 上对 `external/VAGEN` 的递归 submodule fetch 会命中 SSH 权限问题，已改用从 `/project/peilab/atst/nimloth/external/VAGEN` 本地 clone 手动 fetch + checkout `e699e0b` 的方式完成同步；最终远程 worktree / `external/VAGEN` / nested `verl` 都已恢复到干净状态。
+- 当前**还没有**新的 train step 启动；下一步是在 `471789` 真正拿到 4 GPU 后，用 fresh run dir + fresh ws4 conversion 从 `ckpt300` 拉起这条 `grounding_worldmodeling` 单动作重训。
+
 ## 2026-07-08：VAGEN legacy-dev 1-action / 20-turn / step300→330 resume 分支进展
 
 - 本地分支：`exp/vagen-1action`，当前 Nimloth commit `d05c172`；远程 worktree：`/project/peilab/atst/nimloth/.worktree/exp-vagen-1action`。
