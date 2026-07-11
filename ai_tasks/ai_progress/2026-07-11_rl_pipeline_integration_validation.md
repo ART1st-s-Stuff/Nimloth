@@ -72,3 +72,10 @@
 - Resume：iteration 1 的 `best/` 保存 model/WM/optimizer；第二个 torchrun 使用 `--resume --rl-iterations 2`。
 - 监控：trajectory 数/schema、transition 数、wm_mse、value_loss、actor_loss、entropy、global_step，以及 final `rl_state.pt` 的 iteration/global_step。
 - 资源：单个 preempt 节点 2 GPU；env+rollout 并行占 2 GPU，之后停止 env 并用 2 GPU FSDP；预计 20–45 分钟。人类已批准。
+
+## 2026-07-11 GPU smoke 运行状态
+
+- 提交 hold job `471933`：preempt、单节点 2 GPU、48 CPU、160G，分配到 `dgx-44` 并进入 RUNNING。
+- 在 hold allocation 中启动 `run_e2e_smoke.sh`；实际 commit `5f7ca3f`，env VAGEN `4607097`，env URL `http://10.23.1.101:8500`。
+- 最后一次成功监控：env server health 正常，registered env 包含 navigation；rollout 进程已加载 2 个 Qwen checkpoint shards，GPU1 memory 增长到约 4.5 GiB，处于模型加载阶段；尚未确认首条 trajectory。
+- 随后连续两次 SSH 均失败并返回 `Connection closed by UNKNOWN port 65535`。按项目远程网络规则停止重试，需要人类恢复 VPN/SSH 后继续监控。当前不能确认 job 后续是继续、完成还是失败。
