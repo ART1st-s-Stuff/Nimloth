@@ -2,6 +2,7 @@
 
 ## 任务目标
 
+- 当前环境约定：如果新开 subagent，必须显式指定模型 `openai-codex/gpt-5.6-sol`。
 - 将 `d6e1c1f`、`e05bb53` 中已经完成的 RL/FSDP 安全修复合并到 `feat/rl`。
 - 保留当前工作区已有的 encoding `max_length=999999` 未提交修改。
 - 先完成本地静态检查和单元测试；在满足实验规则后，再进行真实 GPU/环境管线 smoke 验证。
