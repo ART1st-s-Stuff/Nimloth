@@ -90,7 +90,16 @@
   - `validation/301.jsonl` 中的代表性输出虽然包含 `moveahead` / `moveright`，却使用错误结构，例如 `<think>... </thought><observation>...<answer>...`；严格 parser 要求 observation/reasoning/prediction 全部嵌在 `<think>...</think>` 内，因此实际提取结果是 `actions=[]`；
   - 长期运行的 env job `468531` 仍是 prompt 代码更新前启动的进程，所以它提供的 system prompt 仍是旧 wording；只同步 train worktree 并不会更新 env 进程内存中的 prompt；
   - 因继续训练只会在全零有效动作上更新参数，我已主动取消 `472007`（elapsed `00:55:47`），避免继续产出无效 checkpoint。
-- `global_step_302` / `303` 已保留但应标记为 invalid，禁止用来继续；`global_step_301` 也因 `validation@301` 已坍缩为零有效动作而可疑。当前最稳妥方案是：重启 env service 使新 concise prompt 生效，并从原始 `global_step_300` 重新开始 cap256 retrain，而不是从 301/303 继续。
+- `global_step_302` / `303` 已保留但应标记为 invalid，禁止用来继续；`global_step_301` 也因 `validation@301` 已坍缩为零有效动作而可疑。
+- 人类明确指出我把单轮 cap 设成 `256` 是错误的：`grounding_worldmodeling` 至少需要 `1024 tokens/turn`，并要求从原始 step300 重来。当前已修正本地配置：
+  - `max_response_per_turn=1024`
+  - `max_turns=20`，最大生成预算 `20480`
+  - `non_response_reserve=11000`
+  - `max_trajectory_length=32000`
+  - 总预算 `31480 <= 32000`
+  - `truncation=error`
+- 下一次有效 run 必须：重启 env service 以加载新 prompt；从原始 `global_step_300` strict ws8 checkpoint 重来；不得使用 invalid 301/302/303。
+- 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 
 ## 2026-07-08：VAGEN legacy-dev 1-action / 20-turn / step300→330 resume 分支进展

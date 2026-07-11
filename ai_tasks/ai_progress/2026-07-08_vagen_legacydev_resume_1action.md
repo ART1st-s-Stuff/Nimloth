@@ -244,5 +244,18 @@
 - 鉴于继续训练只会用全零有效动作更新 actor/critic，我已主动取消 `472007`，Slurm 最终 `CANCELLED`, elapsed `00:55:47`。
 - 产物策略：
   - `global_step_302` / `303` 保留但标记为 invalid，不应继续；
-  - `global_step_301` 因 validation 已坍缩为零有效动作也不建议继续；
-  - 最稳妥下一步是重启 env service 到新代码，并从原始 `global_step_300` 重新跑 cap256 retrain。
+  - `global_step_301` 因 validation 已坍缩为零有效动作也不建议继续。
+- 人类随后明确指出：我把单轮上限设为 `256` 是错误的；`grounding_worldmodeling` 至少应使用 `1024 tokens`，并要求从原始 step300 重来。
+- 当前本地已修正为：
+  - `ROLLOUT_MAX_TURNS=20`
+  - `VLLM_MAX_RESPONSE_PER_TURN=1024`
+  - `VAGEN_NON_RESPONSE_TOKEN_RESERVE=11000`
+  - `ROLLOUT_MAX_TRAJECTORY_LENGTH=32000`
+  - 最大生成预算 `20480`，总保守预算 `31480 <= 32000`
+  - `VAGEN_TRAJECTORY_TRUNCATION=error`
+- 下一次 run 的硬要求：
+  1. 重启 env service，使最新 concise `grounding_worldmodeling` prompt 真正进入进程内存；
+  2. 从原始 `global_step_300` strict ws8 checkpoint 重来；
+  3. 不使用 invalid step301/302/303；
+  4. 先核验 step300 validation 中 action-valid 不为零，再继续训练。
+- 已登记 known error：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
