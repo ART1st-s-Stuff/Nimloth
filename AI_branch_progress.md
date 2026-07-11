@@ -98,7 +98,12 @@
   - `max_trajectory_length=32000`
   - 总预算 `31480 <= 32000`
   - `truncation=error`
-- 下一次有效 run 必须：重启 env service 以加载新 prompt；从原始 `global_step_300` strict ws8 checkpoint 重来；不得使用 invalid 301/302/303。
+- 上述有效重启现已执行：
+  - preempt env job `472143` 在 `dgx-11` 因两张 GPU 的 AI2-THOR smoke 都 timeout (`rc=124`) 而失败，未被训练使用；
+  - 随后取消旧 env `468531`，并在已知 AI2-THOR 可用的 `dgx-37` 启动 fresh env job `472153`，新 URL `http://10.23.1.45:5001`，进程已加载最新 prompt code；
+  - strict ws8 train job `472159` 已在 preempt `dgx-22` 从原始 `global_step_300` 重启，未使用 invalid 301/302/303；
+  - runtime 已确认：`max_response_per_turn=1024`、`max_turns=20`、`max_trajectory_length=32000`、生成预算 `20480`、reserve `11000`、`truncation=error`；模型 `max_position_embeddings=128000`，足以支持 32000 context；
+  - `validation@300` 已完成：base action-valid/success=`0.950/0.383`，common_sense=`0.967/0.433`；action validity 恢复健康，train job 当前继续运行。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 

@@ -259,3 +259,12 @@
   3. 不使用 invalid step301/302/303；
   4. 先核验 step300 validation 中 action-valid 不为零，再继续训练。
 - 已登记 known error：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
+- 人类重连 VPN 后，已按修正方案执行：
+  - 服务器 checkpoint config 确认 `max_position_embeddings=128000`，因此 `max_trajectory_length=32000` 可用；
+  - 新代码已同步到服务器：Nimloth `35699d7` / VAGEN `bb26c0d` / VERL `c94fc88d`；
+  - fresh env 首次尝试 `472143`（preempt `dgx-11`）失败于两张 GPU AI2-THOR smoke timeout (`rc=124`)，未被训练使用；
+  - 随后在 `dgx-37` 启动 fresh env job `472153`，URL `http://10.23.1.45:5001`，并取消旧 env `468531`；
+  - train job `472159` 已在 preempt `dgx-22` 从原始 step300 strict ws8 checkpoint 重启；
+  - run dir：`.../vagen_legacydev_strict_retrain300_to330_ws8_1action_turn20_groundingwm_cap1024_freshenv`；
+  - runtime log 已确认 cap/context 预算与 `truncation=error`；
+  - `validation@300` 完成：base action-valid/success `0.950/0.383`，common_sense action-valid/success `0.967/0.433`；新 env prompt 与 1024 cap 下 action validity 正常，训练继续运行。
