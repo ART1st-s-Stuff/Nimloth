@@ -63,6 +63,16 @@ source "${PYTHON_ENV}/bin/activate"
 source "${SCRIPTDIR}/common_env.sh"
 cd "${BASEDIR}"
 
+TRAIN_CONFIG_SUMMARY=$(python - <<PY
+import yaml
+with open(${TRAIN_CONFIG@Q}, 'r') as f:
+    cfg = yaml.safe_load(f)
+prompt_formats = sorted({value.get('env_config', {}).get('prompt_format', '<missing>') for value in cfg.values()})
+use_state_reward = sorted({str(value.get('env_config', {}).get('use_state_reward', '<missing>')).lower() for value in cfg.values()})
+print(f"prompt_format={','.join(prompt_formats)} use_state_reward={','.join(use_state_reward)}")
+PY
+)
+
 {
   echo "=== VAGEN legacy reproduction launch $(date) ==="
   echo "repo=${REPO}"
@@ -74,7 +84,7 @@ cd "${BASEDIR}"
   echo "train_config=${TRAIN_CONFIG}"
   echo "val_config=${VAL_CONFIG}"
   echo "service_base_url=${SERVICE_BASE_URL}"
-  echo "adv_estimator=bi_level_gae prompt_format=wm use_state_reward=false reward_model.enable=false"
+  echo "adv_estimator=bi_level_gae ${TRAIN_CONFIG_SUMMARY} reward_model.enable=false"
   echo "gamma=${ALGORITHM_GAMMA} high_level_gamma=${HIGH_LEVEL_GAMMA} total_steps=${TOTAL_STEPS} total_epochs=${TOTAL_EPOCHS} save_freq=${SAVE_FREQ} test_freq=${TEST_FREQ}"
   echo "resume_mode=${RESUME_MODE} resume_from_path=${RESUME_FROM_PATH:-<auto-from-default_local_dir>}"
   echo "resources train_nodes=${TRAIN_NODES} train_gpus_per_node=${TRAIN_GPUS_PER_NODE}"

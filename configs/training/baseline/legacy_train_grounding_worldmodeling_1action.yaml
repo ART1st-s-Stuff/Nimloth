@@ -1,0 +1,26 @@
+# VAGEN legacy navigation training dataset config.
+# Paper-aligned reasoning format for this retrain: grounding_worldmodeling.
+# Nimloth-required overrides: max_actions_per_step=1, max_turns=20 in rollout manager,
+# and no LLM-as-a-judge state reward.
+
+navigation_base:
+  env_name: navigation
+  env_config:
+    render_mode: vision
+    prompt_format: grounding_worldmodeling
+    use_state_reward: false
+    eval_set: base_train
+    max_actions_per_step: 1
+  train_size: 1200
+  test_size: 0
+
+navigation_common:
+  env_name: navigation
+  env_config:
+    render_mode: vision
+    prompt_format: grounding_worldmodeling
+    use_state_reward: false
+    eval_set: common_sense_train
+    max_actions_per_step: 1
+  train_size: 1200
+  test_size: 0
