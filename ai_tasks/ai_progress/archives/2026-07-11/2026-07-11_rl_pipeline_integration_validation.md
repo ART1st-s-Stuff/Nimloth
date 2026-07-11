@@ -84,4 +84,8 @@
 - 首个 2-rank FSDP iteration 成功：`global_step=1`，`wm_mse=4.96267`、`value_loss=0.63232`、`actor_loss=0.0`、`entropy=0.64507`、`elapsed=8.3s`。
 - Resume 失败：`best/model.safetensors` 中 Linear weight 被保存为 shape `[0]`，重新加载期望 `[151676,2048]`。原因是旧 `save_rl_checkpoint` 只让 rank0 对 FSDP underlying module 调用 `save_pretrained`，没有让所有 rank 参加 full-state gather；`rl_state.pt` 也只保存 rank0 optimizer shard。
 - retry1 状态：失败、不可从其 checkpoint resume；rollout JSONL 可复用，但按输出隔离规则下一次使用全新 `post_fsdp_fix_e2e_smoke_retry2`。
-- 本地修复中：FSDP checkpoint 改为所有 rank 进入 `FULL_STATE_DICT` collective，rank0 写完整 HF model；optimizer 按 rank 保存，resume 强制相同 world size 并加载对应 rank shard；trainer 的 periodic/best/final save 改为所有 rank 调用。
+- 已修复并提交 `5a4025e`：FSDP checkpoint 改为所有 rank 进入 `FULL_STATE_DICT` collective，rank0 写完整 HF model；optimizer 按 rank 保存，resume 强制相同 world size并加载对应 rank shard；trainer 的 periodic/best/final save 改为所有 rank 调用。
+- retry2 成功：使用全新输出 `post_fsdp_fix_e2e_smoke_retry2`；4 条 `base_train` trajectory / 8 transitions schema 全部通过；iteration 1 成功保存完整两 shard HF model 与 rank0/rank1 optimizer；resume 成功加载并完成 iteration/global_step 2。
+- retry2 metrics：step1 `wm_mse=5.45424`、`value_loss=0.83652`、`actor_loss=0.0`、`entropy=0.64473`；step2 `wm_mse=5.32952`、`value_loss=0.78039`、`actor_loss=0.002046`、`entropy=0.63848`。
+- 独立 post-run verification 通过：4 个 trajectory 均满足 images=actions+1、action log-probs 数量匹配且每组 8 维、instruction 非空；`best/final/iter_0001/iter_0002` 均有完整 HF index、两个 optimizer rank 文件及正确 metadata；final iteration/global_step=2。
+- 输出 README 与服务器 `outputs/experiments/training/rl/progress.md` 已更新；hold job `471933` 在验证结束后取消释放资源。该 smoke 只证明管线与 resume 可运行，4 个固定小样本 success rate 为 0，不能作为 policy 质量结论。

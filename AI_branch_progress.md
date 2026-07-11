@@ -511,3 +511,28 @@
   相关 upstream issues: [EasyR1#650](https://github.com/hiyouga/EasyR1/pull/650), [Accelerate#3258](https://github.com/huggingface/accelerate/issues/3258)。
   临时方案：切换到 `--llm-tune full`（全参数训练），避开 PEFT LoRA。
   后续需要：升级 PyTorch 或手动实现 LoRA 以避开 `get_peft_model` 的模块包装。
+
+## 2026-07-11：feat/rl 两阶段 FSDP 管线修复与端到端验证
+
+### 已完成并验证
+
+- 将 RL/FSDP 安全修复 `d6e1c1f`、`e05bb53` cherry-pick 到 `feat/rl`（本分支提交 `afff665`、`212a6a7`）：
+  - 多 GPU 禁止直接动态 env rollout；使用确定性多源 JSONL collector。
+  - 非 FSDP WM 模块初始同步、确定性 batch、单样本 advantage NaN 修复。
+  - JSONL CLI 与 WandB experiment-name 参数修复。
+- 修复独立 rollout backend：`rollout_env.py` 复用 `EnvRolloutCollector` 的 Nimloth special-token action policy，输出 final observation、8-way action log-probs、instruction 和完整 JSONL；训练 split 必须显式使用 `*_train` dataset。
+- 修复 FSDP checkpoint ownership（`5a4025e`）：所有 rank 参与 full-state model gather；rank0 写完整 HF model；optimizer 按 rank 保存，same-world-size resume 加载对应 shard；periodic/best/final save 均由所有 rank 进入 collective。
+- superpod runtime tests：RL/WM 组合测试 `40 passed, 1 warning`；warning 为测试主动验证 `std(unbiased=True)` 单样本 NaN。
+- 真实端到端 smoke retry2 已通过：
+  - 数据：VAGEN `4607097` 的 navigation `base_train`，seeds 1..4。
+  - Rollout：4 trajectories / 8 transitions，schema post-check 全部通过。
+  - 训练：2-rank FSDP，Qwen language model full tune + WM predictor/value head；vision/state projector 冻结。
+  - iteration 1 成功保存 checkpoint；新进程从 `best/` 加载完整两 shard HF model及 rank0/rank1 optimizer，成功完成 iteration/global_step 2。
+  - 输出：`outputs/experiments/training/rl/2026-07-11/post_fsdp_fix_e2e_smoke_retry2`。
+- retry1 因旧 checkpoint 只保存 rank0 local shard而在 resume 失败，已在其 README 记录为不可恢复；retry2 使用全新目录。
+
+### 边界与注意
+
+- 本次是两步管线 smoke，只证明 rollout→JSONL→FSDP train→checkpoint→resume 可运行；固定 4 个样本 success rate 为 0，不能作为 policy 质量结论。
+- 当前 FSDP optimizer checkpoint 是 rank-local 格式，resume 要求相同 world size。
+- PyTorch 2.8 提示 `FSDP.state_dict_type()` 将弃用，但当前功能验证通过；后续可迁移到 distributed checkpoint state-dict API。
