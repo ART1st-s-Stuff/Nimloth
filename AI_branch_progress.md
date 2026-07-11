@@ -50,7 +50,13 @@
 - 当前这条 strict ws8 run 的直接结论：
   - 它已经证明 `grounding_worldmodeling + 1 action` 配置、env service、Ray、strict ws8 checkpoint load、以及 `validation@300` 都能走通；
   - 但**还不能**直接给出到 `301/330` 的 ETA，因为当前没有进入任何训练 step，就已经在 dataloader state restore 处失败了；
-  - 若要继续这条 strict ws8 fresh retrain，下一步应优先修补 / 绕过 dataloader resume state（例如只恢复模型/optimizer/global step，不恢复旧 sampler iterator state），而不是单纯再次 auto-resume。
+  - 当前已在代码层完成修补：
+    - `external/VAGEN/vagen/trainer/ppo/ray_trainer.py` 新增 `trainer.restore_dataloader_state` 开关；
+    - 当该开关为 `False` 时，会跳过 `data.pt` 的 dataloader/sampler state 恢复；
+    - `run_legacy_reproduction.sh` 已支持环境变量 `RESTORE_DATALOADER_STATE`，并会把真实取值写入日志；
+    - `legacy_train_external_service.slurm` / `legacy_preempt_reproduction.slurm` 也会把该变量传给训练入口；
+    - VAGEN 已推进到 `4607097c4c4dd78ae5c609ff69fc44b1402c97a0`，nested `verl` 已推进到 `c94fc88dd9c6d1dcd982760ec2461f8a99018dd4`。
+  - 因此若要继续这条 strict ws8 fresh retrain，下一步不该再用默认 auto-resume dataloader state，而应显式使用 `RESTORE_DATALOADER_STATE=false` 再次拉起。
 - 注意：`legacy_train_external_service.slurm` 里的旧 banner 文字仍会打印 `non-strict`，但 `471797` 实际走的是 **strict ws8 skip-conversion path**；它失败的真正阻塞点也不是 banner，而是上面的 dataloader `StopIteration`。
 
 ## 2026-07-08：VAGEN legacy-dev 1-action / 20-turn / step300→330 resume 分支进展
