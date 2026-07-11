@@ -20,15 +20,30 @@
 - launcher 侧补充了一个小修正：
   - `legacy_train_external_service.slurm` 现在会把 `TRAIN_CONFIG` / `VAL_CONFIG` export 给 `run_legacy_reproduction.sh`；
   - `run_legacy_reproduction.sh` 不再把 `prompt_format=wm` 硬编码写进日志，而是从 YAML 读取并打印真实 `prompt_format` / `use_state_reward` 摘要，避免误导后续排查。
-- 新的服务器 fresh run dir 已建立：
-  - `/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-07-11/vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_groundingwm_hold4g`
-  - README 已写明：这是 **从 ckpt300 重训** 的新 run，不复用旧的 `...step320` run dir。
-- 资源状态已变化：
-  - 旧 4-GPU hold `468852` 实际已在 `2026-07-10 19:34:16 HKT` 结束 / `CANCELLED`，因此“仍可直接在 468852 上续跑”的旧结论已失效；
-  - env job `468531` 仍在 `dgx-37` 健康运行，service URL 仍是 `http://10.23.1.45:5000`；
-  - 已按同样的 hold-first 策略重新提交 normal 4-GPU hold `471789`，当前状态是 `PENDING (Priority)`。
-- 远程 worktree 已同步到 Nimloth `b48ca25`；由于 cluster 上对 `external/VAGEN` 的递归 submodule fetch 会命中 SSH 权限问题，已改用从 `/project/peilab/atst/nimloth/external/VAGEN` 本地 clone 手动 fetch + checkout `e699e0b` 的方式完成同步；最终远程 worktree / `external/VAGEN` / nested `verl` 都已恢复到干净状态。
-- 当前**还没有**新的 train step 启动；下一步是在 `471789` 真正拿到 4 GPU 后，用 fresh run dir + fresh ws4 conversion 从 `ckpt300` 拉起这条 `grounding_worldmodeling` 单动作重训。
+- 新的服务器 fresh run dir 已建立两条：
+  - 旧准备中的 ws4 fallback run：`/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-07-11/vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_groundingwm_hold4g`
+  - 当前真正启动的 ws8 strict run：`/project/peilab/atst/nimloth/.worktree/exp-vagen-1action/outputs/experiments/training/baseline/2026-07-11/vagen_legacydev_strict_resume300_to330_ws8_1action_turn20_groundingwm_extenv_preempt`
+- 资源与启动策略已再次变化：
+  - 人类最新允许直接用 **preempt** 跑 `8` 卡甚至更多；考虑到源 checkpoint 本身就是 **ws8**，当前实际选择的是 **strict ws8**，避免再走 ws4/ws7 non-strict conversion。
+  - 旧 4-GPU hold `468852` 已失效；之后为了 ws4 fallback 提交的 normal hold `471789` 也已在切换到 preempt 后主动取消，避免继续占 normal 资源。
+  - env job `468531` 仍在 `dgx-37` 健康运行，service URL 仍是 `http://10.23.1.45:5000`。
+- 远程 worktree 已进一步同步到 Nimloth `3ff1f7a4241eaa14e90e57daee819bb74876a3b4`；`external/VAGEN` 仍是 `e699e0b2ea957c8570c33c157043bdf555a7646a`，nested `verl` 仍是 `65316156d1011d71d62e0542e4b954f9499e872e`。由于 cluster 上对 `external/VAGEN` 的递归 submodule fetch 会命中 SSH 权限问题，仍使用从 `/project/peilab/atst/nimloth/external/VAGEN` 本地 clone 手动 fetch + checkout 的方式同步。
+- 已按 preempt 方案提交并启动新的 strict ws8 fresh retrain：
+  - train job：`471797`
+  - node：`dgx-22`
+  - partition：`preempt`
+  - shape：`1 node x 8 GPU`
+  - checkpoint mount：`checkpoints/global_step_300 -> /project/peilab/atst/vagen_ckpt`
+  - `latest_checkpointed_iteration.txt = 300`
+  - actor init path：`/project/peilab/atst/vagen_ckpt/actor/huggingface`
+  - critic init scaffold：也临时使用 `actor/huggingface`，原因是 `/project/peilab/atst/vagen_ckpt/critic/huggingface` 缺少 model shards；strict resume 仍会从 ws8 checkpoint 覆盖真正 critic 权重。
+- 当前健康启动证据已经有：
+  - env health OK；
+  - Ray head 已到 `8/8` GPUs；
+  - launcher 识别到 `ws8 checkpoint already present; skip conversion`；
+  - `run_legacy_reproduction.sh` 已启动，并明确打印 `prompt_format=grounding_worldmodeling use_state_reward=false`；
+  - fresh train parquet 已开始生成，日志已打印 `NavigationEnvConfig(...max_actions_per_step=1)`。
+- 注意：`legacy_train_external_service.slurm` 里的旧 banner 文字仍会打印 `non-strict`，但这次实际走的是 **strict ws8 skip-conversion path**，以 run README 和 mounted `global_step_300` 为准。
 
 ## 2026-07-08：VAGEN legacy-dev 1-action / 20-turn / step300→330 resume 分支进展
 

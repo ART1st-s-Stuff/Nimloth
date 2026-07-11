@@ -16,12 +16,13 @@
 
 ## 2026-07-11 latest direction
 - 人类已明确：**这次要从 ckpt300 重新训练**，而不是沿着旧的 `wm` run 从 `global_step_320` 继续。
+- 人类随后又明确补充：**preempt 分区现在有很多节点，可以直接用 preempt，8 卡甚至更多都可以。**
 - 因此当前最新目标变成：
   1. 把 `grounding_worldmodeling` prompt 改成兼容 `max_actions_per_step=1`；
-  2. 新建一条 fresh ws4 non-strict retrain run；
+  2. 优先走 **strict ws8** fresh retrain（因为源 checkpoint 本身就是 ws8，语义最干净）；
   3. 继续保持 `max_turns=20`、`use_state_reward=false`；
-  4. 仍复用现有 legacy env service，但**不复用**旧的 `...step320` run dir。
-- 当前等待条件：新的 4-GPU hold `471789` 落地后，再在 held allocation 上 `srun` 启动 fresh retrain。
+  4. 继续复用现有 legacy env service，但**不复用**旧的 `...step320` run dir。
+- ws4 non-strict hold-first 方案不再是主线，只保留作 fallback 参考。
 
 ## Current status
 - **最新计划变更（2026-07-11）**：旧的 `wm` ws4 run 已推进到 `global_step_320`，但人类现在明确要的是一条 **从 ckpt300 重新开始** 的新 retrain；所以旧 run 只保留作参考，不再作为下一次启动目标。
@@ -145,22 +146,31 @@
   - 用途：把多次 resume/重启切碎的自动 wandb run 重新汇总成一条更完整的进度曲线，方便人类直接看当前累计进展。
 - 服务器 `.venv` import smoke：能导入 `vagen.env.navigation.env.NavigationEnv`，并看到 `base_train in ValidEvalSets == True`
 - 服务器 `.venv` import smoke：能导入 `vagen.server.server` 与 `vagen.trainer.main_ppo`
-- 2026-07-11 已完成 fresh retrain 准备：
+- 2026-07-11 已完成 fresh retrain 准备并实际启动 strict ws8 preempt run：
   - `external/VAGEN/vagen/env/navigation/prompt.py` 已改成在 `grounding_worldmodeling` + `max_actions_per_step=1` 时显式要求 observation / reasoning / prediction 围绕“**恰好一个 action**”展开；
   - 已新增 fresh retrain 配置：`legacy_train_grounding_worldmodeling_1action.yaml` / `legacy_val_grounding_worldmodeling_1action.yaml`；
   - `run_legacy_reproduction.sh` 现在会从 YAML 读取真实 `prompt_format` 摘要，不再在日志里硬编码 `prompt_format=wm`；
-  - 新的 fresh run dir 已建好：`/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-07-11/vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_groundingwm_hold4g`；
-  - superpod worktree 已同步到 Nimloth `b48ca25` / VAGEN `e699e0b` / VERL `65316156`。
+  - 旧准备中的 ws4 fallback run dir 仍在：`/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-07-11/vagen_legacydev_non_strict_resume300_to330_ws4_1action_turn20_groundingwm_hold4g`；
+  - 当前真正启动的 strict ws8 run dir：`/project/peilab/atst/nimloth/.worktree/exp-vagen-1action/outputs/experiments/training/baseline/2026-07-11/vagen_legacydev_strict_resume300_to330_ws8_1action_turn20_groundingwm_extenv_preempt`；
+  - superpod worktree 已同步到 Nimloth `3ff1f7a` / VAGEN `e699e0b` / VERL `65316156`。
 - 资源现状也已变化：
-  - 旧 hold `468852` 实际已经 `CANCELLED`，因此“仍可直接在 468852 / dgx-27 上继续”的旧结论已失效；
+  - 旧 hold `468852` 实际已经 `CANCELLED`；
+  - 后来为 ws4 fallback 提交的 hold-first 4-GPU job `471789` 也已在切换到 preempt 后主动取消；
   - env `468531` 仍在 `dgx-37` 健康运行；
-  - 新的 hold-first 4-GPU job `471789` 已提交，当前 `PENDING (Priority)`；
-  - 目前**还没有**新的 retrain train step 启动。
+  - 新 train job `471797` 已在 preempt `dgx-22` 上启动，资源形状 `1 node x 8 GPU`。
+- 当前 strict ws8 run 的已验证健康状态：
+  - env health OK；
+  - Ray head 已达到 `8/8` GPUs；
+  - `checkpoints/global_step_300 -> /project/peilab/atst/vagen_ckpt` 已被识别，launcher 日志明确写出 `ws8 checkpoint already present; skip conversion`；
+  - `run_legacy_reproduction.sh` 已启动，并打印 `prompt_format=grounding_worldmodeling use_state_reward=false`；
+  - train parquet 已成功开始生成，运行日志已经打印 `NavigationEnvConfig(...max_actions_per_step=1)`。
+- 这次 strict ws8 run 的一个实现细节：
+  - `critic_init_path` 没再用 `/project/peilab/atst/vagen_ckpt/critic/huggingface`，因为那个目录缺少 model shards；
+  - 当前改用 `actor/huggingface` 作为 **critic 初始化 scaffold**，然后再从 strict ws8 checkpoint 覆盖真正 critic 权重。
 
 ## Open questions / assumptions
 - 当前按“再训练 30 个 global step”解释为 **300 -> 330**。若人类实际想要别的终点，需要改 `trainer.total_training_steps`。
-- 当前人类最新意图已经变成：**从 ckpt300 重训**，而不是继续旧的 `wm` run。
-- strict ws8 resume 仍然是语义最干净的方案；但当前实际执行路线仍是用户确认过的 normal ws4 hold-first non-strict fallback。
-- normal fallback 的关键限制：虽然新 run 会从 `global_step_300` 形式继续到 `330`，但 ws4 checkpoint 是从 actor/critic HF export 新生成的，因此 **optimizer / lr scheduler 状态不会严格继承 ws8 step300 checkpoint**。
+- 当前人类最新意图已经变成：**从 ckpt300 重训**，并且允许直接使用 preempt 8 GPU。
+- 这次主线已经重新切回 **strict ws8**；如果后续人类要求 `>8` GPU，则又会重新落回 non-strict world-size conversion 语义。
 - `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
-- 当前最新阻塞点不再是“是否从 `320` 继续”，而是：等待新 hold `471789` 落地后，启动 fresh `grounding_worldmodeling` ws4 retrain，并继续观察它是否仍会复现同一个 `none_dealloc` 底层崩溃。
+- 当前最新待观察点已经不再是“怎么拿资源”，而是：这条 fresh `grounding_worldmodeling` strict ws8 retrain 是否能顺利从 `global_step_300` 进入 validation / PPO step，并且是否仍会复现旧的 `none_dealloc` 底层崩溃。
