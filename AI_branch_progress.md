@@ -83,8 +83,15 @@
   - `data.truncation` 默认改为 `error`，若预算估计仍失效，会明确报告真实 sequence length，而不是 silent left-truncation 后破坏 reward alignment；
   - `ROLLOUT_MAX_TURNS`、`VLLM_MAX_RESPONSE_PER_TURN`、`VAGEN_NON_RESPONSE_TOKEN_RESERVE`、`VAGEN_TRAJECTORY_TRUNCATION` 都已参数化并透传 legacy launchers；
   - `grounding_worldmodeling` 单动作 prompt 也新增 concise / no repetition / stop after answer 要求；
-  - VAGEN 当前推进到 `bb26c0d`，下一步应从 `global_step_301` 严格恢复并继续到 step330。
-- 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但 `471797` / `471869` 实际走的都是 **strict ws8 skip-conversion path**；真正差异在于是否恢复 dataloader state。
+  - VAGEN 当前推进到 `bb26c0d`。
+- 使用 cap256 从 step301 恢复的 retry `472007` 已在 preempt `dgx-38` 实际运行，结果说明：
+  - cap 技术上生效：所有已记录单轮输出都 `<=256 tokens`；旧 reward-position mismatch 没再出现；step302 / step303 都完成并保存，marker 推进到 `303`；
+  - 但实验语义失效：`validation@301` 的 base/common_sense action-valid 与 success 全为 `0`；train step302/303 两个 split 的 action-valid / score / success 也全为 `0`；
+  - `validation/301.jsonl` 中的代表性输出虽然包含 `moveahead` / `moveright`，却使用错误结构，例如 `<think>... </thought><observation>...<answer>...`；严格 parser 要求 observation/reasoning/prediction 全部嵌在 `<think>...</think>` 内，因此实际提取结果是 `actions=[]`；
+  - 长期运行的 env job `468531` 仍是 prompt 代码更新前启动的进程，所以它提供的 system prompt 仍是旧 wording；只同步 train worktree 并不会更新 env 进程内存中的 prompt；
+  - 因继续训练只会在全零有效动作上更新参数，我已主动取消 `472007`（elapsed `00:55:47`），避免继续产出无效 checkpoint。
+- `global_step_302` / `303` 已保留但应标记为 invalid，禁止用来继续；`global_step_301` 也因 `validation@301` 已坍缩为零有效动作而可疑。当前最稳妥方案是：重启 env service 使新 concise prompt 生效，并从原始 `global_step_300` 重新开始 cap256 retrain，而不是从 301/303 继续。
+- 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 
 ## 2026-07-08：VAGEN legacy-dev 1-action / 20-turn / step300→330 resume 分支进展
 

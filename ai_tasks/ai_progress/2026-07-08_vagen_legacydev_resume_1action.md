@@ -231,4 +231,18 @@
   - legacy external-service / preempt launchers 已透传上述参数。
   - `grounding_worldmodeling` 单动作 prompt 新增“每个字段简洁、不要重复、answer 后停止”要求。
   - 新 VAGEN commit：`bb26c0d`。
-- 下一步：同步新代码后，从 `global_step_301` 恢复 strict ws8 训练，并继续监控单轮长度及 step302。
+- 随后已同步新代码并从 `global_step_301` 启动 cap256 strict ws8 retry：
+  - job：`472007`
+  - node：`dgx-38`
+  - run dir：`.../vagen_legacydev_strict_resume301_to330_ws8_1action_turn20_groundingwm_cap256_preempt`
+- `472007` 的实际结果：
+  - cap 技术上成功：日志统计中单轮输出最大值为 `256`，没有任何 `>256`；旧 reward-position mismatch 没有复发；
+  - `validation@301` 完成，step302 / step303 都完成并保存，marker 推进到 `303`；
+  - 但 metrics 全面失效：validation@301 两个 split 的 action-valid/success 都为 `0`，train step302/303 两个 split 的 action-valid/score/success 也都为 `0`；
+  - `validation/301.jsonl` 的代表性输出显示模型经常生成 `<think>... </thought>`，再把 `<observation>` / `<reasoning>` / `<prediction>` 放在 think 外；虽然含有 `<answer>moveahead</answer>` 等动作文本，但不满足严格 parser，环境反馈明确写出 `extracted valid action is []`；
+  - 长期 env job `468531` 没有在 prompt 代码更新后重启，因此它仍从旧进程内存提供旧版 system prompt；这也说明仅同步 train worktree 不足以应用 env-side prompt 改动。
+- 鉴于继续训练只会用全零有效动作更新 actor/critic，我已主动取消 `472007`，Slurm 最终 `CANCELLED`, elapsed `00:55:47`。
+- 产物策略：
+  - `global_step_302` / `303` 保留但标记为 invalid，不应继续；
+  - `global_step_301` 因 validation 已坍缩为零有效动作也不建议继续；
+  - 最稳妥下一步是重启 env service 到新代码，并从原始 `global_step_300` 重新跑 cap256 retrain。
