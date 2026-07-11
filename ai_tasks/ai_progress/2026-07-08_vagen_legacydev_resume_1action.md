@@ -281,3 +281,10 @@
   - 保留 actor/critic 模型、optimizer、lr-scheduler 与 global step；
   - `RESTORE_DATALOADER_STATE=true`，因为这是延续同一 fresh retrain 数据流；
   - rank0-7 checkpoint load 已成功，并开始 `validation@306`。
+- 已新增并启用 none_dealloc 自动恢复链：
+  - files：`experiments/training/baseline/legacy_train_failure_watchdog.slurm`、`submit_legacy_train_failure_watchdog.sh`；
+  - commit：`5852db7`（功能主 commit `b2d5dd0`，随后将 watcher 修正到 cpu partition）；
+  - watchdog job `472304` 已通过 `afternotok:472287` 挂载，当前 `PENDING (Dependency)`，仅需 1CPU/2G；
+  - 只在 predecessor log 含精确 `Fatal Python error: none_dealloc: deallocating None` 时重启；
+  - 自动选择 predecessor 的最新完整 marker，验证 strict ws8 actor/critic 全 shard 与 `data.pt`，建立独立 retry dir，恢复 optimizer/lr-scheduler/dataloader state，并递归挂下一代 watchdog；
+  - unrelated error、checkpoint 不完整或超过 8 次 retry 时立即停止并留下 state log。

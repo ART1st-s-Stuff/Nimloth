@@ -109,6 +109,13 @@
   - 原 job `472159` 后续完成并保存到 step306，但在 step307 启动时再次出现 `Fatal Python error: none_dealloc: deallocating None` / Ray ActorDiedError，Slurm 最终 `FAILED`，elapsed `01:49:00`；本轮没有复发 reward-position mismatch；
   - env `472153` 保持健康；已从最新完整 strict ws8 `global_step_306` 启动 retry `472287`（preempt `dgx-38`），恢复 actor/critic 模型、optimizer、lr-scheduler、global step，并设置 `restore_dataloader_state=true` 延续同一 fresh-run 数据流；
   - `472287` 已成功加载 rank0-7 checkpoint 并开始 `validation@306`。
+- 已实现 exact-signature 自动恢复：
+  - 新增 `legacy_train_failure_watchdog.slurm` 与 `submit_legacy_train_failure_watchdog.sh`；
+  - watchdog 使用 Slurm `afternotok:<train-job-id>` 依赖，健康训练期间保持 pending 且不占 GPU；
+  - 只匹配精确的 `Fatal Python error: none_dealloc: deallocating None`，其他错误会停止，不会掩盖新故障；
+  - 重启前会读取最新 marker，验证 ws8 actor/critic 的 model/optimizer/extra-state rank0-7 shard，并在恢复 dataloader 时验证 `data.pt`；
+  - 每次创建独立 retry run dir，并递归挂载下一代 watchdog，最多 `MAX_AUTO_RETRIES`；
+  - 当前 watchdog job `472304` 已挂到 train `472287`，状态为 `PENDING (Dependency)`，cpu partition 1CPU/2G；若 `472287` 正常完成则不会触发，若再次出现 exact none_dealloc 则从最新完整 checkpoint 自动提交 preempt ws8 retry。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 
