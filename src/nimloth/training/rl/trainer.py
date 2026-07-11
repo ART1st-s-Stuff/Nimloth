@@ -540,7 +540,19 @@ def train_rl(
             start_iteration = int(resume_state.get("iteration", 0)) + 1
             global_step = int(resume_state.get("global_step", 0))
             best_value_loss = float(resume_state.get("best_value_loss", float("inf")))
-            if resume_state.get("optimizer") is not None:
+            if world > 1:
+                saved_world = int(resume_state.get("optimizer_world_size", 0))
+                if saved_world != world:
+                    raise RuntimeError(
+                        f"FSDP optimizer checkpoint world_size={saved_world}, current={world}"
+                    )
+                optimizer_path = resume_aux_ckpt / f"optimizer_rank_{rank:05d}.pt"
+                if not optimizer_path.is_file():
+                    raise FileNotFoundError(f"missing rank optimizer checkpoint: {optimizer_path}")
+                optimizer.load_state_dict(
+                    torch.load(optimizer_path, map_location="cpu", weights_only=False)
+                )
+            elif resume_state.get("optimizer") is not None:
                 optimizer.load_state_dict(resume_state["optimizer"])
             if is_main():
                 print(json.dumps({"resume": True, "start_iteration": start_iteration,
@@ -760,9 +772,27 @@ def train_rl(
 
         # --- checkpoint --------------------------------------------------------
         if iteration % save_interval == 0:
-            if is_main():
+            save_rl_checkpoint(
+                output_dir / f"iter_{iteration:04d}",
+                state_proj=state_proj,
+                wm_predictor=wm_predictor,
+                value_head=value_head,
+                model=model,
+                processor=processor,
+                vision_ema=vision_ema,
+                optimizer=optimizer,
+                iteration=iteration,
+                global_step=global_step,
+                best_value_loss=best_value_loss,
+                lora=uses_lora(args),
+                llm_tune=llm_tune,
+                vision_tune=vision_tune,
+                base_model_path=base_model_path,
+            )
+            if current_val < best_value_loss:
+                best_value_loss = current_val
                 save_rl_checkpoint(
-                    output_dir / f"iter_{iteration:04d}",
+                    resume_ckpt_dir,  # "best/"
                     state_proj=state_proj,
                     wm_predictor=wm_predictor,
                     value_head=value_head,
@@ -778,47 +808,27 @@ def train_rl(
                     vision_tune=vision_tune,
                     base_model_path=base_model_path,
                 )
-                if current_val < best_value_loss:
-                    best_value_loss = current_val
-                    save_rl_checkpoint(
-                        resume_ckpt_dir,  # "best/"
-                        state_proj=state_proj,
-                        wm_predictor=wm_predictor,
-                        value_head=value_head,
-                        model=model,
-                        processor=processor,
-                        vision_ema=vision_ema,
-                        optimizer=optimizer,
-                        iteration=iteration,
-                        global_step=global_step,
-                        best_value_loss=best_value_loss,
-                        lora=uses_lora(args),
-                        llm_tune=llm_tune,
-                        vision_tune=vision_tune,
-                        base_model_path=base_model_path,
-                    )
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
 
     # --- final checkpoint -----------------------------------------------------
-    if is_main():
-        save_rl_checkpoint(
-            output_dir / "final",
-            state_proj=state_proj,
-            wm_predictor=wm_predictor,
-            value_head=value_head,
-            model=model,
-            processor=processor,
-            vision_ema=vision_ema,
-            optimizer=optimizer,
-            iteration=iterations,
-            global_step=global_step,
-            best_value_loss=best_value_loss,
-            lora=uses_lora(args),
-            llm_tune=llm_tune,
-            vision_tune=vision_tune,
-            base_model_path=base_model_path,
-        )
+    save_rl_checkpoint(
+        output_dir / "final",
+        state_proj=state_proj,
+        wm_predictor=wm_predictor,
+        value_head=value_head,
+        model=model,
+        processor=processor,
+        vision_ema=vision_ema,
+        optimizer=optimizer,
+        iteration=iterations,
+        global_step=global_step,
+        best_value_loss=best_value_loss,
+        lora=uses_lora(args),
+        llm_tune=llm_tune,
+        vision_tune=vision_tune,
+        base_model_path=base_model_path,
+    )
     cleanup_dist()
     return 0
