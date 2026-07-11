@@ -194,21 +194,29 @@
 - 当前人类最新意图已经变成：**从 ckpt300 重训**，并且允许直接使用 preempt 8 GPU。
 - 这次主线已经重新切回 **strict ws8**；如果后续人类要求 `>8` GPU，则又会重新落回 non-strict world-size conversion 语义。
 - `468531` 已证明当前这次在 `dgx-37` 分到的 physical GPU `0/1` 能通过 AI2-THOR smoke；但这仍然是本次 allocation 结果，不保证别的 allocation 也一样。
-- 当前最新阻塞点已经变化：不是 `none_dealloc`，也不是资源不足，而是 **strict ws8 fresh retrain 默认会在 train dataloader state restore 处直接 `StopIteration`**。
-- 这个阻塞点的代码修补已经完成，因此下一步的首选动作已经变成：
-  1. 用新代码链（VAGEN `4607097` / VERL `c94fc88d`）重新同步服务器 worktree；
-  2. 重新提交 strict ws8 preempt 训练，但显式设置 `RESTORE_DATALOADER_STATE=false`；
-  3. 继续观察它是否能顺利越过 `validation@300` 进入 `global_step_301`。
-- 上述下一步现已执行：
+- dataloader `StopIteration` 阻塞已通过 `RESTORE_DATALOADER_STATE=false` 修补并获得 runtime 验证；`471869` 已成功越过 step301。
+- 当前最新阻塞已经变为 step302 rollout assembly 的 **reward / reward-position 数量不一致**。
+- 已执行的修补验证 run：
   - strict ws8 retry job：`471869`
   - node：`dgx-48`
   - run dir：`/project/peilab/atst/nimloth/.worktree/exp-vagen-1action/outputs/experiments/training/baseline/2026-07-11/vagen_legacydev_strict_resume300_to330_ws8_1action_turn20_groundingwm_extenv_preempt_skipdlstate`
   - env：继续复用 `468531` / `http://10.23.1.45:5000`
   - 关键启动参数：`RESTORE_DATALOADER_STATE=false`
-- 当前 retry `471869` 的已验证状态：
+- retry `471869` 的最终结果：
   - env health OK；
   - Ray head 达到 `8/8` GPUs；
-  - strict ws8 checkpoint 仍被识别为 `global_step_300`，launcher 继续 skip conversion；
-  - 日志已经明确打印 `Skipping dataloader state restore from .../data.pt because trainer.restore_dataloader_state=False`；
-  - 日志已进入 `validation@300`；
-  - 截至 `2026-07-11 18:02 HKT`，该 run 仍在活跃运行，还没有失败；但也尚未进入 `global_step_301`，所以还不能说修复已经完全验证通过。
+  - strict ws8 checkpoint 被识别为 `global_step_300`，launcher skip conversion；
+  - 日志明确打印 `Skipping dataloader state restore from .../data.pt because trainer.restore_dataloader_state=False`；
+  - `validation@300` 完整结束；
+  - 成功完成 step301：日志出现 `[DEBUG] step 301 rollout ends`；
+  - 成功保存 `checkpoints/global_step_301/`（约 `98G`），marker 推进到 `301`，checkpoint 保存时间约 `18:46:54 HKT`；
+  - trainer 随后打印 `global_steps: 302`，因此已经明确**越过 step301**；
+  - step301 总耗时 `2364.852s`（约 `39.4min`），其中 save checkpoint `77.700s`；
+  - step301 train success：`base_train=0.059`、`common_sense_train=0.033`。
+- `471869` 随后在 step302 rollout assembly 中失败：
+  - 时间：`2026-07-11 19:14:21 HKT`
+  - Slurm：`FAILED`, elapsed `01:52:59`
+  - 失败签名：`AssertionError: Number of rewards does not match number of reward positions`
+  - 路径：`rollout_manager_service.py::_generate_input_for_uptate`，由 `generate_batch_for_update()` 调用
+  - 这证明 `restore_dataloader_state=False` 修补已经有效越过旧 `StopIteration`；当前最新阻塞变为 reward / reward-position 对齐。
+- 当前最新可恢复 checkpoint：`global_step_301`。

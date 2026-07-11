@@ -58,13 +58,27 @@
     - VAGEN 已推进到 `4607097c4c4dd78ae5c609ff69fc44b1402c97a0`，nested `verl` 已推进到 `c94fc88dd9c6d1dcd982760ec2461f8a99018dd4`。
   - 因此若要继续这条 strict ws8 fresh retrain，下一步不该再用默认 auto-resume dataloader state，而应显式使用 `RESTORE_DATALOADER_STATE=false` 再次拉起。
 - 随后已用修补后的代码链重新拉起 strict ws8 retry：
-  - 新 job：`471869`
+  - job：`471869`
   - node：`dgx-48`
   - run dir：`/project/peilab/atst/nimloth/.worktree/exp-vagen-1action/outputs/experiments/training/baseline/2026-07-11/vagen_legacydev_strict_resume300_to330_ws8_1action_turn20_groundingwm_extenv_preempt_skipdlstate`
   - 关键差异：显式传入 `RESTORE_DATALOADER_STATE=false`
-  - 已验证健康启动：env health OK、Ray `8/8` GPUs OK、strict ws8 checkpoint detected and skip conversion、日志已出现 `Skipping dataloader state restore ... trainer.restore_dataloader_state=False`
-  - 截至 `2026-07-11 18:02 HKT`，该 retry 仍在 **`validation@300`** 中活跃运行，尚未再次失败；但也**尚未**推进到 `global_step_301`，因此还不能宣称已经彻底越过旧失败点。
-- 注意：`legacy_train_external_service.slurm` 里的旧 banner 文字仍会打印 `non-strict`，但 `471797` / `471869` 实际走的都是 **strict ws8 skip-conversion path**；真正差异在于是否恢复 dataloader state。
+  - 已验证健康启动：env health OK、Ray `8/8` GPUs OK、strict ws8 checkpoint detected and skip conversion、日志已出现 `Skipping dataloader state restore ... trainer.restore_dataloader_state=False`。
+- `471869` 最终已经**成功越过 step301**，因此 dataloader 修复获得 runtime 验证：
+  - 日志出现 `[DEBUG] step 301 rollout ends`；
+  - 成功保存 `checkpoints/global_step_301/`（约 `98G`）；
+  - `latest_checkpointed_iteration.txt = 301`；
+  - checkpoint 保存时间约 `2026-07-11 18:46:54 HKT`；
+  - trainer 随后明确打印 `global_steps: 302`，说明已进入 step302；
+  - step301 总耗时 `2364.852s`（约 `39.4 min`），其中 checkpoint save `77.700s`；
+  - step301 train success：`base_train=0.059`、`common_sense_train=0.033`。
+- 但 `471869` 随后在 step302 中失败：
+  - 失败时间：`2026-07-11 19:14:21 HKT`；
+  - Slurm：`FAILED`, elapsed `01:52:59`；
+  - 新失败签名：`AssertionError: Number of rewards does not match number of reward positions`；
+  - 栈落在 `rollout_manager_service.py::_generate_input_for_uptate`，由 `generate_batch_for_update()` 调用；
+  - 这与此前的 dataloader `StopIteration` 和 `none_dealloc` 都是不同故障族。
+- 当前最新可恢复点是 `global_step_301`。若继续，应先修复 step302 rollout assembly 中 reward / reward-position 数量不一致的问题，再从 `301` 恢复。
+- 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但 `471797` / `471869` 实际走的都是 **strict ws8 skip-conversion path**；真正差异在于是否恢复 dataloader state。
 
 ## 2026-07-08：VAGEN legacy-dev 1-action / 20-turn / step300→330 resume 分支进展
 
