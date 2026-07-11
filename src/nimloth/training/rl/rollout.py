@@ -169,7 +169,16 @@ class EnvRolloutCollector:
         seed_offset: int = 0,
         temperature: float = 1.0,
         top_p: float = 1.0,
+        eval_sets: tuple[str, ...] = ("base", "common_sense"),
+        split: str = "eval",
     ) -> None:
+        if not eval_sets:
+            raise ValueError("EnvRolloutCollector requires at least one eval_set")
+        if split == "train" and any(not name.endswith("_train") for name in eval_sets):
+            raise ValueError(
+                "training rollout requires *_train datasets; "
+                f"got eval_sets={eval_sets}"
+            )
         self._model = qwen_model
         self._processor = processor
         self._env_url = env_url.rstrip("/")
@@ -178,6 +187,8 @@ class EnvRolloutCollector:
         self._client = None  # lazy init
         self._temperature = temperature
         self._top_p = top_p
+        self._eval_sets = eval_sets
+        self._split = split
 
     @property
     def client(self):
@@ -217,11 +228,11 @@ class EnvRolloutCollector:
         trajectories: list[RolloutTrajectory] = []
 
         for ep_i in range(num_episodes):
-            ep_id = f"rl_{self._ep_counter:06d}"
+            seed = self._ep_counter
+            ep_id = f"rl_{seed:06d}"
             self._ep_counter += 1
-            seed = self._ep_counter * 13 + 7
             t0 = time.time()
-            eval_set = "base" if (ep_i % 2 == 0) else "common_sense"
+            eval_set = self._eval_sets[ep_i % len(self._eval_sets)]
 
             print(json.dumps({"rl_ep": ep_i, "id": ep_id, "eval_set": eval_set}), flush=True)
 
@@ -285,7 +296,7 @@ class EnvRolloutCollector:
 
             action_names: list[str] = []
             action_indices: list[int] = []
-            action_log_probs_list: list[list[float]] = []
+            action_log_probs: list[list[float]] = []
             image_paths: list[str] = []
             done = False
             step_rewards: list[float] = []
@@ -346,10 +357,7 @@ class EnvRolloutCollector:
 
                 action_names.append(action_name)
                 action_indices.append(action_idx)
-                # Lazy init list for log_probs
-                if not hasattr(self, '_ep_log_probs'):
-                    self._ep_log_probs: list[list[float]] = []
-                self._ep_log_probs.append(log_probs_list)
+                action_log_probs.append(log_probs_list)
 
                 if done:
                     break
@@ -373,21 +381,28 @@ class EnvRolloutCollector:
             except Exception:
                 pass
 
-            ep_log_probs = list(getattr(self, '_ep_log_probs', []))
+            if not action_names or len(image_paths) != len(action_names) + 1:
+                print(json.dumps({
+                    "rl_ep": ep_i,
+                    "warning": "discarding incomplete trajectory",
+                    "num_actions": len(action_names),
+                    "num_images": len(image_paths),
+                }), flush=True)
+                continue
+
             messages = _build_vagen_messages(nav_instruction, len(action_names), action_names)
             trajectories.append(RolloutTrajectory(
                 record_id=ep_id,
                 image_paths=image_paths,
                 action_indices=action_indices,
                 action_names=list(action_names),
-                action_log_probs=ep_log_probs,
+                action_log_probs=action_log_probs,
                 nav_instruction=nav_instruction,
                 success=success,
                 reward=reward,
-                split="train",
+                split=self._split,
                 messages=messages,
             ))
-            self._ep_log_probs = []
 
             elapsed = time.time() - t0
             print(json.dumps({
@@ -398,7 +413,12 @@ class EnvRolloutCollector:
                 "elapsed_s": round(elapsed, 1),
             }), flush=True)
 
-        print(json.dumps({"rl_collect": "done", "trajectories": len(trajectories)}), flush=True)
+        jsonl_path = save_trajectories(trajectories, out_dir)
+        print(json.dumps({
+            "rl_collect": "done",
+            "trajectories": len(trajectories),
+            "jsonl_path": str(jsonl_path),
+        }), flush=True)
         return trajectories
 
 

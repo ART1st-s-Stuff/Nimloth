@@ -173,6 +173,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.env_url:
         from nimloth.training.rl.rollout import EnvRolloutCollector
         rl_cfg = config.get("rl", {})
+        rollout_cfg = config.get("rollout", {})
+        eval_sets = tuple(rollout_cfg.get("eval_sets", ()))
+        if not eval_sets:
+            raise ValueError(
+                "direct env training requires rollout.eval_sets with explicit *_train datasets"
+            )
         collector = EnvRolloutCollector(
             qwen_model=None,  # filled in by trainer after model loading
             processor=None,   # filled in by trainer
@@ -180,9 +186,12 @@ def main(argv: list[str] | None = None) -> int:
             device=None,      # filled in by trainer
             temperature=float(rl_cfg.get("temperature", 1.0)),
             top_p=float(rl_cfg.get("top_p", 1.0)),
+            eval_sets=eval_sets,
+            split="train",
         )
         if is_main():
             print(json.dumps({"rollout_mode": "env", "env_url": args.env_url,
+                              "eval_sets": eval_sets,
                               "temperature": rl_cfg.get("temperature", 1.0),
                               "top_p": rl_cfg.get("top_p", 1.0)}))
     elif args.use_jsonl_rollout or (args.vagen_config is None and not args.env_url):

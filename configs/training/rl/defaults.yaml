@@ -30,6 +30,13 @@ value_head:
   rank_margin: 0.1     # margin for ranking loss (0 → regression only)
   lambda_rank: 0.0     # 0 = pure regression; set > 0 for ranking term
 
+# --- Direct environment rollout ---
+# The connected env server must actually provide these training datasets.
+rollout:
+  eval_sets:
+    - base_train
+    - common_sense_train
+
 # --- RL loop (1 iteration = 1 global_step = 1 optimizer step) ---
 rl:
   iterations: 1000

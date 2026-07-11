@@ -7,7 +7,8 @@
 | 文件 | 用途 |
 |------|------|
 | `smoke_test.slurm` | 单 GPU smoke test：加载 SFT2 checkpoint，synthetic data 跑 1 步训练 |
-| `rollout_env.py` | 独立 rollout 脚本：加载 Qwen 连接 env server，生成 JSONL（不参与训练） |
+| `rollout_env.py` | 独立 rollout 脚本：复用 Nimloth action policy，生成完整 RL JSONL（不参与训练） |
+| `run_e2e_smoke.sh` | 训练 split rollout → 两卡 FSDP step → resume step 的端到端 smoke |
 
 ## 运行模式
 
@@ -21,6 +22,8 @@ python -m nimloth.training.rl.cli \
   --output-dir outputs/experiments/training/rl/test
 ```
 
+配置中的 `rollout.eval_sets` 必须显式列出环境实际支持的 `*_train` datasets；trainer 会拒绝把 `base/common_sense` 等 eval assets 当作训练数据。
+
 ### 分布式/离线 JSONL rollout（`world > 1`，推荐）
 
 **分布式/FSDP 训练禁止直接使用 `EnvRolloutCollector`**。必须先通过独立 rollout 后端生成 JSONL，再离线消费：
@@ -31,7 +34,9 @@ python -m experiments.training.rl.rollout_env \
   --model /path/to/sft2/export_best_hf \
   --env-url http://127.0.0.1:5000 \
   --output-dir outputs/rollouts/batch_001 \
-  --num-episodes 128
+  --num-episodes 128 \
+  --eval-set base_train \
+  --split train
 
 # 步骤 2：离线 RL 训练消费 JSONL
 python -m nimloth.training.rl.cli \
@@ -69,6 +74,6 @@ outputs/experiments/training/rl/<date>/<name>/
 # Smoke test (单 GPU，synthetic data)
 sbatch experiments/training/rl/smoke_test.slurm
 
-# 完整在线 RL（单 GPU，需要 VAGEN env server）
-sbatch experiments/training/rl/train_online.slurm
+# 真实端到端 smoke（在至少 2 GPU 的 hold allocation 内执行）
+bash experiments/training/rl/run_e2e_smoke.sh
 ```
