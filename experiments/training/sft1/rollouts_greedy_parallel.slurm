@@ -469,6 +469,8 @@ run_shard() {
       +actor_rollout_ref.rollout.val_kwargs.n=${VAL_N} \
       +actor_rollout_ref.rollout.val_kwargs.do_sample=False \
       +actor_rollout_ref.rollout.val_kwargs.temperature=0 \
+      +actor_rollout_ref.rollout.val_kwargs.top_p=1.0 \
+      +actor_rollout_ref.rollout.val_kwargs.top_k=-1 \
       actor_rollout_ref.rollout.max_num_batched_tokens=24000 \
       actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
       actor_rollout_ref.rollout.enforce_eager=True \
