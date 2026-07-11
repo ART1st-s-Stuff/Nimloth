@@ -25,7 +25,7 @@
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
 - full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。最初540条 shard 后确认 prompt/action/reward/dynamics 与源 step60 不一致，已按人类要求永久删除；当前生产恢复不能跳过该 shard。
 - 已新增独立 `source_eval_mode` 并逐字核对 prompt、role boundary、canonical actions、reward feedback、0.3m step、1.0m threshold、20 turns及 greedy kwargs。120条精确 composition 重放为86/120=71.67%（base73.33%、common70%），高于源72/120=60%（base55%、common65%），action validity1.0。
-- 2026-07-11 人类明确将门禁改为“优质数据/成功率不低于源”。retry2（`08a898d`，≤120 rows/invocation，workers4）在hold到期前完成train seeds1-320共8 shards：960 records、19,328 PNG、0 bad JSON/empty/missing image；第9 shard环境创建超时，无`0.jsonl`。成功106/960=11.04%（base17.50%、common10.31%、long5.31%），明显低于heldout parity replay；6 records的30/18,368 assistant turns无action或使用unsupported action，必须严格排除。hold471146已TIMEOUT，无GPU allocation；因“优质数据”目标与train成功率存在冲突，续采前等待人类决定all-trajectory是否可接受或只保留success+strict-valid。
+- 2026-07-11 production retry2完成train seeds1-320共960 records后，确认其错误使用了validation greedy参数（temperature0），而源train rollout明确使用`do_sample=true, temperature=0.7, top_p=0.95`。这是把validation parity与训练数据采集场景混淆的人为错误；960 records虽结构完整但对当前训练目的判定无效，禁止conversion/SFT，等待人类决定删除或隔离。hold471146已TIMEOUT，无GPU allocation。正确重启前须分别固定train sampling和val/test greedy参数，并先做train sampling质量门禁。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`及服务器 full-scale README。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
