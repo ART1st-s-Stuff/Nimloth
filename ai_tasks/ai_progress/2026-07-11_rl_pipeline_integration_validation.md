@@ -36,6 +36,11 @@
 
 - Cherry-pick 修改：`src/nimloth/training/rl/`、`experiments/training/rl/README.md`、`tests/training/rl/`。
 - `src/nimloth/training/rl/trainer.py`：保留任务开始前已有的 encoding `max_length=999999` 修改。
+- `src/nimloth/training/rl/rollout.py`：Env collector 显式接收 dataset/split，拒绝 eval→train 冒充；使用确定 seed；保存每步 action log-probs、final observation 和完整 `trajectories.jsonl`；丢弃结构不完整的轨迹。
+- `src/nimloth/training/rl/cli.py`：直接环境训练必须通过 `rollout.eval_sets` 显式提供 `*_train` datasets。
+- `experiments/training/rl/rollout_env.py`：移除旧 action-name-token placeholder，复用 `EnvRolloutCollector` 的 Nimloth action policy，并在输出后强校验 RL schema。
+- `configs/training/rl/e2e_smoke.yaml`、`experiments/training/rl/run_e2e_smoke.sh`：真实训练 split rollout → 2-rank FSDP step → resume step 验证入口。
+- `tests/training/rl/test_rollout_schema.py`：dataset split 与 trajectory schema 测试。
 - `ai_tasks/ai_progress/2026-07-11_rl_pipeline_integration_validation.md`：本任务实时进度。
 
 ## 验证命令和结果
@@ -53,4 +58,17 @@
 - 满足 training-split 硬规则并验证真实管线需要选择路线：
   1. 修复/替换 `rollout_env.py`，使其复用 `EnvRolloutCollector` 的 Nimloth action policy，输出完整兼容 JSONL；使用已有 `exp/vagen-1action` VAGEN commit `e699e0b` 的 `base_train/common_sense_train` 启外部 env。这会新增 train split 参数并形成明确的跨 worktree env 依赖。
   2. 只做不更新参数的 eval rollout + synthetic/离线 trainer smoke；它只能分别验证组件，不能证明真实端到端 RL 管线。
-- FSDP full-tune 的 checkpoint 保存/resume 仍缺少独立端到端验证；GPU smoke 应至少验证 final checkpoint 可读取，若要验证 resume 需再跑一个恢复 step。
+- FSDP full-tune 的 checkpoint 保存/resume 仍缺少独立端到端验证；已批准的 GPU smoke 将跑 iteration 1，再从 `best/` resume 到 iteration 2。
+
+## 2026-07-11 GPU smoke 启动前检查
+
+- 目的：验证修复后的真实训练 split rollout、RL JSONL、2-rank FSDP PPO/WM 更新、checkpoint 和 resume。
+- 代码入口：`experiments/training/rl/run_e2e_smoke.sh`。
+- 配置：`configs/training/rl/e2e_smoke.yaml`；4 episodes × 最多 2 steps，batch size 2，先 iteration 1，再 resume 到 iteration 2。
+- 数据：服务器 `exp/vagen-1action` worktree 的 VAGEN commit `4607097`，`base_train.json` 实际含 1200 tasks；使用 seeds 1..4。该数据文件和 env 代码明确属于 `*_train` dataset。
+- 初始化：`outputs/experiments/training/sft2/2026-06-22/sft2_llmlora_visionfull_1epoch_gamma1_ckpt100_keep2_stride2` 的 `export_best_hf` 和 `best/{state_proj,wm_predictor,value_head}`。
+- 训练模块：Qwen language model full parameters、WM predictor、value head；冻结 vision tower 和 state projector。
+- 输出：`outputs/experiments/training/rl/2026-07-11/post_fsdp_fix_e2e_smoke_retry1`，脚本拒绝复用非空目录。
+- Resume：iteration 1 的 `best/` 保存 model/WM/optimizer；第二个 torchrun 使用 `--resume --rl-iterations 2`。
+- 监控：trajectory 数/schema、transition 数、wm_mse、value_loss、actor_loss、entropy、global_step，以及 final `rl_state.pt` 的 iteration/global_step。
+- 资源：单个 preempt 节点 2 GPU；env+rollout 并行占 2 GPU，之后停止 env 并用 2 GPU FSDP；预计 20–45 分钟。人类已批准。

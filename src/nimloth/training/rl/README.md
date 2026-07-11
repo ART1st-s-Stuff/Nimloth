@@ -9,7 +9,9 @@
 | 单 GPU 在线 | 需要 | 否 | `world == 1` 调试 |
 | JSONL 离线 | 不需要 | 是 | 分布式 FSDP；独立 rollout 生成 JSONL |
 
-**分布式/FSDP (`world > 1`) 训练禁止使用 `EnvRolloutCollector`**。trainer 会在启动时检测并报错，要求使用 `--use-jsonl-rollout --jsonl-sources <路径>`。
+**分布式/FSDP (`world > 1`) 训练禁止使用 `EnvRolloutCollector`**。trainer 会在启动时检测并报错，要求使用 `--use-jsonl-rollout --jsonl-sources <路径>`。直接环境训练也必须在 `rollout.eval_sets` 中显式指定环境实际支持的 `*_train` datasets；eval assets 不能标记为训练数据。
+
+独立 `experiments/training/rl/rollout_env.py` 复用同一个 `EnvRolloutCollector`，因此动作 prior、final observation、action log-probs 和 JSONL schema 与在线 collector 一致。
 
 JSONL collector 支持从 CLI `--jsonl-sources` 或 config `rollout.jsonl_sources` 指定文件/目录读取轨迹，按 iteration 轮转消费（数据耗尽自动循环），目录会递归搜索 `*.jsonl` / `*.jsonl.gz`。所有 rank 得到相同轨迹序列，保证 FSDP forward 触碰次数一致。Batch 选择使用 per-iteration 确定性 generator (`seed + iteration`)。非 FSDP 的 `state_proj`、`wm_predictor`、`value_head` 会在 distributed setup 后从 rank0 广播初始参数；在相同数据/相同 batch 下保持本地副本同步。
 
