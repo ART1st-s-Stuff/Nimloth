@@ -325,4 +325,10 @@
   - runtime log 明确打印 `Size of train dataloader: 18`；train batch size=128，drop-last 对应每个完整 epoch 18 batches；
   - trainer 源码是 `for epoch in total_epochs` 再 `for batch in train_dataloader`。
 - 但我直接把 resume 后30 epochs等价为540 updates不严谨：stateful dataloader 恢复后，第一个 outer-loop epoch 可能只剩部分 batches。人类质疑后，已在 job `472777` 尚未运行时取消它和 watcher `472778`。
-- 当前没有 long train job；step329 保留，301-328 已清理。等待人类确认：原生 `trainer.total_epochs=30`，还是固定540 updates。已登记 `E0005_do_not_equate_resumed_epochs_with_full_dataloader_lengths.md`。
+- 人类最终明确：目标是从329再训练 **30个 global steps**，不是30 epochs；此前 epoch 推断错误。
+- 已提交正确任务：
+  - train job `472793`，从 strict ws8 step329 恢复；
+  - 30次 PPO updates = train/save step330..359；legacy stop semantics 对应 `TOTAL_STEPS=360`；
+  - `TOTAL_EPOCHS=3` 仅提供足够 loop capacity，absolute step target 保证恰好30 updates；
+  - normal/preempt 当前无整台 idle 8GPU，故先投 preempt，当前 pending resources；
+  - watchdog `472794`，env `472577`；rolling retention enabled。

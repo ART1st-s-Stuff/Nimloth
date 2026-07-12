@@ -12,3 +12,6 @@
 2. 固定更新量语义：无论 sampler 当前位置如何都执行540次 PPO updates。
 
 在得到确认前，不启动对应长训练任务。
+
+## 本次最终确认
+人类所说的“再来30个”指 **30个 global training steps**，不是30 epochs。应从 step329 执行30次 PPO update，即训练/save step330到359，并将 legacy trainer 的 `total_training_steps` 设为360。
