@@ -142,7 +142,9 @@
   - 为避免错误语义，已在 long-run job `472777` 尚未获得资源、尚未运行时取消它及 watcher `472778`；当前没有长训练在跑，step329 保留，301-328 cleanup 已完成；
   - 人类最终明确：要求的是**再训练30个 global steps**，不是30 epochs；我此前的 epoch 推断是错误的；
   - 已从保留的 strict ws8 step329 提交 `472793`：执行30次 PPO update，即 train/save step330..359；由于 stop check 在 increment 后，`TOTAL_STEPS=360`；`TOTAL_EPOCHS=3` 只提供足够 loop capacity，绝对 step target 确保恰好30 updates；
-  - normal/preempt 当前均无整台 idle 8GPU，因此先投 preempt，job `472793` 当前 pending resources；watchdog `472794` 支持 none_dealloc/preemption；env `472577` 继续健康；
+  - job `472793` 后续在 preempt `dgx-48` 启动，完成并保存 step330-334，然后在 step335 启动时复发 none_dealloc；
+  - watchdog 已自动从 strict ws8 step334 启动 `472885`（preempt `dgx-11`）并挂载 `472886`；validation@334 base/common success=`0.400/0.433`、action-valid=`0.900/0.933`；当前 step335 active；
+  - 请求的30 updates 已完成5个，剩余25个；env `472577` 继续健康；
   - checkpoint storage 使用 `SAVE_FREQ=1` + `REMOVE_PREVIOUS_CKPT_IN_SAVE=true`，确保逐步可恢复且滚动删除上一组 actor/critic shards。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。

@@ -330,5 +330,7 @@
   - train job `472793`，从 strict ws8 step329 恢复；
   - 30次 PPO updates = train/save step330..359；legacy stop semantics 对应 `TOTAL_STEPS=360`；
   - `TOTAL_EPOCHS=3` 仅提供足够 loop capacity，absolute step target 保证恰好30 updates；
-  - normal/preempt 当前无整台 idle 8GPU，故先投 preempt，当前 pending resources；
-  - watchdog `472794`，env `472577`；rolling retention enabled。
+  - job `472793` 在 preempt dgx-48 启动，完成/save step330-334 后于 step335 startup 复发 none_dealloc；
+  - watchdog 自动从 step334 启动 `472885`（dgx-11），下一代 watcher `472886` armed；
+  - validation@334 base/common success=`0.400/0.433`、action-valid=`0.900/0.933`；step335 active；
+  - 30 updates 已完成5个、剩余25；env `472577` healthy；rolling retention enabled。
