@@ -127,7 +127,12 @@
   - 当前最新完整 checkpoint=`global_step_323`；validation@319 两个 split success 都为 `0.433`、action-valid 都为 `1.000`；step323 train base/common_sense success=`0.081/0.197`、action-valid 都为 `1.000`；
   - 已重启 fresh env `472577`（`dgx-37`, port5003）并通过 smoke/health；从 step323 提交 train `472581`；
   - `472581` 实际在 `dgx-12` 完成并保存 step324-327，随后在 step328 中被 Slurm `PREEMPTED`；latest marker=`327`；step327 train base/common_sense success=`0.143/0.154`，action-valid 都为 `1.000`；
-  - env `472577` 保持健康；已从 strict ws8 step327 在 preempt `dgx-48` 启动 continuation `472676`，watchdog `472677` armed；当前仅剩 step328-330。
+  - env `472577` 保持健康；从 strict ws8 step327 启动的 continuation `472676` 完成 train step328/329 和 final `validation@330`，但 legacy trainer 的 stop check 在 global step increment 后执行，因此 `TOTAL_STEPS=330` 的最新实际 checkpoint 是 `global_step_329`；
+  - 用户要求在330后继续额外训练30个 epoch，并删除 step301-329 checkpoint。当前 train dataloader size=`18`，所以30 epoch=`540` PPO updates；为保存最后的 step870，后续绝对 target 将设为 `trainer.total_training_steps=871`；
+  - 已提交 materialize-step330 job `472769`：从 step329 恢复，`TOTAL_STEPS=331`，实际训练并保存 `global_step_330`；当前等待 preempt 8GPU，watchdog `472770`；
+  - 已新增 long-run storage 支持：`REMOVE_PREVIOUS_CKPT_IN_SAVE=true` 透传到 trainer，并让 failure watchdog 同时自动恢复 exact none_dealloc 与 Slurm PREEMPTED；commit `b21ae10`；
+  - 已新增 audited range cleanup `cleanup_legacy_checkpoint_range.py`；dry-run 找到 step301-329 共40条路径（32 real dirs + 8 symlinks），预计释放约 `3.05 TiB`；只会在完整 step330 验证通过后执行；
+  - CPU orchestrator `472773` 已提交：等待完整 strict ws8 step330，执行 step301-329 cleanup，再提交从330到870的540-update long run（`TOTAL_STEPS=871`, loop capacity31 epochs, save_freq1, rolling previous-shard removal）及自动恢复 watchdog。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 

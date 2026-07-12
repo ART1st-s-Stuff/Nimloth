@@ -302,4 +302,13 @@
   - 已启动 fresh env `472577`（dgx-37, port5003）并通过 health；resume train `472581` 从 step323 提交；
   - `472581` 在 dgx-12 完成并保存 step324-327，随后 step328 中被 Slurm `PREEMPTED`；marker=`327`；
   - step327 train base/common_sense success=`0.143/0.154`，action-valid=`1.000/1.000`；
-  - env 保持健康；已从 strict ws8 step327 在 preempt dgx-48 启动 `472676`，watchdog `472677` armed；剩余 step328-330。
+  - env 保持健康；从 strict ws8 step327 在 preempt dgx-48 启动的 `472676` 完成 train step328/329 与 final `validation@330`；
+  - legacy trainer 在每次 update 后先 `global_steps += 1` 再比较 `total_training_steps`，所以原 `TOTAL_STEPS=330` 最终只保存到 `global_step_329`。
+- 用户要求：得到 step330 后继续额外训练30 epochs，并清理 step301-329 checkpoints。执行计划已落地：
+  - dataloader size=`18`，30 epochs=`540` PPO updates；从330训练/save到870需要 `TOTAL_STEPS=871`；
+  - materialize job `472769` 从329以 `TOTAL_STEPS=331` 训练并保存真实 `global_step_330`，watchdog `472770`；
+  - long-run 增加 `REMOVE_PREVIOUS_CKPT_IN_SAVE=true`，每步仍保存用于 crash recovery，但每个 run 只滚动保留 source/latest shards；
+  - failure watchdog 现同时识别 exact none_dealloc 与 Slurm `PREEMPTED`，其他 application error 仍停止；
+  - cleanup dry-run 在 baseline outputs 下找到301-329共40条 checkpoint 路径（32 real dirs + 8 symlinks），预计释放约3.05TiB；
+  - CPU orchestrator `472773` 等待完整 step330，验证 strict ws8 全 shards/data.pt 后执行 cleanup，再提交330+540 updates的 long run（target saved step870）与 watchdog；
+  - 实现 commit：`b21ae10`。
