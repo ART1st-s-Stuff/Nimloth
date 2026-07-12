@@ -122,7 +122,10 @@
   - 已从 strict ws8 `global_step_308` 启动 train retry `472366`（preempt `dgx-47`，restore dataloader state=true），并挂载新 exact-none_dealloc watcher `472367`；
   - VPN 恢复后已确认 `472366` 健康：strict ws8 step308 load 与 `validation@308` 完成，step309 完成并保存，marker=`309`，当前 step310 active；
   - validation@308 base/common_sense success=`0.433/0.433`，action-valid=`0.983/1.000`；step309 train success=`0.143/0.169`，action-valid=`0.984/0.985`；
-  - env `472364` 当前 health 正常、48 active environments；watchdog `472367` 保持 armed。
+  - exact-none_dealloc 自动链随后实际工作：`472366` 保存到 step313 后 none_dealloc，watchdog 启动 `472441` from313；`472441` 保存到 step319 后 none_dealloc，下一代 watcher 启动 `472457` from319；
+  - `472457` 保存到 step323 后在 env `/batch/reset` 收到 HTTP500；env log 定位为 AI2-THOR backend 在 `FloorPlan410_physics` Initialize 时 300 秒 timeout；这不是 none_dealloc，因此 watcher 正确 STOP；
+  - 当前最新完整 checkpoint=`global_step_323`；validation@319 两个 split success 都为 `0.433`、action-valid 都为 `1.000`；step323 train base/common_sense success=`0.081/0.197`、action-valid 都为 `1.000`；
+  - 已重启 fresh env `472577`（`dgx-37`, port5003）并通过 smoke/health；从 step323 提交 train `472581`，当前因没有整台 idle preempt 8GPU node 而 `PENDING (Priority)`；watchdog `472583` 已挂载。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 

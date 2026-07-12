@@ -296,4 +296,7 @@
   - VPN 恢复后确认：step308 strict ws8 load 与 `validation@308` 均完成，step309 完成并保存，marker=`309`，step310 active；
   - validation@308 base/common_sense success=`0.433/0.433`，action-valid=`0.983/1.000`；
   - step309 train base/common_sense success=`0.143/0.169`，action-valid=`0.984/0.985`；
-  - env `472364` health 正常、48 active environments，watchdog `472367` armed。
+  - exact-none_dealloc auto chain 后续验证成功：`472366` 保存到 step313 后 none_dealloc，watchdog 启动 `472441` from313；`472441` 保存到319后 none_dealloc，watchdog 再启动 `472457` from319；
+  - `472457` 保存到 step323 后因 env `/batch/reset` HTTP500 失败；env log 给出 AI2-THOR backend 在 FloorPlan410_physics Initialize 的 300 秒 timeout；watchdog 正确判断为 unrelated error 并停止；
+  - 最新完整 checkpoint=`global_step_323`；validation@319 两个 split success=`0.433/0.433`、action-valid=`1.000/1.000`；step323 train success base/common_sense=`0.081/0.197`；
+  - 已启动 fresh env `472577`（dgx-37, port5003）并通过 health；resume train `472581` 从 step323 提交，当前 `PENDING (Priority)` 等待整台 preempt 8GPU node；watchdog `472583` armed。
