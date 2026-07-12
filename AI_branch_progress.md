@@ -25,7 +25,7 @@
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
 - full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。最初540条 shard 后确认 prompt/action/reward/dynamics 与源 step60 不一致，已按人类要求永久删除；当前生产恢复不能跳过该 shard。
 - 已新增独立 `source_eval_mode` 并逐字核对 prompt、role boundary、canonical actions、reward feedback、0.3m step、1.0m threshold、20 turns及 greedy kwargs。120条精确 composition 重放为86/120=71.67%（base73.33%、common70%），高于源72/120=60%（base55%、common65%），action validity1.0。
-- 2026-07-12 fresh hold472930 resume健康：已跳过train001-120，重跑完成121-160（120 records/2,423 PNG，success14/120=11.67%，0 bad JSON/missing image/action格式问题）。Durable现为1140/3900、21,000 PNG；train累计480、success63=13.12%。161-200正在最终generation/postprocess，无新traceback/timeout/OOM；clean d2046d6/VAGENe7cc2d0/source step60 eval kwargs不变。
+- 2026-07-12 fresh hold472930 resume健康：已跳过train001-120并完成121-240三个新shards。Durable=1380/3900（train720+val360+test300）、25,585 PNG；train success90/720=12.50%，0 bad JSON/missing image、累计2条action格式受影响。241-280约160/400 batches，无新错误。近期13.5–15.5min/shard；不中断ETA约5.25h，考虑已知env退化/重启的rollout operational ETA约6–7h。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`及服务器 full-scale README。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
