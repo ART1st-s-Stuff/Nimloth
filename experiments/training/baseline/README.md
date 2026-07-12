@@ -21,6 +21,7 @@ Canonical scripts for VAGEN navigation RL baseline per `ai_rules/03_experiments_
 | `vagen_env_repro_cli.inc.sh` | Reproducible env sampling + val composition assert |
 | `convert_checkpoint_world_size.slurm` | HF → FSDP shard conversion |
 | `prune_checkpoints.py` + `prune_checkpoints_policy.sh` | Keep latest + every 10th step + best val checkpoint |
+| `cleanup_legacy_checkpoint_range.py` | Audited dry-run/execute cleanup of a human-approved `global_step_N` range across retry directories |
 | `convert_vagen_*_to_world_size.py` | Conversion entrypoints |
 | `slurm_gpu_resources.py` | Cluster GPU inventory helper |
 | `submit_env_external_4gpu.sh` | Thin sbatch wrapper for external env |
@@ -89,8 +90,9 @@ RUN_DIR=... EXPERIMENT_NAME=my_run NODELIST=dgx-32,dgx-37 \
 Attach the watchdog to an already running legacy train job with
 `submit_legacy_train_failure_watchdog.sh`. The watchdog is scheduled with
 `afternotok:<train-job-id>`, so it consumes no resources while training is
-healthy. On failure it restarts only when the run log contains the exact
-`Fatal Python error: none_dealloc: deallocating None` signature.
+healthy. It restarts when the run log contains the exact
+`Fatal Python error: none_dealloc: deallocating None` signature or Slurm marks
+the predecessor `PREEMPTED`.
 
 Before submitting a successor it:
 
@@ -100,8 +102,14 @@ Before submitting a successor it:
 - creates a new retry run directory and links the latest complete checkpoint;
 - submits the next watchdog recursively, up to `MAX_AUTO_RETRIES`.
 
-It deliberately stops on unrelated failures, missing/incomplete checkpoints,
-or retry-limit exhaustion instead of hiding a new error.
+It deliberately stops on unrelated application failures, missing/incomplete
+checkpoints, or retry-limit exhaustion instead of hiding a new error.
+
+For long runs with `SAVE_FREQ=1`, set `REMOVE_PREVIOUS_CKPT_IN_SAVE=true` to
+keep only the checkpoint manager's latest actor/critic shard set in each run.
+Old `global_step_*` directories retain only small dataloader metadata; the
+checkpoint used to enter a fresh retry directory is not removed on the first
+save.
 
 ## Legacy
 

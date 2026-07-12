@@ -37,6 +37,7 @@ SERVICE_BASE_URL=${SERVICE_BASE_URL:-http://127.0.0.1:5000}
 RESUME_MODE=${RESUME_MODE:-auto}
 RESUME_FROM_PATH=${RESUME_FROM_PATH:-}
 RESTORE_DATALOADER_STATE=${RESTORE_DATALOADER_STATE:-true}
+REMOVE_PREVIOUS_CKPT_IN_SAVE=${REMOVE_PREVIOUS_CKPT_IN_SAVE:-false}
 AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-8}
 VAGEN_MAX_PROMPT_LENGTH=${VAGEN_MAX_PROMPT_LENGTH:-3000}
 VAGEN_MAX_RESPONSE_LENGTH=${VAGEN_MAX_RESPONSE_LENGTH:-20000}
@@ -97,7 +98,7 @@ PY
   echo "service_base_url=${SERVICE_BASE_URL}"
   echo "adv_estimator=bi_level_gae ${TRAIN_CONFIG_SUMMARY} reward_model.enable=false"
   echo "gamma=${ALGORITHM_GAMMA} high_level_gamma=${HIGH_LEVEL_GAMMA} total_steps=${TOTAL_STEPS} total_epochs=${TOTAL_EPOCHS} save_freq=${SAVE_FREQ} test_freq=${TEST_FREQ}"
-  echo "resume_mode=${RESUME_MODE} resume_from_path=${RESUME_FROM_PATH:-<auto-from-default_local_dir>} restore_dataloader_state=${RESTORE_DATALOADER_STATE}"
+  echo "resume_mode=${RESUME_MODE} resume_from_path=${RESUME_FROM_PATH:-<auto-from-default_local_dir>} restore_dataloader_state=${RESTORE_DATALOADER_STATE} remove_previous_ckpt_in_save=${REMOVE_PREVIOUS_CKPT_IN_SAVE}"
   echo "trajectory max_turns=${ROLLOUT_MAX_TURNS} max_response_per_turn=${VLLM_MAX_RESPONSE_PER_TURN} max_trajectory_length=${ROLLOUT_MAX_TRAJECTORY_LENGTH} truncation=${VAGEN_TRAJECTORY_TRUNCATION} max_generated_budget=${MAX_GENERATED_TOKEN_BUDGET} non_response_reserve=${VAGEN_NON_RESPONSE_TOKEN_RESERVE}"
   echo "resources train_nodes=${TRAIN_NODES} train_gpus_per_node=${TRAIN_GPUS_PER_NODE}"
 } | tee -a "${LOG_FILE}"
@@ -182,6 +183,7 @@ PYTHONUNBUFFERED=1 python -m vagen.trainer.main_ppo \
   trainer.total_training_steps="${TOTAL_STEPS}" \
   trainer.default_local_dir="${SAVE_CHECKPOINT_DIR}" \
   trainer.restore_dataloader_state="${RESTORE_DATALOADER_STATE}" \
+  trainer.remove_previous_ckpt_in_save="${REMOVE_PREVIOUS_CKPT_IN_SAVE}" \
   "${RESUME_ARGS[@]}" \
   trainer.val_before_train=True \
   trainer.val_generations_to_log_to_wandb=8 \
