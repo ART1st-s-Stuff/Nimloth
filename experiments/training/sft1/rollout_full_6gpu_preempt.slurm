@@ -178,9 +178,19 @@ done < "${URLS}"
 # by rollouts_greedy_parallel.slurm, so a later retry preserves shard progress.
 if [ "${ROLLOUT_SMOKE:-0}" = "1" ] || [ "${ROLLOUT_SOURCE_PARITY:-0}" = "1" ]; then
   TASK_IDS=(0)
+elif [ -n "${ROLLOUT_TASK_IDS:-}" ]; then
+  read -r -a TASK_IDS <<< "${ROLLOUT_TASK_IDS//,/ }"
+  if [ "${#TASK_IDS[@]}" -eq 0 ]; then
+    echo "ERROR ROLLOUT_TASK_IDS did not contain a task id" >&2
+    exit 2
+  fi
+  for task_id in "${TASK_IDS[@]}"; do
+    case "${task_id}" in 0|1|2|3) ;; *) echo "ERROR invalid rollout task id ${task_id}" >&2; exit 2;; esac
+  done
 else
   TASK_IDS=(0 1 2 3)
 fi
+echo "rollout task order=${TASK_IDS[*]}" | tee -a "${LOG}"
 for task_id in "${TASK_IDS[@]}"; do
   echo "=== starting rollout task ${task_id} at $(date -Is) ===" | tee -a "${LOG}"
   (
