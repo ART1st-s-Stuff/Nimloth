@@ -25,7 +25,7 @@
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
 - full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。最初540条 shard 后确认 prompt/action/reward/dynamics 与源 step60 不一致，已按人类要求永久删除；当前生产恢复不能跳过该 shard。
 - 已新增独立 `source_eval_mode` 并逐字核对 prompt、role boundary、canonical actions、reward feedback、0.3m step、1.0m threshold、20 turns及 greedy kwargs。120条精确 composition 重放为86/120=71.67%（base73.33%、common70%），高于源72/120=60%（base55%、common65%），action validity1.0。
-- 2026-07-12 fresh hold472930/dgx-44继续task0；已完成至train201-240，241-280运行中，主目录durable=1380/3900（检查时）。按人类指令并行启动hold472972/dgx-48（6/8 H800，保持2env+4policy源topology），只采task2 train seeds721-1080的9×120 records，独占临时目录`rollout_parallel_tail_dgx48_20260712`；clean d2046d6/VAGENe7cc2d0/source step60 eval kwargs不变。完成后先严格核验无重叠/JSON/action/image，再复制到主目录并原子重写absolute image_paths；合并验证前保留临时目录。当前dgx-48处于AI2-THOR smoke gate，预计2.5–3h。
+- 2026-07-12 双节点采集中：dgx-44主目录已完成train001-320=960及val360/test300；dgx-48临时tail已完成train721-800=240。Combined durable=1860/3900（47.69%）、34,798 PNG，0 bad JSON/missing image且seed overlap=0；主train success11.46%/2 action问题，tail38.75%/2 action问题。当前主321-360约72/400 batches，tail801-840约212/400，无新错误。task0结束后将在fresh dgx-44 service启动task1 seeds361-720；combined rollout ETA约4–5h，之后严格验证并合并临时tail。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`及服务器 full-scale README。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
