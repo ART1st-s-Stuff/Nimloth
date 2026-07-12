@@ -299,4 +299,7 @@
   - exact-none_dealloc auto chain 后续验证成功：`472366` 保存到 step313 后 none_dealloc，watchdog 启动 `472441` from313；`472441` 保存到319后 none_dealloc，watchdog 再启动 `472457` from319；
   - `472457` 保存到 step323 后因 env `/batch/reset` HTTP500 失败；env log 给出 AI2-THOR backend 在 FloorPlan410_physics Initialize 的 300 秒 timeout；watchdog 正确判断为 unrelated error 并停止；
   - 最新完整 checkpoint=`global_step_323`；validation@319 两个 split success=`0.433/0.433`、action-valid=`1.000/1.000`；step323 train success base/common_sense=`0.081/0.197`；
-  - 已启动 fresh env `472577`（dgx-37, port5003）并通过 health；resume train `472581` 从 step323 提交，当前 `PENDING (Priority)` 等待整台 preempt 8GPU node；watchdog `472583` armed。
+  - 已启动 fresh env `472577`（dgx-37, port5003）并通过 health；resume train `472581` 从 step323 提交；
+  - `472581` 在 dgx-12 完成并保存 step324-327，随后 step328 中被 Slurm `PREEMPTED`；marker=`327`；
+  - step327 train base/common_sense success=`0.143/0.154`，action-valid=`1.000/1.000`；
+  - env 保持健康；已从 strict ws8 step327 在 preempt dgx-48 启动 `472676`，watchdog `472677` armed；剩余 step328-330。
