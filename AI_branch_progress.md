@@ -25,7 +25,7 @@
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
 - full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。最初540条 shard 后确认 prompt/action/reward/dynamics 与源 step60 不一致，已按人类要求永久删除；当前生产恢复不能跳过该 shard。
 - 已新增独立 `source_eval_mode` 并逐字核对 prompt、role boundary、canonical actions、reward feedback、0.3m step、1.0m threshold、20 turns及 greedy kwargs。120条精确 composition 重放为86/120=71.67%（base73.33%、common70%），高于源72/120=60%（base55%、common65%），action validity1.0。
-- 2026-07-12 workflow-first job472590运行中（源train-time eval kwargs）。task3已完成val360+test300；train001-080两个shards也完成240 records/4,768 PNG，success38/240=15.83%，0 missing image、2条action格式受影响。Durable总计900/3900、15,915 PNG；train081-120已开始生成，无traceback/timeout/OOM，三种split已可做最小workflow。
+- 2026-07-12 workflow-first step472590.0部分完成后失败：legacy env service连续完成9个120-row invocations后退化，第10个train121-160环境创建POST超过120s；该shard无JSONL，GPU已清零。Durable为train360+val360+test300=1020/3900、18,339 PNG，0 bad JSON/missing image；train success49/360=13.61%，2条action格式受影响。恢复时fresh env、task0跳过001-120并重跑121-160；outer hold472590仍暂存且Requeue=1，但检查时不足1h，不冒险启动完整shard。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`及服务器 full-scale README。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
