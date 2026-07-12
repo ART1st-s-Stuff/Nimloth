@@ -25,7 +25,7 @@
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
 - full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。最初540条 shard 后确认 prompt/action/reward/dynamics 与源 step60 不一致，已按人类要求永久删除；当前生产恢复不能跳过该 shard。
 - 已新增独立 `source_eval_mode` 并逐字核对 prompt、role boundary、canonical actions、reward feedback、0.3m step、1.0m threshold、20 turns及 greedy kwargs。120条精确 composition 重放为86/120=71.67%（base73.33%、common70%），高于源72/120=60%（base55%、common65%），action validity1.0。
-- 2026-07-11 人类纠正：所有新样本使用源train-time evaluation `val_kwargs`（greedy temperature0/top_p1/top_k-1/n1），不能改用optimization rollout sampling。retry2参数实际符合，但人类仍命令删除；已永久删除19,336 files/8.0G，有效count=0。上游 `mll-lab-nu/VAGEN@5ba5e77` 核验：`val_navigation_base_common.yaml`确为base/common各60、seed1-60；我们六个navigation JSON与上游逐文件SHA256完全一致。注意这不是120个独立场景：base/common逐条共享同一60个scene/start/target，仅instruction不同。源run将上游默认10 turns/5 actions改为20 turns/1 action，但任务资产未改。
+- 2026-07-12 人类要求继续采集已知困难split用于workflow验证，低success不再作为本轮停止门禁。已提交clean `d2046d6` / VAGEN `e7cc2d0`，新hold472590（dgx-44,6GPU,8h）运行中；所有split固定源train-time eval kwargs。为尽快获得workflow所需heldout，任务顺序改为3,0,1,2：先val/test后train；首个val120-row shard已通过config/data gate并在4 policy GPU加载step60模型。active output从0重新开始，按非空完整shard恢复。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`及服务器 full-scale README。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
