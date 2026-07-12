@@ -320,3 +320,9 @@
   - 额外30 epochs 从329开始，共540 updates，训练/save step330..869，`TOTAL_STEPS=870`；
   - normal/preempt 当时均无整台 idle 8GPU；集群拒绝 multi-partition request，因此提交 preempt `472777`（pending priority），watchdog `472778`；normal 后续有空可改投；
   - rolling retention：`SAVE_FREQ=1`, `REMOVE_PREVIOUS_CKPT_IN_SAVE=true`。
+- 关于“18 steps/epoch”的复核：
+  - train config 是 base/common 各1200，生成 parquet 共2400 rows；
+  - runtime log 明确打印 `Size of train dataloader: 18`；train batch size=128，drop-last 对应每个完整 epoch 18 batches；
+  - trainer 源码是 `for epoch in total_epochs` 再 `for batch in train_dataloader`。
+- 但我直接把 resume 后30 epochs等价为540 updates不严谨：stateful dataloader 恢复后，第一个 outer-loop epoch 可能只剩部分 batches。人类质疑后，已在 job `472777` 尚未运行时取消它和 watcher `472778`。
+- 当前没有 long train job；step329 保留，301-328 已清理。等待人类确认：原生 `trainer.total_epochs=30`，还是固定540 updates。已登记 `E0005_do_not_equate_resumed_epochs_with_full_dataloader_lengths.md`。

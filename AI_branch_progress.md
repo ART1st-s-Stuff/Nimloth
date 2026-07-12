@@ -137,7 +137,11 @@
   - 已执行 audited cleanup：删除所有 `global_step_301..328` real dirs/symlinks，复查 remaining count=`0`；完整 strict ws8 `global_step_329` 已验证并保留；NFS free 从约3.2T提高到5.7T；manifest：`2026-07-12/checkpoint_cleanup_keep329/checkpoint_cleanup_301_328_executed.json`；
   - 额外30 epochs 直接从329开始：18 steps/epoch ×30=`540` updates，即 train/save step330..869，`TOTAL_STEPS=870`，loop capacity设31以覆盖 mid-epoch resume；
   - normal 与 preempt 当时都没有整台 idle 8GPU node；集群不支持单 job 多 partition request，因此按当前可恢复路线提交 preempt job `472777`（pending priority），watchdog `472778`；如果 normal 后续有整台空闲节点，可改投 normal；
-  - long run 使用 `SAVE_FREQ=1` + `REMOVE_PREVIOUS_CKPT_IN_SAVE=true`，确保逐步可恢复且滚动删除上一组 actor/critic shards。
+  - `18 steps/epoch` 的依据是：train YAML 为 base/common 各1200，共2400 rows；runtime 明确打印 `Size of train dataloader: 18`；batch size128 且 drop-last 后每个**完整** epoch 为18 batches；trainer 源码确实是 outer `for epoch` + inner dataloader loop；
+  - 但人类质疑后确认：我不应直接把 resume 后的“30 epochs”无条件等价成540 updates，因为 stateful dataloader 恢复后第一个 outer-loop epoch 可能只消费当前 epoch 的剩余部分；
+  - 为避免错误语义，已在 long-run job `472777` 尚未获得资源、尚未运行时取消它及 watcher `472778`；当前没有长训练在跑，step329 保留，301-328 cleanup 已完成；
+  - 需要人类确认目标语义：A) 原生 `trainer.total_epochs=30`；B) 固定执行540 PPO updates。已登记 `E0005_do_not_equate_resumed_epochs_with_full_dataloader_lengths.md`。
+  - checkpoint storage 方案仍为 `SAVE_FREQ=1` + `REMOVE_PREVIOUS_CKPT_IN_SAVE=true`，确保逐步可恢复且滚动删除上一组 actor/critic shards。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 
