@@ -132,7 +132,12 @@
   - 已提交 materialize-step330 job `472769`：从 step329 恢复，`TOTAL_STEPS=331`，实际训练并保存 `global_step_330`；当前等待 preempt 8GPU，watchdog `472770`；
   - 已新增 long-run storage 支持：`REMOVE_PREVIOUS_CKPT_IN_SAVE=true` 透传到 trainer，并让 failure watchdog 同时自动恢复 exact none_dealloc 与 Slurm PREEMPTED；commit `b21ae10`；
   - 已新增 audited range cleanup `cleanup_legacy_checkpoint_range.py`；dry-run 找到 step301-329 共40条路径（32 real dirs + 8 symlinks），预计释放约 `3.05 TiB`；只会在完整 step330 验证通过后执行；
-  - CPU orchestrator `472773` 已提交：等待完整 strict ws8 step330，执行 step301-329 cleanup，再提交从330到870的540-update long run（`TOTAL_STEPS=871`, loop capacity31 epochs, save_freq1, rolling previous-shard removal）及自动恢复 watchdog。
+  - 人类随后纠正：不需要为编号额外补造 step330 checkpoint，应直接保留329并删除更早 checkpoint；该错误已登记为 `E0004_do_not_materialize_unrequested_checkpoint_step.md`；
+  - 已取消 materialize job `472769`、watchdog `472770` 和 post330 orchestrator `472773`；
+  - 已执行 audited cleanup：删除所有 `global_step_301..328` real dirs/symlinks，复查 remaining count=`0`；完整 strict ws8 `global_step_329` 已验证并保留；NFS free 从约3.2T提高到5.7T；manifest：`2026-07-12/checkpoint_cleanup_keep329/checkpoint_cleanup_301_328_executed.json`；
+  - 额外30 epochs 直接从329开始：18 steps/epoch ×30=`540` updates，即 train/save step330..869，`TOTAL_STEPS=870`，loop capacity设31以覆盖 mid-epoch resume；
+  - normal 与 preempt 当时都没有整台 idle 8GPU node；集群不支持单 job 多 partition request，因此按当前可恢复路线提交 preempt job `472777`（pending priority），watchdog `472778`；如果 normal 后续有整台空闲节点，可改投 normal；
+  - long run 使用 `SAVE_FREQ=1` + `REMOVE_PREVIOUS_CKPT_IN_SAVE=true`，确保逐步可恢复且滚动删除上一组 actor/critic shards。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
 

@@ -312,3 +312,11 @@
   - cleanup dry-run 在 baseline outputs 下找到301-329共40条 checkpoint 路径（32 real dirs + 8 symlinks），预计释放约3.05TiB；
   - CPU orchestrator `472773` 等待完整 step330，验证 strict ws8 全 shards/data.pt 后执行 cleanup，再提交330+540 updates的 long run（target saved step870）与 watchdog；
   - 实现 commit：`b21ae10`。
+- 人类随后纠正：不需要额外 materialize step330，应直接保留329、删除更早 checkpoint；已登记 known error `E0004_do_not_materialize_unrequested_checkpoint_step.md`。
+- 已执行修正：
+  - 取消 `472769` / `472770` / `472773`；
+  - audited cleanup 已删除所有 `global_step_301..328` real dirs/symlinks，复查 remaining=`0`；保留并验证 strict ws8 `global_step_329`；
+  - NFS free 从约3.2T增加到5.7T；manifest=`outputs/experiments/training/baseline/2026-07-12/checkpoint_cleanup_keep329/checkpoint_cleanup_301_328_executed.json`；
+  - 额外30 epochs 从329开始，共540 updates，训练/save step330..869，`TOTAL_STEPS=870`；
+  - normal/preempt 当时均无整台 idle 8GPU；集群拒绝 multi-partition request，因此提交 preempt `472777`（pending priority），watchdog `472778`；normal 后续有空可改投；
+  - rolling retention：`SAVE_FREQ=1`, `REMOVE_PREVIOUS_CKPT_IN_SAVE=true`。
