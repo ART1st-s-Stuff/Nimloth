@@ -15,7 +15,8 @@
 - formal 8×H800 train job473874按人类要求在执行前取消（elapsed0、无W&B/训练输出），completed cache保留并只读复用。
 - 4×H800 replacement job473963在执行前取消（elapsed0、无W&B），因为人类指定改用新空闲的preempt 8GPU节点。
 - preempt dgx-20 8GPU job473976完成cache/model/DDP/W&B初始化，正确创建`nimloth-sft2` ID1 run `x6zdsjgq`，但在首个non-sync accumulation backward触发PyTorch2.8 `static_graph=True + no_sync()` upstream reducer assert，step0失败且无checkpoint。该W&B run标记为失败，不可复用ID1。
-- 当前修复保留static graph，但在固定PyTorch2.8运行时每个micro-batch都做DDP同步，禁用`no_sync`；梯度数学等价但通信增加。retry将使用W&B ID2/comment `ddpsyncfix`和全新输出目录，继续复用已验证cache。
+- 当前修复保留static graph，但在固定PyTorch2.8运行时每个micro-batch都做DDP同步，禁用`no_sync`；梯度数学等价但通信增加。
+- retry job473978在preempt dgx-20健康越过失败点并运行到至少step5；W&B ID2/comment`ddpsyncfix` run=`5zm5pxqx`。step1–5 total loss=`4.44245,7.05436,7.29576,2.16365,8.12609`，均有限；WM MSE从0.27644降到约0.10649。8卡显存约59–61GiB，采样利用率94–100%，无OOM/NaN/traceback。
 - 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
 - `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
 - SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。
