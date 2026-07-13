@@ -337,3 +337,5 @@
   - job `473055` 随后因 env HTTP500 停止，env log 确认为 AI2-THOR FIFO reset timeout300s；
   - fresh env `473378` 已在 dgx-37 port5004 启动；normal 有整台 idle8GPU，因此 strict ws8 continuation `473380` 从347在 normal dgx-16启动，watchdog `473381`；
   - 剩余12 updates（348..359）；step347 train base/common success=`0.194/0.131`，validation@344=`0.450/0.450`；rolling retention enabled。
+- 人类要求暂不继续后，已取消 train `473380`、watchdog `473381`、env `473378`；该 retry 未产生新 update。
+- 暂停点：strict ws8 `global_step_347`，actor/critic rank0-7 与 data.pt 已验证完整；当前无 active jobs；完成18/30 updates，剩余12。

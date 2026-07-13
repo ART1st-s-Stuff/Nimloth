@@ -148,6 +148,8 @@
   - 随后 job `473055` 因 env `/batch/reset` HTTP500 停止，env log 确认为 AI2-THOR FIFO backend 300秒 timeout；watchdog正确停止 unrelated error；
   - 已启动 fresh env `473378`（dgx-37, port5004）；当时 normal 有整台 idle 8GPU，故从 strict ws8 step347 启动 normal job `473380`（dgx-16），watchdog `473381`；剩余12 updates（348..359）；
   - 最新 step347 train base/common success=`0.194/0.131`；validation@344=`0.450/0.450`；
+  - 人类随后要求暂停；已取消 normal train `473380`、watchdog `473381` 与 env `473378`，且该 retry 尚未执行新 update；
+  - 当前无 active train/env/watchdog；最新 strict ws8 `global_step_347` 的 actor/critic rank0-7 shards 与 `data.pt` 已验证完整；30-step extension 完成18/30，未来如恢复还剩 step348..359 共12 updates。
   - checkpoint storage 使用 `SAVE_FREQ=1` + `REMOVE_PREVIOUS_CKPT_IN_SAVE=true`，确保逐步可恢复且滚动删除上一组 actor/critic shards。
 - 该错误已登记：`ai_rules/known_errors/E0003_do_not_overcompress_grounding_wm_turns.md`。
 - 注意：`legacy_train_external_service.slurm` 的旧 banner 仍打印 `non-strict`，但这些 run 实际走的是 **strict ws8 skip-conversion path**；真正差异在于 dataloader restore 与 prompt/cap 配置。
