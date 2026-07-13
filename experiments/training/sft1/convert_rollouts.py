@@ -388,6 +388,11 @@ def main() -> int:
         help="Rollout dump/image step filename; defaults to --checkpoint-step for legacy resumed rollouts.",
     )
     ap.add_argument("--splits", nargs="+", default=["train", "val", "test"])
+    ap.add_argument(
+        "--strict-valid-only",
+        action="store_true",
+        help="Exclude records with validation issues from every converted split output.",
+    )
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
@@ -407,14 +412,23 @@ def main() -> int:
         "checkpoint_step": args.checkpoint_step,
         "rollout_step": rollout_step,
         "splits": list(args.splits),
+        "strict_valid_only": args.strict_valid_only,
         "action_names": ACTION_NAMES,
         "action_to_idx": ACTION_TO_IDX,
         "special_tokens": SPECIAL_TOKENS,
         "format": f"Nimloth SFT v1: assistant=<think>...</think>{NIMLOTH_ACTION_BLOCK}",
         "split_policy": {
-            "train_all": "all train-split rollouts; default SFT train file (success + failed)",
-            "train_success": "train-split rollouts with traj_success >= 1.0 and no validation issues; optional ablation",
-            "val_all/test_all": "all rollout records for held-out validation/test eval",
+            "train_all": (
+                "valid train-split rollouts only (success + failed)"
+                if args.strict_valid_only
+                else "all train-split rollouts (success + failed)"
+            ),
+            "train_success": "valid train-split rollouts with traj_success >= 1.0; SFT1 training input",
+            "val_all/test_all": (
+                "valid held-out rollout records only"
+                if args.strict_valid_only
+                else "all held-out rollout records"
+            ),
         },
     }
 
@@ -435,10 +449,25 @@ def main() -> int:
                 rec = convert_one(SourceRecord(split, shard, jsonl_path, line_index, rollout_step, payload))
                 all_by_split[split].append(rec)
 
-    train_success = [r for r in all_by_split.get("train", []) if r["success"] and not r["validation_issues"]]
-    train_all = all_by_split.get("train", [])
-    val_all = all_by_split.get("val", [])
-    test_all = all_by_split.get("test", [])
+    rejected_by_split = {
+        split: [r for r in records if r["validation_issues"]]
+        for split, records in all_by_split.items()
+    }
+    output_by_split = {
+        split: ([r for r in records if not r["validation_issues"]] if args.strict_valid_only else records)
+        for split, records in all_by_split.items()
+    }
+    train_all = output_by_split.get("train", [])
+    train_success = [r for r in train_all if r["success"] and not r["validation_issues"]]
+    val_all = output_by_split.get("val", [])
+    test_all = output_by_split.get("test", [])
+
+    manifest["rejected_validation_issue_counts"] = {
+        split: len(records) for split, records in rejected_by_split.items()
+    }
+    manifest["rejected_validation_issue_ids"] = {
+        split: [r["id"] for r in records] for split, records in rejected_by_split.items()
+    }
 
     counts: dict[str, Any] = {}
     outputs = {
@@ -458,25 +487,34 @@ def main() -> int:
         counts[name] = write_jsonl(jsonl_path, records)
         counts[f"{name}_parquet"] = maybe_write_parquet(jsonl_path, out / f"{name}.parquet")
 
-    split_stats: dict[str, Any] = {}
-    for split, records in all_by_split.items():
-        split_stats[split] = {
-            "records": len(records),
-            "success": sum(1 for r in records if r["success"]),
-            "with_validation_issues": sum(1 for r in records if r["validation_issues"]),
-            "with_warnings": sum(1 for r in records if r["warnings"]),
-            "image_placeholders": sum(sum(m["content"].count("<image>") for m in r["messages"]) for r in records),
-            "image_paths": sum(len(r["image_paths"]) for r in records),
-            "assistant_turns": sum(sum(1 for m in r["messages"] if m["role"] == "assistant") for r in records),
-            "actions": sum(len(r["actions"]) for r in records),
-        }
+    def summarize_splits(records_by_split: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+        stats: dict[str, Any] = {}
+        for split, records in records_by_split.items():
+            stats[split] = {
+                "records": len(records),
+                "success": sum(1 for r in records if r["success"]),
+                "with_validation_issues": sum(1 for r in records if r["validation_issues"]),
+                "with_warnings": sum(1 for r in records if r["warnings"]),
+                "image_placeholders": sum(
+                    sum(m["content"].count("<image>") for m in r["messages"]) for r in records
+                ),
+                "image_paths": sum(len(r["image_paths"]) for r in records),
+                "assistant_turns": sum(
+                    sum(1 for m in r["messages"] if m["role"] == "assistant") for r in records
+                ),
+                "actions": sum(len(r["actions"]) for r in records),
+            }
+        return stats
 
+    source_split_stats = summarize_splits(all_by_split)
+    split_stats = summarize_splits(output_by_split)
     manifest["counts"] = counts
+    manifest["source_split_stats"] = source_split_stats
     manifest["split_stats"] = split_stats
     manifest_path = out / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    readme = f"""# SFT1 converted rollout records\n\nSource: `{manifest['input_root']}`\n\nCheckpoint HF init for SFT: `{manifest['checkpoint_hf']}`\n\nSource checkpoint step: `{manifest['checkpoint_step']}`; rollout dump step: `{manifest['rollout_step']}`.\n\nFormat: `{manifest['format']}`\n\nFiles:\n\n- `train_all.jsonl`: all training-split rollouts; **default SFT train file** (includes failed trajectories).\n- `train_success.jsonl`: successful training-split rollouts only; optional ablation / audit.\n- `val_all.jsonl`: validation split, held out from SFT train.\n- `test_all.jsonl`: test split, held out from SFT train.\n- `manifest.json`: action mapping, counts, and conversion metadata.\n\nCounts:\n\n```json\n{json.dumps(counts, indent=2)}\n```\n\nSplit stats:\n\n```json\n{json.dumps(split_stats, indent=2)}\n```\n"""
+    readme = f"""# SFT1 converted rollout records\n\nSource: `{manifest['input_root']}`\n\nCheckpoint HF init for SFT: `{manifest['checkpoint_hf']}`\n\nSource checkpoint step: `{manifest['checkpoint_step']}`; rollout dump step: `{manifest['rollout_step']}`.\n\nFormat: `{manifest['format']}`\n\nFiles:\n\n- `train_all.jsonl`: {"valid " if args.strict_valid_only else ""}training-split rollouts, including failed trajectories.\n- `train_success.jsonl`: valid successful training-split rollouts; SFT1 training input.\n- `val_all.jsonl`: {"valid " if args.strict_valid_only else ""}validation split, held out from SFT train.\n- `test_all.jsonl`: {"valid " if args.strict_valid_only else ""}test split, held out from SFT train.\n- `manifest.json`: action mapping, counts, and conversion metadata.\n\nCounts:\n\n```json\n{json.dumps(counts, indent=2)}\n```\n\nSplit stats:\n\n```json\n{json.dumps(split_stats, indent=2)}\n```\n"""
     (out / "README.md").write_text(readme, encoding="utf-8")
 
     print(json.dumps({"output_root": str(out), "counts": counts, "split_stats": split_stats}, indent=2))
