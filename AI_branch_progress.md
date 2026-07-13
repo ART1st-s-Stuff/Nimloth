@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-07-13：显式 latent query 协议与 SFT1 → SFT2 continuation gate
+
+- 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
+- `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
+- SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。
+- 代码提交并推送：`9600fd0`（显式协议）和 `c09e408`（SFT1 LoRA merge 保留 k/mode HF metadata）。服务器相关单测 `22 passed`，compile/shell/diff checks 通过。
+- 生产 SFT1 best 的旧 metadata 为 k=8、`mask_latent_query_labels=true`，按兼容规则解析为 `inject`；与新 SFT2 k=8 config 的 `inject`/adapter 语义一致。
+- continuation smoke 输出：`.../full_2e66e97/sft2_smoke_c09e408_20260712`。job473841 从 SFT1 best merged init 完成3个有限 optimizer steps后，为避免每 step 写完整Qwen checkpoint而主动取消；完整 checkpoint 为`train/step_000002`。
+- step1/2/3 total loss=`16.8865/17.6227/16.6903`，WM MSE=`0.2759/0.2776/0.1545`，LM CE=`16.6222/15.8897/16.4258`；均有限，无OOM/NaN/traceback。
+- reload gate job473846 COMPLETED exit0：Qwen/processor/state projector从step2实际重载；metadata保持k=8/inject/adapter，query IDs=151665..151672；12,885个query-row元素发生变化、max abs BF16 delta=0.0001220703125，抽查non-query row bitwise不变。
+- 结论：现有masked SFT1 best可机械上继续SFT2训练，query adapter确实收到更新并正确物化到HF checkpoint。该结果仅是workflow smoke，不代表模型质量；正式SFT2仍未启动。
+
 ## 2026-07-10：服务器实验磁盘审计与授权清理
 
 - `/project` 的 50 TiB 配额在清理前仅余约 245 GiB；实验目录主要大户为历史 VAGEN/SFT1 checkpoints、当前 legacy-dev ws4 checkpoints 和旧 SFT2 preprocess cache。

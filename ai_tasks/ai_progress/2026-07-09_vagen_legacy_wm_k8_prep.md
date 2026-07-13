@@ -155,3 +155,14 @@
 - 上游核验：官方 `mll-lab-nu/VAGEN` HEAD `5ba5e77020aee64d7b4ed5303df69461893b2d2b` 的 `examples/train/navigation/val_navigation_base_common.yaml` 明确是base/common各60、seed1-60；官方base/common及三个`*_train`/long JSON的SHA256与本地legacy datasets逐文件完全一致。因此相关split不是fork自造。严格说120 records只有60个独立scene/start/target geometry：base与common逐条几何相同，仅instruction wording不同；eval60 scenes与train60 scenes交集为0。源run只把上游10 turns/5 actions改为20 turns/1 action。
 - 71.67% parity与11.04% train不是同任务分布，不能直接比较。parity使用上述heldout60 geometry×2 wording；retry2使用三个`*_train`资产。人类明确要求继续采集该已知困难数据用于workflow验证，低success不作为本轮停止门禁。
 - workflow-first restart：clean Nimloth `d2046d6892001fe3ac11434b1b68da1626c97d89` / VAGEN `e7cc2d0`；hold472590在dgx-44占6GPU/168CPU/180GB/8h，Requeue=1。任务顺序`3,0,1,2`，先收集val/test再train，以尽快获得converter/cache/train workflow所需split；每shard≤120 rows，所有样本固定源train-time eval kwargs。首个val shard1081-1120已通过config/data gate，4 policy workers正在加载step60 HF；active output从0开始按非空完整shard恢复。
+
+## 2026-07-13 显式 query mode 与 production SFT1 → SFT2 continuation gate
+
+- 代码：`9600fd02dd8e7ebed60e64ddf801abb89659e5c6` 增加 SFT1/SFT2 canonical `inject|generate`、mode-aware labels/eval/cache/checkpoint/resume，以及 SFT2 `freeze|adapter` query tuning；`c09e408c544dd288785b4c15c98abf1427ade2dd` 让独立 LoRA merge 同样保留 k/mode HF config metadata。
+- 验证：服务器 `.venv-vagen-main/bin/python3` 运行 query/config/checkpoint/cache 相关测试共 `22 passed`；本地 compileall、shell syntax 与 diff check 通过。
+- 生产 SFT1 best：epoch5/step50，k=8，旧 metadata `mask_latent_query_labels=true`，canonical 解析为 `inject`；source base 为 step60。SFT2 k=8 config 同为 inject，并启用 tiny additive query adapter。
+- Smoke 输出：`outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/sft2_smoke_c09e408_20260712`。
+- job473838：SFT1 merge成功且702 adapter tensors验证通过；因对空SFT2输出误传`--resume`，在模型训练前FAILED。已记录，不影响merged init。
+- job473841：加载merged SFT1后完成3个optimizer steps；total loss=`16.886543,17.622742,16.690308`，WM MSE=`0.275919,0.277622,0.154456`，LM CE=`16.622169,15.889709,16.425825`，均有限。因单轨迹展开多个micro-batches且step interval=1会反复保存完整Qwen，为节省资源主动取消；完整checkpoint为`train/step_000002`。
+- job473846：reload-only gate COMPLETED 0:0。实际重载step2 Qwen/processor/state projector；metadata为step2/k8/inject/adapter，query IDs 151665..151672。与merged init比较，query rows有12,885个元素变化、max abs BF16 delta 0.0001220703125；抽查non-query row bitwise不变。
+- 结论：production masked/inject SFT1 best 可以继续 SFT2，训练与checkpoint materialization路径有效。仍未运行正确的在线 inject rollout quality evaluation，也未启动正式 SFT2 cache/train。
