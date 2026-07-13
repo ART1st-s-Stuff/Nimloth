@@ -12,7 +12,8 @@
 - SFT2 wrapper在读取credential `.env` 后会重新export预先选择的stage-specific W&B project/mode，防止旧`WANDB_PROJECT/WANDB_MODE`覆盖正式实验身份。
 - 正式SFT2首轮cache/train submission 473866/473867因CPU job误设24h、超过partition MaxTime12h而在执行前取消；无输出/W&B。cache walltime已修为12h。
 - replacement cache job473873在CPU intel-01 COMPLETED 0:0（02:00:37）：约85GiB，train 59,389 transitions/464 image+232 token shards，val 6,054/48+24 shards；双manifest/cache_done完整，k8/inject/masked/BF16/max_pixels100352指纹通过。
-- formal 8×H800 train job473874已解除dependency，目前`PENDING(Priority)`；当前normal无整节点8张空闲GPU。实验代码commit=`453667c`，输出与W&B run name均为`1_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga4_px100352_img12_bestwm`。
+- formal 8×H800 train job473874按人类要求在执行前取消（elapsed0、无W&B/训练输出），completed cache保留并只读复用。
+- 4×H800 replacement保持global effective batch≈64：world4、batch2、grad_accum8。新W&B/run输出名为`1_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga8_ws4_px100352_img12_bestwm`；job473963固定dgx-14提交。提交时dgx-14资源被其他作业抢占至仅1张空闲GPU，当前`PENDING(Priority)`，训练/W&B尚未启动。
 - 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
 - `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
 - SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。
