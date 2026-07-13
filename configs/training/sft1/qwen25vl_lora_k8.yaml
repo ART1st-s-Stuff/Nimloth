@@ -10,7 +10,7 @@ data:
 
 latent:
   token_count: 8
-  mask_query_labels: true
+  query_mode: inject  # inject | generate
 
 tuning:
   lora: true

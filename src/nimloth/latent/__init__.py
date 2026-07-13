@@ -1,5 +1,15 @@
 """Latent-state and action-prior extraction utilities."""
 
+from nimloth.latent.query_mode import (
+    LATENT_QUERY_MODES,
+    LatentQueryEmbeddingAdapter,
+    LatentQueryMode,
+    install_query_embedding_adapter,
+    materialize_query_embedding_adapter,
+    normalize_latent_query_mode,
+    query_labels_are_masked,
+    resolve_latent_query_mode,
+)
 from nimloth.latent.extraction import (
     ActionPrior,
     ExtractionPositions,
@@ -28,6 +38,9 @@ __all__ = [
     "ExtractionPositions",
     "LatentActionExtractor",
     "LatentActionTokens",
+    "LATENT_QUERY_MODES",
+    "LatentQueryEmbeddingAdapter",
+    "LatentQueryMode",
     "add_special_tokens",
     "all_special_tokens_for_latent_count",
     "extract_action_prior",
@@ -39,9 +52,14 @@ __all__ = [
     "find_last_latent_state_block",
     "find_last_latent_state_index",
     "initialize_extra_latent_token_embeddings",
+    "install_query_embedding_adapter",
     "last_hidden_state",
     "latent_state_block",
     "latent_state_tokens",
+    "materialize_query_embedding_adapter",
+    "normalize_latent_query_mode",
     "normalize_latent_state_blocks",
+    "query_labels_are_masked",
+    "resolve_latent_query_mode",
     "special_token_ids",
 ]

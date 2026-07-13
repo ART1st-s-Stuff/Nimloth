@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from nimloth.latent import LATENT_QUERY_MODES, query_labels_are_masked, resolve_latent_query_mode
 from nimloth.training.common.config import apply_yaml_defaults
 
 
@@ -43,10 +44,23 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Number of latent query tokens per step (1 keeps legacy single-token behavior).",
     )
     ap.add_argument(
+        "--latent-query-mode",
+        choices=LATENT_QUERY_MODES,
+        default=None,
+        help="inject: framework supplies query slots; generate: model emits query token IDs.",
+    )
+    ap.add_argument(
+        "--query-tune",
+        choices=("freeze", "adapter"),
+        default="freeze",
+        help="Optionally tune a small additive latent-query embedding adapter.",
+    )
+    ap.add_argument("--query-lr", type=float, default=5e-5)
+    ap.add_argument(
         "--mask-latent-query-labels",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Mask latent query tokens from CE labels; they are state query slots, not text targets.",
+        default=None,
+        help="Deprecated compatibility alias: true=inject, false=generate.",
     )
     ap.add_argument("--max-train-records", type=int, default=-1)
     ap.add_argument("--max-val-records", type=int, default=-1)
@@ -222,4 +236,11 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
     pre.add_argument("--config", type=Path, default=None)
     pre_args, remaining = pre.parse_known_args(argv)
     ap = build_sft2_arg_parser(pre_args.config)
-    return ap.parse_args(remaining)
+    args = ap.parse_args(remaining)
+    args.latent_query_mode = resolve_latent_query_mode(
+        args.latent_query_mode,
+        args.mask_latent_query_labels,
+        default="inject",
+    )
+    args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)
+    return args

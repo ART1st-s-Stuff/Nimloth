@@ -31,7 +31,7 @@ EPOCHS=${EPOCHS:-20}
 GRAD_ACCUM=${GRAD_ACCUM:-8}
 MAX_LENGTH=${MAX_LENGTH:-20000}
 LATENT_TOKEN_COUNT=${LATENT_TOKEN_COUNT:-1}
-MASK_LATENT_QUERY_LABELS=${MASK_LATENT_QUERY_LABELS:-1}
+LATENT_QUERY_MODE=${LATENT_QUERY_MODE:-}
 TRAIN_JSONL=${TRAIN_JSONL:-${RECORDS_ROOT}/train_all.jsonl}
 VAL_JSONL=${VAL_JSONL:-${RECORDS_ROOT}/val_all.jsonl}
 
@@ -45,7 +45,7 @@ mkdir -p "${TRAIN_OUT}" "${REPO}/outputs/experiments/training/sft1/slurm"
   echo "Val: ${VAL_JSONL}"
   echo "Output: ${TRAIN_OUT}"
   echo "Latent token count: ${LATENT_TOKEN_COUNT}"
-  echo "Mask latent query labels: ${MASK_LATENT_QUERY_LABELS}"
+  echo "Latent query mode override: ${LATENT_QUERY_MODE:-<config/default>}"
 } | tee -a "${LOG}"
 
 if [ ! -s "${TRAIN_JSONL}" ]; then
@@ -53,7 +53,11 @@ if [ ! -s "${TRAIN_JSONL}" ]; then
   exit 1
 fi
 
-TRAIN_ARGS=(
+TRAIN_ARGS=()
+if [ -n "${SFT1_CONFIG}" ]; then
+  TRAIN_ARGS+=(--config "${SFT1_CONFIG}")
+fi
+TRAIN_ARGS+=(
   --model "${INIT_HF}"
   --train-jsonl "${TRAIN_JSONL}"
   --val-jsonl "${VAL_JSONL}"
@@ -73,8 +77,8 @@ TRAIN_ARGS=(
   --wandb-run-name "${WANDB_RUN_NAME}"
   --seed 42
 )
-if [ "${MASK_LATENT_QUERY_LABELS}" = "0" ]; then
-  TRAIN_ARGS+=(--no-mask-latent-query-labels)
+if [ -n "${LATENT_QUERY_MODE}" ]; then
+  TRAIN_ARGS+=(--latent-query-mode "${LATENT_QUERY_MODE}")
 fi
 if [ "${REQUIRE_PREBUILT_CACHE:-0}" = "1" ]; then
   TRAIN_ARGS+=(--require-prebuilt-cache)

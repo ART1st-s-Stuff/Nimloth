@@ -60,7 +60,7 @@ ensure_sft1_merged() {
   echo "Train jsonl: ${RECORDS_ROOT}/train_all.jsonl"
   echo "Output: ${TRAIN_OUT}"
   echo "Latent token count: ${LATENT_TOKEN_COUNT}"
-  echo "Mask latent query labels: ${MASK_LATENT_QUERY_LABELS}"
+  echo "Latent query mode override: ${LATENT_QUERY_MODE:-<config/default>}"
   echo "Packed forward: ${PACKED_FORWARD:-0}"
   echo "Trajectory-aware batching: ${TRAJECTORY_AWARE_BATCHING:-0}"
 } | tee -a "${LOG}"
@@ -132,8 +132,8 @@ if [ "${TRAJECTORY_AWARE_BATCHING:-0}" = "1" ]; then
   TRAJECTORY_BATCH_ARGS=(--trajectory-aware-batching)
 fi
 LATENT_ARGS=(--latent-token-count "${LATENT_TOKEN_COUNT}")
-if [ "${MASK_LATENT_QUERY_LABELS}" = "0" ]; then
-  LATENT_ARGS+=(--no-mask-latent-query-labels)
+if [ -n "${LATENT_QUERY_MODE}" ]; then
+  LATENT_ARGS+=(--latent-query-mode "${LATENT_QUERY_MODE}")
 fi
 
 if [ -n "${PREPROCESS_CACHE_DIR:-}" ] && [ "${REQUIRE_PREBUILT_CACHE:-0}" != "1" ]; then

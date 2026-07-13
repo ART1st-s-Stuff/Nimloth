@@ -31,7 +31,7 @@ Profiling / speedup (see `ai_tasks/sft2_speedup_plan.md`):
 | `latent_wm_value_profiling.yaml` | `batch_size=2`, `grad_accum=4`, `--step-timing` |
 | `latent_wm_value_vision_freeze_profiling.yaml` | P6 vision-freeze diagnostic |
 
-CLI knobs: `--preprocess-cache-dir`, `--preprocess-cache-format`, `--preprocess-cache-image-dtype`, `--require-prebuilt-cache`, `--dataloader-workers`, `--dataloader-prefetch-factor`, `--packed-forward`, `--latent-token-count`, `--[no-]mask-latent-query-labels`.  `--full-trajectory-batching` is **enabled by default**; use `--no-full-trajectory-batching` to disable.
+CLI knobs: `--preprocess-cache-dir`, `--preprocess-cache-format`, `--preprocess-cache-image-dtype`, `--require-prebuilt-cache`, `--dataloader-workers`, `--dataloader-prefetch-factor`, `--packed-forward`, `--latent-token-count`, `--latent-query-mode inject|generate`, and `--query-tune freeze|adapter`. `adapter` trains a small additive latent-query embedding table, folds it into the saved embedding rows, and is intentionally rejected with LoRA. `--[no-]mask-latent-query-labels` remains a deprecated compatibility alias. `--full-trajectory-batching` is **enabled by default**; use `--no-full-trajectory-batching` to disable.
 
 ### Compact preprocess cache (default)
 
@@ -54,7 +54,7 @@ bash experiments/training/sft2/submit_cache_then_train.sh
 
 The training job is submitted with `afterok:<cache_job>` and `REQUIRE_PREBUILT_CACHE=1`; no GPU is held during PIL/processor preprocessing. Compact cache is for the standard per-prefix forward path, including full-trajectory batch sampling. Packed-forward keeps its separate trajectory cache until packed semantics are accepted.
 
-For k=8 latent-query runs, either use `configs/training/sft2/latent_wm_value_k8.yaml` or set `LATENT_TOKEN_COUNT=8` in Slurm wrappers.
+For k=8 latent-query runs, either use `configs/training/sft2/latent_wm_value_k8.yaml` or set `LATENT_TOKEN_COUNT=8` in Slurm wrappers. The k=8 config uses `query_mode: inject` and `query_tune: adapter`.
 
 ### `--full-trajectory-batching` (方案 B, 默认启用)
 

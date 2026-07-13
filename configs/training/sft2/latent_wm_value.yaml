@@ -60,7 +60,9 @@ train:
 
 latent:
   token_count: 1
-  mask_query_labels: true
+  query_mode: inject  # inject | generate
+  query_tune: freeze  # freeze | adapter
+  query_lr: 5.0e-5
 
 loss:
   lambda_wm_start: 0.1

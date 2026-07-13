@@ -26,7 +26,7 @@ TRAIN_JSONL=${TRAIN_JSONL:-${RECORDS_ROOT}/train_success.jsonl}
 VAL_JSONL=${VAL_JSONL:-${RECORDS_ROOT}/val_all.jsonl}
 CACHE_LOG=${TRAIN_OUT}/sft1_cache_build.log
 LATENT_TOKEN_COUNT=${LATENT_TOKEN_COUNT:-8}
-MASK_LATENT_QUERY_LABELS=${MASK_LATENT_QUERY_LABELS:-1}
+LATENT_QUERY_MODE=${LATENT_QUERY_MODE:-}
 
 mkdir -p "${TRAIN_OUT}" "${REPO}/outputs/experiments/training/sft1/slurm"
 {
@@ -37,10 +37,15 @@ mkdir -p "${TRAIN_OUT}" "${REPO}/outputs/experiments/training/sft1/slurm"
   echo "Train: ${TRAIN_JSONL}"
   echo "Val: ${VAL_JSONL}"
   echo "Output/cache root: ${TRAIN_OUT}"
+  echo "Latent query mode override: ${LATENT_QUERY_MODE:-<config/default>}"
   echo "Pixel dtype: ${CACHE_PIXEL_DTYPE:-bfloat16}"
 } | tee -a "${CACHE_LOG}"
 
-CACHE_ARGS=(
+CACHE_ARGS=()
+if [ -n "${SFT1_CONFIG}" ]; then
+  CACHE_ARGS+=(--config "${SFT1_CONFIG}")
+fi
+CACHE_ARGS+=(
   --model "${INIT_HF}"
   --train-jsonl "${TRAIN_JSONL}"
   --val-jsonl "${VAL_JSONL}"
@@ -53,10 +58,9 @@ CACHE_ARGS=(
   --cache-pixel-dtype "${CACHE_PIXEL_DTYPE:-bfloat16}"
   --preprocess-workers "${PREPROCESS_WORKERS:-${SLURM_CPUS_PER_TASK:-8}}"
 )
-if [ "${MASK_LATENT_QUERY_LABELS}" = "0" ]; then
-  CACHE_ARGS+=(--no-mask-latent-query-labels)
+if [ -n "${LATENT_QUERY_MODE}" ]; then
+  CACHE_ARGS+=(--latent-query-mode "${LATENT_QUERY_MODE}")
 fi
-
 "${PYTHON_ENV}/bin/python3" "${SCRIPTDIR}/train.py" "${CACHE_ARGS[@]}" 2>&1 | tee -a "${CACHE_LOG}"
 touch "${TRAIN_OUT}/preprocess_cache_done.flag"
 echo "=== SFT1 preprocess cache build finished at $(date) ===" | tee -a "${CACHE_LOG}"

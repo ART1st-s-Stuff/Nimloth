@@ -21,7 +21,7 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 
 Config: `configs/training/sft1/qwen25vl_lora.yaml`; k=8 run manifest: `configs/training/sft1/qwen25vl_lora_k8.yaml`.
 
-Latent query token count can be set with `LATENT_TOKEN_COUNT=<k>` in Slurm wrappers or `--latent-token-count <k>` in `train.py`. For k>1, SFT1 normalizes rendered `<|latent_state|>` blocks to distinct latent query tokens and masks latent query token labels by default.
+Latent query token count can be set with `LATENT_TOKEN_COUNT=<k>` in Slurm wrappers or `--latent-token-count <k>` in `train.py`. Select the protocol with YAML `latent.query_mode` or `--latent-query-mode inject|generate`: `inject` masks query-token CE labels and uses staged format evaluation, while `generate` supervises and freely generates the query-token block. `--[no-]mask-latent-query-labels` remains a deprecated compatibility alias; conflicting settings fail fast.
 
 Library (planned): `src/nimloth/training/phase1_sft/`
 

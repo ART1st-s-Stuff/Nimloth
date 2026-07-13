@@ -37,12 +37,17 @@ from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration, get_cosine_schedule_with_warmup
 
 from nimloth.latent import (
+    LATENT_QUERY_MODES,
     add_special_tokens,
     initialize_extra_latent_token_embeddings,
+    latent_state_block,
     latent_state_tokens,
     normalize_latent_state_blocks,
+    query_labels_are_masked,
+    resolve_latent_query_mode,
     special_token_ids,
 )
+from nimloth.training.sft1.config import sft1_yaml_defaults
 
 import re
 
@@ -256,6 +261,7 @@ def cache_fingerprint(
     mask_latent_query_labels: bool = True,
     cache_pixel_dtype: str = "bfloat16",
     processor_source: str = "",
+    latent_query_mode: str = "inject",
 ) -> str:
     stat = jsonl_path.stat()
     payload = "|".join(
@@ -270,9 +276,10 @@ def cache_fingerprint(
             str(max_images_per_record),
             str(latent_token_count),
             str(mask_latent_query_labels),
+            latent_query_mode,
             cache_pixel_dtype,
             processor_source,
-            "v5",
+            "v6-query-mode",
         ]
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
@@ -408,6 +415,16 @@ def nimloth_format_correct(text: str, *, latent_token_count: int = 1) -> bool:
     return bool(_nimloth_format_re(latent_token_count).search(text))
 
 
+def action_block_format_correct(text: str) -> bool:
+    return bool(
+        re.search(
+            r"<\|action_start\|>\s*<\|action_\(\d+\)\|>\s*<\|action_end\|>",
+            text,
+            re.S,
+        )
+    )
+
+
 def prompt_messages_before_first_assistant(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for msg in messages:
@@ -426,6 +443,7 @@ def evaluate_format(
     max_samples: int = 32,
     *,
     latent_token_count: int = 1,
+    latent_query_mode: str = "inject",
 ) -> float:
     if dist.is_available() and dist.is_initialized() and not is_main():
         return 0.0
@@ -442,6 +460,18 @@ def evaluate_format(
             continue
         images = collect_images(prompt_msgs)
         text = processor.apply_chat_template(prompt_msgs, tokenize=False, add_generation_prompt=True)
+        if latent_query_mode == "inject":
+            first_assistant = next((m for m in messages if m["role"] == "assistant"), None)
+            if first_assistant is None:
+                continue
+            content = str(first_assistant["content"])
+            think_match = re.search(r"<think>.*?</think>", content, re.S)
+            if think_match is None:
+                continue
+            # Isolate action formatting from thought generation: teacher-force
+            # the reference thought, inject deterministic query slots, then ask
+            # the model to generate only the action block.
+            text += think_match.group(0) + latent_state_block(latent_token_count)
         text = normalize_latent_state_blocks(text, latent_token_count)
         inputs = processor(text=[text], images=images or None, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -449,8 +479,10 @@ def evaluate_format(
         new_ids = output_ids[0, inputs["input_ids"].shape[1] :]
         decoded = processor.decode(new_ids, skip_special_tokens=False)
         total += 1
-        if nimloth_format_correct(decoded, latent_token_count=latent_token_count):
-            correct += 1
+        if latent_query_mode == "inject":
+            correct += int(action_block_format_correct(decoded))
+        else:
+            correct += int(nimloth_format_correct(decoded, latent_token_count=latent_token_count))
     if was_training:
         module.train()
     return correct / max(total, 1)
@@ -577,6 +609,7 @@ def build_preprocess_cache(
     latent_token_count: int = 1,
     mask_latent_query_labels: bool = True,
     cache_pixel_dtype: str = "bfloat16",
+    latent_query_mode: str = "inject",
 ) -> None:
     del processor
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -588,6 +621,10 @@ def build_preprocess_cache(
             and manifest.get("max_length") == max_length
             and int(manifest.get("latent_token_count", 1)) == int(latent_token_count)
             and bool(manifest.get("mask_latent_query_labels", True)) == bool(mask_latent_query_labels)
+            and manifest.get(
+                "latent_query_mode",
+                "inject" if manifest.get("mask_latent_query_labels", True) else "generate",
+            ) == latent_query_mode
             and manifest.get("cache_pixel_dtype", "float32") == cache_pixel_dtype
         ):
             missing = 0
@@ -617,6 +654,7 @@ def build_preprocess_cache(
                     "workers": preprocess_workers,
                     "latent_token_count": latent_token_count,
                     "mask_latent_query_labels": mask_latent_query_labels,
+                    "latent_query_mode": latent_query_mode,
                 }
             )
         )
@@ -626,6 +664,7 @@ def build_preprocess_cache(
         "max_length": max_length,
         "latent_token_count": latent_token_count,
         "mask_latent_query_labels": mask_latent_query_labels,
+        "latent_query_mode": latent_query_mode,
         "cache_pixel_dtype": cache_pixel_dtype,
         "dir": str(cache_dir),
     }
@@ -677,10 +716,13 @@ def save_checkpoint(
     merge_for_eval: bool = False,
     latent_token_count: int = 1,
     mask_latent_query_labels: bool = True,
+    latent_query_mode: str = "inject",
 ) -> None:
     ckpt = out_dir / name
     ckpt.mkdir(parents=True, exist_ok=True)
     module = model.module if hasattr(model, "module") else model
+    module.config.nimloth_latent_token_count = int(latent_token_count)
+    module.config.nimloth_latent_query_mode = latent_query_mode
     module.save_pretrained(ckpt, safe_serialization=True)
     processor.save_pretrained(ckpt)
     state = {
@@ -689,6 +731,7 @@ def save_checkpoint(
         "best_val": best_val,
         "lora": lora,
         "latent_token_count": int(latent_token_count),
+        "latent_query_mode": latent_query_mode,
         "mask_latent_query_labels": bool(mask_latent_query_labels),
     }
     if base_model_path is not None:
@@ -756,6 +799,14 @@ def merge_peft_checkpoint(
     )
     resize_token_embeddings_and_sync_vocab(base, len(processor.tokenizer))
     merged = PeftModel.from_pretrained(base, adapter_path).merge_and_unload()
+    state_path = adapter_path / "training_state.pt"
+    if state_path.is_file():
+        state = torch.load(state_path, map_location="cpu", weights_only=False)
+        merged.config.nimloth_latent_token_count = int(state.get("latent_token_count", 1))
+        saved_mode = state.get("latent_query_mode")
+        if saved_mode is None:
+            saved_mode = "inject" if state.get("mask_latent_query_labels", True) else "generate"
+        merged.config.nimloth_latent_query_mode = saved_mode
     out_path.mkdir(parents=True, exist_ok=True)
     merged.save_pretrained(out_path, safe_serialization=True)
     processor.save_pretrained(out_path)
@@ -926,6 +977,7 @@ def maybe_init_wandb(args: argparse.Namespace) -> Any | None:
             "preprocess_workers": args.preprocess_workers,
             "use_cache": not args.no_cache,
             "latent_token_count": args.latent_token_count,
+            "latent_query_mode": args.latent_query_mode,
             "mask_latent_query_labels": args.mask_latent_query_labels,
         },
     )
@@ -961,7 +1013,12 @@ def upload_dataset_artifact(
 
 
 def main() -> int:
+    config_probe = argparse.ArgumentParser(add_help=False)
+    config_probe.add_argument("--config", type=Path, default=None)
+    probed, _ = config_probe.parse_known_args()
+
     ap = argparse.ArgumentParser()
+    ap.add_argument("--config", type=Path, default=probed.config)
     ap.add_argument("--model", type=Path, required=True)
     ap.add_argument("--train-jsonl", type=Path, required=True)
     ap.add_argument("--val-jsonl", type=Path, required=True)
@@ -986,10 +1043,16 @@ def main() -> int:
         help="Number of latent query tokens per action block; 1 keeps legacy SFT1 behavior.",
     )
     ap.add_argument(
+        "--latent-query-mode",
+        choices=LATENT_QUERY_MODES,
+        default=None,
+        help="inject: framework supplies query slots; generate: model emits query token IDs.",
+    )
+    ap.add_argument(
         "--mask-latent-query-labels",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Mask latent query tokens from SFT CE labels.",
+        default=None,
+        help="Deprecated compatibility alias: true=inject, false=generate.",
     )
     ap.add_argument("--max-train-records", type=int, default=-1)
     ap.add_argument("--max-val-records", type=int, default=-1)
@@ -1046,7 +1109,17 @@ def main() -> int:
         default="bfloat16",
         help="On-disk cached pixel dtype; bfloat16 matches the GPU visual encoder dtype.",
     )
+    if probed.config is not None:
+        ap.set_defaults(**sft1_yaml_defaults(probed.config))
+    if os.environ.get("LATENT_QUERY_MODE"):
+        ap.set_defaults(latent_query_mode=os.environ["LATENT_QUERY_MODE"])
     args = ap.parse_args()
+    args.latent_query_mode = resolve_latent_query_mode(
+        args.latent_query_mode,
+        args.mask_latent_query_labels,
+        default="inject",
+    )
+    args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)
     args.latent_token_count = int(args.latent_token_count)
     if args.latent_token_count < 1:
         raise ValueError(f"--latent-token-count must be >= 1, got {args.latent_token_count}")
@@ -1068,6 +1141,7 @@ def main() -> int:
                     "special_tokens_requested": len(token_id_map),
                     "special_tokens_newly_added": added,
                     "latent_token_count": args.latent_token_count,
+                    "latent_query_mode": args.latent_query_mode,
                     "mask_latent_query_labels": args.mask_latent_query_labels,
                     "lr": args.lr,
                     "embedding_lr": args.embedding_lr if args.embedding_lr is not None else args.lr,
@@ -1098,6 +1172,7 @@ def main() -> int:
         args.mask_latent_query_labels,
         args.cache_pixel_dtype,
         str(Path(args.model).resolve()),
+        latent_query_mode=args.latent_query_mode,
     )
     train_cache_dir = cache_root / f"train_{args.train_jsonl.stem}_{fp}" if use_cache else None
     val_fp = cache_fingerprint(
@@ -1111,6 +1186,7 @@ def main() -> int:
         args.mask_latent_query_labels,
         args.cache_pixel_dtype,
         str(Path(args.model).resolve()),
+        latent_query_mode=args.latent_query_mode,
     )
     val_cache_dir = cache_root / f"val_{args.val_jsonl.stem}_{val_fp}" if use_cache else None
 
@@ -1136,6 +1212,7 @@ def main() -> int:
                 latent_token_count=args.latent_token_count,
                 mask_latent_query_labels=args.mask_latent_query_labels,
                 cache_pixel_dtype=args.cache_pixel_dtype,
+                latent_query_mode=args.latent_query_mode,
             )
             build_preprocess_cache(
                 val_ds,
@@ -1150,6 +1227,7 @@ def main() -> int:
                 latent_token_count=args.latent_token_count,
                 mask_latent_query_labels=args.mask_latent_query_labels,
                 cache_pixel_dtype=args.cache_pixel_dtype,
+                latent_query_mode=args.latent_query_mode,
             )
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
@@ -1215,6 +1293,14 @@ def main() -> int:
     resume_lora = False
     if args.resume and resume_ckpt is not None and resume_ckpt.exists():
         state_peek = torch.load(resume_ckpt, map_location="cpu")
+        saved_mode = state_peek.get("latent_query_mode")
+        if saved_mode is None and "mask_latent_query_labels" in state_peek:
+            saved_mode = "inject" if state_peek["mask_latent_query_labels"] else "generate"
+        if saved_mode is not None and saved_mode != args.latent_query_mode:
+            raise ValueError(
+                "checkpoint latent_query_mode mismatch: "
+                f"checkpoint={saved_mode}, current={args.latent_query_mode}"
+            )
         resume_lora = bool(state_peek.get("lora")) or (resume_dir / "adapter_config.json").exists()
         if resume_lora:
             load_path = state_peek.get("base_model_path", args.model)
@@ -1404,6 +1490,7 @@ def main() -> int:
             device,
             args.format_eval_samples,
             latent_token_count=args.latent_token_count,
+            latent_query_mode=args.latent_query_mode,
         )
         if is_main():
             with log_path.open("a", newline="") as f:
@@ -1425,6 +1512,7 @@ def main() -> int:
                 merge_for_eval=False,
                 latent_token_count=args.latent_token_count,
                 mask_latent_query_labels=args.mask_latent_query_labels,
+                latent_query_mode=args.latent_query_mode,
             )
             if val_loss < best_val:
                 best_val = val_loss
@@ -1443,6 +1531,7 @@ def main() -> int:
                     merge_for_eval=False,
                     latent_token_count=args.latent_token_count,
                     mask_latent_query_labels=args.mask_latent_query_labels,
+                    latent_query_mode=args.latent_query_mode,
                 )
             print(
                 json.dumps(
@@ -1451,6 +1540,7 @@ def main() -> int:
                         "global_step": global_step,
                         "val_loss": val_loss,
                         "format_correct_rate": format_rate,
+                        "format_eval_protocol": args.latent_query_mode,
                         "best_val": best_val,
                     }
                 )
@@ -1486,6 +1576,7 @@ def main() -> int:
             merge_for_eval=False,
             latent_token_count=args.latent_token_count,
             mask_latent_query_labels=args.mask_latent_query_labels,
+            latent_query_mode=args.latent_query_mode,
         )
         if wandb_run is not None:
             import wandb

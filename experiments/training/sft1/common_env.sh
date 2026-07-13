@@ -15,8 +15,11 @@ RECORDS_ROOT="${RECORDS_ROOT:-${SFT1_RUNS_ROOT}/sft1_sft_records_vagen79_nimloth
 ROLLOUT_RUN_NAME="${ROLLOUT_RUN_NAME:-sft1_rollouts_vagen79_greedy_parallel}"
 ROLLOUT_RUN_DIR="${ROLLOUT_RUN_DIR:-${SFT1_RUNS_ROOT}/${ROLLOUT_RUN_NAME}}"
 LATENT_TOKEN_COUNT="${LATENT_TOKEN_COUNT:-1}"
-MASK_LATENT_QUERY_LABELS="${MASK_LATENT_QUERY_LABELS:-1}"
-export LATENT_TOKEN_COUNT MASK_LATENT_QUERY_LABELS
+# Leave mode empty when unset so an optional SFT1_CONFIG can supply it.
+# train.py defaults to inject when neither source specifies a mode.
+LATENT_QUERY_MODE="${LATENT_QUERY_MODE:-}"
+SFT1_CONFIG="${SFT1_CONFIG:-}"
+export LATENT_TOKEN_COUNT LATENT_QUERY_MODE SFT1_CONFIG
 export NIMLOTH_LATENT_TOKEN_COUNT="${LATENT_TOKEN_COUNT}"
 
 export UV_CACHE_DIR="${REPO}/.cache/uv"

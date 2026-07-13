@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 
+from nimloth.latent import materialize_query_embedding_adapter
 from nimloth.training.common.dist import is_main
 from nimloth.backbone.vision_ema import VisionEncoderEMA
 from nimloth.wm.predictor import LatentWMPredictor
@@ -136,15 +137,24 @@ def save_checkpoint(
     base_model_path: Path | None = None,
     llm_tune: str = "freeze",
     vision_tune: str = "freeze",
+    latent_query_mode: str = "inject",
+    query_tune: str = "freeze",
     epoch_complete: bool = True,
     micro_step_in_epoch: int = 0,
     training_invariants: dict[str, Any] | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     module = model.module if hasattr(model, "module") else model
-    module.save_pretrained(out_dir, safe_serialization=True)
-    processor.save_pretrained(out_dir)
     proj = state_proj.module if hasattr(state_proj, "module") else state_proj
+    module.config.nimloth_latent_token_count = int(getattr(proj, "latent_token_count", 1))
+    module.config.nimloth_latent_query_mode = latent_query_mode
+    module.config.nimloth_query_tune = query_tune
+    with materialize_query_embedding_adapter(module) as materialized_state:
+        save_kwargs = {"safe_serialization": True}
+        if materialized_state is not None:
+            save_kwargs["state_dict"] = materialized_state
+        module.save_pretrained(out_dir, **save_kwargs)
+    processor.save_pretrained(out_dir)
     torch.save(proj.state_dict(), out_dir / "state_proj.pt")
     if wm_predictor is not None:
         pred = wm_predictor.module if hasattr(wm_predictor, "module") else wm_predictor
@@ -177,6 +187,9 @@ def save_checkpoint(
         "step": step,
         "epoch": epoch,
         "latent_token_count": int(getattr(proj, "latent_token_count", 1)),
+        "latent_query_mode": latent_query_mode,
+        "mask_latent_query_labels": latent_query_mode == "inject",
+        "query_tune": query_tune,
         "qwen_hidden_dim": int(getattr(proj, "qwen_hidden_dim", -1)),
         "state_proj_input_dim": int(state_proj_input_dim),
         "best_val_success_rate": best_val_success_rate,
@@ -204,6 +217,9 @@ def load_aux_checkpoint(
     wm_predictor: LatentWMPredictor,
     value_head: ValueHead,
     device: torch.device,
+    *,
+    latent_query_mode: str | None = None,
+    query_tune: str | None = None,
 ) -> None:
     sp_path = ckpt_dir / "state_proj.pt"
     if sp_path.is_file():
@@ -211,6 +227,21 @@ def load_aux_checkpoint(
         state_path = ckpt_dir / "training_state.pt"
         if state_path.is_file():
             training_state = torch.load(state_path, map_location="cpu", weights_only=False)
+            saved_mode = training_state.get("latent_query_mode")
+            if saved_mode is None and "mask_latent_query_labels" in training_state:
+                saved_mode = "inject" if training_state["mask_latent_query_labels"] else "generate"
+            if latent_query_mode is not None and saved_mode is not None and saved_mode != latent_query_mode:
+                raise ValueError(
+                    "checkpoint latent_query_mode mismatch: "
+                    f"checkpoint={saved_mode}, current={latent_query_mode}"
+                )
+            # Historical checkpoints had frozen query embeddings.
+            saved_query_tune = training_state.get("query_tune", "freeze")
+            if query_tune is not None and saved_query_tune != query_tune:
+                raise ValueError(
+                    "checkpoint query_tune mismatch: "
+                    f"checkpoint={saved_query_tune}, current={query_tune}"
+                )
             saved_k = training_state.get("latent_token_count")
             if saved_k is not None and int(saved_k) != int(getattr(proj, "latent_token_count", 1)):
                 raise ValueError(

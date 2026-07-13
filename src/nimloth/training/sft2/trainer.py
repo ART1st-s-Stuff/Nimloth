@@ -18,7 +18,15 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-from nimloth.latent import add_special_tokens, initialize_extra_latent_token_embeddings, special_token_ids
+from nimloth.latent import (
+    add_special_tokens,
+    initialize_extra_latent_token_embeddings,
+    install_query_embedding_adapter,
+    latent_state_tokens,
+    query_labels_are_masked,
+    resolve_latent_query_mode,
+    special_token_ids,
+)
 from nimloth.training.common.config import merge_cli_over_yaml
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.common.metrics import MetricAccumulator
@@ -355,11 +363,22 @@ def train_sft2(args=None) -> int:
         args = parse_sft2_args()
     merge_cli_over_yaml(args, args.config)
     args.latent_token_count = int(getattr(args, "latent_token_count", 1))
-    args.mask_latent_query_labels = bool(getattr(args, "mask_latent_query_labels", True))
+    args.latent_query_mode = resolve_latent_query_mode(
+        getattr(args, "latent_query_mode", None),
+        getattr(args, "mask_latent_query_labels", None),
+        default="inject",
+    )
+    args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)
+    args.query_tune = str(getattr(args, "query_tune", "freeze"))
+    args.query_lr = float(getattr(args, "query_lr", 5e-5))
+    if args.query_tune not in {"freeze", "adapter"}:
+        raise ValueError(f"query_tune must be freeze or adapter, got {args.query_tune!r}")
     if args.latent_token_count < 1:
         raise ValueError(f"--latent-token-count must be >= 1, got {args.latent_token_count}")
 
     llm_tune, vision_tune = resolve_tune_modes(args)
+    if args.query_tune == "adapter" and uses_lora(args):
+        raise ValueError("query_tune=adapter is not supported with LoRA tuning")
     vision_ema_enabled = resolve_vision_ema(args, vision_tune)
     train_wm_predictor = args.train_wm_predictor and not args.freeze_wm_predictor
 
@@ -404,6 +423,8 @@ def train_sft2(args=None) -> int:
                     "trajectory_aware_batching": args.trajectory_aware_batching,
                     "full_trajectory_batching": args.full_trajectory_batching,
                     "latent_token_count": args.latent_token_count,
+                    "latent_query_mode": args.latent_query_mode,
+                    "query_tune": args.query_tune,
                     "mask_latent_query_labels": args.mask_latent_query_labels,
                     "preprocess_cache_format": args.preprocess_cache_format,
                     "preprocess_cache_image_dtype": args.preprocess_cache_image_dtype,
@@ -577,6 +598,24 @@ def train_sft2(args=None) -> int:
         if is_main():
             print(json.dumps({"init": "configured_tuning", "base_model_path": str(base_model_path)}))
 
+    query_adapter = None
+    if args.query_tune == "adapter":
+        query_token_ids = [
+            token_id_map[token]
+            for token in latent_state_tokens(args.latent_token_count)
+        ]
+        query_adapter = install_query_embedding_adapter(model, query_token_ids)
+        if is_main():
+            print(
+                json.dumps(
+                    {
+                        "query_tune": "adapter",
+                        "query_token_ids": query_token_ids,
+                        "query_lr": args.query_lr,
+                    }
+                )
+            )
+
     if not qwen_pair_parallel:
         model.to(device)
 
@@ -609,7 +648,15 @@ def train_sft2(args=None) -> int:
     lambda_sigreg_val = args.lambda_sigreg
 
     if args.resume and resume_state_path is not None and resume_state_path.exists():
-        load_aux_checkpoint(resume_ckpt_dir, state_proj, wm_predictor, value_head, device)
+        load_aux_checkpoint(
+            resume_ckpt_dir,
+            state_proj,
+            wm_predictor,
+            value_head,
+            device,
+            latent_query_mode=args.latent_query_mode,
+            query_tune=args.query_tune,
+        )
 
     if world > 1:
         # Every trainable branch is exercised on every rank (terminal-only WM
@@ -668,11 +715,26 @@ def train_sft2(args=None) -> int:
         if is_main():
             print(json.dumps({"vision_ema": True, "shadow_params": len(vision_ema.shadow), "decay": vision_ema.decay}))
 
+    query_adapter_param = query_adapter.delta if query_adapter is not None else None
+    qwen_params = [
+        param
+        for param in model.parameters()
+        if param.requires_grad and param is not query_adapter_param
+    ]
     param_groups = [
-        {"params": [p for p in model.parameters() if p.requires_grad], "lr": args.lr_qwen_start, "name": "qwen"},
+        {"params": qwen_params, "lr": args.lr_qwen_start, "name": "qwen"},
         {"params": state_proj.parameters(), "lr": args.state_proj_lr, "name": "state_proj"},
         {"params": value_head.parameters(), "lr": args.value_head_lr, "name": "value_head"},
     ]
+    if query_adapter_param is not None:
+        param_groups.append(
+            {
+                "params": [query_adapter_param],
+                "lr": args.query_lr,
+                "weight_decay": 0.0,
+                "name": "query_adapter",
+            }
+        )
     if train_wm_predictor:
         pred_params = wm_predictor.parameters() if not hasattr(wm_predictor, "module") else wm_predictor.module.parameters()
         param_groups.append({"params": list(pred_params), "lr": args.wm_predictor_lr, "name": "wm_predictor"})
@@ -685,6 +747,8 @@ def train_sft2(args=None) -> int:
         "seed": int(args.seed),
         "world_size": int(world),
         "grad_accum": int(args.grad_accum),
+        "latent_query_mode": args.latent_query_mode,
+        "query_tune": args.query_tune,
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }
@@ -1020,6 +1084,8 @@ def train_sft2(args=None) -> int:
                             base_model_path=base_model_path,
                             llm_tune=llm_tune,
                             vision_tune=vision_tune,
+                            latent_query_mode=args.latent_query_mode,
+                            query_tune=args.query_tune,
                             epoch_complete=False,
                             micro_step_in_epoch=micro_idx,
                         )
@@ -1047,6 +1113,8 @@ def train_sft2(args=None) -> int:
                             base_model_path=base_model_path,
                             llm_tune=llm_tune,
                             vision_tune=vision_tune,
+                            latent_query_mode=args.latent_query_mode,
+                            query_tune=args.query_tune,
                             epoch_complete=False,
                             micro_step_in_epoch=micro_idx,
                         )
@@ -1137,6 +1205,8 @@ def train_sft2(args=None) -> int:
                 base_model_path=base_model_path,
                 llm_tune=llm_tune,
                 vision_tune=vision_tune,
+                latent_query_mode=args.latent_query_mode,
+                query_tune=args.query_tune,
             )
             if improved:
                 _save_checkpoint(
@@ -1156,6 +1226,8 @@ def train_sft2(args=None) -> int:
                     base_model_path=base_model_path,
                     llm_tune=llm_tune,
                     vision_tune=vision_tune,
+                    latent_query_mode=args.latent_query_mode,
+                    query_tune=args.query_tune,
                 )
             print(
                 json.dumps(
@@ -1194,6 +1266,8 @@ def train_sft2(args=None) -> int:
             base_model_path=base_model_path,
             llm_tune=llm_tune,
             vision_tune=vision_tune,
+            latent_query_mode=args.latent_query_mode,
+            query_tune=args.query_tune,
         )
     cleanup_dist()
     return 0

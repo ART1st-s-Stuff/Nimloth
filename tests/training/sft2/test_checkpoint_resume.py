@@ -5,10 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 import random
 
+import pytest
 import torch
 
 from nimloth.training.sft2.checkpoint import (
     find_resume_checkpoint,
+    load_aux_checkpoint,
     resolve_resume_checkpoint_dir,
     resume_epoch_and_micro_step,
 )
@@ -60,3 +62,34 @@ def test_resolve_resume_checkpoint_dir_explicit_path(tmp_path: Path) -> None:
 
     resolved = resolve_resume_checkpoint_dir(out, Path("epoch_002"))
     assert resolved == out / "epoch_002"
+
+
+def test_resume_rejects_query_tune_mismatch(tmp_path: Path) -> None:
+    ckpt = tmp_path / "checkpoint"
+    ckpt.mkdir()
+    proj = torch.nn.Linear(3, 2)
+    proj.latent_token_count = 1
+    proj.qwen_hidden_dim = 3
+    proj.input_dim = 3
+    torch.save(proj.state_dict(), ckpt / "state_proj.pt")
+    torch.save(
+        {
+            "latent_token_count": 1,
+            "latent_query_mode": "inject",
+            "query_tune": "freeze",
+            "qwen_hidden_dim": 3,
+            "state_proj_input_dim": 3,
+        },
+        ckpt / "training_state.pt",
+    )
+
+    with pytest.raises(ValueError, match="checkpoint query_tune mismatch"):
+        load_aux_checkpoint(
+            ckpt,
+            proj,
+            object(),
+            object(),
+            torch.device("cpu"),
+            latent_query_mode="inject",
+            query_tune="adapter",
+        )

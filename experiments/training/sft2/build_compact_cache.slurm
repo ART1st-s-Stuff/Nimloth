@@ -23,7 +23,7 @@ PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv-vagen-main}
 SCRIPTDIR=${REPO}/experiments/training/sft2
 CONFIG=${CONFIG:-${REPO}/configs/training/sft2/latent_wm_value_k8.yaml}
 LATENT_TOKEN_COUNT=${LATENT_TOKEN_COUNT:-8}
-MASK_LATENT_QUERY_LABELS=${MASK_LATENT_QUERY_LABELS:-1}
+LATENT_QUERY_MODE=${LATENT_QUERY_MODE:-}
 PREPROCESS_WORKERS=${PREPROCESS_WORKERS:-16}
 CACHE_LOG=${PREPROCESS_CACHE_DIR}/build_compact_cache.log
 CACHE_BUILD_OUTPUT_DIR=${CACHE_BUILD_OUTPUT_DIR:-${PREPROCESS_CACHE_DIR}/build_metadata}
@@ -67,8 +67,8 @@ bash "${SCRIPTDIR}/resolve_sft1_init_for_sft2.sh" | tee -a "${CACHE_LOG}"
 source "${SFT1_RUN}/.sft2_init_env"
 
 LATENT_ARGS=(--latent-token-count "${LATENT_TOKEN_COUNT}")
-if [ "${MASK_LATENT_QUERY_LABELS}" = "0" ]; then
-  LATENT_ARGS+=(--no-mask-latent-query-labels)
+if [ -n "${LATENT_QUERY_MODE}" ]; then
+  LATENT_ARGS+=(--latent-query-mode "${LATENT_QUERY_MODE}")
 fi
 
 python "${SCRIPTDIR}/build_preprocess_cache.py" \

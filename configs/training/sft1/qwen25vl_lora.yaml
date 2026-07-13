@@ -14,7 +14,7 @@ tuning:
 
 latent:
   token_count: 1
-  mask_query_labels: true
+  query_mode: generate  # legacy SFT1 autonomously emits the query token
 
 train:
   epochs: 20

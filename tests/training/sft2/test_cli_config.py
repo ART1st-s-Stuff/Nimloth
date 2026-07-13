@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from nimloth.training.sft2.cli import parse_sft2_args
 
 
@@ -24,7 +26,10 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
 
     assert args.config == K8_CONFIG
     assert args.latent_token_count == 8
+    assert args.latent_query_mode == "inject"
     assert args.mask_latent_query_labels is True
+    assert args.query_tune == "adapter"
+    assert args.query_lr == pytest.approx(5e-5)
     assert args.epochs == 10
     assert args.batch_size == 2
     assert args.grad_accum == 4
@@ -44,6 +49,8 @@ def test_cli_values_override_yaml_defaults() -> None:
             *REQUIRED,
             "--latent-token-count",
             "3",
+            "--latent-query-mode",
+            "generate",
             "--epochs",
             "2",
             "--preprocess-workers",
@@ -52,5 +59,21 @@ def test_cli_values_override_yaml_defaults() -> None:
     )
 
     assert args.latent_token_count == 3
+    assert args.latent_query_mode == "generate"
+    assert args.mask_latent_query_labels is False
     assert args.epochs == 2
     assert args.preprocess_workers == 1
+
+
+def test_cli_rejects_conflicting_mode_and_legacy_mask() -> None:
+    with pytest.raises(ValueError, match="conflicting latent query settings"):
+        parse_sft2_args(
+            [
+                "--config",
+                str(K8_CONFIG),
+                *REQUIRED,
+                "--latent-query-mode",
+                "inject",
+                "--no-mask-latent-query-labels",
+            ]
+        )
