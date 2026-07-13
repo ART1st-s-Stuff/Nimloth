@@ -30,6 +30,7 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert args.mask_latent_query_labels is True
     assert args.query_tune == "adapter"
     assert args.query_lr == pytest.approx(5e-5)
+    assert args.early_stop_metric == "val_wm_mse"
     assert args.epochs == 10
     assert args.batch_size == 2
     assert args.grad_accum == 4

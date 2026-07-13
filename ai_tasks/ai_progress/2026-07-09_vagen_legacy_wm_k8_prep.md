@@ -170,7 +170,8 @@
 ## 2026-07-13 正式 SFT2 启动准备
 
 - 人类规定 W&B project/run naming 后，规则已写入 `ai_rules/events/on_experiment_start.md`。正式 SFT2 project=`nimloth-sft2`；W&B API 查询该 project 不存在，因此使用首个ID=1。
-- run name=`1_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga4_px100352_img12`；无 comment（不是 smoke）。params 表示 k8/inject、全部3217条严格有效train records、query adapter、vision full、WM predictor train、10 epochs、batch2、grad accumulation4、max_pixels100352、image budget12。
-- 输出计划：`.../full_2e66e97/sft2/1_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga4_px100352_img12`；cache 在其 `preprocess_cache/`，训练 checkpoint 与日志在 `train/`。
+- run name=`1_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga4_px100352_img12_bestwm`；无 comment（不是 smoke）。params 表示 k8/inject、全部3217条严格有效train records、query adapter、vision full、WM predictor train、10 epochs、batch2、grad accumulation4、max_pixels100352、image budget12、按val WM MSE选best。
+- 输出计划：`.../full_2e66e97/sft2/1_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga4_px100352_img12_bestwm`；cache 在其 `preprocess_cache/`，训练 checkpoint 与日志在 `train/`。
 - 数据：strict `train_all=3217`、`val_all=355`；test不参与训练。初始化为 production SFT1 best epoch5/step50 的 verified BF16 merged HF。
 - 启动前修复：SFT2 CPU cache job按实际CPU partition QOS改为8 CPU/128G；preempt/direct requeue resume detection补入`latest/training_state.pt`；SFT2 common env默认W&B project改为`nimloth-sft2`并显式透传run name。
+- k=8 config 的 checkpoint selection 改为 `val_wm_mse`。原 `val_success_rate` 只是读取固定 val JSONL success 标签，每个epoch相同，不是当前模型的在线rollout指标，不能用于选best。

@@ -84,4 +84,6 @@ loss:
 
 monitor:
   wandb: true
-  early_stop_metric: val_success_rate
+  # Offline rollout success is a fixed property of val_all.jsonl, not a model
+  # metric. Select checkpoints by held-out WM MSE until online rollout eval is wired.
+  early_stop_metric: val_wm_mse
