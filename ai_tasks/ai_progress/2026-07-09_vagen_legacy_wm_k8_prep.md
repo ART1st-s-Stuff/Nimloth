@@ -175,3 +175,4 @@
 - 数据：strict `train_all=3217`、`val_all=355`；test不参与训练。初始化为 production SFT1 best epoch5/step50 的 verified BF16 merged HF。
 - 启动前修复：SFT2 CPU cache job按实际CPU partition QOS改为8 CPU/128G；preempt/direct requeue resume detection补入`latest/training_state.pt`；SFT2 common env默认W&B project改为`nimloth-sft2`并显式透传run name。
 - k=8 config 的 checkpoint selection 改为 `val_wm_mse`。原 `val_success_rate` 只是读取固定 val JSONL success 标签，每个epoch相同，不是当前模型的在线rollout指标，不能用于选best。
+- 服务器credential `.env` 含旧 `WANDB_PROJECT/WANDB_MODE`，会在source时覆盖stage设置；SFT2 wrapper现先保存requested project/mode，载入凭据后重新显式export，避免正式run误传到旧project或disabled mode。

@@ -63,9 +63,17 @@ ensure_sft1_merged() {
   echo "Latent query mode override: ${LATENT_QUERY_MODE:-<config/default>}"
   echo "Packed forward: ${PACKED_FORWARD:-0}"
   echo "Trajectory-aware batching: ${TRAJECTORY_AWARE_BATCHING:-0}"
+  echo "W&B project: ${WANDB_PROJECT:-nimloth-sft2}"
+  echo "W&B run name: ${WANDB_RUN_NAME:-<missing>}"
 } | tee -a "${LOG}"
 
+# The credential file contains legacy project/mode defaults. Preserve the
+# stage-specific values selected before sourcing credentials.
+WANDB_PROJECT_REQUESTED="${WANDB_PROJECT:-nimloth-sft2}"
+WANDB_MODE_REQUESTED="${WANDB_MODE_OVERRIDE:-online}"
 eval "${COMMON_ENV}"
+export WANDB_PROJECT="${WANDB_PROJECT_REQUESTED}"
+export WANDB_MODE="${WANDB_MODE_REQUESTED}"
 
 if [ "${SKIP_SFT1_DONE:-0}" != "1" ] && [ ! -f "${SFT1_RUN}/train_done.flag" ]; then
   echo "ERROR SFT1 train_done.flag missing at ${SFT1_RUN}" | tee -a "${LOG}"
