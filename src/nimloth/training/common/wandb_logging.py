@@ -51,9 +51,17 @@ def log_train_step(run: Any | None, global_step: int, metrics: dict[str, float])
     run.log(payload, step=global_step)
 
 
-def log_val_epoch(run: Any | None, epoch: int, metrics: dict[str, float]) -> None:
+def log_val_epoch(
+    run: Any | None,
+    epoch: int,
+    metrics: dict[str, float],
+    *,
+    global_step: int,
+) -> None:
     if run is None:
         return
     payload = {f"val/{k}": v for k, v in metrics.items()}
     payload["epoch"] = epoch
-    run.log(payload, step=epoch)
+    # W&B's transport step must remain monotonic with train logging. The
+    # separately defined `epoch` step metric controls val/* chart x-axes.
+    run.log(payload, step=global_step)

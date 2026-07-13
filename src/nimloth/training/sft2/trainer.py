@@ -1175,6 +1175,7 @@ def train_sft2(args=None) -> int:
                     **val_metrics,
                     "rollout_success_rate": val_rollout_success,
                 },
+                global_step=global_step,
             )
             with log_path.open("a", newline="") as f:
                 csv.writer(f).writerow(

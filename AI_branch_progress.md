@@ -16,7 +16,8 @@
 - 4×H800 replacement job473963在执行前取消（elapsed0、无W&B），因为人类指定改用新空闲的preempt 8GPU节点。
 - preempt dgx-20 8GPU job473976完成cache/model/DDP/W&B初始化，正确创建`nimloth-sft2` ID1 run `x6zdsjgq`，但在首个non-sync accumulation backward触发PyTorch2.8 `static_graph=True + no_sync()` upstream reducer assert，step0失败且无checkpoint。该W&B run标记为失败，不可复用ID1。
 - 当前修复保留static graph，但在固定PyTorch2.8运行时每个micro-batch都做DDP同步，禁用`no_sync`；梯度数学等价但通信增加。
-- retry job473978在preempt dgx-20健康运行；W&B ID2/comment`ddpsyncfix` run=`5zm5pxqx`。elapsed00:54:54时位于epoch1/global step896，896条train log均finite，已有完整`latest` periodic checkpoint可恢复；近期WM MSE约0.0008–0.0041。8卡显存约61–64GiB，采样利用率85–100%，无OOM/NaN/traceback。
+- retry job473978在preempt dgx-20健康运行；W&B ID2/comment`ddpsyncfix` run=`5zm5pxqx`。epoch1在step1456完成：val WM MSE0.00227056、SIGReg0.40491741、value0.12201370；epoch_001/best/latest均完整，已进入epoch2（至少step1508）。无OOM/NaN/traceback。
+- 发现running code把W&B validation transport step设为epoch=1，低于train step1456，导致epoch1 val payload被W&B忽略；CSV/checkpoint数据完整且训练不受影响。本地修复改用global_step作为transport step、保留epoch custom metric；该活跃进程仍用旧代码，需后续回填val。
 - 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
 - `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
 - SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。
