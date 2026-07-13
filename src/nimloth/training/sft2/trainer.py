@@ -658,6 +658,7 @@ def train_sft2(args=None) -> int:
             query_tune=args.query_tune,
         )
 
+    ddp_static_graph = world > 1
     if world > 1:
         # Every trainable branch is exercised on every rank (terminal-only WM
         # batches use dummy aux forwards), so unused-parameter graph traversal is
@@ -668,7 +669,7 @@ def train_sft2(args=None) -> int:
                 device_ids=None,
                 output_device=None,
                 find_unused_parameters=False,
-                static_graph=True,
+                static_graph=ddp_static_graph,
             )
         else:
             device_idx = int(str(device).split(":")[-1])
@@ -677,7 +678,7 @@ def train_sft2(args=None) -> int:
                 device_ids=[device_idx],
                 output_device=device_idx,
                 find_unused_parameters=False,
-                static_graph=True,
+                static_graph=ddp_static_graph,
             )
         aux_idx = int(str(aux_device).split(":")[-1])
         state_proj = DDP(
@@ -685,14 +686,14 @@ def train_sft2(args=None) -> int:
             device_ids=[aux_idx],
             output_device=aux_idx,
             find_unused_parameters=False,
-            static_graph=True,
+            static_graph=ddp_static_graph,
         )
         value_head = DDP(
             value_head,
             device_ids=[aux_idx],
             output_device=aux_idx,
             find_unused_parameters=False,
-            static_graph=True,
+            static_graph=ddp_static_graph,
         )
         if train_wm_predictor:
             wm_predictor = DDP(
@@ -700,7 +701,7 @@ def train_sft2(args=None) -> int:
                 device_ids=[aux_idx],
                 output_device=aux_idx,
                 find_unused_parameters=False,
-                static_graph=True,
+                static_graph=ddp_static_graph,
             )
 
     vision_ema: VisionEncoderEMA | None = None
@@ -892,6 +893,23 @@ def train_sft2(args=None) -> int:
         ddp_modules = [model, state_proj, value_head]
         if train_wm_predictor:
             ddp_modules.append(wm_predictor)
+        # PyTorch 2.8 has an upstream DDP regression where static_graph=True
+        # combined with no_sync() crashes in Reducer::finalize_backward before
+        # the first optimizer step (expect_autograd_hooks_ assertion). Keep the
+        # static graph required by repeated Qwen forwards/checkpointing, and
+        # synchronize each accumulation micro-batch. All-reduce is linear, so
+        # this preserves the accumulated gradient while trading extra comms for
+        # correctness on the pinned runtime.
+        use_ddp_no_sync = world > 1 and not qwen_pair_parallel and not ddp_static_graph
+        if is_main() and world > 1 and args.grad_accum > 1 and not use_ddp_no_sync:
+            print(
+                json.dumps(
+                    {
+                        "ddp_gradient_accumulation": "sync_each_microbatch",
+                        "reason": "torch_2_8_static_graph_no_sync_regression",
+                    }
+                )
+            )
 
         train_iter = iter(train_loader)
         micro_idx = 0
@@ -933,7 +951,7 @@ def train_sft2(args=None) -> int:
             micro_idx += 1
             _seed_training_micro_step(args.seed, epoch, micro_idx, rank)
             sync_gradients = (micro_idx % args.grad_accum == 0) or (micro_idx == num_micro_batches)
-            with _no_sync_if_needed(ddp_modules, enabled=world > 1 and not sync_gradients and not qwen_pair_parallel):
+            with _no_sync_if_needed(ddp_modules, enabled=not sync_gradients and use_ddp_no_sync):
                 t0 = step_timer.start("batch_prep")
                 items, enc, next_enc_rows, transition_samples, full_enc = _unpack_train_batch(
                     batch_samples,
