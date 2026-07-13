@@ -2,7 +2,7 @@
 #SBATCH --job-name=sft2-cache-compact
 #SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/slurm/%x_%j.out
 #SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/slurm/%x_%j.err
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --account=peilab
 #SBATCH --partition=cpu
 #SBATCH --nodes=1

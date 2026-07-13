@@ -10,6 +10,7 @@
 - 正式 SFT2 将使用新 project `nimloth-sft2`；API 核实该 project 尚不存在，因此首个正式 run ID=1，名称 `1_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga4_px100352_img12_bestwm`。
 - 正式 k=8 config 的 best checkpoint 改按 `val_wm_mse` 选择；现有 `val_rollout_success_rate` 只读取固定 val JSONL 的 success 标签，不随模型变化，不能用于跨 epoch 选优。
 - SFT2 wrapper在读取credential `.env` 后会重新export预先选择的stage-specific W&B project/mode，防止旧`WANDB_PROJECT/WANDB_MODE`覆盖正式实验身份。
+- 正式SFT2首轮cache/train submission 473866/473867因CPU job误设24h、超过partition MaxTime12h而在执行前取消；无输出/W&B。cache walltime已修为12h，待replacement提交。
 - 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
 - `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
 - SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。
