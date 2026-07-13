@@ -25,7 +25,7 @@
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
 - full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。最初540条 shard 后确认 prompt/action/reward/dynamics 与源 step60 不一致，已按人类要求永久删除；当前生产恢复不能跳过该 shard。
 - 已新增独立 `source_eval_mode` 并逐字核对 prompt、role boundary、canonical actions、reward feedback、0.3m step、1.0m threshold、20 turns及 greedy kwargs。120条精确 composition 重放为86/120=71.67%（base73.33%、common70%），高于源72/120=60%（base55%、common65%），action validity1.0。
-- 2026-07-13 rollout/merge/strict conversion已完成：3900 records、74,236 PNG；train_success613/val355严格k8且issue0。SFT1 compact cache473364在intel-01以8 workers运行。人类根据此前epoch5已收敛，将正式预算从20改为5 epochs；未分配/未启动的dependency job473365已取消（0 elapsed），cache未中断；replacement8GPU LoRA job473384保持afterok:473364，maxlen12000/global batch64/k8 latent labels masked，W&B名`vagen-legacy-wm-step60-k8-sft1-5epoch`。
+- 2026-07-13 SFT1 cache473364 COMPLETED exit0（2:32:55）：train613/26GB、val355/21GB，manifest与done flag完整。5-epoch train473384已在dgx-32运行：8 H800约37–39GB且80–100% util；epoch1 global_step10，val_loss0.178709，epoch_001与best adapter已保存；检查时epoch2 step16，无NaN/OOM/traceback。format_correct_rate仍为0.0需继续观察；按实测ETA约15–20min。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`及服务器 full-scale README。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
