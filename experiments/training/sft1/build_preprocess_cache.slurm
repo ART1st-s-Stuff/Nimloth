@@ -7,7 +7,7 @@
 #SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=48
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
 #SBATCH --requeue
 
@@ -51,7 +51,7 @@ CACHE_ARGS=(
   --max-pixels 602112
   --latent-token-count "${LATENT_TOKEN_COUNT}"
   --cache-pixel-dtype "${CACHE_PIXEL_DTYPE:-bfloat16}"
-  --preprocess-workers "${PREPROCESS_WORKERS:-16}"
+  --preprocess-workers "${PREPROCESS_WORKERS:-${SLURM_CPUS_PER_TASK:-8}}"
 )
 if [ "${MASK_LATENT_QUERY_LABELS}" = "0" ]; then
   CACHE_ARGS+=(--no-mask-latent-query-labels)
