@@ -17,7 +17,9 @@
 - preempt dgx-20 8GPU job473976完成cache/model/DDP/W&B初始化，正确创建`nimloth-sft2` ID1 run `x6zdsjgq`，但在首个non-sync accumulation backward触发PyTorch2.8 `static_graph=True + no_sync()` upstream reducer assert，step0失败且无checkpoint。该W&B run标记为失败，不可复用ID1。
 - 当前修复保留static graph，但在固定PyTorch2.8运行时每个micro-batch都做DDP同步，禁用`no_sync`；梯度数学等价但通信增加。
 - retry job473978在preempt dgx-20健康运行；W&B ID2/comment`ddpsyncfix` run=`5zm5pxqx`。epoch1在step1456完成：val WM MSE0.00227056、SIGReg0.40491741、value0.12201370；epoch_001/best/latest均完整，已进入epoch2（至少step1508）。无OOM/NaN/traceback。
-- 发现running code把W&B validation transport step设为epoch=1，低于train step1456，导致epoch1 val payload被W&B忽略；CSV/checkpoint数据完整且训练不受影响。本地修复改用global_step作为transport step、保留epoch custom metric；该活跃进程仍用旧代码，需后续回填val。
+- 发现running code把W&B validation transport step设为epoch=1，低于train step1456，导致epoch1 val payload被W&B忽略；CSV/checkpoint数据完整且训练不受影响。本地修复改用global_step作为transport step、保留epoch custom metric；需后续回填epoch1 val。
+- job473978在elapsed02:39:59被PREEMPTED；最后logged step2347，最近完整latest为epoch2/step2137/micro2724，因此恢复会回退210个optimizer steps。无runtime traceback/OOM。按已完成epoch walltime与checkpoint throughput估计，重新获得8GPU后还需约14小时计算，排队时间未知。
+- 抢占同时暴露SFT2未持久化W&B内部run ID，直接重启会创建同名重复run。本地新增`wandb_run_id.txt`与`resume=allow`；本次恢复前将写回`5zm5pxqx`并复用原ID2 run。
 - 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
 - `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
 - SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。

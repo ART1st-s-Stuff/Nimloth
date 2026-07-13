@@ -28,14 +28,21 @@ def maybe_init_wandb(args: argparse.Namespace) -> Any | None:
     wandb_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("WANDB_DIR", str(wandb_dir))
 
+    run_id_path = Path(args.output_dir) / "wandb_run_id.txt"
+    requested_run_id = os.environ.get("WANDB_RUN_ID")
+    if requested_run_id is None and run_id_path.is_file():
+        requested_run_id = run_id_path.read_text(encoding="utf-8").strip() or None
     run = wandb.init(
         project=os.environ.get("WANDB_PROJECT", "nimloth"),
         entity=os.environ.get("WANDB_ENTITY"),
         name=run_name,
+        id=requested_run_id,
+        resume="allow" if requested_run_id is not None else None,
         mode=os.environ.get("WANDB_MODE", "online"),
         dir=str(wandb_dir),
         config=vars(args),
     )
+    run_id_path.write_text(f"{run.id}\n", encoding="utf-8")
     wandb.define_metric("global_step")
     wandb.define_metric("train/*", step_metric="global_step")
     wandb.define_metric("epoch")
