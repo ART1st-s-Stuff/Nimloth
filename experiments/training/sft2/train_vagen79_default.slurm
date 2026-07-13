@@ -91,6 +91,7 @@ if [ -n "${RESUME_FROM:-}" ]; then
   RESUME_ARGS=(--resume --resume-from "${RESUME_FROM}")
   echo "=== Resume SFT2 from ${RESUME_FROM} ===" | tee -a "${LOG}"
 elif compgen -G "${TRAIN_OUT}/epoch_*/training_state.pt" > /dev/null \
+  || [ -f "${TRAIN_OUT}/latest/training_state.pt" ] \
   || [ -f "${TRAIN_OUT}/best/training_state.pt" ]; then
   RESUME_ARGS=(--resume)
   echo "=== Resume SFT2 from latest checkpoint under ${TRAIN_OUT} ===" | tee -a "${LOG}"
@@ -135,6 +136,10 @@ LATENT_ARGS=(--latent-token-count "${LATENT_TOKEN_COUNT}")
 if [ -n "${LATENT_QUERY_MODE}" ]; then
   LATENT_ARGS+=(--latent-query-mode "${LATENT_QUERY_MODE}")
 fi
+WANDB_ARGS=()
+if [ -n "${WANDB_RUN_NAME:-}" ]; then
+  WANDB_ARGS+=(--wandb-run-name "${WANDB_RUN_NAME}")
+fi
 
 if [ -n "${PREPROCESS_CACHE_DIR:-}" ] && [ "${REQUIRE_PREBUILT_CACHE:-0}" != "1" ]; then
   echo "=== prebuild preprocess cache inside training allocation ===" | tee -a "${LOG}"
@@ -176,6 +181,7 @@ PYTHONUNBUFFERED=1 "${PYTHON_ENV}/bin/python3" -m torch.distributed.run \
   "${PACKED_ARGS[@]}" \
   "${TRAJECTORY_BATCH_ARGS[@]}" \
   "${LATENT_ARGS[@]}" \
+  "${WANDB_ARGS[@]}" \
   ${EXTRA_TRAIN_ARGS:-} \
   --epochs "${SFT2_EPOCHS:-10}" \
   --value-gamma "${VALUE_GAMMA:-1.0}" \

@@ -7,8 +7,9 @@
 #SBATCH --partition=cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=56
-#SBATCH --mem=256G
+# CPU partition QOS currently permits at most 8 CPUs per node.
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=128G
 #SBATCH --requeue
 
 set -euo pipefail
@@ -24,7 +25,7 @@ SCRIPTDIR=${REPO}/experiments/training/sft2
 CONFIG=${CONFIG:-${REPO}/configs/training/sft2/latent_wm_value_k8.yaml}
 LATENT_TOKEN_COUNT=${LATENT_TOKEN_COUNT:-8}
 LATENT_QUERY_MODE=${LATENT_QUERY_MODE:-}
-PREPROCESS_WORKERS=${PREPROCESS_WORKERS:-16}
+PREPROCESS_WORKERS=${PREPROCESS_WORKERS:-${SLURM_CPUS_PER_TASK:-8}}
 CACHE_LOG=${PREPROCESS_CACHE_DIR}/build_compact_cache.log
 CACHE_BUILD_OUTPUT_DIR=${CACHE_BUILD_OUTPUT_DIR:-${PREPROCESS_CACHE_DIR}/build_metadata}
 

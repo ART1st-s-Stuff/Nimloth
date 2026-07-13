@@ -6,6 +6,8 @@
 
 ## 2026-07-13：显式 latent query 协议与 SFT1 → SFT2 continuation gate
 
+- 人类新增 W&B 命名硬规则并写入 `ai_rules/events/on_experiment_start.md`：VAGEN retrain project=`vagen`，其余 project=`nimloth-<stage>`；run name=`<id>[_<comment>]_<params>`，smoke 必须使用 `smoke` comment，ID 启动前从目标 project 递增选择。
+- 正式 SFT2 将使用新 project `nimloth-sft2`；API 核实该 project 尚不存在，因此首个正式 run ID=1，名称 `1_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga4_px100352_img12`。
 - 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
 - `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
 - SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。

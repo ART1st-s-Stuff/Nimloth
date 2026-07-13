@@ -166,3 +166,11 @@
 - job473841：加载merged SFT1后完成3个optimizer steps；total loss=`16.886543,17.622742,16.690308`，WM MSE=`0.275919,0.277622,0.154456`，LM CE=`16.622169,15.889709,16.425825`，均有限。因单轨迹展开多个micro-batches且step interval=1会反复保存完整Qwen，为节省资源主动取消；完整checkpoint为`train/step_000002`。
 - job473846：reload-only gate COMPLETED 0:0。实际重载step2 Qwen/processor/state projector；metadata为step2/k8/inject/adapter，query IDs 151665..151672。与merged init比较，query rows有12,885个元素变化、max abs BF16 delta 0.0001220703125；抽查non-query row bitwise不变。
 - 结论：production masked/inject SFT1 best 可以继续 SFT2，训练与checkpoint materialization路径有效。仍未运行正确的在线 inject rollout quality evaluation，也未启动正式 SFT2 cache/train。
+
+## 2026-07-13 正式 SFT2 启动准备
+
+- 人类规定 W&B project/run naming 后，规则已写入 `ai_rules/events/on_experiment_start.md`。正式 SFT2 project=`nimloth-sft2`；W&B API 查询该 project 不存在，因此使用首个ID=1。
+- run name=`1_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga4_px100352_img12`；无 comment（不是 smoke）。params 表示 k8/inject、全部3217条严格有效train records、query adapter、vision full、WM predictor train、10 epochs、batch2、grad accumulation4、max_pixels100352、image budget12。
+- 输出计划：`.../full_2e66e97/sft2/1_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga4_px100352_img12`；cache 在其 `preprocess_cache/`，训练 checkpoint 与日志在 `train/`。
+- 数据：strict `train_all=3217`、`val_all=355`；test不参与训练。初始化为 production SFT1 best epoch5/step50 的 verified BF16 merged HF。
+- 启动前修复：SFT2 CPU cache job按实际CPU partition QOS改为8 CPU/128G；preempt/direct requeue resume detection补入`latest/training_state.pt`；SFT2 common env默认W&B project改为`nimloth-sft2`并显式透传run name。
