@@ -65,6 +65,14 @@ def main() -> int:
     verified_tensors = verify_adapter_loaded(peft_model, args.adapter_dir)
     merged = peft_model.merge_and_unload()
     sync_vocab_metadata(merged, len(processor.tokenizer))
+    training_state_path = args.adapter_dir / "training_state.pt"
+    if training_state_path.is_file():
+        training_state = torch.load(training_state_path, map_location="cpu", weights_only=False)
+        merged.config.nimloth_latent_token_count = int(training_state.get("latent_token_count", 1))
+        saved_mode = training_state.get("latent_query_mode")
+        if saved_mode is None:
+            saved_mode = "inject" if training_state.get("mask_latent_query_labels", True) else "generate"
+        merged.config.nimloth_latent_query_mode = saved_mode
     args.out_dir.mkdir(parents=True, exist_ok=True)
     merged.save_pretrained(args.out_dir, safe_serialization=True)
     processor.save_pretrained(args.out_dir)
