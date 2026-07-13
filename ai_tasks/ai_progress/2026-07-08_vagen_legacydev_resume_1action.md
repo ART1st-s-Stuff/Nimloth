@@ -333,4 +333,7 @@
   - job `472793` 在 preempt dgx-48 启动，完成/save step330-334 后于 step335 startup 复发 none_dealloc；
   - watchdog 自动从 step334 启动 `472885`（dgx-11），下一代 watcher `472886` armed；
   - validation@334 base/common success=`0.400/0.433`、action-valid=`0.900/0.933`；step335 active；
-  - 30 updates 已完成5个、剩余25；env `472577` healthy；rolling retention enabled。
+  - auto chain 后续在 step339/344 none_dealloc 时成功恢复，并推进/save 到 step347（18/30 updates）；
+  - job `473055` 随后因 env HTTP500 停止，env log 确认为 AI2-THOR FIFO reset timeout300s；
+  - fresh env `473378` 已在 dgx-37 port5004 启动；normal 有整台 idle8GPU，因此 strict ws8 continuation `473380` 从347在 normal dgx-16启动，watchdog `473381`；
+  - 剩余12 updates（348..359）；step347 train base/common success=`0.194/0.131`，validation@344=`0.450/0.450`；rolling retention enabled。
