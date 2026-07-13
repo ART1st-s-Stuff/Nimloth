@@ -25,7 +25,7 @@
 - 人类已批准 full-scale 前的最小端到端 preflight；已提交 `29cd068` 增加单 task production rollout smoke 模式。计划复用现有 4-GPU hold 与 2-GPU env service，顺序验证 rollout → SFT1 cache/train/resume → SFT2 compact cache/train/resume。
 - full-scale根 `outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97`。最初540条 shard 后确认 prompt/action/reward/dynamics 与源 step60 不一致，已按人类要求永久删除；当前生产恢复不能跳过该 shard。
 - 已新增独立 `source_eval_mode` 并逐字核对 prompt、role boundary、canonical actions、reward feedback、0.3m step、1.0m threshold、20 turns及 greedy kwargs。120条精确 composition 重放为86/120=71.67%（base73.33%、common70%），高于源72/120=60%（base55%、common65%），action validity1.0。
-- 2026-07-13 holds472930/472972均TIMEOUT：main完成seeds1-680=2040（success281=13.77%，14 action问题），temp tail完成721-1040=960（success251=26.15%，9 action问题），0 bad JSON/missing image；combined durable3660/3900、70,002 PNG。缺失严格限定为main681-720与tail1041-1080，均因退化env create ReadTimeout且无非空JSONL。已启动fresh recovery hold473305/dgx-44/6GPU/2h：先task1只补681-720，strict gate后deferred fresh task2只补temp1041-1080；monitor已改为不使用`sacct -X`并匹配准确step ID。
+- 2026-07-13 recovery hold473305：main final681-720已完成并strict audit；main train现2160 seeds1-720/42,895 PNG，success314=14.54%，0 bad/missing、14 action问题。准确step monitor成功触发fresh tail task2，12:28:45开始只补1041-1080。Combined durable3780/3900、72,220 PNG，仅剩最后120 records；hold余>1h40。
 - 详细记录：`ai_tasks/ai_progress/2026-07-09_vagen_legacy_wm_k8_prep.md`及服务器 full-scale README。
 
 ## 2026-07-09：SFT2 多 latent query token 主路径已本地实现
