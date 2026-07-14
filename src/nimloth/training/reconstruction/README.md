@@ -93,6 +93,27 @@ The cache fingerprint, model config, data sizes, k, optimizer hyperparameters,
 and seed must match. The final gate saves 5-step and 50-step ODE contact sheets
 for current-state and WM-predicted-next reconstruction.
 
+## Compare projected and preprojection query states
+
+Build a separate cache of the frozen Qwen hidden vectors at all k latent-query
+positions by adding `--state-cache-representation qwen_query_hidden
+--cache-only` to the RCDM cache command.  Then run the controlled decoder pair:
+
+```bash
+python -m nimloth.training.reconstruction.query_state_ablation \
+  --projected-cache-dir outputs/.../projected_state_cache \
+  --query-cache-dir outputs/.../query_hidden_cache \
+  --output-dir outputs/.../query_state_ablation/<run_name> \
+  --query-token-count 8 --max-steps 18560 --batch-size 16 \
+  --wandb-project nimloth-recon --wandb-run-name <run_name>
+```
+
+Both branches receive identical examples and use the same patch-decoder body.
+One branch gets the single projected 1024-d state; the other gets all k Qwen
+query hidden vectors before `StateProjector`.  Correct-versus-shuffled held-out
+metrics localize whether visual information is lost before or during state
+projection.  Qwen and all SFT2 modules remain frozen.
+
 ## Sample from RCDM
 
 Sample from a trained RCDM checkpoint:

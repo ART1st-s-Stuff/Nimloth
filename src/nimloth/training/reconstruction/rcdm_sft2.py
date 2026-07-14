@@ -256,6 +256,7 @@ def _build_metadata(args: argparse.Namespace, rcdm_config: RCDMConfig, cond_dim:
             "state_cache_shard_size": args.state_cache_shard_size,
             "state_cache_compression": args.state_cache_compression,
             "state_cache_dtype": args.state_cache_dtype,
+            "state_cache_representation": args.state_cache_representation,
             "latent_token_count": args.latent_token_count,
         },
         "wandb": {
@@ -388,6 +389,7 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
                     shard_size=args.state_cache_shard_size,
                     compression=args.state_cache_compression,
                     state_dtype=args.state_cache_dtype,
+                    representation=args.state_cache_representation,
                     force=args.force_rebuild_state_cache,
                 )
                 build_rcdm_state_cache(
@@ -418,6 +420,16 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
             cond_dim = train_ds.manifest.cond_dim
             if val_ds.manifest.cond_dim != cond_dim:
                 raise ValueError("train/val state cache cond_dim mismatch")
+            train_manifest_data = json.loads((train_cache_dir / "manifest.json").read_text())
+            val_manifest_data = json.loads((val_cache_dir / "manifest.json").read_text())
+            train_representation = train_manifest_data.get("representation", "projected")
+            val_representation = val_manifest_data.get("representation", "projected")
+            if train_representation != args.state_cache_representation or val_representation != args.state_cache_representation:
+                raise ValueError(
+                    "state cache representation mismatch: "
+                    f"requested={args.state_cache_representation}, "
+                    f"train={train_representation}, val={val_representation}"
+                )
             train_collate = collate_rcdm_state_cache_batch
             val_collate = collate_rcdm_state_cache_batch
         else:
@@ -437,6 +449,12 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
                     "latent_token_count": args.latent_token_count,
                 }))
             return 0
+
+        if args.state_cache_representation != "projected":
+            raise ValueError(
+                "RCDM training only accepts projected state caches; "
+                "use --cache-only for qwen_query_hidden extraction"
+            )
 
         rcdm_config = rcdm_config_from_args(args)
         if rcdm_config.use_fp16:
@@ -671,6 +689,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--state-cache-shard-size", type=int, default=4096)
     ap.add_argument("--state-cache-compression", choices=("gzip", "none"), default="gzip")
     ap.add_argument("--state-cache-dtype", choices=("float16", "bfloat16", "float32"), default="float16")
+    ap.add_argument(
+        "--state-cache-representation",
+        choices=("projected", "qwen_query_hidden"),
+        default="projected",
+        help="Cache projected WM states or the k preprojection Qwen query hidden vectors",
+    )
 
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--max-steps", type=int, default=-1)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -28,6 +29,7 @@ from nimloth.wm.state_proj import StateProjector
 STATE_CACHE_VERSION = "rcdm_state_cache_v2"
 Compression = Literal["gzip", "none"]
 StateDType = Literal["float16", "bfloat16", "float32"]
+StateRepresentation = Literal["projected", "qwen_query_hidden"]
 
 
 def _path_stat_payload(path: Path) -> str:
@@ -60,24 +62,28 @@ def state_cache_fingerprint(
     success_only: bool,
     max_records: int,
     state_dtype: StateDType,
+    representation: StateRepresentation = "projected",
 ) -> str:
-    payload = "|".join(
-        [
-            STATE_CACHE_VERSION,
-            _path_stat_payload(jsonl_path),
-            str(model_path.resolve()),
-            _checkpoint_payload(state_proj_checkpoint),
-            _checkpoint_payload(wm_checkpoint),
-            str(max_length),
-            str(max_pixels),
-            str(min_pixels),
-            str(latent_token_count),
-            str(vocab_size),
-            str(success_only),
-            str(max_records),
-            state_dtype,
-        ]
-    )
+    parts = [
+        STATE_CACHE_VERSION,
+        _path_stat_payload(jsonl_path),
+        str(model_path.resolve()),
+        _checkpoint_payload(state_proj_checkpoint),
+        _checkpoint_payload(wm_checkpoint),
+        str(max_length),
+        str(max_pixels),
+        str(min_pixels),
+        str(latent_token_count),
+        str(vocab_size),
+        str(success_only),
+        str(max_records),
+        state_dtype,
+    ]
+    # Keep legacy projected-cache fingerprints stable.  The representation tag
+    # is only needed for the new preprojection query-hidden cache.
+    if representation != "projected":
+        parts.append(representation)
+    payload = "|".join(parts)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -203,9 +209,13 @@ def build_rcdm_state_cache(
     shard_size: int = 4096,
     compression: Compression = "gzip",
     state_dtype: StateDType = "float16",
+    representation: StateRepresentation = "projected",
     force: bool = False,
 ) -> RCDMStateCacheManifest:
-    """Precompute and compressed-save SFT2 state embeddings for one split."""
+    """Precompute projected states or preprojection Qwen query hidden states."""
+
+    if representation not in ("projected", "qwen_query_hidden"):
+        raise ValueError(f"unsupported state representation: {representation}")
 
     fingerprint = state_cache_fingerprint(
         jsonl_path=jsonl_path,
@@ -220,6 +230,7 @@ def build_rcdm_state_cache(
         success_only=success_only,
         max_records=max_records,
         state_dtype=state_dtype,
+        representation=representation,
     )
     distributed = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     rank = dist.get_rank() if distributed else 0
@@ -262,6 +273,7 @@ def build_rcdm_state_cache(
     count = 0
     shard_index = 0
     cond_dim = -1
+    state_shape: tuple[int, ...] = ()
 
     def flush() -> None:
         nonlocal shard_rows, shard_index
@@ -298,9 +310,14 @@ def build_rcdm_state_cache(
             device,
             latent_token_count=latent_token_count,
         )
-        states = state_proj(hidden).detach().float().cpu()
+        if representation == "projected":
+            states = state_proj(hidden)
+        else:
+            states = hidden
+        states = states.detach().float().cpu()
         if cond_dim < 0:
-            cond_dim = int(states.shape[-1])
+            state_shape = tuple(int(dim) for dim in states.shape[1:])
+            cond_dim = math.prod(state_shape)
         for item, state in zip(items, states, strict=True):
             shard_rows.append(
                 {
@@ -326,6 +343,7 @@ def build_rcdm_state_cache(
         "sample_end": sample_end,
         "count": count,
         "cond_dim": cond_dim,
+        "state_shape": list(state_shape),
         "shards": shards,
         "total_bytes": local_total_bytes,
     }
@@ -338,8 +356,16 @@ def build_rcdm_state_cache(
 
     rank_results.sort(key=lambda result: int(result["rank"]))
     cond_dims = {int(result["cond_dim"]) for result in rank_results if int(result["count"]) > 0}
-    if len(cond_dims) != 1:
-        raise ValueError(f"distributed RCDM cache cond_dim mismatch: {sorted(cond_dims)}")
+    state_shapes = {
+        tuple(int(dim) for dim in result["state_shape"])
+        for result in rank_results
+        if int(result["count"]) > 0
+    }
+    if len(cond_dims) != 1 or len(state_shapes) != 1:
+        raise ValueError(
+            "distributed RCDM cache representation mismatch: "
+            f"cond_dims={sorted(cond_dims)}, state_shapes={sorted(state_shapes)}"
+        )
     if rank == 0:
         merged_shards = [
             shard
@@ -369,6 +395,8 @@ def build_rcdm_state_cache(
                 "max_pixels": max_pixels,
                 "min_pixels": min_pixels,
                 "latent_token_count": latent_token_count,
+                "representation": representation,
+                "state_shape": list(next(iter(state_shapes))),
                 "success_only": success_only,
                 "max_records": max_records,
                 "cache_build_world_size": world_size,
