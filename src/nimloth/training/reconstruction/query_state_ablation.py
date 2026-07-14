@@ -183,11 +183,15 @@ def load_paired_state_image_split(
 
     projected_dataset = RCDMStateCacheDataset(projected_cache_dir)
     query_dataset = RCDMStateCacheDataset(query_cache_dir)
-    if len(projected_dataset) != len(query_dataset):
-        raise ValueError(
-            f"cache item count mismatch: projected={len(projected_dataset)}, query={len(query_dataset)}"
-        )
-    count = len(projected_dataset) if max_items < 0 else min(max_items, len(projected_dataset))
+    if max_items < 0:
+        if len(projected_dataset) != len(query_dataset):
+            raise ValueError(
+                f"cache item count mismatch: projected={len(projected_dataset)}, "
+                f"query={len(query_dataset)}"
+            )
+        count = len(projected_dataset)
+    else:
+        count = min(max_items, len(projected_dataset), len(query_dataset))
     if count < 2:
         raise ValueError(f"paired split needs at least two items, got {count}")
 
