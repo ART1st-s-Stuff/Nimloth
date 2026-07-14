@@ -252,6 +252,7 @@ def _build_metadata(args: argparse.Namespace, rcdm_config: RCDMConfig, cond_dim:
             "resume_checkpoint": str(args.resume_checkpoint) if args.resume_checkpoint is not None else None,
             "state_cache_dir": str(args.state_cache_dir) if args.state_cache_dir is not None else None,
             "build_state_cache": args.build_state_cache,
+            "parallel_state_cache": args.parallel_state_cache,
             "state_cache_shard_size": args.state_cache_shard_size,
             "state_cache_compression": args.state_cache_compression,
             "state_cache_dtype": args.state_cache_dtype,
@@ -367,7 +368,8 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
                 or not state_cache_ready(train_cache_dir)
                 or not state_cache_ready(val_cache_dir)
             )
-            if is_main() and need_cache_build:
+            parallel_cache_build = args.parallel_state_cache and world > 1
+            if need_cache_build and (parallel_cache_build or is_main()):
                 processor, token_id_map, qwen_model, state_proj, wm_predictor = _load_frozen_sft2_modules(args, device)
                 build_kwargs = dict(
                     model_path=args.model,
@@ -660,6 +662,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--build-state-cache", action="store_true", help="Build missing RCDM state cache before training")
     ap.add_argument("--force-rebuild-state-cache", action="store_true")
     ap.add_argument("--cache-only", action="store_true", help="Build or validate state cache, then exit before RCDM training")
+    ap.add_argument(
+        "--parallel-state-cache",
+        action="store_true",
+        help="When launched with torchrun, shard ordered cache extraction across all ranks",
+    )
     ap.add_argument("--state-cache-build-batch-size", type=int, default=1)
     ap.add_argument("--state-cache-shard-size", type=int, default=4096)
     ap.add_argument("--state-cache-compression", choices=("gzip", "none"), default="gzip")

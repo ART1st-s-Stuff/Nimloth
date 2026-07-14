@@ -4,6 +4,7 @@ import pytest
 
 from nimloth.rcdm.config import RCDMConfig, rcdm_config_from_args
 from nimloth.rcdm.external import ensure_rcdm_importable
+from nimloth.rcdm.state_cache import contiguous_rank_bounds
 from nimloth.training.reconstruction.rcdm_sft2 import resolve_latent_token_count
 
 
@@ -48,3 +49,17 @@ def test_rcdm_latent_token_count_rejects_checkpoint_conflict() -> None:
     config = SimpleNamespace(nimloth_latent_token_count=8)
     with pytest.raises(ValueError, match="requested=1, checkpoint=8"):
         resolve_latent_token_count(args, config)
+
+
+def test_parallel_cache_rank_bounds_are_balanced_and_ordered() -> None:
+    bounds = [contiguous_rank_bounds(59_389, rank, 8) for rank in range(8)]
+    assert bounds[0][0] == 0
+    assert bounds[-1][1] == 59_389
+    assert all(left[1] == right[0] for left, right in zip(bounds, bounds[1:], strict=True))
+    sizes = [end - start for start, end in bounds]
+    assert max(sizes) - min(sizes) <= 1
+
+
+def test_parallel_cache_rank_bounds_reject_invalid_rank() -> None:
+    with pytest.raises(ValueError, match="rank must be"):
+        contiguous_rank_bounds(10, rank=2, world_size=2)

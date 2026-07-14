@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+import torch.distributed as dist
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from nimloth.training.common.qwen_batch import build_qwen_batch
 from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
@@ -90,9 +91,21 @@ def _torch_dtype(name: StateDType) -> torch.dtype:
     raise ValueError(f"unsupported state dtype: {name}")
 
 
-def _shard_name(index: int, compression: Compression) -> str:
+def _shard_name(index: int, compression: Compression, *, rank: int | None = None) -> str:
     suffix = ".pt.gz" if compression == "gzip" else ".pt"
-    return f"shard_{index:06d}{suffix}"
+    if rank is None:
+        return f"shard_{index:06d}{suffix}"
+    return f"shard_r{rank:03d}_{index:06d}{suffix}"
+
+
+def contiguous_rank_bounds(total: int, rank: int, world_size: int) -> tuple[int, int]:
+    """Split an ordered dataset into balanced contiguous rank ranges."""
+
+    if world_size < 1:
+        raise ValueError(f"world_size must be >= 1, got {world_size}")
+    if rank < 0 or rank >= world_size:
+        raise ValueError(f"rank must be in [0, {world_size}), got {rank}")
+    return total * rank // world_size, total * (rank + 1) // world_size
 
 
 def _save_payload(payload: dict[str, Any], path: Path, compression: Compression) -> None:
@@ -208,19 +221,36 @@ def build_rcdm_state_cache(
         max_records=max_records,
         state_dtype=state_dtype,
     )
-    if not force and state_cache_ready(cache_dir):
+    distributed = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
+    rank = dist.get_rank() if distributed else 0
+    world_size = dist.get_world_size() if distributed else 1
+    cache_hit = False
+    if rank == 0 and not force and state_cache_ready(cache_dir):
         manifest = RCDMStateCacheManifest.load(cache_dir)
-        if manifest.fingerprint == fingerprint:
+        cache_hit = manifest.fingerprint == fingerprint
+    if distributed:
+        hit_payload = [cache_hit]
+        dist.broadcast_object_list(hit_payload, src=0)
+        cache_hit = bool(hit_payload[0])
+    if cache_hit:
+        manifest = RCDMStateCacheManifest.load(cache_dir)
+        if rank == 0:
             print(json.dumps({"rcdm_state_cache": "hit", "split": split_name, "dir": str(cache_dir), "count": manifest.count}))
-            return manifest
+        return manifest
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    for old in cache_dir.glob("shard_*.pt*"):
-        old.unlink()
+    if rank == 0:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        for old in cache_dir.glob("shard_*.pt*"):
+            old.unlink()
+        (cache_dir / "manifest.json").unlink(missing_ok=True)
+    if distributed:
+        dist.barrier()
 
     ds = TransitionQwenDataset(jsonl_path, max_records=max_records, success_only=success_only)
+    sample_start, sample_end = contiguous_rank_bounds(len(ds), rank, world_size)
+    rank_ds = Subset(ds, range(sample_start, sample_end))
     loader = DataLoader(
-        ds,
+        rank_ds,
         batch_size=batch_size,
         shuffle=False,
         num_workers=0,
@@ -242,7 +272,11 @@ def build_rcdm_state_cache(
             "state_emb": states,
             "rows": shard_rows,
         }
-        filename = _shard_name(shard_index, compression)
+        filename = _shard_name(
+            shard_index,
+            compression,
+            rank=rank if distributed else None,
+        )
         _save_payload(payload, cache_dir / filename, compression)
         shards.append({"file": filename, "count": len(shard_rows)})
         shard_index += 1
@@ -270,7 +304,7 @@ def build_rcdm_state_cache(
         for item, state in zip(items, states, strict=True):
             shard_rows.append(
                 {
-                    "id": str(item.get("id", count)),
+                    "id": str(item.get("id", sample_start + count)),
                     "record_id": str(item.get("record_id", "")),
                     "step_index": int(item.get("step_index", -1)),
                     "action_index": int(item["action_index"]),
@@ -285,35 +319,82 @@ def build_rcdm_state_cache(
                 flush()
     flush()
 
-    manifest = RCDMStateCacheManifest(
-        cache_dir=cache_dir,
-        count=count,
-        cond_dim=cond_dim,
-        state_dtype=state_dtype,
-        compression=compression,
-        shard_size=shard_size,
-        shards=shards,
-        fingerprint=fingerprint,
-    )
-    total_bytes = sum((cache_dir / str(shard["file"])).stat().st_size for shard in shards)
-    manifest.write(
-        {
+    local_total_bytes = sum((cache_dir / str(shard["file"])).stat().st_size for shard in shards)
+    local_result = {
+        "rank": rank,
+        "sample_start": sample_start,
+        "sample_end": sample_end,
+        "count": count,
+        "cond_dim": cond_dim,
+        "shards": shards,
+        "total_bytes": local_total_bytes,
+    }
+    if distributed:
+        gathered: list[dict[str, Any] | None] = [None] * world_size
+        dist.all_gather_object(gathered, local_result)
+        rank_results = [result for result in gathered if result is not None]
+    else:
+        rank_results = [local_result]
+
+    rank_results.sort(key=lambda result: int(result["rank"]))
+    cond_dims = {int(result["cond_dim"]) for result in rank_results if int(result["count"]) > 0}
+    if len(cond_dims) != 1:
+        raise ValueError(f"distributed RCDM cache cond_dim mismatch: {sorted(cond_dims)}")
+    if rank == 0:
+        merged_shards = [
+            shard
+            for result in rank_results
+            for shard in result["shards"]
+        ]
+        merged_count = sum(int(result["count"]) for result in rank_results)
+        total_bytes = sum(int(result["total_bytes"]) for result in rank_results)
+        manifest = RCDMStateCacheManifest(
+            cache_dir=cache_dir,
+            count=merged_count,
+            cond_dim=next(iter(cond_dims)),
+            state_dtype=state_dtype,
+            compression=compression,
+            shard_size=shard_size,
+            shards=merged_shards,
+            fingerprint=fingerprint,
+        )
+        manifest.write(
+            {
+                "split": split_name,
+                "jsonl_path": str(jsonl_path),
+                "model_path": str(model_path),
+                "state_proj_checkpoint": str(state_proj_checkpoint),
+                "wm_checkpoint": str(wm_checkpoint),
+                "max_length": max_length,
+                "max_pixels": max_pixels,
+                "min_pixels": min_pixels,
+                "latent_token_count": latent_token_count,
+                "success_only": success_only,
+                "max_records": max_records,
+                "cache_build_world_size": world_size,
+                "rank_ranges": [
+                    {
+                        "rank": int(result["rank"]),
+                        "start": int(result["sample_start"]),
+                        "end": int(result["sample_end"]),
+                        "count": int(result["count"]),
+                    }
+                    for result in rank_results
+                ],
+                "total_bytes": total_bytes,
+            }
+        )
+        print(json.dumps({
+            "rcdm_state_cache": "done",
             "split": split_name,
-            "jsonl_path": str(jsonl_path),
-            "model_path": str(model_path),
-            "state_proj_checkpoint": str(state_proj_checkpoint),
-            "wm_checkpoint": str(wm_checkpoint),
-            "max_length": max_length,
-            "max_pixels": max_pixels,
-            "min_pixels": min_pixels,
-            "latent_token_count": latent_token_count,
-            "success_only": success_only,
-            "max_records": max_records,
+            "dir": str(cache_dir),
+            "count": merged_count,
             "total_bytes": total_bytes,
-        }
-    )
-    print(json.dumps({"rcdm_state_cache": "done", "split": split_name, "dir": str(cache_dir), "count": count, "total_bytes": total_bytes}))
-    return manifest
+            "world_size": world_size,
+        }))
+    if distributed:
+        dist.barrier()
+    return RCDMStateCacheManifest.load(cache_dir)
 
 
 class RCDMStateCacheDataset(Dataset):
