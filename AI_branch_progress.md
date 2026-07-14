@@ -25,7 +25,9 @@
 - 人类要求暂时停止SFT2续训并转向RCDM可视化。pending resume2 job474291已在运行前取消（elapsed 0）；`epoch_001`、`epoch_002`均核实为约15GiB完整checkpoint并保留，其他输出也未删除。RCDM将从更优的epoch2（val WM MSE=0.00224416）初始化。
 - RCDM原实现只支持单latent query，已补齐SFT2 checkpoint metadata驱动的k=8 token注册、batch/extraction、StateProjector构造和state-cache fingerprint/manifest传播；显式CLI k冲突会报错。提交`8639ba3`，服务器测试9 passed。
 - 真实epoch2 k=8 state-cache smoke job474301在46秒内完成：2条train trajectory→40 transitions、2条val trajectory→16 transitions（`max_records`限制trajectory而非transition），manifest k=8/cond_dim1024，抽查state tensors全部finite。
-- 正式RCDM实验`1_rcdm128_sft2e2_k8_all3217_ep1_b1_lr1e4`已启动：cache job474302在normal/dgx-51运行；1 epoch、8-GPU RCDM train job474303以afterok依赖等待。W&B project=`nimloth-recon`，run ID序号1。
+- 正式RCDM实验`1_rcdm128_sft2e2_k8_all3217_ep1_b1_lr1e4`：人类要求cache也并行后，单GPU cache job474302在27:12取消，未运行的train474303取消；partial shard归档保留，未删除。
+- 新增有序连续rank分片、rank独立shard和rank0校验/manifest合并的多GPU cache，提交`38ff865`（测试修复`17cdb3a`）。2-GPU真实epoch2等价smoke job474338完成：train40/val16 rows顺序相同，FP16 state tensors与串行输出bitwise一致、max delta 0；服务器11 tests passed。
+- 并行smoke首次job474334错误使用带stale `.venv` shebang的`torchrun`，在模型权重加载前失败；已记录`E0025`，后续固定`.venv-vagen-main/bin/python3 -m torch.distributed.run`。正式8-GPU cache job474350已提交normal，train job474351 afterok等待；W&B project=`nimloth-recon`，run ID序号1。
 - 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
 - `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
 - SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。

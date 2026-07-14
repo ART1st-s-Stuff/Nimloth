@@ -191,4 +191,6 @@
 - 人类要求暂时停止SFT2续训并转向RCDM可视化训练。pending resume2 job474291已在运行前取消（elapsed 0）；`epoch_001`和`epoch_002`均核实完整、各约15GiB并保留，其他输出未删除。RCDM source定为当前best `epoch_002`。
 - RCDM原实现默认k=1，不能直接加载k=8 StateProjector；已补齐checkpoint metadata驱动的k=8 token注册、Qwen batch/extraction、StateProjector和state-cache fingerprint/manifest传播，并为显式CLI/checkpoint k冲突增加拒绝门禁，提交`8639ba3`，服务器测试9 passed。
 - 真实epoch2 smoke job474301完成（46s）：2条train trajectory展开40 transitions，2条val trajectory展开16 transitions；manifest k=8/cond_dim1024，抽查state tensor全finite。此前把`max_records=2`写成期望2 transitions是不正确的，已在实验README澄清。
-- 正式RCDM输出为`.../rcdm/1_rcdm128_sft2e2_k8_all3217_ep1_b1_lr1e4`：job474302在normal/dgx-51构建全部fp16/gzip state cache；job474303依赖cache后使用8 H800训练128px RCDM 1 epoch。W&B project=`nimloth-recon`，run name序号1。
+- 正式RCDM输出为`.../rcdm/1_rcdm128_sft2e2_k8_all3217_ep1_b1_lr1e4`。人类要求cache并行后，单GPU cache job474302在27:12取消，未运行train474303取消；partial shard已归档保留。
+- 新增有序连续rank分片、rank独立shard和rank0校验/manifest合并的多GPU cache，提交`38ff865`（test fix `17cdb3a`）。2-GPU真实epoch2等价smoke job474338完成：train40/val16 row顺序完全相同，FP16 state与串行bitwise相等、max delta0；服务器11 tests passed。
+- job474334因直接调用带stale `.venv` shebang的`.venv-vagen-main/bin/torchrun`而在权重加载前失败，记录`E0025`；正确入口固定为`.venv-vagen-main/bin/python3 -m torch.distributed.run`。正式8-GPU cache job474350已提交normal，train job474351 afterok等待；W&B project=`nimloth-recon`，run name序号1。
