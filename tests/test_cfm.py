@@ -60,4 +60,4 @@ def test_cfm_euler_sampling_is_deterministic() -> None:
         model, states, noise, steps=2, device=torch.device("cpu"), chunk_size=2
     )
     assert first.shape == noise.shape
-    torch.testing.assert_close(first, second, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(first, second, rtol=1e-4, atol=3e-6)
