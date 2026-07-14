@@ -81,6 +81,7 @@ def evaluate_residual_condition_sensitivity(
     batch_size: int,
     reconstruction_weight: float,
     seed: int,
+    max_items: int = -1,
 ) -> dict[str, float]:
     model.eval()
     scaffold_decoder.eval()
@@ -90,7 +91,8 @@ def evaluate_residual_condition_sensitivity(
     correct_l1_sum = 0.0
     wrong_l1_sum = 0.0
     total = 0
-    for start in range(0, split.states.shape[0], batch_size):
+    count = split.states.shape[0] if max_items < 0 else min(max_items, split.states.shape[0])
+    for start in range(0, count, batch_size):
         condition = split.states[start : start + batch_size].to(
             device=device, dtype=torch.float32
         )
@@ -247,7 +249,17 @@ def _save_samples(
     count: int,
     seed: int,
 ) -> Path:
-    indices = list(range(min(count, split.states.shape[0])))
+    by_record: dict[str, int] = {}
+    for index, row in enumerate(split.rows):
+        by_record.setdefault(str(row.get("record_id", index)), index)
+    candidates = list(by_record.values())
+    if len(candidates) <= count:
+        indices = candidates
+    else:
+        indices = [
+            candidates[round(i * (len(candidates) - 1) / max(count - 1, 1))]
+            for i in range(count)
+        ]
     condition = split.states[indices].float()
     wrong_condition = torch.roll(condition, shifts=1, dims=0)
     generator = torch.Generator(device="cpu").manual_seed(seed)
@@ -405,6 +417,7 @@ def train_residual_cfm(args: argparse.Namespace) -> int:
                 batch_size=args.eval_batch_size,
                 reconstruction_weight=args.reconstruction_weight,
                 seed=args.seed + 10_000 + step,
+                max_items=args.eval_max_items,
             )
             if last_eval["correct_loss"] < best_loss:
                 best_loss = last_eval["correct_loss"]
@@ -475,6 +488,7 @@ def train_residual_cfm(args: argparse.Namespace) -> int:
         batch_size=args.eval_batch_size,
         reconstruction_weight=args.reconstruction_weight,
         seed=args.seed + 30_000,
+        max_items=-1,
     )
     contact = _save_samples(
         model=model,
@@ -530,6 +544,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reconstruction-weight", type=float, default=0.5)
     parser.add_argument("--log-interval", type=int, default=100)
     parser.add_argument("--eval-interval", type=int, default=500)
+    parser.add_argument("--eval-max-items", type=int, default=-1)
     parser.add_argument("--save-interval", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=20260714)
     parser.add_argument("--resume", action="store_true")
