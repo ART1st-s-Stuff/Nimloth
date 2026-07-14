@@ -194,4 +194,6 @@
 - 正式RCDM输出为`.../rcdm/1_rcdm128_sft2e2_k8_all3217_ep1_b1_lr1e4`。人类要求cache并行后，单GPU cache job474302在27:12取消，未运行train474303取消；partial shard已归档保留。
 - 新增有序连续rank分片、rank独立shard和rank0校验/manifest合并的多GPU cache，提交`38ff865`（test fix `17cdb3a`）。2-GPU真实epoch2等价smoke job474338完成：train40/val16 row顺序完全相同，FP16 state与串行bitwise相等、max delta0；服务器11 tests passed。
 - job474334因直接调用带stale `.venv` shebang的`.venv-vagen-main/bin/torchrun`而在权重加载前失败，记录`E0025`；正确入口固定为`.venv-vagen-main/bin/python3 -m torch.distributed.run`。
-- 为避免cache完成后再次排8-GPU，pending jobs474350/474351在执行前取消；最终替换为同一allocation连续执行8-GPU并行cache→RCDM train的normal job474353，当前`PENDING(Resources)`。W&B project=`nimloth-recon`，run name序号1。
+- 为避免cache完成后再次排8-GPU，pending jobs474350/474351在执行前取消；最终替换为同一allocation连续执行8-GPU并行cache→RCDM train的normal job474353。
+- job474353在dgx-18 `COMPLETED 01:35:41`：cache train59,389/16 shards/114,635,864B、val6,054/8 shards/11,706,974B，world8/k8/cond_dim1024；RCDM epoch1/step7424完成，step10 train loss0.690300→step7420 0.00370852，val loss0.0048489963，全部finite。
+- final raw/training-state/EMA checkpoint step7424完整；raw/EMA reload各494相同keys且tensor全finite。W&B `nimloth-recon/v8xoufn6`。现有sampling evaluator仍默认k=1，必须补齐checkpoint-driven k=8 token/batch/extraction/StateProjector后再生成可视化，不能把未运行的图像质量门禁写成通过。

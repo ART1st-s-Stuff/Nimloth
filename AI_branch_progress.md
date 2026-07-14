@@ -28,7 +28,9 @@
 - 正式RCDM实验`1_rcdm128_sft2e2_k8_all3217_ep1_b1_lr1e4`：人类要求cache也并行后，单GPU cache job474302在27:12取消，未运行的train474303取消；partial shard归档保留，未删除。
 - 新增有序连续rank分片、rank独立shard和rank0校验/manifest合并的多GPU cache，提交`38ff865`（测试修复`17cdb3a`）。2-GPU真实epoch2等价smoke job474338完成：train40/val16 rows顺序相同，FP16 state tensors与串行输出bitwise一致、max delta 0；服务器11 tests passed。
 - 并行smoke首次job474334错误使用带stale `.venv` shebang的`torchrun`，在模型权重加载前失败；已记录`E0025`，后续固定`.venv-vagen-main/bin/python3 -m torch.distributed.run`。
-- 为避免cache完成后再次排8-GPU，pending jobs474350/474351在执行前取消，替换为同一allocation连续执行并行cache→RCDM train的8-GPU normal job474353，当前`PENDING(Resources)`；W&B project=`nimloth-recon`，run ID序号1。
+- 为避免cache完成后再次排8-GPU，pending jobs474350/474351在执行前取消，替换为同一allocation连续执行并行cache→RCDM train的8-GPU normal job474353。
+- job474353在dgx-18 `COMPLETED 01:35:41`：cache train59,389/16 shards/114.6MB、val6,054/8 shards/11.7MB，world8/k8/cond_dim1024；RCDM完成epoch1/step7424，train loss step10 0.690300→step7420 0.00370852，val loss=0.0048489963，全部finite。
+- final `model_000007424.pt`/`training_state_000007424.pt`/`ema_0.9999_000007424.pt` reload gate通过：raw/EMA各494个相同keys且tensor全finite。W&B `nimloth-recon` run `v8xoufn6`。现有RCDM evaluator仍是k=1-only，生成图像前必须补齐与训练相同的checkpoint-driven k=8传播。
 - 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
 - `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
 - SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。
