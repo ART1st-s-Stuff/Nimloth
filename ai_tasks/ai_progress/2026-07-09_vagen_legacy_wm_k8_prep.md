@@ -187,4 +187,6 @@
 - job473978在elapsed02:39:59被PREEMPTED，无training traceback/OOM。最后logged epoch2/step2347；用checkpoint zip metadata直接核实最近完整`latest`为epoch2/step2137、`epoch_complete=false`、micro_step_in_epoch2724、train_micro_batches5822，因此恢复会回退210 optimizer steps。按step2137前含val/checkpoint的实际wall throughput估计，获得8GPU后剩余计算约14小时；资源排队时间无法估计。
 - 原实现没有保存W&B内部run ID，抢占恢复会创建同名新run。commit`049e293`新增`wandb_run_id.txt`持久化和`wandb.init(id=...,resume="allow")`并登记E0024；已写回run ID `5zm5pxqx`，继续同一project ID2 run。原CSV完整归档为`train_step_log_preempted_473978.csv`，active CSV原子截到step2137。
 - resume job474104在dgx-39运行01:05:35后再次PREEMPTED，无model error。它完成epoch2 step2912：val WM MSE=0.0022441554（优于epoch1）、SIGReg=0.4048548317、value=0.1208010323；W&B同run恢复成功，epoch2 val使用修正后的global transport step。
-- 最后logged step3040；zip metadata核实最新完整`latest`=epoch3/step3021/micro436，恢复仅回退19 steps。CSV归档为`train_step_log_preempted_474104.csv`并原子截到3021。resume2 job474291已提交preempt 8GPU，当前`PENDING(Priority)`；剩余11,539 steps，按本轮含startup/val/checkpoint的实测速度约需14.3h计算，排队/抢占额外。
+- 最后logged step3040；zip metadata核实最新完整`latest`=epoch3/step3021/micro436，恢复仅回退19 steps。CSV归档为`train_step_log_preempted_474104.csv`并原子截到3021。
+- 人类要求暂时停止SFT2续训并转向RCDM可视化训练。pending resume2 job474291已在运行前取消（elapsed 0）；`epoch_001`和`epoch_002`均核实完整、各约15GiB并保留，其他输出未删除。RCDM source定为当前best `epoch_002`。
+- RCDM原实现默认k=1，不能直接加载k=8 StateProjector；正在补齐checkpoint metadata驱动的k=8 token注册、Qwen batch/extraction、StateProjector和state-cache fingerprint/manifest传播，并为显式CLI/checkpoint k冲突增加拒绝门禁。

@@ -1,5 +1,10 @@
+from types import SimpleNamespace
+
+import pytest
+
 from nimloth.rcdm.config import RCDMConfig, rcdm_config_from_args
 from nimloth.rcdm.external import ensure_rcdm_importable
+from nimloth.training.reconstruction.rcdm_sft2 import resolve_latent_token_count
 
 
 class _Args:
@@ -30,3 +35,16 @@ def test_rcdm_config_metadata_uses_jsonable_values() -> None:
     meta = cfg.to_metadata()
     assert meta["image_size"] == 128
     assert meta["timestep_respacing"] == "100"
+
+
+def test_rcdm_latent_token_count_comes_from_sft2_checkpoint() -> None:
+    args = SimpleNamespace(latent_token_count=None)
+    config = SimpleNamespace(nimloth_latent_token_count=8)
+    assert resolve_latent_token_count(args, config) == 8
+
+
+def test_rcdm_latent_token_count_rejects_checkpoint_conflict() -> None:
+    args = SimpleNamespace(latent_token_count=1)
+    config = SimpleNamespace(nimloth_latent_token_count=8)
+    with pytest.raises(ValueError, match="requested=1, checkpoint=8"):
+        resolve_latent_token_count(args, config)

@@ -18,7 +18,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+from transformers import AutoConfig, AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.rcdm.checkpoint import (
@@ -60,18 +60,46 @@ def _encode_states(
     state_proj: StateProjector,
     device: torch.device,
     max_length: int,
+    latent_token_count: int,
 ) -> torch.Tensor:
-    enc = build_qwen_batch(items, processor, max_length=max_length)
-    hidden, _ = extract_qwen_latents(model, enc, token_id_map, device)
+    enc = build_qwen_batch(
+        items,
+        processor,
+        max_length=max_length,
+        latent_token_count=latent_token_count,
+    )
+    hidden, _ = extract_qwen_latents(
+        model,
+        enc,
+        token_id_map,
+        device,
+        latent_token_count=latent_token_count,
+    )
     return state_proj(hidden).float()
 
 
+def resolve_latent_token_count(args: argparse.Namespace, model_config) -> int:
+    saved_count = int(getattr(model_config, "nimloth_latent_token_count", 1))
+    requested = getattr(args, "latent_token_count", None)
+    if requested is not None and int(requested) != saved_count:
+        raise ValueError(
+            "RCDM latent token count conflicts with SFT2 checkpoint: "
+            f"requested={requested}, checkpoint={saved_count}"
+        )
+    return saved_count
+
+
 def _load_frozen_sft2_modules(args: argparse.Namespace, device: torch.device):
+    model_config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
+    args.latent_token_count = resolve_latent_token_count(args, model_config)
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = args.max_pixels
-    add_special_tokens(processor.tokenizer)
-    token_id_map = special_token_ids(processor.tokenizer)
+    add_special_tokens(processor.tokenizer, latent_token_count=args.latent_token_count)
+    token_id_map = special_token_ids(
+        processor.tokenizer,
+        latent_token_count=args.latent_token_count,
+    )
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         args.model,
@@ -85,7 +113,11 @@ def _load_frozen_sft2_modules(args: argparse.Namespace, device: torch.device):
 
     wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_checkpoint, map_location=device).to(device)
     _freeze(wm_predictor)
-    state_proj = StateProjector(model.config.hidden_size, wm_predictor.emb_dim).to(device)
+    state_proj = StateProjector(
+        model.config.hidden_size,
+        wm_predictor.emb_dim,
+        latent_token_count=args.latent_token_count,
+    ).to(device)
     state_proj.load_state_dict(torch.load(args.state_proj_checkpoint, map_location=device, weights_only=True))
     _freeze(state_proj)
     return processor, token_id_map, model, state_proj, wm_predictor
@@ -223,6 +255,7 @@ def _build_metadata(args: argparse.Namespace, rcdm_config: RCDMConfig, cond_dim:
             "state_cache_shard_size": args.state_cache_shard_size,
             "state_cache_compression": args.state_cache_compression,
             "state_cache_dtype": args.state_cache_dtype,
+            "latent_token_count": args.latent_token_count,
         },
         "wandb": {
             "project": args.wandb_project,
@@ -245,6 +278,7 @@ def _batch_states_and_images(
     device: torch.device,
     image_size: int,
     max_length: int,
+    latent_token_count: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if isinstance(batch, dict) and "state_emb" in batch:
         states = batch["state_emb"].to(device=device, dtype=torch.float32)
@@ -260,6 +294,7 @@ def _batch_states_and_images(
             state_proj=state_proj,
             device=device,
             max_length=max_length,
+            latent_token_count=latent_token_count,
         )
         paths = [item["current_image_path"] for item in batch]
     images = torch.stack([
@@ -282,6 +317,7 @@ def _evaluate_loss(
     image_size: int,
     max_length: int,
     max_batches: int,
+    latent_token_count: int,
 ) -> float:
     model.eval()
     losses: list[float] = []
@@ -297,6 +333,7 @@ def _evaluate_loss(
             device=device,
             image_size=image_size,
             max_length=max_length,
+            latent_token_count=latent_token_count,
         )
         t = torch.randint(0, diffusion.num_timesteps, (images.shape[0],), device=device)
         loss = diffusion.training_losses(model, images, t, model_kwargs={"feat": states})["loss"].mean()
@@ -309,7 +346,11 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
     rank, world, _local_rank, device = setup_dist()
     try:
         args.output_dir.mkdir(parents=True, exist_ok=True)
+        if args.cache_only and args.state_cache_dir is None:
+            raise ValueError("--cache-only requires --state-cache-dir")
         torch.manual_seed(int(args.seed) + rank)
+        model_config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
+        args.latent_token_count = resolve_latent_token_count(args, model_config)
 
         qwen_model = None
         processor = None
@@ -340,6 +381,7 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
                     max_length=args.max_length,
                     max_pixels=args.max_pixels,
                     min_pixels=3136,
+                    latent_token_count=args.latent_token_count,
                     batch_size=args.state_cache_build_batch_size,
                     shard_size=args.state_cache_shard_size,
                     compression=args.state_cache_compression,
@@ -383,6 +425,16 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
             val_ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_val_records)
             train_collate = collate_transition_batch
             val_collate = collate_transition_batch
+
+        if args.cache_only:
+            if is_main():
+                print(json.dumps({
+                    "rcdm_state_cache": "ready",
+                    "train_count": len(train_ds),
+                    "val_count": len(val_ds),
+                    "latent_token_count": args.latent_token_count,
+                }))
+            return 0
 
         rcdm_config = rcdm_config_from_args(args)
         if rcdm_config.use_fp16:
@@ -475,6 +527,7 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
                     device=device,
                     image_size=args.image_size,
                     max_length=args.max_length,
+                    latent_token_count=args.latent_token_count,
                 )
                 t = torch.randint(0, diffusion.num_timesteps, (images.shape[0],), device=device)
                 losses = diffusion.training_losses(train_model, images, t, model_kwargs={"feat": states})
@@ -543,6 +596,7 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
                     image_size=args.image_size,
                     max_length=args.max_length,
                     max_batches=args.max_val_batches,
+                    latent_token_count=args.latent_token_count,
                 )
                 with (args.output_dir / "train_step_log.csv").open("a", newline="") as f:
                     csv.writer(f).writerow([time.time(), epoch, step, "", val_loss])
@@ -605,6 +659,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--build-state-cache", action="store_true", help="Build missing RCDM state cache before training")
     ap.add_argument("--force-rebuild-state-cache", action="store_true")
+    ap.add_argument("--cache-only", action="store_true", help="Build or validate state cache, then exit before RCDM training")
     ap.add_argument("--state-cache-build-batch-size", type=int, default=1)
     ap.add_argument("--state-cache-shard-size", type=int, default=4096)
     ap.add_argument("--state-cache-compression", choices=("gzip", "none"), default="gzip")
@@ -624,6 +679,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-val-batches", type=int, default=8)
     ap.add_argument("--success-only", action="store_true")
     ap.add_argument("--max-length", type=int, default=12000)
+    ap.add_argument(
+        "--latent-token-count",
+        type=int,
+        default=None,
+        help="Expected SFT2 latent query count; defaults to checkpoint metadata and rejects conflicts",
+    )
     ap.add_argument("--max-pixels", type=int, default=602112)
     ap.add_argument("--attn-implementation", default="sdpa")
     ap.add_argument("--seed", type=int, default=42)

@@ -24,7 +24,7 @@ from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transit
 from nimloth.training.sft2.qwen_latent import extract_qwen_latents
 from nimloth.wm.state_proj import StateProjector
 
-STATE_CACHE_VERSION = "rcdm_state_cache_v1"
+STATE_CACHE_VERSION = "rcdm_state_cache_v2"
 Compression = Literal["gzip", "none"]
 StateDType = Literal["float16", "bfloat16", "float32"]
 
@@ -54,6 +54,7 @@ def state_cache_fingerprint(
     max_length: int,
     max_pixels: int,
     min_pixels: int,
+    latent_token_count: int,
     vocab_size: int,
     success_only: bool,
     max_records: int,
@@ -69,6 +70,7 @@ def state_cache_fingerprint(
             str(max_length),
             str(max_pixels),
             str(min_pixels),
+            str(latent_token_count),
             str(vocab_size),
             str(success_only),
             str(max_records),
@@ -181,6 +183,7 @@ def build_rcdm_state_cache(
     max_length: int,
     max_pixels: int,
     min_pixels: int,
+    latent_token_count: int,
     max_records: int = -1,
     success_only: bool = False,
     batch_size: int = 1,
@@ -199,6 +202,7 @@ def build_rcdm_state_cache(
         max_length=max_length,
         max_pixels=max_pixels,
         min_pixels=min_pixels,
+        latent_token_count=latent_token_count,
         vocab_size=len(processor.tokenizer),
         success_only=success_only,
         max_records=max_records,
@@ -247,8 +251,19 @@ def build_rcdm_state_cache(
     qwen_model.eval()
     state_proj.eval()
     for items in loader:
-        enc = build_qwen_batch(items, processor, max_length=max_length)
-        hidden, _ = extract_qwen_latents(qwen_model, enc, token_id_map, device)
+        enc = build_qwen_batch(
+            items,
+            processor,
+            max_length=max_length,
+            latent_token_count=latent_token_count,
+        )
+        hidden, _ = extract_qwen_latents(
+            qwen_model,
+            enc,
+            token_id_map,
+            device,
+            latent_token_count=latent_token_count,
+        )
         states = state_proj(hidden).detach().float().cpu()
         if cond_dim < 0:
             cond_dim = int(states.shape[-1])
@@ -291,6 +306,7 @@ def build_rcdm_state_cache(
             "max_length": max_length,
             "max_pixels": max_pixels,
             "min_pixels": min_pixels,
+            "latent_token_count": latent_token_count,
             "success_only": success_only,
             "max_records": max_records,
             "total_bytes": total_bytes,
