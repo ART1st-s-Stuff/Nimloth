@@ -193,4 +193,5 @@
 - 真实epoch2 smoke job474301完成（46s）：2条train trajectory展开40 transitions，2条val trajectory展开16 transitions；manifest k=8/cond_dim1024，抽查state tensor全finite。此前把`max_records=2`写成期望2 transitions是不正确的，已在实验README澄清。
 - 正式RCDM输出为`.../rcdm/1_rcdm128_sft2e2_k8_all3217_ep1_b1_lr1e4`。人类要求cache并行后，单GPU cache job474302在27:12取消，未运行train474303取消；partial shard已归档保留。
 - 新增有序连续rank分片、rank独立shard和rank0校验/manifest合并的多GPU cache，提交`38ff865`（test fix `17cdb3a`）。2-GPU真实epoch2等价smoke job474338完成：train40/val16 row顺序完全相同，FP16 state与串行bitwise相等、max delta0；服务器11 tests passed。
-- job474334因直接调用带stale `.venv` shebang的`.venv-vagen-main/bin/torchrun`而在权重加载前失败，记录`E0025`；正确入口固定为`.venv-vagen-main/bin/python3 -m torch.distributed.run`。正式8-GPU cache job474350已提交normal，train job474351 afterok等待；W&B project=`nimloth-recon`，run name序号1。
+- job474334因直接调用带stale `.venv` shebang的`.venv-vagen-main/bin/torchrun`而在权重加载前失败，记录`E0025`；正确入口固定为`.venv-vagen-main/bin/python3 -m torch.distributed.run`。
+- 为避免cache完成后再次排8-GPU，pending jobs474350/474351在执行前取消；最终替换为同一allocation连续执行8-GPU并行cache→RCDM train的normal job474353，当前`PENDING(Resources)`。W&B project=`nimloth-recon`，run name序号1。
