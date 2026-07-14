@@ -76,3 +76,6 @@ external/VAGEN.qwen-bug-repro/
 
 # worktree
 .worktree
+
+# Local AI code navigation map
+.codeabs/
