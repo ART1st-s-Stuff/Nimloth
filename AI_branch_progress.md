@@ -20,7 +20,8 @@
 - 发现running code把W&B validation transport step设为epoch=1，低于train step1456，导致epoch1 val payload被W&B忽略；CSV/checkpoint数据完整且训练不受影响。本地修复改用global_step作为transport step、保留epoch custom metric；需后续回填epoch1 val。
 - job473978在elapsed02:39:59被PREEMPTED；最后logged step2347，最近完整latest为epoch2/step2137/micro2724，因此恢复会回退210个optimizer steps。无runtime traceback/OOM。按已完成epoch walltime与checkpoint throughput估计，重新获得8GPU后还需约14小时计算，排队时间未知。
 - 抢占同时暴露SFT2未持久化W&B内部run ID，直接重启会创建同名重复run。commit`049e293`新增`wandb_run_id.txt`与`resume=allow`；本次已写回`5zm5pxqx`并复用原ID2 run。
-- 原CSV已归档为`train_step_log_preempted_473978.csv`，active CSV原子截到checkpoint step2137。resume job474104已无节点绑定提交preempt 8GPU，当前`PENDING(Priority)`；提交时所有显示8卡空闲的preempt节点均DOWN/NOT_RESPONDING。
+- 原CSV已归档为`train_step_log_preempted_473978.csv`，active CSV原子截到checkpoint step2137。resume job474104随后在dgx-39运行01:05:35，完成epoch2后再次PREEMPTED；epoch2 step2912 val WM MSE=0.00224416，优于epoch1。
+- 第二次最后logged step3040，最新完整latest=epoch3/step3021/micro436，仅回退19 steps；CSV再次归档/截断，W&B同run恢复与val global-step修复均验证有效。resume2 job474291已提交preempt 8GPU，当前`PENDING(Priority)`。
 - 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
 - `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
 - SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。
