@@ -55,7 +55,7 @@ def test_parallel_cache_rank_bounds_are_balanced_and_ordered() -> None:
     bounds = [contiguous_rank_bounds(59_389, rank, 8) for rank in range(8)]
     assert bounds[0][0] == 0
     assert bounds[-1][1] == 59_389
-    assert all(left[1] == right[0] for left, right in zip(bounds, bounds[1:], strict=True))
+    assert all(left[1] == right[0] for left, right in zip(bounds, bounds[1:]))
     sizes = [end - start for start, end in bounds]
     assert max(sizes) - min(sizes) <= 1
 
