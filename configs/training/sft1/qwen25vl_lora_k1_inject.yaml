@@ -1,0 +1,29 @@
+# SFT1 k=1 control: identical to the production k=8 inject setup except k.
+
+model: Qwen2.5-VL-3B
+init_checkpoint: null
+
+data:
+  train_jsonl: train_success.jsonl
+  val_jsonl: val_all.jsonl
+
+latent:
+  token_count: 1
+  query_mode: inject
+
+tuning:
+  lora: true
+  lora_r: 64
+  lora_alpha: 128
+
+train:
+  epochs: 5
+  batch_size: 1
+  grad_accum: 8
+  lr: 2.0e-4
+  embedding_lr: 5.0e-4
+  max_length: 12000
+  max_pixels: 602112
+
+eval:
+  val_success_rate: true

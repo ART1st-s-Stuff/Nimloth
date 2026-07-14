@@ -954,10 +954,16 @@ def maybe_init_wandb(args: argparse.Namespace) -> Any | None:
 
     prefix = os.environ.get("WANDB_RUN_PREFIX", "")
     run_name = args.wandb_run_name or f"{prefix}sft1-qwen25vl"
+    run_id_path = args.output_dir / "wandb_run_id.txt"
+    requested_run_id = os.environ.get("WANDB_RUN_ID")
+    if requested_run_id is None and run_id_path.is_file():
+        requested_run_id = run_id_path.read_text(encoding="utf-8").strip() or None
     run = wandb.init(
-        project=os.environ.get("WANDB_PROJECT", "nimloth"),
+        project=os.environ.get("WANDB_PROJECT", "nimloth-sft1"),
         entity=os.environ.get("WANDB_ENTITY"),
         name=run_name,
+        id=requested_run_id,
+        resume="allow" if requested_run_id is not None else None,
         mode=os.environ.get("WANDB_MODE", "online"),
         config={
             "model": str(args.model),
@@ -981,6 +987,7 @@ def maybe_init_wandb(args: argparse.Namespace) -> Any | None:
             "mask_latent_query_labels": args.mask_latent_query_labels,
         },
     )
+    run_id_path.write_text(f"{run.id}\n", encoding="utf-8")
     # Train charts use global_step; val/eval charts use epoch (one point per epoch).
     wandb.define_metric("global_step")
     wandb.define_metric("train/*", step_metric="global_step")
@@ -1557,6 +1564,7 @@ def main() -> int:
                         "eval/format_correct_rate": format_rate,
                         "epoch": epoch,
                     },
+                    step=global_step,
                 )
         distributed_barrier()
 

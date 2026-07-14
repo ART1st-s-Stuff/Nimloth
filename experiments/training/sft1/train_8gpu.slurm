@@ -46,6 +46,8 @@ mkdir -p "${TRAIN_OUT}" "${REPO}/outputs/experiments/training/sft1/slurm"
   echo "Output: ${TRAIN_OUT}"
   echo "Latent token count: ${LATENT_TOKEN_COUNT}"
   echo "Latent query mode override: ${LATENT_QUERY_MODE:-<config/default>}"
+  echo "W&B project: ${WANDB_PROJECT:-nimloth-sft1}"
+  echo "W&B run name: ${WANDB_RUN_NAME}"
 } | tee -a "${LOG}"
 
 if [ ! -s "${TRAIN_JSONL}" ]; then
