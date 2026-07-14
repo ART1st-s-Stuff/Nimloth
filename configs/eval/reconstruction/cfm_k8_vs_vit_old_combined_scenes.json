@@ -1,0 +1,15 @@
+{
+  "source_jsonl": "/project/peilab/atst/nimloth/experiments/navigation_baseline/runs/sft1_sft_records_vagen79_nimloth_format/val_all.jsonl",
+  "source_contact_sheet": "combined_lowlr_vit_sft2_cfm/rollout5_contact_sheet",
+  "selection_policy": "Exact eight records, order, first-five action prefixes, and image trajectories used by the previous combined_lowlr_vit_sft2_cfm contact sheet.",
+  "selections": [
+    {"run_index": 0, "record_id": "val/shard_1081_1200/000000", "expected_actions": [0, 0, 0, 2, 0]},
+    {"run_index": 1, "record_id": "val/shard_1081_1200/000048", "expected_actions": [2, 3, 2, 2, 3]},
+    {"run_index": 2, "record_id": "val/shard_1081_1200/000100", "expected_actions": [0, 2, 2, 3, 3]},
+    {"run_index": 3, "record_id": "val/shard_1081_1200/000153", "expected_actions": [0, 0, 0, 0, 0]},
+    {"run_index": 4, "record_id": "val/shard_1081_1200/000203", "expected_actions": [0, 0, 0, 0, 3]},
+    {"run_index": 5, "record_id": "val/shard_1081_1200/000256", "expected_actions": [0, 3, 3, 0, 3]},
+    {"run_index": 6, "record_id": "val/shard_1081_1200/000310", "expected_actions": [0, 0, 0, 0, 3]},
+    {"run_index": 7, "record_id": "val/shard_1081_1200/000359", "expected_actions": [0, 2, 2, 2, 2]}
+  ]
+}
