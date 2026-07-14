@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-07-14：k=1 inject SFT control（准备中）
+
+- 人类要求新增k=1对照，完整执行SFT1和SFT2。为保证单变量对照，计划保持正式k=8的inject协议、严格数据、训练预算、可训练模块、loss和cache语义，仅把latent query数量从8改为1。
+- 代码提交`09fa71a`新增k1 inject专用SFT1/SFT2 configs，并为SFT1补齐stage-specific W&B project、run ID持久化/恢复和validation global transport step。
+- 计划与固定路径、W&B命名、资源/恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`；当前等待人类确认昂贵pipeline后再提交。
+
 ## 2026-07-13：显式 latent query 协议与 SFT1 → SFT2 continuation gate
 
 - 人类新增 W&B 命名硬规则并写入 `ai_rules/events/on_experiment_start.md`：VAGEN retrain project=`vagen`，其余 project=`nimloth-<stage>`；run name=`<id>[_<comment>]_<params>`，smoke 必须使用 `smoke` comment，ID 启动前从目标 project 递增选择。
