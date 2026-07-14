@@ -6,7 +6,7 @@ Train a controlled k=1 comparison for the formal k=8 inject pipeline. The intend
 
 ## Frozen design
 
-- Code commit for launch preparation: `09fa71a`.
+- Code change commit: `09fa71a`; clean detached server launch worktree commit: `3d46066`.
 - Runtime: `/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3`.
 - Query protocol: `inject`; query CE label masked in SFT1 and SFT2.
 - Source checkpoint: `/project/peilab/atst/nimloth/outputs/experiments/training/baseline/2026-06-24/vagen_legacy_wm_entropy01_kl001_60step_2env4train/checkpoints/global_step_60/actor/huggingface`.
@@ -48,4 +48,5 @@ No k=8 job, checkpoint, cache, CSV, or output will be modified or deleted.
 ## Status
 
 - Prepared dedicated k=1 inject configs and SFT1 W&B project/run-ID persistence.
-- Local syntax checks passed. Server runtime tests and launch await human confirmation of the exact controlled setup above.
+- Local syntax checks passed. Clean server worktree `/project/peilab/atst/nimloth/.worktree/k1-sft-control` is pinned to `3d46066`; 19 relevant server tests passed.
+- Launch awaits human confirmation of the exact controlled setup above.
