@@ -23,7 +23,9 @@
 - 原CSV已归档为`train_step_log_preempted_473978.csv`，active CSV原子截到checkpoint step2137。resume job474104随后在dgx-39运行01:05:35，完成epoch2后再次PREEMPTED；epoch2 step2912 val WM MSE=0.00224416，优于epoch1。
 - 第二次最后logged step3040，最新完整latest=epoch3/step3021/micro436，仅回退19 steps；CSV再次归档/截断，W&B同run恢复与val global-step修复均验证有效。
 - 人类要求暂时停止SFT2续训并转向RCDM可视化。pending resume2 job474291已在运行前取消（elapsed 0）；`epoch_001`、`epoch_002`均核实为约15GiB完整checkpoint并保留，其他输出也未删除。RCDM将从更优的epoch2（val WM MSE=0.00224416）初始化。
-- RCDM原实现只支持单latent query，已开始补齐SFT2 checkpoint metadata驱动的k=8 token注册、batch/extraction、StateProjector构造和state-cache fingerprint/manifest传播；显式CLI k冲突会报错。
+- RCDM原实现只支持单latent query，已补齐SFT2 checkpoint metadata驱动的k=8 token注册、batch/extraction、StateProjector构造和state-cache fingerprint/manifest传播；显式CLI k冲突会报错。提交`8639ba3`，服务器测试9 passed。
+- 真实epoch2 k=8 state-cache smoke job474301在46秒内完成：2条train trajectory→40 transitions、2条val trajectory→16 transitions（`max_records`限制trajectory而非transition），manifest k=8/cond_dim1024，抽查state tensors全部finite。
+- 正式RCDM实验`1_rcdm128_sft2e2_k8_all3217_ep1_b1_lr1e4`已启动：cache job474302在normal/dgx-51运行；1 epoch、8-GPU RCDM train job474303以afterok依赖等待。W&B project=`nimloth-recon`，run ID序号1。
 - 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
 - `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
 - SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。

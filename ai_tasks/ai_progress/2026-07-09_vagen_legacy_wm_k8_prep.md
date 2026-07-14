@@ -189,4 +189,6 @@
 - resume job474104在dgx-39运行01:05:35后再次PREEMPTED，无model error。它完成epoch2 step2912：val WM MSE=0.0022441554（优于epoch1）、SIGReg=0.4048548317、value=0.1208010323；W&B同run恢复成功，epoch2 val使用修正后的global transport step。
 - 最后logged step3040；zip metadata核实最新完整`latest`=epoch3/step3021/micro436，恢复仅回退19 steps。CSV归档为`train_step_log_preempted_474104.csv`并原子截到3021。
 - 人类要求暂时停止SFT2续训并转向RCDM可视化训练。pending resume2 job474291已在运行前取消（elapsed 0）；`epoch_001`和`epoch_002`均核实完整、各约15GiB并保留，其他输出未删除。RCDM source定为当前best `epoch_002`。
-- RCDM原实现默认k=1，不能直接加载k=8 StateProjector；正在补齐checkpoint metadata驱动的k=8 token注册、Qwen batch/extraction、StateProjector和state-cache fingerprint/manifest传播，并为显式CLI/checkpoint k冲突增加拒绝门禁。
+- RCDM原实现默认k=1，不能直接加载k=8 StateProjector；已补齐checkpoint metadata驱动的k=8 token注册、Qwen batch/extraction、StateProjector和state-cache fingerprint/manifest传播，并为显式CLI/checkpoint k冲突增加拒绝门禁，提交`8639ba3`，服务器测试9 passed。
+- 真实epoch2 smoke job474301完成（46s）：2条train trajectory展开40 transitions，2条val trajectory展开16 transitions；manifest k=8/cond_dim1024，抽查state tensor全finite。此前把`max_records=2`写成期望2 transitions是不正确的，已在实验README澄清。
+- 正式RCDM输出为`.../rcdm/1_rcdm128_sft2e2_k8_all3217_ep1_b1_lr1e4`：job474302在normal/dgx-51构建全部fp16/gzip state cache；job474303依赖cache后使用8 H800训练128px RCDM 1 epoch。W&B project=`nimloth-recon`，run name序号1。
