@@ -70,6 +70,31 @@ Use `--resume-checkpoint outputs/.../training_state_000001000.pt` to resume a
 specific checkpoint. W&B uses `wandb_run_id.txt` in the output directory when
 `--resume` is set.
 
+## Train direct-state conditional flow matching
+
+CFM is a lighter alternative to RCDM. It reuses a completed RCDM state cache,
+trains only a token-conditioned UNet velocity field, and reports both validation
+flow MSE and shuffled-condition sensitivity. Qwen, `StateProjector`, and the WM
+predictor remain frozen.
+
+```bash
+python -m nimloth.training.reconstruction.cfm_sft2 \
+  --state-cache-dir outputs/.../state_cache \
+  --source-checkpoint outputs/.../sft2/epoch_002 \
+  --wm-checkpoint outputs/.../sft2/epoch_002/wm_predictor \
+  --output-dir outputs/.../cfm/<run_name> \
+  --latent-token-count 8 \
+  --epochs 10 --batch-size 32 --lr 1e-4 \
+  --wandb-project nimloth-recon --wandb-run-name <run_name>
+```
+
+Use `--resume` to load the latest `checkpoint_*.pt` in the output directory.
+The cache fingerprint, model config, data sizes, k, optimizer hyperparameters,
+and seed must match. The final gate saves 5-step and 50-step ODE contact sheets
+for current-state and WM-predicted-next reconstruction.
+
+## Sample from RCDM
+
 Sample from a trained RCDM checkpoint:
 
 ```bash

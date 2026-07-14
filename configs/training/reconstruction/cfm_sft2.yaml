@@ -1,0 +1,30 @@
+# Direct-state conditional flow matching for post-hoc SFT2 visualization.
+# CLI reference: python -m nimloth.training.reconstruction.cfm_sft2
+
+model:
+  image_size: 128
+  base_channels: 64
+  condition_dim: 256
+  time_dim: 512
+
+train:
+  epochs: 10
+  batch_size: 32
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  log_interval: 100
+  eval_interval: 500
+  eval_max_items: 1024
+  save_interval: 2000
+  seed: 20260708
+
+protocol:
+  latent_token_count: 8
+  condition: projected_sft2_state_1024d
+  target: current_image_128px
+  flow_path: straight_gaussian_to_image
+
+samples:
+  num_items: 8
+  ode_steps: [5, 50]
