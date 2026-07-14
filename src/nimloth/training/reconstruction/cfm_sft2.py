@@ -170,7 +170,9 @@ def _load_checkpoint(
     torch.set_rng_state(payload["torch_rng_state"].cpu())
     cuda_states = payload.get("cuda_rng_state_all")
     if torch.cuda.is_available() and cuda_states is not None:
-        torch.cuda.set_rng_state_all(cuda_states)
+        # map_location may move serialized RNG states onto CUDA, while PyTorch's
+        # RNG restore API requires CPU ByteTensors.
+        torch.cuda.set_rng_state_all([state.cpu() for state in cuda_states])
     return int(payload["step"]), float(payload.get("best_val", float("inf")))
 
 
