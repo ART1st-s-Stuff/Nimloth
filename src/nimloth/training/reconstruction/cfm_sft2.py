@@ -349,7 +349,7 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         expected_latent_token_count=args.latent_token_count,
     )
     val_split = load_state_image_split(
-        args.state_cache_dir / "val",
+        args.state_cache_dir / args.validation_cache_split,
         image_size=args.image_size,
         max_items=args.max_val_items,
         expected_latent_token_count=args.latent_token_count,
@@ -383,7 +383,11 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         "source_checkpoint": str(args.source_checkpoint),
         "state_cache_dir": str(args.state_cache_dir),
         "wm_checkpoint": str(args.wm_checkpoint),
-        "split_semantics": "strict-valid train_all for training; disjoint val_all for validation only",
+        "split_semantics": (
+            "same train-cache subset for explicit tiny-overfit diagnostics"
+            if args.validation_cache_split == "train"
+            else "strict-valid train_all for training; disjoint val_all for validation only"
+        ),
         "target": "current_128px_image_from_current_projected_sft2_state",
         "trainable_modules": "TokenConditionedFlowUNet only",
         "frozen_modules": "SFT2 Qwen, StateProjector, WM predictor; WM predictor loaded only for post-train samples",
@@ -638,6 +642,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save-interval", type=int, default=2000)
     parser.add_argument("--max-train-items", type=int, default=-1)
     parser.add_argument("--max-val-items", type=int, default=-1)
+    parser.add_argument(
+        "--validation-cache-split",
+        choices=("train", "val"),
+        default="val",
+        help="Use train only for explicit overfit diagnostics; formal validation uses val",
+    )
     parser.add_argument("--sample-items", type=int, default=8)
     parser.add_argument("--sample-ode-steps", type=int, nargs="+", default=[5, 50])
     parser.add_argument("--seed", type=int, default=20260708)
