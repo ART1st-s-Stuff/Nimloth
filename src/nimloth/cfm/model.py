@@ -119,6 +119,8 @@ class CFMConfig:
     base_channels: int = 64
     condition_dim: int = 256
     time_dim: int = 512
+    input_channels: int = 3
+    output_channels: int = 3
 
     def __post_init__(self) -> None:
         if self.image_size < 8 or self.image_size % 8:
@@ -127,6 +129,8 @@ class CFMConfig:
             raise ValueError("token_count and token_dim must be positive")
         if self.base_channels < 4 or self.base_channels % 4:
             raise ValueError("base_channels must be >= 4 and divisible by 4")
+        if self.input_channels < 1 or self.output_channels < 1:
+            raise ValueError("input_channels and output_channels must be positive")
 
     @property
     def flat_condition_dim(self) -> int:
@@ -165,7 +169,7 @@ class TokenConditionedFlowUNet(nn.Module):
             nn.SiLU(),
             nn.Linear(config.time_dim, config.time_dim),
         )
-        self.in_conv = nn.Conv2d(3, base, 3, padding=1)
+        self.in_conv = nn.Conv2d(config.input_channels, base, 3, padding=1)
         self.block1 = _ResBlock(base, base, config.time_dim)
         self.down1 = _Downsample(base)
         self.block2 = _ResBlock(base, base * 2, config.time_dim)
@@ -186,7 +190,7 @@ class TokenConditionedFlowUNet(nn.Module):
         self.up1 = _Upsample(base * 2)
         self.up_block1 = _ResBlock(base * 3, base, config.time_dim)
         self.out_norm = nn.GroupNorm(_choose_groups(base), base)
-        self.out_conv = nn.Conv2d(base, 3, 3, padding=1)
+        self.out_conv = nn.Conv2d(base, config.output_channels, 3, padding=1)
 
     def encode_condition(self, condition: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         expected = self.config.flat_condition_dim

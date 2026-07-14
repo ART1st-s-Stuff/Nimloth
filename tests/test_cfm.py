@@ -10,6 +10,7 @@ from nimloth.cfm import (
 )
 from nimloth.rcdm.image_utils import image_to_diffusion_tensor
 from nimloth.training.reconstruction.cfm_sft2 import _load_image_uint8
+from nimloth.training.reconstruction.residual_cfm_sft2 import biased_flow_loss
 
 
 def _tiny_model() -> TokenConditionedFlowUNet:
@@ -43,6 +44,34 @@ def test_cfm_forward_and_loss_are_finite() -> None:
     assert torch.isfinite(loss)
     loss.backward()
     assert any(parameter.grad is not None for parameter in model.parameters())
+
+
+def test_residual_cfm_accepts_spatial_scaffold_channels() -> None:
+    model = TokenConditionedFlowUNet(
+        CFMConfig(
+            image_size=16,
+            token_count=1,
+            token_dim=12,
+            base_channels=4,
+            condition_dim=8,
+            time_dim=16,
+            input_channels=6,
+            output_channels=3,
+        )
+    )
+    scaffold = torch.randn(2, 3, 16, 16).clamp(-1, 1)
+    target = torch.randn(2, 3, 16, 16).clamp(-1, 1)
+    condition = torch.randn(2, 12)
+    loss, parts = biased_flow_loss(
+        model,
+        scaffold,
+        target,
+        condition,
+        reconstruction_weight=0.5,
+    )
+    assert torch.isfinite(loss)
+    assert set(parts) == {"velocity_mse", "reconstruction_l1", "loss"}
+    loss.backward()
 
 
 def test_cfm_rejects_wrong_condition_width() -> None:
