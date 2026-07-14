@@ -1,0 +1,52 @@
+{
+  "source_split": "converted_strict_k8_b6c811c/val_all.jsonl",
+  "selection_policy": "Manually selected all six held-out validation records whose first five rollout actions contain both turn_right and turn_left. All six happen to be unsuccessful source rollouts; selection is based only on the requested action pattern.",
+  "action_names": [
+    "move_forward",
+    "move_backward",
+    "move_right",
+    "move_left",
+    "turn_right",
+    "turn_left",
+    "look_up",
+    "look_down"
+  ],
+  "selections": [
+    {
+      "record_id": "val/shard_1081_1120/000083",
+      "start_step": 0,
+      "success": false,
+      "expected_actions": [0, 4, 0, 5, 0]
+    },
+    {
+      "record_id": "val/shard_1081_1120/000089",
+      "start_step": 0,
+      "success": false,
+      "expected_actions": [0, 4, 0, 5, 4]
+    },
+    {
+      "record_id": "val/shard_1081_1120/000092",
+      "start_step": 0,
+      "success": false,
+      "expected_actions": [0, 4, 0, 5, 4]
+    },
+    {
+      "record_id": "val/shard_1081_1120/000110",
+      "start_step": 0,
+      "success": false,
+      "expected_actions": [0, 4, 0, 5, 0]
+    },
+    {
+      "record_id": "val/shard_1161_1200/000079",
+      "start_step": 0,
+      "success": false,
+      "expected_actions": [0, 0, 4, 0, 5]
+    },
+    {
+      "record_id": "val/shard_1161_1200/000095",
+      "start_step": 0,
+      "success": false,
+      "expected_actions": [0, 4, 0, 0, 5]
+    }
+  ]
+}
