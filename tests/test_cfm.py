@@ -1,5 +1,6 @@
 import pytest
 import torch
+from PIL import Image
 
 from nimloth.cfm import (
     CFMConfig,
@@ -7,6 +8,8 @@ from nimloth.cfm import (
     conditional_flow_matching_loss,
     sample_euler,
 )
+from nimloth.rcdm.image_utils import image_to_diffusion_tensor
+from nimloth.training.reconstruction.cfm_sft2 import _load_image_uint8
 
 
 def _tiny_model() -> TokenConditionedFlowUNet:
@@ -46,6 +49,16 @@ def test_cfm_rejects_wrong_condition_width() -> None:
     model = _tiny_model()
     with pytest.raises(ValueError, match="expected condition shape"):
         model(torch.randn(2, 3, 16, 16), torch.rand(2), torch.randn(2, 11))
+
+
+def test_cfm_uint8_loader_matches_existing_image_normalization(tmp_path) -> None:
+    values = torch.arange(3 * 16 * 16, dtype=torch.int64).remainder(256).byte()
+    image = values.view(3, 16, 16).permute(1, 2, 0).numpy()
+    path = tmp_path / "image.png"
+    Image.fromarray(image, mode="RGB").save(path)
+    loaded = _load_image_uint8(path, 16)
+    expected = image_to_diffusion_tensor(path, image_size=16)
+    torch.testing.assert_close(loaded.float().div(127.5).sub(1.0), expected)
 
 
 def test_cfm_euler_sampling_is_deterministic() -> None:

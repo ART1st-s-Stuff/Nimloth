@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from PIL import Image, ImageDraw
 
@@ -38,9 +39,10 @@ def _load_image_uint8(path: str | Path, image_size: int) -> torch.Tensor:
     resample = getattr(getattr(Image, "Resampling", Image), "BICUBIC")
     with Image.open(path) as source:
         image = source.convert("RGB").resize((image_size, image_size), resample)
-    return torch.tensor(list(image.getdata()), dtype=torch.uint8).view(
-        image_size, image_size, 3
-    ).permute(2, 0, 1)
+    # NumPy copies the contiguous RGB buffer directly; materializing every
+    # pixel as a Python tuple makes full-cache preload several times slower.
+    array = np.asarray(image, dtype=np.uint8).copy()
+    return torch.from_numpy(array).permute(2, 0, 1)
 
 
 def load_state_image_split(
