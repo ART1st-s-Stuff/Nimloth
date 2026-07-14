@@ -8,7 +8,7 @@
 
 - 人类要求新增k=1对照，完整执行SFT1和SFT2。为保证单变量对照，计划保持正式k=8的inject协议、严格数据、训练预算、可训练模块、loss和cache语义，仅把latent query数量从8改为1。
 - 代码提交`09fa71a`新增k1 inject专用SFT1/SFT2 configs，并为SFT1补齐stage-specific W&B project、run ID持久化/恢复和validation global transport step。
-- clean server worktree固定在`3d46066`，相关server tests `19 passed`。计划与固定路径、W&B命名、资源/恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`；当前等待人类确认昂贵pipeline后再提交。
+- clean server worktree固定在`3d46066`，相关server tests `19 passed`。人类确认后已提交dependency pipeline：SFT1 cache `474974` -> SFT1 train `474975` -> BF16 merge `474976` -> SFT2 cache `474977` -> SFT2 train `474978`。SFT1 cache已在intel-01健康启动，log核实k1/inject/masked/BF16/success613/val355和正确commit。完整路径与恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`。
 
 ## 2026-07-13：显式 latent query 协议与 SFT1 → SFT2 continuation gate
 
@@ -49,7 +49,8 @@
 - 按人类要求执行condition诊断三步：新增CFM同train-cache overfit模式和deterministic spatial decoder，提交`7718209`。tiny64 direct CFM job474922完成10k：final seeded correct0.0301021/shuffled0.0573379/ratio1.90478，50Euler correct-state能重建tiny train scenes，说明CFM condition path可学习，full-data ratio1.003是shortcut/generalization问题。W&B `08ytbkjj`。
 - tiny64 deterministic job474923完成10k：best correct loss0.00856589、wrong0.0998479、ratio11.6565、PSNR33.24dB；correct-state近乎精确、wrong-state切换到错误scene，证明当前k=8 projected state至少在tiny subset保留可重建视觉信息。W&B `785ddbhe`。
 - 第三步实现frozen deterministic scaffold + residual CFM：6ch输入(noisy residual+spatial scaffold)、`t=U²`低t偏置、velocity MSE+0.5 image L1，提交`e17c7c7`、full-val scaling`92ded22`、server7 tests passed。tiny64 job474928完成10k/00:04:17：best@6000 seeded correct0.0133539、wrong0.402337、ratio30.1289，correct L1 0.01814 vs wrong0.17191；50Euler correct跟随GT、wrong切换scene，redesign tiny gate通过。W&B `r5w9a1d9`。
-- 为完成full generalization，已提交full deterministic scaffold job474934（train59,389/val6,054、18,560 steps≈5ep、W&B ID7）和afterok full residual CFM job474935（18,560 steps、fixed1024+final full val、W&B ID8）；job474934已在normal/dgx-09健康preload。
+- full generalization链已完成。deterministic scaffold job474934 `COMPLETED 00:17:04`：best@12000 full heldout correct0.128052/wrong0.129786/ratio1.01354、PSNR16.51；correct/wrong均坍缩为近相同beige mean-room，W&B `57ymjlhb`。tiny64 PSNR33.24/ratio11.66只证明可记忆，当前global1024→pixel mapping在full data不泛化。
+- afterok residual CFM job474935 `COMPLETED 00:16:25`：best@17000 full heldout correct0.104958/wrong0.106077/ratio1.01066，correct L1 0.109646 vs wrong0.110586；50Euler更像连贯房间但correct/wrong视觉几乎相同且常GT不匹配，W&B `aagrbr6l`。redesign tiny成功依赖condition-specific overfit scaffold；full scaffold collapse后spatial concat/low-t/image-L1无法恢复condition dependence，full gate失败，不建议同配置续训。best checkpoints分别55/180 keys全finite。
 - 新增 canonical `latent_query_mode: inject | generate`，统一 SFT1/SFT2 YAML、CLI、label mask、cache fingerprint/manifest、checkpoint/HF config 和 resume mismatch 检查；旧 bool 仅作为兼容 alias，冲突时报错。
 - `inject` 的 SFT1 format evaluator 采用 reference thought + deterministic k-query insertion 后评估 action block；`generate` 继续自由生成完整 query/action 格式。
 - SFT2 新增 `query_tune: freeze | adapter`；k=8 配置使用小型 additive query embedding adapter，保存时只在克隆 state dict 中折叠到 query rows，不修改内存模型，也不产生整张 embedding 的 optimizer state。

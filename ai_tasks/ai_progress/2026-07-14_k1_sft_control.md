@@ -49,4 +49,5 @@ No k=8 job, checkpoint, cache, CSV, or output will be modified or deleted.
 
 - Prepared dedicated k=1 inject configs and SFT1 W&B project/run-ID persistence.
 - Local syntax checks passed. Clean server worktree `/project/peilab/atst/nimloth/.worktree/k1-sft-control` is pinned to `3d46066`; 19 relevant server tests passed.
-- Launch awaits human confirmation of the exact controlled setup above.
+- Human confirmed the exact controlled setup. Dependency pipeline submitted: SFT1 cache `474974` -> SFT1 train `474975` -> BF16 merge `474976` -> SFT2 compact cache `474977` -> SFT2 train `474978`.
+- SFT1 cache job `474974` started on `intel-01`; log confirms commit `3d46066`, source checkpoint, success613/val355 inputs, k=1 inject, masked query labels, BF16 pixels, 8 workers, and fingerprinted cache build. It is healthy with no traceback.
