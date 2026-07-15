@@ -14,10 +14,10 @@ from nimloth.wm.matched_heads import MatchedHeadSpec, MatchedWMHeads
 class TinyTransitions(Dataset):
     def __init__(self, count: int = 12) -> None:
         generator = torch.Generator().manual_seed(71)
-        self.states = torch.randn(count, 8, 4, generator=generator)
+        self.states = torch.randn(count, 8, 4, generator=generator).half()
         self.actions = torch.arange(count) % 8
         effects = self.actions.float().view(-1, 1, 1) / 20
-        self.targets = self.states + effects
+        self.targets = (self.states + effects).half()
 
     def __len__(self) -> int:
         return len(self.states)

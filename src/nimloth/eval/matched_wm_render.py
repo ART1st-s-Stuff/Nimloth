@@ -57,7 +57,7 @@ def _sample(model, conditions: torch.Tensor, noise: torch.Tensor, device: torch.
 
 @torch.inference_mode()
 def _wm_states(heads: MatchedWMHeads, initial: torch.Tensor, actions: torch.Tensor, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-    state = initial.to(device)
+    state = initial.to(device=device, dtype=torch.float32)
     views = StateViews.from_tokens(state.contiguous())
     vector, token = heads.to(device).eval().rollout(views, actions.to(device))
     shape = (initial.shape[0] * actions.shape[1], initial.shape[1], initial.shape[2])

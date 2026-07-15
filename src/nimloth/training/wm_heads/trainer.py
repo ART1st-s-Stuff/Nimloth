@@ -29,8 +29,8 @@ class MatchedTrainerConfig:
 def _batch(dataset: Dataset, indices: torch.Tensor, device: torch.device) -> dict[str, Any]:
     items = [dataset[int(index)] for index in indices]
     return {
-        "state": torch.stack([item["state"] for item in items]).to(device),
-        "target": torch.stack([item["next_state"] for item in items]).to(device),
+        "state": torch.stack([item["state"] for item in items]).to(device=device, dtype=torch.float32),
+        "target": torch.stack([item["next_state"] for item in items]).to(device=device, dtype=torch.float32),
         "action": torch.tensor([int(item["action"]) for item in items], device=device),
         "ids": [str(item["id"]) for item in items],
     }

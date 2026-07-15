@@ -52,9 +52,9 @@ def _values(prediction: torch.Tensor, target: torch.Tensor) -> tuple[float, floa
 
 def _batch_windows(windows: list, start: int, size: int, device: torch.device) -> tuple[StateViews, torch.Tensor, torch.Tensor]:
     items = windows[start : start + size]
-    state = torch.stack([item[0] for item in items]).to(device)
+    state = torch.stack([item[0] for item in items]).to(device=device, dtype=torch.float32)
     actions = torch.stack([item[1] for item in items]).to(device)
-    target = torch.stack([item[2] for item in items]).to(device)
+    target = torch.stack([item[2] for item in items]).to(device=device, dtype=torch.float32)
     return StateViews.from_tokens(state.contiguous()), actions, target
 
 
