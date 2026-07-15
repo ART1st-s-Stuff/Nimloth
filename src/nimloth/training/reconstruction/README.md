@@ -110,9 +110,36 @@ python -m nimloth.training.reconstruction.query_state_ablation \
 
 Both branches receive identical examples and use the same patch-decoder body.
 One branch gets the single projected 1024-d state; the other gets all k Qwen
-query hidden vectors before `StateProjector`.  Correct-versus-shuffled held-out
-metrics localize whether visual information is lost before or during state
-projection.  Qwen and all SFT2 modules remain frozen.
+query hidden vectors before `StateProjector`.  This deterministic decoder later
+failed its visual-fidelity gate and must not be used to localize information.
+
+The valid retry first builds an aligned positive-control cache using the exact
+old Qwen-vision + 16x512 compressor representation that produced
+scene-conditioned ViT-token CFM images:
+
+```bash
+python -m nimloth.training.reconstruction.qwen_positive_cache \
+  --source-cache-dir outputs/.../query_hidden_cache/train \
+  --qwen-checkpoint /path/to/old/sft2_step1000 \
+  --compressor-checkpoint /path/to/rollout4/compressor \
+  --output-dir outputs/.../positive_cache/train
+```
+
+Then map query/projected states into that frozen visual-token space and render
+all branches through the frozen proven CFM checkpoint:
+
+```bash
+python -m nimloth.training.reconstruction.state_to_vision_tokens \
+  --projected-cache-dir outputs/.../projected_cache \
+  --query-cache-dir outputs/.../query_hidden_cache \
+  --positive-cache-dir outputs/.../positive_cache \
+  --cfm-checkpoint /path/to/vit_token_cfm_low_lr_best_val.pt \
+  --output-dir outputs/.../state_to_vision_tokens
+```
+
+The contact sheet is valid only if the true Qwen positive-control column first
+recovers scene-conditioned structure.  Otherwise the run is a decoder/pipeline
+failure and says nothing about State information.
 
 ## Sample from RCDM
 
