@@ -33,9 +33,11 @@ if [[ "$STAGE" == "all" || "$STAGE" == "train" ]]; then
   fi
   "$PYTHON_BIN" -m nimloth.training.wm_heads.dynamics_dim_train_cli "${TRAIN_ARGS[@]}"
 fi
-if [[ "$STAGE" == "all" || "$STAGE" == "eval" ]]; then
+if [[ "$STAGE" == "all" || "$STAGE" == "eval" || "$STAGE" == "metrics" ]]; then
   OUTPUT_DIR="$($PYTHON_BIN -c 'import json,sys; print(json.load(open(sys.argv[1]))["output_dir"])' "$CONFIG")"
-  "$PYTHON_BIN" -m nimloth.eval.dynamics_dim_cli \
-    --config "$CONFIG" \
-    --checkpoint "$OUTPUT_DIR/train/best"
+  EVAL_ARGS=(--config "$CONFIG" --checkpoint "$OUTPUT_DIR/train/best")
+  if [[ "$STAGE" == "metrics" ]]; then
+    EVAL_ARGS+=(--metrics-only)
+  fi
+  "$PYTHON_BIN" -m nimloth.eval.dynamics_dim_cli "${EVAL_ARGS[@]}"
 fi
