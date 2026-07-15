@@ -13,12 +13,14 @@ python3 -m py_compile \
   src/nimloth/wm/frozen_query_state.py \
   src/nimloth/wm/frozen_state_cache.py \
   src/nimloth/wm/matched_heads.py \
+  tests/eval/test_matched_wm_ablation.py \
   tests/test_matched_wm_heads.py \
   tests/training/test_matched_wm_trainer.py
 
 if "$PYTHON_BIN" -c 'import torch' >/dev/null 2>&1; then
   PYTHONPATH="$ROOT/src:$ROOT/external/le-wm" \
     "$PYTHON_BIN" -m pytest -q \
+      tests/eval/test_matched_wm_ablation.py \
       tests/test_matched_wm_heads.py \
       tests/training/test_matched_wm_trainer.py
   echo "torch_contracts=PASS"
