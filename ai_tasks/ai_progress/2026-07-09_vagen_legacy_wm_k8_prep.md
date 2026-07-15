@@ -236,4 +236,7 @@
 - TDD代码链：shape/cache RED→GREEN与trainer RED→GREEN已提交至`3deeb3c`；server affected suite `8 passed`。cache manifest记录source fingerprint、encoder hash/step和exact view contract；sampler/optimizer/RNG实际resume与uninterrupted下一step权重bitwise一致。
 - matched heads：vector53,281,664参数（hidden896），token52,503,552（hidden1024），差1.48%；共同depth4/heads8/action conditioning。CPU8-thread batch2两头合计one-step0.0396s、rollout5 0.2317s，GPU吞吐待正式训练记录。
 - dynamics dataset只连接同record相邻step；terminal row无缓存next-State，保留给reconstruction但不进入WM loss。正式cache、训练、full-val与30-row visual artifacts均尚未启动。
+- evaluator RED`3ec260a`、GREEN`e6bcad6`；真实FP16 cache fixture随后在head Linear暴露Half/Float边界，`bbee777`统一在trainer/dynamics/render入口转FP32。CLI/Slurm/artifact verifier由`212197b`加入，launch finite guards/W&B credential/resume参数修复至`860de9f`；server affected suite`13 passed`。
+- full-val定义为每条record所有连续起点的horizon1..5窗口；正式source metadata核实train56,172 dynamics pairs/3,217 records，val5,699/355。tiny CPU cache CLI与2-step train CLI执行smoke通过，含atomic manifests、best/final、actual reload、5-step rollout和branch timing。
+- W&B新stage固定`nimloth-wm`；API确认project尚不存在，因此首个正式ID1，run name=`1_frozen_vector8192_vs_token8x1024_s10000_b128`。单job请求1GPU/8CPU/≤2h，未超过用户批准的2GPU/2GPUh边界。
 - 用户明确豁免mise和GitHub CI；最终验证直接运行`bash experiments/validation/verify_wm_head_shape_ablation.sh`。

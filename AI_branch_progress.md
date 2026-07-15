@@ -12,6 +12,9 @@
 - TDD commits：`e18d9c0` shape RED，`fae4a96` heads GREEN，`98e5e8d` cache RED，`46f4fe0` frozen cache GREEN，`b82b647`结构/参数门禁，`701bfce` trainer RED，`8f78db0` trainer GREEN，`3deeb3c`修正错误的确定性sampler测试oracle。服务器affected suite现为`8 passed`；结构门禁为文件≤200 LOC、function/class≤30 LOC、nesting≤3。
 - 新cache builder不加载Qwen，原子生成FP16 `8×1024` shards并记录source fingerprint、encoder content hash/step与exact flatten contract。`FrozenStateTransitions`仅配对同record相邻step，因此每条trajectory最后一个无next-State的row只用于reconstruction、不进入dynamics loss；正式counts尚待cache build后核验。
 - matched trainer每个step只采样一次IDs并供两分支共享，分别optimizer；checkpoint持久化sampler、optimizer、CPU/CUDA RNG并已通过实际uninterrupted-vs-resume tensor exact测试；best/latest/final synthetic artifacts、correct/shuffled metric schema均通过。
+- evaluator/automation已补齐：full-val one-step+shuffled与所有可用窗口的horizon1..5；strict六条turn batch；同CFM/noise的五列30-row artifact；frozen adapter reload；cache/train/eval CLI、single-GPU Slurm和artifact verifier。提交至`860de9f`，server affected suite现为`13 passed`。
+- evaluator GREEN首次用真实FP16 cache fixture暴露head FP32 dtype边界，commit`bbee777`在trainer/full-val/render三条cache→head路径显式转FP32；trainer fixture同步改FP16，防止复发。
+- 正式source metadata实测dynamics pairs为train56,172（59,389 rows/3,217 records）和val5,699（6,054/355）。tiny CPU执行smoke已实际通过cache CLI和2-step train CLI，包括best/final、reload、5-step rollout与branch timing。
 - 尚未构建正式8×1024 cache、未启动GPU训练、未生成新重建图。用户豁免mise/GitHub CI；最终唯一命令必须直接运行`bash experiments/validation/verify_wm_head_shape_ablation.sh`。
 
 ## 2026-07-14：k=1 inject SFT control（准备中）
