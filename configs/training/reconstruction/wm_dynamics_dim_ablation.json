@@ -58,6 +58,6 @@
   },
   "wandb": {
     "project": "nimloth-wm",
-    "run_name": "2_dynamics8192_vs2048_state8192_ep5_b128"
+    "run_name": "3_dynamics8192_vs2048_state8192_ep5_b128"
   }
 }

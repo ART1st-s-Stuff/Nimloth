@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "configs/training/reconstruction/frozen_wm_head_shape_ablation.json"
 DYNAMICS_CONFIG = ROOT / "configs/training/reconstruction/wm_dynamics_dim_ablation.json"
+DYNAMICS_SMOKE_CONFIG = ROOT / "configs/training/reconstruction/wm_dynamics_dim_smoke.json"
 DEV = ROOT / "experiments/validation/wm_head_ablation_dev.sh"
 VERIFY = ROOT / "experiments/validation/verify_wm_head_shape_ablation.sh"
 DYNAMICS_VERIFY = ROOT / "experiments/validation/verify_wm_dynamics_dim_ablation.sh"
@@ -69,6 +70,9 @@ def check_dynamics_config() -> None:
     assert config["predictor"]["factorized_dynamics_dim"] == 2048
     assert config["predictor"]["hidden_dim"] == 1024
     assert config["training"]["epochs"] == 5
+    smoke = load_json(DYNAMICS_SMOKE_CONFIG)
+    assert smoke["training"]["epochs"] == 1
+    assert "_smoke_" in smoke["wandb"]["run_name"]
 
 
 def check_budget(config: dict) -> None:
@@ -111,7 +115,7 @@ def check_python_structure(path: Path) -> None:
 
 
 def check_files() -> None:
-    for path in (CONFIG, DYNAMICS_CONFIG, DEV, VERIFY, DYNAMICS_VERIFY, SLURM, DYNAMICS_SLURM, *PYTHON_TARGETS):
+    for path in (CONFIG, DYNAMICS_CONFIG, DYNAMICS_SMOKE_CONFIG, DEV, VERIFY, DYNAMICS_VERIFY, SLURM, DYNAMICS_SLURM, *PYTHON_TARGETS):
         assert path.is_file(), f"missing bootstrap file: {path}"
         assert len(path.read_text(encoding="utf-8").splitlines()) <= 200
     for path in PYTHON_TARGETS:

@@ -1,0 +1,35 @@
+{
+  "experiment_id": 20,
+  "name": "20_smoke_dynamics8192_vs2048_ep1_b128",
+  "seed": 20260716,
+  "inputs": {
+    "state_cache": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/query_state_ablation/20_smoke_dynamics8192_vs2048_ep1_b128/state_cache"
+  },
+  "output_dir": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/query_state_ablation/20_smoke_dynamics8192_vs2048_ep1_b128",
+  "state": {
+    "external_dim": 8192
+  },
+  "predictor": {
+    "full_dynamics_dim": 8192,
+    "factorized_dynamics_dim": 2048,
+    "hidden_dim": 1024,
+    "depth": 6,
+    "heads": 16,
+    "mlp_dim": 4096,
+    "history_size": 4,
+    "action_dim": 8
+  },
+  "training": {
+    "epochs": 1,
+    "batch_size": 128,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.0001,
+    "cosine_weight": 0.1,
+    "grad_clip": 1.0,
+    "dtype": "bfloat16"
+  },
+  "wandb": {
+    "project": "nimloth-wm",
+    "run_name": "2_smoke_dynamics8192_vs2048_state8192_ep1_b128"
+  }
+}
