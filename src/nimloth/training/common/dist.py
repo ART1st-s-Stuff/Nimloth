@@ -19,9 +19,14 @@ def setup_dist() -> tuple[int, int, int, torch.device]:
         local = int(os.environ.get("LOCAL_RANK", "0"))
         gpu_stride = int(os.environ.get("NIMLOTH_DDP_GPU_STRIDE", "1"))
         primary = local * gpu_stride
+        device = torch.device(f"cuda:{primary}")
         torch.cuda.set_device(primary)
-        dist.init_process_group(backend="nccl")
-        return rank, world, local, torch.device(f"cuda:{primary}")
+        # Passing the concrete device removes ProcessGroupNCCL's rank-to-device
+        # guess at the first barrier.  The guess is ambiguous when Slurm starts
+        # one node-level launcher that spawns a non-uniform number of local
+        # workers on each node.
+        dist.init_process_group(backend="nccl", device_id=device)
+        return rank, world, local, device
     return 0, 1, 0, torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
