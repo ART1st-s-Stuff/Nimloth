@@ -73,7 +73,7 @@ def load_state_image_split(
     rows: list[dict[str, Any]] = []
     for index in range(count):
         item = dataset[index]
-        states[index].copy_(item["state_emb"].to(dtype=torch.float16))
+        states[index].copy_(item["state_emb"].reshape(-1).to(dtype=torch.float16))
         images[index].copy_(_load_image_uint8(item["current_image_path"], image_size))
         rows.append(
             {
@@ -119,6 +119,14 @@ def _checkpoint_invariants(
         "train_items": int(train_split.states.shape[0]),
         "val_items": int(val_split.states.shape[0]),
         "latent_token_count": int(args.latent_token_count),
+        "condition_dropout": float(args.condition_dropout),
+        "init_legacy_cfm_checkpoint": (
+            str(args.init_legacy_cfm_checkpoint)
+            if args.init_legacy_cfm_checkpoint is not None
+            else None
+        ),
+        "lr_decay_step": int(args.lr_decay_step),
+        "lr_after_decay": float(args.lr_after_decay),
     }
 
 
@@ -176,6 +184,70 @@ def _load_checkpoint(
         # RNG restore API requires CPU ByteTensors.
         torch.cuda.set_rng_state_all([state.cpu() for state in cuda_states])
     return int(payload["step"]), float(payload.get("best_val", float("inf")))
+
+
+def _legacy_cfm_key(key: str) -> str:
+    replacements = (
+        ("cond_mlp.", "condition_mlp."),
+        ("rb1.", "block1."),
+        ("rb2.", "block2."),
+        ("rb3.", "block3."),
+        ("attn3.", "attention3."),
+        ("rb4.", "block4."),
+        ("attn4.", "attention4."),
+        ("mid1.", "middle1."),
+        ("mid_attn.", "middle_attention."),
+        ("mid2.", "middle2."),
+        ("urb3.", "up_block3."),
+        ("uattn3.", "up_attention3."),
+        ("urb2.", "up_block2."),
+        ("urb1.", "up_block1."),
+    )
+    for old, new in replacements:
+        if key.startswith(old):
+            return new + key[len(old) :]
+    return key
+
+
+def initialize_from_legacy_cfm(
+    model: TokenConditionedFlowUNet,
+    checkpoint: Path,
+) -> dict[str, Any]:
+    """Load every shape-compatible weight from the proven 16x512 CFM.
+
+    Query input normalization and the first 2048->256 projection are new; the
+    UNet body, time/condition MLP, later token projection, and spatial
+    cross-attention weights initialize from the proven visual decoder.
+    """
+
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    translated = {_legacy_cfm_key(key): value for key, value in payload["model"].items()}
+    current = model.state_dict()
+    loaded: list[str] = []
+    skipped: list[str] = []
+    for key, value in translated.items():
+        if key in current and current[key].shape == value.shape:
+            current[key] = value.detach().clone()
+            loaded.append(key)
+        else:
+            skipped.append(key)
+    model.load_state_dict(current, strict=True)
+    return {
+        "checkpoint": str(checkpoint),
+        "loaded_keys": len(loaded),
+        "skipped_keys": len(skipped),
+        "skipped": skipped,
+    }
+
+
+def resolve_condition_token_shape(manifest: dict[str, Any]) -> tuple[int, int]:
+    representation = str(manifest.get("representation", "projected"))
+    state_shape = tuple(int(value) for value in manifest.get("state_shape", []))
+    if representation == "qwen_query_hidden":
+        if len(state_shape) != 2:
+            raise ValueError(f"qwen_query_hidden cache needs [K,D] state_shape, got {state_shape}")
+        return state_shape
+    return 1, int(manifest["cond_dim"])
 
 
 def _init_wandb(args: argparse.Namespace, metadata: dict[str, Any]):
@@ -333,9 +405,80 @@ def _save_reconstruction_samples(
     return outputs
 
 
+@torch.no_grad()
+def _save_query_cfm_samples(
+    *,
+    model: TokenConditionedFlowUNet,
+    split: LoadedStateImageSplit,
+    positive_cache_dir: Path,
+    positive_cfm_checkpoint: Path,
+    output_dir: Path,
+    device: torch.device,
+    num_items: int,
+    ode_steps: int,
+    cfg_scale: float,
+    seed: int,
+) -> dict[str, str]:
+    from nimloth.training.reconstruction.state_to_vision_tokens import (
+        load_proven_cfm,
+        sample_euler_cfg,
+    )
+
+    indices = _select_sample_indices(split.rows, num_items)
+    query = split.states[indices].float()
+    query_wrong = torch.roll(query, 1, 0)
+    positive_dataset = RCDMStateCacheDataset(positive_cache_dir)
+    positive_rows = [positive_dataset[index] for index in indices]
+    for offset, (index, row) in enumerate(zip(indices, positive_rows, strict=True)):
+        expected = split.rows[index]
+        for key in ("id", "record_id", "step_index", "current_image_path"):
+            if str(row.get(key, "")) != str(expected.get(key, "")):
+                raise ValueError(f"positive/query sample alignment mismatch offset={offset} key={key}")
+    positive = torch.stack([row["state_emb"].reshape(-1).float() for row in positive_rows])
+    positive_wrong = torch.roll(positive, 1, 0)
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    noise = torch.randn(len(indices), 3, model.config.image_size, model.config.image_size, generator=generator)
+    query_correct_images = sample_euler_cfg(
+        model, query, noise, device=device, steps=ode_steps, cfg_scale=cfg_scale
+    )
+    query_wrong_images = sample_euler_cfg(
+        model, query_wrong, noise, device=device, steps=ode_steps, cfg_scale=cfg_scale
+    )
+    positive_model = load_proven_cfm(positive_cfm_checkpoint, device)
+    positive_images = sample_euler_cfg(
+        positive_model, positive, noise, device=device, steps=ode_steps, cfg_scale=cfg_scale
+    )
+    positive_wrong_images = sample_euler_cfg(
+        positive_model, positive_wrong, noise, device=device, steps=ode_steps, cfg_scale=cfg_scale
+    )
+    sample_dir = output_dir / f"query_samples_{ode_steps}ode_cfg{cfg_scale:g}"
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    strips: list[Image.Image] = []
+    for offset, index in enumerate(indices):
+        gt = Image.fromarray(split.images_uint8[index].permute(1, 2, 0).numpy(), mode="RGB")
+        strip = _label_strip(
+            [
+                gt,
+                diffusion_tensor_to_pil(positive_images[offset]),
+                diffusion_tensor_to_pil(positive_wrong_images[offset]),
+                diffusion_tensor_to_pil(query_correct_images[offset]),
+                diffusion_tensor_to_pil(query_wrong_images[offset]),
+            ],
+            ["GT", "Qwen positive", "Qwen wrong", "8-query CFM", "query wrong"],
+        )
+        strip.save(sample_dir / f"sample_{offset:03d}_strip.png")
+        strips.append(strip)
+    contact = _contact_sheet(strips, columns=1)
+    contact_path = sample_dir / "contact_sheet.png"
+    contact.save(contact_path)
+    return {f"{ode_steps}ode_cfg{cfg_scale:g}": str(contact_path)}
+
+
 def train_cfm_sft2(args: argparse.Namespace) -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if not 0.0 <= args.condition_dropout < 1.0:
+        raise ValueError("condition_dropout must be in [0, 1)")
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
@@ -357,15 +500,26 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
     condition_dim = int(train_split.states.shape[1])
     if val_split.states.shape[1] != condition_dim:
         raise ValueError("CFM train/val condition dimensions differ")
+    token_count, token_dim = resolve_condition_token_shape(train_split.manifest)
+    val_token_shape = resolve_condition_token_shape(val_split.manifest)
+    if val_token_shape != (token_count, token_dim) or token_count * token_dim != condition_dim:
+        raise ValueError(
+            "CFM cache token shape mismatch: "
+            f"train={(token_count, token_dim)}, val={val_token_shape}, flat={condition_dim}"
+        )
     config = CFMConfig(
         image_size=args.image_size,
-        token_count=1,
-        token_dim=condition_dim,
+        token_count=token_count,
+        token_dim=token_dim,
         base_channels=args.base_channels,
         condition_dim=args.condition_dim,
         time_dim=args.time_dim,
     )
     model = TokenConditionedFlowUNet(config).to(device)
+    initialization = None
+    if args.init_legacy_cfm_checkpoint is not None:
+        initialization = initialize_from_legacy_cfm(model, args.init_legacy_cfm_checkpoint)
+        print(json.dumps({"legacy_cfm_initialization": initialization}), flush=True)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
@@ -388,10 +542,21 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
             if args.validation_cache_split == "train"
             else "strict-valid train_all for training; disjoint val_all for validation only"
         ),
-        "target": "current_128px_image_from_current_projected_sft2_state",
+        "target": (
+            "current_128px_image_from_preprojection_8_query_hidden"
+            if token_count > 1
+            else "current_128px_image_from_current_projected_sft2_state"
+        ),
         "trainable_modules": "TokenConditionedFlowUNet only",
         "frozen_modules": "SFT2 Qwen, StateProjector, WM predictor; WM predictor loaded only for post-train samples",
         "invariants": invariants,
+        "initialization": initialization,
+        "condition_dropout": args.condition_dropout,
+        "lr_schedule": {
+            "initial": args.lr,
+            "decay_step": args.lr_decay_step,
+            "after_decay": args.lr_after_decay,
+        },
         "epochs": args.epochs,
         "planned_steps": planned_steps,
         "total_steps": total_steps,
@@ -450,10 +615,20 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
     last_eval: dict[str, float] | None = None
     train_count = train_split.states.shape[0]
     for step in range(start_step + 1, total_steps + 1):
+        learning_rate = (
+            args.lr_after_decay
+            if args.lr_decay_step > 0 and step > args.lr_decay_step
+            else args.lr
+        )
+        for group in optimizer.param_groups:
+            group["lr"] = learning_rate
         indices = torch.randint(0, train_count, (args.batch_size,))
         condition = train_split.states[indices].to(
             device=device, dtype=torch.float32
         )
+        if args.condition_dropout > 0:
+            drop = torch.rand(condition.shape[0], device=device) < args.condition_dropout
+            condition = condition.masked_fill(drop[:, None], 0.0)
         target = train_split.images_uint8[indices].to(
             device=device, dtype=torch.float32
         ).div(127.5).sub(1.0)
@@ -504,6 +679,7 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
                 "cfm/val_shuffled_flow_mse": last_eval["shuffled_flow_mse"],
                 "cfm/val_shuffled_over_correct": last_eval["shuffled_over_correct"],
                 "cfm/best_val_correct_flow_mse": best_val,
+                "cfm/lr": learning_rate,
                 "epoch": epoch_float,
             }
             if wandb_run is not None:
@@ -524,6 +700,7 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
             if wandb_run is not None:
                 wandb_run.log({
                     "cfm/train_flow_mse": last_loss,
+                    "cfm/lr": learning_rate,
                     "epoch": epoch_float,
                 }, step=step)
             print(json.dumps({
@@ -567,21 +744,40 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         args.output_dir / "best.pt", map_location=device, weights_only=False
     )
     model.load_state_dict(best_payload["model"], strict=True)
-    wm_predictor = LatentWMPredictor.load_checkpoint(
-        args.wm_checkpoint, map_location=device
-    ).to(device).eval()
-    for parameter in wm_predictor.parameters():
-        parameter.requires_grad_(False)
-    sample_paths = _save_reconstruction_samples(
-        model=model,
-        split=val_split,
-        wm_predictor=wm_predictor,
-        output_dir=args.output_dir,
-        device=device,
-        ode_steps=args.sample_ode_steps,
-        num_items=args.sample_items,
-        seed=args.seed + 30_000,
-    )
+    if token_count > 1:
+        if args.positive_cache_dir is None or args.positive_cfm_checkpoint is None:
+            raise ValueError(
+                "multi-token CFM sampling requires --positive-cache-dir and "
+                "--positive-cfm-checkpoint"
+            )
+        sample_paths = _save_query_cfm_samples(
+            model=model,
+            split=val_split,
+            positive_cache_dir=args.positive_cache_dir / "val",
+            positive_cfm_checkpoint=args.positive_cfm_checkpoint,
+            output_dir=args.output_dir,
+            device=device,
+            num_items=args.sample_items,
+            ode_steps=max(args.sample_ode_steps),
+            cfg_scale=args.cfg_scale,
+            seed=args.seed + 30_000,
+        )
+    else:
+        wm_predictor = LatentWMPredictor.load_checkpoint(
+            args.wm_checkpoint, map_location=device
+        ).to(device).eval()
+        for parameter in wm_predictor.parameters():
+            parameter.requires_grad_(False)
+        sample_paths = _save_reconstruction_samples(
+            model=model,
+            split=val_split,
+            wm_predictor=wm_predictor,
+            output_dir=args.output_dir,
+            device=device,
+            ode_steps=args.sample_ode_steps,
+            num_items=args.sample_items,
+            seed=args.seed + 30_000,
+        )
     if wandb_run is not None:
         import wandb
 
@@ -636,6 +832,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument("--condition-dropout", type=float, default=0.0)
+    parser.add_argument(
+        "--init-legacy-cfm-checkpoint",
+        type=Path,
+        default=None,
+        help="Initialize all shape-compatible weights from the proven 16x512 ViT-token CFM",
+    )
+    parser.add_argument("--lr-decay-step", type=int, default=-1)
+    parser.add_argument("--lr-after-decay", type=float, default=1e-5)
     parser.add_argument("--log-interval", type=int, default=100)
     parser.add_argument("--eval-interval", type=int, default=500)
     parser.add_argument("--eval-max-items", type=int, default=1024)
@@ -650,6 +855,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sample-items", type=int, default=8)
     parser.add_argument("--sample-ode-steps", type=int, nargs="+", default=[5, 50])
+    parser.add_argument("--cfg-scale", type=float, default=2.0)
+    parser.add_argument(
+        "--positive-cache-dir",
+        type=Path,
+        default=None,
+        help="Aligned Qwen positive-control cache root for multi-token sample sheets",
+    )
+    parser.add_argument("--positive-cfm-checkpoint", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=20260708)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--resume-checkpoint", type=Path, default=None)

@@ -93,6 +93,29 @@ The cache fingerprint, model config, data sizes, k, optimizer hyperparameters,
 and seed must match. The final gate saves 5-step and 50-step ODE contact sheets
 for current-state and WM-predicted-next reconstruction.
 
+For a true 8-query CFM, point `--state-cache-dir` at a
+`qwen_query_hidden` cache. The trainer reads manifest `state_shape=[8,2048]`,
+flattens storage only at the model boundary, and keeps eight condition tokens
+inside every cross-attention layer. A proven ViT-token CFM can initialize all
+shape-compatible UNet weights:
+
+```bash
+python -m nimloth.training.reconstruction.cfm_sft2 \
+  --state-cache-dir outputs/.../query_hidden_cache \
+  --latent-token-count 8 \
+  --init-legacy-cfm-checkpoint /path/to/vit_token_cfm_low_lr_best_val.pt \
+  --condition-dropout 0.15 --lr 3e-5 \
+  --lr-decay-step 37120 --lr-after-decay 1e-5 \
+  --positive-cache-dir outputs/.../positive_cache \
+  --positive-cfm-checkpoint /path/to/vit_token_cfm_low_lr_best_val.pt \
+  ...
+```
+
+The resulting contact sheet uses matched noise for
+`GT | Qwen positive | Qwen wrong | 8-query CFM | query wrong`.  This direct
+CFM remains invalid if correct and wrong Query conditions produce the same
+scene, regardless of flow loss.
+
 ## Compare projected and preprojection query states
 
 Build a separate cache of the frozen Qwen hidden vectors at all k latent-query

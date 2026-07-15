@@ -9,7 +9,11 @@ from nimloth.cfm import (
     sample_euler,
 )
 from nimloth.rcdm.image_utils import image_to_diffusion_tensor
-from nimloth.training.reconstruction.cfm_sft2 import _load_image_uint8
+from nimloth.training.reconstruction.cfm_sft2 import (
+    _load_image_uint8,
+    initialize_from_legacy_cfm,
+    resolve_condition_token_shape,
+)
 from nimloth.training.reconstruction.residual_cfm_sft2 import biased_flow_loss
 
 
@@ -103,3 +107,66 @@ def test_cfm_euler_sampling_is_deterministic() -> None:
     )
     assert first.shape == noise.shape
     torch.testing.assert_close(first, second, rtol=1e-4, atol=3e-6)
+
+
+def test_query_hidden_manifest_resolves_eight_condition_tokens() -> None:
+    manifest = {
+        "representation": "qwen_query_hidden",
+        "state_shape": [8, 2048],
+        "cond_dim": 16384,
+    }
+    assert resolve_condition_token_shape(manifest) == (8, 2048)
+    assert resolve_condition_token_shape({"cond_dim": 1024}) == (1, 1024)
+
+
+def test_legacy_cfm_initialization_loads_shape_compatible_body(tmp_path) -> None:
+    source = TokenConditionedFlowUNet(
+        CFMConfig(
+            image_size=16,
+            token_count=16,
+            token_dim=8,
+            base_channels=4,
+            condition_dim=8,
+            time_dim=16,
+        )
+    )
+    reverse = (
+        ("condition_mlp.", "cond_mlp."),
+        ("block1.", "rb1."),
+        ("block2.", "rb2."),
+        ("block3.", "rb3."),
+        ("attention3.", "attn3."),
+        ("block4.", "rb4."),
+        ("attention4.", "attn4."),
+        ("middle1.", "mid1."),
+        ("middle_attention.", "mid_attn."),
+        ("middle2.", "mid2."),
+        ("up_block3.", "urb3."),
+        ("up_attention3.", "uattn3."),
+        ("up_block2.", "urb2."),
+        ("up_block1.", "urb1."),
+    )
+    legacy = {}
+    for key, value in source.state_dict().items():
+        old_key = key
+        for current, old in reverse:
+            if key.startswith(current):
+                old_key = old + key[len(current) :]
+                break
+        legacy[old_key] = value
+    checkpoint = tmp_path / "legacy.pt"
+    torch.save({"model": legacy}, checkpoint)
+    target = TokenConditionedFlowUNet(
+        CFMConfig(
+            image_size=16,
+            token_count=8,
+            token_dim=12,
+            base_channels=4,
+            condition_dim=8,
+            time_dim=16,
+        )
+    )
+    result = initialize_from_legacy_cfm(target, checkpoint)
+    assert result["loaded_keys"] > result["skipped_keys"]
+    assert "token_norm.weight" in result["skipped"]
+    torch.testing.assert_close(target.in_conv.weight, source.in_conv.weight)
