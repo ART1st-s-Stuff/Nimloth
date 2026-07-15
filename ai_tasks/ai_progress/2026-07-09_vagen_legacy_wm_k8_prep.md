@@ -254,6 +254,6 @@
 - 正式job476787（commit`64bea16`）normal/dgx-09 `COMPLETED0:0`/00:06:23；W&B`azizxo78`。精确5 epochs/2,195 steps、五个resume checkpoints、best/final严格reload与5-step finite gate全部通过；Qwen未加载，output44GiB，主任务gpumem11,246MiB。
 - epoch5 direct heldout full/factorized MSE `.167086/.167503`、cos `.912306/.911991`；几乎持平。吞吐37.995/57.867 step/s，factorized快1.52倍、参数少60.7%。
 - 初始evaluator将`rollout_states`补history4后的h1标为one-step，但trainer使用T=1 `predict_next`；full差异显著。RED`d21aa20`、GREEN`5bbf5fe`后分离metric mode，旧JSON归档，refresh job476793 `COMPLETED0:0`/34s；登记E0035。
-- corrected autoregressive full/factorized MSE：h1 `.197503/.174901`、h2 `.282647/.233092`、h3 `.343504/.280476`、h4 `.385163/.318991`、h5 `.414193/.351398`。factorized全horizon更优且action-sensitive；full rollout-h1 correct甚至略差于shuffled。
+- corrected autoregressive full/factorized MSE：h1 `.197503/.174901`、h2 `.282647/.233092`、h3 `.343504/.280476`、h4 `.385163/.318991`、h5 `.414193/.351398`。factorized全horizon更优。第二次审计发现首版rollout-h1 shuffled仍误调direct path；`a1f5659`修复后job476804 exit0/34s，path-matched shuffled MSE `.228208/.218918`，两者均action-sensitive，factorized penalty更大（25.2% vs15.5%）。两版错误JSON均保留。
 - 固定六条30 rows视觉审查：full在人物/墙画两条保留语义更好且PNG辅助L1低（overall `.09708/.13814`）；factorized多漂成generic白门/房间。其余门墙浴室序列两者均未稳定对应turn视角。2048因此是latent dynamics/效率默认，但需保留有限decoder-visible detail代价，不作overall visual winner或matched-param声明。
 - W&B已上传corrected direct/rollout和visual metrics；artifact verifier PASS。完整SFT2仍未启动。

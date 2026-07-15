@@ -1085,7 +1085,7 @@
 - direct `predict_next` MSE为 `.167086/.167503`，基本持平；shuffled MSE为 `.195567/.207859`。
 - autoregressive h1 MSE为 `.197503/.174901`，h5为 `.414193/.351398`；factorized在所有horizon更低且action sensitivity更强。
 - full/factorized吞吐为37.995/57.867 step/s；factorized快1.52倍、参数少60.7%。
-- 初始报告误把padded-history rollout-h1当作训练一致的one-step；已登记 `E0035`，保留旧JSON并由job `476793`分离direct与rollout语义。
+- 初始报告误把padded-history rollout-h1当作训练一致的one-step；已登记 `E0035`，保留旧JSON并由job `476793`分离direct与rollout语义。继续审计发现rollout-h1 shuffled仍误用direct path；`a1f5659`修复，job476804 exit0/34s。最终path-matched shuffled MSE full/factorized `.228208/.218918`，两者均action-sensitive，factorized penalty更大（25.2% vs15.5%）；中间JSON也保留。
 - 固定六条/30行视觉审查：full在两条人物/墙画序列保留语义更好、PNG辅助L1更低；factorized常漂成generic门/房间。前四条中两者均不能稳定跟随turn视角。
 - 结论：2048 bottleneck没有损害direct dynamics，并显著改善autoregressive dynamics、action sensitivity和效率，建议作为完整SFT2默认；同时保留full8192的有限decoder-visible detail优势，不宣布overall visual winner。
 - Artifact verifier PASS；完整SFT2尚未启动。

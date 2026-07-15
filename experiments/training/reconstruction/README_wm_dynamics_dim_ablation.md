@@ -102,15 +102,16 @@ Do not start complete SFT2 until this experiment and its visual review finish.
 ## Formal result
 
 Main job `476787` ran commit `64bea16` and completed exit0 in `00:06:23`;
-metric-correction job `476793` completed in 34 seconds. W&B is
+metric-correction jobs `476793` and `476804` each completed in 34 seconds. W&B is
 `nimloth-wm/azizxo78`. Exact five epochs / 2,195 steps, all resume checkpoints,
 best/final reload, full-val evaluation, and 30 visual rows passed.
 
 Direct `predict_next` MSE was `.167086` full versus `.167503` factorized: an
 effective tie. Autoregressive MSE was `.197503/.174901` at horizon1 and
-`.414193/.351398` at horizon5; factorized was lower at every horizon and
-retained stronger shuffled-action separation. Factorized was 1.52× faster and
-used 60.7% fewer parameters.
+`.414193/.351398` at horizon5; factorized was lower at every horizon. Path-matched
+rollout-h1 shuffled MSE was `.228208/.218918`: both branches were action-sensitive,
+with a larger factorized penalty (25.2% versus 15.5%). Factorized was 1.52× faster
+and used 60.7% fewer parameters. Both superseded metric JSONs remain archived.
 
 Visual review found a different trade-off. Full preserved the person/wall-art
 identity better in two of six fixed runs and had lower auxiliary PNG L1;

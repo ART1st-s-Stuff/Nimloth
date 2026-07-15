@@ -23,9 +23,10 @@ direct validation loss but very different horizon1 rollout behavior.
 
 In frozen-State dynamics-dimension experiment ID20, direct MSE was
 `.167086/.167503` for full8192/factorized2048. Padded-history horizon1 was
-`.197503/.174901`. Full horizon1 correct-action MSE was slightly worse than its
-shuffled control, while its direct path remained action-sensitive.
+`.197503/.174901`. Path-matched shuffled MSE was `.228208/.218918`, so both
+rollout paths were action-sensitive and factorized had the larger penalty.
 
-The original metrics were preserved as
-`dynamics_metrics_pre_direct_mode_fix.json`; corrected metrics record
-`direct_predict_next` and `autoregressive_rollout` modes.
+The original metrics were preserved as `dynamics_metrics_pre_direct_mode_fix.json`.
+A second archive, `dynamics_metrics_pre_rollout_control_fix.json`, records the
+first correction that still mixed rollout predictions with direct controls.
+Final metrics name both prediction and control modes explicitly.
