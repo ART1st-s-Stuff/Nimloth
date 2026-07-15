@@ -17,9 +17,9 @@ cd "$REPO"
 export PYTHONPATH="$REPO/src:$REPO/external/le-wm"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 
-if [[ -f /project/peilab/atst/nimloth/.env ]]; then
+if [[ -f /project/peilab/atst/flower/.env ]]; then
   set -a
-  source /project/peilab/atst/nimloth/.env
+  source /project/peilab/atst/flower/.env
   set +a
 fi
 
@@ -28,7 +28,11 @@ if [[ "$STAGE" == "all" || "$STAGE" == "cache" ]]; then
   "$PYTHON_BIN" -m nimloth.training.wm_heads.cache_cli --config "$CONFIG"
 fi
 if [[ "$STAGE" == "all" || "$STAGE" == "train" ]]; then
-  "$PYTHON_BIN" -m nimloth.training.wm_heads.train_cli --config "$CONFIG"
+  TRAIN_ARGS=(--config "$CONFIG")
+  if [[ -n "${RESUME_CHECKPOINT:-}" ]]; then
+    TRAIN_ARGS+=(--resume "$RESUME_CHECKPOINT")
+  fi
+  "$PYTHON_BIN" -m nimloth.training.wm_heads.train_cli "${TRAIN_ARGS[@]}"
 fi
 if [[ "$STAGE" == "all" || "$STAGE" == "eval" ]]; then
   OUTPUT_DIR="$($PYTHON_BIN -c 'import json,sys; print(json.load(open(sys.argv[1]))["output_dir"])' "$CONFIG")"

@@ -59,8 +59,12 @@ def _branch_step(module, optimizer: Optimizer, state: torch.Tensor, action: torc
     _sync(device)
     started = time.perf_counter()
     loss = _loss(module(state, action), target, config.cosine_weight)
+    if not torch.isfinite(loss):
+        raise FloatingPointError("matched WM loss is non-finite")
     loss.backward()
-    clip_grad_norm_(module.parameters(), config.grad_clip)
+    grad_norm = clip_grad_norm_(module.parameters(), config.grad_clip)
+    if not torch.isfinite(grad_norm):
+        raise FloatingPointError("matched WM gradient norm is non-finite")
     optimizer.step()
     _sync(device)
     return loss.item(), time.perf_counter() - started
