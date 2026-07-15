@@ -67,7 +67,7 @@ def run(config_path: Path, checkpoint: Path, device: torch.device, no_wandb: boo
     heads = MatchedWMHeads.load_checkpoint(checkpoint, device).to(device).eval()
     dynamics = evaluate_full_dynamics(heads, state_cache, device, batch_size=int(config["training"]["eval_batch_size"]))
     _atomic_json(root / "dynamics_metrics.json", dynamics)
-    batch = _turn_batch(config, state_cache)
+    batch = load_turn_batch(config, state_cache)
     adapter = load_frozen_state_adapter(Path(config["inputs"]["encoder_checkpoint"]), device)
     cfm = load_proven_cfm(Path(config["inputs"]["cfm_checkpoint"]), device)
     render = config["reconstruction"]
@@ -80,7 +80,7 @@ def run(config_path: Path, checkpoint: Path, device: torch.device, no_wandb: boo
     return summary
 
 
-def _turn_batch(config: dict, state_cache: Path):
+def load_turn_batch(config: dict, state_cache: Path):
     positive_cache = Path(config["inputs"]["positive_cache"]) / "val"
     _manifest_gate(state_cache, "frozen_query_state", [8, 1024])
     _manifest_gate(positive_cache, "qwen_compressed_vision_positive", [16, 512])

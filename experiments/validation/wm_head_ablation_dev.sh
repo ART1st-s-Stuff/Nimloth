@@ -9,9 +9,11 @@ PYTHON_BIN="${WM_HEAD_PYTHON:-python3}"
 python3 experiments/validation/wm_head_ablation_bootstrap.py
 python3 -m py_compile \
   experiments/validation/derive_turn_visual_metrics.py \
+  experiments/validation/verify_wm_dynamics_dim_artifacts.py \
   experiments/validation/verify_wm_head_artifacts.py \
   experiments/validation/wm_head_ablation_bootstrap.py \
   src/nimloth/eval/dynamics_dim_ablation.py \
+  src/nimloth/eval/dynamics_dim_cli.py \
   src/nimloth/eval/matched_wm_ablation.py \
   src/nimloth/eval/matched_wm_cli.py \
   src/nimloth/eval/matched_wm_metrics.py \
@@ -20,6 +22,7 @@ python3 -m py_compile \
   src/nimloth/training/wm_heads/cache_cli.py \
   src/nimloth/training/wm_heads/config.py \
   src/nimloth/training/wm_heads/data.py \
+  src/nimloth/training/wm_heads/dynamics_dim_train_cli.py \
   src/nimloth/training/wm_heads/dynamics_dim_trainer.py \
   src/nimloth/training/wm_heads/train_cli.py \
   src/nimloth/training/wm_heads/trainer.py \
@@ -34,9 +37,11 @@ python3 -m py_compile \
   tests/training/test_dynamics_dim_trainer.py \
   tests/training/test_matched_wm_trainer.py
 
-bash -n experiments/training/reconstruction/frozen_wm_head_ablation.slurm
+bash -n \
+  experiments/training/reconstruction/frozen_wm_head_ablation.slurm \
+  experiments/training/reconstruction/frozen_wm_dynamics_dim_ablation.slurm
 if "$PYTHON_BIN" -c 'import torch' >/dev/null 2>&1; then
-  for module in nimloth.training.wm_heads.cache_cli nimloth.training.wm_heads.train_cli nimloth.eval.matched_wm_cli; do
+  for module in nimloth.training.wm_heads.cache_cli nimloth.training.wm_heads.train_cli nimloth.training.wm_heads.dynamics_dim_train_cli nimloth.eval.matched_wm_cli nimloth.eval.dynamics_dim_cli; do
     PYTHONPATH="$ROOT/src:$ROOT/external/le-wm" "$PYTHON_BIN" -m "$module" --help >/dev/null
   done
   PYTHONPATH="$ROOT/src:$ROOT/external/le-wm" \

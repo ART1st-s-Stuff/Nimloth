@@ -9,7 +9,7 @@ from typing import Any
 
 from PIL import Image, ImageChops, ImageStat
 
-COLUMNS = ("GT", "Qwen positive", "Frozen State GT", "Vector 1x8192 WM", "Token 8x1024 WM")
+DEFAULT_COLUMNS = ("GT", "Qwen positive", "Frozen State GT", "Vector 1x8192 WM", "Token 8x1024 WM")
 
 
 def _l1(left: Image.Image, right: Image.Image) -> float:
@@ -17,25 +17,28 @@ def _l1(left: Image.Image, right: Image.Image) -> float:
     return sum(means) / (255 * len(means))
 
 
-def _row_images(sheet: Image.Image, horizon: int) -> dict[str, Image.Image]:
-    width, strip_height = sheet.width // len(COLUMNS), sheet.height // 5
+def _row_images(sheet: Image.Image, horizon: int, columns: tuple[str, ...]) -> dict[str, Image.Image]:
+    width, strip_height = sheet.width // len(columns), sheet.height // 5
     top = (horizon - 1) * strip_height + 18
-    return {name: sheet.crop((index * width, top, (index + 1) * width, horizon * strip_height)) for index, name in enumerate(COLUMNS)}
+    return {name: sheet.crop((index * width, top, (index + 1) * width, horizon * strip_height)) for index, name in enumerate(columns)}
 
 
-def _row_metrics(images: dict[str, Image.Image]) -> dict[str, float]:
-    metrics = {f"{name}_to_GT_l1": _l1(image, images["GT"]) for name, image in images.items() if name != "GT"}
-    metrics["Vector_to_Frozen_State_GT_l1"] = _l1(images["Vector 1x8192 WM"], images["Frozen State GT"])
-    metrics["Token_to_Frozen_State_GT_l1"] = _l1(images["Token 8x1024 WM"], images["Frozen State GT"])
+def _row_metrics(images: dict[str, Image.Image], columns: tuple[str, ...]) -> dict[str, float]:
+    metrics = {f"{name}_to_GT_l1": _l1(image, images[columns[0]]) for name, image in images.items() if name != columns[0]}
+    metrics[f"{columns[3]}_to_{columns[2]}_l1"] = _l1(images[columns[3]], images[columns[2]])
+    metrics[f"{columns[4]}_to_{columns[2]}_l1"] = _l1(images[columns[4]], images[columns[2]])
     return metrics
 
 
 def derive(root: Path) -> dict[str, Any]:
+    metadata_path = root / "metadata.json"
+    columns = tuple(json.loads(metadata_path.read_text())["columns"]) if metadata_path.is_file() else DEFAULT_COLUMNS
     by_horizon = {str(step): [] for step in range(1, 6)}
     for run in range(6):
         with Image.open(root / f"run_{run:02d}.png") as sheet:
             for horizon in range(1, 6):
-                by_horizon[str(horizon)].append(_row_metrics(_row_images(sheet, horizon)))
+                images = _row_images(sheet, horizon, columns)
+                by_horizon[str(horizon)].append(_row_metrics(images, columns))
     horizons = {key: _average(rows) for key, rows in by_horizon.items()}
     all_rows = [row for rows in by_horizon.values() for row in rows]
     payload = {"status": "completed", "source": "8-bit PNG crops; auxiliary only", "rows": 30, "horizons": horizons, "overall": _average(all_rows)}
