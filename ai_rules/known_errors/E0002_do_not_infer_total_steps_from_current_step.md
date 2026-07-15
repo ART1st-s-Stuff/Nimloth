@@ -33,3 +33,14 @@
 ```text
 1710
 ```
+
+## 再次发生的变体（2026-07-15）
+
+fragmented SFT2 的 CSV `global_step` 是 optimizer step，但 sampler 的
+`train_micro_batches` 是 micro-batch 数。agent 将约 `9.43s/optimizer step`
+直接乘 `11,643 micro-batches/epoch`，把正确约3.8小时/epoch误算成30.5小时。
+
+有 gradient accumulation 时，ETA必须先核对 checkpoint：job476479 的
+`latest/training_state.pt` 明确为`step=128`、`micro_step_in_epoch=1024`、
+`grad_accum=8`。因此应使用约`ceil(11643/8)=1456 optimizer steps/epoch`，
+或者把optimizer-step时间除以8后再乘micro-batch数。
