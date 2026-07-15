@@ -641,9 +641,13 @@ def train_sft2(args=None) -> int:
     state_proj = StateProjector(
         hidden_size,
         wm_predictor.emb_dim,
+        projector_hidden_dim=args.projector_hidden_dim,
         latent_token_count=args.latent_token_count,
     ).to(device=aux_device, dtype=model_dtype)
-    value_head = ValueHead(wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
+    value_head = ValueHead(
+        wm_predictor.emb_dim,
+        hidden_dim=args.value_hidden_dim or None,
+    ).to(device=aux_device, dtype=model_dtype)
     sigreg = SIGRegModule(knots=args.sigreg_knots, num_proj=args.sigreg_num_proj).to(device=aux_device)
     lambda_sigreg_val = args.lambda_sigreg
 
@@ -750,6 +754,9 @@ def train_sft2(args=None) -> int:
         "grad_accum": int(args.grad_accum),
         "latent_query_mode": args.latent_query_mode,
         "query_tune": args.query_tune,
+        "emb_dim": int(args.emb_dim),
+        "projector_hidden_dim": int(args.projector_hidden_dim),
+        "value_hidden_dim": int(args.value_hidden_dim or args.emb_dim),
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }

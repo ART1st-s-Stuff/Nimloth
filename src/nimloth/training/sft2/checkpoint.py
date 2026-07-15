@@ -192,6 +192,13 @@ def save_checkpoint(
         "query_tune": query_tune,
         "qwen_hidden_dim": int(getattr(proj, "qwen_hidden_dim", -1)),
         "state_proj_input_dim": int(state_proj_input_dim),
+        "state_proj_hidden_dim": int(getattr(proj, "projector_hidden_dim", -1)),
+        "state_proj_output_dim": int(getattr(proj, "output_dim", -1)),
+        "value_hidden_dim": int(
+            getattr(value_head.module if hasattr(value_head, "module") else value_head, "hidden_dim", -1)
+            if value_head is not None
+            else -1
+        ),
         "best_val_success_rate": best_val_success_rate,
         "best_val_wm_mse": best_val_wm_mse,
         "best_val": best_val_wm_mse,
@@ -260,6 +267,28 @@ def load_aux_checkpoint(
                     "checkpoint state_proj_input_dim mismatch: "
                     f"checkpoint={saved_input_dim}, current={getattr(proj, 'input_dim', -1)}"
                 )
+            saved_projector_hidden = training_state.get("state_proj_hidden_dim")
+            if (
+                saved_projector_hidden is not None
+                and int(saved_projector_hidden) >= 0
+                and int(saved_projector_hidden) != int(getattr(proj, "projector_hidden_dim", -1))
+            ):
+                raise ValueError(
+                    "checkpoint state_proj_hidden_dim mismatch: "
+                    f"checkpoint={saved_projector_hidden}, "
+                    f"current={getattr(proj, 'projector_hidden_dim', -1)}"
+                )
+            saved_projector_output = training_state.get("state_proj_output_dim")
+            if (
+                saved_projector_output is not None
+                and int(saved_projector_output) >= 0
+                and int(saved_projector_output) != int(getattr(proj, "output_dim", -1))
+            ):
+                raise ValueError(
+                    "checkpoint state_proj_output_dim mismatch: "
+                    f"checkpoint={saved_projector_output}, "
+                    f"current={getattr(proj, 'output_dim', -1)}"
+                )
         proj.load_state_dict(torch.load(sp_path, map_location=device, weights_only=True))
     pred_path = ckpt_dir / "wm_predictor"
     if pred_path.is_dir():
@@ -272,6 +301,7 @@ def load_aux_checkpoint(
         loaded_head = ValueHead.load_checkpoint(
             head_path,
             emb_dim=head.net[0].in_features,
+            hidden_dim=head.net[0].out_features,
             map_location=device,
         )
         head.load_state_dict(loaded_head.state_dict())

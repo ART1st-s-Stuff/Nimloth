@@ -18,9 +18,10 @@ class StateProjector(nn.Module):
     """LeWM-style MLP bridge from Qwen latent query states to WM emb.
 
     ``latent_token_count`` controls how many Qwen hidden vectors form one raw
-    state.  For ``latent_token_count > 1`` the input ``(B, k, H)`` is flattened to
-    ``(B, k*H)`` before projection, increasing the raw Qwen-exported state
-    capacity while keeping downstream WM state size unchanged.
+    state. For ``latent_token_count > 1`` the input ``(B, k, H)`` is flattened to
+    ``(B, k*H)`` before projection. Both the projector hidden width and downstream
+    WM State width are explicit so capacity ablations do not retain an accidental
+    narrow hidden bottleneck.
     """
 
     def __init__(
@@ -37,12 +38,14 @@ class StateProjector(nn.Module):
         self.qwen_hidden_dim = int(qwen_hidden_dim)
         self.latent_token_count = int(latent_token_count)
         self.input_dim = self.qwen_hidden_dim * self.latent_token_count
+        self.projector_hidden_dim = int(projector_hidden_dim)
+        self.output_dim = int(lewm_emb_dim)
         # LayerNorm avoids inplace running-buffer conflicts when state_proj is
         # called multiple times before backward (e.g. WM + value losses).
         self.net = MLP(
             self.input_dim,
-            projector_hidden_dim,
-            lewm_emb_dim,
+            self.projector_hidden_dim,
+            self.output_dim,
             norm_fn=nn.LayerNorm,
         )
 

@@ -9,6 +9,9 @@ from nimloth.training.sft2.cli import parse_sft2_args
 
 ROOT = Path(__file__).resolve().parents[3]
 K8_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8.yaml"
+K8_STATE8192_CONFIG = (
+    ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8_state8192.yaml"
+)
 K1_CONTROL_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k1_control.yaml"
 REQUIRED = [
     "--model",
@@ -41,6 +44,17 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert args.preprocess_cache_format == "compact"
     assert args.preprocess_cache_image_dtype == "bfloat16"
     assert args.preprocess_workers == 16
+
+
+def test_state8192_config_removes_projector_hidden_bottleneck() -> None:
+    args = parse_sft2_args(["--config", str(K8_STATE8192_CONFIG), *REQUIRED])
+
+    assert args.latent_token_count == 8
+    assert args.emb_dim == 8192
+    assert args.projector_hidden_dim == 8192
+    assert args.value_hidden_dim == 1024
+    assert args.epochs == 2
+    assert args.max_pixels == 100352
 
 
 def test_k1_control_only_changes_latent_capacity_not_runtime_budget() -> None:

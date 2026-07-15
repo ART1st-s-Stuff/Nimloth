@@ -38,6 +38,18 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--max-pixels", type=int, default=602112)
     ap.add_argument("--emb-dim", type=int, default=1024)
     ap.add_argument(
+        "--projector-hidden-dim",
+        type=int,
+        default=2048,
+        help="Hidden width of StateProjector; raise with emb_dim to avoid a narrow projection bottleneck.",
+    )
+    ap.add_argument(
+        "--value-hidden-dim",
+        type=int,
+        default=0,
+        help="Value-head hidden width (0 uses emb_dim); decouple it for high-dimensional State experiments.",
+    )
+    ap.add_argument(
         "--latent-token-count",
         type=int,
         default=1,

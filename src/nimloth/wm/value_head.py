@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import torch
@@ -21,6 +22,9 @@ class ValueHead(nn.Module):
     ) -> None:
         super().__init__()
         hidden = hidden_dim or emb_dim
+        self.emb_dim = int(emb_dim)
+        self.num_actions = int(num_actions)
+        self.hidden_dim = int(hidden)
         self.net = nn.Sequential(
             nn.Linear(emb_dim, hidden),
             nn.GELU(),
@@ -35,6 +39,17 @@ class ValueHead(nn.Module):
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         torch.save(self.state_dict(), path / "value_head.pt")
+        (path / "config.json").write_text(
+            json.dumps(
+                {
+                    "emb_dim": self.emb_dim,
+                    "num_actions": self.num_actions,
+                    "hidden_dim": self.hidden_dim,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     @classmethod
     def load_checkpoint(
@@ -47,6 +62,16 @@ class ValueHead(nn.Module):
         map_location: str | torch.device = "cpu",
     ) -> "ValueHead":
         path = Path(path)
+        config_path = path / "config.json"
+        if config_path.is_file():
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            saved_emb_dim = int(config["emb_dim"])
+            if saved_emb_dim != int(emb_dim):
+                raise ValueError(
+                    f"ValueHead emb_dim mismatch: checkpoint={saved_emb_dim}, current={emb_dim}"
+                )
+            num_actions = int(config["num_actions"])
+            hidden_dim = int(config["hidden_dim"])
         module = cls(emb_dim=emb_dim, num_actions=num_actions, hidden_dim=hidden_dim)
         state_path = path / "value_head.pt"
         if state_path.is_file():

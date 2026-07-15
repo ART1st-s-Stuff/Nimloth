@@ -1,9 +1,22 @@
 from __future__ import annotations
 
+import json
+
 import torch
 
 from nimloth.training.sft2.loss import compute_value_loss
 from nimloth.wm.value_head import ValueHead
+
+
+def test_value_head_checkpoint_preserves_decoupled_hidden_width(tmp_path) -> None:
+    head = ValueHead(emb_dim=32, num_actions=8, hidden_dim=7)
+    head.save_checkpoint(tmp_path)
+
+    assert json.loads((tmp_path / "config.json").read_text())["hidden_dim"] == 7
+    loaded = ValueHead.load_checkpoint(tmp_path, emb_dim=32)
+    assert loaded.hidden_dim == 7
+    for expected, actual in zip(head.parameters(), loaded.parameters(), strict=True):
+        torch.testing.assert_close(expected, actual)
 
 
 def _bias_only_head(bias: torch.Tensor) -> ValueHead:

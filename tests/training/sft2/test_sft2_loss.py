@@ -21,6 +21,8 @@ def test_state_projector_accepts_multi_latent_block() -> None:
 
     assert out.shape == (2, 4)
     assert state_proj.input_dim == 24
+    assert state_proj.projector_hidden_dim == 16
+    assert state_proj.output_dim == 4
 
 
 def test_wm_latent_loss_no_detach_grad_to_state_proj() -> None:

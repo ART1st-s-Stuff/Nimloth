@@ -1,0 +1,76 @@
+# SFT2 — k=8 inject queries with a full-width 8192-d projected WM State.
+# Controlled against latent_wm_value_k8.yaml: same data/tuning/loss/cache,
+# two epochs to match the currently completed 1024-d epoch_002 checkpoint.
+
+init:
+  sft1_checkpoint: null
+  wm_predictor_checkpoint: null
+
+data:
+  train_jsonl: train_all.jsonl
+  val_jsonl: val_all.jsonl
+  include_failed_rollouts: true
+
+tuning:
+  llm_tune: freeze
+  vision_tune: full
+  vision_ema: true
+  vision_ema_decay: 0.999
+  lora_r: 64
+  lora_alpha: 128
+
+train:
+  epochs: 2
+  batch_size: 2
+  grad_accum: 4
+  lr_qwen_start: 1.0e-8
+  lr_qwen_peak: 5.0e-7
+  state_proj_lr: 1.0e-4
+  wm_predictor_lr: 3.0e-4
+  value_head_lr: 3.0e-4
+  train_wm_predictor: true
+  max_length: 12000
+  max_pixels: 100352
+  emb_dim: 8192
+  # A 2048 hidden layer would remain the actual information bottleneck even
+  # when the output is 8192. Keep the full projection path at 8192 width.
+  projector_hidden_dim: 8192
+  # The value target is eight action scalars; a second 8192-wide layer adds
+  # 67M parameters without increasing State capacity. Keep this head at 1024.
+  value_hidden_dim: 1024
+  full_trajectory_batching: true
+  max_images_per_batch: 12
+  max_steps_per_trajectory: 16
+  attn_implementation: flash_attention_2
+  gradient_checkpointing: true
+  checkpoint_interval_minutes: 20.0
+  preprocess_cache_format: compact
+  preprocess_cache_image_dtype: bfloat16
+  preprocess_cache_image_shard_size: 128
+  preprocess_cache_transition_shard_size: 256
+  preprocess_cache_shard_lru: 2
+  preprocess_workers: 16
+  dataloader_workers: 4
+  dataloader_prefetch_factor: 2
+
+latent:
+  token_count: 8
+  query_mode: inject
+  query_tune: adapter
+  query_lr: 5.0e-5
+
+loss:
+  lambda_wm_start: 0.1
+  lambda_wm_end: 1.0
+  lambda_ce: 1.0
+  lambda_value: 1.0
+  lambda_sigreg: 0.1
+  sigreg_num_proj: 1024
+  sigreg_knots: 17
+  value_rank_margin: 0.1
+  value_rank_lambda: 1.0
+  value_gamma: 1.0
+
+monitor:
+  wandb: true
+  early_stop_metric: val_wm_mse
