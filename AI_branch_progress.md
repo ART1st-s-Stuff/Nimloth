@@ -19,7 +19,7 @@
 - cache gates全部通过：train59,389/fingerprint`b0802d7c6dae1639`、val6,054/`520b27798fb28c1c`，source fingerprints/order/finiteness/exact view一致，`qwen_loaded=false`。best vector@3500、token@2000，best/final严格reload与5-step rollout finite。
 - full-val h1 MSE vector/token `.160832/.161595`，h2 `.208456/.218074`，h3 `.240766/.253824`，h4 `.266622/.280754`，h5 `.287718/.302603`；vector在所有horizon更低、shuffled penalty19.9% vs token9.1%，且134.57 vs70.26 steps/s（约1.92×快）。这是matched latent-dynamics优势。
 - 六条canonical turn-both/30 rows同CFM/noise已全部人工审查：vector常退化成平滑同色墙，token常有更清晰但错误的门/走廊/浴室geometry；两者都不能稳定对应实际右转/左转视角，run4人物/画面reveal-return均失败。故不宣布overall visual winner或新默认；pixel L1仅辅助。
-- postprocess/verifier commit`7bd6939`生成per-horizon visual auxiliary metrics和semantic review；artifact verifier已PASS。最终仍需提交docs cleanup commit，并逐字运行直接`bash experiments/validation/verify_wm_head_shape_ablation.sh`（用户豁免mise/GitHub CI）。
+- postprocess/verifier commit`7bd6939`生成per-horizon visual auxiliary metrics和semantic review；artifact verifier PASS。cleanup commit`b51e4d6`的直接`bash experiments/validation/verify_wm_head_shape_ablation.sh`也已PASS：server13 tests、cache/params/10k/horizon/30-row gates及release suite全部通过；全程未使用mise/GitHub CI。
 
 ## 2026-07-14：k=1 inject SFT control（准备中）
 

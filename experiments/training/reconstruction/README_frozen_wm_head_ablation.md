@@ -117,3 +117,5 @@ Post-processing/verifier commit `7bd6939` produced per-horizon auxiliary visual
 metrics and passed the deterministic artifact verifier. Full evidence is in the
 exclusive output README, `eval/dynamics_metrics.json`,
 `eval/turns/semantic_review.json`, and `eval/turns/visual_horizon_metrics.json`.
+The direct release command passed on cleanup commit `b51e4d6`: 13 server tests,
+all artifact gates, and `release_suite=PASS` without mise.

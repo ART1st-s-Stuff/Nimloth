@@ -243,4 +243,4 @@
 - derived cache train59,389/fingerprint`b0802d7c6dae1639`、val6,054/`520b27798fb28c1c`，全部source/order/finite/view gates通过且Qwen未加载。best vector@3500 MSE.16083155、token@2000 .16159483；best/final reload+rollout finite。throughput134.57 vs70.26 steps/s。
 - full-val vector/token h1 MSE.160832/.161595（shuffled.192763/.176274），h2.208456/.218074，h3.240766/.253824，h4.266622/.280754，h5.287718/.302603；vector所有horizon略优且action shuffled penalty更大。
 - 30-row视觉人工审查完成：vector常为平滑同色墙，token常为更清晰但错误geometry；两者均不能稳定对应right/left rotation，尤其run4人物/画面reveal-return失败。仅判vector latent dynamics/吞吐更优，不宣布overall visual winner或新默认。
-- postprocess/verifier`7bd6939`补per-horizon PNG auxiliary metrics并完成semantic review；artifact verifier PASS。用户明确豁免mise和GitHub CI；最终验证直接运行`bash experiments/validation/verify_wm_head_shape_ablation.sh`。
+- postprocess/verifier`7bd6939`补per-horizon PNG auxiliary metrics并完成semantic review；artifact verifier PASS。cleanup`b51e4d6`上直接`bash experiments/validation/verify_wm_head_shape_ablation.sh`最终PASS：server13 tests、cache59,389/6,054、params53,281,664/52,503,552、10k、horizon counts5699/5344/4989/4634/4287、turn rows30和release suite全部通过。用户豁免mise/GitHub CI且全程未使用。
