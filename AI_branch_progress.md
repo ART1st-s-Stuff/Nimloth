@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-07-15：冻结 State 的 SFT2 dynamics_dim 对照（准备中）
+
+- 人类要求在完整SFT2前额外比较相同外部`1×8192` State下的现有SFT2 predictor：`dynamics_dim=8192` full与`2048` factorized；冻结Qwen/encoder/adapter/CFM，只训练WM，精确5个cache epochs。
+- 审计澄清两分支AR Transformer hidden均1024；full408,345,672参数（action encoder268.7M），factorized160,648,264参数。该实验刻意不匹配参数量，目标是判断2048 dynamics bottleneck是否损害未来SFT2。
+- canonical config为`wm_dynamics_dim_ablation.json`，共享ID19 cache fingerprints train`b0802d7c6dae1639`/val`520b27798fb28c1c`，batch128、AdamW3e-4、BF16、每epochexact-once shuffle；预计439 steps/epoch、总2195。
+- TDD：head RED`ddc3532`→GREEN`0107697`，trainer RED`839749f`→GREEN`67704fc`，evaluator RED`d5c2c6a`→GREEN`44ac71c`，CLI/Slurm/verifier`787063e`；server`19 passed`。tiny CPU CLI完成2 exact epochs/6 steps、best/final/reload/5-step rollout。尚未申请GPU或启动正式实验。
+
 ## 2026-07-15：冻结 State 的 matched WM-head 对照（代码 GREEN）
 
 - 新目标冻结旧 SFT2 epoch2 Query cache 与 best@7500 `8×2048→8×1024` encoder，只比较消费同一 State tensor 的 `1×8192` vector 与 `8×1024` token WM heads；六条最终 rollout 固定来自 `rcdm_rollout5_turns_val.json`，每条前五步同时含 action4/5，禁止把2/3当作turn。

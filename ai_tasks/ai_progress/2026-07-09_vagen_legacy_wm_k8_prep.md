@@ -244,3 +244,9 @@
 - full-val vector/token h1 MSE.160832/.161595（shuffled.192763/.176274），h2.208456/.218074，h3.240766/.253824，h4.266622/.280754，h5.287718/.302603；vector所有horizon略优且action shuffled penalty更大。
 - 30-row视觉人工审查完成：vector常为平滑同色墙，token常为更清晰但错误geometry；两者均不能稳定对应right/left rotation，尤其run4人物/画面reveal-return失败。仅判vector latent dynamics/吞吐更优，不宣布overall visual winner或新默认。
 - postprocess/verifier`7bd6939`补per-horizon PNG auxiliary metrics并完成semantic review；artifact verifier PASS。cleanup`b51e4d6`上直接`bash experiments/validation/verify_wm_head_shape_ablation.sh`最终PASS：server13 tests、cache59,389/6,054、params53,281,664/52,503,552、10k、horizon counts5699/5344/4989/4634/4287、turn rows30和release suite全部通过。用户豁免mise/GitHub CI且全程未使用。
+
+## 2026-07-15 frozen-State SFT2 dynamics_dim ablation
+
+- 完整SFT2继续暂停；新增head-only对照，外部均`1×8192`，比较现有SFT2 `dynamics_dim=8192` full与2048 factorized，AR Transformer hidden均1024。参数full408,345,672（action encoder268.7M）vs factorized160,648,264，明确不作matched-param结论。
+- 用户选择精确5 cache epochs而非10k steps。共享ID19 cache、batch128、AdamW3e-4/BF16、seed20260716；每transition每epochexact-once shuffle，56,172 rows→439 steps/epoch→2195 total。
+- TDD链：head`ddc3532→0107697`、trainer`839749f→67704fc`、eval`d5c2c6a→44ac71c`、CLI/Slurm/verifier`787063e`。server19 tests；tiny CPU CLI2 epochs/6 steps、epoch checkpoints、best/final、strict reload和rollout通过。尚未启动GPU；下一步production-shape短smoke测显存/吞吐后再记录正式资源估算。
