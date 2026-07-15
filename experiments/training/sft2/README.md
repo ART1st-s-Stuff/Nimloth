@@ -71,6 +71,14 @@ cost of tying every dynamics layer to 8192. The matching CLI knobs are
 `--projector-hidden-dim`, `--wm-dynamics-dim`, and `--value-hidden-dim` (`0`
 preserves the legacy `internal=emb_dim` behavior).
 
+For non-uniform multi-node Slurm fragments, run one Slurm task per node and
+spawn that node's local workers while all allocated local GPUs remain visible.
+Set each worker's global `RANK` and `LOCAL_RANK`, and keep the explicit
+`device_id` passed by `setup_dist()` to ProcessGroupNCCL. One-task-per-GPU
+cgroup isolation caused same-node NCCL `invalid device ordinal`; omitting the
+explicit process-group device then hung the first barrier. Use a common
+bootstrap interface and leave NCCL IB enabled for production multi-node runs.
+
 ### `--full-trajectory-batching` (方案 B, 默认启用)
 
 Each micro-batch = one complete trajectory (all transitions for one record).
