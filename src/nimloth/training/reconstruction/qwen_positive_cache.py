@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset, Subset
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
+from nimloth.latent import add_special_tokens
 from nimloth.rcdm.state_cache import (
     RCDMStateCacheDataset,
     RCDMStateCacheManifest,
@@ -214,21 +216,36 @@ def positive_cache_fingerprint(
 
 
 def _load_visual_model(checkpoint: Path, device: torch.device, *, max_pixels: int):
+    from nimloth.backbone.qwen_tuning import configure_qwen_tuning
+    from nimloth.training.sft2.checkpoint import load_lora_adapter_state
+
     adapter_config = json.loads((checkpoint / "adapter_config.json").read_text(encoding="utf-8"))
     base = Path(adapter_config["base_model_name_or_path"])
     processor = AutoProcessor.from_pretrained(base, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = max_pixels
+    add_special_tokens(processor.tokenizer)
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         base,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         attn_implementation="sdpa",
         trust_remote_code=True,
     )
-    model.visual.load_state_dict(
-        torch.load(checkpoint / "vision_full_state.pt", map_location="cpu", weights_only=True),
-        strict=True,
+    model.resize_token_embeddings(len(processor.tokenizer))
+    # The preserved checkpoint's vision_full_state was saved after PEFT had
+    # wrapped matching vision projections.  Recreate that exact module topology
+    # before loading rather than forcing PEFT keys into a plain visual encoder.
+    tuning_args = SimpleNamespace(
+        lora=False,
+        llm_tune="lora",
+        vision_tune="full" if (checkpoint / "vision_full_state.pt").is_file() else "freeze",
+        lora_r=int(adapter_config.get("r", 64)),
+        lora_alpha=int(adapter_config.get("lora_alpha", 128)),
+        lora_dropout=float(adapter_config.get("lora_dropout", 0.0)),
+        gradient_checkpointing=False,
     )
+    model = configure_qwen_tuning(model, tuning_args)
+    load_lora_adapter_state(model, checkpoint)
     model.to(device).eval()
     for parameter in model.parameters():
         parameter.requires_grad_(False)
