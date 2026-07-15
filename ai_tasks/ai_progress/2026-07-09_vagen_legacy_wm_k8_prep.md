@@ -228,3 +228,12 @@
 - factorized`25f0443`保持8192 projector/external State、仅dynamics2048，aux370.4M。smoke476351 terminal dtype失败后`41f8778`修复/server28；fresh476359完成03:07，W&B`8gpp24fj`，32 finite/median.625s/val WM.113875/memory60.9GiB；reload476362通过。
 - single-node8 job476365 ETA51h后改normal fragments；nonuniform failures促成`5e2b454`显式ProcessGroup device/E0033。最终476479 world4/GA8、W&B`z3c0w63v`，median9.43s/optimizer step；每epoch11,643 micro/1,456 optimizer，约3.8h/epoch（曾误乘micro count，E0002）。
 - 人类复审证据并因GPU稀缺暂停8192：476479 `CANCELLED01:31:07`，logged573，durable latest epoch1 step525/micro4200，末WM.008432/SIGReg.432541，无错误可恢复；resume476507未运行即取消。cache probe`66d3196`/server8 tests冻结best8×2048 baseline，只训tokenwise8×(2048→1024)+同positive target adapter。hold476600先获得allocation；step476600.1完成02:34，W&B`cao9bxpx`。best@7500/full-val6,054：8×1024 MSE.248745/cos.866350/wrong ratio1.82774 vs8×2048 .229184/.876347/1.88795（MSE+8.53%,cos-.0100）；8-row matched-noise结构近似baseline，baseline/bottleneck L1.05972 vs baseline/bottleneck-wrong.15353。practical sufficiency PASS但supervised frontend不证明最小维度/WM可用性；下一clean control 8×128(total1024) vs1×1024。
+
+## 2026-07-15 frozen-State WM-head topology ablation
+
+- 冻结旧SFT2 epoch2 Query cache和best@7500 encoder，公平比较同一`8×1024` State的flatten `1×8192`与token-set `8×1024` WM heads；正式六条turn rollout固定为canonical config中的记录，不按重建质量选样本。
+- 输入核验：train59,389/fingerprint`fe3076b60cc96fe2`，val6,054/`d06f4adf47846d52`；encoder2,104,320参数、严格加载、finite输出。新cache仅运行冻结encoder，不加载Qwen。
+- TDD代码链：shape/cache RED→GREEN与trainer RED→GREEN已提交至`3deeb3c`；server affected suite `8 passed`。cache manifest记录source fingerprint、encoder hash/step和exact view contract；sampler/optimizer/RNG实际resume与uninterrupted下一step权重bitwise一致。
+- matched heads：vector53,281,664参数（hidden896），token52,503,552（hidden1024），差1.48%；共同depth4/heads8/action conditioning。CPU8-thread batch2两头合计one-step0.0396s、rollout5 0.2317s，GPU吞吐待正式训练记录。
+- dynamics dataset只连接同record相邻step；terminal row无缓存next-State，保留给reconstruction但不进入WM loss。正式cache、训练、full-val与30-row visual artifacts均尚未启动。
+- 用户明确豁免mise和GitHub CI；最终验证直接运行`bash experiments/validation/verify_wm_head_shape_ablation.sh`。

@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-07-15：冻结 State 的 matched WM-head 对照（代码 GREEN）
+
+- 新目标冻结旧 SFT2 epoch2 Query cache 与 best@7500 `8×2048→8×1024` encoder，只比较消费同一 State tensor 的 `1×8192` vector 与 `8×1024` token WM heads；六条最终 rollout 固定来自 `rcdm_rollout5_turns_val.json`，每条前五步同时含 action4/5，禁止把2/3当作turn。
+- 已核实 Query cache：train59,389/fingerprint`fe3076b60cc96fe2`，val6,054/`d06f4adf47846d52`；encoder严格加载、2,104,320参数、输出finite。vector输入只是同一contiguous tensor的flatten view。
+- matched架构均复用`TokenSetWMPredictor`：vector为1×8192/hidden896，53,281,664参数；token为8×1024/hidden1024，52,503,552参数；均depth4/heads8/action token，参数差1.48%。8-thread CPU batch2基准：两头one-step0.0396s、rollout5 0.2317s；正式GPU吞吐仍待实测。
+- TDD commits：`e18d9c0` shape RED，`fae4a96` heads GREEN，`98e5e8d` cache RED，`46f4fe0` frozen cache GREEN，`b82b647`结构/参数门禁，`701bfce` trainer RED，`8f78db0` trainer GREEN，`3deeb3c`修正错误的确定性sampler测试oracle。服务器affected suite现为`8 passed`；结构门禁为文件≤200 LOC、function/class≤30 LOC、nesting≤3。
+- 新cache builder不加载Qwen，原子生成FP16 `8×1024` shards并记录source fingerprint、encoder content hash/step与exact flatten contract。`FrozenStateTransitions`仅配对同record相邻step，因此每条trajectory最后一个无next-State的row只用于reconstruction、不进入dynamics loss；正式counts尚待cache build后核验。
+- matched trainer每个step只采样一次IDs并供两分支共享，分别optimizer；checkpoint持久化sampler、optimizer、CPU/CUDA RNG并已通过实际uninterrupted-vs-resume tensor exact测试；best/latest/final synthetic artifacts、correct/shuffled metric schema均通过。
+- 尚未构建正式8×1024 cache、未启动GPU训练、未生成新重建图。用户豁免mise/GitHub CI；最终唯一命令必须直接运行`bash experiments/validation/verify_wm_head_shape_ablation.sh`。
+
 ## 2026-07-14：k=1 inject SFT control（准备中）
 
 - 人类要求新增k=1对照，完整执行SFT1和SFT2。为保证单变量对照，计划保持正式k=8的inject协议、严格数据、训练预算、可训练模块、loss和cache语义，仅把latent query数量从8改为1。
