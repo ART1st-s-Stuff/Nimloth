@@ -8,7 +8,8 @@
 
 - 人类要求新增k=1对照，完整执行SFT1和SFT2。为保证单变量对照，计划保持正式k=8的inject协议、严格数据、训练预算、可训练模块、loss和cache语义，仅把latent query数量从8改为1。
 - 代码提交`09fa71a`新增k1 inject专用SFT1/SFT2 configs，并为SFT1补齐stage-specific W&B project、run ID持久化/恢复和validation global transport step。
-- clean server worktree固定在`3d46066`，相关server tests `19 passed`。人类确认后已提交dependency pipeline：SFT1 cache `474974` -> SFT1 train `474975` -> BF16 merge `474976` -> SFT2 cache `474977` -> SFT2 train `474978`。SFT1 cache已在intel-01健康启动，log核实k1/inject/masked/BF16/success613/val355和正确commit。完整路径与恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`。
+- clean server worktree固定在`3d46066`，相关server tests `19 passed`。dependency pipeline：SFT1 cache `474974` -> SFT1 train `474975` -> BF16 merge `474976` -> SFT2 cache `474977` -> SFT2 train `474978`。
+- SFT1 cache `474974` 已在intel-01以`COMPLETED 0:0`结束（02:38:46，47GiB）；success613/val355均完整，k1/inject/masked/BF16双cache和done flag完整。SFT1 train `474975`当前`PENDING(Priority)`等待单节点8GPU；当前无preempt节点有8卡空闲，排队ETA未知。完整路径与恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`。
 
 ## 2026-07-13：显式 latent query 协议与 SFT1 → SFT2 continuation gate
 
