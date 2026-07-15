@@ -84,7 +84,14 @@ class LatentWMPredictor(nn.Module):
             action_ctx, num_classes=self.config.action_dim
         ).float()
         act_emb = self.action_encoder(actions)
-        dynamics_ctx = self.state_input(state_ctx)
+        if isinstance(self.state_input, nn.Identity):
+            dynamics_ctx = state_ctx
+        else:
+            # StateProjector follows the Qwen BF16 dtype while WM parameters are
+            # FP32 by default. Normal training runs under autocast, but DDP's
+            # terminal-only dummy path intentionally executes outside it.
+            input_dtype = next(self.state_input.parameters()).dtype
+            dynamics_ctx = self.state_input(state_ctx.to(dtype=input_dtype))
         preds = self.predictor(dynamics_ctx, act_emb)
         b, t, _ = preds.shape
         preds = self.pred_proj(rearrange(preds, "b t d -> (b t) d"))

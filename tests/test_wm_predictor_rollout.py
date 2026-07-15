@@ -25,8 +25,13 @@ def test_factorized_dynamics_preserve_external_state_shape_and_checkpoint(tmp_pa
     actions = torch.randint(0, 8, (2, 3))
 
     output = factorized.rollout_states(state, actions)
+    mixed_dtype_output = factorized.predict_next_emb(
+        state.to(torch.bfloat16), actions[:, 0]
+    )
 
     assert output.shape == (2, 3, 64)
+    assert mixed_dtype_output.shape == (2, 64)
+    assert torch.isfinite(mixed_dtype_output).all()
     assert factorized.dynamics_dim == 16
     assert sum(p.numel() for p in factorized.parameters()) < sum(
         p.numel() for p in unfactorized.parameters()
