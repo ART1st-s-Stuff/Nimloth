@@ -54,6 +54,8 @@ def test_full_dynamics_dim_metrics_cover_all_windows(tmp_path: Path) -> None:
     metrics = evaluate_dynamics_dims(tiny_heads(), cache, torch.device("cpu"), batch_size=4)
 
     assert metrics["one_step_count"] == 10
+    assert metrics["one_step_mode"] == "direct_predict_next"
+    assert metrics["horizons"]["1"]["mode"] == "autoregressive_rollout"
     assert [metrics["horizons"][str(step)]["count"] for step in range(1, 6)] == [10, 8, 6, 4, 2]
     assert set(metrics["one_step"]) == {"full", "factorized"}
     assert set(metrics["one_step"]["full"]) == {"mse", "cosine", "shuffled_mse", "shuffled_cosine"}
