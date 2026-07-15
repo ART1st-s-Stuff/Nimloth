@@ -100,6 +100,11 @@ def _evaluation_gate(root: Path) -> dict[str, Any]:
     samples = json.loads((root / "eval/turns/samples.json").read_text())
     if len(samples) != 30 or {row["action_index"] for row in samples} < {4, 5}:
         raise ValueError("turn sample rows lack action4/action5 coverage")
+    visual = _json(root / "eval/turns/visual_horizon_metrics.json")
+    if visual.get("rows") != 30 or set(visual.get("horizons", {})) != {"1", "2", "3", "4", "5"}:
+        raise ValueError("visual per-horizon metrics are incomplete")
+    if not _finite_tree(visual):
+        raise ValueError("visual per-horizon metrics are non-finite")
     return dynamics
 
 

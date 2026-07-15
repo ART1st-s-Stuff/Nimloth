@@ -13,6 +13,7 @@ DEV = ROOT / "experiments/validation/wm_head_ablation_dev.sh"
 VERIFY = ROOT / "experiments/validation/verify_wm_head_shape_ablation.sh"
 SLURM = ROOT / "experiments/training/reconstruction/frozen_wm_head_ablation.slurm"
 PYTHON_TARGETS = (
+    ROOT / "experiments/validation/derive_turn_visual_metrics.py",
     ROOT / "experiments/validation/verify_wm_head_artifacts.py",
     ROOT / "experiments/validation/wm_head_ablation_bootstrap.py",
     ROOT / "src/nimloth/eval/matched_wm_ablation.py",
