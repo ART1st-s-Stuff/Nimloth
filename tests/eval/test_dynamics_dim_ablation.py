@@ -55,7 +55,9 @@ def test_full_dynamics_dim_metrics_cover_all_windows(tmp_path: Path) -> None:
 
     assert metrics["one_step_count"] == 10
     assert metrics["one_step_mode"] == "direct_predict_next"
+    assert metrics["one_step_control_mode"] == "direct_predict_next"
     assert metrics["horizons"]["1"]["mode"] == "autoregressive_rollout"
+    assert metrics["horizons"]["1"]["shuffled_mode"] == "autoregressive_rollout"
     assert [metrics["horizons"][str(step)]["count"] for step in range(1, 6)] == [10, 8, 6, 4, 2]
     assert set(metrics["one_step"]) == {"full", "factorized"}
     assert set(metrics["one_step"]["full"]) == {"mse", "cosine", "shuffled_mse", "shuffled_cosine"}
