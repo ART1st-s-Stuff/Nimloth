@@ -107,6 +107,16 @@ def test_frozen_state_cache_preserves_rows_and_manifest(tmp_path: Path) -> None:
     assert not list(output.glob("*.tmp"))
 
 
+def test_production_head_parameter_budgets_are_matched() -> None:
+    heads = MatchedWMHeads.create(MatchedHeadSpec())
+
+    counts = heads.parameter_counts()
+    relative_gap = abs(counts["vector"] - counts["token"]) / min(counts.values())
+
+    assert counts == {"vector": 53_281_664, "token": 52_503_552}
+    assert relative_gap < 0.02
+
+
 def test_matched_heads_predict_rollout_and_reload(tmp_path: Path) -> None:
     spec = MatchedHeadSpec(
         state_tokens=8,
