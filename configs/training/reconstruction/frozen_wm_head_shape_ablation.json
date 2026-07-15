@@ -1,0 +1,82 @@
+{
+  "experiment_id": 19,
+  "name": "19_frozen_wm_heads_vector8192_vs_token8x1024_s10000_b128",
+  "seed": 20260716,
+  "inputs": {
+    "query_cache": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/query_state_ablation/10_preproj_vs_projected_k8_all3217_steps18560_b16_h256d4/query_hidden_cache",
+    "query_train_fingerprint": "fe3076b60cc96fe2",
+    "query_val_fingerprint": "d06f4adf47846d52",
+    "encoder_checkpoint": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/query_state_ablation/18_query8x1024_cache_probe/train/best.pt",
+    "encoder_step": 7500,
+    "positive_cache": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/query_state_ablation/12_qwenpositive_stateadapter_all3217_s10000_b128/positive_cache",
+    "cfm_checkpoint": "/project/peilab/atst/nimloth/outputs/experiments/representation_ablation/2026-07-07/token_cfm_decoder_full_b32_e10_lr1em4_rollout5_467041/vit_token_cfm_low_lr_cont_b32_e10_lr1em5_from_dropcfg_467261/vit_token_cfm_low_lr_best_val.pt",
+    "strict_records": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/converted_strict_k8_b6c811c",
+    "turn_spec": "configs/eval/reconstruction/rcdm_rollout5_turns_val.json"
+  },
+  "output_dir": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/query_state_ablation/19_frozen_wm_heads_vector8192_vs_token8x1024_s10000_b128",
+  "state": {
+    "tokens": 8,
+    "token_dim": 1024,
+    "flat_dim": 8192,
+    "dtype": "float16",
+    "train_count": 59389,
+    "val_count": 6054
+  },
+  "heads": {
+    "vector": {
+      "tokens": 1,
+      "emb_dim": 8192,
+      "hidden_dim": 896,
+      "depth": 4,
+      "heads": 8,
+      "mlp_ratio": 4
+    },
+    "token": {
+      "tokens": 8,
+      "emb_dim": 1024,
+      "hidden_dim": 1024,
+      "depth": 4,
+      "heads": 8,
+      "mlp_ratio": 4
+    }
+  },
+  "training": {
+    "steps": 10000,
+    "batch_size": 128,
+    "eval_batch_size": 128,
+    "eval_interval": 500,
+    "save_interval": 2000,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.0001,
+    "cosine_weight": 0.1,
+    "grad_clip": 1.0
+  },
+  "reconstruction": {
+    "sample_steps": 50,
+    "cfg_scale": 2.0,
+    "num_rollouts": 6,
+    "horizons": 5,
+    "required_actions": [4, 5],
+    "forbidden_substitutes": [2, 3],
+    "columns": [
+      "GT",
+      "Qwen positive",
+      "Frozen State GT",
+      "Vector 1x8192 WM",
+      "Token 8x1024 WM"
+    ]
+  },
+  "validation": {
+    "max_gpus": 2,
+    "max_gpu_hours": 2,
+    "require_finite_checkpoints": true,
+    "require_resume_gate": true,
+    "require_full_val_metrics": true,
+    "require_action_shuffled_control": true,
+    "require_turn_rows": 30
+  },
+  "wandb": {
+    "project": "nimloth-wm",
+    "run_name": "1_frozen_vector8192_vs_token8x1024_s10000_b128"
+  }
+}
