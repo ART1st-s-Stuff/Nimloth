@@ -17,24 +17,36 @@ class LatentWMPredictor(nn.Module):
     """LeWM ARPredictor + action encoder for Qwen-latent dynamics.
 
     Mirrors the LeWM paper predictor structure:
-    - ARPredictor outputs into ``predictor_hidden_dim`` (not directly ``emb_dim``).
-    - ``pred_proj`` (LeWM MLP with BatchNorm1d) maps predictor hidden to ``emb_dim``.
+    - an optional ``dynamics_dim`` factorizes a wide external State before the
+      action-conditioned transformer;
+    - ARPredictor outputs into ``predictor_hidden_dim`` (not directly ``emb_dim``);
+    - ``pred_proj`` maps predictor hidden back to the external ``emb_dim``.
     """
 
     def __init__(self, config: LeWMConfig) -> None:
         super().__init__()
         self.config = config
+        dynamics_dim = int(config.dynamics_dim or config.emb_dim)
+        self.dynamics_dim = dynamics_dim
+        self.state_input = (
+            nn.Identity()
+            if dynamics_dim == config.emb_dim
+            else nn.Sequential(
+                nn.LayerNorm(config.emb_dim),
+                nn.Linear(config.emb_dim, dynamics_dim),
+            )
+        )
         self.action_encoder = Embedder(
             input_dim=config.action_dim,
             smoothed_dim=config.action_dim,
-            emb_dim=config.emb_dim,
+            emb_dim=dynamics_dim,
         )
         self.predictor = ARPredictor(
             num_frames=config.history_size,
             depth=config.predictor_depth,
             heads=config.predictor_heads,
             mlp_dim=config.predictor_mlp_dim,
-            input_dim=config.emb_dim,
+            input_dim=dynamics_dim,
             hidden_dim=config.predictor_hidden_dim,
             output_dim=config.predictor_hidden_dim,  # LeWM style: not directly emb_dim
         )
@@ -72,7 +84,8 @@ class LatentWMPredictor(nn.Module):
             action_ctx, num_classes=self.config.action_dim
         ).float()
         act_emb = self.action_encoder(actions)
-        preds = self.predictor(state_ctx, act_emb)
+        dynamics_ctx = self.state_input(state_ctx)
+        preds = self.predictor(dynamics_ctx, act_emb)
         b, t, _ = preds.shape
         preds = self.pred_proj(rearrange(preds, "b t d -> (b t) d"))
         preds = rearrange(preds, "(b t) d -> b t d", b=b, t=t)

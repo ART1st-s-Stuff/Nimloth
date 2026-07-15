@@ -11,6 +11,32 @@ def _make_predictor(history_size: int = 4, emb_dim: int = 64) -> LatentWMPredict
     return LatentWMPredictor.create(cfg)
 
 
+def test_factorized_dynamics_preserve_external_state_shape_and_checkpoint(tmp_path) -> None:
+    common = dict(
+        history_size=2,
+        emb_dim=64,
+        predictor_hidden_dim=32,
+        predictor_mlp_dim=64,
+        predictor_heads=2,
+    )
+    factorized = LatentWMPredictor.create(LeWMConfig(**common, dynamics_dim=16))
+    unfactorized = LatentWMPredictor.create(LeWMConfig(**common))
+    state = torch.randn(2, 64)
+    actions = torch.randint(0, 8, (2, 3))
+
+    output = factorized.rollout_states(state, actions)
+
+    assert output.shape == (2, 3, 64)
+    assert factorized.dynamics_dim == 16
+    assert sum(p.numel() for p in factorized.parameters()) < sum(
+        p.numel() for p in unfactorized.parameters()
+    )
+    factorized.save_checkpoint(tmp_path)
+    reloaded = LatentWMPredictor.load_checkpoint(tmp_path)
+    assert reloaded.config.dynamics_dim == 16
+    reloaded.load_state_dict(factorized.state_dict(), strict=True)
+
+
 def test_predict_next_emb_shape() -> None:
     """Single-step prediction returns correct shape."""
     emb_dim = 64

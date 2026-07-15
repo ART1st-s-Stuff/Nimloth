@@ -50,6 +50,12 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Value-head hidden width (0 uses emb_dim); decouple it for high-dimensional State experiments.",
     )
     ap.add_argument(
+        "--wm-dynamics-dim",
+        type=int,
+        default=0,
+        help="Internal WM transformer width (0 uses emb_dim); external State input/output stays emb_dim.",
+    )
+    ap.add_argument(
         "--latent-token-count",
         type=int,
         default=1,

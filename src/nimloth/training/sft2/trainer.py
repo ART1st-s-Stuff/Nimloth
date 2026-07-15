@@ -619,7 +619,10 @@ def train_sft2(args=None) -> int:
     if not qwen_pair_parallel:
         model.to(device)
 
-    wm_cfg = LeWMConfig(emb_dim=args.emb_dim)
+    wm_cfg = LeWMConfig(
+        emb_dim=args.emb_dim,
+        dynamics_dim=args.wm_dynamics_dim or None,
+    )
     if args.wm_predictor_checkpoint is not None:
         wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_predictor_checkpoint, map_location=device).to(device)
     else:
@@ -757,6 +760,7 @@ def train_sft2(args=None) -> int:
         "emb_dim": int(args.emb_dim),
         "projector_hidden_dim": int(args.projector_hidden_dim),
         "value_hidden_dim": int(args.value_hidden_dim or args.emb_dim),
+        "wm_dynamics_dim": int(args.wm_dynamics_dim or args.emb_dim),
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }

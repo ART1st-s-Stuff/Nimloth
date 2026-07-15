@@ -79,6 +79,10 @@ class LeWMConfig:
     """
 
     emb_dim: int = 1024
+    # Optional internal dynamics width. The externally visible State remains
+    # emb_dim; setting this smaller factorizes WM compute without narrowing the
+    # preceding StateProjector or the saved/predicted State.
+    dynamics_dim: int | None = None
     action_dim: int = NUM_NAVIGATION_ACTIONS
     predictor_depth: int = 6
     predictor_heads: int = 16

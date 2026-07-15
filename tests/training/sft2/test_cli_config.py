@@ -12,6 +12,13 @@ K8_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8.yaml"
 K8_STATE8192_CONFIG = (
     ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8_state8192.yaml"
 )
+K8_STATE8192_FACTORIZED_CONFIG = (
+    ROOT
+    / "configs"
+    / "training"
+    / "sft2"
+    / "latent_wm_value_k8_state8192_factorized.yaml"
+)
 K1_CONTROL_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k1_control.yaml"
 REQUIRED = [
     "--model",
@@ -55,6 +62,18 @@ def test_state8192_config_removes_projector_hidden_bottleneck() -> None:
     assert args.value_hidden_dim == 1024
     assert args.epochs == 2
     assert args.max_pixels == 100352
+
+
+def test_state8192_factorized_config_keeps_wide_state_and_narrow_dynamics() -> None:
+    args = parse_sft2_args(
+        ["--config", str(K8_STATE8192_FACTORIZED_CONFIG), *REQUIRED]
+    )
+
+    assert args.emb_dim == 8192
+    assert args.projector_hidden_dim == 8192
+    assert args.wm_dynamics_dim == 2048
+    assert args.value_hidden_dim == 1024
+    assert args.epochs == 2
 
 
 def test_k1_control_only_changes_latent_capacity_not_runtime_budget() -> None:
