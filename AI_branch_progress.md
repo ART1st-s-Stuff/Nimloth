@@ -12,7 +12,8 @@
 - SFT1 cache `474974` 已在intel-01以`COMPLETED 0:0`结束（02:38:46，47GiB）；success613/val355均完整，k1/inject/masked/BF16双cache和done flag完整。
 - 人类指示先用dgx-51可用GPU后，elapsed0的8GPU SFT1 job及未启动依赖链已取消重接；SFT1改为4GPU/GA16以保持effective batch64，cache目录原子改名并原样复用。
 - SFT1 `475713`在dgx-51以`COMPLETED 0:0`结束（00:39:26，5 epochs/step50）：val loss=`0.226365,0.071915,0.063489,0.060220,0.058280`，各epoch inject format=1.0，best/final=epoch5；W&B `wlxx2qsp` finished。merge `475714`在54s内完成702 adapter tensors验证并生成BF16 `epoch_005/hf_merged`。
-- SFT2 cache `475715`正在intel-01健康构建；elapsed00:35时train image shards=136/464（约29%，21GiB），k1/all3217/val355/BF16配置正确。SFT2 8GPU/GA4 train `475716`仍dependency pending，尚无W&B run。完整路径与恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`。
+- SFT2 cache `475715`在intel-01以`COMPLETED 0:0`结束（02:09:48，84GiB）：train 59,389 transitions/images、464 image+232 transition shards；val 6,054、48+24 shards；双manifest/done flag及k1/inject/masked/BF16 metadata完整。
+- 人类允许2/3GPU后，elapsed0的8GPU train `475716`被取消，cache/output原子改名为准确ws3/ga11 identity。最终SFT2 job `476023`固定dgx-44请求3GPU、batch2/GA11（nominal effective batch66，较原64高3.125%）、72h，当前`PENDING(Priority)`且尚无W&B run。完整路径与恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`。
 
 ## 2026-07-13：显式 latent query 协议与 SFT1 → SFT2 continuation gate
 
