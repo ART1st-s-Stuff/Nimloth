@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from nimloth.eval.wm_predicted_visual_comparison import (
@@ -94,7 +95,7 @@ def test_visual_metrics_reports_each_horizon() -> None:
     qwen_state = _state_metrics(torch.ones(10, 4), torch.zeros(10, 4))
     current_state = _state_metrics(torch.ones(10, 4), torch.zeros(10, 4))
     metrics, horizons = _visual_metrics(rows, gt, branches, qwen_state, current_state)
-    assert metrics["visual/qwen_gt_to_gt_l1"] == torch.tensor(0.1).item()
+    assert metrics["visual/qwen_gt_to_gt_l1"] == pytest.approx(0.1)
     assert metrics["visual/current_wm_pred_to_gt_l1"] == 0.5
     assert set(horizons) == {"1", "2", "3", "4", "5"}
     assert horizons["3"]["qwen_wm_state_mse"] == 1.0
