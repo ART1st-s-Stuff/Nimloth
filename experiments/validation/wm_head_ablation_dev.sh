@@ -11,6 +11,7 @@ python3 -m py_compile \
   experiments/validation/derive_turn_visual_metrics.py \
   experiments/validation/verify_wm_head_artifacts.py \
   experiments/validation/wm_head_ablation_bootstrap.py \
+  src/nimloth/eval/dynamics_dim_ablation.py \
   src/nimloth/eval/matched_wm_ablation.py \
   src/nimloth/eval/matched_wm_cli.py \
   src/nimloth/eval/matched_wm_metrics.py \

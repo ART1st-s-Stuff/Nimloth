@@ -40,7 +40,7 @@ def matched_noise(count: int, *, seed: int, image_size: int = 128) -> tuple[torc
 
 
 @torch.inference_mode()
-def _adapt(adapter: StateToVisionTokens, states: torch.Tensor, device: torch.device, chunk_size: int) -> torch.Tensor:
+def adapt_states(adapter: StateToVisionTokens, states: torch.Tensor, device: torch.device, chunk_size: int) -> torch.Tensor:
     output = []
     for start in range(0, len(states), chunk_size):
         output.append(adapter(states[start : start + chunk_size].to(device=device, dtype=torch.float32)).cpu())
@@ -48,7 +48,7 @@ def _adapt(adapter: StateToVisionTokens, states: torch.Tensor, device: torch.dev
 
 
 @torch.inference_mode()
-def _sample(model, conditions: torch.Tensor, noise: torch.Tensor, device: torch.device, steps: int, cfg_scale: float, chunk_size: int) -> torch.Tensor:
+def sample_conditions(model, conditions: torch.Tensor, noise: torch.Tensor, device: torch.device, steps: int, cfg_scale: float, chunk_size: int) -> torch.Tensor:
     output = []
     for start in range(0, len(conditions), chunk_size):
         output.append(sample_euler_cfg(model, conditions[start : start + chunk_size], noise[start : start + chunk_size], device=device, steps=steps, cfg_scale=cfg_scale))
@@ -69,9 +69,9 @@ def _conditions(batch, heads: MatchedWMHeads, adapter: StateToVisionTokens, devi
     targets = batch.target_states.reshape(-1, *batch.target_states.shape[2:])
     return {
         "Qwen positive": batch.positive_tokens,
-        "Frozen State GT": _adapt(adapter, targets, device, chunk_size),
-        "Vector 1x8192 WM": _adapt(adapter, vector, device, chunk_size),
-        "Token 8x1024 WM": _adapt(adapter, token, device, chunk_size),
+        "Frozen State GT": adapt_states(adapter, targets, device, chunk_size),
+        "Vector 1x8192 WM": adapt_states(adapter, vector, device, chunk_size),
+        "Token 8x1024 WM": adapt_states(adapter, token, device, chunk_size),
     }
 
 
@@ -79,6 +79,6 @@ def _conditions(batch, heads: MatchedWMHeads, adapter: StateToVisionTokens, devi
 def render_turn_comparison(batch, heads: MatchedWMHeads, adapter: StateToVisionTokens, cfm, device: torch.device, *, steps: int, cfg_scale: float, chunk_size: int, seed: int) -> tuple[dict[str, torch.Tensor], str]:
     conditions = _conditions(batch, heads, adapter, device, chunk_size)
     noise, fingerprint = matched_noise(len(batch.rows), seed=seed)
-    generated = {name: _sample(cfm, condition, noise, device, steps, cfg_scale, chunk_size) for name, condition in conditions.items()}
+    generated = {name: sample_conditions(cfm, condition, noise, device, steps, cfg_scale, chunk_size) for name, condition in conditions.items()}
     gt = torch.stack([image_to_diffusion_tensor(row["gt_image_path"], image_size=128) for row in batch.rows])
     return {"GT": gt, **generated}, fingerprint

@@ -17,6 +17,7 @@ PYTHON_TARGETS = (
     ROOT / "experiments/validation/derive_turn_visual_metrics.py",
     ROOT / "experiments/validation/verify_wm_head_artifacts.py",
     ROOT / "experiments/validation/wm_head_ablation_bootstrap.py",
+    ROOT / "src/nimloth/eval/dynamics_dim_ablation.py",
     ROOT / "src/nimloth/eval/matched_wm_ablation.py",
     ROOT / "src/nimloth/eval/matched_wm_cli.py",
     ROOT / "src/nimloth/eval/matched_wm_metrics.py",

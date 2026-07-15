@@ -118,25 +118,25 @@ def _write_json(path: Path, payload: Any) -> None:
     temporary.replace(path)
 
 
-def _pixel_metrics(images: dict[str, torch.Tensor]) -> dict[str, float]:
-    gt = images[RECONSTRUCTION_COLUMNS[0]].float()
-    return {f"aux_pixel_l1/{name}": float((value.float() - gt).abs().mean()) for name, value in images.items() if name != RECONSTRUCTION_COLUMNS[0]}
+def _pixel_metrics(images: dict[str, torch.Tensor], columns: tuple[str, ...]) -> dict[str, float]:
+    gt = images[columns[0]].float()
+    return {f"aux_pixel_l1/{name}": float((value.float() - gt).abs().mean()) for name, value in images.items() if name != columns[0]}
 
 
-def write_turn_artifacts(batch: TurnBatch, images: dict[str, torch.Tensor], output_dir: Path, *, seed: int, steps: int, cfg_scale: float, noise_fingerprint: str) -> dict[str, Any]:
-    if tuple(images) != RECONSTRUCTION_COLUMNS or any(len(value) != 30 for value in images.values()):
+def write_turn_artifacts(batch: TurnBatch, images: dict[str, torch.Tensor], output_dir: Path, *, seed: int, steps: int, cfg_scale: float, noise_fingerprint: str, columns: tuple[str, ...] = RECONSTRUCTION_COLUMNS) -> dict[str, Any]:
+    if tuple(images) != columns or any(len(value) != 30 for value in images.values()):
         raise ValueError("turn artifact requires five ordered branches with 30 images each")
     if output_dir.exists() and any(output_dir.iterdir()):
         raise FileExistsError(f"artifact output is not empty: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     grouped: dict[int, list[Image.Image]] = defaultdict(list)
     for index, row in enumerate(batch.rows):
-        strip = _strip([_to_image(images[name][index]) for name in RECONSTRUCTION_COLUMNS], RECONSTRUCTION_COLUMNS)
+        strip = _strip([_to_image(images[name][index]) for name in columns], columns)
         row["strip_path"] = str(output_dir / f"run_{row['run_index']:02d}_step_{row['step_index']:02d}.png")
         strip.save(row["strip_path"])
         grouped[int(row["run_index"])].append(strip)
     contacts = _save_contacts(grouped, output_dir)
-    metadata = _metadata(contacts, images, seed, steps, cfg_scale, noise_fingerprint)
+    metadata = _metadata(contacts, images, seed, steps, cfg_scale, noise_fingerprint, columns)
     _write_json(output_dir / "samples.json", batch.rows)
     _write_json(output_dir / "metadata.json", metadata)
     return metadata
@@ -151,5 +151,5 @@ def _save_contacts(grouped: dict[int, list[Image.Image]], output_dir: Path) -> l
     return paths
 
 
-def _metadata(contacts: list[str], images: dict[str, torch.Tensor], seed: int, steps: int, cfg_scale: float, noise: str) -> dict[str, Any]:
-    return {"status": "completed", "num_runs": 6, "num_rows": 30, "columns": list(RECONSTRUCTION_COLUMNS), "seed": seed, "steps": steps, "cfg_scale": cfg_scale, "noise_fingerprint": noise, "contact_sheets": contacts, "semantic_review_status": "pending", "metrics": _pixel_metrics(images)}
+def _metadata(contacts: list[str], images: dict[str, torch.Tensor], seed: int, steps: int, cfg_scale: float, noise: str, columns: tuple[str, ...]) -> dict[str, Any]:
+    return {"status": "completed", "num_runs": 6, "num_rows": 30, "columns": list(columns), "seed": seed, "steps": steps, "cfg_scale": cfg_scale, "noise_fingerprint": noise, "contact_sheets": contacts, "semantic_review_status": "pending", "metrics": _pixel_metrics(images, columns)}
