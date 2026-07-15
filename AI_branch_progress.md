@@ -1076,3 +1076,16 @@
   - 新增 `--experiment-name`，避免启用 wandb 时引用不存在的 `args.experiment_name`。
   - distributed JSONL/FSDP 模式下，从 rank0 广播非 FSDP 小模块 `state_proj`、`wm_predictor`、`value_head` 初始 state，配合同步 JSONL 数据和确定性 batch，避免本地副本初始参数分叉。
 - 验证：`python -m py_compile src/nimloth/training/rl/*.py tests/training/rl/test_rollout_jsonl.py experiments/training/rl/rollout_env.py` 通过；`bash -n experiments/training/rl/run_inside_allocation.sh experiments/training/rl/*.slurm` 通过；pytest 仍受本地环境限制，系统 Python 无 pytest，复用 dev `.venv` 时 torch import 缺 `libstdc++.so.6`。
+
+## 2026-07-16：冻结 State 的 SFT2 dynamics8192 vs2048 已完成
+
+- 正式 job `476787`（commit `64bea16`）在单张 H800 上 exit0，耗时 `00:06:23`；W&B `nimloth-wm/azizxo78`。
+- 两分支共享冻结 `1×8192` State cache，精确训练5 epochs/2,195 steps；Qwen未加载。
+- full8192为408,345,672参数；factorized2048为160,648,264参数。所有epoch resume、best/final reload及finite gates通过。
+- direct `predict_next` MSE为 `.167086/.167503`，基本持平；shuffled MSE为 `.195567/.207859`。
+- autoregressive h1 MSE为 `.197503/.174901`，h5为 `.414193/.351398`；factorized在所有horizon更低且action sensitivity更强。
+- full/factorized吞吐为37.995/57.867 step/s；factorized快1.52倍、参数少60.7%。
+- 初始报告误把padded-history rollout-h1当作训练一致的one-step；已登记 `E0035`，保留旧JSON并由job `476793`分离direct与rollout语义。
+- 固定六条/30行视觉审查：full在两条人物/墙画序列保留语义更好、PNG辅助L1更低；factorized常漂成generic门/房间。前四条中两者均不能稳定跟随turn视角。
+- 结论：2048 bottleneck没有损害direct dynamics，并显著改善autoregressive dynamics、action sensitivity和效率，建议作为完整SFT2默认；同时保留full8192的有限decoder-visible detail优势，不宣布overall visual winner。
+- Artifact verifier PASS；完整SFT2尚未启动。
