@@ -28,6 +28,7 @@ python3 -m py_compile \
   tests/eval/test_matched_wm_ablation.py \
   tests/test_matched_wm_heads.py \
   tests/test_wm_dynamics_dim_ablation.py \
+  tests/training/test_dynamics_dim_trainer.py \
   tests/training/test_matched_wm_trainer.py
 
 bash -n experiments/training/reconstruction/frozen_wm_head_ablation.slurm
@@ -40,6 +41,7 @@ if "$PYTHON_BIN" -c 'import torch' >/dev/null 2>&1; then
       tests/eval/test_matched_wm_ablation.py \
       tests/test_matched_wm_heads.py \
       tests/test_wm_dynamics_dim_ablation.py \
+      tests/training/test_dynamics_dim_trainer.py \
       tests/training/test_matched_wm_trainer.py
   echo "torch_contracts=PASS"
 else

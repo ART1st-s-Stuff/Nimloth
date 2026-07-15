@@ -34,6 +34,7 @@ PYTHON_TARGETS = (
     ROOT / "tests/eval/test_matched_wm_ablation.py",
     ROOT / "tests/test_matched_wm_heads.py",
     ROOT / "tests/test_wm_dynamics_dim_ablation.py",
+    ROOT / "tests/training/test_dynamics_dim_trainer.py",
     ROOT / "tests/training/test_matched_wm_trainer.py",
 )
 CONTROL_NODES = (ast.If, ast.For, ast.While, ast.With, ast.Try, ast.Match, ast.comprehension)
