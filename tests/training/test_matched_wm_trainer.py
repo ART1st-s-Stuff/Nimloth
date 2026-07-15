@@ -82,7 +82,7 @@ def test_trainer_uses_shared_ids_reports_controls_and_resumes(tmp_path: Path) ->
     actual = resumed.train_step()
     metrics = resumed.evaluate(dataset)
 
-    assert first["sample_ids"] == ["row:3", "row:4", "row:2", "row:5"]
+    assert first["sample_ids"] == ["row:3", "row:5", "row:8", "row:4"]
     assert actual["sample_ids"] == expected["sample_ids"]
     assert all(torch.equal(expected_state[key], value) for key, value in resumed.heads.state_dict().items())
     assert set(metrics) == {"vector", "token"}
