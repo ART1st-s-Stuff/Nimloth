@@ -9,13 +9,17 @@ import torch
 from torch import nn
 
 
+def _encoder_state(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    prefixes = ("encoder_norm.", "encoder.", "bottleneck_norm.")
+    return {key: value for key, value in state.items() if key.startswith(prefixes)}
+
+
 class FrozenQueryStateEncoder(nn.Module):
     """Load only the trained 8×2048→8×1024 encoder from a probe checkpoint."""
 
     def __init__(self, input_dim: int, output_dim: int, *, source_step: int) -> None:
         super().__init__()
-        self.input_dim = int(input_dim)
-        self.output_dim = int(output_dim)
+        self.input_dim, self.output_dim = int(input_dim), int(output_dim)
         self.source_step = int(source_step)
         self.encoder_norm = nn.LayerNorm(input_dim)
         self.encoder = nn.Linear(input_dim, output_dim)
@@ -24,19 +28,13 @@ class FrozenQueryStateEncoder(nn.Module):
     @classmethod
     def from_probe_checkpoint(cls, path: Path) -> "FrozenQueryStateEncoder":
         payload = torch.load(path, map_location="cpu", weights_only=False)
-        input_shape = payload["invariants"]["input_shape"]
-        output_shape = payload["invariants"]["bottleneck_shape"]
-        module = cls(input_shape[1], output_shape[1], source_step=payload["step"])
-        module.load_state_dict(cls._encoder_state(payload["model"]), strict=True)
+        source, target = payload["invariants"]["input_shape"], payload["invariants"]["bottleneck_shape"]
+        module = cls(source[1], target[1], source_step=payload["step"])
+        module.load_state_dict(_encoder_state(payload["model"]), strict=True)
         module.eval()
         for parameter in module.parameters():
             parameter.requires_grad_(False)
         return module
-
-    @staticmethod
-    def _encoder_state(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        prefixes = ("encoder_norm.", "encoder.", "bottleneck_norm.")
-        return {key: value for key, value in state.items() if key.startswith(prefixes)}
 
     def forward(self, query_hidden: torch.Tensor) -> torch.Tensor:
         expected = (8, self.input_dim)
