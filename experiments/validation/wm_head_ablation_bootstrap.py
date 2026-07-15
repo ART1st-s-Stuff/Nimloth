@@ -27,6 +27,7 @@ PYTHON_TARGETS = (
     ROOT / "src/nimloth/training/wm_heads/data.py",
     ROOT / "src/nimloth/training/wm_heads/train_cli.py",
     ROOT / "src/nimloth/training/wm_heads/trainer.py",
+    ROOT / "src/nimloth/wm/dynamics_dim_heads.py",
     ROOT / "src/nimloth/wm/frozen_query_state.py",
     ROOT / "src/nimloth/wm/frozen_state_cache.py",
     ROOT / "src/nimloth/wm/matched_heads.py",

@@ -21,6 +21,7 @@ python3 -m py_compile \
   src/nimloth/training/wm_heads/data.py \
   src/nimloth/training/wm_heads/train_cli.py \
   src/nimloth/training/wm_heads/trainer.py \
+  src/nimloth/wm/dynamics_dim_heads.py \
   src/nimloth/wm/frozen_query_state.py \
   src/nimloth/wm/frozen_state_cache.py \
   src/nimloth/wm/matched_heads.py \
