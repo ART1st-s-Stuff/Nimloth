@@ -249,4 +249,5 @@
 
 - 完整SFT2继续暂停；新增head-only对照，外部均`1×8192`，比较现有SFT2 `dynamics_dim=8192` full与2048 factorized，AR Transformer hidden均1024。参数full408,345,672（action encoder268.7M）vs factorized160,648,264，明确不作matched-param结论。
 - 用户选择精确5 cache epochs而非10k steps。共享ID19 cache、batch128、AdamW3e-4/BF16、seed20260716；每transition每epochexact-once shuffle，56,172 rows→439 steps/epoch→2195 total。
-- TDD链：head`ddc3532→0107697`、trainer`839749f→67704fc`、eval`d5c2c6a→44ac71c`、CLI/Slurm/verifier`787063e`。server19 tests；tiny CPU CLI2 epochs/6 steps、epoch checkpoints、best/final、strict reload和rollout通过。尚未启动GPU；下一步production-shape短smoke测显存/吞吐后再记录正式资源估算。
+- TDD链：head`ddc3532→0107697`、trainer`839749f→67704fc`、eval`d5c2c6a→44ac71c`、CLI/Slurm/verifier`787063e`。server19 tests；tiny CPU CLI2 epochs/6 steps、epoch checkpoints、best/final、strict reload和rollout通过。
+- production-shape smoke使用明确subset cache（train256 rows/242 pairs、val128/118，source fingerprints保持）与batch128。job476783 normal/dgx-09 `COMPLETED0:0`/00:01:51，W&B`65w2wpv8`；2 finite steps，gpumem11,214MiB/MaxRSS约8.68GiB，无OOM/NaN/traceback/Qwen。full408M throughput.922 step/s，factorized161M 33.4 step/s；epoch resume checkpoint约6.83GB，best/final reload+rollout通过。正式5epochs估45–60min/1H800，尚未提交。
