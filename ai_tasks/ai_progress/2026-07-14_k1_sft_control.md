@@ -18,10 +18,10 @@ Train a controlled k=1 comparison for the formal k=8 inject pipeline. The intend
 
 - Config: `configs/training/sft1/qwen25vl_lora_k1_inject.yaml`.
 - Trainable: Qwen LoRA r64/alpha128 and newly added query-token embedding row; base weights otherwise frozen.
-- Budget: 5 epochs, 8 GPUs, per-rank batch1, grad accumulation8, LR2e-4, embedding LR5e-4, max length12000, max pixels602112.
+- Original budget was 5 epochs on 8 GPUs with per-rank batch1/grad accumulation8. At human direction after cache completion, SFT1 was changed to 4 GPUs with grad accumulation16, preserving effective batch64; all other settings remain unchanged.
 - CPU preprocess cache is built first; GPU training requires the fingerprint-matching prebuilt cache.
-- W&B: project `nimloth-sft1`, ID1, run `1_k1inject_success613_lora64a128_ep5_b1_ga8_ws8_px602112`.
-- Output: `/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/control_k1/sft1/1_k1inject_success613_lora64a128_ep5_b1_ga8_ws8_px602112`.
+- W&B: project `nimloth-sft1`, ID1, run `1_k1inject_success613_lora64a128_ep5_b1_ga16_ws4_px602112`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/control_k1/sft1/1_k1inject_success613_lora64a128_ep5_b1_ga16_ws4_px602112`.
 - Checkpoints are saved every epoch plus best/final. Resume auto-selects latest complete epoch checkpoint; W&B run ID is persisted and reused.
 
 ## SFT1 merge
@@ -41,7 +41,7 @@ Train a controlled k=1 comparison for the formal k=8 inject pipeline. The intend
 
 ## Pipeline and resources
 
-Dependency chain: SFT1 CPU cache (8 CPU, up to ~3h, ~47GiB) -> SFT1 train (8 H800, historically ~30m) -> SFT1 merge (1 GPU, estimate <30m) -> SFT2 CPU compact cache (8 CPU, historically ~2h, ~85GiB) -> SFT2 train (8 H800, estimate ~16h including validation/checkpoint overhead). Preempt queue delay and repeated preemption are additional and unpredictable.
+Dependency chain: SFT1 CPU cache (8 CPU, up to ~3h, ~47GiB) -> SFT1 train (now 4 H800, estimated under 1h) -> SFT1 merge (1 GPU, estimate <30m) -> SFT2 CPU compact cache (8 CPU, historically ~2h, ~85GiB) -> SFT2 train (8 H800, estimate ~16h including validation/checkpoint overhead). Queue delay and repeated preemption are additional and unpredictable.
 
 No k=8 job, checkpoint, cache, CSV, or output will be modified or deleted.
 
@@ -51,4 +51,5 @@ No k=8 job, checkpoint, cache, CSV, or output will be modified or deleted.
 - Local syntax checks passed. Clean server worktree `/project/peilab/atst/nimloth/.worktree/k1-sft-control` is pinned to `3d46066`; 19 relevant server tests passed.
 - Human confirmed the exact controlled setup. Dependency pipeline submitted: SFT1 cache `474974` -> SFT1 train `474975` -> BF16 merge `474976` -> SFT2 compact cache `474977` -> SFT2 train `474978`.
 - SFT1 cache job `474974` completed `0:0` on `intel-01` in 02:38:46. Log confirms commit `3d46066`, source checkpoint, complete success613/val355 inputs, k=1 inject, masked query labels, BF16 pixels, and both completed cache fingerprints. Cache uses 47GiB and `preprocess_cache_done.flag` exists.
-- SFT1 train job `474975` is now `PENDING (Priority)` for one 8-GPU preempt node. No preempt node currently has 8 free GPUs; queue ETA is unknown. W&B run has correctly not been created before training starts. Downstream jobs remain dependency-gated.
+- Human directed using the available GPUs on dgx-51. At verification time dgx-51 had 6 free GPUs. The unstarted 8-GPU job `474975` and dependency-only downstream jobs `474976`–`474978` were cancelled at elapsed0 and replaced without deleting data.
+- Completed cache/run directory was atomically renamed for accurate ws4/ga16 identity. Replacement SFT1 job `475713` requests 4 GPUs on dgx-51 with grad accumulation16/effective batch64 and is currently `PENDING (Priority)`. Replacement downstream jobs: merge `475714`, SFT2 cache `475715`, SFT2 8-GPU train `475716`.
