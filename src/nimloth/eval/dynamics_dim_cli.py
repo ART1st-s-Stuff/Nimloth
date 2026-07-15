@@ -75,13 +75,16 @@ def refresh_metrics(config_path: Path, checkpoint: Path, device: torch.device, n
     metrics_path, archive = root / "dynamics_metrics.json", root / "dynamics_metrics_pre_direct_mode_fix.json"
     if metrics_path.is_file() and not archive.exists():
         archive.write_bytes(metrics_path.read_bytes())
+    control_archive = root / "dynamics_metrics_pre_rollout_control_fix.json"
+    if metrics_path.is_file() and not control_archive.exists():
+        control_archive.write_bytes(metrics_path.read_bytes())
     _atomic_json(metrics_path, dynamics)
     summary_path = root / "evaluation_summary.json"
     summary = json.loads(summary_path.read_text())
     old_summary = root / "evaluation_summary_pre_direct_mode_fix.json"
     if not old_summary.exists():
         old_summary.write_bytes(summary_path.read_bytes())
-    summary["dynamics"], summary["metric_semantics"] = dynamics, {"one_step": "direct_predict_next", "horizons": "autoregressive_rollout"}
+    summary["dynamics"], summary["metric_semantics"] = dynamics, {"one_step": "direct_predict_next", "one_step_control": "direct_predict_next", "horizons": "autoregressive_rollout", "horizon1_control": "autoregressive_rollout"}
     summary["wandb_url"] = _wandb(config, root, None, dynamics, no_wandb)
     _atomic_json(summary_path, summary)
     print(json.dumps(dynamics), flush=True)

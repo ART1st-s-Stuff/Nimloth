@@ -64,6 +64,13 @@ def _autocast(device: torch.device):
     return torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda")
 
 
+def _add_rollout_control(wrong: dict, heads, state: torch.Tensor, actions: torch.Tensor, target: torch.Tensor) -> None:
+    if actions.shape[1] != 1:
+        return
+    rollouts = heads.rollout(state, actions.roll(1, dims=0))
+    _add(wrong, tuple(output[:, -1] for output in rollouts), target)
+
+
 def _evaluate_horizon(heads, windows: list, device: torch.device, batch_size: int) -> dict[str, Any]:
     totals, wrong = _totals(), _totals()
     horizon = int(windows[0][1].shape[0])
@@ -72,13 +79,15 @@ def _evaluate_horizon(heads, windows: list, device: torch.device, batch_size: in
             state, actions, target = _batch(windows, start, batch_size, device)
             rollouts = heads.rollout(state, actions)
             _add(totals, tuple(output[:, -1] for output in rollouts), target)
-            if horizon == 1:
-                _add(wrong, heads.predict_next(state, actions[:, 0].roll(1)), target)
+            _add_rollout_control(wrong, heads, state, actions, target)
     result = {name: {key: value / len(windows) for key, value in metrics.items()} for name, metrics in totals.items()}
     if horizon == 1:
         for name in result:
             result[name].update({f"shuffled_{key}": value / len(windows) for key, value in wrong[name].items()})
-    return {"count": len(windows), "mode": "autoregressive_rollout", **result}
+    output = {"count": len(windows), "mode": "autoregressive_rollout", **result}
+    if horizon == 1:
+        output["shuffled_mode"] = "autoregressive_rollout"
+    return output
 
 
 def _evaluate_direct(heads, windows: list, device: torch.device, batch_size: int) -> dict[str, Any]:
@@ -104,7 +113,7 @@ def evaluate_dynamics_dims(heads: DynamicsDimWMHeads, cache_dir: Path, device: t
             raise ValueError(f"no dynamics-dimension windows for horizon {horizon}")
         horizons[str(horizon)] = _evaluate_horizon(heads, windows, device, batch_size)
     one_step = {name: direct[name] for name in ("full", "factorized")}
-    return {"one_step_count": direct["count"], "one_step_mode": direct["mode"], "one_step": one_step, "horizons": horizons}
+    return {"one_step_count": direct["count"], "one_step_mode": direct["mode"], "one_step_control_mode": direct["mode"], "one_step": one_step, "horizons": horizons}
 
 
 def _wm_states(batch: TurnBatch, heads: DynamicsDimWMHeads, device: torch.device):
