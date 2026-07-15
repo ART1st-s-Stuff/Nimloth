@@ -78,19 +78,33 @@ def _evaluate_horizon(heads, windows: list, device: torch.device, batch_size: in
     if horizon == 1:
         for name in result:
             result[name].update({f"shuffled_{key}": value / len(windows) for key, value in wrong[name].items()})
-    return {"count": len(windows), **result}
+    return {"count": len(windows), "mode": "autoregressive_rollout", **result}
+
+
+def _evaluate_direct(heads, windows: list, device: torch.device, batch_size: int) -> dict[str, Any]:
+    totals, wrong = _totals(), _totals()
+    with torch.inference_mode(), _autocast(device):
+        for start in range(0, len(windows), batch_size):
+            state, actions, target = _batch(windows, start, batch_size, device)
+            _add(totals, heads.predict_next(state, actions[:, 0]), target)
+            _add(wrong, heads.predict_next(state, actions[:, 0].roll(1)), target)
+    result = {name: {key: value / len(windows) for key, value in metrics.items()} for name, metrics in totals.items()}
+    for name in result:
+        result[name].update({f"shuffled_{key}": value / len(windows) for key, value in wrong[name].items()})
+    return {"count": len(windows), "mode": "direct_predict_next", **result}
 
 
 def evaluate_dynamics_dims(heads: DynamicsDimWMHeads, cache_dir: Path, device: torch.device, *, batch_size: int) -> dict[str, Any]:
     records, horizons = load_state_records(cache_dir), {}
     heads.to(device).eval()
+    direct = _evaluate_direct(heads, _windows(records, 1), device, batch_size)
     for horizon in range(1, 6):
         windows = _windows(records, horizon)
         if not windows:
             raise ValueError(f"no dynamics-dimension windows for horizon {horizon}")
         horizons[str(horizon)] = _evaluate_horizon(heads, windows, device, batch_size)
-    one_step = {name: horizons["1"][name] for name in ("full", "factorized")}
-    return {"one_step_count": horizons["1"]["count"], "one_step": one_step, "horizons": horizons}
+    one_step = {name: direct[name] for name in ("full", "factorized")}
+    return {"one_step_count": direct["count"], "one_step_mode": direct["mode"], "one_step": one_step, "horizons": horizons}
 
 
 def _wm_states(batch: TurnBatch, heads: DynamicsDimWMHeads, device: torch.device):

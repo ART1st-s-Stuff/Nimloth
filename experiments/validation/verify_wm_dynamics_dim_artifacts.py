@@ -76,6 +76,10 @@ def _evaluation_gate(root: Path) -> dict[str, Any]:
     dynamics = _json(root / "eval/dynamics_metrics.json")
     if not _finite(dynamics) or set(dynamics["horizons"]) != {"1", "2", "3", "4", "5"}:
         raise ValueError("full-val dynamics metrics incomplete")
+    if dynamics.get("one_step_mode") != "direct_predict_next":
+        raise ValueError("direct one-step metric mode missing")
+    if any(value.get("mode") != "autoregressive_rollout" for value in dynamics["horizons"].values()):
+        raise ValueError("autoregressive horizon mode missing")
     turns = _json(root / "eval/turns/metadata.json")
     expected = ["GT", "Qwen positive", "Frozen State GT", "Full dynamics8192 WM", "Factorized dynamics2048 WM"]
     if (turns["num_runs"], turns["num_rows"], turns["columns"]) != (6, 30, expected):

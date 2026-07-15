@@ -24,7 +24,7 @@ def _atomic_json(path: Path, payload: Any) -> None:
     temporary.replace(path)
 
 
-def _wandb(config: dict, root: Path, artifacts: dict, dynamics: dict, disabled: bool) -> str | None:
+def _wandb(config: dict, root: Path, artifacts: dict | None, dynamics: dict, disabled: bool) -> str | None:
     if disabled:
         return None
     import wandb
@@ -35,9 +35,10 @@ def _wandb(config: dict, root: Path, artifacts: dict, dynamics: dict, disabled: 
     for horizon, values in dynamics["horizons"].items():
         for branch in ("full", "factorized"):
             payload.update({f"horizon/{horizon}/{branch}/{key}": value for key, value in values[branch].items()})
-    for index, path in enumerate(artifacts["contact_sheets"]):
-        payload[f"dynamics_dim_turns/run_{index:02d}"] = wandb.Image(path)
-    step = int(config["training"]["epochs"]) * 10000 + 1
+    if artifacts is not None:
+        for index, path in enumerate(artifacts["contact_sheets"]):
+            payload[f"dynamics_dim_turns/run_{index:02d}"] = wandb.Image(path)
+    step = int(config["training"]["epochs"]) * 10000 + (1 if artifacts is not None else 2)
     run.log(payload, step=step)
     url = run.url
     run.finish()
@@ -66,18 +67,41 @@ def run(config_path: Path, checkpoint: Path, device: torch.device, no_wandb: boo
     return summary
 
 
+def refresh_metrics(config_path: Path, checkpoint: Path, device: torch.device, no_wandb: bool) -> dict[str, Any]:
+    config, root = load_config(config_path), output_dir(load_config(config_path)) / "eval"
+    cache = Path(config["inputs"]["state_cache"]) / "val"
+    heads = DynamicsDimWMHeads.load_checkpoint(checkpoint, device).to(device).eval()
+    dynamics = evaluate_dynamics_dims(heads, cache, device, batch_size=int(config["training"]["eval_batch_size"]))
+    metrics_path, archive = root / "dynamics_metrics.json", root / "dynamics_metrics_pre_direct_mode_fix.json"
+    if metrics_path.is_file() and not archive.exists():
+        archive.write_bytes(metrics_path.read_bytes())
+    _atomic_json(metrics_path, dynamics)
+    summary_path = root / "evaluation_summary.json"
+    summary = json.loads(summary_path.read_text())
+    old_summary = root / "evaluation_summary_pre_direct_mode_fix.json"
+    if not old_summary.exists():
+        old_summary.write_bytes(summary_path.read_bytes())
+    summary["dynamics"], summary["metric_semantics"] = dynamics, {"one_step": "direct_predict_next", "horizons": "autoregressive_rollout"}
+    summary["wandb_url"] = _wandb(config, root, None, dynamics, no_wandb)
+    _atomic_json(summary_path, summary)
+    print(json.dumps(dynamics), flush=True)
+    return dynamics
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--no-wandb", action="store_true")
+    parser.add_argument("--metrics-only", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    run(args.config, args.checkpoint, torch.device(args.device), args.no_wandb)
+    function = refresh_metrics if args.metrics_only else run
+    function(args.config, args.checkpoint, torch.device(args.device), args.no_wandb)
     return 0
 
 
