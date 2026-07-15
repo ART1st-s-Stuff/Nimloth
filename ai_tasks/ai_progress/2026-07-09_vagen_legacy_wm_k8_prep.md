@@ -235,8 +235,12 @@
 - 输入核验：train59,389/fingerprint`fe3076b60cc96fe2`，val6,054/`d06f4adf47846d52`；encoder2,104,320参数、严格加载、finite输出。新cache仅运行冻结encoder，不加载Qwen。
 - TDD代码链：shape/cache RED→GREEN与trainer RED→GREEN已提交至`3deeb3c`；server affected suite `8 passed`。cache manifest记录source fingerprint、encoder hash/step和exact view contract；sampler/optimizer/RNG实际resume与uninterrupted下一step权重bitwise一致。
 - matched heads：vector53,281,664参数（hidden896），token52,503,552（hidden1024），差1.48%；共同depth4/heads8/action conditioning。CPU8-thread batch2两头合计one-step0.0396s、rollout5 0.2317s，GPU吞吐待正式训练记录。
-- dynamics dataset只连接同record相邻step；terminal row无缓存next-State，保留给reconstruction但不进入WM loss。正式cache、训练、full-val与30-row visual artifacts均尚未启动。
+- dynamics dataset只连接同record相邻step；terminal row无缓存next-State，保留给reconstruction但不进入WM loss。
 - evaluator RED`3ec260a`、GREEN`e6bcad6`；真实FP16 cache fixture随后在head Linear暴露Half/Float边界，`bbee777`统一在trainer/dynamics/render入口转FP32。CLI/Slurm/artifact verifier由`212197b`加入，launch finite guards/W&B credential/resume参数修复至`860de9f`；server affected suite`13 passed`。
 - full-val定义为每条record所有连续起点的horizon1..5窗口；正式source metadata核实train56,172 dynamics pairs/3,217 records，val5,699/355。tiny CPU cache CLI与2-step train CLI执行smoke通过，含atomic manifests、best/final、actual reload、5-step rollout和branch timing。
 - W&B新stage固定`nimloth-wm`；API确认project尚不存在，因此首个正式ID1，run name=`1_frozen_vector8192_vs_token8x1024_s10000_b128`。单job请求1GPU/8CPU/≤2h，未超过用户批准的2GPU/2GPUh边界。
-- 用户明确豁免mise和GitHub CI；最终验证直接运行`bash experiments/validation/verify_wm_head_shape_ablation.sh`。
+- pre-submit两次均未入队：首个命令本地quote失败；第二个被Slurm因缺`--account`拒绝。`1eee7c5`补`--account=peilab`后，正式job476723在normal/dgx-27 `COMPLETED0:0`/00:06:24。无OOM/NaN/traceback；W&B`ned9k9vf`。cache13.96s，train10k/308.78s/0.0858GPUh，allocation0.107GPUh，output11GiB。
+- derived cache train59,389/fingerprint`b0802d7c6dae1639`、val6,054/`520b27798fb28c1c`，全部source/order/finite/view gates通过且Qwen未加载。best vector@3500 MSE.16083155、token@2000 .16159483；best/final reload+rollout finite。throughput134.57 vs70.26 steps/s。
+- full-val vector/token h1 MSE.160832/.161595（shuffled.192763/.176274），h2.208456/.218074，h3.240766/.253824，h4.266622/.280754，h5.287718/.302603；vector所有horizon略优且action shuffled penalty更大。
+- 30-row视觉人工审查完成：vector常为平滑同色墙，token常为更清晰但错误geometry；两者均不能稳定对应right/left rotation，尤其run4人物/画面reveal-return失败。仅判vector latent dynamics/吞吐更优，不宣布overall visual winner或新默认。
+- postprocess/verifier`7bd6939`补per-horizon PNG auxiliary metrics并完成semantic review；artifact verifier PASS。用户明确豁免mise和GitHub CI；最终验证直接运行`bash experiments/validation/verify_wm_head_shape_ablation.sh`。

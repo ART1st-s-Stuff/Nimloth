@@ -15,7 +15,11 @@
 - evaluator/automation已补齐：full-val one-step+shuffled与所有可用窗口的horizon1..5；strict六条turn batch；同CFM/noise的五列30-row artifact；frozen adapter reload；cache/train/eval CLI、single-GPU Slurm和artifact verifier。提交至`860de9f`，server affected suite现为`13 passed`。
 - evaluator GREEN首次用真实FP16 cache fixture暴露head FP32 dtype边界，commit`bbee777`在trainer/full-val/render三条cache→head路径显式转FP32；trainer fixture同步改FP16，防止复发。
 - 正式source metadata实测dynamics pairs为train56,172（59,389 rows/3,217 records）和val5,699（6,054/355）。tiny CPU执行smoke已实际通过cache CLI和2-step train CLI，包括best/final、reload、5-step rollout与branch timing。
-- 尚未构建正式8×1024 cache、未启动GPU训练、未生成新重建图。用户豁免mise/GitHub CI；最终唯一命令必须直接运行`bash experiments/validation/verify_wm_head_shape_ablation.sh`。
+- 正式job`476723`（experiment commit`1eee7c5`）在normal/dgx-27 `COMPLETED 0:0`/`00:06:24`/1×H800，无OOM/NaN/traceback；W&B `nimloth-wm/ned9k9vf`。cache13.96s，train10k steps/308.78s/0.0858 GPUh，allocation约0.107 GPUh，output11GiB。
+- cache gates全部通过：train59,389/fingerprint`b0802d7c6dae1639`、val6,054/`520b27798fb28c1c`，source fingerprints/order/finiteness/exact view一致，`qwen_loaded=false`。best vector@3500、token@2000，best/final严格reload与5-step rollout finite。
+- full-val h1 MSE vector/token `.160832/.161595`，h2 `.208456/.218074`，h3 `.240766/.253824`，h4 `.266622/.280754`，h5 `.287718/.302603`；vector在所有horizon更低、shuffled penalty19.9% vs token9.1%，且134.57 vs70.26 steps/s（约1.92×快）。这是matched latent-dynamics优势。
+- 六条canonical turn-both/30 rows同CFM/noise已全部人工审查：vector常退化成平滑同色墙，token常有更清晰但错误的门/走廊/浴室geometry；两者都不能稳定对应实际右转/左转视角，run4人物/画面reveal-return均失败。故不宣布overall visual winner或新默认；pixel L1仅辅助。
+- postprocess/verifier commit`7bd6939`生成per-horizon visual auxiliary metrics和semantic review；artifact verifier已PASS。最终仍需提交docs cleanup commit，并逐字运行直接`bash experiments/validation/verify_wm_head_shape_ablation.sh`（用户豁免mise/GitHub CI）。
 
 ## 2026-07-14：k=1 inject SFT control（准备中）
 

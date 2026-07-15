@@ -91,3 +91,29 @@ bash experiments/validation/verify_wm_head_shape_ablation.sh
 The verifier requires finite full-cache metrics, best/final reload and five-step
 rollout, six contact sheets covering 30 rows, and a completed semantic review.
 Pixel L1 is auxiliary and cannot determine the winner.
+
+## Result
+
+Experiment commit `1eee7c5373234069724a808b452bddc783ea3f88` ran as Slurm
+job `476723` on one H800 and completed exit0 in `00:06:24`. W&B project/run is
+`nimloth-wm/ned9k9vf`. Cache transformation took 13.96s; training took 308.78s
+and 0.0858 GPU-hour. Output size is 11 GiB.
+
+Both branches completed 10,000 matched steps and strict finite reload/rollout.
+Best vector is step3500, val MSE `0.16083155`; best token is step2000,
+`0.16159483`. Vector/token throughput is 134.57/70.26 branch steps/s. Full-val
+MSE at horizons1..5 is vector
+`0.160832,0.208456,0.240766,0.266622,0.287718` versus token
+`0.161595,0.218074,0.253824,0.280754,0.302603`. Vector also has a larger
+one-step shuffled-action penalty: 19.9% versus 9.1%.
+
+All 30 fixed visual rows were reviewed. Vector often becomes a smooth same-color
+wall; token often has sharper but wrong doors/corridors/fixtures. Neither branch
+reliably follows the actual right/left viewpoint sequence, so no overall visual
+winner or new default is declared. Vector is the better fast latent-dynamics
+head under this matched budget, subject to that visual limitation.
+
+Post-processing/verifier commit `7bd6939` produced per-horizon auxiliary visual
+metrics and passed the deterministic artifact verifier. Full evidence is in the
+exclusive output README, `eval/dynamics_metrics.json`,
+`eval/turns/semantic_review.json`, and `eval/turns/visual_horizon_metrics.json`.
