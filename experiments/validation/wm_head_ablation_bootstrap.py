@@ -32,6 +32,7 @@ PYTHON_TARGETS = (
     ROOT / "src/nimloth/wm/frozen_query_state.py",
     ROOT / "src/nimloth/wm/frozen_state_cache.py",
     ROOT / "src/nimloth/wm/matched_heads.py",
+    ROOT / "tests/eval/test_dynamics_dim_ablation.py",
     ROOT / "tests/eval/test_matched_wm_ablation.py",
     ROOT / "tests/test_matched_wm_heads.py",
     ROOT / "tests/test_wm_dynamics_dim_ablation.py",

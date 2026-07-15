@@ -26,6 +26,7 @@ python3 -m py_compile \
   src/nimloth/wm/frozen_query_state.py \
   src/nimloth/wm/frozen_state_cache.py \
   src/nimloth/wm/matched_heads.py \
+  tests/eval/test_dynamics_dim_ablation.py \
   tests/eval/test_matched_wm_ablation.py \
   tests/test_matched_wm_heads.py \
   tests/test_wm_dynamics_dim_ablation.py \
@@ -39,6 +40,7 @@ if "$PYTHON_BIN" -c 'import torch' >/dev/null 2>&1; then
   done
   PYTHONPATH="$ROOT/src:$ROOT/external/le-wm" \
     "$PYTHON_BIN" -m pytest -q \
+      tests/eval/test_dynamics_dim_ablation.py \
       tests/eval/test_matched_wm_ablation.py \
       tests/test_matched_wm_heads.py \
       tests/test_wm_dynamics_dim_ablation.py \
