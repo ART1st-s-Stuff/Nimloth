@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "configs/training/reconstruction/frozen_wm_head_shape_ablation.json"
+DYNAMICS_CONFIG = ROOT / "configs/training/reconstruction/wm_dynamics_dim_ablation.json"
 DEV = ROOT / "experiments/validation/wm_head_ablation_dev.sh"
 VERIFY = ROOT / "experiments/validation/verify_wm_head_shape_ablation.sh"
 SLURM = ROOT / "experiments/training/reconstruction/frozen_wm_head_ablation.slurm"
@@ -31,6 +32,7 @@ PYTHON_TARGETS = (
     ROOT / "src/nimloth/wm/matched_heads.py",
     ROOT / "tests/eval/test_matched_wm_ablation.py",
     ROOT / "tests/test_matched_wm_heads.py",
+    ROOT / "tests/test_wm_dynamics_dim_ablation.py",
     ROOT / "tests/training/test_matched_wm_trainer.py",
 )
 CONTROL_NODES = (ast.If, ast.For, ast.While, ast.With, ast.Try, ast.Match, ast.comprehension)
@@ -48,6 +50,15 @@ def check_state(config: dict) -> None:
     assert heads["vector"]["emb_dim"] == state["flat_dim"]
     assert heads["token"]["tokens"] == state["tokens"]
     assert heads["token"]["emb_dim"] == state["token_dim"]
+
+
+def check_dynamics_config() -> None:
+    config = load_json(DYNAMICS_CONFIG)
+    assert config["state"]["external_dim"] == 8192
+    assert config["predictor"]["full_dynamics_dim"] == 8192
+    assert config["predictor"]["factorized_dynamics_dim"] == 2048
+    assert config["predictor"]["hidden_dim"] == 1024
+    assert config["training"]["epochs"] == 5
 
 
 def check_budget(config: dict) -> None:
@@ -90,7 +101,7 @@ def check_python_structure(path: Path) -> None:
 
 
 def check_files() -> None:
-    for path in (CONFIG, DEV, VERIFY, SLURM, *PYTHON_TARGETS):
+    for path in (CONFIG, DYNAMICS_CONFIG, DEV, VERIFY, SLURM, *PYTHON_TARGETS):
         assert path.is_file(), f"missing bootstrap file: {path}"
         assert len(path.read_text(encoding="utf-8").splitlines()) <= 200
     for path in PYTHON_TARGETS:
@@ -101,11 +112,13 @@ def main() -> int:
     config = load_json(CONFIG)
     check_state(config)
     check_budget(config)
+    check_dynamics_config()
     check_turns(config)
     check_files()
     print("bootstrap_config=PASS")
     print("turn_semantics=PASS required=turn_right,turn_left forbidden=move_right,move_left")
     print("state_views=PASS vector=1x8192 token=8x1024 shared_scalars=8192")
+    print("dynamics_dims=PASS external=8192 full=8192 factorized=2048 hidden=1024 epochs=5")
     print("structure=PASS file_max=200 construct_max=30 nesting_max=3")
     print("mise=WAIVED_BY_USER github_ci=WAIVED_BY_USER")
     return 0

@@ -1,0 +1,63 @@
+{
+  "experiment_id": 20,
+  "name": "20_state8192_dynamics8192_vs2048_ep5_b128",
+  "seed": 20260716,
+  "inputs": {
+    "state_cache": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/query_state_ablation/19_frozen_wm_heads_vector8192_vs_token8x1024_s10000_b128/state_cache",
+    "state_train_fingerprint": "b0802d7c6dae1639",
+    "state_val_fingerprint": "520b27798fb28c1c",
+    "positive_cache": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/query_state_ablation/12_qwenpositive_stateadapter_all3217_s10000_b128/positive_cache",
+    "adapter_checkpoint": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/query_state_ablation/18_query8x1024_cache_probe/train/best.pt",
+    "cfm_checkpoint": "/project/peilab/atst/nimloth/outputs/experiments/representation_ablation/2026-07-07/token_cfm_decoder_full_b32_e10_lr1em4_rollout5_467041/vit_token_cfm_low_lr_cont_b32_e10_lr1em5_from_dropcfg_467261/vit_token_cfm_low_lr_best_val.pt",
+    "turn_spec": "configs/eval/reconstruction/rcdm_rollout5_turns_val.json"
+  },
+  "output_dir": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/query_state_ablation/20_state8192_dynamics8192_vs2048_ep5_b128",
+  "state": {
+    "tokens": 8,
+    "token_dim": 1024,
+    "external_dim": 8192,
+    "train_rows": 59389,
+    "val_rows": 6054,
+    "train_transitions": 56172,
+    "val_transitions": 5699
+  },
+  "predictor": {
+    "full_dynamics_dim": 8192,
+    "factorized_dynamics_dim": 2048,
+    "hidden_dim": 1024,
+    "depth": 6,
+    "heads": 16,
+    "mlp_dim": 4096,
+    "history_size": 4,
+    "action_dim": 8
+  },
+  "training": {
+    "epochs": 5,
+    "batch_size": 128,
+    "eval_batch_size": 128,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.0001,
+    "cosine_weight": 0.1,
+    "grad_clip": 1.0,
+    "dtype": "bfloat16",
+    "checkpoint_each_epoch": true
+  },
+  "reconstruction": {
+    "sample_steps": 50,
+    "cfg_scale": 2.0,
+    "chunk_size": 4,
+    "num_rollouts": 6,
+    "horizons": 5,
+    "columns": [
+      "GT",
+      "Qwen positive",
+      "Frozen State GT",
+      "Full dynamics8192 WM",
+      "Factorized dynamics2048 WM"
+    ]
+  },
+  "wandb": {
+    "project": "nimloth-wm",
+    "run_name": "2_dynamics8192_vs2048_state8192_ep5_b128"
+  }
+}
