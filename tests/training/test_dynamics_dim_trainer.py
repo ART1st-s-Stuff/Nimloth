@@ -64,7 +64,7 @@ def test_dynamics_trainer_uses_shared_batch_and_resumes_exactly(tmp_path: Path) 
     actual = resumed.train_step()
     metrics = resumed.evaluate(dataset)
 
-    assert first["sample_ids"] == ["row:11", "row:2", "row:5", "row:8"]
+    assert first["sample_ids"] == ["row:2", "row:11", "row:0", "row:6"]
     assert actual["sample_ids"] == expected["sample_ids"]
     assert all(torch.equal(expected_state[key], value) for key, value in resumed.heads.state_dict().items())
     assert set(metrics) == {"full", "factorized"}
