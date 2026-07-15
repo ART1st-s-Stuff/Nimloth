@@ -56,15 +56,20 @@ The training job is submitted with `afterok:<cache_job>` and `REQUIRE_PREBUILT_C
 
 For k=8 latent-query runs, either use `configs/training/sft2/latent_wm_value_k8.yaml` or set `LATENT_TOKEN_COUNT=8` in Slurm wrappers. The k=8 config uses `query_mode: inject` and `query_tune: adapter`.
 
-`latent_wm_value_k8_state8192.yaml` is the controlled high-capacity State
+`latent_wm_value_k8_state8192.yaml` is the full-dynamics high-capacity State
 ablation: `StateProjector` uses `16384 → 8192 → 8192`, the WM predicts an
 8192-d State, and the value head uses a separate 1024 hidden width. Use
 `--projector-hidden-dim` with `--emb-dim`; changing only the output while
 leaving the projector hidden width at 2048 retains a hidden information
 bottleneck. New checkpoints persist and validate projector output/hidden and
-value hidden dimensions. The matching CLI knobs are
-`--projector-hidden-dim` and `--value-hidden-dim` (`0` preserves the legacy
-`hidden=emb_dim` behavior).
+value hidden dimensions.
+
+`latent_wm_value_k8_state8192_factorized.yaml` preserves that same full-width
+Projector and external/saved/predicted 8192-d State, while setting the internal
+action-conditioned transformer to 2048. This avoids the measured prohibitive
+cost of tying every dynamics layer to 8192. The matching CLI knobs are
+`--projector-hidden-dim`, `--wm-dynamics-dim`, and `--value-hidden-dim` (`0`
+preserves the legacy `internal=emb_dim` behavior).
 
 ### `--full-trajectory-batching` (方案 B, 默认启用)
 
