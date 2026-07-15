@@ -11,13 +11,19 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "configs/training/reconstruction/frozen_wm_head_shape_ablation.json"
 DEV = ROOT / "experiments/validation/wm_head_ablation_dev.sh"
 VERIFY = ROOT / "experiments/validation/verify_wm_head_shape_ablation.sh"
+SLURM = ROOT / "experiments/training/reconstruction/frozen_wm_head_ablation.slurm"
 PYTHON_TARGETS = (
+    ROOT / "experiments/validation/verify_wm_head_artifacts.py",
     ROOT / "experiments/validation/wm_head_ablation_bootstrap.py",
     ROOT / "src/nimloth/eval/matched_wm_ablation.py",
+    ROOT / "src/nimloth/eval/matched_wm_cli.py",
     ROOT / "src/nimloth/eval/matched_wm_metrics.py",
     ROOT / "src/nimloth/eval/matched_wm_render.py",
     ROOT / "src/nimloth/eval/matched_wm_turns.py",
+    ROOT / "src/nimloth/training/wm_heads/cache_cli.py",
+    ROOT / "src/nimloth/training/wm_heads/config.py",
     ROOT / "src/nimloth/training/wm_heads/data.py",
+    ROOT / "src/nimloth/training/wm_heads/train_cli.py",
     ROOT / "src/nimloth/training/wm_heads/trainer.py",
     ROOT / "src/nimloth/wm/frozen_query_state.py",
     ROOT / "src/nimloth/wm/frozen_state_cache.py",
@@ -83,7 +89,7 @@ def check_python_structure(path: Path) -> None:
 
 
 def check_files() -> None:
-    for path in (CONFIG, DEV, VERIFY, *PYTHON_TARGETS):
+    for path in (CONFIG, DEV, VERIFY, SLURM, *PYTHON_TARGETS):
         assert path.is_file(), f"missing bootstrap file: {path}"
         assert len(path.read_text(encoding="utf-8").splitlines()) <= 200
     for path in PYTHON_TARGETS:

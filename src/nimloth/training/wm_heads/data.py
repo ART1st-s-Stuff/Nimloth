@@ -17,39 +17,34 @@ def _is_successor(current: dict[str, Any], following: dict[str, Any]) -> bool:
     return same_record and next_step
 
 
-def _transition_pairs(source: RCDMStateCacheDataset) -> tuple[tuple[int, int], ...]:
-    pairs: list[tuple[int, int]] = []
-    if len(source) < 2:
-        return ()
-    previous = source[0]
-    for index in range(1, len(source)):
-        current = source[index]
-        if _is_successor(previous, current):
-            pairs.append((index - 1, index))
-        previous = current
-    return tuple(pairs)
+def _preload(cache_dir: Path) -> tuple[torch.Tensor, list[dict[str, Any]]]:
+    source = RCDMStateCacheDataset(cache_dir)
+    rows, states = [], []
+    for index in range(len(source)):
+        item = source[index]
+        states.append(item["state_emb"])
+        rows.append({key: value for key, value in item.items() if key != "state_emb"})
+    return torch.stack(states), rows
+
+
+def _transition_pairs(rows: list[dict[str, Any]]) -> tuple[tuple[int, int], ...]:
+    return tuple((index - 1, index) for index in range(1, len(rows)) if _is_successor(rows[index - 1], rows[index]))
 
 
 class FrozenStateTransitions(Dataset):
-    """Pair each non-terminal State row with its cached successor."""
+    """Preload and pair each non-terminal State row with its successor."""
 
     def __init__(self, cache_dir: Path) -> None:
-        self.source = RCDMStateCacheDataset(cache_dir)
-        self.pairs = _transition_pairs(self.source)
-        self.transition_ids = tuple(str(self.source[left]["id"]) for left, _ in self.pairs)
+        self.states, self.rows = _preload(cache_dir)
+        self.pairs = _transition_pairs(self.rows)
+        self.transition_ids = tuple(str(self.rows[left]["id"]) for left, _ in self.pairs)
 
     def __len__(self) -> int:
         return len(self.pairs)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         left, right = self.pairs[index]
-        current, following = self.source[left], self.source[right]
-        return {
-            "state": current["state_emb"],
-            "next_state": following["state_emb"],
-            "action": int(current["action_index"]),
-            "id": str(current["id"]),
-        }
+        return {"state": self.states[left], "next_state": self.states[right], "action": int(self.rows[left]["action_index"]), "id": str(self.rows[left]["id"])}
 
 
 def _next_indices(stream: "DeterministicBatchStream") -> torch.Tensor:

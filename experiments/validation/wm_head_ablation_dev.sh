@@ -7,12 +7,17 @@ cd "$ROOT"
 PYTHON_BIN="${WM_HEAD_PYTHON:-python3}"
 python3 experiments/validation/wm_head_ablation_bootstrap.py
 python3 -m py_compile \
+  experiments/validation/verify_wm_head_artifacts.py \
   experiments/validation/wm_head_ablation_bootstrap.py \
   src/nimloth/eval/matched_wm_ablation.py \
+  src/nimloth/eval/matched_wm_cli.py \
   src/nimloth/eval/matched_wm_metrics.py \
   src/nimloth/eval/matched_wm_render.py \
   src/nimloth/eval/matched_wm_turns.py \
+  src/nimloth/training/wm_heads/cache_cli.py \
+  src/nimloth/training/wm_heads/config.py \
   src/nimloth/training/wm_heads/data.py \
+  src/nimloth/training/wm_heads/train_cli.py \
   src/nimloth/training/wm_heads/trainer.py \
   src/nimloth/wm/frozen_query_state.py \
   src/nimloth/wm/frozen_state_cache.py \
@@ -21,7 +26,11 @@ python3 -m py_compile \
   tests/test_matched_wm_heads.py \
   tests/training/test_matched_wm_trainer.py
 
+bash -n experiments/training/reconstruction/frozen_wm_head_ablation.slurm
 if "$PYTHON_BIN" -c 'import torch' >/dev/null 2>&1; then
+  for module in nimloth.training.wm_heads.cache_cli nimloth.training.wm_heads.train_cli nimloth.eval.matched_wm_cli; do
+    PYTHONPATH="$ROOT/src:$ROOT/external/le-wm" "$PYTHON_BIN" -m "$module" --help >/dev/null
+  done
   PYTHONPATH="$ROOT/src:$ROOT/external/le-wm" \
     "$PYTHON_BIN" -m pytest -q \
       tests/eval/test_matched_wm_ablation.py \

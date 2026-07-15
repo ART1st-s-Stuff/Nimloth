@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+import time
 
 import torch
 from torch.nn.utils import clip_grad_norm_
@@ -48,20 +49,32 @@ def _optimizers(heads: MatchedWMHeads, config: MatchedTrainerConfig) -> dict[str
     return {"vector": AdamW(heads.vector.parameters(), **options), "token": AdamW(heads.token.parameters(), **options)}
 
 
+def _sync(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def _branch_step(module, optimizer: Optimizer, state: torch.Tensor, action: torch.Tensor, target: torch.Tensor, config: MatchedTrainerConfig, device: torch.device) -> tuple[float, float]:
+    optimizer.zero_grad(set_to_none=True)
+    _sync(device)
+    started = time.perf_counter()
+    loss = _loss(module(state, action), target, config.cosine_weight)
+    loss.backward()
+    clip_grad_norm_(module.parameters(), config.grad_clip)
+    optimizer.step()
+    _sync(device)
+    return loss.item(), time.perf_counter() - started
+
+
 def _train_step(trainer: "MatchedWMTrainer") -> dict[str, Any]:
     trainer.heads.train()
     batch = _batch(trainer.dataset, trainer.stream.next_indices(), trainer.device)
     views = StateViews.from_tokens(batch["state"].contiguous())
-    vector, token = trainer.heads.predict_next(views, batch["action"])
     targets = (batch["target"].reshape(len(batch["ids"]), 1, -1), batch["target"])
-    losses = (_loss(vector, targets[0], trainer.config.cosine_weight), _loss(token, targets[1], trainer.config.cosine_weight))
-    for name, loss in zip(("vector", "token"), losses, strict=True):
-        trainer.optimizers[name].zero_grad(set_to_none=True)
-        loss.backward()
-        clip_grad_norm_(getattr(trainer.heads, name).parameters(), trainer.config.grad_clip)
-        trainer.optimizers[name].step()
+    vector = _branch_step(trainer.heads.vector, trainer.optimizers["vector"], views.vector, batch["action"], targets[0], trainer.config, trainer.device)
+    token = _branch_step(trainer.heads.token, trainer.optimizers["token"], views.tokens, batch["action"], targets[1], trainer.config, trainer.device)
     trainer.step += 1
-    return {"step": trainer.step, "sample_ids": batch["ids"], "vector_loss": losses[0].item(), "token_loss": losses[1].item()}
+    return {"step": trainer.step, "sample_ids": batch["ids"], "vector_loss": vector[0], "token_loss": token[0], "vector_step_s": vector[1], "token_step_s": token[1]}
 
 
 def _metrics(prediction: torch.Tensor, target: torch.Tensor) -> dict[str, float]:

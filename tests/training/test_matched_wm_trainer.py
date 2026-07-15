@@ -83,6 +83,7 @@ def test_trainer_uses_shared_ids_reports_controls_and_resumes(tmp_path: Path) ->
     metrics = resumed.evaluate(dataset)
 
     assert first["sample_ids"] == ["row:3", "row:5", "row:8", "row:4"]
+    assert first["vector_step_s"] > 0 and first["token_step_s"] > 0
     assert actual["sample_ids"] == expected["sample_ids"]
     assert all(torch.equal(expected_state[key], value) for key, value in resumed.heads.state_dict().items())
     assert set(metrics) == {"vector", "token"}

@@ -20,7 +20,9 @@
     "flat_dim": 8192,
     "dtype": "float16",
     "train_count": 59389,
-    "val_count": 6054
+    "val_count": 6054,
+    "train_dynamics_count": 56172,
+    "val_dynamics_count": 5699
   },
   "heads": {
     "vector": {
@@ -54,6 +56,7 @@
   "reconstruction": {
     "sample_steps": 50,
     "cfg_scale": 2.0,
+    "chunk_size": 4,
     "num_rollouts": 6,
     "horizons": 5,
     "required_actions": [4, 5],
