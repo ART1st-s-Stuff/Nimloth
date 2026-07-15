@@ -32,16 +32,16 @@ Train a controlled k=1 comparison for the formal k=8 inject pipeline. The intend
 
 - Config: `configs/training/sft2/latent_wm_value_k1_control.yaml`.
 - Trainable: full vision tower, state projector, WM predictor, value head, and one-row additive query adapter. Qwen backbone is frozen; vision EMA is enabled.
-- Original budget was 10 epochs on 8 GPUs, per-rank batch2, grad accumulation4. At human direction after cache completion, training was changed before launch to 3 GPUs on dgx-44 with grad accumulation11: nominal effective batch66, the closest integer to the original64 (+3.125%). Full trajectory batching, max pixels100352, max images/batch12, and all other settings remain unchanged. Each accumulation micro-batch synchronizes DDP gradients because of the PyTorch 2.8 static-graph/no_sync regression.
+- Original budget was 10 epochs on 8 GPUs, per-rank batch2, grad accumulation4. At human direction after cache completion, final training was changed before launch to 2 GPUs on dgx-27 with grad accumulation16, exactly preserving nominal effective batch64. Full trajectory batching, max pixels100352, max images/batch12, and all other settings remain unchanged. Each accumulation micro-batch synchronizes DDP gradients because of the PyTorch 2.8 static-graph/no_sync regression.
 - Loss and learning rates match the formal k=8 setup. Best checkpoint is selected by validation WM MSE.
 - Compact BF16 CPU cache is built after the canonical merged SFT1 checkpoint exists; GPU training requires the matching completed cache.
-- W&B: project `nimloth-sft2`, ID3, run `3_k1inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga11_ws3_px100352_img12_bestwm`.
-- Output: `/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/control_k1/sft2/3_k1inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga11_ws3_px100352_img12_bestwm`.
+- W&B: project `nimloth-sft2`, ID3, run `3_k1inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga16_ws2_px100352_img12_bestwm`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/control_k1/sft2/3_k1inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga16_ws2_px100352_img12_bestwm`.
 - SFT2 checkpoints include periodic `latest`, every epoch, best, and final. Resume checks k/mode/query-tune/cache/training invariants and reuses the persisted W&B run ID.
 
 ## Pipeline and resources
 
-Dependency chain: SFT1 CPU cache (8 CPU, ~47GiB) -> SFT1 train (4 H800) -> SFT1 merge (1 GPU) -> SFT2 CPU compact cache (8 CPU, ~84GiB) -> SFT2 train (now 3 H800, rough estimate ~43h including validation/checkpoint overhead). Queue delay and repeated preemption are additional and unpredictable.
+Dependency chain: SFT1 CPU cache (8 CPU, ~47GiB) -> SFT1 train (4 H800) -> SFT1 merge (1 GPU) -> SFT2 CPU compact cache (8 CPU, ~84GiB) -> SFT2 train (now 2 H800, rough estimate ~64h including validation/checkpoint overhead). Queue delay is additional and unpredictable. Normal QOS permits at most 48h per job, so a checkpoint resume is expected unless measured ws2 throughput is faster than this estimate.
 
 No k=8 job, checkpoint, cache, CSV, or output will be modified or deleted.
 
@@ -55,4 +55,5 @@ No k=8 job, checkpoint, cache, CSV, or output will be modified or deleted.
 - SFT1 job `475713` completed `0:0` on dgx-51 in 00:39:26: 5 epochs/50 steps. Val loss by epoch=`0.22636521, 0.07191491, 0.06348853, 0.06022014, 0.05827980`; staged inject format rate was 1.0 every epoch. Best/final=epoch5; all epoch checkpoints and done flag complete; no OOM/traceback/NaN/Inf. W&B `wlxx2qsp` is finished at project `nimloth-sft1`.
 - Merge job `475714` completed `0:0` in 54s, verifying/merging 702 adapter tensors into canonical BF16 `epoch_005/hf_merged`. SFT1 output including cache/checkpoints/merged HF is ~114GiB. Preliminary k1 val0.05828 is slightly below prior k8 val0.05948, but this is not an end-to-end conclusion and SFT1 world size differs despite equal effective batch64.
 - SFT2 compact cache `475715` completed `0:0` on intel-01 in 02:09:48, 84GiB: train 59,389 transitions/images in 464 image + 232 transition shards; val 6,054 in 48 + 24. Both manifests/done flag and k1/inject/masked/BF16 metadata are complete.
-- At human direction, elapsed0 8-GPU train `475716` was cancelled. The cache/output root was atomically renamed to accurate ws3/ga11 identity. Replacement `476022` was also cancelled at elapsed0 solely to make `EXTRA_TRAIN_ARGS=--grad-accum=11` explicit and unambiguous; final job `476023` requests 3 GPUs on dgx-44, 72h, and is `PENDING (Priority)`. No SFT2 W&B run yet.
+- At human direction, elapsed0 8-GPU train `475716` was cancelled. A 3-GPU dgx-44 replacement was prepared, but two of the three free GPUs were allocated to another job before ours started; jobs `476022`/`476023` were cancelled at elapsed0 with no output/W&B. The cache/output root was atomically renamed again to accurate ws2/ga16 identity.
+- Final job `476029` requests the two free normal-partition GPUs on dgx-27, batch2/GA16/effective batch64, explicit `EXTRA_TRAIN_ARGS=--grad-accum=16`, and 48h (96h was rejected by QOS). It is currently `PENDING (Priority)`; no SFT2 W&B run yet. Periodic latest checkpoints support the expected resume if 10 epochs exceed 48h.
