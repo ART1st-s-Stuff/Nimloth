@@ -14,8 +14,9 @@
 - SFT1 `475713`在dgx-51以`COMPLETED 0:0`结束（00:39:26，5 epochs/step50）：val loss=`0.226365,0.071915,0.063489,0.060220,0.058280`，各epoch inject format=1.0，best/final=epoch5；W&B `wlxx2qsp` finished。merge `475714`在54s内完成702 adapter tensors验证并生成BF16 `epoch_005/hf_merged`。
 - SFT2 cache `475715`在intel-01以`COMPLETED 0:0`结束（02:09:48，84GiB）：train 59,389 transitions/images、464 image+232 transition shards；val 6,054、48+24 shards；双manifest/done flag及k1/inject/masked/BF16 metadata完整。
 - 人类允许2/3GPU后，elapsed0的8GPU train `475716`被取消。dgx-44的3空闲卡中2卡在我方分配前被他人占用，故3GPU replacements `476022/476023`均elapsed0取消、无输出/W&B。
-- cache/output最终采用ws2/ga16。原ID3在control尚未分配/W&B init前被并发smoke占用，且dgx-27由2空闲降至1空闲；elapsed0 job `476029`因此取消、无输出/W&B，control按命名规则原子改为ID4。
-- 最终SFT2 `476338`固定dgx-52请求2GPU、batch2/GA16（nominal effective batch64，精确保持原值）、16CPU/128G/48h，当前`PENDING(Priority)`且尚无control W&B run；按粗略~64h估算可能需从periodic latest恢复。run/output=`4_k1inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga16_ws2_px100352_img12_bestwm`。完整路径与恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`。
+- cache/output最终采用ws2/ga16。dgx-27由2空闲降至1空闲，elapsed0 `476029`取消；继续排队期间，并发SFT2 runs把数字ID推进至15，故elapsed0 ID4 job `476338`也取消，无训练输出。
+- 为防止排队期间继续丢失数字ID，control原子改为ID16并实际创建/持久化W&B run `az8nqwv9`，仅记录queued reservation step0；排队时页面显示finished，训练将从同一internal run恢复并从global step1开始。
+- 最终SFT2 `476585`固定dgx-52请求2GPU、batch2/GA16（nominal effective batch64）、16CPU/128G/48h，当前仍`PENDING(Priority)`，无训练log/checkpoint；run/output=`16_k1inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga16_ws2_px100352_img12_bestwm`。完整路径与恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`。
 
 ## 2026-07-13：显式 latent query 协议与 SFT1 → SFT2 continuation gate
 
