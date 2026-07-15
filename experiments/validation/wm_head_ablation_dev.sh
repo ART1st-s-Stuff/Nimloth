@@ -8,6 +8,10 @@ PYTHON_BIN="${WM_HEAD_PYTHON:-python3}"
 python3 experiments/validation/wm_head_ablation_bootstrap.py
 python3 -m py_compile \
   experiments/validation/wm_head_ablation_bootstrap.py \
+  src/nimloth/eval/matched_wm_ablation.py \
+  src/nimloth/eval/matched_wm_metrics.py \
+  src/nimloth/eval/matched_wm_render.py \
+  src/nimloth/eval/matched_wm_turns.py \
   src/nimloth/training/wm_heads/data.py \
   src/nimloth/training/wm_heads/trainer.py \
   src/nimloth/wm/frozen_query_state.py \

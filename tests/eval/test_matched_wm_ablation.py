@@ -9,10 +9,13 @@ import torch
 from nimloth.eval.matched_wm_ablation import (
     RECONSTRUCTION_COLUMNS,
     evaluate_full_dynamics,
+    load_frozen_state_adapter,
     load_turn_spec,
+    matched_noise,
     prepare_turn_batch,
     write_turn_artifacts,
 )
+from nimloth.training.reconstruction.query_bottleneck_probe import QueryBottleneckAdapter
 from nimloth.wm.matched_heads import MatchedHeadSpec, MatchedWMHeads
 
 
@@ -93,6 +96,21 @@ def test_full_dynamics_reports_all_horizon_windows(tmp_path: Path) -> None:
     assert set(metrics["one_step"]) == {"vector", "token"}
     assert set(metrics["one_step"]["vector"]) == {"mse", "cosine", "shuffled_mse", "shuffled_cosine"}
     assert all(torch.isfinite(torch.tensor(value)) for branch in metrics["one_step"].values() for value in branch.values())
+
+
+def test_frozen_adapter_and_noise_reload_contract(tmp_path: Path) -> None:
+    model = QueryBottleneckAdapter(input_tokens=8, input_dim=32, bottleneck_dim=4)
+    checkpoint = tmp_path / "probe.pt"
+    torch.save({"model": model.state_dict(), "step": 9, "invariants": {"input_shape": [8, 32], "bottleneck_shape": [8, 4]}}, checkpoint)
+
+    adapter = load_frozen_state_adapter(checkpoint, torch.device("cpu"))
+    first, first_hash = matched_noise(3, seed=9, image_size=8)
+    second, second_hash = matched_noise(3, seed=9, image_size=8)
+
+    assert adapter(torch.randn(2, 8, 4)).shape == (2, 16, 512)
+    assert all(not parameter.requires_grad for parameter in adapter.parameters())
+    assert torch.equal(first, second)
+    assert first_hash == second_hash
 
 
 def test_turn_artifact_has_five_columns_and_thirty_rows(tmp_path: Path) -> None:
