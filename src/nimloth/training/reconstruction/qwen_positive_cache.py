@@ -145,15 +145,25 @@ def _collate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def _load_rgb(path: str) -> Image.Image:
+def _load_rgb(path: str, *, input_image_size: int) -> Image.Image:
     with Image.open(path) as image:
-        return image.convert("RGB")
+        rgb = image.convert("RGB")
+    if input_image_size > 0 and rgb.size != (input_image_size, input_image_size):
+        resample = getattr(getattr(Image, "Resampling", Image), "BICUBIC")
+        rgb = rgb.resize((input_image_size, input_image_size), resample)
+    return rgb
 
 
-def _vision_batch(paths: list[str], processor, *, max_pixels: int) -> dict[str, torch.Tensor]:
+def _vision_batch(
+    paths: list[str],
+    processor,
+    *,
+    max_pixels: int,
+    input_image_size: int,
+) -> dict[str, torch.Tensor]:
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = max_pixels
-    images = [[_load_rgb(path)] for path in paths]
+    images = [[_load_rgb(path, input_image_size=input_image_size)] for path in paths]
     text = ["<|vision_start|><|image_pad|><|vision_end|>" for _ in paths]
     return processor(text=text, images=images, padding=True, return_tensors="pt")
 
@@ -167,8 +177,14 @@ def extract_qwen_vision_tokens(
     device: torch.device,
     max_pixels: int,
     expected_tokens: int,
+    input_image_size: int,
 ) -> torch.Tensor:
-    encoded = _vision_batch(paths, processor, max_pixels=max_pixels)
+    encoded = _vision_batch(
+        paths,
+        processor,
+        max_pixels=max_pixels,
+        input_image_size=input_image_size,
+    )
     pixel_values = encoded["pixel_values"].to(device=device, dtype=model.visual.dtype)
     grid = encoded["image_grid_thw"].to(device=device)
     flat = model.visual(pixel_values, grid_thw=grid)
@@ -201,6 +217,7 @@ def positive_cache_fingerprint(
     compressor_checkpoint: Path,
     max_pixels: int,
     max_items: int,
+    input_image_size: int,
 ) -> str:
     payload = "|".join(
         [
@@ -210,6 +227,7 @@ def positive_cache_fingerprint(
             _path_signature(compressor_checkpoint),
             str(max_pixels),
             str(max_items),
+            str(input_image_size),
         ]
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
@@ -264,6 +282,7 @@ def build_positive_cache(args: argparse.Namespace) -> RCDMStateCacheManifest:
         compressor_checkpoint=args.compressor_checkpoint,
         max_pixels=args.max_pixels,
         max_items=args.max_items,
+        input_image_size=args.input_image_size,
     )
     manifest_path = args.output_dir / "manifest.json"
     hit = False
@@ -335,6 +354,7 @@ def build_positive_cache(args: argparse.Namespace) -> RCDMStateCacheManifest:
             device=device,
             max_pixels=args.max_pixels,
             expected_tokens=compressor.config.input_tokens,
+            input_image_size=args.input_image_size,
         )
         compressed = compressor(visual.float()).detach().cpu()
         for row, state in zip(rows, compressed, strict=True):
@@ -384,6 +404,7 @@ def build_positive_cache(args: argparse.Namespace) -> RCDMStateCacheManifest:
                 "state_shape": [compressor.config.num_output_tokens, compressor.config.output_dim],
                 "max_pixels": args.max_pixels,
                 "max_items": args.max_items,
+                "input_image_size": args.input_image_size,
                 "cache_build_world_size": world,
                 "rank_ranges": results,
                 "total_bytes": sum(int(item["bytes"]) for item in results),
@@ -403,6 +424,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--compressor-checkpoint", type=Path, required=True)
     parser.add_argument("--max-items", type=int, default=-1)
     parser.add_argument("--max-pixels", type=int, default=602112)
+    parser.add_argument(
+        "--input-image-size",
+        type=int,
+        default=255,
+        help="Resize current 512px rollout images to the proven old 255px Qwen-feature input",
+    )
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--shard-size", type=int, default=512)
     return parser

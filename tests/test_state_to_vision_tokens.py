@@ -143,6 +143,7 @@ def test_positive_cache_fingerprint_changes_with_source(tmp_path: Path) -> None:
         compressor_checkpoint=compressor,
         max_pixels=100,
         max_items=-1,
+        input_image_size=255,
     )
     second = positive_cache_fingerprint(
         source_fingerprint="source-b",
@@ -150,5 +151,6 @@ def test_positive_cache_fingerprint_changes_with_source(tmp_path: Path) -> None:
         compressor_checkpoint=compressor,
         max_pixels=100,
         max_items=-1,
+        input_image_size=255,
     )
     assert first != second
