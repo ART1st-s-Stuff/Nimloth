@@ -25,6 +25,7 @@ PYTHON_TARGETS = (
     ROOT / "src/nimloth/training/wm_heads/cache_cli.py",
     ROOT / "src/nimloth/training/wm_heads/config.py",
     ROOT / "src/nimloth/training/wm_heads/data.py",
+    ROOT / "src/nimloth/training/wm_heads/dynamics_dim_trainer.py",
     ROOT / "src/nimloth/training/wm_heads/train_cli.py",
     ROOT / "src/nimloth/training/wm_heads/trainer.py",
     ROOT / "src/nimloth/wm/dynamics_dim_heads.py",

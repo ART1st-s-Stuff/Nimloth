@@ -19,6 +19,7 @@ python3 -m py_compile \
   src/nimloth/training/wm_heads/cache_cli.py \
   src/nimloth/training/wm_heads/config.py \
   src/nimloth/training/wm_heads/data.py \
+  src/nimloth/training/wm_heads/dynamics_dim_trainer.py \
   src/nimloth/training/wm_heads/train_cli.py \
   src/nimloth/training/wm_heads/trainer.py \
   src/nimloth/wm/dynamics_dim_heads.py \
