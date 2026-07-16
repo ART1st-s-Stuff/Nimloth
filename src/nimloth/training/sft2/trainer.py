@@ -29,7 +29,10 @@ from nimloth.latent import (
 )
 from nimloth.training.common.config import merge_cli_over_yaml
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
-from nimloth.training.common.grad_sync import average_module_gradients
+from nimloth.training.common.grad_sync import (
+    assert_consistent_relative_placement,
+    average_partitioned_module_gradients,
+)
 from nimloth.training.common.metrics import MetricAccumulator
 from nimloth.backbone.qwen_tuning import configure_qwen_tuning, resolve_tune_modes, uses_lora
 from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema
@@ -348,6 +351,14 @@ def _unpack_train_batch(
     return items, enc, next_rows, None, None
 
 
+def _resolve_pair_aux_device(model, fallback: torch.device) -> torch.device:
+    device_map = getattr(model, "hf_device_map", {}) or {}
+    mapped = device_map.get("model.language_model.norm")
+    if mapped is None:
+        mapped = device_map.get("lm_head")
+    return fallback if mapped is None else torch.device(f"cuda:{mapped}")
+
+
 def _ddp_sync_policy(*, world: int, qwen_pair_parallel: bool) -> dict[str, bool]:
     distributed = world > 1
     return {
@@ -642,12 +653,7 @@ def train_sft2(args=None) -> int:
 
     hidden_size = model.config.hidden_size
     model_dtype = next(model.parameters()).dtype
-    aux_device = device
-    if qwen_pair_parallel:
-        device_map = getattr(model, "hf_device_map", {}) or {}
-        mapped = device_map.get("lm_head") or device_map.get("model.language_model.norm")
-        if mapped is not None:
-            aux_device = torch.device(f"cuda:{mapped}")
+    aux_device = _resolve_pair_aux_device(model, device) if qwen_pair_parallel else device
     if qwen_pair_parallel:
         wm_predictor = wm_predictor.to(aux_device)
     state_proj = StateProjector(
@@ -679,10 +685,26 @@ def train_sft2(args=None) -> int:
     aux_static_graph = sync_policy["aux_static_graph"]
     manual_qwen_sync = world > 1 and qwen_pair_parallel
     aux_ddp_group = None
-    qwen_grad_group = None
+    qwen_grad_groups = None
+    qwen_placement_group = None
+    qwen_placement = ()
     if manual_qwen_sync:
         aux_ddp_group = dist.new_group(backend="nccl")
-        qwen_grad_group = dist.new_group(backend="gloo")
+        qwen_placement_group = dist.new_group(backend="gloo")
+        qwen_grad_groups = tuple(dist.new_group(backend="nccl") for _ in range(qwen_gpu_stride))
+        primary_idx = int(str(device).split(":")[-1])
+        qwen_placement = assert_consistent_relative_placement(
+            model,
+            primary_device=primary_idx,
+            stride=qwen_gpu_stride,
+            group=qwen_placement_group,
+        )
+        if is_main():
+            slot_numel = {
+                slot: sum(math.prod(shape) for _name, item_slot, shape in qwen_placement if item_slot == slot)
+                for slot in range(qwen_gpu_stride)
+            }
+            print(json.dumps({"qwen_relative_placement": "consistent", "trainable_numel_by_slot": slot_numel}))
     if world > 1:
         # Multi-device Qwen cannot share one DDP reducer with ranks whose pair
         # uses different CUDA ordinals. Accumulate locally, then explicitly
@@ -866,7 +888,11 @@ def train_sft2(args=None) -> int:
         set_optimizer_group_lr(optimizer, "qwen", qwen_lr)
 
         if manual_qwen_sync:
-            average_module_gradients(model, group=qwen_grad_group, cpu=True)
+            average_partitioned_module_gradients(
+                model,
+                groups=qwen_grad_groups,
+                primary_device=int(str(device).split(":")[-1]),
+            )
         torch.nn.utils.clip_grad_norm_(
             [p for group in optimizer.param_groups for p in group["params"]],
             1.0,
@@ -925,7 +951,7 @@ def train_sft2(args=None) -> int:
         # static_graph and synchronize only at the accumulation boundary.
         use_ddp_no_sync = sync_policy["aux_no_sync"]
         if is_main() and manual_qwen_sync:
-            print(json.dumps({"qwen_gradient_sync": "manual_at_optimizer_boundary"}))
+            print(json.dumps({"qwen_gradient_sync": "gpu_nccl_partitioned_optimizer_boundary"}))
         if is_main() and world > 1 and args.grad_accum > 1:
             mode = "sync_optimizer_boundary" if use_ddp_no_sync else "sync_each_microbatch"
             print(

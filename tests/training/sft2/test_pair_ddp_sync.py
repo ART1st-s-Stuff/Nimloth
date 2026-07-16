@@ -1,6 +1,18 @@
 from __future__ import annotations
 
-from nimloth.training.sft2.trainer import _ddp_sync_policy
+import torch
+
+from nimloth.training.sft2.trainer import _ddp_sync_policy, _resolve_pair_aux_device
+
+
+def test_pair_aux_follows_final_norm_even_when_lm_head_is_cuda_zero() -> None:
+    model = type(
+        "Model",
+        (),
+        {"hf_device_map": {"lm_head": 0, "model.language_model.norm": 1}},
+    )()
+
+    assert _resolve_pair_aux_device(model, torch.device("cuda:0")) == torch.device("cuda:1")
 
 
 def test_pair_parallel_aux_uses_nonstatic_accumulation_sync() -> None:
