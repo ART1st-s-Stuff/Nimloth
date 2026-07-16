@@ -19,7 +19,8 @@
 - dgx-32 single3 launcher在`c4f57cd`就绪后，allocated preflight确认MemAvailable913GiB；新ID5 W&B `5_smoke_fsdpdynamic_single3_k1ep2_base2x1_ws2_iter1_b2_retry2`/`t1iw3ajy`，job477281。model/NCCL/FSDP/collector init通过，但AI2-THOR create约255s，超过240s timeout，无trajectory/update；5:31取消，zero-update guard阻止final，output688KiB/W&B仍step0。
 - 根本修复`a040180`：变延迟env控制object collectives移到CPU Gloo group，action logits/FSDP保留NCCL，timeout恢复600s；server14 tests passed。
 - 人类批准ID6 retry；gate commit=`34ac97a`，W&B `6_smoke_fsdpdynamic_single3_glooctl_k1ep2_base2x1_ws2_iter1_b2_retry3`/`30rzlkjx`，job477303在dgx-32运行20:59后FAILED。Gloo control验证成功：两次600s env等待无NCCL错误；但每次`/batch/create`均timeout，AI2-THOR恰在timeout后约5-6s才Initialize return，0 trajectories/updates；zero-update guard阻止final，880KiB output/W&B step0，不可resume。
-- 人类要求换节点；ID7 W&B `7_smoke_fsdpdynamic_single3_dgx37_glooctl_k1ep2_base2x1_ws2_iter1_b2_retry4`/`5c8u45v6`，job477348在dgx-37仅1:11即通过env create并保存真实initial PNG，证明节点更换解决AI2-THOR阻塞。首个all-rank policy forward暴露Transformers4.55 fast processor不接受PNG路径字符串；同步fail，无fallback/完整trajectory/update/checkpoint。output1MiB/W&B step0不可resume；正在修复rollout/PPO processor边界把路径物化为RGB PIL。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
+- 人类要求换节点；ID7 W&B `7_smoke_fsdpdynamic_single3_dgx37_glooctl_k1ep2_base2x1_ws2_iter1_b2_retry4`/`5c8u45v6`，job477348在dgx-37仅1:11即通过env create并保存真实initial PNG，证明节点更换解决AI2-THOR阻塞。首个all-rank policy forward暴露Transformers4.55 fast processor不接受PNG路径字符串；同步fail，无fallback/完整trajectory/update/checkpoint。output1MiB/W&B step0不可resume。
+- 修复`b0ef747`在rollout和PPO processor边界统一把path history物化为RGB PIL，prompt/schema继续保留path；server15 tests passed，且用ID7真实PNG+epoch2 processor验证生成非空`pixel_values(324,1176)`。下一retry需新W&B ID/output和人类确认。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
 
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 
