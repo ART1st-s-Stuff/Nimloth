@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import socket
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -19,8 +20,21 @@ from nimloth.training.rl.rollout import (
     build_nimloth_policy_messages,
     materialize_policy_images,
     sample_action_from_logits,
+    validate_rl_policy_protocol,
     validate_rollout_trajectory,
 )
+
+
+def test_k8_inject_policy_protocol_is_supported() -> None:
+    assert validate_rl_policy_protocol(SimpleNamespace(
+        nimloth_latent_token_count=8,
+        nimloth_latent_query_mode="inject",
+    )) == 8
+    with pytest.raises(ValueError, match="inject"):
+        validate_rl_policy_protocol(SimpleNamespace(
+            nimloth_latent_token_count=8,
+            nimloth_latent_query_mode="generate",
+        ))
 
 
 def test_zero_update_run_refuses_final_checkpoint() -> None:
@@ -47,6 +61,27 @@ def test_policy_prompt_uses_real_windowed_images() -> None:
     ]
     assert image_contents == ["obs1.png", "obs2.png"]
     assert "<|action_(5)|>" in messages[2]["content"][0]["text"]
+
+
+def test_policy_prompt_renders_eight_query_tokens() -> None:
+    messages, _ = build_nimloth_policy_messages(
+        ["obs0.png", "obs1.png"],
+        "Find the chair.",
+        ["moveahead"],
+        history_window=4,
+        latent_token_count=8,
+    )
+    expected = "<|latent_state|>" + "".join(
+        f"<|latent_state_{index}|>" for index in range(1, 8)
+    )
+    assistant_texts = [
+        part["text"]
+        for message in messages
+        if message["role"] == "assistant"
+        for part in message["content"]
+    ]
+    assert len(assistant_texts) == 2
+    assert all(expected in text for text in assistant_texts)
 
 
 def test_policy_image_paths_are_materialized_as_rgb(tmp_path: Path) -> None:
@@ -118,6 +153,21 @@ def test_distributed_wrapper_preserves_env_timeout() -> None:
     assert wrapped._env_timeout == 37
 
 
+def test_collector_can_reset_fixed_heldout_seed_cursor() -> None:
+    collector = EnvRolloutCollector(
+        None,
+        None,
+        "http://env",
+        None,
+        seed_offset=1,
+        eval_sets=("base",),
+        split="validation",
+    )
+    collector._ep_counter = 99
+    collector.reset_seed_cursor()
+    assert collector._ep_counter == 1
+
+
 def test_resume_seed_cursor_accounts_for_completed_rollouts() -> None:
     collector = EnvRolloutCollector(
         None,
@@ -136,6 +186,101 @@ def test_resume_seed_cursor_accounts_for_completed_rollouts() -> None:
         validation_envs=3,
     )
     assert collector._ep_counter == 100 + 5 * 8 + 2 * 3
+
+
+def test_k8_hidden_encoding_extracts_full_query_block(monkeypatch, tmp_path: Path) -> None:
+    from nimloth.latent.extraction import latent_state_tokens
+    from nimloth.training.rl.trainer import encode_trajectory_hiddens
+
+    latent_names = latent_state_tokens(8)
+    token_id_map = {name: 101 + index for index, name in enumerate(latent_names)}
+    input_ids = torch.tensor([[0, *[token_id_map[name] for name in latent_names], 9]])
+    hidden = torch.arange(input_ids.numel() * 2, dtype=torch.float32).reshape(1, -1, 2)
+
+    def fake_batch(items, processor, max_length, *, latent_token_count, **kwargs):
+        assert latent_token_count == 8
+        return {"input_ids": input_ids}
+
+    class FakeModel:
+        def __call__(self, **kwargs):
+            return SimpleNamespace(hidden_states=(hidden,))
+
+    monkeypatch.setattr(
+        "nimloth.training.common.qwen_batch.build_qwen_batch", fake_batch
+    )
+    trajectory = RolloutTrajectory(
+        record_id="k8",
+        image_paths=[str(tmp_path / "a.png"), str(tmp_path / "b.png")],
+        action_indices=[0],
+        action_names=["moveahead"],
+        action_log_probs=[[float(-torch.log(torch.tensor(8.0)))] * 8],
+        nav_instruction="Move.",
+        split="train",
+        messages=[{"role": "system", "content": "Navigate."}],
+    )
+    states = encode_trajectory_hiddens(
+        trajectory,
+        FakeModel(),
+        object(),
+        token_id_map,
+        torch.device("cpu"),
+        latent_token_count=8,
+    )
+    assert len(states) == 2
+    assert states[0].shape == (8, 2)
+    assert torch.equal(states[0], hidden[0, 1:9])
+
+
+def test_state_projector_loader_infers_k8_checkpoint_width(tmp_path: Path) -> None:
+    from nimloth.training.rl.cli import load_state_projector_for_rl
+    from nimloth.wm.state_proj import StateProjector
+
+    expected = StateProjector(
+        qwen_hidden_dim=3,
+        lewm_emb_dim=4,
+        projector_hidden_dim=5,
+        latent_token_count=8,
+    )
+    checkpoint = tmp_path / "state_proj.pt"
+    torch.save(expected.state_dict(), checkpoint)
+
+    loaded = load_state_projector_for_rl(
+        checkpoint,
+        qwen_hidden_dim=3,
+        lewm_emb_dim=4,
+        latent_token_count=8,
+    )
+    assert loaded.input_dim == 24
+    assert loaded.latent_token_count == 8
+    assert all(
+        torch.equal(expected.state_dict()[key], loaded.state_dict()[key])
+        for key in expected.state_dict()
+    )
+    with pytest.raises(ValueError, match="input dim"):
+        load_state_projector_for_rl(
+            checkpoint,
+            qwen_hidden_dim=3,
+            lewm_emb_dim=4,
+            latent_token_count=1,
+        )
+
+
+def test_validation_summary_requires_all_fixed_episodes() -> None:
+    from nimloth.training.rl.trainer import summarize_validation_trajectories
+
+    trajectories = [
+        RolloutTrajectory(record_id="v1", success=True, reward=10.0, action_indices=[0]),
+        RolloutTrajectory(record_id="v2", success=False, reward=0.0, action_indices=[0, 1]),
+    ]
+    metrics = summarize_validation_trajectories(trajectories, expected_episodes=2)
+    assert metrics == {
+        "val_success_rate": 0.5,
+        "val_avg_reward": 5.0,
+        "val_avg_steps": 1.5,
+        "val_num_episodes": 2.0,
+    }
+    with pytest.raises(RuntimeError, match="expected 3"):
+        summarize_validation_trajectories(trajectories, expected_episodes=3)
 
 
 class _FakeEnvClient:
