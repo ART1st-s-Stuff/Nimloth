@@ -64,6 +64,15 @@ leaving the projector hidden width at 2048 retains a hidden information
 bottleneck. New checkpoints persist and validate projector output/hidden and
 value hidden dimensions.
 
+`latent_wm_value_k8_state8192_ep5.yaml` is the five-epoch Full8192 run selected
+after the frozen-State ablation. It uses LLM LoRA and vision LoRA (r64/alpha128)
+because the historical matched one-epoch rollout favored LoRA/LoRA over
+LoRA/full. `query_tune=freeze` is required because the additive query adapter
+cannot coexist with PEFT; the SFT1 merged checkpoint already contains its
+materialized k=8 query rows. The dgx-27×6 + dgx-54×2 entrypoints are
+`full8192_lora_hetero_6plus2.slurm` and
+`run_full8192_lora_hetero_6plus2.sh`.
+
 `latent_wm_value_k8_state8192_factorized.yaml` preserves that same full-width
 Projector and external/saved/predicted 8192-d State, while setting the internal
 action-conditioned transformer to 2048. This avoids the measured prohibitive
