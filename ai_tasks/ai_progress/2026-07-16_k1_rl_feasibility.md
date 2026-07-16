@@ -55,3 +55,9 @@ The historical retry2 GPU smoke on `feat/rl` validated 4 `base_train` trajectori
 - W&B: project `nimloth-rl`, currently empty so ID1, run `1_smoke_k1ep2_base4x2_fsdp2_iter2`; internal run will be reserved before queueing and resumed by both torchrun processes.
 - Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-07-16/1_smoke_k1ep2_base4x2_fsdp2_iter2`; nonempty reuse forbidden.
 - Resources: one normal node,2 GPUs,48 CPUs,160G,2h. Resume strategy is built into the smoke: iteration1 best -> process2 iteration2; if the Slurm job itself stops earlier, inspect and use only a complete iteration checkpoint.
+
+## Launch status
+
+- W&B ID1 `1_smoke_k1ep2_base4x2_fsdp2_iter2`, internal `2zmcueoc`, was reserved. Job `477075` was initially pending and then obtained dgx-13; the agent mistakenly cancelled it19s later while attempting a preempt-node replacement without a final state recheck. Env health had passed but no trajectory/training step existed. Output is preserved and marked interrupted.
+- Replacement `477078` correctly refused the nonempty ID1 output and failed elapsed0. This agent error is recorded as `E0026_recheck_slurm_state_immediately_before_replacing_pending_job.md`; ID1 is not reused.
+- Retry W&B ID2=`2_smoke_k1ep2_base4x2_fsdp2_iter2_retry1`, internal `o1jit8xr`. Job `477080` is running on dgx-13 with2GPU/48CPU/160G. It passed env health using VAGEN `bb26c0d`, correct commit `bb7913e`, and current epoch2 paths; rollout model loading has begun. No result claim yet.

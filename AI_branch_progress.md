@@ -9,7 +9,9 @@
 - 人类要求暂停SFT2 epoch3，下一阶段只验证RL可行性、不对效果做期待。job `476585`已取消并释放GPU；epoch2/best完整，partial latest=epoch3/step3125，CSV已归档/截断，W&B `az8nqwv9` clean finish。
 - `feat/rl`与dev分叉过大，不能整分支合并；dev已有RL squash与FSDP safety等价修复。选择性port了后续三个有价值提交到`merge/rl-feasibility`：trajectory无截断`1698b1c`、train-split-safe two-stage e2e`3165c34`、完整FSDP checkpoint/resume`41dd411`。
 - 人类同意选择性合并与2GPU smoke。port/adaptation已fast-forward merge dev=`caf60d9`：W&B rank0/persisted resume、当前MODEL/WM参数化、ENV_REPO imports、finite metrics/FSDP tensor/optimizer-rank gates、k1/inject fail-fast。updated server tests `37 passed, 1 expected warning`，CLI/shell/checkpoint metadata gate通过。
-- 已确认smoke计划：当前k1 SFT2 epoch2初始化，`base_train` seeds1..4，4 episodes×最多2 actions，Qwen language full+WM/value训练、vision/state projector冻结，2-rank FSDP step1+new-process resume step2；W&B `nimloth-rl/1_smoke_k1ep2_base4x2_fsdp2_iter2`，输出与资源详见`ai_tasks/ai_progress/2026-07-16_k1_rl_feasibility.md`。
+- 已确认smoke：当前k1 SFT2 epoch2初始化，`base_train` seeds1..4，4 episodes×最多2 actions，Qwen language full+WM/value训练、vision/state projector冻结，2-rank FSDP step1+new-process resume step2。
+- ID1 job `477075`从pending切到dgx-13 running后，agent在未最终复查state的情况下误取消（19s，env health已过，无trajectory/train step）；replacement `477078`按非空隔离正确elapsed0失败。输出保留，错误登记`E0026_recheck_slurm_state_immediately_before_replacing_pending_job.md`，ID1不复用。
+- retry W&B ID2 `2_smoke_k1ep2_base4x2_fsdp2_iter2_retry1`/`o1jit8xr`，job `477080`正在dgx-13运行2GPU/48CPU/160G；commit/env/checkpoint正确、env health通过、rollout model开始加载，尚无结果claim。详见`ai_tasks/ai_progress/2026-07-16_k1_rl_feasibility.md`。
 
 ## 2026-07-14：k=1 inject SFT control（准备中）
 
