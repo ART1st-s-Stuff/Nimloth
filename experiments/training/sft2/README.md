@@ -69,9 +69,12 @@ after the frozen-State ablation. It uses LLM LoRA and vision LoRA (r64/alpha128)
 because the historical matched one-epoch rollout favored LoRA/LoRA over
 LoRA/full. `query_tune=freeze` is required because the additive query adapter
 cannot coexist with PEFT; the SFT1 merged checkpoint already contains its
-materialized k=8 query rows. The dgx-27×6 + dgx-54×2 entrypoints are
-`full8192_lora_hetero_6plus2.slurm` and
-`run_full8192_lora_hetero_6plus2.sh`.
+materialized k=8 query rows. A one-GPU-per-rank launch OOMed before step1 at76.79GiB. The production
+dgx-27×6 + dgx-54×2 topology therefore uses four pair-parallel ranks, each
+spanning two GPUs, with world4/GA8. Its entrypoints are
+`full8192_lora_pair2_3plus1.slurm` and
+`run_full8192_lora_pair2_3plus1.sh`; the world8 files are retained only to
+reproduce the failed memory gate.
 
 `latent_wm_value_k8_state8192_factorized.yaml` preserves that same full-width
 Projector and external/saved/predicted 8192-d State, while setting the internal
