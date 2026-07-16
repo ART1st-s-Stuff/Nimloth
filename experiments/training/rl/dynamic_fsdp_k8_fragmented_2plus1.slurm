@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --mem=128G
-#SBATCH --nodelist=dgx-[21,26,32,54]
+#SBATCH --nodelist=dgx-[21,32]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
@@ -22,8 +22,9 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 
-# Atomic fragmented allocation: two trainer ranks on separate one-GPU nodes,
-# plus a dgx-24 GPU whose local create/reset preflight completed in 5.35s/0.39s.
+# Atomic fragmented allocation: trainer ranks are pinned to dgx-21/dgx-32 so
+# they do not share job477349's dgx-[14,26,51,54]. The env uses a dgx-24 GPU
+# whose local create/reset preflight completed in 5.35s/0.39s.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"
