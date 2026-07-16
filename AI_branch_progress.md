@@ -20,7 +20,9 @@
 - 根本修复`a040180`：变延迟env控制object collectives移到CPU Gloo group，action logits/FSDP保留NCCL，timeout恢复600s；server14 tests passed。
 - 人类批准ID6 retry；gate commit=`34ac97a`，W&B `6_smoke_fsdpdynamic_single3_glooctl_k1ep2_base2x1_ws2_iter1_b2_retry3`/`30rzlkjx`，job477303在dgx-32运行20:59后FAILED。Gloo control验证成功：两次600s env等待无NCCL错误；但每次`/batch/create`均timeout，AI2-THOR恰在timeout后约5-6s才Initialize return，0 trajectories/updates；zero-update guard阻止final，880KiB output/W&B step0，不可resume。
 - 人类要求换节点；ID7 W&B `7_smoke_fsdpdynamic_single3_dgx37_glooctl_k1ep2_base2x1_ws2_iter1_b2_retry4`/`5c8u45v6`，job477348在dgx-37仅1:11即通过env create并保存真实initial PNG，证明节点更换解决AI2-THOR阻塞。首个all-rank policy forward暴露Transformers4.55 fast processor不接受PNG路径字符串；同步fail，无fallback/完整trajectory/update/checkpoint。output1MiB/W&B step0不可resume。
-- 修复`b0ef747`在rollout和PPO processor边界统一把path history物化为RGB PIL，prompt/schema继续保留path；server15 tests passed，且用ID7真实PNG+epoch2 processor验证生成非空`pixel_values(324,1176)`。下一retry需新W&B ID/output和人类确认。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
+- 修复`b0ef747`在rollout和PPO processor边界统一把path history物化为RGB PIL，prompt/schema继续保留path；server15 tests passed，且用ID7真实PNG+epoch2 processor验证生成非空`pixel_values(324,1176)`。
+- 人类批准ID8；W&B `8_smoke_fsdpdynamic_single3_dgx37_pilfix_k1ep2_base2x1_ws2_iter1_b2_retry5`/`qlt6y0el`，job477364在dgx-37 `COMPLETED 0:0`/1:18。2条base_train one-action current-policy trajectories和真实PNG完整；8-action log-prob finite/归一；global_step1 WM/value/actor/entropy/total均finite；2个HF shards和两rank optimizer全finite、无zero shapes。独立delta：language/WM/value改变，vision sample与完整state projector bitwise frozen。约25GiB final保留。
+- ID8训练进程因launcher source `.env`未auto-export而跳过W&B；已将真实CSV透明posthoc写回同run step1并标记`training_process_wandb_initialized=false`。修复`3b1efa3`加入`set -a`、credential fail-fast、exact run-ID/initialized gates；ID8不证明in-process W&B transport。`final`有效但本次无`best`，现有`--resume`不能直接同目录发现；精确继续需same-world2及explicit resume dir/stage。动态one-iteration action→update→FSDP checkpoint mechanics目标已达到，不解释success/质量。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
 
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 
