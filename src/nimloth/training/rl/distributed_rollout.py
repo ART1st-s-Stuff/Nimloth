@@ -56,6 +56,7 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
             env_timeout=collector._env_timeout,
         )
         result._base_seed_offset = collector._base_seed_offset
+        result._control_group = None
         return result
 
     @property
@@ -66,13 +67,22 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
     def world_size(self) -> int:
         return dist.get_world_size()
 
+    def _ensure_control_group(self) -> None:
+        """Create a CPU Gloo group for variable-latency env control messages."""
+
+        if getattr(self, "_control_group", None) is None:
+            # Every rank enters collect() in lockstep, so new_group ordering is
+            # deterministic. Keeping HTTP waits off NCCL avoids its watchdog and
+            # avoids spinning a trainer GPU while rank0 initializes AI2-THOR.
+            self._control_group = dist.new_group(backend="gloo")
+
     def _log(self, payload: dict[str, Any]) -> None:
         if self.rank == 0:
             print(json.dumps(payload), flush=True)
 
     def _broadcast_rank0(self, value: Any) -> Any:
         objects = [value if self.rank == 0 else None]
-        dist.broadcast_object_list(objects, src=0)
+        dist.broadcast_object_list(objects, src=0, group=self._control_group)
         return objects[0]
 
     def _rank0_call(
@@ -124,7 +134,7 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
             local_error = traceback.format_exc()
 
         errors: list[str | None] = [None] * self.world_size
-        dist.all_gather_object(errors, local_error)
+        dist.all_gather_object(errors, local_error, group=self._control_group)
         failed = {rank: error for rank, error in enumerate(errors) if error}
         if failed:
             raise RuntimeError(f"distributed policy forward failed: {failed}")
@@ -156,16 +166,18 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
             raise RuntimeError("DistributedEnvRolloutCollector requires initialized world_size > 1")
         if self._model is None or self._processor is None or self._device is None:
             raise RuntimeError("distributed env collector is not wired to model/processor/device")
+        self._ensure_control_group()
 
         out_dir = output_dir or Path(".")
         img_dir = out_dir / "images"
         if self.rank == 0:
             img_dir.mkdir(parents=True, exist_ok=True)
-        dist.barrier()
+        dist.barrier(group=self._control_group)
         self._log({
             "rl_collect": "distributed_start",
             "num_episodes": num_episodes,
             "world_size": self.world_size,
+            "control_backend": "gloo",
             "output": str(out_dir),
         })
 
@@ -353,7 +365,7 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
         else:
             result = None
         result = self._broadcast_rank0(result)
-        dist.barrier()
+        dist.barrier(group=self._control_group)
         self._log({
             "rl_collect": "distributed_done",
             "trajectories": len(trajectories),

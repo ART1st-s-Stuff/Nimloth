@@ -568,6 +568,7 @@ def train_rl(
             "top_p": float(rl_cfg.get("top_p", 1.0)),
             "seed_offset": int(collector._base_seed_offset),
             "env_timeout": int(collector._env_timeout),
+            "control_backend": "gloo" if world > 1 else "local",
         }
     else:
         rollout_protocol = {

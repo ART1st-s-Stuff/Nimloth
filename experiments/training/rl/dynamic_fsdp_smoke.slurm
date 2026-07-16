@@ -137,7 +137,7 @@ state = torch.load(final / "rl_state.pt", map_location="cpu", weights_only=False
 assert state["iteration"] == 1 and state["global_step"] == 1
 assert state["optimizer_world_size"] == 2
 assert state["rollout_protocol"]["mode"] == "dynamic_env"
-assert state["rollout_protocol"]["env_timeout"] == 240
+assert state["rollout_protocol"]["env_timeout"] == 600
 print(json.dumps({"status": "ALL_OK", "records": len(records), "shards": len(shards)}))
 PY
 

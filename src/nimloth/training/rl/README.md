@@ -10,7 +10,7 @@
 | FSDP 动态在线 | 需要 | 否 | `world > 1`，每轮用当前 policy 访问环境 |
 | JSONL 离线 | 不需要 | 是 | 独立 rollout 后确定性消费 |
 
-FSDP 动态模式由 `DistributedEnvRolloutCollector` 同步：只有 rank0 访问 VAGEN HTTP env service 和写 PNG/JSONL；所有 rank 从共享路径构造同一 prompt、以相同顺序进入 FSDP policy forward，校验 action logits 一致后由 rank0 采样并广播动作。rank0 step 环境并广播结果，完整 trajectory 最后广播给所有 rank。这样保留 VAGEN 的每轮 `current policy -> env.step -> update` 语义，同时避免不同 episode 长度导致 FSDP collective 次序不一致。
+FSDP 动态模式由 `DistributedEnvRolloutCollector` 同步：只有 rank0 访问 VAGEN HTTP env service 和写 PNG/JSONL；所有 rank 从共享路径构造同一 prompt、以相同顺序进入 FSDP policy forward，校验 action logits 一致后由 rank0 采样并广播动作。可变延迟的HTTP状态、错误和trajectory通过专用CPU Gloo control group广播，action logits与FSDP参数/梯度仍使用NCCL；因此首次AI2-THOR初始化不会让等待rank占住NCCL collective。这样保留 VAGEN 的每轮 `current policy -> env.step -> update` 语义，同时避免不同 episode 长度导致 FSDP collective 次序不一致。
 
 环境、policy 或 schema 错误不会回退成默认动作或零 log-prob；不完整 episode 整条丢弃，collective policy 错误使所有 rank 同步失败。直接训练 rollout 必须在 `rollout.eval_sets` 中显式指定实际支持的 `*_train` datasets。动态训练暂不把 train env 冒充 validation，因此要求 `validation.enabled=false`。
 

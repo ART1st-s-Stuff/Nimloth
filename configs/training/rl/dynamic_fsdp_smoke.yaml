@@ -25,7 +25,7 @@ rollout:
     - base_train
   history_window: 4
   seed_offset: 20001
-  env_timeout: 240
+  env_timeout: 600
 
 rl:
   iterations: 1
