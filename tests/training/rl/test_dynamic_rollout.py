@@ -17,6 +17,7 @@ from nimloth.training.rl.rollout import (
     EnvRolloutCollector,
     RolloutTrajectory,
     build_nimloth_policy_messages,
+    materialize_policy_images,
     sample_action_from_logits,
     validate_rollout_trajectory,
 )
@@ -46,6 +47,21 @@ def test_policy_prompt_uses_real_windowed_images() -> None:
     ]
     assert image_contents == ["obs1.png", "obs2.png"]
     assert "<|action_(5)|>" in messages[2]["content"][0]["text"]
+
+
+def test_policy_image_paths_are_materialized_as_rgb(tmp_path: Path) -> None:
+    path = tmp_path / "observation.png"
+    Image.new("RGBA", (3, 2), (10, 20, 30, 40)).save(path)
+
+    result = materialize_policy_images([str(path)])
+
+    assert len(result) == 1
+    assert isinstance(result[0], Image.Image)
+    assert result[0].mode == "RGB"
+    assert result[0].size == (3, 2)
+    assert result[0].getpixel((0, 0)) == (10, 20, 30)
+    # The returned copy must remain readable after the source file is closed.
+    result[0].load()
 
 
 def test_policy_prompt_rejects_misaligned_history() -> None:

@@ -184,7 +184,10 @@ def compute_new_log_probs_for_batch(
         action_logits: (B, 8) raw logits for all 8 actions
     """
     from nimloth.latent.extraction import LatentActionTokens
-    from nimloth.training.rl.rollout import build_nimloth_policy_messages
+    from nimloth.training.rl.rollout import (
+        build_nimloth_policy_messages,
+        materialize_policy_images,
+    )
 
     if temperature < 0:
         raise ValueError(f"temperature must be >= 0, got {temperature}")
@@ -204,7 +207,10 @@ def compute_new_log_probs_for_batch(
             messages, tokenize=False, add_generation_prompt=True
         )
         encoded = processor(
-            text=[text], images=images, padding=True, return_tensors="pt"
+            text=[text],
+            images=materialize_policy_images(images),
+            padding=True,
+            return_tensors="pt",
         )
         model_inputs = {key: value.to(device) for key, value in encoded.items()}
         outputs = model(

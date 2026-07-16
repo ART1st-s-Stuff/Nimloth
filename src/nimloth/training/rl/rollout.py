@@ -615,6 +615,26 @@ def build_nimloth_policy_messages(
     return messages, image_history
 
 
+def materialize_policy_images(images: list[Any]) -> list[Any]:
+    """Load path-backed history as RGB PIL images for Qwen's fast processor.
+
+    Prompt/schema construction intentionally retains path strings. Transformers
+    4.55's fast Qwen image processor, however, requires image objects rather
+    than local path strings at the explicit ``images=`` call boundary.
+    """
+
+    from PIL import Image
+
+    materialized: list[Any] = []
+    for image in images:
+        if isinstance(image, (str, Path)):
+            with Image.open(image) as source:
+                materialized.append(source.convert("RGB").copy())
+        else:
+            materialized.append(image)
+    return materialized
+
+
 def compute_nimloth_action_distribution(
     model,
     processor,
@@ -641,7 +661,10 @@ def compute_nimloth_action_distribution(
         messages, tokenize=False, add_generation_prompt=True
     )
     inputs = processor(
-        text=[text], images=images, return_tensors="pt", padding=True
+        text=[text],
+        images=materialize_policy_images(images),
+        return_tensors="pt",
+        padding=True,
     )
     try:
         device = next(model.parameters()).device
