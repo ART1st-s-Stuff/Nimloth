@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-07-16：k=1 epoch2 RL feasibility 准备
+
+- 人类要求暂停SFT2 epoch3，下一阶段只验证RL可行性、不对效果做期待。job `476585`已取消并释放GPU；epoch2/best完整，partial latest=epoch3/step3125，CSV已归档/截断，W&B `az8nqwv9` clean finish。
+- `feat/rl`与dev分叉过大，不能整分支合并；dev已有RL squash与FSDP safety等价修复。选择性port了后续三个有价值提交到`merge/rl-feasibility`：trajectory无截断`1698b1c`、train-split-safe two-stage e2e`3165c34`、完整FSDP checkpoint/resume`41dd411`。
+- clean server worktree commit `41dd411`上RL/schema/WM tests `35 passed, 1 expected warning`。分支已push但尚未合并dev、尚未启动RL实验。当前e2e默认路径陈旧且torchrun前W&B init会每rank重复；启动前需修复/明确禁用W&B并固定当前k1 epoch2、train-split env、输出与资源。详情见`ai_tasks/ai_progress/2026-07-16_k1_rl_feasibility.md`。
+
 ## 2026-07-14：k=1 inject SFT control（准备中）
 
 - 人类要求新增k=1对照，完整执行SFT1和SFT2。为保证单变量对照，计划保持正式k=8的inject协议、严格数据、训练预算、可训练模块、loss和cache语义，仅把latent query数量从8改为1。
