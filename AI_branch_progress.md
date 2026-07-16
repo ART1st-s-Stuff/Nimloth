@@ -12,7 +12,8 @@
 - checkpoint新增严格`rollout_protocol`和resume seed cursor；动态train只允许显式`*_train`，且在独立heldout collector接线前强制关闭validation，避免train结果伪装val。
 - 提交`3f87a5c`、`a19ee8f`已推送。服务器RL/latent tests=`29 passed, 1 expected warning`，后续定向回归`24 passed`；2-rank gloo覆盖rank0-only env、collective action、相同trajectory。
 - 人类允许用dgx-51/52做真实smoke，后批准dgx-32替换dgx-52。W&B ID3 `3_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2`/`66bsq5lp`。attempt1 trainer477199在worker/model init前因默认port29500占用FAILED，env477201 health通过；已登记E0027并以`--standalone`修复。
-- 人类批准attempt2；trainer477204获得dgx-32，但env477205被共享账户`MaxGRESPerAccount`阻塞，未触碰其他活跃任务。trainer仍在等env URL、model未启动，复核状态后取消（49s/0）。两次均无trajectory/update/checkpoint，W&B仍queue step0。待决定等待quota或批准dgx-32内env共享rank0 GPU；详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
+- 人类批准attempt2；trainer477204获得dgx-32，但env477205被共享账户`MaxGRESPerAccount`阻塞，未触碰其他活跃任务。trainer仍在等env URL、model未启动，复核状态后取消（49s/0）。两次均无trajectory/update/checkpoint，W&B仍queue step0。
+- 人类指定attempt3使用单个heterogeneous job原子申请两节点2+1：job477219 group0 dgx-32 trainer2GPU，group1 dgx-51 env1GPU；launch=`a1b2bf9`。两个component当前PENDING/no allocation，等待当前9GPU shared-account usage下降和节点资源同时满足。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
 
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 

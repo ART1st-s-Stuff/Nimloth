@@ -65,3 +65,4 @@
 - 本次没有trajectory/CSV/model load/update/checkpoint，未验证NCCL/FSDP；W&B `66bsq5lp`仍只有queue step0。输出日志保留。已登记`E0027_torchrun_default_master_port_collision.md`并以`--standalone`修复。
 - 人类批准retry2。dgx-32 trainer477204 acquired2GPU，但自动env477205被`MaxGRESPerAccount`阻塞：共享`csejzhang`身份的其他活跃任务已占剩余account GPU quota；未触碰这些任务。trainer仍只等待env URL，torchrun/model未启动。即时复核trainer=RUNNING/env=PENDING后取消，elapsed49s/0，无artifact，W&B仍step0。
 - 人类指定改用单个Slurm heterogeneous job原子申请2节点2+1卡：het-group0=dgx-32 trainer2GPU/16CPU/128G，het-group1=dgx-51 env1GPU/8CPU/64G。这样不会出现trainer已运行但env受account quota单独排队；整个3卡job会等总quota与两节点资源同时满足。
+- launch commit=`a1b2bf9`；job477219两个component当前均PENDING/no allocation。shared user当前9GPU，因此此3GPU atomic job等待quota和两节点资源；无其他任务被修改。
