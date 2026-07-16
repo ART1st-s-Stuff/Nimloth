@@ -18,7 +18,7 @@
 - 人类批准ID4新output retry：W&B `4_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2_retry1`/`lqqteh6p`。job477246在direct-dgx32 replacement gate前原子转RUNNING，故先监控；VAGEN health/NCCL/FSDP/collector entry通过，但dgx-51 AI2-THOR create超过240s，无action/update。按人类direct要求及unhealthy env，复核后4:42取消；zero-update guard阻止final，output仅736KiB/W&B仍step0。
 - dgx-32 single3 launcher在`c4f57cd`就绪后，allocated preflight确认MemAvailable913GiB；新ID5 W&B `5_smoke_fsdpdynamic_single3_k1ep2_base2x1_ws2_iter1_b2_retry2`/`t1iw3ajy`，job477281。model/NCCL/FSDP/collector init通过，但AI2-THOR create约255s，超过240s timeout，无trajectory/update；5:31取消，zero-update guard阻止final，output688KiB/W&B仍step0。
 - 根本修复`a040180`：变延迟env控制object collectives移到CPU Gloo group，action logits/FSDP保留NCCL，timeout恢复600s；server14 tests passed。
-- 人类批准ID6 retry；gate commit=`34ac97a`，W&B `6_smoke_fsdpdynamic_single3_glooctl_k1ep2_base2x1_ws2_iter1_b2_retry3`/`30rzlkjx`已实际预留并创建output根，但提交前SSH连续`Connection closed by UNKNOWN port65535`。没有Slurm job，等待VPN/SSH恢复；详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
+- 人类批准ID6 retry；gate commit=`34ac97a`，W&B `6_smoke_fsdpdynamic_single3_glooctl_k1ep2_base2x1_ws2_iter1_b2_retry3`/`30rzlkjx`，job477303在dgx-32运行20:59后FAILED。Gloo control验证成功：两次600s env等待无NCCL错误；但每次`/batch/create`均timeout，AI2-THOR恰在timeout后约5-6s才Initialize return，0 trajectories/updates；zero-update guard阻止final，880KiB output/W&B step0，不可resume。人类要求下一attempt换节点；详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
 
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 
