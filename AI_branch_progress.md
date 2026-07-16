@@ -12,8 +12,10 @@
 - 当前正式ID27：hold`476868`，dgx-27×6+dgx-54×2，world4/GA8、image budget8、effective accumulation32；output `.../sft2/27_state8192_fullwm8192_llmlora_vislora_pair2_ws4_ga8_ep5_bucketed`，W&B`nimloth-sft2/lilzcdjs`。
 - 用户要求修复aux每micro同步。原run在logged51时按durable latest step44/epoch1/micro352暂停；51-step CSV归档，active CSV原子截到44，W&B中45-51为discarded stale history。commit`bc0d6e4`让pair路径aux DDP关闭static graph，并仅在GA8边界同步；Qwen仍手动boundary sync。
 - server focused suite`30 passed`；真实PyTorch2.8 cross-node world4 smoke以混合aux映射`0/1,2/2,4/4,0/1`、GA8、每micro两次DDP forward运行2 optimizer steps，首7 micro使用no_sync，全部rank每步权重bitwise一致。
-- ID27已从step44和同W&B ID恢复，日志确认`aux_ddp_gradient_accumulation=sync_optimizer_boundary`/`aux_static_graph=false`，至少到step60且finite、无OOM/NCCL/reducer错误。旧steps45-51 median27.353s；排除W&B丢弃重放45-51后的clean steps52-60 median26.176s，约4.5%加速（全45-60含一次35.5s outlier的median26.604s）。aux通信大多与backward重叠，当前主瓶颈仍是Qwen双forward/checkpoint backward及Full8192计算。
-- 预算为1,655 steps/epoch、8,275 total；按clean median约12.0h/epoch、约60h总时长。每20分钟写atomic latest；优化后新latest尚未到时，当前durable boundary仍是step44。
+- aux GA-boundary优化后，进一步确认CPU Gloo是主瓶颈：164,496,896个FP32 LoRA参数约658MB/rank每step需GPU→CPU→跨节点Gloo→GPU；训练主进程约10 CPU cores，而20秒GPU平均仅primary18–26%/secondary12–15%。另发现`device_map.get("lm_head") or norm`把CUDA0误当false，导致aux相对placement不一致，登记E0043。
+- ID27在logged132时按latest step89/epoch1/micro712暂停；132-step CSV归档、active截到89，W&B90-132标为stale。commit`6ebe35a`改为：aux固定跟随final LM norm；Gloo一次性核验826个trainable tensors的relative pair slot；slot0/slot1各用独立NCCL group按≤64MB bucket直接平均GPU gradients。server focused suite34 passed，跨节点synthetic mixed-pair smoke梯度精确平均。
+- 正式resume核实placement一致：slot0=81,348,096、slot1=83,148,800 params；日志`qwen_gradient_sync=gpu_nccl_partitioned_optimizer_boundary`。steps90-105 finite无OOM/NCCL/placement/missing-grad错误；15个clean intervals median8.192s/mean8.178s（7.338–9.315），相对CPU Gloo clean median26.176s约3.20×加速。
+- 20秒GPU平均提升到primary58–75%、secondary17–40%。预算1,655 steps/epoch、8,275 total，修正粗估约3.76h/epoch、18.8h/5epochs（另加checkpoint/validation）。当前durable boundary仍step89，等待GPU-NCCL路径首个新latest。
 
 ## 2026-07-15：冻结 State 的 SFT2 dynamics_dim 对照（准备中）
 
