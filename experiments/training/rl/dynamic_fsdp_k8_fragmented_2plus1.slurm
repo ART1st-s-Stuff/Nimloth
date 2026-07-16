@@ -185,16 +185,18 @@ assert (final / "optimizer_rank_00001.pt").stat().st_size > 0
 assert (final / "adapter_model.safetensors").stat().st_size > 0
 with safe_open(final / "adapter_model.safetensors", framework="pt", device="cpu") as handle:
     keys = list(handle.keys())
-    assert keys and not any("visual" in key for key in keys)
-    b_keys = [key for key in keys if "lora_B" in key]
-    assert b_keys
-    assert any(torch.count_nonzero(handle.get_tensor(key)).item() > 0 for key in b_keys)
+    language_b = [key for key in keys if "lora_B" in key and "visual" not in key]
+    visual_b = [key for key in keys if "lora_B" in key and "visual" in key]
+    assert language_b and visual_b
+    assert any(torch.count_nonzero(handle.get_tensor(key)).item() > 0 for key in language_b)
+    assert all(torch.count_nonzero(handle.get_tensor(key)).item() == 0 for key in visual_b)
 initial_proj = torch.load(
     Path(os.environ["SFT2_SNAPSHOT"]) / "state_proj.pt",
     map_location="cpu", weights_only=True,
 )
 final_proj = torch.load(final / "state_proj.pt", map_location="cpu", weights_only=True)
 assert initial_proj.keys() == final_proj.keys()
+assert all(initial_proj[key].dtype == final_proj[key].dtype for key in initial_proj)
 assert all(torch.equal(initial_proj[key], final_proj[key]) for key in initial_proj)
 if mode == "smoke":
     assert state["iteration"] == 1 and state["global_step"] == 1

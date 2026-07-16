@@ -149,6 +149,7 @@ def load_state_projector_for_rl(
         projector_hidden_dim=projector_hidden_dim,
         latent_token_count=latent_token_count,
     )
+    module.to(dtype=first_weight.dtype)
     module.load_state_dict(state)
     return module
 

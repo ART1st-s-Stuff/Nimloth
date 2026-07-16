@@ -97,6 +97,26 @@ def test_k8_snapshot_is_immutable_and_omits_sft_optimizer(tmp_path: Path) -> Non
         snapshot_checkpoint(source, output)
 
 
+def test_llm_lora_does_not_train_suffix_matched_visual_adapters() -> None:
+    from nimloth.backbone.qwen_tuning import _set_lora_trainability
+
+    language = torch.nn.Parameter(torch.ones(1))
+    visual = torch.nn.Parameter(torch.ones(1))
+
+    class FakePeftModel:
+        def named_parameters(self):
+            return iter((
+                ("base_model.model.model.layers.0.mlp.gate_proj.lora_A.default.weight", language),
+                ("base_model.model.model.visual.blocks.0.mlp.gate_proj.lora_A.default.weight", visual),
+            ))
+
+    _set_lora_trainability(
+        FakePeftModel(), llm_tune="lora", vision_tune="freeze"
+    )
+    assert language.requires_grad is True
+    assert visual.requires_grad is False
+
+
 def test_policy_dtype_normalization_makes_fsdp_parameters_uniform() -> None:
     from nimloth.training.rl.trainer import normalize_policy_parameter_dtype
 
@@ -316,7 +336,7 @@ def test_state_projector_loader_infers_k8_checkpoint_width(tmp_path: Path) -> No
         lewm_emb_dim=4,
         projector_hidden_dim=5,
         latent_token_count=8,
-    )
+    ).to(dtype=torch.bfloat16)
     checkpoint = tmp_path / "state_proj.pt"
     torch.save(expected.state_dict(), checkpoint)
 
@@ -328,6 +348,7 @@ def test_state_projector_loader_infers_k8_checkpoint_width(tmp_path: Path) -> No
     )
     assert loaded.input_dim == 24
     assert loaded.latent_token_count == 8
+    assert {parameter.dtype for parameter in loaded.parameters()} == {torch.bfloat16}
     assert all(
         torch.equal(expected.state_dict()[key], loaded.state_dict()[key])
         for key in expected.state_dict()

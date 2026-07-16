@@ -51,6 +51,23 @@ def _set_requires_grad(module, predicate, enabled: bool) -> None:
             param.requires_grad = enabled
 
 
+def _set_lora_trainability(
+    model,
+    *,
+    llm_tune: TuneMode,
+    vision_tune: TuneMode,
+) -> None:
+    """Keep suffix-matched LoRA modules outside the selected branch frozen."""
+
+    for name, param in model.named_parameters():
+        if "lora_" not in name:
+            continue
+        if _is_vision_param(name):
+            param.requires_grad = vision_tune == "lora"
+        else:
+            param.requires_grad = llm_tune == "lora"
+
+
 def configure_qwen_tuning(
     model: Qwen2_5_VLForConditionalGeneration,
     args: argparse.Namespace,
@@ -87,6 +104,12 @@ def configure_qwen_tuning(
             modules_to_save=modules_to_save or None,
         )
         model = get_peft_model(model, lora_config)
+        # PEFT target names are suffix based: LLM targets such as gate_proj also
+        # exist in Qwen's visual MLP. Freeze those accidentally injected visual
+        # adapters unless vision LoRA was explicitly requested.
+        _set_lora_trainability(
+            model, llm_tune=llm_tune, vision_tune=vision_tune
+        )
         if args.gradient_checkpointing:
             model.enable_input_require_grads()
 
