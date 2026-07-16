@@ -6,6 +6,7 @@ from nimloth.training.sft2.loss import (
     StateProjector,
     _build_trajectory_sigreg_inputs,
     compute_combined_loss,
+    compute_value_loss,
     compute_wm_latent_loss,
     wm_loss_weight_schedule,
 )
@@ -177,6 +178,26 @@ def test_wm_loss_weight_schedule_warms_up() -> None:
     mid = wm_loss_weight_schedule(25, 100, start=0.1, end=1.0, warmup_fraction=0.5)
     assert 0.1 < mid < 1.0
     assert wm_loss_weight_schedule(60, 100, start=0.1, end=1.0, warmup_fraction=0.5) == 1.0
+
+
+def test_value_loss_aligns_action_indices_to_output_device() -> None:
+    seen: list[torch.device] = []
+
+    class Indices:
+        def to(self, *, device):
+            seen.append(device)
+            return torch.tensor([1], device=device)
+
+    head = torch.nn.Linear(3, 8)
+    loss, _ = compute_value_loss(
+        state_emb=torch.randn(1, 3),
+        action_indices=Indices(),
+        action_value_targets=torch.tensor([0.5]),
+        value_head=head,
+    )
+
+    assert loss.isfinite()
+    assert seen == [torch.device("cpu")]
 
 
 def test_compute_combined_loss() -> None:

@@ -166,11 +166,12 @@ def compute_value_loss(
     """Regression on chosen-action value + margin ranking vs unchosen actions."""
 
     values = value_head(state_emb).float()
-    chosen_values = values.gather(1, action_indices.unsqueeze(1)).squeeze(1)
+    actions = action_indices.to(device=values.device)
+    chosen_values = values.gather(1, actions.unsqueeze(1)).squeeze(1)
     targets = action_value_targets.to(device=values.device, dtype=values.dtype)
     reg_loss = F.mse_loss(chosen_values, targets)
 
-    mask = F.one_hot(action_indices, num_classes=values.shape[1]).bool()
+    mask = F.one_hot(actions, num_classes=values.shape[1]).bool()
     other_values = values.masked_fill(mask, float("-inf"))
     max_other = other_values.max(dim=1).values
     rank_loss = F.relu(rank_margin + max_other - chosen_values).mean()
