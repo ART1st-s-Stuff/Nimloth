@@ -13,10 +13,15 @@ the rank's secondary GPU during module-state broadcast.
 - When `NIMLOTH_DDP_GPU_STRIDE>1`, select the primary CUDA device locally but
   initialize NCCL without a single `device_id`, because the module spans the
   whole GPU pair.
+- Immediately run a bootstrap barrier with `device_ids=[primary]`. Otherwise
+  NCCL guesses from global rank (for example rank1→cuda1 instead of the actual
+  pair primary cuda2), and later multi-device DDP synchronization can hang.
 - Cover both paths with unit tests.
 
 ## Evidence
 
 Full8192 pair2 output ID18 failed before step1 with
 `Tensor found on device cuda:1 but backend constrained to cuda:0` (and the
-corresponding device pairs for every rank). No checkpoint was produced.
+corresponding device pairs for every rank). The next attempt omitted the
+binding but hung after NCCL guessed the wrong bootstrap devices; both attempts
+ended before step1 and produced no checkpoint.

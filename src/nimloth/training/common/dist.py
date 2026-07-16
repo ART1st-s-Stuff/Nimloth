@@ -28,6 +28,10 @@ def setup_dist() -> tuple[int, int, int, torch.device]:
         if gpu_stride == 1:
             kwargs["device_id"] = device
         dist.init_process_group(**kwargs)
+        if gpu_stride > 1:
+            # Establish the bootstrap communicator on each rank's actual
+            # primary GPU instead of NCCL's global-rank modulo guess.
+            dist.barrier(device_ids=[primary])
         return rank, world, local, device
     return 0, 1, 0, torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
