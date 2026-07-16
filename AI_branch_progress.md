@@ -17,7 +17,9 @@
 - 正式resume核实placement一致：slot0=81,348,096、slot1=83,148,800 params；日志`qwen_gradient_sync=gpu_nccl_partitioned_optimizer_boundary`。steps90-105 finite无OOM/NCCL/placement/missing-grad错误；15个clean intervals median8.192s/mean8.178s（7.338–9.315），相对CPU Gloo clean median26.176s约3.20×加速。
 - 20秒GPU平均提升到primary58–75%、secondary17–40%。预算1,655 steps/epoch、8,275 total，修正粗估约3.76h/epoch、18.8h/5epochs（另加checkpoint/validation）。
 - hold476868两component均`TIMEOUT0:0`/08:00:28，仅因walltime终止。最后logged1924；durable latest1886（epoch2/micro1848），CSV已归档并截断，回退38步，无model error。epoch1 step1655完成：val WM MSE`.0043698056`、SIGReg`.4129391`、value`.1205234`；`epoch_001`和`best`完整。
-- 人类明确要求time-limit后继续。已提交直接resume hetero job`477304`（commit`60c9b0b`），固定dgx-27×6+dgx-54×2、8h，allocation获得后自动复用ID27/W&B`lilzcdjs`/world4/GA8从step1886恢复；当前`PENDING(Resources)`，group1调度估计21:42、group0 start unknown。
+- 人类明确要求time-limit后继续，随后明确禁止使用dgx-27、要求碎片节点凑8卡。原pending job`477304`在未分配GPU时取消（`CANCELLED0:0`）。
+- RED`42c16c3`/GREEN`1c5db95`增加one-rank-per-node布局：4节点×2GPU、每节点一个pair-sharded rank，world4/GA8数学不变；MASTER_ADDR动态取首节点，rank取SLURM_PROCID。four-node Slurm显式exclude dgx-27，并在正式Qwen加载前运行两slot NCCL exact-average smoke。server shell/pair/grad focused suite`14 passed`。
+- 续训job`477345`已从commit`1c5db95b7ab57b92d0cef32d98758963bbfc2758`提交：normal、4nodes×2GPU、8h、dgx-27 excluded；获得资源后先smoke再自动复用latest step1886与W&B`lilzcdjs`。当前`PENDING(Priority)`，start unknown。
 
 ## 2026-07-15：冻结 State 的 SFT2 dynamics_dim 对照（准备中）
 
