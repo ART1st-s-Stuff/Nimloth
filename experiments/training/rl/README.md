@@ -12,7 +12,9 @@
 | `dynamic_env_server.slurm` | 独立节点运行VAGEN/AI2-THOR环境，等待trainer完成 |
 | `dynamic_fsdp_smoke.slurm` | 两卡NCCL/FSDP current-policy动态rollout trainer step |
 | `dynamic_fsdp_smoke_hetero_2plus1.slurm` | 单个heterogeneous job原子申请dgx-32 trainer2卡+dgx-51 env1卡 |
-| `dynamic_fsdp_smoke_single3.slurm` | dgx-32单节点3卡：env独占1卡、trainer使用2卡 |
+| `dynamic_fsdp_smoke_single3.slurm` | 单节点3卡：env独占1卡、trainer使用2卡 |
+| `prepare_k8_sft2_init.py/.slurm` | 稳定快照live SFT2 latest并merge现有LLM+Vision LoRA为immutable k8 RL init |
+| `dynamic_fsdp_k8_fragmented_2plus1.slurm` | 原子申请两个1-GPU trainer碎片节点+dgx-37 env，运行k8 smoke/pilot |
 
 ## 运行模式
 
@@ -33,13 +35,15 @@ python -m nimloth.training.rl.cli \
 ```bash
 torchrun --nproc-per-node=4 -m nimloth.training.rl.cli \
   --config configs/training/rl/defaults.yaml \
-  --model /path/to/k1-inject-sft2 \
+  --model /path/to/inject-sft2-merged \
   --env-url http://ENV_NODE:5000 \
   --llm-tune full --vision-tune freeze \
   --output-dir outputs/experiments/training/rl/online
 ```
 
-`DistributedEnvRolloutCollector` 只让rank0访问HTTP环境；所有rank同步运行当前FSDP policy，rank0采样并广播action，然后step环境。每个iteration更新完成后，下一轮rollout直接使用更新后的policy。配置必须使用训练split并设`validation.enabled=false`；`rollout.history_window`、temperature、top-p和seed offset会写入checkpoint并在resume时核对。
+`DistributedEnvRolloutCollector`只让rank0访问HTTP环境；所有rank同步运行当前FSDP policy，rank0采样并广播action，然后step环境。每个iteration更新完成后，下一轮rollout直接使用更新后的policy。inject runtime支持k≥1并在prompt/PPO/latent extraction/StateProjector/checkpoint中严格使用同一个k。
+
+训练collector必须使用`*_train`。若`validation.enabled=true`，CLI另建只允许heldout assets的collector；每次重置固定seed并要求完整episode数，结果写`validation_log.csv`，不进入optimizer。`rollout.history_window`、temperature、top-p、seed offset、k和validation协议会写入checkpoint并在resume时核对。长任务可用`--resume --resume-checkpoint <iter_dir>`显式same-world恢复。
 
 ### 分布式/离线 JSONL rollout
 
@@ -81,6 +85,7 @@ python -m nimloth.training.rl.cli \
 outputs/experiments/training/rl/<date>/<name>/
 ├── README.md
 ├── train_step_log.csv
+├── validation_log.csv       # fixed heldout baseline/periodic metrics when enabled
 ├── best/                  # best checkpoint (state_proj, predictor, value_head, optimizer)
 ├── iter_NNNN/             # periodic checkpoints
 ├── rollouts/              # per-iteration trajectory JSONL

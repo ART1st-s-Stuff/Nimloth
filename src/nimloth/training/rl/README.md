@@ -12,9 +12,9 @@
 
 FSDP 动态模式由 `DistributedEnvRolloutCollector` 同步：只有 rank0 访问 VAGEN HTTP env service 和写 PNG/JSONL；所有 rank 从共享路径构造同一 prompt、以相同顺序进入 FSDP policy forward，校验 action logits 一致后由 rank0 采样并广播动作。可变延迟的HTTP状态、错误和trajectory通过专用CPU Gloo control group广播，action logits与FSDP参数/梯度仍使用NCCL；因此首次AI2-THOR初始化不会让等待rank占住NCCL collective。这样保留 VAGEN 的每轮 `current policy -> env.step -> update` 语义，同时避免不同 episode 长度导致 FSDP collective 次序不一致。
 
-环境、policy 或 schema 错误不会回退成默认动作或零 log-prob；不完整 episode 整条丢弃，collective policy 错误使所有 rank 同步失败。直接训练 rollout 必须在 `rollout.eval_sets` 中显式指定实际支持的 `*_train` datasets。动态训练暂不把 train env 冒充 validation，因此要求 `validation.enabled=false`。
+环境、policy 或 schema 错误不会回退成默认动作或零 log-prob；不完整 episode 整条丢弃，collective policy 错误使所有 rank 同步失败。直接训练 rollout 必须在 `rollout.eval_sets` 中显式指定实际支持的 `*_train` datasets。启用validation时，CLI创建独立heldout collector：拒绝`*_train`，每次评估前重置固定seed cursor，且必须返回配置数量的完整episodes；训练collector与heldout collector不共享轨迹或seed。
 
-`rollout.history_window` 控制 policy prompt 保存的真实历史图像窗口。rollout old log-prob 与 PPO new log-prob 都使用同一个 temperature-scaled 八动作分布；top-p 只限制采样。checkpoint 保存完整 `rollout_protocol`，resume 时 mode/split/eval sets/history window/temperature/top-p/seed offset 必须一致；seed cursor根据已完成 iteration恢复。
+runtime支持显式`inject` checkpoint的k≥1 query block；prompt、action distribution、latent extraction、StateProjector input width和checkpoint protocol使用同一个k，`generate`仍fail-fast。`rollout.history_window` 控制policy/latent/PPO共用的真实历史图像窗口。rollout old log-prob 与 PPO new log-prob 都使用同一个temperature-scaled八动作分布；top-p只限制采样。checkpoint保存完整`rollout_protocol`（含k/query mode和heldout协议），resume时必须完全一致；训练seed cursor根据已完成iteration恢复，heldout cursor固定重置。
 
 独立 `experiments/training/rl/rollout_env.py` 仍复用单进程 `EnvRolloutCollector`，可生成 JSONL 供离线模式使用。
 
@@ -68,7 +68,7 @@ for iteration = 1, 2, …, N_iter:
     # ============================================================
     trajectories = []
 
-    for env_i = 1, 2, …, K_envs (parallel):
+    for env_i = 1, 2, …, K_envs (current collector runs sequentially):
         env.reset(seed_i)
         obs_0 = initial observation (image)
         τ = []   # trajectory for this episode
@@ -103,11 +103,12 @@ for iteration = 1, 2, …, N_iter:
     transitions = []
 
     for each trajectory in trajectories:
-        # Encode each frame independently through Qwen
-        hiddens = []  # T+1 vectors in R^d_qwen
-        for img in trajectory.image_paths:
-            h = θ_qwen.encode(img)                    # extract hidden state
-            h_latent = h[<|latent_state|> position]   # Nimloth latent token
+        # Rebuild the same history-aware policy prefix used for action/PPO.
+        hiddens = []  # T+1 blocks in R^(k × d_qwen)
+        for t in 0..T:
+            prompt_t = build_prompt(obs_0..obs_t, action_0..action_{t-1})
+            h = θ_qwen(prompt_t)
+            h_latent = h[the contiguous k-query block]
             hiddens.append(h_latent)
 
         # Compute discounted MC returns
@@ -202,7 +203,7 @@ agent.act(current_image):   # called at each env step
 
 | 文件 | 职责 |
 |------|------|
-| `rollout.py` | trajectory、单进程 env/JSONL collector、canonical k=1 policy prompt与action distribution |
+| `rollout.py` | trajectory、单进程 env/JSONL collector、canonical inject k-query prompt与action distribution |
 | `distributed_rollout.py` | rank0 env + all-rank FSDP forward 的动态在线collector |
 | `loss.py` | `compute_predictor_loss`（MSE dynamics），`compute_value_loss`（MSE + ranking），`compute_advantages`（unbiased=False，避免 batch size=1 NaN），`compute_actor_loss`（PPO clipped） |
 | `trainer.py` | `train_rl` — 在线 RL 主循环，含 Qwen 加载、FSDP/DDP、resume、分布式 guard |
@@ -234,6 +235,7 @@ python -m nimloth.training.rl.cli \
   --model Qwen/Qwen2.5-VL-3B-Instruct \
   --llm-tune lora --vision-tune full \
   --resume \
+  --resume-checkpoint outputs/experiments/training/rl/.../iter_0010 \
   --output-dir outputs/experiments/training/rl/.../existing_run
 ```
 
