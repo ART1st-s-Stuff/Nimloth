@@ -35,7 +35,9 @@ set -euo pipefail
 : "${RUN_MODE:?must be smoke or pilot}"
 : "${WANDB_RUN_ID:?must reserve W&B id before submit}"
 : "${WANDB_RUN_NAME:?must set W&B name}"
+VISION_TUNE=${VISION_TUNE:-freeze}
 [[ "${RUN_MODE}" == smoke || "${RUN_MODE}" == pilot ]]
+[[ "${VISION_TUNE}" == freeze || "${VISION_TUNE}" == lora || "${VISION_TUNE}" == full ]]
 
 PY=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
 SRUN=/cm/shared/apps/slurm/current/bin/srun
@@ -58,7 +60,7 @@ rm -f \
   "${RUN_ROOT}/env_url.txt.tmp" \
   "${RUN_ROOT}/env_ready.flag"
 export RUN_ROOT REPO ENV_REPO EXPECTED_COMMIT MODEL SFT2_SNAPSHOT CONFIG RUN_MODE
-export WANDB_RUN_ID WANDB_RUN_NAME
+export WANDB_RUN_ID WANDB_RUN_NAME VISION_TUNE
 
 cleanup() {
   touch "${RUN_ROOT}/trainer_done.flag"
@@ -134,7 +136,7 @@ set +e
       --config "${CONFIG}" \
       --model "${MODEL}" \
       --llm-tune lora \
-      --vision-tune freeze \
+      --vision-tune "${VISION_TUNE}" \
       --lora-r 64 \
       --lora-alpha 128 \
       --lora-dropout 0.05 \
@@ -158,11 +160,11 @@ ENV_RC=${ENV_RC:-0}
 echo "fragmented trainer_rc=${TRAIN_RC} env_rc=${ENV_RC}"
 [[ "${TRAIN_RC}" == 0 && "${ENV_RC}" == 0 ]]
 
-"${PY}" - "${RUN_ROOT}" "${RUN_MODE}" "${WANDB_RUN_ID}" <<'PY'
+"${PY}" - "${RUN_ROOT}" "${RUN_MODE}" "${WANDB_RUN_ID}" "${VISION_TUNE}" <<'PY'
 import csv, json, math, os, sys, torch
 from pathlib import Path
 from safetensors import safe_open
-root, mode, wandb_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+root, mode, wandb_id, vision_tune = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 rows = list(csv.DictReader((root / "train/train_step_log.csv").open()))
 assert rows
 for row in rows:
@@ -189,7 +191,10 @@ with safe_open(final / "adapter_model.safetensors", framework="pt", device="cpu"
     visual_b = [key for key in keys if "lora_B" in key and "visual" in key]
     assert language_b and visual_b
     assert any(torch.count_nonzero(handle.get_tensor(key)).item() > 0 for key in language_b)
-    assert all(torch.count_nonzero(handle.get_tensor(key)).item() == 0 for key in visual_b)
+    if vision_tune == "freeze":
+        assert all(torch.count_nonzero(handle.get_tensor(key)).item() == 0 for key in visual_b)
+    elif vision_tune == "lora":
+        assert any(torch.count_nonzero(handle.get_tensor(key)).item() > 0 for key in visual_b)
 initial_proj = torch.load(
     Path(os.environ["SFT2_SNAPSHOT"]) / "state_proj.pt",
     map_location="cpu", weights_only=True,
@@ -216,6 +221,7 @@ else:
 print(json.dumps({
     "status": "ALL_OK",
     "mode": mode,
+    "vision_tune": vision_tune,
     "iteration": state["iteration"],
     "global_step": state["global_step"],
     "train_rows": len(rows),

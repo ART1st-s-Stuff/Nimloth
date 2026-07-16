@@ -116,6 +116,12 @@ def test_llm_lora_does_not_train_suffix_matched_visual_adapters() -> None:
     assert language.requires_grad is True
     assert visual.requires_grad is False
 
+    _set_lora_trainability(
+        FakePeftModel(), llm_tune="lora", vision_tune="lora"
+    )
+    assert language.requires_grad is True
+    assert visual.requires_grad is True
+
 
 def test_policy_dtype_normalization_makes_fsdp_parameters_uniform() -> None:
     from nimloth.training.rl.trainer import normalize_policy_parameter_dtype
