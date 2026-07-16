@@ -25,20 +25,24 @@ def _trajectory() -> RolloutTrajectory:
     )
 
 
-def test_rl_policy_protocol_requires_k1_inject() -> None:
-    validate_rl_policy_protocol(SimpleNamespace(
+def test_rl_policy_protocol_requires_inject_queries() -> None:
+    assert validate_rl_policy_protocol(SimpleNamespace(
         nimloth_latent_token_count=1,
         nimloth_latent_query_mode="inject",
-    ))
-    with pytest.raises(ValueError, match="k=1 inject"):
-        validate_rl_policy_protocol(SimpleNamespace(
-            nimloth_latent_token_count=8,
-            nimloth_latent_query_mode="inject",
-        ))
-    with pytest.raises(ValueError, match="k=1 inject"):
+    )) == 1
+    assert validate_rl_policy_protocol(SimpleNamespace(
+        nimloth_latent_token_count=8,
+        nimloth_latent_query_mode="inject",
+    )) == 8
+    with pytest.raises(ValueError, match="requires an inject checkpoint"):
         validate_rl_policy_protocol(SimpleNamespace(
             nimloth_latent_token_count=1,
             nimloth_latent_query_mode="generate",
+        ))
+    with pytest.raises(ValueError, match="at least one latent query"):
+        validate_rl_policy_protocol(SimpleNamespace(
+            nimloth_latent_token_count=0,
+            nimloth_latent_query_mode="inject",
         ))
 
 
@@ -56,6 +60,11 @@ def test_env_collector_enforces_training_dataset() -> None:
     with pytest.raises(ValueError, match=r"requires \*_train datasets"):
         EnvRolloutCollector(None, None, "http://env", None,
                             eval_sets=("base",), split="train")
+    EnvRolloutCollector(None, None, "http://env", None,
+                        eval_sets=("base",), split="validation")
+    with pytest.raises(ValueError, match=r"forbids \*_train datasets"):
+        EnvRolloutCollector(None, None, "http://env", None,
+                            eval_sets=("base_train",), split="validation")
 
 
 def test_complete_trajectory_schema_passes() -> None:
