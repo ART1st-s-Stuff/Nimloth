@@ -18,9 +18,20 @@ set -euo pipefail
 : "${WANDB_RUN_NAME:?must set WANDB_RUN_NAME}"
 
 PYTHON=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
+SBATCH=/cm/shared/apps/slurm/current/bin/sbatch
+SCANCEL=/cm/shared/apps/slurm/current/bin/scancel
+SQUEUE=/cm/shared/apps/slurm/current/bin/squeue
 TRAIN_OUT="${RUN_ROOT}/train"
 mkdir -p "${TRAIN_OUT}"
-trap 'touch "${RUN_ROOT}/trainer_done.flag"' EXIT TERM INT
+ENV_JOB_ID=""
+SUCCESS=0
+cleanup() {
+  touch "${RUN_ROOT}/trainer_done.flag"
+  if [[ -n "${ENV_JOB_ID}" && "${SUCCESS}" != 1 ]]; then
+    "${SCANCEL}" "${ENV_JOB_ID}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT TERM INT
 
 ACTUAL_COMMIT=$(git -C "${REPO}" rev-parse HEAD)
 [[ "${ACTUAL_COMMIT}" == "${EXPECTED_COMMIT}" ]] || {
@@ -33,7 +44,19 @@ ACTUAL_COMMIT=$(git -C "${REPO}" rev-parse HEAD)
   exit 1
 }
 
-for _ in $(seq 1 180); do
+if [[ "${AUTO_SUBMIT_ENV:-0}" == 1 ]]; then
+  : "${ENV_REPO:?AUTO_SUBMIT_ENV requires ENV_REPO}"
+  export SLURM_CONF=${SLURM_CONF:-/cm/shared/apps/slurm/var/etc/slurm/slurm.conf}
+  ENV_JOB_ID=$("${SBATCH}" --parsable --nodelist="${ENV_NODE:-dgx-51}" \
+    --output="${RUN_ROOT}/env_slurm_%j.out" \
+    --error="${RUN_ROOT}/env_slurm_%j.err" \
+    --export="ALL,RUN_ROOT=${RUN_ROOT},ENV_REPO=${ENV_REPO}" \
+    "${REPO}/experiments/training/rl/dynamic_env_server.slurm")
+  printf '%s\n' "${ENV_JOB_ID}" >"${RUN_ROOT}/env_job_id.txt"
+  echo "submitted env job ${ENV_JOB_ID} on ${ENV_NODE:-dgx-51}"
+fi
+
+for _ in $(seq 1 300); do
   [[ -s "${RUN_ROOT}/env_url.txt" ]] && break
   sleep 2
 done
@@ -118,3 +141,11 @@ print(json.dumps({"status": "ALL_OK", "records": len(records), "shards": len(sha
 PY
 
 echo "=== dynamic FSDP smoke ALL_OK $(date --iso-8601=seconds) ==="
+SUCCESS=1
+touch "${RUN_ROOT}/trainer_done.flag"
+if [[ -n "${ENV_JOB_ID}" ]]; then
+  for _ in $(seq 1 12); do
+    [[ -z "$("${SQUEUE}" -h -j "${ENV_JOB_ID}" 2>/dev/null)" ]] && break
+    sleep 5
+  done
+fi
