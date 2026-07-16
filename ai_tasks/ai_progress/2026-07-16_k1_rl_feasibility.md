@@ -41,4 +41,17 @@ The historical retry2 GPU smoke on `feat/rl` validated 4 `base_train` trajectori
 - Follow-up changes move W&B initialization from pre-distributed CLI code to rank0 inside trainer, persist/reuse the internal run ID across the two torchrun processes, and log finite per-step train metrics under project `nimloth-rl`.
 - E2E script now accepts direct `MODEL` and `WM_CKPT` overrides, preserves stage-specific W&B settings after credential loading, uses the verified ENV_REPO VAGEN checkout for rollout imports, and validates two finite metric rows plus nonempty full FSDP tensors/two optimizer-rank states.
 - Rollout/trainer now fail fast unless checkpoint metadata is exactly k=1/inject, matching the only staged query protocol implemented by this RL path.
-- No RL job has been launched yet. Code/runtime tests and merge into dev precede the confirmed 2-GPU feasibility smoke.
+- Selective port and adaptations were fast-forward merged into dev at `caf60d9`. Updated server tests: `37 passed, 1 expected warning`; CLI help, shell syntax, and current epoch2 k1/inject metadata gate passed.
+
+## Confirmed smoke launch plan
+
+- Purpose: mechanics only; no policy-quality/success-rate expectation or claim.
+- Code: clean detached server worktree `/project/peilab/atst/nimloth/.worktree/rl-feasibility`, launch commit will be the dev documentation successor of `caf60d9`.
+- Model and aux init: current k1 SFT2 complete `epoch_002` for full HF, state projector, WM predictor, and value head.
+- Data: verified `base_train` seeds1..4 from ENV_REPO `/project/peilab/atst/nimloth/.worktree/exp-vagen-1action`, root `b21ae10`, VAGEN `bb26c0d`; train split only.
+- Rollout: 4 episodes x at most2 actions, k1 inject action-token policy, temperature0.7/top-p0.95, complete trajectory schema required.
+- Trainable: Qwen language model full parameters, WM predictor, value head. Frozen: vision tower and state projector.
+- Training: 2-rank FSDP, one update followed by a new-process resume update; require finite metrics, global_step2, full nonempty HF tensors, two optimizer-rank states.
+- W&B: project `nimloth-rl`, currently empty so ID1, run `1_smoke_k1ep2_base4x2_fsdp2_iter2`; internal run will be reserved before queueing and resumed by both torchrun processes.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-07-16/1_smoke_k1ep2_base4x2_fsdp2_iter2`; nonempty reuse forbidden.
+- Resources: one normal node,2 GPUs,48 CPUs,160G,2h. Resume strategy is built into the smoke: iteration1 best -> process2 iteration2; if the Slurm job itself stops earlier, inspect and use only a complete iteration checkpoint.
