@@ -33,12 +33,14 @@ def test_setup_dist_does_not_constrain_pair_parallel_to_primary_device(monkeypat
     monkeypatch.setenv("WORLD_SIZE", "4")
     monkeypatch.setenv("LOCAL_RANK", "1")
     monkeypatch.setenv("NIMLOTH_DDP_GPU_STRIDE", "2")
-    selected, initialized = [], []
+    selected, initialized, barriers = [], [], []
     monkeypatch.setattr(torch.cuda, "set_device", selected.append)
     monkeypatch.setattr(dist_helpers.dist, "init_process_group", lambda **kwargs: initialized.append(kwargs))
+    monkeypatch.setattr(dist_helpers.dist, "barrier", lambda **kwargs: barriers.append(kwargs))
 
     _, _, _, device = dist_helpers.setup_dist()
 
     assert device == torch.device("cuda:2")
     assert selected == [2]
     assert initialized == [{"backend": "nccl"}]
+    assert barriers == [{"device_ids": [2]}]
