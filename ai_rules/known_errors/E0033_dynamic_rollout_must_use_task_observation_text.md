@@ -6,7 +6,7 @@
 
 ## 后果
 
-策略只看到“instruction会在first observation提供”这类通用说明和图片，却看不到实际目标（例如“navigate to the Pot”）。rollout/PPO虽内部使用同一个错误prompt，但都偏离SFT transcript。导航成功率和RL质量结论因此无效；只能保留FSDP、collective、checkpoint等mechanics结论。
+策略只看到“instruction会在first observation提供”这类通用说明和图片，却看不到实际目标（例如“navigate to the Pot”）。更糟的是，该system prompt带有具体`<answer>rotateright</answer>`示例，并被错误地重复放入每轮user消息，直接把策略推向rotateright。rollout/PPO虽内部使用同一个错误prompt，但都偏离SFT transcript。导航成功率和RL质量结论因此无效；只能保留FSDP、collective、checkpoint等mechanics结论。
 
 ## 正确做法
 
