@@ -70,4 +70,5 @@
 - pre-fix trainer在global_step0仍开始final save；即时复核两组件RUNNING后cancel job477219（5:35），阻止继续写误导性大checkpoint。CSV仅header、JSONL空；partial final含约5GB temp shard和未初始化tiny optimizer文件，保留且禁止resume/reuse；W&B ID3仍queue step0。
 - attempt3只证明真实NCCL/FSDP初始化和dynamic collector入口，未完成action/update。修复：smoke timeout改240秒；global_step0强制failed cleanup且拒绝final，登记E0028。server tests14 passed。
 - 人类批准新ID retry。W&B ID4=`4_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2_retry1`/`lqqteh6p`已实际预留；exclusive output同名。launch=`b3c5c18`，atomic hetero job477246提交dgx-32 trainer2GPU + dgx-51 env1GPU。
-- 两component当前PENDING(Resources)：dgx-32有3空闲GPU，但dgx-51在调度前被新job占满至0空闲。Slurm会等dgx-51释放1GPU后原子启动；无其他任务被修改。尚无ID4结果claim。
+- 人类随后要求直接在dgx-32启动。replacement critical section发现hetero job已从PENDING原子转RUNNING，安全gate拒绝基于stale pending取消，先监控。ID4同样通过VAGEN health、NCCL/FSDP和collector entry，但dgx-51首次AI2-THOR create超过240s，未产action/update。按人类direct-dgx32要求及env unhealthy，双component复核RUNNING后在4:42取消；zero-update guard成功阻止final。output仅空JSONL/CSV header/logs736KiB，W&B仍queue step0，保留且不resume。
+- 新增dgx-32 single3 launcher（commit c4f57cd）：env独占GPU0、FSDP使用GPU1/2。但当前dgx-32虽有3空GPU，host free RAM仅约40GiB（已有两任务占用其余内存）；双Qwen loader+env有host OOM风险，故未提交。需等待RAM恢复或人类指定其他内存充足节点；新尝试仍需新W&B ID/output。

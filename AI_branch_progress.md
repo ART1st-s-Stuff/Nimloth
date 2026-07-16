@@ -15,7 +15,8 @@
 - 人类批准attempt2；trainer477204获得dgx-32，但env477205被共享账户`MaxGRESPerAccount`阻塞，未触碰其他活跃任务。trainer仍在等env URL、model未启动，复核状态后取消（49s/0）。两次均无trajectory/update/checkpoint，W&B仍queue step0。
 - 人类指定attempt3单个heterogeneous job两节点2+1。job477219原子启动dgx-32 trainer2GPU+dgx-51 env1GPU，VAGEN health、torchrun standalone、真实2-rank NCCL、FSDP wrap及dynamic collector entry通过。首个base_train create约185s，刚超过180s client timeout，episode正确丢弃；service后续失败，0 trajectory/update。
 - pre-fix trainer在global_step0开始final save，job经双component状态复核后于5:35取消；partial final保留且禁止resume/reuse，W&B ID3仍queue step0。smoke timeout已改240s；新增global_step0拒绝final并登记E0028，server14 tests passed。attempt3证明NCCL/FSDP初始化但未完成action/update。
-- 人类批准ID4新output retry：W&B `4_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2_retry1`/`lqqteh6p`已预留，launch=`b3c5c18`。atomic hetero job477246已提交dgx-32 trainer2GPU+dgx-51 env1GPU；当前两component PENDING(Resources)，因dgx-51被新job占满，等待原子调度。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
+- 人类批准ID4新output retry：W&B `4_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2_retry1`/`lqqteh6p`。job477246在direct-dgx32 replacement gate前原子转RUNNING，故先监控；VAGEN health/NCCL/FSDP/collector entry通过，但dgx-51 AI2-THOR create超过240s，无action/update。按人类direct要求及unhealthy env，复核后4:42取消；zero-update guard阻止final，output仅736KiB/W&B仍step0。
+- dgx-32 single3 launcher已在`c4f57cd`就绪（env GPU0、trainer GPU1/2），但节点当前host free RAM仅约40GiB，双Qwen loader+env有OOM风险，未提交；等待RAM恢复或换内存充足节点。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
 
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 
