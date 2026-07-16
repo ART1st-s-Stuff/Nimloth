@@ -68,4 +68,6 @@
 - launch commit=`a1b2bf9`；job477219随后原子获得两组件。VAGEN bb26c0d health、torchrun standalone、真实2-rank NCCL、FSDP wrap、k1/inject gate及distributed collector entry均通过。
 - 第一个base_train create约185秒才在server记录`Initialize return`，比client timeout180秒晚约5秒；client已timeout并正确整条丢弃episode，无fallback action/data。首个超时使service后续create失败，最终0 trajectories/updates。
 - pre-fix trainer在global_step0仍开始final save；即时复核两组件RUNNING后cancel job477219（5:35），阻止继续写误导性大checkpoint。CSV仅header、JSONL空；partial final含约5GB temp shard和未初始化tiny optimizer文件，保留且禁止resume/reuse；W&B ID3仍queue step0。
-- attempt3只证明真实NCCL/FSDP初始化和dynamic collector入口，未完成action/update。修复：smoke timeout改240秒；global_step0强制failed cleanup且拒绝final，登记E0028。任何retry必须新W&B数字ID和独占output，需人类确认。
+- attempt3只证明真实NCCL/FSDP初始化和dynamic collector入口，未完成action/update。修复：smoke timeout改240秒；global_step0强制failed cleanup且拒绝final，登记E0028。server tests14 passed。
+- 人类批准新ID retry。W&B ID4=`4_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2_retry1`/`lqqteh6p`已实际预留；exclusive output同名。launch=`b3c5c18`，atomic hetero job477246提交dgx-32 trainer2GPU + dgx-51 env1GPU。
+- 两component当前PENDING(Resources)：dgx-32有3空闲GPU，但dgx-51在调度前被新job占满至0空闲。Slurm会等dgx-51释放1GPU后原子启动；无其他任务被修改。尚无ID4结果claim。
