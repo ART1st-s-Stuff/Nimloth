@@ -36,7 +36,8 @@ cleanup() {
 trap cleanup EXIT TERM INT
 
 cd "${ENV_REPO}/external/VAGEN"
-CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 "${PYTHON}" -m vagen.server.server \
+SERVER_CUDA_VISIBLE_DEVICES=${ENV_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}
+CUDA_VISIBLE_DEVICES="${SERVER_CUDA_VISIBLE_DEVICES}" PYTHONUNBUFFERED=1 "${PYTHON}" -m vagen.server.server \
   server.host=0.0.0.0 \
   server.port="${ENV_PORT}" \
   use_state_reward=False \

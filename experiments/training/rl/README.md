@@ -12,6 +12,7 @@
 | `dynamic_env_server.slurm` | 独立节点运行VAGEN/AI2-THOR环境，等待trainer完成 |
 | `dynamic_fsdp_smoke.slurm` | 两卡NCCL/FSDP current-policy动态rollout trainer step |
 | `dynamic_fsdp_smoke_hetero_2plus1.slurm` | 单个heterogeneous job原子申请dgx-32 trainer2卡+dgx-51 env1卡 |
+| `dynamic_fsdp_smoke_single3.slurm` | dgx-32单节点3卡：env独占1卡、trainer使用2卡 |
 
 ## 运行模式
 
