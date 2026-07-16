@@ -9,21 +9,21 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --mem=128G
-#SBATCH --nodelist=dgx-[21,24,26,32,54]
+#SBATCH --nodelist=dgx-[21,26,32,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
 #SBATCH --partition=normal
 #SBATCH --time=08:00:00
 #SBATCH --nodes=1
-#SBATCH --nodelist=dgx-37
+#SBATCH --nodelist=dgx-24
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 
 # Atomic fragmented allocation: two trainer ranks on separate one-GPU nodes,
-# plus the dgx-37 GPU that has demonstrated healthy AI2-THOR startup.
+# plus a dgx-24 GPU whose local create/reset preflight completed in 5.35s/0.39s.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"

@@ -14,7 +14,7 @@
 | `dynamic_fsdp_smoke_hetero_2plus1.slurm` | 单个heterogeneous job原子申请dgx-32 trainer2卡+dgx-51 env1卡 |
 | `dynamic_fsdp_smoke_single3.slurm` | 单节点3卡：env独占1卡、trainer使用2卡 |
 | `prepare_k8_sft2_init.py/.slurm` | 稳定快照live SFT2 latest并merge现有LLM+Vision LoRA为immutable k8 RL init |
-| `dynamic_fsdp_k8_fragmented_2plus1.slurm` | 原子申请两个1-GPU trainer碎片节点+dgx-37 env，运行k8 smoke/pilot |
+| `dynamic_fsdp_k8_fragmented_2plus1.slurm` | 原子申请两个1-GPU trainer碎片节点+已预检健康的env节点，运行k8 smoke/pilot |
 
 ## 运行模式
 
