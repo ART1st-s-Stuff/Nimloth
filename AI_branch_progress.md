@@ -11,7 +11,8 @@
 - 人类同意选择性合并与2GPU smoke。port/adaptation已fast-forward merge dev=`caf60d9`：W&B rank0/persisted resume、当前MODEL/WM参数化、ENV_REPO imports、finite metrics/FSDP tensor/optimizer-rank gates、k1/inject fail-fast。updated server tests `37 passed, 1 expected warning`，CLI/shell/checkpoint metadata gate通过。
 - 已确认smoke：当前k1 SFT2 epoch2初始化，`base_train` seeds1..4，4 episodes×最多2 actions，Qwen language full+WM/value训练、vision/state projector冻结，2-rank FSDP step1+new-process resume step2。
 - ID1 job `477075`从pending切到dgx-13 running后，agent在未最终复查state的情况下误取消（19s，env health已过，无trajectory/train step）；replacement `477078`按非空隔离正确elapsed0失败。输出保留，错误登记`E0026_recheck_slurm_state_immediately_before_replacing_pending_job.md`，ID1不复用。
-- retry W&B ID2 `2_smoke_k1ep2_base4x2_fsdp2_iter2_retry1`/`o1jit8xr`，job `477080`正在dgx-13运行2GPU/48CPU/160G；commit/env/checkpoint正确、env health通过、rollout model开始加载，尚无结果claim。详见`ai_tasks/ai_progress/2026-07-16_k1_rl_feasibility.md`。
+- retry W&B ID2 `2_smoke_k1ep2_base4x2_fsdp2_iter2_retry1`/`o1jit8xr`，job `477080`在dgx-13以`COMPLETED 0:0`结束（00:06:16，2GPU）。4条base_train seeds1..4/8 transitions schema完整；step1与new-process resume step2均finite，final global_step2、2 HF shards无空tensor、两rank optimizer完整。
+- 独立delta gate：language q_proj有44,830/4,194,304元素变化（max3.81e-6），sample vision bitwise不变，完整state projector bitwise不变，WM/value有变化，符合language full+WM/value train、vision/state projector freeze。约98GiB输出保留。结论仅为k1/inject epoch2的rollout→JSONL→FSDP update→full checkpoint→same-world resume可行，不解释0/4 success或效果。详见`ai_tasks/ai_progress/2026-07-16_k1_rl_feasibility.md`。
 
 ## 2026-07-14：k=1 inject SFT control（准备中）
 
