@@ -73,7 +73,10 @@ for path in \
   [[ -f "${path}" ]] || { echo "missing checkpoint artifact: ${path}" >&2; exit 1; }
 done
 
+set -a
 source /project/peilab/atst/flower/.env
+set +a
+: "${WANDB_API_KEY:?flower .env must export WANDB_API_KEY}"
 export PATH=/project/peilab/atst/nimloth/.venv-vagen-main/bin:${PATH}
 export PYTHONPATH="${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/le-wm:${PYTHONPATH:-}"
 export HF_HOME=/project/peilab/atst/.cache/huggingface
@@ -108,12 +111,14 @@ cd "${REPO}"
   2>&1 | tee "${RUN_ROOT}/trainer.log"
 
 "${PYTHON}" - "${RUN_ROOT}" <<'PY'
-import csv, json, math, sys, torch
+import csv, json, math, os, sys, torch
 from pathlib import Path
 from safetensors import safe_open
 root = Path(sys.argv[1])
 rows = list(csv.DictReader((root / "train/train_step_log.csv").open()))
 assert len(rows) == 1, len(rows)
+assert (root / "train/wandb_run_id.txt").read_text().strip() == os.environ["WANDB_RUN_ID"]
+assert '"wandb": "initialized"' in (root / "trainer.log").read_text()
 for key in ("wm_mse", "value_loss", "total_loss", "actor_loss", "entropy"):
     assert math.isfinite(float(rows[0][key])), (key, rows[0][key])
 records = [json.loads(line) for line in (root / "train/rollouts/iter_0001/trajectories.jsonl").open()]
