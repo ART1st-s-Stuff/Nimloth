@@ -71,7 +71,13 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
 
     # ---- Training control ---------------------------------------------------
     ap.add_argument("--resume", action="store_true",
-                    help="Resume from --output-dir/best/")
+                    help="Resume RL model/heads/optimizer state")
+    ap.add_argument(
+        "--resume-checkpoint",
+        type=Path,
+        default=None,
+        help="Explicit RL checkpoint dir; defaults to --output-dir/best/",
+    )
     ap.add_argument("--seed", type=int, default=None,
                     help="Override seed from config")
     ap.add_argument("--rl-iterations", type=int, default=None,
@@ -163,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     from nimloth.wm.value_head import ValueHead
 
     args = parse_rl_args(argv)
+    if args.resume_checkpoint is not None and not args.resume:
+        raise ValueError("--resume-checkpoint requires --resume")
     config = load_rl_config(args.config)
     config = merge_config_overrides(args, config)
 
@@ -179,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
                 "vision_tune": args.vision_tune,
                 "lora": args.lora,
                 "resume": args.resume,
+                "resume_checkpoint": args.resume_checkpoint,
                 "latent_token_count": latent_token_count,
                 "latent_query_mode": "inject",
                 "rl": config.get("rl", {}),

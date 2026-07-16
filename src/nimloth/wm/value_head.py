@@ -22,6 +22,9 @@ class ValueHead(nn.Module):
     ) -> None:
         super().__init__()
         hidden = hidden_dim or emb_dim
+        self.emb_dim = int(emb_dim)
+        self.num_actions = int(num_actions)
+        self.hidden_dim = int(hidden)
         self.net = nn.Sequential(
             nn.Linear(emb_dim, hidden),
             nn.GELU(),
@@ -36,6 +39,14 @@ class ValueHead(nn.Module):
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         torch.save(self.state_dict(), path / "value_head.pt")
+        (path / "config.json").write_text(
+            json.dumps({
+                "emb_dim": self.emb_dim,
+                "num_actions": self.num_actions,
+                "hidden_dim": self.hidden_dim,
+            }, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     @classmethod
     def load_checkpoint(

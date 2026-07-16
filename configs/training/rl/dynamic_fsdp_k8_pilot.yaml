@@ -1,0 +1,62 @@
+# k=8/inject dynamic RL pilot: 20 updates with fixed heldout base evaluation.
+
+freeze:
+  qwen: false
+  state_proj: true
+
+actor:
+  lr: 1.0e-6
+  entropy_coeff: 0.01
+  clip_ratio: 0.2
+
+predictor:
+  lr: 1.0e-4
+  emb_dim: 8192
+  history_size: 4
+  projector_hidden_dim: 8192
+  rollout_steps: 1
+
+value_head:
+  lr: 1.0e-4
+  rank_margin: 0.1
+  lambda_rank: 1.0
+
+rollout:
+  # Training is restricted to the actual 1200-task training dataset.
+  eval_sets:
+    - base_train
+  history_window: 4
+  seed_offset: 30001
+  env_timeout: 600
+
+rl:
+  # One iteration is one optimizer update from a deterministic sample of the
+  # collected transitions. Batch 2 is the memory-safe first k=8/Full8192 run.
+  iterations: 20
+  envs_per_iteration: 8
+  max_steps_per_episode: 20
+  gamma: 0.99
+  batch_size: 2
+  temperature: 0.7
+  top_p: 0.95
+
+validation:
+  enabled: true
+  baseline: true
+  interval: 5
+  envs: 20
+  max_steps_per_episode: 20
+  # base.json contains 60 heldout tasks/scenes and is disjoint from base_train.
+  eval_sets:
+    - base
+  seed_offset: 1
+  temperature: 0.0
+  top_p: 1.0
+  history_window: 4
+  env_timeout: 600
+
+training:
+  seed: 42
+  log_interval: 1
+  save_interval: 5
+  stop_if_no_success_by_iteration: 5

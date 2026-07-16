@@ -37,6 +37,66 @@ def test_k8_inject_policy_protocol_is_supported() -> None:
         ))
 
 
+def test_k8_pilot_uses_disjoint_fixed_heldout_protocol() -> None:
+    import yaml
+
+    config = yaml.safe_load(Path(
+        "configs/training/rl/dynamic_fsdp_k8_pilot.yaml"
+    ).read_text(encoding="utf-8"))
+    assert config["rollout"]["eval_sets"] == ["base_train"]
+    assert config["rl"]["iterations"] == 20
+    assert config["rl"]["envs_per_iteration"] == 8
+    assert config["rl"]["max_steps_per_episode"] == 20
+    assert config["validation"] == {
+        "enabled": True,
+        "baseline": True,
+        "interval": 5,
+        "envs": 20,
+        "max_steps_per_episode": 20,
+        "eval_sets": ["base"],
+        "seed_offset": 1,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "history_window": 4,
+        "env_timeout": 600,
+    }
+
+
+def test_k8_snapshot_is_immutable_and_omits_sft_optimizer(tmp_path: Path) -> None:
+    from experiments.training.rl.prepare_k8_sft2_init import (
+        ROOT_FILES,
+        TREE_FILES,
+        snapshot_checkpoint,
+    )
+
+    source = tmp_path / "latest"
+    source.mkdir()
+    for relative_name in (*ROOT_FILES, *TREE_FILES):
+        path = source / relative_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"content:{relative_name}".encode())
+    torch.save({
+        "step": 123,
+        "epoch": 2,
+        "latent_token_count": 8,
+        "latent_query_mode": "inject",
+        "base_model_path": "/base",
+        "optimizer": {"huge": torch.ones(3)},
+    }, source / "training_state.pt")
+
+    output = tmp_path / "snapshot"
+    manifest = snapshot_checkpoint(source, output)
+
+    assert manifest["source_step"] == 123
+    assert manifest["stable_during_copy"] is True
+    assert (output / "SNAPSHOT_READY").is_file()
+    state = torch.load(output / "training_state.pt", weights_only=False)
+    assert state["latent_token_count"] == 8
+    assert "optimizer" not in state
+    with pytest.raises(FileExistsError):
+        snapshot_checkpoint(source, output)
+
+
 def test_zero_update_run_refuses_final_checkpoint() -> None:
     from nimloth.training.rl.trainer import _require_optimizer_progress
 
@@ -269,13 +329,8 @@ def test_value_head_loader_honors_checkpoint_hidden_width(tmp_path: Path) -> Non
     from nimloth.wm.value_head import ValueHead
 
     checkpoint = tmp_path / "value"
-    checkpoint.mkdir()
     expected = ValueHead(emb_dim=12, hidden_dim=5)
-    torch.save(expected.state_dict(), checkpoint / "value_head.pt")
-    (checkpoint / "config.json").write_text(
-        json.dumps({"emb_dim": 12, "num_actions": 8, "hidden_dim": 5}),
-        encoding="utf-8",
-    )
+    expected.save_checkpoint(checkpoint)
     loaded = ValueHead.load_checkpoint(checkpoint, emb_dim=12)
     assert loaded.net[0].weight.shape == (5, 12)
     assert all(

@@ -50,13 +50,22 @@ rl:
   temperature: 1.0           # applied to rollout and PPO action log-probs
   top_p: 1.0                 # restricts sampling only
 
-# --- Validation ---
+# --- Fixed heldout validation ---
 validation:
-  # Dynamic trainer currently has only an explicit training collector. Keep
-  # disabled until a separate heldout collector is configured.
+  # When enabled, CLI builds a separate collector. *_train datasets are
+  # rejected, and its seed cursor resets before every evaluation.
   enabled: false
+  baseline: false
   interval: 50
   envs: 16
+  max_steps_per_episode: 20
+  eval_sets:
+    - base
+  seed_offset: 1
+  temperature: 0.0
+  top_p: 1.0
+  history_window: 4
+  env_timeout: 180
 
 # --- Training / output ---
 training:

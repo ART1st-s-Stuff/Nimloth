@@ -346,6 +346,7 @@ def _maybe_init_wandb(
     run_id_path.write_text(f"{run.id}\n", encoding="utf-8")
     wandb.define_metric("global_step")
     wandb.define_metric("train/*", step_metric="global_step")
+    wandb.define_metric("validation/*", step_metric="global_step")
     print(json.dumps({"wandb": "initialized", "run_id": run.id, "resume": requested_run_id is not None}))
     return run
 
@@ -426,6 +427,9 @@ def train_rl(
     val_envs: int = val_cfg.get("envs", 16)
     val_baseline: bool = bool(val_cfg.get("baseline", False))
     val_max_steps: int = int(val_cfg.get("max_steps_per_episode", max_steps_per_ep))
+    stop_if_no_success_by = int(
+        train_cfg.get("stop_if_no_success_by_iteration", 0)
+    )
     seed: int = train_cfg.get("seed", 42)
 
     # --- tuning modes --------------------------------------------------------
@@ -457,7 +461,11 @@ def train_rl(
     )
     tokenizer_vocab = len(processor.tokenizer)
 
-    resume_ckpt_dir = output_dir / "best"
+    resume_ckpt_dir = (
+        Path(args.resume_checkpoint).resolve()
+        if args.resume_checkpoint is not None
+        else output_dir / "best"
+    )
     resume_state_path = resume_ckpt_dir / "rl_state.pt"
     resume_adapter = resume_ckpt_dir / "adapter_config.json"
     base_model_path = str(args.model)
@@ -824,6 +832,16 @@ def train_rl(
             label="baseline", iteration=0, current_global_step=global_step
         )
 
+    successful_rollouts_total = 0
+    last_completed_iteration = start_iteration - 1
+    if log_path.is_file() and start_iteration > 1:
+        with log_path.open() as stream:
+            for row in csv.DictReader(stream):
+                if row.get("success_rate") and row.get("num_rollouts"):
+                    successful_rollouts_total += round(
+                        float(row["success_rate"]) * float(row["num_rollouts"])
+                    )
+
     # --- main loop ------------------------------------------------------------
     for iteration in range(start_iteration, iterations + 1):
         iter_start = time.time()
@@ -845,9 +863,15 @@ def train_rl(
                 max_steps_per_episode=max_steps_per_ep,
                 output_dir=output_dir / f"rollouts/iter_{iteration:04d}",
             )
+        successful_rollouts_total += sum(
+            1 for trajectory in trajectories if trajectory.success
+        )
         if is_main():
-            print(json.dumps({"iteration": iteration,
-                              "trajectories_collected": len(trajectories)}))
+            print(json.dumps({
+                "iteration": iteration,
+                "trajectories_collected": len(trajectories),
+                "successful_rollouts_total": successful_rollouts_total,
+            }))
 
         if not trajectories:
             if is_main():
@@ -975,6 +999,7 @@ def train_rl(
             vision_ema.update(model)
 
         global_step += 1
+        last_completed_iteration = iteration
         iter_metrics: dict[str, float] = {
             "wm_mse": float(pred_metrics.get("wm_mse", 0.0)),
             "value_loss": float(val_metrics.get("value_loss",
@@ -1084,6 +1109,19 @@ def train_rl(
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
 
+        if (
+            stop_if_no_success_by > 0
+            and iteration >= stop_if_no_success_by
+            and successful_rollouts_total == 0
+        ):
+            if is_main():
+                print(json.dumps({
+                    "early_stop": "no_successful_training_trajectory",
+                    "iteration": iteration,
+                    "global_step": global_step,
+                }))
+            break
+
     # --- final checkpoint -----------------------------------------------------
     try:
         _require_optimizer_progress(global_step)
@@ -1101,7 +1139,7 @@ def train_rl(
         processor=processor,
         vision_ema=vision_ema,
         optimizer=optimizer,
-        iteration=iterations,
+        iteration=last_completed_iteration,
         global_step=global_step,
         best_value_loss=best_value_loss,
         lora=uses_lora(args),
