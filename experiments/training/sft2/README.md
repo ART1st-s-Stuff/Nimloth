@@ -69,13 +69,15 @@ after the frozen-State ablation. It uses LLM LoRA and vision LoRA (r64/alpha128)
 because the historical matched one-epoch rollout favored LoRA/LoRA over
 LoRA/full. `query_tune=freeze` is required because the additive query adapter
 cannot coexist with PEFT; the SFT1 merged checkpoint already contains its
-materialized k=8 query rows. A one-GPU-per-rank launch with image budget12 OOMed before step1 at76.79GiB.
-A four-rank pair-parallel replacement then showed that the 3+1 non-uniform
-multi-node topology desynchronizes multi-device Qwen and auxiliary DDP
-collectives. The production retry therefore returns to
-`run_full8192_lora_hetero_6plus2.sh` with
-`latent_wm_value_k8_state8192_ep5_img8.yaml`: world8/GA4 and image budget8.
-The pair2 files remain as failed-topology reproduction artifacts.
+materialized k=8 query rows. One-GPU-per-rank launches OOM even at image budget8 because a single late
+prefix itself contains eight images and cannot be split without changing
+semantics. A four-rank pair-parallel replacement showed that the 3+1
+non-uniform multi-node topology desynchronizes multi-device Qwen and auxiliary
+DDP collectives. The production retry therefore uses
+`run_full8192_lora_pair2_single_node3.sh`: three pair-parallel ranks entirely
+on dgx-27, world3/GA11 (effective accumulation33) and image budget8. dgx-54's
+two GPUs remain held but unused. The other launchers remain as failed-topology
+reproduction artifacts.
 
 `latent_wm_value_k8_state8192_factorized.yaml` preserves that same full-width
 Projector and external/saved/predicted 8192-d State, while setting the internal
