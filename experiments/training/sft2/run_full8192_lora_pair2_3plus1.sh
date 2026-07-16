@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+module load slurm >/dev/null 2>&1
 
 REPO=${REPO:-/project/peilab/atst/nimloth/.worktree/k8-preprojection-recon}
 ROOT=${ROOT:-/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97}

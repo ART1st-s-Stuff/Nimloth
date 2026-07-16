@@ -78,7 +78,9 @@ including when all ranks share one node. The production retry uses
 world3/GA11 (effective accumulation33), image budget8, ordinary DDP for the
 single-device auxiliary modules on a dedicated NCCL group, and explicit
 ordered Qwen gradient averaging through a CPU Gloo group at each optimizer
-boundary. dgx-54's two GPUs remain held but unused.
+boundary. A five-step world3 smoke passed; production uses the corrected
+`run_full8192_lora_pair2_3plus1.sh` topology across dgx-27 and dgx-54 with
+world4/GA8 and effective accumulation32.
 
 `latent_wm_value_k8_state8192_factorized.yaml` preserves that same full-width
 Projector and external/saved/predicted 8192-d State, while setting the internal
