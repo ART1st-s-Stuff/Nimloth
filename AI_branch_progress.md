@@ -13,7 +13,8 @@
 - 提交`3f87a5c`、`a19ee8f`已推送。服务器RL/latent tests=`29 passed, 1 expected warning`，后续定向回归`24 passed`；2-rank gloo覆盖rank0-only env、collective action、相同trajectory。
 - 人类允许用dgx-51/52做真实smoke，后批准dgx-32替换dgx-52。W&B ID3 `3_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2`/`66bsq5lp`。attempt1 trainer477199在worker/model init前因默认port29500占用FAILED，env477201 health通过；已登记E0027并以`--standalone`修复。
 - 人类批准attempt2；trainer477204获得dgx-32，但env477205被共享账户`MaxGRESPerAccount`阻塞，未触碰其他活跃任务。trainer仍在等env URL、model未启动，复核状态后取消（49s/0）。两次均无trajectory/update/checkpoint，W&B仍queue step0。
-- 人类指定attempt3使用单个heterogeneous job原子申请两节点2+1：job477219 group0 dgx-32 trainer2GPU，group1 dgx-51 env1GPU；launch=`a1b2bf9`。两个component当前PENDING/no allocation，等待当前9GPU shared-account usage下降和节点资源同时满足。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
+- 人类指定attempt3单个heterogeneous job两节点2+1。job477219原子启动dgx-32 trainer2GPU+dgx-51 env1GPU，VAGEN health、torchrun standalone、真实2-rank NCCL、FSDP wrap及dynamic collector entry通过。首个base_train create约185s，刚超过180s client timeout，episode正确丢弃；service后续失败，0 trajectory/update。
+- pre-fix trainer在global_step0开始final save，job经双component状态复核后于5:35取消；partial final保留且禁止resume/reuse，W&B ID3仍queue step0。smoke timeout已改240s；新增global_step0拒绝final并登记E0028。attempt3证明NCCL/FSDP初始化但未完成action/update；retry需新ID/output和人类确认。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
 
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 

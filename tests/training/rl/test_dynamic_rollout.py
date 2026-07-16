@@ -22,6 +22,14 @@ from nimloth.training.rl.rollout import (
 )
 
 
+def test_zero_update_run_refuses_final_checkpoint() -> None:
+    from nimloth.training.rl.trainer import _require_optimizer_progress
+
+    with pytest.raises(RuntimeError, match="zero optimizer steps"):
+        _require_optimizer_progress(0)
+    _require_optimizer_progress(1)
+
+
 def test_policy_prompt_uses_real_windowed_images() -> None:
     messages, images = build_nimloth_policy_messages(
         ["obs0.png", "obs1.png", "obs2.png"],

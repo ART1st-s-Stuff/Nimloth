@@ -294,6 +294,15 @@ def _maybe_init_wandb(
     return run
 
 
+def _require_optimizer_progress(global_step: int) -> None:
+    """Refuse to materialize a misleading final checkpoint with zero updates."""
+
+    if int(global_step) <= 0:
+        raise RuntimeError(
+            "RL completed zero optimizer steps; refusing to write final checkpoint"
+        )
+
+
 def _broadcast_module_state(module: torch.nn.Module, src: int = 0) -> None:
     """Synchronize a small non-FSDP module across ranks.
 
@@ -916,6 +925,13 @@ def train_rl(
             dist.barrier()
 
     # --- final checkpoint -----------------------------------------------------
+    try:
+        _require_optimizer_progress(global_step)
+    except RuntimeError:
+        if wandb_run is not None:
+            wandb_run.finish(exit_code=1)
+        cleanup_dist()
+        raise
     save_rl_checkpoint(
         output_dir / "final",
         state_proj=state_proj,
