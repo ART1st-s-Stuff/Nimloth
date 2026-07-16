@@ -15,7 +15,9 @@
 - aux GA-boundary优化后，进一步确认CPU Gloo是主瓶颈：164,496,896个FP32 LoRA参数约658MB/rank每step需GPU→CPU→跨节点Gloo→GPU；训练主进程约10 CPU cores，而20秒GPU平均仅primary18–26%/secondary12–15%。另发现`device_map.get("lm_head") or norm`把CUDA0误当false，导致aux相对placement不一致，登记E0043。
 - ID27在logged132时按latest step89/epoch1/micro712暂停；132-step CSV归档、active截到89，W&B90-132标为stale。commit`6ebe35a`改为：aux固定跟随final LM norm；Gloo一次性核验826个trainable tensors的relative pair slot；slot0/slot1各用独立NCCL group按≤64MB bucket直接平均GPU gradients。server focused suite34 passed，跨节点synthetic mixed-pair smoke梯度精确平均。
 - 正式resume核实placement一致：slot0=81,348,096、slot1=83,148,800 params；日志`qwen_gradient_sync=gpu_nccl_partitioned_optimizer_boundary`。steps90-105 finite无OOM/NCCL/placement/missing-grad错误；15个clean intervals median8.192s/mean8.178s（7.338–9.315），相对CPU Gloo clean median26.176s约3.20×加速。
-- 20秒GPU平均提升到primary58–75%、secondary17–40%。预算1,655 steps/epoch、8,275 total，修正粗估约3.76h/epoch、18.8h/5epochs（另加checkpoint/validation）。当前durable boundary仍step89，等待GPU-NCCL路径首个新latest。
+- 20秒GPU平均提升到primary58–75%、secondary17–40%。预算1,655 steps/epoch、8,275 total，修正粗估约3.76h/epoch、18.8h/5epochs（另加checkpoint/validation）。
+- hold476868两component均`TIMEOUT0:0`/08:00:28，仅因walltime终止。最后logged1924；durable latest1886（epoch2/micro1848），CSV已归档并截断，回退38步，无model error。epoch1 step1655完成：val WM MSE`.0043698056`、SIGReg`.4129391`、value`.1205234`；`epoch_001`和`best`完整。
+- 人类明确要求time-limit后继续。已提交直接resume hetero job`477304`（commit`60c9b0b`），固定dgx-27×6+dgx-54×2、8h，allocation获得后自动复用ID27/W&B`lilzcdjs`/world4/GA8从step1886恢复；当前`PENDING(Resources)`，group1调度估计21:42、group0 start unknown。
 
 ## 2026-07-15：冻结 State 的 SFT2 dynamics_dim 对照（准备中）
 
