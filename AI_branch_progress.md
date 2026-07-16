@@ -11,7 +11,7 @@
 - rollout与PPO共用canonical k1/inject prompt、真实history images和可配window；temperature-scaled old/new log-prob一致，top-p仅控制采样。rollout/latent encoding临时eval，PPO保留梯度。
 - checkpoint新增严格`rollout_protocol`和resume seed cursor；动态train只允许显式`*_train`，且在独立heldout collector接线前强制关闭validation，避免train结果伪装val。
 - 提交`3f87a5c`、`a19ee8f`已推送。服务器RL/latent tests=`29 passed, 1 expected warning`，后续定向回归`24 passed`；2-rank gloo覆盖rank0-only env、collective action、相同trajectory。
-- 人类允许用dgx-51/52做真实smoke。新增配置/两节点orchestrator并将env HTTP timeout降到180秒后，launch commit=`1e93a74`。W&B ID3 `3_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2`/`66bsq5lp`已预留；trainer job477191 pending dgx-52，启动后自动提交dgx-51 env child。尚无结果claim，详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
+- 人类允许用dgx-51/52做真实smoke，后批准dgx-32替换dgx-52。launch=`e6eaf50`、W&B ID3 `3_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2`/`66bsq5lp`。dgx-52 job477191经即时复查仍PENDING后elapsed0取消；dgx-32 trainer477199在worker/model init前因默认torchrun port29500被占用而FAILED（00:01:20），dgx-51 env477201 health通过并clean COMPLETED。无trajectory/update/checkpoint，未验证NCCL；W&B仍queue step0。错误登记E0027，待确认用`--standalone`原identity重试。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
 
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 

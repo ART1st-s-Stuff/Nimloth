@@ -60,4 +60,6 @@
 - W&B project=`nimloth-rl`，ID3，run=`3_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2`，internal=`66bsq5lp`已实际预留并持久化。
 - 初始化k1/inject SFT2 epoch2；`base_train` seeds20001..20002；2 episodes×1 action；1 update/batch2；language full+WM/value train，vision/state projector freeze；只写final full checkpoint，不做效果claim。
 - output=`outputs/experiments/training/rl/2026-07-16/3_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2`，README已记录commit/data/modules/checkpoint/resources/gates。
-- trainer job `477191`已提交并因Priority pending dgx-52；启动后才会提交dgx-51 env child，避免env提前占卡超时。尚无运行结果claim。
+- trainer job `477191`提交dgx-52后因Priority pending。人类批准改用dgx-32；agent在同一critical section确认job仍为PENDING/elapsed0/no allocation后取消，未触发E0026竞态。
+- dgx-32 retry trainer `477199`运行00:01:20后FAILED `1:0`，发生在worker/model初始化前：torchrun默认TCP port29500被共享节点其他进程占用，报`DistNetworkError/EADDRINUSE`。env477200 pending取消；8CPU replacement env477201在dgx-51通过health并于trainer失败后23s clean COMPLETED。
+- 本次没有trajectory/CSV/model load/update/checkpoint，未验证NCCL/FSDP；W&B `66bsq5lp`仍只有queue step0。输出日志保留。已登记`E0027_torchrun_default_master_port_collision.md`；建议同output/internal run用`--standalone`和新retry日志重试，需人类确认。

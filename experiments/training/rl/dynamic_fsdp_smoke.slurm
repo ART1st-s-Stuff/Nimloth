@@ -48,7 +48,7 @@ if [[ "${AUTO_SUBMIT_ENV:-0}" == 1 ]]; then
   : "${ENV_REPO:?AUTO_SUBMIT_ENV requires ENV_REPO}"
   export SLURM_CONF=${SLURM_CONF:-/cm/shared/apps/slurm/var/etc/slurm/slurm.conf}
   ENV_JOB_ID=$("${SBATCH}" --parsable --nodelist="${ENV_NODE:-dgx-51}" \
-    --cpus-per-task="${ENV_CPUS:-16}" \
+    --cpus-per-task="${ENV_CPUS:-8}" \
     --output="${RUN_ROOT}/env_slurm_%j.out" \
     --error="${RUN_ROOT}/env_slurm_%j.err" \
     --export="ALL,RUN_ROOT=${RUN_ROOT},ENV_REPO=${ENV_REPO}" \
@@ -90,7 +90,7 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_DEBUG=INFO
 
 cd "${REPO}"
-"${PYTHON}" -m torch.distributed.run --nproc_per_node=2 -- \
+"${PYTHON}" -m torch.distributed.run --standalone --nproc_per_node=2 -- \
   -m nimloth.training.rl.cli \
   --config configs/training/rl/dynamic_fsdp_smoke.yaml \
   --model "${MODEL}" \
