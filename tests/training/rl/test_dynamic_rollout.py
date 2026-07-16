@@ -330,12 +330,13 @@ def test_state_projector_loader_infers_k8_checkpoint_width(tmp_path: Path) -> No
 
 
 def test_value_head_loader_honors_checkpoint_hidden_width(tmp_path: Path) -> None:
+    from nimloth.training.rl.cli import load_value_head_for_rl
     from nimloth.wm.value_head import ValueHead
 
     checkpoint = tmp_path / "value"
     expected = ValueHead(emb_dim=12, hidden_dim=5)
     expected.save_checkpoint(checkpoint)
-    loaded = ValueHead.load_checkpoint(checkpoint, emb_dim=12)
+    loaded = load_value_head_for_rl(checkpoint, emb_dim=12)
     assert loaded.net[0].weight.shape == (5, 12)
     assert all(
         torch.equal(expected.state_dict()[key], loaded.state_dict()[key])

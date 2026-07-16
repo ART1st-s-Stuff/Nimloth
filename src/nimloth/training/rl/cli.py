@@ -153,6 +153,21 @@ def load_state_projector_for_rl(
     return module
 
 
+def load_value_head_for_rl(
+    checkpoint: Path | None,
+    *,
+    emb_dim: int,
+    default_hidden_dim: int | None = None,
+):
+    """Construct ValueHead with the checkpoint's actual hidden width."""
+
+    from nimloth.wm.value_head import ValueHead
+
+    if checkpoint is not None:
+        return ValueHead.load_checkpoint(checkpoint, emb_dim=emb_dim)
+    return ValueHead(emb_dim=emb_dim, hidden_dim=default_hidden_dim)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse args, load config, build modules, and launch RL training."""
     import torch
@@ -166,7 +181,6 @@ def main(argv: list[str] | None = None) -> int:
     from nimloth.training.rl.trainer import train_rl
     from nimloth.wm.predictor import LatentWMPredictor
     from nimloth.wm.state_proj import StateProjector
-    from nimloth.wm.value_head import ValueHead
 
     args = parse_rl_args(argv)
     if args.resume_checkpoint is not None and not args.resume:
@@ -239,12 +253,18 @@ def main(argv: list[str] | None = None) -> int:
             ),
             latent_token_count=latent_token_count,
         )
-    value_head = ValueHead(emb_dim=emb_dim)
+    value_head = load_value_head_for_rl(
+        args.value_head_checkpoint,
+        emb_dim=emb_dim,
+        default_hidden_dim=config.get("value_head", {}).get("hidden_dim"),
+    )
     if args.value_head_checkpoint is not None:
-        loaded_vh = ValueHead.load_checkpoint(args.value_head_checkpoint, emb_dim=emb_dim)
-        value_head.load_state_dict(loaded_vh.state_dict())
         if is_main():
-            print(json.dumps({"warm_start": "value_head", "source": str(args.value_head_checkpoint)}))
+            print(json.dumps({
+                "warm_start": "value_head",
+                "source": str(args.value_head_checkpoint),
+                "hidden_dim": value_head.net[0].out_features,
+            }))
 
     # --- Rollout collectors --------------------------------------------------
     validation_collector = None
