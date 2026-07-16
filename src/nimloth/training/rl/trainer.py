@@ -290,6 +290,25 @@ def _unwrap(m: torch.nn.Module) -> torch.nn.Module:
     return m.module if hasattr(m, "module") else m
 
 
+def normalize_policy_parameter_dtype(
+    module: torch.nn.Module,
+    *,
+    dtype: torch.dtype,
+) -> None:
+    """Cast PEFT-created FP32 parameters to the BF16 policy dtype for FSDP."""
+
+    module.to(dtype=dtype)
+    dtypes = {
+        parameter.dtype
+        for parameter in module.parameters()
+        if parameter.is_floating_point()
+    }
+    if dtypes != {dtype}:
+        raise RuntimeError(
+            f"policy parameters must have one FSDP dtype {dtype}, got {dtypes}"
+        )
+
+
 def _freeze(module: torch.nn.Module) -> None:
     module.eval()
     for p in module.parameters():
@@ -480,6 +499,7 @@ def train_rl(
             "policy config changed while loading: "
             f"expected k={latent_token_count}, got k={loaded_latent_token_count}"
         )
+    policy_dtype = model.get_input_embeddings().weight.dtype
     model_vocab_before = model.get_input_embeddings().weight.shape[0]
     # Log model embedding info before resize
     embed = model.get_input_embeddings()
@@ -547,7 +567,10 @@ def train_rl(
                               "llm_tune": llm_tune,
                               "vision_tune": vision_tune}))
 
+    normalize_policy_parameter_dtype(model, dtype=policy_dtype)
     model.to(device)
+    if is_main():
+        print(json.dumps({"policy_parameter_dtype": str(policy_dtype)}))
 
     # --- freeze WM-encoding pathway if requested -----------------------------
     if freeze_qwen and llm_tune == "freeze" and vision_tune == "freeze":

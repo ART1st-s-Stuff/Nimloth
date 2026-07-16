@@ -97,6 +97,18 @@ def test_k8_snapshot_is_immutable_and_omits_sft_optimizer(tmp_path: Path) -> Non
         snapshot_checkpoint(source, output)
 
 
+def test_policy_dtype_normalization_makes_fsdp_parameters_uniform() -> None:
+    from nimloth.training.rl.trainer import normalize_policy_parameter_dtype
+
+    module = torch.nn.Module()
+    module.base = torch.nn.Linear(3, 3).to(dtype=torch.bfloat16)
+    module.register_parameter(
+        "adapter", torch.nn.Parameter(torch.ones(3, dtype=torch.float32))
+    )
+    normalize_policy_parameter_dtype(module, dtype=torch.bfloat16)
+    assert {parameter.dtype for parameter in module.parameters()} == {torch.bfloat16}
+
+
 def test_zero_update_run_refuses_final_checkpoint() -> None:
     from nimloth.training.rl.trainer import _require_optimizer_progress
 
