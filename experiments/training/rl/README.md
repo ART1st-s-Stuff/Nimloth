@@ -10,7 +10,8 @@
 | `rollout_env.py` | 独立 rollout 脚本：复用 Nimloth action policy，生成完整 RL JSONL（不参与训练） |
 | `run_e2e_smoke.sh` | 训练 split JSONL → 两卡 FSDP step → resume step 的端到端 smoke |
 | `dynamic_env_server.slurm` | 独立节点运行VAGEN/AI2-THOR环境，等待trainer完成 |
-| `dynamic_fsdp_smoke.slurm` | 两卡NCCL/FSDP current-policy动态rollout真实smoke |
+| `dynamic_fsdp_smoke.slurm` | 两卡NCCL/FSDP current-policy动态rollout trainer step |
+| `dynamic_fsdp_smoke_hetero_2plus1.slurm` | 单个heterogeneous job原子申请dgx-32 trainer2卡+dgx-51 env1卡 |
 
 ## 运行模式
 

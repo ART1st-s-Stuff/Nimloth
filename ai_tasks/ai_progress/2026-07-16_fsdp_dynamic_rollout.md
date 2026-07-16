@@ -64,4 +64,4 @@
 - dgx-32 retry trainer `477199`运行00:01:20后FAILED `1:0`，发生在worker/model初始化前：torchrun默认TCP port29500被共享节点其他进程占用，报`DistNetworkError/EADDRINUSE`。env477200 pending取消；8CPU replacement env477201在dgx-51通过health并于trainer失败后23s clean COMPLETED。
 - 本次没有trajectory/CSV/model load/update/checkpoint，未验证NCCL/FSDP；W&B `66bsq5lp`仍只有queue step0。输出日志保留。已登记`E0027_torchrun_default_master_port_collision.md`并以`--standalone`修复。
 - 人类批准retry2。dgx-32 trainer477204 acquired2GPU，但自动env477205被`MaxGRESPerAccount`阻塞：共享`csejzhang`身份的其他活跃任务已占剩余account GPU quota；未触碰这些任务。trainer仍只等待env URL，torchrun/model未启动。即时复核trainer=RUNNING/env=PENDING后取消，elapsed49s/0，无artifact，W&B仍step0。
-- 待人类决策：等待account quota释放后保持dgx-32+dgx-51，或批准在dgx-32同一allocation内让env与FSDP rank0共享GPU。后者仍可验证NCCL/FSDP动态rollout，但不验证跨节点HTTP拓扑。
+- 人类指定改用单个Slurm heterogeneous job原子申请2节点2+1卡：het-group0=dgx-32 trainer2GPU/16CPU/128G，het-group1=dgx-51 env1GPU/8CPU/64G。这样不会出现trainer已运行但env受account quota单独排队；整个3卡job会等总quota与两节点资源同时满足。
