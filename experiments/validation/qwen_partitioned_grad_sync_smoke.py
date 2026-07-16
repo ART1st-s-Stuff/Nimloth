@@ -15,6 +15,8 @@ from nimloth.training.common.grad_sync import (
 
 
 def _devices(rank: int) -> tuple[int, int]:
+    if os.environ.get("NIMLOTH_SMOKE_LOCAL_PAIR") == "1":
+        return 0, 1
     return (0, 2, 4, 0)[rank], (1, 3, 5, 1)[rank]
 
 

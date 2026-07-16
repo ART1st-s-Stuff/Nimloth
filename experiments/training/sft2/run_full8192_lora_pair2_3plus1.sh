@@ -12,6 +12,8 @@ MODEL=${MODEL:-${ROOT}/sft1/epoch_005/hf_merged}
 RECORDS=${RECORDS:-${ROOT}/converted_strict_k8_b6c811c}
 CACHE=${CACHE:-${ROOT}/sft2/1_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga4_px100352_img12_bestwm/preprocess_cache}
 RUN_NAME=${RUN_NAME:-18_state8192_fullwm8192_llmlora64a128_vislora64a128_pair2_ws4_ga8_ep5}
+PAIR_LAYOUT=${PAIR_LAYOUT:-hetero_3plus1}
+LAYOUT_HELPER=$REPO/experiments/training/sft2/pair_launcher_layout.sh
 
 cd "$REPO"
 set -a
@@ -24,7 +26,14 @@ export WANDB_PROJECT=nimloth-sft2 WANDB_MODE=online
 export NCCL_DEBUG=INFO NCCL_IB_DISABLE=0
 export NCCL_SOCKET_IFNAME=ibp41s0f0 GLOO_SOCKET_IFNAME=ibp41s0f0
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1 NCCL_ASYNC_ERROR_HANDLING=1
-export MASTER_ADDR=dgx-27 WORLD_SIZE=4 NIMLOTH_DDP_GPU_STRIDE=2
+if [[ -z "${MASTER_ADDR:-}" ]]; then
+  if [[ "$PAIR_LAYOUT" == one_rank_per_node ]]; then
+    MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)
+  else
+    MASTER_ADDR=dgx-27
+  fi
+fi
+export MASTER_ADDR WORLD_SIZE=4 NIMLOTH_DDP_GPU_STRIDE=2
 export MASTER_PORT=${MASTER_PORT:-$((20001 + ${HOLD_JOB:-${SLURM_JOB_ID%%+*}} % 10000))}
 mkdir -p "$TRAIN_OUT" "$OUT_ROOT/logs"
 
@@ -43,24 +52,28 @@ fi
 RESUME=0
 [[ -f "$TRAIN_OUT/latest/training_state.pt" ]] && RESUME=1
 export REPO ROOT OUT_ROOT TRAIN_OUT PY CONFIG MODEL RECORDS CACHE RUN_NAME RESUME
+export PAIR_LAYOUT LAYOUT_HELPER
 
-SRUN_ARGS=(--het-group=0-1 --kill-on-bad-exit=1)
+if [[ "$PAIR_LAYOUT" == one_rank_per_node ]]; then
+  SRUN_ARGS=(--nodes=4 --ntasks=4 --ntasks-per-node=1 --kill-on-bad-exit=1)
+else
+  SRUN_ARGS=(--het-group=0-1 --kill-on-bad-exit=1)
+fi
 if [[ -n "${HOLD_JOB:-}" ]]; then
   SRUN_ARGS=(--jobid="$HOLD_JOB" --overlap "${SRUN_ARGS[@]}")
 fi
 srun "${SRUN_ARGS[@]}" bash -lc '
-  case "$(hostname)" in
-    dgx-27*) BASE_RANK=0; LOCAL_WORLD=3 ;;
-    dgx-54*) BASE_RANK=3; LOCAL_WORLD=1 ;;
-    *) echo "unexpected host $(hostname)" >&2; exit 2 ;;
-  esac
+  source "$LAYOUT_HELPER"
+  read -r BASE_RANK LOCAL_WORLD < <(
+    pair_layout_values "$PAIR_LAYOUT" "$(hostname)" "${SLURM_PROCID:-0}"
+  )
   echo "launcher host=$(hostname) visible=${CUDA_VISIBLE_DEVICES:-unset} base=$BASE_RANK local_world=$LOCAL_WORLD resume=$RESUME" >&2
   pids=()
   for ((local=0; local<LOCAL_WORLD; local++)); do
     rank=$((BASE_RANK + local))
     resume_args=()
     [[ "$RESUME" == 1 ]] && resume_args=(--resume)
-    RANK=$rank LOCAL_RANK=$local WORLD_SIZE=4 MASTER_ADDR=dgx-27 MASTER_PORT="$MASTER_PORT" \
+    RANK=$rank LOCAL_RANK=$local WORLD_SIZE=4 MASTER_ADDR="$MASTER_ADDR" MASTER_PORT="$MASTER_PORT" \
       "$PY" experiments/training/sft2/train.py \
         --config "$CONFIG" --model "$MODEL" \
         --train-jsonl "$RECORDS/train_all.jsonl" --val-jsonl "$RECORDS/val_all.jsonl" \
