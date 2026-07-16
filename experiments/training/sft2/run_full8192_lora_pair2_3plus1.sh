@@ -24,7 +24,13 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=true
 export WANDB_PROJECT=nimloth-sft2 WANDB_MODE=online
 export NCCL_DEBUG=INFO NCCL_IB_DISABLE=0
-export NCCL_SOCKET_IFNAME=ibp41s0f0 GLOO_SOCKET_IFNAME=ibp41s0f0
+source "$LAYOUT_HELPER"
+read -r NCCL_IF GLOO_IF < <(pair_network_values "$PAIR_LAYOUT")
+if [[ "$NCCL_IF" == auto ]]; then
+  unset NCCL_SOCKET_IFNAME GLOO_SOCKET_IFNAME
+else
+  export NCCL_SOCKET_IFNAME=$NCCL_IF GLOO_SOCKET_IFNAME=$GLOO_IF
+fi
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1 NCCL_ASYNC_ERROR_HANDLING=1
 if [[ -z "${MASTER_ADDR:-}" ]]; then
   if [[ "$PAIR_LAYOUT" == one_rank_per_node ]]; then

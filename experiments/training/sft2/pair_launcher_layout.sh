@@ -12,3 +12,11 @@ pair_layout_values() {
     *) echo "unexpected host $host" >&2; return 2 ;;
   esac
 }
+
+pair_network_values() {
+  if [[ "$1" == one_rank_per_node ]]; then
+    printf 'auto auto\n'
+  else
+    printf 'ibp41s0f0 ibp41s0f0\n'
+  fi
+}

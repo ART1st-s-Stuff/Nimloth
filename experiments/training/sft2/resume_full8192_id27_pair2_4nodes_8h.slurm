@@ -20,8 +20,11 @@ CONFIG=$REPO/configs/training/sft2/latent_wm_value_k8_state8192_ep5_img8.yaml
 RUN_NAME=27_state8192_fullwm8192_llmlora64a128_vislora64a128_pair2_ws4_ga8_ep5_bucketed
 PY=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
 export REPO ROOT OUT_ROOT CONFIG RUN_NAME PY PAIR_LAYOUT=one_rank_per_node
+export NCCL_DEBUG=INFO NCCL_IB_DISABLE=0
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1 NCCL_ASYNC_ERROR_HANDLING=1
+unset NCCL_SOCKET_IFNAME GLOO_SOCKET_IFNAME
 cd "$REPO"
-echo "resume_commit=$(git rev-parse HEAD) job=$SLURM_JOB_ID nodes=$SLURM_JOB_NODELIST"
+echo "resume_commit=$(git rev-parse HEAD) job=$SLURM_JOB_ID nodes=$SLURM_JOB_NODELIST socket_if=auto"
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)
 SMOKE_PORT=$((30001 + SLURM_JOB_ID % 10000))
 export MASTER_ADDR SMOKE_PORT
