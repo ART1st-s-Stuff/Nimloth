@@ -248,7 +248,7 @@ def test_resume_seed_cursor_accounts_for_completed_rollouts() -> None:
     assert collector._ep_counter == 100 + 5 * 8 + 2 * 3
 
 
-def test_k8_hidden_encoding_extracts_full_query_block(monkeypatch, tmp_path: Path) -> None:
+def test_k8_hidden_encoding_extracts_full_query_block(tmp_path: Path) -> None:
     from nimloth.latent.extraction import latent_state_tokens
     from nimloth.training.rl.trainer import encode_trajectory_hiddens
 
@@ -257,20 +257,24 @@ def test_k8_hidden_encoding_extracts_full_query_block(monkeypatch, tmp_path: Pat
     input_ids = torch.tensor([[0, *[token_id_map[name] for name in latent_names], 9]])
     hidden = torch.arange(input_ids.numel() * 2, dtype=torch.float32).reshape(1, -1, 2)
 
-    def fake_batch(items, processor, max_length, *, latent_token_count, **kwargs):
-        assert latent_token_count == 8
-        return {"input_ids": input_ids}
+    class FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            return "prompt"
+
+        def __call__(self, **kwargs):
+            assert all(isinstance(image, Image.Image) for image in kwargs["images"])
+            return {"input_ids": input_ids}
 
     class FakeModel:
         def __call__(self, **kwargs):
             return SimpleNamespace(hidden_states=(hidden,))
 
-    monkeypatch.setattr(
-        "nimloth.training.common.qwen_batch.build_qwen_batch", fake_batch
-    )
+    image_paths = [tmp_path / "a.png", tmp_path / "b.png"]
+    for path in image_paths:
+        Image.new("RGB", (2, 2), "black").save(path)
     trajectory = RolloutTrajectory(
         record_id="k8",
-        image_paths=[str(tmp_path / "a.png"), str(tmp_path / "b.png")],
+        image_paths=[str(path) for path in image_paths],
         action_indices=[0],
         action_names=["moveahead"],
         action_log_probs=[[float(-torch.log(torch.tensor(8.0)))] * 8],
@@ -281,7 +285,7 @@ def test_k8_hidden_encoding_extracts_full_query_block(monkeypatch, tmp_path: Pat
     states = encode_trajectory_hiddens(
         trajectory,
         FakeModel(),
-        object(),
+        FakeProcessor(),
         token_id_map,
         torch.device("cpu"),
         latent_token_count=8,

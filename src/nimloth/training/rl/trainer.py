@@ -59,6 +59,7 @@ def encode_trajectory_hiddens(
     device: torch.device,
     *,
     latent_token_count: int = 1,
+    history_window: int = 4,
 ) -> list[torch.Tensor]:
     """Run Qwen on each frame of a trajectory, return hidden states.
 
@@ -69,40 +70,35 @@ def encode_trajectory_hiddens(
         LatentActionTokens,
         extract_latent_state_block,
         find_last_latent_state_block,
-        latent_state_block,
         last_hidden_state,
     )
-    from nimloth.training.common.qwen_batch import build_qwen_batch
+    from nimloth.training.rl.rollout import (
+        build_nimloth_policy_messages,
+        materialize_policy_images,
+    )
 
     states: list[torch.Tensor] = []
     tokens = LatentActionTokens()
 
-    # System message from trajectory
-    system_msg = trajectory.messages[0] if trajectory.messages else {
-        "role": "system", "content": "You are a navigation agent."
-    }
-
-    for i, image_path in enumerate(trajectory.image_paths):
-        # Build messages: system + image observation + brief assistant
-        # so Qwen encodes the conversation context including <|latent_state|>.
-        messages = [
-            system_msg,
-            {"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": "Observe the scene from the current viewpoint."},
-            ]},
-            # Include <|latent_state|> in assistant so we can extract it
-            {"role": "assistant", "content": [
-                {"type": "text", "text": latent_state_block(latent_token_count)},
-            ]},
-        ]
-        item = {"messages": messages}
-        enc = build_qwen_batch(
-            [item],
-            processor,
-            max_length=999999,
+    for index in range(len(trajectory.image_paths)):
+        # Recompute the exact policy prefix used at rollout/PPO time. This keeps
+        # SFT2 query extraction and the action distribution on one prompt.
+        messages, images = build_nimloth_policy_messages(
+            trajectory.image_paths[: index + 1],
+            trajectory.nav_instruction,
+            trajectory.action_names[:index],
+            history_window=history_window,
             latent_token_count=latent_token_count,
-        )  # effectively no truncation
+        )
+        text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        enc = processor(
+            text=[text],
+            images=materialize_policy_images(images),
+            return_tensors="pt",
+            padding=True,
+        )
         model_inputs = {k: v.to(device) for k, v in enc.items()}
         with torch.no_grad():
             output = qwen_model(**model_inputs, output_hidden_states=True, return_dict=True)
@@ -135,6 +131,7 @@ def build_rl_transitions(
     gamma: float = 0.99,
     *,
     latent_token_count: int = 1,
+    history_window: int = 4,
 ) -> list[dict[str, torch.Tensor]]:
     """Encode trajectories → list of transition dicts (CPU tensors)."""
 
@@ -147,6 +144,7 @@ def build_rl_transitions(
             token_id_map,
             device,
             latent_token_count=latent_token_count,
+            history_window=history_window,
         )
         if len(hiddens) < 2:
             continue
@@ -889,6 +887,7 @@ def train_rl(
                 device,
                 gamma=gamma,
                 latent_token_count=latent_token_count,
+                history_window=int(getattr(collector, "_history_window", 4)),
             )
         # Free GPU memory before PPO forward (Qwen+LoRA+gradients needs extra VRAM)
         torch.cuda.empty_cache()
