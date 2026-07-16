@@ -26,3 +26,19 @@ def test_setup_dist_initializes_nccl_with_explicit_local_device(monkeypatch) -> 
     assert device == torch.device("cuda:1")
     assert selected == [1]
     assert initialized == [{"backend": "nccl", "device_id": torch.device("cuda:1")}]
+
+
+def test_setup_dist_does_not_constrain_pair_parallel_to_primary_device(monkeypatch) -> None:
+    monkeypatch.setenv("RANK", "1")
+    monkeypatch.setenv("WORLD_SIZE", "4")
+    monkeypatch.setenv("LOCAL_RANK", "1")
+    monkeypatch.setenv("NIMLOTH_DDP_GPU_STRIDE", "2")
+    selected, initialized = [], []
+    monkeypatch.setattr(torch.cuda, "set_device", selected.append)
+    monkeypatch.setattr(dist_helpers.dist, "init_process_group", lambda **kwargs: initialized.append(kwargs))
+
+    _, _, _, device = dist_helpers.setup_dist()
+
+    assert device == torch.device("cuda:2")
+    assert selected == [2]
+    assert initialized == [{"backend": "nccl"}]
