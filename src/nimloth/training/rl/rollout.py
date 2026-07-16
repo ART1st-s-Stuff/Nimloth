@@ -15,6 +15,18 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
+def validate_rl_policy_protocol(model_config: Any) -> None:
+    """Fail fast unless the policy matches the implemented k=1 inject runtime."""
+
+    latent_count = int(getattr(model_config, "nimloth_latent_token_count", 1))
+    query_mode = getattr(model_config, "nimloth_latent_query_mode", None)
+    if latent_count != 1 or query_mode != "inject":
+        raise ValueError(
+            "RL action/encoding runtime currently requires a k=1 inject checkpoint; "
+            f"got latent_token_count={latent_count}, latent_query_mode={query_mode!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------

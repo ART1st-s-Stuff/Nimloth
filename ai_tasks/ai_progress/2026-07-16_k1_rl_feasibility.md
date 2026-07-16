@@ -37,5 +37,8 @@ The historical retry2 GPU smoke on `feat/rl` validated 4 `base_train` trajectori
 - Existing e2e script defaults reference an old SFT2 checkpoint and old validation worktree. Launch must explicitly use current epoch2 for both model and WM/value paths and a verified train-split VAGEN worktree.
 - Verified server env candidate: `/project/peilab/atst/nimloth/.worktree/exp-vagen-1action`, root commit `b21ae10`, VAGEN `bb26c0d`, with `base_train.json` present.
 - Historical e2e smoke uses Qwen full FSDP, vision frozen, state projector frozen, WM predictor/value trainable, 4 episodes x at most2 actions, then one update + one resume update on2 GPUs.
-- W&B initialization currently happens in CLI before distributed setup, so a torchrun online W&B run would be initialized once per rank. Historical smoke disabled W&B. This must be fixed or W&B kept disabled with an explicitly documented smoke identity before launch.
-- No RL job has been launched. Human confirmation is required after selecting the exact merged code, W&B handling, checkpoint/env paths, output, and resources.
+- Human approved merging the selective port and preparing the proposed smoke.
+- Follow-up changes move W&B initialization from pre-distributed CLI code to rank0 inside trainer, persist/reuse the internal run ID across the two torchrun processes, and log finite per-step train metrics under project `nimloth-rl`.
+- E2E script now accepts direct `MODEL` and `WM_CKPT` overrides, preserves stage-specific W&B settings after credential loading, uses the verified ENV_REPO VAGEN checkout for rollout imports, and validates two finite metric rows plus nonempty full FSDP tensors/two optimizer-rank states.
+- Rollout/trainer now fail fast unless checkpoint metadata is exactly k=1/inject, matching the only staged query protocol implemented by this RL path.
+- No RL job has been launched yet. Code/runtime tests and merge into dev precede the confirmed 2-GPU feasibility smoke.

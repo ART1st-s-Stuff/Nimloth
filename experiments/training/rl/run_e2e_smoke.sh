@@ -9,11 +9,14 @@ SFT2_ROOT=${SFT2_ROOT:-/project/peilab/atst/nimloth/outputs/experiments/training
 RUN_OUT=${RUN_OUT:-/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-07-11/post_fsdp_fix_e2e_smoke_retry1}
 ENV_PORT=${ENV_PORT:-8500}
 
-MODEL=${SFT2_ROOT}/export_best_hf
-WM_CKPT=${SFT2_ROOT}/best
+MODEL=${MODEL:-${SFT2_ROOT}/export_best_hf}
+WM_CKPT=${WM_CKPT:-${SFT2_ROOT}/best}
 ROLLOUT_OUT=${RUN_OUT}/rollout
 TRAIN_OUT=${RUN_OUT}/train
 LOG=${RUN_OUT}/pipeline.log
+WANDB_PROJECT_REQUESTED=${WANDB_PROJECT:-nimloth-rl}
+WANDB_MODE_REQUESTED=${WANDB_MODE_OVERRIDE:-disabled}
+WANDB_RUN_NAME_REQUESTED=${WANDB_RUN_NAME:-1_smoke_k1ep2_rl_e2e4x2_fsdp2_iter2}
 
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
@@ -40,12 +43,14 @@ cat > "${RUN_OUT}/README.md" <<EOF
 - env VAGEN commit: ${ENV_COMMIT}
 - data: navigation base_train, seeds 1..4 (training scenes/tasks)
 - rollout: 4 episodes, at most 2 actions each, Nimloth action-token policy
-- initialization: ${SFT2_ROOT}
+- model initialization: ${MODEL}
+- WM/value initialization: ${WM_CKPT}
 - trainable: Qwen language model full parameters, WM predictor, value head
 - frozen: vision tower, state projector
 - training: two-rank FSDP, JSONL collector, one step followed by one resume step
 - output: ${RUN_OUT}
-- monitor: rollout schema/count, wm_mse, value_loss, actor_loss, entropy, checkpoint and resume global_step
+- W&B: project ${WANDB_PROJECT_REQUESTED}, run ${WANDB_RUN_NAME_REQUESTED}, mode ${WANDB_MODE_REQUESTED}
+- monitor: rollout schema/count, finite losses, actor update, checkpoint and resume global_step
 EOF
 
 export HF_HOME=/project/peilab/atst/.cache/huggingface
@@ -54,7 +59,15 @@ export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
 export TOKENIZERS_PARALLELISM=true
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-export WANDB_MODE=disabled
+if [[ -f /project/peilab/atst/flower/.env ]]; then
+  set -a
+  source /project/peilab/atst/flower/.env
+  set +a
+fi
+export WANDB_PROJECT=${WANDB_PROJECT_REQUESTED}
+export WANDB_MODE=${WANDB_MODE_REQUESTED}
+export WANDB_RUN_NAME=${WANDB_RUN_NAME_REQUESTED}
+export WANDB_DIR=${WANDB_DIR:-${REPO}/.cache/wandb}
 
 VISIBLE=${CUDA_VISIBLE_DEVICES:-0,1}
 IFS=',' read -r -a GPUS <<< "${VISIBLE}"
@@ -114,7 +127,7 @@ done
 curl -fsS "${ENV_URL}/health" | tee -a "${LOG}"
 
 export CUDA_VISIBLE_DEVICES=${ROLLOUT_GPU}
-export PYTHONPATH=${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm
+export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
 "${PYTHON}" "${REPO}/experiments/training/rl/rollout_env.py" \
   --model "${MODEL}" \
   --env-url "${ENV_URL}" \
@@ -134,7 +147,7 @@ cleanup
 ENV_PID=""
 
 export CUDA_VISIBLE_DEVICES=${TRAIN_GPUS}
-export PYTHONPATH=${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm
+export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
 TRAIN_ARGS=(
   -m nimloth.training.rl.cli
   --config "${REPO}/configs/training/rl/e2e_smoke.yaml"
@@ -162,24 +175,54 @@ TRAIN_ARGS=(
   2>&1 | tee -a "${LOG}"
 
 "${PYTHON}" - <<PY | tee -a "${LOG}"
+import csv
 import json
+import math
 from pathlib import Path
 import torch
+from safetensors import safe_open
 root = Path("${TRAIN_OUT}")
-state = torch.load(root / "final" / "rl_state.pt", map_location="cpu", weights_only=False)
+final = root / "final"
+state = torch.load(final / "rl_state.pt", map_location="cpu", weights_only=False)
 required = [
     root / "train_step_log.csv",
     root / "best" / "rl_state.pt",
-    root / "final" / "rl_state.pt",
-    root / "final" / "wm_predictor" / "predictor.pt",
-    root / "final" / "value_head" / "value_head.pt",
+    final / "rl_state.pt",
+    final / "wm_predictor" / "predictor.pt",
+    final / "value_head" / "value_head.pt",
+    final / "model.safetensors.index.json",
+    final / "optimizer_rank_00000.pt",
+    final / "optimizer_rank_00001.pt",
 ]
 missing = [str(path) for path in required if not path.is_file()]
 if missing:
     raise SystemExit(f"missing outputs: {missing}")
 if state.get("iteration") != 2 or state.get("global_step") != 2:
     raise SystemExit(f"resume did not reach iteration/global_step 2: {state}")
-print(json.dumps({"status": "ALL_OK", "iteration": 2, "global_step": 2}))
+rows = list(csv.DictReader((root / "train_step_log.csv").open()))
+if [int(row["global_step"]) for row in rows] != [1, 2]:
+    raise SystemExit(f"unexpected training steps: {rows}")
+finite_keys = ("wm_mse", "value_loss", "total_loss", "actor_loss", "entropy")
+for row in rows:
+    bad = {key: row[key] for key in finite_keys if not math.isfinite(float(row[key]))}
+    if bad:
+        raise SystemExit(f"non-finite RL metrics at step {row['global_step']}: {bad}")
+index = json.loads((final / "model.safetensors.index.json").read_text())
+for shard_name in set(index["weight_map"].values()):
+    shard = final / shard_name
+    if not shard.is_file() or shard.stat().st_size == 0:
+        raise SystemExit(f"missing or empty model shard: {shard}")
+    with safe_open(shard, framework="pt", device="cpu") as handle:
+        empty_shapes = [key for key in handle.keys() if 0 in handle.get_slice(key).get_shape()]
+    if empty_shapes:
+        raise SystemExit(f"empty FSDP tensors in {shard}: {empty_shapes[:3]}")
+print(json.dumps({
+    "status": "ALL_OK",
+    "iteration": 2,
+    "global_step": 2,
+    "finite_metric_rows": len(rows),
+    "model_shards": len(set(index["weight_map"].values())),
+}))
 PY
 
 sed -i 's/- status: running/- status: completed/' "${RUN_OUT}/README.md"

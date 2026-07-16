@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,11 @@ from nimloth.training.rl.checkpoint import (
     save_rl_checkpoint,
 )
 from nimloth.training.rl.loss import compute_predictor_loss, compute_value_loss
-from nimloth.training.rl.rollout import RolloutCollector, RolloutTrajectory
+from nimloth.training.rl.rollout import (
+    RolloutCollector,
+    RolloutTrajectory,
+    validate_rl_policy_protocol,
+)
 from nimloth.wm.dataset import discounted_action_value_targets
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
@@ -279,6 +284,45 @@ def _freeze(module: torch.nn.Module) -> None:
         p.requires_grad = False
 
 
+def _maybe_init_wandb(
+    *,
+    rank: int,
+    output_dir: Path,
+    args: argparse.Namespace,
+    config: dict[str, Any],
+):
+    """Initialize one resumable W&B run after distributed rank is known."""
+
+    if rank != 0:
+        return None
+    mode = os.environ.get("WANDB_MODE", "online")
+    if mode != "disabled" and not os.environ.get("WANDB_API_KEY"):
+        print(json.dumps({"wandb": "skipped", "reason": "WANDB_API_KEY not set"}))
+        return None
+
+    import wandb
+
+    run_id_path = output_dir / "wandb_run_id.txt"
+    requested_run_id = os.environ.get("WANDB_RUN_ID")
+    if requested_run_id is None and run_id_path.is_file():
+        requested_run_id = run_id_path.read_text(encoding="utf-8").strip() or None
+    run = wandb.init(
+        project=os.environ.get("WANDB_PROJECT", "nimloth-rl"),
+        entity=os.environ.get("WANDB_ENTITY"),
+        name=os.environ.get("WANDB_RUN_NAME") or args.experiment_name,
+        id=requested_run_id,
+        resume="allow" if requested_run_id is not None else None,
+        mode=mode,
+        config=config,
+        dir=os.environ.get("WANDB_DIR"),
+    )
+    run_id_path.write_text(f"{run.id}\n", encoding="utf-8")
+    wandb.define_metric("global_step")
+    wandb.define_metric("train/*", step_metric="global_step")
+    print(json.dumps({"wandb": "initialized", "run_id": run.id, "resume": requested_run_id is not None}))
+    return run
+
+
 def _broadcast_module_state(module: torch.nn.Module, src: int = 0) -> None:
     """Synchronize a small non-FSDP module across ranks.
 
@@ -353,6 +397,12 @@ def train_rl(
     rank, world, local_rank, device = setup_dist()
     output_dir.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(seed)
+    wandb_run = _maybe_init_wandb(
+        rank=rank,
+        output_dir=output_dir,
+        args=args,
+        config=config,
+    )
 
     # --- Qwen model loading --------------------------------------------------
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
@@ -373,6 +423,7 @@ def train_rl(
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
     )
+    validate_rl_policy_protocol(model.config)
     model_vocab_before = model.get_input_embeddings().weight.shape[0]
     # Log model embedding info before resize
     embed = model.get_input_embeddings()
@@ -769,6 +820,15 @@ def train_rl(
                 "metrics": iter_metrics,
                 "elapsed_s": round(elapsed, 1),
             }))
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        **{f"train/{key}": value for key, value in iter_metrics.items()},
+                        "global_step": global_step,
+                        "iteration": iteration,
+                    },
+                    step=global_step,
+                )
 
         # --- checkpoint --------------------------------------------------------
         if iteration % save_interval == 0:
@@ -830,5 +890,7 @@ def train_rl(
         vision_tune=vision_tune,
         base_model_path=base_model_path,
     )
+    if wandb_run is not None:
+        wandb_run.finish()
     cleanup_dist()
     return 0

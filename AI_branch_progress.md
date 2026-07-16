@@ -8,7 +8,7 @@
 
 - 人类要求暂停SFT2 epoch3，下一阶段只验证RL可行性、不对效果做期待。job `476585`已取消并释放GPU；epoch2/best完整，partial latest=epoch3/step3125，CSV已归档/截断，W&B `az8nqwv9` clean finish。
 - `feat/rl`与dev分叉过大，不能整分支合并；dev已有RL squash与FSDP safety等价修复。选择性port了后续三个有价值提交到`merge/rl-feasibility`：trajectory无截断`1698b1c`、train-split-safe two-stage e2e`3165c34`、完整FSDP checkpoint/resume`41dd411`。
-- clean server worktree commit `41dd411`上RL/schema/WM tests `35 passed, 1 expected warning`。分支已push但尚未合并dev、尚未启动RL实验。当前e2e默认路径陈旧且torchrun前W&B init会每rank重复；启动前需修复/明确禁用W&B并固定当前k1 epoch2、train-split env、输出与资源。详情见`ai_tasks/ai_progress/2026-07-16_k1_rl_feasibility.md`。
+- clean server worktree commit `41dd411`上RL/schema/WM tests `35 passed, 1 expected warning`。人类同意合并并准备smoke；follow-up已把W&B init移到distributed setup后的rank0并持久化run ID，参数化当前MODEL/WM checkpoint，修正ENV_REPO imports，加强finite metrics/FSDP tensors/optimizer-rank输出gate，并对RL仅支持的k1/inject协议fail fast。待补跑测试、合并dev后按已确认2GPU scope启动；详情见`ai_tasks/ai_progress/2026-07-16_k1_rl_feasibility.md`。
 
 ## 2026-07-14：k=1 inject SFT control（准备中）
 

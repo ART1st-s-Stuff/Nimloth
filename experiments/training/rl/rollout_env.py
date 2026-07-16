@@ -50,6 +50,7 @@ def load_qwen(model_path: Path, attn_implementation: str, max_pixels: int):
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
     from nimloth.latent import add_special_tokens
+    from nimloth.training.rl.rollout import validate_rl_policy_protocol
 
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
@@ -64,6 +65,7 @@ def load_qwen(model_path: Path, attn_implementation: str, max_pixels: int):
     )
     if n_added:
         model.resize_token_embeddings(len(processor.tokenizer))
+    validate_rl_policy_protocol(model.config)
     model.eval().cuda()
     return model, processor
 

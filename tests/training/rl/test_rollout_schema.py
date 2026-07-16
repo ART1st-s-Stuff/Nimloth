@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from experiments.training.rl.rollout_env import validate_split, validate_trajectories
-from nimloth.training.rl.rollout import EnvRolloutCollector, RolloutTrajectory
+from nimloth.training.rl.rollout import (
+    EnvRolloutCollector,
+    RolloutTrajectory,
+    validate_rl_policy_protocol,
+)
 
 
 def _trajectory() -> RolloutTrajectory:
@@ -18,6 +23,23 @@ def _trajectory() -> RolloutTrajectory:
         nav_instruction="Move near the couch.",
         split="train",
     )
+
+
+def test_rl_policy_protocol_requires_k1_inject() -> None:
+    validate_rl_policy_protocol(SimpleNamespace(
+        nimloth_latent_token_count=1,
+        nimloth_latent_query_mode="inject",
+    ))
+    with pytest.raises(ValueError, match="k=1 inject"):
+        validate_rl_policy_protocol(SimpleNamespace(
+            nimloth_latent_token_count=8,
+            nimloth_latent_query_mode="inject",
+        ))
+    with pytest.raises(ValueError, match="k=1 inject"):
+        validate_rl_policy_protocol(SimpleNamespace(
+            nimloth_latent_token_count=1,
+            nimloth_latent_query_mode="generate",
+        ))
 
 
 def test_training_split_requires_training_dataset() -> None:
