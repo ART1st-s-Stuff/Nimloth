@@ -257,3 +257,14 @@
 - corrected autoregressive full/factorized MSE：h1 `.197503/.174901`、h2 `.282647/.233092`、h3 `.343504/.280476`、h4 `.385163/.318991`、h5 `.414193/.351398`。factorized全horizon更优。第二次审计发现首版rollout-h1 shuffled仍误调direct path；`a1f5659`修复后job476804 exit0/34s，path-matched shuffled MSE `.228208/.218918`，两者均action-sensitive，factorized penalty更大（25.2% vs15.5%）。两版错误JSON均保留。
 - 固定六条30 rows视觉审查：full在人物/墙画两条保留语义更好且PNG辅助L1低（overall `.09708/.13814`）；factorized多漂成generic白门/房间。其余门墙浴室序列两者均未稳定对应turn视角。2048因此是latent dynamics/效率默认，但需保留有限decoder-visible detail代价，不作overall visual winner或matched-param声明。
 - W&B已上传corrected direct/rollout和visual metrics；artifact verifier PASS。完整SFT2仍未启动。
+
+## 2026-07-16 Full8192 SFT2 tuning audit and production launch
+
+- 历史matched tuning审计支持用户选择LLM LoRA+vision LoRA：旧stride2 A/B的val/test rollout为34.44%/28.33%，优于LoRA+vision full的30.0%/24.0%；WM MSE也为.3083 vs.8600。当前使用两侧r64/alpha128、vision EMA；`query_tune=freeze`，因为SFT1 epoch5已materialize k8 query rows且PEFT LoRA不兼容additive query adapter。
+- Full8192为外部/动力学8192、StateProjector16384→8192→8192、value hidden1024、严格train3217/val355、精确5 epochs。hold476868占dgx-27×6+dgx-54×2，8小时。
+- 单GPU rank在image budget12和8都于最长8-image prefix首个backward OOM（约76.9GiB仍需2.46GiB）；aggregate budget不能拆单条prefix，登记E0041。pair2普通DDP随后暴露多device Qwen collective错序和auto device-map不一致，登记/修正E0040；value gather index跨GPU错误登记E0042。
+- 修复后的pair协议：默认NCCL只用于primary控制/评估；auxiliary DDP使用独立NCCL group；Qwen LoRA梯度在optimizer boundary经CPU Gloo按固定参数顺序检查并平均，当前再按≤16M float约64MB bucket合并。跨节点world4 mixed mapping smoke（primary/aux=`0/1,2/2,4/4,0/1`）的dedicated NCCL与Gloo sum均精确10。
+- ID25 world3完成7 finite steps、峰值约64GiB；ID26 unbucketed world4完成5 finite steps。两者均无OOM/traceback、未产checkpoint并作为拓扑/吞吐smoke终止，不得resume。相关server focused suite27 passed。
+- 当前正式ID27输出：`.../sft2/27_state8192_fullwm8192_llmlora_vislora_pair2_ws4_ga8_ep5_bucketed`；commit`51d2695`；W&B`nimloth-sft2/lilzcdjs`。拓扑为dgx-27三pair+dgx-54一pair，world4/GA8、effective accumulation32、image budget8、全部8卡。
+- 正式budget为52,957 chunks、每rank每epoch13,240 microbatches、1,655 optimizer steps/epoch、总8,275 steps。steps1-5 finite且无OOM/NCCL/missing-grad错误；step5 total/WM/CE=`8.20128/.250334/7.48675`。steps2-5约27.2–29.0s，早期粗估12.5–13.5h/epoch、63–67h/5 epochs；后续轨迹mix/checkpoint/validation会改变估算。
+- 当前hold无法完成epoch1；每20分钟atomic latest是强制continuation boundary。恢复必须复用ID27、W&B`lilzcdjs`、world4/GA8和checkpoint metadata，并将active CSV归档/截断到durable step。第一个latest尚未到20分钟，当前不能声称已有可恢复checkpoint。

@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-07-16：Full8192 LoRA/LoRA SFT2 正式训练中
+
+- 历史审计和人类选择锁定LLM LoRA+vision LoRA r64/alpha128、vision EMA；k8 query rows使用SFT1 epoch5 materialized结果并freeze。外部/动力学State均8192，严格train3217/val355，精确5 epochs。
+- 单卡rank无法容纳最长8-image prefix的LoRA backward；pair-sharded Qwen不能用普通DDP，且auto device map会让不同rank的aux设备相对位置不同。现协议为default primary NCCL、独立aux NCCL DDP、CPU Gloo Qwen gradient averaging；value loss indices显式跟随output device。已登记E0040/E0041/E0042。
+- ID25完成world3七个finite steps；ID26完成cross-node world4五个finite steps；均无OOM/traceback并作为拓扑smoke终止。跨节点mixed mappings`0/1,2/2,4/4,0/1`的dedicated NCCL/Gloo smoke sum精确10；server focused suite27 passed。
+- 当前正式ID27：commit`51d2695`，hold`476868`，dgx-27×6+dgx-54×2，world4/GA8、image budget8、effective accumulation32；output `.../sft2/27_state8192_fullwm8192_llmlora_vislora_pair2_ws4_ga8_ep5_bucketed`，W&B`nimloth-sft2/lilzcdjs`。
+- 预算为1,655 steps/epoch、8,275 total。steps1-5 finite；step5 total/WM/CE=`8.20128/.250334/7.48675`。早期约27.2–29.0s/step，粗估12.5–13.5h/epoch、63–67h总时长，必须跨allocation恢复。
+- 每20分钟写atomic latest；当前第一个latest尚未产生，不能声称已可恢复。恢复必须保持world4/GA8、W&B ID和checkpoint invariants，并把CSV归档/截断到durable step。
+
 ## 2026-07-15：冻结 State 的 SFT2 dynamics_dim 对照（准备中）
 
 - 人类要求在完整SFT2前额外比较相同外部`1×8192` State下的现有SFT2 predictor：`dynamics_dim=8192` full与`2048` factorized；冻结Qwen/encoder/adapter/CFM，只训练WM，精确5个cache epochs。
