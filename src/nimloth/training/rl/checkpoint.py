@@ -65,6 +65,7 @@ def save_rl_checkpoint(
     llm_tune: str = "freeze",
     vision_tune: str = "freeze",
     base_model_path: str = "",
+    rollout_protocol: dict[str, Any] | None = None,
 ) -> None:
     rank, world = _rank_world()
     fsdp_model = _is_fsdp(model)
@@ -131,6 +132,8 @@ def save_rl_checkpoint(
         }
         if base_model_path:
             state["base_model_path"] = str(base_model_path)
+        if rollout_protocol is not None:
+            state["rollout_protocol"] = dict(rollout_protocol)
         if optimizer is not None and not fsdp_model:
             state["optimizer"] = optimizer.state_dict()
         torch.save(state, out_dir / "rl_state.pt")

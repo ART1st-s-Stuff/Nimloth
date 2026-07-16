@@ -13,6 +13,7 @@ import csv
 import json
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +152,7 @@ def build_rl_transitions(
                 "nav_instruction": traj.nav_instruction,
                 "action_history_names": traj.action_names[:t],
                 "image_path": traj.image_paths[t],
+                "image_history_paths": traj.image_paths[:t + 1],
             })
 
     return transitions
@@ -160,31 +162,20 @@ def build_rl_transitions(
 # PPO forward pass (Qwen with gradients)
 # ---------------------------------------------------------------------------
 
-# Action token name → index map (copied from rollout.py to avoid circular import)
-_ACTION_NAME_TO_IDX = {
-    "moveahead": 0, "moveback": 1, "moveright": 2, "moveleft": 3,
-    "rotateright": 4, "rotateleft": 5, "lookup": 6, "lookdown": 7,
-}
-_NAV_SYSTEM_TEXT = (
-    "You are a home robot and perform navigation tasks according to instructions.\n"
-    "Actions you can take: moveahead, moveback, moveright, moveleft, "
-    "rotateright, rotateleft, lookup, lookdown.\n"
-    "Rewards: Format correct: +0.5. Achieve the human instruction: +10.0.\n"
-    "Look at the image carefully and navigate to complete the instruction."
-)
-
-
 def compute_new_log_probs_for_batch(
     ppo_items: list[dict],
     model,
     processor,
     token_id_map: dict[str, int],
     device: torch.device,
+    *,
+    history_window: int,
+    temperature: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run Qwen forward WITH gradients, returning new log-probs and action logits.
 
     Each ppo_item must have:
-        - "image_path": path to the observation image
+        - "image_history_paths": observation paths through the current step
         - "nav_instruction": navigation instruction
         - "action_history_names": list of VAGEN text action names before this step
         - "taken_action_idx": the action that was actually taken
@@ -193,80 +184,48 @@ def compute_new_log_probs_for_batch(
         new_log_probs: (B,) log-prob of taken actions under current policy
         action_logits: (B, 8) raw logits for all 8 actions
     """
-    import torch
-    from PIL import Image
     from nimloth.latent.extraction import LatentActionTokens
+    from nimloth.training.rl.rollout import build_nimloth_policy_messages
 
+    if temperature < 0:
+        raise ValueError(f"temperature must be >= 0, got {temperature}")
     tokens = LatentActionTokens()
-    action_token_ids = [token_id_map[t] for t in tokens.action_tokens]
+    action_token_ids = [token_id_map[token] for token in tokens.action_tokens]
 
-    texts = []
-    all_images = []
+    new_log_probs_list: list[torch.Tensor] = []
+    policy_logits_list: list[torch.Tensor] = []
     for item in ppo_items:
-        # Build the same Nimloth prompt as _select_action_nimloth
-        image_path = item["image_path"]
-        nav_instruction = item["nav_instruction"]
-        # Limit history to last 4 steps to keep image count low (≤5)
-        action_history = item["action_history_names"][-4:]
-        num_images = 1 + len(action_history)
-
-        messages = [
-            {"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]},
-            {"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": f"Observe the scene. {nav_instruction}"},
-            ]},
-        ]
-        for act_name in action_history:
-            act_idx = _ACTION_NAME_TO_IDX.get(act_name, 0)
-            messages.append({"role": "assistant", "content": [
-                {"type": "text", "text": (
-                    f"<think>Navigating.</think>"
-                    f"<|latent_state|><|action_start|><|action_({act_idx})|><|action_end|>"
-                )},
-            ]})
-            messages.append({"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": f"Observe the scene after {act_name}. {nav_instruction}"},
-            ]})
-        messages.append({"role": "assistant", "content": [
-            {"type": "text", "text": "<think>What should I do next?</think><|latent_state|><|action_start|>"},
-        ]})
-
-        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        texts.append(text)
-
-        imgs = [Image.open(image_path).convert("RGB")] * num_images
-        all_images.append(imgs)
-
-    # Process items individually — variable image counts per item prevent batching.
-    new_log_probs_list = []
-    action_logits_list = []
-    for i in range(len(ppo_items)):
-        enc_i = processor(
-            text=[texts[i]], images=all_images[i], padding=True,
-            return_tensors="pt",
+        messages, images = build_nimloth_policy_messages(
+            item["image_history_paths"],
+            item["nav_instruction"],
+            item["action_history_names"],
+            history_window=history_window,
         )
-        model_inputs_i = {k: v.to(device) for k, v in enc_i.items()}
-        outputs_i = model(**model_inputs_i, output_hidden_states=False, return_dict=True)
-        logits_i = outputs_i.logits  # (1, seq_len, vocab)
-
-        input_ids = enc_i["input_ids"][0]
-        as_positions = (input_ids == token_id_map[tokens.action_start]).nonzero(as_tuple=True)[0]
-        if as_positions.numel() == 0:
+        text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        encoded = processor(
+            text=[text], images=images, padding=True, return_tensors="pt"
+        )
+        model_inputs = {key: value.to(device) for key, value in encoded.items()}
+        outputs = model(
+            **model_inputs, output_hidden_states=False, return_dict=True
+        )
+        input_ids = encoded["input_ids"][0]
+        positions = (
+            input_ids == token_id_map[tokens.action_start]
+        ).nonzero(as_tuple=True)[0]
+        if positions.numel() == 0:
             raise RuntimeError("<|action_start|> token not found in PPO prompt")
-        pos = int(as_positions[-1].item())
-        act_ids = torch.tensor(action_token_ids, device=logits_i.device)
-        action_logits_list.append(logits_i[0, pos, act_ids])
+        position = int(positions[-1].item())
+        action_ids = torch.tensor(action_token_ids, device=outputs.logits.device)
+        raw_logits = outputs.logits[0, position, action_ids].float()
+        policy_logits = raw_logits if temperature == 0 else raw_logits / temperature
+        policy_logits_list.append(policy_logits)
+        log_probs = torch.log_softmax(policy_logits, dim=-1)
+        new_log_probs_list.append(log_probs[int(item["taken_action_idx"])])
 
-        taken_idx = ppo_items[i]["taken_action_idx"]
-        log_probs_i = torch.log_softmax(action_logits_list[-1].float(), dim=-1)
-        new_log_probs_list.append(log_probs_i[taken_idx])
-
-    action_logits = torch.stack(action_logits_list)  # (B, 8)
-    new_log_probs = torch.stack(new_log_probs_list)  # (B,)
-
-    return new_log_probs, action_logits
+    return torch.stack(new_log_probs_list), torch.stack(policy_logits_list)
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +241,19 @@ def _freeze(module: torch.nn.Module) -> None:
     module.eval()
     for p in module.parameters():
         p.requires_grad = False
+
+
+@contextmanager
+def _temporary_eval(module: torch.nn.Module):
+    """Run inference without permanently changing per-submodule train modes."""
+
+    training_modes = [(submodule, submodule.training) for submodule in module.modules()]
+    module.eval()
+    try:
+        yield
+    finally:
+        for submodule, was_training in training_modes:
+            submodule.training = was_training
 
 
 def _maybe_init_wandb(
@@ -493,23 +465,6 @@ def train_rl(
 
     model.to(device)
 
-    # --- Wire up EnvRolloutCollector with loaded model -----------------------
-    from nimloth.training.rl.rollout import EnvRolloutCollector
-    if isinstance(collector, EnvRolloutCollector):
-        if world > 1:
-            raise RuntimeError(
-                "分布式/FSDP trainer 不能直接让 EnvRolloutCollector 使用 FSDP-wrapped Qwen "
-                "做动态 env rollout。各 rank 的 episode 长度、图片数、失败时机不同，会导致 "
-                "FSDP forward 触碰次数和形状不一致，可能 deadlock 或错误训练。\n"
-                "请先使用独立 rollout backend（如 experiments/training/rl/rollout_env.py）"
-                "生成 JSONL 文件，再用 --use-jsonl-rollout --jsonl-sources 指定 JSONL 路径训练。"
-            )
-        collector._model = model
-        collector._processor = processor
-        collector._device = device
-        if is_main():
-            print(json.dumps({"env_collector": "wired", "device": str(device)}))
-
     # --- freeze WM-encoding pathway if requested -----------------------------
     if freeze_qwen and llm_tune == "freeze" and vision_tune == "freeze":
         _freeze(model)
@@ -570,6 +525,52 @@ def train_rl(
             print(json.dumps({"fsdp": "wrapped", "world_size": world}))
     # FSDP handles multi-GPU; small modules stay on device if world==1.
 
+    # --- Wire online env rollout after FSDP wrapping -------------------------
+    from nimloth.training.rl.rollout import EnvRolloutCollector
+    if isinstance(collector, EnvRolloutCollector):
+        if val_enabled:
+            raise ValueError(
+                "dynamic training rollout uses explicit *_train datasets; "
+                "validation.enabled must be false until a separate heldout env collector is configured"
+            )
+        if world > 1:
+            from nimloth.training.rl.distributed_rollout import (
+                DistributedEnvRolloutCollector,
+            )
+            collector = DistributedEnvRolloutCollector.from_collector(collector)
+        collector._model = model
+        collector._processor = processor
+        collector._device = device
+        if is_main():
+            print(json.dumps({
+                "env_collector": "distributed_wired" if world > 1 else "wired",
+                "device": str(device),
+                "world_size": world,
+                "history_window": collector._history_window,
+                "eval_sets": collector._eval_sets,
+            }))
+
+    if isinstance(collector, EnvRolloutCollector):
+        rollout_protocol: dict[str, Any] = {
+            "mode": "dynamic_env",
+            "split": collector._split,
+            "eval_sets": list(collector._eval_sets),
+            "history_window": int(collector._history_window),
+            "temperature": float(rl_cfg.get("temperature", 1.0)),
+            "top_p": float(rl_cfg.get("top_p", 1.0)),
+            "seed_offset": int(collector._base_seed_offset),
+        }
+    else:
+        rollout_protocol = {
+            "mode": "jsonl",
+            "sources": [str(path) for path in getattr(collector, "_sources", [])],
+        }
+    ppo_temperature = (
+        float(rl_cfg.get("temperature", 1.0))
+        if rollout_protocol["mode"] == "dynamic_env"
+        else 1.0
+    )
+
     # --- optimizer ------------------------------------------------------------
     param_groups = [
         {"params": [p for p in model.parameters() if p.requires_grad], "lr": actor_lr, "name": "qwen"},
@@ -588,6 +589,16 @@ def train_rl(
             resume_aux_ckpt, state_proj, wm_predictor, value_head, device
         )
         if resume_state:
+            saved_rollout_protocol = resume_state.get("rollout_protocol")
+            if saved_rollout_protocol is None:
+                raise RuntimeError(
+                    "RL checkpoint has no rollout_protocol metadata; refusing an unverifiable resume"
+                )
+            if saved_rollout_protocol != rollout_protocol:
+                raise RuntimeError(
+                    "rollout protocol mismatch on resume: "
+                    f"saved={saved_rollout_protocol}, current={rollout_protocol}"
+                )
             start_iteration = int(resume_state.get("iteration", 0)) + 1
             global_step = int(resume_state.get("global_step", 0))
             best_value_loss = float(resume_state.get("best_value_loss", float("inf")))
@@ -609,6 +620,21 @@ def train_rl(
                 print(json.dumps({"resume": True, "start_iteration": start_iteration,
                                   "global_step": global_step}))
 
+    if isinstance(collector, EnvRolloutCollector):
+        collector.set_resume_iteration(
+            start_iteration=start_iteration,
+            envs_per_iteration=envs_per_iter,
+            validation_enabled=val_enabled,
+            validation_interval=val_interval,
+            validation_envs=val_envs,
+        )
+        if is_main():
+            print(json.dumps({
+                "env_seed_cursor": collector._ep_counter,
+                "base_seed_offset": collector._base_seed_offset,
+                "start_iteration": start_iteration,
+            }))
+
     # --- logging --------------------------------------------------------------
     log_path = output_dir / "train_step_log.csv"
     if is_main() and not log_path.exists():
@@ -629,11 +655,19 @@ def train_rl(
         if is_main():
             print(json.dumps({"iteration": iteration, "phase": "rollout",
                               "num_episodes": envs_per_iter}))
-        trajectories = collector.collect(
-            num_episodes=envs_per_iter,
-            max_steps_per_episode=max_steps_per_ep,
-            output_dir=output_dir / f"rollouts/iter_{iteration:04d}",
-        )
+        if isinstance(collector, EnvRolloutCollector):
+            with _temporary_eval(model):
+                trajectories = collector.collect(
+                    num_episodes=envs_per_iter,
+                    max_steps_per_episode=max_steps_per_ep,
+                    output_dir=output_dir / f"rollouts/iter_{iteration:04d}",
+                )
+        else:
+            trajectories = collector.collect(
+                num_episodes=envs_per_iter,
+                max_steps_per_episode=max_steps_per_ep,
+                output_dir=output_dir / f"rollouts/iter_{iteration:04d}",
+            )
         if is_main():
             print(json.dumps({"iteration": iteration,
                               "trajectories_collected": len(trajectories)}))
@@ -712,7 +746,7 @@ def train_rl(
             for i in range(len(batch)):
                 b = batch[i]
                 ppo_items.append({
-                    "image_path": b["image_path"],
+                    "image_history_paths": b["image_history_paths"],
                     "nav_instruction": b["nav_instruction"],
                     "action_history_names": b["action_history_names"],
                     "taken_action_idx": int(b["action_index"].item()),
@@ -720,7 +754,13 @@ def train_rl(
 
             # Qwen forward with gradients
             new_log_probs, action_logits = compute_new_log_probs_for_batch(
-                ppo_items, model, processor, token_id_map, device,
+                ppo_items,
+                model,
+                processor,
+                token_id_map,
+                device,
+                history_window=int(getattr(collector, "_history_window", 4)),
+                temperature=ppo_temperature,
             )
             old_log_probs = torch.tensor(
                 [b["old_log_prob"] for b in batch],
@@ -848,6 +888,7 @@ def train_rl(
                 llm_tune=llm_tune,
                 vision_tune=vision_tune,
                 base_model_path=base_model_path,
+                rollout_protocol=rollout_protocol,
             )
             if current_val < best_value_loss:
                 best_value_loss = current_val
@@ -867,6 +908,7 @@ def train_rl(
                     llm_tune=llm_tune,
                     vision_tune=vision_tune,
                     base_model_path=base_model_path,
+                    rollout_protocol=rollout_protocol,
                 )
 
         if dist.is_available() and dist.is_initialized():
@@ -889,6 +931,7 @@ def train_rl(
         llm_tune=llm_tune,
         vision_tune=vision_tune,
         base_model_path=base_model_path,
+        rollout_protocol=rollout_protocol,
     )
     if wandb_run is not None:
         wandb_run.finish()

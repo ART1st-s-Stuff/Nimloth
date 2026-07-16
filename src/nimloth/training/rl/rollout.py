@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 import time
+
+import torch
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -183,6 +186,7 @@ class EnvRolloutCollector:
         top_p: float = 1.0,
         eval_sets: tuple[str, ...] = ("base", "common_sense"),
         split: str = "eval",
+        history_window: int = 4,
     ) -> None:
         if not eval_sets:
             raise ValueError("EnvRolloutCollector requires at least one eval_set")
@@ -195,12 +199,16 @@ class EnvRolloutCollector:
         self._processor = processor
         self._env_url = env_url.rstrip("/")
         self._device = device
-        self._ep_counter = seed_offset
+        self._base_seed_offset = int(seed_offset)
+        self._ep_counter = int(seed_offset)
         self._client = None  # lazy init
         self._temperature = temperature
         self._top_p = top_p
         self._eval_sets = eval_sets
         self._split = split
+        if history_window < 0:
+            raise ValueError(f"history_window must be >= 0, got {history_window}")
+        self._history_window = int(history_window)
 
     @property
     def client(self):
@@ -208,6 +216,47 @@ class EnvRolloutCollector:
             from vagen.server.client import BatchEnvClient
             self._client = BatchEnvClient(base_url=self._env_url, timeout=600)
         return self._client
+
+    def _environment_config(self, eval_set: str) -> dict[str, Any]:
+        return {
+            "env_name": "navigation",
+            "env_config": {
+                "render_mode": "vision",
+                "prompt_format": "wm",
+                "use_state_reward": False,
+                "eval_set": eval_set,
+                "max_actions_per_step": 1,
+                "max_action_penalty": -0.1,
+                "format_reward": 0.0,
+                "success_threshold": 1.5,
+                "step_length": 0.5,
+                "grounding_reward_weight": 0.5,
+                "worldmodeling_reward_weight": 0.5,
+                "gpu_device": 0,
+            },
+        }
+
+    def _sampling_seed(self, episode_seed: int, step: int) -> int:
+        # Sampling is a pure function of env seed + step, so checkpoint resume
+        # does not depend on a process-local RNG state.
+        return int((self._base_seed_offset + 1) * 1_000_003 + episode_seed * 997 + step)
+
+    def set_resume_iteration(
+        self,
+        *,
+        start_iteration: int,
+        envs_per_iteration: int,
+        validation_enabled: bool,
+        validation_interval: int,
+        validation_envs: int,
+    ) -> None:
+        """Restore the deterministic environment-seed cursor for resume."""
+
+        completed = max(0, int(start_iteration) - 1)
+        consumed = completed * int(envs_per_iteration)
+        if validation_enabled and validation_interval > 0:
+            consumed += (completed // int(validation_interval)) * int(validation_envs)
+        self._ep_counter = self._base_seed_offset + consumed
 
     def collect(
         self,
@@ -248,23 +297,7 @@ class EnvRolloutCollector:
 
             print(json.dumps({"rl_ep": ep_i, "id": ep_id, "eval_set": eval_set}), flush=True)
 
-            env_config = {
-                "env_name": "navigation",
-                "env_config": {
-                    "render_mode": "vision",
-                    "prompt_format": "wm",
-                    "use_state_reward": False,
-                    "eval_set": eval_set,
-                    "max_actions_per_step": 1,
-                    "max_action_penalty": -0.1,
-                    "format_reward": 0.0,  # Nimloth: no format reward (we control the format)
-                    "success_threshold": 1.5,
-                    "step_length": 0.5,
-                    "grounding_reward_weight": 0.5,
-                    "worldmodeling_reward_weight": 0.5,
-                    "gpu_device": 0,
-                },
-            }
+            env_config = self._environment_config(eval_set)
 
             # --- create env on server ---
             print(json.dumps({"rl_ep": ep_i, "step": "create_env"}), flush=True)
@@ -282,12 +315,18 @@ class EnvRolloutCollector:
             print(json.dumps({"rl_ep": ep_i, "step": "get_prompt"}), flush=True)
             try:
                 prompts = self._client.get_system_prompts_batch([ep_id])
-                nav_instruction = prompts.get(ep_id, "Navigate to the target object.")
+                nav_instruction = str(prompts.get(ep_id, "")).strip()
+                if not nav_instruction:
+                    raise RuntimeError(f"environment returned no instruction for {ep_id}")
                 print(json.dumps({"rl_ep": ep_i, "step": "get_prompt_done"}), flush=True)
             except Exception:
                 import traceback
                 traceback.print_exc()
-                nav_instruction = "Navigate to the target object."
+                try:
+                    self._client.close_batch([ep_id])
+                except Exception:
+                    pass
+                continue
 
             # --- reset ---
             print(json.dumps({"rl_ep": ep_i, "step": "reset", "seed": seed}), flush=True)
@@ -313,6 +352,7 @@ class EnvRolloutCollector:
             done = False
             step_rewards: list[float] = []
             success = False
+            episode_valid = True
 
             for step in range(max_steps_per_episode):
                 print(json.dumps({"rl_ep": ep_i, "step": f"action_{step}", "history_len": len(action_names)}), flush=True)
@@ -323,6 +363,7 @@ class EnvRolloutCollector:
                 except Exception:
                     import traceback
                     traceback.print_exc()
+                    episode_valid = False
                     break
 
                 # --- save image ---
@@ -332,18 +373,23 @@ class EnvRolloutCollector:
 
                 # --- qwen action selection ---
                 try:
+                    generator = torch.Generator(device="cpu")
+                    generator.manual_seed(self._sampling_seed(seed, step))
                     action_name, action_idx, log_probs_list = _select_action_nimloth(
-                        self._model, self._processor, img,
+                        self._model, self._processor, image_paths,
                         nav_instruction, action_names,
                         temperature=self._temperature,
                         top_p=self._top_p,
+                        history_window=self._history_window,
+                        generator=generator,
                     )
                     print(json.dumps({"rl_ep": ep_i, "action_selected": action_name,
                                       "action_idx": action_idx}), flush=True)
                 except Exception:
                     import traceback
                     traceback.print_exc()
-                    action_name, action_idx, log_probs_list = "moveahead", 0, [0.0] * 8
+                    episode_valid = False
+                    break
 
                 # --- env step ---
                 # Build VAGEN wm-format response so parse_worldmodeling succeeds.
@@ -365,6 +411,7 @@ class EnvRolloutCollector:
                 except Exception:
                     import traceback
                     traceback.print_exc()
+                    episode_valid = False
                     break
 
                 action_names.append(action_name)
@@ -393,7 +440,7 @@ class EnvRolloutCollector:
             except Exception:
                 pass
 
-            if not action_names or len(image_paths) != len(action_names) + 1:
+            if not episode_valid or not action_names or len(image_paths) != len(action_names) + 1:
                 print(json.dumps({
                     "rl_ep": ep_i,
                     "warning": "discarding incomplete trajectory",
@@ -403,7 +450,7 @@ class EnvRolloutCollector:
                 continue
 
             messages = _build_vagen_messages(nav_instruction, len(action_names), action_names)
-            trajectories.append(RolloutTrajectory(
+            trajectory = RolloutTrajectory(
                 record_id=ep_id,
                 image_paths=image_paths,
                 action_indices=action_indices,
@@ -414,7 +461,9 @@ class EnvRolloutCollector:
                 reward=reward,
                 split=self._split,
                 messages=messages,
-            ))
+            )
+            validate_rollout_trajectory(trajectory)
+            trajectories.append(trajectory)
 
             elapsed = time.time() - t0
             print(json.dumps({
@@ -497,100 +546,228 @@ def _obs_to_pil(obs) -> "Image.Image":
     raise ValueError(f"Unknown obs type: {type(obs)}")
 
 
-def _select_action_nimloth(model, processor, image, nav_instruction: str,
-                           action_history: list[str],
-                           temperature: float = 1.0,
-                           top_p: float = 1.0) -> tuple[str, int, list[float]]:
-    """Sampled action selection using Nimloth action tokens.
+def _window_policy_history(
+    image_history: list[Any],
+    action_history: list[str],
+    history_window: int,
+) -> tuple[list[Any], list[str]]:
+    if len(image_history) != len(action_history) + 1:
+        raise ValueError(
+            "policy history requires one more image than actions: "
+            f"images={len(image_history)}, actions={len(action_history)}"
+        )
+    if history_window < 0:
+        raise ValueError(f"history_window must be >= 0, got {history_window}")
+    if len(action_history) > history_window:
+        action_history = action_history[-history_window:] if history_window else []
+        image_history = image_history[-(history_window + 1):]
+    return list(image_history), list(action_history)
 
-    The SFT2 model was trained with ``<|action_(0)|>`` … ``<|action_(7)|>``
-    special tokens.  We build a Nimloth-format prompt (ending with
-    ``<|action_start|>``), run Qwen forward, and extract the logits at
-    ``<|action_start|>``.  Sampling with temperature + nucleus (top-p).
 
-    Returns (action_name, action_index, action_log_probs) where
-    action_log_probs is the log-softmax over all 8 actions.
-    """
-    import torch
-    from nimloth.latent.extraction import (
-        LatentActionTokens,
-        extract_action_prior,
-        special_token_ids,
+def build_nimloth_policy_messages(
+    image_history: list[Any],
+    nav_instruction: str,
+    action_history: list[str],
+    *,
+    history_window: int,
+) -> tuple[list[dict[str, Any]], list[Any]]:
+    """Build the canonical k=1/inject action prompt with real history images."""
+
+    image_history, action_history = _window_policy_history(
+        image_history, action_history, history_window
     )
-
-    tokens = LatentActionTokens()
-    token_ids = special_token_ids(processor.tokenizer, tokens)
-    action_token_ids = [token_ids[t] for t in tokens.action_tokens]
-
-    # Build Nimloth-format messages.
-    # The assistant response includes <|latent_state|> and <|action_start|>.
-    # The model will predict the next token (one of <|action_(N)|>).
-    num_images = 1 + len(action_history)
-    messages: list[dict] = [
+    messages: list[dict[str, Any]] = [
         {"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]},
+        {"role": "user", "content": [
+            {"type": "image", "image": image_history[0]},
+            {"type": "text", "text": f"Observe the scene. {nav_instruction}"},
+        ]},
     ]
-
-    # Initial observation
-    messages.append({"role": "user", "content": [
-        {"type": "image", "image": image},
-        {"type": "text", "text": f"Observe the scene. {nav_instruction}"},
-    ]})
-
-    # History turns: user shows image, assistant says what it did + latent + action_start
-    for act_name in action_history:
+    for index, action_name in enumerate(action_history):
+        if action_name not in ACTION_NAME_TO_IDX:
+            raise ValueError(f"unknown navigation action in history: {action_name!r}")
         messages.append({"role": "assistant", "content": [
             {"type": "text", "text": (
-                f"<think>Navigating.</think>"
-                f"<|latent_state|><|action_start|><|action_({ACTION_NAME_TO_IDX[act_name]})|><|action_end|>"
+                "<think>Navigating.</think><|latent_state|><|action_start|>"
+                f"<|action_({ACTION_NAME_TO_IDX[action_name]})|><|action_end|>"
             )},
         ]})
         messages.append({"role": "user", "content": [
-            {"type": "image", "image": image},
-            {"type": "text", "text": f"Observe the scene after {act_name}. {nav_instruction}"},
+            {"type": "image", "image": image_history[index + 1]},
+            {"type": "text", "text": (
+                f"Observe the scene after {action_name}. {nav_instruction}"
+            )},
         ]})
-
-    # Current turn: we want the model to predict the next action
     messages.append({"role": "assistant", "content": [
-        {"type": "text", "text": "<think>What should I do next?</think><|latent_state|><|action_start|>"},
+        {"type": "text", "text": (
+            "<think>What should I do next?</think>"
+            "<|latent_state|><|action_start|>"
+        )},
     ]})
+    return messages, image_history
 
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = processor(text=[text], images=[image] * num_images, return_tensors="pt", padding=True)
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
+def compute_nimloth_action_distribution(
+    model,
+    processor,
+    image_history: list[Any],
+    nav_instruction: str,
+    action_history: list[str],
+    *,
+    history_window: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return raw logits and untempered log-probs for the eight action tokens."""
+
+    from nimloth.latent.extraction import LatentActionTokens, special_token_ids
+
+    tokens = LatentActionTokens()
+    token_ids = special_token_ids(processor.tokenizer, tokens)
+    action_token_ids = [token_ids[token] for token in tokens.action_tokens]
+    messages, images = build_nimloth_policy_messages(
+        image_history,
+        nav_instruction,
+        action_history,
+        history_window=history_window,
+    )
+    text = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    inputs = processor(
+        text=[text], images=images, return_tensors="pt", padding=True
+    )
+    try:
+        device = next(model.parameters()).device
+    except StopIteration as exc:
+        raise RuntimeError("policy model has no parameters") from exc
+    inputs = {key: value.to(device) for key, value in inputs.items()}
     with torch.no_grad():
-        outputs = model(**inputs, output_hidden_states=True, return_dict=True)
+        outputs = model(**inputs, output_hidden_states=False, return_dict=True)
 
-    # Locate the <|action_start|> token. Its logits predict the next token
-    # (one of <|action_(0)|>…<|action_(7)|> in the training distribution).
     input_ids = inputs["input_ids"][0]
-    as_positions = (input_ids == token_ids[tokens.action_start]).nonzero(as_tuple=True)[0]
-    if as_positions.numel() == 0:
+    positions = (input_ids == token_ids[tokens.action_start]).nonzero(as_tuple=True)[0]
+    if positions.numel() == 0:
         raise RuntimeError("<|action_start|> token not found in prompt")
-    action_start_pos = int(as_positions[-1].item())  # use the last one
-    logits = outputs.logits[0, action_start_pos, :]
-    action_logits = logits[action_token_ids]
-    action_log_probs = torch.log_softmax(action_logits.float(), dim=-1)
+    action_start_pos = int(positions[-1].item())
+    action_ids = torch.tensor(action_token_ids, device=outputs.logits.device)
+    action_logits = outputs.logits[0, action_start_pos, action_ids].float()
+    if action_logits.shape != (len(ACTION_NAMES),):
+        raise RuntimeError(f"unexpected action logits shape: {tuple(action_logits.shape)}")
+    if not torch.isfinite(action_logits).all():
+        raise RuntimeError("action logits contain non-finite values")
+    return action_logits, torch.log_softmax(action_logits, dim=-1)
 
-    # Sample with temperature
-    if temperature > 0:
-        scaled_logits = action_logits.float() / temperature
-        if top_p < 1.0:
-            # Nucleus (top-p) sampling
-            sorted_logits, sorted_indices = torch.sort(scaled_logits, descending=True)
-            cum_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-            keep = cum_probs <= top_p
-            keep[0] = True  # Always keep top token
-            keep_mask = torch.zeros_like(scaled_logits, dtype=torch.bool)
-            keep_mask[sorted_indices[keep]] = True
-            scaled_logits[~keep_mask] = float("-inf")
-        probs = torch.softmax(scaled_logits, dim=-1)
-        chosen_idx = int(torch.multinomial(probs, 1).item())
-    else:
-        chosen_idx = int(action_logits.argmax().item())
 
-    best_name = ACTION_NAMES[chosen_idx]
-    return best_name, chosen_idx, action_log_probs.cpu().tolist()
+def sample_action_from_logits(
+    action_logits: torch.Tensor,
+    *,
+    temperature: float,
+    top_p: float,
+    generator: torch.Generator | None = None,
+) -> tuple[int, list[float]]:
+    """Sample one action and return temperature-scaled full log-probs.
+
+    Top-p only restricts sampling.  PPO log-probs use the full temperature-scaled
+    distribution, matching VAGEN/VERL's recompute-log-prob convention.
+    """
+
+    if action_logits.shape != (len(ACTION_NAMES),):
+        raise ValueError(f"expected 8 action logits, got {tuple(action_logits.shape)}")
+    if temperature < 0:
+        raise ValueError(f"temperature must be >= 0, got {temperature}")
+    if not 0 < top_p <= 1:
+        raise ValueError(f"top_p must be in (0, 1], got {top_p}")
+
+    logits = action_logits.detach().float().cpu()
+    if temperature == 0:
+        chosen_idx = int(logits.argmax().item())
+        log_probs = torch.log_softmax(logits, dim=-1)
+        return chosen_idx, [float(value) for value in log_probs.tolist()]
+
+    scaled = logits / temperature
+    log_probs = torch.log_softmax(scaled, dim=-1)
+    sampling_logits = scaled.clone()
+    if top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(sampling_logits, descending=True)
+        sorted_probs = torch.softmax(sorted_logits, dim=-1)
+        cumulative_before = torch.cumsum(sorted_probs, dim=-1) - sorted_probs
+        keep = cumulative_before < top_p
+        keep[0] = True
+        keep_mask = torch.zeros_like(sampling_logits, dtype=torch.bool)
+        keep_mask[sorted_indices[keep]] = True
+        sampling_logits[~keep_mask] = float("-inf")
+    probabilities = torch.softmax(sampling_logits, dim=-1)
+    chosen_idx = int(torch.multinomial(probabilities, 1, generator=generator).item())
+    return chosen_idx, [float(value) for value in log_probs.tolist()]
+
+
+def _select_action_nimloth(
+    model,
+    processor,
+    image_history: list[Any],
+    nav_instruction: str,
+    action_history: list[str],
+    *,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+    history_window: int = 4,
+    generator: torch.Generator | None = None,
+) -> tuple[str, int, list[float]]:
+    """Compute the current policy distribution and sample one action."""
+
+    action_logits, _ = compute_nimloth_action_distribution(
+        model,
+        processor,
+        image_history,
+        nav_instruction,
+        action_history,
+        history_window=history_window,
+    )
+    chosen_idx, log_probs = sample_action_from_logits(
+        action_logits,
+        temperature=temperature,
+        top_p=top_p,
+        generator=generator,
+    )
+    return ACTION_NAMES[chosen_idx], chosen_idx, log_probs
+
+
+def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
+    """Reject incomplete or numerically invalid policy trajectories."""
+
+    steps = trajectory.num_steps
+    if steps <= 0:
+        raise ValueError(f"trajectory {trajectory.record_id!r} has no actions")
+    if len(trajectory.image_paths) != steps + 1:
+        raise ValueError(
+            f"trajectory {trajectory.record_id!r}: images={len(trajectory.image_paths)} "
+            f"but actions={steps}"
+        )
+    if len(trajectory.action_names) != steps:
+        raise ValueError(
+            f"trajectory {trajectory.record_id!r}: action_names="
+            f"{len(trajectory.action_names)} but actions={steps}"
+        )
+    if len(trajectory.action_log_probs) != steps:
+        raise ValueError(
+            f"trajectory {trajectory.record_id!r}: action_log_probs="
+            f"{len(trajectory.action_log_probs)} but actions={steps}"
+        )
+    for step, (action_idx, log_probs) in enumerate(
+        zip(trajectory.action_indices, trajectory.action_log_probs)
+    ):
+        if not 0 <= int(action_idx) < len(ACTION_NAMES):
+            raise ValueError(f"trajectory {trajectory.record_id!r}: invalid action {action_idx}")
+        if len(log_probs) != len(ACTION_NAMES):
+            raise ValueError(
+                f"trajectory {trajectory.record_id!r}: step {step} has "
+                f"{len(log_probs)} action log-probs"
+            )
+        if not all(math.isfinite(float(value)) for value in log_probs):
+            raise ValueError(
+                f"trajectory {trajectory.record_id!r}: step {step} has non-finite log-probs"
+            )
+    if not trajectory.nav_instruction.strip():
+        raise ValueError(f"trajectory {trajectory.record_id!r} has no instruction")
 
 
 def _build_vagen_messages(nav_instruction: str, num_steps: int,

@@ -7,11 +7,16 @@
 | 模式 | `--env-url` | `--use-jsonl-rollout` | 适用 |
 |------|-------------|----------------------|------|
 | 单 GPU 在线 | 需要 | 否 | `world == 1` 调试 |
-| JSONL 离线 | 不需要 | 是 | 分布式 FSDP；独立 rollout 生成 JSONL |
+| FSDP 动态在线 | 需要 | 否 | `world > 1`，每轮用当前 policy 访问环境 |
+| JSONL 离线 | 不需要 | 是 | 独立 rollout 后确定性消费 |
 
-**分布式/FSDP (`world > 1`) 训练禁止使用 `EnvRolloutCollector`**。trainer 会在启动时检测并报错，要求使用 `--use-jsonl-rollout --jsonl-sources <路径>`。直接环境训练也必须在 `rollout.eval_sets` 中显式指定环境实际支持的 `*_train` datasets；eval assets 不能标记为训练数据。
+FSDP 动态模式由 `DistributedEnvRolloutCollector` 同步：只有 rank0 访问 VAGEN HTTP env service 和写 PNG/JSONL；所有 rank 从共享路径构造同一 prompt、以相同顺序进入 FSDP policy forward，校验 action logits 一致后由 rank0 采样并广播动作。rank0 step 环境并广播结果，完整 trajectory 最后广播给所有 rank。这样保留 VAGEN 的每轮 `current policy -> env.step -> update` 语义，同时避免不同 episode 长度导致 FSDP collective 次序不一致。
 
-独立 `experiments/training/rl/rollout_env.py` 复用同一个 `EnvRolloutCollector`，因此动作 prior、final observation、action log-probs 和 JSONL schema 与在线 collector 一致。
+环境、policy 或 schema 错误不会回退成默认动作或零 log-prob；不完整 episode 整条丢弃，collective policy 错误使所有 rank 同步失败。直接训练 rollout 必须在 `rollout.eval_sets` 中显式指定实际支持的 `*_train` datasets。动态训练暂不把 train env 冒充 validation，因此要求 `validation.enabled=false`。
+
+`rollout.history_window` 控制 policy prompt 保存的真实历史图像窗口。rollout old log-prob 与 PPO new log-prob 都使用同一个 temperature-scaled 八动作分布；top-p 只限制采样。checkpoint 保存完整 `rollout_protocol`，resume 时 mode/split/eval sets/history window/temperature/top-p/seed offset 必须一致；seed cursor根据已完成 iteration恢复。
+
+独立 `experiments/training/rl/rollout_env.py` 仍复用单进程 `EnvRolloutCollector`，可生成 JSONL 供离线模式使用。
 
 JSONL collector 支持从 CLI `--jsonl-sources` 或 config `rollout.jsonl_sources` 指定文件/目录读取轨迹，按 iteration 轮转消费（数据耗尽自动循环），目录会递归搜索 `*.jsonl` / `*.jsonl.gz`。所有 rank 得到相同轨迹序列，保证 FSDP forward 触碰次数一致。Batch 选择使用 per-iteration 确定性 generator (`seed + iteration`)。非 FSDP 的 `state_proj`、`wm_predictor`、`value_head` 会在 distributed setup 后从 rank0 广播初始参数；在相同数据/相同 batch 下保持本地副本同步。
 
@@ -197,7 +202,8 @@ agent.act(current_image):   # called at each env step
 
 | 文件 | 职责 |
 |------|------|
-| `rollout.py` | `RolloutTrajectory` 数据结构，`EnvRolloutCollector`（单 GPU 在线），`JSONLRolloutCollector`（离线/分布式，支持多源文件轮转） |
+| `rollout.py` | trajectory、单进程 env/JSONL collector、canonical k=1 policy prompt与action distribution |
+| `distributed_rollout.py` | rank0 env + all-rank FSDP forward 的动态在线collector |
 | `loss.py` | `compute_predictor_loss`（MSE dynamics），`compute_value_loss`（MSE + ranking），`compute_advantages`（unbiased=False，避免 batch size=1 NaN），`compute_actor_loss`（PPO clipped） |
 | `trainer.py` | `train_rl` — 在线 RL 主循环，含 Qwen 加载、FSDP/DDP、resume、分布式 guard |
 | `checkpoint.py` | `save_rl_checkpoint` / `load_rl_wm_checkpoint` / `load_lora_adapter_state` |

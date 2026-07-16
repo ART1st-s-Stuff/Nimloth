@@ -36,6 +36,8 @@ rollout:
   eval_sets:
     - base_train
     - common_sense_train
+  history_window: 4          # current observation + up to 4 real history images
+  seed_offset: 0             # deterministic cursor; resume advances by completed iterations
 
 # --- RL loop (1 iteration = 1 global_step = 1 optimizer step) ---
 rl:
@@ -44,12 +46,16 @@ rl:
   max_steps_per_episode: 20
   gamma: 0.99
   batch_size: 32
+  temperature: 1.0           # applied to rollout and PPO action log-probs
+  top_p: 1.0                 # restricts sampling only
 
 # --- Validation ---
 validation:
-  enabled: true
-  interval: 50              # run validation every N iterations
-  envs: 16                  # number of envs for validation rollout
+  # Dynamic trainer currently has only an explicit training collector. Keep
+  # disabled until a separate heldout collector is configured.
+  enabled: false
+  interval: 50
+  envs: 16
 
 # --- Training / output ---
 training:

@@ -24,9 +24,22 @@ python -m nimloth.training.rl.cli \
 
 配置中的 `rollout.eval_sets` 必须显式列出环境实际支持的 `*_train` datasets；trainer 会拒绝把 `base/common_sense` 等 eval assets 当作训练数据。
 
-### 分布式/离线 JSONL rollout（`world > 1`，推荐）
+### 分布式动态在线 rollout（`world > 1`）
 
-**分布式/FSDP 训练禁止直接使用 `EnvRolloutCollector`**。必须先通过独立 rollout 后端生成 JSONL，再离线消费：
+```bash
+torchrun --nproc-per-node=4 -m nimloth.training.rl.cli \
+  --config configs/training/rl/defaults.yaml \
+  --model /path/to/k1-inject-sft2 \
+  --env-url http://ENV_NODE:5000 \
+  --llm-tune full --vision-tune freeze \
+  --output-dir outputs/experiments/training/rl/online
+```
+
+`DistributedEnvRolloutCollector` 只让rank0访问HTTP环境；所有rank同步运行当前FSDP policy，rank0采样并广播action，然后step环境。每个iteration更新完成后，下一轮rollout直接使用更新后的policy。配置必须使用训练split并设`validation.enabled=false`；`rollout.history_window`、temperature、top-p和seed offset会写入checkpoint并在resume时核对。
+
+### 分布式/离线 JSONL rollout
+
+需要把 rollout 与训练分开时，仍可先生成 JSONL，再确定性消费：
 
 ```bash
 # 步骤 1：独立 rollout 生成 JSONL（可在 Slurm 上单卡运行）
@@ -51,6 +64,8 @@ python -m nimloth.training.rl.cli \
 
 ### 分布式安全说明
 
+- 动态模式中只有rank0拥有env状态，所有rank按同一顺序执行policy forward，并在step前核对action logits、广播rank0 action和完整trajectory。
+- env/policy/schema错误不会写入默认动作或零log-prob；不完整episode整条丢弃，collective policy错误同步失败。
 - `JSONLRolloutCollector` 在所有 rank 上返回相同轨迹序列（确定性轮转），保证 FSDP forward 次数一致。
 - Batch 选择使用 per-iteration 确定性 generator（`seed + iteration`），不依赖全局 RNG 状态同步。
 - 非 FSDP 的 `state_proj`、`wm_predictor`、`value_head` 会在 distributed setup 后从 rank0 广播初始参数；因为所有 rank 消费相同数据，它们的本地副本会保持同步。
