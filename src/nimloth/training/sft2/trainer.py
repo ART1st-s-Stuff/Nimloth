@@ -668,6 +668,11 @@ def train_sft2(args=None) -> int:
 
     ddp_static_graph = world > 1
     manual_qwen_sync = world > 1 and qwen_pair_parallel
+    aux_ddp_group = None
+    qwen_grad_group = None
+    if manual_qwen_sync:
+        aux_ddp_group = dist.new_group(backend="nccl")
+        qwen_grad_group = dist.new_group(backend="gloo")
     if world > 1:
         # Multi-device Qwen cannot share one DDP reducer with ranks whose pair
         # uses different CUDA ordinals. Accumulate locally, then explicitly
@@ -684,6 +689,7 @@ def train_sft2(args=None) -> int:
         aux_idx = int(str(aux_device).split(":")[-1])
         state_proj = DDP(
             state_proj,
+            process_group=aux_ddp_group,
             device_ids=[aux_idx],
             output_device=aux_idx,
             find_unused_parameters=False,
@@ -691,6 +697,7 @@ def train_sft2(args=None) -> int:
         )
         value_head = DDP(
             value_head,
+            process_group=aux_ddp_group,
             device_ids=[aux_idx],
             output_device=aux_idx,
             find_unused_parameters=False,
@@ -699,6 +706,7 @@ def train_sft2(args=None) -> int:
         if train_wm_predictor:
             wm_predictor = DDP(
                 wm_predictor,
+                process_group=aux_ddp_group,
                 device_ids=[aux_idx],
                 output_device=aux_idx,
                 find_unused_parameters=False,
@@ -848,7 +856,7 @@ def train_sft2(args=None) -> int:
         set_optimizer_group_lr(optimizer, "qwen", qwen_lr)
 
         if manual_qwen_sync:
-            average_module_gradients(model)
+            average_module_gradients(model, group=qwen_grad_group, cpu=True)
         torch.nn.utils.clip_grad_norm_(
             [p for group in optimizer.param_groups for p in group["params"]],
             1.0,
