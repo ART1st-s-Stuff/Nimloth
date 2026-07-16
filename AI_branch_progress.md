@@ -18,7 +18,8 @@
 - 为防止排队期间继续丢失数字ID，control原子改为ID16并实际创建/持久化W&B run `az8nqwv9`，仅记录queued reservation step0；排队时页面显示finished，训练将从同一internal run恢复并从global step1开始。
 - 最终SFT2 `476585`已在dgx-52以2GPU/batch2/GA16启动，并成功resume预留W&B `az8nqwv9`。epoch1 step1456 val WM MSE=`0.00463320`、SIGReg=`0.40787934`、value=`0.12230686`，epoch1/best/latest完整；elapsed06:45时epoch2 logged step2085（epoch2 43.2%，overall14.3%），latest=`step2032/micro9216`。
 - 两卡显存约62.5–63.0/81.6GiB、util97–100%，无OOM/NaN/Inf/traceback，W&B train/val可见。
-- Epoch2 step2912已完成：val WM MSE=`0.00238993`、SIGReg=`0.40597524`、value=`0.12528174`；WM较epoch1改善48.4%，比k8 epoch2的`0.00224416`高6.5%，best更新到epoch2。job继续进入epoch3 logged3171，latest=`step3125/micro3408`；完整epoch2可用于拟议LoRA+LoRA试验，等待人类决定是否暂停。run/output=`16_k1inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga16_ws2_px100352_img12_bestwm`。完整路径与恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`。
+- Epoch2 step2912已完成：val WM MSE=`0.00238993`、SIGReg=`0.40597524`、value=`0.12528174`；WM较epoch1改善48.4%，比k8 epoch2的`0.00224416`高6.5%，best更新到epoch2。
+- 人类要求暂停epoch3开展RL可行性测试。job `476585`在logged epoch3 step3213后取消（elapsed11:02:38，无训练错误），latest=`step3125/micro3408`；完整CSV归档后active原子截到3125，latest resume回退88 logged steps，epoch2仍为完整best。W&B `az8nqwv9`已clean finish并可用持久ID恢复，GPU已释放。run/output=`16_k1inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga16_ws2_px100352_img12_bestwm`。完整路径与恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`。
 
 ## 2026-07-13：显式 latent query 协议与 SFT1 → SFT2 continuation gate
 
