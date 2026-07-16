@@ -558,6 +558,7 @@ def train_rl(
             "temperature": float(rl_cfg.get("temperature", 1.0)),
             "top_p": float(rl_cfg.get("top_p", 1.0)),
             "seed_offset": int(collector._base_seed_offset),
+            "env_timeout": int(collector._env_timeout),
         }
     else:
         rollout_protocol = {

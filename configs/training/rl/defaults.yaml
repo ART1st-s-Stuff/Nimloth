@@ -38,6 +38,7 @@ rollout:
     - common_sense_train
   history_window: 4          # current observation + up to 4 real history images
   seed_offset: 0             # deterministic cursor; resume advances by completed iterations
+  env_timeout: 180           # keep below the default NCCL collective watchdog
 
 # --- RL loop (1 iteration = 1 global_step = 1 optimizer step) ---
 rl:

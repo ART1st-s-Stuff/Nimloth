@@ -187,6 +187,7 @@ class EnvRolloutCollector:
         eval_sets: tuple[str, ...] = ("base", "common_sense"),
         split: str = "eval",
         history_window: int = 4,
+        env_timeout: int = 180,
     ) -> None:
         if not eval_sets:
             raise ValueError("EnvRolloutCollector requires at least one eval_set")
@@ -209,12 +210,17 @@ class EnvRolloutCollector:
         if history_window < 0:
             raise ValueError(f"history_window must be >= 0, got {history_window}")
         self._history_window = int(history_window)
+        if env_timeout <= 0:
+            raise ValueError(f"env_timeout must be > 0, got {env_timeout}")
+        self._env_timeout = int(env_timeout)
 
     @property
     def client(self):
         if self._client is None:
             from vagen.server.client import BatchEnvClient
-            self._client = BatchEnvClient(base_url=self._env_url, timeout=600)
+            self._client = BatchEnvClient(
+                base_url=self._env_url, timeout=self._env_timeout
+            )
         return self._client
 
     def _environment_config(self, eval_set: str) -> dict[str, Any]:
@@ -278,7 +284,9 @@ class EnvRolloutCollector:
             print(json.dumps({"rl_collect": "init_client", "url": self._env_url}), flush=True)
             try:
                 from vagen.server.client import BatchEnvClient
-                self._client = BatchEnvClient(base_url=self._env_url, timeout=600)
+                self._client = BatchEnvClient(
+                    base_url=self._env_url, timeout=self._env_timeout
+                )
                 print(json.dumps({"rl_collect": "client_created"}), flush=True)
             except Exception:
                 import traceback

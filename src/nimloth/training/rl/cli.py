@@ -189,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
             split="train",
             seed_offset=int(rollout_cfg.get("seed_offset", 0)),
             history_window=int(rollout_cfg.get("history_window", 4)),
+            env_timeout=int(rollout_cfg.get("env_timeout", 180)),
         )
         if is_main():
             print(json.dumps({"rollout_mode": "env", "env_url": args.env_url,
@@ -196,7 +197,8 @@ def main(argv: list[str] | None = None) -> int:
                               "temperature": rl_cfg.get("temperature", 1.0),
                               "top_p": rl_cfg.get("top_p", 1.0),
                               "seed_offset": rollout_cfg.get("seed_offset", 0),
-                              "history_window": rollout_cfg.get("history_window", 4)}))
+                              "history_window": rollout_cfg.get("history_window", 4),
+                              "env_timeout": rollout_cfg.get("env_timeout", 180)}))
     elif args.use_jsonl_rollout or (args.vagen_config is None and not args.env_url):
         cfg_sources = (
             config.get("rollout", {}).get("jsonl_sources")

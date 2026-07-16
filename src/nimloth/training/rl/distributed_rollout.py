@@ -53,6 +53,7 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
             eval_sets=collector._eval_sets,
             split=collector._split,
             history_window=collector._history_window,
+            env_timeout=collector._env_timeout,
         )
         result._base_seed_offset = collector._base_seed_offset
         return result

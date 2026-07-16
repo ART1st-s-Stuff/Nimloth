@@ -78,6 +78,22 @@ def test_trajectory_validation_rejects_nonfinite_log_probs() -> None:
         validate_rollout_trajectory(trajectory)
 
 
+def test_distributed_wrapper_preserves_env_timeout() -> None:
+    from nimloth.training.rl.distributed_rollout import DistributedEnvRolloutCollector
+
+    collector = EnvRolloutCollector(
+        None,
+        None,
+        "http://env",
+        None,
+        eval_sets=("base_train",),
+        split="train",
+        env_timeout=37,
+    )
+    wrapped = DistributedEnvRolloutCollector.from_collector(collector)
+    assert wrapped._env_timeout == 37
+
+
 def test_resume_seed_cursor_accounts_for_completed_rollouts() -> None:
     collector = EnvRolloutCollector(
         None,
