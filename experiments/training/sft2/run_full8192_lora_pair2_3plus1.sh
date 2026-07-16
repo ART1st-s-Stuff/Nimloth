@@ -27,7 +27,15 @@ export MASTER_ADDR=dgx-27 WORLD_SIZE=4 NIMLOTH_DDP_GPU_STRIDE=2
 export MASTER_PORT=${MASTER_PORT:-$((20001 + ${HOLD_JOB:-${SLURM_JOB_ID%%+*}} % 10000))}
 mkdir -p "$TRAIN_OUT" "$OUT_ROOT/logs"
 
+checkpoint_complete() {
+  "$PY" - "$TRAIN_OUT/final/training_state.pt" <<'PY'
+import sys, torch
+state = torch.load(sys.argv[1], map_location="cpu", weights_only=False)
+assert int(state.get("epoch", 0)) >= 5 and bool(state.get("epoch_complete", False)), state
+PY
+}
 if [[ -f "$TRAIN_OUT/sft2_done.flag" ]]; then
+  checkpoint_complete || { echo "invalid SFT2 done flag" >&2; exit 3; }
   echo "SFT2 already complete: $TRAIN_OUT"
   exit 0
 fi
@@ -67,4 +75,5 @@ srun "${SRUN_ARGS[@]}" bash -lc '
   for pid in "${pids[@]}"; do wait "$pid" || rc=$?; done
   exit "$rc"
 '
+checkpoint_complete
 touch "$TRAIN_OUT/sft2_done.flag"
