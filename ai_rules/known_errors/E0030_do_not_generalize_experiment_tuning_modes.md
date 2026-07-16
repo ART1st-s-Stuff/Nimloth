@@ -10,7 +10,7 @@ LLM、Vision 的 tuning mode 都应是显式可配置参数。不同实验可以
 
 - `freeze`：Vision 参数和任何误匹配生成的 Vision LoRA 都不得更新；
 - `lora`：Vision LoRA 可以且应参与训练；
-- `full`：Vision 基础参数可以参与训练，不能用 LoRA 是否为 0 作为完整判断。
+- `full`：Vision 基础参数可以参与训练，不能用 LoRA 是否为 0 作为完整判断；但必须使用能完整保存基础参数的checkpoint路径，不能与当前PEFT LoRA checkpoint混用（见E0032）。
 
 单次实验的冻结验证只能说明该次运行遵守了自己的配置，不能升级成项目级禁令。
 
@@ -20,7 +20,7 @@ LLM、Vision 的 tuning mode 都应是显式可配置参数。不同实验可以
 2. launcher、checkpoint protocol 和验证 gate 按该值判断：
    - `freeze` 时检查 Vision LoRA 不产生有效更新；
    - `lora` 时允许并验证 Vision LoRA 更新；
-   - `full` 时验证对应基础参数的训练状态。
+   - `full` 时验证对应基础参数的训练状态和完整checkpoint；当前RL中与另一分支LoRA混合时应拒绝。
 3. 报告中写“本次 retry 选择冻结 Vision LoRA”，不要写成“Vision LoRA 必须为 0”。
 
 ## 本次触发

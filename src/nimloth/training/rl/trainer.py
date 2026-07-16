@@ -290,6 +290,21 @@ def _unwrap(m: torch.nn.Module) -> torch.nn.Module:
     return m.module if hasattr(m, "module") else m
 
 
+def validate_policy_tune_combination(
+    *,
+    llm_tune: str,
+    vision_tune: str,
+) -> None:
+    """Reject mixed full/LoRA policies that PEFT cannot checkpoint completely."""
+
+    modes = {llm_tune, vision_tune}
+    if "lora" in modes and "full" in modes:
+        raise ValueError(
+            "mixed full/LoRA Qwen tuning is unsupported: PEFT checkpoints only "
+            "the adapters and would drop full-tuned backbone parameters"
+        )
+
+
 def normalize_policy_parameter_dtype(
     module: torch.nn.Module,
     *,
@@ -451,6 +466,9 @@ def train_rl(
 
     # --- tuning modes --------------------------------------------------------
     llm_tune, vision_tune = resolve_tune_modes(args)
+    validate_policy_tune_combination(
+        llm_tune=llm_tune, vision_tune=vision_tune
+    )
     vision_ema_enabled = resolve_vision_ema(args, vision_tune)
 
     # --- distributed setup ---------------------------------------------------

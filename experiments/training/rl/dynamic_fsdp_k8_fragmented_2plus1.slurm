@@ -38,7 +38,7 @@ set -euo pipefail
 : "${WANDB_RUN_NAME:?must set W&B name}"
 VISION_TUNE=${VISION_TUNE:-freeze}
 [[ "${RUN_MODE}" == smoke || "${RUN_MODE}" == pilot ]]
-[[ "${VISION_TUNE}" == freeze || "${VISION_TUNE}" == lora || "${VISION_TUNE}" == full ]]
+[[ "${VISION_TUNE}" == freeze || "${VISION_TUNE}" == lora ]]
 
 PY=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
 SRUN=/cm/shared/apps/slurm/current/bin/srun
@@ -194,7 +194,8 @@ with safe_open(final / "adapter_model.safetensors", framework="pt", device="cpu"
     assert any(torch.count_nonzero(handle.get_tensor(key)).item() > 0 for key in language_b)
     if vision_tune == "freeze":
         assert all(torch.count_nonzero(handle.get_tensor(key)).item() == 0 for key in visual_b)
-    elif vision_tune == "lora":
+    else:
+        assert vision_tune == "lora"
         assert any(torch.count_nonzero(handle.get_tensor(key)).item() > 0 for key in visual_b)
 initial_proj = torch.load(
     Path(os.environ["SFT2_SNAPSHOT"]) / "state_proj.pt",
