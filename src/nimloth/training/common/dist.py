@@ -21,11 +21,13 @@ def setup_dist() -> tuple[int, int, int, torch.device]:
         primary = local * gpu_stride
         device = torch.device(f"cuda:{primary}")
         torch.cuda.set_device(primary)
-        # Passing the concrete device removes ProcessGroupNCCL's rank-to-device
-        # guess at the first barrier.  The guess is ambiguous when Slurm starts
-        # one node-level launcher that spawns a non-uniform number of local
-        # workers on each node.
-        dist.init_process_group(backend="nccl", device_id=device)
+        # A single-device rank needs an explicit device for non-uniform node
+        # launchers. Pair-parallel Qwen ranks span two GPUs, so constraining the
+        # process group to the primary GPU rejects DDP's secondary-GPU tensors.
+        kwargs = {"backend": "nccl"}
+        if gpu_stride == 1:
+            kwargs["device_id"] = device
+        dist.init_process_group(**kwargs)
         return rank, world, local, device
     return 0, 1, 0, torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
