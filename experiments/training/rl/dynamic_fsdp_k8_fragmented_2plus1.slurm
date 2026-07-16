@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --mem=128G
-#SBATCH --nodelist=dgx-[18,21,32,34]
+#SBATCH --exclude=dgx-[14,26,51,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
@@ -22,9 +22,9 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 
-# Atomic fragmented allocation: trainer candidates exclude job477349's
-# dgx-[14,26,51,54]. The env uses dgx-37, which completed the prior real
-# AI2-THOR dynamic smoke and currently provides a free fragmented GPU.
+# Atomic fragmented allocation: group-0 hard-excludes job477349's nodes.
+# A longer --nodelist is only advisory in this Slurm deployment and must not
+# be used as an allowlist. The env uses proven-good dgx-37.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"
