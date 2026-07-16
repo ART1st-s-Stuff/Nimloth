@@ -52,4 +52,12 @@
 - 尚未用真实Qwen FSDP + VAGEN env做2-GPU动态online smoke；CPU/gloo测试不能证明NCCL/FSDP模型forward不会遇到运行时问题。
 - 外部环境服务超时期间其他rank会等待rank0广播；HTTP timeout为600秒，失败后同步丢弃完整episode或终止collective policy path。
 - 当前逐episode、逐action forward保证语义但未做VAGEN式active-env batching，吞吐可能较低；需真实smoke后再优化。
-- 服务器测试worktree的`external/le-wm`因Python cache显示submodule dirty，正式launch前需清理并再次确认clean commit，不修改其源码。
+- 服务器submodule Python cache已清理，launch worktree固定clean commit `1e93a74148eee9ca248c528de89c1686871097fc`。
+
+## 真实NCCL动态smoke
+
+- 人类允许先用dgx-51/dgx-52测试。新增config与两节点orchestrator：dgx-52 trainer2GPU NCCL/FSDP，allocation启动后自动向dgx-51提交1GPU VAGEN/AI2-THOR env child；HTTP timeout降到180秒并写入resume protocol，低于默认NCCL watchdog。
+- W&B project=`nimloth-rl`，ID3，run=`3_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2`，internal=`66bsq5lp`已实际预留并持久化。
+- 初始化k1/inject SFT2 epoch2；`base_train` seeds20001..20002；2 episodes×1 action；1 update/batch2；language full+WM/value train，vision/state projector freeze；只写final full checkpoint，不做效果claim。
+- output=`outputs/experiments/training/rl/2026-07-16/3_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2`，README已记录commit/data/modules/checkpoint/resources/gates。
+- trainer job `477191`已提交并因Priority pending dgx-52；启动后才会提交dgx-51 env child，避免env提前占卡超时。尚无运行结果claim。

@@ -10,7 +10,8 @@
 - 新增`DistributedEnvRolloutCollector`：仅rank0访问VAGEN HTTP和写PNG/JSONL；所有rank同序FSDP policy forward并核对8-action logits；rank0确定性采样/broadcast action、step env并广播结果；完整trajectory再广播。env/policy/schema错误不再fallback为默认action/零log-prob。
 - rollout与PPO共用canonical k1/inject prompt、真实history images和可配window；temperature-scaled old/new log-prob一致，top-p仅控制采样。rollout/latent encoding临时eval，PPO保留梯度。
 - checkpoint新增严格`rollout_protocol`和resume seed cursor；动态train只允许显式`*_train`，且在独立heldout collector接线前强制关闭validation，避免train结果伪装val。
-- 提交`3f87a5c`、`a19ee8f`已推送。服务器RL/latent tests=`29 passed, 1 expected warning`，后续定向回归`24 passed`；2-rank gloo覆盖rank0-only env、collective action、相同trajectory。真实NCCL/FSDP+VAGEN GPU smoke尚未启动，详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
+- 提交`3f87a5c`、`a19ee8f`已推送。服务器RL/latent tests=`29 passed, 1 expected warning`，后续定向回归`24 passed`；2-rank gloo覆盖rank0-only env、collective action、相同trajectory。
+- 人类允许用dgx-51/52做真实smoke。新增配置/两节点orchestrator并将env HTTP timeout降到180秒后，launch commit=`1e93a74`。W&B ID3 `3_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2`/`66bsq5lp`已预留；trainer job477191 pending dgx-52，启动后自动提交dgx-51 env child。尚无结果claim，详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
 
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 
