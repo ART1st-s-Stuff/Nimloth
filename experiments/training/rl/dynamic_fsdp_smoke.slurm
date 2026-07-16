@@ -48,6 +48,7 @@ if [[ "${AUTO_SUBMIT_ENV:-0}" == 1 ]]; then
   : "${ENV_REPO:?AUTO_SUBMIT_ENV requires ENV_REPO}"
   export SLURM_CONF=${SLURM_CONF:-/cm/shared/apps/slurm/var/etc/slurm/slurm.conf}
   ENV_JOB_ID=$("${SBATCH}" --parsable --nodelist="${ENV_NODE:-dgx-51}" \
+    --cpus-per-task="${ENV_CPUS:-16}" \
     --output="${RUN_ROOT}/env_slurm_%j.out" \
     --error="${RUN_ROOT}/env_slurm_%j.err" \
     --export="ALL,RUN_ROOT=${RUN_ROOT},ENV_REPO=${ENV_REPO}" \
