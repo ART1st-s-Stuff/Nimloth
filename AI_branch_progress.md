@@ -16,7 +16,8 @@
 - 人类允许2/3GPU后，elapsed0的8GPU train `475716`被取消。dgx-44的3空闲卡中2卡在我方分配前被他人占用，故3GPU replacements `476022/476023`均elapsed0取消、无输出/W&B。
 - cache/output最终采用ws2/ga16。dgx-27由2空闲降至1空闲，elapsed0 `476029`取消；继续排队期间，并发SFT2 runs把数字ID推进至15，故elapsed0 ID4 job `476338`也取消，无训练输出。
 - 为防止排队期间继续丢失数字ID，control原子改为ID16并实际创建/持久化W&B run `az8nqwv9`，仅记录queued reservation step0；排队时页面显示finished，训练将从同一internal run恢复并从global step1开始。
-- 最终SFT2 `476585`固定dgx-52请求2GPU、batch2/GA16（nominal effective batch64）、16CPU/128G/48h，当前仍`PENDING(Priority)`，无训练log/checkpoint；run/output=`16_k1inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga16_ws2_px100352_img12_bestwm`。完整路径与恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`。
+- 最终SFT2 `476585`已在dgx-52以2GPU/batch2/GA16启动，并成功resume预留W&B `az8nqwv9`。epoch1 step1456 val WM MSE=`0.00463320`、SIGReg=`0.40787934`、value=`0.12230686`，epoch1/best/latest完整；elapsed06:45时epoch2 logged step2085（epoch2 43.2%，overall14.3%），latest=`step2032/micro9216`。
+- 两卡显存约62.5–63.0/81.6GiB、util97–100%，无OOM/NaN/Inf/traceback，W&B train/val可见。按throughput估算剩余40–42h，allocation剩余约41h，可能刚好完成或需periodic latest恢复。run/output=`16_k1inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga16_ws2_px100352_img12_bestwm`。完整路径与恢复策略见`ai_tasks/ai_progress/2026-07-14_k1_sft_control.md`。
 
 ## 2026-07-13：显式 latent query 协议与 SFT1 → SFT2 continuation gate
 
