@@ -60,7 +60,7 @@ def test_average_module_gradients_can_sync_through_cpu_group(monkeypatch) -> Non
 
     monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
 
-    average_module_gradients(module, group=group, cpu=True)
+    average_module_gradients(module, group=group, cpu=True, cpu_bucket_numel=2)
 
-    assert len(calls) == len(list(module.parameters())) + 1
+    assert len(calls) == 3  # missing-gradient check plus two bounded buckets
     assert all(torch.equal(param.grad, torch.full_like(param, 2.0)) for param in module.parameters())
