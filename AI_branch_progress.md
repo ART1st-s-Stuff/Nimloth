@@ -16,7 +16,8 @@
 - 人类指定attempt3单个heterogeneous job两节点2+1。job477219原子启动dgx-32 trainer2GPU+dgx-51 env1GPU，VAGEN health、torchrun standalone、真实2-rank NCCL、FSDP wrap及dynamic collector entry通过。首个base_train create约185s，刚超过180s client timeout，episode正确丢弃；service后续失败，0 trajectory/update。
 - pre-fix trainer在global_step0开始final save，job经双component状态复核后于5:35取消；partial final保留且禁止resume/reuse，W&B ID3仍queue step0。smoke timeout已改240s；新增global_step0拒绝final并登记E0028，server14 tests passed。attempt3证明NCCL/FSDP初始化但未完成action/update。
 - 人类批准ID4新output retry：W&B `4_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2_retry1`/`lqqteh6p`。job477246在direct-dgx32 replacement gate前原子转RUNNING，故先监控；VAGEN health/NCCL/FSDP/collector entry通过，但dgx-51 AI2-THOR create超过240s，无action/update。按人类direct要求及unhealthy env，复核后4:42取消；zero-update guard阻止final，output仅736KiB/W&B仍step0。
-- dgx-32 single3 launcher已在`c4f57cd`就绪（env GPU0、trainer GPU1/2），但节点当前host free RAM仅约40GiB，双Qwen loader+env有OOM风险，未提交；等待RAM恢复或换内存充足节点。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
+- dgx-32 single3 launcher在`c4f57cd`就绪后，allocated preflight确认MemAvailable913GiB；新ID5 W&B `5_smoke_fsdpdynamic_single3_k1ep2_base2x1_ws2_iter1_b2_retry2`/`t1iw3ajy`，job477281。model/NCCL/FSDP/collector init通过，但AI2-THOR create约255s，超过240s timeout，无trajectory/update；5:31取消，zero-update guard阻止final，output688KiB/W&B仍step0。
+- 根本修复`a040180`：变延迟env控制object collectives移到CPU Gloo group，action logits/FSDP保留NCCL，timeout恢复600s；server14 tests passed。新retry需新ID/output和确认。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
 
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 

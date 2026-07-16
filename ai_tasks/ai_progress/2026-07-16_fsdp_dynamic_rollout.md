@@ -71,4 +71,6 @@
 - attempt3只证明真实NCCL/FSDP初始化和dynamic collector入口，未完成action/update。修复：smoke timeout改240秒；global_step0强制failed cleanup且拒绝final，登记E0028。server tests14 passed。
 - 人类批准新ID retry。W&B ID4=`4_smoke_fsdpdynamic_k1ep2_base2x1_ws2_iter1_b2_retry1`/`lqqteh6p`已实际预留；exclusive output同名。launch=`b3c5c18`，atomic hetero job477246提交dgx-32 trainer2GPU + dgx-51 env1GPU。
 - 人类随后要求直接在dgx-32启动。replacement critical section发现hetero job已从PENDING原子转RUNNING，安全gate拒绝基于stale pending取消，先监控。ID4同样通过VAGEN health、NCCL/FSDP和collector entry，但dgx-51首次AI2-THOR create超过240s，未产action/update。按人类direct-dgx32要求及env unhealthy，双component复核RUNNING后在4:42取消；zero-update guard成功阻止final。output仅空JSONL/CSV header/logs736KiB，W&B仍queue step0，保留且不resume。
-- 新增dgx-32 single3 launcher（commit c4f57cd）：env独占GPU0、FSDP使用GPU1/2。但当前dgx-32虽有3空GPU，host free RAM仅约40GiB（已有两任务占用其余内存）；双Qwen loader+env有host OOM风险，故未提交。需等待RAM恢复或人类指定其他内存充足节点；新尝试仍需新W&B ID/output。
+- 新增dgx-32 single3 launcher（commit c4f57cd）：env独占GPU0、FSDP使用GPU1/2。后续allocated preflight确认MemAvailable913GiB，故安全提交新ID5 output/W&B `5_smoke_fsdpdynamic_single3_k1ep2_base2x1_ws2_iter1_b2_retry2`/`t1iw3ajy`，job477281。
+- ID5 model/NCCL/FSDP/collector init通过，但首次AI2-THOR create约255s，超过240s timeout约15s；无valid trajectory/update。state-check后5:31取消；zero-update guard成功阻止final，output688KiB/W&B仍queue step0，保留且不resume。
+- 根本设计修复`a040180`：env payload/error/trajectory object collectives改用专用CPU Gloo control group，action logits与FSDP仍用NCCL；可变HTTP等待不再占NCCL collective/watchdog，smoke env timeout恢复600s。server distributed tests14 passed。下一retry需新W&B ID/output和人类确认。
