@@ -19,7 +19,6 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.backbone.qwen_tuning import (
@@ -679,9 +678,10 @@ def train_rl(
             continue
 
         # 2. Encode → transitions ------------------------------------------------
-        transitions = build_rl_transitions(
-            trajectories, model, processor, token_id_map, device, gamma=gamma,
-        )
+        with _temporary_eval(model):
+            transitions = build_rl_transitions(
+                trajectories, model, processor, token_id_map, device, gamma=gamma,
+            )
         # Free GPU memory before PPO forward (Qwen+LoRA+gradients needs extra VRAM)
         torch.cuda.empty_cache()
         if len(transitions) < batch_size:
