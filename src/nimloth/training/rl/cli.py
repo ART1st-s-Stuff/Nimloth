@@ -105,11 +105,58 @@ def merge_config_overrides(args: argparse.Namespace, config: dict[str, Any]) -> 
     return config
 
 
+def load_state_projector_for_rl(
+    checkpoint: Path,
+    *,
+    qwen_hidden_dim: int,
+    lewm_emb_dim: int,
+    latent_token_count: int,
+):
+    """Rebuild StateProjector from its checkpoint widths and validate k."""
+
+    import torch
+    from nimloth.wm.state_proj import StateProjector
+
+    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    first_weight = state.get("net.net.0.weight")
+    final_weight = state.get("net.net.3.weight")
+    if first_weight is None or final_weight is None:
+        raise ValueError("unrecognized StateProjector checkpoint layout")
+    projector_hidden_dim, input_dim = map(int, first_weight.shape)
+    output_dim, final_input_dim = map(int, final_weight.shape)
+    expected_input_dim = int(qwen_hidden_dim) * int(latent_token_count)
+    if input_dim != expected_input_dim:
+        raise ValueError(
+            "StateProjector input dim does not match policy protocol: "
+            f"checkpoint={input_dim}, expected={expected_input_dim} "
+            f"(k={latent_token_count}, hidden={qwen_hidden_dim})"
+        )
+    if final_input_dim != projector_hidden_dim or output_dim != int(lewm_emb_dim):
+        raise ValueError(
+            "StateProjector output layout does not match WM: "
+            f"hidden={projector_hidden_dim}, final_input={final_input_dim}, "
+            f"output={output_dim}, wm={lewm_emb_dim}"
+        )
+    module = StateProjector(
+        qwen_hidden_dim=qwen_hidden_dim,
+        lewm_emb_dim=lewm_emb_dim,
+        projector_hidden_dim=projector_hidden_dim,
+        latent_token_count=latent_token_count,
+    )
+    module.load_state_dict(state)
+    return module
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse args, load config, build modules, and launch RL training."""
     import torch
+    from transformers import AutoConfig
     from nimloth.training.common.dist import is_main
-    from nimloth.training.rl.rollout import JSONLRolloutCollector, VAGENRolloutCollector
+    from nimloth.training.rl.rollout import (
+        JSONLRolloutCollector,
+        VAGENRolloutCollector,
+        validate_rl_policy_protocol,
+    )
     from nimloth.training.rl.trainer import train_rl
     from nimloth.wm.predictor import LatentWMPredictor
     from nimloth.wm.state_proj import StateProjector
@@ -120,6 +167,10 @@ def main(argv: list[str] | None = None) -> int:
     config = merge_config_overrides(args, config)
 
     output_dir = Path(args.output_dir).resolve()
+    model_config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
+    latent_token_count = validate_rl_policy_protocol(model_config)
+    text_config = getattr(model_config, "text_config", model_config)
+    qwen_hidden_dim = int(getattr(text_config, "hidden_size"))
 
     if is_main():
         print(json.dumps({
@@ -128,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
                 "vision_tune": args.vision_tune,
                 "lora": args.lora,
                 "resume": args.resume,
+                "latent_token_count": latent_token_count,
+                "latent_query_mode": "inject",
                 "rl": config.get("rl", {}),
                 "freeze": config.get("freeze", {}),
                 "predictor": config.get("predictor", {}),
@@ -154,21 +207,38 @@ def main(argv: list[str] | None = None) -> int:
         wm_predictor = LatentWMPredictor.create(wm_config)
 
     emb_dim = wm_predictor.config.emb_dim
-    state_proj = StateProjector(qwen_hidden_dim=2048, lewm_emb_dim=emb_dim)
-    value_head = ValueHead(emb_dim=emb_dim)
     if args.state_proj_checkpoint is not None:
-        state_proj.load_state_dict(
-            torch.load(args.state_proj_checkpoint, map_location="cpu", weights_only=True)
+        state_proj = load_state_projector_for_rl(
+            args.state_proj_checkpoint,
+            qwen_hidden_dim=qwen_hidden_dim,
+            lewm_emb_dim=emb_dim,
+            latent_token_count=latent_token_count,
         )
         if is_main():
-            print(json.dumps({"warm_start": "state_proj", "source": str(args.state_proj_checkpoint)}))
+            print(json.dumps({
+                "warm_start": "state_proj",
+                "source": str(args.state_proj_checkpoint),
+                "latent_token_count": latent_token_count,
+                "input_dim": state_proj.input_dim,
+            }))
+    else:
+        state_proj = StateProjector(
+            qwen_hidden_dim=qwen_hidden_dim,
+            lewm_emb_dim=emb_dim,
+            projector_hidden_dim=int(
+                config.get("predictor", {}).get("projector_hidden_dim", 2048)
+            ),
+            latent_token_count=latent_token_count,
+        )
+    value_head = ValueHead(emb_dim=emb_dim)
     if args.value_head_checkpoint is not None:
         loaded_vh = ValueHead.load_checkpoint(args.value_head_checkpoint, emb_dim=emb_dim)
         value_head.load_state_dict(loaded_vh.state_dict())
         if is_main():
             print(json.dumps({"warm_start": "value_head", "source": str(args.value_head_checkpoint)}))
 
-    # --- Rollout collector ---------------------------------------------------
+    # --- Rollout collectors --------------------------------------------------
+    validation_collector = None
     if args.env_url:
         from nimloth.training.rl.rollout import EnvRolloutCollector
         rl_cfg = config.get("rl", {})
@@ -190,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
             seed_offset=int(rollout_cfg.get("seed_offset", 0)),
             history_window=int(rollout_cfg.get("history_window", 4)),
             env_timeout=int(rollout_cfg.get("env_timeout", 180)),
+            latent_token_count=latent_token_count,
         )
         if is_main():
             print(json.dumps({"rollout_mode": "env", "env_url": args.env_url,
@@ -199,6 +270,45 @@ def main(argv: list[str] | None = None) -> int:
                               "seed_offset": rollout_cfg.get("seed_offset", 0),
                               "history_window": rollout_cfg.get("history_window", 4),
                               "env_timeout": rollout_cfg.get("env_timeout", 180)}))
+        validation_cfg = config.get("validation", {})
+        if bool(validation_cfg.get("enabled", False)):
+            heldout_sets = tuple(validation_cfg.get("eval_sets", ()))
+            if not heldout_sets:
+                raise ValueError(
+                    "validation.enabled requires validation.eval_sets"
+                )
+            validation_collector = EnvRolloutCollector(
+                qwen_model=None,
+                processor=None,
+                env_url=args.env_url,
+                device=None,
+                temperature=float(validation_cfg.get("temperature", 0.0)),
+                top_p=float(validation_cfg.get("top_p", 1.0)),
+                eval_sets=heldout_sets,
+                split="validation",
+                seed_offset=int(validation_cfg.get("seed_offset", 1)),
+                history_window=int(
+                    validation_cfg.get(
+                        "history_window", rollout_cfg.get("history_window", 4)
+                    )
+                ),
+                env_timeout=int(
+                    validation_cfg.get(
+                        "env_timeout", rollout_cfg.get("env_timeout", 180)
+                    )
+                ),
+                latent_token_count=latent_token_count,
+            )
+            if is_main():
+                print(json.dumps({
+                    "validation_collector": "heldout_env",
+                    "eval_sets": heldout_sets,
+                    "seed_offset": validation_collector._base_seed_offset,
+                    "temperature": validation_collector._temperature,
+                    "envs": validation_cfg.get("envs", 16),
+                    "interval": validation_cfg.get("interval", 50),
+                    "baseline": validation_cfg.get("baseline", False),
+                }))
     elif args.use_jsonl_rollout or (args.vagen_config is None and not args.env_url):
         cfg_sources = (
             config.get("rollout", {}).get("jsonl_sources")
@@ -239,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
         value_head=value_head,
         collector=collector,
         output_dir=output_dir,
+        validation_collector=validation_collector,
     )
 
 

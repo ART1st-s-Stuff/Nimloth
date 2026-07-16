@@ -54,6 +54,7 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
             split=collector._split,
             history_window=collector._history_window,
             env_timeout=collector._env_timeout,
+            latent_token_count=collector._latent_token_count,
         )
         result._base_seed_offset = collector._base_seed_offset
         result._control_group = None
@@ -129,6 +130,7 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
                 nav_instruction,
                 action_history,
                 history_window=self._history_window,
+                latent_token_count=self._latent_token_count,
             )
         except Exception:
             local_error = traceback.format_exc()

@@ -18,16 +18,18 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
-def validate_rl_policy_protocol(model_config: Any) -> None:
-    """Fail fast unless the policy matches the implemented k=1 inject runtime."""
+def validate_rl_policy_protocol(model_config: Any) -> int:
+    """Validate the implemented inject runtime and return its query count."""
 
     latent_count = int(getattr(model_config, "nimloth_latent_token_count", 1))
     query_mode = getattr(model_config, "nimloth_latent_query_mode", None)
-    if latent_count != 1 or query_mode != "inject":
+    if latent_count < 1 or query_mode != "inject":
         raise ValueError(
-            "RL action/encoding runtime currently requires a k=1 inject checkpoint; "
-            f"got latent_token_count={latent_count}, latent_query_mode={query_mode!r}"
+            "RL action/encoding runtime requires an inject checkpoint with at least "
+            f"one latent query; got latent_token_count={latent_count}, "
+            f"latent_query_mode={query_mode!r}"
         )
+    return latent_count
 
 
 # ---------------------------------------------------------------------------
@@ -188,12 +190,18 @@ class EnvRolloutCollector:
         split: str = "eval",
         history_window: int = 4,
         env_timeout: int = 180,
+        latent_token_count: int = 1,
     ) -> None:
         if not eval_sets:
             raise ValueError("EnvRolloutCollector requires at least one eval_set")
         if split == "train" and any(not name.endswith("_train") for name in eval_sets):
             raise ValueError(
                 "training rollout requires *_train datasets; "
+                f"got eval_sets={eval_sets}"
+            )
+        if split == "validation" and any(name.endswith("_train") for name in eval_sets):
+            raise ValueError(
+                "heldout validation forbids *_train datasets; "
                 f"got eval_sets={eval_sets}"
             )
         self._model = qwen_model
@@ -207,6 +215,11 @@ class EnvRolloutCollector:
         self._top_p = top_p
         self._eval_sets = eval_sets
         self._split = split
+        if latent_token_count < 1:
+            raise ValueError(
+                f"latent_token_count must be >= 1, got {latent_token_count}"
+            )
+        self._latent_token_count = int(latent_token_count)
         if history_window < 0:
             raise ValueError(f"history_window must be >= 0, got {history_window}")
         self._history_window = int(history_window)
@@ -246,6 +259,11 @@ class EnvRolloutCollector:
         # Sampling is a pure function of env seed + step, so checkpoint resume
         # does not depend on a process-local RNG state.
         return int((self._base_seed_offset + 1) * 1_000_003 + episode_seed * 997 + step)
+
+    def reset_seed_cursor(self) -> None:
+        """Reset to the fixed base seed (used for repeatable heldout evaluation)."""
+
+        self._ep_counter = self._base_seed_offset
 
     def set_resume_iteration(
         self,
@@ -389,6 +407,7 @@ class EnvRolloutCollector:
                         temperature=self._temperature,
                         top_p=self._top_p,
                         history_window=self._history_window,
+                        latent_token_count=self._latent_token_count,
                         generator=generator,
                     )
                     print(json.dumps({"rl_ep": ep_i, "action_selected": action_name,
@@ -578,9 +597,13 @@ def build_nimloth_policy_messages(
     action_history: list[str],
     *,
     history_window: int,
+    latent_token_count: int = 1,
 ) -> tuple[list[dict[str, Any]], list[Any]]:
-    """Build the canonical k=1/inject action prompt with real history images."""
+    """Build the canonical inject action prompt with real history images."""
 
+    from nimloth.latent.extraction import latent_state_block
+
+    query_block = latent_state_block(latent_token_count)
     image_history, action_history = _window_policy_history(
         image_history, action_history, history_window
     )
@@ -596,7 +619,7 @@ def build_nimloth_policy_messages(
             raise ValueError(f"unknown navigation action in history: {action_name!r}")
         messages.append({"role": "assistant", "content": [
             {"type": "text", "text": (
-                "<think>Navigating.</think><|latent_state|><|action_start|>"
+                f"<think>Navigating.</think>{query_block}<|action_start|>"
                 f"<|action_({ACTION_NAME_TO_IDX[action_name]})|><|action_end|>"
             )},
         ]})
@@ -608,8 +631,8 @@ def build_nimloth_policy_messages(
         ]})
     messages.append({"role": "assistant", "content": [
         {"type": "text", "text": (
-            "<think>What should I do next?</think>"
-            "<|latent_state|><|action_start|>"
+            f"<think>What should I do next?</think>"
+            f"{query_block}<|action_start|>"
         )},
     ]})
     return messages, image_history
@@ -643,19 +666,23 @@ def compute_nimloth_action_distribution(
     action_history: list[str],
     *,
     history_window: int,
+    latent_token_count: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return raw logits and untempered log-probs for the eight action tokens."""
 
     from nimloth.latent.extraction import LatentActionTokens, special_token_ids
 
     tokens = LatentActionTokens()
-    token_ids = special_token_ids(processor.tokenizer, tokens)
+    token_ids = special_token_ids(
+        processor.tokenizer, tokens, latent_token_count=latent_token_count
+    )
     action_token_ids = [token_ids[token] for token in tokens.action_tokens]
     messages, images = build_nimloth_policy_messages(
         image_history,
         nav_instruction,
         action_history,
         history_window=history_window,
+        latent_token_count=latent_token_count,
     )
     text = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
@@ -741,6 +768,7 @@ def _select_action_nimloth(
     temperature: float = 1.0,
     top_p: float = 1.0,
     history_window: int = 4,
+    latent_token_count: int = 1,
     generator: torch.Generator | None = None,
 ) -> tuple[str, int, list[float]]:
     """Compute the current policy distribution and sample one action."""
@@ -752,6 +780,7 @@ def _select_action_nimloth(
         nav_instruction,
         action_history,
         history_window=history_window,
+        latent_token_count=latent_token_count,
     )
     chosen_idx, log_probs = sample_action_from_logits(
         action_logits,

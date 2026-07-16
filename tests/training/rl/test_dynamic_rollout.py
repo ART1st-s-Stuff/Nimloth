@@ -265,6 +265,25 @@ def test_state_projector_loader_infers_k8_checkpoint_width(tmp_path: Path) -> No
         )
 
 
+def test_value_head_loader_honors_checkpoint_hidden_width(tmp_path: Path) -> None:
+    from nimloth.wm.value_head import ValueHead
+
+    checkpoint = tmp_path / "value"
+    checkpoint.mkdir()
+    expected = ValueHead(emb_dim=12, hidden_dim=5)
+    torch.save(expected.state_dict(), checkpoint / "value_head.pt")
+    (checkpoint / "config.json").write_text(
+        json.dumps({"emb_dim": 12, "num_actions": 8, "hidden_dim": 5}),
+        encoding="utf-8",
+    )
+    loaded = ValueHead.load_checkpoint(checkpoint, emb_dim=12)
+    assert loaded.net[0].weight.shape == (5, 12)
+    assert all(
+        torch.equal(expected.state_dict()[key], loaded.state_dict()[key])
+        for key in expected.state_dict()
+    )
+
+
 def test_validation_summary_requires_all_fixed_episodes() -> None:
     from nimloth.training.rl.trainer import summarize_validation_trajectories
 

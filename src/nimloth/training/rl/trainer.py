@@ -19,7 +19,7 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+from transformers import AutoConfig, AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.backbone.qwen_tuning import (
     configure_qwen_tuning,
@@ -57,16 +57,19 @@ def encode_trajectory_hiddens(
     processor: Any,
     token_id_map: dict[str, int],
     device: torch.device,
+    *,
+    latent_token_count: int = 1,
 ) -> list[torch.Tensor]:
     """Run Qwen on each frame of a trajectory, return hidden states.
 
     Returns:
-        List of ``(hidden_dim,)`` tensors, one per frame (len = num_steps + 1).
+        List of ``(k, hidden_dim)`` tensors, one per frame (len = num_steps + 1).
     """
     from nimloth.latent.extraction import (
         LatentActionTokens,
-        extract_latent_state,
-        find_last_latent_state_index,
+        extract_latent_state_block,
+        find_last_latent_state_block,
+        latent_state_block,
         last_hidden_state,
     )
     from nimloth.training.common.qwen_batch import build_qwen_batch
@@ -90,20 +93,30 @@ def encode_trajectory_hiddens(
             ]},
             # Include <|latent_state|> in assistant so we can extract it
             {"role": "assistant", "content": [
-                {"type": "text", "text": f"<|latent_state|>"},
+                {"type": "text", "text": latent_state_block(latent_token_count)},
             ]},
         ]
         item = {"messages": messages}
-        enc = build_qwen_batch([item], processor, max_length=999999)  # effectively no truncation
+        enc = build_qwen_batch(
+            [item],
+            processor,
+            max_length=999999,
+            latent_token_count=latent_token_count,
+        )  # effectively no truncation
         model_inputs = {k: v.to(device) for k, v in enc.items()}
         with torch.no_grad():
             output = qwen_model(**model_inputs, output_hidden_states=True, return_dict=True)
         hidden = last_hidden_state(output)
-        latent_idx = find_last_latent_state_index(
-            enc["input_ids"][0], token_id_map, tokens
+        latent_indices = find_last_latent_state_block(
+            enc["input_ids"][0],
+            token_id_map,
+            tokens,
+            latent_token_count=latent_token_count,
         )
-        latent = extract_latent_state(hidden[0:1], latent_idx)  # (1, hidden_dim)
-        states.append(latent.squeeze(0).detach().cpu())
+        latent = extract_latent_state_block(
+            hidden[0:1], latent_indices
+        )  # (k, hidden_dim)
+        states.append(latent.detach().cpu())
 
     return states
 
@@ -120,13 +133,20 @@ def build_rl_transitions(
     token_id_map: dict[str, int],
     device: torch.device,
     gamma: float = 0.99,
+    *,
+    latent_token_count: int = 1,
 ) -> list[dict[str, torch.Tensor]]:
     """Encode trajectories → list of transition dicts (CPU tensors)."""
 
     transitions: list[dict[str, torch.Tensor]] = []
     for traj in trajectories:
         hiddens = encode_trajectory_hiddens(
-            traj, qwen_model, processor, token_id_map, device
+            traj,
+            qwen_model,
+            processor,
+            token_id_map,
+            device,
+            latent_token_count=latent_token_count,
         )
         if len(hiddens) < 2:
             continue
@@ -157,6 +177,34 @@ def build_rl_transitions(
     return transitions
 
 
+def summarize_validation_trajectories(
+    trajectories: list[RolloutTrajectory],
+    *,
+    expected_episodes: int,
+) -> dict[str, float]:
+    """Summarize a strict fixed-task heldout evaluation."""
+
+    if len(trajectories) != int(expected_episodes):
+        raise RuntimeError(
+            "heldout evaluation returned incomplete data: "
+            f"expected {expected_episodes} episodes, got {len(trajectories)}"
+        )
+    return {
+        "val_success_rate": float(
+            sum(1 for trajectory in trajectories if trajectory.success)
+            / expected_episodes
+        ),
+        "val_avg_reward": float(
+            sum(trajectory.reward for trajectory in trajectories) / expected_episodes
+        ),
+        "val_avg_steps": float(
+            sum(trajectory.num_steps for trajectory in trajectories)
+            / expected_episodes
+        ),
+        "val_num_episodes": float(expected_episodes),
+    }
+
+
 # ---------------------------------------------------------------------------
 # PPO forward pass (Qwen with gradients)
 # ---------------------------------------------------------------------------
@@ -170,6 +218,7 @@ def compute_new_log_probs_for_batch(
     *,
     history_window: int,
     temperature: float,
+    latent_token_count: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run Qwen forward WITH gradients, returning new log-probs and action logits.
 
@@ -202,6 +251,7 @@ def compute_new_log_probs_for_batch(
             item["nav_instruction"],
             item["action_history_names"],
             history_window=history_window,
+            latent_token_count=latent_token_count,
         )
         text = processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
@@ -334,6 +384,7 @@ def train_rl(
     value_head: ValueHead,
     collector: RolloutCollector,
     output_dir: Path,
+    validation_collector: RolloutCollector | None = None,
 ) -> int:
     """Run the online RL training loop."""
 
@@ -373,6 +424,8 @@ def train_rl(
     val_enabled: bool = val_cfg.get("enabled", True)
     val_interval: int = val_cfg.get("interval", 50)
     val_envs: int = val_cfg.get("envs", 16)
+    val_baseline: bool = bool(val_cfg.get("baseline", False))
+    val_max_steps: int = int(val_cfg.get("max_steps_per_episode", max_steps_per_ep))
     seed: int = train_cfg.get("seed", 42)
 
     # --- tuning modes --------------------------------------------------------
@@ -391,11 +444,17 @@ def train_rl(
     )
 
     # --- Qwen model loading --------------------------------------------------
+    policy_config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
+    latent_token_count = validate_rl_policy_protocol(policy_config)
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = args.max_pixels
-    n_added = add_special_tokens(processor.tokenizer)
-    token_id_map = special_token_ids(processor.tokenizer)
+    n_added = add_special_tokens(
+        processor.tokenizer, latent_token_count=latent_token_count
+    )
+    token_id_map = special_token_ids(
+        processor.tokenizer, latent_token_count=latent_token_count
+    )
     tokenizer_vocab = len(processor.tokenizer)
 
     resume_ckpt_dir = output_dir / "best"
@@ -409,7 +468,12 @@ def train_rl(
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
     )
-    validate_rl_policy_protocol(model.config)
+    loaded_latent_token_count = validate_rl_policy_protocol(model.config)
+    if loaded_latent_token_count != latent_token_count:
+        raise ValueError(
+            "policy config changed while loading: "
+            f"expected k={latent_token_count}, got k={loaded_latent_token_count}"
+        )
     model_vocab_before = model.get_input_embeddings().weight.shape[0]
     # Log model embedding info before resize
     embed = model.get_input_embeddings()
@@ -541,28 +605,56 @@ def train_rl(
 
     # --- Wire online env rollout after FSDP wrapping -------------------------
     from nimloth.training.rl.rollout import EnvRolloutCollector
-    if isinstance(collector, EnvRolloutCollector):
-        if val_enabled:
+
+    def _wire_env_collector(
+        env_collector: RolloutCollector,
+        *,
+        role: str,
+    ) -> RolloutCollector:
+        if not isinstance(env_collector, EnvRolloutCollector):
+            raise TypeError(f"{role} collector must be EnvRolloutCollector")
+        if env_collector._latent_token_count != latent_token_count:
             raise ValueError(
-                "dynamic training rollout uses explicit *_train datasets; "
-                "validation.enabled must be false until a separate heldout env collector is configured"
+                f"{role} collector/model latent-token mismatch: "
+                f"collector={env_collector._latent_token_count}, "
+                f"model={latent_token_count}"
             )
         if world > 1:
             from nimloth.training.rl.distributed_rollout import (
                 DistributedEnvRolloutCollector,
             )
-            collector = DistributedEnvRolloutCollector.from_collector(collector)
-        collector._model = model
-        collector._processor = processor
-        collector._device = device
+            env_collector = DistributedEnvRolloutCollector.from_collector(
+                env_collector
+            )
+        env_collector._model = model
+        env_collector._processor = processor
+        env_collector._device = device
         if is_main():
             print(json.dumps({
-                "env_collector": "distributed_wired" if world > 1 else "wired",
+                "env_collector": role,
+                "distributed": world > 1,
                 "device": str(device),
                 "world_size": world,
-                "history_window": collector._history_window,
-                "eval_sets": collector._eval_sets,
+                "history_window": env_collector._history_window,
+                "eval_sets": env_collector._eval_sets,
+                "split": env_collector._split,
             }))
+        return env_collector
+
+    if isinstance(collector, EnvRolloutCollector):
+        collector = _wire_env_collector(collector, role="train")
+    if val_enabled:
+        if validation_collector is None:
+            raise ValueError(
+                "validation.enabled requires a separate heldout env collector"
+            )
+        validation_collector = _wire_env_collector(
+            validation_collector, role="heldout_validation"
+        )
+    elif validation_collector is not None:
+        raise ValueError(
+            "validation collector was provided while validation.enabled is false"
+        )
 
     if isinstance(collector, EnvRolloutCollector):
         rollout_protocol: dict[str, Any] = {
@@ -575,7 +667,23 @@ def train_rl(
             "seed_offset": int(collector._base_seed_offset),
             "env_timeout": int(collector._env_timeout),
             "control_backend": "gloo" if world > 1 else "local",
+            "latent_token_count": latent_token_count,
+            "latent_query_mode": "inject",
         }
+        if isinstance(validation_collector, EnvRolloutCollector):
+            rollout_protocol["validation"] = {
+                "split": validation_collector._split,
+                "eval_sets": list(validation_collector._eval_sets),
+                "history_window": int(validation_collector._history_window),
+                "temperature": float(validation_collector._temperature),
+                "top_p": float(validation_collector._top_p),
+                "seed_offset": int(validation_collector._base_seed_offset),
+                "env_timeout": int(validation_collector._env_timeout),
+                "baseline": val_baseline,
+                "interval": val_interval,
+                "envs": val_envs,
+                "max_steps_per_episode": val_max_steps,
+            }
     else:
         rollout_protocol = {
             "mode": "jsonl",
@@ -640,7 +748,7 @@ def train_rl(
         collector.set_resume_iteration(
             start_iteration=start_iteration,
             envs_per_iteration=envs_per_iter,
-            validation_enabled=val_enabled,
+            validation_enabled=False,
             validation_interval=val_interval,
             validation_envs=val_envs,
         )
@@ -662,6 +770,59 @@ def train_rl(
                 "val_success_rate", "val_avg_reward", "val_avg_steps",
                 "actor_loss", "entropy", "clip_fraction", "mean_advantage",
             ])
+
+    validation_log_path = output_dir / "validation_log.csv"
+    if is_main() and val_enabled and not validation_log_path.exists():
+        with validation_log_path.open("w", newline="") as stream:
+            csv.writer(stream).writerow([
+                "time", "label", "iteration", "global_step",
+                "val_success_rate", "val_avg_reward", "val_avg_steps",
+                "val_num_episodes",
+            ])
+
+    def _run_heldout_validation(
+        *,
+        label: str,
+        iteration: int,
+        current_global_step: int,
+    ) -> dict[str, float]:
+        assert isinstance(validation_collector, EnvRolloutCollector)
+        validation_collector.reset_seed_cursor()
+        with _temporary_eval(model):
+            trajectories = validation_collector.collect(
+                num_episodes=val_envs,
+                max_steps_per_episode=val_max_steps,
+                output_dir=output_dir / "validation" / label,
+            )
+        metrics = summarize_validation_trajectories(
+            trajectories, expected_episodes=val_envs
+        )
+        if is_main():
+            with validation_log_path.open("a", newline="") as stream:
+                csv.writer(stream).writerow([
+                    time.time(), label, iteration, current_global_step,
+                    metrics["val_success_rate"], metrics["val_avg_reward"],
+                    metrics["val_avg_steps"], metrics["val_num_episodes"],
+                ])
+            print(json.dumps({
+                "validation": label,
+                "iteration": iteration,
+                "global_step": current_global_step,
+                **metrics,
+            }))
+            if wandb_run is not None:
+                wandb_run.log({
+                    **{f"validation/{key[4:]}": value for key, value in metrics.items()},
+                    "global_step": current_global_step,
+                    "iteration": iteration,
+                    "validation/label": label,
+                })
+        return metrics
+
+    if val_enabled and val_baseline and start_iteration == 1:
+        _run_heldout_validation(
+            label="baseline", iteration=0, current_global_step=global_step
+        )
 
     # --- main loop ------------------------------------------------------------
     for iteration in range(start_iteration, iterations + 1):
@@ -697,7 +858,13 @@ def train_rl(
         # 2. Encode → transitions ------------------------------------------------
         with _temporary_eval(model):
             transitions = build_rl_transitions(
-                trajectories, model, processor, token_id_map, device, gamma=gamma,
+                trajectories,
+                model,
+                processor,
+                token_id_map,
+                device,
+                gamma=gamma,
+                latent_token_count=latent_token_count,
             )
         # Free GPU memory before PPO forward (Qwen+LoRA+gradients needs extra VRAM)
         torch.cuda.empty_cache()
@@ -778,6 +945,7 @@ def train_rl(
                 device,
                 history_window=int(getattr(collector, "_history_window", 4)),
                 temperature=ppo_temperature,
+                latent_token_count=latent_token_count,
             )
             old_log_probs = torch.tensor(
                 [b["old_log_prob"] for b in batch],
@@ -824,27 +992,13 @@ def train_rl(
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
 
-        # --- validation rollout -------------------------------------------------
+        # --- fixed heldout validation -------------------------------------------
         if val_enabled and iteration % val_interval == 0:
-            val_trajectories = collector.collect(
-                num_episodes=val_envs,
-                max_steps_per_episode=max_steps_per_ep,
-                output_dir=output_dir / f"rollouts/val_{iteration:04d}",
-            )
-            if val_trajectories:
-                val_success = sum(1 for t in val_trajectories if t.success) / len(val_trajectories)
-                val_avg_reward = sum(t.reward for t in val_trajectories) / len(val_trajectories)
-                val_avg_steps = sum(t.num_steps for t in val_trajectories) / len(val_trajectories)
-                iter_metrics["val_success_rate"] = float(val_success)
-                iter_metrics["val_avg_reward"] = float(val_avg_reward)
-                iter_metrics["val_avg_steps"] = float(val_avg_steps)
-                if is_main():
-                    print(json.dumps({
-                        "iteration": iteration,
-                        "val_success_rate": val_success,
-                        "val_avg_reward": val_avg_reward,
-                        "val_num_episodes": len(val_trajectories),
-                    }))
+            iter_metrics.update(_run_heldout_validation(
+                label=f"iter_{iteration:04d}",
+                iteration=iteration,
+                current_global_step=global_step,
+            ))
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
@@ -883,8 +1037,7 @@ def train_rl(
                         **{f"train/{key}": value for key, value in iter_metrics.items()},
                         "global_step": global_step,
                         "iteration": iteration,
-                    },
-                    step=global_step,
+                    }
                 )
 
         # --- checkpoint --------------------------------------------------------
