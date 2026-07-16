@@ -19,7 +19,8 @@
 - hold476868两component均`TIMEOUT0:0`/08:00:28，仅因walltime终止。最后logged1924；durable latest1886（epoch2/micro1848），CSV已归档并截断，回退38步，无model error。epoch1 step1655完成：val WM MSE`.0043698056`、SIGReg`.4129391`、value`.1205234`；`epoch_001`和`best`完整。
 - 人类明确要求time-limit后继续，随后明确禁止使用dgx-27、要求碎片节点凑8卡。原pending job`477304`在未分配GPU时取消（`CANCELLED0:0`）。
 - RED`42c16c3`/GREEN`1c5db95`增加one-rank-per-node布局：4节点×2GPU、每节点一个pair-sharded rank，world4/GA8数学不变；MASTER_ADDR动态取首节点，rank取SLURM_PROCID。four-node Slurm显式exclude dgx-27，并在正式Qwen加载前运行两slot NCCL exact-average smoke。server shell/pair/grad focused suite`14 passed`。
-- 续训job`477345`已从commit`1c5db95b7ab57b92d0cef32d98758963bbfc2758`提交：normal、4nodes×2GPU、8h、dgx-27 excluded；获得资源后先smoke再自动复用latest step1886与W&B`lilzcdjs`。当前`PENDING(Priority)`，start unknown。
+- 首次four-node job`477345`分配dgx-13/14/51/54，synthetic smoke通过但formal default barrier在模型加载前失败：旧固定`NCCL_SOCKET_IFNAME=ibp41s0f0`对碎片节点出现`10.24.0.37 No route to host`；job`FAILED15:0`/2m44s，无step/checkpoint写入，登记E0044。
+- RED`13b07b3`/GREEN`1fd7bc7`让one-rank-per-node的smoke与formal均使用自动socket选择，同时保留NCCL IB和旧3+1显式interface；server focused suite`16 passed`。retry job`477349`现运行于dgx-14/26/51/54各2GPU，明确无dgx-27。四rank smoke PASS、formal IB init PASS、Qwen placement一致81,348,096/83,148,800；从step1886恢复后至少到1900 finite，无OOM/NCCL/non-finite。显存primary约53.5–53.6GiB、secondary约41.2GiB。
 
 ## 2026-07-15：冻结 State 的 SFT2 dynamics_dim 对照（准备中）
 
