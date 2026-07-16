@@ -71,13 +71,13 @@ LoRA/full. `query_tune=freeze` is required because the additive query adapter
 cannot coexist with PEFT; the SFT1 merged checkpoint already contains its
 materialized k=8 query rows. One-GPU-per-rank launches OOM even at image budget8 because a single late
 prefix itself contains eight images and cannot be split without changing
-semantics. A four-rank pair-parallel replacement showed that the 3+1
-non-uniform multi-node topology desynchronizes multi-device Qwen and auxiliary
-DDP collectives. The production retry therefore uses
-`run_full8192_lora_pair2_single_node3.sh`: three pair-parallel ranks entirely
-on dgx-27, world3/GA11 (effective accumulation33) and image budget8. dgx-54's
-two GPUs remain held but unused. The other launchers remain as failed-topology
-reproduction artifacts.
+semantics. Ordinary DDP also cannot wrap Qwen when each rank spans a different
+GPU pair: its reducer desynchronizes with the following auxiliary DDP modules,
+including when all ranks share one node. The production retry uses
+`run_full8192_lora_pair2_single_node3.sh`: three pair ranks on dgx-27,
+world3/GA11 (effective accumulation33), image budget8, ordinary DDP for the
+single-device auxiliary modules, and explicit ordered Qwen gradient averaging
+at each optimizer boundary. dgx-54's two GPUs remain held but unused.
 
 `latent_wm_value_k8_state8192_factorized.yaml` preserves that same full-width
 Projector and external/saved/predicted 8192-d State, while setting the internal

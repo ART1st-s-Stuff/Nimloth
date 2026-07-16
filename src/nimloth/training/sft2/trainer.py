@@ -29,6 +29,7 @@ from nimloth.latent import (
 )
 from nimloth.training.common.config import merge_cli_over_yaml
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
+from nimloth.training.common.grad_sync import average_module_gradients
 from nimloth.training.common.metrics import MetricAccumulator
 from nimloth.backbone.qwen_tuning import configure_qwen_tuning, resolve_tune_modes, uses_lora
 from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema
@@ -666,19 +667,12 @@ def train_sft2(args=None) -> int:
         )
 
     ddp_static_graph = world > 1
+    manual_qwen_sync = world > 1 and qwen_pair_parallel
     if world > 1:
-        # Every trainable branch is exercised on every rank (terminal-only WM
-        # batches use dummy aux forwards), so unused-parameter graph traversal is
-        # unnecessary and interacts badly with multi-forward/checkpointed steps.
-        if qwen_pair_parallel:
-            model = DDP(
-                model,
-                device_ids=None,
-                output_device=None,
-                find_unused_parameters=False,
-                static_graph=ddp_static_graph,
-            )
-        else:
+        # Multi-device Qwen cannot share one DDP reducer with ranks whose pair
+        # uses different CUDA ordinals. Accumulate locally, then explicitly
+        # average its trainable gradients at each optimizer boundary.
+        if not manual_qwen_sync:
             device_idx = int(str(device).split(":")[-1])
             model = DDP(
                 model,
@@ -853,6 +847,8 @@ def train_sft2(args=None) -> int:
         )
         set_optimizer_group_lr(optimizer, "qwen", qwen_lr)
 
+        if manual_qwen_sync:
+            average_module_gradients(model)
         torch.nn.utils.clip_grad_norm_(
             [p for group in optimizer.param_groups for p in group["params"]],
             1.0,
@@ -901,7 +897,9 @@ def train_sft2(args=None) -> int:
         micro = 0
 
         num_micro_batches = len(train_loader)
-        ddp_modules = [model, state_proj, value_head]
+        ddp_modules = [state_proj, value_head]
+        if not manual_qwen_sync:
+            ddp_modules.insert(0, model)
         if train_wm_predictor:
             ddp_modules.append(wm_predictor)
         # PyTorch 2.8 has an upstream DDP regression where static_graph=True
@@ -912,11 +910,13 @@ def train_sft2(args=None) -> int:
         # this preserves the accumulated gradient while trading extra comms for
         # correctness on the pinned runtime.
         use_ddp_no_sync = world > 1 and not qwen_pair_parallel and not ddp_static_graph
+        if is_main() and manual_qwen_sync:
+            print(json.dumps({"qwen_gradient_sync": "manual_at_optimizer_boundary"}))
         if is_main() and world > 1 and args.grad_accum > 1 and not use_ddp_no_sync:
             print(
                 json.dumps(
                     {
-                        "ddp_gradient_accumulation": "sync_each_microbatch",
+                        "aux_ddp_gradient_accumulation": "sync_each_microbatch",
                         "reason": "torch_2_8_static_graph_no_sync_regression",
                     }
                 )
