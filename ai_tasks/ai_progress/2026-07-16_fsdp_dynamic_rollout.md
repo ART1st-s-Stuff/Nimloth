@@ -25,17 +25,31 @@
 
 - 创建分支/worktree：`feat/fsdp-dynamic-rollout` / `../nimloth-feat-fsdp-dynamic-rollout`，起点 dev `25f4237`。
 - 核实 VAGEN：每个 global step动态 reset/step env，当前 actor产生trajectory，随后 update_actor；下一个step生成前同步最新FSDP权重。
-- 核实现有 blocker：`train_rl`明确拒绝 world>1 `EnvRolloutCollector`；JSONL path不能提供每轮更新后的policy rollout。
+- 新增`DistributedEnvRolloutCollector`：仅rank0持有HTTP env与写文件；所有rank同序policy forward；all-reduce检查8-action logits；rank0按确定性seed采样并广播action；rank0 step env并广播结果；最终完整trajectory广播。
+- trainer已移除world>1 env guard，改为FSDP wrap后接线distributed collector；rollout与latent encoding使用临时eval mode，PPO继续带梯度。
+- rollout与PPO改为同一canonical k1/inject prompt，使用真实历史图片和可配`history_window`；old/new log-prob均为temperature-scaled完整8-action distribution，top-p只约束采样。
+- 删除policy错误时`moveahead + [0]*8` fallback；环境、policy、schema失败不能进入训练。新增finite/schema validator。
+- checkpoint记录`rollout_protocol`；resume强制核对mode/split/eval sets/history window/temperature/top-p/seed offset，并根据已完成iteration恢复env seed cursor。
+- 动态训练要求显式`*_train`且暂时`validation.enabled=false`，避免把train collector结果标成heldout validation。
 
 ## 修改
 
-- 尚无代码修改。
+- `src/nimloth/training/rl/distributed_rollout.py`
+- `src/nimloth/training/rl/{rollout,trainer,cli,checkpoint}.py`
+- `configs/training/rl/defaults.yaml`
+- `tests/training/rl/test_dynamic_rollout.py`
+- RL README文档。
+- 提交：`3f87a5c`、`a19ee8f`，已推送`origin/feat/fsdp-dynamic-rollout`。
 
 ## 验证
 
-- 尚未执行。
+- 本地`compileall`与`git diff --check`通过。
+- 服务器提交`a19ee8f`：RL/latent tests `29 passed, 1 expected warning`；后续定向回归`24 passed, 1 expected warning`。
+- 2-rank gloo integration覆盖rank0-only fake env、all-rank action distribution collective、rank0 action broadcast、相同trajectory与rank0-only JSONL。
 
 ## 待确认/风险
 
-- 外部环境服务超时期间其他rank会等待rank0广播；必须使用有限HTTP timeout并同步传播错误。
-- 先实现正确的逐episode同步forward；性能批处理可在语义验证后单独优化。
+- 尚未用真实Qwen FSDP + VAGEN env做2-GPU动态online smoke；CPU/gloo测试不能证明NCCL/FSDP模型forward不会遇到运行时问题。
+- 外部环境服务超时期间其他rank会等待rank0广播；HTTP timeout为600秒，失败后同步丢弃完整episode或终止collective policy path。
+- 当前逐episode、逐action forward保证语义但未做VAGEN式active-env batching，吞吐可能较低；需真实smoke后再优化。
+- 服务器测试worktree的`external/le-wm`因Python cache显示submodule dirty，正式launch前需清理并再次确认clean commit，不修改其源码。

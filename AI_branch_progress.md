@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-07-16：FSDP动态在线rollout实现
+
+- 人类要求参考VAGEN，为现有Nimloth FSDP trainer实现每轮current-policy动态访问环境，替换正式在线RL的固定JSONL限制。分支/worktree=`feat/fsdp-dynamic-rollout`/`../nimloth-feat-fsdp-dynamic-rollout`。
+- 新增`DistributedEnvRolloutCollector`：仅rank0访问VAGEN HTTP和写PNG/JSONL；所有rank同序FSDP policy forward并核对8-action logits；rank0确定性采样/broadcast action、step env并广播结果；完整trajectory再广播。env/policy/schema错误不再fallback为默认action/零log-prob。
+- rollout与PPO共用canonical k1/inject prompt、真实history images和可配window；temperature-scaled old/new log-prob一致，top-p仅控制采样。rollout/latent encoding临时eval，PPO保留梯度。
+- checkpoint新增严格`rollout_protocol`和resume seed cursor；动态train只允许显式`*_train`，且在独立heldout collector接线前强制关闭validation，避免train结果伪装val。
+- 提交`3f87a5c`、`a19ee8f`已推送。服务器RL/latent tests=`29 passed, 1 expected warning`，后续定向回归`24 passed`；2-rank gloo覆盖rank0-only env、collective action、相同trajectory。真实NCCL/FSDP+VAGEN GPU smoke尚未启动，详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
+
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 
 - 人类要求暂停SFT2 epoch3，下一阶段只验证RL可行性、不对效果做期待。job `476585`已取消并释放GPU；epoch2/best完整，partial latest=epoch3/step3125，CSV已归档/截断，W&B `az8nqwv9` clean finish。
