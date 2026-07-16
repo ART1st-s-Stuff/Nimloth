@@ -348,6 +348,14 @@ def _unpack_train_batch(
     return items, enc, next_rows, None, None
 
 
+def _ddp_sync_policy(*, world: int, qwen_pair_parallel: bool) -> dict[str, bool]:
+    distributed = world > 1
+    return {
+        "aux_static_graph": distributed and not qwen_pair_parallel,
+        "aux_no_sync": distributed and qwen_pair_parallel,
+    }
+
+
 def _no_sync_if_needed(modules, *, enabled: bool):
     if not enabled:
         return contextlib.nullcontext()
@@ -667,6 +675,8 @@ def train_sft2(args=None) -> int:
         )
 
     ddp_static_graph = world > 1
+    sync_policy = _ddp_sync_policy(world=world, qwen_pair_parallel=qwen_pair_parallel)
+    aux_static_graph = sync_policy["aux_static_graph"]
     manual_qwen_sync = world > 1 and qwen_pair_parallel
     aux_ddp_group = None
     qwen_grad_group = None
@@ -693,7 +703,7 @@ def train_sft2(args=None) -> int:
             device_ids=[aux_idx],
             output_device=aux_idx,
             find_unused_parameters=False,
-            static_graph=ddp_static_graph,
+            static_graph=aux_static_graph,
         )
         value_head = DDP(
             value_head,
@@ -701,7 +711,7 @@ def train_sft2(args=None) -> int:
             device_ids=[aux_idx],
             output_device=aux_idx,
             find_unused_parameters=False,
-            static_graph=ddp_static_graph,
+            static_graph=aux_static_graph,
         )
         if train_wm_predictor:
             wm_predictor = DDP(
@@ -710,7 +720,7 @@ def train_sft2(args=None) -> int:
                 device_ids=[aux_idx],
                 output_device=aux_idx,
                 find_unused_parameters=False,
-                static_graph=ddp_static_graph,
+                static_graph=aux_static_graph,
             )
 
     vision_ema: VisionEncoderEMA | None = None
@@ -910,22 +920,19 @@ def train_sft2(args=None) -> int:
             ddp_modules.insert(0, model)
         if train_wm_predictor:
             ddp_modules.append(wm_predictor)
-        # PyTorch 2.8 has an upstream DDP regression where static_graph=True
-        # combined with no_sync() crashes in Reducer::finalize_backward before
-        # the first optimizer step (expect_autograd_hooks_ assertion). Keep the
-        # static graph required by repeated Qwen forwards/checkpointing, and
-        # synchronize each accumulation micro-batch. All-reduce is linear, so
-        # this preserves the accumulated gradient while trading extra comms for
-        # correctness on the pinned runtime.
-        use_ddp_no_sync = world > 1 and not qwen_pair_parallel and not ddp_static_graph
+        # PyTorch2.8 crashes when static_graph and no_sync are combined. Pair
+        # mode keeps Qwen outside DDP, so its simple auxiliary graphs can disable
+        # static_graph and synchronize only at the accumulation boundary.
+        use_ddp_no_sync = sync_policy["aux_no_sync"]
         if is_main() and manual_qwen_sync:
             print(json.dumps({"qwen_gradient_sync": "manual_at_optimizer_boundary"}))
-        if is_main() and world > 1 and args.grad_accum > 1 and not use_ddp_no_sync:
+        if is_main() and world > 1 and args.grad_accum > 1:
+            mode = "sync_optimizer_boundary" if use_ddp_no_sync else "sync_each_microbatch"
             print(
                 json.dumps(
                     {
-                        "aux_ddp_gradient_accumulation": "sync_each_microbatch",
-                        "reason": "torch_2_8_static_graph_no_sync_regression",
+                        "aux_ddp_gradient_accumulation": mode,
+                        "aux_static_graph": aux_static_graph,
                     }
                 )
             )
