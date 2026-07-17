@@ -68,7 +68,7 @@ def test_sft_converter_delegates_to_the_shared_runtime_rewrite() -> None:
 def test_vagen_policy_image_normalization_matches_source_rollout_manager() -> None:
     # VAGEN's pinned `verl.utils.dataset.rl_dataset.process_image` upscales
     # raw AI2-THOR frames from255×255 to512×512 before policy use.
-    raw = Image.new("RGBA", (255, 255), (1, 2, 3, 4))
+    raw = Image.new("RGBA", (255, 255), (1, 2, 3, 255))
     normalized = normalize_vagen_policy_image(raw)
     assert normalized.size == (512, 512)
     assert normalized.mode == "RGB"
