@@ -194,6 +194,23 @@ def test_dynamic_4211_launcher_has_no_stale_trainer_node_rules() -> None:
     assert 'expected_microbatch = 1 if mode == "pilot" else 2' in launcher
 
 
+def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None:
+    probe = Path(
+        "experiments/training/rl/probe_actor_recompute_memory.py"
+    ).read_text(encoding="utf-8")
+    launcher = Path(
+        "experiments/training/rl/actor_memory_probe_1plus1plus2plus4.slurm"
+    ).read_text(encoding="utf-8")
+    assert "trajectory.num_steps < 20" in probe
+    assert "_temporary_deterministic_train" in probe
+    assert "loss.backward()" in probe
+    assert "torch.cuda.max_memory_reserved" in probe
+    assert launcher.count("#SBATCH hetjob") == 3
+    assert 'assert peak < 70.0' in launcher
+    assert 'assert all(row["history_images"]==20' in launcher
+    assert 'assert all(row["policy_tokens"]==9' in launcher
+
+
 def test_placeholder_hold_runs_atomically_published_stages() -> None:
     hold = Path(
         "experiments/training/rl/hold_dynamic_fsdp_k8_1124_env48.slurm"
