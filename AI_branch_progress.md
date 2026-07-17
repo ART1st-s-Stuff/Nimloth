@@ -18,7 +18,8 @@
 - 修复已提交并推送`ba7513994216e8f66371f306b9d1255002e82109`。尚未提交GPU/Slurm任务，未创建新W&B/output，未resume ID11。
 - `/project`空间已由人类清理并恢复；server worktree已同步clean `dcf7eef`，VAGEN=`e7cc2d0`、le-wm=`8edfeb3`。实际server tests=`64 passed, 2 expected warnings`，VAGEN source protocol另`3 passed`。
 - 人类要求不再使用旧partial step3059 init，改用现在完整SFT2 Epoch2。已核实source `train/epoch_002`与`best`均step3310、epoch2、`epoch_complete=true`、k8/inject；Epoch2 val WM MSE=`0.003050072753`。RL prep新增`--require-epoch-complete`，误传当前Epoch3 partial step4799会fail-fast；定向2 tests通过。
-- ID12 semantic smoke终态FAILED/NON-RESUMABLE：prep478316成功构建完整SFT2 Epoch2 step3310 immutable init；实际job478559用normal碎片4@dgx29+2@dgx13+1@dgx09+1@dgx51形成world8，env在dgx51共享rank7 H100且health通过。rank0在任何rollout/optimizer step前因job-id modulo端口39559已占用触发TCPStore `EADDRINUSE`；确认fatal后取消全部het groups（2:09）。output/W&B `c8w83kd3`已标记terminal，禁止resume/reuse；无semantic结论。launcher改为rank0节点kernel free-port probe，E0027补充multi-node规则；下一次必须用新output/W&B。
+- ID12 semantic smoke终态FAILED/NON-RESUMABLE：prep478316成功构建完整SFT2 Epoch2 step3310 immutable init；实际job478559用normal碎片4@dgx29+2@dgx13+1@dgx09+1@dgx51形成world8，env在dgx51共享rank7 H100且health通过。rank0在任何rollout/optimizer step前因job-id modulo端口39559已占用触发TCPStore `EADDRINUSE`；确认fatal后取消全部het groups（2:09）。output/W&B `c8w83kd3`已标记terminal，禁止resume/reuse；无semantic结论。launcher改为rank0节点kernel free-port probe，E0027补充multi-node规则。
+- ID13新identity/W&B=`rf0v5w8z`，job478578使用同一4+2+1+1 normal world8并在kernel-probed port36847成功rendezvous，env health通过；首个真实policy turn全部rank fail-fast：Qwen收到81 image features但prompt中0 image tokens。根因是dynamic runtime/PPO/latent replay把含literal `<image>`的string messages直接送chat template，而SFT先转换为multimodal image/text parts。ID13终态FAILED/NON-RESUMABLE、0 optimizer steps、无semantic结论；正在用共享SFT multimodal转换路径修复并补回归测试，后续必须新output/W&B。
 
 ## 2026-07-16：FSDP动态在线rollout实现
 

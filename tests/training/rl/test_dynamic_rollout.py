@@ -19,6 +19,7 @@ from nimloth.training.rl.rollout import (
     RolloutTrajectory,
     build_nimloth_policy_messages,
     materialize_policy_images,
+    multimodal_policy_messages,
     sample_action_from_logits,
     validate_rl_policy_protocol,
     validate_rollout_trajectory,
@@ -241,6 +242,30 @@ def test_policy_image_paths_are_materialized_as_rgb(tmp_path: Path) -> None:
     result[0].load()
 
 
+def test_policy_prompt_replaces_image_placeholders_with_sft_multimodal_parts() -> None:
+    image = Image.new("RGB", (2, 2), "black")
+    messages, images = multimodal_policy_messages(
+        [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "before<image>after"},
+        ],
+        [image],
+    )
+    assert messages[0] == {"role": "system", "content": "system"}
+    content = messages[1]["content"]
+    assert content[0] == {"type": "text", "text": "before"}
+    assert content[1]["type"] == "image"
+    assert isinstance(content[1]["image"], Image.Image)
+    assert content[1]["image"] is images[0]
+    assert content[2] == {"type": "text", "text": "after"}
+    assert len(images) == 1
+
+    with pytest.raises(ValueError, match="image placeholder count"):
+        multimodal_policy_messages(
+            [{"role": "user", "content": "<image>"}], []
+        )
+
+
 def test_policy_prompt_rejects_misaligned_history() -> None:
     with pytest.raises(ValueError, match="one image per observation"):
         build_nimloth_policy_messages(
@@ -286,11 +311,15 @@ def test_inject_runtime_generates_thought_before_inserting_query_block() -> None
             self.tokenizer = FakeTokenizer()
 
         def apply_chat_template(self, messages, **kwargs):
-            assert messages[-1]["content"] == "<image>\nreal task"
+            content = messages[-1]["content"]
+            assert content[0]["type"] == "image"
+            assert isinstance(content[0]["image"], Image.Image)
+            assert content[1] == {"type": "text", "text": "\nreal task"}
             return "rendered-training-prefix"
 
         def __call__(self, **kwargs):
             assert kwargs["text"] == ["rendered-training-prefix"]
+            assert len(kwargs["images"]) == 1
             return {
                 "input_ids": torch.tensor([[1]]),
                 "attention_mask": torch.tensor([[1]]),
@@ -325,7 +354,7 @@ def test_inject_runtime_generates_thought_before_inserting_query_block() -> None
             {"role": "system", "content": "system"},
             {"role": "user", "content": "<image>\nreal task"},
         ],
-        [],
+        [Image.new("RGB", (2, 2), "black")],
         latent_token_count=8,
         max_think_tokens=8,
         token_selector=lambda logits, _: int(logits.argmax().item()),
@@ -354,10 +383,11 @@ def test_ppo_replays_the_stored_rollout_prefix_verbatim() -> None:
 
     class FakeProcessor:
         def apply_chat_template(self, messages, **kwargs):
-            assert messages == [
-                {"role": "system", "content": "real system"},
-                {"role": "user", "content": "<image>\nreal task"},
-            ]
+            assert messages[0] == {"role": "system", "content": "real system"}
+            content = messages[1]["content"]
+            assert content[0]["type"] == "image"
+            assert isinstance(content[0]["image"], Image.Image)
+            assert content[1] == {"type": "text", "text": "\nreal task"}
             return "TRAINING_TEMPLATE_PREFIX"
 
         def __call__(self, **kwargs):

@@ -638,6 +638,59 @@ def materialize_policy_images(images: list[Any]) -> list[Any]:
     return materialized
 
 
+def multimodal_policy_messages(
+    messages: list[dict[str, Any]], images: list[Any]
+) -> tuple[list[dict[str, Any]], list[Any]]:
+    """Attach real images to transcript placeholders exactly as SFT batching does."""
+
+    from nimloth.wm.collate import messages_with_image_paths
+
+    materialized = materialize_policy_images(images)
+    string_placeholders = 0
+    multimodal_parts = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            string_placeholders += content.count("<image>")
+        elif isinstance(content, list):
+            multimodal_parts += sum(
+                1 for part in content
+                if isinstance(part, dict) and part.get("type") == "image"
+            )
+    if string_placeholders and multimodal_parts:
+        raise ValueError(
+            "policy messages cannot mix string <image> placeholders and image parts"
+        )
+    placeholder_count = string_placeholders + multimodal_parts
+    if placeholder_count != len(materialized):
+        raise ValueError(
+            "policy image placeholder count must equal image count: "
+            f"placeholders={placeholder_count}, images={len(materialized)}"
+        )
+    if string_placeholders:
+        return messages_with_image_paths(messages, materialized), materialized
+    if not multimodal_parts:
+        return [dict(message) for message in messages], materialized
+
+    image_iter = iter(materialized)
+    attached: list[dict[str, Any]] = []
+    for message in messages:
+        copied = dict(message)
+        content = copied.get("content")
+        if isinstance(content, list):
+            copied_parts: list[Any] = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image":
+                    copied_part = dict(part)
+                    copied_part["image"] = next(image_iter)
+                    copied_parts.append(copied_part)
+                else:
+                    copied_parts.append(dict(part) if isinstance(part, dict) else part)
+            copied["content"] = copied_parts
+        attached.append(copied)
+    return attached, materialized
+
+
 def policy_inputs_from_messages(
     model,
     processor,
@@ -646,12 +699,13 @@ def policy_inputs_from_messages(
 ) -> tuple[dict[str, torch.Tensor], str]:
     """Apply the training chat template to an exact multimodal history."""
 
+    messages, materialized_images = multimodal_policy_messages(messages, images)
     rendered = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
     inputs = processor(
         text=[rendered],
-        images=materialize_policy_images(images),
+        images=materialized_images,
         return_tensors="pt",
         padding=True,
     )

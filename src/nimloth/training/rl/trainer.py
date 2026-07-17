@@ -74,7 +74,7 @@ def encode_trajectory_hiddens(
     )
     from nimloth.training.rl.rollout import (
         build_nimloth_policy_messages,
-        materialize_policy_images,
+        multimodal_policy_messages,
     )
 
     if trajectory.latent_token_count != latent_token_count:
@@ -94,12 +94,13 @@ def encode_trajectory_hiddens(
             history_window=history_window,
         )
         messages.append({"role": "assistant", "content": current_response})
+        messages, images = multimodal_policy_messages(messages, images)
         text = processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=False
         )
         enc = processor(
             text=[text],
-            images=materialize_policy_images(images),
+            images=images,
             return_tensors="pt",
             padding=True,
         )
@@ -261,7 +262,7 @@ def compute_new_log_probs_for_batch(
     from nimloth.latent.extraction import LatentActionTokens, latent_state_block
     from nimloth.training.rl.rollout import (
         build_nimloth_policy_messages,
-        materialize_policy_images,
+        multimodal_policy_messages,
     )
 
     if temperature < 0:
@@ -279,6 +280,7 @@ def compute_new_log_probs_for_batch(
             item["assistant_responses"],
             history_window=history_window,
         )
+        messages, images = multimodal_policy_messages(messages, images)
         text = processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
@@ -289,7 +291,7 @@ def compute_new_log_probs_for_batch(
         )
         encoded = processor(
             text=[text],
-            images=materialize_policy_images(images),
+            images=images,
             padding=True,
             return_tensors="pt",
         )
