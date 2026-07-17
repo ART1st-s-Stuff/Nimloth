@@ -12,7 +12,7 @@ ID11 只保留 FSDP/checkpoint mechanics 证据；它的 rollout 丢失真实任
 2. 固定 heldout `base` seeds 1–20、greedy、evaluation-only baseline；
 3. 人工审阅 baseline artifact 后，才能创建新的 quality pilot 身份。
 
-当前资源入口`dynamic_fsdp_k8_fragmented_5plus3_env48.slurm`只接受`RUN_MODE=smoke`；它固定使用normal 5@dgx09+3@dgx27 trainers与独立preempt dgx48 env GPU，在同一allocation内重跑bounded create/prompt/reset/schema/close preflight，并明确拒绝baseline/pilot。dgx48已由job478976独立preflight通过。
+当前资源入口`dynamic_fsdp_k8_fragmented_5plus3_env48.slurm`只接受`RUN_MODE=smoke`；它由Slurm在normal分区动态选择5+3 trainer节点，不固定trainer节点名，并使用独立preempt dgx48 env GPU。在同一allocation内重跑bounded create/prompt/reset/schema/close preflight，并明确拒绝baseline/pilot。dgx48已由job478976独立preflight通过。
 
 ## 主要文件
 
@@ -20,7 +20,7 @@ ID11 只保留 FSDP/checkpoint mechanics 证据；它的 rollout 丢失真实任
 |---|---|
 | `dynamic_env_server.slurm` | 当前 clean worktree/pinned VAGEN 的 AI2-THOR service |
 | `dynamic_env_preflight.slurm` | 单GPU bounded create+prompt+reset+schema+close gate；`/health`不能替代 |
-| `dynamic_fsdp_k8_fragmented_5plus3_env48.slurm` | 当前normal 5@dgx09+3@dgx27 world8 trainers + preflight-proven preempt dgx48 env |
+| `dynamic_fsdp_k8_fragmented_5plus3_env48.slurm` | Slurm动态选择normal 5+3 world8 trainer节点 + preflight-proven preempt dgx48 env |
 | `dynamic_fsdp_k8_fragmented_6plus2_env1.slurm` | 历史ID19 attempt2入口；dgx13 env create超时，不得复用 |
 | `dynamic_fsdp_k8_fragmented_3plus2plus2plus1_env1.slurm` | scheduler-selected 3+2+2+1 normal trainer fragments入口；当前因需要五个碎片同时满足而未采用 |
 | `dynamic_fsdp_k8_fragmented_4plus2plus2_env1.slurm` | 历史4+2+2 fixed-node smoke入口 |

@@ -147,8 +147,10 @@ def test_fixed_5plus3_launcher_uses_preflight_proven_env48() -> None:
         "experiments/training/rl/dynamic_fsdp_k8_fragmented_5plus3_env48.slurm"
     ).read_text(encoding="utf-8")
     assert launcher.count("#SBATCH hetjob") == 2
-    for node in ("dgx-09", "dgx-27", "dgx-48"):
-        assert f"#SBATCH --nodelist={node}" in launcher
+    assert "#SBATCH --nodelist=dgx-09" not in launcher
+    assert "#SBATCH --nodelist=dgx-27" not in launcher
+    assert "#SBATCH --nodelist=dgx-48" in launcher
+    assert launcher.count("#SBATCH --exclude=dgx-[18,32,52,54]") == 2
     assert launcher.count("#SBATCH --partition=normal") == 2
     assert launcher.count("#SBATCH --partition=preempt") == 1
     assert "#SBATCH --ntasks=5" in launcher

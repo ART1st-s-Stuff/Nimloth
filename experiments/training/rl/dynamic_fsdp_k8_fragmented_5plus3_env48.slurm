@@ -9,7 +9,6 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:5
 #SBATCH --mem=160G
-#SBATCH --nodelist=dgx-09
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -22,7 +21,6 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:3
 #SBATCH --mem=96G
-#SBATCH --nodelist=dgx-27
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-env
@@ -36,10 +34,10 @@
 #SBATCH --mem=64G
 #SBATCH --nodelist=dgx-48
 
-# Atomic current-resource allocation: normal trainer groups0/1 contribute5+3
-# GPUs on dgx-09/dgx-27 to world-size8 FSDP. Preempt group2 reserves an
-# independent ninth GPU on preflight-proven dgx-48 for the env. The bounded
-# semantic preflight runs again inside this exact allocation before trainers.
+# Atomic current-resource allocation: scheduler-selected normal trainer groups
+# 0/1 contribute5+3 GPUs to world-size8 FSDP without fixed trainer node names.
+# Preempt group2 reserves an independent ninth GPU on preflight-proven dgx-48.
+# The bounded semantic preflight runs again before trainers.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"
@@ -211,8 +209,12 @@ assert preflight["status"] == "passed"
 assert preflight["seed"] == 30002
 assert (root / "env_preflight.png").is_file()
 topology = (root / "topology.txt").read_text()
-assert topology.startswith("trainer_fragments=5@dgx-09,3@dgx-27")
+assert topology.startswith("trainer_fragments=5@dgx-")
+assert ",3@dgx-" in topology, topology
 assert " env=1@dgx-48" in topology, topology
+trainer_topology = topology.split(" master=", 1)[0]
+for protected in ("dgx-18", "dgx-32", "dgx-52", "dgx-54"):
+    assert protected not in trainer_topology, (protected, trainer_topology)
 rows = list(csv.DictReader((root / "train/train_step_log.csv").open()))
 assert (root / "train/wandb_run_id.txt").read_text().strip() == wandb_id
 trainer_log = (root / "trainer.log").read_text()
