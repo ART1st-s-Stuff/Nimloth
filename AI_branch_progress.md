@@ -22,7 +22,8 @@
 - 首次four-node job`477345`分配dgx-13/14/51/54，synthetic smoke通过但formal default barrier在模型加载前失败：旧固定`NCCL_SOCKET_IFNAME=ibp41s0f0`对碎片节点出现`10.24.0.37 No route to host`；job`FAILED15:0`/2m44s，无step/checkpoint写入，登记E0044。
 - RED`13b07b3`/GREEN`1fd7bc7`让one-rank-per-node的smoke与formal均使用自动socket选择，同时保留NCCL IB和旧3+1显式interface；server focused suite`16 passed`。retry job`477349`运行于dgx-14/26/51/54各2GPU，明确无dgx-27；四rank smoke/formal IB/Qwen placement均通过，显存primary约53.5–53.6GiB、secondary约41.2GiB。
 - job477349仅因8h walltime `TIMEOUT0:15`结束，无model error。epoch2 global3310完成：val WM MSE`.0030500728`（优于epoch1`.0043698056`）、SIGReg`.40718877`、value`.11922920`，`epoch_002`/`best`完整。最后logged4801；durable4799/epoch3/micro11912（epoch3 90.1%），CSV归档并截到4799，仅回退2步。
-- 四碎片节点续训job`478282`从clean commit`1fd7bc7db6590ecfeda179c5b65aa1de144d15b0`运行于dgx-18/32/52/54各2GPU，明确无dgx-27。四rank smoke、formal IB、Qwen placement与step4799 checkpoint load均PASS；启动5m40s时正确定性skip epoch3前11912 micros恢复sampler位置，尚无新optimizer step且无error。
+- 四碎片节点续训job`478282`从clean commit`1fd7bc7db6590ecfeda179c5b65aa1de144d15b0`运行于dgx-18/32/52/54各2GPU，明确无dgx-27。四rank smoke、formal IB、Qwen placement与step4799 resume均PASS。
+- epoch3 global4965完成：val WM MSE`.0031694090`、SIGReg`.40910494`、value`.13145171`，略差于epoch2 best`.0030500728`，`epoch_003`完整。snapshot global6420/epoch4 step1455=87.9%/total77.6%，median10.53s；durable6340，无OOM/NCCL/non-finite。
 
 ## 2026-07-15：冻结 State 的 SFT2 dynamics_dim 对照（准备中）
 
