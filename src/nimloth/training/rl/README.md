@@ -107,4 +107,4 @@ PYTHONPATH=src:external/VAGEN python -m pytest -q \
   tests/training/rl/test_dynamic_rollout.py
 ```
 
-真实 smoke 还必须通过 `dynamic_fsdp_k8_fragmented_3plus2plus2plus1_env1.slurm` 的 artifact gate；该入口用3+2+2+1 normal碎片组成8个FSDP trainer GPUs，并要求独立的第9个AI2-THOR env GPU。仅 CPU mock不能证明真实 `obs_str`、dataset task 或 reward 路径。Env与FSDP rank共享GPU会使CloudRendering持续占满SM，严格禁止。
+真实 smoke 还必须通过 `dynamic_fsdp_k8_fragmented_4plus2plus2_env1.slurm` 的 artifact gate；该入口用4+2+2 normal碎片组成8个FSDP trainer GPUs，并要求独立的第9个AI2-THOR env GPU。仅 CPU mock不能证明真实 `obs_str`、dataset task 或 reward 路径。Env与FSDP rank共享GPU严格禁止；HTTP health也不能替代真实create+reset gate。
