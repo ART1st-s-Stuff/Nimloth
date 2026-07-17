@@ -30,7 +30,9 @@
 - 提交`4023985`/`b94be77`已推送并同步clean server。server RL+SFT1+query tests=`74 passed,2 warnings`；与pinned VERL one-off逐元素核对PPO loss/clip/ppo-KL及`kl|abs|mse|low_var_kl`全部delta0；真实PEFT LoRA layer在reference context中输出与base bitwise equal且退出后恢复adapter。shell syntax/compile/diff checks通过。
 - 初版scheduler-selected `3+2+2+1` world8 trainer + env需要五个physical fragments同时满足。ID19 attempt1 job478923持续`PENDING/Resources`；即时复核五组仍PENDING/elapsed0后使用`scancel --state=PENDING`安全取消，全部components `CANCELLED/00:00:00`，无allocation/artifact。期间曾误把dgx27 `IDLE+PLANNED`的8 GPU当可立即使用；后核实其`SchedNodeList`属于他人job478950，登记E0041。
 - replacement commit=`d16a9ede9d5d173adddcfdafb0ceaf6662c9419d`固定当前normal资源6@dgx09+2@dgx37 trainers与独立dgx13 env，allocation内bounded semantic preflight先于trainer；server tests=`32 passed`、bash syntax和Slurm配置检查通过。attempt2 job478965于00:12立即获得三组资源，但dgx13仅health通过，`create_environments_batch`在300s超时，cleanup close因未创建env返回500/KeyError。三组`FAILED1:0`/elapsed5:40；preflight无JSON/image，trainer未启动，0 trajectory/update/checkpoint/final。
-- ID19/W&B=`rvz46qrl`已标记FAILED/NON-RESUMABLE。只读ID12 init未改变；本次没有schema-v3、full-token PPO/KL、FA2/FSDP backward或质量结论。ID19禁止resume/reuse，fixed20 baseline继续阻塞；下一次必须新identity并先选通过bounded create+prompt+reset+schema+close的env GPU。
+- ID19/W&B=`rvz46qrl`已标记FAILED/NON-RESUMABLE。只读ID12 init未改变；本次没有schema-v3、full-token PPO/KL、FA2/FSDP backward或质量结论。ID19禁止resume/reuse，fixed20 baseline继续阻塞。
+- 用户要求更换env节点重试。独立preflight job478976在preempt dgx48 `COMPLETED0:0`/24s：create2.631s、prompt0.0025s、reset0.263s，真实base_train seed30002 StoveBurner instruction、one-image schema及close通过。commit=`c65488fd09b49dec868ac60e74acdb74dfd509c8`新增normal 5@dgx09+3@dgx27 trainers + preempt dgx48 env atomic launcher；allocation内仍会重复preflight，server tests=`33 passed`。
+- 新identity ID20/W&B=`n34u6ifk`/job478990已提交：同一ID12 immutable init、base_train seeds30002/30003、schema-v3 full-token PPO/KL/FA2、vision/StateProjector freeze。当前三组`PENDING/Resources`、elapsed0；dgx09已被新任务占满，Slurm leader估计11:05但不是保证。尚无allocation/trainer/result；不得因pending描述为已启动或成功。
 
 ## 2026-07-16：FSDP动态在线rollout实现
 
