@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --mem=128G
-#SBATCH --exclude=dgx-[14,26,51,54]
+#SBATCH --exclude=dgx-[14,18,26,32,51,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
@@ -22,7 +22,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 
-# Atomic fragmented allocation: group-0 hard-excludes job477349's nodes.
+# Atomic fragmented allocation: group-0 hard-excludes active SFT2 job478282
+# nodes dgx-[18,32,52,54] plus previously protected nodes.
 # A longer --nodelist is only advisory in this Slurm deployment and must not
 # be used as an allowlist. The env uses proven-good dgx-37.
 set -euo pipefail
