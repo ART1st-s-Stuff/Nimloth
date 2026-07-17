@@ -22,7 +22,7 @@
 - ID13新identity/W&B=`rf0v5w8z`，job478578使用同一4+2+1+1 normal world8并在kernel-probed port36847成功rendezvous，env health通过；首个真实policy turn全部rank fail-fast：Qwen收到81 image features但prompt中0 image tokens。根因是dynamic runtime/PPO/latent replay把含literal `<image>`的string messages直接送chat template，而SFT先转换为multimodal image/text parts。ID13终态FAILED/NON-RESUMABLE、0 optimizer steps、无semantic结论。commit17027fc统一SFT multimodal转换；58 tests通过，actual Qwen processor确认121 image tokens=121 features且含vision marker。
 - ID14 W&B=`cfm6lpiz`错误共享rank7/env GPU，ID15 W&B=`wnu71oeo`改独立dgx37 env；两者都在首条`rl_ep`后全trainer GPU0%且无trajectory。ID16 diagnostic W&B=`epzlgdud`/job478689用SIGUSR1证明：没有rank进入policy forward；rank0阻塞VAGEN `create_environments_batch`，其他ranks正确等待Gloo。600s后`ReadTimeout`；11:36取消。先前“FSDP deadlock”归因撤销，登记E0037。
 - 新增bounded env semantic preflight。ID17 job478728在dgx29 COMPLETED0:0/45s：health、create9.02s、prompt0.002s、reset0.67s、真实obs_str/one-image/Human Instruction schema及close全部通过，task为StoveBurner导航；不再仅凭`/health`选节点。
-- ID18新output/W&B=`tmk7ejop`，commit16d22b3，job478738指定4@dgx09+2@dgx13+2@dgx37 dedicated trainers和ID17通过的dgx29 dedicated env。当前全部groups PENDING Resources/elapsed0/no allocation；scheduler估计4-GPU trainer fragment21:19:58，其余20:20:25。无trainer artifact、未修改他人任务。
+- ID18 W&B=`tmk7ejop`/job478738实际20:20:28启动4@dgx09+2@dgx13+2@dgx37 world8 trainers和ID17通过的dgx29 env；2:50后全groups FAILED1:0。env create/reset成功；全部rank输入一致（len615、81 image tokens=81 features、grid1×18×18），model forward完成并同步首token13708=`<th`。随后policy生成满512 tokens仍未产生完整`</think>`，runtime按协议fail-closed且未伪造action。0 trajectory/optimizer step/final，semantic gate失败；output/W&B terminal，禁止resume/reuse，无质量结论。
 
 ## 2026-07-16：FSDP动态在线rollout实现
 
