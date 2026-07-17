@@ -27,6 +27,12 @@ from nimloth.training.rl.rollout import (
 from nimloth.training.rl.vagen_protocol import nimloth_assistant_response
 
 
+def test_trainer_replay_imports_trajectory_validator() -> None:
+    from nimloth.training.rl import trainer as trainer_module
+
+    assert trainer_module.validate_rollout_trajectory is validate_rollout_trajectory
+
+
 def test_k8_inject_policy_protocol_is_supported() -> None:
     assert validate_rl_policy_protocol(SimpleNamespace(
         nimloth_latent_token_count=8,

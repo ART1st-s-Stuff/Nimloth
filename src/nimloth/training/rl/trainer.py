@@ -39,6 +39,7 @@ from nimloth.training.rl.rollout import (
     RolloutCollector,
     RolloutTrajectory,
     validate_rl_policy_protocol,
+    validate_rollout_trajectory,
 )
 from nimloth.wm.dataset import discounted_action_value_targets
 from nimloth.wm.predictor import LatentWMPredictor
