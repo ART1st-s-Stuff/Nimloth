@@ -42,6 +42,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:4
 #SBATCH --mem=128G
+#SBATCH --nodelist=dgx-27
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-env
 #SBATCH --account=peilab
@@ -57,7 +58,8 @@
 # Atomic allocation: four Slurm-selected normal trainer fragments contribute
 # 1+1+2+4 GPUs to world-size8 FSDP. Small components lead so weighted Slurm
 # cannot reserve the 4-GPU leader on a future high-weight node while a current
-# 4-GPU fragment sits unused. No trainer nodelist or stale exclude is embedded.
+# 4-GPU fragment sits unused. The large group is pinned only to the submit-time
+# verified 4-free-GPU node; smaller trainer groups have no nodelist or exclude.
 # Group4 reserves an independent ninth GPU on
 # preflight-proven preempt dgx-48; preflight repeats before trainer launch.
 set -euo pipefail

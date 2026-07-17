@@ -169,7 +169,8 @@ def test_dynamic_4211_launcher_has_no_stale_trainer_node_rules() -> None:
     assert launcher.count("#SBATCH hetjob") == 4
     assert launcher.count("#SBATCH --partition=normal") == 4
     assert launcher.count("#SBATCH --partition=preempt") == 1
-    assert launcher.count("#SBATCH --nodelist=") == 1
+    assert launcher.count("#SBATCH --nodelist=") == 2
+    assert "#SBATCH --nodelist=dgx-27" in launcher
     assert "#SBATCH --nodelist=dgx-48" in launcher
     assert "#SBATCH --exclude=" not in launcher
     for tasks, count in ((4, 1), (2, 1), (1, 3)):
