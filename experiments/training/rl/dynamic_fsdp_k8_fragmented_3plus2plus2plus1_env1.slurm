@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:3
 #SBATCH --mem=96G
-#SBATCH --nodelist=dgx-09
+#SBATCH --nodelist=dgx-29
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -35,7 +35,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:2
 #SBATCH --mem=64G
-#SBATCH --nodelist=dgx-29
+#SBATCH --nodelist=dgx-51
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -47,7 +47,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --nodelist=dgx-51
+#SBATCH --nodelist=dgx-09
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-env
@@ -63,7 +63,7 @@
 #SBATCH --exclude=dgx-[18,32,52,54]
 
 # Atomic normal-fragment allocation: trainer groups 0/1/2/3 contribute
-# 3+2+2+1 GPUs on dgx-09/dgx-13/dgx-29/dgx-51 to world-size-8 FSDP.
+# 3+2+2+1 GPUs on dgx-29/dgx-13/dgx-51/dgx-09 to world-size-8 FSDP.
 # Group 4 provides a dedicated, proven AI2-THOR GPU on dgx-37. Active SFT2
 # nodes remain excluded; sharing an env GPU with an FSDP rank is forbidden.
 set -euo pipefail
