@@ -111,16 +111,15 @@ def test_current_fragment_launcher_has_world8_and_dedicated_preflight_env() -> N
         "experiments/training/rl/"
         "dynamic_fsdp_k8_fragmented_3plus2plus2plus1_env1.slurm"
     ).read_text(encoding="utf-8")
-    for nodelist, tasks, offset in (
-        ("dgx-48", 3, 0),
-        ("dgx-37", 2, 3),
-        ("dgx-34", 2, 5),
-        ("dgx-44", 1, 7),
-    ):
-        assert f"#SBATCH --nodelist={nodelist}" in launcher
+    assert launcher.count("#SBATCH --partition=normal") == 5
+    assert launcher.count("#SBATCH --exclude=dgx-[18,32,52,54]") == 5
+    assert "#SBATCH --nodelist=" not in launcher
+    assert launcher.count("#SBATCH hetjob") == 4
+    assert launcher.count("#SBATCH --ntasks=3") == 1
+    assert launcher.count("#SBATCH --ntasks=2") == 2
+    assert launcher.count("#SBATCH --ntasks=1") == 2
+    for offset in (0, 3, 5, 7):
         assert f"RANK_OFFSET={offset}" in launcher
-        assert f"--ntasks={tasks}" in launcher
-    assert "#SBATCH --nodelist=dgx-09" in launcher
     assert '"${SRUN}" --het-group=4' in launcher
     assert "preflight_dynamic_env.py" in launcher
     assert "WORLD_SIZE=8" in Path(

@@ -9,7 +9,6 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:3
 #SBATCH --mem=96G
-#SBATCH --nodelist=dgx-48
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -22,7 +21,6 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:2
 #SBATCH --mem=64G
-#SBATCH --nodelist=dgx-37
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -35,7 +33,6 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:2
 #SBATCH --mem=64G
-#SBATCH --nodelist=dgx-34
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -48,7 +45,6 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --nodelist=dgx-44
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-env
@@ -60,13 +56,13 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --nodelist=dgx-09
 #SBATCH --exclude=dgx-[18,32,52,54]
 
 # Atomic normal-fragment allocation: trainer groups0/1/2/3 contribute3+2+2+1
-# GPUs on dgx-48/37/34/44 to world-size8 FSDP. Group4 provides a dedicated
-# env GPU on dgx-09 and must pass bounded create+prompt+reset+schema+close
-# preflight inside this allocation before trainer launch.
+# GPUs to world-size8 FSDP. Group4 reserves an independent ninth GPU for the
+# env and must pass bounded create+prompt+reset+schema+close preflight inside
+# this exact allocation before trainer launch. Slurm chooses available nodes;
+# active SFT2 nodes remain hard-excluded.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"
@@ -178,6 +174,7 @@ TRAIN_NODELIST_0=${SLURM_JOB_NODELIST_HET_GROUP_0:?missing trainer group 0}
 TRAIN_NODELIST_1=${SLURM_JOB_NODELIST_HET_GROUP_1:?missing trainer group 1}
 TRAIN_NODELIST_2=${SLURM_JOB_NODELIST_HET_GROUP_2:?missing trainer group 2}
 TRAIN_NODELIST_3=${SLURM_JOB_NODELIST_HET_GROUP_3:?missing trainer group 3}
+ENV_NODELIST=${SLURM_JOB_NODELIST_HET_GROUP_4:?missing env group 4}
 MASTER_ADDR=$("${SCONTROL}" show hostnames "${TRAIN_NODELIST_0}" | head -n1)
 # The batch shell runs on trainer group0's node. Ask its kernel for a free port;
 # job-id-derived ports can collide with unrelated jobs on shared nodes.
@@ -189,9 +186,10 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 PY
 )
 export MASTER_ADDR MASTER_PORT
-printf 'trainer_fragments=3@%s,2@%s,2@%s,1@%s master=%s:%s env=%s\n' \
+printf 'trainer_fragments=3@%s,2@%s,2@%s,1@%s master=%s:%s env=1@%s(%s)\n' \
   "${TRAIN_NODELIST_0}" "${TRAIN_NODELIST_1}" "${TRAIN_NODELIST_2}" \
-  "${TRAIN_NODELIST_3}" "${MASTER_ADDR}" "${MASTER_PORT}" "${ENV_URL}" \
+  "${TRAIN_NODELIST_3}" "${MASTER_ADDR}" "${MASTER_PORT}" \
+  "${ENV_NODELIST}" "${ENV_URL}" \
   | tee "${RUN_ROOT}/topology.txt"
 
 RESUME_ARGS=()
@@ -257,7 +255,9 @@ assert preflight["status"] == "passed"
 assert preflight["seed"] == 30002
 assert (root / "env_preflight.png").is_file()
 topology = (root / "topology.txt").read_text()
-for required in ("3@dgx-48", "2@dgx-37", "2@dgx-34", "1@dgx-44"):
+assert topology.startswith("trainer_fragments=3@")
+assert topology.count(",2@") == 2, topology
+for required in (",1@", " env=1@dgx-"):
     assert required in topology, (required, topology)
 rows = list(csv.DictReader((root / "train/train_step_log.csv").open()))
 assert (root / "train/wandb_run_id.txt").read_text().strip() == wandb_id
