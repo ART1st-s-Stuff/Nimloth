@@ -112,6 +112,42 @@ def vagen_env_response(thought: str, action_index: int) -> str:
     return f"{thought}<action>{ACTION_NAMES[int(action_index)]}</action>"
 
 
+def normalize_vagen_policy_image(
+    image: Any,
+    *,
+    max_pixels: int = 2048 * 2048,
+    min_pixels: int = 512 * 512,
+) -> Any:
+    """Match the pinned VAGEN rollout manager's policy-image normalization.
+
+    VAGEN calls ``verl.utils.dataset.rl_dataset.process_image`` before both
+    policy inference and validation-image persistence.  Navigation emits raw
+    255×255 frames, while SFT persisted512×512 frames. At the SFT2
+    ``max_pixels=100352`` setting, omission yields81 image tokens instead of121.
+    """
+
+    import math
+    from PIL import Image
+
+    if not isinstance(image, Image.Image):
+        raise ValueError(f"navigation policy image must be PIL.Image, got {type(image)}")
+    if min_pixels <= 0 or max_pixels < min_pixels:
+        raise ValueError(
+            f"invalid VAGEN image pixel bounds: min={min_pixels}, max={max_pixels}"
+        )
+    area = image.width * image.height
+    if area > max_pixels:
+        factor = math.sqrt(max_pixels / area)
+        image = image.resize((int(image.width * factor), int(image.height * factor)))
+    area = image.width * image.height
+    if area < min_pixels:
+        factor = math.sqrt(min_pixels / area)
+        image = image.resize((int(image.width * factor), int(image.height * factor)))
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    return image
+
+
 def observation_text_and_image(
     observation: Any, *, latent_token_count: int
 ) -> tuple[str, Any]:
@@ -145,7 +181,7 @@ def observation_text_and_image(
             "navigation obs_str must contain exactly one <image> placeholder; "
             f"got {converted.count('<image>')}"
         )
-    return converted, images[0]
+    return converted, normalize_vagen_policy_image(images[0])
 
 
 def extract_human_instruction(observation_text: str) -> str:
@@ -172,9 +208,9 @@ def trajectory_messages(
 
     ``observation_texts`` must contain the current observation, hence exactly
     one more entry than completed assistant responses.  ``history_window`` is
-    measured in completed turns, matching VAGEN's rollout manager.  A value
-    large enough for the episode (the source checkpoint used 112) preserves the
-    full SFT transcript.
+    measured in completed turns, matching VAGEN's rollout manager. A value
+    large enough for the episode preserves the full SFT teacher-forcing prefix;
+    the source VAGEN collector generated with ``window_size=5``.
     """
 
     if not str(system_prompt).strip():

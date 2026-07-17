@@ -899,8 +899,16 @@ def _generate_nimloth_thought_from_inputs(
         if len(generated) >= len(closing_ids) and generated[-len(closing_ids):] == closing_ids:
             break
     else:
+        decoded = processor.tokenizer.decode(
+            generated, skip_special_tokens=False
+        ).strip()
         raise RuntimeError(
-            f"policy did not emit </think> within {max_think_tokens} tokens"
+            f"policy did not emit </think> within {max_think_tokens} tokens; "
+            f"generated_token_count={len(generated)}; "
+            f"generated_token_prefix={generated[:32]!r}; "
+            f"generated_token_suffix={generated[-32:]!r}; "
+            f"generated_text_prefix={decoded[:512]!r}; "
+            f"generated_text_suffix={decoded[-512:]!r}"
         )
     thought = processor.tokenizer.decode(generated, skip_special_tokens=False).strip()
     if re.fullmatch(r"<think>.*?</think>", thought, re.DOTALL) is None:

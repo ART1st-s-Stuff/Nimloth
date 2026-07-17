@@ -36,8 +36,8 @@ rollout:
   eval_sets:
     - base_train
     - common_sense_train
-  history_window: 112        # source checkpoint protocol; preserves every 20-turn episode
-  max_think_tokens: 512      # source response_length_per_turn
+  history_window: 112        # preserves every SFT teacher-forced20-turn prefix
+  max_think_tokens: 512      # historical VAGEN response_length_per_turn
   seed_offset: 0             # deterministic cursor; resume advances by completed iterations
   env_timeout: 180           # keep below the default NCCL collective watchdog
 

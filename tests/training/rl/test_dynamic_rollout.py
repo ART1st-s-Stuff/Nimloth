@@ -60,7 +60,7 @@ def test_k8_pilot_uses_disjoint_fixed_heldout_protocol() -> None:
         "temperature": 0.0,
         "top_p": 1.0,
         "history_window": 112,
-        "max_think_tokens": 512,
+        "max_think_tokens": 2048,
         "env_timeout": 600,
     }
 
@@ -78,8 +78,19 @@ def test_corrected_baseline_is_fixed_heldout_and_evaluation_only() -> None:
     assert config["validation"]["seed_offset"] == 1
     assert config["validation"]["temperature"] == 0.0
     assert config["validation"]["top_p"] == 1.0
+    assert config["rollout"]["max_think_tokens"] == 2048
     assert config["validation"]["history_window"] == 112
+    assert config["validation"]["max_think_tokens"] == 2048
     assert config["value_head"]["lambda_rank"] == 0.0
+
+
+def test_k8_smoke_allows_2048_thought_tokens() -> None:
+    import yaml
+
+    config = yaml.safe_load(Path(
+        "configs/training/rl/dynamic_fsdp_k8_smoke.yaml"
+    ).read_text(encoding="utf-8"))
+    assert config["rollout"]["max_think_tokens"] == 2048
 
 
 def test_k8_snapshot_is_immutable_and_omits_sft_optimizer(tmp_path: Path) -> None:
@@ -361,6 +372,39 @@ def test_inject_runtime_generates_thought_before_inserting_query_block() -> None
     )
     assert thought == "<think>generated from policy</think>"
     assert action_logits.tolist() == list(map(float, range(8)))
+
+
+def test_unterminated_thought_error_keeps_bounded_generated_evidence() -> None:
+    from nimloth.training.rl.rollout import _generate_nimloth_thought_from_inputs
+
+    class FakeTokenizer:
+        def encode(self, text, add_special_tokens=False):
+            assert text == "</think>"
+            return [99]
+
+        def decode(self, ids, skip_special_tokens=False):
+            return " ".join(f"tok{token}" for token in ids)
+
+    class FakeProcessor:
+        tokenizer = FakeTokenizer()
+
+    class FakeModel(torch.nn.Module):
+        def forward(self, input_ids, **kwargs):
+            return SimpleNamespace(logits=torch.zeros((1, input_ids.shape[1], 8)))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _generate_nimloth_thought_from_inputs(
+            FakeModel(),
+            FakeProcessor(),
+            {"input_ids": torch.tensor([[1]]), "attention_mask": torch.tensor([[1]])},
+            latent_token_count=8,
+            max_think_tokens=4,
+            token_selector=lambda _logits, token_index: token_index + 2,
+        )
+    message = str(exc_info.value)
+    assert "generated_token_count=4" in message
+    assert "generated_token_prefix=[2, 3, 4, 5]" in message
+    assert "generated_text_prefix='tok2 tok3 tok4 tok5'" in message
 
 
 def test_ppo_replays_the_stored_rollout_prefix_verbatim() -> None:

@@ -27,9 +27,11 @@ rollout:
   # Training is restricted to the actual 1200-task training dataset.
   eval_sets:
     - base_train
-  # The source VAGEN checkpoint used window_size=112; this preserves all 20 turns.
+  # SFT1/SFT2 teacher-forcing prefixes preserve complete trajectories. A large
+  # window keeps all20 turns (VAGEN rollout generation itself used window_size=5).
   history_window: 112
-  max_think_tokens: 512
+  # User-requested diagnostic ceiling; the source collector used512 per turn.
+  max_think_tokens: 2048
   seed_offset: 30001
   env_timeout: 600
 
@@ -56,7 +58,7 @@ validation:
   temperature: 0.0
   top_p: 1.0
   history_window: 112
-  max_think_tokens: 512
+  max_think_tokens: 2048
   env_timeout: 600
 
 training:

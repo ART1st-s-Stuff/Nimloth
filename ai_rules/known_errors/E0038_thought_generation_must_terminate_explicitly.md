@@ -10,7 +10,7 @@ The policy then generated512 tokens without emitting the complete tokenizer sequ
 RuntimeError: policy did not emit </think> within 512 tokens
 ```
 
-No trajectory or optimizer step was produced.
+No trajectory or optimizer step was produced. A later parity audit found that ID18 also omitted VAGEN's255×255→512×512 policy-image normalization and therefore used81 image tokens instead of the SFT source's121. The termination failure is valid protocol evidence, but it is not clean model-quality evidence and does not prove that512 tokens were intrinsically insufficient.
 
 ## Correct practice
 

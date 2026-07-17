@@ -27,7 +27,7 @@ rollout:
   eval_sets:
     - base_train
   history_window: 112
-  max_think_tokens: 512
+  max_think_tokens: 2048
   seed_offset: 30001
   env_timeout: 600
 
@@ -52,7 +52,7 @@ validation:
   temperature: 0.0
   top_p: 1.0
   history_window: 112
-  max_think_tokens: 512
+  max_think_tokens: 2048
   env_timeout: 600
 
 training:

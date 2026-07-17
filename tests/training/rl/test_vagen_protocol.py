@@ -9,6 +9,7 @@ from nimloth.training.rl.vagen_protocol import (
     ACTION_NAMES,
     extract_human_instruction,
     nimloth_assistant_response,
+    normalize_vagen_policy_image,
     observation_text_and_image,
     source_eval_text_to_nimloth,
     task_succeeded,
@@ -64,14 +65,28 @@ def test_sft_converter_delegates_to_the_shared_runtime_rewrite() -> None:
     )
 
 
+def test_vagen_policy_image_normalization_matches_source_rollout_manager() -> None:
+    # VAGEN's pinned `verl.utils.dataset.rl_dataset.process_image` upscales
+    # raw AI2-THOR frames from255×255 to512×512 before policy use.
+    raw = Image.new("RGBA", (255, 255), (1, 2, 3, 4))
+    normalized = normalize_vagen_policy_image(raw)
+    assert normalized.size == (512, 512)
+    assert normalized.mode == "RGB"
+    assert normalized.getpixel((0, 0)) == (1, 2, 3)
+
+    source_sized = Image.new("RGB", (512, 512), "black")
+    assert normalize_vagen_policy_image(source_sized) is source_sized
+
+
 def test_observation_extraction_requires_real_obs_str_and_one_image() -> None:
-    image = Image.new("RGB", (2, 2), "black")
+    image = Image.new("RGB", (255, 255), "black")
     text, extracted = observation_text_and_image({
         "obs_str": INITIAL_OBSERVATION,
         "multi_modal_data": {"<image>": [image]},
     }, latent_token_count=8)
     assert text == INITIAL_OBSERVATION
-    assert extracted is image
+    assert extracted.size == (512, 512)
+    assert extracted.mode == "RGB"
 
     with pytest.raises(ValueError, match="obs_str"):
         observation_text_and_image(

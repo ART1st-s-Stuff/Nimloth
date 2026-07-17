@@ -2,7 +2,7 @@
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=4
 #SBATCH --ntasks-per-node=4
@@ -15,7 +15,7 @@
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=2
 #SBATCH --ntasks-per-node=2
@@ -28,7 +28,7 @@
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=2
 #SBATCH --ntasks-per-node=2
@@ -41,7 +41,7 @@
 #SBATCH --job-name=rl-k8-env
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -222,8 +222,9 @@ assert protocol["latent_token_count"] == 8
 assert protocol["latent_query_mode"] == "inject"
 assert protocol["control_backend"] == "gloo"
 assert protocol["history_window"] == 112
-assert protocol["max_think_tokens"] == 512
-assert protocol["prompt_protocol"] == "vagen-source-eval-to-nimloth-inject-v1"
+assert protocol["max_think_tokens"] == 2048
+assert protocol["prompt_protocol"] == "vagen-source-eval-to-nimloth-inject-v2"
+assert protocol["image_protocol"] == "vagen-process-image-min512-max2048-v1"
 assert protocol["reward_protocol"] == "vagen-per-turn-plus-final-v1"
 assert protocol["optimization_protocol"] == "all-action-transitions-one-ppo-epoch-v1"
 assert protocol["transition_microbatch_size"] == 2

@@ -13,7 +13,7 @@
 3. source-eval XML 格式通过 `vagen_protocol.source_eval_text_to_nimloth()` 转为 SFT 的 Nimloth 格式；SFT converter 调用同一函数。
 4. 当前 assistant turn 先由 policy 生成真实 `<think>...</think>`；框架再插入 k 个 latent query 和 `<|action_start|>`，从八个 action token 的 logits 采样。
 5. 历史保存 policy 真实生成的完整 assistant response。PPO 和 latent encoding 逐字重放这些字段，不重新编造 thought、instruction 或 feedback。
-6. source checkpoint 使用 `history_window=112`、每轮最多 512 response tokens；20-turn episode 因此保留完整历史。
+6. SFT teacher-forcing prefix 使用完整轨迹，因此 runtime 的 `history_window=112` 保留全部20 turns；source VAGEN rollout 生成本身使用 `window_size=5`、每轮最多512 response tokens。
 
 `generate` query mode 尚未实现，动态 RL 只接受显式 `inject` checkpoint。
 

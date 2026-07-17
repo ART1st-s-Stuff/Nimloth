@@ -25,7 +25,9 @@ rollout:
   eval_sets:
     - base_train
   history_window: 112
-  max_think_tokens: 512
+  # User-requested diagnostic ceiling. The pinned VAGEN/SFT collector used a
+  # ceiling of512 tokens; fail closed if </think> is still absent by2048.
+  max_think_tokens: 2048
   # Seeds 30002/30003 are distinct StoveBurner/Bread task instructions.
   seed_offset: 30002
   env_timeout: 600
