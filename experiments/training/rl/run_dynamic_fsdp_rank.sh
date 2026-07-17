@@ -16,7 +16,11 @@ set -euo pipefail
 
 export RANK=$((RANK_OFFSET + SLURM_PROCID))
 export WORLD_SIZE=8
-export LOCAL_RANK=${SLURM_LOCALID}
+if [[ "${SINGLE_VISIBLE_GPU:-0}" == 1 ]]; then
+  export LOCAL_RANK=0
+else
+  export LOCAL_RANK=${SLURM_LOCALID}
+fi
 
 ARGS=()
 if [[ -n "${RESUME_CHECKPOINT:-}" ]]; then
