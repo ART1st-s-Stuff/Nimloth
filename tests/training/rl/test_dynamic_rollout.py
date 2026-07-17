@@ -398,12 +398,18 @@ def test_inject_runtime_generates_thought_before_inserting_query_block() -> None
             if text in self.ids:
                 return [self.ids[text]]
             if text == "</think>":
-                return [12]
+                # Context-independent encoding intentionally differs from the
+                # sampled IDs: real BPE can merge preceding punctuation with
+                # the start of the closing tag.
+                return [99]
             raise AssertionError(text)
 
         def decode(self, ids, skip_special_tokens=False):
-            assert ids == [10, 11, 12]
-            return "<think>generated from policy</think>"
+            return {
+                (10,): "<think>generated",
+                (10, 11): "<think>generated from policy.</",
+                (10, 11, 12): "<think>generated from policy.</think>",
+            }[tuple(ids)]
 
     class FakeProcessor:
         def __init__(self):
@@ -458,7 +464,7 @@ def test_inject_runtime_generates_thought_before_inserting_query_block() -> None
         max_think_tokens=8,
         token_selector=lambda logits, _: int(logits.argmax().item()),
     )
-    assert thought == "<think>generated from policy</think>"
+    assert thought == "<think>generated from policy.</think>"
     assert action_logits.tolist() == list(map(float, range(8)))
 
     from nimloth.training.rl.rollout import _generate_nimloth_thought_from_inputs

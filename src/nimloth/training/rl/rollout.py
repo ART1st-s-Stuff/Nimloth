@@ -882,9 +882,6 @@ def _generate_nimloth_thought_from_inputs(
 
     if max_think_tokens <= 0:
         raise ValueError(f"max_think_tokens must be > 0, got {max_think_tokens}")
-    closing_ids = processor.tokenizer.encode("</think>", add_special_tokens=False)
-    if not closing_ids:
-        raise RuntimeError("tokenizer produced no ids for </think>")
     if log_prob_temperature is not None and log_prob_temperature < 0:
         raise ValueError(
             f"log_prob_temperature must be >= 0, got {log_prob_temperature}"
@@ -951,7 +948,14 @@ def _generate_nimloth_thought_from_inputs(
             selected_log_prob = torch.log_softmax(policy_logits, dim=-1)[token_id]
             generated_log_probs.append(float(selected_log_prob.detach().cpu().item()))
         inputs = _append_input_token(inputs, token_id)
-        if len(generated) >= len(closing_ids) and generated[-len(closing_ids):] == closing_ids:
+        # BPE tokenization is context-sensitive: punctuation immediately before
+        # the closing tag can merge with its `</` prefix (for example `.</`).
+        # Detect the semantic boundary in the exact sampled prefix instead of
+        # matching a context-independent encoding of `</think>`.
+        decoded_prefix = processor.tokenizer.decode(
+            generated, skip_special_tokens=False
+        )
+        if "</think>" in decoded_prefix:
             break
     else:
         decoded = processor.tokenizer.decode(
