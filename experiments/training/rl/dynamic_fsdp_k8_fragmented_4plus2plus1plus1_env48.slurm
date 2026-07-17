@@ -4,11 +4,22 @@
 #SBATCH --partition=normal
 #SBATCH --time=01:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=4
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks=1
+#SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:4
-#SBATCH --mem=128G
+#SBATCH --gres=gpu:1
+#SBATCH --mem=24G
+#SBATCH hetjob
+#SBATCH --job-name=rl-k8-frag
+#SBATCH --account=peilab
+#SBATCH --partition=normal
+#SBATCH --time=01:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --gres=gpu:1
+#SBATCH --mem=24G
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
@@ -26,22 +37,11 @@
 #SBATCH --partition=normal
 #SBATCH --time=01:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --ntasks-per-node=1
+#SBATCH --ntasks=4
+#SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:1
-#SBATCH --mem=24G
-#SBATCH hetjob
-#SBATCH --job-name=rl-k8-frag
-#SBATCH --account=peilab
-#SBATCH --partition=normal
-#SBATCH --time=01:00:00
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:1
-#SBATCH --mem=24G
+#SBATCH --gres=gpu:4
+#SBATCH --mem=128G
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-env
 #SBATCH --account=peilab
@@ -55,8 +55,10 @@
 #SBATCH --nodelist=dgx-48
 
 # Atomic allocation: four Slurm-selected normal trainer fragments contribute
-# 4+2+1+1 GPUs to world-size8 FSDP. No trainer nodelist or stale protected-node
-# exclude is embedded. Group4 reserves an independent ninth GPU on
+# 1+1+2+4 GPUs to world-size8 FSDP. Small components lead so weighted Slurm
+# cannot reserve the 4-GPU leader on a future high-weight node while a current
+# 4-GPU fragment sits unused. No trainer nodelist or stale exclude is embedded.
+# Group4 reserves an independent ninth GPU on
 # preflight-proven preempt dgx-48; preflight repeats before trainer launch.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
@@ -181,7 +183,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 PY
 )
 export MASTER_ADDR MASTER_PORT
-printf 'trainer_fragments=4@%s,2@%s,1@%s,1@%s master=%s:%s env=1@%s(%s)\n' \
+printf 'trainer_fragments=1@%s,1@%s,2@%s,4@%s master=%s:%s env=1@%s(%s)\n' \
   "${TRAIN_NODELIST_0}" "${TRAIN_NODELIST_1}" "${TRAIN_NODELIST_2}" \
   "${TRAIN_NODELIST_3}" "${MASTER_ADDR}" "${MASTER_PORT}" \
   "${ENV_NODELIST}" "${ENV_URL}" \
@@ -197,32 +199,32 @@ set +e
 (
   set -o pipefail
   env RANK_OFFSET=0 "${SRUN}" --het-group=0 --overlap --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=4 --ntasks-per-node=4 --cpus-per-task=8 \
+    --nodes=1 --ntasks=1 --ntasks-per-node=1 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     2>&1 | tee "${RUN_ROOT}/trainer.log"
 ) &
 TRAIN_STEP_0_PID=$!
 (
   set -o pipefail
-  env RANK_OFFSET=4 \
+  env RANK_OFFSET=1 \
     "${SRUN}" --het-group=1 --overlap --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=2 --ntasks-per-node=2 --cpus-per-task=8 \
+    --nodes=1 --ntasks=1 --ntasks-per-node=1 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     >"${RUN_ROOT}/trainer_group1.log" 2>&1
 ) &
 TRAIN_STEP_1_PID=$!
 (
   set -o pipefail
-  env RANK_OFFSET=6 "${SRUN}" --het-group=2 --overlap --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=1 --ntasks-per-node=1 --cpus-per-task=8 \
+  env RANK_OFFSET=2 "${SRUN}" --het-group=2 --overlap --kill-on-bad-exit=1 \
+    --nodes=1 --ntasks=2 --ntasks-per-node=2 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     >"${RUN_ROOT}/trainer_group2.log" 2>&1
 ) &
 TRAIN_STEP_2_PID=$!
 (
   set -o pipefail
-  env RANK_OFFSET=7 "${SRUN}" --het-group=3 --overlap --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=1 --ntasks-per-node=1 --cpus-per-task=8 \
+  env RANK_OFFSET=4 "${SRUN}" --het-group=3 --overlap --kill-on-bad-exit=1 \
+    --nodes=1 --ntasks=4 --ntasks-per-node=4 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     >"${RUN_ROOT}/trainer_group3.log" 2>&1
 ) &
@@ -250,9 +252,10 @@ assert preflight["status"] == "passed"
 assert preflight["seed"] == 30002
 assert (root / "env_preflight.png").is_file()
 topology = (root / "topology.txt").read_text()
-assert topology.startswith("trainer_fragments=4@dgx-")
+assert topology.startswith("trainer_fragments=1@dgx-")
+assert topology.count(",1@dgx-") == 1, topology
 assert ",2@dgx-" in topology, topology
-assert topology.count(",1@dgx-") == 2, topology
+assert ",4@dgx-" in topology, topology
 assert " env=1@dgx-48" in topology, topology
 rows = list(csv.DictReader((root / "train/train_step_log.csv").open()))
 assert (root / "train/wandb_run_id.txt").read_text().strip() == wandb_id

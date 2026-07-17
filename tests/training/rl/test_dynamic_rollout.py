@@ -174,7 +174,7 @@ def test_dynamic_4211_launcher_has_no_stale_trainer_node_rules() -> None:
     assert "#SBATCH --exclude=" not in launcher
     for tasks, count in ((4, 1), (2, 1), (1, 3)):
         assert launcher.count(f"#SBATCH --ntasks={tasks}") == count
-    for offset in (0, 4, 6, 7):
+    for offset in (0, 1, 2, 4):
         assert f"RANK_OFFSET={offset}" in launcher
     assert '"${SRUN}" --het-group=4' in launcher
     assert "preflight_dynamic_env.py" in launcher
