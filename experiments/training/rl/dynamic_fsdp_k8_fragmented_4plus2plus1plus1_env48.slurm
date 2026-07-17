@@ -69,12 +69,11 @@ set -euo pipefail
 : "${MODEL:?must set MODEL to immutable merged k8 init}"
 : "${SFT2_SNAPSHOT:?must set SFT2_SNAPSHOT}"
 : "${CONFIG:?must set CONFIG}"
-: "${RUN_MODE:?must be smoke}"
+: "${RUN_MODE:?must be smoke, baseline, or pilot}"
 : "${WANDB_RUN_ID:?must reserve W&B id before submit}"
 : "${WANDB_RUN_NAME:?must set W&B name}"
 VISION_TUNE=${VISION_TUNE:-freeze}
-# This launcher is limited to the short protocol smoke.
-[[ "${RUN_MODE}" == smoke ]]
+[[ "${RUN_MODE}" == smoke || "${RUN_MODE}" == baseline || "${RUN_MODE}" == pilot ]]
 [[ "${VISION_TUNE}" == freeze || "${VISION_TUNE}" == lora ]]
 
 PY=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
@@ -344,6 +343,91 @@ if mode == "baseline":
         "successes": sum(bool(record["success"]) for record in records),
         "unique_instructions": 9,
         "optimizer_steps": 0,
+    }))
+    raise SystemExit(0)
+
+if mode == "pilot":
+    assert 1 <= len(rows) <= 20
+    for row in rows:
+        for key in (
+            "wm_mse", "value_loss", "total_loss", "actor_loss", "entropy",
+            "policy_tokens", "ppo_kl", "kl_loss", "kl_reward_penalty",
+        ):
+            assert math.isfinite(float(row[key])), (key, row[key])
+        assert float(row["policy_tokens"]) > 1.0
+        assert float(row["kl_loss"]) >= 0.0
+    final = root / "train/final"
+    state = torch.load(final / "rl_state.pt", map_location="cpu", weights_only=False)
+    assert state["rollout_protocol"] == protocol
+    assert state["optimizer_world_size"] == 8
+    assert 1 <= state["iteration"] <= 20 and state["global_step"] >= 1
+    for rank in range(8):
+        assert (final / f"optimizer_rank_{rank:05d}.pt").stat().st_size > 0
+    assert (final / "adapter_model.safetensors").stat().st_size > 0
+    with safe_open(final / "adapter_model.safetensors", framework="pt", device="cpu") as handle:
+        keys = list(handle.keys())
+        language_b = [key for key in keys if "lora_B" in key and "visual" not in key]
+        visual_b = [key for key in keys if "lora_B" in key and "visual" in key]
+        assert language_b and visual_b
+        assert any(torch.count_nonzero(handle.get_tensor(key)).item() > 0 for key in language_b)
+        if vision_tune == "freeze":
+            assert all(torch.count_nonzero(handle.get_tensor(key)).item() == 0 for key in visual_b)
+        else:
+            assert vision_tune == "lora"
+            assert any(torch.count_nonzero(handle.get_tensor(key)).item() > 0 for key in visual_b)
+    initial_proj = torch.load(
+        Path(os.environ["SFT2_SNAPSHOT"]) / "state_proj.pt",
+        map_location="cpu", weights_only=True,
+    )
+    final_proj = torch.load(final / "state_proj.pt", map_location="cpu", weights_only=True)
+    assert initial_proj.keys() == final_proj.keys()
+    assert all(initial_proj[key].dtype == final_proj[key].dtype for key in initial_proj)
+    assert all(torch.equal(initial_proj[key], final_proj[key]) for key in initial_proj)
+    train_files = sorted((root / "train/rollouts").glob("iter_*/trajectories.jsonl"))
+    assert train_files
+    train_records = [
+        json.loads(line)
+        for path in train_files
+        for line in path.open()
+    ]
+    assert len(train_records) >= 8
+    for record in train_records:
+        steps = len(record["action_indices"])
+        assert 1 <= steps <= 20
+        assert len(record["thought_token_ids"]) == steps
+        assert len(record["thought_token_log_probs"]) == steps
+        assert len(record["ppo_old_token_log_probs"]) == steps
+        assert len(record["reference_token_log_probs"]) == steps
+        assert all(
+            len(old) == len(ids) + 1
+            for ids, old in zip(
+                record["thought_token_ids"], record["ppo_old_token_log_probs"]
+            )
+        )
+        assert all(
+            len(reference) == len(ids) + 1
+            for ids, reference in zip(
+                record["thought_token_ids"], record["reference_token_log_probs"]
+            )
+        )
+        assert "Human Instruction:" in record["observation_texts"][0]
+    validation_rows = list(csv.DictReader((root / "train/validation_log.csv").open()))
+    labels = [row["label"] for row in validation_rows]
+    assert labels[0] == "baseline"
+    assert all(int(float(row["val_num_episodes"])) == 20 for row in validation_rows)
+    if state["iteration"] >= 5:
+        assert "iter_0005" in labels
+    heldout_files = sorted((root / "train/validation").glob("*/trajectories.jsonl"))
+    assert len(heldout_files) == len(validation_rows)
+    assert all(sum(1 for _ in path.open()) == 20 for path in heldout_files)
+    print(json.dumps({
+        "status": "ALL_OK",
+        "mode": mode,
+        "iteration": state["iteration"],
+        "global_step": state["global_step"],
+        "train_rows": len(rows),
+        "train_trajectories": len(train_records),
+        "validation_labels": labels,
     }))
     raise SystemExit(0)
 

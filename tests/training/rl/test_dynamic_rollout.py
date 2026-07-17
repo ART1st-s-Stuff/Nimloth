@@ -185,6 +185,25 @@ def test_dynamic_4211_launcher_has_no_stale_trainer_node_rules() -> None:
         assert f"RANK_OFFSET={offset}" in launcher
     assert '"${SRUN}" --het-group=4' in launcher
     assert "preflight_dynamic_env.py" in launcher
+    assert '"${RUN_MODE}" == baseline' in launcher
+    assert '"${RUN_MODE}" == pilot' in launcher
+    assert 'if mode == "pilot":' in launcher
+
+
+def test_placeholder_hold_runs_atomically_published_stages() -> None:
+    hold = Path(
+        "experiments/training/rl/hold_dynamic_fsdp_k8_1124_env48.slurm"
+    ).read_text(encoding="utf-8")
+    assert hold.count("#SBATCH hetjob") == 4
+    assert hold.count("#SBATCH --partition=normal") == 4
+    assert hold.count("#SBATCH --partition=preempt") == 1
+    assert "#SBATCH --nodelist=dgx-27" in hold
+    assert "#SBATCH --nodelist=dgx-48" in hold
+    assert "#SBATCH --exclude=" not in hold
+    assert 'touch "${HOLD_ROOT}/READY"' in hold
+    assert '"${HOLD_ROOT}/next_stage.sh"' in hold
+    assert 'touch "${stage_dir}/PASSED"' in hold
+    assert 'touch "${stage_dir}/FAILED"' in hold
 
 
 def test_k8_snapshot_is_immutable_and_omits_sft_optimizer(tmp_path: Path) -> None:
