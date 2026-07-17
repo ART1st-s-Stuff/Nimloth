@@ -2,55 +2,58 @@
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --time=08:00:00
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=4
 #SBATCH --ntasks-per-node=4
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:4
-#SBATCH --mem=512G
+#SBATCH --mem=128G
+#SBATCH --nodelist=dgx-29
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --time=08:00:00
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=3
 #SBATCH --ntasks-per-node=3
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:3
-#SBATCH --mem=384G
+#SBATCH --mem=96G
+#SBATCH --nodelist=dgx-09
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --time=08:00:00
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
-#SBATCH --mem=128G
+#SBATCH --mem=32G
+#SBATCH --nodelist=dgx-13
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --time=08:00:00
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
-#SBATCH --mem=64G
+#SBATCH --mem=32G
+#SBATCH --nodelist=dgx-48
 #SBATCH --exclude=dgx-[18,32,52,54]
 
 # Atomic normal-fragment allocation: trainer groups 0/1/2 contribute 4+3+1
-# GPUs to one world-size-8 FSDP process group; group 3 provides one env GPU.
-# Active SFT2 job478282 nodes dgx-[18,32,52,54] are hard-excluded. No multi-node
-# --nodelist is used as an allowlist; the semantic gate fails closed if
-# AI2-THOR is unhealthy on the allocated env fragment.
+# GPUs on the currently free dgx-29/dgx-09/dgx-13 fragments to one world-size-8
+# FSDP process group; group 3 provides one env GPU on dgx-48. Active SFT2 nodes
+# dgx-[18,32,52,54] remain excluded; the semantic gate fails closed on env errors.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"
@@ -160,7 +163,7 @@ set +e
 (
   set -o pipefail
   env RANK_OFFSET=0 "${SRUN}" --het-group=0 --overlap --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=4 --ntasks-per-node=4 --cpus-per-task=16 \
+    --nodes=1 --ntasks=4 --ntasks-per-node=4 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     2>&1 | tee "${RUN_ROOT}/trainer.log"
 ) &
@@ -168,7 +171,7 @@ TRAIN_STEP_0_PID=$!
 (
   set -o pipefail
   env RANK_OFFSET=4 "${SRUN}" --het-group=1 --overlap --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=3 --ntasks-per-node=3 --cpus-per-task=16 \
+    --nodes=1 --ntasks=3 --ntasks-per-node=3 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     >"${RUN_ROOT}/trainer_group1.log" 2>&1
 ) &
@@ -176,7 +179,7 @@ TRAIN_STEP_1_PID=$!
 (
   set -o pipefail
   env RANK_OFFSET=7 "${SRUN}" --het-group=2 --overlap --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=1 --ntasks-per-node=1 --cpus-per-task=16 \
+    --nodes=1 --ntasks=1 --ntasks-per-node=1 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     >"${RUN_ROOT}/trainer_group2.log" 2>&1
 ) &
