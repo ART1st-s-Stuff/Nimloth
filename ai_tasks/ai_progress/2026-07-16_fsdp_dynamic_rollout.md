@@ -118,4 +118,5 @@
 - 删除会重建旧generic prompt的`diagnose_eval.py`和`debug_action.py`。登记E0034，明确CPU/image-only mock不能证明真实语义协议。
 - 新增evaluation-only fixed20 config：optimizer step0、不写final；launcher只接受smoke/baseline并逐seed对照dataset。注意`base` seeds1–20实际只有9个唯一instruction文本，正确gate是逐seed精确比对，不能要求20个文本全不同。
 - 定向remote suite最新`64 passed, 2 expected warnings`；pinned VAGEN source protocol tests另`3 passed`。测试中实际发现`LatentActionTokens.latent_tokens`不存在，已修为共享`latent_state_tokens()`。真实production SFT train JSONL首条的system/initial-user消息与runtime由pinned VAGEN prompt生成后转换的结果逐字相等。更宽SFT suite为`64 passed`后命中1个与本改动无关的既有测试bug：`test_trajectory_prefix_encoding.py`在局部变量`token_id_map`赋值前使用它。
-- 未提交GPU job、未创建新W&B/output、未resume ID11；quality experiment仍阻塞。
+- 修复commit=`ba7513994216e8f66371f306b9d1255002e82109`已推送origin。未提交GPU job、未创建新W&B/output、未resume ID11；quality experiment仍阻塞。
+- server sync尝试在确认旧worktree tracked-clean后失败：`/project`全局50T为100%/Avail0，git无法写`FETCH_HEAD`（`No space left on device`）；remote HEAD保持`c1d2cf3`。未删除任何artifact。空间恢复或人类批准替代存储前，不能完成clean server sync和新实验output，semantic smoke/fixed20 baseline不得提交。

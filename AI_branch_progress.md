@@ -15,7 +15,8 @@
 - terminal observation不伪造assistant query；最后action仍用于actor/value，缺真实next query时只跳过对应WM pair。
 - 新增evaluation-only fixed20 baseline config：optimizer=0且不写final。fragmented launcher固定当前clean repo/VAGEN e7，只允许`smoke|baseline`，逐seed对照dataset；quality pilot仍阻塞。
 - 新增E0034。定向server测试`64 passed, 2 expected warnings`；pinned VAGEN source protocol tests另`3 passed`。更宽SFT suite为`64 passed, 1 unrelated pre-existing test bug`（`test_trajectory_prefix_encoding.py`先使用后定义`token_id_map`）。compile、bash syntax、diff check通过。
-- 尚未提交GPU/Slurm任务，未创建新W&B/output，未resume ID11。下一步：完成review/commit/clean server sync，按实验event建立新身份后先跑真实semantic smoke，再跑固定20 baseline。
+- 修复已提交并推送`ba7513994216e8f66371f306b9d1255002e82109`。尚未提交GPU/Slurm任务，未创建新W&B/output，未resume ID11。
+- clean server sync被外部存储阻塞：`/project`全局50T已100%、Avail=0；remote fetch无法写`.git/worktrees/.../FETCH_HEAD`并报`No space left on device`。远程worktree仍为旧`c1d2cf3`，未被修改。禁止擅自删除artifact；在空间恢复或人类批准其他存储方案前不能满足实验前clean-worktree/output条件，故真实semantic smoke与fixed20 baseline尚未启动。
 
 ## 2026-07-16：FSDP动态在线rollout实现
 
