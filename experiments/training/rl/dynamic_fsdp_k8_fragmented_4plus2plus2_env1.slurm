@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:4
 #SBATCH --mem=128G
-#SBATCH --nodelist=dgx-29
+#SBATCH --nodelist=dgx-09
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -35,7 +35,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:2
 #SBATCH --mem=64G
-#SBATCH --nodelist=dgx-09
+#SBATCH --nodelist=dgx-37
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-env
@@ -47,12 +47,12 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --nodelist=dgx-51
+#SBATCH --nodelist=dgx-29
 #SBATCH --exclude=dgx-[18,32,52,54]
 
 # Atomic normal-fragment allocation: trainer groups 0/1/2 contribute 4+2+2
-# GPUs on dgx-29/dgx-13/dgx-09 to world-size-8 FSDP. Group 3 provides a
-# dedicated env GPU on dgx-51, which reached a real policy turn in ID13.
+# GPUs on dgx-09/dgx-13/dgx-37 to world-size-8 FSDP. Group 3 provides a
+# dedicated env GPU on dgx-29, which passed ID17 create+prompt+reset preflight.
 # Active SFT2 nodes remain excluded; trainer/env GPU sharing is forbidden.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
