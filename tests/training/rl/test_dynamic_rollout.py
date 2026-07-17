@@ -161,6 +161,25 @@ def test_fixed_5plus3_launcher_uses_preflight_proven_env48() -> None:
     assert "preflight_dynamic_env.py" in launcher
 
 
+def test_dynamic_4211_launcher_has_no_stale_trainer_node_rules() -> None:
+    launcher = Path(
+        "experiments/training/rl/"
+        "dynamic_fsdp_k8_fragmented_4plus2plus1plus1_env48.slurm"
+    ).read_text(encoding="utf-8")
+    assert launcher.count("#SBATCH hetjob") == 4
+    assert launcher.count("#SBATCH --partition=normal") == 4
+    assert launcher.count("#SBATCH --partition=preempt") == 1
+    assert launcher.count("#SBATCH --nodelist=") == 1
+    assert "#SBATCH --nodelist=dgx-48" in launcher
+    assert "#SBATCH --exclude=" not in launcher
+    for tasks, count in ((4, 1), (2, 1), (1, 3)):
+        assert launcher.count(f"#SBATCH --ntasks={tasks}") == count
+    for offset in (0, 4, 6, 7):
+        assert f"RANK_OFFSET={offset}" in launcher
+    assert '"${SRUN}" --het-group=4' in launcher
+    assert "preflight_dynamic_env.py" in launcher
+
+
 def test_k8_snapshot_is_immutable_and_omits_sft_optimizer(tmp_path: Path) -> None:
     from experiments.training.rl.prepare_k8_sft2_init import (
         ROOT_FILES,
