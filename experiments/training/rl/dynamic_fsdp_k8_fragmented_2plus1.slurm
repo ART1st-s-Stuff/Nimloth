@@ -16,7 +16,6 @@
 #SBATCH --partition=normal
 #SBATCH --time=08:00:00
 #SBATCH --nodes=1
-#SBATCH --nodelist=dgx-37
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
@@ -24,8 +23,9 @@
 
 # Atomic fragmented allocation: group-0 hard-excludes active SFT2 job478282
 # nodes dgx-[18,32,52,54] plus previously protected nodes.
-# A longer --nodelist is only advisory in this Slurm deployment and must not
-# be used as an allowlist. The env uses proven-good dgx-37.
+# All three components use normal-partition one-GPU fragments. No multi-node
+# --nodelist is used as an allowlist; the real semantic gate fails closed if
+# AI2-THOR is unhealthy on the allocated env fragment.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"
