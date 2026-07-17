@@ -16,7 +16,8 @@
 - 新增evaluation-only fixed20 baseline config：optimizer=0且不写final。fragmented launcher固定当前clean repo/VAGEN e7，只允许`smoke|baseline`，逐seed对照dataset；quality pilot仍阻塞。
 - 新增E0034。定向server测试`64 passed, 2 expected warnings`；pinned VAGEN source protocol tests另`3 passed`。更宽SFT suite为`64 passed, 1 unrelated pre-existing test bug`（`test_trajectory_prefix_encoding.py`先使用后定义`token_id_map`）。compile、bash syntax、diff check通过。
 - 修复已提交并推送`ba7513994216e8f66371f306b9d1255002e82109`。尚未提交GPU/Slurm任务，未创建新W&B/output，未resume ID11。
-- clean server sync被外部存储阻塞：`/project`全局50T已100%、Avail=0；remote fetch无法写`.git/worktrees/.../FETCH_HEAD`并报`No space left on device`。远程worktree仍为旧`c1d2cf3`，未被修改。禁止擅自删除artifact；在空间恢复或人类批准其他存储方案前不能满足实验前clean-worktree/output条件，故真实semantic smoke与fixed20 baseline尚未启动。
+- `/project`空间已由人类清理并恢复；server worktree已同步clean `dcf7eef`，VAGEN=`e7cc2d0`、le-wm=`8edfeb3`。实际server tests=`64 passed, 2 expected warnings`，VAGEN source protocol另`3 passed`。
+- 人类要求不再使用旧partial step3059 init，改用现在完整SFT2 Epoch2。已核实source `train/epoch_002`与`best`均step3310、epoch2、`epoch_complete=true`、k8/inject；Epoch2 val WM MSE=`0.003050072753`。RL prep新增`--require-epoch-complete`，误传当前Epoch3 partial step4799会fail-fast；定向2 tests通过。下一实验将从Epoch2完整checkpoint构建新的immutable init，不能复用ID10 init。
 
 ## 2026-07-16：FSDP动态在线rollout实现
 

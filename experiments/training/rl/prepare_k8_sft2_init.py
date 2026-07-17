@@ -79,7 +79,12 @@ def _sanitized_training_state(state: dict[str, Any]) -> dict[str, Any]:
     return {key: state[key] for key in keep if key in state}
 
 
-def snapshot_checkpoint(source: Path, output: Path) -> dict[str, Any]:
+def snapshot_checkpoint(
+    source: Path,
+    output: Path,
+    *,
+    require_epoch_complete: bool = False,
+) -> dict[str, Any]:
     source = source.resolve()
     output = output.resolve()
     if output.exists():
@@ -93,6 +98,10 @@ def snapshot_checkpoint(source: Path, output: Path) -> dict[str, Any]:
         raise ValueError("source checkpoint is not k=8")
     if before_state.get("latent_query_mode") != "inject":
         raise ValueError("source checkpoint is not inject mode")
+    if require_epoch_complete and not bool(before_state.get("epoch_complete", False)):
+        raise ValueError(
+            "source checkpoint is not a complete epoch; refusing RL initialization"
+        )
 
     relative_files = [Path(name) for name in (*ROOT_FILES, *TREE_FILES)]
     missing = [str(path) for path in relative_files if not (source / path).is_file()]
@@ -123,6 +132,7 @@ def snapshot_checkpoint(source: Path, output: Path) -> dict[str, Any]:
         "source_step": before_step,
         "source_epoch": int(before_state.get("epoch", -1)),
         "source_epoch_complete": bool(before_state.get("epoch_complete", False)),
+        "required_epoch_complete": bool(require_epoch_complete),
         "latent_token_count": 8,
         "latent_query_mode": "inject",
         "base_model_path": str(before_state.get("base_model_path", "")),
@@ -149,8 +159,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--require-epoch-complete", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(snapshot_checkpoint(args.source, args.output), indent=2))
+    print(json.dumps(snapshot_checkpoint(
+        args.source,
+        args.output,
+        require_epoch_complete=args.require_epoch_complete,
+    ), indent=2))
     return 0
 
 

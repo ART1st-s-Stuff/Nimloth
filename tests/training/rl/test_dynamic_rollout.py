@@ -100,13 +100,18 @@ def test_k8_snapshot_is_immutable_and_omits_sft_optimizer(tmp_path: Path) -> Non
         "latent_token_count": 8,
         "latent_query_mode": "inject",
         "base_model_path": "/base",
+        "epoch_complete": True,
         "optimizer": {"huge": torch.ones(3)},
     }, source / "training_state.pt")
 
     output = tmp_path / "snapshot"
-    manifest = snapshot_checkpoint(source, output)
+    manifest = snapshot_checkpoint(
+        source, output, require_epoch_complete=True
+    )
 
     assert manifest["source_step"] == 123
+    assert manifest["source_epoch_complete"] is True
+    assert manifest["required_epoch_complete"] is True
     assert manifest["stable_during_copy"] is True
     assert (output / "SNAPSHOT_READY").is_file()
     state = torch.load(output / "training_state.pt", weights_only=False)
@@ -114,6 +119,28 @@ def test_k8_snapshot_is_immutable_and_omits_sft_optimizer(tmp_path: Path) -> Non
     assert "optimizer" not in state
     with pytest.raises(FileExistsError):
         snapshot_checkpoint(source, output)
+
+
+def test_k8_snapshot_rejects_partial_epoch_when_complete_is_required(
+    tmp_path: Path,
+) -> None:
+    from experiments.training.rl.prepare_k8_sft2_init import snapshot_checkpoint
+
+    source = tmp_path / "partial"
+    source.mkdir()
+    torch.save({
+        "step": 4799,
+        "epoch": 3,
+        "epoch_complete": False,
+        "latent_token_count": 8,
+        "latent_query_mode": "inject",
+    }, source / "training_state.pt")
+    with pytest.raises(ValueError, match="not a complete epoch"):
+        snapshot_checkpoint(
+            source,
+            tmp_path / "output",
+            require_epoch_complete=True,
+        )
 
 
 def test_llm_lora_does_not_train_suffix_matched_visual_adapters() -> None:
