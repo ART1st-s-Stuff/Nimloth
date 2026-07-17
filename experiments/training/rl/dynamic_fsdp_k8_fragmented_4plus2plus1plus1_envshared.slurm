@@ -22,7 +22,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:2
 #SBATCH --mem=64G
-#SBATCH --nodelist=dgx-09
+#SBATCH --nodelist=dgx-13
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -30,12 +30,12 @@
 #SBATCH --partition=normal
 #SBATCH --time=00:30:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=2
-#SBATCH --ntasks-per-node=2
+#SBATCH --ntasks=1
+#SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:2
-#SBATCH --mem=64G
-#SBATCH --nodelist=dgx-13
+#SBATCH --gres=gpu:1
+#SBATCH --mem=32G
+#SBATCH --nodelist=dgx-09
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -50,9 +50,10 @@
 #SBATCH --nodelist=dgx-51
 #SBATCH --exclude=dgx-[18,32,52,54]
 
-# Atomic normal-fragment allocation: trainer groups 0/1/2 contribute 4+2+2
-# GPUs on dgx-29/dgx-09/dgx-13 to one world-size-8 FSDP process group. Group 3
-# provides the env GPU on dgx-51. Active SFT2 nodes remain excluded.
+# Atomic normal-fragment allocation: trainer groups 0/1/2/3 contribute
+# 4+2+1+1 GPUs on dgx-29/dgx-13/dgx-09/dgx-51 to one world-size-8 FSDP group.
+# For this short smoke, the env shares group 3's H100 with rank 7; both steps
+# use --overlap. Active SFT2 nodes remain excluded.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"
@@ -60,12 +61,12 @@ set -euo pipefail
 : "${MODEL:?must set MODEL to immutable merged k8 init}"
 : "${SFT2_SNAPSHOT:?must set SFT2_SNAPSHOT}"
 : "${CONFIG:?must set CONFIG}"
-: "${RUN_MODE:?must be smoke or baseline}"
+: "${RUN_MODE:?must be smoke}"
 : "${WANDB_RUN_ID:?must reserve W&B id before submit}"
 : "${WANDB_RUN_NAME:?must set W&B name}"
 VISION_TUNE=${VISION_TUNE:-freeze}
-# Quality pilots remain blocked; only protocol smoke and fixed heldout baseline run.
-[[ "${RUN_MODE}" == smoke || "${RUN_MODE}" == baseline ]]
+# GPU-sharing is permitted only for this short protocol smoke.
+[[ "${RUN_MODE}" == smoke ]]
 [[ "${VISION_TUNE}" == freeze || "${VISION_TUNE}" == lora ]]
 
 PY=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
@@ -96,7 +97,7 @@ export WANDB_RUN_ID WANDB_RUN_NAME VISION_TUNE
 
 cleanup() {
   touch "${RUN_ROOT}/trainer_done.flag"
-  for pid_name in TRAIN_STEP_0_PID TRAIN_STEP_1_PID TRAIN_STEP_2_PID; do
+  for pid_name in TRAIN_STEP_0_PID TRAIN_STEP_1_PID TRAIN_STEP_2_PID TRAIN_STEP_3_PID; do
     pid=${!pid_name:-}
     [[ -z "${pid}" ]] || kill "${pid}" 2>/dev/null || true
   done
@@ -144,12 +145,13 @@ export NCCL_DEBUG=INFO
 TRAIN_NODELIST_0=${SLURM_JOB_NODELIST_HET_GROUP_0:?missing trainer group 0}
 TRAIN_NODELIST_1=${SLURM_JOB_NODELIST_HET_GROUP_1:?missing trainer group 1}
 TRAIN_NODELIST_2=${SLURM_JOB_NODELIST_HET_GROUP_2:?missing trainer group 2}
+TRAIN_NODELIST_3=${SLURM_JOB_NODELIST_HET_GROUP_3:?missing trainer group 3}
 MASTER_ADDR=$("${SCONTROL}" show hostnames "${TRAIN_NODELIST_0}" | head -n1)
 MASTER_PORT=$((31000 + SLURM_JOB_ID % 10000))
 export MASTER_ADDR MASTER_PORT
-printf 'trainer_fragments=4@%s,3@%s,1@%s master=%s:%s env=%s\n' \
+printf 'trainer_fragments=4@%s,2@%s,1@%s,1@%s master=%s:%s env=%s\n' \
   "${TRAIN_NODELIST_0}" "${TRAIN_NODELIST_1}" "${TRAIN_NODELIST_2}" \
-  "${MASTER_ADDR}" "${MASTER_PORT}" "${ENV_URL}" \
+  "${TRAIN_NODELIST_3}" "${MASTER_ADDR}" "${MASTER_PORT}" "${ENV_URL}" \
   | tee "${RUN_ROOT}/topology.txt"
 
 RESUME_ARGS=()
@@ -179,16 +181,25 @@ TRAIN_STEP_1_PID=$!
 (
   set -o pipefail
   env RANK_OFFSET=6 "${SRUN}" --het-group=2 --overlap --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=2 --ntasks-per-node=2 --cpus-per-task=8 \
+    --nodes=1 --ntasks=1 --ntasks-per-node=1 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     >"${RUN_ROOT}/trainer_group2.log" 2>&1
 ) &
 TRAIN_STEP_2_PID=$!
+(
+  set -o pipefail
+  env RANK_OFFSET=7 "${SRUN}" --het-group=3 --overlap --kill-on-bad-exit=1 \
+    --nodes=1 --ntasks=1 --ntasks-per-node=1 --cpus-per-task=8 \
+    bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
+    >"${RUN_ROOT}/trainer_group3.log" 2>&1
+) &
+TRAIN_STEP_3_PID=$!
 wait "${TRAIN_STEP_0_PID}"; TRAIN_RC_0=$?
 wait "${TRAIN_STEP_1_PID}"; TRAIN_RC_1=$?
 wait "${TRAIN_STEP_2_PID}"; TRAIN_RC_2=$?
+wait "${TRAIN_STEP_3_PID}"; TRAIN_RC_3=$?
 set -e
-TRAIN_RC=$((TRAIN_RC_0 || TRAIN_RC_1 || TRAIN_RC_2))
+TRAIN_RC=$((TRAIN_RC_0 || TRAIN_RC_1 || TRAIN_RC_2 || TRAIN_RC_3))
 
 touch "${RUN_ROOT}/trainer_done.flag"
 wait "${ENV_STEP_PID}" || ENV_RC=$?
