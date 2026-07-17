@@ -43,11 +43,13 @@ rollout:
 
 rl:
   # batch_size is a memory microbatch; every collected transition is consumed.
+  # Long 20-turn multimodal actor recompute exceeded 79GiB at2 even though the
+  # short semantic smoke fit. Use1 until a direct long-history gate proves2.
   iterations: 20
   envs_per_iteration: 8
   max_steps_per_episode: 20
   gamma: 1.0
-  batch_size: 2
+  batch_size: 1
   temperature: 0.7
   top_p: 0.95
 

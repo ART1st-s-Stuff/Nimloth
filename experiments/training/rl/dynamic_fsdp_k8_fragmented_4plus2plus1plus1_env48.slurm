@@ -276,7 +276,13 @@ assert protocol["image_protocol"] == "vagen-process-image-min512-max2048-v1"
 assert protocol["reward_protocol"] == "vagen-per-turn-plus-final-v1"
 assert protocol["optimization_protocol"] == "all-stochastic-response-tokens-one-ppo-epoch-v2"
 assert protocol["policy_loss_mask"] == "sampled-thought-plus-action;injected-scaffold-excluded"
-assert protocol["transition_microbatch_size"] == 2
+assert protocol["actor_recompute_protocol"] == (
+    "deterministic-train-gradient-checkpointing-selected-logits-v1"
+)
+assert protocol["gradient_checkpointing"] is True
+assert protocol["functional_attention_dropout"] == 0.0
+expected_microbatch = 1 if mode == "pilot" else 2
+assert protocol["transition_microbatch_size"] == expected_microbatch
 assert protocol["value_ranking_weight"] == 0.0
 assert protocol["trajectory_schema"] == 3
 assert protocol["attention_implementation"] == "flash_attention_2"

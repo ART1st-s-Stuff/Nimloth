@@ -380,14 +380,23 @@ def compute_policy_token_stats_for_batch(
             model_inputs, token_id_map[tokens.action_start]
         )
 
+        logit_positions = torch.tensor(
+            [
+                *(prefix_length - 1 + offset for offset in range(len(thought_ids))),
+                int(model_inputs["input_ids"].shape[1]) - 1,
+            ],
+            device=model_inputs["input_ids"].device,
+            dtype=torch.long,
+        )
         outputs = model(
             **model_inputs,
             output_hidden_states=False,
             return_dict=True,
             use_cache=False,
+            logits_to_keep=logit_positions,
         )
         for offset, selected_id in enumerate(thought_ids):
-            raw_logits = outputs.logits[0, prefix_length - 1 + offset].float()
+            raw_logits = outputs.logits[0, offset].float()
             policy_logits = raw_logits if temperature == 0 else raw_logits / temperature
             token_log_probs = torch.log_softmax(policy_logits, dim=-1)
             token_probs = torch.softmax(policy_logits, dim=-1)
@@ -641,6 +650,35 @@ def _temporary_eval(module: torch.nn.Module):
             submodule.training = was_training
 
 
+@contextmanager
+def _temporary_deterministic_train(module: torch.nn.Module):
+    """Enable gradient checkpointing while keeping PPO recompute deterministic.
+
+    Hugging Face Qwen only applies gradient checkpointing when ``training`` is
+    true. Actor recompute previously used ``eval()``, silently disabling the
+    requested checkpointing and retaining every long-history activation. Set
+    train mode but temporarily turn module-based dropout into an identity so
+    the recomputed policy remains equivalent to deterministic evaluation.
+    """
+
+    training_modes = [(submodule, submodule.training) for submodule in module.modules()]
+    dropouts = [
+        (submodule, float(submodule.p))
+        for submodule in module.modules()
+        if isinstance(submodule, torch.nn.modules.dropout._DropoutNd)
+    ]
+    module.train()
+    try:
+        for dropout, _probability in dropouts:
+            dropout.p = 0.0
+        yield
+    finally:
+        for dropout, probability in dropouts:
+            dropout.p = probability
+        for submodule, was_training in training_modes:
+            submodule.training = was_training
+
+
 def _maybe_init_wandb(
     *,
     rank: int,
@@ -815,6 +853,14 @@ def train_rl(
     # --- Qwen model loading --------------------------------------------------
     policy_config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
     latent_token_count = validate_rl_policy_protocol(policy_config)
+    attention_dropout = float(
+        getattr(getattr(policy_config, "text_config", None), "attention_dropout", 0.0)
+    )
+    if actor_enabled and attention_dropout != 0.0:
+        raise ValueError(
+            "deterministic actor recompute requires text attention_dropout=0, "
+            f"got {attention_dropout}"
+        )
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = args.max_pixels
@@ -1052,6 +1098,11 @@ def train_rl(
             "reward_protocol": "vagen-per-turn-plus-final-v1",
             "optimization_protocol": "all-stochastic-response-tokens-one-ppo-epoch-v2",
             "policy_loss_mask": "sampled-thought-plus-action;injected-scaffold-excluded",
+            "actor_recompute_protocol": (
+                "deterministic-train-gradient-checkpointing-selected-logits-v1"
+            ),
+            "gradient_checkpointing": bool(args.gradient_checkpointing),
+            "functional_attention_dropout": attention_dropout,
             "transition_microbatch_size": batch_size,
             "value_ranking_weight": 0.0,
             "trajectory_schema": 3,
@@ -1433,7 +1484,7 @@ def train_rl(
                     "thought_token_ids": item["thought_token_ids"],
                     "taken_action_idx": int(item["action_index"].item()),
                 } for item in batch]
-                with _temporary_eval(model):
+                with _temporary_deterministic_train(model):
                     new_log_probs, token_entropies, token_counts = (
                         compute_policy_token_stats_for_batch(
                             ppo_items,

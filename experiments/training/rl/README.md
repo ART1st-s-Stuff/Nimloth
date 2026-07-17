@@ -31,7 +31,7 @@ ID11 只保留 FSDP/checkpoint mechanics 证据；它的 rollout 丢失真实任
 | `run_e2e_smoke.sh` | JSONL/FSDP mechanics test；不能替代真实 env integration |
 | `dynamic_fsdp_k8_smoke.yaml` | 两任务、最多两步的 corrected protocol smoke |
 | `dynamic_fsdp_k8_baseline20.yaml` | evaluation-only fixed-20 heldout baseline |
-| `dynamic_fsdp_k8_pilot.yaml` | 仅保留 corrected future config；baseline 审批前不得提交 |
+| `dynamic_fsdp_k8_pilot.yaml` | fixed20通过后的quality pilot；长20-turn actor使用transition microbatch1，提交前仍须显存gate |
 
 旧 `diagnose_eval.py` / `debug_action.py` 已删除，因为它们会重建 taskless generic prompt，不能用于新的 baseline。
 

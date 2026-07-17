@@ -56,6 +56,7 @@ def test_k8_pilot_uses_disjoint_fixed_heldout_protocol() -> None:
     assert config["rl"]["envs_per_iteration"] == 8
     assert config["rl"]["max_steps_per_episode"] == 20
     assert config["rl"]["gamma"] == 1.0
+    assert config["rl"]["batch_size"] == 1
     assert config["actor"]["use_kl_loss"] is True
     assert config["actor"]["kl_loss_coef"] == 0.001
     assert config["actor"]["kl_loss_type"] == "low_var_kl"
@@ -189,6 +190,8 @@ def test_dynamic_4211_launcher_has_no_stale_trainer_node_rules() -> None:
     assert '"${RUN_MODE}" == baseline' in launcher
     assert '"${RUN_MODE}" == pilot' in launcher
     assert 'if mode == "pilot":' in launcher
+    assert "deterministic-train-gradient-checkpointing-selected-logits-v1" in launcher
+    assert 'expected_microbatch = 1 if mode == "pilot" else 2' in launcher
 
 
 def test_placeholder_hold_runs_atomically_published_stages() -> None:
@@ -592,7 +595,8 @@ def test_ppo_replays_every_stochastic_response_token_verbatim() -> None:
         def forward(self, input_ids, **kwargs):
             expected = [1, 10, 11, 12, *range(20, 28), 30]
             assert input_ids[0].tolist() == expected
-            logits = torch.zeros((1, len(expected), 64)) + self.anchor
+            assert kwargs["logits_to_keep"].tolist() == [0, 1, 2, 12]
+            logits = torch.zeros((1, 4, 64)) + self.anchor
             logits[0, 0, 10] += 3.0
             logits[0, 1, 11] += 4.0
             logits[0, 2, 12] += 5.0
@@ -626,6 +630,29 @@ def test_ppo_replays_every_stochastic_response_token_verbatim() -> None:
     assert torch.isfinite(entropies).all()
     (-log_probs.mean()).backward()
     assert model.anchor.grad is not None
+
+
+def test_deterministic_train_enables_checkpointing_without_dropout() -> None:
+    from nimloth.training.rl.trainer import _temporary_deterministic_train
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.dropout = torch.nn.Dropout(0.25)
+
+        def forward(self, value):
+            assert self.training is True
+            assert self.dropout.training is True
+            assert self.dropout.p == 0.0
+            return self.dropout(value)
+
+    model = FakeModel().eval()
+    with _temporary_deterministic_train(model):
+        output = model(torch.ones(4))
+        assert torch.equal(output, torch.ones(4))
+    assert model.training is False
+    assert model.dropout.training is False
+    assert model.dropout.p == 0.25
 
 
 def test_reference_context_disables_and_restores_lora_without_grad_flags() -> None:

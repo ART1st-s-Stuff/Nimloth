@@ -67,13 +67,14 @@ action-level return 为：最后一步 reward 加 final reward，然后按 `G_t 
 - 每个真实 assistant response 提取一个 k-query hidden block。
 - terminal observation 没有 assistant response，因此不会伪造 terminal latent query；最后 action 仍用于 actor/value，只有缺真实 next query 的 WM pair 被跳过。
 - 动态 online RL 禁止 unconditional chosen-action ranking，`lambda_rank` 必须为 0。
-- `rl.batch_size` 是 transition microbatch size，不是随机保留数量。
+- `rl.batch_size` 是 transition microbatch size，不是随机保留数量。20-turn多模态pilot默认使用1；短smoke的2不能证明长历史显存安全。
 - 每轮对全部 transitions 确定性 shuffle，一次 PPO epoch内每条数据恰好消费一次；每个 microbatch 执行 optimizer step。
 - advantage 在首个optimizer step前由WM Value head按turn计算，再按response-token mask加权做全局标准化，并广播到该turn的每个采样policy token。
 - PPO loss覆盖全部采样thought tokens和action token，按VAGEN response loss mask求均值。inject协议中由框架确定性插入的latent queries、`action_start/end`不属于policy采样，因此保持mask0。
 - LoRA关闭时的immutable merged SFT2 base作为reference policy；actor使用与VAGEN相同的`low_var_kl`和系数0.001。VAGEN实际代码在actor KL启用时不再同时施加reward KL；runtime也强制两种placement互斥，但实现了可配置的sampled-token reward KL路径。
 - WM predictor和Value head loss继续与token-level PPO联合优化；dynamic Value ranking保持0。
-- 当前k8 launcher使用`flash_attention_2`；attention backend写入resume protocol。
+- actor有梯度recompute保持train mode以启用Qwen gradient checkpointing，同时临时把module dropout设为0以保持PPO确定性；LM head只计算sampled thought和action所需position的logits，避免长序列全词表logits。
+- 当前k8 launcher使用`flash_attention_2`；attention backend、actor recompute协议和gradient-checkpointing状态写入resume protocol。
 
 checkpoint 的 `rollout_protocol` / `rollout_protocol.json` 记录 prompt、reward、schema、environment、history、sampling、microbatch、k/query mode 和 validation 协议；resume 必须完全一致。旧协议 checkpoint 会被拒绝。
 
@@ -87,7 +88,7 @@ checkpoint 的 `rollout_protocol` / `rollout_protocol.json` 记录 prompt、rewa
 - 不写 `final/` checkpoint；
 - 每条任务必须与 `base.json[seed % len(tasks)]` 精确一致。
 
-在该 baseline 通过前，launcher 只允许 `RUN_MODE=smoke|baseline`，拒绝 quality pilot。
+该baseline通过后才允许`RUN_MODE=pilot`。Pilot仍须使用新identity，并通过长历史actor forward+backward显存gate。
 
 ## 文件
 
