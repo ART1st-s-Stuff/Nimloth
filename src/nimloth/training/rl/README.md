@@ -1,336 +1,110 @@
 # RL 训练管线
 
-在线 RL 训练：Qwen policy 与环境交互采集轨迹 → Qwen 编码 latent state → 训练 WM predictor + value head。
+动态在线模式：Qwen policy 与 VAGEN navigation 环境交互，保存可逐字重放的轨迹，再更新 action policy、WM predictor 和 value head。
 
-## 运行模式
+## 协议边界
 
-| 模式 | `--env-url` | `--use-jsonl-rollout` | 适用 |
-|------|-------------|----------------------|------|
-| 单 GPU 在线 | 需要 | 否 | `world == 1` 调试 |
-| FSDP 动态在线 | 需要 | 否 | `world > 1`，每轮用当前 policy 访问环境 |
-| JSONL 离线 | 不需要 | 是 | 独立 rollout 后确定性消费 |
+### Prompt
 
-FSDP 动态模式由 `DistributedEnvRolloutCollector` 同步：只有 rank0 访问 VAGEN HTTP env service 和写 PNG/JSONL；所有 rank 从共享路径构造同一 prompt、以相同顺序进入 FSDP policy forward，校验 action logits 一致后由 rank0 采样并广播动作。可变延迟的HTTP状态、错误和trajectory通过专用CPU Gloo control group广播，action logits与FSDP参数/梯度仍使用NCCL；因此首次AI2-THOR初始化不会让等待rank占住NCCL collective。这样保留 VAGEN 的每轮 `current policy -> env.step -> update` 语义，同时避免不同 episode 长度导致 FSDP collective 次序不一致。
+动态 collector 必须使用与 SFT 数据相同的消息：
 
-环境、policy 或 schema 错误不会回退成默认动作或零 log-prob；不完整 episode 整条丢弃，collective policy 错误使所有 rank 同步失败。直接训练 rollout 必须在 `rollout.eval_sets` 中显式指定实际支持的 `*_train` datasets。启用validation时，CLI创建独立heldout collector：拒绝`*_train`，每次评估前重置固定seed cursor，且必须返回配置数量的完整episodes；训练collector与heldout collector不共享轨迹或seed。
+1. `get_system_prompts_batch()` 只提供 system prompt；不能把它当任务。
+2. `reset/step` 返回的 `obs_str` 是 user message，包含首轮 `Human Instruction:`，后续轮包含动作、环境反馈、reward、done 和 `<image>`。
+3. source-eval XML 格式通过 `vagen_protocol.source_eval_text_to_nimloth()` 转为 SFT 的 Nimloth 格式；SFT converter 调用同一函数。
+4. 当前 assistant turn 先由 policy 生成真实 `<think>...</think>`；框架再插入 k 个 latent query 和 `<|action_start|>`，从八个 action token 的 logits 采样。
+5. 历史保存 policy 真实生成的完整 assistant response。PPO 和 latent encoding 逐字重放这些字段，不重新编造 thought、instruction 或 feedback。
+6. source checkpoint 使用 `history_window=112`、每轮最多 512 response tokens；20-turn episode 因此保留完整历史。
 
-runtime支持显式`inject` checkpoint的k≥1 query block；prompt、action distribution、latent extraction、StateProjector input width和checkpoint protocol使用同一个k，`generate`仍fail-fast。`rollout.history_window` 控制policy/latent/PPO共用的真实历史图像窗口。rollout old log-prob 与 PPO new log-prob 都使用同一个temperature-scaled八动作分布；top-p只限制采样。checkpoint保存完整`rollout_protocol`（含k/query mode和heldout协议），resume时必须完全一致；训练seed cursor根据已完成iteration恢复，heldout cursor固定重置。
+`generate` query mode 尚未实现，动态 RL 只接受显式 `inject` checkpoint。
 
-独立 `experiments/training/rl/rollout_env.py` 仍复用单进程 `EnvRolloutCollector`，可生成 JSONL 供离线模式使用。
+### Reward
 
-JSONL collector 支持从 CLI `--jsonl-sources` 或 config `rollout.jsonl_sources` 指定文件/目录读取轨迹，按 iteration 轮转消费（数据耗尽自动循环），目录会递归搜索 `*.jsonl` / `*.jsonl.gz`。所有 rank 得到相同轨迹序列，保证 FSDP forward 触碰次数一致。Batch 选择使用 per-iteration 确定性 generator (`seed + iteration`)。非 FSDP 的 `state_proj`、`wm_predictor`、`value_head` 会在 distributed setup 后从 rank0 广播初始参数；在相同数据/相同 batch 下保持本地副本同步。
+环境配置固定为 SFT collection 的 source-eval 协议：
 
-## 总览
+- `prompt_format=source_eval_mode`
+- `step_length=0.3`
+- `success_threshold=1.0`
+- `per_turn_format_reward=0.01`
+- `success_reward=1.0`
+- `format_reward=0.0`
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     Online RL Loop                       │
-│                                                          │
-│  ┌──────────┐    ┌──────────┐    ┌──────────────────┐  │
-│  │ Rollout  │ →  │ Encode   │ →  │ Train             │  │
-│  │ Qwen+Env │    │ Qwen→WM  │    │ predictor+value   │  │
-│  └──────────┘    └──────────┘    └──────────────────┘  │
-│       ↑                                   │             │
-│       └───────────────────────────────────┘             │
-│              checkpoint / resume                         │
-└─────────────────────────────────────────────────────────┘
-```
+collector 原样保存每次 `env.step()` 的 reward，并在 episode 结束后调用 `compute_reward_batch()` 保存 final reward。禁止额外碰撞惩罚或按 reward 阈值推断 success；success 读取 VAGEN `task_success` / trajectory metrics。
 
-## 算法
+action-level return 为：最后一步 reward 加 final reward，然后按 `G_t = r_t + gamma * G_(t+1)` 向后累计。这对应 VAGEN 把每轮 reward 放在该 assistant response 结束位置的多轮语义。旧 SFT JSONL 没有 `step_rewards` 时仍保留历史 terminal-return 解释；新的动态 RL record 不允许缺字段。
 
-### 初始化
+### Trajectory schema v2
 
-```
-Input:
-  - Qwen model θ_qwen (base + optional LoRA/full-tune LLM or vision)
-  - StateProjector f_proj : R^d_qwen → R^d_wm
-  - LatentWMPredictor f_pred : R^d_wm × {0..7} → R^d_wm
-  - ValueHead V : R^d_wm → R^8
-  - Environment env (AI2-THOR navigation)
-  - Hyperparams: γ (discount), N_iter, K_envs, T_max, B, S_train
+每条动态轨迹必须包含：
 
-Freeze:
-  - θ_qwen:   requires_grad = False  (unless --llm-tune full or --vision-tune full)
-  - f_proj:   requires_grad = False  (unless freeze.state_proj = false)
+- `system_prompt`
+- `task_instruction`
+- `observation_texts`，长度 `T+1`
+- `image_paths`，长度 `T+1`
+- `assistant_responses`，长度 `T`
+- `action_indices` / `action_names` / `action_log_probs`，长度 `T`
+- `step_rewards`，长度 `T`
+- `final_reward`, `reward`, `success`, `latent_token_count`
 
-Trainable:
-  - f_pred:   requires_grad = True
-  - V:        requires_grad = True
-```
+首轮 instruction 必须与 `task_instruction` 相同；每次 step 返回的 `info.instruction` 也必须相同。legacy/taskless ID11 record 会 fail-fast，不能 resume 或进入 optimizer。
 
-### Online RL Loop
+## 分布式动态 rollout
 
-```
-for iteration = 1, 2, …, N_iter:
+`DistributedEnvRolloutCollector` 使用：
 
-    # ============================================================
-    # Phase 1: Rollout — collect trajectories
-    # ============================================================
-    trajectories = []
+- rank0 独占 HTTP env 和文件写入；
+- 所有 rank 同序执行 FSDP policy forward；
+- NCCL 承载 FSDP/logits；独立 Gloo group 承载可变延迟 env control；
+- rank0 同步采样 thought token 和 action，再广播；
+- 任一 prompt、schema、数值或 env 错误都 fail closed，不回退默认动作或零 log-prob。
 
-    for env_i = 1, 2, …, K_envs (current collector runs sequentially):
-        env.reset(seed_i)
-        obs_0 = initial observation (image)
-        τ = []   # trajectory for this episode
+环境 server 必须来自当前 clean worktree 的 pinned VAGEN `e7cc2d0`；旧 `exp-vagen-1action` worktree 不符合此协议。
 
-        for step t = 0, 1, …, T_max-1:
-            # Qwen policy: action prior from <|action_start|> logits
-            prompt_t = build_prompt(obs_0..obs_t, action_0..action_{t-1})
-            logits = θ_qwen(prompt_t)              # Qwen forward
-            a_t = argmax(logits at <|action_start|> position)
-                   restricted to 8 action tokens
+## Encode / optimization
 
-            obs_{t+1}, r_t, done = env.step(a_t)
-            τ.append((obs_t, a_t, r_t))
+- 每个真实 assistant response 提取一个 k-query hidden block。
+- terminal observation 没有 assistant response，因此不会伪造 terminal latent query；最后 action 仍用于 actor/value，只有缺真实 next query 的 WM pair 被跳过。
+- 动态 online RL 禁止 unconditional chosen-action ranking，`lambda_rank` 必须为 0。
+- `rl.batch_size` 是 transition microbatch size，不是随机保留数量。
+- 每轮对全部 transitions 确定性 shuffle，一次 PPO epoch内每条数据恰好消费一次；每个 microbatch 执行 optimizer step。
+- advantage 在本轮全部 transitions 上、首个 optimizer step 前统一计算和标准化。
+- PPO actor 当前只更新 framework 选择的 action token；生成 thought token 会保存和重放，但尚未纳入 token-level PPO loss。不能把该实现描述成完整复刻 VAGEN 的全 response-token actor loss。
 
-            if done: break
+checkpoint 的 `rollout_protocol` / `rollout_protocol.json` 记录 prompt、reward、schema、environment、history、sampling、microbatch、k/query mode 和 validation 协议；resume 必须完全一致。旧协议 checkpoint 会被拒绝。
 
-        # Episode-level sparse reward
-        R = env.compute_reward() if done else 0
+## 固定 heldout baseline
 
-        trajectory = {
-            image_paths:  [save(obs_0), …, save(obs_T)],  # T = len(τ)
-            action_indices: [a_0, …, a_{T-1}],
-            reward: R,
-            success: done ∧ (distance < threshold),
-            messages: [system, user_0, assistant_0, …, user_{T-1}, assistant_{T-1}],
-        }
-        trajectories.append(trajectory)
+`configs/training/rl/dynamic_fsdp_k8_baseline20.yaml` 设置 `training.evaluation_only=true`：
 
-    # ============================================================
-    # Phase 2: Encode — extract WM latent states
-    # ============================================================
-    transitions = []
+- 只运行固定 seeds 1–20 的 heldout `base`；
+- greedy `temperature=0`, `top_p=1`；
+- optimizer steps 必须为 0；
+- 不写 `final/` checkpoint；
+- 每条任务必须与 `base.json[seed % len(tasks)]` 精确一致。
 
-    for each trajectory in trajectories:
-        # Rebuild the same history-aware policy prefix used for action/PPO.
-        hiddens = []  # T+1 blocks in R^(k × d_qwen)
-        for t in 0..T:
-            prompt_t = build_prompt(obs_0..obs_t, action_0..action_{t-1})
-            h = θ_qwen(prompt_t)
-            h_latent = h[the contiguous k-query block]
-            hiddens.append(h_latent)
+在该 baseline 通过前，launcher 只允许 `RUN_MODE=smoke|baseline`，拒绝 quality pilot。
 
-        # Compute discounted MC returns
-        for t = 0, …, T-1:
-            G_t = trajectory.reward · γ^(T-1-t)      # MC target
-
-        # Build transitions
-        for t = 0, …, T-1:
-            transitions.append({
-                qwen_hidden_current: hiddens[t],      # ∈ R^d_qwen
-                qwen_hidden_next:    hiddens[t+1],    # ∈ R^d_qwen
-                action_index:        a_t,             # ∈ {0..7}
-                value_target:        G_t,             # ∈ R
-            })
-
-    # ============================================================
-    # Phase 3: Train — update predictor + value head
-    # ============================================================
-    for train_step = 1, 2, …, S_train:
-        batch = sample(transitions, B)   # random batch of size B
-
-        for each (h_cur, h_next, a, G) in batch:
-
-            # ---- Predictor loss (dynamics) ----
-            s_cur  = f_proj(h_cur)                   # current WM state
-            s_next = f_proj(h_next).detach()          # target: next WM state (no grad)
-            ŝ_next = f_pred(s_cur, a)                # predicted next WM state
-
-            L_pred = MSE(ŝ_next, s_next)
-
-            # ---- Value loss (critic) ----
-            values = V(s_cur)                         # ∈ R^8
-            L_reg  = MSE(values[a], G)                # regression on taken action
-
-            # Optional ranking loss: penalise when any unchosen action
-            # scores higher than the chosen one
-            max_other = max_{j≠a} values[j]
-            L_rank = ReLU(rank_margin + max_other - values[a])
-            L_value = L_reg + λ_rank · L_rank
-
-            # ---- Total loss ----
-            L = L_pred + L_value
-
-        # Update
-        optimizer.zero_grad()
-        L.backward()
-        clip_grad_norm(max_norm=1.0)
-        optimizer.step()
-        if vision_ema enabled:
-            vision_ema.update(θ_qwen)
-
-    # ============================================================
-    # Phase 4: Checkpoint
-    # ============================================================
-    if iteration % save_interval == 0:
-        save_checkpoint(
-            state_proj, wm_predictor, value_head,
-            model=θ_qwen (full or LoRA adapter),
-            optimizer, iteration, global_step,
-        )
-    if value_loss improved:
-        save_checkpoint(best/)
-```
-
-### 推理：Slow Path / Fast Path
-
-训练后的 predictor 和 value head 可用于加速推理（见 `agent/` 模块）：
-
-```
-slow_path_steps = 4   # Qwen re-sync interval
-
-agent.reset(first_image):
-    s_wm = f_proj(θ_qwen.encode(first_image)[<|latent_state|>])
-    steps_since_sync = 0
-
-agent.act(current_image):   # called at each env step
-    if steps_since_sync >= slow_path_steps:
-        # Slow path: re-align WM state with real observation
-        s_wm = f_proj(θ_qwen.encode(current_image)[<|latent_state|>])
-        steps_since_sync = 0
-    else:
-        # Fast path: predict next state without Qwen
-        s_wm = f_pred(s_wm, previous_action)
-        steps_since_sync += 1
-
-    action = planner.select_action(s_wm)   # greedy or beam_search
-    previous_action = action
-    return action
-```
-
-## 模块
+## 文件
 
 | 文件 | 职责 |
-|------|------|
-| `rollout.py` | trajectory、单进程 env/JSONL collector、canonical inject k-query prompt与action distribution |
-| `distributed_rollout.py` | rank0 env + all-rank FSDP forward 的动态在线collector |
-| `loss.py` | `compute_predictor_loss`（MSE dynamics），`compute_value_loss`（MSE + ranking），`compute_advantages`（unbiased=False，避免 batch size=1 NaN），`compute_actor_loss`（PPO clipped） |
-| `trainer.py` | `train_rl` — 在线 RL 主循环，含 Qwen 加载、FSDP/DDP、resume、分布式 guard |
-| `checkpoint.py` | `save_rl_checkpoint` / `load_rl_wm_checkpoint` / `load_lora_adapter_state` |
-| `cli.py` | 命令行入口，`--llm-tune` / `--vision-tune` / `--resume` / `--jsonl-sources` 等参数 |
+|---|---|
+| `vagen_protocol.py` | source-eval/SFT text rewrite、任务提取、action/env response、success |
+| `rollout.py` | schema v2、单进程 collector、thought generation、inject action distribution |
+| `distributed_rollout.py` | rank0 env + all-rank FSDP synchronized collector |
+| `trainer.py` | exact replay、returns、all-transition microbatches、checkpoint/resume、eval-only |
+| `loss.py` | predictor/value/action-token PPO losses |
+| `checkpoint.py` | model/WM/optimizer checkpoint |
+| `cli.py` | config/collector/model wiring |
 
-## 入口
+## 验证
+
+最小定向测试：
 
 ```bash
-# 基本用法
-python -m nimloth.training.rl.cli \
-  --config configs/training/rl/defaults.yaml \
-  --model Qwen/Qwen2.5-VL-3B-Instruct \
-  --output-dir outputs/experiments/training/rl/2026-06-27/test
-
-# SFT2 warm-start（LLM LoRA + Vision Full）
-python -m nimloth.training.rl.cli \
-  --config configs/training/rl/sft2_warmstart.yaml \
-  --model Qwen/Qwen2.5-VL-3B-Instruct \
-  --llm-tune lora --vision-tune full \
-  --wm-checkpoint outputs/.../sft2/.../best/wm_predictor \
-  --state-proj-checkpoint outputs/.../sft2/.../best/state_proj.pt \
-  --value-head-checkpoint outputs/.../sft2/.../best/value_head \
-  --output-dir outputs/experiments/training/rl/.../test
-
-# Resume
-python -m nimloth.training.rl.cli \
-  --config configs/training/rl/sft2_warmstart.yaml \
-  --model Qwen/Qwen2.5-VL-3B-Instruct \
-  --llm-tune lora --vision-tune full \
-  --resume \
-  --resume-checkpoint outputs/experiments/training/rl/.../iter_0010 \
-  --output-dir outputs/experiments/training/rl/.../existing_run
+PYTHONPATH=src:external/VAGEN python -m pytest -q \
+  tests/training/rl/test_vagen_protocol.py \
+  tests/training/rl/test_vagen_rewards.py \
+  tests/training/rl/test_rollout_schema.py \
+  tests/training/rl/test_dynamic_rollout.py
 ```
 
-## Loss 函数
-
-### Predictor Loss（Dynamics）
-
-```
-L_pred = MSE(ŝ_{t+1}, s_{t+1})
-
-where:
-  s_{t+1} = f_proj(θ_qwen.encode(img_{t+1})[<|latent_state|>])  # target (no grad)
-  ŝ_{t+1} = f_pred(s_t, a_t)                                      # prediction
-  s_t     = f_proj(θ_qwen.encode(img_t)[<|latent_state|>])
-```
-
-### Value Loss（Critic）
-
-```
-L_reg  = MSE(V(s_t)[a_t], G_t)
-
-L_rank = ReLU(rank_margin + max_{j≠a_t} V(s_t)[j] - V(s_t)[a_t])
-
-L_value = L_reg + λ_rank · L_rank
-
-where:
-  G_t = R · γ^(T-1-t)    # Monte Carlo return (sparse terminal reward)
-```
-
-## 配置参考
-
-```yaml
-# configs/training/rl/defaults.yaml
-
-freeze:
-  qwen: true             # True = no gradients for Qwen (overridden by --llm-tune)
-  state_proj: true       # True = StateProjector frozen
-
-predictor:
-  lr: 1e-3
-  emb_dim: 128           # WM embedding dimension
-  history_size: 4        # ARPredictor context window (frames)
-  rollout_steps: 1       # training rollout steps (1 = single-step first)
-
-value_head:
-  lr: 1e-3
-  rank_margin: 0.1       # margin for ranking loss
-  lambda_rank: 0.0       # 0 = regression only; > 0 enables ranking term
-
-rl:
-  iterations: 1000         # number of online RL iterations
-  envs_per_iteration: 8    # parallel environments per iteration
-  max_steps_per_episode: 20
-  gamma: 0.99              # discount factor
-  batch_size: 32
-  train_steps_per_iteration: 10
-
-training:
-  seed: 42
-  log_interval: 10         # log every N iterations
-  save_interval: 50        # checkpoint every N iterations
-```
-
-## 调参模式
-
-通过 CLI 控制（覆盖 config 中的 freeze 设置）：
-
-| `--llm-tune` | `--vision-tune` | 说明 |
-|-------------|----------------|------|
-| `freeze` | `freeze` | Qwen 全冻结，仅 forward（默认） |
-| `lora` | `freeze` | LLM LoRA，vision 冻结 |
-| `freeze` | `full` | LLM 冻结，vision 全参数 |
-| `lora` | `full` | LLM LoRA + vision 全参数（SFT2 常用） |
-| `full` | `freeze` | LLM 全参数，vision 冻结 |
-
-`--lora` 是 `--llm-tune lora --vision-tune freeze` 的快捷方式。
-
-## Checkpoint 结构
-
-```
-best/
-├── config.json                  # Qwen (full HF) 或 adapter_model.safetensors (LoRA)
-├── state_proj.pt                # StateProjector weights
-├── wm_predictor/                # LatentWMPredictor (predictor.pt + config.json)
-├── value_head/                  # ValueHead (value_head.pt)
-├── vision_ema.pt                # VisionEncoderEMA shadow (可选)
-├── rl_state.pt                  # iteration/global_step/best/tune metadata
-├── optimizer_rank_00000.pt      # FSDP rank-local optimizer shard（分布式时）
-├── optimizer_rank_00001.pt      # resume 要求相同 world size
-└── processor/                   # tokenizer + image processor files
-```
-
-## 与 SFT2 的关系
-
-- **SFT2**：离线监督训练，从已有 rollout JSONL 学习 WM dynamics + value。数据不来自在线交互。
-- **RL**：在线 RL，持续采集新数据、持续训练。是 SFT2 的后续阶段。
-- 二者共享 WM 模块（`LatentWMPredictor`、`ValueHead`、`StateProjector`）、公共训练工具（`dist`、`metrics`、`logging`），以及 Qwen 调参基础设施（`configure_qwen_tuning`）。
-- SFT2 的 `best/` checkpoint 可作为 RL 的 warm-start（通过 `--wm-checkpoint` 等参数）。
+真实 smoke/baseline 还必须通过 `dynamic_fsdp_k8_fragmented_2plus1.slurm` 的 artifact gate；仅 CPU mock 不能证明 AI2-THOR 的真实 `obs_str`、dataset task 或 reward 路径。

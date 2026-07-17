@@ -28,16 +28,16 @@
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"
-: "${ENV_REPO:?must set ENV_REPO}"
 : "${EXPECTED_COMMIT:?must set EXPECTED_COMMIT}"
 : "${MODEL:?must set MODEL to immutable merged k8 init}"
 : "${SFT2_SNAPSHOT:?must set SFT2_SNAPSHOT}"
 : "${CONFIG:?must set CONFIG}"
-: "${RUN_MODE:?must be smoke or pilot}"
+: "${RUN_MODE:?must be smoke or baseline}"
 : "${WANDB_RUN_ID:?must reserve W&B id before submit}"
 : "${WANDB_RUN_NAME:?must set W&B name}"
 VISION_TUNE=${VISION_TUNE:-freeze}
-[[ "${RUN_MODE}" == smoke || "${RUN_MODE}" == pilot ]]
+# Quality pilots remain blocked; only protocol smoke and fixed heldout baseline run.
+[[ "${RUN_MODE}" == smoke || "${RUN_MODE}" == baseline ]]
 [[ "${VISION_TUNE}" == freeze || "${VISION_TUNE}" == lora ]]
 
 PY=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
@@ -47,6 +47,9 @@ TRAIN_OUT=${RUN_ROOT}/train
 mkdir -p "${TRAIN_OUT}"
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${EXPECTED_COMMIT}" ]]
 [[ -z "$(git -C "${REPO}" status --porcelain --untracked-files=no)" ]]
+ENV_REPO=${REPO}
+[[ "$(git -C "${ENV_REPO}/external/VAGEN" rev-parse HEAD)" == \
+   "e7cc2d01584abcab1e49ba4a6b18ba2067fb6762" ]]
 [[ -f "${MODEL}/RL_INIT_READY" ]]
 for path in \
   "${SFT2_SNAPSHOT}/state_proj.pt" \
@@ -167,21 +170,78 @@ from pathlib import Path
 from safetensors import safe_open
 root, mode, wandb_id, vision_tune = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 rows = list(csv.DictReader((root / "train/train_step_log.csv").open()))
-assert rows
-for row in rows:
-    for key in ("wm_mse", "value_loss", "total_loss", "actor_loss", "entropy"):
-        assert math.isfinite(float(row[key])), (key, row[key])
 assert (root / "train/wandb_run_id.txt").read_text().strip() == wandb_id
 trainer_log = (root / "trainer.log").read_text()
 assert '"wandb": "initialized"' in trainer_log
-final = root / "train/final"
-state = torch.load(final / "rl_state.pt", map_location="cpu", weights_only=False)
-protocol = state["rollout_protocol"]
+protocol = json.loads((root / "train/rollout_protocol.json").read_text())
 assert protocol["mode"] == "dynamic_env"
 assert protocol["eval_sets"] == ["base_train"]
 assert protocol["latent_token_count"] == 8
 assert protocol["latent_query_mode"] == "inject"
 assert protocol["control_backend"] == "gloo"
+assert protocol["history_window"] == 112
+assert protocol["max_think_tokens"] == 512
+assert protocol["prompt_protocol"] == "vagen-source-eval-to-nimloth-inject-v1"
+assert protocol["reward_protocol"] == "vagen-per-turn-plus-final-v1"
+assert protocol["optimization_protocol"] == "all-action-transitions-one-ppo-epoch-v1"
+assert protocol["transition_microbatch_size"] == 2
+assert protocol["value_ranking_weight"] == 0.0
+assert protocol["trajectory_schema"] == 2
+assert protocol["environment_config"]["prompt_format"] == "source_eval_mode"
+assert protocol["environment_config"]["action_sep"] == "|"
+assert protocol["environment_config"]["example_count"] == 0
+assert protocol["environment_config"]["success_reward"] == 1.0
+assert protocol["environment_config"]["per_turn_format_reward"] == 0.01
+
+if mode == "baseline":
+    assert rows == []
+    assert not (root / "train/final").exists()
+    assert '"evaluation_only": "complete"' in trainer_log
+    validation_rows = list(csv.DictReader((root / "train/validation_log.csv").open()))
+    assert len(validation_rows) == 1
+    assert validation_rows[0]["label"] == "baseline"
+    assert int(float(validation_rows[0]["val_num_episodes"])) == 20
+    records = [json.loads(line) for line in (
+        root / "train/validation/baseline/trajectories.jsonl"
+    ).open()]
+    assert len(records) == 20
+    dataset = json.loads((
+        Path(os.environ["REPO"])
+        / "external/VAGEN/vagen/env/navigation/datasets/base.json"
+    ).read_text())["tasks"]
+    for record in records:
+        seed = int(record["id"].rsplit("_", 1)[1])
+        expected = dataset[seed % len(dataset)]["instruction"]
+        assert record["task_instruction"] == expected
+        assert expected in record["observation_texts"][0]
+        steps = len(record["action_indices"])
+        assert len(record["observation_texts"]) == steps + 1
+        assert len(record["assistant_responses"]) == steps
+        assert len(record["step_rewards"]) == steps
+        assert math.isclose(
+            record["reward"],
+            sum(record["step_rewards"]) + record["final_reward"],
+            abs_tol=1e-6,
+        )
+    assert len({record["task_instruction"] for record in records}) == 9
+    print(json.dumps({
+        "status": "ALL_OK",
+        "mode": mode,
+        "episodes": len(records),
+        "successes": sum(bool(record["success"]) for record in records),
+        "unique_instructions": 9,
+        "optimizer_steps": 0,
+    }))
+    raise SystemExit(0)
+
+assert mode == "smoke"
+assert rows
+for row in rows:
+    for key in ("wm_mse", "value_loss", "total_loss", "actor_loss", "entropy"):
+        assert math.isfinite(float(row[key])), (key, row[key])
+final = root / "train/final"
+state = torch.load(final / "rl_state.pt", map_location="cpu", weights_only=False)
+assert state["rollout_protocol"] == protocol
 assert state["optimizer_world_size"] == 2
 assert (final / "optimizer_rank_00000.pt").stat().st_size > 0
 assert (final / "optimizer_rank_00001.pt").stat().st_size > 0
@@ -205,21 +265,40 @@ final_proj = torch.load(final / "state_proj.pt", map_location="cpu", weights_onl
 assert initial_proj.keys() == final_proj.keys()
 assert all(initial_proj[key].dtype == final_proj[key].dtype for key in initial_proj)
 assert all(torch.equal(initial_proj[key], final_proj[key]) for key in initial_proj)
-if mode == "smoke":
-    assert state["iteration"] == 1 and state["global_step"] == 1
-    records = [json.loads(line) for line in (
-        root / "train/rollouts/iter_0001/trajectories.jsonl"
-    ).open()]
-    assert len(records) == 2 and all(len(record["action_indices"]) == 1 for record in records)
-else:
-    assert state["iteration"] in (5, 20), state
-    assert state["global_step"] == state["iteration"]
-    validation_rows = list(csv.DictReader((root / "train/validation_log.csv").open()))
-    expected_labels = ["baseline", "iter_0005"]
-    if state["iteration"] == 20:
-        expected_labels += ["iter_0010", "iter_0015", "iter_0020"]
-    assert [row["label"] for row in validation_rows] == expected_labels
-    assert all(int(float(row["val_num_episodes"])) == 20 for row in validation_rows)
+assert state["iteration"] == 1 and state["global_step"] >= 1
+records = [json.loads(line) for line in (
+    root / "train/rollouts/iter_0001/trajectories.jsonl"
+).open()]
+assert len(records) == 2
+instructions = []
+train_dataset = json.loads((
+    Path(os.environ["REPO"])
+    / "external/VAGEN/vagen/env/navigation/datasets/base_train.json"
+).read_text())["tasks"]
+for record in records:
+    steps = len(record["action_indices"])
+    assert 1 <= steps <= 2
+    assert len(record["image_paths"]) == steps + 1
+    assert len(record["observation_texts"]) == steps + 1
+    assert len(record["assistant_responses"]) == steps
+    assert len(record["step_rewards"]) == steps
+    assert "Human Instruction:" in record["observation_texts"][0]
+    seed = int(record["id"].rsplit("_", 1)[1])
+    expected_instruction = train_dataset[seed % len(train_dataset)]["instruction"]
+    assert record["task_instruction"] == expected_instruction
+    assert record["task_instruction"] in record["observation_texts"][0]
+    assert "Observe the scene" not in json.dumps(record["messages"])
+    assert "What should I do next?" not in json.dumps(record["messages"])
+    assert math.isclose(
+        record["reward"], sum(record["step_rewards"]) + record["final_reward"],
+        abs_tol=1e-6,
+    )
+    instructions.append(record["task_instruction"])
+assert len(set(instructions)) == 2
+num_transitions = sum(len(record["action_indices"]) for record in records)
+expected_steps = math.ceil(num_transitions / 2)
+assert state["global_step"] == expected_steps
+assert int(float(rows[0]["optimizer_steps"])) == expected_steps
 print(json.dumps({
     "status": "ALL_OK",
     "mode": mode,

@@ -1,4 +1,4 @@
-# Mechanics-only k=8/inject dynamic rollout smoke from the Full8192 SFT2 policy.
+# k=8/inject integration smoke for real task text, transcript replay, and rewards.
 
 freeze:
   qwen: false
@@ -18,20 +18,22 @@ predictor:
 
 value_head:
   lr: 1.0e-4
-  rank_margin: 0.1
-  lambda_rank: 1.0
+  rank_margin: 0.0
+  lambda_rank: 0.0
 
 rollout:
   eval_sets:
     - base_train
-  history_window: 4
-  seed_offset: 30001
+  history_window: 112
+  max_think_tokens: 512
+  # Seeds 30002/30003 are distinct StoveBurner/Bread task instructions.
+  seed_offset: 30002
   env_timeout: 600
 
 rl:
   iterations: 1
   envs_per_iteration: 2
-  max_steps_per_episode: 1
+  max_steps_per_episode: 2
   gamma: 0.99
   batch_size: 2
   temperature: 0.7

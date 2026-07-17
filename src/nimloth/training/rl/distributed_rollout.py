@@ -22,12 +22,19 @@ from nimloth.training.rl.rollout import (
     ACTION_NAMES,
     EnvRolloutCollector,
     RolloutTrajectory,
-    _build_vagen_messages,
-    _obs_to_pil,
-    compute_nimloth_action_distribution,
+    generate_nimloth_thought_and_action_logits,
     sample_action_from_logits,
+    sample_token_from_logits,
     save_trajectories,
     validate_rollout_trajectory,
+)
+from nimloth.training.rl.vagen_protocol import (
+    extract_human_instruction,
+    nimloth_assistant_response,
+    observation_text_and_image,
+    source_eval_text_to_nimloth,
+    task_succeeded,
+    vagen_env_response,
 )
 
 
@@ -55,6 +62,7 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
             history_window=collector._history_window,
             env_timeout=collector._env_timeout,
             latent_token_count=collector._latent_token_count,
+            max_think_tokens=collector._max_think_tokens,
         )
         result._base_seed_offset = collector._base_seed_offset
         result._control_group = None
@@ -113,24 +121,48 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
             )
         return payload
 
-    def _collective_action_distribution(
+    def _collective_policy_turn(
         self,
         *,
         image_paths: list[str],
-        nav_instruction: str,
-        action_history: list[str],
-    ) -> torch.Tensor:
+        system_prompt: str,
+        observation_texts: list[str],
+        assistant_responses: list[str],
+        sampling_seed: int,
+    ) -> dict[str, Any]:
+        """Generate one real assistant turn with rank-0 synchronized sampling."""
+
+        generator = None
+        if self.rank == 0:
+            generator = torch.Generator(device="cpu")
+            generator.manual_seed(sampling_seed)
+
+        def select_thought_token(logits: torch.Tensor, _: int) -> int:
+            token_id = None
+            if self.rank == 0:
+                token_id = sample_token_from_logits(
+                    logits,
+                    temperature=self._temperature,
+                    top_p=self._top_p,
+                    generator=generator,
+                )
+            return int(self._broadcast_rank0(token_id))
+
         local_error: str | None = None
+        thought: str | None = None
         logits: torch.Tensor | None = None
         try:
-            logits, _ = compute_nimloth_action_distribution(
+            thought, logits = generate_nimloth_thought_and_action_logits(
                 self._model,
                 self._processor,
                 image_paths,
-                nav_instruction,
-                action_history,
+                system_prompt,
+                observation_texts,
+                assistant_responses,
                 history_window=self._history_window,
                 latent_token_count=self._latent_token_count,
+                max_think_tokens=self._max_think_tokens,
+                token_selector=select_thought_token,
             )
         except Exception:
             local_error = traceback.format_exc()
@@ -140,10 +172,8 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
         failed = {rank: error for rank, error in enumerate(errors) if error}
         if failed:
             raise RuntimeError(f"distributed policy forward failed: {failed}")
-        assert logits is not None
+        assert logits is not None and thought is not None
 
-        # FSDP returns a replicated output.  Refuse to sample if any rank sees a
-        # materially different action distribution.
         local = logits.detach().float()
         global_min = local.clone()
         global_max = local.clone()
@@ -155,7 +185,25 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
                 "FSDP ranks produced different action logits: "
                 f"max_rank_delta={max_rank_delta}"
             )
-        return local
+
+        payload: dict[str, Any] | None = None
+        if self.rank == 0:
+            action_idx, log_probs = sample_action_from_logits(
+                local.cpu(),
+                temperature=self._temperature,
+                top_p=self._top_p,
+                generator=generator,
+            )
+            payload = {
+                "thought": thought,
+                "action_idx": action_idx,
+                "action_name": ACTION_NAMES[action_idx],
+                "log_probs": log_probs,
+            }
+        payload = self._broadcast_rank0(payload)
+        if str(payload["thought"]) != thought:
+            raise RuntimeError("ranks decoded different generated thought text")
+        return payload
 
     def collect(
         self,
@@ -198,13 +246,17 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
                 self.client.create_environments_batch({ep_id: env_config})
                 prompts = self.client.get_system_prompts_batch([ep_id])
                 if ep_id not in prompts or not str(prompts[ep_id]).strip():
-                    raise RuntimeError(f"environment returned no instruction for {ep_id}")
+                    raise RuntimeError(f"environment returned no system prompt for {ep_id}")
                 results = self.client.reset_batch({ep_id: seed})
                 if ep_id not in results:
                     raise RuntimeError(f"environment returned no reset result for {ep_id}")
                 rank0_state["obs"], rank0_state["info"] = results[ep_id]
-                rank0_state["nav_instruction"] = str(prompts[ep_id])
-                return {"nav_instruction": rank0_state["nav_instruction"]}
+                system_prompt = source_eval_text_to_nimloth(
+                    str(prompts[ep_id]),
+                    latent_token_count=self._latent_token_count,
+                )
+                rank0_state["system_prompt"] = system_prompt
+                return {"system_prompt": system_prompt}
 
             started = self._rank0_call("start_episode", start_episode, fatal=False)
             if not started.get("ok"):
@@ -220,22 +272,29 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
                     except Exception:
                         pass
                 continue
-            nav_instruction = str(started["value"]["nav_instruction"])
+            system_prompt = str(started["value"]["system_prompt"])
 
             action_names: list[str] = []
             action_indices: list[int] = []
             action_log_probs: list[list[float]] = []
+            assistant_responses: list[str] = []
             image_paths: list[str] = []
+            observation_texts: list[str] = []
+            task_instruction = ""
             step_rewards: list[float] = []
+            success = False
             done = False
             episode_valid = True
 
             for step in range(max_steps_per_episode):
-                def save_observation() -> str:
-                    image = _obs_to_pil(rank0_state["obs"])
+                def save_observation() -> dict[str, str]:
+                    observation_text, image = observation_text_and_image(
+                        rank0_state["obs"],
+                        latent_token_count=self._latent_token_count,
+                    )
                     image_path = img_dir / f"{ep_id}_step{step:02d}.png"
                     image.save(str(image_path))
-                    return str(image_path)
+                    return {"path": str(image_path), "text": observation_text}
 
                 image_result = self._rank0_call("save_observation", save_observation, fatal=False)
                 if not image_result.get("ok"):
@@ -244,51 +303,47 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
                                "reason": "observation_failed", "step": step,
                                "error": image_result.get("error")})
                     break
-                image_paths.append(str(image_result["value"]))
+                image_paths.append(str(image_result["value"]["path"]))
+                observation_texts.append(str(image_result["value"]["text"]))
+                if not task_instruction:
+                    task_instruction = extract_human_instruction(observation_texts[0])
 
-                action_logits = self._collective_action_distribution(
+                action_payload = self._collective_policy_turn(
                     image_paths=image_paths,
-                    nav_instruction=nav_instruction,
-                    action_history=action_names,
+                    system_prompt=system_prompt,
+                    observation_texts=observation_texts,
+                    assistant_responses=assistant_responses,
+                    sampling_seed=self._sampling_seed(seed, step),
                 )
-                action_payload: dict[str, Any] | None = None
-                if self.rank == 0:
-                    generator = torch.Generator(device="cpu")
-                    generator.manual_seed(self._sampling_seed(seed, step))
-                    action_idx, log_probs = sample_action_from_logits(
-                        action_logits.cpu(),
-                        temperature=self._temperature,
-                        top_p=self._top_p,
-                        generator=generator,
-                    )
-                    action_payload = {
-                        "action_idx": action_idx,
-                        "action_name": ACTION_NAMES[action_idx],
-                        "log_probs": log_probs,
-                    }
-                action_payload = self._broadcast_rank0(action_payload)
+                thought = str(action_payload["thought"])
                 action_idx = int(action_payload["action_idx"])
                 action_name = str(action_payload["action_name"])
                 log_probs = [float(value) for value in action_payload["log_probs"]]
+                assistant_response = nimloth_assistant_response(
+                    thought,
+                    action_idx,
+                    latent_token_count=self._latent_token_count,
+                )
 
                 def step_environment() -> dict[str, Any]:
-                    vagen_response = (
-                        "<think><reasoning>Navigating toward target.</reasoning>"
-                        "<prediction>Moving.</prediction></think>"
-                        f"<answer>{action_name}</answer>"
-                    )
-                    results = self.client.step_batch({ep_id: vagen_response})
+                    results = self.client.step_batch({
+                        ep_id: vagen_env_response(thought, action_idx)
+                    })
                     if ep_id not in results:
                         raise RuntimeError(f"environment returned no step result for {ep_id}")
                     obs, reward, env_done, info = results[ep_id]
                     action_ok = info.get("last_action_success", True) if isinstance(info, dict) else True
-                    adjusted_reward = float(reward) - (0.1 if not action_ok else 0.0)
                     rank0_state["obs"] = obs
                     rank0_state["info"] = info
                     return {
-                        "reward": adjusted_reward,
+                        "reward": float(reward),
                         "done": bool(env_done),
                         "action_ok": bool(action_ok),
+                        "success": task_succeeded(info),
+                        "instruction": (
+                            str(info.get("instruction", ""))
+                            if isinstance(info, dict) else ""
+                        ),
                     }
 
                 step_result = self._rank0_call("step_environment", step_environment, fatal=False)
@@ -299,10 +354,22 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
                                "error": step_result.get("error")})
                     break
                 step_value = step_result["value"]
+                if str(step_value["instruction"]) != task_instruction:
+                    episode_valid = False
+                    self._log({
+                        "rl_ep": ep_i,
+                        "discarded": True,
+                        "reason": "task_instruction_mismatch",
+                        "initial_instruction": task_instruction,
+                        "step_instruction": step_value["instruction"],
+                    })
+                    break
                 action_names.append(action_name)
                 action_indices.append(action_idx)
                 action_log_probs.append(log_probs)
+                assistant_responses.append(assistant_response)
                 step_rewards.append(float(step_value["reward"]))
+                success = success or bool(step_value["success"])
                 done = bool(step_value["done"])
                 self._log({"rl_ep": ep_i, "step": step,
                            "action": action_name, "reward": step_rewards[-1],
@@ -314,23 +381,34 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
             if self.rank == 0:
                 try:
                     if episode_valid and action_names:
-                        final_image = _obs_to_pil(rank0_state["obs"])
+                        final_text, final_image = observation_text_and_image(
+                            rank0_state["obs"],
+                            latent_token_count=self._latent_token_count,
+                        )
                         final_path = img_dir / f"{ep_id}_step{len(action_names):02d}.png"
                         final_image.save(str(final_path))
                         image_paths.append(str(final_path))
+                        observation_texts.append(final_text)
+                        rewards = self.client.compute_reward_batch([ep_id])
+                        if ep_id not in rewards:
+                            raise RuntimeError(f"environment returned no final reward for {ep_id}")
+                        final_reward = float(rewards[ep_id])
                         trajectory = RolloutTrajectory(
                             record_id=ep_id,
                             image_paths=image_paths,
+                            observation_texts=observation_texts,
+                            task_instruction=task_instruction,
+                            system_prompt=system_prompt,
+                            assistant_responses=assistant_responses,
                             action_indices=action_indices,
                             action_names=action_names,
                             action_log_probs=action_log_probs,
-                            nav_instruction=nav_instruction,
-                            success=any(reward >= 10.0 for reward in step_rewards),
-                            reward=sum(step_rewards),
+                            step_rewards=step_rewards,
+                            final_reward=final_reward,
+                            success=success,
+                            reward=sum(step_rewards) + final_reward,
                             split=self._split,
-                            messages=_build_vagen_messages(
-                                nav_instruction, len(action_names), action_names
-                            ),
+                            latent_token_count=self._latent_token_count,
                         )
                         validate_rollout_trajectory(trajectory)
                         trajectory_payload = {"ok": True, "record": trajectory.to_record()}

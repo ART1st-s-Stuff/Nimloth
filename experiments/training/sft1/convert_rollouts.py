@@ -100,33 +100,14 @@ def iter_jsonl(path: Path) -> Iterable[tuple[int, dict[str, Any]]]:
 
 
 def rewrite_prompt_instruction(content: str) -> str:
-    """Rewrite VAGEN action-format instructions into Nimloth format."""
-    replacements = [
-        (
-            "You can optionally think first, then give your action. Respond in this format:\n"
-            "<think>...</think><action>some_action</action>",
-            "You can optionally think first, then give your action. " + NIMLOTH_FORMAT_INSTRUCTION,
-        ),
-        (
-            "Respond in this format:\n<think>...</think><action>some_action</action>",
-            NIMLOTH_FORMAT_INSTRUCTION,
-        ),
-        (
-            "<think>...</think><action>some_action</action>",
-            f"<think>...</think>{NIMLOTH_ACTION_BLOCK}",
-        ),
-        (
-            "<action>{action_example}</action>",
-            "<|action_start|><|action_(idx)|><|action_end|>",
-        ),
-    ]
-    for old, new in replacements:
-        content = content.replace(old, new)
-    # Current VAGEN output_str includes concrete XML examples such as
-    # <action>moveahead</action>; every prompt-side XML action example must be
-    # rewritten or it teaches the opposite format from the SFT target.
-    content = ACTION_RE.sub(NIMLOTH_ACTION_BLOCK, content)
-    return content
+    """Rewrite source-eval prompts through the shared runtime/SFT protocol."""
+
+    from nimloth.training.rl.vagen_protocol import source_eval_text_to_nimloth
+
+    latent_count = len(re.findall(r"<\|latent_state(?:_\d+)?\|>", LATENT_STATE_BLOCK))
+    return source_eval_text_to_nimloth(
+        content, latent_token_count=latent_count
+    )
 
 
 def parse_im_messages(text: str) -> list[dict[str, str]]:

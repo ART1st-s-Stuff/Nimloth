@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
 from types import SimpleNamespace
+import math
+
+import pytest
 
 from experiments.training.rl.rollout_env import validate_split, validate_trajectories
 from nimloth.training.rl.rollout import (
@@ -11,17 +13,39 @@ from nimloth.training.rl.rollout import (
     RolloutTrajectory,
     validate_rl_policy_protocol,
 )
+from nimloth.training.rl.vagen_protocol import nimloth_assistant_response
+
+
+INITIAL = """[Initial Observation]:
+<image>
+Human Instruction: Move near the couch.
+Decide your next action(s)."""
+NEXT = """After your action, the extracted valid action is move_forward.
+The environment feedback is: Last action is executed successfully.
+After that, the observation is:
+<image>
+Decide your next action(s)."""
 
 
 def _trajectory() -> RolloutTrajectory:
     return RolloutTrajectory(
         record_id="train-1",
         image_paths=["before.png", "after.png"],
+        observation_texts=[INITIAL, NEXT],
+        task_instruction="Move near the couch.",
+        system_prompt="Navigation system prompt.",
+        assistant_responses=[nimloth_assistant_response(
+            "<think>Move toward the couch.</think>", 0, latent_token_count=8
+        )],
         action_indices=[0],
-        action_names=["moveahead"],
-        action_log_probs=[[-2.0] * 8],
-        nav_instruction="Move near the couch.",
+        action_names=["move_forward"],
+        action_log_probs=[[-math.log(8.0)] * 8],
+        step_rewards=[0.01],
+        final_reward=0.0,
+        success=False,
+        reward=0.01,
         split="train",
+        latent_token_count=8,
     )
 
 
@@ -67,14 +91,73 @@ def test_env_collector_enforces_training_dataset() -> None:
                             eval_sets=("base_train",), split="validation")
 
 
+def test_environment_config_matches_pinned_source_eval_reference() -> None:
+    collector = EnvRolloutCollector(
+        None, None, "http://env", None,
+        eval_sets=("base_train",), split="train",
+    )
+    config = collector._environment_config("base_train")["env_config"]
+    assert config == {
+        "render_mode": "vision",
+        "prompt_format": "source_eval_mode",
+        "use_state_reward": False,
+        "eval_set": "base_train",
+        "max_actions_per_step": 1,
+        "action_sep": "|",
+        "example_count": 0,
+        "format_reward": 0.0,
+        "per_turn_format_reward": 0.01,
+        "success_reward": 1.0,
+        "success_threshold": 1.0,
+        "step_length": 0.3,
+        "grounding_reward_weight": 0.5,
+        "worldmodeling_reward_weight": 0.5,
+        "gpu_device": 0,
+    }
+
+
 def test_complete_trajectory_schema_passes() -> None:
-    validate_trajectories([_trajectory()])
+    trajectory = _trajectory()
+    validate_trajectories([trajectory])
+    record = trajectory.to_record()
+    assert record["observation_texts"] == [INITIAL, NEXT]
+    assert record["task_instruction"] == "Move near the couch."
+    assert record["step_rewards"] == [0.01]
+    assert record["assistant_responses"] == trajectory.assistant_responses
+    assert [message["role"] for message in record["messages"]] == [
+        "system", "user", "assistant"
+    ]
+    assert "nav_instruction" not in record
+
+
+def test_legacy_taskless_record_is_rejected() -> None:
+    record = _trajectory().to_record()
+    for key in (
+        "task_instruction", "observation_texts", "assistant_responses", "step_rewards"
+    ):
+        record.pop(key)
+    with pytest.raises(ValueError, match="legacy/taskless"):
+        RolloutTrajectory.from_record(record)
 
 
 def test_missing_final_observation_is_rejected() -> None:
     trajectory = _trajectory()
     trajectory.image_paths.pop()
     with pytest.raises(RuntimeError, match="images=1 but actions=1"):
+        validate_trajectories([trajectory])
+
+
+def test_missing_observation_text_is_rejected() -> None:
+    trajectory = _trajectory()
+    trajectory.observation_texts.pop()
+    with pytest.raises(RuntimeError, match="observation_texts=1 but actions=1"):
+        validate_trajectories([trajectory])
+
+
+def test_missing_step_reward_is_rejected() -> None:
+    trajectory = _trajectory()
+    trajectory.step_rewards.clear()
+    with pytest.raises(RuntimeError, match="step_rewards=0 but actions=1"):
         validate_trajectories([trajectory])
 
 

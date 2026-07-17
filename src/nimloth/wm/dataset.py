@@ -14,18 +14,35 @@ DEFAULT_VALUE_GAMMA = 1.0
 
 
 def discounted_action_value_targets(record: dict[str, Any], *, gamma: float = DEFAULT_VALUE_GAMMA) -> list[float]:
-    """Discounted Monte Carlo return for each taken action in a trajectory.
+    """Discounted returns with VAGEN's reward attached to its actual turn.
 
-    Uses trajectory-level ``reward`` as terminal return (sparse). Step ``t`` receives
-    ``reward * gamma ** (T - 1 - t)`` where ``T`` is the number of actions.
+    New RL records preserve ``step_rewards`` and ``final_reward``.  The final
+    environment reward is added to the last assistant turn, matching VAGEN's
+    multi-turn token reward placement, then returns are accumulated backward.
+    Legacy SFT records without per-turn rewards retain their historical sparse
+    terminal-return interpretation.
     """
 
     action_indices = list(record.get("action_indices", []))
     n = len(action_indices)
     if n == 0:
         return []
-    terminal = float(record.get("reward", 0.0) or 0.0)
-    return [terminal * (gamma ** (n - 1 - t)) for t in range(n)]
+    if "step_rewards" not in record:
+        terminal = float(record.get("reward", 0.0) or 0.0)
+        return [terminal * (gamma ** (n - 1 - t)) for t in range(n)]
+
+    rewards = [float(value) for value in record.get("step_rewards", [])]
+    if len(rewards) != n:
+        raise ValueError(
+            f"step_rewards has length {len(rewards)} but action_indices has length {n}"
+        )
+    rewards[-1] += float(record.get("final_reward", 0.0) or 0.0)
+    returns = [0.0] * n
+    running = 0.0
+    for index in range(n - 1, -1, -1):
+        running = rewards[index] + float(gamma) * running
+        returns[index] = running
+    return returns
 
 
 @dataclass(frozen=True)

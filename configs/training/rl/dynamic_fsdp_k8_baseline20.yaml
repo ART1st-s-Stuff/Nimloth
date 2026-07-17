@@ -1,5 +1,5 @@
-# Corrected k=8/inject protocol config. Do not launch a quality pilot until the
-# separate fixed-20 heldout baseline passes task/prompt/reward validation.
+# Evaluation-only corrected k=8/inject heldout baseline. No optimizer step or
+# checkpoint is permitted; this gate must pass before any new quality pilot.
 
 freeze:
   qwen: false
@@ -19,24 +19,21 @@ predictor:
 
 value_head:
   lr: 1.0e-4
-  # VAGEN PPO has no unconditional chosen-action ranking objective.
   rank_margin: 0.0
   lambda_rank: 0.0
 
 rollout:
-  # Training is restricted to the actual 1200-task training dataset.
+  # Required to construct the trainer collector, but evaluation_only never uses it.
   eval_sets:
     - base_train
-  # The source VAGEN checkpoint used window_size=112; this preserves all 20 turns.
   history_window: 112
   max_think_tokens: 512
   seed_offset: 30001
   env_timeout: 600
 
 rl:
-  # batch_size is a memory microbatch; every collected transition is consumed.
-  iterations: 20
-  envs_per_iteration: 8
+  iterations: 0
+  envs_per_iteration: 0
   max_steps_per_episode: 20
   gamma: 0.99
   batch_size: 2
@@ -46,10 +43,9 @@ rl:
 validation:
   enabled: true
   baseline: true
-  interval: 5
+  interval: 1
   envs: 20
   max_steps_per_episode: 20
-  # base.json contains 60 heldout tasks/scenes and is disjoint from base_train.
   eval_sets:
     - base
   seed_offset: 1
@@ -60,7 +56,7 @@ validation:
   env_timeout: 600
 
 training:
+  evaluation_only: true
   seed: 42
   log_interval: 1
-  save_interval: 5
-  stop_if_no_success_by_iteration: 5
+  save_interval: 100

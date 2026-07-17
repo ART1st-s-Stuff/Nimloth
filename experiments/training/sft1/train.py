@@ -459,19 +459,39 @@ def evaluate_format(
         if not prompt_msgs:
             continue
         images = collect_images(prompt_msgs)
-        text = processor.apply_chat_template(prompt_msgs, tokenize=False, add_generation_prompt=True)
         if latent_query_mode == "inject":
-            first_assistant = next((m for m in messages if m["role"] == "assistant"), None)
-            if first_assistant is None:
+            from nimloth.training.rl.rollout import (
+                generate_nimloth_thought_and_action_logits_from_messages,
+            )
+            from nimloth.training.rl.vagen_protocol import nimloth_assistant_response
+
+            try:
+                thought, action_logits = generate_nimloth_thought_and_action_logits_from_messages(
+                    module,
+                    processor,
+                    prompt_msgs,
+                    images,
+                    latent_token_count=latent_token_count,
+                    max_think_tokens=512,
+                    token_selector=lambda logits, _: int(logits.argmax().item()),
+                )
+            except (RuntimeError, ValueError):
+                total += 1
                 continue
-            content = str(first_assistant["content"])
-            think_match = re.search(r"<think>.*?</think>", content, re.S)
-            if think_match is None:
-                continue
-            # Isolate action formatting from thought generation: teacher-force
-            # the reference thought, inject deterministic query slots, then ask
-            # the model to generate only the action block.
-            text += think_match.group(0) + latent_state_block(latent_token_count)
+            decoded = nimloth_assistant_response(
+                thought,
+                int(action_logits.argmax().item()),
+                latent_token_count=latent_token_count,
+            )
+            total += 1
+            correct += int(nimloth_format_correct(
+                decoded, latent_token_count=latent_token_count
+            ))
+            continue
+
+        text = processor.apply_chat_template(
+            prompt_msgs, tokenize=False, add_generation_prompt=True
+        )
         text = normalize_latent_state_blocks(text, latent_token_count)
         inputs = processor(text=[text], images=images or None, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -479,10 +499,9 @@ def evaluate_format(
         new_ids = output_ids[0, inputs["input_ids"].shape[1] :]
         decoded = processor.decode(new_ids, skip_special_tokens=False)
         total += 1
-        if latent_query_mode == "inject":
-            correct += int(action_block_format_correct(decoded))
-        else:
-            correct += int(nimloth_format_correct(decoded, latent_token_count=latent_token_count))
+        correct += int(nimloth_format_correct(
+            decoded, latent_token_count=latent_token_count
+        ))
     if was_training:
         module.train()
     return correct / max(total, 1)

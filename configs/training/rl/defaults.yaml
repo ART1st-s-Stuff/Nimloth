@@ -36,17 +36,18 @@ rollout:
   eval_sets:
     - base_train
     - common_sense_train
-  history_window: 4          # current observation + up to 4 real history images
+  history_window: 112        # source checkpoint protocol; preserves every 20-turn episode
+  max_think_tokens: 512      # source response_length_per_turn
   seed_offset: 0             # deterministic cursor; resume advances by completed iterations
   env_timeout: 180           # keep below the default NCCL collective watchdog
 
-# --- RL loop (1 iteration = 1 global_step = 1 optimizer step) ---
+# --- RL loop (one PPO epoch; every transition is consumed in microbatches) ---
 rl:
   iterations: 1000
   envs_per_iteration: 8     # episodes collected per iteration
   max_steps_per_episode: 20
   gamma: 0.99
-  batch_size: 32
+  batch_size: 32            # transition microbatch size, not a subsample count
   temperature: 1.0           # applied to rollout and PPO action log-probs
   top_p: 1.0                 # restricts sampling only
 
@@ -64,7 +65,8 @@ validation:
   seed_offset: 1
   temperature: 0.0
   top_p: 1.0
-  history_window: 4
+  history_window: 112
+  max_think_tokens: 512
   env_timeout: 180
 
 # --- Training / output ---

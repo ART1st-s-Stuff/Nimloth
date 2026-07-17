@@ -23,6 +23,7 @@ from nimloth.training.rl.rollout import (
     validate_rl_policy_protocol,
     validate_rollout_trajectory,
 )
+from nimloth.training.rl.vagen_protocol import nimloth_assistant_response
 
 
 def test_k8_inject_policy_protocol_is_supported() -> None:
@@ -57,9 +58,27 @@ def test_k8_pilot_uses_disjoint_fixed_heldout_protocol() -> None:
         "seed_offset": 1,
         "temperature": 0.0,
         "top_p": 1.0,
-        "history_window": 4,
+        "history_window": 112,
+        "max_think_tokens": 512,
         "env_timeout": 600,
     }
+
+
+def test_corrected_baseline_is_fixed_heldout_and_evaluation_only() -> None:
+    import yaml
+
+    config = yaml.safe_load(Path(
+        "configs/training/rl/dynamic_fsdp_k8_baseline20.yaml"
+    ).read_text(encoding="utf-8"))
+    assert config["training"]["evaluation_only"] is True
+    assert config["rl"]["iterations"] == 0
+    assert config["validation"]["envs"] == 20
+    assert config["validation"]["eval_sets"] == ["base"]
+    assert config["validation"]["seed_offset"] == 1
+    assert config["validation"]["temperature"] == 0.0
+    assert config["validation"]["top_p"] == 1.0
+    assert config["validation"]["history_window"] == 112
+    assert config["value_head"]["lambda_rank"] == 0.0
 
 
 def test_k8_snapshot_is_immutable_and_omits_sft_optimizer(tmp_path: Path) -> None:
@@ -155,43 +174,29 @@ def test_zero_update_run_refuses_final_checkpoint() -> None:
     _require_optimizer_progress(1)
 
 
-def test_policy_prompt_uses_real_windowed_images() -> None:
+def test_policy_prompt_uses_real_windowed_transcript_and_images() -> None:
+    responses = [
+        nimloth_assistant_response(
+            "<think>first</think>", 0, latent_token_count=8
+        ),
+        nimloth_assistant_response(
+            "<think>second</think>", 5, latent_token_count=8
+        ),
+    ]
     messages, images = build_nimloth_policy_messages(
         ["obs0.png", "obs1.png", "obs2.png"],
-        "Find the chair.",
-        ["moveahead", "rotateleft"],
+        "system",
+        ["<image>\ntask", "<image>\nfeedback1", "<image>\nfeedback2"],
+        responses,
         history_window=1,
     )
     assert images == ["obs1.png", "obs2.png"]
-    image_contents = [
-        part["image"]
-        for message in messages
-        for part in message.get("content", [])
-        if isinstance(part, dict) and part.get("type") == "image"
+    assert messages == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "<image>\nfeedback1"},
+        {"role": "assistant", "content": responses[1]},
+        {"role": "user", "content": "<image>\nfeedback2"},
     ]
-    assert image_contents == ["obs1.png", "obs2.png"]
-    assert "<|action_(5)|>" in messages[2]["content"][0]["text"]
-
-
-def test_policy_prompt_renders_eight_query_tokens() -> None:
-    messages, _ = build_nimloth_policy_messages(
-        ["obs0.png", "obs1.png"],
-        "Find the chair.",
-        ["moveahead"],
-        history_window=4,
-        latent_token_count=8,
-    )
-    expected = "<|latent_state|>" + "".join(
-        f"<|latent_state_{index}|>" for index in range(1, 8)
-    )
-    assistant_texts = [
-        part["text"]
-        for message in messages
-        if message["role"] == "assistant"
-        for part in message["content"]
-    ]
-    assert len(assistant_texts) == 2
-    assert all(expected in text for text in assistant_texts)
 
 
 def test_policy_image_paths_are_materialized_as_rgb(tmp_path: Path) -> None:
@@ -210,10 +215,159 @@ def test_policy_image_paths_are_materialized_as_rgb(tmp_path: Path) -> None:
 
 
 def test_policy_prompt_rejects_misaligned_history() -> None:
-    with pytest.raises(ValueError, match="one more image"):
+    with pytest.raises(ValueError, match="one image per observation"):
         build_nimloth_policy_messages(
-            ["obs0.png"], "Find it.", ["moveahead"], history_window=4
+            ["obs0.png"],
+            "system",
+            ["<image>\ntask", "<image>\nnext"],
+            [nimloth_assistant_response(
+                "<think>move</think>", 0, latent_token_count=8
+            )],
+            history_window=112,
         )
+
+
+def test_inject_runtime_generates_thought_before_inserting_query_block() -> None:
+    from nimloth.latent.extraction import all_special_tokens_for_latent_count
+    from nimloth.training.rl.rollout import (
+        generate_nimloth_thought_and_action_logits_from_messages,
+    )
+
+    class FakeTokenizer:
+        unk_token_id = -1
+
+        def __init__(self):
+            special = all_special_tokens_for_latent_count(latent_token_count=8)
+            self.ids = {token: 20 + index for index, token in enumerate(special)}
+
+        def convert_tokens_to_ids(self, token):
+            return self.ids.get(token, -1)
+
+        def encode(self, text, add_special_tokens=False):
+            if text in self.ids:
+                return [self.ids[text]]
+            if text == "</think>":
+                return [12]
+            raise AssertionError(text)
+
+        def decode(self, ids, skip_special_tokens=False):
+            assert ids == [10, 11, 12]
+            return "<think>generated from policy</think>"
+
+    class FakeProcessor:
+        def __init__(self):
+            self.tokenizer = FakeTokenizer()
+
+        def apply_chat_template(self, messages, **kwargs):
+            assert messages[-1]["content"] == "<image>\nreal task"
+            return "rendered-training-prefix"
+
+        def __call__(self, **kwargs):
+            assert kwargs["text"] == ["rendered-training-prefix"]
+            return {
+                "input_ids": torch.tensor([[1]]),
+                "attention_mask": torch.tensor([[1]]),
+            }
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self, tokenizer):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(()))
+            self.tokenizer = tokenizer
+
+        def forward(self, input_ids, **kwargs):
+            logits = torch.full((1, input_ids.shape[1], 128), -100.0)
+            last = int(input_ids[0, -1])
+            next_id = {1: 10, 10: 11, 11: 12}.get(last)
+            if next_id is not None:
+                logits[0, -1, next_id] = 0.0
+            else:
+                action_start = self.tokenizer.ids["<|action_start|>"]
+                assert last == action_start
+                for index in range(8):
+                    token = self.tokenizer.ids[f"<|action_({index})|>"]
+                    logits[0, -1, token] = float(index)
+            return SimpleNamespace(logits=logits)
+
+    processor = FakeProcessor()
+    model = FakeModel(processor.tokenizer)
+    thought, action_logits = generate_nimloth_thought_and_action_logits_from_messages(
+        model,
+        processor,
+        [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "<image>\nreal task"},
+        ],
+        [],
+        latent_token_count=8,
+        max_think_tokens=8,
+        token_selector=lambda logits, _: int(logits.argmax().item()),
+    )
+    assert thought == "<think>generated from policy</think>"
+    assert action_logits.tolist() == list(map(float, range(8)))
+
+
+def test_ppo_replays_the_stored_rollout_prefix_verbatim() -> None:
+    from nimloth.latent.extraction import (
+        LatentActionTokens,
+        latent_state_block,
+    )
+    from nimloth.training.rl.trainer import compute_new_log_probs_for_batch
+
+    tokens = LatentActionTokens()
+    token_id_map = {
+        tokens.action_start: 30,
+        **{token: 40 + index for index, token in enumerate(tokens.action_tokens)},
+    }
+    expected_suffix = (
+        "<think>actual generated thought</think>"
+        + latent_state_block(8)
+        + "<|action_start|>"
+    )
+
+    class FakeProcessor:
+        def apply_chat_template(self, messages, **kwargs):
+            assert messages == [
+                {"role": "system", "content": "real system"},
+                {"role": "user", "content": "<image>\nreal task"},
+            ]
+            return "TRAINING_TEMPLATE_PREFIX"
+
+        def __call__(self, **kwargs):
+            assert kwargs["text"] == ["TRAINING_TEMPLATE_PREFIX" + expected_suffix]
+            assert len(kwargs["images"]) == 1
+            return {"input_ids": torch.tensor([[1, 30]])}
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(()))
+
+        def forward(self, input_ids, **kwargs):
+            logits = torch.zeros((1, 2, 64)) + self.anchor
+            for index in range(8):
+                logits[0, 1, 40 + index] = float(index) + self.anchor
+            return SimpleNamespace(logits=logits)
+
+    new_log_probs, logits = compute_new_log_probs_for_batch(
+        [{
+            "image_history_paths": [Image.new("RGB", (2, 2), "black")],
+            "system_prompt": "real system",
+            "observation_texts": ["<image>\nreal task"],
+            "assistant_responses": [],
+            "current_thought": "<think>actual generated thought</think>",
+            "taken_action_idx": 7,
+        }],
+        FakeModel(),
+        FakeProcessor(),
+        token_id_map,
+        torch.device("cpu"),
+        history_window=112,
+        temperature=1.0,
+        latent_token_count=8,
+    )
+    assert logits.shape == (1, 8)
+    assert new_log_probs.shape == (1,)
 
 
 def test_sampling_is_deterministic_and_temperature_scaled() -> None:
@@ -237,10 +391,21 @@ def test_trajectory_validation_rejects_nonfinite_log_probs() -> None:
     trajectory = RolloutTrajectory(
         record_id="bad",
         image_paths=["before.png", "after.png"],
+        observation_texts=[
+            "<image>\nHuman Instruction: Move.\nDecide your next action(s).",
+            "<image>\nfeedback",
+        ],
+        task_instruction="Move.",
+        system_prompt="system",
+        assistant_responses=[nimloth_assistant_response(
+            "<think>move</think>", 0, latent_token_count=8
+        )],
         action_indices=[0],
-        action_names=["moveahead"],
+        action_names=["move_forward"],
         action_log_probs=[[float("nan")] * 8],
-        nav_instruction="Move.",
+        step_rewards=[0.01],
+        reward=0.01,
+        latent_token_count=8,
         split="train",
     )
     with pytest.raises(ValueError, match="non-finite"):
@@ -325,12 +490,22 @@ def test_k8_hidden_encoding_extracts_full_query_block(tmp_path: Path) -> None:
     trajectory = RolloutTrajectory(
         record_id="k8",
         image_paths=[str(path) for path in image_paths],
+        observation_texts=[
+            "<image>\nHuman Instruction: Move.\nDecide your next action(s).",
+            "<image>\nfeedback",
+        ],
+        task_instruction="Move.",
+        system_prompt="Navigate.",
+        assistant_responses=[nimloth_assistant_response(
+            "<think>move</think>", 0, latent_token_count=8
+        )],
         action_indices=[0],
-        action_names=["moveahead"],
+        action_names=["move_forward"],
         action_log_probs=[[float(-torch.log(torch.tensor(8.0)))] * 8],
-        nav_instruction="Move.",
+        step_rewards=[0.01],
+        reward=0.01,
+        latent_token_count=8,
         split="train",
-        messages=[{"role": "system", "content": "Navigate."}],
     )
     states = encode_trajectory_hiddens(
         trajectory,
@@ -340,7 +515,7 @@ def test_k8_hidden_encoding_extracts_full_query_block(tmp_path: Path) -> None:
         torch.device("cpu"),
         latent_token_count=8,
     )
-    assert len(states) == 2
+    assert len(states) == 1
     assert states[0].shape == (8, 2)
     assert torch.equal(states[0], hidden[0, 1:9])
 
@@ -395,6 +570,17 @@ def test_value_head_loader_honors_checkpoint_hidden_width(tmp_path: Path) -> Non
     )
 
 
+def test_transition_microbatches_consume_all_collected_data_once() -> None:
+    from nimloth.training.rl.trainer import deterministic_transition_microbatches
+
+    batches = deterministic_transition_microbatches(160, 2, seed=47)
+    flattened = [index for batch in batches for index in batch]
+    assert len(batches) == 80
+    assert len(flattened) == 160
+    assert sorted(flattened) == list(range(160))
+    assert len(set(flattened)) == 160
+
+
 def test_validation_summary_requires_all_fixed_episodes() -> None:
     from nimloth.training.rl.trainer import summarize_validation_trajectories
 
@@ -426,24 +612,56 @@ class _FakeEnvClient:
 
     def get_system_prompts_batch(self, env_ids):
         self._record("prompt")
-        return {env_ids[0]: "Move near the couch."}
+        return {
+            env_ids[0]: (
+                "You can optionally think first, then give your action. Respond in this format:\n"
+                "<think>...</think><action>some_action</action>"
+            )
+        }
+
+    @staticmethod
+    def _observation(image, text):
+        return {
+            "obs_str": text,
+            "multi_modal_data": {"<image>": [image]},
+        }
 
     def reset_batch(self, seeds):
         self._record("reset")
         env_id = next(iter(seeds))
-        return {env_id: (Image.new("RGB", (4, 4), "black"), {})}
+        return {env_id: (self._observation(
+            Image.new("RGB", (4, 4), "black"),
+            "<image>\nHuman Instruction: Move near the couch.\n"
+            "Decide your next action(s).",
+        ), {})}
 
     def step_batch(self, actions):
         self._record("step")
         env_id = next(iter(actions))
+        assert "<think>generated</think>" in actions[env_id]
+        assert "<action>look_down</action>" in actions[env_id]
         return {
             env_id: (
-                Image.new("RGB", (4, 4), "white"),
-                10.0,
+                self._observation(
+                    Image.new("RGB", (4, 4), "white"),
+                    "After your action, the extracted valid action is look_down.\n"
+                    "The environment feedback is: Last action is executed successfully.\n"
+                    "After that, the observation is:\n<image>\n"
+                    "Decide your next action(s).",
+                ),
+                1.01,
                 True,
-                {"last_action_success": True},
+                {
+                    "last_action_success": True,
+                    "task_success": True,
+                    "instruction": "Move near the couch.",
+                },
             )
         }
+
+    def compute_reward_batch(self, env_ids):
+        self._record("reward")
+        return {env_ids[0]: 0.0}
 
     def close_batch(self, env_ids) -> None:
         self._record("close")
@@ -471,11 +689,12 @@ def _distributed_collect_worker(rank: int, world: int, port: int, root: str) -> 
         import nimloth.training.rl.distributed_rollout as distributed_module
         from nimloth.training.rl.distributed_rollout import DistributedEnvRolloutCollector
 
-        def fake_distribution(*args, **kwargs):
-            logits = torch.arange(8, dtype=torch.float32)
-            return logits, torch.log_softmax(logits, dim=-1)
+        def fake_policy_turn(*args, **kwargs):
+            return "<think>generated</think>", torch.tensor(
+                [-100.0] * 7 + [0.0], dtype=torch.float32
+            )
 
-        distributed_module.compute_nimloth_action_distribution = fake_distribution
+        distributed_module.generate_nimloth_thought_and_action_logits = fake_policy_turn
         collector = DistributedEnvRolloutCollector(
             object(),
             object(),
@@ -520,6 +739,9 @@ def test_distributed_collector_rank0_env_and_identical_trajectories(tmp_path: Pa
     assert len(records) == 1
     assert len(records[0]["image_paths"]) == 2
     assert len(records[0]["action_log_probs"][0]) == len(ACTION_NAMES)
+    assert "Human Instruction:" in records[0]["observation_texts"][0]
+    assert records[0]["step_rewards"] == [1.01]
+    assert records[0]["success"] is True
     calls = (tmp_path / "env_calls.txt").read_text(encoding="utf-8").splitlines()
-    assert calls == ["create", "prompt", "reset", "step", "close"]
+    assert calls == ["create", "prompt", "reset", "step", "reward", "close"]
     assert (tmp_path / "rollout" / "trajectories.jsonl").is_file()

@@ -59,12 +59,12 @@ def encode_trajectory_hiddens(
     device: torch.device,
     *,
     latent_token_count: int = 1,
-    history_window: int = 4,
+    history_window: int = 112,
 ) -> list[torch.Tensor]:
-    """Run Qwen on each frame of a trajectory, return hidden states.
+    """Replay each real assistant turn and return its latent query block.
 
-    Returns:
-        List of ``(k, hidden_dim)`` tensors, one per frame (len = num_steps + 1).
+    There is one query state per generated action response.  The terminal image
+    has no assistant response in VAGEN and therefore no fabricated query state.
     """
     from nimloth.latent.extraction import (
         LatentActionTokens,
@@ -77,21 +77,25 @@ def encode_trajectory_hiddens(
         materialize_policy_images,
     )
 
+    if trajectory.latent_token_count != latent_token_count:
+        raise ValueError(
+            f"trajectory latent_token_count={trajectory.latent_token_count} but "
+            f"runtime requested {latent_token_count}"
+        )
     states: list[torch.Tensor] = []
     tokens = LatentActionTokens()
 
-    for index in range(len(trajectory.image_paths)):
-        # Recompute the exact policy prefix used at rollout/PPO time. This keeps
-        # SFT2 query extraction and the action distribution on one prompt.
+    for index, current_response in enumerate(trajectory.assistant_responses):
         messages, images = build_nimloth_policy_messages(
             trajectory.image_paths[: index + 1],
-            trajectory.nav_instruction,
-            trajectory.action_names[:index],
+            trajectory.system_prompt,
+            trajectory.observation_texts[: index + 1],
+            trajectory.assistant_responses[:index],
             history_window=history_window,
-            latent_token_count=latent_token_count,
         )
+        messages.append({"role": "assistant", "content": current_response})
         text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+            messages, tokenize=False, add_generation_prompt=False
         )
         enc = processor(
             text=[text],
@@ -131,11 +135,11 @@ def build_rl_transitions(
     gamma: float = 0.99,
     *,
     latent_token_count: int = 1,
-    history_window: int = 4,
-) -> list[dict[str, torch.Tensor]]:
+    history_window: int = 112,
+) -> list[dict[str, Any]]:
     """Encode trajectories → list of transition dicts (CPU tensors)."""
 
-    transitions: list[dict[str, torch.Tensor]] = []
+    transitions: list[dict[str, Any]] = []
     for traj in trajectories:
         hiddens = encode_trajectory_hiddens(
             traj,
@@ -146,8 +150,11 @@ def build_rl_transitions(
             latent_token_count=latent_token_count,
             history_window=history_window,
         )
-        if len(hiddens) < 2:
-            continue
+        if len(hiddens) != traj.num_steps:
+            raise RuntimeError(
+                f"trajectory {traj.record_id}: encoded {len(hiddens)} states for "
+                f"{traj.num_steps} actions"
+            )
 
         record = traj.to_record()
         value_targets = discounted_action_value_targets(record, gamma=gamma)
@@ -157,22 +164,45 @@ def build_rl_transitions(
             log_probs = traj.action_log_probs[t] if t < len(traj.action_log_probs) else []
             old_lp = float(log_probs[traj.action_indices[t]]) if len(log_probs) > traj.action_indices[t] else 0.0
 
+            from nimloth.training.rl.vagen_protocol import thought_from_assistant_response
+
             transitions.append({
                 "qwen_hidden_current": hiddens[t],
-                "qwen_hidden_next": hiddens[t + 1],
+                "qwen_hidden_next": hiddens[t + 1] if t + 1 < len(hiddens) else None,
                 "action_index": torch.tensor(traj.action_indices[t], dtype=torch.long),
-                "value_target": torch.tensor(
-                    value_targets[t] if t < len(value_targets) else 0.0,
-                    dtype=torch.float32,
-                ),
+                "value_target": torch.tensor(value_targets[t], dtype=torch.float32),
                 "old_log_prob": old_lp,
-                "nav_instruction": traj.nav_instruction,
-                "action_history_names": traj.action_names[:t],
-                "image_path": traj.image_paths[t],
+                "system_prompt": traj.system_prompt,
+                "observation_texts": traj.observation_texts[:t + 1],
+                "assistant_responses": traj.assistant_responses[:t],
+                "current_thought": thought_from_assistant_response(
+                    traj.assistant_responses[t]
+                ),
                 "image_history_paths": traj.image_paths[:t + 1],
             })
 
     return transitions
+
+
+def deterministic_transition_microbatches(
+    num_transitions: int,
+    microbatch_size: int,
+    *,
+    seed: int,
+) -> list[list[int]]:
+    """Shuffle once and partition every transition exactly once."""
+
+    if num_transitions < 0:
+        raise ValueError(f"num_transitions must be >= 0, got {num_transitions}")
+    if microbatch_size <= 0:
+        raise ValueError(f"microbatch_size must be > 0, got {microbatch_size}")
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(seed))
+    indices = torch.randperm(num_transitions, generator=generator).tolist()
+    return [
+        indices[start:start + microbatch_size]
+        for start in range(0, num_transitions, microbatch_size)
+    ]
 
 
 def summarize_validation_trajectories(
@@ -220,17 +250,15 @@ def compute_new_log_probs_for_batch(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run Qwen forward WITH gradients, returning new log-probs and action logits.
 
-    Each ppo_item must have:
-        - "image_history_paths": observation paths through the current step
-        - "nav_instruction": navigation instruction
-        - "action_history_names": list of VAGEN text action names before this step
-        - "taken_action_idx": the action that was actually taken
+    Each item contains the exact stored system/observation/assistant history,
+    the generated current thought, and the taken action.  No prompt text is
+    synthesized during PPO recomputation.
 
     Returns (new_log_probs, action_logits) where:
         new_log_probs: (B,) log-prob of taken actions under current policy
         action_logits: (B, 8) raw logits for all 8 actions
     """
-    from nimloth.latent.extraction import LatentActionTokens
+    from nimloth.latent.extraction import LatentActionTokens, latent_state_block
     from nimloth.training.rl.rollout import (
         build_nimloth_policy_messages,
         materialize_policy_images,
@@ -246,13 +274,18 @@ def compute_new_log_probs_for_batch(
     for item in ppo_items:
         messages, images = build_nimloth_policy_messages(
             item["image_history_paths"],
-            item["nav_instruction"],
-            item["action_history_names"],
+            item["system_prompt"],
+            item["observation_texts"],
+            item["assistant_responses"],
             history_window=history_window,
-            latent_token_count=latent_token_count,
         )
         text = processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
+        )
+        text += (
+            item["current_thought"]
+            + latent_state_block(latent_token_count)
+            + "<|action_start|>"
         )
         encoded = processor(
             text=[text],
@@ -434,12 +467,13 @@ def train_rl(
     max_steps_per_ep: int = rl_cfg.get("max_steps_per_episode", 20)
     gamma: float = rl_cfg.get("gamma", 0.99)
     batch_size: int = rl_cfg.get("batch_size", 32)
-    # One optimizer step per iteration → 1 iteration = 1 global_step.
+    if batch_size <= 0:
+        raise ValueError(f"rl.batch_size must be > 0, got {batch_size}")
 
     pred_lr: float = float(pred_cfg.get("lr", 1e-3))
     vh_lr: float = float(vh_cfg.get("lr", 1e-3))
-    rank_margin: float = vh_cfg.get("rank_margin", 0.1)
-    lambda_rank: float = vh_cfg.get("lambda_rank", 1.0)
+    rank_margin: float = float(vh_cfg.get("rank_margin", 0.0))
+    lambda_rank: float = float(vh_cfg.get("lambda_rank", 0.0))
 
     # Actor (Qwen PPO) config
     actor_cfg: dict = config.get("actor", {})
@@ -462,6 +496,17 @@ def train_rl(
     stop_if_no_success_by = int(
         train_cfg.get("stop_if_no_success_by_iteration", 0)
     )
+    evaluation_only = bool(train_cfg.get("evaluation_only", False))
+    if evaluation_only and not (val_enabled and val_baseline):
+        raise ValueError(
+            "training.evaluation_only requires validation.enabled=true and baseline=true"
+        )
+    if evaluation_only and (iterations != 0 or envs_per_iter != 0):
+        raise ValueError(
+            "training.evaluation_only requires rl.iterations=0 and envs_per_iteration=0"
+        )
+    if evaluation_only and bool(getattr(args, "resume", False)):
+        raise ValueError("evaluation-only baseline cannot resume a training checkpoint")
     seed: int = train_cfg.get("seed", 42)
 
     # --- tuning modes --------------------------------------------------------
@@ -653,6 +698,12 @@ def train_rl(
     # --- Wire online env rollout after FSDP wrapping -------------------------
     from nimloth.training.rl.rollout import EnvRolloutCollector
 
+    if isinstance(collector, EnvRolloutCollector) and lambda_rank != 0.0:
+        raise ValueError(
+            "dynamic online RL forbids unconditional chosen-action ranking; "
+            "VAGEN uses per-turn returns without this auxiliary objective"
+        )
+
     def _wire_env_collector(
         env_collector: RolloutCollector,
         *,
@@ -683,6 +734,7 @@ def train_rl(
                 "device": str(device),
                 "world_size": world,
                 "history_window": env_collector._history_window,
+                "max_think_tokens": env_collector._max_think_tokens,
                 "eval_sets": env_collector._eval_sets,
                 "split": env_collector._split,
             }))
@@ -709,6 +761,16 @@ def train_rl(
             "split": collector._split,
             "eval_sets": list(collector._eval_sets),
             "history_window": int(collector._history_window),
+            "max_think_tokens": int(collector._max_think_tokens),
+            "prompt_protocol": "vagen-source-eval-to-nimloth-inject-v1",
+            "reward_protocol": "vagen-per-turn-plus-final-v1",
+            "optimization_protocol": "all-action-transitions-one-ppo-epoch-v1",
+            "transition_microbatch_size": batch_size,
+            "value_ranking_weight": 0.0,
+            "trajectory_schema": 2,
+            "environment_config": collector._environment_config(
+                str(collector._eval_sets[0])
+            )["env_config"] | {"eval_set": "<per-episode>"},
             "temperature": float(rl_cfg.get("temperature", 1.0)),
             "top_p": float(rl_cfg.get("top_p", 1.0)),
             "seed_offset": int(collector._base_seed_offset),
@@ -722,6 +784,7 @@ def train_rl(
                 "split": validation_collector._split,
                 "eval_sets": list(validation_collector._eval_sets),
                 "history_window": int(validation_collector._history_window),
+                "max_think_tokens": int(validation_collector._max_think_tokens),
                 "temperature": float(validation_collector._temperature),
                 "top_p": float(validation_collector._top_p),
                 "seed_offset": int(validation_collector._base_seed_offset),
@@ -736,6 +799,11 @@ def train_rl(
             "mode": "jsonl",
             "sources": [str(path) for path in getattr(collector, "_sources", [])],
         }
+    if is_main():
+        (output_dir / "rollout_protocol.json").write_text(
+            json.dumps(rollout_protocol, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     ppo_temperature = (
         float(rl_cfg.get("temperature", 1.0))
         if rollout_protocol["mode"] == "dynamic_env"
@@ -813,7 +881,7 @@ def train_rl(
             csv.writer(f).writerow([
                 "time", "iteration", "global_step",
                 "wm_mse", "value_loss", "total_loss",
-                "num_rollouts", "num_transitions", "success_rate",
+                "num_rollouts", "num_transitions", "optimizer_steps", "success_rate",
                 "val_success_rate", "val_avg_reward", "val_avg_steps",
                 "actor_loss", "entropy", "clip_fraction", "mean_advantage",
             ])
@@ -870,6 +938,18 @@ def train_rl(
         _run_heldout_validation(
             label="baseline", iteration=0, current_global_step=global_step
         )
+
+    if evaluation_only:
+        if is_main():
+            print(json.dumps({
+                "evaluation_only": "complete",
+                "global_step": global_step,
+                "optimizer_steps": 0,
+            }))
+        if wandb_run is not None:
+            wandb_run.finish()
+        cleanup_dist()
+        return 0
 
     successful_rollouts_total = 0
     last_completed_iteration = start_iteration - 1
@@ -928,131 +1008,171 @@ def train_rl(
                 device,
                 gamma=gamma,
                 latent_token_count=latent_token_count,
-                history_window=int(getattr(collector, "_history_window", 4)),
+                history_window=int(getattr(collector, "_history_window", 112)),
             )
-        # Free GPU memory before PPO forward (Qwen+LoRA+gradients needs extra VRAM)
+        # Free GPU memory before PPO forward (Qwen+LoRA+gradients needs extra VRAM).
         torch.cuda.empty_cache()
-        if len(transitions) < batch_size:
+        if not transitions:
             if is_main():
-                print(json.dumps({
-                    "iteration": iteration,
-                    "warning": f"only {len(transitions)} transitions, need {batch_size}",
-                }))
+                print(json.dumps({"iteration": iteration, "warning": "no transitions"}))
             continue
 
-        # 3. Train predictor + value head (1 step per iteration) ---------------
-        # 使用 per-iteration 确定性 generator 保证所有 rank 选同一 batch，
-        # 不依赖全局 RNG 状态同步（FSDP 等可能引入细微信号差异）。
-        g = torch.Generator(device="cpu")
-        g.manual_seed(seed + iteration)
-        indices = torch.randperm(len(transitions), generator=g)[:batch_size]
-        batch = [transitions[i] for i in indices]
-
-        hidden_cur = torch.stack([b["qwen_hidden_current"] for b in batch]).to(device)
-        hidden_next = torch.stack([b["qwen_hidden_next"] for b in batch]).to(device)
-        actions = torch.stack([b["action_index"] for b in batch]).to(device)
-        value_targets = torch.stack([b["value_target"] for b in batch]).to(device)
-
-        pred_loss, pred_metrics = compute_predictor_loss(
-            qwen_hidden_current=hidden_cur,
-            qwen_hidden_next=hidden_next,
-            action_indices=actions,
-            state_proj=state_proj,
-            wm_predictor=wm_predictor,
-        )
-
+        # Compute one normalized advantage population before any mini-batch update,
+        # then consume every transition exactly once (VAGEN ppo_epochs=1).
         sp = _unwrap(state_proj)
-        wm_state = sp(hidden_cur).float().detach()
-        val_loss, val_metrics = compute_value_loss(
-            state_emb=wm_state,
-            action_indices=actions,
-            action_value_targets=value_targets,
-            value_head=value_head,
-            rank_margin=rank_margin,
-            lambda_rank=lambda_rank,
+        raw_advantages: list[torch.Tensor] = []
+        with torch.no_grad():
+            for start in range(0, len(transitions), batch_size):
+                items = transitions[start:start + batch_size]
+                hidden = torch.stack([
+                    item["qwen_hidden_current"] for item in items
+                ]).to(device)
+                actions = torch.stack([item["action_index"] for item in items]).to(device)
+                targets = torch.stack([item["value_target"] for item in items]).to(device)
+                state = sp(hidden).float()
+                values = value_head(state).float().gather(
+                    1, actions.unsqueeze(1)
+                ).squeeze(1)
+                raw_advantages.extend((targets - values).detach().cpu().unbind())
+        advantage_tensor = torch.stack(raw_advantages)
+        advantage_tensor = (
+            advantage_tensor - advantage_tensor.mean()
+        ) / (advantage_tensor.std(unbiased=False) + 1e-8)
+        for item, advantage in zip(transitions, advantage_tensor):
+            item["advantage"] = advantage
+
+        transition_batches = deterministic_transition_microbatches(
+            len(transitions), batch_size, seed=seed + iteration
         )
+        metric_sums: dict[str, float] = {}
+        optimizer_steps_this_iteration = 0
 
-        # --- PPO actor loss (Qwen update) ---
-        actor_metrics: dict[str, float] = {}
-        if actor_enabled:
-            import gc
-            torch.cuda.empty_cache()
-            gc.collect()
-            from nimloth.training.rl.loss import compute_actor_loss, compute_action_entropy
+        for batch_indices in transition_batches:
+            batch = [transitions[index] for index in batch_indices]
+            hidden_cur = torch.stack([
+                item["qwen_hidden_current"] for item in batch
+            ]).to(device)
+            actions = torch.stack([item["action_index"] for item in batch]).to(device)
+            value_targets = torch.stack([
+                item["value_target"] for item in batch
+            ]).to(device)
 
-            # advantages from value head
-            with torch.no_grad():
-                all_values = value_head(wm_state).float()
-                chosen_values = all_values.gather(1, actions.unsqueeze(1)).squeeze(1)
-            advantages = (value_targets.to(device=chosen_values.device, dtype=chosen_values.dtype)
-                          - chosen_values.detach())
-            # unbiased=False 避免 batch size=1 时 std 产生 NaN
-            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+            wm_batch = [item for item in batch if item["qwen_hidden_next"] is not None]
+            if wm_batch:
+                pred_loss, pred_metrics = compute_predictor_loss(
+                    qwen_hidden_current=torch.stack([
+                        item["qwen_hidden_current"] for item in wm_batch
+                    ]).to(device),
+                    qwen_hidden_next=torch.stack([
+                        item["qwen_hidden_next"] for item in wm_batch
+                    ]).to(device),
+                    action_indices=torch.stack([
+                        item["action_index"] for item in wm_batch
+                    ]).to(device),
+                    state_proj=state_proj,
+                    wm_predictor=wm_predictor,
+                )
+            else:
+                pred_loss = torch.zeros((), device=device)
+                pred_metrics = {"wm_mse": 0.0}
 
-            # Build PPO items
-            ppo_items = []
-            for i in range(len(batch)):
-                b = batch[i]
-                ppo_items.append({
-                    "image_history_paths": b["image_history_paths"],
-                    "nav_instruction": b["nav_instruction"],
-                    "action_history_names": b["action_history_names"],
-                    "taken_action_idx": int(b["action_index"].item()),
-                })
-
-            # Qwen forward with gradients
-            new_log_probs, action_logits = compute_new_log_probs_for_batch(
-                ppo_items,
-                model,
-                processor,
-                token_id_map,
-                device,
-                history_window=int(getattr(collector, "_history_window", 4)),
-                temperature=ppo_temperature,
-                latent_token_count=latent_token_count,
-            )
-            old_log_probs = torch.tensor(
-                [b["old_log_prob"] for b in batch],
-                device=new_log_probs.device, dtype=new_log_probs.dtype,
+            wm_state = sp(hidden_cur).float().detach()
+            val_loss, val_metrics = compute_value_loss(
+                state_emb=wm_state,
+                action_indices=actions,
+                action_value_targets=value_targets,
+                value_head=value_head,
+                rank_margin=rank_margin,
+                lambda_rank=lambda_rank,
             )
 
-            actor_loss, actor_metrics = compute_actor_loss(
-                new_log_probs=new_log_probs,
-                old_log_probs=old_log_probs,
-                advantages=advantages.to(device=new_log_probs.device, dtype=new_log_probs.dtype),
-                clip_ratio=clip_ratio,
+            actor_metrics: dict[str, float] = {}
+            if actor_enabled:
+                import gc
+                from nimloth.training.rl.loss import (
+                    compute_action_entropy,
+                    compute_actor_loss,
+                )
+
+                torch.cuda.empty_cache()
+                gc.collect()
+                ppo_items = [{
+                    "image_history_paths": item["image_history_paths"],
+                    "system_prompt": item["system_prompt"],
+                    "observation_texts": item["observation_texts"],
+                    "assistant_responses": item["assistant_responses"],
+                    "current_thought": item["current_thought"],
+                    "taken_action_idx": int(item["action_index"].item()),
+                } for item in batch]
+                new_log_probs, action_logits = compute_new_log_probs_for_batch(
+                    ppo_items,
+                    model,
+                    processor,
+                    token_id_map,
+                    device,
+                    history_window=int(getattr(collector, "_history_window", 112)),
+                    temperature=ppo_temperature,
+                    latent_token_count=latent_token_count,
+                )
+                old_log_probs = torch.tensor(
+                    [item["old_log_prob"] for item in batch],
+                    device=new_log_probs.device,
+                    dtype=new_log_probs.dtype,
+                )
+                advantages = torch.stack([
+                    item["advantage"] for item in batch
+                ]).to(device=new_log_probs.device, dtype=new_log_probs.dtype)
+                actor_loss, actor_metrics = compute_actor_loss(
+                    new_log_probs=new_log_probs,
+                    old_log_probs=old_log_probs,
+                    advantages=advantages,
+                    clip_ratio=clip_ratio,
+                )
+                entropy = compute_action_entropy(action_logits)
+                total_loss = pred_loss + val_loss + actor_loss - entropy_coeff * entropy
+                actor_metrics["entropy"] = float(entropy.detach().item())
+                actor_metrics["mean_advantage"] = float(advantages.mean().item())
+            else:
+                total_loss = pred_loss + val_loss
+
+            optimizer.zero_grad(set_to_none=True)
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                [p for group in optimizer.param_groups for p in group["params"]], 1.0
             )
-            entropy = compute_action_entropy(action_logits)
-            total_loss = pred_loss + val_loss + actor_loss - entropy_coeff * entropy
-            actor_metrics["entropy"] = float(entropy.detach().item())
-            actor_metrics["mean_advantage"] = float(advantages.mean().item())
-        else:
-            total_loss = pred_loss + val_loss
+            optimizer.step()
+            if vision_ema is not None:
+                vision_ema.update(model)
+            global_step += 1
+            optimizer_steps_this_iteration += 1
 
-        optimizer.zero_grad(set_to_none=True)
-        total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            [p for group in optimizer.param_groups for p in group["params"]], 1.0,
-        )
-        optimizer.step()
-        if vision_ema is not None:
-            vision_ema.update(model)
+            batch_metrics = {
+                "wm_mse": float(pred_metrics.get("wm_mse", 0.0)),
+                "value_loss": float(val_metrics.get(
+                    "value_loss", val_metrics.get("value_total", 0.0)
+                )),
+                "total_loss": float(total_loss.detach().item()),
+                "actor_loss": float(actor_metrics.get("actor_loss", 0.0)),
+                "entropy": float(actor_metrics.get("entropy", 0.0)),
+                "clip_fraction": float(actor_metrics.get("clip_fraction", 0.0)),
+                "mean_advantage": float(actor_metrics.get("mean_advantage", 0.0)),
+            }
+            for key, value in batch_metrics.items():
+                metric_sums[key] = metric_sums.get(key, 0.0) + value * len(batch)
 
-        global_step += 1
         last_completed_iteration = iteration
-        iter_metrics: dict[str, float] = {
-            "wm_mse": float(pred_metrics.get("wm_mse", 0.0)),
-            "value_loss": float(val_metrics.get("value_loss",
-                                                val_metrics.get("value_total", 0.0))),
-            "total_loss": float(total_loss.detach().item()),
+        iter_metrics = {
+            key: value / len(transitions) for key, value in metric_sums.items()
+        }
+        iter_metrics.update({
             "num_rollouts": float(len(trajectories)),
             "num_transitions": float(len(transitions)),
+            "optimizer_steps": float(optimizer_steps_this_iteration),
             "success_rate": float(
-                sum(1 for t in trajectories if t.success) / max(1, len(trajectories))
+                sum(1 for trajectory in trajectories if trajectory.success)
+                / max(1, len(trajectories))
             ),
-        }
-        iter_metrics.update({k: v for k, v in actor_metrics.items() if k != "actor_loss"})
-        iter_metrics["actor_loss"] = float(actor_metrics.get("actor_loss", 0.0))
+        })
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
@@ -1080,6 +1200,7 @@ def train_rl(
                     iter_metrics.get("total_loss", ""),
                     iter_metrics.get("num_rollouts", ""),
                     iter_metrics.get("num_transitions", ""),
+                    iter_metrics.get("optimizer_steps", ""),
                     iter_metrics.get("success_rate", ""),
                     iter_metrics.get("val_success_rate", ""),
                     iter_metrics.get("val_avg_reward", ""),

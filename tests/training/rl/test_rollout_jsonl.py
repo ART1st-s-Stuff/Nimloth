@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from nimloth.training.rl.rollout import JSONLRolloutCollector, RolloutTrajectory
+from nimloth.training.rl.vagen_protocol import ACTION_NAMES, nimloth_assistant_response
 
 
 # ---------------------------------------------------------------------------
@@ -18,15 +19,34 @@ from nimloth.training.rl.rollout import JSONLRolloutCollector, RolloutTrajectory
 
 
 def _make_traj(record_id: str, num_steps: int = 3) -> RolloutTrajectory:
+    indices = [index % 8 for index in range(num_steps)]
+    step_rewards = [0.01] * num_steps
     return RolloutTrajectory(
         record_id=record_id,
         image_paths=[f"/tmp/{record_id}_step{s}.png" for s in range(num_steps + 1)],
-        action_indices=[i % 8 for i in range(num_steps)],
-        action_names=["moveahead", "rotateright", "lookup"][:num_steps],
-        action_log_probs=[[-2.0] * 8 for _ in range(num_steps)],
-        nav_instruction="Go to the couch.",
+        observation_texts=[
+            (
+                "<image>\nHuman Instruction: Go to the couch.\n"
+                "Decide your next action(s)."
+                if index == 0 else f"<image>\nfeedback-{index}"
+            )
+            for index in range(num_steps + 1)
+        ],
+        task_instruction="Go to the couch.",
+        system_prompt="navigation system",
+        assistant_responses=[
+            nimloth_assistant_response(
+                f"<think>step-{index}</think>", action_index, latent_token_count=8
+            )
+            for index, action_index in enumerate(indices)
+        ],
+        action_indices=indices,
+        action_names=[ACTION_NAMES[index] for index in indices],
+        action_log_probs=[[-math.log(8.0)] * 8 for _ in range(num_steps)],
+        step_rewards=step_rewards,
         success=(num_steps % 2 == 0),
-        reward=10.0 if num_steps % 2 == 0 else 0.0,
+        reward=sum(step_rewards),
+        latent_token_count=8,
     )
 
 

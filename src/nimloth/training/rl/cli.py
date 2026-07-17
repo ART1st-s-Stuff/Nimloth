@@ -288,9 +288,10 @@ def main(argv: list[str] | None = None) -> int:
             eval_sets=eval_sets,
             split="train",
             seed_offset=int(rollout_cfg.get("seed_offset", 0)),
-            history_window=int(rollout_cfg.get("history_window", 4)),
+            history_window=int(rollout_cfg.get("history_window", 112)),
             env_timeout=int(rollout_cfg.get("env_timeout", 180)),
             latent_token_count=latent_token_count,
+            max_think_tokens=int(rollout_cfg.get("max_think_tokens", 512)),
         )
         if is_main():
             print(json.dumps({"rollout_mode": "env", "env_url": args.env_url,
@@ -298,7 +299,8 @@ def main(argv: list[str] | None = None) -> int:
                               "temperature": rl_cfg.get("temperature", 1.0),
                               "top_p": rl_cfg.get("top_p", 1.0),
                               "seed_offset": rollout_cfg.get("seed_offset", 0),
-                              "history_window": rollout_cfg.get("history_window", 4),
+                              "history_window": rollout_cfg.get("history_window", 112),
+                              "max_think_tokens": rollout_cfg.get("max_think_tokens", 512),
                               "env_timeout": rollout_cfg.get("env_timeout", 180)}))
         validation_cfg = config.get("validation", {})
         if bool(validation_cfg.get("enabled", False)):
@@ -319,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
                 seed_offset=int(validation_cfg.get("seed_offset", 1)),
                 history_window=int(
                     validation_cfg.get(
-                        "history_window", rollout_cfg.get("history_window", 4)
+                        "history_window", rollout_cfg.get("history_window", 112)
                     )
                 ),
                 env_timeout=int(
@@ -328,6 +330,11 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 ),
                 latent_token_count=latent_token_count,
+                max_think_tokens=int(
+                    validation_cfg.get(
+                        "max_think_tokens", rollout_cfg.get("max_think_tokens", 512)
+                    )
+                ),
             )
             if is_main():
                 print(json.dumps({

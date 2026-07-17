@@ -90,15 +90,34 @@ def validate_trajectories(records) -> None:
                 f"trajectory {record.record_id}: images={len(record.image_paths)} "
                 f"but actions={record.num_steps}"
             )
-        if len(record.action_log_probs) != record.num_steps:
+        if len(record.observation_texts) != record.num_steps + 1:
             raise RuntimeError(
-                f"trajectory {record.record_id}: action_log_probs="
-                f"{len(record.action_log_probs)} but actions={record.num_steps}"
+                f"trajectory {record.record_id}: observation_texts="
+                f"{len(record.observation_texts)} but actions={record.num_steps}"
             )
+        for field_name in ("assistant_responses", "step_rewards", "action_log_probs"):
+            values = getattr(record, field_name)
+            if len(values) != record.num_steps:
+                raise RuntimeError(
+                    f"trajectory {record.record_id}: {field_name}="
+                    f"{len(values)} but actions={record.num_steps}"
+                )
         if any(len(log_probs) != 8 for log_probs in record.action_log_probs):
             raise RuntimeError(f"trajectory {record.record_id} has non-8-way action logits")
-        if not record.nav_instruction:
-            raise RuntimeError(f"trajectory {record.record_id} has no navigation instruction")
+        if not record.system_prompt:
+            raise RuntimeError(f"trajectory {record.record_id} has no system prompt")
+        if "Human Instruction:" not in record.observation_texts[0]:
+            raise RuntimeError(f"trajectory {record.record_id} has no task instruction")
+        if not record.task_instruction or record.task_instruction not in record.observation_texts[0]:
+            raise RuntimeError(
+                f"trajectory {record.record_id} task_instruction disagrees with observation"
+            )
+        from nimloth.training.rl.rollout import validate_rollout_trajectory
+
+        try:
+            validate_rollout_trajectory(record)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
 
 
 def main(argv: list[str] | None = None) -> int:

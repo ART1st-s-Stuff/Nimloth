@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-17：撤回ID11质量结论并修复dynamic semantic protocol
+
+- 人类指出此前关键决策含主观设计、image-only smoke未覆盖真实问题，且所谓“top-p放大因素”与错误prompt根因不可分割。已承认并撤回该分类；ID11只保留FSDP/checkpoint mechanics，禁止quality resume/reuse。
+- 根因确认：collector把generic system prompt当task，丢弃真实`obs_str`；固定thought、错误prompt/env/reward、2/160 transition抽样和无条件Value ranking进一步偏离VAGEN/SFT。
+- P0实现已改为schema v2：保存`system_prompt`、`task_instruction`、每轮observation text、真实assistant response、step/final rewards；initial task与每步`info.instruction`逐字核对，旧taskless record fail-fast。
+- `vagen_protocol.py`成为SFT converter与runtime共享协议：`source_eval_mode`、canonical `<action>name</action>`、0.3m/threshold1.0/per-turn0.01/success1.0；删除额外碰撞惩罚、reward-threshold success和旧generic诊断脚本/config。
+- policy先真实生成`<think>...</think>`再inject k queries/action；rollout、PPO、latent encoding逐字重放。SFT inject format evaluator也不再teacher-force reference thought。真实SFT train record已GPU-free核对：system和initial user prefix与runtime转换逐字相等。
+- reward按VAGEN每轮位置保存，final只加到最后response后向discount；dynamic ranking weight强制0。`rl.batch_size`改为microbatch，每轮全部transitions消费一次，global_step按实际optimizer microsteps计。
+- terminal observation不伪造assistant query；最后action仍用于actor/value，缺真实next query时只跳过对应WM pair。
+- 新增evaluation-only fixed20 baseline config：optimizer=0且不写final。fragmented launcher固定当前clean repo/VAGEN e7，只允许`smoke|baseline`，逐seed对照dataset；quality pilot仍阻塞。
+- 新增E0034。定向server测试`64 passed, 2 expected warnings`；pinned VAGEN source protocol tests另`3 passed`。更宽SFT suite为`64 passed, 1 unrelated pre-existing test bug`（`test_trajectory_prefix_encoding.py`先使用后定义`token_id_map`）。compile、bash syntax、diff check通过。
+- 尚未提交GPU/Slurm任务，未创建新W&B/output，未resume ID11。下一步：完成review/commit/clean server sync，按实验event建立新身份后先跑真实semantic smoke，再跑固定20 baseline。
+
 ## 2026-07-16：FSDP动态在线rollout实现
 
 - 人类要求参考VAGEN，为现有Nimloth FSDP trainer实现每轮current-policy动态访问环境，替换正式在线RL的固定JSONL限制。分支/worktree=`feat/fsdp-dynamic-rollout`/`../nimloth-feat-fsdp-dynamic-rollout`。
@@ -30,7 +43,7 @@
 - ID10：`2026-07-17/10_smoke_fsdpdynamic_k8full8192_sft2j477349_frag2x1_iter1_b2_retry1`，W&B`bvdnc6h4`。prep477537从job477349 stable latest step3059/epoch2 partial/micro11232 merge826 tensors，init12GiB。allocation477542因Slurm候选nodelist越界分配受保护dgx-14而9秒内取消（0 trainer/artifact），登记E0031并改为硬exclude14/26/51/54。
 - retry477548在dgx-18+21 trainers/dgx-37 env COMPLETED2:09、ALL_OK：2条真实k8/inject base_train trajectories、4PNG、完整八动作log-prob归一、finite step1（WM0.00293958/value0.172185/actor1.79e-7/entropy1.85024/total0.156622）。LLM LoRA-B252/252 nonzero；该次显式freeze下Vision LoRA-B0/96 nonzero；StateProjector6 tensors BF16 dtype/value exact；WM97/97和Value4/4 tensors改变且finite；两rank optimizer3.49/3.66GB、全部2118 tensors finite、0 zero-shape；W&B in-process finished step1。smoke仅验证mechanics。
 - Pilot ID11=`2026-07-17/11_pilot_fsdpdynamic_k8full8192_sft2step3059_frag2x1_iter20_b8_heldout20_visfreeze`、W&B`u67p32ee`，job477562 dgx-21+52 trainers/dgx-37 env COMPLETED16:32。mechanics gates仍有效：5 finite updates、world2 optimizer、k8/inject protocol、checkpoint、run-specific Vision freeze、StateProjector exact。按guardrail在iter5因40/40 train trajectories 0 success停止。
-- **ID11质量结论已作废**：诊断确认distributed collector把`get_system_prompts_batch()`通用动作说明误存为`nav_instruction`，并仅从reset/step observation取图片，丢弃`obs_str`中的真实`Human Instruction`/feedback/reward/done。80条trajectory instruction唯一值=1、含`Human Instruction:`=0；真实base seeds1–20对应不同目标物体。误用的system prompt还在末尾提供具体`<answer>rotateright</answer>`示例，并被每轮重复插入user prompt，直接解释greedy rotateright偏置。故0/20→0/20和全rotateright不能判断模型/RL质量，只能说明错误prompt下失败。额外放大因素：policy/SFT transcript严重格式错位、top-p0.95在57.5–94.4% train steps只保留top1、每轮只用2/160 transitions（总10/800）、仅非正稀疏reward且rotation=0优于collision move=-0.1、trajectory总reward被分配给每一步、Value ranking无条件抬高chosen action。登记E0033；修复prompt/schema并重新baseline前禁止继续pilot。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
+- **ID11质量结论已作废**：诊断确认distributed collector把`get_system_prompts_batch()`通用动作说明误存为`nav_instruction`，并仅从reset/step observation取图片，丢弃`obs_str`中的真实`Human Instruction`/feedback/reward/done。80条trajectory instruction唯一值=1、含`Human Instruction:`=0；真实base seeds1–20对应20个dataset tasks（9个唯一instruction文本）。误用的system prompt还在末尾提供具体`<answer>rotateright</answer>`示例，并被每轮重复插入user prompt，直接解释greedy rotateright偏置。故0/20→0/20和全rotateright不能判断模型/RL质量，只能说明错误prompt下失败。原称“额外放大因素”的prompt错位/top-p尖锐分布与根因不可分割；另有每轮只用2/160 transitions、错误reward/return和Value ranking问题。登记E0033；修复prompt/schema并重新baseline前禁止继续pilot。详见`ai_tasks/ai_progress/2026-07-16_fsdp_dynamic_rollout.md`。
 
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 

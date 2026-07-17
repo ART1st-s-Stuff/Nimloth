@@ -1,103 +1,65 @@
-# RL 训练实验
+# RL 实验入口
 
-从 SFT2 checkpoint warm-start，在线/离线 RL 训练 WM predictor + value head。
+详细协议见 `src/nimloth/training/rl/README.md`。
 
-## 脚本
+## 当前状态
+
+ID11 只保留 FSDP/checkpoint mechanics 证据；它的 rollout 丢失真实任务文本，因此所有质量结论无效，禁止 resume/reuse。
+
+新的动态 RL 必须先通过：
+
+1. corrected k=8 protocol integration smoke；
+2. 固定 heldout `base` seeds 1–20、greedy、evaluation-only baseline；
+3. 人工审阅 baseline artifact 后，才能创建新的 quality pilot 身份。
+
+`dynamic_fsdp_k8_fragmented_2plus1.slurm` 当前只接受 `RUN_MODE=smoke|baseline`，明确拒绝 pilot。
+
+## 主要文件
 
 | 文件 | 用途 |
-|------|------|
-| `smoke_test.slurm` | 单 GPU smoke test：加载 SFT2 checkpoint，synthetic data 跑 1 步训练 |
-| `rollout_env.py` | 独立 rollout 脚本：复用 Nimloth action policy，生成完整 RL JSONL（不参与训练） |
-| `run_e2e_smoke.sh` | 训练 split JSONL → 两卡 FSDP step → resume step 的端到端 smoke |
-| `dynamic_env_server.slurm` | 独立节点运行VAGEN/AI2-THOR环境，等待trainer完成 |
-| `dynamic_fsdp_smoke.slurm` | 两卡NCCL/FSDP current-policy动态rollout trainer step |
-| `dynamic_fsdp_smoke_hetero_2plus1.slurm` | 单个heterogeneous job原子申请dgx-32 trainer2卡+dgx-51 env1卡 |
-| `dynamic_fsdp_smoke_single3.slurm` | 单节点3卡：env独占1卡、trainer使用2卡 |
-| `prepare_k8_sft2_init.py/.slurm` | 稳定快照live SFT2 latest并merge现有LLM+Vision LoRA为immutable k8 RL init |
-| `dynamic_fsdp_k8_fragmented_2plus1.slurm` | 原子申请两个1-GPU trainer碎片节点+已预检健康的env节点，运行k8 smoke/pilot |
+|---|---|
+| `dynamic_env_server.slurm` | 当前 clean worktree/pinned VAGEN 的 AI2-THOR service |
+| `dynamic_fsdp_k8_fragmented_2plus1.slurm` | 2×1-GPU FSDP trainer + 1 env 节点；含真实 artifact gate |
+| `prepare_k8_sft2_init.py/.slurm` | 从稳定 SFT2 snapshot 构建 immutable k=8 RL init |
+| `rollout_env.py` | 单进程 schema-v2 rollout producer |
+| `run_e2e_smoke.sh` | JSONL/FSDP mechanics test；不能替代真实 env integration |
+| `dynamic_fsdp_k8_smoke.yaml` | 两任务、最多两步的 corrected protocol smoke |
+| `dynamic_fsdp_k8_baseline20.yaml` | evaluation-only fixed-20 heldout baseline |
+| `dynamic_fsdp_k8_pilot.yaml` | 仅保留 corrected future config；baseline 审批前不得提交 |
 
-## 运行模式
+旧 `diagnose_eval.py` / `debug_action.py` 已删除，因为它们会重建 taskless generic prompt，不能用于新的 baseline。
 
-### 单 GPU 在线 rollout（`world == 1`）
+## 必须满足的 runtime 协议
 
-```bash
-python -m nimloth.training.rl.cli \
-  --config configs/training/rl/defaults.yaml \
-  --model Qwen/Qwen2.5-VL-3B-Instruct \
-  --env-url http://127.0.0.1:5000 \
-  --output-dir outputs/experiments/training/rl/test
-```
+- env server 与 trainer 使用同一个 clean server worktree；VAGEN 必须为 `e7cc2d01584abcab1e49ba4a6b18ba2067fb6762`。
+- 禁止使用旧 `exp-vagen-1action` env worktree。
+- `prompt_format=source_eval_mode`，环境值与 SFT collection 完全一致。
+- system prompt、每轮 `obs_str`、policy-generated assistant response、step reward/final reward全部进入 schema v2。
+- `task_instruction` 必须匹配 initial observation 和每步 `info.instruction`。
+- full history `history_window=112`；thought/action sampling使用配置 temperature/top-p。
+- rollout、PPO 和 latent encoding 逐字重放同一 transcript。
+- dynamic value ranking weight 为 0；`rl.batch_size` 是 microbatch，每轮全部 transitions 消费一次。
+- checkpoint/resume 严格比较 `rollout_protocol`；旧协议 checkpoint 自动拒绝。
 
-配置中的 `rollout.eval_sets` 必须显式列出环境实际支持的 `*_train` datasets；trainer 会拒绝把 `base/common_sense` 等 eval assets 当作训练数据。
+## Baseline
 
-### 分布式动态在线 rollout（`world > 1`）
+`dynamic_fsdp_k8_baseline20.yaml`：
 
-```bash
-torchrun --nproc-per-node=4 -m nimloth.training.rl.cli \
-  --config configs/training/rl/defaults.yaml \
-  --model /path/to/inject-sft2-merged \
-  --env-url http://ENV_NODE:5000 \
-  --llm-tune full --vision-tune freeze \
-  --output-dir outputs/experiments/training/rl/online
-```
+- `training.evaluation_only=true`
+- `iterations=0`
+- heldout `base`, seeds 1–20
+- `temperature=0`, `top_p=1`
+- 不执行 optimizer step，不写 `final/`
 
-`DistributedEnvRolloutCollector`只让rank0访问HTTP环境；所有rank同步运行当前FSDP policy，rank0采样并广播action，然后step环境。每个iteration更新完成后，下一轮rollout直接使用更新后的policy。inject runtime支持k≥1并在prompt/PPO/latent extraction/StateProjector/checkpoint中严格使用同一个k。
+launcher gate 会逐条对照 `base.json[seed % len(tasks)]`，并检查 observation/assistant/reward 长度、task text、reward 总和、W&B run 和零 optimizer artifact。
 
-训练collector必须使用`*_train`。若`validation.enabled=true`，CLI另建只允许heldout assets的collector；每次重置固定seed并要求完整episode数，结果写`validation_log.csv`，不进入optimizer。`rollout.history_window`、temperature、top-p、seed offset、k和validation协议会写入checkpoint并在resume时核对。长任务可用`--resume --resume-checkpoint <iter_dir>`显式same-world恢复。
+## 提交前
 
-### 分布式/离线 JSONL rollout
+按项目实验协议：
 
-需要把 rollout 与训练分开时，仍可先生成 JSONL，再确定性消费：
-
-```bash
-# 步骤 1：独立 rollout 生成 JSONL（可在 Slurm 上单卡运行）
-python -m experiments.training.rl.rollout_env \
-  --model /path/to/sft2/export_best_hf \
-  --env-url http://127.0.0.1:5000 \
-  --output-dir outputs/rollouts/batch_001 \
-  --num-episodes 128 \
-  --eval-set base_train \
-  --split train
-
-# 步骤 2：离线 RL 训练消费 JSONL
-python -m nimloth.training.rl.cli \
-  --config configs/training/rl/defaults.yaml \
-  --model Qwen/Qwen2.5-VL-3B-Instruct \
-  --use-jsonl-rollout \
-  --jsonl-sources outputs/rollouts/ \
-  --output-dir outputs/experiments/training/rl/test
-```
-
-`--jsonl-sources` 接受一个或多个 JSONL 文件或目录（目录下递归搜索 `*.jsonl` / `*.jsonl.gz`）。也可以在 config 中设置 `rollout.jsonl_sources`。训练时轮转消费所有轨迹；数据耗尽时自动回到开头（loop）。
-
-### 分布式安全说明
-
-- 动态模式中只有rank0拥有env状态，所有rank按同一顺序执行policy forward，并在step前核对action logits、广播rank0 action和完整trajectory。
-- env/policy/schema错误不会写入默认动作或零log-prob；不完整episode整条丢弃，collective policy错误同步失败。
-- `JSONLRolloutCollector` 在所有 rank 上返回相同轨迹序列（确定性轮转），保证 FSDP forward 次数一致。
-- Batch 选择使用 per-iteration 确定性 generator（`seed + iteration`），不依赖全局 RNG 状态同步。
-- 非 FSDP 的 `state_proj`、`wm_predictor`、`value_head` 会在 distributed setup 后从 rank0 广播初始参数；因为所有 rank 消费相同数据，它们的本地副本会保持同步。
-- 所有 rank 必须调用相同的 `collect()` 次数——训练循环已保证这一点。
-
-## 输出
-
-```
-outputs/experiments/training/rl/<date>/<name>/
-├── README.md
-├── train_step_log.csv
-├── validation_log.csv       # fixed heldout baseline/periodic metrics when enabled
-├── best/                  # best checkpoint (state_proj, predictor, value_head, optimizer)
-├── iter_NNNN/             # periodic checkpoints
-├── rollouts/              # per-iteration trajectory JSONL
-└── final/                 # final checkpoint
-```
-
-## 入口
-
-```bash
-# Smoke test (单 GPU，synthetic data)
-sbatch experiments/training/rl/smoke_test.slurm
-
-# 真实端到端 smoke（在至少 2 GPU 的 hold allocation 内执行）
-bash experiments/training/rl/run_e2e_smoke.sh
-```
+1. commit code/config/docs；
+2. 同步 server worktree 并确认 clean、HEAD/submodule commit；
+3. 新建 output identity 和 W&B ID；
+4. 运行 `on-experiment-start`；
+5. 只提交获批的 smoke/baseline；
+6. 结束后运行 `on-experiment-end` 并更新 progress。
