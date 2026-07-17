@@ -32,7 +32,8 @@
 - replacement commit=`d16a9ede9d5d173adddcfdafb0ceaf6662c9419d`固定当前normal资源6@dgx09+2@dgx37 trainers与独立dgx13 env，allocation内bounded semantic preflight先于trainer；server tests=`32 passed`、bash syntax和Slurm配置检查通过。attempt2 job478965于00:12立即获得三组资源，但dgx13仅health通过，`create_environments_batch`在300s超时，cleanup close因未创建env返回500/KeyError。三组`FAILED1:0`/elapsed5:40；preflight无JSON/image，trainer未启动，0 trajectory/update/checkpoint/final。
 - ID19/W&B=`rvz46qrl`已标记FAILED/NON-RESUMABLE。只读ID12 init未改变；本次没有schema-v3、full-token PPO/KL、FA2/FSDP backward或质量结论。ID19禁止resume/reuse，fixed20 baseline继续阻塞。
 - 用户要求更换env节点重试。独立preflight job478976在preempt dgx48 `COMPLETED0:0`/24s：create2.631s、prompt0.0025s、reset0.263s，真实base_train seed30002 StoveBurner instruction、one-image schema及close通过。commit=`c65488fd09b49dec868ac60e74acdb74dfd509c8`新增normal 5@dgx09+3@dgx27 trainers + preempt dgx48 env atomic launcher；allocation内仍会重复preflight，server tests=`33 passed`。
-- 新identity ID20/W&B=`n34u6ifk`/job478990已提交：同一ID12 immutable init、base_train seeds30002/30003、schema-v3 full-token PPO/KL/FA2、vision/StateProjector freeze。当前三组`PENDING/Resources`、elapsed0；dgx09已被新任务占满，Slurm leader估计11:05但不是保证。尚无allocation/trainer/result；不得因pending描述为已启动或成功。
+- 新identity ID20/W&B=`n34u6ifk`：同一ID12 immutable init、base_train seeds30002/30003、schema-v3 full-token PPO/KL/FA2、vision/StateProjector freeze。初次job478990把trainer固定为dgx09/dgx27，提交后瞬时资源变化导致PENDING；人类明确指出不能把提交前快照固化为节点约束，登记E0042。三组即时复核PENDING/elapsed0后以state-filter安全取消，无allocation/artifact。
+- commit=`c6ecb9c6a577f0cf7d7a05ef5d106bdd3cd29375`改为Slurm动态选择normal 5+3 trainer节点，仅固定preflight-proven dgx48 env；protected dgx-[18,32,52,54]继续排除。ID20 active attempt2 job479001当前PENDING/Resources/elapsed0；scheduler此刻选择dgx09/dgx27，但launcher没有固定trainer node，资源变化时可重选。尚无trainer/result，fixed20继续阻塞。
 
 ## 2026-07-16：FSDP动态在线rollout实现
 
