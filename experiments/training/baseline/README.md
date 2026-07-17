@@ -32,13 +32,14 @@ Outputs: `outputs/experiments/training/baseline/` (Slurm logs, per-run dirs, `pr
 
 ## Latest valid reference run (2026-06)
 
-Remote legacy run (still authoritative for SFT1 init / rollouts):
+Remote legacy run retained for historical SFT1 initialization:
 
 `experiments/navigation_baseline/runs/vagen_nav_dgx31_49train_dgx36env_3node_16train8env_original_base_common_resp20k_single_action_promptfix_retry2`
 
-- Latest checkpoint: `global_step_93` (`checkpoints/latest_checkpointed_iteration.txt`)
-- Resume pattern: external 4-GPU env + 2-node×8 GPU train (`train_resume.slurm`)
-- Fused kernels **off** on resume; `use_kl_in_reward=True`, `kl_coef=0.001`
+- Retained checkpoints after the human-authorized 2026-07-17 cleanup: `global_step_48` and `global_step_79`.
+- Latest marker: `global_step_79` (`checkpoints/latest_checkpointed_iteration.txt`).
+- `global_step_50` and `global_step_93` were deleted; frozen legacy scripts that reference them cannot be rerun directly.
+- `global_step_79/actor/huggingface` remains the canonical SFT1 initialization export.
 
 New runs should write to `outputs/experiments/training/baseline/<YYYY-MM-DD>/<experiment_name>/`.
 To resume a legacy run, set `RUN_DIR` to the legacy path.

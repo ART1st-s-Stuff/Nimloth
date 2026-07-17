@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
+
+- 人类明确要求完整保留 legacy `retry2` 的 `global_step_48` 与 `global_step_79`，删除该 run 下其他全部 `global_step_*` checkpoint。
+- 已删除 `10,20,30,40,46,47,49,50,60,70,77,78,80,90,93`；保留的 `48/79` 均通过 actor HF、actor shard、critic shard存在性检查。
+- `latest_checkpointed_iteration.txt` 已从 `93` 原子更新为 `79`；checkpoint 根目录从约2.1TiB降至245GiB，`/project` 可用空间增至约2.2TiB。
+- 删除记录：远程 run 根目录 `checkpoint_prune_keep48_79_20260717_160932.log`。原 `global_step_50/93` 已不可恢复，依赖这些 checkpoint 的冻结 legacy 脚本不能直接重跑。
+
 ## 2026-07-16：k=1 epoch2 RL feasibility 准备
 
 - 人类要求暂停SFT2 epoch3，下一阶段只验证RL可行性、不对效果做期待。job `476585`已取消并释放GPU；epoch2/best完整，partial latest=epoch3/step3125，CSV已归档/截断，W&B `az8nqwv9` clean finish。
