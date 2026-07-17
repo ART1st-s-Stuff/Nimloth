@@ -2,7 +2,7 @@
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --time=02:00:00
+#SBATCH --time=00:30:00
 #SBATCH --nodes=2
 #SBATCH --ntasks=8
 #SBATCH --ntasks-per-node=4
@@ -15,7 +15,7 @@
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --time=02:00:00
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
