@@ -17,7 +17,8 @@
 - 新增E0034。定向server测试`64 passed, 2 expected warnings`；pinned VAGEN source protocol tests另`3 passed`。更宽SFT suite为`64 passed, 1 unrelated pre-existing test bug`（`test_trajectory_prefix_encoding.py`先使用后定义`token_id_map`）。compile、bash syntax、diff check通过。
 - 修复已提交并推送`ba7513994216e8f66371f306b9d1255002e82109`。尚未提交GPU/Slurm任务，未创建新W&B/output，未resume ID11。
 - `/project`空间已由人类清理并恢复；server worktree已同步clean `dcf7eef`，VAGEN=`e7cc2d0`、le-wm=`8edfeb3`。实际server tests=`64 passed, 2 expected warnings`，VAGEN source protocol另`3 passed`。
-- 人类要求不再使用旧partial step3059 init，改用现在完整SFT2 Epoch2。已核实source `train/epoch_002`与`best`均step3310、epoch2、`epoch_complete=true`、k8/inject；Epoch2 val WM MSE=`0.003050072753`。RL prep新增`--require-epoch-complete`，误传当前Epoch3 partial step4799会fail-fast；定向2 tests通过。下一实验将从Epoch2完整checkpoint构建新的immutable init，不能复用ID10 init。
+- 人类要求不再使用旧partial step3059 init，改用现在完整SFT2 Epoch2。已核实source `train/epoch_002`与`best`均step3310、epoch2、`epoch_complete=true`、k8/inject；Epoch2 val WM MSE=`0.003050072753`。RL prep新增`--require-epoch-complete`，误传当前Epoch3 partial step4799会fail-fast；定向2 tests通过。
+- ID12 semantic smoke已获批准：output=`.../2026-07-17/12_smoke_fsdpdynamic_k8full8192_sft2epoch2step3310_semantic_frag2x1_iter1_b2_visfreeze`，W&B=`c8w83kd3`，实验commit=`e92cb3b`。Prep job478316在dgx-13 `COMPLETED 0:0`/2:25：source step3310完整Epoch2 hash稳定，merge826 adapters，k8 IDs151665–151672，两HF shards，immutable init ready。Smoke hetero job478318已提交且hard-exclude active SFT2 job478282节点18/32/52/54；当前pending Resources，等待已验证env dgx-37（scheduler estimate19:24），未修改任何他人job。
 
 ## 2026-07-16：FSDP动态在线rollout实现
 
