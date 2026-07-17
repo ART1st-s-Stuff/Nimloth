@@ -9,6 +9,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=24G
+#SBATCH --nodelist=dgx-09
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-hold
 #SBATCH --account=peilab

@@ -175,7 +175,8 @@ def test_dynamic_4211_launcher_has_no_stale_trainer_node_rules() -> None:
     assert launcher.count("#SBATCH hetjob") == 4
     assert launcher.count("#SBATCH --partition=normal") == 4
     assert launcher.count("#SBATCH --partition=preempt") == 1
-    assert launcher.count("#SBATCH --nodelist=") == 2
+    assert launcher.count("#SBATCH --nodelist=") == 3
+    assert "#SBATCH --nodelist=dgx-09" in launcher
     assert "#SBATCH --nodelist=dgx-27" in launcher
     assert "#SBATCH --nodelist=dgx-48" in launcher
     assert "#SBATCH --exclude=" not in launcher
@@ -197,6 +198,7 @@ def test_placeholder_hold_runs_atomically_published_stages() -> None:
     assert hold.count("#SBATCH hetjob") == 4
     assert hold.count("#SBATCH --partition=normal") == 4
     assert hold.count("#SBATCH --partition=preempt") == 1
+    assert "#SBATCH --nodelist=dgx-09" in hold
     assert "#SBATCH --nodelist=dgx-27" in hold
     assert "#SBATCH --nodelist=dgx-48" in hold
     assert "#SBATCH --exclude=" not in hold
