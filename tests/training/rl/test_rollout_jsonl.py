@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 
 import pytest
+import torch
 
 from nimloth.training.rl.rollout import JSONLRolloutCollector, RolloutTrajectory
 from nimloth.training.rl.vagen_protocol import ACTION_NAMES, nimloth_assistant_response
@@ -43,6 +44,8 @@ def _make_traj(record_id: str, num_steps: int = 3) -> RolloutTrajectory:
         action_indices=indices,
         action_names=[ACTION_NAMES[index] for index in indices],
         action_log_probs=[[-math.log(8.0)] * 8 for _ in range(num_steps)],
+        thought_token_ids=[[10, 11, 12] for _ in range(num_steps)],
+        thought_token_log_probs=[[-0.2, -0.3, -0.1] for _ in range(num_steps)],
         step_rewards=step_rewards,
         success=(num_steps % 2 == 0),
         reward=sum(step_rewards),
@@ -181,6 +184,46 @@ def test_jsonl_collector_nonexistent_source(tmp_path: Path) -> None:
     collector = JSONLRolloutCollector(sources=[tmp_path / "nonexistent.jsonl"])
     with pytest.raises(FileNotFoundError, match="未找到任何 JSONL 文件"):
         collector.collect(num_episodes=1)
+
+
+# ---------------------------------------------------------------------------
+# Full-response-token PPO and KL
+# ---------------------------------------------------------------------------
+
+
+def test_actor_loss_consumes_every_response_token() -> None:
+    from nimloth.training.rl.loss import compute_actor_loss
+
+    old = torch.log(torch.tensor([0.5, 0.25, 0.8, 0.4]))
+    new = torch.log(torch.tensor([0.6, 0.20, 0.9, 0.3]))
+    advantages = torch.tensor([1.0, 1.0, -0.5, -0.5])
+    loss, metrics = compute_actor_loss(
+        new_log_probs=new,
+        old_log_probs=old,
+        advantages=advantages,
+        clip_ratio=0.2,
+    )
+    ratio = torch.exp(new - old)
+    expected = -torch.minimum(
+        ratio * advantages,
+        torch.clamp(ratio, 0.8, 1.2) * advantages,
+    ).mean()
+    assert torch.allclose(loss, expected)
+    assert metrics["clip_fraction"] > 0.0
+
+
+def test_low_variance_kl_matches_vagen_formula() -> None:
+    from nimloth.training.rl.loss import compute_kl_penalty
+
+    policy = torch.tensor([-0.2, -1.0, -2.0])
+    reference = torch.tensor([-0.4, -0.8, -2.0])
+    actual = compute_kl_penalty(
+        policy, reference, penalty_type="low_var_kl"
+    )
+    reverse_delta = reference - policy
+    expected = torch.exp(reverse_delta) - reverse_delta - 1.0
+    assert torch.allclose(actual, expected)
+    assert torch.all(actual >= 0.0)
 
 
 # ---------------------------------------------------------------------------

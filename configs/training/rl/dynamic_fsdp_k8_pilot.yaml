@@ -9,6 +9,12 @@ actor:
   lr: 1.0e-6
   entropy_coeff: 0.01
   clip_ratio: 0.2
+  use_kl_loss: true
+  kl_loss_coef: 0.001
+  kl_loss_type: low_var_kl
+  use_kl_in_reward: false
+  kl_reward_coef: 0.001
+  kl_reward_type: kl
 
 predictor:
   lr: 1.0e-4
@@ -40,7 +46,7 @@ rl:
   iterations: 20
   envs_per_iteration: 8
   max_steps_per_episode: 20
-  gamma: 0.99
+  gamma: 1.0
   batch_size: 2
   temperature: 0.7
   top_p: 0.95

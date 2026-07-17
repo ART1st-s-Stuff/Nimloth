@@ -133,10 +133,13 @@ def build_rl_transitions(
     processor: Any,
     token_id_map: dict[str, int],
     device: torch.device,
-    gamma: float = 0.99,
+    gamma: float = 1.0,
     *,
     latent_token_count: int = 1,
     history_window: int = 112,
+    use_kl_in_reward: bool = False,
+    kl_reward_coef: float = 0.0,
+    kl_penalty_type: str = "kl",
 ) -> list[dict[str, Any]]:
     """Encode trajectories → list of transition dicts (CPU tensors)."""
 
@@ -158,12 +161,57 @@ def build_rl_transitions(
             )
 
         record = traj.to_record()
+        kl_reward_penalties = [0.0] * traj.num_steps
+        if use_kl_in_reward:
+            if kl_reward_coef <= 0:
+                raise ValueError(
+                    f"KL-in-reward requires positive coefficient, got {kl_reward_coef}"
+                )
+            if len(traj.reference_token_log_probs) != traj.num_steps:
+                raise ValueError(
+                    f"trajectory {traj.record_id} has no complete reference token log-probs"
+                )
+            from nimloth.training.rl.loss import compute_kl_penalty
+
+            adjusted_rewards: list[float] = []
+            for step in range(traj.num_steps):
+                if len(traj.ppo_old_token_log_probs) != traj.num_steps:
+                    raise ValueError(
+                        f"trajectory {traj.record_id} has no complete PPO-old log-probs"
+                    )
+                behavior = torch.tensor(
+                    traj.ppo_old_token_log_probs[step], dtype=torch.float32
+                )
+                reference = torch.tensor(
+                    traj.reference_token_log_probs[step], dtype=torch.float32
+                )
+                penalty = float(compute_kl_penalty(
+                    behavior,
+                    reference,
+                    penalty_type=kl_penalty_type,
+                ).sum().item())
+                kl_reward_penalties[step] = kl_reward_coef * penalty
+                adjusted_rewards.append(
+                    float(traj.step_rewards[step]) - kl_reward_penalties[step]
+                )
+            record["step_rewards"] = adjusted_rewards
+            record["reward"] = sum(adjusted_rewards) + float(traj.final_reward)
         value_targets = discounted_action_value_targets(record, gamma=gamma)
 
         for t in range(traj.num_steps):
-            # old_log_prob for the taken action at step t
-            log_probs = traj.action_log_probs[t] if t < len(traj.action_log_probs) else []
-            old_lp = float(log_probs[traj.action_indices[t]]) if len(log_probs) > traj.action_indices[t] else 0.0
+            action_log_probs = traj.action_log_probs[t]
+            old_action_log_prob = float(
+                action_log_probs[traj.action_indices[t]]
+            )
+            behavior_token_log_probs = [
+                *[float(value) for value in traj.thought_token_log_probs[t]],
+                old_action_log_prob,
+            ]
+            old_token_log_probs = (
+                [float(value) for value in traj.ppo_old_token_log_probs[t]]
+                if traj.ppo_old_token_log_probs
+                else behavior_token_log_probs
+            )
 
             from nimloth.training.rl.vagen_protocol import thought_from_assistant_response
 
@@ -172,7 +220,14 @@ def build_rl_transitions(
                 "qwen_hidden_next": hiddens[t + 1] if t + 1 < len(hiddens) else None,
                 "action_index": torch.tensor(traj.action_indices[t], dtype=torch.long),
                 "value_target": torch.tensor(value_targets[t], dtype=torch.float32),
-                "old_log_prob": old_lp,
+                "old_token_log_probs": old_token_log_probs,
+                "behavior_token_log_probs": behavior_token_log_probs,
+                "thought_token_ids": list(traj.thought_token_ids[t]),
+                "reference_token_log_probs": (
+                    list(traj.reference_token_log_probs[t])
+                    if traj.reference_token_log_probs else []
+                ),
+                "kl_reward_penalty": kl_reward_penalties[t],
                 "system_prompt": traj.system_prompt,
                 "observation_texts": traj.observation_texts[:t + 1],
                 "assistant_responses": traj.assistant_responses[:t],
@@ -238,8 +293,8 @@ def summarize_validation_trajectories(
 # PPO forward pass (Qwen with gradients)
 # ---------------------------------------------------------------------------
 
-def compute_new_log_probs_for_batch(
-    ppo_items: list[dict],
+def compute_policy_token_stats_for_batch(
+    ppo_items: list[dict[str, Any]],
     model,
     processor,
     token_id_map: dict[str, int],
@@ -248,30 +303,29 @@ def compute_new_log_probs_for_batch(
     history_window: int,
     temperature: float,
     latent_token_count: int = 1,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run Qwen forward WITH gradients, returning new log-probs and action logits.
+) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
+    """Recompute VAGEN-style response-token log-probs and entropies.
 
-    Each item contains the exact stored system/observation/assistant history,
-    the generated current thought, and the taken action.  No prompt text is
-    synthesized during PPO recomputation.
-
-    Returns (new_log_probs, action_logits) where:
-        new_log_probs: (B,) log-prob of taken actions under current policy
-        action_logits: (B, 8) raw logits for all 8 actions
+    Every sampled thought token and sampled action token participates in PPO.
+    Deterministically injected latent queries and action delimiters are context,
+    not policy decisions, and therefore stay outside the loss mask.
     """
-    from nimloth.latent.extraction import LatentActionTokens, latent_state_block
+
+    from nimloth.latent.extraction import LatentActionTokens, latent_state_tokens
     from nimloth.training.rl.rollout import (
+        _append_input_token,
         build_nimloth_policy_messages,
-        multimodal_policy_messages,
+        policy_inputs_from_messages,
     )
 
     if temperature < 0:
         raise ValueError(f"temperature must be >= 0, got {temperature}")
     tokens = LatentActionTokens()
     action_token_ids = [token_id_map[token] for token in tokens.action_tokens]
+    flattened_log_probs: list[torch.Tensor] = []
+    flattened_entropies: list[torch.Tensor] = []
+    token_counts: list[int] = []
 
-    new_log_probs_list: list[torch.Tensor] = []
-    policy_logits_list: list[torch.Tensor] = []
     for item in ppo_items:
         messages, images = build_nimloth_policy_messages(
             item["image_history_paths"],
@@ -280,40 +334,198 @@ def compute_new_log_probs_for_batch(
             item["assistant_responses"],
             history_window=history_window,
         )
-        messages, images = multimodal_policy_messages(messages, images)
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+        model_inputs, _ = policy_inputs_from_messages(
+            model, processor, messages, images
         )
-        text += (
-            item["current_thought"]
-            + latent_state_block(latent_token_count)
-            + "<|action_start|>"
+        prefix_length = int(model_inputs["input_ids"].shape[1])
+        thought_ids = [int(token) for token in item["thought_token_ids"]]
+        decoded_thought = processor.tokenizer.decode(
+            thought_ids, skip_special_tokens=False
+        ).strip()
+        if decoded_thought != str(item["current_thought"]).strip():
+            raise RuntimeError(
+                "stored thought token IDs do not reproduce current_thought: "
+                f"decoded={decoded_thought!r}, text={item['current_thought']!r}"
+            )
+        for token_id in thought_ids:
+            model_inputs = _append_input_token(model_inputs, token_id)
+        for query_name in latent_state_tokens(latent_token_count, tokens):
+            model_inputs = _append_input_token(
+                model_inputs, token_id_map[query_name]
+            )
+        model_inputs = _append_input_token(
+            model_inputs, token_id_map[tokens.action_start]
         )
-        encoded = processor(
-            text=[text],
-            images=images,
-            padding=True,
-            return_tensors="pt",
-        )
-        model_inputs = {key: value.to(device) for key, value in encoded.items()}
-        outputs = model(
-            **model_inputs, output_hidden_states=False, return_dict=True
-        )
-        input_ids = encoded["input_ids"][0]
-        positions = (
-            input_ids == token_id_map[tokens.action_start]
-        ).nonzero(as_tuple=True)[0]
-        if positions.numel() == 0:
-            raise RuntimeError("<|action_start|> token not found in PPO prompt")
-        position = int(positions[-1].item())
-        action_ids = torch.tensor(action_token_ids, device=outputs.logits.device)
-        raw_logits = outputs.logits[0, position, action_ids].float()
-        policy_logits = raw_logits if temperature == 0 else raw_logits / temperature
-        policy_logits_list.append(policy_logits)
-        log_probs = torch.log_softmax(policy_logits, dim=-1)
-        new_log_probs_list.append(log_probs[int(item["taken_action_idx"])])
 
-    return torch.stack(new_log_probs_list), torch.stack(policy_logits_list)
+        outputs = model(
+            **model_inputs,
+            output_hidden_states=False,
+            return_dict=True,
+            use_cache=False,
+        )
+        for offset, selected_id in enumerate(thought_ids):
+            raw_logits = outputs.logits[0, prefix_length - 1 + offset].float()
+            policy_logits = raw_logits if temperature == 0 else raw_logits / temperature
+            token_log_probs = torch.log_softmax(policy_logits, dim=-1)
+            token_probs = torch.softmax(policy_logits, dim=-1)
+            flattened_log_probs.append(token_log_probs[selected_id])
+            flattened_entropies.append(-(token_probs * token_log_probs).sum())
+
+        action_ids = torch.tensor(
+            action_token_ids, device=outputs.logits.device
+        )
+        raw_action_logits = outputs.logits[0, -1, action_ids].float()
+        action_logits = (
+            raw_action_logits
+            if temperature == 0
+            else raw_action_logits / temperature
+        )
+        action_log_probs = torch.log_softmax(action_logits, dim=-1)
+        action_probs = torch.softmax(action_logits, dim=-1)
+        taken_action = int(item["taken_action_idx"])
+        flattened_log_probs.append(action_log_probs[taken_action])
+        flattened_entropies.append(
+            -(action_probs * action_log_probs).sum()
+        )
+        token_counts.append(len(thought_ids) + 1)
+
+    if not flattened_log_probs:
+        raise ValueError("PPO batch contains no stochastic response tokens")
+    return (
+        torch.stack(flattened_log_probs),
+        torch.stack(flattened_entropies),
+        token_counts,
+    )
+
+
+def attach_policy_and_reference_token_log_probs(
+    trajectories: list[RolloutTrajectory],
+    model,
+    processor,
+    token_id_map: dict[str, int],
+    device: torch.device,
+    *,
+    history_window: int,
+    temperature: float,
+    latent_token_count: int,
+    compute_reference: bool,
+) -> dict[str, float]:
+    """Recompute PPO-old and immutable-base reference token log-probs.
+
+    VAGEN recomputes old log-probs with the actor after rollout rather than
+    trusting inference-engine values. We retain generation-time behavior values
+    for audit, but PPO ratios use this full-response replay.
+    """
+
+    items: list[dict[str, Any]] = []
+    owners: list[tuple[RolloutTrajectory, int]] = []
+    for trajectory in trajectories:
+        trajectory.ppo_old_token_log_probs = []
+        trajectory.reference_token_log_probs = []
+        for step in range(trajectory.num_steps):
+            from nimloth.training.rl.vagen_protocol import (
+                thought_from_assistant_response,
+            )
+
+            items.append({
+                "image_history_paths": trajectory.image_paths[: step + 1],
+                "system_prompt": trajectory.system_prompt,
+                "observation_texts": trajectory.observation_texts[: step + 1],
+                "assistant_responses": trajectory.assistant_responses[:step],
+                "current_thought": thought_from_assistant_response(
+                    trajectory.assistant_responses[step]
+                ),
+                "thought_token_ids": trajectory.thought_token_ids[step],
+                "taken_action_idx": trajectory.action_indices[step],
+            })
+            owners.append((trajectory, step))
+
+    with _temporary_eval(model), torch.no_grad():
+        old_log_probs, _old_entropies, old_counts = (
+            compute_policy_token_stats_for_batch(
+                items,
+                model,
+                processor,
+                token_id_map,
+                device,
+                history_window=history_window,
+                temperature=temperature,
+                latent_token_count=latent_token_count,
+            )
+        )
+    reference_log_probs: torch.Tensor | None = None
+    reference_counts: list[int] = []
+    if compute_reference:
+        with _temporary_eval(model), disable_lora_adapters_for_reference(model):
+            with torch.no_grad():
+                reference_log_probs, _reference_entropies, reference_counts = (
+                    compute_policy_token_stats_for_batch(
+                        items,
+                        model,
+                        processor,
+                        token_id_map,
+                        device,
+                        history_window=history_window,
+                        temperature=temperature,
+                        latent_token_count=latent_token_count,
+                    )
+                )
+        if old_counts != reference_counts:
+            raise RuntimeError(
+                f"policy/reference token counts differ: {old_counts} != {reference_counts}"
+            )
+
+    def split_values(
+        flattened: torch.Tensor,
+        counts: list[int],
+        *,
+        label: str,
+    ) -> dict[int, list[list[float]]]:
+        cursor = 0
+        result = {
+            id(trajectory): [[] for _ in range(trajectory.num_steps)]
+            for trajectory in trajectories
+        }
+        for (trajectory, step), count in zip(owners, counts):
+            values = flattened[cursor:cursor + count].detach().cpu().tolist()
+            result[id(trajectory)][step] = [float(value) for value in values]
+            cursor += count
+        if cursor != int(flattened.numel()):
+            raise RuntimeError(
+                f"{label} token split consumed {cursor} of {flattened.numel()} values"
+            )
+        return result
+
+    old_by_trajectory = split_values(old_log_probs, old_counts, label="PPO-old")
+    reference_by_trajectory = (
+        split_values(reference_log_probs, reference_counts, label="reference")
+        if reference_log_probs is not None else {
+            id(trajectory): [] for trajectory in trajectories
+        }
+    )
+    behavior_deltas: list[float] = []
+    for trajectory in trajectories:
+        trajectory.ppo_old_token_log_probs = old_by_trajectory[id(trajectory)]
+        trajectory.reference_token_log_probs = reference_by_trajectory[id(trajectory)]
+        for step in range(trajectory.num_steps):
+            behavior = [
+                *trajectory.thought_token_log_probs[step],
+                trajectory.action_log_probs[step][trajectory.action_indices[step]],
+            ]
+            replayed = trajectory.ppo_old_token_log_probs[step]
+            behavior_deltas.extend(
+                abs(float(left) - float(right))
+                for left, right in zip(behavior, replayed)
+            )
+        validate_rollout_trajectory(trajectory)
+    return {
+        "policy_tokens": float(old_log_probs.numel()),
+        "behavior_replay_logprob_max_delta": max(behavior_deltas, default=0.0),
+        "behavior_replay_logprob_mean_delta": (
+            sum(behavior_deltas) / len(behavior_deltas)
+            if behavior_deltas else 0.0
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +535,34 @@ def compute_new_log_probs_for_batch(
 
 def _unwrap(m: torch.nn.Module) -> torch.nn.Module:
     return m.module if hasattr(m, "module") else m
+
+
+@contextmanager
+def disable_lora_adapters_for_reference(model: torch.nn.Module):
+    """Expose the immutable merged SFT2 base as PPO's reference policy.
+
+    PEFT's public ``disable_adapter()`` changes ``requires_grad`` and has had
+    FSDP flat-parameter incompatibilities. LoRA forward layers already consult
+    ``_disable_adapters``; toggling only that boolean preserves FSDP ownership.
+    """
+
+    root = _unwrap(model)
+    adapter_layers = [
+        module for module in root.modules()
+        if hasattr(module, "_disable_adapters") and hasattr(module, "base_layer")
+    ]
+    if not adapter_layers:
+        raise RuntimeError(
+            "KL reference requires LoRA adapter layers over the immutable SFT2 base"
+        )
+    previous = [bool(module._disable_adapters) for module in adapter_layers]
+    try:
+        for module in adapter_layers:
+            module._disable_adapters = True
+        yield
+    finally:
+        for module, was_disabled in zip(adapter_layers, previous):
+            module._disable_adapters = was_disabled
 
 
 def validate_policy_tune_combination(
@@ -483,6 +723,26 @@ def train_rl(
     actor_lr: float = float(actor_cfg.get("lr", 1e-6))
     entropy_coeff: float = float(actor_cfg.get("entropy_coeff", 0.0))
     clip_ratio: float = float(actor_cfg.get("clip_ratio", 0.2))
+    use_kl_loss: bool = bool(actor_cfg.get("use_kl_loss", False))
+    kl_loss_coef: float = float(actor_cfg.get("kl_loss_coef", 0.0))
+    kl_loss_type: str = str(actor_cfg.get("kl_loss_type", "low_var_kl"))
+    use_kl_in_reward: bool = bool(actor_cfg.get("use_kl_in_reward", False))
+    kl_reward_coef: float = float(actor_cfg.get("kl_reward_coef", 0.0))
+    kl_reward_type: str = str(actor_cfg.get("kl_reward_type", "kl"))
+    if use_kl_loss and use_kl_in_reward:
+        raise ValueError(
+            "VAGEN applies actor KL instead of reward KL when use_kl_loss=true; "
+            "enable only one KL placement"
+        )
+    if use_kl_loss and kl_loss_coef <= 0:
+        raise ValueError("actor KL loss requires actor.kl_loss_coef > 0")
+    if use_kl_in_reward and kl_reward_coef <= 0:
+        raise ValueError("reward KL requires actor.kl_reward_coef > 0")
+    if (use_kl_loss or use_kl_in_reward) and not uses_lora(args):
+        raise ValueError(
+            "KL reference currently requires LoRA so the immutable merged SFT2 "
+            "base can be evaluated with adapters disabled"
+        )
 
     # Config-controlled freeze is advisory — actual tuning is via --llm-tune / --vision-tune
     freeze_qwen: bool = freeze_cfg.get("qwen", True)
@@ -767,10 +1027,21 @@ def train_rl(
             "prompt_protocol": "vagen-source-eval-to-nimloth-inject-v2",
             "image_protocol": "vagen-process-image-min512-max2048-v1",
             "reward_protocol": "vagen-per-turn-plus-final-v1",
-            "optimization_protocol": "all-action-transitions-one-ppo-epoch-v1",
+            "optimization_protocol": "all-stochastic-response-tokens-one-ppo-epoch-v2",
+            "policy_loss_mask": "sampled-thought-plus-action;injected-scaffold-excluded",
             "transition_microbatch_size": batch_size,
             "value_ranking_weight": 0.0,
-            "trajectory_schema": 2,
+            "trajectory_schema": 3,
+            "kl": {
+                "reference": "immutable-merged-sft2-base-adapters-disabled",
+                "use_actor_loss": use_kl_loss,
+                "actor_coef": kl_loss_coef,
+                "actor_penalty": kl_loss_type,
+                "use_in_reward": use_kl_in_reward,
+                "reward_coef": kl_reward_coef,
+                "reward_penalty": kl_reward_type,
+            },
+            "attention_implementation": str(args.attn_implementation),
             "environment_config": collector._environment_config(
                 str(collector._eval_sets[0])
             )["env_config"] | {"eval_set": "<per-episode>"},
@@ -887,6 +1158,7 @@ def train_rl(
                 "num_rollouts", "num_transitions", "optimizer_steps", "success_rate",
                 "val_success_rate", "val_avg_reward", "val_avg_steps",
                 "actor_loss", "entropy", "clip_fraction", "mean_advantage",
+                "policy_tokens", "kl_loss", "kl_reward_penalty",
             ])
 
     validation_log_path = output_dir / "validation_log.csv"
@@ -1001,6 +1273,30 @@ def train_rl(
                                   "warning": "no trajectories collected, skipping"}))
             continue
 
+        if actor_enabled:
+            replay_metrics = attach_policy_and_reference_token_log_probs(
+                trajectories,
+                model,
+                processor,
+                token_id_map,
+                device,
+                history_window=int(getattr(collector, "_history_window", 112)),
+                temperature=ppo_temperature,
+                latent_token_count=latent_token_count,
+                compute_reference=use_kl_loss or use_kl_in_reward,
+            )
+            if is_main():
+                from nimloth.training.rl.rollout import save_trajectories
+
+                print(json.dumps({
+                    "iteration": iteration,
+                    "policy_replay": replay_metrics,
+                }))
+                save_trajectories(
+                    trajectories,
+                    output_dir / f"rollouts/iter_{iteration:04d}",
+                )
+
         # 2. Encode → transitions ------------------------------------------------
         with _temporary_eval(model):
             transitions = build_rl_transitions(
@@ -1012,6 +1308,9 @@ def train_rl(
                 gamma=gamma,
                 latent_token_count=latent_token_count,
                 history_window=int(getattr(collector, "_history_window", 112)),
+                use_kl_in_reward=use_kl_in_reward,
+                kl_reward_coef=kl_reward_coef,
+                kl_penalty_type=kl_reward_type,
             )
         # Free GPU memory before PPO forward (Qwen+LoRA+gradients needs extra VRAM).
         torch.cuda.empty_cache()
@@ -1093,8 +1392,8 @@ def train_rl(
             if actor_enabled:
                 import gc
                 from nimloth.training.rl.loss import (
-                    compute_action_entropy,
                     compute_actor_loss,
+                    compute_kl_penalty,
                 )
 
                 torch.cuda.empty_cache()
@@ -1105,25 +1404,44 @@ def train_rl(
                     "observation_texts": item["observation_texts"],
                     "assistant_responses": item["assistant_responses"],
                     "current_thought": item["current_thought"],
+                    "thought_token_ids": item["thought_token_ids"],
                     "taken_action_idx": int(item["action_index"].item()),
                 } for item in batch]
-                new_log_probs, action_logits = compute_new_log_probs_for_batch(
-                    ppo_items,
-                    model,
-                    processor,
-                    token_id_map,
-                    device,
-                    history_window=int(getattr(collector, "_history_window", 112)),
-                    temperature=ppo_temperature,
-                    latent_token_count=latent_token_count,
-                )
+                with _temporary_eval(model):
+                    new_log_probs, token_entropies, token_counts = (
+                        compute_policy_token_stats_for_batch(
+                            ppo_items,
+                            model,
+                            processor,
+                            token_id_map,
+                            device,
+                            history_window=int(
+                                getattr(collector, "_history_window", 112)
+                            ),
+                            temperature=ppo_temperature,
+                            latent_token_count=latent_token_count,
+                        )
+                    )
+                expected_counts = [
+                    len(item["old_token_log_probs"]) for item in batch
+                ]
+                if token_counts != expected_counts:
+                    raise RuntimeError(
+                        "PPO stochastic-token count mismatch: "
+                        f"recomputed={token_counts}, rollout={expected_counts}"
+                    )
                 old_log_probs = torch.tensor(
-                    [item["old_log_prob"] for item in batch],
+                    [
+                        value
+                        for item in batch
+                        for value in item["old_token_log_probs"]
+                    ],
                     device=new_log_probs.device,
                     dtype=new_log_probs.dtype,
                 )
-                advantages = torch.stack([
-                    item["advantage"] for item in batch
+                advantages = torch.cat([
+                    item["advantage"].reshape(1).expand(count)
+                    for item, count in zip(batch, token_counts)
                 ]).to(device=new_log_probs.device, dtype=new_log_probs.dtype)
                 actor_loss, actor_metrics = compute_actor_loss(
                     new_log_probs=new_log_probs,
@@ -1131,10 +1449,33 @@ def train_rl(
                     advantages=advantages,
                     clip_ratio=clip_ratio,
                 )
-                entropy = compute_action_entropy(action_logits)
-                total_loss = pred_loss + val_loss + actor_loss - entropy_coeff * entropy
+                entropy = token_entropies.mean()
+                policy_loss = actor_loss - entropy_coeff * entropy
+                if use_kl_loss:
+                    reference_log_probs = torch.tensor(
+                        [
+                            value
+                            for item in batch
+                            for value in item["reference_token_log_probs"]
+                        ],
+                        device=new_log_probs.device,
+                        dtype=new_log_probs.dtype,
+                    )
+                    kl_loss = compute_kl_penalty(
+                        new_log_probs,
+                        reference_log_probs,
+                        penalty_type=kl_loss_type,
+                    ).mean()
+                    policy_loss = policy_loss + kl_loss_coef * kl_loss
+                    actor_metrics["kl_loss"] = float(kl_loss.detach().item())
+                    actor_metrics["kl_coef"] = kl_loss_coef
+                total_loss = pred_loss + val_loss + policy_loss
                 actor_metrics["entropy"] = float(entropy.detach().item())
                 actor_metrics["mean_advantage"] = float(advantages.mean().item())
+                actor_metrics["policy_tokens"] = float(new_log_probs.numel())
+                actor_metrics["kl_reward_penalty"] = float(sum(
+                    item["kl_reward_penalty"] for item in batch
+                ) / len(batch))
             else:
                 total_loss = pred_loss + val_loss
 
@@ -1159,6 +1500,11 @@ def train_rl(
                 "entropy": float(actor_metrics.get("entropy", 0.0)),
                 "clip_fraction": float(actor_metrics.get("clip_fraction", 0.0)),
                 "mean_advantage": float(actor_metrics.get("mean_advantage", 0.0)),
+                "policy_tokens": float(actor_metrics.get("policy_tokens", 0.0)),
+                "kl_loss": float(actor_metrics.get("kl_loss", 0.0)),
+                "kl_reward_penalty": float(
+                    actor_metrics.get("kl_reward_penalty", 0.0)
+                ),
             }
             for key, value in batch_metrics.items():
                 metric_sums[key] = metric_sums.get(key, 0.0) + value * len(batch)
@@ -1212,6 +1558,9 @@ def train_rl(
                     iter_metrics.get("entropy", ""),
                     iter_metrics.get("clip_fraction", ""),
                     iter_metrics.get("mean_advantage", ""),
+                    iter_metrics.get("policy_tokens", ""),
+                    iter_metrics.get("kl_loss", ""),
+                    iter_metrics.get("kl_reward_penalty", ""),
                 ])
             elapsed = time.time() - iter_start
             print(json.dumps({

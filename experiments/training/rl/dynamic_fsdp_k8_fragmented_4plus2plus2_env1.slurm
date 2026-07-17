@@ -226,10 +226,21 @@ assert protocol["max_think_tokens"] == 2048
 assert protocol["prompt_protocol"] == "vagen-source-eval-to-nimloth-inject-v2"
 assert protocol["image_protocol"] == "vagen-process-image-min512-max2048-v1"
 assert protocol["reward_protocol"] == "vagen-per-turn-plus-final-v1"
-assert protocol["optimization_protocol"] == "all-action-transitions-one-ppo-epoch-v1"
+assert protocol["optimization_protocol"] == "all-stochastic-response-tokens-one-ppo-epoch-v2"
+assert protocol["policy_loss_mask"] == "sampled-thought-plus-action;injected-scaffold-excluded"
 assert protocol["transition_microbatch_size"] == 2
 assert protocol["value_ranking_weight"] == 0.0
-assert protocol["trajectory_schema"] == 2
+assert protocol["trajectory_schema"] == 3
+assert protocol["attention_implementation"] == "flash_attention_2"
+assert protocol["kl"] == {
+    "reference": "immutable-merged-sft2-base-adapters-disabled",
+    "use_actor_loss": True,
+    "actor_coef": 0.001,
+    "actor_penalty": "low_var_kl",
+    "use_in_reward": False,
+    "reward_coef": 0.001,
+    "reward_penalty": "kl",
+}
 assert protocol["environment_config"]["prompt_format"] == "source_eval_mode"
 assert protocol["environment_config"]["action_sep"] == "|"
 assert protocol["environment_config"]["example_count"] == 0
@@ -260,6 +271,17 @@ if mode == "baseline":
         steps = len(record["action_indices"])
         assert len(record["observation_texts"]) == steps + 1
         assert len(record["assistant_responses"]) == steps
+        assert len(record["thought_token_ids"]) == steps
+        assert len(record["thought_token_log_probs"]) == steps
+        assert record["ppo_old_token_log_probs"] == []
+        assert record["reference_token_log_probs"] == []
+        assert all(record["thought_token_ids"])
+        assert all(
+            len(ids) == len(log_probs)
+            for ids, log_probs in zip(
+                record["thought_token_ids"], record["thought_token_log_probs"]
+            )
+        )
         assert len(record["step_rewards"]) == steps
         assert math.isclose(
             record["reward"],
@@ -280,8 +302,13 @@ if mode == "baseline":
 assert mode == "smoke"
 assert rows
 for row in rows:
-    for key in ("wm_mse", "value_loss", "total_loss", "actor_loss", "entropy"):
+    for key in (
+        "wm_mse", "value_loss", "total_loss", "actor_loss", "entropy",
+        "policy_tokens", "kl_loss", "kl_reward_penalty",
+    ):
         assert math.isfinite(float(row[key])), (key, row[key])
+    assert float(row["policy_tokens"]) > 1.0
+    assert float(row["kl_loss"]) >= 0.0
 final = root / "train/final"
 state = torch.load(final / "rl_state.pt", map_location="cpu", weights_only=False)
 assert state["rollout_protocol"] == protocol
@@ -324,6 +351,22 @@ for record in records:
     assert len(record["image_paths"]) == steps + 1
     assert len(record["observation_texts"]) == steps + 1
     assert len(record["assistant_responses"]) == steps
+    assert len(record["thought_token_ids"]) == steps
+    assert len(record["thought_token_log_probs"]) == steps
+    assert len(record["ppo_old_token_log_probs"]) == steps
+    assert len(record["reference_token_log_probs"]) == steps
+    assert all(
+        len(old) == len(ids) + 1
+        for ids, old in zip(
+            record["thought_token_ids"], record["ppo_old_token_log_probs"]
+        )
+    )
+    assert all(
+        len(reference) == len(ids) + 1
+        for ids, reference in zip(
+            record["thought_token_ids"], record["reference_token_log_probs"]
+        )
+    )
     assert len(record["step_rewards"]) == steps
     assert "Human Instruction:" in record["observation_texts"][0]
     seed = int(record["id"].rsplit("_", 1)[1])

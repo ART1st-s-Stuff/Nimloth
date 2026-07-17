@@ -49,6 +49,11 @@ def test_k8_pilot_uses_disjoint_fixed_heldout_protocol() -> None:
     assert config["rl"]["iterations"] == 20
     assert config["rl"]["envs_per_iteration"] == 8
     assert config["rl"]["max_steps_per_episode"] == 20
+    assert config["rl"]["gamma"] == 1.0
+    assert config["actor"]["use_kl_loss"] is True
+    assert config["actor"]["kl_loss_coef"] == 0.001
+    assert config["actor"]["kl_loss_type"] == "low_var_kl"
+    assert config["actor"]["use_kl_in_reward"] is False
     assert config["validation"] == {
         "enabled": True,
         "baseline": True,
@@ -84,13 +89,21 @@ def test_corrected_baseline_is_fixed_heldout_and_evaluation_only() -> None:
     assert config["value_head"]["lambda_rank"] == 0.0
 
 
-def test_k8_smoke_allows_2048_thought_tokens() -> None:
+def test_k8_smoke_uses_vagen_ppo_and_flash_attention_protocol() -> None:
     import yaml
 
     config = yaml.safe_load(Path(
         "configs/training/rl/dynamic_fsdp_k8_smoke.yaml"
     ).read_text(encoding="utf-8"))
     assert config["rollout"]["max_think_tokens"] == 2048
+    assert config["rl"]["gamma"] == 1.0
+    assert config["actor"]["use_kl_loss"] is True
+    assert config["actor"]["kl_loss_coef"] == 0.001
+    launcher = Path(
+        "experiments/training/rl/run_dynamic_fsdp_rank.sh"
+    ).read_text(encoding="utf-8")
+    assert "--attn-implementation flash_attention_2" in launcher
+    assert "--attn-implementation sdpa" not in launcher
 
 
 def test_k8_snapshot_is_immutable_and_omits_sft_optimizer(tmp_path: Path) -> None:
@@ -373,6 +386,23 @@ def test_inject_runtime_generates_thought_before_inserting_query_block() -> None
     assert thought == "<think>generated from policy</think>"
     assert action_logits.tolist() == list(map(float, range(8)))
 
+    from nimloth.training.rl.rollout import _generate_nimloth_thought_from_inputs
+
+    traced, traced_action_logits = _generate_nimloth_thought_from_inputs(
+        model,
+        processor,
+        {"input_ids": torch.tensor([[1]]), "attention_mask": torch.tensor([[1]])},
+        latent_token_count=8,
+        max_think_tokens=8,
+        token_selector=lambda logits, _: int(logits.argmax().item()),
+        log_prob_temperature=1.0,
+    )
+    assert traced.text == thought
+    assert traced.token_ids == [10, 11, 12]
+    assert len(traced.token_log_probs) == 3
+    assert all(torch.isfinite(torch.tensor(traced.token_log_probs)))
+    assert torch.equal(traced_action_logits, action_logits)
+
 
 def test_unterminated_thought_error_keeps_bounded_generated_evidence() -> None:
     from nimloth.training.rl.rollout import _generate_nimloth_thought_from_inputs
@@ -407,37 +437,44 @@ def test_unterminated_thought_error_keeps_bounded_generated_evidence() -> None:
     assert "generated_text_prefix='tok2 tok3 tok4 tok5'" in message
 
 
-def test_ppo_replays_the_stored_rollout_prefix_verbatim() -> None:
-    from nimloth.latent.extraction import (
-        LatentActionTokens,
-        latent_state_block,
-    )
-    from nimloth.training.rl.trainer import compute_new_log_probs_for_batch
+def test_ppo_replays_every_stochastic_response_token_verbatim() -> None:
+    from nimloth.latent.extraction import LatentActionTokens, latent_state_tokens
+    from nimloth.training.rl.trainer import compute_policy_token_stats_for_batch
 
     tokens = LatentActionTokens()
     token_id_map = {
         tokens.action_start: 30,
+        **{
+            token: 20 + index
+            for index, token in enumerate(latent_state_tokens(8, tokens))
+        },
         **{token: 40 + index for index, token in enumerate(tokens.action_tokens)},
     }
-    expected_suffix = (
-        "<think>actual generated thought</think>"
-        + latent_state_block(8)
-        + "<|action_start|>"
-    )
+
+    class FakeTokenizer:
+        def decode(self, token_ids, skip_special_tokens=False):
+            assert token_ids == [10, 11, 12]
+            return "<think>actual generated thought</think>"
 
     class FakeProcessor:
+        tokenizer = FakeTokenizer()
+
         def apply_chat_template(self, messages, **kwargs):
             assert messages[0] == {"role": "system", "content": "real system"}
             content = messages[1]["content"]
             assert content[0]["type"] == "image"
             assert isinstance(content[0]["image"], Image.Image)
             assert content[1] == {"type": "text", "text": "\nreal task"}
+            assert kwargs["add_generation_prompt"] is True
             return "TRAINING_TEMPLATE_PREFIX"
 
         def __call__(self, **kwargs):
-            assert kwargs["text"] == ["TRAINING_TEMPLATE_PREFIX" + expected_suffix]
+            assert kwargs["text"] == ["TRAINING_TEMPLATE_PREFIX"]
             assert len(kwargs["images"]) == 1
-            return {"input_ids": torch.tensor([[1, 30]])}
+            return {
+                "input_ids": torch.tensor([[1]]),
+                "attention_mask": torch.tensor([[1]]),
+            }
 
     class FakeModel(torch.nn.Module):
         def __init__(self):
@@ -445,21 +482,28 @@ def test_ppo_replays_the_stored_rollout_prefix_verbatim() -> None:
             self.anchor = torch.nn.Parameter(torch.zeros(()))
 
         def forward(self, input_ids, **kwargs):
-            logits = torch.zeros((1, 2, 64)) + self.anchor
+            expected = [1, 10, 11, 12, *range(20, 28), 30]
+            assert input_ids[0].tolist() == expected
+            logits = torch.zeros((1, len(expected), 64)) + self.anchor
+            logits[0, 0, 10] += 3.0
+            logits[0, 1, 11] += 4.0
+            logits[0, 2, 12] += 5.0
             for index in range(8):
-                logits[0, 1, 40 + index] = float(index) + self.anchor
+                logits[0, -1, 40 + index] += float(index)
             return SimpleNamespace(logits=logits)
 
-    new_log_probs, logits = compute_new_log_probs_for_batch(
+    model = FakeModel()
+    log_probs, entropies, token_counts = compute_policy_token_stats_for_batch(
         [{
             "image_history_paths": [Image.new("RGB", (2, 2), "black")],
             "system_prompt": "real system",
             "observation_texts": ["<image>\nreal task"],
             "assistant_responses": [],
             "current_thought": "<think>actual generated thought</think>",
+            "thought_token_ids": [10, 11, 12],
             "taken_action_idx": 7,
         }],
-        FakeModel(),
+        model,
         FakeProcessor(),
         token_id_map,
         torch.device("cpu"),
@@ -467,8 +511,31 @@ def test_ppo_replays_the_stored_rollout_prefix_verbatim() -> None:
         temperature=1.0,
         latent_token_count=8,
     )
-    assert logits.shape == (1, 8)
-    assert new_log_probs.shape == (1,)
+    assert token_counts == [4]
+    assert log_probs.shape == (4,)
+    assert entropies.shape == (4,)
+    assert torch.isfinite(log_probs).all()
+    assert torch.isfinite(entropies).all()
+    (-log_probs.mean()).backward()
+    assert model.anchor.grad is not None
+
+
+def test_reference_context_disables_and_restores_lora_without_grad_flags() -> None:
+    from nimloth.training.rl.trainer import disable_lora_adapters_for_reference
+
+    class FakeLoraLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.base_layer = torch.nn.Linear(1, 1)
+            self._disable_adapters = False
+
+    model = torch.nn.Module()
+    model.lora = FakeLoraLayer()
+    parameter_flags = [parameter.requires_grad for parameter in model.parameters()]
+    with disable_lora_adapters_for_reference(model):
+        assert model.lora._disable_adapters is True
+        assert [parameter.requires_grad for parameter in model.parameters()] == parameter_flags
+    assert model.lora._disable_adapters is False
 
 
 def test_sampling_is_deterministic_and_temperature_scaled() -> None:
@@ -504,6 +571,8 @@ def test_trajectory_validation_rejects_nonfinite_log_probs() -> None:
         action_indices=[0],
         action_names=["move_forward"],
         action_log_probs=[[float("nan")] * 8],
+        thought_token_ids=[[10, 11, 12]],
+        thought_token_log_probs=[[-0.2, -0.3, -0.1]],
         step_rewards=[0.01],
         reward=0.01,
         latent_token_count=8,
@@ -603,6 +672,8 @@ def test_k8_hidden_encoding_extracts_full_query_block(tmp_path: Path) -> None:
         action_indices=[0],
         action_names=["move_forward"],
         action_log_probs=[[float(-torch.log(torch.tensor(8.0)))] * 8],
+        thought_token_ids=[[10, 11, 12]],
+        thought_token_log_probs=[[-0.2, -0.3, -0.1]],
         step_rewards=[0.01],
         reward=0.01,
         latent_token_count=8,
@@ -789,13 +860,18 @@ def _distributed_collect_worker(rank: int, world: int, port: int, root: str) -> 
     try:
         import nimloth.training.rl.distributed_rollout as distributed_module
         from nimloth.training.rl.distributed_rollout import DistributedEnvRolloutCollector
+        from nimloth.training.rl.rollout import GeneratedThought
 
         def fake_policy_turn(*args, **kwargs):
-            return "<think>generated</think>", torch.tensor(
-                [-100.0] * 7 + [0.0], dtype=torch.float32
-            )
+            return GeneratedThought(
+                text="<think>generated</think>",
+                token_ids=[10, 11, 12],
+                token_log_probs=[-0.2, -0.3, -0.1],
+            ), torch.tensor([-100.0] * 7 + [0.0], dtype=torch.float32)
 
-        distributed_module.generate_nimloth_thought_and_action_logits = fake_policy_turn
+        distributed_module.generate_nimloth_thought_and_action_logits_with_trace = (
+            fake_policy_turn
+        )
         collector = DistributedEnvRolloutCollector(
             object(),
             object(),
@@ -840,6 +916,8 @@ def test_distributed_collector_rank0_env_and_identical_trajectories(tmp_path: Pa
     assert len(records) == 1
     assert len(records[0]["image_paths"]) == 2
     assert len(records[0]["action_log_probs"][0]) == len(ACTION_NAMES)
+    assert records[0]["thought_token_ids"] == [[10, 11, 12]]
+    assert records[0]["thought_token_log_probs"] == [[-0.2, -0.3, -0.1]]
     assert "Human Instruction:" in records[0]["observation_texts"][0]
     assert records[0]["step_rewards"] == [1.01]
     assert records[0]["success"] is True

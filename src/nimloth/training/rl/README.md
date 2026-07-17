@@ -32,7 +32,7 @@ collector 原样保存每次 `env.step()` 的 reward，并在 episode 结束后�
 
 action-level return 为：最后一步 reward 加 final reward，然后按 `G_t = r_t + gamma * G_(t+1)` 向后累计。这对应 VAGEN 把每轮 reward 放在该 assistant response 结束位置的多轮语义。旧 SFT JSONL 没有 `step_rewards` 时仍保留历史 terminal-return 解释；新的动态 RL record 不允许缺字段。
 
-### Trajectory schema v2
+### Trajectory schema v3
 
 每条动态轨迹必须包含：
 
@@ -42,6 +42,9 @@ action-level return 为：最后一步 reward 加 final reward，然后按 `G_t 
 - `image_paths`，长度 `T+1`
 - `assistant_responses`，长度 `T`
 - `action_indices` / `action_names` / `action_log_probs`，长度 `T`
+- `thought_token_ids` / `thought_token_log_probs`，长度 `T`，保存所有采样thought tokens及inference-engine behavior值
+- `ppo_old_token_log_probs`，训练rollout长度 `T`，由actor按完整response replay重算，PPO ratio使用该字段
+- `reference_token_log_probs`，训练rollout长度 `T`，每轮覆盖thought+action
 - `step_rewards`，长度 `T`
 - `final_reward`, `reward`, `success`, `latent_token_count`
 
@@ -66,8 +69,11 @@ action-level return 为：最后一步 reward 加 final reward，然后按 `G_t 
 - 动态 online RL 禁止 unconditional chosen-action ranking，`lambda_rank` 必须为 0。
 - `rl.batch_size` 是 transition microbatch size，不是随机保留数量。
 - 每轮对全部 transitions 确定性 shuffle，一次 PPO epoch内每条数据恰好消费一次；每个 microbatch 执行 optimizer step。
-- advantage 在本轮全部 transitions 上、首个 optimizer step 前统一计算和标准化。
-- PPO actor 当前只更新 framework 选择的 action token；生成 thought token 会保存和重放，但尚未纳入 token-level PPO loss。不能把该实现描述成完整复刻 VAGEN 的全 response-token actor loss。
+- advantage 在本轮全部 transitions 上、首个 optimizer step 前统一计算和标准化，再广播到该turn的每个采样policy token。
+- PPO loss覆盖全部采样thought tokens和action token，按VAGEN response loss mask求均值。inject协议中由框架确定性插入的latent queries、`action_start/end`不属于policy采样，因此保持mask0。
+- LoRA关闭时的immutable merged SFT2 base作为reference policy；actor使用与VAGEN相同的`low_var_kl`和系数0.001。VAGEN实际代码在actor KL启用时不再同时施加reward KL；runtime也强制两种placement互斥，但实现了可配置的sampled-token reward KL路径。
+- WM predictor和Value head loss继续与token-level PPO联合优化；dynamic Value ranking保持0。
+- 当前k8 launcher使用`flash_attention_2`；attention backend写入resume protocol。
 
 checkpoint 的 `rollout_protocol` / `rollout_protocol.json` 记录 prompt、reward、schema、environment、history、sampling、microbatch、k/query mode 和 validation 协议；resume 必须完全一致。旧协议 checkpoint 会被拒绝。
 
@@ -88,10 +94,10 @@ checkpoint 的 `rollout_protocol` / `rollout_protocol.json` 记录 prompt、rewa
 | 文件 | 职责 |
 |---|---|
 | `vagen_protocol.py` | source-eval/SFT text rewrite、任务提取、action/env response、success |
-| `rollout.py` | schema v2、单进程 collector、thought generation、inject action distribution |
+| `rollout.py` | schema v3、thought token behavior trace、单进程 collector、inject action distribution |
 | `distributed_rollout.py` | rank0 env + all-rank FSDP synchronized collector |
 | `trainer.py` | exact replay、returns、all-transition microbatches、checkpoint/resume、eval-only |
-| `loss.py` | predictor/value/action-token PPO losses |
+| `loss.py` | predictor/value/full-response-token PPO及VAGEN KL losses |
 | `checkpoint.py` | model/WM/optimizer checkpoint |
 | `cli.py` | config/collector/model wiring |
 

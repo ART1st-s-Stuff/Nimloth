@@ -22,7 +22,7 @@ ID11 只保留 FSDP/checkpoint mechanics 证据；它的 rollout 丢失真实任
 | `dynamic_env_preflight.slurm` | 单GPU bounded create+prompt+reset+schema+close gate；`/health`不能替代 |
 | `dynamic_fsdp_k8_fragmented_4plus2plus2_env1.slurm` | 4+2+2 normal trainer fragments（world8）+ ID17 create/reset通过的独立dgx29 env GPU；含真实 artifact gate |
 | `prepare_k8_sft2_init.py/.slurm` | 从稳定 SFT2 snapshot 构建 immutable k=8 RL init |
-| `rollout_env.py` | 单进程 schema-v2 rollout producer |
+| `rollout_env.py` | 单进程 schema-v3 rollout producer |
 | `run_e2e_smoke.sh` | JSONL/FSDP mechanics test；不能替代真实 env integration |
 | `dynamic_fsdp_k8_smoke.yaml` | 两任务、最多两步的 corrected protocol smoke |
 | `dynamic_fsdp_k8_baseline20.yaml` | evaluation-only fixed-20 heldout baseline |
@@ -35,7 +35,7 @@ ID11 只保留 FSDP/checkpoint mechanics 证据；它的 rollout 丢失真实任
 - env server 与 trainer 使用同一个 clean server worktree；VAGEN 必须为 `e7cc2d01584abcab1e49ba4a6b18ba2067fb6762`。
 - 禁止使用旧 `exp-vagen-1action` env worktree。
 - `prompt_format=source_eval_mode`，环境值与 SFT collection 完全一致。
-- system prompt、每轮 `obs_str`、policy-generated assistant response、step reward/final reward全部进入 schema v2。
+- system prompt、每轮 `obs_str`、policy-generated assistant response、thought/action behavior token log-probs、step reward/final reward全部进入 schema v3。
 - `task_instruction` 必须匹配 initial observation 和每步 `info.instruction`。
 - full history `history_window=112`；thought/action sampling使用配置 temperature/top-p。
 - rollout、PPO 和 latent encoding 逐字重放同一 transcript。

@@ -21,8 +21,9 @@ import torch.distributed as dist
 from nimloth.training.rl.rollout import (
     ACTION_NAMES,
     EnvRolloutCollector,
+    GeneratedThought,
     RolloutTrajectory,
-    generate_nimloth_thought_and_action_logits,
+    generate_nimloth_thought_and_action_logits_with_trace,
     sample_action_from_logits,
     sample_token_from_logits,
     save_trajectories,
@@ -149,10 +150,10 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
             return int(self._broadcast_rank0(token_id))
 
         local_error: str | None = None
-        thought: str | None = None
+        thought: GeneratedThought | None = None
         logits: torch.Tensor | None = None
         try:
-            thought, logits = generate_nimloth_thought_and_action_logits(
+            thought, logits = generate_nimloth_thought_and_action_logits_with_trace(
                 self._model,
                 self._processor,
                 image_paths,
@@ -162,6 +163,7 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
                 history_window=self._history_window,
                 latent_token_count=self._latent_token_count,
                 max_think_tokens=self._max_think_tokens,
+                temperature=self._temperature,
                 token_selector=select_thought_token,
             )
         except Exception:
@@ -195,14 +197,18 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
                 generator=generator,
             )
             payload = {
-                "thought": thought,
+                "thought": thought.text,
+                "thought_token_ids": thought.token_ids,
+                "thought_token_log_probs": thought.token_log_probs,
                 "action_idx": action_idx,
                 "action_name": ACTION_NAMES[action_idx],
                 "log_probs": log_probs,
             }
         payload = self._broadcast_rank0(payload)
-        if str(payload["thought"]) != thought:
+        if str(payload["thought"]) != thought.text:
             raise RuntimeError("ranks decoded different generated thought text")
+        if list(payload["thought_token_ids"]) != thought.token_ids:
+            raise RuntimeError("ranks selected different generated thought tokens")
         return payload
 
     def collect(
@@ -277,6 +283,8 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
             action_names: list[str] = []
             action_indices: list[int] = []
             action_log_probs: list[list[float]] = []
+            thought_token_ids: list[list[int]] = []
+            thought_token_log_probs: list[list[float]] = []
             assistant_responses: list[str] = []
             image_paths: list[str] = []
             observation_texts: list[str] = []
@@ -319,6 +327,12 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
                 action_idx = int(action_payload["action_idx"])
                 action_name = str(action_payload["action_name"])
                 log_probs = [float(value) for value in action_payload["log_probs"]]
+                generated_ids = [
+                    int(value) for value in action_payload["thought_token_ids"]
+                ]
+                generated_log_probs = [
+                    float(value) for value in action_payload["thought_token_log_probs"]
+                ]
                 assistant_response = nimloth_assistant_response(
                     thought,
                     action_idx,
@@ -367,6 +381,8 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
                 action_names.append(action_name)
                 action_indices.append(action_idx)
                 action_log_probs.append(log_probs)
+                thought_token_ids.append(generated_ids)
+                thought_token_log_probs.append(generated_log_probs)
                 assistant_responses.append(assistant_response)
                 step_rewards.append(float(step_value["reward"]))
                 success = success or bool(step_value["success"])
@@ -403,6 +419,8 @@ class DistributedEnvRolloutCollector(EnvRolloutCollector):
                             action_indices=action_indices,
                             action_names=action_names,
                             action_log_probs=action_log_probs,
+                            thought_token_ids=thought_token_ids,
+                            thought_token_log_probs=thought_token_log_probs,
                             step_rewards=step_rewards,
                             final_reward=final_reward,
                             success=success,

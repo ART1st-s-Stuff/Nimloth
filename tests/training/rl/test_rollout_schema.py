@@ -40,6 +40,8 @@ def _trajectory() -> RolloutTrajectory:
         action_indices=[0],
         action_names=["move_forward"],
         action_log_probs=[[-math.log(8.0)] * 8],
+        thought_token_ids=[[10, 11, 12]],
+        thought_token_log_probs=[[-0.2, -0.3, -0.1]],
         step_rewards=[0.01],
         final_reward=0.0,
         success=False,
@@ -124,6 +126,8 @@ def test_complete_trajectory_schema_passes() -> None:
     assert record["task_instruction"] == "Move near the couch."
     assert record["step_rewards"] == [0.01]
     assert record["assistant_responses"] == trajectory.assistant_responses
+    assert record["thought_token_ids"] == [[10, 11, 12]]
+    assert record["thought_token_log_probs"] == [[-0.2, -0.3, -0.1]]
     assert [message["role"] for message in record["messages"]] == [
         "system", "user", "assistant"
     ]
@@ -133,7 +137,8 @@ def test_complete_trajectory_schema_passes() -> None:
 def test_legacy_taskless_record_is_rejected() -> None:
     record = _trajectory().to_record()
     for key in (
-        "task_instruction", "observation_texts", "assistant_responses", "step_rewards"
+        "task_instruction", "observation_texts", "assistant_responses",
+        "thought_token_ids", "thought_token_log_probs", "step_rewards"
     ):
         record.pop(key)
     with pytest.raises(ValueError, match="legacy/taskless"):
@@ -165,4 +170,11 @@ def test_missing_action_log_probs_is_rejected() -> None:
     trajectory = _trajectory()
     trajectory.action_log_probs.clear()
     with pytest.raises(RuntimeError, match="action_log_probs=0 but actions=1"):
+        validate_trajectories([trajectory])
+
+
+def test_missing_thought_token_trace_is_rejected() -> None:
+    trajectory = _trajectory()
+    trajectory.thought_token_ids.clear()
+    with pytest.raises(RuntimeError, match="thought_token_ids=0 but actions=1"):
         validate_trajectories([trajectory])

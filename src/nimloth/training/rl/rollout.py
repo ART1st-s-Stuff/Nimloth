@@ -37,6 +37,15 @@ def validate_rl_policy_protocol(model_config: Any) -> int:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class GeneratedThought:
+    """Exact stochastic thought tokens selected by the rollout policy."""
+
+    text: str
+    token_ids: list[int]
+    token_log_probs: list[float]
+
+
 @dataclass
 class RolloutTrajectory:
     """One exact policy/environment transcript.
@@ -56,6 +65,10 @@ class RolloutTrajectory:
     action_indices: list[int] = field(default_factory=list)
     action_names: list[str] = field(default_factory=list)
     action_log_probs: list[list[float]] = field(default_factory=list)
+    thought_token_ids: list[list[int]] = field(default_factory=list)
+    thought_token_log_probs: list[list[float]] = field(default_factory=list)
+    ppo_old_token_log_probs: list[list[float]] = field(default_factory=list)
+    reference_token_log_probs: list[list[float]] = field(default_factory=list)
     step_rewards: list[float] = field(default_factory=list)
     final_reward: float = 0.0
     success: bool = False
@@ -102,6 +115,10 @@ class RolloutTrajectory:
             "action_indices": self.action_indices,
             "action_names": self.action_names,
             "action_log_probs": self.action_log_probs,
+            "thought_token_ids": self.thought_token_ids,
+            "thought_token_log_probs": self.thought_token_log_probs,
+            "ppo_old_token_log_probs": self.ppo_old_token_log_probs,
+            "reference_token_log_probs": self.reference_token_log_probs,
             "latent_token_count": self.latent_token_count,
         }
 
@@ -112,6 +129,8 @@ class RolloutTrajectory:
             "task_instruction",
             "observation_texts",
             "assistant_responses",
+            "thought_token_ids",
+            "thought_token_log_probs",
             "step_rewards",
         )
         missing = [key for key in required if key not in record]
@@ -130,6 +149,22 @@ class RolloutTrajectory:
             action_indices=[int(value) for value in record.get("action_indices", [])],
             action_names=[str(value) for value in record.get("action_names", [])],
             action_log_probs=list(record.get("action_log_probs", [])),
+            thought_token_ids=[
+                [int(token) for token in values]
+                for values in record["thought_token_ids"]
+            ],
+            thought_token_log_probs=[
+                [float(log_prob) for log_prob in values]
+                for values in record["thought_token_log_probs"]
+            ],
+            ppo_old_token_log_probs=[
+                [float(log_prob) for log_prob in values]
+                for values in record.get("ppo_old_token_log_probs", [])
+            ],
+            reference_token_log_probs=[
+                [float(log_prob) for log_prob in values]
+                for values in record.get("reference_token_log_probs", [])
+            ],
             step_rewards=[float(value) for value in record["step_rewards"]],
             final_reward=float(record.get("final_reward", 0.0)),
             success=bool(record.get("success", False)),
@@ -418,6 +453,8 @@ class EnvRolloutCollector:
             action_names: list[str] = []
             action_indices: list[int] = []
             action_log_probs: list[list[float]] = []
+            thought_token_ids: list[list[int]] = []
+            thought_token_log_probs: list[list[float]] = []
             assistant_responses: list[str] = []
             image_paths: list[str] = []
             observation_texts: list[str] = []
@@ -474,11 +511,11 @@ class EnvRolloutCollector:
                         generator=generator,
                     )
                     assistant_response = nimloth_assistant_response(
-                        thought,
+                        thought.text,
                         action_idx,
                         latent_token_count=self._latent_token_count,
                     )
-                    env_response = vagen_env_response(thought, action_idx)
+                    env_response = vagen_env_response(thought.text, action_idx)
                     print(json.dumps({"rl_ep": ep_i, "action_selected": action_name,
                                       "action_idx": action_idx}), flush=True)
                 except Exception:
@@ -510,6 +547,8 @@ class EnvRolloutCollector:
                 action_names.append(action_name)
                 action_indices.append(action_idx)
                 action_log_probs.append(log_probs_list)
+                thought_token_ids.append(list(thought.token_ids))
+                thought_token_log_probs.append(list(thought.token_log_probs))
                 assistant_responses.append(assistant_response)
 
                 if done:
@@ -561,6 +600,8 @@ class EnvRolloutCollector:
                 action_indices=action_indices,
                 action_names=list(action_names),
                 action_log_probs=action_log_probs,
+                thought_token_ids=thought_token_ids,
+                thought_token_log_probs=thought_token_log_probs,
                 step_rewards=step_rewards,
                 final_reward=final_reward,
                 success=success,
@@ -835,7 +876,8 @@ def _generate_nimloth_thought_from_inputs(
     latent_token_count: int,
     max_think_tokens: int,
     token_selector,
-) -> tuple[str, torch.Tensor]:
+    log_prob_temperature: float | None = None,
+) -> tuple[GeneratedThought, torch.Tensor]:
     import re
 
     if max_think_tokens <= 0:
@@ -843,7 +885,12 @@ def _generate_nimloth_thought_from_inputs(
     closing_ids = processor.tokenizer.encode("</think>", add_special_tokens=False)
     if not closing_ids:
         raise RuntimeError("tokenizer produced no ids for </think>")
+    if log_prob_temperature is not None and log_prob_temperature < 0:
+        raise ValueError(
+            f"log_prob_temperature must be >= 0, got {log_prob_temperature}"
+        )
     generated: list[int] = []
+    generated_log_probs: list[float] = []
     for token_index in range(max_think_tokens):
         rank = (
             torch.distributed.get_rank()
@@ -895,6 +942,14 @@ def _generate_nimloth_thought_from_inputs(
                 "token_id": token_id,
             }), flush=True)
         generated.append(token_id)
+        if log_prob_temperature is not None:
+            policy_logits = (
+                next_logits
+                if log_prob_temperature == 0
+                else next_logits / log_prob_temperature
+            )
+            selected_log_prob = torch.log_softmax(policy_logits, dim=-1)[token_id]
+            generated_log_probs.append(float(selected_log_prob.detach().cpu().item()))
         inputs = _append_input_token(inputs, token_id)
         if len(generated) >= len(closing_ids) and generated[-len(closing_ids):] == closing_ids:
             break
@@ -919,7 +974,11 @@ def _generate_nimloth_thought_from_inputs(
         inputs,
         latent_token_count=latent_token_count,
     )
-    return thought, action_logits
+    return GeneratedThought(
+        text=thought,
+        token_ids=generated,
+        token_log_probs=generated_log_probs,
+    ), action_logits
 
 
 def generate_nimloth_thought_and_action_logits_from_messages(
@@ -935,7 +994,7 @@ def generate_nimloth_thought_and_action_logits_from_messages(
     """Run the inject protocol from an exact SFT-format message prefix."""
 
     inputs, _ = policy_inputs_from_messages(model, processor, messages, images)
-    return _generate_nimloth_thought_from_inputs(
+    generated, action_logits = _generate_nimloth_thought_from_inputs(
         model,
         processor,
         inputs,
@@ -943,6 +1002,7 @@ def generate_nimloth_thought_and_action_logits_from_messages(
         max_think_tokens=max_think_tokens,
         token_selector=token_selector,
     )
+    return generated.text, action_logits
 
 
 def generate_nimloth_thought_and_action_logits(
@@ -969,6 +1029,42 @@ def generate_nimloth_thought_and_action_logits(
         assistant_responses,
         history_window=history_window,
     )
+    generated, action_logits = _generate_nimloth_thought_from_inputs(
+        model,
+        processor,
+        inputs,
+        latent_token_count=latent_token_count,
+        max_think_tokens=max_think_tokens,
+        token_selector=token_selector,
+    )
+    return generated.text, action_logits
+
+
+def generate_nimloth_thought_and_action_logits_with_trace(
+    model,
+    processor,
+    image_history: list[Any],
+    system_prompt: str,
+    observation_texts: list[str],
+    assistant_responses: list[str],
+    *,
+    history_window: int,
+    latent_token_count: int,
+    max_think_tokens: int,
+    temperature: float,
+    token_selector,
+) -> tuple[GeneratedThought, torch.Tensor]:
+    """Generate a thought and retain every stochastic token's behavior log-prob."""
+
+    inputs, _ = _policy_inputs(
+        model,
+        processor,
+        image_history,
+        system_prompt,
+        observation_texts,
+        assistant_responses,
+        history_window=history_window,
+    )
     return _generate_nimloth_thought_from_inputs(
         model,
         processor,
@@ -976,6 +1072,7 @@ def generate_nimloth_thought_and_action_logits(
         latent_token_count=latent_token_count,
         max_think_tokens=max_think_tokens,
         token_selector=token_selector,
+        log_prob_temperature=temperature,
     )
 
 
@@ -1069,10 +1166,10 @@ def _select_action_nimloth(
     latent_token_count: int = 1,
     max_think_tokens: int = 512,
     generator: torch.Generator | None = None,
-) -> tuple[str, str, int, list[float]]:
+) -> tuple[GeneratedThought, str, int, list[float]]:
     """Generate the actual assistant thought, inject queries, and sample action."""
 
-    thought, action_logits = generate_nimloth_thought_and_action_logits(
+    thought, action_logits = generate_nimloth_thought_and_action_logits_with_trace(
         model,
         processor,
         image_history,
@@ -1082,6 +1179,7 @@ def _select_action_nimloth(
         history_window=history_window,
         latent_token_count=latent_token_count,
         max_think_tokens=max_think_tokens,
+        temperature=temperature,
         token_selector=lambda logits, _: sample_token_from_logits(
             logits,
             temperature=temperature,
@@ -1122,6 +1220,8 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
     per_step = {
         "action_names": len(trajectory.action_names),
         "action_log_probs": len(trajectory.action_log_probs),
+        "thought_token_ids": len(trajectory.thought_token_ids),
+        "thought_token_log_probs": len(trajectory.thought_token_log_probs),
         "assistant_responses": len(trajectory.assistant_responses),
         "step_rewards": len(trajectory.step_rewards),
     }
@@ -1129,6 +1229,15 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
         if length != steps:
             raise ValueError(
                 f"trajectory {trajectory.record_id!r}: {name}={length} but actions={steps}"
+            )
+    for name, values in (
+        ("ppo_old_token_log_probs", trajectory.ppo_old_token_log_probs),
+        ("reference_token_log_probs", trajectory.reference_token_log_probs),
+    ):
+        if values and len(values) != steps:
+            raise ValueError(
+                f"trajectory {trajectory.record_id!r}: {name}={len(values)} "
+                f"but actions={steps}"
             )
     if not trajectory.system_prompt.strip():
         raise ValueError(f"trajectory {trajectory.record_id!r} has no system prompt")
@@ -1143,10 +1252,20 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
             raise ValueError(
                 f"trajectory {trajectory.record_id!r}: observation {index} must have one <image>"
             )
-    for step, (action_idx, action_name, log_probs, response, step_reward) in enumerate(zip(
+    for step, (
+        action_idx,
+        action_name,
+        log_probs,
+        thought_ids,
+        thought_log_probs,
+        response,
+        step_reward,
+    ) in enumerate(zip(
         trajectory.action_indices,
         trajectory.action_names,
         trajectory.action_log_probs,
+        trajectory.thought_token_ids,
+        trajectory.thought_token_log_probs,
         trajectory.assistant_responses,
         trajectory.step_rewards,
     )):
@@ -1171,6 +1290,38 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
                 f"trajectory {trajectory.record_id!r}: step {step} action "
                 f"log-probs are not normalized (sum={probability_sum})"
             )
+        if not thought_ids:
+            raise ValueError(
+                f"trajectory {trajectory.record_id!r}: step {step} has no thought tokens"
+            )
+        if len(thought_ids) != len(thought_log_probs):
+            raise ValueError(
+                f"trajectory {trajectory.record_id!r}: step {step} thought token/log-prob "
+                f"length mismatch {len(thought_ids)} != {len(thought_log_probs)}"
+            )
+        if not all(math.isfinite(float(value)) for value in thought_log_probs):
+            raise ValueError(
+                f"trajectory {trajectory.record_id!r}: step {step} has non-finite "
+                "thought token log-probs"
+            )
+        expected_policy_tokens = len(thought_ids) + 1
+        for name, per_step_values in (
+            ("PPO-old", trajectory.ppo_old_token_log_probs),
+            ("reference", trajectory.reference_token_log_probs),
+        ):
+            if not per_step_values:
+                continue
+            values = per_step_values[step]
+            if len(values) != expected_policy_tokens:
+                raise ValueError(
+                    f"trajectory {trajectory.record_id!r}: step {step} {name} token "
+                    f"log-probs={len(values)}, expected={expected_policy_tokens}"
+                )
+            if not all(math.isfinite(float(value)) for value in values):
+                raise ValueError(
+                    f"trajectory {trajectory.record_id!r}: step {step} has non-finite "
+                    f"{name} token log-probs"
+                )
         if not math.isfinite(float(step_reward)):
             raise ValueError(
                 f"trajectory {trajectory.record_id!r}: step {step} has non-finite reward"

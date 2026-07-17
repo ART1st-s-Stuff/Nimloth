@@ -15,6 +15,7 @@ __all__ = [
     "compute_advantages",
     "compute_actor_loss",
     "compute_action_entropy",
+    "compute_kl_penalty",
 ]
 
 
@@ -101,12 +102,16 @@ def compute_actor_loss(
     advantages: torch.Tensor,
     clip_ratio: float = 0.2,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """PPO clipped policy gradient for per-step discrete actions.
+    """PPO clipped policy gradient over every stochastic response token.
+
+    The tensors are flattened across the VAGEN-style response loss mask. For
+    Nimloth inject mode this includes generated thought tokens and the sampled
+    action token, while deterministic query/scaffold tokens remain masked out.
 
     Args:
-        new_log_probs: (B,) log-prob of taken actions under current policy.
-        old_log_probs:  (B,) log-prob of taken actions under rollout policy.
-        advantages:     (B,) detached advantages.
+        new_log_probs: log-probs under the current policy.
+        old_log_probs: log-probs under the rollout policy.
+        advantages: detached turn advantages broadcast to response tokens.
         clip_ratio:      PPO clipping epsilon.
 
     Returns:
@@ -125,6 +130,33 @@ def compute_actor_loss(
         "clip_fraction": float(clip_frac.item()),
         "mean_ratio": float(ratio.mean().item()),
     }
+
+
+def compute_kl_penalty(
+    log_probs: torch.Tensor,
+    reference_log_probs: torch.Tensor,
+    *,
+    penalty_type: str = "low_var_kl",
+) -> torch.Tensor:
+    """Match VAGEN/VERL's sampled-token KL penalty implementations."""
+
+    if log_probs.shape != reference_log_probs.shape:
+        raise ValueError(
+            "policy/reference log-prob shape mismatch: "
+            f"{tuple(log_probs.shape)} != {tuple(reference_log_probs.shape)}"
+        )
+    delta = log_probs - reference_log_probs
+    if penalty_type == "kl":
+        return delta
+    if penalty_type == "abs":
+        return delta.abs()
+    if penalty_type == "mse":
+        return 0.5 * delta.square()
+    if penalty_type == "low_var_kl":
+        reverse_delta = -delta
+        penalty = torch.exp(reverse_delta) - reverse_delta - 1.0
+        return torch.clamp(penalty, min=-10.0, max=10.0)
+    raise ValueError(f"unsupported KL penalty type: {penalty_type!r}")
 
 
 def compute_action_entropy(action_logits: torch.Tensor) -> torch.Tensor:

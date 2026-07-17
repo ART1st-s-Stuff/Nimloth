@@ -42,7 +42,7 @@ exec /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
   --state-proj-checkpoint "${SFT2_SNAPSHOT}/state_proj.pt" \
   --value-head-checkpoint "${SFT2_SNAPSHOT}/value_head" \
   --env-url "${ENV_URL}" \
-  --attn-implementation sdpa \
+  --attn-implementation flash_attention_2 \
   --max-pixels 100352 \
   --experiment-name "${WANDB_RUN_NAME}" \
   --output-dir "${TRAIN_OUT}" \
