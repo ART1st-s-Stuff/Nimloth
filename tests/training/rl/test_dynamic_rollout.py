@@ -106,6 +106,28 @@ def test_k8_smoke_uses_vagen_ppo_and_flash_attention_protocol() -> None:
     assert "--attn-implementation sdpa" not in launcher
 
 
+def test_current_fragment_launcher_has_world8_and_dedicated_preflight_env() -> None:
+    launcher = Path(
+        "experiments/training/rl/"
+        "dynamic_fsdp_k8_fragmented_3plus2plus2plus1_env1.slurm"
+    ).read_text(encoding="utf-8")
+    for nodelist, tasks, offset in (
+        ("dgx-48", 3, 0),
+        ("dgx-37", 2, 3),
+        ("dgx-34", 2, 5),
+        ("dgx-44", 1, 7),
+    ):
+        assert f"#SBATCH --nodelist={nodelist}" in launcher
+        assert f"RANK_OFFSET={offset}" in launcher
+        assert f"--ntasks={tasks}" in launcher
+    assert "#SBATCH --nodelist=dgx-09" in launcher
+    assert '"${SRUN}" --het-group=4' in launcher
+    assert "preflight_dynamic_env.py" in launcher
+    assert "WORLD_SIZE=8" in Path(
+        "experiments/training/rl/run_dynamic_fsdp_rank.sh"
+    ).read_text(encoding="utf-8")
+
+
 def test_k8_snapshot_is_immutable_and_omits_sft_optimizer(tmp_path: Path) -> None:
     from experiments.training.rl.prepare_k8_sft2_init import (
         ROOT_FILES,
