@@ -8,7 +8,7 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:4
-#SBATCH --mem=512G
+#SBATCH --mem=128G
 #SBATCH --nodelist=dgx-[09,29]
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
@@ -20,7 +20,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
-#SBATCH --mem=64G
+#SBATCH --mem=32G
 #SBATCH --nodelist=dgx-13
 
 # Atomic fragmented allocation: group-0 provides eight FSDP trainer GPUs as
