@@ -47,12 +47,12 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --nodelist=dgx-48
+#SBATCH --nodelist=dgx-51
 #SBATCH --exclude=dgx-[18,32,52,54]
 
 # Atomic normal-fragment allocation: trainer groups 0/1/2 contribute 4+3+1
 # GPUs on the currently free dgx-29/dgx-09/dgx-13 fragments to one world-size-8
-# FSDP process group; group 3 provides one env GPU on dgx-48. Active SFT2 nodes
+# FSDP process group; group 3 provides one env GPU on dgx-51. Active SFT2 nodes
 # dgx-[18,32,52,54] remain excluded; the semantic gate fails closed on env errors.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
