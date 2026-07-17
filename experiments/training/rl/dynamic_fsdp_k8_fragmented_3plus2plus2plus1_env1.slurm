@@ -4,12 +4,12 @@
 #SBATCH --partition=normal
 #SBATCH --time=00:30:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=4
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks=3
+#SBATCH --ntasks-per-node=3
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:4
-#SBATCH --mem=128G
-#SBATCH --nodelist=dgx-29
+#SBATCH --gres=gpu:3
+#SBATCH --mem=96G
+#SBATCH --nodelist=dgx-09
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -30,12 +30,12 @@
 #SBATCH --partition=normal
 #SBATCH --time=00:30:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --ntasks-per-node=1
+#SBATCH --ntasks=2
+#SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:1
-#SBATCH --mem=32G
-#SBATCH --nodelist=dgx-09
+#SBATCH --gres=gpu:2
+#SBATCH --mem=64G
+#SBATCH --nodelist=dgx-29
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -49,11 +49,23 @@
 #SBATCH --mem=32G
 #SBATCH --nodelist=dgx-51
 #SBATCH --exclude=dgx-[18,32,52,54]
+#SBATCH hetjob
+#SBATCH --job-name=rl-k8-env
+#SBATCH --account=peilab
+#SBATCH --partition=normal
+#SBATCH --time=00:30:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --gres=gpu:1
+#SBATCH --mem=32G
+#SBATCH --nodelist=dgx-37
+#SBATCH --exclude=dgx-[18,32,52,54]
 
 # Atomic normal-fragment allocation: trainer groups 0/1/2/3 contribute
-# 4+2+1+1 GPUs on dgx-29/dgx-13/dgx-09/dgx-51 to one world-size-8 FSDP group.
-# For this short smoke, the env shares group 3's H100 with rank 7; both steps
-# use --overlap. Active SFT2 nodes remain excluded.
+# 3+2+2+1 GPUs on dgx-09/dgx-13/dgx-29/dgx-51 to world-size-8 FSDP.
+# Group 4 provides a dedicated, proven AI2-THOR GPU on dgx-37. Active SFT2
+# nodes remain excluded; sharing an env GPU with an FSDP rank is forbidden.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"
@@ -108,7 +120,7 @@ cleanup() {
 }
 trap cleanup EXIT TERM INT
 
-"${SRUN}" --het-group=3 --overlap --kill-on-bad-exit=1 \
+"${SRUN}" --het-group=4 --overlap --kill-on-bad-exit=1 \
   --nodes=1 --ntasks=1 --cpus-per-task=8 \
   bash "${REPO}/experiments/training/rl/dynamic_env_server.slurm" \
   >"${RUN_ROOT}/env_fragment_step.out" \
@@ -157,7 +169,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 PY
 )
 export MASTER_ADDR MASTER_PORT
-printf 'trainer_fragments=4@%s,2@%s,1@%s,1@%s master=%s:%s env=%s\n' \
+printf 'trainer_fragments=3@%s,2@%s,2@%s,1@%s master=%s:%s env=%s\n' \
   "${TRAIN_NODELIST_0}" "${TRAIN_NODELIST_1}" "${TRAIN_NODELIST_2}" \
   "${TRAIN_NODELIST_3}" "${MASTER_ADDR}" "${MASTER_PORT}" "${ENV_URL}" \
   | tee "${RUN_ROOT}/topology.txt"
@@ -172,14 +184,14 @@ set +e
 (
   set -o pipefail
   env RANK_OFFSET=0 "${SRUN}" --het-group=0 --overlap --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=4 --ntasks-per-node=4 --cpus-per-task=8 \
+    --nodes=1 --ntasks=3 --ntasks-per-node=3 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     2>&1 | tee "${RUN_ROOT}/trainer.log"
 ) &
 TRAIN_STEP_0_PID=$!
 (
   set -o pipefail
-  env RANK_OFFSET=4 \
+  env RANK_OFFSET=3 \
     "${SRUN}" --het-group=1 --overlap --kill-on-bad-exit=1 \
     --nodes=1 --ntasks=2 --ntasks-per-node=2 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
@@ -188,8 +200,8 @@ TRAIN_STEP_0_PID=$!
 TRAIN_STEP_1_PID=$!
 (
   set -o pipefail
-  env RANK_OFFSET=6 "${SRUN}" --het-group=2 --overlap --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=1 --ntasks-per-node=1 --cpus-per-task=8 \
+  env RANK_OFFSET=5 "${SRUN}" --het-group=2 --overlap --kill-on-bad-exit=1 \
+    --nodes=1 --ntasks=2 --ntasks-per-node=2 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     >"${RUN_ROOT}/trainer_group2.log" 2>&1
 ) &

@@ -12,14 +12,14 @@ ID11 只保留 FSDP/checkpoint mechanics 证据；它的 rollout 丢失真实任
 2. 固定 heldout `base` seeds 1–20、greedy、evaluation-only baseline；
 3. 人工审阅 baseline artifact 后，才能创建新的 quality pilot 身份。
 
-`dynamic_fsdp_k8_fragmented_4plus2plus1plus1_envshared.slurm` 只接受 `RUN_MODE=smoke`；shared-GPU入口明确拒绝 baseline/pilot。
+`dynamic_fsdp_k8_fragmented_3plus2plus2plus1_env1.slurm` 只接受 `RUN_MODE=smoke`；它要求8个trainer GPUs和独立第9个env GPU，明确拒绝baseline/pilot。
 
 ## 主要文件
 
 | 文件 | 用途 |
 |---|---|
 | `dynamic_env_server.slurm` | 当前 clean worktree/pinned VAGEN 的 AI2-THOR service |
-| `dynamic_fsdp_k8_fragmented_4plus2plus1plus1_envshared.slurm` | 4+2+1+1 normal trainer fragments（world8）；rank7 GPU同时承载短smoke env；含真实 artifact gate |
+| `dynamic_fsdp_k8_fragmented_3plus2plus2plus1_env1.slurm` | 3+2+2+1 normal trainer fragments（world8）+ 独立dgx37 env GPU；含真实 artifact gate |
 | `prepare_k8_sft2_init.py/.slurm` | 从稳定 SFT2 snapshot 构建 immutable k=8 RL init |
 | `rollout_env.py` | 单进程 schema-v2 rollout producer |
 | `run_e2e_smoke.sh` | JSONL/FSDP mechanics test；不能替代真实 env integration |
