@@ -6,9 +6,10 @@
 #SBATCH --nodes=2
 #SBATCH --ntasks=8
 #SBATCH --ntasks-per-node=4
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:4
 #SBATCH --mem=512G
+#SBATCH --nodelist=dgx-[09,29]
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -20,12 +21,13 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
+#SBATCH --nodelist=dgx-13
 
 # Atomic fragmented allocation: group-0 provides eight FSDP trainer GPUs as
 # two normal-partition 4-GPU fragments; group-1 provides one 1-GPU env fragment.
-# Active SFT2 job478282 nodes dgx-[18,32,52,54] are hard-excluded. No multi-node
-# --nodelist is used as an allowlist; the semantic gate fails closed if
-# AI2-THOR is unhealthy on the allocated env fragment.
+# The human-selected currently free fragments are dgx-09/dgx-29 for trainers
+# and dgx-13 for env. Active SFT2 nodes dgx-[18,32,52,54] stay excluded. The
+# semantic gate fails closed if AI2-THOR is unhealthy on the env fragment.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"
@@ -126,7 +128,7 @@ export RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-}
 
 set +e
 "${SRUN}" --het-group=0 --overlap --kill-on-bad-exit=1 \
-  --nodes=2 --ntasks=8 --ntasks-per-node=4 --cpus-per-task=16 \
+  --nodes=2 --ntasks=8 --ntasks-per-node=4 --cpus-per-task=8 \
   bash -lc '
     set -euo pipefail
     export RANK=${SLURM_PROCID}
