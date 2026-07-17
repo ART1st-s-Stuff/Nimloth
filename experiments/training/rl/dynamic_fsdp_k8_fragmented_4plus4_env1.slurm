@@ -253,7 +253,7 @@ assert rows
 for row in rows:
     for key in (
         "wm_mse", "value_loss", "total_loss", "actor_loss", "entropy",
-        "policy_tokens", "kl_loss", "kl_reward_penalty",
+        "policy_tokens", "ppo_kl", "kl_loss", "kl_reward_penalty",
     ):
         assert math.isfinite(float(row[key])), (key, row[key])
     assert float(row["policy_tokens"]) > 1.0

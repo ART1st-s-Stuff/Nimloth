@@ -742,6 +742,21 @@ def test_value_head_loader_honors_checkpoint_hidden_width(tmp_path: Path) -> Non
     )
 
 
+def test_turn_advantages_are_whitened_with_response_token_weighting() -> None:
+    from nimloth.training.rl.trainer import (
+        normalize_turn_advantages_for_policy_tokens,
+    )
+
+    normalized = normalize_turn_advantages_for_policy_tokens(
+        torch.tensor([1.0, -1.0]), [3, 1]
+    )
+    flattened = torch.cat((normalized[0].expand(3), normalized[1].expand(1)))
+    assert torch.isclose(flattened.mean(), torch.tensor(0.0), atol=1e-6)
+    assert torch.isclose(
+        flattened.std(unbiased=False), torch.tensor(1.0), atol=1e-6
+    )
+
+
 def test_transition_microbatches_consume_all_collected_data_once() -> None:
     from nimloth.training.rl.trainer import deterministic_transition_microbatches
 

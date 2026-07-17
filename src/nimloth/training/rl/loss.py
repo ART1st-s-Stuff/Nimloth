@@ -119,16 +119,19 @@ def compute_actor_loss(
     """
     ratio = torch.exp(new_log_probs - old_log_probs)
     clipped_ratio = torch.clamp(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio)
-    surrogate = -torch.min(ratio * advantages, clipped_ratio * advantages)
-    loss = surrogate.mean()
+    pg_losses = -ratio * advantages
+    clipped_losses = -clipped_ratio * advantages
+    loss = torch.maximum(pg_losses, clipped_losses).mean()
 
     with torch.no_grad():
-        clip_frac = (ratio.abs() - 1.0).abs().gt(clip_ratio).float().mean()
+        clip_frac = (clipped_losses > pg_losses).float().mean()
+        ppo_kl = (old_log_probs - new_log_probs).mean()
 
     return loss, {
         "actor_loss": float(loss.detach().item()),
         "clip_fraction": float(clip_frac.item()),
         "mean_ratio": float(ratio.mean().item()),
+        "ppo_kl": float(ppo_kl.item()),
     }
 
 

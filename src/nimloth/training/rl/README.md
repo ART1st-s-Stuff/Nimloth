@@ -69,7 +69,7 @@ action-level return 为：最后一步 reward 加 final reward，然后按 `G_t 
 - 动态 online RL 禁止 unconditional chosen-action ranking，`lambda_rank` 必须为 0。
 - `rl.batch_size` 是 transition microbatch size，不是随机保留数量。
 - 每轮对全部 transitions 确定性 shuffle，一次 PPO epoch内每条数据恰好消费一次；每个 microbatch 执行 optimizer step。
-- advantage 在本轮全部 transitions 上、首个 optimizer step 前统一计算和标准化，再广播到该turn的每个采样policy token。
+- advantage 在首个optimizer step前由WM Value head按turn计算，再按response-token mask加权做全局标准化，并广播到该turn的每个采样policy token。
 - PPO loss覆盖全部采样thought tokens和action token，按VAGEN response loss mask求均值。inject协议中由框架确定性插入的latent queries、`action_start/end`不属于policy采样，因此保持mask0。
 - LoRA关闭时的immutable merged SFT2 base作为reference policy；actor使用与VAGEN相同的`low_var_kl`和系数0.001。VAGEN实际代码在actor KL启用时不再同时施加reward KL；runtime也强制两种placement互斥，但实现了可配置的sampled-token reward KL路径。
 - WM predictor和Value head loss继续与token-level PPO联合优化；dynamic Value ranking保持0。

@@ -240,6 +240,28 @@ def build_rl_transitions(
     return transitions
 
 
+def normalize_turn_advantages_for_policy_tokens(
+    raw_advantages: torch.Tensor,
+    token_counts: list[int],
+) -> torch.Tensor:
+    """Whiten turn advantages with VAGEN's response-token loss-mask weighting."""
+
+    if raw_advantages.ndim != 1 or raw_advantages.numel() != len(token_counts):
+        raise ValueError(
+            "turn advantage/token count mismatch: "
+            f"advantages={tuple(raw_advantages.shape)}, counts={token_counts}"
+        )
+    if any(count <= 0 for count in token_counts):
+        raise ValueError(f"policy token counts must be positive, got {token_counts}")
+    weighted = torch.cat([
+        advantage.reshape(1).expand(count)
+        for advantage, count in zip(raw_advantages, token_counts)
+    ])
+    return (
+        raw_advantages - weighted.mean()
+    ) / (weighted.std(unbiased=False) + 1e-8)
+
+
 def deterministic_transition_microbatches(
     num_transitions: int,
     microbatch_size: int,
@@ -1158,7 +1180,7 @@ def train_rl(
                 "num_rollouts", "num_transitions", "optimizer_steps", "success_rate",
                 "val_success_rate", "val_avg_reward", "val_avg_steps",
                 "actor_loss", "entropy", "clip_fraction", "mean_advantage",
-                "policy_tokens", "kl_loss", "kl_reward_penalty",
+                "policy_tokens", "ppo_kl", "kl_loss", "kl_reward_penalty",
             ])
 
     validation_log_path = output_dir / "validation_log.csv"
@@ -1336,10 +1358,13 @@ def train_rl(
                     1, actions.unsqueeze(1)
                 ).squeeze(1)
                 raw_advantages.extend((targets - values).detach().cpu().unbind())
-        advantage_tensor = torch.stack(raw_advantages)
-        advantage_tensor = (
-            advantage_tensor - advantage_tensor.mean()
-        ) / (advantage_tensor.std(unbiased=False) + 1e-8)
+        raw_advantage_tensor = torch.stack(raw_advantages)
+        policy_token_counts = [
+            len(item["old_token_log_probs"]) for item in transitions
+        ]
+        advantage_tensor = normalize_turn_advantages_for_policy_tokens(
+            raw_advantage_tensor, policy_token_counts
+        )
         for item, advantage in zip(transitions, advantage_tensor):
             item["advantage"] = advantage
 
@@ -1472,7 +1497,9 @@ def train_rl(
                 total_loss = pred_loss + val_loss + policy_loss
                 actor_metrics["entropy"] = float(entropy.detach().item())
                 actor_metrics["mean_advantage"] = float(advantages.mean().item())
-                actor_metrics["policy_tokens"] = float(new_log_probs.numel())
+                actor_metrics["policy_tokens"] = float(
+                    new_log_probs.numel() / len(batch)
+                )
                 actor_metrics["kl_reward_penalty"] = float(sum(
                     item["kl_reward_penalty"] for item in batch
                 ) / len(batch))
@@ -1501,6 +1528,7 @@ def train_rl(
                 "clip_fraction": float(actor_metrics.get("clip_fraction", 0.0)),
                 "mean_advantage": float(actor_metrics.get("mean_advantage", 0.0)),
                 "policy_tokens": float(actor_metrics.get("policy_tokens", 0.0)),
+                "ppo_kl": float(actor_metrics.get("ppo_kl", 0.0)),
                 "kl_loss": float(actor_metrics.get("kl_loss", 0.0)),
                 "kl_reward_penalty": float(
                     actor_metrics.get("kl_reward_penalty", 0.0)
@@ -1559,6 +1587,7 @@ def train_rl(
                     iter_metrics.get("clip_fraction", ""),
                     iter_metrics.get("mean_advantage", ""),
                     iter_metrics.get("policy_tokens", ""),
+                    iter_metrics.get("ppo_kl", ""),
                     iter_metrics.get("kl_loss", ""),
                     iter_metrics.get("kl_reward_penalty", ""),
                 ])
