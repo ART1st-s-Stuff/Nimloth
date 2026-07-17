@@ -12,10 +12,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+def install_stack_dump_signal() -> None:
+    """Allow Slurm diagnostics to dump every Python thread without ptrace."""
+
+    if os.environ.get("NIMLOTH_STACK_DUMP_SIGNAL") != "1":
+        return
+    import faulthandler
+    import signal
+
+    faulthandler.enable()
+    faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
 
 
 def build_rl_arg_parser() -> argparse.ArgumentParser:
@@ -171,6 +184,7 @@ def load_value_head_for_rl(
 
 def main(argv: list[str] | None = None) -> int:
     """Parse args, load config, build modules, and launch RL training."""
+    install_stack_dump_signal()
     import torch
     from transformers import AutoConfig
     from nimloth.training.common.dist import is_main

@@ -11,7 +11,7 @@ thor-CloudRendering  C+G  99% SM
 python3              C     trainer rank7
 ```
 
-Rank7 remained blocked in the GPU runtime while the other seven FSDP ranks waited at collectives with 0% GPU utilization. The job was cancelled after 11:18 with no trajectory or optimizer step.
+Rank7 remained blocked in the GPU runtime while the other seven FSDP ranks waited at collectives with 0% GPU utilization. The job was cancelled after 11:18 with no trajectory or optimizer step. ID15 later reproduced a first-forward stall with a dedicated env GPU, so sharing was an invalid/confounding allocation but was **not proven to be the underlying collective-stall root cause**.
 
 ## Correct practice
 

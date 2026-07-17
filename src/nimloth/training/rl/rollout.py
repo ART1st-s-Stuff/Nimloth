@@ -845,12 +845,55 @@ def _generate_nimloth_thought_from_inputs(
         raise RuntimeError("tokenizer produced no ids for </think>")
     generated: list[int] = []
     for token_index in range(max_think_tokens):
+        rank = (
+            torch.distributed.get_rank()
+            if torch.distributed.is_available() and torch.distributed.is_initialized()
+            else 0
+        )
+        if token_index == 0:
+            image_token_id = getattr(
+                processor,
+                "image_token_id",
+                getattr(processor.tokenizer, "image_token_id", None),
+            )
+            image_tokens = (
+                int((inputs["input_ids"] == int(image_token_id)).sum().item())
+                if image_token_id is not None else None
+            )
+            print(json.dumps({
+                "policy_forward_stage": "enter",
+                "rank": rank,
+                "token_index": token_index,
+                "input_shape": list(inputs["input_ids"].shape),
+                "image_tokens": image_tokens,
+                "pixel_values_shape": (
+                    list(inputs["pixel_values"].shape)
+                    if "pixel_values" in inputs else None
+                ),
+                "image_grid_thw": (
+                    inputs["image_grid_thw"].detach().cpu().tolist()
+                    if "image_grid_thw" in inputs else None
+                ),
+            }), flush=True)
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=False, return_dict=True)
+        if token_index == 0:
+            print(json.dumps({
+                "policy_forward_stage": "model_exit",
+                "rank": rank,
+                "token_index": token_index,
+            }), flush=True)
         next_logits = outputs.logits[0, -1].float()
         if not torch.isfinite(next_logits).all():
             raise RuntimeError("thought logits contain non-finite values")
         token_id = int(token_selector(next_logits, token_index))
+        if token_index == 0:
+            print(json.dumps({
+                "policy_forward_stage": "token_selected",
+                "rank": rank,
+                "token_index": token_index,
+                "token_id": token_id,
+            }), flush=True)
         generated.append(token_id)
         inputs = _append_input_token(inputs, token_id)
         if len(generated) >= len(closing_ids) and generated[-len(closing_ids):] == closing_ids:
