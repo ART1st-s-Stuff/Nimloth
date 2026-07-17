@@ -147,7 +147,15 @@ TRAIN_NODELIST_1=${SLURM_JOB_NODELIST_HET_GROUP_1:?missing trainer group 1}
 TRAIN_NODELIST_2=${SLURM_JOB_NODELIST_HET_GROUP_2:?missing trainer group 2}
 TRAIN_NODELIST_3=${SLURM_JOB_NODELIST_HET_GROUP_3:?missing trainer group 3}
 MASTER_ADDR=$("${SCONTROL}" show hostnames "${TRAIN_NODELIST_0}" | head -n1)
-MASTER_PORT=$((31000 + SLURM_JOB_ID % 10000))
+# The batch shell runs on trainer group0's node. Ask its kernel for a free port;
+# job-id-derived ports can collide with unrelated jobs on shared nodes.
+MASTER_PORT=$("${PY}" - <<'PY'
+import socket
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind(("", 0))
+    print(sock.getsockname()[1])
+PY
+)
 export MASTER_ADDR MASTER_PORT
 printf 'trainer_fragments=4@%s,2@%s,1@%s,1@%s master=%s:%s env=%s\n' \
   "${TRAIN_NODELIST_0}" "${TRAIN_NODELIST_1}" "${TRAIN_NODELIST_2}" \
