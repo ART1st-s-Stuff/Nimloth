@@ -17,12 +17,25 @@
 #SBATCH --partition=normal
 #SBATCH --time=00:30:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=4
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks=2
+#SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:4
-#SBATCH --mem=128G
-#SBATCH --nodelist=dgx-51
+#SBATCH --gres=gpu:2
+#SBATCH --mem=64G
+#SBATCH --nodelist=dgx-09
+#SBATCH --exclude=dgx-[18,32,52,54]
+#SBATCH hetjob
+#SBATCH --job-name=rl-k8-frag
+#SBATCH --account=peilab
+#SBATCH --partition=normal
+#SBATCH --time=00:30:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=2
+#SBATCH --ntasks-per-node=2
+#SBATCH --cpus-per-task=8
+#SBATCH --gres=gpu:2
+#SBATCH --mem=64G
+#SBATCH --nodelist=dgx-13
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -31,17 +44,15 @@
 #SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --nodelist=dgx-13
+#SBATCH --nodelist=dgx-51
 #SBATCH --exclude=dgx-[18,32,52,54]
 
-# Atomic normal-fragment allocation: trainer groups 0/1/2 contribute 4+3+1
-# GPUs on dgx-29/dgx-51/dgx-13 to one world-size-8 FSDP process group. Group 1
-# allocates a fourth GPU for the env on dgx-51; its env and trainer job steps
-# request disjoint GRES. Active SFT2 nodes dgx-[18,32,52,54] remain excluded.
+# Atomic normal-fragment allocation: trainer groups 0/1/2 contribute 4+2+2
+# GPUs on dgx-29/dgx-09/dgx-13 to one world-size-8 FSDP process group. Group 3
+# provides the env GPU on dgx-51. Active SFT2 nodes remain excluded.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
 : "${REPO:?must set REPO}"
@@ -96,8 +107,8 @@ cleanup() {
 }
 trap cleanup EXIT TERM INT
 
-"${SRUN}" --het-group=1 --exact --kill-on-bad-exit=1 \
-  --nodes=1 --ntasks=1 --cpus-per-task=8 --gpus-per-task=1 \
+"${SRUN}" --het-group=3 --overlap --kill-on-bad-exit=1 \
+  --nodes=1 --ntasks=1 --cpus-per-task=8 \
   bash "${REPO}/experiments/training/rl/dynamic_env_server.slurm" \
   >"${RUN_ROOT}/env_fragment_step.out" \
   2>"${RUN_ROOT}/env_fragment_step.err" &
@@ -158,17 +169,17 @@ set +e
 TRAIN_STEP_0_PID=$!
 (
   set -o pipefail
-  env RANK_OFFSET=4 SINGLE_VISIBLE_GPU=1 \
-    "${SRUN}" --het-group=1 --exact --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=3 --ntasks-per-node=3 --cpus-per-task=8 --gpus-per-task=1 \
+  env RANK_OFFSET=4 \
+    "${SRUN}" --het-group=1 --overlap --kill-on-bad-exit=1 \
+    --nodes=1 --ntasks=2 --ntasks-per-node=2 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     >"${RUN_ROOT}/trainer_group1.log" 2>&1
 ) &
 TRAIN_STEP_1_PID=$!
 (
   set -o pipefail
-  env RANK_OFFSET=7 "${SRUN}" --het-group=2 --overlap --kill-on-bad-exit=1 \
-    --nodes=1 --ntasks=1 --ntasks-per-node=1 --cpus-per-task=8 \
+  env RANK_OFFSET=6 "${SRUN}" --het-group=2 --overlap --kill-on-bad-exit=1 \
+    --nodes=1 --ntasks=2 --ntasks-per-node=2 --cpus-per-task=8 \
     bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
     >"${RUN_ROOT}/trainer_group2.log" 2>&1
 ) &
