@@ -34,7 +34,8 @@
 - 用户要求更换env节点重试。独立preflight job478976在preempt dgx48 `COMPLETED0:0`/24s：create2.631s、prompt0.0025s、reset0.263s，真实base_train seed30002 StoveBurner instruction、one-image schema及close通过。commit=`c65488fd09b49dec868ac60e74acdb74dfd509c8`新增normal 5@dgx09+3@dgx27 trainers + preempt dgx48 env atomic launcher；allocation内仍会重复preflight，server tests=`33 passed`。
 - 新identity ID20/W&B=`n34u6ifk`：同一ID12 immutable init、base_train seeds30002/30003、schema-v3 full-token PPO/KL/FA2、vision/StateProjector freeze。初次job478990把trainer固定为dgx09/dgx27，提交后瞬时资源变化导致PENDING；人类明确指出不能把提交前快照固化为节点约束，登记E0042。三组即时复核PENDING/elapsed0后以state-filter安全取消，无allocation/artifact。
 - commit=`c6ecb9c6a577f0cf7d7a05ef5d106bdd3cd29375`先改为Slurm动态选择normal 5+3 trainer节点，仅固定preflight-proven dgx48 env。attempt2 job479001仍因fragment形状PENDING；用户随后明确旧protected-node约束已失效。三组即时复核PENDING/elapsed0后安全取消，无allocation/artifact。
-- commit=`d00e74f985f34df5d26e01858eaaf4258167bad9`删除全部trainer nodelist和旧exclude，改为在全部normal节点动态选择4+2+1+1 trainer fragments；server tests=`34 passed`。ID20 active attempt3 job479019当前PENDING/Resources/elapsed0，ReqNodeList均为空、ExcNodeList仅由独立preempt env组件自动避免同节点；尚无trainer/result，fixed20继续阻塞。
+- commit=`d00e74f985f34df5d26e01858eaaf4258167bad9`删除旧exclude并改为全部normal节点动态4+2+1+1。Slurm权重却把4-GPU组计划到仅3卡空闲的高权重dgx37、把当前4卡空闲dgx27给小组；attempt3/4 jobs479019/479033均PENDING/elapsed0安全取消。commit10f3f66只把submit-time重新核实4卡空闲的dgx27绑定给大组，其余1+1+2保持动态；attempt5 job479039立即启动。
+- ID20 attempt5实际拓扑1@dgx13+1@dgx09+2@dgx37+4@dgx27、env dgx48。allocation内preflight再次通过；全8rank完成NCCL/Gloo/FSDP+FA2首forward，输入len655、121 image tokens/grid22/pixel484匹配。但decoded输出早已是`<think>Move forward.</think>`，固定token-ID闭合检测因实际BPE为`.</`+`think`+`>`未命中，错误继续到2048 tokens后fail-closed。job479039五组FAILED1:0/7:42；0 trajectory/update/checkpoint，ID20/W&B`n34u6ifk`终态FAILED/NON-RESUMABLE，登记E0043。fixed20继续阻塞。
 
 ## 2026-07-16：FSDP动态在线rollout实现
 
