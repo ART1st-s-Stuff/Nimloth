@@ -4,12 +4,12 @@
 #SBATCH --partition=normal
 #SBATCH --time=08:00:00
 #SBATCH --nodes=2
-#SBATCH --ntasks=2
-#SBATCH --ntasks-per-node=1
+#SBATCH --ntasks=8
+#SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=16
-#SBATCH --gres=gpu:1
-#SBATCH --mem=128G
-#SBATCH --exclude=dgx-[14,18,26,32,51,52,54]
+#SBATCH --gres=gpu:4
+#SBATCH --mem=512G
+#SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
 #SBATCH --account=peilab
@@ -21,10 +21,10 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 
-# Atomic fragmented allocation: group-0 hard-excludes active SFT2 job478282
-# nodes dgx-[18,32,52,54] plus previously protected nodes.
-# All three components use normal-partition one-GPU fragments. No multi-node
-# --nodelist is used as an allowlist; the real semantic gate fails closed if
+# Atomic fragmented allocation: group-0 provides eight FSDP trainer GPUs as
+# two normal-partition 4-GPU fragments; group-1 provides one 1-GPU env fragment.
+# Active SFT2 job478282 nodes dgx-[18,32,52,54] are hard-excluded. No multi-node
+# --nodelist is used as an allowlist; the semantic gate fails closed if
 # AI2-THOR is unhealthy on the allocated env fragment.
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"
@@ -126,12 +126,12 @@ export RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-}
 
 set +e
 "${SRUN}" --het-group=0 --overlap --kill-on-bad-exit=1 \
-  --nodes=2 --ntasks=2 --ntasks-per-node=1 --cpus-per-task=16 \
+  --nodes=2 --ntasks=8 --ntasks-per-node=4 --cpus-per-task=16 \
   bash -lc '
     set -euo pipefail
     export RANK=${SLURM_PROCID}
     export WORLD_SIZE=${SLURM_NTASKS}
-    export LOCAL_RANK=0
+    export LOCAL_RANK=${SLURM_LOCALID}
     ARGS=()
     if [[ -n "${RESUME_CHECKPOINT}" ]]; then
       ARGS=(--resume --resume-checkpoint "${RESUME_CHECKPOINT}")
@@ -243,9 +243,9 @@ for row in rows:
 final = root / "train/final"
 state = torch.load(final / "rl_state.pt", map_location="cpu", weights_only=False)
 assert state["rollout_protocol"] == protocol
-assert state["optimizer_world_size"] == 2
-assert (final / "optimizer_rank_00000.pt").stat().st_size > 0
-assert (final / "optimizer_rank_00001.pt").stat().st_size > 0
+assert state["optimizer_world_size"] == 8
+for rank in range(8):
+    assert (final / f"optimizer_rank_{rank:05d}.pt").stat().st_size > 0
 assert (final / "adapter_model.safetensors").stat().st_size > 0
 with safe_open(final / "adapter_model.safetensors", framework="pt", device="cpu") as handle:
     keys = list(handle.keys())
