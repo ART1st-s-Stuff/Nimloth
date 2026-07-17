@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:4
 #SBATCH --mem=128G
-#SBATCH --nodelist=dgx-[09,29]
+#SBATCH --nodelist=dgx-[29,33]
 #SBATCH --exclude=dgx-[18,32,52,54]
 #SBATCH hetjob
 #SBATCH --job-name=rl-k8-frag
@@ -25,7 +25,7 @@
 
 # Atomic fragmented allocation: group-0 provides eight FSDP trainer GPUs as
 # two normal-partition 4-GPU fragments; group-1 provides one 1-GPU env fragment.
-# The human-selected currently free fragments are dgx-09/dgx-29 for trainers
+# The selected currently free fragments are dgx-29/dgx-33 for trainers
 # and dgx-13 for env. Active SFT2 nodes dgx-[18,32,52,54] stay excluded. The
 # semantic gate fails closed if AI2-THOR is unhealthy on the env fragment.
 set -euo pipefail
