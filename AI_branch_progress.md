@@ -23,7 +23,9 @@
 - RED`13b07b3`/GREEN`1fd7bc7`让one-rank-per-node的smoke与formal均使用自动socket选择，同时保留NCCL IB和旧3+1显式interface；server focused suite`16 passed`。retry job`477349`运行于dgx-14/26/51/54各2GPU，明确无dgx-27；四rank smoke/formal IB/Qwen placement均通过，显存primary约53.5–53.6GiB、secondary约41.2GiB。
 - job477349仅因8h walltime `TIMEOUT0:15`结束，无model error。epoch2 global3310完成：val WM MSE`.0030500728`（优于epoch1`.0043698056`）、SIGReg`.40718877`、value`.11922920`，`epoch_002`/`best`完整。最后logged4801；durable4799/epoch3/micro11912（epoch3 90.1%），CSV归档并截到4799，仅回退2步。
 - 四碎片节点续训job`478282`从clean commit`1fd7bc7db6590ecfeda179c5b65aa1de144d15b0`运行于dgx-18/32/52/54各2GPU，明确无dgx-27。四rank smoke、formal IB、Qwen placement与step4799 resume均PASS。
-- epoch3 global4965完成：val WM MSE`.0031694090`、SIGReg`.40910494`、value`.13145171`，略差于epoch2 best`.0030500728`，`epoch_003`完整。snapshot global6420/epoch4 step1455=87.9%/total77.6%，median10.53s；durable6340，无OOM/NCCL/non-finite。
+- epoch3 global4965完成：val WM MSE`.0031694090`、SIGReg`.40910494`、value`.13145171`，略差于epoch2 best`.0030500728`，`epoch_003`完整。
+- 人类要求epoch4结束后暂停；请求到达时epoch4已完成且epoch5已开始。确认`epoch_004`/`best`均step6620/epoch4 complete后，于job478282 elapsed06:04:00执行scancel，状态`CANCELLED0:0`，无model error。epoch4 val WM MSE`.0012174460`（新best）、SIGReg`.40581210`、value`.12502690`。
+- job已logged到epoch5 step6681；CSV归档并截到6620，W&B6621-6681标为discarded stale。rolling latest step6621未删除，重命名`latest_discarded_post_epoch4_step6621`以排除自动resume；resume gate确认选择`best` step6620并返回epoch5/micro0。当前`PAUSED_BY_HUMAN_AFTER_EPOCH4`，无done flag。
 
 ## 2026-07-15：冻结 State 的 SFT2 dynamics_dim 对照（准备中）
 
