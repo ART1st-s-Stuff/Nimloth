@@ -18,7 +18,7 @@
 - 修复已提交并推送`ba7513994216e8f66371f306b9d1255002e82109`。尚未提交GPU/Slurm任务，未创建新W&B/output，未resume ID11。
 - `/project`空间已由人类清理并恢复；server worktree已同步clean `dcf7eef`，VAGEN=`e7cc2d0`、le-wm=`8edfeb3`。实际server tests=`64 passed, 2 expected warnings`，VAGEN source protocol另`3 passed`。
 - 人类要求不再使用旧partial step3059 init，改用现在完整SFT2 Epoch2。已核实source `train/epoch_002`与`best`均step3310、epoch2、`epoch_complete=true`、k8/inject；Epoch2 val WM MSE=`0.003050072753`。RL prep新增`--require-epoch-complete`，误传当前Epoch3 partial step4799会fail-fast；定向2 tests通过。
-- ID12 semantic smoke已获批准：output=`.../2026-07-17/12_smoke_fsdpdynamic_k8full8192_sft2epoch2step3310_semantic_frag2x1_iter1_b2_visfreeze`，W&B=`c8w83kd3`。Prep478316在dgx-13 `COMPLETED 0:0`/2:25：source step3310完整Epoch2 hash稳定，merge826 adapters，k8 IDs151665–151672，两HF shards，immutable init ready。人类要求env也使用normal碎片后，固定dgx37的478318经双group复核PENDING/elapsed0/no allocation后取消。commit=`be4ae85`改为2个trainer+1个env全部请求normal one-GPU fragments并硬排除active SFT2节点18/32/52/54；replacement478337沿用未触发过的ID12 identity/init，当前pending Resources，未修改他人job。
+- ID12 semantic smoke已获批准：output最终命名=`.../12_smoke_fsdpdynamic_k8full8192_sft2epoch2step3310_semantic_frag8x1_iter1_b2_visfreeze`，W&B=`c8w83kd3`。Prep478316在dgx-13 `COMPLETED 0:0`/2:25：source step3310完整Epoch2 hash稳定，merge826 adapters，k8 IDs151665–151672，两HF shards，immutable init ready。固定dgx37的478318与world2碎片478337均经双group复核PENDING/elapsed0/no allocation后按人类资源修正取消，无trainer artifact。人类要求至少8个trainer GPUs并指出dgx09有4空闲后，commit=`b927727`改为2×4-GPU normal trainer fragments（world8）+1×1-GPU normal env fragment，硬排除active SFT2节点18/32/52/54；output/W&B name在trainer启动前同步改为frag8x1。Replacement478356 pending Resources，scheduler当前估计trainer group20:58；未修改他人job。
 
 ## 2026-07-16：FSDP动态在线rollout实现
 
