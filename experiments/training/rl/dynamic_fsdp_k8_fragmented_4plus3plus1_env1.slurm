@@ -3,8 +3,8 @@
 #SBATCH --account=peilab
 #SBATCH --partition=normal
 #SBATCH --time=08:00:00
-#SBATCH --nodes=2
-#SBATCH --ntasks=8
+#SBATCH --nodes=1
+#SBATCH --ntasks=4
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:4
@@ -16,13 +16,38 @@
 #SBATCH --partition=normal
 #SBATCH --time=08:00:00
 #SBATCH --nodes=1
+#SBATCH --ntasks=3
+#SBATCH --ntasks-per-node=3
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:3
+#SBATCH --mem=384G
+#SBATCH --exclude=dgx-[18,32,52,54]
+#SBATCH hetjob
+#SBATCH --job-name=rl-k8-frag
+#SBATCH --account=peilab
+#SBATCH --partition=normal
+#SBATCH --time=08:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:1
+#SBATCH --mem=128G
+#SBATCH --exclude=dgx-[18,32,52,54]
+#SBATCH hetjob
+#SBATCH --job-name=rl-k8-frag
+#SBATCH --account=peilab
+#SBATCH --partition=normal
+#SBATCH --time=08:00:00
+#SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
+#SBATCH --exclude=dgx-[18,32,52,54]
 
-# Atomic fragmented allocation: group-0 provides eight FSDP trainer GPUs as
-# two normal-partition 4-GPU fragments; group-1 provides one 1-GPU env fragment.
+# Atomic normal-fragment allocation: trainer groups 0/1/2 contribute 4+3+1
+# GPUs to one world-size-8 FSDP process group; group 3 provides one env GPU.
 # Active SFT2 job478282 nodes dgx-[18,32,52,54] are hard-excluded. No multi-node
 # --nodelist is used as an allowlist; the semantic gate fails closed if
 # AI2-THOR is unhealthy on the allocated env fragment.
@@ -64,11 +89,15 @@ rm -f \
   "${RUN_ROOT}/env_url.txt" \
   "${RUN_ROOT}/env_url.txt.tmp" \
   "${RUN_ROOT}/env_ready.flag"
-export RUN_ROOT REPO ENV_REPO EXPECTED_COMMIT MODEL SFT2_SNAPSHOT CONFIG RUN_MODE
+export RUN_ROOT REPO ENV_REPO EXPECTED_COMMIT MODEL SFT2_SNAPSHOT CONFIG RUN_MODE TRAIN_OUT
 export WANDB_RUN_ID WANDB_RUN_NAME VISION_TUNE
 
 cleanup() {
   touch "${RUN_ROOT}/trainer_done.flag"
+  for pid_name in TRAIN_STEP_0_PID TRAIN_STEP_1_PID TRAIN_STEP_2_PID; do
+    pid=${!pid_name:-}
+    [[ -z "${pid}" ]] || kill "${pid}" 2>/dev/null || true
+  done
   if [[ -n "${ENV_STEP_PID:-}" ]]; then
     kill "${ENV_STEP_PID}" 2>/dev/null || true
     wait "${ENV_STEP_PID}" 2>/dev/null || true
@@ -76,7 +105,7 @@ cleanup() {
 }
 trap cleanup EXIT TERM INT
 
-"${SRUN}" --het-group=1 --overlap --kill-on-bad-exit=1 \
+"${SRUN}" --het-group=3 --overlap --kill-on-bad-exit=1 \
   --nodes=1 --ntasks=1 --cpus-per-task=8 \
   bash "${REPO}/experiments/training/rl/dynamic_env_server.slurm" \
   >"${RUN_ROOT}/env_fragment_step.out" \
@@ -110,12 +139,15 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_DEBUG=INFO
 
-TRAIN_NODELIST=${SLURM_JOB_NODELIST_HET_GROUP_0:-${SLURM_JOB_NODELIST}}
-MASTER_ADDR=$("${SCONTROL}" show hostnames "${TRAIN_NODELIST}" | head -n1)
+TRAIN_NODELIST_0=${SLURM_JOB_NODELIST_HET_GROUP_0:?missing trainer group 0}
+TRAIN_NODELIST_1=${SLURM_JOB_NODELIST_HET_GROUP_1:?missing trainer group 1}
+TRAIN_NODELIST_2=${SLURM_JOB_NODELIST_HET_GROUP_2:?missing trainer group 2}
+MASTER_ADDR=$("${SCONTROL}" show hostnames "${TRAIN_NODELIST_0}" | head -n1)
 MASTER_PORT=$((31000 + SLURM_JOB_ID % 10000))
 export MASTER_ADDR MASTER_PORT
-printf 'trainer_nodes=%s master=%s:%s env=%s\n' \
-  "${TRAIN_NODELIST}" "${MASTER_ADDR}" "${MASTER_PORT}" "${ENV_URL}" \
+printf 'trainer_fragments=4@%s,3@%s,1@%s master=%s:%s env=%s\n' \
+  "${TRAIN_NODELIST_0}" "${TRAIN_NODELIST_1}" "${TRAIN_NODELIST_2}" \
+  "${MASTER_ADDR}" "${MASTER_PORT}" "${ENV_URL}" \
   | tee "${RUN_ROOT}/topology.txt"
 
 RESUME_ARGS=()
@@ -125,39 +157,35 @@ fi
 export RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-}
 
 set +e
-"${SRUN}" --het-group=0 --overlap --kill-on-bad-exit=1 \
-  --nodes=2 --ntasks=8 --ntasks-per-node=4 --cpus-per-task=16 \
-  bash -lc '
-    set -euo pipefail
-    export RANK=${SLURM_PROCID}
-    export WORLD_SIZE=${SLURM_NTASKS}
-    export LOCAL_RANK=${SLURM_LOCALID}
-    ARGS=()
-    if [[ -n "${RESUME_CHECKPOINT}" ]]; then
-      ARGS=(--resume --resume-checkpoint "${RESUME_CHECKPOINT}")
-    fi
-    cd "${REPO}"
-    "'"${PY}"'" -m nimloth.training.rl.cli \
-      --config "${CONFIG}" \
-      --model "${MODEL}" \
-      --llm-tune lora \
-      --vision-tune "${VISION_TUNE}" \
-      --lora-r 64 \
-      --lora-alpha 128 \
-      --lora-dropout 0.05 \
-      --gradient-checkpointing \
-      --wm-checkpoint "${SFT2_SNAPSHOT}/wm_predictor" \
-      --state-proj-checkpoint "${SFT2_SNAPSHOT}/state_proj.pt" \
-      --value-head-checkpoint "${SFT2_SNAPSHOT}/value_head" \
-      --env-url "${ENV_URL}" \
-      --attn-implementation sdpa \
-      --max-pixels 100352 \
-      --experiment-name "${WANDB_RUN_NAME}" \
-      --output-dir "'"${TRAIN_OUT}"'" \
-      "${ARGS[@]}"
-  ' 2>&1 | tee "${RUN_ROOT}/trainer.log"
-TRAIN_RC=${PIPESTATUS[0]}
+(
+  set -o pipefail
+  env RANK_OFFSET=0 "${SRUN}" --het-group=0 --overlap --kill-on-bad-exit=1 \
+    --nodes=1 --ntasks=4 --ntasks-per-node=4 --cpus-per-task=16 \
+    bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
+    2>&1 | tee "${RUN_ROOT}/trainer.log"
+) &
+TRAIN_STEP_0_PID=$!
+(
+  set -o pipefail
+  env RANK_OFFSET=4 "${SRUN}" --het-group=1 --overlap --kill-on-bad-exit=1 \
+    --nodes=1 --ntasks=3 --ntasks-per-node=3 --cpus-per-task=16 \
+    bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
+    >"${RUN_ROOT}/trainer_group1.log" 2>&1
+) &
+TRAIN_STEP_1_PID=$!
+(
+  set -o pipefail
+  env RANK_OFFSET=7 "${SRUN}" --het-group=2 --overlap --kill-on-bad-exit=1 \
+    --nodes=1 --ntasks=1 --ntasks-per-node=1 --cpus-per-task=16 \
+    bash "${REPO}/experiments/training/rl/run_dynamic_fsdp_rank.sh" \
+    >"${RUN_ROOT}/trainer_group2.log" 2>&1
+) &
+TRAIN_STEP_2_PID=$!
+wait "${TRAIN_STEP_0_PID}"; TRAIN_RC_0=$?
+wait "${TRAIN_STEP_1_PID}"; TRAIN_RC_1=$?
+wait "${TRAIN_STEP_2_PID}"; TRAIN_RC_2=$?
 set -e
+TRAIN_RC=$((TRAIN_RC_0 || TRAIN_RC_1 || TRAIN_RC_2))
 
 touch "${RUN_ROOT}/trainer_done.flag"
 wait "${ENV_STEP_PID}" || ENV_RC=$?
