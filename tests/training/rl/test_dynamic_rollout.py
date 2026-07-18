@@ -119,6 +119,7 @@ def test_k8_smoke_uses_vagen_ppo_and_flash_attention_protocol() -> None:
     ).read_text(encoding="utf-8")
     assert "--attn-implementation flash_attention_2" in launcher
     assert "--attn-implementation sdpa" not in launcher
+    assert "--lora-dropout 0.0" in launcher
 
 
 def test_current_fragment_launcher_has_world8_and_dedicated_preflight_env() -> None:
@@ -269,7 +270,6 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     assert ".gradient_checkpointing_enable(" not in probe
     assert '${REPO}/src:${REPO}:${REPO}/external/VAGEN' in rank_runner
     assert "external/VAGEN/verl" in rank_runner
-    assert "--lora-dropout 0.0" in rank_runner
     assert launcher.count("#SBATCH hetjob") == 3
     assert "FSDP_FRAGMENT_SPECS" in launcher
     assert "FSDP_SINGLE_COMPONENT" in launcher
