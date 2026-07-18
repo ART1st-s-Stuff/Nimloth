@@ -12,6 +12,22 @@ def _make_predictor(history_size: int = 4, emb_dim: int = 64) -> LatentWMPredict
     return LatentWMPredictor.create(cfg)
 
 
+def _make_tokenized_predictor() -> LatentWMPredictor:
+    return LatentWMPredictor.create(
+        LeWMConfig(
+            emb_dim=64,
+            history_size=4,
+            state_token_count=4,
+            residual_prediction=True,
+            predictor_hidden_dim=16,
+            predictor_mlp_dim=32,
+            predictor_depth=2,
+            predictor_heads=2,
+            predictor_dim_head=8,
+        )
+    )
+
+
 def test_factorized_dynamics_preserve_external_state_shape_and_checkpoint(tmp_path) -> None:
     common = dict(
         history_size=1,
@@ -118,6 +134,49 @@ def test_history_override_migrates_checkpoint_to_one_slot(tmp_path) -> None:
         migrated.predictor.pos_embedding,
         predictor.predictor.pos_embedding[:, :1],
     )
+
+
+def test_tokenized_t4_zero_delta_starts_as_identity() -> None:
+    predictor = _make_tokenized_predictor()
+    states = torch.randn(3, 4, 64)
+    actions = torch.randint(0, 8, (3, 4))
+    valid = torch.tensor([[False, False, False, True], [False, True, True, True], [True] * 4])
+    output = predictor.predict_next_from_history(states, actions, valid)
+    torch.testing.assert_close(output, states[:, -1])
+
+
+def test_tokenized_t4_padding_values_are_masked() -> None:
+    predictor = _make_tokenized_predictor().eval()
+    torch.nn.init.normal_(predictor.tokenized_predictor.delta_head[-1].weight, std=0.01)
+    states = torch.randn(2, 4, 64)
+    actions = torch.randint(0, 8, (2, 4))
+    valid = torch.tensor([[False, False, False, True], [False, False, True, True]])
+    expected = predictor.predict_next_from_history(states, actions, valid)
+    changed_states = states.clone()
+    changed_actions = actions.clone()
+    changed_states[~valid] = torch.randn_like(changed_states[~valid]) * 100
+    changed_actions[~valid] = 7
+    actual = predictor.predict_next_from_history(changed_states, changed_actions, valid)
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+def test_tokenized_t4_recursive_rollout_uses_masked_warmup() -> None:
+    predictor = _make_tokenized_predictor().eval()
+    initial = torch.randn(2, 64)
+    actions = torch.randint(0, 8, (2, 5))
+    output = predictor.rollout_states(initial, actions)
+    assert output.shape == (2, 5, 64)
+    torch.testing.assert_close(output, initial[:, None].expand_as(output))
+
+
+def test_tokenized_t4_requires_last_slot_valid() -> None:
+    predictor = _make_tokenized_predictor()
+    with pytest.raises(ValueError, match="final history slot"):
+        predictor.predict_next_from_history(
+            torch.randn(1, 4, 64),
+            torch.zeros(1, 4, dtype=torch.long),
+            torch.tensor([[True, True, True, False]]),
+        )
 
 
 def test_rollout_states_deterministic() -> None:

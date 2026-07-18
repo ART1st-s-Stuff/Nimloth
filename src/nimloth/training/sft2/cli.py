@@ -59,11 +59,25 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         "--wm-history-size",
         type=int,
         default=1,
-        help=(
-            "Exact number T of State/action context entries supplied to the WM. "
-            "The current transition trainer implements T=1 only and rejects other values."
-        ),
+        help="Exact number T of State/action context entries supplied to the WM.",
     )
+    ap.add_argument(
+        "--wm-state-token-count",
+        type=int,
+        default=1,
+        help="Split each external State into this many hidden tokens.",
+    )
+    ap.add_argument(
+        "--wm-residual-prediction",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Predict next State as the current State plus a learned delta.",
+    )
+    ap.add_argument("--wm-predictor-hidden-dim", type=int, default=1024)
+    ap.add_argument("--wm-predictor-mlp-dim", type=int, default=4096)
+    ap.add_argument("--wm-predictor-heads", type=int, default=16)
+    ap.add_argument("--wm-predictor-dim-head", type=int, default=64)
+    ap.add_argument("--wm-predictor-depth", type=int, default=6)
     ap.add_argument(
         "--latent-token-count",
         type=int,

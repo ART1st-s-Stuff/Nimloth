@@ -17,12 +17,59 @@ from nimloth.wm.value_head import ValueHead
 __all__ = [
     "SIGReg",
     "StateProjector",
+    "_build_masked_history_contexts",
     "_build_trajectory_sigreg_inputs",
     "compute_combined_loss",
     "compute_value_loss",
     "compute_wm_latent_loss",
     "wm_loss_weight_schedule",
 ]
+
+
+def _build_masked_history_contexts(
+    items: list[dict[str, Any]],
+    state_emb: torch.Tensor,
+    action_indices: torch.Tensor,
+    history_size: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Build fixed-T right-aligned contexts with explicit left-padding masks."""
+    if history_size < 1:
+        raise ValueError("history_size must be positive")
+    if len(items) != state_emb.shape[0] or action_indices.shape[0] != state_emb.shape[0]:
+        raise ValueError("items, states, and actions must have the same batch length")
+    lookup: dict[tuple[str, int], int] = {}
+    for index, item in enumerate(items):
+        record_id = str(item.get("record_id", ""))
+        step = int(item.get("step_index", -1))
+        if not record_id or step < 0:
+            raise ValueError("T>1 history requires record_id and nonnegative step_index")
+        key = (record_id, step)
+        if key in lookup:
+            raise ValueError(f"duplicate trajectory State in batch: {key}")
+        lookup[key] = index
+    batch, width = state_emb.shape
+    states = state_emb.new_zeros((batch, history_size, width))
+    actions = torch.zeros(
+        (batch, history_size), device=action_indices.device, dtype=torch.long
+    )
+    valid = torch.zeros_like(actions, dtype=torch.bool)
+    for output_index, item in enumerate(items):
+        record_id = str(item["record_id"])
+        current_step = int(item["step_index"])
+        source_indices: list[int] = []
+        for step in range(current_step, max(-1, current_step - history_size), -1):
+            source = lookup.get((record_id, step))
+            if source is None:
+                break
+            source_indices.append(source)
+        source_indices.reverse()
+        count = len(source_indices)
+        if not count:
+            raise ValueError(f"current trajectory State missing: {record_id}/{current_step}")
+        states[output_index, -count:] = state_emb[source_indices]
+        actions[output_index, -count:] = action_indices[source_indices]
+        valid[output_index, -count:] = True
+    return states, actions, valid
 
 
 def _build_trajectory_sigreg_inputs(
@@ -95,6 +142,7 @@ def compute_wm_latent_loss(
     wm_predictor: LatentWMPredictor,
     sigreg_module: SIGReg | None = None,
     items: list[dict[str, Any]] | None = None,
+    trajectory_history: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, float]]:
     """WM predictor MSE plus an optional raw SIGReg loss.
 
@@ -129,7 +177,22 @@ def compute_wm_latent_loss(
     state_emb = cat_emb[:B]
     target_emb = cat_emb[B:]
 
-    pred = wm_predictor(state_emb, action_indices)
+    predictor_config = getattr(wm_predictor, "module", wm_predictor).config
+    if predictor_config.history_size == 1:
+        pred = wm_predictor(state_emb, action_indices)
+    else:
+        if not trajectory_history or items is None:
+            raise ValueError(
+                "T>1 WM loss requires full trajectory batching and explicit history contexts"
+            )
+        state_ctx, action_ctx, valid_mask = _build_masked_history_contexts(
+            items,
+            state_emb,
+            action_indices,
+            predictor_config.history_size,
+        )
+        # Enter through forward so DDP hooks and gradient synchronization remain active.
+        pred = wm_predictor(state_ctx, action_ctx, valid_mask)
     mse = F.mse_loss(pred, target_emb)
 
     sigreg_loss: torch.Tensor | None = None

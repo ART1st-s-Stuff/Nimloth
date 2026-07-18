@@ -112,6 +112,26 @@ def _forward_next_latents(
     return torch.cat(rows, dim=0)
 
 
+def _dummy_wm_prediction(
+    wm_predictor: LatentWMPredictor,
+    state_emb: torch.Tensor,
+    actions: torch.Tensor,
+) -> torch.Tensor:
+    predictor_config = getattr(wm_predictor, "module", wm_predictor).config
+    if predictor_config.history_size == 1:
+        return wm_predictor(state_emb, actions)
+    history = predictor_config.history_size
+    state_ctx = state_emb.new_zeros((state_emb.shape[0], history, state_emb.shape[-1]))
+    state_ctx[:, -1] = state_emb
+    action_ctx = torch.zeros(
+        (state_emb.shape[0], history), device=actions.device, dtype=torch.long
+    )
+    action_ctx[:, -1] = actions
+    valid = torch.zeros_like(action_ctx, dtype=torch.bool)
+    valid[:, -1] = True
+    return wm_predictor(state_ctx, action_ctx, valid)
+
+
 def compute_step_wm_loss(
     model,
     items: list[dict[str, Any]],
@@ -178,7 +198,9 @@ def compute_step_wm_loss(
         with torch.no_grad():
             dummy_target_emb = state_proj(next_latent[:1])
         dummy_actions = torch.zeros((dummy_state_emb.shape[0],), device=dummy_state_emb.device, dtype=torch.long)
-        dummy_pred = wm_predictor(dummy_state_emb, dummy_actions)
+        dummy_pred = _dummy_wm_prediction(
+            wm_predictor, dummy_state_emb, dummy_actions
+        )
         return (dummy_state_emb.sum() + dummy_target_emb.sum() + dummy_pred.sum()) * 0.0, None, {}
     action_indices = torch.tensor([items[i]["action_index"] for i in indices], device=current_latent.device)
     wm_items = [items[i] for i in indices]
@@ -248,11 +270,12 @@ def compute_trajectory_wm_loss(
             wm_predictor=wm_predictor,
             sigreg_module=sigreg_module,
             items=wm_items,
+            trajectory_history=True,
         )
 
     dummy_state_emb = state_proj(current_latents[:1])
     with torch.no_grad():
         dummy_target_emb = state_proj(current_latents[:1])
     dummy_actions = torch.zeros((dummy_state_emb.shape[0],), device=dummy_state_emb.device, dtype=torch.long)
-    dummy_pred = wm_predictor(dummy_state_emb, dummy_actions)
+    dummy_pred = _dummy_wm_prediction(wm_predictor, dummy_state_emb, dummy_actions)
     return (dummy_state_emb.sum() + dummy_target_emb.sum() + dummy_pred.sum()) * 0.0, None, {}

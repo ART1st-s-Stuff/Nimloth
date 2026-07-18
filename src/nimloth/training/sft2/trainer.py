@@ -639,23 +639,40 @@ def train_sft2(args=None) -> int:
     if not qwen_pair_parallel:
         model.to(device)
 
-    if args.wm_history_size != 1:
+    if args.wm_history_size > 1 and not args.full_trajectory_batching:
         raise ValueError(
-            "SFT2 transition training currently supplies exactly T=1 State/action context; "
-            f"got --wm-history-size={args.wm_history_size}. Implement aligned history-window "
-            "data and masking before training T>1."
+            "T>1 WM training requires --full-trajectory-batching so history contexts "
+            "cannot cross records or omit preceding States"
         )
+    if args.wm_state_token_count > 1 and not args.wm_residual_prediction:
+        raise ValueError("tokenized T>1 WM requires --wm-residual-prediction")
     wm_cfg = LeWMConfig(
         emb_dim=args.emb_dim,
         dynamics_dim=args.wm_dynamics_dim or None,
         history_size=args.wm_history_size,
+        state_token_count=args.wm_state_token_count,
+        residual_prediction=args.wm_residual_prediction,
+        predictor_hidden_dim=args.wm_predictor_hidden_dim,
+        predictor_mlp_dim=args.wm_predictor_mlp_dim,
+        predictor_heads=args.wm_predictor_heads,
+        predictor_dim_head=args.wm_predictor_dim_head,
+        predictor_depth=args.wm_predictor_depth,
     )
     if args.wm_predictor_checkpoint is not None:
         wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_predictor_checkpoint, map_location=device).to(device)
-        if wm_predictor.config.history_size != args.wm_history_size:
+        expected_wm_config = {
+            "history_size": args.wm_history_size,
+            "state_token_count": args.wm_state_token_count,
+            "residual_prediction": args.wm_residual_prediction,
+            "predictor_hidden_dim": args.wm_predictor_hidden_dim,
+        }
+        actual_wm_config = {
+            key: getattr(wm_predictor.config, key) for key in expected_wm_config
+        }
+        if actual_wm_config != expected_wm_config:
             raise ValueError(
-                "WM checkpoint history_size does not match --wm-history-size: "
-                f"{wm_predictor.config.history_size} != {args.wm_history_size}"
+                "WM checkpoint architecture does not match training arguments: "
+                f"checkpoint={actual_wm_config}, args={expected_wm_config}"
             )
     else:
         wm_predictor = LatentWMPredictor.create(wm_cfg).to(device)
@@ -808,6 +825,13 @@ def train_sft2(args=None) -> int:
         "value_hidden_dim": int(args.value_hidden_dim or args.emb_dim),
         "wm_dynamics_dim": int(args.wm_dynamics_dim or args.emb_dim),
         "wm_history_size": int(args.wm_history_size),
+        "wm_state_token_count": int(args.wm_state_token_count),
+        "wm_residual_prediction": bool(args.wm_residual_prediction),
+        "wm_predictor_hidden_dim": int(args.wm_predictor_hidden_dim),
+        "wm_predictor_mlp_dim": int(args.wm_predictor_mlp_dim),
+        "wm_predictor_heads": int(args.wm_predictor_heads),
+        "wm_predictor_dim_head": int(args.wm_predictor_dim_head),
+        "wm_predictor_depth": int(args.wm_predictor_depth),
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }

@@ -4,6 +4,7 @@ import torch
 
 from nimloth.training.sft2.loss import (
     StateProjector,
+    _build_masked_history_contexts,
     _build_trajectory_sigreg_inputs,
     compute_combined_loss,
     compute_value_loss,
@@ -97,6 +98,28 @@ def test_wm_latent_loss_with_items_trajectory_sigreg() -> None:
     assert sigreg_loss.item() > 0
     assert "sigreg_loss" in metrics
     assert "wm_mse" in metrics
+
+
+def test_build_masked_history_contexts_left_pads_each_trajectory() -> None:
+    items = [
+        {"record_id": "a", "step_index": 0},
+        {"record_id": "a", "step_index": 1},
+        {"record_id": "b", "step_index": 0},
+        {"record_id": "a", "step_index": 2},
+    ]
+    states = torch.arange(4).float()[:, None].expand(-1, 3)
+    actions = torch.tensor([4, 0, 5, 2])
+    state_ctx, action_ctx, valid = _build_masked_history_contexts(
+        items, states, actions, history_size=4
+    )
+    assert valid.tolist() == [
+        [False, False, False, True],
+        [False, False, True, True],
+        [False, False, False, True],
+        [False, True, True, True],
+    ]
+    torch.testing.assert_close(state_ctx[3, 1:, 0], torch.tensor([0.0, 1.0, 3.0]))
+    assert action_ctx[3].tolist() == [0, 4, 0, 2]
 
 
 def test_build_trajectory_sigreg_inputs() -> None:

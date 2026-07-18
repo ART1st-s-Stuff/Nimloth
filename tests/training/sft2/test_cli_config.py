@@ -20,6 +20,13 @@ K8_STATE8192_FACTORIZED_CONFIG = (
     / "latent_wm_value_k8_state8192_factorized.yaml"
 )
 K1_CONTROL_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k1_control.yaml"
+T4_TOKENIZED_CONFIG = (
+    ROOT
+    / "configs"
+    / "training"
+    / "sft2"
+    / "latent_wm_value_k8_state8192_t4_tok8_residual_ep5_img8.yaml"
+)
 REQUIRED = [
     "--model",
     "/tmp/model",
@@ -75,6 +82,17 @@ def test_state8192_factorized_config_keeps_wide_state_and_narrow_dynamics() -> N
     assert args.wm_dynamics_dim == 2048
     assert args.value_hidden_dim == 1024
     assert args.epochs == 2
+
+
+def test_t4_tokenized_residual_config_has_exact_history_contract() -> None:
+    args = parse_sft2_args(["--config", str(T4_TOKENIZED_CONFIG), *REQUIRED])
+    assert args.emb_dim == 8192
+    assert args.wm_history_size == 4
+    assert args.wm_state_token_count == 8
+    assert args.wm_residual_prediction is True
+    assert args.wm_predictor_hidden_dim == 1024
+    assert args.wm_predictor_heads * args.wm_predictor_dim_head == 1024
+    assert args.full_trajectory_batching is True
 
 
 def test_k1_control_only_changes_latent_capacity_not_runtime_budget() -> None:

@@ -88,9 +88,14 @@ class LeWMConfig:
     predictor_heads: int = 16
     predictor_mlp_dim: int = 4096
     predictor_hidden_dim: int = 1024
+    predictor_dim_head: int = 64
     # Exact State/action sequence length accepted by LatentWMPredictor.
-    # Current SFT2 transition training supplies one cumulative-prefix State.
     history_size: int = 1
+    # Split one external State into this many tokens before temporal modeling.
+    # Eight tokens with emb_dim8192 retain total hidden capacity8x1024.
+    state_token_count: int = 1
+    # Predict a delta from the last context State, with a zero-initialized head.
+    residual_prediction: bool = False
 
     # SIGReg regularization (LeWM paper §3.3)
     lambda_sigreg: float = 0.1

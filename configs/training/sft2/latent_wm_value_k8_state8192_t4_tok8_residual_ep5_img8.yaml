@@ -1,0 +1,80 @@
+# SFT2 — k=8 Qwen queries, external State8192, tokenized T=4 residual WM.
+
+init:
+  sft1_checkpoint: null
+  wm_predictor_checkpoint: null
+
+data:
+  train_jsonl: train_all.jsonl
+  val_jsonl: val_all.jsonl
+  include_failed_rollouts: true
+
+tuning:
+  llm_tune: lora
+  vision_tune: lora
+  vision_ema: true
+  vision_ema_decay: 0.999
+  lora_r: 64
+  lora_alpha: 128
+
+train:
+  epochs: 5
+  batch_size: 2
+  grad_accum: 4
+  lr_qwen_start: 1.0e-8
+  lr_qwen_peak: 5.0e-7
+  state_proj_lr: 1.0e-4
+  wm_predictor_lr: 3.0e-4
+  value_head_lr: 3.0e-4
+  train_wm_predictor: true
+  max_length: 12000
+  max_pixels: 100352
+  emb_dim: 8192
+  projector_hidden_dim: 8192
+  value_hidden_dim: 1024
+  # Four exact temporal slots. Early steps use masked left padding.
+  wm_history_size: 4
+  # Preserve full external hidden capacity as eight independently modeled1024-d tokens.
+  wm_state_token_count: 8
+  wm_residual_prediction: true
+  wm_predictor_hidden_dim: 1024
+  wm_predictor_mlp_dim: 4096
+  wm_predictor_heads: 16
+  wm_predictor_dim_head: 64
+  wm_predictor_depth: 6
+  full_trajectory_batching: true
+  max_images_per_batch: 8
+  max_steps_per_trajectory: 16
+  attn_implementation: flash_attention_2
+  gradient_checkpointing: true
+  checkpoint_interval_minutes: 20.0
+  preprocess_cache_format: compact
+  preprocess_cache_image_dtype: bfloat16
+  preprocess_cache_image_shard_size: 128
+  preprocess_cache_transition_shard_size: 256
+  preprocess_cache_shard_lru: 2
+  preprocess_workers: 16
+  dataloader_workers: 4
+  dataloader_prefetch_factor: 2
+
+latent:
+  token_count: 8
+  query_mode: inject
+  query_tune: freeze
+  query_lr: 5.0e-5
+
+loss:
+  lambda_wm_start: 0.1
+  lambda_wm_end: 1.0
+  lambda_ce: 1.0
+  lambda_value: 1.0
+  lambda_sigreg: 0.1
+  sigreg_num_proj: 1024
+  sigreg_knots: 17
+  value_rank_margin: 0.1
+  value_rank_lambda: 1.0
+  value_gamma: 1.0
+
+monitor:
+  wandb: true
+  early_stop_metric: val_wm_mse
