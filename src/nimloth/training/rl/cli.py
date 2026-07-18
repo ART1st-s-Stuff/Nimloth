@@ -223,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
                 "freeze": config.get("freeze", {}),
                 "predictor": config.get("predictor", {}),
                 "value_head": config.get("value_head", {}),
+                "algorithm": config.get("algorithm", {}),
+                "critic": config.get("critic", {}),
                 "output_dir": str(output_dir),
             }
         }, indent=2, default=str))

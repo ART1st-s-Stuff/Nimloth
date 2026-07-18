@@ -137,7 +137,7 @@ source /project/peilab/atst/flower/.env
 set +a
 : "${WANDB_API_KEY:?flower .env must export WANDB_API_KEY}"
 export PATH=/project/peilab/atst/nimloth/.venv-vagen-main/bin:${PATH}
-export PYTHONPATH="${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/le-wm:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm:${PYTHONPATH:-}"
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
@@ -284,7 +284,23 @@ assert protocol["functional_attention_dropout"] == 0.0
 expected_microbatch = 1 if mode == "pilot" else 2
 assert protocol["transition_microbatch_size"] == expected_microbatch
 assert protocol["value_ranking_weight"] == 0.0
-assert protocol["trajectory_schema"] == 3
+assert protocol["trajectory_schema"] == (4 if mode == "pilot" else 3)
+if mode == "pilot":
+    assert protocol["advantage"] == {
+        "estimator": "masked_gae",
+        "gamma": 1.0,
+        "lam": 1.0,
+        "reward_placement": "final",
+    }
+    assert protocol["critic"] == {
+        "backend": "independent_qwen",
+        "lr": 1e-5,
+        "micro_batch_size": 1,
+        "cliprange_value": 0.5,
+        "gradient_checkpointing": True,
+    }
+else:
+    assert protocol["advantage"]["estimator"] == "turn_mc"
 assert protocol["attention_implementation"] == "flash_attention_2"
 assert protocol["kl"] == {
     "reference": "immutable-merged-sft2-base-adapters-disabled",
@@ -359,6 +375,7 @@ if mode == "pilot":
         for key in (
             "wm_mse", "value_loss", "total_loss", "actor_loss", "entropy",
             "policy_tokens", "ppo_kl", "kl_loss", "kl_reward_penalty",
+            "critic_loss", "value_clip_fraction", "critic_value_mean",
         ):
             assert math.isfinite(float(row[key])), (key, row[key])
         assert float(row["policy_tokens"]) > 1.0
@@ -367,9 +384,13 @@ if mode == "pilot":
     state = torch.load(final / "rl_state.pt", map_location="cpu", weights_only=False)
     assert state["rollout_protocol"] == protocol
     assert state["optimizer_world_size"] == 8
+    assert state["critic_optimizer_world_size"] == 8
     assert 1 <= state["iteration"] <= 20 and state["global_step"] >= 1
     for rank in range(8):
         assert (final / f"optimizer_rank_{rank:05d}.pt").stat().st_size > 0
+        assert (final / f"critic_optimizer_rank_{rank:05d}.pt").stat().st_size > 0
+    assert (final / "critic/config.json").is_file()
+    assert list((final / "critic").glob("*.safetensors"))
     assert (final / "adapter_model.safetensors").stat().st_size > 0
     with safe_open(final / "adapter_model.safetensors", framework="pt", device="cpu") as handle:
         keys = list(handle.keys())
@@ -405,6 +426,7 @@ if mode == "pilot":
         assert len(record["thought_token_log_probs"]) == steps
         assert len(record["ppo_old_token_log_probs"]) == steps
         assert len(record["reference_token_log_probs"]) == steps
+        assert len(record["critic_token_values"]) == steps
         assert all(
             len(old) == len(ids) + 1
             for ids, old in zip(
@@ -416,6 +438,17 @@ if mode == "pilot":
             for ids, reference in zip(
                 record["thought_token_ids"], record["reference_token_log_probs"]
             )
+        )
+        assert all(
+            len(values) == len(ids) + 1
+            for ids, values in zip(
+                record["thought_token_ids"], record["critic_token_values"]
+            )
+        )
+        assert all(
+            math.isfinite(value)
+            for values in record["critic_token_values"]
+            for value in values
         )
         assert "Human Instruction:" in record["observation_texts"][0]
     validation_rows = list(csv.DictReader((root / "train/validation_log.csv").open()))

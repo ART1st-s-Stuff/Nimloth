@@ -23,6 +23,22 @@ actor:
   kl_reward_coef: 0.001
   kl_reward_type: kl
 
+# --- Advantage estimator / critic ---
+algorithm:
+  # turn_mc preserves the historical action-value pathway; masked_gae matches
+  # VAGEN's selectable token-level navigation estimator.
+  adv_estimator: turn_mc       # turn_mc | masked_gae
+  gamma: 1.0
+  lam: 1.0
+  reward_placement: per_turn   # final | per_turn
+
+critic:
+  backend: independent_qwen
+  lr: 1.0e-5
+  micro_batch_size: 1
+  cliprange_value: 0.5
+  gradient_checkpointing: true
+
 # --- Predictor ---
 predictor:
   lr: 1e-3

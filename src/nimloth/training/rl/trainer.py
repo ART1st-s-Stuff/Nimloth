@@ -228,6 +228,12 @@ def build_rl_transitions(
                     list(traj.reference_token_log_probs[t])
                     if traj.reference_token_log_probs else []
                 ),
+                "old_token_values": (
+                    list(traj.critic_token_values[t])
+                    if traj.critic_token_values else []
+                ),
+                "token_advantages": [],
+                "token_returns": [],
                 "kl_reward_penalty": kl_reward_penalties[t],
                 "system_prompt": traj.system_prompt,
                 "observation_texts": traj.observation_texts[:t + 1],
@@ -261,6 +267,87 @@ def normalize_turn_advantages_for_policy_tokens(
     return (
         raw_advantages - weighted.mean()
     ) / (weighted.std(unbiased=False) + 1e-8)
+
+
+def assign_masked_gae_to_transitions(
+    trajectories: list[RolloutTrajectory],
+    transitions: list[dict[str, Any]],
+    *,
+    gamma: float,
+    lam: float,
+    reward_placement: str,
+) -> None:
+    """Compute VAGEN token-level masked GAE and attach it to transitions."""
+
+    from nimloth.training.rl.loss import compute_masked_gae_advantage_return
+
+    if reward_placement not in {"final", "per_turn"}:
+        raise ValueError(
+            f"masked_gae reward_placement must be final or per_turn, got {reward_placement!r}"
+        )
+    per_trajectory_values: list[list[float]] = []
+    per_trajectory_rewards: list[list[float]] = []
+    token_counts_by_trajectory: list[list[int]] = []
+    for trajectory in trajectories:
+        if len(trajectory.critic_token_values) != trajectory.num_steps:
+            raise RuntimeError(
+                f"trajectory {trajectory.record_id} has no complete critic values"
+            )
+        counts = [len(values) for values in trajectory.critic_token_values]
+        values = [value for step_values in trajectory.critic_token_values for value in step_values]
+        rewards = [0.0] * len(values)
+        cursor = 0
+        if reward_placement == "per_turn":
+            for step, count in enumerate(counts):
+                reward = float(trajectory.step_rewards[step])
+                if step == trajectory.num_steps - 1:
+                    reward += float(trajectory.final_reward)
+                rewards[cursor + count - 1] = reward
+                cursor += count
+        else:
+            rewards[-1] = float(trajectory.reward)
+        per_trajectory_values.append(values)
+        per_trajectory_rewards.append(rewards)
+        token_counts_by_trajectory.append(counts)
+
+    max_tokens = max(len(values) for values in per_trajectory_values)
+    values_tensor = torch.zeros((len(trajectories), max_tokens), dtype=torch.float32)
+    rewards_tensor = torch.zeros_like(values_tensor)
+    loss_mask = torch.zeros_like(values_tensor, dtype=torch.long)
+    for row, (values, rewards) in enumerate(
+        zip(per_trajectory_values, per_trajectory_rewards)
+    ):
+        length = len(values)
+        values_tensor[row, :length] = torch.tensor(values)
+        rewards_tensor[row, :length] = torch.tensor(rewards)
+        loss_mask[row, :length] = 1
+    advantages, returns = compute_masked_gae_advantage_return(
+        token_level_rewards=rewards_tensor,
+        values=values_tensor,
+        loss_mask=loss_mask,
+        gamma=gamma,
+        lam=lam,
+    )
+
+    transition_cursor = 0
+    for row, counts in enumerate(token_counts_by_trajectory):
+        token_cursor = 0
+        for count in counts:
+            transition = transitions[transition_cursor]
+            transition["token_advantages"] = advantages[
+                row, token_cursor:token_cursor + count
+            ].tolist()
+            transition["token_returns"] = returns[
+                row, token_cursor:token_cursor + count
+            ].tolist()
+            if len(transition["old_token_values"]) != count:
+                raise RuntimeError("transition critic token count changed during GAE")
+            token_cursor += count
+            transition_cursor += 1
+    if transition_cursor != len(transitions):
+        raise RuntimeError(
+            f"masked GAE assigned {transition_cursor} of {len(transitions)} transitions"
+        )
 
 
 def deterministic_transition_microbatches(
@@ -430,6 +517,32 @@ def compute_policy_token_stats_for_batch(
     )
 
 
+def _trajectory_policy_items(
+    trajectories: list[RolloutTrajectory],
+) -> tuple[list[dict[str, Any]], list[tuple[RolloutTrajectory, int]]]:
+    """Flatten exact per-turn policy contexts without changing transcript order."""
+
+    from nimloth.training.rl.vagen_protocol import thought_from_assistant_response
+
+    items: list[dict[str, Any]] = []
+    owners: list[tuple[RolloutTrajectory, int]] = []
+    for trajectory in trajectories:
+        for step in range(trajectory.num_steps):
+            items.append({
+                "image_history_paths": trajectory.image_paths[: step + 1],
+                "system_prompt": trajectory.system_prompt,
+                "observation_texts": trajectory.observation_texts[: step + 1],
+                "assistant_responses": trajectory.assistant_responses[:step],
+                "current_thought": thought_from_assistant_response(
+                    trajectory.assistant_responses[step]
+                ),
+                "thought_token_ids": trajectory.thought_token_ids[step],
+                "taken_action_idx": trajectory.action_indices[step],
+            })
+            owners.append((trajectory, step))
+    return items, owners
+
+
 def attach_policy_and_reference_token_log_probs(
     trajectories: list[RolloutTrajectory],
     model,
@@ -449,28 +562,10 @@ def attach_policy_and_reference_token_log_probs(
     for audit, but PPO ratios use this full-response replay.
     """
 
-    items: list[dict[str, Any]] = []
-    owners: list[tuple[RolloutTrajectory, int]] = []
+    items, owners = _trajectory_policy_items(trajectories)
     for trajectory in trajectories:
         trajectory.ppo_old_token_log_probs = []
         trajectory.reference_token_log_probs = []
-        for step in range(trajectory.num_steps):
-            from nimloth.training.rl.vagen_protocol import (
-                thought_from_assistant_response,
-            )
-
-            items.append({
-                "image_history_paths": trajectory.image_paths[: step + 1],
-                "system_prompt": trajectory.system_prompt,
-                "observation_texts": trajectory.observation_texts[: step + 1],
-                "assistant_responses": trajectory.assistant_responses[:step],
-                "current_thought": thought_from_assistant_response(
-                    trajectory.assistant_responses[step]
-                ),
-                "thought_token_ids": trajectory.thought_token_ids[step],
-                "taken_action_idx": trajectory.action_indices[step],
-            })
-            owners.append((trajectory, step))
 
     with _temporary_eval(model), torch.no_grad():
         old_log_probs, _old_entropies, old_counts = (
@@ -557,6 +652,55 @@ def attach_policy_and_reference_token_log_probs(
             sum(behavior_deltas) / len(behavior_deltas)
             if behavior_deltas else 0.0
         ),
+    }
+
+
+def attach_critic_token_values(
+    trajectories: list[RolloutTrajectory],
+    critic: torch.nn.Module,
+    processor: Any,
+    token_id_map: dict[str, int],
+    device: torch.device,
+    *,
+    history_window: int,
+    latent_token_count: int,
+) -> dict[str, float]:
+    """Attach old independent-critic values for every stochastic token."""
+
+    from nimloth.training.rl.token_critic import compute_token_values_for_batch
+
+    items, owners = _trajectory_policy_items(trajectories)
+    with _temporary_eval(critic), torch.no_grad():
+        flattened, counts = compute_token_values_for_batch(
+            items,
+            critic,
+            processor,
+            token_id_map,
+            device,
+            history_window=history_window,
+            latent_token_count=latent_token_count,
+        )
+    cursor = 0
+    by_trajectory = {
+        id(trajectory): [[] for _ in range(trajectory.num_steps)]
+        for trajectory in trajectories
+    }
+    for (trajectory, step), count in zip(owners, counts):
+        by_trajectory[id(trajectory)][step] = [
+            float(value)
+            for value in flattened[cursor:cursor + count].detach().cpu().tolist()
+        ]
+        cursor += count
+    if cursor != flattened.numel():
+        raise RuntimeError(
+            f"critic token split consumed {cursor} of {flattened.numel()} values"
+        )
+    for trajectory in trajectories:
+        trajectory.critic_token_values = by_trajectory[id(trajectory)]
+        validate_rollout_trajectory(trajectory)
+    return {
+        "critic_tokens": float(flattened.numel()),
+        "critic_value_mean": float(flattened.float().mean().item()),
     }
 
 
@@ -762,6 +906,8 @@ def train_rl(
     freeze_cfg: dict = config.get("freeze", {})
     pred_cfg: dict = config.get("predictor", {})
     vh_cfg: dict = config.get("value_head", {})
+    algo_cfg: dict = config.get("algorithm", {})
+    critic_cfg: dict = config.get("critic", {})
     val_cfg: dict = config.get("validation", {})
     train_cfg: dict = config.get("training", {})
 
@@ -831,6 +977,44 @@ def train_rl(
     if evaluation_only and bool(getattr(args, "resume", False)):
         raise ValueError("evaluation-only baseline cannot resume a training checkpoint")
     seed: int = train_cfg.get("seed", 42)
+
+    adv_estimator = str(algo_cfg.get("adv_estimator", "turn_mc"))
+    if adv_estimator not in {"turn_mc", "masked_gae"}:
+        raise ValueError(
+            f"algorithm.adv_estimator must be turn_mc or masked_gae, got {adv_estimator!r}"
+        )
+    gae_gamma = float(algo_cfg.get("gamma", gamma))
+    gae_lam = float(algo_cfg.get("lam", 1.0))
+    reward_placement = str(algo_cfg.get("reward_placement", "per_turn"))
+    critic_backend = str(critic_cfg.get("backend", "independent_qwen"))
+    critic_lr = float(critic_cfg.get("lr", 1e-5))
+    critic_micro_batch_size = int(critic_cfg.get("micro_batch_size", 1))
+    critic_cliprange_value = float(critic_cfg.get("cliprange_value", 0.5))
+    critic_gradient_checkpointing = bool(
+        critic_cfg.get("gradient_checkpointing", True)
+    )
+    if adv_estimator == "masked_gae":
+        if not actor_enabled:
+            raise ValueError("masked_gae requires an enabled actor")
+        if critic_backend != "independent_qwen":
+            raise ValueError(
+                "masked_gae currently requires critic.backend=independent_qwen"
+            )
+        if critic_micro_batch_size != 1 or batch_size != 1:
+            raise ValueError(
+                "initial independent-Qwen masked_gae requires critic and transition "
+                "microbatch size1 until a long-history memory gate passes"
+            )
+        if reward_placement not in {"final", "per_turn"}:
+            raise ValueError(
+                "masked_gae reward_placement must be final or per_turn"
+            )
+        if use_kl_in_reward:
+            raise ValueError(
+                "masked_gae token KL-in-reward is not implemented; use actor KL loss"
+            )
+        if critic_lr <= 0 or critic_cliprange_value <= 0:
+            raise ValueError("masked_gae critic lr and cliprange_value must be positive")
 
     # --- tuning modes --------------------------------------------------------
     llm_tune, vision_tune = resolve_tune_modes(args)
@@ -1026,6 +1210,55 @@ def train_rl(
             print(json.dumps({"fsdp": "wrapped", "world_size": world}))
     # FSDP handles multi-GPU; small modules stay on device if world==1.
 
+    critic_model: torch.nn.Module | None = None
+    if adv_estimator == "masked_gae":
+        from nimloth.training.rl.token_critic import (
+            load_independent_qwen_critic,
+        )
+
+        critic_source = (
+            resume_ckpt_dir / "critic"
+            if args.resume and (resume_ckpt_dir / "critic").is_dir()
+            else Path(args.model)
+        )
+        if args.resume and critic_source == Path(args.model):
+            raise FileNotFoundError(
+                f"masked_gae resume missing independent critic at {resume_ckpt_dir / 'critic'}"
+            )
+        critic_model = load_independent_qwen_critic(
+            critic_source,
+            dtype=policy_dtype,
+            attn_implementation=args.attn_implementation,
+            gradient_checkpointing=critic_gradient_checkpointing,
+        )
+        critic_model.to(device)
+        critic_embedding = critic_model.get_input_embeddings()
+        if (
+            hasattr(critic_embedding, "padding_idx")
+            and critic_embedding.padding_idx is not None
+        ):
+            critic_embedding.padding_idx = None
+        if world > 1:
+            from torch.distributed.fsdp import (
+                FullyShardedDataParallel as FSDP,
+                ShardingStrategy,
+            )
+
+            critic_model = FSDP(
+                critic_model,
+                device_id=torch.cuda.current_device(),
+                sharding_strategy=ShardingStrategy.FULL_SHARD,
+                sync_module_states=True,
+                use_orig_params=True,
+            )
+        if is_main():
+            print(json.dumps({
+                "critic": "independent_qwen",
+                "source": str(critic_source),
+                "fsdp": world > 1,
+                "gradient_checkpointing": critic_gradient_checkpointing,
+            }))
+
     # --- Wire online env rollout after FSDP wrapping -------------------------
     from nimloth.training.rl.rollout import EnvRolloutCollector
 
@@ -1104,8 +1337,28 @@ def train_rl(
             "gradient_checkpointing": bool(args.gradient_checkpointing),
             "functional_attention_dropout": attention_dropout,
             "transition_microbatch_size": batch_size,
+            "advantage": {
+                "estimator": adv_estimator,
+                "gamma": gae_gamma if adv_estimator == "masked_gae" else gamma,
+                "lam": gae_lam if adv_estimator == "masked_gae" else None,
+                "reward_placement": reward_placement,
+            },
+            "critic": {
+                "backend": critic_backend if adv_estimator == "masked_gae" else None,
+                "lr": critic_lr if adv_estimator == "masked_gae" else None,
+                "micro_batch_size": (
+                    critic_micro_batch_size if adv_estimator == "masked_gae" else None
+                ),
+                "cliprange_value": (
+                    critic_cliprange_value if adv_estimator == "masked_gae" else None
+                ),
+                "gradient_checkpointing": (
+                    critic_gradient_checkpointing
+                    if adv_estimator == "masked_gae" else None
+                ),
+            },
             "value_ranking_weight": 0.0,
-            "trajectory_schema": 3,
+            "trajectory_schema": 4 if adv_estimator == "masked_gae" else 3,
             "kl": {
                 "reference": "immutable-merged-sft2-base-adapters-disabled",
                 "use_actor_loss": use_kl_loss,
@@ -1162,10 +1415,23 @@ def train_rl(
     param_groups = [
         {"params": [p for p in model.parameters() if p.requires_grad], "lr": actor_lr, "name": "qwen"},
         {"params": state_proj.parameters(), "lr": pred_lr, "name": "state_proj"},
-        {"params": value_head.parameters(), "lr": vh_lr, "name": "value_head"},
         {"params": wm_predictor.parameters(), "lr": pred_lr, "name": "wm_predictor"},
     ]
+    if adv_estimator == "turn_mc":
+        param_groups.append({
+            "params": value_head.parameters(), "lr": vh_lr, "name": "value_head"
+        })
+    else:
+        _freeze(value_head)
     optimizer = torch.optim.AdamW(param_groups, weight_decay=1e-4)
+    critic_optimizer = (
+        torch.optim.AdamW(
+            [parameter for parameter in critic_model.parameters() if parameter.requires_grad],
+            lr=critic_lr,
+            weight_decay=1e-2,
+        )
+        if critic_model is not None else None
+    )
 
     # --- resume training state ------------------------------------------------
     start_iteration = 1
@@ -1201,8 +1467,34 @@ def train_rl(
                 optimizer.load_state_dict(
                     torch.load(optimizer_path, map_location="cpu", weights_only=False)
                 )
+                if critic_optimizer is not None:
+                    saved_critic_world = int(
+                        resume_state.get("critic_optimizer_world_size", 0)
+                    )
+                    if saved_critic_world != world:
+                        raise RuntimeError(
+                            "critic optimizer world-size mismatch: "
+                            f"saved={saved_critic_world}, current={world}"
+                        )
+                    critic_optimizer_path = (
+                        resume_aux_ckpt / f"critic_optimizer_rank_{rank:05d}.pt"
+                    )
+                    if not critic_optimizer_path.is_file():
+                        raise FileNotFoundError(
+                            f"missing rank critic optimizer: {critic_optimizer_path}"
+                        )
+                    critic_optimizer.load_state_dict(torch.load(
+                        critic_optimizer_path,
+                        map_location="cpu",
+                        weights_only=False,
+                    ))
             elif resume_state.get("optimizer") is not None:
                 optimizer.load_state_dict(resume_state["optimizer"])
+                if critic_optimizer is not None:
+                    critic_state = resume_state.get("critic_optimizer")
+                    if critic_state is None:
+                        raise RuntimeError("masked_gae resume has no critic optimizer")
+                    critic_optimizer.load_state_dict(critic_state)
             if is_main():
                 print(json.dumps({"resume": True, "start_iteration": start_iteration,
                                   "global_step": global_step}))
@@ -1233,6 +1525,7 @@ def train_rl(
                 "val_success_rate", "val_avg_reward", "val_avg_steps",
                 "actor_loss", "entropy", "clip_fraction", "mean_advantage",
                 "policy_tokens", "ppo_kl", "kl_loss", "kl_reward_penalty",
+                "critic_loss", "value_clip_fraction", "critic_value_mean",
             ])
 
     validation_log_path = output_dir / "validation_log.csv"
@@ -1360,16 +1653,32 @@ def train_rl(
                 compute_reference=use_kl_loss or use_kl_in_reward,
             )
             if is_main():
-                from nimloth.training.rl.rollout import save_trajectories
-
                 print(json.dumps({
                     "iteration": iteration,
                     "policy_replay": replay_metrics,
                 }))
-                save_trajectories(
-                    trajectories,
-                    output_dir / f"rollouts/iter_{iteration:04d}",
-                )
+        if critic_model is not None:
+            critic_replay_metrics = attach_critic_token_values(
+                trajectories,
+                critic_model,
+                processor,
+                token_id_map,
+                device,
+                history_window=int(getattr(collector, "_history_window", 112)),
+                latent_token_count=latent_token_count,
+            )
+            if is_main():
+                print(json.dumps({
+                    "iteration": iteration,
+                    "critic_replay": critic_replay_metrics,
+                }))
+        if is_main():
+            from nimloth.training.rl.rollout import save_trajectories
+
+            save_trajectories(
+                trajectories,
+                output_dir / f"rollouts/iter_{iteration:04d}",
+            )
 
         # 2. Encode → transitions ------------------------------------------------
         with _temporary_eval(model):
@@ -1396,29 +1705,44 @@ def train_rl(
         # Compute one normalized advantage population before any mini-batch update,
         # then consume every transition exactly once (VAGEN ppo_epochs=1).
         sp = _unwrap(state_proj)
-        raw_advantages: list[torch.Tensor] = []
-        with torch.no_grad():
-            for start in range(0, len(transitions), batch_size):
-                items = transitions[start:start + batch_size]
-                hidden = torch.stack([
-                    item["qwen_hidden_current"] for item in items
-                ]).to(device)
-                actions = torch.stack([item["action_index"] for item in items]).to(device)
-                targets = torch.stack([item["value_target"] for item in items]).to(device)
-                state = sp(hidden).float()
-                values = value_head(state).float().gather(
-                    1, actions.unsqueeze(1)
-                ).squeeze(1)
-                raw_advantages.extend((targets - values).detach().cpu().unbind())
-        raw_advantage_tensor = torch.stack(raw_advantages)
-        policy_token_counts = [
-            len(item["old_token_log_probs"]) for item in transitions
-        ]
-        advantage_tensor = normalize_turn_advantages_for_policy_tokens(
-            raw_advantage_tensor, policy_token_counts
-        )
-        for item, advantage in zip(transitions, advantage_tensor):
-            item["advantage"] = advantage
+        if adv_estimator == "masked_gae":
+            assign_masked_gae_to_transitions(
+                trajectories,
+                transitions,
+                gamma=gae_gamma,
+                lam=gae_lam,
+                reward_placement=reward_placement,
+            )
+        else:
+            raw_advantages: list[torch.Tensor] = []
+            with torch.no_grad():
+                for start in range(0, len(transitions), batch_size):
+                    items = transitions[start:start + batch_size]
+                    hidden = torch.stack([
+                        item["qwen_hidden_current"] for item in items
+                    ]).to(device)
+                    actions = torch.stack([
+                        item["action_index"] for item in items
+                    ]).to(device)
+                    targets = torch.stack([
+                        item["value_target"] for item in items
+                    ]).to(device)
+                    state = sp(hidden).float()
+                    values = value_head(state).float().gather(
+                        1, actions.unsqueeze(1)
+                    ).squeeze(1)
+                    raw_advantages.extend(
+                        (targets - values).detach().cpu().unbind()
+                    )
+            raw_advantage_tensor = torch.stack(raw_advantages)
+            policy_token_counts = [
+                len(item["old_token_log_probs"]) for item in transitions
+            ]
+            advantage_tensor = normalize_turn_advantages_for_policy_tokens(
+                raw_advantage_tensor, policy_token_counts
+            )
+            for item, advantage in zip(transitions, advantage_tensor):
+                item["advantage"] = advantage
 
         transition_batches = deterministic_transition_microbatches(
             len(transitions), batch_size, seed=seed + iteration
@@ -1455,15 +1779,19 @@ def train_rl(
                 pred_loss = torch.zeros((), device=device)
                 pred_metrics = {"wm_mse": 0.0}
 
-            wm_state = sp(hidden_cur).float().detach()
-            val_loss, val_metrics = compute_value_loss(
-                state_emb=wm_state,
-                action_indices=actions,
-                action_value_targets=value_targets,
-                value_head=value_head,
-                rank_margin=rank_margin,
-                lambda_rank=lambda_rank,
-            )
+            if adv_estimator == "turn_mc":
+                wm_state = sp(hidden_cur).float().detach()
+                val_loss, val_metrics = compute_value_loss(
+                    state_emb=wm_state,
+                    action_indices=actions,
+                    action_value_targets=value_targets,
+                    value_head=value_head,
+                    rank_margin=rank_margin,
+                    lambda_rank=lambda_rank,
+                )
+            else:
+                val_loss = torch.zeros((), device=device)
+                val_metrics = {"value_loss": 0.0}
 
             actor_metrics: dict[str, float] = {}
             if actor_enabled:
@@ -1516,10 +1844,22 @@ def train_rl(
                     device=new_log_probs.device,
                     dtype=new_log_probs.dtype,
                 )
-                advantages = torch.cat([
-                    item["advantage"].reshape(1).expand(count)
-                    for item, count in zip(batch, token_counts)
-                ]).to(device=new_log_probs.device, dtype=new_log_probs.dtype)
+                if adv_estimator == "masked_gae":
+                    advantages = torch.cat([
+                        torch.tensor(item["token_advantages"])
+                        for item in batch
+                    ]).to(
+                        device=new_log_probs.device,
+                        dtype=new_log_probs.dtype,
+                    )
+                else:
+                    advantages = torch.cat([
+                        item["advantage"].reshape(1).expand(count)
+                        for item, count in zip(batch, token_counts)
+                    ]).to(
+                        device=new_log_probs.device,
+                        dtype=new_log_probs.dtype,
+                    )
                 actor_loss, actor_metrics = compute_actor_loss(
                     new_log_probs=new_log_probs,
                     old_log_probs=old_log_probs,
@@ -1566,6 +1906,59 @@ def train_rl(
             optimizer.step()
             if vision_ema is not None:
                 vision_ema.update(model)
+
+            critic_metrics: dict[str, float] = {}
+            if critic_model is not None:
+                from nimloth.training.rl.loss import (
+                    compute_clipped_token_value_loss,
+                )
+                from nimloth.training.rl.token_critic import (
+                    compute_token_values_for_batch,
+                )
+
+                assert critic_optimizer is not None
+                critic_optimizer.zero_grad(set_to_none=True)
+                with _temporary_deterministic_train(critic_model):
+                    predicted_values, critic_counts = (
+                        compute_token_values_for_batch(
+                            ppo_items,
+                            critic_model,
+                            processor,
+                            token_id_map,
+                            device,
+                            history_window=int(
+                                getattr(collector, "_history_window", 112)
+                            ),
+                            latent_token_count=latent_token_count,
+                        )
+                    )
+                if critic_counts != token_counts:
+                    raise RuntimeError(
+                        "actor/critic stochastic-token count mismatch: "
+                        f"actor={token_counts}, critic={critic_counts}"
+                    )
+                old_values = torch.cat([
+                    torch.tensor(item["old_token_values"])
+                    for item in batch
+                ]).to(device=predicted_values.device, dtype=predicted_values.dtype)
+                token_returns = torch.cat([
+                    torch.tensor(item["token_returns"])
+                    for item in batch
+                ]).to(device=predicted_values.device, dtype=predicted_values.dtype)
+                critic_loss, critic_metrics = compute_clipped_token_value_loss(
+                    predicted_values=predicted_values,
+                    old_values=old_values,
+                    returns=token_returns,
+                    cliprange_value=critic_cliprange_value,
+                )
+                critic_loss.backward()
+                if hasattr(critic_model, "clip_grad_norm_"):
+                    critic_model.clip_grad_norm_(1.0)
+                else:
+                    torch.nn.utils.clip_grad_norm_(critic_model.parameters(), 1.0)
+                critic_optimizer.step()
+                val_metrics = {"value_loss": critic_metrics["critic_loss"]}
+
             global_step += 1
             optimizer_steps_this_iteration += 1
 
@@ -1584,6 +1977,13 @@ def train_rl(
                 "kl_loss": float(actor_metrics.get("kl_loss", 0.0)),
                 "kl_reward_penalty": float(
                     actor_metrics.get("kl_reward_penalty", 0.0)
+                ),
+                "critic_loss": float(critic_metrics.get("critic_loss", 0.0)),
+                "value_clip_fraction": float(
+                    critic_metrics.get("value_clip_fraction", 0.0)
+                ),
+                "critic_value_mean": float(
+                    critic_metrics.get("critic_value_mean", 0.0)
                 ),
             }
             for key, value in batch_metrics.items():
@@ -1642,6 +2042,9 @@ def train_rl(
                     iter_metrics.get("ppo_kl", ""),
                     iter_metrics.get("kl_loss", ""),
                     iter_metrics.get("kl_reward_penalty", ""),
+                    iter_metrics.get("critic_loss", ""),
+                    iter_metrics.get("value_clip_fraction", ""),
+                    iter_metrics.get("critic_value_mean", ""),
                 ])
             elapsed = time.time() - iter_start
             print(json.dumps({
@@ -1667,9 +2070,11 @@ def train_rl(
                 wm_predictor=wm_predictor,
                 value_head=value_head,
                 model=model,
+                critic_model=critic_model,
                 processor=processor,
                 vision_ema=vision_ema,
                 optimizer=optimizer,
+                critic_optimizer=critic_optimizer,
                 iteration=iteration,
                 global_step=global_step,
                 best_value_loss=best_value_loss,
@@ -1687,9 +2092,11 @@ def train_rl(
                     wm_predictor=wm_predictor,
                     value_head=value_head,
                     model=model,
+                    critic_model=critic_model,
                     processor=processor,
                     vision_ema=vision_ema,
                     optimizer=optimizer,
+                    critic_optimizer=critic_optimizer,
                     iteration=iteration,
                     global_step=global_step,
                     best_value_loss=best_value_loss,
@@ -1730,9 +2137,11 @@ def train_rl(
         wm_predictor=wm_predictor,
         value_head=value_head,
         model=model,
+        critic_model=critic_model,
         processor=processor,
         vision_ema=vision_ema,
         optimizer=optimizer,
+        critic_optimizer=critic_optimizer,
         iteration=last_completed_iteration,
         global_step=global_step,
         best_value_loss=best_value_loss,

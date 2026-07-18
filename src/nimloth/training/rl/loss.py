@@ -16,6 +16,8 @@ __all__ = [
     "compute_actor_loss",
     "compute_action_entropy",
     "compute_kl_penalty",
+    "compute_masked_gae_advantage_return",
+    "compute_clipped_token_value_loss",
 ]
 
 
@@ -93,6 +95,93 @@ def compute_advantages(
     # unbiased=False 避免 batch size=1 时 std 产生 NaN（单样本下 unbiased std 分母为 0）
     advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
     return advantages
+
+
+def compute_masked_gae_advantage_return(
+    *,
+    token_level_rewards: torch.Tensor,
+    values: torch.Tensor,
+    loss_mask: torch.Tensor,
+    gamma: float,
+    lam: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """VAGEN ``masked_gae`` over only loss-masked response tokens."""
+
+    if token_level_rewards.shape != values.shape or values.shape != loss_mask.shape:
+        raise ValueError(
+            "masked GAE tensors must share shape: "
+            f"rewards={tuple(token_level_rewards.shape)}, "
+            f"values={tuple(values.shape)}, mask={tuple(loss_mask.shape)}"
+        )
+    if token_level_rewards.ndim != 2:
+        raise ValueError(
+            f"masked GAE expects [batch, sequence], got {token_level_rewards.shape}"
+        )
+    mask = loss_mask.to(dtype=torch.bool)
+    with torch.no_grad():
+        advantages = torch.zeros_like(token_level_rewards)
+        returns = torch.zeros_like(token_level_rewards)
+        for row in range(token_level_rewards.shape[0]):
+            valid = mask[row].nonzero(as_tuple=True)[0]
+            last_gae = torch.zeros(
+                (), device=values.device, dtype=values.dtype
+            )
+            for index in range(len(valid) - 1, -1, -1):
+                position = valid[index]
+                next_value = (
+                    values[row, valid[index + 1]]
+                    if index + 1 < len(valid)
+                    else torch.zeros((), device=values.device, dtype=values.dtype)
+                )
+                delta = (
+                    token_level_rewards[row, position]
+                    + float(gamma) * next_value
+                    - values[row, position]
+                )
+                last_gae = delta + float(gamma) * float(lam) * last_gae
+                advantages[row, position] = last_gae
+                returns[row, position] = last_gae + values[row, position]
+        valid_advantages = advantages[mask]
+        if valid_advantages.numel() == 0:
+            raise ValueError("masked GAE requires at least one loss token")
+        mean = valid_advantages.mean()
+        std = valid_advantages.std(unbiased=False)
+        advantages = torch.where(
+            mask,
+            (advantages - mean) / (std + 1e-8),
+            torch.zeros_like(advantages),
+        )
+    return advantages, returns
+
+
+def compute_clipped_token_value_loss(
+    *,
+    predicted_values: torch.Tensor,
+    old_values: torch.Tensor,
+    returns: torch.Tensor,
+    cliprange_value: float,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """VAGEN clipped token-critic regression loss."""
+
+    if not (
+        predicted_values.shape == old_values.shape == returns.shape
+    ):
+        raise ValueError("token value tensors must share shape")
+    clipped = torch.clamp(
+        predicted_values,
+        old_values - float(cliprange_value),
+        old_values + float(cliprange_value),
+    )
+    losses = (predicted_values - returns).square()
+    clipped_losses = (clipped - returns).square()
+    loss = 0.5 * torch.maximum(losses, clipped_losses).mean()
+    with torch.no_grad():
+        clip_fraction = (clipped_losses > losses).float().mean()
+    return loss, {
+        "critic_loss": float(loss.detach().item()),
+        "value_clip_fraction": float(clip_fraction.item()),
+        "critic_value_mean": float(predicted_values.detach().mean().item()),
+    }
 
 
 def compute_actor_loss(

@@ -69,6 +69,7 @@ class RolloutTrajectory:
     thought_token_log_probs: list[list[float]] = field(default_factory=list)
     ppo_old_token_log_probs: list[list[float]] = field(default_factory=list)
     reference_token_log_probs: list[list[float]] = field(default_factory=list)
+    critic_token_values: list[list[float]] = field(default_factory=list)
     step_rewards: list[float] = field(default_factory=list)
     final_reward: float = 0.0
     success: bool = False
@@ -119,6 +120,7 @@ class RolloutTrajectory:
             "thought_token_log_probs": self.thought_token_log_probs,
             "ppo_old_token_log_probs": self.ppo_old_token_log_probs,
             "reference_token_log_probs": self.reference_token_log_probs,
+            "critic_token_values": self.critic_token_values,
             "latent_token_count": self.latent_token_count,
         }
 
@@ -164,6 +166,10 @@ class RolloutTrajectory:
             reference_token_log_probs=[
                 [float(log_prob) for log_prob in values]
                 for values in record.get("reference_token_log_probs", [])
+            ],
+            critic_token_values=[
+                [float(value) for value in values]
+                for values in record.get("critic_token_values", [])
             ],
             step_rewards=[float(value) for value in record["step_rewards"]],
             final_reward=float(record.get("final_reward", 0.0)),
@@ -1237,6 +1243,7 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
     for name, values in (
         ("ppo_old_token_log_probs", trajectory.ppo_old_token_log_probs),
         ("reference_token_log_probs", trajectory.reference_token_log_probs),
+        ("critic_token_values", trajectory.critic_token_values),
     ):
         if values and len(values) != steps:
             raise ValueError(
@@ -1312,6 +1319,7 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
         for name, per_step_values in (
             ("PPO-old", trajectory.ppo_old_token_log_probs),
             ("reference", trajectory.reference_token_log_probs),
+            ("critic", trajectory.critic_token_values),
         ):
             if not per_step_values:
                 continue
@@ -1319,12 +1327,12 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
             if len(values) != expected_policy_tokens:
                 raise ValueError(
                     f"trajectory {trajectory.record_id!r}: step {step} {name} token "
-                    f"log-probs={len(values)}, expected={expected_policy_tokens}"
+                    f"values={len(values)}, expected={expected_policy_tokens}"
                 )
             if not all(math.isfinite(float(value)) for value in values):
                 raise ValueError(
                     f"trajectory {trajectory.record_id!r}: step {step} has non-finite "
-                    f"{name} token log-probs"
+                    f"{name} token values"
                 )
         if not math.isfinite(float(step_reward)):
             raise ValueError(

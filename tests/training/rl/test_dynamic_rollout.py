@@ -59,6 +59,14 @@ def test_k8_pilot_uses_disjoint_fixed_heldout_protocol() -> None:
     assert config["rl"]["batch_size"] == 1
     assert config["actor"]["use_kl_loss"] is True
     assert config["actor"]["kl_loss_coef"] == 0.001
+    assert config["algorithm"] == {
+        "adv_estimator": "masked_gae",
+        "gamma": 1.0,
+        "lam": 1.0,
+        "reward_placement": "final",
+    }
+    assert config["critic"]["backend"] == "independent_qwen"
+    assert config["critic"]["micro_batch_size"] == 1
     assert config["actor"]["kl_loss_type"] == "low_var_kl"
     assert config["actor"]["use_kl_in_reward"] is False
     assert config["validation"] == {
@@ -892,6 +900,42 @@ def test_value_head_loader_honors_checkpoint_hidden_width(tmp_path: Path) -> Non
         torch.equal(expected.state_dict()[key], loaded.state_dict()[key])
         for key in expected.state_dict()
     )
+
+
+def test_masked_gae_assigns_token_specific_vagen_advantages() -> None:
+    from nimloth.training.rl.loss import compute_masked_gae_advantage_return
+
+    rewards = torch.tensor([[0.0, 0.0, 1.0, 0.0]])
+    values = torch.tensor([[0.2, 0.4, 0.1, 99.0]])
+    loss_mask = torch.tensor([[1, 1, 1, 0]])
+    advantages, returns = compute_masked_gae_advantage_return(
+        token_level_rewards=rewards,
+        values=values,
+        loss_mask=loss_mask,
+        gamma=1.0,
+        lam=1.0,
+    )
+    expected_raw = torch.tensor([0.8, 0.6, 0.9])
+    expected = (expected_raw - expected_raw.mean()) / expected_raw.std(unbiased=False)
+    assert torch.allclose(advantages[0, :3], expected)
+    assert advantages[0, 3].item() == 0.0
+    assert torch.allclose(returns[0, :3], torch.ones(3))
+    assert returns[0, 3].item() == 0.0
+
+
+def test_clipped_token_value_loss_matches_vagen_maximum() -> None:
+    from nimloth.training.rl.loss import compute_clipped_token_value_loss
+
+    loss, metrics = compute_clipped_token_value_loss(
+        predicted_values=torch.tensor([2.0, 0.5]),
+        old_values=torch.tensor([0.0, 0.0]),
+        returns=torch.tensor([1.0, 1.0]),
+        cliprange_value=0.5,
+    )
+    # First token uses the larger clipped error (0.5-1)^2 vs (2-1)^2 =>1.
+    # Second token has equal unclipped/clipped error0.25.
+    assert torch.isclose(loss, torch.tensor(0.3125))
+    assert metrics["value_clip_fraction"] == 0.0
 
 
 def test_turn_advantages_are_whitened_with_response_token_weighting() -> None:

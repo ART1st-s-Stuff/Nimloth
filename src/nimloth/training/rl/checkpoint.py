@@ -53,10 +53,12 @@ def save_rl_checkpoint(
     value_head: ValueHead,
     # Qwen model (may be DDP-wrapped or PeftModel)
     model: torch.nn.Module | None = None,
+    critic_model: torch.nn.Module | None = None,
     processor: Any = None,
     vision_ema: Any = None,
     # Training state
     optimizer: torch.optim.Optimizer | None = None,
+    critic_optimizer: torch.optim.Optimizer | None = None,
     iteration: int = 0,
     global_step: int = 0,
     best_value_loss: float = float("inf"),
@@ -69,6 +71,7 @@ def save_rl_checkpoint(
 ) -> None:
     rank, world = _rank_world()
     fsdp_model = _is_fsdp(model)
+    fsdp_critic = _is_fsdp(critic_model)
 
     if rank == 0:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -88,10 +91,29 @@ def save_rl_checkpoint(
         with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, policy):
             full_model_state = model.state_dict()
 
+    full_critic_state = None
+    if fsdp_critic:
+        from torch.distributed.fsdp import (
+            FullStateDictConfig,
+            FullyShardedDataParallel as FSDP,
+            StateDictType,
+        )
+
+        policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+        with FSDP.state_dict_type(
+            critic_model, StateDictType.FULL_STATE_DICT, policy
+        ):
+            full_critic_state = critic_model.state_dict()
+
     # Raw optimizer states are rank-local FSDP shards. Saving one file per rank
     # supports exact same-world-size resume while also covering the local WM heads.
     if optimizer is not None and fsdp_model:
         torch.save(optimizer.state_dict(), out_dir / f"optimizer_rank_{rank:05d}.pt")
+    if critic_optimizer is not None and fsdp_critic:
+        torch.save(
+            critic_optimizer.state_dict(),
+            out_dir / f"critic_optimizer_rank_{rank:05d}.pt",
+        )
 
     if rank == 0:
         # WM modules
@@ -110,6 +132,13 @@ def save_rl_checkpoint(
                 )
             else:
                 m.save_pretrained(out_dir, safe_serialization=True)
+        if critic_model is not None:
+            critic = _unwrap(critic_model)
+            critic.save_pretrained(
+                out_dir / "critic",
+                state_dict=full_critic_state if fsdp_critic else None,
+                safe_serialization=True,
+            )
         if processor is not None:
             processor.save_pretrained(out_dir)
         if vision_ema is not None:
@@ -129,6 +158,7 @@ def save_rl_checkpoint(
             "llm_tune": llm_tune,
             "vision_tune": vision_tune,
             "optimizer_world_size": world if fsdp_model else 1,
+            "critic_optimizer_world_size": world if fsdp_critic else 0,
         }
         if base_model_path:
             state["base_model_path"] = str(base_model_path)
@@ -136,6 +166,8 @@ def save_rl_checkpoint(
             state["rollout_protocol"] = dict(rollout_protocol)
         if optimizer is not None and not fsdp_model:
             state["optimizer"] = optimizer.state_dict()
+        if critic_optimizer is not None and not fsdp_critic:
+            state["critic_optimizer"] = critic_optimizer.state_dict()
         torch.save(state, out_dir / "rl_state.pt")
 
     if world > 1:
