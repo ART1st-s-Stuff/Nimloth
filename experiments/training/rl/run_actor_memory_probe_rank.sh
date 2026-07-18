@@ -11,6 +11,7 @@ set -euo pipefail
 export RANK=$((RANK_OFFSET + SLURM_PROCID))
 export WORLD_SIZE=8
 export LOCAL_RANK=${SLURM_LOCALID}
+export PYTHONPATH="${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm:${PYTHONPATH:-}"
 cd "${REPO}"
 exec /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
   "${REPO}/experiments/training/rl/probe_actor_recompute_memory.py" \
