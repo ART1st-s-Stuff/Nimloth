@@ -62,7 +62,8 @@ cd "${REPO}/external/VAGEN"
   data.shuffle=false \
   actor_rollout_ref.model.path="${MODEL}" \
   actor_rollout_ref.model.external_lib=nimloth.training.rl.verl_runtime_patch \
-  'actor_rollout_ref.model.override_config={use_cache:false,tie_word_embeddings:true}' \
+  +actor_rollout_ref.model.override_config.use_cache=false \
+  +actor_rollout_ref.model.override_config.tie_word_embeddings=true \
   actor_rollout_ref.model.enable_gradient_checkpointing=true \
   actor_rollout_ref.model.use_remove_padding=false \
   actor_rollout_ref.actor.optim.lr=1e-6 \
@@ -113,7 +114,7 @@ cd "${REPO}/external/VAGEN"
   critic.model.path="${MODEL}" \
   critic.model.tokenizer_path="${MODEL}" \
   critic.model.external_lib=nimloth.training.rl.verl_runtime_patch \
-  'critic.model.override_config={use_cache:false}' \
+  +critic.model.override_config.use_cache=false \
   critic.model.enable_gradient_checkpointing=true \
   critic.model.use_remove_padding=false \
   +critic.model.fsdp_config.model_dtype=fp32 \
