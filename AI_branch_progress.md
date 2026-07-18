@@ -1123,3 +1123,10 @@ Online迁移现推进至commit`b58d877`、VAGEN`063670b`、VERL`8f15b32`：local
   - 新增 `--experiment-name`，避免启用 wandb 时引用不存在的 `args.experiment_name`。
   - distributed JSONL/FSDP 模式下，从 rank0 广播非 FSDP 小模块 `state_proj`、`wm_predictor`、`value_head` 初始 state，配合同步 JSONL 数据和确定性 batch，避免本地副本初始参数分叉。
 - 验证：`python -m py_compile src/nimloth/training/rl/*.py tests/training/rl/test_rollout_jsonl.py experiments/training/rl/rollout_env.py` 通过；`bash -n experiments/training/rl/run_inside_allocation.sh experiments/training/rl/*.slurm` 通过；pytest 仍受本地环境限制，系统 Python 无 pytest，复用 dev `.venv` 时 torch import 缺 `libstdc++.so.6`。
+
+## 2026-07-19：online VERL推进到KV cache并修复sampling/attention runtime
+
+- SSH恢复后同步server到当前feature HEAD。ID58证明venv ninja PATH修复生效；新失败来自集群`/usr/bin/nvcc`是教学说明Python stub，不能编译FlashInfer sampling JIT。E0076/commit`57e4996`设置`VLLM_USE_FLASHINFER_SAMPLER=0`，保留vLLM native Torch sampler。
+- ID59绕过sampling JIT并完成TP4/DP2模型、tied lm head及每worker 449,840-token KV cache初始化，随后在xFormers backend的`assert XFORMERS_AVAILABLE`失败。安装的xFormers 0.0.32.post1在固定Torch2.8下跳过C++ extension；E0077/commit`b345bdb`改用可加载的FlashAttention2 backend。
+- ID58/59均在W&B/rollout/update/checkpoint前terminal；未复用identity。hold479919确认无own child后释放。新同规格normal 8+1 hold479993已提交且因缺单节点8GPU pending；禁止重复提交allocation。
+- Server recursive worktree clean，targeted online tests`5 passed`。下一次运行必须使用新identity并完成真实8×2 rollout、masked-GAE、actor/critic/WM update及strict artifact gate；当前仍无online端到端成功，不能做质量结论。
