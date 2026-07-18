@@ -79,6 +79,7 @@ def test_online_launcher_uses_one_normal_8plus1_hold() -> None:
     assert "trainer.nimloth_online_update_audit=true" in run
     assert "REQUESTED_WANDB_PROJECT=${WANDB_PROJECT}" in run
     assert "export WANDB_PROJECT=${REQUESTED_WANDB_PROJECT}" in run
+    assert "export VLLM_ALLREDUCE_USE_SYMM_MEM=0" in run
 
 
 def test_online_artifact_validator_accepts_complete_synthetic_gate(

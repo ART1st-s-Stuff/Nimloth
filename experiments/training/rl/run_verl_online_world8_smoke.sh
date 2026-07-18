@@ -45,6 +45,10 @@ export HOME=/project/peilab/atst/nimloth/.home
 export WANDB_DIR="${OUTPUT_DIR}/wandb"
 export TOKENIZERS_PARALLELISM=true
 export VLLM_ATTENTION_BACKEND=XFORMERS
+# Ray workers are each remapped to a single visible physical GPU. Torch2.8
+# symmetric-memory rendezvous compares ordinal0 across workers as overlapping;
+# use the normal NCCL all-reduce communicator instead.
+export VLLM_ALLREDUCE_USE_SYMM_MEM=0
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_DEBUG=WARN
