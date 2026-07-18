@@ -75,6 +75,11 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
     assert "MASTER_ADDR" in rank_runner
     assert "MASTER_PORT" in rank_runner
     assert "external/VAGEN/verl" in rank_runner
+    source_index = rank_runner.index("source /project/peilab/atst/flower/.env")
+    restore_index = rank_runner.index(
+        "export WANDB_PROJECT=${_REQUESTED_WANDB_PROJECT}"
+    )
+    assert source_index < restore_index
     assert "run_verl_exact_replay_worker_gate.py" in rank_runner
     hold = Path(
         "experiments/training/rl/hold_verl_exact_replay_normal8.slurm"

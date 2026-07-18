@@ -41,6 +41,9 @@ export HOME=/project/peilab/atst/nimloth/.home
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=${HF_HOME}
 export WANDB_DIR=${OUTPUT_DIR}/wandb
+_REQUESTED_WANDB_PROJECT=${WANDB_PROJECT}
+_REQUESTED_WANDB_RUN_NAME=${WANDB_RUN_NAME}
+_REQUESTED_WANDB_RUN_ID=${WANDB_RUN_ID}
 export TRITON_CACHE_DIR=/tmp/triton_verl_exact_${SLURM_JOB_ID:-local}_$(hostname)
 export TORCH_EXTENSIONS_DIR=/tmp/torch_ext_verl_exact_${SLURM_JOB_ID:-local}_$(hostname)
 mkdir -p "${HOME}" "${WANDB_DIR}" "${TRITON_CACHE_DIR}" "${TORCH_EXTENSIONS_DIR}"
@@ -50,6 +53,12 @@ if [[ -f /project/peilab/atst/flower/.env ]]; then
   source /project/peilab/atst/flower/.env
   set +a
 fi
+# The shared secret file may contain defaults for another project. Experiment
+# identity is an explicit launcher contract and must win over those defaults.
+export WANDB_PROJECT=${_REQUESTED_WANDB_PROJECT}
+export WANDB_RUN_NAME=${_REQUESTED_WANDB_RUN_NAME}
+export WANDB_RUN_ID=${_REQUESTED_WANDB_RUN_ID}
+unset _REQUESTED_WANDB_PROJECT _REQUESTED_WANDB_RUN_NAME _REQUESTED_WANDB_RUN_ID
 
 exec /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
   "${REPO}/experiments/training/rl/run_verl_exact_replay_worker_gate.py" \
