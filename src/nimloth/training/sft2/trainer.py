@@ -639,12 +639,24 @@ def train_sft2(args=None) -> int:
     if not qwen_pair_parallel:
         model.to(device)
 
+    if args.wm_history_size != 1:
+        raise ValueError(
+            "SFT2 transition training currently supplies exactly T=1 State/action context; "
+            f"got --wm-history-size={args.wm_history_size}. Implement aligned history-window "
+            "data and masking before training T>1."
+        )
     wm_cfg = LeWMConfig(
         emb_dim=args.emb_dim,
         dynamics_dim=args.wm_dynamics_dim or None,
+        history_size=args.wm_history_size,
     )
     if args.wm_predictor_checkpoint is not None:
         wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_predictor_checkpoint, map_location=device).to(device)
+        if wm_predictor.config.history_size != args.wm_history_size:
+            raise ValueError(
+                "WM checkpoint history_size does not match --wm-history-size: "
+                f"{wm_predictor.config.history_size} != {args.wm_history_size}"
+            )
     else:
         wm_predictor = LatentWMPredictor.create(wm_cfg).to(device)
     if not train_wm_predictor:
@@ -795,6 +807,7 @@ def train_sft2(args=None) -> int:
         "projector_hidden_dim": int(args.projector_hidden_dim),
         "value_hidden_dim": int(args.value_hidden_dim or args.emb_dim),
         "wm_dynamics_dim": int(args.wm_dynamics_dim or args.emb_dim),
+        "wm_history_size": int(args.wm_history_size),
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }

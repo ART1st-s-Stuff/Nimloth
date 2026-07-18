@@ -28,7 +28,7 @@ class TinyFlatTransitions(Dataset):
 
 
 def tiny_heads() -> DynamicsDimWMHeads:
-    spec = DynamicsDimHeadSpec(external_dim=32, full_dynamics_dim=32, factorized_dynamics_dim=8, predictor_hidden_dim=8, predictor_depth=1, predictor_heads=2, predictor_mlp_dim=16, history_size=2)
+    spec = DynamicsDimHeadSpec(external_dim=32, full_dynamics_dim=32, factorized_dynamics_dim=8, predictor_hidden_dim=8, predictor_depth=1, predictor_heads=2, predictor_mlp_dim=16, history_size=1)
     return DynamicsDimWMHeads.create(spec)
 
 

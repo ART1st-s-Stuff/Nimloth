@@ -103,7 +103,11 @@ def evaluate(args: argparse.Namespace) -> int:
     query_records = _records(args.query_cache, representation="qwen_query_hidden", state_shape=[8, 2048])
     projected_records = _records(args.projected_cache, representation="projected", state_shape=[8192])
     qwen_records = _records(args.qwen_cache, representation="qwen_compressed_vision_positive", state_shape=[16, 512])
-    predictor = LatentWMPredictor.load_checkpoint(args.wm_checkpoint, map_location=device).to(device).eval()
+    predictor = LatentWMPredictor.load_checkpoint(
+        args.wm_checkpoint,
+        map_location=device,
+        history_size_override=args.wm_history_size_override,
+    ).to(device).eval()
     for parameter in predictor.parameters():
         parameter.requires_grad_(False)
     rows, states = prepare_rows(selections, query_records, projected_records, qwen_records, predictor, device)
@@ -153,6 +157,11 @@ def evaluate(args: argparse.Namespace) -> int:
     metadata: dict[str, Any] = {
         "status": "completed", "num_runs": len(run_sheets), "num_rows": len(rows),
         "columns": labels, "steps": args.steps, "cfg_scale": args.cfg_scale,
+        "wm_history_protocol": {
+            "history_size": predictor.config.history_size,
+            "checkpoint_override": args.wm_history_size_override,
+            "rollout": "recursive predict_next_emb T=1",
+        },
         "metrics": metrics, "horizon_metrics": horizon,
         "contact_sheets": [str(path) for path in contacts],
     }
@@ -169,6 +178,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--projected-cache", type=Path, required=True)
     parser.add_argument("--qwen-cache", type=Path, required=True)
     parser.add_argument("--wm-checkpoint", type=Path, required=True)
+    parser.add_argument(
+        "--wm-history-size-override",
+        type=int,
+        choices=[1],
+        default=None,
+        help="Explicitly migrate a legacy checkpoint whose training used T=1.",
+    )
     parser.add_argument("--query-cfm-checkpoint", type=Path, required=True)
     parser.add_argument("--projected-cfm-checkpoint", type=Path, required=True)
     parser.add_argument("--qwen-cfm-checkpoint", type=Path, required=True)

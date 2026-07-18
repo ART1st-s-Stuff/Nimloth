@@ -22,7 +22,7 @@ class DynamicsDimHeadSpec:
     predictor_depth: int = 6
     predictor_heads: int = 16
     predictor_mlp_dim: int = 4096
-    history_size: int = 4
+    history_size: int = 1
     action_dim: int = 8
 
 

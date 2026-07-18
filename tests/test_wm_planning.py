@@ -14,7 +14,7 @@ from nimloth.wm.value_head import ValueHead
 
 
 def _make_predictor_and_head(emb_dim: int = 64) -> tuple[LatentWMPredictor, ValueHead]:
-    cfg = LeWMConfig(emb_dim=emb_dim, history_size=4)
+    cfg = LeWMConfig(emb_dim=emb_dim, history_size=1)
     predictor = LatentWMPredictor.create(cfg)
     value_head = ValueHead(emb_dim=emb_dim)
     predictor.eval()

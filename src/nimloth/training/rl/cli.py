@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         pred_cfg = config.get("predictor", {})
         wm_config = LeWMConfig(
             emb_dim=pred_cfg.get("emb_dim", 128),
-            history_size=pred_cfg.get("history_size", 4),
+            history_size=pred_cfg.get("history_size", 1),
         )
         wm_predictor = LatentWMPredictor.create(wm_config)
 

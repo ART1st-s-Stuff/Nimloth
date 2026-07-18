@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from nimloth.wm.lewm import LeWMConfig
@@ -13,7 +14,7 @@ def _make_predictor(history_size: int = 4, emb_dim: int = 64) -> LatentWMPredict
 
 def test_factorized_dynamics_preserve_external_state_shape_and_checkpoint(tmp_path) -> None:
     common = dict(
-        history_size=2,
+        history_size=1,
         emb_dim=64,
         predictor_hidden_dim=32,
         predictor_mlp_dim=64,
@@ -43,14 +44,28 @@ def test_factorized_dynamics_preserve_external_state_shape_and_checkpoint(tmp_pa
 
 
 def test_predict_next_emb_shape() -> None:
-    """Single-step prediction returns correct shape."""
+    """Single-step prediction returns correct shape for a T=1 architecture."""
     emb_dim = 64
     B = 2
-    predictor = _make_predictor(history_size=4, emb_dim=emb_dim)
+    predictor = _make_predictor(history_size=1, emb_dim=emb_dim)
     state = torch.randn(B, emb_dim)
     actions = torch.randint(0, 8, (B,))
     out = predictor.predict_next_emb(state, actions)
     assert out.shape == (B, emb_dim)
+
+
+def test_predict_next_emb_rejects_history_size_four() -> None:
+    predictor = _make_predictor(history_size=4)
+    with pytest.raises(ValueError, match="configured history_size=4"):
+        predictor.predict_next_emb(torch.randn(2, 64), torch.zeros(2, dtype=torch.long))
+
+
+def test_context_length_must_equal_configured_history_size() -> None:
+    predictor = _make_predictor(history_size=4)
+    with pytest.raises(ValueError, match="expected exactly T=4"):
+        predictor._predict_from_context(
+            torch.randn(2, 1, 64), torch.zeros(2, 1, dtype=torch.long)
+        )
 
 
 def test_predict_next_emb_equals_full_context_single_step() -> None:
@@ -64,9 +79,9 @@ def test_predict_next_emb_equals_full_context_single_step() -> None:
 
 
 def test_rollout_states_shape() -> None:
-    """rollout_states returns (B, num_steps, emb_dim)."""
+    """A T=1 architecture recursively returns all requested states."""
     B, num_steps, emb_dim = 2, 5, 64
-    predictor = _make_predictor(history_size=4, emb_dim=emb_dim)
+    predictor = _make_predictor(history_size=1, emb_dim=emb_dim)
     state = torch.randn(B, emb_dim)
     action_seq = torch.randint(0, 8, (B, num_steps))
     out = predictor.rollout_states(state, action_seq)
@@ -83,20 +98,31 @@ def test_rollout_states_single_step_eq_predict_next_emb() -> None:
     assert torch.allclose(out_rollout, out_single, atol=1e-6)
 
 
-def test_rollout_states_different_history_sizes() -> None:
-    """rollout_states works for history_size 1, 2, 4."""
-    B, num_steps = 3, 4
-    for H in [1, 2, 4]:
-        predictor = _make_predictor(history_size=H)
-        state = torch.randn(B, 64)
-        action_seq = torch.randint(0, 8, (B, num_steps))
-        out = predictor.rollout_states(state, action_seq)
-        assert out.shape == (B, num_steps, 64)
+def test_rollout_states_rejects_unavailable_multi_step_history() -> None:
+    predictor = _make_predictor(history_size=4)
+    with pytest.raises(ValueError, match="requires an explicit trained history context"):
+        predictor.rollout_states(
+            torch.randn(3, 64), torch.randint(0, 8, (3, 4))
+        )
+
+
+def test_history_override_migrates_checkpoint_to_one_slot(tmp_path) -> None:
+    predictor = _make_predictor(history_size=4)
+    predictor.save_checkpoint(tmp_path)
+    migrated = LatentWMPredictor.load_checkpoint(
+        tmp_path, history_size_override=1
+    )
+    assert migrated.config.history_size == 1
+    assert migrated.predictor.pos_embedding.shape == (1, 1, 64)
+    torch.testing.assert_close(
+        migrated.predictor.pos_embedding,
+        predictor.predictor.pos_embedding[:, :1],
+    )
 
 
 def test_rollout_states_deterministic() -> None:
     """Same inputs produce same outputs (no randomness in eval mode)."""
-    predictor = _make_predictor(history_size=4).eval()
+    predictor = _make_predictor(history_size=1).eval()
     state = torch.randn(1, 64)
     action_seq = torch.randint(0, 8, (1, 6))
     out1 = predictor.rollout_states(state, action_seq)

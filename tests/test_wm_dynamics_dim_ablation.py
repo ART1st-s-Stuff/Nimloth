@@ -20,7 +20,7 @@ def tiny_spec() -> DynamicsDimHeadSpec:
         predictor_depth=1,
         predictor_heads=2,
         predictor_mlp_dim=16,
-        history_size=2,
+        history_size=1,
     )
 
 
@@ -44,5 +44,5 @@ def test_dynamics_dim_heads_predict_rollout_and_reload(tmp_path: Path) -> None:
 def test_production_parameter_counts_are_explicitly_unmatched() -> None:
     counts = parameter_counts_meta(DynamicsDimHeadSpec())
 
-    assert counts == {"full": 408_345_672, "factorized": 160_648_264}
+    assert counts == {"full": 408_321_096, "factorized": 160_642_120}
     assert counts["full"] / counts["factorized"] > 2.5

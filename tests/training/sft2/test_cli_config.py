@@ -37,6 +37,7 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
 
     assert args.config == K8_CONFIG
     assert args.latent_token_count == 8
+    assert args.wm_history_size == 1
     assert args.latent_query_mode == "inject"
     assert args.mask_latent_query_labels is True
     assert args.query_tune == "adapter"

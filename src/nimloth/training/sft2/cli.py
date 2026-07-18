@@ -56,6 +56,15 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Internal WM transformer width (0 uses emb_dim); external State input/output stays emb_dim.",
     )
     ap.add_argument(
+        "--wm-history-size",
+        type=int,
+        default=1,
+        help=(
+            "Exact number T of State/action context entries supplied to the WM. "
+            "The current transition trainer implements T=1 only and rejects other values."
+        ),
+    )
+    ap.add_argument(
         "--latent-token-count",
         type=int,
         default=1,

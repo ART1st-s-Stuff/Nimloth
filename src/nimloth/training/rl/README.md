@@ -267,7 +267,7 @@ freeze:
 predictor:
   lr: 1e-3
   emb_dim: 128           # WM embedding dimension
-  history_size: 4        # ARPredictor context window (frames)
+  history_size: 1        # exact trained State/action context length
   rollout_steps: 1       # training rollout steps (1 = single-step first)
 
 value_head:

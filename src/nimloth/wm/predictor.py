@@ -78,6 +78,24 @@ class LatentWMPredictor(nn.Module):
         Returns:
             (B, emb_dim) -- predicted next state after the last context step.
         """
+        if state_ctx.ndim != 3 or action_ctx.ndim != 2:
+            raise ValueError(
+                "state/action context must have shapes (B,T,D)/(B,T), got "
+                f"{tuple(state_ctx.shape)}/{tuple(action_ctx.shape)}"
+            )
+        if state_ctx.shape[:2] != action_ctx.shape:
+            raise ValueError(
+                "state/action context dimensions disagree: "
+                f"{tuple(state_ctx.shape)}/{tuple(action_ctx.shape)}"
+            )
+        expected_t = int(self.config.history_size)
+        actual_t = int(state_ctx.shape[1])
+        if actual_t != expected_t:
+            raise ValueError(
+                f"LatentWMPredictor expected exactly T={expected_t} from configured "
+                f"history_size={expected_t}, got T={actual_t}; training and inference "
+                "history protocols must match"
+            )
         # action_one_hot adds an extra unsqueeze(1) designed for (B,) input;
         # for multi-step (B, T) we use one_hot directly to get (B, T, num_actions).
         actions = torch.nn.functional.one_hot(
@@ -114,6 +132,12 @@ class LatentWMPredictor(nn.Module):
         Returns:
             (B, emb_dim) -- predicted next WM state.
         """
+        if self.config.history_size != 1:
+            raise ValueError(
+                "predict_next_emb supplies T=1 but this predictor is configured "
+                f"history_size={self.config.history_size}; use a predictor trained with "
+                "history_size=1 or provide an explicit full history context"
+            )
         return self._predict_from_context(
             state_emb.unsqueeze(1),   # (B, 1, emb_dim)
             action_indices.unsqueeze(1),  # (B, 1)
@@ -133,38 +157,20 @@ class LatentWMPredictor(nn.Module):
         Returns:
             (B, num_steps, emb_dim) -- predicted states s₁ … s_num_steps.
         """
-        B = state_emb.shape[0]
-        num_steps = action_sequences.shape[1]
-        H = self.config.history_size
-        device = state_emb.device
-
-        # all_s grows from (B, 1, emb_dim) to (B, num_steps + 1, emb_dim).
-        all_s = state_emb.unsqueeze(1)
-        zero_action = torch.zeros(B, dtype=torch.long, device=device)
-
-        for t in range(num_steps):
-            s_ctx_list: list[torch.Tensor] = []
-            a_ctx_list: list[torch.Tensor] = []
-
-            for h in range(H):
-                s_idx = t - H + 1 + h  # state index into s₀…s_t
-                if s_idx < 0:
-                    s_ctx_list.append(state_emb)
-                    a_ctx_list.append(zero_action)
-                elif s_idx == 0:
-                    s_ctx_list.append(state_emb)
-                    a_ctx_list.append(action_sequences[:, s_idx])
-                else:
-                    s_ctx_list.append(all_s[:, s_idx, :])
-                    a_ctx_list.append(action_sequences[:, s_idx])
-
-            s_ctx = torch.stack(s_ctx_list, dim=1)  # (B, H, emb_dim)
-            a_ctx = torch.stack(a_ctx_list, dim=1)  # (B, H)
-
-            next_s = self._predict_from_context(s_ctx, a_ctx)  # (B, emb_dim)
-            all_s = torch.cat([all_s, next_s.unsqueeze(1)], dim=1)
-
-        return all_s[:, 1:, :]  # drop s₀
+        if self.config.history_size != 1:
+            raise ValueError(
+                "rollout_states(initial_state, actions) only has one initial state and "
+                "requires an explicit trained history context when history_size="
+                f"{self.config.history_size}; fake repeated-state/action padding is forbidden"
+            )
+        current = state_emb
+        predicted: list[torch.Tensor] = []
+        for step in range(action_sequences.shape[1]):
+            current = self.predict_next_emb(current, action_sequences[:, step])
+            predicted.append(current)
+        if not predicted:
+            return state_emb.new_empty((state_emb.shape[0], 0, state_emb.shape[-1]))
+        return torch.stack(predicted, dim=1)
 
     def forward(self, state_emb: torch.Tensor, action_indices: torch.Tensor) -> torch.Tensor:
         """DDP-compatible entrypoint for next-latent prediction."""
@@ -182,14 +188,33 @@ class LatentWMPredictor(nn.Module):
         return cls(config or LeWMConfig())
 
     @classmethod
-    def load_checkpoint(cls, path: Path, map_location: str | torch.device = "cpu") -> "LatentWMPredictor":
+    def load_checkpoint(
+        cls,
+        path: Path,
+        map_location: str | torch.device = "cpu",
+        *,
+        history_size_override: int | None = None,
+    ) -> "LatentWMPredictor":
         path = Path(path)
         cfg_dict = json.loads((path / "config.json").read_text(encoding="utf-8"))
+        original_history_size = int(cfg_dict.get("history_size", 1))
+        if history_size_override is not None:
+            if history_size_override != 1 or original_history_size < 1:
+                raise ValueError(
+                    "history_size_override only supports explicit migration to the "
+                    "historically trained T=1 protocol"
+                )
+            cfg_dict["history_size"] = 1
         cfg = LeWMConfig(**{k: v for k, v in cfg_dict.items() if k in LeWMConfig.__dataclass_fields__})
         module = cls.create(cfg)
         state_path = path / "predictor.pt"
         if state_path.is_file():
             state = torch.load(state_path, map_location=map_location, weights_only=True)
+            if history_size_override == 1:
+                key = "predictor.pos_embedding"
+                if key not in state or state[key].ndim != 3:
+                    raise ValueError("checkpoint misses predictor.pos_embedding for T=1 migration")
+                state[key] = state[key][:, :1].clone()
             module.load_state_dict(state)
             return module
 
