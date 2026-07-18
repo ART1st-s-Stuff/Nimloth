@@ -41,6 +41,7 @@ def test_online_main_path_has_update_and_reference_audits() -> None:
         "external/VAGEN/vagen/trainer/main_ppo.py"
     ).read_text(encoding="utf-8")
     assert "self._dump_training_records(rst)" in trainer
+    assert "* config.rollout_manager.n_trajectory" in trainer
     assert "NIMLOTH_ONLINE_UPDATE_AUDIT=" in trainer
     assert "post_ref_log_prob" in trainer
     assert "NIMLOTH_ACTOR_WM_UPDATE_AUDIT=" in worker
@@ -76,6 +77,8 @@ def test_online_launcher_uses_one_normal_8plus1_hold() -> None:
     assert "rollout_manager.n_trajectory=8" in run
     assert "trainer.disable_validation=true" in run
     assert "trainer.nimloth_online_update_audit=true" in run
+    assert "REQUESTED_WANDB_PROJECT=${WANDB_PROJECT}" in run
+    assert "export WANDB_PROJECT=${REQUESTED_WANDB_PROJECT}" in run
 
 
 def test_online_artifact_validator_accepts_complete_synthetic_gate(

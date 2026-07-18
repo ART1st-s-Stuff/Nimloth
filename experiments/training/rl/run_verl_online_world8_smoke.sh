@@ -26,11 +26,16 @@ mkdir -p "${OUTPUT_DIR}/data" "${OUTPUT_DIR}/train_records" "${OUTPUT_DIR}/check
   --output-dir "${OUTPUT_DIR}/data" --seed 30002 \
   >"${OUTPUT_DIR}/dataset_build.log" 2>&1
 
+REQUESTED_WANDB_PROJECT=${WANDB_PROJECT}
+REQUESTED_WANDB_RUN_NAME=${WANDB_RUN_NAME}
+REQUESTED_WANDB_RUN_ID=${WANDB_RUN_ID}
 set -a
 source /project/peilab/atst/flower/.env
 set +a
 # The secret file provides credentials only; experiment identity is immutable.
-export WANDB_PROJECT WANDB_RUN_NAME WANDB_RUN_ID
+export WANDB_PROJECT=${REQUESTED_WANDB_PROJECT}
+export WANDB_RUN_NAME=${REQUESTED_WANDB_RUN_NAME}
+export WANDB_RUN_ID=${REQUESTED_WANDB_RUN_ID}
 export WANDB_RESUME=never
 export PYTHONPATH="${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm:${PYTHONPATH:-}"
 export HF_HOME=/project/peilab/atst/.cache/huggingface
