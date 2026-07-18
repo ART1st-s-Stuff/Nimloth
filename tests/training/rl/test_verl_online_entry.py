@@ -63,6 +63,7 @@ def test_online_launcher_uses_one_normal_8plus1_hold() -> None:
     assert "#SBATCH --gres=gpu:8" in hold
     assert "#SBATCH --gres=gpu:1" in hold
     assert "--het-group=0" in launch and "--het-group=1" in launch
+    assert "module load slurm" in launch
     assert "--eval-set base_train --seed 30002" in launch
     assert "nvidia-smi -L | wc -l" in launch
     assert "rollout_manager.max_turns=2" in run

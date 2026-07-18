@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source /etc/profile >/dev/null 2>&1 || true
+module load slurm >/dev/null 2>&1
+
 : "${HOLD_JOB:?set HOLD_JOB}"
 : "${REPO:?set REPO}"
 : "${EXPECTED_COMMIT:?set EXPECTED_COMMIT}"
