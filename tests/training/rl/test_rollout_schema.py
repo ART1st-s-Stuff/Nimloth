@@ -134,6 +134,16 @@ def test_complete_trajectory_schema_passes() -> None:
     assert "nav_instruction" not in record
 
 
+def test_schema4_critic_token_values_round_trip() -> None:
+    trajectory = _trajectory()
+    trajectory.ppo_old_token_log_probs = [[-0.2, -0.3, -0.1, -0.4]]
+    trajectory.reference_token_log_probs = [[-0.25, -0.35, -0.15, -0.45]]
+    trajectory.critic_token_values = [[0.1, 0.2, 0.3, 0.4]]
+    restored = RolloutTrajectory.from_record(trajectory.to_record())
+    assert restored.critic_token_values == [[0.1, 0.2, 0.3, 0.4]]
+    validate_trajectories([restored])
+
+
 def test_legacy_taskless_record_is_rejected() -> None:
     record = _trajectory().to_record()
     for key in (
