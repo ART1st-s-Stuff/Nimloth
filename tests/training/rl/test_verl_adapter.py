@@ -171,6 +171,62 @@ def test_build_nimloth_verl_trajectory_row_preserves_cross_turn_gae() -> None:
     assert returns.tolist() == pytest.approx([1.02, 1.02, 1.02, 1.01, 1.01, 1.01])
 
 
+def test_finalize_exact_replay_batch_attaches_worker_outputs_and_masked_gae() -> None:
+    from nimloth.training.rl.verl_adapter import (
+        build_nimloth_verl_trajectory_replay_row,
+        build_verl_replay_dataproto,
+        finalize_verl_exact_replay_batch,
+    )
+    from verl.protocol import DataProto
+
+    response = [20, 21, 30, 31, 32, 40, 33]
+    transcript = torch.tensor([1, *response, 2], dtype=torch.long)
+    row = build_nimloth_verl_trajectory_replay_row(
+        trajectory_id="episode-finalize",
+        transcript_input_ids=transcript,
+        transcript_attention_mask=torch.ones_like(transcript),
+        transcript_position_ids=torch.arange(transcript.numel()).repeat(3, 1),
+        thought_token_ids_by_turn=[[20, 21]],
+        latent_query_token_ids=[30, 31],
+        action_start_token_id=32,
+        action_token_ids=[40],
+        action_end_token_id=33,
+        turn_rewards=[1.0],
+        pad_token_id=0,
+        multi_modal_inputs={},
+    )
+    replay = build_verl_replay_dataproto([row], pad_token_id=0)
+    shape = replay.batch["responses"].shape
+    old = DataProto.from_dict(tensors={"old_log_probs": torch.zeros(shape)})
+    ref = DataProto.from_dict(tensors={"ref_log_prob": torch.full(shape, -0.1)})
+    values = DataProto.from_dict(tensors={"values": torch.zeros(shape)})
+    finalized, audit = finalize_verl_exact_replay_batch(
+        replay,
+        old_log_prob_output=old,
+        reference_log_prob_output=ref,
+        values_output=values,
+        gamma=1.0,
+        lam=1.0,
+    )
+    assert audit == {
+        "batch_size": 1,
+        "response_tokens": shape.numel(),
+        "policy_tokens": 3,
+        "reward_positions": 1,
+        "finite_old_policy_tokens": 3,
+        "finite_ref_policy_tokens": 3,
+        "finite_value_policy_tokens": 3,
+        "max_abs_old_ref_delta": pytest.approx(0.1),
+    }
+    assert torch.equal(
+        finalized.batch["token_level_rewards"],
+        finalized.batch["token_level_scores"],
+    )
+    assert finalized.batch["returns"].masked_select(
+        finalized.batch["loss_mask"][:, -shape[1]:].bool()
+    ).tolist() == pytest.approx([1.0, 1.0, 1.0])
+
+
 def test_build_nimloth_verl_row_masks_only_sampled_thought_and_action() -> None:
     from nimloth.training.rl.verl_adapter import build_nimloth_verl_replay_row
 

@@ -618,3 +618,79 @@ def build_verl_replay_dataproto(
             "use_dynamic_bsz": False,
         },
     )
+
+
+def finalize_verl_exact_replay_batch(
+    replay,
+    *,
+    old_log_prob_output,
+    reference_log_prob_output,
+    values_output,
+    gamma: float = 1.0,
+    lam: float = 1.0,
+):
+    """Attach immutable worker outputs and compute strict masked-GAE in place."""
+
+    from vagen.trainer.ppo.ray_trainer import AdvantageEstimator, compute_advantage
+
+    replay = replay.union(old_log_prob_output)
+    replay = replay.union(reference_log_prob_output)
+    replay = replay.union(values_output)
+    response_shape = replay.batch["responses"].shape
+    if len(response_shape) != 2:
+        raise ValueError(f"VERL exact replay responses must be 2D, got {response_shape}")
+    response_length = int(response_shape[1])
+    response_mask = replay.batch["loss_mask"][:, -response_length:].bool()
+    response_attention = replay.batch["attention_mask"][:, -response_length:].bool()
+    expected_shape = tuple(response_shape)
+    for key in ("old_log_probs", "ref_log_prob", "values"):
+        if key not in replay.batch:
+            raise ValueError(f"VERL exact replay worker output omitted {key}")
+        tensor = replay.batch[key]
+        if tuple(tensor.shape) != expected_shape:
+            raise ValueError(
+                f"VERL exact replay {key} shape mismatch: "
+                f"expected={expected_shape}, got={tuple(tensor.shape)}"
+            )
+        if not bool(torch.isfinite(tensor.masked_select(response_attention)).all()):
+            raise ValueError(f"VERL exact replay {key} contains non-finite attended values")
+    scores = replay.batch["multi_turn_token_level_rewards"][:, -response_length:]
+    if bool((scores.ne(0) & ~response_mask).any()):
+        raise ValueError("VERL exact replay rewards must be placed on policy tokens")
+    replay.batch["token_level_scores"] = scores.clone()
+    replay.batch["token_level_rewards"] = scores.clone()
+    replay.meta_info["global_token_num"] = torch.sum(
+        replay.batch["attention_mask"], dim=-1
+    ).tolist()
+    compute_advantage(
+        replay,
+        adv_estimator=AdvantageEstimator.MASKED_GAE,
+        gamma=float(gamma),
+        lam=float(lam),
+    )
+    if not bool(torch.isfinite(replay.batch["advantages"].masked_select(response_mask)).all()):
+        raise ValueError("VERL exact replay produced non-finite policy advantages")
+    if not bool(torch.isfinite(replay.batch["returns"].masked_select(response_mask)).all()):
+        raise ValueError("VERL exact replay produced non-finite policy returns")
+    if bool(replay.batch["returns"].masked_select(~response_mask).ne(0).any()):
+        raise ValueError("VERL exact replay masked-GAE wrote returns outside loss mask")
+
+    policy_tokens = int(response_mask.sum().item())
+    old_policy = replay.batch["old_log_probs"].masked_select(response_mask)
+    ref_policy = replay.batch["ref_log_prob"].masked_select(response_mask)
+    value_policy = replay.batch["values"].masked_select(response_mask)
+    audit = {
+        "batch_size": int(response_shape[0]),
+        "response_tokens": int(response_attention.sum().item()),
+        "policy_tokens": policy_tokens,
+        "reward_positions": int(scores.ne(0).sum().item()),
+        "finite_old_policy_tokens": int(torch.isfinite(old_policy).sum().item()),
+        "finite_ref_policy_tokens": int(torch.isfinite(ref_policy).sum().item()),
+        "finite_value_policy_tokens": int(torch.isfinite(value_policy).sum().item()),
+        "max_abs_old_ref_delta": float(
+            (old_policy - ref_policy).abs().max().item()
+        ),
+    }
+    if policy_tokens <= 0:
+        raise ValueError("VERL exact replay contains no policy tokens")
+    return replay, audit
