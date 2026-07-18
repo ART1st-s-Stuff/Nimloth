@@ -244,6 +244,19 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     assert 'assert all(row["policy_tokens"]==9' in launcher
 
 
+def test_world8_hold_is_one_dynamic_four_component_bash_allocation() -> None:
+    hold = Path(
+        "experiments/training/rl/hold_world8_1plus1plus2plus4.slurm"
+    ).read_text(encoding="utf-8")
+    assert hold.count("#SBATCH hetjob") == 3
+    assert hold.count("#SBATCH --partition=normal") == 4
+    assert "#SBATCH --nodelist=" not in hold
+    assert "#SBATCH --exclude=" not in hold
+    assert 'touch "${HOLD_ROOT}/READY"' in hold
+    assert '"${HOLD_ROOT}/next_stage.sh"' in hold
+    assert 'bash "${stage_dir}/command.sh"' in hold
+
+
 def test_placeholder_hold_runs_atomically_published_stages() -> None:
     hold = Path(
         "experiments/training/rl/hold_dynamic_fsdp_k8_1124_env48.slurm"
