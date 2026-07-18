@@ -258,6 +258,8 @@ def test_world8_hold_is_one_dynamic_fragmented_bash_allocation() -> None:
     assert hold.count("#SBATCH --exclude=dgx-32") == 7
     assert 'touch "${HOLD_ROOT}/READY"' in hold
     assert '"${HOLD_ROOT}/next_stage.sh"' in hold
+    assert 'rm -f "${HOLD_ROOT}/READY" "${HOLD_ROOT}/RELEASE"' in hold
+    assert 'rm -f "${HOLD_ROOT}/READY" "${HOLD_ROOT}/RELEASE" "${HOLD_ROOT}/next_stage.sh"' not in hold
     assert 'bash "${stage_dir}/command.sh"' in hold
 
 

@@ -85,7 +85,9 @@ set -euo pipefail
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${EXPECTED_COMMIT}" ]]
 [[ -z "$(git -C "${REPO}" status --porcelain --untracked-files=no)" ]]
 mkdir -p "${HOLD_ROOT}/stages"
-rm -f "${HOLD_ROOT}/READY" "${HOLD_ROOT}/RELEASE" "${HOLD_ROOT}/next_stage.sh"
+rm -f "${HOLD_ROOT}/READY" "${HOLD_ROOT}/RELEASE"
+# next_stage.sh may be pre-published before sbatch so an allocation can start
+# and execute unattended without a second Slurm job or a login-node watcher.
 {
   echo "job_id=${SLURM_JOB_ID}"
   for group in 0 1 2 3 4 5 6; do
