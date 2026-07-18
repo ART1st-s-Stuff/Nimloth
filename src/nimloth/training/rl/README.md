@@ -74,7 +74,7 @@ action-level return 为：最后一步 reward 加 final reward，然后按 `G_t 
 - LoRA关闭时的immutable merged SFT2 base作为reference policy；actor使用与VAGEN相同的`low_var_kl`和系数0.001。VAGEN实际代码在actor KL启用时不再同时施加reward KL；runtime也强制两种placement互斥，但实现了可配置的sampled-token reward KL路径。
 - `turn_mc`训练原action ValueHead；`masked_gae`冻结该旧head并单独优化Qwen token critic的clipped value loss，同时WM predictor和actor继续更新；dynamic action ranking保持0。
 - actor有梯度recompute保持train mode以启用Qwen gradient checkpointing，同时临时把module dropout设为0以保持PPO确定性；LM head只计算sampled thought和action所需position的logits，避免长序列全词表logits。
-- 当前k8 launcher使用`flash_attention_2`。Transformers4.55的Qwen block内部checkpoint会绕过wrapper-level重放，因此actor和独立critic先禁用HF内部GC，再把每个decoder/vision block包装为PyTorch external non-reentrant checkpoint；随后FSDP auto-wrap其内部raw block，使重算重新进入nested FSDP unit。Attention、FSDP wrap、activation-checkpoint和recompute协议均写入resume metadata。
+- 当前k8 launcher使用`flash_attention_2`。Actor和独立critic禁用HF内部GC，把每个decoder/vision block包装为PyTorch external non-reentrant checkpoint，再由FSDP auto-wrap内部raw block。RL LoRA dropout必须固定为0：forward后、checkpoint backward前改变dropout会改变重算算子序列并触发`CheckpointError`。Attention、LoRA dropout、FSDP wrap、activation-checkpoint和recompute协议均写入resume metadata。
 
 checkpoint 的 `rollout_protocol` / `rollout_protocol.json` 还记录advantage estimator、reward placement和critic backend；masked-GAE保存schema4 critic token values、独立critic模型及8份rank-local critic optimizer。Resume必须完全一致，旧协议checkpoint会被拒绝。
 
