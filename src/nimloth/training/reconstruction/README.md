@@ -94,13 +94,15 @@ and seed must match. The final gate saves 5-step and 50-step ODE contact sheets
 for current-state and WM-predicted-next reconstruction.
 
 For a true 8-query CFM, point `--state-cache-dir` at a
-`qwen_query_hidden` cache. Query-cache extraction accepts both full Hugging Face
-checkpoints and SFT2 PEFT checkpoints. For PEFT it loads the declared base,
-applies the saved adapter, and materializes every saved `vision_ema.pt` shadow
-weight so extracted tokens match SFT2 validation-time vision semantics. The
-fingerprint includes adapter and vision-EMA file identities. Query-only cache
-builds do not instantiate StateProjector/WM modules, which also permits newer
-projector dimensions without changing the preprojection probe.
+`qwen_query_hidden` cache. Query-cache extraction requires the canonical merged
+Hugging Face SFT2 handoff produced by the same snapshot+merge path used by RL
+(`prepare_k8_sft2_init.py` / `.slurm`). It rejects raw PEFT adapter directories:
+direct distributed PEFT loading is version-sensitive, and raw
+`load_state_dict` does not restore saved adapter keys. The merged handoff has
+already verified all adapter tensors, k/query protocol, model shards, and
+source epoch completeness. Query-only cache builds do not instantiate
+StateProjector/WM modules, which also permits newer projector dimensions
+without changing the preprojection probe.
 
 The trainer reads manifest `state_shape=[8,2048]`,
 flattens storage only at the model boundary, and keeps eight condition tokens

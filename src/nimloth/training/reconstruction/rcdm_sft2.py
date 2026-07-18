@@ -12,7 +12,6 @@ import csv
 import json
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -90,31 +89,14 @@ def resolve_qwen_base_checkpoint(checkpoint: Path) -> Path:
     return Path(base)
 
 
-@torch.no_grad()
-def apply_vision_ema_checkpoint(model: torch.nn.Module, checkpoint: Path) -> dict[str, int | str]:
-    """Materialize saved validation-time vision EMA weights on a PEFT model."""
-
-    from nimloth.backbone.vision_ema import VisionEncoderEMA
-
-    ema = VisionEncoderEMA.load_checkpoint(checkpoint, map_location="cpu")
-    parameters = dict(model.named_parameters())
-    missing = sorted(set(ema.shadow) - set(parameters))
-    if missing:
+def require_merged_qwen_checkpoint(checkpoint: Path) -> Path:
+    if resolve_qwen_base_checkpoint(checkpoint) != checkpoint:
         raise ValueError(
-            f"vision EMA topology mismatch: missing={len(missing)}, first={missing[:3]}"
+            "reconstruction cache extraction requires the canonical merged HF "
+            "SFT2 handoff, not a raw PEFT adapter directory; use the validated "
+            "prepare_k8_sft2_init snapshot+merge path"
         )
-    for name, shadow in ema.shadow.items():
-        parameter = parameters[name]
-        if parameter.shape != shadow.shape:
-            raise ValueError(
-                f"vision EMA shape mismatch for {name}: model={parameter.shape}, ema={shadow.shape}"
-            )
-        parameter.copy_(shadow.to(device=parameter.device, dtype=parameter.dtype))
-    return {
-        "checkpoint": str(checkpoint),
-        "shadow_parameters": len(ema.shadow),
-        "decay": str(ema.decay),
-    }
+    return checkpoint
 
 
 def resolve_latent_token_count(args: argparse.Namespace, model_config) -> int:
@@ -129,7 +111,7 @@ def resolve_latent_token_count(args: argparse.Namespace, model_config) -> int:
 
 
 def _load_frozen_sft2_modules(args: argparse.Namespace, device: torch.device):
-    base_checkpoint = resolve_qwen_base_checkpoint(args.model)
+    base_checkpoint = require_merged_qwen_checkpoint(args.model)
     model_config = AutoConfig.from_pretrained(base_checkpoint, trust_remote_code=True)
     args.latent_token_count = resolve_latent_token_count(args, model_config)
     processor = AutoProcessor.from_pretrained(base_checkpoint, trust_remote_code=True)
@@ -148,51 +130,15 @@ def _load_frozen_sft2_modules(args: argparse.Namespace, device: torch.device):
         trust_remote_code=True,
     )
     model.resize_token_embeddings(len(processor.tokenizer))
-    if base_checkpoint != args.model:
-        from nimloth.backbone.qwen_tuning import (
-            LLM_LORA_TARGETS,
-            VISION_LORA_TARGETS,
-            configure_qwen_tuning,
-        )
-        from nimloth.training.sft2.checkpoint import load_lora_adapter_state
-
-        adapter_config = json.loads(
-            (args.model / "adapter_config.json").read_text(encoding="utf-8")
-        )
-        targets = set(adapter_config.get("target_modules") or [])
-        llm_tune = "lora" if targets.intersection(LLM_LORA_TARGETS) else "freeze"
-        vision_tune = "lora" if targets.intersection(VISION_LORA_TARGETS) else "freeze"
-        if llm_tune == vision_tune == "freeze":
-            raise ValueError(f"PEFT checkpoint has no supported Qwen LoRA targets: {args.model}")
-        model = configure_qwen_tuning(
-            model,
-            SimpleNamespace(
-                lora=False,
-                llm_tune=llm_tune,
-                vision_tune=vision_tune,
-                lora_r=int(adapter_config["r"]),
-                lora_alpha=int(adapter_config["lora_alpha"]),
-                lora_dropout=float(adapter_config.get("lora_dropout", 0.0)),
-                gradient_checkpointing=False,
-            ),
-        )
-        # Do not call PeftModel.from_pretrained after process-group setup:
-        # PEFT 0.19 unconditionally imports a newer Transformers TP API in
-        # distributed mode. Recreate the exact topology, then load state.
-        load_lora_adapter_state(model, args.model)
     model.to(device)
-    ema_metadata = None
-    vision_ema_path = args.model / "vision_ema.pt"
-    if vision_ema_path.is_file():
-        ema_metadata = apply_vision_ema_checkpoint(model, vision_ema_path)
     _freeze(model)
     if is_main():
         print(json.dumps({
             "reconstruction_qwen_load": {
                 "checkpoint": str(args.model),
                 "base": str(base_checkpoint),
-                "peft": base_checkpoint != args.model,
-                "vision_ema": ema_metadata,
+                "peft": False,
+                "handoff_ready": (args.model / "RL_INIT_READY").is_file(),
                 "latent_token_count": args.latent_token_count,
             }
         }), flush=True)
@@ -441,7 +387,7 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
             raise ValueError("--cache-only requires --state-cache-dir")
         torch.manual_seed(int(args.seed) + rank)
         model_config = AutoConfig.from_pretrained(
-            resolve_qwen_base_checkpoint(args.model), trust_remote_code=True
+            require_merged_qwen_checkpoint(args.model), trust_remote_code=True
         )
         args.latent_token_count = resolve_latent_token_count(args, model_config)
 

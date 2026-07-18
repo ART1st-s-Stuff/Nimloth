@@ -2,13 +2,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import torch
 
 from nimloth.rcdm.config import RCDMConfig, rcdm_config_from_args
 from nimloth.rcdm.external import ensure_rcdm_importable
 from nimloth.rcdm.state_cache import contiguous_rank_bounds, state_cache_fingerprint
 from nimloth.training.reconstruction.rcdm_sft2 import (
-    apply_vision_ema_checkpoint,
+    require_merged_qwen_checkpoint,
     resolve_latent_token_count,
     resolve_qwen_base_checkpoint,
 )
@@ -81,20 +80,9 @@ def test_resolve_qwen_base_checkpoint_reads_peft_adapter(tmp_path: Path) -> None
     )
     assert resolve_qwen_base_checkpoint(adapter) == base
     assert resolve_qwen_base_checkpoint(base) == base
-
-
-def test_apply_vision_ema_checkpoint_materializes_all_shadow_weights(tmp_path: Path) -> None:
-    model = torch.nn.Linear(3, 2)
-    shadow = {
-        "weight": torch.full_like(model.weight, 4.0),
-        "bias": torch.full_like(model.bias, -2.0),
-    }
-    checkpoint = tmp_path / "vision_ema.pt"
-    torch.save({"decay": 0.9, "shadow": shadow}, checkpoint)
-    result = apply_vision_ema_checkpoint(model, checkpoint)
-    assert result["shadow_parameters"] == 2
-    torch.testing.assert_close(model.weight, shadow["weight"])
-    torch.testing.assert_close(model.bias, shadow["bias"])
+    assert require_merged_qwen_checkpoint(base) == base
+    with pytest.raises(ValueError, match="canonical merged HF"):
+        require_merged_qwen_checkpoint(adapter)
 
 
 def _fingerprint(tmp_path: Path, model_path: Path) -> str:
