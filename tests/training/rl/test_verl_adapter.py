@@ -128,6 +128,49 @@ def test_build_verl_replay_dataproto_preserves_scaffold_and_masks() -> None:
     )
 
 
+def test_build_nimloth_verl_trajectory_row_preserves_cross_turn_gae() -> None:
+    from nimloth.training.rl.verl_adapter import (
+        build_nimloth_verl_trajectory_replay_row,
+        build_verl_replay_dataproto,
+    )
+    from vagen.trainer.ppo.ray_trainer import AdvantageEstimator, compute_advantage
+
+    response_a = [20, 21, 30, 31, 32, 40, 33]
+    response_b = [20, 22, 30, 31, 32, 41, 33]
+    transcript = torch.tensor(
+        [1, 2, *response_a, 5, 6, *response_b, 7, 8], dtype=torch.long
+    )
+    row = build_nimloth_verl_trajectory_replay_row(
+        trajectory_id="episode-1",
+        transcript_input_ids=transcript,
+        transcript_attention_mask=torch.ones_like(transcript),
+        transcript_position_ids=torch.arange(transcript.numel()).repeat(3, 1),
+        thought_token_ids_by_turn=[[20, 21], [20, 22]],
+        latent_query_token_ids=[30, 31],
+        action_start_token_id=32,
+        action_token_ids=[40, 41],
+        action_end_token_id=33,
+        turn_rewards=[0.01, 1.01],
+        pad_token_id=0,
+        multi_modal_inputs={"pixel_values": torch.ones(2, 4)},
+    )
+    assert row.prompt_length == 1
+    assert row.input_ids.tolist() == [0, *transcript.tolist()]
+    policy_positions = row.loss_mask.nonzero(as_tuple=True)[0].tolist()
+    assert policy_positions == [3, 4, 8, 12, 13, 17]
+    assert row.end_of_response_position_mask.nonzero(as_tuple=True)[0].tolist() == [8, 17]
+    assert row.token_level_rewards[8].item() == pytest.approx(0.01)
+    assert row.token_level_rewards[17].item() == pytest.approx(1.01)
+
+    data = build_verl_replay_dataproto([row], pad_token_id=0)
+    data.batch["token_level_rewards"] = data.batch["token_level_scores"].clone()
+    data.batch["values"] = torch.zeros_like(data.batch["token_level_scores"])
+    compute_advantage(data, AdvantageEstimator.MASKED_GAE, gamma=1.0, lam=1.0)
+    response_mask = data.batch["loss_mask"][:, -transcript.numel():].bool()
+    returns = data.batch["returns"].masked_select(response_mask)
+    assert returns.tolist() == pytest.approx([1.02, 1.02, 1.02, 1.01, 1.01, 1.01])
+
+
 def test_build_nimloth_verl_row_masks_only_sampled_thought_and_action() -> None:
     from nimloth.training.rl.verl_adapter import build_nimloth_verl_replay_row
 

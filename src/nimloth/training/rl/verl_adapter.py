@@ -88,6 +88,135 @@ def _validate_row(row: VerlReplayRow) -> None:
         raise ValueError("VERL replay multi_modal_inputs must be a dict or None")
 
 
+def _find_ordered_subsequence(
+    values: list[int], subsequence: list[int], *, start: int
+) -> int:
+    if not subsequence:
+        raise ValueError("Nimloth VERL response subsequence must be nonempty")
+    stop = len(values) - len(subsequence) + 1
+    for index in range(start, stop):
+        if values[index:index + len(subsequence)] == subsequence:
+            return index
+    raise ValueError(
+        "Nimloth VERL transcript does not contain the expected ordered "
+        f"assistant response after token {start}"
+    )
+
+
+def build_nimloth_verl_trajectory_replay_row(
+    *,
+    trajectory_id: str,
+    transcript_input_ids: torch.Tensor,
+    transcript_attention_mask: torch.Tensor,
+    transcript_position_ids: torch.Tensor,
+    thought_token_ids_by_turn: Sequence[Sequence[int]],
+    latent_query_token_ids: Sequence[int],
+    action_start_token_id: int,
+    action_token_ids: Sequence[int],
+    action_end_token_id: int,
+    turn_rewards: Sequence[float],
+    pad_token_id: int,
+    multi_modal_inputs: dict[str, Any] | None,
+) -> VerlReplayRow:
+    """Serialize one complete episode so masked GAE crosses turn boundaries."""
+
+    if transcript_input_ids.ndim != 1 or transcript_input_ids.numel() == 0:
+        raise ValueError("Nimloth VERL transcript input_ids must be nonempty and 1D")
+    if transcript_attention_mask.shape != transcript_input_ids.shape:
+        raise ValueError("Nimloth VERL transcript attention shape mismatch")
+    if not bool(transcript_attention_mask.bool().all()):
+        raise ValueError("Nimloth VERL unpadded transcript attention must be all ones")
+    if transcript_position_ids.ndim not in {1, 2} or int(
+        transcript_position_ids.shape[-1]
+    ) != int(transcript_input_ids.numel()):
+        raise ValueError("Nimloth VERL transcript position_ids shape mismatch")
+
+    thoughts = [[int(token) for token in values] for values in thought_token_ids_by_turn]
+    query_ids = [int(token) for token in latent_query_token_ids]
+    actions = [int(token) for token in action_token_ids]
+    rewards_by_turn = [float(value) for value in turn_rewards]
+    turn_count = len(thoughts)
+    if turn_count == 0:
+        raise ValueError("Nimloth VERL trajectory requires at least one turn")
+    if not query_ids:
+        raise ValueError("Nimloth VERL trajectory requires latent query tokens")
+    if len(actions) != turn_count or len(rewards_by_turn) != turn_count:
+        raise ValueError(
+            "Nimloth VERL trajectory turn metadata mismatch: "
+            f"thoughts={turn_count}, actions={len(actions)}, rewards={len(rewards_by_turn)}"
+        )
+    if any(not values for values in thoughts):
+        raise ValueError("Nimloth VERL trajectory requires sampled thought tokens per turn")
+
+    transcript_ids = [int(token) for token in transcript_input_ids.tolist()]
+    transcript_loss_mask = torch.zeros(len(transcript_ids), dtype=torch.long)
+    transcript_rewards = torch.zeros(len(transcript_ids), dtype=torch.float32)
+    transcript_end_mask = torch.zeros(len(transcript_ids), dtype=torch.long)
+    search_start = 0
+    for turn, (thought_ids, action_id, reward) in enumerate(
+        zip(thoughts, actions, rewards_by_turn, strict=True)
+    ):
+        expected_response = [
+            *thought_ids,
+            *query_ids,
+            int(action_start_token_id),
+            action_id,
+            int(action_end_token_id),
+        ]
+        response_start = _find_ordered_subsequence(
+            transcript_ids, expected_response, start=search_start
+        )
+        action_position = response_start + len(expected_response) - 2
+        transcript_loss_mask[
+            response_start:response_start + len(thought_ids)
+        ] = 1
+        transcript_loss_mask[action_position] = 1
+        transcript_rewards[action_position] = reward
+        transcript_end_mask[action_position] = 1
+        search_start = response_start + len(expected_response)
+
+    input_ids = torch.cat(
+        (torch.tensor([int(pad_token_id)], dtype=torch.long), transcript_input_ids.cpu())
+    )
+    attention_mask = torch.cat(
+        (torch.zeros(1, dtype=torch.long), transcript_attention_mask.long().cpu())
+    )
+    loss_mask = torch.cat((torch.zeros(1, dtype=torch.long), transcript_loss_mask))
+    token_level_rewards = torch.cat(
+        (torch.zeros(1, dtype=torch.float32), transcript_rewards)
+    )
+    end_mask = torch.cat((torch.zeros(1, dtype=torch.long), transcript_end_mask))
+    transcript_position_ids = transcript_position_ids.detach().cpu()
+    if transcript_position_ids.ndim == 1:
+        position_ids = torch.cat(
+            (torch.zeros(1, dtype=transcript_position_ids.dtype), transcript_position_ids)
+        )
+    else:
+        position_ids = torch.cat(
+            (
+                torch.zeros(
+                    (transcript_position_ids.shape[0], 1),
+                    dtype=transcript_position_ids.dtype,
+                ),
+                transcript_position_ids,
+            ),
+            dim=-1,
+        )
+    row = VerlReplayRow(
+        trajectory_id=str(trajectory_id),
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        prompt_length=1,
+        loss_mask=loss_mask,
+        token_level_rewards=token_level_rewards,
+        end_of_response_position_mask=end_mask,
+        multi_modal_inputs=multi_modal_inputs,
+    )
+    _validate_row(row)
+    return row
+
+
 def build_nimloth_verl_replay_row(
     *,
     trajectory_id: str,
