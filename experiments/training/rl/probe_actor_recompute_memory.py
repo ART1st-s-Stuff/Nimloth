@@ -16,6 +16,8 @@ from nimloth.backbone.qwen_tuning import configure_qwen_tuning
 from nimloth.latent.extraction import add_special_tokens, special_token_ids
 from nimloth.training.rl.rollout import RolloutTrajectory, validate_rl_policy_protocol
 from nimloth.training.rl.fsdp import (
+    apply_qwen_activation_checkpointing,
+    count_activation_checkpoint_units,
     count_fsdp_units,
     qwen25vl_transformer_auto_wrap_policy,
 )
@@ -77,9 +79,6 @@ def main() -> int:
     token_id_map = special_token_ids(
         processor.tokenizer, latent_token_count=latent_token_count
     )
-    model.gradient_checkpointing_enable(
-        gradient_checkpointing_kwargs={"use_reentrant": False}
-    )
     tune_args = SimpleNamespace(
         lora=False,
         llm_tune="lora",
@@ -90,6 +89,7 @@ def main() -> int:
         gradient_checkpointing=True,
     )
     model = configure_qwen_tuning(model, tune_args)
+    actor_activation_checkpoint_units = apply_qwen_activation_checkpointing(model)
     normalize_policy_parameter_dtype(model, dtype=torch.bfloat16)
     model.to(device)
 
@@ -125,6 +125,8 @@ def main() -> int:
     }
 
     actor_fsdp_units = count_fsdp_units(model)
+    if actor_activation_checkpoint_units <= 0:
+        raise RuntimeError("actor memory probe requires activation checkpoints")
     if actor_fsdp_units <= 1:
         raise RuntimeError("actor memory probe requires nested FSDP units")
     actor_optimizer = torch.optim.AdamW(
@@ -173,7 +175,10 @@ def main() -> int:
         sync_module_states=True,
         use_orig_params=True,
     )
+    critic_activation_checkpoint_units = count_activation_checkpoint_units(critic)
     critic_fsdp_units = count_fsdp_units(critic)
+    if critic_activation_checkpoint_units <= 0:
+        raise RuntimeError("critic memory probe requires activation checkpoints")
     if critic_fsdp_units <= 1:
         raise RuntimeError("critic memory probe requires nested FSDP units")
     critic_optimizer = torch.optim.AdamW(critic.parameters(), lr=1e-5)
@@ -209,6 +214,8 @@ def main() -> int:
         "critic_tokens": critic_counts[0],
         "actor_fsdp_units": actor_fsdp_units,
         "critic_fsdp_units": critic_fsdp_units,
+        "actor_activation_checkpoint_units": actor_activation_checkpoint_units,
+        "critic_activation_checkpoint_units": critic_activation_checkpoint_units,
         "first_actor_loss": first_actor_loss,
         "steady_actor_loss": steady_actor_loss,
         "critic_loss": float(critic_loss.detach().item()),

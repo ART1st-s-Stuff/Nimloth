@@ -198,7 +198,8 @@ def test_dynamic_4211_launcher_has_no_stale_trainer_node_rules() -> None:
     assert '"${RUN_MODE}" == baseline' in launcher
     assert '"${RUN_MODE}" == pilot' in launcher
     assert 'if mode == "pilot":' in launcher
-    assert "deterministic-train-gradient-checkpointing-selected-logits-v1" in launcher
+    assert "deterministic-train-external-checkpoint-selected-logits-v2" in launcher
+    assert "qwen25vl-external-nonreentrant-block-wrapper-v1" in launcher
     assert 'expected_microbatch = 1 if mode == "pilot" else 2' in launcher
     assert "qwen25vl-decoder-and-vision-block-v1" in launcher
 
@@ -238,6 +239,8 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     assert "steady_actor_peak_reserved_gib" in probe
     assert "actor_fsdp_units" in probe
     assert "critic_fsdp_units" in probe
+    assert "actor_activation_checkpoint_units" in probe
+    assert "critic_activation_checkpoint_units" in probe
     assert "apply_qwen_activation_checkpointing" in probe
     assert ".gradient_checkpointing_enable(" not in probe
     assert '${REPO}/src:${REPO}:${REPO}/external/VAGEN' in rank_runner

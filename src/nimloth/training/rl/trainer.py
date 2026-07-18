@@ -1091,10 +1091,6 @@ def train_rl(
         "embed_weight_shape": list(embed.weight.shape),
     }), flush=True)
 
-    if args.gradient_checkpointing:
-        model.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs={"use_reentrant": False}
-        )
     if n_added > 0:
         model.resize_token_embeddings(tokenizer_vocab)
         model_vocab_after = model.get_input_embeddings().weight.shape[0]
@@ -1129,10 +1125,6 @@ def train_rl(
             attn_implementation=args.attn_implementation,
             trust_remote_code=True,
         )
-        if args.gradient_checkpointing:
-            model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False}
-            )
         model.resize_token_embeddings(len(processor.tokenizer))
         model = configure_qwen_tuning(model, args)
         resume_aux_ckpt = resume_ckpt_dir
@@ -1147,8 +1139,16 @@ def train_rl(
 
     normalize_policy_parameter_dtype(model, dtype=policy_dtype)
     model.to(device)
+    actor_activation_checkpoint_units = 0
+    if args.gradient_checkpointing:
+        from nimloth.training.rl.fsdp import apply_qwen_activation_checkpointing
+
+        actor_activation_checkpoint_units = apply_qwen_activation_checkpointing(model)
     if is_main():
-        print(json.dumps({"policy_parameter_dtype": str(policy_dtype)}))
+        print(json.dumps({
+            "policy_parameter_dtype": str(policy_dtype),
+            "activation_checkpoint_units": actor_activation_checkpoint_units,
+        }))
 
     # --- freeze WM-encoding pathway if requested -----------------------------
     if freeze_qwen and llm_tune == "freeze" and vision_tune == "freeze":
@@ -1182,7 +1182,10 @@ def train_rl(
                               "decay": vision_ema.decay}))
 
     # --- FSDP wrap ------------------------------------------------------------
-    from nimloth.training.rl.fsdp import FSDP_WRAP_PROTOCOL
+    from nimloth.training.rl.fsdp import (
+        ACTIVATION_CHECKPOINT_PROTOCOL,
+        FSDP_WRAP_PROTOCOL,
+    )
 
     if world > 1:
         from torch.distributed.fsdp import (
@@ -1251,6 +1254,15 @@ def train_rl(
             gradient_checkpointing=critic_gradient_checkpointing,
         )
         critic_model.to(device)
+        from nimloth.training.rl.fsdp import count_activation_checkpoint_units
+
+        critic_activation_checkpoint_units = count_activation_checkpoint_units(
+            critic_model
+        )
+        if critic_gradient_checkpointing and critic_activation_checkpoint_units <= 0:
+            raise RuntimeError(
+                "Qwen critic activation-checkpoint policy wrapped no blocks"
+            )
         critic_embedding = critic_model.get_input_embeddings()
         if (
             hasattr(critic_embedding, "padding_idx")
@@ -1287,6 +1299,7 @@ def train_rl(
                 "source": str(critic_source),
                 "fsdp": world > 1,
                 "gradient_checkpointing": critic_gradient_checkpointing,
+                "activation_checkpoint_units": critic_activation_checkpoint_units,
                 "fsdp_units": critic_fsdp_units if world > 1 else 0,
             }))
 
@@ -1363,9 +1376,13 @@ def train_rl(
             "optimization_protocol": "all-stochastic-response-tokens-one-ppo-epoch-v2",
             "policy_loss_mask": "sampled-thought-plus-action;injected-scaffold-excluded",
             "actor_recompute_protocol": (
-                "deterministic-train-gradient-checkpointing-selected-logits-v1"
+                "deterministic-train-external-checkpoint-selected-logits-v2"
             ),
             "gradient_checkpointing": bool(args.gradient_checkpointing),
+            "activation_checkpoint_protocol": (
+                ACTIVATION_CHECKPOINT_PROTOCOL
+                if args.gradient_checkpointing else "none"
+            ),
             "functional_attention_dropout": attention_dropout,
             "fsdp_wrap_protocol": FSDP_WRAP_PROTOCOL if world > 1 else "none",
             "transition_microbatch_size": batch_size,
@@ -1387,6 +1404,11 @@ def train_rl(
                 "gradient_checkpointing": (
                     critic_gradient_checkpointing
                     if adv_estimator == "masked_gae" else None
+                ),
+                "activation_checkpoint_protocol": (
+                    ACTIVATION_CHECKPOINT_PROTOCOL
+                    if adv_estimator == "masked_gae"
+                    and critic_gradient_checkpointing else "none"
                 ),
             },
             "value_ranking_weight": 0.0,

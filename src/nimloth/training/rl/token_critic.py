@@ -65,9 +65,9 @@ def load_independent_qwen_critic(
     )
     critic.to(dtype=dtype)
     if gradient_checkpointing:
-        critic.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs={"use_reentrant": False}
-        )
+        from nimloth.training.rl.fsdp import apply_qwen_activation_checkpointing
+
+        apply_qwen_activation_checkpointing(critic)
     return critic
 
 

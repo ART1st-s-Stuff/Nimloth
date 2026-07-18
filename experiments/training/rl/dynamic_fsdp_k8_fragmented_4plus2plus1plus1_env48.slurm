@@ -277,9 +277,12 @@ assert protocol["reward_protocol"] == "vagen-per-turn-plus-final-v1"
 assert protocol["optimization_protocol"] == "all-stochastic-response-tokens-one-ppo-epoch-v2"
 assert protocol["policy_loss_mask"] == "sampled-thought-plus-action;injected-scaffold-excluded"
 assert protocol["actor_recompute_protocol"] == (
-    "deterministic-train-gradient-checkpointing-selected-logits-v1"
+    "deterministic-train-external-checkpoint-selected-logits-v2"
 )
 assert protocol["gradient_checkpointing"] is True
+assert protocol["activation_checkpoint_protocol"] == (
+    "qwen25vl-external-nonreentrant-block-wrapper-v1"
+)
 assert protocol["functional_attention_dropout"] == 0.0
 assert protocol["fsdp_wrap_protocol"] == "qwen25vl-decoder-and-vision-block-v1"
 expected_microbatch = 1 if mode == "pilot" else 2
@@ -299,6 +302,9 @@ if mode == "pilot":
         "micro_batch_size": 1,
         "cliprange_value": 0.5,
         "gradient_checkpointing": True,
+        "activation_checkpoint_protocol": (
+            "qwen25vl-external-nonreentrant-block-wrapper-v1"
+        ),
     }
 else:
     assert protocol["advantage"]["estimator"] == "turn_mc"
