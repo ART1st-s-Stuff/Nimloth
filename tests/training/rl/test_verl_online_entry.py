@@ -69,6 +69,8 @@ def test_online_launcher_uses_one_normal_8plus1_hold() -> None:
     assert "--eval-set base_train --seed 30002" in launch
     assert 'srun --jobid="${HOLD_JOB}" --het-group=0 --overlap' in launch
     assert "--gpus=0 --cpus-per-task=4" in launch
+    assert "export PYTHONDONTWRITEBYTECODE=1" in launch
+    assert "export PYTHONDONTWRITEBYTECODE=1" in run
     assert "nvidia-smi -L | wc -l" in launch
     assert "rollout_manager.max_turns=2" in run
     assert "rollout_manager.n_trajectory=8" in run

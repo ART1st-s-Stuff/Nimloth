@@ -19,6 +19,7 @@ module load slurm >/dev/null 2>&1
 
 SLURM=/cm/shared/apps/slurm/current/bin
 PY=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
+export PYTHONDONTWRITEBYTECODE=1
 mkdir -p "${OUTPUT_DIR}"
 rm -f "${OUTPUT_DIR}/trainer_done.flag" "${OUTPUT_DIR}/env_url.txt" \
   "${OUTPUT_DIR}/env_ready.flag"

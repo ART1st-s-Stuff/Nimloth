@@ -11,6 +11,7 @@ set -euo pipefail
 : "${WANDB_RUN_ID:?set WANDB_RUN_ID}"
 
 PY=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
+export PYTHONDONTWRITEBYTECODE=1
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${EXPECTED_COMMIT}" ]]
 [[ -z "$(git -C "${REPO}" status --porcelain)" ]]
 [[ "$(git -C "${REPO}/external/VAGEN" rev-parse HEAD)" == \
