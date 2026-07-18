@@ -1,4 +1,4 @@
-# E0048: 文件入口也必须显式导出repo PYTHONPATH
+# E0050: 文件入口也必须显式导出repo PYTHONPATH
 
 ## 已发生错误
 

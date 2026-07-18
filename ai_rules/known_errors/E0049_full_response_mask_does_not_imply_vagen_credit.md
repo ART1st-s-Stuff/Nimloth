@@ -1,4 +1,4 @@
-# E0047: Full-response mask 不等于 VAGEN credit 对齐
+# E0049: Full-response mask 不等于 VAGEN credit 对齐
 
 ## 已发生错误
 
