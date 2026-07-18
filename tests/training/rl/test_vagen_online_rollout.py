@@ -116,6 +116,75 @@ def test_staged_rollout_generates_thought_then_forced_action() -> None:
     )
 
 
+def test_online_manager_serializes_one_complete_episode_row() -> None:
+    from nimloth.training.rl.vagen_online_rollout import (
+        _NimlothStagedRolloutMixin,
+    )
+
+    manager = object.__new__(_NimlothStagedRolloutMixin)
+    manager.tokenizer = type("Tokenizer", (), {"pad_token_id": 0})()
+    manager.config = {"temperature": 0.7}
+    manager.latent_token_count = 2
+    manager._tokens = type(
+        "Tokens",
+        (),
+        {"action_start": "start", "action_end": "end"},
+    )()
+    manager._token_ids = {"start": 32, "end": 33}
+    manager._query_ids = [30, 31]
+    manager._action_ids = list(range(40, 48))
+    manager.envs = {"train1": object()}
+    manager.env_states = {"train1": {"step": 2}}
+    manager._trajectory_ids = {"train1": "base_train:7"}
+    manager._thought_token_ids = {"train1": [[20, 21], [20, 22]]}
+    manager._action_indices = {"train1": [0, 3]}
+    manager.recorder = {
+        "train1": [
+            {
+                "obs_str": "Human Instruction: Find the mug.\nDecide your next action(s).",
+                "reward": 0.0,
+                "info": {},
+            },
+            {
+                "obs_str": "After that, observation one.\nDecide your next action(s).",
+                "reward": 0.01,
+                "info": {"nimloth_policy_response": "response-a"},
+            },
+            {
+                "obs_str": "After that, observation two.\nDecide your next action(s).",
+                "reward": 0.0,
+                "info": {"nimloth_policy_response": "response-b"},
+            },
+        ]
+    }
+    response_a = [20, 21, 30, 31, 32, 40, 33]
+    response_b = [20, 22, 30, 31, 32, 43, 33]
+    transcript = torch.tensor([1, *response_a, 5, *response_b, 6])
+    manager._generate_input_for_uptate = lambda **_kwargs: {
+        "input_ids": torch.tensor([0, *transcript.tolist(), 0, 0]),
+        "attention_mask": torch.tensor([0, *([1] * len(transcript)), 0, 0]),
+        "position_ids": torch.arange(1 + len(transcript) + 2).repeat(3, 1),
+        "multi_modal_inputs": {},
+    }
+    manager._final_rewards = lambda: {"train1": 1.0}
+    manager._single_recording_to_prompt = lambda *_args, **_kwargs: {
+        "prompt": "exact transcript"
+    }
+
+    batch = manager.generate_batch_for_update()
+
+    assert tuple(batch.batch.batch_size) == (1,)
+    assert batch.non_tensor_batch["trajectory_id"].tolist() == ["base_train:7"]
+    assert batch.non_tensor_batch["task_instruction"].tolist() == ["Find the mug."]
+    assert batch.batch["wm_latent_positions"].tolist() == [[[4, 5], [12, 13]]]
+    assert batch.batch["wm_action_indices"].tolist() == [[0, 3]]
+    assert batch.batch["wm_transition_mask"].tolist() == [[1, 0]]
+    rewards = batch.batch["multi_turn_token_level_rewards"]
+    assert rewards[0].masked_select(rewards[0].ne(0)).tolist() == pytest.approx(
+        [0.01, 1.0]
+    )
+
+
 def test_pinned_vagen_verl_exposes_staged_rollout_hooks() -> None:
     from pathlib import Path
 
