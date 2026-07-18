@@ -2,7 +2,9 @@
 
 正式RL后端已决定迁移为**VERL + full actor/full critic**。本目录原有自写trainer只保留diagnostic用途，不再用于quality pilot；下面旧管线约束仍作为数据和语义审计依据。
 
-`verl_adapter.py`负责把一个完整多轮episode转换成一个VERL `DataProto` row：完整system/user/assistant/image transcript作为response，sampled thought/action mask1，latent queries、action delimiters、chat/environment scaffold mask0，每轮reward放在对应采样action token，terminal reward加到最后action，并保留mRoPE、multimodal inputs和审计文本。禁止按turn拆row，否则masked-GAE无法把后续turn reward归因给前面turn。Transformers4.55.4 ID39 world8 exact-replay gate已完成full actor、immutable ref、4.55-native full token critic、masked-GAE、actor/critic更新及完整checkpoint。该gate只证明离线mechanics；ID40已验证runner可用成功`result.json + checkpoint_root`成对fail-closed加载actor/critic model、optimizer与scheduler，在更新前精确核对source fingerprint，并让optimizer state从step1连续到step2后写入新的完整world8 checkpoint。在线rollout、StateProjector、WM predictor和WM auxiliary worker仍未接入，完成前禁止把结果描述为正式VERL RL或quality训练。
+`verl_adapter.py`负责把一个完整多轮episode转换成一个VERL `DataProto` row：完整system/user/assistant/image transcript作为response，sampled thought/action mask1，latent queries、action delimiters、chat/environment scaffold mask0，每轮reward放在对应采样action token，terminal reward加到最后action，并保留mRoPE、multimodal inputs和审计文本。禁止按turn拆row，否则masked-GAE无法把后续turn reward归因给前面turn。Transformers4.55.4 ID39 world8 exact-replay gate已完成full actor、immutable ref、4.55-native full token critic、masked-GAE、actor/critic更新及完整checkpoint。该gate只证明离线mechanics；ID40已验证runner可用成功`result.json + checkpoint_root`成对fail-closed加载actor/critic model、optimizer与scheduler，在更新前精确核对source fingerprint，并让optimizer state从step1连续到step2后写入新的完整world8 checkpoint。
+
+`vagen_online_rollout.py`现提供local/service两种严格staged manager：先让vLLM生成完整`<think>...</think>`，再注入k个latent queries和action-start，用八个action token白名单采样一个action；环境只接收source XML，record/replay保存Nimloth response。完整episode由`verl_adapter.py`序列化成一个row，并携带逐turn latent位置、action及WM transition mask。`verl_wm_aux.py`在actor PPO minibatch中从连续turn latent计算StateProjector+WM predictor next-state MSE；VERL worker使用独立DDP WM模块/optimizer并在actor checkpoint写严格sidecar。当前CPU/unit gates已通过，world8 WM update/checkpoint及真实service rollout尚未direct验证，验证前禁止称为正式在线RL完成。
 
 ## 协议边界
 
