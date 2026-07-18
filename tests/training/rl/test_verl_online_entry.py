@@ -90,6 +90,7 @@ def test_online_launcher_uses_one_normal_8plus1_hold() -> None:
     assert "--gpus=0 --cpus-per-task=4" in launch
     assert "export PYTHONDONTWRITEBYTECODE=1" in launch
     assert "export PYTHONDONTWRITEBYTECODE=1" in run
+    assert "export PATH=/project/peilab/atst/nimloth/.venv-vagen-main/bin" in run
     assert "nvidia-smi -L | wc -l" in launch
     assert "actor_rollout_ref.rollout.tensor_model_parallel_size=4" in run
     assert "rollout_manager.max_turns=2" in run
