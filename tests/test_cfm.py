@@ -13,6 +13,7 @@ from nimloth.training.reconstruction.cfm_sft2 import (
     _load_image_uint8,
     initialize_from_legacy_cfm,
     resolve_condition_token_shape,
+    uses_query_positive_control,
 )
 from nimloth.training.reconstruction.residual_cfm_sft2 import biased_flow_loss
 
@@ -125,6 +126,11 @@ def test_query_hidden_manifest_resolves_eight_condition_tokens() -> None:
         resolve_condition_token_shape(
             {"cond_dim": 8192}, token_count_override=7
         )
+    assert uses_query_positive_control({"representation": "qwen_query_hidden"})
+    assert not uses_query_positive_control({"representation": "projected"})
+    assert not uses_query_positive_control(
+        {"representation": "projected", "state_shape": [8, 1024]}
+    )
 
 
 def test_legacy_cfm_initialization_loads_shape_compatible_body(tmp_path) -> None:

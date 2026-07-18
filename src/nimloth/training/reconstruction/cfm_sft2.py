@@ -120,6 +120,7 @@ def _checkpoint_invariants(
         "val_items": int(val_split.states.shape[0]),
         "latent_token_count": int(args.latent_token_count),
         "condition_token_count_override": int(args.condition_token_count),
+        "wm_history_size_override": args.wm_history_size_override,
         "condition_dropout": float(args.condition_dropout),
         "init_legacy_cfm_checkpoint": (
             str(args.init_legacy_cfm_checkpoint)
@@ -259,6 +260,11 @@ def resolve_condition_token_shape(
             raise ValueError(f"qwen_query_hidden cache needs [K,D] state_shape, got {state_shape}")
         return state_shape
     return 1, flat_dim
+
+
+def uses_query_positive_control(manifest: dict[str, Any]) -> bool:
+    """Sampling mode follows representation semantics, not CFM token count."""
+    return str(manifest.get("representation", "projected")) == "qwen_query_hidden"
 
 
 def _init_wandb(args: argparse.Namespace, metadata: dict[str, Any]):
@@ -761,10 +767,10 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         args.output_dir / "best.pt", map_location=device, weights_only=False
     )
     model.load_state_dict(best_payload["model"], strict=True)
-    if token_count > 1:
+    if uses_query_positive_control(train_split.manifest):
         if args.positive_cache_dir is None or args.positive_cfm_checkpoint is None:
             raise ValueError(
-                "multi-token CFM sampling requires --positive-cache-dir and "
+                "Query CFM sampling requires --positive-cache-dir and "
                 "--positive-cfm-checkpoint"
             )
         sample_paths = _save_query_cfm_samples(
@@ -781,7 +787,9 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         )
     else:
         wm_predictor = LatentWMPredictor.load_checkpoint(
-            args.wm_checkpoint, map_location=device
+            args.wm_checkpoint,
+            map_location=device,
+            history_size_override=args.wm_history_size_override,
         ).to(device).eval()
         for parameter in wm_predictor.parameters():
             parameter.requires_grad_(False)
@@ -839,6 +847,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--latent-token-count", type=int, default=8)
+    parser.add_argument(
+        "--wm-history-size-override",
+        type=int,
+        choices=[1],
+        default=None,
+        help="Explicit legacy checkpoint migration used only for projected-State samples.",
+    )
     parser.add_argument(
         "--condition-token-count",
         type=int,
