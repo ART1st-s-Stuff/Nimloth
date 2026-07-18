@@ -8,6 +8,20 @@ from pathlib import Path
 import torch
 
 
+def test_vllm_tied_head_uses_exact_embedding_tensor() -> None:
+    from nimloth.training.rl.vllm_tied_head import _materialize_tied_lm_head
+
+    embedding = torch.randn(4, 3)
+    weights = _materialize_tied_lm_head(
+        [("model.embed_tokens.weight", embedding)], tie_word_embeddings=True
+    )
+    assert [name for name, _value in weights] == [
+        "model.embed_tokens.weight",
+        "lm_head.weight",
+    ]
+    assert weights[1][1] is embedding
+
+
 def test_online_smoke_dataset_is_strict_base_train_seed(tmp_path: Path) -> None:
     from datasets import load_dataset
 
@@ -40,6 +54,9 @@ def test_online_main_path_has_update_and_reference_audits() -> None:
     main = Path(
         "external/VAGEN/vagen/trainer/main_ppo.py"
     ).read_text(encoding="utf-8")
+    runtime_patch = Path(
+        "src/nimloth/training/rl/verl_runtime_patch.py"
+    ).read_text(encoding="utf-8")
     assert "self._dump_training_records(rst)" in trainer
     assert "* config.rollout_manager.n_trajectory" in trainer
     assert "NIMLOTH_ONLINE_UPDATE_AUDIT=" in trainer
@@ -48,6 +65,7 @@ def test_online_main_path_has_update_and_reference_audits() -> None:
     assert "NIMLOTH_CRITIC_UPDATE_AUDIT=" in worker
     assert "NIMLOTH_REFERENCE_AUDIT=" in worker
     assert "disable_validation" in main
+    assert "install_vllm_qwen25vl_tied_head_patch()" in runtime_patch
 
 
 def test_online_launcher_uses_one_normal_8plus1_hold() -> None:
