@@ -48,10 +48,14 @@ Pinned VAGEN/VERL：VAGEN `e7cc2d0`，VERL `6531615`。
 - torchrun8 NCCL direct gate通过。ID33完成tied-head full actor语言+视觉FSDP、真实1670-token多模态PPO-old及immutable ref FSDP/ref log-prob；critic构建前因旧VERL patch导入4.55已删除常量而失败。E0058新增4.55-native token critic。
 - ID34进一步完成full critic FSDP、finite values和masked-GAE finalize；被错误跨精度阈值挡住。E0059改用实际mean low-var-KL判断parity并保留reference fingerprint immutability。
 - ID35–38定位到pinned VERL zero-warmup LambdaLR把首次optimizer LR设为0；E0061修复该step0语义。
-- ID39/W&B`cou63u6r`成功：world8 full actor（语言+视觉）、immutable ref、4.55-native full token critic对真实ID22两轮1670-token多模态episode完成old/ref/value、masked-GAE、critic+actor各一次真实更新。Actor sum`231017.9088→231018.4159`，critic sum`232792.9362→232792.5477`，ref前后完全相同，post-update policy log-prob max change`0.11981964`。rank0–7 actor/critic model+optimizer+extra-state checkpoints完整并二次验证。仅是mechanics，尚未含在线env或WM auxiliary。Post-run RL+SFT1 suite为`103 passed, 3 warnings`；hold479723已释放。
-- Commit`aef9f2d`实现fail-closed resume gate。ID40/W&B`ifcesm4z`在normal8/dgx-46 direct通过：actor/critic加载fingerprint精确等于ID39 source，fresh fingerprint明确不同；model+optimizer+scheduler恢复后critic每rank state到step2，actor/critic再次变化，ref完全不变，post-update log-prob max change`0.13974571`。新global_step2与原ID39 step1的rank0–7文件均二次验证完整；hold479826已释放。Post-resume RL+SFT1 suite为`103 passed, 3 warnings`。仅证明resume mechanics。
-- Commit`420853e`（VAGEN`896aac1`/VERL`dbca62d9`）完成在线结构接线：staged thought/query/action VLLM采样、source XML env与Nimloth transcript分离、完整episode WM位置metadata，以及actor-side StateProjector+predictor MSE、DDP WM optimizer和sidecar checkpoint/resume。4.55 critic/zero-warmup runtime patch改为每worker external-lib安装。Targeted server suite`21 passed, 2 warnings`；GPU WM gate和真实service rollout仍未执行。
-- 尚未接入在线rollout或WM auxiliary；full worker仍待修复后的direct gate，当前不可启动正式VERL训练。
+- ID39/W&B`cou63u6r`完成world8 full actor、immutable ref、token critic、masked-GAE和actor/critic更新；ID40/W&B`ifcesm4z`完成其step1→2 model/optimizer/scheduler resume。后续ID41的checkpoint coverage审计推翻了“critic从actor checkpoint正确初始化”的旧结论：自定义4.55 critic缺少官方flat→nested key转换，ID34–40的critic backbone实际为固定seed随机初始化。两次实验仍证明full critic FSDP/update/checkpoint mechanics，但不能证明加载critic的训练或resume语义；E0064已记录。
+- Commit`420853e`（当时VAGEN`896aac1`/VERL`dbca62d9`）完成在线结构接线：staged thought/query/action VLLM采样、source XML env与Nimloth transcript分离、完整episode WM位置metadata，以及actor-side StateProjector+predictor MSE、DDP WM optimizer和sidecar checkpoint/resume。4.55 critic/zero-warmup runtime patch改为每worker external-lib安装。
+- ID41发现两个P0：critic全backbone随机初始化；同一optimizer step的PPO backward已reduce-shard后，第二次WM backward累加full gradient时报world8倍数shape mismatch。修复为复用Transformers4.55官方checkpoint conversion mapping、rank0 fail-closed检查loading_info coverage，并让首个PPO forward/backward处于FSDP`no_sync()`。
+- ID42 direct证明loaded critic只缺新scalar score weights并完成critic更新，但WM loss只依赖final-norm hook捕获hidden，绕过FSDP root返回树，root post-backward在`TrainingState.IDLE`失败。E0065加入zero-valued returned-logits graph anchor，使root pre-backward状态机先执行。
+- ID43/W&B`cg2clhhb`随后完成loaded critic、full actor语言+视觉和WM auxiliary真实更新：actor sum`231017.9088→231017.4088`、critic`231017.8636→231015.9137`、WM`18826.7637→18825.6304`，WM MSE`0.255776`，reference exact，policy max change`0.144140`；world8 actor/critic和WM module/optimizer/scheduler sidecar均写出。Artifact审计发现首版sidecar没有独立schema/query-mode字段，因此ID43只证明update/save mechanics，拒绝作为strict resume source。
+- Commit`17b3b49`（VAGEN`e00131c`/VERL`490a3cb`）把WM sidecar固定为schema1并显式绑定`inject`/k/global_step，build/load对非inject、schema、k和完整config fail closed。ID44/W&B`ov5nnqo2`重新生成strict step1：actor/loaded critic/WM均更新，sidecar直接验证module32项、optimizer32 states step1、scheduler epoch1，world8文件完整。
+- ID45/W&B`uzbjjyc8`从ID44严格resume到step2：actor/critic/WM加载fingerprint精确等于source，fresh不同；critic rank0–7 Adam state及WM optimizer state均1→2，WM scheduler1→2；actor`231017.4008→231017.1802`、critic`231015.9231→231014.9616`、WM`18485.2376→18483.7474`，reference exact，policy max change`0.049059`。source/destination artifacts均完整且source未删除；hold479883验证后释放。
+- 当前online staged rollout manager及完整episode DataProto/WM metadata已接线并有CPU tests，但尚未在真实VAGEN environment service上执行online world8 generation→environment→update。ID44/45使用ID22固定真实trajectory exact replay和随机WM，仅是mechanics；正式quality仍被thought collapse和缺真实SFT2 WM init阻塞。
 
 ## 证据位置
 
@@ -60,3 +64,7 @@ Pinned VAGEN/VERL：VAGEN `e7cc2d0`，VERL `6531615`。
 - `external/VAGEN/verl/verl/workers/fsdp_workers.py`
 - `external/VAGEN/verl/verl/utils/fsdp_utils.py`
 - `ai_rules/known_errors/E0051_checkpoint_forward_backward_lora_dropout.md`
+- `ai_rules/known_errors/E0063_fsdp_two_objective_backward_needs_first_no_sync.md`
+- `ai_rules/known_errors/E0064_qwen455_critic_requires_checkpoint_conversion_mapping.md`
+- `ai_rules/known_errors/E0065_fsdp_hook_captured_hidden_loss_needs_return_anchor.md`
+- `ai_rules/known_errors/E0066_wm_sidecar_must_encode_schema_query_mode_and_k.md`

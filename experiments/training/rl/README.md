@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-正式RL后端已改为VAGEN/VERL full actor + full token critic + immutable ref；下方自写dynamic trainer入口仅保留diagnostic证据，不再用于quality pilot。Transformers4.55.4 ID39已在world8上通过真实ID22两轮多模态exact replay、masked-GAE、actor/critic各一次真实更新、reference immutability、post-update log-prob及rank0–7 checkpoint gate。运行入口为`hold_verl_exact_replay_normal8.slurm`、`launch_verl_exact_replay_in_hold.sh`及`run_verl_exact_replay_worker_gate.py`。ID39/40尚不含在线environment rollout或WM loss。当前`vagen_online_rollout.py`已接通staged thought→deterministic latent scaffold→restricted action及完整episode DataProto；actor worker也已接入StateProjector、WM predictor、MSE、独立DDP optimizer和checkpoint sidecar。上述新增路径目前只有CPU/unit gate，仍须先跑无环境world8 WM update/checkpoint，再跑真实service rollout，才能称为正式RL mechanics完成。
+正式RL后端已改为VAGEN/VERL full actor + full token critic + immutable ref；下方自写dynamic trainer入口仅保留diagnostic证据，不再用于quality pilot。运行入口为`hold_verl_exact_replay_normal8.slurm`、`launch_verl_exact_replay_in_hold.sh`及`run_verl_exact_replay_worker_gate.py`。ID39/40虽通过actor/critic update与resume mechanics，但后续确认其4.55 critic因缺官方checkpoint key转换而全backbone随机初始化，不能作为loaded-critic证据。当前`vagen_online_rollout.py`已接通staged thought→deterministic latent scaffold→restricted action及完整episode DataProto；actor worker也已接入StateProjector、WM predictor、MSE、独立DDP optimizer和checkpoint sidecar。ID44/45已在world8 fixed exact replay验证loaded critic、full actor语言+视觉、WM update、immutable ref，以及schema1/inject/k8 WM module+optimizer+scheduler从step1严格恢复到step2。该结果仍使用ID22固定trajectory和随机WM，只证明mechanics；真实VAGEN service online rollout仍须direct world8验证，collapsed SFT1也禁止quality pilot。
 
 ID11 只保留 FSDP/checkpoint mechanics 证据；它的 rollout 丢失真实任务文本，因此所有质量结论无效，禁止 resume/reuse。
 
