@@ -4,7 +4,7 @@
 
 当前ID26–ID28的`CheckpointError`已用CPU exact-LoRA最小样例定位：actor forward期间临时把LoRA dropout设为0，但在checkpoint backward之前恢复为0.05，导致重算多出`[1,4548,2048] bool` dropout mask并使saved/recomputed tensor列表错位。该错误来自Nimloth context作用域，不证明FSDP或PEFT本身不兼容。commit `d09e8b0`将RL LoRA dropout固定为0并加入fail-fast/protocol gate；尚无修复后的GPU backward证明。
 
-长期RL执行建议迁移到VERL，而不是继续扩充自写PPO/FSDP orchestration。
+长期RL执行迁移到VERL，不再继续扩充自写PPO/FSDP orchestration。人类已明确选择**VERL + 全量训练**：actor全参数训练、独立critic全参数训练；不再将PEFT LoRA作为正式RL路径。
 
 ## 现有VERL能力
 
@@ -26,11 +26,12 @@ Pinned VAGEN/VERL：VAGEN `e7cc2d0`，VERL `6531615`。
 
 ## 建议迁移顺序
 
-1. 修复teacher thought数据并产生新的merged SFT2 init。
+1. 冻结旧自写trainer为diagnostic-only，不再提交其quality/memory pilot。
 2. 建立Nimloth→VERL `DataProto`适配器，逐字保存prompt/response/image history、old/ref log-prob、token values、rewards和loss mask。
-3. 用VERL full actor + immutable ref + full token critic运行无环境的exact transcript replay gate；验证逐token数量、ratio/KL/value/GAE。
+3. 用VERL full actor（语言+视觉全参数）+ immutable ref + full token critic运行无环境exact transcript replay gate；验证逐token数量、ratio/KL/value/GAE和checkpoint resume。
 4. 接回VAGEN多轮navigation rollout和latent-query插入；先做optimizer0 baseline，再做单iteration mechanics。
-5. 最后扩展VERL actor worker以加入StateProjector/WM auxiliary loss和完整checkpoint/resume。
+5. 扩展VERL actor worker以加入StateProjector/WM auxiliary loss及其checkpoint；禁止迁移时静默丢弃world-model目标。
+6. 修复teacher thought数据并产生新merged SFT2 init后，才允许quality baseline/pilot；mechanics适配可先用明确标记为非质量来源的临时init。
 
 ## 证据位置
 
