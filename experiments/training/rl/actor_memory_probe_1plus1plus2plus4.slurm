@@ -95,6 +95,8 @@ assert [row["rank"] for row in rows]==list(range(8))
 assert all(row["history_images"]==20 for row in rows)
 assert all(row["policy_tokens"]==9 for row in rows)
 assert all(row["critic_tokens"]==9 for row in rows)
+assert all(row["actor_fsdp_units"] > 1 for row in rows)
+assert all(row["critic_fsdp_units"] > 1 for row in rows)
 peaks={
     key:max(row[key] for row in rows)
     for key in (

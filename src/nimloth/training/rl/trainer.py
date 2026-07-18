@@ -1182,6 +1182,8 @@ def train_rl(
                               "decay": vision_ema.decay}))
 
     # --- FSDP wrap ------------------------------------------------------------
+    from nimloth.training.rl.fsdp import FSDP_WRAP_PROTOCOL
+
     if world > 1:
         from torch.distributed.fsdp import (
             FullyShardedDataParallel as FSDP,
@@ -1199,15 +1201,32 @@ def train_rl(
             if is_main():
                 print(json.dumps({"cleared_padding_idx": True}))
 
+        from nimloth.training.rl.fsdp import (
+            FSDP_WRAP_PROTOCOL,
+            count_fsdp_units,
+            qwen25vl_transformer_auto_wrap_policy,
+        )
+
         model = FSDP(
             model,
+            auto_wrap_policy=qwen25vl_transformer_auto_wrap_policy(),
             device_id=torch.cuda.current_device(),
             sharding_strategy=ShardingStrategy.FULL_SHARD,
             sync_module_states=True,
             use_orig_params=True,
         )
+        actor_fsdp_units = count_fsdp_units(model)
+        if actor_fsdp_units <= 1:
+            raise RuntimeError(
+                "Qwen actor FSDP auto-wrap produced no nested layer units"
+            )
         if is_main():
-            print(json.dumps({"fsdp": "wrapped", "world_size": world}))
+            print(json.dumps({
+                "fsdp": "wrapped",
+                "world_size": world,
+                "wrap_protocol": FSDP_WRAP_PROTOCOL,
+                "units": actor_fsdp_units,
+            }))
     # FSDP handles multi-GPU; small modules stay on device if world==1.
 
     critic_model: torch.nn.Module | None = None
@@ -1244,19 +1263,31 @@ def train_rl(
                 ShardingStrategy,
             )
 
+            from nimloth.training.rl.fsdp import (
+                count_fsdp_units,
+                qwen25vl_transformer_auto_wrap_policy,
+            )
+
             critic_model = FSDP(
                 critic_model,
+                auto_wrap_policy=qwen25vl_transformer_auto_wrap_policy(),
                 device_id=torch.cuda.current_device(),
                 sharding_strategy=ShardingStrategy.FULL_SHARD,
                 sync_module_states=True,
                 use_orig_params=True,
             )
+            critic_fsdp_units = count_fsdp_units(critic_model)
+            if critic_fsdp_units <= 1:
+                raise RuntimeError(
+                    "Qwen critic FSDP auto-wrap produced no nested layer units"
+                )
         if is_main():
             print(json.dumps({
                 "critic": "independent_qwen",
                 "source": str(critic_source),
                 "fsdp": world > 1,
                 "gradient_checkpointing": critic_gradient_checkpointing,
+                "fsdp_units": critic_fsdp_units if world > 1 else 0,
             }))
 
     # --- Wire online env rollout after FSDP wrapping -------------------------
@@ -1336,6 +1367,7 @@ def train_rl(
             ),
             "gradient_checkpointing": bool(args.gradient_checkpointing),
             "functional_attention_dropout": attention_dropout,
+            "fsdp_wrap_protocol": FSDP_WRAP_PROTOCOL if world > 1 else "none",
             "transition_microbatch_size": batch_size,
             "advantage": {
                 "estimator": adv_estimator,

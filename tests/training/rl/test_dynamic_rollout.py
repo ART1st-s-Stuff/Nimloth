@@ -200,6 +200,21 @@ def test_dynamic_4211_launcher_has_no_stale_trainer_node_rules() -> None:
     assert 'if mode == "pilot":' in launcher
     assert "deterministic-train-gradient-checkpointing-selected-logits-v1" in launcher
     assert 'expected_microbatch = 1 if mode == "pilot" else 2' in launcher
+    assert "qwen25vl-decoder-and-vision-block-v1" in launcher
+
+
+def test_qwen_fsdp_policy_wraps_text_and_vision_blocks() -> None:
+    from nimloth.training.rl.fsdp import (
+        FSDP_WRAP_PROTOCOL,
+        qwen25vl_transformer_auto_wrap_policy,
+    )
+
+    policy = qwen25vl_transformer_auto_wrap_policy()
+    wrapped_names = {
+        layer.__name__ for layer in policy.keywords["transformer_layer_cls"]
+    }
+    assert wrapped_names == {"Qwen2_5_VLDecoderLayer", "Qwen2_5_VLVisionBlock"}
+    assert FSDP_WRAP_PROTOCOL == "qwen25vl-decoder-and-vision-block-v1"
 
 
 def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None:
@@ -217,6 +232,8 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     assert "actor_loss.backward()" in probe
     assert "critic_loss.backward()" in probe
     assert "steady_actor_peak_reserved_gib" in probe
+    assert "actor_fsdp_units" in probe
+    assert "critic_fsdp_units" in probe
     assert '${REPO}/src:${REPO}:${REPO}/external/VAGEN' in rank_runner
     assert "external/VAGEN/verl" in rank_runner
     assert launcher.count("#SBATCH hetjob") == 3

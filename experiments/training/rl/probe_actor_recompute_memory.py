@@ -15,6 +15,10 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from nimloth.backbone.qwen_tuning import configure_qwen_tuning
 from nimloth.latent.extraction import add_special_tokens, special_token_ids
 from nimloth.training.rl.rollout import RolloutTrajectory, validate_rl_policy_protocol
+from nimloth.training.rl.fsdp import (
+    count_fsdp_units,
+    qwen25vl_transformer_auto_wrap_policy,
+)
 from nimloth.training.rl.token_critic import (
     compute_token_values_for_batch,
     load_independent_qwen_critic,
@@ -99,6 +103,7 @@ def main() -> int:
         embedding.padding_idx = None
     model = FSDP(
         model,
+        auto_wrap_policy=qwen25vl_transformer_auto_wrap_policy(),
         device_id=torch.cuda.current_device(),
         sharding_strategy=ShardingStrategy.FULL_SHARD,
         sync_module_states=True,
@@ -119,6 +124,9 @@ def main() -> int:
         "taken_action_idx": trajectory.action_indices[step],
     }
 
+    actor_fsdp_units = count_fsdp_units(model)
+    if actor_fsdp_units <= 1:
+        raise RuntimeError("actor memory probe requires nested FSDP units")
     actor_optimizer = torch.optim.AdamW(
         [parameter for parameter in model.parameters() if parameter.requires_grad],
         lr=1e-6,
@@ -159,11 +167,15 @@ def main() -> int:
         critic_embedding.padding_idx = None
     critic = FSDP(
         critic,
+        auto_wrap_policy=qwen25vl_transformer_auto_wrap_policy(),
         device_id=torch.cuda.current_device(),
         sharding_strategy=ShardingStrategy.FULL_SHARD,
         sync_module_states=True,
         use_orig_params=True,
     )
+    critic_fsdp_units = count_fsdp_units(critic)
+    if critic_fsdp_units <= 1:
+        raise RuntimeError("critic memory probe requires nested FSDP units")
     critic_optimizer = torch.optim.AdamW(critic.parameters(), lr=1e-5)
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
@@ -195,6 +207,8 @@ def main() -> int:
         "history_images": len(item["image_history_paths"]),
         "policy_tokens": token_counts[0],
         "critic_tokens": critic_counts[0],
+        "actor_fsdp_units": actor_fsdp_units,
+        "critic_fsdp_units": critic_fsdp_units,
         "first_actor_loss": first_actor_loss,
         "steady_actor_loss": steady_actor_loss,
         "critic_loss": float(critic_loss.detach().item()),

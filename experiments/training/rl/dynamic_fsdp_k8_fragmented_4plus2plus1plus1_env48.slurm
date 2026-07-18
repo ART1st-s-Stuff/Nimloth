@@ -281,6 +281,7 @@ assert protocol["actor_recompute_protocol"] == (
 )
 assert protocol["gradient_checkpointing"] is True
 assert protocol["functional_attention_dropout"] == 0.0
+assert protocol["fsdp_wrap_protocol"] == "qwen25vl-decoder-and-vision-block-v1"
 expected_microbatch = 1 if mode == "pilot" else 2
 assert protocol["transition_microbatch_size"] == expected_microbatch
 assert protocol["value_ranking_weight"] == 0.0
