@@ -217,6 +217,8 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
     assert "update_actor" in runner
     assert "--resume-checkpoint-root" in runner
     assert "--resume-result" in runner
+    assert "--enable-wm-aux-mechanics" in runner
+    assert "WM auxiliary optimizer update did not change parameters" in runner
     assert "resumed actor fingerprint does not match source result" in runner
     assert "resumed critic fingerprint does not match source result" in runner
     assert "del_local_after_load=False" in runner
@@ -271,6 +273,8 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
     assert 'RESUME_CHECKPOINT_ROOT:?set both resume paths' in torchrun
     assert '--save-global-step "${SAVE_GLOBAL_STEP:-1}"' in torchrun
     assert "SAVE_GLOBAL_STEP=${SAVE_GLOBAL_STEP:-1}" in launcher
+    assert "WM_AUX_MECHANICS=${WM_AUX_MECHANICS:-0}" in launcher
+    assert "nimloth_wm_aux.pt" in launcher
     assert 'f"global_step_{global_step}"' in launcher
 
 

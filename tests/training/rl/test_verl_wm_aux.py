@@ -92,6 +92,24 @@ def test_verl_wm_aux_uses_consecutive_latents_and_stops_target_qwen_grad() -> No
     )
 
 
+def test_pinned_verl_actor_calls_and_checkpoints_wm_auxiliary() -> None:
+    from pathlib import Path
+
+    actor = Path(
+        "external/VAGEN/verl/verl/workers/actor/dp_actor.py"
+    ).read_text(encoding="utf-8")
+    assert "compute_verl_wm_auxiliary_loss" in actor
+    assert "scaled_wm_loss.backward()" in actor
+    assert "self.wm_optimizer.step()" in actor
+    worker = Path(
+        "external/VAGEN/verl/verl/workers/fsdp_workers.py"
+    ).read_text(encoding="utf-8")
+    assert "_build_nimloth_wm_auxiliary" in worker
+    assert "nimloth_wm_aux.pt" in worker
+    assert "enabled Nimloth WM auxiliary checkpoint is missing" in worker
+    assert "Nimloth WM auxiliary checkpoint config mismatch" in worker
+
+
 def test_verl_wm_aux_rejects_wrong_latent_block_width() -> None:
     from nimloth.training.rl.verl_wm_aux import (
         NimlothWMAuxiliaryModules,

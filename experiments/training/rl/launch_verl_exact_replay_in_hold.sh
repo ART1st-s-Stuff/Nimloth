@@ -60,7 +60,7 @@ ${SLURM}/srun \
   --gpus=8 \
   --cpus-per-task=96 \
   --kill-on-bad-exit=1 \
-  --export="ALL,REPO=${REPO},EXPECTED_COMMIT=${EXPECTED_COMMIT},MODEL=${MODEL},TRAJECTORY_JSONL=${TRAJECTORY_JSONL},TRAJECTORY_INDEX=${TRAJECTORY_INDEX:-0},OUTPUT_DIR=${OUTPUT_DIR},MAX_TOKEN_LENGTH=${MAX_TOKEN_LENGTH:-8192},RESUME_CHECKPOINT_ROOT=${RESUME_CHECKPOINT_ROOT:-},RESUME_RESULT=${RESUME_RESULT:-},SAVE_GLOBAL_STEP=${SAVE_GLOBAL_STEP:-1},WANDB_PROJECT=${WANDB_PROJECT},WANDB_RUN_NAME=${WANDB_RUN_NAME},WANDB_RUN_ID=${WANDB_RUN_ID},MASTER_ADDR=${MASTER_ADDR},MASTER_PORT=${MASTER_PORT},WORLD_SIZE=8" \
+  --export="ALL,REPO=${REPO},EXPECTED_COMMIT=${EXPECTED_COMMIT},MODEL=${MODEL},TRAJECTORY_JSONL=${TRAJECTORY_JSONL},TRAJECTORY_INDEX=${TRAJECTORY_INDEX:-0},OUTPUT_DIR=${OUTPUT_DIR},MAX_TOKEN_LENGTH=${MAX_TOKEN_LENGTH:-8192},RESUME_CHECKPOINT_ROOT=${RESUME_CHECKPOINT_ROOT:-},RESUME_RESULT=${RESUME_RESULT:-},SAVE_GLOBAL_STEP=${SAVE_GLOBAL_STEP:-1},WM_AUX_MECHANICS=${WM_AUX_MECHANICS:-0},WANDB_PROJECT=${WANDB_PROJECT},WANDB_RUN_NAME=${WANDB_RUN_NAME},WANDB_RUN_ID=${WANDB_RUN_ID},MASTER_ADDR=${MASTER_ADDR},MASTER_PORT=${MASTER_PORT},WORLD_SIZE=8" \
   bash "${REPO}/experiments/training/rl/run_verl_exact_replay_torchrun.sh" \
   2>&1 | tee -a "${LOG}"
 STATUS=${PIPESTATUS[0]}
@@ -84,5 +84,7 @@ for role in ("actor", "critic"):
     for prefix in ("model", "optim", "extra_state"):
         files = list(checkpoint.glob(f"{prefix}_world_size_8_rank_*.pt"))
         assert len(files) == 8, (role, prefix, len(files))
+if result.get("wm_aux_after") is not None:
+    assert (root / "checkpoints" / f"global_step_{global_step}" / "actor" / "nimloth_wm_aux.pt").is_file()
 print("VERL_EXACT_REPLAY_ARTIFACTS_OK")
 PY

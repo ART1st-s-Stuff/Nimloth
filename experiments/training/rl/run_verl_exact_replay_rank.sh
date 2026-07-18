@@ -61,6 +61,9 @@ export WANDB_RUN_ID=${_REQUESTED_WANDB_RUN_ID}
 unset _REQUESTED_WANDB_PROJECT _REQUESTED_WANDB_RUN_NAME _REQUESTED_WANDB_RUN_ID
 
 EXTRA_ARGS=(--save-global-step "${SAVE_GLOBAL_STEP:-1}")
+if [[ "${WM_AUX_MECHANICS:-0}" = 1 ]]; then
+  EXTRA_ARGS+=(--enable-wm-aux-mechanics)
+fi
 if [[ -n "${RESUME_CHECKPOINT_ROOT:-}" || -n "${RESUME_RESULT:-}" ]]; then
   : "${RESUME_CHECKPOINT_ROOT:?set both resume paths}"
   : "${RESUME_RESULT:?set both resume paths}"

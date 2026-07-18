@@ -26,6 +26,7 @@ from nimloth.training.rl.verl_critic_455 import (
 )
 from nimloth.training.rl.verl_gate import (
     build_exact_replay_worker_config,
+    configure_nimloth_wm_auxiliary,
     install_verl_zero_warmup_scheduler_patch,
 )
 
@@ -134,6 +135,7 @@ def main() -> None:
     parser.add_argument("--resume-checkpoint-root", type=Path)
     parser.add_argument("--resume-result", type=Path)
     parser.add_argument("--save-global-step", type=int, default=1)
+    parser.add_argument("--enable-wm-aux-mechanics", action="store_true")
     args = parser.parse_args()
 
     if (args.resume_checkpoint_root is None) != (args.resume_result is None):
@@ -225,6 +227,15 @@ def main() -> None:
         model, use_fast=True, trust_remote_code=False
     )
     trajectory = _load_trajectory(trajectory_path, args.trajectory_index)
+    if args.enable_wm_aux_mechanics:
+        configure_nimloth_wm_auxiliary(
+            config,
+            latent_token_count=int(trajectory.latent_token_count),
+            checkpoint_dir=None,
+            loss_coef=0.1,
+            learning_rate=1e-5,
+            allow_random_init=True,
+        )
     row = build_verl_replay_row_from_trajectory(processor, trajectory)
     if row.input_ids.numel() > args.max_token_length:
         raise RuntimeError(
@@ -278,8 +289,15 @@ def main() -> None:
                         raise RuntimeError(f"resume checkpoint is incomplete: {source_file}")
         actor.load_checkpoint(str(resume_root / "actor"), del_local_after_load=False)
     actor_before = _module_fingerprint(actor.actor_module_fsdp)
+    wm_before = (
+        _module_fingerprint(actor.wm_auxiliary_module)
+        if actor.wm_auxiliary_module is not None
+        else None
+    )
     if resume_report is not None and actor_before != resume_report["actor_after"]:
         raise RuntimeError("resumed actor fingerprint does not match source result")
+    if resume_report is not None and wm_before != resume_report.get("wm_aux_after"):
+        raise RuntimeError("resumed WM auxiliary fingerprint does not match source result")
     if actor_before["trainable_numel"] != actor_before["parameter_numel"]:
         raise RuntimeError("full actor gate found frozen actor parameters")
     old_output = actor.compute_log_prob(copy.deepcopy(replay))
@@ -392,8 +410,15 @@ def main() -> None:
 
     actor_metrics = actor.update_actor(copy.deepcopy(ppo_batch))
     actor_after = _module_fingerprint(actor.actor_module_fsdp)
+    wm_after = (
+        _module_fingerprint(actor.wm_auxiliary_module)
+        if actor.wm_auxiliary_module is not None
+        else None
+    )
     if not _fingerprint_changed(actor_before_update, actor_after):
         raise RuntimeError("actor optimizer update did not change parameters")
+    if wm_before is not None and not _fingerprint_changed(wm_before, wm_after):
+        raise RuntimeError("WM auxiliary optimizer update did not change parameters")
     post_output = actor.compute_log_prob(copy.deepcopy(replay))
     response_length = replay.batch["responses"].shape[1]
     policy_mask = replay.batch["loss_mask"][:, -response_length:].bool()
@@ -441,6 +466,8 @@ def main() -> None:
         "actor_fresh_before_resume": actor_fresh,
         "actor_before": actor_before,
         "actor_after": actor_after,
+        "wm_aux_before": wm_before,
+        "wm_aux_after": wm_after,
         "critic_fresh_before_resume": critic_fresh,
         "critic_before": critic_before,
         "critic_after": critic_after,
@@ -478,6 +505,7 @@ def main() -> None:
                 "trajectory_id": trajectory.record_id,
                 "quality_valid": False,
                 "mechanics_only": True,
+                "wm_aux_enabled": bool(args.enable_wm_aux_mechanics),
             },
         )
         run.log(
