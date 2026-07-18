@@ -6,8 +6,9 @@ ID46从SSH nohup启动`launch_verl_online_in_hold.sh`。脚本直接调用绝对
 
 ## 正确做法
 
-- 由nohup/非交互shell执行的launcher必须在脚本内部`source /etc/profile`并`module load slurm`。
-- 不能假设父SSH命令加载过module；launcher必须自包含。
+- 由nohup/非交互shell执行的launcher必须在脚本内部直接`source /etc/profile.d/modules.sh`并`module load slurm`。
+- 不要source完整`/etc/profile`：本集群profile在这种detached shell中会直接结束shell，ID47因此在任何日志/step前再次退出。
+- 不能假设父SSH命令加载过module；launcher必须自包含，并用`env -i ... bash -c`验证。
 - 该类pre-srun失败仍应终止当前实验identity，以新ID重试；已获得且仍健康的同一human-approved hold可保留复用。
 
 ## 证据
