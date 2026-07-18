@@ -152,17 +152,19 @@ def main() -> None:
     world_size = int(os.environ["WORLD_SIZE"])
     rank = int(os.environ["RANK"])
     visible_cuda_devices = torch.cuda.device_count()
-    if visible_cuda_devices != 1 or local_rank != 0:
+    if visible_cuda_devices != world_size or not 0 <= local_rank < visible_cuda_devices:
         raise RuntimeError(
-            "exact replay Slurm tasks require one remapped CUDA device at ordinal0; "
-            f"device_count={visible_cuda_devices}, local_rank={local_rank}"
+            "exact replay single-node torchrun requires every process to see all "
+            f"world GPUs; device_count={visible_cuda_devices}, world_size={world_size}, "
+            f"local_rank={local_rank}"
         )
-    torch.cuda.set_device(0)
+    torch.cuda.set_device(local_rank)
     if world_size < 2:
         raise RuntimeError("exact replay full-worker gate requires distributed FSDP")
+    process_device = torch.device(f"cuda:{local_rank}")
     if not dist.is_initialized():
-        dist.init_process_group(backend="nccl", device_id=torch.device("cuda:0"))
-    dist.barrier(device_ids=[0])
+        dist.init_process_group(backend="nccl", device_id=process_device)
+    dist.barrier(device_ids=[local_rank])
 
     output = args.output_dir.resolve()
     if not output.is_dir() or not (output / "README.md").is_file():

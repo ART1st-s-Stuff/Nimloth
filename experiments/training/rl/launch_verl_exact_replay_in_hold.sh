@@ -55,14 +55,13 @@ ${SLURM}/srun \
   --jobid="${HOLD_JOB}" \
   --overlap \
   --nodes=1 \
-  --ntasks=8 \
-  --ntasks-per-node=8 \
-  --gpus-per-task=1 \
-  --cpus-per-task=12 \
-  --gpu-bind=single:1 \
+  --ntasks=1 \
+  --ntasks-per-node=1 \
+  --gpus=8 \
+  --cpus-per-task=96 \
   --kill-on-bad-exit=1 \
   --export="ALL,REPO=${REPO},EXPECTED_COMMIT=${EXPECTED_COMMIT},MODEL=${MODEL},TRAJECTORY_JSONL=${TRAJECTORY_JSONL},TRAJECTORY_INDEX=${TRAJECTORY_INDEX:-0},OUTPUT_DIR=${OUTPUT_DIR},MAX_TOKEN_LENGTH=${MAX_TOKEN_LENGTH:-8192},WANDB_PROJECT=${WANDB_PROJECT},WANDB_RUN_NAME=${WANDB_RUN_NAME},WANDB_RUN_ID=${WANDB_RUN_ID},MASTER_ADDR=${MASTER_ADDR},MASTER_PORT=${MASTER_PORT},WORLD_SIZE=8" \
-  bash "${REPO}/experiments/training/rl/run_verl_exact_replay_rank.sh" \
+  bash "${REPO}/experiments/training/rl/run_verl_exact_replay_torchrun.sh" \
   2>&1 | tee -a "${LOG}"
 STATUS=${PIPESTATUS[0]}
 set -e

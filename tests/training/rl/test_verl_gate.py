@@ -73,9 +73,9 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
     assert "SLURM_PROCID" in rank_runner
     assert "SLURM_TASK_LOCAL_RANK" in rank_runner
     assert "export LOCAL_RANK=0" in rank_runner
-    assert "torch.cuda.set_device(0)" in runner
-    assert 'dist.init_process_group(backend="nccl", device_id=torch.device("cuda:0"))' in runner
-    assert "dist.barrier(device_ids=[0])" in runner
+    assert "torch.cuda.set_device(local_rank)" in runner
+    assert 'dist.init_process_group(backend="nccl", device_id=process_device)' in runner
+    assert "dist.barrier(device_ids=[local_rank])" in runner
     assert "random/missing head forbidden" in runner
     assert "one remapped CUDA device at ordinal0" in runner
     assert "MASTER_ADDR" in rank_runner
@@ -99,10 +99,18 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
     assert "sbatch" not in launcher
     assert 'JobState=RUNNING' in launcher
     assert 'Partition=normal' in launcher
-    assert "--ntasks=8" in launcher
-    assert "--gpus-per-task=1" in launcher
-    assert "--gpu-bind=single:1" in launcher
+    assert "--ntasks=1" in launcher
+    assert "--gpus=8" in launcher
+    assert "--gpus-per-task=1" not in launcher
+    assert "run_verl_exact_replay_torchrun.sh" in launcher
     assert "VERL_EXACT_REPLAY_ARTIFACTS_OK" in launcher
+    torchrun = Path(
+        "experiments/training/rl/run_verl_exact_replay_torchrun.sh"
+    ).read_text(encoding="utf-8")
+    assert ".venv-vagen-main/bin/python3" in torchrun
+    assert "-m torch.distributed.run" in torchrun
+    assert "--nproc-per-node=8" in torchrun
+    assert "run_verl_exact_replay_worker_gate.py" in torchrun
 
 
 def test_exact_replay_worker_config_rejects_invalid_world_or_budget() -> None:
