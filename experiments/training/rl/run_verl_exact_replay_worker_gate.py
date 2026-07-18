@@ -262,6 +262,19 @@ def main() -> None:
 
     critic_metrics = critic.update_critic(copy.deepcopy(ppo_batch))
     critic_after = _module_fingerprint(critic.critic_module)
+    if rank == 0:
+        print(
+            "CRITIC_UPDATE_AUDIT="
+            + json.dumps(
+                {
+                    "before": critic_before,
+                    "after": critic_after,
+                    "meta_info": _json_value(critic_metrics.meta_info),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
     if not _fingerprint_changed(critic_before, critic_after):
         raise RuntimeError("critic optimizer update did not change parameters")
 
