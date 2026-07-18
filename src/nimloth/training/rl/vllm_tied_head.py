@@ -25,10 +25,10 @@ def _materialize_tied_lm_head(weights, *, tie_word_embeddings: bool):
 def install_vllm_qwen25vl_tied_head_patch() -> None:
     """Duplicate tied embeddings into vLLM's separate LM-head parameter.
 
-    The SFT merged checkpoint intentionally stores only ``model.embed_tokens``.
-    Transformers honors ``tie_word_embeddings=true`` after our override, while
-    vLLM's Qwen2.5-VL implementation keeps a distinct load target named
-    ``language_model.lm_head``. Feed that target the exact embedding tensor.
+    The SFT merged checkpoint stores only ``model.embed_tokens``. Transformers
+    honors VERL's ``tie_word_embeddings=true`` actor override, while vLLM
+    reloads the stale source config (tie=false) and keeps a distinct load target
+    named ``language_model.lm_head``. Feed it the exact embedding tensor.
     """
     from vllm.model_executor.models.qwen2_5_vl import (
         Qwen2_5_VLForConditionalGeneration,
@@ -39,11 +39,13 @@ def install_vllm_qwen25vl_tied_head_patch() -> None:
         return
 
     def load_weights(self, weights):
+        # vLLM reloads config.json from model_path and does not consume VERL's
+        # actor override_config/model_hf_config. The source config still says
+        # tie=false even though its only valid head is the stored embedding and
+        # the FSDP actor is explicitly tied, so enforce this known protocol here.
         materialized = _materialize_tied_lm_head(
             weights,
-            tie_word_embeddings=bool(
-                getattr(self.config, "tie_word_embeddings", False)
-            ),
+            tie_word_embeddings=True,
         )
         return current(self, materialized)
 
