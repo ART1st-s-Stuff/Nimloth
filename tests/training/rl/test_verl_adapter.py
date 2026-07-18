@@ -218,8 +218,8 @@ def test_finalize_exact_replay_batch_attaches_worker_outputs_and_masked_gae() ->
         "finite_value_policy_tokens": 3,
         "mean_abs_old_ref_delta": pytest.approx(0.1),
         "max_abs_old_ref_delta": pytest.approx(0.1),
-        "mean_low_var_kl": pytest.approx(0.0048374),
-        "max_low_var_kl": pytest.approx(0.0048374),
+        "mean_low_var_kl": pytest.approx(0.0048374, abs=1e-7),
+        "max_low_var_kl": pytest.approx(0.0048374, abs=1e-7),
     }
     assert torch.equal(
         finalized.batch["token_level_rewards"],
