@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 import torch
@@ -26,6 +26,11 @@ class VerlReplayRow:
     token_level_rewards: torch.Tensor
     end_of_response_position_mask: torch.Tensor
     multi_modal_inputs: dict[str, Any] | None = None
+    policy_transcript: str | None = None
+    task_instruction: str | None = None
+    observation_texts: tuple[str, ...] = ()
+    assistant_responses: tuple[str, ...] = ()
+    image_paths: tuple[str, ...] = ()
 
 
 def _validate_row(row: VerlReplayRow) -> None:
@@ -319,6 +324,142 @@ def build_nimloth_verl_replay_row(
     return row
 
 
+def build_verl_replay_row_from_trajectory(
+    processor,
+    trajectory,
+) -> VerlReplayRow:
+    """Tokenize one complete stored trajectory using the live Qwen processor."""
+
+    from nimloth.latent.extraction import (
+        LatentActionTokens,
+        latent_state_tokens,
+        special_token_ids,
+    )
+    from nimloth.training.rl.rollout import (
+        build_nimloth_policy_messages,
+        multimodal_policy_messages,
+        validate_rollout_trajectory,
+    )
+    from verl.models.transformers.qwen2_vl import get_rope_index
+
+    validate_rollout_trajectory(trajectory)
+    messages, images = build_nimloth_policy_messages(
+        list(trajectory.image_paths),
+        trajectory.system_prompt,
+        list(trajectory.observation_texts),
+        list(trajectory.assistant_responses),
+        history_window=trajectory.num_steps,
+    )
+    messages, materialized_images = multimodal_policy_messages(messages, images)
+    rendered = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=False
+    )
+    model_inputs = processor(
+        text=[rendered],
+        images=materialized_images,
+        return_tensors="pt",
+        padding=False,
+    )
+    if "input_ids" not in model_inputs or "attention_mask" not in model_inputs:
+        raise ValueError("Qwen processor omitted transcript ids or attention mask")
+    input_ids = model_inputs["input_ids"]
+    attention_mask = model_inputs["attention_mask"]
+    if input_ids.ndim != 2 or input_ids.shape[0] != 1:
+        raise ValueError(
+            "Nimloth VERL trajectory processor requires one unpadded transcript"
+        )
+    transcript_input_ids = input_ids[0].detach().cpu()
+    transcript_attention_mask = attention_mask[0].detach().cpu()
+    image_grid_thw = model_inputs.get("image_grid_thw")
+    video_grid_thw = model_inputs.get("video_grid_thw")
+    second_per_grid_ts = model_inputs.get("second_per_grid_ts")
+    position_ids = get_rope_index(
+        processor,
+        input_ids=transcript_input_ids,
+        image_grid_thw=(
+            image_grid_thw.detach().cpu() if image_grid_thw is not None else None
+        ),
+        video_grid_thw=(
+            video_grid_thw.detach().cpu() if video_grid_thw is not None else None
+        ),
+        second_per_grid_ts=(
+            second_per_grid_ts.detach().cpu()
+            if isinstance(second_per_grid_ts, torch.Tensor)
+            else second_per_grid_ts
+        ),
+        attention_mask=transcript_attention_mask,
+    )
+
+    tokens = LatentActionTokens()
+    token_id_map = special_token_ids(
+        processor.tokenizer,
+        tokens,
+        latent_token_count=int(trajectory.latent_token_count),
+    )
+    query_ids = [
+        token_id_map[name]
+        for name in latent_state_tokens(int(trajectory.latent_token_count), tokens)
+    ]
+    action_token_ids = [
+        token_id_map[tokens.action_tokens[int(action_index)]]
+        for action_index in trajectory.action_indices
+    ]
+    for turn, assistant_response in enumerate(trajectory.assistant_responses):
+        expected = [
+            *[int(token) for token in trajectory.thought_token_ids[turn]],
+            *query_ids,
+            token_id_map[tokens.action_start],
+            action_token_ids[turn],
+            token_id_map[tokens.action_end],
+        ]
+        encoded = processor.tokenizer.encode(
+            assistant_response, add_special_tokens=False
+        )
+        if [int(token) for token in encoded] != expected:
+            raise ValueError(
+                "stored assistant response tokens disagree with sampled thought and "
+                f"deterministic scaffold at turn {turn}"
+            )
+
+    turn_rewards = [float(value) for value in trajectory.step_rewards]
+    turn_rewards[-1] += float(trajectory.final_reward)
+    pad_token_id = processor.tokenizer.pad_token_id
+    if pad_token_id is None:
+        raise ValueError("Qwen tokenizer requires pad_token_id for VERL replay")
+    multimodal_inputs: dict[str, Any] = {}
+    for key, value in model_inputs.items():
+        if key in {"input_ids", "attention_mask"}:
+            continue
+        if not isinstance(value, torch.Tensor):
+            raise ValueError(
+                f"Qwen multimodal processor output {key} must be a tensor"
+            )
+        multimodal_inputs[key] = value.detach().cpu()
+
+    row = build_nimloth_verl_trajectory_replay_row(
+        trajectory_id=str(trajectory.record_id),
+        transcript_input_ids=transcript_input_ids,
+        transcript_attention_mask=transcript_attention_mask,
+        transcript_position_ids=position_ids,
+        thought_token_ids_by_turn=trajectory.thought_token_ids,
+        latent_query_token_ids=query_ids,
+        action_start_token_id=token_id_map[tokens.action_start],
+        action_token_ids=action_token_ids,
+        action_end_token_id=token_id_map[tokens.action_end],
+        turn_rewards=turn_rewards,
+        pad_token_id=int(pad_token_id),
+        multi_modal_inputs=multimodal_inputs,
+    )
+    return replace(
+        row,
+        policy_transcript=rendered,
+        task_instruction=str(trajectory.task_instruction),
+        observation_texts=tuple(str(value) for value in trajectory.observation_texts),
+        assistant_responses=tuple(str(value) for value in trajectory.assistant_responses),
+        image_paths=tuple(str(value) for value in trajectory.image_paths),
+    )
+
+
 def build_verl_replay_dataproto(
     rows: Sequence[VerlReplayRow],
     *,
@@ -458,6 +599,11 @@ def build_verl_replay_dataproto(
     non_tensors: dict[str, Any] = {
         "trajectory_id": [row.trajectory_id for row in rows],
         "raw_prompt_ids": raw_prompt_ids,
+        "policy_transcript": [row.policy_transcript for row in rows],
+        "task_instruction": [row.task_instruction for row in rows],
+        "observation_texts": [row.observation_texts for row in rows],
+        "assistant_responses": [row.assistant_responses for row in rows],
+        "image_paths": [row.image_paths for row in rows],
     }
     if all(has_multimodal):
         non_tensors["multi_modal_inputs"] = [
