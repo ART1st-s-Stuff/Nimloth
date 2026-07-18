@@ -5,9 +5,10 @@
 #SBATCH --time=00:25:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=24G
+#SBATCH --exclude=dgx-32
 #SBATCH hetjob
 #SBATCH --job-name=rl-world8-hold
 #SBATCH --account=peilab
@@ -15,9 +16,54 @@
 #SBATCH --time=00:25:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=24G
+#SBATCH --exclude=dgx-32
+#SBATCH hetjob
+#SBATCH --job-name=rl-world8-hold
+#SBATCH --account=peilab
+#SBATCH --partition=normal
+#SBATCH --time=00:25:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --mem=24G
+#SBATCH --exclude=dgx-32
+#SBATCH hetjob
+#SBATCH --job-name=rl-world8-hold
+#SBATCH --account=peilab
+#SBATCH --partition=normal
+#SBATCH --time=00:25:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --mem=24G
+#SBATCH --exclude=dgx-32
+#SBATCH hetjob
+#SBATCH --job-name=rl-world8-hold
+#SBATCH --account=peilab
+#SBATCH --partition=normal
+#SBATCH --time=00:25:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --mem=24G
+#SBATCH --exclude=dgx-32
+#SBATCH hetjob
+#SBATCH --job-name=rl-world8-hold
+#SBATCH --account=peilab
+#SBATCH --partition=normal
+#SBATCH --time=00:25:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --mem=24G
+#SBATCH --exclude=dgx-32
 #SBATCH hetjob
 #SBATCH --job-name=rl-world8-hold
 #SBATCH --account=peilab
@@ -29,18 +75,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:2
 #SBATCH --mem=48G
-#SBATCH hetjob
-#SBATCH --job-name=rl-world8-hold
-#SBATCH --account=peilab
-#SBATCH --partition=normal
-#SBATCH --time=00:25:00
-#SBATCH --nodes=1
-#SBATCH --ntasks=4
-#SBATCH --ntasks-per-node=4
-#SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:4
-#SBATCH --mem=128G
-
+#SBATCH --exclude=dgx-32
 # One bash allocation for all world8 resources. Actual probes are atomically
 # published as next_stage.sh and run via nested srun without releasing GPUs.
 set -euo pipefail
@@ -53,7 +88,7 @@ mkdir -p "${HOLD_ROOT}/stages"
 rm -f "${HOLD_ROOT}/READY" "${HOLD_ROOT}/RELEASE" "${HOLD_ROOT}/next_stage.sh"
 {
   echo "job_id=${SLURM_JOB_ID}"
-  for group in 0 1 2 3; do
+  for group in 0 1 2 3 4 5 6; do
     variable="SLURM_JOB_NODELIST_HET_GROUP_${group}"
     echo "group${group}=${!variable:-missing}"
   done

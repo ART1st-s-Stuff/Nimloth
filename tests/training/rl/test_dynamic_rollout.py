@@ -237,6 +237,8 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     assert '${REPO}/src:${REPO}:${REPO}/external/VAGEN' in rank_runner
     assert "external/VAGEN/verl" in rank_runner
     assert launcher.count("#SBATCH hetjob") == 3
+    assert "FSDP_FRAGMENT_SPECS" in launcher
+    assert 'IFS=: read -r group offset tasks cpus' in launcher
     assert "#SBATCH --nodelist=" not in launcher
     assert "#SBATCH --exclude=" not in launcher
     assert 'assert max(peaks.values()) < 70.0' in launcher
@@ -244,14 +246,16 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     assert 'assert all(row["policy_tokens"]==9' in launcher
 
 
-def test_world8_hold_is_one_dynamic_four_component_bash_allocation() -> None:
+def test_world8_hold_is_one_dynamic_fragmented_bash_allocation() -> None:
     hold = Path(
-        "experiments/training/rl/hold_world8_1plus1plus2plus4.slurm"
+        "experiments/training/rl/hold_world8_1x6plus2.slurm"
     ).read_text(encoding="utf-8")
-    assert hold.count("#SBATCH hetjob") == 3
-    assert hold.count("#SBATCH --partition=normal") == 4
+    assert hold.count("#SBATCH hetjob") == 6
+    assert hold.count("#SBATCH --partition=normal") == 7
+    assert hold.count("#SBATCH --gres=gpu:1") == 6
+    assert hold.count("#SBATCH --gres=gpu:2") == 1
     assert "#SBATCH --nodelist=" not in hold
-    assert "#SBATCH --exclude=" not in hold
+    assert hold.count("#SBATCH --exclude=dgx-32") == 7
     assert 'touch "${HOLD_ROOT}/READY"' in hold
     assert '"${HOLD_ROOT}/next_stage.sh"' in hold
     assert 'bash "${stage_dir}/command.sh"' in hold
