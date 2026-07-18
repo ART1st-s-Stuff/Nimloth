@@ -94,6 +94,17 @@ def main() -> None:
     parser.add_argument("--wandb-run-id", required=True)
     args = parser.parse_args()
 
+    if args.wandb_project != "nimloth-rl":
+        raise RuntimeError(
+            f"exact replay gate requires W&B project nimloth-rl, got {args.wandb_project!r}"
+        )
+    if os.environ.get("WANDB_PROJECT") != args.wandb_project:
+        raise RuntimeError("W&B project argument/environment mismatch")
+    if os.environ.get("WANDB_RUN_NAME") != args.wandb_run_name:
+        raise RuntimeError("W&B run-name argument/environment mismatch")
+    if os.environ.get("WANDB_RUN_ID") != args.wandb_run_id:
+        raise RuntimeError("W&B run-id argument/environment mismatch")
+
     import transformers
     from transformers import AutoProcessor
     from verl.workers.fsdp_workers import ActorRolloutRefWorker, CriticWorker
