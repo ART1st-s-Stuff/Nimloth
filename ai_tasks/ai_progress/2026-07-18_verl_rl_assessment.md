@@ -49,7 +49,7 @@ Pinned VAGEN/VERL：VAGEN `e7cc2d0`，VERL `6531615`。
 - ID34进一步完成full critic FSDP、finite values和masked-GAE finalize；被错误跨精度阈值挡住。E0059改用实际mean low-var-KL判断parity并保留reference fingerprint immutability。
 - ID35–38定位到pinned VERL zero-warmup LambdaLR把首次optimizer LR设为0；E0061修复该step0语义。
 - ID39/W&B`cou63u6r`成功：world8 full actor（语言+视觉）、immutable ref、4.55-native full token critic对真实ID22两轮1670-token多模态episode完成old/ref/value、masked-GAE、critic+actor各一次真实更新。Actor sum`231017.9088→231018.4159`，critic sum`232792.9362→232792.5477`，ref前后完全相同，post-update policy log-prob max change`0.11981964`。rank0–7 actor/critic model+optimizer+extra-state checkpoints完整并二次验证。仅是mechanics，尚未含在线env或WM auxiliary。Post-run RL+SFT1 suite为`103 passed, 3 warnings`；hold479723已释放。
-- Commit`aef9f2d`实现fail-closed resume gate。ID40/W&B`ifcesm4z`在normal8/dgx-46 direct通过：actor/critic加载fingerprint精确等于ID39 source，fresh fingerprint明确不同；model+optimizer+scheduler恢复后critic每rank state到step2，actor/critic再次变化，ref完全不变，post-update log-prob max change`0.13974571`。新global_step2与原ID39 step1的rank0–7文件均二次验证完整；hold479826已释放。仅证明resume mechanics。
+- Commit`aef9f2d`实现fail-closed resume gate。ID40/W&B`ifcesm4z`在normal8/dgx-46 direct通过：actor/critic加载fingerprint精确等于ID39 source，fresh fingerprint明确不同；model+optimizer+scheduler恢复后critic每rank state到step2，actor/critic再次变化，ref完全不变，post-update log-prob max change`0.13974571`。新global_step2与原ID39 step1的rank0–7文件均二次验证完整；hold479826已释放。Post-resume RL+SFT1 suite为`103 passed, 3 warnings`。仅证明resume mechanics。
 - 尚未接入在线rollout或WM auxiliary；full worker仍待修复后的direct gate，当前不可启动正式VERL训练。
 
 ## 证据位置
