@@ -222,6 +222,27 @@ def test_qwen_fsdp_policy_wraps_text_and_vision_blocks() -> None:
     )
 
 
+def test_tiny_external_checkpoint_gate_is_multimodal_distributed_backward() -> None:
+    probe = Path(
+        "experiments/training/rl/probe_external_checkpoint_fsdp.py"
+    ).read_text(encoding="utf-8")
+    launcher = Path(
+        "experiments/training/rl/run_external_checkpoint_fsdp_gate.sh"
+    ).read_text(encoding="utf-8")
+    rank_runner = Path(
+        "experiments/training/rl/run_external_checkpoint_probe_rank.sh"
+    ).read_text(encoding="utf-8")
+    assert "apply_qwen_activation_checkpointing" in probe
+    assert "qwen25vl_transformer_auto_wrap_policy" in probe
+    assert "pixel_values" in probe
+    assert "loss.backward()" in probe
+    assert "optimizer.step()" in probe
+    assert "gradient_checkpointing_enable" not in probe
+    assert "TINY_FSDP_CHECKPOINT_OK" in launcher
+    assert "FSDP_FRAGMENT_SPECS" in launcher
+    assert '${REPO}/src:${REPO}:${REPO}/external/VAGEN' in rank_runner
+
+
 def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None:
     probe = Path(
         "experiments/training/rl/probe_actor_recompute_memory.py"
@@ -253,6 +274,20 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     assert 'assert max(peaks.values()) < 70.0' in launcher
     assert 'assert all(row["history_images"]==20' in launcher
     assert 'assert all(row["policy_tokens"]==9' in launcher
+
+
+def test_world8_8x1_hold_is_one_maximally_flexible_allocation() -> None:
+    hold = Path(
+        "experiments/training/rl/hold_world8_8x1.slurm"
+    ).read_text(encoding="utf-8")
+    assert hold.count("#SBATCH hetjob") == 7
+    assert hold.count("#SBATCH --partition=normal") == 8
+    assert hold.count("#SBATCH --gres=gpu:1") == 8
+    assert hold.count("#SBATCH --mem=64G") == 8
+    assert "#SBATCH --nodelist=" not in hold
+    assert "#SBATCH --exclude=" not in hold
+    assert 'for group in 0 1 2 3 4 5 6 7; do' in hold
+    assert 'bash "${stage_dir}/command.sh"' in hold
 
 
 def test_world8_hold_is_one_dynamic_fragmented_bash_allocation() -> None:
