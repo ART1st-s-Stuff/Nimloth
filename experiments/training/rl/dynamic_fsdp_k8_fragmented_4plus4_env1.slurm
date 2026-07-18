@@ -146,7 +146,7 @@ set +e
       --vision-tune "${VISION_TUNE}" \
       --lora-r 64 \
       --lora-alpha 128 \
-      --lora-dropout 0.05 \
+      --lora-dropout 0.0 \
       --gradient-checkpointing \
       --wm-checkpoint "${SFT2_SNAPSHOT}/wm_predictor" \
       --state-proj-checkpoint "${SFT2_SNAPSHOT}/state_proj.pt" \

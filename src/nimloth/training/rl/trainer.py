@@ -1045,6 +1045,11 @@ def train_rl(
             "deterministic actor recompute requires text attention_dropout=0, "
             f"got {attention_dropout}"
         )
+    if actor_enabled and float(args.lora_dropout) != 0.0:
+        raise ValueError(
+            "checkpointed PPO requires lora_dropout=0 for identical forward and "
+            f"backward recomputation, got {args.lora_dropout}"
+        )
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = args.max_pixels
@@ -1384,6 +1389,7 @@ def train_rl(
                 if args.gradient_checkpointing else "none"
             ),
             "functional_attention_dropout": attention_dropout,
+            "lora_dropout": float(args.lora_dropout),
             "fsdp_wrap_protocol": FSDP_WRAP_PROTOCOL if world > 1 else "none",
             "transition_microbatch_size": batch_size,
             "advantage": {

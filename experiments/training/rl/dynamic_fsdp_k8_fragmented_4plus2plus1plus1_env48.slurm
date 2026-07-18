@@ -284,6 +284,7 @@ assert protocol["activation_checkpoint_protocol"] == (
     "qwen25vl-external-nonreentrant-block-wrapper-v1"
 )
 assert protocol["functional_attention_dropout"] == 0.0
+assert protocol["lora_dropout"] == 0.0
 assert protocol["fsdp_wrap_protocol"] == "qwen25vl-decoder-and-vision-block-v1"
 expected_microbatch = 1 if mode == "pilot" else 2
 assert protocol["transition_microbatch_size"] == expected_microbatch

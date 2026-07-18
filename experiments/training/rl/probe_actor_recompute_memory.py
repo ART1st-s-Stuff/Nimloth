@@ -85,7 +85,7 @@ def main() -> int:
         vision_tune="freeze",
         lora_r=64,
         lora_alpha=128,
-        lora_dropout=0.05,
+        lora_dropout=0.0,
         gradient_checkpointing=True,
     )
     model = configure_qwen_tuning(model, tune_args)

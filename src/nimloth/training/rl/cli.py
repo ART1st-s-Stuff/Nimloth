@@ -51,7 +51,7 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
                     help="Shorthand: --llm-tune lora --vision-tune freeze")
     ap.add_argument("--lora-r", type=int, default=64)
     ap.add_argument("--lora-alpha", type=int, default=128)
-    ap.add_argument("--lora-dropout", type=float, default=0.05)
+    ap.add_argument("--lora-dropout", type=float, default=0.0)
 
     # ---- Model loading ------------------------------------------------------
     ap.add_argument("--attn-implementation", default="flash_attention_2")

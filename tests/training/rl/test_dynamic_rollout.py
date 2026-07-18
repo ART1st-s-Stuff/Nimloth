@@ -265,9 +265,11 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     assert "actor_activation_checkpoint_units" in probe
     assert "critic_activation_checkpoint_units" in probe
     assert "apply_qwen_activation_checkpointing" in probe
+    assert "lora_dropout=0.0" in probe
     assert ".gradient_checkpointing_enable(" not in probe
     assert '${REPO}/src:${REPO}:${REPO}/external/VAGEN' in rank_runner
     assert "external/VAGEN/verl" in rank_runner
+    assert "--lora-dropout 0.0" in rank_runner
     assert launcher.count("#SBATCH hetjob") == 3
     assert "FSDP_FRAGMENT_SPECS" in launcher
     assert "FSDP_SINGLE_COMPONENT" in launcher
@@ -1113,7 +1115,7 @@ def test_lora_checkpoint_dropout_context_must_cover_backward() -> None:
         vision_end_token_id=63,
     )
 
-    def build_model():
+    def build_model(lora_dropout: float = 0.2):
         model = Qwen2_5_VLForConditionalGeneration(config).float()
         model = configure_qwen_tuning(
             model,
@@ -1123,7 +1125,7 @@ def test_lora_checkpoint_dropout_context_must_cover_backward() -> None:
                 vision_tune="freeze",
                 lora_r=4,
                 lora_alpha=8,
-                lora_dropout=0.2,
+                lora_dropout=lora_dropout,
                 gradient_checkpointing=True,
             ),
         )
@@ -1158,6 +1160,22 @@ def test_lora_checkpoint_dropout_context_must_cover_backward() -> None:
     ]
     assert lora_grads
     assert all(grad is not None and torch.isfinite(grad).all() for grad in lora_grads)
+
+    production = build_model(lora_dropout=0.0)
+    with _temporary_deterministic_train(production):
+        production_loss = production(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=False,
+        ).logits.float().square().mean()
+    # Production may construct the loss and call backward in separate scopes;
+    # permanent zero LoRA dropout keeps checkpoint recomputation identical.
+    production_loss.backward()
+    assert all(
+        parameter.grad is not None and torch.isfinite(parameter.grad).all()
+        for name, parameter in production.named_parameters()
+        if "lora_" in name and parameter.requires_grad
+    )
 
 
 def test_masked_gae_assigns_token_specific_vagen_advantages() -> None:
