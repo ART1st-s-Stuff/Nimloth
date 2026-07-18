@@ -116,7 +116,7 @@ def test_rollout_states_single_step_eq_predict_next_emb() -> None:
 
 def test_rollout_states_rejects_unavailable_multi_step_history() -> None:
     predictor = _make_predictor(history_size=4)
-    with pytest.raises(ValueError, match="requires an explicit trained history context"):
+    with pytest.raises(ValueError, match="requires a tokenized predictor"):
         predictor.rollout_states(
             torch.randn(3, 64), torch.randint(0, 8, (3, 4))
         )
