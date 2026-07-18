@@ -1,7 +1,7 @@
 [submodule "external/VAGEN"]
 	path = external/VAGEN
 	url = ssh://git@ssh.github.com:443/ART1st-s-Stuff/VAGEN.git
-	branch = nimloth/main
+	branch = nimloth/vagen-legacy-k8-online
 [submodule "external/le-wm"]
 	path = external/le-wm
 	url = https://github.com/lucas-maes/le-wm.git

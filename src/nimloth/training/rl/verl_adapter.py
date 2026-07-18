@@ -31,6 +31,8 @@ class VerlReplayRow:
     observation_texts: tuple[str, ...] = ()
     assistant_responses: tuple[str, ...] = ()
     image_paths: tuple[str, ...] = ()
+    latent_query_positions: tuple[tuple[int, ...], ...] | None = None
+    action_indices: tuple[int, ...] | None = None
 
 
 def _validate_row(row: VerlReplayRow) -> None:
@@ -91,6 +93,36 @@ def _validate_row(row: VerlReplayRow) -> None:
         row.multi_modal_inputs, dict
     ):
         raise ValueError("VERL replay multi_modal_inputs must be a dict or None")
+    if (row.latent_query_positions is None) != (row.action_indices is None):
+        raise ValueError(
+            "VERL replay WM positions and action indices must be provided together"
+        )
+    if row.latent_query_positions is not None:
+        assert row.action_indices is not None
+        if not row.latent_query_positions:
+            raise ValueError("VERL replay WM metadata requires at least one turn")
+        if len(row.latent_query_positions) != len(row.action_indices):
+            raise ValueError("VERL replay WM turn metadata length mismatch")
+        query_count = len(row.latent_query_positions[0])
+        if query_count < 1 or any(
+            len(positions) != query_count
+            for positions in row.latent_query_positions
+        ):
+            raise ValueError("VERL replay WM latent blocks must have uniform nonzero k")
+        flattened = [
+            int(position)
+            for block in row.latent_query_positions
+            for position in block
+        ]
+        if any(
+            position < row.prompt_length or position >= sequence_length
+            for position in flattened
+        ):
+            raise ValueError("VERL replay WM latent position is outside the response")
+        if flattened != sorted(flattened) or len(flattened) != len(set(flattened)):
+            raise ValueError("VERL replay WM latent positions must be unique and ordered")
+        if any(int(action) < 0 for action in row.action_indices):
+            raise ValueError("VERL replay WM action indices must be nonnegative")
 
 
 def _find_ordered_subsequence(
@@ -120,6 +152,7 @@ def build_nimloth_verl_trajectory_replay_row(
     action_token_ids: Sequence[int],
     action_end_token_id: int,
     turn_rewards: Sequence[float],
+    action_indices: Sequence[int] | None = None,
     pad_token_id: int,
     multi_modal_inputs: dict[str, Any] | None,
 ) -> VerlReplayRow:
@@ -140,6 +173,11 @@ def build_nimloth_verl_trajectory_replay_row(
     query_ids = [int(token) for token in latent_query_token_ids]
     actions = [int(token) for token in action_token_ids]
     rewards_by_turn = [float(value) for value in turn_rewards]
+    wm_actions = (
+        [int(value) for value in action_indices]
+        if action_indices is not None
+        else None
+    )
     turn_count = len(thoughts)
     if turn_count == 0:
         raise ValueError("Nimloth VERL trajectory requires at least one turn")
@@ -150,6 +188,11 @@ def build_nimloth_verl_trajectory_replay_row(
             "Nimloth VERL trajectory turn metadata mismatch: "
             f"thoughts={turn_count}, actions={len(actions)}, rewards={len(rewards_by_turn)}"
         )
+    if wm_actions is not None and len(wm_actions) != turn_count:
+        raise ValueError(
+            "Nimloth VERL trajectory WM action metadata mismatch: "
+            f"actions={len(wm_actions)}, turns={turn_count}"
+        )
     if any(not values for values in thoughts):
         raise ValueError("Nimloth VERL trajectory requires sampled thought tokens per turn")
 
@@ -158,6 +201,7 @@ def build_nimloth_verl_trajectory_replay_row(
     transcript_rewards = torch.zeros(len(transcript_ids), dtype=torch.float32)
     transcript_end_mask = torch.zeros(len(transcript_ids), dtype=torch.long)
     search_start = 0
+    latent_positions: list[tuple[int, ...]] = []
     for turn, (thought_ids, action_id, reward) in enumerate(
         zip(thoughts, actions, rewards_by_turn, strict=True)
     ):
@@ -170,6 +214,13 @@ def build_nimloth_verl_trajectory_replay_row(
         ]
         response_start = _find_ordered_subsequence(
             transcript_ids, expected_response, start=search_start
+        )
+        latent_start = response_start + len(thought_ids)
+        latent_positions.append(
+            tuple(
+                1 + latent_start + offset
+                for offset in range(len(query_ids))
+            )
         )
         action_position = response_start + len(expected_response) - 2
         transcript_loss_mask[
@@ -217,6 +268,10 @@ def build_nimloth_verl_trajectory_replay_row(
         token_level_rewards=token_level_rewards,
         end_of_response_position_mask=end_mask,
         multi_modal_inputs=multi_modal_inputs,
+        latent_query_positions=(
+            tuple(latent_positions) if wm_actions is not None else None
+        ),
+        action_indices=(tuple(wm_actions) if wm_actions is not None else None),
     )
     _validate_row(row)
     return row
@@ -447,6 +502,7 @@ def build_verl_replay_row_from_trajectory(
         action_token_ids=action_token_ids,
         action_end_token_id=token_id_map[tokens.action_end],
         turn_rewards=turn_rewards,
+        action_indices=[int(value) for value in trajectory.action_indices],
         pad_token_id=int(pad_token_id),
         multi_modal_inputs=multimodal_inputs,
     )
@@ -495,6 +551,14 @@ def build_verl_replay_dataproto(
         raise ValueError(
             "VERL replay batch cannot mix multimodal and text-only rows"
         )
+    has_wm_metadata = [row.latent_query_positions is not None for row in rows]
+    if any(has_wm_metadata) and not all(has_wm_metadata):
+        raise ValueError("VERL replay batch cannot mix rows with and without WM metadata")
+    wm_turn_width = 0
+    wm_query_count = 0
+    if all(has_wm_metadata):
+        wm_turn_width = max(len(row.latent_query_positions or ()) for row in rows)
+        wm_query_count = len((rows[0].latent_query_positions or ((),))[0])
 
     prompt_width = max(int(row.prompt_length) for row in rows)
     response_width = max(
@@ -528,6 +592,20 @@ def build_verl_replay_dataproto(
         position_ids = torch.zeros(
             (batch_size, position_channels, sequence_width),
             dtype=rows[0].position_ids.dtype,
+        )
+
+    wm_latent_positions = None
+    wm_action_indices = None
+    wm_transition_mask = None
+    if all(has_wm_metadata):
+        wm_latent_positions = torch.full(
+            (batch_size, wm_turn_width, wm_query_count), -1, dtype=torch.long
+        )
+        wm_action_indices = torch.full(
+            (batch_size, wm_turn_width), -1, dtype=torch.long
+        )
+        wm_transition_mask = torch.zeros(
+            (batch_size, wm_turn_width), dtype=torch.long
         )
 
     raw_prompt_ids: list[list[int]] = []
@@ -580,6 +658,26 @@ def build_verl_replay_dataproto(
             )
         raw_prompt_ids.append([int(token) for token in prompt_tokens.tolist()])
 
+        if wm_latent_positions is not None:
+            assert row.latent_query_positions is not None
+            assert row.action_indices is not None
+            for turn, (positions, action_index) in enumerate(
+                zip(row.latent_query_positions, row.action_indices, strict=True)
+            ):
+                adjusted_positions = []
+                for position in positions:
+                    if position < prompt_length:
+                        adjusted = prompt_start + position
+                    else:
+                        adjusted = response_start + (position - prompt_length)
+                    adjusted_positions.append(adjusted)
+                wm_latent_positions[batch_index, turn] = torch.tensor(
+                    adjusted_positions, dtype=torch.long
+                )
+                wm_action_indices[batch_index, turn] = int(action_index)
+                if turn + 1 < len(row.action_indices):
+                    wm_transition_mask[batch_index, turn] = 1
+
     from verl.protocol import DataProto
 
     tensors = {
@@ -596,6 +694,15 @@ def build_verl_replay_dataproto(
         "index": torch.arange(batch_size, dtype=torch.long),
         "step_reward_sum": response_rewards.sum(dim=-1),
     }
+    if wm_latent_positions is not None:
+        assert wm_action_indices is not None and wm_transition_mask is not None
+        tensors.update(
+            {
+                "wm_latent_positions": wm_latent_positions,
+                "wm_action_indices": wm_action_indices,
+                "wm_transition_mask": wm_transition_mask,
+            }
+        )
     non_tensors: dict[str, Any] = {
         "trajectory_id": [row.trajectory_id for row in rows],
         "raw_prompt_ids": raw_prompt_ids,

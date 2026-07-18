@@ -150,6 +150,7 @@ def test_build_nimloth_verl_trajectory_row_preserves_cross_turn_gae() -> None:
         action_start_token_id=32,
         action_token_ids=[40, 41],
         action_end_token_id=33,
+        action_indices=[2, 5],
         turn_rewards=[0.01, 1.01],
         pad_token_id=0,
         multi_modal_inputs={"pixel_values": torch.ones(2, 4)},
@@ -161,8 +162,13 @@ def test_build_nimloth_verl_trajectory_row_preserves_cross_turn_gae() -> None:
     assert row.end_of_response_position_mask.nonzero(as_tuple=True)[0].tolist() == [8, 17]
     assert row.token_level_rewards[8].item() == pytest.approx(0.01)
     assert row.token_level_rewards[17].item() == pytest.approx(1.01)
+    assert row.latent_query_positions == ((5, 6), (14, 15))
+    assert row.action_indices == (2, 5)
 
     data = build_verl_replay_dataproto([row], pad_token_id=0)
+    assert data.batch["wm_latent_positions"].tolist() == [[[5, 6], [14, 15]]]
+    assert data.batch["wm_action_indices"].tolist() == [[2, 5]]
+    assert data.batch["wm_transition_mask"].tolist() == [[1, 0]]
     data.batch["token_level_rewards"] = data.batch["token_level_scores"].clone()
     data.batch["values"] = torch.zeros_like(data.batch["token_level_scores"])
     compute_advantage(data, AdvantageEstimator.MASKED_GAE, gamma=1.0, lam=1.0)
