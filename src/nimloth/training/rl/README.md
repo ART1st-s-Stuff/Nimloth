@@ -74,7 +74,7 @@ action-level return 为：最后一步 reward 加 final reward，然后按 `G_t 
 - LoRA关闭时的immutable merged SFT2 base作为reference policy；actor使用与VAGEN相同的`low_var_kl`和系数0.001。VAGEN实际代码在actor KL启用时不再同时施加reward KL；runtime也强制两种placement互斥，但实现了可配置的sampled-token reward KL路径。
 - `turn_mc`训练原action ValueHead；`masked_gae`冻结该旧head并单独优化Qwen token critic的clipped value loss，同时WM predictor和actor继续更新；dynamic action ranking保持0。
 - actor有梯度recompute保持train mode以启用Qwen gradient checkpointing，同时临时把module dropout设为0以保持PPO确定性；LM head只计算sampled thought和action所需position的logits，避免长序列全词表logits。
-- 当前k8 launcher使用`flash_attention_2`；attention backend、actor recompute协议和gradient-checkpointing状态写入resume protocol。
+- 当前k8 launcher使用`flash_attention_2`；actor和独立critic按Qwen decoder/vision block做layer-wise FSDP auto-wrap，使non-reentrant gradient checkpoint重算落在正确unshard边界。Attention、wrap、recompute和checkpointing协议均写入resume metadata。
 
 checkpoint 的 `rollout_protocol` / `rollout_protocol.json` 还记录advantage estimator、reward placement和critic backend；masked-GAE保存schema4 critic token values、独立critic模型及8份rank-local critic optimizer。Resume必须完全一致，旧协议checkpoint会被拒绝。
 
