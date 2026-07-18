@@ -40,12 +40,28 @@ def _path_stat_payload(path: Path) -> str:
 def _checkpoint_payload(path: Path) -> str:
     if path.is_dir():
         parts = []
-        for name in ("predictor.pt", "config.json"):
+        for name in (
+            "predictor.pt",
+            "config.json",
+            "adapter_config.json",
+            "adapter_model.safetensors",
+            "adapter_model.bin",
+            "vision_ema.pt",
+        ):
             child = path / name
             if child.exists():
                 parts.append(_path_stat_payload(child))
         return "|".join(parts) or str(path.resolve())
     return _path_stat_payload(path)
+
+
+def _model_checkpoint_payload(path: Path) -> str:
+    # Preserve historical fingerprints for full-model directories. PEFT paths
+    # need content identity because the directory name alone does not capture
+    # adapter or validation-time vision EMA weights.
+    if path.is_dir() and (path / "adapter_config.json").is_file():
+        return _checkpoint_payload(path)
+    return str(path.resolve())
 
 
 def state_cache_fingerprint(
@@ -67,7 +83,7 @@ def state_cache_fingerprint(
     parts = [
         STATE_CACHE_VERSION,
         _path_stat_payload(jsonl_path),
-        str(model_path.resolve()),
+        _model_checkpoint_payload(model_path),
         _checkpoint_payload(state_proj_checkpoint),
         _checkpoint_payload(wm_checkpoint),
         str(max_length),

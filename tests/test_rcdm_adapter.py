@@ -1,11 +1,17 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from nimloth.rcdm.config import RCDMConfig, rcdm_config_from_args
 from nimloth.rcdm.external import ensure_rcdm_importable
-from nimloth.rcdm.state_cache import contiguous_rank_bounds
-from nimloth.training.reconstruction.rcdm_sft2 import resolve_latent_token_count
+from nimloth.rcdm.state_cache import contiguous_rank_bounds, state_cache_fingerprint
+from nimloth.training.reconstruction.rcdm_sft2 import (
+    apply_vision_ema_checkpoint,
+    resolve_latent_token_count,
+    resolve_qwen_base_checkpoint,
+)
 
 
 class _Args:
@@ -63,3 +69,69 @@ def test_parallel_cache_rank_bounds_are_balanced_and_ordered() -> None:
 def test_parallel_cache_rank_bounds_reject_invalid_rank() -> None:
     with pytest.raises(ValueError, match="rank must be"):
         contiguous_rank_bounds(10, rank=2, world_size=2)
+
+
+def test_resolve_qwen_base_checkpoint_reads_peft_adapter(tmp_path: Path) -> None:
+    base = tmp_path / "base"
+    base.mkdir()
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        '{"base_model_name_or_path": "' + str(base) + '"}', encoding="utf-8"
+    )
+    assert resolve_qwen_base_checkpoint(adapter) == base
+    assert resolve_qwen_base_checkpoint(base) == base
+
+
+def test_apply_vision_ema_checkpoint_materializes_all_shadow_weights(tmp_path: Path) -> None:
+    model = torch.nn.Linear(3, 2)
+    shadow = {
+        "weight": torch.full_like(model.weight, 4.0),
+        "bias": torch.full_like(model.bias, -2.0),
+    }
+    checkpoint = tmp_path / "vision_ema.pt"
+    torch.save({"decay": 0.9, "shadow": shadow}, checkpoint)
+    result = apply_vision_ema_checkpoint(model, checkpoint)
+    assert result["shadow_parameters"] == 2
+    torch.testing.assert_close(model.weight, shadow["weight"])
+    torch.testing.assert_close(model.bias, shadow["bias"])
+
+
+def _fingerprint(tmp_path: Path, model_path: Path) -> str:
+    jsonl = tmp_path / "data.jsonl"
+    state = tmp_path / "state.pt"
+    wm = tmp_path / "wm.pt"
+    for path in (jsonl, state, wm):
+        if not path.exists():
+            path.write_bytes(b"x")
+    return state_cache_fingerprint(
+        jsonl_path=jsonl,
+        model_path=model_path,
+        state_proj_checkpoint=state,
+        wm_checkpoint=wm,
+        max_length=10,
+        max_pixels=20,
+        min_pixels=4,
+        latent_token_count=8,
+        vocab_size=100,
+        success_only=False,
+        max_records=-1,
+        state_dtype="float16",
+        representation="qwen_query_hidden",
+    )
+
+
+def test_peft_cache_fingerprint_tracks_adapter_and_vision_ema(tmp_path: Path) -> None:
+    model = tmp_path / "adapter"
+    model.mkdir()
+    (model / "adapter_config.json").write_text("{}", encoding="utf-8")
+    adapter = model / "adapter_model.safetensors"
+    adapter.write_bytes(b"first")
+    ema = model / "vision_ema.pt"
+    ema.write_bytes(b"ema-one")
+    first = _fingerprint(tmp_path, model)
+    adapter.write_bytes(b"second-longer")
+    second = _fingerprint(tmp_path, model)
+    ema.write_bytes(b"ema-two-longer")
+    third = _fingerprint(tmp_path, model)
+    assert len({first, second, third}) == 3

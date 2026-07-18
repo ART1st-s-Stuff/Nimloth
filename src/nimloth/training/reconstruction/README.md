@@ -94,7 +94,15 @@ and seed must match. The final gate saves 5-step and 50-step ODE contact sheets
 for current-state and WM-predicted-next reconstruction.
 
 For a true 8-query CFM, point `--state-cache-dir` at a
-`qwen_query_hidden` cache. The trainer reads manifest `state_shape=[8,2048]`,
+`qwen_query_hidden` cache. Query-cache extraction accepts both full Hugging Face
+checkpoints and SFT2 PEFT checkpoints. For PEFT it loads the declared base,
+applies the saved adapter, and materializes every saved `vision_ema.pt` shadow
+weight so extracted tokens match SFT2 validation-time vision semantics. The
+fingerprint includes adapter and vision-EMA file identities. Query-only cache
+builds do not instantiate StateProjector/WM modules, which also permits newer
+projector dimensions without changing the preprojection probe.
+
+The trainer reads manifest `state_shape=[8,2048]`,
 flattens storage only at the model boundary, and keeps eight condition tokens
 inside every cross-attention layer. A proven ViT-token CFM can initialize all
 shape-compatible UNet weights:
