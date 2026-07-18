@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source /etc/profile >/dev/null 2>&1 || true
+source /etc/profile.d/modules.sh
 module load slurm >/dev/null 2>&1
 
 : "${HOLD_JOB:?set HOLD_JOB}"
