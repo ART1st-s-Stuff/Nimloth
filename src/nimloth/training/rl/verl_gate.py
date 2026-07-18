@@ -24,6 +24,36 @@ def install_verl_zero_warmup_scheduler_patch() -> None:
     torch_functional.get_constant_schedule_with_warmup = fixed_schedule
 
 
+def configure_nimloth_wm_auxiliary(
+    config,
+    *,
+    latent_token_count: int,
+    checkpoint_dir: str | Path | None,
+    loss_coef: float = 1.0,
+    learning_rate: float = 1e-5,
+    allow_random_init: bool = False,
+) -> None:
+    """Enable actor-side StateProjector + predictor loss and checkpointing."""
+    latent_token_count = int(latent_token_count)
+    if latent_token_count < 1:
+        raise ValueError("WM auxiliary latent_token_count must be >= 1")
+    if float(loss_coef) <= 0 or float(learning_rate) <= 0:
+        raise ValueError("WM auxiliary loss coefficient and LR must be positive")
+    if checkpoint_dir is None and not allow_random_init:
+        raise ValueError("WM auxiliary requires an SFT2 checkpoint")
+    wm_config = config.actor_rollout_ref.actor.nimloth_wm_aux
+    wm_config.enabled = True
+    wm_config.checkpoint_dir = (
+        str(Path(checkpoint_dir).expanduser().resolve())
+        if checkpoint_dir is not None
+        else None
+    )
+    wm_config.allow_random_init = bool(allow_random_init)
+    wm_config.latent_token_count = latent_token_count
+    wm_config.loss_coef = float(loss_coef)
+    wm_config.lr = float(learning_rate)
+
+
 def configure_nimloth_online_rollout(
     config,
     *,

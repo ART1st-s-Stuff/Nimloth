@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 
 def test_verl_runtime_patch_installs_scheduler_and_critic_compatibility() -> None:
     import sys
@@ -78,6 +80,47 @@ def test_zero_warmup_scheduler_patch_preserves_first_optimizer_lr(
         fixed_optimizer, num_warmup_steps=0
     )
     assert fixed_optimizer.param_groups[0]["lr"] == pytest.approx(1e-5)
+
+
+def test_wm_aux_config_requires_explicit_checkpoint_or_mechanics_override() -> None:
+    from omegaconf import OmegaConf
+
+    from nimloth.training.rl.verl_gate import configure_nimloth_wm_auxiliary
+
+    config = OmegaConf.create(
+        {
+            "actor_rollout_ref": {
+                "actor": {
+                    "nimloth_wm_aux": {
+                        "enabled": False,
+                        "checkpoint_dir": None,
+                        "allow_random_init": False,
+                        "latent_token_count": None,
+                        "loss_coef": 1.0,
+                        "lr": 1e-5,
+                    }
+                }
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="requires an SFT2 checkpoint"):
+        configure_nimloth_wm_auxiliary(
+            config, latent_token_count=8, checkpoint_dir=None
+        )
+    configure_nimloth_wm_auxiliary(
+        config,
+        latent_token_count=8,
+        checkpoint_dir=None,
+        loss_coef=0.3,
+        learning_rate=2e-5,
+        allow_random_init=True,
+    )
+    wm = config.actor_rollout_ref.actor.nimloth_wm_aux
+    assert wm.enabled is True
+    assert wm.latent_token_count == 8
+    assert wm.allow_random_init is True
+    assert wm.loss_coef == 0.3
+    assert wm.lr == 2e-5
 
 
 def test_online_rollout_config_selects_strict_service_manager() -> None:
