@@ -250,10 +250,14 @@ def main() -> None:
         gamma=1.0,
         lam=1.0,
     )
-    if audit["max_abs_old_ref_delta"] > 1e-4:
+    # VERL intentionally loads the trainable actor in fp32 and the immutable
+    # reference in bf16. Judge initialization parity by the actual PPO KL
+    # estimator, not bitwise log-prob equality across those precision paths.
+    if audit["max_abs_old_ref_delta"] > 0.5 or audit["mean_low_var_kl"] > 0.01:
         raise RuntimeError(
-            "actor/reference initialization mismatch: "
-            f"{audit['max_abs_old_ref_delta']}"
+            "actor/reference initialization KL is unexpectedly large: "
+            f"max_delta={audit['max_abs_old_ref_delta']}, "
+            f"mean_low_var_kl={audit['mean_low_var_kl']}"
         )
 
     critic_metrics = critic.update_critic(copy.deepcopy(ppo_batch))
@@ -351,6 +355,7 @@ def main() -> None:
                 "gate/policy_tokens": audit["policy_tokens"],
                 "gate/sequence_tokens": int(row.input_ids.numel()),
                 "gate/old_ref_max_delta": audit["max_abs_old_ref_delta"],
+                "gate/old_ref_mean_low_var_kl": audit["mean_low_var_kl"],
                 "gate/actor_log_prob_change": actor_log_prob_change,
             },
             step=1,

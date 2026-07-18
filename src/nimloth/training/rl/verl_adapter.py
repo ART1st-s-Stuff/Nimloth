@@ -679,6 +679,8 @@ def finalize_verl_exact_replay_batch(
     old_policy = replay.batch["old_log_probs"].masked_select(response_mask)
     ref_policy = replay.batch["ref_log_prob"].masked_select(response_mask)
     value_policy = replay.batch["values"].masked_select(response_mask)
+    old_ref_delta = old_policy - ref_policy
+    low_var_kl = torch.exp(-old_ref_delta) + old_ref_delta - 1.0
     audit = {
         "batch_size": int(response_shape[0]),
         "response_tokens": int(response_attention.sum().item()),
@@ -687,9 +689,10 @@ def finalize_verl_exact_replay_batch(
         "finite_old_policy_tokens": int(torch.isfinite(old_policy).sum().item()),
         "finite_ref_policy_tokens": int(torch.isfinite(ref_policy).sum().item()),
         "finite_value_policy_tokens": int(torch.isfinite(value_policy).sum().item()),
-        "max_abs_old_ref_delta": float(
-            (old_policy - ref_policy).abs().max().item()
-        ),
+        "mean_abs_old_ref_delta": float(old_ref_delta.abs().mean().item()),
+        "max_abs_old_ref_delta": float(old_ref_delta.abs().max().item()),
+        "mean_low_var_kl": float(low_var_kl.mean().item()),
+        "max_low_var_kl": float(low_var_kl.max().item()),
     }
     if policy_tokens <= 0:
         raise ValueError("VERL exact replay contains no policy tokens")
