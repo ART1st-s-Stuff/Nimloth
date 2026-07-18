@@ -55,41 +55,57 @@ mkdir -p "${PROBE_OUT}"
 rm -f "${PROBE_OUT}"/rank_*.json
 SRUN=/cm/shared/apps/slurm/current/bin/srun
 SCONTROL=/cm/shared/apps/slurm/current/bin/scontrol
-MASTER_NODE=$(${SCONTROL} show hostnames "${SLURM_JOB_NODELIST_HET_GROUP_0}" | head -1)
-MASTER_ADDR=$(${SRUN} --het-group=0 --overlap --nodes=1 --ntasks=1 bash -lc \
+if [[ "${FSDP_SINGLE_COMPONENT:-0}" == 1 ]]; then
+  master_nodelist=${SLURM_JOB_NODELIST}
+  srun_prefix=("${SRUN}" --overlap)
+else
+  master_nodelist=${SLURM_JOB_NODELIST_HET_GROUP_0}
+  srun_prefix=("${SRUN}" --het-group=0 --overlap)
+fi
+MASTER_NODE=$(${SCONTROL} show hostnames "${master_nodelist}" | head -1)
+MASTER_ADDR=$("${srun_prefix[@]}" --nodes=1 --ntasks=1 bash -lc \
   "hostname -I | tr ' ' '\\n' | awk '/^10.23./ {print; exit}'")
-MASTER_PORT=$(${SRUN} --het-group=0 --overlap --nodes=1 --ntasks=1 \
+MASTER_PORT=$("${srun_prefix[@]}" --nodes=1 --ntasks=1 \
   /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 - <<'PY'
 import socket
 s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()
 PY
 )
 export REPO MODEL TRAJECTORIES PROBE_OUT MASTER_ADDR MASTER_PORT
-FRAGMENT_SPECS=${FSDP_FRAGMENT_SPECS:-"0:0:1:8 1:1:1:8 2:2:2:8 3:4:4:8"}
-read -r -a fragment_specs <<<"${FRAGMENT_SPECS}"
-: >"${RUN_ROOT}/topology.txt"
-for spec in "${fragment_specs[@]}"; do
-  IFS=: read -r group _offset tasks _cpus <<<"${spec}"
-  node_variable="SLURM_JOB_NODELIST_HET_GROUP_${group}"
-  printf '%s:%s@%s\n' "${group}" "${tasks}" "${!node_variable}" \
-    >>"${RUN_ROOT}/topology.txt"
-done
+if [[ "${FSDP_SINGLE_COMPONENT:-0}" == 1 ]]; then
+  printf '0:8@%s\n' "${SLURM_JOB_NODELIST}" >"${RUN_ROOT}/topology.txt"
+  export RANK_OFFSET=0
+  "${SRUN}" --overlap --kill-on-bad-exit=1 --nodes=1 --ntasks=8 \
+    --ntasks-per-node=8 --cpus-per-task=8 \
+    bash "${REPO}/experiments/training/rl/run_actor_memory_probe_rank.sh" \
+    >"${RUN_ROOT}/group0.log" 2>&1
+else
+  FRAGMENT_SPECS=${FSDP_FRAGMENT_SPECS:-"0:0:1:8 1:1:1:8 2:2:2:8 3:4:4:8"}
+  read -r -a fragment_specs <<<"${FRAGMENT_SPECS}"
+  : >"${RUN_ROOT}/topology.txt"
+  for spec in "${fragment_specs[@]}"; do
+    IFS=: read -r group _offset tasks _cpus <<<"${spec}"
+    node_variable="SLURM_JOB_NODELIST_HET_GROUP_${group}"
+    printf '%s:%s@%s\n' "${group}" "${tasks}" "${!node_variable}" \
+      >>"${RUN_ROOT}/topology.txt"
+  done
 
-pids=()
-for spec in "${fragment_specs[@]}"; do
-  IFS=: read -r group offset tasks cpus <<<"${spec}"
-  (
-    export RANK_OFFSET=${offset}
-    "${SRUN}" --het-group="${group}" --overlap --kill-on-bad-exit=1 \
-      --nodes=1 --ntasks="${tasks}" --ntasks-per-node="${tasks}" --cpus-per-task="${cpus}" \
-      bash "${REPO}/experiments/training/rl/run_actor_memory_probe_rank.sh" \
-      >"${RUN_ROOT}/group${group}.log" 2>&1
-  ) &
-  pids+=("$!")
-done
-rc=0
-for pid in "${pids[@]}"; do wait "${pid}" || rc=1; done
-[[ "${rc}" == 0 ]]
+  pids=()
+  for spec in "${fragment_specs[@]}"; do
+    IFS=: read -r group offset tasks cpus <<<"${spec}"
+    (
+      export RANK_OFFSET=${offset}
+      "${SRUN}" --het-group="${group}" --overlap --kill-on-bad-exit=1 \
+        --nodes=1 --ntasks="${tasks}" --ntasks-per-node="${tasks}" --cpus-per-task="${cpus}" \
+        bash "${REPO}/experiments/training/rl/run_actor_memory_probe_rank.sh" \
+        >"${RUN_ROOT}/group${group}.log" 2>&1
+    ) &
+    pids+=("$!")
+  done
+  rc=0
+  for pid in "${pids[@]}"; do wait "${pid}" || rc=1; done
+  [[ "${rc}" == 0 ]]
+fi
 
 /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 - "${PROBE_OUT}" <<'PY'
 import json,sys

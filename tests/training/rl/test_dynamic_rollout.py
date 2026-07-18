@@ -240,6 +240,8 @@ def test_tiny_external_checkpoint_gate_is_multimodal_distributed_backward() -> N
     assert "gradient_checkpointing_enable" not in probe
     assert "TINY_FSDP_CHECKPOINT_OK" in launcher
     assert "FSDP_FRAGMENT_SPECS" in launcher
+    assert "FSDP_SINGLE_COMPONENT" in launcher
+    assert "--ntasks-per-node=8" in launcher
     assert '${REPO}/src:${REPO}:${REPO}/external/VAGEN' in rank_runner
 
 
@@ -268,12 +270,26 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     assert "external/VAGEN/verl" in rank_runner
     assert launcher.count("#SBATCH hetjob") == 3
     assert "FSDP_FRAGMENT_SPECS" in launcher
+    assert "FSDP_SINGLE_COMPONENT" in launcher
+    assert "--ntasks-per-node=8" in launcher
     assert 'IFS=: read -r group offset tasks cpus' in launcher
     assert "#SBATCH --nodelist=" not in launcher
     assert "#SBATCH --exclude=" not in launcher
     assert 'assert max(peaks.values()) < 70.0' in launcher
     assert 'assert all(row["history_images"]==20' in launcher
     assert 'assert all(row["policy_tokens"]==9' in launcher
+
+
+def test_human_selected_preempt_dgx38_hold_is_one_component() -> None:
+    hold = Path(
+        "experiments/training/rl/hold_world8_preempt_dgx38.slurm"
+    ).read_text(encoding="utf-8")
+    assert hold.count("#SBATCH hetjob") == 0
+    assert "#SBATCH --partition=preempt" in hold
+    assert "#SBATCH --nodelist=dgx-38" in hold
+    assert "#SBATCH --ntasks=8" in hold
+    assert "#SBATCH --gres=gpu:8" in hold
+    assert 'bash "${stage_dir}/command.sh"' in hold
 
 
 def test_world8_8x1_hold_is_one_maximally_flexible_allocation() -> None:
