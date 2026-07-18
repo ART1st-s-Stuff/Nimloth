@@ -33,8 +33,8 @@ from nimloth.training.rl.verl_gate import (
 
 EXPECTED_TRANSFORMERS = "4.55.4"
 EXPECTED_TORCH_PREFIX = "2.8.0"
-EXPECTED_VAGEN = "84f4736e4d23314a05d7dcfd3710a94b9ed7278d"
-EXPECTED_VERL = "0280dd7af1de3d80565dba142d2179cfb029945d"
+EXPECTED_VAGEN = "896aac145732de81f1a3b656f21ac687b84de6c6"
+EXPECTED_VERL = "dbca62d9227874ac44720ae1c9deb94165274abe"
 
 
 def _git_head(path: Path) -> str:
