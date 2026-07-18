@@ -98,6 +98,34 @@ def test_prepare_transformers449_view_hardlinks_complete_checkpoint(tmp_path: Pa
     assert json.loads((output / "nimloth_verl_view.json").read_text(encoding="utf-8")) == manifest
 
 
+def test_transformers449_key_coverage_allows_only_tied_lm_head_alias() -> None:
+    from nimloth.training.rl.verl_checkpoint import validate_checkpoint_key_coverage
+
+    report = validate_checkpoint_key_coverage(
+        model_keys={"model.embed_tokens.weight", "lm_head.weight", "model.layer.weight"},
+        checkpoint_keys={"model.embed_tokens.weight", "model.layer.weight"},
+        tie_word_embeddings=True,
+    )
+    assert report == {
+        "model_key_count": 3,
+        "checkpoint_key_count": 2,
+        "missing_keys": ["lm_head.weight"],
+        "unexpected_keys": [],
+    }
+    with pytest.raises(ValueError, match="checkpoint key coverage"):
+        validate_checkpoint_key_coverage(
+            model_keys={"model.embed_tokens.weight", "lm_head.weight"},
+            checkpoint_keys={"model.embed_tokens.weight"},
+            tie_word_embeddings=False,
+        )
+    with pytest.raises(ValueError, match="checkpoint key coverage"):
+        validate_checkpoint_key_coverage(
+            model_keys={"model.embed_tokens.weight"},
+            checkpoint_keys={"model.embed_tokens.weight", "unexpected.weight"},
+            tie_word_embeddings=True,
+        )
+
+
 def test_prepare_transformers449_view_rejects_missing_or_existing_artifacts(
     tmp_path: Path,
 ) -> None:

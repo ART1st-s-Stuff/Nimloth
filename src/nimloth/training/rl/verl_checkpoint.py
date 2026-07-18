@@ -98,6 +98,83 @@ def translate_qwen25vl_config_for_transformers449(
     return source
 
 
+def validate_checkpoint_key_coverage(
+    *,
+    model_keys: set[str],
+    checkpoint_keys: set[str],
+    tie_word_embeddings: bool,
+) -> dict[str, Any]:
+    """Reject all state-key differences except an explicitly tied lm_head alias."""
+
+    missing = sorted(model_keys - checkpoint_keys)
+    unexpected = sorted(checkpoint_keys - model_keys)
+    allowed_missing = ["lm_head.weight"] if tie_word_embeddings else []
+    if missing != allowed_missing or unexpected:
+        raise ValueError(
+            "Transformers 4.49 checkpoint key coverage mismatch: "
+            f"missing={missing[:20]}, unexpected={unexpected[:20]}"
+        )
+    return {
+        "model_key_count": len(model_keys),
+        "checkpoint_key_count": len(checkpoint_keys),
+        "missing_keys": missing,
+        "unexpected_keys": unexpected,
+    }
+
+
+def validate_transformers449_checkpoint_view(
+    checkpoint_dir: str | Path,
+) -> dict[str, Any]:
+    """Run the pinned 4.49 config, processor, and meta-model compatibility gate."""
+
+    import transformers
+    from accelerate import init_empty_weights
+    from transformers import (
+        AutoConfig,
+        AutoProcessor,
+        Qwen2_5_VLForConditionalGeneration,
+    )
+
+    if transformers.__version__ != _TARGET_TRANSFORMERS_VERSION:
+        raise RuntimeError(
+            "VERL compatibility validation requires transformers==4.49.0; "
+            f"got {transformers.__version__}"
+        )
+    checkpoint = Path(checkpoint_dir).expanduser().resolve()
+    manifest = _load_json(checkpoint / "nimloth_verl_view.json")
+    if manifest.get("protocol_version") != _PROTOCOL_VERSION:
+        raise ValueError("unsupported or missing Nimloth VERL checkpoint view protocol")
+    config = AutoConfig.from_pretrained(checkpoint, trust_remote_code=False)
+    if getattr(config, "text_config", None) is not None:
+        raise ValueError("Transformers 4.49 compatibility config must be flat")
+    processor = AutoProcessor.from_pretrained(
+        checkpoint, use_fast=True, trust_remote_code=False
+    )
+    with init_empty_weights():
+        model = Qwen2_5_VLForConditionalGeneration(config)
+    index = _load_json(checkpoint / "model.safetensors.index.json")
+    coverage = validate_checkpoint_key_coverage(
+        model_keys=set(model.state_dict()),
+        checkpoint_keys=set(index["weight_map"]),
+        tie_word_embeddings=bool(config.tie_word_embeddings),
+    )
+    report = {
+        "protocol_version": _PROTOCOL_VERSION,
+        "transformers_version": transformers.__version__,
+        "model_class": type(model).__name__,
+        "model_type": config.model_type,
+        "vocab_size": int(config.vocab_size),
+        "tokenizer_length": len(processor.tokenizer),
+        **coverage,
+    }
+    if report["tokenizer_length"] != report["vocab_size"]:
+        raise ValueError(
+            "VERL checkpoint tokenizer/config vocab mismatch: "
+            f"{report['tokenizer_length']} != {report['vocab_size']}"
+        )
+    return report
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
