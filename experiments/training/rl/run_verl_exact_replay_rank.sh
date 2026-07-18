@@ -14,7 +14,10 @@ set -euo pipefail
 
 export RANK=${RANK:-${SLURM_PROCID:?missing RANK/SLURM_PROCID}}
 export WORLD_SIZE=${WORLD_SIZE:-${SLURM_NTASKS:?missing WORLD_SIZE/SLURM_NTASKS}}
-export LOCAL_RANK=${LOCAL_RANK:-${SLURM_LOCALID:?missing LOCAL_RANK/SLURM_LOCALID}}
+export SLURM_TASK_LOCAL_RANK=${SLURM_LOCALID:?missing SLURM_LOCALID}
+# srun --gpus-per-task=1 remaps each task's sole GPU to CUDA ordinal zero.
+# SLURM_LOCALID remains 0..7 and must not be passed to torch.cuda.set_device.
+export LOCAL_RANK=0
 export LOCAL_WORLD_SIZE=${LOCAL_WORLD_SIZE:-${SLURM_NTASKS_PER_NODE:-1}}
 
 VERL_ROOT=${REPO}/external/VAGEN/verl

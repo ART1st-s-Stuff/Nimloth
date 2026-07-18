@@ -68,7 +68,10 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
     ).read_text(encoding="utf-8")
     assert ".venv-vagen-main/bin/python3" in rank_runner
     assert "SLURM_PROCID" in rank_runner
-    assert "SLURM_LOCALID" in rank_runner
+    assert "SLURM_TASK_LOCAL_RANK" in rank_runner
+    assert "export LOCAL_RANK=0" in rank_runner
+    assert "torch.cuda.set_device(0)" in runner
+    assert "one remapped CUDA device at ordinal0" in runner
     assert "MASTER_ADDR" in rank_runner
     assert "MASTER_PORT" in rank_runner
     assert "external/VAGEN/verl" in rank_runner

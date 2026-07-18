@@ -128,7 +128,13 @@ def main() -> None:
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
     rank = int(os.environ["RANK"])
-    torch.cuda.set_device(local_rank)
+    visible_cuda_devices = torch.cuda.device_count()
+    if visible_cuda_devices != 1 or local_rank != 0:
+        raise RuntimeError(
+            "exact replay Slurm tasks require one remapped CUDA device at ordinal0; "
+            f"device_count={visible_cuda_devices}, local_rank={local_rank}"
+        )
+    torch.cuda.set_device(0)
     if world_size < 2:
         raise RuntimeError("exact replay full-worker gate requires distributed FSDP")
 
