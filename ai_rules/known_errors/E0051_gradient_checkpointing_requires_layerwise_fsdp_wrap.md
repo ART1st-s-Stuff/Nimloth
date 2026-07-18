@@ -8,6 +8,8 @@ ID27将actor和critic改为Qwen decoder layer及vision block的layer-wise FSDP a
 
 Transformers 4.55的`GradientCheckpointingLayer.__call__`在Qwen block内部建立`partial(super().__call__)`的non-reentrant checkpoint。该checkpoint位于已经进入的FSDP unit内部，重算没有重放同一个wrapper-level执行边界。
 
+VAGEN确实为actor和critic都设置了`enable_gradient_checkpointing=True`及`use_reentrant=False`，但其VERL固定`transformers==4.49.0`。4.49的Qwen实现由外层model loop checkpoint `decoder_layer.__call__`；FSDP auto-wrap替换layer后，重算会重新进入FSDP wrapper。Nimloth服务器环境是Transformers4.55.4/PyTorch2.8，不能把VAGEN配置名相同视为执行边界相同。
+
 ## 正确做法
 
 - 禁用Qwen/Hugging Face block内部的gradient checkpointing。
