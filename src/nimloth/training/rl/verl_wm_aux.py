@@ -180,7 +180,11 @@ def compute_verl_wm_auxiliary_loss(
         "use_cache": False,
     }
     with torch.autocast(device_type=input_ids.device.type, dtype=torch.bfloat16):
-        hidden, _ = _capture_last_hidden(actor_module, model_inputs)
+        hidden, model_output = _capture_last_hidden(actor_module, model_inputs)
+    # Latents come from a forward hook, outside the FSDP root's returned output
+    # tree. Keep a zero-valued dependency on returned logits so FSDP's root
+    # pre-backward hook enters FORWARD_BACKWARD before parameter hooks fire.
+    fsdp_backward_anchor = model_output.logits.sum() * 0.0
 
     positions = micro_batch["wm_latent_positions"].long()
     actions = micro_batch["wm_action_indices"].long()
@@ -222,13 +226,16 @@ def compute_verl_wm_auxiliary_loss(
         dummy_loss = wm_auxiliary_module(
             dummy_hidden, dummy_hidden.detach(), dummy_action
         )
-        zero = hidden.sum() * 0.0 + dummy_loss * 0.0
+        zero = hidden.sum() * 0.0 + dummy_loss * 0.0 + fsdp_backward_anchor
         return zero, {"wm_mse": 0.0, "wm_transitions": 0.0}
 
     current_hidden = torch.stack(current_rows, dim=0)
     next_hidden = torch.stack(next_rows, dim=0)
     action_tensor = torch.stack(action_rows).to(device=hidden.device, dtype=torch.long)
-    wm_loss = wm_auxiliary_module(current_hidden, next_hidden, action_tensor)
+    wm_loss = (
+        wm_auxiliary_module(current_hidden, next_hidden, action_tensor)
+        + fsdp_backward_anchor
+    )
     metrics = {
         "wm_mse": float(wm_loss.detach().item()),
         "wm_transitions": float(len(current_rows)),

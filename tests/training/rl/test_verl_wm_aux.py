@@ -102,6 +102,10 @@ def test_pinned_verl_actor_calls_and_checkpoints_wm_auxiliary() -> None:
     assert "scaled_wm_loss.backward()" in actor
     assert "policy_no_sync = self.actor_module.no_sync()" in actor
     assert "self.wm_optimizer.step()" in actor
+    wm_aux_source = Path(
+        "src/nimloth/training/rl/verl_wm_aux.py"
+    ).read_text(encoding="utf-8")
+    assert "fsdp_backward_anchor = model_output.logits.sum() * 0.0" in wm_aux_source
     worker = Path(
         "external/VAGEN/verl/verl/workers/fsdp_workers.py"
     ).read_text(encoding="utf-8")
