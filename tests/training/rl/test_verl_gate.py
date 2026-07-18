@@ -51,14 +51,26 @@ def test_zero_warmup_scheduler_patch_preserves_first_optimizer_lr(
     from nimloth.training.rl.verl_gate import install_verl_zero_warmup_scheduler_patch
     from verl.utils import torch_functional
 
-    original = torch_functional.get_constant_schedule_with_warmup
+    from torch.optim.lr_scheduler import LambdaLR
+
+    def pinned_broken_schedule(optimizer, num_warmup_steps, last_epoch=-1):
+        return LambdaLR(
+            optimizer,
+            lambda step: min(
+                1, float(step) / float(max(1, num_warmup_steps))
+            ),
+            last_epoch,
+        )
+
     parameter = torch.nn.Parameter(torch.tensor(1.0))
-    optimizer = torch.optim.AdamW([parameter], lr=1e-5)
-    original(optimizer, num_warmup_steps=0)
-    assert optimizer.param_groups[0]["lr"] == 0.0
+    broken_optimizer = torch.optim.AdamW([parameter], lr=1e-5)
+    pinned_broken_schedule(broken_optimizer, num_warmup_steps=0)
+    assert broken_optimizer.param_groups[0]["lr"] == 0.0
 
     monkeypatch.setattr(
-        torch_functional, "get_constant_schedule_with_warmup", original
+        torch_functional,
+        "get_constant_schedule_with_warmup",
+        pinned_broken_schedule,
     )
     install_verl_zero_warmup_scheduler_patch()
     fixed_optimizer = torch.optim.AdamW([parameter], lr=1e-5)
