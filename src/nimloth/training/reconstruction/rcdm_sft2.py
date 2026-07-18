@@ -12,6 +12,7 @@ import csv
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -148,9 +149,37 @@ def _load_frozen_sft2_modules(args: argparse.Namespace, device: torch.device):
     )
     model.resize_token_embeddings(len(processor.tokenizer))
     if base_checkpoint != args.model:
-        from peft import PeftModel
+        from nimloth.backbone.qwen_tuning import (
+            LLM_LORA_TARGETS,
+            VISION_LORA_TARGETS,
+            configure_qwen_tuning,
+        )
+        from nimloth.training.sft2.checkpoint import load_lora_adapter_state
 
-        model = PeftModel.from_pretrained(model, args.model, is_trainable=False)
+        adapter_config = json.loads(
+            (args.model / "adapter_config.json").read_text(encoding="utf-8")
+        )
+        targets = set(adapter_config.get("target_modules") or [])
+        llm_tune = "lora" if targets.intersection(LLM_LORA_TARGETS) else "freeze"
+        vision_tune = "lora" if targets.intersection(VISION_LORA_TARGETS) else "freeze"
+        if llm_tune == vision_tune == "freeze":
+            raise ValueError(f"PEFT checkpoint has no supported Qwen LoRA targets: {args.model}")
+        model = configure_qwen_tuning(
+            model,
+            SimpleNamespace(
+                lora=False,
+                llm_tune=llm_tune,
+                vision_tune=vision_tune,
+                lora_r=int(adapter_config["r"]),
+                lora_alpha=int(adapter_config["lora_alpha"]),
+                lora_dropout=float(adapter_config.get("lora_dropout", 0.0)),
+                gradient_checkpointing=False,
+            ),
+        )
+        # Do not call PeftModel.from_pretrained after process-group setup:
+        # PEFT 0.19 unconditionally imports a newer Transformers TP API in
+        # distributed mode. Recreate the exact topology, then load state.
+        load_lora_adapter_state(model, args.model)
     model.to(device)
     ema_metadata = None
     vision_ema_path = args.model / "vision_ema.pt"
