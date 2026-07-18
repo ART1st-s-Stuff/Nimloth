@@ -1070,6 +1070,96 @@ def test_independent_qwen_token_critic_has_per_token_gradients() -> None:
     assert torch.isfinite(critic.score.weight.grad).all()
 
 
+def test_lora_checkpoint_dropout_context_must_cover_backward() -> None:
+    from types import SimpleNamespace
+
+    from transformers import Qwen2_5_VLConfig, Qwen2_5_VLForConditionalGeneration
+
+    from nimloth.backbone.qwen_tuning import configure_qwen_tuning
+    from nimloth.training.rl.fsdp import apply_qwen_activation_checkpointing
+    from nimloth.training.rl.trainer import _temporary_deterministic_train
+
+    config = Qwen2_5_VLConfig(
+        text_config={
+            "vocab_size": 64,
+            "hidden_size": 16,
+            "intermediate_size": 32,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 2,
+            "head_dim": 8,
+            "max_position_embeddings": 64,
+            "attention_dropout": 0.0,
+            "rope_scaling": {
+                "rope_type": "default",
+                "type": "default",
+                "mrope_section": [1, 1, 2],
+            },
+        },
+        vision_config={
+            "depth": 1,
+            "hidden_size": 16,
+            "intermediate_size": 32,
+            "num_heads": 2,
+            "in_channels": 3,
+            "patch_size": 2,
+            "spatial_merge_size": 1,
+            "temporal_patch_size": 1,
+            "out_hidden_size": 16,
+        },
+        image_token_id=60,
+        video_token_id=61,
+        vision_start_token_id=62,
+        vision_end_token_id=63,
+    )
+
+    def build_model():
+        model = Qwen2_5_VLForConditionalGeneration(config).float()
+        model = configure_qwen_tuning(
+            model,
+            SimpleNamespace(
+                lora=False,
+                llm_tune="lora",
+                vision_tune="freeze",
+                lora_r=4,
+                lora_alpha=8,
+                lora_dropout=0.2,
+                gradient_checkpointing=True,
+            ),
+        )
+        apply_qwen_activation_checkpointing(model)
+        model.train()
+        return model
+
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    attention_mask = torch.ones_like(input_ids)
+    broken = build_model()
+    with _temporary_deterministic_train(broken):
+        broken_loss = broken(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=False,
+        ).logits.float().square().mean()
+    with pytest.raises(torch.utils.checkpoint.CheckpointError):
+        broken_loss.backward()
+
+    fixed = build_model()
+    with _temporary_deterministic_train(fixed):
+        fixed_loss = fixed(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=False,
+        ).logits.float().square().mean()
+        fixed_loss.backward()
+    lora_grads = [
+        parameter.grad
+        for name, parameter in fixed.named_parameters()
+        if "lora_" in name and parameter.requires_grad
+    ]
+    assert lora_grads
+    assert all(grad is not None and torch.isfinite(grad).all() for grad in lora_grads)
+
+
 def test_masked_gae_assigns_token_specific_vagen_advantages() -> None:
     from nimloth.training.rl.loss import compute_masked_gae_advantage_return
 
