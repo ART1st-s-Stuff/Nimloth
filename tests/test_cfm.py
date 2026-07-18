@@ -117,6 +117,14 @@ def test_query_hidden_manifest_resolves_eight_condition_tokens() -> None:
     }
     assert resolve_condition_token_shape(manifest) == (8, 2048)
     assert resolve_condition_token_shape({"cond_dim": 1024}) == (1, 1024)
+    assert resolve_condition_token_shape(
+        {"cond_dim": 8192, "representation": "projected"},
+        token_count_override=8,
+    ) == (8, 1024)
+    with pytest.raises(ValueError, match="does not divide"):
+        resolve_condition_token_shape(
+            {"cond_dim": 8192}, token_count_override=7
+        )
 
 
 def test_legacy_cfm_initialization_loads_shape_compatible_body(tmp_path) -> None:

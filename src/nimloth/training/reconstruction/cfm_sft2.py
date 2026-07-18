@@ -119,6 +119,7 @@ def _checkpoint_invariants(
         "train_items": int(train_split.states.shape[0]),
         "val_items": int(val_split.states.shape[0]),
         "latent_token_count": int(args.latent_token_count),
+        "condition_token_count_override": int(args.condition_token_count),
         "condition_dropout": float(args.condition_dropout),
         "init_legacy_cfm_checkpoint": (
             str(args.init_legacy_cfm_checkpoint)
@@ -240,14 +241,24 @@ def initialize_from_legacy_cfm(
     }
 
 
-def resolve_condition_token_shape(manifest: dict[str, Any]) -> tuple[int, int]:
+def resolve_condition_token_shape(
+    manifest: dict[str, Any], *, token_count_override: int = 0
+) -> tuple[int, int]:
+    flat_dim = int(manifest["cond_dim"])
+    if token_count_override:
+        if token_count_override < 1 or flat_dim % token_count_override:
+            raise ValueError(
+                "condition token count must divide the flat condition dimension: "
+                f"{token_count_override} does not divide {flat_dim}"
+            )
+        return token_count_override, flat_dim // token_count_override
     representation = str(manifest.get("representation", "projected"))
     state_shape = tuple(int(value) for value in manifest.get("state_shape", []))
     if representation == "qwen_query_hidden":
         if len(state_shape) != 2:
             raise ValueError(f"qwen_query_hidden cache needs [K,D] state_shape, got {state_shape}")
         return state_shape
-    return 1, int(manifest["cond_dim"])
+    return 1, flat_dim
 
 
 def _init_wandb(args: argparse.Namespace, metadata: dict[str, Any]):
@@ -500,8 +511,14 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
     condition_dim = int(train_split.states.shape[1])
     if val_split.states.shape[1] != condition_dim:
         raise ValueError("CFM train/val condition dimensions differ")
-    token_count, token_dim = resolve_condition_token_shape(train_split.manifest)
-    val_token_shape = resolve_condition_token_shape(val_split.manifest)
+    token_count, token_dim = resolve_condition_token_shape(
+        train_split.manifest,
+        token_count_override=args.condition_token_count,
+    )
+    val_token_shape = resolve_condition_token_shape(
+        val_split.manifest,
+        token_count_override=args.condition_token_count,
+    )
     if val_token_shape != (token_count, token_dim) or token_count * token_dim != condition_dim:
         raise ValueError(
             "CFM cache token shape mismatch: "
@@ -822,6 +839,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--latent-token-count", type=int, default=8)
+    parser.add_argument(
+        "--condition-token-count",
+        type=int,
+        default=0,
+        help=(
+            "Override only the CFM view of the flat condition. For example, "
+            "Projected8192 with value8 becomes eight1024-d tokens while the source "
+            "cache remains one Projected State. Zero preserves the cache-native view."
+        ),
+    )
     parser.add_argument("--image-size", type=int, default=128)
     parser.add_argument("--base-channels", type=int, default=64)
     parser.add_argument("--condition-dim", type=int, default=256)
