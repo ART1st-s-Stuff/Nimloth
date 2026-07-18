@@ -285,7 +285,7 @@ def test_world8_8x1_hold_is_one_maximally_flexible_allocation() -> None:
     assert hold.count("#SBATCH --gres=gpu:1") == 8
     assert hold.count("#SBATCH --mem=64G") == 8
     assert "#SBATCH --nodelist=" not in hold
-    assert "#SBATCH --exclude=" not in hold
+    assert hold.count("#SBATCH --exclude=dgx-29,dgx-32") == 8
     assert 'for group in 0 1 2 3 4 5 6 7; do' in hold
     assert 'bash "${stage_dir}/command.sh"' in hold
 

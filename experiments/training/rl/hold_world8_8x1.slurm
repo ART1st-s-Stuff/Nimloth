@@ -8,6 +8,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
+#SBATCH --exclude=dgx-29,dgx-32
 #SBATCH hetjob
 #SBATCH --job-name=rl-world8-hold
 #SBATCH --account=peilab
@@ -18,6 +19,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
+#SBATCH --exclude=dgx-29,dgx-32
 #SBATCH hetjob
 #SBATCH --job-name=rl-world8-hold
 #SBATCH --account=peilab
@@ -28,6 +30,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
+#SBATCH --exclude=dgx-29,dgx-32
 #SBATCH hetjob
 #SBATCH --job-name=rl-world8-hold
 #SBATCH --account=peilab
@@ -38,6 +41,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
+#SBATCH --exclude=dgx-29,dgx-32
 #SBATCH hetjob
 #SBATCH --job-name=rl-world8-hold
 #SBATCH --account=peilab
@@ -48,6 +52,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
+#SBATCH --exclude=dgx-29,dgx-32
 #SBATCH hetjob
 #SBATCH --job-name=rl-world8-hold
 #SBATCH --account=peilab
@@ -58,6 +63,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
+#SBATCH --exclude=dgx-29,dgx-32
 #SBATCH hetjob
 #SBATCH --job-name=rl-world8-hold
 #SBATCH --account=peilab
@@ -68,6 +74,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
+#SBATCH --exclude=dgx-29,dgx-32
 #SBATCH hetjob
 #SBATCH --job-name=rl-world8-hold
 #SBATCH --account=peilab
@@ -78,6 +85,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
+#SBATCH --exclude=dgx-29,dgx-32
 # One bash allocation for all world8 resources. Actual probes are atomically
 # published as next_stage.sh and run via nested srun without releasing GPUs.
 set -euo pipefail
