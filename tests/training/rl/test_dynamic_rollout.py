@@ -211,10 +211,11 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     ).read_text(encoding="utf-8")
     assert "trajectory.num_steps < 20" in probe
     assert "_temporary_deterministic_train" in probe
-    assert "loss.backward()" in probe
-    assert "torch.cuda.max_memory_reserved" in probe
+    assert "actor_loss.backward()" in probe
+    assert "critic_loss.backward()" in probe
+    assert "steady_actor_peak_reserved_gib" in probe
     assert launcher.count("#SBATCH hetjob") == 3
-    assert 'assert peak < 70.0' in launcher
+    assert 'assert max(peaks.values()) < 70.0' in launcher
     assert 'assert all(row["history_images"]==20' in launcher
     assert 'assert all(row["policy_tokens"]==9' in launcher
 

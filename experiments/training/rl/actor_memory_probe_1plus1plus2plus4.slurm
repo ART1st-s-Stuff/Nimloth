@@ -98,7 +98,15 @@ rows=[json.loads(path.read_text()) for path in paths]
 assert [row["rank"] for row in rows]==list(range(8))
 assert all(row["history_images"]==20 for row in rows)
 assert all(row["policy_tokens"]==9 for row in rows)
-peak=max(row["peak_reserved_gib"] for row in rows)
-assert peak < 70.0, peak
-print(json.dumps({"status":"ALL_OK","max_peak_reserved_gib":peak,"ranks":rows}))
+assert all(row["critic_tokens"]==9 for row in rows)
+peaks={
+    key:max(row[key] for row in rows)
+    for key in (
+        "first_actor_peak_reserved_gib",
+        "critic_peak_reserved_gib",
+        "steady_actor_peak_reserved_gib",
+    )
+}
+assert max(peaks.values()) < 70.0, peaks
+print(json.dumps({"status":"ALL_OK","max_peaks_gib":peaks,"ranks":rows}))
 PY

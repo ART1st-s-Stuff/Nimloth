@@ -15,6 +15,10 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from nimloth.backbone.qwen_tuning import configure_qwen_tuning
 from nimloth.latent.extraction import add_special_tokens, special_token_ids
 from nimloth.training.rl.rollout import RolloutTrajectory, validate_rl_policy_protocol
+from nimloth.training.rl.token_critic import (
+    compute_token_values_for_batch,
+    load_independent_qwen_critic,
+)
 from nimloth.training.rl.trainer import (
     _temporary_deterministic_train,
     compute_policy_token_stats_for_batch,
@@ -115,22 +119,74 @@ def main() -> int:
         "taken_action_idx": trajectory.action_indices[step],
     }
 
+    actor_optimizer = torch.optim.AdamW(
+        [parameter for parameter in model.parameters() if parameter.requires_grad],
+        lr=1e-6,
+    )
+
+    def actor_step() -> tuple[float, list[int]]:
+        actor_optimizer.zero_grad(set_to_none=True)
+        with _temporary_deterministic_train(model):
+            log_probs, entropies, counts = compute_policy_token_stats_for_batch(
+                [item],
+                model,
+                processor,
+                token_id_map,
+                device,
+                history_window=112,
+                temperature=args.temperature,
+                latent_token_count=latent_token_count,
+            )
+            actor_loss = -log_probs.mean() - 0.01 * entropies.mean()
+        actor_loss.backward()
+        model.clip_grad_norm_(1.0)
+        actor_optimizer.step()
+        return float(actor_loss.detach().item()), counts
+
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
-    model.zero_grad(set_to_none=True)
-    with _temporary_deterministic_train(model):
-        log_probs, entropies, token_counts = compute_policy_token_stats_for_batch(
+    first_actor_loss, token_counts = actor_step()
+    first_actor_peak = torch.cuda.max_memory_reserved(device) / 2**30
+
+    critic = load_independent_qwen_critic(
+        args.model,
+        dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",
+        gradient_checkpointing=True,
+    ).to(device)
+    critic_embedding = critic.get_input_embeddings()
+    if getattr(critic_embedding, "padding_idx", None) is not None:
+        critic_embedding.padding_idx = None
+    critic = FSDP(
+        critic,
+        device_id=torch.cuda.current_device(),
+        sharding_strategy=ShardingStrategy.FULL_SHARD,
+        sync_module_states=True,
+        use_orig_params=True,
+    )
+    critic_optimizer = torch.optim.AdamW(critic.parameters(), lr=1e-5)
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(device)
+    critic_optimizer.zero_grad(set_to_none=True)
+    with _temporary_deterministic_train(critic):
+        predicted_values, critic_counts = compute_token_values_for_batch(
             [item],
-            model,
+            critic,
             processor,
             token_id_map,
             device,
             history_window=112,
-            temperature=args.temperature,
             latent_token_count=latent_token_count,
         )
-        loss = -log_probs.mean() - 0.01 * entropies.mean()
-    loss.backward()
+        critic_loss = predicted_values.square().mean()
+    critic_loss.backward()
+    critic.clip_grad_norm_(1.0)
+    critic_optimizer.step()
+    critic_peak = torch.cuda.max_memory_reserved(device) / 2**30
+
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(device)
+    steady_actor_loss, steady_counts = actor_step()
     torch.cuda.synchronize(device)
     result = {
         "rank": rank,
@@ -138,10 +194,24 @@ def main() -> int:
         "step": step,
         "history_images": len(item["image_history_paths"]),
         "policy_tokens": token_counts[0],
-        "loss": float(loss.detach().item()),
-        "peak_allocated_gib": torch.cuda.max_memory_allocated(device) / 2**30,
-        "peak_reserved_gib": torch.cuda.max_memory_reserved(device) / 2**30,
+        "critic_tokens": critic_counts[0],
+        "first_actor_loss": first_actor_loss,
+        "steady_actor_loss": steady_actor_loss,
+        "critic_loss": float(critic_loss.detach().item()),
+        "first_actor_peak_reserved_gib": first_actor_peak,
+        "critic_peak_reserved_gib": critic_peak,
+        "steady_actor_peak_allocated_gib": (
+            torch.cuda.max_memory_allocated(device) / 2**30
+        ),
+        "steady_actor_peak_reserved_gib": (
+            torch.cuda.max_memory_reserved(device) / 2**30
+        ),
     }
+    if critic_counts != token_counts or steady_counts != token_counts:
+        raise RuntimeError(
+            "actor/critic token counts changed during memory probe: "
+            f"actor={token_counts}, critic={critic_counts}, steady={steady_counts}"
+        )
     (args.output_dir / f"rank_{rank:05d}.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
