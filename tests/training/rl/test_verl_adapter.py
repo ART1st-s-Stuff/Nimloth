@@ -102,6 +102,30 @@ def test_build_verl_replay_dataproto_preserves_scaffold_and_masks() -> None:
         for value in data.non_tensor_batch["multi_modal_inputs"]
     )
 
+    from vagen.trainer.ppo.ray_trainer import (
+        AdvantageEstimator,
+        compute_advantage,
+    )
+
+    data.batch["token_level_rewards"] = data.batch["token_level_scores"].clone()
+    data.batch["values"] = torch.zeros_like(data.batch["token_level_scores"])
+    compute_advantage(
+        data,
+        AdvantageEstimator.MASKED_GAE,
+        gamma=1.0,
+        lam=1.0,
+    )
+    response_loss_mask = data.batch["loss_mask"][:, -5:].bool()
+    assert torch.isfinite(data.batch["advantages"]).all()
+    assert torch.equal(
+        data.batch["advantages"].masked_select(~response_loss_mask),
+        torch.zeros_like(data.batch["advantages"].masked_select(~response_loss_mask)),
+    )
+    assert torch.equal(
+        data.batch["returns"].masked_select(~response_loss_mask),
+        torch.zeros_like(data.batch["returns"].masked_select(~response_loss_mask)),
+    )
+
 
 def test_verl_replay_rejects_reward_or_loss_on_prompt_and_empty_policy_mask() -> None:
     from nimloth.training.rl.verl_adapter import (
