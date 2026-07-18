@@ -3,6 +3,22 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def test_transformers455_token_critic_avoids_removed_verl_constants() -> None:
+    from nimloth.training.rl.verl_critic_455 import (
+        Qwen2_5_VLForTokenClassification,
+    )
+
+    assert Qwen2_5_VLForTokenClassification.__name__ == (
+        "Qwen2_5_VLForTokenClassification"
+    )
+    source = Path(
+        "src/nimloth/training/rl/verl_critic_455.py"
+    ).read_text(encoding="utf-8")
+    assert "Qwen2_5_VL_START_DOCSTRING" not in source
+    assert "self.model = Qwen2_5_VLModel(config)" in source
+    assert "config.text_config.hidden_size" in source
+
+
 def test_exact_replay_worker_config_is_full_actor_ref_critic() -> None:
     from nimloth.training.rl.verl_gate import build_exact_replay_worker_config
 
@@ -56,6 +72,7 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
     assert 'role="actor"' in runner
     assert 'role="ref"' in runner
     assert "CriticWorker" in runner
+    assert "_install_transformers455_critic_patch()" in runner
     assert "build_verl_replay_row_from_trajectory" in runner
     assert "compute_log_prob" in runner
     assert "compute_ref_log_prob" in runner

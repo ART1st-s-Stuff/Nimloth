@@ -9,6 +9,8 @@ import json
 import math
 import os
 import subprocess
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +85,17 @@ def _assert_tied_embeddings(module, *, role: str) -> None:
         raise RuntimeError(
             f"{role} lm_head is not tied to input embeddings; random/missing head forbidden"
         )
+
+
+def _install_transformers455_critic_patch() -> None:
+    from nimloth.training.rl.verl_critic_455 import (
+        Qwen2_5_VLForTokenClassification,
+    )
+
+    module_name = "verl.models.transformers.modeling_qwen_2_5_vl_patch"
+    module = types.ModuleType(module_name)
+    module.Qwen2_5_VLForTokenClassification = Qwen2_5_VLForTokenClassification
+    sys.modules[module_name] = module
 
 
 def _load_trajectory(path: Path, index: int) -> RolloutTrajectory:
@@ -221,6 +234,7 @@ def main() -> None:
     reference_before = _module_fingerprint(reference.ref_module_fsdp)
     ref_output = reference.compute_ref_log_prob(copy.deepcopy(replay))
 
+    _install_transformers455_critic_patch()
     critic = CriticWorker(config=copy.deepcopy(config.critic))
     critic.init_model()
     critic_before = _module_fingerprint(critic.critic_module)

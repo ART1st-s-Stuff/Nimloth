@@ -44,7 +44,8 @@ Pinned VAGEN/VERL：VAGEN `e7cc2d0`，VERL `6531615`。
 - ID29 normal8 full-worker exact replay gate在模型加载前terminal失败：未初始化VERL submodule的空目录通过了`Path.exists()`，`git -C`向上解析成父repo后报commit mismatch。0模型forward/optimizer/checkpoint/W&B；E0053已要求检查`verl/__init__.py`。
 - ID30通过E0053 gate，但同样在模型加载前terminal失败：`srun --gpus-per-task=1`将每task GPU映射为CUDA ordinal0，而wrapper错误使用`SLURM_LOCALID=0..7`。E0054固定task内`LOCAL_RANK=0`；8-task preflight已验证8个唯一H800 UUID。
 - ID31在shard load0%时发现共享`flower/.env`覆盖显式W&B project，立即取消；E0055固定source secret后恢复显式project/name/run-id。
-- ID32八rank完整读取actor shards后，在FSDP前VERL内部barrier报NCCL invalid ordinal；同时4.55 loader随机初始化缺失`lm_head`。0 FSDP/forward/update/W&B。后续direct collective确认即使显式device ID，one-GPU-per-task隔离仍失败；E0056改为单Slurm task持有8GPU并在其内torchrun8 child，E0057强制/验证actor/ref tied embeddings。
+- ID32八rank完整读取actor shards后，在FSDP前VERL内部barrier报NCCL invalid ordinal；同时4.55 loader随机初始化缺失`lm_head`。后续direct collective确认one-GPU-per-task隔离仍失败；E0056改为单Slurm task持有8GPU并在其内torchrun8 child，E0057强制/验证actor/ref tied embeddings。
+- torchrun8 NCCL direct gate通过。ID33完成tied-head full actor语言+视觉FSDP、真实1670-token多模态PPO-old及immutable ref FSDP/ref log-prob；critic构建前因旧VERL patch导入4.55已删除常量而失败。E0058新增4.55-native `Qwen2_5_VLModel + scalar score` token critic。
 - 尚未接入在线rollout或WM auxiliary；full worker仍待修复后的direct gate，当前不可启动正式VERL训练。
 
 ## 证据位置
