@@ -2,7 +2,7 @@
 
 正式RL后端已决定迁移为**VERL + full actor/full critic**。本目录原有自写trainer只保留diagnostic用途，不再用于quality pilot；下面旧管线约束仍作为数据和语义审计依据。
 
-`verl_adapter.py`负责把Nimloth完整token序列转换成VERL `DataProto`：sampled thought/action mask1，latent queries与action delimiters mask0，reward放在最后一个采样action token，并保留mRoPE position IDs和multimodal inputs。当前已完成exact replay tensor/DataProto/Masked-GAE单元gate；在线rollout与WM auxiliary worker仍在迁移中，未完成前禁止提交VERL训练。
+`verl_adapter.py`负责把一个完整多轮episode转换成一个VERL `DataProto` row：完整system/user/assistant/image transcript作为response，sampled thought/action mask1，latent queries、action delimiters、chat/environment scaffold mask0，每轮reward放在对应采样action token，terminal reward加到最后action，并保留mRoPE、multimodal inputs和审计文本。禁止按turn拆row，否则masked-GAE无法把后续turn reward归因给前面turn。当前Transformers4.55.4 exact replay/Masked-GAE CPU gate已通过；在线rollout与WM auxiliary worker仍在迁移中，未完成前禁止提交VERL训练。
 
 ## 协议边界
 
