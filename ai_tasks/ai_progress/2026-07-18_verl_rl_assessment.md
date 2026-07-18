@@ -33,6 +33,13 @@ Pinned VAGEN/VERL：VAGEN `e7cc2d0`，VERL `6531615`。
 5. 扩展VERL actor worker以加入StateProjector/WM auxiliary loss及其checkpoint；禁止迁移时静默丢弃world-model目标。
 6. 修复teacher thought数据并产生新merged SFT2 init后，才允许quality baseline/pilot；mechanics适配可先用明确标记为非质量来源的临时init。
 
+## 当前实现进度
+
+- `src/nimloth/training/rl/verl_adapter.py`已实现严格`VerlReplayRow`与`DataProto`batch：prompt左pad、response右pad、1D/3D mRoPE、multimodal对象、turn reward和loss/GAE mask。
+- Nimloth response固定为`sampled thought + latent queries + action_start + sampled action + action_end`；仅thought/action mask1，reward与end marker放在最后采样action位置。
+- Pinned VAGEN `compute_advantage(MASKED_GAE)`直接兼容测试通过；whiten后mask外advantage可有filler值，actor loss仍必须应用loss mask，mask外return保持0。
+- Server完整RL+SFT1测试`91 passed, 3 warnings`。尚未接入在线rollout、full actor worker或WM auxiliary，当前不可启动VERL训练。
+
 ## 证据位置
 
 - `external/VAGEN/vagen/trainer/ppo/ray_trainer.py`

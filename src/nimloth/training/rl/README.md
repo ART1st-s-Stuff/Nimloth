@@ -1,6 +1,8 @@
 # RL 训练管线
 
-动态在线模式：Qwen policy 与 VAGEN navigation 环境交互，保存可逐字重放的轨迹，再更新 action policy、WM predictor 和 value head。
+正式RL后端已决定迁移为**VERL + full actor/full critic**。本目录原有自写trainer只保留diagnostic用途，不再用于quality pilot；下面旧管线约束仍作为数据和语义审计依据。
+
+`verl_adapter.py`负责把Nimloth完整token序列转换成VERL `DataProto`：sampled thought/action mask1，latent queries与action delimiters mask0，reward放在最后一个采样action token，并保留mRoPE position IDs和multimodal inputs。当前已完成exact replay tensor/DataProto/Masked-GAE单元gate；在线rollout与WM auxiliary worker仍在迁移中，未完成前禁止提交VERL训练。
 
 ## 协议边界
 
