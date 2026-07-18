@@ -42,6 +42,12 @@ def test_transformers455_token_critic_avoids_removed_verl_constants() -> None:
     assert "Qwen2_5_VL_START_DOCSTRING" not in source
     assert "self.model = Qwen2_5_VLModel(config)" in source
     assert "config.text_config.hidden_size" in source
+    assert "_checkpoint_conversion_mapping = dict(" in source
+    worker = Path(
+        "external/VAGEN/verl/verl/workers/fsdp_workers.py"
+    ).read_text(encoding="utf-8")
+    assert "output_loading_info=True" in worker
+    assert "Qwen2.5-VL critic checkpoint coverage failed" in worker
 
 
 def test_zero_warmup_scheduler_patch_preserves_first_optimizer_lr(

@@ -100,6 +100,7 @@ def test_pinned_verl_actor_calls_and_checkpoints_wm_auxiliary() -> None:
     ).read_text(encoding="utf-8")
     assert "compute_verl_wm_auxiliary_loss" in actor
     assert "scaled_wm_loss.backward()" in actor
+    assert "policy_no_sync = self.actor_module.no_sync()" in actor
     assert "self.wm_optimizer.step()" in actor
     worker = Path(
         "external/VAGEN/verl/verl/workers/fsdp_workers.py"

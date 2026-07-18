@@ -8,7 +8,11 @@ import sys
 import types
 import torch
 from torch import nn
-from transformers import Qwen2_5_VLModel, Qwen2_5_VLPreTrainedModel
+from transformers import (
+    Qwen2_5_VLForConditionalGeneration,
+    Qwen2_5_VLModel,
+    Qwen2_5_VLPreTrainedModel,
+)
 from transformers.modeling_outputs import TokenClassifierOutput
 
 
@@ -26,6 +30,12 @@ def install_verl_transformers455_critic_patch() -> None:
 
 
 class Qwen2_5_VLForTokenClassification(Qwen2_5_VLPreTrainedModel):
+    # Transformers4.55 checkpoints still store the pre-refactor flat keys
+    # (model.layers.*, visual.*). Reuse the causal model's official mapping so
+    # the critic does not silently random-initialize its entire backbone.
+    _checkpoint_conversion_mapping = dict(
+        Qwen2_5_VLForConditionalGeneration._checkpoint_conversion_mapping
+    )
     """Qwen2.5-VL backbone with one scalar value per input token.
 
     Transformers 4.55 moved vision and language modules under
