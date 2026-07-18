@@ -60,7 +60,7 @@ ${SLURM}/srun \
   --gpus=8 \
   --cpus-per-task=96 \
   --kill-on-bad-exit=1 \
-  --export="ALL,REPO=${REPO},EXPECTED_COMMIT=${EXPECTED_COMMIT},MODEL=${MODEL},TRAJECTORY_JSONL=${TRAJECTORY_JSONL},TRAJECTORY_INDEX=${TRAJECTORY_INDEX:-0},OUTPUT_DIR=${OUTPUT_DIR},MAX_TOKEN_LENGTH=${MAX_TOKEN_LENGTH:-8192},WANDB_PROJECT=${WANDB_PROJECT},WANDB_RUN_NAME=${WANDB_RUN_NAME},WANDB_RUN_ID=${WANDB_RUN_ID},MASTER_ADDR=${MASTER_ADDR},MASTER_PORT=${MASTER_PORT},WORLD_SIZE=8" \
+  --export="ALL,REPO=${REPO},EXPECTED_COMMIT=${EXPECTED_COMMIT},MODEL=${MODEL},TRAJECTORY_JSONL=${TRAJECTORY_JSONL},TRAJECTORY_INDEX=${TRAJECTORY_INDEX:-0},OUTPUT_DIR=${OUTPUT_DIR},MAX_TOKEN_LENGTH=${MAX_TOKEN_LENGTH:-8192},RESUME_CHECKPOINT_ROOT=${RESUME_CHECKPOINT_ROOT:-},RESUME_RESULT=${RESUME_RESULT:-},SAVE_GLOBAL_STEP=${SAVE_GLOBAL_STEP:-1},WANDB_PROJECT=${WANDB_PROJECT},WANDB_RUN_NAME=${WANDB_RUN_NAME},WANDB_RUN_ID=${WANDB_RUN_ID},MASTER_ADDR=${MASTER_ADDR},MASTER_PORT=${MASTER_PORT},WORLD_SIZE=8" \
   bash "${REPO}/experiments/training/rl/run_verl_exact_replay_torchrun.sh" \
   2>&1 | tee -a "${LOG}"
 STATUS=${PIPESTATUS[0]}
@@ -70,15 +70,17 @@ if [[ ${STATUS} -ne 0 ]]; then
   exit "${STATUS}"
 fi
 
-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 - "${OUTPUT_DIR}" <<'PY'
+/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 - "${OUTPUT_DIR}" "${SAVE_GLOBAL_STEP:-1}" <<'PY'
 import json
 import pathlib
 import sys
 root = pathlib.Path(sys.argv[1])
+global_step = int(sys.argv[2])
 result = json.loads((root / "result.json").read_text())
 assert result["status"] == "VERL_EXACT_REPLAY_ALL_OK", result
+assert result["save_global_step"] == global_step, result
 for role in ("actor", "critic"):
-    checkpoint = root / "checkpoints" / "global_step_1" / role
+    checkpoint = root / "checkpoints" / f"global_step_{global_step}" / role
     for prefix in ("model", "optim", "extra_state"):
         files = list(checkpoint.glob(f"{prefix}_world_size_8_rank_*.pt"))
         assert len(files) == 8, (role, prefix, len(files))

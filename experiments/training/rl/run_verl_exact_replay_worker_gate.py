@@ -141,7 +141,19 @@ def main() -> None:
     parser.add_argument("--wandb-project", required=True)
     parser.add_argument("--wandb-run-name", required=True)
     parser.add_argument("--wandb-run-id", required=True)
+    parser.add_argument("--resume-checkpoint-root", type=Path)
+    parser.add_argument("--resume-result", type=Path)
+    parser.add_argument("--save-global-step", type=int, default=1)
     args = parser.parse_args()
+
+    if (args.resume_checkpoint_root is None) != (args.resume_result is None):
+        raise RuntimeError(
+            "resume checkpoint root and source result must be provided together"
+        )
+    if args.save_global_step <= 0:
+        raise RuntimeError("save global step must be positive")
+    if args.resume_checkpoint_root is None and args.save_global_step != 1:
+        raise RuntimeError("fresh exact replay gate must save global_step_1")
 
     if args.wandb_project != "nimloth-rl":
         raise RuntimeError(
@@ -240,7 +252,44 @@ def main() -> None:
     )
     actor.init_model()
     _assert_tied_embeddings(actor.actor_module, role="actor")
+    actor_fresh = _module_fingerprint(actor.actor_module_fsdp)
+    resume_report = None
+    resume_root = None
+    if args.resume_checkpoint_root is not None:
+        resume_root = args.resume_checkpoint_root.resolve()
+        resume_result = args.resume_result.resolve()
+        if not resume_root.is_dir() or not resume_result.is_file():
+            raise RuntimeError("resume checkpoint/result path is missing")
+        resume_report = json.loads(resume_result.read_text(encoding="utf-8"))
+        if resume_report.get("status") != "VERL_EXACT_REPLAY_ALL_OK":
+            raise RuntimeError("resume source result is not a successful exact replay")
+        if Path(resume_report.get("checkpoint_root", "")).resolve() != resume_root:
+            raise RuntimeError("resume source result/checkpoint root mismatch")
+        if int(resume_report.get("world_size", -1)) != world_size:
+            raise RuntimeError("resume source world size mismatch")
+        try:
+            source_global_step = int(resume_root.name.removeprefix("global_step_"))
+        except ValueError as error:
+            raise RuntimeError("resume checkpoint root must be named global_step_<n>") from error
+        if args.save_global_step != source_global_step + 1:
+            raise RuntimeError(
+                "resumed exact replay must save the next global step: "
+                f"source={source_global_step}, requested={args.save_global_step}"
+            )
+        for role in ("actor", "critic"):
+            for prefix in ("model", "optim", "extra_state"):
+                for source_rank in range(world_size):
+                    source_file = (
+                        resume_root
+                        / role
+                        / f"{prefix}_world_size_{world_size}_rank_{source_rank}.pt"
+                    )
+                    if not source_file.is_file():
+                        raise RuntimeError(f"resume checkpoint is incomplete: {source_file}")
+        actor.load_checkpoint(str(resume_root / "actor"), del_local_after_load=False)
     actor_before = _module_fingerprint(actor.actor_module_fsdp)
+    if resume_report is not None and actor_before != resume_report["actor_after"]:
+        raise RuntimeError("resumed actor fingerprint does not match source result")
     if actor_before["trainable_numel"] != actor_before["parameter_numel"]:
         raise RuntimeError("full actor gate found frozen actor parameters")
     old_output = actor.compute_log_prob(copy.deepcopy(replay))
@@ -263,7 +312,12 @@ def main() -> None:
     _install_transformers455_critic_patch()
     critic = CriticWorker(config=copy.deepcopy(config.critic))
     critic.init_model()
+    critic_fresh = _module_fingerprint(critic.critic_module)
+    if resume_root is not None:
+        critic.load_checkpoint(str(resume_root / "critic"), del_local_after_load=False)
     critic_before = _module_fingerprint(critic.critic_module)
+    if resume_report is not None and critic_before != resume_report["critic_after"]:
+        raise RuntimeError("resumed critic fingerprint does not match source result")
     if critic_before["trainable_numel"] != critic_before["parameter_numel"]:
         raise RuntimeError("full critic gate found frozen critic parameters")
     values_output = critic.compute_values(copy.deepcopy(replay))
@@ -315,6 +369,20 @@ def main() -> None:
     critic_after = _module_fingerprint(critic.critic_module)
     gathered_step_audits: list[Any] = [None] * world_size
     dist.all_gather_object(gathered_step_audits, critic_step_audit)
+    for source_rank, rank_audit in enumerate(gathered_step_audits):
+        if len(rank_audit) != 1:
+            raise RuntimeError(
+                f"rank{source_rank} expected one critic optimizer step, got {rank_audit}"
+            )
+        step_audit = rank_audit[0]
+        if (
+            step_audit["state_step_min"] != float(args.save_global_step)
+            or step_audit["state_step_max"] != float(args.save_global_step)
+        ):
+            raise RuntimeError(
+                f"rank{source_rank} critic optimizer state did not reach "
+                f"step{args.save_global_step}: {step_audit}"
+            )
     if rank == 0:
         print(
             "CRITIC_UPDATE_AUDIT="
@@ -352,17 +420,17 @@ def main() -> None:
     if reference_after != reference_before:
         raise RuntimeError("immutable reference parameters changed")
 
-    checkpoint_root = output / "checkpoints" / "global_step_1"
+    checkpoint_root = output / "checkpoints" / f"global_step_{args.save_global_step}"
     actor.save_checkpoint(
         str(checkpoint_root / "actor"),
         hdfs_path=None,
-        global_step=1,
+        global_step=args.save_global_step,
         remove_previous_ckpt=False,
     )
     critic.save_checkpoint(
         str(checkpoint_root / "critic"),
         hdfs_path=None,
-        global_step=1,
+        global_step=args.save_global_step,
         remove_previous_ckpt=False,
     )
     dist.barrier()
@@ -380,8 +448,10 @@ def main() -> None:
         "trajectory_id": trajectory.record_id,
         "trajectory_turns": trajectory.num_steps,
         "sequence_tokens": int(row.input_ids.numel()),
+        "actor_fresh_before_resume": actor_fresh,
         "actor_before": actor_before,
         "actor_after": actor_after,
+        "critic_fresh_before_resume": critic_fresh,
         "critic_before": critic_before,
         "critic_after": critic_after,
         "reference_before": reference_before,
@@ -390,7 +460,11 @@ def main() -> None:
         "replay_audit": audit,
         "actor_metrics": _json_value(actor_metrics.meta_info.get("metrics", {})),
         "critic_metrics": _json_value(critic_metrics.meta_info.get("metrics", {})),
+        "critic_optimizer_step_audit": gathered_step_audits,
         "checkpoint_root": str(checkpoint_root),
+        "resume_checkpoint_root": str(resume_root) if resume_root is not None else None,
+        "resume_source_result": str(args.resume_result.resolve()) if args.resume_result else None,
+        "save_global_step": args.save_global_step,
     }
     if rank == 0:
         (output / "result.json").write_text(
@@ -418,14 +492,14 @@ def main() -> None:
         )
         run.log(
             {
-                "global_step": 1,
+                "global_step": args.save_global_step,
                 "gate/policy_tokens": audit["policy_tokens"],
                 "gate/sequence_tokens": int(row.input_ids.numel()),
                 "gate/old_ref_max_delta": audit["max_abs_old_ref_delta"],
                 "gate/old_ref_mean_low_var_kl": audit["mean_low_var_kl"],
                 "gate/actor_log_prob_change": actor_log_prob_change,
             },
-            step=1,
+            step=args.save_global_step,
         )
         run.summary["status"] = report["status"]
         run.finish()

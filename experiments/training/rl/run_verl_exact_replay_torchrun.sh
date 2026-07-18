@@ -45,6 +45,16 @@ export WANDB_RUN_NAME=${_REQUESTED_WANDB_RUN_NAME}
 export WANDB_RUN_ID=${_REQUESTED_WANDB_RUN_ID}
 unset _REQUESTED_WANDB_PROJECT _REQUESTED_WANDB_RUN_NAME _REQUESTED_WANDB_RUN_ID
 
+EXTRA_ARGS=(--save-global-step "${SAVE_GLOBAL_STEP:-1}")
+if [[ -n "${RESUME_CHECKPOINT_ROOT:-}" || -n "${RESUME_RESULT:-}" ]]; then
+  : "${RESUME_CHECKPOINT_ROOT:?set both resume paths}"
+  : "${RESUME_RESULT:?set both resume paths}"
+  EXTRA_ARGS+=(
+    --resume-checkpoint-root "${RESUME_CHECKPOINT_ROOT}"
+    --resume-result "${RESUME_RESULT}"
+  )
+fi
+
 # One Slurm task owns all eight GPUs. torchrun children see CUDA ordinals0..7,
 # which is required by NCCL peer access on this cluster.
 exec /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
@@ -63,4 +73,5 @@ exec /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
   --max-token-length "${MAX_TOKEN_LENGTH:-8192}" \
   --wandb-project "${WANDB_PROJECT}" \
   --wandb-run-name "${WANDB_RUN_NAME}" \
-  --wandb-run-id "${WANDB_RUN_ID}"
+  --wandb-run-id "${WANDB_RUN_ID}" \
+  "${EXTRA_ARGS[@]}"

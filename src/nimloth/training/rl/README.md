@@ -2,7 +2,7 @@
 
 正式RL后端已决定迁移为**VERL + full actor/full critic**。本目录原有自写trainer只保留diagnostic用途，不再用于quality pilot；下面旧管线约束仍作为数据和语义审计依据。
 
-`verl_adapter.py`负责把一个完整多轮episode转换成一个VERL `DataProto` row：完整system/user/assistant/image transcript作为response，sampled thought/action mask1，latent queries、action delimiters、chat/environment scaffold mask0，每轮reward放在对应采样action token，terminal reward加到最后action，并保留mRoPE、multimodal inputs和审计文本。禁止按turn拆row，否则masked-GAE无法把后续turn reward归因给前面turn。Transformers4.55.4 ID39 world8 exact-replay gate已完成full actor、immutable ref、4.55-native full token critic、masked-GAE、actor/critic更新及完整checkpoint。该gate只证明离线mechanics；在线rollout、StateProjector、WM predictor和WM auxiliary worker仍未接入，完成前禁止把结果描述为正式VERL RL或quality训练。
+`verl_adapter.py`负责把一个完整多轮episode转换成一个VERL `DataProto` row：完整system/user/assistant/image transcript作为response，sampled thought/action mask1，latent queries、action delimiters、chat/environment scaffold mask0，每轮reward放在对应采样action token，terminal reward加到最后action，并保留mRoPE、multimodal inputs和审计文本。禁止按turn拆row，否则masked-GAE无法把后续turn reward归因给前面turn。Transformers4.55.4 ID39 world8 exact-replay gate已完成full actor、immutable ref、4.55-native full token critic、masked-GAE、actor/critic更新及完整checkpoint。该gate只证明离线mechanics；runner现支持以成功`result.json + checkpoint_root`成对fail-closed加载actor/critic model、optimizer与scheduler，并在更新前核对source fingerprint，供独立resume identity验证。在线rollout、StateProjector、WM predictor和WM auxiliary worker仍未接入，完成前禁止把结果描述为正式VERL RL或quality训练。
 
 ## 协议边界
 
