@@ -205,6 +205,7 @@ def test_dynamic_4211_launcher_has_no_stale_trainer_node_rules() -> None:
 
 def test_qwen_fsdp_policy_wraps_text_and_vision_blocks() -> None:
     from nimloth.training.rl.fsdp import (
+        ACTIVATION_CHECKPOINT_PROTOCOL,
         FSDP_WRAP_PROTOCOL,
         qwen25vl_transformer_auto_wrap_policy,
     )
@@ -215,6 +216,9 @@ def test_qwen_fsdp_policy_wraps_text_and_vision_blocks() -> None:
     }
     assert wrapped_names == {"Qwen2_5_VLDecoderLayer", "Qwen2_5_VLVisionBlock"}
     assert FSDP_WRAP_PROTOCOL == "qwen25vl-decoder-and-vision-block-v1"
+    assert ACTIVATION_CHECKPOINT_PROTOCOL == (
+        "qwen25vl-external-nonreentrant-block-wrapper-v1"
+    )
 
 
 def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None:
@@ -234,6 +238,8 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     assert "steady_actor_peak_reserved_gib" in probe
     assert "actor_fsdp_units" in probe
     assert "critic_fsdp_units" in probe
+    assert "apply_qwen_activation_checkpointing" in probe
+    assert ".gradient_checkpointing_enable(" not in probe
     assert '${REPO}/src:${REPO}:${REPO}/external/VAGEN' in rank_runner
     assert "external/VAGEN/verl" in rank_runner
     assert launcher.count("#SBATCH hetjob") == 3
@@ -983,9 +989,18 @@ def test_independent_qwen_token_critic_has_per_token_gradients() -> None:
         vision_start_token_id=62,
         vision_end_token_id=63,
     )
+    from nimloth.training.rl.fsdp import (
+        apply_qwen_activation_checkpointing,
+        count_activation_checkpoint_units,
+    )
+
     critic = IndependentQwenTokenCritic(config).float()
-    critic.gradient_checkpointing_enable(
-        gradient_checkpointing_kwargs={"use_reentrant": False}
+    wrapped = apply_qwen_activation_checkpointing(critic)
+    assert wrapped == 2
+    assert count_activation_checkpoint_units(critic) == 2
+    assert all(
+        not getattr(module, "gradient_checkpointing", False)
+        for module in critic.modules()
     )
     critic.train()
     input_ids = torch.tensor([[1, 2, 3, 4]])
