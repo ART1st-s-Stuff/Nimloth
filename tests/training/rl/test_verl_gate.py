@@ -204,8 +204,8 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
         "experiments/training/rl/run_verl_exact_replay_worker_gate.py"
     ).read_text(encoding="utf-8")
     assert 'EXPECTED_TRANSFORMERS = "4.55.4"' in runner
-    assert 'EXPECTED_VAGEN = "da67d16b' in runner
-    assert 'EXPECTED_VERL = "b2ee2b37' in runner
+    assert 'EXPECTED_VAGEN = "e00131c2' in runner
+    assert 'EXPECTED_VERL = "490a3cb5' in runner
     assert 'args.wandb_project != "nimloth-rl"' in runner
     assert "W&B run-id argument/environment mismatch" in runner
     assert '(verl_path / "verl/__init__.py").is_file()' in runner
