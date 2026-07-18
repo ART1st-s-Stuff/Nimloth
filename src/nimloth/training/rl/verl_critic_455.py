@@ -4,10 +4,25 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import sys
+import types
 import torch
 from torch import nn
 from transformers import Qwen2_5_VLModel, Qwen2_5_VLPreTrainedModel
 from transformers.modeling_outputs import TokenClassifierOutput
+
+
+def install_verl_transformers455_critic_patch() -> None:
+    """Install the 4.55 critic class under pinned VERL's expected module path."""
+
+    module_name = "verl.models.transformers.modeling_qwen_2_5_vl_patch"
+    existing = sys.modules.get(module_name)
+    if existing is not None and getattr(existing, "_nimloth_transformers455", False):
+        return
+    module = types.ModuleType(module_name)
+    module.Qwen2_5_VLForTokenClassification = Qwen2_5_VLForTokenClassification
+    module._nimloth_transformers455 = True
+    sys.modules[module_name] = module
 
 
 class Qwen2_5_VLForTokenClassification(Qwen2_5_VLPreTrainedModel):

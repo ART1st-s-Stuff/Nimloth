@@ -24,6 +24,40 @@ def install_verl_zero_warmup_scheduler_patch() -> None:
     torch_functional.get_constant_schedule_with_warmup = fixed_schedule
 
 
+def configure_nimloth_online_rollout(
+    config,
+    *,
+    latent_token_count: int,
+    max_think_tokens: int = 512,
+    use_service: bool = True,
+) -> None:
+    """Enable the strict staged inject manager on an existing VAGEN config."""
+    latent_token_count = int(latent_token_count)
+    max_think_tokens = int(max_think_tokens)
+    if latent_token_count < 1:
+        raise ValueError("online rollout latent_token_count must be >= 1")
+    if max_think_tokens < 1:
+        raise ValueError("online rollout max_think_tokens must be >= 1")
+    manager = config.rollout_manager
+    manager.use_service = bool(use_service)
+    manager.latent_token_count = latent_token_count
+    manager.latent_query_mode = "inject"
+    manager.max_think_tokens = max_think_tokens
+    manager.temperature = float(config.actor_rollout_ref.rollout.temperature)
+    if use_service:
+        manager.manager_class = None
+        manager.service_manager_class = (
+            "nimloth.training.rl.vagen_online_rollout."
+            "NimlothQwenVLRolloutManagerService"
+        )
+    else:
+        manager.service_manager_class = None
+        manager.manager_class = (
+            "nimloth.training.rl.vagen_online_rollout."
+            "NimlothQwenVLRolloutManager"
+        )
+
+
 def build_exact_replay_worker_config(
     base_config_path: str | Path,
     *,
@@ -58,6 +92,9 @@ def build_exact_replay_worker_config(
         config.data.train_batch_size = world_size
 
         config.actor_rollout_ref.model.path = model
+        config.actor_rollout_ref.model.external_lib = (
+            "nimloth.training.rl.verl_runtime_patch"
+        )
         config.actor_rollout_ref.model.enable_gradient_checkpointing = True
         config.actor_rollout_ref.model.use_remove_padding = False
         config.actor_rollout_ref.model.override_config = {
@@ -96,6 +133,7 @@ def build_exact_replay_worker_config(
         config.critic.strategy = "fsdp"
         config.critic.model.path = model
         config.critic.model.tokenizer_path = model
+        config.critic.model.external_lib = "nimloth.training.rl.verl_runtime_patch"
         config.critic.model.enable_gradient_checkpointing = True
         config.critic.model.use_remove_padding = False
         config.critic.model.override_config = {"use_cache": False}

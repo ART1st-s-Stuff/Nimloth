@@ -3,6 +3,29 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def test_verl_runtime_patch_installs_scheduler_and_critic_compatibility() -> None:
+    import sys
+
+    from nimloth.training.rl.verl_runtime_patch import (
+        install_nimloth_verl_runtime_patches,
+    )
+    from verl.utils import torch_functional
+
+    install_nimloth_verl_runtime_patches()
+    critic_patch = sys.modules[
+        "verl.models.transformers.modeling_qwen_2_5_vl_patch"
+    ]
+    assert critic_patch._nimloth_transformers455 is True
+    assert critic_patch.Qwen2_5_VLForTokenClassification.__module__ == (
+        "nimloth.training.rl.verl_critic_455"
+    )
+    assert getattr(
+        torch_functional.get_constant_schedule_with_warmup,
+        "_nimloth_zero_warmup_fixed",
+        False,
+    )
+
+
 def test_transformers455_token_critic_avoids_removed_verl_constants() -> None:
     from nimloth.training.rl.verl_critic_455 import (
         Qwen2_5_VLForTokenClassification,
@@ -45,6 +68,30 @@ def test_zero_warmup_scheduler_patch_preserves_first_optimizer_lr(
     assert fixed_optimizer.param_groups[0]["lr"] == pytest.approx(1e-5)
 
 
+def test_online_rollout_config_selects_strict_service_manager() -> None:
+    from omegaconf import OmegaConf
+
+    from nimloth.training.rl.verl_gate import configure_nimloth_online_rollout
+
+    config = OmegaConf.create(
+        {
+            "actor_rollout_ref": {"rollout": {"temperature": 0.7}},
+            "rollout_manager": {},
+        }
+    )
+    configure_nimloth_online_rollout(
+        config, latent_token_count=8, max_think_tokens=256, use_service=True
+    )
+    assert config.rollout_manager.latent_token_count == 8
+    assert config.rollout_manager.latent_query_mode == "inject"
+    assert config.rollout_manager.max_think_tokens == 256
+    assert config.rollout_manager.temperature == 0.7
+    assert config.rollout_manager.manager_class is None
+    assert config.rollout_manager.service_manager_class.endswith(
+        "NimlothQwenVLRolloutManagerService"
+    )
+
+
 def test_exact_replay_worker_config_is_full_actor_ref_critic() -> None:
     from nimloth.training.rl.verl_gate import build_exact_replay_worker_config
 
@@ -58,6 +105,9 @@ def test_exact_replay_worker_config_is_full_actor_ref_critic() -> None:
     assert config.algorithm.gamma == 1.0
     assert config.algorithm.lam == 1.0
     assert config.actor_rollout_ref.model.path == "/tmp/nimloth-k8-model"
+    assert config.actor_rollout_ref.model.external_lib == (
+        "nimloth.training.rl.verl_runtime_patch"
+    )
     assert config.actor_rollout_ref.model.enable_gradient_checkpointing is True
     assert config.actor_rollout_ref.model.use_remove_padding is False
     assert config.actor_rollout_ref.model.override_config.tie_word_embeddings is True
@@ -73,6 +123,7 @@ def test_exact_replay_worker_config_is_full_actor_ref_critic() -> None:
     assert config.actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu == 1
     assert config.critic.model.path == "/tmp/nimloth-k8-model"
     assert config.critic.model.tokenizer_path == "/tmp/nimloth-k8-model"
+    assert config.critic.model.external_lib == "nimloth.training.rl.verl_runtime_patch"
     assert config.critic.model.enable_gradient_checkpointing is True
     assert config.critic.model.use_remove_padding is False
     assert config.critic.ppo_mini_batch_size == 8
@@ -91,6 +142,8 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
         "experiments/training/rl/run_verl_exact_replay_worker_gate.py"
     ).read_text(encoding="utf-8")
     assert 'EXPECTED_TRANSFORMERS = "4.55.4"' in runner
+    assert 'EXPECTED_VAGEN = "84f4736e' in runner
+    assert 'EXPECTED_VERL = "0280dd7a' in runner
     assert 'args.wandb_project != "nimloth-rl"' in runner
     assert "W&B run-id argument/environment mismatch" in runner
     assert '(verl_path / "verl/__init__.py").is_file()' in runner

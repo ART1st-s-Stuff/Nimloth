@@ -9,8 +9,6 @@ import json
 import math
 import os
 import subprocess
-import sys
-import types
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +21,9 @@ from nimloth.training.rl.verl_adapter import (
     build_verl_replay_row_from_trajectory,
     finalize_verl_exact_replay_batch,
 )
+from nimloth.training.rl.verl_critic_455 import (
+    install_verl_transformers455_critic_patch as _install_transformers455_critic_patch,
+)
 from nimloth.training.rl.verl_gate import (
     build_exact_replay_worker_config,
     install_verl_zero_warmup_scheduler_patch,
@@ -31,8 +32,8 @@ from nimloth.training.rl.verl_gate import (
 
 EXPECTED_TRANSFORMERS = "4.55.4"
 EXPECTED_TORCH_PREFIX = "2.8.0"
-EXPECTED_VAGEN = "e7cc2d01584abcab1e49ba4a6b18ba2067fb6762"
-EXPECTED_VERL = "65316156d1011d71d62e0542e4b954f9499e872e"
+EXPECTED_VAGEN = "84f4736e4d23314a05d7dcfd3710a94b9ed7278d"
+EXPECTED_VERL = "0280dd7af1de3d80565dba142d2179cfb029945d"
 
 
 def _git_head(path: Path) -> str:
@@ -109,17 +110,6 @@ def _assert_tied_embeddings(module, *, role: str) -> None:
         raise RuntimeError(
             f"{role} lm_head is not tied to input embeddings; random/missing head forbidden"
         )
-
-
-def _install_transformers455_critic_patch() -> None:
-    from nimloth.training.rl.verl_critic_455 import (
-        Qwen2_5_VLForTokenClassification,
-    )
-
-    module_name = "verl.models.transformers.modeling_qwen_2_5_vl_patch"
-    module = types.ModuleType(module_name)
-    module.Qwen2_5_VLForTokenClassification = Qwen2_5_VLForTokenClassification
-    sys.modules[module_name] = module
 
 
 def _load_trajectory(path: Path, index: int) -> RolloutTrajectory:
