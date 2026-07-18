@@ -198,6 +198,7 @@ def test_pinned_vagen_verl_exposes_staged_rollout_hooks() -> None:
         "vllm_rollout_spmd.py"
     ).read_text(encoding="utf-8")
     assert "'response_lengths': response_lengths" in rollout
+    assert "max_response_per_turn is not None and 'max_tokens' not in kwargs" in rollout
     trainer = Path(
         "external/VAGEN/vagen/trainer/ppo/ray_trainer.py"
     ).read_text(encoding="utf-8")
