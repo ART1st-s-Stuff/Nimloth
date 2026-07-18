@@ -194,9 +194,18 @@ def compute_wm_latent_loss(
         # Enter through forward so DDP hooks and gradient synchronization remain active.
         pred = wm_predictor(state_ctx, action_ctx, valid_mask)
     mse = F.mse_loss(pred, target_emb)
+    identity_mse = F.mse_loss(state_emb, target_emb)
+    pred_cos = F.cosine_similarity(pred, target_emb, dim=-1).mean()
+    identity_cos = F.cosine_similarity(state_emb, target_emb, dim=-1).mean()
 
     sigreg_loss: torch.Tensor | None = None
-    metrics: dict[str, float] = {"wm_mse": float(mse.detach().item())}
+    metrics: dict[str, float] = {
+        "wm_mse": float(mse.detach().item()),
+        "wm_identity_mse": float(identity_mse.detach().item()),
+        "wm_gain_over_identity": float((identity_mse - mse).detach().item()),
+        "wm_pred_cos": float(pred_cos.detach().item()),
+        "wm_identity_cos": float(identity_cos.detach().item()),
+    }
     if sigreg_module is not None:
         if items is not None:
             # Trajectory-aware SIGReg: one (T_i, 1, D) input per trajectory.
