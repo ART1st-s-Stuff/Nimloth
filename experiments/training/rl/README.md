@@ -20,6 +20,7 @@ ID11 只保留 FSDP/checkpoint mechanics 证据；它的 rollout 丢失真实任
 |---|---|
 | `dynamic_env_server.slurm` | 当前 clean worktree/pinned VAGEN 的 AI2-THOR service |
 | `dynamic_env_preflight.slurm` | 单GPU bounded create+prompt+reset+schema+close gate；`/health`不能替代 |
+| `actor_memory_probe_1plus1plus2plus4.slurm` | 用真实20-turn轨迹依次执行actor step、独立critic step和带critic optimizer state的steady actor step，8 rank峰值须<70GiB |
 | `hold_dynamic_fsdp_k8_1124_env48.slurm` | 占位allocation；在同一8-trainer+1-env资源内顺序执行原子发布的baseline/pilot stage |
 | `dynamic_fsdp_k8_fragmented_4plus2plus1plus1_env48.slurm` | submit-time verified dgx09 rank0 + dynamic 1+2 + dgx27 4-GPU fragment + preflight-proven dgx48 env；支持smoke/baseline/pilot gates |
 | `dynamic_fsdp_k8_fragmented_5plus3_env48.slurm` | 历史ID20 attempt2入口；trainer动态但fragment形状不匹配后续空闲资源 |
@@ -31,7 +32,7 @@ ID11 只保留 FSDP/checkpoint mechanics 证据；它的 rollout 丢失真实任
 | `run_e2e_smoke.sh` | JSONL/FSDP mechanics test；不能替代真实 env integration |
 | `dynamic_fsdp_k8_smoke.yaml` | 两任务、最多两步的 corrected protocol smoke |
 | `dynamic_fsdp_k8_baseline20.yaml` | evaluation-only fixed-20 heldout baseline |
-| `dynamic_fsdp_k8_pilot.yaml` | fixed20通过后的quality pilot；长20-turn actor使用transition microbatch1，提交前仍须显存gate |
+| `dynamic_fsdp_k8_pilot.yaml` | fixed20后的quality pilot；schema4、VAGEN masked-GAE、独立full-Qwen token critic，actor/critic microbatch1，提交前须steady-state显存gate |
 
 旧 `diagnose_eval.py` / `debug_action.py` 已删除，因为它们会重建 taskless generic prompt，不能用于新的 baseline。
 
