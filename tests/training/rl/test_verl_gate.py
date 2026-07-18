@@ -77,7 +77,7 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
     assert 'dist.init_process_group(backend="nccl", device_id=process_device)' in runner
     assert "dist.barrier(device_ids=[local_rank])" in runner
     assert "random/missing head forbidden" in runner
-    assert "one remapped CUDA device at ordinal0" in runner
+    assert "single-node torchrun requires every process" in runner
     assert "MASTER_ADDR" in rank_runner
     assert "MASTER_PORT" in rank_runner
     assert "external/VAGEN/verl" in rank_runner
