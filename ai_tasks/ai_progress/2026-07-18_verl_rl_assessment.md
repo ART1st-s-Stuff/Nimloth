@@ -40,7 +40,9 @@ Pinned VAGEN/VERL：VAGEN `e7cc2d0`，VERL `6531615`。
 - 每轮Nimloth assistant response固定为`sampled thought + latent queries + action_start + sampled action + action_end`；仅thought/action mask1，reward与end marker放在对应采样action位置，terminal reward加到最后action。
 - VAGEN `compute_advantage(MASKED_GAE)`跨turn测试通过；whiten后mask外advantage可有filler值，actor loss仍必须应用loss mask，mask外return保持0。
 - 真实ID22两轮trajectory在当前Transformers4.55.4 processor下direct CPU gate：1670 sequence tokens、18 policy tokens、2 reward positions、reward sum0.02与trajectory一致、returns finite。
-- 人类明确要求暂不处理版本差异，继续当前`.venv-vagen-main` Transformers4.55.4；4.49 view仅为diagnostic。尚未接入在线rollout、full actor worker或WM auxiliary，当前不可启动VERL训练。
+- 人类明确要求暂不处理版本差异，继续当前`.venv-vagen-main` Transformers4.55.4；4.49 view仅为diagnostic。
+- ID29 normal8 full-worker exact replay gate在模型加载前terminal失败：未初始化VERL submodule的空目录通过了`Path.exists()`，`git -C`向上解析成父repo后报commit mismatch。0模型forward/optimizer/checkpoint/W&B；E0053已要求检查`verl/__init__.py`并使用新identity。
+- 尚未接入在线rollout或WM auxiliary；full worker仍待修复后的direct gate，当前不可启动正式VERL训练。
 
 ## 证据位置
 

@@ -47,6 +47,8 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
         "experiments/training/rl/run_verl_exact_replay_worker_gate.py"
     ).read_text(encoding="utf-8")
     assert 'EXPECTED_TRANSFORMERS = "4.55.4"' in runner
+    assert '(verl_path / "verl/__init__.py").is_file()' in runner
+    assert "VERL source tree is missing or uninitialized" in runner
     assert "ActorRolloutRefWorker" in runner
     assert 'role="actor"' in runner
     assert 'role="ref"' in runner

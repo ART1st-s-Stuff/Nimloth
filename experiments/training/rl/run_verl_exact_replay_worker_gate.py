@@ -113,11 +113,13 @@ def main() -> None:
     if _git_head(repo / "external/VAGEN") != EXPECTED_VAGEN:
         raise RuntimeError("VAGEN commit mismatch")
     verl_path = repo / "external/VAGEN/verl"
-    if not verl_path.exists():
+    if not (verl_path / "verl/__init__.py").is_file():
         shared_verl = Path(
             "/project/peilab/atst/nimloth/.worktree/vagen-legacy-wm-k8/external/VAGEN/verl"
         )
         verl_path = shared_verl
+    if not (verl_path / "verl/__init__.py").is_file():
+        raise RuntimeError("VERL source tree is missing or uninitialized")
     if _git_head(verl_path) != EXPECTED_VERL:
         raise RuntimeError("VERL commit mismatch")
 
