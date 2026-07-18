@@ -42,6 +42,37 @@ def test_exact_replay_worker_config_is_full_actor_ref_critic() -> None:
     assert config.rollout_manager.use_multi_turn_reward is True
 
 
+def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
+    runner = Path(
+        "experiments/training/rl/run_verl_exact_replay_worker_gate.py"
+    ).read_text(encoding="utf-8")
+    assert 'EXPECTED_TRANSFORMERS = "4.55.4"' in runner
+    assert "ActorRolloutRefWorker" in runner
+    assert 'role="actor"' in runner
+    assert 'role="ref"' in runner
+    assert "CriticWorker" in runner
+    assert "build_verl_replay_row_from_trajectory" in runner
+    assert "compute_log_prob" in runner
+    assert "compute_ref_log_prob" in runner
+    assert "compute_values" in runner
+    assert "finalize_verl_exact_replay_batch" in runner
+    assert "update_critic" in runner
+    assert "update_actor" in runner
+    assert "immutable reference parameters changed" in runner
+    assert "save_checkpoint" in runner
+    assert "VERL_EXACT_REPLAY_ALL_OK" in runner
+    rank_runner = Path(
+        "experiments/training/rl/run_verl_exact_replay_rank.sh"
+    ).read_text(encoding="utf-8")
+    assert ".venv-vagen-main/bin/python3" in rank_runner
+    assert "SLURM_PROCID" in rank_runner
+    assert "SLURM_LOCALID" in rank_runner
+    assert "MASTER_ADDR" in rank_runner
+    assert "MASTER_PORT" in rank_runner
+    assert "external/VAGEN/verl" in rank_runner
+    assert "run_verl_exact_replay_worker_gate.py" in rank_runner
+
+
 def test_exact_replay_worker_config_rejects_invalid_world_or_budget() -> None:
     import pytest
 
