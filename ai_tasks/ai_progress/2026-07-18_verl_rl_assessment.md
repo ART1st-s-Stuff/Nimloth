@@ -47,7 +47,7 @@ Pinned VAGEN/VERL：VAGEN `e7cc2d0`，VERL `6531615`。
 - ID32八rank完整读取actor shards后，在FSDP前VERL内部barrier报NCCL invalid ordinal；同时4.55 loader随机初始化缺失`lm_head`。后续direct collective确认one-GPU-per-task隔离仍失败；E0056改为单Slurm task持有8GPU并在其内torchrun8 child，E0057强制/验证actor/ref tied embeddings。
 - torchrun8 NCCL direct gate通过。ID33完成tied-head full actor语言+视觉FSDP、真实1670-token多模态PPO-old及immutable ref FSDP/ref log-prob；critic构建前因旧VERL patch导入4.55已删除常量而失败。E0058新增4.55-native token critic。
 - ID34进一步完成full critic FSDP、finite values和masked-GAE finalize；被错误跨精度阈值挡住。E0059改用实际mean low-var-KL判断parity并保留reference fingerprint immutability。
-- ID35/36的critic fingerprint均未变；fp32 master未修复。ID37确认`vf_loss=0.3625373`、`grad_norm=218.8685`、`lr=1e-5`均finite而post-worker fingerprint完全相同，已排除zero loss/grad/LR；下一gate审计AdamW.step即时参数变化、optimizer state及offload后module fingerprint。
+- ID35–37的critic fingerprint未变。ID38逐rank证实gradient非零、Adam state到step1但step即时参数不变；pinned VERL zero-warmup LambdaLR在构造时把首次optimizer LR设为0，metric1e-5仅是step后scheduler值。E0061在actor/critic构建前修复zero-warmup lambda。
 - 尚未接入在线rollout或WM auxiliary；full worker仍待修复后的direct gate，当前不可启动正式VERL训练。
 
 ## 证据位置

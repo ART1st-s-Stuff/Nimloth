@@ -5,6 +5,25 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def install_verl_zero_warmup_scheduler_patch() -> None:
+    """Make a zero-warmup pinned-VERL scheduler start at configured LR."""
+    from torch.optim.lr_scheduler import LambdaLR
+    from verl.utils import torch_functional
+
+    current = torch_functional.get_constant_schedule_with_warmup
+    if getattr(current, "_nimloth_zero_warmup_fixed", False):
+        return
+    original = current
+
+    def fixed_schedule(optimizer, num_warmup_steps: int, last_epoch: int = -1):
+        if num_warmup_steps == 0:
+            return LambdaLR(optimizer, lambda _step: 1.0, last_epoch)
+        return original(optimizer, num_warmup_steps, last_epoch)
+
+    fixed_schedule._nimloth_zero_warmup_fixed = True
+    torch_functional.get_constant_schedule_with_warmup = fixed_schedule
+
+
 def build_exact_replay_worker_config(
     base_config_path: str | Path,
     *,

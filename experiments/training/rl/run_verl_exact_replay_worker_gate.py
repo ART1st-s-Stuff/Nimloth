@@ -23,7 +23,10 @@ from nimloth.training.rl.verl_adapter import (
     build_verl_replay_row_from_trajectory,
     finalize_verl_exact_replay_batch,
 )
-from nimloth.training.rl.verl_gate import build_exact_replay_worker_config
+from nimloth.training.rl.verl_gate import (
+    build_exact_replay_worker_config,
+    install_verl_zero_warmup_scheduler_patch,
+)
 
 
 EXPECTED_TRANSFORMERS = "4.55.4"
@@ -153,6 +156,8 @@ def main() -> None:
 
     import transformers
     from transformers import AutoProcessor
+
+    install_verl_zero_warmup_scheduler_patch()
     from verl.workers.fsdp_workers import ActorRolloutRefWorker, CriticWorker
 
     if transformers.__version__ != EXPECTED_TRANSFORMERS:

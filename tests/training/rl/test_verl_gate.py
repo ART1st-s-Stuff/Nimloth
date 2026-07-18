@@ -19,6 +19,32 @@ def test_transformers455_token_critic_avoids_removed_verl_constants() -> None:
     assert "config.text_config.hidden_size" in source
 
 
+def test_zero_warmup_scheduler_patch_preserves_first_optimizer_lr(
+    monkeypatch,
+) -> None:
+    import pytest
+    import torch
+
+    from nimloth.training.rl.verl_gate import install_verl_zero_warmup_scheduler_patch
+    from verl.utils import torch_functional
+
+    original = torch_functional.get_constant_schedule_with_warmup
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.AdamW([parameter], lr=1e-5)
+    original(optimizer, num_warmup_steps=0)
+    assert optimizer.param_groups[0]["lr"] == 0.0
+
+    monkeypatch.setattr(
+        torch_functional, "get_constant_schedule_with_warmup", original
+    )
+    install_verl_zero_warmup_scheduler_patch()
+    fixed_optimizer = torch.optim.AdamW([parameter], lr=1e-5)
+    torch_functional.get_constant_schedule_with_warmup(
+        fixed_optimizer, num_warmup_steps=0
+    )
+    assert fixed_optimizer.param_groups[0]["lr"] == pytest.approx(1e-5)
+
+
 def test_exact_replay_worker_config_is_full_actor_ref_critic() -> None:
     from nimloth.training.rl.verl_gate import build_exact_replay_worker_config
 
