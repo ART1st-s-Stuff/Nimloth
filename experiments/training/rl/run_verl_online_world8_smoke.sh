@@ -45,7 +45,9 @@ export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
 export HOME=/project/peilab/atst/nimloth/.home
 export WANDB_DIR="${OUTPUT_DIR}/wandb"
 export TOKENIZERS_PARALLELISM=true
-export VLLM_ATTENTION_BACKEND=XFORMERS
+# xFormers 0.0.32.post1 disables its C++ extension under the pinned Torch 2.8;
+# use the separately installed and loadable FlashAttention 2.8.3 backend.
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 # The cluster /usr/bin/nvcc is an instructional Python stub, not a CUDA
 # compiler. Use vLLM's native Torch sampler instead of FlashInfer sampling JIT.
 export VLLM_USE_FLASHINFER_SAMPLER=0
