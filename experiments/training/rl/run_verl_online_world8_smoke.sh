@@ -104,7 +104,7 @@ cd "${REPO}/external/VAGEN"
   actor_rollout_ref.ref.fsdp_config.param_offload=true \
   actor_rollout_ref.ref.nimloth_parameter_audit=true \
   actor_rollout_ref.rollout.name=vllm \
-  actor_rollout_ref.rollout.tensor_model_parallel_size=8 \
+  actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
   actor_rollout_ref.rollout.dtype=bfloat16 \
   actor_rollout_ref.rollout.gpu_memory_utilization=0.2 \
   actor_rollout_ref.rollout.enforce_eager=true \

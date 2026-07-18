@@ -73,6 +73,7 @@ def test_online_launcher_uses_one_normal_8plus1_hold() -> None:
     assert "export PYTHONDONTWRITEBYTECODE=1" in launch
     assert "export PYTHONDONTWRITEBYTECODE=1" in run
     assert "nvidia-smi -L | wc -l" in launch
+    assert "actor_rollout_ref.rollout.tensor_model_parallel_size=4" in run
     assert "rollout_manager.max_turns=2" in run
     assert "rollout_manager.n_trajectory=8" in run
     assert "trainer.disable_validation=true" in run
