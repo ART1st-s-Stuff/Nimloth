@@ -67,14 +67,22 @@ for _ in $(seq 1 180); do
 done
 [[ -s "${OUTPUT_DIR}/env_url.txt" ]]
 ENV_URL=$(<"${OUTPUT_DIR}/env_url.txt")
-curl --fail --silent "${ENV_URL}/health" >/dev/null
 
-export PYTHONPATH="${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm:${PYTHONPATH:-}"
-"${PY}" "${REPO}/experiments/training/rl/preflight_dynamic_env.py" \
-  --env-url "${ENV_URL}" \
-  --output "${OUTPUT_DIR}/env_preflight.json" \
-  --eval-set base_train --seed 30002 --timeout 300 \
-  >"${OUTPUT_DIR}/env_preflight.log" 2>&1
+# The login node cannot reliably route compute-node 10.23 service addresses.
+# Run health/create/reset/close from the allocated trainer node instead.
+${SLURM}/srun --jobid="${HOLD_JOB}" --het-group=0 --overlap \
+  --nodes=1 --ntasks=1 --gpus=0 --cpus-per-task=4 --kill-on-bad-exit=1 \
+  --export="ALL,REPO=${REPO},ENV_URL=${ENV_URL},OUTPUT_DIR=${OUTPUT_DIR}" \
+  bash -lc '
+    set -euo pipefail
+    curl --fail --silent "${ENV_URL}/health" >/dev/null
+    export PYTHONPATH="${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm:${PYTHONPATH:-}"
+    /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
+      "${REPO}/experiments/training/rl/preflight_dynamic_env.py" \
+      --env-url "${ENV_URL}" \
+      --output "${OUTPUT_DIR}/env_preflight.json" \
+      --eval-set base_train --seed 30002 --timeout 300
+  ' >"${OUTPUT_DIR}/env_preflight.log" 2>&1
 
 echo "launch_time=$(date --iso-8601=seconds) hold=${HOLD_JOB} env=${ENV_URL}" \
   | tee "${OUTPUT_DIR}/topology.log"
