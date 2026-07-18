@@ -18,6 +18,7 @@ def test_exact_replay_worker_config_is_full_actor_ref_critic() -> None:
     assert config.actor_rollout_ref.model.path == "/tmp/nimloth-k8-model"
     assert config.actor_rollout_ref.model.enable_gradient_checkpointing is True
     assert config.actor_rollout_ref.model.use_remove_padding is False
+    assert config.actor_rollout_ref.model.override_config.tie_word_embeddings is True
     assert config.actor_rollout_ref.actor.strategy == "fsdp"
     assert config.actor_rollout_ref.actor.ppo_mini_batch_size == 8
     assert config.actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu == 1
@@ -73,6 +74,9 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
     assert "SLURM_TASK_LOCAL_RANK" in rank_runner
     assert "export LOCAL_RANK=0" in rank_runner
     assert "torch.cuda.set_device(0)" in runner
+    assert 'dist.init_process_group(backend="nccl", device_id=torch.device("cuda:0"))' in runner
+    assert "dist.barrier(device_ids=[0])" in runner
+    assert "random/missing head forbidden" in runner
     assert "one remapped CUDA device at ordinal0" in runner
     assert "MASTER_ADDR" in rank_runner
     assert "MASTER_PORT" in rank_runner

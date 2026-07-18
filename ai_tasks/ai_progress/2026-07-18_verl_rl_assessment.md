@@ -43,7 +43,8 @@ Pinned VAGEN/VERL：VAGEN `e7cc2d0`，VERL `6531615`。
 - 人类明确要求暂不处理版本差异，继续当前`.venv-vagen-main` Transformers4.55.4；4.49 view仅为diagnostic。
 - ID29 normal8 full-worker exact replay gate在模型加载前terminal失败：未初始化VERL submodule的空目录通过了`Path.exists()`，`git -C`向上解析成父repo后报commit mismatch。0模型forward/optimizer/checkpoint/W&B；E0053已要求检查`verl/__init__.py`。
 - ID30通过E0053 gate，但同样在模型加载前terminal失败：`srun --gpus-per-task=1`将每task GPU映射为CUDA ordinal0，而wrapper错误使用`SLURM_LOCALID=0..7`。E0054固定task内`LOCAL_RANK=0`；8-task preflight已验证8个唯一H800 UUID。
-- ID31在shard load0%时发现共享`flower/.env`覆盖显式W&B project，立即取消；0完整模型load/forward/optimizer/checkpoint/W&B。E0055固定source secret后恢复显式project/name/run-id。
+- ID31在shard load0%时发现共享`flower/.env`覆盖显式W&B project，立即取消；E0055固定source secret后恢复显式project/name/run-id。
+- ID32八rank完整读取actor shards后，在FSDP前VERL内部barrier报NCCL invalid ordinal：one-GPU-per-task process group缺显式device ID；同时4.55 loader随机初始化缺失`lm_head`。0 FSDP/forward/update/W&B。E0056显式device-bound NCCL并要求direct collective gate；E0057强制/验证actor/ref tied embeddings。
 - 尚未接入在线rollout或WM auxiliary；full worker仍待修复后的direct gate，当前不可启动正式VERL训练。
 
 ## 证据位置

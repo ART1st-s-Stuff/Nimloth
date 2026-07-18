@@ -73,6 +73,18 @@ def _fingerprint_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
     return before["sum"] != after["sum"] or before["sum_sq"] != after["sum_sq"]
 
 
+def _assert_tied_embeddings(module, *, role: str) -> None:
+    input_weight = module.get_input_embeddings().weight
+    output_weight = module.get_output_embeddings().weight
+    if input_weight is not output_weight and (
+        input_weight.data_ptr() != output_weight.data_ptr()
+        or input_weight.storage_offset() != output_weight.storage_offset()
+    ):
+        raise RuntimeError(
+            f"{role} lm_head is not tied to input embeddings; random/missing head forbidden"
+        )
+
+
 def _load_trajectory(path: Path, index: int) -> RolloutTrajectory:
     records = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not 0 <= index < len(records):
@@ -148,6 +160,9 @@ def main() -> None:
     torch.cuda.set_device(0)
     if world_size < 2:
         raise RuntimeError("exact replay full-worker gate requires distributed FSDP")
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl", device_id=torch.device("cuda:0"))
+    dist.barrier(device_ids=[0])
 
     output = args.output_dir.resolve()
     if not output.is_dir() or not (output / "README.md").is_file():
@@ -183,6 +198,7 @@ def main() -> None:
         config=copy.deepcopy(config.actor_rollout_ref), role="actor"
     )
     actor.init_model()
+    _assert_tied_embeddings(actor.actor_module, role="actor")
     actor_before = _module_fingerprint(actor.actor_module_fsdp)
     if actor_before["trainable_numel"] != actor_before["parameter_numel"]:
         raise RuntimeError("full actor gate found frozen actor parameters")
@@ -195,6 +211,9 @@ def main() -> None:
         config=copy.deepcopy(config.actor_rollout_ref), role="ref"
     )
     reference.init_model()
+    _assert_tied_embeddings(
+        reference.ref_module_fsdp._fsdp_wrapped_module, role="reference"
+    )
     for parameter in reference.ref_module_fsdp.parameters():
         parameter.requires_grad_(False)
     reference_before = _module_fingerprint(reference.ref_module_fsdp)

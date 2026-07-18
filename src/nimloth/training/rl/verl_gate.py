@@ -41,7 +41,10 @@ def build_exact_replay_worker_config(
         config.actor_rollout_ref.model.path = model
         config.actor_rollout_ref.model.enable_gradient_checkpointing = True
         config.actor_rollout_ref.model.use_remove_padding = False
-        config.actor_rollout_ref.model.override_config = {"use_cache": False}
+        config.actor_rollout_ref.model.override_config = {
+            "use_cache": False,
+            "tie_word_embeddings": True,
+        }
         config.actor_rollout_ref.actor.strategy = "fsdp"
         config.actor_rollout_ref.actor.ppo_mini_batch_size = world_size
         config.actor_rollout_ref.actor.ppo_micro_batch_size = None
