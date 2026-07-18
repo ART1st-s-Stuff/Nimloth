@@ -8,7 +8,6 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=24G
-#SBATCH --nodelist=dgx-26
 #SBATCH hetjob
 #SBATCH --job-name=rl-actor-mem
 #SBATCH --account=peilab
@@ -19,7 +18,6 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=24G
-#SBATCH --nodelist=dgx-13
 #SBATCH hetjob
 #SBATCH --job-name=rl-actor-mem
 #SBATCH --account=peilab
@@ -31,7 +29,6 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:2
 #SBATCH --mem=48G
-#SBATCH --nodelist=dgx-51
 #SBATCH hetjob
 #SBATCH --job-name=rl-actor-mem
 #SBATCH --account=peilab
@@ -43,7 +40,6 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:4
 #SBATCH --mem=128G
-#SBATCH --nodelist=dgx-18
 
 set -euo pipefail
 : "${RUN_ROOT:?must set RUN_ROOT}"

@@ -220,6 +220,8 @@ def test_actor_memory_probe_requires_real_20turn_backward_and_headroom() -> None
     assert '${REPO}/src:${REPO}:${REPO}/external/VAGEN' in rank_runner
     assert "external/VAGEN/verl" in rank_runner
     assert launcher.count("#SBATCH hetjob") == 3
+    assert "#SBATCH --nodelist=" not in launcher
+    assert "#SBATCH --exclude=" not in launcher
     assert 'assert max(peaks.values()) < 70.0' in launcher
     assert 'assert all(row["history_images"]==20' in launcher
     assert 'assert all(row["policy_tokens"]==9' in launcher
