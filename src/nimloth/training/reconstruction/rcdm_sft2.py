@@ -138,7 +138,10 @@ def _load_frozen_sft2_modules(args: argparse.Namespace, device: torch.device):
                 "checkpoint": str(args.model),
                 "base": str(base_checkpoint),
                 "peft": False,
-                "handoff_ready": (args.model / "RL_INIT_READY").is_file(),
+                "handoff_ready": any(
+                    (args.model / name).is_file()
+                    for name in ("SFT2_RECON_READY", "RL_INIT_READY")
+                ),
                 "latent_token_count": args.latent_token_count,
             }
         }), flush=True)
