@@ -124,6 +124,7 @@ def test_wm_aux_config_requires_explicit_checkpoint_or_mechanics_override() -> N
     wm = config.actor_rollout_ref.actor.nimloth_wm_aux
     assert wm.enabled is True
     assert wm.latent_token_count == 8
+    assert wm.latent_query_mode == "inject"
     assert wm.allow_random_init is True
     assert wm.loss_coef == 0.3
     assert wm.lr == 2e-5

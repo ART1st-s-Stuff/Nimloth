@@ -50,6 +50,7 @@ def configure_nimloth_wm_auxiliary(
     )
     wm_config.allow_random_init = bool(allow_random_init)
     wm_config.latent_token_count = latent_token_count
+    wm_config.latent_query_mode = "inject"
     wm_config.loss_coef = float(loss_coef)
     wm_config.lr = float(learning_rate)
 

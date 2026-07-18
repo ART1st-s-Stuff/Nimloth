@@ -112,6 +112,9 @@ def test_pinned_verl_actor_calls_and_checkpoints_wm_auxiliary() -> None:
     assert "_build_nimloth_wm_auxiliary" in worker
     assert "nimloth_wm_aux.pt" in worker
     assert "enabled Nimloth WM auxiliary checkpoint is missing" in worker
+    assert "Nimloth WM auxiliary checkpoint schema mismatch" in worker
+    assert "Nimloth WM auxiliary checkpoint query-mode mismatch" in worker
+    assert "Nimloth WM auxiliary checkpoint latent-count mismatch" in worker
     assert "Nimloth WM auxiliary checkpoint config mismatch" in worker
 
 

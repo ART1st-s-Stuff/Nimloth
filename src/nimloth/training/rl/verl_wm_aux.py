@@ -51,7 +51,10 @@ def build_nimloth_wm_auxiliary_modules(
 ) -> NimlothWMAuxiliaryModules:
     """Build checkpoint-compatible WM modules for one VERL actor worker."""
     latent_token_count = int(config.get("latent_token_count", 0))
+    latent_query_mode = config.get("latent_query_mode")
     projector_hidden_dim = int(config.get("projector_hidden_dim", 2048))
+    if latent_query_mode != "inject":
+        raise ValueError("Nimloth WM auxiliary currently requires inject query mode")
     if latent_token_count < 1 or projector_hidden_dim < 1:
         raise ValueError("invalid Nimloth WM latent/projector dimensions")
 
