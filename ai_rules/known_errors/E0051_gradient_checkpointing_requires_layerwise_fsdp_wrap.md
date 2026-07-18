@@ -1,11 +1,17 @@
-# E0051: Gradient checkpointing需要layer-wise FSDP wrap
+# E0051: HF内部checkpoint不能只靠layer-wise FSDP auto-wrap修复
 
 ## 已发生错误
 
-ID26首次让actor recompute在train mode真正启用gradient checkpointing。真实20-turn/4548-tokenforward通过，但root-only FSDP在forward后reshard整模参数；non-reentrant checkpoint backward逐层重算时拿到不同参数/tensor布局，8个rank均触发`CheckpointError: recomputed values ... different metadata`。此前eval mode静默关闭checkpointing，所以短smoke没有暴露该问题。
+ID26首次让actor recompute在train mode真正启用gradient checkpointing。真实20-turn/4548-token forward通过，但root-only FSDP在首个backward触发`CheckpointError: recomputed values ... different metadata`。
+
+ID27将actor和critic改为Qwen decoder layer及vision block的layer-wise FSDP auto-wrap。Nested FSDP runtime gate通过，真实20-turn actor forward再次完成，但8个rank仍在首个actor backward触发同类`CheckpointError`；saved/recomputed tensor从position 8起错位。没有actor optimizer step、critic阶段或显存结果。这证明layer-wise auto-wrap本身不充分。
+
+Transformers 4.55的`GradientCheckpointingLayer.__call__`在Qwen block内部建立`partial(super().__call__)`的non-reentrant checkpoint。该checkpoint位于已经进入的FSDP unit内部，重算没有重放同一个wrapper-level执行边界。
 
 ## 正确做法
 
-- Qwen FSDP与gradient checkpointing组合必须按decoder layer和vision block auto-wrap，不能只wrap整个PEFT root。
-- 显存/训练gate必须包含真实train-mode checkpointed backward；仅forward或eval-mode replay不能证明兼容。
-- FSDP wrap policy属于checkpoint/resume协议，改变后旧identity和旧checkpoint不得无审计复用。
+- 禁用Qwen/Hugging Face block内部的gradient checkpointing。
+- 在与FSDP相同的decoder/vision block边界，使用PyTorch `checkpoint_wrapper(..., CheckpointImpl.NO_REENTRANT)` / `apply_activation_checkpointing`建立外部activation-checkpoint wrapper，再验证FSDP与checkpoint wrapper的嵌套顺序。
+- 必须先做直接distributed train-mode forward/backward测试，再运行真实20-turn显存gate。
+- 不能关闭checkpoint determinism check来掩盖错误，也不能用forward或eval-mode成功声称兼容。
+- Activation-checkpoint与FSDP wrapper协议均须进入checkpoint/resume metadata；改变协议后旧identity不可resume。
