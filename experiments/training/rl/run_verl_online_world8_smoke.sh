@@ -45,9 +45,10 @@ export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
 export HOME=/project/peilab/atst/nimloth/.home
 export WANDB_DIR="${OUTPUT_DIR}/wandb"
 export TOKENIZERS_PARALLELISM=true
-# xFormers 0.0.32.post1 disables its C++ extension under the pinned Torch 2.8;
-# use the separately installed and loadable FlashAttention 2.8.3 backend.
-export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+# Do not force one global attention backend: Qwen2.5-VL needs vLLM FA for
+# text head-dim 128 but upstream FlashAttention for vision head-dim 80. Its
+# model implementation selects both correctly when this env override is absent.
+unset VLLM_ATTENTION_BACKEND
 # The cluster /usr/bin/nvcc is an instructional Python stub, not a CUDA
 # compiler. Use vLLM's native Torch sampler instead of FlashInfer sampling JIT.
 export VLLM_USE_FLASHINFER_SAMPLER=0

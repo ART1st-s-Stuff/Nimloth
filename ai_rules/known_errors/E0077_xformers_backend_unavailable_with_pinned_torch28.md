@@ -7,8 +7,9 @@ ID59禁用FlashInfer sampler JIT后到达KV-cache初始化；vLLM因`VLLM_ATTENT
 ## 正确做法
 
 - 不得把“Python可以import xformers”当成vLLM attention backend可用证据。
-- 当前固定环境改用已安装且二进制可加载的FlashAttention 2.8.3 backend：`VLLM_ATTENTION_BACKEND=FLASH_ATTN`。
-- `VLLM_USE_FLASHINFER_SAMPLER=0`只关闭FlashInfer sampler JIT，不代表必须使用xFormers attention。
+- 不得改为全局强制`VLLM_ATTENTION_BACKEND=FLASH_ATTN`：后续ID60证明这会错误地把vision head-dim80也交给只支持32倍数head-dim的vLLM FA build。
+- 当前固定环境必须unset全局attention override，让Qwen2.5-VL分别为text head-dim128选择vLLM FA、为vision head-dim80选择upstream FlashAttention。
+- `VLLM_USE_FLASHINFER_SAMPLER=0`只关闭FlashInfer sampler JIT，不决定attention backend。
 
 ## 证据
 
