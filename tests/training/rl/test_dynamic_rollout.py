@@ -298,8 +298,10 @@ def test_world8_hold_is_one_dynamic_fragmented_bash_allocation() -> None:
     assert hold.count("#SBATCH --partition=normal") == 7
     assert hold.count("#SBATCH --gres=gpu:1") == 6
     assert hold.count("#SBATCH --gres=gpu:2") == 1
+    assert hold.count("#SBATCH --mem=64G") == 6
+    assert hold.count("#SBATCH --mem=128G") == 1
     assert "#SBATCH --nodelist=" not in hold
-    assert hold.count("#SBATCH --exclude=dgx-32") == 7
+    assert hold.count("#SBATCH --exclude=dgx-29,dgx-32") == 7
     assert 'touch "${HOLD_ROOT}/READY"' in hold
     assert '"${HOLD_ROOT}/next_stage.sh"' in hold
     assert 'rm -f "${HOLD_ROOT}/READY" "${HOLD_ROOT}/RELEASE"' in hold
