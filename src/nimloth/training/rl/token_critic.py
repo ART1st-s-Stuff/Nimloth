@@ -6,7 +6,41 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch import nn
 from transformers import AutoConfig
+from transformers.modeling_outputs import TokenClassifierOutput
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
+    Qwen2_5_VLModel,
+    Qwen2_5_VLPreTrainedModel,
+)
+
+
+class IndependentQwenTokenCritic(Qwen2_5_VLPreTrainedModel):
+    """Qwen2.5-VL backbone plus one scalar value for every token position."""
+
+    def __init__(self, config) -> None:
+        super().__init__(config)
+        self.model = Qwen2_5_VLModel(config)
+        hidden_size = int(getattr(config.text_config, "hidden_size"))
+        self.score = nn.Linear(hidden_size, 1)
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.model.get_input_embeddings()
+
+    def set_input_embeddings(self, value) -> None:
+        self.model.set_input_embeddings(value)
+
+    def forward(self, **kwargs) -> TokenClassifierOutput:
+        kwargs.pop("labels", None)
+        kwargs.pop("return_dict", None)
+        outputs = self.model(return_dict=True, **kwargs)
+        logits = self.score(outputs.last_hidden_state)
+        return TokenClassifierOutput(
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
 
 
 def load_independent_qwen_critic(
@@ -18,15 +52,11 @@ def load_independent_qwen_critic(
 ) -> torch.nn.Module:
     """Load VAGEN's independent full Qwen token-classification critic."""
 
-    from verl.models.transformers.modeling_qwen_2_5_vl_patch import (
-        Qwen2_5_VLForTokenClassification,
-    )
-
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     config.num_labels = 1
     config.classifier_dropout = 0.0
     config.hidden_dropout = 0.0
-    critic = Qwen2_5_VLForTokenClassification.from_pretrained(
+    critic = IndependentQwenTokenCritic.from_pretrained(
         model_path,
         config=config,
         torch_dtype=dtype,
