@@ -46,7 +46,8 @@ Pinned VAGEN/VERL：VAGEN `e7cc2d0`，VERL `6531615`。
 - ID31在shard load0%时发现共享`flower/.env`覆盖显式W&B project，立即取消；E0055固定source secret后恢复显式project/name/run-id。
 - ID32八rank完整读取actor shards后，在FSDP前VERL内部barrier报NCCL invalid ordinal；同时4.55 loader随机初始化缺失`lm_head`。后续direct collective确认one-GPU-per-task隔离仍失败；E0056改为单Slurm task持有8GPU并在其内torchrun8 child，E0057强制/验证actor/ref tied embeddings。
 - torchrun8 NCCL direct gate通过。ID33完成tied-head full actor语言+视觉FSDP、真实1670-token多模态PPO-old及immutable ref FSDP/ref log-prob；critic构建前因旧VERL patch导入4.55已删除常量而失败。E0058新增4.55-native token critic。
-- ID34进一步完成full critic FSDP、finite values和masked-GAE finalize；被错误的跨精度bitwise-like阈值挡住（fp32 actor/bf16 ref max log-prob delta0.0752）。E0059改用实际mean low-var-KL判断parity，同时保留reference fingerprint immutability。
+- ID34进一步完成full critic FSDP、finite values和masked-GAE finalize；被错误跨精度阈值挡住。E0059改用实际mean low-var-KL判断parity并保留reference fingerprint immutability。
+- ID35通过上述forward/GAE并执行critic backward/AdamW，但critic fingerprint不变：gate错误将master参数设为bf16，lr1e-5更新被量化掉。E0060恢复fp32 critic master参数，FSDP计算仍用bf16 mixed precision。
 - 尚未接入在线rollout或WM auxiliary；full worker仍待修复后的direct gate，当前不可启动正式VERL训练。
 
 ## 证据位置

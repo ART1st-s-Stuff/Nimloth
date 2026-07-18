@@ -82,7 +82,10 @@ def build_exact_replay_worker_config(
         config.critic.model.override_config = {"use_cache": False}
         config.critic.model.fsdp_config.param_offload = True
         config.critic.model.fsdp_config.optimizer_offload = True
-        config.critic.model.fsdp_config.model_dtype = "bf16"
+        # Keep optimizer/master parameters in fp32. FSDP mixed precision still
+        # runs forward/backward in bf16; storing trainable params as bf16 makes
+        # lr=1e-5 AdamW updates quantize away.
+        config.critic.model.fsdp_config.model_dtype = "fp32"
         config.critic.ppo_mini_batch_size = world_size
         config.critic.ppo_micro_batch_size = None
         config.critic.ppo_micro_batch_size_per_gpu = 1

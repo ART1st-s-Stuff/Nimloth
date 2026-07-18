@@ -54,6 +54,7 @@ def test_exact_replay_worker_config_is_full_actor_ref_critic() -> None:
     assert config.critic.forward_micro_batch_size_per_gpu == 1
     assert config.critic.model.fsdp_config.param_offload is True
     assert config.critic.model.fsdp_config.optimizer_offload is True
+    assert config.critic.model.fsdp_config.model_dtype == "fp32"
     assert config.rollout_manager.use_loss_mask is True
     assert config.rollout_manager.use_gae_mask is True
     assert config.rollout_manager.use_multi_turn_reward is True
