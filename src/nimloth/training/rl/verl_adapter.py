@@ -88,6 +88,108 @@ def _validate_row(row: VerlReplayRow) -> None:
         raise ValueError("VERL replay multi_modal_inputs must be a dict or None")
 
 
+def build_nimloth_verl_replay_row(
+    *,
+    trajectory_id: str,
+    prompt_input_ids: torch.Tensor,
+    prompt_attention_mask: torch.Tensor,
+    prompt_position_ids: torch.Tensor,
+    thought_token_ids: Sequence[int],
+    latent_query_token_ids: Sequence[int],
+    action_start_token_id: int,
+    action_token_id: int,
+    action_end_token_id: int,
+    reward: float,
+    multi_modal_inputs: dict[str, Any] | None,
+) -> VerlReplayRow:
+    """Serialize one Nimloth turn using VERL response and loss-mask semantics."""
+
+    if prompt_input_ids.ndim != 1 or prompt_input_ids.numel() == 0:
+        raise ValueError("Nimloth VERL prompt_input_ids must be nonempty and 1D")
+    prompt_length = int(prompt_input_ids.numel())
+    if prompt_attention_mask.shape != prompt_input_ids.shape:
+        raise ValueError("Nimloth VERL prompt attention shape mismatch")
+    if prompt_position_ids.ndim not in {1, 2} or int(
+        prompt_position_ids.shape[-1]
+    ) != prompt_length:
+        raise ValueError("Nimloth VERL prompt position_ids shape mismatch")
+    prompt_input_ids = prompt_input_ids.detach().cpu()
+    prompt_attention_mask = prompt_attention_mask.detach().cpu()
+    prompt_position_ids = prompt_position_ids.detach().cpu()
+    thought_ids = [int(token) for token in thought_token_ids]
+    query_ids = [int(token) for token in latent_query_token_ids]
+    if not thought_ids:
+        raise ValueError("Nimloth VERL response requires sampled thought tokens")
+    if not query_ids:
+        raise ValueError("Nimloth VERL response requires latent query tokens")
+    response_ids = [
+        *thought_ids,
+        *query_ids,
+        int(action_start_token_id),
+        int(action_token_id),
+        int(action_end_token_id),
+    ]
+    response_length = len(response_ids)
+    input_ids = torch.cat(
+        (
+            prompt_input_ids.to(dtype=torch.long),
+            torch.tensor(response_ids, dtype=torch.long),
+        )
+    )
+    attention_mask = torch.cat(
+        (
+            prompt_attention_mask.to(dtype=torch.long),
+            torch.ones(response_length, dtype=torch.long),
+        )
+    )
+    response_loss_mask = torch.tensor(
+        [
+            *([1] * len(thought_ids)),
+            *([0] * len(query_ids)),
+            0,
+            1,
+            0,
+        ],
+        dtype=torch.long,
+    )
+    loss_mask = torch.cat(
+        (torch.zeros(prompt_length, dtype=torch.long), response_loss_mask)
+    )
+    action_position = prompt_length + response_length - 2
+    rewards = torch.zeros(input_ids.numel(), dtype=torch.float32)
+    rewards[action_position] = float(reward)
+    end_mask = torch.zeros(input_ids.numel(), dtype=torch.long)
+    end_mask[action_position] = 1
+
+    position_delta = torch.arange(
+        1,
+        response_length + 1,
+        dtype=prompt_position_ids.dtype,
+        device=prompt_position_ids.device,
+    )
+    if prompt_position_ids.ndim == 1:
+        response_position_ids = prompt_position_ids[-1:] + position_delta
+        position_ids = torch.cat((prompt_position_ids, response_position_ids))
+    else:
+        response_position_ids = prompt_position_ids[:, -1:] + position_delta
+        position_ids = torch.cat(
+            (prompt_position_ids, response_position_ids), dim=-1
+        )
+    row = VerlReplayRow(
+        trajectory_id=str(trajectory_id),
+        input_ids=input_ids.cpu(),
+        attention_mask=attention_mask.cpu(),
+        position_ids=position_ids.cpu(),
+        prompt_length=prompt_length,
+        loss_mask=loss_mask,
+        token_level_rewards=rewards,
+        end_of_response_position_mask=end_mask,
+        multi_modal_inputs=multi_modal_inputs,
+    )
+    _validate_row(row)
+    return row
+
+
 def build_verl_replay_dataproto(
     rows: Sequence[VerlReplayRow],
     *,

@@ -128,6 +128,40 @@ def test_build_verl_replay_dataproto_preserves_scaffold_and_masks() -> None:
     )
 
 
+def test_build_nimloth_verl_row_masks_only_sampled_thought_and_action() -> None:
+    from nimloth.training.rl.verl_adapter import build_nimloth_verl_replay_row
+
+    row = build_nimloth_verl_replay_row(
+        trajectory_id="trajectory-7-turn-3",
+        prompt_input_ids=torch.tensor([10, 11, 12]),
+        prompt_attention_mask=torch.ones(3, dtype=torch.long),
+        prompt_position_ids=torch.tensor(
+            [[0, 1, 2], [0, 1, 2], [0, 1, 2]], dtype=torch.long
+        ),
+        thought_token_ids=[20, 21],
+        latent_query_token_ids=[30, 31],
+        action_start_token_id=32,
+        action_token_id=40,
+        action_end_token_id=33,
+        reward=1.25,
+        multi_modal_inputs={"pixel_values": torch.ones(1, 4)},
+    )
+    assert row.prompt_length == 3
+    assert row.input_ids.tolist() == [10, 11, 12, 20, 21, 30, 31, 32, 40, 33]
+    assert row.loss_mask.tolist() == [0, 0, 0, 1, 1, 0, 0, 0, 1, 0]
+    assert row.token_level_rewards.tolist() == [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.25, 0.0
+    ]
+    assert row.end_of_response_position_mask.tolist() == [
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 0
+    ]
+    assert row.position_ids.tolist() == [
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    ]
+
+
 def test_verl_replay_rejects_reward_or_loss_on_prompt_and_empty_policy_mask() -> None:
     from nimloth.training.rl.verl_adapter import (
         VerlReplayRow,
