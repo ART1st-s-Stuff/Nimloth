@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+set +u
 source /etc/profile.d/modules.sh
+set -u
 module load slurm >/dev/null 2>&1
 
 : "${HOLD_JOB:?set HOLD_JOB}"
