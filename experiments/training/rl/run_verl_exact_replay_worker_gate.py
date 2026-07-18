@@ -75,6 +75,27 @@ def _fingerprint_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
     return before["sum"] != after["sum"] or before["sum_sq"] != after["sum_sq"]
 
 
+def _local_optimizer_fingerprint(optimizer) -> dict[str, float | int]:
+    device = torch.device("cuda", torch.cuda.current_device())
+    totals = torch.zeros(5, dtype=torch.float64, device=device)
+    for group in optimizer.param_groups:
+        for parameter in group["params"]:
+            values = parameter.detach()
+            totals[0] += values.sum(dtype=torch.float64)
+            totals[1] += values.square().sum(dtype=torch.float64)
+            totals[2] += parameter.numel()
+            if parameter.grad is not None:
+                totals[3] += parameter.grad.detach().square().sum(dtype=torch.float64)
+                totals[4] += parameter.grad.numel()
+    return {
+        "sum": float(totals[0].item()),
+        "sum_sq": float(totals[1].item()),
+        "parameter_numel": int(totals[2].item()),
+        "grad_sum_sq": float(totals[3].item()),
+        "grad_numel": int(totals[4].item()),
+    }
+
+
 def _assert_tied_embeddings(module, *, role: str) -> None:
     input_weight = module.get_input_embeddings().weight
     output_weight = module.get_output_embeddings().weight
@@ -260,8 +281,35 @@ def main() -> None:
             f"mean_low_var_kl={audit['mean_low_var_kl']}"
         )
 
+    critic_step_audit: list[dict[str, Any]] = []
+    original_critic_step = critic.critic_optimizer.step
+
+    def audited_critic_step(*args, **kwargs):
+        before_step = _local_optimizer_fingerprint(critic.critic_optimizer)
+        output = original_critic_step(*args, **kwargs)
+        after_step = _local_optimizer_fingerprint(critic.critic_optimizer)
+        state_steps = [
+            float(state["step"].item())
+            for state in critic.critic_optimizer.state.values()
+            if "step" in state
+        ]
+        critic_step_audit.append(
+            {
+                "before": before_step,
+                "after": after_step,
+                "state_entries": len(critic.critic_optimizer.state),
+                "state_step_min": min(state_steps) if state_steps else None,
+                "state_step_max": max(state_steps) if state_steps else None,
+            }
+        )
+        return output
+
+    critic.critic_optimizer.step = audited_critic_step
     critic_metrics = critic.update_critic(copy.deepcopy(ppo_batch))
+    critic.critic_optimizer.step = original_critic_step
     critic_after = _module_fingerprint(critic.critic_module)
+    gathered_step_audits: list[Any] = [None] * world_size
+    dist.all_gather_object(gathered_step_audits, critic_step_audit)
     if rank == 0:
         print(
             "CRITIC_UPDATE_AUDIT="
@@ -270,6 +318,7 @@ def main() -> None:
                     "before": critic_before,
                     "after": critic_after,
                     "meta_info": _json_value(critic_metrics.meta_info),
+                    "optimizer_steps_by_rank": gathered_step_audits,
                 },
                 sort_keys=True,
             ),
