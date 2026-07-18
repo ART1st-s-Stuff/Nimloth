@@ -71,6 +71,22 @@ def test_exact_replay_runner_uses_real_full_verl_workers() -> None:
     assert "MASTER_PORT" in rank_runner
     assert "external/VAGEN/verl" in rank_runner
     assert "run_verl_exact_replay_worker_gate.py" in rank_runner
+    hold = Path(
+        "experiments/training/rl/hold_verl_exact_replay_normal8.slurm"
+    ).read_text(encoding="utf-8")
+    assert "#SBATCH --partition=normal" in hold
+    assert "#SBATCH --gres=gpu:8" in hold
+    assert "#SBATCH --nodelist=" not in hold
+    launcher = Path(
+        "experiments/training/rl/launch_verl_exact_replay_in_hold.sh"
+    ).read_text(encoding="utf-8")
+    assert "sbatch" not in launcher
+    assert 'JobState=RUNNING' in launcher
+    assert 'Partition=normal' in launcher
+    assert "--ntasks=8" in launcher
+    assert "--gpus-per-task=1" in launcher
+    assert "--gpu-bind=single:1" in launcher
+    assert "VERL_EXACT_REPLAY_ARTIFACTS_OK" in launcher
 
 
 def test_exact_replay_worker_config_rejects_invalid_world_or_budget() -> None:

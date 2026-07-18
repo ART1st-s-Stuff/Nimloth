@@ -34,8 +34,19 @@ export NCCL_SOCKET_IFNAME='^lo,docker0,virbr0'
 export TORCHINDUCTOR_DISABLE=1
 export TORCH_COMPILE_DISABLE=1
 export TORCHDYNAMO_DISABLE=1
+export HOME=/project/peilab/atst/nimloth/.home
+export HF_HOME=/project/peilab/atst/.cache/huggingface
+export TRANSFORMERS_CACHE=${HF_HOME}
 export WANDB_DIR=${OUTPUT_DIR}/wandb
-mkdir -p "${WANDB_DIR}"
+export TRITON_CACHE_DIR=/tmp/triton_verl_exact_${SLURM_JOB_ID:-local}_$(hostname)
+export TORCH_EXTENSIONS_DIR=/tmp/torch_ext_verl_exact_${SLURM_JOB_ID:-local}_$(hostname)
+mkdir -p "${HOME}" "${WANDB_DIR}" "${TRITON_CACHE_DIR}" "${TORCH_EXTENSIONS_DIR}"
+if [[ -f /project/peilab/atst/flower/.env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source /project/peilab/atst/flower/.env
+  set +a
+fi
 
 exec /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
   "${REPO}/experiments/training/rl/run_verl_exact_replay_worker_gate.py" \
