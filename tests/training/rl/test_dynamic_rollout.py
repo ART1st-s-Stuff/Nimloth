@@ -902,6 +902,59 @@ def test_value_head_loader_honors_checkpoint_hidden_width(tmp_path: Path) -> Non
     )
 
 
+def test_independent_qwen_token_critic_has_per_token_gradients() -> None:
+    from transformers import Qwen2_5_VLConfig
+    from nimloth.training.rl.token_critic import IndependentQwenTokenCritic
+
+    config = Qwen2_5_VLConfig(
+        text_config={
+            "vocab_size": 64,
+            "hidden_size": 16,
+            "intermediate_size": 32,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 2,
+            "head_dim": 8,
+            "max_position_embeddings": 64,
+            "attention_dropout": 0.0,
+            "rope_scaling": {
+                "rope_type": "default",
+                "type": "default",
+                "mrope_section": [1, 1, 2],
+            },
+        },
+        vision_config={
+            "depth": 1,
+            "hidden_size": 16,
+            "intermediate_size": 32,
+            "num_heads": 2,
+            "in_channels": 3,
+            "patch_size": 2,
+            "spatial_merge_size": 1,
+            "temporal_patch_size": 1,
+            "out_hidden_size": 16,
+        },
+        image_token_id=60,
+        video_token_id=61,
+        vision_start_token_id=62,
+        vision_end_token_id=63,
+    )
+    critic = IndependentQwenTokenCritic(config).float()
+    critic.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
+    critic.train()
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    output = critic(
+        input_ids=input_ids,
+        attention_mask=torch.ones_like(input_ids),
+        use_cache=False,
+    )
+    assert output.logits.shape == (1, 4, 1)
+    output.logits.mean().backward()
+    assert torch.isfinite(critic.score.weight.grad).all()
+
+
 def test_masked_gae_assigns_token_specific_vagen_advantages() -> None:
     from nimloth.training.rl.loss import compute_masked_gae_advantage_return
 
