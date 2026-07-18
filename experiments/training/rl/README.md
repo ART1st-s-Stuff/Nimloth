@@ -4,6 +4,8 @@
 
 ## 当前状态
 
+正式RL后端已改为VAGEN/VERL full actor + full token critic + immutable ref；下方自写dynamic trainer入口仅保留diagnostic证据，不再用于quality pilot。Transformers4.55.4 ID39已在world8上通过真实ID22两轮多模态exact replay、masked-GAE、actor/critic各一次真实更新、reference immutability、post-update log-prob及rank0–7 checkpoint gate。运行入口为`hold_verl_exact_replay_normal8.slurm`、`launch_verl_exact_replay_in_hold.sh`及`run_verl_exact_replay_worker_gate.py`。该结果尚不含在线environment rollout、StateProjector、WM predictor或WM auxiliary loss，不能称为正式RL训练完成。
+
 ID11 只保留 FSDP/checkpoint mechanics 证据；它的 rollout 丢失真实任务文本，因此所有质量结论无效，禁止 resume/reuse。
 
 新的动态 RL 必须先通过：
