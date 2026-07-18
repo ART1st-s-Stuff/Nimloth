@@ -46,6 +46,9 @@ export HOME=/project/peilab/atst/nimloth/.home
 export WANDB_DIR="${OUTPUT_DIR}/wandb"
 export TOKENIZERS_PARALLELISM=true
 export VLLM_ATTENTION_BACKEND=XFORMERS
+# The cluster /usr/bin/nvcc is an instructional Python stub, not a CUDA
+# compiler. Use vLLM's native Torch sampler instead of FlashInfer sampling JIT.
+export VLLM_USE_FLASHINFER_SAMPLER=0
 # Ray workers are each remapped to a single visible physical GPU. Torch2.8
 # symmetric-memory rendezvous compares ordinal0 across workers as overlapping;
 # use the normal NCCL all-reduce communicator instead.
