@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from pathlib import Path
 
 import torch
@@ -65,13 +66,35 @@ def main() -> None:
     records = [json.loads(line) for line in records_path.read_text().splitlines()]
     if len(records) != 8:
         raise RuntimeError(f"expected eight online trajectories, got {len(records)}")
+    env_ids = [str(record.get("env_id", "")) for record in records]
+    if any(not env_id for env_id in env_ids) or len(set(env_ids)) != 8:
+        raise RuntimeError("online trajectories have missing or duplicate env IDs")
+    latent_block = "<|latent_state|>" + "".join(
+        f"<|latent_state_{index}|>" for index in range(1, 8)
+    )
+    response_pattern = re.compile(
+        r"^<think>.+?</think>"
+        + re.escape(latent_block)
+        + r"<\|action_start\|><\|action_\([0-7]\)\|><\|action_end\|>$",
+        flags=re.DOTALL,
+    )
     for record in records:
         transcript = str(record["output_str"])
         metrics = record["metrics"]
         if int(metrics["step"]) != 2:
             raise RuntimeError("online trajectory did not consume exactly two turns")
-        if transcript.count("</think>") != 2:
-            raise RuntimeError("online trajectory lacks two complete sampled thoughts")
+        assistant_responses = []
+        for segment in transcript.split("<|im_start|>assistant\n")[1:]:
+            response = segment.split("<|im_end|>", 1)[0].strip()
+            if response:
+                assistant_responses.append(response)
+        if len(assistant_responses) != 2 or any(
+            response_pattern.fullmatch(response) is None
+            for response in assistant_responses
+        ):
+            raise RuntimeError(
+                "online trajectory lacks two complete sampled thought/query/action responses"
+            )
         if "Human Instruction:" not in transcript:
             raise RuntimeError("online transcript lost the real task instruction")
         if len(record.get("image_paths", [])) != 3:

@@ -149,9 +149,23 @@ def test_online_artifact_validator_accepts_complete_synthetic_gate(
             image = tmp_path / f"{record_index}_{image_index}.png"
             image.write_bytes(b"png")
             image_paths.append(str(image))
+        latent_block = "<|latent_state|>" + "".join(
+            f"<|latent_state_{index}|>" for index in range(1, 8)
+        )
         records.append(
             {
-                "output_str": "Human Instruction: task\n</think> x </think>",
+                "env_id": f"train{record_index + 1}",
+                "output_str": (
+                    "system examples: <think>...</think> and <think>...</think>\n"
+                    "Human Instruction: task\n"
+                    "<|im_start|>assistant\n<think>one</think>"
+                    f"{latent_block}<|action_start|><|action_(0)|><|action_end|>"
+                    "<|im_end|>\n"
+                    "<|im_start|>assistant\n<think>two</think>"
+                    f"{latent_block}<|action_start|><|action_(1)|><|action_end|>"
+                    "<|im_end|>\n"
+                    "<|im_start|>assistant\n"
+                ),
                 "metrics": {"step": 2},
                 "image_paths": image_paths,
             }
