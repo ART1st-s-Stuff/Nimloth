@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def test_exact_replay_worker_config_is_full_actor_ref_critic() -> None:
+    from nimloth.training.rl.verl_gate import build_exact_replay_worker_config
+
+    config = build_exact_replay_worker_config(
+        Path("external/VAGEN/vagen/trainer/config/ppo_trainer.yaml"),
+        model_path=Path("/tmp/nimloth-k8-model"),
+        world_size=8,
+        max_token_length=8192,
+    )
+    assert config.algorithm.adv_estimator == "masked_gae"
+    assert config.algorithm.gamma == 1.0
+    assert config.algorithm.lam == 1.0
+    assert config.actor_rollout_ref.model.path == "/tmp/nimloth-k8-model"
+    assert config.actor_rollout_ref.model.enable_gradient_checkpointing is True
+    assert config.actor_rollout_ref.model.use_remove_padding is False
+    assert config.actor_rollout_ref.actor.strategy == "fsdp"
+    assert config.actor_rollout_ref.actor.ppo_mini_batch_size == 8
+    assert config.actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu == 1
+    assert config.actor_rollout_ref.actor.use_kl_loss is True
+    assert config.actor_rollout_ref.actor.kl_loss_type == "low_var_kl"
+    assert config.actor_rollout_ref.actor.kl_loss_coef == 0.001
+    assert config.actor_rollout_ref.actor.fsdp_config.param_offload is True
+    assert config.actor_rollout_ref.actor.fsdp_config.optimizer_offload is True
+    assert config.actor_rollout_ref.ref.fsdp_config.param_offload is True
+    assert config.actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu == 1
+    assert config.critic.model.path == "/tmp/nimloth-k8-model"
+    assert config.critic.model.tokenizer_path == "/tmp/nimloth-k8-model"
+    assert config.critic.model.enable_gradient_checkpointing is True
+    assert config.critic.model.use_remove_padding is False
+    assert config.critic.ppo_mini_batch_size == 8
+    assert config.critic.ppo_micro_batch_size_per_gpu == 1
+    assert config.critic.forward_micro_batch_size_per_gpu == 1
+    assert config.critic.model.fsdp_config.param_offload is True
+    assert config.critic.model.fsdp_config.optimizer_offload is True
+    assert config.rollout_manager.use_loss_mask is True
+    assert config.rollout_manager.use_gae_mask is True
+    assert config.rollout_manager.use_multi_turn_reward is True
+
+
+def test_exact_replay_worker_config_rejects_invalid_world_or_budget() -> None:
+    import pytest
+
+    from nimloth.training.rl.verl_gate import build_exact_replay_worker_config
+
+    path = Path("external/VAGEN/vagen/trainer/config/ppo_trainer.yaml")
+    with pytest.raises(ValueError, match="world_size"):
+        build_exact_replay_worker_config(
+            path, model_path=Path("/tmp/model"), world_size=0
+        )
+    with pytest.raises(ValueError, match="max_token_length"):
+        build_exact_replay_worker_config(
+            path,
+            model_path=Path("/tmp/model"),
+            world_size=8,
+            max_token_length=0,
+        )
