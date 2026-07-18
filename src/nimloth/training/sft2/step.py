@@ -212,6 +212,9 @@ def compute_step_wm_loss(
         wm_predictor=wm_predictor,
         sigreg_module=sigreg_module,
         items=wm_items,
+        trajectory_history=(
+            getattr(wm_predictor, "module", wm_predictor).config.history_size > 1
+        ),
     )
 
 
