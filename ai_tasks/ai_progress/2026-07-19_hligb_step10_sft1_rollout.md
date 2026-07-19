@@ -50,4 +50,13 @@
 - `python3 -m compileall`：通过。
 - `bash -n`：rollout/submit/env 三个脚本通过。
 - Nimloth 与 VAGEN `git diff --check`：通过。
-- 完整 pytest 待同步服务器后在项目运行环境执行。
+- 服务器 `.venv-vagen-main` targeted pytest：`5 passed, 1 warning`。
+- 实际 rollout runtime `.venv`（torch2.6/transformers4.49/vLLM0.8.2）golden prompt/parser gate：通过。
+
+## Smoke 启动
+
+- W&B：`nimloth-sft1/2_smoke_step10src_base1_t07p095k50_t25`，internal ID `6dde8ias`。
+- 输出：`outputs/experiments/training/sft1/2026-07-19/2_smoke_step10src_base1_t07p095k50_t25`。
+- env job：`480257`（normal，4 GPU）。
+- policy array job：`480258_0`（normal，2 GPU）。
+- 初次查询两者均 pending，尚未宣称健康启动。
