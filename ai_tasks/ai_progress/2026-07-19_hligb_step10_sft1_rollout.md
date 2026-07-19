@@ -59,4 +59,21 @@
 - 输出：`outputs/experiments/training/sft1/2026-07-19/2_smoke_step10src_base1_t07p095k50_t25`。
 - env job：`480257`（normal，4 GPU）。
 - policy array job：`480258_0`（normal，2 GPU）。
-- 初次查询两者均 pending，尚未宣称健康启动。
+- 初次查询两者均 pending；normal 预计 policy 早于 env 90分钟启动，故经人类许可改用 preempt。
+- normal `480257/480258` 均在 elapsed0 取消；preempt env `480274` + dependent smoke `480275_0` 启动。
+- smoke `480275_0`：`COMPLETED 0:0`，00:05:59。1 record、25 assistant/actions、26 images、action validity1.0；strict answer-tag conversion零 warnings/issues。
+
+## Converter 补齐
+
+- 发现旧 converter 只解析 `<action>`；人类批准增加显式 `--source-action-tag answer`，默认仍为 action，避免静默改变旧行为。
+- commit `5975bee27e8c52cf57ec06948c4ef921932aea36`；服务器 targeted tests `7 passed, 1 warning`。
+- 真实 smoke conversion：1 train_all、25 actions、26 images、零 warnings/issues；success-only=0（该 smoke 未成功）。
+
+## Formal attempt 1 — 已暂停
+
+- W&B `nimloth-sft1/3_rollout_step10src_train3240_val360_t07p095k50_t25`，internal ID `wzsoxvxr`。
+- output：`outputs/experiments/training/sft1/2026-07-19/3_rollout_step10src_train3240_val360_t07p095k50_t25`。
+- array `480309`：task0在首个120-row shard生成若干turn后 `FAILED 1:0`；task1/2随即取消，task3未启动；env480274随后取消，GPU释放。正式有效JSONL=0。
+- 直接失败：env server对val6/8/9报告`NoneType` step error；recovery info无metrics，manager触发`KeyError: metrics`。
+- 根因：attempt使用旧Nimloth env拓扑（4个独立1-GPU服务、每个max_workers48），policy只读取第一URL，120-row shard在单GPU上并发48个AI2-THOR环境。
+- 已核实checkpoint source env job479522使用单服务、devices `[0,1,2,3]`、navigation max_workers16。下一步需人类批准实现精确source拓扑并跑120-record gate；禁止resume旧array480309。

@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-07-19：hligb step10 SFT1 rollout（暂停，正式有效数据0）
+
+- 人类要求从`/project/peilab/atst/vagen_ckpt_JUL19`采三类train3240+val360，不采test；rollout保持checkpoint原`grounding_worldmodeling`/single-action prompt，后续再转Nimloth。
+- 新增隔离source prompt profile与显式answer-tag converter：Nimloth `5975bee`、VAGEN `dda9239`；服务器tests 7 passed。1-record smoke job480275完成：25 actions/26 images/action validity1.0，严格转换零issue。
+- formal array480309首个120-row shard因环境服务拓扑不匹配失败：旧wrapper启动4个单GPU/max_workers48服务但policy只用第一URL，单GPU并发环境step出现`NoneType`，recovery缺metrics导致manager KeyError。task1/2取消、task3未启动、env释放，正式0个完整JSONL。
+- checkpoint source env job479522实际为单服务/devices[0,1,2,3]/max_workers16。旧array480309禁止resume；待人类确认后实现精确source拓扑并先过120-record gate。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
+
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 
 - 人类明确要求完整保留 legacy `retry2` 的 `global_step_48` 与 `global_step_79`，删除该 run 下其他全部 `global_step_*` checkpoint。
