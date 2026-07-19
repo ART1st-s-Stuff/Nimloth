@@ -62,15 +62,14 @@ All root commits modify only the VAGEN gitlink. Existing unrelated `.memory/memo
 
 ## Active jobs (2026-07-20 server time)
 
-- CPU image derivation: job `481070`, CPU partition, 8 CPUs/64 GiB on `intel-01`; started healthy. The initial 32-CPU request was rejected before job creation by `QOSMaxCpuPerNode`, so the approved conversion was resubmitted with 8 workers. Output: `converted_strict_k8_b6c811c_images255`.
+- CPU image derivation job `481070`: `COMPLETED 0:0` in `00:08:55` on `intel-01` with 8 CPUs/64 GiB. The initial 32-CPU request was rejected before job creation by `QOSMaxCpuPerNode`, so the approved conversion used 8 workers. Exhaustive validation passed: all four JSONL counts preserved; 81,570 references map to 73,648 existing unique RGB 255×255 images; all 73,648 source images remain RGB 512×512 and aggregate source bytes remain `11,161,340,020`. Derived logical bytes=`4,510,928,566` (4.201 GiB), while NFS `du` reports 16 GiB because of allocation units. Output: `converted_strict_k8_b6c811c_images255`.
 - Old-resolution A: job `481071`, normal, 6 GPUs (2 env + 4 policy), W&B ID10, output `outputs/experiments/rollout_resolution/2026-07-20/10_resprobe_step60_train120_img504_greedy`.
 - Corrected-resolution B: job `481072`, normal, 6 GPUs (2 env + 4 policy), W&B ID11, output `outputs/experiments/rollout_resolution/2026-07-20/11_resprobe_step60_train120_img252_greedy`.
-- Human explicitly requested two separate normal A/B jobs. Both GPU jobs are currently pending because no normal node has six free GPUs; current normal capacity is fragmented across nodes.
+- Human explicitly requested two separate normal A/B jobs. A started on dgx-13, passed all six GPU probes (one CUDA-only policy GPU was unsuitable for AI2-THOR as expected), selected 2 healthy env + 4 policy GPUs, loaded exact old VAGEN `e7cc2d0`, passed trainer config, built vLLM at ~45.15 GiB/rank, and is generating. W&B run `9l4vjc1j` has the exact ID10 name and is running. B remains pending due fragmented normal capacity.
 - Exact server worktrees verified clean: Nimloth `f7ea3da`, old VAGEN `e7cc2d0`, fixed VAGEN `a01f7af`, both verl `65316156`.
 - Dataset scope measured exactly: 4 JSONLs, 4,485 records, 81,570 references, 73,648 unique source images, 10.39 GiB source bytes; estimated derived PNG bytes 4.28 GiB.
 
 ## Pending
 
-- Monitor `481070` to completion and validate manifest, JSONL counts/path rewriting, every output RGB 255×255, and unchanged source sizes.
-- Monitor `481071/481072` until healthy, then to completion; verify W&B/run IDs, 120 records each, expected 512/255 persisted PNG gate, and no hidden parameter differences.
+- Monitor `481071/481072` to completion; verify W&B/run IDs, 120 records each, expected 512/255 persisted PNG gate, and no hidden parameter differences.
 - Run paired comparison over identical `(data_source, env_seed)` keys and record overall/per-source rates, discordant outcomes, exact McNemar p-value, and interpretation.

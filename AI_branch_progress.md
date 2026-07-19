@@ -10,7 +10,8 @@
 - VAGEN主修复`a01f7af`使本地/service Qwen rollout持有、送入vLLM并落盘的图片固定为RGB 255×255；测试`2 passed`。按各自VAGEN基线移植后，dev及11个活跃实验分支均已更新并推送，没有回退分支专有VAGEN改动。
 - 人类选择保留原512图片并派生新255数据集；train probe采用base_train/common_sense_train各seeds1–60，并对旧504与新252模型输入做同checkpoint、同任务、同greedy参数的配对A/B。
 - dev已准备并推送非破坏性图片派生、train120 rollout模式、PNG尺寸gate及配对比较工具（`f7ea3da`）；本地契约/数据/比较测试`4 passed`，compileall、bash语法和diff-check通过。
-- 人类确认后已提交：CPU派生job`481070`在intel-01健康运行；旧504路径A job`481071`与新252路径B job`481072`分别申请normal 6GPU（2 env+4 policy），当前因单节点无6张空闲卡处于pending。数据实测73,648唯一图/10.39GiB，派生预计4.28GiB；W&B `nimloth-sft1` ID10/11。详见`ai_tasks/ai_progress/2026-07-19_rollout_resolution255.md`。
+- CPU派生job`481070`已`COMPLETED 0:0`（00:08:55）：4个JSONL/4,485 records计数原样保留，81,570 refs映射73,648张唯一RGB255图；全量源图仍为RGB512且总字节不变。派生图logical 4.201GiB（NFS `du`因allocation unit显示16GiB）。
+- 旧504路径A job`481071`已在dgx-13以normal 6GPU启动，2 env+4 policy、VAGEN `e7cc2d0`、config/vLLM均健康，W&B ID10 run `9l4vjc1j`运行中；新252路径B job`481072`仍因normal资源碎片pending。详见`ai_tasks/ai_progress/2026-07-19_rollout_resolution255.md`。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 
