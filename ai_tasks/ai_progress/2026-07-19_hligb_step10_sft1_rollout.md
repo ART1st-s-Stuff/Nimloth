@@ -111,4 +111,5 @@
 - 人类据此批准临时把SFT rollout profile改为训练时prompt，SFT1/SFT2阶段再转换Nimloth格式。VAGEN commit `3003c2e`恢复原multi-action hints/examples且保留env max_actions=1；Nimloth pointer/docs commit `d736ddc`。runtime golden combined SHA=`ee38bc...900f`，server targeted tests9 passed。
 - image-dumping smoke `7_smoke_step10trainprompt_base1_t07p095k50_t25`通过：policy480514 COMPLETED，1条/25 actions/26 images，prompt hash精确，strict answer conversion 1/1零issue。480500/480511因metadata仍显示step79在JSONL前取消；正确变量是`INIT_HF_STEP=10`。
 - formal ID8 attempt env480517+array480518失败且有效数据0：array `%2`使两个独立manager共享service并复用`val1...` env IDs，互相覆盖/close，出现6个NoneType step errors和KeyError metrics。全部停止，禁止resume；错误登记E0031。
-- 修复方案已明确：新run/output，单一policy manager（array `%1`）内部使用4 policy GPUs，加4 env GPUs，总计8。尚未提交retry，因为superpod SSH gateway随后持续`Connection closed by UNKNOWN port 65535`，外部连接恢复前blocked。
+- superpod SSH恢复后启动fresh formal ID9：`9_rollout_step10trainprompt_train3240_val360_serialmgr_t07p095k50_t25`，W&B `jyf980bb`。env480536为4GPU source topology。
+- 初始serial 4GPU policy array480537因Priority预测次日启动且elapsed0，最终复查后安全取消。replacement array480550保持`%1`单manager，使用2 policy GPU（总并发env4+policy2=6GPU），task0已加载120-row shard并进入generation，env errors=0，状态healthy running。目标仍为train3240+val360/no test。
