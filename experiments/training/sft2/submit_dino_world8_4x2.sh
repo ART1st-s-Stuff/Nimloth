@@ -29,10 +29,17 @@ job_id=${job_id%%;*}
 trap '"${SCANCEL}" "${job_id}" >/dev/null 2>&1 || true' ERR
 
 details=$("${SCONTROL}" show job "${job_id}" -o)
-time_limit=$(tr " " "\n" <<<"${details}" | awk -F= '$1=="TimeLimit" {print $2; exit}')
-num_nodes=$(tr " " "\n" <<<"${details}" | awk -F= '$1=="NumNodes" {print $2; exit}')
-req_tres=$(tr " " "\n" <<<"${details}" | awk -F= '$1=="ReqTRES" {print $2; exit}')
-if [[ "${time_limit}" != "2-00:00:00" || "${num_nodes}" != "4" || "${req_tres}" != *"gres/gpu=8"* ]]; then
+read_field() {
+  local name=$1 token
+  for token in ${details}; do
+    [[ "${token}" == "${name}="* ]] && { printf '%s\n' "${token#*=}"; return; }
+  done
+  return 1
+}
+time_limit=$(read_field TimeLimit)
+num_nodes=$(read_field NumNodes)
+req_tres=$(read_field ReqTRES)
+if [[ "${time_limit}" != "2-00:00:00" || ( "${num_nodes}" != "4" && "${num_nodes}" != "4-4" ) || "${req_tres}" != *"gres/gpu=8"* ]]; then
   echo "unsafe allocation request: TimeLimit=${time_limit} NumNodes=${num_nodes} ReqTRES=${req_tres}" >&2
   "${SCANCEL}" "${job_id}" || true
   exit 5
