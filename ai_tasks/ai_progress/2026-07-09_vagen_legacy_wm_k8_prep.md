@@ -300,3 +300,10 @@
 - epoch3 global4965完成并保存`epoch_003`：val WM MSE`.003169409047`、SIGReg`.409104940`、value`.131451708`，未改善epoch2 best`.003050072753`。
 - 人类要求epoch4结束后暂停；prompt到达时epoch4已结束且epoch5已运行。先核实`epoch_004`和`best`均global6620/epoch4/epoch_complete=true，再scancel job478282；terminal`CANCELLED0:0`/elapsed06:04:00，无model/distributed error。epoch4 val WM MSE`.001217446007`（新best）、SIGReg`.405812097`、value`.125026900`、fixed success`.309859155`。
 - 原run已logged到epoch5 global6681。CSV归档`train_step_log_pause_epoch4_logged6681.csv`并截到epoch4 val row/global6620；W&B6621-6681为discarded stale。rolling latest step6621按人类“不删除旧ckpt”的意图保留为`latest_discarded_post_epoch4_step6621`，但排除自动resume。`find_resume_checkpoint` gate实际选择`best` step6620，`resume_epoch_and_micro_step==(5,0)`。状态`PAUSED_BY_HUMAN_AFTER_EPOCH4`，无`sft2_done.flag`，epoch5待人类后续指令。
+
+## 2026-07-19 ID27 epoch2 query-latent CFM + Decoder
+
+- 用户确认：CFM条件为Qwen final-norm 8×2048 query latent；Decoder为对称MLP8192→8192→8×2048；训练loss为actual projected和teacher-forced WM predicted projected两路MSE 1:1；最终第四列严格从真实上一State/action单步预测当前State，不做递归rollout。
+- 提交`dd423d4/aa33019/38d8c90`新增Decoder trainer、同源cache/checkpoint fingerprint门禁、精确四列matched-noise evaluator和smoke pair限制；server focused tests`16 passed`。
+- smoke ID38/aifcbqpv：normal1GPU job480296，64/16 pairs、4 finite steps；val clean MSE/cos4.472669/.836910，pred4.493670/.835355。首次eval用旧cache选择ID失败且未采样；current diverse40 retry完成Euler2/200 rows，mechanics PASS。
+- formal fresh CFM ID39在同hold/dgx-51运行；路径`.../query_state_ablation/39_sft2e2_querycfm_ep30_b32_drop015_rerun`，配方与旧ID19相同，当前待完成后启动full Decoder ID40和Euler50四列eval ID41。

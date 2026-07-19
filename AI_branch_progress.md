@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-07-19：ID27 epoch2 query-latent CFM + projected-State Decoder（进行中）
+
+- 人类要求从ID27 SFT2 epoch2重新训练query-latent CFM，并输出`GT | 旧Qwen ViT-token CFM | query latent CFM | 单步WM预测State→Decoder→query latent CFM`。确认Decoder为对称MLP`8192→8192→8×2048`，真实/WM预测projected State两路MSE 1:1，最终预测采用真实`t-1` State/action的teacher-forced单步协议。
+- 实现提交`dd423d4/aa33019/38d8c90`：新增Decoder训练器、cache lineage/checkpoint fingerprint强校验、精确四列evaluator、matched-noise及clean-decoder gate；服务器相关测试`16 passed`。
+- normal单GPU smoke W&B `nimloth-recon/aifcbqpv`：64 train/16 disjoint val、4 finite steps；val clean MSE/cos=`4.472669/.836910`，predicted=`4.493670/.835355`。首次eval误用旧`shard_1081_1200`选择而在采样前失败；改用当前cache的diverse40后Euler2机械gate完成200行，四列顺序/alignment通过。仅为mechanics，不解释4-step质量。
+- fresh正式CFM ID39已在hold job`480296`/dgx-51启动，使用与旧ID19相同30ep/55,680step/b32/dropout.15/lr schedule/legacy-CFM init/seed；输出`.../query_state_ablation/39_sft2e2_querycfm_ep30_b32_drop015_rerun`，当前处于full cache preload/训练中。
+
 ## 2026-07-16：Full8192 LoRA/LoRA SFT2 正式训练中
 
 - 历史审计和人类选择锁定LLM LoRA+vision LoRA r64/alpha128、vision EMA；k8 query rows使用SFT1 epoch5 materialized结果并freeze。外部/动力学State均8192，严格train3217/val355，精确5 epochs。
