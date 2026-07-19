@@ -306,4 +306,6 @@
 - 用户确认：CFM条件为Qwen final-norm 8×2048 query latent；Decoder为对称MLP8192→8192→8×2048；训练loss为actual projected和teacher-forced WM predicted projected两路MSE 1:1；最终第四列严格从真实上一State/action单步预测当前State，不做递归rollout。
 - 提交`dd423d4/aa33019/38d8c90`新增Decoder trainer、同源cache/checkpoint fingerprint门禁、精确四列matched-noise evaluator和smoke pair限制；server focused tests`16 passed`。
 - smoke ID38/aifcbqpv：normal1GPU job480296，64/16 pairs、4 finite steps；val clean MSE/cos4.472669/.836910，pred4.493670/.835355。首次eval用旧cache选择ID失败且未采样；current diverse40 retry完成Euler2/200 rows，mechanics PASS。
-- formal fresh CFM ID39在同hold/dgx-51运行；路径`.../query_state_ablation/39_sft2e2_querycfm_ep30_b32_drop015_rerun`，配方与旧ID19相同，当前待完成后启动full Decoder ID40和Euler50四列eval ID41。
+- formal CFM ID39在同hold/dgx-51完成55,680steps/30ep，W&B`kxj6lblp`；best@17000 subset correct`.03231484`，final full-val correct/shuffled`.03919945/.03968144` ratio`1.012296`，best/final/Euler50 CFG2 artifacts完整。
+- Decoder ID40完成5epochs/2,195steps，W&B`5d48t68t`。full val5,699 clean actual projected→query MSE/cos`.1434287/.9951712`；teacher-forced WM predicted projected→query`1.2743621/.9561902`。
+- final ID41 W&B`41uobfuf`完成diverse40/200 rows exact四列。L1 Qwen/direct-query/WM→Decoder=`.272989/.320531/.333934`；state MSE/cos`.003416/.703572`；selected rows decoder clean/pred query MSE/cos`.138314/.995344` vs`1.535103/.947032`。视觉Qwen最scene-faithful，direct query粗结构可见但漂移，pred多数generic pale room。clean Decoder gate也有细节/layout损失，因此pred失败是WM drift与Decoder/CFM sensitivity共同结果。hold480296任务完成后取消释放。

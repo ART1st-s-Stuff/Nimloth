@@ -9,7 +9,10 @@
 - 人类要求从ID27 SFT2 epoch2重新训练query-latent CFM，并输出`GT | 旧Qwen ViT-token CFM | query latent CFM | 单步WM预测State→Decoder→query latent CFM`。确认Decoder为对称MLP`8192→8192→8×2048`，真实/WM预测projected State两路MSE 1:1，最终预测采用真实`t-1` State/action的teacher-forced单步协议。
 - 实现提交`dd423d4/aa33019/38d8c90`：新增Decoder训练器、cache lineage/checkpoint fingerprint强校验、精确四列evaluator、matched-noise及clean-decoder gate；服务器相关测试`16 passed`。
 - normal单GPU smoke W&B `nimloth-recon/aifcbqpv`：64 train/16 disjoint val、4 finite steps；val clean MSE/cos=`4.472669/.836910`，predicted=`4.493670/.835355`。首次eval误用旧`shard_1081_1200`选择而在采样前失败；改用当前cache的diverse40后Euler2机械gate完成200行，四列顺序/alignment通过。仅为mechanics，不解释4-step质量。
-- fresh正式CFM ID39已在hold job`480296`/dgx-51启动，使用与旧ID19相同30ep/55,680step/b32/dropout.15/lr schedule/legacy-CFM init/seed；输出`.../query_state_ablation/39_sft2e2_querycfm_ep30_b32_drop015_rerun`，当前处于full cache preload/训练中。
+- fresh正式CFM ID39在hold job`480296`/dgx-51完成：55,680steps/30ep，W&B`kxj6lblp`；best@17000 subset correct MSE`.03231484`，final full-val6,054 correct/shuffled`.03919945/.03968144`、ratio`1.012296`，与旧ID19相近，仍仅弱condition use。best/final和Euler50/CFG2 sheet完整。
+- 正式Decoder ID40完成5 epochs/2,195steps，W&B`5d48t68t`。full heldout5,699：clean actual-State decode MSE/cos=`.1434287/.9951712`；teacher-forced WM-predicted-State decode=`1.2743621/.9561902`，预测路误差显著更大；best/latest各约2.4GB且reload通过。
+- 最终ID41 diverse40/200 rows Euler50/CFG2四列完成，W&B`41uobfuf`。image L1：Qwen ViT`.272989`、direct query`.320531`、WM→Decoder`.333934`；query-vs-pred output L1`.157630`。所选200行state MSE/cos=`.003416/.703572`；Decoder clean/pred query MSE/cos=`.138314/.995344` vs`1.535103/.947032`。肉眼Qwen最稳；direct query保留粗结构但漂移；第四列多为不匹配的浅色generic room。clean Decoder gate多数保留粗场景但会损细节/改layout，故第四列失败同时包含WM off-manifold与Decoder/CFM sensitivity，不能全归因WM。hold完成任务后已取消释放。
+- 更新服务器experiment-group progress时再次触发E0028：quoted heredoc嵌套在外层`ssh '...'`单引号后仍被本地shell展开反引号。损坏段已用Python完整重写并读取核验；E0028补充禁止这种嵌套方式。
 
 ## 2026-07-16：Full8192 LoRA/LoRA SFT2 正式训练中
 
