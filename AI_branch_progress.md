@@ -11,8 +11,10 @@
 - formal array480309首个120-row shard因环境服务拓扑不匹配失败：旧wrapper启动4个单GPU/max_workers48服务但policy只用第一URL，环境step失败。正式0个完整JSONL，旧array禁止resume。
 - 按source job479522实现单服务/devices`[0,1,2,3]`/max_workers16精确拓扑与120-row gate：commits `feef88d`,`fb9f985`，服务器tests9 passed。
 - gate policy480366_0 `COMPLETED 0:0`（00:21:48），env零create/step/reset error；raw120条（3类各40）、3055 images零missing、success4/120、mean action validity0.949。严格answer-tag转换保留114/120（含全部4 success），保留数据零warnings/issues。
-- 初始gate jobs480363/480364已RUNNING15秒但被错误的`set -e` shell guard继续scancel；无JSONL，replacement资源与source一致。错误登记`E0029_shell_guard_must_explicitly_exit_before_scancel.md`。
-- 机械并发/topology gate通过；正式数据仍为0。因3.33% success和95%严格record retention是否满足质量门槛不明确，已释放全部GPU并等待人类决定是否启动full 3240+360。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
+- 内容审计发现policy塌缩：80.6% parsed actions是moveahead，77.3% turns被AI2-THOR阻挡，109/120 records至少一次blocked；long-horizon0/40 success。典型失败在墙前重复相同thought+moveahead直到turn25。
+- 更关键的是archived source eval479904 runtime prompt保留“可多动作”文字和多动作example，只由env `max_actions_per_step=1`执行首动作；当前gate却显式one-action并截断example。此前source-exact结论失效，错误登记E0030。source eval的270个首动作也全部moveahead，weighted effectiveness36/270=13.3%；其6/16 success来自短有利starts，不能证明policy正常。
+- 初始gate jobs480363/480364已RUNNING15秒但被错误的`set -e` shell guard继续scancel；无JSONL，replacement资源与source一致。错误登记E0029。
+- 机械并发/topology gate通过，但prompt fidelity与policy质量gate未通过；正式数据仍为0，GPU已释放。必须由人类决定是否复现archived矛盾prompt后重跑gate；禁止启动full 3240+360或把当前profile称为source-exact。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 

@@ -88,3 +88,13 @@
 - raw：120 records（3类各40）、3055 images零missing、2935 assistant turns；success4/120=3.33%，mean action validity0.949。
 - strict answer conversion：接受114/120（95%）、包含全部4 successes；2785 assistant/actions、2899 images、零warnings/issues；6条reject IDs在manifest。
 - mechanical concurrency/topology gate通过，但3.33% success与95% strict retention是否足以开始full collection不明确；GPU均已释放，等待人类质量决策。
+
+## 120-record内容审计与结论修正
+
+- 用户要求审计后确认gate确为train：base/common/long-horizon各seeds1..40，不是val/test。
+- 2935 assistant turns中，parsed actions 2857：moveahead2302（80.6%），rotateright208，moveleft127，moveright94，rotateleft27，moveback23，lookup1，lookdown0。
+- 2270/2935 turns（77.3%）收到AI2-THOR `Last action is not executed successfully`；109/120 records至少一次blocked。116条失败中112条有连续>=4个相同动作。典型base seed1在首次forward后被墙阻挡，后续重复近相同thought+moveahead至turn25。
+- success只有base seeds5/34的Kettle与common seeds4 Toaster/8 indirect Statue；long-horizon 0/40。核心原因是policy对moveahead塌缩且不响应blocked feedback，成功主要来自目标刚好沿初始朝向数步内。
+- 关键新证据：archived source eval job479904的`results.jsonl`实际runtime prompt仍写“可多动作”并含多动作examples，env `max_actions_per_step=1`只执行第一个动作；当前gate prompt则显式one-action并截断example。因此此前“prompt exact”的结论失效，登记E0030。
+- archived job479904虽然test16条success6/16，但其270个executed first actions全部是moveahead，234/270 blocked，只有36/270 position-changing；summary0.415是per-trajectory unweighted mean，被6条短成功轨迹抬高，weighted effectiveness=13.3%，与gate接近。
+- formal collection必须继续blocked：需要人类决定是否复现archived的矛盾协议（multi-action wording + first-action-only execution）并重跑gate，禁止继续把当前profile称为source-exact。
