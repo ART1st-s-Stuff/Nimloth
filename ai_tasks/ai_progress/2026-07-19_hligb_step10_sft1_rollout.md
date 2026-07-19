@@ -98,3 +98,13 @@
 - 关键新证据：archived source eval job479904的`results.jsonl`实际runtime prompt仍写“可多动作”并含多动作examples，env `max_actions_per_step=1`只执行第一个动作；当前gate prompt则显式one-action并截断example。因此此前“prompt exact”的结论失效，登记E0030。
 - archived job479904虽然test16条success6/16，但其270个executed first actions全部是moveahead，234/270 blocked，只有36/270 position-changing；summary0.415是per-trajectory unweighted mean，被6条短成功轨迹抬高，weighted effectiveness=13.3%，与gate接近。
 - formal collection必须继续blocked：需要人类决定是否复现archived的矛盾协议（multi-action wording + first-action-only execution）并重跑gate，禁止继续把当前profile称为source-exact。
+
+## 原checkpoint数据与训练时prompt只读代码复跑
+
+- 人类要求禁止更改代码，临时使用训练时prompt跑原checkpoint数据train120+val120。没有修改任何repo/source文件；env job在node-local `/tmp`解包VAGEN committed HEAD `8839a2a`，policy只使用现有source evaluator作HTTP client。
+- 数据：原20,000-row train parquet中按原顺序取base60+common60；原trainer `data.val_files=test.parquet`的128 rows中按原顺序取base60+common60。
+- prompt gate：全部240条serialized system prompt SHA256=`ee38bc0c257422734b55e3b301b3c767f95ad76a74e682c35705a6c1d37c900f`；含原multi-action hint和`You can take up to 1 action(s)`，不含`Choose exactly one action`。
+- env480449：preempt 4GPU、one service/devices0..3/max_workers16；两次policy完成后取消释放GPU。
+- train480452 `COMPLETED 0:0`（00:14:54）：base19/60、common23/60，总success42/120=35.00%；all actions valid；weighted position-changing272/2088=13.03%。W&B `nimloth-sft1/5r9yh8qe`。
+- val480471 `COMPLETED 0:0`（00:13:49）：base25/60、common24/60，总success49/120=40.83%；all actions valid；weighted position-changing291/1943=14.98%。W&B `nimloth-sft1/11lhw3it`。
+- 输出：`/project/peilab/hligb/vagen-navigation/eval/origprompt_step10_train120_val120_20260719`。source evaluator消费真实图像但只记录`num_images`，不保存PNG路径，所以本次是质量复核rollout，不能直接转换为SFT image dataset。

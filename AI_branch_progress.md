@@ -14,7 +14,8 @@
 - 内容审计发现policy塌缩：80.6% parsed actions是moveahead，77.3% turns被AI2-THOR阻挡，109/120 records至少一次blocked；long-horizon0/40 success。典型失败在墙前重复相同thought+moveahead直到turn25。
 - 更关键的是archived source eval479904 runtime prompt保留“可多动作”文字和多动作example，只由env `max_actions_per_step=1`执行首动作；当前gate却显式one-action并截断example。此前source-exact结论失效，错误登记E0030。source eval的270个首动作也全部moveahead，weighted effectiveness36/270=13.3%；其6/16 success来自短有利starts，不能证明policy正常。
 - 初始gate jobs480363/480364已RUNNING15秒但被错误的`set -e` shell guard继续scancel；无JSONL，replacement资源与source一致。错误登记E0029。
-- 机械并发/topology gate通过，但prompt fidelity与policy质量gate未通过；正式数据仍为0，GPU已释放。必须由人类决定是否复现archived矛盾prompt后重跑gate；禁止启动full 3240+360或把当前profile称为source-exact。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
+- 人类随后要求禁止改代码，用训练时prompt在原checkpoint数据只读复跑train120+val120：node-local解包VAGEN HEAD `8839a2a`，全部240条prompt hash=`ee38bc...900f`。train success42/120=35.00%，val49/120=40.83%，all actions valid；jobs480452/480471完成，GPU已释放。输出在`/project/peilab/hligb/vagen-navigation/eval/origprompt_step10_train120_val120_20260719`。source evaluator不持久化PNG，故只作质量复核、不能直接转SFT。
+- 机械并发/topology已验证，原prompt质量复核明显高于错误prompt gate；但正式数据仍为0。当前repo的explicit-one-action profile仍非source-exact，禁止用于full 3240+360。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 
