@@ -7,6 +7,7 @@ Canonical location for SFT2 per `ai_tasks/sft2_exp.md`.
 | `train.py` | Thin experiment entry → `nimloth.training.sft2.trainer` |
 | `train_vagen79_default.slurm` | 8-GPU Slurm job (reads yaml config) |
 | `submit_dino_world8_4x2.sh` / `train_dino_world8_4x2.slurm` / `run_dino_world8_4x2.sh` | DINO-aligned SFT2：单个常规多节点job用4节点×2GPU碎片组成world size 8；显式48h |
+| `profile_dino_world8_4x2.slurm` / `run_dino_world8_profile.sh` | 隔离world8 profile：online+GC、cached+GC各50步；cached no-GC诊断；不做validation/checkpoint/W&B |
 | `build_compact_cache.slurm` | CPU-only compact preprocess-cache build |
 | `build_benchmark_dino_cache.slurm` / `build_dino_feature_cache.py` / `benchmark_dino_feature_cache.py` | 独立1-GPU构建分片float32 DINO CLS sidecar并测量online/cache teacher-only吞吐；要求CUDA BF16与bitwise抽检 |
 | `submit_compact_cache.sh` | Submit only the CPU cache build |
@@ -33,7 +34,7 @@ Profiling / speedup (see `ai_tasks/sft2_speedup_plan.md`):
 | `latent_wm_value_profiling.yaml` | `batch_size=2`, `grad_accum=4`, `--step-timing` |
 | `latent_wm_value_vision_freeze_profiling.yaml` | P6 vision-freeze diagnostic |
 
-CLI knobs: `--preprocess-cache-dir`, `--preprocess-cache-format`, `--preprocess-cache-image-dtype`, `--require-prebuilt-cache`, `--dino-cache-dir`, `--require-dino-cache`, `--dataloader-workers`, `--dataloader-prefetch-factor`, `--packed-forward`, `--latent-token-count`, `--latent-query-mode inject|generate`, and `--query-tune freeze|adapter`. `adapter` trains a small additive latent-query embedding table, folds it into the saved embedding rows, and is intentionally rejected with LoRA. `--[no-]mask-latent-query-labels` remains a deprecated compatibility alias. `--full-trajectory-batching` is **enabled by default**; use `--no-full-trajectory-batching` to disable.
+CLI knobs: `--preprocess-cache-dir`, `--preprocess-cache-format`, `--preprocess-cache-image-dtype`, `--require-prebuilt-cache`, `--dino-cache-dir`, `--require-dino-cache`, `--dataloader-workers`, `--dataloader-prefetch-factor`, `--profile-optimizer-steps`（必须配合`--step-timing`，成功短停且跳过validation/checkpoint）, `--packed-forward`, `--latent-token-count`, `--latent-query-mode inject|generate`, and `--query-tune freeze|adapter`. `adapter` trains a small additive latent-query embedding table, folds it into the saved embedding rows, and is intentionally rejected with LoRA. `--[no-]mask-latent-query-labels` remains a deprecated compatibility alias. `--full-trajectory-batching` is **enabled by default**; use `--no-full-trajectory-batching` to disable.
 
 ### Compact preprocess cache (default)
 

@@ -186,6 +186,12 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Log step timings every N optimizer steps when --step-timing is set.",
     )
     ap.add_argument(
+        "--profile-optimizer-steps",
+        type=int,
+        default=0,
+        help="Profiling only: stop successfully after N optimizer steps without validation/checkpoints (0 disables).",
+    )
+    ap.add_argument(
         "--checkpoint-interval-minutes",
         type=float,
         default=20.0,

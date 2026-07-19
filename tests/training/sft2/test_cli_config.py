@@ -125,6 +125,17 @@ def test_cli_values_override_yaml_defaults() -> None:
     assert args.preprocess_workers == 1
 
 
+def test_profile_step_limit_is_explicit_and_disabled_by_default() -> None:
+    args = parse_sft2_args(["--config", str(K8_CONFIG), *REQUIRED])
+    assert args.profile_optimizer_steps == 0
+
+    profiled = parse_sft2_args(
+        ["--config", str(K8_CONFIG), *REQUIRED, "--step-timing", "--profile-optimizer-steps", "50"]
+    )
+    assert profiled.step_timing is True
+    assert profiled.profile_optimizer_steps == 50
+
+
 def test_cli_rejects_conflicting_mode_and_legacy_mask() -> None:
     with pytest.raises(ValueError, match="conflicting latent query settings"):
         parse_sft2_args(

@@ -397,6 +397,13 @@ def train_sft2(args=None) -> int:
         raise ValueError("DINO cache options require --dino-align")
     if args.require_dino_cache and args.dino_cache_dir is None:
         raise ValueError("--require-dino-cache requires --dino-cache-dir")
+    args.profile_optimizer_steps = int(getattr(args, "profile_optimizer_steps", 0) or 0)
+    if args.profile_optimizer_steps < 0:
+        raise ValueError("--profile-optimizer-steps must be >= 0")
+    if args.profile_optimizer_steps and not args.step_timing:
+        raise ValueError("--profile-optimizer-steps requires --step-timing")
+    if args.profile_optimizer_steps and args.resume:
+        raise ValueError("profiling step limit cannot be combined with --resume")
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     if args.query_tune == "adapter" and uses_lora(args):
@@ -956,6 +963,7 @@ def train_sft2(args=None) -> int:
     pad_token_id = processor.tokenizer.pad_token_id
     last_periodic_ckpt_time = time.monotonic()
 
+    profile_complete = False
     for epoch in range(start_epoch, args.epochs + 1):
         if train_batch_sampler is not None:
             train_batch_sampler.set_epoch(epoch)
@@ -1158,6 +1166,20 @@ def train_sft2(args=None) -> int:
                 _optimizer_step(epoch, lambda_wm=lambda_wm, lambda_sigreg=lambda_sigreg_val)
                 step_timer.stop("optimizer", t0)
                 step_timer.on_optimizer_step(global_step=global_step, epoch=epoch)
+                if args.profile_optimizer_steps and global_step >= args.profile_optimizer_steps:
+                    profile_complete = True
+                    if is_main():
+                        print(
+                            json.dumps(
+                                {
+                                    "profile_complete": True,
+                                    "global_step": global_step,
+                                    "requested_optimizer_steps": args.profile_optimizer_steps,
+                                    "validation_and_checkpoints_skipped": True,
+                                }
+                            )
+                        )
+                    break
 
                 should_save_step = bool(
                     args.checkpoint_interval_steps
@@ -1230,6 +1252,11 @@ def train_sft2(args=None) -> int:
                         _prune_step_checkpoints()
                     if dist.is_available() and dist.is_initialized():
                         dist.barrier()
+
+        if profile_complete:
+            if dist.is_available() and dist.is_initialized():
+                dist.barrier()
+            break
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
@@ -1362,7 +1389,7 @@ def train_sft2(args=None) -> int:
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
 
-    if is_main():
+    if is_main() and not profile_complete:
         _save_checkpoint(
             model,
             state_proj,
