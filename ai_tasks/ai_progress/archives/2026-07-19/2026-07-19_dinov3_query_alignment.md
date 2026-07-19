@@ -9,6 +9,7 @@
 - 分支：`feat/dinov3-query-alignment`
 - worktree：`/workspace/remote2/nimloth-feat-dinov3-query-alignment`
 - 起点：`dev` commit `5628cc5`
+- 实现提交：`e6d67e8 feat(sft2): align query state with DINOv3`
 
 ## 已完成
 
