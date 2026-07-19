@@ -85,9 +85,14 @@ All root commits modify only the VAGEN gitlink. Existing unrelated `.memory/memo
 - Tests cover shuffled returns, service environment reuse, missing identity, local/service manager mapping contract and trainer use. Fixed lineage: 7 passed including image contracts; old lineage: 8 passed including source-eval contract; compileall and diff checks passed.
 - Added `validate_rollout_train120_dump.py` as an automatic post-rollout gate: exactly 120 expected keys, stable UID, matching runtime config/eval set, `metrics.success`, existing RGB images and exact size. Root rerun tooling now passes 10 tests plus shell/compile/diff checks.
 
-## Pending before rerun
+## Exact-seed rerun jobs (human-confirmed)
 
-- Commit/push the final train120 gate and prepare the final clean server Nimloth worktree at that exact commit. Clean VAGEN endpoints are already prepared at `192c35a` (fixed255) and `ef851af` (old504), both with verl `65316156`.
-- Recheck W&B IDs, disk and normal resources; assign new experiment names/output directories without overwriting the diagnostic runs.
-- Report exact frozen modules, checkpoint, two task sets, greedy settings, A/B VAGEN commits, 2-env+4-policy topology, expected duration and validation gates; obtain the required final GPU launch confirmation.
-- On rerun, require zero `config_id/eval_set` mismatches and exact 120 `(data_source, env_seed)` pairs before computing McNemar.
+- Final clean server root: Nimloth `b27d0e3`, fixed VAGEN `192c35a`, old VAGEN `ef851af`, both verl `65316156`. Root/VAGEN tests: 10/7/8 passed respectively.
+- Old504 A: job `481089`, W&B ID12 name `12_resprobe_identityfix_step60_train120_img504_greedy`, dgx-13, physical GPUs0/1 env +2/3/4/5 policy. Both HTTP services healthy; exact old commit and greedy args verified; rollout task started 04:26:48.
+- New252 B: job `481090`, W&B ID13 name `13_resprobe_identityfix_step60_train120_img252_greedy`, dgx-12, physical GPUs0/1 env +2/3/4/5 policy. Both HTTP services healthy; exact fixed commit and greedy args verified; rollout task started 04:24:57.
+- Each is an independent normal 6-GPU allocation with 112 CPUs/180 GiB/4h; evaluation only with frozen step60 and no optimizer. Output dirs are new and mandatory stable-identity/RGB gates are active.
+
+## Pending
+
+- Monitor both reruns to completion; require zero metadata mismatches, exact 120 `(data_source, env_seed)` keys and RGB512/RGB255 gates.
+- Compare strict seed pairs, record per-source and overall rates, flips, exact McNemar p-value, and relation to diagnostic recovery/historical 71.67%.
