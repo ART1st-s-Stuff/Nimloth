@@ -18,6 +18,8 @@ ROOT=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${ROOT}/experiments/training/sft1
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
+# shellcheck disable=SC1091
+source "${SCRIPTDIR}/env_topology.sh"
 BASEDIR=${ROOT}/external/VAGEN
 EXPERIMENT_NAME=${ROLLOUT_RUN_NAME}
 RUN_DIR=${ROLLOUT_RUN_DIR}
@@ -56,14 +58,15 @@ NODE_IP=$(hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
 if [ -z "${NODE_IP}" ]; then NODE_IP=$(hostname -I | awk '{print $1}'); fi
 IFS=',' read -r -a GPU_IDS <<< "${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 PORT_BASE=${PORT_BASE:-8400}
-ENV_SERVICE_COUNT=${ENV_SERVICE_COUNT:-4}
-if [ "${ENV_SERVICE_COUNT}" -lt 1 ] || [ "${ENV_SERVICE_COUNT}" -gt "${#GPU_IDS[@]}" ]; then
-  echo "ERROR ENV_SERVICE_COUNT=${ENV_SERVICE_COUNT} incompatible with allocated GPUs ${CUDA_VISIBLE_DEVICES:-}" >&2
+configure_sft1_env_topology
+if [ "${ENV_REQUIRED_GOOD_GPUS}" -lt 1 ] || [ "${ENV_REQUIRED_GOOD_GPUS}" -gt "${#GPU_IDS[@]}" ]; then
+  echo "ERROR ENV_REQUIRED_GOOD_GPUS=${ENV_REQUIRED_GOOD_GPUS} incompatible with allocated GPUs ${CUDA_VISIBLE_DEVICES:-}" >&2
   exit 2
 fi
 
-echo "=== SFT1 vagen79 ${ENV_SERVICE_COUNT}-GPU env job starting ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
-echo "job=${SLURM_JOB_ID} node=${NODE} ip=${NODE_IP}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+echo "=== SFT1 env job starting ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+echo "job=${SLURM_JOB_ID} node=${NODE} ip=${NODE_IP} protocol=${ROLLOUT_PROTOCOL:-nimloth_source_eval}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+echo "services=${ENV_SERVICE_COUNT} required_gpus=${ENV_REQUIRED_GOOD_GPUS} navigation_max_workers=${ENV_NAVIGATION_MAX_WORKERS} all_gpus_per_service=${ENV_USE_ALL_ALLOCATED_GPUS}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 
 declare -a GOOD_PHYS=()
 for idx in "${!GPU_IDS[@]}"; do
@@ -93,8 +96,8 @@ PY
   if [ "$rc" -eq 0 ]; then GOOD_PHYS+=("$phys"); fi
 done
 
-if [ "${#GOOD_PHYS[@]}" -lt "${ENV_SERVICE_COUNT}" ]; then
-  echo "ERROR need ${ENV_SERVICE_COUNT} good GPUs, got ${#GOOD_PHYS[@]}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+if [ "${#GOOD_PHYS[@]}" -lt "${ENV_REQUIRED_GOOD_GPUS}" ]; then
+  echo "ERROR need ${ENV_REQUIRED_GOOD_GPUS} good GPUs, got ${#GOOD_PHYS[@]}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   touch "${CONTROL_DIR}/failed"
   exit 2
 fi
@@ -110,12 +113,18 @@ cleanup() {
 trap cleanup EXIT
 
 for env_i in $(seq 0 $((ENV_SERVICE_COUNT - 1))); do
-  phys="${GOOD_PHYS[$env_i]}"
+  if [ "${ENV_USE_ALL_ALLOCATED_GPUS}" = "1" ]; then
+    visible_devices=$(IFS=,; echo "${GOOD_PHYS[*]:0:${ENV_REQUIRED_GOOD_GPUS}}")
+    navigation_devices="[$(seq -s, 0 $((ENV_REQUIRED_GOOD_GPUS - 1)))]"
+  else
+    visible_devices="${GOOD_PHYS[$env_i]}"
+    navigation_devices='[0]'
+  fi
   port=$((PORT_BASE + env_i))
   echo "http://${NODE_IP}:${port}" >> "${CONTROL_DIR}/env_urls.txt"
-  CUDA_VISIBLE_DEVICES="$phys" PYTHONUNBUFFERED=1 python -m vagen.server.server \
+  CUDA_VISIBLE_DEVICES="$visible_devices" PYTHONUNBUFFERED=1 python -m vagen.server.server \
     server.host=0.0.0.0 server.port="$port" use_state_reward=False \
-    navigation.devices='[0]' navigation.max_workers=48 \
+    navigation.devices="$navigation_devices" navigation.max_workers="${ENV_NAVIGATION_MAX_WORKERS}" \
     > "${RUN_DIR}/env_server_${SLURM_JOB_ID}_${NODE}_${env_i}.log" 2>&1 &
   echo $! >> "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids"
 done
