@@ -8,7 +8,7 @@ Canonical location for SFT2 per `ai_tasks/sft2_exp.md`.
 | `train_vagen79_default.slurm` | 8-GPU Slurm job (reads yaml config) |
 | `submit_dino_world8_4x2.sh` / `train_dino_world8_4x2.slurm` / `run_dino_world8_4x2.sh` | DINO-aligned SFT2：单个常规多节点job用4节点×2GPU碎片组成world size 8；显式48h |
 | `build_compact_cache.slurm` | CPU-only compact preprocess-cache build |
-| `build_dino_feature_cache.py` / `benchmark_dino_feature_cache.py` | 构建分片float32 DINO CLS sidecar并测量online/cache teacher-only吞吐；生产构建要求CUDA BF16并进行bitwise抽检 |
+| `build_benchmark_dino_cache.slurm` / `build_dino_feature_cache.py` / `benchmark_dino_feature_cache.py` | 独立1-GPU构建分片float32 DINO CLS sidecar并测量online/cache teacher-only吞吐；要求CUDA BF16与bitwise抽检 |
 | `submit_compact_cache.sh` | Submit only the CPU cache build |
 | `submit_cache_then_train.sh` | Submit cache, then dependency-gated 8-GPU training |
 | `submit_default_8gpu.sh` | Default: LLM freeze + vision full |
