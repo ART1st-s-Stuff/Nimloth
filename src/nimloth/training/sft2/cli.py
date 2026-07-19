@@ -76,6 +76,17 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     )
     ap.add_argument("--lambda-dino", type=float, default=0.0)
     ap.add_argument(
+        "--dino-cache-dir",
+        type=Path,
+        default=None,
+        help="Compact preprocess-cache root with validated train/val DINO CLS sidecars.",
+    )
+    ap.add_argument(
+        "--require-dino-cache",
+        action="store_true",
+        help="Refuse online frozen-teacher inference when a valid DINO target cache is unavailable.",
+    )
+    ap.add_argument(
         "--mask-latent-query-labels",
         action=argparse.BooleanOptionalAction,
         default=None,

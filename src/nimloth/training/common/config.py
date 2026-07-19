@@ -39,6 +39,8 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("alignment", "dino_model"): "dino_model",
     ("alignment", "dino_feature"): "dino_feature",
     ("alignment", "lambda_dino"): "lambda_dino",
+    ("alignment", "dino_cache_dir"): "dino_cache_dir",
+    ("alignment", "require_dino_cache"): "require_dino_cache",
     ("train", "full_trajectory_batching"): "full_trajectory_batching",
     ("train", "max_images_per_batch"): "max_images_per_batch",
     ("train", "max_steps_per_trajectory"): "max_steps_per_trajectory",

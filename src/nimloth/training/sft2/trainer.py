@@ -30,7 +30,7 @@ from nimloth.latent import (
 from nimloth.training.common.config import merge_cli_over_yaml
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.common.metrics import MetricAccumulator
-from nimloth.backbone.dino import FrozenDINOEncoder
+from nimloth.backbone.dino import CachedDINOEncoder, FrozenDINOEncoder, resolve_dino_identity
 from nimloth.backbone.qwen_tuning import configure_qwen_tuning, resolve_tune_modes, uses_lora
 from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema
 from nimloth.training.common.schedules import qwen_lr_schedule, set_optimizer_group_lr
@@ -380,6 +380,9 @@ def train_sft2(args=None) -> int:
     args.dino_model = str(getattr(args, "dino_model", ""))
     args.dino_feature = str(getattr(args, "dino_feature", "cls"))
     args.lambda_dino = float(getattr(args, "lambda_dino", 0.0))
+    raw_dino_cache_dir = getattr(args, "dino_cache_dir", None)
+    args.dino_cache_dir = Path(raw_dino_cache_dir) if raw_dino_cache_dir else None
+    args.require_dino_cache = bool(getattr(args, "require_dino_cache", False))
     if args.query_tune not in {"freeze", "adapter"}:
         raise ValueError(f"query_tune must be freeze or adapter, got {args.query_tune!r}")
     if args.latent_token_count < 1:
@@ -390,6 +393,10 @@ def train_sft2(args=None) -> int:
         raise ValueError("--dino-align requires --lambda-dino > 0")
     if not args.dino_align and args.lambda_dino != 0.0:
         raise ValueError("--lambda-dino must be 0 unless --dino-align is enabled")
+    if not args.dino_align and (args.dino_cache_dir is not None or args.require_dino_cache):
+        raise ValueError("DINO cache options require --dino-align")
+    if args.require_dino_cache and args.dino_cache_dir is None:
+        raise ValueError("--require-dino-cache requires --dino-cache-dir")
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     if args.query_tune == "adapter" and uses_lora(args):
@@ -445,6 +452,8 @@ def train_sft2(args=None) -> int:
                     "dino_model": args.dino_model if args.dino_align else None,
                     "dino_feature": args.dino_feature if args.dino_align else None,
                     "lambda_dino": args.lambda_dino,
+                    "dino_cache_dir": str(args.dino_cache_dir) if args.dino_cache_dir is not None else None,
+                    "require_dino_cache": args.require_dino_cache,
                     "preprocess_cache_format": args.preprocess_cache_format,
                     "preprocess_cache_image_dtype": args.preprocess_cache_image_dtype,
                     "require_prebuilt_cache": args.require_prebuilt_cache,
@@ -665,17 +674,33 @@ def train_sft2(args=None) -> int:
     value_head = ValueHead(wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
     sigreg = SIGRegModule(knots=args.sigreg_knots, num_proj=args.sigreg_num_proj).to(device=aux_device)
     lambda_sigreg_val = args.lambda_sigreg
-    dino_encoder: FrozenDINOEncoder | None = None
+    dino_encoder: FrozenDINOEncoder | CachedDINOEncoder | None = None
     if args.dino_align:
-        dino_encoder = FrozenDINOEncoder.from_pretrained(
-            args.dino_model,
-            device=aux_device,
-            dtype=model_dtype,
-        )
+        if args.dino_cache_dir is not None:
+            dino_identity = resolve_dino_identity(args.dino_model)
+            dino_encoder = CachedDINOEncoder.from_cache_root(
+                args.dino_cache_dir,
+                identity=dino_identity,
+            )
+        else:
+            dino_encoder = FrozenDINOEncoder.from_pretrained(
+                args.dino_model,
+                device=aux_device,
+                dtype=model_dtype,
+            )
         if dino_encoder.hidden_size != wm_predictor.emb_dim:
             raise ValueError(
                 "DINO direct alignment requires WM emb_dim to equal DINO hidden_size, "
                 f"got emb_dim={wm_predictor.emb_dim}, DINO={dino_encoder.hidden_size}"
+            )
+        if is_main():
+            print(
+                json.dumps(
+                    {
+                        "dino_target_provider": "cache" if isinstance(dino_encoder, CachedDINOEncoder) else "online",
+                        "dino_cache_fingerprint": getattr(dino_encoder, "cache_fingerprint", None),
+                    }
+                )
             )
 
     if args.resume and resume_state_path is not None and resume_state_path.exists():
@@ -775,18 +800,21 @@ def train_sft2(args=None) -> int:
     steps_per_epoch = max(1, math.ceil(len(train_loader) / args.grad_accum))
     total_steps = steps_per_epoch * args.epochs
     qwen_warmup_steps = max(1, int(total_steps * args.qwen_lr_warmup_ratio))
+    dino_alignment_invariant = {
+        "enabled": args.dino_align,
+        "source": args.dino_model if args.dino_align else None,
+        "feature": args.dino_feature if args.dino_align else None,
+        "lambda": args.lambda_dino,
+    }
+    if isinstance(dino_encoder, CachedDINOEncoder):
+        dino_alignment_invariant["cache_fingerprint"] = dino_encoder.cache_fingerprint
     checkpoint_invariants = {
         "seed": int(args.seed),
         "world_size": int(world),
         "grad_accum": int(args.grad_accum),
         "latent_query_mode": args.latent_query_mode,
         "query_tune": args.query_tune,
-        "dino_alignment": {
-            "enabled": args.dino_align,
-            "source": args.dino_model if args.dino_align else None,
-            "feature": args.dino_feature if args.dino_align else None,
-            "lambda": args.lambda_dino,
-        },
+        "dino_alignment": dino_alignment_invariant,
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }

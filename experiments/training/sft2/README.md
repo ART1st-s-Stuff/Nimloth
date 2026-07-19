@@ -8,6 +8,7 @@ Canonical location for SFT2 per `ai_tasks/sft2_exp.md`.
 | `train_vagen79_default.slurm` | 8-GPU Slurm job (reads yaml config) |
 | `submit_dino_world8_4x2.sh` / `train_dino_world8_4x2.slurm` / `run_dino_world8_4x2.sh` | DINO-aligned SFT2：单个常规多节点job用4节点×2GPU碎片组成world size 8；显式48h |
 | `build_compact_cache.slurm` | CPU-only compact preprocess-cache build |
+| `build_dino_feature_cache.py` | 在现有compact cache旁构建分片float32 DINO CLS sidecar；生产构建要求CUDA BF16并进行在线/缓存bitwise抽检 |
 | `submit_compact_cache.sh` | Submit only the CPU cache build |
 | `submit_cache_then_train.sh` | Submit cache, then dependency-gated 8-GPU training |
 | `submit_default_8gpu.sh` | Default: LLM freeze + vision full |
@@ -32,7 +33,7 @@ Profiling / speedup (see `ai_tasks/sft2_speedup_plan.md`):
 | `latent_wm_value_profiling.yaml` | `batch_size=2`, `grad_accum=4`, `--step-timing` |
 | `latent_wm_value_vision_freeze_profiling.yaml` | P6 vision-freeze diagnostic |
 
-CLI knobs: `--preprocess-cache-dir`, `--preprocess-cache-format`, `--preprocess-cache-image-dtype`, `--require-prebuilt-cache`, `--dataloader-workers`, `--dataloader-prefetch-factor`, `--packed-forward`, `--latent-token-count`, `--latent-query-mode inject|generate`, and `--query-tune freeze|adapter`. `adapter` trains a small additive latent-query embedding table, folds it into the saved embedding rows, and is intentionally rejected with LoRA. `--[no-]mask-latent-query-labels` remains a deprecated compatibility alias. `--full-trajectory-batching` is **enabled by default**; use `--no-full-trajectory-batching` to disable.
+CLI knobs: `--preprocess-cache-dir`, `--preprocess-cache-format`, `--preprocess-cache-image-dtype`, `--require-prebuilt-cache`, `--dino-cache-dir`, `--require-dino-cache`, `--dataloader-workers`, `--dataloader-prefetch-factor`, `--packed-forward`, `--latent-token-count`, `--latent-query-mode inject|generate`, and `--query-tune freeze|adapter`. `adapter` trains a small additive latent-query embedding table, folds it into the saved embedding rows, and is intentionally rejected with LoRA. `--[no-]mask-latent-query-labels` remains a deprecated compatibility alias. `--full-trajectory-batching` is **enabled by default**; use `--no-full-trajectory-batching` to disable.
 
 ### Compact preprocess cache (default)
 
