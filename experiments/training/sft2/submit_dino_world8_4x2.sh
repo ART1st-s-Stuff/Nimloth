@@ -17,7 +17,7 @@ mkdir -p "${OUT_ROOT}/logs" "${ROOT}/sft2" \
 # Equal 2-GPU fragments use one regular four-node batch job. The site submit
 # plugin caps later heterogeneous components at 8h, so do not use `sbatch :`.
 job_id=$(
-  "${SBATCH}" --parsable --hold \
+  "${SBATCH}" --parsable \
     --job-name=sft2-dino2-w8 \
     --account=peilab --partition=normal \
     --nodes=4 --ntasks=4 --ntasks-per-node=1 \
@@ -44,7 +44,6 @@ if [[ "${time_limit}" != "2-00:00:00" || ( "${num_nodes}" != "4" && "${num_nodes
   "${SCANCEL}" "${job_id}" || true
   exit 5
 fi
-"${SCONTROL}" release "${job_id}"
 trap - ERR
-printf 'dino SFT2 job: %s (4 nodes x 2 GPU; verified 48h and released)\n' "${job_id}"
+printf 'dino SFT2 job: %s (4 nodes x 2 GPU; verified 48h)\n' "${job_id}"
 printf 'run: %s\n' "${OUT_ROOT}"
