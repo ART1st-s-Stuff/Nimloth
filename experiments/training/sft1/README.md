@@ -21,6 +21,7 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 | `compare_eval_summaries.py` | Compare eval summary CSVs |
 | `compare_rollout_resolution_probe.py` | Paired comparison for dumps with verified stable metadata; fails on visible runtime/metadata mismatch |
 | `recover_rollout_resolution_pairs.py` | Diagnostic recovery for E0030-corrupted dumps via batch/runtime/instruction/initial-frame identity |
+| `validate_rollout_train120_dump.py` | Exact 120-key, stable metadata/UID, runtime-config and RGB PNG completion gate |
 | `submit_*.sh` | Thin sbatch wrappers (no hardcoded nodes by default) |
 
 Config: `configs/training/sft1/qwen25vl_lora.yaml`; k=8 run manifest: `configs/training/sft1/qwen25vl_lora_k8.yaml`.

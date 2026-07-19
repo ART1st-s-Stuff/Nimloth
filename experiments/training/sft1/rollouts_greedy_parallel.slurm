@@ -539,6 +539,16 @@ if set(sizes) != {(expected, expected)}:
 print(f"rollout PNG size gate passed: count={len(paths)} size={expected}x{expected}")
 PY
   fi
+  if [ "${split_name}" = "train120" ]; then
+    if [ -z "${EXPECTED_ROLLOUT_PNG_SIZE}" ]; then
+      echo "ERROR train120 requires EXPECTED_ROLLOUT_PNG_SIZE" >&2
+      exit 3
+    fi
+    "${PYTHON_ENV}/bin/python3" "${SCRIPTDIR}/validate_rollout_train120_dump.py" \
+      --jsonl "${out_jsonl}" \
+      --expected-png-size "${EXPECTED_ROLLOUT_PNG_SIZE}" \
+      --output "${split_dir}/stable_identity_validation.json"
+  fi
 }
 
 wait_for_env() {

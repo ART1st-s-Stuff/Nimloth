@@ -36,3 +36,11 @@ def test_train120_probe_locks_eval_kwargs_and_single_array_task():
     ):
         assert required in rollout
     assert "--array=0 --job-name=rollout-train120" in submit
+
+
+def test_train120_probe_requires_stable_identity_gate():
+    rollout = ROLLOUT.read_text(encoding="utf-8")
+    assert "validate_rollout_train120_dump.py" in rollout
+    assert 'if [ "${split_name}" = "train120" ]; then' in rollout
+    assert "stable_identity_validation.json" in rollout
+    assert "train120 requires EXPECTED_ROLLOUT_PNG_SIZE" in rollout

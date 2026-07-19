@@ -83,10 +83,11 @@ All root commits modify only the VAGEN gitlink. Existing unrelated `.memory/memo
 - Fixed lineage: VAGEN `192c35a` on `nimloth/fix-rollout-image255`. Old-resolution lineage: VAGEN `ef851af` on `nimloth/fix-validation-identity-e7cc2d0`.
 - Both managers now save reset-time `env_id -> input index`; trainer attaches metadata through a lightweight fail-fast stable-identity helper instead of positional zip.
 - Tests cover shuffled returns, service environment reuse, missing identity, local/service manager mapping contract and trainer use. Fixed lineage: 7 passed including image contracts; old lineage: 8 passed including source-eval contract; compileall and diff checks passed.
+- Added `validate_rollout_train120_dump.py` as an automatic post-rollout gate: exactly 120 expected keys, stable UID, matching runtime config/eval set, `metrics.success`, existing RGB images and exact size. Root rerun tooling now passes 10 tests plus shell/compile/diff checks.
 
 ## Pending before rerun
 
-- Commit/push the Nimloth VAGEN gitlink and prepare clean server worktrees at exact commits.
+- Commit/push the final train120 gate and prepare the final clean server Nimloth worktree at that exact commit. Clean VAGEN endpoints are already prepared at `192c35a` (fixed255) and `ef851af` (old504), both with verl `65316156`.
 - Recheck W&B IDs, disk and normal resources; assign new experiment names/output directories without overwriting the diagnostic runs.
 - Report exact frozen modules, checkpoint, two task sets, greedy settings, A/B VAGEN commits, 2-env+4-policy topology, expected duration and validation gates; obtain the required final GPU launch confirmation.
 - On rerun, require zero `config_id/eval_set` mismatches and exact 120 `(data_source, env_seed)` pairs before computing McNemar.
