@@ -11,7 +11,7 @@
 - 已实现 frozen/no-fallback DINOv3 encoder、直接MSE train/validation路径、current image path cache传播、CSV/W&B metrics、专用 `latent_wm_value_k8_dinov3.yaml` 和 checkpoint/resume invariants；不增加 trainable alignment head，维度不等立即报错，DINO teacher不写入checkpoint。
 - 验证：compileall、diff check通过；targeted `24 passed`；相关 suite `75 passed`（排除 dev 已存在的 `test_trajectory_prefix_encoding` 局部变量先用后赋值错误）。
 - 未启动或提交任何训练、评估、Slurm、GPU或远程实验；真实 gated DINOv3 权重加载、GPU显存/吞吐和联合loss数值尚未验证。详细记录：`ai_tasks/ai_progress/archives/2026-07-19/2026-07-19_dinov3_query_alignment.md`。
-- 后续正式SFT2启动中：使用公开`facebook/dinov2-large`与多节点碎片world8；权重已缓存/CPU加载验证，W&B ID30 `c2lkxd63`已保留。首次Slurm尝试`480794-480797`成功分配4节点×2GPU，但runner的不可用`module`调用使其0秒退出，未启动Python；同时确认站点会将het后续component重置为8h。正在以绝对Slurm路径和held-submit/逐component校正48h协议重试。实时记录：`ai_tasks/ai_progress/2026-07-19_dinov2_sft2.md`。
+- 后续正式SFT2启动中：使用公开`facebook/dinov2-large`与多节点碎片world8；权重已缓存/CPU加载验证，W&B ID30 `c2lkxd63`已保留。首次Slurm尝试`480794-480797`因runner的不可用`module`调用而0秒退出；第二次held尝试`480798-480801`确认站点强制het后续component为8h且禁止延长，未release/未占卡并已安全取消。方案改为单个常规4节点×2GPU batch，held验证总8GPU/48h后release。实时记录：`ai_tasks/ai_progress/2026-07-19_dinov2_sft2.md`。
 - 同期发现另一会话的SFT2 ID29 hetero job `479979/479980`已结束而README仍写running：component1实际8h timeout后终止全job，W&B `nvy3monl` crashed；epoch1 step1655 val WM MSE0.00240206、identity0.00369671，latest可从epoch2 step2931/micro10208恢复（CSV到2990，回退59步）。已更新其输出README；5-epoch目标未完成。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理

@@ -34,27 +34,13 @@ unset NCCL_SOCKET_IFNAME GLOO_SOCKET_IFNAME
 export WORLD_SIZE NIMLOTH_DDP_GPU_STRIDE=1
 mkdir -p "${TRAIN_OUT}" "${OUT_ROOT}/logs"
 
-node_for_group() {
-  local group=$1 var value component
-  var="SLURM_JOB_NODELIST_HET_GROUP_${group}"
-  value=${!var:-}
-  if [[ -z "${value}" ]]; then
-    component="${SLURM_JOB_ID%%+*}+${group}"
-    value=$(scontrol show job "${component}" -o | tr " " "\n" | awk -F= '$1=="NodeList" {print $2; exit}')
-  fi
-  [[ -n "${value}" && "${value}" != "(null)" ]] || {
-    echo "cannot resolve node for heterogeneous group ${group}" >&2
-    return 1
-  }
-  scontrol show hostnames "${value}" | head -n1
+mapfile -t nodes < <(scontrol show hostnames "${SLURM_JOB_NODELIST}")
+[[ ${#nodes[@]} -eq 4 ]] || {
+  echo "expected four allocated nodes, got ${#nodes[@]}: ${nodes[*]}" >&2
+  exit 2
 }
-
-nodes=()
-for group in 0 1 2 3; do
-  nodes+=("$(node_for_group "${group}")")
-done
-export DINO_HET_NODES
-DINO_HET_NODES=$(IFS=,; echo "${nodes[*]}")
+export DINO_NODES
+DINO_NODES=$(IFS=,; echo "${nodes[*]}")
 export MASTER_ADDR=${MASTER_ADDR:-${nodes[0]}}
 export MASTER_PORT=${MASTER_PORT:-$((21001 + ${SLURM_JOB_ID%%+*} % 10000))}
 
@@ -79,16 +65,16 @@ export REPO ROOT RUN_NAME OUT_ROOT TRAIN_OUT PY CONFIG MODEL RECORDS CACHE RESUM
 export WORLD_SIZE LOCAL_WORLD_SIZE MASTER_ADDR MASTER_PORT
 
 printf 'dino_world8 nodes=%s master=%s:%s resume=%s commit=%s\n' \
-  "${DINO_HET_NODES}" "${MASTER_ADDR}" "${MASTER_PORT}" "${RESUME}" "$(git rev-parse HEAD)"
+  "${DINO_NODES}" "${MASTER_ADDR}" "${MASTER_PORT}" "${RESUME}" "$(git rev-parse HEAD)"
 
-srun --het-group=0-3 --kill-on-bad-exit=1 bash -lc '
-  IFS=, read -r -a nodes <<< "${DINO_HET_NODES}"
+srun --nodes=4 --ntasks=4 --ntasks-per-node=1 --kill-on-bad-exit=1 bash -lc '
+  IFS=, read -r -a nodes <<< "${DINO_NODES}"
   host=$(hostname -s)
   group=-1
   for i in "${!nodes[@]}"; do
     [[ "${nodes[$i]}" == "${host}" ]] && group=$i && break
   done
-  [[ ${group} -ge 0 ]] || { echo "unmapped host ${host}: ${DINO_HET_NODES}" >&2; exit 4; }
+  [[ ${group} -ge 0 ]] || { echo "unmapped host ${host}: ${DINO_NODES}" >&2; exit 4; }
   base_rank=$((group * LOCAL_WORLD_SIZE))
   echo "launcher host=${host} visible=${CUDA_VISIBLE_DEVICES:-unset} base_rank=${base_rank} local_world=${LOCAL_WORLD_SIZE} resume=${RESUME}" >&2
   pids=()
