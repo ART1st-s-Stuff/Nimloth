@@ -77,7 +77,16 @@ All root commits modify only the VAGEN gitlink. Existing unrelated `.memory/memo
 - Conclusion: on these train120 tasks the 252 path is slightly higher, but the effect is not statistically distinguishable and resolution alone does not recover the historical 86/120=71.67%. That historical result used a different held-out task set and older source runtime, so its absolute rate is not directly comparable.
 - Evidence: group `progress.md`, `paired_comparison.runtime_identity.json`, per-arm `validation_summary.runtime_config.json`, and corrected READMEs.
 
-## Pending human decision
+## Stable-identity fix and approved rerun preparation
 
-- For exact `(data_source, env_seed)` paired evidence, first fix rollout-manager stable identity propagation, port it to both A/B VAGEN lineages, then rerun both 6-GPU arms. This requires a new GPU-experiment confirmation.
-- If diagnostic task pairing is sufficient, no GPU rerun is needed; retain E0030 and the fail-fast comparator for future runs.
+- Human selected “fix and rerun”; repo memory M0012 remains pending at the human's request.
+- Fixed lineage: VAGEN `192c35a` on `nimloth/fix-rollout-image255`. Old-resolution lineage: VAGEN `ef851af` on `nimloth/fix-validation-identity-e7cc2d0`.
+- Both managers now save reset-time `env_id -> input index`; trainer attaches metadata through a lightweight fail-fast stable-identity helper instead of positional zip.
+- Tests cover shuffled returns, service environment reuse, missing identity, local/service manager mapping contract and trainer use. Fixed lineage: 7 passed including image contracts; old lineage: 8 passed including source-eval contract; compileall and diff checks passed.
+
+## Pending before rerun
+
+- Commit/push the Nimloth VAGEN gitlink and prepare clean server worktrees at exact commits.
+- Recheck W&B IDs, disk and normal resources; assign new experiment names/output directories without overwriting the diagnostic runs.
+- Report exact frozen modules, checkpoint, two task sets, greedy settings, A/B VAGEN commits, 2-env+4-policy topology, expected duration and validation gates; obtain the required final GPU launch confirmation.
+- On rerun, require zero `config_id/eval_set` mismatches and exact 120 `(data_source, env_seed)` pairs before computing McNemar.

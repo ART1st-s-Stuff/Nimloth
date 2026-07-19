@@ -13,7 +13,8 @@
 - CPU派生job`481070`已`COMPLETED 0:0`（00:08:55）：4个JSONL/4,485 records计数原样保留，81,570 refs映射73,648张唯一RGB255图；全量源图仍为RGB512且总字节不变。派生图logical 4.201GiB（NFS `du`因allocation unit显示16GiB）。
 - 旧504路径A job`481071`已`COMPLETED 0:0`（00:20:22）：2,370张RGB512引用gate通过，runtime-config成功base 11/60、common 8/60、总19/120=15.83%；W&B `9l4vjc1j`。
 - 新252路径B job`481072`已`COMPLETED 0:0`（00:23:21）：2,364张RGB255引用gate通过，runtime-config成功base 13/60、common 9/60、总22/120=18.33%；W&B `8lct7arz`。两臂action validity均为1.0。
-- 发现并登记E0030：async recorder结果被按位置zip输入metadata，A/B分别有16/14行可见`config_id/eval_set`冲突，原始seed标签不可用于paired test。诊断性runtime-identity恢复获得both/old-only/new-only/fail=`18/1/4/97`，delta=+2.5pp，McNemar exact `p=0.375`；匹配assigned RMSE最大5.106、 rejected最小43.170。分辨率效果小且不显著，不能解释历史71.67%；如需精确seed-labelled证据，必须先修stable identity再经人类确认重跑A/B。详见`ai_tasks/ai_progress/2026-07-19_rollout_resolution255.md`。
+- 发现并登记E0030：async recorder结果被按位置zip输入metadata，A/B分别有16/14行可见`config_id/eval_set`冲突。诊断性runtime-identity恢复获得both/old-only/new-only/fail=`18/1/4/97`，delta=+2.5pp，McNemar exact `p=0.375`；分辨率效果小且不显著，不能解释历史71.67%。
+- 人类选择修复并重跑。stable identity已在255 lineage VAGEN `192c35a`和旧504 lineage `ef851af`实现：reset保存`env_id->input index`，trainer按identity fail-fast合并，不再位置zip；两lineage测试分别7/8 passed。下一步准备clean server worktree并在完整实验配置再次确认后提交两个normal 6GPU任务。详见`ai_tasks/ai_progress/2026-07-19_rollout_resolution255.md`。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 

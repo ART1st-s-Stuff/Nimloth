@@ -30,6 +30,12 @@ for item, env_config, uid in zip(micro_validation_rst, env_configs, uids):
 - 既有 A/B 的总成功数和按 runtime `config_id` 的聚合仍可信。
 - 既有 A/B 使用 control-batch、runtime config、instruction 和初始帧 RMSE 做了非破坏性 task identity 恢复；可用于诊断性 paired test，但无法恢复精确 seed 标签。
 
-## 正式修复要求
+## 正式修复
 
-rollout manager 在 reset 时必须保存 `env_id -> input index/uid/metadata` 映射；trainer 必须按稳定 identity 合并结果，不能按返回位置 `zip`。修复后需增加跨 config、异步乱序和 environment reuse 的测试。需要精确 `(data_source, env_seed)` 证据时，必须用修复后的代码重跑。
+rollout manager 在 reset 时保存 `env_id -> input index` 映射；trainer 通过`attach_validation_input_metadata()`按稳定 identity 合并结果，并对缺失、重复、越界和不完整映射fail fast，不再按返回位置`zip`。
+
+- 255路径VAGEN：`192c35a fix(validation): preserve rollout input identity`
+- 旧504路径VAGEN：`ef851af fix(validation): preserve rollout input identity`
+- 测试覆盖乱序返回、environment reuse、映射错误、local/service manager contract和trainer禁止旧zip；255 lineage为7 passed，旧504 lineage连同source eval contract为8 passed。
+
+需要精确 `(data_source, env_seed)` 证据时，仍必须用修复后的代码重跑；旧dump不能被修复代码追溯恢复seed标签。
