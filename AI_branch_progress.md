@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-07-19：ID27 epoch2 query-latent CFM + projected-State Decoder（进行中）
+## 2026-07-19：ID27 epoch2 query-latent CFM + projected-State Decoder（完成）
 
 - 人类要求从ID27 SFT2 epoch2重新训练query-latent CFM，并输出`GT | 旧Qwen ViT-token CFM | query latent CFM | 单步WM预测State→Decoder→query latent CFM`。确认Decoder为对称MLP`8192→8192→8×2048`，真实/WM预测projected State两路MSE 1:1，最终预测采用真实`t-1` State/action的teacher-forced单步协议。
 - 实现提交`dd423d4/aa33019/38d8c90`：新增Decoder训练器、cache lineage/checkpoint fingerprint强校验、精确四列evaluator、matched-noise及clean-decoder gate；服务器相关测试`16 passed`。
