@@ -19,7 +19,7 @@ __all__ = [
     "StateProjector",
     "_build_trajectory_sigreg_inputs",
     "compute_combined_loss",
-    "compute_dinov3_alignment_loss",
+    "compute_dino_alignment_loss",
     "compute_value_loss",
     "compute_wm_latent_loss",
     "wm_loss_weight_schedule",
@@ -155,42 +155,42 @@ def compute_wm_latent_loss(
     return mse, sigreg_loss, metrics
 
 
-def compute_dinov3_alignment_loss(
+def compute_dino_alignment_loss(
     *,
     current_latent: torch.Tensor,
     items: list[dict[str, Any]],
     state_proj: StateProjector,
-    dinov3_encoder: Any,
+    dino_encoder: Any,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Directly align projected current query states to frozen DINOv3 CLS features.
+    """Directly align projected current query states to frozen DINO CLS features.
 
     The target is the current observation visible when the action is chosen.
-    There is deliberately no trainable DINO alignment head: the WM state and
-    DINOv3 global feature dimensions must match exactly.
+    There is deliberately no trainable alignment head: the WM state and DINO
+    global feature dimensions must match exactly.
     """
 
     if current_latent.shape[0] != len(items):
         raise ValueError(
-            "DINOv3 alignment batch mismatch: "
+            "DINO alignment batch mismatch: "
             f"latent batch={current_latent.shape[0]}, items={len(items)}"
         )
     paths: list[str] = []
     for index, item in enumerate(items):
         path = item.get("current_image_path")
         if not path:
-            raise ValueError(f"DINOv3 alignment item {index} is missing current_image_path")
+            raise ValueError(f"DINO alignment item {index} is missing current_image_path")
         paths.append(str(path))
 
     query_state = state_proj(current_latent).float()
-    target = dinov3_encoder.encode_image_paths(paths, device=query_state.device).float()
+    target = dino_encoder.encode_image_paths(paths, device=query_state.device).float()
     if query_state.shape != target.shape:
         raise ValueError(
-            "DINOv3 direct alignment requires projected query state and CLS target "
+            "DINO direct alignment requires projected query state and CLS target "
             f"to have identical shapes, got query={tuple(query_state.shape)}, "
             f"target={tuple(target.shape)}"
         )
     loss = F.mse_loss(query_state, target.detach())
-    return loss, {"dinov3_mse": float(loss.detach().item())}
+    return loss, {"dino_mse": float(loss.detach().item())}
 
 
 def compute_value_loss(
@@ -250,21 +250,21 @@ def compute_combined_loss(
     lambda_wm: float,
     sigreg_loss: torch.Tensor | None = None,
     lambda_sigreg: float = 0.0,
-    dinov3_loss: torch.Tensor | None = None,
-    lambda_dinov3: float = 0.0,
+    dino_loss: torch.Tensor | None = None,
+    lambda_dino: float = 0.0,
     lambda_value: float = 1.0,
     lambda_ce: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     metrics: dict[str, float] = {
         "lambda_wm": float(lambda_wm),
         "lambda_sigreg": float(lambda_sigreg),
-        "lambda_dinov3": float(lambda_dinov3),
+        "lambda_dino": float(lambda_dino),
         "lambda_value": float(lambda_value),
         "lambda_ce": float(lambda_ce),
     }
     device = lm_loss.device if lm_loss is not None else None
     if device is None:
-        for candidate in (wm_loss, dinov3_loss, value_loss):
+        for candidate in (wm_loss, dino_loss, value_loss):
             if candidate is not None:
                 device = candidate.device
                 break
@@ -276,9 +276,9 @@ def compute_combined_loss(
     if sigreg_loss is not None and lambda_sigreg > 0.0:
         total = total + lambda_sigreg * sigreg_loss.to(total.device)
         metrics["sigreg_loss"] = float(sigreg_loss.detach().item())
-    if dinov3_loss is not None and lambda_dinov3 > 0.0:
-        total = total + lambda_dinov3 * dinov3_loss.to(total.device)
-        metrics["dinov3_mse"] = float(dinov3_loss.detach().item())
+    if dino_loss is not None and lambda_dino > 0.0:
+        total = total + lambda_dino * dino_loss.to(total.device)
+        metrics["dino_mse"] = float(dino_loss.detach().item())
     if value_loss is not None:
         total = total + lambda_value * value_loss.to(total.device)
         metrics["value_total"] = float(value_loss.detach().item())

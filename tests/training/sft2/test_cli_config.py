@@ -9,6 +9,7 @@ from nimloth.training.sft2.cli import parse_sft2_args
 
 ROOT = Path(__file__).resolve().parents[3]
 K8_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8.yaml"
+K8_DINOV2_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8_dinov2.yaml"
 K8_DINOV3_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8_dinov3.yaml"
 K1_CONTROL_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k1_control.yaml"
 REQUIRED = [
@@ -44,14 +45,21 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert args.preprocess_workers == 16
 
 
-def test_dinov3_config_aligns_current_rgb_global_feature() -> None:
-    args = parse_sft2_args(["--config", str(K8_DINOV3_CONFIG), *REQUIRED])
+def test_dinov2_config_aligns_current_rgb_global_feature() -> None:
+    args = parse_sft2_args(["--config", str(K8_DINOV2_CONFIG), *REQUIRED])
 
     assert args.latent_token_count == 8
-    assert args.dinov3_align is True
-    assert args.dinov3_model == "facebook/dinov3-vitl16-pretrain-lvd1689m"
-    assert args.dinov3_feature == "cls"
-    assert args.lambda_dinov3 == pytest.approx(1.0)
+    assert args.dino_align is True
+    assert args.dino_model == "facebook/dinov2-large"
+    assert args.dino_feature == "cls"
+    assert args.lambda_dino == pytest.approx(1.0)
+
+
+def test_dinov3_config_remains_available() -> None:
+    args = parse_sft2_args(["--config", str(K8_DINOV3_CONFIG), *REQUIRED])
+
+    assert args.dino_align is True
+    assert args.dino_model == "facebook/dinov3-vitl16-pretrain-lvd1689m"
 
 
 def test_k1_control_only_changes_latent_capacity_not_runtime_budget() -> None:

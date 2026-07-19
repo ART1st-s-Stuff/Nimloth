@@ -5,7 +5,7 @@ from nimloth.training.common.schedules import qwen_lr_schedule, set_optimizer_gr
 from nimloth.training.sft2.loss import (
     StateProjector,
     compute_combined_loss,
-    compute_dinov3_alignment_loss,
+    compute_dino_alignment_loss,
     compute_value_loss,
     compute_wm_latent_loss,
     wm_loss_weight_schedule,
@@ -20,7 +20,7 @@ __all__ = [
     "StateProjector",
     "ValueHead",
     "compute_combined_loss",
-    "compute_dinov3_alignment_loss",
+    "compute_dino_alignment_loss",
     "compute_value_loss",
     "compute_wm_latent_loss",
     "messages_with_image_paths",

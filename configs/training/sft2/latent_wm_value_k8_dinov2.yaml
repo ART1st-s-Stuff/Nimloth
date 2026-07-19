@@ -1,4 +1,4 @@
-# SFT2 — k=8 latent WM + Value head + current-RGB DINOv3 CLS alignment
+# SFT2 — k=8 latent WM + Value head + current-RGB DINOv2-L/14 CLS alignment
 
 init:
   sft1_checkpoint: null
@@ -71,11 +71,11 @@ latent:
   query_lr: 5.0e-5
 
 # Direct alignment: StateProjector(k query hidden) must have the same 1024-d
-# shape as the frozen DINOv3 ViT-L/16 final CLS feature. No trainable alignment
-# head and no DINOv2/model fallback are used.
+# shape as the frozen DINOv2 ViT-L/14 final CLS feature. No trainable alignment
+# head and no model fallback are used.
 alignment:
   dino_align: true
-  dino_model: facebook/dinov3-vitl16-pretrain-lvd1689m
+  dino_model: facebook/dinov2-large
   dino_feature: cls
   lambda_dino: 1.0
 

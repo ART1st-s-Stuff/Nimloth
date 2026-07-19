@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import torch
 from PIL import Image
 
-from nimloth.backbone.dinov3 import FrozenDINOv3Encoder
+from nimloth.backbone.dino import FrozenDINOEncoder
 
 
 class FakeImageProcessor:
@@ -18,7 +18,7 @@ class FakeImageProcessor:
         return {"pixel_values": torch.stack(rows)}
 
 
-class FakeDINOv3(torch.nn.Module):
+class FakeDINO(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.ones(()))
@@ -36,13 +36,13 @@ class FakeDINOv3(torch.nn.Module):
         return SimpleNamespace(last_hidden_state=torch.cat([cls.unsqueeze(1), registers_and_patches], dim=1))
 
 
-def test_frozen_dinov3_encoder_returns_detached_cls_features(tmp_path) -> None:
+def test_frozen_dino_encoder_returns_detached_cls_features(tmp_path) -> None:
     first = tmp_path / "first.png"
     second = tmp_path / "second.png"
     Image.new("RGB", (2, 2), (0, 0, 0)).save(first)
     Image.new("RGB", (2, 2), (255, 255, 255)).save(second)
-    model = FakeDINOv3()
-    encoder = FrozenDINOv3Encoder(model=model, image_processor=FakeImageProcessor(), source="fake")
+    model = FakeDINO()
+    encoder = FrozenDINOEncoder(model=model, image_processor=FakeImageProcessor(), source="fake")
 
     encoder.train()
     features = encoder.encode_image_paths([str(first), str(second)], device=torch.device("cpu"))

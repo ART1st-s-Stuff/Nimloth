@@ -1,4 +1,4 @@
-"""Frozen DINOv3 encoder used as semantic supervision for query states."""
+"""Frozen DINO-family encoder used as semantic supervision for query states."""
 
 from __future__ import annotations
 
@@ -10,16 +10,16 @@ from PIL import Image
 from torch import nn
 
 
-DEFAULT_DINOV3_MODEL = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+DEFAULT_DINO_MODEL = "facebook/dinov2-large"
 
 
-class FrozenDINOv3Encoder(nn.Module):
+class FrozenDINOEncoder(nn.Module):
     """Extract detached global (CLS) features from RGB observations.
 
-    The encoder owns no trainable path: DINOv3 remains in eval mode and its
-    weights are frozen.  Nimloth directly aligns the projected query state to
-    the final DINOv3 CLS token, so no trainable alignment head can absorb the
-    supervision.
+    The encoder owns no trainable path: the explicitly selected DINO-family
+    model remains in eval mode and its weights are frozen. Nimloth directly
+    aligns the projected query state to the final CLS token, so no trainable
+    alignment head can absorb the supervision.
     """
 
     def __init__(self, *, model: nn.Module, image_processor: Any, source: str) -> None:
@@ -29,7 +29,7 @@ class FrozenDINOv3Encoder(nn.Module):
         self.source = str(source)
         hidden_size = getattr(getattr(model, "config", None), "hidden_size", None)
         if hidden_size is None:
-            raise ValueError("DINOv3 model config must define hidden_size")
+            raise ValueError("DINO model config must define hidden_size")
         self.hidden_size = int(hidden_size)
         self.model.requires_grad_(False)
         super().train(False)
@@ -37,15 +37,15 @@ class FrozenDINOv3Encoder(nn.Module):
     @classmethod
     def from_pretrained(
         cls,
-        source: str | Path = DEFAULT_DINOV3_MODEL,
+        source: str | Path = DEFAULT_DINO_MODEL,
         *,
         device: torch.device,
         dtype: torch.dtype,
-    ) -> FrozenDINOv3Encoder:
-        """Load the explicitly requested DINOv3 checkpoint and processor.
+    ) -> FrozenDINOEncoder:
+        """Load the explicitly requested DINO checkpoint and processor.
 
-        Loading failures are intentionally propagated.  In particular, this
-        never silently substitutes DINOv2 or a different DINOv3 variant.
+        Loading failures are intentionally propagated; the encoder never
+        silently substitutes another model or DINO generation.
         """
 
         from transformers import AutoImageProcessor, AutoModel
@@ -56,7 +56,7 @@ class FrozenDINOv3Encoder(nn.Module):
         model.to(device=device, dtype=dtype)
         return cls(model=model, image_processor=image_processor, source=source_str)
 
-    def train(self, mode: bool = True) -> FrozenDINOv3Encoder:
+    def train(self, mode: bool = True) -> FrozenDINOEncoder:
         """Keep the frozen teacher in eval mode even when its parent trains."""
 
         super().train(False)
@@ -72,7 +72,7 @@ class FrozenDINOv3Encoder(nn.Module):
         """Return final-layer CLS features with shape ``(B, hidden_size)``."""
 
         if not paths:
-            raise ValueError("DINOv3 alignment requires at least one image path")
+            raise ValueError("DINO alignment requires at least one image path")
         images: list[Image.Image] = []
         for path in paths:
             with Image.open(path) as image:
@@ -92,7 +92,7 @@ class FrozenDINOv3Encoder(nn.Module):
         if hidden is None or hidden.ndim != 3 or hidden.shape[-1] != self.hidden_size:
             shape = None if hidden is None else tuple(hidden.shape)
             raise ValueError(
-                "DINOv3 must return last_hidden_state with shape "
+                "DINO model must return last_hidden_state with shape "
                 f"(B, tokens, {self.hidden_size}), got {shape}"
             )
         return hidden[:, 0, :].detach().float()
