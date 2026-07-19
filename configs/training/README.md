@@ -10,6 +10,7 @@
 | `sft2/latent_wm_value.yaml` | **SFT2** WM + Value | `nimloth.training.sft2.trainer`（经 `experiments/training/sft2/train.py --config`） |
 | `sft2/latent_wm_value_k8_dinov2.yaml` | SFT2 k=8 + 当前 RGB 的 DINOv2-L/14 CLS 直接对齐 | 同上；DINO teacher 冻结且不保存进 checkpoint |
 | `sft2/latent_wm_value_k8_dinov2_cached.yaml` | 同一目标的预计算 float32 CLS 版本 | 必须显式提供已校验的 `dino_cache_dir`，禁止fallback到在线teacher |
+| `sft2/latent_wm_value_k8_dinov2_cached_nogc.yaml` | 经world8 profile验证的cached+no-gradient-checkpointing版本 | 约12%快，实测峰值56–64GiB；仍须使用同一图片预算/H800 |
 | `sft2/latent_wm_value_k8_dinov3.yaml` | SFT2 k=8 + 当前 RGB 的 DINOv3-L/16 CLS 直接对齐 | 需要支持 DINOv3 的 Transformers 与 gated 权重 |
 | `reconstruction/rcdm_sft2.yaml` | SFT2 latent → RCDM visualization reference | `python -m nimloth.training.reconstruction.rcdm_sft2` |
 

@@ -11,6 +11,9 @@ ROOT = Path(__file__).resolve().parents[3]
 K8_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8.yaml"
 K8_DINOV2_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8_dinov2.yaml"
 K8_DINOV2_CACHED_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8_dinov2_cached.yaml"
+K8_DINOV2_CACHED_NOGC_CONFIG = (
+    ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8_dinov2_cached_nogc.yaml"
+)
 K8_DINOV3_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8_dinov3.yaml"
 K1_CONTROL_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k1_control.yaml"
 REQUIRED = [
@@ -62,6 +65,14 @@ def test_cached_dinov2_config_fails_closed_without_sidecar_path() -> None:
     assert args.dino_align is True
     assert args.dino_cache_dir is None
     assert args.require_dino_cache is True
+
+
+def test_validated_cached_nogc_config_is_fail_closed() -> None:
+    args = parse_sft2_args(["--config", str(K8_DINOV2_CACHED_NOGC_CONFIG), *REQUIRED])
+
+    assert args.dino_align is True
+    assert args.require_dino_cache is True
+    assert args.gradient_checkpointing is False
 
 
 def test_dino_cache_cli_is_explicit() -> None:
