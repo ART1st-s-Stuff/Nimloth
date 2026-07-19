@@ -60,11 +60,17 @@ All root commits modify only the VAGEN gitlink. Existing unrelated `.memory/memo
 - `compare_rollout_resolution_probe.py`: paired success, per-source rates, discordant outcomes, exact McNemar p-value, and PNG-size evidence.
 - Current local validation: two dataset/comparison tests pass; Python compileall, shell `bash -n`, and diff-check pass.
 
+## Active jobs (2026-07-20 server time)
+
+- CPU image derivation: job `481070`, CPU partition, 8 CPUs/64 GiB on `intel-01`; started healthy. The initial 32-CPU request was rejected before job creation by `QOSMaxCpuPerNode`, so the approved conversion was resubmitted with 8 workers. Output: `converted_strict_k8_b6c811c_images255`.
+- Old-resolution A: job `481071`, normal, 6 GPUs (2 env + 4 policy), W&B ID10, output `outputs/experiments/rollout_resolution/2026-07-20/10_resprobe_step60_train120_img504_greedy`.
+- Corrected-resolution B: job `481072`, normal, 6 GPUs (2 env + 4 policy), W&B ID11, output `outputs/experiments/rollout_resolution/2026-07-20/11_resprobe_step60_train120_img252_greedy`.
+- Human explicitly requested two separate normal A/B jobs. Both GPU jobs are currently pending because no normal node has six free GPUs; current normal capacity is fragmented across nodes.
+- Exact server worktrees verified clean: Nimloth `f7ea3da`, old VAGEN `e7cc2d0`, fixed VAGEN `a01f7af`, both verl `65316156`.
+- Dataset scope measured exactly: 4 JSONLs, 4,485 records, 81,570 references, 73,648 unique source images, 10.39 GiB source bytes; estimated derived PNG bytes 4.28 GiB.
+
 ## Pending
 
-- Commit and push dev dataset/probe tooling after final local validation.
-- VPN/SSH recovery is required before inspecting remote disk/resources, selecting W&B IDs, creating the server worktree, or submitting work.
-- Before CPU conversion: report source/output roots, image count/disk estimate, and expected runtime.
-- Before GPU A/B: report project/run names, exact checkpoint, code commits, task composition, fixed eval hyperparameters, old/new VAGEN dirs, output dirs, GPU topology/partition, expected runtime, and no-resume policy; obtain human confirmation.
-- Run conversion and validate every derived image is RGB 255×255 and source images remain unchanged.
-- Run A/B, then compare identical `(data_source, env_seed)` pairs and record results.
+- Monitor `481070` to completion and validate manifest, JSONL counts/path rewriting, every output RGB 255×255, and unchanged source sizes.
+- Monitor `481071/481072` until healthy, then to completion; verify W&B/run IDs, 120 records each, expected 512/255 persisted PNG gate, and no hidden parameter differences.
+- Run paired comparison over identical `(data_source, env_seed)` keys and record overall/per-source rates, discordant outcomes, exact McNemar p-value, and interpretation.
