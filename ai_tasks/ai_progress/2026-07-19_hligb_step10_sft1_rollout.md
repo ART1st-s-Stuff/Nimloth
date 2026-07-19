@@ -108,4 +108,7 @@
 - train480452 `COMPLETED 0:0`（00:14:54）：base19/60、common23/60，总success42/120=35.00%；all actions valid；weighted position-changing272/2088=13.03%。W&B `nimloth-sft1/5r9yh8qe`。
 - val480471 `COMPLETED 0:0`（00:13:49）：base25/60、common24/60，总success49/120=40.83%；all actions valid；weighted position-changing291/1943=14.98%。W&B `nimloth-sft1/11lhw3it`。
 - 输出：`/project/peilab/hligb/vagen-navigation/eval/origprompt_step10_train120_val120_20260719`。source evaluator消费真实图像但只记录`num_images`，不保存PNG路径，所以本次是质量复核rollout，不能直接转换为SFT image dataset。
-- 人类据此批准临时把SFT rollout profile改为训练时prompt，SFT1/SFT2阶段再转换Nimloth格式。VAGEN commit `3003c2e`恢复原multi-action hints/examples且保留env max_actions=1；Nimloth pointer/docs commit `d736ddc`。runtime golden combined SHA=`ee38bc...900f`，server targeted tests9 passed。下一步必须重新过image-dumping 1-record smoke后才能启动full collection。
+- 人类据此批准临时把SFT rollout profile改为训练时prompt，SFT1/SFT2阶段再转换Nimloth格式。VAGEN commit `3003c2e`恢复原multi-action hints/examples且保留env max_actions=1；Nimloth pointer/docs commit `d736ddc`。runtime golden combined SHA=`ee38bc...900f`，server targeted tests9 passed。
+- image-dumping smoke `7_smoke_step10trainprompt_base1_t07p095k50_t25`通过：policy480514 COMPLETED，1条/25 actions/26 images，prompt hash精确，strict answer conversion 1/1零issue。480500/480511因metadata仍显示step79在JSONL前取消；正确变量是`INIT_HF_STEP=10`。
+- formal ID8 attempt env480517+array480518失败且有效数据0：array `%2`使两个独立manager共享service并复用`val1...` env IDs，互相覆盖/close，出现6个NoneType step errors和KeyError metrics。全部停止，禁止resume；错误登记E0031。
+- 修复方案已明确：新run/output，单一policy manager（array `%1`）内部使用4 policy GPUs，加4 env GPUs，总计8。尚未提交retry，因为superpod SSH gateway随后持续`Connection closed by UNKNOWN port 65535`，外部连接恢复前blocked。

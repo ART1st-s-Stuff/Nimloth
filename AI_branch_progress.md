@@ -15,7 +15,9 @@
 - 更关键的是archived source eval479904 runtime prompt保留“可多动作”文字和多动作example，只由env `max_actions_per_step=1`执行首动作；当前gate却显式one-action并截断example。此前source-exact结论失效，错误登记E0030。source eval的270个首动作也全部moveahead，weighted effectiveness36/270=13.3%；其6/16 success来自短有利starts，不能证明policy正常。
 - 初始gate jobs480363/480364已RUNNING15秒但被错误的`set -e` shell guard继续scancel；无JSONL，replacement资源与source一致。错误登记E0029。
 - 人类随后要求禁止改代码，用训练时prompt在原checkpoint数据只读复跑train120+val120：node-local解包VAGEN HEAD `8839a2a`，全部240条prompt hash=`ee38bc...900f`。train success42/120=35.00%，val49/120=40.83%，all actions valid；jobs480452/480471完成，GPU已释放。输出在`/project/peilab/hligb/vagen-navigation/eval/origprompt_step10_train120_val120_20260719`。source evaluator不持久化PNG，故只作质量复核、不能直接转SFT。
-- 人类批准临时把SFT rollout切到训练时原prompt，后续SFT1/SFT2再转Nimloth格式。VAGEN `3003c2e`恢复原multi-action hints/examples并保留env max_actions=1；Nimloth `d736ddc`更新pointer/docs。combined prompt SHA=`ee38bc...900f`，服务器tests9 passed。正式数据仍为0；需重新通过image-dumping 1-record smoke后启动full 3240+360。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
+- 人类批准临时把SFT rollout切到训练时原prompt，后续SFT1/SFT2再转Nimloth格式。VAGEN `3003c2e`恢复原multi-action hints/examples并保留env max_actions=1；Nimloth `d736ddc`更新pointer/docs。combined prompt SHA=`ee38bc...900f`，服务器tests9 passed。
+- 新prompt image smoke policy480514通过：1条/25 actions/26 images、hash精确、strict conversion零issue。formal ID8 attempt因array `%2`的两个manager共享service且复用相同env IDs而失败，出现NoneType step/KeyError metrics；有效正式数据仍为0，禁止resume，登记E0031。
+- retry方案为新run/output、array `%1`、单一4GPU policy manager + 4GPU env，总计8GPU。尚未提交，因为superpod SSH gateway持续`Connection closed by UNKNOWN port 65535`。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 
