@@ -9,6 +9,8 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 | `build_preprocess_cache.slurm` | CPU-only BF16 preprocess-cache build |
 | `submit_cache_then_train_8gpu.sh` | Submit cache, then dependency-gated training |
 | `convert_rollouts.py` | VAGEN rollout JSONL → Nimloth SFT records |
+| `derive_rollout_images_255.py` | Preserve sources and derive RGB 255×255 images with rewritten JSONLs |
+| `derive_rollout_images_255.slurm` | CPU wrapper for the non-destructive image derivation |
 | `merge_lora_ckpt.py` | LoRA adapter → `hf_merged` for VAGEN eval / SFT2 init |
 | `rollouts_greedy_parallel.slurm` | Greedy rollout collection (Slurm array) |
 | `eval_greedy_valtest.slurm` | Val/test rollout eval for a checkpoint |
@@ -17,6 +19,7 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 | `summarize_eval_rollouts.py` | Aggregate eval JSONL success rates |
 | `summarize_before_after_rollouts.py` | Before/after training comparison |
 | `compare_eval_summaries.py` | Compare eval summary CSVs |
+| `compare_rollout_resolution_probe.py` | Paired old/new resolution success and PNG-size comparison |
 | `submit_*.sh` | Thin sbatch wrappers (no hardcoded nodes by default) |
 
 Config: `configs/training/sft1/qwen25vl_lora.yaml`; k=8 run manifest: `configs/training/sft1/qwen25vl_lora_k8.yaml`.
@@ -51,6 +54,8 @@ bash experiments/training/sft1/submit_rollouts_greedy.sh
 TRAIN_OUT=.../sft1_train_lora BASE_MODEL=.../global_step_79/actor/huggingface \
   bash experiments/training/sft1/submit_ckpt_eval_watcher.sh
 ```
+
+For the fixed 120-task resolution probe, set `ROLLOUT_TRAIN120=1`; the dataset is exactly `base_train` seeds 1–60 plus `common_sense_train` seeds 1–60. `VAGEN_DIR` selects the old or corrected VAGEN worktree, and `EXPECTED_ROLLOUT_PNG_SIZE=512|255` makes the job fail if its persisted image path is wrong. The probe always uses greedy `temperature=0`, `top_p=1`, `top_k=-1`, `n=1`, 20 turns, one action per turn, and 512 response tokens per turn.
 
 SFT1 stores cached `pixel_values` as BF16 by default (`CACHE_PIXEL_DTYPE=bfloat16`), which matches the GPU visual encoder input dtype and halves their disk/read bandwidth versus FP32. The dependency-gated wrapper sets `REQUIRE_PREBUILT_CACHE=1`, so the GPU allocation never performs image preprocessing.
 

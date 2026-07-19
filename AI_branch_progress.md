@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-07-19：rollout图像分辨率纠正
+
+- 确认有效rollout链路存在分辨率偏差：AI2-THOR输出255×255，但VAGEN `e7cc2d0`调用verl `process_image(min_pixels=512²)`放大为512×512，Qwen实际按504×504/grid36编码；历史源VAGEN `f7aefd3`则是255→252/grid18。
+- VAGEN主修复`a01f7af`使本地/service Qwen rollout持有、送入vLLM并落盘的图片固定为RGB 255×255；测试`2 passed`。按各自VAGEN基线移植后，dev及11个活跃实验分支均已更新并推送，没有回退分支专有VAGEN改动。
+- 人类选择保留原512图片并派生新255数据集；train probe采用base_train/common_sense_train各seeds1–60，并对旧504与新252模型输入做同checkpoint、同任务、同greedy参数的配对A/B。
+- dev已准备非破坏性图片派生、train120 rollout模式、PNG尺寸gate及配对比较工具；本地数据/比较测试`2 passed`，compileall、bash语法和diff-check通过。远程数据转换与GPU A/B尚未启动，需VPN恢复、资源/磁盘/W&B ID核查及实验前再次确认。详见`ai_tasks/ai_progress/2026-07-19_rollout_resolution255.md`。
+
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 
 - 人类明确要求完整保留 legacy `retry2` 的 `global_step_48` 与 `global_step_79`，删除该 run 下其他全部 `global_step_*` checkpoint。

@@ -1,0 +1,70 @@
+# Rollout image resolution correction and paired probe
+
+## Goal
+
+1. Make navigation rollout retain RGB 255×255 PIL images instead of forcing them to 512×512.
+2. Build a non-destructive 255×255 derivative of the converted rollout dataset.
+3. Compare the source step-60 checkpoint on the same 120 train tasks under the old and corrected resolution paths.
+
+## Confirmed mismatch
+
+- Effective production rollout used Nimloth VAGEN `e7cc2d0` with nested verl `65316156`.
+- AI2-THOR emitted 255×255 frames, but both Qwen rollout managers called verl `process_image()` whose default `min_pixels=512*512`; this changed each image to 512×512.
+- Qwen2.5-VL then smart-resized 512 to 504, giving `image_grid_thw=[1,36,36]` and 18×18=324 merged vision tokens.
+- Historical source VAGEN `f7aefd3` passed 255×255 images directly; standard Qwen processing maps this to 252, `image_grid_thw=[1,18,18]`, and 9×9=81 merged vision tokens.
+- Existing 512×512 rollout dumps and the recorded native 504/grid36 SFT diagnostics corroborate the production path.
+
+## Human decisions
+
+- Synchronize all active experiment branches while preserving each branch's VAGEN lineage.
+- Preserve existing images and create a derived dataset with rewritten JSONL paths.
+- Probe 120 train tasks as base_train seeds 1–60 plus common_sense_train seeds 1–60.
+- Run a paired A/B comparison: old 512→504 path versus corrected 255→252 path, with identical checkpoint/tasks/eval settings.
+
+## Completed
+
+### VAGEN fix
+
+- Canonical VAGEN fix: `a01f7af fix(rollout): preserve 255px navigation images` on `nimloth/fix-rollout-image255`.
+- Added `vagen.rollout.image_utils.prepare_rollout_image()` and used it in both local and service Qwen rollout managers.
+- RED test failed before implementation; GREEN validation: `2 passed`, compileall and diff-check passed.
+- Ported and pushed equivalent fixes for every distinct active VAGEN baseline:
+  - `7908040 -> 55c7b7f`
+  - `bb26c0d -> d3e82f1`
+  - `154c537 -> 178a6dc`
+  - `93c1124 -> d28a41e`
+  - `3003c2e -> d30d6d9`
+
+### Nimloth branch synchronization
+
+- dev: `8ce2512`
+- exp/k8-preprojection-recon: `56fa44a`
+- exp/latent-repr-ablation: `150face`
+- exp/vagen-1action: `463d000`
+- feat/dinov3-query-alignment: `378fd3b`
+- feat/fsdp-dynamic-rollout: `54cac57`
+- feat/reconstruct: `2ecfe59`
+- feat/rl: `8d9cf2c`
+- feat/sft1-dino16-grid-wm: `630fa4f`
+- feat/sft1-hligb-step10-rollout: `037b519`
+- nimloth-lewm-repro: `6edab8d`
+- recon-compare-qwen: `c6451fe`
+
+All root commits modify only the VAGEN gitlink. Existing unrelated `.memory/memories.jsonl` changes in feat/reconstruct and recon-compare-qwen were left untouched.
+
+### Dataset/probe tooling prepared on dev
+
+- `derive_rollout_images_255.py`: hashes unique source paths, writes RGB 255×255 BICUBIC PNGs into a separate tree, rewrites all top-level JSONL files, preserves sources, supports resume, and writes a manifest.
+- `derive_rollout_images_255.slurm`: CPU conversion job wrapper.
+- `rollouts_greedy_parallel.slurm`: prepared `ROLLOUT_TRAIN120=1`, alternate `VAGEN_DIR`, exact source eval kwargs, W&B logging, and expected PNG-size gate.
+- `compare_rollout_resolution_probe.py`: paired success, per-source rates, discordant outcomes, exact McNemar p-value, and PNG-size evidence.
+- Current local validation: two dataset/comparison tests pass; Python compileall, shell `bash -n`, and diff-check pass.
+
+## Pending
+
+- Commit and push dev dataset/probe tooling after final local validation.
+- VPN/SSH recovery is required before inspecting remote disk/resources, selecting W&B IDs, creating the server worktree, or submitting work.
+- Before CPU conversion: report source/output roots, image count/disk estimate, and expected runtime.
+- Before GPU A/B: report project/run names, exact checkpoint, code commits, task composition, fixed eval hyperparameters, old/new VAGEN dirs, output dirs, GPU topology/partition, expected runtime, and no-resume policy; obtain human confirmation.
+- Run conversion and validate every derived image is RGB 255×255 and source images remain unchanged.
+- Run A/B, then compare identical `(data_source, env_seed)` pairs and record results.

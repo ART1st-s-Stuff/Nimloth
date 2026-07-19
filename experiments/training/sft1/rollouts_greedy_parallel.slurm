@@ -20,7 +20,7 @@ SL=/cm/shared/apps/slurm/current/bin
 SCRIPTDIR=${ROOT}/experiments/training/sft1
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
-BASEDIR=${ROOT}/external/VAGEN
+BASEDIR=${VAGEN_DIR:-${ROOT}/external/VAGEN}
 CHECKPOINT_STEP=${INIT_HF_STEP}
 ROLLOUT_DUMP_STEP=${ROLLOUT_DUMP_STEP:-0}
 EXPERIMENT_NAME=${ROLLOUT_RUN_NAME}
@@ -35,7 +35,9 @@ RAY_DASHBOARD_PORT=$((8266 + SLURM_ARRAY_TASK_ID))
 RAY_CMD="${PYTHON_ENV}/bin/python3 ${PYTHON_ENV}/bin/ray"
 ROLLOUT_SMOKE=${ROLLOUT_SMOKE:-0}
 ROLLOUT_SOURCE_PARITY=${ROLLOUT_SOURCE_PARITY:-0}
+ROLLOUT_TRAIN120=${ROLLOUT_TRAIN120:-0}
 ROLLOUT_SMOKE_SEED=${ROLLOUT_SMOKE_SEED:-1}
+EXPECTED_ROLLOUT_PNG_SIZE=${EXPECTED_ROLLOUT_PNG_SIZE:-}
 export ROLLOUT_SMOKE_EVAL_SET=${ROLLOUT_SMOKE_EVAL_SET:-base_train}
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-24}
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-24}
@@ -51,10 +53,17 @@ if [ "${ROLLOUT_SMOKE}" = "1" ]; then
   AGENT_NUM_WORKERS=1
   AGENT_MAX_CONCURRENT_TRAJECTORIES=1
 fi
+if [ "${ROLLOUT_TRAIN120}" = "1" ]; then
+  TRAINER_LOGGER="['console','wandb']"
+  TRAINER_PROJECT=${ROLLOUT_WANDB_PROJECT:-nimloth-sft1}
+else
+  TRAINER_LOGGER="['console']"
+  TRAINER_PROJECT=nimloth_navigation
+fi
 
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${RUN_DIR}/validation" "${RUN_DIR}/checkpoints_rollout"
 
-COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; unset PYTORCH_CUDA_ALLOC_CONF; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname)'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
+COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; export PYTHONPATH='${BASEDIR}:${BASEDIR}/verl:${ROOT}/src'; unset PYTORCH_CUDA_ALLOC_CONF; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname)'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
 
 cleanup() {
   set +e
@@ -365,6 +374,10 @@ specs = {
         ("navigation_base_source_parity", "base"),
         ("navigation_common_source_parity", "common_sense"),
     ],
+    "train120": [
+        ("navigation_base_train_resolution_probe", "base_train"),
+        ("navigation_common_train_resolution_probe", "common_sense_train"),
+    ],
     "test": [
         ("navigation_base_test", "base"),
         ("navigation_common_test", "common_sense"),
@@ -385,7 +398,7 @@ for data_source, eval_set in selected_specs:
                 "data_source": data_source,
                 "prompt": [{"role": "user", "content": ""}],
                 "extra_info": {
-                    "split": split_name,
+                    "split": "train" if split_name == "train120" else split_name,
                     "env_name": "navigation",
                     "env_config": {
                         "eval_set": eval_set,
@@ -480,14 +493,14 @@ run_shard() {
       actor_rollout_ref.rollout.disable_log_stats=False \
       +actor_rollout_ref.ref.use_ref=False \
       actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
-      trainer.logger=['console'] \
+      trainer.logger=${TRAINER_LOGGER} \
       trainer.val_before_train=True \
       trainer.val_only=True \
       trainer.n_gpus_per_node=${TRAIN_GPUS_PER_NODE} \
       trainer.nnodes=1 \
       trainer.save_freq=-1 \
       trainer.test_freq=-1 \
-      trainer.project_name=nimloth_navigation \
+      trainer.project_name=${TRAINER_PROJECT} \
       trainer.experiment_name=${EXPERIMENT_NAME}_a${SLURM_ARRAY_TASK_ID}_${split_name}_${shard_name} \
       trainer.default_local_dir='${RUN_DIR}/checkpoints_rollout' \
       trainer.validation_data_dir='${split_dir}' \
@@ -506,6 +519,26 @@ run_shard() {
       rollout_manager.use_loss_mask=True \
       rollout_manager.use_gae_mask=True \
       critic.model.path='${MODEL_PATH}'" 2>&1 | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  if [ -n "${EXPECTED_ROLLOUT_PNG_SIZE}" ]; then
+    "${PYTHON_ENV}/bin/python3" - "${split_dir}" "${EXPECTED_ROLLOUT_PNG_SIZE}" <<'PY'
+import sys
+from collections import Counter
+from pathlib import Path
+from PIL import Image
+
+split_dir, expected = Path(sys.argv[1]), int(sys.argv[2])
+paths = sorted(split_dir.glob("image_*/images_*/*.png"))
+if not paths:
+    raise RuntimeError(f"no rollout PNGs found under {split_dir}")
+sizes = Counter()
+for path in paths:
+    with Image.open(path) as image:
+        sizes[image.size] += 1
+if set(sizes) != {(expected, expected)}:
+    raise RuntimeError(f"rollout PNG size gate failed: expected={expected}, observed={dict(sizes)}")
+print(f"rollout PNG size gate passed: count={len(paths)} size={expected}x{expected}")
+PY
+  fi
 }
 
 wait_for_env() {
@@ -527,7 +560,8 @@ main() {
   echo "=== ${EXPERIMENT_NAME} array_task=${SLURM_ARRAY_TASK_ID} job=${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} node=${SLURM_JOB_NODELIST} ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   echo "MODEL_PATH=${MODEL_PATH}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   echo "SOURCE_CHECKPOINT_STEP=${CHECKPOINT_STEP} ROLLOUT_DUMP_STEP=${ROLLOUT_DUMP_STEP}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
-  echo "Eval-consistent: greedy do_sample=False temperature=0 n=${VAL_N}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  echo "VAGEN_DIR=${BASEDIR} VAGEN_COMMIT=$(git -C "${BASEDIR}" rev-parse HEAD)" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  echo "Eval-consistent: greedy do_sample=False temperature=0 top_p=1 top_k=-1 n=${VAL_N} turns=20 actions_per_turn=1 tokens_per_turn=512" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   if [ ! -d "${MODEL_PATH}" ]; then
     echo "ERROR missing model ${MODEL_PATH}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
     exit 3
@@ -559,6 +593,14 @@ main() {
       exit 2
     fi
     run_shard source_val shard_001_060 1 60
+    return 0
+  fi
+  if [ "${ROLLOUT_TRAIN120}" = "1" ]; then
+    if [ "${SLURM_ARRAY_TASK_ID}" != "0" ]; then
+      echo "ROLLOUT_TRAIN120=1 only supports array task 0" >&2
+      exit 2
+    fi
+    run_shard train120 shard_001_060 1 60
     return 0
   fi
 
