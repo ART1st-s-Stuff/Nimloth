@@ -4,12 +4,15 @@
 
 ---
 
-## 2026-07-19：hligb step10 SFT1 rollout（暂停，正式有效数据0）
+## 2026-07-19：hligb step10 SFT1 rollout（120-record gate完成，等待质量决策）
 
 - 人类要求从`/project/peilab/atst/vagen_ckpt_JUL19`采三类train3240+val360，不采test；rollout保持checkpoint原`grounding_worldmodeling`/single-action prompt，后续再转Nimloth。
-- 新增隔离source prompt profile与显式answer-tag converter：Nimloth `5975bee`、VAGEN `dda9239`；服务器tests 7 passed。1-record smoke job480275完成：25 actions/26 images/action validity1.0，严格转换零issue。
-- formal array480309首个120-row shard因环境服务拓扑不匹配失败：旧wrapper启动4个单GPU/max_workers48服务但policy只用第一URL，单GPU并发环境step出现`NoneType`，recovery缺metrics导致manager KeyError。task1/2取消、task3未启动、env释放，正式0个完整JSONL。
-- checkpoint source env job479522实际为单服务/devices[0,1,2,3]/max_workers16。旧array480309禁止resume；待人类确认后实现精确source拓扑并先过120-record gate。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
+- 新增隔离source prompt profile与显式answer-tag converter：Nimloth `5975bee`、VAGEN `dda9239`；1-record smoke job480275完成：25 actions/26 images/action validity1.0，严格转换零issue。
+- formal array480309首个120-row shard因环境服务拓扑不匹配失败：旧wrapper启动4个单GPU/max_workers48服务但policy只用第一URL，环境step失败。正式0个完整JSONL，旧array禁止resume。
+- 按source job479522实现单服务/devices`[0,1,2,3]`/max_workers16精确拓扑与120-row gate：commits `feef88d`,`fb9f985`，服务器tests9 passed。
+- gate policy480366_0 `COMPLETED 0:0`（00:21:48），env零create/step/reset error；raw120条（3类各40）、3055 images零missing、success4/120、mean action validity0.949。严格answer-tag转换保留114/120（含全部4 success），保留数据零warnings/issues。
+- 初始gate jobs480363/480364已RUNNING15秒但被错误的`set -e` shell guard继续scancel；无JSONL，replacement资源与source一致。错误登记`E0029_shell_guard_must_explicitly_exit_before_scancel.md`。
+- 机械并发/topology gate通过；正式数据仍为0。因3.33% success和95%严格record retention是否满足质量门槛不明确，已释放全部GPU并等待人类决定是否启动full 3240+360。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 

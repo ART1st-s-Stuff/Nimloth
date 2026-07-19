@@ -76,4 +76,15 @@
 - array `480309`：task0在首个120-row shard生成若干turn后 `FAILED 1:0`；task1/2随即取消，task3未启动；env480274随后取消，GPU释放。正式有效JSONL=0。
 - 直接失败：env server对val6/8/9报告`NoneType` step error；recovery info无metrics，manager触发`KeyError: metrics`。
 - 根因：attempt使用旧Nimloth env拓扑（4个独立1-GPU服务、每个max_workers48），policy只读取第一URL，120-row shard在单GPU上并发48个AI2-THOR环境。
-- 已核实checkpoint source env job479522使用单服务、devices `[0,1,2,3]`、navigation max_workers16。下一步需人类批准实现精确source拓扑并跑120-record gate；禁止resume旧array480309。
+- 已核实checkpoint source env job479522使用单服务、devices `[0,1,2,3]`、navigation max_workers16；人类批准实现并运行120-record gate。旧array480309禁止resume。
+
+## Exact source topology 与 120-record gate
+
+- commit `feef88d` 新增profile：单服务、4 devices、max_workers16；保留旧Nimloth四服务拓扑。server tests累计9 passed。
+- commit `fb9f985` 新增单个120-record train shard gate入口。
+- gate=`4_smoke_step10src_train120_env4w16_t07p095k50_t25`，W&B `ievfc0tr`。
+- 初始jobs480363/480364启动15秒后被错误shell guard取消：虽然状态检查已打印RUNNING，`set -e`在`&&`复合上下文没有终止，仍执行scancel。无JSONL；错误登记E0029。replacement使用source env资源64CPU/384G。
+- replacement env480365精确显示`devices=[0,1,2,3], max_workers=16`；policy480366_0 `COMPLETED 0:0`，00:21:48。env create/step/reset errors=0。
+- raw：120 records（3类各40）、3055 images零missing、2935 assistant turns；success4/120=3.33%，mean action validity0.949。
+- strict answer conversion：接受114/120（95%）、包含全部4 successes；2785 assistant/actions、2899 images、零warnings/issues；6条reject IDs在manifest。
+- mechanical concurrency/topology gate通过，但3.33% success与95% strict retention是否足以开始full collection不明确；GPU均已释放，等待人类质量决策。
