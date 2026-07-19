@@ -193,6 +193,22 @@ def load_teacher_forced_split(projected_dir: Path, query_dir: Path) -> TeacherFo
     )
 
 
+def limit_split(split: TeacherForcedSplit, max_items: int) -> TeacherForcedSplit:
+    if max_items < 0 or max_items >= len(split):
+        return split
+    if max_items < 1:
+        raise ValueError("max pairs must be positive or -1")
+    return TeacherForcedSplit(
+        previous_projected=split.previous_projected[:max_items],
+        current_projected=split.current_projected[:max_items],
+        previous_actions=split.previous_actions[:max_items],
+        target_query=split.target_query[:max_items],
+        rows=split.rows[:max_items],
+        projected_fingerprint=split.projected_fingerprint,
+        query_fingerprint=split.query_fingerprint,
+    )
+
+
 @torch.no_grad()
 def evaluate_decoder(
     decoder: ProjectedQueryDecoder,
@@ -258,8 +274,14 @@ def train(args: argparse.Namespace) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
-    train_split = load_teacher_forced_split(args.projected_cache_dir / "train", args.query_cache_dir / "train")
-    val_split = load_teacher_forced_split(args.projected_cache_dir / "val", args.query_cache_dir / "val")
+    train_split = limit_split(
+        load_teacher_forced_split(args.projected_cache_dir / "train", args.query_cache_dir / "train"),
+        args.max_train_pairs,
+    )
+    val_split = limit_split(
+        load_teacher_forced_split(args.projected_cache_dir / "val", args.query_cache_dir / "val"),
+        args.max_val_pairs,
+    )
     query_shape = tuple(train_split.target_query.shape[1:])
     if query_shape != tuple(val_split.target_query.shape[1:]) or len(query_shape) != 2:
         raise ValueError(f"invalid query shapes: train={query_shape}, val={tuple(val_split.target_query.shape[1:])}")
@@ -292,6 +314,8 @@ def train(args: argparse.Namespace) -> int:
         "lr": args.lr,
         "weight_decay": args.weight_decay,
         "seed": args.seed,
+        "max_train_pairs": args.max_train_pairs,
+        "max_val_pairs": args.max_val_pairs,
         "wm_checkpoint": str(args.wm_checkpoint),
         "wm_history_size_override": args.wm_history_size_override,
     }
@@ -414,6 +438,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=20260719)
+    parser.add_argument("--max-train-pairs", type=int, default=-1)
+    parser.add_argument("--max-val-pairs", type=int, default=-1)
     parser.add_argument("--wm-history-size-override", type=int, choices=[1], default=1)
     parser.add_argument("--resume-checkpoint", type=Path)
     parser.add_argument("--wandb-project", default="nimloth-recon")
