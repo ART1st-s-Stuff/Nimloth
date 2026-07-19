@@ -959,6 +959,31 @@ def train_sft2(args=None) -> int:
             accum.reset()
             log_train_step(wandb_run, global_step, avg)
 
+    # Transformers loads pretrained modules in eval mode. Enter train mode before
+    # epoch 1 so gradient checkpointing and any train-time module behavior do not
+    # change only after the first validation pass restores model.train().
+    model.train()
+    state_proj.train()
+    wm_predictor.train()
+    value_head.train()
+    if is_main():
+        print(
+            json.dumps(
+                {
+                    "training_modes": {
+                        "qwen": bool(model.training),
+                        "state_proj": bool(state_proj.training),
+                        "wm_predictor": bool(wm_predictor.training),
+                        "value_head": bool(value_head.training),
+                    },
+                    "gradient_checkpointing_requested": args.gradient_checkpointing,
+                    "gradient_checkpointing_active": bool(
+                        getattr(_unwrap(model), "is_gradient_checkpointing", False)
+                    ),
+                }
+            )
+        )
+
     step_timer = StepTimer(enabled=args.step_timing, log_interval=args.step_timing_interval)
     pad_token_id = processor.tokenizer.pad_token_id
     last_periodic_ckpt_time = time.monotonic()
