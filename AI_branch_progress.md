@@ -11,7 +11,7 @@
 - 已实现 frozen/no-fallback DINOv3 encoder、直接MSE train/validation路径、current image path cache传播、CSV/W&B metrics、专用 `latent_wm_value_k8_dinov3.yaml` 和 checkpoint/resume invariants；不增加 trainable alignment head，维度不等立即报错，DINO teacher不写入checkpoint。
 - 验证：compileall、diff check通过；targeted `24 passed`；相关 suite `75 passed`（排除 dev 已存在的 `test_trajectory_prefix_encoding` 局部变量先用后赋值错误）。
 - 未启动或提交任何训练、评估、Slurm、GPU或远程实验；真实 gated DINOv3 权重加载、GPU显存/吞吐和联合loss数值尚未验证。详细记录：`ai_tasks/ai_progress/archives/2026-07-19/2026-07-19_dinov3_query_alignment.md`。
-- 正式DINOv2 SFT2已提交：W&B ID30 `c2lkxd63`，作业`480807`，单个regular job用4节点×2 H800碎片组成world8，总64CPU/384G/48h；只读请求验证通过，当前PENDING/Priority，预计2026-07-19 23:28:08+08:00开始。此前4次启动器探测均已诚实记录：仅第一次分配后0秒退出且未进Python，后三次均held未占卡；最终代码commit `5e7fc3f`。实时记录：`ai_tasks/ai_progress/2026-07-19_dinov2_sft2.md`。
+- 正式DINOv2 SFT2已健康启动：W&B ID30 `c2lkxd63`，作业`480807`，`dgx-21,dgx-28,dgx-29,dgx-54`各2卡组成world8，总64CPU/384G/48h。runtime24m41s时CSV到step277且DINO/总/各子loss finite；8卡99–100%、约61.6–64.3GiB；W&B heartbeat正常；periodic latest checkpoint可读（epoch1/step263/micro1052）。日志无traceback/OOM/NaN/NCCL error/timeout；mixed IB/RoCE与DDP grad-stride warning暂为非致命性能风险。最终训练代码commit `5e7fc3f`。实时记录：`ai_tasks/ai_progress/2026-07-19_dinov2_sft2.md`。
 - 同期发现另一会话的SFT2 ID29 hetero job `479979/479980`已结束而README仍写running：component1实际8h timeout后终止全job，W&B `nvy3monl` crashed；epoch1 step1655 val WM MSE0.00240206、identity0.00369671，latest可从epoch2 step2931/micro10208恢复（CSV到2990，回退59步）。已更新其输出README；5-epoch目标未完成。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
