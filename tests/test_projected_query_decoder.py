@@ -8,6 +8,7 @@ from nimloth.training.reconstruction.projected_query_decoder import (
     ProjectedQueryDecoderConfig,
     build_teacher_forced_pairs,
     joint_decoder_loss,
+    validate_cache_lineage,
 )
 
 
@@ -51,6 +52,18 @@ def test_joint_decoder_loss_weights_clean_and_predicted_equally() -> None:
     assert metrics["clean_mse"] == pytest.approx(1.0)
     assert metrics["predicted_mse"] == pytest.approx(4.0)
     assert metrics["total"] == pytest.approx(5.0)
+
+
+def test_projected_cache_must_come_from_the_exact_query_cache() -> None:
+    validate_cache_lineage(
+        {"source_query_fingerprint": "same"}, {"fingerprint": "same"}
+    )
+    with pytest.raises(ValueError, match="lineage mismatch"):
+        validate_cache_lineage(
+            {"source_query_fingerprint": "old"}, {"fingerprint": "new"}
+        )
+    with pytest.raises(ValueError, match="lacks source_query_fingerprint"):
+        validate_cache_lineage({}, {"fingerprint": "new"})
 
 
 def test_teacher_forced_pairs_use_previous_actual_state_and_action() -> None:

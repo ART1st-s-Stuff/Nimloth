@@ -16,7 +16,10 @@ from nimloth.eval.cfm_k8_vs_vit import _load_current_cfm
 from nimloth.eval.query_cfm_trajectory import ACTION_NAMES, _sample_cfg
 from nimloth.eval.query_vs_qwen_trajectory import _records
 from nimloth.rcdm.image_utils import diffusion_tensor_to_pil, image_to_diffusion_tensor
-from nimloth.training.reconstruction.projected_query_decoder import ProjectedQueryDecoder
+from nimloth.training.reconstruction.projected_query_decoder import (
+    ProjectedQueryDecoder,
+    validate_cache_lineage,
+)
 from nimloth.training.reconstruction.state_to_vision_tokens import load_proven_cfm
 from nimloth.wm.predictor import LatentWMPredictor
 
@@ -144,6 +147,10 @@ def evaluate(args: argparse.Namespace) -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     selections = json.loads(args.selections.read_text())["selections"]
+    query_manifest = json.loads((args.query_cache / "manifest.json").read_text())
+    projected_manifest = json.loads((args.projected_cache / "manifest.json").read_text())
+    qwen_manifest = json.loads((args.qwen_cache / "manifest.json").read_text())
+    validate_cache_lineage(projected_manifest, query_manifest)
     query_records = _records(args.query_cache, representation="qwen_query_hidden", state_shape=[8, 2048])
     projected_records = _records(args.projected_cache, representation="projected", state_shape=[8192])
     qwen_records = _records(args.qwen_cache, representation="qwen_compressed_vision_positive", state_shape=[16, 512])
@@ -153,6 +160,20 @@ def evaluate(args: argparse.Namespace) -> int:
         map_location=device,
         history_size_override=args.wm_history_size_override,
     ).to(device).eval()
+    decoder_payload = torch.load(args.decoder_checkpoint, map_location="cpu", weights_only=False)
+    decoder_invariants = decoder_payload.get("invariants")
+    if not isinstance(decoder_invariants, dict):
+        raise ValueError("decoder checkpoint lacks training invariants")
+    expected_decoder_cache = {
+        "val_projected_fingerprint": str(projected_manifest["fingerprint"]),
+        "val_query_fingerprint": str(query_manifest["fingerprint"]),
+    }
+    for key, expected in expected_decoder_cache.items():
+        if str(decoder_invariants.get(key)) != expected:
+            raise ValueError(
+                f"decoder/eval cache mismatch for {key}: "
+                f"{decoder_invariants.get(key)!r} != {expected!r}"
+            )
     decoder = ProjectedQueryDecoder.load_checkpoint(args.decoder_checkpoint, map_location=device).to(device).eval()
     for module in (predictor, decoder):
         for parameter in module.parameters():
@@ -233,6 +254,19 @@ def evaluate(args: argparse.Namespace) -> int:
         "steps": args.steps,
         "cfg_scale": args.cfg_scale,
         "metrics": metrics,
+        "inputs": {
+            "query_cache": str(args.query_cache),
+            "query_cache_fingerprint": str(query_manifest["fingerprint"]),
+            "projected_cache": str(args.projected_cache),
+            "projected_cache_fingerprint": str(projected_manifest["fingerprint"]),
+            "qwen_cache": str(args.qwen_cache),
+            "qwen_cache_fingerprint": str(qwen_manifest["fingerprint"]),
+            "wm_checkpoint": str(args.wm_checkpoint),
+            "decoder_checkpoint": str(args.decoder_checkpoint),
+            "query_cfm_checkpoint": str(args.query_cfm_checkpoint),
+            "qwen_cfm_checkpoint": str(args.qwen_cfm_checkpoint),
+            "selections": str(args.selections),
+        },
         "contact_sheets": [str(path) for path in contacts],
         "wandb_url": wandb_url,
     }

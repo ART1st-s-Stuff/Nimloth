@@ -152,6 +152,20 @@ class TeacherForcedSplit:
         return self.previous_actions.shape[0]
 
 
+def validate_cache_lineage(
+    projected_manifest: dict[str, Any], query_manifest: dict[str, Any]
+) -> None:
+    source_fingerprint = projected_manifest.get("source_query_fingerprint")
+    query_fingerprint = query_manifest.get("fingerprint")
+    if not source_fingerprint:
+        raise ValueError("projected cache lacks source_query_fingerprint")
+    if str(source_fingerprint) != str(query_fingerprint):
+        raise ValueError(
+            "projected/query cache lineage mismatch: "
+            f"{source_fingerprint} != {query_fingerprint}"
+        )
+
+
 def load_teacher_forced_split(projected_dir: Path, query_dir: Path) -> TeacherForcedSplit:
     projected_manifest = json.loads((projected_dir / "manifest.json").read_text())
     query_manifest = json.loads((query_dir / "manifest.json").read_text())
@@ -159,6 +173,7 @@ def load_teacher_forced_split(projected_dir: Path, query_dir: Path) -> TeacherFo
         raise ValueError(f"expected projected cache: {projected_dir}")
     if query_manifest.get("representation") != "qwen_query_hidden":
         raise ValueError(f"expected qwen_query_hidden cache: {query_dir}")
+    validate_cache_lineage(projected_manifest, query_manifest)
     projected_dataset = RCDMStateCacheDataset(projected_dir)
     query_dataset = RCDMStateCacheDataset(query_dir)
     pairs = build_teacher_forced_pairs(
