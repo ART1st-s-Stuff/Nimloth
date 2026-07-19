@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-module load slurm >/dev/null 2>&1
+export SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
+export PATH=/cm/shared/apps/slurm/current/bin:${PATH}
 
 REPO=${REPO:-/project/peilab/atst/nimloth/.worktree/dino-query-align}
 ROOT=${ROOT:-/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97}
