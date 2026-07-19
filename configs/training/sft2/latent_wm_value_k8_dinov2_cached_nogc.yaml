@@ -1,3 +1,4 @@
+# FORBIDDEN / HISTORICAL ONLY: DINO alignment belongs in SFT1. The SFT2 CLI rejects this file.
 # SFT2 — validated faster k=8 DINOv2: precomputed CLS + no gradient checkpointing
 
 init:

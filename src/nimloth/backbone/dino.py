@@ -141,15 +141,12 @@ class FrozenDINOEncoder(nn.Module):
         super().train(False)
         return self
 
-    @torch.no_grad()
-    def encode_image_paths(
+    def _encode_image_paths_hidden(
         self,
         paths: Sequence[str | Path],
         *,
         device: torch.device,
-    ) -> torch.Tensor:
-        """Return final-layer CLS features with shape ``(B, hidden_size)``."""
-
+    ) -> tuple[torch.Tensor, tuple[int, int]]:
         if not paths:
             raise ValueError("DINO alignment requires at least one image path")
         images: list[Image.Image] = []
@@ -174,7 +171,52 @@ class FrozenDINOEncoder(nn.Module):
                 "DINO model must return last_hidden_state with shape "
                 f"(B, tokens, {self.hidden_size}), got {shape}"
             )
+        return hidden, (int(pixel_values.shape[-2]), int(pixel_values.shape[-1]))
+
+    @torch.no_grad()
+    def encode_image_paths(
+        self,
+        paths: Sequence[str | Path],
+        *,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Return final-layer CLS features with shape ``(B, hidden_size)``."""
+
+        hidden, _image_hw = self._encode_image_paths_hidden(paths, device=device)
         return hidden[:, 0, :].detach().float()
+
+    @torch.no_grad()
+    def encode_image_paths_grid(
+        self,
+        paths: Sequence[str | Path],
+        *,
+        device: torch.device,
+        grid_size: int = 4,
+    ) -> torch.Tensor:
+        """Pool final spatial patch tokens into a row-major ``grid_size²`` grid."""
+
+        if grid_size < 1:
+            raise ValueError("DINO grid_size must be positive")
+        hidden, (image_height, image_width) = self._encode_image_paths_hidden(paths, device=device)
+        patch_size = getattr(getattr(self.model, "config", None), "patch_size", None)
+        if patch_size is None:
+            raise ValueError("DINO patch-grid alignment requires model.config.patch_size")
+        patch_size = int(patch_size)
+        patch_height = image_height // patch_size
+        patch_width = image_width // patch_size
+        patch_count = patch_height * patch_width
+        if patch_count < 1 or hidden.shape[1] < patch_count + 1:
+            raise ValueError(
+                "DINO patch token count is incompatible with processed image/grid: "
+                f"hidden_tokens={hidden.shape[1]}, image={image_height}x{image_width}, patch={patch_size}"
+            )
+        # Taking the final H*W tokens is robust to optional register tokens
+        # inserted between CLS and spatial patches by some DINO-family models.
+        patches = hidden[:, -patch_count:, :]
+        patches = patches.reshape(hidden.shape[0], patch_height, patch_width, self.hidden_size)
+        patches = patches.permute(0, 3, 1, 2).float()
+        pooled = torch.nn.functional.adaptive_avg_pool2d(patches, (grid_size, grid_size))
+        return pooled.permute(0, 2, 3, 1).reshape(hidden.shape[0], grid_size * grid_size, self.hidden_size).detach()
 
 
 def _source_image_fingerprint(paths: Sequence[str]) -> str:

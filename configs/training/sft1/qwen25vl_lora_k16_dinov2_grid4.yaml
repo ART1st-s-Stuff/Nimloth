@@ -1,0 +1,51 @@
+# Prefix-exact SFT1: 16 query slots aligned to a pooled 4x4 DINOv2 patch grid.
+model: Qwen2.5-VL-3B
+init_checkpoint: null  # must be passed explicitly; no fallback is allowed
+
+data:
+  train_jsonl: train_success.jsonl
+  val_jsonl: val_all.jsonl
+  success_only: true
+  forward_semantics: one_transition_prefix_per_sample
+
+latent:
+  token_count: 16
+  query_mode: inject
+  grid_size: 4
+  ordering: row_major
+  projector:
+    shared_across_slots: true
+    input_dim: 2048
+    hidden_dim: 2048
+    output_dim: 1024
+
+dino:
+  model: facebook/dinov2-large
+  target: final_patch_tokens_adaptive_avg_pool_4x4
+  loss: mse
+  loss_weight: 1.0
+  frozen: true
+
+# Initial experiment defaults; GPU resource/epoch budget still requires human approval.
+tuning:
+  llm: lora
+  vision: freeze
+  lora_r: 64
+  lora_alpha: 128
+  query_adapter: additive
+
+train:
+  epochs: 5
+  batch_size: 1
+  grad_accum: 8
+  lr: 2.0e-4
+  query_lr: 5.0e-4
+  projector_lr: 2.0e-4
+  max_length: 12000
+  max_pixels: 602112
+
+handoff:
+  qwen: final/hf_merged
+  slot_projector: final/hf_merged/slot_projector.pt
+  grid_state_config: final/hf_merged/grid_state_config.json
+  sft2_dino_teacher: forbidden

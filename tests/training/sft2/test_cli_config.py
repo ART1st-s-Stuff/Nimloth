@@ -49,53 +49,32 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert args.preprocess_workers == 16
 
 
-def test_dinov2_config_aligns_current_rgb_global_feature() -> None:
-    args = parse_sft2_args(["--config", str(K8_DINOV2_CONFIG), *REQUIRED])
-
-    assert args.latent_token_count == 8
-    assert args.dino_align is True
-    assert args.dino_model == "facebook/dinov2-large"
-    assert args.dino_feature == "cls"
-    assert args.lambda_dino == pytest.approx(1.0)
-
-
-def test_cached_dinov2_config_fails_closed_without_sidecar_path() -> None:
-    args = parse_sft2_args(["--config", str(K8_DINOV2_CACHED_CONFIG), *REQUIRED])
-
-    assert args.dino_align is True
-    assert args.dino_cache_dir is None
-    assert args.require_dino_cache is True
+@pytest.mark.parametrize(
+    "config",
+    [
+        K8_DINOV2_CONFIG,
+        K8_DINOV2_CACHED_CONFIG,
+        K8_DINOV2_CACHED_NOGC_CONFIG,
+        K8_DINOV3_CONFIG,
+    ],
+)
+def test_old_dino_configs_are_forbidden_in_sft2(config: Path) -> None:
+    with pytest.raises(SystemExit):
+        parse_sft2_args(["--config", str(config), *REQUIRED])
 
 
-def test_validated_cached_nogc_config_is_fail_closed() -> None:
-    args = parse_sft2_args(["--config", str(K8_DINOV2_CACHED_NOGC_CONFIG), *REQUIRED])
-
-    assert args.dino_align is True
-    assert args.require_dino_cache is True
-    assert args.gradient_checkpointing is False
-
-
-def test_dino_cache_cli_is_explicit() -> None:
-    args = parse_sft2_args(
-        [
-            "--config",
-            str(K8_DINOV2_CONFIG),
-            *REQUIRED,
-            "--dino-cache-dir",
-            "/tmp/dino-cache",
-            "--require-dino-cache",
-        ]
-    )
-
-    assert args.dino_cache_dir == Path("/tmp/dino-cache")
-    assert args.require_dino_cache is True
-
-
-def test_dinov3_config_remains_available() -> None:
-    args = parse_sft2_args(["--config", str(K8_DINOV3_CONFIG), *REQUIRED])
-
-    assert args.dino_align is True
-    assert args.dino_model == "facebook/dinov3-vitl16-pretrain-lvd1689m"
+def test_dino_cache_cli_is_forbidden_in_sft2() -> None:
+    with pytest.raises(SystemExit):
+        parse_sft2_args(
+            [
+                "--config",
+                str(K8_CONFIG),
+                *REQUIRED,
+                "--dino-cache-dir",
+                "/tmp/dino-cache",
+                "--require-dino-cache",
+            ]
+        )
 
 
 def test_k1_control_only_changes_latent_capacity_not_runtime_budget() -> None:

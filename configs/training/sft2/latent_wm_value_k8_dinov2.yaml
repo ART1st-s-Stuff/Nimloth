@@ -1,3 +1,4 @@
+# FORBIDDEN / HISTORICAL ONLY: DINO alignment belongs in SFT1. The SFT2 CLI rejects this file.
 # SFT2 — k=8 latent WM + Value head + current-RGB DINOv2-L/14 CLS alignment
 
 init:

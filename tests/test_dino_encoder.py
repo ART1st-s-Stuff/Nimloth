@@ -44,6 +44,32 @@ class FakeDINO(torch.nn.Module):
         return SimpleNamespace(last_hidden_state=torch.cat([cls.unsqueeze(1), registers_and_patches], dim=1))
 
 
+class FakeGridDINO(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchor = torch.nn.Parameter(torch.ones(()))
+        self.config = SimpleNamespace(hidden_size=2, patch_size=1)
+
+    def forward(self, *, pixel_values: torch.Tensor):
+        batch, _channels, height, width = pixel_values.shape
+        coords = torch.stack(
+            torch.meshgrid(
+                torch.arange(height, device=pixel_values.device),
+                torch.arange(width, device=pixel_values.device),
+                indexing="ij",
+            ),
+            dim=-1,
+        ).reshape(1, height * width, 2).expand(batch, -1, -1).float()
+        cls = torch.full((batch, 1, 2), -1.0, device=pixel_values.device)
+        return SimpleNamespace(last_hidden_state=torch.cat([cls, coords], dim=1))
+
+
+class FakeGridProcessor:
+    def __call__(self, *, images, return_tensors: str):
+        assert return_tensors == "pt"
+        return {"pixel_values": torch.zeros(len(images), 3, 4, 4)}
+
+
 def test_frozen_dino_encoder_returns_detached_cls_features(tmp_path) -> None:
     first = tmp_path / "first.png"
     second = tmp_path / "second.png"
@@ -63,6 +89,28 @@ def test_frozen_dino_encoder_returns_detached_cls_features(tmp_path) -> None:
     torch.testing.assert_close(
         features,
         torch.tensor([[0.0, 1.0, 2.0, 3.0], [1.0, 2.0, 3.0, 4.0]]),
+    )
+
+
+def test_frozen_dino_encoder_pools_patch_grid_row_major(tmp_path) -> None:
+    image = tmp_path / "image.png"
+    Image.new("RGB", (4, 4), (0, 0, 0)).save(image)
+    encoder = FrozenDINOEncoder(
+        model=FakeGridDINO(),
+        image_processor=FakeGridProcessor(),
+        source="fake-grid",
+    )
+
+    grid = encoder.encode_image_paths_grid(
+        [image],
+        device=torch.device("cpu"),
+        grid_size=2,
+    )
+
+    assert grid.shape == (1, 4, 2)
+    torch.testing.assert_close(
+        grid,
+        torch.tensor([[[0.5, 0.5], [0.5, 2.5], [2.5, 0.5], [2.5, 2.5]]]),
     )
 
 

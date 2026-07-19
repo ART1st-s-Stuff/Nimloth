@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-07-19：DINOv2 4×4 grid SFT1（开发中）
+
+- 人类将设计调整为：SFT1每step使用16个inject query；同一个共享`2048→2048→1024` projector逐slot映射；冻结`facebook/dinov2-large` final patch map无参数pool为row-major 4×4，以CE + `1.0×grid MSE`训练成功轨迹。
+- 因真实多图整轨forward与SFT2逐prefix hidden已知不等价，人类选择新的SFT1采用逐prefix transition forward，确保SFT2读取同一种representation。
+- SFT2不再运行DINO；后续由一个joint Grid WM读取当前完整`[16,1024]` grid和action，联合预测下一完整grid。
+- 独立分支/worktree：`feat/sft1-dino16-grid-wm` / `/workspace/remote2/nimloth-feat-sft1-dino16-grid-wm`，从阶段纠正提交`6ba3cd0`分出。
+- 已实现DINO patch-grid pooling、共享slot projector、joint Grid WM、loss helper及prefix-exact SFT1实验入口/配置；SFT2 joint-grid入口会冻结Qwen/projector，仅训练一个完整grid WM与value，且旧SFT2 DINO CLI已显式禁用。相关suite `78 passed`（排除父分支已知测试局部变量错误），compileall与diff-check通过；尚未运行GPU/Slurm/真实权重smoke。详见`ai_tasks/ai_progress/2026-07-19_dinov2_grid_sft1.md`。
+
 ## 2026-07-19：DINOv3 current-RGB query-state 对齐实现
 
 - 新分支/worktree：`feat/dinov3-query-alignment` / `/workspace/remote2/nimloth-feat-dinov3-query-alignment`，起点 `dev@5628cc5`；实现提交 `e6d67e8`。

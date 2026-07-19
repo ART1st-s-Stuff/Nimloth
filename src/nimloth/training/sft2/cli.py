@@ -279,4 +279,14 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="inject",
     )
     args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)
+    if (
+        bool(args.dino_align)
+        or float(args.lambda_dino) != 0.0
+        or args.dino_cache_dir is not None
+        or bool(args.require_dino_cache)
+    ):
+        ap.error(
+            "DINO alignment is forbidden in SFT2; train the 4x4/16-query representation in SFT1 "
+            "and use experiments/training/sft2/train_grid.py without a DINO teacher"
+        )
     return args
