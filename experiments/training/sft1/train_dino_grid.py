@@ -9,9 +9,8 @@ SFT2 inference semantics. One shared slot projector maps every Qwen hidden to a
 from __future__ import annotations
 
 import argparse
+import csv
 import json
-import math
-import os
 import random
 import shutil
 from pathlib import Path
@@ -26,15 +25,20 @@ from nimloth.backbone.dino import DEFAULT_DINO_MODEL, FrozenDINOEncoder
 from nimloth.backbone.qwen_tuning import configure_qwen_tuning
 from nimloth.latent import (
     add_special_tokens,
-    initialize_extra_latent_token_embeddings,
     install_query_embedding_adapter,
     latent_state_tokens,
     special_token_ids,
 )
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
-from nimloth.training.common.qwen_batch import build_qwen_batch
+from nimloth.training.common.wandb_logging import log_train_step, log_val_epoch, maybe_init_wandb
 from nimloth.training.sft1.dino_grid import compute_dino_grid_alignment_loss
 from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
+from nimloth.training.sft2.preprocess_cache import (
+    COMPACT_CACHE_FORMAT,
+    CachedTransitionDataset,
+    CompactCachedTransitionCollator,
+    unpack_transition_batch,
+)
 from nimloth.training.sft2.qwen_latent import extract_qwen_latents
 from nimloth.wm.grid import SharedSlotProjector
 
@@ -61,12 +65,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-train-records", type=int, default=-1)
     parser.add_argument("--max-val-records", type=int, default=-1)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--preprocess-cache-dir", type=Path)
+    parser.add_argument("--require-prebuilt-cache", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--lora-r", type=int, default=64)
     parser.add_argument("--lora-alpha", type=int, default=128)
     parser.add_argument("--lora-dropout", type=float, default=0.0)
     parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--wandb-run-name")
+    parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
     if args.latent_token_count != args.grid_size**2:
         parser.error("latent-token-count must equal grid-size squared")
@@ -83,6 +91,26 @@ def parse_args() -> argparse.Namespace:
 
 def _unwrap(module):
     return module.module if hasattr(module, "module") else module
+
+
+def _initialize_only_new_query_rows(model, query_token_ids: list[int], old_vocab_size: int) -> None:
+    """Copy slot-0 into newly added rows without erasing existing trained slots."""
+
+    new_ids = [token_id for token_id in query_token_ids[1:] if token_id >= old_vocab_size]
+    if not new_ids:
+        return
+
+    def copy(weight: torch.Tensor) -> None:
+        with torch.no_grad():
+            source = weight[query_token_ids[0]].detach().clone()
+            for token_id in new_ids:
+                weight[token_id].copy_(source.to(weight))
+
+    input_weight = model.get_input_embeddings().weight
+    copy(input_weight)
+    output = model.get_output_embeddings()
+    if output is not None and output.weight.data_ptr() != input_weight.data_ptr():
+        copy(output.weight)
 
 
 def _save_checkpoint(model, projector, processor, optimizer, output: Path, *, epoch: int, step: int, args) -> None:
@@ -181,19 +209,24 @@ def _metric_reduce(values: torch.Tensor) -> torch.Tensor:
     return values
 
 
+def _current_batch(batch, processor, args):
+    items, enc, _next = unpack_transition_batch(
+        batch,
+        processor,
+        args.max_length,
+        latent_token_count=16,
+        mask_latent_query_labels=True,
+    )
+    return items, enc
+
+
 @torch.no_grad()
 def evaluate(model, projector, teacher, loader, processor, token_ids, device, args) -> dict[str, float]:
     model.eval()
     projector.eval()
     totals = torch.zeros(3, device=device, dtype=torch.float64)
-    for items in loader:
-        enc = build_qwen_batch(
-            items,
-            processor,
-            args.max_length,
-            latent_token_count=16,
-            mask_latent_query_labels=True,
-        )
+    for batch_data in loader:
+        items, enc = _current_batch(batch_data, processor, args)
         hidden, ce_loss = extract_qwen_latents(
             model, enc, token_ids, device, latent_token_count=16
         )
@@ -233,15 +266,16 @@ def main() -> None:
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         trust_remote_code=True,
     )
+    old_vocab_size = int(model.get_input_embeddings().num_embeddings)
     if added:
         model.resize_token_embeddings(len(processor.tokenizer))
     token_ids = special_token_ids(processor.tokenizer, latent_token_count=16)
-    initialize_extra_latent_token_embeddings(model, token_ids, latent_token_count=16)
+    query_token_ids = [token_ids[token] for token in latent_state_tokens(16)]
+    _initialize_only_new_query_rows(model, query_token_ids, old_vocab_size)
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
         model.config.use_cache = False
     model = configure_qwen_tuning(model, args)
-    query_token_ids = [token_ids[token] for token in latent_state_tokens(16)]
     query_adapter = install_query_embedding_adapter(model, query_token_ids)
     model.to(device)
 
@@ -262,12 +296,37 @@ def main() -> None:
             f"DINO hidden size {teacher.hidden_size} != projected state size {projector.output_dim}"
         )
 
-    train_ds = TransitionQwenDataset(
+    raw_train_ds = TransitionQwenDataset(
         args.train_jsonl,
         max_records=args.max_train_records,
         success_only=True,
     )
-    val_ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_val_records)
+    raw_val_ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_val_records)
+    train_ds, val_ds = raw_train_ds, raw_val_ds
+    collate_train = collate_val = collate_transition_batch
+    if args.preprocess_cache_dir is not None:
+        train_cache = args.preprocess_cache_dir / "train"
+        val_cache = args.preprocess_cache_dir / "val"
+        for cache_dir in (train_cache, val_cache):
+            manifest_path = cache_dir / "manifest.json"
+            if not manifest_path.is_file():
+                raise FileNotFoundError(f"required preprocess cache manifest missing: {manifest_path}")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("format") != COMPACT_CACHE_FORMAT:
+                raise ValueError(f"SFT1 grid training requires compact preprocess cache: {cache_dir}")
+            if int(manifest.get("latent_token_count", -1)) != 16:
+                raise ValueError(f"preprocess cache latent_token_count mismatch: {cache_dir}")
+            if not bool(manifest.get("mask_latent_query_labels", False)):
+                raise ValueError(f"preprocess cache must mask injected query labels: {cache_dir}")
+        train_ds = CachedTransitionDataset(train_cache, raw_train_ds.samples)
+        val_ds = CachedTransitionDataset(val_cache, raw_val_ds.samples)
+        pad_id = processor.tokenizer.pad_token_id
+        if pad_id is None:
+            raise ValueError("processor tokenizer must define pad_token_id")
+        collate_train = CompactCachedTransitionCollator(train_cache, pad_token_id=pad_id)
+        collate_val = CompactCachedTransitionCollator(val_cache, pad_token_id=pad_id)
+    elif args.require_prebuilt_cache:
+        raise ValueError("--require-prebuilt-cache requires --preprocess-cache-dir")
     train_sampler = DistributedSampler(train_ds, shuffle=True, seed=args.seed) if world_size > 1 else None
     val_sampler = DistributedSampler(val_ds, shuffle=False) if world_size > 1 else None
     train_loader = DataLoader(
@@ -276,7 +335,7 @@ def main() -> None:
         sampler=train_sampler,
         shuffle=train_sampler is None,
         num_workers=args.num_workers,
-        collate_fn=collate_transition_batch,
+        collate_fn=collate_train,
     )
     val_loader = DataLoader(
         val_ds,
@@ -284,7 +343,7 @@ def main() -> None:
         sampler=val_sampler,
         shuffle=False,
         num_workers=args.num_workers,
-        collate_fn=collate_transition_batch,
+        collate_fn=collate_val,
     )
 
     model_groups = []
@@ -310,8 +369,17 @@ def main() -> None:
         model = DDP(model, find_unused_parameters=False, **ddp_kwargs)
         projector = DDP(projector, find_unused_parameters=False, **ddp_kwargs)
 
+    run = None
+    csv_path = args.output / "train_step_log.csv"
     if is_main():
         args.output.mkdir(parents=True, exist_ok=True)
+        args.output_dir = args.output
+        run = maybe_init_wandb(args)
+        if not csv_path.exists():
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                csv.writer(handle).writerow(
+                    ["global_step", "epoch", "micro_step", "total_loss", "ce_loss", "dino_grid_mse"]
+                )
         print(json.dumps({"train_transitions": len(train_ds), "val_transitions": len(val_ds), "world_size": world_size}))
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
@@ -323,14 +391,8 @@ def main() -> None:
         projector.train()
         optimizer.zero_grad(set_to_none=True)
         epoch_totals = torch.zeros(4, device=device, dtype=torch.float64)
-        for micro_step, items in enumerate(train_loader, start=1):
-            enc = build_qwen_batch(
-                items,
-                processor,
-                args.max_length,
-                latent_token_count=16,
-                mask_latent_query_labels=True,
-            )
+        for micro_step, batch_data in enumerate(train_loader, start=1):
+            items, enc = _current_batch(batch_data, processor, args)
             hidden, ce_loss = extract_qwen_latents(
                 model, enc, token_ids, device, latent_token_count=16
             )
@@ -352,6 +414,25 @@ def main() -> None:
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
+                if is_main():
+                    step_metrics = {
+                        "loss": float(loss.detach().item()),
+                        "ce": float(ce_loss.detach().item()),
+                        "dino_grid_mse": float(dino_loss.detach().item()),
+                        "epoch": float(epoch),
+                    }
+                    log_train_step(run, global_step, step_metrics)
+                    with csv_path.open("a", newline="", encoding="utf-8") as handle:
+                        csv.writer(handle).writerow(
+                            [
+                                global_step,
+                                epoch,
+                                micro_step,
+                                step_metrics["loss"],
+                                step_metrics["ce"],
+                                step_metrics["dino_grid_mse"],
+                            ]
+                        )
             batch = len(items)
             epoch_totals += torch.tensor(
                 [float(loss.item()) * batch, float(ce_loss.item()) * batch, float(dino_loss.item()) * batch, batch],
@@ -372,6 +453,12 @@ def main() -> None:
                 "val/dino_grid_mse": val["dino_grid_mse"],
             }
             print(json.dumps(metrics, sort_keys=True))
+            log_val_epoch(
+                run,
+                epoch,
+                {"ce": val["ce"], "dino_grid_mse": val["dino_grid_mse"]},
+                global_step=global_step,
+            )
             epoch_dir = args.output / f"epoch_{epoch:03d}"
             _save_checkpoint(model, projector, processor, optimizer, epoch_dir, epoch=epoch, step=global_step, args=args)
             latest = args.output / "latest"
@@ -383,6 +470,8 @@ def main() -> None:
 
     if is_main():
         _save_merged(model, projector, processor, args.output / "final" / "hf_merged")
+        if run is not None:
+            run.finish()
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
     cleanup_dist()
