@@ -12,7 +12,7 @@
 - dev已准备并推送非破坏性图片派生、train120 rollout模式、PNG尺寸gate及配对比较工具（`f7ea3da`）；本地契约/数据/比较测试`4 passed`，compileall、bash语法和diff-check通过。
 - CPU派生job`481070`已`COMPLETED 0:0`（00:08:55）：4个JSONL/4,485 records计数原样保留，81,570 refs映射73,648张唯一RGB255图；全量源图仍为RGB512且总字节不变。派生图logical 4.201GiB（NFS `du`因allocation unit显示16GiB）。
 - 旧504路径A job`481071`已`COMPLETED 0:0`（00:20:22）：120 keys和2,370张RGB512引用全量gate通过，base 11/60、common 8/60、总19/120=15.83%，action validity=1.0；W&B ID10 run `9l4vjc1j`正常结束。
-- 新252路径B job`481072`已在dgx-32启动；GPU smoke仍在选择2张AI2-THOR env卡（GPU0健康，GPU1-2仅保留policy），之后将以固定step60/greedy参数执行相同120 keys。详见`ai_tasks/ai_progress/2026-07-19_rollout_resolution255.md`。
+- 新252路径B job`481072`已在dgx-32健康启动：GPU0/4运行两套AI2-THOR env服务，GPU1/2/3/5运行policy；两套HTTP服务健康，精确VAGEN `a01f7af`、step60及greedy/train120参数已核验，03:27:44开始rollout。详见`ai_tasks/ai_progress/2026-07-19_rollout_resolution255.md`。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 
