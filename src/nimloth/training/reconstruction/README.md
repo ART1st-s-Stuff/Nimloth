@@ -126,6 +126,42 @@ The resulting contact sheet uses matched noise for
 CFM remains invalid if correct and wrong Query conditions produce the same
 scene, regardless of flow loss.
 
+## Decode WM-predicted State into query latent
+
+`projected_query_decoder.py` trains a post-hoc symmetric MLP
+`8192 → 8192 → 8×2048`. It uses only adjacent rows and equal supervision from
+(1) the true current projected State and (2) the frozen WM's one-step prediction
+from the true previous projected State and previous action. Both targets are the
+current Qwen query hidden vectors; Qwen, StateProjector, WM, and CFM stay frozen.
+
+```bash
+python -m nimloth.training.reconstruction.projected_query_decoder \
+  --projected-cache-dir outputs/.../projected_cache \
+  --query-cache-dir outputs/.../query_cache \
+  --wm-checkpoint outputs/.../sft2/epoch_002/wm_predictor \
+  --output-dir outputs/.../projected_query_decoder \
+  --hidden-dim 8192 --epochs 5 --batch-size 128
+```
+
+After training a fresh query-latent CFM, the teacher-forced evaluator produces
+exactly `GT | old Qwen ViT-token CFM | query-latent CFM |
+WM predicted State → Decoder → query-latent CFM` with matched noise. Every row
+predicts time `t` from the true projected State at `t-1`; it is not a recursive
+rollout.
+
+```bash
+python -m nimloth.eval.query_cfm_teacher_forced \
+  --query-cache outputs/.../query_cache/val \
+  --projected-cache outputs/.../projected_cache/val \
+  --qwen-cache outputs/.../positive_cache/val \
+  --wm-checkpoint outputs/.../sft2/epoch_002/wm_predictor \
+  --decoder-checkpoint outputs/.../projected_query_decoder/best.pt \
+  --query-cfm-checkpoint outputs/.../query_cfm/best.pt \
+  --qwen-cfm-checkpoint /path/to/vit_token_cfm_low_lr_best_val.pt \
+  --selections configs/eval/reconstruction/query_cfm_action_sequences.json \
+  --output-dir outputs/.../teacher_forced_eval
+```
+
 ## Compare projected and preprojection query states
 
 Build a separate cache of the frozen Qwen hidden vectors at all k latent-query

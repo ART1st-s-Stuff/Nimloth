@@ -7,5 +7,6 @@
 | `rollout.py` | Nimloth jsonl 轨迹级成功率等 |
 | `reconstruction.py` | WM reconstruction diagnostic：oracle / predicted / copy / shuffled-action 对比 |
 | `rcdm_reconstruction.py` | 从 SFT2 true / WM-predicted latent state 采样 RCDM 可视化 |
+| `query_cfm_teacher_forced.py` | 对比 GT、旧 Qwen ViT-token CFM、真实 query latent CFM 与单步 WM→Decoder→query latent CFM |
 
 实验入口示例：`experiments/training/sft2/eval_val_rollout_success.py`。
