@@ -11,8 +11,9 @@
 - 人类选择保留原512图片并派生新255数据集；train probe采用base_train/common_sense_train各seeds1–60，并对旧504与新252模型输入做同checkpoint、同任务、同greedy参数的配对A/B。
 - dev已准备并推送非破坏性图片派生、train120 rollout模式、PNG尺寸gate及配对比较工具（`f7ea3da`）；本地契约/数据/比较测试`4 passed`，compileall、bash语法和diff-check通过。
 - CPU派生job`481070`已`COMPLETED 0:0`（00:08:55）：4个JSONL/4,485 records计数原样保留，81,570 refs映射73,648张唯一RGB255图；全量源图仍为RGB512且总字节不变。派生图logical 4.201GiB（NFS `du`因allocation unit显示16GiB）。
-- 旧504路径A job`481071`已`COMPLETED 0:0`（00:20:22）：120 keys和2,370张RGB512引用全量gate通过，base 11/60、common 8/60、总19/120=15.83%，action validity=1.0；W&B ID10 run `9l4vjc1j`正常结束。
-- 新252路径B job`481072`已在dgx-32健康启动：GPU0/4运行两套AI2-THOR env服务，GPU1/2/3/5运行policy；两套HTTP服务健康，精确VAGEN `a01f7af`、step60及greedy/train120参数已核验，03:27:44开始rollout。详见`ai_tasks/ai_progress/2026-07-19_rollout_resolution255.md`。
+- 旧504路径A job`481071`已`COMPLETED 0:0`（00:20:22）：2,370张RGB512引用gate通过，runtime-config成功base 11/60、common 8/60、总19/120=15.83%；W&B `9l4vjc1j`。
+- 新252路径B job`481072`已`COMPLETED 0:0`（00:23:21）：2,364张RGB255引用gate通过，runtime-config成功base 13/60、common 9/60、总22/120=18.33%；W&B `8lct7arz`。两臂action validity均为1.0。
+- 发现并登记E0030：async recorder结果被按位置zip输入metadata，A/B分别有16/14行可见`config_id/eval_set`冲突，原始seed标签不可用于paired test。诊断性runtime-identity恢复获得both/old-only/new-only/fail=`18/1/4/97`，delta=+2.5pp，McNemar exact `p=0.375`；匹配assigned RMSE最大5.106、 rejected最小43.170。分辨率效果小且不显著，不能解释历史71.67%；如需精确seed-labelled证据，必须先修stable identity再经人类确认重跑A/B。详见`ai_tasks/ai_progress/2026-07-19_rollout_resolution255.md`。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 

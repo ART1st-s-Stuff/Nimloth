@@ -57,18 +57,27 @@ All root commits modify only the VAGEN gitlink. Existing unrelated `.memory/memo
 - `derive_rollout_images_255.py`: hashes unique source paths, writes RGB 255×255 BICUBIC PNGs into a separate tree, rewrites all top-level JSONL files, preserves sources, supports resume, and writes a manifest.
 - `derive_rollout_images_255.slurm`: CPU conversion job wrapper.
 - `rollouts_greedy_parallel.slurm`: prepared `ROLLOUT_TRAIN120=1`, alternate `VAGEN_DIR`, exact source eval kwargs, W&B logging, and expected PNG-size gate.
-- `compare_rollout_resolution_probe.py`: paired success, per-source rates, discordant outcomes, exact McNemar p-value, and PNG-size evidence.
-- Current local validation: two dataset/comparison tests pass; Python compileall, shell `bash -n`, and diff-check pass.
+- `compare_rollout_resolution_probe.py`: reads both converted `traj_success` and raw `metrics.success`, and now rejects visible runtime-config/metadata inconsistency instead of silently producing false all-failure or false seed-paired results.
+- `recover_rollout_resolution_pairs.py`: diagnostic recovery for E0030 dumps using control-batch membership, actual runtime config, instruction, and minimum initial-frame RMSE.
+- Current server validation: comparator/recovery `4 passed`; complete resolution contract suite `5 passed` plus VAGEN image tests `2 passed`. Python compileall, shell `bash -n`, and diff-check passed before launch.
 
-## Active jobs (2026-07-20 server time)
+## Completed experiments (2026-07-20 server time)
 
 - CPU image derivation job `481070`: `COMPLETED 0:0` in `00:08:55` on `intel-01` with 8 CPUs/64 GiB. The initial 32-CPU request was rejected before job creation by `QOSMaxCpuPerNode`, so the approved conversion used 8 workers. Exhaustive validation passed: all four JSONL counts preserved; 81,570 references map to 73,648 existing unique RGB 255×255 images; all 73,648 source images remain RGB 512×512 and aggregate source bytes remain `11,161,340,020`. Derived logical bytes=`4,510,928,566` (4.201 GiB), while NFS `du` reports 16 GiB because of allocation units. Output: `converted_strict_k8_b6c811c_images255`.
-- Old-resolution A job `481071`: `COMPLETED 0:0` in `00:20:22` on dgx-13 with normal 6 GPUs (2 env + 4 policy). It loaded old VAGEN `e7cc2d0`, passed config/vLLM health checks, and W&B run `9l4vjc1j` finished under the exact ID10 name. All 120 paired keys and 2,370 RGB 512×512 PNG references passed. Success was base 11/60, common 8/60, overall 19/120=15.83%; action validity was 1.0. W&B logged mean scores base/common=0.36917/0.32250, while direct dumped-row recomputation is 0.37083/0.32083 (the success indicators agree exactly).
-- Corrected-resolution B job `481072`: running on dgx-32 with normal 6 GPUs. GPU probes selected physical GPUs0/4 for the two AI2-THOR env services and GPUs1/2/3/5 for policy; both HTTP services became healthy. It loaded exact fixed VAGEN `a01f7af`, exact step60 path, and exact greedy/train120 arguments, then started rollout task0 at 03:27:44 server time. W&B ID11 is reserved; output is `outputs/experiments/rollout_resolution/2026-07-20/11_resprobe_step60_train120_img252_greedy`.
-- Exact server worktrees verified clean: Nimloth `f7ea3da`, old VAGEN `e7cc2d0`, fixed VAGEN `a01f7af`, both verl `65316156`.
-- Dataset scope measured exactly: 4 JSONLs, 4,485 records, 81,570 references, 73,648 unique source images, 10.39 GiB source bytes; estimated derived PNG bytes 4.28 GiB.
+- Old-resolution A job `481071`: `COMPLETED 0:0` in `00:20:22`, old VAGEN `e7cc2d0`, W&B `9l4vjc1j`, 2,370 RGB512 references passed. Trusted runtime-config success: base 11/60, common 8/60, overall 19/120=15.83%; action validity=1.0.
+- Corrected-resolution B job `481072`: `COMPLETED 0:0` in `00:23:21`, fixed VAGEN `a01f7af`, W&B `8lct7arz`, 2,364 RGB255 references passed. Trusted runtime-config success: base 13/60, common 9/60, overall 22/120=18.33%; action validity=1.0.
+- Both GPU arms used exact step60, the same control parquet contents and greedy parameters, and separate normal 6-GPU allocations (2 env + 4 policy). Exact server code was Nimloth `f7ea3da`, both nested verl `65316156`.
 
-## Pending
+## Discovered metadata error and trustworthy comparison
 
-- Monitor `481072` to healthy rollout and completion; verify W&B/run ID11, 120 records, RGB255 persisted PNG gate, and no hidden parameter differences.
-- Run paired comparison over identical `(data_source, env_seed)` keys and record overall/per-source rates, discordant outcomes, exact McNemar p-value, and interpretation.
+- Raw dumps are affected by E0030: trainer `zip(micro_validation_rst, env_configs, uids)` assumes async recorder order equals input order. A has 16/120 and B has 14/120 visible cross-config metadata mismatches; seed permutations within one config can be invisible. Direct `(data_source, env_seed)` pairing is therefore invalid. Earlier direct comparison outputs were renamed `*.invalid_metadata.json` and README claims were corrected.
+- Aggregate totals and grouping by actual runtime `config_id` remain trustworthy.
+- Diagnostic task identities were recovered using each reported key only for its control-batch membership, then actual runtime config, exact instruction, and minimum initial-frame RMSE. All 120 tasks paired across 104 groups; 13 repeated-instruction groups used frame assignment. Assigned RMSE max=5.106; smallest rejected alternative=43.170, giving clear separation. Exact seed labels were not recovered.
+- Recovered outcomes: both success=18, old-only=1, new-only=4, both failure=97. Success changed 19/120→22/120, +3 tasks / +2.5 percentage points; exact two-sided McNemar `p=0.375`. Per runtime source: base +2/60 (+3.33 pp), common +1/60 (+1.67 pp).
+- Conclusion: on these train120 tasks the 252 path is slightly higher, but the effect is not statistically distinguishable and resolution alone does not recover the historical 86/120=71.67%. That historical result used a different held-out task set and older source runtime, so its absolute rate is not directly comparable.
+- Evidence: group `progress.md`, `paired_comparison.runtime_identity.json`, per-arm `validation_summary.runtime_config.json`, and corrected READMEs.
+
+## Pending human decision
+
+- For exact `(data_source, env_seed)` paired evidence, first fix rollout-manager stable identity propagation, port it to both A/B VAGEN lineages, then rerun both 6-GPU arms. This requires a new GPU-experiment confirmation.
+- If diagnostic task pairing is sufficient, no GPU rerun is needed; retain E0030 and the fail-fast comparator for future runs.

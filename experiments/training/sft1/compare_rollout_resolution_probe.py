@@ -20,6 +20,15 @@ def _load_rows(path: Path) -> dict[tuple[str, int], dict[str, Any]]:
             if not line.strip():
                 continue
             row = json.loads(line)
+            config_id = row.get("config_id")
+            eval_set = row.get("eval_set")
+            if isinstance(config_id, str) and isinstance(eval_set, str):
+                expected_fragment = f"eval_set={eval_set},"
+                if expected_fragment not in config_id:
+                    raise ValueError(
+                        f"{path}:{line_number} has mismatched runtime config_id "
+                        f"and eval_set: {config_id!r} vs {eval_set!r}"
+                    )
             source = row.get("data_source")
             seed = row.get("env_seed")
             if not isinstance(source, str) or seed is None:
@@ -32,7 +41,16 @@ def _load_rows(path: Path) -> dict[tuple[str, int], dict[str, Any]]:
 
 
 def _is_success(row: dict[str, Any]) -> bool:
-    return float(row.get("traj_success", 0.0) or 0.0) >= 1.0
+    metrics = row.get("metrics")
+    if isinstance(metrics, dict) and "success" in metrics:
+        value = metrics["success"]
+    elif "traj_success" in row:
+        value = row["traj_success"]
+    else:
+        raise ValueError("row lacks metrics.success and traj_success")
+    if isinstance(value, bool):
+        return value
+    return float(value or 0.0) >= 1.0
 
 
 def _png_size_counts(jsonl_path: Path) -> dict[str, int]:
