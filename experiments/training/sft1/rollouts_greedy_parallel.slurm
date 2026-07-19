@@ -34,6 +34,7 @@ RAY_PORT=$((6379 + SLURM_ARRAY_TASK_ID))
 RAY_DASHBOARD_PORT=$((8266 + SLURM_ARRAY_TASK_ID))
 RAY_CMD="${PYTHON_ENV}/bin/python3 ${PYTHON_ENV}/bin/ray"
 ROLLOUT_SMOKE=${ROLLOUT_SMOKE:-0}
+ROLLOUT_GATE_120=${ROLLOUT_GATE_120:-0}
 ROLLOUT_SOURCE_PARITY=${ROLLOUT_SOURCE_PARITY:-0}
 ROLLOUT_SMOKE_SEED=${ROLLOUT_SMOKE_SEED:-1}
 export ROLLOUT_SMOKE_EVAL_SET=${ROLLOUT_SMOKE_EVAL_SET:-base_train}
@@ -607,6 +608,14 @@ main() {
       exit 2
     fi
     run_shard train "shard_smoke_seed_${ROLLOUT_SMOKE_SEED}" "${ROLLOUT_SMOKE_SEED}" "${ROLLOUT_SMOKE_SEED}"
+    return 0
+  fi
+  if [ "${ROLLOUT_GATE_120}" = "1" ]; then
+    if [ "${SLURM_ARRAY_TASK_ID}" != "0" ]; then
+      echo "ROLLOUT_GATE_120=1 only supports array task 0" >&2
+      exit 2
+    fi
+    run_shard train shard_gate_001_040 1 40
     return 0
   fi
   if [ "${ROLLOUT_SOURCE_PARITY}" = "1" ]; then
