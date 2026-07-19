@@ -108,3 +108,4 @@
 - train480452 `COMPLETED 0:0`（00:14:54）：base19/60、common23/60，总success42/120=35.00%；all actions valid；weighted position-changing272/2088=13.03%。W&B `nimloth-sft1/5r9yh8qe`。
 - val480471 `COMPLETED 0:0`（00:13:49）：base25/60、common24/60，总success49/120=40.83%；all actions valid；weighted position-changing291/1943=14.98%。W&B `nimloth-sft1/11lhw3it`。
 - 输出：`/project/peilab/hligb/vagen-navigation/eval/origprompt_step10_train120_val120_20260719`。source evaluator消费真实图像但只记录`num_images`，不保存PNG路径，所以本次是质量复核rollout，不能直接转换为SFT image dataset。
+- 人类据此批准临时把SFT rollout profile改为训练时prompt，SFT1/SFT2阶段再转换Nimloth格式。VAGEN commit `3003c2e`恢复原multi-action hints/examples且保留env max_actions=1；Nimloth pointer/docs commit `d736ddc`。runtime golden combined SHA=`ee38bc...900f`，server targeted tests9 passed。下一步必须重新过image-dumping 1-record smoke后才能启动full collection。
