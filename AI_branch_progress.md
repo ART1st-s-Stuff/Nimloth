@@ -17,8 +17,9 @@
 - 人类随后要求禁止改代码，用训练时prompt在原checkpoint数据只读复跑train120+val120：node-local解包VAGEN HEAD `8839a2a`，全部240条prompt hash=`ee38bc...900f`。train success42/120=35.00%，val49/120=40.83%，all actions valid；jobs480452/480471完成，GPU已释放。输出在`/project/peilab/hligb/vagen-navigation/eval/origprompt_step10_train120_val120_20260719`。source evaluator不持久化PNG，故只作质量复核、不能直接转SFT。
 - 人类批准临时把SFT rollout切到训练时原prompt，后续SFT1/SFT2再转Nimloth格式。VAGEN `3003c2e`恢复原multi-action hints/examples并保留env max_actions=1；Nimloth `d736ddc`更新pointer/docs。combined prompt SHA=`ee38bc...900f`，服务器tests9 passed。
 - 新prompt image smoke policy480514通过：1条/25 actions/26 images、hash精确、strict conversion零issue。formal ID8 attempt因array `%2`的两个manager共享service且复用相同env IDs而失败，出现NoneType step/KeyError metrics；有效正式数据仍为0，禁止resume，登记E0031。
-- SSH恢复后formal ID9已启动：env480536 4GPU；4GPU policy array480537因Priority预测次日且elapsed0安全取消，replacement480550采用array`%1`单manager+2 policy GPU，总并发6GPU。首shard已完成120 rows（prompt hash精确、3060 images零missing、4 success、env errors0），task0继续，目标train3240+val360/no test。W&B `nimloth-sft1/jyf980bb`。
-- 发现JSONL增量写而wrapper仅`-s` skip；若中断必须验证每shard=120 rows+图片完整并隔离partial后resume，登记E0032，运行中不改wrapper。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
+- formal ID9完成两个完整shards后因用户质疑质量已暂停并释放GPU：seed1..40 success4/120，seed41..80 success16/120，累计20/240=8.33%，prompt/images完整、env errors0，第三shard无JSONL。W&B `nimloth-sft1/jyf980bb`。
+- 原checkpoint replay只用旧`base/common_sense`，formal用新`*_train`并含long-horizon，不同分布。replay虽success35-41%，但weighted position-changing仅13-15%、blocked约85%；formal240同样moveahead塌缩（4430/5615）、blocked83.08%、position-changing9.21%。replay高success主要由更有利的初始几何造成，不能外推到formal tasks。
+- JSONL增量写而wrapper仅`-s` skip；恢复前必须验证每shard=120 rows+图片完整，登记E0032。当前两个shard已验证完整。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 

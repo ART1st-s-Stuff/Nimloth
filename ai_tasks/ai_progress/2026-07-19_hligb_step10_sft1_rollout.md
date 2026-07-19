@@ -113,5 +113,7 @@
 - formal ID8 attempt env480517+array480518失败且有效数据0：array `%2`使两个独立manager共享service并复用`val1...` env IDs，互相覆盖/close，出现6个NoneType step errors和KeyError metrics。全部停止，禁止resume；错误登记E0031。
 - superpod SSH恢复后启动fresh formal ID9：`9_rollout_step10trainprompt_train3240_val360_serialmgr_t07p095k50_t25`，W&B `jyf980bb`。env480536为4GPU source topology。
 - 初始serial 4GPU policy array480537因Priority预测次日启动且elapsed0，最终复查后安全取消。replacement array480550保持`%1`单manager，使用2 policy GPU（总并发env4+policy2=6GPU）。目标仍为train3240+val360/no test。
-- 首个formal shard `train/shard_001_040`已完成120 rows：全部prompt hash精确、3060 images零missing、2940 assistant turns、4 success、env errors0；task0继续下一shard，W&B accepted_records=120。
-- 新发现resume风险：JSONL按25/50/75/99/120 rows增量写入，但wrapper只用`-s`判断skip。若中断，必须先逐shard验证120 rows+图片完整，隔离partial后再resume；运行中不改wrapper。错误登记E0032。
+- 前两formal shards完整且prompt/image/env gate通过：seed1..40 success4/120（base2/common2/long0）；seed41..80 success16/120（base7/common7/long2）。累计20/240=8.33%，env errors0。
+- 用户质疑与原checkpoint replay不符后已主动暂停array480550/env480536并释放GPU；第三shard刚进入generation、无JSONL，现有仅2个完整120-row shards。
+- 原replay与formal不是同分布：replay使用旧`base/common_sense`，formal使用新`base_train/common_sense_train/long_horizon_train`。更关键的是replay本身weighted position-changing仅train13.03%/val14.98%、blocked约85%，高35-41% success主要来自初始朝向恰好对准近目标；formal240同样moveahead塌缩（4430/5615）、blocked83.08%、position-changing9.21%，更难/含long-horizon后成功率下降。
+- 新发现resume风险：JSONL按25/50/75/99/120 rows增量写入，但wrapper只用`-s`判断skip。若恢复，必须先逐shard验证120 rows+图片完整；当前两个shard已完整。错误登记E0032。
