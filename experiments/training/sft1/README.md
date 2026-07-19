@@ -48,8 +48,10 @@ ENV_NODE=dgx-13 bash experiments/training/sft1/submit_env_external_4gpu.sh
 bash experiments/training/sft1/submit_rollouts_greedy.sh
 
 # hligb step10 source-compatible rollout profile. This keeps the checkpoint's
-# original prompt during collection and starts the source env topology (one
-# service across four GPUs, navigation.max_workers=16); convert_rollouts.py
+# original training-time prompt, including its multi-action hints/examples;
+# max_actions_per_step=1 still executes only the first parsed action. It starts
+# the source env topology (one service across four GPUs, max_workers=16);
+# convert_rollouts.py
 # performs the later Nimloth-format conversion.
 ROLLOUT_PROTOCOL=hligb_step10_eval ROLLOUT_INCLUDE_TEST=0 \
   INIT_HF=/project/peilab/atst/vagen_ckpt_JUL19 \
