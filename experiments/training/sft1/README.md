@@ -53,6 +53,8 @@ bash experiments/training/sft1/submit_rollouts_greedy.sh
 ROLLOUT_PROTOCOL=hligb_step10_eval ROLLOUT_INCLUDE_TEST=0 \
   INIT_HF=/project/peilab/atst/vagen_ckpt_JUL19 \
   bash experiments/training/sft1/submit_rollouts_greedy.sh
+# Convert this source profile only with the explicit answer-tag selector:
+#   python experiments/training/sft1/convert_rollouts.py ... --source-action-tag answer
 
 # Per-epoch eval watcher
 TRAIN_OUT=.../sft1_train_lora BASE_MODEL=.../global_step_79/actor/huggingface \

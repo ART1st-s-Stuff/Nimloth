@@ -8,8 +8,9 @@ Input layout is the rollout-only validation tree produced by
     validation/{train,val,test}/shard_*/image_{step}/images_<record_idx>/*.png
 
 The converter preserves split boundaries, rewrites VAGEN assistant actions from
-`<action>move_forward</action>` into the Nimloth prompt/action format described
-in DESIGN_DOCS.md, and stores exact image paths for every `<image>` placeholder.
+an explicitly selected source XML tag (`<action>` or `<answer>`) into the Nimloth
+prompt/action format described in DESIGN_DOCS.md, and stores exact image paths
+for every `<image>` placeholder.
 
 Training policy: both `train_all.jsonl` and `train_success.jsonl` are emitted.
 `train_all.jsonl` is the default SFT train file (all train-split rollouts, including
@@ -66,7 +67,9 @@ ASSISTANT_RE = re.compile(r"<\|im_start\|>assistant\n(.*?)(?:<\|im_end\|>|\Z)", 
 USER_RE = re.compile(r"<\|im_start\|>user\n(.*?)(?:<\|im_end\|>|\Z)", re.S)
 SYSTEM_RE = re.compile(r"<\|im_start\|>system\n(.*?)(?:<\|im_end\|>|\Z)", re.S)
 ACTION_RE = re.compile(r"<action>\s*([^<]+?)\s*</action>", re.S)
+ANSWER_RE = re.compile(r"<answer>\s*([^<]+?)\s*</answer>", re.S)
 THINK_RE = re.compile(r"<think>(.*?)</think>", re.S)
+SOURCE_ACTION_PATTERNS = {"action": ACTION_RE, "answer": ANSWER_RE}
 
 LEGACY_ACTION_ALIASES = {
     "moveahead": "move_forward",
@@ -99,8 +102,8 @@ def iter_jsonl(path: Path) -> Iterable[tuple[int, dict[str, Any]]]:
             yield i, json.loads(line)
 
 
-def rewrite_prompt_instruction(content: str) -> str:
-    """Rewrite VAGEN action-format instructions into Nimloth format."""
+def rewrite_prompt_instruction(content: str, source_action_tag: str = "action") -> str:
+    """Rewrite the selected VAGEN action-format instructions into Nimloth format."""
     replacements = [
         (
             "You can optionally think first, then give your action. Respond in this format:\n"
@@ -122,10 +125,10 @@ def rewrite_prompt_instruction(content: str) -> str:
     ]
     for old, new in replacements:
         content = content.replace(old, new)
-    # Current VAGEN output_str includes concrete XML examples such as
-    # <action>moveahead</action>; every prompt-side XML action example must be
-    # rewritten or it teaches the opposite format from the SFT target.
-    content = ACTION_RE.sub(NIMLOTH_ACTION_BLOCK, content)
+    # Every prompt-side source XML example must be rewritten or it teaches the
+    # opposite format from the SFT target. The default remains `<action>` for
+    # backwards compatibility; `<answer>` must be selected explicitly.
+    content = SOURCE_ACTION_PATTERNS[source_action_tag].sub(NIMLOTH_ACTION_BLOCK, content)
     return content
 
 
@@ -173,8 +176,8 @@ def parse_output_messages(text: str) -> list[dict[str, str]]:
     return messages
 
 
-def extract_action(text: str) -> str | None:
-    m = ACTION_RE.search(text)
+def extract_action(text: str, source_action_tag: str = "action") -> str | None:
+    m = SOURCE_ACTION_PATTERNS[source_action_tag].search(text)
     if not m:
         return None
     raw = m.group(1).strip()
@@ -197,10 +200,12 @@ def extract_action(text: str) -> str | None:
     return None
 
 
-def convert_assistant(content: str) -> tuple[str, str | None, str | None]:
+def convert_assistant(
+    content: str, source_action_tag: str = "action"
+) -> tuple[str, str | None, str | None]:
     think_m = THINK_RE.search(content)
     think = think_m.group(1).strip() if think_m else ""
-    action = extract_action(content)
+    action = extract_action(content, source_action_tag=source_action_tag)
     if action is None:
         # Keep malformed/non-action responses auditable but not trainable.
         converted = f"<think>{think}</think>{LATENT_STATE_BLOCK}<|action_start|><|action_end|>"
@@ -209,7 +214,9 @@ def convert_assistant(content: str) -> tuple[str, str | None, str | None]:
     return converted, action, think
 
 
-def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], list[str], list[str]]:
+def split_messages(
+    src: SourceRecord, source_action_tag: str = "action"
+) -> tuple[list[dict[str, str]], list[str], list[str], list[str]]:
     obj = src.payload
     messages: list[dict[str, str]] = []
     actions: list[str] = []
@@ -232,7 +239,9 @@ def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], 
         warnings.append("missing_input_messages")
     for msg in input_messages:
         if msg["role"] == "assistant":
-            converted, action, think = convert_assistant(msg["content"])
+            converted, action, think = convert_assistant(
+                msg["content"], source_action_tag=source_action_tag
+            )
             msg = {"role": "assistant", "content": converted}
             if action:
                 actions.append(action)
@@ -241,7 +250,12 @@ def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], 
             if think is not None:
                 thinks.append(think)
         else:
-            msg = {"role": msg["role"], "content": rewrite_prompt_instruction(msg["content"])}
+            msg = {
+                "role": msg["role"],
+                "content": rewrite_prompt_instruction(
+                    msg["content"], source_action_tag=source_action_tag
+                ),
+            }
         messages.append(msg)
 
     # `output` starts with the first assistant response and then alternates
@@ -250,7 +264,9 @@ def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], 
     # input = system+initial user only.
     for msg in output_messages:
         if msg["role"] == "assistant":
-            converted, action, think = convert_assistant(msg["content"])
+            converted, action, think = convert_assistant(
+                msg["content"], source_action_tag=source_action_tag
+            )
             msg = {"role": "assistant", "content": converted}
             if action:
                 actions.append(action)
@@ -259,7 +275,12 @@ def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], 
             if think is not None:
                 thinks.append(think)
         else:
-            msg = {"role": msg["role"], "content": rewrite_prompt_instruction(msg["content"])}
+            msg = {
+                "role": msg["role"],
+                "content": rewrite_prompt_instruction(
+                    msg["content"], source_action_tag=source_action_tag
+                ),
+            }
         messages.append(msg)
 
     # Remove accidental adjacent duplicate system+user prefix if present.
@@ -307,21 +328,25 @@ def validate_record(messages: list[dict[str, str]], image_paths: list[str], acti
             if "<|latent_state|>" not in c or "<|action_start|>" not in c or "<|action_end|>" not in c:
                 issues.append("assistant_missing_nimloth_tokens")
                 break
-            if "<action>" in c or "</action>" in c:
+            if any(tag in c for tag in ("<action>", "</action>", "<answer>", "</answer>")):
                 issues.append("assistant_still_has_vagen_action_xml")
                 break
         else:
             c = m.get("content", "")
-            if "<action>some_action</action>" in c or "<think>...</think><action>" in c:
+            if any(tag in c for tag in ("<action>", "</action>", "<answer>", "</answer>")):
                 issues.append("prompt_still_has_vagen_action_instruction")
                 break
     return issues
 
 
-def convert_one(src: SourceRecord) -> dict[str, Any]:
+def convert_one(
+    src: SourceRecord, source_action_tag: str = "action"
+) -> dict[str, Any]:
     obj = src.payload
     step = int(obj.get("step", src.rollout_step))
-    messages, actions, thinks, warnings = split_messages(src)
+    messages, actions, thinks, warnings = split_messages(
+        src, source_action_tag=source_action_tag
+    )
     dumped_image_paths = [str(Path(path).resolve()) for path in obj.get("image_paths", [])]
     image_paths = dumped_image_paths or image_paths_for(src.jsonl_path, step, src.line_index)
     issues = validate_record(messages, image_paths, actions)
@@ -389,6 +414,12 @@ def main() -> int:
     )
     ap.add_argument("--splits", nargs="+", default=["train", "val", "test"])
     ap.add_argument(
+        "--source-action-tag",
+        choices=sorted(SOURCE_ACTION_PATTERNS),
+        default="action",
+        help="Source assistant XML tag; use answer for hligb single-action rollouts.",
+    )
+    ap.add_argument(
         "--strict-valid-only",
         action="store_true",
         help="Exclude records with validation issues from every converted split output.",
@@ -413,6 +444,7 @@ def main() -> int:
         "rollout_step": rollout_step,
         "splits": list(args.splits),
         "strict_valid_only": args.strict_valid_only,
+        "source_action_tag": args.source_action_tag,
         "action_names": ACTION_NAMES,
         "action_to_idx": ACTION_TO_IDX,
         "special_tokens": SPECIAL_TOKENS,
@@ -446,7 +478,10 @@ def main() -> int:
         for jsonl_path in jsonl_paths:
             shard = jsonl_path.parent.name
             for line_index, payload in iter_jsonl(jsonl_path):
-                rec = convert_one(SourceRecord(split, shard, jsonl_path, line_index, rollout_step, payload))
+                rec = convert_one(
+                    SourceRecord(split, shard, jsonl_path, line_index, rollout_step, payload),
+                    source_action_tag=args.source_action_tag,
+                )
                 all_by_split[split].append(rec)
 
     rejected_by_split = {
