@@ -8,6 +8,7 @@ import torch
 
 from nimloth.training.common.metrics import MetricAccumulator
 from nimloth.backbone.vision_ema import VisionEncoderEMA
+from nimloth.training.sft2.loss import compute_dinov3_alignment_loss
 from nimloth.training.sft2.metrics import batch_step_success_rate
 from nimloth.training.sft2.qwen_latent import extract_qwen_latents
 from nimloth.training.sft2.preprocess_cache import unpack_transition_batch
@@ -33,6 +34,7 @@ def evaluate(
     packed_forward: bool = False,
     sigreg_module=None,
     lambda_sigreg: float = 0.0,
+    dinov3_encoder=None,
     latent_token_count: int = 1,
     mask_latent_query_labels: bool = True,
 ) -> dict[str, float]:
@@ -114,8 +116,23 @@ def evaluate(
                 rank_margin=0.0,
                 lambda_rank=0.0,
             )
+            dinov3_metrics: dict[str, float] = {}
+            if dinov3_encoder is not None:
+                _, dinov3_metrics = compute_dinov3_alignment_loss(
+                    current_latent=latent_hidden,
+                    items=items,
+                    state_proj=state_proj,
+                    dinov3_encoder=dinov3_encoder,
+                )
             success_rate = batch_step_success_rate(items)
-            acc.update({**wm_metrics, **value_metrics, "success_rate": success_rate})
+            acc.update(
+                {
+                    **wm_metrics,
+                    **value_metrics,
+                    **dinov3_metrics,
+                    "success_rate": success_rate,
+                }
+            )
 
     model.train()
     state_proj.train()

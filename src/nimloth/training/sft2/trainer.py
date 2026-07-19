@@ -30,6 +30,7 @@ from nimloth.latent import (
 from nimloth.training.common.config import merge_cli_over_yaml
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.common.metrics import MetricAccumulator
+from nimloth.backbone.dinov3 import FrozenDINOv3Encoder
 from nimloth.backbone.qwen_tuning import configure_qwen_tuning, resolve_tune_modes, uses_lora
 from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema
 from nimloth.training.common.schedules import qwen_lr_schedule, set_optimizer_group_lr
@@ -51,7 +52,11 @@ from nimloth.training.sft2.dataset import (
     collate_transition_batch,
 )
 from nimloth.training.sft2.evaluate import evaluate
-from nimloth.training.sft2.loss import compute_combined_loss, wm_loss_weight_schedule
+from nimloth.training.sft2.loss import (
+    compute_combined_loss,
+    compute_dinov3_alignment_loss,
+    wm_loss_weight_schedule,
+)
 from nimloth.training.sft2.loss import SIGReg as SIGRegModule
 from nimloth.training.sft2.preprocess_cache import (
     COMPACT_CACHE_FORMAT,
@@ -371,10 +376,20 @@ def train_sft2(args=None) -> int:
     args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)
     args.query_tune = str(getattr(args, "query_tune", "freeze"))
     args.query_lr = float(getattr(args, "query_lr", 5e-5))
+    args.dinov3_align = bool(getattr(args, "dinov3_align", False))
+    args.dinov3_model = str(getattr(args, "dinov3_model", ""))
+    args.dinov3_feature = str(getattr(args, "dinov3_feature", "cls"))
+    args.lambda_dinov3 = float(getattr(args, "lambda_dinov3", 0.0))
     if args.query_tune not in {"freeze", "adapter"}:
         raise ValueError(f"query_tune must be freeze or adapter, got {args.query_tune!r}")
     if args.latent_token_count < 1:
         raise ValueError(f"--latent-token-count must be >= 1, got {args.latent_token_count}")
+    if args.dinov3_feature != "cls":
+        raise ValueError(f"only DINOv3 cls alignment is supported, got {args.dinov3_feature!r}")
+    if args.dinov3_align and args.lambda_dinov3 <= 0.0:
+        raise ValueError("--dinov3-align requires --lambda-dinov3 > 0")
+    if not args.dinov3_align and args.lambda_dinov3 != 0.0:
+        raise ValueError("--lambda-dinov3 must be 0 unless --dinov3-align is enabled")
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     if args.query_tune == "adapter" and uses_lora(args):
@@ -426,6 +441,10 @@ def train_sft2(args=None) -> int:
                     "latent_query_mode": args.latent_query_mode,
                     "query_tune": args.query_tune,
                     "mask_latent_query_labels": args.mask_latent_query_labels,
+                    "dinov3_align": args.dinov3_align,
+                    "dinov3_model": args.dinov3_model if args.dinov3_align else None,
+                    "dinov3_feature": args.dinov3_feature if args.dinov3_align else None,
+                    "lambda_dinov3": args.lambda_dinov3,
                     "preprocess_cache_format": args.preprocess_cache_format,
                     "preprocess_cache_image_dtype": args.preprocess_cache_image_dtype,
                     "require_prebuilt_cache": args.require_prebuilt_cache,
@@ -646,6 +665,18 @@ def train_sft2(args=None) -> int:
     value_head = ValueHead(wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
     sigreg = SIGRegModule(knots=args.sigreg_knots, num_proj=args.sigreg_num_proj).to(device=aux_device)
     lambda_sigreg_val = args.lambda_sigreg
+    dinov3_encoder: FrozenDINOv3Encoder | None = None
+    if args.dinov3_align:
+        dinov3_encoder = FrozenDINOv3Encoder.from_pretrained(
+            args.dinov3_model,
+            device=aux_device,
+            dtype=model_dtype,
+        )
+        if dinov3_encoder.hidden_size != wm_predictor.emb_dim:
+            raise ValueError(
+                "DINOv3 direct alignment requires WM emb_dim to equal DINOv3 hidden_size, "
+                f"got emb_dim={wm_predictor.emb_dim}, DINOv3={dinov3_encoder.hidden_size}"
+            )
 
     if args.resume and resume_state_path is not None and resume_state_path.exists():
         load_aux_checkpoint(
@@ -750,6 +781,12 @@ def train_sft2(args=None) -> int:
         "grad_accum": int(args.grad_accum),
         "latent_query_mode": args.latent_query_mode,
         "query_tune": args.query_tune,
+        "dinov3_alignment": {
+            "enabled": args.dinov3_align,
+            "source": args.dinov3_model if args.dinov3_align else None,
+            "feature": args.dinov3_feature if args.dinov3_align else None,
+            "lambda": args.lambda_dinov3,
+        },
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }
@@ -766,14 +803,17 @@ def train_sft2(args=None) -> int:
                     "total_loss",
                     "wm_mse",
                     "sigreg_loss",
+                    "dinov3_mse",
                     "value_total",
                     "value_reg",
                     "value_rank",
                     "lm_ce",
                     "lambda_wm",
                     "lambda_sigreg",
+                    "lambda_dinov3",
                     "qwen_lr",
                     "val_wm_mse",
+                    "val_dinov3_mse",
                     "val_success_rate",
                 ]
             )
@@ -789,6 +829,11 @@ def train_sft2(args=None) -> int:
         best_val_success_rate = float(state.get("best_val_success_rate", -1.0))
         best_val_wm_mse = float(state.get("best_val_wm_mse", state.get("best_val", float("inf"))))
         saved_invariants = state.get("training_invariants")
+        if args.dinov3_align and saved_invariants is None:
+            raise ValueError(
+                "DINOv3 alignment resume requires checkpoint training_invariants; "
+                "use the old checkpoint as a fresh initialization instead of --resume"
+            )
         if saved_invariants is not None:
             mismatches = {
                 key: (saved_invariants.get(key), value)
@@ -862,13 +907,16 @@ def train_sft2(args=None) -> int:
                         avg.get("total_loss", ""),
                         avg.get("wm_mse", ""),
                         avg.get("sigreg_loss", ""),
+                        avg.get("dinov3_mse", ""),
                         avg.get("value_total", ""),
                         avg.get("value_reg", ""),
                         avg.get("value_rank", ""),
                         avg.get("lm_ce", ""),
                         lambda_wm,
                         lambda_sigreg,
+                        args.lambda_dinov3,
                         qwen_lr,
+                        "",
                         "",
                         "",
                     ]
@@ -1041,6 +1089,18 @@ def train_sft2(args=None) -> int:
                 )
                 step_timer.stop("value_loss", t0)
 
+                dinov3_loss = None
+                dinov3_metrics: dict[str, float] = {}
+                if dinov3_encoder is not None:
+                    t0 = step_timer.start("dinov3_loss")
+                    dinov3_loss, dinov3_metrics = compute_dinov3_alignment_loss(
+                        current_latent=latent_hidden,
+                        items=items,
+                        state_proj=state_proj,
+                        dinov3_encoder=dinov3_encoder,
+                    )
+                    step_timer.stop("dinov3_loss", t0)
+
                 t0 = step_timer.start("loss_combine")
                 loss, metrics = compute_combined_loss(
                     wm_loss=wm_loss,
@@ -1049,11 +1109,14 @@ def train_sft2(args=None) -> int:
                     lambda_wm=lambda_wm if wm_loss is not None else 0.0,
                     sigreg_loss=sigreg_loss,
                     lambda_sigreg=lambda_sigreg_val,
+                    dinov3_loss=dinov3_loss,
+                    lambda_dinov3=args.lambda_dinov3,
                     lambda_value=args.lambda_value,
                     lambda_ce=args.lambda_ce,
                 )
                 metrics.update(wm_metrics)
                 metrics.update(value_metrics)
+                metrics.update(dinov3_metrics)
                 step_timer.stop("loss_combine", t0)
 
                 t0 = step_timer.start("backward")
@@ -1158,6 +1221,7 @@ def train_sft2(args=None) -> int:
             pad_token_id=pad_token_id,
             packed_forward=args.packed_forward,
             sigreg_module=sigreg,
+            dinov3_encoder=dinov3_encoder,
             latent_token_count=args.latent_token_count,
             mask_latent_query_labels=args.mask_latent_query_labels,
         )
@@ -1186,6 +1250,7 @@ def train_sft2(args=None) -> int:
                         "",
                         val_metrics.get("wm_mse", ""),
                         val_metrics.get("sigreg_loss", ""),
+                        val_metrics.get("dinov3_mse", ""),
                         val_metrics.get("value_total", ""),
                         val_metrics.get("value_reg", ""),
                         val_metrics.get("value_rank", ""),
@@ -1193,7 +1258,9 @@ def train_sft2(args=None) -> int:
                         "",
                         "",
                         "",
+                        "",
                         val_metrics.get("wm_mse", ""),
+                        val_metrics.get("dinov3_mse", ""),
                         val_rollout_success,
                     ]
                 )

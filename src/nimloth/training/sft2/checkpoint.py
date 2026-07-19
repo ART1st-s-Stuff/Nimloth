@@ -149,6 +149,9 @@ def save_checkpoint(
     module.config.nimloth_latent_token_count = int(getattr(proj, "latent_token_count", 1))
     module.config.nimloth_latent_query_mode = latent_query_mode
     module.config.nimloth_query_tune = query_tune
+    dinov3_alignment = (training_invariants or {}).get("dinov3_alignment")
+    if dinov3_alignment is not None:
+        module.config.nimloth_dinov3_alignment = dict(dinov3_alignment)
     with materialize_query_embedding_adapter(module) as materialized_state:
         save_kwargs = {"safe_serialization": True}
         if materialized_state is not None:

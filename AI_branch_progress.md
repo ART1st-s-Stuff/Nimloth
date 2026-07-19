@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-07-19：DINOv3 current-RGB query-state 对齐实现
+
+- 新分支/worktree：`feat/dinov3-query-alignment` / `/workspace/remote2/nimloth-feat-dinov3-query-alignment`，起点 `dev@5628cc5`。
+- 对照 DeepSight 论文与官方代码后确认：论文原版使用 1305 个 BEV query 对齐未来5帧 dense DINOv3 features，与 Nimloth 当前 k=8 state/逐步RGB数据不等价；人类选择保留 k=8，直接把 `StateProjector(query hidden)` 对齐选择 action 时的 current RGB DINOv3 ViT-L/16 final CLS。
+- 已实现 frozen/no-fallback DINOv3 encoder、直接MSE train/validation路径、current image path cache传播、CSV/W&B metrics、专用 `latent_wm_value_k8_dinov3.yaml` 和 checkpoint/resume invariants；不增加 trainable alignment head，维度不等立即报错，DINO teacher不写入checkpoint。
+- 验证：compileall、diff check通过；targeted `24 passed`；相关 suite `75 passed`（排除 dev 已存在的 `test_trajectory_prefix_encoding` 局部变量先用后赋值错误）。
+- 未启动或提交任何训练、评估、Slurm、GPU或远程实验；真实 gated DINOv3 权重加载、GPU显存/吞吐和联合loss数值尚未验证。详细记录：`ai_tasks/ai_progress/archives/2026-07-19/2026-07-19_dinov3_query_alignment.md`。
+
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 
 - 人类明确要求完整保留 legacy `retry2` 的 `global_step_48` 与 `global_step_79`，删除该 run 下其他全部 `global_step_*` checkpoint。

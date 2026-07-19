@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from nimloth.training.sft2.loss import (
     StateProjector,
     _build_trajectory_sigreg_inputs,
     compute_combined_loss,
+    compute_dinov3_alignment_loss,
     compute_wm_latent_loss,
     wm_loss_weight_schedule,
 )
@@ -177,10 +179,71 @@ def test_wm_loss_weight_schedule_warms_up() -> None:
     assert wm_loss_weight_schedule(60, 100, start=0.1, end=1.0, warmup_fraction=0.5) == 1.0
 
 
+def test_dinov3_alignment_loss_directly_matches_projected_query_state() -> None:
+    class FakeDINOEncoder:
+        hidden_size = 4
+
+        def encode_image_paths(self, paths, *, device):
+            assert paths == ["current-0.png", "current-1.png"]
+            return torch.tensor(
+                [[1.0, 2.0, 3.0, 4.0], [4.0, 3.0, 2.0, 1.0]],
+                device=device,
+            )
+
+    query_state = torch.tensor(
+        [[1.0, 2.0, 3.0, 4.0], [4.0, 3.0, 2.0, 1.0]],
+        requires_grad=True,
+    )
+    state_proj = torch.nn.Linear(4, 4, bias=False)
+    with torch.no_grad():
+        state_proj.weight.copy_(torch.eye(4))
+    loss, metrics = compute_dinov3_alignment_loss(
+        current_latent=query_state,
+        items=[
+            {"current_image_path": "current-0.png"},
+            {"current_image_path": "current-1.png"},
+        ],
+        state_proj=state_proj,
+        dinov3_encoder=FakeDINOEncoder(),
+    )
+
+    assert loss.item() == 0.0
+    assert metrics == {"dinov3_mse": 0.0}
+    loss.backward()
+    assert query_state.grad is not None
+    assert state_proj.weight.grad is not None
+
+
+def test_dinov3_alignment_loss_rejects_non_direct_dimension_mapping() -> None:
+    class FakeDINOEncoder:
+        hidden_size = 3
+
+        def encode_image_paths(self, paths, *, device):
+            return torch.zeros(len(paths), 3, device=device)
+
+    with torch.no_grad(), pytest.raises(ValueError, match="direct alignment requires"):
+        compute_dinov3_alignment_loss(
+            current_latent=torch.zeros(2, 4),
+            items=[{"current_image_path": "a"}, {"current_image_path": "b"}],
+            state_proj=torch.nn.Identity(),
+            dinov3_encoder=FakeDINOEncoder(),
+        )
+
+
 def test_compute_combined_loss() -> None:
     wm = torch.tensor(2.0)
+    dino = torch.tensor(4.0)
     lm = torch.tensor(3.0)
-    total, metrics = compute_combined_loss(wm_loss=wm, value_loss=None, lm_loss=lm, lambda_wm=0.5, lambda_ce=1.0)
-    assert total.item() == 4.0
-    assert metrics["total_loss"] == 4.0
+    total, metrics = compute_combined_loss(
+        wm_loss=wm,
+        dinov3_loss=dino,
+        value_loss=None,
+        lm_loss=lm,
+        lambda_wm=0.5,
+        lambda_dinov3=0.25,
+        lambda_ce=1.0,
+    )
+    assert total.item() == 5.0
+    assert metrics["total_loss"] == 5.0
+    assert metrics["dinov3_mse"] == 4.0
     assert metrics["lm_ce"] == 3.0

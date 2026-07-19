@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from nimloth.backbone.dinov3 import DEFAULT_DINOV3_MODEL
 from nimloth.latent import LATENT_QUERY_MODES, query_labels_are_masked, resolve_latent_query_mode
 from nimloth.training.common.config import apply_yaml_defaults
 
@@ -56,6 +57,24 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Optionally tune a small additive latent-query embedding adapter.",
     )
     ap.add_argument("--query-lr", type=float, default=5e-5)
+    ap.add_argument(
+        "--dinov3-align",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Directly align projected current query state to frozen DINOv3 CLS features.",
+    )
+    ap.add_argument(
+        "--dinov3-model",
+        default=DEFAULT_DINOV3_MODEL,
+        help="DINOv3 Hugging Face model ID or local checkpoint path (no fallback).",
+    )
+    ap.add_argument(
+        "--dinov3-feature",
+        choices=("cls",),
+        default="cls",
+        help="Frozen DINOv3 feature used as current-RGB alignment target.",
+    )
+    ap.add_argument("--lambda-dinov3", type=float, default=0.0)
     ap.add_argument(
         "--mask-latent-query-labels",
         action=argparse.BooleanOptionalAction,

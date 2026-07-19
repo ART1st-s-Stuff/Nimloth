@@ -271,6 +271,7 @@ def collate_cached_transition_batch(
                 "action_index": entry["action_index"],
                 "action_value_target": entry["action_value_target"],
                 "success": entry["success"],
+                "current_image_path": entry.get("current_image_path"),
                 "messages": entry.get("messages"),
                 "next_messages": entry.get("next_messages"),
             }
@@ -414,6 +415,7 @@ class CompactCachedTransitionCollator:
                     "action_index": entry["action_index"],
                     "action_value_target": entry["action_value_target"],
                     "success": entry["success"],
+                    "current_image_path": entry.get("current_image_path"),
                     "messages": entry.get("messages"),
                     "next_messages": entry.get("next_messages"),
                 }
@@ -511,6 +513,7 @@ class CachedTransitionDataset(Dataset):
             if not cache_path.is_file():
                 raise FileNotFoundError(f"missing preprocess cache: {cache_path}")
             entry = torch.load(cache_path, map_location="cpu", weights_only=True)
+        entry["current_image_path"] = sample.current_image_path
         entry["messages"] = messages_with_image_paths(
             sample.prefix_messages,
             sample.prefix_image_paths,

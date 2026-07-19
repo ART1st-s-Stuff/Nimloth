@@ -1,0 +1,98 @@
+# SFT2 — k=8 latent WM + Value head + current-RGB DINOv3 CLS alignment
+
+init:
+  sft1_checkpoint: null
+  wm_predictor_checkpoint: null
+
+data:
+  train_jsonl: train_all.jsonl
+  val_jsonl: val_all.jsonl
+  include_failed_rollouts: true
+
+tuning:
+  llm_tune: freeze
+  vision_tune: full
+  vision_ema: true
+  vision_ema_decay: 0.999
+  lora_r: 64
+  lora_alpha: 128
+
+train:
+  epochs: 10
+  # P2: per-rank batch 2 x grad_accum 4 keeps effective batch 64 on 8 GPUs.
+  # Packed-forward (--packed-forward): micro-batch = 1 trajectory (~T steps/rank);
+  # tune grad_accum so world * grad_accum * avg_T ≈ 64, or verify loss curves vs legacy.
+  batch_size: 2
+  grad_accum: 4
+  lr_qwen_start: 1.0e-8
+  lr_qwen_peak: 5.0e-7
+  state_proj_lr: 1.0e-4
+  wm_predictor_lr: 3.0e-4
+  value_head_lr: 3.0e-4
+  train_wm_predictor: true
+  max_length: 12000
+  # Full-vision H800 smoke: native 504px/grid36 prefixes OOM at 9 images.
+  # 100352 caps new 512px rollout screenshots near 308px/grid22, making a
+  # 20-image prefix comparable to the validated 9-image/grid32 workload.
+  max_pixels: 100352
+  emb_dim: 1024
+  # Full-trajectory batching (--full-trajectory-batching): each micro-batch is
+  # one complete trajectory; Qwen still forward each prefix as independent row
+  # (per-prefix semantics preserved).  Distinct from --packed-forward.
+  # Micro-batch size = trajectory length (variable).  Tune --grad-accum
+  # accordingly so effective steps match: world * grad_accum * avg_records_per_rank.
+  # Keep multi-row chunks below the validated H800 activation envelope. A
+  # single longer prefix is still emitted as a one-row batch (never dropped).
+  # --max-steps-per-trajectory provides an independent hard step ceiling.
+  full_trajectory_batching: true
+  max_images_per_batch: 12
+  max_steps_per_trajectory: 16
+  # Performance knobs: remote H800 environment has flash_attn installed; keep
+  # gradient checkpointing enabled by default for memory safety, but CLI now
+  # supports --no-gradient-checkpointing for profiling.
+  attn_implementation: flash_attention_2
+  gradient_checkpointing: true
+  checkpoint_interval_minutes: 20.0
+  # Deduplicated cache: each image processor tensor is stored once as BF16;
+  # token prefixes and image tensors are mmap-loaded from medium-size shards.
+  preprocess_cache_format: compact
+  preprocess_cache_image_dtype: bfloat16
+  preprocess_cache_image_shard_size: 128
+  preprocess_cache_transition_shard_size: 256
+  preprocess_cache_shard_lru: 2
+  preprocess_workers: 16
+  dataloader_workers: 4
+  dataloader_prefetch_factor: 2
+
+latent:
+  token_count: 8
+  query_mode: inject  # inject | generate
+  query_tune: adapter  # freeze | adapter
+  query_lr: 5.0e-5
+
+# Direct alignment: StateProjector(k query hidden) must have the same 1024-d
+# shape as the frozen DINOv3 ViT-L/16 final CLS feature. No trainable alignment
+# head and no DINOv2/model fallback are used.
+alignment:
+  dinov3_align: true
+  dinov3_model: facebook/dinov3-vitl16-pretrain-lvd1689m
+  dinov3_feature: cls
+  lambda_dinov3: 1.0
+
+loss:
+  lambda_wm_start: 0.1
+  lambda_wm_end: 1.0
+  lambda_ce: 1.0
+  lambda_value: 1.0
+  lambda_sigreg: 0.1
+  sigreg_num_proj: 1024
+  sigreg_knots: 17
+  value_rank_margin: 0.1
+  value_rank_lambda: 1.0
+  value_gamma: 1.0
+
+monitor:
+  wandb: true
+  # Offline rollout success is a fixed property of val_all.jsonl, not a model
+  # metric. Select checkpoints by held-out WM MSE until online rollout eval is wired.
+  early_stop_metric: val_wm_mse

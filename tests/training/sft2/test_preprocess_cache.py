@@ -274,6 +274,7 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     batch = collator([dataset[0], dataset[1]])
 
     current_pixels = batch["current_enc"]["pixel_values"]
+    assert [item["current_image_path"] for item in batch["items"]] == ["im0", "im1"]
     assert current_pixels.dtype == torch.bfloat16
     assert torch.equal(current_pixels, torch.cat([pixels[:2], pixels[:2], pixels[2:]], dim=0))
     next_bundle = batch["next_enc_bundle"]
