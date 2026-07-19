@@ -85,14 +85,18 @@ All root commits modify only the VAGEN gitlink. Existing unrelated `.memory/memo
 - Tests cover shuffled returns, service environment reuse, missing identity, local/service manager mapping contract and trainer use. Fixed lineage: 7 passed including image contracts; old lineage: 8 passed including source-eval contract; compileall and diff checks passed.
 - Added `validate_rollout_train120_dump.py` as an automatic post-rollout gate: exactly 120 expected keys, stable UID, matching runtime config/eval set, `metrics.success`, existing RGB images and exact size. Root rerun tooling now passes 10 tests plus shell/compile/diff checks.
 
-## Exact-seed rerun jobs (human-confirmed)
+## Exact-seed rerun completed
 
 - Final clean server root: Nimloth `b27d0e3`, fixed VAGEN `192c35a`, old VAGEN `ef851af`, both verl `65316156`. Root/VAGEN tests: 10/7/8 passed respectively.
-- Old504 A: job `481089`, W&B ID12 name `12_resprobe_identityfix_step60_train120_img504_greedy`, dgx-13, physical GPUs0/1 env +2/3/4/5 policy. Both HTTP services healthy; exact old commit and greedy args verified; rollout task started 04:26:48.
-- New252 B: job `481090`, W&B ID13 name `13_resprobe_identityfix_step60_train120_img252_greedy`, dgx-12, physical GPUs0/1 env +2/3/4/5 policy. Both HTTP services healthy; exact fixed commit and greedy args verified; rollout task started 04:24:57.
-- Each is an independent normal 6-GPU allocation with 112 CPUs/180 GiB/4h; evaluation only with frozen step60 and no optimizer. Output dirs are new and mandatory stable-identity/RGB gates are active.
+- Old504 A job `481089`: `COMPLETED 0:0` in `00:16:56` on dgx-13; W&B `aj3cfv27` finished under exact ID12 name. Stable gate passed: 120/120 exact keys, zero metadata mismatches, 2,361 RGB512 references. Success base/common/overall=`14/60`, `8/60`, `22/120=18.33%`; action validity=1.0.
+- New252 B job `481090`: `COMPLETED 0:0` in `00:15:56` on dgx-12; W&B `pc45edc4` finished under exact ID13 name. Stable gate passed: 120/120 exact keys, zero metadata mismatches, 2,365 RGB255 references. Success base/common/overall=`12/60`, `9/60`, `21/120=17.50%`; action validity=1.0.
+- Both used independent normal 6-GPU allocations, frozen step60, identical control tasks and greedy parameters. No resume/checkpoint is needed.
 
-## Pending
+## Authoritative strict comparison
 
-- Monitor both reruns to completion; require zero metadata mismatches, exact 120 `(data_source, env_seed)` keys and RGB512/RGB255 gates.
-- Compare strict seed pairs, record per-source and overall rates, flips, exact McNemar p-value, and relation to diagnostic recovery/historical 71.67%.
+- Exact seed pairing: both success=20, old-only=2, new-only=1, both failure=97.
+- Corrected B minus old A: `-1/120=-0.83` percentage points; exact two-sided McNemar `p=1.0`.
+- Per source: base `14/60→12/60` (-3.33 pp); common `8/60→9/60` (+1.67 pp).
+- Conclusion: changing only `512→504/grid36` to `255→252/grid18` does not improve success on train120. The strict effect is negligible and statistically indistinguishable, so resolution alone cannot explain the historical 71.67% versus current low train120 rates.
+- Historical `86/120` used a different held-out task set and older source runtime; its absolute difference remains non-causal. Other runtime/task-distribution differences must be investigated separately if reproducing 71.67% is still required.
+- Authoritative evidence: `paired_comparison.strict_seed_identity.json`, strict arm READMEs and `stable_identity_validation.json`. It supersedes the diagnostic runtime-identity pairing for the primary conclusion.

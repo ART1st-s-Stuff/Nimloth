@@ -38,4 +38,4 @@ rollout manager 在 reset 时保存 `env_id -> input index` 映射；trainer 通
 - 旧504路径VAGEN：`ef851af fix(validation): preserve rollout input identity`
 - 测试覆盖乱序返回、environment reuse、映射错误、local/service manager contract和trainer禁止旧zip；255 lineage为7 passed，旧504 lineage连同source eval contract为8 passed。
 
-需要精确 `(data_source, env_seed)` 证据时，仍必须用修复后的代码重跑；旧dump不能被修复代码追溯恢复seed标签。
+旧dump不能被修复代码追溯恢复seed标签。2026-07-20已用修复后代码完成严格重跑：jobs `481089/481090`均通过120个精确key、stable UID、runtime config与eval set零错配gate，证明该修复在实际service rollout和environment reuse路径生效。

@@ -14,7 +14,7 @@
 - 旧504路径A job`481071`已`COMPLETED 0:0`（00:20:22）：2,370张RGB512引用gate通过，runtime-config成功base 11/60、common 8/60、总19/120=15.83%；W&B `9l4vjc1j`。
 - 新252路径B job`481072`已`COMPLETED 0:0`（00:23:21）：2,364张RGB255引用gate通过，runtime-config成功base 13/60、common 9/60、总22/120=18.33%；W&B `8lct7arz`。两臂action validity均为1.0。
 - 发现并登记E0030：async recorder结果被按位置zip输入metadata，A/B分别有16/14行可见`config_id/eval_set`冲突。诊断性runtime-identity恢复获得both/old-only/new-only/fail=`18/1/4/97`，delta=+2.5pp，McNemar exact `p=0.375`；分辨率效果小且不显著，不能解释历史71.67%。
-- 人类确认后已启动严格重跑：旧504 A job`481089`/W&B ID12在dgx-13，新252 B job`481090`/W&B ID13在dgx-12；两者均normal 6GPU（0/1 env +2/3/4/5 policy）、HTTP健康、精确VAGEN `ef851af`/`192c35a`与greedy参数核验通过，分别于04:26:48/04:24:57开始rollout。自动gate将要求120精确keys、UID/runtime config零错配及RGB512/255。详见`ai_tasks/ai_progress/2026-07-19_rollout_resolution255.md`。
+- 严格重跑已完成且全部gate通过：旧504 A job`481089`/W&B `aj3cfv27`为22/120=18.33%，新252 B job`481090`/W&B `pc45edc4`为21/120=17.50%；两臂均120精确keys、UID/runtime config零错配、RGB512/255全量通过。exact seed pairing both/old-only/new-only/fail=`20/2/1/97`，B-A=-0.83pp，McNemar exact `p=1.0`。结论：252输入未改善train120成功率，分辨率不能解释历史71.67%；历史使用不同held-out任务和older source runtime，需另查。详见`ai_tasks/ai_progress/2026-07-19_rollout_resolution255.md`。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理
 
