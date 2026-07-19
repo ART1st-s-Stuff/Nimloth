@@ -1,0 +1,53 @@
+# 2026-07-19 hligb step10 SFT1 rollout
+
+## 任务目标
+
+使用 `/project/peilab/atst/vagen_ckpt_JUL19` 采集 SFT1 train/val rollout；rollout prompt 与该 checkpoint 原训练/eval 协议一致，后续转换阶段再转为 Nimloth 格式。
+
+## 人类已确认
+
+- 数据：base/common/long-horizon 三类，3240 train + 360 val，不采 test。
+- 协议：复现 checkpoint 原 single-action prompt/env 协议，不使用 Nimloth prompt 采集。
+- 采样：跟随该 checkpoint 已执行 eval 的参数。
+- 资源：normal 分区，最多 8 GPU（4 env + 4 policy）；先 1-record smoke，通过后启动正式任务。
+
+## 已核实的 source eval 配置
+
+- source run：`navigation_base_single_action_stable_4gpu_20260718T084000Z/global_step_10`。
+- prompt format：`grounding_worldmodeling`，单动作 `<answer>...</answer>`。
+- 生成：temperature=0.7、top_p=0.95、top_k=50、max_tokens=256、seed=0。
+- rollout：max_steps/max_turns=25、window_size=5、n=1。
+- env 默认：step_length=0.5、success_threshold=1.5、format_reward=0.5、success_reward=10、state reward disabled。
+- source eval 证据：`/home/hligb/test_lu/VAGEN-navigation-repro/scripts/superpod/run_navigation_single_action_infer_1gpu.sbatch`；有效 eval job 479904。
+
+## 当前计划
+
+1. 在独立分支为 source prompt 增加隔离的兼容 profile，不改变现有 `grounding_worldmodeling`/`source_eval_mode` 行为。
+2. 参数化 canonical SFT1 rollout wrapper：source profile、train+val only、eval sampling、25 turns/256 tokens。
+3. 添加 golden prompt 与 wrapper 静态测试并提交。
+4. 同步 clean commit 到服务器 worktree，写实验 README/metadata。
+5. 查询 normal 资源并启动 1-record smoke；验证 transcript、动作、图像、split 和 checkpoint。
+6. smoke 通过后启动正式 8-GPU rollout，按非空完整 shard 恢复并监控健康。
+
+## 工作区
+
+- 本地分支：`feat/sft1-hligb-step10-rollout`
+- 本地 worktree：`/workspace/remote2/nimloth-feat-sft1-hligb-step10-rollout`
+- 初始 Nimloth commit：`5628cc5`
+- 初始 VAGEN submodule commit：`e7cc2d0`
+
+## 已完成代码
+
+- VAGEN 新增隔离模式 `hligb_single_action_source`，精确复用 source checkout 的 system/format/init/action prompt；旧模式行为不变。
+- 新模式使用 source legacy action vocabulary，并复用原 `grounding_worldmodeling` parser。
+- SFT1 rollout wrapper 新增 `ROLLOUT_PROTOCOL=hligb_step10_eval`：25 turns、256 tokens、temperature0.7/top-p0.95/top-k50、0.5m/1.5m、format/success reward 0.5/10。
+- wrapper 新增 `ROLLOUT_INCLUDE_TEST=0`，正式任务仅采 train+val。
+- VAGEN commit：`dda9239fe67d0d3f364df2db068cd8b69212e661`（已推送 feature branch）。
+
+## 验证记录
+
+- source checkout 生成五类 prompt 的 SHA256 golden 全部逐项一致。
+- `python3 -m compileall`：通过。
+- `bash -n`：rollout/submit/env 三个脚本通过。
+- Nimloth 与 VAGEN `git diff --check`：通过。
+- 完整 pytest 待同步服务器后在项目运行环境执行。

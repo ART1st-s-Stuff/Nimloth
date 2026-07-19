@@ -47,6 +47,13 @@ SFT1_TUNE_MODE=lora bash experiments/training/sft1/submit_cache_then_train_8gpu.
 ENV_NODE=dgx-13 bash experiments/training/sft1/submit_env_external_4gpu.sh
 bash experiments/training/sft1/submit_rollouts_greedy.sh
 
+# hligb step10 source-compatible rollout profile. This keeps the checkpoint's
+# original prompt during collection; convert_rollouts.py performs the later
+# Nimloth-format conversion.
+ROLLOUT_PROTOCOL=hligb_step10_eval ROLLOUT_INCLUDE_TEST=0 \
+  INIT_HF=/project/peilab/atst/vagen_ckpt_JUL19 \
+  bash experiments/training/sft1/submit_rollouts_greedy.sh
+
 # Per-epoch eval watcher
 TRAIN_OUT=.../sft1_train_lora BASE_MODEL=.../global_step_79/actor/huggingface \
   bash experiments/training/sft1/submit_ckpt_eval_watcher.sh

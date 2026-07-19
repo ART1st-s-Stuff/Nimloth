@@ -37,12 +37,64 @@ ROLLOUT_SMOKE=${ROLLOUT_SMOKE:-0}
 ROLLOUT_SOURCE_PARITY=${ROLLOUT_SOURCE_PARITY:-0}
 ROLLOUT_SMOKE_SEED=${ROLLOUT_SMOKE_SEED:-1}
 export ROLLOUT_SMOKE_EVAL_SET=${ROLLOUT_SMOKE_EVAL_SET:-base_train}
+ROLLOUT_PROTOCOL=${ROLLOUT_PROTOCOL:-nimloth_source_eval}
+ROLLOUT_INCLUDE_TEST=${ROLLOUT_INCLUDE_TEST:-1}
+case "${ROLLOUT_PROTOCOL}" in
+  nimloth_source_eval)
+    ROLLOUT_PROMPT_FORMAT=source_eval_mode
+    ROLLOUT_ACTION_SEP='|'
+    ROLLOUT_MAX_TURNS=20
+    ROLLOUT_MAX_TOKENS_PER_TURN=512
+    ROLLOUT_DATA_MAX_RESPONSE_LENGTH=20000
+    ROLLOUT_MAX_PROMPT_LENGTH=3000
+    ROLLOUT_MAX_TRAJECTORY_LENGTH=23000
+    ROLLOUT_WINDOW_SIZE=5
+    ROLLOUT_DO_SAMPLE=False
+    ROLLOUT_TEMPERATURE=0
+    ROLLOUT_TOP_P=1.0
+    ROLLOUT_TOP_K=-1
+    ROLLOUT_STEP_LENGTH=0.3
+    ROLLOUT_SUCCESS_THRESHOLD=1.0
+    ROLLOUT_FORMAT_REWARD=0.0
+    ROLLOUT_PER_TURN_FORMAT_REWARD=0.01
+    ROLLOUT_SUCCESS_REWARD=1.0
+    ROLLOUT_AGENT_NUM_WORKERS_DEFAULT=4
+    ROLLOUT_GPU_MEMORY_UTILIZATION=0.6
+    ;;
+  hligb_step10_eval)
+    ROLLOUT_PROMPT_FORMAT=hligb_single_action_source
+    ROLLOUT_ACTION_SEP=','
+    ROLLOUT_MAX_TURNS=25
+    ROLLOUT_MAX_TOKENS_PER_TURN=256
+    ROLLOUT_DATA_MAX_RESPONSE_LENGTH=256
+    ROLLOUT_MAX_PROMPT_LENGTH=1024
+    ROLLOUT_MAX_TRAJECTORY_LENGTH=12000
+    ROLLOUT_WINDOW_SIZE=5
+    ROLLOUT_DO_SAMPLE=True
+    ROLLOUT_TEMPERATURE=0.7
+    ROLLOUT_TOP_P=0.95
+    ROLLOUT_TOP_K=50
+    ROLLOUT_STEP_LENGTH=0.5
+    ROLLOUT_SUCCESS_THRESHOLD=1.5
+    ROLLOUT_FORMAT_REWARD=0.5
+    ROLLOUT_PER_TURN_FORMAT_REWARD=0.0
+    ROLLOUT_SUCCESS_REWARD=10.0
+    ROLLOUT_AGENT_NUM_WORKERS_DEFAULT=8
+    ROLLOUT_GPU_MEMORY_UTILIZATION=0.75
+    ;;
+  *)
+    echo "ERROR unknown ROLLOUT_PROTOCOL=${ROLLOUT_PROTOCOL}" >&2
+    exit 2
+    ;;
+esac
+export ROLLOUT_PROMPT_FORMAT ROLLOUT_ACTION_SEP ROLLOUT_STEP_LENGTH ROLLOUT_SUCCESS_THRESHOLD
+export ROLLOUT_FORMAT_REWARD ROLLOUT_PER_TURN_FORMAT_REWARD ROLLOUT_SUCCESS_REWARD
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-24}
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-24}
 # Match source step60 rollout orchestration values. In this pinned legacy path,
 # max_workers controls environment RPC concurrency; policy topology is set by
 # POLICY_GPU_COUNT.
-AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-4}
+AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-${ROLLOUT_AGENT_NUM_WORKERS_DEFAULT}}
 AGENT_MAX_CONCURRENT_TRAJECTORIES=${AGENT_MAX_CONCURRENT_TRAJECTORIES:-6}
 VAL_N=${VAL_N:-1}
 if [ "${ROLLOUT_SMOKE}" = "1" ]; then
@@ -389,15 +441,15 @@ for data_source, eval_set in selected_specs:
                     "env_name": "navigation",
                     "env_config": {
                         "eval_set": eval_set,
-                        "prompt_format": "source_eval_mode",
+                        "prompt_format": __import__("os").environ["ROLLOUT_PROMPT_FORMAT"],
                         "max_actions_per_step": 1,
-                        "action_sep": "|",
+                        "action_sep": __import__("os").environ["ROLLOUT_ACTION_SEP"],
                         "example_count": 0,
-                        "step_length": 0.3,
-                        "success_threshold": 1.0,
-                        "format_reward": 0.0,
-                        "per_turn_format_reward": 0.01,
-                        "success_reward": 1.0,
+                        "step_length": float(__import__("os").environ["ROLLOUT_STEP_LENGTH"]),
+                        "success_threshold": float(__import__("os").environ["ROLLOUT_SUCCESS_THRESHOLD"]),
+                        "format_reward": float(__import__("os").environ["ROLLOUT_FORMAT_REWARD"]),
+                        "per_turn_format_reward": float(__import__("os").environ["ROLLOUT_PER_TURN_FORMAT_REWARD"]),
+                        "success_reward": float(__import__("os").environ["ROLLOUT_SUCCESS_REWARD"]),
                     },
                     "seed": seed,
                 },
@@ -438,9 +490,9 @@ run_shard() {
       data.val_files='${val_parquet}' \
       data.train_batch_size=${TRAIN_BATCH_SIZE} \
       data.val_batch_size=${VAL_BATCH_SIZE} \
-      data.max_prompt_length=3000 \
-      data.max_response_length=20000 \
-      data.max_trajectory_length=23000 \
+      data.max_prompt_length=${ROLLOUT_MAX_PROMPT_LENGTH} \
+      data.max_response_length=${ROLLOUT_DATA_MAX_RESPONSE_LENGTH} \
+      data.max_trajectory_length=${ROLLOUT_MAX_TRAJECTORY_LENGTH} \
       data.truncation=left \
       algorithm.adv_estimator=reinforce_plus_plus \
       algorithm.kl_ctrl.kl_coef=0.0 \
@@ -464,19 +516,21 @@ run_shard() {
       actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
       actor_rollout_ref.rollout.name=vllm \
       actor_rollout_ref.rollout.n=1 \
-      actor_rollout_ref.rollout.do_sample=False \
-      actor_rollout_ref.rollout.temperature=0 \
+      actor_rollout_ref.rollout.do_sample=${ROLLOUT_DO_SAMPLE} \
+      actor_rollout_ref.rollout.temperature=${ROLLOUT_TEMPERATURE} \
+      actor_rollout_ref.rollout.top_p=${ROLLOUT_TOP_P} \
+      actor_rollout_ref.rollout.top_k=${ROLLOUT_TOP_K} \
       +actor_rollout_ref.rollout.val_kwargs.n=${VAL_N} \
-      +actor_rollout_ref.rollout.val_kwargs.do_sample=False \
-      +actor_rollout_ref.rollout.val_kwargs.temperature=0 \
-      +actor_rollout_ref.rollout.val_kwargs.top_p=1.0 \
-      +actor_rollout_ref.rollout.val_kwargs.top_k=-1 \
+      +actor_rollout_ref.rollout.val_kwargs.do_sample=${ROLLOUT_DO_SAMPLE} \
+      +actor_rollout_ref.rollout.val_kwargs.temperature=${ROLLOUT_TEMPERATURE} \
+      +actor_rollout_ref.rollout.val_kwargs.top_p=${ROLLOUT_TOP_P} \
+      +actor_rollout_ref.rollout.val_kwargs.top_k=${ROLLOUT_TOP_K} \
       actor_rollout_ref.rollout.max_num_batched_tokens=24000 \
-      actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+      actor_rollout_ref.rollout.gpu_memory_utilization=${ROLLOUT_GPU_MEMORY_UTILIZATION} \
       actor_rollout_ref.rollout.enforce_eager=True \
       actor_rollout_ref.rollout.free_cache_engine=True \
       actor_rollout_ref.rollout.enable_chunked_prefill=True \
-      actor_rollout_ref.rollout.max_response_per_turn=512 \
+      actor_rollout_ref.rollout.max_response_per_turn=${ROLLOUT_MAX_TOKENS_PER_TURN} \
       actor_rollout_ref.rollout.disable_log_stats=False \
       +actor_rollout_ref.ref.use_ref=False \
       actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
@@ -495,8 +549,9 @@ run_shard() {
       trainer.total_epochs=1 \
       trainer.total_training_steps=1 \
       trainer.resume_mode=disable \
-      rollout_manager.max_turns=20 \
-      rollout_manager.max_trajectory_length=23000 \
+      rollout_manager.max_turns=${ROLLOUT_MAX_TURNS} \
+      rollout_manager.max_trajectory_length=${ROLLOUT_MAX_TRAJECTORY_LENGTH} \
+      rollout_manager.window_size=${ROLLOUT_WINDOW_SIZE} \
       rollout_manager.n_trajectory=1 \
       rollout_manager.use_service=True \
       rollout_manager.base_url='${service_base_url}' \
@@ -527,7 +582,8 @@ main() {
   echo "=== ${EXPERIMENT_NAME} array_task=${SLURM_ARRAY_TASK_ID} job=${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} node=${SLURM_JOB_NODELIST} ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   echo "MODEL_PATH=${MODEL_PATH}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   echo "SOURCE_CHECKPOINT_STEP=${CHECKPOINT_STEP} ROLLOUT_DUMP_STEP=${ROLLOUT_DUMP_STEP}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
-  echo "Eval-consistent: greedy do_sample=False temperature=0 n=${VAL_N}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  echo "ROLLOUT_PROTOCOL=${ROLLOUT_PROTOCOL} prompt=${ROLLOUT_PROMPT_FORMAT} turns=${ROLLOUT_MAX_TURNS} tokens_per_turn=${ROLLOUT_MAX_TOKENS_PER_TURN}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  echo "Eval-consistent: do_sample=${ROLLOUT_DO_SAMPLE} temperature=${ROLLOUT_TEMPERATURE} top_p=${ROLLOUT_TOP_P} top_k=${ROLLOUT_TOP_K} n=${VAL_N}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   if [ ! -d "${MODEL_PATH}" ]; then
     echo "ERROR missing model ${MODEL_PATH}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
     exit 3
@@ -594,9 +650,11 @@ main() {
         printf -v shard_name 'shard_%03d_%03d' "${seed_start}" "${seed_end}"
         run_shard val "${shard_name}" "${seed_start}" "${seed_end}"
       done
-      run_shard test shard_001_024 1 24
-      run_shard test shard_025_048 25 48
-      run_shard test shard_049_060 49 60
+      if [ "${ROLLOUT_INCLUDE_TEST}" = "1" ]; then
+        run_shard test shard_001_024 1 24
+        run_shard test shard_025_048 25 48
+        run_shard test shard_049_060 49 60
+      fi
       ;;
     *)
       echo "unknown array task ${SLURM_ARRAY_TASK_ID}" >&2
