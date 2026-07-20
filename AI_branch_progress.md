@@ -11,11 +11,11 @@
 - 草案明确保留两阶段 FSDP 安全边界，并禁止将 WM planner 动作伪装成 Qwen behavior data 进入 PPO ratio。
 - 已创建本地 worktree `/workspace/remote2/nimloth-feat-rl-kgt1-wm-multiaction`，分支 `feat/rl-kgt1-wm-multiaction`；未启动 smoke 或提交服务器任务。
 - 人类已确认连续动作语义：fast-path segment 从 Qwen GT state 开始，segment 内持续使用 WM predicted state，结束后再从当前真实 observation 经 Qwen 重同步；首期 planner 只做 greedy。
-- 人类进一步确认首期 k>1 仅支持 `inject`；rollout 保留独立 `qwen` policy 做现有 PPO，新增 `wm_value` policy 只训练 WM dynamics 与 ValueHead、禁止进入 Qwen PPO。两个 horizon 配置化并以2作为本地 correctness 默认；本次不启动 smoke或服务器任务。
-- 本地已实现 metadata-driven k/token/projector/checkpoint、`qwen|wm_value` rollout、连续 WM predicted segment、真实 behavior-logprob ownership、多步 dynamics window/mask，以及 predicted behavior state 上的 ValueHead训练。旧 JSONL 无明确 sampling-distribution 语义时仍可训练 WM/value，但自动排除 Qwen PPO。
-- 本地 Nix 环境验证：RL/WM/latent相关测试 `70 passed, 1 expected warning`；targeted ruff、py_compile与diff-check通过。
+- 人类最终确认首期k>1仅支持`inject`，正式rollout使用`qwen_wm` hybrid segment：首步Qwen从GT state真实采样，ValueHead作critic并以`A=G-Q(s,a)`做clipped PPO；后续step用连续WM predicted state+greedy ValueHead且不进入PPO。训练Qwen language full、WM predictor、ValueHead，冻结vision与StateProjector。
+- 本地已实现metadata-driven k/token/projector/checkpoint、`qwen|wm_value|qwen_wm` rollout、连续WM predicted segment、真实behavior-logprob ownership、多步dynamics window/mask，以及predicted behavior state上的ValueHead训练。旧JSONL无明确sampling-distribution语义时仍可训练WM/value，但自动排除Qwen PPO。
+- 最终hybrid实现本地Nix验证：RL/WM/latent相关测试`74 passed, 1 expected warning`；targeted ruff、py_compile、bash syntax与diff-check通过。
 - 人类随后允许最小真实服务器 smoke；首次 SSH preflight 因 forwarding timeout停止，恢复连接后已核实：正式 k8 SFT2 epoch2/step2912 checkpoint完整且metadata为k8/inject/hidden2048/projector16384；ENV worktree `b21ae10`/VAGEN `bb26c0d` 的`base_train`为1200-task训练集，seeds1..4由实际loader确定选择训练任务；W&B `nimloth-rl`下一ID=63；normal现有充足2GPU资源。
-- 已准备独立 smoke config/runner/Slurm wrapper，计划2×H800、48CPU、180G、2h上限（预计8–15分钟、60–100GiB），执行4×2 WM/value rollout→FSDP step1→新进程same-world resume step2。尚未reserve W&B、创建远程输出或提交job；真实结果仍未验证。详见`ai_tasks/ai_progress/2026-07-20_rl_kgt1_wm_multiaction.md`。
+- 初版纯`wm_value` smoke方案因不训练Qwen被人类否决，且未reserve W&B/创建输出/提交job。已完成最终`Qwen首步→WM/value后续`实现与smoke runner：目标W&B/输出ID63同名`63_smoke_k8inject_qwenfirst_wmsecond_base4x2_h2_multistep2_fsdp2_iter2`；资源仍为2×H800、48CPU、180G、2h上限（预计8–15分钟、60–100GiB）。尚未reserve/create/submit，待修订方案最终确认。详见`ai_tasks/ai_progress/2026-07-20_rl_kgt1_wm_multiaction.md`。
 
 ## 2026-07-19：rollout图像分辨率纠正
 

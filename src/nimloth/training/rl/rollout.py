@@ -103,6 +103,19 @@ class WMValueFastPathController:
         self._state: torch.Tensor | None = None
         self._step = 0
 
+    @property
+    def needs_sync(self) -> bool:
+        return self._state is None
+
+    def start_segment(self, qwen_gt_state: torch.Tensor) -> None:
+        if qwen_gt_state.ndim != 2 or qwen_gt_state.shape[0] != 1:
+            raise ValueError(
+                "qwen_gt_state must have shape (1, emb_dim), got "
+                f"{tuple(qwen_gt_state.shape)}"
+            )
+        self._state = qwen_gt_state.detach()
+        self._step = 0
+
     @torch.no_grad()
     def select_action(self, observation: Any) -> WMActionDecision:
         if self._state is None:
@@ -351,14 +364,17 @@ class EnvRolloutCollector:
                 "training rollout requires *_train datasets; "
                 f"got eval_sets={eval_sets}"
             )
-        if rollout_policy not in ("qwen", "wm_value"):
-            raise ValueError(f"rollout_policy must be qwen or wm_value, got {rollout_policy!r}")
+        if rollout_policy not in ("qwen", "wm_value", "qwen_wm"):
+            raise ValueError(
+                "rollout_policy must be qwen, wm_value, or qwen_wm, "
+                f"got {rollout_policy!r}"
+            )
         if latent_token_count < 1 or latent_query_mode != "inject":
             raise ValueError(
                 "EnvRolloutCollector requires a positive-k inject protocol, got "
                 f"k={latent_token_count}, mode={latent_query_mode!r}"
             )
-        if rollout_policy == "wm_value":
+        if rollout_policy in ("wm_value", "qwen_wm"):
             missing = [
                 name
                 for name, module in (
@@ -369,9 +385,9 @@ class EnvRolloutCollector:
                 if module is None
             ]
             if missing:
-                raise ValueError(f"wm_value rollout requires {', '.join(missing)}")
+                raise ValueError(f"WM rollout requires {', '.join(missing)}")
             if fast_path_horizon < 1:
-                raise ValueError("wm_value fast_path_horizon must be positive")
+                raise ValueError("WM fast_path_horizon must be positive")
         self._model = qwen_model
         self._processor = processor
         self._env_url = env_url.rstrip("/")
@@ -506,7 +522,7 @@ class EnvRolloutCollector:
             step_rewards: list[float] = []
             success = False
             wm_controller: WMValueFastPathController | None = None
-            if self._rollout_policy == "wm_value":
+            if self._rollout_policy in ("wm_value", "qwen_wm"):
                 wm_controller = WMValueFastPathController(
                     encode_state=lambda image: _encode_wm_state_nimloth(
                         self._model,
@@ -543,8 +559,18 @@ class EnvRolloutCollector:
 
                 # --- behavior-policy action selection ---
                 try:
-                    if self._rollout_policy == "qwen":
-                        action_name, action_idx, log_probs_list = _select_action_nimloth(
+                    qwen_step = self._rollout_policy == "qwen" or (
+                        self._rollout_policy == "qwen_wm"
+                        and wm_controller is not None
+                        and wm_controller.needs_sync
+                    )
+                    if qwen_step:
+                        (
+                            action_name,
+                            action_idx,
+                            log_probs_list,
+                            qwen_wm_state,
+                        ) = _select_action_nimloth(
                             self._model,
                             self._processor,
                             img,
@@ -554,7 +580,18 @@ class EnvRolloutCollector:
                             top_p=self._top_p,
                             latent_token_count=self._latent_token_count,
                             observation_history=observation_images,
+                            state_proj=(
+                                self._state_proj
+                                if self._rollout_policy == "qwen_wm"
+                                else None
+                            ),
                         )
+                        if self._rollout_policy == "qwen_wm":
+                            if qwen_wm_state is None or wm_controller is None:
+                                raise RuntimeError(
+                                    "hybrid Qwen step did not produce a WM state"
+                                )
+                            wm_controller.start_segment(qwen_wm_state)
                         policy_source = "qwen"
                         state_source = "qwen_gt"
                         fast_path_step = 0
@@ -656,7 +693,9 @@ class EnvRolloutCollector:
                 fast_path_steps=fast_path_steps,
                 rollout_policy=self._rollout_policy,
                 fast_path_horizon=(
-                    self._fast_path_horizon if self._rollout_policy == "wm_value" else 0
+                    self._fast_path_horizon
+                    if self._rollout_policy in ("wm_value", "qwen_wm")
+                    else 0
                 ),
                 latent_token_count=self._latent_token_count,
                 latent_query_mode=self._latent_query_mode,
@@ -664,7 +703,7 @@ class EnvRolloutCollector:
                 action_top_p=self._top_p,
                 action_log_prob_semantics=(
                     "sampling_distribution_v1"
-                    if self._rollout_policy == "qwen"
+                    if self._rollout_policy in ("qwen", "qwen_wm")
                     else None
                 ),
                 nav_instruction=nav_instruction,
@@ -893,7 +932,9 @@ def _select_action_nimloth(model, processor, image, nav_instruction: str,
                            top_p: float = 1.0,
                            *,
                            latent_token_count: int = 1,
-                           observation_history: list[Any] | None = None) -> tuple[str, int, list[float | None]]:
+                           observation_history: list[Any] | None = None,
+                           state_proj: Any = None,
+                           ) -> tuple[str, int, list[float | None], torch.Tensor | None]:
     """Sampled action selection using Nimloth action tokens.
 
     The SFT2 model was trained with ``<|action_(0)|>`` … ``<|action_(7)|>``
@@ -901,11 +942,17 @@ def _select_action_nimloth(model, processor, image, nav_instruction: str,
     ``<|action_start|>``), run Qwen forward, and extract the logits at
     ``<|action_start|>``.  Sampling with temperature + nucleus (top-p).
 
-    Returns (action_name, action_index, action_log_probs) where
-    action_log_probs is the log-softmax over all 8 actions.
+    Returns action name/index, behavior log-probs, and optionally the projected
+    k-query state from the same Qwen forward.
     """
     import torch
-    from nimloth.latent.extraction import LatentActionTokens, special_token_ids
+    from nimloth.latent.extraction import (
+        LatentActionTokens,
+        extract_latent_state_block,
+        find_last_latent_state_block,
+        last_hidden_state,
+        special_token_ids,
+    )
 
     tokens = LatentActionTokens()
     token_ids = special_token_ids(
@@ -950,9 +997,21 @@ def _select_action_nimloth(model, processor, image, nav_instruction: str,
     else:
         chosen_idx = int(action_logits.argmax().item())
 
+    qwen_wm_state = None
+    if state_proj is not None:
+        latent_block = find_last_latent_state_block(
+            input_ids,
+            token_ids,
+            tokens,
+            latent_token_count=latent_token_count,
+        )
+        hidden = last_hidden_state(outputs)
+        latent = extract_latent_state_block(hidden[0:1], latent_block).unsqueeze(0)
+        qwen_wm_state = state_proj(latent).float().detach()
+
     serialized_log_probs = serialize_action_log_probs(action_log_probs)
     best_name = ACTION_NAMES[chosen_idx]
-    return best_name, chosen_idx, serialized_log_probs
+    return best_name, chosen_idx, serialized_log_probs, qwen_wm_state
 
 
 def _build_vagen_messages(nav_instruction: str, num_steps: int,

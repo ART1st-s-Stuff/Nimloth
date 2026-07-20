@@ -55,11 +55,13 @@
 
 WM planner 产生的动作不是 Qwen rollout policy 的采样结果。不得把这些动作配上 Qwen 的 log-prob 后直接进入当前 PPO ratio，否则 `old_log_prob` 不代表真实行为策略。
 
-人类已确认首期采用两个明确的 rollout policy：
+人类最终确认正式 fast-path RL 使用 hybrid `policy=qwen_wm`：
 
-- `policy=qwen`：动作由 Qwen 行为策略采样，保留现有 Qwen PPO，并同时训练 WM dynamics 与 ValueHead；
-- `policy=wm_value`：动作由 deterministic greedy ValueHead 产生，只训练 WM dynamics 与 ValueHead，禁止进入 Qwen PPO actor loss；
-- 如果未来要对 WM planner 做 policy-gradient，必须先定义真实的随机行为分布并记录对应 behavior log-prob，作为单独任务实现。
+- 每个 segment 的首步从 Qwen GT k-query state 出发，由 Qwen 行为策略真实采样动作并记录 behavior log-prob；
+- ValueHead 对 Qwen step 提供 critic，使用标准 advantage `A=G-Q(s,a)` 进入 clipped PPO；
+- segment 后续 step 由 deterministic greedy ValueHead 在连续 WM predicted state 上产生，不进入 Qwen PPO；
+- WM dynamics 与 ValueHead 使用 segment 的全部 step；训练 Qwen language full、WM predictor和ValueHead，冻结vision与StateProjector；
+- 保留纯 `qwen`/纯 `wm_value` 模式用于对照，但正式配置使用 `qwen_wm`。
 
 ### 4.3 多步 dynamics 必须使用连续 trajectory window
 
@@ -198,6 +200,7 @@ bash -n experiments/training/rl/*.sh experiments/training/rl/*.slurm
 
 1. **已确认**：k>1 首期只支持 `inject`；`generate` 不在本次范围。
 2. **已确认**：fast path 从 Qwen GT state 开始，segment 内连续使用 WM predicted state；segment 结束后从当前真实 observation 经 Qwen 重新取得 GT state。
-3. **已确认**：保留独立 `qwen` policy 做现有 PPO；新增 `wm_value` policy，只训练 WM dynamics 与 ValueHead，不做 Qwen PPO。
-4. `fast_path_horizon` 与 multi-step loss horizon 均配置化；首期默认 2，仅做本地 correctness tests，本次不启动 smoke。
-5. **已确认**：首期 planner 只支持 greedy，beam search 不在本次范围。
+3. **已确认**：正式使用 `qwen_wm` hybrid segment；首步Qwen sampled action以`A=G-Q(s,a)`做合法PPO，后续WM/value action不进入PPO；全部step训练WM/value。
+4. **已确认**：Qwen language full、WM predictor、ValueHead可训练；vision与StateProjector冻结。
+5. `fast_path_horizon` 与 multi-step loss horizon 均配置化；首期默认2。
+6. **已确认**：WM planner只使用greedy，beam search不在本次范围。

@@ -34,7 +34,7 @@ value_head:
 # --- Direct environment rollout ---
 # The connected env server must actually provide these training datasets.
 rollout:
-  policy: qwen            # qwen | wm_value
+  policy: qwen            # qwen | wm_value | qwen_wm
   eval_sets:
     - base_train
     - common_sense_train

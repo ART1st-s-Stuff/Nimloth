@@ -7,10 +7,10 @@
 在本地 feature worktree 中实现：
 
 1. RL 全链路 metadata-driven `k>1 + inject`，保留 k=1；
-2. 独立 `qwen | wm_value` rollout policy；
-3. `wm_value` 从 Qwen GT state 开始，segment 内连续使用 WM predicted state + greedy ValueHead，segment 结束后从真实 observation 重同步；
-4. 连续 trajectory window 的多步 dynamics loss；
-5. WM policy transition 不进入 Qwen PPO。
+2. `qwen | wm_value | qwen_wm` rollout policy；正式RL使用`qwen_wm`；
+3. hybrid segment首步由Qwen从GT state采样并记录behavior log-prob，后续step连续使用WM predicted state + greedy ValueHead，结束后从真实observation重同步；
+4. Qwen step以ValueHead为critic、使用标准`A=G-Q(s,a)` clipped PPO；WM step不进入Qwen PPO；
+5. 连续trajectory window的多步dynamics loss，全部step训练WM predictor与ValueHead。
 
 ## 人类边界
 
@@ -33,9 +33,9 @@
 ## 已完成
 
 - 创建新 worktree/branch；未启动实验。
-- 人类确认 inject-only、greedy、连续 WM predicted segment 和 Qwen/WM policy ownership。
-- RL protocol 改为从 checkpoint metadata 读取任意正整数 k，并全链路使用完整 inject query block、显式 token IDs 和 k-aware StateProjector。
-- 新增 `qwen | wm_value` rollout policy。`wm_value` 在 segment 内只递归使用 predictor state，达到 horizon 后从真实 observation 经 Qwen 重同步。
+- 人类确认inject-only、greedy及hybrid ownership：segment首步Qwen sampled action做标准advantage PPO，后续WM/value action不做PPO；Qwen language full、WM predictor、ValueHead训练，vision与StateProjector冻结。
+- RL protocol改为从checkpoint metadata读取任意正整数k，并全链路使用完整inject query block、显式token IDs和k-aware StateProjector。
+- 新增`qwen | wm_value | qwen_wm` rollout policy。正式`qwen_wm`在Qwen首步后递归使用predictor state，达到horizon后从真实observation经Qwen重同步。
 - JSONL 新增 policy/state/fast-step/protocol/behavior-logprob metadata；WM action 不保存伪造 Qwen log-prob。
 - Qwen rollout 与 PPO forward 共用同一 prompt 和真实 observation history；temperature/top-p 后的实际采样分布用于 old/new log-prob。旧 JSONL 无语义版本时自动排除出 PPO。
 - 新增连续 trajectory window 的递归多步 dynamics loss，并用 mask 处理短 window。
@@ -57,7 +57,7 @@
 
 - RED 已确认：首批新测试因缺少 k>1/fast-path/multi-step/PPO ownership API，collection 4 errors。
 - 本地 Nix Python 3.13 环境提供 torch/pytest/einops/transformers 等依赖。
-- `PYTHONPATH=src:. python -m pytest -q tests/training/rl tests/test_wm_predictor_rollout.py tests/test_wm_planning.py tests/test_latent_extraction.py`：`70 passed, 1 expected warning`。
+- 最终hybrid改动后，`PYTHONPATH=src:. python -m pytest -q tests/training/rl tests/test_wm_predictor_rollout.py tests/test_wm_planning.py tests/test_latent_extraction.py`：`74 passed, 1 expected warning`。
 - `ruff check src/nimloth/training/rl experiments/training/rl/rollout_env.py tests/training/rl`：通过。
 - `python -m py_compile ...` 与 `git diff --check`：通过。
 - 按人类要求未运行 smoke，未提交服务器任务。
@@ -71,8 +71,10 @@
   - ENV worktree root=`b21ae10`、VAGEN=`bb26c0d`；`base_train.json` 含 `tasks` 1200条，loader读取该列表并以 `seed % 1200` 选任务，因此 seeds1..4 是明确训练数据。
   - W&B `nimloth-rl` 已有 numeric IDs 到62，下一 ID=63。
   - normal 当前有42张空闲GPU，多个单节点可提供2GPU。
-- 已准备独立 k8 WM fast-path smoke config、runner 与 Slurm wrapper；尚未 reserve W&B run、创建远程输出或提交 job。
-- 拟用2×H800、48CPU、180G、2h上限；预计实际8–15分钟，输出约60–100GiB。step1完整保存后由新 torchrun 以相同world-size恢复到step2。
+- 初版纯`wm_value` smoke方案被人类否决，因为没有训练Qwen；未reserve W&B、未创建输出、未提交job。
+- 已按最终设计实现并本地验证`qwen_wm`：每条2-step segment为`Qwen sampled step → WM/value step`，同一次Qwen forward同时给出行为log-prob和GT k-query state；Qwen language full与WM/value联合更新，vision/StateProjector冻结。
+- 修订后的目标输出=`outputs/experiments/training/rl/2026-07-20/63_smoke_k8inject_qwenfirst_wmsecond_base4x2_h2_multistep2_fsdp2_iter2`，W&B run同名；尚未reserve/create/submit。
+- 资源计划仍为2×H800、48CPU、180G、2h上限；预计实际8–15分钟，输出约60–100GiB。step1完整保存后由新torchrun以相同world-size恢复到step2。
 
 ## 待确认/风险
 

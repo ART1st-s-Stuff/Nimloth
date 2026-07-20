@@ -41,7 +41,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--seed-offset", type=int, default=1)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.95)
-    ap.add_argument("--policy", choices=("qwen", "wm_value"), default="qwen")
+    ap.add_argument(
+        "--policy", choices=("qwen", "wm_value", "qwen_wm"), default="qwen"
+    )
     ap.add_argument(
         "--wm-checkpoint",
         type=Path,
@@ -178,6 +180,33 @@ def validate_trajectories(records) -> None:
                         f"trajectory {record.record_id} step {step} has invalid fast-path "
                         f"metadata: state={state_source}, fast_step={fast_step}"
                     )
+        elif record.rollout_policy == "qwen_wm":
+            if record.fast_path_horizon < 2:
+                raise RuntimeError(
+                    f"trajectory {record.record_id} qwen_wm horizon must be at least 2"
+                )
+            if record.action_log_prob_semantics != "sampling_distribution_v1":
+                raise RuntimeError(
+                    f"trajectory {record.record_id} lacks exact Qwen behavior-logprob semantics"
+                )
+            for step, (source, state_source, fast_step) in enumerate(
+                zip(sources, state_sources, fast_steps, strict=True)
+            ):
+                expected_fast_step = step % record.fast_path_horizon
+                expected_source = "qwen" if expected_fast_step == 0 else "wm_value"
+                expected_state_source = (
+                    "qwen_gt" if expected_fast_step == 0 else "wm_predicted"
+                )
+                if (
+                    source != expected_source
+                    or state_source != expected_state_source
+                    or fast_step != expected_fast_step
+                ):
+                    raise RuntimeError(
+                        f"trajectory {record.record_id} step {step} has invalid hybrid "
+                        f"metadata: policy={source}, state={state_source}, "
+                        f"fast_step={fast_step}"
+                    )
         elif record.rollout_policy == "qwen":
             if record.action_log_prob_semantics != "sampling_distribution_v1":
                 raise RuntimeError(
@@ -241,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         args.model, args.attn_implementation, args.max_pixels
     )
     state_proj = predictor = value_head = None
-    if args.policy == "wm_value":
+    if args.policy in ("wm_value", "qwen_wm"):
         checkpoint = args.wm_checkpoint or args.model
         state_proj, predictor, value_head = load_wm_modules(
             checkpoint,

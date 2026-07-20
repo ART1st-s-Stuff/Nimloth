@@ -40,11 +40,11 @@ python -m experiments.training.rl.rollout_env \
   --eval-set base_train \
   --split train
 
-# WM+ValueHead greedy fast path（不生成/伪造 Qwen log-prob）
+# Qwen-first / WM-second hybrid fast path
 python -m experiments.training.rl.rollout_env \
   --model /path/to/sft2/checkpoint \
   --wm-checkpoint /path/to/sft2/checkpoint \
-  --policy wm_value \
+  --policy qwen_wm \
   --fast-path-horizon 2 \
   --env-url http://127.0.0.1:5000 \
   --output-dir outputs/rollouts/wm_batch_001 \
@@ -61,7 +61,7 @@ python -m nimloth.training.rl.cli \
   --output-dir outputs/experiments/training/rl/test
 ```
 
-`--jsonl-sources` 接受一个或多个 JSONL 文件或目录（目录下递归搜索 `*.jsonl` / `*.jsonl.gz`）。也可以在 config 中设置 `rollout.jsonl_sources`。训练时轮转消费所有轨迹；数据耗尽时自动回到开头（loop）。每个 transition 保存 `policy_source`、`state_source`、fast-path step 及 inject/k metadata；只有 `policy_source=qwen`、`action_log_prob_semantics=sampling_distribution_v1` 且存在真实 behavior log-prob 的 row 可进入 Qwen PPO。旧 JSONL 没有该语义标记时仍可训练 WM/value，但会从 Qwen PPO 自动排除。
+`--jsonl-sources` 接受一个或多个 JSONL 文件或目录（目录下递归搜索 `*.jsonl` / `*.jsonl.gz`）。也可以在 config 中设置 `rollout.jsonl_sources`。训练时轮转消费所有轨迹；数据耗尽时自动回到开头（loop）。每个 transition 保存 `policy_source`、`state_source`、fast-path step 及 inject/k metadata。`qwen_wm`中只有每段首个`policy_source=qwen`、具备`sampling_distribution_v1`真实behavior log-prob的step进入Qwen PPO；后续`wm_value` step只训练WM dynamics与ValueHead。旧 JSONL 没有该语义标记时仍可训练 WM/value，但会从 Qwen PPO 自动排除。
 
 ### 分布式安全说明
 

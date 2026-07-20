@@ -504,11 +504,14 @@ def train_rl(
     latent_token_count = int(getattr(args, "latent_token_count", 1))
     latent_query_mode = str(getattr(args, "latent_query_mode", "inject"))
     rollout_policy = str(rollout_cfg.get("policy", "qwen"))
-    if rollout_policy not in ("qwen", "wm_value"):
-        raise ValueError(f"rollout.policy must be qwen or wm_value, got {rollout_policy!r}")
+    if rollout_policy not in ("qwen", "wm_value", "qwen_wm"):
+        raise ValueError(
+            "rollout.policy must be qwen, wm_value, or qwen_wm, "
+            f"got {rollout_policy!r}"
+        )
     fast_path_horizon = (
         int(rollout_cfg.get("fast_path_horizon", 2))
-        if rollout_policy == "wm_value"
+        if rollout_policy in ("wm_value", "qwen_wm")
         else 0
     )
     vh_lr: float = float(vh_cfg.get("lr", 1e-3))

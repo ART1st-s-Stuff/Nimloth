@@ -83,6 +83,56 @@ def test_build_transitions_preserves_contiguous_k8_windows(monkeypatch) -> None:
     assert torch.equal(behavior_states[2], torch.full((16,), 2.0))
 
 
+def test_hybrid_transition_batch_trains_qwen_only_on_segment_first_step(monkeypatch) -> None:
+    trajectory = RolloutTrajectory(
+        record_id="hybrid-k8",
+        image_paths=["0.png", "1.png", "2.png"],
+        action_indices=[1, 2],
+        action_names=["moveback", "moveright"],
+        action_log_probs=[[-0.5] * 8, None],
+        policy_sources=["qwen", "wm_value"],
+        state_sources=["qwen_gt", "wm_predicted"],
+        fast_path_steps=[0, 1],
+        rollout_policy="qwen_wm",
+        fast_path_horizon=2,
+        latent_token_count=8,
+        latent_query_mode="inject",
+        action_log_prob_semantics="sampling_distribution_v1",
+        nav_instruction="Find the couch.",
+        reward=10.0,
+    )
+    hiddens = [torch.full((8, 2), float(step)) for step in range(3)]
+    monkeypatch.setattr(
+        trainer,
+        "encode_trajectory_hiddens",
+        lambda *args, **kwargs: hiddens,
+    )
+
+    transitions = trainer.build_rl_transitions(
+        [trajectory],
+        qwen_model=object(),
+        processor=object(),
+        token_id_map={},
+        device=torch.device("cpu"),
+        latent_token_count=8,
+        rollout_steps=2,
+        rollout_policy="qwen_wm",
+    )
+
+    assert trainer.qwen_actor_batch_indices(transitions) == [0]
+    assert transitions[0]["old_log_prob"] == -0.5
+    assert transitions[1]["old_log_prob"] is None
+    assert transitions[1]["behavior_action_prefix"].tolist() == [1]
+    behavior_states = trainer.reconstruct_behavior_wm_states(
+        transitions,
+        state_proj=FlattenProjector(),
+        wm_predictor=AddActionPredictor(),
+        device=torch.device("cpu"),
+    )
+    assert torch.equal(behavior_states[0], torch.zeros(16))
+    assert torch.equal(behavior_states[1], torch.ones(16))
+
+
 def test_legacy_qwen_log_probs_are_not_silently_treated_as_ppo_behavior(monkeypatch) -> None:
     trajectory = RolloutTrajectory(
         record_id="legacy-qwen",

@@ -37,21 +37,21 @@ def test_lora_resume_can_take_protocol_from_rl_state() -> None:
     assert hidden_dim == 2048
 
 
-def test_k8_wm_fastpath_config_disables_actor_and_uses_two_step_horizons() -> None:
+def test_k8_wm_fastpath_config_trains_qwen_actor_and_wm_heads() -> None:
     config = load_rl_config(ROOT / "configs/training/rl/k8_wm_fastpath.yaml")
-    assert config["freeze"]["qwen"] is True
-    assert "actor" not in config
-    assert config["rollout"]["policy"] == "wm_value"
+    assert config["freeze"] == {"qwen": False, "state_proj": True}
+    assert config["actor"]["clip_ratio"] == 0.2
+    assert config["rollout"]["policy"] == "qwen_wm"
     assert config["rollout"]["fast_path_horizon"] == 2
     assert config["predictor"]["rollout_steps"] == 2
 
 
 def test_k8_wm_fastpath_smoke_config_covers_two_step_windows() -> None:
     config = load_rl_config(ROOT / "configs/training/rl/k8_wm_fastpath_smoke.yaml")
-    assert config["freeze"] == {"qwen": True, "state_proj": True}
-    assert "actor" not in config
+    assert config["freeze"] == {"qwen": False, "state_proj": True}
+    assert config["actor"]["clip_ratio"] == 0.2
     assert config["rollout"] == {
-        "policy": "wm_value",
+        "policy": "qwen_wm",
         "fast_path_horizon": 2,
         "eval_sets": ["base_train"],
     }

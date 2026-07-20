@@ -146,6 +146,32 @@ def test_wm_value_schema_has_no_fake_qwen_log_probs() -> None:
     assert restored.action_top_p == 0.95
 
 
+def test_qwen_wm_schema_assigns_behavior_ownership_per_step() -> None:
+    trajectory = RolloutTrajectory(
+        record_id="hybrid",
+        image_paths=["0.png", "1.png", "2.png"],
+        action_indices=[0, 4],
+        action_names=["moveahead", "rotateright"],
+        action_log_probs=[[-2.0] * 8, None],
+        policy_sources=["qwen", "wm_value"],
+        state_sources=["qwen_gt", "wm_predicted"],
+        fast_path_steps=[0, 1],
+        rollout_policy="qwen_wm",
+        fast_path_horizon=2,
+        latent_token_count=8,
+        latent_query_mode="inject",
+        action_temperature=0.7,
+        action_top_p=0.95,
+        action_log_prob_semantics="sampling_distribution_v1",
+        nav_instruction="Find the couch.",
+        split="train",
+    )
+    validate_trajectories([trajectory])
+    restored = RolloutTrajectory.from_record(trajectory.to_record())
+    assert restored.policy_sources == ["qwen", "wm_value"]
+    assert restored.action_log_probs[1] is None
+
+
 def test_wm_value_schema_rejects_qwen_behavior_log_probs() -> None:
     trajectory = _trajectory()
     trajectory.policy_sources = ["wm_value"]

@@ -13,10 +13,11 @@ RL 训练：独立行为策略与环境交互采集轨迹 → Qwen 编码 metada
 
 | `rollout.policy` | 动作来源 | Qwen PPO | WM/Value训练 |
 |---|---|---|---|
-| `qwen` | Qwen action-token distribution | 是，仅使用真实 Qwen behavior log-prob | 是 |
-| `wm_value` | `argmax_a ValueHead(s)[a]` | 否 | 是 |
+| `qwen` | 每步均由 Qwen action-token distribution 采样 | 是 | 是 |
+| `wm_value` | 每步均由 `argmax_a ValueHead(s)[a]` 产生 | 否 | 是 |
+| `qwen_wm` | 每段首步由 Qwen 采样，后续步由 WM predicted state + greedy ValueHead 产生 | 仅段首 Qwen step | 是，使用全部 step |
 
-`wm_value` 不会事后伪造 Qwen old log-prob。其 fast-path segment 从 Qwen GT state 开始，segment 内连续使用 WM predicted state；达到 `fast_path_horizon` 后，再从当前真实 observation 经 Qwen 重同步。每个动作仍逐步进入真实环境并记录 observation/reward/done。
+正式 k>1 fast-path RL 使用 `qwen_wm`：segment 首步从 Qwen GT k-query state 采样动作并记录真实 behavior log-prob；后续 step 连续使用 WM predicted state。达到 `fast_path_horizon` 后，再从当前真实 observation 经 Qwen 重同步。ValueHead作为critic，以环境回报构造 `A=G-Q(s,a)` 给 Qwen step 的合法 PPO；WM step 不会伪装成 Qwen样本。
 
 ## 运行模式
 
@@ -327,7 +328,7 @@ training:
 
 ```yaml
 rollout:
-  policy: wm_value
+  policy: qwen_wm
   fast_path_horizon: 2
 
 predictor:

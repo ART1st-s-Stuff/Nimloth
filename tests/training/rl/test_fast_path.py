@@ -68,6 +68,29 @@ def test_fast_path_uses_predicted_state_until_segment_resync() -> None:
     assert predictor.calls == 1
 
 
+def test_hybrid_segment_starts_from_qwen_state_then_uses_wm_value() -> None:
+    encoder = CountingEncoder()
+    predictor = AddActionPredictor()
+    controller = WMValueFastPathController(
+        encode_state=encoder,
+        predictor=predictor,
+        value_head=GreedyValueHead(),
+        horizon=2,
+    )
+
+    controller.start_segment(torch.tensor([[10.0]]))
+    assert controller.needs_sync is False
+    # The Qwen-sampled first action is 2. Advance to its WM-predicted state.
+    controller.advance(2, done=False)
+    second = controller.select_action(999)
+    assert second.action_index == 5
+    assert second.state_source == "wm_predicted"
+    assert second.fast_path_step == 1
+    assert encoder.calls == 0
+    controller.advance(second.action_index, done=False)
+    assert controller.needs_sync is True
+
+
 def test_fast_path_done_forces_new_qwen_gt_segment() -> None:
     encoder = CountingEncoder()
     controller = WMValueFastPathController(

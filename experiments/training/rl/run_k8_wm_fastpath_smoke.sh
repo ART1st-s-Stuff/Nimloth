@@ -45,17 +45,17 @@ mkdir -p "${RUN_OUT}" "${ROLLOUT_OUT}" "${TRAIN_OUT}"
 COMMIT=$(git -C "${REPO}" rev-parse HEAD)
 ENV_COMMIT=$(git -C "${ENV_REPO}/external/VAGEN" rev-parse HEAD)
 cat > "${RUN_OUT}/README.md" <<EOF
-# k=8 inject WM/value fast-path RL end-to-end smoke
+# k=8 inject Qwen-first/WM-second fast-path RL end-to-end smoke
 
 - status: running
 - Nimloth commit: ${COMMIT}
 - env VAGEN commit: ${ENV_COMMIT}
 - data: navigation base_train, seeds 1..4 (1200-task training dataset)
-- rollout: 4 episodes x at most 2 actions, policy=wm_value, fast_path_horizon=2, greedy
-- state semantics: step0 Qwen GT k=8 state; step1 recursive WM predicted state; no Qwen PPO log-prob
+- rollout: 4 episodes x at most 2 actions, policy=qwen_wm, fast_path_horizon=2
+- behavior semantics: step0 Qwen samples action from GT k=8 state and records exact behavior log-prob; step1 greedy ValueHead acts on recursive WM predicted state
 - model/WM/value initialization: ${K8_CKPT} (complete SFT2 epoch2/step2912)
-- trainable: WM predictor, value head
-- frozen: complete Qwen language+vision model, state projector
+- trainable: Qwen language full parameters, WM predictor, value head
+- frozen: Qwen vision tower, state projector
 - dynamics training: contiguous recursive rollout_steps=2, decay=1.0
 - training: two-rank FSDP, one update followed by one new-process resume update
 - output: ${RUN_OUT}
@@ -143,7 +143,7 @@ export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VA
 "${PYTHON}" "${REPO}/experiments/training/rl/rollout_env.py" \
   --model "${MODEL}" \
   --wm-checkpoint "${WM_CKPT}" \
-  --policy wm_value \
+  --policy qwen_wm \
   --fast-path-horizon 2 \
   --env-url "${ENV_URL}" \
   --output-dir "${ROLLOUT_OUT}" \
@@ -167,7 +167,7 @@ TRAIN_ARGS=(
   -m nimloth.training.rl.cli
   --config "${REPO}/configs/training/rl/k8_wm_fastpath_smoke.yaml"
   --model "${MODEL}"
-  --llm-tune freeze
+  --llm-tune full
   --vision-tune freeze
   --wm-checkpoint "${WM_CKPT}/wm_predictor"
   --state-proj-checkpoint "${WM_CKPT}/state_proj.pt"
@@ -227,7 +227,7 @@ for record in records:
     expected = {
         "latent_token_count": 8,
         "latent_query_mode": "inject",
-        "rollout_policy": "wm_value",
+        "rollout_policy": "qwen_wm",
         "fast_path_horizon": 2,
     }
     for key, value in expected.items():
@@ -235,14 +235,21 @@ for record in records:
             raise SystemExit(f"rollout {record.get('id')} {key}={record.get(key)!r}, expected {value!r}")
     if steps != 2 or len(record["image_paths"]) != 3:
         raise SystemExit(f"incomplete rollout {record.get('id')}: actions={steps}, images={len(record['image_paths'])}")
-    if record["policy_sources"] != ["wm_value", "wm_value"]:
+    if record["policy_sources"] != ["qwen", "wm_value"]:
         raise SystemExit(f"wrong policy provenance: {record['policy_sources']}")
     if record["state_sources"] != ["qwen_gt", "wm_predicted"]:
         raise SystemExit(f"wrong state provenance: {record['state_sources']}")
     if record["fast_path_steps"] != [0, 1]:
         raise SystemExit(f"wrong fast-path steps: {record['fast_path_steps']}")
-    if record["action_log_probs"] != [None, None] or record.get("action_log_prob_semantics") is not None:
-        raise SystemExit("WM behavior must not contain Qwen behavior log-probs")
+    log_probs = record["action_log_probs"]
+    if (
+        not isinstance(log_probs[0], list)
+        or len(log_probs[0]) != 8
+        or log_probs[0][record["action_indices"][0]] is None
+        or log_probs[1] is not None
+        or record.get("action_log_prob_semantics") != "sampling_distribution_v1"
+    ):
+        raise SystemExit("hybrid behavior log-prob ownership is invalid")
 
 expected_state = {
     "iteration": 2,
@@ -251,7 +258,7 @@ expected_state = {
     "latent_query_mode": "inject",
     "qwen_hidden_dim": 2048,
     "state_proj_input_dim": 16384,
-    "rollout_policy": "wm_value",
+    "rollout_policy": "qwen_wm",
     "fast_path_horizon": 2,
     "predictor_rollout_steps": 2,
     "predictor_rollout_loss_decay": 1.0,
@@ -266,13 +273,14 @@ if not isinstance(query_ids, list) or len(query_ids) != 8 or len(set(query_ids))
 rows = list(csv.DictReader((train_root / "train_step_log.csv").open()))
 if [int(row["global_step"]) for row in rows] != [1, 2]:
     raise SystemExit(f"unexpected training steps: {rows}")
-finite_keys = ("wm_mse", "wm_mse_h1", "wm_mse_hlast", "value_loss", "total_loss", "actor_loss")
+finite_keys = (
+    "wm_mse", "wm_mse_h1", "wm_mse_hlast", "value_loss", "total_loss",
+    "actor_loss", "entropy",
+)
 for row in rows:
     bad = {key: row[key] for key in finite_keys if not row[key] or not math.isfinite(float(row[key]))}
     if bad:
         raise SystemExit(f"non-finite RL metrics at step {row['global_step']}: {bad}")
-    if float(row["actor_loss"]) != 0.0:
-        raise SystemExit(f"WM policy unexpectedly entered Qwen PPO: actor_loss={row['actor_loss']}")
 
 index = json.loads((final / "model.safetensors.index.json").read_text())
 for shard_name in set(index["weight_map"].values()):
@@ -331,11 +339,12 @@ final_keys = set(index["weight_map"])
 common = [key for key in source_index if key in final_keys]
 language_key = next((key for key in common if "language_model.layers.0" in key and key.endswith("q_proj.weight")), None)
 vision_key = next((key for key in common if "visual" in key and key.endswith("weight")), None)
-for label, key in (("language", language_key), ("vision", vision_key)):
-    if key is None:
-        raise SystemExit(f"could not find frozen {label} probe tensor")
-    if not torch.equal(hf_tensor(source, key), hf_tensor(final, key)):
-        raise SystemExit(f"frozen Qwen {label} tensor changed: {key}")
+if language_key is None or vision_key is None:
+    raise SystemExit("could not find Qwen language/vision probe tensors")
+if torch.equal(hf_tensor(source, language_key), hf_tensor(final, language_key)):
+    raise SystemExit(f"trainable Qwen language tensor did not change: {language_key}")
+if not torch.equal(hf_tensor(source, vision_key), hf_tensor(final, vision_key)):
+    raise SystemExit(f"frozen Qwen vision tensor changed: {vision_key}")
 
 print(json.dumps({
     "status": "ALL_OK",
@@ -347,7 +356,8 @@ print(json.dumps({
     "model_shards": len(set(index["weight_map"].values())),
     "predictor_changed_tensors": len(predictor_changed),
     "value_changed_tensors": len(value_changed),
-    "frozen_qwen_probes": [language_key, vision_key],
+    "trainable_qwen_language_probe": language_key,
+    "frozen_qwen_vision_probe": vision_key,
 }))
 PY
 

@@ -6,8 +6,13 @@ qwen:
   max_pixels: 100352
 
 freeze:
-  qwen: true
+  qwen: false
   state_proj: true
+
+actor:
+  lr: 0.000001
+  entropy_coeff: 0.01
+  clip_ratio: 0.2
 
 predictor:
   lr: 0.0001
@@ -22,7 +27,7 @@ value_head:
   lambda_rank: 1.0
 
 rollout:
-  policy: wm_value
+  policy: qwen_wm
   fast_path_horizon: 2
   eval_sets:
     - base_train
