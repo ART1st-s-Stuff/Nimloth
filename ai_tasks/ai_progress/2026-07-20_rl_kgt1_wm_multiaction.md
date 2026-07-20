@@ -75,7 +75,9 @@
 - 已按最终设计实现并本地验证`qwen_wm`：每条2-step segment为`Qwen sampled step → WM/value step`，同一次Qwen forward同时给出行为log-prob和GT k-query state；Qwen language full与WM/value联合更新，vision/StateProjector冻结。
 - ID63 hybrid smoke已执行并失败：job`482447`在`dgx-21`运行`00:02:47`，W&B`wh351jfg`为failed；rollout成功生成4条真实`base_train`轨迹/8 transitions，全部行为归属为`qwen→wm_value`、state为`qwen_gt→wm_predicted`，但训练optimizer step为0、无checkpoint，不能resume。
 - 失败根因：`encode_trajectory_hiddens()`调用`build_qwen_batch()`时漏传k=8，helper默认k=1并把query block归一化为单token，严格k=8提取器报malformed block。已增加真实RED回归测试并修复显式透传`latent_token_count`；本地全套`75 passed, 1 expected warning`。错误登记于`ai_rules/known_errors/E0031_forward_latent_k_to_qwen_batch.md`。
-- ID63输出及`outputs/experiments/training/rl/progress.md`已记录失败与不可恢复原因。后续重试必须使用新W&B numeric ID和新输出目录。
+- ID63输出及`outputs/experiments/training/rl/progress.md`已记录失败与不可恢复原因。
+- ID64 retry1随后执行：job`482474`在`dgx-10`运行`00:06:41`。k8 trainer编码修复生效，iteration1 forward全部有限（WM=0.00240672、Value=0.149349、actor=1.49e-08、entropy=1.54232），但optimizer step后trainable checkpoint全线NaN，fresh-process iteration2全部loss NaN；外部finite gate拒绝，W&B`ixvtbpqr`已显式标为failed。
+- 根因经RED backward测试确认：top-p使用`-inf`mask，旧entropy的`where(p>0,p*logp,0)`只保证forward有限，autograd仍从`0*-inf`产生NaN；global grad clipping随后污染Qwen language、WM和ValueHead。已改为finite sentinel entropy并检查backward gradient，optimizer前新增non-finite loss/grad-norm fail-fast；登记`E0032_top_p_entropy_backward_nan.md`。ID64全部checkpoint不安全，不得resume；后续retry必须新ID/新输出。
 
 ## 待确认/风险
 

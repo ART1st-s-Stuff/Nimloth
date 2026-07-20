@@ -15,7 +15,7 @@
 - 本地已实现metadata-driven k/token/projector/checkpoint、`qwen|wm_value|qwen_wm` rollout、连续WM predicted segment、真实behavior-logprob ownership、多步dynamics window/mask，以及predicted behavior state上的ValueHead训练。旧JSONL无明确sampling-distribution语义时仍可训练WM/value，但自动排除Qwen PPO。
 - 最终hybrid实现本地Nix验证：RL/WM/latent相关测试`74 passed, 1 expected warning`；targeted ruff、py_compile、bash syntax与diff-check通过。
 - 人类随后允许最小真实服务器 smoke；首次 SSH preflight 因 forwarding timeout停止，恢复连接后已核实：正式 k8 SFT2 epoch2/step2912 checkpoint完整且metadata为k8/inject/hidden2048/projector16384；ENV worktree `b21ae10`/VAGEN `bb26c0d` 的`base_train`为1200-task训练集，seeds1..4由实际loader确定选择训练任务；W&B `nimloth-rl`下一ID=63；normal现有充足2GPU资源。
-- 最终hybrid ID63 smoke job`482447`已运行：4条真实`base_train`轨迹/8 transitions的`qwen→wm_value`与`qwen_gt→wm_predicted`归属全部正确，但训练前因Qwen re-encoding漏传k=8、helper默认k1归一化而失败；elapsed`00:02:47`，optimizer steps0、无checkpoint、不可resume，W&B`wh351jfg` failed。已用RED测试复现并修复显式k透传；全套`75 passed, 1 expected warning`，登记`E0031_forward_latent_k_to_qwen_batch.md`。后续重试必须用新W&B ID/输出。详见`ai_tasks/ai_progress/2026-07-20_rl_kgt1_wm_multiaction.md`。
+- hybrid ID63 job`482447`验证4条/8-step rollout归属正确，但因trainer Qwen batch漏传k8而在optimizer前失败；已修复并登记E0031。ID64 retry1 job`482474`进一步跑通iteration1 finite forward和checkpoint/resume入口，但post-step trainables全NaN、iteration2全loss NaN。RED backward测试确认top-p的`-inf`在旧entropy`where`未选分支产生NaN gradient，global clipping污染Qwen language/WM/ValueHead；已改finite-sentinel entropy、加入backward-finite测试及optimizer前non-finite fail-fast，登记E0032。ID63/64均已写服务器README/progress并标W&B failed；所有相关checkpoint不可resume，后续必须新ID/输出。详见`ai_tasks/ai_progress/2026-07-20_rl_kgt1_wm_multiaction.md`。
 
 ## 2026-07-19：rollout图像分辨率纠正
 

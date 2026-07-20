@@ -29,13 +29,16 @@ def test_qwen_actor_batch_rejects_fake_or_missing_behavior_probabilities() -> No
 
 
 def test_behavior_log_probs_use_temperature_and_top_p_transform() -> None:
-    raw = torch.tensor([3.0, 2.0, 1.0, 0.0])
+    raw = torch.tensor([3.0, 2.0, 1.0, 0.0], requires_grad=True)
     transformed = action_sampling_logits(raw, temperature=0.5, top_p=0.8)
     assert transformed[0].item() == 6.0
     assert torch.isneginf(transformed[1:]).all()
     entropy = compute_action_entropy(transformed.unsqueeze(0))
     assert torch.isfinite(entropy)
     assert entropy.item() == 0.0
+    entropy.backward()
+    assert raw.grad is not None
+    assert torch.isfinite(raw.grad).all()
     serialized = serialize_action_log_probs(torch.log_softmax(transformed, dim=-1))
     assert serialized[0] == 0.0
     assert serialized[1:] == [None, None, None]

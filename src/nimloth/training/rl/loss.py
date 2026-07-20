@@ -199,8 +199,14 @@ def compute_action_entropy(action_logits: torch.Tensor) -> torch.Tensor:
 
     Returns a scalar tensor (0 to ~2.08 for 8 actions).
     """
-    probs = torch.softmax(action_logits.float(), dim=-1)
-    log_probs = torch.log_softmax(action_logits.float(), dim=-1)
-    terms = torch.where(probs > 0, probs * log_probs, torch.zeros_like(probs))
-    entropy = -terms.sum(dim=-1).mean()
+    logits = action_logits.float()
+    # Top-p masking represents excluded actions with -inf.  Computing
+    # ``where(p > 0, p * log(p), 0)`` has a finite forward value but still
+    # backpropagates NaN through the unselected ``0 * -inf`` branch.  Replace
+    # only masked logits with a finite sentinel; exp(-1e9) is exactly zero in
+    # float32 while its gradients remain finite.
+    safe_logits = logits.masked_fill(~torch.isfinite(logits), -1.0e9)
+    probs = torch.softmax(safe_logits, dim=-1)
+    log_probs = torch.log_softmax(safe_logits, dim=-1)
+    entropy = -(probs * log_probs).sum(dim=-1).mean()
     return entropy

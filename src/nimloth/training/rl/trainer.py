@@ -1001,10 +1001,16 @@ def train_rl(
             total_loss = pred_loss + val_loss
             actor_metrics["actor_samples"] = 0.0
 
+        if not bool(torch.isfinite(total_loss.detach())):
+            raise FloatingPointError(
+                f"non-finite total loss before optimizer step at iteration {iteration}"
+            )
         optimizer.zero_grad(set_to_none=True)
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(
-            [p for group in optimizer.param_groups for p in group["params"]], 1.0,
+            [p for group in optimizer.param_groups for p in group["params"]],
+            1.0,
+            error_if_nonfinite=True,
         )
         optimizer.step()
         if vision_ema is not None:
