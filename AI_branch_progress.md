@@ -18,7 +18,8 @@
 - 获批的正式world8 ID16（commit`801de41`、Slurm`481482`、W&B`4k53mvne`）在1m14s、step1前失败：PEFT按后缀匹配language LoRA targets时误装了96个visual LoRA trainables，违反vision freeze并触发DDP unused-parameter检查。已改为PEFT后重新执行path freeze并对任何visual trainable fail-fast，不用`find_unused_parameters`掩盖；登记`E0033`。
 - 修复commit`05a3e8a`的world2 gate ID17（Slurm`481492`、W&B`lyn0h127`）1m30s完成：9个optimizer steps+distributed val/checkpoint通过，query与252/252 language LoRA-B更新，96个frozen visual LoRA-B严格全零。
 - 正式retry1 ID18（Slurm`481494`、W&B`ie19vs47`）world8在3h15m36s完成5 epochs/575 steps；val DINO grid MSE逐epoch `0.501212→0.389819→0.358707→0.344065→0.337753`，val CE稳定约5.424。final epoch5/step575、query/projector/698 adapter tensors finite、language LoRA全更新、visual LoRA严格零、merged两shard gates均通过；canonical SFT2 init为该run的`final/hf_merged`。详见`ai_tasks/ai_progress/2026-07-19_dinov2_grid_sft1.md`。
-- 人类随后明确要求SFT2新增`0.5×DINO MSE`，但监督对象是**WM prediction经decoder后的next-RGB 4×4 DINO features**，不是重复训练query representation；同时保留latent next-query MSE、SIGReg=0.1与value。已确认用LeWM MLP作为逐slot encoder/decoder、LeWM Embedder/AdaLN-zero block构造非因果spatial predictor、EMA target encoder decay0.99；Qwen/SFT1 projector/DINO冻结。实现与测试进行中，详见`ai_tasks/ai_progress/2026-07-20_dinov2_grid_sft2.md`。
+- 人类随后明确要求SFT2新增`0.5×DINO MSE`，但监督对象是**WM prediction经decoder后的next-RGB 4×4 DINO features**，不是重复训练query representation；同时保留latent next-query MSE、SIGReg=0.1与value。使用LeWM MLP逐slot encoder/decoder、LeWM Embedder/AdaLN-zero构造非因果spatial predictor、EMA target encoder decay0.99；Qwen/SFT1 projector/DINO冻结。实现commit`b8659fe`，相关suite 86 passed。
+- 人类已批准cache+smoke门禁链：CPU k16 compact cache`482287` → 1GPU exact float32 DINO 4×4 sidecar`482288` → world2 smoke`482289`；初始为cache pending priority、下游pending dependency。W&B `nimloth-sft2` ID31已预留并固定内部run`dz48wt5c`，无重复run；正式SFT2尚未获批。详见`ai_tasks/ai_progress/2026-07-20_dinov2_grid_sft2.md`。
 
 ## 2026-07-19：DINOv3 current-RGB query-state 对齐实现
 

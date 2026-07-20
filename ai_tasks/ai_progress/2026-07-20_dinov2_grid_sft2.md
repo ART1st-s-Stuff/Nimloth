@@ -49,8 +49,19 @@ SFT1 Slurm `481494` completed 5 epochs/575 steps in 3h15m36s; W&B `ie19vs47` fin
 - Added checkpoint/resume round-trip, terminal transition, EMA, noncausal connectivity, grid cache, and compact-cache next-path tests.
 - Broader SFT1+SFT2+DINO suite: 86 passed (excluding the inherited known-broken trajectory-prefix test); compileall, shell syntax, and diff-check pass.
 
-## Remaining before GPU work
+## Approved gate chain submitted
 
-1. Human approval for CPU compact-cache build (~2–3h, CPU partition, 8 CPU/128G), dependent 1-GPU DINO grid sidecar build (≤1h), and 2-GPU SFT2 smoke (≤30m).
-2. Inspect real cache manifests/counts/size and run the exact online/cache bitwise gate.
-3. Run world2 smoke and measure memory/step time before proposing formal SFT2 resources.
+- Human approved CPU compact cache → dependent 1-GPU DINO grid cache → dependent world2 smoke. Formal SFT2 remains unapproved.
+- Fixed code commit: `b8659fe4d04e8fea47450e2b71006daf0131cf13`.
+- Qwen cache job: Slurm `482287` (CPU, 8 CPU/128G/12h).
+- DINO grid sidecar job: Slurm `482288`, `afterok:482287` (1 GPU/1h).
+- World2 smoke: Slurm `482289`, `afterok:482288` (2 GPU/30m).
+- W&B reserved without creating a duplicate: project `nimloth-sft2`, ID31, run `dz48wt5c`, name `31_smoke_lewmgrid_dino05_ema099_all1_ep1_b1_ga1_ws2_px100352`.
+- Cache root: `outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-20/sft2/cache/k16_all3217_px100352_bf16_dino4x4_f32_b8659fe`.
+- Initial state: cache pending priority; dependent GPU jobs pending dependency.
+
+## Remaining
+
+1. Monitor cache manifests/counts/size and exact online/cache bitwise gate.
+2. Monitor world2 smoke, checkpoint/resume gates, memory and step time.
+3. Propose formal SFT2 resources for separate human approval.
