@@ -21,12 +21,12 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-from nimloth.backbone.qwen_tuning import (
+from nimloth.backbone.qwen25vl.tuning import (
     configure_qwen_tuning,
     resolve_tune_modes,
     uses_lora,
 )
-from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema
+from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA, resolve_vision_ema
 from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.rl.checkpoint import (
@@ -69,7 +69,7 @@ def encode_trajectory_hiddens(
         find_last_latent_state_index,
         last_hidden_state,
     )
-    from nimloth.training.common.qwen_batch import build_qwen_batch
+    from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 
     states: list[torch.Tensor] = []
     tokens = LatentActionTokens()

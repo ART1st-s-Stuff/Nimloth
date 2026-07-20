@@ -20,7 +20,7 @@ from transformers import AutoProcessor
 
 from nimloth.latent import add_special_tokens
 from nimloth.training.common.dist import is_main
-from nimloth.training.common.qwen_batch import (
+from nimloth.backbone.qwen25vl.batch import (
     _labels_for_text_rows,
     _message_cache_key,
     _render_messages,
@@ -303,7 +303,7 @@ def unpack_transition_batch(
     dict[str, Any],
     Any,
 ]:
-    from nimloth.training.common.qwen_batch import build_qwen_batch
+    from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 
     if isinstance(batch, dict) and "current_enc" in batch:
         items = batch["items"]

@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-07-20：SFT2 代码目录职责整理
+
+- 在本地分支 `fix/sft2-review-bugs` 继续整理 SFT2 代码，尚未合并回 `dev`。
+- `src/nimloth/training/sft2/` 根目录只保留生产训练、评估、checkpoint 与 trajectory-once 主路径；packed/KV 等价性原型移入 `src/nimloth/training/sft2/diagnosis/`。
+- 一次性 debug、probe、validation、cache estimate 与性能 smoke 脚本移入 `experiments/training/sft2/diagnosis/`；生产 train/cache/eval/submit 入口仍位于父目录。移动后的 Slurm 脚本继续从父目录加载公共环境，并显式调用 `diagnosis/` 内的 Python 脚本。
+- Qwen2.5-VL batching、latent extraction、tuning、vision EMA 与 diagnosis-only monkey patch 统一移入 `src/nimloth/backbone/qwen25vl/`；全仓生产、诊断与测试 import 已切换到新路径。
+- 为避免生产 `trajectory_once.py` 反向依赖 diagnosis，将单样本编码补 batch 维的 helper 提升到 `qwen25vl/batch.py`；静态扫描确认 SFT2 生产包不导入 `diagnosis`。
+- 验证：全目录 `compileall`、诊断 Slurm `bash -n`、`git diff --check` 均通过；相关测试 `93 passed, 1 deselected`。排除未初始化的 `external/VAGEN` 后，其余完整测试为 `165 passed, 2 unrelated failures, 1 deselected`；两个失败分别来自未初始化的 `external/RCDM` 与测试环境缺少 parquet engine。已知 deselect 仍是基线中 `token_id_map` 赋值前使用的问题。
+
 ## 2026-07-20：SFT2 模型与训练高优先级缺陷修复
 
 - 在本地分支 `fix/sft2-review-bugs` 修复三项只读审查发现的问题，尚未合并回 `dev`。

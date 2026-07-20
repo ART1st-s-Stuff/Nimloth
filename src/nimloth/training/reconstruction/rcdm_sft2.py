@@ -37,9 +37,9 @@ from nimloth.rcdm.state_cache import (
     state_cache_ready,
 )
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
-from nimloth.training.common.qwen_batch import build_qwen_batch
+from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
-from nimloth.training.sft2.qwen_latent import extract_qwen_latents
+from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 

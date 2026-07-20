@@ -16,11 +16,9 @@ Canonical location for SFT2 per `ai_tasks/sft2_exp.md`.
 | `eval_val_rollout_success.py` | Offline val trajectory success rate |
 | `upload_sft2_wandb_from_csv.py` | Retroactive wandb upload from CSV |
 | `upload_sft2_eval_wandb.py` | Upload VAGEN greedy rollout eval per-ckpt metrics to wandb |
-| `smoke_speedup.py` / `smoke_speedup.slurm` | 1-GPU speedup smoke (encode/cache/trajectory-once equiv) |
-| `validate_trajectory_once_2step.py` / `validate_2step.slurm` | 2-step GPU 验收：text/image synthetic + real record 前 2 step |
-| `probe_trajectory_once_equiv.py` | GPU: legacy vs trajectory-once (latent + CE + WM + value) |
-| `estimate_preprocess_cache.py` | Sample transition vs trajectory cache byte estimates |
 | `resolve_sft1_init_for_sft2.sh` | Merge SFT1 LoRA → hf_merged for SFT2 |
+
+诊断、probe、validation、cache estimate 和性能 smoke 脚本统一位于 `diagnosis/`，不属于生产训练入口。
 
 Config: `configs/training/sft2/latent_wm_value.yaml`
 
@@ -76,21 +74,21 @@ embeddings without violating Qwen-VL prefix non-invariance.
 
 1. Run GPU equivalence first:
    ```bash
-   PYTHONPATH=src python experiments/training/sft2/probe_trajectory_once_equiv.py \
+   PYTHONPATH=src python experiments/training/sft2/diagnosis/probe_trajectory_once_equiv.py \
      --model /path/to/hf_merged --train-jsonl /path/to/train_all.jsonl --max-records 3
    ```
 2. Optional smoke gate: `smoke_speedup.py --require-packed-once-equiv`
 3. Packed mode uses **one trajectory per micro-batch**; tune `grad_accum` so effective steps match legacy (`world * grad_accum * avg_T ≈ 64` on 8 GPU).
 4. For preprocess cache with packed mode, build trajectory cache (`train_trajectory/` / `val_trajectory/`). Estimate size:
    ```bash
-   PYTHONPATH=src python experiments/training/sft2/estimate_preprocess_cache.py \
+   PYTHONPATH=src python experiments/training/sft2/diagnosis/estimate_preprocess_cache.py \
      --model /path/to/hf_merged --train-jsonl /path/to/train_all.jsonl
    ```
 5. Do **not** default `PACKED_FORWARD=1` in production until equiv passes on your data.
 
 `validate_2step` job **456802** (2026-06-20): text synthetic **0/0** latent diff (encoding OK); image synthetic step0 **~0.41**; real nav record step0 **~10** — failures are **forward semantics** (full trajectory + all images in one forward ≠ per-prefix legacy), not token/index bugs.
 
-Library: `src/nimloth/training/sft2/`；WM 在 `wm/`；Qwen 调参在 `backbone/`；离线 eval 在 `eval/`。
+Library: SFT2 主路径在 `src/nimloth/training/sft2/`；诊断实现在其 `diagnosis/`；Qwen2.5-VL 公共代码在 `src/nimloth/backbone/qwen25vl/`；WM 在 `wm/`；离线 eval 在 `eval/`。
 
 SFT1 checkpoints and rollout records stay under `experiments/navigation_baseline/runs/` (legacy); SFT1 scripts are in `experiments/training/sft1/`.
 

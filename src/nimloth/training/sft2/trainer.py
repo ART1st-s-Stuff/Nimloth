@@ -30,8 +30,8 @@ from nimloth.latent import (
 from nimloth.training.common.config import merge_cli_over_yaml
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.common.metrics import MetricAccumulator
-from nimloth.backbone.qwen_tuning import configure_qwen_tuning, resolve_tune_modes, uses_lora
-from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema
+from nimloth.backbone.qwen25vl.tuning import configure_qwen_tuning, resolve_tune_modes, uses_lora
+from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA, resolve_vision_ema
 from nimloth.training.common.schedules import qwen_lr_schedule, set_optimizer_group_lr
 from nimloth.training.common.wandb_logging import log_train_step, log_val_epoch, maybe_init_wandb
 from nimloth.training.sft2.checkpoint import (
@@ -67,7 +67,7 @@ from nimloth.training.sft2.preprocess_cache import (
 )
 from nimloth.training.sft2.profiling import StepTimer
 from nimloth.eval.rollout import val_rollout_success_rate
-from nimloth.training.sft2.qwen_latent import extract_qwen_latents
+from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.training.sft2.step import (
     compute_step_value_loss,
     compute_step_wm_loss,

@@ -20,9 +20,9 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from nimloth.training.common.qwen_batch import build_qwen_batch
+from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
-from nimloth.training.sft2.qwen_latent import extract_qwen_latents
+from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.state_proj import StateProjector
 
 STATE_CACHE_VERSION = "rcdm_state_cache_v2"

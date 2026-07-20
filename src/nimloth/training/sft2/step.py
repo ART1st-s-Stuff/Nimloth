@@ -8,11 +8,11 @@ from typing import Any
 import torch
 from transformers import AutoProcessor
 
-from nimloth.training.common.qwen_batch import _message_cache_key, build_qwen_batch
+from nimloth.backbone.qwen25vl.batch import _message_cache_key, build_qwen_batch
 from nimloth.training.sft2.preprocess_cache import collate_cached_encodings
-from nimloth.backbone.vision_ema import VisionEncoderEMA
+from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
 from nimloth.training.sft2.loss import SIGReg, compute_value_loss, compute_wm_latent_loss
-from nimloth.training.sft2.qwen_latent import extract_qwen_latents
+from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead

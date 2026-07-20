@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-from nimloth.training.common.qwen_batch import _message_cache_key
+from nimloth.backbone.qwen25vl.batch import _message_cache_key
 from nimloth.training.sft2.step import _forward_next_latents, wm_eligible_indices
 
 

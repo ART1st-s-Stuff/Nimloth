@@ -14,9 +14,9 @@ from PIL import Image
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.training.common.qwen_batch import build_qwen_batch
+from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
-from nimloth.training.sft2.qwen_latent import extract_qwen_latents
+from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.reconstruction import WMImageDecoder, WMImageDecoderConfig
 from nimloth.wm.state_proj import StateProjector

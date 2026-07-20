@@ -9,6 +9,18 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoProcessor
 
+from nimloth.backbone.qwen25vl.batch import (
+    _message_cache_key,
+    _offset_cache,
+    _template_cache,
+    assistant_char_spans,
+    batch_single_encoding,
+    encode_qwen_item,
+)
+from nimloth.backbone.qwen25vl.latent import (
+    _capture_last_hidden,
+    reset_model_rope_state,
+)
 from nimloth.latent import (
     extract_latent_state,
     extract_latent_state_block,
@@ -19,15 +31,6 @@ from nimloth.latent import (
     normalize_latent_state_blocks,
 )
 from nimloth.latent.extraction import LatentActionTokens
-from nimloth.training.common.qwen_batch import (
-    _message_cache_key,
-    _offset_cache,
-    _template_cache,
-    assistant_char_spans,
-    encode_qwen_item,
-)
-from nimloth.training.sft2.qwen_latent import _capture_last_hidden, reset_model_rope_state
-from nimloth.training.sft2.trajectory_forward import _batch_enc
 from nimloth.wm.collate import prefix_messages_with_images
 from nimloth.wm.dataset import TransitionSample
 
@@ -517,7 +520,7 @@ def forward_trajectory_once(
             latent_token_count=latent_token_count,
         )
 
-    batch = _batch_enc(enc)
+    batch = batch_single_encoding(enc)
     model_inputs = {k: v.to(device) for k, v in batch.items()}
     reset_model_rope_state(model)
     hidden, output = _capture_last_hidden(model, model_inputs)

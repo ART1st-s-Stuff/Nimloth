@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from nimloth.training.common.qwen_batch import build_qwen_batch, encode_qwen_item
+from nimloth.backbone.qwen25vl.batch import build_qwen_batch, encode_qwen_item
 from nimloth.training.sft2.preprocess_cache import (
     COMPACT_CACHE_FORMAT,
     CachedTransitionDataset,
