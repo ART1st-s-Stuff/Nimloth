@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-07-20：DINO监督SFT1 grid reconstruction（运行中）
+
+- 人类要求使用最新完整DINO-grid SFT1 ID18 epoch5/final重新reconstruction；SFT2尚未完成，本次禁止加载或比较WM predicted。人类选择只重建DINO直接监督的shared-projector grid `[16,1024]`，CFM使用strict全部train59,389、held-out val6,054，最终保持diverse40/200帧matched-noise Euler50 CFG2三列`GT | Qwen ViT-token CFM | DINO-grid CFM`。
+- `80aaac5/f0d4204`新增显式`dino_grid_state` cache、BF16 token-wise shared projector、严格row-major/source lineage/fingerprint gate、CFM no-WM positive-control路径及无WM evaluator；服务器targeted tests `14 passed`。
+- Agent未先hold人类指定的空闲`dgx-40`，节点被他人占用；人类明确纠正后已登记`E0049`。replacement holder Slurm`482045`现RUNNING于preempt `dgx-03`，8GPU/128CPU/768G/8h；同allocation step`482045.1`已从clean commit`f0d4204`启动cache→projection→CFM→eval。W&B ID45/46=`f9wj5gza/ek552cqe`已预留；八个torchrun ranks和八卡CUDA初始化均已确认，无traceback/OOM/NCCL/NaN。详细记录：`ai_tasks/ai_progress/2026-07-20_dino_grid_reconstruction.md`。
+
 ## 2026-07-20：k1 ID16 epoch2同协议reconstruction（完成）
 
 - 人类指定完整epoch2/best，并批准8GPU；实际资源方案为normal8GPU并行query cache，再用normal1GPU顺序projected cache→CFM→Decoder→四列评估，避免单GPU训练阶段闲置7卡。代码`dbf10bc`让evaluator按manifest/Decoder动态支持k1/k8。
