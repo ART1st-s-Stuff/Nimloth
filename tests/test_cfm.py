@@ -117,6 +117,14 @@ def test_query_hidden_manifest_resolves_eight_condition_tokens() -> None:
         "cond_dim": 16384,
     }
     assert resolve_condition_token_shape(manifest) == (8, 2048)
+    assert resolve_condition_token_shape(
+        {
+            "representation": "qwen_query_hidden",
+            "state_shape": [2048],
+            "cond_dim": 2048,
+            "latent_token_count": 1,
+        }
+    ) == (1, 2048)
     assert resolve_condition_token_shape({"cond_dim": 1024}) == (1, 1024)
     assert resolve_condition_token_shape(
         {"cond_dim": 8192, "representation": "projected"},

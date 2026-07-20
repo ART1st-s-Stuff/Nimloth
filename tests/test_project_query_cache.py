@@ -1,7 +1,10 @@
 import pytest
 import torch
 
-from nimloth.training.reconstruction.project_query_cache import resolve_projector_config
+from nimloth.training.reconstruction.project_query_cache import (
+    resolve_projector_config,
+    validate_query_cache_shape,
+)
 
 
 def test_resolve_projector_config_accepts_full8192_checkpoint() -> None:
@@ -23,6 +26,13 @@ def test_resolve_projector_config_accepts_full8192_checkpoint() -> None:
         "hidden_dim": 8192,
         "output_dim": 8192,
     }
+
+
+def test_k1_projector_accepts_flat_query_cache_storage() -> None:
+    validate_query_cache_shape([2048], latent_token_count=1, qwen_hidden_dim=2048)
+    validate_query_cache_shape([1, 2048], latent_token_count=1, qwen_hidden_dim=2048)
+    with pytest.raises(ValueError, match="query shape mismatch"):
+        validate_query_cache_shape([8, 2048], latent_token_count=1, qwen_hidden_dim=2048)
 
 
 def test_resolve_projector_config_infers_old_k1_dimensions_from_weights() -> None:

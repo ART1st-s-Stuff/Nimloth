@@ -70,6 +70,19 @@ def _fingerprint(source: dict[str, Any], checkpoint: Path, config: dict[str, int
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def validate_query_cache_shape(
+    state_shape: list[int], *, latent_token_count: int, qwen_hidden_dim: int
+) -> None:
+    canonical = [latent_token_count, qwen_hidden_dim]
+    allowed = [canonical]
+    if latent_token_count == 1:
+        allowed.append([qwen_hidden_dim])
+    if state_shape not in allowed:
+        raise ValueError(
+            f"query shape mismatch: expected one of {allowed}, actual={state_shape}"
+        )
+
+
 @torch.no_grad()
 def project_split(
     *,
@@ -84,11 +97,11 @@ def project_split(
     source = json.loads((source_dir / "manifest.json").read_text(encoding="utf-8"))
     if source.get("representation") != "qwen_query_hidden":
         raise ValueError(f"source is not qwen_query_hidden: {source_dir}")
-    expected_shape = [config["latent_token_count"], config["qwen_hidden_dim"]]
-    if source.get("state_shape") != expected_shape:
-        raise ValueError(
-            f"query shape mismatch: expected={expected_shape}, actual={source.get('state_shape')}"
-        )
+    validate_query_cache_shape(
+        [int(value) for value in source.get("state_shape", [])],
+        latent_token_count=config["latent_token_count"],
+        qwen_hidden_dim=config["qwen_hidden_dim"],
+    )
     fingerprint = _fingerprint(source, checkpoint, config)
     manifest_path = output_dir / "manifest.json"
     if manifest_path.is_file():

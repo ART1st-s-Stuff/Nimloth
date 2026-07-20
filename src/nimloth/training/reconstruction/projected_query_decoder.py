@@ -86,6 +86,14 @@ class ProjectedQueryDecoder(nn.Module):
         return decoder
 
 
+def normalize_query_hidden(state: torch.Tensor) -> torch.Tensor:
+    if state.ndim == 1:
+        return state.unsqueeze(0)
+    if state.ndim == 2:
+        return state
+    raise ValueError(f"query hidden must have shape [D] or [K,D], got {tuple(state.shape)}")
+
+
 def joint_decoder_loss(
     clean_output: torch.Tensor,
     predicted_output: torch.Tensor,
@@ -130,7 +138,7 @@ def build_teacher_forced_pairs(
                     "previous_action": int(previous_projected["action_index"]),
                     "previous_projected": previous_projected["state_emb"].reshape(-1),
                     "current_projected": projected["state_emb"].reshape(-1),
-                    "target_query": query["state_emb"],
+                    "target_query": normalize_query_hidden(query["state_emb"]),
                     "current_image_path": str(query.get("current_image_path", "")),
                 }
             )

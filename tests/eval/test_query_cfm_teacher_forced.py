@@ -20,9 +20,9 @@ def test_requested_columns_are_exact_and_ordered() -> None:
     ]
 
 
-def test_condition_shapes_support_one_query_token() -> None:
+def test_condition_shapes_support_flat_stored_one_query_token() -> None:
     query_shape, projected_shape = resolve_condition_shapes(
-        {"representation": "qwen_query_hidden", "state_shape": [1, 2048]},
+        {"representation": "qwen_query_hidden", "state_shape": [2048]},
         {"representation": "projected", "state_shape": [1024]},
         ProjectedQueryDecoderConfig(
             projected_dim=1024,
@@ -31,7 +31,7 @@ def test_condition_shapes_support_one_query_token() -> None:
             query_dim=2048,
         ),
     )
-    assert query_shape == [1, 2048]
+    assert query_shape == [2048]
     assert projected_shape == [1024]
 
 

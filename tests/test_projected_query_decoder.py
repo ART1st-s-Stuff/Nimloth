@@ -8,6 +8,7 @@ from nimloth.training.reconstruction.projected_query_decoder import (
     ProjectedQueryDecoderConfig,
     build_teacher_forced_pairs,
     joint_decoder_loss,
+    normalize_query_hidden,
     validate_cache_lineage,
 )
 
@@ -52,6 +53,15 @@ def test_joint_decoder_loss_weights_clean_and_predicted_equally() -> None:
     assert metrics["clean_mse"] == pytest.approx(1.0)
     assert metrics["predicted_mse"] == pytest.approx(4.0)
     assert metrics["total"] == pytest.approx(5.0)
+
+
+def test_flat_k1_query_hidden_is_normalized_to_one_token() -> None:
+    flat = torch.randn(2048)
+    normalized = normalize_query_hidden(flat)
+    assert normalized.shape == (1, 2048)
+    torch.testing.assert_close(normalized[0], flat)
+    tokenized = torch.randn(8, 2048)
+    assert normalize_query_hidden(tokenized) is tokenized
 
 
 def test_projected_cache_must_come_from_the_exact_query_cache() -> None:

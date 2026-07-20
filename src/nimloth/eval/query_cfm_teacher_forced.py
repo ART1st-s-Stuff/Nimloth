@@ -19,6 +19,7 @@ from nimloth.rcdm.image_utils import diffusion_tensor_to_pil, image_to_diffusion
 from nimloth.training.reconstruction.projected_query_decoder import (
     ProjectedQueryDecoder,
     ProjectedQueryDecoderConfig,
+    normalize_query_hidden,
     validate_cache_lineage,
 )
 from nimloth.training.reconstruction.state_to_vision_tokens import load_proven_cfm
@@ -39,14 +40,22 @@ def resolve_condition_shapes(
         raise ValueError("expected projected State cache")
     query_shape = [int(value) for value in query_manifest.get("state_shape", [])]
     projected_shape = [int(value) for value in projected_manifest.get("state_shape", [])]
-    if len(query_shape) != 2:
-        raise ValueError(f"query cache needs [K,D] state_shape, got {query_shape}")
+    semantic_query_shape = (
+        [1, query_shape[0]]
+        if len(query_shape) == 1 and decoder_config.query_tokens == 1
+        else query_shape
+    )
+    if len(semantic_query_shape) != 2:
+        raise ValueError(
+            f"query cache needs [K,D], or legacy-flat [D] for k=1; got {query_shape}"
+        )
     if len(projected_shape) != 1:
         raise ValueError(f"projected cache needs [D] state_shape, got {projected_shape}")
     expected_query = [decoder_config.query_tokens, decoder_config.query_dim]
-    if query_shape != expected_query:
+    if semantic_query_shape != expected_query:
         raise ValueError(
-            f"decoder/query cache shape mismatch: {expected_query} != {query_shape}"
+            "decoder/query cache shape mismatch: "
+            f"{expected_query} != {semantic_query_shape} (stored={query_shape})"
         )
     if projected_shape[0] != decoder_config.projected_dim:
         raise ValueError(
@@ -124,7 +133,9 @@ def prepare_teacher_forced_rows(
             previous_projected.append(caches["projected"][step - 1]["state_emb"].reshape(-1).float())
             current_projected.append(caches["projected"][step]["state_emb"].reshape(-1).float())
             previous_actions.append(previous_action)
-            query.append(caches["query"][step]["state_emb"].float())
+            query.append(
+                normalize_query_hidden(caches["query"][step]["state_emb"].float())
+            )
             qwen.append(caches["qwen"][step]["state_emb"].float())
             rows.append({
                 "run_index": int(selection["run_index"]),

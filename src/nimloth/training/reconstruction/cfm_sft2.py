@@ -256,8 +256,13 @@ def resolve_condition_token_shape(
     representation = str(manifest.get("representation", "projected"))
     state_shape = tuple(int(value) for value in manifest.get("state_shape", []))
     if representation == "qwen_query_hidden":
+        if len(state_shape) == 1 and int(manifest.get("latent_token_count", 1)) == 1:
+            return 1, state_shape[0]
         if len(state_shape) != 2:
-            raise ValueError(f"qwen_query_hidden cache needs [K,D] state_shape, got {state_shape}")
+            raise ValueError(
+                "qwen_query_hidden cache needs [K,D], or legacy-flat [D] for k=1; "
+                f"got {state_shape}"
+            )
         return state_shape
     return 1, flat_dim
 
