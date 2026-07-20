@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-07-20：RL k>1 与 WM+ValueHead 连续动作任务草案
+
+- 按人类要求先创建新任务 `ai_tasks/rl_kgt1_wm_multiaction_plan.md`，当前仅为待审阅计划，尚未修改 RL 代码或启动实验。
+- 任务覆盖两项适配：RL 全链路 metadata-driven k>1 latent query；一次 Qwen sync 后由 WM+ValueHead 连续选择/执行动作，并补充真实多步 dynamics loss。
+- 草案明确保留两阶段 FSDP 安全边界，并禁止将 WM planner 动作伪装成 Qwen behavior data 进入 PPO ratio。实施前仍需人类确认 query mode、连续动作语义、PPO ownership、horizon 与 planner 范围。
+
 ## 2026-07-19：rollout图像分辨率纠正
 
 - 确认有效rollout链路存在分辨率偏差：AI2-THOR输出255×255，但VAGEN `e7cc2d0`调用verl `process_image(min_pixels=512²)`放大为512×512，Qwen实际按504×504/grid36编码；历史源VAGEN `f7aefd3`则是255→252/grid18。
