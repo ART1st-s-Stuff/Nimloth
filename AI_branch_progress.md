@@ -19,7 +19,8 @@
 - 修复commit`05a3e8a`的world2 gate ID17（Slurm`481492`、W&B`lyn0h127`）1m30s完成：9个optimizer steps+distributed val/checkpoint通过，query与252/252 language LoRA-B更新，96个frozen visual LoRA-B严格全零。
 - 正式retry1 ID18（Slurm`481494`、W&B`ie19vs47`）world8在3h15m36s完成5 epochs/575 steps；val DINO grid MSE逐epoch `0.501212→0.389819→0.358707→0.344065→0.337753`，val CE稳定约5.424。final epoch5/step575、query/projector/698 adapter tensors finite、language LoRA全更新、visual LoRA严格零、merged两shard gates均通过；canonical SFT2 init为该run的`final/hf_merged`。详见`ai_tasks/ai_progress/2026-07-19_dinov2_grid_sft1.md`。
 - 人类随后明确要求SFT2新增`0.5×DINO MSE`，但监督对象是**WM prediction经decoder后的next-RGB 4×4 DINO features**，不是重复训练query representation；同时保留latent next-query MSE、SIGReg=0.1与value。使用LeWM MLP逐slot encoder/decoder、LeWM Embedder/AdaLN-zero构造非因果spatial predictor、EMA target encoder decay0.99；Qwen/SFT1 projector/DINO冻结。实现commit`b8659fe`，相关suite 86 passed。
-- 人类已批准cache+smoke门禁链：CPU k16 compact cache`482287` → 1GPU exact float32 DINO 4×4 sidecar`482288` → world2 smoke`482289`；初始为cache pending priority、下游pending dependency。W&B `nimloth-sft2` ID31已预留并固定内部run`dz48wt5c`，无重复run；正式SFT2尚未获批。详见`ai_tasks/ai_progress/2026-07-20_dinov2_grid_sft2.md`。
+- cache门禁有效：CPU k16 compact cache`482287`在1h50m完成（train/val 59,389/6,054 transitions，fingerprints `b94ea4f1f05d08b5`/`42b4de9e90f8b42c`）；DINO 4×4 sidecar`482288`在15m完成（combined `b50d261e2b533f3e`），4样本online/cache bitwise一致，总cache约94GB。
+- world2 smoke`482289`/W&B ID31 `dz48wt5c`虽Slurm exit0，但10个finite train steps后所有val指标NaN，判定INVALID，全部checkpoint禁用。根因是`SafeBatchNorm1d`以`new_empty`创建scratch running stats，momentum更新后online encoder出现37个负running variances；train batch stats掩盖，eval暴露。已改为clone当前running stats、增加标准BN/双forward回归测试和non-finite fail-fast，登记`E0034`；正式SFT2仍blocked，需新world2 ID32。详见`ai_tasks/ai_progress/2026-07-20_dinov2_grid_sft2.md`。
 
 ## 2026-07-19：DINOv3 current-RGB query-state 对齐实现
 

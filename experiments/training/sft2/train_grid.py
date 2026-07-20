@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import shutil
 from dataclasses import asdict
 from pathlib import Path
@@ -298,6 +299,13 @@ def _sync_ema_buffers(target: EMATargetGridEncoder) -> None:
             dist.broadcast(buffer, src=0)
 
 
+def _assert_finite_loss(loss: torch.Tensor, metrics: dict[str, float], *, stage: str) -> None:
+    if not bool(torch.isfinite(loss.detach()).all()) or any(
+        not math.isfinite(float(value)) for value in metrics.values()
+    ):
+        raise FloatingPointError(f"non-finite {stage} loss/metrics: {metrics}")
+
+
 def _compute_batch_loss(model, projector, teacher, encoder, target, wm, decoder, value, sigreg, batch, processor, token_ids, device, args):
     items, current, nxt, indices = _encode_batch(model, batch, processor, token_ids, device, args)
     dino_target = _dino_targets(teacher, items, device)
@@ -334,6 +342,7 @@ def evaluate(model, projector, teacher, encoder, target, wm, decoder, value, sig
             model, projector, teacher, encoder, target, wm, decoder, value, sigreg,
             batch, processor, token_ids, device, args,
         )
+        _assert_finite_loss(loss, metrics, stage="validation")
         count = len(batch["items"]) if isinstance(batch, dict) else len(batch)
         totals += torch.tensor(
             [
@@ -492,6 +501,7 @@ def main() -> None:
                 model, projector, teacher, encoder, target, wm, decoder, value, sigreg,
                 batch, processor, token_ids, device, args,
             )
+            _assert_finite_loss(loss, metrics, stage="training")
             (loss / args.grad_accum).backward()
             if micro_step % args.grad_accum == 0 or micro_step == len(train_loader):
                 torch.nn.utils.clip_grad_norm_(

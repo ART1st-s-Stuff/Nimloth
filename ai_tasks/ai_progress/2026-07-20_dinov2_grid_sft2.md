@@ -58,10 +58,16 @@ SFT1 Slurm `481494` completed 5 epochs/575 steps in 3h15m36s; W&B `ie19vs47` fin
 - World2 smoke: Slurm `482289`, `afterok:482288` (2 GPU/30m).
 - W&B reserved without creating a duplicate: project `nimloth-sft2`, ID31, run `dz48wt5c`, name `31_smoke_lewmgrid_dino05_ema099_all1_ep1_b1_ga1_ws2_px100352`.
 - Cache root: `outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-20/sft2/cache/k16_all3217_px100352_bf16_dino4x4_f32_b8659fe`.
-- Initial state: cache pending priority; dependent GPU jobs pending dependency.
+## Gate results
+
+- Qwen cache Slurm `482287` completed in 1h50m02s: train/val 59,389/6,054 transitions, 62,606/6,409 unique images, fingerprints `b94ea4f1f05d08b5`/`42b4de9e90f8b42c`, k16/inject/masked/BF16 metadata valid.
+- DINO grid cache Slurm `482288` completed in 15m01s: train/val manifests `b4bc4650a987677d`/`da67814e8537dbcd`, combined fingerprint `b50d261e2b533f3e`; four online/cache samples bitwise equal. Total cache ~94GB, including ~5GB DINO grids. Both caches are valid and reusable.
+- World2 smoke Slurm `482289`, W&B `dz48wt5c`: **INVALID despite exit0**. Ten train steps were finite, but all validation metrics became NaN. Online encoder checkpoint had 37 negative BatchNorm running-variance entries.
+- Root cause: `SafeBatchNorm1d` used uninitialized scratch running buffers; train mode hid corruption by using batch statistics and eval exposed it. ID31 epoch/latest/final checkpoints are forbidden.
+- Fixed scratch buffers to clone current running stats, added standard-BN/repeated-forward regression tests, and added fail-fast non-finite train/val checks. Registered `E0034`.
 
 ## Remaining
 
-1. Monitor cache manifests/counts/size and exact online/cache bitwise gate.
-2. Monitor world2 smoke, checkpoint/resume gates, memory and step time.
-3. Propose formal SFT2 resources for separate human approval.
+1. Run broader tests and commit the BatchNorm fix.
+2. Rerun a new world2 smoke with W&B ID32; valid caches may be reused.
+3. If smoke passes, measure memory/step time and propose formal SFT2 resources for separate human approval.
