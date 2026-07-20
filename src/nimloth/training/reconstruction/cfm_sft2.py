@@ -292,7 +292,11 @@ def _init_wandb(args: argparse.Namespace, metadata: dict[str, Any]):
         return None
     run_id_path = args.output_dir / "wandb_run_id.txt"
     run_id = args.wandb_id
-    resume_requested = args.resume or args.resume_checkpoint is not None
+    resume_requested = (
+        bool(getattr(args, "wandb_resume", False))
+        or args.resume
+        or args.resume_checkpoint is not None
+    )
     if run_id is None and resume_requested and run_id_path.is_file():
         run_id = run_id_path.read_text(encoding="utf-8").strip() or None
     try:
@@ -933,6 +937,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb-project", default="nimloth-recon")
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--wandb-id", default=None)
+    parser.add_argument(
+        "--wandb-resume",
+        action="store_true",
+        help="Resume only the W&B run identity without requiring a training checkpoint.",
+    )
     parser.add_argument("--no-wandb", action="store_true")
     return parser
 
