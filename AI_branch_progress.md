@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-07-20：SFT2 模型与训练高优先级缺陷修复
+
+- 在本地分支 `fix/sft2-review-bugs` 修复三项只读审查发现的问题，尚未合并回 `dev`。
+- SFT2 当前仍监督单步 dynamics，因此新建及外部初始化的 WM predictor 明确要求 `history_size=1`；不再以单步训练权重执行未训练的多位置上下文 rollout。旧 `history_size>1` predictor 会 fail-fast，真实多步 dynamics loss 仍属于待人类确认的独立任务。
+- DDP 验证改用不补齐、不重复样本的 rank-strided sampler；验证 forward 使用 unwrapped model 以允许各 rank 不等长迭代，末尾通过 distributed object gather 合并所有 rank 的 metric sums/counts。
+- SFT2 resume 现在要求 `state_proj`、WM predictor config/weights、value head 与 training state 全部存在；WM history 不匹配及 ValueHead 权重缺失均明确报错，禁止随机初始化后静默继续。
+- 验证：compileall 与 `git diff --check` 通过；focused tests `19 passed`（含真实 2-process Gloo 汇总）；相关完整回归 `79 passed, 1 deselected`。deselect 的 `test_two_step_prefix_tokenization_is_stable` 在基线即因 `token_id_map` 赋值前使用而失败，本分支未修改该无关测试。
+
 ## 2026-07-20：RL k>1 与 WM+ValueHead 连续动作任务草案
 
 - 按人类要求先创建新任务 `ai_tasks/rl_kgt1_wm_multiaction_plan.md`，当前仅为待审阅计划，尚未修改 RL 代码或启动实验。

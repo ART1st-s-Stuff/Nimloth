@@ -49,6 +49,7 @@ class ValueHead(nn.Module):
         path = Path(path)
         module = cls(emb_dim=emb_dim, num_actions=num_actions, hidden_dim=hidden_dim)
         state_path = path / "value_head.pt"
-        if state_path.is_file():
-            module.load_state_dict(torch.load(state_path, map_location=map_location, weights_only=True))
+        if not state_path.is_file():
+            raise FileNotFoundError(f"missing ValueHead checkpoint: {state_path}")
+        module.load_state_dict(torch.load(state_path, map_location=map_location, weights_only=True))
         return module

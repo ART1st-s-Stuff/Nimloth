@@ -41,9 +41,17 @@ def resume_epoch_and_micro_step(state: dict[str, Any]) -> tuple[int, int]:
 
 
 def is_trainable_checkpoint_dir(ckpt_dir: Path) -> bool:
-    if not (ckpt_dir / "training_state.pt").is_file():
-        return False
-    return (ckpt_dir / "config.json").is_file() or (ckpt_dir / "adapter_config.json").is_file()
+    required = (
+        ckpt_dir / "training_state.pt",
+        ckpt_dir / "state_proj.pt",
+        ckpt_dir / "wm_predictor" / "config.json",
+        ckpt_dir / "wm_predictor" / "predictor.pt",
+        ckpt_dir / "value_head" / "value_head.pt",
+    )
+    return all(path.is_file() for path in required) and (
+        (ckpt_dir / "config.json").is_file()
+        or (ckpt_dir / "adapter_config.json").is_file()
+    )
 
 
 def find_resume_checkpoint(output_dir: Path) -> Path | None:
@@ -222,56 +230,71 @@ def load_aux_checkpoint(
     query_tune: str | None = None,
 ) -> None:
     sp_path = ckpt_dir / "state_proj.pt"
-    if sp_path.is_file():
-        proj = state_proj.module if hasattr(state_proj, "module") else state_proj
-        state_path = ckpt_dir / "training_state.pt"
-        if state_path.is_file():
-            training_state = torch.load(state_path, map_location="cpu", weights_only=False)
-            saved_mode = training_state.get("latent_query_mode")
-            if saved_mode is None and "mask_latent_query_labels" in training_state:
-                saved_mode = "inject" if training_state["mask_latent_query_labels"] else "generate"
-            if latent_query_mode is not None and saved_mode is not None and saved_mode != latent_query_mode:
-                raise ValueError(
-                    "checkpoint latent_query_mode mismatch: "
-                    f"checkpoint={saved_mode}, current={latent_query_mode}"
-                )
-            # Historical checkpoints had frozen query embeddings.
-            saved_query_tune = training_state.get("query_tune", "freeze")
-            if query_tune is not None and saved_query_tune != query_tune:
-                raise ValueError(
-                    "checkpoint query_tune mismatch: "
-                    f"checkpoint={saved_query_tune}, current={query_tune}"
-                )
-            saved_k = training_state.get("latent_token_count")
-            if saved_k is not None and int(saved_k) != int(getattr(proj, "latent_token_count", 1)):
-                raise ValueError(
-                    "checkpoint latent_token_count mismatch: "
-                    f"checkpoint={saved_k}, current={getattr(proj, 'latent_token_count', 1)}"
-                )
-            saved_hidden_dim = training_state.get("qwen_hidden_dim")
-            if saved_hidden_dim is not None and int(saved_hidden_dim) != int(getattr(proj, "qwen_hidden_dim", -1)):
-                raise ValueError(
-                    "checkpoint qwen_hidden_dim mismatch: "
-                    f"checkpoint={saved_hidden_dim}, current={getattr(proj, 'qwen_hidden_dim', -1)}"
-                )
-            saved_input_dim = training_state.get("state_proj_input_dim")
-            if saved_input_dim is not None and int(saved_input_dim) != int(getattr(proj, "input_dim", -1)):
-                raise ValueError(
-                    "checkpoint state_proj_input_dim mismatch: "
-                    f"checkpoint={saved_input_dim}, current={getattr(proj, 'input_dim', -1)}"
-                )
-        proj.load_state_dict(torch.load(sp_path, map_location=device, weights_only=True))
-    pred_path = ckpt_dir / "wm_predictor"
-    if pred_path.is_dir():
-        pred = wm_predictor.module if hasattr(wm_predictor, "module") else wm_predictor
-        loaded = LatentWMPredictor.load_checkpoint(pred_path, map_location=device)
-        pred.load_state_dict(loaded.state_dict())
-    head_path = ckpt_dir / "value_head"
-    if head_path.is_dir():
-        head = value_head.module if hasattr(value_head, "module") else value_head
-        loaded_head = ValueHead.load_checkpoint(
-            head_path,
-            emb_dim=head.net[0].in_features,
-            map_location=device,
+    required = (
+        sp_path,
+        ckpt_dir / "training_state.pt",
+        ckpt_dir / "wm_predictor" / "config.json",
+        ckpt_dir / "wm_predictor" / "predictor.pt",
+        ckpt_dir / "value_head" / "value_head.pt",
+    )
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"incomplete SFT2 auxiliary checkpoint; missing: {missing}")
+
+    proj = state_proj.module if hasattr(state_proj, "module") else state_proj
+    training_state = torch.load(
+        ckpt_dir / "training_state.pt", map_location="cpu", weights_only=False
+    )
+    saved_mode = training_state.get("latent_query_mode")
+    if saved_mode is None and "mask_latent_query_labels" in training_state:
+        saved_mode = "inject" if training_state["mask_latent_query_labels"] else "generate"
+    if latent_query_mode is not None and saved_mode is not None and saved_mode != latent_query_mode:
+        raise ValueError(
+            "checkpoint latent_query_mode mismatch: "
+            f"checkpoint={saved_mode}, current={latent_query_mode}"
         )
-        head.load_state_dict(loaded_head.state_dict())
+    # Historical checkpoints had frozen query embeddings.
+    saved_query_tune = training_state.get("query_tune", "freeze")
+    if query_tune is not None and saved_query_tune != query_tune:
+        raise ValueError(
+            "checkpoint query_tune mismatch: "
+            f"checkpoint={saved_query_tune}, current={query_tune}"
+        )
+    saved_k = training_state.get("latent_token_count")
+    if saved_k is not None and int(saved_k) != int(getattr(proj, "latent_token_count", 1)):
+        raise ValueError(
+            "checkpoint latent_token_count mismatch: "
+            f"checkpoint={saved_k}, current={getattr(proj, 'latent_token_count', 1)}"
+        )
+    saved_hidden_dim = training_state.get("qwen_hidden_dim")
+    if saved_hidden_dim is not None and int(saved_hidden_dim) != int(getattr(proj, "qwen_hidden_dim", -1)):
+        raise ValueError(
+            "checkpoint qwen_hidden_dim mismatch: "
+            f"checkpoint={saved_hidden_dim}, current={getattr(proj, 'qwen_hidden_dim', -1)}"
+        )
+    saved_input_dim = training_state.get("state_proj_input_dim")
+    if saved_input_dim is not None and int(saved_input_dim) != int(getattr(proj, "input_dim", -1)):
+        raise ValueError(
+            "checkpoint state_proj_input_dim mismatch: "
+            f"checkpoint={saved_input_dim}, current={getattr(proj, 'input_dim', -1)}"
+        )
+    proj.load_state_dict(torch.load(sp_path, map_location=device, weights_only=True))
+
+    pred_path = ckpt_dir / "wm_predictor"
+    pred = wm_predictor.module if hasattr(wm_predictor, "module") else wm_predictor
+    loaded = LatentWMPredictor.load_checkpoint(pred_path, map_location=device)
+    if loaded.config.history_size != pred.config.history_size:
+        raise ValueError(
+            "checkpoint WM history_size mismatch: "
+            f"checkpoint={loaded.config.history_size}, current={pred.config.history_size}"
+        )
+    pred.load_state_dict(loaded.state_dict())
+
+    head_path = ckpt_dir / "value_head"
+    head = value_head.module if hasattr(value_head, "module") else value_head
+    loaded_head = ValueHead.load_checkpoint(
+        head_path,
+        emb_dim=head.net[0].in_features,
+        map_location=device,
+    )
+    head.load_state_dict(loaded_head.state_dict())

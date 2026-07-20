@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 
 import torch
+import torch.distributed as dist
 
 from nimloth.training.common.metrics import MetricAccumulator
 from nimloth.backbone.vision_ema import VisionEncoderEMA
@@ -13,6 +14,36 @@ from nimloth.training.sft2.qwen_latent import extract_qwen_latents
 from nimloth.training.sft2.preprocess_cache import unpack_transition_batch
 from nimloth.training.sft2.step import compute_step_value_loss, compute_step_wm_loss, compute_trajectory_wm_loss
 from nimloth.training.sft2.trajectory_once import forward_trajectory_once
+
+
+def merge_metric_accumulators(
+    accumulators: list[tuple[dict[str, float], dict[str, int]]],
+) -> dict[str, float]:
+    """Merge rank-local metric sums/counts into global averages."""
+
+    merged = MetricAccumulator()
+    for sums, counts in accumulators:
+        for key, value in sums.items():
+            merged.sums[key] = merged.sums.get(key, 0.0) + float(value)
+        for key, value in counts.items():
+            merged.counts[key] = merged.counts.get(key, 0) + int(value)
+    return merged.averages()
+
+
+def distributed_metric_averages(accumulator: MetricAccumulator) -> dict[str, float]:
+    """Return global metric averages when distributed validation is active."""
+
+    if not (dist.is_available() and dist.is_initialized()):
+        return accumulator.averages()
+    gathered: list[tuple[dict[str, float], dict[str, int]] | None] = [
+        None
+    ] * dist.get_world_size()
+    dist.all_gather_object(gathered, (accumulator.sums, accumulator.counts))
+    if any(rank_accumulator is None for rank_accumulator in gathered):
+        raise RuntimeError("distributed validation failed to gather a rank accumulator")
+    return merge_metric_accumulators(
+        [rank_accumulator for rank_accumulator in gathered if rank_accumulator is not None]
+    )
 
 
 @torch.no_grad()
@@ -117,8 +148,10 @@ def evaluate(
             success_rate = batch_step_success_rate(items)
             acc.update({**wm_metrics, **value_metrics, "success_rate": success_rate})
 
+    metrics = distributed_metric_averages(acc)
+
     model.train()
     state_proj.train()
     wm_predictor.train()
     value_head.train()
-    return acc.averages()
+    return metrics

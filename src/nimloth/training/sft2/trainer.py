@@ -44,6 +44,7 @@ from nimloth.training.sft2.checkpoint import (
 )
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.dataset import (
+    DistributedEvalSampler,
     TrajectoryRecordDataset,
     TransitionQwenDataset,
     collate_packed_trajectory_batch,
@@ -77,6 +78,16 @@ from nimloth.training.sft2.trajectory_once import forward_trajectory_once
 from nimloth.training.sft2.trajectory_sampler import TrajectoryAwareBatchSampler
 from nimloth.wm import LeWMConfig, LatentWMPredictor, StateProjector, ValueHead
 from nimloth.wm.dataset import TransitionJsonlDataset, TransitionSample
+
+SFT2_WM_HISTORY_SIZE = 1
+
+
+def require_sft2_wm_history(wm_predictor: LatentWMPredictor, source: Path) -> None:
+    if wm_predictor.config.history_size != SFT2_WM_HISTORY_SIZE:
+        raise ValueError(
+            "SFT2 one-step dynamics requires a WM checkpoint with history_size=1; "
+            f"got history_size={wm_predictor.config.history_size} from {source}"
+        )
 
 
 def _unwrap(module):
@@ -490,7 +501,7 @@ def train_sft2(args=None) -> int:
     elif world > 1:
         train_sampler = DistributedSampler(train_ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed)
     if world > 1:
-        val_sampler = DistributedSampler(val_ds, num_replicas=world, rank=rank, shuffle=False)
+        val_sampler = DistributedEvalSampler(val_ds, num_replicas=world, rank=rank)
 
     if train_batch_sampler is not None:
         train_loader = DataLoader(
@@ -619,9 +630,12 @@ def train_sft2(args=None) -> int:
     if not qwen_pair_parallel:
         model.to(device)
 
-    wm_cfg = LeWMConfig(emb_dim=args.emb_dim)
+    # SFT2 supervises one-step state/action pairs, so rollout must use the same
+    # context length instead of untrained multi-position predictor inputs.
+    wm_cfg = LeWMConfig(emb_dim=args.emb_dim, history_size=SFT2_WM_HISTORY_SIZE)
     if args.wm_predictor_checkpoint is not None:
         wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_predictor_checkpoint, map_location=device).to(device)
+        require_sft2_wm_history(wm_predictor, args.wm_predictor_checkpoint)
     else:
         wm_predictor = LatentWMPredictor.create(wm_cfg).to(device)
     if not train_wm_predictor:
@@ -1144,7 +1158,7 @@ def train_sft2(args=None) -> int:
             dist.barrier()
 
         val_metrics = evaluate(
-            model,
+            _unwrap(model),
             _unwrap(state_proj),
             _unwrap(wm_predictor),
             _unwrap(value_head),

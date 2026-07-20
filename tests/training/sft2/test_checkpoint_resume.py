@@ -10,17 +10,34 @@ import torch
 
 from nimloth.training.sft2.checkpoint import (
     find_resume_checkpoint,
+    is_trainable_checkpoint_dir,
     load_aux_checkpoint,
     resolve_resume_checkpoint_dir,
     resume_epoch_and_micro_step,
 )
-from nimloth.training.sft2.trainer import _seed_training_micro_step, _training_micro_seed
+from nimloth.training.sft2.trainer import (
+    _seed_training_micro_step,
+    _training_micro_seed,
+    require_sft2_wm_history,
+)
+from nimloth.wm.lewm import LeWMConfig
+from nimloth.wm.predictor import LatentWMPredictor
+
+
+def _write_aux_markers(ckpt_dir: Path) -> None:
+    torch.save({}, ckpt_dir / "state_proj.pt")
+    (ckpt_dir / "wm_predictor").mkdir()
+    (ckpt_dir / "wm_predictor" / "config.json").write_text("{}", encoding="utf-8")
+    torch.save({}, ckpt_dir / "wm_predictor" / "predictor.pt")
+    (ckpt_dir / "value_head").mkdir()
+    torch.save({}, ckpt_dir / "value_head" / "value_head.pt")
 
 
 def _write_ckpt(ckpt_dir: Path, *, step: int, epoch: int) -> None:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     (ckpt_dir / "config.json").write_text("{}", encoding="utf-8")
     torch.save({"step": step, "epoch": epoch}, ckpt_dir / "training_state.pt")
+    _write_aux_markers(ckpt_dir)
 
 
 def test_counter_based_micro_seed_replays_stochastic_operations() -> None:
@@ -82,6 +99,11 @@ def test_resume_rejects_query_tune_mismatch(tmp_path: Path) -> None:
         },
         ckpt / "training_state.pt",
     )
+    (ckpt / "wm_predictor").mkdir()
+    (ckpt / "wm_predictor" / "config.json").write_text("{}", encoding="utf-8")
+    torch.save({}, ckpt / "wm_predictor" / "predictor.pt")
+    (ckpt / "value_head").mkdir()
+    torch.save({}, ckpt / "value_head" / "value_head.pt")
 
     with pytest.raises(ValueError, match="checkpoint query_tune mismatch"):
         load_aux_checkpoint(
@@ -93,3 +115,26 @@ def test_resume_rejects_query_tune_mismatch(tmp_path: Path) -> None:
             latent_query_mode="inject",
             query_tune="adapter",
         )
+
+
+def test_resume_checkpoint_requires_all_auxiliary_weights(tmp_path: Path) -> None:
+    ckpt = tmp_path / "checkpoint"
+    _write_ckpt(ckpt, step=1, epoch=1)
+    (ckpt / "value_head" / "value_head.pt").unlink()
+
+    assert not is_trainable_checkpoint_dir(ckpt)
+    with pytest.raises(FileNotFoundError, match="incomplete SFT2 auxiliary checkpoint"):
+        load_aux_checkpoint(
+            ckpt,
+            object(),
+            object(),
+            object(),
+            torch.device("cpu"),
+        )
+
+
+def test_sft2_rejects_multi_step_predictor_checkpoint() -> None:
+    predictor = LatentWMPredictor.create(LeWMConfig(emb_dim=16, history_size=4))
+
+    with pytest.raises(ValueError, match="history_size=1"):
+        require_sft2_wm_history(predictor, Path("wm"))
