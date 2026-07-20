@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from nimloth.training.sft2.trajectory_once import labels_for_trajectory_steps, supervised_token_count
+from nimloth.training.sft2.diagnosis.trajectory_once import labels_for_trajectory_steps, supervised_token_count
 
 _spec = importlib.util.spec_from_file_location(
     "test_preprocess_cache",

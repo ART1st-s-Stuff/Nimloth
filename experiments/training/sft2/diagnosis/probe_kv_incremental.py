@@ -21,7 +21,7 @@ from nimloth.latent import (
     special_token_ids,
 )
 from nimloth.training.sft2.diagnosis.trajectory_forward import _prefix_latent
-from nimloth.wm.collate import prefix_messages_with_images
+from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
 from nimloth.wm.dataset import expand_record_transitions, load_jsonl_records
 
 

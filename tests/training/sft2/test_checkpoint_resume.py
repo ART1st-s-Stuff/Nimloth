@@ -15,11 +15,8 @@ from nimloth.training.sft2.checkpoint import (
     resolve_resume_checkpoint_dir,
     resume_epoch_and_micro_step,
 )
-from nimloth.training.sft2.trainer import (
-    _seed_training_micro_step,
-    _training_micro_seed,
-    require_sft2_wm_history,
-)
+from nimloth.training.sft2.components import require_sft2_wm_history
+from nimloth.training.sft2.utils import seed_training_micro_step, training_micro_seed
 from nimloth.wm.lewm import LeWMConfig
 from nimloth.wm.predictor import LatentWMPredictor
 
@@ -41,16 +38,16 @@ def _write_ckpt(ckpt_dir: Path, *, step: int, epoch: int) -> None:
 
 
 def test_counter_based_micro_seed_replays_stochastic_operations() -> None:
-    seed = _seed_training_micro_step(42, epoch=3, micro_step=7, rank=1)
+    seed = seed_training_micro_step(42, epoch=3, micro_step=7, rank=1)
     first = (random.random(), torch.rand(4))
     random.random()
     torch.rand(11)
-    assert _seed_training_micro_step(42, epoch=3, micro_step=7, rank=1) == seed
+    assert seed_training_micro_step(42, epoch=3, micro_step=7, rank=1) == seed
     second = (random.random(), torch.rand(4))
 
     assert first[0] == second[0]
     assert torch.equal(first[1], second[1])
-    assert _training_micro_seed(42, 3, 7, 0) != _training_micro_seed(42, 3, 7, 1)
+    assert training_micro_seed(42, 3, 7, 0) != training_micro_seed(42, 3, 7, 1)
 
 
 def test_resume_position_for_epoch_complete_and_legacy_checkpoints() -> None:

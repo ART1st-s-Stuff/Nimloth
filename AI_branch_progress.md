@@ -1102,3 +1102,14 @@
   - 新增 `--experiment-name`，避免启用 wandb 时引用不存在的 `args.experiment_name`。
   - distributed JSONL/FSDP 模式下，从 rank0 广播非 FSDP 小模块 `state_proj`、`wm_predictor`、`value_head` 初始 state，配合同步 JSONL 数据和确定性 batch，避免本地副本初始参数分叉。
 - 验证：`python -m py_compile src/nimloth/training/rl/*.py tests/training/rl/test_rollout_jsonl.py experiments/training/rl/rollout_env.py` 通过；`bash -n experiments/training/rl/run_inside_allocation.sh experiments/training/rl/*.slurm` 通过；pytest 仍受本地环境限制，系统 Python 无 pytest，复用 dev `.venv` 时 torch import 缺 `libstdc++.so.6`。
+
+## 2026-07-20：SFT2 模块边界与生产路径整理
+
+- SFT2 配置 schema 已归入 `training/sft2/config.py`，未知 YAML 字段会直接报错；生产 checkpoint 指标固定为模型产生的 `val_wm_mse`。
+- 数据层拆为 `data/batch.py`、`data/factory.py`、`data/samplers.py` 和 `data/cache/`；训练与验证统一通过 `SFT2StepRunner.forward`。
+- Qwen transition/checkpoint 适配归入 `backbone/qwen25vl/`；外层 reconstruction/eval 不再依赖 SFT2 私有 dataset。
+- packed/full-trajectory forward 已从生产 CLI、Slurm wrapper 和提交脚本移除，研究实现及 cache 仅保留在 `training/sft2/diagnosis/`。
+- 静态 JSONL success 比例已移到 `wm.statistics` 并明确标记为数据集统计，不再写入 SFT2 validation 或参与 checkpoint 选择。
+- 邻接回归修复了 RCDM 移入 `recon/rcdm/` 后默认 `external/RCDM` 根目录层级错误。
+- 验证：相关 SFT2/common/backbone/WM/eval/recon/RL 测试共 131 项通过（130 项常规测试 + 单独放开 loopback socket 后的 1 项 Gloo 双进程测试）；`compileall`、修改过的 shell/Slurm `bash -n`、`git diff --check` 通过。
+- 对 `training/rl` 完成只读审计，确认仍需优先处理 PPO behavior/new-policy prompt 与概率契约、LoRA+vision-full checkpoint 完整性、validation 数据边界和配置/schema 漂移；本轮未修改 RL 实现。

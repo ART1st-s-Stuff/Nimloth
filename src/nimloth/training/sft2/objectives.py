@@ -1,4 +1,4 @@
-"""Loss functions for SFT2 (WM latent MSE + SIGReg + value head + optional LM CE)."""
+"""Pure SFT2 objective functions over latent tensors and WM modules."""
 
 from __future__ import annotations
 
@@ -9,14 +9,12 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from nimloth.wm._vendor_lewm import SIGReg
+from nimloth.wm import SIGReg
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
 
 __all__ = [
-    "SIGReg",
-    "StateProjector",
     "_build_trajectory_sigreg_inputs",
     "compute_combined_loss",
     "compute_value_loss",

@@ -24,11 +24,11 @@ from nimloth.latent import (
     special_token_ids,
 )
 from nimloth.training.sft2.diagnosis.packed_trajectory import _reset_model_rope_state
-from nimloth.training.sft2.trajectory_once import (
+from nimloth.training.sft2.diagnosis.trajectory_once import (
     encode_full_trajectory,
     find_step_latent_indices,
 )
-from nimloth.wm.collate import prefix_messages_with_images
+from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
 from nimloth.wm.dataset import TransitionSample
 
 

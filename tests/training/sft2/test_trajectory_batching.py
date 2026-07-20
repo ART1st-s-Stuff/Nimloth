@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nimloth.training.sft2.trajectory_batching import (
+from nimloth.training.sft2.diagnosis.trajectory_batching import (
     TrajectoryDistributedBatchSampler,
     assert_packed_batch,
     build_record_trajectory_batches,

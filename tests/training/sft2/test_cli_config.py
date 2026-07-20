@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from nimloth.training.sft2.cli import parse_sft2_args
+from nimloth.training.sft2.config import flatten_sft2_yaml_config
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -31,7 +32,8 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert args.mask_latent_query_labels is True
     assert args.query_tune == "adapter"
     assert args.query_lr == pytest.approx(5e-5)
-    assert args.early_stop_metric == "val_wm_mse"
+    assert args.checkpoint_metric == "val_wm_mse"
+    assert args.batch_mode == "trajectory_image_budget"
     assert args.epochs == 10
     assert args.batch_size == 2
     assert args.grad_accum == 4
@@ -54,7 +56,7 @@ def test_k1_control_only_changes_latent_capacity_not_runtime_budget() -> None:
     assert args.grad_accum == 4
     assert args.max_pixels == 100352
     assert args.max_images_per_batch == 12
-    assert args.early_stop_metric == "val_wm_mse"
+    assert args.checkpoint_metric == "val_wm_mse"
 
 
 def test_cli_values_override_yaml_defaults() -> None:
@@ -93,3 +95,8 @@ def test_cli_rejects_conflicting_mode_and_legacy_mask() -> None:
                 "--no-mask-latent-query-labels",
             ]
         )
+
+
+def test_sft2_config_rejects_unknown_fields() -> None:
+    with pytest.raises(ValueError, match="unknown SFT2 config field: train.typo"):
+        flatten_sft2_yaml_config({"train": {"typo": True}})

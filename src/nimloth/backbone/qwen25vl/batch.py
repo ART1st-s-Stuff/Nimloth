@@ -17,7 +17,7 @@ from nimloth.latent import (
 )
 
 
-def _message_cache_key(messages: list[dict[str, Any]]) -> str:
+def message_cache_key(messages: list[dict[str, Any]]) -> str:
     """Stable key for repeated trajectory prefixes within/across epochs."""
 
     return json.dumps(messages, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -90,7 +90,7 @@ def _offset_cache(processor: AutoProcessor) -> _OffsetCache:
     return cache
 
 
-def _render_messages(
+def render_messages(
     messages: list[dict[str, Any]],
     processor: AutoProcessor,
     *,
@@ -98,7 +98,7 @@ def _render_messages(
     latent_token_count: int = 1,
 ) -> str:
     cache = _template_cache(processor)
-    cache_key = _message_cache_key(messages)
+    cache_key = message_cache_key(messages)
     text = cache.render(cache_key, add_generation_prompt)
     return normalize_latent_state_blocks(text, latent_token_count)
 
@@ -124,13 +124,13 @@ def assistant_char_spans(
     if last_assistant_index is None:
         return []
 
-    prev_gen = _render_messages(
+    prev_gen = render_messages(
         messages[:last_assistant_index],
         processor,
         add_generation_prompt=True,
         latent_token_count=latent_token_count,
     )
-    cur = _render_messages(
+    cur = render_messages(
         messages[: last_assistant_index + 1],
         processor,
         add_generation_prompt=False,
@@ -175,7 +175,7 @@ def _mask_latent_query_labels(
     return labels
 
 
-def _labels_for_text_rows(
+def labels_for_text_rows(
     processor: AutoProcessor,
     enc_input_ids: torch.Tensor,
     texts: list[str],
@@ -218,7 +218,7 @@ def encode_qwen_item(
 ) -> dict[str, Any]:
     """Encode one prefix with the same semantics as ``build_qwen_batch``."""
 
-    text = _render_messages(
+    text = render_messages(
         messages,
         processor,
         add_generation_prompt=False,
@@ -246,7 +246,7 @@ def encode_qwen_item(
         else:
             out[key] = value
     if include_labels:
-        labels = _labels_for_text_rows(
+        labels = labels_for_text_rows(
             processor,
             enc["input_ids"],
             [text],
@@ -280,7 +280,7 @@ def build_qwen_batch(
     spans_per_item: list[list[tuple[int, int]]] = []
     all_images: list[list[Image.Image]] = []
     for item in items:
-        text = _render_messages(
+        text = render_messages(
             item["messages"],
             processor,
             add_generation_prompt=False,
@@ -304,7 +304,7 @@ def build_qwen_batch(
         max_length=max_length,
         return_tensors="pt",
     )
-    enc["labels"] = _labels_for_text_rows(
+    enc["labels"] = labels_for_text_rows(
         processor,
         enc["input_ids"],
         texts,

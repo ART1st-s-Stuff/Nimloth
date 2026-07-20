@@ -6,17 +6,17 @@ import torch
 
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
-from nimloth.training.sft2.loss import compute_combined_loss, compute_wm_latent_loss
+from nimloth.training.sft2.objectives import compute_combined_loss, compute_wm_latent_loss
 from nimloth.training.sft2.step import (
     compute_step_value_loss,
     compute_step_wm_loss,
     wm_eligible_indices,
 )
-from nimloth.training.sft2.trajectory_once import (
+from nimloth.training.sft2.diagnosis.trajectory_once import (
     forward_trajectory_once,
     supervised_token_count,
 )
-from nimloth.wm.collate import transition_collate_for_qwen
+from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
 from nimloth.wm.dataset import expand_record_transitions
 
 
@@ -51,7 +51,7 @@ def legacy_record_losses(
         model, items, current, processor, token_id_map, device, state_proj, wm_predictor, max_length
     )
     value_loss, _ = compute_step_value_loss(
-        current, items, state_proj, value_head, device, rank_margin=0.1, lambda_rank=1.0
+        current, items, state_proj, value_head, rank_margin=0.1, lambda_rank=1.0
     )
     total, _ = compute_combined_loss(
         wm_loss=wm_loss,
@@ -102,7 +102,7 @@ def packed_record_losses(
         wm_loss = torch.zeros((), device=device)
         sigreg_loss = None
     value_loss, _ = compute_step_value_loss(
-        traj.current_latents, items, state_proj, value_head, device, rank_margin=0.1, lambda_rank=1.0
+        traj.current_latents, items, state_proj, value_head, rank_margin=0.1, lambda_rank=1.0
     )
     total, _ = compute_combined_loss(
         wm_loss=wm_loss,

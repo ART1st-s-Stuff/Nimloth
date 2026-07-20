@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from nimloth.training.sft2.trajectory_once import ce_loss_from_logits, legacy_batch_ce_loss
+from nimloth.training.sft2.diagnosis.trajectory_once import ce_loss_from_logits, legacy_batch_ce_loss
 
 
 def test_token_weighted_ce_matches_legacy_batch_mean() -> None:

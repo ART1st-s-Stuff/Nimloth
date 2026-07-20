@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+from torch.utils.data import Dataset
+
 # Matches vagen.envs.navigation.utils.nimloth_format.ACTION_NAMES length.
 NUM_NAVIGATION_ACTIONS = 8
 
@@ -143,7 +145,7 @@ def iter_transitions_from_jsonl(
         yield from expand_record_transitions(record, value_gamma=value_gamma)
 
 
-class TransitionJsonlDataset:
+class TransitionJsonlDataset(Dataset[TransitionSample]):
     """PyTorch-style indexable dataset over expanded transitions."""
 
     def __init__(
@@ -164,6 +166,12 @@ class TransitionJsonlDataset:
                 value_gamma=value_gamma,
             )
         )
+
+    @classmethod
+    def from_samples(cls, samples: list[TransitionSample]) -> TransitionJsonlDataset:
+        dataset = cls.__new__(cls)
+        dataset.samples = samples
+        return dataset
 
     def __len__(self) -> int:
         return len(self.samples)

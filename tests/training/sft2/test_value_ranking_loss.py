@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from nimloth.training.sft2.loss import compute_value_loss
+from nimloth.training.sft2.objectives import compute_value_loss
 from nimloth.wm.value_head import ValueHead
 
 

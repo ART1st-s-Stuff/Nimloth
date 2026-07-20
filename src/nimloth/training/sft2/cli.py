@@ -6,12 +6,12 @@ import argparse
 from pathlib import Path
 
 from nimloth.latent import LATENT_QUERY_MODES, query_labels_are_masked, resolve_latent_query_mode
-from nimloth.training.common.config import apply_yaml_defaults
+from nimloth.training.sft2.config import apply_sft2_yaml_defaults
 
 
 def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="SFT2: latent WM + value head alignment")
-    applied_config = apply_yaml_defaults(ap, config_path)
+    applied_config = apply_sft2_yaml_defaults(ap, config_path)
 
     ap.add_argument(
         "--config",
@@ -100,9 +100,10 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--wandb-run-name", default=None)
     ap.add_argument("--no-wandb", action="store_true")
     ap.add_argument(
-        "--early-stop-metric",
-        choices=("val_success_rate", "val_wm_mse"),
-        default="val_success_rate",
+        "--checkpoint-metric",
+        choices=("val_wm_mse",),
+        default="val_wm_mse",
+        help="Model-derived validation metric used to select the best checkpoint.",
     )
     ap.add_argument(
         "--preprocess-cache-dir",
@@ -174,25 +175,13 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Keep only the last N step_NNNNNN checkpoints when step checkpointing is enabled (0 keeps all).",
     )
     ap.add_argument(
-        "--trajectory-aware-batching",
-        action=argparse.BooleanOptionalAction,
-        default=False,
+        "--batch-mode",
+        choices=("random", "trajectory", "trajectory_image_budget"),
+        default="trajectory_image_budget",
         help=(
-            "Batch consecutive prefixes from the same trajectory as independent rows. "
-            "This improves padding/next-target locality without full-trajectory forward."
-        ),
-    )
-    ap.add_argument(
-        "--full-trajectory-batching",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Each micro-batch is one complete trajectory (all transitions for one record). "
-            "Qwen still sees per-prefix independent rows (NOT packed-forward). "
-            "This lets SIGReg access the full trajectory's projected embeddings "
-            "while respecting Qwen-VL prefix non-invariance. "
-            "Micro-batch size = trajectory length (variable). "
-            "Do NOT combine with --packed-forward."
+            "random uses ordinary batches; trajectory groups a fixed number of "
+            "consecutive prefixes; trajectory_image_budget groups consecutive "
+            "prefixes under the configured image and step limits."
         ),
     )
     ap.add_argument(
@@ -200,7 +189,7 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         type=int,
         default=16,
         help=(
-            "When --full-trajectory-batching is enabled, hard ceiling on steps "
+            "In trajectory_image_budget mode, hard ceiling on steps "
             "per micro-batch (default 16).  The primary limit is --max-images-per-batch."
         ),
     )
@@ -209,24 +198,14 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         type=int,
         default=32,
         help=(
-            "When --full-trajectory-batching is enabled, cap total cumulative "
+            "In trajectory_image_budget mode, cap total cumulative "
             "prefix images per micro-batch (default 32).  Prevents CUDA OOM "
             "from long trajectories with large image prefixes."
         ),
     )
-    ap.add_argument(
-        "--packed-forward",
-        action="store_true",
-        help="Use full-trajectory single forward (research-only; not semantic-equivalent for default Qwen-VL SFT2).",
-    )
-    ap.add_argument(
-        "--allow-approx-trajectory-once",
-        action="store_true",
-        help="Explicitly allow non-equivalent trajectory-once packed forward for research/profiling only.",
-    )
     # set_defaults must run after add_argument: registering an argument with an
     # explicit default otherwise overwrites the YAML value set earlier.
-    apply_yaml_defaults(ap, applied_config)
+    apply_sft2_yaml_defaults(ap, applied_config)
     ap.set_defaults(config=applied_config)
     return ap
 

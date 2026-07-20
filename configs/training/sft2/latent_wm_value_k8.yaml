@@ -20,8 +20,6 @@ tuning:
 train:
   epochs: 10
   # P2: per-rank batch 2 x grad_accum 4 keeps effective batch 64 on 8 GPUs.
-  # Packed-forward (--packed-forward): micro-batch = 1 trajectory (~T steps/rank);
-  # tune grad_accum so world * grad_accum * avg_T ≈ 64, or verify loss curves vs legacy.
   batch_size: 2
   grad_accum: 4
   lr_qwen_start: 1.0e-8
@@ -36,15 +34,14 @@ train:
   # 20-image prefix comparable to the validated 9-image/grid32 workload.
   max_pixels: 100352
   emb_dim: 1024
-  # Full-trajectory batching (--full-trajectory-batching): each micro-batch is
-  # one complete trajectory; Qwen still forward each prefix as independent row
-  # (per-prefix semantics preserved).  Distinct from --packed-forward.
+  # Full-trajectory batching: each micro-batch is one trajectory chunk; Qwen
+  # still forwards every prefix as an independent row.
   # Micro-batch size = trajectory length (variable).  Tune --grad-accum
   # accordingly so effective steps match: world * grad_accum * avg_records_per_rank.
   # Keep multi-row chunks below the validated H800 activation envelope. A
   # single longer prefix is still emitted as a one-row batch (never dropped).
   # --max-steps-per-trajectory provides an independent hard step ceiling.
-  full_trajectory_batching: true
+  batch_mode: trajectory_image_budget
   max_images_per_batch: 12
   max_steps_per_trajectory: 16
   # Performance knobs: remote H800 environment has flash_attn installed; keep
@@ -86,4 +83,4 @@ monitor:
   wandb: true
   # Offline rollout success is a fixed property of val_all.jsonl, not a model
   # metric. Select checkpoints by held-out WM MSE until online rollout eval is wired.
-  early_stop_metric: val_wm_mse
+  checkpoint_metric: val_wm_mse

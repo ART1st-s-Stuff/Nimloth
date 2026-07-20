@@ -22,12 +22,12 @@ from nimloth.backbone.qwen25vl.monkey_patch import (
     apply_qwen25vl_force_explicit_causal_mask_patch,
 )
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.training.sft2.trajectory_once import (
+from nimloth.training.sft2.diagnosis.trajectory_once import (
     encode_full_trajectory,
     find_step_latent_indices,
     forward_trajectory_once,
 )
-from nimloth.wm.collate import prefix_messages_with_images
+from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
 from nimloth.wm.dataset import (
     NUM_NAVIGATION_ACTIONS,
     TransitionSample,

@@ -1,4 +1,4 @@
-"""Batching helpers for P4 packed trajectory forward."""
+"""Research-only batching helpers for packed trajectory forwards."""
 
 from __future__ import annotations
 

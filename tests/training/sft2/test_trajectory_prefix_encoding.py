@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nimloth.training.sft2.trajectory_once import (
+from nimloth.training.sft2.diagnosis.trajectory_once import (
     encode_full_trajectory,
     find_step_latent_indices,
     verify_prefix_tokenization,
@@ -98,11 +98,11 @@ def _two_step_samples() -> list[TransitionSample]:
 def test_two_step_prefix_tokenization_is_stable() -> None:
     processor = FakeProcessor()
     steps = _two_step_samples()
+    token_id_map = {"<|latent_state|>": ord("\x01")}
     full_enc, full_text = encode_full_trajectory(steps, processor, max_length=512)
     verify_prefix_tokenization(
         steps, full_enc, processor, max_length=512, full_text=full_text, token_id_map=token_id_map
     )
-    token_id_map = {"<|latent_state|>": ord("\x01")}
     indices = find_step_latent_indices(steps, full_enc, processor, token_id_map, max_length=512)
     assert indices[0] == full_text.index("\x01")
     assert indices[1] == full_text.rindex("\x01")

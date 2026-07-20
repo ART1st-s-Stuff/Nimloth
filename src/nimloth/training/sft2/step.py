@@ -8,12 +8,13 @@ from typing import Any
 import torch
 from transformers import AutoProcessor
 
-from nimloth.backbone.qwen25vl.batch import _message_cache_key, build_qwen_batch
-from nimloth.training.sft2.preprocess_cache import collate_cached_encodings
+from nimloth.backbone.qwen25vl.batch import build_qwen_batch, message_cache_key
 from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
-from nimloth.training.sft2.loss import SIGReg, compute_value_loss, compute_wm_latent_loss
+from nimloth.training.sft2.objectives import compute_value_loss, compute_wm_latent_loss
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
+from nimloth.training.sft2.data.batch import collate_cached_encodings
 from nimloth.wm.predictor import LatentWMPredictor
+from nimloth.wm import SIGReg
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
 
@@ -25,7 +26,7 @@ def wm_eligible_indices(items: list[dict[str, Any]]) -> list[int]:
 def _next_messages_key(messages: list[dict[str, Any]] | None) -> str:
     if not messages:
         return ""
-    return _message_cache_key(messages)
+    return message_cache_key(messages)
 
 
 def _collate_next_enc_rows(
@@ -198,7 +199,6 @@ def compute_step_value_loss(
     items: list[dict[str, Any]],
     state_proj: StateProjector,
     value_head: ValueHead,
-    device: torch.device,
     *,
     rank_margin: float,
     lambda_rank: float,
@@ -219,40 +219,3 @@ def compute_step_value_loss(
         rank_margin=rank_margin,
         lambda_rank=lambda_rank,
     )
-
-
-def compute_trajectory_wm_loss(
-    items: list[dict[str, Any]],
-    current_latents: torch.Tensor,
-    next_latents: torch.Tensor | None,
-    state_proj: StateProjector,
-    wm_predictor: LatentWMPredictor,
-    device: torch.device,
-    *,
-    sigreg_module: SIGReg | None = None,
-) -> tuple[torch.Tensor | None, torch.Tensor | None, dict[str, float]]:
-    """WM loss from precomputed trajectory latents (no extra Qwen forward)."""
-
-    indices = wm_eligible_indices(items)
-    if indices:
-        if next_latents is None:
-            raise ValueError("next_latents required for WM-eligible trajectory steps")
-        next_rows = torch.stack([next_latents[i] for i in indices], dim=0)
-        action_indices = torch.tensor([items[i]["action_index"] for i in indices], device=device)
-        wm_items = [items[i] for i in indices]
-        return compute_wm_latent_loss(
-            qwen_hidden_at_latent=current_latents[indices],
-            qwen_hidden_at_next_latent=next_rows,
-            action_indices=action_indices,
-            state_proj=state_proj,
-            wm_predictor=wm_predictor,
-            sigreg_module=sigreg_module,
-            items=wm_items,
-        )
-
-    dummy_state_emb = state_proj(current_latents[:1])
-    with torch.no_grad():
-        dummy_target_emb = state_proj(current_latents[:1])
-    dummy_actions = torch.zeros((dummy_state_emb.shape[0],), device=dummy_state_emb.device, dtype=torch.long)
-    dummy_pred = wm_predictor(dummy_state_emb, dummy_actions)
-    return (dummy_state_emb.sum() + dummy_target_emb.sum() + dummy_pred.sum()) * 0.0, None, {}

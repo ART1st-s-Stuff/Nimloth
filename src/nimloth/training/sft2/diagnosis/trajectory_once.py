@@ -1,4 +1,4 @@
-"""Full-trajectory single forward for SFT2 packed mode (strict legacy equivalence)."""
+"""Research-only full-trajectory single forward for packed-mode diagnosis."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from transformers import AutoProcessor
 
 from nimloth.backbone.qwen25vl.batch import (
-    _message_cache_key,
+    message_cache_key,
     _offset_cache,
     _template_cache,
     assistant_char_spans,
@@ -31,7 +31,7 @@ from nimloth.latent import (
     normalize_latent_state_blocks,
 )
 from nimloth.latent.extraction import LatentActionTokens
-from nimloth.wm.collate import prefix_messages_with_images
+from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
 from nimloth.wm.dataset import TransitionSample
 
 
@@ -164,7 +164,7 @@ def _render_messages(
     latent_token_count: int = 1,
 ) -> str:
     cache = _template_cache(processor)
-    cache_key = _message_cache_key(messages)
+    cache_key = message_cache_key(messages)
     return normalize_latent_state_blocks(cache.render(cache_key, False), latent_token_count)
 
 

@@ -1,4 +1,4 @@
-from nimloth.training.sft2.trajectory_sampler import TrajectoryAwareBatchSampler
+from nimloth.training.sft2.data.samplers import TrajectoryAwareBatchSampler
 from nimloth.wm.dataset import TransitionSample
 
 

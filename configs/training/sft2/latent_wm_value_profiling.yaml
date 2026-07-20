@@ -41,4 +41,4 @@ loss:
 
 monitor:
   wandb: false
-  early_stop_metric: val_success_rate
+  checkpoint_metric: val_wm_mse

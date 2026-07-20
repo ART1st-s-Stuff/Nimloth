@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from nimloth.training.sft2.loss import (
+from nimloth.training.sft2.objectives import (
     StateProjector,
     _build_trajectory_sigreg_inputs,
     compute_combined_loss,

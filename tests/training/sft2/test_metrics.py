@@ -6,8 +6,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from nimloth.training.common.metrics import MetricAccumulator
-from nimloth.training.sft2.metrics import batch_step_success_rate
-from nimloth.training.sft2.dataset import DistributedEvalSampler
+from nimloth.training.sft2.data.samplers import DistributedEvalSampler
 from nimloth.training.sft2.evaluate import (
     distributed_metric_averages,
     merge_metric_accumulators,
@@ -27,11 +26,6 @@ def _distributed_metric_worker(rank: int, init_file: str) -> None:
         assert distributed_metric_averages(accumulator) == {"wm_mse": 7.0 / 3.0}
     finally:
         dist.destroy_process_group()
-
-
-def test_batch_step_success_rate() -> None:
-    items = [{"success": True}, {"success": False}]
-    assert batch_step_success_rate(items) == 0.5
 
 
 def test_distributed_eval_sampler_partitions_without_duplicates() -> None:

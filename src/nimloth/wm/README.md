@@ -1,6 +1,6 @@
 # World Model (`nimloth.wm`)
 
-Nimloth 世界模型层：transition 数据、LeWM predictor 封装、state/value 头，以及与 Qwen latent 的桥接。
+Nimloth 世界模型层：transition 数据、数据集统计、LeWM predictor 封装和 state/value 头。
 
 LeWM 核心算子来自 `external/le-wm`，经 `wm/_vendor_lewm.py` 以最小子集 vendoring；Nimloth 不在运行时 import `external/le-wm` 脚本。
 
@@ -11,7 +11,7 @@ LeWM 核心算子来自 `external/le-wm`，经 `wm/_vendor_lewm.py` 以最小子
 | 文件 | 内容 |
 |------|------|
 | `dataset.py` | Nimloth jsonl → `TransitionSample`；折扣 action value target |
-| `collate.py` | transition batch → Qwen messages + metadata |
+| `statistics.py` | 不运行模型的 rollout 数据集描述性统计 |
 | `_vendor_lewm.py` | LeWM `ARPredictor` / `Embedder` / `MLP` / `SIGReg`（上游子集） |
 | `lewm.py` | `LeWMConfig`、`action_one_hot`、`freeze_module` |
 | `predictor.py` | `LatentWMPredictor`（Qwen-latent 动力学，无 pixel encoder） |
@@ -29,7 +29,8 @@ LeWM 核心算子来自 `external/le-wm`，经 `wm/_vendor_lewm.py` 以最小子
 
 ## 与 training 的边界
 
-- **本包**：模型定义、transition 数据与 collate。
+- **本包**：模型定义与模型无关的 transition 数据。
+- **`nimloth.backbone.qwen25vl`**：transition → Qwen messages 的适配。
 - **`nimloth.training.sft2`**：训练循环（`trainer.py`）、loss 组装、checkpoint、验证。
 
 SFT2 实验入口：`experiments/training/sft2/train.py` → `nimloth.training.sft2.trainer`。

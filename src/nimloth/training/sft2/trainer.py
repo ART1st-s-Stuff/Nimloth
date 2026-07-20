@@ -2,377 +2,52 @@
 
 from __future__ import annotations
 
-import contextlib
 import csv
 import json
 import math
 import random
 import shutil
 import time
-from functools import partial
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, DistributedSampler
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+from transformers import AutoProcessor
 
 from nimloth.latent import (
     add_special_tokens,
-    initialize_extra_latent_token_embeddings,
-    install_query_embedding_adapter,
-    latent_state_tokens,
     query_labels_are_masked,
     resolve_latent_query_mode,
     special_token_ids,
 )
-from nimloth.training.common.config import merge_cli_over_yaml
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.common.metrics import MetricAccumulator
-from nimloth.backbone.qwen25vl.tuning import configure_qwen_tuning, resolve_tune_modes, uses_lora
-from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA, resolve_vision_ema
+from nimloth.backbone.qwen25vl.tuning import resolve_tune_modes, uses_lora
+from nimloth.backbone.qwen25vl.vision_ema import resolve_vision_ema
 from nimloth.training.common.schedules import qwen_lr_schedule, set_optimizer_group_lr
 from nimloth.training.common.wandb_logging import log_train_step, log_val_epoch, maybe_init_wandb
 from nimloth.training.sft2.checkpoint import (
-    load_aux_checkpoint,
-    load_lora_adapter_state,
+    SFT2CheckpointManager,
     read_checkpoint_step,
     resolve_resume_checkpoint_dir,
     resume_epoch_and_micro_step,
-    save_checkpoint,
 )
 from nimloth.training.sft2.cli import parse_sft2_args
-from nimloth.training.sft2.dataset import (
-    DistributedEvalSampler,
-    TrajectoryRecordDataset,
-    TransitionQwenDataset,
-    collate_packed_trajectory_batch,
-    collate_trajectory_record_batch,
-    collate_transition_batch,
-)
+from nimloth.training.sft2.components import build_sft2_components
+from nimloth.training.sft2.data.factory import build_data_bundle
+from nimloth.training.sft2.engine import SFT2StepRunner
 from nimloth.training.sft2.evaluate import evaluate
-from nimloth.training.sft2.loss import compute_combined_loss, wm_loss_weight_schedule
-from nimloth.training.sft2.loss import SIGReg as SIGRegModule
-from nimloth.training.sft2.preprocess_cache import (
-    COMPACT_CACHE_FORMAT,
-    LEGACY_CACHE_FORMAT,
-    CachedTransitionDataset,
-    CompactCachedTransitionCollator,
-    build_compact_transition_preprocess_cache,
-    build_transition_preprocess_cache,
-    cache_fingerprint,
-    collate_cached_transition_batch,
-    unpack_transition_batch,
-)
+from nimloth.training.sft2.objectives import compute_combined_loss, wm_loss_weight_schedule
 from nimloth.training.sft2.profiling import StepTimer
-from nimloth.eval.rollout import val_rollout_success_rate
-from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
-from nimloth.training.sft2.step import (
-    compute_step_value_loss,
-    compute_step_wm_loss,
-    compute_trajectory_wm_loss,
+from nimloth.training.sft2.utils import (
+    no_sync_if_needed,
+    seed_training_micro_step,
 )
-from nimloth.training.sft2.trajectory_batching import assert_packed_batch
-from nimloth.training.sft2.trajectory_once import forward_trajectory_once
-from nimloth.training.sft2.trajectory_sampler import TrajectoryAwareBatchSampler
-from nimloth.wm import LeWMConfig, LatentWMPredictor, StateProjector, ValueHead
-from nimloth.wm.dataset import TransitionJsonlDataset, TransitionSample
-
-SFT2_WM_HISTORY_SIZE = 1
-
-
-def require_sft2_wm_history(wm_predictor: LatentWMPredictor, source: Path) -> None:
-    if wm_predictor.config.history_size != SFT2_WM_HISTORY_SIZE:
-        raise ValueError(
-            "SFT2 one-step dynamics requires a WM checkpoint with history_size=1; "
-            f"got history_size={wm_predictor.config.history_size} from {source}"
-        )
-
-
-def _unwrap(module):
-    return module.module if hasattr(module, "module") else module
-
-
-def _training_micro_seed(base_seed: int, epoch: int, micro_step: int, rank: int) -> int:
-    """Counter-based RNG seed so an exact resume does not need skipped RNG state."""
-
-    return int((base_seed + epoch * 1_000_003 + micro_step * 10_007 + rank) % (2**63 - 1))
-
-
-def _seed_training_micro_step(base_seed: int, epoch: int, micro_step: int, rank: int) -> int:
-    seed = _training_micro_seed(base_seed, epoch, micro_step, rank)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-    return seed
-
-
-def _resolve_dataloader_workers(args) -> int:
-    if args.dataloader_workers >= 0:
-        return args.dataloader_workers
-    return 4 if args.preprocess_cache_dir is not None else 0
-
-
-def _prepare_transition_datasets(args, processor):
-    train_samples = TransitionJsonlDataset(
-        args.train_jsonl,
-        max_records=args.max_train_records,
-        success_only=args.success_only,
-        value_gamma=args.value_gamma,
-    ).samples
-    val_samples = TransitionJsonlDataset(
-        args.val_jsonl,
-        max_records=args.max_val_records,
-        value_gamma=args.value_gamma,
-    ).samples
-
-    if args.preprocess_cache_dir is None:
-        if args.packed_forward:
-            train_ds = TrajectoryRecordDataset(train_samples)
-            val_ds = TrajectoryRecordDataset(val_samples)
-            train_collate = collate_trajectory_record_batch
-            val_collate = collate_trajectory_record_batch
-        else:
-            train_ds = TransitionQwenDataset.from_samples(train_samples)
-            val_ds = TransitionQwenDataset.from_samples(val_samples)
-            train_collate = collate_transition_batch
-            val_collate = collate_transition_batch
-        return train_ds, val_ds, train_collate, val_collate, train_samples, val_samples
-
-    if args.packed_forward:
-        cache_root = args.preprocess_cache_dir
-        train_cache_dir = cache_root / "train_trajectory"
-        val_cache_dir = cache_root / "val_trajectory"
-        min_pixels = 3136
-        build_kwargs = dict(
-            model_path=args.model,
-            processor=processor,
-            max_length=args.max_length,
-            max_pixels=args.max_pixels,
-            min_pixels=min_pixels,
-            preprocess_workers=args.preprocess_workers,
-            force=args.force_rebuild_cache,
-            latent_token_count=args.latent_token_count,
-            mask_latent_query_labels=args.mask_latent_query_labels,
-        )
-        if is_main() and not args.require_prebuilt_cache:
-            from nimloth.training.sft2.preprocess_cache import build_trajectory_preprocess_cache
-
-            build_trajectory_preprocess_cache(
-                jsonl_path=args.train_jsonl,
-                cache_dir=train_cache_dir,
-                max_records=args.max_train_records,
-                success_only=args.success_only,
-                **build_kwargs,
-            )
-            build_trajectory_preprocess_cache(
-                jsonl_path=args.val_jsonl,
-                cache_dir=val_cache_dir,
-                max_records=args.max_val_records,
-                success_only=False,
-                **build_kwargs,
-            )
-        if dist.is_available() and dist.is_initialized():
-            dist.barrier()
-        trajectory_specs = (
-            (train_cache_dir, args.train_jsonl, len({sample.record_id for sample in train_samples})),
-            (val_cache_dir, args.val_jsonl, len({sample.record_id for sample in val_samples})),
-        )
-        for required_dir, jsonl_path, expected_count in trajectory_specs:
-            manifest_path = required_dir / "manifest.json"
-            if not manifest_path.is_file():
-                raise FileNotFoundError(f"required trajectory preprocess cache missing manifest: {manifest_path}")
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            expected_fingerprint = cache_fingerprint(
-                jsonl_path,
-                max_length=args.max_length,
-                max_pixels=args.max_pixels,
-                min_pixels=min_pixels,
-                vocab_size=len(processor.tokenizer),
-                latent_token_count=args.latent_token_count,
-                mask_latent_query_labels=args.mask_latent_query_labels,
-                processor_source=str(Path(args.model).resolve()),
-            )
-            if manifest.get("fingerprint") != expected_fingerprint or int(manifest.get("count", -1)) != expected_count:
-                raise ValueError(f"trajectory preprocess cache fingerprint/count mismatch: {required_dir}")
-        from nimloth.training.sft2.preprocess_cache import CachedTrajectoryDataset
-
-        return (
-            CachedTrajectoryDataset(train_cache_dir, train_samples),
-            CachedTrajectoryDataset(val_cache_dir, val_samples),
-            collate_trajectory_record_batch,
-            collate_trajectory_record_batch,
-            train_samples,
-            val_samples,
-        )
-
-    cache_root = args.preprocess_cache_dir
-    train_cache_dir = cache_root / "train"
-    val_cache_dir = cache_root / "val"
-    min_pixels = 3136
-    build_kwargs = dict(
-        model_path=args.model,
-        processor=processor,
-        max_length=args.max_length,
-        max_pixels=args.max_pixels,
-        min_pixels=min_pixels,
-        preprocess_workers=args.preprocess_workers,
-        force=args.force_rebuild_cache,
-        value_gamma=args.value_gamma,
-        latent_token_count=args.latent_token_count,
-        mask_latent_query_labels=args.mask_latent_query_labels,
-    )
-    if is_main() and not args.require_prebuilt_cache:
-        builder = (
-            build_compact_transition_preprocess_cache
-            if args.preprocess_cache_format == "compact"
-            else build_transition_preprocess_cache
-        )
-        compact_kwargs = (
-            {
-                "image_dtype": args.preprocess_cache_image_dtype,
-                "image_shard_size": args.preprocess_cache_image_shard_size,
-                "transition_shard_size": args.preprocess_cache_transition_shard_size,
-            }
-            if args.preprocess_cache_format == "compact"
-            else {}
-        )
-        builder(
-            jsonl_path=args.train_jsonl,
-            cache_dir=train_cache_dir,
-            max_records=args.max_train_records,
-            success_only=args.success_only,
-            **build_kwargs,
-            **compact_kwargs,
-        )
-        builder(
-            jsonl_path=args.val_jsonl,
-            cache_dir=val_cache_dir,
-            max_records=args.max_val_records,
-            success_only=False,
-            **build_kwargs,
-            **compact_kwargs,
-        )
-    if dist.is_available() and dist.is_initialized():
-        dist.barrier()
-    cache_format_id = COMPACT_CACHE_FORMAT if args.preprocess_cache_format == "compact" else LEGACY_CACHE_FORMAT
-    image_dtype = args.preprocess_cache_image_dtype if args.preprocess_cache_format == "compact" else "float32"
-    cache_specs = (
-        (train_cache_dir, args.train_jsonl, len(train_samples)),
-        (val_cache_dir, args.val_jsonl, len(val_samples)),
-    )
-    for required_dir, jsonl_path, expected_count in cache_specs:
-        manifest_path = required_dir / "manifest.json"
-        if not manifest_path.is_file():
-            mode = "required prebuilt" if args.require_prebuilt_cache else "built"
-            raise FileNotFoundError(f"{mode} preprocess cache missing manifest: {required_dir}")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        expected_fingerprint = cache_fingerprint(
-            jsonl_path,
-            max_length=args.max_length,
-            max_pixels=args.max_pixels,
-            min_pixels=min_pixels,
-            vocab_size=len(processor.tokenizer),
-            value_gamma=args.value_gamma,
-            latent_token_count=args.latent_token_count,
-            mask_latent_query_labels=args.mask_latent_query_labels,
-            cache_format=cache_format_id,
-            image_dtype=image_dtype,
-            processor_source=str(Path(args.model).resolve()),
-        )
-        actual_fingerprint = (
-            manifest.get("base_fingerprint")
-            if args.preprocess_cache_format == "compact"
-            else manifest.get("fingerprint")
-        )
-        if actual_fingerprint != expected_fingerprint or int(manifest.get("count", -1)) != expected_count:
-            raise ValueError(
-                f"preprocess cache fingerprint/count mismatch: {required_dir}; "
-                "rebuild the CPU cache for this model, dataset, and config"
-            )
-    pad_token_id = processor.tokenizer.pad_token_id
-    train_ds = CachedTransitionDataset(
-        train_cache_dir,
-        train_samples,
-        max_open_shards=args.preprocess_cache_shard_lru,
-    )
-    val_ds = CachedTransitionDataset(
-        val_cache_dir,
-        val_samples,
-        max_open_shards=args.preprocess_cache_shard_lru,
-    )
-    if train_ds.is_compact != val_ds.is_compact:
-        raise ValueError("train/val preprocess cache formats differ")
-    if train_ds.is_compact:
-        train_collate = CompactCachedTransitionCollator(
-            train_cache_dir,
-            pad_token_id=pad_token_id,
-            max_open_shards=args.preprocess_cache_shard_lru,
-        )
-        val_collate = CompactCachedTransitionCollator(
-            val_cache_dir,
-            pad_token_id=pad_token_id,
-            max_open_shards=args.preprocess_cache_shard_lru,
-        )
-    else:
-        train_collate = partial(collate_cached_transition_batch, pad_token_id=pad_token_id)
-        val_collate = partial(collate_cached_transition_batch, pad_token_id=pad_token_id)
-    return (
-        train_ds,
-        val_ds,
-        train_collate,
-        val_collate,
-        train_samples,
-        val_samples,
-    )
-
-
-def _unpack_train_batch(
-    batch,
-    processor,
-    max_length: int,
-    *,
-    packed_forward: bool,
-    pad_token_id: int,
-    latent_token_count: int = 1,
-    mask_latent_query_labels: bool = True,
-):
-    if isinstance(batch, dict) and "transition_samples" in batch:
-        return (
-            batch["items"],
-            None,
-            None,
-            batch["transition_samples"],
-            batch.get("full_enc"),
-        )
-    items, enc, next_rows = unpack_transition_batch(
-        batch,
-        processor,
-        max_length,
-        pad_token_id=pad_token_id,
-        latent_token_count=latent_token_count,
-        mask_latent_query_labels=mask_latent_query_labels,
-    )
-    return items, enc, next_rows, None, None
-
-
-def _no_sync_if_needed(modules, *, enabled: bool):
-    if not enabled:
-        return contextlib.nullcontext()
-    stack = contextlib.ExitStack()
-    for module in modules:
-        no_sync = getattr(module, "no_sync", None)
-        if no_sync is not None:
-            stack.enter_context(no_sync())
-    return stack
 
 
 def train_sft2(args=None) -> int:
     if args is None:
         args = parse_sft2_args()
-    merge_cli_over_yaml(args, args.config)
     args.latent_token_count = int(getattr(args, "latent_token_count", 1))
     args.latent_query_mode = resolve_latent_query_mode(
         getattr(args, "latent_query_mode", None),
@@ -405,8 +80,6 @@ def train_sft2(args=None) -> int:
     resume_state_path = (
         resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir is not None else None
     )
-    resume_adapter = resume_ckpt_dir / "adapter_config.json" if resume_ckpt_dir is not None else None
-
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = args.max_pixels
@@ -430,9 +103,7 @@ def train_sft2(args=None) -> int:
                     "init_model": str(args.model),
                     "wm_predictor_checkpoint": str(args.wm_predictor_checkpoint) if args.wm_predictor_checkpoint else None,
                     "output_dir": str(args.output_dir),
-                    "packed_forward": args.packed_forward,
-                    "trajectory_aware_batching": args.trajectory_aware_batching,
-                    "full_trajectory_batching": args.full_trajectory_batching,
+                    "batch_mode": args.batch_mode,
                     "latent_token_count": args.latent_token_count,
                     "latent_query_mode": args.latent_query_mode,
                     "query_tune": args.query_tune,
@@ -444,316 +115,34 @@ def train_sft2(args=None) -> int:
             )
         )
 
-    if args.packed_forward and not args.allow_approx_trajectory_once:
-        raise ValueError(
-            "--packed-forward trajectory-once is not semantic-equivalent for default multi-image Qwen-VL SFT2; "
-            "pass --allow-approx-trajectory-once only for research/profiling."
-        )
-    if args.trajectory_aware_batching and args.packed_forward:
-        raise ValueError("--trajectory-aware-batching is for legacy per-prefix batching; do not combine with --packed-forward")
-    if args.full_trajectory_batching and args.packed_forward:
-        raise ValueError(
-            "--full-trajectory-batching guarantees per-prefix Qwen forward semantics; "
-            "do NOT combine with --packed-forward (which does full-trajectory single forward)."
-        )
-    if args.full_trajectory_batching and args.trajectory_aware_batching:
-        raise ValueError(
-            "--full-trajectory-batching is a strict superset of --trajectory-aware-batching. "
-            "Use only one."
-        )
+    data = build_data_bundle(args, processor, rank=rank, world_size=world)
+    train_loader = data.train_loader
+    val_loader = data.val_loader
+    train_sampler = data.train_sampler
+    train_batch_sampler = data.train_batch_sampler
 
-    train_ds, val_ds, train_collate, val_collate, train_samples, val_samples = _prepare_transition_datasets(
-        args, processor
+    components = build_sft2_components(
+        args,
+        processor,
+        token_id_map,
+        added_special_token_count,
+        resume_ckpt_dir,
+        device=device,
+        world_size=world,
+        train_wm_predictor=train_wm_predictor,
+        vision_ema_enabled=vision_ema_enabled,
     )
-    dataloader_workers = _resolve_dataloader_workers(args)
-    loader_kwargs: dict = {
-        "num_workers": dataloader_workers,
-        "pin_memory": True,
-    }
-    if dataloader_workers > 0:
-        loader_kwargs["persistent_workers"] = True
-        loader_kwargs["prefetch_factor"] = max(1, int(args.dataloader_prefetch_factor))
-
-    train_sampler = None
-    train_batch_sampler = None
-    val_sampler = None
-    if args.full_trajectory_batching:
-        train_batch_sampler = TrajectoryAwareBatchSampler(
-            train_samples,
-            batch_size=args.batch_size,  # ignored when full_trajectory=True
-            num_replicas=world,
-            rank=rank,
-            shuffle=True,
-            seed=args.seed,
-            full_trajectory=True,
-            max_images_per_batch=args.max_images_per_batch,
-            max_steps_per_trajectory=args.max_steps_per_trajectory,
-        )
-    elif args.trajectory_aware_batching:
-        train_batch_sampler = TrajectoryAwareBatchSampler(
-            train_samples,
-            batch_size=args.batch_size,
-            num_replicas=world,
-            rank=rank,
-            shuffle=True,
-            seed=args.seed,
-        )
-    elif world > 1:
-        train_sampler = DistributedSampler(train_ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed)
-    if world > 1:
-        val_sampler = DistributedEvalSampler(val_ds, num_replicas=world, rank=rank)
-
-    if train_batch_sampler is not None:
-        train_loader = DataLoader(
-            train_ds,
-            batch_sampler=train_batch_sampler,
-            collate_fn=train_collate,
-            **loader_kwargs,
-        )
-    else:
-        train_loader = DataLoader(
-            train_ds,
-            batch_size=1 if args.packed_forward else args.batch_size,
-            sampler=train_sampler,
-            shuffle=train_sampler is None and not args.packed_forward,
-            collate_fn=train_collate,
-            **loader_kwargs,
-        )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=1 if args.packed_forward else args.batch_size,
-        sampler=val_sampler,
-        shuffle=False,
-        collate_fn=val_collate,
-        **loader_kwargs,
-    )
-
-    qwen_gpu_stride = int(__import__("os").environ.get("NIMLOTH_DDP_GPU_STRIDE", "1"))
-    qwen_pair_parallel = qwen_gpu_stride > 1 and torch.cuda.is_available()
-    qwen_load_kwargs = {}
-    if qwen_pair_parallel:
-        primary_idx = int(str(device).split(":")[-1])
-        pair = [primary_idx + i for i in range(qwen_gpu_stride)]
-        qwen_load_kwargs = {
-            "device_map": "auto",
-            "max_memory": {i: "74GiB" for i in pair} | {"cpu": "64GiB"},
-            "low_cpu_mem_usage": True,
-        }
-        if is_main():
-            print(json.dumps({"qwen_pair_parallel": True, "gpu_stride": qwen_gpu_stride, "rank0_pair": pair}))
-    base_model_path = args.model
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        attn_implementation=args.attn_implementation,
-        trust_remote_code=True,
-        **qwen_load_kwargs,
-    )
-    if args.gradient_checkpointing:
-        # DDP + reentrant activation checkpointing can fire reducer hooks for the
-        # same trainable Qwen parameter twice when the training step uses Qwen
-        # hidden states in several downstream losses.  The non-reentrant variant
-        # is the PyTorch-recommended checkpointing mode for DDP.
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    model.resize_token_embeddings(len(processor.tokenizer))
-    if added_special_token_count > 0:
-        initialize_extra_latent_token_embeddings(
-            model,
-            token_id_map,
-            latent_token_count=args.latent_token_count,
-        )
-    model.config.vocab_size = len(processor.tokenizer)
-    if hasattr(model, "generation_config"):
-        model.generation_config.vocab_size = len(processor.tokenizer)
-
-    if args.resume and resume_state_path is not None and resume_state_path.exists() and resume_adapter.exists():
-        saved = torch.load(resume_state_path, map_location="cpu", weights_only=False)
-        if not uses_lora(args):
-            raise ValueError("--resume with LoRA adapter requires llm_tune and/or vision_tune lora")
-        saved_base = saved.get("base_model_path")
-        if saved_base:
-            base_model_path = Path(saved_base)
-        if is_main():
-            print(json.dumps({"resume_lora_adapter": str(resume_ckpt_dir), "base_model_path": str(base_model_path)}))
-        model = configure_qwen_tuning(model, args)
-        load_lora_adapter_state(model, resume_ckpt_dir)
-    elif (
-        args.resume
-        and resume_state_path is not None
-        and resume_state_path.exists()
-        and (resume_ckpt_dir / "config.json").exists()
-    ):
-        if uses_lora(args):
-            raise ValueError("cannot --resume full HF checkpoint with lora tuning")
-        if is_main():
-            print(json.dumps({"resume_full": str(resume_ckpt_dir)}))
-        # Full-finetune checkpoints save the Qwen weights under best/.  Reload
-        # them before constructing the optimizer, then re-apply tuning flags so
-        # the trainable parameter set matches the saved optimizer groups.
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            resume_ckpt_dir,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            attn_implementation=args.attn_implementation,
-            trust_remote_code=True,
-            **qwen_load_kwargs,
-        )
-        if args.gradient_checkpointing:
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-        model.resize_token_embeddings(len(processor.tokenizer))
-        model.config.vocab_size = len(processor.tokenizer)
-        if hasattr(model, "generation_config"):
-            model.generation_config.vocab_size = len(processor.tokenizer)
-        model = configure_qwen_tuning(model, args)
-    else:
-        model = configure_qwen_tuning(model, args)
-        if is_main():
-            print(json.dumps({"init": "configured_tuning", "base_model_path": str(base_model_path)}))
-
-    query_adapter = None
-    if args.query_tune == "adapter":
-        query_token_ids = [
-            token_id_map[token]
-            for token in latent_state_tokens(args.latent_token_count)
-        ]
-        query_adapter = install_query_embedding_adapter(model, query_token_ids)
-        if is_main():
-            print(
-                json.dumps(
-                    {
-                        "query_tune": "adapter",
-                        "query_token_ids": query_token_ids,
-                        "query_lr": args.query_lr,
-                    }
-                )
-            )
-
-    if not qwen_pair_parallel:
-        model.to(device)
-
-    # SFT2 supervises one-step state/action pairs, so rollout must use the same
-    # context length instead of untrained multi-position predictor inputs.
-    wm_cfg = LeWMConfig(emb_dim=args.emb_dim, history_size=SFT2_WM_HISTORY_SIZE)
-    if args.wm_predictor_checkpoint is not None:
-        wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_predictor_checkpoint, map_location=device).to(device)
-        require_sft2_wm_history(wm_predictor, args.wm_predictor_checkpoint)
-    else:
-        wm_predictor = LatentWMPredictor.create(wm_cfg).to(device)
-    if not train_wm_predictor:
-        for param in wm_predictor.parameters():
-            param.requires_grad = False
-
-    hidden_size = model.config.hidden_size
-    model_dtype = next(model.parameters()).dtype
-    aux_device = device
-    if qwen_pair_parallel:
-        device_map = getattr(model, "hf_device_map", {}) or {}
-        mapped = device_map.get("lm_head") or device_map.get("model.language_model.norm")
-        if mapped is not None:
-            aux_device = torch.device(f"cuda:{mapped}")
-    if qwen_pair_parallel:
-        wm_predictor = wm_predictor.to(aux_device)
-    state_proj = StateProjector(
-        hidden_size,
-        wm_predictor.emb_dim,
-        latent_token_count=args.latent_token_count,
-    ).to(device=aux_device, dtype=model_dtype)
-    value_head = ValueHead(wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
-    sigreg = SIGRegModule(knots=args.sigreg_knots, num_proj=args.sigreg_num_proj).to(device=aux_device)
+    model = components.model
+    state_proj = components.state_proj
+    wm_predictor = components.wm_predictor
+    value_head = components.value_head
+    sigreg = components.sigreg
+    vision_ema = components.vision_ema
+    optimizer = components.optimizer
+    base_model_path = components.base_model_path
+    qwen_pair_parallel = components.qwen_pair_parallel
+    ddp_static_graph = components.ddp_static_graph
     lambda_sigreg_val = args.lambda_sigreg
-
-    if args.resume and resume_state_path is not None and resume_state_path.exists():
-        load_aux_checkpoint(
-            resume_ckpt_dir,
-            state_proj,
-            wm_predictor,
-            value_head,
-            device,
-            latent_query_mode=args.latent_query_mode,
-            query_tune=args.query_tune,
-        )
-
-    ddp_static_graph = world > 1
-    if world > 1:
-        # Every trainable branch is exercised on every rank (terminal-only WM
-        # batches use dummy aux forwards), so unused-parameter graph traversal is
-        # unnecessary and interacts badly with multi-forward/checkpointed steps.
-        if qwen_pair_parallel:
-            model = DDP(
-                model,
-                device_ids=None,
-                output_device=None,
-                find_unused_parameters=False,
-                static_graph=ddp_static_graph,
-            )
-        else:
-            device_idx = int(str(device).split(":")[-1])
-            model = DDP(
-                model,
-                device_ids=[device_idx],
-                output_device=device_idx,
-                find_unused_parameters=False,
-                static_graph=ddp_static_graph,
-            )
-        aux_idx = int(str(aux_device).split(":")[-1])
-        state_proj = DDP(
-            state_proj,
-            device_ids=[aux_idx],
-            output_device=aux_idx,
-            find_unused_parameters=False,
-            static_graph=ddp_static_graph,
-        )
-        value_head = DDP(
-            value_head,
-            device_ids=[aux_idx],
-            output_device=aux_idx,
-            find_unused_parameters=False,
-            static_graph=ddp_static_graph,
-        )
-        if train_wm_predictor:
-            wm_predictor = DDP(
-                wm_predictor,
-                device_ids=[aux_idx],
-                output_device=aux_idx,
-                find_unused_parameters=False,
-                static_graph=ddp_static_graph,
-            )
-
-    vision_ema: VisionEncoderEMA | None = None
-    if vision_ema_enabled:
-        vision_ema = VisionEncoderEMA(decay=args.vision_ema_decay)
-        vision_ema.reset(model)
-        ema_path = resume_ckpt_dir / "vision_ema.pt" if resume_ckpt_dir is not None else None
-        if args.resume and ema_path is not None and ema_path.is_file():
-            loaded_ema = VisionEncoderEMA.load_checkpoint(ema_path, map_location=device)
-            vision_ema.decay = loaded_ema.decay
-            vision_ema.shadow = {k: v.to(device) for k, v in loaded_ema.shadow.items()}
-        if is_main():
-            print(json.dumps({"vision_ema": True, "shadow_params": len(vision_ema.shadow), "decay": vision_ema.decay}))
-
-    query_adapter_param = query_adapter.delta if query_adapter is not None else None
-    qwen_params = [
-        param
-        for param in model.parameters()
-        if param.requires_grad and param is not query_adapter_param
-    ]
-    param_groups = [
-        {"params": qwen_params, "lr": args.lr_qwen_start, "name": "qwen"},
-        {"params": state_proj.parameters(), "lr": args.state_proj_lr, "name": "state_proj"},
-        {"params": value_head.parameters(), "lr": args.value_head_lr, "name": "value_head"},
-    ]
-    if query_adapter_param is not None:
-        param_groups.append(
-            {
-                "params": [query_adapter_param],
-                "lr": args.query_lr,
-                "weight_decay": 0.0,
-                "name": "query_adapter",
-            }
-        )
-    if train_wm_predictor:
-        pred_params = wm_predictor.parameters() if not hasattr(wm_predictor, "module") else wm_predictor.module.parameters()
-        param_groups.append({"params": list(pred_params), "lr": args.wm_predictor_lr, "name": "wm_predictor"})
-    optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)
 
     steps_per_epoch = max(1, math.ceil(len(train_loader) / args.grad_accum))
     total_steps = steps_per_epoch * args.epochs
@@ -767,7 +156,23 @@ def train_sft2(args=None) -> int:
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }
-    _save_checkpoint = partial(save_checkpoint, training_invariants=checkpoint_invariants)
+    checkpoint_manager = SFT2CheckpointManager(
+        output_dir=args.output_dir,
+        model=model,
+        state_proj=state_proj,
+        processor=processor,
+        wm_predictor=wm_predictor,
+        value_head=value_head,
+        vision_ema=vision_ema,
+        optimizer=optimizer,
+        training_invariants=checkpoint_invariants,
+        lora=uses_lora(args),
+        base_model_path=base_model_path,
+        llm_tune=llm_tune,
+        vision_tune=vision_tune,
+        latent_query_mode=args.latent_query_mode,
+        query_tune=args.query_tune,
+    )
 
     log_path = args.output_dir / "train_step_log.csv"
     if is_main() and not log_path.exists():
@@ -788,19 +193,16 @@ def train_sft2(args=None) -> int:
                     "lambda_sigreg",
                     "qwen_lr",
                     "val_wm_mse",
-                    "val_success_rate",
                 ]
             )
 
     global_step = 0
-    best_val_success_rate = -1.0
     best_val_wm_mse = float("inf")
     start_epoch = 1
     resume_micro_step = 0
     if args.resume and resume_state_path is not None and resume_state_path.exists():
         state = torch.load(resume_state_path, map_location="cpu", weights_only=False)
         global_step = int(state.get("step", 0))
-        best_val_success_rate = float(state.get("best_val_success_rate", -1.0))
         best_val_wm_mse = float(state.get("best_val_wm_mse", state.get("best_val", float("inf"))))
         saved_invariants = state.get("training_invariants")
         if saved_invariants is not None:
@@ -824,7 +226,6 @@ def train_sft2(args=None) -> int:
                         "start_epoch": start_epoch,
                         "global_step": global_step,
                         "resume_micro_step": resume_micro_step,
-                        "best_val_success_rate": best_val_success_rate,
                         "best_val_wm_mse": best_val_wm_mse,
                     }
                 )
@@ -884,7 +285,6 @@ def train_sft2(args=None) -> int:
                         lambda_sigreg,
                         qwen_lr,
                         "",
-                        "",
                     ]
                 )
             accum.reset()
@@ -892,6 +292,23 @@ def train_sft2(args=None) -> int:
 
     step_timer = StepTimer(enabled=args.step_timing, log_interval=args.step_timing_interval)
     pad_token_id = processor.tokenizer.pad_token_id
+    step_runner = SFT2StepRunner(
+        model=model,
+        state_proj=state_proj,
+        wm_predictor=wm_predictor,
+        value_head=value_head,
+        processor=processor,
+        token_id_map=token_id_map,
+        device=device,
+        max_length=args.max_length,
+        pad_token_id=pad_token_id,
+        latent_token_count=args.latent_token_count,
+        mask_latent_query_labels=args.mask_latent_query_labels,
+        vision_ema=vision_ema,
+        sigreg_module=sigreg,
+        value_rank_margin=args.value_rank_margin,
+        value_rank_lambda=args.value_rank_lambda,
+    )
     last_periodic_ckpt_time = time.monotonic()
 
     for epoch in range(start_epoch, args.epochs + 1):
@@ -963,48 +380,12 @@ def train_sft2(args=None) -> int:
                 break
             step_timer.stop("dataloader", t0)
             micro_idx += 1
-            _seed_training_micro_step(args.seed, epoch, micro_idx, rank)
+            seed_training_micro_step(args.seed, epoch, micro_idx, rank)
             sync_gradients = (micro_idx % args.grad_accum == 0) or (micro_idx == num_micro_batches)
-            with _no_sync_if_needed(ddp_modules, enabled=not sync_gradients and use_ddp_no_sync):
-                t0 = step_timer.start("batch_prep")
-                items, enc, next_enc_rows, transition_samples, full_enc = _unpack_train_batch(
-                    batch_samples,
-                    processor,
-                    args.max_length,
-                    packed_forward=args.packed_forward,
-                    pad_token_id=pad_token_id,
-                    latent_token_count=args.latent_token_count,
-                    mask_latent_query_labels=args.mask_latent_query_labels,
-                )
-                step_timer.stop("batch_prep", t0)
-
-                t0 = step_timer.start("current_forward")
-                if args.packed_forward:
-                    assert transition_samples is not None
-                    assert_packed_batch(transition_samples)
-                    traj = forward_trajectory_once(
-                        model,
-                        transition_samples,
-                        processor,
-                        token_id_map,
-                        device,
-                        max_length=args.max_length,
-                        vision_ema=vision_ema,
-                        full_enc=full_enc,
-                        latent_token_count=args.latent_token_count,
-                        mask_latent_query_labels=args.mask_latent_query_labels,
-                    )
-                    latent_hidden = traj.current_latents
-                    lm_loss = traj.lm_loss
-                else:
-                    latent_hidden, lm_loss = extract_qwen_latents(
-                        model,
-                        enc,
-                        token_id_map,
-                        device,
-                        latent_token_count=args.latent_token_count,
-                    )
-                step_timer.stop("current_forward", t0)
+            with no_sync_if_needed(ddp_modules, enabled=not sync_gradients and use_ddp_no_sync):
+                t0 = step_timer.start("forward")
+                step_output = step_runner.forward(batch_samples, training=True)
+                step_timer.stop("forward", t0)
 
                 lambda_wm = wm_loss_weight_schedule(
                     global_step,
@@ -1012,62 +393,18 @@ def train_sft2(args=None) -> int:
                     start=args.lambda_wm_start,
                     end=args.lambda_wm_end,
                 )
-
-                t0 = step_timer.start("next_forward")
-                if args.packed_forward:
-                    wm_loss, sigreg_loss, wm_metrics = compute_trajectory_wm_loss(
-                        items,
-                        latent_hidden,
-                        traj.next_latents,
-                        state_proj,
-                        wm_predictor,
-                        device,
-                        sigreg_module=sigreg,
-                    )
-                else:
-                    wm_loss, sigreg_loss, wm_metrics = compute_step_wm_loss(
-                        model,
-                        items,
-                        latent_hidden,
-                        processor,
-                        token_id_map,
-                        device,
-                        state_proj,
-                        wm_predictor,
-                        args.max_length,
-                        vision_ema=vision_ema,
-                        next_enc_rows=next_enc_rows,
-                        pad_token_id=pad_token_id,
-                        sigreg_module=sigreg,
-                        latent_token_count=args.latent_token_count,
-                    )
-                step_timer.stop("next_forward", t0)
-
-                t0 = step_timer.start("value_loss")
-                value_loss, value_metrics = compute_step_value_loss(
-                    latent_hidden,
-                    items,
-                    state_proj,
-                    value_head,
-                    device,
-                    rank_margin=args.value_rank_margin,
-                    lambda_rank=args.value_rank_lambda,
-                )
-                step_timer.stop("value_loss", t0)
-
                 t0 = step_timer.start("loss_combine")
                 loss, metrics = compute_combined_loss(
-                    wm_loss=wm_loss,
-                    value_loss=value_loss,
-                    lm_loss=lm_loss,
-                    lambda_wm=lambda_wm if wm_loss is not None else 0.0,
-                    sigreg_loss=sigreg_loss,
+                    wm_loss=step_output.wm_loss,
+                    value_loss=step_output.value_loss,
+                    lm_loss=step_output.lm_loss,
+                    lambda_wm=lambda_wm if step_output.wm_loss is not None else 0.0,
+                    sigreg_loss=step_output.sigreg_loss,
                     lambda_sigreg=lambda_sigreg_val,
                     lambda_value=args.lambda_value,
                     lambda_ce=args.lambda_ce,
                 )
-                metrics.update(wm_metrics)
-                metrics.update(value_metrics)
+                metrics.update(step_output.metrics)
                 step_timer.stop("loss_combine", t0)
 
                 t0 = step_timer.start("backward")
@@ -1099,25 +436,11 @@ def train_sft2(args=None) -> int:
                     if dist.is_available() and dist.is_initialized():
                         dist.barrier()
                     if is_main():
-                        _save_checkpoint(
-                            model,
-                            state_proj,
-                            processor,
-                            args.output_dir / "latest",
-                            wm_predictor=_unwrap(wm_predictor),
-                            value_head=_unwrap(value_head),
-                            vision_ema=vision_ema,
-                            optimizer=optimizer,
+                        checkpoint_manager.save(
+                            "latest",
                             step=global_step,
                             epoch=epoch,
-                            best_val_success_rate=best_val_success_rate,
                             best_val_wm_mse=best_val_wm_mse,
-                            lora=uses_lora(args),
-                            base_model_path=base_model_path,
-                            llm_tune=llm_tune,
-                            vision_tune=vision_tune,
-                            latent_query_mode=args.latent_query_mode,
-                            query_tune=args.query_tune,
                             epoch_complete=False,
                             micro_step_in_epoch=micro_idx,
                         )
@@ -1128,25 +451,11 @@ def train_sft2(args=None) -> int:
                     if dist.is_available() and dist.is_initialized():
                         dist.barrier()
                     if is_main():
-                        _save_checkpoint(
-                            model,
-                            state_proj,
-                            processor,
-                            args.output_dir / f"step_{global_step:06d}",
-                            wm_predictor=_unwrap(wm_predictor),
-                            value_head=_unwrap(value_head),
-                            vision_ema=vision_ema,
-                            optimizer=optimizer,
+                        checkpoint_manager.save(
+                            f"step_{global_step:06d}",
                             step=global_step,
                             epoch=epoch,
-                            best_val_success_rate=best_val_success_rate,
                             best_val_wm_mse=best_val_wm_mse,
-                            lora=uses_lora(args),
-                            base_model_path=base_model_path,
-                            llm_tune=llm_tune,
-                            vision_tune=vision_tune,
-                            latent_query_mode=args.latent_query_mode,
-                            query_tune=args.query_tune,
                             epoch_complete=False,
                             micro_step_in_epoch=micro_idx,
                         )
@@ -1157,38 +466,14 @@ def train_sft2(args=None) -> int:
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
 
-        val_metrics = evaluate(
-            _unwrap(model),
-            _unwrap(state_proj),
-            _unwrap(wm_predictor),
-            _unwrap(value_head),
-            val_loader,
-            processor,
-            token_id_map,
-            device,
-            max_batches=args.max_val_batches,
-            max_length=args.max_length,
-            vision_ema=vision_ema,
-            pad_token_id=pad_token_id,
-            packed_forward=args.packed_forward,
-            sigreg_module=sigreg,
-            latent_token_count=args.latent_token_count,
-            mask_latent_query_labels=args.mask_latent_query_labels,
-        )
+        val_metrics = evaluate(step_runner, val_loader, max_batches=args.max_val_batches)
         val_wm = val_metrics.get("wm_mse", float("inf"))
-        val_success = val_metrics.get("success_rate", 0.0)
-        val_rollout_success = val_rollout_success_rate(args.val_jsonl, max_records=args.max_val_records)
-        if is_main():
-            val_metrics["val_rollout_success_rate"] = val_rollout_success
 
         if is_main():
             log_val_epoch(
                 wandb_run,
                 epoch,
-                {
-                    **val_metrics,
-                    "rollout_success_rate": val_rollout_success,
-                },
+                val_metrics,
                 global_step=global_step,
             )
             with log_path.open("a", newline="") as f:
@@ -1208,59 +493,23 @@ def train_sft2(args=None) -> int:
                         "",
                         "",
                         val_metrics.get("wm_mse", ""),
-                        val_rollout_success,
                     ]
                 )
-            improved = False
-            if args.early_stop_metric == "val_success_rate":
-                if val_rollout_success > best_val_success_rate:
-                    best_val_success_rate = val_rollout_success
-                    improved = True
-            elif val_wm < best_val_wm_mse:
+            improved = val_wm < best_val_wm_mse
+            if improved:
                 best_val_wm_mse = val_wm
-                improved = True
-            if val_wm < best_val_wm_mse:
-                best_val_wm_mse = val_wm
-            _save_checkpoint(
-                model,
-                state_proj,
-                processor,
-                args.output_dir / f"epoch_{epoch:03d}",
-                wm_predictor=_unwrap(wm_predictor),
-                value_head=_unwrap(value_head),
-                vision_ema=vision_ema,
-                optimizer=optimizer,
+            checkpoint_manager.save(
+                f"epoch_{epoch:03d}",
                 step=global_step,
                 epoch=epoch,
-                best_val_success_rate=best_val_success_rate,
                 best_val_wm_mse=best_val_wm_mse,
-                lora=uses_lora(args),
-                base_model_path=base_model_path,
-                llm_tune=llm_tune,
-                vision_tune=vision_tune,
-                latent_query_mode=args.latent_query_mode,
-                query_tune=args.query_tune,
             )
             if improved:
-                _save_checkpoint(
-                    model,
-                    state_proj,
-                    processor,
-                    args.output_dir / "best",
-                    wm_predictor=_unwrap(wm_predictor),
-                    value_head=_unwrap(value_head),
-                    vision_ema=vision_ema,
-                    optimizer=optimizer,
+                checkpoint_manager.save(
+                    "best",
                     step=global_step,
                     epoch=epoch,
-                    best_val_success_rate=best_val_success_rate,
                     best_val_wm_mse=best_val_wm_mse,
-                    lora=uses_lora(args),
-                    base_model_path=base_model_path,
-                    llm_tune=llm_tune,
-                    vision_tune=vision_tune,
-                    latent_query_mode=args.latent_query_mode,
-                    query_tune=args.query_tune,
                 )
             print(
                 json.dumps(
@@ -1268,10 +517,8 @@ def train_sft2(args=None) -> int:
                         "epoch": epoch,
                         "global_step": global_step,
                         "val_metrics": val_metrics,
-                        "val_rollout_success_rate": val_rollout_success,
-                        "best_val_success_rate": best_val_success_rate,
                         "best_val_wm_mse": best_val_wm_mse,
-                        "early_stop_metric": args.early_stop_metric,
+                        "checkpoint_metric": args.checkpoint_metric,
                         "llm_tune": llm_tune,
                         "vision_tune": vision_tune,
                     }
@@ -1282,25 +529,11 @@ def train_sft2(args=None) -> int:
             dist.barrier()
 
     if is_main():
-        _save_checkpoint(
-            model,
-            state_proj,
-            processor,
-            args.output_dir / "final",
-            wm_predictor=_unwrap(wm_predictor),
-            value_head=_unwrap(value_head),
-            vision_ema=vision_ema,
-            optimizer=optimizer,
+        checkpoint_manager.save(
+            "final",
             step=global_step,
             epoch=args.epochs,
-            best_val_success_rate=best_val_success_rate,
             best_val_wm_mse=best_val_wm_mse,
-            lora=uses_lora(args),
-            base_model_path=base_model_path,
-            llm_tune=llm_tune,
-            vision_tune=vision_tune,
-            latent_query_mode=args.latent_query_mode,
-            query_tune=args.query_tune,
         )
     cleanup_dist()
     return 0

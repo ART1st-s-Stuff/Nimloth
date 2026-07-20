@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
 
+from nimloth.backbone.qwen25vl.checkpoint import load_adapter_state, save_full_vision_state
+from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
 from nimloth.latent import materialize_query_embedding_adapter
 from nimloth.training.common.dist import is_main
-from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
@@ -83,44 +85,16 @@ def resolve_resume_checkpoint_dir(output_dir: Path, resume_from: Path | None) ->
 
 
 def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
-    adapter_file = adapter_dir / "adapter_model.safetensors"
-    if adapter_file.is_file():
-        from safetensors.torch import load_file
-
-        state = load_file(str(adapter_file))
-    else:
-        bin_file = adapter_dir / "adapter_model.bin"
-        if not bin_file.is_file():
-            raise FileNotFoundError(f"missing adapter weights in {adapter_dir}")
-        state = torch.load(bin_file, map_location="cpu", weights_only=True)
-    incompatible = model.load_state_dict(state, strict=False)
-    vision_full_path = adapter_dir / "vision_full_state.pt"
-    vision_loaded = False
-    if vision_full_path.is_file():
-        root = model.module if hasattr(model, "module") else model
-        visual = None
-        for path in ("base_model.model.model.visual", "base_model.model.visual", "model.visual", "visual"):
-            cur = root
-            for name in path.split("."):
-                cur = getattr(cur, name, None)
-                if cur is None:
-                    break
-            if isinstance(cur, torch.nn.Module):
-                visual = cur
-                break
-        if visual is None:
-            raise RuntimeError(f"vision_full_state.pt exists but could not locate visual module in {type(root)}")
-        visual.load_state_dict(torch.load(vision_full_path, map_location="cpu", weights_only=True))
-        vision_loaded = True
+    report = load_adapter_state(model, adapter_dir)
     if is_main():
         print(
             json.dumps(
                 {
                     "resume_load": {
                         "adapter_dir": str(adapter_dir),
-                        "missing_keys": len(incompatible.missing_keys),
-                        "unexpected_keys": len(incompatible.unexpected_keys),
-                        "vision_full_state_loaded": vision_loaded,
+                        "missing_keys": report.missing_keys,
+                        "unexpected_keys": report.unexpected_keys,
+                        "vision_full_state_loaded": report.vision_full_state_loaded,
                     }
                 }
             )
@@ -139,7 +113,6 @@ def save_checkpoint(
     optimizer=None,
     step: int = 0,
     epoch: int = 0,
-    best_val_success_rate: float = -1.0,
     best_val_wm_mse: float = float("inf"),
     lora: bool = False,
     base_model_path: Path | None = None,
@@ -173,20 +146,7 @@ def save_checkpoint(
     if vision_ema is not None and vision_ema.shadow:
         vision_ema.save_checkpoint(out_dir / "vision_ema.pt")
     if lora and vision_tune == "full":
-        root = module
-        visual = None
-        for path in ("base_model.model.model.visual", "base_model.model.visual", "model.visual", "visual"):
-            cur = root
-            for name in path.split("."):
-                cur = getattr(cur, name, None)
-                if cur is None:
-                    break
-            if isinstance(cur, torch.nn.Module):
-                visual = cur
-                break
-        if visual is None:
-            raise RuntimeError(f"vision_tune=full requested but could not locate visual module in {type(root)}")
-        torch.save(visual.state_dict(), out_dir / "vision_full_state.pt")
+        save_full_vision_state(module, out_dir / "vision_full_state.pt")
     state_proj_input_dim = getattr(proj, "input_dim", None)
     if state_proj_input_dim is None:
         net_layers = getattr(getattr(proj, "net", None), "net", None)
@@ -200,7 +160,6 @@ def save_checkpoint(
         "query_tune": query_tune,
         "qwen_hidden_dim": int(getattr(proj, "qwen_hidden_dim", -1)),
         "state_proj_input_dim": int(state_proj_input_dim),
-        "best_val_success_rate": best_val_success_rate,
         "best_val_wm_mse": best_val_wm_mse,
         "best_val": best_val_wm_mse,
         "lora": lora,
@@ -217,6 +176,60 @@ def save_checkpoint(
     if optimizer is not None:
         state["optimizer"] = optimizer.state_dict()
     torch.save(state, out_dir / "training_state.pt")
+
+
+@dataclass(frozen=True)
+class SFT2CheckpointManager:
+    """Own repeated SFT2 component and metadata wiring for checkpoint saves."""
+
+    output_dir: Path
+    model: Any
+    state_proj: Any
+    processor: Any
+    wm_predictor: LatentWMPredictor
+    value_head: ValueHead
+    vision_ema: VisionEncoderEMA | None
+    optimizer: Any
+    training_invariants: dict[str, Any]
+    lora: bool
+    base_model_path: Path
+    llm_tune: str
+    vision_tune: str
+    latent_query_mode: str
+    query_tune: str
+
+    def save(
+        self,
+        name: str,
+        *,
+        step: int,
+        epoch: int,
+        best_val_wm_mse: float,
+        epoch_complete: bool = True,
+        micro_step_in_epoch: int = 0,
+    ) -> None:
+        save_checkpoint(
+            self.model,
+            self.state_proj,
+            self.processor,
+            self.output_dir / name,
+            wm_predictor=self.wm_predictor,
+            value_head=self.value_head,
+            vision_ema=self.vision_ema,
+            optimizer=self.optimizer,
+            step=step,
+            epoch=epoch,
+            best_val_wm_mse=best_val_wm_mse,
+            lora=self.lora,
+            base_model_path=self.base_model_path,
+            llm_tune=self.llm_tune,
+            vision_tune=self.vision_tune,
+            latent_query_mode=self.latent_query_mode,
+            query_tune=self.query_tune,
+            epoch_complete=epoch_complete,
+            micro_step_in_epoch=micro_step_in_epoch,
+            training_invariants=self.training_invariants,
+        )
 
 
 def load_aux_checkpoint(

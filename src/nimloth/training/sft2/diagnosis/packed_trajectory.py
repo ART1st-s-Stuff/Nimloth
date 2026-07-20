@@ -15,7 +15,7 @@ from nimloth.backbone.qwen25vl.latent import (
     reset_model_rope_state as _reset_model_rope_state,
 )
 from nimloth.latent import extract_latent_state, find_last_latent_state_index
-from nimloth.wm.collate import prefix_messages_with_images, transition_collate_for_qwen
+from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images, transition_collate_for_qwen
 from nimloth.wm.dataset import TransitionSample
 
 

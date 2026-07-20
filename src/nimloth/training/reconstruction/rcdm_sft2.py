@@ -38,7 +38,8 @@ from nimloth.recon.rcdm.state_cache import (
 )
 from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
-from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
+from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
+from nimloth.wm.dataset import TransitionJsonlDataset
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
@@ -423,10 +424,10 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
         else:
             processor, token_id_map, qwen_model, state_proj, wm_predictor = _load_frozen_sft2_modules(args, device)
             cond_dim = wm_predictor.emb_dim
-            train_ds = TransitionQwenDataset(args.train_jsonl, max_records=args.max_train_records, success_only=args.success_only)
-            val_ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_val_records)
-            train_collate = collate_transition_batch
-            val_collate = collate_transition_batch
+            train_ds = TransitionJsonlDataset(args.train_jsonl, max_records=args.max_train_records, success_only=args.success_only)
+            val_ds = TransitionJsonlDataset(args.val_jsonl, max_records=args.max_val_records)
+            train_collate = transition_collate_for_qwen
+            val_collate = transition_collate_for_qwen
 
         if args.cache_only:
             if is_main():

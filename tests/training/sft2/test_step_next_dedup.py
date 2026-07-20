@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-from nimloth.backbone.qwen25vl.batch import _message_cache_key
+from nimloth.backbone.qwen25vl.batch import message_cache_key
 from nimloth.training.sft2.step import _forward_next_latents, wm_eligible_indices
 
 
@@ -67,7 +67,7 @@ def test_forward_next_latents_dedups_identical_next_prefixes() -> None:
 def test_forward_next_latents_uses_worker_prebatched_cache() -> None:
     next_messages = [{"role": "user", "content": "next"}]
     items = [{"next_messages": next_messages}]
-    key = _message_cache_key(next_messages)
+    key = message_cache_key(next_messages)
     bundle = {
         "keys": [key],
         "enc": {

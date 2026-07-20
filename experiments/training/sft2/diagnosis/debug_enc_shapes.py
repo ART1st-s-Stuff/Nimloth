@@ -6,7 +6,7 @@ from transformers import AutoProcessor
 from experiments.training.sft2.probe_kv_incremental import _vision_delta
 from nimloth.backbone.qwen25vl.batch import encode_qwen_item
 from nimloth.latent import add_special_tokens
-from nimloth.wm.collate import prefix_messages_with_images
+from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
 from nimloth.wm.dataset import expand_record_transitions, load_jsonl_records
 
 

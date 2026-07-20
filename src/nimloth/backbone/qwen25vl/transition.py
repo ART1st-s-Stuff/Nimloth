@@ -1,4 +1,4 @@
-"""Collate helpers for WM transition batches fed to Qwen."""
+"""Adapt world-model transition samples to Qwen2.5-VL messages."""
 
 from __future__ import annotations
 
