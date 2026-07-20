@@ -36,6 +36,20 @@ def uses_lora(args: argparse.Namespace) -> bool:
     return llm_tune == "lora" or vision_tune == "lora"
 
 
+def resize_token_embeddings_and_sync_vocab(model, vocab_size: int) -> None:
+    """Resize token rows and synchronize every config used by HF causal loss."""
+
+    vocab_size = int(vocab_size)
+    model.resize_token_embeddings(vocab_size)
+    model.config.vocab_size = vocab_size
+    text_config = getattr(model.config, "text_config", None)
+    if text_config is not None:
+        text_config.vocab_size = vocab_size
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is not None:
+        generation_config.vocab_size = vocab_size
+
+
 def _lora_target_modules(llm_tune: TuneMode, vision_tune: TuneMode) -> list[str]:
     targets: list[str] = []
     if llm_tune == "lora":

@@ -22,7 +22,10 @@ from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.backbone.dino import DEFAULT_DINO_MODEL, FrozenDINOEncoder
-from nimloth.backbone.qwen_tuning import configure_qwen_tuning
+from nimloth.backbone.qwen_tuning import (
+    configure_qwen_tuning,
+    resize_token_embeddings_and_sync_vocab,
+)
 from nimloth.latent import (
     add_special_tokens,
     install_query_embedding_adapter,
@@ -259,15 +262,14 @@ def main() -> None:
     processor = AutoProcessor.from_pretrained(str(args.model), trust_remote_code=True)
     if hasattr(processor, "image_processor"):
         processor.image_processor.max_pixels = args.max_pixels
-    added = add_special_tokens(processor.tokenizer, latent_token_count=16)
+    add_special_tokens(processor.tokenizer, latent_token_count=16)
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         str(args.model),
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         trust_remote_code=True,
     )
     old_vocab_size = int(model.get_input_embeddings().num_embeddings)
-    if added:
-        model.resize_token_embeddings(len(processor.tokenizer))
+    resize_token_embeddings_and_sync_vocab(model, len(processor.tokenizer))
     token_ids = special_token_ids(processor.tokenizer, latent_token_count=16)
     query_token_ids = [token_ids[token] for token in latent_state_tokens(16)]
     _initialize_only_new_query_rows(model, query_token_ids, old_vocab_size)

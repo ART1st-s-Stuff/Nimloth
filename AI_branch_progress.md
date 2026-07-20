@@ -12,7 +12,8 @@
 - 独立分支/worktree：`feat/sft1-dino16-grid-wm` / `/workspace/remote2/nimloth-feat-sft1-dino16-grid-wm`，从阶段纠正提交`6ba3cd0`分出。
 - 已实现DINO patch-grid pooling、共享slot projector、joint Grid WM、loss helper及prefix-exact SFT1实验入口/配置；SFT2 joint-grid入口会冻结Qwen/projector，仅训练一个完整grid WM与value，且旧SFT2 DINO CLI已显式禁用。相关suite `78 passed`（排除父分支已知测试局部变量错误），compileall与diff-check通过。
 - 已获批的1GPU smoke在两次pre-allocation提交失败后以retry2 Slurm `481441`启动，但20秒内在模型/W&B初始化前失败：新入口错误地把canonical四返回值`setup_dist()`解包成三个值。无指标/checkpoint，不可resume，GPU已释放；SFT1/SFT2入口均已修复并登记`E0030`。
-- retry3 Slurm `481444`在成功加载Qwen后25秒失败：offline DINO lookup未指向服务器已验证的共享HF cache；仍无W&B/step/checkpoint，GPU已释放。launcher现显式设置`HF_HOME=/project/peilab/atst/.cache/huggingface`，该cache包含指定`facebook/dinov2-large`完整config/processor/weights，无模型替换；登记`E0031`。各失败输出README/group progress均已更新。详见`ai_tasks/ai_progress/2026-07-19_dinov2_grid_sft1.md`。
+- retry3 Slurm `481444`在成功加载Qwen后25秒失败：offline DINO lookup未指向服务器已验证的共享HF cache；无W&B/step/checkpoint，GPU已释放。launcher现显式设置共享`HF_HOME`，cache包含指定`facebook/dinov2-large`完整config/processor/weights，无模型替换；登记`E0031`。
+- retry4 Slurm `481457`/W&B `35rpx073`成功加载Qwen+DINO，并确认1条train/val轨迹展开17/12 transitions，但首个forward因embedding resize后未同步Qwen config vocab而失败；无optimizer step/checkpoint，GPU已释放，W&B ID14已消耗。已新增统一resize+config/text/generation vocab同步helper与测试并登记`E0032`。各失败输出README/group progress均已更新。详见`ai_tasks/ai_progress/2026-07-19_dinov2_grid_sft1.md`。
 
 ## 2026-07-19：DINOv3 current-RGB query-state 对齐实现
 

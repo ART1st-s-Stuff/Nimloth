@@ -37,6 +37,7 @@
 - Job `481441` failed in 20 seconds before model/data/W&B initialization because the new entry point unpacked three values from canonical four-value `setup_dist()`. No metrics/checkpoint and not resumable; output README and experiment-group progress were updated.
 - Fixed both new SFT1/SFT2 entry points to use `(rank, world_size, local_rank, device)` and registered `E0030`.
 - Smoke retry3 Slurm `481444` (commit `8c64e1c`) loaded Qwen, then failed in 25 seconds before W&B/data/steps because offline DINO lookup did not use the complete shared HF cache. No metrics/checkpoint, GPU released. Launcher now explicitly exports `HF_HOME=/project/peilab/atst/.cache/huggingface`; registered `E0031`. The cache contains the requested `facebook/dinov2-large` commit `47b73eefe95e8d44ec3623f8890bd894b6ea2d6c` config, processor, and weight blobs; no substitute model is used.
+- Smoke retry4 Slurm `481457`, commit `037c6e1`, W&B `35rpx073` (`failed`) loaded exact Qwen+DINO and expanded 1 train/val trajectories to 17/12 transitions. First forward failed before optimizer step because embedding resize did not synchronize Qwen config vocab (`151936` stale). No metrics/checkpoint; GPU released; W&B ID14 consumed. Added canonical vocab-sync helper/test and registered `E0032`.
 
 ## Remaining before formal training
 
