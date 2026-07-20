@@ -43,7 +43,7 @@ def test_dino_grid_cfm_lineage_requires_matching_cache_and_shape(tmp_path) -> No
     torch.save({
         "invariants": {
             "val_cache_fingerprint": "grid-val",
-            "cfm_config": {"condition_token_count": 16, "condition_token_dim": 1024},
+            "cfm_config": {"token_count": 16, "token_dim": 1024},
         }
     }, checkpoint)
     validate_dino_grid_cfm_lineage(checkpoint, {"fingerprint": "grid-val"})

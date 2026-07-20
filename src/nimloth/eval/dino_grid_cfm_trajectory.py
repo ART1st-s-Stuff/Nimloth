@@ -76,8 +76,8 @@ def validate_dino_grid_cfm_lineage(checkpoint: Path, manifest: dict[str, Any]) -
         )
     config = invariants.get("cfm_config", {})
     actual_shape = (
-        int(config.get("condition_token_count", -1)),
-        int(config.get("condition_token_dim", -1)),
+        int(config.get("token_count", -1)),
+        int(config.get("token_dim", -1)),
     )
     if actual_shape != (16, 1024):
         raise ValueError(
