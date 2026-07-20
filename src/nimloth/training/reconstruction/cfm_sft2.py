@@ -255,21 +255,31 @@ def resolve_condition_token_shape(
         return token_count_override, flat_dim // token_count_override
     representation = str(manifest.get("representation", "projected"))
     state_shape = tuple(int(value) for value in manifest.get("state_shape", []))
-    if representation == "qwen_query_hidden":
-        if len(state_shape) == 1 and int(manifest.get("latent_token_count", 1)) == 1:
+    if representation in {"qwen_query_hidden", "dino_grid_state"}:
+        if (
+            representation == "qwen_query_hidden"
+            and len(state_shape) == 1
+            and int(manifest.get("latent_token_count", 1)) == 1
+        ):
             return 1, state_shape[0]
         if len(state_shape) != 2:
             raise ValueError(
-                "qwen_query_hidden cache needs [K,D], or legacy-flat [D] for k=1; "
-                f"got {state_shape}"
+                f"{representation} cache needs [K,D]"
+                + (", or legacy-flat [D] for qwen k=1" if representation == "qwen_query_hidden" else "")
+                + f"; got {state_shape}"
             )
+        if state_shape[0] * state_shape[1] != flat_dim:
+            raise ValueError(f"{representation} state_shape {state_shape} does not match cond_dim={flat_dim}")
         return state_shape
     return 1, flat_dim
 
 
 def uses_query_positive_control(manifest: dict[str, Any]) -> bool:
     """Sampling mode follows representation semantics, not CFM token count."""
-    return str(manifest.get("representation", "projected")) == "qwen_query_hidden"
+    return str(manifest.get("representation", "projected")) in {
+        "qwen_query_hidden",
+        "dino_grid_state",
+    }
 
 
 def _init_wandb(args: argparse.Namespace, metadata: dict[str, Any]):
@@ -428,7 +438,7 @@ def _save_reconstruction_samples(
 
 
 @torch.no_grad()
-def _save_query_cfm_samples(
+def _save_positive_control_samples(
     *,
     model: TokenConditionedFlowUNet,
     split: LoadedStateImageSplit,
@@ -473,7 +483,9 @@ def _save_query_cfm_samples(
     positive_wrong_images = sample_euler_cfg(
         positive_model, positive_wrong, noise, device=device, steps=ode_steps, cfg_scale=cfg_scale
     )
-    sample_dir = output_dir / f"query_samples_{ode_steps}ode_cfg{cfg_scale:g}"
+    representation = str(split.manifest.get("representation", "condition"))
+    condition_label = "DINO grid" if representation == "dino_grid_state" else "query latent"
+    sample_dir = output_dir / f"positive_control_samples_{ode_steps}ode_cfg{cfg_scale:g}"
     sample_dir.mkdir(parents=True, exist_ok=True)
     strips: list[Image.Image] = []
     for offset, index in enumerate(indices):
@@ -486,7 +498,7 @@ def _save_query_cfm_samples(
                 diffusion_tensor_to_pil(query_correct_images[offset]),
                 diffusion_tensor_to_pil(query_wrong_images[offset]),
             ],
-            ["GT", "Qwen positive", "Qwen wrong", "8-query CFM", "query wrong"],
+            ["GT", "Qwen positive", "Qwen wrong", f"{condition_label} CFM", f"{condition_label} wrong"],
         )
         strip.save(sample_dir / f"sample_{offset:03d}_strip.png")
         strips.append(strip)
@@ -564,19 +576,22 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         "task": "sft2_k8_direct_conditional_flow_matching_reconstruction",
         "source_checkpoint": str(args.source_checkpoint),
         "state_cache_dir": str(args.state_cache_dir),
-        "wm_checkpoint": str(args.wm_checkpoint),
+        "wm_checkpoint": str(args.wm_checkpoint) if args.wm_checkpoint is not None else None,
         "split_semantics": (
             "same train-cache subset for explicit tiny-overfit diagnostics"
             if args.validation_cache_split == "train"
             else "strict-valid train_all for training; disjoint val_all for validation only"
         ),
-        "target": (
-            "current_128px_image_from_preprojection_8_query_hidden"
-            if token_count > 1
-            else "current_128px_image_from_current_projected_sft2_state"
-        ),
+        "target": {
+            "qwen_query_hidden": "current_128px_image_from_qwen_query_hidden",
+            "dino_grid_state": "current_128px_image_from_dino_supervised_grid_state",
+        }.get(str(train_split.manifest.get("representation")), "current_128px_image_from_projected_sft2_state"),
         "trainable_modules": "TokenConditionedFlowUNet only",
-        "frozen_modules": "SFT2 Qwen, StateProjector, WM predictor; WM predictor loaded only for post-train samples",
+        "frozen_modules": (
+            "SFT1 Qwen and shared DINO-grid projector; no WM loaded"
+            if str(train_split.manifest.get("representation")) == "dino_grid_state"
+            else "SFT2 Qwen, StateProjector, WM predictor; WM predictor loaded only for projected-State samples"
+        ),
         "invariants": invariants,
         "initialization": initialization,
         "condition_dropout": args.condition_dropout,
@@ -775,10 +790,10 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
     if uses_query_positive_control(train_split.manifest):
         if args.positive_cache_dir is None or args.positive_cfm_checkpoint is None:
             raise ValueError(
-                "Query CFM sampling requires --positive-cache-dir and "
+                "Positive-control sampling requires --positive-cache-dir and "
                 "--positive-cfm-checkpoint"
             )
-        sample_paths = _save_query_cfm_samples(
+        sample_paths = _save_positive_control_samples(
             model=model,
             split=val_split,
             positive_cache_dir=args.positive_cache_dir / "val",
@@ -791,6 +806,8 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
             seed=args.seed + 30_000,
         )
     else:
+        if args.wm_checkpoint is None:
+            raise ValueError("Projected-State sampling requires --wm-checkpoint")
         wm_predictor = LatentWMPredictor.load_checkpoint(
             args.wm_checkpoint,
             map_location=device,
@@ -848,7 +865,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Train direct-state conditional flow matching for SFT2 visualization"
     )
     parser.add_argument("--state-cache-dir", type=Path, required=True)
-    parser.add_argument("--wm-checkpoint", type=Path, required=True)
+    parser.add_argument("--wm-checkpoint", type=Path, default=None)
     parser.add_argument("--source-checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--latent-token-count", type=int, default=8)

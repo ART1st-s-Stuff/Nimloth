@@ -134,7 +134,14 @@ def test_query_hidden_manifest_resolves_eight_condition_tokens() -> None:
         resolve_condition_token_shape(
             {"cond_dim": 8192}, token_count_override=7
         )
+    dino_grid = {
+        "representation": "dino_grid_state",
+        "state_shape": [16, 1024],
+        "cond_dim": 16384,
+    }
+    assert resolve_condition_token_shape(dino_grid) == (16, 1024)
     assert uses_query_positive_control({"representation": "qwen_query_hidden"})
+    assert uses_query_positive_control(dino_grid)
     assert not uses_query_positive_control({"representation": "projected"})
     assert not uses_query_positive_control(
         {"representation": "projected", "state_shape": [8, 1024]}
