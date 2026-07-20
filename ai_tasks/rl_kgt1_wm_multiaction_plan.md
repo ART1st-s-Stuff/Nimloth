@@ -190,7 +190,7 @@ bash -n experiments/training/rl/*.sh experiments/training/rl/*.slurm
 
 - k=1 回归测试保持通过；
 - 真实 k>1/inject checkpoint 可完成 rollout encoding、WM/value update 和 checkpoint resume；
-- 至少两个连续真实环境动作由 WM+ValueHead 路径产生，且 Qwen call count 证明中间 fast-path 未重编码图像；
+- horizon=2真实segment严格产生“Qwen首步→WM+ValueHead第二步”，且provenance证明WM step未重编码Qwen、未进入Qwen PPO；
 - 多步 dynamics loss 真实参与训练并产生 predictor 梯度；
 - Qwen PPO 未错误消费 WM planner 行为数据；
 - 两阶段 FSDP 安全 gate、train/val split gate、finite/shape/delta gate 全部通过；
@@ -204,3 +204,12 @@ bash -n experiments/training/rl/*.sh experiments/training/rl/*.slurm
 4. **已确认**：Qwen language full、WM predictor、ValueHead可训练；vision与StateProjector冻结。
 5. `fast_path_horizon` 与 multi-step loss horizon 均配置化；首期默认2。
 6. **已确认**：WM planner只使用greedy，beam search不在本次范围。
+
+## 10. 最终验证结果（2026-07-20）
+
+- 本地最终验证：75 tests passed，targeted Ruff、py_compile、bash syntax与diff-check通过。
+- 真实smoke最终有效run：ID65 / W&B`nimloth-rl/nrxroyos` / training commit`a3b091b`；2×H800，4条`base_train`轨迹/8 transitions。
+- Hybrid provenance全部为`qwen→wm_value`、`qwen_gt→wm_predicted`、fast step`0→1`；WM step无Qwen behavior log-prob，Qwen step保留真实sampling-distribution log-prob。
+- 2-rank FSDP step1与fresh-process same-world resume step2均finite，global_step2；多步WM h1/h2、ValueHead与Qwen PPO actor均参与。
+- Qwen language、WM predictor、ValueHead参数改变；vision与StateProjector bitwise冻结；checkpoint shard/resume/finite gate通过。
+- 原Slurm final validator因HF key前缀误匹配退出1；validator commit`25823cc`对原产物post-hoc返回`ALL_OK`，因此实验mechanics结论为通过。success0/4不构成策略效果结论。

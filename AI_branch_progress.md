@@ -15,7 +15,9 @@
 - 本地已实现metadata-driven k/token/projector/checkpoint、`qwen|wm_value|qwen_wm` rollout、连续WM predicted segment、真实behavior-logprob ownership、多步dynamics window/mask，以及predicted behavior state上的ValueHead训练。旧JSONL无明确sampling-distribution语义时仍可训练WM/value，但自动排除Qwen PPO。
 - 最终hybrid实现本地Nix验证：RL/WM/latent相关测试`74 passed, 1 expected warning`；targeted ruff、py_compile、bash syntax与diff-check通过。
 - 人类随后允许最小真实服务器 smoke；首次 SSH preflight 因 forwarding timeout停止，恢复连接后已核实：正式 k8 SFT2 epoch2/step2912 checkpoint完整且metadata为k8/inject/hidden2048/projector16384；ENV worktree `b21ae10`/VAGEN `bb26c0d` 的`base_train`为1200-task训练集，seeds1..4由实际loader确定选择训练任务；W&B `nimloth-rl`下一ID=63；normal现有充足2GPU资源。
-- hybrid ID63 job`482447`验证4条/8-step rollout归属正确，但因trainer Qwen batch漏传k8而在optimizer前失败；已修复并登记E0031。ID64 retry1 job`482474`进一步跑通iteration1 finite forward和checkpoint/resume入口，但post-step trainables全NaN、iteration2全loss NaN。RED backward测试确认top-p的`-inf`在旧entropy`where`未选分支产生NaN gradient，global clipping污染Qwen language/WM/ValueHead；已改finite-sentinel entropy、加入backward-finite测试及optimizer前non-finite fail-fast，登记E0032。ID63/64均已写服务器README/progress并标W&B failed；所有相关checkpoint不可resume，后续必须新ID/输出。详见`ai_tasks/ai_progress/2026-07-20_rl_kgt1_wm_multiaction.md`。
+- hybrid ID63/64依次暴露并修复k8 batch透传遗漏（E0031）与top-p entropy backward NaN（E0032）；两次失败均已写服务器README/progress并标W&B failed，checkpoint不可resume。
+- ID65 retry2已完成requested mechanics：training commit`a3b091b`，job`482484`、2×H800、`00:06:23`，W&B`nrxroyos` finished。4条真实`base_train`轨迹/8 transitions严格`qwen→wm_value`、`qwen_gt→wm_predicted`、fast`0→1`且仅Qwen step有behavior log-prob；2-rank FSDP step1与fresh-process same-world resume step2均finite。Iter2 WM0.00219252/Value0.177008/actor−0.0569786/entropy1.55328/total0.106689。Qwen language、WM93 tensors、ValueHead4 tensors改变；vision与StateProjector bitwise冻结。
+- ID65原Slurm`FAILED1:0`仅因validator猜错HF key前缀（E0033）；validator commit`25823cc`对原产物post-hoc`ALL_OK`，服务器README/progress已将实验标为completed。success0/4不构成quality结论。详见`ai_tasks/ai_progress/2026-07-20_rl_kgt1_wm_multiaction.md`。
 
 ## 2026-07-19：rollout图像分辨率纠正
 

@@ -77,7 +77,10 @@
 - 失败根因：`encode_trajectory_hiddens()`调用`build_qwen_batch()`时漏传k=8，helper默认k=1并把query block归一化为单token，严格k=8提取器报malformed block。已增加真实RED回归测试并修复显式透传`latent_token_count`；本地全套`75 passed, 1 expected warning`。错误登记于`ai_rules/known_errors/E0031_forward_latent_k_to_qwen_batch.md`。
 - ID63输出及`outputs/experiments/training/rl/progress.md`已记录失败与不可恢复原因。
 - ID64 retry1随后执行：job`482474`在`dgx-10`运行`00:06:41`。k8 trainer编码修复生效，iteration1 forward全部有限（WM=0.00240672、Value=0.149349、actor=1.49e-08、entropy=1.54232），但optimizer step后trainable checkpoint全线NaN，fresh-process iteration2全部loss NaN；外部finite gate拒绝，W&B`ixvtbpqr`已显式标为failed。
-- 根因经RED backward测试确认：top-p使用`-inf`mask，旧entropy的`where(p>0,p*logp,0)`只保证forward有限，autograd仍从`0*-inf`产生NaN；global grad clipping随后污染Qwen language、WM和ValueHead。已改为finite sentinel entropy并检查backward gradient，optimizer前新增non-finite loss/grad-norm fail-fast；登记`E0032_top_p_entropy_backward_nan.md`。ID64全部checkpoint不安全，不得resume；后续retry必须新ID/新输出。
+- 根因经RED backward测试确认：top-p使用`-inf`mask，旧entropy的`where(p>0,p*logp,0)`只保证forward有限，autograd仍从`0*-inf`产生NaN；global grad clipping随后污染Qwen language、WM和ValueHead。已改为finite sentinel entropy并检查backward gradient，optimizer前新增non-finite loss/grad-norm fail-fast；登记`E0032_top_p_entropy_backward_nan.md`。ID64全部checkpoint不安全，不得resume。
+- ID65 retry2最终通过：training commit`a3b091b`，job`482484`在`dgx-10`耗时`00:06:23`，W&B`nrxroyos` finished。Slurm显示`FAILED1:0`只是原final validator误匹配不存在的`language_model.layers.0`前缀；实际HF公共key为`model.layers.0.*`/`visual.*`。修复validator commit`25823cc`后对原产物post-hoc验证`ALL_OK`，登记E0033。
+- ID65真实`base_train` rollout为4 trajectories/8 transitions，全部严格`qwen→wm_value`、`qwen_gt→wm_predicted`、fast step`0→1`，仅Qwen step有真实behavior log-prob。2-rank FSDP iteration1与fresh-process same-world iteration2均完成，global_step2，loss全finite。iteration2：WM0.00219252（h1 0.00212392/h2 0.00232973）、Value0.177008、actor−0.0569786、entropy1.55328、ratio1.05849、total0.106689。
+- Delta/freeze gate：Qwen language probe改变、WM predictor 93 tensors改变、ValueHead 4 tensors改变；Qwen vision与StateProjector bitwise不变；model shards与最终tensor有限。服务器README与RL group progress已更新。success0/4只说明smoke策略效果未验证，不影响mechanics结论。
 
 ## 待确认/风险
 
