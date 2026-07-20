@@ -22,18 +22,32 @@ def resolve_projector_config(
     latent_count = int(training_state["latent_token_count"])
     qwen_dim = int(training_state["qwen_hidden_dim"])
     input_dim = int(training_state["state_proj_input_dim"])
-    hidden_dim = int(training_state["state_proj_hidden_dim"])
-    output_dim = int(training_state["state_proj_output_dim"])
     if input_dim != latent_count * qwen_dim:
         raise ValueError(
             f"projector input mismatch: {input_dim} != {latent_count}*{qwen_dim}"
         )
     first = state_dict["net.net.0.weight"]
     last = state_dict["net.net.3.weight"]
-    if tuple(first.shape) != (hidden_dim, input_dim):
-        raise ValueError(f"first projector layer mismatch: {tuple(first.shape)}")
-    if tuple(last.shape) != (output_dim, hidden_dim):
-        raise ValueError(f"last projector layer mismatch: {tuple(last.shape)}")
+    hidden_dim, weight_input_dim = (int(value) for value in first.shape)
+    output_dim, last_hidden_dim = (int(value) for value in last.shape)
+    if weight_input_dim != input_dim:
+        raise ValueError(
+            f"first projector layer mismatch: {tuple(first.shape)} vs input_dim={input_dim}"
+        )
+    if last_hidden_dim != hidden_dim:
+        raise ValueError(
+            f"last projector layer mismatch: {tuple(last.shape)} vs hidden_dim={hidden_dim}"
+        )
+    optional_dimensions = {
+        "state_proj_hidden_dim": hidden_dim,
+        "state_proj_output_dim": output_dim,
+    }
+    for key, inferred in optional_dimensions.items():
+        if key in training_state and int(training_state[key]) != inferred:
+            raise ValueError(
+                f"projector metadata mismatch for {key}: "
+                f"{training_state[key]} != {inferred}"
+            )
     return {
         "latent_token_count": latent_count,
         "qwen_hidden_dim": qwen_dim,

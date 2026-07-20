@@ -25,6 +25,25 @@ def test_resolve_projector_config_accepts_full8192_checkpoint() -> None:
     }
 
 
+def test_resolve_projector_config_infers_old_k1_dimensions_from_weights() -> None:
+    state = {
+        "latent_token_count": 1,
+        "qwen_hidden_dim": 2048,
+        "state_proj_input_dim": 2048,
+    }
+    weights = {
+        "net.net.0.weight": torch.empty(2048, 2048, device="meta"),
+        "net.net.3.weight": torch.empty(1024, 2048, device="meta"),
+    }
+    assert resolve_projector_config(state, weights) == {
+        "latent_token_count": 1,
+        "qwen_hidden_dim": 2048,
+        "input_dim": 2048,
+        "hidden_dim": 2048,
+        "output_dim": 1024,
+    }
+
+
 def test_resolve_projector_config_rejects_input_contract_mismatch() -> None:
     state = {
         "latent_token_count": 8,
