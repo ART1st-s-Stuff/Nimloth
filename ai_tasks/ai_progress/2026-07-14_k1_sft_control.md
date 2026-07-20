@@ -57,4 +57,5 @@ No k=8 job, checkpoint, cache, CSV, or output will be modified or deleted.
 - 后续权威SFT2状态见`AI_branch_progress.md`：用户选择ID16完整epoch2/best，并要求8GPU。方案为normal8GPU query extraction后normal1GPU projected cache/CFM/Decoder/eval；同k8协议使用query latent、actual/predicted projected双路1:1 Decoder loss、单步teacher-forced四列。
 - `dbf10bc`让四列evaluator动态读取k1/k8 shape。cache481472 dgx-46 `COMPLETED0:0`/00:37:08：train59,389、val6,054，manifest完整，k1 query以兼容flat`[2048]`存储。
 - pipeline481473在CFM前失败：旧ID16 training_state缺projector hidden/output metadata，且consumer误只接受`[1,2048]`。修复`0fa75f9/5085e7f`从真实权重推导2048→2048→1024，并在projection/CFM/Decoder/evaluator统一把flat k1 cache解释为一个token；server22 tests与真实manifest gate通过，登记E0048。
-- replacement481531已生成lineage-strict projected cache，train/val count59,389/6,054、fingerprint`e169b6e426c43a3d/e2e1f4b75174e42e`；CFM42运行中，后续Decoder43/eval44同job串行。
+- replacement481531 `COMPLETED0:0`/01:01:53：projected cache fingerprint`e169b6e426c43a3d/e2e1f4b75174e42e`；CFM42/Decoder43/eval44全部完成，W&B`a5apbi89/wskfj90b/zs97gfxl`。
+- CFM full-val correct/shuffled`.03988655/.04008224` ratio`1.004906`。Decoder full-val clean/pred MSE/cos`.3672595/.9881236` vs`2.2566451/.9243215`。四列200rows L1 Qwen/direct/pred`.272989/.304943/.334709`，State cos`.603146`。视觉Qwen最稳；direct-k1有粗场景但偏pale/generic，pred更不匹配；clean Decoder也损detail/layout。main contacts与clean gate上传完成。

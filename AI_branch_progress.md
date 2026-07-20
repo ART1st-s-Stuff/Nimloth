@@ -4,12 +4,15 @@
 
 ---
 
-## 2026-07-20：k1 ID16 epoch2同协议reconstruction（进行中）
+## 2026-07-20：k1 ID16 epoch2同协议reconstruction（完成）
 
 - 人类指定完整epoch2/best，并批准8GPU；实际资源方案为normal8GPU并行query cache，再用normal1GPU顺序projected cache→CFM→Decoder→四列评估，避免单GPU训练阶段闲置7卡。代码`dbf10bc`让evaluator按manifest/Decoder动态支持k1/k8。
 - cache job`481472`在dgx-46 `COMPLETED0:0`/00:37:08：train59,389、val6,054，k1 query semantic token实际兼容存储为flat`state_shape=[2048]`，完整manifest/shards。
 - 首个pipeline`481473`在CFM/W&B前失败：ID16旧training_state缺Projector hidden/output字段，且consumer误要求k1 cache`[1,2048]`。`0fa75f9`改由真实权重推导Projector=`2048→2048→1024`；`5085e7f`统一将flat k1 storage解释/恢复为一个query token，覆盖projection/CFM/Decoder/evaluator；server22 tests与真实manifest gate通过，登记E0048。
-- replacement pipeline`481531`已完成projected cache：train/val fingerprints=`e169b6e426c43a3d/e2e1f4b75174e42e`、counts保持59,389/6,054；fresh k1 CFM42启动中。
+- replacement pipeline`481531` `COMPLETED0:0`/01:01:53。projected cache train/val fingerprints=`e169b6e426c43a3d/e2e1f4b75174e42e`、counts59,389/6,054。
+- CFM42完成55,680steps/30ep，W&B`a5apbi89`；best subset correct`.03361808`，final full-val correct/shuffled`.03988655/.04008224` ratio`1.004906`，condition use弱于k8 ratio1.012296。
+- Decoder43完成5ep/2,195steps，W&B`wskfj90b`；full-val5,699 clean actual-State MSE/cos`.3672595/.9881236`，teacher-forced predicted-State`2.2566451/.9243215`，均差于k8对应`.1434287/.9951712`与`1.2743621/.9561902`。
+- Eval44完成diverse40/200rows，W&B`zs97gfxl`。image L1 Qwen/direct-k1/pred=`.272989/.304943/.334709`；k1 direct按L1优于k8 direct`.320531`，但肉眼仍偏pale/generic并有漂移；pred与k8`.333934`近似。State MSE/cos`.003611/.603146`低于k8 cos`.703572`；selected Decoder clean/pred query MSE/cos`.505037/.983581` vs`1.913851/.935508`。Qwen仍最scene-faithful，pred失败同样混合WM drift和Decoder/CFM sensitivity。main contacts及clean gate已上传。
 
 ## 2026-07-19：ID27 epoch2 query-latent CFM + projected-State Decoder（完成）
 
