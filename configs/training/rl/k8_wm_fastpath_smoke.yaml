@@ -1,0 +1,45 @@
+# Minimal real k=8/inject WM-value fast-path RL smoke.
+
+qwen:
+  model: Qwen/Qwen2.5-VL-3B-Instruct
+  attn_implementation: sdpa
+  max_pixels: 100352
+
+freeze:
+  qwen: true
+  state_proj: true
+
+predictor:
+  lr: 0.0001
+  emb_dim: 1024
+  history_size: 4
+  rollout_steps: 2
+  rollout_loss_decay: 1.0
+
+value_head:
+  lr: 0.0001
+  rank_margin: 0.1
+  lambda_rank: 1.0
+
+rollout:
+  policy: wm_value
+  fast_path_horizon: 2
+  eval_sets:
+    - base_train
+
+rl:
+  iterations: 1
+  envs_per_iteration: 4
+  max_steps_per_episode: 2
+  gamma: 0.99
+  batch_size: 8
+
+validation:
+  enabled: false
+  interval: 1
+  envs: 0
+
+training:
+  seed: 42
+  log_interval: 1
+  save_interval: 1

@@ -46,6 +46,20 @@ def test_k8_wm_fastpath_config_disables_actor_and_uses_two_step_horizons() -> No
     assert config["predictor"]["rollout_steps"] == 2
 
 
+def test_k8_wm_fastpath_smoke_config_covers_two_step_windows() -> None:
+    config = load_rl_config(ROOT / "configs/training/rl/k8_wm_fastpath_smoke.yaml")
+    assert config["freeze"] == {"qwen": True, "state_proj": True}
+    assert "actor" not in config
+    assert config["rollout"] == {
+        "policy": "wm_value",
+        "fast_path_horizon": 2,
+        "eval_sets": ["base_train"],
+    }
+    assert config["predictor"]["rollout_steps"] == 2
+    assert config["rl"]["batch_size"] == 8
+    assert config["training"]["save_interval"] == 1
+
+
 def test_resume_rejects_model_state_protocol_mismatch() -> None:
     with pytest.raises(ValueError, match="model/state protocol mismatch"):
         resolve_rl_init_metadata(

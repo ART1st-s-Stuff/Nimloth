@@ -14,7 +14,8 @@
 - 人类进一步确认首期 k>1 仅支持 `inject`；rollout 保留独立 `qwen` policy 做现有 PPO，新增 `wm_value` policy 只训练 WM dynamics 与 ValueHead、禁止进入 Qwen PPO。两个 horizon 配置化并以2作为本地 correctness 默认；本次不启动 smoke或服务器任务。
 - 本地已实现 metadata-driven k/token/projector/checkpoint、`qwen|wm_value` rollout、连续 WM predicted segment、真实 behavior-logprob ownership、多步 dynamics window/mask，以及 predicted behavior state 上的 ValueHead训练。旧 JSONL 无明确 sampling-distribution 语义时仍可训练 WM/value，但自动排除 Qwen PPO。
 - 本地 Nix 环境验证：RL/WM/latent相关测试 `70 passed, 1 expected warning`；targeted ruff、py_compile与diff-check通过。
-- 人类随后允许最小真实服务器 smoke；启动前 SSH preflight 因 forwarding connection timeout 失败，已按服务器规则停止重试。尚未创建远程输出/W&B run/Slurm job，等待人类恢复 VPN/SSH 后继续；真实 k8 checkpoint、环境交互和GPU/FSDP resume仍未验证。详见`ai_tasks/ai_progress/2026-07-20_rl_kgt1_wm_multiaction.md`。
+- 人类随后允许最小真实服务器 smoke；首次 SSH preflight 因 forwarding timeout停止，恢复连接后已核实：正式 k8 SFT2 epoch2/step2912 checkpoint完整且metadata为k8/inject/hidden2048/projector16384；ENV worktree `b21ae10`/VAGEN `bb26c0d` 的`base_train`为1200-task训练集，seeds1..4由实际loader确定选择训练任务；W&B `nimloth-rl`下一ID=63；normal现有充足2GPU资源。
+- 已准备独立 smoke config/runner/Slurm wrapper，计划2×H800、48CPU、180G、2h上限（预计8–15分钟、60–100GiB），执行4×2 WM/value rollout→FSDP step1→新进程same-world resume step2。尚未reserve W&B、创建远程输出或提交job；真实结果仍未验证。详见`ai_tasks/ai_progress/2026-07-20_rl_kgt1_wm_multiaction.md`。
 
 ## 2026-07-19：rollout图像分辨率纠正
 

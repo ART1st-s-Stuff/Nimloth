@@ -66,7 +66,13 @@
 
 - 人类已解除 smoke 与最小服务器任务限制，允许真实 k=8/FSDP smoke。
 - 已按实验开始规则核对实验约束并尝试连接 `superpod-csejzhang`，SSH forwarding connection timed out；按服务器规则停止重试。
-- 尚未创建远程输出、W&B run、Slurm allocation 或 job；等待人类恢复 VPN/SSH 后继续 checkpoint/split/W&B ID/resource preflight。
+- 人类恢复连接后 preflight 已完成：
+  - 真实 source=`.../sft2/2_ddpsyncfix_k8inject_all3217_qadapter_vfull_wmtrain_ep10_b2_ga4_px100352_img12_bestwm/train/epoch_002`；HF/processor/state projector/WM/value/training state 均存在，metadata 为 k=8/inject、hidden2048、projector input16384、epoch2/step2912 complete。
+  - ENV worktree root=`b21ae10`、VAGEN=`bb26c0d`；`base_train.json` 含 `tasks` 1200条，loader读取该列表并以 `seed % 1200` 选任务，因此 seeds1..4 是明确训练数据。
+  - W&B `nimloth-rl` 已有 numeric IDs 到62，下一 ID=63。
+  - normal 当前有42张空闲GPU，多个单节点可提供2GPU。
+- 已准备独立 k8 WM fast-path smoke config、runner 与 Slurm wrapper；尚未 reserve W&B run、创建远程输出或提交 job。
+- 拟用2×H800、48CPU、180G、2h上限；预计实际8–15分钟，输出约60–100GiB。step1完整保存后由新 torchrun 以相同world-size恢复到step2。
 
 ## 待确认/风险
 
