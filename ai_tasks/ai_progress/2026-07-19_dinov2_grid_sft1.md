@@ -30,6 +30,13 @@
 - `compileall` and `git diff --check` pass.
 - No GPU, Slurm, remote training, or model-weight smoke has been started for this design.
 
+## GPU smoke attempts
+
+- Two pre-allocation submission attempts created no job/GPU/W&B run: the first non-login shell lacked the Slurm module; retry1 was rejected because the script lacked `account=peilab`. Both output directories are marked `SUBMISSION_FAILED` and were not reused.
+- Approved smoke retry2: W&B name reserved as `14_smoke_retry2_dino2l_grid4_k16_prefix_success1_l1_ep1_b1_ga1_ws1_px602112`; Slurm `481441`, commit `b913fcc`, one GPU on `dgx-13`.
+- Job `481441` failed in 20 seconds before model/data/W&B initialization because the new entry point unpacked three values from canonical four-value `setup_dist()`. No metrics/checkpoint and not resumable; output README and experiment-group progress were updated.
+- Fixed both new SFT1/SFT2 entry points to use `(rank, world_size, local_rank, device)` and registered `E0030`.
+
 ## Remaining before formal training
 
 1. Build a fast preprocess path/cache for prefix-expanded SFT1; current online processor path is correct but may be CPU-bound.

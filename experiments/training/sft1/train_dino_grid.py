@@ -250,8 +250,7 @@ def evaluate(model, projector, teacher, loader, processor, token_ids, device, ar
 
 def main() -> None:
     args = parse_args()
-    rank, local_rank, world_size = setup_dist()
-    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    rank, world_size, local_rank, device = setup_dist()
     random.seed(args.seed + rank)
     torch.manual_seed(args.seed + rank)
     if torch.cuda.is_available():

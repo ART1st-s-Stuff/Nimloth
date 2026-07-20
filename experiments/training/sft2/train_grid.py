@@ -158,8 +158,7 @@ def evaluate(model, projector, wm, value, loader, processor, token_ids, device, 
 
 def main() -> None:
     args = parse_args()
-    rank, local_rank, world_size = setup_dist()
-    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    rank, world_size, local_rank, device = setup_dist()
     torch.manual_seed(args.seed + rank)
 
     processor = AutoProcessor.from_pretrained(str(args.sft1_checkpoint), trust_remote_code=True)
