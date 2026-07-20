@@ -66,8 +66,18 @@ SFT1 Slurm `481494` completed 5 epochs/575 steps in 3h15m36s; W&B `ie19vs47` fin
 - Root cause: `SafeBatchNorm1d` used uninitialized scratch running buffers; train mode hid corruption by using batch statistics and eval exposed it. ID31 epoch/latest/final checkpoints are forbidden.
 - Fixed scratch buffers to clone current running stats, added standard-BN/repeated-forward regression tests, and added fail-fast non-finite train/val checks. Registered `E0034`.
 
+## BatchNorm-fix world2 result
+
+- Fix commit `1e5208bf512f437a879b0d17679c736f7225a6e7`; 88 relevant tests passed.
+- Slurm `482446`, W&B ID32 `3qhd3t97`, completed 0:0 in 3m23s on dgx-10.
+- Two ranks completed 20 train transitions / 10 optimizer steps and distributed validation over 12 transitions.
+- Final train total/latent/DINO/SIGReg/value: `1.185793 / 0.782094 / 0.692199 / 0.556406 / 0.001958`.
+- Val total/latent/DINO/SIGReg/value: `2.228710 / 0.729252 / 1.110717 / 0.478685 / 0.896231`; all finite.
+- Epoch/best/latest/final checkpoints exist. All saved module floating tensors are finite; no BatchNorm running variance is negative. State is epoch1/step10/best2.2287099063.
+- CPU MaxRSS was ~11.3GB. W&B did not capture system GPU telemetry; one initialization sample was 7.4GiB/GPU and is not a train-peak measurement.
+
 ## Remaining
 
-1. Run broader tests and commit the BatchNorm fix.
-2. Rerun a new world2 smoke with W&B ID32; valid caches may be reused.
-3. If smoke passes, measure memory/step time and propose formal SFT2 resources for separate human approval.
+1. Add a bounded full-cache profiling mode so the exact formal cached path can measure step throughput and peak GPU without traversing all 59,389 transitions.
+2. Propose formal SFT2 world size, batch/accumulation, epochs, and time budget for separate human approval.
+3. Do not start formal SFT2 until that approval.
