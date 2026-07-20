@@ -1,6 +1,6 @@
 # RL 训练实验
 
-从 SFT2 checkpoint warm-start，在线/离线 RL 训练 WM predictor + value head。
+从 metadata-bearing SFT2 checkpoint warm-start，训练 k>1/inject WM predictor + value head；Qwen 行为轨迹可额外做 PPO，WM/value fast-path 轨迹不进入 Qwen PPO。
 
 ## 脚本
 
@@ -30,10 +30,24 @@ python -m nimloth.training.rl.cli \
 
 ```bash
 # 步骤 1：独立 rollout 生成 JSONL（可在 Slurm 上单卡运行）
+# Qwen behavior policy（记录真实 temperature/top-p behavior log-prob）
 python -m experiments.training.rl.rollout_env \
-  --model /path/to/sft2/export_best_hf \
+  --model /path/to/sft2/checkpoint \
+  --policy qwen \
   --env-url http://127.0.0.1:5000 \
-  --output-dir outputs/rollouts/batch_001 \
+  --output-dir outputs/rollouts/qwen_batch_001 \
+  --num-episodes 128 \
+  --eval-set base_train \
+  --split train
+
+# WM+ValueHead greedy fast path（不生成/伪造 Qwen log-prob）
+python -m experiments.training.rl.rollout_env \
+  --model /path/to/sft2/checkpoint \
+  --wm-checkpoint /path/to/sft2/checkpoint \
+  --policy wm_value \
+  --fast-path-horizon 2 \
+  --env-url http://127.0.0.1:5000 \
+  --output-dir outputs/rollouts/wm_batch_001 \
   --num-episodes 128 \
   --eval-set base_train \
   --split train
@@ -47,7 +61,7 @@ python -m nimloth.training.rl.cli \
   --output-dir outputs/experiments/training/rl/test
 ```
 
-`--jsonl-sources` 接受一个或多个 JSONL 文件或目录（目录下递归搜索 `*.jsonl` / `*.jsonl.gz`）。也可以在 config 中设置 `rollout.jsonl_sources`。训练时轮转消费所有轨迹；数据耗尽时自动回到开头（loop）。
+`--jsonl-sources` 接受一个或多个 JSONL 文件或目录（目录下递归搜索 `*.jsonl` / `*.jsonl.gz`）。也可以在 config 中设置 `rollout.jsonl_sources`。训练时轮转消费所有轨迹；数据耗尽时自动回到开头（loop）。每个 transition 保存 `policy_source`、`state_source`、fast-path step 及 inject/k metadata；只有 `policy_source=qwen`、`action_log_prob_semantics=sampling_distribution_v1` 且存在真实 behavior log-prob 的 row 可进入 Qwen PPO。旧 JSONL 没有该语义标记时仍可训练 WM/value，但会从 Qwen PPO 自动排除。
 
 ### 分布式安全说明
 
@@ -55,6 +69,7 @@ python -m nimloth.training.rl.cli \
 - Batch 选择使用 per-iteration 确定性 generator（`seed + iteration`），不依赖全局 RNG 状态同步。
 - 非 FSDP 的 `state_proj`、`wm_predictor`、`value_head` 会在 distributed setup 后从 rank0 广播初始参数；因为所有 rank 消费相同数据，它们的本地副本会保持同步。
 - 所有 rank 必须调用相同的 `collect()` 次数——训练循环已保证这一点。
+- 多步 dynamics loss 只使用同一 trajectory 内的连续 action/state window，短 episode 用显式 mask padding。
 
 ## 输出
 

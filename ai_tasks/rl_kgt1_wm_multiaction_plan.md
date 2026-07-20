@@ -6,7 +6,7 @@
 
 日期：2026-07-20
 
-状态：任务草案，待人类确认后实施
+状态：本地实现与单元验证完成；按人类要求暂缓 smoke/服务器任务
 
 ## 1. 背景与当前边界
 
@@ -22,7 +22,7 @@
 ### Feature A：k>1 latent query
 
 - 从 SFT2/HF checkpoint metadata 读取 `latent_token_count` 与 `latent_query_mode`。
-- 首期目标建议限定为 `inject`，至少支持当前主路径 `k=8`；是否同时支持 `generate` 由人类决定。
+- 人类已确认首期只支持 `inject`，至少支持当前主路径 `k=8`；`generate` 不在本次范围。
 - rollout action policy、RL trajectory encoding、PPO forward、StateProjector、checkpoint/resume 全链路使用同一个显式 k。
 - k=1 继续保持兼容，并对 metadata/token/shape 不一致 fail-fast。
 
@@ -33,14 +33,13 @@
 - fast-path 中通过 `WMPredictor(s_t, a_t)` 得到下一 predicted state，并在配置的 horizon/resync 边界重新使用真实 observation 经 Qwen 对齐。
 - 为连续 fast-path 增加真实的多步 dynamics rollout loss，避免只训练单步 MSE 却把递归推演描述成已训练的多步模型。
 
-## 3. 术语与建议语义
-
-为避免“多个连续动作”含义混乱，本任务建议采用以下定义，实施前需人类确认：
+## 3. 术语与已确认的连续动作语义
 
 - `latent_token_count=k`：每个 observation 导出 k 个有序 query hidden，shape 为 `[B,k,H]`；StateProjector 展平为 `[B,kH]` 后映射到固定维度 WM state。
-- `fast_path_horizon=N`：一次 Qwen real-observation sync 后，最多连续执行 N 个由 WM+ValueHead/planner 产生的动作；达到 N、episode 结束或显式异常时重新 sync/停止。
-- 每个 fast-path step 都根据当前 predicted WM state 重新选动作；首期不要求一次性输出并盲执行整个 action chunk。
-- `planning_depth` 与 `fast_path_horizon` 分开配置：前者是内部搜索深度，后者是真实环境中两次 Qwen sync 之间最多执行的动作数。
+- `fast_path_horizon=N`：一次 Qwen real-observation sync 后，最多连续执行 N 个由 WM+ValueHead 产生的动作。
+- 人类已确认：fast path 开始时使用 Qwen GT state；整个 fast-path segment 内不再用环境 observation 覆盖 state，而是持续以 `WMPredictor(s_t,a_t)` 的 predicted state 作为下一步输入；segment 结束后，再从当前真实 observation 经 Qwen 得到新的 GT state，开始后续过程。
+- 每个动作仍逐步发送给真实环境，并记录 observation/reward/done；环境 done 会立即终止 segment。
+- 人类已确认首期 planner 只支持 greedy。Beam search 不在本次范围内，因此本任务不依赖尚待复核的 sequence-score 语义。
 
 ## 4. 关键正确性约束
 
@@ -56,10 +55,10 @@
 
 WM planner 产生的动作不是 Qwen rollout policy 的采样结果。不得把这些动作配上 Qwen 的 log-prob 后直接进入当前 PPO ratio，否则 `old_log_prob` 不代表真实行为策略。
 
-首期建议：
+人类已确认首期采用两个明确的 rollout policy：
 
-- `policy_source=qwen` 的 transition 才允许进入 Qwen PPO actor loss；
-- `policy_source=wm_value` 的 transition 用于真实环境回报、ValueHead 和 WM dynamics 训练，但默认从 Qwen PPO loss mask 掉；
+- `policy=qwen`：动作由 Qwen 行为策略采样，保留现有 Qwen PPO，并同时训练 WM dynamics 与 ValueHead；
+- `policy=wm_value`：动作由 deterministic greedy ValueHead 产生，只训练 WM dynamics 与 ValueHead，禁止进入 Qwen PPO actor loss；
 - 如果未来要对 WM planner 做 policy-gradient，必须先定义真实的随机行为分布并记录对应 behavior log-prob，作为单独任务实现。
 
 ### 4.3 多步 dynamics 必须使用连续 trajectory window
@@ -183,6 +182,8 @@ bash -n experiments/training/rl/*.sh experiments/training/rl/*.slurm
 
 ## 8. 完成标准
 
+当前已满足本地实现、回归单测和静态检查；真实 checkpoint/env/GPU/FSDP 条目因人类要求暂缓 smoke，尚未验证。因此任务不能宣称端到端完成。
+
 只有同时满足以下条件才可将任务标记为完成：
 
 - k=1 回归测试保持通过；
@@ -193,10 +194,10 @@ bash -n experiments/training/rl/*.sh experiments/training/rl/*.slurm
 - 两阶段 FSDP 安全 gate、train/val split gate、finite/shape/delta gate 全部通过；
 - 文档清楚区分“代码支持”“smoke 可行”和“效果验证”。
 
-## 9. 实施前待人类确认
+## 9. 已确认决策与剩余配置边界
 
-1. k>1 首期是否只支持 `inject`（建议），还是同时支持 `generate`？
-2. 连续动作是否采用“每步基于 predicted state 重新选动作、每 N 步 Qwen resync”（建议），还是一次性生成并 open-loop 执行 action chunk？
-3. WM planner 产生的 transition 是否按建议从 Qwen PPO mask 掉，只训练 WM+ValueHead？
-4. 首期默认 `fast_path_horizon` 和 multi-step loss horizon 取多少？建议先用 2 做 correctness smoke，再单独决定正式配置。
-5. 首期 planner 使用 greedy，还是同时要求 beam search？当前 beam-search sequence score 的 value 语义需要在正式使用前单独复核。
+1. **已确认**：k>1 首期只支持 `inject`；`generate` 不在本次范围。
+2. **已确认**：fast path 从 Qwen GT state 开始，segment 内连续使用 WM predicted state；segment 结束后从当前真实 observation 经 Qwen 重新取得 GT state。
+3. **已确认**：保留独立 `qwen` policy 做现有 PPO；新增 `wm_value` policy，只训练 WM dynamics 与 ValueHead，不做 Qwen PPO。
+4. `fast_path_horizon` 与 multi-step loss horizon 均配置化；首期默认 2，仅做本地 correctness tests，本次不启动 smoke。
+5. **已确认**：首期 planner 只支持 greedy，beam search 不在本次范围。

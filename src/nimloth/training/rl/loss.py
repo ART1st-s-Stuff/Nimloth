@@ -11,6 +11,7 @@ from nimloth.wm.value_head import ValueHead
 
 __all__ = [
     "compute_predictor_loss",
+    "compute_multistep_predictor_loss",
     "compute_value_loss",
     "compute_advantages",
     "compute_actor_loss",
@@ -37,6 +38,72 @@ def compute_predictor_loss(
     pred = wm_predictor(state_emb, action_indices)
     mse = F.mse_loss(pred, target_emb)
     return mse, {"wm_mse": float(mse.detach().item())}
+
+
+def compute_multistep_predictor_loss(
+    *,
+    qwen_hidden_current: torch.Tensor,
+    qwen_hidden_targets: torch.Tensor,
+    action_sequences: torch.Tensor,
+    valid_mask: torch.Tensor,
+    state_proj: StateProjector,
+    wm_predictor: LatentWMPredictor,
+    loss_decay: float = 1.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Recursive multi-step dynamics loss over contiguous trajectory windows.
+
+    Step one starts from a Qwen-GT state.  Every later step consumes the
+    predictor's previous output; real future states are targets only.  The
+    leading shapes are ``(B, T, ...)`` for targets and ``(B, T)`` for actions
+    and mask.  ``...`` is either ``H`` for k=1 or ``(k, H)`` for k>1.
+    """
+
+    if action_sequences.ndim != 2 or valid_mask.shape != action_sequences.shape:
+        raise ValueError(
+            "action_sequences and valid_mask must both have shape (B, T), got "
+            f"{tuple(action_sequences.shape)} and {tuple(valid_mask.shape)}"
+        )
+    if qwen_hidden_targets.shape[:2] != action_sequences.shape:
+        raise ValueError(
+            "qwen_hidden_targets leading shape must match actions; got "
+            f"{tuple(qwen_hidden_targets.shape[:2])} vs {tuple(action_sequences.shape)}"
+        )
+    if loss_decay <= 0:
+        raise ValueError(f"loss_decay must be positive, got {loss_decay}")
+    mask = valid_mask.to(dtype=torch.bool, device=action_sequences.device)
+    if not bool(mask.any()):
+        raise ValueError("multi-step predictor loss requires at least one valid target")
+
+    batch_size, num_steps = action_sequences.shape
+    state = state_proj(qwen_hidden_current).float()
+    flat_targets = qwen_hidden_targets.reshape(
+        batch_size * num_steps, *qwen_hidden_targets.shape[2:]
+    )
+    with torch.no_grad():
+        target_states = state_proj(flat_targets).float().reshape(batch_size, num_steps, -1)
+
+    weighted_loss = state.sum() * 0.0
+    weight_total = torch.zeros((), dtype=state.dtype, device=state.device)
+    metrics: dict[str, float] = {}
+    for step in range(num_steps):
+        # Preserve the SFT2/current-RL one-step predictor contract at h=1,
+        # then recursively feed its own prediction for later horizons.
+        state = wm_predictor(state, action_sequences[:, step])
+        per_item = F.mse_loss(
+            state, target_states[:, step], reduction="none"
+        ).mean(dim=-1)
+        step_mask = mask[:, step].to(device=per_item.device)
+        if bool(step_mask.any()):
+            step_loss = per_item[step_mask].mean()
+            metrics[f"wm_mse_h{step + 1}"] = float(step_loss.detach().item())
+            weight = float(loss_decay ** step)
+            weighted_loss = weighted_loss + weight * per_item[step_mask].sum()
+            weight_total = weight_total + weight * step_mask.sum().to(dtype=state.dtype)
+
+    total = weighted_loss / weight_total.clamp_min(1.0)
+    metrics["wm_mse"] = float(total.detach().item())
+    metrics["wm_rollout_steps"] = float(num_steps)
+    return total, metrics
 
 
 def compute_value_loss(
@@ -134,5 +201,6 @@ def compute_action_entropy(action_logits: torch.Tensor) -> torch.Tensor:
     """
     probs = torch.softmax(action_logits.float(), dim=-1)
     log_probs = torch.log_softmax(action_logits.float(), dim=-1)
-    entropy = -(probs * log_probs).sum(dim=-1).mean()
+    terms = torch.where(probs > 0, probs * log_probs, torch.zeros_like(probs))
+    entropy = -terms.sum(dim=-1).mean()
     return entropy

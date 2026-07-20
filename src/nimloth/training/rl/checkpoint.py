@@ -65,6 +65,11 @@ def save_rl_checkpoint(
     llm_tune: str = "freeze",
     vision_tune: str = "freeze",
     base_model_path: str = "",
+    latent_query_mode: str = "inject",
+    rollout_policy: str = "qwen",
+    fast_path_horizon: int = 0,
+    predictor_rollout_steps: int = 1,
+    predictor_rollout_loss_decay: float = 1.0,
 ) -> None:
     rank, world = _rank_world()
     fsdp_model = _is_fsdp(model)
@@ -93,6 +98,23 @@ def save_rl_checkpoint(
         torch.save(optimizer.state_dict(), out_dir / f"optimizer_rank_{rank:05d}.pt")
 
     if rank == 0:
+        query_token_ids: list[int] | None = None
+        if processor is not None:
+            from nimloth.latent.extraction import (
+                LatentActionTokens,
+                latent_state_tokens,
+                special_token_ids,
+            )
+
+            token_count = int(getattr(_unwrap(state_proj), "latent_token_count", 1))
+            tokens = LatentActionTokens()
+            token_map = special_token_ids(
+                processor.tokenizer, tokens, latent_token_count=token_count
+            )
+            query_token_ids = [
+                int(token_map[name]) for name in latent_state_tokens(token_count, tokens)
+            ]
+
         # WM modules
         torch.save(_unwrap(state_proj).state_dict(), out_dir / "state_proj.pt")
         _unwrap(wm_predictor).save_checkpoint(out_dir / "wm_predictor")
@@ -101,6 +123,12 @@ def save_rl_checkpoint(
         # Qwen model
         if model is not None:
             m = _unwrap(model)
+            m.config.nimloth_latent_token_count = int(
+                getattr(_unwrap(state_proj), "latent_token_count", 1)
+            )
+            m.config.nimloth_latent_query_mode = latent_query_mode
+            if query_token_ids is not None:
+                m.config.nimloth_latent_query_token_ids = query_token_ids
             if fsdp_model:
                 m.save_pretrained(
                     out_dir,
@@ -128,7 +156,23 @@ def save_rl_checkpoint(
             "llm_tune": llm_tune,
             "vision_tune": vision_tune,
             "optimizer_world_size": world if fsdp_model else 1,
+            "latent_token_count": int(
+                getattr(_unwrap(state_proj), "latent_token_count", 1)
+            ),
+            "latent_query_mode": latent_query_mode,
+            "qwen_hidden_dim": int(
+                getattr(_unwrap(state_proj), "qwen_hidden_dim", -1)
+            ),
+            "state_proj_input_dim": int(
+                getattr(_unwrap(state_proj), "input_dim", -1)
+            ),
+            "rollout_policy": rollout_policy,
+            "fast_path_horizon": int(fast_path_horizon),
+            "predictor_rollout_steps": int(predictor_rollout_steps),
+            "predictor_rollout_loss_decay": float(predictor_rollout_loss_decay),
         }
+        if query_token_ids is not None:
+            state["latent_query_token_ids"] = query_token_ids
         if base_model_path:
             state["base_model_path"] = str(base_model_path)
         if optimizer is not None and not fsdp_model:
@@ -177,6 +221,47 @@ def load_rl_wm_checkpoint(
     if state_path.is_file():
         return torch.load(state_path, map_location="cpu", weights_only=False)
     return {}
+
+
+def validate_rl_checkpoint_metadata(
+    state: dict[str, Any],
+    *,
+    state_proj: StateProjector,
+    latent_query_mode: str,
+    rollout_policy: str,
+    fast_path_horizon: int,
+    predictor_rollout_steps: int,
+    predictor_rollout_loss_decay: float,
+    latent_query_token_ids: list[int] | None = None,
+) -> None:
+    """Fail fast when a resumed RL checkpoint changes protocol semantics."""
+
+    proj = _unwrap(state_proj)
+    expected: dict[str, Any] = {
+        "latent_token_count": int(getattr(proj, "latent_token_count", 1)),
+        "latent_query_mode": latent_query_mode,
+        "qwen_hidden_dim": int(getattr(proj, "qwen_hidden_dim", -1)),
+        "state_proj_input_dim": int(getattr(proj, "input_dim", -1)),
+        "rollout_policy": rollout_policy,
+        "fast_path_horizon": int(fast_path_horizon),
+        "predictor_rollout_steps": int(predictor_rollout_steps),
+        "predictor_rollout_loss_decay": float(predictor_rollout_loss_decay),
+    }
+    if latent_query_token_ids is not None:
+        expected["latent_query_token_ids"] = [int(value) for value in latent_query_token_ids]
+    for key, expected_value in expected.items():
+        if key not in state:
+            continue
+        actual = state[key]
+        if isinstance(expected_value, float):
+            matches = float(actual) == expected_value
+        else:
+            matches = actual == expected_value
+        if not matches:
+            raise ValueError(
+                f"RL checkpoint {key} mismatch: checkpoint={actual!r}, "
+                f"current={expected_value!r}"
+            )
 
 
 def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:

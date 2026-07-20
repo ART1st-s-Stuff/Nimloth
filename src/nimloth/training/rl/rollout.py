@@ -12,19 +12,129 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
+
+import torch
+
+if TYPE_CHECKING:
+    from PIL.Image import Image
 
 
-def validate_rl_policy_protocol(model_config: Any) -> None:
-    """Fail fast unless the policy matches the implemented k=1 inject runtime."""
+@dataclass(frozen=True)
+class RLPolicyProtocol:
+    """Latent-query protocol read from an SFT/HF checkpoint."""
+
+    latent_token_count: int
+    latent_query_mode: str
+
+
+def validate_rl_policy_protocol(model_config: Any) -> RLPolicyProtocol:
+    """Return the supported metadata-driven RL protocol or fail fast.
+
+    RL supplies latent query slots as inputs.  Autoregressively generated query
+    tokens have different policy-probability ownership and are intentionally not
+    accepted by this runtime.
+    """
 
     latent_count = int(getattr(model_config, "nimloth_latent_token_count", 1))
     query_mode = getattr(model_config, "nimloth_latent_query_mode", None)
-    if latent_count != 1 or query_mode != "inject":
+    if latent_count < 1:
+        raise ValueError(f"RL latent_token_count must be positive, got {latent_count}")
+    if query_mode != "inject":
         raise ValueError(
-            "RL action/encoding runtime currently requires a k=1 inject checkpoint; "
+            "RL action/encoding runtime currently supports inject query mode only; "
             f"got latent_token_count={latent_count}, latent_query_mode={query_mode!r}"
         )
+    return RLPolicyProtocol(latent_count, query_mode)
+
+
+def qwen_hidden_size_from_config(model_config: Any) -> int:
+    """Read Qwen text hidden size without assuming one Transformers layout."""
+
+    hidden_size = getattr(model_config, "hidden_size", None)
+    if hidden_size is None:
+        hidden_size = getattr(getattr(model_config, "text_config", None), "hidden_size", None)
+    if hidden_size is None or int(hidden_size) < 1:
+        raise ValueError("Qwen checkpoint config does not expose a positive hidden_size")
+    return int(hidden_size)
+
+
+def build_injected_query_prefix(
+    latent_token_count: int,
+    *,
+    include_action_start: bool,
+) -> str:
+    """Build the canonical injected latent block used by RL prompts."""
+
+    from nimloth.latent.extraction import LatentActionTokens, latent_state_block
+
+    tokens = LatentActionTokens()
+    block = latent_state_block(latent_token_count, tokens)
+    return block + (tokens.action_start if include_action_start else "")
+
+
+@dataclass(frozen=True)
+class WMActionDecision:
+    action_index: int
+    state_source: str
+    fast_path_step: int
+
+
+class WMValueFastPathController:
+    """Greedy WM/value policy with periodic Qwen-GT state re-synchronization."""
+
+    def __init__(
+        self,
+        *,
+        encode_state: Callable[[Any], torch.Tensor],
+        predictor: Any,
+        value_head: Any,
+        horizon: int,
+    ) -> None:
+        if horizon < 1:
+            raise ValueError(f"fast_path_horizon must be positive, got {horizon}")
+        self._encode_state = encode_state
+        self._predictor = predictor
+        self._value_head = value_head
+        self._horizon = int(horizon)
+        self.reset()
+
+    def reset(self) -> None:
+        self._state: torch.Tensor | None = None
+        self._step = 0
+
+    @torch.no_grad()
+    def select_action(self, observation: Any) -> WMActionDecision:
+        if self._state is None:
+            self._state = self._encode_state(observation).detach()
+            self._step = 0
+            state_source = "qwen_gt"
+        else:
+            state_source = "wm_predicted"
+        values = self._value_head(self._state).float()
+        if values.ndim != 2 or values.shape[0] != 1:
+            raise ValueError(
+                "WMValueFastPathController expects value_head output shape (1, num_actions), "
+                f"got {tuple(values.shape)}"
+            )
+        return WMActionDecision(
+            action_index=int(values.argmax(dim=-1).item()),
+            state_source=state_source,
+            fast_path_step=self._step,
+        )
+
+    @torch.no_grad()
+    def advance(self, action_index: int, *, done: bool) -> None:
+        if self._state is None:
+            raise RuntimeError("select_action() must be called before advance()")
+        if done or self._step + 1 >= self._horizon:
+            self.reset()
+            return
+        action = torch.tensor(
+            [int(action_index)], dtype=torch.long, device=self._state.device
+        )
+        self._state = self._predictor.predict_next_emb(self._state, action).detach()
+        self._step += 1
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +153,21 @@ class RolloutTrajectory:
     """action_indices[t] = action taken at step t (0..7)."""
     action_names: list[str] = field(default_factory=list)
     """action_names[t] = VAGEN text name of action at step t."""
-    action_log_probs: list[list[float]] = field(default_factory=list)
-    """action_log_probs[t] = [log_prob(a0), ..., log_prob(a7)] at step t (log-softmax)."""
+    action_log_probs: list[list[float | None] | None] = field(default_factory=list)
+    """Qwen behavior log-probs, or None when the behavior policy is WM/value."""
+    policy_sources: list[str] = field(default_factory=list)
+    """Per-step behavior policy ownership: qwen or wm_value."""
+    state_sources: list[str] = field(default_factory=list)
+    """Per-step state source: qwen_gt or wm_predicted."""
+    fast_path_steps: list[int] = field(default_factory=list)
+    """Zero-based position inside the current fast-path segment."""
+    rollout_policy: str = "qwen"
+    fast_path_horizon: int = 0
+    latent_token_count: int = 1
+    latent_query_mode: str = "inject"
+    action_temperature: float = 1.0
+    action_top_p: float = 1.0
+    action_log_prob_semantics: str | None = None
     nav_instruction: str = ""
     """Navigation instruction from env server."""
     success: bool = False
@@ -69,17 +192,47 @@ class RolloutTrajectory:
             "action_indices": self.action_indices,
             "action_names": self.action_names,
             "action_log_probs": self.action_log_probs,
+            "policy_sources": self.policy_sources,
+            "state_sources": self.state_sources,
+            "fast_path_steps": self.fast_path_steps,
+            "rollout_policy": self.rollout_policy,
+            "fast_path_horizon": self.fast_path_horizon,
+            "latent_token_count": self.latent_token_count,
+            "latent_query_mode": self.latent_query_mode,
+            "action_temperature": self.action_temperature,
+            "action_top_p": self.action_top_p,
+            "action_log_prob_semantics": self.action_log_prob_semantics,
             "nav_instruction": self.nav_instruction,
         }
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "RolloutTrajectory":
+        action_indices = list(record.get("action_indices", []))
+        policy_sources = list(record.get("policy_sources", []))
+        if not policy_sources and action_indices:
+            policy_sources = ["qwen"] * len(action_indices)
+        state_sources = list(record.get("state_sources", []))
+        if not state_sources and action_indices:
+            state_sources = ["qwen_gt"] * len(action_indices)
+        fast_path_steps = list(record.get("fast_path_steps", []))
+        if not fast_path_steps and action_indices:
+            fast_path_steps = [0] * len(action_indices)
         return cls(
             record_id=str(record.get("id", "")),
             image_paths=list(record.get("image_paths", [])),
-            action_indices=list(record.get("action_indices", [])),
+            action_indices=action_indices,
             action_names=list(record.get("action_names", [])),
             action_log_probs=list(record.get("action_log_probs", [])),
+            policy_sources=policy_sources,
+            state_sources=state_sources,
+            fast_path_steps=fast_path_steps,
+            rollout_policy=str(record.get("rollout_policy", "qwen")),
+            fast_path_horizon=int(record.get("fast_path_horizon", 0)),
+            latent_token_count=int(record.get("latent_token_count", 1)),
+            latent_query_mode=str(record.get("latent_query_mode", "inject")),
+            action_temperature=float(record.get("action_temperature", 1.0)),
+            action_top_p=float(record.get("action_top_p", 1.0)),
+            action_log_prob_semantics=record.get("action_log_prob_semantics"),
             nav_instruction=str(record.get("nav_instruction", "")),
             success=bool(record.get("success", False)),
             reward=float(record.get("reward", 0.0)),
@@ -183,6 +336,13 @@ class EnvRolloutCollector:
         top_p: float = 1.0,
         eval_sets: tuple[str, ...] = ("base", "common_sense"),
         split: str = "eval",
+        rollout_policy: str = "qwen",
+        state_proj: Any = None,
+        wm_predictor: Any = None,
+        value_head: Any = None,
+        fast_path_horizon: int = 2,
+        latent_token_count: int = 1,
+        latent_query_mode: str = "inject",
     ) -> None:
         if not eval_sets:
             raise ValueError("EnvRolloutCollector requires at least one eval_set")
@@ -191,6 +351,27 @@ class EnvRolloutCollector:
                 "training rollout requires *_train datasets; "
                 f"got eval_sets={eval_sets}"
             )
+        if rollout_policy not in ("qwen", "wm_value"):
+            raise ValueError(f"rollout_policy must be qwen or wm_value, got {rollout_policy!r}")
+        if latent_token_count < 1 or latent_query_mode != "inject":
+            raise ValueError(
+                "EnvRolloutCollector requires a positive-k inject protocol, got "
+                f"k={latent_token_count}, mode={latent_query_mode!r}"
+            )
+        if rollout_policy == "wm_value":
+            missing = [
+                name
+                for name, module in (
+                    ("state_proj", state_proj),
+                    ("wm_predictor", wm_predictor),
+                    ("value_head", value_head),
+                )
+                if module is None
+            ]
+            if missing:
+                raise ValueError(f"wm_value rollout requires {', '.join(missing)}")
+            if fast_path_horizon < 1:
+                raise ValueError("wm_value fast_path_horizon must be positive")
         self._model = qwen_model
         self._processor = processor
         self._env_url = env_url.rstrip("/")
@@ -201,6 +382,13 @@ class EnvRolloutCollector:
         self._top_p = top_p
         self._eval_sets = eval_sets
         self._split = split
+        self._rollout_policy = rollout_policy
+        self._state_proj = state_proj
+        self._wm_predictor = wm_predictor
+        self._value_head = value_head
+        self._fast_path_horizon = int(fast_path_horizon)
+        self._latent_token_count = int(latent_token_count)
+        self._latent_query_mode = latent_query_mode
 
     @property
     def client(self):
@@ -308,11 +496,33 @@ class EnvRolloutCollector:
 
             action_names: list[str] = []
             action_indices: list[int] = []
-            action_log_probs: list[list[float]] = []
+            action_log_probs: list[list[float | None] | None] = []
+            policy_sources: list[str] = []
+            state_sources: list[str] = []
+            fast_path_steps: list[int] = []
             image_paths: list[str] = []
+            observation_images: list[Any] = []
             done = False
             step_rewards: list[float] = []
             success = False
+            wm_controller: WMValueFastPathController | None = None
+            if self._rollout_policy == "wm_value":
+                wm_controller = WMValueFastPathController(
+                    encode_state=lambda image: _encode_wm_state_nimloth(
+                        self._model,
+                        self._processor,
+                        image,
+                        nav_instruction,
+                        action_names,
+                        self._state_proj,
+                        self._device,
+                        latent_token_count=self._latent_token_count,
+                        observation_history=observation_images,
+                    ),
+                    predictor=self._wm_predictor,
+                    value_head=self._value_head,
+                    horizon=self._fast_path_horizon,
+                )
 
             for step in range(max_steps_per_episode):
                 print(json.dumps({"rl_ep": ep_i, "step": f"action_{step}", "history_len": len(action_names)}), flush=True)
@@ -329,21 +539,48 @@ class EnvRolloutCollector:
                 img_path = img_dir / f"{ep_id}_step{step:02d}.png"
                 img.save(str(img_path))
                 image_paths.append(str(img_path))
+                observation_images.append(img.copy())
 
-                # --- qwen action selection ---
+                # --- behavior-policy action selection ---
                 try:
-                    action_name, action_idx, log_probs_list = _select_action_nimloth(
-                        self._model, self._processor, img,
-                        nav_instruction, action_names,
-                        temperature=self._temperature,
-                        top_p=self._top_p,
-                    )
-                    print(json.dumps({"rl_ep": ep_i, "action_selected": action_name,
-                                      "action_idx": action_idx}), flush=True)
+                    if self._rollout_policy == "qwen":
+                        action_name, action_idx, log_probs_list = _select_action_nimloth(
+                            self._model,
+                            self._processor,
+                            img,
+                            nav_instruction,
+                            action_names,
+                            temperature=self._temperature,
+                            top_p=self._top_p,
+                            latent_token_count=self._latent_token_count,
+                            observation_history=observation_images,
+                        )
+                        policy_source = "qwen"
+                        state_source = "qwen_gt"
+                        fast_path_step = 0
+                    else:
+                        assert wm_controller is not None
+                        decision = wm_controller.select_action(img)
+                        action_idx = decision.action_index
+                        action_name = ACTION_NAMES[action_idx]
+                        log_probs_list = None
+                        policy_source = "wm_value"
+                        state_source = decision.state_source
+                        fast_path_step = decision.fast_path_step
+                    print(json.dumps({
+                        "rl_ep": ep_i,
+                        "action_selected": action_name,
+                        "action_idx": action_idx,
+                        "policy_source": policy_source,
+                        "state_source": state_source,
+                        "fast_path_step": fast_path_step,
+                    }), flush=True)
                 except Exception:
                     import traceback
                     traceback.print_exc()
-                    action_name, action_idx, log_probs_list = "moveahead", 0, [0.0] * 8
+                    # A policy failure invalidates behavior ownership; discard the
+                    # incomplete trajectory instead of fabricating an action/log-prob.
+                    break
 
                 # --- env step ---
                 # Build VAGEN wm-format response so parse_worldmodeling succeeds.
@@ -370,6 +607,11 @@ class EnvRolloutCollector:
                 action_names.append(action_name)
                 action_indices.append(action_idx)
                 action_log_probs.append(log_probs_list)
+                policy_sources.append(policy_source)
+                state_sources.append(state_source)
+                fast_path_steps.append(fast_path_step)
+                if wm_controller is not None:
+                    wm_controller.advance(action_idx, done=done)
 
                 if done:
                     break
@@ -409,6 +651,22 @@ class EnvRolloutCollector:
                 action_indices=action_indices,
                 action_names=list(action_names),
                 action_log_probs=action_log_probs,
+                policy_sources=policy_sources,
+                state_sources=state_sources,
+                fast_path_steps=fast_path_steps,
+                rollout_policy=self._rollout_policy,
+                fast_path_horizon=(
+                    self._fast_path_horizon if self._rollout_policy == "wm_value" else 0
+                ),
+                latent_token_count=self._latent_token_count,
+                latent_query_mode=self._latent_query_mode,
+                action_temperature=self._temperature,
+                action_top_p=self._top_p,
+                action_log_prob_semantics=(
+                    "sampling_distribution_v1"
+                    if self._rollout_policy == "qwen"
+                    else None
+                ),
                 nav_instruction=nav_instruction,
                 success=success,
                 reward=reward,
@@ -439,7 +697,7 @@ class EnvRolloutCollector:
 # ---------------------------------------------------------------------------
 
 
-def _obs_to_pil(obs) -> "Image.Image":
+def _obs_to_pil(obs) -> "Image":
     """Convert env server observation to PIL Image.
 
     Handles VAGEN env server's multi_modal_data format where images are
@@ -497,10 +755,145 @@ def _obs_to_pil(obs) -> "Image.Image":
     raise ValueError(f"Unknown obs type: {type(obs)}")
 
 
+def _build_nimloth_policy_messages(
+    image: Any,
+    nav_instruction: str,
+    action_history: list[str],
+    *,
+    latent_token_count: int,
+    include_action_start: bool,
+    observation_history: list[Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Build the canonical injected-query prompt for Qwen action/state reads."""
+
+    observations = list(observation_history or [image] * (len(action_history) + 1))
+    if len(observations) != len(action_history) + 1:
+        raise ValueError(
+            "observation_history must contain one more item than action_history, got "
+            f"{len(observations)} observations and {len(action_history)} actions"
+        )
+    query_prefix = build_injected_query_prefix(
+        latent_token_count, include_action_start=include_action_start
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]},
+        {"role": "user", "content": [
+            {"type": "image", "image": observations[0]},
+            {"type": "text", "text": f"Observe the scene. {nav_instruction}"},
+        ]},
+    ]
+    for step, act_name in enumerate(action_history):
+        messages.append({"role": "assistant", "content": [
+            {"type": "text", "text": (
+                f"<think>Navigating.</think>{build_injected_query_prefix(latent_token_count, include_action_start=True)}"
+                f"<|action_({ACTION_NAME_TO_IDX[act_name]})|><|action_end|>"
+            )},
+        ]})
+        messages.append({"role": "user", "content": [
+            {"type": "image", "image": observations[step + 1]},
+            {"type": "text", "text": f"Observe the scene after {act_name}. {nav_instruction}"},
+        ]})
+    messages.append({"role": "assistant", "content": [
+        {"type": "text", "text": f"<think>What should I do next?</think>{query_prefix}"},
+    ]})
+    return messages
+
+
+def _encode_wm_state_nimloth(
+    model: Any,
+    processor: Any,
+    image: Any,
+    nav_instruction: str,
+    action_history: list[str],
+    state_proj: Any,
+    device: Any,
+    *,
+    latent_token_count: int,
+    observation_history: list[Any] | None = None,
+) -> torch.Tensor:
+    """Encode one real observation into a metadata-driven k-query WM state."""
+
+    from nimloth.latent.extraction import (
+        LatentActionTokens,
+        extract_latent_state_block,
+        find_last_latent_state_block,
+        last_hidden_state,
+        special_token_ids,
+    )
+
+    tokens = LatentActionTokens()
+    token_ids = special_token_ids(
+        processor.tokenizer, tokens, latent_token_count=latent_token_count
+    )
+    messages = _build_nimloth_policy_messages(
+        image,
+        nav_instruction,
+        action_history,
+        latent_token_count=latent_token_count,
+        include_action_start=False,
+        observation_history=observation_history,
+    )
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    images = list(observation_history or [image] * (1 + len(action_history)))
+    inputs = processor(
+        text=[text], images=images, return_tensors="pt", padding=True
+    )
+    inputs = {key: value.to(device) for key, value in inputs.items()}
+    with torch.no_grad():
+        outputs = model(**inputs, output_hidden_states=True, return_dict=True)
+    hidden = last_hidden_state(outputs)
+    block = find_last_latent_state_block(
+        inputs["input_ids"][0],
+        token_ids,
+        tokens,
+        latent_token_count=latent_token_count,
+    )
+    latent = extract_latent_state_block(hidden[0:1], block).unsqueeze(0)
+    return state_proj(latent).float().detach()
+
+
+def action_sampling_logits(
+    action_logits: torch.Tensor,
+    *,
+    temperature: float,
+    top_p: float,
+) -> torch.Tensor:
+    """Apply the exact behavior-policy sampling transform to action logits."""
+
+    if not 0.0 < top_p <= 1.0:
+        raise ValueError(f"top_p must be in (0, 1], got {top_p}")
+    if temperature <= 0:
+        transformed = torch.full_like(action_logits.float(), float("-inf"))
+        transformed[action_logits.argmax()] = 0.0
+        return transformed
+    transformed = action_logits.float() / temperature
+    if top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(transformed, descending=True)
+        cum_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+        keep = cum_probs <= top_p
+        keep[0] = True
+        keep_mask = torch.zeros_like(transformed, dtype=torch.bool)
+        keep_mask[sorted_indices[keep]] = True
+        transformed = transformed.masked_fill(~keep_mask, float("-inf"))
+    return transformed
+
+
+def serialize_action_log_probs(log_probs: torch.Tensor) -> list[float | None]:
+    """Encode zero-probability actions as JSON null rather than non-standard Infinity."""
+
+    return [
+        float(value) if torch.isfinite(value) else None
+        for value in log_probs.detach().cpu()
+    ]
+
+
 def _select_action_nimloth(model, processor, image, nav_instruction: str,
                            action_history: list[str],
                            temperature: float = 1.0,
-                           top_p: float = 1.0) -> tuple[str, int, list[float]]:
+                           top_p: float = 1.0,
+                           *,
+                           latent_token_count: int = 1,
+                           observation_history: list[Any] | None = None) -> tuple[str, int, list[float | None]]:
     """Sampled action selection using Nimloth action tokens.
 
     The SFT2 model was trained with ``<|action_(0)|>`` … ``<|action_(7)|>``
@@ -512,50 +905,27 @@ def _select_action_nimloth(model, processor, image, nav_instruction: str,
     action_log_probs is the log-softmax over all 8 actions.
     """
     import torch
-    from nimloth.latent.extraction import (
-        LatentActionTokens,
-        extract_action_prior,
-        special_token_ids,
-    )
+    from nimloth.latent.extraction import LatentActionTokens, special_token_ids
 
     tokens = LatentActionTokens()
-    token_ids = special_token_ids(processor.tokenizer, tokens)
+    token_ids = special_token_ids(
+        processor.tokenizer, tokens, latent_token_count=latent_token_count
+    )
     action_token_ids = [token_ids[t] for t in tokens.action_tokens]
 
-    # Build Nimloth-format messages.
-    # The assistant response includes <|latent_state|> and <|action_start|>.
-    # The model will predict the next token (one of <|action_(N)|>).
     num_images = 1 + len(action_history)
-    messages: list[dict] = [
-        {"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]},
-    ]
-
-    # Initial observation
-    messages.append({"role": "user", "content": [
-        {"type": "image", "image": image},
-        {"type": "text", "text": f"Observe the scene. {nav_instruction}"},
-    ]})
-
-    # History turns: user shows image, assistant says what it did + latent + action_start
-    for act_name in action_history:
-        messages.append({"role": "assistant", "content": [
-            {"type": "text", "text": (
-                f"<think>Navigating.</think>"
-                f"<|latent_state|><|action_start|><|action_({ACTION_NAME_TO_IDX[act_name]})|><|action_end|>"
-            )},
-        ]})
-        messages.append({"role": "user", "content": [
-            {"type": "image", "image": image},
-            {"type": "text", "text": f"Observe the scene after {act_name}. {nav_instruction}"},
-        ]})
-
-    # Current turn: we want the model to predict the next action
-    messages.append({"role": "assistant", "content": [
-        {"type": "text", "text": "<think>What should I do next?</think><|latent_state|><|action_start|>"},
-    ]})
+    messages = _build_nimloth_policy_messages(
+        image,
+        nav_instruction,
+        action_history,
+        latent_token_count=latent_token_count,
+        include_action_start=True,
+        observation_history=observation_history,
+    )
 
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = processor(text=[text], images=[image] * num_images, return_tensors="pt", padding=True)
+    images = list(observation_history or [image] * num_images)
+    inputs = processor(text=[text], images=images, return_tensors="pt", padding=True)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -570,27 +940,19 @@ def _select_action_nimloth(model, processor, image, nav_instruction: str,
     action_start_pos = int(as_positions[-1].item())  # use the last one
     logits = outputs.logits[0, action_start_pos, :]
     action_logits = logits[action_token_ids]
-    action_log_probs = torch.log_softmax(action_logits.float(), dim=-1)
+    behavior_logits = action_sampling_logits(
+        action_logits, temperature=temperature, top_p=top_p
+    )
+    action_log_probs = torch.log_softmax(behavior_logits, dim=-1)
 
-    # Sample with temperature
     if temperature > 0:
-        scaled_logits = action_logits.float() / temperature
-        if top_p < 1.0:
-            # Nucleus (top-p) sampling
-            sorted_logits, sorted_indices = torch.sort(scaled_logits, descending=True)
-            cum_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-            keep = cum_probs <= top_p
-            keep[0] = True  # Always keep top token
-            keep_mask = torch.zeros_like(scaled_logits, dtype=torch.bool)
-            keep_mask[sorted_indices[keep]] = True
-            scaled_logits[~keep_mask] = float("-inf")
-        probs = torch.softmax(scaled_logits, dim=-1)
-        chosen_idx = int(torch.multinomial(probs, 1).item())
+        chosen_idx = int(torch.multinomial(torch.softmax(behavior_logits, dim=-1), 1).item())
     else:
         chosen_idx = int(action_logits.argmax().item())
 
+    serialized_log_probs = serialize_action_log_probs(action_log_probs)
     best_name = ACTION_NAMES[chosen_idx]
-    return best_name, chosen_idx, action_log_probs.cpu().tolist()
+    return best_name, chosen_idx, serialized_log_probs
 
 
 def _build_vagen_messages(nav_instruction: str, num_steps: int,

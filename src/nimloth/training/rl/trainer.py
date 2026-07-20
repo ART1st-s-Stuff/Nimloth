@@ -18,7 +18,6 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.backbone.qwen_tuning import (
@@ -33,8 +32,9 @@ from nimloth.training.rl.checkpoint import (
     load_lora_adapter_state,
     load_rl_wm_checkpoint,
     save_rl_checkpoint,
+    validate_rl_checkpoint_metadata,
 )
-from nimloth.training.rl.loss import compute_predictor_loss, compute_value_loss
+from nimloth.training.rl.loss import compute_multistep_predictor_loss, compute_value_loss
 from nimloth.training.rl.rollout import (
     RolloutCollector,
     RolloutTrajectory,
@@ -57,6 +57,8 @@ def encode_trajectory_hiddens(
     processor: Any,
     token_id_map: dict[str, int],
     device: torch.device,
+    *,
+    latent_token_count: int,
 ) -> list[torch.Tensor]:
     """Run Qwen on each frame of a trajectory, return hidden states.
 
@@ -65,45 +67,41 @@ def encode_trajectory_hiddens(
     """
     from nimloth.latent.extraction import (
         LatentActionTokens,
-        extract_latent_state,
-        find_last_latent_state_index,
+        extract_latent_state_block,
+        find_last_latent_state_block,
         last_hidden_state,
     )
     from nimloth.training.common.qwen_batch import build_qwen_batch
+    from nimloth.training.rl.rollout import _build_nimloth_policy_messages
 
     states: list[torch.Tensor] = []
     tokens = LatentActionTokens()
 
-    # System message from trajectory
-    system_msg = trajectory.messages[0] if trajectory.messages else {
-        "role": "system", "content": "You are a navigation agent."
-    }
-
     for i, image_path in enumerate(trajectory.image_paths):
-        # Build messages: system + image observation + brief assistant
-        # so Qwen encodes the conversation context including <|latent_state|>.
-        messages = [
-            system_msg,
-            {"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": "Observe the scene from the current viewpoint."},
-            ]},
-            # Include <|latent_state|> in assistant so we can extract it
-            {"role": "assistant", "content": [
-                {"type": "text", "text": f"<|latent_state|>"},
-            ]},
-        ]
+        messages = _build_nimloth_policy_messages(
+            image_path,
+            trajectory.nav_instruction,
+            trajectory.action_names[:i],
+            latent_token_count=latent_token_count,
+            include_action_start=False,
+            observation_history=trajectory.image_paths[: i + 1],
+        )
         item = {"messages": messages}
         enc = build_qwen_batch([item], processor, max_length=999999)  # effectively no truncation
         model_inputs = {k: v.to(device) for k, v in enc.items()}
         with torch.no_grad():
             output = qwen_model(**model_inputs, output_hidden_states=True, return_dict=True)
         hidden = last_hidden_state(output)
-        latent_idx = find_last_latent_state_index(
-            enc["input_ids"][0], token_id_map, tokens
+        latent_block = find_last_latent_state_block(
+            enc["input_ids"][0],
+            token_id_map,
+            tokens,
+            latent_token_count=latent_token_count,
         )
-        latent = extract_latent_state(hidden[0:1], latent_idx)  # (1, hidden_dim)
-        states.append(latent.squeeze(0).detach().cpu())
+        latent = extract_latent_state_block(hidden[0:1], latent_block)
+        if latent_token_count == 1:
+            latent = latent.squeeze(0)
+        states.append(latent.detach().cpu())
 
     return states
 
@@ -120,13 +118,45 @@ def build_rl_transitions(
     token_id_map: dict[str, int],
     device: torch.device,
     gamma: float = 0.99,
-) -> list[dict[str, torch.Tensor]]:
+    *,
+    latent_token_count: int = 1,
+    rollout_steps: int = 1,
+    rollout_policy: str | None = None,
+) -> list[dict[str, Any]]:
     """Encode trajectories → list of transition dicts (CPU tensors)."""
 
-    transitions: list[dict[str, torch.Tensor]] = []
+    if rollout_steps < 1:
+        raise ValueError(f"rollout_steps must be positive, got {rollout_steps}")
+    transitions: list[dict[str, Any]] = []
     for traj in trajectories:
+        if rollout_policy is not None and traj.rollout_policy != rollout_policy:
+            raise ValueError(
+                f"trajectory {traj.record_id!r} rollout policy mismatch: "
+                f"trajectory={traj.rollout_policy!r}, trainer={rollout_policy!r}"
+            )
+        if traj.latent_query_mode != "inject" or traj.latent_token_count != latent_token_count:
+            raise ValueError(
+                f"trajectory {traj.record_id!r} protocol mismatch: "
+                f"trajectory k={traj.latent_token_count}/{traj.latent_query_mode}, "
+                f"trainer k={latent_token_count}/inject"
+            )
+        for field_name, values in (
+            ("policy_sources", traj.policy_sources),
+            ("state_sources", traj.state_sources),
+            ("fast_path_steps", traj.fast_path_steps),
+        ):
+            if values and len(values) != traj.num_steps:
+                raise ValueError(
+                    f"trajectory {traj.record_id!r} has {len(values)} {field_name} "
+                    f"for {traj.num_steps} actions"
+                )
         hiddens = encode_trajectory_hiddens(
-            traj, qwen_model, processor, token_id_map, device
+            traj,
+            qwen_model,
+            processor,
+            token_id_map,
+            device,
+            latent_token_count=latent_token_count,
         )
         if len(hiddens) < 2:
             continue
@@ -135,44 +165,141 @@ def build_rl_transitions(
         value_targets = discounted_action_value_targets(record, gamma=gamma)
 
         for t in range(traj.num_steps):
-            # old_log_prob for the taken action at step t
-            log_probs = traj.action_log_probs[t] if t < len(traj.action_log_probs) else []
-            old_lp = float(log_probs[traj.action_indices[t]]) if len(log_probs) > traj.action_indices[t] else 0.0
+            policy_source = (
+                traj.policy_sources[t] if t < len(traj.policy_sources) else "qwen"
+            )
+            state_source = (
+                traj.state_sources[t] if t < len(traj.state_sources) else "qwen_gt"
+            )
+            log_probs = (
+                traj.action_log_probs[t] if t < len(traj.action_log_probs) else None
+            )
+            old_lp: float | None = None
+            action_index = traj.action_indices[t]
+            if (
+                policy_source == "qwen"
+                and traj.action_log_prob_semantics == "sampling_distribution_v1"
+                and log_probs is not None
+                and len(log_probs) > action_index
+                and log_probs[action_index] is not None
+            ):
+                old_lp = float(log_probs[action_index])
 
+            fast_path_step = (
+                int(traj.fast_path_steps[t]) if t < len(traj.fast_path_steps) else 0
+            )
+            segment_start = t - fast_path_step
+            if segment_start < 0:
+                raise ValueError(
+                    f"trajectory {traj.record_id!r} step {t} has invalid "
+                    f"fast_path_step={fast_path_step}"
+                )
+            if state_source == "qwen_gt" and fast_path_step != 0:
+                raise ValueError(
+                    f"trajectory {traj.record_id!r} step {t}: qwen_gt state must start "
+                    "at fast_path_step=0"
+                )
+            if state_source == "wm_predicted" and fast_path_step < 1:
+                raise ValueError(
+                    f"trajectory {traj.record_id!r} step {t}: wm_predicted state requires "
+                    "fast_path_step>=1"
+                )
+
+            end = min(traj.num_steps, t + rollout_steps)
             transitions.append({
+                "trajectory_id": traj.record_id,
+                "step_index": t,
                 "qwen_hidden_current": hiddens[t],
                 "qwen_hidden_next": hiddens[t + 1],
-                "action_index": torch.tensor(traj.action_indices[t], dtype=torch.long),
+                "qwen_hidden_targets": torch.stack(hiddens[t + 1 : end + 1]),
+                "action_sequence": torch.tensor(
+                    traj.action_indices[t:end], dtype=torch.long
+                ),
+                "action_index": torch.tensor(action_index, dtype=torch.long),
                 "value_target": torch.tensor(
                     value_targets[t] if t < len(value_targets) else 0.0,
                     dtype=torch.float32,
                 ),
+                "policy_source": policy_source,
+                "state_source": state_source,
+                "fast_path_step": fast_path_step,
+                "behavior_qwen_hidden_start": hiddens[segment_start],
+                "behavior_action_prefix": torch.tensor(
+                    traj.action_indices[segment_start:t], dtype=torch.long
+                ),
                 "old_log_prob": old_lp,
+                "action_temperature": traj.action_temperature,
+                "action_top_p": traj.action_top_p,
+                "action_log_prob_semantics": traj.action_log_prob_semantics,
                 "nav_instruction": traj.nav_instruction,
                 "action_history_names": traj.action_names[:t],
                 "image_path": traj.image_paths[t],
+                "image_history_paths": traj.image_paths[: t + 1],
             })
 
     return transitions
 
 
+def collate_transition_windows(
+    batch: list[dict[str, Any]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pad contiguous future-state windows and return an explicit valid mask."""
+
+    if not batch:
+        raise ValueError("cannot collate an empty transition batch")
+    current = torch.stack([item["qwen_hidden_current"] for item in batch])
+    max_steps = max(int(item["action_sequence"].shape[0]) for item in batch)
+    target_shape = tuple(batch[0]["qwen_hidden_targets"].shape[1:])
+    targets = torch.zeros(
+        (len(batch), max_steps, *target_shape),
+        dtype=batch[0]["qwen_hidden_targets"].dtype,
+    )
+    actions = torch.zeros((len(batch), max_steps), dtype=torch.long)
+    valid_mask = torch.zeros((len(batch), max_steps), dtype=torch.bool)
+    for row, item in enumerate(batch):
+        steps = int(item["action_sequence"].shape[0])
+        if tuple(item["qwen_hidden_targets"].shape[1:]) != target_shape:
+            raise ValueError("all transition windows must use the same latent hidden shape")
+        targets[row, :steps] = item["qwen_hidden_targets"]
+        actions[row, :steps] = item["action_sequence"]
+        valid_mask[row, :steps] = True
+    return current, targets, actions, valid_mask
+
+
+@torch.no_grad()
+def reconstruct_behavior_wm_states(
+    batch: list[dict[str, Any]],
+    *,
+    state_proj: StateProjector,
+    wm_predictor: LatentWMPredictor,
+    device: torch.device,
+) -> torch.Tensor:
+    """Rebuild the state that actually selected each action in a rollout."""
+
+    states: list[torch.Tensor] = []
+    for item in batch:
+        hidden = item["behavior_qwen_hidden_start"].unsqueeze(0).to(device)
+        state = state_proj(hidden).float()
+        for action_index in item["behavior_action_prefix"]:
+            action = action_index.reshape(1).to(device=device, dtype=torch.long)
+            state = wm_predictor(state, action).float()
+        states.append(state.squeeze(0))
+    return torch.stack(states).detach()
+
+
+def qwen_actor_batch_indices(batch: list[dict[str, Any]]) -> list[int]:
+    """Rows whose action really came from Qwen and has a behavior log-prob."""
+
+    return [
+        index
+        for index, item in enumerate(batch)
+        if item.get("policy_source") == "qwen" and item.get("old_log_prob") is not None
+    ]
+
+
 # ---------------------------------------------------------------------------
 # PPO forward pass (Qwen with gradients)
 # ---------------------------------------------------------------------------
-
-# Action token name → index map (copied from rollout.py to avoid circular import)
-_ACTION_NAME_TO_IDX = {
-    "moveahead": 0, "moveback": 1, "moveright": 2, "moveleft": 3,
-    "rotateright": 4, "rotateleft": 5, "lookup": 6, "lookdown": 7,
-}
-_NAV_SYSTEM_TEXT = (
-    "You are a home robot and perform navigation tasks according to instructions.\n"
-    "Actions you can take: moveahead, moveback, moveright, moveleft, "
-    "rotateright, rotateleft, lookup, lookdown.\n"
-    "Rewards: Format correct: +0.5. Achieve the human instruction: +10.0.\n"
-    "Look at the image carefully and navigate to complete the instruction."
-)
-
 
 def compute_new_log_probs_for_batch(
     ppo_items: list[dict],
@@ -180,6 +307,8 @@ def compute_new_log_probs_for_batch(
     processor,
     token_id_map: dict[str, int],
     device: torch.device,
+    *,
+    latent_token_count: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run Qwen forward WITH gradients, returning new log-probs and action logits.
 
@@ -196,6 +325,10 @@ def compute_new_log_probs_for_batch(
     import torch
     from PIL import Image
     from nimloth.latent.extraction import LatentActionTokens
+    from nimloth.training.rl.rollout import (
+        _build_nimloth_policy_messages,
+        action_sampling_logits,
+    )
 
     tokens = LatentActionTokens()
     action_token_ids = [token_id_map[t] for t in tokens.action_tokens]
@@ -203,40 +336,28 @@ def compute_new_log_probs_for_batch(
     texts = []
     all_images = []
     for item in ppo_items:
-        # Build the same Nimloth prompt as _select_action_nimloth
         image_path = item["image_path"]
-        nav_instruction = item["nav_instruction"]
-        # Limit history to last 4 steps to keep image count low (≤5)
-        action_history = item["action_history_names"][-4:]
+        action_history = item["action_history_names"]
         num_images = 1 + len(action_history)
-
-        messages = [
-            {"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]},
-            {"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": f"Observe the scene. {nav_instruction}"},
-            ]},
-        ]
-        for act_name in action_history:
-            act_idx = _ACTION_NAME_TO_IDX.get(act_name, 0)
-            messages.append({"role": "assistant", "content": [
-                {"type": "text", "text": (
-                    f"<think>Navigating.</think>"
-                    f"<|latent_state|><|action_start|><|action_({act_idx})|><|action_end|>"
-                )},
-            ]})
-            messages.append({"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": f"Observe the scene after {act_name}. {nav_instruction}"},
-            ]})
-        messages.append({"role": "assistant", "content": [
-            {"type": "text", "text": "<think>What should I do next?</think><|latent_state|><|action_start|>"},
-        ]})
+        image_history_paths = item["image_history_paths"]
+        messages = _build_nimloth_policy_messages(
+            image_path,
+            item["nav_instruction"],
+            action_history,
+            latent_token_count=latent_token_count,
+            include_action_start=True,
+            observation_history=image_history_paths,
+        )
 
         text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         texts.append(text)
 
-        imgs = [Image.open(image_path).convert("RGB")] * num_images
+        imgs = [Image.open(path).convert("RGB") for path in image_history_paths]
+        if len(imgs) != num_images:
+            raise ValueError(
+                "PPO image/action history mismatch: "
+                f"images={len(imgs)}, expected={num_images}"
+            )
         all_images.append(imgs)
 
     # Process items individually — variable image counts per item prevent batching.
@@ -257,10 +378,16 @@ def compute_new_log_probs_for_batch(
             raise RuntimeError("<|action_start|> token not found in PPO prompt")
         pos = int(as_positions[-1].item())
         act_ids = torch.tensor(action_token_ids, device=logits_i.device)
-        action_logits_list.append(logits_i[0, pos, act_ids])
+        raw_action_logits = logits_i[0, pos, act_ids]
+        transformed_logits = action_sampling_logits(
+            raw_action_logits,
+            temperature=float(ppo_items[i]["action_temperature"]),
+            top_p=float(ppo_items[i]["action_top_p"]),
+        )
+        action_logits_list.append(transformed_logits)
 
         taken_idx = ppo_items[i]["taken_action_idx"]
-        log_probs_i = torch.log_softmax(action_logits_list[-1].float(), dim=-1)
+        log_probs_i = torch.log_softmax(transformed_logits, dim=-1)
         new_log_probs_list.append(log_probs_i[taken_idx])
 
     action_logits = torch.stack(action_logits_list)  # (B, 8)
@@ -355,6 +482,7 @@ def train_rl(
     rl_cfg: dict = config.get("rl", {})
     freeze_cfg: dict = config.get("freeze", {})
     pred_cfg: dict = config.get("predictor", {})
+    rollout_cfg: dict = config.get("rollout", {})
     vh_cfg: dict = config.get("value_head", {})
     val_cfg: dict = config.get("validation", {})
     train_cfg: dict = config.get("training", {})
@@ -367,6 +495,22 @@ def train_rl(
     # One optimizer step per iteration → 1 iteration = 1 global_step.
 
     pred_lr: float = float(pred_cfg.get("lr", 1e-3))
+    predictor_rollout_steps: int = int(pred_cfg.get("rollout_steps", 1))
+    predictor_loss_decay: float = float(pred_cfg.get("rollout_loss_decay", 1.0))
+    if predictor_rollout_steps < 1:
+        raise ValueError("predictor.rollout_steps must be positive")
+    if predictor_loss_decay <= 0:
+        raise ValueError("predictor.rollout_loss_decay must be positive")
+    latent_token_count = int(getattr(args, "latent_token_count", 1))
+    latent_query_mode = str(getattr(args, "latent_query_mode", "inject"))
+    rollout_policy = str(rollout_cfg.get("policy", "qwen"))
+    if rollout_policy not in ("qwen", "wm_value"):
+        raise ValueError(f"rollout.policy must be qwen or wm_value, got {rollout_policy!r}")
+    fast_path_horizon = (
+        int(rollout_cfg.get("fast_path_horizon", 2))
+        if rollout_policy == "wm_value"
+        else 0
+    )
     vh_lr: float = float(vh_cfg.get("lr", 1e-3))
     rank_margin: float = vh_cfg.get("rank_margin", 0.1)
     lambda_rank: float = vh_cfg.get("lambda_rank", 1.0)
@@ -405,16 +549,33 @@ def train_rl(
     )
 
     # --- Qwen model loading --------------------------------------------------
-    processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
-    processor.image_processor.min_pixels = 3136
-    processor.image_processor.max_pixels = args.max_pixels
-    n_added = add_special_tokens(processor.tokenizer)
-    token_id_map = special_token_ids(processor.tokenizer)
-    tokenizer_vocab = len(processor.tokenizer)
-
     resume_ckpt_dir = output_dir / "best"
     resume_state_path = resume_ckpt_dir / "rl_state.pt"
     resume_adapter = resume_ckpt_dir / "adapter_config.json"
+    processor_source = (
+        resume_ckpt_dir
+        if args.resume and (resume_ckpt_dir / "tokenizer_config.json").is_file()
+        else args.model
+    )
+    processor = AutoProcessor.from_pretrained(processor_source, trust_remote_code=True)
+    processor.image_processor.min_pixels = 3136
+    processor.image_processor.max_pixels = args.max_pixels
+    n_added = add_special_tokens(
+        processor.tokenizer, latent_token_count=latent_token_count
+    )
+    if n_added:
+        raise ValueError(
+            "metadata-bearing RL checkpoint processor is missing "
+            f"{n_added} required Nimloth special tokens"
+        )
+    token_id_map = special_token_ids(
+        processor.tokenizer, latent_token_count=latent_token_count
+    )
+    from nimloth.latent.extraction import latent_state_tokens
+    latent_query_token_ids = [
+        int(token_id_map[name]) for name in latent_state_tokens(latent_token_count)
+    ]
+    tokenizer_vocab = len(processor.tokenizer)
     base_model_path = str(args.model)
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -423,7 +584,29 @@ def train_rl(
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
     )
-    validate_rl_policy_protocol(model.config)
+    if args.resume and getattr(model.config, "nimloth_latent_query_mode", None) is None:
+        # LoRA resume may load a plain base config; rl_state.pt resolved by the
+        # CLI is authoritative for the injected query protocol.
+        model.config.nimloth_latent_token_count = latent_token_count
+        model.config.nimloth_latent_query_mode = latent_query_mode
+    loaded_protocol = validate_rl_policy_protocol(model.config)
+    configured_query_ids = getattr(
+        model.config, "nimloth_latent_query_token_ids", None
+    )
+    if configured_query_ids is not None and list(configured_query_ids) != latent_query_token_ids:
+        raise ValueError(
+            "RL checkpoint latent query token IDs do not match its tokenizer: "
+            f"config={list(configured_query_ids)}, tokenizer={latent_query_token_ids}"
+        )
+    if (
+        loaded_protocol.latent_token_count != latent_token_count
+        or loaded_protocol.latent_query_mode != latent_query_mode
+    ):
+        raise ValueError(
+            "RL policy metadata changed between CLI initialization and model load: "
+            f"expected k={latent_token_count}/{latent_query_mode}, "
+            f"loaded k={loaded_protocol.latent_token_count}/{loaded_protocol.latent_query_mode}"
+        )
     model_vocab_before = model.get_input_embeddings().weight.shape[0]
     # Log model embedding info before resize
     embed = model.get_input_embeddings()
@@ -441,7 +624,12 @@ def train_rl(
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
-    if n_added > 0:
+    if model_vocab_before != tokenizer_vocab:
+        if not args.resume:
+            raise ValueError(
+                "RL init checkpoint model/tokenizer vocabulary mismatch: "
+                f"model={model_vocab_before}, tokenizer={tokenizer_vocab}"
+            )
         model.resize_token_embeddings(tokenizer_vocab)
         model_vocab_after = model.get_input_embeddings().weight.shape[0]
         print(json.dumps({"rank": rank, "resized": True,
@@ -491,6 +679,22 @@ def train_rl(
                               "llm_tune": llm_tune,
                               "vision_tune": vision_tune}))
 
+    active_protocol = validate_rl_policy_protocol(model.config)
+    active_query_ids = getattr(model.config, "nimloth_latent_query_token_ids", None)
+    if active_query_ids is not None and list(active_query_ids) != latent_query_token_ids:
+        raise ValueError(
+            "active RL checkpoint latent query token IDs do not match tokenizer: "
+            f"config={list(active_query_ids)}, tokenizer={latent_query_token_ids}"
+        )
+    if (
+        active_protocol.latent_token_count != latent_token_count
+        or active_protocol.latent_query_mode != latent_query_mode
+    ):
+        raise ValueError(
+            "active RL checkpoint protocol mismatch: "
+            f"expected k={latent_token_count}/{latent_query_mode}, "
+            f"got k={active_protocol.latent_token_count}/{active_protocol.latent_query_mode}"
+        )
     model.to(device)
 
     # --- Wire up EnvRolloutCollector with loaded model -----------------------
@@ -588,6 +792,16 @@ def train_rl(
             resume_aux_ckpt, state_proj, wm_predictor, value_head, device
         )
         if resume_state:
+            validate_rl_checkpoint_metadata(
+                resume_state,
+                state_proj=state_proj,
+                latent_query_mode=latent_query_mode,
+                rollout_policy=rollout_policy,
+                fast_path_horizon=fast_path_horizon,
+                predictor_rollout_steps=predictor_rollout_steps,
+                predictor_rollout_loss_decay=predictor_loss_decay,
+                latent_query_token_ids=latent_query_token_ids,
+            )
             start_iteration = int(resume_state.get("iteration", 0)) + 1
             global_step = int(resume_state.get("global_step", 0))
             best_value_loss = float(resume_state.get("best_value_loss", float("inf")))
@@ -615,7 +829,8 @@ def train_rl(
         with log_path.open("w", newline="") as f:
             csv.writer(f).writerow([
                 "time", "iteration", "global_step",
-                "wm_mse", "value_loss", "total_loss",
+                "wm_mse", "wm_mse_h1", "wm_mse_hlast", "wm_rollout_steps",
+                "value_loss", "total_loss",
                 "num_rollouts", "num_transitions", "success_rate",
                 "val_success_rate", "val_avg_reward", "val_avg_steps",
                 "actor_loss", "entropy", "clip_fraction", "mean_advantage",
@@ -646,7 +861,15 @@ def train_rl(
 
         # 2. Encode → transitions ------------------------------------------------
         transitions = build_rl_transitions(
-            trajectories, model, processor, token_id_map, device, gamma=gamma,
+            trajectories,
+            model,
+            processor,
+            token_id_map,
+            device,
+            gamma=gamma,
+            latent_token_count=latent_token_count,
+            rollout_steps=predictor_rollout_steps,
+            rollout_policy=rollout_policy,
         )
         # Free GPU memory before PPO forward (Qwen+LoRA+gradients needs extra VRAM)
         torch.cuda.empty_cache()
@@ -666,21 +889,34 @@ def train_rl(
         indices = torch.randperm(len(transitions), generator=g)[:batch_size]
         batch = [transitions[i] for i in indices]
 
-        hidden_cur = torch.stack([b["qwen_hidden_current"] for b in batch]).to(device)
-        hidden_next = torch.stack([b["qwen_hidden_next"] for b in batch]).to(device)
+        hidden_cur, hidden_targets, action_sequences, rollout_mask = (
+            collate_transition_windows(batch)
+        )
+        hidden_cur = hidden_cur.to(device)
+        hidden_targets = hidden_targets.to(device)
+        action_sequences = action_sequences.to(device)
+        rollout_mask = rollout_mask.to(device)
         actions = torch.stack([b["action_index"] for b in batch]).to(device)
         value_targets = torch.stack([b["value_target"] for b in batch]).to(device)
 
-        pred_loss, pred_metrics = compute_predictor_loss(
+        pred_loss, pred_metrics = compute_multistep_predictor_loss(
             qwen_hidden_current=hidden_cur,
-            qwen_hidden_next=hidden_next,
-            action_indices=actions,
+            qwen_hidden_targets=hidden_targets,
+            action_sequences=action_sequences,
+            valid_mask=rollout_mask,
             state_proj=state_proj,
             wm_predictor=wm_predictor,
+            loss_decay=predictor_loss_decay,
         )
 
         sp = _unwrap(state_proj)
-        wm_state = sp(hidden_cur).float().detach()
+        pred_module = _unwrap(wm_predictor)
+        wm_state = reconstruct_behavior_wm_states(
+            batch,
+            state_proj=sp,
+            wm_predictor=pred_module,
+            device=device,
+        )
         val_loss, val_metrics = compute_value_loss(
             state_emb=wm_state,
             action_indices=actions,
@@ -692,53 +928,70 @@ def train_rl(
 
         # --- PPO actor loss (Qwen update) ---
         actor_metrics: dict[str, float] = {}
-        if actor_enabled:
+        actor_rows = qwen_actor_batch_indices(batch) if actor_enabled else []
+        if actor_enabled and actor_rows:
             import gc
             torch.cuda.empty_cache()
             gc.collect()
             from nimloth.training.rl.loss import compute_actor_loss, compute_action_entropy
 
-            # advantages from value head
+            actor_index = torch.tensor(actor_rows, dtype=torch.long, device=device)
+            actor_actions = actions.index_select(0, actor_index)
+            actor_targets = value_targets.index_select(0, actor_index)
+            actor_states = wm_state.index_select(0, actor_index)
             with torch.no_grad():
-                all_values = value_head(wm_state).float()
-                chosen_values = all_values.gather(1, actions.unsqueeze(1)).squeeze(1)
-            advantages = (value_targets.to(device=chosen_values.device, dtype=chosen_values.dtype)
-                          - chosen_values.detach())
-            # unbiased=False 避免 batch size=1 时 std 产生 NaN
-            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+                all_values = value_head(actor_states).float()
+                chosen_values = all_values.gather(1, actor_actions.unsqueeze(1)).squeeze(1)
+            advantages = actor_targets.to(
+                device=chosen_values.device, dtype=chosen_values.dtype
+            ) - chosen_values.detach()
+            advantages = (advantages - advantages.mean()) / (
+                advantages.std(unbiased=False) + 1e-8
+            )
 
-            # Build PPO items
             ppo_items = []
-            for i in range(len(batch)):
-                b = batch[i]
+            for row in actor_rows:
+                item = batch[row]
                 ppo_items.append({
-                    "image_path": b["image_path"],
-                    "nav_instruction": b["nav_instruction"],
-                    "action_history_names": b["action_history_names"],
-                    "taken_action_idx": int(b["action_index"].item()),
+                    "image_path": item["image_path"],
+                    "image_history_paths": item["image_history_paths"],
+                    "nav_instruction": item["nav_instruction"],
+                    "action_history_names": item["action_history_names"],
+                    "taken_action_idx": int(item["action_index"].item()),
+                    "action_temperature": float(item["action_temperature"]),
+                    "action_top_p": float(item["action_top_p"]),
                 })
 
-            # Qwen forward with gradients
             new_log_probs, action_logits = compute_new_log_probs_for_batch(
-                ppo_items, model, processor, token_id_map, device,
+                ppo_items,
+                model,
+                processor,
+                token_id_map,
+                device,
+                latent_token_count=latent_token_count,
             )
             old_log_probs = torch.tensor(
-                [b["old_log_prob"] for b in batch],
-                device=new_log_probs.device, dtype=new_log_probs.dtype,
+                [float(batch[row]["old_log_prob"]) for row in actor_rows],
+                device=new_log_probs.device,
+                dtype=new_log_probs.dtype,
             )
 
             actor_loss, actor_metrics = compute_actor_loss(
                 new_log_probs=new_log_probs,
                 old_log_probs=old_log_probs,
-                advantages=advantages.to(device=new_log_probs.device, dtype=new_log_probs.dtype),
+                advantages=advantages.to(
+                    device=new_log_probs.device, dtype=new_log_probs.dtype
+                ),
                 clip_ratio=clip_ratio,
             )
             entropy = compute_action_entropy(action_logits)
             total_loss = pred_loss + val_loss + actor_loss - entropy_coeff * entropy
             actor_metrics["entropy"] = float(entropy.detach().item())
             actor_metrics["mean_advantage"] = float(advantages.mean().item())
+            actor_metrics["actor_samples"] = float(len(actor_rows))
         else:
             total_loss = pred_loss + val_loss
+            actor_metrics["actor_samples"] = 0.0
 
         optimizer.zero_grad(set_to_none=True)
         total_loss.backward()
@@ -761,6 +1014,11 @@ def train_rl(
                 sum(1 for t in trajectories if t.success) / max(1, len(trajectories))
             ),
         }
+        iter_metrics.update({
+            key: float(value)
+            for key, value in pred_metrics.items()
+            if key != "wm_mse"
+        })
         iter_metrics.update({k: v for k, v in actor_metrics.items() if k != "actor_loss"})
         iter_metrics["actor_loss"] = float(actor_metrics.get("actor_loss", 0.0))
 
@@ -800,6 +1058,9 @@ def train_rl(
                 csv.writer(f).writerow([
                     time.time(), iteration, global_step,
                     iter_metrics.get("wm_mse", ""),
+                    iter_metrics.get("wm_mse_h1", ""),
+                    iter_metrics.get(f"wm_mse_h{predictor_rollout_steps}", ""),
+                    iter_metrics.get("wm_rollout_steps", ""),
                     iter_metrics.get("value_loss", ""),
                     iter_metrics.get("total_loss", ""),
                     iter_metrics.get("num_rollouts", ""),
@@ -848,6 +1109,11 @@ def train_rl(
                 llm_tune=llm_tune,
                 vision_tune=vision_tune,
                 base_model_path=base_model_path,
+                latent_query_mode=latent_query_mode,
+                rollout_policy=rollout_policy,
+                fast_path_horizon=fast_path_horizon,
+                predictor_rollout_steps=predictor_rollout_steps,
+                predictor_rollout_loss_decay=predictor_loss_decay,
             )
             if current_val < best_value_loss:
                 best_value_loss = current_val
@@ -867,6 +1133,11 @@ def train_rl(
                     llm_tune=llm_tune,
                     vision_tune=vision_tune,
                     base_model_path=base_model_path,
+                    latent_query_mode=latent_query_mode,
+                    rollout_policy=rollout_policy,
+                    fast_path_horizon=fast_path_horizon,
+                    predictor_rollout_steps=predictor_rollout_steps,
+                    predictor_rollout_loss_decay=predictor_loss_decay,
                 )
 
         if dist.is_available() and dist.is_initialized():
@@ -889,6 +1160,11 @@ def train_rl(
         llm_tune=llm_tune,
         vision_tune=vision_tune,
         base_model_path=base_model_path,
+        latent_query_mode=latent_query_mode,
+        rollout_policy=rollout_policy,
+        fast_path_horizon=fast_path_horizon,
+        predictor_rollout_steps=predictor_rollout_steps,
+        predictor_rollout_loss_decay=predictor_loss_decay,
     )
     if wandb_run is not None:
         wandb_run.finish()

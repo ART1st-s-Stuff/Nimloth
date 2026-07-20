@@ -22,7 +22,8 @@ predictor:
   lr: 1e-3
   emb_dim: 128           # WM embedding dimension
   history_size: 4        # ARPredictor context frames
-  rollout_steps: 1       # training rollout steps (start with single-step)
+  rollout_steps: 1       # contiguous recursive dynamics horizon
+  rollout_loss_decay: 1.0
 
 # --- Value head ---
 value_head:
@@ -33,6 +34,7 @@ value_head:
 # --- Direct environment rollout ---
 # The connected env server must actually provide these training datasets.
 rollout:
+  policy: qwen            # qwen | wm_value
   eval_sets:
     - base_train
     - common_sense_train

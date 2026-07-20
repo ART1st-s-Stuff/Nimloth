@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import yaml
@@ -105,9 +106,45 @@ def merge_config_overrides(args: argparse.Namespace, config: dict[str, Any]) -> 
     return config
 
 
+def resolve_rl_init_metadata(
+    model_config: Any,
+    resume_state: dict[str, Any] | None = None,
+):
+    """Resolve inject/k/hidden metadata from a model or authoritative RL state."""
+
+    from nimloth.training.rl.rollout import (
+        qwen_hidden_size_from_config,
+        validate_rl_policy_protocol,
+    )
+
+    config_hidden_dim = qwen_hidden_size_from_config(model_config)
+    state = resume_state or {}
+    if "latent_token_count" in state or "latent_query_mode" in state:
+        protocol = validate_rl_policy_protocol(SimpleNamespace(
+            nimloth_latent_token_count=state.get("latent_token_count", 1),
+            nimloth_latent_query_mode=state.get("latent_query_mode"),
+        ))
+        config_mode = getattr(model_config, "nimloth_latent_query_mode", None)
+        if config_mode is not None:
+            config_protocol = validate_rl_policy_protocol(model_config)
+            if config_protocol != protocol:
+                raise ValueError(
+                    f"RL model/state protocol mismatch: model={config_protocol}, state={protocol}"
+                )
+        state_hidden_dim = int(state.get("qwen_hidden_dim", config_hidden_dim))
+        if state_hidden_dim != config_hidden_dim:
+            raise ValueError(
+                "RL model/state qwen_hidden_dim mismatch: "
+                f"model={config_hidden_dim}, state={state_hidden_dim}"
+            )
+        return protocol, state_hidden_dim
+    return validate_rl_policy_protocol(model_config), config_hidden_dim
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse args, load config, build modules, and launch RL training."""
     import torch
+    from transformers import AutoConfig
     from nimloth.training.common.dist import is_main
     from nimloth.training.rl.rollout import JSONLRolloutCollector, VAGENRolloutCollector
     from nimloth.training.rl.trainer import train_rl
@@ -120,6 +157,18 @@ def main(argv: list[str] | None = None) -> int:
     config = merge_config_overrides(args, config)
 
     output_dir = Path(args.output_dir).resolve()
+    best_dir = output_dir / "best"
+    protocol_source = best_dir if args.resume and (best_dir / "config.json").is_file() else args.model
+    model_config = AutoConfig.from_pretrained(protocol_source, trust_remote_code=True)
+    resume_state = None
+    if args.resume and (best_dir / "rl_state.pt").is_file():
+        resume_state = torch.load(
+            best_dir / "rl_state.pt", map_location="cpu", weights_only=False
+        )
+    protocol, qwen_hidden_dim = resolve_rl_init_metadata(model_config, resume_state)
+    args.latent_token_count = protocol.latent_token_count
+    args.latent_query_mode = protocol.latent_query_mode
+    args.qwen_hidden_dim = qwen_hidden_dim
 
     if is_main():
         print(json.dumps({
@@ -132,6 +181,9 @@ def main(argv: list[str] | None = None) -> int:
                 "freeze": config.get("freeze", {}),
                 "predictor": config.get("predictor", {}),
                 "value_head": config.get("value_head", {}),
+                "latent_token_count": protocol.latent_token_count,
+                "latent_query_mode": protocol.latent_query_mode,
+                "qwen_hidden_dim": qwen_hidden_dim,
                 "output_dir": str(output_dir),
             }
         }, indent=2, default=str))
@@ -154,7 +206,11 @@ def main(argv: list[str] | None = None) -> int:
         wm_predictor = LatentWMPredictor.create(wm_config)
 
     emb_dim = wm_predictor.config.emb_dim
-    state_proj = StateProjector(qwen_hidden_dim=2048, lewm_emb_dim=emb_dim)
+    state_proj = StateProjector(
+        qwen_hidden_dim=qwen_hidden_dim,
+        lewm_emb_dim=emb_dim,
+        latent_token_count=protocol.latent_token_count,
+    )
     value_head = ValueHead(emb_dim=emb_dim)
     if args.state_proj_checkpoint is not None:
         state_proj.load_state_dict(
@@ -178,6 +234,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(
                 "direct env training requires rollout.eval_sets with explicit *_train datasets"
             )
+        rollout_policy = str(rollout_cfg.get("policy", "qwen"))
+        fast_path_horizon = int(rollout_cfg.get("fast_path_horizon", 2))
         collector = EnvRolloutCollector(
             qwen_model=None,  # filled in by trainer after model loading
             processor=None,   # filled in by trainer
@@ -187,9 +245,18 @@ def main(argv: list[str] | None = None) -> int:
             top_p=float(rl_cfg.get("top_p", 1.0)),
             eval_sets=eval_sets,
             split="train",
+            rollout_policy=rollout_policy,
+            state_proj=state_proj,
+            wm_predictor=wm_predictor,
+            value_head=value_head,
+            fast_path_horizon=fast_path_horizon,
+            latent_token_count=protocol.latent_token_count,
+            latent_query_mode=protocol.latent_query_mode,
         )
         if is_main():
             print(json.dumps({"rollout_mode": "env", "env_url": args.env_url,
+                              "rollout_policy": rollout_policy,
+                              "fast_path_horizon": fast_path_horizon,
                               "eval_sets": eval_sets,
                               "temperature": rl_cfg.get("temperature", 1.0),
                               "top_p": rl_cfg.get("top_p", 1.0)}))
@@ -237,5 +304,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    import sys
     raise SystemExit(main())

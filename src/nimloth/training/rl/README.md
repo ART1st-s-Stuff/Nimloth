@@ -1,6 +1,22 @@
 # RL 训练管线
 
-在线 RL 训练：Qwen policy 与环境交互采集轨迹 → Qwen 编码 latent state → 训练 WM predictor + value head。
+RL 训练：独立行为策略与环境交互采集轨迹 → Qwen 编码 metadata-driven latent query block → 训练 WM predictor + value head；`policy=qwen` 时可额外训练 Qwen PPO。
+
+## Latent query 协议
+
+- RL 从 HF/SFT2 checkpoint metadata 读取 `nimloth_latent_token_count=k` 与 `nimloth_latent_query_mode`。
+- 支持任意正整数 k 的 `inject` 协议，包括 k=1 和当前 k=8 主路径。
+- tokenizer、prompt、latent block extraction、StateProjector 与 checkpoint/resume 必须使用同一个 k；shape/metadata 冲突会 fail-fast。
+- `generate` query mode 不在当前 RL 范围内，因为 query token 本身会成为随机生成序列，改变 PPO 联合概率的定义。
+
+## 行为策略
+
+| `rollout.policy` | 动作来源 | Qwen PPO | WM/Value训练 |
+|---|---|---|---|
+| `qwen` | Qwen action-token distribution | 是，仅使用真实 Qwen behavior log-prob | 是 |
+| `wm_value` | `argmax_a ValueHead(s)[a]` | 否 | 是 |
+
+`wm_value` 不会事后伪造 Qwen old log-prob。其 fast-path segment 从 Qwen GT state 开始，segment 内连续使用 WM predicted state；达到 `fast_path_horizon` 后，再从当前真实 observation 经 Qwen 重同步。每个动作仍逐步进入真实环境并记录 observation/reward/done。
 
 ## 运行模式
 
@@ -53,7 +69,7 @@ Trainable:
   - V:        requires_grad = True
 ```
 
-### Online RL Loop
+### Rollout → Train Loop
 
 ```
 for iteration = 1, 2, …, N_iter:
@@ -131,7 +147,8 @@ for iteration = 1, 2, …, N_iter:
             s_next = f_proj(h_next).detach()          # target: next WM state (no grad)
             ŝ_next = f_pred(s_cur, a)                # predicted next WM state
 
-            L_pred = MSE(ŝ_next, s_next)
+            L_pred = Σ_j w_j · MSE(ŝ_{t+j}, s_{t+j})
+            # j=1 从 GT state 开始；j>1 递归消费 predicted state
 
             # ---- Value loss (critic) ----
             values = V(s_cur)                         # ∈ R^8
@@ -198,7 +215,7 @@ agent.act(current_image):   # called at each env step
 | 文件 | 职责 |
 |------|------|
 | `rollout.py` | `RolloutTrajectory` 数据结构，`EnvRolloutCollector`（单 GPU 在线），`JSONLRolloutCollector`（离线/分布式，支持多源文件轮转） |
-| `loss.py` | `compute_predictor_loss`（MSE dynamics），`compute_value_loss`（MSE + ranking），`compute_advantages`（unbiased=False，避免 batch size=1 NaN），`compute_actor_loss`（PPO clipped） |
+| `loss.py` | 单步/递归多步 dynamics MSE、Value MSE + ranking、advantage normalization、PPO clipped loss |
 | `trainer.py` | `train_rl` — 在线 RL 主循环，含 Qwen 加载、FSDP/DDP、resume、分布式 guard |
 | `checkpoint.py` | `save_rl_checkpoint` / `load_rl_wm_checkpoint` / `load_lora_adapter_state` |
 | `cli.py` | 命令行入口，`--llm-tune` / `--vision-tune` / `--resume` / `--jsonl-sources` 等参数 |
@@ -270,7 +287,8 @@ predictor:
   lr: 1e-3
   emb_dim: 128           # WM embedding dimension
   history_size: 4        # ARPredictor context window (frames)
-  rollout_steps: 1       # training rollout steps (1 = single-step first)
+  rollout_steps: 1       # contiguous recursive dynamics horizon
+  rollout_loss_decay: 1.0
 
 value_head:
   lr: 1e-3
@@ -304,6 +322,20 @@ training:
 | `full` | `freeze` | LLM 全参数，vision 冻结 |
 
 `--lora` 是 `--llm-tune lora --vision-tune freeze` 的快捷方式。
+
+## WM fast-path 配置
+
+```yaml
+rollout:
+  policy: wm_value
+  fast_path_horizon: 2
+
+predictor:
+  rollout_steps: 2
+  rollout_loss_decay: 1.0
+```
+
+`fast_path_horizon` 控制两次 Qwen GT sync 之间执行多少个 WM/value 动作；`predictor.rollout_steps` 控制训练时连续 trajectory window 的递归 loss 长度，二者独立配置。
 
 ## Checkpoint 结构
 
