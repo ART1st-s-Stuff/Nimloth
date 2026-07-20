@@ -6,6 +6,7 @@ Unified training logic for Nimloth phases. See `ai_tasks/sft2_phase2_plan.md`.
 |----------------------|---------|
 | `nimloth.backbone/qwen25vl/` | Qwen2.5-VL batching, latent extraction, tuning, vision EMA |
 | `nimloth.wm/` | WM models, transition data/collate |
+| `nimloth.recon/` | Post-hoc CFM and RCDM reconstruction models |
 | `nimloth.eval/` | Offline rollout metrics |
 | `training/common/` | dist, schedules, metrics, wandb |
 | `training/phase0_vagen/` | Phase 0 hooks |

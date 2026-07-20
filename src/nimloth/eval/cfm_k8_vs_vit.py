@@ -12,9 +12,9 @@ from typing import Any
 import torch
 from PIL import Image, ImageDraw
 
-from nimloth.cfm import CFMConfig, TokenConditionedFlowUNet
-from nimloth.rcdm.image_utils import diffusion_tensor_to_pil, image_to_diffusion_tensor
-from nimloth.rcdm.state_cache import RCDMStateCacheDataset
+from nimloth.recon.cfm import CFMConfig, TokenConditionedFlowUNet
+from nimloth.recon.rcdm.image_utils import diffusion_tensor_to_pil, image_to_diffusion_tensor
+from nimloth.recon.rcdm.state_cache import RCDMStateCacheDataset
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.token_set_predictor import TokenSetWMPredictor
 

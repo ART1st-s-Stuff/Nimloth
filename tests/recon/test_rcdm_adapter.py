@@ -2,9 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from nimloth.rcdm.config import RCDMConfig, rcdm_config_from_args
-from nimloth.rcdm.external import ensure_rcdm_importable
-from nimloth.rcdm.state_cache import contiguous_rank_bounds
+from nimloth.recon.rcdm.config import RCDMConfig, rcdm_config_from_args
+from nimloth.recon.rcdm.external import ensure_rcdm_importable
+from nimloth.recon.rcdm.state_cache import contiguous_rank_bounds
 from nimloth.training.reconstruction.rcdm_sft2 import resolve_latent_token_count
 
 

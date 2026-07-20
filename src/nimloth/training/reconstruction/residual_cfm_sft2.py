@@ -13,7 +13,7 @@ from typing import Any
 import torch
 from PIL import Image, ImageDraw
 
-from nimloth.cfm import CFMConfig, TokenConditionedFlowUNet
+from nimloth.recon.cfm import CFMConfig, TokenConditionedFlowUNet
 from nimloth.training.reconstruction.cfm_sft2 import (
     LoadedStateImageSplit,
     load_state_image_split,

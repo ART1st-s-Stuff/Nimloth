@@ -1,4 +1,4 @@
-# RCDM adapter
+# RCDM reconstruction (`nimloth.recon.rcdm`)
 
 Nimloth RCDM adapter for post-hoc SFT2 latent-state reconstruction.
 

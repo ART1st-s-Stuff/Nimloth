@@ -4,6 +4,9 @@ This package trains a **post-hoc** image decoder for WM diagnostics.  It freezes
 Qwen, `StateProjector`, and the WM predictor checkpoint, then trains only
 `WMImageDecoder` to reconstruct observations from projected WM states.
 
+Reusable CFM and RCDM model code lives under `nimloth.recon`; this package owns
+their training orchestration and command-line entrypoints.
+
 The decoder is not part of the SFT2/RL objective.  Use it to compare:
 
 - `decoder(s_next)` vs next image: decoder/oracle upper bound.

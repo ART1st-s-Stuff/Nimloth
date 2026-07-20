@@ -1,4 +1,4 @@
-# Conditional flow matching
+# CFM reconstruction (`nimloth.recon.cfm`)
 
 This package implements the post-hoc conditional flow-matching (CFM) image
 visualizer used by Nimloth reconstruction diagnostics.

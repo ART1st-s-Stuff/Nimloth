@@ -21,16 +21,16 @@ from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoConfig, AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.rcdm.checkpoint import (
+from nimloth.recon.rcdm.checkpoint import (
     init_ema_state,
     parse_ema_rates,
     save_training_checkpoint,
     unwrap_model,
     update_ema_state,
 )
-from nimloth.rcdm.config import RCDMConfig, create_model_and_diffusion, rcdm_config_from_args
-from nimloth.rcdm.image_utils import image_to_diffusion_tensor
-from nimloth.rcdm.state_cache import (
+from nimloth.recon.rcdm.config import RCDMConfig, create_model_and_diffusion, rcdm_config_from_args
+from nimloth.recon.rcdm.image_utils import image_to_diffusion_tensor
+from nimloth.recon.rcdm.state_cache import (
     RCDMStateCacheDataset,
     build_rcdm_state_cache,
     collate_rcdm_state_cache_batch,

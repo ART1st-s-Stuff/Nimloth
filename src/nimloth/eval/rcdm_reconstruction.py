@@ -13,9 +13,9 @@ from PIL import Image
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.rcdm.checkpoint import load_state_dict
-from nimloth.rcdm.config import RCDMConfig, create_model_and_diffusion, rcdm_config_from_args
-from nimloth.rcdm.image_utils import diffusion_tensor_to_pil, image_to_diffusion_tensor, make_horizontal_strip
+from nimloth.recon.rcdm.checkpoint import load_state_dict
+from nimloth.recon.rcdm.config import RCDMConfig, create_model_and_diffusion, rcdm_config_from_args
+from nimloth.recon.rcdm.image_utils import diffusion_tensor_to_pil, image_to_diffusion_tensor, make_horizontal_strip
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents

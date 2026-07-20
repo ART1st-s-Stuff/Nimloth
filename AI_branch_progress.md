@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-07-20：CFM/RCDM 归入 recon 包
+
+- 在本地分支 `fix/sft2-review-bugs` 将顶层 `nimloth.cfm` 与 `nimloth.rcdm` 迁入 `nimloth.recon.cfm` 和 `nimloth.recon.rcdm`；训练编排继续保留在 `nimloth.training.reconstruction`，评估入口继续保留在 `nimloth.eval`。
+- CFM/RCDM 内部导入、训练与评估依赖以及对应单元测试均已切换到新路径；原顶层包路径不再保留兼容 shim，静态扫描确认当前代码和文档没有旧 import。
+- 顶层 CFM/RCDM 测试移入 `tests/recon/`，新增 recon 包 README 并同步更新 training/reconstruction 导航说明。
+- 验证：`compileall` 与 `git diff --check` 通过；CFM/RCDM/reconstruction 相关测试 `20 passed, 1 deselected`。deselect 的测试要求当前本地未初始化的 `external/RCDM` 子模块。
+
 ## 2026-07-20：SFT2 代码目录职责整理
 
 - 在本地分支 `fix/sft2-review-bugs` 继续整理 SFT2 代码，尚未合并回 `dev`。

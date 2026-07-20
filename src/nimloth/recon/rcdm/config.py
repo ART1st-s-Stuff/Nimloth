@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from nimloth.rcdm.external import ensure_rcdm_importable
+from nimloth.recon.rcdm.external import ensure_rcdm_importable
 
 
 @dataclass(frozen=True)

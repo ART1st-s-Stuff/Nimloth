@@ -2,13 +2,13 @@ import pytest
 import torch
 from PIL import Image
 
-from nimloth.cfm import (
+from nimloth.recon.cfm import (
     CFMConfig,
     TokenConditionedFlowUNet,
     conditional_flow_matching_loss,
     sample_euler,
 )
-from nimloth.rcdm.image_utils import image_to_diffusion_tensor
+from nimloth.recon.rcdm.image_utils import image_to_diffusion_tensor
 from nimloth.training.reconstruction.cfm_sft2 import _load_image_uint8
 from nimloth.training.reconstruction.residual_cfm_sft2 import biased_flow_loss
 
