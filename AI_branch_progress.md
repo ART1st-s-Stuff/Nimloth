@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-07-20：k1 ID16 epoch2同协议reconstruction（进行中）
+
+- 人类指定完整epoch2/best，并批准8GPU；实际资源方案为normal8GPU并行query cache，再用normal1GPU顺序projected cache→CFM→Decoder→四列评估，避免单GPU训练阶段闲置7卡。代码`dbf10bc`让evaluator按manifest/Decoder动态支持k1/k8。
+- cache job`481472`在dgx-46 `COMPLETED0:0`/00:37:08：train59,389、val6,054，k1 query semantic token实际兼容存储为flat`state_shape=[2048]`，完整manifest/shards。
+- 首个pipeline`481473`在CFM/W&B前失败：ID16旧training_state缺Projector hidden/output字段，且consumer误要求k1 cache`[1,2048]`。`0fa75f9`改由真实权重推导Projector=`2048→2048→1024`；`5085e7f`统一将flat k1 storage解释/恢复为一个query token，覆盖projection/CFM/Decoder/evaluator；server22 tests与真实manifest gate通过，登记E0048。
+- replacement pipeline`481531`已完成projected cache：train/val fingerprints=`e169b6e426c43a3d/e2e1f4b75174e42e`、counts保持59,389/6,054；fresh k1 CFM42启动中。
+
 ## 2026-07-19：ID27 epoch2 query-latent CFM + projected-State Decoder（完成）
 
 - 人类要求从ID27 SFT2 epoch2重新训练query-latent CFM，并输出`GT | 旧Qwen ViT-token CFM | query latent CFM | 单步WM预测State→Decoder→query latent CFM`。确认Decoder为对称MLP`8192→8192→8×2048`，真实/WM预测projected State两路MSE 1:1，最终预测采用真实`t-1` State/action的teacher-forced单步协议。

@@ -51,3 +51,10 @@ No k=8 job, checkpoint, cache, CSV, or output will be modified or deleted.
 - Local syntax checks passed. Clean server worktree `/project/peilab/atst/nimloth/.worktree/k1-sft-control` is pinned to `3d46066`; 19 relevant server tests passed.
 - Human confirmed the exact controlled setup. Dependency pipeline submitted: SFT1 cache `474974` -> SFT1 train `474975` -> BF16 merge `474976` -> SFT2 compact cache `474977` -> SFT2 train `474978`.
 - SFT1 cache job `474974` started on `intel-01`; log confirms commit `3d46066`, source checkpoint, success613/val355 inputs, k=1 inject, masked query labels, BF16 pixels, 8 workers, and fingerprinted cache build. It is healthy with no traceback.
+
+## 2026-07-20 epoch2 query-latent reconstruction
+
+- 后续权威SFT2状态见`AI_branch_progress.md`：用户选择ID16完整epoch2/best，并要求8GPU。方案为normal8GPU query extraction后normal1GPU projected cache/CFM/Decoder/eval；同k8协议使用query latent、actual/predicted projected双路1:1 Decoder loss、单步teacher-forced四列。
+- `dbf10bc`让四列evaluator动态读取k1/k8 shape。cache481472 dgx-46 `COMPLETED0:0`/00:37:08：train59,389、val6,054，manifest完整，k1 query以兼容flat`[2048]`存储。
+- pipeline481473在CFM前失败：旧ID16 training_state缺projector hidden/output metadata，且consumer误只接受`[1,2048]`。修复`0fa75f9/5085e7f`从真实权重推导2048→2048→1024，并在projection/CFM/Decoder/evaluator统一把flat k1 cache解释为一个token；server22 tests与真实manifest gate通过，登记E0048。
+- replacement481531已生成lineage-strict projected cache，train/val count59,389/6,054、fingerprint`e169b6e426c43a3d/e2e1f4b75174e42e`；CFM42运行中，后续Decoder43/eval44同job串行。
