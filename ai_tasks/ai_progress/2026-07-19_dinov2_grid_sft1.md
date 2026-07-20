@@ -36,6 +36,7 @@
 - Approved smoke retry2: W&B name reserved as `14_smoke_retry2_dino2l_grid4_k16_prefix_success1_l1_ep1_b1_ga1_ws1_px602112`; Slurm `481441`, commit `b913fcc`, one GPU on `dgx-13`.
 - Job `481441` failed in 20 seconds before model/data/W&B initialization because the new entry point unpacked three values from canonical four-value `setup_dist()`. No metrics/checkpoint and not resumable; output README and experiment-group progress were updated.
 - Fixed both new SFT1/SFT2 entry points to use `(rank, world_size, local_rank, device)` and registered `E0030`.
+- Smoke retry3 Slurm `481444` (commit `8c64e1c`) loaded Qwen, then failed in 25 seconds before W&B/data/steps because offline DINO lookup did not use the complete shared HF cache. No metrics/checkpoint, GPU released. Launcher now explicitly exports `HF_HOME=/project/peilab/atst/.cache/huggingface`; registered `E0031`. The cache contains the requested `facebook/dinov2-large` commit `47b73eefe95e8d44ec3623f8890bd894b6ea2d6c` config, processor, and weight blobs; no substitute model is used.
 
 ## Remaining before formal training
 

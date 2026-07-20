@@ -28,6 +28,7 @@ source /project/peilab/atst/flower/.env
 set +a
 export WANDB_PROJECT=nimloth-sft1
 export WANDB_RUN_NAME
+export HF_HOME=/project/peilab/atst/.cache/huggingface
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export PYTHONPATH="${REPO}/src:${PYTHONPATH:-}"
