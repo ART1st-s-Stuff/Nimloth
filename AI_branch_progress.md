@@ -4,11 +4,14 @@
 
 ---
 
-## 2026-07-20：DINO监督SFT1 grid reconstruction（运行中）
+## 2026-07-20：DINO监督SFT1 grid reconstruction（完成）
 
-- 人类要求使用最新完整DINO-grid SFT1 ID18 epoch5/final重新reconstruction；SFT2尚未完成，本次禁止加载或比较WM predicted。人类选择只重建DINO直接监督的shared-projector grid `[16,1024]`，CFM使用strict全部train59,389、held-out val6,054，最终保持diverse40/200帧matched-noise Euler50 CFG2三列`GT | Qwen ViT-token CFM | DINO-grid CFM`。
-- `80aaac5/f0d4204`新增显式`dino_grid_state` cache、BF16 token-wise shared projector、严格row-major/source lineage/fingerprint gate、CFM no-WM positive-control路径及无WM evaluator；服务器targeted tests `14 passed`。
-- Agent未先hold人类指定的空闲`dgx-40`，节点被他人占用；人类明确纠正后已登记`E0049`。replacement holder Slurm`482045`现RUNNING于preempt `dgx-03`，8GPU/128CPU/768G/8h；同allocation step`482045.1`已从clean commit`f0d4204`启动cache→projection→CFM→eval。W&B ID45/46=`f9wj5gza/ek552cqe`已预留；八个torchrun ranks和八卡CUDA初始化均已确认，无traceback/OOM/NCCL/NaN。详细记录：`ai_tasks/ai_progress/2026-07-20_dino_grid_reconstruction.md`。
+- 人类要求使用最新完整DINO-grid SFT1 ID18 epoch5/final重新reconstruction；SFT2尚未完成，本次未加载或比较WM predicted。只重建DINO直接监督的shared-projector grid `[16,1024]`，CFM使用strict全部train59,389、held-out val6,054；最终协议为diverse40/200帧matched-noise Euler50 CFG2三列`GT | Qwen ViT-token CFM | DINO-grid CFM`。
+- `80aaac5/f0d4204`新增显式`dino_grid_state` cache、BF16 token-wise shared projector、严格row-major/source lineage/fingerprint gate、CFM no-WM positive-control路径及无WM evaluator；`0f73260`分离W&B identity resume与checkpoint resume；`9d8b1b4`修正evaluator读取canonical CFM `token_count/token_dim` metadata。服务器targeted tests `14 passed`，evaluator修复后`4 passed`。
+- holder `482045`在preempt `dgx-03`完成cache和训练后已取消释放。query cache train/val fingerprints=`2f3825837d4b8e07/4dca28dedb62f0fb`；DINO grid=`a1eceb48063f4138/fee377fa57374b9a`。完整272 shards、65,443 rows全部finite。
+- CFM ID45完成55,680steps/30ep，W&B`f9wj5gza`；best subset correct MSE=`.03185286`@step29000；final full-val correct/shuffled=`.03929895/.04263037`，ratio=`1.08477135`，明显高于此前query-latent k8/k1约`1.012/1.005`，表明condition use更强。best/final各180 tensors finite且strict reload通过。
+- Eval ID46 W&B`ek552cqe`：Qwen/DINO image L1=`.276300/.233603`，DINO/Qwen=`.845467`，DINO在75%帧L1更低。四张contact sheet及共244 PNG均非空/PIL可读；肉眼DINO通常更好保留房间颜色、走廊/窗口与粗几何，但仍有合理却不匹配的房间和边界模糊，不能宣称pixel-perfect。
+- 两个可恢复接口错误未改变协议：初次CFM错误把W&B resume等同checkpoint resume，cache原样复用；CFM完成后evaluator读取了错误metadata key，修复后只重跑eval。最终eval retry遗漏`--ntasks=1`而并发执行8份相同确定性评估，导致W&B重复上传及step非零；最终文件/指标经独立完整gate验证有效。服务器README已如实记录。详细记录：`ai_tasks/ai_progress/2026-07-20_dino_grid_reconstruction.md`。
 
 ## 2026-07-20：k1 ID16 epoch2同协议reconstruction（完成）
 
