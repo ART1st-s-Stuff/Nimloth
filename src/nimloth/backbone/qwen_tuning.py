@@ -65,6 +65,20 @@ def _set_requires_grad(module, predicate, enabled: bool) -> None:
             param.requires_grad = enabled
 
 
+def enforce_frozen_tune_boundaries(
+    model,
+    *,
+    llm_tune: TuneMode,
+    vision_tune: TuneMode,
+) -> None:
+    """Re-freeze out-of-scope paths after PEFT's suffix-based target matching."""
+
+    if llm_tune == "freeze":
+        _set_requires_grad(model, _is_llm_param, False)
+    if vision_tune == "freeze":
+        _set_requires_grad(model, _is_vision_param, False)
+
+
 def configure_qwen_tuning(
     model: Qwen2_5_VLForConditionalGeneration,
     args: argparse.Namespace,
@@ -103,6 +117,16 @@ def configure_qwen_tuning(
         model = get_peft_model(model, lora_config)
         if args.gradient_checkpointing:
             model.enable_input_require_grads()
+
+    # PEFT matches target module names by suffix. Language names such as
+    # q_proj/k_proj/v_proj can therefore also match visual modules. Enforce the
+    # declared stage boundary after adapter insertion so frozen really means no
+    # trainable parameters on that path.
+    enforce_frozen_tune_boundaries(
+        model,
+        llm_tune=llm_tune,
+        vision_tune=vision_tune,
+    )
 
     if llm_tune == "full":
         _set_requires_grad(model, _is_llm_param, True)

@@ -24,6 +24,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from nimloth.backbone.dino import DEFAULT_DINO_MODEL, FrozenDINOEncoder
 from nimloth.backbone.qwen_tuning import (
     configure_qwen_tuning,
+    is_vision_param,
     resize_token_embeddings_and_sync_vocab,
 )
 from nimloth.latent import (
@@ -278,6 +279,15 @@ def main() -> None:
         model.config.use_cache = False
     model = configure_qwen_tuning(model, args)
     query_adapter = install_query_embedding_adapter(model, query_token_ids)
+    unexpected_visual_trainables = [
+        name for name, parameter in model.named_parameters()
+        if parameter.requires_grad and is_vision_param(name)
+    ]
+    if unexpected_visual_trainables:
+        raise RuntimeError(
+            "vision_tune=freeze but visual parameters remain trainable: "
+            f"{unexpected_visual_trainables[:8]}"
+        )
     model.to(device)
 
     qwen_hidden_dim = int(model.config.hidden_size)
