@@ -18,6 +18,7 @@ from nimloth.eval.query_vs_qwen_trajectory import _records
 from nimloth.rcdm.image_utils import diffusion_tensor_to_pil, image_to_diffusion_tensor
 from nimloth.training.reconstruction.projected_query_decoder import (
     ProjectedQueryDecoder,
+    ProjectedQueryDecoderConfig,
     validate_cache_lineage,
 )
 from nimloth.training.reconstruction.state_to_vision_tokens import load_proven_cfm
@@ -25,6 +26,34 @@ from nimloth.wm.predictor import LatentWMPredictor
 
 
 COLUMNS = ["GT", "Qwen ViT-token CFM", "query-latent CFM", "WM pred + Decoder + CFM"]
+
+
+def resolve_condition_shapes(
+    query_manifest: dict[str, Any],
+    projected_manifest: dict[str, Any],
+    decoder_config: ProjectedQueryDecoderConfig,
+) -> tuple[list[int], list[int]]:
+    if query_manifest.get("representation") != "qwen_query_hidden":
+        raise ValueError("expected qwen_query_hidden query cache")
+    if projected_manifest.get("representation") != "projected":
+        raise ValueError("expected projected State cache")
+    query_shape = [int(value) for value in query_manifest.get("state_shape", [])]
+    projected_shape = [int(value) for value in projected_manifest.get("state_shape", [])]
+    if len(query_shape) != 2:
+        raise ValueError(f"query cache needs [K,D] state_shape, got {query_shape}")
+    if len(projected_shape) != 1:
+        raise ValueError(f"projected cache needs [D] state_shape, got {projected_shape}")
+    expected_query = [decoder_config.query_tokens, decoder_config.query_dim]
+    if query_shape != expected_query:
+        raise ValueError(
+            f"decoder/query cache shape mismatch: {expected_query} != {query_shape}"
+        )
+    if projected_shape[0] != decoder_config.projected_dim:
+        raise ValueError(
+            "decoder/projected cache shape mismatch: "
+            f"{decoder_config.projected_dim} != {projected_shape[0]}"
+        )
+    return query_shape, projected_shape
 
 
 def calculate_metrics(
@@ -151,8 +180,21 @@ def evaluate(args: argparse.Namespace) -> int:
     projected_manifest = json.loads((args.projected_cache / "manifest.json").read_text())
     qwen_manifest = json.loads((args.qwen_cache / "manifest.json").read_text())
     validate_cache_lineage(projected_manifest, query_manifest)
-    query_records = _records(args.query_cache, representation="qwen_query_hidden", state_shape=[8, 2048])
-    projected_records = _records(args.projected_cache, representation="projected", state_shape=[8192])
+    decoder_payload = torch.load(args.decoder_checkpoint, map_location="cpu", weights_only=False)
+    decoder_config = ProjectedQueryDecoderConfig(**decoder_payload["decoder_config"])
+    query_shape, projected_shape = resolve_condition_shapes(
+        query_manifest, projected_manifest, decoder_config
+    )
+    query_records = _records(
+        args.query_cache,
+        representation="qwen_query_hidden",
+        state_shape=query_shape,
+    )
+    projected_records = _records(
+        args.projected_cache,
+        representation="projected",
+        state_shape=projected_shape,
+    )
     qwen_records = _records(args.qwen_cache, representation="qwen_compressed_vision_positive", state_shape=[16, 512])
     rows, states = prepare_teacher_forced_rows(selections, query_records, projected_records, qwen_records)
     predictor = LatentWMPredictor.load_checkpoint(
@@ -160,7 +202,6 @@ def evaluate(args: argparse.Namespace) -> int:
         map_location=device,
         history_size_override=args.wm_history_size_override,
     ).to(device).eval()
-    decoder_payload = torch.load(args.decoder_checkpoint, map_location="cpu", weights_only=False)
     decoder_invariants = decoder_payload.get("invariants")
     if not isinstance(decoder_invariants, dict):
         raise ValueError("decoder checkpoint lacks training invariants")
