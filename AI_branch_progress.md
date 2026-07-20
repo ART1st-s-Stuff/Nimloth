@@ -19,6 +19,7 @@
 - 新prompt image smoke policy480514通过：1条/25 actions/26 images、hash精确、strict conversion零issue。formal ID8 attempt因array `%2`的两个manager共享service且复用相同env IDs而失败，出现NoneType step/KeyError metrics；有效正式数据仍为0，禁止resume，登记E0031。
 - formal ID9完成两个完整shards后因用户质疑质量已暂停并释放GPU：seed1..40 success4/120，seed41..80 success16/120，累计20/240=8.33%，prompt/images完整、env errors0，第三shard无JSONL。W&B `nimloth-sft1/jyf980bb`。
 - 原checkpoint replay只用旧`base/common_sense`，formal用新`*_train`并含long-horizon，不同分布。replay虽success35-41%，但weighted position-changing仅13-15%、blocked约85%；formal240同样moveahead塌缩（4430/5615）、blocked83.08%、position-changing9.21%。replay高success主要由更有利的初始几何造成，不能外推到formal tasks。
+- CoT审计：99.54% turns标签齐全，但72.50%连续CoT逐字重复，blocked后96.75%重复同动作/82.21%重复同CoT，median trajectory仅20% unique CoT；39.75%回答含多动作而env只执行首动作，thought/prediction与transition错位。原checkpoint replay的CoT重复更严重（92-93%），故是checkpoint自身塌缩，raw CoT不适合直接SFT监督。
 - JSONL增量写而wrapper仅`-s` skip；恢复前必须验证每shard=120 rows+图片完整，登记E0032。当前两个shard已验证完整。详见`ai_tasks/ai_progress/2026-07-19_hligb_step10_sft1_rollout.md`。
 
 ## 2026-07-17：legacy VAGEN retry2 checkpoint 清理

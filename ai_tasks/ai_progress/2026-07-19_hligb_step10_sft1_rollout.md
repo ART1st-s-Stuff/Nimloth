@@ -117,3 +117,5 @@
 - 用户质疑与原checkpoint replay不符后已主动暂停array480550/env480536并释放GPU；第三shard刚进入generation、无JSONL，现有仅2个完整120-row shards。
 - 原replay与formal不是同分布：replay使用旧`base/common_sense`，formal使用新`base_train/common_sense_train/long_horizon_train`。更关键的是replay本身weighted position-changing仅train13.03%/val14.98%、blocked约85%，高35-41% success主要来自初始朝向恰好对准近目标；formal240同样moveahead塌缩（4430/5615）、blocked83.08%、position-changing9.21%，更难/含long-horizon后成功率下降。
 - 新发现resume风险：JSONL按25/50/75/99/120 rows增量写入，但wrapper只用`-s`判断skip。若恢复，必须先逐shard验证120 rows+图片完整；当前两个shard已完整。错误登记E0032。
+- CoT审计结论：格式表面正常（5589/5615=99.54%具备observation/reasoning/prediction/answer，98.38% first action canonical），但语义塌缩，不能直接作为SFT监督。72.50% turns与上一CoT完全相同；median trajectory unique CoT仅20%；blocked后96.75%重复同动作、82.21%原样重复CoT；215/240 trajectories同一动作连续>=10次。39.75% answers含多动作，而env只执行首动作，thought/prediction常描述整个序列，和真实transition错位。
+- 视觉抽查base_train seed17：前进后墙体占据视野、toaster逐渐出视野，但25 turns仍逐字重复“toaster在右边”与`moveahead,moveright`。原checkpoint-data replay也有92-93% consecutive exact CoT repetition、blocked后100%同动作、median unique CoT train4%/val8%，证明是checkpoint自身行为，不只是formal backend。
