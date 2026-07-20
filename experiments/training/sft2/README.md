@@ -2,14 +2,37 @@
 
 Canonical location for SFT2 per `ai_tasks/sft2_exp.md`.
 
+## Current k16 grid path
+
+The current human-approved path is separate from the legacy single-state trainer:
+
+```text
+frozen SFT1 query grid → LeWM per-slot encoder
+ → one bidirectional spatial AdaLN-zero WM
+ → predicted 16×1024 latent grid
+ ├─ next-query EMA latent MSE
+ └─ LeWM per-slot decoder → 0.5× next-RGB DINOv2 pooled-4×4 MSE
+ + 0.1× SIGReg + value MSE
+```
+
+Use `train_grid.py`, `build_grid_preprocess_cache.py`, and `build_dino_grid_cache.py`.
+The Qwen compact cache and exact float32 DINO grid sidecar are required for formal
+training; cache/model/identity mismatch fails rather than falling back. Legacy
+`--dino-align` query-state flags and the old k8 CLS launchers below are historical
+only and are rejected by the legacy CLI.
+
 | File | Purpose |
 |------|---------|
-| `train.py` | Thin experiment entry → `nimloth.training.sft2.trainer` |
-| `train_vagen79_default.slurm` | 8-GPU Slurm job (reads yaml config) |
-| `submit_dino_world8_4x2.sh` / `train_dino_world8_4x2.slurm` / `run_dino_world8_4x2.sh` | DINO-aligned SFT2：单个常规多节点job用4节点×2GPU碎片组成world size 8；显式48h |
+| `train.py` | Thin legacy single-state entry → `nimloth.training.sft2.trainer` |
+| `train_grid.py` | Current k16 LeWM encoder/spatial-WM/decoder/value trainer with EMA and 0.5× decoded-DINO MSE |
+| `build_grid_preprocess_cache.py` / `.slurm` | Required k16 compact current/next-prefix cache, including terminal next RGB paths |
+| `build_dino_grid_cache.py` / `.slurm` | Required exact float32 DINOv2 pooled-4×4 sidecar with bitwise online/cache gate |
+| `smoke_grid_dino_world2.slurm` | Current 2-GPU DDP smoke before formal grid SFT2 |
+| `train_vagen79_default.slurm` | Legacy 8-GPU Slurm job (reads yaml config) |
+| `submit_dino_world8_4x2.sh` / `train_dino_world8_4x2.slurm` / `run_dino_world8_4x2.sh` | **Historical/forbidden:** old k8 query-CLS SFT2 path; retained only for diagnostics |
 | `profile_dino_world8_4x2.slurm` / `run_dino_world8_profile.sh` | 隔离world8 profile：online+GC、cached+GC各50步；cached no-GC诊断；不做validation/checkpoint/W&B |
 | `build_compact_cache.slurm` | CPU-only compact preprocess-cache build |
-| `build_benchmark_dino_cache.slurm` / `build_dino_feature_cache.py` / `benchmark_dino_feature_cache.py` | 独立1-GPU构建分片float32 DINO CLS sidecar并测量online/cache teacher-only吞吐；要求CUDA BF16与bitwise抽检 |
+| `build_benchmark_dino_cache.slurm` / `build_dino_feature_cache.py` / `benchmark_dino_feature_cache.py` | Historical CLS sidecar; incompatible with current 4×4 decoded-DINO target |
 | `submit_compact_cache.sh` | Submit only the CPU cache build |
 | `submit_cache_then_train.sh` | Submit cache, then dependency-gated 8-GPU training |
 | `submit_default_8gpu.sh` | Default: LLM freeze + vision full |

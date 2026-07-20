@@ -3,9 +3,11 @@
 from nimloth.backbone.dino import (
     DEFAULT_DINO_MODEL,
     CachedDINOEncoder,
+    CachedDINOGridEncoder,
     DINOIdentity,
     FrozenDINOEncoder,
     build_dino_feature_cache,
+    build_dino_grid_feature_cache,
     resolve_dino_identity,
 )
 from nimloth.backbone.qwen_tuning import (
@@ -20,9 +22,11 @@ from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema, vi
 __all__ = [
     "DEFAULT_DINO_MODEL",
     "CachedDINOEncoder",
+    "CachedDINOGridEncoder",
     "DINOIdentity",
     "FrozenDINOEncoder",
     "build_dino_feature_cache",
+    "build_dino_grid_feature_cache",
     "resolve_dino_identity",
     "TuneMode",
     "VisionEncoderEMA",

@@ -10,9 +10,11 @@ from PIL import Image
 
 from nimloth.backbone.dino import (
     CachedDINOEncoder,
+    CachedDINOGridEncoder,
     DINOIdentity,
     FrozenDINOEncoder,
     build_dino_feature_cache,
+    build_dino_grid_feature_cache,
 )
 
 
@@ -190,6 +192,48 @@ def test_build_and_load_cached_dino_features(tmp_path) -> None:
     assert cached.hidden_size == 4
     assert cached.source == "fake/dino"
     assert cached.cache_fingerprint
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected)
+
+
+class FakeGridFeatureEncoder(FakeFeatureEncoder):
+    def encode_image_paths_grid(self, paths, *, device, grid_size):
+        base = self.encode_image_paths(paths, device=device)
+        return torch.stack([base + slot for slot in range(grid_size * grid_size)], dim=1)
+
+
+def test_build_and_load_cached_dino_grid_features(tmp_path) -> None:
+    first = str((tmp_path / "first.png").resolve())
+    second = str((tmp_path / "second.png").resolve())
+    _write_compact_split(tmp_path / "cache", "train", [first])
+    _write_compact_split(tmp_path / "cache", "val", [second])
+
+    manifests = build_dino_grid_feature_cache(
+        cache_root=tmp_path / "cache",
+        encoder=FakeGridFeatureEncoder(),
+        device=torch.device("cpu"),
+        grid_size=2,
+        batch_size=1,
+        shard_size=1,
+    )
+    cached = CachedDINOGridEncoder.from_cache_root(
+        tmp_path / "cache",
+        identity=FakeGridFeatureEncoder.identity,
+        grid_size=2,
+    )
+    actual = cached.encode_image_paths_grid(
+        [second, first],
+        device=torch.device("cpu"),
+        grid_size=2,
+    )
+    expected = FakeGridFeatureEncoder().encode_image_paths_grid(
+        [second, first],
+        device=torch.device("cpu"),
+        grid_size=2,
+    )
+
+    assert set(manifests) == {"train", "val"}
+    assert actual.shape == (2, 4, 4)
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected)
 

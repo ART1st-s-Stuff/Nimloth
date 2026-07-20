@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch import nn
+
+from nimloth.wm._vendor_lewm import ConditionalBlock, Embedder, MLP, modulate
+from nimloth.wm.lewm import SafeBatchNorm1d
 
 
 class SharedSlotProjector(nn.Module):
@@ -47,6 +52,158 @@ class SharedSlotProjector(nn.Module):
             )
         dtype = next(self.parameters()).dtype
         return self.net(hidden.to(dtype=dtype))
+
+
+class _LeWMGridMLP(nn.Module):
+    """Apply LeWM's projector/pred-proj MLP independently to spatial slots."""
+
+    def __init__(self, *, emb_dim: int = 1024, hidden_dim: int = 2048) -> None:
+        super().__init__()
+        self.emb_dim = int(emb_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.net = MLP(
+            input_dim=self.emb_dim,
+            hidden_dim=self.hidden_dim,
+            output_dim=self.emb_dim,
+            norm_fn=SafeBatchNorm1d,
+        )
+
+    def forward(self, grid: torch.Tensor) -> torch.Tensor:
+        if grid.ndim != 3 or grid.shape[-1] != self.emb_dim:
+            raise ValueError(f"expected grid (B, N, {self.emb_dim}), got {tuple(grid.shape)}")
+        batch, slots, _ = grid.shape
+        weight = next(self.parameters())
+        encoded = self.net(grid.reshape(batch * slots, self.emb_dim).to(dtype=weight.dtype))
+        return encoded.reshape(batch, slots, self.emb_dim)
+
+
+class LeWMGridEncoder(_LeWMGridMLP):
+    """LeWM projector MLP adapted to each SFT1 spatial query slot."""
+
+
+class LeWMGridDecoder(_LeWMGridMLP):
+    """LeWM pred-proj MLP used to decode predicted latents to DINO tokens."""
+
+
+class EMATargetGridEncoder(nn.Module):
+    """Non-trainable EMA copy of the online LeWM grid encoder."""
+
+    def __init__(self, online_encoder: LeWMGridEncoder, *, decay: float = 0.99) -> None:
+        super().__init__()
+        if not 0.0 < decay < 1.0:
+            raise ValueError(f"EMA decay must be in (0, 1), got {decay}")
+        self.decay = float(decay)
+        self.encoder = copy.deepcopy(online_encoder)
+        self.encoder.requires_grad_(False)
+        self.encoder.eval()
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self.encoder.eval()
+        return self
+
+    @torch.no_grad()
+    def update(self, online_encoder: LeWMGridEncoder) -> None:
+        online = online_encoder.module if hasattr(online_encoder, "module") else online_encoder
+        for target_parameter, online_parameter in zip(
+            self.encoder.parameters(), online.parameters(), strict=True
+        ):
+            target_parameter.mul_(self.decay).add_(online_parameter.detach(), alpha=1.0 - self.decay)
+        for target_buffer, online_buffer in zip(
+            self.encoder.buffers(), online.buffers(), strict=True
+        ):
+            if target_buffer.is_floating_point():
+                target_buffer.mul_(self.decay).add_(online_buffer.detach(), alpha=1.0 - self.decay)
+            else:
+                target_buffer.copy_(online_buffer)
+
+    @torch.no_grad()
+    def forward(self, grid: torch.Tensor) -> torch.Tensor:
+        return self.encoder(grid).detach()
+
+
+class _NonCausalConditionalBlock(ConditionalBlock):
+    """LeWM AdaLN-zero block with bidirectional spatial attention."""
+
+    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self.adaLN_modulation(c).chunk(6, dim=-1)
+        )
+        x = x + gate_msa * self.attn(
+            modulate(self.norm1(x), shift_msa, scale_msa),
+            causal=False,
+        )
+        x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        return x
+
+
+class LeWMSpatialPredictor(nn.Module):
+    """LeWM action-conditioned predictor adapted from temporal to spatial tokens."""
+
+    def __init__(
+        self,
+        *,
+        grid_tokens: int = 16,
+        emb_dim: int = 1024,
+        action_dim: int = 6,
+        depth: int = 6,
+        heads: int = 16,
+        dim_head: int = 64,
+        mlp_dim: int = 2048,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        if grid_tokens < 1:
+            raise ValueError("grid_tokens must be positive")
+        self.grid_tokens = int(grid_tokens)
+        self.emb_dim = int(emb_dim)
+        self.action_dim = int(action_dim)
+        self.depth = int(depth)
+        self.heads = int(heads)
+        self.dim_head = int(dim_head)
+        self.mlp_dim = int(mlp_dim)
+        self.dropout = float(dropout)
+        self.spatial_position = nn.Parameter(torch.randn(1, self.grid_tokens, self.emb_dim))
+        self.action_encoder = Embedder(
+            input_dim=self.action_dim,
+            smoothed_dim=self.action_dim,
+            emb_dim=self.emb_dim,
+        )
+        self.layers = nn.ModuleList(
+            [
+                _NonCausalConditionalBlock(
+                    self.emb_dim,
+                    heads=self.heads,
+                    dim_head=self.dim_head,
+                    mlp_dim=self.mlp_dim,
+                    dropout=self.dropout,
+                )
+                for _ in range(self.depth)
+            ]
+        )
+        self.norm = nn.LayerNorm(self.emb_dim)
+
+    def forward(self, state_grid: torch.Tensor, action_indices: torch.Tensor) -> torch.Tensor:
+        if state_grid.ndim != 3 or tuple(state_grid.shape[1:]) != (
+            self.grid_tokens,
+            self.emb_dim,
+        ):
+            raise ValueError(
+                f"expected state grid (B, {self.grid_tokens}, {self.emb_dim}), "
+                f"got {tuple(state_grid.shape)}"
+            )
+        if action_indices.ndim != 1 or action_indices.shape[0] != state_grid.shape[0]:
+            raise ValueError(f"action_indices must have shape ({state_grid.shape[0]},)")
+        if torch.any(action_indices < 0) or torch.any(action_indices >= self.action_dim):
+            raise ValueError("action index is outside configured action_dim")
+        dtype = self.spatial_position.dtype
+        actions = F.one_hot(action_indices.long(), num_classes=self.action_dim).float()
+        actions = actions.unsqueeze(1).expand(-1, self.grid_tokens, -1)
+        condition = self.action_encoder(actions).to(dtype=dtype)
+        state = state_grid.to(dtype=dtype) + self.spatial_position
+        for block in self.layers:
+            state = block(state, condition)
+        return self.norm(state)
 
 
 class GridLatentWMPredictor(nn.Module):

@@ -286,7 +286,8 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
         or bool(args.require_dino_cache)
     ):
         ap.error(
-            "DINO alignment is forbidden in SFT2; train the 4x4/16-query representation in SFT1 "
-            "and use experiments/training/sft2/train_grid.py without a DINO teacher"
+            "legacy SFT2 query-state DINO alignment flags are forbidden; "
+            "decoded WM-prediction DINO supervision is implemented separately by "
+            "experiments/training/sft2/train_grid.py"
         )
     return args

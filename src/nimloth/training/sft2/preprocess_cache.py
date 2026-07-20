@@ -272,6 +272,7 @@ def collate_cached_transition_batch(
                 "action_value_target": entry["action_value_target"],
                 "success": entry["success"],
                 "current_image_path": entry.get("current_image_path"),
+                "next_image_path": entry.get("next_image_path"),
                 "messages": entry.get("messages"),
                 "next_messages": entry.get("next_messages"),
             }
@@ -416,6 +417,7 @@ class CompactCachedTransitionCollator:
                     "action_value_target": entry["action_value_target"],
                     "success": entry["success"],
                     "current_image_path": entry.get("current_image_path"),
+                    "next_image_path": entry.get("next_image_path"),
                     "messages": entry.get("messages"),
                     "next_messages": entry.get("next_messages"),
                 }
@@ -514,6 +516,7 @@ class CachedTransitionDataset(Dataset):
                 raise FileNotFoundError(f"missing preprocess cache: {cache_path}")
             entry = torch.load(cache_path, map_location="cpu", weights_only=True)
         entry["current_image_path"] = sample.current_image_path
+        entry["next_image_path"] = sample.next_image_path
         entry["messages"] = messages_with_image_paths(
             sample.prefix_messages,
             sample.prefix_image_paths,
@@ -789,7 +792,11 @@ def build_compact_transition_preprocess_cache(
     cumulative_image_refs = 0
     for sample in samples:
         cumulative_image_refs += len(sample.prefix_image_paths)
-        for raw_path in sample.prefix_image_paths:
+        # Include the post-action observation even for terminal transitions.
+        # It is not present in the final Qwen prefix, but decoded-DINO SFT2
+        # supervises every transition against this exact next RGB.
+        source_paths = [*sample.prefix_image_paths, sample.next_image_path]
+        for raw_path in source_paths:
             image_path = str(Path(raw_path).resolve())
             if image_path not in path_to_image_index:
                 path_to_image_index[image_path] = len(unique_image_paths)

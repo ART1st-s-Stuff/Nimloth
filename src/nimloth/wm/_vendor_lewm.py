@@ -42,8 +42,18 @@ def _load_lewm_file(module_name: str, filename: str) -> ModuleType:
 _module = _load_lewm_file("module", "module.py")
 
 ARPredictor = _module.ARPredictor
+ConditionalBlock = _module.ConditionalBlock
 Embedder = _module.Embedder
 MLP = _module.MLP
 SIGReg = _module.SIGReg
+modulate = _module.modulate
 
-__all__ = ["ARPredictor", "Embedder", "MLP", "SIGReg", "lewm_root"]
+__all__ = [
+    "ARPredictor",
+    "ConditionalBlock",
+    "Embedder",
+    "MLP",
+    "SIGReg",
+    "lewm_root",
+    "modulate",
+]

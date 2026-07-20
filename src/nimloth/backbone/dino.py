@@ -18,6 +18,7 @@ from torch import nn
 
 DEFAULT_DINO_MODEL = "facebook/dinov2-large"
 DINO_CACHE_FORMAT = "dino_cls_sharded_v1"
+DINO_GRID_CACHE_FORMAT = "dino_grid_sharded_v1"
 
 
 def _json_fingerprint(payload: Any) -> str:
@@ -380,6 +381,144 @@ def build_dino_feature_cache(
     return manifests
 
 
+def _load_grid_feature_shard(path: Path) -> torch.Tensor:
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+    except TypeError:  # pragma: no cover - old torch fallback
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+    features = payload.get("features")
+    if not isinstance(features, torch.Tensor) or features.ndim != 3:
+        raise ValueError(f"invalid DINO grid feature shard: {path}")
+    return features
+
+
+def _build_dino_grid_split_cache(
+    *,
+    cache_split_dir: Path,
+    encoder: Any,
+    device: torch.device,
+    grid_size: int,
+    batch_size: int,
+    shard_size: int,
+    force: bool,
+) -> dict[str, Any]:
+    paths, image_index_fingerprint = _image_index(cache_split_dir)
+    parent = _parent_cache_identity(cache_split_dir)
+    if _source_image_fingerprint(paths) != parent["image_source_fingerprint"]:
+        raise ValueError(
+            f"compact cache image source changed before DINO grid cache build: {cache_split_dir}"
+        )
+    identity = encoder.identity
+    grid_tokens = int(grid_size) ** 2
+    expected = {
+        "format": DINO_GRID_CACHE_FORMAT,
+        "identity": asdict(identity),
+        **parent,
+        "image_index_fingerprint": image_index_fingerprint,
+        "count": len(paths),
+        "grid_size": int(grid_size),
+        "grid_tokens": grid_tokens,
+        "feature_dtype": "float32",
+        "shard_size": int(shard_size),
+        "shards": math.ceil(len(paths) / shard_size) if paths else 0,
+    }
+    expected["fingerprint"] = _json_fingerprint(expected)
+    output_dir = cache_split_dir / f"dino_grid{grid_size}"
+    manifest_path = output_dir / "manifest.json"
+    build_state_path = output_dir / "build_state.json"
+
+    if force:
+        shutil.rmtree(output_dir, ignore_errors=True)
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest == expected and all(
+            (output_dir / f"shard_{index:05d}.pt").is_file()
+            for index in range(expected["shards"])
+        ):
+            return manifest
+        raise RuntimeError(f"DINO grid cache fingerprint/files mismatch: {output_dir}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if build_state_path.is_file():
+        if json.loads(build_state_path.read_text(encoding="utf-8")) != expected:
+            raise RuntimeError(f"partial DINO grid cache identity mismatch: {output_dir}")
+    else:
+        if any(output_dir.glob("shard_*.pt")):
+            raise RuntimeError(f"untracked partial DINO grid cache: {output_dir}")
+        tmp = build_state_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(expected, indent=2), encoding="utf-8")
+        os.replace(tmp, build_state_path)
+
+    for shard_index in range(expected["shards"]):
+        shard_path = output_dir / f"shard_{shard_index:05d}.pt"
+        start = shard_index * shard_size
+        chunk = paths[start : start + shard_size]
+        expected_shape = (len(chunk), grid_tokens, identity.hidden_size)
+        if shard_path.is_file():
+            existing = _load_grid_feature_shard(shard_path)
+            if existing.shape != expected_shape or existing.dtype != torch.float32:
+                raise ValueError(f"invalid resumable DINO grid shard: {shard_path}")
+            continue
+        rows = []
+        for offset in range(0, len(chunk), batch_size):
+            batch_paths = chunk[offset : offset + batch_size]
+            features = encoder.encode_image_paths_grid(
+                batch_paths,
+                device=device,
+                grid_size=grid_size,
+            )
+            if features.shape != (len(batch_paths), grid_tokens, identity.hidden_size):
+                raise ValueError(
+                    f"DINO grid cache shape mismatch: {tuple(features.shape)} != "
+                    f"({len(batch_paths)}, {grid_tokens}, {identity.hidden_size})"
+                )
+            if not torch.isfinite(features.float()).all():
+                raise ValueError("DINO grid cache refuses non-finite features")
+            rows.append(features.detach().to(device="cpu", dtype=torch.float32))
+        shard_features = (
+            torch.cat(rows, dim=0)
+            if rows
+            else torch.empty((0, grid_tokens, identity.hidden_size), dtype=torch.float32)
+        )
+        tmp = shard_path.with_suffix(".pt.tmp")
+        torch.save({"features": shard_features}, tmp)
+        os.replace(tmp, shard_path)
+
+    tmp = manifest_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(expected, indent=2), encoding="utf-8")
+    os.replace(tmp, manifest_path)
+    build_state_path.unlink(missing_ok=True)
+    return expected
+
+
+def build_dino_grid_feature_cache(
+    *,
+    cache_root: Path,
+    encoder: Any,
+    device: torch.device,
+    grid_size: int = 4,
+    batch_size: int = 32,
+    shard_size: int = 256,
+    force: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Build exact float32 pooled-patch grid sidecars for compact train/val caches."""
+
+    if grid_size < 1 or batch_size < 1 or shard_size < 1:
+        raise ValueError("DINO grid cache sizes must be positive")
+    return {
+        split: _build_dino_grid_split_cache(
+            cache_split_dir=Path(cache_root) / split,
+            encoder=encoder,
+            device=device,
+            grid_size=int(grid_size),
+            batch_size=int(batch_size),
+            shard_size=int(shard_size),
+            force=force,
+        )
+        for split in ("train", "val")
+    }
+
+
 class CachedDINOEncoder(nn.Module):
     """Serve exact frozen DINO CLS targets from validated mmap sidecars."""
 
@@ -473,6 +612,123 @@ class CachedDINOEncoder(nn.Module):
             location = self.path_to_feature.get(path)
             if location is None:
                 raise KeyError(f"DINO cache missing image: {path}")
+            tensor, index = location
+            rows.append(tensor[index])
+        return torch.stack(rows).to(device=device, non_blocking=True).float().detach()
+
+
+class CachedDINOGridEncoder(nn.Module):
+    """Serve exact pooled DINO patch grids from validated mmap sidecars."""
+
+    def __init__(
+        self,
+        *,
+        identity: DINOIdentity,
+        grid_size: int,
+        path_to_feature: dict[str, tuple[torch.Tensor, int]],
+        cache_fingerprint: str,
+    ) -> None:
+        super().__init__()
+        self.identity = identity
+        self.source = identity.source
+        self.hidden_size = identity.hidden_size
+        self.grid_size = int(grid_size)
+        self.path_to_feature = path_to_feature
+        self.cache_fingerprint = cache_fingerprint
+        super().train(False)
+
+    @classmethod
+    def from_cache_root(
+        cls,
+        cache_root: str | Path,
+        *,
+        identity: DINOIdentity,
+        grid_size: int = 4,
+    ) -> "CachedDINOGridEncoder":
+        path_to_feature: dict[str, tuple[torch.Tensor, int]] = {}
+        fingerprints = []
+        grid_tokens = int(grid_size) ** 2
+        for split in ("train", "val"):
+            split_dir = Path(cache_root) / split
+            sidecar = split_dir / f"dino_grid{grid_size}"
+            manifest_path = sidecar / "manifest.json"
+            if not manifest_path.is_file():
+                raise FileNotFoundError(f"required DINO grid cache missing: {manifest_path}")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            claimed = manifest.get("fingerprint")
+            payload = {key: value for key, value in manifest.items() if key != "fingerprint"}
+            if claimed != _json_fingerprint(payload):
+                raise ValueError(f"DINO grid cache manifest fingerprint mismatch: {sidecar}")
+            if (
+                manifest.get("format") != DINO_GRID_CACHE_FORMAT
+                or manifest.get("identity") != asdict(identity)
+                or int(manifest.get("grid_size", -1)) != int(grid_size)
+                or int(manifest.get("grid_tokens", -1)) != grid_tokens
+            ):
+                raise ValueError(f"DINO grid cache identity/grid mismatch: {sidecar}")
+            paths, image_index_fingerprint = _image_index(split_dir)
+            parent = _parent_cache_identity(split_dir)
+            if (
+                manifest.get("image_index_fingerprint") != image_index_fingerprint
+                or manifest.get("parent_fingerprint") != parent["parent_fingerprint"]
+                or manifest.get("image_source_fingerprint") != parent["image_source_fingerprint"]
+            ):
+                raise ValueError(f"DINO grid cache parent/image mismatch: {sidecar}")
+            shard_size = int(manifest.get("shard_size", 0))
+            shard_count = int(manifest.get("shards", -1))
+            if (
+                int(manifest.get("count", -1)) != len(paths)
+                or manifest.get("feature_dtype") != "float32"
+                or shard_size < 1
+                or shard_count != (math.ceil(len(paths) / shard_size) if paths else 0)
+            ):
+                raise ValueError(f"invalid DINO grid cache shard metadata: {sidecar}")
+            shards = []
+            for index in range(shard_count):
+                tensor = _load_grid_feature_shard(sidecar / f"shard_{index:05d}.pt")
+                expected_rows = min(shard_size, len(paths) - index * shard_size)
+                if tensor.shape != (expected_rows, grid_tokens, identity.hidden_size):
+                    raise ValueError(f"DINO grid cache feature shape mismatch: {sidecar}")
+                if tensor.dtype != torch.float32:
+                    raise ValueError(f"DINO grid cache feature dtype mismatch: {sidecar}")
+                shards.append(tensor)
+            for index, path in enumerate(paths):
+                path_to_feature.setdefault(
+                    path,
+                    (shards[index // shard_size], index % shard_size),
+                )
+            fingerprints.append(str(claimed))
+        return cls(
+            identity=identity,
+            grid_size=int(grid_size),
+            path_to_feature=path_to_feature,
+            cache_fingerprint=_json_fingerprint(fingerprints),
+        )
+
+    def train(self, mode: bool = True) -> "CachedDINOGridEncoder":
+        super().train(False)
+        return self
+
+    @torch.no_grad()
+    def encode_image_paths_grid(
+        self,
+        paths: Sequence[str | Path],
+        *,
+        device: torch.device,
+        grid_size: int = 4,
+    ) -> torch.Tensor:
+        if int(grid_size) != self.grid_size:
+            raise ValueError(
+                f"DINO grid cache size mismatch: cache={self.grid_size}, requested={grid_size}"
+            )
+        if not paths:
+            raise ValueError("DINO grid alignment requires at least one image path")
+        rows = []
+        for raw_path in paths:
+            path = str(Path(raw_path).resolve())
+            location = self.path_to_feature.get(path)
+            if location is None:
+                raise KeyError(f"DINO grid cache missing image: {path}")
             tensor, index = location
             rows.append(tensor[index])
         return torch.stack(rows).to(device=device, non_blocking=True).float().detach()

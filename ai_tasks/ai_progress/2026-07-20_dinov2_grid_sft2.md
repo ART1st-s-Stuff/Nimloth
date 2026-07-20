@@ -1,0 +1,56 @@
+# 2026-07-20 LeWM-style grid SFT2 with decoded DINO supervision
+
+## Human-approved design
+
+- SFT2 uses all 3,217 train trajectories / 59,389 transitions, including failures.
+- Input representation is the completed SFT1 4×4 query grid. Qwen and the SFT1 shared slot projector stay frozen.
+- Add a trainable WM encoder and decoder around one joint spatial WM.
+- WM latent shape remains `[B,16,1024]`.
+- Latent target uses an EMA encoder with decay `0.99` and stop-gradient.
+- Preserve next-query latent MSE and LeWM SIGReg (`λ=0.1`).
+- Decoder predicts next-RGB DINOv2 final-patch features pooled to row-major 4×4; decoded DINO MSE weight is exactly `0.5`.
+- Value loss remains enabled.
+
+## LeWM source audit
+
+Pinned `external/le-wm` has:
+
+- pixel ViT encoder;
+- LeWM `MLP` projector;
+- action `Embedder`;
+- causal AdaLN-zero `ARPredictor`;
+- LeWM `MLP` pred-proj;
+- next-embedding MSE + SIGReg.
+
+It has no decoder and no EMA target encoder. The approved adaptation therefore:
+
+- reuses LeWM MLP for shared per-slot online encoder and DINO decoder;
+- reuses LeWM Embedder and AdaLN-zero ConditionalBlock;
+- changes predictor attention from causal temporal attention to bidirectional spatial attention over the 16 grid slots;
+- adds the explicitly requested EMA target encoder and decoded-DINO objective. This is documented as a spatial adaptation, not an unmodified LeWM decoder.
+
+## SFT1 dependency completed
+
+Canonical checkpoint:
+
+`/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-19/sft1/18_retry1_dino2l_grid4_k16_prefix_success7309_l1_ep5_b1_ga8_ws8_px602112/final/hf_merged`
+
+SFT1 Slurm `481494` completed 5 epochs/575 steps in 3h15m36s; W&B `ie19vs47` finished. Val DINO grid MSE improved monotonically from `0.501212` to `0.337753`; final checkpoint gates passed.
+
+## Local implementation in progress
+
+- Added LeWM per-slot encoder/decoder, noncausal spatial AdaLN-zero predictor, and EMA target encoder.
+- Updated SFT2 loss to combine latent MSE + `0.5×` decoded DINO MSE + `0.1×` SIGReg + value MSE.
+- Terminal transitions retain DINO and value supervision even when no next-query prefix exists.
+- Compact preprocess cache now propagates `next_image_path` for DINO targets.
+- Reworked `experiments/training/sft2/train_grid.py` for frozen SFT1 modules, trainable encoder/WM/decoder/value, EMA updates, checkpoint/resume, CSV and W&B.
+- Added exact fail-closed float32 DINO 4×4 sidecar cache with teacher/processor/parent/image fingerprints, resumable shards, terminal-next-RGB coverage, and online/cache bitwise gate. Existing CLS cache is incompatible and cannot substitute.
+- Added dedicated k16 compact Qwen cache builder and CPU/GPU cache Slurm scripts.
+- Added checkpoint/resume round-trip, terminal transition, EMA, noncausal connectivity, grid cache, and compact-cache next-path tests.
+- Broader SFT1+SFT2+DINO suite: 86 passed (excluding the inherited known-broken trajectory-prefix test); compileall, shell syntax, and diff-check pass.
+
+## Remaining before GPU work
+
+1. Human approval for CPU compact-cache build (~2–3h, CPU partition, 8 CPU/128G), dependent 1-GPU DINO grid sidecar build (≤1h), and 2-GPU SFT2 smoke (≤30m).
+2. Inspect real cache manifests/counts/size and run the exact online/cache bitwise gate.
+3. Run world2 smoke and measure memory/step time before proposing formal SFT2 resources.

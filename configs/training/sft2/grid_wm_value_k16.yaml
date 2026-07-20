@@ -1,13 +1,17 @@
 # SFT2 consuming the DINO-aligned SFT1 4x4 query-state interface.
 init:
-  sft1_checkpoint: null  # final/hf_merged from qwen25vl_lora_k16_dinov2_grid4
+  sft1_checkpoint: null  # required: completed SFT1 final/hf_merged
   slot_projector: required_from_sft1_checkpoint
 
 data:
-  train_jsonl: train_all.jsonl
-  val_jsonl: val_all.jsonl
+  train_jsonl: train_all.jsonl       # 3217 trajectories / 59389 transitions
+  val_jsonl: val_all.jsonl           # 355 trajectories / 6054 transitions
   include_failed_rollouts: true
   forward_semantics: one_transition_prefix_per_sample
+  compact_preprocess_cache: required
+  cache_latent_token_count: 16
+  cache_query_mode: inject
+  cache_image_dtype: bfloat16
 
 representation:
   grid_size: 4
@@ -16,29 +20,62 @@ representation:
   state_dim: 1024
   ordering: row_major
   qwen: freeze
-  slot_projector: freeze
-  dino_teacher: forbidden
+  sft1_slot_projector: freeze
+
+encoder:
+  type: LeWM_MLP_per_slot
+  input_shape: [16, 1024]
+  output_shape: [16, 1024]
+  hidden_dim: 2048
+  target: EMA
+  ema_decay: 0.99
 
 world_model:
-  type: one_joint_spatial_transformer
-  input: current_grid_plus_action
-  output: complete_next_grid
-  target: next_prefix_query_grid_stop_gradient
-  depth: 4
-  heads: 8
+  type: LeWM_AdaLN_zero_spatial_predictor
+  attention: bidirectional_noncausal
+  input: current_encoded_grid_plus_action
+  output: complete_next_latent_grid
+  latent_target: EMA_encoder_next_query_grid_stop_gradient
+  depth: 6
+  heads: 16
+  dim_head: 64
   mlp_dim: 2048
+  dropout: 0.1
+
+decoder:
+  type: LeWM_MLP_per_slot
+  input_shape: [16, 1024]
+  output_shape: [16, 1024]
+  hidden_dim: 2048
+  target: next_rgb_frozen_dinov2_final_patch_adaptive_pool_4x4
+
+dino:
+  model: facebook/dinov2-large
+  frozen: true
+  loss: mse
+  loss_weight: 0.5
+  pooled_grid_cache: required
+  pooled_grid_cache_dtype: float32
+  fallback: forbidden
 
 value:
-  input: mean_pool_4x4_current_grid
-  output: six_action_values
+  input: mean_pool_online_encoded_current_grid
+  output: eight_action_values
+
+loss:
+  latent_mse: 1.0
+  decoded_dino_mse: 0.5
+  sigreg: 0.1
+  value_mse: 1.0
 
 train:
   epochs: 10
   batch_size: 2
   grad_accum: 4
-  wm_lr: 1.0e-4
+  effective_batch_world8: 64
+  encoder_lr: 1.0e-4
+  wm_lr: 3.0e-4
+  decoder_lr: 1.0e-4
   value_lr: 1.0e-4
-  wm_weight: 1.0
-  value_weight: 1.0
   max_length: 12000
   max_pixels: 100352
