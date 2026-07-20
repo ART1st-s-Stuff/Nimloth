@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=sft1-dino-grid-smoke
+#SBATCH --account=peilab
 #SBATCH --partition=normal
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
