@@ -76,8 +76,9 @@ SFT1 Slurm `481494` completed 5 epochs/575 steps in 3h15m36s; W&B `ie19vs47` fin
 - Epoch/best/latest/final checkpoints exist. All saved module floating tensors are finite; no BatchNorm running variance is negative. State is epoch1/step10/best2.2287099063.
 - CPU MaxRSS was ~11.3GB. W&B did not capture system GPU telemetry; one initialization sample was 7.4GiB/GPU and is not a train-peak measurement.
 
-## Remaining
+## Formal launch approval
 
-1. Add a bounded full-cache profiling mode so the exact formal cached path can measure step throughput and peak GPU without traversing all 59,389 transitions.
-2. Propose formal SFT2 world size, batch/accumulation, epochs, and time budget for separate human approval.
-3. Do not start formal SFT2 until that approval.
+- Human explicitly approved starting formal SFT2 after the valid cache and world2 gates.
+- Canonical configuration: all 3,217 train / 355 val trajectories, required compact and DINO caches, world8 on one node, 10 epochs, batch2/GA4 (effective batch64), SIGReg projections1024, 48h allocation.
+- Added `train_grid_world8.slurm`; it fails closed on both caches and resumes only from this run's latest completed epoch. Invalid ID31 checkpoints are never used.
+- Formal W&B/output IDs and Slurm job are recorded below after submission.

@@ -28,6 +28,7 @@ only and are rejected by the legacy CLI.
 | `build_grid_preprocess_cache.py` / `.slurm` | Required k16 compact current/next-prefix cache, including terminal next RGB paths |
 | `build_dino_grid_cache.py` / `.slurm` | Required exact float32 DINOv2 pooled-4×4 sidecar with bitwise online/cache gate |
 | `smoke_grid_dino_world2.slurm` | Current 2-GPU DDP smoke before formal grid SFT2 |
+| `train_grid_world8.slurm` | Formal one-node/world8 cached grid SFT2: 10 epochs, batch2/GA4, completed-epoch resume |
 | `train_vagen79_default.slurm` | Legacy 8-GPU Slurm job (reads yaml config) |
 | `submit_dino_world8_4x2.sh` / `train_dino_world8_4x2.slurm` / `run_dino_world8_4x2.sh` | **Historical/forbidden:** old k8 query-CLS SFT2 path; retained only for diagnostics |
 | `profile_dino_world8_4x2.slurm` / `run_dino_world8_profile.sh` | 隔离world8 profile：online+GC、cached+GC各50步；cached no-GC诊断；不做validation/checkpoint/W&B |
