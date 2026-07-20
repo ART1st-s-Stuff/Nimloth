@@ -13,7 +13,8 @@
 - 已实现DINO patch-grid pooling、共享slot projector、joint Grid WM、loss helper及prefix-exact SFT1实验入口/配置；SFT2 joint-grid入口会冻结Qwen/projector，仅训练一个完整grid WM与value，且旧SFT2 DINO CLI已显式禁用。相关suite `78 passed`（排除父分支已知测试局部变量错误），compileall与diff-check通过。
 - 已获批的1GPU smoke在两次pre-allocation提交失败后以retry2 Slurm `481441`启动，但20秒内在模型/W&B初始化前失败：新入口错误地把canonical四返回值`setup_dist()`解包成三个值。无指标/checkpoint，不可resume，GPU已释放；SFT1/SFT2入口均已修复并登记`E0030`。
 - retry3 Slurm `481444`在成功加载Qwen后25秒失败：offline DINO lookup未指向服务器已验证的共享HF cache；无W&B/step/checkpoint，GPU已释放。launcher现显式设置共享`HF_HOME`，cache包含指定`facebook/dinov2-large`完整config/processor/weights，无模型替换；登记`E0031`。
-- retry4 Slurm `481457`/W&B `35rpx073`成功加载Qwen+DINO，并确认1条train/val轨迹展开17/12 transitions，但首个forward因embedding resize后未同步Qwen config vocab而失败；无optimizer step/checkpoint，GPU已释放，W&B ID14已消耗。已新增统一resize+config/text/generation vocab同步helper与测试并登记`E0032`。各失败输出README/group progress均已更新。详见`ai_tasks/ai_progress/2026-07-19_dinov2_grid_sft1.md`。
+- retry4 Slurm `481457`/W&B `35rpx073`成功加载Qwen+DINO，并确认1条train/val轨迹展开17/12 transitions，但首个forward因embedding resize后未同步Qwen config vocab而失败；无optimizer step/checkpoint，GPU已释放，W&B ID14已消耗。已新增统一resize+config/text/generation vocab同步helper与测试并登记`E0032`。
+- **有效smoke retry5通过**：commit`d098732`，Slurm`481468`在dgx-13单GPU `COMPLETED 0:0`（1m34s），W&B `27eybfpd` finished；17个train optimizer steps和12个val transitions均finite，train CE/DINO/total=`7.5728999/0.86995595/8.4428560`，val CE/DINO=`5.6181414/0.8510280`。采样显存约47.8GiB；epoch/latest/final merged通过metadata、query/698 adapter tensors finite、projector reload与两shard完整性gate。smoke仅证明执行/checkpoint接口健康，不解释效果；正式5 epoch尚未获批。详见`ai_tasks/ai_progress/2026-07-19_dinov2_grid_sft1.md`。
 
 ## 2026-07-19：DINOv3 current-RGB query-state 对齐实现
 
