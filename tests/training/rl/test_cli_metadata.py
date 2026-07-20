@@ -58,6 +58,11 @@ def test_k8_wm_fastpath_smoke_config_covers_two_step_windows() -> None:
     assert config["predictor"]["rollout_steps"] == 2
     assert config["rl"]["batch_size"] == 8
     assert config["training"]["save_interval"] == 1
+    runner = (
+        ROOT / "experiments/training/rl/run_k8_wm_fastpath_smoke.sh"
+    ).read_text()
+    assert '"model.layers.0" in key' in runner
+    assert 'key.startswith("visual.")' in runner
 
 
 def test_encode_trajectory_hiddens_passes_k_to_qwen_batch(monkeypatch) -> None:

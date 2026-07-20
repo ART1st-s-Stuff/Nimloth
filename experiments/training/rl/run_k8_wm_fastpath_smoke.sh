@@ -337,8 +337,14 @@ def hf_tensor(root, key):
 source_index = json.loads((source / "model.safetensors.index.json").read_text())["weight_map"]
 final_keys = set(index["weight_map"])
 common = [key for key in source_index if key in final_keys]
-language_key = next((key for key in common if "language_model.layers.0" in key and key.endswith("q_proj.weight")), None)
-vision_key = next((key for key in common if "visual" in key and key.endswith("weight")), None)
+language_key = next((
+    key for key in common
+    if "model.layers.0" in key and key.endswith("q_proj.weight")
+), None)
+vision_key = next((
+    key for key in common
+    if key.startswith("visual.") and key.endswith("weight")
+), None)
 if language_key is None or vision_key is None:
     raise SystemExit("could not find Qwen language/vision probe tensors")
 if torch.equal(hf_tensor(source, language_key), hf_tensor(final, language_key)):
