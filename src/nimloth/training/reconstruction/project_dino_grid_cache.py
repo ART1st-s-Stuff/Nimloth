@@ -41,7 +41,7 @@ def load_grid_projector(checkpoint: Path) -> tuple[dict[str, Any], SharedSlotPro
     config = json.loads((checkpoint / "grid_state_config.json").read_text(encoding="utf-8"))
     required = {
         "grid_size", "grid_tokens", "qwen_hidden_dim", "state_dim",
-        "projector_hidden_dim", "shared_slot_projector",
+        "projector_hidden_dim", "shared_slot_projector", "ordering",
     }
     missing = sorted(required - config.keys())
     if missing:
@@ -51,6 +51,8 @@ def load_grid_projector(checkpoint: Path) -> tuple[dict[str, Any], SharedSlotPro
         raise ValueError("grid config shared_slot_projector must be true")
     if int(config["grid_size"]) ** 2 != grid_tokens:
         raise ValueError("grid_size/grid_tokens mismatch")
+    if config["ordering"] != "row_major":
+        raise ValueError(f"grid config ordering must be row_major, got {config['ordering']!r}")
     dimensions = {
         "qwen_hidden_dim": int(config["qwen_hidden_dim"]),
         "state_dim": int(config["state_dim"]),
@@ -100,6 +102,12 @@ def project_split(*, source_dir: Path, output_dir: Path, projector: SharedSlotPr
     expected_shape = [int(config["grid_tokens"]), int(config["qwen_hidden_dim"])]
     if [int(value) for value in source.get("state_shape", [])] != expected_shape:
         raise ValueError(f"query shape mismatch: expected={expected_shape}, actual={source.get('state_shape')}")
+    source_model = source.get("model_path")
+    if source_model is None or Path(source_model).resolve() != checkpoint.resolve():
+        raise ValueError(
+            "query cache/model lineage mismatch: "
+            f"source model_path={source_model!r}, grid checkpoint={str(checkpoint)!r}"
+        )
     fingerprint = _fingerprint(source, checkpoint, config)
     manifest_path = output_dir / "manifest.json"
     if manifest_path.is_file():
@@ -110,7 +118,10 @@ def project_split(*, source_dir: Path, output_dir: Path, projector: SharedSlotPr
             return existing
         raise ValueError(f"DINO grid cache exists with a different fingerprint: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    projector.to(device).eval()
+    projector.to(
+        device=device,
+        dtype=torch.bfloat16 if device.type == "cuda" else torch.float32,
+    ).eval()
     shards, total, total_bytes = [], 0, 0
     for shard in source["shards"]:
         payload = torch.load(source_dir / shard["file"], map_location="cpu", weights_only=False)
@@ -145,7 +156,7 @@ def project_split(*, source_dir: Path, output_dir: Path, projector: SharedSlotPr
         "latent_token_count": int(config["grid_tokens"]),
         "source_query_cache": str(source_dir),
         "source_query_fingerprint": source["fingerprint"],
-        "source_checkpoint": source.get("source_checkpoint"),
+        "source_checkpoint": source["model_path"],
         "grid_checkpoint": str(checkpoint), "grid_state_config": config,
         "total_bytes": total_bytes,
     })

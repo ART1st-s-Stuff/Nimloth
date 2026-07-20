@@ -5,6 +5,7 @@ from nimloth.eval.dino_grid_cfm_trajectory import (
     COLUMNS,
     calculate_image_metrics,
     prepare_rows,
+    validate_dino_grid_cfm_lineage,
 )
 
 
@@ -35,6 +36,19 @@ def test_prepare_rows_selects_five_aligned_steps() -> None:
     qwen["r"][2]["current_image_path"] = "/wrong.png"
     with pytest.raises(ValueError, match="alignment mismatch"):
         prepare_rows(selections, grid, qwen)
+
+
+def test_dino_grid_cfm_lineage_requires_matching_cache_and_shape(tmp_path) -> None:
+    checkpoint = tmp_path / "best.pt"
+    torch.save({
+        "invariants": {
+            "val_cache_fingerprint": "grid-val",
+            "cfm_config": {"condition_token_count": 16, "condition_token_dim": 1024},
+        }
+    }, checkpoint)
+    validate_dino_grid_cfm_lineage(checkpoint, {"fingerprint": "grid-val"})
+    with pytest.raises(ValueError, match="fingerprint mismatch"):
+        validate_dino_grid_cfm_lineage(checkpoint, {"fingerprint": "other"})
 
 
 def test_image_metrics_report_each_reconstruction_l1() -> None:

@@ -62,6 +62,29 @@ def calculate_image_metrics(images: dict[str, torch.Tensor], gt: torch.Tensor) -
     return {f"image/{name}_to_gt_l1": float((value - gt).abs().mean()) for name, value in images.items()}
 
 
+def validate_dino_grid_cfm_lineage(checkpoint: Path, manifest: dict[str, Any]) -> None:
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    invariants = payload.get("invariants")
+    if not isinstance(invariants, dict):
+        raise ValueError("DINO-grid CFM checkpoint lacks training invariants")
+    expected_fingerprint = str(manifest["fingerprint"])
+    if str(invariants.get("val_cache_fingerprint")) != expected_fingerprint:
+        raise ValueError(
+            "DINO-grid CFM/cache fingerprint mismatch: "
+            f"checkpoint={invariants.get('val_cache_fingerprint')!r}, "
+            f"cache={expected_fingerprint!r}"
+        )
+    config = invariants.get("cfm_config", {})
+    actual_shape = (
+        int(config.get("condition_token_count", -1)),
+        int(config.get("condition_token_dim", -1)),
+    )
+    if actual_shape != (16, 1024):
+        raise ValueError(
+            f"DINO-grid CFM condition shape must be (16, 1024), got {actual_shape}"
+        )
+
+
 @torch.no_grad()
 def evaluate(args: argparse.Namespace) -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -69,6 +92,7 @@ def evaluate(args: argparse.Namespace) -> int:
     selections = json.loads(args.selections.read_text(encoding="utf-8"))["selections"]
     grid_manifest = json.loads((args.dino_grid_cache / "manifest.json").read_text())
     qwen_manifest = json.loads((args.qwen_cache / "manifest.json").read_text())
+    validate_dino_grid_cfm_lineage(args.dino_grid_cfm_checkpoint, grid_manifest)
     grid_records = _records(args.dino_grid_cache, representation="dino_grid_state", state_shape=[16, 1024])
     qwen_records = _records(args.qwen_cache, representation="qwen_compressed_vision_positive", state_shape=[16, 512])
     rows, states = prepare_rows(selections, grid_records, qwen_records)

@@ -57,7 +57,7 @@ def test_project_split_preserves_rows_and_writes_dino_grid_lineage(tmp_path) -> 
         "split": "train",
         "fingerprint": "query-fingerprint",
         "shards": [{"file": "shard_00000.pt", "count": 2}],
-        "source_checkpoint": "/model/final/hf_merged",
+        "model_path": str(checkpoint),
     }))
     output = tmp_path / "grid" / "train"
     manifest = project_split(
@@ -74,7 +74,7 @@ def test_project_split_preserves_rows_and_writes_dino_grid_lineage(tmp_path) -> 
     assert manifest["cond_dim"] == 48
     assert manifest["source_query_fingerprint"] == "query-fingerprint"
     assert manifest["source_query_cache"] == str(source)
-    assert manifest["source_checkpoint"] == "/model/final/hf_merged"
+    assert manifest["source_checkpoint"] == str(checkpoint)
     payload = torch.load(output / "shard_00000.pt", weights_only=False)
     assert payload["rows"] == rows
     assert payload["state_emb"].shape == (2, 16, 3)
