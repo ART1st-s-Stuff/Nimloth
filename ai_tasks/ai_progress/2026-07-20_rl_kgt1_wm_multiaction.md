@@ -62,6 +62,12 @@
 - `python -m py_compile ...` 与 `git diff --check`：通过。
 - 按人类要求未运行 smoke，未提交服务器任务。
 
+## Smoke preflight
+
+- 人类已解除 smoke 与最小服务器任务限制，允许真实 k=8/FSDP smoke。
+- 已按实验开始规则核对实验约束并尝试连接 `superpod-csejzhang`，SSH forwarding connection timed out；按服务器规则停止重试。
+- 尚未创建远程输出、W&B run、Slurm allocation 或 job；等待人类恢复 VPN/SSH 后继续 checkpoint/split/W&B ID/resource preflight。
+
 ## 待确认/风险
 
 - 尚未使用真实 k=8 checkpoint、真实 processor 或环境验证；当前只能声明本地代码和单元测试通过。

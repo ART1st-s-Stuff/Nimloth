@@ -13,7 +13,8 @@
 - 人类已确认连续动作语义：fast-path segment 从 Qwen GT state 开始，segment 内持续使用 WM predicted state，结束后再从当前真实 observation 经 Qwen 重同步；首期 planner 只做 greedy。
 - 人类进一步确认首期 k>1 仅支持 `inject`；rollout 保留独立 `qwen` policy 做现有 PPO，新增 `wm_value` policy 只训练 WM dynamics 与 ValueHead、禁止进入 Qwen PPO。两个 horizon 配置化并以2作为本地 correctness 默认；本次不启动 smoke或服务器任务。
 - 本地已实现 metadata-driven k/token/projector/checkpoint、`qwen|wm_value` rollout、连续 WM predicted segment、真实 behavior-logprob ownership、多步 dynamics window/mask，以及 predicted behavior state 上的 ValueHead训练。旧 JSONL 无明确 sampling-distribution 语义时仍可训练 WM/value，但自动排除 Qwen PPO。
-- 本地 Nix 环境验证：RL/WM/latent相关测试 `70 passed, 1 expected warning`；targeted ruff、py_compile与diff-check通过。按人类要求未运行 smoke、未连接服务器或提交任务，因此真实 k8 checkpoint、环境交互和GPU/FSDP resume仍未验证。详见`ai_tasks/ai_progress/2026-07-20_rl_kgt1_wm_multiaction.md`。
+- 本地 Nix 环境验证：RL/WM/latent相关测试 `70 passed, 1 expected warning`；targeted ruff、py_compile与diff-check通过。
+- 人类随后允许最小真实服务器 smoke；启动前 SSH preflight 因 forwarding connection timeout 失败，已按服务器规则停止重试。尚未创建远程输出/W&B run/Slurm job，等待人类恢复 VPN/SSH 后继续；真实 k8 checkpoint、环境交互和GPU/FSDP resume仍未验证。详见`ai_tasks/ai_progress/2026-07-20_rl_kgt1_wm_multiaction.md`。
 
 ## 2026-07-19：rollout图像分辨率纠正
 
