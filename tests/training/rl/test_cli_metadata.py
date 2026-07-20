@@ -60,6 +60,51 @@ def test_k8_wm_fastpath_smoke_config_covers_two_step_windows() -> None:
     assert config["training"]["save_interval"] == 1
 
 
+def test_encode_trajectory_hiddens_passes_k_to_qwen_batch(monkeypatch) -> None:
+    import torch
+
+    from nimloth.latent import extraction
+    from nimloth.training.common import qwen_batch
+    from nimloth.training.rl import trainer
+    from nimloth.training.rl.rollout import RolloutTrajectory
+
+    observed: list[int | None] = []
+
+    def fake_build(items, processor, max_length, *, latent_token_count=None, **kwargs):
+        observed.append(latent_token_count)
+        return {"input_ids": torch.arange(8).unsqueeze(0)}
+
+    monkeypatch.setattr(qwen_batch, "build_qwen_batch", fake_build)
+    monkeypatch.setattr(
+        extraction,
+        "find_last_latent_state_block",
+        lambda *args, **kwargs: tuple(range(8)),
+    )
+    def model(**kwargs):
+        return SimpleNamespace(hidden_states=(torch.zeros(1, 8, 4),))
+    trajectory = RolloutTrajectory(
+        record_id="k8",
+        image_paths=["0.png", "1.png"],
+        action_indices=[0],
+        action_names=["moveahead"],
+        nav_instruction="Find it.",
+        latent_token_count=8,
+        latent_query_mode="inject",
+    )
+
+    states = trainer.encode_trajectory_hiddens(
+        trajectory,
+        qwen_model=model,
+        processor=object(),
+        token_id_map={},
+        device=torch.device("cpu"),
+        latent_token_count=8,
+    )
+
+    assert len(states) == 2
+    assert observed == [8, 8]
+
+
 def test_resume_rejects_model_state_protocol_mismatch() -> None:
     with pytest.raises(ValueError, match="model/state protocol mismatch"):
         resolve_rl_init_metadata(

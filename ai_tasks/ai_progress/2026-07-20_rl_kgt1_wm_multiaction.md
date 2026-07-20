@@ -73,8 +73,9 @@
   - normal 当前有42张空闲GPU，多个单节点可提供2GPU。
 - 初版纯`wm_value` smoke方案被人类否决，因为没有训练Qwen；未reserve W&B、未创建输出、未提交job。
 - 已按最终设计实现并本地验证`qwen_wm`：每条2-step segment为`Qwen sampled step → WM/value step`，同一次Qwen forward同时给出行为log-prob和GT k-query state；Qwen language full与WM/value联合更新，vision/StateProjector冻结。
-- 修订后的目标输出=`outputs/experiments/training/rl/2026-07-20/63_smoke_k8inject_qwenfirst_wmsecond_base4x2_h2_multistep2_fsdp2_iter2`，W&B run同名；尚未reserve/create/submit。
-- 资源计划仍为2×H800、48CPU、180G、2h上限；预计实际8–15分钟，输出约60–100GiB。step1完整保存后由新torchrun以相同world-size恢复到step2。
+- ID63 hybrid smoke已执行并失败：job`482447`在`dgx-21`运行`00:02:47`，W&B`wh351jfg`为failed；rollout成功生成4条真实`base_train`轨迹/8 transitions，全部行为归属为`qwen→wm_value`、state为`qwen_gt→wm_predicted`，但训练optimizer step为0、无checkpoint，不能resume。
+- 失败根因：`encode_trajectory_hiddens()`调用`build_qwen_batch()`时漏传k=8，helper默认k=1并把query block归一化为单token，严格k=8提取器报malformed block。已增加真实RED回归测试并修复显式透传`latent_token_count`；本地全套`75 passed, 1 expected warning`。错误登记于`ai_rules/known_errors/E0031_forward_latent_k_to_qwen_batch.md`。
+- ID63输出及`outputs/experiments/training/rl/progress.md`已记录失败与不可恢复原因。后续重试必须使用新W&B numeric ID和新输出目录。
 
 ## 待确认/风险
 

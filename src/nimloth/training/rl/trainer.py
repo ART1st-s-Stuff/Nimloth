@@ -87,7 +87,12 @@ def encode_trajectory_hiddens(
             observation_history=trajectory.image_paths[: i + 1],
         )
         item = {"messages": messages}
-        enc = build_qwen_batch([item], processor, max_length=999999)  # effectively no truncation
+        enc = build_qwen_batch(
+            [item],
+            processor,
+            max_length=999999,  # effectively no truncation
+            latent_token_count=latent_token_count,
+        )
         model_inputs = {k: v.to(device) for k, v in enc.items()}
         with torch.no_grad():
             output = qwen_model(**model_inputs, output_hidden_states=True, return_dict=True)
