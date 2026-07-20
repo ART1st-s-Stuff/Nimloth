@@ -81,4 +81,6 @@ SFT1 Slurm `481494` completed 5 epochs/575 steps in 3h15m36s; W&B `ie19vs47` fin
 - Human explicitly approved starting formal SFT2 after the valid cache and world2 gates.
 - Canonical configuration: all 3,217 train / 355 val trajectories, required compact and DINO caches, world8 on one node, 10 epochs, batch2/GA4 (effective batch64), SIGReg projections1024, 48h allocation.
 - Added `train_grid_world8.slurm`; it fails closed on both caches and resumes only from this run's latest completed epoch. Invalid ID31 checkpoints are never used.
-- Formal W&B/output IDs and Slurm job are recorded below after submission.
+- Formal commit `c3801f6d6b91ee6ce93832e342fbf123399b6d37`; Slurm `482470`; W&B ID33 `n1knd7lt` / `33_cached_lewmgrid_dino05_sig01_ema099_all3217_ep10_b2_ga4_ws8_px100352`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-21/sft2/33_cached_lewmgrid_dino05_sig01_ema099_all3217_ep10_b2_ga4_ws8_px100352`.
+- Initial scheduler state: pending priority, estimated start `2026-07-21 09:26`; one-node world8 starts earlier than tested 2×4 or 4×2 alternatives (~12:33), so keep job `482470` queued.
