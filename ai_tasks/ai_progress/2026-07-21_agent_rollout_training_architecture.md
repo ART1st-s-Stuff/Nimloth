@@ -140,3 +140,10 @@
 - 本地静态验证已通过。远程回归计划：在 superpod 的分支 worktree 运行
   `tests/wm`、`tests/training/sft2`、`tests/training/rl` 和相邻 Qwen transition
   测试；不使用数据、checkpoint、W&B 或 GPU，只记录 pytest pass/fail。
+- 远程回归尝试 1 已失败且不可恢复：`9feab5d` 的 dev worktree 已同步，但命令
+  `PYTHONPATH=src ../../.venv/bin/python -m pytest -q ...` 在收集前报
+  `No module named pytest`。该共享 venv 不是此前使用的测试环境；本次没有执行
+  测试、读取数据或生成输出/checkpoint。下一步只读定位服务器现有 pytest 环境，
+  不在共享环境中安装依赖。服务器未找到其他 pytest 安装；后续将用标准库
+  `runpy` 直接调用相同测试文件中所有无 fixture 的 `test_*` 函数，并明确记录
+  这不等同于完整 pytest collection。
