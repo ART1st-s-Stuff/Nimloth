@@ -8,9 +8,7 @@ import torch
 
 from nimloth.agent import Agent
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
-from nimloth.training.rl.algorithm import RLAlgorithm
-from nimloth.training.rl.batch import RLBatch
-from nimloth.training.rl.objective import RLObjective
+from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch
 from nimloth.wm.model import WorldModel
 from nimloth.wm.value_head import ValueHead
 
@@ -59,16 +57,18 @@ def _algorithm() -> tuple[RLAlgorithm, torch.nn.Linear, _Predictor, ValueHead]:
             value_head=value_head,
         ),
     )
+    optimizer = torch.optim.SGD(agent.wm.parameters(), lr=0.01)
     return (
         RLAlgorithm(
             agent=agent,
-            objective=RLObjective(
-                value_rank_margin=0.1,
-                value_rank_weight=1.0,
-                ppo_clip_ratio=0.2,
-                entropy_weight=0.0,
-            ),
+            optimizer=optimizer,
+            device=torch.device("cpu"),
+            vision_ema=None,
             policy_replay=None,
+            value_rank_margin=0.1,
+            value_rank_weight=1.0,
+            ppo_clip_ratio=0.2,
+            entropy_weight=0.0,
         ),
         state_proj,
         predictor,

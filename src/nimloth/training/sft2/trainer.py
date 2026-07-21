@@ -7,22 +7,36 @@ import math
 import os
 import random
 from pathlib import Path
+from typing import Any
 
 import torch
-from nimloth.backbone import resolve_tune_modes, resolve_vision_ema, uses_lora
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+from nimloth.agent import Agent, AgentTarget
+from nimloth.backbone import (
+    build_sft2_batch_builder,
+    build_vision_ema,
+    load_sft2_backbone,
+    resolve_tune_modes,
+    resolve_vision_ema,
+    uses_lora,
+)
 from nimloth.latent import (
     query_labels_are_masked,
     resolve_latent_query_mode,
 )
 from nimloth.training.sft2.checkpoint import (
     SFT2CheckpointManager,
+    load_aux_checkpoint,
     resolve_resume_checkpoint_dir,
 )
 from nimloth.training.sft2.cli import parse_sft2_args
-from nimloth.training.sft2.components import build_sft2_components
 from nimloth.training.sft2.data.factory import build_data_bundle
-from nimloth.training.sft2.algorithm import SFT2Algorithm
-from nimloth.training.sft2.objective import SFT2Objective
+from nimloth.training.sft2.algorithm import (
+    SFT2_WM_HISTORY_SIZE,
+    SFT2Algorithm,
+    require_sft2_wm_history,
+)
 from nimloth.training.sft2.loop import (
     SFT2TrainingLoop,
     load_sft2_loop_state,
@@ -30,6 +44,202 @@ from nimloth.training.sft2.loop import (
 from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
 from nimloth.util.csv_log import CSVRecordWriter
 from nimloth.util.wandb import init_wandb_run
+from nimloth.wm import (
+    LeWMConfig,
+    LatentWMPredictor,
+    SIGReg,
+    StateProjector,
+    ValueHead,
+    WorldModel,
+)
+
+
+def _build_world_model(
+    args: Any,
+    *,
+    model: torch.nn.Module,
+    device: torch.device,
+    pair_parallel: bool,
+    resume_ckpt_dir: Path | None,
+    train_wm_predictor: bool,
+) -> tuple[WorldModel, torch.device]:
+    """构造并恢复 SFT2 的三个 world-model 子模块。"""
+
+    if args.wm_predictor_checkpoint is not None:
+        wm_predictor = LatentWMPredictor.load_checkpoint(
+            args.wm_predictor_checkpoint,
+            map_location=device,
+        ).to(device)
+        require_sft2_wm_history(wm_predictor, args.wm_predictor_checkpoint)
+    else:
+        wm_predictor = LatentWMPredictor.create(
+            LeWMConfig(emb_dim=args.emb_dim, history_size=SFT2_WM_HISTORY_SIZE)
+        ).to(device)
+    if not train_wm_predictor:
+        for parameter in wm_predictor.parameters():
+            parameter.requires_grad = False
+
+    aux_device = device
+    if pair_parallel:
+        device_map = getattr(model, "hf_device_map", {}) or {}
+        mapped = device_map.get("lm_head") or device_map.get(
+            "model.language_model.norm"
+        )
+        if mapped is not None:
+            aux_device = torch.device(f"cuda:{mapped}")
+        wm_predictor = wm_predictor.to(aux_device)
+
+    model_dtype = next(model.parameters()).dtype
+    world_model = WorldModel(
+        state_proj=StateProjector(
+            model.config.hidden_size,
+            wm_predictor.emb_dim,
+            latent_token_count=args.latent_token_count,
+        ).to(device=aux_device, dtype=model_dtype),
+        wm_predictor=wm_predictor,
+        value_head=ValueHead(wm_predictor.emb_dim).to(
+            device=aux_device,
+            dtype=model_dtype,
+        ),
+    )
+    resume_state = resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir else None
+    if args.resume and resume_state is not None and resume_state.exists():
+        load_aux_checkpoint(
+            resume_ckpt_dir,
+            world_model,
+            device,
+            latent_query_mode=args.latent_query_mode,
+            query_tune=args.query_tune,
+        )
+    return world_model, aux_device
+
+
+def _wrap_sft2_agent(
+    loaded,
+    world_model: WorldModel,
+    *,
+    device: torch.device,
+    aux_device: torch.device,
+    world_size: int,
+    train_wm_predictor: bool,
+) -> tuple[Agent, bool]:
+    """按现有多卡语义包装模型，再组成唯一的神经网络 Agent。"""
+
+    model = loaded.backbone.model
+    state_proj = world_model.state_proj
+    wm_predictor = world_model.wm_predictor
+    value_head = world_model.value_head
+    static_graph = world_size > 1
+    if world_size > 1:
+        if loaded.pair_parallel:
+            model = DDP(
+                model,
+                device_ids=None,
+                output_device=None,
+                find_unused_parameters=False,
+                static_graph=static_graph,
+            )
+        else:
+            device_index = int(str(device).split(":")[-1])
+            model = DDP(
+                model,
+                device_ids=[device_index],
+                output_device=device_index,
+                find_unused_parameters=False,
+                static_graph=static_graph,
+            )
+        aux_index = int(str(aux_device).split(":")[-1])
+        state_proj = DDP(
+            state_proj,
+            device_ids=[aux_index],
+            output_device=aux_index,
+            find_unused_parameters=False,
+            static_graph=static_graph,
+        )
+        value_head = DDP(
+            value_head,
+            device_ids=[aux_index],
+            output_device=aux_index,
+            find_unused_parameters=False,
+            static_graph=static_graph,
+        )
+        if train_wm_predictor:
+            wm_predictor = DDP(
+                wm_predictor,
+                device_ids=[aux_index],
+                output_device=aux_index,
+                find_unused_parameters=False,
+                static_graph=static_graph,
+            )
+
+    return (
+        Agent(
+            backbone=loaded.backbone.with_model(model),
+            wm=WorldModel(
+                state_proj=state_proj,
+                wm_predictor=wm_predictor,
+                value_head=value_head,
+            ),
+        ),
+        static_graph,
+    )
+
+
+def _build_optimizer(
+    args: Any,
+    *,
+    agent: Agent,
+    query_adapter: Any,
+    train_wm_predictor: bool,
+) -> torch.optim.Optimizer:
+    """按模块名称建立可审计的 SFT2 参数组。"""
+
+    query_parameter = query_adapter.delta if query_adapter is not None else None
+    parameter_groups: list[dict[str, Any]] = [
+        {
+            "params": [
+                parameter
+                for parameter in agent.backbone.model.parameters()
+                if parameter.requires_grad and parameter is not query_parameter
+            ],
+            "lr": args.lr_qwen_start,
+            "name": "qwen",
+        },
+        {
+            "params": agent.wm.state_proj.parameters(),
+            "lr": args.state_proj_lr,
+            "name": "state_proj",
+        },
+        {
+            "params": agent.wm.value_head.parameters(),
+            "lr": args.value_head_lr,
+            "name": "value_head",
+        },
+    ]
+    if query_parameter is not None:
+        parameter_groups.append(
+            {
+                "params": [query_parameter],
+                "lr": args.query_lr,
+                "weight_decay": 0.0,
+                "name": "query_adapter",
+            }
+        )
+    if train_wm_predictor:
+        predictor = agent.wm.wm_predictor
+        predictor_parameters = (
+            predictor.module.parameters()
+            if hasattr(predictor, "module")
+            else predictor.parameters()
+        )
+        parameter_groups.append(
+            {
+                "params": list(predictor_parameters),
+                "lr": args.wm_predictor_lr,
+                "name": "wm_predictor",
+            }
+        )
+    return torch.optim.AdamW(parameter_groups, weight_decay=args.weight_decay)
 
 
 def train_sft2(args=None) -> int:
@@ -107,22 +317,55 @@ def train_sft2(args=None) -> int:
             )
         )
 
-    components = build_sft2_components(
+    loaded = load_sft2_backbone(args, resume_ckpt_dir, device=device)
+    world_model, aux_device = _build_world_model(
         args,
-        resume_ckpt_dir,
+        model=loaded.backbone.model,
         device=device,
+        pair_parallel=loaded.pair_parallel,
+        resume_ckpt_dir=resume_ckpt_dir,
+        train_wm_predictor=train_wm_predictor,
+    )
+    agent, ddp_static_graph = _wrap_sft2_agent(
+        loaded,
+        world_model,
+        device=device,
+        aux_device=aux_device,
         world_size=world,
         train_wm_predictor=train_wm_predictor,
-        vision_ema_enabled=vision_ema_enabled,
     )
-    agent = components.agent
-    sigreg = components.sigreg
-    optimizer = components.optimizer
-    base_model_path = components.base_model_path
+    vision_ema = build_vision_ema(
+        enabled=vision_ema_enabled,
+        decay=args.vision_ema_decay,
+        llm=agent.backbone.model,
+        resume_path=(resume_ckpt_dir / "vision_ema.pt") if resume_ckpt_dir else None,
+        device=device,
+    )
+    batch_builder = build_sft2_batch_builder(
+        loaded,
+        device=aux_device,
+        max_length=args.max_length,
+        latent_token_count=args.latent_token_count,
+        mask_latent_query_labels=args.mask_latent_query_labels,
+    )
+    target = AgentTarget(
+        agent,
+        backbone_context=(
+            (lambda: vision_ema.use_ema_weights(agent.backbone.model))
+            if vision_ema is not None
+            else None
+        ),
+    )
+    optimizer = _build_optimizer(
+        args,
+        agent=agent,
+        query_adapter=loaded.query_adapter,
+        train_wm_predictor=train_wm_predictor,
+    )
 
     data = build_data_bundle(
         args,
-        components.batch_builder,
+        batch_builder,
         rank=rank,
         world_size=world,
     )
@@ -146,12 +389,12 @@ def train_sft2(args=None) -> int:
     checkpoint_manager = SFT2CheckpointManager(
         output_dir=args.output_dir,
         agent=agent,
-        processor=components.processor,
-        vision_ema=components.vision_ema,
+        processor=loaded.processor,
+        vision_ema=vision_ema,
         optimizer=optimizer,
         training_invariants=checkpoint_invariants,
         lora=uses_lora(args),
-        base_model_path=base_model_path,
+        base_model_path=Path(loaded.base_model_path),
         llm_tune=llm_tune,
         vision_tune=vision_tune,
         latent_query_mode=args.latent_query_mode,
@@ -182,15 +425,18 @@ def train_sft2(args=None) -> int:
 
     algorithm = SFT2Algorithm(
         agent=agent,
-        target=components.target,
-        objective=SFT2Objective(
-            sigreg=sigreg,
-            sigreg_weight=args.lambda_sigreg,
-            value_weight=args.lambda_value,
-            ce_weight=args.lambda_ce,
-            value_rank_margin=args.value_rank_margin,
-            value_rank_weight=args.value_rank_lambda,
-        ),
+        target=target,
+        sigreg=SIGReg(
+            knots=args.sigreg_knots,
+            num_proj=args.sigreg_num_proj,
+        ).to(device=aux_device),
+        sigreg_weight=args.lambda_sigreg,
+        value_weight=args.lambda_value,
+        ce_weight=args.lambda_ce,
+        value_rank_margin=args.value_rank_margin,
+        value_rank_weight=args.value_rank_lambda,
+        wm_weight_start=args.lambda_wm_start,
+        wm_weight_end=args.lambda_wm_end,
     )
 
     loop_state = load_sft2_loop_state(
@@ -209,8 +455,12 @@ def train_sft2(args=None) -> int:
         val_loader=val_loader,
         train_sampler=train_sampler,
         train_batch_sampler=train_batch_sampler,
-        components=components,
         algorithm=algorithm,
+        batch_builder=batch_builder,
+        optimizer=optimizer,
+        vision_ema=vision_ema,
+        qwen_pair_parallel=loaded.pair_parallel,
+        ddp_static_graph=ddp_static_graph,
         checkpoint_manager=checkpoint_manager,
         log_writer=log_writer,
         wandb_run=wandb_run,

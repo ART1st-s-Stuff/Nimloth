@@ -8,12 +8,10 @@ import torch
 
 from nimloth.agent import Agent, AgentBatch, AgentTarget
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
-from nimloth.training.sft2.algorithm import SFT2Algorithm
-from nimloth.training.sft2.objective import (
-    SFT2Objective,
+from nimloth.training.sft2.algorithm import (
+    SFT2Algorithm,
     build_trajectory_sigreg_inputs,
 )
-from nimloth.training.sft2.schedule import wm_loss_weight_schedule
 from nimloth.wm import StateProjector, ValueHead, WorldModel
 
 
@@ -87,14 +85,12 @@ def _algorithm(sigreg: torch.nn.Module | None = None):
         SFT2Algorithm(
             agent=agent,
             target=AgentTarget(agent),
-            objective=SFT2Objective(
-                sigreg=sigreg,
-                sigreg_weight=0.1,
-                value_weight=1.0,
-                ce_weight=1.0,
-                value_rank_margin=0.1,
-                value_rank_weight=1.0,
-            ),
+            sigreg=sigreg,
+            sigreg_weight=0.1,
+            value_weight=1.0,
+            ce_weight=1.0,
+            value_rank_margin=0.1,
+            value_rank_weight=1.0,
         ),
         backbone,
         projector,
@@ -169,7 +165,8 @@ def test_build_trajectory_sigreg_inputs() -> None:
     ]
 
 
-def test_wm_loss_weight_schedule_warms_up() -> None:
-    assert wm_loss_weight_schedule(0, 100, start=0.1, end=1.0) == 0.1
-    assert 0.1 < wm_loss_weight_schedule(15, 100, start=0.1, end=1.0) < 1.0
-    assert wm_loss_weight_schedule(60, 100, start=0.1, end=1.0) == 1.0
+def test_algorithm_wm_weight_warms_up() -> None:
+    algorithm, _, _ = _algorithm()
+    assert algorithm.wm_weight(0, 100) == 0.1
+    assert 0.1 < algorithm.wm_weight(15, 100) < 1.0
+    assert algorithm.wm_weight(60, 100) == 1.0

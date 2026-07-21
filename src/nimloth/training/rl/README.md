@@ -104,17 +104,13 @@ distribution, including masked zero-probability actions.
 |--------|----------------|
 | `nimloth.rollout` | Model-independent trajectory schema, JSONL, and transition expansion |
 | `nimloth.backbone.qwen25vl.rollout` | Qwen latent transition encoding |
-| `components.py` | 完整 `Agent`、独立 backbone adapters、placement 和 resume |
-| `batch.py` | transition 子采样与张量化 |
-| `algorithm.py` | WM/value 前向、stop-gradient 与可选 PPO replay 编排 |
-| `objective.py` | WM、value、PPO loss 和指标 |
-| `update.py` | backward、optimizer、梯度裁剪与 EMA |
+| `algorithm.py` | 完整单批更新：采样、WM/value/PPO、梯度边界、backward、optimizer 和 EMA |
 | `loop.py` | collect→encode→update→validate→save iteration 生命周期 |
 | `evaluation.py` | Held-out rollout collection and checkpoint metric selection |
 | `rollout_runtime.py` | Collector startup constraints and online policy binding |
 | `reporting.py` | RL-specific CSV/W&B metric shape over shared util helpers |
 | `checkpoint_manager.py` | Runtime component state to checkpoint artifact mapping |
-| `trainer.py` | 运行模式校验与依赖装配入口 |
+| `trainer.py` | 按执行顺序加载 Agent、设置 FSDP/EMA/optimizer/resume 和 adapters |
 | `checkpoint.py` | 完整模型与 optimizer checkpoint helpers |
 | `cli.py` | CLI adapter and independent train/eval collector selection |
 
@@ -134,8 +130,8 @@ distribution, including masked zero-probability actions.
   restores both through the shared Qwen checkpoint helper.
 - 当前 WM loss 只通过当前状态更新 StateProjector；下一状态是 stop-gradient
   target。ValueHead 输入也显式 detach，因此 value loss 不更新 StateProjector。
-  梯度 ownership 写在 `algorithm.py`，数学目标位于 `objective.py`，并由梯度
-  测试保护；后续若改变必须作为单独算法决策处理。
+  梯度 ownership 和数学目标都写在 `algorithm.py`，并由梯度测试保护；后续若
+  改变必须作为单独算法决策处理。
 
 Example standalone rollout:
 

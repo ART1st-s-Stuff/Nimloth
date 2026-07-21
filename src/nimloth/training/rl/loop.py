@@ -13,7 +13,7 @@ import torch.distributed as dist
 from nimloth.config.rl import RLConfig
 from nimloth.rollout import RolloutCollector
 from nimloth.rollout import RolloutEncoder
-from nimloth.training.rl.update import RLUpdater
+from nimloth.training.rl.algorithm import RLAlgorithm
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.evaluation import (
     evaluate_rollout_collector,
@@ -36,7 +36,7 @@ class RLTrainingLoop:
     """按 iteration 执行 collect → encode → update → evaluate。"""
 
     config: RLConfig
-    updater: RLUpdater
+    algorithm: RLAlgorithm
     rollout_encoder: RolloutEncoder
     train_collector: RolloutCollector
     eval_collector: RolloutCollector | None
@@ -98,7 +98,7 @@ class RLTrainingLoop:
             )
             return
 
-        update_metrics = self.updater.update(
+        update_metrics = self.algorithm.update(
             transitions,
             batch_size=self.config.rl.batch_size,
             batch_seed=self.config.training.seed + iteration,

@@ -70,7 +70,7 @@ from nimloth.agent import Agent
 from nimloth.backbone.qwen25vl.model import Qwen25VLBackbone
 from nimloth.wm.model import WorldModel
 from nimloth.training.rl.checkpoint import save_rl_checkpoint
-from nimloth.training.rl.objective import RLObjective
+from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch
 
 sft2_best = Path('${SFT2_BEST}')
 out_dir = Path('${TRAIN_OUT}')
@@ -126,28 +126,25 @@ optimizer = torch.optim.AdamW(
     lr=1e-4
 )
 
-# Predictor loss：RL target projector 保持 stop-gradient。
-current_state = state_proj(hidden_cur).float()
-with torch.no_grad():
-    target_state = state_proj(hidden_next).float()
-predicted_state = agent.wm.predict_next_state(current_state, actions)
-action_values = agent.wm.predict_action_values(current_state.detach())
-objective = RLObjective(
+algorithm = RLAlgorithm(
+    agent=agent,
+    optimizer=optimizer,
+    device=device,
+    vision_ema=None,
+    policy_replay=None,
     value_rank_margin=0.1,
     value_rank_weight=1.0,
     ppo_clip_ratio=0.2,
     entropy_weight=0.0,
 )
-output = objective(
-    predicted_next_state=predicted_state,
-    target_next_state=target_state,
-    action_values=action_values,
+output = algorithm.training_step(RLBatch(
+    transitions=(),
+    current_hidden=hidden_cur,
+    next_hidden=hidden_next,
     action_indices=actions,
     return_targets=value_targets,
     old_log_probs=torch.zeros(B, device=device),
-    new_log_probs=None,
-    action_log_probs=None,
-)
+))
 pred_loss = output.losses['wm']
 print(json.dumps({'pred_loss': float(pred_loss.item()), 'wm_mse': float(pred_loss.item())}))
 

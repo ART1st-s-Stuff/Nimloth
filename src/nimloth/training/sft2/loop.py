@@ -12,14 +12,14 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
+from nimloth.agent import AgentBatchBuilder
+from nimloth.backbone import BackboneEMA
 from nimloth.training.sft2.checkpoint import (
     SFT2CheckpointManager,
     read_checkpoint_step,
     resume_epoch_and_micro_step,
 )
-from nimloth.training.sft2.components import SFT2Components
 from nimloth.training.sft2.algorithm import SFT2Algorithm
-from nimloth.training.sft2.schedule import wm_loss_weight_schedule
 from nimloth.training.sft2.evaluate import evaluate
 from nimloth.training.sft2.utils import no_sync_if_needed, seed_training_micro_step
 from nimloth.util.csv_log import CSVRecordWriter
@@ -105,8 +105,12 @@ class SFT2TrainingLoop:
     val_loader: Any
     train_sampler: Any
     train_batch_sampler: Any
-    components: SFT2Components
     algorithm: SFT2Algorithm
+    batch_builder: AgentBatchBuilder
+    optimizer: torch.optim.Optimizer
+    vision_ema: BackboneEMA | None
+    qwen_pair_parallel: bool
+    ddp_static_graph: bool
     checkpoint_manager: SFT2CheckpointManager
     log_writer: CSVRecordWriter
     wandb_run: Any
@@ -145,12 +149,12 @@ class SFT2TrainingLoop:
         """执行一个 epoch，并在全部 rank 完成后统一验证。"""
 
         self._set_sampler_epoch(epoch)
-        optimizer = self.components.optimizer
+        optimizer = self.optimizer
         optimizer.zero_grad(set_to_none=True)
         accumulator = MetricAccumulator()
         train_iterator, micro_index = self._resume_train_iterator(epoch)
         micro_batch_count = len(self.train_loader)
-        agent = self.components.agent
+        agent = self.algorithm.agent
         ddp_modules = [agent.backbone.model, agent.wm.state_proj, agent.wm.value_head]
         if self.train_wm_predictor:
             ddp_modules.append(agent.wm.wm_predictor)
@@ -159,8 +163,8 @@ class SFT2TrainingLoop:
         # 回归。保留重复 Qwen forward 所需的静态图，并在每个微批同步梯度。
         use_ddp_no_sync = (
             self.world_size > 1
-            and not self.components.qwen_pair_parallel
-            and not self.components.ddp_static_graph
+            and not self.qwen_pair_parallel
+            and not self.ddp_static_graph
         )
         if (
             is_main()
@@ -262,13 +266,11 @@ class SFT2TrainingLoop:
         """运行共享 forward，并按当前训练步组合全部目标函数。"""
 
         timer_start = self.step_timer.start("forward")
-        lambda_wm = wm_loss_weight_schedule(
+        lambda_wm = self.algorithm.wm_weight(
             self.state.global_step,
             self.total_steps,
-            start=self.args.lambda_wm_start,
-            end=self.args.lambda_wm_end,
         )
-        batch = self.components.batch_builder.prepare(batch_samples)
+        batch = self.batch_builder.prepare(batch_samples)
         step_output = self.algorithm.training_step(
             batch,
             wm_weight=lambda_wm,
@@ -285,7 +287,7 @@ class SFT2TrainingLoop:
     ) -> None:
         """更新学习率和所有训练模块，并记录聚合后的微批指标。"""
 
-        optimizer = self.components.optimizer
+        optimizer = self.optimizer
         qwen_lr = qwen_lr_schedule(
             self.state.global_step,
             warmup_steps=self.qwen_warmup_steps,
@@ -299,8 +301,8 @@ class SFT2TrainingLoop:
             1.0,
         )
         optimizer.step()
-        if self.components.vision_ema is not None:
-            self.components.vision_ema.update(self.components.agent.backbone.model)
+        if self.vision_ema is not None:
+            self.vision_ema.update(self.algorithm.agent.backbone.model)
         optimizer.zero_grad(set_to_none=True)
         self.state.global_step += 1
 
@@ -395,7 +397,7 @@ class SFT2TrainingLoop:
         val_metrics = evaluate(
             self.algorithm,
             self.val_loader,
-            batch_builder=self.components.batch_builder,
+            batch_builder=self.batch_builder,
             max_batches=self.args.max_val_batches,
         )
         if not is_main():

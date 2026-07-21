@@ -15,7 +15,7 @@ from nimloth.training.sft2.checkpoint import (
     resolve_resume_checkpoint_dir,
     resume_epoch_and_micro_step,
 )
-from nimloth.training.sft2.components import require_sft2_wm_history
+from nimloth.training.sft2.algorithm import require_sft2_wm_history
 from nimloth.training.sft2.utils import seed_training_micro_step, training_micro_seed
 from nimloth.wm.lewm import LeWMConfig
 from nimloth.wm.predictor import LatentWMPredictor

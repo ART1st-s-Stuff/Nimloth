@@ -37,8 +37,6 @@ from nimloth.training.sft2.diagnosis.trajectory_equiv import (
 )
 from nimloth.training.sft2.diagnosis.trajectory_forward import run_equivalence_on_jsonl
 from nimloth.training.sft2.algorithm import SFT2Algorithm
-from nimloth.training.sft2.objective import SFT2Objective
-from nimloth.training.sft2.schedule import wm_loss_weight_schedule
 from nimloth.util.cache import (
     encode_transition_item,
 )
@@ -147,16 +145,14 @@ def run_micro_training_loss(
     algorithm = SFT2Algorithm(
         agent=agent,
         target=AgentTarget(agent),
-        objective=SFT2Objective(
-            sigreg=None,
-            sigreg_weight=0.0,
-            value_weight=1.0,
-            ce_weight=1.0,
-            value_rank_margin=0.1,
-            value_rank_weight=1.0,
-        ),
+        sigreg=None,
+        sigreg_weight=0.0,
+        value_weight=1.0,
+        ce_weight=1.0,
+        value_rank_margin=0.1,
+        value_rank_weight=1.0,
     )
-    lambda_wm = wm_loss_weight_schedule(0, 100, start=0.1, end=1.0)
+    lambda_wm = algorithm.wm_weight(0, 100)
     output = algorithm.training_step(
         batch_builder.prepare(raw_batch),
         wm_weight=lambda_wm,

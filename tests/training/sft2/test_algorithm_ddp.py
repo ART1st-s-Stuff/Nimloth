@@ -9,7 +9,6 @@ import torch
 from nimloth.agent import Agent, AgentBatch, AgentTarget
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.training.sft2.algorithm import SFT2Algorithm
-from nimloth.training.sft2.objective import SFT2Objective
 from nimloth.wm.model import WorldModel
 
 
@@ -55,14 +54,12 @@ def test_terminal_only_batch_runs_backbone_and_wm_with_masked_zero_loss() -> Non
     algorithm = SFT2Algorithm(
         agent=agent,
         target=AgentTarget(agent),
-        objective=SFT2Objective(
-            sigreg=None,
-            sigreg_weight=0.0,
-            value_weight=1.0,
-            ce_weight=1.0,
-            value_rank_margin=0.1,
-            value_rank_weight=1.0,
-        ),
+        sigreg=None,
+        sigreg_weight=0.0,
+        value_weight=1.0,
+        ce_weight=1.0,
+        value_rank_margin=0.1,
+        value_rank_weight=1.0,
     )
     current = torch.randn(1, 3, requires_grad=True)
     batch = AgentBatch(

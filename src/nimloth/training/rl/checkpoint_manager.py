@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
+from typing import Any
 
+import torch
+
+from nimloth.agent import Agent
+from nimloth.backbone import BackboneEMA
 from nimloth.config.rl import RLConfig
 from nimloth.training.rl.checkpoint import save_rl_checkpoint
-from nimloth.training.rl.components import RLComponents
 
 
 class RLCheckpointManager:
@@ -16,13 +19,23 @@ class RLCheckpointManager:
     def __init__(
         self,
         *,
-        args: argparse.Namespace,
         config: RLConfig,
-        components: RLComponents,
+        agent: Agent,
+        processor: Any,
+        vision_ema: BackboneEMA | None,
+        optimizer: torch.optim.Optimizer,
+        base_model_path: str,
+        llm_tune: str,
+        vision_tune: str,
     ) -> None:
-        self._args = args
         self._config = config
-        self._components = components
+        self._agent = agent
+        self._processor = processor
+        self._vision_ema = vision_ema
+        self._optimizer = optimizer
+        self._base_model_path = base_model_path
+        self._llm_tune = llm_tune
+        self._vision_tune = vision_tune
 
     def save(
         self,
@@ -32,19 +45,18 @@ class RLCheckpointManager:
         global_step: int,
         best_eval_metric: float,
     ) -> None:
-        components = self._components
         save_rl_checkpoint(
             path,
-            agent=components.agent,
-            processor=components.processor,
-            vision_ema=components.vision_ema,
-            optimizer=components.optimizer,
+            agent=self._agent,
+            processor=self._processor,
+            vision_ema=self._vision_ema,
+            optimizer=self._optimizer,
             iteration=iteration,
             global_step=global_step,
             best_eval_metric=best_eval_metric,
             checkpoint_metric=self._config.validation.checkpoint_metric,
-            lora=components.llm_tune == "lora" or components.vision_tune == "lora",
-            llm_tune=components.llm_tune,
-            vision_tune=components.vision_tune,
-            base_model_path=components.base_model_path,
+            lora=self._llm_tune == "lora" or self._vision_tune == "lora",
+            llm_tune=self._llm_tune,
+            vision_tune=self._vision_tune,
+            base_model_path=self._base_model_path,
         )
