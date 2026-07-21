@@ -16,8 +16,11 @@
 - SFT2/RL 的 components、checkpoint、rollout encoding 和 trainer 现在从同一个
   `NimlothModel` 访问模块；`QwenTransitionEncoder` 只保存 processor/cache/EMA
   运行期配置，不再额外持有一份 LLM 引用。
-- 代码提交：`d023e33`。本地 `compileall`、shell 语法和 `git diff --check` 已通过；
-  本机无 torch/pytest，下一步在 superpod 现有远程 worktree 执行 CPU 定向回归。
+- 代码提交：`d023e33`。本地 `compileall`、shell 语法和 `git diff --check` 已通过。
+  superpod dev worktree 的共享 venv 缺少 pytest；未安装依赖，改用 `runpy` 直接
+  执行 17 个无 fixture 的原始 test 函数，结果 `17 direct tests passed`。完整模型、
+  SFT2/RL trainer 与 checkpoint 导入回归也以退出码 0 通过。fixture 驱动的
+  DDP/checkpoint 测试仍需在具有 pytest 的环境补跑，不能视为完整 suite 通过。
 
 ## 2026-07-21：SFT2/RL 核心算法可读性重构
 

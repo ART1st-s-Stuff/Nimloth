@@ -147,3 +147,21 @@
   不在共享环境中安装依赖。服务器未找到其他 pytest 安装；后续将用标准库
   `runpy` 直接调用相同测试文件中所有无 fixture 的 `test_*` 函数，并明确记录
   这不等同于完整 pytest collection。
+
+### 远程验证结果
+
+- 状态：完成（受远程环境缺少 pytest 限制）。
+- worktree：`/project/peilab/atst/nimloth/.worktree/dev`，分支提交 `a33f3ec`，
+  实际模型代码提交 `d023e33`。
+- 数据、split、checkpoint、训练/冻结模块、W&B、输出目录、resume：均不涉及；
+  测试只读取仓库源码并使用合成 tensor，结果只输出到 SSH stdout。
+- 直接测试命令：`PYTHONPATH=src ../../.venv/bin/python -u -c <runpy runner>`；
+  runner 执行 `tests/wm/test_model.py`、`test_objectives.py`、SFT2 loss、Qwen
+  transition encoder 和 RL algorithm 中全部 17 个无 fixture `test_*` 函数。
+- 结果：`17 direct tests passed`，退出码 0；覆盖完整模型 state_dict ownership、
+  WorldModel dynamics/value、SFT2 双侧 projector 梯度和 SIGReg、Qwen next prompt
+  去重/cache、RL target stop-gradient 与 value detach。
+- 相邻导入回归：`NimlothModel`、`WorldModel`、SFT2/RL trainer 和 checkpoint
+  全部导入成功，退出码 0，确认删除 `wm/objectives.py` 后无残留真实导入。
+- 限制：fixture 驱动的 DDP terminal 和 checkpoint resume 测试未执行；必须在有
+  pytest 的环境补跑后，才能声称完整定向 pytest 或全仓 suite 通过。
