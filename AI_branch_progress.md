@@ -22,11 +22,15 @@
 - VAGEN navigation collector 已归入 `environment/navigation`，只依赖通用
   `AgentPolicy`；通用 rollout encoding 位于 `nimloth.rollout`，不再让训练包或
   collector 认识具体神经网络 Agent。
-- 模型边界提交为 `3fb71b6`；训练层级收敛提交为 `c6ec871`。本地 `compileall`、
+- 模型边界提交为 `3fb71b6`；训练层级收敛提交为 `c6ec871`。远程 collection
+  进一步发现并修复 `Agent ↔ wm ↔ rollout`（`f2dc8fd`）和
+  `Agent ↔ environment.navigation.collector`（`18123ff`）两处包级循环导入。
+  本地 `compileall`、
   RL smoke shell 语法、
   `git diff --check` 与训练目录的具体 Qwen import 扫描通过。本机 Python 和
-  `.venv` 均缺少 torch/pytest；远程定向 pytest 两次没有返回测试输出或退出码，
-  因此本轮不能记为 pytest 通过，待远程连接恢复后补跑。
+  `.venv` 均缺少 torch/pytest；远程 dev worktree 已同步到 `18123ff`，定向回归
+  `49 passed, 1 warning`，完整 `tests/wm tests/training/sft2 tests/training/rl`
+  回归 `101 passed, 1 warning`。warning 来自测试刻意验证单样本 unbiased std。
 - `d023e33` 中的 `NimlothModel` 和“loss 属于 `WorldModel`”是已失效的中间设计；
   当前源码和本节是有效边界。
 

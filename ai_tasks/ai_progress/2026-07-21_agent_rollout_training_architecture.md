@@ -232,4 +232,12 @@
 - `git diff --check`：通过。
 - 静态扫描确认生产代码、测试和实验脚本不再导入已删除的训练模块；SFT2/RL
   生产训练目录仍不直接导入 Qwen2.5-VL 或 Transformers。
-- 本地仍无 torch/pytest；远程可执行回归状态没有变化，不能声称 pytest 通过。
+- 本地仍无 torch/pytest。远程 worktree 同步到 `c6ec871` 后，首轮 collection
+  暴露 `wm/__init__.py` 反向导出 rollout transition 导致的
+  `Agent → wm → rollout → Agent` 循环，提交 `f2dc8fd` 已移除该错误导出。
+- 第二轮 collection 暴露 navigation 包级导出 collector 导致的
+  `AgentRuntime → environment registry → navigation collector → Agent` 循环，
+  提交 `18123ff` 将 collector 改为调用方显式导入。
+- 修复后远程定向回归：`49 passed, 1 warning`；完整
+  `tests/wm tests/training/sft2 tests/training/rl`：`101 passed, 1 warning`。
+  warning 来自测试刻意调用单样本 `std(unbiased=True)`，不是实现回归。

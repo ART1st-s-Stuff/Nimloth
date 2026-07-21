@@ -16,6 +16,8 @@ optimizer 等运行期状态才留在 trainer/runtime。
 ## 正确做法
 
 - 保留项目已稳定使用的 `StateProjector`、`LatentWMPredictor`、`ValueHead` 命名。
-- `WorldModel` 组合上述三个模块，`NimlothModel` 再组合 LLM 与 `WorldModel`。
-- 公共 dynamics/value loss 使用 `WorldModel` 成员方法。
-- SFT2/RL 只保留各自的梯度策略和 loss 组合，禁止重新拆成多个模型参数传递。
+- `WorldModel` 组合上述三个模块，神经网络 `Agent` 再组合 `Backbone` 与
+  `WorldModel`；episode 状态机使用独立 `AgentRuntime`。
+- loss 应成为模型或阶段算法的成员行为，并接收结构化 batch/output；禁止重新拆成
+  多个模型参数传递。
+- SFT2/RL 只保留各自确实不同的梯度策略和训练生命周期。
