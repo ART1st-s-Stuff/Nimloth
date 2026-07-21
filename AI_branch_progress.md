@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-07-21：SFT2/RL 核心算法可读性重构
+
+- 在分支 `fix/sft2-review-bugs` 为 SFT2/RL 各建立单一核心入口：
+  `training/sft2/algorithm.py` 显式展示 current/next Qwen state、SIGReg、value
+  和 loss 组合；`training/rl/algorithm.py` 显式展示 dynamics、value、PPO 与
+  optimizer update。
+- 公共 dynamics/value 数学迁入 `wm/objectives.py`，不在公共函数中隐藏
+  stop-gradient。SFT2 保留 projector 双侧梯度；RL 保留下一状态 target
+  stop-gradient 和 value input detach，并新增逐组件梯度测试。
+- Qwen cached batch 合并、下一状态 prompt 去重/EMA forward 与 PPO prompt replay
+  归入 `backbone/qwen25vl`；`util.cache` 不再反向依赖 SFT2 私有 batch helper。
+- RL iteration 生命周期进入 `training/rl/loop.py`，`trainer.py` 缩减为运行模式
+  校验和依赖装配。旧 SFT2 `engine/step/objectives/types` 及 RL
+  `actor/loss/step` 已移除，对应诊断脚本、测试和文档均已迁移。
+- 提交并推送：`3fa6199`（实现）与 `7d7711a`（任务文档路径/验证状态）。本地
+  `compileall`、RL smoke shell 语法和 `git diff --check` 通过。
+- 未完成验证：本机缺少 torch/pytest；远程 SSH 两次只到达 VPN 跳板，未进入
+  superpod。依照服务器规则停止重试，待 VPN 恢复后在远程 `.worktree/dev`
+  运行定向和相邻 pytest。
+
 ## 2026-07-21：Agent prompt/runtime 成为 SFT2 与 RL 公共边界
 
 - 在本地分支 `fix/sft2-review-bugs` 将 `src/nimloth/agent/` 从无调用方的 `WMAgent` 原型改为实际使用的结构化 transcript、可注册 prompt template、`Agent` policy runtime 和 `EpisodeRunner`；Qwen2.5-VL 的模型前向与 temperature/top-p 行为分布保留在 `backbone/qwen25vl/policy.py`。
