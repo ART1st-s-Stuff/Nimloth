@@ -99,11 +99,12 @@
 
 ### 14. Value loss 不会更新解冻后的 StateProjector
 
-- 状态：**待设计决策**
-- 位置：`src/nimloth/training/rl/step.py` value loss 前的 `state_proj(...).detach()`。
+- 状态：**待设计决策（当前行为已显式化并有梯度测试）**
+- 位置：`src/nimloth/training/rl/algorithm.py` 的 value state 构造。
 - 现状：predictor loss 可以更新未冻结的 StateProjector；value loss 因 detach 只能更新 ValueHead。
 - 影响：当 `freeze.state_proj=false` 时，value supervision 无法塑造 state representation。若设计目标本来就是只由 dynamics loss 更新 projector，则当前行为合理，但必须明确记录。
-- 修复方向：先确定 StateProjector 的梯度 ownership，再保留或删除 detach，并增加梯度路径测试。
+- 修复方向：当前 `algorithm.py` 明确保留 detach，测试确认 value 只更新 ValueHead；
+  人类确定新的 StateProjector ownership 后，再单独改变算法与测试期望。
 
 ## P1：分布式风险
 

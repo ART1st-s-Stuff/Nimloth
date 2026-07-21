@@ -124,3 +124,6 @@
   terminal dummy、Qwen next-prefix 去重等保护测试。
 - 本地 `compileall`、RL smoke shell 语法和 `git diff --check` 通过；本地系统 Python
   缺少 torch/pytest，运行测试仍按人类建议放到远程依赖环境。
+- 核心迁移提交并推送为 `3fa6199`。随后两次 SSH 均只到达 VPN 跳板，未进入
+  superpod 或得到退出码；按 `.local/SERVER.md` 停止重试，远程 pytest 等 VPN
+  恢复后继续。
