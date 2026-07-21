@@ -11,7 +11,7 @@ from nimloth.wm.predictor import (
     require_one_step_wm_predictor,
 )
 from nimloth.wm.reconstruction import WMImageDecoder, WMImageDecoderConfig
-from nimloth.wm.sigreg import OneStepSIGReg
+from nimloth.wm.sigreg import OneStepSIGReg, SequenceSIGReg
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
 
@@ -22,6 +22,7 @@ __all__ = [
     "ONE_STEP_WM_PREDICTION_OFFSET",
     "ONE_STEP_WM_SEQUENCE_LENGTH",
     "OneStepSIGReg",
+    "SequenceSIGReg",
     "SIGReg",
     "StateProjector",
     "ValueHead",

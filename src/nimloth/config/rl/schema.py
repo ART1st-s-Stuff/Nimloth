@@ -67,6 +67,9 @@ class PredictorConfig:
     lr: float = 1e-3
     emb_dim: int = 128
     history_size: int = 4
+    lambda_sigreg: float = 0.1
+    sigreg_num_proj: int = 1024
+    sigreg_knots: int = 17
 
 
 @dataclass(frozen=True)
@@ -140,7 +143,18 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
 
     actor = _section(raw, "actor", {"lr", "entropy_coeff", "clip_ratio"})
     freeze = _section(raw, "freeze", {"state_proj"})
-    predictor = _section(raw, "predictor", {"lr", "emb_dim", "history_size"})
+    predictor = _section(
+        raw,
+        "predictor",
+        {
+            "lr",
+            "emb_dim",
+            "history_size",
+            "lambda_sigreg",
+            "sigreg_num_proj",
+            "sigreg_knots",
+        },
+    )
     value_head = _section(
         raw,
         "value_head",
@@ -213,6 +227,19 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             history_size=_positive_int(
                 predictor.get("history_size", 4),
                 "predictor.history_size",
+            ),
+            lambda_sigreg=_positive_float(
+                predictor.get("lambda_sigreg", 0.1),
+                "predictor.lambda_sigreg",
+                allow_zero=True,
+            ),
+            sigreg_num_proj=_positive_int(
+                predictor.get("sigreg_num_proj", 1024),
+                "predictor.sigreg_num_proj",
+            ),
+            sigreg_knots=_positive_int(
+                predictor.get("sigreg_knots", 17),
+                "predictor.sigreg_knots",
             ),
         ),
         value_head=ValueHeadConfig(

@@ -20,6 +20,9 @@ predictor:
   lr: 1e-3
   emb_dim: 128           # WM embedding dimension
   history_size: 4        # ARPredictor context frames
+  lambda_sigreg: 0.1     # LeWM representation regularization
+  sigreg_num_proj: 1024
+  sigreg_knots: 17
 
 # --- Value head ---
 value_head:

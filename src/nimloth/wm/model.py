@@ -54,6 +54,15 @@ class WorldModel(nn.Module):
 
         return self.wm_predictor(current_state, action_indices)
 
+    def predict_state_sequence(
+        self,
+        state_context: torch.Tensor,
+        action_context: torch.Tensor,
+    ) -> torch.Tensor:
+        """对 ``(B,T,D)`` 连续上下文的每个因果位置预测下一状态。"""
+
+        return self.wm_predictor(state_context, action_context)
+
     def predict_action_values(self, state: torch.Tensor) -> torch.Tensor:
         """预测每个离散动作的 value。"""
 

@@ -16,7 +16,7 @@ from nimloth.latent.extraction import (
     last_hidden_state,
 )
 from nimloth.rollout.schema import RolloutTrajectory
-from nimloth.rollout.encoding import EncodedTransition
+from nimloth.rollout.encoding import EncodedTrajectory, EncodedTransition
 from nimloth.rollout.transitions import discounted_action_value_targets
 from nimloth.rollout.validation import validate_rollout_trajectory
 from nimloth.util.module import evaluating
@@ -39,8 +39,8 @@ class QwenRolloutEncoder:
         trajectories: Sequence[RolloutTrajectory],
         *,
         gamma: float,
-    ) -> list[EncodedTransition]:
-        return encode_rollout_transitions(
+    ) -> list[EncodedTrajectory]:
+        return encode_rollout_trajectories(
             list(trajectories),
             self.model,
             self.processor,
@@ -103,7 +103,7 @@ def encode_trajectory_states(
     return states
 
 
-def encode_rollout_transitions(
+def encode_rollout_trajectories(
     trajectories: list[RolloutTrajectory],
     qwen_model: torch.nn.Module,
     processor: Any,
@@ -111,10 +111,10 @@ def encode_rollout_transitions(
     device: torch.device,
     *,
     gamma: float = 0.99,
-) -> list[EncodedTransition]:
-    """校验 trajectory，并展开为带 Qwen latent state 的 transition。"""
+) -> list[EncodedTrajectory]:
+    """校验 trajectory，并保留其连续 Qwen latent transition。"""
 
-    transitions: list[EncodedTransition] = []
+    encoded_trajectories: list[EncodedTrajectory] = []
     for trajectory in trajectories:
         validate_rollout_trajectory(trajectory)
         hidden_states = encode_trajectory_states(
@@ -130,10 +130,13 @@ def encode_rollout_transitions(
             trajectory.to_record(),
             gamma=gamma,
         )
+        transitions: list[EncodedTransition] = []
         for step_index in range(trajectory.num_steps):
             action_index = trajectory.action_indices[step_index]
             transitions.append(
                 EncodedTransition(
+                    record_id=trajectory.record_id,
+                    step_index=step_index,
                     current_hidden=hidden_states[step_index],
                     next_hidden=hidden_states[step_index + 1],
                     action_index=action_index,
@@ -151,4 +154,11 @@ def encode_rollout_transitions(
                     latent_token_count=trajectory.resolved_latent_token_count(),
                 )
             )
-    return transitions
+        if transitions:
+            encoded_trajectories.append(
+                EncodedTrajectory(
+                    record_id=trajectory.record_id,
+                    transitions=tuple(transitions),
+                )
+            )
+    return encoded_trajectories

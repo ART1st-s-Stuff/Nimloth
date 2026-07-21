@@ -13,7 +13,7 @@ import torch.distributed as dist
 from nimloth.config.rl import RLConfig
 from nimloth.rollout import RolloutCollector
 from nimloth.rollout import RolloutEncoder
-from nimloth.training.rl.algorithm import RLAlgorithm
+from nimloth.training.rl.algorithm import RLAlgorithm, count_sequence_windows
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.evaluation import (
     evaluate_rollout_collector,
@@ -86,20 +86,27 @@ class RLTrainingLoop:
             self._warn_skip(iteration, "no trajectories collected")
             return
 
-        transitions = self.rollout_encoder(
+        encoded_trajectories = self.rollout_encoder(
             trajectories,
             gamma=self.config.rl.gamma,
         )
         torch.cuda.empty_cache()
-        if len(transitions) < self.config.rl.batch_size:
+        num_transitions = sum(
+            trajectory.num_steps for trajectory in encoded_trajectories
+        )
+        num_windows = count_sequence_windows(
+            encoded_trajectories,
+            history_size=self.config.predictor.history_size,
+        )
+        if num_windows < self.config.rl.batch_size:
             self._warn_skip(
                 iteration,
-                f"only {len(transitions)} transitions, need {self.config.rl.batch_size}",
+                f"only {num_windows} sequence windows, need {self.config.rl.batch_size}",
             )
             return
 
         update_metrics = self.algorithm.update(
-            transitions,
+            encoded_trajectories,
             batch_size=self.config.rl.batch_size,
             batch_seed=self.config.training.seed + iteration,
         )
@@ -108,7 +115,9 @@ class RLTrainingLoop:
         metrics = {
             **update_metrics,
             "num_rollouts": float(len(trajectories)),
-            "num_transitions": float(len(transitions)),
+            "num_encoded_trajectories": float(len(encoded_trajectories)),
+            "num_transitions": float(num_transitions),
+            "num_wm_windows": float(num_windows),
             "success_rate": float(rollout_metrics["success_rate"]),
         }
         self._barrier()

@@ -52,6 +52,9 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert overridden.rl.envs_per_iteration == 3
     assert overridden.training.seed == 7
     assert overridden.rollout.train_datasets == ("base_train",)
+    assert config.predictor.lambda_sigreg == 0.1
+    assert config.predictor.sigreg_num_proj == 1024
+    assert config.predictor.sigreg_knots == 17
 
 
 def test_rl_config_rejects_unknown_checkpoint_metric() -> None:

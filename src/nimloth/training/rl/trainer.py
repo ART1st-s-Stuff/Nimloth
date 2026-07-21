@@ -40,6 +40,7 @@ from nimloth.wm import (
     LeWMConfig,
     LatentWMPredictor,
     StateProjector,
+    SequenceSIGReg,
     ValueHead,
     WorldModel,
 )
@@ -63,6 +64,12 @@ def _build_world_model(
 
     if args.wm_checkpoint is not None:
         wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_checkpoint)
+        if wm_predictor.config.history_size != config.predictor.history_size:
+            raise ValueError(
+                "RL WM checkpoint history_size does not match config: "
+                f"checkpoint={wm_predictor.config.history_size}, "
+                f"config={config.predictor.history_size}"
+            )
     else:
         wm_predictor = LatentWMPredictor.create(
             LeWMConfig(
@@ -311,6 +318,16 @@ def train_rl(
             policy_replay=(
                 adapters.policy_replay if actor_enabled else None
             ),
+            history_size=config.predictor.history_size,
+            sigreg=(
+                SequenceSIGReg(
+                    knots=config.predictor.sigreg_knots,
+                    num_proj=config.predictor.sigreg_num_proj,
+                ).to(device)
+                if config.predictor.lambda_sigreg > 0.0
+                else None
+            ),
+            sigreg_weight=config.predictor.lambda_sigreg,
             value_rank_margin=config.value_head.rank_margin,
             value_rank_weight=config.value_head.lambda_rank,
             ppo_clip_ratio=config.actor.clip_ratio,

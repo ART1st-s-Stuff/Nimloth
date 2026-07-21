@@ -78,19 +78,22 @@ in memory, serialized as JSON `null`, and restored as `-inf` when read.
 
 ## Training semantics
 
-For each trajectory step, the current and next Qwen hidden states are extracted
-from the same shared policy query used for action selection. The next-state
-query includes the real next observation and all earlier observation/action
-turns.
+Qwen hidden states are encoded in trajectory order. With
+`H = predictor.history_size`, each WM sample contains `H + 1` consecutive
+states and `H` actions from the same trajectory; windows never cross episode
+boundaries. The next-state query includes the real next observation and all
+earlier observation/action turns.
 
 ```text
-s_t       = state_proj(qwen(policy_prompt_t)[latent_state])
-s_{t+1}   = state_proj(qwen(policy_prompt_{t+1})[latent_state])
-s_hat     = wm_predictor(s_t, action_t)
-L_wm      = mse(s_hat, stop_gradient(s_{t+1}))
+states    = state_proj(qwen(policy_prompt_0..H)[latent_state])
+context   = states[:, :H]
+targets   = stop_gradient(states[:, 1:H+1])
+predicted = wm_predictor(context, actions[:, :H])
+L_wm      = mse(predicted, targets)
+L_sigreg  = SIGReg(states.transpose(0, 1))
 
-Q_t       = value_head(s_t)
-L_value   = regression(Q_t[action_t], discounted_return_t) + ranking_loss
+Q         = value_head(stop_gradient(context))
+L_value   = regression(Q[action], discounted_returns) + ranking_loss
 ```
 
 When actor training is enabled, PPO recomputes `new_log_prob` from the exact
@@ -104,7 +107,7 @@ distribution, including masked zero-probability actions.
 |--------|----------------|
 | `nimloth.rollout` | Model-independent trajectory schema, JSONL, and transition expansion |
 | `nimloth.backbone.qwen25vl.rollout` | Qwen latent transition encoding |
-| `algorithm.py` | 完整单批更新：采样、WM/value/PPO、梯度边界、backward、optimizer 和 EMA |
+| `algorithm.py` | 连续窗口采样、multi-step WM/SIGReg、value/PPO、梯度边界和单批更新 |
 | `loop.py` | collect→encode→update→validate→save iteration 生命周期 |
 | `evaluation.py` | Held-out rollout collection and checkpoint metric selection |
 | `rollout_runtime.py` | Collector startup constraints and online policy binding |
