@@ -14,10 +14,10 @@
 - [x] 实现返回全部时间位置预测的 WM sequence API，并保留单步推理入口。
 - [x] 实现 RL multi-step WM loss 与 `(T=H+1,B,D)` SIGReg。
 - [x] 补充 `history_size > 1`、窗口边界、target 对齐和 SIGReg shape 测试。
-- [ ] 将 optimizer/backward/EMA 从 RL Algorithm 移到训练运行期。
-- [ ] 将 SFT2 Algorithm 改为普通算法对象，移除算法层的 distributed unwrap。
-- [ ] 按完整责任拆解 SFT2 loop，并消除其对 Agent 子模块布局的直接依赖。
-- [ ] 运行本地定向测试与远程短时 smoke；禁用 W&B 并清理测试生成物。
+- [x] 将 optimizer/backward/EMA 从 RL Algorithm 移到训练运行期。
+- [x] 将 SFT2 Algorithm 改为普通算法对象，移除算法层的 distributed unwrap。
+- [x] 按完整责任拆解 SFT2 loop，并消除其对具体 Backbone 包装布局的依赖。
+- [x] 运行本地静态检查与远程 CPU 回归；禁用 W&B 并清理测试生成物。
 
 ## 已确认约束
 
@@ -38,6 +38,14 @@
 - `training/rl/algorithm.py`、`loop.py`、`trainer.py`：采样同一 trajectory 内的
   H-step window，计算 H 个 WM/value 位置及 H+1 状态 SIGReg，并校验 checkpoint
   history 与配置一致。
+- `training/rl/runtime.py`、`training/sft2/runtime.py`：显式提供各阶段单批算法所需
+  的模型能力；两个 Algorithm 都不再持有 Agent 或 optimizer。
+- `util/optim.py`：统一 backward、梯度累积同步、梯度裁剪、optimizer step 与
+  EMA callback；`Agent.synchronized_modules` 隐藏实际 DDP/FSDP 包装位置。
+- `training/sft2/reporting.py`、`checkpoint.py`：从 loop 提取 CSV/W&B 汇报、保存
+  触发、分布式同步和历史 checkpoint 清理。
+- `rollout/batch.py`：将误放在 Agent 包中的 `AgentBatch` 改为职责明确的
+  `TransitionBatch` 与 builder 协议。
 - `config/rl/schema.py`、`configs/training/rl/defaults.yaml`：加入严格的 RL SIGReg
   配置。
 - 新增和更新 multi-step window、梯度边界、SIGReg shape、真实 prefix 测试。
@@ -46,7 +54,17 @@
 
 - 本地 `python -m compileall -q src/nimloth tests`：通过。
 - 本地 `git diff --check`：通过。
-- 本机缺少 Torch/Pytest；远程定向回归待本阶段提交并同步后执行。
+- 本机缺少 Torch/Pytest；算法阶段提交 `e55b73a` 已同步到服务器 worktree。
+- 远程使用 `WANDB_MODE=disabled`：RL algorithm/config `12 passed`；新增 multi-step
+  predictor 用例 `2 passed`；SFT2 SIGReg 相邻回归与 WorldModel `10 passed`。
+- 远程纯 Torch 集成 smoke 通过 sequence shape、窗口边界、SIGReg shape 和 target
+  stop-gradient；只在进程内生成张量，没有创建实验或 W&B 输出。
+- 运行期重构提交 `7ba215b` 已同步远程；完整 SFT2 测试 `59 passed`、完整 RL
+  测试 `42 passed, 1 warning`、WM 与公共优化测试 `11 passed`。warning 是既有
+  用例主动验证单样本 unbiased std 时触发的 PyTorch 数值提示。
+- 全部远程测试显式设置 `WANDB_MODE=disabled`；没有创建实验输出或上传 W&B。
+- 已删除本次产生的 `.pytest_cache` 及源码、测试、experiments 下 `__pycache__`；
+  远程原有 `external/le-wm` 状态、`scripts/` 和 trainer backup 未改动。
 
 ## 待确认问题
 

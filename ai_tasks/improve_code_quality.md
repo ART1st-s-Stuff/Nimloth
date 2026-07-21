@@ -4,7 +4,9 @@
 
 范围：`src/nimloth/training/rl/` 及其直接依赖的 Qwen2.5-VL policy、checkpoint、配置和 rollout 路径。
 
-本文记录当前审计发现，供后续分阶段修复。除特别标注外，这些问题均来自源码静态审计；当前 RL 测试主要覆盖 JSONL schema、轮转确定性和 W&B，没有覆盖 policy prompt 等价性、PPO 行为概率、checkpoint 完整恢复、独立 validation 或 FSDP EMA。
+本文记录当前审计发现及分阶段修复结果。当前测试已覆盖多步 WM 窗口、SIGReg、
+policy prompt/probability、独立 validation 与核心梯度边界；真实多卡 FSDP + EMA
+仍受启动保护，尚未解除。
 
 状态说明：
 
@@ -80,14 +82,16 @@
 ### 11. README 中的 base Qwen 启动与协议校验冲突
 
 - 状态：**部分修复，仍有 artifact 设计缺口**
-- 位置：`src/nimloth/training/rl/README.md`、`src/nimloth/training/rl/cli.py`、`src/nimloth/training/rl/components.py`。
+- 位置：`src/nimloth/training/rl/README.md`、`src/nimloth/training/rl/cli.py`、`src/nimloth/training/rl/trainer.py`。
 - 已修复：README 与 CLI 现在明确要求完整 `k=1 inject` HF checkpoint，不再声称 plain base Qwen 或 standalone PEFT adapter 可直接启动。
 - 剩余问题：SFT2 产出的 PEFT adapter、materialized query embedding、Vision Full 和基础模型引用尚未形成一个可由 RL 直接消费的统一 manifest。需要先定义跨阶段 artifact 契约，再实现自动装载，不能把仅加载 WM heads 称为完整 SFT2 warm-start。
 
 ### 12. StateProjector 输入维度硬编码为 2048
 
 - 状态：**已修复（2026-07-21）**
-- 修复：`training/rl/components.py` 先加载 Qwen，再通过共享 `qwen_hidden_size()` 兼容读取顶层或 `text_config.hidden_size`，随后创建 StateProjector。
+- 修复：`training/rl/trainer.py` 先加载 Backbone，再通过公共
+  `backbone_hidden_size()` 兼容读取顶层或 `text_config.hidden_size`，随后创建
+  StateProjector。
 
 ## P1：State 语义与梯度边界
 
@@ -122,6 +126,15 @@
   归入 `nimloth.environment.navigation.VAGENNavigationRolloutCollector`，并通过
   通用 `AgentPolicy` 注入模型行为。
 
+### 17. `history_size > 1` 仍按独立 transition 训练 WM
+
+- 状态：**已修复（2026-07-21）**
+- 修复：编码结果保留 trajectory 与连续 step；RL 按 `H=history_size` 采样同一
+  trajectory 的 H-step window，以 H+1 个状态监督 H 个因果预测。SIGReg 消费
+  完整 `(T=H+1,B,D)` 状态序列，episode 开头使用真实短前缀。
+- 验证：窗口边界、shape、target 对齐、梯度 stop、可变 history 和 SIGReg 时间轴
+  均有单元测试。禁止再用强制 `history_size=1` 或虚构 padding 掩盖问题。
+
 ## 建议实施顺序
 
 1. 先统一 policy prompt、真实历史图片、采样分布和轨迹 schema，补齐 PPO 行为概率契约测试。
@@ -138,9 +151,12 @@
 rollout 和 Agent/Rollout config 已迁出 training。Qwen rollout encoding 与 policy
 replay 位于 `backbone/qwen25vl`，VAGEN collector 位于 `environment/navigation`。
 `WorldModel` 只组合 StateProjector、WMPredictor、ValueHead 并负责神经网络计算。
-SFT2/RL 的单批 forward、loss 和梯度边界分别集中在各自 `algorithm.py`；trainer
-按运行顺序装配依赖，loop 负责跨 batch/iteration 生命周期。原先宽泛的
-`components` 以及只做转发的 `objective/schedule/update` 层已删除。
+SFT2/RL 的单批 forward、loss 和梯度边界分别集中在各自 `algorithm.py`；二者
+都是不持有模型/optimizer 的普通算法对象，通过阶段 runtime 显式接收 Agent、
+target 或 policy replay。公共 `OptimizationRuntime` 管理 backward、no_sync、
+裁剪、optimizer step 与 EMA callback。SFT2 loop 的 reporting/checkpoint 触发已
+拆到完整职责模块。原先宽泛的 `components` 以及只做转发的
+`objective/schedule/update` 层已删除。
 
 ## 完成标准
 

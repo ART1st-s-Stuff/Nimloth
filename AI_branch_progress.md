@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-07-21：SFT2/RL Algorithm 与训练运行期边界统一
+
+- `SFT2Algorithm` 与 `RLAlgorithm` 现在都是普通 Python 单批算法对象：只保存
+  目标函数超参数，不注册模型，不持有 optimizer，也不执行 backward/step/EMA。
+  两阶段分别通过显式 `SFT2ModelRuntime`、`RLModelRuntime` 提供 Agent 及阶段特有
+  的 target/policy replay 能力。
+- 新增公共 `OptimizationRuntime`，统一 backward、梯度裁剪、optimizer step、
+  梯度累积 `no_sync` 与 step 后 EMA callback。`Agent.synchronized_modules` 暴露
+  实际 DDP/FSDP 包装模块，训练代码不再认识 Qwen 的具体包装位置。
+- SFT2 loop 已移除 optimizer、EMA、学习率、W&B/CSV 和 checkpoint 触发细节；
+  这些责任分别进入 `runtime.py`、`reporting.py` 和 `checkpoint.py`。loop 只保留
+  epoch/microbatch、resume cursor、validation 边界与组件编排。
+- 原 `agent.AgentBatch` 实际只描述 rollout transition 训练数据，现已改名为
+  `rollout.TransitionBatch`，builder 协议也归入 rollout；Agent 包只保留神经网络
+  与 episode/prompt/policy 契约。
+- 提交 `7ba215b` 已推送并同步远程。远程在 `WANDB_MODE=disabled` 下完整回归：
+  SFT2 `59 passed`、RL `42 passed, 1 expected warning`、WM/公共优化 `11 passed`；
+  本地 compileall/diff-check 通过。测试缓存已删除，远程原有未跟踪文件未改动。
+
+## 2026-07-21：RL multi-step WM 根本错误修复
+
+- RL 编码结果现在保留 trajectory 边界和连续 step；训练按可配置
+  `H=history_size` 采样同一 trajectory 内的 H-step window，每个 window 包含
+  `H+1` 个状态和 H 个动作，不再把随机 transition 临时扩成长度 1。
+- `LatentWMPredictor` 新增返回全部 H 个因果位置的 sequence API；WM loss 对齐
+  `[s_1,...,s_H]`。自回归 rollout 在 episode 开头使用真实短前缀，不再重复初始
+  state 和 zero action。
+- 新增公共 `SequenceSIGReg`，RL 对完整 `(T=H+1,B,D)` 状态序列计算 SIGReg；
+  SFT2 继续通过 `OneStepSIGReg` 使用固定两状态契约。RL 配置新增严格的 SIGReg
+  权重与投影参数，外部 WM checkpoint 的 history 与配置不一致时直接报错。
+- 提交 `e55b73a` 已推送并同步远程。验证：本地 compileall/diff-check 通过；远程
+  `WANDB_MODE=disabled` 定向回归分别为 `12 passed`、`2 passed`、`10 passed`，
+  另有纯 Torch multi-step/梯度 smoke 通过。测试没有写实验目录，Pytest/Python
+  缓存已清理。
+- 后续运行期边界与 SFT2 loop 拆解已在提交 `7ba215b` 完成，见上一节。
+
 ## 2026-07-21：SFT2 SIGReg 时间轴修复
 
 - 已确认旧 `build_trajectory_sigreg_inputs` 同时混淆了时间轴和 batch 轴：它把
