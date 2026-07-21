@@ -20,21 +20,15 @@ from nimloth.rollout.transitions import TransitionSample
 class TrajectoryAwareBatchSampler(Sampler[list[int]]):
     """Yield batches of consecutive steps from the same trajectory record.
 
-    Batches contain normal dataset indices.  DataLoader still collates them as
+    Batches contain normal dataset indices. DataLoader still collates them as
     independent samples, so Qwen sees the same per-prefix batch rows as before.
 
-    Two modes:
-    - **Chunked** (``full_trajectory=False``, default): each batch is up to
-      ``batch_size`` consecutive steps from one record.  Keeps micro-batch size
-      bounded but does not guarantee a complete trajectory in one batch.
-    - **Full trajectory** (``full_trajectory=True``): each batch groups
-      consecutive steps from one record, bounded by
-      ``max_images_per_batch`` (cumulative prefix image count, default 32)
-      and ``max_steps_per_trajectory`` (hard ceiling, default 16).  SIGReg
-      gets long contiguous runs while GPU memory stays bounded.
+    ``full_trajectory=False`` 时，每批最多包含 ``batch_size`` 个连续 step。
+    ``full_trajectory=True`` 时，图片预算和 step 上限负责切分轨迹。无论哪种
+    模式，每一行仍是一个独立 transition；它不定义 SIGReg 的时间轴。
 
     For distributed training, batches are partitioned by batch index after
-    optional deterministic shuffling.  When ``drop_last`` is false, shorter
+    optional deterministic shuffling. When ``drop_last`` is false, shorter
     shards repeat from the front so every rank executes the same number of
     micro-batches, matching ``DistributedSampler`` behavior.
     """
@@ -76,14 +70,21 @@ class TrajectoryAwareBatchSampler(Sampler[list[int]]):
         self.max_steps_per_trajectory = max_steps_per_trajectory
         self.epoch = 0
         self._base_batches = self._build_base_batches(
-            samples, batch_size, drop_last=drop_last, full_trajectory=full_trajectory,
+            samples,
+            batch_size,
+            drop_last=drop_last,
+            full_trajectory=full_trajectory,
             max_images_per_batch=max_images_per_batch,
             max_steps_per_trajectory=max_steps_per_trajectory,
         )
         if drop_last:
             self.num_batches = len(self._base_batches) // num_replicas
         else:
-            self.num_batches = math.ceil(len(self._base_batches) / num_replicas) if self._base_batches else 0
+            self.num_batches = (
+                math.ceil(len(self._base_batches) / num_replicas)
+                if self._base_batches
+                else 0
+            )
         self.total_size = self.num_batches * num_replicas
 
     @staticmethod
@@ -97,33 +98,29 @@ class TrajectoryAwareBatchSampler(Sampler[list[int]]):
         max_steps_per_trajectory: int = 16,
     ) -> list[list[int]]:
         by_record: dict[str, list[int]] = defaultdict(list)
-        for idx, sample in enumerate(samples):
-            by_record[sample.record_id].append(idx)
+        for index, sample in enumerate(samples):
+            by_record[sample.record_id].append(index)
 
         batches: list[list[int]] = []
-        for _record_id, indices in by_record.items():
-            indices.sort(key=lambda i: samples[i].step_index)
+        for indices in by_record.values():
+            indices.sort(key=lambda index: samples[index].step_index)
             if full_trajectory:
-                # Chunk by cumulative prefix image count, with a hard step ceiling.
                 start = 0
                 while start < len(indices):
-                    accum = 0
+                    image_count = 0
                     end = start
                     while end < len(indices):
-                        imgs = samples[indices[end]].step_index + 1
-                        if accum + imgs > max_images_per_batch:
+                        prefix_images = samples[indices[end]].step_index + 1
+                        if image_count + prefix_images > max_images_per_batch:
                             break
-                        accum += imgs
+                        image_count += prefix_images
                         end += 1
                         if end - start >= max_steps_per_trajectory:
                             break
                     if end == start:
-                        # A single late prefix can exceed the aggregate image
-                        # budget by itself. It still needs a one-row batch;
-                        # otherwise start never advances and the sampler loops.
+                        # 单个 late prefix 也可能超过总预算；仍需输出一行以继续遍历。
                         end = start + 1
-                    chunk = indices[start:end]
-                    batches.append(chunk)
+                    batches.append(indices[start:end])
                     start = end
             else:
                 for start in range(0, len(indices), batch_size):

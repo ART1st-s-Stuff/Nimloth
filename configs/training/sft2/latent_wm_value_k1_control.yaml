@@ -30,6 +30,7 @@ train:
   max_length: 12000
   max_pixels: 100352
   emb_dim: 1024
+  # 每行是单步 transition；SIGReg 固定 T=2，轨迹 chunk 的行数就是 B。
   batch_mode: trajectory_image_budget
   max_images_per_batch: 12
   max_steps_per_trajectory: 16

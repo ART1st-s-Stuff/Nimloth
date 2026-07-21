@@ -16,3 +16,8 @@ SFT2 包只保留阶段算法、训练生命周期、数据与 checkpoint。文�
 `algorithm.py` 不导入 Qwen，也不处理 processor、cache、DDP、EMA 或 checkpoint。
 Qwen batch 在进入算法前被转换成 `AgentBatch`；terminal transition
 通过 mask 参与统一调用结构，不再需要 `_compute_wm` 或 DDP dummy-loss 分支。
+
+SIGReg 只在训练阶段计算。每个有效 transition 提供 ``[s_t, s_{t+1}]``，公共
+`OneStepSIGReg` 固定构造 `(T=2,B,D)`；`B` 是 microbatch 中有下一状态的
+transition 数。`B<2` 时保留其他目标并记录该批跳过 SIGReg；验证集不计算
+SIGReg。trajectory sampler 只决定哪些 transition 共享 microbatch，不再定义 `T`。

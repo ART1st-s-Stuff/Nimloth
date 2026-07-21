@@ -72,3 +72,17 @@ After the SFT2 work is complete, perform a separate read-only audit of
   only, and train/eval runtime helpers may live under `utils.py`.
 - The separate RL audit has identified correctness and modularity issues; the
   final report will prioritize them without changing RL in this refactor.
+
+## 2026-07-21 SIGReg batch 语义修复
+
+- 已确认原 `build_trajectory_sigreg_inputs` 把每条轨迹分别变成 `(T_i,1,D)`，
+  但 SIGReg 实际沿 `B` 维估计分布，因此该实现不能检测跨样本表示坍缩。
+- 人类进一步指出 `T` 不能取 rollout 的变长轨迹长度。LeWM 的 `T` 由
+  `history_size + prediction_offset` 决定；SFT2 当前为一步上下文、一步预测，
+  因此每个 transition 提供 `[s_t,s_{t+1}]`，固定构造 `(2,B,D)`。
+- 新的 `nimloth.wm.OneStepSIGReg` 统一持有该契约；SFT2 algorithm 只筛选
+  有效 transition，`B<2` 时保留 WM/CE/value 并显式记录跳过。validation
+  不再计算随机 SIGReg。
+- RL 的 `history_size` 必须继续可配置。本轮撤回了把 RL 限制为 1 的错误尝试；
+  真正的多步 RL WM/SIGReg 需要单独实现连续上下文，暂不在本修复中落地。
+- 本地静态编译通过；远程定向/相邻回归待运行，完成后补充结果和提交号。

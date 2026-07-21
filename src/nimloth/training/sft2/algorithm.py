@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from nimloth.agent import Agent, AgentBatch, AgentOutput, AgentTarget
-from nimloth.wm import LatentWMPredictor
+from nimloth.wm import (
+    ONE_STEP_WM_HISTORY_SIZE,
+    LatentWMPredictor,
+    OneStepSIGReg,
+    require_one_step_wm_predictor,
+)
 
 
-SFT2_WM_HISTORY_SIZE = 1
+SFT2_WM_HISTORY_SIZE = ONE_STEP_WM_HISTORY_SIZE
 
 
 def require_sft2_wm_history(
@@ -25,11 +28,7 @@ def require_sft2_wm_history(
 ) -> None:
     """SFT2 当前只支持一步 world-model predictor。"""
 
-    if wm_predictor.config.history_size != SFT2_WM_HISTORY_SIZE:
-        raise ValueError(
-            "SFT2 one-step WM requires a checkpoint with history_size=1; "
-            f"got history_size={wm_predictor.config.history_size} from {source}"
-        )
+    require_one_step_wm_predictor(wm_predictor, source=source)
 
 
 @dataclass(frozen=True)
@@ -40,37 +39,6 @@ class SFT2StepOutput:
     losses: dict[str, torch.Tensor | None]
     metrics: dict[str, float]
     model_output: AgentOutput
-
-
-def build_trajectory_sigreg_inputs(
-    trajectory_steps: Sequence[tuple[str, int]],
-    current_states: torch.Tensor,
-    next_states: torch.Tensor,
-) -> list[torch.Tensor]:
-    """把同一 record 的 transition 还原为 SIGReg 使用的状态序列。"""
-
-    if not trajectory_steps:
-        return []
-    groups: dict[str, list[tuple[int, torch.Tensor, torch.Tensor]]] = defaultdict(list)
-    all_record_ids_empty = True
-    for (record_id, step_index), current, target in zip(
-        trajectory_steps,
-        current_states,
-        next_states,
-        strict=True,
-    ):
-        if record_id:
-            all_record_ids_empty = False
-        groups[record_id].append((step_index, current, target))
-    if all_record_ids_empty and len(groups) <= 1:
-        return []
-
-    inputs: list[torch.Tensor] = []
-    for entries in groups.values():
-        entries.sort(key=lambda entry: entry[0])
-        sequence = [entries[0][1], *(entry[2] for entry in entries)]
-        inputs.append(torch.stack(sequence, dim=0).unsqueeze(1))
-    return inputs
 
 
 class SFT2Algorithm(nn.Module):
@@ -86,7 +54,7 @@ class SFT2Algorithm(nn.Module):
         *,
         agent: Agent,
         target: AgentTarget,
-        sigreg: nn.Module | None,
+        sigreg: OneStepSIGReg | None,
         sigreg_weight: float,
         value_weight: float,
         ce_weight: float,
@@ -134,6 +102,7 @@ class SFT2Algorithm(nn.Module):
             wm_weight=wm_weight,
             include_lm_loss=True,
             include_value_ranking=True,
+            include_sigreg=True,
         )
 
     def evaluation_step(self, batch: AgentBatch) -> SFT2StepOutput:
@@ -142,6 +111,7 @@ class SFT2Algorithm(nn.Module):
             wm_weight=1.0,
             include_lm_loss=False,
             include_value_ranking=False,
+            include_sigreg=False,
         )
 
     def _step(
@@ -151,6 +121,7 @@ class SFT2Algorithm(nn.Module):
         wm_weight: float,
         include_lm_loss: bool,
         include_value_ranking: bool,
+        include_sigreg: bool,
     ) -> SFT2StepOutput:
         """按照 current forward → next target → loss 的顺序完成一次计算。"""
 
@@ -173,10 +144,10 @@ class SFT2Algorithm(nn.Module):
             batch.value_targets,
             include_ranking=include_value_ranking,
         )
-        sigreg_loss = self._sigreg_loss(
-            model_output.state,
-            aligned_targets,
-            batch,
+        sigreg_loss = (
+            self._sigreg_loss(model_output.state, aligned_targets, batch)
+            if include_sigreg
+            else None
         )
 
         total = wm_weight * wm_loss + self.value_weight * value["loss"]
@@ -190,7 +161,7 @@ class SFT2Algorithm(nn.Module):
             "value_rank": float(value["ranking"].detach().item()),
             "value_total": float(value["loss"].detach().item()),
             "lambda_wm": float(wm_weight),
-            "lambda_sigreg": self.sigreg_weight,
+            "lambda_sigreg": self.sigreg_weight if include_sigreg else 0.0,
             "lambda_value": self.value_weight,
             "lambda_ce": self.ce_weight,
             "total_loss": float(total.detach().item()),
@@ -199,6 +170,8 @@ class SFT2Algorithm(nn.Module):
             metrics["wm_mse"] = float(wm_loss.detach().item())
         if sigreg_loss is not None:
             metrics["sigreg_loss"] = float(sigreg_loss.detach().item())
+        elif include_sigreg and self.sigreg is not None and self.sigreg_weight > 0.0:
+            metrics["sigreg_skipped_small_batch"] = 1.0
         if model_output.lm_loss is not None:
             metrics["lm_ce"] = float(model_output.lm_loss.detach().item())
 
@@ -259,23 +232,17 @@ class SFT2Algorithm(nn.Module):
         next_states: torch.Tensor,
         batch: AgentBatch,
     ) -> torch.Tensor | None:
-        if self.sigreg is None or not bool(batch.non_terminal_mask.any()):
+        """把有效单步 transition 交给公共的固定 ``T=2`` SIGReg 模块。"""
+
+        if self.sigreg is None or self.sigreg_weight <= 0.0:
             return None
         indices = batch.non_terminal_mask.nonzero(as_tuple=False).flatten()
-        selected_current = current_states[indices]
-        selected_next = next_states[indices]
-        trajectory_steps = [
-            batch.trajectory_steps[index]
-            for index in indices.detach().cpu().tolist()
-        ]
-        inputs = build_trajectory_sigreg_inputs(
-            trajectory_steps,
-            selected_current,
-            selected_next,
+        if indices.numel() < 2:
+            return None
+        return self.sigreg(
+            current_states.index_select(0, indices),
+            next_states.index_select(0, indices),
         )
-        if not inputs:
-            inputs = [torch.stack([selected_current, selected_next], dim=0)]
-        return torch.stack([self.sigreg(value) for value in inputs]).mean()
 
     def unwrapped(self) -> "SFT2Algorithm":
         agent = self.agent.unwrapped()
@@ -298,6 +265,5 @@ __all__ = [
     "SFT2_WM_HISTORY_SIZE",
     "SFT2Algorithm",
     "SFT2StepOutput",
-    "build_trajectory_sigreg_inputs",
     "require_sft2_wm_history",
 ]

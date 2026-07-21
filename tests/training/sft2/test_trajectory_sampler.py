@@ -7,7 +7,7 @@ def _sample(record_id: str, step: int) -> TransitionSample:
         record_id=record_id,
         step_index=step,
         prefix_messages=[],
-        prefix_image_paths=[""] * (step + 1),  # cumulative prefix images
+        prefix_image_paths=[""] * (step + 1),
         action_index=0,
         current_image_path="",
         next_image_path="",
@@ -37,7 +37,6 @@ def test_trajectory_aware_sampler_partitions_batches_across_ranks() -> None:
 
 
 def test_full_trajectory_sampler_each_record_is_one_batch() -> None:
-    """With default max_images_per_batch=32, short records span a single batch."""
     samples = [
         _sample("a", 0), _sample("a", 1), _sample("a", 2),
         _sample("b", 0), _sample("b", 1),
@@ -48,17 +47,14 @@ def test_full_trajectory_sampler_each_record_is_one_batch() -> None:
     )
     batches = list(sampler)
     assert len(batches) == 3
-    # Each batch contains all steps of one record, sorted by step_index.
     record_ids_per_batch = [
         sorted({samples[i].record_id for i in batch}) for batch in batches
     ]
     assert record_ids_per_batch == [["a"], ["b"], ["c"]]
-    # Verify step counts.
-    assert [len(b) for b in batches] == [3, 2, 1]
+    assert [len(batch) for batch in batches] == [3, 2, 1]
 
 
 def test_full_trajectory_sampler_ddp_partitions_evenly() -> None:
-    """DDP: each rank gets same number of micro-batches; different trajectories."""
     samples = [
         _sample("a", 0), _sample("a", 1),
         _sample("b", 0),
@@ -74,40 +70,33 @@ def test_full_trajectory_sampler_ddp_partitions_evenly() -> None:
         num_replicas=2, rank=1, shuffle=False, full_trajectory=True,
     )
     assert len(rank0) == len(rank1) == 2
-    # Ranks have disjoint record sets.
-    r0_records = {samples[b[0]].record_id for b in rank0}
-    r1_records = {samples[b[0]].record_id for b in rank1}
+    r0_records = {samples[batch[0]].record_id for batch in rank0}
+    r1_records = {samples[batch[0]].record_id for batch in rank1}
     assert r0_records.isdisjoint(r1_records)
     assert r0_records | r1_records == {"a", "b", "c", "d"}
 
 
 def test_full_trajectory_sampler_ignores_batch_size() -> None:
-    """batch_size irrelevant when full_trajectory=True; max_images_per_batch controls chunking."""
     samples = [_sample("a", 0), _sample("a", 1)]
     sampler = TrajectoryAwareBatchSampler(
         samples, batch_size=1, shuffle=False, full_trajectory=True,
     )
-    assert len(list(sampler)[0]) == 2  # both steps in one batch (below max_images=32)
+    assert len(list(sampler)[0]) == 2
 
 
 def test_full_trajectory_chunks_by_image_count() -> None:
-    """Records with cumulative images > max_images_per_batch are split by image ceiling."""
-    # 5 steps: prefix images = 1+2+3+4+5 = 15 (≤32) → one batch
-    # 8 steps: prefix images = 1+2+...+8 = 36 (>32) → must split
-    #   first 7 steps = 28 images → batch1
-    #   step 7 = 8 images → batch2
-    samples = [_sample("a", i) for i in range(8)]
+    samples = [_sample("a", index) for index in range(8)]
     sampler = TrajectoryAwareBatchSampler(
         samples, batch_size=1, shuffle=False, full_trajectory=True,
         max_images_per_batch=32,
     )
     batches = list(sampler)
     assert len(batches) == 2
-    assert [len(b) for b in batches] == [7, 1]
+    assert [len(batch) for batch in batches] == [7, 1]
 
 
 def test_full_trajectory_single_prefix_can_exceed_image_budget() -> None:
-    samples = [_sample("a", i) for i in range(5)]
+    samples = [_sample("a", index) for index in range(5)]
     sampler = TrajectoryAwareBatchSampler(
         samples,
         batch_size=1,
@@ -115,19 +104,16 @@ def test_full_trajectory_single_prefix_can_exceed_image_budget() -> None:
         full_trajectory=True,
         max_images_per_batch=3,
     )
-    batches = list(sampler)
-    assert batches == [[0, 1], [2], [3], [4]]
+    assert list(sampler) == [[0, 1], [2], [3], [4]]
 
 
 def test_full_trajectory_hard_step_ceiling() -> None:
-    """max_steps_per_trajectory acts as a hard ceiling even if images are below limit."""
-    samples = [_sample("a", i) for i in range(20)]  # step 0..19, each has only step_index+1 images
+    samples = [_sample("a", index) for index in range(20)]
     sampler = TrajectoryAwareBatchSampler(
         samples, batch_size=1, shuffle=False, full_trajectory=True,
-        max_images_per_batch=1000,  # effectively no image limit
+        max_images_per_batch=1000,
         max_steps_per_trajectory=6,
     )
     batches = list(sampler)
-    # 20 steps / 6 = 4 batches: 6 + 6 + 6 + 2
     assert len(batches) == 4
-    assert [len(b) for b in batches] == [6, 6, 6, 2]
+    assert [len(batch) for batch in batches] == [6, 6, 6, 2]

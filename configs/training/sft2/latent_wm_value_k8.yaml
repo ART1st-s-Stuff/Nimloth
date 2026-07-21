@@ -34,13 +34,9 @@ train:
   # 20-image prefix comparable to the validated 9-image/grid32 workload.
   max_pixels: 100352
   emb_dim: 1024
-  # Full-trajectory batching: each micro-batch is one trajectory chunk; Qwen
-  # still forwards every prefix as an independent row.
-  # Micro-batch size = trajectory length (variable).  Tune --grad-accum
-  # accordingly so effective steps match: world * grad_accum * avg_records_per_rank.
-  # Keep multi-row chunks below the validated H800 activation envelope. A
-  # single longer prefix is still emitted as a one-row batch (never dropped).
-  # --max-steps-per-trajectory provides an independent hard step ceiling.
+  # 每行是一个单步 transition；SIGReg 将 current/next 固定组织为 (T=2,B,D)。
+  # max_images_per_batch 与 step 上限负责切 chunk；单行仍超预算时 transition
+  # 不丢弃，B<2 的 batch 会跳过 SIGReg。
   batch_mode: trajectory_image_budget
   max_images_per_batch: 12
   max_steps_per_trajectory: 16

@@ -47,7 +47,7 @@ from nimloth.util.wandb import init_wandb_run
 from nimloth.wm import (
     LeWMConfig,
     LatentWMPredictor,
-    SIGReg,
+    OneStepSIGReg,
     StateProjector,
     ValueHead,
     WorldModel,
@@ -426,10 +426,14 @@ def train_sft2(args=None) -> int:
     algorithm = SFT2Algorithm(
         agent=agent,
         target=target,
-        sigreg=SIGReg(
-            knots=args.sigreg_knots,
-            num_proj=args.sigreg_num_proj,
-        ).to(device=aux_device),
+        sigreg=(
+            OneStepSIGReg(
+                knots=args.sigreg_knots,
+                num_proj=args.sigreg_num_proj,
+            ).to(device=aux_device)
+            if args.lambda_sigreg > 0.0
+            else None
+        ),
         sigreg_weight=args.lambda_sigreg,
         value_weight=args.lambda_value,
         ce_weight=args.lambda_ce,

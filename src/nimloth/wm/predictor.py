@@ -13,6 +13,29 @@ from torch import nn
 from nimloth.wm._vendor_lewm import ARPredictor, Embedder, MLP
 from nimloth.wm.lewm import LeWMConfig, action_one_hot
 
+
+ONE_STEP_WM_HISTORY_SIZE = 1
+ONE_STEP_WM_PREDICTION_OFFSET = 1
+ONE_STEP_WM_SEQUENCE_LENGTH = (
+    ONE_STEP_WM_HISTORY_SIZE + ONE_STEP_WM_PREDICTION_OFFSET
+)
+
+
+def require_one_step_wm_predictor(
+    predictor: "LatentWMPredictor",
+    *,
+    source: object,
+) -> None:
+    """拒绝把多步上下文 checkpoint 伪装成当前的单步训练接口。"""
+
+    history_size = predictor.config.history_size
+    if history_size != ONE_STEP_WM_HISTORY_SIZE:
+        raise ValueError(
+            "one-step WM training requires history_size=1; "
+            f"got history_size={history_size} from {source}"
+        )
+
+
 class LatentWMPredictor(nn.Module):
     """LeWM ARPredictor + action encoder for Qwen-latent dynamics.
 
