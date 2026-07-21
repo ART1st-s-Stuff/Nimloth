@@ -10,7 +10,7 @@ import pytest
 from experiments.training.rl.rollout_env import validate_split, validate_trajectories
 from nimloth.agent import AgentTranscript, NimlothPromptTemplate
 from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
-from nimloth.environment.navigation import VAGENNavigationRolloutCollector
+from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
 from nimloth.rollout import RolloutTrajectory
 
 

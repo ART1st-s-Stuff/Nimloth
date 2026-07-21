@@ -93,7 +93,7 @@ def parse_rl_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     """解析参数、创建阶段组件并启动 RL 训练。"""
     from nimloth.util.distributed import is_main
-    from nimloth.environment.navigation import VAGENNavigationRolloutCollector
+    from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
     from nimloth.rollout import JSONLRolloutCollector
     from nimloth.training.rl.trainer import train_rl
 

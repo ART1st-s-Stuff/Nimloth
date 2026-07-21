@@ -8,12 +8,10 @@ from nimloth.environment.navigation.vagen import (
     VAGENNavigationSession,
     instruction_from_observation,
 )
-from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
 
 __all__ = [
     "NAVIGATION_ACTION_SPACE",
     "NUM_NAVIGATION_ACTIONS",
     "VAGENNavigationSession",
-    "VAGENNavigationRolloutCollector",
     "instruction_from_observation",
 ]

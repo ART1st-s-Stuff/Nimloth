@@ -8,7 +8,7 @@ from nimloth.rollout import (
     JSONLRolloutCollector,
     RolloutCollector,
 )
-from nimloth.environment.navigation import VAGENNavigationRolloutCollector
+from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
 from nimloth.util.distributed import is_main
 
 

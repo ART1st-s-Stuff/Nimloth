@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.path.insert(0, str(path))
 
     from nimloth.backbone.qwen25vl.policy import QwenAgentPolicy
-    from nimloth.environment.navigation import VAGENNavigationRolloutCollector
+    from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
 
     model, processor = load_qwen(
         args.model, args.attn_implementation, args.max_pixels
