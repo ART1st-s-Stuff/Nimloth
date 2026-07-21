@@ -18,9 +18,13 @@ from nimloth.training.sft2.checkpoint import (
     resume_epoch_and_micro_step,
 )
 from nimloth.training.sft2.components import SFT2Components
-from nimloth.training.sft2.engine import SFT2StepRunner
+from nimloth.training.sft2.algorithm import (
+    SFT2Algorithm,
+    SFT2Mode,
+    combine_sft2_losses,
+    wm_loss_weight_schedule,
+)
 from nimloth.training.sft2.evaluate import evaluate
-from nimloth.training.sft2.objectives import compute_combined_loss, wm_loss_weight_schedule
 from nimloth.training.sft2.utils import no_sync_if_needed, seed_training_micro_step
 from nimloth.util.csv_log import CSVRecordWriter
 from nimloth.util.distributed import is_main
@@ -106,7 +110,7 @@ class SFT2TrainingLoop:
     train_sampler: Any
     train_batch_sampler: Any
     components: SFT2Components
-    step_runner: SFT2StepRunner
+    algorithm: SFT2Algorithm
     checkpoint_manager: SFT2CheckpointManager
     log_writer: CSVRecordWriter
     wandb_run: Any
@@ -265,7 +269,7 @@ class SFT2TrainingLoop:
         """运行共享 forward，并按当前训练步组合全部目标函数。"""
 
         timer_start = self.step_timer.start("forward")
-        step_output = self.step_runner.forward(batch_samples, training=True)
+        step_output = self.algorithm.compute(batch_samples, mode=SFT2Mode.TRAIN)
         self.step_timer.stop("forward", timer_start)
         lambda_wm = wm_loss_weight_schedule(
             self.state.global_step,
@@ -274,19 +278,15 @@ class SFT2TrainingLoop:
             end=self.args.lambda_wm_end,
         )
         timer_start = self.step_timer.start("loss_combine")
-        loss, metrics = compute_combined_loss(
-            wm_loss=step_output.wm_loss,
-            value_loss=step_output.value_loss,
-            lm_loss=step_output.lm_loss,
-            lambda_wm=lambda_wm if step_output.wm_loss is not None else 0.0,
-            sigreg_loss=step_output.sigreg_loss,
-            lambda_sigreg=self.args.lambda_sigreg,
-            lambda_value=self.args.lambda_value,
-            lambda_ce=self.args.lambda_ce,
+        weighted = combine_sft2_losses(
+            step_output,
+            wm_weight=lambda_wm if step_output.dynamics is not None else 0.0,
+            sigreg_weight=self.args.lambda_sigreg,
+            value_weight=self.args.lambda_value,
+            ce_weight=self.args.lambda_ce,
         )
-        metrics.update(step_output.metrics)
         self.step_timer.stop("loss_combine", timer_start)
-        return lambda_wm, metrics, loss
+        return lambda_wm, weighted.metrics, weighted.loss
 
     def _optimizer_step(
         self,
@@ -405,7 +405,7 @@ class SFT2TrainingLoop:
         """验证当前模型，并根据 WM MSE 更新 epoch/best checkpoint。"""
 
         val_metrics = evaluate(
-            self.step_runner,
+            self.algorithm,
             self.val_loader,
             max_batches=self.args.max_val_batches,
         )

@@ -1,1 +1,1 @@
-"""RL 阶段专用的 loss、checkpoint、CLI 与训练引擎。"""
+"""RL 阶段专用的核心算法、训练循环、checkpoint 与 CLI。"""

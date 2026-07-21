@@ -2,185 +2,178 @@ from __future__ import annotations
 
 import torch
 
-from nimloth.training.sft2.objectives import (
-    StateProjector,
-    _build_trajectory_sigreg_inputs,
-    compute_combined_loss,
-    compute_wm_latent_loss,
+from nimloth.backbone.qwen25vl.transition import QwenTransitionMessages
+from nimloth.training.sft2.algorithm import (
+    SFT2Losses,
+    build_trajectory_sigreg_inputs,
+    combine_sft2_losses,
+    compute_sft2_dynamics,
     wm_loss_weight_schedule,
 )
-from nimloth.wm.predictor import LatentWMPredictor
+from nimloth.training.sft2.data.batch import SFT2Transition
+from nimloth.wm import LatentWMPredictor, StateProjector
 from nimloth.wm.lewm import LeWMConfig
 
 
 def test_state_projector_accepts_multi_latent_block() -> None:
-    state_proj = StateProjector(qwen_hidden_dim=8, lewm_emb_dim=4, projector_hidden_dim=16, latent_token_count=3)
-    qwen_hidden = torch.randn(2, 3, 8)
-
-    out = state_proj(qwen_hidden)
-
+    state_proj = StateProjector(
+        qwen_hidden_dim=8,
+        lewm_emb_dim=4,
+        projector_hidden_dim=16,
+        latent_token_count=3,
+    )
+    out = state_proj(torch.randn(2, 3, 8))
     assert out.shape == (2, 4)
     assert state_proj.input_dim == 24
 
 
-def test_wm_latent_loss_no_detach_grad_to_state_proj() -> None:
-    """MSE target is NOT detached; state_proj gets gradient from both sides."""
+def test_sft2_dynamics_keeps_projector_gradient_on_both_sides() -> None:
     cfg = LeWMConfig(emb_dim=16, predictor_hidden_dim=16, predictor_mlp_dim=32)
     wm_predictor = LatentWMPredictor.create(cfg)
-
     state_proj = StateProjector(qwen_hidden_dim=32, lewm_emb_dim=cfg.emb_dim)
-    qwen_hidden = torch.randn(2, 32, requires_grad=True)
-    # next_hidden has requires_grad=True so we can verify gradient flows
-    # through state_proj on the target side too.
-    qwen_next_hidden = torch.randn(2, 32, requires_grad=True)
-    actions = torch.tensor([0, 3])
+    current_hidden = torch.randn(2, 32, requires_grad=True)
+    next_hidden = torch.randn(2, 32, requires_grad=True)
 
-    loss, sigreg_loss, metrics = compute_wm_latent_loss(
-        qwen_hidden_at_latent=qwen_hidden,
-        qwen_hidden_at_next_latent=qwen_next_hidden,
-        action_indices=actions,
+    dynamics, sigreg = compute_sft2_dynamics(
+        current_hidden=current_hidden,
+        next_hidden=next_hidden,
+        action_indices=torch.tensor([0, 3]),
+        trajectory_steps=None,
         state_proj=state_proj,
         wm_predictor=wm_predictor,
+        sigreg=None,
     )
-    loss.backward()
+    dynamics.loss.backward()
 
-    assert loss.item() > 0
-    assert sigreg_loss is None
-    assert "wm_mse" in metrics
-    # State projector should receive gradient (it was trainable on both sides).
+    assert dynamics.loss.item() > 0
+    assert sigreg is None
     assert state_proj.net.net[0].weight.grad is not None
-    # Current-side Qwen hidden should receive gradient.
-    assert qwen_hidden.grad is not None
-    # Target-side Qwen hidden should also receive gradient (no detach on MSE target).
-    assert qwen_next_hidden.grad is not None
+    assert current_hidden.grad is not None
+    assert next_hidden.grad is not None
 
 
-def test_wm_latent_loss_with_items_trajectory_sigreg() -> None:
-    """When items with record_id/step_index are passed, SIGReg runs per-trajectory."""
+def test_sft2_dynamics_runs_sigreg_per_trajectory() -> None:
     cfg = LeWMConfig(emb_dim=4, predictor_hidden_dim=4, predictor_mlp_dim=8)
     wm_predictor = LatentWMPredictor.create(cfg)
-    state_proj = StateProjector(qwen_hidden_dim=4, lewm_emb_dim=cfg.emb_dim, projector_hidden_dim=8)
-
-    # Simulate 3 transitions: two from record A (steps 0, 1), one from record B.
-    qwen_current = torch.randn(3, 4)
-    qwen_next = torch.randn(3, 4)
-    actions = torch.tensor([0, 1, 2])
-    items = [
-        {"record_id": "rec_A", "step_index": 0, "id": "rec_A:0"},
-        {"record_id": "rec_A", "step_index": 1, "id": "rec_A:1"},
-        {"record_id": "rec_B", "step_index": 5, "id": "rec_B:5"},
-    ]
-
-    # Use a simple SIGReg for testing (the real SIGReg from le-wm may not be
-    # available in a CPU-only env; we mock its interface).
-    class MockSIGReg(torch.nn.Module):
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            # x shape: (T, B, D)
-            assert x.dim() == 3
-            return x.pow(2).mean()
-
-    sigreg = MockSIGReg()
-    mse, sigreg_loss, metrics = compute_wm_latent_loss(
-        qwen_hidden_at_latent=qwen_current,
-        qwen_hidden_at_next_latent=qwen_next,
-        action_indices=actions,
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        sigreg_module=sigreg,
-        items=items,
+    state_proj = StateProjector(
+        qwen_hidden_dim=4,
+        lewm_emb_dim=cfg.emb_dim,
+        projector_hidden_dim=8,
     )
 
-    assert sigreg_loss is not None
-    assert sigreg_loss.item() > 0
-    assert "sigreg_loss" in metrics
-    assert "wm_mse" in metrics
+    class MockSIGReg(torch.nn.Module):
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            assert value.dim() == 3
+            return value.pow(2).mean()
+
+    dynamics, sigreg = compute_sft2_dynamics(
+        current_hidden=torch.randn(3, 4),
+        next_hidden=torch.randn(3, 4),
+        action_indices=torch.tensor([0, 1, 2]),
+        trajectory_steps=[("rec_A", 0), ("rec_A", 1), ("rec_B", 5)],
+        state_proj=state_proj,
+        wm_predictor=wm_predictor,
+        sigreg=MockSIGReg(),
+    )
+
+    assert dynamics.loss.item() > 0
+    assert sigreg is not None
+    assert sigreg.item() > 0
 
 
 def test_build_trajectory_sigreg_inputs() -> None:
-    """Unit test for trajectory grouping helper."""
-    D = 4
-    # Simulate 4 transitions:
-    #   rec_A step 0: s0→s1, rec_A step 1: s1→s2
-    #   rec_B step 0: s0→s1
-    #   rec_C step 3: s3→s4
-    state_emb = torch.tensor([
-        [1.0, 0.0, 0.0, 0.0],  # rec_A step 0 state
-        [2.0, 0.0, 0.0, 0.0],  # rec_A step 1 state
-        [3.0, 0.0, 0.0, 0.0],  # rec_B step 0 state
-        [4.0, 0.0, 0.0, 0.0],  # rec_C step 3 state
-    ])
-    target_emb = torch.tensor([
-        [1.1, 0.0, 0.0, 0.0],  # rec_A step 0 target (s1)
-        [2.1, 0.0, 0.0, 0.0],  # rec_A step 1 target (s2)
-        [3.1, 0.0, 0.0, 0.0],  # rec_B step 0 target (s1)
-        [4.1, 0.0, 0.0, 0.0],  # rec_C step 3 target (s4)
-    ])
-    items = [
-        {"record_id": "rec_A", "step_index": 0},
-        {"record_id": "rec_A", "step_index": 1},
-        {"record_id": "rec_B", "step_index": 0},
-        {"record_id": "rec_C", "step_index": 3},
+    dimension = 4
+    current = torch.tensor(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0, 0.0],
+        ]
+    )
+    target = current + 0.1
+    result = build_trajectory_sigreg_inputs(
+        [("rec_A", 0), ("rec_A", 1), ("rec_B", 0), ("rec_C", 3)],
+        current,
+        target,
+    )
+
+    assert sorted(tuple(value.shape) for value in result) == [
+        (2, 1, dimension),
+        (2, 1, dimension),
+        (3, 1, dimension),
     ]
-
-    result = _build_trajectory_sigreg_inputs(items, state_emb, target_emb)
-
-    # Should get 3 trajectories: rec_A (T=3), rec_B (T=2), rec_C (T=2)
-    assert len(result) == 3
-    shapes = sorted([tuple(r.shape) for r in result])
-    assert shapes == [(2, 1, D), (2, 1, D), (3, 1, D)]
-
-    # Check rec_A trajectory (T=3): s0_state, s1_target, s2_target
-    rec_a = [r for r in result if r.shape[0] == 3][0].squeeze(1)
-    assert torch.equal(rec_a[0], state_emb[0])   # s0_state (step 0 state)
-    assert torch.equal(rec_a[1], target_emb[0])  # s1 from step 0 target
-    assert torch.equal(rec_a[2], target_emb[1])  # s2 from step 1 target
+    rec_a = next(value for value in result if value.shape[0] == 3).squeeze(1)
+    assert torch.equal(rec_a[0], current[0])
+    assert torch.equal(rec_a[1], target[0])
+    assert torch.equal(rec_a[2], target[1])
 
 
-def test_build_trajectory_sigreg_inputs_empty() -> None:
-    assert _build_trajectory_sigreg_inputs(
-        [], torch.empty(0, 4), torch.empty(0, 4)
+def test_build_trajectory_sigreg_inputs_empty_or_legacy() -> None:
+    assert build_trajectory_sigreg_inputs(
+        [],
+        torch.empty(0, 4),
+        torch.empty(0, 4),
+    ) == []
+    assert build_trajectory_sigreg_inputs(
+        [("", 0), ("", 1)],
+        torch.randn(2, 4),
+        torch.randn(2, 4),
     ) == []
 
 
-def test_build_trajectory_sigreg_inputs_old_cache_fallback() -> None:
-    """When items have no record_id (old cache), returns empty list → pair fallback."""
-    D = 2
-    state_emb = torch.tensor([[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
-    target_emb = torch.tensor([[1.1, 0.0], [2.1, 0.0], [3.1, 0.0]])
-    items = [
-        {"id": "?", "step_index": 0},  # no record_id, empty id
-        {"id": "?", "step_index": 0},
-        {"id": "?", "step_index": 0},
-    ]
-    result = _build_trajectory_sigreg_inputs(items, state_emb, target_emb)
-    assert result == [], f"Expected empty for old cache, got {len(result)} groups"
-
-
-def test_build_trajectory_sigreg_inputs_fallback_from_id() -> None:
-    """When record_id is absent, parses it from the 'id' field."""
-    D = 2
-    state_emb = torch.tensor([[1.0, 0.0], [2.0, 0.0]])
-    target_emb = torch.tensor([[1.1, 0.0], [2.1, 0.0]])
-    items = [
-        {"id": "rec_X:0", "step_index": 0},
-        {"id": "rec_X:1", "step_index": 1},
-    ]
-    result = _build_trajectory_sigreg_inputs(items, state_emb, target_emb)
-    assert len(result) == 1
-    assert result[0].shape == (3, 1, D)  # T=3 for two consecutive steps
+def test_sft2_transition_resolves_legacy_record_id() -> None:
+    transition = SFT2Transition(
+        identifier="rec_X:1",
+        record_id="",
+        step_index=1,
+        action_index=0,
+        value_target=1.0,
+        success=True,
+        qwen=QwenTransitionMessages(current=[], next=None),
+    )
+    assert transition.trajectory_step == ("rec_X", 1)
 
 
 def test_wm_loss_weight_schedule_warms_up() -> None:
-    assert wm_loss_weight_schedule(0, 100, start=0.1, end=1.0, warmup_fraction=0.5) == 0.1
-    mid = wm_loss_weight_schedule(25, 100, start=0.1, end=1.0, warmup_fraction=0.5)
+    assert wm_loss_weight_schedule(
+        0,
+        100,
+        start=0.1,
+        end=1.0,
+        warmup_fraction=0.5,
+    ) == 0.1
+    mid = wm_loss_weight_schedule(
+        25,
+        100,
+        start=0.1,
+        end=1.0,
+        warmup_fraction=0.5,
+    )
     assert 0.1 < mid < 1.0
-    assert wm_loss_weight_schedule(60, 100, start=0.1, end=1.0, warmup_fraction=0.5) == 1.0
+    assert wm_loss_weight_schedule(
+        60,
+        100,
+        start=0.1,
+        end=1.0,
+        warmup_fraction=0.5,
+    ) == 1.0
 
 
-def test_compute_combined_loss() -> None:
-    wm = torch.tensor(2.0)
-    lm = torch.tensor(3.0)
-    total, metrics = compute_combined_loss(wm_loss=wm, value_loss=None, lm_loss=lm, lambda_wm=0.5, lambda_ce=1.0)
-    assert total.item() == 4.0
-    assert metrics["total_loss"] == 4.0
-    assert metrics["lm_ce"] == 3.0
+def test_combine_sft2_losses() -> None:
+    weighted = combine_sft2_losses(
+        SFT2Losses(
+            lm=torch.tensor(3.0),
+            dynamics=torch.tensor(2.0),
+            sigreg=None,
+            value=torch.tensor(0.0),
+            metrics={"wm_mse": 2.0, "lm_ce": 3.0},
+        ),
+        wm_weight=0.5,
+        sigreg_weight=0.0,
+        value_weight=1.0,
+        ce_weight=1.0,
+    )
+    assert weighted.loss.item() == 4.0
+    assert weighted.metrics["total_loss"] == 4.0
+    assert weighted.metrics["lm_ce"] == 3.0

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import torch
 from nimloth.backbone.qwen25vl.loading import load_qwen_processor
+from nimloth.backbone.qwen25vl.transition import QwenTransitionEncoder
 from nimloth.latent import (
     query_labels_are_masked,
     resolve_latent_query_mode,
@@ -23,7 +24,7 @@ from nimloth.training.sft2.checkpoint import (
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.components import build_sft2_components
 from nimloth.training.sft2.data.factory import build_data_bundle
-from nimloth.training.sft2.engine import SFT2StepRunner
+from nimloth.training.sft2.algorithm import SFT2Algorithm
 from nimloth.training.sft2.loop import (
     SFT2TrainingLoop,
     load_sft2_loop_state,
@@ -196,11 +197,8 @@ def train_sft2(args=None) -> int:
         log_writer.ensure_header()
 
     pad_token_id = processor.tokenizer.pad_token_id
-    step_runner = SFT2StepRunner(
+    qwen_transition_encoder = QwenTransitionEncoder(
         model=model,
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        value_head=value_head,
         processor=processor,
         token_id_map=token_id_map,
         device=device,
@@ -209,9 +207,15 @@ def train_sft2(args=None) -> int:
         latent_token_count=args.latent_token_count,
         mask_latent_query_labels=args.mask_latent_query_labels,
         vision_ema=vision_ema,
-        sigreg_module=sigreg,
+    )
+    algorithm = SFT2Algorithm(
+        qwen=qwen_transition_encoder,
+        state_proj=state_proj,
+        wm_predictor=wm_predictor,
+        value_head=value_head,
+        sigreg=sigreg,
         value_rank_margin=args.value_rank_margin,
-        value_rank_lambda=args.value_rank_lambda,
+        value_rank_weight=args.value_rank_lambda,
     )
 
     loop_state = load_sft2_loop_state(
@@ -231,7 +235,7 @@ def train_sft2(args=None) -> int:
         train_sampler=train_sampler,
         train_batch_sampler=train_batch_sampler,
         components=components,
-        step_runner=step_runner,
+        algorithm=algorithm,
         checkpoint_manager=checkpoint_manager,
         log_writer=log_writer,
         wandb_run=wandb_run,

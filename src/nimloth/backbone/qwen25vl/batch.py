@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 from PIL import Image
+from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoProcessor
 
 from nimloth.latent import (
@@ -266,6 +267,50 @@ def batch_single_encoding(enc: dict[str, torch.Tensor]) -> dict[str, torch.Tenso
         key: value.unsqueeze(0) if isinstance(value, torch.Tensor) and value.ndim == 1 else value
         for key, value in enc.items()
     }
+
+
+def collate_qwen_encodings(
+    rows: list[dict[str, torch.Tensor]],
+    pad_token_id: int,
+) -> dict[str, torch.Tensor]:
+    """合并预处理后的 Qwen prefix，并保持视觉 token 的原始拼接顺序。"""
+
+    if not rows:
+        raise ValueError("Qwen encoding rows must not be empty")
+    if len(rows) == 1:
+        return {
+            key: value.unsqueeze(0) if value.ndim == 1 else value
+            for key, value in rows[0].items()
+        }
+
+    batch: dict[str, torch.Tensor] = {}
+    if "input_ids" in rows[0]:
+        batch["input_ids"] = pad_sequence(
+            [row["input_ids"] for row in rows],
+            batch_first=True,
+            padding_value=pad_token_id,
+        )
+    if "attention_mask" in rows[0]:
+        batch["attention_mask"] = pad_sequence(
+            [row["attention_mask"] for row in rows],
+            batch_first=True,
+            padding_value=0,
+        )
+    if "labels" in rows[0]:
+        batch["labels"] = pad_sequence(
+            [row["labels"] for row in rows],
+            batch_first=True,
+            padding_value=-100,
+        )
+    for key in ("pixel_values", "image_grid_thw"):
+        if key not in rows[0]:
+            continue
+        tensors = [
+            row[key].unsqueeze(0) if row[key].ndim == 1 else row[key]
+            for row in rows
+        ]
+        batch[key] = torch.cat(tensors, dim=0)
+    return batch
 
 
 def build_qwen_batch(

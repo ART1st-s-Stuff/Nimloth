@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 import torch
 from PIL import Image
 
-from nimloth.agent import AgentPrompt, PolicyDecision
+from nimloth.agent import AgentPrompt, PolicyDecision, bind_image_placeholders
 from nimloth.latent import (
     LatentActionTokens,
     normalize_latent_state_blocks,
     special_token_ids,
 )
 from nimloth.util.module import evaluating
+
+if TYPE_CHECKING:
+    from nimloth.backbone.qwen25vl.rollout import EncodedRolloutTransition
 
 
 def validate_agent_policy_protocol(model_config: Any) -> None:
@@ -161,6 +164,18 @@ def behavior_log_probs(
     return torch.log_softmax(scaled_logits, dim=-1)
 
 
+def categorical_entropy_from_log_probs(log_probs: torch.Tensor) -> torch.Tensor:
+    """计算可能包含 top-p ``-inf`` mask 的离散分布 entropy。"""
+
+    probabilities = log_probs.exp()
+    terms = torch.where(
+        probabilities > 0,
+        probabilities * log_probs,
+        torch.zeros_like(log_probs),
+    )
+    return -terms.sum(dim=-1).mean()
+
+
 class QwenAgentPolicy:
     """运行 Qwen，并从可审计的 behavior distribution 中采样。"""
 
@@ -257,3 +272,46 @@ def batch_action_log_probs(
         selected.append(log_probs[int(action_index)])
         distributions.append(log_probs)
     return torch.stack(selected), torch.stack(distributions)
+
+
+def replay_rollout_action_log_probs(
+    *,
+    transitions: Sequence[EncodedRolloutTransition],
+    model: torch.nn.Module,
+    processor: Any,
+    token_id_map: dict[str, int],
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """用当前 Qwen 重放 rollout 时保存的完整 prompt 与采样变换。"""
+
+    if not transitions:
+        raise ValueError("PPO policy batch must not be empty")
+    latent_token_counts = {
+        int(transition.latent_token_count) for transition in transitions
+    }
+    if len(latent_token_counts) != 1:
+        raise ValueError("one PPO batch cannot mix latent token counts")
+    bound_messages = [
+        bind_image_placeholders(
+            transition.policy_messages,
+            transition.policy_image_paths,
+        )
+        for transition in transitions
+    ]
+    # eval mode 关闭 dropout 但不关闭梯度，保证 PPO old/new policy 可比较。
+    with evaluating(model):
+        return batch_action_log_probs(
+            model=model,
+            processor=processor,
+            token_id_map=token_id_map,
+            messages=bound_messages,
+            taken_action_indices=[
+                transition.action_index for transition in transitions
+            ],
+            temperatures=[
+                transition.sampling_temperature for transition in transitions
+            ],
+            top_ps=[transition.sampling_top_p for transition in transitions],
+            device=device,
+            latent_token_count=latent_token_counts.pop(),
+        )

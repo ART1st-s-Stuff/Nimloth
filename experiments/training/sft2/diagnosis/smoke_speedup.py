@@ -35,12 +35,17 @@ from nimloth.training.sft2.diagnosis.trajectory_equiv import (
     packed_record_losses,
 )
 from nimloth.training.sft2.diagnosis.trajectory_forward import run_equivalence_on_jsonl
-from nimloth.training.sft2.objectives import compute_combined_loss, wm_loss_weight_schedule
+from nimloth.training.sft2.algorithm import (
+    SFT2Algorithm,
+    SFT2Mode,
+    combine_sft2_losses,
+    wm_loss_weight_schedule,
+)
 from nimloth.training.sft2.data.batch import collate_cached_transition_batch
 from nimloth.util.cache import (
     encode_transition_item,
 )
-from nimloth.training.sft2.step import compute_step_value_loss, compute_step_wm_loss
+from nimloth.backbone.qwen25vl.transition import QwenTransitionEncoder
 from nimloth.wm import LatentWMPredictor, LeWMConfig, StateProjector, ValueHead
 from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
 from nimloth.rollout.transitions import TransitionJsonlDataset, load_jsonl_records
@@ -102,47 +107,37 @@ def run_micro_training_loss(
     items = transition_collate_for_qwen(samples[:batch_size])
     if use_cached_enc:
         rows = [encode_transition_item(item, processor, max_length) for item in items]
-        batch = collate_cached_transition_batch(rows, pad_token_id=processor.tokenizer.pad_token_id)
-        enc = batch["current_enc"]
-        next_enc_rows = batch["next_enc_rows"]
-        meta = batch["items"]
+        batch = collate_cached_transition_batch(
+            rows,
+            pad_token_id=processor.tokenizer.pad_token_id,
+        )
     else:
-        enc = build_qwen_batch(items, processor, max_length)
-        next_enc_rows = None
-        meta = items
+        batch = items
 
-    latent_hidden, lm_loss = extract_qwen_latents(model, enc, token_id_map, device)
-    wm_loss, sigreg_loss, _ = compute_step_wm_loss(
-        model,
-        meta,
-        latent_hidden,
-        processor,
-        token_id_map,
-        device,
-        state_proj,
-        wm_predictor,
-        max_length,
-        next_enc_rows=next_enc_rows,
-        pad_token_id=processor.tokenizer.pad_token_id,
+    algorithm = SFT2Algorithm(
+        qwen=QwenTransitionEncoder(
+            model=model,
+            processor=processor,
+            token_id_map=token_id_map,
+            device=device,
+            max_length=max_length,
+            pad_token_id=processor.tokenizer.pad_token_id,
+        ),
+        state_proj=state_proj,
+        wm_predictor=wm_predictor,
+        value_head=value_head,
+        sigreg=None,
     )
-    value_loss, _ = compute_step_value_loss(
-        latent_hidden,
-        meta,
-        state_proj,
-        value_head,
-        rank_margin=0.1,
-        lambda_rank=1.0,
-    )
+    losses = algorithm.compute(batch, mode=SFT2Mode.TRAIN)
     lambda_wm = wm_loss_weight_schedule(0, 100, start=0.1, end=1.0)
-    loss, _ = compute_combined_loss(
-        wm_loss=wm_loss,
-        value_loss=value_loss,
-        lm_loss=lm_loss,
-        lambda_wm=lambda_wm if wm_loss is not None else 0.0,
-        lambda_value=1.0,
-        lambda_ce=1.0,
+    weighted = combine_sft2_losses(
+        losses,
+        wm_weight=lambda_wm if losses.dynamics is not None else 0.0,
+        sigreg_weight=0.0,
+        value_weight=1.0,
+        ce_weight=1.0,
     )
-    return float(loss.item())
+    return float(weighted.loss.item())
 
 
 @torch.no_grad()

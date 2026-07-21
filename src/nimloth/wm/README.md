@@ -17,6 +17,7 @@ LeWM 核心算子来自 `external/le-wm`，经 `wm/_vendor_lewm.py` 以最小子
 | `predictor.py` | `LatentWMPredictor`（Qwen-latent 动力学，无 pixel encoder） |
 | `state_proj.py` | `StateProjector`：LeWM-style MLP (BatchNorm1d) Qwen hidden → WM emb |
 | `value_head.py` | `ValueHead`：state emb → 每 action 的 value |
+| `objectives.py` | SFT2/RL 共用的 dynamics MSE 与 action-value 回归/排序公式 |
 | `reconstruction.py` | `WMImageDecoder`：post-hoc reconstruction diagnostic decoder（不参与 SFT2/RL loss） |
 
 ### LeWM 结构对齐
@@ -25,11 +26,13 @@ LeWM 核心算子来自 `external/le-wm`，经 `wm/_vendor_lewm.py` 以最小子
 - **pred_proj**：LeWM `MLP(predictor_hidden_dim → predictor_hidden_dim → emb_dim)`，使用 `BatchNorm1d` 归一化。
 - **StateProjector**：LeWM `MLP(qwen_hidden_dim → projector_hidden_dim → emb_dim)`，默认 `projector_hidden_dim=2048`，使用 `BatchNorm1d`。
 - **SIGReg**：Sketch Isotropic Gaussian Regularizer（LeWM §3.3），对 projected embeddings 施加正则化，默认 `lambda_sigreg=0.1`。
-- **MSE target** 使用 detached target embedding（stop-gradient），SIGReg 对 state_proj 的当前和下一状态投影**均有梯度**。
+- `wm/objectives.py` 不决定 stop-gradient。SFT2 让当前/下一两侧投影都更新
+  StateProjector；RL 将下一状态投影作为 stop-gradient target。两阶段策略在各自
+  `algorithm.py` 中显式实现。
 
 ## 与 training 的边界
 
-- **本包**：模型定义与模型无关的 transition 数据。
+- **本包**：模型定义、模型无关 transition 和跨阶段共享目标公式。
 - **`nimloth.backbone.qwen25vl`**：transition → Qwen messages 的适配。
 - **`nimloth.training.sft2`**：训练循环（`trainer.py`）、loss 组装、checkpoint、验证。
 

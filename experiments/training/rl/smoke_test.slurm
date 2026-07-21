@@ -66,7 +66,7 @@ from nimloth.wm.lewm import LeWMConfig
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
-from nimloth.training.rl.loss import compute_predictor_loss, compute_value_loss
+from nimloth.wm.objectives import compute_action_value_loss, compute_dynamics_loss
 from nimloth.training.rl.checkpoint import save_rl_checkpoint
 
 sft2_best = Path('${SFT2_BEST}')
@@ -108,26 +108,30 @@ optimizer = torch.optim.AdamW(
     lr=1e-4
 )
 
-# Predictor loss
-pred_loss, pred_m = compute_predictor_loss(
-    qwen_hidden_current=hidden_cur,
-    qwen_hidden_next=hidden_next,
+# Predictor loss：RL target projector 保持 stop-gradient。
+current_state = state_proj(hidden_cur).float()
+with torch.no_grad():
+    target_state = state_proj(hidden_next).float()
+dynamics = compute_dynamics_loss(
+    current_state=current_state,
+    target_next_state=target_state,
     action_indices=actions,
-    state_proj=state_proj,
-    wm_predictor=wm_predictor,
+    predictor=wm_predictor,
 )
-print(json.dumps({'pred_loss': float(pred_loss.item()), **pred_m}))
+pred_loss = dynamics.loss
+print(json.dumps({'pred_loss': float(pred_loss.item()), 'wm_mse': float(pred_loss.item())}))
 
 # Value loss (project current hidden first)
 with torch.no_grad():
     wm_state = state_proj(hidden_cur).float()
-val_loss, val_m = compute_value_loss(
-    state_emb=wm_state,
+value = compute_action_value_loss(
+    state=wm_state,
     action_indices=actions,
-    action_value_targets=value_targets,
+    return_targets=value_targets,
     value_head=value_head,
 )
-print(json.dumps({'val_loss': float(val_loss.item()), **val_m}))
+val_loss = value.loss
+print(json.dumps({'val_loss': float(val_loss.item()), 'value_reg': float(value.regression.item()), 'value_rank': float(value.ranking.item())}))
 
 # Backward
 total_loss = pred_loss + val_loss

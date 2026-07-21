@@ -224,13 +224,16 @@ def test_jsonl_collector_nonexistent_source(tmp_path: Path) -> None:
 
 
 def test_advantage_std_single_sample_no_nan() -> None:
-    """compute_advantages with single sample must not produce NaN."""
+    """单样本 Monte Carlo advantage 标准化不能产生 NaN。"""
     import torch
-    from nimloth.training.rl.loss import compute_advantages
+    from nimloth.training.rl.algorithm import normalized_monte_carlo_advantages
 
     targets = torch.tensor([5.0])
     values = torch.tensor([4.0])
-    result = compute_advantages(value_targets=targets, predicted_values=values)
+    result = normalized_monte_carlo_advantages(
+        return_targets=targets,
+        predicted_values=values,
+    )
     assert not torch.isnan(result).any()
     assert not torch.isinf(result).any()
     # Mean-centered → should be 0 for single sample
@@ -240,12 +243,15 @@ def test_advantage_std_single_sample_no_nan() -> None:
 def test_advantage_std_multi_sample() -> None:
     """compute_advantages with multiple samples works normally."""
     import torch
-    from nimloth.training.rl.loss import compute_advantages
+    from nimloth.training.rl.algorithm import normalized_monte_carlo_advantages
 
     torch.manual_seed(42)
     targets = torch.tensor([5.0, 3.0, 7.0])
     values = torch.tensor([4.0, 2.0, 8.0])
-    result = compute_advantages(value_targets=targets, predicted_values=values)
+    result = normalized_monte_carlo_advantages(
+        return_targets=targets,
+        predicted_values=values,
+    )
     assert result.shape == (3,)
     assert torch.isclose(result.mean(), torch.tensor(0.0), atol=1e-7)
     assert torch.isclose(result.std(unbiased=False), torch.tensor(1.0), atol=1e-3)

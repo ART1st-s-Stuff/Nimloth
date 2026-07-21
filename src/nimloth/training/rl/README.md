@@ -14,7 +14,7 @@ model, and trains the predictor, value head, and optionally the Qwen actor.
 | `nimloth.rollout` | Model-independent trajectory schema, JSONL storage, sources, and transition expansion |
 | `nimloth.config.agent`, `nimloth.config.rollout` | Stage-independent Agent and rollout configuration |
 | `nimloth.config.rl` | Strict typed RL-phase configuration |
-| `nimloth.training.rl` | RL components, losses, optimizer step, checkpoints, and train loop |
+| `nimloth.training.rl` | RL 算法、组件装配、optimizer、checkpoint 和训练循环 |
 | `experiments/training/rl/rollout_env.py` | Thin standalone rollout entry point and pre-write validation |
 
 RL code must not construct an independent navigation prompt. Online action
@@ -106,13 +106,13 @@ distribution, including masked zero-probability actions.
 | `nimloth.rollout` | Model-independent trajectory schema, JSONL, and transition expansion |
 | `nimloth.backbone.qwen25vl.rollout` | Qwen latent transition encoding |
 | `components.py` | Qwen/WM construction, placement, EMA, optimizer, and resume |
-| `step.py` | Deterministic transition batch and one joint optimizer step |
+| `algorithm.py` | 类型化 RL batch、dynamics/value/PPO 目标和一次联合更新 |
+| `loop.py` | collect→encode→update→validate→save iteration 生命周期 |
 | `evaluation.py` | Held-out rollout collection and checkpoint metric selection |
 | `rollout_runtime.py` | Collector startup constraints and online policy binding |
 | `reporting.py` | RL-specific CSV/W&B metric shape over shared util helpers |
 | `checkpoint_manager.py` | Runtime component state to checkpoint artifact mapping |
-| `trainer.py` | Iteration order and checkpoint triggers |
-| `loss.py` | Predictor, value, PPO, advantage, and action-entropy losses |
+| `trainer.py` | 运行模式校验与依赖装配入口 |
 | `checkpoint.py` | Qwen/WM/value/optimizer checkpoint helpers |
 | `cli.py` | CLI adapter and independent train/eval collector selection |
 
@@ -130,6 +130,10 @@ distribution, including masked zero-probability actions.
   held-out `validation.checkpoint_metric` (`success_rate` or `avg_reward`).
 - LoRA plus full Vision saves `vision_full_state.pt` next to the adapter and
   restores both through the shared Qwen checkpoint helper.
+- 当前 dynamics 只通过当前状态更新 StateProjector；下一状态是 stop-gradient
+  target。ValueHead 输入也显式 detach，因此 value loss 不更新 StateProjector。
+  该 ownership 写在 `algorithm.py` 并由梯度测试保护，后续若改变必须作为单独
+  算法决策处理。
 
 Example standalone rollout:
 

@@ -5,10 +5,10 @@ from PIL import Image
 
 from nimloth.backbone.qwen25vl.policy import (
     behavior_log_probs,
+    categorical_entropy_from_log_probs,
     collect_policy_images,
     render_policy_messages,
 )
-from nimloth.training.rl.loss import compute_action_entropy_from_log_probs
 
 
 def test_behavior_distribution_matches_raw_policy_without_sampling_transform() -> None:
@@ -32,7 +32,7 @@ def test_greedy_distribution_records_the_actual_deterministic_behavior() -> None
 
 def test_entropy_handles_top_p_zero_probability_actions() -> None:
     log_probs = torch.tensor([[0.0, float("-inf"), float("-inf")]])
-    entropy = compute_action_entropy_from_log_probs(log_probs)
+    entropy = categorical_entropy_from_log_probs(log_probs)
     assert torch.isfinite(entropy)
     assert entropy.item() == 0.0
 

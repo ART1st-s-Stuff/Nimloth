@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 import torch.distributed as dist
 
-from nimloth.training.sft2.engine import SFT2StepRunner
+from nimloth.training.sft2.algorithm import SFT2Algorithm, SFT2Mode
 from nimloth.util.metrics import MetricAccumulator
 
 
@@ -41,19 +41,19 @@ def distributed_metric_averages(accumulator: MetricAccumulator) -> dict[str, flo
 
 @torch.no_grad()
 def evaluate(
-    runner: SFT2StepRunner,
+    algorithm: SFT2Algorithm,
     loader,
     *,
     max_batches: int = -1,
 ) -> dict[str, float]:
     """Evaluate with the same forward implementation used during training."""
 
-    validation_runner = runner.unwrapped()
+    validation_algorithm = algorithm.unwrapped()
     accumulator = MetricAccumulator()
-    with validation_runner.validation_context():
+    with validation_algorithm.validation_context():
         for index, batch in enumerate(loader):
             if max_batches > 0 and index >= max_batches:
                 break
-            output = validation_runner.forward(batch, training=False)
+            output = validation_algorithm.compute(batch, mode=SFT2Mode.VALIDATE)
             accumulator.update(output.metrics)
     return distributed_metric_averages(accumulator)

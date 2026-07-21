@@ -99,3 +99,28 @@
 - 当前 SFT2/RL 的 WM target 梯度语义不同，共享 objective 前必须显式建模。
 - SFT2 PEFT adapter、query embedding、Vision Full 与基础模型引用仍缺少可由
   RL 自动消费的统一 artifact manifest；当前 CLI 明确只接收完整 HF checkpoint。
+
+## 2026-07-21：核心算法可读性重构（进行中）
+
+- 人类确认继续整理 SFT2/RL 核心算法；本阶段保持现有数值、梯度、cache、
+  DDP、EMA 和 checkpoint 语义，不顺带决定 RL ValueHead 是否应更新
+  StateProjector。
+- 目标是给 SFT2 与 RL 各建立一个可从上到下阅读的 `algorithm.py`，公共 WM/value
+  数学归入 `nimloth.wm`，Qwen transition 编码与 PPO prompt replay 归入
+  `nimloth.backbone.qwen25vl`。
+- 先补数值和逐组件梯度保护测试，再迁移实现；完成后在远程现有分支 worktree
+  运行定向及相邻回归。
+- 已新增 `wm/objectives.py`，公共 dynamics/value 公式只接收 state tensor；两阶段
+  的投影和 stop-gradient 策略留在各自 `algorithm.py`。
+- SFT2 使用类型化 `SFT2Batch`/`SFT2Transition`，`SFT2Algorithm.compute` 集中展示
+  Qwen current/next、SIGReg、value 和总 loss；旧 `engine.py`、`step.py`、
+  `objectives.py`、`types.py` 已移除。
+- RL 使用类型化 `RLBatch` 和 `RLAlgorithm.compute_losses/update` 集中展示
+  dynamics/value/PPO；iteration 生命周期移到 `loop.py`，`trainer.py` 只做装配，
+  旧 `actor.py`、`loss.py`、`step.py` 已移除。
+- Qwen cached encoding 合并、下一状态去重/EMA target forward 和 PPO prompt replay
+  已归入 `backbone/qwen25vl`；`util.cache` 不再反向 import SFT2 私有 batch helper。
+- 已新增 SFT2 双侧 projector 梯度、RL target stop-gradient、RL value detach、DDP
+  terminal dummy、Qwen next-prefix 去重等保护测试。
+- 本地 `compileall`、RL smoke shell 语法和 `git diff --check` 通过；本地系统 Python
+  缺少 torch/pytest，运行测试仍按人类建议放到远程依赖环境。

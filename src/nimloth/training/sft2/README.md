@@ -8,11 +8,9 @@ Qwen and world-model concepts stay outside it.
 |--------|----------------|
 | `nimloth.config.sft2`, `cli.py` | Strict SFT2 YAML schema and CLI adapter |
 | `components.py` | Model/head construction, placement, DDP, EMA, optimizer |
-| `data/` | Transition batch protocol, samplers, and loaders |
-| `engine.py` | Shared train/validation forward contract |
+| `algorithm.py` | 单个 batch 的 Qwen→WM/value→loss 完整算法与梯度策略 |
+| `data/` | 类型化 transition batch、sampler 和 loader |
 | `loop.py` | Resumable micro-batch loop, validation, and checkpoint policy |
-| `step.py` | One-step WM and value computation |
-| `objectives.py` | Tensor-level losses and schedules |
 | `evaluate.py` | Validation loop and distributed metric aggregation |
 | `checkpoint.py` | SFT2 artifact set, resume state, save manager |
 | `utils.py` | Small runtime helpers shared by training and validation |
@@ -42,7 +40,10 @@ Outer reconstruction/evaluation modules consume `nimloth.wm` transition types
 and `nimloth.backbone.qwen25vl` adapters directly. They must not import SFT2's
 private data implementation.
 
-Training and validation call the same `SFT2StepRunner.forward`; validation only
-changes mode/gradient/EMA policy. Checkpoint selection uses model-derived
-`val_wm_mse`. Static rollout labels are available from `nimloth.wm.statistics`
-for dataset inspection only.
+Training and validation call the same `SFT2Algorithm.compute` with an explicit
+`SFT2Mode`. `algorithm.py` shows the complete state/loss flow; Qwen prompt
+deduplication, cache and EMA target forward stay in
+`backbone/qwen25vl/transition.py`, while shared dynamics/value formulas stay in
+`wm/objectives.py`. Checkpoint selection uses model-derived `val_wm_mse`.
+Static rollout labels are available from `nimloth.wm.statistics` for dataset
+inspection only.

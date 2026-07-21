@@ -10,10 +10,11 @@ from typing import Any
 import torch
 from torch.utils.data import Dataset
 
-from nimloth.backbone.qwen25vl.transition import messages_with_image_paths
-from nimloth.training.sft2.data.batch import (
-    _collate_next_encoding_bundle,
-    collate_cached_encodings,
+from nimloth.backbone.qwen25vl.batch import collate_qwen_encodings
+from nimloth.backbone.qwen25vl.transition import (
+    QwenTransitionMessages,
+    collate_next_qwen_encodings,
+    messages_with_image_paths,
 )
 from nimloth.util.cache.schema import (
     COMPACT_CACHE_FORMAT,
@@ -138,11 +139,17 @@ class CompactCachedTransitionCollator:
 
         return {
             "items": items,
-            "current_enc": collate_cached_encodings(current_rows, self.pad_token_id),
+            "current_enc": collate_qwen_encodings(current_rows, self.pad_token_id),
             "current_enc_rows": current_rows,
             "next_enc_rows": next_rows,
-            "next_enc_bundle": _collate_next_encoding_bundle(
-                items,
+            "next_enc_bundle": collate_next_qwen_encodings(
+                tuple(
+                    QwenTransitionMessages(
+                        current=item["messages"],
+                        next=item.get("next_messages"),
+                    )
+                    for item in items
+                ),
                 next_rows,
                 pad_token_id=self.pad_token_id,
             ),

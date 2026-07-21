@@ -4,9 +4,9 @@ Qwen2.5-VL-specific helpers shared by training and evaluation code.
 
 | File | Purpose |
 |------|---------|
-| `batch.py` | Chat rendering, image collection, CE labels, and processor batches |
-| `transition.py` | WM transition samples → Qwen messages and training metadata |
-| `policy.py` | Agent action logits and temperature/top-p behavior probabilities |
+| `batch.py` | Chat rendering, image collection, CE labels, online/cached processor batches |
+| `transition.py` | WM transition messages、cache 去重和 SFT2 current/next latent 编码 |
+| `policy.py` | Agent action distribution、entropy 和 PPO prompt replay |
 | `rollout.py` | Structured rollout → Qwen latent transition encoding |
 | `vagen_rollout.py` | Qwen policy + VAGEN navigation Agent collection |
 | `checkpoint.py` | PEFT adapter and fully tuned visual-tower state handling |

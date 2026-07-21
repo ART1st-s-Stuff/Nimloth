@@ -282,5 +282,8 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     assert torch.equal(current_pixels, torch.cat([pixels[:2], pixels[:2], pixels[2:]], dim=0))
     next_bundle = batch["next_enc_bundle"]
     assert next_bundle is not None
-    assert len(next_bundle["keys"]) == 1
-    assert torch.equal(next_bundle["enc"]["pixel_values"], torch.cat([pixels[:2], pixels[2:]], dim=0))
+    assert len(next_bundle.keys) == 1
+    assert torch.equal(
+        next_bundle.encoding["pixel_values"],
+        torch.cat([pixels[:2], pixels[2:]], dim=0),
+    )
