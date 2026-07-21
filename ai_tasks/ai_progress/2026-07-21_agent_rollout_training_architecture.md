@@ -68,8 +68,13 @@
   `std(unbiased=True)` 以确认旧 NaN 行为，不是实现回归。
 - 首轮远程测试发现 diagnosis/test 仍从 rollout 导入 navigation action count；
   已把该常量迁到 environment action space，提交 `737638d` 后重测通过。
-- 当前第二阶段改动已通过 `compileall` 和 `git diff --check`，待提交后在同一
-  远程 worktree 补跑新增 config/checkpoint/module/SFT2 loop 测试及相邻回归。
+- 第二阶段改动已通过 `compileall` 和 `git diff --check`。
+- 远程新增与相邻定向回归：`73 passed, 1 warning`。
+- 远程完整 `tests/training/rl tests/training/sft2`：`96 passed, 1 warning`。
+- 远程全仓测试修复了 VAGEN submodule 新目录/字段导致的旧测试收集问题，以及
+  `test_config.py` 同名模块冲突。跳过缺少 `external/RCDM` 的单一 submodule
+  可用性测试后：`203 passed, 4 warnings`。默认全量测试唯一剩余阻塞是远程未
+  初始化 `external/RCDM/guided_diffusion_rcdm`，没有把该环境缺失记为代码通过。
 
 ## 待处理设计点
 
