@@ -18,7 +18,7 @@
 ### 1. Rollout 使用当前图片伪造全部视觉历史
 
 - 状态：**已修复（2026-07-21）**
-- 修复：`NavigationAgent` 保存每一步真实的 observation text/image/action；`NimlothAgentPrompt` 按原始顺序绑定 `images[:t+1]`。旧 `_select_action_nimloth()` 已删除。
+- 修复：公共 `Agent` 保存每一步真实的 observation text/image/action；注册式 `NimlothPromptTemplate` 按原始顺序绑定 `images[:t+1]`。`EpisodeRunner` 负责真实环境交互，旧 `_select_action_nimloth()` 已删除。
 - 验证：Agent prompt 测试检查多步真实图片顺序；rollout schema 要求 observations/images 均为 actions + 1。
 
 ### 2. old/new log probability 使用不同长度的 prompt
@@ -94,7 +94,7 @@
 ### 13. WM state 与 policy state 使用不同 prompt
 
 - 状态：**已修复（2026-07-21）**
-- 修复：`encode_trajectory_hiddens()` 逐步调用 `RolloutTrajectory.build_policy_messages()`，其底层使用和 rollout/PPO/SFT2 相同的 `NimlothAgentPrompt`；generic image-only prompt 已删除。
+- 修复：`backbone/qwen25vl/rollout.py` 逐步调用 `RolloutTrajectory.build_policy_prompt()`，其底层按 trajectory 保存的模板 spec 重建和 online rollout/PPO/SFT2 相同的 `AgentPromptTemplate`；generic image-only prompt 已删除。
 - 验证：结构化 SFT2 transition 测试确认当前 supervised prefix 与下一状态 policy prefix 使用共享模板。
 
 ### 14. Value loss 不会更新解冻后的 StateProjector
@@ -129,6 +129,10 @@
 6. 统一 policy state 与 WM state；决定 StateProjector 梯度 ownership。
 7. 用真实多卡测试验证 FSDP + Vision EMA，再确定实现。
 8. 最后清理死入口，并按 `config / components / engine / collectors` 拆分 `trainer.py` 和 `rollout.py`。
+
+当前架构进展：公共 Agent、rollout、Agent/Rollout config 已迁出 training；Qwen
+rollout encoding 与 Qwen+VAGEN collector 已归入 `backbone/qwen25vl`。RL trainer
+的 evaluation、collector runtime、reporting 和 checkpoint mapping 已拆为独立模块。
 
 ## 完成标准
 

@@ -14,7 +14,7 @@
 - 新 RL JSONL 保存 prompt version、结构化 observation/action、每步 prompt 审计副本、采样参数和真实 8-way behavior log probabilities；写入前和训练前统一校验，top-p/greedy 的 `-inf` 以标准 JSON `null` round-trip。
 - SFT2 对结构化记录用同一模板生成 supervised current prefix 与 policy-query next prefix；旧 `messages` 数据继续走显式 legacy 读取路径。SFT1 converter 的 assistant action block 也改由 Agent 模板生成并保留原 reasoning。
 - 已删除 `src/nimloth/agent/inference.py`，并更新 Agent/SFT2/RL README、RL 质量清单和已失效的 k>1 计划说明。
-- 当前新增架构改动已通过 `compileall` 与 `git diff --check`；本地 `.venv` 缺少 pytest/torch，新增 AgentEpisode→Rollout、模板 registry/config 和 RL evaluation/runtime 测试待推送后在远程依赖环境执行。此前相关组合测试 `116 passed, 1 deselected`；扩大到本地可收集测试为 `184 passed, 1 deselected`。
+- 新增架构改动已通过 `compileall` 与 `git diff --check`。远程定向回归覆盖 AgentEpisode→Rollout、模板 registry/config、Qwen policy、RL、SFT2 和 transition：`128 passed, 1 warning`；排除远程未初始化 `external/RCDM` 的单一可用性测试后，全仓为 `217 passed, 4 warnings`。warning 均来自既有数值边界或弃用提示。
 
 ## 2026-07-20：CFM/RCDM 归入 recon 包
 

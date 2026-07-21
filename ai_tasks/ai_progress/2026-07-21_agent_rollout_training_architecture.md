@@ -87,9 +87,11 @@
   `test_config.py` 同名模块冲突。跳过缺少 `external/RCDM` 的单一 submodule
   可用性测试后：`203 passed, 4 warnings`。默认全量测试唯一剩余阻塞是远程未
   初始化 `external/RCDM/guided_diffusion_rcdm`，没有把该环境缺失记为代码通过。
-- 本轮新增 Agent/rollout/trainer 架构改动：`python -m compileall -q src experiments
-  tests` 与 `git diff --check` 通过；本地 `.venv` 缺少 pytest 和 torch，新增/相邻
-  pytest 待提交推送后在远程 `.worktree/dev` 执行。
+- 本轮新增 Agent/rollout/trainer 架构改动：`python -m compileall -q src experiments tests`
+  与 `git diff --check` 通过。远程 `.worktree/dev` 定向回归 `128 passed,
+  1 warning`；排除未初始化 `external/RCDM` 的单一可用性测试后，全仓 `217
+  passed, 4 warnings`。远程原有 `external/le-wm`、`scripts/` 和 SFT2 trainer 备份
+  脏项均保持不变。
 
 ## 待处理设计点
 
