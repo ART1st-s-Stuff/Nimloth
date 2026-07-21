@@ -4,8 +4,10 @@ import pytest
 
 from nimloth.agent import (
     AgentTranscript,
-    NimlothAgentPrompt,
+    NimlothPromptTemplate,
+    PromptTemplateSpec,
     bind_image_placeholders,
+    create_prompt_template,
 )
 
 
@@ -18,16 +20,18 @@ def _transcript(*, observations: int, actions: tuple[int, ...]) -> AgentTranscri
     )
 
 
+def _template() -> NimlothPromptTemplate:
+    return NimlothPromptTemplate(latent_token_count=1, action_count=8)
+
+
 def test_policy_and_supervised_turn_share_the_exact_action_prefix() -> None:
-    prompt = NimlothAgentPrompt()
-    policy_messages = prompt.build_policy_messages(
-        _transcript(observations=2, actions=(0,)),
-        bind_images=False,
-    )
-    supervised_messages = prompt.build_supervised_messages(
-        _transcript(observations=2, actions=(0, 3)),
-        bind_images=False,
-    )
+    prompt = _template()
+    policy_messages = prompt.build_policy_prompt(
+        _transcript(observations=2, actions=(0,))
+    ).unbound_messages()
+    supervised_messages = prompt.build_supervised_prompt(
+        _transcript(observations=2, actions=(0, 3))
+    ).unbound_messages()
 
     assert policy_messages[:-1] == supervised_messages[:-1]
     assert supervised_messages[-1]["content"].startswith(
@@ -39,11 +43,10 @@ def test_policy_and_supervised_turn_share_the_exact_action_prefix() -> None:
 
 
 def test_policy_prompt_binds_each_real_observation_in_order() -> None:
-    prompt = NimlothAgentPrompt()
-    messages = prompt.build_policy_messages(
-        _transcript(observations=3, actions=(0, 4)),
-        bind_images=True,
-    )
+    prompt = _template()
+    messages = prompt.build_policy_prompt(
+        _transcript(observations=3, actions=(0, 4))
+    ).bound_messages()
     bound_images = [
         part["image"]
         for message in messages
@@ -68,16 +71,15 @@ def test_bind_image_placeholders_rejects_count_mismatch() -> None:
 
 
 def test_policy_prefix_requires_one_unacted_observation() -> None:
-    prompt = NimlothAgentPrompt()
+    prompt = _template()
     with pytest.raises(ValueError, match="one unacted observation"):
-        prompt.build_policy_messages(
-            _transcript(observations=1, actions=(0,)),
-            bind_images=False,
+        prompt.build_policy_prompt(
+            _transcript(observations=1, actions=(0,))
         )
 
 
 def test_supervised_response_can_preserve_dataset_thought_text() -> None:
-    response = NimlothAgentPrompt().assistant_response(
+    response = _template().assistant_response(
         4,
         thought="The target is to my right.",
     )
@@ -85,3 +87,36 @@ def test_supervised_response_can_preserve_dataset_thought_text() -> None:
         "<think>The target is to my right.</think>"
         "<|latent_state|><|action_start|><|action_(4)|><|action_end|>"
     )
+
+
+def test_prompt_template_spec_rebuilds_the_same_template() -> None:
+    original = NimlothPromptTemplate(
+        latent_token_count=3,
+        action_count=8,
+        thought="Inspect the next observation.",
+    )
+
+    restored = create_prompt_template(original.spec, action_count=8)
+    assert restored.spec == original.spec
+    assert restored.assistant_prefix() == original.assistant_prefix()
+
+
+def test_prompt_registry_rejects_unknown_template_and_version() -> None:
+    with pytest.raises(ValueError, match="unknown prompt template"):
+        create_prompt_template(
+            PromptTemplateSpec(identifier="missing", version="v1"),
+            action_count=8,
+        )
+    with pytest.raises(ValueError, match="unsupported prompt version"):
+        create_prompt_template(
+            PromptTemplateSpec(
+                identifier="nimloth-latent-action",
+                version="old",
+            ),
+            action_count=8,
+        )
+
+
+def test_transcript_rejects_multiple_unacted_observations() -> None:
+    with pytest.raises(ValueError, match="at most one unacted observation"):
+        _transcript(observations=2, actions=())

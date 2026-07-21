@@ -6,10 +6,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nimloth.agent import (
+    NIMLOTH_PROMPT_TEMPLATE_ID,
     PROMPT_VERSION,
+    AgentPrompt,
     AgentTranscript,
-    NimlothAgentPrompt,
-    validate_action_log_probs,
+    PromptTemplateSpec,
+    create_prompt_template,
+    prompt_template_spec_from_record,
 )
 from nimloth.environment import get_action_space
 
@@ -23,7 +26,7 @@ class RolloutTrajectory:
     action_indices: list[int] = field(default_factory=list)
     action_names: list[str] = field(default_factory=list)
     action_log_probs: list[list[float]] = field(default_factory=list)
-    nav_instruction: str = ""
+    instruction: str = ""
     success: bool = False
     reward: float = 0.0
     split: str = "train"
@@ -31,6 +34,8 @@ class RolloutTrajectory:
     system_prompt: str = ""
     observation_texts: list[str] = field(default_factory=list)
     policy_messages: list[list[dict[str, Any]]] = field(default_factory=list)
+    prompt_template_spec: PromptTemplateSpec | None = None
+    # 下面两个字段只为读取旧 JSONL 保留；新记录以 prompt_template_spec 为准。
     prompt_version: str = PROMPT_VERSION
     latent_token_count: int = 1
     sampling_temperature: float = 1.0
@@ -42,49 +47,83 @@ class RolloutTrajectory:
     def num_steps(self) -> int:
         return len(self.action_indices)
 
+    def resolved_prompt_template_spec(self) -> PromptTemplateSpec:
+        """返回新式 spec，或把内存中的旧字段显式迁移。"""
+
+        if self.prompt_template_spec is not None:
+            return self.prompt_template_spec
+        return prompt_template_spec_from_record(
+            {
+                "prompt_version": self.prompt_version,
+                "latent_token_count": self.latent_token_count,
+            }
+        )
+
+    def resolved_latent_token_count(self) -> int:
+        """返回模板声明的 latent 数量，旧模板则读取兼容字段。"""
+
+        spec = self.resolved_prompt_template_spec()
+        if spec.identifier == NIMLOTH_PROMPT_TEMPLATE_ID:
+            value = int(spec.config.get("latent_token_count", 1))
+        else:
+            value = self.latent_token_count
+        if value < 1:
+            raise ValueError("latent_token_count must be >= 1")
+        return value
+
+    def build_policy_prompt(self, step_index: int) -> AgentPrompt:
+        """通过注册模板重建某一步的 policy prompt。"""
+
+        action_space = get_action_space(
+            self.action_space_id,
+            self.action_space_version,
+        )
+        template = create_prompt_template(
+            self.resolved_prompt_template_spec(),
+            action_count=len(action_space),
+        )
+        return template.build_policy_prompt(
+            self.transcript().policy_prefix(step_index)
+        )
+
     def build_policy_messages(
         self,
         step_index: int,
         *,
         bind_images: bool,
     ) -> list[dict[str, Any]]:
-        transcript = AgentTranscript(
-            system_prompt=self.system_prompt,
-            observation_texts=tuple(self.observation_texts),
-            observation_images=tuple(self.image_paths),
-            action_indices=tuple(self.action_indices),
-        )
+        prompt = self.build_policy_prompt(step_index)
+        return prompt.bound_messages() if bind_images else prompt.unbound_messages()
+
+    def build_completed_prompt(self) -> AgentPrompt:
+        """通过注册模板重建完整监督 prompt。"""
+
         action_space = get_action_space(
             self.action_space_id,
             self.action_space_version,
         )
-        prompt = NimlothAgentPrompt(
-            latent_token_count=self.latent_token_count,
+        template = create_prompt_template(
+            self.resolved_prompt_template_spec(),
             action_count=len(action_space),
         )
-        return prompt.build_policy_messages(
-            transcript.policy_prefix(step_index),
-            bind_images=bind_images,
-        )
+        return template.build_supervised_prompt(self.transcript())
 
     def build_completed_messages(self, *, bind_images: bool) -> list[dict[str, Any]]:
-        transcript = AgentTranscript(
+        prompt = self.build_completed_prompt()
+        return prompt.bound_messages() if bind_images else prompt.unbound_messages()
+
+    def transcript(self) -> AgentTranscript:
+        """把持久化字段还原为 Agent transcript。"""
+
+        return AgentTranscript(
             system_prompt=self.system_prompt,
             observation_texts=tuple(self.observation_texts),
             observation_images=tuple(self.image_paths),
             action_indices=tuple(self.action_indices),
         )
-        action_space = get_action_space(
-            self.action_space_id,
-            self.action_space_version,
-        )
-        prompt = NimlothAgentPrompt(
-            latent_token_count=self.latent_token_count,
-            action_count=len(action_space),
-        )
-        return prompt.build_supervised_messages(transcript, bind_images=bind_images)
 
     def to_record(self) -> dict[str, Any]:
+        prompt_spec = self.resolved_prompt_template_spec()
         return {
             "id": self.record_id,
             "split": self.split,
@@ -98,12 +137,16 @@ class RolloutTrajectory:
                 [None if value == float("-inf") else value for value in row]
                 for row in self.action_log_probs
             ],
-            "nav_instruction": self.nav_instruction,
+            "instruction": self.instruction,
+            # 迁移期继续写旧 key，旧训练工具仍可读取。
+            "nav_instruction": self.instruction,
             "system_prompt": self.system_prompt,
             "observation_texts": self.observation_texts,
             "policy_messages": self.policy_messages,
-            "prompt_version": self.prompt_version,
-            "latent_token_count": self.latent_token_count,
+            "prompt_template": prompt_spec.to_record(),
+            # 同时写出旧字段，便于已有工具在迁移期继续读取。
+            "prompt_version": prompt_spec.version,
+            "latent_token_count": self.resolved_latent_token_count(),
             "sampling_temperature": self.sampling_temperature,
             "sampling_top_p": self.sampling_top_p,
             "action_space_id": self.action_space_id,
@@ -112,6 +155,13 @@ class RolloutTrajectory:
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "RolloutTrajectory":
+        prompt_template_spec = prompt_template_spec_from_record(record)
+        latent_token_count = int(
+            prompt_template_spec.config.get(
+                "latent_token_count",
+                record.get("latent_token_count", 1),
+            )
+        )
         return cls(
             record_id=str(record.get("id", "")),
             image_paths=list(record.get("image_paths", [])),
@@ -121,7 +171,9 @@ class RolloutTrajectory:
                 [float("-inf") if value is None else float(value) for value in row]
                 for row in record.get("action_log_probs", [])
             ],
-            nav_instruction=str(record.get("nav_instruction", "")),
+            instruction=str(
+                record.get("instruction", record.get("nav_instruction", ""))
+            ),
             success=bool(record.get("success", False)),
             reward=float(record.get("reward", 0.0)),
             split=str(record.get("split", "train")),
@@ -129,86 +181,12 @@ class RolloutTrajectory:
             system_prompt=str(record.get("system_prompt", "")),
             observation_texts=list(record.get("observation_texts", [])),
             policy_messages=list(record.get("policy_messages", [])),
-            prompt_version=str(record.get("prompt_version", "")),
-            latent_token_count=int(record.get("latent_token_count", 1)),
+            prompt_template_spec=prompt_template_spec,
+            prompt_version=prompt_template_spec.version,
+            latent_token_count=latent_token_count,
             sampling_temperature=float(record.get("sampling_temperature", 1.0)),
             sampling_top_p=float(record.get("sampling_top_p", 1.0)),
             # 旧轨迹没有版本字段，按当时唯一存在的 navigation@1 解释。
             action_space_id=str(record.get("action_space_id", "navigation")),
             action_space_version=int(record.get("action_space_version", 1)),
-        )
-
-
-def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
-    """在写盘或训练前校验一条结构化 Agent trajectory。"""
-
-    prefix = f"trajectory {trajectory.record_id}"
-    if len(trajectory.image_paths) != trajectory.num_steps + 1:
-        raise ValueError(
-            f"{prefix}: images={len(trajectory.image_paths)} "
-            f"but actions={trajectory.num_steps}"
-        )
-    if len(trajectory.observation_texts) != trajectory.num_steps + 1:
-        raise ValueError(
-            f"{prefix}: observations={len(trajectory.observation_texts)} "
-            f"but actions={trajectory.num_steps}"
-        )
-    if len(trajectory.action_names) != trajectory.num_steps:
-        raise ValueError(
-            f"{prefix}: action_names={len(trajectory.action_names)} "
-            f"but actions={trajectory.num_steps}"
-        )
-    action_space = get_action_space(
-        trajectory.action_space_id,
-        trajectory.action_space_version,
-    )
-    expected_names = [action_space.key_for(index) for index in trajectory.action_indices]
-    if trajectory.action_names != expected_names:
-        raise ValueError(f"{prefix}: action names do not match action indices")
-    if len(trajectory.action_log_probs) != trajectory.num_steps:
-        raise ValueError(
-            f"{prefix}: action_log_probs={len(trajectory.action_log_probs)} "
-            f"but actions={trajectory.num_steps}"
-        )
-    for step, (action_index, log_probs) in enumerate(
-        zip(trajectory.action_indices, trajectory.action_log_probs, strict=True)
-    ):
-        try:
-            validate_action_log_probs(
-                action_index,
-                log_probs,
-                action_count=len(action_space),
-            )
-        except ValueError as error:
-            raise ValueError(
-                f"{prefix} step {step} has invalid action probabilities: {error}"
-            ) from error
-    if len(trajectory.policy_messages) != trajectory.num_steps:
-        raise ValueError(
-            f"{prefix}: policy_messages={len(trajectory.policy_messages)} "
-            f"but actions={trajectory.num_steps}"
-        )
-    if not trajectory.system_prompt:
-        raise ValueError(f"{prefix} has no system prompt")
-    if trajectory.prompt_version != PROMPT_VERSION:
-        raise ValueError(
-            f"{prefix} uses unsupported prompt version {trajectory.prompt_version!r}"
-        )
-    if not trajectory.nav_instruction:
-        raise ValueError(f"{prefix} has no navigation instruction")
-    if trajectory.sampling_temperature < 0.0:
-        raise ValueError(f"{prefix} has a negative sampling temperature")
-    if not 0.0 < trajectory.sampling_top_p <= 1.0:
-        raise ValueError(f"{prefix} has sampling_top_p outside (0, 1]")
-    for step, policy_messages in enumerate(trajectory.policy_messages):
-        expected_messages = trajectory.build_policy_messages(step, bind_images=False)
-        if policy_messages != expected_messages:
-            raise ValueError(
-                f"{prefix} step {step} policy prompt does not match the "
-                "shared Agent template"
-            )
-    expected_completed = trajectory.build_completed_messages(bind_images=False)
-    if trajectory.messages != expected_completed:
-        raise ValueError(
-            f"{prefix} completed messages do not match the shared Agent template"
         )

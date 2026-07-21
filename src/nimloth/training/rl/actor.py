@@ -8,7 +8,7 @@ import torch
 
 from nimloth.agent import bind_image_placeholders
 from nimloth.backbone.qwen25vl.policy import batch_action_log_probs
-from nimloth.rollout.encoding import EncodedRolloutTransition
+from nimloth.backbone.qwen25vl.rollout import EncodedRolloutTransition
 from nimloth.util.module import evaluating
 
 

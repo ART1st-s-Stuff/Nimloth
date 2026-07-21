@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from nimloth.agent.runtime import Agent, AgentAction
+from nimloth.agent.template import PromptTemplateSpec
+from nimloth.agent.transcript import AgentTranscript
 from nimloth.environment.common.session import (
     EnvironmentObservation,
     EnvironmentSession,
@@ -21,6 +23,9 @@ class AgentEpisode:
     rewards: tuple[float, ...]
     success: bool
     done: bool
+    prompt_template: PromptTemplateSpec
+    action_space_id: str
+    action_space_version: int
 
     def __post_init__(self) -> None:
         if len(self.observations) != len(self.actions) + 1:
@@ -33,6 +38,23 @@ class AgentEpisode:
     @property
     def reward(self) -> float:
         return sum(self.rewards)
+
+    @property
+    def transcript(self) -> AgentTranscript:
+        """把执行结果转换为模型无关 transcript。"""
+
+        return AgentTranscript(
+            system_prompt=self.system_prompt,
+            observation_texts=tuple(
+                observation.text for observation in self.observations
+            ),
+            observation_images=tuple(
+                observation.image for observation in self.observations
+            ),
+            action_indices=tuple(
+                action.action_index for action in self.actions
+            ),
+        )
 
 
 class EpisodeRunner:
@@ -50,6 +72,13 @@ class EpisodeRunner:
     ) -> AgentEpisode:
         if max_steps < 1:
             raise ValueError("max_steps must be >= 1")
+        if session.action_space != self._agent.action_space:
+            raise ValueError(
+                "Agent action space does not match environment session: "
+                f"{self._agent.action_space.identifier}@"
+                f"{self._agent.action_space.version} != "
+                f"{session.action_space.identifier}@{session.action_space.version}"
+            )
 
         observations: list[EnvironmentObservation] = []
         actions: list[AgentAction] = []
@@ -86,6 +115,9 @@ class EpisodeRunner:
                 rewards=tuple(rewards),
                 success=success,
                 done=done,
+                prompt_template=self._agent.prompt_template_spec,
+                action_space_id=self._agent.action_space.identifier,
+                action_space_version=self._agent.action_space.version,
             )
         finally:
             session.close()

@@ -7,7 +7,9 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
+from nimloth.config.agent import AgentConfig, parse_agent_config
 from nimloth.config.io import load_yaml_config
+from nimloth.config.rollout import RolloutConfig, parse_rollout_config
 
 
 def _section(
@@ -38,14 +40,6 @@ def _positive_float(value: Any, field: str, *, allow_zero: bool = False) -> floa
         operator = ">=" if allow_zero else ">"
         raise ValueError(f"{field} must be {operator} 0, got {result}")
     return result
-
-
-def _string_tuple(value: Any, field: str) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-        raise ValueError(f"{field} must be a list of strings")
-    return tuple(value)
 
 
 def _boolean(value: Any, field: str) -> bool:
@@ -83,16 +77,6 @@ class ValueHeadConfig:
 
 
 @dataclass(frozen=True)
-class RolloutConfig:
-    train_datasets: tuple[str, ...] = ()
-    eval_datasets: tuple[str, ...] = ()
-    jsonl_train_sources: tuple[str, ...] = ()
-    jsonl_eval_sources: tuple[str, ...] = ()
-    temperature: float = 1.0
-    top_p: float = 1.0
-
-
-@dataclass(frozen=True)
 class RLLoopConfig:
     iterations: int = 1000
     envs_per_iteration: int = 8
@@ -120,6 +104,7 @@ class TrainingConfig:
 class RLConfig:
     """训练代码唯一接收的 RL 配置对象。"""
 
+    agent: AgentConfig
     actor: ActorConfig
     freeze: FreezeConfig
     predictor: PredictorConfig
@@ -139,6 +124,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     """校验原始 YAML mapping，并拒绝所有未实现字段。"""
 
     allowed_sections = {
+        "agent",
         "actor",
         "freeze",
         "predictor",
@@ -159,18 +145,6 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         raw,
         "value_head",
         {"lr", "rank_margin", "lambda_rank"},
-    )
-    rollout = _section(
-        raw,
-        "rollout",
-        {
-            "train_datasets",
-            "eval_datasets",
-            "jsonl_train_sources",
-            "jsonl_eval_sources",
-            "temperature",
-            "top_p",
-        },
     )
     loop = _section(
         raw,
@@ -202,32 +176,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     if not 0.0 < actor_config.clip_ratio < 1.0:
         raise ValueError("actor.clip_ratio must be in (0, 1)")
 
-    rollout_config = RolloutConfig(
-        train_datasets=_string_tuple(
-            rollout.get("train_datasets"),
-            "rollout.train_datasets",
-        ),
-        eval_datasets=_string_tuple(
-            rollout.get("eval_datasets"),
-            "rollout.eval_datasets",
-        ),
-        jsonl_train_sources=_string_tuple(
-            rollout.get("jsonl_train_sources"),
-            "rollout.jsonl_train_sources",
-        ),
-        jsonl_eval_sources=_string_tuple(
-            rollout.get("jsonl_eval_sources"),
-            "rollout.jsonl_eval_sources",
-        ),
-        temperature=_positive_float(
-            rollout.get("temperature", 1.0),
-            "rollout.temperature",
-            allow_zero=True,
-        ),
-        top_p=float(rollout.get("top_p", 1.0)),
-    )
-    if not 0.0 < rollout_config.top_p <= 1.0:
-        raise ValueError("rollout.top_p must be in (0, 1]")
+    rollout_config = parse_rollout_config(raw.get("rollout"))
     checkpoint_metric = str(
         validation.get("checkpoint_metric", "success_rate")
     )
@@ -250,6 +199,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     )
 
     return RLConfig(
+        agent=parse_agent_config(raw.get("agent")),
         actor=actor_config,
         freeze=FreezeConfig(
             state_proj=_boolean(

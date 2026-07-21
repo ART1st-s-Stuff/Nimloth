@@ -1,4 +1,4 @@
-"""连接公共 Agent runner 与具体 environment session 的在线采集器。"""
+"""用 Qwen policy 和 VAGEN navigation session 运行公共 Agent。"""
 
 from __future__ import annotations
 
@@ -8,17 +8,19 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from nimloth.agent import Agent, EpisodeRunner, NimlothAgentPrompt
+from nimloth.agent import Agent, EpisodeRunner, create_prompt_template
 from nimloth.backbone.qwen25vl.policy import (
     QwenAgentPolicy,
     validate_agent_policy_protocol,
 )
+from nimloth.config.agent import AgentConfig
 from nimloth.environment.navigation import (
     NAVIGATION_ACTION_SPACE,
     VAGENNavigationSession,
     instruction_from_observation,
 )
 from nimloth.rollout.schema import RolloutTrajectory
+from nimloth.rollout.from_agent import trajectory_from_agent_episode
 from nimloth.rollout.storage import save_trajectories
 
 
@@ -37,6 +39,7 @@ class VAGENNavigationRolloutCollector:
         top_p: float = 1.0,
         eval_sets: tuple[str, ...] = ("base", "common_sense"),
         split: str = "eval",
+        agent_config: AgentConfig | None = None,
     ) -> None:
         if not eval_sets:
             raise ValueError("rollout collector requires at least one eval_set")
@@ -56,6 +59,7 @@ class VAGENNavigationRolloutCollector:
         self._top_p = top_p
         self._eval_sets = eval_sets
         self._split = split
+        self._agent_config = agent_config or AgentConfig()
         self._client: Any | None = None
         self._policy: QwenAgentPolicy | None = None
         self._latent_token_count = 1
@@ -126,8 +130,10 @@ class VAGENNavigationRolloutCollector:
             agent = Agent(
                 policy=self._policy,
                 action_space=NAVIGATION_ACTION_SPACE,
-                prompt=NimlothAgentPrompt(
-                    latent_token_count=self._latent_token_count,
+                prompt_template=create_prompt_template(
+                    self._agent_config.prompt_spec(
+                        latent_token_count=self._latent_token_count,
+                    ),
                     action_count=len(NAVIGATION_ACTION_SPACE),
                 ),
             )
@@ -149,40 +155,19 @@ class VAGENNavigationRolloutCollector:
                     episode.observations,
                     image_dir,
                 )
-                action_keys = [action.action_key for action in episode.actions]
                 observation_texts = [
                     observation.text for observation in episode.observations
                 ]
-                trajectory = RolloutTrajectory(
+                trajectory = trajectory_from_agent_episode(
+                    episode,
                     record_id=episode_id,
                     image_paths=image_paths,
-                    action_indices=[
-                        action.action_index for action in episode.actions
-                    ],
-                    action_names=action_keys,
-                    action_log_probs=[
-                        list(action.action_log_probs) for action in episode.actions
-                    ],
-                    nav_instruction=instruction_from_observation(
+                    instruction=instruction_from_observation(
                         observation_texts[0]
                     ),
-                    success=episode.success
-                    or any(reward >= 10.0 for reward in episode.rewards),
-                    reward=episode.reward,
                     split=self._split,
-                    messages=agent.completed_messages(bind_images=False),
-                    system_prompt=episode.system_prompt,
-                    observation_texts=observation_texts,
-                    policy_messages=[
-                        [dict(message) for message in action.prompt_messages]
-                        for action in episode.actions
-                    ],
-                    prompt_version=agent.prompt_version,
-                    latent_token_count=self._latent_token_count,
                     sampling_temperature=self._temperature,
                     sampling_top_p=self._top_p,
-                    action_space_id=NAVIGATION_ACTION_SPACE.identifier,
-                    action_space_version=NAVIGATION_ACTION_SPACE.version,
                 )
                 trajectories.append(trajectory)
                 self._log(

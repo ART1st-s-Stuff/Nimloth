@@ -160,7 +160,8 @@ class VAGENNavigationSession:
         adjusted_reward = float(reward)
         if not info_dict.get("last_action_success", True):
             adjusted_reward -= self._failure_penalty
-        success = bool(info_dict.get("task_success", False))
+        # VAGEN navigation 的稀疏成功奖励为 10；旧服务可能不返回 task_success。
+        success = bool(info_dict.get("task_success", False)) or adjusted_reward >= 10.0
         return EnvironmentStep(
             observation=EnvironmentObservation(
                 text=observation_text(raw_observation),

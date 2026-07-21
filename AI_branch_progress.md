@@ -6,12 +6,15 @@
 
 ## 2026-07-21：Agent prompt/runtime 成为 SFT2 与 RL 公共边界
 
-- 在本地分支 `fix/sft2-review-bugs` 将 `src/nimloth/agent/` 从无调用方的 `WMAgent` 原型改为实际使用的结构化 transcript、prompt/action 模板和 `NavigationAgent` episode 运行时；Qwen2.5-VL 的模型前向与 temperature/top-p 行为分布保留在 `backbone/qwen25vl/policy.py`。
+- 在本地分支 `fix/sft2-review-bugs` 将 `src/nimloth/agent/` 从无调用方的 `WMAgent` 原型改为实际使用的结构化 transcript、可注册 prompt template、`Agent` policy runtime 和 `EpisodeRunner`；Qwen2.5-VL 的模型前向与 temperature/top-p 行为分布保留在 `backbone/qwen25vl/policy.py`。
+- environment 通过 `EnvironmentSession.system_prompt` 和带版本动作空间提供环境语义；`moveahead` 等 navigation 指令不再由 Agent prompt 硬编码。`AgentEpisode` 是 runtime 到 rollout 的唯一输入，collector 不再重新拼 transcript/prompt。
+- 公共 `AgentConfig`、`RolloutConfig` 已放在 `nimloth.config.agent` 与 `nimloth.config.rollout`；RL 配置组合这两个对象。trajectory 持久化模板 identifier/version/config，并保留显式 legacy JSONL 迁移。
+- `rollout/schema.py` 的跨字段校验已拆到 `rollout/validation.py`；RL trainer 的 held-out evaluation、collector 约束、CSV/W&B reporting 和 checkpoint 映射分别拆到独立模块，`trainer.py` 只保留迭代顺序。
 - RL 环境 rollout 现在使用环境真实 `system_prompt`、每步 `obs_str` 和按序历史图片；PPO replay、WM state encoding 与 online action query 使用同一模板和完整历史。推理失败不再伪造 moveahead/零概率样本。
 - 新 RL JSONL 保存 prompt version、结构化 observation/action、每步 prompt 审计副本、采样参数和真实 8-way behavior log probabilities；写入前和训练前统一校验，top-p/greedy 的 `-inf` 以标准 JSON `null` round-trip。
 - SFT2 对结构化记录用同一模板生成 supervised current prefix 与 policy-query next prefix；旧 `messages` 数据继续走显式 legacy 读取路径。SFT1 converter 的 assistant action block 也改由 Agent 模板生成并保留原 reasoning。
 - 已删除 `src/nimloth/agent/inference.py`，并更新 Agent/SFT2/RL README、RL 质量清单和已失效的 k>1 计划说明。
-- 验证：相关组合测试 `116 passed, 1 deselected`；扩大到本地可收集测试为 `184 passed, 1 deselected`。完整测试收集仍受三个基线环境问题阻塞：旧 VAGEN `envs/` 文件路径不存在、两个无 package 的 `test_config.py` 同名导入冲突、当前 Python 环境缺少 pandas；单独的两进程 Gloo 测试因沙箱无法解析 loopback 被 deselect。`compileall` 与 `git diff --check` 通过。
+- 当前新增架构改动已通过 `compileall` 与 `git diff --check`；本地 `.venv` 缺少 pytest/torch，新增 AgentEpisode→Rollout、模板 registry/config 和 RL evaluation/runtime 测试待推送后在远程依赖环境执行。此前相关组合测试 `116 passed, 1 deselected`；扩大到本地可收集测试为 `184 passed, 1 deselected`。
 
 ## 2026-07-20：CFM/RCDM 归入 recon 包
 

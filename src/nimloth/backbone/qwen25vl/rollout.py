@@ -1,4 +1,4 @@
-"""使用 Qwen 把结构化 rollout 编码为训练可消费的 latent transition。"""
+"""使用 Qwen 把结构化 rollout 编码为 latent transition。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from nimloth.agent import PROMPT_VERSION
+from nimloth.agent import NIMLOTH_PROMPT_TEMPLATE_ID, PROMPT_VERSION
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 from nimloth.latent.extraction import (
     LatentActionTokens,
@@ -15,8 +15,9 @@ from nimloth.latent.extraction import (
     find_last_latent_state_index,
     last_hidden_state,
 )
-from nimloth.rollout.schema import RolloutTrajectory, validate_rollout_trajectory
+from nimloth.rollout.schema import RolloutTrajectory
 from nimloth.rollout.transitions import discounted_action_value_targets
+from nimloth.rollout.validation import validate_rollout_trajectory
 from nimloth.util.module import evaluating
 
 
@@ -45,10 +46,14 @@ def encode_trajectory_states(
 ) -> list[torch.Tensor]:
     """逐个 policy state 编码，返回包含最终状态的 CPU hidden 列表。"""
 
-    if trajectory.prompt_version != PROMPT_VERSION:
+    prompt_spec = trajectory.resolved_prompt_template_spec()
+    if (
+        prompt_spec.identifier != NIMLOTH_PROMPT_TEMPLATE_ID
+        or prompt_spec.version != PROMPT_VERSION
+    ):
         raise ValueError(
-            f"trajectory {trajectory.record_id!r} uses prompt_version "
-            f"{trajectory.prompt_version!r}; expected {PROMPT_VERSION!r}"
+            f"trajectory {trajectory.record_id!r} uses unsupported Qwen "
+            f"prompt template {prompt_spec.identifier}@{prompt_spec.version}"
         )
     if not trajectory.system_prompt or not trajectory.observation_texts:
         raise ValueError(
@@ -56,6 +61,7 @@ def encode_trajectory_states(
         )
 
     states: list[torch.Tensor] = []
+    latent_token_count = trajectory.resolved_latent_token_count()
     tokens = LatentActionTokens()
     # State 编码和行为 policy 使用相同的确定性 eval-mode Qwen。
     with evaluating(qwen_model), torch.no_grad():
@@ -65,7 +71,7 @@ def encode_trajectory_states(
                 [{"messages": messages}],
                 processor,
                 max_length=999999,
-                latent_token_count=trajectory.latent_token_count,
+                latent_token_count=latent_token_count,
             )
             model_inputs = {key: value.to(device) for key, value in encoding.items()}
             output = qwen_model(
@@ -129,7 +135,7 @@ def encode_rollout_transitions(
                     policy_image_paths=trajectory.image_paths[: step_index + 1],
                     sampling_temperature=trajectory.sampling_temperature,
                     sampling_top_p=trajectory.sampling_top_p,
-                    latent_token_count=trajectory.latent_token_count,
+                    latent_token_count=trajectory.resolved_latent_token_count(),
                 )
             )
     return transitions

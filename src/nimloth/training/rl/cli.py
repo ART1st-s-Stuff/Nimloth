@@ -93,10 +93,10 @@ def parse_rl_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     """解析参数、创建阶段组件并启动 RL 训练。"""
     from nimloth.util.distributed import is_main
-    from nimloth.rollout import (
-        JSONLRolloutCollector,
+    from nimloth.backbone.qwen25vl.vagen_rollout import (
         VAGENNavigationRolloutCollector,
     )
+    from nimloth.rollout import JSONLRolloutCollector
     from nimloth.training.rl.trainer import train_rl
 
     args = parse_rl_args(argv)
@@ -137,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             top_p=config.rollout.top_p,
             eval_sets=train_datasets,
             split="train",
+            agent_config=config.agent,
         )
         eval_collector = None
         if config.validation.enabled:
@@ -154,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
                 top_p=config.rollout.top_p,
                 eval_sets=config.rollout.eval_datasets,
                 split="eval",
+                agent_config=config.agent,
             )
         if is_main():
             print(json.dumps({"rollout_mode": "env", "env_url": args.env_url,

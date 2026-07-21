@@ -103,7 +103,9 @@ def main(argv: list[str] | None = None) -> int:
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
 
-    from nimloth.rollout import VAGENNavigationRolloutCollector
+    from nimloth.backbone.qwen25vl.vagen_rollout import (
+        VAGENNavigationRolloutCollector,
+    )
 
     model, processor = load_qwen(
         args.model, args.attn_implementation, args.max_pixels

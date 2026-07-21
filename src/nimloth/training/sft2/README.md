@@ -23,7 +23,8 @@ Qwen and world-model concepts stay outside it.
 
 For structured rollout records, transcript and action-prompt construction are
 owned by `nimloth.agent`. SFT2 expands each action into a supervised current
-prefix and a policy-query next prefix using `NimlothAgentPrompt`. Legacy JSONL
+prefix and a policy-query next prefix using the trajectory's registered
+`AgentPromptTemplate`. Legacy JSONL
 records without `system_prompt`/`observation_texts` remain readable through
 their stored `messages`, but new data should use the structured Agent schema.
 

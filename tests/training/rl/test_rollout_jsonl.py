@@ -11,7 +11,7 @@ import pytest
 
 from nimloth.agent import (
     AgentTranscript,
-    NimlothAgentPrompt,
+    NimlothPromptTemplate,
 )
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
 from nimloth.rollout import JSONLRolloutCollector, RolloutTrajectory
@@ -34,7 +34,7 @@ def _make_traj(record_id: str, num_steps: int = 3) -> RolloutTrajectory:
     ]
     image_paths = [f"/tmp/{record_id}_step{s}.png" for s in range(num_steps + 1)]
     action_indices = [i % 8 for i in range(num_steps)]
-    prompt = NimlothAgentPrompt()
+    prompt = NimlothPromptTemplate(latent_token_count=1, action_count=8)
     transcript = AgentTranscript(
         system_prompt=system_prompt,
         observation_texts=tuple(observation_texts),
@@ -49,19 +49,21 @@ def _make_traj(record_id: str, num_steps: int = 3) -> RolloutTrajectory:
             NAVIGATION_ACTION_SPACE.key_for(index) for index in action_indices
         ],
         action_log_probs=[[-math.log(8.0)] * 8 for _ in range(num_steps)],
-        nav_instruction="Go to the couch.",
+        instruction="Go to the couch.",
         success=(num_steps % 2 == 0),
         reward=10.0 if num_steps % 2 == 0 else 0.0,
-        messages=prompt.build_supervised_messages(transcript, bind_images=False),
+        messages=(
+            prompt.build_supervised_prompt(transcript).unbound_messages()
+        ),
         system_prompt=system_prompt,
         observation_texts=observation_texts,
         policy_messages=[
-            prompt.build_policy_messages(
-                transcript.policy_prefix(step),
-                bind_images=False,
-            )
+            prompt.build_policy_prompt(
+                transcript.policy_prefix(step)
+            ).unbound_messages()
             for step in range(num_steps)
         ],
+        prompt_template_spec=prompt.spec,
     )
 
 

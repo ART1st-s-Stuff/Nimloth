@@ -1,12 +1,13 @@
 """RL 配置对象、严格加载与命令行覆盖。"""
 
+from nimloth.config.agent import AgentConfig
+from nimloth.config.rollout import RolloutConfig
 from nimloth.config.rl.schema import (
     ActorConfig,
     FreezeConfig,
     PredictorConfig,
     RLConfig,
     RLLoopConfig,
-    RolloutConfig,
     TrainingConfig,
     ValidationConfig,
     ValueHeadConfig,
@@ -17,6 +18,7 @@ from nimloth.config.rl.schema import (
 
 __all__ = [
     "ActorConfig",
+    "AgentConfig",
     "FreezeConfig",
     "PredictorConfig",
     "RLConfig",

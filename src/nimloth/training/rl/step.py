@@ -9,7 +9,7 @@ import torch
 
 from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
 from nimloth.config.rl import RLConfig
-from nimloth.rollout.encoding import EncodedRolloutTransition
+from nimloth.backbone.qwen25vl.rollout import EncodedRolloutTransition
 from nimloth.training.rl.actor import compute_current_policy_log_probs
 from nimloth.training.rl.loss import (
     compute_action_entropy_from_log_probs,

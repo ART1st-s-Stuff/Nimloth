@@ -2,6 +2,10 @@
 # Dataset config matches VAGEN baseline (navigation base + common_sense).
 
 # Qwen 模型和 tune mode 由 CLI 唯一负责。
+agent:
+  prompt_template: nimloth-latent-action
+  thought: What should I do next?
+
 freeze:
   state_proj: true
 

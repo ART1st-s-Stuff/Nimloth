@@ -9,10 +9,10 @@ from typing import Any, Iterator
 
 from torch.utils.data import Dataset
 
-from nimloth.agent.prompt import (
-    PROMPT_VERSION,
+from nimloth.agent import (
     AgentTranscript,
-    NimlothAgentPrompt,
+    create_prompt_template,
+    prompt_template_spec_from_record,
 )
 from nimloth.environment import get_action_space
 
@@ -96,12 +96,6 @@ def expand_record_transitions(
     system_prompt = str(record.get("system_prompt", ""))
     observation_texts = tuple(str(text) for text in record.get("observation_texts", []))
     if system_prompt and observation_texts:
-        prompt_version = str(record.get("prompt_version", PROMPT_VERSION))
-        if prompt_version != PROMPT_VERSION:
-            raise ValueError(
-                f"record {record_id!r}: unsupported prompt_version {prompt_version!r}; "
-                f"expected {PROMPT_VERSION!r}"
-            )
         return _expand_structured_agent_transitions(
             record=record,
             record_id=record_id,
@@ -196,8 +190,8 @@ def _expand_structured_agent_transitions(
             f"actions={len(action_indices)}; expected one final image"
         )
 
-    prompt = NimlothAgentPrompt(
-        latent_token_count=int(record.get("latent_token_count", 1)),
+    prompt = create_prompt_template(
+        prompt_template_spec_from_record(record),
         action_count=action_count,
     )
     value_targets = discounted_action_value_targets(record, gamma=value_gamma)
@@ -219,17 +213,15 @@ def _expand_structured_agent_transitions(
             TransitionSample(
                 record_id=record_id,
                 step_index=step_index,
-                prefix_messages=prompt.build_supervised_messages(
-                    current,
-                    bind_images=False,
+                prefix_messages=(
+                    prompt.build_supervised_prompt(current).unbound_messages()
                 ),
                 prefix_image_paths=list(image_paths[: step_index + 1]),
                 action_index=action_index,
                 current_image_path=image_paths[step_index],
                 next_image_path=image_paths[step_index + 1],
-                next_prefix_messages=prompt.build_policy_messages(
-                    next_state,
-                    bind_images=False,
+                next_prefix_messages=(
+                    prompt.build_policy_prompt(next_state).unbound_messages()
                 ),
                 next_prefix_image_paths=list(image_paths[: step_index + 2]),
                 action_value_target=float(value_targets[step_index]),

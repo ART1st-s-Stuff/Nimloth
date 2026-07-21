@@ -41,8 +41,9 @@
   experiment directory 和 preprocess cache 迁到 `nimloth.util`。
 - 已建立 environment-owned action space、VAGEN session、通用 Agent runtime
   与 `EpisodeRunner`。
-- 已建立顶层 `nimloth.rollout`，统一 trajectory schema、JSONL、离线来源、
-  在线 VAGEN navigation collector、transition 展开和 Qwen latent 编码。
+- 已建立顶层 `nimloth.rollout`，统一模型无关 trajectory schema、JSONL、离线
+  来源和 transition 展开；Qwen latent 编码及 Qwen+VAGEN 在线适配位于
+  `nimloth.backbone.qwen25vl`。
 - 已删除公开但永远抛出 `NotImplementedError` 的旧 VAGEN collector 入口，
   并将 RL train/eval collector 拆成独立实例。
 - 已把 RL 的 Qwen/WM/EMA/optimizer/resume 装配拆到 `components.py`，把单次
@@ -54,6 +55,17 @@
   可确定性重放。
 - 已修复 RL 的 LoRA + Vision Full 保存/恢复、独立 train/eval collector、显式
   best metric、严格配置、actor 单一开关和 Qwen hidden size 硬编码。
+- 已把原单文件 Agent prompt 拆为 transcript、模板协议、模板 registry、policy
+  协议、runtime、episode runner 与 serialization；`Agent` 必须显式注入模板、
+  policy 和 environment 动作空间。
+- `AgentEpisode` 现在携带模板 spec 和动作空间版本；`from_agent.py` 是 runtime
+  到持久化 rollout 的唯一适配器。公共 rollout 不再猜 navigation reward 阈值，
+  success fallback 留在 VAGEN navigation session。
+- 新增 `nimloth.config.agent` 与 `nimloth.config.rollout`；RL YAML 显式声明 Agent
+  模板，RL 阶段 schema 通过组合而不是复制持有这两类配置。
+- rollout 的记录/序列化与跨字段 validation 已分离。RL trainer 的 evaluation、
+  collector runtime、reporting、checkpoint mapping 已拆到独立模块；公共 CSV/W&B
+  实现继续由 `nimloth.util` 提供。
 
 ## 验证
 
@@ -75,6 +87,9 @@
   `test_config.py` 同名模块冲突。跳过缺少 `external/RCDM` 的单一 submodule
   可用性测试后：`203 passed, 4 warnings`。默认全量测试唯一剩余阻塞是远程未
   初始化 `external/RCDM/guided_diffusion_rcdm`，没有把该环境缺失记为代码通过。
+- 本轮新增 Agent/rollout/trainer 架构改动：`python -m compileall -q src experiments
+  tests` 与 `git diff --check` 通过；本地 `.venv` 缺少 pytest 和 torch，新增/相邻
+  pytest 待提交推送后在远程 `.worktree/dev` 执行。
 
 ## 待处理设计点
 

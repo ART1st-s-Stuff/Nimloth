@@ -8,7 +8,7 @@ from typing import Any, Sequence
 import torch
 from PIL import Image
 
-from nimloth.agent.runtime import PolicyDecision
+from nimloth.agent import AgentPrompt, PolicyDecision
 from nimloth.latent import (
     LatentActionTokens,
     normalize_latent_state_blocks,
@@ -183,14 +183,14 @@ class QwenAgentPolicy:
         self.latent_token_count = latent_token_count
         self.token_id_map = token_id_map or special_token_ids(processor.tokenizer)
 
-    def select_action(self, messages: list[dict[str, Any]]) -> PolicyDecision:
+    def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
         # 行为概率必须可被 PPO 确定性重放，不能受 LoRA dropout 影响。
         with evaluating(self.model), torch.no_grad():
             logits = action_logits_for_messages(
                 model=self.model,
                 processor=self.processor,
                 token_id_map=self.token_id_map,
-                messages=messages,
+                messages=prompt.bound_messages(),
                 device=self.device,
                 latent_token_count=self.latent_token_count,
             )

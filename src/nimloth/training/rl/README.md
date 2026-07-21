@@ -1,7 +1,7 @@
 # RL training
 
 The RL path collects navigation trajectories with the real
-`nimloth.agent.NavigationAgent`, encodes the same policy states for the world
+`nimloth.agent.Agent` and `EpisodeRunner`, encodes the same policy states for the world
 model, and trains the predictor, value head, and optionally the Qwen actor.
 
 ## Ownership boundaries
@@ -10,9 +10,10 @@ model, and trains the predictor, value head, and optionally the Qwen actor.
 |-------|----------------|
 | `nimloth.agent` | Transcript state, prompt version, policy/supervised message construction, episode runner |
 | `nimloth.environment` | Action vocabulary, environment session, and VAGEN navigation adapter |
-| `nimloth.backbone.qwen25vl.policy` | Qwen forward, action-token logits, temperature/top-p distribution |
-| `nimloth.rollout` | Trajectory schema, collectors, JSONL storage, transition encoding |
-| `nimloth.config.rl` | Strict typed RL configuration |
+| `nimloth.backbone.qwen25vl` | Qwen policy, VAGEN online adapter, and latent transition encoding |
+| `nimloth.rollout` | Model-independent trajectory schema, JSONL storage, sources, and transition expansion |
+| `nimloth.config.agent`, `nimloth.config.rollout` | Stage-independent Agent and rollout configuration |
+| `nimloth.config.rl` | Strict typed RL-phase configuration |
 | `nimloth.training.rl` | RL components, losses, optimizer step, checkpoints, and train loop |
 | `experiments/training/rl/rollout_env.py` | Thin standalone rollout entry point and pre-write validation |
 
@@ -27,7 +28,7 @@ by the shared Agent template.
 | Single-GPU online | required | no | local integration and online training |
 | JSONL | not required | yes | offline WM/value training from separately collected trajectories |
 
-Direct `EnvRolloutCollector` use is rejected when `world > 1`: different
+Direct `VAGENNavigationRolloutCollector` use is rejected when `world > 1`: different
 episode lengths and failures would make FSDP ranks execute different Qwen
 forwards. Generate JSONL separately for distributed training. A training
 collector must use an environment dataset whose name ends in `_train`; eval
@@ -44,9 +45,9 @@ use separate collector instances and sources.
 environment system_prompt + obs_str + images
                     |
                     v
-       NavigationAgent / NimlothAgentPrompt
+       Agent / EpisodeRunner / AgentPromptTemplate
                     |
-          QwenNavigationPolicy
+               QwenAgentPolicy
                     |
      action + exact behavior log probabilities
                     |
@@ -61,7 +62,7 @@ environment system_prompt + obs_str + images
 
 For every step `t`, a complete trajectory stores:
 
-- `system_prompt` and `prompt_version`;
+- `system_prompt` and versioned `prompt_template` spec;
 - `observation_texts[0:t+2]` and `image_paths[0:t+2]`;
 - `action_indices[0:t+1]` and action names;
 - the exact unbound `policy_messages[t]` used during rollout;
@@ -102,10 +103,15 @@ distribution, including masked zero-probability actions.
 
 | Module | Responsibility |
 |--------|----------------|
-| `nimloth.rollout` | Trajectory schema, collection, JSONL, transition expansion, Qwen encoding |
+| `nimloth.rollout` | Model-independent trajectory schema, JSONL, and transition expansion |
+| `nimloth.backbone.qwen25vl.rollout` | Qwen latent transition encoding |
 | `components.py` | Qwen/WM construction, placement, EMA, optimizer, and resume |
 | `step.py` | Deterministic transition batch and one joint optimizer step |
-| `trainer.py` | Iteration orchestration, held-out evaluation, logging, and checkpoint triggers |
+| `evaluation.py` | Held-out rollout collection and checkpoint metric selection |
+| `rollout_runtime.py` | Collector startup constraints and online policy binding |
+| `reporting.py` | RL-specific CSV/W&B metric shape over shared util helpers |
+| `checkpoint_manager.py` | Runtime component state to checkpoint artifact mapping |
+| `trainer.py` | Iteration order and checkpoint triggers |
 | `loss.py` | Predictor, value, PPO, advantage, and action-entropy losses |
 | `checkpoint.py` | Qwen/WM/value/optimizer checkpoint helpers |
 | `cli.py` | CLI adapter and independent train/eval collector selection |

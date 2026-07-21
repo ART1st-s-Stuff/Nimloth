@@ -34,7 +34,7 @@ for _dependency_root in (_REPO_ROOT / "src", _VAGEN_ROOT):
     if _dependency_root.is_dir() and str(_dependency_root) not in sys.path:
         sys.path.insert(0, str(_dependency_root))
 
-from nimloth.agent import NimlothAgentPrompt
+from nimloth.agent import NimlothPromptTemplate
 
 try:
     from vagen.envs.navigation.utils.nimloth_format import (
@@ -58,7 +58,10 @@ except ModuleNotFoundError:
 ACTION_NAMES = list(ACTION_NAMES)
 ACTION_TO_IDX = dict(ACTION_TO_IDX)
 SPECIAL_TOKENS = list(SPECIAL_TOKENS)
-AGENT_PROMPT = NimlothAgentPrompt(latent_token_count=len(LATENT_STATE_TOKENS))
+AGENT_PROMPT = NimlothPromptTemplate(
+    latent_token_count=len(LATENT_STATE_TOKENS),
+    action_count=len(ACTION_NAMES),
+)
 
 IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"

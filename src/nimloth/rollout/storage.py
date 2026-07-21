@@ -6,7 +6,8 @@ import gzip
 import json
 from pathlib import Path
 
-from nimloth.rollout.schema import RolloutTrajectory, validate_rollout_trajectory
+from nimloth.rollout.schema import RolloutTrajectory
+from nimloth.rollout.validation import validate_rollout_trajectory
 
 
 def save_trajectories(

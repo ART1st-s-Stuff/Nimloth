@@ -2,6 +2,10 @@
 # sft2_llmlora_visionfull_1epoch_gamma1_ckpt100_keep2_stride2
 
 # Qwen 模型及 tune mode 由 CLI 唯一负责。
+agent:
+  prompt_template: nimloth-latent-action
+  thought: What should I do next?
+
 freeze:
   state_proj: true
 
