@@ -1,10 +1,5 @@
-"""World-model utilities for Nimloth."""
+"""World-model 神经网络模块的公共导出。"""
 
-from nimloth.rollout.transitions import (
-    TransitionSample,
-    expand_record_transitions,
-    load_jsonl_records,
-)
 from nimloth.wm.lewm import LeWMConfig, action_one_hot, freeze_module
 from nimloth.wm._vendor_lewm import SIGReg
 from nimloth.wm.model import WorldModel
@@ -18,13 +13,10 @@ __all__ = [
     "LeWMConfig",
     "SIGReg",
     "StateProjector",
-    "TransitionSample",
     "ValueHead",
     "WMImageDecoder",
     "WMImageDecoderConfig",
     "WorldModel",
     "action_one_hot",
-    "expand_record_transitions",
     "freeze_module",
-    "load_jsonl_records",
 ]
