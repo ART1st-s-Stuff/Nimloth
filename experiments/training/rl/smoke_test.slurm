@@ -66,7 +66,8 @@ from nimloth.wm.lewm import LeWMConfig
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
-from nimloth.wm.objectives import compute_action_value_loss, compute_dynamics_loss
+from nimloth.model import NimlothModel
+from nimloth.wm.model import WorldModel
 from nimloth.training.rl.checkpoint import save_rl_checkpoint
 
 sft2_best = Path('${SFT2_BEST}')
@@ -92,6 +93,14 @@ print(json.dumps({'loaded': 'wm_predictor', 'history_size': wm_predictor.config.
 value_head = ValueHead.load_checkpoint(sft2_best / 'value_head', emb_dim=emb_dim, map_location=device).to(device)
 value_head.train()
 print(json.dumps({'loaded': 'value_head'}))
+nimloth_model = NimlothModel(
+    llm=torch.nn.Identity(),
+    wm=WorldModel(
+        state_proj=state_proj,
+        wm_predictor=wm_predictor,
+        value_head=value_head,
+    ),
+)
 
 # Synthetic batch: random Qwen hidden states
 B = 8
@@ -112,11 +121,10 @@ optimizer = torch.optim.AdamW(
 current_state = state_proj(hidden_cur).float()
 with torch.no_grad():
     target_state = state_proj(hidden_next).float()
-dynamics = compute_dynamics_loss(
+dynamics = nimloth_model.wm.compute_dynamics_loss(
     current_state=current_state,
     target_next_state=target_state,
     action_indices=actions,
-    predictor=wm_predictor,
 )
 pred_loss = dynamics.loss
 print(json.dumps({'pred_loss': float(pred_loss.item()), 'wm_mse': float(pred_loss.item())}))
@@ -124,11 +132,10 @@ print(json.dumps({'pred_loss': float(pred_loss.item()), 'wm_mse': float(pred_los
 # Value loss (project current hidden first)
 with torch.no_grad():
     wm_state = state_proj(hidden_cur).float()
-value = compute_action_value_loss(
+value = nimloth_model.wm.compute_action_value_loss(
     state=wm_state,
     action_indices=actions,
     return_targets=value_targets,
-    value_head=value_head,
 )
 val_loss = value.loss
 print(json.dumps({'val_loss': float(val_loss.item()), 'value_reg': float(value.regression.item()), 'value_rank': float(value.ranking.item())}))
@@ -151,13 +158,12 @@ with torch.no_grad():
 # Save checkpoint
 save_rl_checkpoint(
     out_dir / 'best',
-    state_proj=state_proj,
-    wm_predictor=wm_predictor,
-    value_head=value_head,
+    nimloth_model=nimloth_model,
+    save_llm=False,
     optimizer=optimizer,
     iteration=1,
     global_step=1,
-    best_value_loss=float(val_loss.item()),
+    best_eval_metric=-float(val_loss.item()),
 )
 print(json.dumps({'checkpoint': 'saved', 'path': str(out_dir / 'best')}))
 

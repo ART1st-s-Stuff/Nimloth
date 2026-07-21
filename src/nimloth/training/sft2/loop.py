@@ -20,8 +20,8 @@ from nimloth.training.sft2.checkpoint import (
 from nimloth.training.sft2.components import SFT2Components
 from nimloth.training.sft2.algorithm import (
     SFT2Algorithm,
+    SFT2LossWeights,
     SFT2Mode,
-    combine_sft2_losses,
     wm_loss_weight_schedule,
 )
 from nimloth.training.sft2.evaluate import evaluate
@@ -154,13 +154,10 @@ class SFT2TrainingLoop:
         accumulator = MetricAccumulator()
         train_iterator, micro_index = self._resume_train_iterator(epoch)
         micro_batch_count = len(self.train_loader)
-        ddp_modules = [
-            self.components.model,
-            self.components.state_proj,
-            self.components.value_head,
-        ]
+        model = self.components.nimloth_model
+        ddp_modules = [model.llm, model.wm.state_proj, model.wm.value_head]
         if self.train_wm_predictor:
-            ddp_modules.append(self.components.wm_predictor)
+            ddp_modules.append(model.wm.wm_predictor)
 
         # PyTorch 2.8 的 static_graph=True 与 no_sync() 组合存在 Reducer
         # 回归。保留重复 Qwen forward 所需的静态图，并在每个微批同步梯度。
@@ -278,12 +275,13 @@ class SFT2TrainingLoop:
             end=self.args.lambda_wm_end,
         )
         timer_start = self.step_timer.start("loss_combine")
-        weighted = combine_sft2_losses(
-            step_output,
-            wm_weight=lambda_wm if step_output.dynamics is not None else 0.0,
-            sigreg_weight=self.args.lambda_sigreg,
-            value_weight=self.args.lambda_value,
-            ce_weight=self.args.lambda_ce,
+        weighted = step_output.weighted(
+            SFT2LossWeights(
+                wm=lambda_wm if step_output.dynamics is not None else 0.0,
+                sigreg=self.args.lambda_sigreg,
+                value=self.args.lambda_value,
+                ce=self.args.lambda_ce,
+            )
         )
         self.step_timer.stop("loss_combine", timer_start)
         return lambda_wm, weighted.metrics, weighted.loss
@@ -312,7 +310,7 @@ class SFT2TrainingLoop:
         )
         optimizer.step()
         if self.components.vision_ema is not None:
-            self.components.vision_ema.update(self.components.model)
+            self.components.vision_ema.update(self.components.nimloth_model.llm)
         optimizer.zero_grad(set_to_none=True)
         self.state.global_step += 1
 

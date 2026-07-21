@@ -37,8 +37,8 @@ from nimloth.training.sft2.diagnosis.trajectory_equiv import (
 from nimloth.training.sft2.diagnosis.trajectory_forward import run_equivalence_on_jsonl
 from nimloth.training.sft2.algorithm import (
     SFT2Algorithm,
+    SFT2LossWeights,
     SFT2Mode,
-    combine_sft2_losses,
     wm_loss_weight_schedule,
 )
 from nimloth.training.sft2.data.batch import collate_cached_transition_batch
@@ -46,7 +46,14 @@ from nimloth.util.cache import (
     encode_transition_item,
 )
 from nimloth.backbone.qwen25vl.transition import QwenTransitionEncoder
-from nimloth.wm import LatentWMPredictor, LeWMConfig, StateProjector, ValueHead
+from nimloth.model import NimlothModel
+from nimloth.wm import (
+    LatentWMPredictor,
+    LeWMConfig,
+    StateProjector,
+    ValueHead,
+    WorldModel,
+)
 from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
 from nimloth.rollout.transitions import TransitionJsonlDataset, load_jsonl_records
 
@@ -114,28 +121,34 @@ def run_micro_training_loss(
     else:
         batch = items
 
+    nimloth_model = NimlothModel(
+        llm=model,
+        wm=WorldModel(
+            state_proj=state_proj,
+            wm_predictor=wm_predictor,
+            value_head=value_head,
+        ),
+    )
     algorithm = SFT2Algorithm(
+        model=nimloth_model,
         qwen=QwenTransitionEncoder(
-            model=model,
             processor=processor,
             token_id_map=token_id_map,
             device=device,
             max_length=max_length,
             pad_token_id=processor.tokenizer.pad_token_id,
         ),
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        value_head=value_head,
         sigreg=None,
     )
     losses = algorithm.compute(batch, mode=SFT2Mode.TRAIN)
     lambda_wm = wm_loss_weight_schedule(0, 100, start=0.1, end=1.0)
-    weighted = combine_sft2_losses(
-        losses,
-        wm_weight=lambda_wm if losses.dynamics is not None else 0.0,
-        sigreg_weight=0.0,
-        value_weight=1.0,
-        ce_weight=1.0,
+    weighted = losses.weighted(
+        SFT2LossWeights(
+            wm=lambda_wm if losses.dynamics is not None else 0.0,
+            sigreg=0.0,
+            value=1.0,
+            ce=1.0,
+        )
     )
     return float(weighted.loss.item())
 

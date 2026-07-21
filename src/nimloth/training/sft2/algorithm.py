@@ -9,7 +9,7 @@
 5. 训练循环只负责按步调度权重、反向传播和 optimizer 生命周期。
 
 Qwen cache、prompt 去重和 Vision EMA 由 ``QwenTransitionEncoder`` 负责；
-公共 dynamics/value 数学由 ``nimloth.wm.objectives`` 负责。
+state projection、dynamics 和 value 统一通过完整 ``NimlothModel`` 调用。
 """
 
 from __future__ import annotations
@@ -24,15 +24,11 @@ from typing import Any, Sequence
 import torch
 
 from nimloth.backbone.qwen25vl.transition import QwenTransitionEncoder
+from nimloth.model import NimlothModel
 from nimloth.training.sft2.data.batch import SFT2Batch, prepare_sft2_batch
-from nimloth.training.sft2.utils import preserve_module_modes, unwrap_module
+from nimloth.training.sft2.utils import preserve_module_modes
 from nimloth.wm import SIGReg
-from nimloth.wm.objectives import (
-    ActionValueLoss,
-    DynamicsLoss,
-    compute_action_value_loss,
-    compute_dynamics_loss,
-)
+from nimloth.wm.model import ActionValueLoss
 
 
 class SFT2Mode(Enum):
@@ -40,6 +36,16 @@ class SFT2Mode(Enum):
 
     TRAIN = "train"
     VALIDATE = "validate"
+
+
+@dataclass(frozen=True)
+class SFT2LossWeights:
+    """一个训练步实际使用的 SFT2 loss 权重。"""
+
+    wm: float
+    sigreg: float
+    value: float
+    ce: float
 
 
 @dataclass(frozen=True)
@@ -52,13 +58,40 @@ class SFT2Losses:
     value: torch.Tensor
     metrics: dict[str, float]
 
+    def weighted(self, weights: SFT2LossWeights) -> "WeightedSFT2Loss":
+        """按当前训练步配置组合四个目标。"""
+
+        tensors = (self.lm, self.dynamics, self.value, self.sigreg)
+        device = next(value.device for value in tensors if value is not None)
+        total = torch.zeros((), device=device)
+        metrics = dict(self.metrics)
+        metrics.update(
+            {
+                "lambda_wm": float(weights.wm),
+                "lambda_sigreg": float(weights.sigreg),
+                "lambda_value": float(weights.value),
+                "lambda_ce": float(weights.ce),
+            }
+        )
+        if self.dynamics is not None:
+            total = total + weights.wm * self.dynamics.to(device)
+        if self.sigreg is not None and weights.sigreg > 0.0:
+            total = total + weights.sigreg * self.sigreg.to(device)
+        total = total + weights.value * self.value.to(device)
+        if self.lm is not None:
+            total = total + weights.ce * self.lm.to(device)
+        metrics["total_loss"] = float(total.detach().item())
+        return WeightedSFT2Loss(
+            loss=total,
+            metrics=metrics,
+        )
+
 
 @dataclass(frozen=True)
 class WeightedSFT2Loss:
     """按当前训练步加权后的总目标。"""
 
     loss: torch.Tensor
-    wm_weight: float
     metrics: dict[str, float]
 
 
@@ -95,47 +128,6 @@ def build_trajectory_sigreg_inputs(
     return inputs
 
 
-def compute_sft2_dynamics(
-    *,
-    current_hidden: torch.Tensor,
-    next_hidden: torch.Tensor,
-    action_indices: torch.Tensor,
-    trajectory_steps: Sequence[tuple[str, int]] | None,
-    state_proj: torch.nn.Module,
-    wm_predictor: torch.nn.Module,
-    sigreg: SIGReg | None,
-) -> tuple[DynamicsLoss, torch.Tensor | None]:
-    """执行 SFT2 特有的双侧 projector 梯度和 trajectory SIGReg。"""
-
-    # 合并 forward 可避免 SafeBatchNorm1d 在同一 autograd 图内两次修改 running buffer。
-    projected = state_proj(torch.cat([current_hidden, next_hidden], dim=0)).float()
-    batch_size = current_hidden.shape[0]
-    current_state = projected[:batch_size]
-    target_next_state = projected[batch_size:]
-    dynamics = compute_dynamics_loss(
-        current_state=current_state,
-        target_next_state=target_next_state,
-        action_indices=action_indices,
-        predictor=wm_predictor,
-    )
-
-    sigreg_loss: torch.Tensor | None = None
-    if sigreg is not None:
-        inputs = (
-            build_trajectory_sigreg_inputs(
-                trajectory_steps,
-                current_state,
-                target_next_state,
-            )
-            if trajectory_steps is not None
-            else []
-        )
-        if not inputs:
-            inputs = [torch.stack([current_state, target_next_state], dim=0)]
-        sigreg_loss = torch.stack([sigreg(value) for value in inputs]).mean()
-    return dynamics, sigreg_loss
-
-
 def wm_loss_weight_schedule(
     global_step: int,
     total_steps: int,
@@ -156,69 +148,33 @@ def wm_loss_weight_schedule(
     return start + (end - start) * cosine
 
 
-def combine_sft2_losses(
-    losses: SFT2Losses,
-    *,
-    wm_weight: float,
-    sigreg_weight: float,
-    value_weight: float,
-    ce_weight: float,
-) -> WeightedSFT2Loss:
-    """显式组合 SFT2 的四个训练目标。"""
-
-    tensors = (losses.lm, losses.dynamics, losses.value, losses.sigreg)
-    device = next(value.device for value in tensors if value is not None)
-    total = torch.zeros((), device=device)
-    metrics = dict(losses.metrics)
-    metrics.update(
-        {
-            "lambda_wm": float(wm_weight),
-            "lambda_sigreg": float(sigreg_weight),
-            "lambda_value": float(value_weight),
-            "lambda_ce": float(ce_weight),
-        }
-    )
-    if losses.dynamics is not None:
-        total = total + wm_weight * losses.dynamics.to(device)
-    if losses.sigreg is not None and sigreg_weight > 0.0:
-        total = total + sigreg_weight * losses.sigreg.to(device)
-    total = total + value_weight * losses.value.to(device)
-    if losses.lm is not None:
-        total = total + ce_weight * losses.lm.to(device)
-    metrics["total_loss"] = float(total.detach().item())
-    return WeightedSFT2Loss(loss=total, wm_weight=wm_weight, metrics=metrics)
-
-
 @dataclass(frozen=True)
 class SFT2Algorithm:
     """SFT2 train/validation 共用的单 batch 算法入口。"""
 
+    model: NimlothModel
     qwen: QwenTransitionEncoder
-    state_proj: torch.nn.Module
-    wm_predictor: torch.nn.Module
-    value_head: torch.nn.Module
     sigreg: SIGReg | None
     value_rank_margin: float = 0.1
     value_rank_weight: float = 1.0
 
     @property
     def modules(self) -> tuple[torch.nn.Module, ...]:
-        return self.qwen.model, self.state_proj, self.wm_predictor, self.value_head
+        return (
+            self.model.llm,
+            self.model.wm.state_proj,
+            self.model.wm.wm_predictor,
+            self.model.wm.value_head,
+        )
 
     def unwrapped(self) -> SFT2Algorithm:
-        model = unwrap_module(self.qwen.model)
-        return replace(
-            self,
-            qwen=replace(self.qwen, model=model),
-            state_proj=unwrap_module(self.state_proj),
-            wm_predictor=unwrap_module(self.wm_predictor),
-            value_head=unwrap_module(self.value_head),
-        )
+        model = self.model.unwrapped()
+        return replace(self, model=model)
 
     @contextlib.contextmanager
     def validation_context(self):
         ema_context = (
-            self.qwen.vision_ema.use_ema_weights(self.qwen.model)
+            self.qwen.vision_ema.use_ema_weights(self.model.llm)
             if self.qwen.vision_ema is not None
             else contextlib.nullcontext()
         )
@@ -236,6 +192,7 @@ class SFT2Algorithm:
             mask_latent_query_labels=self.qwen.mask_latent_query_labels,
         )
         current_hidden, lm_loss = self.qwen.encode_current(
+            self.model.llm,
             batch.current_encoding,
             include_lm_loss=mode is SFT2Mode.TRAIN,
         )
@@ -277,6 +234,7 @@ class SFT2Algorithm:
             return self._ddp_aligned_zero_dynamics(batch, current_hidden, mode=mode)
 
         next_hidden = self.qwen.encode_next(
+            self.model.llm,
             [transition.qwen for transition in batch.transitions],
             indices,
             cached=batch.cached_next,
@@ -291,19 +249,53 @@ class SFT2Algorithm:
             batch.transitions[index].trajectory_step
             for index in indices
         ]
-        dynamics, sigreg_loss = compute_sft2_dynamics(
-            current_hidden=current_hidden[indices],
-            next_hidden=next_hidden,
-            action_indices=actions,
-            trajectory_steps=trajectory_steps,
-            state_proj=self.state_proj,
-            wm_predictor=self.wm_predictor,
-            sigreg=self.sigreg,
+        dynamics, sigreg_loss = self._compute_wm_losses(
+            current_hidden[indices],
+            next_hidden,
+            actions,
+            trajectory_steps,
         )
         metrics = {"wm_mse": float(dynamics.loss.detach().item())}
         if sigreg_loss is not None:
             metrics["sigreg_loss"] = float(sigreg_loss.detach().item())
         return dynamics.loss, sigreg_loss, metrics
+
+    def _compute_wm_losses(
+        self,
+        current_hidden: torch.Tensor,
+        next_hidden: torch.Tensor,
+        action_indices: torch.Tensor,
+        trajectory_steps: Sequence[tuple[str, int]],
+    ):
+        """执行 SFT2 特有的双侧 projector 梯度和 trajectory SIGReg。"""
+
+        wm = self.model.wm
+        # 合并 projector forward，确保两侧使用同一次模块调用和同一梯度图。
+        projected = wm.project_state(
+            torch.cat([current_hidden, next_hidden], dim=0)
+        )
+        batch_size = current_hidden.shape[0]
+        current_state = projected[:batch_size]
+        target_next_state = projected[batch_size:]
+        dynamics = wm.compute_dynamics_loss(
+            current_state=current_state,
+            target_next_state=target_next_state,
+            action_indices=action_indices,
+        )
+
+        sigreg_loss: torch.Tensor | None = None
+        if self.sigreg is not None:
+            inputs = build_trajectory_sigreg_inputs(
+                trajectory_steps,
+                current_state,
+                target_next_state,
+            )
+            if not inputs:
+                inputs = [torch.stack([current_state, target_next_state], dim=0)]
+            sigreg_loss = torch.stack(
+                [self.sigreg(value) for value in inputs]
+            ).mean()
+        return dynamics, sigreg_loss
 
     def _ddp_aligned_zero_dynamics(
         self,
@@ -315,18 +307,19 @@ class SFT2Algorithm:
         """terminal-only rank 调用相同模块，以免其他 rank 等待 gradient all-reduce。"""
 
         dummy_target = self.qwen.encode_ddp_dummy_target(
+            self.model.llm,
             batch.transitions[0].qwen.current,
             use_vision_ema=mode is SFT2Mode.TRAIN,
         )
-        current_state = self.state_proj(current_hidden[:1])
+        current_state = self.model.wm.project_state(current_hidden[:1])
         with torch.no_grad():
-            target_state = self.state_proj(dummy_target[:1])
+            target_state = self.model.wm.project_state(dummy_target[:1])
         actions = torch.zeros(
             (current_state.shape[0],),
             dtype=torch.long,
             device=current_state.device,
         )
-        prediction = self.wm_predictor(current_state, actions)
+        prediction = self.model.wm.predict_next_state(current_state, actions)
         zero = (current_state.sum() + target_state.sum() + prediction.sum()) * 0.0
         return zero, None, {}
 
@@ -347,23 +340,21 @@ class SFT2Algorithm:
             dtype=torch.float32,
             device=current_hidden.device,
         )
-        state = self.state_proj(current_hidden)
-        return compute_action_value_loss(
+        state = self.model.wm.project_state(current_hidden)
+        return self.model.wm.compute_action_value_loss(
             state=state,
             action_indices=actions,
             return_targets=targets,
-            value_head=self.value_head,
             rank_margin=self.value_rank_margin if mode is SFT2Mode.TRAIN else 0.0,
             rank_weight=self.value_rank_weight if mode is SFT2Mode.TRAIN else 0.0,
         )
 
 __all__ = [
     "SFT2Algorithm",
+    "SFT2LossWeights",
     "SFT2Losses",
     "SFT2Mode",
     "WeightedSFT2Loss",
     "build_trajectory_sigreg_inputs",
-    "combine_sft2_losses",
-    "compute_sft2_dynamics",
     "wm_loss_weight_schedule",
 ]

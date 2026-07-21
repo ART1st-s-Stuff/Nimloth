@@ -36,10 +36,7 @@ class RLCheckpointManager:
         components = self._components
         save_rl_checkpoint(
             path,
-            state_proj=components.state_proj,
-            wm_predictor=components.wm_predictor,
-            value_head=components.value_head,
-            model=components.model,
+            nimloth_model=components.nimloth_model,
             processor=components.processor,
             vision_ema=components.vision_ema,
             optimizer=components.optimizer,

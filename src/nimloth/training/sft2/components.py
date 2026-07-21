@@ -19,9 +19,17 @@ from nimloth.latent import (
     install_query_embedding_adapter,
     latent_state_tokens,
 )
+from nimloth.model import NimlothModel
 from nimloth.util.distributed import is_main
 from nimloth.training.sft2.checkpoint import load_aux_checkpoint, load_lora_adapter_state
-from nimloth.wm import LeWMConfig, LatentWMPredictor, SIGReg, StateProjector, ValueHead
+from nimloth.wm import (
+    LeWMConfig,
+    LatentWMPredictor,
+    SIGReg,
+    StateProjector,
+    ValueHead,
+    WorldModel,
+)
 
 
 SFT2_WM_HISTORY_SIZE = 1
@@ -37,10 +45,7 @@ def require_sft2_wm_history(wm_predictor: LatentWMPredictor, source: Path) -> No
 
 @dataclass(frozen=True)
 class SFT2Components:
-    model: torch.nn.Module
-    state_proj: torch.nn.Module
-    wm_predictor: torch.nn.Module
-    value_head: torch.nn.Module
+    nimloth_model: NimlothModel
     sigreg: SIGReg
     vision_ema: VisionEncoderEMA | None
     optimizer: torch.optim.Optimizer
@@ -221,14 +226,17 @@ def build_sft2_components(
     ).to(device=aux_device, dtype=model_dtype)
     value_head = ValueHead(wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
     sigreg = SIGReg(knots=args.sigreg_knots, num_proj=args.sigreg_num_proj).to(device=aux_device)
+    wm = WorldModel(
+        state_proj=state_proj,
+        wm_predictor=wm_predictor,
+        value_head=value_head,
+    )
 
     resume_state_path = resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir else None
     if args.resume and resume_state_path is not None and resume_state_path.exists():
         load_aux_checkpoint(
             resume_ckpt_dir,
-            state_proj,
-            wm_predictor,
-            value_head,
+            wm,
             device,
             latent_query_mode=args.latent_query_mode,
             query_tune=args.query_tune,
@@ -332,11 +340,16 @@ def build_sft2_components(
         )
     optimizer = torch.optim.AdamW(parameter_groups, weight_decay=args.weight_decay)
 
+    nimloth_model = NimlothModel(
+        llm=model,
+        wm=WorldModel(
+            state_proj=state_proj,
+            wm_predictor=wm_predictor,
+            value_head=value_head,
+        ),
+    )
     return SFT2Components(
-        model=model,
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        value_head=value_head,
+        nimloth_model=nimloth_model,
         sigreg=sigreg,
         vision_ema=vision_ema,
         optimizer=optimizer,

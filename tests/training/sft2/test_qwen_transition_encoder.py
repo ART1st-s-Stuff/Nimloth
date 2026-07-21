@@ -14,7 +14,6 @@ from nimloth.backbone.qwen25vl.transition import (
 
 def _encoder() -> QwenTransitionEncoder:
     return QwenTransitionEncoder(
-        model=MagicMock(),
         processor=MagicMock(),
         token_id_map={"latent_state": 1},
         device=torch.device("cpu"),
@@ -54,6 +53,7 @@ def test_encode_next_deduplicates_identical_prompts() -> None:
         ),
     ):
         next_latent = _encoder().encode_next(
+            MagicMock(),
             transitions,
             [0, 1],
             cached=None,
@@ -87,6 +87,7 @@ def test_encode_next_uses_worker_prebatched_cache() -> None:
         ),
     ):
         next_latent = _encoder().encode_next(
+            MagicMock(),
             [QwenTransitionMessages(current=[], next=next_messages)],
             [0],
             cached=cached,

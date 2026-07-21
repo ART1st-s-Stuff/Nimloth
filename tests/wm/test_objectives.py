@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from nimloth.wm.objectives import compute_action_value_loss
+from nimloth.wm.model import WorldModel
 from nimloth.wm.value_head import ValueHead
 
 
@@ -18,12 +18,21 @@ def _bias_only_head(bias: torch.Tensor) -> ValueHead:
     return head
 
 
+def _world_model(value_head: ValueHead) -> WorldModel:
+    return WorldModel(
+        state_proj=torch.nn.Identity(),
+        wm_predictor=torch.nn.Identity(),
+        value_head=value_head,
+    )
+
+
 def test_value_ranking_zero_when_chosen_is_best() -> None:
-    result = compute_action_value_loss(
+    result = _world_model(
+        _bias_only_head(torch.tensor([2.0, 0.5, 0.1]))
+    ).compute_action_value_loss(
         state=torch.randn(1, 4),
         action_indices=torch.tensor([0]),
         return_targets=torch.tensor([2.0]),
-        value_head=_bias_only_head(torch.tensor([2.0, 0.5, 0.1])),
         rank_margin=0.1,
         rank_weight=1.0,
     )
@@ -32,11 +41,12 @@ def test_value_ranking_zero_when_chosen_is_best() -> None:
 
 
 def test_value_ranking_positive_when_unchosen_beats_chosen() -> None:
-    result = compute_action_value_loss(
+    result = _world_model(
+        _bias_only_head(torch.tensor([0.5, 2.0, 0.1]))
+    ).compute_action_value_loss(
         state=torch.randn(1, 4),
         action_indices=torch.tensor([0]),
         return_targets=torch.tensor([1.0]),
-        value_head=_bias_only_head(torch.tensor([0.5, 2.0, 0.1])),
     )
     assert result.ranking.item() > 0.0
 
@@ -44,11 +54,10 @@ def test_value_ranking_positive_when_unchosen_beats_chosen() -> None:
 def test_value_loss_backprops_to_head_and_input_state() -> None:
     head = ValueHead(emb_dim=16, num_actions=8)
     state = torch.randn(3, 16, requires_grad=True)
-    result = compute_action_value_loss(
+    result = _world_model(head).compute_action_value_loss(
         state=state,
         action_indices=torch.tensor([0, 3, 5]),
         return_targets=torch.tensor([1.0, 0.0, -0.5]),
-        value_head=head,
     )
     result.loss.backward()
     assert head.net[0].weight.grad is not None

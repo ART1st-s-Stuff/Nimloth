@@ -27,12 +27,14 @@ from nimloth.backbone.qwen25vl.vision_ema import (
     resolve_vision_ema,
 )
 from nimloth.config.rl import RLConfig
+from nimloth.model import NimlothModel
 from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.util.distributed import broadcast_module_state, is_main
 from nimloth.wm.lewm import LeWMConfig
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
+from nimloth.wm.model import WorldModel
 
 
 @dataclass(frozen=True)
@@ -44,12 +46,9 @@ class RLResumeState:
 
 @dataclass(frozen=True)
 class RLComponents:
-    model: torch.nn.Module
+    nimloth_model: NimlothModel
     processor: Any
     token_id_map: dict[str, int]
-    state_proj: StateProjector
-    wm_predictor: LatentWMPredictor
-    value_head: ValueHead
     vision_ema: VisionEncoderEMA | None
     optimizer: torch.optim.Optimizer
     base_model_path: str
@@ -163,7 +162,7 @@ def _build_wm_components(
     *,
     qwen_model: torch.nn.Module,
     device: torch.device,
-) -> tuple[StateProjector, LatentWMPredictor, ValueHead]:
+) -> WorldModel:
     """按真实 Qwen hidden size 构造并应用显式 warm-start。"""
 
     if args.wm_checkpoint is not None:
@@ -204,7 +203,11 @@ def _build_wm_components(
     state_proj.to(device)
     wm_predictor.to(device)
     value_head.to(device)
-    return state_proj, wm_predictor, value_head
+    return WorldModel(
+        state_proj=state_proj,
+        wm_predictor=wm_predictor,
+        value_head=value_head,
+    )
 
 
 def _wrap_qwen_fsdp(
@@ -239,9 +242,7 @@ def _wrap_qwen_fsdp(
 def _load_resume_state(
     *,
     checkpoint_dir: Path | None,
-    state_proj: StateProjector,
-    wm_predictor: LatentWMPredictor,
-    value_head: ValueHead,
+    wm: WorldModel,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     rank: int,
@@ -252,9 +253,7 @@ def _load_resume_state(
         return RLResumeState()
     state = load_rl_wm_checkpoint(
         checkpoint_dir,
-        state_proj,
-        wm_predictor,
-        value_head,
+        wm,
         device,
     )
     if not state:
@@ -306,16 +305,16 @@ def build_rl_components(
         output_dir=output_dir,
         device=device,
     )
-    state_proj, wm_predictor, value_head = _build_wm_components(
+    wm = _build_wm_components(
         args,
         config,
         qwen_model=model,
         device=device,
     )
     if world_size > 1:
-        broadcast_module_state(state_proj)
-        broadcast_module_state(wm_predictor)
-        broadcast_module_state(value_head)
+        broadcast_module_state(wm.state_proj)
+        broadcast_module_state(wm.wm_predictor)
+        broadcast_module_state(wm.value_head)
 
     vision_ema: VisionEncoderEMA | None = None
     if resolve_vision_ema(args, vision_tune):
@@ -342,9 +341,9 @@ def build_rl_components(
             {"params": qwen_parameters, "lr": config.actor.lr, "name": "qwen"}
         )
     for name, module, learning_rate in (
-        ("state_proj", state_proj, config.predictor.lr),
-        ("value_head", value_head, config.value_head.lr),
-        ("wm_predictor", wm_predictor, config.predictor.lr),
+        ("state_proj", wm.state_proj, config.predictor.lr),
+        ("value_head", wm.value_head, config.value_head.lr),
+        ("wm_predictor", wm.wm_predictor, config.predictor.lr),
     ):
         parameters = [
             parameter for parameter in module.parameters() if parameter.requires_grad
@@ -358,22 +357,21 @@ def build_rl_components(
     optimizer = torch.optim.AdamW(parameter_groups, weight_decay=1e-4)
     resume = _load_resume_state(
         checkpoint_dir=resume_dir,
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        value_head=value_head,
+        wm=wm,
         optimizer=optimizer,
         device=device,
         rank=rank,
         world_size=world_size,
         expected_checkpoint_metric=config.validation.checkpoint_metric,
     )
+    nimloth_model = NimlothModel(
+        llm=model,
+        wm=wm,
+    )
     return RLComponents(
-        model=model,
+        nimloth_model=nimloth_model,
         processor=processor,
         token_id_map=token_id_map,
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        value_head=value_head,
         vision_ema=vision_ema,
         optimizer=optimizer,
         base_model_path=base_model_path,

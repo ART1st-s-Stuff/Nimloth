@@ -8,10 +8,13 @@ Unified training logic for Nimloth phases. See `ai_tasks/sft2_phase2_plan.md`.
 | `nimloth.wm/` | WM models, transition data, and dataset statistics |
 | `nimloth.recon/` | Post-hoc CFM and RCDM reconstruction models |
 | `nimloth.eval/` | Model-dependent offline evaluation and reconstruction diagnostics |
-| `training/common/` | dist, schedules, metrics, wandb |
-| `training/phase0_vagen/` | Phase 0 hooks |
-| `training/phase1_sft/` | Phase 1 SFT |
-| `training/sft2/` | SFT2 configuration, components, data plane, shared step engine, objectives, evaluation, and checkpoints |
+| `nimloth.model` | 完整 `NimlothModel(llm, wm)` 模型组合 |
+| `nimloth.agent/` | Agent prompt、transcript、policy 和 environment runner |
+| `nimloth.rollout/` | 跨训练阶段使用的 rollout schema、collector 和存储 |
+| `nimloth.config/` | Agent、rollout、SFT2 和 RL 配置 |
+| `nimloth.util/` | dist、schedule、profiling、cache、metrics、W&B |
+| `training/sft2/` | SFT2 数据、梯度策略、训练循环、验证和 checkpoint |
+| `training/rl/` | RL loss、rollout iteration、验证和 checkpoint |
 | `training/sft2/diagnosis/` | Packed/KV trajectory equivalence diagnostics |
 | `training/reconstruction/` | post-hoc diagnostic image decoder training; freezes Qwen/WM |
 

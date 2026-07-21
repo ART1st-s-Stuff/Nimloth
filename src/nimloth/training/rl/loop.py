@@ -87,7 +87,7 @@ class RLTrainingLoop:
 
         transitions = encode_rollout_transitions(
             trajectories,
-            self.algorithm.components.model,
+            self.algorithm.components.nimloth_model.llm,
             self.algorithm.components.processor,
             self.algorithm.components.token_id_map,
             self.algorithm.device,
@@ -101,7 +101,7 @@ class RLTrainingLoop:
             )
             return
 
-        update = self.algorithm.update(
+        update_metrics = self.algorithm.update(
             transitions,
             batch_size=self.config.rl.batch_size,
             batch_seed=self.config.training.seed + iteration,
@@ -109,7 +109,7 @@ class RLTrainingLoop:
         self.state.global_step += 1
         rollout_metrics = summarize_rollouts(trajectories)
         metrics = {
-            **update.metrics,
+            **update_metrics,
             "num_rollouts": float(len(trajectories)),
             "num_transitions": float(len(transitions)),
             "success_rate": float(rollout_metrics["success_rate"]),

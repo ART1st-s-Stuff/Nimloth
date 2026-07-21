@@ -69,9 +69,8 @@ def collate_next_qwen_encodings(
 
 @dataclass(frozen=True)
 class QwenTransitionEncoder:
-    """集中管理 SFT2 当前/下一 prefix 的 Qwen forward 细节。"""
+    """集中管理 SFT2 当前/下一 prefix 的 Qwen 运行期配置。"""
 
-    model: torch.nn.Module
     processor: Any
     token_id_map: dict[str, int]
     device: torch.device
@@ -83,6 +82,7 @@ class QwenTransitionEncoder:
 
     def encode_current(
         self,
+        model: torch.nn.Module,
         encoding: dict[str, torch.Tensor],
         *,
         include_lm_loss: bool,
@@ -93,7 +93,7 @@ class QwenTransitionEncoder:
         if not include_lm_loss:
             model_encoding.pop("labels", None)
         latent, lm_loss = extract_qwen_latents(
-            self.model,
+            model,
             model_encoding,
             self.token_id_map,
             self.device,
@@ -103,6 +103,7 @@ class QwenTransitionEncoder:
 
     def encode_next(
         self,
+        model: torch.nn.Module,
         transitions: Sequence[QwenTransitionMessages],
         indices: Sequence[int],
         *,
@@ -145,10 +146,10 @@ class QwenTransitionEncoder:
             )
         next_encoding.pop("labels", None)
 
-        ema_context = self._vision_ema_context(use_vision_ema)
+        ema_context = self._vision_ema_context(model, use_vision_ema)
         with torch.no_grad(), ema_context:
             unique_latents, _ = extract_qwen_latents(
-                self.model,
+                model,
                 next_encoding,
                 self.token_id_map,
                 self.device,
@@ -165,6 +166,7 @@ class QwenTransitionEncoder:
 
     def encode_ddp_dummy_target(
         self,
+        model: torch.nn.Module,
         messages: list[dict[str, Any]],
         *,
         use_vision_ema: bool,
@@ -178,9 +180,9 @@ class QwenTransitionEncoder:
             latent_token_count=self.latent_token_count,
         )
         encoding.pop("labels", None)
-        with torch.no_grad(), self._vision_ema_context(use_vision_ema):
+        with torch.no_grad(), self._vision_ema_context(model, use_vision_ema):
             latent, _ = extract_qwen_latents(
-                self.model,
+                model,
                 encoding,
                 self.token_id_map,
                 self.device,
@@ -188,9 +190,9 @@ class QwenTransitionEncoder:
             )
         return latent
 
-    def _vision_ema_context(self, enabled: bool):
+    def _vision_ema_context(self, model: torch.nn.Module, enabled: bool):
         if enabled and self.vision_ema is not None:
-            return self.vision_ema.use_ema_weights(self.model)
+            return self.vision_ema.use_ema_weights(model)
         return contextlib.nullcontext()
 
 

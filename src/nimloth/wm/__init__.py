@@ -7,11 +7,10 @@ from nimloth.rollout.transitions import (
 )
 from nimloth.wm.lewm import LeWMConfig, action_one_hot, freeze_module
 from nimloth.wm._vendor_lewm import SIGReg
-from nimloth.wm.objectives import (
+from nimloth.wm.model import (
     ActionValueLoss,
     DynamicsLoss,
-    compute_action_value_loss,
-    compute_dynamics_loss,
+    WorldModel,
 )
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.reconstruction import WMImageDecoder, WMImageDecoderConfig
@@ -29,9 +28,8 @@ __all__ = [
     "ValueHead",
     "WMImageDecoder",
     "WMImageDecoderConfig",
+    "WorldModel",
     "action_one_hot",
-    "compute_action_value_loss",
-    "compute_dynamics_loss",
     "expand_record_transitions",
     "freeze_module",
     "load_jsonl_records",

@@ -13,22 +13,14 @@ from nimloth.backbone.qwen25vl.transition import (
 )
 from nimloth.rollout.transitions import expand_record_transitions
 from nimloth.training.sft2.algorithm import (
+    SFT2LossWeights,
     SFT2Losses,
-    combine_sft2_losses,
-    compute_sft2_dynamics,
 )
 from nimloth.training.sft2.diagnosis.trajectory_once import (
     forward_trajectory_once,
     supervised_token_count,
 )
-from nimloth.wm.objectives import compute_action_value_loss
-
-
-def _trajectory_step(item: dict) -> tuple[str, int]:
-    record_id = str(item.get("record_id", ""))
-    if not record_id and ":" in str(item.get("id", "")):
-        record_id = str(item["id"]).split(":", 1)[0]
-    return record_id, int(item.get("step_index", 0))
+from nimloth.wm.model import WorldModel
 
 
 def _auxiliary_losses(
@@ -37,33 +29,29 @@ def _auxiliary_losses(
     next_hidden: torch.Tensor | None,
     items: list[dict],
     eligible_indices: list[int],
-    state_proj,
-    wm_predictor,
-    value_head,
+    wm: WorldModel,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if eligible_indices:
         assert next_hidden is not None
-        dynamics, _ = compute_sft2_dynamics(
-            current_hidden=current_hidden[eligible_indices],
-            next_hidden=next_hidden,
+        selected_current = current_hidden[eligible_indices]
+        projected = wm.project_state(
+            torch.cat([selected_current, next_hidden], dim=0)
+        )
+        dynamics = wm.compute_dynamics_loss(
+            current_state=projected[: len(eligible_indices)],
+            target_next_state=projected[len(eligible_indices) :],
             action_indices=torch.tensor(
                 [items[index]["action_index"] for index in eligible_indices],
                 dtype=torch.long,
                 device=current_hidden.device,
             ),
-            trajectory_steps=[
-                _trajectory_step(items[index]) for index in eligible_indices
-            ],
-            state_proj=state_proj,
-            wm_predictor=wm_predictor,
-            sigreg=None,
         )
         dynamics_loss = dynamics.loss
     else:
         dynamics_loss = torch.zeros((), device=current_hidden.device)
 
-    value = compute_action_value_loss(
-        state=state_proj(current_hidden),
+    value = wm.compute_action_value_loss(
+        state=wm.project_state(current_hidden),
         action_indices=torch.tensor(
             [item["action_index"] for item in items],
             dtype=torch.long,
@@ -74,7 +62,6 @@ def _auxiliary_losses(
             dtype=torch.float32,
             device=current_hidden.device,
         ),
-        value_head=value_head,
         rank_margin=0.1,
         rank_weight=1.0,
     )
@@ -93,6 +80,11 @@ def legacy_record_losses(
     wm_predictor,
     value_head,
 ):
+    wm = WorldModel(
+        state_proj=state_proj,
+        wm_predictor=wm_predictor,
+        value_head=value_head,
+    )
     steps = expand_record_transitions(record)
     items = transition_collate_for_qwen(steps)
     latents = []
@@ -110,7 +102,6 @@ def legacy_record_losses(
     lm_loss_batch = lm_total / lm_tokens if lm_tokens else None
 
     qwen = QwenTransitionEncoder(
-        model=model,
         processor=processor,
         token_id_map=token_id_map,
         device=device,
@@ -126,7 +117,13 @@ def legacy_record_losses(
     ]
     eligible = [index for index, value in enumerate(messages) if value.next is not None]
     next_hidden = (
-        qwen.encode_next(messages, eligible, cached=None, use_vision_ema=False)
+        qwen.encode_next(
+            model,
+            messages,
+            eligible,
+            cached=None,
+            use_vision_ema=False,
+        )
         if eligible
         else None
     )
@@ -135,23 +132,17 @@ def legacy_record_losses(
         next_hidden=next_hidden,
         items=items,
         eligible_indices=eligible,
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        value_head=value_head,
+        wm=wm,
     )
-    total = combine_sft2_losses(
-        SFT2Losses(
+    total = SFT2Losses(
             lm=lm_loss_batch,
             dynamics=wm_loss,
             sigreg=None,
             value=value_loss,
             metrics={},
-        ),
-        wm_weight=1.0,
-        sigreg_weight=0.0,
-        value_weight=1.0,
-        ce_weight=1.0,
-    ).loss
+        ).weighted(
+            SFT2LossWeights(wm=1.0, sigreg=0.0, value=1.0, ce=1.0)
+        ).loss
     return {
         "current": current,
         "lm_loss": lm_loss_batch,
@@ -173,6 +164,11 @@ def packed_record_losses(
     wm_predictor,
     value_head,
 ):
+    wm = WorldModel(
+        state_proj=state_proj,
+        wm_predictor=wm_predictor,
+        value_head=value_head,
+    )
     steps = expand_record_transitions(record)
     items = transition_collate_for_qwen(steps)
     trajectory = forward_trajectory_once(
@@ -194,23 +190,17 @@ def packed_record_losses(
         next_hidden=next_hidden,
         items=items,
         eligible_indices=eligible,
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        value_head=value_head,
+        wm=wm,
     )
-    total = combine_sft2_losses(
-        SFT2Losses(
+    total = SFT2Losses(
             lm=trajectory.lm_loss,
             dynamics=wm_loss,
             sigreg=None,
             value=value_loss,
             metrics={},
-        ),
-        wm_weight=1.0,
-        sigreg_weight=0.0,
-        value_weight=1.0,
-        ce_weight=1.0,
-    ).loss
+        ).weighted(
+            SFT2LossWeights(wm=1.0, sigreg=0.0, value=1.0, ce=1.0)
+        ).loss
     return {
         "current": trajectory.current_latents,
         "lm_loss": trajectory.lm_loss,

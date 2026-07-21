@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 
+from nimloth.model import NimlothModel
 from nimloth.backbone.qwen25vl.checkpoint import load_adapter_state, save_full_vision_state
 from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
 from nimloth.latent import materialize_query_embedding_adapter
@@ -16,6 +17,7 @@ from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
+from nimloth.wm.model import WorldModel
 
 
 def read_checkpoint_step(ckpt_dir: Path) -> int:
@@ -102,13 +104,10 @@ def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
 
 
 def save_checkpoint(
-    model,
-    state_proj,
+    nimloth_model: NimlothModel,
     processor,
     out_dir: Path,
     *,
-    wm_predictor: LatentWMPredictor | None = None,
-    value_head: ValueHead | None = None,
     vision_ema: VisionEncoderEMA | None = None,
     optimizer=None,
     step: int = 0,
@@ -125,7 +124,14 @@ def save_checkpoint(
     training_invariants: dict[str, Any] | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    module = model.module if hasattr(model, "module") else model
+    module = (
+        nimloth_model.llm.module
+        if hasattr(nimloth_model.llm, "module")
+        else nimloth_model.llm
+    )
+    state_proj = nimloth_model.wm.state_proj
+    wm_predictor = nimloth_model.wm.wm_predictor
+    value_head = nimloth_model.wm.value_head
     proj = state_proj.module if hasattr(state_proj, "module") else state_proj
     module.config.nimloth_latent_token_count = int(getattr(proj, "latent_token_count", 1))
     module.config.nimloth_latent_query_mode = latent_query_mode
@@ -137,12 +143,10 @@ def save_checkpoint(
         module.save_pretrained(out_dir, **save_kwargs)
     processor.save_pretrained(out_dir)
     torch.save(proj.state_dict(), out_dir / "state_proj.pt")
-    if wm_predictor is not None:
-        pred = wm_predictor.module if hasattr(wm_predictor, "module") else wm_predictor
-        pred.save_checkpoint(out_dir / "wm_predictor")
-    if value_head is not None:
-        head = value_head.module if hasattr(value_head, "module") else value_head
-        head.save_checkpoint(out_dir / "value_head")
+    pred = wm_predictor.module if hasattr(wm_predictor, "module") else wm_predictor
+    pred.save_checkpoint(out_dir / "wm_predictor")
+    head = value_head.module if hasattr(value_head, "module") else value_head
+    head.save_checkpoint(out_dir / "value_head")
     if vision_ema is not None and vision_ema.shadow:
         vision_ema.save_checkpoint(out_dir / "vision_ema.pt")
     if lora and vision_tune == "full":
@@ -183,11 +187,8 @@ class SFT2CheckpointManager:
     """Own repeated SFT2 component and metadata wiring for checkpoint saves."""
 
     output_dir: Path
-    model: Any
-    state_proj: Any
+    nimloth_model: NimlothModel
     processor: Any
-    wm_predictor: LatentWMPredictor
-    value_head: ValueHead
     vision_ema: VisionEncoderEMA | None
     optimizer: Any
     training_invariants: dict[str, Any]
@@ -209,12 +210,9 @@ class SFT2CheckpointManager:
         micro_step_in_epoch: int = 0,
     ) -> None:
         save_checkpoint(
-            self.model,
-            self.state_proj,
+            self.nimloth_model,
             self.processor,
             self.output_dir / name,
-            wm_predictor=self.wm_predictor,
-            value_head=self.value_head,
             vision_ema=self.vision_ema,
             optimizer=self.optimizer,
             step=step,
@@ -234,14 +232,15 @@ class SFT2CheckpointManager:
 
 def load_aux_checkpoint(
     ckpt_dir: Path,
-    state_proj,
-    wm_predictor: LatentWMPredictor,
-    value_head: ValueHead,
+    wm: WorldModel,
     device: torch.device,
     *,
     latent_query_mode: str | None = None,
     query_tune: str | None = None,
 ) -> None:
+    state_proj = wm.state_proj
+    wm_predictor = wm.wm_predictor
+    value_head = wm.value_head
     sp_path = ckpt_dir / "state_proj.pt"
     required = (
         sp_path,

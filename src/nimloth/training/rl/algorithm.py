@@ -7,8 +7,8 @@
 - value 输入显式 detach，因此 value supervision 只更新 ValueHead；
 - actor 开启时，用保存的完整 prompt 和采样参数重放 Qwen，并计算 PPO clipped loss。
 
-公共 dynamics/value 数学位于 ``nimloth.wm.objectives``；Qwen prompt replay
-位于 ``nimloth.backbone.qwen25vl.policy``。
+公共 dynamics/value 数学由完整 ``NimlothModel.wm`` 模块负责；Qwen prompt
+replay 位于 ``nimloth.backbone.qwen25vl.policy``。
 """
 
 from __future__ import annotations
@@ -25,12 +25,7 @@ from nimloth.backbone.qwen25vl.policy import (
 from nimloth.backbone.qwen25vl.rollout import EncodedRolloutTransition
 from nimloth.config.rl import RLConfig
 from nimloth.training.rl.components import RLComponents
-from nimloth.wm.objectives import (
-    ActionValueLoss,
-    DynamicsLoss,
-    compute_action_value_loss,
-    compute_dynamics_loss,
-)
+from nimloth.wm.model import ActionValueLoss, DynamicsLoss
 
 
 @dataclass(frozen=True)
@@ -64,11 +59,6 @@ class RLLosses:
     value: ActionValueLoss
     policy: PolicyLoss | None
     total: torch.Tensor
-
-
-@dataclass(frozen=True)
-class RLUpdateResult:
-    metrics: dict[str, float]
 
 
 def select_transition_batch(
@@ -127,40 +117,6 @@ def normalized_monte_carlo_advantages(
     )
 
 
-def compute_ppo_policy_loss(
-    *,
-    new_log_probs: torch.Tensor,
-    old_log_probs: torch.Tensor,
-    action_log_probs: torch.Tensor,
-    advantages: torch.Tensor,
-    clip_ratio: float,
-) -> PolicyLoss:
-    """计算离散动作的 PPO clipped surrogate 和采样后分布 entropy。"""
-
-    probability_ratio = torch.exp(new_log_probs - old_log_probs)
-    clipped_ratio = torch.clamp(
-        probability_ratio,
-        1.0 - clip_ratio,
-        1.0 + clip_ratio,
-    )
-    loss = -torch.min(
-        probability_ratio * advantages,
-        clipped_ratio * advantages,
-    ).mean()
-    with torch.no_grad():
-        clip_fraction = (
-            (probability_ratio - 1.0).abs().gt(clip_ratio).float().mean()
-        )
-    entropy = categorical_entropy_from_log_probs(action_log_probs)
-    return PolicyLoss(
-        loss=loss,
-        entropy=entropy,
-        advantages=advantages,
-        probability_ratio=probability_ratio,
-        clip_fraction=clip_fraction,
-    )
-
-
 @dataclass(frozen=True)
 class RLAlgorithm:
     """把 latent dynamics、value 与可选 PPO actor 组合成一次 optimizer 更新。"""
@@ -173,24 +129,23 @@ class RLAlgorithm:
     def compute_losses(self, batch: RLBatch) -> RLLosses:
         """只构造 autograd 图；optimizer 生命周期由 ``update`` 统一执行。"""
 
-        state_proj = self.components.state_proj
-        current_state = state_proj(batch.current_hidden).float()
+        model = self.components.nimloth_model
+        wm = model.wm
+        current_state = wm.project_state(batch.current_hidden)
         with torch.no_grad():
-            target_next_state = state_proj(batch.next_hidden).float()
-        dynamics = compute_dynamics_loss(
+            target_next_state = wm.project_state(batch.next_hidden)
+        dynamics = wm.compute_dynamics_loss(
             current_state=current_state,
             target_next_state=target_next_state,
             action_indices=batch.action_indices,
-            predictor=self.components.wm_predictor,
         )
 
         # 保留既有 ownership：value 只更新 ValueHead，不更新 StateProjector。
-        value_state = self._unwrapped(state_proj)(batch.current_hidden).float().detach()
-        value = compute_action_value_loss(
+        value_state = self._unwrapped(wm.state_proj)(batch.current_hidden).float().detach()
+        value = wm.compute_action_value_loss(
             state=value_state,
             action_indices=batch.action_indices,
             return_targets=batch.return_targets,
-            value_head=self.components.value_head,
             rank_margin=self.config.value_head.rank_margin,
             rank_weight=self.config.value_head.lambda_rank,
         )
@@ -207,12 +162,12 @@ class RLAlgorithm:
             )
             new_log_probs, action_log_probs = replay_rollout_action_log_probs(
                 transitions=batch.transitions,
-                model=self.components.model,
+                model=model.llm,
                 processor=self.components.processor,
                 token_id_map=self.components.token_id_map,
                 device=self.device,
             )
-            policy = compute_ppo_policy_loss(
+            policy = self._compute_policy_loss(
                 new_log_probs=new_log_probs,
                 old_log_probs=batch.old_log_probs.to(
                     device=new_log_probs.device,
@@ -223,7 +178,6 @@ class RLAlgorithm:
                     device=new_log_probs.device,
                     dtype=new_log_probs.dtype,
                 ),
-                clip_ratio=self.config.actor.clip_ratio,
             )
             total = (
                 total
@@ -237,13 +191,47 @@ class RLAlgorithm:
             total=total,
         )
 
+    def _compute_policy_loss(
+        self,
+        *,
+        new_log_probs: torch.Tensor,
+        old_log_probs: torch.Tensor,
+        action_log_probs: torch.Tensor,
+        advantages: torch.Tensor,
+    ) -> PolicyLoss:
+        """计算离散动作的 PPO clipped surrogate 和采样后分布 entropy。"""
+
+        probability_ratio = torch.exp(new_log_probs - old_log_probs)
+        clip_ratio = self.config.actor.clip_ratio
+        clipped_ratio = torch.clamp(
+            probability_ratio,
+            1.0 - clip_ratio,
+            1.0 + clip_ratio,
+        )
+        loss = -torch.min(
+            probability_ratio * advantages,
+            clipped_ratio * advantages,
+        ).mean()
+        with torch.no_grad():
+            clip_fraction = (
+                (probability_ratio - 1.0).abs().gt(clip_ratio).float().mean()
+            )
+        entropy = categorical_entropy_from_log_probs(action_log_probs)
+        return PolicyLoss(
+            loss=loss,
+            entropy=entropy,
+            advantages=advantages,
+            probability_ratio=probability_ratio,
+            clip_fraction=clip_fraction,
+        )
+
     def update(
         self,
         transitions: list[EncodedRolloutTransition],
         *,
         batch_size: int,
         batch_seed: int,
-    ) -> RLUpdateResult:
+    ) -> dict[str, float]:
         """选择一个 batch、反向传播并更新所有启用的 RL 组件。"""
 
         batch = select_transition_batch(
@@ -270,8 +258,8 @@ class RLAlgorithm:
         )
         optimizer.step()
         if self.components.vision_ema is not None:
-            self.components.vision_ema.update(self.components.model)
-        return RLUpdateResult(metrics=self._metrics(losses))
+            self.components.vision_ema.update(self.components.nimloth_model.llm)
+        return self._metrics(losses)
 
     @staticmethod
     def _metrics(losses: RLLosses) -> dict[str, float]:
@@ -302,8 +290,6 @@ __all__ = [
     "RLAlgorithm",
     "RLBatch",
     "RLLosses",
-    "RLUpdateResult",
-    "compute_ppo_policy_loss",
     "normalized_monte_carlo_advantages",
     "select_transition_batch",
 ]

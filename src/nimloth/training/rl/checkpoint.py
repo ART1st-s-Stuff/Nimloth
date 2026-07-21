@@ -13,11 +13,13 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
+from nimloth.model import NimlothModel
 from nimloth.backbone.qwen25vl.checkpoint import save_full_vision_state
 from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
+from nimloth.wm.model import WorldModel
 
 
 def _unwrap(module: torch.nn.Module) -> torch.nn.Module:
@@ -48,14 +50,11 @@ def _rank_world() -> tuple[int, int]:
 def save_rl_checkpoint(
     out_dir: Path,
     *,
-    # WM modules
-    state_proj: StateProjector,
-    wm_predictor: LatentWMPredictor,
-    value_head: ValueHead,
-    # Qwen model (may be DDP-wrapped or PeftModel)
-    model: torch.nn.Module | None = None,
+    # 完整 Nimloth 模型；内部 LLM 可能由 FSDP/PEFT 包装。
+    nimloth_model: NimlothModel,
     processor: Any = None,
     vision_ema: Any = None,
+    save_llm: bool = True,
     # Training state
     optimizer: torch.optim.Optimizer | None = None,
     iteration: int = 0,
@@ -68,6 +67,10 @@ def save_rl_checkpoint(
     vision_tune: str = "freeze",
     base_model_path: str = "",
 ) -> None:
+    model = nimloth_model.llm
+    state_proj = nimloth_model.wm.state_proj
+    wm_predictor = nimloth_model.wm.wm_predictor
+    value_head = nimloth_model.wm.value_head
     rank, world = _rank_world()
     fsdp_model = _is_fsdp(model)
 
@@ -101,8 +104,10 @@ def save_rl_checkpoint(
         _unwrap(value_head).save_checkpoint(out_dir / "value_head")
 
         # Qwen model
-        if model is not None:
+        if save_llm:
             m = _unwrap(model)
+            if not hasattr(m, "save_pretrained"):
+                raise TypeError("nimloth_model.llm must implement save_pretrained()")
             if fsdp_model:
                 m.save_pretrained(
                     out_dir,
@@ -154,9 +159,7 @@ def save_rl_checkpoint(
 
 def load_rl_wm_checkpoint(
     ckpt_dir: Path,
-    state_proj: StateProjector,
-    wm_predictor: LatentWMPredictor,
-    value_head: ValueHead,
+    wm: WorldModel,
     device: torch.device,
 ) -> dict:
     """Load *only* the WM components from an RL checkpoint.
@@ -164,6 +167,9 @@ def load_rl_wm_checkpoint(
     返回训练状态字典，包括 iteration、global_step、best_eval_metric 和
     optimizer 等可恢复信息。
     """
+    state_proj = wm.state_proj
+    wm_predictor = wm.wm_predictor
+    value_head = wm.value_head
     sp_path = ckpt_dir / "state_proj.pt"
     if sp_path.is_file():
         _unwrap(state_proj).load_state_dict(

@@ -68,7 +68,7 @@ def train_rl(
         bind_online_collectors(
             train_collector=train_collector,
             eval_collector=eval_collector,
-            model=components.model,
+            model=components.nimloth_model.llm,
             processor=components.processor,
             device=device,
             world_size=world,

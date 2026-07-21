@@ -19,6 +19,7 @@ from nimloth.training.sft2.components import require_sft2_wm_history
 from nimloth.training.sft2.utils import seed_training_micro_step, training_micro_seed
 from nimloth.wm.lewm import LeWMConfig
 from nimloth.wm.predictor import LatentWMPredictor
+from nimloth.wm.model import WorldModel
 
 
 def _write_aux_markers(ckpt_dir: Path) -> None:
@@ -105,9 +106,11 @@ def test_resume_rejects_query_tune_mismatch(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="checkpoint query_tune mismatch"):
         load_aux_checkpoint(
             ckpt,
-            proj,
-            object(),
-            object(),
+            WorldModel(
+                state_proj=proj,
+                wm_predictor=torch.nn.Identity(),
+                value_head=torch.nn.Identity(),
+            ),
             torch.device("cpu"),
             latent_query_mode="inject",
             query_tune="adapter",
@@ -123,9 +126,11 @@ def test_resume_checkpoint_requires_all_auxiliary_weights(tmp_path: Path) -> Non
     with pytest.raises(FileNotFoundError, match="incomplete SFT2 auxiliary checkpoint"):
         load_aux_checkpoint(
             ckpt,
-            object(),
-            object(),
-            object(),
+            WorldModel(
+                state_proj=torch.nn.Identity(),
+                wm_predictor=torch.nn.Identity(),
+                value_head=torch.nn.Identity(),
+            ),
             torch.device("cpu"),
         )
 

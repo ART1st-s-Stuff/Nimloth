@@ -5,8 +5,10 @@ from __future__ import annotations
 import torch
 
 from nimloth.config.rl import parse_rl_config
+from nimloth.model import NimlothModel
 from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch
 from nimloth.training.rl.components import RLComponents, RLResumeState
+from nimloth.wm.model import WorldModel
 from nimloth.wm.value_head import ValueHead
 
 
@@ -35,12 +37,16 @@ def _algorithm() -> tuple[RLAlgorithm, torch.nn.Linear, _Predictor, ValueHead]:
         ]
     )
     components = RLComponents(
-        model=torch.nn.Identity(),
+        nimloth_model=NimlothModel(
+            llm=torch.nn.Identity(),
+            wm=WorldModel(
+                state_proj=state_proj,
+                wm_predictor=predictor,
+                value_head=value_head,
+            ),
+        ),
         processor=None,
         token_id_map={},
-        state_proj=state_proj,
-        wm_predictor=predictor,
-        value_head=value_head,
         vision_ema=None,
         optimizer=optimizer,
         base_model_path="unused",

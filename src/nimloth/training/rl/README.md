@@ -105,7 +105,7 @@ distribution, including masked zero-probability actions.
 |--------|----------------|
 | `nimloth.rollout` | Model-independent trajectory schema, JSONL, and transition expansion |
 | `nimloth.backbone.qwen25vl.rollout` | Qwen latent transition encoding |
-| `components.py` | Qwen/WM construction, placement, EMA, optimizer, and resume |
+| `components.py` | 完整 `NimlothModel`、placement、EMA、optimizer 和 resume |
 | `algorithm.py` | 类型化 RL batch、dynamics/value/PPO 目标和一次联合更新 |
 | `loop.py` | collect→encode→update→validate→save iteration 生命周期 |
 | `evaluation.py` | Held-out rollout collection and checkpoint metric selection |
@@ -113,7 +113,7 @@ distribution, including masked zero-probability actions.
 | `reporting.py` | RL-specific CSV/W&B metric shape over shared util helpers |
 | `checkpoint_manager.py` | Runtime component state to checkpoint artifact mapping |
 | `trainer.py` | 运行模式校验与依赖装配入口 |
-| `checkpoint.py` | Qwen/WM/value/optimizer checkpoint helpers |
+| `checkpoint.py` | 完整模型与 optimizer checkpoint helpers |
 | `cli.py` | CLI adapter and independent train/eval collector selection |
 
 ## Important restrictions
@@ -132,8 +132,8 @@ distribution, including masked zero-probability actions.
   restores both through the shared Qwen checkpoint helper.
 - 当前 dynamics 只通过当前状态更新 StateProjector；下一状态是 stop-gradient
   target。ValueHead 输入也显式 detach，因此 value loss 不更新 StateProjector。
-  该 ownership 写在 `algorithm.py` 并由梯度测试保护，后续若改变必须作为单独
-  算法决策处理。
+  loss 通过 `NimlothModel.wm` 的成员方法计算，ownership 写在 `algorithm.py`
+  并由梯度测试保护，后续若改变必须作为单独算法决策处理。
 
 Example standalone rollout:
 

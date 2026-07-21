@@ -8,8 +8,10 @@ from nimloth.backbone.qwen25vl.transition import (
     QwenTransitionEncoder,
     QwenTransitionMessages,
 )
+from nimloth.model import NimlothModel
 from nimloth.training.sft2.algorithm import SFT2Algorithm, SFT2Mode
 from nimloth.training.sft2.data.batch import SFT2Batch, SFT2Transition
+from nimloth.wm.model import WorldModel
 
 
 def test_terminal_only_batch_runs_ddp_aligned_module_forwards(monkeypatch) -> None:
@@ -65,18 +67,24 @@ def test_terminal_only_batch_runs_ddp_aligned_module_forwards(monkeypatch) -> No
 
     state_proj = CountingStateProj()
     wm_predictor = CountingWMPredictor()
+    llm = torch.nn.Identity()
+    nimloth_model = NimlothModel(
+        llm=llm,
+        wm=WorldModel(
+            state_proj=state_proj,
+            wm_predictor=wm_predictor,
+            value_head=torch.nn.Linear(2, 8),
+        ),
+    )
     algorithm = SFT2Algorithm(
+        model=nimloth_model,
         qwen=QwenTransitionEncoder(
-            model=torch.nn.Identity(),
             processor=None,
             token_id_map={},
             device=torch.device("cpu"),
             max_length=16,
             pad_token_id=0,
         ),
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        value_head=torch.nn.Linear(2, 8),
         sigreg=None,
     )
     batch = SFT2Batch(

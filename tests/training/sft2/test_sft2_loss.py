@@ -2,17 +2,47 @@ from __future__ import annotations
 
 import torch
 
-from nimloth.backbone.qwen25vl.transition import QwenTransitionMessages
+from nimloth.backbone.qwen25vl.transition import (
+    QwenTransitionEncoder,
+    QwenTransitionMessages,
+)
+from nimloth.model import NimlothModel
 from nimloth.training.sft2.algorithm import (
+    SFT2Algorithm,
+    SFT2LossWeights,
     SFT2Losses,
     build_trajectory_sigreg_inputs,
-    combine_sft2_losses,
-    compute_sft2_dynamics,
     wm_loss_weight_schedule,
 )
 from nimloth.training.sft2.data.batch import SFT2Transition
-from nimloth.wm import LatentWMPredictor, StateProjector
+from nimloth.wm import LatentWMPredictor, StateProjector, ValueHead, WorldModel
 from nimloth.wm.lewm import LeWMConfig
+
+
+def _algorithm(
+    state_proj: torch.nn.Module,
+    wm_predictor: torch.nn.Module,
+    sigreg: torch.nn.Module | None,
+) -> SFT2Algorithm:
+    llm = torch.nn.Identity()
+    return SFT2Algorithm(
+        model=NimlothModel(
+            llm=llm,
+            wm=WorldModel(
+                state_proj=state_proj,
+                wm_predictor=wm_predictor,
+                value_head=ValueHead(emb_dim=wm_predictor.config.emb_dim),
+            ),
+        ),
+        qwen=QwenTransitionEncoder(
+            processor=None,
+            token_id_map={},
+            device=torch.device("cpu"),
+            max_length=16,
+            pad_token_id=0,
+        ),
+        sigreg=sigreg,
+    )
 
 
 def test_state_projector_accepts_multi_latent_block() -> None:
@@ -34,14 +64,15 @@ def test_sft2_dynamics_keeps_projector_gradient_on_both_sides() -> None:
     current_hidden = torch.randn(2, 32, requires_grad=True)
     next_hidden = torch.randn(2, 32, requires_grad=True)
 
-    dynamics, sigreg = compute_sft2_dynamics(
-        current_hidden=current_hidden,
-        next_hidden=next_hidden,
-        action_indices=torch.tensor([0, 3]),
-        trajectory_steps=None,
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        sigreg=None,
+    dynamics, sigreg = _algorithm(
+        state_proj,
+        wm_predictor,
+        None,
+    )._compute_wm_losses(
+        current_hidden,
+        next_hidden,
+        torch.tensor([0, 3]),
+        [],
     )
     dynamics.loss.backward()
 
@@ -66,14 +97,15 @@ def test_sft2_dynamics_runs_sigreg_per_trajectory() -> None:
             assert value.dim() == 3
             return value.pow(2).mean()
 
-    dynamics, sigreg = compute_sft2_dynamics(
-        current_hidden=torch.randn(3, 4),
-        next_hidden=torch.randn(3, 4),
-        action_indices=torch.tensor([0, 1, 2]),
-        trajectory_steps=[("rec_A", 0), ("rec_A", 1), ("rec_B", 5)],
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        sigreg=MockSIGReg(),
+    dynamics, sigreg = _algorithm(
+        state_proj,
+        wm_predictor,
+        MockSIGReg(),
+    )._compute_wm_losses(
+        torch.randn(3, 4),
+        torch.randn(3, 4),
+        torch.tensor([0, 1, 2]),
+        [("rec_A", 0), ("rec_A", 1), ("rec_B", 5)],
     )
 
     assert dynamics.loss.item() > 0
@@ -160,20 +192,14 @@ def test_wm_loss_weight_schedule_warms_up() -> None:
     ) == 1.0
 
 
-def test_combine_sft2_losses() -> None:
-    weighted = combine_sft2_losses(
-        SFT2Losses(
+def test_sft2_losses_apply_runtime_weights() -> None:
+    weighted = SFT2Losses(
             lm=torch.tensor(3.0),
             dynamics=torch.tensor(2.0),
             sigreg=None,
             value=torch.tensor(0.0),
             metrics={"wm_mse": 2.0, "lm_ce": 3.0},
-        ),
-        wm_weight=0.5,
-        sigreg_weight=0.0,
-        value_weight=1.0,
-        ce_weight=1.0,
-    )
+        ).weighted(SFT2LossWeights(wm=0.5, sigreg=0.0, value=1.0, ce=1.0))
     assert weighted.loss.item() == 4.0
     assert weighted.metrics["total_loss"] == 4.0
     assert weighted.metrics["lm_ce"] == 3.0
