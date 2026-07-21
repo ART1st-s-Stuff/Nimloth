@@ -6,16 +6,20 @@ Qwen and world-model concepts stay outside it.
 
 | Module | Responsibility |
 |--------|----------------|
-| `config.py`, `cli.py` | Strict SFT2 YAML schema and CLI |
+| `nimloth.config.sft2`, `cli.py` | Strict SFT2 YAML schema and CLI adapter |
 | `components.py` | Model/head construction, placement, DDP, EMA, optimizer |
-| `data/` | Transition batch protocol, samplers, loaders, preprocess cache |
+| `data/` | Transition batch protocol, samplers, and loaders |
 | `engine.py` | Shared train/validation forward contract |
+| `loop.py` | Resumable micro-batch loop, validation, and checkpoint policy |
 | `step.py` | One-step WM and value computation |
 | `objectives.py` | Tensor-level losses and schedules |
 | `evaluate.py` | Validation loop and distributed metric aggregation |
 | `checkpoint.py` | SFT2 artifact set, resume state, save manager |
 | `utils.py` | Small runtime helpers shared by training and validation |
 | `diagnosis/` | Non-production packed/KV equivalence investigations |
+
+预处理 cache、profiling、CSV、W&B 和分布式工具由 `nimloth.util` 负责，
+不属于 SFT2 的训练语义。
 
 For structured rollout records, transcript and action-prompt construction are
 owned by `nimloth.agent`. SFT2 expands each action into a supervised current

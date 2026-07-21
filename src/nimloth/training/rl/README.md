@@ -8,9 +8,12 @@ model, and trains the predictor, value head, and optionally the Qwen actor.
 
 | Owner | Responsibility |
 |-------|----------------|
-| `nimloth.agent` | Transcript state, action vocabulary, prompt version, policy/supervised message construction |
+| `nimloth.agent` | Transcript state, prompt version, policy/supervised message construction, episode runner |
+| `nimloth.environment` | Action vocabulary, environment session, and VAGEN navigation adapter |
 | `nimloth.backbone.qwen25vl.policy` | Qwen forward, action-token logits, temperature/top-p distribution |
-| `nimloth.training.rl` | Trajectory schema, collectors, RL transitions, losses, checkpoints, and train loop |
+| `nimloth.rollout` | Trajectory schema, collectors, JSONL storage, transition encoding |
+| `nimloth.config.rl` | Strict typed RL configuration |
+| `nimloth.training.rl` | RL components, losses, optimizer step, checkpoints, and train loop |
 | `experiments/training/rl/rollout_env.py` | Thin standalone rollout entry point and pre-write validation |
 
 RL code must not construct an independent navigation prompt. Online action
@@ -22,13 +25,18 @@ by the shared Agent template.
 | Mode | `--env-url` | `--use-jsonl-rollout` | Intended use |
 |------|-------------|-----------------------|--------------|
 | Single-GPU online | required | no | local integration and online training |
-| JSONL | not required | yes | distributed/FSDP training from separately collected trajectories |
+| JSONL | not required | yes | offline WM/value training from separately collected trajectories |
 
 Direct `EnvRolloutCollector` use is rejected when `world > 1`: different
 episode lengths and failures would make FSDP ranks execute different Qwen
 forwards. Generate JSONL separately for distributed training. A training
 collector must use an environment dataset whose name ends in `_train`; eval
 assets cannot be labeled as training data.
+
+The CLI requires one rollout mode explicitly. A static JSONL collector is
+rejected when either Qwen tune mode enables the PPO actor, because its behavior
+probabilities were produced by an older policy. Train and validation always
+use separate collector instances and sources.
 
 ## Data flow
 
@@ -94,22 +102,28 @@ distribution, including masked zero-probability actions.
 
 | Module | Responsibility |
 |--------|----------------|
-| `rollout.py` | `RolloutTrajectory`, direct environment collection, JSONL reading/writing |
-| `trainer.py` | State encoding, RL transition construction, PPO replay, and training loop |
+| `nimloth.rollout` | Trajectory schema, collection, JSONL, transition expansion, Qwen encoding |
+| `components.py` | Qwen/WM construction, placement, EMA, optimizer, and resume |
+| `step.py` | Deterministic transition batch and one joint optimizer step |
+| `trainer.py` | Iteration orchestration, held-out evaluation, logging, and checkpoint triggers |
 | `loss.py` | Predictor, value, PPO, advantage, and action-entropy losses |
 | `checkpoint.py` | Qwen/WM/value/optimizer checkpoint helpers |
-| `cli.py` | RL command-line entry point and collector selection |
+| `cli.py` | CLI adapter and independent train/eval collector selection |
 
 ## Important restrictions
 
-- The current runtime requires a Nimloth `k=1`, `latent_query_mode=inject`
-  checkpoint. A plain base Qwen checkpoint does not satisfy this protocol.
+- The current runtime requires a complete Nimloth `k=1`,
+  `latent_query_mode=inject` HF checkpoint. A plain base Qwen checkpoint and a
+  standalone PEFT adapter directory do not satisfy this artifact contract.
 - New RL JSONL must use the structured Agent schema. Old records that contain
   only `messages` cannot provide exact policy-state/PPO replay and are rejected
   by the trainer.
-- JSONL cycling is suitable for offline WM/value training. Reusing a fixed
-  behavior dataset indefinitely while updating the actor remains an off-policy
-  limitation and is tracked in `ai_tasks/improve_code_quality.md`.
+- JSONL cycling is suitable for offline WM/value training only. The trainer
+  fails at startup if a static JSONL source is combined with an enabled actor.
+- `latest/` records resumable progress. `best/` is updated only by the explicit
+  held-out `validation.checkpoint_metric` (`success_rate` or `avg_reward`).
+- LoRA plus full Vision saves `vision_full_state.pt` next to the adapter and
+  restores both through the shared Qwen checkpoint helper.
 
 Example standalone rollout:
 

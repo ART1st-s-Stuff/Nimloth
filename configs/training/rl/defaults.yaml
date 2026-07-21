@@ -48,6 +48,7 @@ validation:
   enabled: true
   interval: 50              # run validation every N iterations
   envs: 16                  # number of envs for validation rollout
+  checkpoint_metric: success_rate
 
 # --- Training / output ---
 training:

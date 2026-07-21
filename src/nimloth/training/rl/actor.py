@@ -9,6 +9,7 @@ import torch
 from nimloth.agent import bind_image_placeholders
 from nimloth.backbone.qwen25vl.policy import batch_action_log_probs
 from nimloth.rollout.encoding import EncodedRolloutTransition
+from nimloth.util.module import evaluating
 
 
 def compute_current_policy_log_probs(
@@ -34,18 +35,20 @@ def compute_current_policy_log_probs(
         )
         for transition in transitions
     ]
-    return batch_action_log_probs(
-        model=model,
-        processor=processor,
-        token_id_map=token_id_map,
-        messages=bound_messages,
-        taken_action_indices=[
-            transition.action_index for transition in transitions
-        ],
-        temperatures=[
-            transition.sampling_temperature for transition in transitions
-        ],
-        top_ps=[transition.sampling_top_p for transition in transitions],
-        device=device,
-        latent_token_count=latent_token_counts.pop(),
-    )
+    # eval mode 仍保留梯度，但关闭 dropout，保证 old/new policy 可比较。
+    with evaluating(model):
+        return batch_action_log_probs(
+            model=model,
+            processor=processor,
+            token_id_map=token_id_map,
+            messages=bound_messages,
+            taken_action_indices=[
+                transition.action_index for transition in transitions
+            ],
+            temperatures=[
+                transition.sampling_temperature for transition in transitions
+            ],
+            top_ps=[transition.sampling_top_p for transition in transitions],
+            device=device,
+            latent_token_count=latent_token_counts.pop(),
+        )

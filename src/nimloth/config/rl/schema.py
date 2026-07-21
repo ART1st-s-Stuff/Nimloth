@@ -48,6 +48,14 @@ def _string_tuple(value: Any, field: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _boolean(value: Any, field: str) -> bool:
+    """拒绝会被 Python 当作真值的字符串或数字。"""
+
+    if not isinstance(value, bool):
+        raise ValueError(f"{field} must be a boolean")
+    return value
+
+
 @dataclass(frozen=True)
 class ActorConfig:
     lr: float = 1e-6
@@ -98,6 +106,7 @@ class ValidationConfig:
     enabled: bool = True
     interval: int = 50
     envs: int = 16
+    checkpoint_metric: str = "success_rate"
 
 
 @dataclass(frozen=True)
@@ -174,7 +183,11 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "batch_size",
         },
     )
-    validation = _section(raw, "validation", {"enabled", "interval", "envs"})
+    validation = _section(
+        raw,
+        "validation",
+        {"enabled", "interval", "envs", "checkpoint_metric"},
+    )
     training = _section(raw, "training", {"seed", "log_interval", "save_interval"})
 
     actor_config = ActorConfig(
@@ -215,10 +228,35 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     )
     if not 0.0 < rollout_config.top_p <= 1.0:
         raise ValueError("rollout.top_p must be in (0, 1]")
+    checkpoint_metric = str(
+        validation.get("checkpoint_metric", "success_rate")
+    )
+    if checkpoint_metric not in {"success_rate", "avg_reward"}:
+        raise ValueError(
+            "validation.checkpoint_metric must be success_rate or avg_reward"
+        )
+
+    gamma = float(loop.get("gamma", 0.99))
+    if not 0.0 <= gamma <= 1.0:
+        raise ValueError("rl.gamma must be in [0, 1]")
+    validation_enabled = _boolean(
+        validation.get("enabled", True),
+        "validation.enabled",
+    )
+    validation_envs = _positive_int(
+        validation.get("envs", 16),
+        "validation.envs",
+        allow_zero=not validation_enabled,
+    )
 
     return RLConfig(
         actor=actor_config,
-        freeze=FreezeConfig(state_proj=bool(freeze.get("state_proj", True))),
+        freeze=FreezeConfig(
+            state_proj=_boolean(
+                freeze.get("state_proj", True),
+                "freeze.state_proj",
+            )
+        ),
         predictor=PredictorConfig(
             lr=_positive_float(predictor.get("lr", 1e-3), "predictor.lr"),
             emb_dim=_positive_int(predictor.get("emb_dim", 128), "predictor.emb_dim"),
@@ -251,20 +289,17 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 loop.get("max_steps_per_episode", 20),
                 "rl.max_steps_per_episode",
             ),
-            gamma=float(loop.get("gamma", 0.99)),
+            gamma=gamma,
             batch_size=_positive_int(loop.get("batch_size", 32), "rl.batch_size"),
         ),
         validation=ValidationConfig(
-            enabled=bool(validation.get("enabled", True)),
+            enabled=validation_enabled,
             interval=_positive_int(
                 validation.get("interval", 50),
                 "validation.interval",
             ),
-            envs=_positive_int(
-                validation.get("envs", 16),
-                "validation.envs",
-                allow_zero=True,
-            ),
+            envs=validation_envs,
+            checkpoint_metric=checkpoint_metric,
         ),
         training=TrainingConfig(
             seed=int(training.get("seed", 42)),

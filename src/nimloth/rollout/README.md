@@ -8,5 +8,6 @@
 - `source.py`：trajectory source 协议和离线 JSONL source。
 - `collector.py`：在线环境收集。
 - `transitions.py`：trajectory 到 transition 的展开和 dataset。
+- `encoding.py`：用共享 Qwen policy state 编码 rollout transition。
 
 本包中的任何模块都不得导入 `nimloth.training`。

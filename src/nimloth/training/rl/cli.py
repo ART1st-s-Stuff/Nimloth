@@ -26,7 +26,7 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
     # 必填运行参数
     ap.add_argument("--config", type=Path, required=True, help="YAML config file")
     ap.add_argument("--model", type=Path, required=True,
-                    help="Init HF dir (SFT1 hf_merged, SFT2 best/, or HF model name)")
+                    help="完整的 k=1 inject HF checkpoint；不能直接传 PEFT adapter 目录")
     ap.add_argument("--output-dir", type=Path, required=True)
 
     # 模型微调方式
@@ -74,7 +74,7 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
 
     # 训练控制
     ap.add_argument("--resume", action="store_true",
-                    help="Resume from --output-dir/best/")
+                    help="Resume from --output-dir/latest/")
     ap.add_argument("--seed", type=int, default=None,
                     help="Override seed from config")
     ap.add_argument("--rl-iterations", type=int, default=None,
@@ -92,18 +92,18 @@ def parse_rl_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     """解析参数、创建阶段组件并启动 RL 训练。"""
-    import torch
     from nimloth.util.distributed import is_main
     from nimloth.rollout import (
         JSONLRolloutCollector,
         VAGENNavigationRolloutCollector,
     )
     from nimloth.training.rl.trainer import train_rl
-    from nimloth.wm.predictor import LatentWMPredictor
-    from nimloth.wm.state_proj import StateProjector
-    from nimloth.wm.value_head import ValueHead
 
     args = parse_rl_args(argv)
+    if args.env_url and args.use_jsonl_rollout:
+        raise ValueError("--env-url and --use-jsonl-rollout are mutually exclusive")
+    if not args.env_url and not args.use_jsonl_rollout:
+        raise ValueError("choose --env-url or --use-jsonl-rollout explicitly")
     config = load_rl_config(args.config)
     config = merge_rl_config_overrides(args, config)
 
@@ -120,37 +120,6 @@ def main(argv: list[str] | None = None) -> int:
                 "output_dir": str(output_dir),
             }
         }, indent=2, default=str))
-
-    # 创建 WM 组件
-    from nimloth.wm.lewm import LeWMConfig
-
-    if args.wm_checkpoint is not None:
-        # Load from checkpoint — use its config to avoid shape mismatches
-        wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_checkpoint)
-        if is_main():
-            print(json.dumps({"warm_start": "wm_predictor", "source": str(args.wm_checkpoint),
-                              "history_size": wm_predictor.config.history_size}))
-    else:
-        wm_config = LeWMConfig(
-            emb_dim=config.predictor.emb_dim,
-            history_size=config.predictor.history_size,
-        )
-        wm_predictor = LatentWMPredictor.create(wm_config)
-
-    emb_dim = wm_predictor.config.emb_dim
-    state_proj = StateProjector(qwen_hidden_dim=2048, lewm_emb_dim=emb_dim)
-    value_head = ValueHead(emb_dim=emb_dim)
-    if args.state_proj_checkpoint is not None:
-        state_proj.load_state_dict(
-            torch.load(args.state_proj_checkpoint, map_location="cpu", weights_only=True)
-        )
-        if is_main():
-            print(json.dumps({"warm_start": "state_proj", "source": str(args.state_proj_checkpoint)}))
-    if args.value_head_checkpoint is not None:
-        loaded_vh = ValueHead.load_checkpoint(args.value_head_checkpoint, emb_dim=emb_dim)
-        value_head.load_state_dict(loaded_vh.state_dict())
-        if is_main():
-            print(json.dumps({"warm_start": "value_head", "source": str(args.value_head_checkpoint)}))
 
     # 创建 rollout 数据源
     if args.env_url:
@@ -231,9 +200,6 @@ def main(argv: list[str] | None = None) -> int:
     return train_rl(
         args=args,
         config=config,
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        value_head=value_head,
         train_collector=train_collector,
         eval_collector=eval_collector,
         output_dir=output_dir,

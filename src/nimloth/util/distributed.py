@@ -29,3 +29,13 @@ def cleanup_dist() -> None:
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
         dist.destroy_process_group()
+
+
+def broadcast_module_state(module: torch.nn.Module, *, source_rank: int = 0) -> None:
+    """把小型 replicated module 的参数与 buffer 同步到所有 rank。"""
+
+    if not (dist.is_available() and dist.is_initialized()):
+        return
+    for tensor in module.state_dict().values():
+        if torch.is_tensor(tensor):
+            dist.broadcast(tensor, src=source_rank)

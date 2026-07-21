@@ -4,7 +4,9 @@
 backbone 或 world model 语义的运行工具。
 
 - `distributed.py`：进程组和 rank 工具。
+- `module.py`：临时 train/eval mode 等 module 生命周期工具。
 - `metrics.py`：指标累计。
+- `csv_log.py`：固定列的训练/评估 CSV 记录。
 - `optim.py`：optimizer group 和学习率工具。
 - `profiling.py`：可选的步骤计时。
 - `experiment.py`：实验元数据和输出目录创建。

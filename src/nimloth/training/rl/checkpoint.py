@@ -13,6 +13,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
+from nimloth.backbone.qwen25vl.checkpoint import save_full_vision_state
 from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
@@ -59,7 +60,8 @@ def save_rl_checkpoint(
     optimizer: torch.optim.Optimizer | None = None,
     iteration: int = 0,
     global_step: int = 0,
-    best_value_loss: float = float("inf"),
+    best_eval_metric: float = float("-inf"),
+    checkpoint_metric: str = "success_rate",
     # Tune metadata
     lora: bool = False,
     llm_tune: str = "freeze",
@@ -109,6 +111,11 @@ def save_rl_checkpoint(
                 )
             else:
                 m.save_pretrained(out_dir, safe_serialization=True)
+                if lora and vision_tune == "full":
+                    save_full_vision_state(
+                        m,
+                        out_dir / "vision_full_state.pt",
+                    )
         if processor is not None:
             processor.save_pretrained(out_dir)
         if vision_ema is not None:
@@ -123,7 +130,8 @@ def save_rl_checkpoint(
         state: dict[str, Any] = {
             "iteration": iteration,
             "global_step": global_step,
-            "best_value_loss": best_value_loss,
+            "best_eval_metric": best_eval_metric,
+            "checkpoint_metric": checkpoint_metric,
             "lora": lora,
             "llm_tune": llm_tune,
             "vision_tune": vision_tune,
@@ -153,8 +161,8 @@ def load_rl_wm_checkpoint(
 ) -> dict:
     """Load *only* the WM components from an RL checkpoint.
 
-    Returns the training-state dict (iteration, global_step, best_value_loss,
-    optimizer, …).
+    返回训练状态字典，包括 iteration、global_step、best_eval_metric 和
+    optimizer 等可恢复信息。
     """
     sp_path = ckpt_dir / "state_proj.pt"
     if sp_path.is_file():

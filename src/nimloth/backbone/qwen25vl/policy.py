@@ -14,6 +14,7 @@ from nimloth.latent import (
     normalize_latent_state_blocks,
     special_token_ids,
 )
+from nimloth.util.module import evaluating
 
 
 def validate_agent_policy_protocol(model_config: Any) -> None:
@@ -183,7 +184,8 @@ class QwenAgentPolicy:
         self.token_id_map = token_id_map or special_token_ids(processor.tokenizer)
 
     def select_action(self, messages: list[dict[str, Any]]) -> PolicyDecision:
-        with torch.no_grad():
+        # 行为概率必须可被 PPO 确定性重放，不能受 LoRA dropout 影响。
+        with evaluating(self.model), torch.no_grad():
             logits = action_logits_for_messages(
                 model=self.model,
                 processor=self.processor,

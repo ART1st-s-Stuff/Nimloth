@@ -46,6 +46,7 @@ validation:
   enabled: true
   interval: 1               # run val rollout every iteration
   envs: 16                  # 16 val episodes
+  checkpoint_metric: success_rate
 
 # --- Training ---
 training:

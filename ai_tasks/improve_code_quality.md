@@ -41,73 +41,53 @@
 
 ### 5. 固定 JSONL 轨迹被无限循环用于 PPO
 
-- 状态：**已确认缺陷**
-- 位置：`src/nimloth/training/rl/rollout.py::JSONLRolloutCollector`。
-- 现状：collector 首次读取后缓存全部轨迹，数据耗尽便从头循环，不会刷新行为策略或概率来源。
-- 影响：WM/value 可以使用离线数据，但 PPO 会在当前策略持续变化后，长期复用旧策略轨迹和旧 `old_log_prob`，逐渐变成严重离策略训练。JSONL 现已记录并校验 prompt 版本和采样配置，但仍没有 policy checkpoint provenance 或复用期限。
-- 修复方向：actor 开启时周期性用当前策略生成新 rollout，或改用明确支持离策略数据的算法；轨迹 schema 增加 policy provenance 和 sampling configuration。actor 关闭时可以继续把 JSONL 用作离线 WM/value 数据。
+- 状态：**已修复（2026-07-21）**
+- 修复：`JSONLRolloutCollector` 明确只承担离线 WM/value 数据源；任一 Qwen tune mode 启用 actor 时，trainer 在读取数据前直接拒绝静态 JSONL。CLI 还要求显式选择 env 或 JSONL 模式。
+- 验证：严格配置/CLI 测试覆盖 rollout 模式契约；actor 是否启用由最终 tune mode 唯一决定。
 
 ## P0：Checkpoint 完整性
 
 ### 6. LoRA + Vision Full checkpoint 丢失完整视觉权重
 
-- 状态：**已确认错误**
-- 位置：`src/nimloth/training/rl/checkpoint.py::save_rl_checkpoint()`、`load_lora_adapter_state()`；`src/nimloth/backbone/qwen25vl/tuning.py::configure_qwen_tuning()`。
-- 现状：LoRA 模式下 `modules_to_save` 为空，checkpoint 对 `PeftModel` 调用 `save_pretrained()`。该调用保存 adapter，但普通 full-vision 参数不属于 adapter。恢复时也只加载 adapter。
-- 影响：`--llm-tune lora --vision-tune full` 训练得到的 LLM LoRA 可以恢复，Vision Full 更新会丢失。`vision_ema.pt` 只保存 EMA shadow，恢复代码没有把它应用到主模型，不能代替主视觉权重。
-- 修复方向：复用 `src/nimloth/backbone/qwen25vl/checkpoint.py`，独立保存和恢复 adapter 与 `vision_full_state.pt`；增加测试，确保每个 `requires_grad=True` 参数都能 checkpoint round-trip。
+- 状态：**已修复（2026-07-21）**
+- 修复：RL 和 SFT2 共用 `backbone/qwen25vl/checkpoint.py`；LoRA + Vision Full 会额外保存 `vision_full_state.pt`，恢复 adapter 时同步恢复视觉塔。
+- 验证：Qwen checkpoint 测试覆盖视觉塔定位、保存和 adapter + full-vision 恢复。
 
 ## P1：Validation 与 checkpoint 选择
 
 ### 7. Validation 复用训练 collector 和训练数据来源
 
-- 状态：**已确认错误**
-- 位置：`src/nimloth/training/rl/trainer.py` validation rollout；`src/nimloth/training/rl/cli.py` collector 创建。
-- 现状：训练和 validation 调用同一个 collector。Env 模式将其配置为 `split="train"` 和 `*_train` datasets；JSONL 模式则从同一 cursor 继续读取静态轨迹。
-- 影响：Env 模式没有 held-out 环境；JSONL 模式根本不运行当前策略，`val_success_rate` 只是下一批离线记录已有的 success 标签。
-- 修复方向：建立独立的 `train_collector` 和 `eval_collector`，分别配置数据集、seed 范围与采样策略。离线评估应命名为 held-out dataset metric，不能冒充当前策略 rollout 指标。
+- 状态：**已修复（2026-07-21）**
+- 修复：CLI 分别创建 train/eval collector；环境模式使用独立 dataset、split 和 seed range，JSONL 模式要求独立 held-out source。trainer 不再复用训练 cursor。
 
 ### 8. `best/` 根据训练 minibatch value loss 选择
 
-- 状态：**已确认错误**
-- 位置：`src/nimloth/training/rl/trainer.py` checkpoint 部分。
-- 现状：`current_val` 实际取自当前随机训练 minibatch 的 `value_loss`，没有使用 `val_success_rate`、`val_avg_reward` 或 held-out loss；best 比较只在 `save_interval` 触发。
-- 影响：`best/` 的真实含义是“保存时刻训练 minibatch value loss 最低”，容易被采样噪声支配，也无法表示策略质量。
-- 修复方向：显式配置 checkpoint metric 及 mode，例如最大化 held-out `eval/success_rate` 或最小化 held-out `eval/value_loss`；统一 validation 和 checkpoint 的触发契约。
+- 状态：**已修复（2026-07-21）**
+- 修复：`validation.checkpoint_metric` 显式选择最大化 `success_rate` 或 `avg_reward`；`best/` 只在独立 validation 后更新，`latest/` 单独保存可恢复进度。
 
 ## P1：配置与启动契约
 
 ### 9. YAML 非严格解析，大量字段静默无效
 
-- 状态：**已确认缺陷**
-- 位置：`src/nimloth/training/rl/cli.py::load_rl_config()`、`merge_config_overrides()`。
-- 现状：配置仅用 `yaml.safe_load()`。当前未被实现消费的字段包括 `qwen.*`、`dataset.*`、`predictor.rollout_steps`、`rl.train_steps_per_iteration` 和 `training.output_dir`。
-- 影响：配置看起来已经设置模型、验证集或每轮训练步数，实际运行行为不变，容易产生错误实验结论。
-- 修复方向：建立 RL-owned 严格 schema；未知字段直接报错；每个字段有唯一 owner；明确 YAML/CLI 覆盖优先级并输出最终配置。
+- 状态：**已修复（2026-07-21）**
+- 修复：配置迁到 `nimloth.config.rl` 的不可变 dataclass schema；未知 section/field、字符串布尔值、非法概率和无效 validation 数量均直接报错，CLI override 返回新配置对象。
 
 ### 10. Actor 是否启用与 Qwen 是否可训练由两套开关控制
 
-- 状态：**已确认错误**
-- 位置：`src/nimloth/training/rl/trainer.py` actor setup；`src/nimloth/backbone/qwen25vl/tuning.py`。
-- 现状：是否计算 actor loss 由 YAML `freeze.qwen` 决定；参数 `requires_grad` 由 CLI `--llm-tune/--vision-tune` 决定。
-- 影响：`freeze.qwen=true + --llm-tune lora` 会创建 LoRA 但不计算 actor loss；`freeze.qwen=false + tune=freeze` 会记录 actor loss但策略参数不会更新。
-- 修复方向：只保留一套权威 tune mode；根据最终可训练参数决定 actor 是否启用；遇到矛盾配置直接报错。
+- 状态：**已修复（2026-07-21）**
+- 修复：删除 `freeze.qwen` 配置；actor 是否启用只由 `--llm-tune/--vision-tune` 决定，并和 Qwen 参数 tuning 使用同一个解析函数。
 
 ### 11. README 中的 base Qwen 启动与协议校验冲突
 
-- 状态：**已确认错误**
-- 位置：`src/nimloth/training/rl/README.md` 启动示例；`src/nimloth/training/rl/rollout.py::validate_rl_policy_protocol()`；`src/nimloth/training/rl/trainer.py` model setup。
-- 现状：README 允许直接传入标准 Qwen base model，但 trainer 在 resize special tokens 及 tuning 前要求 config 已包含 `nimloth_latent_query_mode="inject"`。
-- 影响：标准 Qwen config 缺少该字段，会在启动早期直接报错。README 的 “SFT2 warm-start（LLM LoRA + Vision Full）” 示例也只加载 WM/state/value，没有加载 SFT2 Qwen adapter 和 full-vision state。
-- 修复方向：明确区分“完整 SFT2 HF export”与“base Qwen + SFT2 adapter + full vision state”两种启动模式，并让 CLI 对应地完整加载和验证。
+- 状态：**部分修复，仍有 artifact 设计缺口**
+- 位置：`src/nimloth/training/rl/README.md`、`src/nimloth/training/rl/cli.py`、`src/nimloth/training/rl/components.py`。
+- 已修复：README 与 CLI 现在明确要求完整 `k=1 inject` HF checkpoint，不再声称 plain base Qwen 或 standalone PEFT adapter 可直接启动。
+- 剩余问题：SFT2 产出的 PEFT adapter、materialized query embedding、Vision Full 和基础模型引用尚未形成一个可由 RL 直接消费的统一 manifest。需要先定义跨阶段 artifact 契约，再实现自动装载，不能把仅加载 WM heads 称为完整 SFT2 warm-start。
 
 ### 12. StateProjector 输入维度硬编码为 2048
 
-- 状态：**已确认缺陷**
-- 位置：`src/nimloth/training/rl/cli.py` WM module setup。
-- 现状：Qwen 加载前就创建 `StateProjector(qwen_hidden_dim=2048, ...)`。
-- 影响：更换 Qwen 尺寸时会出现 checkpoint shape 或 forward 矩阵维度错误。
-- 修复方向：先加载模型，再从实际 model config 推导 hidden size；把 Qwen 及依赖其维度的模块放入统一 component factory。
+- 状态：**已修复（2026-07-21）**
+- 修复：`training/rl/components.py` 先加载 Qwen，再通过共享 `qwen_hidden_size()` 兼容读取顶层或 `text_config.hidden_size`，随后创建 StateProjector。
 
 ## P1：State 语义与梯度边界
 
@@ -120,7 +100,7 @@
 ### 14. Value loss 不会更新解冻后的 StateProjector
 
 - 状态：**待设计决策**
-- 位置：`src/nimloth/training/rl/trainer.py` value loss 前的 `wm_state = state_proj(...).detach()`。
+- 位置：`src/nimloth/training/rl/step.py` value loss 前的 `state_proj(...).detach()`。
 - 现状：predictor loss 可以更新未冻结的 StateProjector；value loss 因 detach 只能更新 ValueHead。
 - 影响：当 `freeze.state_proj=false` 时，value supervision 无法塑造 state representation。若设计目标本来就是只由 dynamics loss 更新 projector，则当前行为合理，但必须明确记录。
 - 修复方向：先确定 StateProjector 的梯度 ownership，再保留或删除 detach，并增加梯度路径测试。
@@ -129,21 +109,15 @@
 
 ### 15. FSDP FULL_SHARD 与 Vision EMA 的参数形状可能不兼容
 
-- 状态：**待运行验证风险**
-- 位置：`src/nimloth/training/rl/trainer.py` EMA/FSDP setup；`src/nimloth/backbone/qwen25vl/vision_ema.py`。
-- 现状：EMA 在 FSDP 包装前用完整视觉参数初始化；FSDP FULL_SHARD 包装后，EMA 在 forward 外直接遍历 `param.data` 更新 shadow。
-- 风险：`use_orig_params=True` 在 forward 外可能暴露 local shard 或空参数，导致 full shadow 与 shard shape 不一致、仅更新局部分片或 copy 失败。
-- 修复方向：增加真实多卡 FSDP+vision-full EMA 测试；根据结果使用 FSDP full-param context、sharded EMA，或只在可安全收集 full state 的阶段维护 EMA。
+- 状态：**已加启动保护，尚未实现多卡 EMA**
+- 修复：多 rank 与 Vision EMA 同时启用时在 FSDP 包装前直接报错，避免进入未验证的 shard 更新路径。未来只有在真实多卡测试覆盖后才应解除限制。
 
 ## P2：公开接口与模块边界
 
 ### 16. VAGENRolloutCollector 是公开但不可用的入口
 
-- 状态：**已确认缺陷**
-- 位置：`src/nimloth/training/rl/rollout.py::VAGENRolloutCollector`；`src/nimloth/training/rl/cli.py`。
-- 现状：CLI 暴露 `--vagen-config/--vagen-checkpoint` 并可构造 collector，但 `collect()` 永远抛出 `NotImplementedError`。
-- 影响：形成死入口，增加使用者和维护者判断成本。
-- 修复方向：删除 CLI 暴露及 package re-export，或完整实现并增加端到端测试。
+- 状态：**已修复（2026-07-21）**
+- 修复：删除永远抛出 `NotImplementedError` 的公开入口和对应 CLI；真实调用路径统一到 `nimloth.rollout.VAGENNavigationRolloutCollector`。
 
 ## 建议实施顺序
 

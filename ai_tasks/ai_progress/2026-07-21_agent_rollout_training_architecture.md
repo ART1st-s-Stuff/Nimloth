@@ -45,8 +45,15 @@
   在线 VAGEN navigation collector、transition 展开和 Qwen latent 编码。
 - 已删除公开但永远抛出 `NotImplementedError` 的旧 VAGEN collector 入口，
   并将 RL train/eval collector 拆成独立实例。
-- 正在继续拆分 RL/SFT2 trainer 的 component、step、logging 和 checkpoint
-  生命周期。
+- 已把 RL 的 Qwen/WM/EMA/optimizer/resume 装配拆到 `components.py`，把单次
+  联合更新拆到 `step.py`；`trainer.py` 只保留 iteration orchestration。
+- 已把 SFT2 可恢复状态、微批循环、优化器步、周期保存和 validation 拆到
+  `loop.py`；`trainer.py` 缩减为配置校验与依赖装配。
+- 已增加公共 CSV writer 与临时 eval-mode module context。rollout、Qwen state
+  encoding 和 PPO replay 现在都会关闭 dropout 后恢复原模式，保证行为概率
+  可确定性重放。
+- 已修复 RL 的 LoRA + Vision Full 保存/恢复、独立 train/eval collector、显式
+  best metric、严格配置、actor 单一开关和 Qwen hidden size 硬编码。
 
 ## 验证
 
@@ -55,9 +62,18 @@
 - 本地系统 Python 缺少 PyYAML；本地 `.venv/bin/pytest` 入口缺少
   `_pytest`，因此没有把本地 pytest 误报为通过。
 - 人类建议后续测试改在 superpod 远程依赖环境执行；待本阶段 commit 推送后，
-  将远程 `.worktree/dev` 安全切换到本分支再运行定向测试。
+  已将远程 `.worktree/dev` 安全切换到本分支。
+- superpod `/project/peilab/atst/nimloth/.venv-vagen-main/bin/python -m pytest`
+  定向测试：`48 passed, 1 warning`。warning 来自测试刻意调用单样本
+  `std(unbiased=True)` 以确认旧 NaN 行为，不是实现回归。
+- 首轮远程测试发现 diagnosis/test 仍从 rollout 导入 navigation action count；
+  已把该常量迁到 environment action space，提交 `737638d` 后重测通过。
+- 当前第二阶段改动已通过 `compileall` 和 `git diff --check`，待提交后在同一
+  远程 worktree 补跑新增 config/checkpoint/module/SFT2 loop 测试及相邻回归。
 
 ## 待处理设计点
 
 - 当前 Qwen action-token 协议仍为 8 路；动作语义从 Agent prompt 中迁往 environment。
 - 当前 SFT2/RL 的 WM target 梯度语义不同，共享 objective 前必须显式建模。
+- SFT2 PEFT adapter、query embedding、Vision Full 与基础模型引用仍缺少可由
+  RL 自动消费的统一 artifact manifest；当前 CLI 明确只接收完整 HF checkpoint。

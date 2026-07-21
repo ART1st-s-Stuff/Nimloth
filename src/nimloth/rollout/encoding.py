@@ -17,6 +17,7 @@ from nimloth.latent.extraction import (
 )
 from nimloth.rollout.schema import RolloutTrajectory, validate_rollout_trajectory
 from nimloth.rollout.transitions import discounted_action_value_targets
+from nimloth.util.module import evaluating
 
 
 @dataclass(frozen=True)
@@ -56,29 +57,30 @@ def encode_trajectory_states(
 
     states: list[torch.Tensor] = []
     tokens = LatentActionTokens()
-    for step_index in range(len(trajectory.image_paths)):
-        messages = trajectory.build_policy_messages(step_index, bind_images=True)
-        encoding = build_qwen_batch(
-            [{"messages": messages}],
-            processor,
-            max_length=999999,
-            latent_token_count=trajectory.latent_token_count,
-        )
-        model_inputs = {key: value.to(device) for key, value in encoding.items()}
-        with torch.no_grad():
+    # State 编码和行为 policy 使用相同的确定性 eval-mode Qwen。
+    with evaluating(qwen_model), torch.no_grad():
+        for step_index in range(len(trajectory.image_paths)):
+            messages = trajectory.build_policy_messages(step_index, bind_images=True)
+            encoding = build_qwen_batch(
+                [{"messages": messages}],
+                processor,
+                max_length=999999,
+                latent_token_count=trajectory.latent_token_count,
+            )
+            model_inputs = {key: value.to(device) for key, value in encoding.items()}
             output = qwen_model(
                 **model_inputs,
                 output_hidden_states=True,
                 return_dict=True,
             )
-        hidden = last_hidden_state(output)
-        latent_index = find_last_latent_state_index(
-            encoding["input_ids"][0],
-            token_id_map,
-            tokens,
-        )
-        latent = extract_latent_state(hidden[0:1], latent_index)
-        states.append(latent.squeeze(0).detach().cpu())
+            hidden = last_hidden_state(output)
+            latent_index = find_last_latent_state_index(
+                encoding["input_ids"][0],
+                token_id_map,
+                tokens,
+            )
+            latent = extract_latent_state(hidden[0:1], latent_index)
+            states.append(latent.squeeze(0).detach().cpu())
     return states
 
 

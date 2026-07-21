@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import csv
 import json
 import math
 import os
 import random
-import shutil
-import time
 from pathlib import Path
 
 import torch
-import torch.distributed as dist
 from nimloth.backbone.qwen25vl.loading import load_qwen_processor
 from nimloth.latent import (
     query_labels_are_masked,
@@ -22,25 +18,19 @@ from nimloth.backbone.qwen25vl.tuning import resolve_tune_modes, uses_lora
 from nimloth.backbone.qwen25vl.vision_ema import resolve_vision_ema
 from nimloth.training.sft2.checkpoint import (
     SFT2CheckpointManager,
-    read_checkpoint_step,
     resolve_resume_checkpoint_dir,
-    resume_epoch_and_micro_step,
 )
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.components import build_sft2_components
 from nimloth.training.sft2.data.factory import build_data_bundle
 from nimloth.training.sft2.engine import SFT2StepRunner
-from nimloth.training.sft2.evaluate import evaluate
-from nimloth.training.sft2.objectives import compute_combined_loss, wm_loss_weight_schedule
-from nimloth.training.sft2.utils import (
-    no_sync_if_needed,
-    seed_training_micro_step,
+from nimloth.training.sft2.loop import (
+    SFT2TrainingLoop,
+    load_sft2_loop_state,
 )
 from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
-from nimloth.util.metrics import MetricAccumulator
-from nimloth.util.optim import qwen_lr_schedule, set_optimizer_group_lr
-from nimloth.util.profiling import StepTimer
-from nimloth.util.wandb import init_wandb_run, log_metrics
+from nimloth.util.csv_log import CSVRecordWriter
+from nimloth.util.wandb import init_wandb_run
 
 
 def train_sft2(args=None) -> int:
@@ -152,9 +142,6 @@ def train_sft2(args=None) -> int:
     vision_ema = components.vision_ema
     optimizer = components.optimizer
     base_model_path = components.base_model_path
-    qwen_pair_parallel = components.qwen_pair_parallel
-    ddp_static_graph = components.ddp_static_graph
-    lambda_sigreg_val = args.lambda_sigreg
 
     steps_per_epoch = max(1, math.ceil(len(train_loader) / args.grad_accum))
     total_steps = steps_per_epoch * args.epochs
@@ -186,129 +173,28 @@ def train_sft2(args=None) -> int:
         query_tune=args.query_tune,
     )
 
-    log_path = args.output_dir / "train_step_log.csv"
-    if is_main() and not log_path.exists():
-        with log_path.open("w", newline="") as f:
-            csv.writer(f).writerow(
-                [
-                    "time",
-                    "epoch",
-                    "global_step",
-                    "total_loss",
-                    "wm_mse",
-                    "sigreg_loss",
-                    "value_total",
-                    "value_reg",
-                    "value_rank",
-                    "lm_ce",
-                    "lambda_wm",
-                    "lambda_sigreg",
-                    "qwen_lr",
-                    "val_wm_mse",
-                ]
-            )
+    log_writer = CSVRecordWriter(
+        args.output_dir / "train_step_log.csv",
+        (
+            "time",
+            "epoch",
+            "global_step",
+            "total_loss",
+            "wm_mse",
+            "sigreg_loss",
+            "value_total",
+            "value_reg",
+            "value_rank",
+            "lm_ce",
+            "lambda_wm",
+            "lambda_sigreg",
+            "qwen_lr",
+            "val_wm_mse",
+        ),
+    )
+    if is_main():
+        log_writer.ensure_header()
 
-    global_step = 0
-    best_val_wm_mse = float("inf")
-    start_epoch = 1
-    resume_micro_step = 0
-    if args.resume and resume_state_path is not None and resume_state_path.exists():
-        state = torch.load(resume_state_path, map_location="cpu", weights_only=False)
-        global_step = int(state.get("step", 0))
-        best_val_wm_mse = float(state.get("best_val_wm_mse", state.get("best_val", float("inf"))))
-        saved_invariants = state.get("training_invariants")
-        if saved_invariants is not None:
-            mismatches = {
-                key: (saved_invariants.get(key), value)
-                for key, value in checkpoint_invariants.items()
-                if saved_invariants.get(key) != value
-            }
-            if mismatches:
-                raise ValueError(f"resume training invariants mismatch: {mismatches}")
-        if "epoch" in state:
-            start_epoch, resume_micro_step = resume_epoch_and_micro_step(state)
-        if state.get("optimizer") is not None:
-            optimizer.load_state_dict(state["optimizer"])
-        if is_main():
-            print(
-                json.dumps(
-                    {
-                        "resume": True,
-                        "resume_ckpt": str(resume_ckpt_dir),
-                        "start_epoch": start_epoch,
-                        "global_step": global_step,
-                        "resume_micro_step": resume_micro_step,
-                        "best_val_wm_mse": best_val_wm_mse,
-                    }
-                )
-            )
-
-    def _prune_step_checkpoints() -> None:
-        keep = int(getattr(args, "checkpoint_keep_last", 0) or 0)
-        if keep <= 0:
-            return
-        ckpts = sorted(
-            (
-                (read_checkpoint_step(path), path)
-                for path in args.output_dir.glob("step_*")
-                if path.is_dir() and path.name.startswith("step_") and (path / "training_state.pt").is_file()
-            ),
-            key=lambda item: item[0],
-        )
-        for _, path in ckpts[:-keep]:
-            shutil.rmtree(path, ignore_errors=True)
-
-    def _optimizer_step(epoch: int, *, lambda_wm: float, lambda_sigreg: float) -> None:
-        nonlocal global_step
-        qwen_lr = qwen_lr_schedule(
-            global_step,
-            warmup_steps=qwen_warmup_steps,
-            total_steps=total_steps,
-            start_lr=args.lr_qwen_start,
-            peak_lr=args.lr_qwen_peak,
-        )
-        set_optimizer_group_lr(optimizer, "qwen", qwen_lr)
-
-        torch.nn.utils.clip_grad_norm_(
-            [p for group in optimizer.param_groups for p in group["params"]],
-            1.0,
-        )
-        optimizer.step()
-        if vision_ema is not None:
-            vision_ema.update(model)
-        optimizer.zero_grad(set_to_none=True)
-        global_step += 1
-        if is_main():
-            avg = accum.averages()
-            with log_path.open("a", newline="") as f:
-                csv.writer(f).writerow(
-                    [
-                        time.time(),
-                        epoch,
-                        global_step,
-                        avg.get("total_loss", ""),
-                        avg.get("wm_mse", ""),
-                        avg.get("sigreg_loss", ""),
-                        avg.get("value_total", ""),
-                        avg.get("value_reg", ""),
-                        avg.get("value_rank", ""),
-                        avg.get("lm_ce", ""),
-                        lambda_wm,
-                        lambda_sigreg,
-                        qwen_lr,
-                        "",
-                    ]
-                )
-            accum.reset()
-            log_metrics(
-                wandb_run,
-                namespace="train",
-                metrics=avg,
-                step=global_step,
-                context={"global_step": global_step},
-            )
-
-    step_timer = StepTimer(enabled=args.step_timing, log_interval=args.step_timing_interval)
     pad_token_id = processor.tokenizer.pad_token_id
     step_runner = SFT2StepRunner(
         model=model,
@@ -327,233 +213,38 @@ def train_sft2(args=None) -> int:
         value_rank_margin=args.value_rank_margin,
         value_rank_lambda=args.value_rank_lambda,
     )
-    last_periodic_ckpt_time = time.monotonic()
 
-    for epoch in range(start_epoch, args.epochs + 1):
-        if train_batch_sampler is not None:
-            train_batch_sampler.set_epoch(epoch)
-        elif train_sampler is not None:
-            train_sampler.set_epoch(epoch)
-        optimizer.zero_grad(set_to_none=True)
-        accum = MetricAccumulator()
-        micro = 0
-
-        num_micro_batches = len(train_loader)
-        ddp_modules = [model, state_proj, value_head]
-        if train_wm_predictor:
-            ddp_modules.append(wm_predictor)
-        # PyTorch 2.8 has an upstream DDP regression where static_graph=True
-        # combined with no_sync() crashes in Reducer::finalize_backward before
-        # the first optimizer step (expect_autograd_hooks_ assertion). Keep the
-        # static graph required by repeated Qwen forwards/checkpointing, and
-        # synchronize each accumulation micro-batch. All-reduce is linear, so
-        # this preserves the accumulated gradient while trading extra comms for
-        # correctness on the pinned runtime.
-        use_ddp_no_sync = world > 1 and not qwen_pair_parallel and not ddp_static_graph
-        if is_main() and world > 1 and args.grad_accum > 1 and not use_ddp_no_sync:
-            print(
-                json.dumps(
-                    {
-                        "ddp_gradient_accumulation": "sync_each_microbatch",
-                        "reason": "torch_2_8_static_graph_no_sync_regression",
-                    }
-                )
-            )
-
-        train_iter = iter(train_loader)
-        micro_idx = 0
-        if epoch == start_epoch and resume_micro_step:
-            if resume_micro_step > num_micro_batches:
-                raise ValueError(
-                    "checkpoint micro_step_in_epoch exceeds current DataLoader length: "
-                    f"{resume_micro_step} > {num_micro_batches}"
-                )
-            if resume_micro_step % args.grad_accum != 0 and resume_micro_step != num_micro_batches:
-                raise ValueError(
-                    "partial-epoch checkpoint was not saved at an optimizer boundary: "
-                    f"micro_step={resume_micro_step}, grad_accum={args.grad_accum}"
-                )
-            for _ in range(resume_micro_step):
-                next(train_iter)
-            micro_idx = resume_micro_step
-            micro = resume_micro_step
-            if is_main():
-                print(
-                    json.dumps(
-                        {
-                            "resume_data_position": {
-                                "epoch": epoch,
-                                "skipped_micro_batches": resume_micro_step,
-                                "total_micro_batches": num_micro_batches,
-                            }
-                        }
-                    )
-                )
-
-        while True:
-            t0 = step_timer.start("dataloader")
-            try:
-                batch_samples = next(train_iter)
-            except StopIteration:
-                break
-            step_timer.stop("dataloader", t0)
-            micro_idx += 1
-            seed_training_micro_step(args.seed, epoch, micro_idx, rank)
-            sync_gradients = (micro_idx % args.grad_accum == 0) or (micro_idx == num_micro_batches)
-            with no_sync_if_needed(ddp_modules, enabled=not sync_gradients and use_ddp_no_sync):
-                t0 = step_timer.start("forward")
-                step_output = step_runner.forward(batch_samples, training=True)
-                step_timer.stop("forward", t0)
-
-                lambda_wm = wm_loss_weight_schedule(
-                    global_step,
-                    total_steps,
-                    start=args.lambda_wm_start,
-                    end=args.lambda_wm_end,
-                )
-                t0 = step_timer.start("loss_combine")
-                loss, metrics = compute_combined_loss(
-                    wm_loss=step_output.wm_loss,
-                    value_loss=step_output.value_loss,
-                    lm_loss=step_output.lm_loss,
-                    lambda_wm=lambda_wm if step_output.wm_loss is not None else 0.0,
-                    sigreg_loss=step_output.sigreg_loss,
-                    lambda_sigreg=lambda_sigreg_val,
-                    lambda_value=args.lambda_value,
-                    lambda_ce=args.lambda_ce,
-                )
-                metrics.update(step_output.metrics)
-                step_timer.stop("loss_combine", t0)
-
-                t0 = step_timer.start("backward")
-                (loss / args.grad_accum).backward()
-                step_timer.stop("backward", t0)
-            accum.update(metrics)
-            micro += 1
-
-            if sync_gradients:
-                t0 = step_timer.start("optimizer")
-                _optimizer_step(epoch, lambda_wm=lambda_wm, lambda_sigreg=lambda_sigreg_val)
-                step_timer.stop("optimizer", t0)
-                step_timer.on_optimizer_step(global_step=global_step, epoch=epoch)
-
-                should_save_step = bool(
-                    args.checkpoint_interval_steps
-                    and args.checkpoint_interval_steps > 0
-                    and global_step % args.checkpoint_interval_steps == 0
-                )
-                should_save_latest = False
-                if args.checkpoint_interval_minutes > 0:
-                    if is_main() and (time.monotonic() - last_periodic_ckpt_time) >= args.checkpoint_interval_minutes * 60.0:
-                        should_save_latest = True
-                    if dist.is_available() and dist.is_initialized():
-                        flag = torch.tensor([1 if should_save_latest else 0], device=device, dtype=torch.int32)
-                        dist.broadcast(flag, src=0)
-                        should_save_latest = bool(flag.item())
-                if should_save_latest:
-                    if dist.is_available() and dist.is_initialized():
-                        dist.barrier()
-                    if is_main():
-                        checkpoint_manager.save(
-                            "latest",
-                            step=global_step,
-                            epoch=epoch,
-                            best_val_wm_mse=best_val_wm_mse,
-                            epoch_complete=False,
-                            micro_step_in_epoch=micro_idx,
-                        )
-                        last_periodic_ckpt_time = time.monotonic()
-                    if dist.is_available() and dist.is_initialized():
-                        dist.barrier()
-                if should_save_step:
-                    if dist.is_available() and dist.is_initialized():
-                        dist.barrier()
-                    if is_main():
-                        checkpoint_manager.save(
-                            f"step_{global_step:06d}",
-                            step=global_step,
-                            epoch=epoch,
-                            best_val_wm_mse=best_val_wm_mse,
-                            epoch_complete=False,
-                            micro_step_in_epoch=micro_idx,
-                        )
-                        _prune_step_checkpoints()
-                    if dist.is_available() and dist.is_initialized():
-                        dist.barrier()
-
-        if dist.is_available() and dist.is_initialized():
-            dist.barrier()
-
-        val_metrics = evaluate(step_runner, val_loader, max_batches=args.max_val_batches)
-        val_wm = val_metrics.get("wm_mse", float("inf"))
-
-        if is_main():
-            log_metrics(
-                wandb_run,
-                namespace="val",
-                metrics=val_metrics,
-                step=global_step,
-                context={"epoch": epoch},
-            )
-            with log_path.open("a", newline="") as f:
-                csv.writer(f).writerow(
-                    [
-                        time.time(),
-                        epoch,
-                        global_step,
-                        "",
-                        val_metrics.get("wm_mse", ""),
-                        val_metrics.get("sigreg_loss", ""),
-                        val_metrics.get("value_total", ""),
-                        val_metrics.get("value_reg", ""),
-                        val_metrics.get("value_rank", ""),
-                        "",
-                        "",
-                        "",
-                        "",
-                        val_metrics.get("wm_mse", ""),
-                    ]
-                )
-            improved = val_wm < best_val_wm_mse
-            if improved:
-                best_val_wm_mse = val_wm
-            checkpoint_manager.save(
-                f"epoch_{epoch:03d}",
-                step=global_step,
-                epoch=epoch,
-                best_val_wm_mse=best_val_wm_mse,
-            )
-            if improved:
-                checkpoint_manager.save(
-                    "best",
-                    step=global_step,
-                    epoch=epoch,
-                    best_val_wm_mse=best_val_wm_mse,
-                )
-            print(
-                json.dumps(
-                    {
-                        "epoch": epoch,
-                        "global_step": global_step,
-                        "val_metrics": val_metrics,
-                        "best_val_wm_mse": best_val_wm_mse,
-                        "checkpoint_metric": args.checkpoint_metric,
-                        "llm_tune": llm_tune,
-                        "vision_tune": vision_tune,
-                    }
-                )
-            )
-
-        if dist.is_available() and dist.is_initialized():
-            dist.barrier()
-
-    if is_main():
-        checkpoint_manager.save(
-            "final",
-            step=global_step,
-            epoch=args.epochs,
-            best_val_wm_mse=best_val_wm_mse,
-        )
+    loop_state = load_sft2_loop_state(
+        resume=args.resume,
+        resume_state_path=resume_state_path,
+        resume_checkpoint_dir=resume_ckpt_dir,
+        optimizer=optimizer,
+        training_invariants=checkpoint_invariants,
+    )
+    training_loop = SFT2TrainingLoop(
+        args=args,
+        rank=rank,
+        world_size=world,
+        device=device,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        train_sampler=train_sampler,
+        train_batch_sampler=train_batch_sampler,
+        components=components,
+        step_runner=step_runner,
+        checkpoint_manager=checkpoint_manager,
+        log_writer=log_writer,
+        wandb_run=wandb_run,
+        state=loop_state,
+        train_wm_predictor=train_wm_predictor,
+        total_steps=total_steps,
+        qwen_warmup_steps=qwen_warmup_steps,
+        llm_tune=llm_tune,
+        vision_tune=vision_tune,
+    )
+    training_loop.run()
+    if wandb_run is not None:
+        wandb_run.finish()
     cleanup_dist()
     return 0
 
