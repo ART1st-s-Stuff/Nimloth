@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-07-21：SFT2 SIGReg 时间轴修复
+
+- 已确认旧 `build_trajectory_sigreg_inputs` 同时混淆了时间轴和 batch 轴：它把
+  变长 trajectory 当成 `T`，并对每条轨迹用 `B=1` 分别调用 SIGReg。
+- SFT2 当前是一步上下文、一步预测，因此 LeWM 训练序列固定为
+  `[s_t,s_{t+1}]`。新增 `nimloth.wm.OneStepSIGReg` 统一构造 `(T=2,B,D)`，
+  `B` 是 microbatch 中有下一状态的 transition 数；`B<2` 时明确跳过。
+- SFT2 validation 不再计算随机 SIGReg。trajectory sampler 只负责决定哪些
+  transition 共享 microbatch，不再定义 SIGReg 的 `T`。
+- 人类明确要求 RL 的 `history_size` 必须保持可配置。本轮曾错误尝试把 RL
+  限制为 1，现已完全撤回；提交 `7be6ba2` 不含任何 RL 文件。真正的多步 RL
+  WM/SIGReg 需要另行设计连续上下文输入。
+- 验证：本地 `py_compile` 与 `git diff --check` 通过。本地环境缺少 torch/pytest；
+  superpod SSH 超过 60 秒未进入 shell，依服务器规则停止重试，远程 pytest 待
+  VPN 恢复后执行。
+
 ## 2026-07-21：Agent、Backbone 与训练算法边界纠正
 
 - 人类确认神经网络 `Agent` 应当是完整 `nn.Module`，episode 状态机则使用独立的

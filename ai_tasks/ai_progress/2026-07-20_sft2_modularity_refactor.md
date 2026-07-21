@@ -85,4 +85,6 @@ After the SFT2 work is complete, perform a separate read-only audit of
   不再计算随机 SIGReg。
 - RL 的 `history_size` 必须继续可配置。本轮撤回了把 RL 限制为 1 的错误尝试；
   真正的多步 RL WM/SIGReg 需要单独实现连续上下文，暂不在本修复中落地。
-- 本地静态编译通过；远程定向/相邻回归待运行，完成后补充结果和提交号。
+- 提交 `7be6ba2`；本地静态编译与 `git diff --check` 通过。superpod SSH
+  超过 60 秒未进入 shell，依服务器规则停止重试；远程定向/相邻回归待 VPN
+  恢复后运行。
