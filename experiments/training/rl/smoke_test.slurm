@@ -66,9 +66,11 @@ from nimloth.wm.lewm import LeWMConfig
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
-from nimloth.model import NimlothModel
+from nimloth.agent import Agent
+from nimloth.backbone.qwen25vl.model import Qwen25VLBackbone
 from nimloth.wm.model import WorldModel
 from nimloth.training.rl.checkpoint import save_rl_checkpoint
+from nimloth.training.rl.objective import RLObjective
 
 sft2_best = Path('${SFT2_BEST}')
 out_dir = Path('${TRAIN_OUT}')
@@ -93,8 +95,15 @@ print(json.dumps({'loaded': 'wm_predictor', 'history_size': wm_predictor.config.
 value_head = ValueHead.load_checkpoint(sft2_best / 'value_head', emb_dim=emb_dim, map_location=device).to(device)
 value_head.train()
 print(json.dumps({'loaded': 'value_head'}))
-nimloth_model = NimlothModel(
-    llm=torch.nn.Identity(),
+agent = Agent(
+    backbone=Qwen25VLBackbone(
+        torch.nn.Identity(),
+        token_id_map={},
+        device=device,
+        latent_token_count=1,
+        lora=False,
+        vision_tune='freeze',
+    ),
     wm=WorldModel(
         state_proj=state_proj,
         wm_predictor=wm_predictor,
@@ -121,27 +130,33 @@ optimizer = torch.optim.AdamW(
 current_state = state_proj(hidden_cur).float()
 with torch.no_grad():
     target_state = state_proj(hidden_next).float()
-dynamics = nimloth_model.wm.compute_dynamics_loss(
-    current_state=current_state,
-    target_next_state=target_state,
-    action_indices=actions,
+predicted_state = agent.wm.predict_next_state(current_state, actions)
+action_values = agent.wm.predict_action_values(current_state.detach())
+objective = RLObjective(
+    value_rank_margin=0.1,
+    value_rank_weight=1.0,
+    ppo_clip_ratio=0.2,
+    entropy_weight=0.0,
 )
-pred_loss = dynamics.loss
+output = objective(
+    predicted_next_state=predicted_state,
+    target_next_state=target_state,
+    action_values=action_values,
+    action_indices=actions,
+    return_targets=value_targets,
+    old_log_probs=torch.zeros(B, device=device),
+    new_log_probs=None,
+    action_log_probs=None,
+)
+pred_loss = output.losses['wm']
 print(json.dumps({'pred_loss': float(pred_loss.item()), 'wm_mse': float(pred_loss.item())}))
 
 # Value loss (project current hidden first)
-with torch.no_grad():
-    wm_state = state_proj(hidden_cur).float()
-value = nimloth_model.wm.compute_action_value_loss(
-    state=wm_state,
-    action_indices=actions,
-    return_targets=value_targets,
-)
-val_loss = value.loss
-print(json.dumps({'val_loss': float(val_loss.item()), 'value_reg': float(value.regression.item()), 'value_rank': float(value.ranking.item())}))
+val_loss = output.losses['value']
+print(json.dumps({'val_loss': float(val_loss.item())}))
 
 # Backward
-total_loss = pred_loss + val_loss
+total_loss = output.loss
 optimizer.zero_grad()
 total_loss.backward()
 optimizer.step()
@@ -158,7 +173,9 @@ with torch.no_grad():
 # Save checkpoint
 save_rl_checkpoint(
     out_dir / 'best',
-    nimloth_model=nimloth_model,
+    agent=agent,
+    processor=None,
+    vision_ema=None,
     save_llm=False,
     optimizer=optimizer,
     iteration=1,

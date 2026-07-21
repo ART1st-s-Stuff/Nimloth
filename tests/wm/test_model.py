@@ -1,11 +1,40 @@
-"""完整 Nimloth 模型组合的结构测试。"""
+"""完整 Agent 与 WorldModel 模块边界测试。"""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 
-from nimloth.model import NimlothModel
+from nimloth.agent import Agent
+from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.wm.model import WorldModel
+
+
+class _Backbone(Backbone):
+    def __init__(self, model: torch.nn.Module) -> None:
+        super().__init__()
+        self.language_model = model
+
+    @property
+    def model(self) -> torch.nn.Module:
+        return self.language_model
+
+    def forward(
+        self,
+        batch: BackboneBatch,
+        *,
+        include_lm_loss: bool = False,
+    ) -> BackboneOutput:
+        hidden = self.language_model(batch.tensors["features"])
+        loss = hidden.mean() if include_lm_loss else None
+        return BackboneOutput(hidden=hidden, lm_loss=loss)
+
+    def with_model(self, model: torch.nn.Module) -> "_Backbone":
+        return _Backbone(model)
+
+    def save_pretrained(self, output_dir: Path, **_kwargs) -> None:
+        raise NotImplementedError
 
 
 class _Predictor(torch.nn.Module):
@@ -17,12 +46,12 @@ class _Predictor(torch.nn.Module):
         return state + 1.0
 
 
-def test_nimloth_model_owns_llm_wm_and_value_head() -> None:
-    llm = torch.nn.Linear(3, 3)
+def test_agent_owns_backbone_wm_and_runs_complete_forward() -> None:
+    language_model = torch.nn.Linear(3, 3)
     state_proj = torch.nn.Linear(3, 2)
     value_head = torch.nn.Linear(2, 4)
-    model = NimlothModel(
-        llm=llm,
+    agent = Agent(
+        backbone=_Backbone(language_model),
         wm=WorldModel(
             state_proj=state_proj,
             wm_predictor=_Predictor(),
@@ -30,12 +59,22 @@ def test_nimloth_model_owns_llm_wm_and_value_head() -> None:
         ),
     )
 
-    assert model.llm is llm
-    assert model.wm.state_proj is state_proj
-    assert model.wm.value_head is value_head
-    assert set(model.state_dict()) == {
-        "llm.weight",
-        "llm.bias",
+    output = agent(
+        BackboneBatch({"features": torch.randn(2, 3)}),
+        torch.tensor([0, 1]),
+        include_lm_loss=True,
+    )
+
+    assert agent.backbone.model is language_model
+    assert agent.wm.state_proj is state_proj
+    assert output.hidden.shape == (2, 3)
+    assert output.state.shape == (2, 2)
+    assert output.predicted_next_state.shape == (2, 2)
+    assert output.action_values.shape == (2, 4)
+    assert output.lm_loss is not None
+    assert set(agent.state_dict()) == {
+        "backbone.language_model.weight",
+        "backbone.language_model.bias",
         "wm.state_proj.weight",
         "wm.state_proj.bias",
         "wm.value_head.weight",
@@ -43,30 +82,14 @@ def test_nimloth_model_owns_llm_wm_and_value_head() -> None:
     }
 
 
-def test_world_model_loss_methods_use_owned_modules() -> None:
+def test_world_model_forward_uses_all_owned_modules() -> None:
     model = WorldModel(
         state_proj=torch.nn.Linear(3, 2, bias=False),
         wm_predictor=_Predictor(),
         value_head=torch.nn.Linear(2, 3, bias=False),
     )
-    hidden = torch.randn(2, 3)
-    state = model.project_state(hidden)
-    actions = torch.tensor([0, 2])
-    output = model(hidden, actions)
+    output = model(torch.randn(2, 3), torch.tensor([0, 2]))
 
-    dynamics = model.compute_dynamics_loss(
-        current_state=state,
-        target_next_state=torch.zeros_like(state),
-        action_indices=actions,
-    )
-    value = model.compute_action_value_loss(
-        state=state,
-        action_indices=actions,
-        return_targets=torch.tensor([1.0, -1.0]),
-    )
-
-    assert dynamics.loss.ndim == 0
-    assert value.loss.ndim == 0
     assert output["state"].shape == (2, 2)
     assert output["predicted_next_state"].shape == (2, 2)
     assert output["action_values"].shape == (2, 3)

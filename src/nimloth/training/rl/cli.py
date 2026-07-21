@@ -93,9 +93,7 @@ def parse_rl_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     """解析参数、创建阶段组件并启动 RL 训练。"""
     from nimloth.util.distributed import is_main
-    from nimloth.backbone.qwen25vl.vagen_rollout import (
-        VAGENNavigationRolloutCollector,
-    )
+    from nimloth.environment.navigation import VAGENNavigationRolloutCollector
     from nimloth.rollout import JSONLRolloutCollector
     from nimloth.training.rl.trainer import train_rl
 
@@ -129,10 +127,8 @@ def main(argv: list[str] | None = None) -> int:
                 "direct env training requires rollout.train_datasets"
             )
         train_collector = VAGENNavigationRolloutCollector(
-            qwen_model=None,  # filled in by trainer after model loading
-            processor=None,   # filled in by trainer
+            policy=None,      # trainer 加载完整 Agent 后绑定
             env_url=args.env_url,
-            device=None,      # filled in by trainer
             temperature=config.rollout.temperature,
             top_p=config.rollout.top_p,
             eval_sets=train_datasets,
@@ -146,10 +142,8 @@ def main(argv: list[str] | None = None) -> int:
                     "validation.enabled requires rollout.eval_datasets"
                 )
             eval_collector = VAGENNavigationRolloutCollector(
-                qwen_model=None,
-                processor=None,
+                policy=None,
                 env_url=args.env_url,
-                device=None,
                 seed_offset=1_000_000,
                 temperature=config.rollout.temperature,
                 top_p=config.rollout.top_p,

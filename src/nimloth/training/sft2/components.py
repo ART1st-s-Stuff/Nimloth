@@ -1,27 +1,22 @@
-"""Construct and place the trainable components used by SFT2."""
+"""构造 SFT2 的 Agent、分布式包装和 optimizer。"""
 
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
-from transformers import Qwen2_5_VLForConditionalGeneration
 
-from nimloth.backbone.qwen25vl.tuning import configure_qwen_tuning, uses_lora
-from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
-from nimloth.latent import (
-    initialize_extra_latent_token_embeddings,
-    install_query_embedding_adapter,
-    latent_state_tokens,
+from nimloth.agent import Agent, AgentBatchBuilder, AgentTarget
+from nimloth.backbone import (
+    BackboneEMA,
+    build_sft2_batch_builder,
+    build_vision_ema,
+    load_sft2_backbone,
 )
-from nimloth.model import NimlothModel
-from nimloth.util.distributed import is_main
-from nimloth.training.sft2.checkpoint import load_aux_checkpoint, load_lora_adapter_state
+from nimloth.training.sft2.checkpoint import load_aux_checkpoint
 from nimloth.wm import (
     LeWMConfig,
     LatentWMPredictor,
@@ -38,16 +33,21 @@ SFT2_WM_HISTORY_SIZE = 1
 def require_sft2_wm_history(wm_predictor: LatentWMPredictor, source: Path) -> None:
     if wm_predictor.config.history_size != SFT2_WM_HISTORY_SIZE:
         raise ValueError(
-            "SFT2 one-step dynamics requires a WM checkpoint with history_size=1; "
+            "SFT2 one-step WM requires a checkpoint with history_size=1; "
             f"got history_size={wm_predictor.config.history_size} from {source}"
         )
 
 
 @dataclass(frozen=True)
 class SFT2Components:
-    nimloth_model: NimlothModel
+    """训练循环需要的完整 Agent 与优化状态。"""
+
+    agent: Agent
+    batch_builder: AgentBatchBuilder
+    target: AgentTarget
+    processor: Any
+    vision_ema: BackboneEMA | None
     sigreg: SIGReg
-    vision_ema: VisionEncoderEMA | None
     optimizer: torch.optim.Optimizer
     base_model_path: Path
     aux_device: torch.device
@@ -55,132 +55,8 @@ class SFT2Components:
     ddp_static_graph: bool
 
 
-def _qwen_load_kwargs(device: torch.device) -> tuple[bool, dict[str, Any]]:
-    gpu_stride = int(os.environ.get("NIMLOTH_DDP_GPU_STRIDE", "1"))
-    pair_parallel = gpu_stride > 1 and torch.cuda.is_available()
-    if not pair_parallel:
-        return False, {}
-    primary_idx = int(str(device).split(":")[-1])
-    pair = [primary_idx + offset for offset in range(gpu_stride)]
-    if is_main():
-        print(json.dumps({"qwen_pair_parallel": True, "gpu_stride": gpu_stride, "rank0_pair": pair}))
-    return True, {
-        "device_map": "auto",
-        "max_memory": {index: "74GiB" for index in pair} | {"cpu": "64GiB"},
-        "low_cpu_mem_usage": True,
-    }
-
-
-def _load_qwen_model(
-    args,
-    processor,
-    token_id_map: dict[str, int],
-    added_special_token_count: int,
-    resume_ckpt_dir: Path | None,
-    device: torch.device,
-) -> tuple[torch.nn.Module, Path, Any, bool]:
-    pair_parallel, load_kwargs = _qwen_load_kwargs(device)
-    resume_state_path = resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir else None
-    resume_adapter = resume_ckpt_dir / "adapter_config.json" if resume_ckpt_dir else None
-    base_model_path = args.model
-
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        attn_implementation=args.attn_implementation,
-        trust_remote_code=True,
-        **load_kwargs,
-    )
-    if args.gradient_checkpointing:
-        model.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs={"use_reentrant": False}
-        )
-    model.resize_token_embeddings(len(processor.tokenizer))
-    if added_special_token_count > 0:
-        initialize_extra_latent_token_embeddings(
-            model,
-            token_id_map,
-            latent_token_count=args.latent_token_count,
-        )
-    model.config.vocab_size = len(processor.tokenizer)
-    if hasattr(model, "generation_config"):
-        model.generation_config.vocab_size = len(processor.tokenizer)
-
-    if args.resume and resume_state_path is not None and resume_state_path.exists() and resume_adapter.is_file():
-        saved = torch.load(resume_state_path, map_location="cpu", weights_only=False)
-        if not uses_lora(args):
-            raise ValueError("--resume with LoRA adapter requires llm_tune and/or vision_tune lora")
-        if saved.get("base_model_path"):
-            base_model_path = Path(saved["base_model_path"])
-        if is_main():
-            print(
-                json.dumps(
-                    {
-                        "resume_lora_adapter": str(resume_ckpt_dir),
-                        "base_model_path": str(base_model_path),
-                    }
-                )
-            )
-        model = configure_qwen_tuning(model, args)
-        load_lora_adapter_state(model, resume_ckpt_dir)
-    elif (
-        args.resume
-        and resume_state_path is not None
-        and resume_state_path.exists()
-        and (resume_ckpt_dir / "config.json").is_file()
-    ):
-        if uses_lora(args):
-            raise ValueError("cannot --resume full HF checkpoint with lora tuning")
-        if is_main():
-            print(json.dumps({"resume_full": str(resume_ckpt_dir)}))
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            resume_ckpt_dir,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            attn_implementation=args.attn_implementation,
-            trust_remote_code=True,
-            **load_kwargs,
-        )
-        if args.gradient_checkpointing:
-            model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False}
-            )
-        model.resize_token_embeddings(len(processor.tokenizer))
-        model.config.vocab_size = len(processor.tokenizer)
-        if hasattr(model, "generation_config"):
-            model.generation_config.vocab_size = len(processor.tokenizer)
-        model = configure_qwen_tuning(model, args)
-    else:
-        model = configure_qwen_tuning(model, args)
-        if is_main():
-            print(json.dumps({"init": "configured_tuning", "base_model_path": str(base_model_path)}))
-
-    query_adapter = None
-    if args.query_tune == "adapter":
-        query_token_ids = [
-            token_id_map[token] for token in latent_state_tokens(args.latent_token_count)
-        ]
-        query_adapter = install_query_embedding_adapter(model, query_token_ids)
-        if is_main():
-            print(
-                json.dumps(
-                    {
-                        "query_tune": "adapter",
-                        "query_token_ids": query_token_ids,
-                        "query_lr": args.query_lr,
-                    }
-                )
-            )
-
-    if not pair_parallel:
-        model.to(device)
-    return model, base_model_path, query_adapter, pair_parallel
-
-
 def build_sft2_components(
     args,
-    processor,
-    token_id_map: dict[str, int],
-    added_special_token_count: int,
     resume_ckpt_dir: Path | None,
     *,
     device: torch.device,
@@ -188,20 +64,19 @@ def build_sft2_components(
     train_wm_predictor: bool,
     vision_ema_enabled: bool,
 ) -> SFT2Components:
-    """Build Qwen, auxiliary heads, DDP wrappers, EMA, and optimizer."""
+    """由通用 backbone factory 加载 LLM，再装配完整 Agent。"""
 
-    model, base_model_path, query_adapter, pair_parallel = _load_qwen_model(
-        args,
-        processor,
-        token_id_map,
-        added_special_token_count,
-        resume_ckpt_dir,
-        device,
-    )
+    loaded = load_sft2_backbone(args, resume_ckpt_dir, device=device)
+    model = loaded.backbone.model
+    pair_parallel = loaded.pair_parallel
+    base_model_path = Path(loaded.base_model_path)
+    query_adapter = loaded.query_adapter
+
     wm_config = LeWMConfig(emb_dim=args.emb_dim, history_size=SFT2_WM_HISTORY_SIZE)
     if args.wm_predictor_checkpoint is not None:
         wm_predictor = LatentWMPredictor.load_checkpoint(
-            args.wm_predictor_checkpoint, map_location=device
+            args.wm_predictor_checkpoint,
+            map_location=device,
         ).to(device)
         require_sft2_wm_history(wm_predictor, args.wm_predictor_checkpoint)
     else:
@@ -224,8 +99,14 @@ def build_sft2_components(
         wm_predictor.emb_dim,
         latent_token_count=args.latent_token_count,
     ).to(device=aux_device, dtype=model_dtype)
-    value_head = ValueHead(wm_predictor.emb_dim).to(device=aux_device, dtype=model_dtype)
-    sigreg = SIGReg(knots=args.sigreg_knots, num_proj=args.sigreg_num_proj).to(device=aux_device)
+    value_head = ValueHead(wm_predictor.emb_dim).to(
+        device=aux_device,
+        dtype=model_dtype,
+    )
+    sigreg = SIGReg(
+        knots=args.sigreg_knots,
+        num_proj=args.sigreg_num_proj,
+    ).to(device=aux_device)
     wm = WorldModel(
         state_proj=state_proj,
         wm_predictor=wm_predictor,
@@ -285,25 +166,13 @@ def build_sft2_components(
                 static_graph=static_graph,
             )
 
-    vision_ema: VisionEncoderEMA | None = None
-    if vision_ema_enabled:
-        vision_ema = VisionEncoderEMA(decay=args.vision_ema_decay)
-        vision_ema.reset(model)
-        ema_path = resume_ckpt_dir / "vision_ema.pt" if resume_ckpt_dir else None
-        if args.resume and ema_path is not None and ema_path.is_file():
-            loaded_ema = VisionEncoderEMA.load_checkpoint(ema_path, map_location=device)
-            vision_ema.decay = loaded_ema.decay
-            vision_ema.shadow = {key: value.to(device) for key, value in loaded_ema.shadow.items()}
-        if is_main():
-            print(
-                json.dumps(
-                    {
-                        "vision_ema": True,
-                        "shadow_params": len(vision_ema.shadow),
-                        "decay": vision_ema.decay,
-                    }
-                )
-            )
+    vision_ema = build_vision_ema(
+        enabled=vision_ema_enabled,
+        decay=args.vision_ema_decay,
+        llm=model,
+        resume_path=(resume_ckpt_dir / "vision_ema.pt") if resume_ckpt_dir else None,
+        device=device,
+    )
 
     query_parameter = query_adapter.delta if query_adapter is not None else None
     qwen_parameters = [
@@ -340,21 +209,43 @@ def build_sft2_components(
         )
     optimizer = torch.optim.AdamW(parameter_groups, weight_decay=args.weight_decay)
 
-    nimloth_model = NimlothModel(
-        llm=model,
+    backbone = loaded.backbone.with_model(model)
+    agent = Agent(
+        backbone=backbone,
         wm=WorldModel(
             state_proj=state_proj,
             wm_predictor=wm_predictor,
             value_head=value_head,
         ),
     )
+    batch_builder = build_sft2_batch_builder(
+        loaded,
+        device=aux_device,
+        max_length=args.max_length,
+        latent_token_count=args.latent_token_count,
+        mask_latent_query_labels=args.mask_latent_query_labels,
+    )
+    target = AgentTarget(
+        agent,
+        backbone_context=(
+            (lambda: vision_ema.use_ema_weights(backbone.model))
+            if vision_ema is not None
+            else None
+        ),
+    )
     return SFT2Components(
-        nimloth_model=nimloth_model,
-        sigreg=sigreg,
+        agent=agent,
+        batch_builder=batch_builder,
+        target=target,
+        processor=loaded.processor,
         vision_ema=vision_ema,
+        sigreg=sigreg,
         optimizer=optimizer,
         base_model_path=base_model_path,
         aux_device=aux_device,
         qwen_pair_parallel=pair_parallel,
         ddp_static_graph=static_graph,
     )
+
+
+__all__ = ["SFT2Components", "build_sft2_components", "require_sft2_wm_history"]

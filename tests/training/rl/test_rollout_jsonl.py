@@ -226,7 +226,7 @@ def test_jsonl_collector_nonexistent_source(tmp_path: Path) -> None:
 def test_advantage_std_single_sample_no_nan() -> None:
     """单样本 Monte Carlo advantage 标准化不能产生 NaN。"""
     import torch
-    from nimloth.training.rl.algorithm import normalized_monte_carlo_advantages
+    from nimloth.training.rl.objective import normalized_monte_carlo_advantages
 
     targets = torch.tensor([5.0])
     values = torch.tensor([4.0])
@@ -243,7 +243,7 @@ def test_advantage_std_single_sample_no_nan() -> None:
 def test_advantage_std_multi_sample() -> None:
     """compute_advantages with multiple samples works normally."""
     import torch
-    from nimloth.training.rl.algorithm import normalized_monte_carlo_advantages
+    from nimloth.training.rl.objective import normalized_monte_carlo_advantages
 
     torch.manual_seed(42)
     targets = torch.tensor([5.0, 3.0, 7.0])

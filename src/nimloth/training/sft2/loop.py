@@ -18,12 +18,8 @@ from nimloth.training.sft2.checkpoint import (
     resume_epoch_and_micro_step,
 )
 from nimloth.training.sft2.components import SFT2Components
-from nimloth.training.sft2.algorithm import (
-    SFT2Algorithm,
-    SFT2LossWeights,
-    SFT2Mode,
-    wm_loss_weight_schedule,
-)
+from nimloth.training.sft2.algorithm import SFT2Algorithm
+from nimloth.training.sft2.schedule import wm_loss_weight_schedule
 from nimloth.training.sft2.evaluate import evaluate
 from nimloth.training.sft2.utils import no_sync_if_needed, seed_training_micro_step
 from nimloth.util.csv_log import CSVRecordWriter
@@ -154,10 +150,10 @@ class SFT2TrainingLoop:
         accumulator = MetricAccumulator()
         train_iterator, micro_index = self._resume_train_iterator(epoch)
         micro_batch_count = len(self.train_loader)
-        model = self.components.nimloth_model
-        ddp_modules = [model.llm, model.wm.state_proj, model.wm.value_head]
+        agent = self.components.agent
+        ddp_modules = [agent.backbone.model, agent.wm.state_proj, agent.wm.value_head]
         if self.train_wm_predictor:
-            ddp_modules.append(model.wm.wm_predictor)
+            ddp_modules.append(agent.wm.wm_predictor)
 
         # PyTorch 2.8 的 static_graph=True 与 no_sync() 组合存在 Reducer
         # 回归。保留重复 Qwen forward 所需的静态图，并在每个微批同步梯度。
@@ -266,25 +262,19 @@ class SFT2TrainingLoop:
         """运行共享 forward，并按当前训练步组合全部目标函数。"""
 
         timer_start = self.step_timer.start("forward")
-        step_output = self.algorithm.compute(batch_samples, mode=SFT2Mode.TRAIN)
-        self.step_timer.stop("forward", timer_start)
         lambda_wm = wm_loss_weight_schedule(
             self.state.global_step,
             self.total_steps,
             start=self.args.lambda_wm_start,
             end=self.args.lambda_wm_end,
         )
-        timer_start = self.step_timer.start("loss_combine")
-        weighted = step_output.weighted(
-            SFT2LossWeights(
-                wm=lambda_wm if step_output.dynamics is not None else 0.0,
-                sigreg=self.args.lambda_sigreg,
-                value=self.args.lambda_value,
-                ce=self.args.lambda_ce,
-            )
+        batch = self.components.batch_builder.prepare(batch_samples)
+        step_output = self.algorithm.training_step(
+            batch,
+            wm_weight=lambda_wm,
         )
-        self.step_timer.stop("loss_combine", timer_start)
-        return lambda_wm, weighted.metrics, weighted.loss
+        self.step_timer.stop("forward", timer_start)
+        return lambda_wm, step_output.metrics, step_output.loss
 
     def _optimizer_step(
         self,
@@ -310,7 +300,7 @@ class SFT2TrainingLoop:
         )
         optimizer.step()
         if self.components.vision_ema is not None:
-            self.components.vision_ema.update(self.components.nimloth_model.llm)
+            self.components.vision_ema.update(self.components.agent.backbone.model)
         optimizer.zero_grad(set_to_none=True)
         self.state.global_step += 1
 
@@ -405,6 +395,7 @@ class SFT2TrainingLoop:
         val_metrics = evaluate(
             self.algorithm,
             self.val_loader,
+            batch_builder=self.components.batch_builder,
             max_batches=self.args.max_val_batches,
         )
         if not is_main():

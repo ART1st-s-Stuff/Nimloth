@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 
 from nimloth.agent import (
-    Agent,
+    AgentRuntime,
     AgentPrompt,
     NimlothPromptTemplate,
     PolicyDecision,
@@ -29,7 +29,7 @@ def _template() -> NimlothPromptTemplate:
 
 def test_navigation_agent_runs_real_history_through_one_policy() -> None:
     policy = _RecordingPolicy()
-    agent = Agent(
+    agent = AgentRuntime(
         policy=policy,
         action_space=NAVIGATION_ACTION_SPACE,
         prompt_template=_template(),
@@ -57,7 +57,7 @@ def test_navigation_agent_runs_real_history_through_one_policy() -> None:
 
 
 def test_navigation_agent_serializes_only_completed_turns() -> None:
-    agent = Agent(
+    agent = AgentRuntime(
         policy=_RecordingPolicy(),
         action_space=NAVIGATION_ACTION_SPACE,
         prompt_template=_template(),

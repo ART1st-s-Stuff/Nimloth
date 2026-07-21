@@ -25,5 +25,5 @@ prompt 模板、动作空间和行为概率都随 `AgentEpisode` 进入 trajecto
 公共适配器中猜测某个环境的 reward/success 语义。
 
 Qwen hidden state 编码属于模型适配，位于
-`nimloth.backbone.qwen25vl.rollout`；Qwen+VAGEN 在线组合适配器位于
-`nimloth.backbone.qwen25vl.vagen_rollout`。二者都不属于本包。
+`nimloth.backbone.qwen25vl.rollout`；VAGEN navigation collector 属于
+`nimloth.environment.navigation.collector`。二者都不属于本包。

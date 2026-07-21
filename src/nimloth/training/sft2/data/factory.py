@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import Any
 
 import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
 
-from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
+from nimloth.agent import AgentBatchBuilder
 from nimloth.util.distributed import is_main
-from nimloth.training.sft2.data.batch import collate_cached_transition_batch
 from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
     LEGACY_CACHE_FORMAT,
@@ -99,10 +97,11 @@ def _verify_cache_manifest(
 
 def _build_or_open_cached_datasets(
     config: Any,
-    processor,
+    batch_builder: AgentBatchBuilder,
     train_samples: list[TransitionSample],
     val_samples: list[TransitionSample],
 ):
+    processor = batch_builder.processor
     cache_root = Path(config.preprocess_cache_dir)
     train_cache_dir = cache_root / "train"
     val_cache_dir = cache_root / "val"
@@ -190,27 +189,30 @@ def _build_or_open_cached_datasets(
             max_open_shards=config.preprocess_cache_shard_lru,
         )
     else:
-        collate_train = partial(
-            collate_cached_transition_batch,
-            pad_token_id=processor.tokenizer.pad_token_id,
-        )
+        collate_train = batch_builder.collate_cached_transition_batch
         collate_val = collate_train
     return train_dataset, val_dataset, collate_train, collate_val
 
 
-def build_data_bundle(config: Any, processor, *, rank: int, world_size: int) -> DataBundle:
+def build_data_bundle(
+    config: Any,
+    batch_builder: AgentBatchBuilder,
+    *,
+    rank: int,
+    world_size: int,
+) -> DataBundle:
     """Construct the complete SFT2 data plane from one validated config."""
 
     train_samples, val_samples = _load_transition_samples(config)
     if config.preprocess_cache_dir is None:
         train_dataset = TransitionJsonlDataset.from_samples(train_samples)
         val_dataset = TransitionJsonlDataset.from_samples(val_samples)
-        train_collate = transition_collate_for_qwen
-        val_collate = transition_collate_for_qwen
+        train_collate = batch_builder.collate_transition_samples
+        val_collate = batch_builder.collate_transition_samples
     else:
         train_dataset, val_dataset, train_collate, val_collate = _build_or_open_cached_datasets(
             config,
-            processor,
+            batch_builder,
             train_samples,
             val_samples,
         )

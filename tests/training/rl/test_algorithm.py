@@ -2,14 +2,36 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 
-from nimloth.config.rl import parse_rl_config
-from nimloth.model import NimlothModel
-from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch
-from nimloth.training.rl.components import RLComponents, RLResumeState
+from nimloth.agent import Agent
+from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
+from nimloth.training.rl.algorithm import RLAlgorithm
+from nimloth.training.rl.batch import RLBatch
+from nimloth.training.rl.objective import RLObjective
 from nimloth.wm.model import WorldModel
 from nimloth.wm.value_head import ValueHead
+
+
+class _UnusedBackbone(Backbone):
+    def __init__(self) -> None:
+        super().__init__()
+        self.language_model = torch.nn.Identity()
+
+    @property
+    def model(self) -> torch.nn.Module:
+        return self.language_model
+
+    def forward(self, batch: BackboneBatch, **_kwargs) -> BackboneOutput:
+        return BackboneOutput(batch.tensors["hidden"])
+
+    def with_model(self, model: torch.nn.Module) -> "_UnusedBackbone":
+        return self
+
+    def save_pretrained(self, output_dir: Path, **_kwargs) -> None:
+        raise NotImplementedError
 
 
 class _Predictor(torch.nn.Module):
@@ -29,48 +51,24 @@ def _algorithm() -> tuple[RLAlgorithm, torch.nn.Linear, _Predictor, ValueHead]:
     state_proj = torch.nn.Linear(3, 2, bias=False)
     predictor = _Predictor()
     value_head = ValueHead(emb_dim=2, num_actions=3, hidden_dim=2)
-    optimizer = torch.optim.AdamW(
-        [
-            *state_proj.parameters(),
-            *predictor.parameters(),
-            *value_head.parameters(),
-        ]
-    )
-    components = RLComponents(
-        nimloth_model=NimlothModel(
-            llm=torch.nn.Identity(),
-            wm=WorldModel(
-                state_proj=state_proj,
-                wm_predictor=predictor,
-                value_head=value_head,
-            ),
+    agent = Agent(
+        backbone=_UnusedBackbone(),
+        wm=WorldModel(
+            state_proj=state_proj,
+            wm_predictor=predictor,
+            value_head=value_head,
         ),
-        processor=None,
-        token_id_map={},
-        vision_ema=None,
-        optimizer=optimizer,
-        base_model_path="unused",
-        llm_tune="freeze",
-        vision_tune="freeze",
-        resume=RLResumeState(),
-    )
-    config = parse_rl_config(
-        {
-            "freeze": {"state_proj": False},
-            "predictor": {"emb_dim": 2, "history_size": 1},
-            "value_head": {"lambda_rank": 1.0},
-            "rollout": {
-                "train_datasets": ["base_train"],
-                "eval_datasets": ["base"],
-            },
-        }
     )
     return (
         RLAlgorithm(
-            components=components,
-            config=config,
-            actor_enabled=False,
-            device=torch.device("cpu"),
+            agent=agent,
+            objective=RLObjective(
+                value_rank_margin=0.1,
+                value_rank_weight=1.0,
+                ppo_clip_ratio=0.2,
+                entropy_weight=0.0,
+            ),
+            policy_replay=None,
         ),
         state_proj,
         predictor,
@@ -89,12 +87,12 @@ def _batch() -> RLBatch:
     )
 
 
-def test_rl_dynamics_stops_gradient_on_next_projector_target() -> None:
+def test_rl_wm_stops_gradient_on_next_projector_target() -> None:
     algorithm, state_proj, predictor, _ = _algorithm()
     batch = _batch()
-    losses = algorithm.compute_losses(batch)
+    output = algorithm.training_step(batch)
 
-    losses.dynamics.loss.backward()
+    output.losses["wm"].backward()
 
     assert batch.current_hidden.grad is not None
     assert batch.next_hidden.grad is None
@@ -105,9 +103,9 @@ def test_rl_dynamics_stops_gradient_on_next_projector_target() -> None:
 def test_rl_value_updates_head_but_not_state_projector() -> None:
     algorithm, state_proj, _, value_head = _algorithm()
     batch = _batch()
-    losses = algorithm.compute_losses(batch)
+    output = algorithm.training_step(batch)
 
-    losses.value.loss.backward()
+    output.losses["value"].backward()
 
     assert batch.current_hidden.grad is None
     assert state_proj.weight.grad is None

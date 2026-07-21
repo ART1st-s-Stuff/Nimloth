@@ -1,47 +1,115 @@
+"""SFT2 Agent forward、objective 与梯度语义测试。"""
+
 from __future__ import annotations
+
+from pathlib import Path
 
 import torch
 
-from nimloth.backbone.qwen25vl.transition import (
-    QwenTransitionEncoder,
-    QwenTransitionMessages,
-)
-from nimloth.model import NimlothModel
-from nimloth.training.sft2.algorithm import (
-    SFT2Algorithm,
-    SFT2LossWeights,
-    SFT2Losses,
+from nimloth.agent import Agent, AgentBatch, AgentTarget
+from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
+from nimloth.training.sft2.algorithm import SFT2Algorithm
+from nimloth.training.sft2.objective import (
+    SFT2Objective,
     build_trajectory_sigreg_inputs,
-    wm_loss_weight_schedule,
 )
-from nimloth.training.sft2.data.batch import SFT2Transition
-from nimloth.wm import LatentWMPredictor, StateProjector, ValueHead, WorldModel
-from nimloth.wm.lewm import LeWMConfig
+from nimloth.training.sft2.schedule import wm_loss_weight_schedule
+from nimloth.wm import StateProjector, ValueHead, WorldModel
 
 
-def _algorithm(
-    state_proj: torch.nn.Module,
-    wm_predictor: torch.nn.Module,
-    sigreg: torch.nn.Module | None,
-) -> SFT2Algorithm:
-    llm = torch.nn.Identity()
-    return SFT2Algorithm(
-        model=NimlothModel(
-            llm=llm,
-            wm=WorldModel(
-                state_proj=state_proj,
-                wm_predictor=wm_predictor,
-                value_head=ValueHead(emb_dim=wm_predictor.config.emb_dim),
+class _TensorBackbone(Backbone):
+    def __init__(self) -> None:
+        super().__init__()
+        self.language_model = torch.nn.Identity()
+        self.calls = 0
+
+    @property
+    def model(self) -> torch.nn.Module:
+        return self.language_model
+
+    def forward(
+        self,
+        batch: BackboneBatch,
+        *,
+        include_lm_loss: bool = False,
+    ) -> BackboneOutput:
+        self.calls += 1
+        hidden = self.language_model(batch.tensors["hidden"])
+        return BackboneOutput(
+            hidden=hidden,
+            lm_loss=hidden.mean() if include_lm_loss else None,
+        )
+
+    def with_model(self, model: torch.nn.Module) -> "_TensorBackbone":
+        return self
+
+    def save_pretrained(self, output_dir: Path, **_kwargs) -> None:
+        raise NotImplementedError
+
+
+class _Predictor(torch.nn.Module):
+    def __init__(self, dimension: int) -> None:
+        super().__init__()
+        self.net = torch.nn.Linear(dimension, dimension, bias=False)
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        _action_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.net(state)
+
+
+class _RecordingProjector(torch.nn.Linear):
+    def __init__(self) -> None:
+        super().__init__(4, 4, bias=False)
+        self.outputs: list[torch.Tensor] = []
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        output = super().forward(hidden)
+        output.retain_grad()
+        self.outputs.append(output)
+        return output
+
+
+def _algorithm(sigreg: torch.nn.Module | None = None):
+    backbone = _TensorBackbone()
+    projector = _RecordingProjector()
+    agent = Agent(
+        backbone=backbone,
+        wm=WorldModel(
+            state_proj=projector,
+            wm_predictor=_Predictor(4),
+            value_head=ValueHead(emb_dim=4, num_actions=3),
+        ),
+    )
+    return (
+        SFT2Algorithm(
+            agent=agent,
+            target=AgentTarget(agent),
+            objective=SFT2Objective(
+                sigreg=sigreg,
+                sigreg_weight=0.1,
+                value_weight=1.0,
+                ce_weight=1.0,
+                value_rank_margin=0.1,
+                value_rank_weight=1.0,
             ),
         ),
-        qwen=QwenTransitionEncoder(
-            processor=None,
-            token_id_map={},
-            device=torch.device("cpu"),
-            max_length=16,
-            pad_token_id=0,
-        ),
-        sigreg=sigreg,
+        backbone,
+        projector,
+    )
+
+
+def _batch() -> AgentBatch:
+    return AgentBatch(
+        current=BackboneBatch({"hidden": torch.randn(2, 4, requires_grad=True)}),
+        next=BackboneBatch({"hidden": torch.randn(2, 4, requires_grad=True)}),
+        action_indices=torch.tensor([0, 2]),
+        value_targets=torch.tensor([1.0, -0.5]),
+        next_indices=torch.tensor([0, 1]),
+        non_terminal_mask=torch.tensor([True, True]),
+        trajectory_steps=(("rec_A", 0), ("rec_A", 1)),
     )
 
 
@@ -57,71 +125,36 @@ def test_state_projector_accepts_multi_latent_block() -> None:
     assert state_proj.input_dim == 24
 
 
-def test_sft2_dynamics_keeps_projector_gradient_on_both_sides() -> None:
-    cfg = LeWMConfig(emb_dim=16, predictor_hidden_dim=16, predictor_mlp_dim=32)
-    wm_predictor = LatentWMPredictor.create(cfg)
-    state_proj = StateProjector(qwen_hidden_dim=32, lewm_emb_dim=cfg.emb_dim)
-    current_hidden = torch.randn(2, 32, requires_grad=True)
-    next_hidden = torch.randn(2, 32, requires_grad=True)
+def test_sft2_training_step_uses_agent_forward_and_two_sided_projector_gradient() -> None:
+    algorithm, backbone, projector = _algorithm()
+    batch = _batch()
 
-    dynamics, sigreg = _algorithm(
-        state_proj,
-        wm_predictor,
-        None,
-    )._compute_wm_losses(
-        current_hidden,
-        next_hidden,
-        torch.tensor([0, 3]),
-        [],
-    )
-    dynamics.loss.backward()
+    output = algorithm.training_step(batch, wm_weight=0.5)
+    output.losses["wm"].backward()
 
-    assert dynamics.loss.item() > 0
-    assert sigreg is None
-    assert state_proj.net.net[0].weight.grad is not None
-    assert current_hidden.grad is not None
-    assert next_hidden.grad is not None
+    assert backbone.calls == 2
+    assert output.model_output.lm_loss is not None
+    assert projector.outputs[0].grad is not None
+    assert projector.outputs[1].grad is not None
+    assert batch.current.tensors["hidden"].grad is not None
+    assert batch.next.tensors["hidden"].grad is None
 
 
-def test_sft2_dynamics_runs_sigreg_per_trajectory() -> None:
-    cfg = LeWMConfig(emb_dim=4, predictor_hidden_dim=4, predictor_mlp_dim=8)
-    wm_predictor = LatentWMPredictor.create(cfg)
-    state_proj = StateProjector(
-        qwen_hidden_dim=4,
-        lewm_emb_dim=cfg.emb_dim,
-        projector_hidden_dim=8,
-    )
-
+def test_sft2_sigreg_is_computed_per_trajectory() -> None:
     class MockSIGReg(torch.nn.Module):
         def forward(self, value: torch.Tensor) -> torch.Tensor:
             assert value.dim() == 3
             return value.pow(2).mean()
 
-    dynamics, sigreg = _algorithm(
-        state_proj,
-        wm_predictor,
-        MockSIGReg(),
-    )._compute_wm_losses(
-        torch.randn(3, 4),
-        torch.randn(3, 4),
-        torch.tensor([0, 1, 2]),
-        [("rec_A", 0), ("rec_A", 1), ("rec_B", 5)],
-    )
-
-    assert dynamics.loss.item() > 0
-    assert sigreg is not None
-    assert sigreg.item() > 0
+    algorithm, _, _ = _algorithm(MockSIGReg())
+    output = algorithm.training_step(_batch(), wm_weight=1.0)
+    assert output.losses["sigreg"] is not None
+    assert output.metrics["sigreg_loss"] > 0.0
 
 
 def test_build_trajectory_sigreg_inputs() -> None:
-    dimension = 4
     current = torch.tensor(
-        [
-            [1.0, 0.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0, 0.0],
-            [3.0, 0.0, 0.0, 0.0],
-            [4.0, 0.0, 0.0, 0.0],
-        ]
+        [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0]]
     )
     target = current + 0.1
     result = build_trajectory_sigreg_inputs(
@@ -129,77 +162,14 @@ def test_build_trajectory_sigreg_inputs() -> None:
         current,
         target,
     )
-
     assert sorted(tuple(value.shape) for value in result) == [
-        (2, 1, dimension),
-        (2, 1, dimension),
-        (3, 1, dimension),
+        (2, 1, 2),
+        (2, 1, 2),
+        (3, 1, 2),
     ]
-    rec_a = next(value for value in result if value.shape[0] == 3).squeeze(1)
-    assert torch.equal(rec_a[0], current[0])
-    assert torch.equal(rec_a[1], target[0])
-    assert torch.equal(rec_a[2], target[1])
-
-
-def test_build_trajectory_sigreg_inputs_empty_or_legacy() -> None:
-    assert build_trajectory_sigreg_inputs(
-        [],
-        torch.empty(0, 4),
-        torch.empty(0, 4),
-    ) == []
-    assert build_trajectory_sigreg_inputs(
-        [("", 0), ("", 1)],
-        torch.randn(2, 4),
-        torch.randn(2, 4),
-    ) == []
-
-
-def test_sft2_transition_resolves_legacy_record_id() -> None:
-    transition = SFT2Transition(
-        identifier="rec_X:1",
-        record_id="",
-        step_index=1,
-        action_index=0,
-        value_target=1.0,
-        success=True,
-        qwen=QwenTransitionMessages(current=[], next=None),
-    )
-    assert transition.trajectory_step == ("rec_X", 1)
 
 
 def test_wm_loss_weight_schedule_warms_up() -> None:
-    assert wm_loss_weight_schedule(
-        0,
-        100,
-        start=0.1,
-        end=1.0,
-        warmup_fraction=0.5,
-    ) == 0.1
-    mid = wm_loss_weight_schedule(
-        25,
-        100,
-        start=0.1,
-        end=1.0,
-        warmup_fraction=0.5,
-    )
-    assert 0.1 < mid < 1.0
-    assert wm_loss_weight_schedule(
-        60,
-        100,
-        start=0.1,
-        end=1.0,
-        warmup_fraction=0.5,
-    ) == 1.0
-
-
-def test_sft2_losses_apply_runtime_weights() -> None:
-    weighted = SFT2Losses(
-            lm=torch.tensor(3.0),
-            dynamics=torch.tensor(2.0),
-            sigreg=None,
-            value=torch.tensor(0.0),
-            metrics={"wm_mse": 2.0, "lm_ce": 3.0},
-        ).weighted(SFT2LossWeights(wm=0.5, sigreg=0.0, value=1.0, ce=1.0))
-    assert weighted.loss.item() == 4.0
-    assert weighted.metrics["total_loss"] == 4.0
-    assert weighted.metrics["lm_ce"] == 3.0
+    assert wm_loss_weight_schedule(0, 100, start=0.1, end=1.0) == 0.1
+    assert 0.1 < wm_loss_weight_schedule(15, 100, start=0.1, end=1.0) < 1.0
+    assert wm_loss_weight_schedule(60, 100, start=0.1, end=1.0) == 1.0

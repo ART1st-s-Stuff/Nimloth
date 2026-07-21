@@ -1,10 +1,10 @@
-"""SFT2 与 RL 共用的世界模型目标函数测试。"""
+"""阶段 objective 的 action-value 目标测试。"""
 
 from __future__ import annotations
 
 import torch
 
-from nimloth.wm.model import WorldModel
+from nimloth.training.sft2.objective import SFT2Objective
 from nimloth.wm.value_head import ValueHead
 
 
@@ -18,47 +18,49 @@ def _bias_only_head(bias: torch.Tensor) -> ValueHead:
     return head
 
 
-def _world_model(value_head: ValueHead) -> WorldModel:
-    return WorldModel(
-        state_proj=torch.nn.Identity(),
-        wm_predictor=torch.nn.Identity(),
-        value_head=value_head,
+def _objective() -> SFT2Objective:
+    return SFT2Objective(
+        sigreg=None,
+        sigreg_weight=0.0,
+        value_weight=1.0,
+        ce_weight=0.0,
+        value_rank_margin=0.1,
+        value_rank_weight=1.0,
     )
 
 
 def test_value_ranking_zero_when_chosen_is_best() -> None:
-    result = _world_model(
-        _bias_only_head(torch.tensor([2.0, 0.5, 0.1]))
-    ).compute_action_value_loss(
-        state=torch.randn(1, 4),
-        action_indices=torch.tensor([0]),
-        return_targets=torch.tensor([2.0]),
-        rank_margin=0.1,
-        rank_weight=1.0,
+    values = _bias_only_head(torch.tensor([2.0, 0.5, 0.1]))(torch.randn(1, 4))
+    result = _objective().value_loss(
+        values,
+        torch.tensor([0]),
+        torch.tensor([2.0]),
+        training=True,
     )
-    assert result.ranking.item() == 0.0
-    assert result.loss.item() == result.regression.item()
+    assert result["ranking"].item() == 0.0
+    assert result["loss"].item() == result["regression"].item()
 
 
 def test_value_ranking_positive_when_unchosen_beats_chosen() -> None:
-    result = _world_model(
-        _bias_only_head(torch.tensor([0.5, 2.0, 0.1]))
-    ).compute_action_value_loss(
-        state=torch.randn(1, 4),
-        action_indices=torch.tensor([0]),
-        return_targets=torch.tensor([1.0]),
+    values = _bias_only_head(torch.tensor([0.5, 2.0, 0.1]))(torch.randn(1, 4))
+    result = _objective().value_loss(
+        values,
+        torch.tensor([0]),
+        torch.tensor([1.0]),
+        training=True,
     )
-    assert result.ranking.item() > 0.0
+    assert result["ranking"].item() > 0.0
 
 
 def test_value_loss_backprops_to_head_and_input_state() -> None:
     head = ValueHead(emb_dim=16, num_actions=8)
     state = torch.randn(3, 16, requires_grad=True)
-    result = _world_model(head).compute_action_value_loss(
-        state=state,
-        action_indices=torch.tensor([0, 3, 5]),
-        return_targets=torch.tensor([1.0, 0.0, -0.5]),
+    result = _objective().value_loss(
+        head(state),
+        torch.tensor([0, 3, 5]),
+        torch.tensor([1.0, 0.0, -0.5]),
+        training=True,
     )
-    result.loss.backward()
+    result["loss"].backward()
     assert head.net[0].weight.grad is not None
     assert state.grad is not None

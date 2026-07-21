@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 import torch
 
@@ -16,25 +16,38 @@ from nimloth.latent.extraction import (
     last_hidden_state,
 )
 from nimloth.rollout.schema import RolloutTrajectory
+from nimloth.rollout.encoding import EncodedTransition
 from nimloth.rollout.transitions import discounted_action_value_targets
 from nimloth.rollout.validation import validate_rollout_trajectory
 from nimloth.util.module import evaluating
 
 
-@dataclass(frozen=True)
-class EncodedRolloutTransition:
-    """一条 rollout transition 的 Qwen state 与 policy provenance。"""
+EncodedRolloutTransition = EncodedTransition
 
-    qwen_hidden_current: torch.Tensor
-    qwen_hidden_next: torch.Tensor
-    action_index: int
-    value_target: float
-    old_log_prob: float
-    policy_messages: list[dict[str, Any]]
-    policy_image_paths: list[str]
-    sampling_temperature: float
-    sampling_top_p: float
-    latent_token_count: int
+
+@dataclass(frozen=True)
+class QwenRolloutEncoder:
+    """使用一个 Qwen backbone 将 trajectory 编码成 RL transition。"""
+
+    model: torch.nn.Module
+    processor: Any
+    token_id_map: dict[str, int]
+    device: torch.device
+
+    def __call__(
+        self,
+        trajectories: Sequence[RolloutTrajectory],
+        *,
+        gamma: float,
+    ) -> list[EncodedTransition]:
+        return encode_rollout_transitions(
+            list(trajectories),
+            self.model,
+            self.processor,
+            self.token_id_map,
+            self.device,
+            gamma=gamma,
+        )
 
 
 def encode_trajectory_states(
@@ -98,10 +111,10 @@ def encode_rollout_transitions(
     device: torch.device,
     *,
     gamma: float = 0.99,
-) -> list[EncodedRolloutTransition]:
+) -> list[EncodedTransition]:
     """校验 trajectory，并展开为带 Qwen latent state 的 transition。"""
 
-    transitions: list[EncodedRolloutTransition] = []
+    transitions: list[EncodedTransition] = []
     for trajectory in trajectories:
         validate_rollout_trajectory(trajectory)
         hidden_states = encode_trajectory_states(
@@ -120,9 +133,9 @@ def encode_rollout_transitions(
         for step_index in range(trajectory.num_steps):
             action_index = trajectory.action_indices[step_index]
             transitions.append(
-                EncodedRolloutTransition(
-                    qwen_hidden_current=hidden_states[step_index],
-                    qwen_hidden_next=hidden_states[step_index + 1],
+                EncodedTransition(
+                    current_hidden=hidden_states[step_index],
+                    next_hidden=hidden_states[step_index + 1],
                     action_index=action_index,
                     value_target=float(value_targets[step_index]),
                     old_log_prob=float(

@@ -8,8 +8,7 @@ Unified training logic for Nimloth phases. See `ai_tasks/sft2_phase2_plan.md`.
 | `nimloth.wm/` | WM models, transition data, and dataset statistics |
 | `nimloth.recon/` | Post-hoc CFM and RCDM reconstruction models |
 | `nimloth.eval/` | Model-dependent offline evaluation and reconstruction diagnostics |
-| `nimloth.model` | 完整 `NimlothModel(llm, wm)` 模型组合 |
-| `nimloth.agent/` | Agent prompt、transcript、policy 和 environment runner |
+| `nimloth.agent/` | `Agent(nn.Module)`、batch/target 契约、prompt 与 episode runtime |
 | `nimloth.rollout/` | 跨训练阶段使用的 rollout schema、collector 和存储 |
 | `nimloth.config/` | Agent、rollout、SFT2 和 RL 配置 |
 | `nimloth.util/` | dist、schedule、profiling、cache、metrics、W&B |

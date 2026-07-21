@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+import torch
+
+if TYPE_CHECKING:
+    from nimloth.rollout.encoding import EncodedTransition
 
 from nimloth.agent.template import AgentPrompt
 
@@ -60,3 +65,12 @@ class AgentPolicy(Protocol):
 
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
         ...
+
+
+class ActionLogProbReplay(Protocol):
+    """用当前 policy 重放 trajectory 中保存的动作分布。"""
+
+    def __call__(
+        self,
+        transitions: tuple["EncodedTransition", ...],
+    ) -> tuple[torch.Tensor, torch.Tensor]: ...

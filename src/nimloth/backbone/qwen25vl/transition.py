@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 from typing import Any, Sequence
 
 import torch
 from PIL import Image
 
-from nimloth.agent import bind_image_placeholders
+from nimloth.agent import AgentBatch, bind_image_placeholders
+from nimloth.backbone.base import BackboneBatch
 from nimloth.backbone.qwen25vl.batch import (
     build_qwen_batch,
     collate_qwen_encodings,
     message_cache_key,
 )
-from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
-from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
 from nimloth.rollout.transitions import TransitionSample
 
 # Compatibility name for existing callers. Agent owns the message/image contract.
@@ -25,7 +23,7 @@ messages_with_image_paths = bind_image_placeholders
 
 @dataclass(frozen=True)
 class QwenTransitionMessages:
-    """一个 transition 在 Qwen 中使用的当前和下一状态 prompt。"""
+    """一个 transition 对应的当前和下一状态 Qwen prompt。"""
 
     current: list[dict[str, Any]]
     next: list[dict[str, Any]] | None
@@ -33,7 +31,7 @@ class QwenTransitionMessages:
 
 @dataclass(frozen=True)
 class CachedQwenNextBatch:
-    """DataLoader worker 已经去重并合并的下一状态 Qwen 输入。"""
+    """DataLoader worker 已去重并合并的下一状态 Qwen 输入。"""
 
     keys: tuple[str, ...]
     encoding: dict[str, torch.Tensor]
@@ -67,134 +65,200 @@ def collate_next_qwen_encodings(
     )
 
 
-@dataclass(frozen=True)
-class QwenTransitionEncoder:
-    """集中管理 SFT2 当前/下一 prefix 的 Qwen 运行期配置。"""
+class Qwen25VLBatchBuilder:
+    """把 DataLoader 输出转换为与具体模型无关的 ``AgentBatch``。"""
 
-    processor: Any
-    token_id_map: dict[str, int]
-    device: torch.device
-    max_length: int
-    pad_token_id: int
-    latent_token_count: int = 1
-    mask_latent_query_labels: bool = True
-    vision_ema: VisionEncoderEMA | None = None
-
-    def encode_current(
+    def __init__(
         self,
-        model: torch.nn.Module,
-        encoding: dict[str, torch.Tensor],
         *,
-        include_lm_loss: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """编码当前 prefix；只有训练模式保留 CE labels。"""
+        processor: Any,
+        device: torch.device,
+        max_length: int,
+        latent_token_count: int = 1,
+        mask_latent_query_labels: bool = True,
+    ) -> None:
+        self.processor = processor
+        self.device = device
+        self.max_length = int(max_length)
+        self.latent_token_count = int(latent_token_count)
+        self.mask_latent_query_labels = bool(mask_latent_query_labels)
 
-        model_encoding = dict(encoding)
-        if not include_lm_loss:
-            model_encoding.pop("labels", None)
-        latent, lm_loss = extract_qwen_latents(
-            model,
-            model_encoding,
-            self.token_id_map,
-            self.device,
-            latent_token_count=self.latent_token_count,
+    def collate_transition_samples(self, batch: list[TransitionSample]) -> list[dict[str, Any]]:
+        return transition_collate_for_qwen(batch)
+
+    def collate_cached_transition_batch(
+        self,
+        batch: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """合并 legacy cache，保留 prompt metadata 供 terminal dummy 使用。"""
+
+        items: list[dict[str, Any]] = []
+        current_rows: list[dict[str, torch.Tensor]] = []
+        next_rows: list[dict[str, torch.Tensor] | None] = []
+        for entry in batch:
+            items.append(self._metadata(entry))
+            current_rows.append(entry["current_enc"])
+            next_rows.append(entry.get("next_enc"))
+        transitions = tuple(
+            QwenTransitionMessages(
+                current=item["messages"],
+                next=item.get("next_messages"),
+            )
+            for item in items
         )
-        return latent, lm_loss if include_lm_loss else None
+        return {
+            "items": items,
+            "current_enc": collate_qwen_encodings(
+                current_rows,
+                self.processor.tokenizer.pad_token_id,
+            ),
+            "next_enc_bundle": collate_next_qwen_encodings(
+                transitions,
+                next_rows,
+                pad_token_id=self.processor.tokenizer.pad_token_id,
+            ),
+        }
 
-    def encode_next(
-        self,
-        model: torch.nn.Module,
-        transitions: Sequence[QwenTransitionMessages],
-        indices: Sequence[int],
-        *,
-        cached: CachedQwenNextBatch | None,
-        use_vision_ema: bool,
-    ) -> torch.Tensor:
-        """去重下一状态 prompt，执行无梯度 target forward，再恢复原 batch 顺序。"""
+    def prepare(self, raw_batch: Any) -> AgentBatch:
+        """构造 current/next 模型输入和对齐后的 transition target。"""
 
-        if not indices:
-            raise ValueError("next-state indices must not be empty")
-
-        unique_keys: list[str] = []
-        key_to_row: dict[str, int] = {}
-        for index in indices:
-            messages = transitions[index].next
-            if messages is None:
-                raise ValueError("next-state index points to a terminal transition")
-            key = message_cache_key(messages)
-            if key not in key_to_row:
-                key_to_row[key] = len(unique_keys)
-                unique_keys.append(key)
-
-        if cached is not None:
-            if cached.keys != tuple(unique_keys):
-                raise ValueError(
-                    "cached next-state order does not match transition prompts: "
-                    f"{len(cached.keys)} != {len(unique_keys)}"
-                )
-            next_encoding = dict(cached.encoding)
+        if isinstance(raw_batch, AgentBatch):
+            return raw_batch
+        if isinstance(raw_batch, dict) and "current_enc" in raw_batch:
+            items = [self._metadata(item) for item in raw_batch["items"]]
+            current_encoding = dict(raw_batch["current_enc"])
+            cached_next = raw_batch.get("next_enc_bundle")
         else:
-            unique_indices = [indices[key_to_row[key]] for key in unique_keys]
+            items = [self._metadata(item) for item in raw_batch]
+            current_encoding = build_qwen_batch(
+                items,
+                self.processor,
+                self.max_length,
+                latent_token_count=self.latent_token_count,
+                mask_latent_query_labels=self.mask_latent_query_labels,
+            )
+            cached_next = None
+
+        unique_keys, key_to_row = self._next_prompt_index(items)
+        if unique_keys:
+            next_encoding = self._next_encoding(
+                items,
+                unique_keys,
+                key_to_row,
+                cached_next,
+            )
+        else:
+            # 全 terminal batch 仍执行一次 target backbone forward，保证多卡调用结构一致。
             next_encoding = build_qwen_batch(
-                [
-                    {"messages": transitions[index].next}
-                    for index in unique_indices
-                ],
+                [{"messages": items[0]["messages"]}],
                 self.processor,
                 self.max_length,
                 latent_token_count=self.latent_token_count,
             )
         next_encoding.pop("labels", None)
 
-        ema_context = self._vision_ema_context(model, use_vision_ema)
-        with torch.no_grad(), ema_context:
-            unique_latents, _ = extract_qwen_latents(
-                model,
-                next_encoding,
-                self.token_id_map,
-                self.device,
-                latent_token_count=self.latent_token_count,
-            )
+        non_terminal = torch.tensor(
+            [item.get("next_messages") is not None for item in items],
+            dtype=torch.bool,
+            device=self.device,
+        )
+        next_indices = torch.tensor(
+            [
+                key_to_row[message_cache_key(item["next_messages"])]
+                if item.get("next_messages") is not None
+                else 0
+                for item in items
+            ],
+            dtype=torch.long,
+            device=self.device,
+        )
+        return AgentBatch(
+            current=BackboneBatch(current_encoding),
+            next=BackboneBatch(next_encoding),
+            action_indices=torch.tensor(
+                [item["action_index"] for item in items],
+                dtype=torch.long,
+                device=self.device,
+            ),
+            value_targets=torch.tensor(
+                [item["action_value_target"] for item in items],
+                dtype=torch.float32,
+                device=self.device,
+            ),
+            next_indices=next_indices,
+            non_terminal_mask=non_terminal,
+            trajectory_steps=tuple(self._trajectory_step(item) for item in items),
+        )
 
-        restored_rows = []
-        for index in indices:
-            messages = transitions[index].next
-            assert messages is not None
-            row = key_to_row[message_cache_key(messages)]
-            restored_rows.append(unique_latents[row : row + 1])
-        return torch.cat(restored_rows, dim=0)
+    @staticmethod
+    def _metadata(item: dict[str, Any]) -> dict[str, Any]:
+        current_messages = item.get("messages")
+        if not isinstance(current_messages, list):
+            raise ValueError("transition is missing current Qwen messages")
+        next_messages = item.get("next_messages")
+        if next_messages is not None and not isinstance(next_messages, list):
+            raise ValueError("next_messages must be a list or None")
+        return {
+            "id": str(item.get("id", "")),
+            "record_id": str(item.get("record_id", "")),
+            "step_index": int(item.get("step_index", 0)),
+            "action_index": int(item["action_index"]),
+            "action_value_target": float(item["action_value_target"]),
+            "success": bool(item.get("success", False)),
+            "messages": current_messages,
+            "next_messages": next_messages,
+        }
 
-    def encode_ddp_dummy_target(
+    @staticmethod
+    def _trajectory_step(item: dict[str, Any]) -> tuple[str, int]:
+        record_id = item["record_id"]
+        if not record_id and ":" in item["id"]:
+            record_id = item["id"].split(":", 1)[0]
+        return record_id, item["step_index"]
+
+    @staticmethod
+    def _next_prompt_index(
+        items: Sequence[dict[str, Any]],
+    ) -> tuple[list[str], dict[str, int]]:
+        unique_keys: list[str] = []
+        key_to_row: dict[str, int] = {}
+        for item in items:
+            messages = item.get("next_messages")
+            if messages is None:
+                continue
+            key = message_cache_key(messages)
+            if key not in key_to_row:
+                key_to_row[key] = len(unique_keys)
+                unique_keys.append(key)
+        return unique_keys, key_to_row
+
+    def _next_encoding(
         self,
-        model: torch.nn.Module,
-        messages: list[dict[str, Any]],
-        *,
-        use_vision_ema: bool,
-    ) -> torch.Tensor:
-        """terminal-only rank 仍执行一次 target Qwen forward，以对齐 DDP 调用次数。"""
-
-        encoding = build_qwen_batch(
-            [{"messages": messages}],
+        items: Sequence[dict[str, Any]],
+        unique_keys: Sequence[str],
+        key_to_row: dict[str, int],
+        cached: CachedQwenNextBatch | dict[str, Any] | None,
+    ) -> dict[str, torch.Tensor]:
+        if cached is not None:
+            if isinstance(cached, dict):
+                cached = CachedQwenNextBatch(
+                    keys=tuple(cached.get("keys", ())),
+                    encoding=dict(cached["enc"]),
+                )
+            if cached.keys != tuple(unique_keys):
+                raise ValueError("cached next-state order does not match transition prompts")
+            return dict(cached.encoding)
+        unique_messages: list[list[dict[str, Any]] | None] = [None] * len(unique_keys)
+        for item in items:
+            messages = item.get("next_messages")
+            if messages is not None:
+                unique_messages[key_to_row[message_cache_key(messages)]] = messages
+        return build_qwen_batch(
+            [{"messages": messages} for messages in unique_messages],
             self.processor,
             self.max_length,
             latent_token_count=self.latent_token_count,
         )
-        encoding.pop("labels", None)
-        with torch.no_grad(), self._vision_ema_context(model, use_vision_ema):
-            latent, _ = extract_qwen_latents(
-                model,
-                encoding,
-                self.token_id_map,
-                self.device,
-                latent_token_count=self.latent_token_count,
-            )
-        return latent
-
-    def _vision_ema_context(self, model: torch.nn.Module, enabled: bool):
-        if enabled and self.vision_ema is not None:
-            return self.vision_ema.use_ema_weights(model)
-        return contextlib.nullcontext()
-
 
 def prefix_messages_with_images(sample: TransitionSample) -> list[dict[str, Any]]:
     return messages_with_image_paths(sample.prefix_messages, sample.prefix_image_paths)

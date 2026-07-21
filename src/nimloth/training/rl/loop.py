@@ -10,10 +10,10 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from nimloth.backbone.qwen25vl.rollout import encode_rollout_transitions
 from nimloth.config.rl import RLConfig
 from nimloth.rollout import RolloutCollector
-from nimloth.training.rl.algorithm import RLAlgorithm
+from nimloth.rollout import RolloutEncoder
+from nimloth.training.rl.update import RLUpdater
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.evaluation import (
     evaluate_rollout_collector,
@@ -36,7 +36,8 @@ class RLTrainingLoop:
     """按 iteration 执行 collect → encode → update → evaluate。"""
 
     config: RLConfig
-    algorithm: RLAlgorithm
+    updater: RLUpdater
+    rollout_encoder: RolloutEncoder
     train_collector: RolloutCollector
     eval_collector: RolloutCollector | None
     output_dir: Path
@@ -85,12 +86,8 @@ class RLTrainingLoop:
             self._warn_skip(iteration, "no trajectories collected")
             return
 
-        transitions = encode_rollout_transitions(
+        transitions = self.rollout_encoder(
             trajectories,
-            self.algorithm.components.nimloth_model.llm,
-            self.algorithm.components.processor,
-            self.algorithm.components.token_id_map,
-            self.algorithm.device,
             gamma=self.config.rl.gamma,
         )
         torch.cuda.empty_cache()
@@ -101,7 +98,7 @@ class RLTrainingLoop:
             )
             return
 
-        update_metrics = self.algorithm.update(
+        update_metrics = self.updater.update(
             transitions,
             batch_size=self.config.rl.batch_size,
             batch_seed=self.config.training.seed + iteration,

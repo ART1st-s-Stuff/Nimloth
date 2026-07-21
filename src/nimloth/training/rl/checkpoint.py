@@ -13,8 +13,8 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from nimloth.model import NimlothModel
-from nimloth.backbone.qwen25vl.checkpoint import save_full_vision_state
+from nimloth.agent import Agent
+from nimloth.backbone import BackboneEMA
 from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
@@ -50,10 +50,9 @@ def _rank_world() -> tuple[int, int]:
 def save_rl_checkpoint(
     out_dir: Path,
     *,
-    # 完整 Nimloth 模型；内部 LLM 可能由 FSDP/PEFT 包装。
-    nimloth_model: NimlothModel,
-    processor: Any = None,
-    vision_ema: Any = None,
+    agent: Agent,
+    processor: Any,
+    vision_ema: BackboneEMA | None,
     save_llm: bool = True,
     # Training state
     optimizer: torch.optim.Optimizer | None = None,
@@ -67,10 +66,10 @@ def save_rl_checkpoint(
     vision_tune: str = "freeze",
     base_model_path: str = "",
 ) -> None:
-    model = nimloth_model.llm
-    state_proj = nimloth_model.wm.state_proj
-    wm_predictor = nimloth_model.wm.wm_predictor
-    value_head = nimloth_model.wm.value_head
+    model = agent.backbone.model
+    state_proj = agent.wm.state_proj
+    wm_predictor = agent.wm.wm_predictor
+    value_head = agent.wm.value_head
     rank, world = _rank_world()
     fsdp_model = _is_fsdp(model)
 
@@ -105,31 +104,13 @@ def save_rl_checkpoint(
 
         # Qwen model
         if save_llm:
-            m = _unwrap(model)
-            if not hasattr(m, "save_pretrained"):
-                raise TypeError("nimloth_model.llm must implement save_pretrained()")
-            if fsdp_model:
-                m.save_pretrained(
-                    out_dir,
-                    state_dict=full_model_state,
-                    safe_serialization=True,
-                )
-            else:
-                m.save_pretrained(out_dir, safe_serialization=True)
-                if lora and vision_tune == "full":
-                    save_full_vision_state(
-                        m,
-                        out_dir / "vision_full_state.pt",
-                    )
-        if processor is not None:
+            agent.backbone.save_pretrained(
+                out_dir,
+                state_dict=full_model_state if fsdp_model else None,
+            )
             processor.save_pretrained(out_dir)
-        if vision_ema is not None:
-            ema = _unwrap(vision_ema) if hasattr(vision_ema, "module") else vision_ema
-            if hasattr(ema, "save_checkpoint"):
-                ema.save_checkpoint(out_dir / "vision_ema.pt")
-            elif hasattr(ema, "shadow") and ema.shadow:
-                torch.save({"shadow": {k: v.cpu() for k, v in ema.shadow.items()}},
-                           out_dir / "vision_ema.pt")
+            if vision_ema is not None and vision_ema.shadow:
+                vision_ema.save_checkpoint(out_dir / "vision_ema.pt")
 
         # Training state
         state: dict[str, Any] = {

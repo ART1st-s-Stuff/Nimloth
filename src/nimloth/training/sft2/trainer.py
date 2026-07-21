@@ -9,14 +9,11 @@ import random
 from pathlib import Path
 
 import torch
-from nimloth.backbone.qwen25vl.loading import load_qwen_processor
-from nimloth.backbone.qwen25vl.transition import QwenTransitionEncoder
+from nimloth.backbone import resolve_tune_modes, resolve_vision_ema, uses_lora
 from nimloth.latent import (
     query_labels_are_masked,
     resolve_latent_query_mode,
 )
-from nimloth.backbone.qwen25vl.tuning import resolve_tune_modes, uses_lora
-from nimloth.backbone.qwen25vl.vision_ema import resolve_vision_ema
 from nimloth.training.sft2.checkpoint import (
     SFT2CheckpointManager,
     resolve_resume_checkpoint_dir,
@@ -25,6 +22,7 @@ from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.components import build_sft2_components
 from nimloth.training.sft2.data.factory import build_data_bundle
 from nimloth.training.sft2.algorithm import SFT2Algorithm
+from nimloth.training.sft2.objective import SFT2Objective
 from nimloth.training.sft2.loop import (
     SFT2TrainingLoop,
     load_sft2_loop_state,
@@ -83,15 +81,6 @@ def train_sft2(args=None) -> int:
     resume_state_path = (
         resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir is not None else None
     )
-    processor_bundle = load_qwen_processor(
-        args.model,
-        max_pixels=args.max_pixels,
-        latent_token_count=args.latent_token_count,
-    )
-    processor = processor_bundle.processor
-    added_special_token_count = processor_bundle.added_special_token_count
-    token_id_map = processor_bundle.token_id_map
-
     if is_main():
         print(
             json.dumps(
@@ -118,32 +107,29 @@ def train_sft2(args=None) -> int:
             )
         )
 
-    data = build_data_bundle(args, processor, rank=rank, world_size=world)
-    train_loader = data.train_loader
-    val_loader = data.val_loader
-    train_sampler = data.train_sampler
-    train_batch_sampler = data.train_batch_sampler
-
     components = build_sft2_components(
         args,
-        processor,
-        token_id_map,
-        added_special_token_count,
         resume_ckpt_dir,
         device=device,
         world_size=world,
         train_wm_predictor=train_wm_predictor,
         vision_ema_enabled=vision_ema_enabled,
     )
-    nimloth_model = components.nimloth_model
-    model = nimloth_model.llm
-    state_proj = nimloth_model.wm.state_proj
-    wm_predictor = nimloth_model.wm.wm_predictor
-    value_head = nimloth_model.wm.value_head
+    agent = components.agent
     sigreg = components.sigreg
-    vision_ema = components.vision_ema
     optimizer = components.optimizer
     base_model_path = components.base_model_path
+
+    data = build_data_bundle(
+        args,
+        components.batch_builder,
+        rank=rank,
+        world_size=world,
+    )
+    train_loader = data.train_loader
+    val_loader = data.val_loader
+    train_sampler = data.train_sampler
+    train_batch_sampler = data.train_batch_sampler
 
     steps_per_epoch = max(1, math.ceil(len(train_loader) / args.grad_accum))
     total_steps = steps_per_epoch * args.epochs
@@ -159,9 +145,9 @@ def train_sft2(args=None) -> int:
     }
     checkpoint_manager = SFT2CheckpointManager(
         output_dir=args.output_dir,
-        nimloth_model=nimloth_model,
-        processor=processor,
-        vision_ema=vision_ema,
+        agent=agent,
+        processor=components.processor,
+        vision_ema=components.vision_ema,
         optimizer=optimizer,
         training_invariants=checkpoint_invariants,
         lora=uses_lora(args),
@@ -194,23 +180,17 @@ def train_sft2(args=None) -> int:
     if is_main():
         log_writer.ensure_header()
 
-    pad_token_id = processor.tokenizer.pad_token_id
-    qwen_transition_encoder = QwenTransitionEncoder(
-        processor=processor,
-        token_id_map=token_id_map,
-        device=device,
-        max_length=args.max_length,
-        pad_token_id=pad_token_id,
-        latent_token_count=args.latent_token_count,
-        mask_latent_query_labels=args.mask_latent_query_labels,
-        vision_ema=vision_ema,
-    )
     algorithm = SFT2Algorithm(
-        model=nimloth_model,
-        qwen=qwen_transition_encoder,
-        sigreg=sigreg,
-        value_rank_margin=args.value_rank_margin,
-        value_rank_weight=args.value_rank_lambda,
+        agent=agent,
+        target=components.target,
+        objective=SFT2Objective(
+            sigreg=sigreg,
+            sigreg_weight=args.lambda_sigreg,
+            value_weight=args.lambda_value,
+            ce_weight=args.lambda_ce,
+            value_rank_margin=args.value_rank_margin,
+            value_rank_weight=args.value_rank_lambda,
+        ),
     )
 
     loop_state = load_sft2_loop_state(

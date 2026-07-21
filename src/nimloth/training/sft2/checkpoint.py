@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
 
-from nimloth.model import NimlothModel
-from nimloth.backbone.qwen25vl.checkpoint import load_adapter_state, save_full_vision_state
-from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
-from nimloth.latent import materialize_query_embedding_adapter
-from nimloth.util.distributed import is_main
+from nimloth.agent import Agent
+from nimloth.backbone import BackboneEMA
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
@@ -86,29 +82,12 @@ def resolve_resume_checkpoint_dir(output_dir: Path, resume_from: Path | None) ->
     return ckpt_dir
 
 
-def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
-    report = load_adapter_state(model, adapter_dir)
-    if is_main():
-        print(
-            json.dumps(
-                {
-                    "resume_load": {
-                        "adapter_dir": str(adapter_dir),
-                        "missing_keys": report.missing_keys,
-                        "unexpected_keys": report.unexpected_keys,
-                        "vision_full_state_loaded": report.vision_full_state_loaded,
-                    }
-                }
-            )
-        )
-
-
 def save_checkpoint(
-    nimloth_model: NimlothModel,
-    processor,
+    agent: Agent,
     out_dir: Path,
     *,
-    vision_ema: VisionEncoderEMA | None = None,
+    processor: Any,
+    vision_ema: BackboneEMA | None,
     optimizer=None,
     step: int = 0,
     epoch: int = 0,
@@ -124,33 +103,28 @@ def save_checkpoint(
     training_invariants: dict[str, Any] | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    module = (
-        nimloth_model.llm.module
-        if hasattr(nimloth_model.llm, "module")
-        else nimloth_model.llm
-    )
-    state_proj = nimloth_model.wm.state_proj
-    wm_predictor = nimloth_model.wm.wm_predictor
-    value_head = nimloth_model.wm.value_head
+    state_proj = agent.wm.state_proj
+    wm_predictor = agent.wm.wm_predictor
+    value_head = agent.wm.value_head
     proj = state_proj.module if hasattr(state_proj, "module") else state_proj
-    module.config.nimloth_latent_token_count = int(getattr(proj, "latent_token_count", 1))
-    module.config.nimloth_latent_query_mode = latent_query_mode
-    module.config.nimloth_query_tune = query_tune
-    with materialize_query_embedding_adapter(module) as materialized_state:
-        save_kwargs = {"safe_serialization": True}
-        if materialized_state is not None:
-            save_kwargs["state_dict"] = materialized_state
-        module.save_pretrained(out_dir, **save_kwargs)
+    agent.backbone.save_pretrained(
+        out_dir,
+        metadata={
+            "nimloth_latent_token_count": int(
+                getattr(proj, "latent_token_count", 1)
+            ),
+            "nimloth_latent_query_mode": latent_query_mode,
+            "nimloth_query_tune": query_tune,
+        },
+    )
     processor.save_pretrained(out_dir)
+    if vision_ema is not None and vision_ema.shadow:
+        vision_ema.save_checkpoint(out_dir / "vision_ema.pt")
     torch.save(proj.state_dict(), out_dir / "state_proj.pt")
     pred = wm_predictor.module if hasattr(wm_predictor, "module") else wm_predictor
     pred.save_checkpoint(out_dir / "wm_predictor")
     head = value_head.module if hasattr(value_head, "module") else value_head
     head.save_checkpoint(out_dir / "value_head")
-    if vision_ema is not None and vision_ema.shadow:
-        vision_ema.save_checkpoint(out_dir / "vision_ema.pt")
-    if lora and vision_tune == "full":
-        save_full_vision_state(module, out_dir / "vision_full_state.pt")
     state_proj_input_dim = getattr(proj, "input_dim", None)
     if state_proj_input_dim is None:
         net_layers = getattr(getattr(proj, "net", None), "net", None)
@@ -187,9 +161,9 @@ class SFT2CheckpointManager:
     """Own repeated SFT2 component and metadata wiring for checkpoint saves."""
 
     output_dir: Path
-    nimloth_model: NimlothModel
+    agent: Agent
     processor: Any
-    vision_ema: VisionEncoderEMA | None
+    vision_ema: BackboneEMA | None
     optimizer: Any
     training_invariants: dict[str, Any]
     lora: bool
@@ -210,9 +184,9 @@ class SFT2CheckpointManager:
         micro_step_in_epoch: int = 0,
     ) -> None:
         save_checkpoint(
-            self.nimloth_model,
-            self.processor,
+            self.agent,
             self.output_dir / name,
+            processor=self.processor,
             vision_ema=self.vision_ema,
             optimizer=self.optimizer,
             step=step,

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from nimloth.backbone.qwen25vl.tuning import uses_lora
 from nimloth.config.rl import RLConfig
 from nimloth.training.rl.checkpoint import save_rl_checkpoint
 from nimloth.training.rl.components import RLComponents
@@ -36,7 +35,7 @@ class RLCheckpointManager:
         components = self._components
         save_rl_checkpoint(
             path,
-            nimloth_model=components.nimloth_model,
+            agent=components.agent,
             processor=components.processor,
             vision_ema=components.vision_ema,
             optimizer=components.optimizer,
@@ -44,7 +43,7 @@ class RLCheckpointManager:
             global_step=global_step,
             best_eval_metric=best_eval_metric,
             checkpoint_metric=self._config.validation.checkpoint_metric,
-            lora=uses_lora(self._args),
+            lora=components.llm_tune == "lora" or components.vision_tune == "lora",
             llm_tune=components.llm_tune,
             vision_tune=components.vision_tune,
             base_model_path=components.base_model_path,

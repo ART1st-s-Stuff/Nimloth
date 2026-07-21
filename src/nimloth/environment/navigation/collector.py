@@ -1,4 +1,4 @@
-"""用 Qwen policy 和 VAGEN navigation session 运行公共 Agent。"""
+"""使用 AgentRuntime 和 VAGEN navigation environment 采集 rollout。"""
 
 from __future__ import annotations
 
@@ -8,31 +8,30 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from nimloth.agent import Agent, EpisodeRunner, create_prompt_template
-from nimloth.backbone.qwen25vl.policy import (
-    QwenAgentPolicy,
-    validate_agent_policy_protocol,
+from nimloth.agent import (
+    AgentPolicy,
+    AgentRuntime,
+    EpisodeRunner,
+    create_prompt_template,
 )
 from nimloth.config.agent import AgentConfig
-from nimloth.environment.navigation import (
-    NAVIGATION_ACTION_SPACE,
+from nimloth.environment.navigation.action_space import NAVIGATION_ACTION_SPACE
+from nimloth.environment.navigation.vagen import (
     VAGENNavigationSession,
     instruction_from_observation,
 )
-from nimloth.rollout.schema import RolloutTrajectory
 from nimloth.rollout.from_agent import trajectory_from_agent_episode
+from nimloth.rollout.schema import RolloutTrajectory
 from nimloth.rollout.storage import save_trajectories
 
 
 class VAGENNavigationRolloutCollector:
-    """使用当前 Qwen policy 直接采集 VAGEN navigation trajectory。"""
+    """使用当前 Agent policy 采集 VAGEN navigation trajectory。"""
 
     def __init__(
         self,
-        qwen_model: Any,
-        processor: Any,
+        policy: AgentPolicy | None,
         env_url: str,
-        device: Any,
         *,
         seed_offset: int = 0,
         temperature: float = 1.0,
@@ -40,20 +39,16 @@ class VAGENNavigationRolloutCollector:
         eval_sets: tuple[str, ...] = ("base", "common_sense"),
         split: str = "eval",
         agent_config: AgentConfig | None = None,
+        latent_token_count: int = 1,
     ) -> None:
         if not eval_sets:
             raise ValueError("rollout collector requires at least one eval_set")
-        if split == "train" and any(
-            not name.endswith("_train") for name in eval_sets
-        ):
+        if split == "train" and any(not name.endswith("_train") for name in eval_sets):
             raise ValueError(
                 "training rollout requires *_train datasets; "
                 f"got eval_sets={eval_sets}"
             )
-        self._model = qwen_model
-        self._processor = processor
         self._env_url = env_url.rstrip("/")
-        self._device = device
         self._episode_counter = seed_offset
         self._temperature = temperature
         self._top_p = top_p
@@ -61,34 +56,22 @@ class VAGENNavigationRolloutCollector:
         self._split = split
         self._agent_config = agent_config or AgentConfig()
         self._client: Any | None = None
-        self._policy: QwenAgentPolicy | None = None
-        self._latent_token_count = 1
-        if qwen_model is not None and processor is not None and device is not None:
-            self.bind_policy(qwen_model, processor, device)
+        self._policy = policy
+        self._latent_token_count = int(latent_token_count)
 
-    def bind_policy(self, qwen_model: Any, processor: Any, device: Any) -> None:
-        """绑定 trainer 已加载的 Qwen，避免采集器重复加载模型。"""
+    def bind_policy(
+        self,
+        policy: AgentPolicy,
+        *,
+        latent_token_count: int,
+    ) -> None:
+        """绑定在线行为 policy；collector 不接触神经网络模型结构。"""
 
-        validate_agent_policy_protocol(qwen_model.config)
-        self._model = qwen_model
-        self._processor = processor
-        self._device = device
-        self._latent_token_count = int(
-            getattr(qwen_model.config, "nimloth_latent_token_count", 1)
-        )
-        self._policy = QwenAgentPolicy(
-            model=qwen_model,
-            processor=processor,
-            device=device,
-            temperature=self._temperature,
-            top_p=self._top_p,
-            latent_token_count=self._latent_token_count,
-        )
+        self._policy = policy
+        self._latent_token_count = int(latent_token_count)
 
     @property
     def client(self) -> Any:
-        """首次采集时再连接 VAGEN，离线训练无需安装其运行依赖。"""
-
         if self._client is None:
             from vagen.server.client import BatchEnvClient
 
@@ -102,10 +85,8 @@ class VAGENNavigationRolloutCollector:
         max_steps_per_episode: int = 20,
         output_dir: Path | None = None,
     ) -> list[RolloutTrajectory]:
-        """采集若干 episode；失败 episode 会记录原因并整体丢弃。"""
-
         if self._policy is None:
-            raise RuntimeError("rollout collector has no bound Agent policy")
+            raise RuntimeError("rollout collector has no bound Agent")
         if num_episodes < 0:
             raise ValueError("num_episodes must be non-negative")
 
@@ -127,7 +108,7 @@ class VAGENNavigationRolloutCollector:
             started_at = time.monotonic()
             self._log(rl_ep=episode_index, id=episode_id, eval_set=eval_set)
 
-            agent = Agent(
+            runtime = AgentRuntime(
                 policy=self._policy,
                 action_space=NAVIGATION_ACTION_SPACE,
                 prompt_template=create_prompt_template(
@@ -143,7 +124,7 @@ class VAGENNavigationRolloutCollector:
                 eval_set=eval_set,
             )
             try:
-                episode = EpisodeRunner(agent).run(
+                episode = EpisodeRunner(runtime).run(
                     session,
                     seed=seed,
                     max_steps=max_steps_per_episode,
@@ -162,9 +143,7 @@ class VAGENNavigationRolloutCollector:
                     episode,
                     record_id=episode_id,
                     image_paths=image_paths,
-                    instruction=instruction_from_observation(
-                        observation_texts[0]
-                    ),
+                    instruction=instruction_from_observation(observation_texts[0]),
                     split=self._split,
                     sampling_temperature=self._temperature,
                     sampling_top_p=self._top_p,
@@ -200,8 +179,6 @@ class VAGENNavigationRolloutCollector:
         observations: tuple[Any, ...],
         image_dir: Path,
     ) -> list[str]:
-        """按 step 顺序保存 observation，包含最后的下一状态图片。"""
-
         paths: list[str] = []
         for step_index, observation in enumerate(observations):
             path = image_dir / f"{episode_id}_step{step_index:02d}.png"
@@ -212,3 +189,6 @@ class VAGENNavigationRolloutCollector:
     @staticmethod
     def _log(**payload: Any) -> None:
         print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+__all__ = ["VAGENNavigationRolloutCollector"]

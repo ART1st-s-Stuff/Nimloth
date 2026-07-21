@@ -1,14 +1,17 @@
 """公共 Agent transcript、模板、policy、runtime 与 episode runner。"""
 
 from nimloth.agent.policy import (
+    ActionLogProbReplay,
     AgentPolicy,
     PolicyDecision,
     validate_action_log_probs,
 )
+from nimloth.agent.batch import AgentBatch, AgentBatchBuilder
+from nimloth.agent.model import Agent, AgentOutput
 from nimloth.agent.registry import create_prompt_template
 from nimloth.agent.serialization import prompt_template_spec_from_record
 from nimloth.agent.runner import AgentEpisode, EpisodeRunner
-from nimloth.agent.runtime import Agent, AgentAction
+from nimloth.agent.runtime import AgentAction, AgentRuntime
 from nimloth.agent.template import (
     AgentPrompt,
     AgentPromptTemplate,
@@ -21,15 +24,22 @@ from nimloth.agent.templates import (
     NimlothPromptTemplate,
 )
 from nimloth.agent.transcript import AgentTranscript
+from nimloth.agent.target import AgentTarget
 
 __all__ = [
     "PROMPT_VERSION",
     "Agent",
     "AgentAction",
+    "ActionLogProbReplay",
+    "AgentBatch",
+    "AgentBatchBuilder",
     "AgentEpisode",
     "AgentPolicy",
     "AgentPrompt",
     "AgentPromptTemplate",
+    "AgentOutput",
+    "AgentRuntime",
+    "AgentTarget",
     "AgentTranscript",
     "EpisodeRunner",
     "NIMLOTH_PROMPT_TEMPLATE_ID",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from nimloth.agent.runtime import Agent, AgentAction
+from nimloth.agent.runtime import AgentAction, AgentRuntime
 from nimloth.agent.template import PromptTemplateSpec
 from nimloth.agent.transcript import AgentTranscript
 from nimloth.environment.common.session import (
@@ -60,7 +60,7 @@ class AgentEpisode:
 class EpisodeRunner:
     """在一个 environment session 中运行一个 Agent。"""
 
-    def __init__(self, agent: Agent) -> None:
+    def __init__(self, agent: AgentRuntime) -> None:
         self._agent = agent
 
     def run(

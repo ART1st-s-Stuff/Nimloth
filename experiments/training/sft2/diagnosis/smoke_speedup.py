@@ -28,6 +28,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch, encode_qwen_item
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
+from nimloth.backbone.qwen25vl.model import Qwen25VLBackbone
 from nimloth.backbone.qwen25vl.tuning import configure_qwen_tuning
 from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.training.sft2.diagnosis.trajectory_equiv import (
@@ -35,18 +36,14 @@ from nimloth.training.sft2.diagnosis.trajectory_equiv import (
     packed_record_losses,
 )
 from nimloth.training.sft2.diagnosis.trajectory_forward import run_equivalence_on_jsonl
-from nimloth.training.sft2.algorithm import (
-    SFT2Algorithm,
-    SFT2LossWeights,
-    SFT2Mode,
-    wm_loss_weight_schedule,
-)
-from nimloth.training.sft2.data.batch import collate_cached_transition_batch
+from nimloth.training.sft2.algorithm import SFT2Algorithm
+from nimloth.training.sft2.objective import SFT2Objective
+from nimloth.training.sft2.schedule import wm_loss_weight_schedule
 from nimloth.util.cache import (
     encode_transition_item,
 )
-from nimloth.backbone.qwen25vl.transition import QwenTransitionEncoder
-from nimloth.model import NimlothModel
+from nimloth.backbone.qwen25vl.transition import Qwen25VLBatchBuilder
+from nimloth.agent import Agent, AgentTarget
 from nimloth.wm import (
     LatentWMPredictor,
     LeWMConfig,
@@ -112,17 +109,26 @@ def run_micro_training_loss(
     wm_predictor = LatentWMPredictor.create(LeWMConfig(emb_dim=128)).to(device=device)
     value_head = ValueHead(128).to(device=device)
     items = transition_collate_for_qwen(samples[:batch_size])
+    batch_builder = Qwen25VLBatchBuilder(
+        processor=processor,
+        device=device,
+        max_length=max_length,
+    )
     if use_cached_enc:
         rows = [encode_transition_item(item, processor, max_length) for item in items]
-        batch = collate_cached_transition_batch(
-            rows,
-            pad_token_id=processor.tokenizer.pad_token_id,
-        )
+        raw_batch = batch_builder.collate_cached_transition_batch(rows)
     else:
-        batch = items
+        raw_batch = items
 
-    nimloth_model = NimlothModel(
-        llm=model,
+    agent = Agent(
+        backbone=Qwen25VLBackbone(
+            model,
+            token_id_map=token_id_map,
+            device=device,
+            latent_token_count=1,
+            lora=False,
+            vision_tune="freeze",
+        ),
         wm=WorldModel(
             state_proj=state_proj,
             wm_predictor=wm_predictor,
@@ -130,27 +136,23 @@ def run_micro_training_loss(
         ),
     )
     algorithm = SFT2Algorithm(
-        model=nimloth_model,
-        qwen=QwenTransitionEncoder(
-            processor=processor,
-            token_id_map=token_id_map,
-            device=device,
-            max_length=max_length,
-            pad_token_id=processor.tokenizer.pad_token_id,
+        agent=agent,
+        target=AgentTarget(agent),
+        objective=SFT2Objective(
+            sigreg=None,
+            sigreg_weight=0.0,
+            value_weight=1.0,
+            ce_weight=1.0,
+            value_rank_margin=0.1,
+            value_rank_weight=1.0,
         ),
-        sigreg=None,
     )
-    losses = algorithm.compute(batch, mode=SFT2Mode.TRAIN)
     lambda_wm = wm_loss_weight_schedule(0, 100, start=0.1, end=1.0)
-    weighted = losses.weighted(
-        SFT2LossWeights(
-            wm=lambda_wm if losses.dynamics is not None else 0.0,
-            sigreg=0.0,
-            value=1.0,
-            ce=1.0,
-        )
+    output = algorithm.training_step(
+        batch_builder.prepare(raw_batch),
+        wm_weight=lambda_wm,
     )
-    return float(weighted.loss.item())
+    return float(output.loss.item())
 
 
 @torch.no_grad()

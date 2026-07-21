@@ -36,7 +36,7 @@ class AgentAction:
         return self.policy_prompt.messages
 
 
-class Agent:
+class AgentRuntime:
     """维护一个 episode 的 transcript，并执行一次次 policy 调用。"""
 
     def __init__(
@@ -136,3 +136,6 @@ class Agent:
 
         prefix = self.transcript().policy_prefix(step_index)
         return self._prompt_template.build_policy_prompt(prefix)
+
+
+__all__ = ["AgentAction", "AgentRuntime"]

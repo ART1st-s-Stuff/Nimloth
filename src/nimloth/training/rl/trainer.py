@@ -7,10 +7,11 @@ from pathlib import Path
 
 import torch
 
-from nimloth.backbone.qwen25vl.tuning import resolve_tune_modes
+from nimloth.backbone import resolve_tune_modes
 from nimloth.config.rl import RLConfig
 from nimloth.rollout import RolloutCollector
 from nimloth.training.rl.algorithm import RLAlgorithm
+from nimloth.training.rl.objective import RLObjective
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.components import build_rl_components
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
@@ -19,6 +20,7 @@ from nimloth.training.rl.rollout_runtime import (
     bind_online_collectors,
     validate_collector_configuration,
 )
+from nimloth.training.rl.update import RLUpdater
 from nimloth.util.distributed import cleanup_dist, setup_dist
 
 
@@ -68,9 +70,8 @@ def train_rl(
         bind_online_collectors(
             train_collector=train_collector,
             eval_collector=eval_collector,
-            model=components.nimloth_model.llm,
-            processor=components.processor,
-            device=device,
+            policy=components.adapters.policy,
+            latent_token_count=1,
             world_size=world,
         )
         checkpoint_manager = RLCheckpointManager(
@@ -79,14 +80,27 @@ def train_rl(
             components=components,
         )
         algorithm = RLAlgorithm(
-            components=components,
-            config=config,
-            actor_enabled=actor_enabled,
+            agent=components.agent,
+            objective=RLObjective(
+                value_rank_margin=config.value_head.rank_margin,
+                value_rank_weight=config.value_head.lambda_rank,
+                ppo_clip_ratio=config.actor.clip_ratio,
+                entropy_weight=config.actor.entropy_coeff,
+            ),
+            policy_replay=(
+                components.adapters.policy_replay if actor_enabled else None
+            ),
+        )
+        updater = RLUpdater(
+            algorithm=algorithm,
+            optimizer=components.optimizer,
             device=device,
+            vision_ema=components.vision_ema,
         )
         loop = RLTrainingLoop(
             config=config,
-            algorithm=algorithm,
+            updater=updater,
+            rollout_encoder=components.adapters.rollout_encoder,
             train_collector=train_collector,
             eval_collector=eval_collector,
             output_dir=output_dir,

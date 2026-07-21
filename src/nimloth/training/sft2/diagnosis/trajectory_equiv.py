@@ -3,19 +3,12 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
-from nimloth.backbone.qwen25vl.transition import (
-    QwenTransitionEncoder,
-    QwenTransitionMessages,
-    transition_collate_for_qwen,
-)
+from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
 from nimloth.rollout.transitions import expand_record_transitions
-from nimloth.training.sft2.algorithm import (
-    SFT2LossWeights,
-    SFT2Losses,
-)
 from nimloth.training.sft2.diagnosis.trajectory_once import (
     forward_trajectory_once,
     supervised_token_count,
@@ -37,35 +30,38 @@ def _auxiliary_losses(
         projected = wm.project_state(
             torch.cat([selected_current, next_hidden], dim=0)
         )
-        dynamics = wm.compute_dynamics_loss(
-            current_state=projected[: len(eligible_indices)],
-            target_next_state=projected[len(eligible_indices) :],
-            action_indices=torch.tensor(
+        predicted = wm.predict_next_state(
+            projected[: len(eligible_indices)],
+            torch.tensor(
                 [items[index]["action_index"] for index in eligible_indices],
                 dtype=torch.long,
                 device=current_hidden.device,
             ),
         )
-        dynamics_loss = dynamics.loss
+        dynamics_loss = F.mse_loss(
+            predicted,
+            projected[len(eligible_indices) :],
+        )
     else:
         dynamics_loss = torch.zeros((), device=current_hidden.device)
 
-    value = wm.compute_action_value_loss(
-        state=wm.project_state(current_hidden),
-        action_indices=torch.tensor(
-            [item["action_index"] for item in items],
-            dtype=torch.long,
-            device=current_hidden.device,
-        ),
-        return_targets=torch.tensor(
-            [item["action_value_target"] for item in items],
-            dtype=torch.float32,
-            device=current_hidden.device,
-        ),
-        rank_margin=0.1,
-        rank_weight=1.0,
+    actions = torch.tensor(
+        [item["action_index"] for item in items],
+        dtype=torch.long,
+        device=current_hidden.device,
     )
-    return dynamics_loss, value.loss
+    values = wm.predict_action_values(wm.project_state(current_hidden))
+    chosen = values.gather(1, actions.unsqueeze(1)).squeeze(1)
+    targets = torch.tensor(
+        [item["action_value_target"] for item in items],
+        dtype=chosen.dtype,
+        device=chosen.device,
+    )
+    regression = F.mse_loss(chosen, targets)
+    chosen_mask = F.one_hot(actions, num_classes=values.shape[1]).bool()
+    max_other = values.masked_fill(chosen_mask, float("-inf")).max(dim=1).values
+    ranking = F.relu(0.1 + max_other - chosen).mean()
+    return dynamics_loss, regression + ranking
 
 
 @torch.no_grad()
@@ -101,32 +97,22 @@ def legacy_record_losses(
     current = torch.stack(latents, dim=0)
     lm_loss_batch = lm_total / lm_tokens if lm_tokens else None
 
-    qwen = QwenTransitionEncoder(
-        processor=processor,
-        token_id_map=token_id_map,
-        device=device,
-        max_length=max_length,
-        pad_token_id=processor.tokenizer.pad_token_id,
-    )
-    messages = [
-        QwenTransitionMessages(
-            current=item["messages"],
-            next=item.get("next_messages"),
+    eligible = [index for index, item in enumerate(items) if item.get("next_messages")]
+    if eligible:
+        next_encoding = build_qwen_batch(
+            [{"messages": items[index]["next_messages"]} for index in eligible],
+            processor,
+            max_length,
         )
-        for item in items
-    ]
-    eligible = [index for index, value in enumerate(messages) if value.next is not None]
-    next_hidden = (
-        qwen.encode_next(
+        next_encoding.pop("labels", None)
+        next_hidden, _ = extract_qwen_latents(
             model,
-            messages,
-            eligible,
-            cached=None,
-            use_vision_ema=False,
+            next_encoding,
+            token_id_map,
+            device,
         )
-        if eligible
-        else None
-    )
+    else:
+        next_hidden = None
     wm_loss, value_loss = _auxiliary_losses(
         current_hidden=current,
         next_hidden=next_hidden,
@@ -134,15 +120,9 @@ def legacy_record_losses(
         eligible_indices=eligible,
         wm=wm,
     )
-    total = SFT2Losses(
-            lm=lm_loss_batch,
-            dynamics=wm_loss,
-            sigreg=None,
-            value=value_loss,
-            metrics={},
-        ).weighted(
-            SFT2LossWeights(wm=1.0, sigreg=0.0, value=1.0, ce=1.0)
-        ).loss
+    total = wm_loss + value_loss
+    if lm_loss_batch is not None:
+        total = total + lm_loss_batch
     return {
         "current": current,
         "lm_loss": lm_loss_batch,
@@ -192,15 +172,9 @@ def packed_record_losses(
         eligible_indices=eligible,
         wm=wm,
     )
-    total = SFT2Losses(
-            lm=trajectory.lm_loss,
-            dynamics=wm_loss,
-            sigreg=None,
-            value=value_loss,
-            metrics={},
-        ).weighted(
-            SFT2LossWeights(wm=1.0, sigreg=0.0, value=1.0, ce=1.0)
-        ).loss
+    total = wm_loss + value_loss
+    if trajectory.lm_loss is not None:
+        total = total + trajectory.lm_loss
     return {
         "current": trajectory.current_latents,
         "lm_loss": trajectory.lm_loss,

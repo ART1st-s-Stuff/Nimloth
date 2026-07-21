@@ -10,9 +10,7 @@ import pytest
 from experiments.training.rl.rollout_env import validate_split, validate_trajectories
 from nimloth.agent import AgentTranscript, NimlothPromptTemplate
 from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
-from nimloth.backbone.qwen25vl.vagen_rollout import (
-    VAGENNavigationRolloutCollector,
-)
+from nimloth.environment.navigation import VAGENNavigationRolloutCollector
 from nimloth.rollout import RolloutTrajectory
 
 
@@ -84,18 +82,14 @@ def test_training_split_requires_training_dataset() -> None:
 def test_env_collector_enforces_training_dataset() -> None:
     VAGENNavigationRolloutCollector(
         None,
-        None,
         "http://env",
-        None,
         eval_sets=("base_train",),
         split="train",
     )
     with pytest.raises(ValueError, match=r"requires \*_train datasets"):
         VAGENNavigationRolloutCollector(
             None,
-            None,
             "http://env",
-            None,
             eval_sets=("base",),
             split="train",
         )

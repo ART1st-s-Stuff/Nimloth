@@ -1,50 +1,19 @@
-# SFT2 library
+# SFT2
 
-SFT2 aligns Qwen latent states with a one-step world-model predictor and an
-action-value head. This package owns phase-specific orchestration; reusable
-Qwen and world-model concepts stay outside it.
+SFT2 包只保留阶段专用的目标函数、训练循环、评估和 checkpoint 策略。
 
-| Module | Responsibility |
-|--------|----------------|
-| `nimloth.config.sft2`, `cli.py` | Strict SFT2 YAML schema and CLI adapter |
-| `components.py` | 构造完整 `NimlothModel`，并处理 placement、DDP、EMA、optimizer |
-| `algorithm.py` | 单个 batch 的 Qwen→WM/value→loss 完整算法与梯度策略 |
-| `data/` | 类型化 transition batch、sampler 和 loader |
-| `loop.py` | Resumable micro-batch loop, validation, and checkpoint policy |
-| `evaluate.py` | Validation loop and distributed metric aggregation |
-| `checkpoint.py` | SFT2 artifact set, resume state, save manager |
-| `utils.py` | Small runtime helpers shared by training and validation |
-| `diagnosis/` | Non-production packed/KV equivalence investigations |
+| 文件 | 职责 |
+|------|------|
+| `algorithm.py` | current Agent → target state → objective 的三步编排 |
+| `objective.py` | LM、WM、SIGReg、value loss 与指标 |
+| `schedule.py` | WM loss 权重调度 |
+| `components.py` | Agent、batch builder、target runtime、DDP 和 optimizer 装配 |
+| `data/` | dataset、sampler 与 DataLoader |
+| `loop.py` | 微批、backward、optimizer、EMA、验证和保存时机 |
+| `evaluate.py` | validation 与分布式指标聚合 |
+| `checkpoint.py` | SFT2 artifact 与恢复状态 |
+| `diagnosis/` | 不进入生产训练的 packed/KV 等价性诊断 |
 
-预处理 cache、profiling、CSV、W&B 和分布式工具由 `nimloth.util` 负责，
-不属于 SFT2 的训练语义。
-
-For structured rollout records, transcript and action-prompt construction are
-owned by `nimloth.agent`. SFT2 expands each action into a supervised current
-prefix and a policy-query next prefix using the trajectory's registered
-`AgentPromptTemplate`. Legacy JSONL
-records without `system_prompt`/`observation_texts` remain readable through
-their stored `messages`, but new data should use the structured Agent schema.
-
-Dependency direction:
-
-```text
-agent (transcript/prompt/action contract)
-  + wm (transition/model concepts)
-  + backbone/qwen25vl (Qwen adapters)
-        -> training/sft2 (phase orchestration)
-              -> experiments/training/sft2 (thin entry points)
-```
-
-Outer reconstruction/evaluation modules consume `nimloth.wm` transition types
-and `nimloth.backbone.qwen25vl` adapters directly. They must not import SFT2's
-private data implementation.
-
-Training and validation call the same `SFT2Algorithm.compute` with an explicit
-`SFT2Mode`. `algorithm.py` shows the stage-specific gradient flow; Qwen prompt
-deduplication, cache and EMA target forward stay in
-`backbone/qwen25vl/transition.py`. Dynamics/value loss are member methods of
-`NimlothModel.wm`, so SFT2 no longer receives separate projector/predictor/head
-arguments. Checkpoint selection uses model-derived `val_wm_mse`.
-Static rollout labels are available from `nimloth.wm.statistics` for dataset
-inspection only.
+`algorithm.py` 不导入 Qwen，也不处理 processor、cache、EMA、DDP、optimizer 或
+checkpoint。Qwen batch 在进入算法前被转换成 `AgentBatch`；terminal transition
+通过 mask 参与统一调用结构，不再需要 `_compute_wm` 或 DDP dummy-loss 分支。

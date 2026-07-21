@@ -1,8 +1,7 @@
 # RL training
 
-The RL path collects navigation trajectories with the real
-`nimloth.agent.Agent` and `EpisodeRunner`, encodes the same policy states for the world
-model, and trains the predictor, value head, and optionally the Qwen actor.
+The RL path uses `AgentRuntime`/`EpisodeRunner` to collect navigation
+trajectories, then trains the neural `Agent` world model and optional actor.
 
 ## Ownership boundaries
 
@@ -105,8 +104,11 @@ distribution, including masked zero-probability actions.
 |--------|----------------|
 | `nimloth.rollout` | Model-independent trajectory schema, JSONL, and transition expansion |
 | `nimloth.backbone.qwen25vl.rollout` | Qwen latent transition encoding |
-| `components.py` | 完整 `NimlothModel`、placement、EMA、optimizer 和 resume |
-| `algorithm.py` | 类型化 RL batch、dynamics/value/PPO 目标和一次联合更新 |
+| `components.py` | 完整 `Agent`、独立 backbone adapters、placement 和 resume |
+| `batch.py` | transition 子采样与张量化 |
+| `algorithm.py` | WM/value 前向、stop-gradient 与可选 PPO replay 编排 |
+| `objective.py` | WM、value、PPO loss 和指标 |
+| `update.py` | backward、optimizer、梯度裁剪与 EMA |
 | `loop.py` | collect→encode→update→validate→save iteration 生命周期 |
 | `evaluation.py` | Held-out rollout collection and checkpoint metric selection |
 | `rollout_runtime.py` | Collector startup constraints and online policy binding |
@@ -130,10 +132,10 @@ distribution, including masked zero-probability actions.
   held-out `validation.checkpoint_metric` (`success_rate` or `avg_reward`).
 - LoRA plus full Vision saves `vision_full_state.pt` next to the adapter and
   restores both through the shared Qwen checkpoint helper.
-- 当前 dynamics 只通过当前状态更新 StateProjector；下一状态是 stop-gradient
+- 当前 WM loss 只通过当前状态更新 StateProjector；下一状态是 stop-gradient
   target。ValueHead 输入也显式 detach，因此 value loss 不更新 StateProjector。
-  loss 通过 `NimlothModel.wm` 的成员方法计算，ownership 写在 `algorithm.py`
-  并由梯度测试保护，后续若改变必须作为单独算法决策处理。
+  梯度 ownership 写在 `algorithm.py`，数学目标位于 `objective.py`，并由梯度
+  测试保护；后续若改变必须作为单独算法决策处理。
 
 Example standalone rollout:
 

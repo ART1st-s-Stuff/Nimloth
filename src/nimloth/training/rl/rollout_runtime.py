@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any
-
-from nimloth.backbone.qwen25vl.vagen_rollout import (
-    VAGENNavigationRolloutCollector,
-)
+from nimloth.agent import AgentPolicy
 from nimloth.rollout import (
     JSONLRolloutCollector,
     RolloutCollector,
 )
+from nimloth.environment.navigation import VAGENNavigationRolloutCollector
 from nimloth.util.distributed import is_main
 
 
@@ -37,9 +34,8 @@ def bind_online_collectors(
     *,
     train_collector: RolloutCollector,
     eval_collector: RolloutCollector | None,
-    model: Any,
-    processor: Any,
-    device: Any,
+    policy: AgentPolicy,
+    latent_token_count: int,
     world_size: int,
 ) -> None:
     """把 trainer 已加载的 Qwen 绑定给单卡在线 collector。"""
@@ -59,6 +55,9 @@ def bind_online_collectors(
             "rollout backend 生成 JSONL，再用 --use-jsonl-rollout 训练。"
         )
     for collector in online_collectors:
-        collector.bind_policy(model, processor, device)
+        collector.bind_policy(
+            policy,
+            latent_token_count=latent_token_count,
+        )
     if is_main():
-        print(json.dumps({"env_collector": "wired", "device": str(device)}))
+        print(json.dumps({"env_collector": "wired"}))

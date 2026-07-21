@@ -17,7 +17,7 @@ from nimloth.latent import (
 from nimloth.util.module import evaluating
 
 if TYPE_CHECKING:
-    from nimloth.backbone.qwen25vl.rollout import EncodedRolloutTransition
+    from nimloth.rollout.encoding import EncodedTransition
 
 
 def validate_agent_policy_protocol(model_config: Any) -> None:
@@ -276,7 +276,7 @@ def batch_action_log_probs(
 
 def replay_rollout_action_log_probs(
     *,
-    transitions: Sequence[EncodedRolloutTransition],
+    transitions: Sequence[EncodedTransition],
     model: torch.nn.Module,
     processor: Any,
     token_id_map: dict[str, int],
@@ -314,4 +314,33 @@ def replay_rollout_action_log_probs(
             top_ps=[transition.sampling_top_p for transition in transitions],
             device=device,
             latent_token_count=latent_token_counts.pop(),
+        )
+
+
+class QwenActionLogProbReplay:
+    """保存 Qwen policy 重放所需的 processor 与 token 协议。"""
+
+    def __init__(
+        self,
+        *,
+        model: torch.nn.Module,
+        processor: Any,
+        token_id_map: dict[str, int],
+        device: torch.device,
+    ) -> None:
+        self.model = model
+        self.processor = processor
+        self.token_id_map = token_id_map
+        self.device = device
+
+    def __call__(
+        self,
+        transitions: tuple["EncodedTransition", ...],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return replay_rollout_action_log_probs(
+            transitions=transitions,
+            model=self.model,
+            processor=self.processor,
+            token_id_map=self.token_id_map,
+            device=self.device,
         )

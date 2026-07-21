@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch, encode_qwen_item
+from nimloth.backbone.qwen25vl.transition import Qwen25VLBatchBuilder
 from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
     CachedTransitionDataset,
@@ -10,7 +11,6 @@ from nimloth.util.cache import (
     cache_fingerprint,
     encode_transition_item,
 )
-from nimloth.training.sft2.data.batch import collate_cached_transition_batch
 from nimloth.util.cache.encoding import _expand_qwen_image_tokens
 from nimloth.rollout.transitions import TransitionSample
 
@@ -101,7 +101,11 @@ def test_encode_transition_item_roundtrip_collate() -> None:
     }
     encoded = encode_transition_item(item, processor, max_length=128)
     encoded["next_messages"] = item.get("next_messages")
-    batch = collate_cached_transition_batch([encoded], pad_token_id=0)
+    batch = Qwen25VLBatchBuilder(
+        processor=processor,
+        device=torch.device("cpu"),
+        max_length=128,
+    ).collate_cached_transition_batch([encoded])
     online_current = build_qwen_batch([{"messages": item["messages"]}], processor, max_length=128)
     assert torch.equal(batch["current_enc"]["input_ids"][0], online_current["input_ids"][0])
     assert torch.equal(batch["current_enc"]["labels"][0], online_current["labels"][0])

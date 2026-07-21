@@ -103,23 +103,29 @@ def main(argv: list[str] | None = None) -> int:
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
 
-    from nimloth.backbone.qwen25vl.vagen_rollout import (
-        VAGENNavigationRolloutCollector,
-    )
+    from nimloth.backbone.qwen25vl.policy import QwenAgentPolicy
+    from nimloth.environment.navigation import VAGENNavigationRolloutCollector
 
     model, processor = load_qwen(
         args.model, args.attn_implementation, args.max_pixels
     )
-    collector = VAGENNavigationRolloutCollector(
-        qwen_model=model,
+    policy = QwenAgentPolicy(
+        model=model,
         processor=processor,
-        env_url=args.env_url,
         device=torch.device("cuda"),
+        temperature=args.temperature,
+        top_p=args.top_p,
+        latent_token_count=1,
+    )
+    collector = VAGENNavigationRolloutCollector(
+        policy=policy,
+        env_url=args.env_url,
         seed_offset=args.seed_offset,
         temperature=args.temperature,
         top_p=args.top_p,
         eval_sets=(args.eval_set,),
         split=args.split,
+        latent_token_count=1,
     )
     trajectories = collector.collect(
         num_episodes=args.num_episodes,

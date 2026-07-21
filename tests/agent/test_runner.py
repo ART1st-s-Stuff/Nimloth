@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from nimloth.agent import (
-    Agent,
+    AgentRuntime,
     AgentPrompt,
     EpisodeRunner,
     NimlothPromptTemplate,
@@ -70,7 +70,7 @@ class _FakeNavigationSession:
 
 def _run_episode():
     policy = _SequencePolicy((0, 4))
-    agent = Agent(
+    agent = AgentRuntime(
         policy=policy,
         action_space=NAVIGATION_ACTION_SPACE,
         prompt_template=NimlothPromptTemplate(
