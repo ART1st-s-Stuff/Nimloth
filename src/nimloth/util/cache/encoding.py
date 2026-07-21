@@ -1,4 +1,4 @@
-"""Encode SFT2 transition rows for the on-disk cache."""
+"""为磁盘预处理缓存编码 Qwen transition。"""
 
 from __future__ import annotations
 

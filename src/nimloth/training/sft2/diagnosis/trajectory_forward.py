@@ -16,7 +16,7 @@ from nimloth.backbone.qwen25vl.latent import (
 )
 from nimloth.latent import extract_latent_state, find_last_latent_state_index
 from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
-from nimloth.wm.dataset import (
+from nimloth.rollout.transitions import (
     TransitionSample,
     expand_record_transitions,
     load_jsonl_records,

@@ -7,7 +7,7 @@ from nimloth.training.sft2.diagnosis.trajectory_once import (
     find_step_latent_indices,
     verify_prefix_tokenization,
 )
-from nimloth.wm.dataset import TransitionSample
+from nimloth.rollout.transitions import TransitionSample
 
 
 class FakeTokenizer:

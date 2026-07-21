@@ -17,7 +17,7 @@ from nimloth.training.sft2.diagnosis.packed_trajectory import (
     kv_forward_trajectory,
     legacy_forward_trajectory,
 )
-from nimloth.wm.dataset import expand_record_transitions, load_jsonl_records
+from nimloth.rollout.transitions import expand_record_transitions, load_jsonl_records
 
 
 def parse_args() -> argparse.Namespace:

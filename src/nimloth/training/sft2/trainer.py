@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import random
 import shutil
 import time
@@ -12,20 +13,13 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from transformers import AutoProcessor
-
+from nimloth.backbone.qwen25vl.loading import load_qwen_processor
 from nimloth.latent import (
-    add_special_tokens,
     query_labels_are_masked,
     resolve_latent_query_mode,
-    special_token_ids,
 )
-from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
-from nimloth.training.common.metrics import MetricAccumulator
 from nimloth.backbone.qwen25vl.tuning import resolve_tune_modes, uses_lora
 from nimloth.backbone.qwen25vl.vision_ema import resolve_vision_ema
-from nimloth.training.common.schedules import qwen_lr_schedule, set_optimizer_group_lr
-from nimloth.training.common.wandb_logging import log_train_step, log_val_epoch, maybe_init_wandb
 from nimloth.training.sft2.checkpoint import (
     SFT2CheckpointManager,
     read_checkpoint_step,
@@ -38,11 +32,15 @@ from nimloth.training.sft2.data.factory import build_data_bundle
 from nimloth.training.sft2.engine import SFT2StepRunner
 from nimloth.training.sft2.evaluate import evaluate
 from nimloth.training.sft2.objectives import compute_combined_loss, wm_loss_weight_schedule
-from nimloth.training.sft2.profiling import StepTimer
 from nimloth.training.sft2.utils import (
     no_sync_if_needed,
     seed_training_micro_step,
 )
+from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
+from nimloth.util.metrics import MetricAccumulator
+from nimloth.util.optim import qwen_lr_schedule, set_optimizer_group_lr
+from nimloth.util.profiling import StepTimer
+from nimloth.util.wandb import init_wandb_run, log_metrics
 
 
 def train_sft2(args=None) -> int:
@@ -72,7 +70,21 @@ def train_sft2(args=None) -> int:
     torch.manual_seed(args.seed)
     rank, world, local_rank, device = setup_dist()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    wandb_run = maybe_init_wandb(args)
+    prefix = os.environ.get("WANDB_RUN_PREFIX", "")
+    wandb_run = init_wandb_run(
+        rank=rank,
+        output_dir=args.output_dir,
+        enabled=not args.no_wandb,
+        default_project="nimloth",
+        run_name=args.wandb_run_name or f"{prefix}sft2-latentwm-value",
+        config=vars(args),
+        metric_definitions=(
+            ("global_step", None),
+            ("train/*", "global_step"),
+            ("epoch", None),
+            ("val/*", "epoch"),
+        ),
+    )
 
     resume_ckpt_dir: Path | None = None
     if args.resume:
@@ -80,14 +92,14 @@ def train_sft2(args=None) -> int:
     resume_state_path = (
         resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir is not None else None
     )
-    processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
-    processor.image_processor.min_pixels = 3136
-    processor.image_processor.max_pixels = args.max_pixels
-    added_special_token_count = add_special_tokens(
-        processor.tokenizer,
+    processor_bundle = load_qwen_processor(
+        args.model,
+        max_pixels=args.max_pixels,
         latent_token_count=args.latent_token_count,
     )
-    token_id_map = special_token_ids(processor.tokenizer, latent_token_count=args.latent_token_count)
+    processor = processor_bundle.processor
+    added_special_token_count = processor_bundle.added_special_token_count
+    token_id_map = processor_bundle.token_id_map
 
     if is_main():
         print(
@@ -288,7 +300,13 @@ def train_sft2(args=None) -> int:
                     ]
                 )
             accum.reset()
-            log_train_step(wandb_run, global_step, avg)
+            log_metrics(
+                wandb_run,
+                namespace="train",
+                metrics=avg,
+                step=global_step,
+                context={"global_step": global_step},
+            )
 
     step_timer = StepTimer(enabled=args.step_timing, log_interval=args.step_timing_interval)
     pad_token_id = processor.tokenizer.pad_token_id
@@ -470,11 +488,12 @@ def train_sft2(args=None) -> int:
         val_wm = val_metrics.get("wm_mse", float("inf"))
 
         if is_main():
-            log_val_epoch(
+            log_metrics(
                 wandb_run,
-                epoch,
-                val_metrics,
-                global_step=global_step,
+                namespace="val",
+                metrics=val_metrics,
+                step=global_step,
+                context={"epoch": epoch},
             )
             with log_path.open("a", newline="") as f:
                 csv.writer(f).writerow(

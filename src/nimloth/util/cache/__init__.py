@@ -1,18 +1,18 @@
-"""Public SFT2 transition-cache API."""
+"""Qwen transition 预处理缓存的公开 API。"""
 
-from nimloth.training.sft2.data.cache.build import (
+from nimloth.util.cache.build import (
     build_compact_transition_preprocess_cache,
     build_transition_preprocess_cache,
 )
-from nimloth.training.sft2.data.cache.dataset import (
+from nimloth.util.cache.dataset import (
     CachedTransitionDataset,
     CompactCachedTransitionCollator,
 )
-from nimloth.training.sft2.data.cache.encoding import (
+from nimloth.util.cache.encoding import (
     encode_qwen_item_from_image_grids,
     encode_transition_item,
 )
-from nimloth.training.sft2.data.cache.schema import (
+from nimloth.util.cache.schema import (
     CE_MASK_VERSION,
     COMPACT_CACHE_FORMAT,
     DEFAULT_MIN_PIXELS,

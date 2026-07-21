@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from nimloth.agent import PROMPT_VERSION
-from nimloth.wm.dataset import (
+from nimloth.rollout.transitions import (
     NUM_NAVIGATION_ACTIONS,
     TransitionSample,
     discounted_action_value_targets,

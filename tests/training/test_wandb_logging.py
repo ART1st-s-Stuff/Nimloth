@@ -1,8 +1,7 @@
-import argparse
 import sys
 import types
 
-from nimloth.training.common.wandb_logging import log_val_epoch, maybe_init_wandb
+from nimloth.util.wandb import init_wandb_run, log_metrics
 
 
 class _Run:
@@ -15,7 +14,13 @@ class _Run:
 
 def test_val_logging_uses_global_transport_step_and_epoch_metric() -> None:
     run = _Run()
-    log_val_epoch(run, 3, {"wm_mse": 0.25}, global_step=1456)
+    log_metrics(
+        run,
+        namespace="val",
+        metrics={"wm_mse": 0.25},
+        step=1456,
+        context={"epoch": 3},
+    )
 
     assert run.calls == [({"val/wm_mse": 0.25, "epoch": 3}, 1456)]
 
@@ -34,14 +39,16 @@ def test_wandb_run_id_is_persisted_and_resumed(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("WANDB_API_KEY", "test")
     monkeypatch.setenv("WANDB_PROJECT", "nimloth-sft2")
     monkeypatch.delenv("WANDB_RUN_ID", raising=False)
-    args = argparse.Namespace(
-        output_dir=tmp_path,
-        no_wandb=False,
-        wandb_run_name="2_retry_params",
-    )
-
-    maybe_init_wandb(args)
-    maybe_init_wandb(args)
+    options = {
+        "rank": 0,
+        "output_dir": tmp_path,
+        "enabled": True,
+        "default_project": "nimloth-sft2",
+        "run_name": "2_retry_params",
+        "config": {},
+    }
+    init_wandb_run(**options)
+    init_wandb_run(**options)
 
     assert (tmp_path / "wandb_run_id.txt").read_text() == "run-123\n"
     assert init_calls[0]["id"] is None

@@ -13,7 +13,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from nimloth.training.common.dist import is_main
+from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead

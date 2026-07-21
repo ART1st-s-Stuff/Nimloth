@@ -17,7 +17,7 @@ from nimloth.backbone.qwen25vl.batch import batch_single_encoding, encode_qwen_i
 from nimloth.backbone.qwen25vl.latent import reset_model_rope_state
 from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
-from nimloth.wm.dataset import (
+from nimloth.rollout.transitions import (
     NUM_NAVIGATION_ACTIONS,
     expand_record_transitions,
     load_jsonl_records,

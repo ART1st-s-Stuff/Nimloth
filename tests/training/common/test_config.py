@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nimloth.training.common.config import load_yaml_config
+from nimloth.config import load_yaml_config
 
 
 def test_load_yaml_config_returns_nested_mapping() -> None:

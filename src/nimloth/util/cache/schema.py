@@ -1,11 +1,11 @@
-"""SFT2 preprocess-cache schema and identity helpers."""
+"""Qwen transition 预处理缓存的 schema 和身份标识工具。"""
 
 from __future__ import annotations
 
 import hashlib
 from pathlib import Path
 
-from nimloth.wm.dataset import TransitionSample
+from nimloth.rollout.transitions import TransitionSample
 
 CE_MASK_VERSION = "last_assistant_span_v1"
 TRANSITION_EXPANSION_VERSION = "wm_expand_v1"

@@ -12,9 +12,9 @@ import pytest
 from nimloth.agent import (
     AgentTranscript,
     NimlothAgentPrompt,
-    navigation_action_name,
 )
-from nimloth.training.rl.rollout import JSONLRolloutCollector, RolloutTrajectory
+from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
+from nimloth.rollout import JSONLRolloutCollector, RolloutTrajectory
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,9 @@ def _make_traj(record_id: str, num_steps: int = 3) -> RolloutTrajectory:
         record_id=record_id,
         image_paths=image_paths,
         action_indices=action_indices,
-        action_names=[navigation_action_name(index) for index in action_indices],
+        action_names=[
+            NAVIGATION_ACTION_SPACE.key_for(index) for index in action_indices
+        ],
         action_log_probs=[[-math.log(8.0)] * 8 for _ in range(num_steps)],
         nav_instruction="Go to the couch.",
         success=(num_steps % 2 == 0),

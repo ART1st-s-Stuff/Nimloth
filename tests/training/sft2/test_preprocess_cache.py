@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch, encode_qwen_item
-from nimloth.training.sft2.data.cache import (
+from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
     CachedTransitionDataset,
     CompactCachedTransitionCollator,
@@ -11,8 +11,8 @@ from nimloth.training.sft2.data.cache import (
     encode_transition_item,
 )
 from nimloth.training.sft2.data.batch import collate_cached_transition_batch
-from nimloth.training.sft2.data.cache.encoding import _expand_qwen_image_tokens
-from nimloth.wm.dataset import TransitionSample
+from nimloth.util.cache.encoding import _expand_qwen_image_tokens
+from nimloth.rollout.transitions import TransitionSample
 
 
 class FakeTokenizer:

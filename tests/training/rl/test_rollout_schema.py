@@ -9,10 +9,10 @@ import pytest
 
 from experiments.training.rl.rollout_env import validate_split, validate_trajectories
 from nimloth.agent import AgentTranscript, NimlothAgentPrompt
-from nimloth.training.rl.rollout import (
-    EnvRolloutCollector,
+from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
+from nimloth.rollout import (
     RolloutTrajectory,
-    validate_rl_policy_protocol,
+    VAGENNavigationRolloutCollector,
 )
 
 
@@ -58,17 +58,17 @@ def _trajectory() -> RolloutTrajectory:
 
 
 def test_rl_policy_protocol_requires_k1_inject() -> None:
-    validate_rl_policy_protocol(SimpleNamespace(
+    validate_agent_policy_protocol(SimpleNamespace(
         nimloth_latent_token_count=1,
         nimloth_latent_query_mode="inject",
     ))
     with pytest.raises(ValueError, match="k=1 inject"):
-        validate_rl_policy_protocol(SimpleNamespace(
+        validate_agent_policy_protocol(SimpleNamespace(
             nimloth_latent_token_count=8,
             nimloth_latent_query_mode="inject",
         ))
     with pytest.raises(ValueError, match="k=1 inject"):
-        validate_rl_policy_protocol(SimpleNamespace(
+        validate_agent_policy_protocol(SimpleNamespace(
             nimloth_latent_token_count=1,
             nimloth_latent_query_mode="generate",
         ))
@@ -83,11 +83,23 @@ def test_training_split_requires_training_dataset() -> None:
 
 
 def test_env_collector_enforces_training_dataset() -> None:
-    EnvRolloutCollector(None, None, "http://env", None,
-                        eval_sets=("base_train",), split="train")
+    VAGENNavigationRolloutCollector(
+        None,
+        None,
+        "http://env",
+        None,
+        eval_sets=("base_train",),
+        split="train",
+    )
     with pytest.raises(ValueError, match=r"requires \*_train datasets"):
-        EnvRolloutCollector(None, None, "http://env", None,
-                            eval_sets=("base",), split="train")
+        VAGENNavigationRolloutCollector(
+            None,
+            None,
+            "http://env",
+            None,
+            eval_sets=("base",),
+            split="train",
+        )
 
 
 def test_complete_trajectory_schema_passes() -> None:

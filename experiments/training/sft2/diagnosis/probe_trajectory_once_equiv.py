@@ -14,7 +14,7 @@ from nimloth.training.sft2.diagnosis.trajectory_equiv import (
     legacy_record_losses,
     packed_record_losses,
 )
-from nimloth.wm.dataset import load_jsonl_records
+from nimloth.rollout.transitions import load_jsonl_records
 
 
 def parse_args() -> argparse.Namespace:

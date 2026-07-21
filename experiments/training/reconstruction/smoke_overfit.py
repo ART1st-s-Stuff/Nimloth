@@ -16,7 +16,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
-from nimloth.wm.dataset import TransitionJsonlDataset
+from nimloth.rollout.transitions import TransitionJsonlDataset
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.reconstruction import WMImageDecoder, WMImageDecoderConfig

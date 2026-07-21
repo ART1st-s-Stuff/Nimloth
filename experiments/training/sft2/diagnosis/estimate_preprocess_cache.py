@@ -10,12 +10,12 @@ from pathlib import Path
 from transformers import AutoProcessor
 
 from nimloth.latent import add_special_tokens
-from nimloth.training.sft2.data.cache import (
+from nimloth.util.cache import (
     encode_trajectory_record,
     encode_transition_item,
 )
 from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
-from nimloth.wm.dataset import expand_record_transitions, load_jsonl_records
+from nimloth.rollout.transitions import expand_record_transitions, load_jsonl_records
 
 
 def parse_args() -> argparse.Namespace:

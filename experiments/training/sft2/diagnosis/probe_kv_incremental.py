@@ -22,7 +22,7 @@ from nimloth.latent import (
 )
 from nimloth.training.sft2.diagnosis.trajectory_forward import _prefix_latent
 from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
-from nimloth.wm.dataset import expand_record_transitions, load_jsonl_records
+from nimloth.rollout.transitions import expand_record_transitions, load_jsonl_records
 
 
 def parse_args() -> argparse.Namespace:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from PIL import Image
 
 from nimloth.agent.prompt import bind_image_placeholders
-from nimloth.wm.dataset import TransitionSample
+from nimloth.rollout.transitions import TransitionSample
 
 # Compatibility name for existing callers. Agent owns the message/image contract.
 messages_with_image_paths = bind_image_placeholders

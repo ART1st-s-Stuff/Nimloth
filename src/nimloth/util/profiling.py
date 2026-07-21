@@ -1,4 +1,4 @@
-"""Optional step-level timing for SFT2 bottleneck analysis."""
+"""用于训练和评估瓶颈分析的可选分段计时器。"""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ from typing import Any
 
 import torch
 
-from nimloth.training.common.dist import is_main
+from nimloth.util.distributed import is_main
 
 
 @dataclass
 class StepTimer:
-    """Collect per-micro-step timings; log rolling averages on optimizer steps."""
+    """累计每步分段耗时，并定期打印滚动平均。"""
 
     enabled: bool = False
     log_interval: int = 50
@@ -38,7 +38,8 @@ class StepTimer:
         if not self.enabled:
             return
         self._sync_cuda()
-        self._sections[name] = self._sections.get(name, 0.0) + (time.perf_counter() - started_at)
+        elapsed = time.perf_counter() - started_at
+        self._sections[name] = self._sections.get(name, 0.0) + elapsed
 
     def on_optimizer_step(self, *, global_step: int, epoch: int) -> None:
         if not self.enabled:

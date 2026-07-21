@@ -1,4 +1,4 @@
-"""Expand Nimloth SFT jsonl trajectories into WM transition samples."""
+"""把 rollout JSONL 展开为 SFT2 与 RL 共用的逐步 transition。"""
 
 from __future__ import annotations
 
@@ -14,18 +14,20 @@ from nimloth.agent.prompt import (
     AgentTranscript,
     NimlothAgentPrompt,
 )
-
-# Matches vagen.envs.navigation.utils.nimloth_format.ACTION_NAMES length.
-NUM_NAVIGATION_ACTIONS = 8
+from nimloth.environment import get_action_space
 
 DEFAULT_VALUE_GAMMA = 1.0
 
 
-def discounted_action_value_targets(record: dict[str, Any], *, gamma: float = DEFAULT_VALUE_GAMMA) -> list[float]:
-    """Discounted Monte Carlo return for each taken action in a trajectory.
+def discounted_action_value_targets(
+    record: dict[str, Any],
+    *,
+    gamma: float = DEFAULT_VALUE_GAMMA,
+) -> list[float]:
+    """计算 trajectory 中每个已执行动作的折扣 Monte Carlo return。
 
-    Uses trajectory-level ``reward`` as terminal return (sparse). Step ``t`` receives
-    ``reward * gamma ** (T - 1 - t)`` where ``T`` is the number of actions.
+    当前数据只有 trajectory 级稀疏 reward，因此第 ``t`` 步的目标为
+    ``reward * gamma ** (T - 1 - t)``。
     """
 
     action_indices = list(record.get("action_indices", []))
@@ -38,7 +40,7 @@ def discounted_action_value_targets(record: dict[str, Any], *, gamma: float = DE
 
 @dataclass(frozen=True)
 class TransitionSample:
-    """One environment step transition derived from a rollout record."""
+    """从一条 rollout 记录派生出的单步 transition。"""
 
     record_id: str
     step_index: int
@@ -67,12 +69,15 @@ def load_jsonl_records(path: Path, max_records: int = -1) -> list[dict[str, Any]
     return records
 
 
-def expand_record_transitions(record: dict[str, Any], *, value_gamma: float = DEFAULT_VALUE_GAMMA) -> list[TransitionSample]:
-    """Expand one Nimloth jsonl record into per-step transitions.
+def expand_record_transitions(
+    record: dict[str, Any],
+    *,
+    value_gamma: float = DEFAULT_VALUE_GAMMA,
+) -> list[TransitionSample]:
+    """把一条 Nimloth JSONL 记录展开为逐步 transition。
 
-    Alignment convention (matches convert_sft1_rollouts_to_nimloth):
-      - image_paths[t] is the observation visible when choosing action_indices[t]
-      - image_paths[t + 1] is the observation after executing action_indices[t]
+    对齐约定：``image_paths[t]`` 是选择 ``action_indices[t]`` 时可见的
+    observation，``image_paths[t + 1]`` 是执行该动作后的 observation。
     """
 
     image_paths = list(record.get("image_paths", []))
@@ -80,6 +85,10 @@ def expand_record_transitions(record: dict[str, Any], *, value_gamma: float = DE
     record_id = str(record.get("id", ""))
     success = bool(record.get("success", False))
     split = str(record.get("split", "train"))
+    action_space = get_action_space(
+        str(record.get("action_space_id", "navigation")),
+        int(record.get("action_space_version", 1)),
+    )
 
     if not image_paths or not action_indices:
         return []
@@ -103,6 +112,7 @@ def expand_record_transitions(record: dict[str, Any], *, value_gamma: float = DE
             success=success,
             split=split,
             value_gamma=value_gamma,
+            action_count=len(action_space),
         )
 
     messages = list(record.get("messages", []))
@@ -124,10 +134,10 @@ def expand_record_transitions(record: dict[str, Any], *, value_gamma: float = DE
             break
 
         action_index = int(action_indices[assistant_turn])
-        if not 0 <= action_index < NUM_NAVIGATION_ACTIONS:
+        if not 0 <= action_index < len(action_space):
             raise ValueError(
                 f"record {record_id!r} step {assistant_turn}: action_index {action_index} "
-                f"out of range [0, {NUM_NAVIGATION_ACTIONS})"
+                f"out of range [0, {len(action_space)})"
             )
 
         next_prefix_messages: list[dict[str, Any]] | None = None
@@ -170,8 +180,9 @@ def _expand_structured_agent_transitions(
     success: bool,
     split: str,
     value_gamma: float,
+    action_count: int,
 ) -> list[TransitionSample]:
-    """Expand records written by the shared Agent runtime into SFT2 prefixes."""
+    """把公共 Agent runtime 写出的结构化记录转换为 prompt prefix。"""
 
     expected_observations = len(action_indices) + 1
     if len(observation_texts) != expected_observations:
@@ -186,7 +197,8 @@ def _expand_structured_agent_transitions(
         )
 
     prompt = NimlothAgentPrompt(
-        latent_token_count=int(record.get("latent_token_count", 1))
+        latent_token_count=int(record.get("latent_token_count", 1)),
+        action_count=action_count,
     )
     value_targets = discounted_action_value_targets(record, gamma=value_gamma)
     transitions: list[TransitionSample] = []
@@ -245,7 +257,7 @@ def iter_transitions_from_jsonl(
 
 
 class TransitionJsonlDataset(Dataset[TransitionSample]):
-    """PyTorch-style indexable dataset over expanded transitions."""
+    """对展开后 transition 提供 PyTorch 风格的随机访问。"""
 
     def __init__(
         self,

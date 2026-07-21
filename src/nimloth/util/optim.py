@@ -1,4 +1,4 @@
-"""Learning-rate schedules for training."""
+"""各优化阶段共享的 optimizer 与学习率工具。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def qwen_lr_schedule(
     peak_lr: float,
     min_lr_ratio: float = 0.1,
 ) -> float:
-    """Ramp Qwen LR from start_lr to peak_lr, then cosine decay to min_lr."""
+    """先将 Qwen 学习率从 start_lr 升至 peak_lr，再做余弦衰减。"""
 
     if warmup_steps <= 0:
         warmup_steps = 1
@@ -31,7 +31,11 @@ def qwen_lr_schedule(
     return min_lr + (peak_lr - min_lr) * cosine
 
 
-def set_optimizer_group_lr(optimizer: torch.optim.Optimizer, group_name: str, lr: float) -> None:
+def set_optimizer_group_lr(
+    optimizer: torch.optim.Optimizer,
+    group_name: str,
+    lr: float,
+) -> None:
     for group in optimizer.param_groups:
         if group.get("name") == group_name:
             group["lr"] = lr

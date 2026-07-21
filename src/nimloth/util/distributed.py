@@ -1,4 +1,4 @@
-"""Distributed training helpers."""
+"""训练和评估共享的分布式运行工具。"""
 
 from __future__ import annotations
 

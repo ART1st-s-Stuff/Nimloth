@@ -1,4 +1,4 @@
-"""Qwen2.5-VL adapter for the shared Agent action-policy protocol."""
+"""Qwen2.5-VL 到公共 Agent 离散动作 policy 协议的适配。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,18 @@ from nimloth.latent import (
     normalize_latent_state_blocks,
     special_token_ids,
 )
+
+
+def validate_agent_policy_protocol(model_config: Any) -> None:
+    """确认 checkpoint 满足当前已实现的 k=1 inject policy 协议。"""
+
+    latent_count = int(getattr(model_config, "nimloth_latent_token_count", 1))
+    query_mode = getattr(model_config, "nimloth_latent_query_mode", None)
+    if latent_count != 1 or query_mode != "inject":
+        raise ValueError(
+            "Agent action runtime currently requires a k=1 inject checkpoint; "
+            f"got latent_token_count={latent_count}, latent_query_mode={query_mode!r}"
+        )
 
 
 def _rgb_image(value: Any) -> Image.Image:
@@ -148,8 +160,8 @@ def behavior_log_probs(
     return torch.log_softmax(scaled_logits, dim=-1)
 
 
-class QwenNavigationPolicy:
-    """Run Qwen and sample from its configured, auditable behavior distribution."""
+class QwenAgentPolicy:
+    """运行 Qwen，并从可审计的 behavior distribution 中采样。"""
 
     def __init__(
         self,

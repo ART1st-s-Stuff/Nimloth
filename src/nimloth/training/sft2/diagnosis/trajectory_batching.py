@@ -8,7 +8,7 @@ from typing import Iterator
 import torch
 from torch.utils.data import Sampler
 
-from nimloth.wm.dataset import TransitionSample
+from nimloth.rollout.transitions import TransitionSample
 
 
 def build_trajectory_batch_indices(

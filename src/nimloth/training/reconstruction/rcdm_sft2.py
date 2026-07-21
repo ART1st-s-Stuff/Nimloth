@@ -36,10 +36,10 @@ from nimloth.recon.rcdm.state_cache import (
     collate_rcdm_state_cache_batch,
     state_cache_ready,
 )
-from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
+from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
-from nimloth.wm.dataset import TransitionJsonlDataset
+from nimloth.rollout.transitions import TransitionJsonlDataset
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector

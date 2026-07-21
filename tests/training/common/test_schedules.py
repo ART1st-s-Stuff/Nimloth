@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nimloth.training.common.schedules import qwen_lr_schedule
+from nimloth.util.optim import qwen_lr_schedule
 
 
 def test_qwen_lr_starts_low_and_ramps_up() -> None:

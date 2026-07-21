@@ -1,8 +1,7 @@
-"""Shared Agent transcript and Nimloth action-prompt construction."""
+"""SFT2、RL 和在线 Agent 共用的 transcript 与动作 prompt。"""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -10,39 +9,9 @@ from nimloth.latent import LatentActionTokens, latent_state_tokens
 
 PROMPT_VERSION = "nimloth-agent-v1"
 
-NAVIGATION_ACTION_NAMES: tuple[str, ...] = (
-    "moveahead",
-    "moveback",
-    "moveright",
-    "moveleft",
-    "rotateright",
-    "rotateleft",
-    "lookup",
-    "lookdown",
-)
-NAVIGATION_ACTION_TO_INDEX = {
-    name: index for index, name in enumerate(NAVIGATION_ACTION_NAMES)
-}
-
-_INSTRUCTION_RE = re.compile(r"Human Instruction:\s*(.+?)(?:\n|$)")
-
-
-def navigation_action_name(action_index: int) -> str:
-    if not 0 <= action_index < len(NAVIGATION_ACTION_NAMES):
-        raise ValueError(f"action_index must be in [0, 8), got {action_index}")
-    return NAVIGATION_ACTION_NAMES[action_index]
-
-
-def instruction_from_observation(observation_text: str) -> str:
-    """Extract navigation instruction metadata from a VAGEN initial observation."""
-
-    match = _INSTRUCTION_RE.search(observation_text)
-    return match.group(1).strip() if match else ""
-
-
 @dataclass(frozen=True)
 class AgentTranscript:
-    """Structured episode history independent of model-specific rendering."""
+    """不依赖具体模型和环境动作语义的 episode 历史。"""
 
     system_prompt: str
     observation_texts: tuple[str, ...]
@@ -60,10 +29,11 @@ class AgentTranscript:
         if len(self.action_indices) > len(self.observation_texts):
             raise ValueError("an action cannot exist without its preceding observation")
         for action_index in self.action_indices:
-            navigation_action_name(action_index)
+            if action_index < 0:
+                raise ValueError(f"action_index must be non-negative, got {action_index}")
 
     def policy_prefix(self, step_index: int) -> AgentTranscript:
-        """Return the state immediately before choosing action ``step_index``."""
+        """返回选择第 ``step_index`` 个动作之前的状态。"""
 
         if not 0 <= step_index < len(self.observation_texts):
             raise IndexError(
@@ -86,7 +56,7 @@ def bind_image_placeholders(
     messages: Sequence[dict[str, Any]],
     images: Sequence[Any],
 ) -> list[dict[str, Any]]:
-    """Replace every textual ``<image>`` placeholder with its ordered image."""
+    """按照顺序把文本中的 ``<image>`` 替换为真实图片。"""
 
     image_index = 0
     bound: list[dict[str, Any]] = []
@@ -121,17 +91,26 @@ def bind_image_placeholders(
 
 
 class NimlothAgentPrompt:
-    """Canonical action prompt shared by online Agent, PPO replay, and SFT2."""
+    """在线 Agent、PPO replay 和 SFT2 共用的离散动作 prompt。"""
 
     def __init__(
         self,
         *,
         latent_token_count: int = 1,
+        action_count: int | None = None,
         thought: str = "What should I do next?",
     ) -> None:
         if latent_token_count < 1:
             raise ValueError("latent_token_count must be >= 1")
+        token_action_count = len(LatentActionTokens().action_tokens)
+        resolved_action_count = token_action_count if action_count is None else action_count
+        if not 1 <= resolved_action_count <= token_action_count:
+            raise ValueError(
+                "action_count must fit the configured action-token vocabulary: "
+                f"got {resolved_action_count}, capacity={token_action_count}"
+            )
         self.latent_token_count = latent_token_count
+        self.action_count = resolved_action_count
         self.thought = thought
 
     @property
@@ -155,7 +134,10 @@ class NimlothAgentPrompt:
         *,
         thought: str | None = None,
     ) -> str:
-        navigation_action_name(action_index)
+        if not 0 <= action_index < self.action_count:
+            raise ValueError(
+                f"action_index must be in [0, {self.action_count}), got {action_index}"
+            )
         tokens = LatentActionTokens()
         return (
             f"{self.assistant_prefix(thought=thought)}"
@@ -169,7 +151,7 @@ class NimlothAgentPrompt:
         *,
         bind_images: bool,
     ) -> list[dict[str, Any]]:
-        """Build the exact prefix whose final token predicts the next action."""
+        """构造最后一个位置用于预测下一动作的精确 prefix。"""
 
         if len(transcript.observation_texts) != len(transcript.action_indices) + 1:
             raise ValueError(
@@ -197,7 +179,7 @@ class NimlothAgentPrompt:
         *,
         bind_images: bool,
     ) -> list[dict[str, Any]]:
-        """Build completed action turns for SFT2 or trajectory serialization."""
+        """构造 SFT2 与 trajectory 序列化使用的完整动作轮次。"""
 
         messages = self._completed_messages(transcript)
         acted_images = transcript.observation_images[: len(transcript.action_indices)]

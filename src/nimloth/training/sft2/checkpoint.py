@@ -12,7 +12,7 @@ import torch
 from nimloth.backbone.qwen25vl.checkpoint import load_adapter_state, save_full_vision_state
 from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
 from nimloth.latent import materialize_query_embedding_adapter
-from nimloth.training.common.dist import is_main
+from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead

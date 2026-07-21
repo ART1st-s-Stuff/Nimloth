@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from nimloth.latent import LATENT_QUERY_MODES, query_labels_are_masked, resolve_latent_query_mode
-from nimloth.training.sft2.config import apply_sft2_yaml_defaults
+from nimloth.config.sft2 import apply_sft2_yaml_defaults
 
 
 def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentParser:

@@ -12,9 +12,9 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
 
 from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
-from nimloth.training.common.dist import is_main
+from nimloth.util.distributed import is_main
 from nimloth.training.sft2.data.batch import collate_cached_transition_batch
-from nimloth.training.sft2.data.cache import (
+from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
     LEGACY_CACHE_FORMAT,
     CachedTransitionDataset,
@@ -27,7 +27,7 @@ from nimloth.training.sft2.data.samplers import (
     DistributedEvalSampler,
     TrajectoryAwareBatchSampler,
 )
-from nimloth.wm.dataset import TransitionJsonlDataset, TransitionSample
+from nimloth.rollout.transitions import TransitionJsonlDataset, TransitionSample
 
 
 @dataclass(frozen=True)

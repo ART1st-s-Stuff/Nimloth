@@ -1,4 +1,4 @@
-"""Build compact and legacy SFT2 transition preprocess caches."""
+"""构建 compact 和 legacy 两种 Qwen transition 预处理缓存。"""
 
 from __future__ import annotations
 
@@ -17,12 +17,12 @@ from transformers import AutoProcessor
 
 from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
 from nimloth.latent import add_special_tokens
-from nimloth.training.common.dist import is_main
-from nimloth.training.sft2.data.cache.encoding import (
+from nimloth.util.distributed import is_main
+from nimloth.util.cache.encoding import (
     encode_qwen_item_from_image_grids,
     encode_transition_item,
 )
-from nimloth.training.sft2.data.cache.schema import (
+from nimloth.util.cache.schema import (
     CE_MASK_VERSION,
     COMPACT_CACHE_FORMAT,
     DEFAULT_MIN_PIXELS,
@@ -32,7 +32,7 @@ from nimloth.training.sft2.data.cache.schema import (
     safe_cache_name,
     transition_sample_id,
 )
-from nimloth.wm.dataset import TransitionJsonlDataset, TransitionSample
+from nimloth.rollout.transitions import TransitionJsonlDataset, TransitionSample
 
 _CACHE_PROCESSOR: AutoProcessor | None = None
 _CACHE_MAX_LENGTH = 0

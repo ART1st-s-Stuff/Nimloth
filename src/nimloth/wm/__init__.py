@@ -1,6 +1,10 @@
 """World-model utilities for Nimloth."""
 
-from nimloth.wm.dataset import TransitionSample, expand_record_transitions, load_jsonl_records
+from nimloth.rollout.transitions import (
+    TransitionSample,
+    expand_record_transitions,
+    load_jsonl_records,
+)
 from nimloth.wm.lewm import LeWMConfig, action_one_hot, freeze_module
 from nimloth.wm._vendor_lewm import SIGReg
 from nimloth.wm.predictor import LatentWMPredictor

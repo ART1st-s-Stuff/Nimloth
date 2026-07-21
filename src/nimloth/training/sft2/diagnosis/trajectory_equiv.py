@@ -17,7 +17,7 @@ from nimloth.training.sft2.diagnosis.trajectory_once import (
     supervised_token_count,
 )
 from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
-from nimloth.wm.dataset import expand_record_transitions
+from nimloth.rollout.transitions import expand_record_transitions
 
 
 @torch.no_grad()

@@ -1,4 +1,4 @@
-"""Stateful Agent runtime backed by a pluggable action policy."""
+"""由可插拔 policy 驱动、与具体环境动作语义解耦的 Agent runtime。"""
 
 from __future__ import annotations
 
@@ -9,21 +9,28 @@ from typing import Any, Protocol
 from nimloth.agent.prompt import (
     AgentTranscript,
     NimlothAgentPrompt,
-    navigation_action_name,
 )
+from nimloth.environment.common.action_space import DiscreteActionSpace
 
 
 def validate_action_log_probs(
     action_index: int,
     action_log_probs: tuple[float, ...] | list[float],
+    *,
+    action_count: int | None = None,
 ) -> tuple[float, ...]:
-    """Validate and normalize the Agent's 8-way behavior distribution."""
+    """校验 Agent behavior distribution，并保留 top-p 产生的 ``-inf``。"""
 
-    navigation_action_name(action_index)
     values = tuple(float(value) for value in action_log_probs)
-    if len(values) != 8:
+    expected_count = len(values) if action_count is None else action_count
+    if len(values) != expected_count:
         raise ValueError(
-            f"policy must return 8 action log probabilities, got {len(values)}"
+            f"policy must return {expected_count} action log probabilities, "
+            f"got {len(values)}"
+        )
+    if not 0 <= action_index < expected_count:
+        raise ValueError(
+            f"action_index must be in [0, {expected_count}), got {action_index}"
         )
     chosen = values[action_index]
     if not math.isfinite(chosen):
@@ -42,7 +49,7 @@ def validate_action_log_probs(
 
 @dataclass(frozen=True)
 class PolicyDecision:
-    """Action and behavior-distribution log probabilities returned by a policy."""
+    """Policy 返回的动作 index 与完整 behavior distribution。"""
 
     action_index: int
     action_log_probs: tuple[float, ...]
@@ -53,30 +60,37 @@ class PolicyDecision:
 
 class AgentPolicy(Protocol):
     def select_action(self, messages: list[dict[str, Any]]) -> PolicyDecision:
-        """Choose an action from one fully rendered Agent policy prompt."""
+        """根据完整渲染后的 Agent policy prompt 选择动作。"""
         ...
 
 
 @dataclass(frozen=True)
 class AgentAction:
     action_index: int
-    action_name: str
+    action_key: str
     action_log_probs: tuple[float, ...]
     response: str
     prompt_messages: tuple[dict[str, Any], ...]
 
 
-class NavigationAgent:
-    """Own one navigation episode's observations, actions, and policy calls."""
+class Agent:
+    """维护一个 episode 的 transcript，并执行 policy 调用。"""
 
     def __init__(
         self,
         *,
         policy: AgentPolicy,
+        action_space: DiscreteActionSpace,
         prompt: NimlothAgentPrompt | None = None,
     ) -> None:
         self._policy = policy
-        self._prompt = prompt or NimlothAgentPrompt()
+        self._action_space = action_space
+        self._prompt = prompt or NimlothAgentPrompt(action_count=len(action_space))
+        if self._prompt.action_count != len(action_space):
+            raise ValueError(
+                "prompt action count must match environment action space: "
+                f"{self._prompt.action_count} != {len(action_space)}"
+            )
         self._system_prompt = ""
         self._observation_texts: list[str] = []
         self._observation_images: list[Any] = []
@@ -100,7 +114,7 @@ class NavigationAgent:
 
     def reset(self, *, system_prompt: str) -> None:
         if not system_prompt.strip():
-            raise ValueError("NavigationAgent requires the environment system prompt")
+            raise ValueError("Agent requires the environment system prompt")
         self._system_prompt = system_prompt
         self._observation_texts.clear()
         self._observation_images.clear()
@@ -108,7 +122,7 @@ class NavigationAgent:
 
     def observe(self, *, text: str, image: Any) -> None:
         if not self._system_prompt:
-            raise RuntimeError("NavigationAgent.reset() must be called before observe()")
+            raise RuntimeError("Agent.reset() must be called before observe()")
         if len(self._observation_texts) != len(self._action_indices):
             raise RuntimeError("the previous observation has not been acted on")
         if "<image>" not in text:
@@ -127,10 +141,15 @@ class NavigationAgent:
             bind_images=True,
         )
         decision = self._policy.select_action(bound_messages)
+        validate_action_log_probs(
+            decision.action_index,
+            decision.action_log_probs,
+            action_count=len(self._action_space),
+        )
         self._action_indices.append(decision.action_index)
         return AgentAction(
             action_index=decision.action_index,
-            action_name=navigation_action_name(decision.action_index),
+            action_key=self._action_space.key_for(decision.action_index),
             action_log_probs=decision.action_log_probs,
             response=self._prompt.assistant_response(decision.action_index),
             prompt_messages=tuple(unbound_messages),
@@ -138,7 +157,7 @@ class NavigationAgent:
 
     def transcript(self) -> AgentTranscript:
         if not self._system_prompt:
-            raise RuntimeError("NavigationAgent has not been reset")
+            raise RuntimeError("Agent has not been reset")
         return AgentTranscript(
             system_prompt=self._system_prompt,
             observation_texts=tuple(self._observation_texts),

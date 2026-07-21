@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from nimloth.wm.dataset import NUM_NAVIGATION_ACTIONS
+from nimloth.wm.lewm import DEFAULT_ACTION_COUNT
 
 
 class ValueHead(nn.Module):
@@ -16,7 +16,7 @@ class ValueHead(nn.Module):
     def __init__(
         self,
         emb_dim: int,
-        num_actions: int = NUM_NAVIGATION_ACTIONS,
+        num_actions: int = DEFAULT_ACTION_COUNT,
         hidden_dim: int | None = None,
     ) -> None:
         super().__init__()
@@ -42,7 +42,7 @@ class ValueHead(nn.Module):
         path: Path,
         *,
         emb_dim: int,
-        num_actions: int = NUM_NAVIGATION_ACTIONS,
+        num_actions: int = DEFAULT_ACTION_COUNT,
         hidden_dim: int | None = None,
         map_location: str | torch.device = "cpu",
     ) -> "ValueHead":

@@ -32,7 +32,7 @@ from nimloth.latent import (
 )
 from nimloth.latent.extraction import LatentActionTokens
 from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
-from nimloth.wm.dataset import TransitionSample
+from nimloth.rollout.transitions import TransitionSample
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,4 @@
-"""SFT2 YAML configuration schema and argparse integration."""
+"""SFT2 YAML 配置 schema 与 argparse 接入。"""
 
 from __future__ import annotations
 
@@ -6,11 +6,9 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from nimloth.training.common.config import load_yaml_config
+from nimloth.config.io import load_yaml_config
 
 
-# SFT2 owns this schema. Generic training utilities must not know phase-specific
-# field names.
 _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("init", "sft1_checkpoint"): "model",
     ("init", "wm_predictor_checkpoint"): "wm_predictor_checkpoint",
@@ -87,7 +85,7 @@ def default_config_path() -> Path:
 
 
 def flatten_sft2_yaml_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Flatten a validated nested SFT2 YAML mapping for argparse defaults."""
+    """把校验后的嵌套 SFT2 YAML 转成 argparse 默认值。"""
 
     flat: dict[str, Any] = {}
     for section, values in config.items():

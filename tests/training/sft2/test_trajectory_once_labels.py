@@ -30,7 +30,7 @@ def test_labels_for_trajectory_steps_marks_each_assistant_span() -> None:
             {"role": "assistant", "content": "a1"},
         ],
     ]
-    from nimloth.wm.dataset import TransitionSample
+    from nimloth.rollout.transitions import TransitionSample
 
     steps = [
         TransitionSample(

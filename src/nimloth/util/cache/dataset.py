@@ -1,4 +1,4 @@
-"""Datasets and mmap-backed readers for SFT2 preprocess caches."""
+"""Qwen transition 预处理缓存的 Dataset 与 mmap reader。"""
 
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ from nimloth.training.sft2.data.batch import (
     _collate_next_encoding_bundle,
     collate_cached_encodings,
 )
-from nimloth.training.sft2.data.cache.schema import (
+from nimloth.util.cache.schema import (
     COMPACT_CACHE_FORMAT,
     safe_cache_name,
     transition_sample_id,
 )
-from nimloth.wm.dataset import TransitionSample
+from nimloth.rollout.transitions import TransitionSample
 
 class _MmapShardStore:
     """Per-DataLoader-worker LRU of mmap-backed torch shards."""

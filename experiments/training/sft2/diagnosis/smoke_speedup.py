@@ -37,13 +37,13 @@ from nimloth.training.sft2.diagnosis.trajectory_equiv import (
 from nimloth.training.sft2.diagnosis.trajectory_forward import run_equivalence_on_jsonl
 from nimloth.training.sft2.objectives import compute_combined_loss, wm_loss_weight_schedule
 from nimloth.training.sft2.data.batch import collate_cached_transition_batch
-from nimloth.training.sft2.data.cache import (
+from nimloth.util.cache import (
     encode_transition_item,
 )
 from nimloth.training.sft2.step import compute_step_value_loss, compute_step_wm_loss
 from nimloth.wm import LatentWMPredictor, LeWMConfig, StateProjector, ValueHead
 from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
-from nimloth.wm.dataset import TransitionJsonlDataset, load_jsonl_records
+from nimloth.rollout.transitions import TransitionJsonlDataset, load_jsonl_records
 
 
 def _tensor_equal(a: torch.Tensor, b: torch.Tensor) -> bool:

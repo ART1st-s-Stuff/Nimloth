@@ -1,15 +1,16 @@
-"""Common environment interfaces and types.
+"""Agent runner 使用的公共 environment 类型。"""
 
-Provides the abstract :class:`BaseEnvManager` and shared data structures
-(:class:`StepResult`, :class:`EnvConfig`, :class:`TrajectoryRecording`).
-"""
-
-from nimloth.environment.common.base import BaseEnvManager
-from nimloth.environment.common.types import EnvConfig, StepResult, TrajectoryRecording
+from nimloth.environment.common.action_space import ActionSpec, DiscreteActionSpace
+from nimloth.environment.common.session import (
+    EnvironmentObservation,
+    EnvironmentSession,
+    EnvironmentStep,
+)
 
 __all__ = [
-    "BaseEnvManager",
-    "EnvConfig",
-    "StepResult",
-    "TrajectoryRecording",
+    "ActionSpec",
+    "DiscreteActionSpace",
+    "EnvironmentObservation",
+    "EnvironmentSession",
+    "EnvironmentStep",
 ]

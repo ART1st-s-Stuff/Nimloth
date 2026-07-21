@@ -1,5 +1,5 @@
 from nimloth.training.sft2.data.samplers import TrajectoryAwareBatchSampler
-from nimloth.wm.dataset import TransitionSample
+from nimloth.rollout.transitions import TransitionSample
 
 
 def _sample(record_id: str, step: int) -> TransitionSample:

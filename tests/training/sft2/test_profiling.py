@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nimloth.training.sft2.profiling import StepTimer
+from nimloth.util.profiling import StepTimer
 
 
 def test_step_timer_disabled_is_noop() -> None:

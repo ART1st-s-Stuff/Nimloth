@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Collect RL-compatible navigation trajectories with the Nimloth policy.
+"""使用 Nimloth policy 采集可供 RL 使用的 navigation trajectory。
 
-This is the rollout producer for distributed JSONL training.  It reuses
-``EnvRolloutCollector`` so online and two-stage rollout use the same Nimloth
-special-token action policy and emit the same trajectory schema.
+这是分布式 JSONL 训练使用的 rollout producer。在线采集与两阶段采集共享同一
+套 Agent runner、动作 policy 和 trajectory schema。
 """
 
 from __future__ import annotations
@@ -46,11 +45,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def load_qwen(model_path: Path, attn_implementation: str, max_pixels: int):
-    """Load the rollout policy and its processor on the current CUDA device."""
+    """在当前 CUDA device 上加载 rollout policy 及 processor。"""
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
+    from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
     from nimloth.latent import add_special_tokens
-    from nimloth.training.rl.rollout import validate_rl_policy_protocol
 
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
@@ -65,13 +64,13 @@ def load_qwen(model_path: Path, attn_implementation: str, max_pixels: int):
     )
     if n_added:
         model.resize_token_embeddings(len(processor.tokenizer))
-    validate_rl_policy_protocol(model.config)
+    validate_agent_policy_protocol(model.config)
     model.eval().cuda()
     return model, processor
 
 
 def validate_split(eval_set: str, split: str) -> None:
-    """Prevent evaluation assets from being mislabeled as training data."""
+    """防止 evaluation 数据集被错误标记为训练数据。"""
     if split == "train" and not eval_set.endswith("_train"):
         raise ValueError(f"refusing to label eval dataset {eval_set!r} as training data")
     if split != "train" and eval_set.endswith("_train"):
@@ -79,8 +78,8 @@ def validate_split(eval_set: str, split: str) -> None:
 
 
 def validate_trajectories(records) -> None:
-    """Reject incomplete records before they can enter FSDP training."""
-    from nimloth.training.rl.rollout import validate_rollout_trajectory
+    """在 trajectory 进入 FSDP 训练前拒绝不完整记录。"""
+    from nimloth.rollout import validate_rollout_trajectory
 
     if not records:
         raise RuntimeError("rollout produced no complete trajectories")
@@ -104,12 +103,12 @@ def main(argv: list[str] | None = None) -> int:
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
 
-    from nimloth.training.rl.rollout import EnvRolloutCollector
+    from nimloth.rollout import VAGENNavigationRolloutCollector
 
     model, processor = load_qwen(
         args.model, args.attn_implementation, args.max_pixels
     )
-    collector = EnvRolloutCollector(
+    collector = VAGENNavigationRolloutCollector(
         qwen_model=model,
         processor=processor,
         env_url=args.env_url,

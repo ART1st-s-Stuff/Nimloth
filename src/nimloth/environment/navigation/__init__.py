@@ -1,11 +1,13 @@
-"""AI2-THOR navigation environment manager.
+"""Navigation 动作空间和 VAGEN session。"""
 
-Wraps VAGEN's ``NavigationService`` with a clean Nimloth-native interface,
-including action-index mapping and trajectory recording.
-"""
-
-from nimloth.environment.navigation.manager import NavigationEnvManager
+from nimloth.environment.navigation.action_space import NAVIGATION_ACTION_SPACE
+from nimloth.environment.navigation.vagen import (
+    VAGENNavigationSession,
+    instruction_from_observation,
+)
 
 __all__ = [
-    "NavigationEnvManager",
+    "NAVIGATION_ACTION_SPACE",
+    "VAGENNavigationSession",
+    "instruction_from_observation",
 ]

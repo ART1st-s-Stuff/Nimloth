@@ -12,16 +12,20 @@ from torch.utils.data import Dataset
 from transformers import AutoProcessor
 
 from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
-from nimloth.training.common.dist import is_main
-from nimloth.training.sft2.data.cache import build as cache_build
-from nimloth.training.sft2.data.cache.schema import (
+from nimloth.util.distributed import is_main
+from nimloth.util.cache import build as cache_build
+from nimloth.util.cache.schema import (
     CE_MASK_VERSION,
     DEFAULT_MIN_PIXELS,
     TRANSITION_EXPANSION_VERSION,
     cache_fingerprint,
     safe_cache_name,
 )
-from nimloth.wm.dataset import TransitionSample, expand_record_transitions, load_jsonl_records
+from nimloth.rollout.transitions import (
+    TransitionSample,
+    expand_record_transitions,
+    load_jsonl_records,
+)
 
 def encode_trajectory_record(
     record: dict[str, Any],

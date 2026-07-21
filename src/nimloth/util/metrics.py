@@ -1,4 +1,4 @@
-"""Simple metric accumulation for training logs."""
+"""训练和评估循环共享的指标累计。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class MetricAccumulator:
             self.counts[key] = self.counts.get(key, 0) + count
 
     def averages(self) -> dict[str, float]:
-        return {k: self.sums[k] / max(1, self.counts[k]) for k in self.sums}
+        return {key: self.sums[key] / max(1, self.counts[key]) for key in self.sums}
 
     def reset(self) -> None:
         self.sums.clear()

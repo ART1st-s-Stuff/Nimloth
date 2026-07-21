@@ -1,4 +1,4 @@
-"""Online RL training loop: rollout → encode → train → repeat.
+"""RL 阶段训练循环：rollout → encode → train → repeat。
 
 Qwen model loading is handled inside ``train_rl`` via
 ``configure_qwen_tuning`` (supports LLM freeze/lora/full +
@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -21,8 +20,10 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-from nimloth.agent import PROMPT_VERSION, bind_image_placeholders
-from nimloth.backbone.qwen25vl.policy import batch_action_log_probs
+from nimloth.config.rl import RLConfig
+from nimloth.backbone.qwen25vl.policy import (
+    validate_agent_policy_protocol,
+)
 from nimloth.backbone.qwen25vl.tuning import (
     configure_qwen_tuning,
     resolve_tune_modes,
@@ -30,190 +31,19 @@ from nimloth.backbone.qwen25vl.tuning import (
 )
 from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA, resolve_vision_ema
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
 from nimloth.training.rl.checkpoint import (
     load_lora_adapter_state,
     load_rl_wm_checkpoint,
     save_rl_checkpoint,
 )
 from nimloth.training.rl.loss import compute_predictor_loss, compute_value_loss
-from nimloth.training.rl.rollout import (
-    RolloutCollector,
-    RolloutTrajectory,
-    validate_rl_policy_protocol,
-    validate_rollout_trajectory,
-)
-from nimloth.wm.dataset import discounted_action_value_targets
+from nimloth.rollout import RolloutCollector, encode_rollout_transitions
+from nimloth.training.rl.actor import compute_current_policy_log_probs
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
-
-
-# ---------------------------------------------------------------------------
-# Latent encoding (Qwen → hidden states)
-# ---------------------------------------------------------------------------
-
-
-def encode_trajectory_hiddens(
-    trajectory: RolloutTrajectory,
-    qwen_model: torch.nn.Module,
-    processor: Any,
-    token_id_map: dict[str, int],
-    device: torch.device,
-) -> list[torch.Tensor]:
-    """Run Qwen on each policy-state prefix and return hidden states.
-
-    Returns:
-        List of ``(hidden_dim,)`` tensors, one per frame (len = num_steps + 1).
-    """
-    from nimloth.latent.extraction import (
-        LatentActionTokens,
-        extract_latent_state,
-        find_last_latent_state_index,
-        last_hidden_state,
-    )
-    from nimloth.backbone.qwen25vl.batch import build_qwen_batch
-
-    states: list[torch.Tensor] = []
-    tokens = LatentActionTokens()
-
-    if trajectory.prompt_version != PROMPT_VERSION:
-        raise ValueError(
-            f"trajectory {trajectory.record_id!r} uses prompt_version "
-            f"{trajectory.prompt_version!r}; expected {PROMPT_VERSION!r}"
-        )
-    if not trajectory.system_prompt or not trajectory.observation_texts:
-        raise ValueError(
-            f"trajectory {trajectory.record_id!r} has no structured Agent transcript"
-        )
-    for step_index in range(len(trajectory.image_paths)):
-        messages = trajectory.build_policy_messages(
-            step_index,
-            bind_images=True,
-        )
-        item = {"messages": messages}
-        enc = build_qwen_batch(
-            [item],
-            processor,
-            max_length=999999,  # effectively no truncation
-            latent_token_count=trajectory.latent_token_count,
-        )
-        model_inputs = {k: v.to(device) for k, v in enc.items()}
-        with torch.no_grad():
-            output = qwen_model(**model_inputs, output_hidden_states=True, return_dict=True)
-        hidden = last_hidden_state(output)
-        latent_idx = find_last_latent_state_index(
-            enc["input_ids"][0], token_id_map, tokens
-        )
-        latent = extract_latent_state(hidden[0:1], latent_idx)  # (1, hidden_dim)
-        states.append(latent.squeeze(0).detach().cpu())
-
-    return states
-
-
-# ---------------------------------------------------------------------------
-# Transition builder
-# ---------------------------------------------------------------------------
-
-
-def build_rl_transitions(
-    trajectories: list[RolloutTrajectory],
-    qwen_model: torch.nn.Module,
-    processor: Any,
-    token_id_map: dict[str, int],
-    device: torch.device,
-    gamma: float = 0.99,
-) -> list[dict[str, Any]]:
-    """Encode trajectories → list of transition dicts (CPU tensors)."""
-
-    transitions: list[dict[str, Any]] = []
-    for traj in trajectories:
-        validate_rollout_trajectory(traj)
-        hiddens = encode_trajectory_hiddens(
-            traj, qwen_model, processor, token_id_map, device
-        )
-        if len(hiddens) < 2:
-            continue
-
-        record = traj.to_record()
-        value_targets = discounted_action_value_targets(record, gamma=gamma)
-
-        for t in range(traj.num_steps):
-            expected_messages = traj.build_policy_messages(t, bind_images=False)
-            log_probs = traj.action_log_probs[t]
-            old_lp = float(log_probs[traj.action_indices[t]])
-
-            transitions.append({
-                "qwen_hidden_current": hiddens[t],
-                "qwen_hidden_next": hiddens[t + 1],
-                "action_index": torch.tensor(traj.action_indices[t], dtype=torch.long),
-                "value_target": torch.tensor(
-                    value_targets[t] if t < len(value_targets) else 0.0,
-                    dtype=torch.float32,
-                ),
-                "old_log_prob": old_lp,
-                "policy_messages": expected_messages,
-                "policy_image_paths": traj.image_paths[: t + 1],
-                "sampling_temperature": traj.sampling_temperature,
-                "sampling_top_p": traj.sampling_top_p,
-                "latent_token_count": traj.latent_token_count,
-            })
-
-    return transitions
-
-
-# ---------------------------------------------------------------------------
-# PPO forward pass (Qwen with gradients)
-# ---------------------------------------------------------------------------
-
-def compute_new_log_probs_for_batch(
-    ppo_items: list[dict],
-    model,
-    processor,
-    token_id_map: dict[str, int],
-    device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run Qwen forward with gradients and return transformed log probabilities.
-
-    Each ppo_item must have:
-        - "policy_messages": exact unbound prompt recorded during rollout
-        - "policy_image_paths": ordered images for all prompt placeholders
-        - "taken_action_idx": the action that was actually taken
-
-    Returns `(new_log_probs, action_log_probs)` where:
-        new_log_probs: (B,) log-prob of taken actions under current policy
-        action_log_probs: (B, 8) current behavior-distribution log probabilities
-    """
-    if not ppo_items:
-        raise ValueError("PPO policy batch must not be empty")
-    latent_token_counts = {
-        int(item.get("latent_token_count", 1)) for item in ppo_items
-    }
-    if len(latent_token_counts) != 1:
-        raise ValueError("one PPO batch cannot mix latent token counts")
-    bound_messages = [
-        bind_image_placeholders(
-            item["policy_messages"],
-            item["policy_image_paths"],
-        )
-        for item in ppo_items
-    ]
-    return batch_action_log_probs(
-        model=model,
-        processor=processor,
-        token_id_map=token_id_map,
-        messages=bound_messages,
-        taken_action_indices=[int(item["taken_action_idx"]) for item in ppo_items],
-        temperatures=[float(item["sampling_temperature"]) for item in ppo_items],
-        top_ps=[float(item["sampling_top_p"]) for item in ppo_items],
-        device=device,
-        latent_token_count=latent_token_counts.pop(),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Trainer
-# ---------------------------------------------------------------------------
+from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
+from nimloth.util.wandb import init_wandb_run
 
 
 def _unwrap(m: torch.nn.Module) -> torch.nn.Module:
@@ -224,49 +54,6 @@ def _freeze(module: torch.nn.Module) -> None:
     module.eval()
     for p in module.parameters():
         p.requires_grad = False
-
-
-def _maybe_init_wandb(
-    *,
-    rank: int,
-    output_dir: Path,
-    args: argparse.Namespace,
-    config: dict[str, Any],
-):
-    """Initialize one resumable W&B run after distributed rank is known."""
-
-    if rank != 0:
-        return None
-    mode = os.environ.get("WANDB_MODE", "online")
-    if mode != "disabled" and not os.environ.get("WANDB_API_KEY"):
-        print(json.dumps({"wandb": "skipped", "reason": "WANDB_API_KEY not set"}))
-        return None
-
-    import wandb
-
-    run_id_path = output_dir / "wandb_run_id.txt"
-    requested_run_id = os.environ.get("WANDB_RUN_ID")
-    if requested_run_id is None and run_id_path.is_file():
-        requested_run_id = run_id_path.read_text(encoding="utf-8").strip() or None
-    run = wandb.init(
-        project=os.environ.get("WANDB_PROJECT", "nimloth-rl"),
-        entity=os.environ.get("WANDB_ENTITY"),
-        name=os.environ.get("WANDB_RUN_NAME") or args.experiment_name,
-        id=requested_run_id,
-        resume="allow" if requested_run_id is not None else None,
-        mode=mode,
-        config=config,
-        dir=os.environ.get("WANDB_DIR"),
-    )
-    run_id_path.write_text(f"{run.id}\n", encoding="utf-8")
-    wandb.define_metric("global_step")
-    wandb.define_metric("train/*", step_metric="global_step")
-    print(json.dumps({
-        "wandb": "initialized",
-        "run_id": run.id,
-        "resume": requested_run_id is not None,
-    }))
-    return run
 
 
 def _broadcast_module_state(module: torch.nn.Module, src: int = 0) -> None:
@@ -288,66 +75,55 @@ def _broadcast_module_state(module: torch.nn.Module, src: int = 0) -> None:
 def train_rl(
     *,
     args: argparse.Namespace,
-    config: dict[str, Any],
+    config: RLConfig,
     state_proj: StateProjector,
     wm_predictor: LatentWMPredictor,
     value_head: ValueHead,
-    collector: RolloutCollector,
+    train_collector: RolloutCollector,
+    eval_collector: RolloutCollector | None,
     output_dir: Path,
 ) -> int:
-    """Run the online RL training loop."""
+    """运行 RL 阶段训练循环。"""
 
-    # --- unpack config -------------------------------------------------------
-    rl_cfg: dict = config.get("rl", {})
-    freeze_cfg: dict = config.get("freeze", {})
-    pred_cfg: dict = config.get("predictor", {})
-    vh_cfg: dict = config.get("value_head", {})
-    val_cfg: dict = config.get("validation", {})
-    train_cfg: dict = config.get("training", {})
-
-    iterations: int = rl_cfg.get("iterations", 1000)
-    envs_per_iter: int = rl_cfg.get("envs_per_iteration", 8)
-    max_steps_per_ep: int = rl_cfg.get("max_steps_per_episode", 20)
-    gamma: float = rl_cfg.get("gamma", 0.99)
-    batch_size: int = rl_cfg.get("batch_size", 32)
-    # One optimizer step per iteration → 1 iteration = 1 global_step.
-
-    pred_lr: float = float(pred_cfg.get("lr", 1e-3))
-    vh_lr: float = float(vh_cfg.get("lr", 1e-3))
-    rank_margin: float = vh_cfg.get("rank_margin", 0.1)
-    lambda_rank: float = vh_cfg.get("lambda_rank", 1.0)
-
-    # Actor (Qwen PPO) config
-    actor_cfg: dict = config.get("actor", {})
-    actor_enabled: bool = bool(actor_cfg) and not freeze_cfg.get("qwen", True)
-    actor_lr: float = float(actor_cfg.get("lr", 1e-6))
-    entropy_coeff: float = float(actor_cfg.get("entropy_coeff", 0.0))
-    clip_ratio: float = float(actor_cfg.get("clip_ratio", 0.2))
-
-    # Config-controlled freeze is advisory — actual tuning is via --llm-tune / --vision-tune
-    freeze_qwen: bool = freeze_cfg.get("qwen", True)
-    freeze_state_proj: bool = freeze_cfg.get("state_proj", True)
-
-    log_interval: int = train_cfg.get("log_interval", 10)
-    save_interval: int = train_cfg.get("save_interval", 50)
-    val_enabled: bool = val_cfg.get("enabled", True)
-    val_interval: int = val_cfg.get("interval", 50)
-    val_envs: int = val_cfg.get("envs", 16)
-    seed: int = train_cfg.get("seed", 42)
+    iterations = config.rl.iterations
+    envs_per_iter = config.rl.envs_per_iteration
+    max_steps_per_ep = config.rl.max_steps_per_episode
+    gamma = config.rl.gamma
+    batch_size = config.rl.batch_size
+    pred_lr = config.predictor.lr
+    vh_lr = config.value_head.lr
+    rank_margin = config.value_head.rank_margin
+    lambda_rank = config.value_head.lambda_rank
+    actor_lr = config.actor.lr
+    entropy_coeff = config.actor.entropy_coeff
+    clip_ratio = config.actor.clip_ratio
+    freeze_state_proj = config.freeze.state_proj
+    log_interval = config.training.log_interval
+    save_interval = config.training.save_interval
+    val_enabled = config.validation.enabled
+    val_interval = config.validation.interval
+    val_envs = config.validation.envs
+    seed = config.training.seed
 
     # --- tuning modes --------------------------------------------------------
     llm_tune, vision_tune = resolve_tune_modes(args)
+    actor_enabled = llm_tune != "freeze" or vision_tune != "freeze"
     vision_ema_enabled = resolve_vision_ema(args, vision_tune)
+    if val_enabled and eval_collector is None:
+        raise ValueError("validation.enabled requires a separate eval collector")
 
     # --- distributed setup ---------------------------------------------------
     rank, world, local_rank, device = setup_dist()
     output_dir.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(seed)
-    wandb_run = _maybe_init_wandb(
+    wandb_run = init_wandb_run(
         rank=rank,
         output_dir=output_dir,
-        args=args,
-        config=config,
+        enabled=True,
+        default_project="nimloth-rl",
+        run_name=args.experiment_name,
+        config=config.to_dict(),
+        metric_definitions=(("global_step", None), ("train/*", "global_step")),
     )
 
     # --- Qwen model loading --------------------------------------------------
@@ -369,7 +145,7 @@ def train_rl(
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
     )
-    validate_rl_policy_protocol(model.config)
+    validate_agent_policy_protocol(model.config)
     model_vocab_before = model.get_input_embeddings().weight.shape[0]
     # Log model embedding info before resize
     embed = model.get_input_embeddings()
@@ -439,24 +215,30 @@ def train_rl(
 
     model.to(device)
 
-    # --- Wire up EnvRolloutCollector with loaded model -----------------------
-    from nimloth.training.rl.rollout import EnvRolloutCollector
-    if isinstance(collector, EnvRolloutCollector):
+    # 在线采集器复用 trainer 已加载的模型；多卡仍需使用独立 rollout 进程。
+    from nimloth.rollout import VAGENNavigationRolloutCollector
+
+    online_collectors = [
+        candidate
+        for candidate in (train_collector, eval_collector)
+        if isinstance(candidate, VAGENNavigationRolloutCollector)
+    ]
+    if online_collectors:
         if world > 1:
             raise RuntimeError(
-                "分布式/FSDP trainer 不能直接让 EnvRolloutCollector 使用 FSDP-wrapped Qwen "
+                "分布式/FSDP trainer 不能直接让在线 rollout collector 使用 "
+                "FSDP-wrapped Qwen "
                 "做动态 env rollout。各 rank 的 episode 长度、图片数、失败时机不同，会导致 "
                 "FSDP forward 触碰次数和形状不一致，可能 deadlock 或错误训练。\n"
                 "请先使用独立 rollout backend（如 experiments/training/rl/rollout_env.py）"
                 "生成 JSONL 文件，再用 --use-jsonl-rollout --jsonl-sources 指定 JSONL 路径训练。"
             )
-        collector.bind_policy(model, processor, device)
+        for online_collector in online_collectors:
+            online_collector.bind_policy(model, processor, device)
         if is_main():
             print(json.dumps({"env_collector": "wired", "device": str(device)}))
 
     # --- freeze WM-encoding pathway if requested -----------------------------
-    if freeze_qwen and llm_tune == "freeze" and vision_tune == "freeze":
-        _freeze(model)
     if freeze_state_proj:
         _freeze(state_proj)
 
@@ -577,7 +359,7 @@ def train_rl(
         if is_main():
             print(json.dumps({"iteration": iteration, "phase": "rollout",
                               "num_episodes": envs_per_iter}))
-        trajectories = collector.collect(
+        trajectories = train_collector.collect(
             num_episodes=envs_per_iter,
             max_steps_per_episode=max_steps_per_ep,
             output_dir=output_dir / f"rollouts/iter_{iteration:04d}",
@@ -593,8 +375,13 @@ def train_rl(
             continue
 
         # 2. Encode → transitions ------------------------------------------------
-        transitions = build_rl_transitions(
-            trajectories, model, processor, token_id_map, device, gamma=gamma,
+        transitions = encode_rollout_transitions(
+            trajectories,
+            model,
+            processor,
+            token_id_map,
+            device,
+            gamma=gamma,
         )
         # Free GPU memory before PPO forward (Qwen+LoRA+gradients needs extra VRAM)
         torch.cuda.empty_cache()
@@ -614,10 +401,22 @@ def train_rl(
         indices = torch.randperm(len(transitions), generator=g)[:batch_size]
         batch = [transitions[i] for i in indices]
 
-        hidden_cur = torch.stack([b["qwen_hidden_current"] for b in batch]).to(device)
-        hidden_next = torch.stack([b["qwen_hidden_next"] for b in batch]).to(device)
-        actions = torch.stack([b["action_index"] for b in batch]).to(device)
-        value_targets = torch.stack([b["value_target"] for b in batch]).to(device)
+        hidden_cur = torch.stack(
+            [transition.qwen_hidden_current for transition in batch]
+        ).to(device)
+        hidden_next = torch.stack(
+            [transition.qwen_hidden_next for transition in batch]
+        ).to(device)
+        actions = torch.tensor(
+            [transition.action_index for transition in batch],
+            dtype=torch.long,
+            device=device,
+        )
+        value_targets = torch.tensor(
+            [transition.value_target for transition in batch],
+            dtype=torch.float32,
+            device=device,
+        )
 
         pred_loss, pred_metrics = compute_predictor_loss(
             qwen_hidden_current=hidden_cur,
@@ -658,25 +457,16 @@ def train_rl(
             # unbiased=False 避免 batch size=1 时 std 产生 NaN
             advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
 
-            # Build PPO items
-            ppo_items = []
-            for i in range(len(batch)):
-                b = batch[i]
-                ppo_items.append({
-                    "policy_messages": b["policy_messages"],
-                    "policy_image_paths": b["policy_image_paths"],
-                    "sampling_temperature": b["sampling_temperature"],
-                    "sampling_top_p": b["sampling_top_p"],
-                    "latent_token_count": b["latent_token_count"],
-                    "taken_action_idx": int(b["action_index"].item()),
-                })
-
-            # Qwen forward with gradients
-            new_log_probs, action_log_probs = compute_new_log_probs_for_batch(
-                ppo_items, model, processor, token_id_map, device,
+            # 使用 rollout 保存的精确 prompt 和采样参数重放当前 policy。
+            new_log_probs, action_log_probs = compute_current_policy_log_probs(
+                batch,
+                model,
+                processor,
+                token_id_map,
+                device,
             )
             old_log_probs = torch.tensor(
-                [b["old_log_prob"] for b in batch],
+                [transition.old_log_prob for transition in batch],
                 device=new_log_probs.device, dtype=new_log_probs.dtype,
             )
 
@@ -722,7 +512,8 @@ def train_rl(
 
         # --- validation rollout -------------------------------------------------
         if val_enabled and iteration % val_interval == 0:
-            val_trajectories = collector.collect(
+            assert eval_collector is not None
+            val_trajectories = eval_collector.collect(
                 num_episodes=val_envs,
                 max_steps_per_episode=max_steps_per_ep,
                 output_dir=output_dir / f"rollouts/val_{iteration:04d}",

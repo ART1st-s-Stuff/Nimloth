@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch
 import torch.distributed as dist
 
-from nimloth.training.common.metrics import MetricAccumulator
 from nimloth.training.sft2.engine import SFT2StepRunner
+from nimloth.util.metrics import MetricAccumulator
 
 
 def merge_metric_accumulators(

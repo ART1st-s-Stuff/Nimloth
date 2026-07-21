@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nimloth.wm.dataset import load_jsonl_records
+from nimloth.rollout.transitions import load_jsonl_records
 
 
 def dataset_rollout_success_rate(jsonl_path: Path, *, max_records: int = -1) -> float:

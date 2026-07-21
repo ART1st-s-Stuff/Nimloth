@@ -29,7 +29,7 @@ from nimloth.training.sft2.diagnosis.trajectory_once import (
     find_step_latent_indices,
 )
 from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
-from nimloth.wm.dataset import TransitionSample
+from nimloth.rollout.transitions import TransitionSample
 
 
 def _assistant_content(step: int) -> str:

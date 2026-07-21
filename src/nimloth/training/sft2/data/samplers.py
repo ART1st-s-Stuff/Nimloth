@@ -14,7 +14,7 @@ from collections.abc import Iterator, Sequence
 
 from torch.utils.data import Dataset, Sampler
 
-from nimloth.wm.dataset import TransitionSample
+from nimloth.rollout.transitions import TransitionSample
 
 
 class TrajectoryAwareBatchSampler(Sampler[list[int]]):

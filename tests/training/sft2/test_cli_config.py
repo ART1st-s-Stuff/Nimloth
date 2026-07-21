@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from nimloth.training.sft2.cli import parse_sft2_args
-from nimloth.training.sft2.config import flatten_sft2_yaml_config
+from nimloth.config.sft2 import flatten_sft2_yaml_config
 
 
 ROOT = Path(__file__).resolve().parents[3]

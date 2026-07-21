@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import math
 
-from nimloth.agent import NavigationAgent, PolicyDecision
+from nimloth.agent import Agent, PolicyDecision
+from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
 
 
 class _RecordingPolicy:
@@ -19,7 +20,7 @@ class _RecordingPolicy:
 
 def test_navigation_agent_runs_real_history_through_one_policy() -> None:
     policy = _RecordingPolicy()
-    agent = NavigationAgent(policy=policy)
+    agent = Agent(policy=policy, action_space=NAVIGATION_ACTION_SPACE)
     agent.reset(system_prompt="system")
 
     agent.observe(text="first <image>", image="image-0")
@@ -27,8 +28,8 @@ def test_navigation_agent_runs_real_history_through_one_policy() -> None:
     agent.observe(text="second <image>", image="image-1")
     second = agent.act()
 
-    assert first.action_name == "moveahead"
-    assert second.action_name == "moveback"
+    assert first.action_key == "moveahead"
+    assert second.action_key == "moveback"
     second_images = [
         part["image"]
         for message in policy.prompts[1]
@@ -43,7 +44,10 @@ def test_navigation_agent_runs_real_history_through_one_policy() -> None:
 
 
 def test_navigation_agent_serializes_only_completed_turns() -> None:
-    agent = NavigationAgent(policy=_RecordingPolicy())
+    agent = Agent(
+        policy=_RecordingPolicy(),
+        action_space=NAVIGATION_ACTION_SPACE,
+    )
     agent.reset(system_prompt="system")
     agent.observe(text="first <image>", image="image-0")
     action = agent.act()

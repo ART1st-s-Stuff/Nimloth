@@ -5,7 +5,7 @@ from pathlib import Path
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from nimloth.training.common.metrics import MetricAccumulator
+from nimloth.util.metrics import MetricAccumulator
 from nimloth.training.sft2.data.samplers import DistributedEvalSampler
 from nimloth.training.sft2.evaluate import (
     distributed_metric_averages,

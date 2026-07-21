@@ -22,7 +22,7 @@ from nimloth.latent import (
     special_token_ids,
 )
 from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
-from nimloth.wm.dataset import (
+from nimloth.rollout.transitions import (
     NUM_NAVIGATION_ACTIONS,
     TransitionSample,
     expand_record_transitions,

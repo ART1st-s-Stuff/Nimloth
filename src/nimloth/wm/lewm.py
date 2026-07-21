@@ -8,8 +8,11 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from nimloth.latent import LatentActionTokens
 from nimloth.wm._vendor_lewm import ARPredictor, Embedder, MLP, SIGReg
-from nimloth.wm.dataset import NUM_NAVIGATION_ACTIONS
+
+
+DEFAULT_ACTION_COUNT = len(LatentActionTokens().action_tokens)
 
 __all__ = [
     "ARPredictor",
@@ -79,7 +82,7 @@ class LeWMConfig:
     """
 
     emb_dim: int = 1024
-    action_dim: int = NUM_NAVIGATION_ACTIONS
+    action_dim: int = DEFAULT_ACTION_COUNT
     predictor_depth: int = 6
     predictor_heads: int = 16
     predictor_mlp_dim: int = 4096
@@ -92,7 +95,10 @@ class LeWMConfig:
     sigreg_knots: int = 17
 
 
-def action_one_hot(indices: torch.Tensor, num_actions: int = NUM_NAVIGATION_ACTIONS) -> torch.Tensor:
+def action_one_hot(
+    indices: torch.Tensor,
+    num_actions: int = DEFAULT_ACTION_COUNT,
+) -> torch.Tensor:
     """indices: (B,) int64 -> (B, 1, num_actions) float."""
 
     one_hot = F.one_hot(indices.long(), num_classes=num_actions).float()

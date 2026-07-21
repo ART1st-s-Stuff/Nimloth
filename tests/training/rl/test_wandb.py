@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import sys
-from types import SimpleNamespace
 
-from nimloth.training.rl.trainer import _maybe_init_wandb
+from nimloth.util.wandb import init_wandb_run
 
 
 class _Run:
@@ -36,13 +35,21 @@ def test_wandb_initializes_only_rank_zero_and_persists_resume_id(
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setenv("WANDB_API_KEY", "test")
     monkeypatch.setenv("WANDB_PROJECT", "nimloth-rl")
-    args = SimpleNamespace(experiment_name="1_smoke_rl")
-
-    assert _maybe_init_wandb(
-        rank=1, output_dir=tmp_path, args=args, config={}
+    assert init_wandb_run(
+        rank=1,
+        output_dir=tmp_path,
+        enabled=True,
+        default_project="nimloth-rl",
+        run_name="1_smoke_rl",
+        config={},
     ) is None
-    run = _maybe_init_wandb(
-        rank=0, output_dir=tmp_path, args=args, config={"rl": {"iterations": 1}}
+    run = init_wandb_run(
+        rank=0,
+        output_dir=tmp_path,
+        enabled=True,
+        default_project="nimloth-rl",
+        run_name="1_smoke_rl",
+        config={"rl": {"iterations": 1}},
     )
     assert run is not None
     assert (tmp_path / "wandb_run_id.txt").read_text().strip() == "rlrun123"
@@ -50,6 +57,13 @@ def test_wandb_initializes_only_rank_zero_and_persists_resume_id(
     assert fake.init_calls[0]["id"] is None
     assert fake.init_calls[0]["resume"] is None
 
-    _maybe_init_wandb(rank=0, output_dir=tmp_path, args=args, config={})
+    init_wandb_run(
+        rank=0,
+        output_dir=tmp_path,
+        enabled=True,
+        default_project="nimloth-rl",
+        run_name="1_smoke_rl",
+        config={},
+    )
     assert fake.init_calls[1]["id"] == "rlrun123"
     assert fake.init_calls[1]["resume"] == "allow"

@@ -19,7 +19,7 @@ from nimloth.latent import (
     install_query_embedding_adapter,
     latent_state_tokens,
 )
-from nimloth.training.common.dist import is_main
+from nimloth.util.distributed import is_main
 from nimloth.training.sft2.checkpoint import load_aux_checkpoint, load_lora_adapter_state
 from nimloth.wm import LeWMConfig, LatentWMPredictor, SIGReg, StateProjector, ValueHead
 

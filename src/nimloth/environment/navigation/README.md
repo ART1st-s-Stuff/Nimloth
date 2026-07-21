@@ -1,56 +1,14 @@
-# Navigation Environment Manager
+# Navigation environment
 
-Wraps VAGEN's `NavigationService` (AI2-THOR) with Nimloth-native recording.
+本包定义 navigation 动作空间，并把 VAGEN server 的单个 episode 适配为
+Nimloth `EnvironmentSession`。轨迹记录由 `nimloth.rollout` 负责。
 
-## Architecture
+## 模块
 
-```
-NavigationEnvManager (this module)
-└── VAGEN NavigationService (ThreadPool-based batch env management)
-    └── VAGEN NavigationEnv × N (single AI2-THOR instance each)
-```
+- `action_space.py`：navigation 动作 key、别名和稳定 index。
+- `vagen.py`：observation 解码、环境配置、reward/success 与 session 生命周期。
 
-## Usage
+## 调用关系
 
-```python
-from nimloth.environment import NavigationEnvManager, EnvConfig
-
-mgr = NavigationEnvManager(
-    output_dir="/tmp/rollouts",
-    gpu_devices=[0],
-)
-
-# Reset with task configs
-configs = [
-    EnvConfig(
-        env_name="navigation",
-        env_config={"eval_set": "base", "prompt_format": "nimloth", ...},
-        seed=42,
-    ),
-]
-obs_list = mgr.reset(configs)
-
-# Record initial image for each env
-for i, obs in enumerate(obs_list):
-    mgr.start_recording(i, system_prompt="...")
-    mgr.save_initial_image(i, obs["obs"])
-
-# Interact
-while mgr.active_env_ids():
-    actions = ["<|action_(0)|>"] * len(mgr.active_env_ids())
-    results = mgr.step(actions)
-
-# Get trajectories in Nimloth format
-trajectories = mgr.get_trajectories()
-# → list[TrajectoryRecording] with image_paths, action_indices, messages
-mgr.close()
-```
-
-## Recording Format
-
-Each `TrajectoryRecording` follows the Nimloth convention:
-
-- `image_paths[t]` — observation before action t
-- `action_indices[t]` — action index 0-7
-- `messages` — system + alternating user/assistant turns
-- `success`, `reward` — episode-level
+`EpisodeRunner` 调用 `VAGENNavigationSession`；online rollout collector 只负责
+批量选择任务、保存图片和构造统一 trajectory。训练代码不直接调用 VAGEN client。

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from nimloth.training.common.config import load_yaml_config
+from nimloth.config import load_yaml_config
 
 _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("data", "train_jsonl"): "train_jsonl",
