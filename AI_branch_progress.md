@@ -4,15 +4,30 @@
 
 ---
 
+## 2026-07-21：建立完整 Nimloth 模型边界
+
+- 人类指出上一轮核心算法重构仍把模型拆散传递，新增的 `Algorithm/Components`
+  更接近 service object，未形成深度学习项目应有的完整 `nn.Module`。
+- 新增 `NimlothModel(llm, wm)`；其中 `WorldModel` 继续使用项目既有命名
+  `state_proj / wm_predictor / value_head`，没有执行命名迁移。
+- 公共 dynamics/value loss 改为 `WorldModel` 成员方法；SFT2 的 WM/SIGReg 和
+  loss weighting、RL 的 PPO loss 改为现有运行期对象的成员行为，删除
+  `wm/objectives.py` 和只包装 metrics 的 `RLUpdateResult`。
+- SFT2/RL 的 components、checkpoint、rollout encoding 和 trainer 现在从同一个
+  `NimlothModel` 访问模块；`QwenTransitionEncoder` 只保存 processor/cache/EMA
+  运行期配置，不再额外持有一份 LLM 引用。
+- 代码提交：`d023e33`。本地 `compileall`、shell 语法和 `git diff --check` 已通过；
+  本机无 torch/pytest，下一步在 superpod 现有远程 worktree 执行 CPU 定向回归。
+
 ## 2026-07-21：SFT2/RL 核心算法可读性重构
 
 - 在分支 `fix/sft2-review-bugs` 为 SFT2/RL 各建立单一核心入口：
   `training/sft2/algorithm.py` 显式展示 current/next Qwen state、SIGReg、value
   和 loss 组合；`training/rl/algorithm.py` 显式展示 dynamics、value、PPO 与
   optimizer update。
-- 公共 dynamics/value 数学迁入 `wm/objectives.py`，不在公共函数中隐藏
-  stop-gradient。SFT2 保留 projector 双侧梯度；RL 保留下一状态 target
-  stop-gradient 和 value input detach，并新增逐组件梯度测试。
+- 该阶段曾把公共 dynamics/value 数学迁入 `wm/objectives.py`；这一设计已由后续
+  完整模型边界纠正，当前公式属于 `WorldModel` 成员方法。SFT2 保留 projector
+  双侧梯度；RL 保留下一状态 target stop-gradient 和 value input detach。
 - Qwen cached batch 合并、下一状态 prompt 去重/EMA forward 与 PPO prompt replay
   归入 `backbone/qwen25vl`；`util.cache` 不再反向依赖 SFT2 私有 batch helper。
 - RL iteration 生命周期进入 `training/rl/loop.py`，`trainer.py` 缩减为运行模式

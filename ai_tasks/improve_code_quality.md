@@ -134,6 +134,8 @@
 当前架构进展：公共 Agent、rollout、Agent/Rollout config 已迁出 training；Qwen
 rollout encoding 与 Qwen+VAGEN collector 已归入 `backbone/qwen25vl`。RL trainer
 的 evaluation、collector runtime、reporting 和 checkpoint mapping 已拆为独立模块。
+`NimlothModel(llm, wm)` 已成为 SFT2/RL 的完整模型边界；`WorldModel` 组合
+StateProjector、WMPredictor、ValueHead，并以成员方法提供公共 loss。
 
 ## 完成标准
 

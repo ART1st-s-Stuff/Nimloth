@@ -91,7 +91,7 @@ WM planner 产生的动作不是 Qwen rollout policy 的采样结果。不得把
   - policy-source-aware PPO mask；
   - 连续 trajectory window 与多步 dynamics loss；
   - k/horizon 相关 metrics。
-- `src/nimloth/training/rl/algorithm.py` 与 `src/nimloth/wm/objectives.py`
+- `src/nimloth/training/rl/algorithm.py` 与 `src/nimloth/wm/model.py`
   - 多步 dynamics loss；
   - 明确单步/多步 loss 权重和指标。
 - `src/nimloth/training/rl/cli.py`

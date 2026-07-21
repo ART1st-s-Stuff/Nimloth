@@ -127,3 +127,16 @@
 - 核心迁移提交并推送为 `3fa6199`。随后两次 SSH 均只到达 VPN 跳板，未进入
   superpod 或得到退出码；按 `.local/SERVER.md` 停止重试，远程 pytest 等 VPN
   恢复后继续。
+
+## 2026-07-21：完整模型边界纠正
+
+- 人类确认保留现有 `StateProjector`、`LatentWMPredictor`、`ValueHead` 命名，
+  同时要求能直接看到 LLM、WM、ValueHead 的完整模块关系。
+- `d023e33` 新增 `NimlothModel(llm, wm)` 和组合三个既有子模块的 `WorldModel`；
+  SFT2/RL 的 components 与 checkpoint 只接收这一完整模型。
+- `wm/objectives.py` 已删除。dynamics/value 目标成为 `WorldModel` 成员方法；
+  SFT2 loss weighting 和 RL PPO loss 也由已有 stage 对象持有配置，避免继续传入
+  多个模型与标量参数。
+- 本地静态验证已通过。远程回归计划：在 superpod 的分支 worktree 运行
+  `tests/wm`、`tests/training/sft2`、`tests/training/rl` 和相邻 Qwen transition
+  测试；不使用数据、checkpoint、W&B 或 GPU，只记录 pytest pass/fail。
