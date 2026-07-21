@@ -64,8 +64,8 @@ def test_parse_nimloth_wm_success() -> None:
     parsed = parse.parse_nimloth_wm(response, max_actions=1)
     assert parsed["format_correct"] is True
     assert parsed["actions"] == ["move_left"]
-    assert parsed["observation"] == "Garbage can on the left."
-    assert parsed["prediction"].startswith("The can")
+    assert parsed["observation_content"] == "Garbage can on the left."
+    assert parsed["prediction_content"].startswith("The can")
 
 
 def test_parse_nimloth_wm_rejects_latent_after_action_start() -> None:
