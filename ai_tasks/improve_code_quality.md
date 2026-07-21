@@ -118,7 +118,9 @@
 ### 16. VAGENRolloutCollector 是公开但不可用的入口
 
 - 状态：**已修复（2026-07-21）**
-- 修复：删除永远抛出 `NotImplementedError` 的公开入口和对应 CLI；真实调用路径统一到 `nimloth.rollout.VAGENNavigationRolloutCollector`。
+- 修复：删除永远抛出 `NotImplementedError` 的公开入口和对应 CLI；真实 collector
+  归入 `nimloth.environment.navigation.VAGENNavigationRolloutCollector`，并通过
+  通用 `AgentPolicy` 注入模型行为。
 
 ## 建议实施顺序
 
@@ -131,11 +133,12 @@
 7. 用真实多卡测试验证 FSDP + Vision EMA，再确定实现。
 8. 最后清理死入口，并按 `config / components / engine / collectors` 拆分 `trainer.py` 和 `rollout.py`。
 
-当前架构进展：公共 Agent、rollout、Agent/Rollout config 已迁出 training；Qwen
-rollout encoding 与 Qwen+VAGEN collector 已归入 `backbone/qwen25vl`。RL trainer
-的 evaluation、collector runtime、reporting 和 checkpoint mapping 已拆为独立模块。
-`NimlothModel(llm, wm)` 已成为 SFT2/RL 的完整模型边界；`WorldModel` 组合
-StateProjector、WMPredictor、ValueHead，并以成员方法提供公共 loss。
+当前架构进展：公共神经网络 `Agent(backbone, wm)`、episode `AgentRuntime`、
+rollout 和 Agent/Rollout config 已迁出 training。Qwen rollout encoding 与 policy
+replay 位于 `backbone/qwen25vl`，VAGEN collector 位于 `environment/navigation`。
+`WorldModel` 只组合 StateProjector、WMPredictor、ValueHead 并负责神经网络计算；
+SFT2/RL 的 loss 分别由各阶段 `Objective(nn.Module)` 持有。两阶段 trainer 的
+algorithm、update、evaluation、reporting 和 checkpoint 职责已经拆开。
 
 ## 完成标准
 

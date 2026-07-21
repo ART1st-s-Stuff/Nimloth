@@ -115,7 +115,16 @@ def run_micro_training_loss(
         max_length=max_length,
     )
     if use_cached_enc:
-        rows = [encode_transition_item(item, processor, max_length) for item in items]
+        # 生产环境由 CachedTransitionDataset 补回 prompt 元数据；诊断脚本绕过
+        # dataset，因此在这里显式恢复同一运行期契约。
+        rows = [
+            {
+                **encode_transition_item(item, processor, max_length),
+                "messages": item["messages"],
+                "next_messages": item.get("next_messages"),
+            }
+            for item in items
+        ]
         raw_batch = batch_builder.collate_cached_transition_batch(rows)
     else:
         raw_batch = items

@@ -100,6 +100,8 @@ def test_encode_transition_item_roundtrip_collate() -> None:
         ],
     }
     encoded = encode_transition_item(item, processor, max_length=128)
+    # CachedTransitionDataset 在实际读取时补回这两个运行期字段。
+    encoded["messages"] = item["messages"]
     encoded["next_messages"] = item.get("next_messages")
     batch = Qwen25VLBatchBuilder(
         processor=processor,

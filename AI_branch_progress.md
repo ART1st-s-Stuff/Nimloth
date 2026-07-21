@@ -4,23 +4,29 @@
 
 ---
 
-## 2026-07-21：建立完整 Nimloth 模型边界
+## 2026-07-21：Agent、Backbone 与训练算法边界纠正
 
-- 人类指出上一轮核心算法重构仍把模型拆散传递，新增的 `Algorithm/Components`
-  更接近 service object，未形成深度学习项目应有的完整 `nn.Module`。
-- 新增 `NimlothModel(llm, wm)`；其中 `WorldModel` 继续使用项目既有命名
-  `state_proj / wm_predictor / value_head`，没有执行命名迁移。
-- 公共 dynamics/value loss 改为 `WorldModel` 成员方法；SFT2 的 WM/SIGReg 和
-  loss weighting、RL 的 PPO loss 改为现有运行期对象的成员行为，删除
-  `wm/objectives.py` 和只包装 metrics 的 `RLUpdateResult`。
-- SFT2/RL 的 components、checkpoint、rollout encoding 和 trainer 现在从同一个
-  `NimlothModel` 访问模块；`QwenTransitionEncoder` 只保存 processor/cache/EMA
-  运行期配置，不再额外持有一份 LLM 引用。
-- 代码提交：`d023e33`。本地 `compileall`、shell 语法和 `git diff --check` 已通过。
-  superpod dev worktree 的共享 venv 缺少 pytest；未安装依赖，改用 `runpy` 直接
-  执行 17 个无 fixture 的原始 test 函数，结果 `17 direct tests passed`。完整模型、
-  SFT2/RL trainer 与 checkpoint 导入回归也以退出码 0 通过。fixture 驱动的
-  DDP/checkpoint 测试仍需在具有 pytest 的环境补跑，不能视为完整 suite 通过。
+- 人类确认神经网络 `Agent` 应当是完整 `nn.Module`，episode 状态机则使用独立的
+  `AgentRuntime`。当前 `Agent` 明确组合 `Backbone` 与 `WorldModel`；后者继续使用
+  项目既有命名 `state_proj / wm_predictor / value_head`，没有迁移为 dynamics。
+- `Backbone` 是可训练模型接口，Qwen2.5-VL 的 processor、latent 提取、policy
+  replay、rollout encoding、cache batch builder 和 artifact 保存均封装在
+  `backbone/qwen25vl`。SFT2/RL 的生产训练代码不再导入具体 Qwen 实现。
+- SFT2 的 `algorithm.py` 只保留 `Agent(current) -> target(next) -> objective`；
+  `SFT2Objective(nn.Module)` 持有 WM、value、SIGReg 与 CE 的目标配置。原先重复的
+  `_compute_wm`、processor/cache/EMA/DDP/optimizer/checkpoint 逻辑已从算法层移除。
+- RL 保留其特有的梯度契约：WM current 更新 projector/predictor，next target
+  stop-gradient，value 输入 detach；`RLObjective(nn.Module)` 负责 WM/value/PPO
+  数学，`RLUpdater` 负责 backward、裁剪、optimizer 和 EMA。
+- VAGEN navigation collector 已归入 `environment/navigation`，只依赖通用
+  `AgentPolicy`；通用 rollout encoding 位于 `nimloth.rollout`，不再让训练包或
+  collector 认识具体神经网络 Agent。
+- 当前实现提交并推送为 `3fb71b6`。本地 `compileall`、RL smoke shell 语法、
+  `git diff --check` 与训练目录的具体 Qwen import 扫描通过。本机 Python 和
+  `.venv` 均缺少 torch/pytest；远程定向 pytest 两次没有返回测试输出或退出码，
+  因此本轮不能记为 pytest 通过，待远程连接恢复后补跑。
+- `d023e33` 中的 `NimlothModel` 和“loss 属于 `WorldModel`”是已失效的中间设计；
+  当前源码和本节是有效边界。
 
 ## 2026-07-21：SFT2/RL 核心算法可读性重构
 

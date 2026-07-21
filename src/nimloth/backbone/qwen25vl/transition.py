@@ -241,9 +241,14 @@ class Qwen25VLBatchBuilder:
     ) -> dict[str, torch.Tensor]:
         if cached is not None:
             if isinstance(cached, dict):
+                # 兼容滚动升级期间旧 worker 返回的 ``enc``，也接受字段名直译后的
+                # ``encoding``；进入 builder 后统一收敛为 CachedQwenNextBatch。
+                encoding = cached.get("encoding", cached.get("enc"))
+                if not isinstance(encoding, dict):
+                    raise ValueError("cached next-state batch is missing encoding")
                 cached = CachedQwenNextBatch(
                     keys=tuple(cached.get("keys", ())),
-                    encoding=dict(cached["enc"]),
+                    encoding=dict(encoding),
                 )
             if cached.keys != tuple(unique_keys):
                 raise ValueError("cached next-state order does not match transition prompts")

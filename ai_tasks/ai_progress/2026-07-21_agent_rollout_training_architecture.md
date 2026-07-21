@@ -165,3 +165,46 @@
   全部导入成功，退出码 0，确认删除 `wm/objectives.py` 后无残留真实导入。
 - 限制：fixture 驱动的 DDP terminal 和 checkpoint resume 测试未执行；必须在有
   pytest 的环境补跑后，才能声称完整定向 pytest 或全仓 suite 通过。
+
+## 2026-07-21：Agent 与 stage algorithm 最终边界纠正
+
+- `d023e33` 的 `NimlothModel` 是中间方案，已由人类进一步审阅后撤销。当前完整
+  神经网络入口为 `Agent(backbone, wm)`；episode 的 prompt、environment session
+  和历史状态由独立 `AgentRuntime` 管理，二者不再共用同一个含糊的 Agent 契约。
+- 新增抽象 `Backbone(nn.Module)`、`BackboneBatch` 与 `BackboneOutput`。训练阶段只
+  面向这个接口；Qwen2.5-VL 的模型 forward、processor batch、rollout encoder、
+  policy replay 和 checkpoint artifact 实现集中在 `backbone/qwen25vl`。
+- `WorldModel(nn.Module)` 只组合 `StateProjector`、`LatentWMPredictor` 和
+  `ValueHead` 并执行神经网络计算。阶段目标不再塞进 WorldModel：SFT2 使用
+  `SFT2Objective(nn.Module)`，RL 使用 `RLObjective(nn.Module)`。
+- SFT2 `algorithm.py` 现在只表达三步：完整 `Agent.forward(current)`、
+  `AgentTarget(next)`、结构化 objective。它不再含 `_compute_wm`，也不依赖
+  processor、Qwen、cache、EMA、DDP、optimizer 或 checkpoint。
+- RL 的 rollout hidden 已在训练前由通用 `RolloutEncoder` 产生，因此
+  `RLAlgorithm` 只调用 Agent 的 `wm` 子模块并显式保留 stage-specific detach；
+  backward、梯度裁剪、optimizer 和 EMA 位于 `RLUpdater`。
+- navigation/VAGEN collector 已迁到 `environment/navigation/collector.py`，通过
+  `AgentPolicy` 注入实际 policy。公共 rollout 包只保留 trajectory、transition、
+  collector 协议和模型无关 encoding，不再拥有 environment-specific collector。
+- 实现提交并推送：`3fb71b6`。随后静态复核发现诊断脚本绕过
+  `CachedTransitionDataset` 时没有补回 prompt 元数据，已修正该直接调用者及测试，
+  并让 next-state worker bundle 同时兼容 `enc`/`encoding` 字段。
+
+### 本轮验证状态
+
+- `python3 -m compileall -q src/nimloth experiments tests`：通过。
+- `bash -n experiments/training/rl/smoke_test.slurm`：通过。
+- `git diff --check`：通过。
+- 静态扫描：`training/sft2` 与 `training/rl` 的生产代码没有具体 Qwen/Transformers
+  import；旧 `NimlothModel`、`QwenTransitionEncoder`、`SFT2Loss`、`SFT2Mode` 和
+  `_compute_wm` 没有残留真实调用。
+- 本地系统 Python 与仓库 `.venv` 均缺少 torch/pytest，无法执行本地测试。
+- 远程 dev worktree 已同步到 `3fb71b6`。使用远程 `.venv-vagen-main` 发起两次
+  定向 pytest，命令均未返回 pytest 输出或退出码；该结果不可用，不能声称测试
+  通过。依照服务器重试规则暂停 SSH 重试，待连接恢复后补跑。
+
+### 当前待办
+
+- 在远程连接恢复后运行 `tests/wm`、`tests/training/sft2`、
+  `tests/training/rl` 和相邻 Qwen transition 测试。
+- 若定向测试通过，再决定是否执行排除未初始化外部 submodule 的全仓回归。
