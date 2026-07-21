@@ -16,8 +16,8 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from nimloth.backbone.qwen25vl.batch import batch_single_encoding, encode_qwen_item
 from nimloth.latent import add_special_tokens
 from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.environment.navigation import NUM_NAVIGATION_ACTIONS
 from nimloth.rollout.transitions import (
-    NUM_NAVIGATION_ACTIONS,
     TransitionSample,
     expand_record_transitions,
     load_jsonl_records,

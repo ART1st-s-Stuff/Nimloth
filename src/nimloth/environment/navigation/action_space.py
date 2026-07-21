@@ -17,3 +17,6 @@ NAVIGATION_ACTION_SPACE = DiscreteActionSpace(
         ActionSpec("lookdown", aliases=("look_down",)),
     ),
 )
+
+# 数量属于 navigation 动作空间，不属于 Agent、rollout 或 WM。
+NUM_NAVIGATION_ACTIONS = len(NAVIGATION_ACTION_SPACE)

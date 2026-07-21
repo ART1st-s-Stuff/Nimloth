@@ -28,8 +28,8 @@ from nimloth.training.sft2.diagnosis.trajectory_once import (
     forward_trajectory_once,
 )
 from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.environment.navigation import NUM_NAVIGATION_ACTIONS
 from nimloth.rollout.transitions import (
-    NUM_NAVIGATION_ACTIONS,
     TransitionSample,
     expand_record_transitions,
     load_jsonl_records,

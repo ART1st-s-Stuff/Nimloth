@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from nimloth.agent import PROMPT_VERSION
+from nimloth.environment.navigation import NUM_NAVIGATION_ACTIONS
 from nimloth.rollout.transitions import (
-    NUM_NAVIGATION_ACTIONS,
     TransitionSample,
     discounted_action_value_targets,
     expand_record_transitions,
