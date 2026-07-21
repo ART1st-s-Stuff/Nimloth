@@ -22,21 +22,24 @@ def _load_module(relpath: str, name: str):
 
 
 nimloth_format = _load_module(
-    "vagen/envs/navigation/utils/nimloth_format.py",
-    "vagen.envs.navigation.utils.nimloth_format",
+    "vagen/env/navigation/nimloth_format.py",
+    "vagen.env.navigation.nimloth_format",
 )
 prompt = _load_module(
-    "vagen/envs/navigation/utils/prompt.py",
-    "vagen.envs.navigation.utils.prompt",
+    "vagen/env/navigation/prompt.py",
+    "vagen.env.navigation.prompt",
 )
 parse = _load_module(
-    "vagen/envs/navigation/utils/parse.py",
-    "vagen.envs.navigation.utils.parse",
+    "vagen/env/utils/parse_utils.py",
+    "vagen.env.utils.parse_utils",
 )
 
 
 def test_nimloth_wm_prompt_has_latent_before_action_start() -> None:
-    text = prompt.system_prompt(format_name="nimloth_wm", max_actions_per_step=1, example_count=0)
+    text = prompt.format_prompt["nimloth_wm"](
+        max_actions_per_step=1,
+        add_example=False,
+    )
     latent_pos = text.index("<|latent_state|>")
     action_start_pos = text.index("<|action_start|>")
     assert latent_pos < action_start_pos
@@ -58,7 +61,7 @@ def test_parse_nimloth_wm_success() -> None:
         "<|latent_state|><|action_start|><|action_(3)|><|action_end|>"
         "<prediction>The can will appear closer on the left.</prediction>"
     )
-    parsed = parse.parse_response(response, prompt_format="nimloth_wm", max_actions=1)
+    parsed = parse.parse_nimloth_wm(response, max_actions=1)
     assert parsed["format_correct"] is True
     assert parsed["actions"] == ["move_left"]
     assert parsed["observation"] == "Garbage can on the left."
@@ -72,7 +75,7 @@ def test_parse_nimloth_wm_rejects_latent_after_action_start() -> None:
         "<|action_start|><|latent_state|><|action_(3)|><|action_end|>"
         "<prediction>The can will appear closer on the left.</prediction>"
     )
-    parsed = parse.parse_response(response, prompt_format="nimloth_wm", max_actions=1)
+    parsed = parse.parse_nimloth_wm(response, max_actions=1)
     assert parsed["format_correct"] is False
     assert parsed["actions"] == []
 
@@ -86,5 +89,5 @@ def test_parse_nimloth_requires_latent_before_action_start() -> None:
         "<think>Turn left first.</think>"
         "<|action_start|><|action_(3)|><|action_end|>"
     )
-    assert parse.parse_response(good, prompt_format="nimloth", max_actions=1)["format_correct"] is True
-    assert parse.parse_response(bad, prompt_format="nimloth", max_actions=1)["format_correct"] is False
+    assert parse.parse_nimloth(good, max_actions=1)["format_correct"] is True
+    assert parse.parse_nimloth(bad, max_actions=1)["format_correct"] is False
