@@ -12,16 +12,18 @@
 - `Backbone` 是可训练模型接口，Qwen2.5-VL 的 processor、latent 提取、policy
   replay、rollout encoding、cache batch builder 和 artifact 保存均封装在
   `backbone/qwen25vl`。SFT2/RL 的生产训练代码不再导入具体 Qwen 实现。
-- SFT2 的 `algorithm.py` 只保留 `Agent(current) -> target(next) -> objective`；
-  `SFT2Objective(nn.Module)` 持有 WM、value、SIGReg 与 CE 的目标配置。原先重复的
-  `_compute_wm`、processor/cache/EMA/DDP/optimizer/checkpoint 逻辑已从算法层移除。
+- SFT2 的 `algorithm.py` 现在完整展示 `Agent(current) → target(next) →
+  WM/value/SIGReg/CE → total loss`，并持有 WM 权重策略。原先横向拆出的
+  `components.py`、`objective.py` 和 `schedule.py` 已删除。
 - RL 保留其特有的梯度契约：WM current 更新 projector/predictor，next target
-  stop-gradient，value 输入 detach；`RLObjective(nn.Module)` 负责 WM/value/PPO
-  数学，`RLUpdater` 负责 backward、裁剪、optimizer 和 EMA。
+  stop-gradient，value 输入 detach；transition 采样、WM/value/PPO、backward、
+  梯度裁剪、optimizer 和 EMA 均可在 `RLAlgorithm` 内顺序阅读。原先的
+  `batch/components/objective/update.py` 已删除。
 - VAGEN navigation collector 已归入 `environment/navigation`，只依赖通用
   `AgentPolicy`；通用 rollout encoding 位于 `nimloth.rollout`，不再让训练包或
   collector 认识具体神经网络 Agent。
-- 当前实现提交并推送为 `3fb71b6`。本地 `compileall`、RL smoke shell 语法、
+- 模型边界提交为 `3fb71b6`；训练层级收敛提交为 `c6ec871`。本地 `compileall`、
+  RL smoke shell 语法、
   `git diff --check` 与训练目录的具体 Qwen import 扫描通过。本机 Python 和
   `.venv` 均缺少 torch/pytest；远程定向 pytest 两次没有返回测试输出或退出码，
   因此本轮不能记为 pytest 通过，待远程连接恢复后补跑。

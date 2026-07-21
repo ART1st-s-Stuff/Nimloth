@@ -208,3 +208,28 @@
 - 在远程连接恢复后运行 `tests/wm`、`tests/training/sft2`、
   `tests/training/rl` 和相邻 Qwen transition 测试。
 - 若定向测试通过，再决定是否执行排除未初始化外部 submodule 的全仓回归。
+
+## 2026-07-21：撤销训练阶段的横向微文件拆分
+
+- 人类指出 `components/objective/schedule` 只是把原本难读的流程分散到更多文件，
+  没有形成真正的模块边界。本轮按一次完整执行路径重新组织，而非继续增加包装层。
+- SFT2 `algorithm.py` 现在包含完整 Agent/target forward、WM/value/SIGReg/CE、
+  metric 和 WM cosine 权重；删除 `components.py`、`objective.py`、`schedule.py`。
+  trainer 按加载 backbone、构造 WorldModel、DDP、EMA、optimizer、Agent、data 和
+  loop 的实际顺序显式装配，loop 只接收其真实使用的依赖。
+- RL `algorithm.py` 现在包含 transition 子采样、WM/value/PPO 计算、stop-gradient、
+  backward、梯度裁剪、optimizer 和 EMA；删除 `batch.py`、`components.py`、
+  `objective.py`、`update.py`。loss 直接使用 `RLBatch`，没有保留多 tensor 转发层。
+- checkpoint manager 不再依赖宽泛的 `RLComponents`，其 artifact 依赖均在构造器
+  中显式声明；trainer 直接展示 Agent、backbone adapters 和 resume 的装配关系。
+- 实现提交：`c6ec871`。相比上一版净删除 107 行生产/测试代码和 7 个无独立概念
+  价值的训练文件；SFT2/RL 的既有梯度语义、cache、checkpoint 和 rollout 协议不变。
+
+### 验证
+
+- `python3 -m compileall -q src/nimloth tests experiments`：通过。
+- `bash -n experiments/training/rl/smoke_test.slurm`：通过。
+- `git diff --check`：通过。
+- 静态扫描确认生产代码、测试和实验脚本不再导入已删除的训练模块；SFT2/RL
+  生产训练目录仍不直接导入 Qwen2.5-VL 或 Transformers。
+- 本地仍无 torch/pytest；远程可执行回归状态没有变化，不能声称 pytest 通过。

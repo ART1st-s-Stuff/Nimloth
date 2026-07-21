@@ -131,14 +131,16 @@
 5. 引入严格 RL config，消除 YAML/CLI 双重开关和硬编码维度。
 6. 统一 policy state 与 WM state；决定 StateProjector 梯度 ownership。
 7. 用真实多卡测试验证 FSDP + Vision EMA，再确定实现。
-8. 最后清理死入口，并按 `config / components / engine / collectors` 拆分 `trainer.py` 和 `rollout.py`。
+8. 最后清理死入口，并按可顺序阅读的算法、训练生命周期和 collector 边界整理；
+   禁止再用宽泛 `components` 或单函数 `objective/schedule/update` 文件横向切碎流程。
 
 当前架构进展：公共神经网络 `Agent(backbone, wm)`、episode `AgentRuntime`、
 rollout 和 Agent/Rollout config 已迁出 training。Qwen rollout encoding 与 policy
 replay 位于 `backbone/qwen25vl`，VAGEN collector 位于 `environment/navigation`。
-`WorldModel` 只组合 StateProjector、WMPredictor、ValueHead 并负责神经网络计算；
-SFT2/RL 的 loss 分别由各阶段 `Objective(nn.Module)` 持有。两阶段 trainer 的
-algorithm、update、evaluation、reporting 和 checkpoint 职责已经拆开。
+`WorldModel` 只组合 StateProjector、WMPredictor、ValueHead 并负责神经网络计算。
+SFT2/RL 的单批 forward、loss 和梯度边界分别集中在各自 `algorithm.py`；trainer
+按运行顺序装配依赖，loop 负责跨 batch/iteration 生命周期。原先宽泛的
+`components` 以及只做转发的 `objective/schedule/update` 层已删除。
 
 ## 完成标准
 
