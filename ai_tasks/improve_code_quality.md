@@ -17,42 +17,34 @@
 
 ### 1. Rollout 使用当前图片伪造全部视觉历史
 
-- 状态：**已确认错误**
-- 位置：`src/nimloth/training/rl/rollout.py`，`_select_action_nimloth()`。
-- 现状：函数只接收当前图片和历史动作。构造历史 turn 时，每个历史 user turn 都重复使用当前图片。
-- 影响：真实轨迹 `I0 --a0--> I1 --a1--> I2` 会被编码成近似 `I2 --a0--> I2 --a1--> I2`。动作历史与视觉历史矛盾，序列越长误差越大。
-- 修复方向：统一 policy-input builder，显式接收 `images[:t+1]`、`actions[:t]` 和 instruction。rollout、PPO 重算、WM state 编码必须复用同一实现。
+- 状态：**已修复（2026-07-21）**
+- 修复：`NavigationAgent` 保存每一步真实的 observation text/image/action；`NimlothAgentPrompt` 按原始顺序绑定 `images[:t+1]`。旧 `_select_action_nimloth()` 已删除。
+- 验证：Agent prompt 测试检查多步真实图片顺序；rollout schema 要求 observations/images 均为 actions + 1。
 
 ### 2. old/new log probability 使用不同长度的 prompt
 
-- 状态：**已确认错误**
-- 位置：`src/nimloth/training/rl/rollout.py::_select_action_nimloth()`；`src/nimloth/training/rl/trainer.py::compute_new_log_probs_for_batch()`。
-- 现状：rollout 使用完整动作历史；trainer 重算 `new_log_prob` 时只保留最后四步历史。
-- 影响：第 5 步以后，PPO 计算的是 `exp(log pi_new(a|prompt_B) - log pi_old(a|prompt_A))`。该值不是同一条件分布上的策略概率比，prompt 差异会被误当作参数更新。
-- 修复方向：rollout 和 trainer 必须共用完全相同的 prompt 构造及截断规则；轨迹中需要保存可精确重放行为输入的信息。
+- 状态：**已修复（2026-07-21）**
+- 修复：rollout 保存每一步完整的 `policy_messages`；PPO 不再截断最后四步，而是绑定该步全部历史图片后重放。进入训练前会从结构化 transcript 重建 prompt，并与保存的审计副本做完全相等比较。
+- 验证：schema 测试覆盖 prompt 缺失、版本过期和 transcript/prompt 不一致。
 
 ### 3. 保存的 old log probability 不是实际采样分布
 
-- 状态：**已确认错误**
-- 位置：`src/nimloth/training/rl/rollout.py::_select_action_nimloth()`。
-- 现状：先保存原始 `log_softmax(action_logits)`，再对 logits 应用 temperature 和 top-p，并从变换后的分布采样。
-- 影响：动作来自 `q_old = top_p(softmax(logits / temperature))`，保存的却是 `p_old = softmax(logits)`。PPO 分母不是行为策略的真实概率；top-p 排除动作在两个分布中的概率甚至分别为正数和零。
-- 修复方向：选择并统一 policy 定义。可以固定 `temperature=1, top_p=1` 使用原始 categorical，也可以让 rollout 与 trainer 都计算并记录 temperature/top-p 后的真实分布。
+- 状态：**已修复（2026-07-21）**
+- 修复：`backbone/qwen25vl/policy.py` 统一计算 temperature/top-p 后的行为分布；rollout 保存该分布和采样参数，PPO 用同一变换重算。entropy 也基于变换后的分布。
+- 验证：测试覆盖无变换、top-p mask/重新归一化、greedy 和 `-inf` entropy。
 
 ### 4. 推理异常和缺失概率被伪装为合法 PPO 样本
 
-- 状态：**已确认错误**
-- 位置：`src/nimloth/training/rl/rollout.py::EnvRolloutCollector.collect()`；`src/nimloth/training/rl/trainer.py::build_rl_transitions()`。
-- 现状：动作推理异常时强制选择 `moveahead` 并写入 `[0.0] * 8`；缺失概率时同样把 taken action 的 `old_log_prob` 补成 `0.0`。
-- 影响：log probability 为零表示概率为 1；八个动作同时为 1 不是合法分布。训练会把模型没有选择的兜底动作当作旧策略以 100% 概率执行的动作。
-- 修复方向：推理失败时丢弃 step/trajectory 或明确终止；JSONL 加载时严格验证概率长度、有限性、归一性和 taken action 索引，禁止默认补零。
+- 状态：**已修复（2026-07-21）**
+- 修复：推理失败会丢弃不完整 trajectory；trainer 禁止缺失概率和补零。Agent 公共校验器检查 8-way 长度、taken action、NaN/+inf、归一性，并允许 top-p 的 `-inf`。落盘以标准 JSON `null` 表示 `-inf`。
+- 验证：schema 与 JSONL round-trip 测试覆盖非归一分布、缺失分布和 masked action。
 
 ### 5. 固定 JSONL 轨迹被无限循环用于 PPO
 
 - 状态：**已确认缺陷**
 - 位置：`src/nimloth/training/rl/rollout.py::JSONLRolloutCollector`。
 - 现状：collector 首次读取后缓存全部轨迹，数据耗尽便从头循环，不会刷新行为策略或概率来源。
-- 影响：WM/value 可以使用离线数据，但 PPO 会在当前策略持续变化后，长期复用旧策略轨迹和旧 `old_log_prob`，逐渐变成严重离策略训练。JSONL 也没有记录或校验 policy checkpoint、prompt 版本和采样配置。
+- 影响：WM/value 可以使用离线数据，但 PPO 会在当前策略持续变化后，长期复用旧策略轨迹和旧 `old_log_prob`，逐渐变成严重离策略训练。JSONL 现已记录并校验 prompt 版本和采样配置，但仍没有 policy checkpoint provenance 或复用期限。
 - 修复方向：actor 开启时周期性用当前策略生成新 rollout，或改用明确支持离策略数据的算法；轨迹 schema 增加 policy provenance 和 sampling configuration。actor 关闭时可以继续把 JSONL 用作离线 WM/value 数据。
 
 ## P0：Checkpoint 完整性
@@ -121,11 +113,9 @@
 
 ### 13. WM state 与 policy state 使用不同 prompt
 
-- 状态：**已确认错误**
-- 位置：`src/nimloth/training/rl/trainer.py::encode_trajectory_hiddens()`。
-- 现状：每帧使用 generic、独立的 image prompt 编码 latent，没有 instruction、历史图片或历史动作；policy 选动作时使用另一套带 instruction/history 的 prompt。
-- 影响：WM predictor/value head 学习的 state 与 policy 实际决策 state 语义不同，也可能破坏从 SFT2 warm-start 的 latent 表示契约。
-- 修复方向：建立唯一的 Qwen policy-state encoder，让 rollout、PPO、WM predictor 和 value head 共享完全相同的状态定义。
+- 状态：**已修复（2026-07-21）**
+- 修复：`encode_trajectory_hiddens()` 逐步调用 `RolloutTrajectory.build_policy_messages()`，其底层使用和 rollout/PPO/SFT2 相同的 `NimlothAgentPrompt`；generic image-only prompt 已删除。
+- 验证：结构化 SFT2 transition 测试确认当前 supervised prefix 与下一状态 policy prefix 使用共享模板。
 
 ### 14. Value loss 不会更新解冻后的 StateProjector
 

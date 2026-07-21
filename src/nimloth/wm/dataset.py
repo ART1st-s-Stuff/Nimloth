@@ -9,6 +9,12 @@ from typing import Any, Iterator
 
 from torch.utils.data import Dataset
 
+from nimloth.agent.prompt import (
+    PROMPT_VERSION,
+    AgentTranscript,
+    NimlothAgentPrompt,
+)
+
 # Matches vagen.envs.navigation.utils.nimloth_format.ACTION_NAMES length.
 NUM_NAVIGATION_ACTIONS = 8
 
@@ -69,14 +75,38 @@ def expand_record_transitions(record: dict[str, Any], *, value_gamma: float = DE
       - image_paths[t + 1] is the observation after executing action_indices[t]
     """
 
-    messages = list(record.get("messages", []))
     image_paths = list(record.get("image_paths", []))
     action_indices = list(record.get("action_indices", []))
     record_id = str(record.get("id", ""))
     success = bool(record.get("success", False))
     split = str(record.get("split", "train"))
 
-    if not messages or not image_paths or not action_indices:
+    if not image_paths or not action_indices:
+        return []
+
+    system_prompt = str(record.get("system_prompt", ""))
+    observation_texts = tuple(str(text) for text in record.get("observation_texts", []))
+    if system_prompt and observation_texts:
+        prompt_version = str(record.get("prompt_version", PROMPT_VERSION))
+        if prompt_version != PROMPT_VERSION:
+            raise ValueError(
+                f"record {record_id!r}: unsupported prompt_version {prompt_version!r}; "
+                f"expected {PROMPT_VERSION!r}"
+            )
+        return _expand_structured_agent_transitions(
+            record=record,
+            record_id=record_id,
+            system_prompt=system_prompt,
+            observation_texts=observation_texts,
+            image_paths=tuple(str(path) for path in image_paths),
+            action_indices=tuple(int(index) for index in action_indices),
+            success=success,
+            split=split,
+            value_gamma=value_gamma,
+        )
+
+    messages = list(record.get("messages", []))
+    if not messages:
         return []
 
     value_targets = discounted_action_value_targets(record, gamma=value_gamma)
@@ -126,6 +156,75 @@ def expand_record_transitions(record: dict[str, Any], *, value_gamma: float = DE
         )
         assistant_turn += 1
 
+    return transitions
+
+
+def _expand_structured_agent_transitions(
+    *,
+    record: dict[str, Any],
+    record_id: str,
+    system_prompt: str,
+    observation_texts: tuple[str, ...],
+    image_paths: tuple[str, ...],
+    action_indices: tuple[int, ...],
+    success: bool,
+    split: str,
+    value_gamma: float,
+) -> list[TransitionSample]:
+    """Expand records written by the shared Agent runtime into SFT2 prefixes."""
+
+    expected_observations = len(action_indices) + 1
+    if len(observation_texts) != expected_observations:
+        raise ValueError(
+            f"record {record_id!r}: observations={len(observation_texts)} but "
+            f"actions={len(action_indices)}; expected one final observation"
+        )
+    if len(image_paths) != expected_observations:
+        raise ValueError(
+            f"record {record_id!r}: images={len(image_paths)} but "
+            f"actions={len(action_indices)}; expected one final image"
+        )
+
+    prompt = NimlothAgentPrompt(
+        latent_token_count=int(record.get("latent_token_count", 1))
+    )
+    value_targets = discounted_action_value_targets(record, gamma=value_gamma)
+    transitions: list[TransitionSample] = []
+    for step_index, action_index in enumerate(action_indices):
+        current = AgentTranscript(
+            system_prompt=system_prompt,
+            observation_texts=observation_texts[: step_index + 1],
+            observation_images=image_paths[: step_index + 1],
+            action_indices=action_indices[: step_index + 1],
+        )
+        next_state = AgentTranscript(
+            system_prompt=system_prompt,
+            observation_texts=observation_texts[: step_index + 2],
+            observation_images=image_paths[: step_index + 2],
+            action_indices=action_indices[: step_index + 1],
+        )
+        transitions.append(
+            TransitionSample(
+                record_id=record_id,
+                step_index=step_index,
+                prefix_messages=prompt.build_supervised_messages(
+                    current,
+                    bind_images=False,
+                ),
+                prefix_image_paths=list(image_paths[: step_index + 1]),
+                action_index=action_index,
+                current_image_path=image_paths[step_index],
+                next_image_path=image_paths[step_index + 1],
+                next_prefix_messages=prompt.build_policy_messages(
+                    next_state,
+                    bind_images=False,
+                ),
+                next_prefix_image_paths=list(image_paths[: step_index + 2]),
+                action_value_target=float(value_targets[step_index]),
+                success=success,
+                split=split,
+            )
+        )
     return transitions
 
 

@@ -23,22 +23,24 @@ import argparse
 import json
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-import sys
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_VAGEN_ROOT = _REPO_ROOT / "external" / "VAGEN"
+for _dependency_root in (_REPO_ROOT / "src", _VAGEN_ROOT):
+    if _dependency_root.is_dir() and str(_dependency_root) not in sys.path:
+        sys.path.insert(0, str(_dependency_root))
 
-_VAGEN_ROOT = Path(__file__).resolve().parents[3] / "external" / "VAGEN"
-if _VAGEN_ROOT.is_dir() and str(_VAGEN_ROOT) not in sys.path:
-    sys.path.insert(0, str(_VAGEN_ROOT))
+from nimloth.agent import NimlothAgentPrompt
 
 try:
     from vagen.envs.navigation.utils.nimloth_format import (
         ACTION_NAMES,
         ACTION_TO_IDX,
-        ACTION_TOKEN,
-        LATENT_STATE_BLOCK,
+        LATENT_STATE_TOKENS,
         NIMLOTH_ACTION_BLOCK,
         NIMLOTH_FORMAT_INSTRUCTION,
         SPECIAL_TOKENS,
@@ -47,8 +49,7 @@ except ModuleNotFoundError:
     from vagen.env.navigation.nimloth_format import (
         ACTION_NAMES,
         ACTION_TO_IDX,
-        ACTION_TOKEN,
-        LATENT_STATE_BLOCK,
+        LATENT_STATE_TOKENS,
         NIMLOTH_ACTION_BLOCK,
         NIMLOTH_FORMAT_INSTRUCTION,
         SPECIAL_TOKENS,
@@ -56,8 +57,8 @@ except ModuleNotFoundError:
 
 ACTION_NAMES = list(ACTION_NAMES)
 ACTION_TO_IDX = dict(ACTION_TO_IDX)
-ACTION_TOKEN = dict(ACTION_TOKEN)
 SPECIAL_TOKENS = list(SPECIAL_TOKENS)
+AGENT_PROMPT = NimlothAgentPrompt(latent_token_count=len(LATENT_STATE_TOKENS))
 
 IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"
@@ -203,9 +204,12 @@ def convert_assistant(content: str) -> tuple[str, str | None, str | None]:
     action = extract_action(content)
     if action is None:
         # Keep malformed/non-action responses auditable but not trainable.
-        converted = f"<think>{think}</think>{LATENT_STATE_BLOCK}<|action_start|><|action_end|>"
+        converted = f"{AGENT_PROMPT.assistant_prefix(thought=think)}<|action_end|>"
         return converted, None, think
-    converted = f"<think>{think}</think>{LATENT_STATE_BLOCK}<|action_start|>{ACTION_TOKEN[action]}<|action_end|>"
+    converted = AGENT_PROMPT.assistant_response(
+        ACTION_TO_IDX[action],
+        thought=think,
+    )
     return converted, action, think
 
 

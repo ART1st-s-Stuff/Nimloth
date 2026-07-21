@@ -15,6 +15,7 @@ __all__ = [
     "compute_advantages",
     "compute_actor_loss",
     "compute_action_entropy",
+    "compute_action_entropy_from_log_probs",
 ]
 
 
@@ -136,3 +137,15 @@ def compute_action_entropy(action_logits: torch.Tensor) -> torch.Tensor:
     log_probs = torch.log_softmax(action_logits.float(), dim=-1)
     entropy = -(probs * log_probs).sum(dim=-1).mean()
     return entropy
+
+
+def compute_action_entropy_from_log_probs(action_log_probs: torch.Tensor) -> torch.Tensor:
+    """Entropy of a possibly top-p-masked categorical distribution."""
+
+    probs = action_log_probs.exp()
+    terms = torch.where(
+        probs > 0,
+        probs * action_log_probs,
+        torch.zeros_like(action_log_probs),
+    )
+    return -terms.sum(dim=-1).mean()

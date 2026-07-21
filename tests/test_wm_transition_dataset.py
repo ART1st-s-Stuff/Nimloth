@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from nimloth.wm.dataset import NUM_NAVIGATION_ACTIONS, TransitionSample, discounted_action_value_targets, expand_record_transitions
+from nimloth.agent import PROMPT_VERSION
+from nimloth.wm.dataset import (
+    NUM_NAVIGATION_ACTIONS,
+    TransitionSample,
+    discounted_action_value_targets,
+    expand_record_transitions,
+)
 
 
 def _make_record(num_steps: int = 2) -> dict:
@@ -88,3 +94,30 @@ def test_discounted_action_value_targets() -> None:
     assert len(values) == 3
     assert values[0] == pytest.approx(0.9 ** 2)
     assert values[2] == pytest.approx(1.0)
+
+
+def test_structured_agent_record_uses_shared_prompt_for_sft2_prefixes() -> None:
+    record = {
+        "id": "structured",
+        "split": "train",
+        "success": True,
+        "reward": 1.0,
+        "system_prompt": "system",
+        "observation_texts": ["first <image>", "second <image>", "final <image>"],
+        "image_paths": ["first.png", "second.png", "final.png"],
+        "action_indices": [0, 3],
+        "prompt_version": PROMPT_VERSION,
+        "latent_token_count": 1,
+    }
+
+    transitions = expand_record_transitions(record)
+    assert len(transitions) == 2
+    assert transitions[1].prefix_messages[-1]["content"].endswith(
+        "<|action_(3)|><|action_end|>"
+    )
+    assert transitions[0].next_prefix_messages is not None
+    assert transitions[0].next_prefix_messages[-2]["content"] == "second <image>"
+    assert transitions[0].next_prefix_messages[-1]["content"].endswith(
+        "<|action_start|>"
+    )
+    assert transitions[0].next_prefix_image_paths == ["first.png", "second.png"]

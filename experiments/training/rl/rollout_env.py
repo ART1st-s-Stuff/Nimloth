@@ -80,25 +80,17 @@ def validate_split(eval_set: str, split: str) -> None:
 
 def validate_trajectories(records) -> None:
     """Reject incomplete records before they can enter FSDP training."""
+    from nimloth.training.rl.rollout import validate_rollout_trajectory
+
     if not records:
         raise RuntimeError("rollout produced no complete trajectories")
     for record in records:
         if record.split == "train" and not record.image_paths:
             raise RuntimeError(f"training trajectory {record.record_id} has no images")
-        if len(record.image_paths) != record.num_steps + 1:
-            raise RuntimeError(
-                f"trajectory {record.record_id}: images={len(record.image_paths)} "
-                f"but actions={record.num_steps}"
-            )
-        if len(record.action_log_probs) != record.num_steps:
-            raise RuntimeError(
-                f"trajectory {record.record_id}: action_log_probs="
-                f"{len(record.action_log_probs)} but actions={record.num_steps}"
-            )
-        if any(len(log_probs) != 8 for log_probs in record.action_log_probs):
-            raise RuntimeError(f"trajectory {record.record_id} has non-8-way action logits")
-        if not record.nav_instruction:
-            raise RuntimeError(f"trajectory {record.record_id} has no navigation instruction")
+        try:
+            validate_rollout_trajectory(record)
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
 
 
 def main(argv: list[str] | None = None) -> int:

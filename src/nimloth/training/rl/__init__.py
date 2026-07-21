@@ -9,6 +9,7 @@ from nimloth.training.rl.checkpoint import (
 from nimloth.training.rl.loss import (
     compute_actor_loss,
     compute_action_entropy,
+    compute_action_entropy_from_log_probs,
     compute_advantages,
     compute_predictor_loss,
     compute_value_loss,
@@ -20,6 +21,7 @@ from nimloth.training.rl.rollout import (
     VAGENRolloutCollector,
     load_trajectories,
     save_trajectories,
+    validate_rollout_trajectory,
 )
 from nimloth.training.rl.trainer import (
     build_rl_transitions,
@@ -31,6 +33,7 @@ __all__ = [
     "build_rl_transitions",
     "compute_actor_loss",
     "compute_action_entropy",
+    "compute_action_entropy_from_log_probs",
     "compute_advantages",
     "compute_predictor_loss",
     "compute_value_loss",
@@ -45,5 +48,6 @@ __all__ = [
     "save_rl_checkpoint",
     "save_trajectories",
     "train_rl",
+    "validate_rollout_trajectory",
     "VAGENRolloutCollector",
 ]

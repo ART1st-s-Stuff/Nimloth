@@ -2,32 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from PIL import Image
 
+from nimloth.agent.prompt import bind_image_placeholders
 from nimloth.wm.dataset import TransitionSample
 
-
-def messages_with_image_paths(messages: list[dict[str, Any]], image_paths: list[str]) -> list[dict[str, Any]]:
-    """Attach rollout image paths to `<image>` placeholders in prefix messages."""
-
-    path_iter = iter(image_paths)
-    out: list[dict[str, Any]] = []
-    for msg in messages:
-        content = msg.get("content", "")
-        if isinstance(content, str) and "<image>" in content:
-            parts: list[dict[str, Any]] = []
-            chunks = content.split("<image>")
-            for i, chunk in enumerate(chunks):
-                if chunk:
-                    parts.append({"type": "text", "text": chunk})
-                if i < len(chunks) - 1:
-                    parts.append({"type": "image", "image": next(path_iter)})
-            out.append({"role": msg["role"], "content": parts})
-        else:
-            out.append(dict(msg))
-    return out
+# Compatibility name for existing callers. Agent owns the message/image contract.
+messages_with_image_paths = bind_image_placeholders
 
 
 def prefix_messages_with_images(sample: TransitionSample) -> list[dict[str, Any]]:

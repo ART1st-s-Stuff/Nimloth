@@ -21,6 +21,8 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
+from nimloth.agent import PROMPT_VERSION, bind_image_placeholders
+from nimloth.backbone.qwen25vl.policy import batch_action_log_probs
 from nimloth.backbone.qwen25vl.tuning import (
     configure_qwen_tuning,
     resolve_tune_modes,
@@ -39,6 +41,7 @@ from nimloth.training.rl.rollout import (
     RolloutCollector,
     RolloutTrajectory,
     validate_rl_policy_protocol,
+    validate_rollout_trajectory,
 )
 from nimloth.wm.dataset import discounted_action_value_targets
 from nimloth.wm.predictor import LatentWMPredictor
@@ -58,7 +61,7 @@ def encode_trajectory_hiddens(
     token_id_map: dict[str, int],
     device: torch.device,
 ) -> list[torch.Tensor]:
-    """Run Qwen on each frame of a trajectory, return hidden states.
+    """Run Qwen on each policy-state prefix and return hidden states.
 
     Returns:
         List of ``(hidden_dim,)`` tensors, one per frame (len = num_steps + 1).
@@ -74,27 +77,27 @@ def encode_trajectory_hiddens(
     states: list[torch.Tensor] = []
     tokens = LatentActionTokens()
 
-    # System message from trajectory
-    system_msg = trajectory.messages[0] if trajectory.messages else {
-        "role": "system", "content": "You are a navigation agent."
-    }
-
-    for i, image_path in enumerate(trajectory.image_paths):
-        # Build messages: system + image observation + brief assistant
-        # so Qwen encodes the conversation context including <|latent_state|>.
-        messages = [
-            system_msg,
-            {"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": "Observe the scene from the current viewpoint."},
-            ]},
-            # Include <|latent_state|> in assistant so we can extract it
-            {"role": "assistant", "content": [
-                {"type": "text", "text": f"<|latent_state|>"},
-            ]},
-        ]
+    if trajectory.prompt_version != PROMPT_VERSION:
+        raise ValueError(
+            f"trajectory {trajectory.record_id!r} uses prompt_version "
+            f"{trajectory.prompt_version!r}; expected {PROMPT_VERSION!r}"
+        )
+    if not trajectory.system_prompt or not trajectory.observation_texts:
+        raise ValueError(
+            f"trajectory {trajectory.record_id!r} has no structured Agent transcript"
+        )
+    for step_index in range(len(trajectory.image_paths)):
+        messages = trajectory.build_policy_messages(
+            step_index,
+            bind_images=True,
+        )
         item = {"messages": messages}
-        enc = build_qwen_batch([item], processor, max_length=999999)  # effectively no truncation
+        enc = build_qwen_batch(
+            [item],
+            processor,
+            max_length=999999,  # effectively no truncation
+            latent_token_count=trajectory.latent_token_count,
+        )
         model_inputs = {k: v.to(device) for k, v in enc.items()}
         with torch.no_grad():
             output = qwen_model(**model_inputs, output_hidden_states=True, return_dict=True)
@@ -120,11 +123,12 @@ def build_rl_transitions(
     token_id_map: dict[str, int],
     device: torch.device,
     gamma: float = 0.99,
-) -> list[dict[str, torch.Tensor]]:
+) -> list[dict[str, Any]]:
     """Encode trajectories → list of transition dicts (CPU tensors)."""
 
-    transitions: list[dict[str, torch.Tensor]] = []
+    transitions: list[dict[str, Any]] = []
     for traj in trajectories:
+        validate_rollout_trajectory(traj)
         hiddens = encode_trajectory_hiddens(
             traj, qwen_model, processor, token_id_map, device
         )
@@ -135,9 +139,9 @@ def build_rl_transitions(
         value_targets = discounted_action_value_targets(record, gamma=gamma)
 
         for t in range(traj.num_steps):
-            # old_log_prob for the taken action at step t
-            log_probs = traj.action_log_probs[t] if t < len(traj.action_log_probs) else []
-            old_lp = float(log_probs[traj.action_indices[t]]) if len(log_probs) > traj.action_indices[t] else 0.0
+            expected_messages = traj.build_policy_messages(t, bind_images=False)
+            log_probs = traj.action_log_probs[t]
+            old_lp = float(log_probs[traj.action_indices[t]])
 
             transitions.append({
                 "qwen_hidden_current": hiddens[t],
@@ -148,9 +152,11 @@ def build_rl_transitions(
                     dtype=torch.float32,
                 ),
                 "old_log_prob": old_lp,
-                "nav_instruction": traj.nav_instruction,
-                "action_history_names": traj.action_names[:t],
-                "image_path": traj.image_paths[t],
+                "policy_messages": expected_messages,
+                "policy_image_paths": traj.image_paths[: t + 1],
+                "sampling_temperature": traj.sampling_temperature,
+                "sampling_top_p": traj.sampling_top_p,
+                "latent_token_count": traj.latent_token_count,
             })
 
     return transitions
@@ -160,20 +166,6 @@ def build_rl_transitions(
 # PPO forward pass (Qwen with gradients)
 # ---------------------------------------------------------------------------
 
-# Action token name → index map (copied from rollout.py to avoid circular import)
-_ACTION_NAME_TO_IDX = {
-    "moveahead": 0, "moveback": 1, "moveright": 2, "moveleft": 3,
-    "rotateright": 4, "rotateleft": 5, "lookup": 6, "lookdown": 7,
-}
-_NAV_SYSTEM_TEXT = (
-    "You are a home robot and perform navigation tasks according to instructions.\n"
-    "Actions you can take: moveahead, moveback, moveright, moveleft, "
-    "rotateright, rotateleft, lookup, lookdown.\n"
-    "Rewards: Format correct: +0.5. Achieve the human instruction: +10.0.\n"
-    "Look at the image carefully and navigate to complete the instruction."
-)
-
-
 def compute_new_log_probs_for_batch(
     ppo_items: list[dict],
     model,
@@ -181,92 +173,42 @@ def compute_new_log_probs_for_batch(
     token_id_map: dict[str, int],
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run Qwen forward WITH gradients, returning new log-probs and action logits.
+    """Run Qwen forward with gradients and return transformed log probabilities.
 
     Each ppo_item must have:
-        - "image_path": path to the observation image
-        - "nav_instruction": navigation instruction
-        - "action_history_names": list of VAGEN text action names before this step
+        - "policy_messages": exact unbound prompt recorded during rollout
+        - "policy_image_paths": ordered images for all prompt placeholders
         - "taken_action_idx": the action that was actually taken
 
-    Returns (new_log_probs, action_logits) where:
+    Returns `(new_log_probs, action_log_probs)` where:
         new_log_probs: (B,) log-prob of taken actions under current policy
-        action_logits: (B, 8) raw logits for all 8 actions
+        action_log_probs: (B, 8) current behavior-distribution log probabilities
     """
-    import torch
-    from PIL import Image
-    from nimloth.latent.extraction import LatentActionTokens
-
-    tokens = LatentActionTokens()
-    action_token_ids = [token_id_map[t] for t in tokens.action_tokens]
-
-    texts = []
-    all_images = []
-    for item in ppo_items:
-        # Build the same Nimloth prompt as _select_action_nimloth
-        image_path = item["image_path"]
-        nav_instruction = item["nav_instruction"]
-        # Limit history to last 4 steps to keep image count low (≤5)
-        action_history = item["action_history_names"][-4:]
-        num_images = 1 + len(action_history)
-
-        messages = [
-            {"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]},
-            {"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": f"Observe the scene. {nav_instruction}"},
-            ]},
-        ]
-        for act_name in action_history:
-            act_idx = _ACTION_NAME_TO_IDX.get(act_name, 0)
-            messages.append({"role": "assistant", "content": [
-                {"type": "text", "text": (
-                    f"<think>Navigating.</think>"
-                    f"<|latent_state|><|action_start|><|action_({act_idx})|><|action_end|>"
-                )},
-            ]})
-            messages.append({"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": f"Observe the scene after {act_name}. {nav_instruction}"},
-            ]})
-        messages.append({"role": "assistant", "content": [
-            {"type": "text", "text": "<think>What should I do next?</think><|latent_state|><|action_start|>"},
-        ]})
-
-        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        texts.append(text)
-
-        imgs = [Image.open(image_path).convert("RGB")] * num_images
-        all_images.append(imgs)
-
-    # Process items individually — variable image counts per item prevent batching.
-    new_log_probs_list = []
-    action_logits_list = []
-    for i in range(len(ppo_items)):
-        enc_i = processor(
-            text=[texts[i]], images=all_images[i], padding=True,
-            return_tensors="pt",
+    if not ppo_items:
+        raise ValueError("PPO policy batch must not be empty")
+    latent_token_counts = {
+        int(item.get("latent_token_count", 1)) for item in ppo_items
+    }
+    if len(latent_token_counts) != 1:
+        raise ValueError("one PPO batch cannot mix latent token counts")
+    bound_messages = [
+        bind_image_placeholders(
+            item["policy_messages"],
+            item["policy_image_paths"],
         )
-        model_inputs_i = {k: v.to(device) for k, v in enc_i.items()}
-        outputs_i = model(**model_inputs_i, output_hidden_states=False, return_dict=True)
-        logits_i = outputs_i.logits  # (1, seq_len, vocab)
-
-        input_ids = enc_i["input_ids"][0]
-        as_positions = (input_ids == token_id_map[tokens.action_start]).nonzero(as_tuple=True)[0]
-        if as_positions.numel() == 0:
-            raise RuntimeError("<|action_start|> token not found in PPO prompt")
-        pos = int(as_positions[-1].item())
-        act_ids = torch.tensor(action_token_ids, device=logits_i.device)
-        action_logits_list.append(logits_i[0, pos, act_ids])
-
-        taken_idx = ppo_items[i]["taken_action_idx"]
-        log_probs_i = torch.log_softmax(action_logits_list[-1].float(), dim=-1)
-        new_log_probs_list.append(log_probs_i[taken_idx])
-
-    action_logits = torch.stack(action_logits_list)  # (B, 8)
-    new_log_probs = torch.stack(new_log_probs_list)  # (B,)
-
-    return new_log_probs, action_logits
+        for item in ppo_items
+    ]
+    return batch_action_log_probs(
+        model=model,
+        processor=processor,
+        token_id_map=token_id_map,
+        messages=bound_messages,
+        taken_action_indices=[int(item["taken_action_idx"]) for item in ppo_items],
+        temperatures=[float(item["sampling_temperature"]) for item in ppo_items],
+        top_ps=[float(item["sampling_top_p"]) for item in ppo_items],
+        device=device,
+        latent_token_count=latent_token_counts.pop(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +261,11 @@ def _maybe_init_wandb(
     run_id_path.write_text(f"{run.id}\n", encoding="utf-8")
     wandb.define_metric("global_step")
     wandb.define_metric("train/*", step_metric="global_step")
-    print(json.dumps({"wandb": "initialized", "run_id": run.id, "resume": requested_run_id is not None}))
+    print(json.dumps({
+        "wandb": "initialized",
+        "run_id": run.id,
+        "resume": requested_run_id is not None,
+    }))
     return run
 
 
@@ -504,9 +450,7 @@ def train_rl(
                 "请先使用独立 rollout backend（如 experiments/training/rl/rollout_env.py）"
                 "生成 JSONL 文件，再用 --use-jsonl-rollout --jsonl-sources 指定 JSONL 路径训练。"
             )
-        collector._model = model
-        collector._processor = processor
-        collector._device = device
+        collector.bind_policy(model, processor, device)
         if is_main():
             print(json.dumps({"env_collector": "wired", "device": str(device)}))
 
@@ -572,7 +516,11 @@ def train_rl(
 
     # --- optimizer ------------------------------------------------------------
     param_groups = [
-        {"params": [p for p in model.parameters() if p.requires_grad], "lr": actor_lr, "name": "qwen"},
+        {
+            "params": [p for p in model.parameters() if p.requires_grad],
+            "lr": actor_lr,
+            "name": "qwen",
+        },
         {"params": state_proj.parameters(), "lr": pred_lr, "name": "state_proj"},
         {"params": value_head.parameters(), "lr": vh_lr, "name": "value_head"},
         {"params": wm_predictor.parameters(), "lr": pred_lr, "name": "wm_predictor"},
@@ -696,7 +644,10 @@ def train_rl(
             import gc
             torch.cuda.empty_cache()
             gc.collect()
-            from nimloth.training.rl.loss import compute_actor_loss, compute_action_entropy
+            from nimloth.training.rl.loss import (
+                compute_action_entropy_from_log_probs,
+                compute_actor_loss,
+            )
 
             # advantages from value head
             with torch.no_grad():
@@ -712,14 +663,16 @@ def train_rl(
             for i in range(len(batch)):
                 b = batch[i]
                 ppo_items.append({
-                    "image_path": b["image_path"],
-                    "nav_instruction": b["nav_instruction"],
-                    "action_history_names": b["action_history_names"],
+                    "policy_messages": b["policy_messages"],
+                    "policy_image_paths": b["policy_image_paths"],
+                    "sampling_temperature": b["sampling_temperature"],
+                    "sampling_top_p": b["sampling_top_p"],
+                    "latent_token_count": b["latent_token_count"],
                     "taken_action_idx": int(b["action_index"].item()),
                 })
 
             # Qwen forward with gradients
-            new_log_probs, action_logits = compute_new_log_probs_for_batch(
+            new_log_probs, action_log_probs = compute_new_log_probs_for_batch(
                 ppo_items, model, processor, token_id_map, device,
             )
             old_log_probs = torch.tensor(
@@ -733,7 +686,7 @@ def train_rl(
                 advantages=advantages.to(device=new_log_probs.device, dtype=new_log_probs.dtype),
                 clip_ratio=clip_ratio,
             )
-            entropy = compute_action_entropy(action_logits)
+            entropy = compute_action_entropy_from_log_probs(action_log_probs)
             total_loss = pred_loss + val_loss + actor_loss - entropy_coeff * entropy
             actor_metrics["entropy"] = float(entropy.detach().item())
             actor_metrics["mean_advantage"] = float(advantages.mean().item())

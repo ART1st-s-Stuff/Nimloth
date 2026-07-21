@@ -9,6 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from nimloth.agent import (
+    AgentTranscript,
+    NimlothAgentPrompt,
+    navigation_action_name,
+)
 from nimloth.training.rl.rollout import JSONLRolloutCollector, RolloutTrajectory
 
 
@@ -18,22 +23,52 @@ from nimloth.training.rl.rollout import JSONLRolloutCollector, RolloutTrajectory
 
 
 def _make_traj(record_id: str, num_steps: int = 3) -> RolloutTrajectory:
+    system_prompt = "Follow the navigation instruction."
+    observation_texts = [
+        (
+            "Human Instruction: Go to the couch.\n<image>"
+            if step == 0
+            else f"Feedback after step {step}.\n<image>"
+        )
+        for step in range(num_steps + 1)
+    ]
+    image_paths = [f"/tmp/{record_id}_step{s}.png" for s in range(num_steps + 1)]
+    action_indices = [i % 8 for i in range(num_steps)]
+    prompt = NimlothAgentPrompt()
+    transcript = AgentTranscript(
+        system_prompt=system_prompt,
+        observation_texts=tuple(observation_texts),
+        observation_images=tuple(image_paths),
+        action_indices=tuple(action_indices),
+    )
     return RolloutTrajectory(
         record_id=record_id,
-        image_paths=[f"/tmp/{record_id}_step{s}.png" for s in range(num_steps + 1)],
-        action_indices=[i % 8 for i in range(num_steps)],
-        action_names=["moveahead", "rotateright", "lookup"][:num_steps],
-        action_log_probs=[[-2.0] * 8 for _ in range(num_steps)],
+        image_paths=image_paths,
+        action_indices=action_indices,
+        action_names=[navigation_action_name(index) for index in action_indices],
+        action_log_probs=[[-math.log(8.0)] * 8 for _ in range(num_steps)],
         nav_instruction="Go to the couch.",
         success=(num_steps % 2 == 0),
         reward=10.0 if num_steps % 2 == 0 else 0.0,
+        messages=prompt.build_supervised_messages(transcript, bind_images=False),
+        system_prompt=system_prompt,
+        observation_texts=observation_texts,
+        policy_messages=[
+            prompt.build_policy_messages(
+                transcript.policy_prefix(step),
+                bind_images=False,
+            )
+            for step in range(num_steps)
+        ],
     )
 
 
 def _write_jsonl(path: Path, trajectories: list[RolloutTrajectory]) -> None:
     with path.open("w", encoding="utf-8") as f:
         for traj in trajectories:
-            f.write(json.dumps(traj.to_record(), ensure_ascii=False) + "\n")
+            f.write(
+                json.dumps(traj.to_record(), ensure_ascii=False, allow_nan=False) + "\n"
+            )
 
 
 def _make_collector_from_trajs(
@@ -122,10 +157,26 @@ def test_jsonl_collector_reads_gzip_files(tmp_path: Path) -> None:
     trajs = [_make_traj(f"gz_{i:03d}") for i in range(4)]
     with gzip.open(gz_path, "wt", encoding="utf-8") as f:
         for traj in trajs:
-            f.write(json.dumps(traj.to_record(), ensure_ascii=False) + "\n")
+            f.write(
+                json.dumps(traj.to_record(), ensure_ascii=False, allow_nan=False) + "\n"
+            )
 
     collector = JSONLRolloutCollector(sources=[tmp_path])
     assert collector.total_trajectories == 4
+
+
+def test_masked_action_probabilities_use_strict_json_null(tmp_path: Path) -> None:
+    trajectory = _make_traj("greedy", num_steps=1)
+    trajectory.action_log_probs = [[0.0] + [float("-inf")] * 7]
+    path = tmp_path / "greedy.jsonl"
+
+    _write_jsonl(path, [trajectory])
+
+    payload = path.read_text(encoding="utf-8")
+    assert "Infinity" not in payload
+    assert "null" in payload
+    loaded = JSONLRolloutCollector(sources=[path]).collect(num_episodes=1)[0]
+    assert loaded.action_log_probs[0] == [0.0] + [float("-inf")] * 7
 
 
 # ---------------------------------------------------------------------------

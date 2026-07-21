@@ -17,10 +17,17 @@ Qwen and world-model concepts stay outside it.
 | `utils.py` | Small runtime helpers shared by training and validation |
 | `diagnosis/` | Non-production packed/KV equivalence investigations |
 
+For structured rollout records, transcript and action-prompt construction are
+owned by `nimloth.agent`. SFT2 expands each action into a supervised current
+prefix and a policy-query next prefix using `NimlothAgentPrompt`. Legacy JSONL
+records without `system_prompt`/`observation_texts` remain readable through
+their stored `messages`, but new data should use the structured Agent schema.
+
 Dependency direction:
 
 ```text
-wm (transition/model concepts)
+agent (transcript/prompt/action contract)
+  + wm (transition/model concepts)
   + backbone/qwen25vl (Qwen adapters)
         -> training/sft2 (phase orchestration)
               -> experiments/training/sft2 (thin entry points)

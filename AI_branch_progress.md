@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-07-21：Agent prompt/runtime 成为 SFT2 与 RL 公共边界
+
+- 在本地分支 `fix/sft2-review-bugs` 将 `src/nimloth/agent/` 从无调用方的 `WMAgent` 原型改为实际使用的结构化 transcript、prompt/action 模板和 `NavigationAgent` episode 运行时；Qwen2.5-VL 的模型前向与 temperature/top-p 行为分布保留在 `backbone/qwen25vl/policy.py`。
+- RL 环境 rollout 现在使用环境真实 `system_prompt`、每步 `obs_str` 和按序历史图片；PPO replay、WM state encoding 与 online action query 使用同一模板和完整历史。推理失败不再伪造 moveahead/零概率样本。
+- 新 RL JSONL 保存 prompt version、结构化 observation/action、每步 prompt 审计副本、采样参数和真实 8-way behavior log probabilities；写入前和训练前统一校验，top-p/greedy 的 `-inf` 以标准 JSON `null` round-trip。
+- SFT2 对结构化记录用同一模板生成 supervised current prefix 与 policy-query next prefix；旧 `messages` 数据继续走显式 legacy 读取路径。SFT1 converter 的 assistant action block 也改由 Agent 模板生成并保留原 reasoning。
+- 已删除 `src/nimloth/agent/inference.py`，并更新 Agent/SFT2/RL README、RL 质量清单和已失效的 k>1 计划说明。
+- 验证：相关组合测试 `116 passed, 1 deselected`；扩大到本地可收集测试为 `184 passed, 1 deselected`。完整测试收集仍受三个基线环境问题阻塞：旧 VAGEN `envs/` 文件路径不存在、两个无 package 的 `test_config.py` 同名导入冲突、当前 Python 环境缺少 pandas；单独的两进程 Gloo 测试因沙箱无法解析 loopback 被 deselect。`compileall` 与 `git diff --check` 通过。
+
 ## 2026-07-20：CFM/RCDM 归入 recon 包
 
 - 在本地分支 `fix/sft2-review-bugs` 将顶层 `nimloth.cfm` 与 `nimloth.rcdm` 迁入 `nimloth.recon.cfm` 和 `nimloth.recon.rcdm`；训练编排继续保留在 `nimloth.training.reconstruction`，评估入口继续保留在 `nimloth.eval`。

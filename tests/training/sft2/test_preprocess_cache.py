@@ -251,18 +251,22 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
         TransitionSample(
             record_id="rec",
             step_index=0,
-            prefix_messages=[{"role": "assistant", "content": "a"}],
+            prefix_messages=[{"role": "assistant", "content": "a <image>"}],
             prefix_image_paths=["im0"],
             action_index=0,
             current_image_path="im0",
             next_image_path="im1",
-            next_prefix_messages=[{"role": "assistant", "content": "b"}],
+            next_prefix_messages=[
+                {"role": "assistant", "content": "b <image> <image>"}
+            ],
             next_prefix_image_paths=["im0", "im1"],
         ),
         TransitionSample(
             record_id="rec",
             step_index=1,
-            prefix_messages=[{"role": "assistant", "content": "b"}],
+            prefix_messages=[
+                {"role": "assistant", "content": "b <image> <image>"}
+            ],
             prefix_image_paths=["im0", "im1"],
             action_index=1,
             current_image_path="im1",
