@@ -31,18 +31,19 @@ def test_evaluate_uses_evaluation_step_and_batch_builder() -> None:
             yield
 
     class FakeAlgorithm:
-        agent = SimpleNamespace(trainable_modules=(module,))
-        target = FakeTarget()
-
         def __init__(self) -> None:
             self.values: list[float] = []
 
-        def unwrapped(self):
-            return self
-
-        def evaluation_step(self, batch):
+        def evaluation_step(self, _runtime, batch):
             self.values.append(float(batch))
             return SimpleNamespace(metrics={"wm_mse": float(batch)})
+
+    class FakeRuntime:
+        agent = SimpleNamespace(trainable_modules=(module,))
+        target = FakeTarget()
+
+        def unwrapped(self):
+            return self
 
     class FakeBuilder:
         def prepare(self, batch):
@@ -51,6 +52,7 @@ def test_evaluate_uses_evaluation_step_and_batch_builder() -> None:
     algorithm = FakeAlgorithm()
     metrics = evaluate(
         algorithm,
+        FakeRuntime(),
         [1.0, 3.0],
         batch_builder=FakeBuilder(),
     )

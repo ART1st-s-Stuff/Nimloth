@@ -13,14 +13,20 @@ import torch.distributed as dist
 from nimloth.config.rl import RLConfig
 from nimloth.rollout import RolloutCollector
 from nimloth.rollout import RolloutEncoder
-from nimloth.training.rl.algorithm import RLAlgorithm, count_sequence_windows
+from nimloth.training.rl.algorithm import (
+    RLAlgorithm,
+    count_sequence_windows,
+    select_sequence_batch,
+)
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.evaluation import (
     evaluate_rollout_collector,
     summarize_rollouts,
 )
 from nimloth.training.rl.reporting import RLReporter
+from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.util.distributed import is_main
+from nimloth.util.optim import OptimizationRuntime
 
 
 @dataclass
@@ -37,6 +43,9 @@ class RLTrainingLoop:
 
     config: RLConfig
     algorithm: RLAlgorithm
+    model_runtime: RLModelRuntime
+    optimization_runtime: OptimizationRuntime
+    device: torch.device
     rollout_encoder: RolloutEncoder
     train_collector: RolloutCollector
     eval_collector: RolloutCollector | None
@@ -105,15 +114,21 @@ class RLTrainingLoop:
             )
             return
 
-        update_metrics = self.algorithm.update(
+        batch = select_sequence_batch(
             encoded_trajectories,
+            history_size=self.config.predictor.history_size,
             batch_size=self.config.rl.batch_size,
-            batch_seed=self.config.training.seed + iteration,
+            seed=self.config.training.seed + iteration,
+            device=self.device,
         )
+        self.optimization_runtime.zero_grad()
+        step_output = self.algorithm.training_step(self.model_runtime, batch)
+        self.optimization_runtime.backward(step_output.loss)
+        self.optimization_runtime.step()
         self.state.global_step += 1
         rollout_metrics = summarize_rollouts(trajectories)
         metrics = {
-            **update_metrics,
+            **step_output.metrics,
             "num_rollouts": float(len(trajectories)),
             "num_encoded_trajectories": float(len(encoded_trajectories)),
             "num_transitions": float(num_transitions),
@@ -133,7 +148,10 @@ class RLTrainingLoop:
             and iteration % self.config.validation.interval == 0
         ):
             return
-        assert self.eval_collector is not None
+        if self.eval_collector is None:
+            raise RuntimeError(
+                "validation is enabled but no evaluation collector was configured"
+            )
         evaluation = evaluate_rollout_collector(
             self.eval_collector,
             num_episodes=self.config.validation.envs,

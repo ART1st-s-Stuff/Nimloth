@@ -63,8 +63,21 @@ class Agent(nn.Module):
 
     @property
     def trainable_modules(self) -> tuple[nn.Module, ...]:
+        """返回需要统一切换 train/eval mode 的完整模型边界。"""
+
         return (
             self.backbone,
+            self.wm.state_proj,
+            self.wm.wm_predictor,
+            self.wm.value_head,
+        )
+
+    @property
+    def synchronized_modules(self) -> tuple[nn.Module, ...]:
+        """返回可能提供 DDP/FSDP ``no_sync`` 的实际包装模块。"""
+
+        return (
+            self.backbone.model,
             self.wm.state_proj,
             self.wm.wm_predictor,
             self.wm.value_head,

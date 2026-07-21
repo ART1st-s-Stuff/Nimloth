@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import shutil
+import time
 from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as dist
 
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
+from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
@@ -202,6 +207,137 @@ class SFT2CheckpointManager:
             micro_step_in_epoch=micro_step_in_epoch,
             training_invariants=self.training_invariants,
         )
+
+
+@dataclass
+class SFT2CheckpointRuntime:
+    """统一 checkpoint 的触发、分布式同步和历史清理策略。"""
+
+    manager: SFT2CheckpointManager
+    device: torch.device
+    interval_steps: int
+    interval_minutes: float
+    keep_last: int
+    last_periodic_time: float = field(default_factory=time.monotonic)
+
+    def save_final(
+        self,
+        *,
+        step: int,
+        epoch: int,
+        best_val_wm_mse: float,
+    ) -> None:
+        self._barrier()
+        if is_main():
+            self.manager.save(
+                "final",
+                step=step,
+                epoch=epoch,
+                best_val_wm_mse=best_val_wm_mse,
+            )
+        self._barrier()
+
+    def save_periodic(
+        self,
+        *,
+        step: int,
+        epoch: int,
+        micro_step: int,
+        best_val_wm_mse: float,
+    ) -> None:
+        save_step = bool(
+            self.interval_steps > 0 and step % self.interval_steps == 0
+        )
+        save_latest = False
+        if self.interval_minutes > 0:
+            if is_main():
+                elapsed = time.monotonic() - self.last_periodic_time
+                save_latest = elapsed >= self.interval_minutes * 60.0
+            save_latest = self._broadcast_bool(save_latest)
+
+        if save_latest:
+            self._barrier()
+            if is_main():
+                self.manager.save(
+                    "latest",
+                    step=step,
+                    epoch=epoch,
+                    best_val_wm_mse=best_val_wm_mse,
+                    epoch_complete=False,
+                    micro_step_in_epoch=micro_step,
+                )
+                self.last_periodic_time = time.monotonic()
+            self._barrier()
+
+        if save_step:
+            self._barrier()
+            if is_main():
+                self.manager.save(
+                    f"step_{step:06d}",
+                    step=step,
+                    epoch=epoch,
+                    best_val_wm_mse=best_val_wm_mse,
+                    epoch_complete=False,
+                    micro_step_in_epoch=micro_step,
+                )
+                self._prune_step_checkpoints()
+            self._barrier()
+
+    def save_epoch(
+        self,
+        *,
+        step: int,
+        epoch: int,
+        best_val_wm_mse: float,
+        improved: bool,
+    ) -> None:
+        if not is_main():
+            return
+        self.manager.save(
+            f"epoch_{epoch:03d}",
+            step=step,
+            epoch=epoch,
+            best_val_wm_mse=best_val_wm_mse,
+        )
+        if improved:
+            self.manager.save(
+                "best",
+                step=step,
+                epoch=epoch,
+                best_val_wm_mse=best_val_wm_mse,
+            )
+
+    def _prune_step_checkpoints(self) -> None:
+        if self.keep_last <= 0:
+            return
+        checkpoints = sorted(
+            (
+                (read_checkpoint_step(path), path)
+                for path in self.manager.output_dir.glob("step_*")
+                if path.is_dir()
+                and path.name.startswith("step_")
+                and (path / "training_state.pt").is_file()
+            ),
+            key=lambda item: item[0],
+        )
+        for _, path in checkpoints[: -self.keep_last]:
+            shutil.rmtree(path, ignore_errors=True)
+
+    def _broadcast_bool(self, value: bool) -> bool:
+        if not (dist.is_available() and dist.is_initialized()):
+            return value
+        flag = torch.tensor(
+            [1 if value else 0],
+            device=self.device,
+            dtype=torch.int32,
+        )
+        dist.broadcast(flag, src=0)
+        return bool(flag.item())
+
+    @staticmethod
+    def _barrier() -> None:
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
 
 
 def load_aux_checkpoint(

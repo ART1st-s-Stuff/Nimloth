@@ -6,9 +6,11 @@ from pathlib import Path
 
 import torch
 
-from nimloth.agent import Agent, AgentBatch, AgentTarget
+from nimloth.agent import Agent, AgentTarget
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
+from nimloth.rollout import TransitionBatch
 from nimloth.training.sft2.algorithm import SFT2Algorithm
+from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm.model import WorldModel
 
 
@@ -52,8 +54,6 @@ def test_terminal_only_batch_runs_backbone_and_wm_with_masked_zero_loss() -> Non
         ),
     )
     algorithm = SFT2Algorithm(
-        agent=agent,
-        target=AgentTarget(agent),
         sigreg=None,
         sigreg_weight=0.0,
         value_weight=1.0,
@@ -61,8 +61,9 @@ def test_terminal_only_batch_runs_backbone_and_wm_with_masked_zero_loss() -> Non
         value_rank_margin=0.1,
         value_rank_weight=1.0,
     )
+    runtime = SFT2ModelRuntime(agent=agent, target=AgentTarget(agent))
     current = torch.randn(1, 3, requires_grad=True)
-    batch = AgentBatch(
+    batch = TransitionBatch(
         current=BackboneBatch({"hidden": current}),
         next=BackboneBatch({"hidden": torch.randn(1, 3)}),
         action_indices=torch.tensor([0]),
@@ -72,7 +73,7 @@ def test_terminal_only_batch_runs_backbone_and_wm_with_masked_zero_loss() -> Non
         trajectory_steps=(("terminal", 0),),
     )
 
-    output = algorithm.training_step(batch, wm_weight=1.0)
+    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
 
     assert backbone.calls == 2
     assert output.metrics.get("wm_mse") is None

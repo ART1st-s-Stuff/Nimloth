@@ -10,7 +10,7 @@ from typing import Any
 import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
 
-from nimloth.agent import AgentBatchBuilder
+from nimloth.rollout import TransitionBatchBuilder
 from nimloth.util.distributed import is_main
 from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
@@ -97,7 +97,7 @@ def _verify_cache_manifest(
 
 def _build_or_open_cached_datasets(
     config: Any,
-    batch_builder: AgentBatchBuilder,
+    batch_builder: TransitionBatchBuilder,
     train_samples: list[TransitionSample],
     val_samples: list[TransitionSample],
 ):
@@ -196,7 +196,7 @@ def _build_or_open_cached_datasets(
 
 def build_data_bundle(
     config: Any,
-    batch_builder: AgentBatchBuilder,
+    batch_builder: TransitionBatchBuilder,
     *,
     rank: int,
     world_size: int,

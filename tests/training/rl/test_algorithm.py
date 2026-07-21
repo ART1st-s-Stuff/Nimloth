@@ -15,6 +15,7 @@ from nimloth.training.rl.algorithm import (
     count_sequence_windows,
     select_sequence_batch,
 )
+from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm.model import WorldModel
 from nimloth.wm.sigreg import SequenceSIGReg
 from nimloth.wm.value_head import ValueHead
@@ -65,7 +66,13 @@ class _RecordingSIGReg(torch.nn.Module):
 def _algorithm(
     *,
     sigreg: SequenceSIGReg | None = None,
-) -> tuple[RLAlgorithm, torch.nn.Linear, _Predictor, ValueHead]:
+) -> tuple[
+    RLAlgorithm,
+    RLModelRuntime,
+    torch.nn.Linear,
+    _Predictor,
+    ValueHead,
+]:
     state_proj = torch.nn.Linear(3, 2, bias=False)
     predictor = _Predictor()
     value_head = ValueHead(emb_dim=2, num_actions=3, hidden_dim=2)
@@ -77,14 +84,8 @@ def _algorithm(
             value_head=value_head,
         ),
     )
-    optimizer = torch.optim.SGD(agent.wm.parameters(), lr=0.01)
     return (
         RLAlgorithm(
-            agent=agent,
-            optimizer=optimizer,
-            device=torch.device("cpu"),
-            vision_ema=None,
-            policy_replay=None,
             history_size=2,
             sigreg=sigreg,
             sigreg_weight=0.1 if sigreg is not None else 0.0,
@@ -93,6 +94,7 @@ def _algorithm(
             ppo_clip_ratio=0.2,
             entropy_weight=0.0,
         ),
+        RLModelRuntime(agent=agent, policy_replay=None),
         state_proj,
         predictor,
         value_head,
@@ -185,9 +187,9 @@ def test_sequence_batch_preserves_trajectory_boundaries_and_alignment() -> None:
 
 
 def test_rl_wm_stops_gradient_on_next_projector_target() -> None:
-    algorithm, state_proj, predictor, _ = _algorithm()
+    algorithm, runtime, state_proj, predictor, _ = _algorithm()
     batch = _batch()
-    output = algorithm.training_step(batch)
+    output = algorithm.training_step(runtime, batch)
 
     output.losses["wm"].backward()
 
@@ -199,9 +201,9 @@ def test_rl_wm_stops_gradient_on_next_projector_target() -> None:
 
 
 def test_rl_value_updates_head_but_not_state_projector() -> None:
-    algorithm, state_proj, _, value_head = _algorithm()
+    algorithm, runtime, state_proj, _, value_head = _algorithm()
     batch = _batch()
-    output = algorithm.training_step(batch)
+    output = algorithm.training_step(runtime, batch)
 
     output.losses["value"].backward()
 
@@ -212,13 +214,21 @@ def test_rl_value_updates_head_but_not_state_projector() -> None:
 
 def test_rl_sigreg_receives_full_history_plus_target_sequence() -> None:
     recording = _RecordingSIGReg()
-    algorithm, _, _, _ = _algorithm(
+    algorithm, runtime, _, _, _ = _algorithm(
         sigreg=SequenceSIGReg(regularizer=recording),
     )
     batch = _batch()
 
-    output = algorithm.training_step(batch)
+    output = algorithm.training_step(runtime, batch)
 
     assert len(recording.inputs) == 1
     assert recording.inputs[0].shape == (3, 2, 2)
     assert output.losses["sigreg"] is not None
+
+
+def test_rl_algorithm_is_pure_compute_configuration() -> None:
+    algorithm, _, _, _, _ = _algorithm()
+
+    assert not isinstance(algorithm, torch.nn.Module)
+    assert not hasattr(algorithm, "agent")
+    assert not hasattr(algorithm, "optimizer")

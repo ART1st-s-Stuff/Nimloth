@@ -1,17 +1,15 @@
-"""RL 的连续序列采样、模型前向、loss、backward 与 optimizer step。"""
+"""RL 的连续序列采样、模型前向与目标函数。"""
 
 from __future__ import annotations
 
-import gc
 from dataclasses import dataclass
 from typing import Sequence
 
 import torch
 import torch.nn.functional as F
 
-from nimloth.agent import ActionLogProbReplay, Agent
-from nimloth.backbone import BackboneEMA
 from nimloth.rollout import EncodedTrajectory, EncodedTransition
+from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm import SequenceSIGReg
 
 
@@ -145,21 +143,16 @@ def normalized_monte_carlo_advantages(
 
 
 class RLAlgorithm:
-    """定义一次 RL optimizer update 的完整执行顺序。
+    """定义 RL 一个 batch 的完整计算图。
 
     本类保留 RL 特有的梯度边界：WM current 更新 StateProjector/WMPredictor，
-    next state 是固定 target，value 输入 detach。rollout 生命周期和 checkpoint
-    不属于单批算法，继续由 loop 管理。
+    next state 是固定 target，value 输入 detach。Agent、policy replay、optimizer、
+    rollout 生命周期和 checkpoint 均由显式运行期或 loop 管理。
     """
 
     def __init__(
         self,
         *,
-        agent: Agent,
-        optimizer: torch.optim.Optimizer,
-        device: torch.device,
-        vision_ema: BackboneEMA | None,
-        policy_replay: ActionLogProbReplay | None,
         history_size: int,
         sigreg: SequenceSIGReg | None,
         sigreg_weight: float,
@@ -168,11 +161,6 @@ class RLAlgorithm:
         ppo_clip_ratio: float,
         entropy_weight: float,
     ) -> None:
-        self.agent = agent
-        self.optimizer = optimizer
-        self.device = device
-        self.vision_ema = vision_ema
-        self.policy_replay = policy_replay
         self.history_size = int(history_size)
         if self.history_size < 1:
             raise ValueError(
@@ -185,47 +173,18 @@ class RLAlgorithm:
         self.ppo_clip_ratio = float(ppo_clip_ratio)
         self.entropy_weight = float(entropy_weight)
 
-    def update(
+    def training_step(
         self,
-        trajectories: Sequence[EncodedTrajectory],
-        *,
-        batch_size: int,
-        batch_seed: int,
-    ) -> dict[str, float]:
-        """采样一个 minibatch，完成 backward、裁剪、optimizer 与 EMA。"""
-
-        batch = select_sequence_batch(
-            trajectories,
-            history_size=self.history_size,
-            batch_size=batch_size,
-            seed=batch_seed,
-            device=self.device,
-        )
-        if self.policy_replay is not None:
-            torch.cuda.empty_cache()
-            gc.collect()
-
-        output = self.training_step(batch)
-        self.optimizer.zero_grad(set_to_none=True)
-        output.loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            [
-                parameter
-                for group in self.optimizer.param_groups
-                for parameter in group["params"]
-            ],
-            1.0,
-        )
-        self.optimizer.step()
-        if self.vision_ema is not None:
-            self.vision_ema.update(self.agent.backbone.model)
-        return output.metrics
-
-    def training_step(self, batch: RLBatch) -> RLStepOutput:
+        runtime: RLModelRuntime,
+        batch: RLBatch,
+    ) -> RLStepOutput:
         """构造 RL 计算图并计算 WM、value 与可选 PPO 目标。"""
 
         expected_state_steps = self.history_size + 1
-        if batch.hidden_states.ndim != 3 or batch.hidden_states.shape[1] != expected_state_steps:
+        if (
+            batch.hidden_states.ndim != 3
+            or batch.hidden_states.shape[1] != expected_state_steps
+        ):
             raise ValueError(
                 "RLBatch hidden_states must have shape (B, history_size + 1, D), "
                 f"got {tuple(batch.hidden_states.shape)} for history_size={self.history_size}"
@@ -240,9 +199,9 @@ class RLAlgorithm:
                 f"got {tuple(batch.action_indices.shape)}, expected {expected_actions}"
             )
 
-        state_sequence = self.agent.wm.project_state(batch.hidden_states)
+        state_sequence = runtime.agent.wm.project_state(batch.hidden_states)
         state_context = state_sequence[:, :-1]
-        predicted_next_states = self.agent.wm.predict_state_sequence(
+        predicted_next_states = runtime.agent.wm.predict_state_sequence(
             state_context,
             batch.action_indices,
         )
@@ -250,7 +209,7 @@ class RLAlgorithm:
         # 一个状态可以在当前位置更新 projector，同时在前一位置作为 stop-gradient
         # target；因此先统一投影，再只 detach 右移后的 target 视图。
         target_next_states = state_sequence[:, 1:].detach()
-        action_values = self.agent.wm.predict_action_values(state_context.detach())
+        action_values = runtime.agent.wm.predict_action_values(state_context.detach())
 
         # 三个目标在这里直接组合，避免把同一批 tensor 再转发给一层 objective。
         wm_loss = F.mse_loss(predicted_next_states, target_next_states)
@@ -270,8 +229,8 @@ class RLAlgorithm:
             total = total + self.sigreg_weight * sigreg_loss
 
         policy: dict[str, torch.Tensor] | None = None
-        if self.policy_replay is not None:
-            new_log_probs, action_log_probs = self.policy_replay(batch.transitions)
+        if runtime.policy_replay is not None:
+            new_log_probs, action_log_probs = runtime.policy_replay(batch.transitions)
             advantages = normalized_monte_carlo_advantages(
                 return_targets=batch.return_targets.flatten().to(
                     device=chosen_values.device,

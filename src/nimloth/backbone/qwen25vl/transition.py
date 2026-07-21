@@ -8,13 +8,14 @@ from typing import Any, Sequence
 import torch
 from PIL import Image
 
-from nimloth.agent import AgentBatch, bind_image_placeholders
+from nimloth.agent import bind_image_placeholders
 from nimloth.backbone.base import BackboneBatch
 from nimloth.backbone.qwen25vl.batch import (
     build_qwen_batch,
     collate_qwen_encodings,
     message_cache_key,
 )
+from nimloth.rollout.batch import TransitionBatch
 from nimloth.rollout.transitions import TransitionSample
 
 # Compatibility name for existing callers. Agent owns the message/image contract.
@@ -66,7 +67,7 @@ def collate_next_qwen_encodings(
 
 
 class Qwen25VLBatchBuilder:
-    """把 DataLoader 输出转换为与具体模型无关的 ``AgentBatch``。"""
+    """把 DataLoader 输出转换为模型无关的 ``TransitionBatch``。"""
 
     def __init__(
         self,
@@ -119,10 +120,10 @@ class Qwen25VLBatchBuilder:
             ),
         }
 
-    def prepare(self, raw_batch: Any) -> AgentBatch:
+    def prepare(self, raw_batch: Any) -> TransitionBatch:
         """构造 current/next 模型输入和对齐后的 transition target。"""
 
-        if isinstance(raw_batch, AgentBatch):
+        if isinstance(raw_batch, TransitionBatch):
             return raw_batch
         if isinstance(raw_batch, dict) and "current_enc" in raw_batch:
             items = [self._metadata(item) for item in raw_batch["items"]]
@@ -172,7 +173,7 @@ class Qwen25VLBatchBuilder:
             dtype=torch.long,
             device=self.device,
         )
-        return AgentBatch(
+        return TransitionBatch(
             current=BackboneBatch(current_encoding),
             next=BackboneBatch(next_encoding),
             action_indices=torch.tensor(

@@ -8,9 +8,10 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch import nn
 
-from nimloth.agent import Agent, AgentBatch, AgentOutput, AgentTarget
+from nimloth.agent import AgentOutput
+from nimloth.rollout import TransitionBatch
+from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import (
     ONE_STEP_WM_HISTORY_SIZE,
     LatentWMPredictor,
@@ -41,7 +42,7 @@ class SFT2StepOutput:
     model_output: AgentOutput
 
 
-class SFT2Algorithm(nn.Module):
+class SFT2Algorithm:
     """定义 SFT2 一个 batch 的完整计算图。
 
     训练循环只负责取 batch、backward 和 optimizer step。本类负责当前状态、目标
@@ -52,8 +53,6 @@ class SFT2Algorithm(nn.Module):
     def __init__(
         self,
         *,
-        agent: Agent,
-        target: AgentTarget,
         sigreg: OneStepSIGReg | None,
         sigreg_weight: float,
         value_weight: float,
@@ -64,9 +63,6 @@ class SFT2Algorithm(nn.Module):
         wm_weight_end: float = 1.0,
         wm_warmup_fraction: float = 0.3,
     ) -> None:
-        super().__init__()
-        self.agent = agent
-        self.target = target
         self.sigreg = sigreg
         self.sigreg_weight = float(sigreg_weight)
         self.value_weight = float(value_weight)
@@ -93,11 +89,13 @@ class SFT2Algorithm(nn.Module):
 
     def training_step(
         self,
-        batch: AgentBatch,
+        runtime: SFT2ModelRuntime,
+        batch: TransitionBatch,
         *,
         wm_weight: float,
     ) -> SFT2StepOutput:
         return self._step(
+            runtime,
             batch,
             wm_weight=wm_weight,
             include_lm_loss=True,
@@ -105,8 +103,13 @@ class SFT2Algorithm(nn.Module):
             include_sigreg=True,
         )
 
-    def evaluation_step(self, batch: AgentBatch) -> SFT2StepOutput:
+    def evaluation_step(
+        self,
+        runtime: SFT2ModelRuntime,
+        batch: TransitionBatch,
+    ) -> SFT2StepOutput:
         return self._step(
+            runtime,
             batch,
             wm_weight=1.0,
             include_lm_loss=False,
@@ -116,7 +119,8 @@ class SFT2Algorithm(nn.Module):
 
     def _step(
         self,
-        batch: AgentBatch,
+        runtime: SFT2ModelRuntime,
+        batch: TransitionBatch,
         *,
         wm_weight: float,
         include_lm_loss: bool,
@@ -125,12 +129,12 @@ class SFT2Algorithm(nn.Module):
     ) -> SFT2StepOutput:
         """按照 current forward → next target → loss 的顺序完成一次计算。"""
 
-        model_output = self.agent(
+        model_output = runtime.agent(
             batch.current,
             batch.action_indices,
             include_lm_loss=include_lm_loss,
         )
-        target_states = self.target(batch.next)
+        target_states = runtime.target(batch.next)
         aligned_targets = target_states[batch.next_indices]
 
         wm_loss = self._wm_loss(
@@ -138,7 +142,7 @@ class SFT2Algorithm(nn.Module):
             aligned_targets,
             batch.non_terminal_mask,
         )
-        value = self.value_loss(
+        value = self._value_loss(
             model_output.action_values,
             batch.action_indices,
             batch.value_targets,
@@ -199,7 +203,7 @@ class SFT2Algorithm(nn.Module):
         weights = mask.to(device=per_row.device, dtype=per_row.dtype)
         return (per_row * weights).sum() / weights.sum().clamp_min(1.0)
 
-    def value_loss(
+    def _value_loss(
         self,
         all_values: torch.Tensor,
         action_indices: torch.Tensor,
@@ -230,7 +234,7 @@ class SFT2Algorithm(nn.Module):
         self,
         current_states: torch.Tensor,
         next_states: torch.Tensor,
-        batch: AgentBatch,
+        batch: TransitionBatch,
     ) -> torch.Tensor | None:
         """把有效单步 transition 交给公共的固定 ``T=2`` SIGReg 模块。"""
 
@@ -243,23 +247,6 @@ class SFT2Algorithm(nn.Module):
             current_states.index_select(0, indices),
             next_states.index_select(0, indices),
         )
-
-    def unwrapped(self) -> "SFT2Algorithm":
-        agent = self.agent.unwrapped()
-        return SFT2Algorithm(
-            agent=agent,
-            target=self.target.with_agent(agent),
-            sigreg=self.sigreg,
-            sigreg_weight=self.sigreg_weight,
-            value_weight=self.value_weight,
-            ce_weight=self.ce_weight,
-            value_rank_margin=self.value_rank_margin,
-            value_rank_weight=self.value_rank_weight,
-            wm_weight_start=self.wm_weight_start,
-            wm_weight_end=self.wm_weight_end,
-            wm_warmup_fraction=self.wm_warmup_fraction,
-        )
-
 
 __all__ = [
     "SFT2_WM_HISTORY_SIZE",

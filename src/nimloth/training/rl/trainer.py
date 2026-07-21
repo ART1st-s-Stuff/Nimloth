@@ -26,6 +26,7 @@ from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
 from nimloth.training.rl.reporting import RLReporter
+from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.training.rl.rollout_runtime import (
     bind_online_collectors,
     validate_collector_configuration,
@@ -36,6 +37,7 @@ from nimloth.util.distributed import (
     is_main,
     setup_dist,
 )
+from nimloth.util.optim import OptimizationRuntime
 from nimloth.wm import (
     LeWMConfig,
     LatentWMPredictor,
@@ -311,13 +313,6 @@ def train_rl(
             vision_tune=vision_tune,
         )
         algorithm = RLAlgorithm(
-            agent=agent,
-            optimizer=optimizer,
-            device=device,
-            vision_ema=vision_ema,
-            policy_replay=(
-                adapters.policy_replay if actor_enabled else None
-            ),
             history_size=config.predictor.history_size,
             sigreg=(
                 SequenceSIGReg(
@@ -333,9 +328,25 @@ def train_rl(
             ppo_clip_ratio=config.actor.clip_ratio,
             entropy_weight=config.actor.entropy_coeff,
         )
+        model_runtime = RLModelRuntime(
+            agent=agent,
+            policy_replay=(adapters.policy_replay if actor_enabled else None),
+        )
+        optimization_runtime = OptimizationRuntime(
+            optimizer=optimizer,
+            synchronized_modules=agent.synchronized_modules,
+            after_step=(
+                lambda: vision_ema.update(agent.backbone.model)
+                if vision_ema is not None
+                else None
+            ),
+        )
         loop = RLTrainingLoop(
             config=config,
             algorithm=algorithm,
+            model_runtime=model_runtime,
+            optimization_runtime=optimization_runtime,
+            device=device,
             rollout_encoder=adapters.rollout_encoder,
             train_collector=train_collector,
             eval_collector=eval_collector,

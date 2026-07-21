@@ -6,7 +6,6 @@ from nimloth.agent.policy import (
     PolicyDecision,
     validate_action_log_probs,
 )
-from nimloth.agent.batch import AgentBatch, AgentBatchBuilder
 from nimloth.agent.model import Agent, AgentOutput
 from nimloth.agent.registry import create_prompt_template
 from nimloth.agent.serialization import prompt_template_spec_from_record
@@ -31,8 +30,6 @@ __all__ = [
     "Agent",
     "AgentAction",
     "ActionLogProbReplay",
-    "AgentBatch",
-    "AgentBatchBuilder",
     "AgentEpisode",
     "AgentPolicy",
     "AgentPrompt",

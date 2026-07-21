@@ -107,8 +107,9 @@ distribution, including masked zero-probability actions.
 |--------|----------------|
 | `nimloth.rollout` | Model-independent trajectory schema, JSONL, and transition expansion |
 | `nimloth.backbone.qwen25vl.rollout` | Qwen latent transition encoding |
-| `algorithm.py` | 连续窗口采样、multi-step WM/SIGReg、value/PPO、梯度边界和单批更新 |
-| `loop.py` | collect→encode→update→validate→save iteration 生命周期 |
+| `algorithm.py` | multi-step WM/SIGReg、value/PPO 和梯度边界；不持有模型或 optimizer |
+| `runtime.py` | 在线 Agent 与可选 policy replay 的单批执行契约 |
+| `loop.py` | collect→encode→sample→forward/backward→validate→save 生命周期 |
 | `evaluation.py` | Held-out rollout collection and checkpoint metric selection |
 | `rollout_runtime.py` | Collector startup constraints and online policy binding |
 | `reporting.py` | RL-specific CSV/W&B metric shape over shared util helpers |

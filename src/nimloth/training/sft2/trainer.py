@@ -21,12 +21,14 @@ from nimloth.backbone import (
     resolve_vision_ema,
     uses_lora,
 )
+from nimloth.config.sft2 import SFT2LoopConfig
 from nimloth.latent import (
     query_labels_are_masked,
     resolve_latent_query_mode,
 )
 from nimloth.training.sft2.checkpoint import (
     SFT2CheckpointManager,
+    SFT2CheckpointRuntime,
     load_aux_checkpoint,
     resolve_resume_checkpoint_dir,
 )
@@ -41,9 +43,15 @@ from nimloth.training.sft2.loop import (
     SFT2TrainingLoop,
     load_sft2_loop_state,
 )
+from nimloth.training.sft2.runtime import (
+    SFT2ModelRuntime,
+    SFT2OptimizationRuntime,
+)
+from nimloth.training.sft2.reporting import SFT2Reporter
 from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
 from nimloth.util.csv_log import CSVRecordWriter
 from nimloth.util.wandb import init_wandb_run
+from nimloth.util.optim import OptimizationRuntime
 from nimloth.wm import (
     LeWMConfig,
     LatentWMPredictor,
@@ -356,13 +364,32 @@ def train_sft2(args=None) -> int:
             else None
         ),
     )
+    model_runtime = SFT2ModelRuntime(agent=agent, target=target)
     optimizer = _build_optimizer(
         args,
         agent=agent,
         query_adapter=loaded.query_adapter,
         train_wm_predictor=train_wm_predictor,
     )
-
+    use_ddp_no_sync = (
+        world > 1
+        and not loaded.pair_parallel
+        and not ddp_static_graph
+    )
+    if (
+        is_main()
+        and world > 1
+        and args.grad_accum > 1
+        and not use_ddp_no_sync
+    ):
+        print(
+            json.dumps(
+                {
+                    "ddp_gradient_accumulation": "sync_each_microbatch",
+                    "reason": "torch_2_8_static_graph_no_sync_regression",
+                }
+            )
+        )
     data = build_data_bundle(
         args,
         batch_builder,
@@ -377,6 +404,22 @@ def train_sft2(args=None) -> int:
     steps_per_epoch = max(1, math.ceil(len(train_loader) / args.grad_accum))
     total_steps = steps_per_epoch * args.epochs
     qwen_warmup_steps = max(1, int(total_steps * args.qwen_lr_warmup_ratio))
+    optimization_runtime = SFT2OptimizationRuntime(
+        optimization=OptimizationRuntime(
+            optimizer=optimizer,
+            synchronized_modules=agent.synchronized_modules,
+            enable_no_sync=use_ddp_no_sync,
+            after_step=(
+                lambda: vision_ema.update(agent.backbone.model)
+                if vision_ema is not None
+                else None
+            ),
+        ),
+        qwen_warmup_steps=qwen_warmup_steps,
+        total_steps=total_steps,
+        qwen_start_lr=args.lr_qwen_start,
+        qwen_peak_lr=args.lr_qwen_peak,
+    )
     checkpoint_invariants = {
         "seed": int(args.seed),
         "world_size": int(world),
@@ -400,6 +443,13 @@ def train_sft2(args=None) -> int:
         latent_query_mode=args.latent_query_mode,
         query_tune=args.query_tune,
     )
+    checkpoint_runtime = SFT2CheckpointRuntime(
+        manager=checkpoint_manager,
+        device=device,
+        interval_steps=int(args.checkpoint_interval_steps or 0),
+        interval_minutes=float(args.checkpoint_interval_minutes),
+        keep_last=int(args.checkpoint_keep_last or 0),
+    )
 
     log_writer = CSVRecordWriter(
         args.output_dir / "train_step_log.csv",
@@ -422,10 +472,14 @@ def train_sft2(args=None) -> int:
     )
     if is_main():
         log_writer.ensure_header()
+    reporter = SFT2Reporter(
+        log_writer=log_writer,
+        wandb_run=wandb_run,
+        llm_tune=llm_tune,
+        vision_tune=vision_tune,
+    )
 
     algorithm = SFT2Algorithm(
-        agent=agent,
-        target=target,
         sigreg=(
             OneStepSIGReg(
                 knots=args.sigreg_knots,
@@ -451,29 +505,20 @@ def train_sft2(args=None) -> int:
         training_invariants=checkpoint_invariants,
     )
     training_loop = SFT2TrainingLoop(
-        args=args,
+        config=SFT2LoopConfig.from_namespace(args),
         rank=rank,
-        world_size=world,
-        device=device,
         train_loader=train_loader,
         val_loader=val_loader,
         train_sampler=train_sampler,
         train_batch_sampler=train_batch_sampler,
         algorithm=algorithm,
+        model_runtime=model_runtime,
+        optimization_runtime=optimization_runtime,
         batch_builder=batch_builder,
-        optimizer=optimizer,
-        vision_ema=vision_ema,
-        qwen_pair_parallel=loaded.pair_parallel,
-        ddp_static_graph=ddp_static_graph,
-        checkpoint_manager=checkpoint_manager,
-        log_writer=log_writer,
-        wandb_run=wandb_run,
+        checkpoint_runtime=checkpoint_runtime,
+        reporter=reporter,
         state=loop_state,
-        train_wm_predictor=train_wm_predictor,
         total_steps=total_steps,
-        qwen_warmup_steps=qwen_warmup_steps,
-        llm_tune=llm_tune,
-        vision_tune=vision_tune,
     )
     training_loop.run()
     if wandb_run is not None:

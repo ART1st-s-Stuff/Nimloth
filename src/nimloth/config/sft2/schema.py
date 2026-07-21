@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,33 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("monitor", "wandb_run_name"): "wandb_run_name",
     ("monitor", "checkpoint_metric"): "checkpoint_metric",
 }
+
+
+@dataclass(frozen=True)
+class SFT2LoopConfig:
+    """训练 loop 实际消费的最小类型化配置。"""
+
+    epochs: int
+    grad_accum: int
+    seed: int
+    max_val_batches: int
+    lambda_sigreg: float
+    checkpoint_metric: str
+    step_timing: bool
+    step_timing_interval: int
+
+    @classmethod
+    def from_namespace(cls, args: argparse.Namespace) -> "SFT2LoopConfig":
+        return cls(
+            epochs=int(args.epochs),
+            grad_accum=int(args.grad_accum),
+            seed=int(args.seed),
+            max_val_batches=int(args.max_val_batches),
+            lambda_sigreg=float(args.lambda_sigreg),
+            checkpoint_metric=str(args.checkpoint_metric),
+            step_timing=bool(args.step_timing),
+            step_timing_interval=int(args.step_timing_interval),
+        )
 
 
 def default_config_path() -> Path:

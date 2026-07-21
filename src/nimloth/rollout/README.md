@@ -9,6 +9,7 @@
 - `storage.py`：JSONL 持久化。
 - `source.py`：trajectory source 协议和离线 JSONL source。
 - `transitions.py`：trajectory 到 transition 的展开和 dataset。
+- `batch.py`：backend 与阶段算法共享的 transition batch/builder 契约。
 
 本包中的任何模块都不得导入 `nimloth.training`。
 

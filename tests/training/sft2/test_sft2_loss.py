@@ -6,9 +6,11 @@ from pathlib import Path
 
 import torch
 
-from nimloth.agent import Agent, AgentBatch, AgentTarget
+from nimloth.agent import Agent, AgentTarget
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
+from nimloth.rollout import TransitionBatch
 from nimloth.training.sft2.algorithm import SFT2Algorithm
+from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import OneStepSIGReg, StateProjector, ValueHead, WorldModel
 
 
@@ -94,10 +96,9 @@ def _algorithm(
             value_head=ValueHead(emb_dim=4, num_actions=3),
         ),
     )
+    runtime = SFT2ModelRuntime(agent=agent, target=AgentTarget(agent))
     return (
         SFT2Algorithm(
-            agent=agent,
-            target=AgentTarget(agent),
             sigreg=sigreg,
             sigreg_weight=sigreg_weight,
             value_weight=1.0,
@@ -105,6 +106,7 @@ def _algorithm(
             value_rank_margin=0.1,
             value_rank_weight=1.0,
         ),
+        runtime,
         backbone,
         projector,
     )
@@ -117,11 +119,11 @@ def _batch(
         ("rec_A", 1),
     ),
     non_terminal_mask: torch.Tensor | None = None,
-) -> AgentBatch:
+) -> TransitionBatch:
     row_count = len(trajectory_steps)
     if non_terminal_mask is None:
         non_terminal_mask = torch.ones(row_count, dtype=torch.bool)
-    return AgentBatch(
+    return TransitionBatch(
         current=BackboneBatch(
             {"hidden": torch.randn(row_count, 4, requires_grad=True)}
         ),
@@ -148,11 +150,20 @@ def test_state_projector_accepts_multi_latent_block() -> None:
     assert state_proj.input_dim == 24
 
 
+def test_sft2_algorithm_is_pure_compute_configuration() -> None:
+    algorithm, _, _, _ = _algorithm()
+
+    assert not isinstance(algorithm, torch.nn.Module)
+    assert not hasattr(algorithm, "agent")
+    assert not hasattr(algorithm, "target")
+    assert not hasattr(algorithm, "optimizer")
+
+
 def test_sft2_training_step_uses_agent_forward_and_two_sided_projector_gradient() -> None:
-    algorithm, backbone, projector = _algorithm()
+    algorithm, runtime, backbone, projector = _algorithm()
     batch = _batch()
 
-    output = algorithm.training_step(batch, wm_weight=0.5)
+    output = algorithm.training_step(runtime, batch, wm_weight=0.5)
     output.losses["wm"].backward()
 
     assert backbone.calls == 2
@@ -166,7 +177,7 @@ def test_sft2_training_step_uses_agent_forward_and_two_sided_projector_gradient(
 def test_sft2_sigreg_receives_one_time_batch_dimension_input() -> None:
     recording = _RecordingSIGReg()
     sigreg = OneStepSIGReg(regularizer=recording)
-    algorithm, _, projector = _algorithm(sigreg)
+    algorithm, runtime, _, projector = _algorithm(sigreg)
     batch = _batch(
         trajectory_steps=(
             ("rec_A", 0),
@@ -176,7 +187,7 @@ def test_sft2_sigreg_receives_one_time_batch_dimension_input() -> None:
         ),
     )
 
-    output = algorithm.training_step(batch, wm_weight=1.0)
+    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
 
     assert len(recording.inputs) == 1
     assert recording.inputs[0].shape == (2, 4, 4)
@@ -188,9 +199,10 @@ def test_sft2_sigreg_receives_one_time_batch_dimension_input() -> None:
 
 def test_sft2_sigreg_skips_single_transition_batch() -> None:
     recording = _RecordingSIGReg()
-    algorithm, _, _ = _algorithm(OneStepSIGReg(regularizer=recording))
+    algorithm, runtime, _, _ = _algorithm(OneStepSIGReg(regularizer=recording))
 
     output = algorithm.training_step(
+        runtime,
         _batch(trajectory_steps=(("rec_A", 0),)),
         wm_weight=1.0,
     )
@@ -202,7 +214,7 @@ def test_sft2_sigreg_skips_single_transition_batch() -> None:
 
 def test_sft2_sigreg_excludes_transitions_without_next_state() -> None:
     recording = _RecordingSIGReg()
-    algorithm, _, projector = _algorithm(OneStepSIGReg(regularizer=recording))
+    algorithm, runtime, _, projector = _algorithm(OneStepSIGReg(regularizer=recording))
     batch = _batch(
         trajectory_steps=(
             ("rec_A", 0),
@@ -212,7 +224,7 @@ def test_sft2_sigreg_excludes_transitions_without_next_state() -> None:
         non_terminal_mask=torch.tensor([True, False, True]),
     )
 
-    output = algorithm.training_step(batch, wm_weight=1.0)
+    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
 
     assert len(recording.inputs) == 1
     expected = torch.stack(
@@ -226,9 +238,9 @@ def test_sft2_sigreg_excludes_transitions_without_next_state() -> None:
 
 def test_sft2_evaluation_does_not_use_training_sigreg_layout() -> None:
     recording = _RecordingSIGReg()
-    algorithm, _, _ = _algorithm(OneStepSIGReg(regularizer=recording))
+    algorithm, runtime, _, _ = _algorithm(OneStepSIGReg(regularizer=recording))
 
-    output = algorithm.evaluation_step(_batch())
+    output = algorithm.evaluation_step(runtime, _batch())
 
     assert recording.inputs == []
     assert output.losses["sigreg"] is None
@@ -237,7 +249,7 @@ def test_sft2_evaluation_does_not_use_training_sigreg_layout() -> None:
 
 def test_sft2_zero_sigreg_weight_does_not_run_module() -> None:
     recording = _RecordingSIGReg()
-    algorithm, _, _ = _algorithm(
+    algorithm, runtime, _, _ = _algorithm(
         OneStepSIGReg(regularizer=recording),
         sigreg_weight=0.0,
     )
@@ -245,7 +257,7 @@ def test_sft2_zero_sigreg_weight_does_not_run_module() -> None:
         trajectory_steps=(("rec_A", 0), ("rec_B", 0)),
     )
 
-    output = algorithm.training_step(batch, wm_weight=1.0)
+    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
 
     assert recording.inputs == []
     assert output.losses["sigreg"] is None
@@ -253,7 +265,7 @@ def test_sft2_zero_sigreg_weight_does_not_run_module() -> None:
 
 
 def test_algorithm_wm_weight_warms_up() -> None:
-    algorithm, _, _ = _algorithm()
+    algorithm, _, _, _ = _algorithm()
     assert algorithm.wm_weight(0, 100) == 0.1
     assert 0.1 < algorithm.wm_weight(15, 100) < 1.0
     assert algorithm.wm_weight(60, 100) == 1.0

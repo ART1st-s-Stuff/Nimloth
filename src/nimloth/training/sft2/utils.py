@@ -28,17 +28,6 @@ def seed_training_micro_step(base_seed: int, epoch: int, micro_step: int, rank: 
     return seed
 
 
-def no_sync_if_needed(modules: Iterable[torch.nn.Module], *, enabled: bool):
-    if not enabled:
-        return contextlib.nullcontext()
-    stack = contextlib.ExitStack()
-    for module in modules:
-        no_sync = getattr(module, "no_sync", None)
-        if no_sync is not None:
-            stack.enter_context(no_sync())
-    return stack
-
-
 @contextlib.contextmanager
 def preserve_module_modes(
     modules: Iterable[torch.nn.Module],
