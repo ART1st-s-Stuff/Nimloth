@@ -6,7 +6,6 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from nimloth.util.metrics import MetricAccumulator
-from nimloth.training.sft2.data.samplers import DistributedEvalSampler
 from nimloth.training.sft2.evaluate import (
     distributed_metric_averages,
     merge_metric_accumulators,
@@ -26,17 +25,6 @@ def _distributed_metric_worker(rank: int, init_file: str) -> None:
         assert distributed_metric_averages(accumulator) == {"wm_mse": 7.0 / 3.0}
     finally:
         dist.destroy_process_group()
-
-
-def test_distributed_eval_sampler_partitions_without_duplicates() -> None:
-    dataset = list(range(7))
-    shards = [
-        list(DistributedEvalSampler(dataset, num_replicas=3, rank=rank))
-        for rank in range(3)
-    ]
-
-    assert sorted(index for shard in shards for index in shard) == list(range(7))
-    assert sum(map(len, shards)) == 7
 
 
 def test_merge_metric_accumulators_uses_all_rank_sums_and_counts() -> None:

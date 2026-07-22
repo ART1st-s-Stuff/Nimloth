@@ -119,7 +119,12 @@ class CompactCachedTransitionCollator:
         for entry in batch:
             next_index = entry.get("next_cache_index")
             if next_index is None:
-                next_rows.append(None)
+                compact_next = entry.get("next_enc")
+                next_rows.append(
+                    self._materialize_encoding(compact_next)
+                    if compact_next is not None
+                    else None
+                )
                 continue
             next_index = int(next_index)
             row = materialized.get(next_index)
@@ -195,7 +200,10 @@ class CachedTransitionDataset(Dataset):
             if sample.next_prefix_messages is not None:
                 next_index = self._sample_index.get((sample.record_id, sample.step_index + 1))
             entry["next_cache_index"] = next_index
-            entry["next_enc"] = self._compact_entry(next_index)["current_enc"] if next_index is not None else None
+            if next_index is not None:
+                entry["next_enc"] = self._compact_entry(next_index)["current_enc"]
+            else:
+                entry["next_enc"] = entry.get("next_enc")
         else:
             cache_path = self.cache_path_for_sample(sample)
             if not cache_path.is_file():

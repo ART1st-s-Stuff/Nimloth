@@ -25,6 +25,7 @@ def test_parse_sft2_args_applies_yaml_defaults() -> None:
     assert args.lambda_value == 1.0
     assert args.checkpoint_metric == "val_wm_mse"
     assert args.batch_mode == "trajectory_image_budget"
+    assert args.history_size == 4
 
 
 def test_parse_sft2_args_batch_mode() -> None:

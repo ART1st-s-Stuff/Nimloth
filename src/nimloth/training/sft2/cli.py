@@ -38,6 +38,15 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--max-pixels", type=int, default=602112)
     ap.add_argument("--emb-dim", type=int, default=1024)
     ap.add_argument(
+        "--history-size",
+        type=int,
+        default=4,
+        help=(
+            "LeWM causal context length H. SFT2 consumes H consecutive actions "
+            "and H+1 real states; warm-started RL must use the same value."
+        ),
+    )
+    ap.add_argument(
         "--latent-token-count",
         type=int,
         default=1,
@@ -179,9 +188,9 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         choices=("random", "trajectory", "trajectory_image_budget"),
         default="trajectory_image_budget",
         help=(
-            "random uses ordinary batches; trajectory groups a fixed number of "
-            "consecutive prefixes; trajectory_image_budget groups consecutive "
-            "prefixes under the configured image and step limits."
+            "All modes sample fixed LeWM history windows. "
+            "random shuffles individual windows; trajectory keeps adjacent windows "
+            "together; trajectory_image_budget additionally limits forward image cost."
         ),
     )
     ap.add_argument(
@@ -189,8 +198,8 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         type=int,
         default=16,
         help=(
-            "In trajectory_image_budget mode, hard ceiling on steps "
-            "per micro-batch (default 16).  The primary limit is --max-images-per-batch."
+            "In trajectory_image_budget mode, hard ceiling on flattened "
+            "transition rows B*H per micro-batch (default 16)."
         ),
     )
     ap.add_argument(

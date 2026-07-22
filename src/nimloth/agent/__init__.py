@@ -5,9 +5,17 @@ from nimloth.agent.policy import (
     AgentPolicy,
     PolicyReplayInput,
     PolicyDecision,
+    behavior_log_probs,
+    categorical_entropy_from_log_probs,
+    sample_policy_decision,
     validate_action_log_probs,
 )
-from nimloth.agent.model import Agent, AgentOutput
+from nimloth.agent.planning import (
+    PlanningPolicy,
+    WorldModelPlan,
+    WorldModelPlanner,
+)
+from nimloth.agent.model import Agent, AgentOutput, AgentStateOutput
 from nimloth.agent.registry import create_prompt_template
 from nimloth.agent.serialization import prompt_template_spec_from_record
 from nimloth.agent.runner import AgentEpisode, EpisodeRunner
@@ -36,15 +44,22 @@ __all__ = [
     "AgentPromptTemplate",
     "AgentOutput",
     "AgentRuntime",
+    "AgentStateOutput",
     "AgentTranscript",
     "EpisodeRunner",
     "NIMLOTH_PROMPT_TEMPLATE_ID",
     "NimlothPromptTemplate",
     "PolicyDecision",
     "PolicyReplayInput",
+    "PlanningPolicy",
     "PromptTemplateSpec",
+    "WorldModelPlan",
+    "WorldModelPlanner",
+    "behavior_log_probs",
     "bind_image_placeholders",
+    "categorical_entropy_from_log_probs",
     "create_prompt_template",
     "prompt_template_spec_from_record",
+    "sample_policy_decision",
     "validate_action_log_probs",
 ]

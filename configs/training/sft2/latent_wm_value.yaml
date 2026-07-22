@@ -31,8 +31,9 @@ train:
   max_length: 12000
   max_pixels: 602112
   emb_dim: 1024
-  # 每行是一个单步 transition；SIGReg 将 current/next 固定组织为 (T=2,B,D)。
-  # full-trajectory 模式下，max_steps_per_trajectory 与图片预算限制 B。
+  # 与 RL 共用同一 LeWM 上下文语义：每个样本含 H 个动作和 H+1 个真实状态。
+  history_size: 4
+  # batch_size 表示窗口数 B；图片预算覆盖 current、target 和在线尾状态 forward。
   batch_mode: trajectory_image_budget
   max_images_per_batch: 32
   max_steps_per_trajectory: 16

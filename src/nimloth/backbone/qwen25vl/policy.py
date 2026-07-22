@@ -8,7 +8,14 @@ from typing import Any, Sequence
 import torch
 from PIL import Image
 
-from nimloth.agent import AgentPrompt, PolicyDecision, PolicyReplayInput
+from nimloth.agent import (
+    AgentPrompt,
+    PolicyDecision,
+    PolicyReplayInput,
+    behavior_log_probs,
+    categorical_entropy_from_log_probs,
+    sample_policy_decision,
+)
 from nimloth.latent import (
     LatentActionTokens,
     normalize_latent_state_blocks,
@@ -126,52 +133,6 @@ def action_logits_for_messages(
     return outputs.logits[0, action_start_position, action_token_ids].float()
 
 
-def behavior_log_probs(
-    action_logits: torch.Tensor,
-    *,
-    temperature: float,
-    top_p: float,
-) -> torch.Tensor:
-    """Return the exact categorical distribution used to select an action."""
-
-    if not 0.0 < top_p <= 1.0:
-        raise ValueError(f"top_p must be in (0, 1], got {top_p}")
-    if temperature < 0.0:
-        raise ValueError(f"temperature must be >= 0, got {temperature}")
-    if temperature == 0.0:
-        chosen = action_logits.argmax(dim=-1, keepdim=True)
-        log_probs = torch.full_like(action_logits, float("-inf"))
-        return log_probs.scatter(dim=-1, index=chosen, value=0.0)
-
-    scaled_logits = action_logits / temperature
-    if top_p < 1.0:
-        sorted_logits, sorted_indices = torch.sort(
-            scaled_logits, dim=-1, descending=True
-        )
-        sorted_probs = torch.softmax(sorted_logits, dim=-1)
-        cumulative_before = torch.cumsum(sorted_probs, dim=-1) - sorted_probs
-        sorted_keep = cumulative_before < top_p
-        keep = torch.zeros_like(sorted_keep).scatter(
-            dim=-1,
-            index=sorted_indices,
-            src=sorted_keep,
-        )
-        scaled_logits = scaled_logits.masked_fill(~keep, float("-inf"))
-    return torch.log_softmax(scaled_logits, dim=-1)
-
-
-def categorical_entropy_from_log_probs(log_probs: torch.Tensor) -> torch.Tensor:
-    """计算可能包含 top-p ``-inf`` mask 的离散分布 entropy。"""
-
-    probabilities = log_probs.exp()
-    terms = torch.where(
-        probabilities > 0,
-        probabilities * log_probs,
-        torch.zeros_like(log_probs),
-    )
-    return -terms.sum(dim=-1).mean()
-
-
 class QwenAgentPolicy:
     """运行 Qwen，并从可审计的 behavior distribution 中采样。"""
 
@@ -194,6 +155,9 @@ class QwenAgentPolicy:
         self.latent_token_count = latent_token_count
         self.token_id_map = token_id_map or special_token_ids(processor.tokenizer)
 
+    def reset_episode(self) -> None:
+        """Qwen direct policy 不保存跨 step 状态。"""
+
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
         # 行为概率必须可被 PPO 确定性重放，不能受 LoRA dropout 影响。
         with evaluating(self.model), torch.no_grad():
@@ -205,19 +169,11 @@ class QwenAgentPolicy:
                 device=self.device,
                 latent_token_count=self.latent_token_count,
             )
-            log_probs = behavior_log_probs(
+            return sample_policy_decision(
                 logits,
                 temperature=self.temperature,
                 top_p=self.top_p,
             )
-            if self.temperature == 0.0:
-                action_index = int(logits.argmax().item())
-            else:
-                action_index = int(torch.multinomial(log_probs.exp(), 1).item())
-        return PolicyDecision(
-            action_index=action_index,
-            action_log_probs=tuple(float(value) for value in log_probs.cpu().tolist()),
-        )
 
 
 def batch_action_log_probs(

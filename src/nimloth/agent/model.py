@@ -16,6 +16,15 @@ def _unwrap(module: nn.Module) -> nn.Module:
 
 
 @dataclass(frozen=True)
+class AgentStateOutput:
+    """Backbone 与 StateProjector 共同编码出的 Agent state。"""
+
+    hidden: torch.Tensor
+    state: torch.Tensor
+    lm_loss: torch.Tensor | None
+
+
+@dataclass(frozen=True)
 class AgentOutput:
     """一次完整 Agent forward 的模型输出。"""
 
@@ -48,17 +57,82 @@ class Agent(nn.Module):
     ) -> AgentOutput:
         """执行 backbone、StateProjector、WMPredictor 和 ValueHead。"""
 
+        encoded = self.encode_state(
+            batch,
+            include_lm_loss=include_lm_loss,
+        )
+        return AgentOutput(
+            hidden=encoded.hidden,
+            state=encoded.state,
+            predicted_next_state=self.wm.predict_next_state(
+                encoded.state,
+                action_indices,
+            ),
+            action_values=self.wm.predict_action_values(encoded.state),
+            lm_loss=encoded.lm_loss,
+        )
+
+    def encode_state(
+        self,
+        batch: BackboneBatch,
+        *,
+        include_lm_loss: bool = False,
+    ) -> AgentStateOutput:
+        """把真实 observation batch 编码为 WM state，不执行或模拟动作。"""
+
         backbone_output = self.backbone(
             batch,
             include_lm_loss=include_lm_loss,
         )
-        wm_output = self.wm(backbone_output.hidden, action_indices)
-        return AgentOutput(
+        return AgentStateOutput(
             hidden=backbone_output.hidden,
-            state=wm_output["state"],
-            predicted_next_state=wm_output["predicted_next_state"],
-            action_values=wm_output["action_values"],
+            state=self.wm.project_state(backbone_output.hidden),
             lm_loss=backbone_output.lm_loss,
+        )
+
+    def forward_sequence(
+        self,
+        batch: BackboneBatch,
+        action_indices: torch.Tensor,
+        *,
+        include_lm_loss: bool = False,
+    ) -> AgentOutput:
+        """对 ``(B,H)`` 真实 state/action 窗口执行完整模型前向。"""
+
+        if action_indices.ndim != 2:
+            raise ValueError(
+                "sequence action_indices must have shape (B,H), "
+                f"got {tuple(action_indices.shape)}"
+            )
+        batch_size, history_size = action_indices.shape
+        backbone_output = self.backbone(
+            batch,
+            include_lm_loss=include_lm_loss,
+        )
+        hidden = backbone_output.hidden
+        expected_rows = batch_size * history_size
+        if hidden.shape[0] != expected_rows:
+            raise ValueError(
+                "sequence Backbone rows must equal B*H, "
+                f"got {hidden.shape[0]} rows for B={batch_size}, H={history_size}"
+            )
+        hidden_sequence = hidden.reshape(
+            batch_size,
+            history_size,
+            *hidden.shape[1:],
+        )
+        state_sequence = self.wm.project_state_sequence(hidden_sequence)
+        return AgentOutput(
+            hidden=hidden_sequence,
+            state=state_sequence,
+            predicted_next_state=self.wm.predict_state_sequence(
+                state_sequence,
+                action_indices,
+            ),
+            action_values=self.wm.predict_action_values(state_sequence),
+            lm_loss=(
+                backbone_output.lm_loss if include_lm_loss else None
+            ),
         )
 
     @property
@@ -96,4 +170,4 @@ class Agent(nn.Module):
         )
 
 
-__all__ = ["Agent", "AgentOutput"]
+__all__ = ["Agent", "AgentOutput", "AgentStateOutput"]

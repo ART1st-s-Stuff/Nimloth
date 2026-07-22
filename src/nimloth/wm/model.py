@@ -80,4 +80,19 @@ class WorldModel(nn.Module):
 
         return self.value_head(state).float()
 
+    def simulate_action_sequences(
+        self,
+        state_history: torch.Tensor,
+        previous_actions: torch.Tensor,
+        action_sequences: torch.Tensor,
+    ) -> torch.Tensor:
+        """从真实历史出发模拟候选动作，不接触 environment。"""
+
+        rollout = getattr(self.wm_predictor, "rollout_from_history", None)
+        if rollout is None:
+            raise TypeError(
+                "wm_predictor must implement rollout_from_history() for planning"
+            )
+        return rollout(state_history, previous_actions, action_sequences)
+
 __all__ = ["WorldModel"]

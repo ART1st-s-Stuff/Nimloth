@@ -25,6 +25,9 @@ class _SequencePolicy:
         self._action_indices = iter(action_indices)
         self.prompts: list[AgentPrompt] = []
 
+    def reset_episode(self) -> None:
+        self.prompts.clear()
+
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
         self.prompts.append(prompt)
         return PolicyDecision(

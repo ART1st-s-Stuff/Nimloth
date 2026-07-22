@@ -24,6 +24,7 @@ train:
   max_length: 12000
   max_pixels: 602112
   emb_dim: 128
+  history_size: 4
   attn_implementation: flash_attention_2
   gradient_checkpointing: true
   preprocess_cache_dir: null

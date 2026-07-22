@@ -2,12 +2,14 @@
 
 The RL path uses `AgentRuntime`/`EpisodeRunner` to collect navigation
 trajectories, then trains the neural `Agent` world model and optional actor.
+RL 在线 planning 使用 SFT2 产出的 WM、StateProjector 和 ValueHead 作为
+warm start；SFT2 本身不运行这条 rollout 路径。
 
 ## Ownership boundaries
 
 | Owner | Responsibility |
 |-------|----------------|
-| `nimloth.agent` | Transcript state, prompt version, policy/supervised message construction, episode runner |
+| `nimloth.agent` | Transcript、prompt、Qwen→WM planning policy 与 episode runner |
 | `nimloth.environment` | Action vocabulary, environment session, and VAGEN navigation adapter |
 | `nimloth.backbone.qwen25vl` | Qwen Backbone、prompt 输入、policy 与 PPO replay 适配 |
 | `nimloth.rollout` | Trajectory schema、JSONL、连续窗口与 behavior provenance |
@@ -44,11 +46,13 @@ by an older policy. Train and validation use separate collector sources.
 environment system_prompt + obs_str + images
                     |
                     v
-       Agent / EpisodeRunner / AgentPromptTemplate
+       AgentRuntime / AgentPromptTemplate
                     |
-               QwenAgentPolicy
+          Qwen 编码当前真实 state（一次）
                     |
-     action + exact behavior log probabilities
+       WM 搜索候选 action sequence（不执行 env）
+                    |
+       选择首动作 → EpisodeRunner.session.step（一次）
                     |
                     v
  RolloutTrajectory (structured transcript + audit prompt)
@@ -147,6 +151,18 @@ distribution, including masked zero-probability actions.
 - WM target 的下一状态保持 stop-gradient。ValueHead 不再擅自 detach state；
   StateProjector 与 Backbone 的梯度 ownership 分别由 `freeze.state_proj` 和
   `gradient.representation_to_backbone` 控制，并有梯度测试保护。
+- `agent.planning.enabled: true` 时，在线 rollout 使用 `PlanningPolicy`。每个真实
+  environment step 只执行一次 Qwen forward 和一次 `session.step()`，两者之间的
+  多步候选搜索全部发生在 WM latent 空间。
+- planner 当前用叶节点最大 action-value 作为搜索启发式；模型尚无 reward/done
+  head，因此不会把中间 Q-value 相加并伪装成 model-predicted return。
+- planner behavior 尚未实现可微且可重放的 PPO 概率，所以
+  `agent.planning.enabled` 与 `actor.enabled` 同时开启会在加载模型前报错。
+- 在线 planning 必须从完整 RL resume 或显式 WM、StateProjector、ValueHead
+  checkpoint 启动；随机初始化的 planner 不允许控制真实 environment。
+- SFT2 和 RL 对 `history_size` 使用相同的 LeWM 语义，warm-start checkpoint
+  必须严格匹配。RL 额外的多步预测由 `agent.planning.horizon` 控制，
+  不得通过改变 `history_size` 来表达。
 
 Example standalone rollout:
 

@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import torch.distributed as dist
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader
 
-from nimloth.rollout import TransitionBatchBuilder
+from nimloth.training.sft2.batch import SFT2BatchBuilder
 from nimloth.util.distributed import is_main
 from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
@@ -22,8 +22,7 @@ from nimloth.util.cache import (
     cache_fingerprint,
 )
 from nimloth.training.sft2.data.samplers import (
-    DistributedEvalSampler,
-    TrajectoryAwareBatchSampler,
+    TrajectoryWindowBatchSampler,
 )
 from nimloth.rollout.transitions import TransitionJsonlDataset, TransitionSample
 
@@ -34,8 +33,8 @@ class DataBundle:
     val_loader: DataLoader
     train_samples: list[TransitionSample]
     val_samples: list[TransitionSample]
-    train_sampler: DistributedSampler | None
-    train_batch_sampler: TrajectoryAwareBatchSampler | None
+    train_batch_sampler: TrajectoryWindowBatchSampler
+    val_batch_sampler: TrajectoryWindowBatchSampler
 
 
 def _dataloader_workers(config: Any) -> int:
@@ -97,7 +96,7 @@ def _verify_cache_manifest(
 
 def _build_or_open_cached_datasets(
     config: Any,
-    batch_builder: TransitionBatchBuilder,
+    batch_builder: SFT2BatchBuilder,
     train_samples: list[TransitionSample],
     val_samples: list[TransitionSample],
 ):
@@ -194,7 +193,7 @@ def _build_or_open_cached_datasets(
 
 def build_data_bundle(
     config: Any,
-    batch_builder: TransitionBatchBuilder,
+    batch_builder: SFT2BatchBuilder,
     *,
     rank: int,
     world_size: int,
@@ -223,67 +222,67 @@ def build_data_bundle(
             prefetch_factor=max(1, int(config.dataloader_prefetch_factor)),
         )
 
-    train_sampler: DistributedSampler | None = None
-    train_batch_sampler: TrajectoryAwareBatchSampler | None = None
-    if config.batch_mode == "trajectory_image_budget":
-        train_batch_sampler = TrajectoryAwareBatchSampler(
-            train_samples,
-            batch_size=config.batch_size,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True,
-            seed=config.seed,
-            full_trajectory=True,
-            max_images_per_batch=config.max_images_per_batch,
-            max_steps_per_trajectory=config.max_steps_per_trajectory,
-        )
-    elif config.batch_mode == "trajectory":
-        train_batch_sampler = TrajectoryAwareBatchSampler(
-            train_samples,
-            batch_size=config.batch_size,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True,
-            seed=config.seed,
-        )
-    elif config.batch_mode == "random":
-        if world_size > 1:
-            train_sampler = DistributedSampler(
-                train_dataset,
-                num_replicas=world_size,
-                rank=rank,
-                shuffle=True,
-                seed=config.seed,
-            )
-    else:
+    if config.batch_mode not in {
+        "random",
+        "trajectory",
+        "trajectory_image_budget",
+    }:
         raise ValueError(f"unsupported SFT2 batch mode: {config.batch_mode!r}")
-
-    val_sampler = (
-        DistributedEvalSampler(val_dataset, num_replicas=world_size, rank=rank)
-        if world_size > 1
+    image_budget = (
+        int(config.max_images_per_batch)
+        if config.batch_mode == "trajectory_image_budget"
         else None
     )
-    if train_batch_sampler is not None:
-        train_loader = DataLoader(
-            train_dataset,
-            batch_sampler=train_batch_sampler,
-            collate_fn=train_collate,
-            **loader_kwargs,
+    row_budget = (
+        int(config.max_steps_per_trajectory)
+        if config.batch_mode == "trajectory_image_budget"
+        else None
+    )
+    train_batch_sampler = TrajectoryWindowBatchSampler(
+        train_samples,
+        history_size=config.history_size,
+        batch_size=config.batch_size,
+        num_replicas=world_size,
+        rank=rank,
+        shuffle=True,
+        shuffle_windows=config.batch_mode == "random",
+        seed=config.seed,
+        max_images_per_batch=image_budget,
+        max_transition_rows_per_batch=row_budget,
+        pad_to_equal_batches=True,
+    )
+    val_batch_sampler = TrajectoryWindowBatchSampler(
+        val_samples,
+        history_size=config.history_size,
+        batch_size=config.batch_size,
+        num_replicas=world_size,
+        rank=rank,
+        shuffle=False,
+        seed=config.seed,
+        max_images_per_batch=image_budget,
+        max_transition_rows_per_batch=row_budget,
+        pad_to_equal_batches=False,
+    )
+    if train_batch_sampler.window_count == 0:
+        raise ValueError(
+            "SFT2 training data has no complete LeWM windows: "
+            f"history_size={config.history_size}"
         )
-    else:
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=config.batch_size,
-            sampler=train_sampler,
-            shuffle=train_sampler is None,
-            collate_fn=train_collate,
-            **loader_kwargs,
+    if val_batch_sampler.window_count == 0:
+        raise ValueError(
+            "SFT2 validation data has no complete LeWM windows: "
+            f"history_size={config.history_size}"
         )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_sampler=train_batch_sampler,
+        collate_fn=train_collate,
+        **loader_kwargs,
+    )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=config.batch_size,
-        sampler=val_sampler,
-        shuffle=False,
+        batch_sampler=val_batch_sampler,
         collate_fn=val_collate,
         **loader_kwargs,
     )
@@ -292,6 +291,6 @@ def build_data_bundle(
         val_loader=val_loader,
         train_samples=train_samples,
         val_samples=val_samples,
-        train_sampler=train_sampler,
         train_batch_sampler=train_batch_sampler,
+        val_batch_sampler=val_batch_sampler,
     )

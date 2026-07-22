@@ -1211,6 +1211,32 @@
   声称远程测试或 GPU smoke 已运行。
 - 保留未改动的人类工作区内容：`ai_rules/events/on_experiment_start.md`、
   `src/nimloth/training/sft2/algorithm.py` 的 docstring 修改以及 `.until-done/`。
+- RL 在线决策现在由 `agent.PlanningPolicy` 负责：每个真实 observation 只执行
+  一次 Qwen/StateProjector，`WorldModelPlanner` 从同一真实根状态重放完整候选
+  action sequence，仅将选中的首动作交给 `EpisodeRunner.session.step()`。
+- SFT2 边界已明确：它只消费 VAGEN trajectory 做离线一步 WM/value 初始化，
+  不运行 Agent rollout 或多步 planner；其 StateProjector/WM/ValueHead checkpoint 作为
+  RL planner warm start。
+- SFT2/RL 现在明确区分 LeWM `history_size` 与 RL planning horizon：前者是两阶段
+  必须一致的因果上下文长度，后者才是 RL 在真实 environment step 前自回归
+  预测的未来步数。checkpoint 加载继续严格校验 `history_size`。
+- 删除了只被测试调用且会丢失 history 的 `wm/planning.py`；通用行为分布与
+  采样函数收入 `agent/policy.py`。planner 暂时使用叶节点最大 action-value heuristic，
+  不伪称是累积 return；planner+PPO 和随机初始化的在线 planner 会在启动时被拒绝。
+- 实现后的扩展 CPU 回归共 191 项通过；边界文档和 resume 判定收尾后，又对
+  planning/runner/config/RL runtime/predictor/WorldModel/Qwen policy 重跑 38 项，全部通过。
+  本轮未启动实验或 W&B，远程 GPU smoke 仍未完成。
+- 根据人类澄清，SFT2 不再固定为 `history_size=1`。两阶段现在都以 H 表示 LeWM
+  因果上下文：训练样本含 H 个连续动作和 H+1 个真实状态；RL 的未来规划步数
+  单独使用 `agent.planning.horizon`。
+- SFT2 新增固定窗口 sampler 和 `SFT2Batch(B,H)`；WM 在 H 个位置预测，SIGReg
+  只消费同一在线 Backbone 产生的 `(B,H+1,D)`，EMA next state 仅作为 WM target。
+  compact cache 升级为 v2，显式保存没有 successor transition 的最终 observation。
+- 新增/相关本地 CPU 语义回归 `58 passed`；现有双进程 Gloo 用例受沙箱 socket
+  权限限制未执行成功。测试未启动 W&B 或实验任务，远程 GPU smoke 待补。
+- 邻接回归扩大到 `tests/`：排除本机缺少 `pandas` 的一个 SFT1 用例和受 socket
+  限制的 Gloo 用例后为 `225 passed, 4 warnings`；未把排除后的结果表述为完整
+  全量通过。测试缓存已清理。
 
 ## 2026-06-21：FA2 不能修复 SFT2 packed-forward 多图不等价
 

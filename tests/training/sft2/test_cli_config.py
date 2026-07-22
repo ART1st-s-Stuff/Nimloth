@@ -40,6 +40,7 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert args.max_length == 12000
     assert args.max_pixels == 100352
     assert args.max_images_per_batch == 12
+    assert args.history_size == 4
     assert args.preprocess_cache_format == "compact"
     assert args.preprocess_cache_image_dtype == "bfloat16"
     assert args.preprocess_workers == 16
@@ -56,6 +57,7 @@ def test_k1_control_only_changes_latent_capacity_not_runtime_budget() -> None:
     assert args.grad_accum == 4
     assert args.max_pixels == 100352
     assert args.max_images_per_batch == 12
+    assert args.history_size == 4
     assert args.checkpoint_metric == "val_wm_mse"
 
 

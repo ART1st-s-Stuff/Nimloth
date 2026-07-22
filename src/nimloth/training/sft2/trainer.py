@@ -36,7 +36,6 @@ from nimloth.training.sft2.batch import SFT2BatchAssembler
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.data.factory import build_data_bundle
 from nimloth.training.sft2.algorithm import (
-    SFT2_WM_HISTORY_SIZE,
     SFT2Algorithm,
     require_sft2_wm_history,
 )
@@ -56,7 +55,7 @@ from nimloth.util.optim import OptimizationRuntime
 from nimloth.wm import (
     LeWMConfig,
     LatentWMPredictor,
-    OneStepSIGReg,
+    SequenceSIGReg,
     StateProjector,
     ValueHead,
     WorldModel,
@@ -79,10 +78,17 @@ def _build_world_model(
             args.wm_predictor_checkpoint,
             map_location=device,
         ).to(device)
-        require_sft2_wm_history(wm_predictor, args.wm_predictor_checkpoint)
+        require_sft2_wm_history(
+            wm_predictor,
+            history_size=args.history_size,
+            source=args.wm_predictor_checkpoint,
+        )
     else:
         wm_predictor = LatentWMPredictor.create(
-            LeWMConfig(emb_dim=args.emb_dim, history_size=SFT2_WM_HISTORY_SIZE)
+            LeWMConfig(
+                emb_dim=args.emb_dim,
+                history_size=args.history_size,
+            )
         ).to(device)
     if not train_wm_predictor:
         for parameter in wm_predictor.parameters():
@@ -267,6 +273,9 @@ def train_sft2(args=None) -> int:
         raise ValueError(f"query_tune must be freeze or adapter, got {args.query_tune!r}")
     if args.latent_token_count < 1:
         raise ValueError(f"--latent-token-count must be >= 1, got {args.latent_token_count}")
+    args.history_size = int(getattr(args, "history_size", 4))
+    if args.history_size < 1:
+        raise ValueError(f"--history-size must be >= 1, got {args.history_size}")
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     if args.query_tune == "adapter" and uses_lora(args):
@@ -315,6 +324,7 @@ def train_sft2(args=None) -> int:
                     "wm_predictor_checkpoint": str(args.wm_predictor_checkpoint) if args.wm_predictor_checkpoint else None,
                     "output_dir": str(args.output_dir),
                     "batch_mode": args.batch_mode,
+                    "history_size": args.history_size,
                     "latent_token_count": args.latent_token_count,
                     "latent_query_mode": args.latent_query_mode,
                     "query_tune": args.query_tune,
@@ -365,6 +375,7 @@ def train_sft2(args=None) -> int:
     batch_builder = SFT2BatchAssembler(
         input_builder=input_builder,
         device=aux_device,
+        history_size=args.history_size,
     )
     model_runtime = SFT2ModelRuntime(
         agent=agent,
@@ -403,7 +414,6 @@ def train_sft2(args=None) -> int:
     )
     train_loader = data.train_loader
     val_loader = data.val_loader
-    train_sampler = data.train_sampler
     train_batch_sampler = data.train_batch_sampler
 
     steps_per_epoch = max(1, math.ceil(len(train_loader) / args.grad_accum))
@@ -431,6 +441,7 @@ def train_sft2(args=None) -> int:
         "grad_accum": int(args.grad_accum),
         "latent_query_mode": args.latent_query_mode,
         "query_tune": args.query_tune,
+        "history_size": int(args.history_size),
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }
@@ -485,8 +496,9 @@ def train_sft2(args=None) -> int:
     )
 
     algorithm = SFT2Algorithm(
+        history_size=args.history_size,
         sigreg=(
-            OneStepSIGReg(
+            SequenceSIGReg(
                 knots=args.sigreg_knots,
                 num_proj=args.sigreg_num_proj,
             ).to(device=aux_device)
@@ -514,7 +526,6 @@ def train_sft2(args=None) -> int:
         rank=rank,
         train_loader=train_loader,
         val_loader=val_loader,
-        train_sampler=train_sampler,
         train_batch_sampler=train_batch_sampler,
         algorithm=algorithm,
         model_runtime=model_runtime,

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
 from nimloth.agent import AgentPolicy
 from nimloth.rollout import (
     JSONLRolloutCollector,
@@ -28,6 +30,48 @@ def validate_collector_configuration(
         )
     if validation_enabled and eval_collector is None:
         raise ValueError("validation.enabled requires a separate eval collector")
+
+
+def validate_online_policy_configuration(
+    *,
+    actor_enabled: bool,
+    planning_enabled: bool,
+) -> None:
+    """拒绝把 planner 动作错误地交给 Qwen PPO replay。"""
+
+    if actor_enabled and planning_enabled:
+        raise ValueError(
+            "agent.planning.enabled cannot be combined with actor.enabled until "
+            "planner behavior probability replay is implemented"
+        )
+
+
+def validate_planning_initialization(
+    *,
+    planning_enabled: bool,
+    online_policy_needed: bool,
+    resume_loaded: bool,
+    wm_checkpoint: Path | None,
+    state_proj_checkpoint: Path | None,
+    value_head_checkpoint: Path | None,
+) -> None:
+    """在线规划不能用尚未训练的随机 WM/Value 模块选择真实动作。"""
+
+    if not planning_enabled or not online_policy_needed:
+        return
+    explicit_modules = all(
+        path is not None
+        for path in (
+            wm_checkpoint,
+            state_proj_checkpoint,
+            value_head_checkpoint,
+        )
+    )
+    if not resume_loaded and not explicit_modules:
+        raise ValueError(
+            "online WM planning requires a resumed RL checkpoint or explicit "
+            "--wm-checkpoint, --state-proj-checkpoint and --value-head-checkpoint"
+        )
 
 
 def online_policy_required(
@@ -80,4 +124,6 @@ __all__ = [
     "bind_online_collectors",
     "online_policy_required",
     "validate_collector_configuration",
+    "validate_online_policy_configuration",
+    "validate_planning_initialization",
 ]

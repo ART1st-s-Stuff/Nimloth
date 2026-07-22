@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 import torch
 
 from nimloth.backbone import BackboneBatch
@@ -20,6 +21,7 @@ def _assembler() -> SFT2BatchAssembler:
             max_length=32,
         ),
         device=torch.device("cpu"),
+        history_size=1,
     )
 
 
@@ -52,10 +54,11 @@ def test_prepare_deduplicates_identical_next_prompts() -> None:
             [_item("a", shared_next), _item("b", shared_next)]
         )
 
-    assert batch_sizes == [2, 1]
+    assert batch_sizes == [2, 2, 1]
+    assert batch.online_tail.tensors["input_ids"].shape[0] == 2
     assert batch.next.tensors["input_ids"].shape[0] == 1
-    assert batch.next_indices.tolist() == [0, 0]
-    assert batch.non_terminal_mask.tolist() == [True, True]
+    assert batch.next_indices.tolist() == [[0], [0]]
+    assert batch.transitions.non_terminal_mask.tolist() == [True, True]
 
 
 def test_prepare_uses_worker_prebatched_next_cache() -> None:
@@ -72,6 +75,9 @@ def test_prepare_uses_worker_prebatched_next_cache() -> None:
         "current": BackboneBatch(
             {"input_ids": torch.ones((1, 2), dtype=torch.long)}
         ),
+        "online_tail": BackboneBatch(
+            {"input_ids": torch.ones((1, 3), dtype=torch.long)}
+        ),
         "next": cached,
     }
 
@@ -85,7 +91,7 @@ def test_prepare_uses_worker_prebatched_next_cache() -> None:
     )
 
 
-def test_terminal_batch_builds_one_dummy_next_input() -> None:
+def test_window_without_final_real_state_is_rejected() -> None:
     seen: list[list[dict]] = []
 
     def fake_build(items, _processor, _max_length, **_kwargs):
@@ -96,11 +102,5 @@ def test_terminal_batch_builds_one_dummy_next_input() -> None:
         "nimloth.backbone.qwen25vl.input.build_qwen_batch",
         side_effect=fake_build,
     ):
-        batch = _assembler().prepare([_item("terminal", None)])
-
-    assert len(seen) == 2
-    assert seen[1] == [
-        {"messages": [{"role": "user", "content": "terminal"}]}
-    ]
-    assert batch.non_terminal_mask.tolist() == [False]
-    assert batch.next_indices.tolist() == [0]
+        with pytest.raises(ValueError, match="real next state for every action"):
+            _assembler().prepare([_item("terminal", None)])

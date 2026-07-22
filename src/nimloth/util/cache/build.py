@@ -161,9 +161,13 @@ def _cache_one_image_shard(task: tuple[list[str], str, str]) -> tuple[str, bool,
 
 
 def _cache_one_compact_transition_shard(
-    task: tuple[list[TransitionSample], str],
+    task: tuple[
+        list[TransitionSample],
+        str,
+        set[tuple[str, int]],
+    ],
 ) -> tuple[str, bool, str]:
-    samples, out_path = task
+    samples, out_path, dedicated_next_keys = task
     try:
         assert _CACHE_PROCESSOR is not None
         entries: list[dict[str, Any]] = []
@@ -187,17 +191,46 @@ def _cache_one_compact_transition_shard(
                 mask_latent_query_labels=_CACHE_MASK_LATENT_QUERY_LABELS,
             )
             current_enc["image_indices"] = torch.tensor(image_indices, dtype=torch.int32)
-            entries.append(
-                {
-                    "id": item["id"],
-                    "record_id": item["record_id"],
-                    "step_index": item["step_index"],
-                    "action_index": item["action_index"],
-                    "action_value_target": item["action_value_target"],
-                    "success": item["success"],
-                    "current_enc": current_enc,
-                }
-            )
+            entry = {
+                "id": item["id"],
+                "record_id": item["record_id"],
+                "step_index": item["step_index"],
+                "action_index": item["action_index"],
+                "action_value_target": item["action_value_target"],
+                "success": item["success"],
+                "current_enc": current_enc,
+            }
+            sample_key = (sample.record_id, sample.step_index)
+            if sample_key in dedicated_next_keys:
+                next_paths = sample.next_prefix_image_paths
+                if sample.next_prefix_messages is None or next_paths is None:
+                    raise ValueError(
+                        "dedicated next state is missing for "
+                        f"{sample.record_id}:{sample.step_index}"
+                    )
+                next_image_indices = [
+                    _COMPACT_PATH_TO_IMAGE_INDEX[str(Path(path).resolve())]
+                    for path in next_paths
+                ]
+                next_grids = torch.tensor(
+                    [_COMPACT_IMAGE_GRIDS[index] for index in next_image_indices],
+                    dtype=torch.long,
+                ).reshape(-1, 3)
+                next_enc = encode_qwen_item_from_image_grids(
+                    item["next_messages"],
+                    next_grids,
+                    _CACHE_PROCESSOR,
+                    _CACHE_MAX_LENGTH,
+                    include_labels=False,
+                    latent_token_count=_CACHE_LATENT_TOKEN_COUNT,
+                    mask_latent_query_labels=_CACHE_MASK_LATENT_QUERY_LABELS,
+                )
+                next_enc["image_indices"] = torch.tensor(
+                    next_image_indices,
+                    dtype=torch.int32,
+                )
+                entry["next_enc"] = next_enc
+            entries.append(entry)
         _atomic_torch_save({"entries": entries}, Path(out_path))
         return out_path, True, ""
     except Exception as exc:  # noqa: BLE001
@@ -294,13 +327,28 @@ def build_compact_transition_preprocess_cache(
         success_only=success_only,
         value_gamma=value_gamma,
     ).samples
+    sample_keys = {
+        (sample.record_id, sample.step_index)
+        for sample in samples
+    }
+    dedicated_next_keys = {
+        (sample.record_id, sample.step_index)
+        for sample in samples
+        if sample.next_prefix_messages is not None
+        and sample.next_prefix_image_paths is not None
+        and (sample.record_id, sample.step_index + 1) not in sample_keys
+    }
 
     unique_image_paths: list[str] = []
     path_to_image_index: dict[str, int] = {}
     cumulative_image_refs = 0
     for sample in samples:
         cumulative_image_refs += len(sample.prefix_image_paths)
-        for raw_path in sample.prefix_image_paths:
+        referenced_paths = list(sample.prefix_image_paths)
+        if (sample.record_id, sample.step_index) in dedicated_next_keys:
+            referenced_paths.extend(sample.next_prefix_image_paths or ())
+            cumulative_image_refs += len(sample.next_prefix_image_paths or ())
+        for raw_path in referenced_paths:
             image_path = str(Path(raw_path).resolve())
             if image_path not in path_to_image_index:
                 path_to_image_index[image_path] = len(unique_image_paths)
@@ -479,7 +527,11 @@ def build_compact_transition_preprocess_cache(
 
     transition_chunks = _chunked(samples, transition_shard_size)
     transition_tasks = [
-        (chunk, str(cache_dir / "transitions" / f"shard_{index:05d}.pt"))
+        (
+            chunk,
+            str(cache_dir / "transitions" / f"shard_{index:05d}.pt"),
+            dedicated_next_keys,
+        )
         for index, chunk in enumerate(transition_chunks)
         if not (cache_dir / "transitions" / f"shard_{index:05d}.pt").is_file()
     ]

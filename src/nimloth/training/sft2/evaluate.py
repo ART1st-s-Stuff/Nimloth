@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch
 import torch.distributed as dist
 
-from nimloth.rollout import TransitionBatchBuilder
 from nimloth.training.sft2.algorithm import SFT2Algorithm
+from nimloth.training.sft2.batch import SFT2BatchBuilder
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.training.sft2.utils import preserve_module_modes
 from nimloth.util.metrics import MetricAccumulator
@@ -48,7 +48,7 @@ def evaluate(
     runtime: SFT2ModelRuntime,
     loader,
     *,
-    batch_builder: TransitionBatchBuilder,
+    batch_builder: SFT2BatchBuilder,
     max_batches: int = -1,
 ) -> dict[str, float]:
     """Evaluate with the same forward implementation used during training."""

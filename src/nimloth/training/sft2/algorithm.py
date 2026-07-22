@@ -10,26 +10,29 @@ import torch
 import torch.nn.functional as F
 
 from nimloth.agent import AgentOutput
-from nimloth.rollout import TransitionBatch
+from nimloth.training.sft2.batch import SFT2Batch
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import (
-    ONE_STEP_WM_HISTORY_SIZE,
     LatentWMPredictor,
-    OneStepSIGReg,
-    require_one_step_wm_predictor,
+    SequenceSIGReg,
 )
-
-
-SFT2_WM_HISTORY_SIZE = ONE_STEP_WM_HISTORY_SIZE
 
 
 def require_sft2_wm_history(
     wm_predictor: LatentWMPredictor,
+    *,
+    history_size: int,
     source: Path,
 ) -> None:
-    """SFT2 当前只支持一步 world-model predictor。"""
+    """拒绝加载与当前 SFT2 LeWM 上下文长度不一致的 predictor。"""
 
-    require_one_step_wm_predictor(wm_predictor, source=source)
+    actual = int(wm_predictor.config.history_size)
+    expected = int(history_size)
+    if actual != expected:
+        raise ValueError(
+            "SFT2 WM checkpoint history_size does not match config: "
+            f"checkpoint={actual}, config={expected}, source={source}"
+        )
 
 
 @dataclass(frozen=True)
@@ -53,7 +56,8 @@ class SFT2Algorithm:
     def __init__(
         self,
         *,
-        sigreg: OneStepSIGReg | None,
+        history_size: int,
+        sigreg: SequenceSIGReg | None,
         sigreg_weight: float,
         value_weight: float,
         ce_weight: float,
@@ -63,6 +67,11 @@ class SFT2Algorithm:
         wm_weight_end: float = 1.0,
         wm_warmup_fraction: float = 0.3,
     ) -> None:
+        self.history_size = int(history_size)
+        if self.history_size < 1:
+            raise ValueError(
+                f"history_size must be positive, got {self.history_size}"
+            )
         self.sigreg = sigreg
         self.sigreg_weight = float(sigreg_weight)
         self.value_weight = float(value_weight)
@@ -90,7 +99,7 @@ class SFT2Algorithm:
     def training_step(
         self,
         runtime: SFT2ModelRuntime,
-        batch: TransitionBatch,
+        batch: SFT2Batch,
         *,
         wm_weight: float,
     ) -> SFT2StepOutput:
@@ -106,7 +115,7 @@ class SFT2Algorithm:
     def evaluation_step(
         self,
         runtime: SFT2ModelRuntime,
-        batch: TransitionBatch,
+        batch: SFT2Batch,
     ) -> SFT2StepOutput:
         return self._step(
             runtime,
@@ -120,7 +129,7 @@ class SFT2Algorithm:
     def _step(
         self,
         runtime: SFT2ModelRuntime,
-        batch: TransitionBatch,
+        batch: SFT2Batch,
         *,
         wm_weight: float,
         include_lm_loss: bool,
@@ -129,18 +138,28 @@ class SFT2Algorithm:
     ) -> SFT2StepOutput:
         """按照 current forward → next target → loss 的顺序完成一次计算。"""
 
-        model_output = runtime.agent(
+        if batch.history_size != self.history_size:
+            raise ValueError(
+                "SFT2 batch history_size does not match algorithm: "
+                f"batch={batch.history_size}, algorithm={self.history_size}"
+            )
+        model_output = runtime.agent.forward_sequence(
             batch.current,
             batch.action_indices,
             include_lm_loss=include_lm_loss,
         )
         target_states = runtime.target_state(batch.next)
-        aligned_targets = target_states[batch.next_indices]
+        aligned_targets = target_states[
+            batch.next_indices.flatten()
+        ].reshape(
+            batch.batch_size,
+            self.history_size,
+            *target_states.shape[1:],
+        )
 
-        wm_loss = self._wm_loss(
+        wm_loss = F.mse_loss(
             model_output.predicted_next_state,
             aligned_targets,
-            batch.non_terminal_mask,
         )
         value = self._value_loss(
             model_output.action_values,
@@ -148,11 +167,19 @@ class SFT2Algorithm:
             batch.value_targets,
             include_ranking=include_value_ranking,
         )
-        sigreg_loss = (
-            self._sigreg_loss(model_output.state, aligned_targets, batch)
-            if include_sigreg
-            else None
-        )
+        sigreg_loss = None
+        if (
+            include_sigreg
+            and self.sigreg is not None
+            and self.sigreg_weight > 0.0
+        ):
+            sigreg_loss = self._sigreg_loss(
+                model_output.state,
+                runtime.agent.encode_state(
+                    batch.online_tail,
+                    include_lm_loss=False,
+                ).state,
+            )
 
         total = wm_weight * wm_loss + self.value_weight * value["loss"]
         if sigreg_loss is not None and self.sigreg_weight > 0.0:
@@ -170,8 +197,7 @@ class SFT2Algorithm:
             "lambda_ce": self.ce_weight,
             "total_loss": float(total.detach().item()),
         }
-        if bool(batch.non_terminal_mask.any()):
-            metrics["wm_mse"] = float(wm_loss.detach().item())
+        metrics["wm_mse"] = float(wm_loss.detach().item())
         if sigreg_loss is not None:
             metrics["sigreg_loss"] = float(sigreg_loss.detach().item())
         elif include_sigreg and self.sigreg is not None and self.sigreg_weight > 0.0:
@@ -191,18 +217,6 @@ class SFT2Algorithm:
             model_output=model_output,
         )
 
-    @staticmethod
-    def _wm_loss(
-        prediction: torch.Tensor,
-        target: torch.Tensor,
-        mask: torch.Tensor,
-    ) -> torch.Tensor:
-        """用 mask 统一处理普通 batch 与 terminal-only batch。"""
-
-        per_row = (prediction - target).pow(2).flatten(start_dim=1).mean(dim=1)
-        weights = mask.to(device=per_row.device, dtype=per_row.dtype)
-        return (per_row * weights).sum() / weights.sum().clamp_min(1.0)
-
     def _value_loss(
         self,
         all_values: torch.Tensor,
@@ -211,14 +225,20 @@ class SFT2Algorithm:
         *,
         include_ranking: bool,
     ) -> dict[str, torch.Tensor]:
-        chosen_values = all_values.gather(1, action_indices.unsqueeze(1)).squeeze(1)
+        chosen_values = all_values.gather(
+            -1,
+            action_indices.unsqueeze(-1),
+        ).squeeze(-1)
         targets = return_targets.to(device=all_values.device, dtype=all_values.dtype)
         regression = F.mse_loss(chosen_values, targets)
         chosen_mask = F.one_hot(
             action_indices,
-            num_classes=all_values.shape[1],
+            num_classes=all_values.shape[-1],
         ).bool()
-        max_other = all_values.masked_fill(chosen_mask, float("-inf")).max(dim=1).values
+        max_other = all_values.masked_fill(
+            chosen_mask,
+            float("-inf"),
+        ).max(dim=-1).values
         ranking = F.relu(
             self.value_rank_margin + max_other - chosen_values
         ).mean()
@@ -233,23 +253,24 @@ class SFT2Algorithm:
     def _sigreg_loss(
         self,
         current_states: torch.Tensor,
-        next_states: torch.Tensor,
-        batch: TransitionBatch,
+        final_state: torch.Tensor,
     ) -> torch.Tensor | None:
-        """把有效单步 transition 交给公共的固定 ``T=2`` SIGReg 模块。"""
+        """用在线 encoder 的 ``H+1`` 个真实状态构造 LeWM SIGReg 输入。"""
 
         if self.sigreg is None or self.sigreg_weight <= 0.0:
             return None
-        indices = batch.non_terminal_mask.nonzero(as_tuple=False).flatten()
-        if indices.numel() < 2:
-            return None
+        if current_states.ndim != 3 or final_state.ndim != 2:
+            raise ValueError(
+                "SFT2 SIGReg expects current_states=(B,H,D) and final_state=(B,D), "
+                f"got {tuple(current_states.shape)} and {tuple(final_state.shape)}"
+            )
+        if current_states.shape[0] != final_state.shape[0]:
+            raise ValueError("SFT2 SIGReg state batch sizes do not match")
         return self.sigreg(
-            current_states.index_select(0, indices),
-            next_states.index_select(0, indices),
+            torch.cat((current_states, final_state.unsqueeze(1)), dim=1)
         )
 
 __all__ = [
-    "SFT2_WM_HISTORY_SIZE",
     "SFT2Algorithm",
     "SFT2StepOutput",
     "require_sft2_wm_history",

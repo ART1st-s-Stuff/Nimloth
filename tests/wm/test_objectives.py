@@ -21,6 +21,7 @@ def _bias_only_head(bias: torch.Tensor) -> ValueHead:
 def _algorithm() -> SFT2Algorithm:
     # 这里只测试算法成员中的 value 目标，不运行 Agent forward。
     return SFT2Algorithm(
+        history_size=1,
         sigreg=None,
         sigreg_weight=0.0,
         value_weight=1.0,

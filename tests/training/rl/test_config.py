@@ -58,6 +58,24 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert config.predictor.sigreg_knots == 17
     assert config.actor.enabled is False
     assert config.gradient.representation_to_backbone is True
+    assert config.agent.planning.enabled is False
+
+
+def test_rl_config_parses_agent_planning() -> None:
+    raw = _raw_config()
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 3,
+            "beam_width": 6,
+        }
+    }
+
+    config = parse_rl_config(raw)
+
+    assert config.agent.planning.enabled is True
+    assert config.agent.planning.horizon == 3
+    assert config.agent.planning.beam_width == 6
 
 
 def test_rl_config_rejects_unknown_checkpoint_metric() -> None:

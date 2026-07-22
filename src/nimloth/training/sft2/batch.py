@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Protocol, Sequence
 
 import torch
 
@@ -20,6 +20,86 @@ class CachedNextBatch:
     batch: BackboneBatch
 
 
+@dataclass(frozen=True)
+class SFT2Batch:
+    """SFT2 的 ``B`` 个连续窗口，每个窗口含 ``H`` 个 transition。"""
+
+    transitions: TransitionBatch
+    online_tail: BackboneBatch
+    history_size: int
+
+    def __post_init__(self) -> None:
+        if self.history_size < 1:
+            raise ValueError("SFT2 history_size must be positive")
+        row_count = len(self.transitions.trajectory_steps)
+        if row_count == 0 or row_count % self.history_size != 0:
+            raise ValueError(
+                "SFT2 transition rows must contain complete history windows: "
+                f"rows={row_count}, history_size={self.history_size}"
+            )
+        for start in range(0, row_count, self.history_size):
+            window = self.transitions.trajectory_steps[
+                start : start + self.history_size
+            ]
+            record_ids = {record_id for record_id, _step in window}
+            step_indices = [step for _record_id, step in window]
+            if len(record_ids) != 1 or any(
+                right != left + 1
+                for left, right in zip(step_indices, step_indices[1:])
+            ):
+                raise ValueError(
+                    "SFT2 history window must contain consecutive steps from "
+                    f"one trajectory, got {window}"
+                )
+
+    @property
+    def batch_size(self) -> int:
+        return len(self.transitions.trajectory_steps) // self.history_size
+
+    @property
+    def current(self) -> BackboneBatch:
+        return self.transitions.current
+
+    @property
+    def next(self) -> BackboneBatch:
+        return self.transitions.next
+
+    @property
+    def action_indices(self) -> torch.Tensor:
+        return self.transitions.action_indices.reshape(
+            self.batch_size,
+            self.history_size,
+        )
+
+    @property
+    def value_targets(self) -> torch.Tensor:
+        return self.transitions.value_targets.reshape(
+            self.batch_size,
+            self.history_size,
+        )
+
+    @property
+    def next_indices(self) -> torch.Tensor:
+        return self.transitions.next_indices.reshape(
+            self.batch_size,
+            self.history_size,
+        )
+
+class SFT2BatchBuilder(Protocol):
+    """DataLoader 输出到 SFT2 连续窗口 batch 的阶段契约。"""
+
+    processor: Any
+
+    def collate_transition_samples(self, batch: list[Any]) -> Any: ...
+
+    def collate_cached_transition_batch(
+        self,
+        batch: list[dict[str, Any]],
+    ) -> Any: ...
+
+    def prepare(self, raw_batch: Any) -> SFT2Batch: ...
+
+
 class SFT2BatchAssembler:
     """负责 SFT2 target 对齐；不包含任何 Qwen 模型或训练算法。"""
 
@@ -28,9 +108,13 @@ class SFT2BatchAssembler:
         *,
         input_builder: BackboneInputBuilder,
         device: torch.device,
+        history_size: int,
     ) -> None:
         self.input_builder = input_builder
         self.device = device
+        self.history_size = int(history_size)
+        if self.history_size < 1:
+            raise ValueError("SFT2 history_size must be positive")
 
     @property
     def processor(self) -> Any:
@@ -59,17 +143,19 @@ class SFT2BatchAssembler:
                 current_rows,
                 include_labels=True,
             ),
+            "online_tail": self._collate_online_tail(items, next_rows),
             "next": self._collate_next(items, next_rows),
         }
 
-    def prepare(self, raw_batch: Any) -> TransitionBatch:
+    def prepare(self, raw_batch: Any) -> SFT2Batch:
         """构造 current/next 模型输入和对齐后的 transition target。"""
 
-        if isinstance(raw_batch, TransitionBatch):
+        if isinstance(raw_batch, SFT2Batch):
             return raw_batch
         if isinstance(raw_batch, dict) and "current" in raw_batch:
             items = [self._metadata(item) for item in raw_batch["items"]]
             current = raw_batch["current"]
+            online_tail = raw_batch.get("online_tail")
             cached_next = raw_batch.get("next")
         elif isinstance(raw_batch, dict) and "current_enc_rows" in raw_batch:
             # compact cache 只在 worker 内恢复 mmap row，统一的输入 builder
@@ -78,6 +164,10 @@ class SFT2BatchAssembler:
             current = self.input_builder.collate_encoded(
                 raw_batch["current_enc_rows"],
                 include_labels=True,
+            )
+            online_tail = self._collate_online_tail(
+                items,
+                raw_batch["next_enc_rows"],
             )
             cached_next = self._collate_next(
                 items,
@@ -90,56 +180,119 @@ class SFT2BatchAssembler:
                 [() for _ in items],
                 include_labels=True,
             )
+            online_tail = None
             cached_next = None
 
-        unique_keys, key_to_row = self._next_prompt_index(items)
-        if unique_keys:
-            next_batch = self._next_batch(
-                items,
-                unique_keys,
-                key_to_row,
-                cached_next,
-            )
-        else:
-            # 全 terminal batch 仍执行一次 target forward，保证多卡调用结构一致。
-            next_batch = self.input_builder.build(
-                [items[0]["messages"]],
-                [()],
+        self._validate_window_items(items)
+        if online_tail is None:
+            tail_messages = [
+                items[end - 1].get("next_messages")
+                for end in range(self.history_size, len(items) + 1, self.history_size)
+            ]
+            if any(messages is None for messages in tail_messages):
+                raise ValueError(
+                    "SFT2 history window requires a real state after its final action"
+                )
+            online_tail = self.input_builder.build(
+                [messages for messages in tail_messages if messages is not None],
+                [() for _ in tail_messages],
                 include_labels=False,
             )
 
-        non_terminal = torch.tensor(
-            [item.get("next_messages") is not None for item in items],
+        unique_keys, key_to_row = self._next_prompt_index(items)
+        next_batch = self._next_batch(
+            items,
+            unique_keys,
+            key_to_row,
+            cached_next,
+        )
+
+        non_terminal = torch.ones(
+            len(items),
             dtype=torch.bool,
             device=self.device,
         )
         next_indices = torch.tensor(
             [
                 key_to_row[self._prompt_key(item["next_messages"])]
-                if item.get("next_messages") is not None
-                else 0
                 for item in items
             ],
             dtype=torch.long,
             device=self.device,
         )
-        return TransitionBatch(
-            current=current,
-            next=next_batch,
-            action_indices=torch.tensor(
-                [item["action_index"] for item in items],
-                dtype=torch.long,
-                device=self.device,
+        return SFT2Batch(
+            transitions=TransitionBatch(
+                current=current,
+                next=next_batch,
+                action_indices=torch.tensor(
+                    [item["action_index"] for item in items],
+                    dtype=torch.long,
+                    device=self.device,
+                ),
+                value_targets=torch.tensor(
+                    [item["action_value_target"] for item in items],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                next_indices=next_indices,
+                non_terminal_mask=non_terminal,
+                trajectory_steps=tuple(
+                    self._trajectory_step(item) for item in items
+                ),
             ),
-            value_targets=torch.tensor(
-                [item["action_value_target"] for item in items],
-                dtype=torch.float32,
-                device=self.device,
-            ),
-            next_indices=next_indices,
-            non_terminal_mask=non_terminal,
-            trajectory_steps=tuple(self._trajectory_step(item) for item in items),
+            online_tail=online_tail,
+            history_size=self.history_size,
         )
+
+    def _collate_online_tail(
+        self,
+        items: Sequence[dict[str, Any]],
+        rows: Sequence[dict[str, torch.Tensor] | None],
+    ) -> BackboneBatch:
+        """只合并每个窗口的最后一个真实 next state，供在线 SIGReg 编码。"""
+
+        self._validate_window_items(items)
+        tail_rows = [
+            rows[end - 1]
+            for end in range(self.history_size, len(rows) + 1, self.history_size)
+        ]
+        if any(row is None for row in tail_rows):
+            raise ValueError(
+                "SFT2 cached history window is missing its final next-state encoding"
+            )
+        return self.input_builder.collate_encoded(
+            [row for row in tail_rows if row is not None],
+            include_labels=False,
+        )
+
+    def _validate_window_items(
+        self,
+        items: Sequence[dict[str, Any]],
+    ) -> None:
+        """在 processor 调用前检查扁平行能否还原为完整连续窗口。"""
+
+        if not items or len(items) % self.history_size != 0:
+            raise ValueError(
+                "SFT2 rows must contain complete history windows: "
+                f"rows={len(items)}, history_size={self.history_size}"
+            )
+        for start in range(0, len(items), self.history_size):
+            window = items[start : start + self.history_size]
+            record_ids = {item["record_id"] for item in window}
+            steps = [item["step_index"] for item in window]
+            if len(record_ids) != 1 or any(
+                right != left + 1
+                for left, right in zip(steps, steps[1:])
+            ):
+                raise ValueError(
+                    "SFT2 history window must contain consecutive steps from one "
+                    "trajectory, got "
+                    f"{[(item['record_id'], item['step_index']) for item in window]}"
+                )
+            if any(item.get("next_messages") is None for item in window):
+                raise ValueError(
+                    "SFT2 history window requires a real next state for every action"
+                )
 
     def _collate_next(
         self,
@@ -249,4 +402,9 @@ class SFT2BatchAssembler:
         return record_id, item["step_index"]
 
 
-__all__ = ["CachedNextBatch", "SFT2BatchAssembler"]
+__all__ = [
+    "CachedNextBatch",
+    "SFT2Batch",
+    "SFT2BatchAssembler",
+    "SFT2BatchBuilder",
+]

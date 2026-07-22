@@ -29,6 +29,10 @@ def test_common_configs_reject_unknown_fields() -> None:
         parse_agent_config({"environment_instruction": "moveahead"})
     with pytest.raises(ValueError, match="unknown rollout config field"):
         parse_rollout_config({"trainer_batch_size": 4})
+    with pytest.raises(ValueError, match="planning.enabled must be a boolean"):
+        parse_agent_config({"planning": {"enabled": "true"}})
+    with pytest.raises(ValueError, match="planning.horizon must be >= 1"):
+        parse_agent_config({"planning": {"horizon": 0}})
 
 
 def test_rollout_config_is_independent_of_training_phase() -> None:

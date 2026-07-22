@@ -15,6 +15,9 @@ class _RecordingPolicy:
     def __init__(self) -> None:
         self.prompts: list[AgentPrompt] = []
 
+    def reset_episode(self) -> None:
+        self.prompts.clear()
+
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
         self.prompts.append(prompt)
         return PolicyDecision(

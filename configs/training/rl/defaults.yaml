@@ -5,6 +5,11 @@
 agent:
   prompt_template: nimloth-latent-action
   thought: What should I do next?
+  # 每个真实 env step 只运行一次 Qwen；候选动作序列全部由 WM 在 latent 空间模拟。
+  planning:
+    enabled: true
+    horizon: 4
+    beam_width: 8
 
 freeze:
   state_proj: true

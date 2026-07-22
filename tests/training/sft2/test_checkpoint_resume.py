@@ -135,8 +135,17 @@ def test_resume_checkpoint_requires_all_auxiliary_weights(tmp_path: Path) -> Non
         )
 
 
-def test_sft2_rejects_multi_step_predictor_checkpoint() -> None:
+def test_sft2_requires_checkpoint_history_to_match_config() -> None:
     predictor = LatentWMPredictor.create(LeWMConfig(emb_dim=16, history_size=4))
 
-    with pytest.raises(ValueError, match="history_size=1"):
-        require_sft2_wm_history(predictor, Path("wm"))
+    require_sft2_wm_history(
+        predictor,
+        history_size=4,
+        source=Path("wm"),
+    )
+    with pytest.raises(ValueError, match="checkpoint=4, config=2"):
+        require_sft2_wm_history(
+            predictor,
+            history_size=2,
+            source=Path("wm"),
+        )

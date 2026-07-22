@@ -82,6 +82,7 @@ class AgentRuntime:
     def reset(self, *, system_prompt: str) -> None:
         if not system_prompt.strip():
             raise ValueError("Agent requires the environment system prompt")
+        self._policy.reset_episode()
         self._system_prompt = system_prompt
         self._observation_texts.clear()
         self._observation_images.clear()

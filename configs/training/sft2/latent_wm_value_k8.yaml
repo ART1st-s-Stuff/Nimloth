@@ -34,9 +34,8 @@ train:
   # 20-image prefix comparable to the validated 9-image/grid32 workload.
   max_pixels: 100352
   emb_dim: 1024
-  # 每行是一个单步 transition；SIGReg 将 current/next 固定组织为 (T=2,B,D)。
-  # max_images_per_batch 与 step 上限负责切 chunk；单行仍超预算时 transition
-  # 不丢弃，B<2 的 batch 会跳过 SIGReg。
+  history_size: 4
+  # 每个样本是 H 个动作和 H+1 个真实状态；B<2 的 batch 跳过 SIGReg。
   batch_mode: trajectory_image_budget
   max_images_per_batch: 12
   max_steps_per_trajectory: 16

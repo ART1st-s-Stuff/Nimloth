@@ -11,7 +11,7 @@ import torch
 import torch.distributed as dist
 
 from nimloth.config.sft2 import SFT2LoopConfig
-from nimloth.rollout import TransitionBatchBuilder
+from nimloth.training.sft2.batch import SFT2BatchBuilder
 from nimloth.training.sft2.checkpoint import (
     SFT2CheckpointRuntime,
     resume_epoch_and_micro_step,
@@ -100,12 +100,11 @@ class SFT2TrainingLoop:
     rank: int
     train_loader: Any
     val_loader: Any
-    train_sampler: Any
     train_batch_sampler: Any
     algorithm: SFT2Algorithm
     model_runtime: SFT2ModelRuntime
     optimization_runtime: SFT2OptimizationRuntime
-    batch_builder: TransitionBatchBuilder
+    batch_builder: SFT2BatchBuilder
     checkpoint_runtime: SFT2CheckpointRuntime
     reporter: SFT2Reporter
     state: SFT2LoopState
@@ -187,10 +186,7 @@ class SFT2TrainingLoop:
     def _set_sampler_epoch(self, epoch: int) -> None:
         """让分布式 sampler 使用一致的 epoch 随机种子。"""
 
-        if self.train_batch_sampler is not None:
-            self.train_batch_sampler.set_epoch(epoch)
-        elif self.train_sampler is not None:
-            self.train_sampler.set_epoch(epoch)
+        self.train_batch_sampler.set_epoch(epoch)
 
     def _resume_train_iterator(self, epoch: int) -> tuple[Any, int]:
         """恢复首个 epoch 内已经消费过的微批位置。"""

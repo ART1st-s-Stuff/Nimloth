@@ -3,9 +3,11 @@ from __future__ import annotations
 import torch
 from PIL import Image
 
-from nimloth.backbone.qwen25vl.policy import (
+from nimloth.agent import (
     behavior_log_probs,
     categorical_entropy_from_log_probs,
+)
+from nimloth.backbone.qwen25vl.policy import (
     collect_policy_images,
     render_policy_messages,
 )

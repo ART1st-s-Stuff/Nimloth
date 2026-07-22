@@ -110,6 +110,7 @@ def test_encode_transition_item_roundtrip_collate() -> None:
             max_length=128,
         ),
         device=torch.device("cpu"),
+        history_size=1,
     ).collate_cached_transition_batch([encoded])
     online_current = build_qwen_batch([{"messages": item["messages"]}], processor, max_length=128)
     assert torch.equal(batch["current"].tensors["input_ids"][0], online_current["input_ids"][0])
@@ -203,11 +204,11 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     (cache_dir / "images").mkdir(parents=True)
     (cache_dir / "transitions").mkdir(parents=True)
     (cache_dir / "manifest.json").write_text(
-        '{"format":"dedup_sharded_v1","count":2,"transition_shard_size":2}',
+        f'{{"format":"{COMPACT_CACHE_FORMAT}","count":2,"transition_shard_size":2}}',
         encoding="utf-8",
     )
     (cache_dir / "image_index.json").write_text(
-        '{"format":"dedup_sharded_v1","images":['
+        f'{{"format":"{COMPACT_CACHE_FORMAT}","images":['
         '{"path":"im0","shard":0,"index":0,"grid_thw":[1,1,2]},'
         '{"path":"im1","shard":0,"index":1,"grid_thw":[1,1,3]}]}',
         encoding="utf-8",
@@ -251,6 +252,7 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
                     "action_value_target": 1.0,
                     "success": True,
                     "current_enc": enc([3, 4, 5], [0, 1], [[1, 1, 2], [1, 1, 3]]),
+                    "next_enc": enc([6], [1], [[1, 1, 3]]),
                 },
             ]
         },
@@ -280,6 +282,10 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
             action_index=1,
             current_image_path="im1",
             next_image_path="im1",
+            next_prefix_messages=[
+                {"role": "assistant", "content": "c <image>"}
+            ],
+            next_prefix_image_paths=["im1"],
         ),
     ]
     dataset = CachedTransitionDataset(cache_dir, samples, max_open_shards=1)
@@ -294,8 +300,9 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     assert torch.equal(current_pixels, torch.cat([pixels[:2], pixels[:2], pixels[2:]], dim=0))
     next_rows = batch["next_enc_rows"]
     assert next_rows[0] is not None
-    assert next_rows[1] is None
+    assert next_rows[1] is not None
     assert torch.equal(
         next_rows[0]["pixel_values"],
         torch.cat([pixels[:2], pixels[2:]], dim=0),
     )
+    assert torch.equal(next_rows[1]["pixel_values"], pixels[2:])

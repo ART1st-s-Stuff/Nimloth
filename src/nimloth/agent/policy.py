@@ -11,6 +11,60 @@ import torch
 from nimloth.agent.template import AgentPrompt
 
 
+def behavior_log_probs(
+    action_scores: torch.Tensor,
+    *,
+    temperature: float,
+    top_p: float,
+) -> torch.Tensor:
+    """把任意 Agent action score 转成实际采样使用的对数概率。"""
+
+    if action_scores.ndim != 1:
+        raise ValueError(
+            f"action_scores must have shape (A,), got {tuple(action_scores.shape)}"
+        )
+    if not torch.isfinite(action_scores).any():
+        raise ValueError("action_scores must contain at least one finite value")
+    if not 0.0 < top_p <= 1.0:
+        raise ValueError(f"top_p must be in (0, 1], got {top_p}")
+    if temperature < 0.0:
+        raise ValueError(f"temperature must be >= 0, got {temperature}")
+    if temperature == 0.0:
+        chosen = action_scores.argmax(dim=-1, keepdim=True)
+        log_probs = torch.full_like(action_scores, float("-inf"))
+        return log_probs.scatter(dim=-1, index=chosen, value=0.0)
+
+    scaled_scores = action_scores / temperature
+    if top_p < 1.0:
+        sorted_scores, sorted_indices = torch.sort(
+            scaled_scores,
+            dim=-1,
+            descending=True,
+        )
+        sorted_probs = torch.softmax(sorted_scores, dim=-1)
+        cumulative_before = torch.cumsum(sorted_probs, dim=-1) - sorted_probs
+        sorted_keep = cumulative_before < top_p
+        keep = torch.zeros_like(sorted_keep).scatter(
+            dim=-1,
+            index=sorted_indices,
+            src=sorted_keep,
+        )
+        scaled_scores = scaled_scores.masked_fill(~keep, float("-inf"))
+    return torch.log_softmax(scaled_scores, dim=-1)
+
+
+def categorical_entropy_from_log_probs(log_probs: torch.Tensor) -> torch.Tensor:
+    """计算允许包含 top-p ``-inf`` mask 的离散分布 entropy。"""
+
+    probabilities = log_probs.exp()
+    terms = torch.where(
+        probabilities > 0,
+        probabilities * log_probs,
+        torch.zeros_like(log_probs),
+    )
+    return -terms.sum(dim=-1).mean()
+
+
 def validate_action_log_probs(
     action_index: int,
     action_log_probs: tuple[float, ...] | list[float],
@@ -57,8 +111,35 @@ class PolicyDecision:
         validate_action_log_probs(self.action_index, self.action_log_probs)
 
 
+def sample_policy_decision(
+    action_scores: torch.Tensor,
+    *,
+    temperature: float,
+    top_p: float,
+) -> PolicyDecision:
+    """按统一采样规则从 action score 构造可审计的行为决策。"""
+
+    log_probs = behavior_log_probs(
+        action_scores,
+        temperature=temperature,
+        top_p=top_p,
+    )
+    if temperature == 0.0:
+        action_index = int(action_scores.argmax().item())
+    else:
+        action_index = int(torch.multinomial(log_probs.exp(), 1).item())
+    return PolicyDecision(
+        action_index=action_index,
+        action_log_probs=tuple(float(value) for value in log_probs.cpu().tolist()),
+    )
+
+
 class AgentPolicy(Protocol):
-    """接收结构化 AgentPrompt 的模型适配协议。"""
+    """接收结构化 AgentPrompt 的 episode policy 协议。"""
+
+    def reset_episode(self) -> None:
+        """清除上一个 episode 的 policy 运行期状态。"""
+        ...
 
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
         ...

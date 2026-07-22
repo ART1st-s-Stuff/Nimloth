@@ -10,7 +10,7 @@ from typing import Any
 
 import torch
 
-from nimloth.agent import Agent
+from nimloth.agent import Agent, PlanningPolicy
 from nimloth.backbone import (
     backbone_hidden_size,
     build_action_log_prob_replay,
@@ -33,6 +33,8 @@ from nimloth.training.rl.rollout_runtime import (
     bind_online_collectors,
     online_policy_required,
     validate_collector_configuration,
+    validate_online_policy_configuration,
+    validate_planning_initialization,
 )
 from nimloth.util.distributed import (
     broadcast_module_state,
@@ -56,6 +58,7 @@ class RLResumeState:
     start_iteration: int = 1
     global_step: int = 0
     best_eval_metric: float = float("-inf")
+    loaded: bool = False
 
 
 def _build_world_model(
@@ -222,6 +225,7 @@ def _load_resume_state(
         start_iteration=int(state.get("iteration", 0)) + 1,
         global_step=int(state.get("global_step", 0)),
         best_eval_metric=float(state.get("best_eval_metric", float("-inf"))),
+        loaded=True,
     )
 
 
@@ -237,6 +241,11 @@ def train_rl(
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     actor_enabled = config.actor.enabled
+    planning_enabled = config.agent.planning.enabled
+    validate_online_policy_configuration(
+        actor_enabled=actor_enabled,
+        planning_enabled=planning_enabled,
+    )
     backbone_trainable = llm_tune != "freeze" or vision_tune != "freeze"
     if actor_enabled and not backbone_trainable:
         raise ValueError(
@@ -248,6 +257,20 @@ def train_rl(
         eval_collector=eval_collector,
         validation_enabled=config.validation.enabled,
     )
+    needs_online_policy = online_policy_required(
+        train_collector,
+        eval_collector,
+    )
+    if not args.resume:
+        # 非 resume 运行可以在加载大模型前完成 planning artifact 校验。
+        validate_planning_initialization(
+            planning_enabled=planning_enabled,
+            online_policy_needed=needs_online_policy,
+            resume_loaded=False,
+            wm_checkpoint=args.wm_checkpoint,
+            state_proj_checkpoint=args.state_proj_checkpoint,
+            value_head_checkpoint=args.value_head_checkpoint,
+        )
 
     rank, world, _, device = setup_dist()
     if actor_enabled and world > 1:
@@ -313,14 +336,33 @@ def train_rl(
             latent_token_count=1,
             mask_latent_query_labels=True,
         )
-        if online_policy_required(train_collector, eval_collector):
-            policy = build_agent_policy(
-                loaded,
-                model=model,
-                device=device,
-                temperature=config.rollout.temperature,
-                top_p=config.rollout.top_p,
-            )
+        # resume 只有在 checkpoint state 确实恢复后才算有效，不能只相信 CLI flag。
+        validate_planning_initialization(
+            planning_enabled=planning_enabled,
+            online_policy_needed=needs_online_policy,
+            resume_loaded=resume.loaded,
+            wm_checkpoint=args.wm_checkpoint,
+            state_proj_checkpoint=args.state_proj_checkpoint,
+            value_head_checkpoint=args.value_head_checkpoint,
+        )
+        if needs_online_policy:
+            if planning_enabled:
+                policy = PlanningPolicy(
+                    agent=agent,
+                    input_builder=input_builder,
+                    horizon=config.agent.planning.horizon,
+                    beam_width=config.agent.planning.beam_width,
+                    temperature=config.rollout.temperature,
+                    top_p=config.rollout.top_p,
+                )
+            else:
+                policy = build_agent_policy(
+                    loaded,
+                    model=model,
+                    device=device,
+                    temperature=config.rollout.temperature,
+                    top_p=config.rollout.top_p,
+                )
             bind_online_collectors(
                 train_collector=train_collector,
                 eval_collector=eval_collector,
@@ -328,6 +370,26 @@ def train_rl(
                 latent_token_count=1,
                 world_size=world,
             )
+            if is_main():
+                print(
+                    json.dumps(
+                        {
+                            "agent_policy": (
+                                "wm_planning" if planning_enabled else "qwen_direct"
+                            ),
+                            "planning_horizon": (
+                                config.agent.planning.horizon
+                                if planning_enabled
+                                else None
+                            ),
+                            "planning_beam_width": (
+                                config.agent.planning.beam_width
+                                if planning_enabled
+                                else None
+                            ),
+                        }
+                    )
+                )
         checkpoint_manager = RLCheckpointManager(
             config=config,
             agent=agent,

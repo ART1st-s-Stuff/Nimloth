@@ -143,6 +143,31 @@ policy prompt/probability、独立 validation 与核心梯度边界；真实多�
 - 验证：窗口边界、shape、target 对齐、梯度 stop、可变 history 和 SIGReg 时间轴
   均有单元测试。禁止再用强制 `history_size=1` 或虚构 padding 掩盖问题。
 
+### 18. 在线 rollout 没有调用多步 WM planner
+
+- 状态：**已修复（2026-07-22）**
+- 原因：真实 collector 只绑定 `QwenAgentPolicy`；旧 `wm/planning.py` 只有测试调用，
+  beam expansion 还会丢失 predictor history。
+- 修复：真实调用改为 `PlanningPolicy`：每个 observation 通过 `Agent.encode_state()`
+  执行一次 Qwen/StateProjector，`WorldModelPlanner` 在 latent 空间重放完整候选 action
+  sequence，`EpisodeRunner` 最终只执行一个首动作。旧 dead planner 已删除。
+- 阶段边界：SFT2 不参与 rollout/planning，只提供 WM/value 初值；
+  SFT2/RL 的 LeWM `history_size` 严格一致，RL 多步预测由独立 planning horizon 控制。
+- 限制：当前缺少 reward/done head，search score 明确为叶节点最大 action-value
+  heuristic；planner PPO replay 尚未实现，因此 planning 与 actor 同时开启会直接
+  报错。
+
+### 19. SFT2 与 RL 的 LeWM history_size 语义不一致
+
+- 状态：**已修复（2026-07-22）**
+- 原因：SFT2 曾固定为独立单步 transition 和 `history_size=1`，RL 则按 H>1 的
+  连续窗口训练/规划；warm-start predictor 实际没有学过 RL 使用的上下文。
+- 修复：SFT2 现在用滑动窗口产生 H 个连续动作和 H+1 个真实状态，在所有 H 个
+  因果位置训练 WM/value，并用在线 encoder 的完整序列计算 SIGReg。SFT2/RL
+  checkpoint 严格匹配 H；RL 额外的未来模拟步数只由 planning horizon 控制。
+- 数据边界：compact cache v2 单独保存轨迹最终 observation，避免最后一个合法
+  H+1 窗口因没有 successor transition 而丢失。
+
 ## 建议实施顺序
 
 1. 先统一 policy prompt、真实历史图片、采样分布和轨迹 schema，补齐 PPO 行为概率契约测试。

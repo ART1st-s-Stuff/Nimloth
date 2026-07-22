@@ -6,7 +6,7 @@
 | `factory.py` | 阶段无关的模型加载、tuning 与独立能力构造 |
 | `input.py` | Agent 消息/图片到 `BackboneBatch` 的通用输入适配 |
 | `batch.py` | chat rendering、图片处理、CE label 与 tensor collate |
-| `policy.py` | 在线动作 policy 与独立 PPO replay 适配器 |
+| `policy.py` | Qwen direct policy score 与独立 PPO replay 适配器 |
 | `checkpoint.py` | PEFT 与 full vision artifact |
 | `latent.py` | final hidden 捕获与 latent query 提取 |
 | `tuning.py` | LLM/vision `freeze | lora | full` 配置 |
