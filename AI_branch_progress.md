@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-22：SFT2 target-state 归入模型运行期
+
+- 删除容易被误解为第二套神经网络的公共 `AgentTarget`。`Agent` 现在是唯一模型
+  对象；SFT2 特有的 target Backbone stop-gradient、target 侧 StateProjector
+  梯度和 Backbone EMA 均由 `SFT2ModelRuntime` 管理。
+- `SFT2ModelRuntime.unwrapped()` 保留同一 EMA owner，但 EMA context 会根据新
+  runtime 的 Agent 重新选择实际 Backbone model，不再复用捕获旧包装模型的闭包。
+- 生产 trainer、algorithm、validation、诊断脚本和测试已切换到新契约；新增测试
+  保护 unwrapped runtime 的 EMA model ownership。实现提交 `37cbc77` 已推送。
+- 本地 `compileall` 和 staged diff-check 通过；本机环境没有 Torch。superpod
+  连续连接失败，最终明确返回 `Connection timed out during banner exchange`，
+  依服务器规则停止重试。远程 worktree 同步和 pytest 待 VPN 恢复。
+
 ## 2026-07-21：SFT2/RL Algorithm 与训练运行期边界统一
 
 - `SFT2Algorithm` 与 `RLAlgorithm` 现在都是普通 Python 单批算法对象：只保存

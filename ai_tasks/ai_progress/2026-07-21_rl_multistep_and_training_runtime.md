@@ -40,6 +40,9 @@
   history 与配置一致。
 - `training/rl/runtime.py`、`training/sft2/runtime.py`：显式提供各阶段单批算法所需
   的模型能力；两个 Algorithm 都不再持有 Agent 或 optimizer。
+- `training/sft2/runtime.py` 进一步吸收原 `AgentTarget`：唯一 Agent 模型之外，
+  target-state stop-gradient、target 侧 projector 梯度、Backbone EMA 和 unwrapped
+  验证视图都由 SFT2 runtime 表达。
 - `util/optim.py`：统一 backward、梯度累积同步、梯度裁剪、optimizer step 与
   EMA callback；`Agent.synchronized_modules` 隐藏实际 DDP/FSDP 包装位置。
 - `training/sft2/reporting.py`、`checkpoint.py`：从 loop 提取 CSV/W&B 汇报、保存
@@ -65,8 +68,13 @@
 - 全部远程测试显式设置 `WANDB_MODE=disabled`；没有创建实验输出或上传 W&B。
 - 已删除本次产生的 `.pytest_cache` 及源码、测试、experiments 下 `__pycache__`；
   远程原有 `external/le-wm` 状态、`scripts/` 和 trainer backup 未改动。
+- `37cbc77` 删除公共 `AgentTarget` 并推送；新增的 unwrapped/EMA ownership 测试
+  已完成静态编译。2026-07-22 远程 SSH 在 banner exchange 阶段超时，本机又无
+  Torch，因此该提交的 pytest 与远程 worktree 同步仍待 VPN 恢复后执行。
 
 ## 待确认问题
 
-- 暂无。实现采用原始 LeWM 的一步偏移契约：每个训练窗口包含 `H+1` 个状态、
-  `H` 个动作，预测和 target 均为 `H` 个时间位置。
+- 算法契约仍采用原始 LeWM 的一步偏移：每个训练窗口包含 `H+1` 个状态、H 个
+  动作，预测和 target 均为 H 个时间位置。
+- 待 VPN 恢复后同步远程 `dev` worktree，并补跑完整 SFT2 测试；全程保持
+  `WANDB_MODE=disabled`，结束后清理测试缓存。
