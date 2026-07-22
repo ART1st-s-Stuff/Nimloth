@@ -15,7 +15,11 @@ from nimloth.wm import SequenceSIGReg
 
 @dataclass(frozen=True)
 class RLBatch:
-    """一次 RL 更新消费的原始连续窗口与逐步监督。"""
+    """一次 RL 更新消费的原始连续窗口与逐步监督。
+
+    三个监督张量均为 ``(B,H)``，并按 window-major、time-minor 排列；这个顺序必须
+    与 ``state_prompts`` 和 ``policy_replay_inputs`` 的展开顺序保持一致。
+    """
 
     windows: tuple[TrajectoryWindow, ...]
     action_indices: torch.Tensor
@@ -58,7 +62,11 @@ def build_rl_batch(
     gamma: float,
     device: torch.device,
 ) -> RLBatch:
-    """把已采样窗口的动作、return 和行为概率整理成张量。"""
+    """把已采样窗口的动作、return 和行为概率整理为 ``(B,H)`` 张量。
+
+    return 先在完整 episode 上计算再切片，避免把训练窗口末端误当作 episode 终点；
+    old log-prob 取自 rollout 时保存的行为分布中实际执行的动作。
+    """
 
     if not windows:
         raise ValueError("RL batch requires at least one trajectory window")
@@ -113,7 +121,11 @@ def normalized_monte_carlo_advantages(
     return_targets: torch.Tensor,
     predicted_values: torch.Tensor,
 ) -> torch.Tensor:
-    """用当前 value baseline 归一化 Monte Carlo return。"""
+    """在 ``B*H`` 个动作位置上，用当前 value baseline 归一化 Monte Carlo return。
+
+    baseline 在这里 detach；PPO 不通过 advantage 更新 ValueHead，ValueHead 由自己的
+    监督目标更新。
+    """
 
     advantages = return_targets - predicted_values.detach()
     return (advantages - advantages.mean()) / (
@@ -159,6 +171,7 @@ class RLAlgorithm:
     ) -> RLStepOutput:
         """构造 RL 计算图并计算 WM、value 与可选 PPO 目标。"""
 
+        # state_prompts 按 window-major 展开，因此 runtime 可无歧义地恢复 (B,H+1)。
         hidden_states = runtime.encode_state_sequence(
             batch.state_prompts,
             batch_size=len(batch.windows),
@@ -185,6 +198,7 @@ class RLAlgorithm:
                 f"got {tuple(batch.action_indices.shape)}, expected {expected_actions}"
             )
 
+        # 投影后统一为 (B,H+1,D_wm)；多 latent token 只在 StateProjector 内合并。
         state_sequence = runtime.agent.wm.project_state_sequence(hidden_states)
         state_context = state_sequence[:, :-1]
         predicted_next_states = runtime.agent.wm.predict_state_sequence(
@@ -197,7 +211,7 @@ class RLAlgorithm:
         target_next_states = state_sequence[:, 1:].detach()
         action_values = runtime.agent.wm.predict_action_values(state_context)
 
-        # 三个目标在这里直接组合，避免把同一批 tensor 再转发给一层 objective。
+        # WM 与 value 共享 state_context，但监督目标和梯度边界各自独立。
         wm_loss = F.mse_loss(predicted_next_states, target_next_states)
         value_loss, chosen_values = self._value_loss(
             action_values,
@@ -206,6 +220,7 @@ class RLAlgorithm:
         )
         total = wm_loss + value_loss
 
+        # SequenceSIGReg 接收 (B,T,D)，内部才转成 LeWM 需要的 (T,B,D)。
         sigreg_loss = (
             self.sigreg(state_sequence)
             if self.sigreg is not None and self.sigreg_weight > 0.0
@@ -216,6 +231,8 @@ class RLAlgorithm:
 
         policy: dict[str, torch.Tensor] | None = None
         if runtime.policy_replay is not None:
+            # replay 与上面的监督张量使用相同的 window/time 展开顺序；flatten 后每个
+            # ratio 仍对应 rollout 中同一个动作位置。
             new_log_probs, action_log_probs = runtime.policy_replay(
                 batch.policy_replay_inputs
             )
@@ -235,6 +252,7 @@ class RLAlgorithm:
                 action_log_probs=action_log_probs,
                 advantages=advantages,
             )
+            # policy["loss"] 已取 clipped surrogate 的负号；entropy 作为奖励项减去。
             total = total + policy["loss"] - self.entropy_weight * policy["entropy"]
 
         metrics = {
@@ -272,6 +290,8 @@ class RLAlgorithm:
         action_indices: torch.Tensor,
         return_targets: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """回归实际动作的 return，并可选约束其高于当前最优未选动作。"""
+
         chosen_values = all_values.gather(
             -1,
             action_indices.unsqueeze(-1),
@@ -296,6 +316,12 @@ class RLAlgorithm:
         action_log_probs: torch.Tensor,
         advantages: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
+        """计算逐动作 PPO clipped surrogate 与变换后策略分布的 entropy。
+
+        ``new_log_probs``/``old_log_probs`` 为 ``(B*H,)``，``action_log_probs`` 为
+        ``(B*H,A)``；后者可能含 top-p mask 产生的 ``-inf``。
+        """
+
         probability_ratio = torch.exp(new_log_probs - old_log_probs)
         clipped_ratio = torch.clamp(
             probability_ratio,
@@ -307,6 +333,7 @@ class RLAlgorithm:
             clipped_ratio * advantages,
         ).mean()
         probabilities = action_log_probs.exp()
+        # 显式屏蔽零概率动作，避免数值上出现 0 * -inf = NaN。
         entropy_terms = torch.where(
             probabilities > 0,
             probabilities * action_log_probs,
