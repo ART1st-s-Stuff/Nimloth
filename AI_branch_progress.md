@@ -1237,6 +1237,9 @@
 - 邻接回归扩大到 `tests/`：排除本机缺少 `pandas` 的一个 SFT1 用例和受 socket
   限制的 Gloo 用例后为 `225 passed, 4 warnings`；未把排除后的结果表述为完整
   全量通过。测试缓存已清理。
+- 重构已提交并推送为 `bdf635e`；提交后相关回归为
+  `161 passed, 1 deselected, 1 warning`。VPN VM 可认证，但到 superpod 的
+  ProxyJump 未建立远端 shell，因此没有运行远程测试或任务。测试缓存再次清理。
 
 ## 2026-06-21：FA2 不能修复 SFT2 packed-forward 多图不等价
 

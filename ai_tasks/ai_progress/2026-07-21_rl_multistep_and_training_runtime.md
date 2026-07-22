@@ -102,6 +102,12 @@
 - 扩大到 `tests/` 后，排除缺少本地 `pandas` 的一个 SFT1 数据恢复用例及上述
   Gloo socket 用例，其余 `225 passed, 4 warnings`；warning 均来自既有数值、
   Pillow 弃用或测试内 tensor 转换路径。该结果不是未排除项的完整全量通过。
+- 提交 `bdf635e` 后重跑 Agent/Qwen/config/RL/SFT2/WM 相关集合：
+  `161 passed, 1 deselected, 1 warning`；deselected 仍是沙箱禁止 socket 的 Gloo
+  用例，warning 仍是既有单样本 unbiased std 测试。
+- 远程 VPN VM 已恢复认证，但 ProxyJump 到 `superpod.ust.hk:22` 停在 stdio
+  forward，未建立 superpod shell；因此没有同步远程 worktree、提交 Slurm、
+  启动 GPU/W&B 或产生远程输出。
 - 2026-07-22 尝试连接 `superpod-csejzhang` 时只完成主机指纹握手，没有获得远程
   shell；因此本轮没有同步远程 worktree、没有运行 GPU smoke，也没有创建实验或
   W&B 输出。
