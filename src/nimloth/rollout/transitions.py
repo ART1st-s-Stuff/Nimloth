@@ -11,6 +11,7 @@ from torch.utils.data import Dataset
 
 from nimloth.agent import (
     AgentTranscript,
+    bind_image_placeholders,
     create_prompt_template,
     prompt_template_spec_from_record,
 )
@@ -54,6 +55,49 @@ class TransitionSample:
     action_value_target: float = 0.0
     success: bool = True
     split: str = "train"
+
+
+def bind_transition_prompt(sample: TransitionSample) -> list[dict[str, Any]]:
+    """绑定单步 transition 当前 prompt 的真实图片。"""
+
+    return bind_image_placeholders(
+        sample.prefix_messages,
+        sample.prefix_image_paths,
+    )
+
+
+def transition_training_item(sample: TransitionSample) -> dict[str, Any]:
+    """把 transition 转为 cache 与 batch assembler 共用的普通字典。"""
+
+    item: dict[str, Any] = {
+        "id": f"{sample.record_id}:{sample.step_index}",
+        "record_id": sample.record_id,
+        "step_index": sample.step_index,
+        "messages": bind_transition_prompt(sample),
+        "action_index": sample.action_index,
+        "action_value_target": sample.action_value_target,
+        "success": sample.success,
+        "next_image_path": sample.next_image_path,
+        "current_image_path": sample.current_image_path,
+        "next_messages": None,
+    }
+    if (
+        sample.next_prefix_messages is not None
+        and sample.next_prefix_image_paths is not None
+    ):
+        item["next_messages"] = bind_image_placeholders(
+            sample.next_prefix_messages,
+            sample.next_prefix_image_paths,
+        )
+    return item
+
+
+def collate_transition_training_items(
+    batch: list[TransitionSample],
+) -> list[dict[str, Any]]:
+    """为不需要阶段 target 对齐的调用方批量转换 transition。"""
+
+    return [transition_training_item(sample) for sample in batch]
 
 
 def load_jsonl_records(path: Path, max_records: int = -1) -> list[dict[str, Any]]:

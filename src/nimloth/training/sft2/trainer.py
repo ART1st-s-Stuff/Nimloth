@@ -14,9 +14,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from nimloth.agent import Agent
 from nimloth.backbone import (
-    build_sft2_batch_builder,
+    build_input_builder,
     build_vision_ema,
-    load_sft2_backbone,
+    load_backbone,
     resolve_tune_modes,
     resolve_vision_ema,
     uses_lora,
@@ -32,6 +32,7 @@ from nimloth.training.sft2.checkpoint import (
     load_aux_checkpoint,
     resolve_resume_checkpoint_dir,
 )
+from nimloth.training.sft2.batch import SFT2BatchAssembler
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.data.factory import build_data_bundle
 from nimloth.training.sft2.algorithm import (
@@ -325,7 +326,13 @@ def train_sft2(args=None) -> int:
             )
         )
 
-    loaded = load_sft2_backbone(args, resume_ckpt_dir, device=device)
+    loaded = load_backbone(
+        args,
+        device=device,
+        latent_token_count=args.latent_token_count,
+        resume_dir=resume_ckpt_dir,
+        resume_state_path=resume_state_path,
+    )
     world_model, aux_device = _build_world_model(
         args,
         model=loaded.backbone.model,
@@ -349,12 +356,15 @@ def train_sft2(args=None) -> int:
         resume_path=(resume_ckpt_dir / "vision_ema.pt") if resume_ckpt_dir else None,
         device=device,
     )
-    batch_builder = build_sft2_batch_builder(
+    input_builder = build_input_builder(
         loaded,
-        device=aux_device,
         max_length=args.max_length,
         latent_token_count=args.latent_token_count,
         mask_latent_query_labels=args.mask_latent_query_labels,
+    )
+    batch_builder = SFT2BatchAssembler(
+        input_builder=input_builder,
+        device=aux_device,
     )
     model_runtime = SFT2ModelRuntime(
         agent=agent,

@@ -7,6 +7,7 @@ SFT2 包只保留阶段算法、训练生命周期、数据与 checkpoint。文�
 |------|------|
 | `algorithm.py` | 纯单批计算：Agent/target forward、全部 loss 和 WM 权重策略 |
 | `trainer.py` | 按执行顺序加载 Agent、设置 DDP/EMA/optimizer 并启动训练 |
+| `batch.py` | SFT2 action/return/next-state 对齐与 terminal mask 装配 |
 | `data/` | dataset、sampler 与 DataLoader |
 | `runtime.py` | Agent/target 执行视图、梯度更新与 Qwen LR 运行期 |
 | `loop.py` | epoch/microbatch 驱动、resume cursor 和 validation 边界 |
@@ -19,8 +20,9 @@ SFT2 包只保留阶段算法、训练生命周期、数据与 checkpoint。文�
 DDP、optimizer、EMA 或 checkpoint。`SFT2ModelRuntime` 统一持有在线 Agent、
 target-state 梯度路径与 Backbone EMA；不等长分布式验证只解除这个 runtime 的
 模型包装。
-Qwen batch 在进入算法前被转换成公共 `TransitionBatch`；terminal transition
-通过 mask 参与统一调用结构，不再需要 `_compute_wm` 或 DDP dummy-loss 分支。
+公共 Backbone input builder 只负责 prompt 到张量的转换；`SFT2BatchAssembler`
+负责把 action/return/next-state 对齐成 `TransitionBatch`。terminal transition 通过
+mask 参与统一调用结构，不再需要 `_compute_wm` 或 DDP dummy-loss 分支。
 
 SIGReg 只在训练阶段计算。每个有效 transition 提供 ``[s_t, s_{t+1}]``，公共
 `OneStepSIGReg` 固定构造 `(T=2,B,D)`；`B` 是 microbatch 中有下一状态的

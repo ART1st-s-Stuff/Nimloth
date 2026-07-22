@@ -27,7 +27,7 @@ from nimloth.training.sft2.diagnosis.trajectory_once import (
     find_step_latent_indices,
     forward_trajectory_once,
 )
-from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.rollout.transitions import bind_transition_prompt
 from nimloth.environment.navigation import NUM_NAVIGATION_ACTIONS
 from nimloth.rollout.transitions import (
     TransitionSample,
@@ -167,7 +167,7 @@ def compare_steps(model, processor, token_id_map, device, steps, max_length, cas
     alignment_reports = []
     latent_indices = find_step_latent_indices(steps, full_enc, processor, token_id_map, max_length)
     for sample in steps:
-        enc = prefix_messages_with_images(sample)
+        enc = bind_transition_prompt(sample)
         prefix_enc = encode_qwen_item(enc, processor, max_length, include_labels=False)
         prefix_len = int(prefix_enc["input_ids"].shape[0])
         alignment_reports.append(

@@ -28,7 +28,7 @@ from nimloth.training.sft2.diagnosis.trajectory_once import (
     encode_full_trajectory,
     find_step_latent_indices,
 )
-from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.rollout.transitions import bind_transition_prompt
 from nimloth.rollout.transitions import TransitionSample
 
 
@@ -162,7 +162,7 @@ def analyze_case(
     step_reports: list[dict[str, Any]] = []
     for sample in steps:
         prefix_enc = encode_qwen_item(
-            prefix_messages_with_images(sample), processor, max_length, include_labels=False
+            bind_transition_prompt(sample), processor, max_length, include_labels=False
         )
         prefix_ids = prefix_enc["input_ids"].tolist()
         prefix_len = len(prefix_ids)

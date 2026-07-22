@@ -16,7 +16,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
-from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
+from nimloth.rollout.transitions import collate_transition_training_items
 from nimloth.rollout.transitions import TransitionJsonlDataset
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=0,
-        collate_fn=transition_collate_for_qwen,
+        collate_fn=collate_transition_training_items,
     )
     summary = evaluate_reconstruction(
         model=model,

@@ -11,12 +11,14 @@ import torch
 import torch.distributed as dist
 
 from nimloth.config.rl import RLConfig
-from nimloth.rollout import RolloutCollector
-from nimloth.rollout import RolloutEncoder
+from nimloth.rollout import (
+    RolloutCollector,
+    count_trajectory_windows,
+    sample_trajectory_windows,
+)
 from nimloth.training.rl.algorithm import (
     RLAlgorithm,
-    count_sequence_windows,
-    select_sequence_batch,
+    build_rl_batch,
 )
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.evaluation import (
@@ -39,14 +41,13 @@ class RLLoopState:
 
 @dataclass
 class RLTrainingLoop:
-    """按 iteration 执行 collect → encode → update → evaluate。"""
+    """按 iteration 执行 collect → sample → encode/update → evaluate。"""
 
     config: RLConfig
     algorithm: RLAlgorithm
     model_runtime: RLModelRuntime
     optimization_runtime: OptimizationRuntime
     device: torch.device
-    rollout_encoder: RolloutEncoder
     train_collector: RolloutCollector
     eval_collector: RolloutCollector | None
     output_dir: Path
@@ -95,16 +96,11 @@ class RLTrainingLoop:
             self._warn_skip(iteration, "no trajectories collected")
             return
 
-        encoded_trajectories = self.rollout_encoder(
-            trajectories,
-            gamma=self.config.rl.gamma,
-        )
-        torch.cuda.empty_cache()
         num_transitions = sum(
-            trajectory.num_steps for trajectory in encoded_trajectories
+            trajectory.num_steps for trajectory in trajectories
         )
-        num_windows = count_sequence_windows(
-            encoded_trajectories,
+        num_windows = count_trajectory_windows(
+            trajectories,
             history_size=self.config.predictor.history_size,
         )
         if num_windows < self.config.rl.batch_size:
@@ -114,11 +110,15 @@ class RLTrainingLoop:
             )
             return
 
-        batch = select_sequence_batch(
-            encoded_trajectories,
+        windows = sample_trajectory_windows(
+            trajectories,
             history_size=self.config.predictor.history_size,
             batch_size=self.config.rl.batch_size,
             seed=self.config.training.seed + iteration,
+        )
+        batch = build_rl_batch(
+            windows,
+            gamma=self.config.rl.gamma,
             device=self.device,
         )
         self.optimization_runtime.zero_grad()
@@ -130,7 +130,6 @@ class RLTrainingLoop:
         metrics = {
             **step_output.metrics,
             "num_rollouts": float(len(trajectories)),
-            "num_encoded_trajectories": float(len(encoded_trajectories)),
             "num_transitions": float(num_transitions),
             "num_wm_windows": float(num_windows),
             "success_rate": float(rollout_metrics["success_rate"]),

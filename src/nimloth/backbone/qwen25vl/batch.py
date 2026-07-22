@@ -33,7 +33,7 @@ def _load_rgb_image(path: str) -> Image.Image:
 class _TemplateCache:
     """Small per-processor chat-template cache.
 
-    Qwen SFT2 repeatedly visits overlapping prefixes from the same trajectory.
+    Agent training repeatedly visits overlapping prefixes from the same trajectory.
     Caching rendered text avoids re-running Jinja chat templates for every
     current/next prefix while keeping processor ownership explicit.
     """
@@ -112,7 +112,7 @@ def assistant_char_spans(
 ) -> list[tuple[int, int]]:
     """Return the current transition's assistant span for CE supervision.
 
-    SFT2 expands one trajectory into many prefix transitions.  Supervising every
+    Transition training expands one trajectory into many prefixes. Supervising every
     assistant span in each prefix would repeatedly train early turns.  The CE
     auxiliary loss should therefore cover only the final assistant message in
     the prefix, i.e. the action/response for the current transition.

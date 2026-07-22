@@ -1,42 +1,67 @@
-"""RL 核心算法的梯度 ownership 保护测试。"""
+"""RL 连续窗口与表征梯度模式测试。"""
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import torch
 
-from nimloth.agent import Agent
+from nimloth.agent import Agent, AgentTranscript, NimlothPromptTemplate
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
-from nimloth.rollout import EncodedTrajectory, EncodedTransition
-from nimloth.training.rl.algorithm import (
-    RLAlgorithm,
-    RLBatch,
-    count_sequence_windows,
-    select_sequence_batch,
+from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
+from nimloth.rollout import (
+    RolloutTrajectory,
+    count_trajectory_windows,
+    sample_trajectory_windows,
 )
+from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch, build_rl_batch
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm.model import WorldModel
 from nimloth.wm.sigreg import SequenceSIGReg
 from nimloth.wm.value_head import ValueHead
 
 
-class _UnusedBackbone(Backbone):
+class _Backbone(Backbone):
     def __init__(self) -> None:
         super().__init__()
-        self.language_model = torch.nn.Identity()
+        self.language_model = torch.nn.Linear(3, 3, bias=False)
 
     @property
     def model(self) -> torch.nn.Module:
         return self.language_model
 
     def forward(self, batch: BackboneBatch, **_kwargs) -> BackboneOutput:
-        return BackboneOutput(batch.tensors["hidden"])
+        return BackboneOutput(self.language_model(batch.tensors["hidden"]))
 
-    def with_model(self, model: torch.nn.Module) -> "_UnusedBackbone":
-        return self
+    def with_model(self, model: torch.nn.Module) -> "_Backbone":
+        view = _Backbone()
+        view.language_model = model
+        return view
 
     def save_pretrained(self, output_dir: Path, **_kwargs) -> None:
+        raise NotImplementedError
+
+
+class _InputBuilder:
+    processor = None
+
+    def __init__(self) -> None:
+        self.last_hidden: torch.Tensor | None = None
+
+    def build(self, messages, images, *, include_labels: bool) -> BackboneBatch:
+        del messages, include_labels
+        rows = []
+        for prompt_images in images:
+            step = float(str(prompt_images[-1]).rsplit("_", 1)[-1].split(".")[0])
+            rows.append([step, step + 1.0, step + 2.0])
+        self.last_hidden = torch.tensor(rows, requires_grad=True)
+        return BackboneBatch({"hidden": self.last_hidden})
+
+    def collate_encoded(self, rows, *, include_labels: bool) -> BackboneBatch:
+        raise NotImplementedError
+
+    def cache_key(self, messages, images) -> str:
         raise NotImplementedError
 
 
@@ -63,21 +88,76 @@ class _RecordingSIGReg(torch.nn.Module):
         return states.pow(2).mean()
 
 
+def _trajectory(record_id: str, length: int) -> RolloutTrajectory:
+    system_prompt = "Follow the navigation instruction."
+    observation_texts = [
+        f"Observation {step}.\n<image>" for step in range(length + 1)
+    ]
+    image_paths = [f"{record_id}_{step}.png" for step in range(length + 1)]
+    action_indices = [step % 8 for step in range(length)]
+    prompt = NimlothPromptTemplate(latent_token_count=1, action_count=8)
+    transcript = AgentTranscript(
+        system_prompt=system_prompt,
+        observation_texts=tuple(observation_texts),
+        observation_images=tuple(image_paths),
+        action_indices=tuple(action_indices),
+    )
+    return RolloutTrajectory(
+        record_id=record_id,
+        image_paths=image_paths,
+        action_indices=action_indices,
+        action_names=[
+            NAVIGATION_ACTION_SPACE.key_for(index) for index in action_indices
+        ],
+        action_log_probs=[[-math.log(8.0)] * 8 for _ in action_indices],
+        instruction="test",
+        reward=1.0,
+        messages=prompt.build_supervised_prompt(transcript).unbound_messages(),
+        system_prompt=system_prompt,
+        observation_texts=observation_texts,
+        policy_messages=[
+            prompt.build_policy_prompt(
+                transcript.policy_prefix(step)
+            ).unbound_messages()
+            for step in range(length)
+        ],
+        prompt_template_spec=prompt.spec,
+    )
+
+
+def _batch() -> RLBatch:
+    windows = tuple(
+        sample_trajectory_windows(
+            [_trajectory(f"record_{index}", 2)],
+            history_size=2,
+            batch_size=1,
+            seed=index,
+        )[0]
+        for index in range(2)
+    )
+    return build_rl_batch(windows, gamma=0.99, device=torch.device("cpu"))
+
+
 def _algorithm(
     *,
     sigreg: SequenceSIGReg | None = None,
+    representation_to_backbone: bool = True,
 ) -> tuple[
     RLAlgorithm,
     RLModelRuntime,
+    _InputBuilder,
+    _Backbone,
     torch.nn.Linear,
     _Predictor,
     ValueHead,
 ]:
+    backbone = _Backbone()
+    input_builder = _InputBuilder()
     state_proj = torch.nn.Linear(3, 2, bias=False)
     predictor = _Predictor()
-    value_head = ValueHead(emb_dim=2, num_actions=3, hidden_dim=2)
+    value_head = ValueHead(emb_dim=2, num_actions=8, hidden_dim=2)
     agent = Agent(
-        backbone=_UnusedBackbone(),
+        backbone=backbone,
         wm=WorldModel(
             state_proj=state_proj,
             wm_predictor=predictor,
@@ -94,132 +174,93 @@ def _algorithm(
             ppo_clip_ratio=0.2,
             entropy_weight=0.0,
         ),
-        RLModelRuntime(agent=agent, policy_replay=None),
+        RLModelRuntime(
+            agent=agent,
+            input_builder=input_builder,
+            representation_to_backbone=representation_to_backbone,
+            policy_replay=None,
+        ),
+        input_builder,
+        backbone,
         state_proj,
         predictor,
         value_head,
     )
 
 
-def _transition(
-    record_id: str,
-    step_index: int,
-    current_hidden: torch.Tensor,
-    next_hidden: torch.Tensor,
-) -> EncodedTransition:
-    return EncodedTransition(
-        record_id=record_id,
-        step_index=step_index,
-        current_hidden=current_hidden,
-        next_hidden=next_hidden,
-        action_index=step_index % 3,
-        value_target=float(step_index),
-        old_log_prob=-0.5,
-        policy_messages=[],
-        policy_image_paths=[],
-        sampling_temperature=1.0,
-        sampling_top_p=1.0,
-        latent_token_count=1,
-    )
-
-
-def _trajectory(record_id: str, length: int, *, offset: float = 0.0) -> EncodedTrajectory:
-    hidden = [torch.full((3,), offset + step) for step in range(length + 1)]
-    return EncodedTrajectory(
-        record_id=record_id,
-        transitions=tuple(
-            _transition(record_id, step, hidden[step], hidden[step + 1])
-            for step in range(length)
-        ),
-    )
-
-
-def _batch() -> RLBatch:
-    hidden_states = torch.randn(2, 3, 3, requires_grad=True)
-    windows = tuple(
-        tuple(
-            _transition(
-                f"record_{batch_index}",
-                step,
-                hidden_states.detach()[batch_index, step],
-                hidden_states.detach()[batch_index, step + 1],
-            )
-            for step in range(2)
-        )
-        for batch_index in range(2)
-    )
-    return RLBatch(
-        windows=windows,
-        hidden_states=hidden_states,
-        action_indices=torch.tensor([[0, 2], [1, 0]]),
-        return_targets=torch.tensor([[1.0, -0.5], [0.5, 0.25]]),
-        old_log_probs=torch.zeros(2, 2),
-    )
-
-
 def test_sequence_batch_preserves_trajectory_boundaries_and_alignment() -> None:
-    trajectories = (
-        _trajectory("short", 1),
-        _trajectory("long", 3, offset=10.0),
-    )
+    trajectories = (_trajectory("short", 1), _trajectory("long", 3))
 
-    assert count_sequence_windows(trajectories, history_size=2) == 2
-    batch = select_sequence_batch(
+    assert count_trajectory_windows(trajectories, history_size=2) == 2
+    windows = sample_trajectory_windows(
         trajectories,
         history_size=2,
         batch_size=2,
         seed=7,
-        device=torch.device("cpu"),
     )
+    batch = build_rl_batch(windows, gamma=0.5, device=torch.device("cpu"))
 
-    assert batch.hidden_states.shape == (2, 3, 3)
     assert batch.action_indices.shape == (2, 2)
-    assert all(
-        {transition.record_id for transition in window} == {"long"}
-        for window in batch.windows
-    )
-    for batch_index, window in enumerate(batch.windows):
-        expected = torch.stack(
-            [window[0].current_hidden]
-            + [transition.next_hidden for transition in window]
-        )
-        torch.testing.assert_close(batch.hidden_states[batch_index], expected)
+    assert all(window.record_id == "long" for window in batch.windows)
+    for window, replay_inputs in zip(
+        batch.windows,
+        (window.policy_replay_inputs() for window in batch.windows),
+        strict=True,
+    ):
+        assert len(window.state_prompts()) == 3
+        assert len(replay_inputs) == 2
+        assert replay_inputs[0].action_index == window.trajectory.action_indices[
+            window.start_step
+        ]
 
 
-def test_rl_wm_stops_gradient_on_next_projector_target() -> None:
-    algorithm, runtime, state_proj, predictor, _ = _algorithm()
-    batch = _batch()
-    output = algorithm.training_step(runtime, batch)
+def test_rl_wm_stops_gradient_on_final_target_but_trains_backbone() -> None:
+    algorithm, runtime, builder, backbone, state_proj, predictor, _ = _algorithm()
+    output = algorithm.training_step(runtime, _batch())
 
     output.losses["wm"].backward()
 
-    assert batch.hidden_states.grad is not None
-    assert bool(batch.hidden_states.grad[:, :-1].abs().sum() > 0)
-    assert torch.count_nonzero(batch.hidden_states.grad[:, -1]) == 0
+    assert builder.last_hidden is not None
+    assert builder.last_hidden.grad is not None
+    gradient = builder.last_hidden.grad.reshape(2, 3, 3)
+    assert bool(gradient[:, :-1].abs().sum() > 0)
+    assert torch.count_nonzero(gradient[:, -1]) == 0
+    assert backbone.model.weight.grad is not None
     assert state_proj.weight.grad is not None
     assert predictor.linear.weight.grad is not None
 
 
-def test_rl_value_updates_head_but_not_state_projector() -> None:
-    algorithm, runtime, state_proj, _, value_head = _algorithm()
-    batch = _batch()
-    output = algorithm.training_step(runtime, batch)
+def test_frozen_representation_mode_blocks_only_backbone_gradient() -> None:
+    algorithm, runtime, _, backbone, state_proj, _, value_head = _algorithm(
+        representation_to_backbone=False
+    )
+    output = algorithm.training_step(runtime, _batch())
 
     output.losses["value"].backward()
 
-    assert batch.hidden_states.grad is None
-    assert state_proj.weight.grad is None
+    assert backbone.model.weight.grad is None
+    assert state_proj.weight.grad is not None
+    assert value_head.net[0].weight.grad is not None
+
+
+def test_joint_value_loss_updates_backbone_and_state_projector() -> None:
+    algorithm, runtime, _, backbone, state_proj, _, value_head = _algorithm()
+    output = algorithm.training_step(runtime, _batch())
+
+    output.losses["value"].backward()
+
+    assert backbone.model.weight.grad is not None
+    assert state_proj.weight.grad is not None
     assert value_head.net[0].weight.grad is not None
 
 
 def test_rl_sigreg_receives_full_history_plus_target_sequence() -> None:
     recording = _RecordingSIGReg()
-    algorithm, runtime, _, _, _ = _algorithm(
+    algorithm, runtime, *_ = _algorithm(
         sigreg=SequenceSIGReg(regularizer=recording),
     )
-    batch = _batch()
 
-    output = algorithm.training_step(runtime, batch)
+    output = algorithm.training_step(runtime, _batch())
 
     assert len(recording.inputs) == 1
     assert recording.inputs[0].shape == (3, 2, 2)
@@ -227,7 +268,7 @@ def test_rl_sigreg_receives_full_history_plus_target_sequence() -> None:
 
 
 def test_rl_algorithm_is_pure_compute_configuration() -> None:
-    algorithm, _, _, _, _ = _algorithm()
+    algorithm, *_ = _algorithm()
 
     assert not isinstance(algorithm, torch.nn.Module)
     assert not hasattr(algorithm, "agent")

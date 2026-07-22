@@ -20,7 +20,7 @@ from nimloth.latent import (
     find_last_latent_state_index,
     special_token_ids,
 )
-from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.rollout.transitions import bind_transition_prompt
 from nimloth.environment.navigation import NUM_NAVIGATION_ACTIONS
 from nimloth.rollout.transitions import (
     expand_record_transitions,
@@ -191,8 +191,8 @@ def _cmp(a, b):
 
 @torch.no_grad()
 def run_case(model, processor, token_id_map, device, steps, max_length, case, position_id_mode):
-    enc0 = encode_qwen_item(prefix_messages_with_images(steps[0]), processor, max_length, include_labels=False)
-    enc1 = encode_qwen_item(prefix_messages_with_images(steps[1]), processor, max_length, include_labels=False)
+    enc0 = encode_qwen_item(bind_transition_prompt(steps[0]), processor, max_length, include_labels=False)
+    enc1 = encode_qwen_item(bind_transition_prompt(steps[1]), processor, max_length, include_labels=False)
     len0 = int(enc0["input_ids"].shape[0])
     latent1 = find_last_latent_state_index(enc1["input_ids"], token_id_map)
     prep0 = _prepare(model, enc0, device, position_id_mode)

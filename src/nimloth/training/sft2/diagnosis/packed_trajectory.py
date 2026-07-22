@@ -15,7 +15,7 @@ from nimloth.backbone.qwen25vl.latent import (
     reset_model_rope_state as _reset_model_rope_state,
 )
 from nimloth.latent import extract_latent_state, find_last_latent_state_index
-from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images, transition_collate_for_qwen
+from nimloth.rollout.transitions import bind_transition_prompt, collate_transition_training_items
 from nimloth.rollout.transitions import TransitionSample
 
 
@@ -83,7 +83,7 @@ def legacy_forward_trajectory(
 ) -> list[TrajectoryStepResult]:
     results: list[TrajectoryStepResult] = []
     for sample in transitions:
-        item = transition_collate_for_qwen([sample])[0]
+        item = collate_transition_training_items([sample])[0]
         enc = encode_qwen_item(item["messages"], processor, max_length, include_labels=True)
         latent, _ = extract_qwen_latents(model, batch_single_encoding(enc), token_id_map, device)
         results.append(
@@ -240,7 +240,7 @@ def kv_forward_trajectory(
     max_length: int,
 ) -> list[TrajectoryStepResult]:
     encodings = [
-        encode_qwen_item(prefix_messages_with_images(sample), processor, max_length, include_labels=True)
+        encode_qwen_item(bind_transition_prompt(sample), processor, max_length, include_labels=True)
         for sample in transitions
     ]
     record_id = transitions[0].record_id if transitions else ""
@@ -250,7 +250,7 @@ def kv_forward_trajectory(
     state: TrajectoryForwardState | None = None
     results: list[TrajectoryStepResult] = []
     for sample, enc in zip(transitions, encodings, strict=True):
-        item = transition_collate_for_qwen([sample])[0]
+        item = collate_transition_training_items([sample])[0]
         latent, state = kv_forward_step(model, enc, state, device, token_id_map)
         results.append(
             TrajectoryStepResult(

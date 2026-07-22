@@ -3,6 +3,7 @@
 from nimloth.agent.policy import (
     ActionLogProbReplay,
     AgentPolicy,
+    PolicyReplayInput,
     PolicyDecision,
     validate_action_log_probs,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "NIMLOTH_PROMPT_TEMPLATE_ID",
     "NimlothPromptTemplate",
     "PolicyDecision",
+    "PolicyReplayInput",
     "PromptTemplateSpec",
     "bind_image_placeholders",
     "create_prompt_template",

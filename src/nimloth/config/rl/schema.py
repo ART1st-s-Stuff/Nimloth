@@ -52,7 +52,7 @@ def _boolean(value: Any, field: str) -> bool:
 
 @dataclass(frozen=True)
 class ActorConfig:
-    lr: float = 1e-6
+    enabled: bool = False
     entropy_coeff: float = 0.0
     clip_ratio: float = 0.2
 
@@ -60,6 +60,14 @@ class ActorConfig:
 @dataclass(frozen=True)
 class FreezeConfig:
     state_proj: bool = True
+
+
+@dataclass(frozen=True)
+class GradientConfig:
+    """控制表征目标是否穿过 StateProjector 回传到 Backbone。"""
+
+    representation_to_backbone: bool = True
+    backbone_lr: float = 1e-6
 
 
 @dataclass(frozen=True)
@@ -110,6 +118,7 @@ class RLConfig:
     agent: AgentConfig
     actor: ActorConfig
     freeze: FreezeConfig
+    gradient: GradientConfig
     predictor: PredictorConfig
     value_head: ValueHeadConfig
     rollout: RolloutConfig
@@ -130,6 +139,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "agent",
         "actor",
         "freeze",
+        "gradient",
         "predictor",
         "value_head",
         "rollout",
@@ -141,8 +151,17 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     if unknown_sections:
         raise ValueError(f"unknown RL config section: {unknown_sections[0]}")
 
-    actor = _section(raw, "actor", {"lr", "entropy_coeff", "clip_ratio"})
+    actor = _section(
+        raw,
+        "actor",
+        {"enabled", "entropy_coeff", "clip_ratio"},
+    )
     freeze = _section(raw, "freeze", {"state_proj"})
+    gradient = _section(
+        raw,
+        "gradient",
+        {"representation_to_backbone", "backbone_lr"},
+    )
     predictor = _section(
         raw,
         "predictor",
@@ -179,7 +198,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     training = _section(raw, "training", {"seed", "log_interval", "save_interval"})
 
     actor_config = ActorConfig(
-        lr=_positive_float(actor.get("lr", 1e-6), "actor.lr"),
+        enabled=_boolean(actor.get("enabled", False), "actor.enabled"),
         entropy_coeff=_positive_float(
             actor.get("entropy_coeff", 0.0),
             "actor.entropy_coeff",
@@ -220,6 +239,16 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 freeze.get("state_proj", True),
                 "freeze.state_proj",
             )
+        ),
+        gradient=GradientConfig(
+            representation_to_backbone=_boolean(
+                gradient.get("representation_to_backbone", True),
+                "gradient.representation_to_backbone",
+            ),
+            backbone_lr=_positive_float(
+                gradient.get("backbone_lr", 1e-6),
+                "gradient.backbone_lr",
+            ),
         ),
         predictor=PredictorConfig(
             lr=_positive_float(predictor.get("lr", 1e-3), "predictor.lr"),

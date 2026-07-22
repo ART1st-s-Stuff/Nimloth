@@ -30,7 +30,7 @@ class TransitionBatch:
 
 
 class TransitionBatchBuilder(Protocol):
-    """backend 把 rollout transition 转为模型无关 batch 的协议。"""
+    """阶段 assembler 把 rollout transition 转为模型无关 batch 的协议。"""
 
     processor: Any
 

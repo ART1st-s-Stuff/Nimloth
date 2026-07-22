@@ -15,7 +15,7 @@ from nimloth.backbone.qwen25vl.latent import (
     reset_model_rope_state,
 )
 from nimloth.latent import extract_latent_state, find_last_latent_state_index
-from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.rollout.transitions import bind_transition_prompt
 from nimloth.rollout.transitions import (
     TransitionSample,
     expand_record_transitions,
@@ -51,7 +51,7 @@ def compare_prefix_vs_full_trajectory_latents(
         raise ValueError(f"record {record.get('id')!r} produced no transitions")
 
     last = transitions[-1]
-    full_messages = prefix_messages_with_images(last)
+    full_messages = bind_transition_prompt(last)
     full_enc = encode_qwen_item(full_messages, processor, max_length, include_labels=False)
     reset_model_rope_state(model)
     full_hidden = forward_qwen_last_hidden(model, batch_single_encoding(full_enc), device)
@@ -60,7 +60,7 @@ def compare_prefix_vs_full_trajectory_latents(
     prefix_latents: list[torch.Tensor] = []
     full_latents: list[torch.Tensor] = []
     for sample in transitions:
-        messages = prefix_messages_with_images(sample)
+        messages = bind_transition_prompt(sample)
         prefix_enc = encode_qwen_item(messages, processor, max_length, include_labels=False)
         prefix_ids = prefix_enc["input_ids"].tolist()
         prefix_latent_pos = find_last_latent_state_index(prefix_enc["input_ids"], token_id_map)
@@ -97,7 +97,7 @@ def _prefix_latent(
     device: torch.device,
     max_length: int,
 ) -> torch.Tensor:
-    messages = prefix_messages_with_images(sample)
+    messages = bind_transition_prompt(sample)
     enc = encode_qwen_item(messages, processor, max_length, include_labels=False)
     reset_model_rope_state(model)
     latent, _ = extract_qwen_latents(model, batch_single_encoding(enc), token_id_map, device)

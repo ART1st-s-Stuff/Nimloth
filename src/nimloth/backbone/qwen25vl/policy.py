@@ -3,22 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import Any, Sequence
 
 import torch
 from PIL import Image
 
-from nimloth.agent import AgentPrompt, PolicyDecision, bind_image_placeholders
+from nimloth.agent import AgentPrompt, PolicyDecision, PolicyReplayInput
 from nimloth.latent import (
     LatentActionTokens,
     normalize_latent_state_blocks,
     special_token_ids,
 )
 from nimloth.util.module import evaluating
-
-if TYPE_CHECKING:
-    from nimloth.rollout.encoding import EncodedTransition
-
 
 def validate_agent_policy_protocol(model_config: Any) -> None:
     """确认 checkpoint 满足当前已实现的 k=1 inject policy 协议。"""
@@ -276,7 +272,7 @@ def batch_action_log_probs(
 
 def replay_rollout_action_log_probs(
     *,
-    transitions: Sequence[EncodedTransition],
+    samples: Sequence[PolicyReplayInput],
     model: torch.nn.Module,
     processor: Any,
     token_id_map: dict[str, int],
@@ -284,20 +280,14 @@ def replay_rollout_action_log_probs(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """用当前 Qwen 重放 rollout 时保存的完整 prompt 与采样变换。"""
 
-    if not transitions:
+    if not samples:
         raise ValueError("PPO policy batch must not be empty")
     latent_token_counts = {
-        int(transition.latent_token_count) for transition in transitions
+        int(sample.latent_token_count) for sample in samples
     }
     if len(latent_token_counts) != 1:
         raise ValueError("one PPO batch cannot mix latent token counts")
-    bound_messages = [
-        bind_image_placeholders(
-            transition.policy_messages,
-            transition.policy_image_paths,
-        )
-        for transition in transitions
-    ]
+    bound_messages = [sample.prompt.bound_messages() for sample in samples]
     # eval mode 关闭 dropout 但不关闭梯度，保证 PPO old/new policy 可比较。
     with evaluating(model):
         return batch_action_log_probs(
@@ -306,12 +296,12 @@ def replay_rollout_action_log_probs(
             token_id_map=token_id_map,
             messages=bound_messages,
             taken_action_indices=[
-                transition.action_index for transition in transitions
+                sample.action_index for sample in samples
             ],
             temperatures=[
-                transition.sampling_temperature for transition in transitions
+                sample.sampling_temperature for sample in samples
             ],
-            top_ps=[transition.sampling_top_p for transition in transitions],
+            top_ps=[sample.sampling_top_p for sample in samples],
             device=device,
             latent_token_count=latent_token_counts.pop(),
         )
@@ -335,10 +325,10 @@ class QwenActionLogProbReplay:
 
     def __call__(
         self,
-        transitions: tuple["EncodedTransition", ...],
+        samples: tuple[PolicyReplayInput, ...],
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return replay_rollout_action_log_probs(
-            transitions=transitions,
+            samples=samples,
             model=self.model,
             processor=self.processor,
             token_id_map=self.token_id_map,

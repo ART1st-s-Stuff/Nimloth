@@ -21,7 +21,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
-from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
+from nimloth.rollout.transitions import collate_transition_training_items
 from nimloth.rollout.transitions import TransitionJsonlDataset
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.state_proj import StateProjector
@@ -255,7 +255,7 @@ def build_rcdm_state_cache(
         batch_size=batch_size,
         shuffle=False,
         num_workers=0,
-        collate_fn=transition_collate_for_qwen,
+        collate_fn=collate_transition_training_items,
     )
     target_dtype = _torch_dtype(state_dtype)
     shard_rows: list[dict[str, Any]] = []

@@ -4,29 +4,29 @@ from nimloth.backbone.base import (
     Backbone,
     BackboneBatch,
     BackboneEMA,
+    BackboneInputBuilder,
     BackboneOutput,
     LoadedBackbone,
-    RLBackboneAdapters,
 )
 
 
-def load_sft2_backbone(*args, **kwargs) -> LoadedBackbone:
-    from nimloth.backbone.qwen25vl.factory import load_sft2_backbone as load
+def load_backbone(*args, **kwargs) -> LoadedBackbone:
+    from nimloth.backbone.qwen25vl.factory import load_backbone as load
     return load(*args, **kwargs)
 
 
-def load_rl_backbone(*args, **kwargs) -> LoadedBackbone:
-    from nimloth.backbone.qwen25vl.factory import load_rl_backbone as load
-    return load(*args, **kwargs)
-
-
-def build_rl_adapters(*args, **kwargs) -> RLBackboneAdapters:
-    from nimloth.backbone.qwen25vl.factory import build_rl_adapters as build
+def build_input_builder(*args, **kwargs) -> BackboneInputBuilder:
+    from nimloth.backbone.qwen25vl.factory import build_input_builder as build
     return build(*args, **kwargs)
 
 
-def build_sft2_batch_builder(*args, **kwargs):
-    from nimloth.backbone.qwen25vl.factory import build_sft2_batch_builder as build
+def build_agent_policy(*args, **kwargs):
+    from nimloth.backbone.qwen25vl.factory import build_agent_policy as build
+    return build(*args, **kwargs)
+
+
+def build_action_log_prob_replay(*args, **kwargs):
+    from nimloth.backbone.qwen25vl.factory import build_action_log_prob_replay as build
     return build(*args, **kwargs)
 
 
@@ -57,17 +57,17 @@ def backbone_hidden_size(config) -> int:
 
 __all__ = [
     "LoadedBackbone",
-    "RLBackboneAdapters",
     "Backbone",
     "BackboneBatch",
     "BackboneEMA",
+    "BackboneInputBuilder",
     "BackboneOutput",
     "backbone_hidden_size",
+    "build_action_log_prob_replay",
+    "build_agent_policy",
+    "build_input_builder",
     "build_vision_ema",
-    "build_rl_adapters",
-    "build_sft2_batch_builder",
-    "load_rl_backbone",
-    "load_sft2_backbone",
+    "load_backbone",
     "resolve_tune_modes",
     "resolve_vision_ema",
     "uses_lora",

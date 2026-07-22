@@ -75,7 +75,7 @@ def configure_qwen_tuning(
         except Exception:
             pass
 
-        # Keep empty: RL FSDP+LoRA experiments hit conflicts with modules_to_save.
+        # FSDP+LoRA 与 modules_to_save 的包装层会发生冲突，因此保持为空。
         modules_to_save: list[str] = []
         lora_config = LoraConfig(
             r=args.lora_r,

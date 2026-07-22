@@ -6,15 +6,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
 import torch
 from torch import nn
-
-if TYPE_CHECKING:
-    from nimloth.agent.policy import ActionLogProbReplay, AgentPolicy
-    from nimloth.rollout.encoding import RolloutEncoder
-
 
 @dataclass(frozen=True)
 class BackboneBatch:
@@ -79,6 +74,33 @@ class BackboneEMA(Protocol):
     def save_checkpoint(self, path: Path) -> None: ...
 
 
+class BackboneInputBuilder(Protocol):
+    """把 Agent 消息和图片转换成具体 Backbone 的张量输入。"""
+
+    processor: Any
+
+    def build(
+        self,
+        messages: Sequence[Sequence[dict[str, Any]]],
+        images: Sequence[Sequence[Any]],
+        *,
+        include_labels: bool,
+    ) -> BackboneBatch: ...
+
+    def collate_encoded(
+        self,
+        rows: Sequence[dict[str, torch.Tensor]],
+        *,
+        include_labels: bool,
+    ) -> BackboneBatch: ...
+
+    def cache_key(
+        self,
+        messages: Sequence[dict[str, Any]],
+        images: Sequence[Any],
+    ) -> str: ...
+
+
 @dataclass(frozen=True)
 class LoadedBackbone:
     """factory 加载模型和 processor 后返回的装配结果。"""
@@ -93,20 +115,11 @@ class LoadedBackbone:
     resume_aux_dir: Path | None = None
 
 
-@dataclass(frozen=True)
-class RLBackboneAdapters:
-    """RL 运行期需要的三个相互独立的 backbone 适配器。"""
-
-    policy: "AgentPolicy"
-    rollout_encoder: "RolloutEncoder"
-    policy_replay: "ActionLogProbReplay"
-
-
 __all__ = [
     "Backbone",
     "BackboneBatch",
     "BackboneEMA",
+    "BackboneInputBuilder",
     "BackboneOutput",
     "LoadedBackbone",
-    "RLBackboneAdapters",
 ]

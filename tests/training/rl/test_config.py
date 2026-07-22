@@ -55,6 +55,8 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert config.predictor.lambda_sigreg == 0.1
     assert config.predictor.sigreg_num_proj == 1024
     assert config.predictor.sigreg_knots == 17
+    assert config.actor.enabled is False
+    assert config.gradient.representation_to_backbone is True
 
 
 def test_rl_config_rejects_unknown_checkpoint_metric() -> None:
@@ -66,7 +68,11 @@ def test_rl_config_rejects_unknown_checkpoint_metric() -> None:
 
 @pytest.mark.parametrize(
     ("section", "field"),
-    (("freeze", "state_proj"), ("validation", "enabled")),
+    (
+        ("freeze", "state_proj"),
+        ("gradient", "representation_to_backbone"),
+        ("validation", "enabled"),
+    ),
 )
 def test_rl_config_rejects_string_booleans(section: str, field: str) -> None:
     raw = _raw_config()

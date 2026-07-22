@@ -21,7 +21,7 @@ from nimloth.eval.reconstruction import evaluate_reconstruction, image_to_tensor
 from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
-from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
+from nimloth.rollout.transitions import collate_transition_training_items
 from nimloth.rollout.transitions import TransitionJsonlDataset
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
@@ -124,7 +124,7 @@ def _fixed_val_preview_items(val_ds, max_items: int) -> list[dict]:
 
     by_record: dict[str, dict] = {}
     for idx in range(len(val_ds)):
-        item = transition_collate_for_qwen([val_ds[idx]])[0]
+        item = collate_transition_training_items([val_ds[idx]])[0]
         if not item.get("next_messages"):
             continue
         record_id = str(item.get("id", idx)).split(":", 1)[0]
@@ -213,7 +213,7 @@ def _make_train_loader(args: argparse.Namespace, train_ds, epoch: int):
         generator=generator,
         num_workers=0,
         pin_memory=True,
-        collate_fn=transition_collate_for_qwen,
+        collate_fn=collate_transition_training_items,
     )
 
 
@@ -305,7 +305,7 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
             shuffle=train_sampler is None,
             num_workers=0,
             pin_memory=True,
-            collate_fn=transition_collate_for_qwen,
+            collate_fn=collate_transition_training_items,
         )
         val_loader = None
         val_preview_items: list[dict] = []
@@ -316,7 +316,7 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
                 shuffle=False,
                 num_workers=0,
                 pin_memory=True,
-                collate_fn=transition_collate_for_qwen,
+                collate_fn=collate_transition_training_items,
             )
             val_preview_items = _fixed_val_preview_items(val_ds, args.wandb_image_samples)
 

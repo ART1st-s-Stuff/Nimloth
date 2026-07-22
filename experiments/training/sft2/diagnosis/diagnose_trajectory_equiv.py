@@ -20,7 +20,8 @@ from nimloth.latent import (
     special_token_ids,
 )
 from nimloth.training.sft2.diagnosis.trajectory_forward import _prefix_latent
-from nimloth.backbone.qwen25vl.transition import messages_with_image_paths, prefix_messages_with_images
+from nimloth.agent import bind_image_placeholders
+from nimloth.rollout.transitions import bind_transition_prompt
 from nimloth.rollout.transitions import expand_record_transitions, load_jsonl_records
 
 
@@ -48,7 +49,7 @@ def main() -> int:
     record = load_jsonl_records(args.train_jsonl, max_records=args.record_index + 1)[args.record_index]
     transitions = expand_record_transitions(record)
     image_paths = [str(p) for p in record.get("image_paths", [])]
-    full_messages = messages_with_image_paths(list(record.get("messages", [])), image_paths)
+    full_messages = bind_image_placeholders(list(record.get("messages", [])), image_paths)
     full_enc = encode_qwen_item(full_messages, processor, args.max_length, include_labels=False)
     full_ids = full_enc["input_ids"].tolist()
     full_indices = find_all_latent_state_indices(full_enc["input_ids"], token_id_map)
@@ -63,7 +64,7 @@ def main() -> int:
     steps = []
     for sample in transitions[:8]:
         step = sample.step_index
-        prefix_msgs = prefix_messages_with_images(sample)
+        prefix_msgs = bind_transition_prompt(sample)
         prefix_enc = encode_qwen_item(prefix_msgs, processor, args.max_length, include_labels=False)
         prefix_ids = prefix_enc["input_ids"].tolist()
         prefix_latent_pos = find_last_latent_state_index(prefix_enc["input_ids"], token_id_map)

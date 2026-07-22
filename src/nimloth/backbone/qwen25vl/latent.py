@@ -39,7 +39,7 @@ def _final_norm_module(model) -> torch.nn.Module:
     """Resolve the final text-model norm used to produce last hidden states.
 
     Calling Qwen with ``output_hidden_states=True`` returns every layer's hidden
-    states.  For SFT2 we only need the last-layer activations at the configured
+    states. Agent state extraction only needs last-layer activations at configured
     latent query tokens, so we capture the output of the final decoder norm.
     The candidate paths cover current HF Qwen2.5-VL naming and older variants.
     """

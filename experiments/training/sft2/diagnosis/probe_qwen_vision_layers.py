@@ -15,7 +15,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.backbone.qwen25vl.batch import batch_single_encoding, encode_qwen_item
 from nimloth.latent import add_special_tokens
-from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.rollout.transitions import bind_transition_prompt
 from nimloth.environment.navigation import NUM_NAVIGATION_ACTIONS
 from nimloth.rollout.transitions import (
     TransitionSample,
@@ -99,8 +99,8 @@ def _max_diff_prefix(a: torch.Tensor, b: torch.Tensor, prefix_len: int) -> float
 
 
 def analyze_case(name: str, steps: list[TransitionSample], model, processor, device: torch.device, max_length: int) -> dict[str, Any]:
-    prefix_enc = encode_qwen_item(prefix_messages_with_images(steps[0]), processor, max_length, include_labels=False)
-    full_enc = encode_qwen_item(prefix_messages_with_images(steps[-1]), processor, max_length, include_labels=False)
+    prefix_enc = encode_qwen_item(bind_transition_prompt(steps[0]), processor, max_length, include_labels=False)
+    full_enc = encode_qwen_item(bind_transition_prompt(steps[-1]), processor, max_length, include_labels=False)
     prefix_pixel, prefix_grid = _prepare(prefix_enc, device)
     full_pixel, full_grid = _prepare(full_enc, device)
 

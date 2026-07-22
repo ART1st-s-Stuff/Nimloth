@@ -19,6 +19,8 @@ episode runtime。两者名称和职责明确分开：
 cache、EMA、optimizer、checkpoint 与 environment 状态均不进入 `Agent.state_dict()`。
 rollout transition 的 batch 契约属于 `nimloth.rollout`，不属于 Agent 模型接口。
 SFT2 的 target-state 梯度与 EMA 策略属于 `training.sft2.runtime`。
+PPO replay 接收 `PolicyReplayInput(AgentPrompt, action, sampling config)`，因此具体
+Backbone 不需要依赖 rollout transition 类型。
 
 ## Episode 契约
 

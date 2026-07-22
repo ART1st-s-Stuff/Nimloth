@@ -28,7 +28,7 @@ from nimloth.training.sft2.diagnosis.trajectory_once import (
     encode_full_trajectory,
     find_step_latent_indices,
 )
-from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.rollout.transitions import bind_transition_prompt
 from nimloth.environment.navigation import NUM_NAVIGATION_ACTIONS
 from nimloth.rollout.transitions import (
     TransitionSample,
@@ -203,7 +203,7 @@ def compare_steps(model, processor, token_id_map, device, steps: list[Transition
     position_region_diffs: list[float] = []
     latent_positions: list[dict[str, int]] = []
     for sample in steps:
-        prefix_enc = encode_qwen_item(prefix_messages_with_images(sample), processor, max_length, include_labels=False)
+        prefix_enc = encode_qwen_item(bind_transition_prompt(sample), processor, max_length, include_labels=False)
         prefix_len = int(prefix_enc["input_ids"].shape[0])
         prefix_dec = prepare_per_image_vision_decoder_inputs(model, prefix_enc, device, position_id_mode)
         prefix_hidden = model.model.language_model(

@@ -15,7 +15,6 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor
 
-from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
 from nimloth.latent import add_special_tokens
 from nimloth.util.distributed import is_main
 from nimloth.util.cache.encoding import (
@@ -32,7 +31,11 @@ from nimloth.util.cache.schema import (
     safe_cache_name,
     transition_sample_id,
 )
-from nimloth.rollout.transitions import TransitionJsonlDataset, TransitionSample
+from nimloth.rollout.transitions import (
+    TransitionJsonlDataset,
+    TransitionSample,
+    transition_training_item,
+)
 
 _CACHE_PROCESSOR: AutoProcessor | None = None
 _CACHE_MAX_LENGTH = 0
@@ -165,7 +168,7 @@ def _cache_one_compact_transition_shard(
         assert _CACHE_PROCESSOR is not None
         entries: list[dict[str, Any]] = []
         for sample in samples:
-            item = transition_collate_for_qwen([sample])[0]
+            item = transition_training_item(sample)
             image_indices = [
                 _COMPACT_PATH_TO_IMAGE_INDEX[str(Path(path).resolve())]
                 for path in sample.prefix_image_paths
@@ -613,7 +616,7 @@ def build_transition_preprocess_cache(
 
     tasks: list[tuple[dict[str, Any], str]] = []
     for sample in samples:
-        item = transition_collate_for_qwen([sample])[0]
+        item = collate_transition_training_items([sample])[0]
         out_path = cache_dir / f"{safe_cache_name(item['id'])}.pt"
         if not force and out_path.is_file():
             continue

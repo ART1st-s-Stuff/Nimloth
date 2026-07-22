@@ -1,4 +1,4 @@
-"""Qwen batch builder 的下一状态去重与 cache 契约测试。"""
+"""通用 Qwen input builder 与 SFT2 batch assembler 的边界测试。"""
 
 from __future__ import annotations
 
@@ -6,20 +6,20 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-from nimloth.backbone.qwen25vl.batch import message_cache_key
-from nimloth.backbone.qwen25vl.transition import (
-    CachedQwenNextBatch,
-    Qwen25VLBatchBuilder,
-)
+from nimloth.backbone import BackboneBatch
+from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
+from nimloth.training.sft2.batch import CachedNextBatch, SFT2BatchAssembler
 
 
-def _builder() -> Qwen25VLBatchBuilder:
+def _assembler() -> SFT2BatchAssembler:
     processor = MagicMock()
     processor.tokenizer.pad_token_id = 0
-    return Qwen25VLBatchBuilder(
-        processor=processor,
+    return SFT2BatchAssembler(
+        input_builder=Qwen25VLInputBuilder(
+            processor=processor,
+            max_length=32,
+        ),
         device=torch.device("cpu"),
-        max_length=32,
     )
 
 
@@ -45,10 +45,10 @@ def test_prepare_deduplicates_identical_next_prompts() -> None:
         return {"input_ids": torch.zeros((len(items), 4), dtype=torch.long)}
 
     with patch(
-        "nimloth.backbone.qwen25vl.transition.build_qwen_batch",
+        "nimloth.backbone.qwen25vl.input.build_qwen_batch",
         side_effect=fake_build,
     ):
-        batch = _builder().prepare(
+        batch = _assembler().prepare(
             [_item("a", shared_next), _item("b", shared_next)]
         )
 
@@ -60,18 +60,23 @@ def test_prepare_deduplicates_identical_next_prompts() -> None:
 
 def test_prepare_uses_worker_prebatched_next_cache() -> None:
     next_messages = [{"role": "user", "content": "next"}]
-    cached = CachedQwenNextBatch(
-        keys=(message_cache_key(next_messages),),
-        encoding={"input_ids": torch.ones((1, 3), dtype=torch.long)},
+    assembler = _assembler()
+    cached = CachedNextBatch(
+        keys=(assembler.input_builder.cache_key(next_messages, ()),),
+        batch=BackboneBatch(
+            {"input_ids": torch.ones((1, 3), dtype=torch.long)}
+        ),
     )
     raw = {
         "items": [_item("a", next_messages)],
-        "current_enc": {"input_ids": torch.ones((1, 2), dtype=torch.long)},
-        "next_enc_bundle": cached,
+        "current": BackboneBatch(
+            {"input_ids": torch.ones((1, 2), dtype=torch.long)}
+        ),
+        "next": cached,
     }
 
-    with patch("nimloth.backbone.qwen25vl.transition.build_qwen_batch") as build:
-        batch = _builder().prepare(raw)
+    with patch("nimloth.backbone.qwen25vl.input.build_qwen_batch") as build:
+        batch = assembler.prepare(raw)
 
     build.assert_not_called()
     assert torch.equal(
@@ -88,10 +93,10 @@ def test_terminal_batch_builds_one_dummy_next_input() -> None:
         return {"input_ids": torch.ones((len(items), 2), dtype=torch.long)}
 
     with patch(
-        "nimloth.backbone.qwen25vl.transition.build_qwen_batch",
+        "nimloth.backbone.qwen25vl.input.build_qwen_batch",
         side_effect=fake_build,
     ):
-        batch = _builder().prepare([_item("terminal", None)])
+        batch = _assembler().prepare([_item("terminal", None)])
 
     assert len(seen) == 2
     assert seen[1] == [

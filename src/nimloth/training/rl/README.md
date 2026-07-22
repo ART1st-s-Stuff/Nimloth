@@ -9,8 +9,8 @@ trajectories, then trains the neural `Agent` world model and optional actor.
 |-------|----------------|
 | `nimloth.agent` | Transcript state, prompt version, policy/supervised message construction, episode runner |
 | `nimloth.environment` | Action vocabulary, environment session, and VAGEN navigation adapter |
-| `nimloth.backbone.qwen25vl` | Qwen policy, VAGEN online adapter, and latent transition encoding |
-| `nimloth.rollout` | Model-independent trajectory schema, JSONL storage, sources, and transition expansion |
+| `nimloth.backbone.qwen25vl` | Qwen Backbone、prompt 输入、policy 与 PPO replay 适配 |
+| `nimloth.rollout` | Trajectory schema、JSONL、连续窗口与 behavior provenance |
 | `nimloth.config.agent`, `nimloth.config.rollout` | Stage-independent Agent and rollout configuration |
 | `nimloth.config.rl` | Strict typed RL-phase configuration |
 | `nimloth.training.rl` | RL 算法、组件装配、optimizer、checkpoint 和训练循环 |
@@ -33,10 +33,10 @@ forwards. Generate JSONL separately for distributed training. A training
 collector must use an environment dataset whose name ends in `_train`; eval
 assets cannot be labeled as training data.
 
-The CLI requires one rollout mode explicitly. A static JSONL collector is
-rejected when either Qwen tune mode enables the PPO actor, because its behavior
-probabilities were produced by an older policy. Train and validation always
-use separate collector instances and sources.
+The CLI requires one rollout mode explicitly. `actor.enabled` controls PPO and
+is independent of `gradient.representation_to_backbone`. Static JSONL is only
+rejected when PPO is enabled, because its behavior probabilities were produced
+by an older policy. Train and validation use separate collector sources.
 
 ## Data flow
 
@@ -54,7 +54,10 @@ environment system_prompt + obs_str + images
  RolloutTrajectory (structured transcript + audit prompt)
              |                       |
              v                       v
- shared policy-state encoding   exact PPO prompt replay
+ raw trajectory window sample   exact PPO prompt replay
+             |                       |
+             v                       |
+ shared Backbone input builder       |
              |                       |
              +---- predictor/value/actor training
 ```
@@ -78,23 +81,33 @@ in memory, serialized as JSON `null`, and restored as `-inf` when read.
 
 ## Training semantics
 
-Qwen hidden states are encoded in trajectory order. With
-`H = predictor.history_size`, each WM sample contains `H + 1` consecutive
-states and `H` actions from the same trajectory; windows never cross episode
-boundaries. The next-state query includes the real next observation and all
-earlier observation/action turns.
+With `H = predictor.history_size`, sampling first selects `H` consecutive
+actions and `H + 1` prompts from the same raw trajectory. Only the sampled
+windows enter the Backbone, so joint mode retains a real autograd graph and
+windows never cross episode boundaries. The final prompt includes the real
+next observation and all earlier turns.
 
 ```text
-states    = state_proj(qwen(policy_prompt_0..H)[latent_state])
+hidden    = backbone(policy_prompt_0..H)
+states    = state_proj(hidden)
 context   = states[:, :H]
 targets   = stop_gradient(states[:, 1:H+1])
 predicted = wm_predictor(context, actions[:, :H])
 L_wm      = mse(predicted, targets)
 L_sigreg  = SIGReg(states.transpose(0, 1))
 
-Q         = value_head(stop_gradient(context))
+Q         = value_head(context)
 L_value   = regression(Q[action], discounted_returns) + ranking_loss
 ```
+
+梯度模式是显式配置：
+
+- `gradient.representation_to_backbone: true`：WM、value 和 SIGReg 均可训练
+  Backbone；下一状态仍只在 WM target 分支 stop-gradient。
+- `gradient.representation_to_backbone: false`：Backbone forward 在 no-grad 下
+  执行；StateProjector 是否训练仍只由 `freeze.state_proj` 决定。
+- `actor.enabled`：单独控制 PPO。Backbone 的可训练参数范围继续由
+  `--llm-tune/--vision-tune` 决定，学习率由 `gradient.backbone_lr` 统一管理。
 
 When actor training is enabled, PPO recomputes `new_log_prob` from the exact
 same prompt and the same temperature/top-p transformation as the recorded
@@ -105,11 +118,10 @@ distribution, including masked zero-probability actions.
 
 | Module | Responsibility |
 |--------|----------------|
-| `nimloth.rollout` | Model-independent trajectory schema, JSONL, and transition expansion |
-| `nimloth.backbone.qwen25vl.rollout` | Qwen latent transition encoding |
+| `nimloth.rollout.windows` | 原始 trajectory 的连续窗口计数与采样 |
 | `algorithm.py` | multi-step WM/SIGReg、value/PPO 和梯度边界；不持有模型或 optimizer |
-| `runtime.py` | 在线 Agent 与可选 policy replay 的单批执行契约 |
-| `loop.py` | collect→encode→sample→forward/backward→validate→save 生命周期 |
+| `runtime.py` | prompt→Backbone hidden 的 joint/frozen 模式与可选 policy replay |
+| `loop.py` | collect→sample→forward/backward→validate→save 生命周期 |
 | `evaluation.py` | Held-out rollout collection and checkpoint metric selection |
 | `rollout_runtime.py` | Collector startup constraints and online policy binding |
 | `reporting.py` | RL-specific CSV/W&B metric shape over shared util helpers |
@@ -132,10 +144,9 @@ distribution, including masked zero-probability actions.
   held-out `validation.checkpoint_metric` (`success_rate` or `avg_reward`).
 - LoRA plus full Vision saves `vision_full_state.pt` next to the adapter and
   restores both through the shared Qwen checkpoint helper.
-- 当前 WM loss 只通过当前状态更新 StateProjector；下一状态是 stop-gradient
-  target。ValueHead 输入也显式 detach，因此 value loss 不更新 StateProjector。
-  梯度 ownership 和数学目标都写在 `algorithm.py`，并由梯度测试保护；后续若
-  改变必须作为单独算法决策处理。
+- WM target 的下一状态保持 stop-gradient。ValueHead 不再擅自 detach state；
+  StateProjector 与 Backbone 的梯度 ownership 分别由 `freeze.state_proj` 和
+  `gradient.representation_to_backbone` 控制，并有梯度测试保护。
 
 Example standalone rollout:
 

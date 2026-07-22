@@ -30,6 +30,19 @@ def validate_collector_configuration(
         raise ValueError("validation.enabled requires a separate eval collector")
 
 
+def online_policy_required(
+    train_collector: RolloutCollector,
+    eval_collector: RolloutCollector | None,
+) -> bool:
+    """判断当前 rollout source 是否需要绑定在线 Agent policy。"""
+
+    return any(
+        isinstance(candidate, VAGENNavigationRolloutCollector)
+        for candidate in (train_collector, eval_collector)
+        if candidate is not None
+    )
+
+
 def bind_online_collectors(
     *,
     train_collector: RolloutCollector,
@@ -61,3 +74,10 @@ def bind_online_collectors(
         )
     if is_main():
         print(json.dumps({"env_collector": "wired"}))
+
+
+__all__ = [
+    "bind_online_collectors",
+    "online_policy_required",
+    "validate_collector_configuration",
+]

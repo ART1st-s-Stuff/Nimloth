@@ -16,7 +16,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from nimloth.backbone.qwen25vl.batch import batch_single_encoding, encode_qwen_item
 from nimloth.backbone.qwen25vl.latent import reset_model_rope_state
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.rollout.transitions import bind_transition_prompt
 from nimloth.environment.navigation import NUM_NAVIGATION_ACTIONS
 from nimloth.rollout.transitions import (
     expand_record_transitions,
@@ -141,8 +141,8 @@ def _maxdiff(a, b):
 
 @torch.no_grad()
 def run_case(model, processor, device, steps, max_length, case):
-    enc0 = encode_qwen_item(prefix_messages_with_images(steps[0]), processor, max_length, include_labels=False)
-    enc1 = encode_qwen_item(prefix_messages_with_images(steps[1]), processor, max_length, include_labels=False)
+    enc0 = encode_qwen_item(bind_transition_prompt(steps[0]), processor, max_length, include_labels=False)
+    enc1 = encode_qwen_item(bind_transition_prompt(steps[1]), processor, max_length, include_labels=False)
     len0 = int(enc0["input_ids"].shape[0])
     prep0 = _prepare(model, enc0, device)
     prep1 = _prepare(model, enc1, device)

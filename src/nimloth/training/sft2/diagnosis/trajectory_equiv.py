@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
-from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
+from nimloth.rollout.transitions import collate_transition_training_items
 from nimloth.rollout.transitions import expand_record_transitions
 from nimloth.training.sft2.diagnosis.trajectory_once import (
     forward_trajectory_once,
@@ -82,7 +82,7 @@ def legacy_record_losses(
         value_head=value_head,
     )
     steps = expand_record_transitions(record)
-    items = transition_collate_for_qwen(steps)
+    items = collate_transition_training_items(steps)
     latents = []
     lm_total = torch.zeros((), device=device)
     lm_tokens = 0
@@ -150,7 +150,7 @@ def packed_record_losses(
         value_head=value_head,
     )
     steps = expand_record_transitions(record)
-    items = transition_collate_for_qwen(steps)
+    items = collate_transition_training_items(steps)
     trajectory = forward_trajectory_once(
         model,
         steps,

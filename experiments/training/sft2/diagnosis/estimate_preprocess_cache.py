@@ -14,7 +14,7 @@ from nimloth.util.cache import (
     encode_trajectory_record,
     encode_transition_item,
 )
-from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
+from nimloth.rollout.transitions import collate_transition_training_items
 from nimloth.rollout.transitions import expand_record_transitions, load_jsonl_records
 
 
@@ -51,7 +51,7 @@ def main() -> int:
         steps = expand_record_transitions(record)
         transitions += len(steps)
         for sample in steps:
-            item = transition_collate_for_qwen([sample])[0]
+            item = collate_transition_training_items([sample])[0]
             enc = encode_transition_item(item, processor, args.max_length)
             transition_bytes += tensor_bytes(enc)
         traj = encode_trajectory_record(record, processor, args.max_length)

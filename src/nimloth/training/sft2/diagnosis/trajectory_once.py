@@ -31,7 +31,7 @@ from nimloth.latent import (
     normalize_latent_state_blocks,
 )
 from nimloth.latent.extraction import LatentActionTokens
-from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.rollout.transitions import bind_transition_prompt
 from nimloth.rollout.transitions import TransitionSample
 
 
@@ -85,7 +85,7 @@ def labels_for_trajectory_steps(
     usable = min(labels.shape[0], len(offset_rows))
     for sample in steps:
         spans = assistant_char_spans(
-            prefix_messages_with_images(sample),
+            bind_transition_prompt(sample),
             processor,
             latent_token_count=latent_token_count,
         )
@@ -267,11 +267,11 @@ def verify_prefix_tokenization(
     full_ids = _input_ids_list(full_enc["input_ids"])
     rendered_full = full_text if full_text is not None else _render_messages(
         processor,
-        prefix_messages_with_images(steps[-1]),
+        bind_transition_prompt(steps[-1]),
         latent_token_count=latent_token_count,
     )
     for sample in steps:
-        prefix_messages = prefix_messages_with_images(sample)
+        prefix_messages = bind_transition_prompt(sample)
         prefix_enc = encode_qwen_item(
             prefix_messages,
             processor,
@@ -348,7 +348,7 @@ def find_step_latent_blocks(
     full_ids = _input_ids_list(full_enc["input_ids"])
     blocks: list[list[int]] = []
     for sample in steps:
-        prefix_messages = prefix_messages_with_images(sample)
+        prefix_messages = bind_transition_prompt(sample)
         prefix_enc = encode_qwen_item(
             prefix_messages,
             processor,
@@ -391,7 +391,7 @@ def find_step_latent_indices_in_full(
     ids = full_input_ids.tolist()
     indices: list[int] = []
     for sample in steps:
-        spans = assistant_char_spans(prefix_messages_with_images(sample), processor)
+        spans = assistant_char_spans(bind_transition_prompt(sample), processor)
         if not spans:
             raise ValueError(
                 f"record {sample.record_id!r} step {sample.step_index}: no assistant span for latent lookup"
@@ -425,7 +425,7 @@ def encode_full_trajectory(
     if not steps:
         raise ValueError("encode_full_trajectory requires at least one step")
     assert_packed_steps(steps)
-    full_messages = prefix_messages_with_images(steps[-1])
+    full_messages = bind_transition_prompt(steps[-1])
     full_text = _render_messages(
         processor,
         full_messages,
@@ -507,7 +507,7 @@ def forward_trajectory_once(
         enc = full_enc
         full_text = _render_messages(
             processor,
-            prefix_messages_with_images(steps[-1]),
+            bind_transition_prompt(steps[-1]),
             latent_token_count=latent_token_count,
         )
         verify_prefix_tokenization(

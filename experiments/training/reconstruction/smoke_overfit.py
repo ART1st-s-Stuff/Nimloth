@@ -15,7 +15,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.latent import add_special_tokens, special_token_ids
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch
-from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
+from nimloth.rollout.transitions import collate_transition_training_items
 from nimloth.rollout.transitions import TransitionJsonlDataset
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
@@ -99,7 +99,7 @@ def main() -> int:
     ).to(device)
 
     ds = TransitionJsonlDataset(args.train_jsonl, max_records=args.sample_index + 1)
-    items = transition_collate_for_qwen([ds[args.sample_index]])
+    items = collate_transition_training_items([ds[args.sample_index]])
     item = items[0]
     sample_id = str(item.get("id", args.sample_index))
     img_path = item["current_image_path"]

@@ -9,7 +9,8 @@
 - `storage.py`：JSONL 持久化。
 - `source.py`：trajectory source 协议和离线 JSONL source。
 - `transitions.py`：trajectory 到 transition 的展开和 dataset。
-- `batch.py`：backend 与阶段算法共享的 transition batch/builder 契约。
+- `windows.py`：在原始 trajectory 上计数并采样连续 `H` 步窗口。
+- `batch.py`：阶段 assembler 与算法之间的 transition batch 契约。
 
 本包中的任何模块都不得导入 `nimloth.training`。
 
@@ -25,6 +26,6 @@ prompt 模板、动作空间和行为概率都随 `AgentEpisode` 进入 trajecto
 只选择具体 environment、policy 和保存位置，不得复制 prompt 构造逻辑，也不得在
 公共适配器中猜测某个环境的 reward/success 语义。
 
-Qwen hidden state 编码属于模型适配，位于
-`nimloth.backbone.qwen25vl.rollout`；VAGEN navigation collector 属于
-`nimloth.environment.navigation.collector`。二者都不属于本包。
+窗口保留原始 Agent prompt 与 behavior provenance，不提前固化为 detached
+Backbone hidden。VAGEN navigation collector 属于
+`nimloth.environment.navigation.collector`，不属于本包。

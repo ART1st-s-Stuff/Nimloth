@@ -180,12 +180,10 @@ def _build_or_open_cached_datasets(
     if train_dataset.is_compact:
         collate_train = CompactCachedTransitionCollator(
             train_cache_dir,
-            pad_token_id=processor.tokenizer.pad_token_id,
             max_open_shards=config.preprocess_cache_shard_lru,
         )
         collate_val = CompactCachedTransitionCollator(
             val_cache_dir,
-            pad_token_id=processor.tokenizer.pad_token_id,
             max_open_shards=config.preprocess_cache_shard_lru,
         )
     else:

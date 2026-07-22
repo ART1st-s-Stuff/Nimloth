@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 import torch
-
-if TYPE_CHECKING:
-    from nimloth.rollout.encoding import EncodedTransition
 
 from nimloth.agent.template import AgentPrompt
 
@@ -67,10 +64,21 @@ class AgentPolicy(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class PolicyReplayInput:
+    """PPO 重放一次已执行动作所需的完整 Agent 输入。"""
+
+    prompt: AgentPrompt
+    action_index: int
+    sampling_temperature: float
+    sampling_top_p: float
+    latent_token_count: int
+
+
 class ActionLogProbReplay(Protocol):
     """用当前 policy 重放 trajectory 中保存的动作分布。"""
 
     def __call__(
         self,
-        transitions: tuple["EncodedTransition", ...],
+        samples: tuple[PolicyReplayInput, ...],
     ) -> tuple[torch.Tensor, torch.Tensor]: ...

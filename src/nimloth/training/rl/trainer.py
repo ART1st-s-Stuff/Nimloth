@@ -13,9 +13,11 @@ import torch
 from nimloth.agent import Agent
 from nimloth.backbone import (
     backbone_hidden_size,
-    build_rl_adapters,
+    build_action_log_prob_replay,
+    build_agent_policy,
+    build_input_builder,
     build_vision_ema,
-    load_rl_backbone,
+    load_backbone,
     resolve_tune_modes,
     resolve_vision_ema,
 )
@@ -29,6 +31,7 @@ from nimloth.training.rl.reporting import RLReporter
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.training.rl.rollout_runtime import (
     bind_online_collectors,
+    online_policy_required,
     validate_collector_configuration,
 )
 from nimloth.util.distributed import (
@@ -153,7 +156,11 @@ def _build_optimizer(
     ]
     if qwen_parameters:
         parameter_groups.append(
-            {"params": qwen_parameters, "lr": config.actor.lr, "name": "qwen"}
+            {
+                "params": qwen_parameters,
+                "lr": config.gradient.backbone_lr,
+                "name": "qwen",
+            }
         )
     for name, module, learning_rate in (
         ("state_proj", world_model.state_proj, config.predictor.lr),
@@ -229,7 +236,12 @@ def train_rl(
     """装配 RL runtime；核心 batch 算法见 ``RLAlgorithm``。"""
 
     llm_tune, vision_tune = resolve_tune_modes(args)
-    actor_enabled = llm_tune != "freeze" or vision_tune != "freeze"
+    actor_enabled = config.actor.enabled
+    backbone_trainable = llm_tune != "freeze" or vision_tune != "freeze"
+    if actor_enabled and not backbone_trainable:
+        raise ValueError(
+            "actor.enabled requires a trainable --llm-tune or --vision-tune mode"
+        )
     validate_collector_configuration(
         actor_enabled=actor_enabled,
         train_collector=train_collector,
@@ -253,7 +265,14 @@ def train_rl(
     )
 
     try:
-        loaded = load_rl_backbone(args, output_dir=output_dir, device=device)
+        resume_dir = output_dir / "latest"
+        loaded = load_backbone(
+            args,
+            device=device,
+            latent_token_count=1,
+            resume_dir=resume_dir,
+            resume_state_path=resume_dir / "rl_state.pt",
+        )
         model = loaded.backbone.model
         world_model = _build_world_model(args, config, llm=model, device=device)
         if world > 1:
@@ -288,20 +307,27 @@ def train_rl(
             backbone=loaded.backbone.with_model(model),
             wm=world_model,
         )
-        adapters = build_rl_adapters(
+        input_builder = build_input_builder(
             loaded,
-            model=model,
-            device=device,
-            temperature=config.rollout.temperature,
-            top_p=config.rollout.top_p,
-        )
-        bind_online_collectors(
-            train_collector=train_collector,
-            eval_collector=eval_collector,
-            policy=adapters.policy,
+            max_length=999_999,
             latent_token_count=1,
-            world_size=world,
+            mask_latent_query_labels=True,
         )
+        if online_policy_required(train_collector, eval_collector):
+            policy = build_agent_policy(
+                loaded,
+                model=model,
+                device=device,
+                temperature=config.rollout.temperature,
+                top_p=config.rollout.top_p,
+            )
+            bind_online_collectors(
+                train_collector=train_collector,
+                eval_collector=eval_collector,
+                policy=policy,
+                latent_token_count=1,
+                world_size=world,
+            )
         checkpoint_manager = RLCheckpointManager(
             config=config,
             agent=agent,
@@ -330,7 +356,19 @@ def train_rl(
         )
         model_runtime = RLModelRuntime(
             agent=agent,
-            policy_replay=(adapters.policy_replay if actor_enabled else None),
+            input_builder=input_builder,
+            representation_to_backbone=(
+                config.gradient.representation_to_backbone
+            ),
+            policy_replay=(
+                build_action_log_prob_replay(
+                    loaded,
+                    model=model,
+                    device=device,
+                )
+                if actor_enabled
+                else None
+            ),
         )
         optimization_runtime = OptimizationRuntime(
             optimizer=optimizer,
@@ -347,7 +385,6 @@ def train_rl(
             model_runtime=model_runtime,
             optimization_runtime=optimization_runtime,
             device=device,
-            rollout_encoder=adapters.rollout_encoder,
             train_collector=train_collector,
             eval_collector=eval_collector,
             output_dir=output_dir,

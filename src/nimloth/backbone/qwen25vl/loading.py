@@ -1,4 +1,4 @@
-"""SFT2、RL 与独立 rollout 共用的 Qwen 加载基础工具。"""
+"""Qwen processor、token 与 hidden-size 加载工具。"""
 
 from __future__ import annotations
 

@@ -98,17 +98,21 @@ policy prompt/probability、独立 validation 与核心梯度边界；真实多�
 ### 13. WM state 与 policy state 使用不同 prompt
 
 - 状态：**已修复（2026-07-21）**
-- 修复：`backbone/qwen25vl/rollout.py` 逐步调用 `RolloutTrajectory.build_policy_prompt()`，其底层按 trajectory 保存的模板 spec 重建和 online rollout/PPO/SFT2 相同的 `AgentPromptTemplate`；generic image-only prompt 已删除。
+- 修复：`rollout/windows.py` 直接从 `RolloutTrajectory.build_policy_prompt()`
+  取得窗口内 `H+1` 个状态。online rollout、PPO 与 WM 都使用同一个
+  `AgentPromptTemplate`；Qwen 层不再单独重建 RL transition。
 - 验证：结构化 SFT2 transition 测试确认当前 supervised prefix 与下一状态 policy prefix 使用共享模板。
 
 ### 14. Value loss 不会更新解冻后的 StateProjector
 
-- 状态：**待设计决策（当前行为已显式化并有梯度测试）**
-- 位置：`src/nimloth/training/rl/algorithm.py` 的 value state 构造。
-- 现状：predictor loss 可以更新未冻结的 StateProjector；value loss 因 detach 只能更新 ValueHead。
-- 影响：当 `freeze.state_proj=false` 时，value supervision 无法塑造 state representation。若设计目标本来就是只由 dynamics loss 更新 projector，则当前行为合理，但必须明确记录。
-- 修复方向：当前 `algorithm.py` 明确保留 detach，测试确认 value 只更新 ValueHead；
-  人类确定新的 StateProjector ownership 后，再单独改变算法与测试期望。
+- 状态：**已修复（2026-07-22）**
+- 修复：ValueHead 直接消费 `state_context`，不再无条件 detach。
+  `freeze.state_proj` 唯一控制 StateProjector 是否训练；新增
+  `gradient.representation_to_backbone` 独立控制 WM/value/SIGReg 是否回传
+  Backbone，`actor.enabled` 独立控制 PPO。
+- 验证：已新增梯度测试，分别覆盖 joint 模式、frozen representation 模式、WM
+  target stop-gradient 与 value 对 Backbone/StateProjector/ValueHead 的梯度；当前
+  本机缺少 Torch/Pytest，仍待远程执行。
 
 ## P1：分布式风险
 
@@ -148,8 +152,11 @@ policy prompt/probability、独立 validation 与核心梯度边界；真实多�
    禁止再用宽泛 `components` 或单函数 `objective/schedule/update` 文件横向切碎流程。
 
 当前架构进展：公共神经网络 `Agent(backbone, wm)`、episode `AgentRuntime`、
-rollout 和 Agent/Rollout config 已迁出 training。Qwen rollout encoding 与 policy
-replay 位于 `backbone/qwen25vl`，VAGEN collector 位于 `environment/navigation`。
+rollout 和 Agent/Rollout config 已迁出 training。Qwen policy/replay 位于
+`backbone/qwen25vl`，VAGEN collector 位于 `environment/navigation`。
+2026-07-22 进一步删除 Qwen rollout encoder：原始连续窗口由 `rollout/windows.py`
+采样，RL runtime 再通过公共 input builder 执行 joint/no-grad Backbone forward。
+SFT2 的 next-state 对齐进入 `training/sft2/batch.py`，Qwen 代码不再认识训练阶段。
 `WorldModel` 只组合 StateProjector、WMPredictor、ValueHead 并负责神经网络计算。
 SFT2/RL 的单批 forward、loss 和梯度边界分别集中在各自 `algorithm.py`；二者
 都是不持有模型/optimizer 的普通算法对象，通过阶段 runtime 显式接收 Agent、

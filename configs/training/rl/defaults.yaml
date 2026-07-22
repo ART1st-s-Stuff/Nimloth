@@ -1,7 +1,7 @@
 # Online RL training defaults
 
 # Qwen 模型、attention 和图片预算由 CLI 唯一负责。
-# Qwen 是否训练由 --llm-tune/--vision-tune 唯一负责。
+# --llm-tune/--vision-tune 决定可训练参数；gradient/actor 决定梯度来源。
 agent:
   prompt_template: nimloth-latent-action
   thought: What should I do next?
@@ -9,9 +9,14 @@ agent:
 freeze:
   state_proj: true
 
+# WM/value/SIGReg 默认共同训练 Backbone；关闭后只训练 WM 侧可训练参数。
+gradient:
+  representation_to_backbone: true
+  backbone_lr: 1e-6
+
 # --- Actor (Qwen PPO) ---
 actor:
-  lr: 1e-6
+  enabled: false          # PPO 是否启用；与 Backbone 是否接收表征梯度独立
   entropy_coeff: 0.0   # 0 = no entropy bonus (backward compatible)
   clip_ratio: 0.2
 

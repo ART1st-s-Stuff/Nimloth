@@ -23,7 +23,7 @@ from nimloth.latent import (
     special_token_ids,
 )
 from nimloth.training.sft2.diagnosis.trajectory_once import find_step_latent_indices
-from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.rollout.transitions import bind_transition_prompt
 from nimloth.environment.navigation import NUM_NAVIGATION_ACTIONS
 from nimloth.rollout.transitions import (
     TransitionSample,
@@ -122,7 +122,7 @@ def _forward_prefix_hidden(model, enc: dict[str, torch.Tensor], device: torch.de
 
 @torch.no_grad()
 def run_case(model, processor, token_id_map, device: torch.device, steps: list[TransitionSample], max_length: int, case_name: str) -> dict[str, Any]:
-    prefix_encs = [encode_qwen_item(prefix_messages_with_images(s), processor, max_length, include_labels=False) for s in steps]
+    prefix_encs = [encode_qwen_item(bind_transition_prompt(s), processor, max_length, include_labels=False) for s in steps]
     prev_enc = None
     prev_len = 0
     past = None

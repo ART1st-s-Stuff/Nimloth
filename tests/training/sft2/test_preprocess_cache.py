@@ -3,7 +3,8 @@ from __future__ import annotations
 import torch
 
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch, encode_qwen_item
-from nimloth.backbone.qwen25vl.transition import Qwen25VLBatchBuilder
+from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
+from nimloth.training.sft2.batch import SFT2BatchAssembler
 from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
     CachedTransitionDataset,
@@ -103,14 +104,16 @@ def test_encode_transition_item_roundtrip_collate() -> None:
     # CachedTransitionDataset 在实际读取时补回这两个运行期字段。
     encoded["messages"] = item["messages"]
     encoded["next_messages"] = item.get("next_messages")
-    batch = Qwen25VLBatchBuilder(
-        processor=processor,
+    batch = SFT2BatchAssembler(
+        input_builder=Qwen25VLInputBuilder(
+            processor=processor,
+            max_length=128,
+        ),
         device=torch.device("cpu"),
-        max_length=128,
     ).collate_cached_transition_batch([encoded])
     online_current = build_qwen_batch([{"messages": item["messages"]}], processor, max_length=128)
-    assert torch.equal(batch["current_enc"]["input_ids"][0], online_current["input_ids"][0])
-    assert torch.equal(batch["current_enc"]["labels"][0], online_current["labels"][0])
+    assert torch.equal(batch["current"].tensors["input_ids"][0], online_current["input_ids"][0])
+    assert torch.equal(batch["current"].tensors["labels"][0], online_current["labels"][0])
 
 
 def test_cache_fingerprint_changes_with_latent_token_count(tmp_path) -> None:
@@ -280,16 +283,19 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
         ),
     ]
     dataset = CachedTransitionDataset(cache_dir, samples, max_open_shards=1)
-    collator = CompactCachedTransitionCollator(cache_dir, pad_token_id=0, max_open_shards=1)
+    collator = CompactCachedTransitionCollator(cache_dir, max_open_shards=1)
     batch = collator([dataset[0], dataset[1]])
 
-    current_pixels = batch["current_enc"]["pixel_values"]
+    current_pixels = torch.cat(
+        [row["pixel_values"] for row in batch["current_enc_rows"]],
+        dim=0,
+    )
     assert current_pixels.dtype == torch.bfloat16
     assert torch.equal(current_pixels, torch.cat([pixels[:2], pixels[:2], pixels[2:]], dim=0))
-    next_bundle = batch["next_enc_bundle"]
-    assert next_bundle is not None
-    assert len(next_bundle.keys) == 1
+    next_rows = batch["next_enc_rows"]
+    assert next_rows[0] is not None
+    assert next_rows[1] is None
     assert torch.equal(
-        next_bundle.encoding["pixel_values"],
+        next_rows[0]["pixel_values"],
         torch.cat([pixels[:2], pixels[2:]], dim=0),
     )

@@ -3,31 +3,44 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
-
 import torch
 import torch.nn.functional as F
 
-from nimloth.rollout import EncodedTrajectory, EncodedTransition
+from nimloth.agent import AgentPrompt, PolicyReplayInput
+from nimloth.rollout import TrajectoryWindow
+from nimloth.rollout.transitions import discounted_action_value_targets
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm import SequenceSIGReg
 
 
 @dataclass(frozen=True)
 class RLBatch:
-    """一次 RL 更新消费的连续 WM window 与逐步 RL 监督。"""
+    """一次 RL 更新消费的原始连续窗口与逐步监督。"""
 
-    windows: tuple[tuple[EncodedTransition, ...], ...]
-    hidden_states: torch.Tensor
+    windows: tuple[TrajectoryWindow, ...]
     action_indices: torch.Tensor
     return_targets: torch.Tensor
     old_log_probs: torch.Tensor
 
     @property
-    def transitions(self) -> tuple[EncodedTransition, ...]:
-        """按 batch/time 顺序展开，供 policy replay 使用。"""
+    def state_prompts(self) -> tuple[AgentPrompt, ...]:
+        """按 batch/time 顺序展开 H+1 个状态 prompt。"""
 
-        return tuple(transition for window in self.windows for transition in window)
+        return tuple(
+            prompt
+            for window in self.windows
+            for prompt in window.state_prompts()
+        )
+
+    @property
+    def policy_replay_inputs(self) -> tuple[PolicyReplayInput, ...]:
+        """按 batch/time 顺序展开 H 个动作重放输入。"""
+
+        return tuple(
+            sample
+            for window in self.windows
+            for sample in window.policy_replay_inputs()
+        )
 
 
 @dataclass(frozen=True)
@@ -39,72 +52,27 @@ class RLStepOutput:
     metrics: dict[str, float]
 
 
-def count_sequence_windows(
-    trajectories: Sequence[EncodedTrajectory],
+def build_rl_batch(
+    windows: tuple[TrajectoryWindow, ...],
     *,
-    history_size: int,
-) -> int:
-    """统计不会跨越 trajectory 边界的固定长度训练窗口。"""
-
-    if history_size < 1:
-        raise ValueError(f"history_size must be positive, got {history_size}")
-    return sum(
-        max(0, trajectory.num_steps - history_size + 1)
-        for trajectory in trajectories
-    )
-
-
-def select_sequence_batch(
-    trajectories: Sequence[EncodedTrajectory],
-    *,
-    history_size: int,
-    batch_size: int,
-    seed: int,
+    gamma: float,
     device: torch.device,
 ) -> RLBatch:
-    """使用独立 CPU generator 采样同一 trajectory 内的连续窗口。"""
+    """把已采样窗口的动作、return 和行为概率整理成张量。"""
 
-    if history_size < 1:
-        raise ValueError(f"history_size must be positive, got {history_size}")
-    if batch_size < 1:
-        raise ValueError(f"batch_size must be positive, got {batch_size}")
-    candidates = [
-        (trajectory, start)
-        for trajectory in trajectories
-        for start in range(trajectory.num_steps - history_size + 1)
-    ]
-    if len(candidates) < batch_size:
-        raise ValueError(
-            f"only {len(candidates)} sequence windows are available, need {batch_size}"
-        )
-    generator = torch.Generator(device="cpu")
-    generator.manual_seed(seed)
-    indices = torch.randperm(len(candidates), generator=generator)[:batch_size]
-    windows = tuple(
-        tuple(
-            candidates[int(index)][0].transitions[
-                candidates[int(index)][1] : candidates[int(index)][1] + history_size
-            ]
-        )
-        for index in indices
-    )
-
-    # 每个 H-step window 由 s0 和 H 个 transition 的 next state 组成 H+1 个状态。
-    hidden_states = torch.stack(
-        [
-            torch.stack(
-                [window[0].current_hidden]
-                + [transition.next_hidden for transition in window]
-            )
-            for window in windows
-        ]
-    ).to(device)
+    if not windows:
+        raise ValueError("RL batch requires at least one trajectory window")
+    history_sizes = {window.history_size for window in windows}
+    if len(history_sizes) != 1:
+        raise ValueError("one RL batch cannot mix trajectory window lengths")
+    history_size = history_sizes.pop()
     return RLBatch(
         windows=windows,
-        hidden_states=hidden_states,
         action_indices=torch.tensor(
             [
-                [transition.action_index for transition in window]
+                window.trajectory.action_indices[
+                    window.start_step : window.start_step + history_size
+                ]
                 for window in windows
             ],
             dtype=torch.long,
@@ -112,7 +80,10 @@ def select_sequence_batch(
         ),
         return_targets=torch.tensor(
             [
-                [transition.value_target for transition in window]
+                discounted_action_value_targets(
+                    window.trajectory.to_record(),
+                    gamma=gamma,
+                )[window.start_step : window.start_step + history_size]
                 for window in windows
             ],
             dtype=torch.float32,
@@ -120,7 +91,15 @@ def select_sequence_batch(
         ),
         old_log_probs=torch.tensor(
             [
-                [transition.old_log_prob for transition in window]
+                [
+                    window.trajectory.action_log_probs[step_index][
+                        window.trajectory.action_indices[step_index]
+                    ]
+                    for step_index in range(
+                        window.start_step,
+                        window.start_step + history_size,
+                    )
+                ]
                 for window in windows
             ],
             dtype=torch.float32,
@@ -145,9 +124,9 @@ def normalized_monte_carlo_advantages(
 class RLAlgorithm:
     """定义 RL 一个 batch 的完整计算图。
 
-    本类保留 RL 特有的梯度边界：WM current 更新 StateProjector/WMPredictor，
-    next state 是固定 target，value 输入 detach。Agent、policy replay、optimizer、
-    rollout 生命周期和 checkpoint 均由显式运行期或 loop 管理。
+    下一状态保持 stop-gradient；Backbone 是否接收 WM/value/SIGReg 梯度由
+    ``RLModelRuntime`` 的显式模式决定，StateProjector 是否训练只由参数冻结状态
+    决定。policy replay、optimizer、rollout 生命周期和 checkpoint 由运行期管理。
     """
 
     def __init__(
@@ -180,17 +159,22 @@ class RLAlgorithm:
     ) -> RLStepOutput:
         """构造 RL 计算图并计算 WM、value 与可选 PPO 目标。"""
 
+        hidden_states = runtime.encode_state_sequence(
+            batch.state_prompts,
+            batch_size=len(batch.windows),
+            state_steps=self.history_size + 1,
+        )
         expected_state_steps = self.history_size + 1
         if (
-            batch.hidden_states.ndim != 3
-            or batch.hidden_states.shape[1] != expected_state_steps
+            hidden_states.ndim != 3
+            or hidden_states.shape[1] != expected_state_steps
         ):
             raise ValueError(
-                "RLBatch hidden_states must have shape (B, history_size + 1, D), "
-                f"got {tuple(batch.hidden_states.shape)} for history_size={self.history_size}"
+                "RL hidden_states must have shape (B, history_size + 1, D), "
+                f"got {tuple(hidden_states.shape)} for history_size={self.history_size}"
             )
         expected_actions = (
-            batch.hidden_states.shape[0],
+            hidden_states.shape[0],
             self.history_size,
         )
         if batch.action_indices.shape != expected_actions:
@@ -199,7 +183,7 @@ class RLAlgorithm:
                 f"got {tuple(batch.action_indices.shape)}, expected {expected_actions}"
             )
 
-        state_sequence = runtime.agent.wm.project_state(batch.hidden_states)
+        state_sequence = runtime.agent.wm.project_state(hidden_states)
         state_context = state_sequence[:, :-1]
         predicted_next_states = runtime.agent.wm.predict_state_sequence(
             state_context,
@@ -209,7 +193,7 @@ class RLAlgorithm:
         # 一个状态可以在当前位置更新 projector，同时在前一位置作为 stop-gradient
         # target；因此先统一投影，再只 detach 右移后的 target 视图。
         target_next_states = state_sequence[:, 1:].detach()
-        action_values = runtime.agent.wm.predict_action_values(state_context.detach())
+        action_values = runtime.agent.wm.predict_action_values(state_context)
 
         # 三个目标在这里直接组合，避免把同一批 tensor 再转发给一层 objective。
         wm_loss = F.mse_loss(predicted_next_states, target_next_states)
@@ -230,7 +214,9 @@ class RLAlgorithm:
 
         policy: dict[str, torch.Tensor] | None = None
         if runtime.policy_replay is not None:
-            new_log_probs, action_log_probs = runtime.policy_replay(batch.transitions)
+            new_log_probs, action_log_probs = runtime.policy_replay(
+                batch.policy_replay_inputs
+            )
             advantages = normalized_monte_carlo_advantages(
                 return_targets=batch.return_targets.flatten().to(
                     device=chosen_values.device,
@@ -345,7 +331,6 @@ __all__ = [
     "RLAlgorithm",
     "RLBatch",
     "RLStepOutput",
-    "count_sequence_windows",
+    "build_rl_batch",
     "normalized_monte_carlo_advantages",
-    "select_sequence_batch",
 ]

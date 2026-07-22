@@ -21,7 +21,7 @@ from nimloth.latent import (
     special_token_ids,
 )
 from nimloth.training.sft2.diagnosis.trajectory_forward import _prefix_latent
-from nimloth.backbone.qwen25vl.transition import prefix_messages_with_images
+from nimloth.rollout.transitions import bind_transition_prompt
 from nimloth.rollout.transitions import expand_record_transitions, load_jsonl_records
 
 
@@ -69,11 +69,11 @@ def main() -> int:
     sample = transitions[step]
 
     enc_prev = (
-        encode_qwen_item(prefix_messages_with_images(sample_prev), processor, args.max_length, include_labels=False)
+        encode_qwen_item(bind_transition_prompt(sample_prev), processor, args.max_length, include_labels=False)
         if sample_prev is not None
         else None
     )
-    enc_cur = encode_qwen_item(prefix_messages_with_images(sample), processor, args.max_length, include_labels=False)
+    enc_cur = encode_qwen_item(bind_transition_prompt(sample), processor, args.max_length, include_labels=False)
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         args.model, torch_dtype=torch.bfloat16, attn_implementation="sdpa", trust_remote_code=True

@@ -10,17 +10,12 @@ from typing import Any
 import torch
 from torch.utils.data import Dataset
 
-from nimloth.backbone.qwen25vl.batch import collate_qwen_encodings
-from nimloth.backbone.qwen25vl.transition import (
-    QwenTransitionMessages,
-    collate_next_qwen_encodings,
-    messages_with_image_paths,
-)
 from nimloth.util.cache.schema import (
     COMPACT_CACHE_FORMAT,
     safe_cache_name,
     transition_sample_id,
 )
+from nimloth.agent import bind_image_placeholders
 from nimloth.rollout.transitions import TransitionSample
 
 class _MmapShardStore:
@@ -58,9 +53,8 @@ class _MmapShardStore:
 class CompactCachedTransitionCollator:
     """Materialize deduplicated pixels in DataLoader workers, then pre-batch them."""
 
-    def __init__(self, cache_dir: Path, *, pad_token_id: int, max_open_shards: int = 2) -> None:
+    def __init__(self, cache_dir: Path, *, max_open_shards: int = 2) -> None:
         self.cache_dir = cache_dir
-        self.pad_token_id = int(pad_token_id)
         index_path = cache_dir / "image_index.json"
         if not index_path.is_file():
             raise FileNotFoundError(f"missing compact image index: {index_path}")
@@ -139,20 +133,8 @@ class CompactCachedTransitionCollator:
 
         return {
             "items": items,
-            "current_enc": collate_qwen_encodings(current_rows, self.pad_token_id),
             "current_enc_rows": current_rows,
             "next_enc_rows": next_rows,
-            "next_enc_bundle": collate_next_qwen_encodings(
-                tuple(
-                    QwenTransitionMessages(
-                        current=item["messages"],
-                        next=item.get("next_messages"),
-                    )
-                    for item in items
-                ),
-                next_rows,
-                pad_token_id=self.pad_token_id,
-            ),
         }
 
 
@@ -219,12 +201,12 @@ class CachedTransitionDataset(Dataset):
             if not cache_path.is_file():
                 raise FileNotFoundError(f"missing preprocess cache: {cache_path}")
             entry = torch.load(cache_path, map_location="cpu", weights_only=True)
-        entry["messages"] = messages_with_image_paths(
+        entry["messages"] = bind_image_placeholders(
             sample.prefix_messages,
             sample.prefix_image_paths,
         )
         if sample.next_prefix_messages is not None and sample.next_prefix_image_paths is not None:
-            entry["next_messages"] = messages_with_image_paths(
+            entry["next_messages"] = bind_image_placeholders(
                 sample.next_prefix_messages,
                 sample.next_prefix_image_paths,
             )

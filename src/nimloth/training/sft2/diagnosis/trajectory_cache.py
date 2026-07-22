@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import Dataset
 from transformers import AutoProcessor
 
-from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
+from nimloth.rollout.transitions import collate_transition_training_items
 from nimloth.util.distributed import is_main
 from nimloth.util.cache import build as cache_build
 from nimloth.util.cache.schema import (
@@ -51,7 +51,7 @@ def encode_trajectory_record(
         "record_id": str(record.get("id", "")),
         "num_steps": len(steps),
         "full_enc": full_enc,
-        "step_items": transition_collate_for_qwen(steps),
+        "step_items": collate_transition_training_items(steps),
     }
 
 

@@ -40,7 +40,8 @@ from nimloth.training.sft2.algorithm import SFT2Algorithm
 from nimloth.util.cache import (
     encode_transition_item,
 )
-from nimloth.backbone.qwen25vl.transition import Qwen25VLBatchBuilder
+from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
+from nimloth.training.sft2.batch import SFT2BatchAssembler
 from nimloth.agent import Agent
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import (
@@ -50,7 +51,7 @@ from nimloth.wm import (
     ValueHead,
     WorldModel,
 )
-from nimloth.backbone.qwen25vl.transition import transition_collate_for_qwen
+from nimloth.rollout.transitions import collate_transition_training_items
 from nimloth.rollout.transitions import TransitionJsonlDataset, load_jsonl_records
 
 
@@ -62,7 +63,7 @@ def check_online_vs_single_encode(processor, samples, max_length: int) -> dict:
     mismatches = 0
     checked = 0
     for sample in samples:
-        item = transition_collate_for_qwen([sample])[0]
+        item = collate_transition_training_items([sample])[0]
         online = build_qwen_batch([{"messages": item["messages"]}], processor, max_length)
         cached = encode_qwen_item(item["messages"], processor, max_length)
         for key in ("input_ids", "attention_mask", "labels"):
@@ -78,7 +79,7 @@ def check_transition_cache_encode(processor, samples, max_length: int) -> dict:
     mismatches = 0
     checked = 0
     for sample in samples:
-        item = transition_collate_for_qwen([sample])[0]
+        item = collate_transition_training_items([sample])[0]
         online = build_qwen_batch([{"messages": item["messages"]}], processor, max_length)
         cached_item = encode_transition_item(item, processor, max_length)
         current = cached_item["current_enc"]
@@ -107,11 +108,13 @@ def run_micro_training_loss(
     state_proj = StateProjector(model.config.hidden_size, 128).to(device=device, dtype=next(model.parameters()).dtype)
     wm_predictor = LatentWMPredictor.create(LeWMConfig(emb_dim=128)).to(device=device)
     value_head = ValueHead(128).to(device=device)
-    items = transition_collate_for_qwen(samples[:batch_size])
-    batch_builder = Qwen25VLBatchBuilder(
-        processor=processor,
+    items = collate_transition_training_items(samples[:batch_size])
+    batch_builder = SFT2BatchAssembler(
+        input_builder=Qwen25VLInputBuilder(
+            processor=processor,
+            max_length=max_length,
+        ),
         device=device,
-        max_length=max_length,
     )
     if use_cached_enc:
         # 生产环境由 CachedTransitionDataset 补回 prompt 元数据；诊断脚本绕过
