@@ -225,6 +225,8 @@ class SFT2Algorithm:
         *,
         include_ranking: bool,
     ) -> dict[str, torch.Tensor]:
+        """Value head loss"""
+
         chosen_values = all_values.gather(
             -1,
             action_indices.unsqueeze(-1),
