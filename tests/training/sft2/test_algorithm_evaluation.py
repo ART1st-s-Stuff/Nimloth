@@ -25,11 +25,6 @@ def test_preserve_module_modes_restores_caller_state() -> None:
 def test_evaluate_uses_evaluation_step_and_batch_builder() -> None:
     module = torch.nn.Linear(1, 1).train()
 
-    class FakeTarget:
-        @contextlib.contextmanager
-        def ema_context(self):
-            yield
-
     class FakeAlgorithm:
         def __init__(self) -> None:
             self.values: list[float] = []
@@ -40,10 +35,13 @@ def test_evaluate_uses_evaluation_step_and_batch_builder() -> None:
 
     class FakeRuntime:
         agent = SimpleNamespace(trainable_modules=(module,))
-        target = FakeTarget()
 
         def unwrapped(self):
             return self
+
+        @contextlib.contextmanager
+        def evaluation_context(self):
+            yield
 
     class FakeBuilder:
         def prepare(self, batch):

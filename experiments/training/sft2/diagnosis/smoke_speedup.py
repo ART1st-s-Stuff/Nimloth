@@ -41,7 +41,8 @@ from nimloth.util.cache import (
     encode_transition_item,
 )
 from nimloth.backbone.qwen25vl.transition import Qwen25VLBatchBuilder
-from nimloth.agent import Agent, AgentTarget
+from nimloth.agent import Agent
+from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import (
     LatentWMPredictor,
     LeWMConfig,
@@ -143,8 +144,6 @@ def run_micro_training_loss(
         ),
     )
     algorithm = SFT2Algorithm(
-        agent=agent,
-        target=AgentTarget(agent),
         sigreg=None,
         sigreg_weight=0.0,
         value_weight=1.0,
@@ -154,6 +153,7 @@ def run_micro_training_loss(
     )
     lambda_wm = algorithm.wm_weight(0, 100)
     output = algorithm.training_step(
+        SFT2ModelRuntime(agent=agent),
         batch_builder.prepare(raw_batch),
         wm_weight=lambda_wm,
     )

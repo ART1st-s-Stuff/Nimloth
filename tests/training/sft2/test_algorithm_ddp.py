@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from nimloth.agent import Agent, AgentTarget
+from nimloth.agent import Agent
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.rollout import TransitionBatch
 from nimloth.training.sft2.algorithm import SFT2Algorithm
@@ -61,7 +61,7 @@ def test_terminal_only_batch_runs_backbone_and_wm_with_masked_zero_loss() -> Non
         value_rank_margin=0.1,
         value_rank_weight=1.0,
     )
-    runtime = SFT2ModelRuntime(agent=agent, target=AgentTarget(agent))
+    runtime = SFT2ModelRuntime(agent=agent)
     current = torch.randn(1, 3, requires_grad=True)
     batch = TransitionBatch(
         current=BackboneBatch({"hidden": current}),

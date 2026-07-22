@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import torch
 
-from nimloth.agent import Agent, AgentTarget
+from nimloth.agent import Agent
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.rollout import TransitionBatch
 from nimloth.training.sft2.algorithm import SFT2Algorithm
@@ -42,6 +43,51 @@ class _TensorBackbone(Backbone):
 
     def save_pretrained(self, output_dir: Path, **_kwargs) -> None:
         raise NotImplementedError
+
+
+class _WrappedModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.module = torch.nn.Identity()
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return self.module(value)
+
+
+class _ReplaceableBackbone(Backbone):
+    def __init__(self, model: torch.nn.Module) -> None:
+        super().__init__()
+        self._model = model
+
+    @property
+    def model(self) -> torch.nn.Module:
+        return self._model
+
+    def forward(self, batch: BackboneBatch, **_kwargs) -> BackboneOutput:
+        return BackboneOutput(self._model(batch.tensors["hidden"]))
+
+    def with_model(self, model: torch.nn.Module) -> "_ReplaceableBackbone":
+        return _ReplaceableBackbone(model)
+
+    def save_pretrained(self, output_dir: Path, **_kwargs) -> None:
+        raise NotImplementedError
+
+
+class _RecordingEMA:
+    def __init__(self) -> None:
+        self.shadow: dict[str, torch.Tensor] = {}
+        self.models: list[torch.nn.Module] = []
+
+    def update(self, model: torch.nn.Module) -> None:
+        pass
+
+    @contextlib.contextmanager
+    def use_ema_weights(self, model: torch.nn.Module):
+        self.models.append(model)
+        yield
+
+    def save_checkpoint(self, path: Path) -> None:
+        pass
 
 
 class _Predictor(torch.nn.Module):
@@ -96,7 +142,7 @@ def _algorithm(
             value_head=ValueHead(emb_dim=4, num_actions=3),
         ),
     )
-    runtime = SFT2ModelRuntime(agent=agent, target=AgentTarget(agent))
+    runtime = SFT2ModelRuntime(agent=agent)
     return (
         SFT2Algorithm(
             sigreg=sigreg,
@@ -157,6 +203,29 @@ def test_sft2_algorithm_is_pure_compute_configuration() -> None:
     assert not hasattr(algorithm, "agent")
     assert not hasattr(algorithm, "target")
     assert not hasattr(algorithm, "optimizer")
+
+
+def test_unwrapped_runtime_applies_ema_to_its_own_backbone_model() -> None:
+    wrapped_model = _WrappedModel()
+    agent = Agent(
+        backbone=_ReplaceableBackbone(wrapped_model),
+        wm=WorldModel(
+            state_proj=torch.nn.Linear(4, 4),
+            wm_predictor=_Predictor(4),
+            value_head=ValueHead(emb_dim=4, num_actions=3),
+        ),
+    )
+    ema = _RecordingEMA()
+    validation_runtime = SFT2ModelRuntime(
+        agent=agent,
+        backbone_ema=ema,
+    ).unwrapped()
+
+    with validation_runtime.evaluation_context():
+        pass
+
+    assert validation_runtime.agent.backbone.model is wrapped_model.module
+    assert ema.models == [validation_runtime.agent.backbone.model]
 
 
 def test_sft2_training_step_uses_agent_forward_and_two_sided_projector_gradient() -> None:

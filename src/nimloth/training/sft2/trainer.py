@@ -12,7 +12,7 @@ from typing import Any
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from nimloth.agent import Agent, AgentTarget
+from nimloth.agent import Agent
 from nimloth.backbone import (
     build_sft2_batch_builder,
     build_vision_ema,
@@ -356,15 +356,10 @@ def train_sft2(args=None) -> int:
         latent_token_count=args.latent_token_count,
         mask_latent_query_labels=args.mask_latent_query_labels,
     )
-    target = AgentTarget(
-        agent,
-        backbone_context=(
-            (lambda: vision_ema.use_ema_weights(agent.backbone.model))
-            if vision_ema is not None
-            else None
-        ),
+    model_runtime = SFT2ModelRuntime(
+        agent=agent,
+        backbone_ema=vision_ema,
     )
-    model_runtime = SFT2ModelRuntime(agent=agent, target=target)
     optimizer = _build_optimizer(
         args,
         agent=agent,

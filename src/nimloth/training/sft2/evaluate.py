@@ -60,7 +60,7 @@ def evaluate(
             validation_runtime.agent.trainable_modules,
             training=False,
         ),
-        validation_runtime.target.ema_context(),
+        validation_runtime.evaluation_context(),
     ):
         for index, batch in enumerate(loader):
             if max_batches > 0 and index >= max_batches:

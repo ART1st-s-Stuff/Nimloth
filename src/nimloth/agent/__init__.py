@@ -23,7 +23,6 @@ from nimloth.agent.templates import (
     NimlothPromptTemplate,
 )
 from nimloth.agent.transcript import AgentTranscript
-from nimloth.agent.target import AgentTarget
 
 __all__ = [
     "PROMPT_VERSION",
@@ -36,7 +35,6 @@ __all__ = [
     "AgentPromptTemplate",
     "AgentOutput",
     "AgentRuntime",
-    "AgentTarget",
     "AgentTranscript",
     "EpisodeRunner",
     "NIMLOTH_PROMPT_TEMPLATE_ID",

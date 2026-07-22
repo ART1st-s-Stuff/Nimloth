@@ -6,7 +6,6 @@ episode runtime。两者名称和职责明确分开：
 | 模块 | 职责 |
 |------|------|
 | `model.py` | `Agent(nn.Module)`：组合 `Backbone` 与 `WorldModel` |
-| `target.py` | target backbone stop-gradient 与 target StateProjector 梯度边界 |
 | `transcript.py` | 按时间保存 observation、图片和动作 |
 | `template.py`、`templates/` | prompt 契约与具体模板 |
 | `policy.py` | 行为 policy 与 PPO replay 协议 |
@@ -19,6 +18,7 @@ episode runtime。两者名称和职责明确分开：
 返回 hidden、state、WM prediction、action values 和可选 LM loss。processor、
 cache、EMA、optimizer、checkpoint 与 environment 状态均不进入 `Agent.state_dict()`。
 rollout transition 的 batch 契约属于 `nimloth.rollout`，不属于 Agent 模型接口。
+SFT2 的 target-state 梯度与 EMA 策略属于 `training.sft2.runtime`。
 
 ## Episode 契约
 

@@ -16,8 +16,9 @@ SFT2 包只保留阶段算法、训练生命周期、数据与 checkpoint。文�
 | `diagnosis/` | 不进入生产训练的 packed/KV 等价性诊断 |
 
 `SFT2Algorithm` 是普通 Python 算法对象，不注册参数，也不处理 processor、cache、
-DDP、optimizer、EMA 或 checkpoint。`SFT2ModelRuntime` 是在线 Agent 与 target
-路径的完整执行契约；不等长分布式验证只解除这个 runtime 的模型包装。
+DDP、optimizer、EMA 或 checkpoint。`SFT2ModelRuntime` 统一持有在线 Agent、
+target-state 梯度路径与 Backbone EMA；不等长分布式验证只解除这个 runtime 的
+模型包装。
 Qwen batch 在进入算法前被转换成公共 `TransitionBatch`；terminal transition
 通过 mask 参与统一调用结构，不再需要 `_compute_wm` 或 DDP dummy-loss 分支。
 

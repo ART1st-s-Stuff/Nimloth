@@ -134,7 +134,7 @@ class SFT2Algorithm:
             batch.action_indices,
             include_lm_loss=include_lm_loss,
         )
-        target_states = runtime.target(batch.next)
+        target_states = runtime.target_state(batch.next)
         aligned_targets = target_states[batch.next_indices]
 
         wm_loss = self._wm_loss(
