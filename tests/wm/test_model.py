@@ -9,6 +9,7 @@ import torch
 from nimloth.agent import Agent
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.wm.model import WorldModel
+from nimloth.wm.state_proj import StateProjector
 
 
 class _Backbone(Backbone):
@@ -93,3 +94,25 @@ def test_world_model_forward_uses_all_owned_modules() -> None:
     assert output["state"].shape == (2, 2)
     assert output["predicted_next_state"].shape == (2, 2)
     assert output["action_values"].shape == (2, 3)
+
+
+def test_world_model_projects_time_axis_as_independent_states() -> None:
+    for latent_token_count in (1, 2):
+        model = WorldModel(
+            state_proj=StateProjector(
+                qwen_hidden_dim=3,
+                lewm_emb_dim=2,
+                projector_hidden_dim=4,
+                latent_token_count=latent_token_count,
+            ),
+            wm_predictor=torch.nn.Identity(),
+            value_head=torch.nn.Identity(),
+        )
+        token_shape = () if latent_token_count == 1 else (latent_token_count,)
+        hidden = torch.randn(2, 4, *token_shape, 3)
+
+        sequence = model.project_state_sequence(hidden)
+        flattened = hidden.flatten(0, 1)
+        expected = model.project_state(flattened).reshape(2, 4, 2)
+
+        torch.testing.assert_close(sequence, expected)

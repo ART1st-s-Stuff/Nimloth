@@ -13,6 +13,7 @@ from nimloth.training.rl.cli import main
 def _raw_config() -> dict:
     return {
         "freeze": {"state_proj": True},
+        "gradient": {"representation_to_backbone": True},
         "predictor": {"emb_dim": 128, "history_size": 1},
         "rollout": {
             "train_datasets": ["base_train"],

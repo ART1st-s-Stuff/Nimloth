@@ -14,7 +14,8 @@ RL 配置允许 `history_size > 1`，但旧实现先把 trajectory 展平成独�
 
 ## 正确做法
 
-- 编码后继续保留 trajectory 边界和 step 顺序。
+- 原始 trajectory 必须保留边界和 step 顺序；先采样连续窗口，再按显式梯度模式
+  编码窗口内的状态，不能提前保存 detached Backbone hidden。
 - 一步预测偏移下，每个 H-step 训练窗口必须包含同一 trajectory 的 `H+1` 个
   连续状态与 H 个动作。
 - predictor 返回 H 个因果预测，依次监督 `[s_1, ..., s_H]`。

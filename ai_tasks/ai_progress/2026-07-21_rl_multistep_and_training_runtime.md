@@ -17,7 +17,8 @@
 - [x] 将 optimizer/backward/EMA 从 RL Algorithm 移到训练运行期。
 - [x] 将 SFT2 Algorithm 改为普通算法对象，移除算法层的 distributed unwrap。
 - [x] 按完整责任拆解 SFT2 loop，并消除其对具体 Backbone 包装布局的依赖。
-- [x] 运行本地静态检查与远程 CPU 回归；禁用 W&B 并清理测试生成物。
+- [x] 运行本地静态检查与 CPU 回归；测试未启动 W&B 或实验任务。
+- [ ] 远程 SSH 恢复后补充短 GPU smoke，不把本地测试冒充远程验证。
 
 ## 已确认约束
 
@@ -29,17 +30,25 @@
 
 ## 文件修改
 
-- `rollout/encoding.py`、`backbone/qwen25vl/rollout.py`：保留编码后 trajectory
-  边界和 step 顺序，不再只返回扁平 transition 列表。
+- `rollout/windows.py`：保留原始 trajectory 边界和 step 顺序，先采样连续窗口，
+  不在 rollout 层预编码或 detach Backbone hidden。
+- `agent/policy.py`：PPO replay 输入只携带公共 `AgentPrompt`、动作和采样参数。
+- `backbone/base.py`、`backbone/qwen25vl/input.py`、`factory.py`：提供阶段无关的
+  Backbone 输入、policy/replay 和加载能力；Qwen 不再导入 training/rollout。
 - `wm/predictor.py`、`wm/model.py`：新增返回全部因果位置的 sequence prediction；
   自回归 rollout 使用真实短前缀，不再用重复初始状态和 zero action 填充。
 - `wm/sigreg.py`：新增公共 `SequenceSIGReg`；SFT2 的 `OneStepSIGReg` 作为固定
   两状态适配器继续保留。
 - `training/rl/algorithm.py`、`loop.py`、`trainer.py`：采样同一 trajectory 内的
-  H-step window，计算 H 个 WM/value 位置及 H+1 状态 SIGReg，并校验 checkpoint
-  history 与配置一致。
-- `training/rl/runtime.py`、`training/sft2/runtime.py`：显式提供各阶段单批算法所需
-  的模型能力；两个 Algorithm 都不再持有 Agent 或 optimizer。
+  H-step window，计算 H 个 WM/value 位置及 H+1 状态 SIGReg；actor 与表征梯度
+  分别由显式配置控制。
+- `training/rl/runtime.py`：在采样后执行 joint 或 no-grad Backbone forward，保留
+  单/多 latent token 维度；PPO replay 可独立训练同一个 Backbone。
+- `training/sft2/batch.py`：SFT2 自己负责 current/next 对齐、terminal mask、next
+  prompt 去重和 all-terminal DDP dummy forward，Qwen input builder 只做 processor
+  适配。
+- `wm/model.py`：`project_state_sequence()` 明确逐时间位置调用 StateProjector，
+  防止把 `(B,T,D)` 的时间轴误当成 `(B,k,D)` latent-token 轴。
 - `training/sft2/runtime.py` 进一步吸收原 `AgentTarget`：唯一 Agent 模型之外，
   target-state stop-gradient、target 侧 projector 梯度、Backbone EMA 和 unwrapped
   验证视图都由 SFT2 runtime 表达。
@@ -57,7 +66,8 @@
 
 - 本地 `python -m compileall -q src/nimloth tests`：通过。
 - 本地 `git diff --check`：通过。
-- 本机缺少 Torch/Pytest；算法阶段提交 `e55b73a` 已同步到服务器 worktree。
+- 本机 `.venv` 的 Python symlink 已漂移到 3.14；本轮使用原 Nix Python 3.13 和
+  现有 site-packages 执行测试，缺失的纯 Python `einops` 只安装到 `/tmp`。
 - 远程使用 `WANDB_MODE=disabled`：RL algorithm/config `12 passed`；新增 multi-step
   predictor 用例 `2 passed`；SFT2 SIGReg 相邻回归与 WorldModel `10 passed`。
 - 远程纯 Torch 集成 smoke 通过 sequence shape、窗口边界、SIGReg shape 和 target
@@ -68,13 +78,19 @@
 - 全部远程测试显式设置 `WANDB_MODE=disabled`；没有创建实验输出或上传 W&B。
 - 已删除本次产生的 `.pytest_cache` 及源码、测试、experiments 下 `__pycache__`；
   远程原有 `external/le-wm` 状态、`scripts/` 和 trainer backup 未改动。
-- `37cbc77` 删除公共 `AgentTarget` 并推送；新增的 unwrapped/EMA ownership 测试
-  已完成静态编译。2026-07-22 远程 SSH 在 banner exchange 阶段超时，本机又无
-  Torch，因此该提交的 pytest 与远程 worktree 同步仍待 VPN 恢复后执行。
+- `50ac52b` 已提交并推送公共 prompt/representation pipeline 重构。
+- 本地相关 CPU 回归：RL/SFT2/Agent/Qwen/WM 共 148 项通过，其中 Gloo 两进程用例
+  因沙箱禁止 loopback socket，放开该权限后单独通过；recon/eval 邻接回归 27 项
+  通过。合计 175 项通过；warning 均来自既有数值/弃用提示。
+- `python3 -m compileall -q src tests`、全源码 AST 解析和修改文件
+  `git diff --check` 通过。
+- 2026-07-22 尝试连接 `superpod-csejzhang` 时只完成主机指纹握手，没有获得远程
+  shell；因此本轮没有同步远程 worktree、没有运行 GPU smoke，也没有创建实验或
+  W&B 输出。
 
 ## 待确认问题
 
-- 算法契约仍采用原始 LeWM 的一步偏移：每个训练窗口包含 `H+1` 个状态、H 个
-  动作，预测和 target 均为 H 个时间位置。
-- 待 VPN 恢复后同步远程 `dev` worktree，并补跑完整 SFT2 测试；全程保持
-  `WANDB_MODE=disabled`，结束后清理测试缓存。
+- 算法契约采用原始 LeWM 的一步偏移：每个训练窗口包含 `H+1` 个状态、H 个动作，
+  预测和 target 均为 H 个时间位置。
+- 待远程 SSH 恢复后同步该 feature worktree，并做不上传 W&B 的短 GPU smoke；
+  测试后立即清理远程临时输出。

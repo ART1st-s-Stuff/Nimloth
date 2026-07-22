@@ -1186,6 +1186,32 @@
   - 健康启动证据：日志显示 LoRA 注入、`qwen_pair_parallel=true`, `rank0_pair=[0,1]`, vision EMA `shadow_params=582`；`train_step_log.csv` 已写到至少 `global_step=20`，无 OOM/ChildFailedError。
 - 注意：一次后提交的重复 job `457216` 因资源 pending 被取消；实际健康运行的是 `457209`。
 
+## 2026-07-22：SFT2/RL 公共表征管线与梯度契约重构
+
+- 分支：`fix/sft2-review-bugs`；主重构提交 `50ac52b` 已推送。
+- `rollout/windows.py` 现在保存并采样原始连续 trajectory window；不再在 Qwen
+  rollout adapter 中预编码 detached hidden。PPO replay 输入改为公共
+  `AgentPrompt`、动作与采样参数。
+- Backbone 公共边界增加阶段无关的 `BackboneInputBuilder`；Qwen2.5-VL 只实现模型
+  加载、输入、policy/replay、tuning、checkpoint 与 EMA，不再导入 SFT2/RL 或
+  rollout window/return/target 语义。
+- RL 明确拆开三个配置：tune mode 决定 Backbone 可训练参数，`actor.enabled` 决定
+  PPO，`gradient.representation_to_backbone` 决定 WM/value/SIGReg 是否回传
+  Backbone。原始窗口采样后才执行 joint/no-grad Backbone forward。
+- RL multi-step 使用 H+1 个真实状态投影 H 个预测；WM target 只 detach 右移后的
+  next-state view。`WorldModel.project_state_sequence()` 逐时间位置调用
+  StateProjector，避免把时间轴误当成 latent-token 轴，并保留多 token 输入维度。
+- SFT2 的 current/next 对齐、terminal mask、next prompt 去重和 all-terminal DDP
+  dummy forward 归入 `training/sft2/batch.py`，不再由 Qwen transition adapter 定义。
+- 本地验证：RL/SFT2/Agent/Qwen/WM 相关 148 项通过（其中 Gloo 两进程用例在允许
+  loopback socket 后单独通过），recon/eval 邻接回归 27 项通过，合计 175 项；
+  `compileall`、全源码 AST 解析和修改文件 `diff --check` 通过。测试没有启动 W&B
+  或实验任务。
+- 远程状态：`ssh superpod-csejzhang` 只完成主机指纹握手，未获得 shell；本轮没有
+  声称远程测试或 GPU smoke 已运行。
+- 保留未改动的人类工作区内容：`ai_rules/events/on_experiment_start.md`、
+  `src/nimloth/training/sft2/algorithm.py` 的 docstring 修改以及 `.until-done/`。
+
 ## 2026-06-21：FA2 不能修复 SFT2 packed-forward 多图不等价
 
 - 给 `validate_trajectory_once_2step.py` 与 `validate_2step.slurm` 增加了 `--attn-implementation` / `ATTN_IMPLEMENTATION` 参数化，允许直接对比 `sdpa` 与 `flash_attention_2`。

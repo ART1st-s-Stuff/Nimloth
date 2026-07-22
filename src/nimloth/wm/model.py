@@ -45,6 +45,18 @@ class WorldModel(nn.Module):
 
         return self.state_proj(qwen_hidden).float()
 
+    def project_state_sequence(self, qwen_hidden: torch.Tensor) -> torch.Tensor:
+        """逐时间位置投影 ``(B,T,...)`` Backbone hidden 序列。"""
+
+        if qwen_hidden.ndim < 3:
+            raise ValueError(
+                "state sequence hidden must have shape (B, T, ...), "
+                f"got {tuple(qwen_hidden.shape)}"
+            )
+        batch_size, time_steps = qwen_hidden.shape[:2]
+        projected = self.project_state(qwen_hidden.flatten(0, 1))
+        return projected.reshape(batch_size, time_steps, *projected.shape[1:])
+
     def predict_next_state(
         self,
         current_state: torch.Tensor,

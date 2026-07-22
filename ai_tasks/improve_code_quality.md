@@ -1,6 +1,6 @@
 # RL 代码质量与正确性改进清单
 
-更新时间：2026-07-21
+更新时间：2026-07-22
 
 范围：`src/nimloth/training/rl/` 及其直接依赖的 Qwen2.5-VL policy、checkpoint、配置和 rollout 路径。
 
@@ -45,7 +45,8 @@ policy prompt/probability、独立 validation 与核心梯度边界；真实多�
 
 - 状态：**已修复（2026-07-21）**
 - 修复：`JSONLRolloutCollector` 明确只承担离线 WM/value 数据源；任一 Qwen tune mode 启用 actor 时，trainer 在读取数据前直接拒绝静态 JSONL。CLI 还要求显式选择 env 或 JSONL 模式。
-- 验证：严格配置/CLI 测试覆盖 rollout 模式契约；actor 是否启用由最终 tune mode 唯一决定。
+- 验证：严格配置/CLI 测试覆盖 rollout 模式契约；`actor.enabled` 与 Backbone tune
+  mode 分别校验。
 
 ## P0：Checkpoint 完整性
 
@@ -74,10 +75,13 @@ policy prompt/probability、独立 validation 与核心梯度边界；真实多�
 - 状态：**已修复（2026-07-21）**
 - 修复：配置迁到 `nimloth.config.rl` 的不可变 dataclass schema；未知 section/field、字符串布尔值、非法概率和无效 validation 数量均直接报错，CLI override 返回新配置对象。
 
-### 10. Actor 是否启用与 Qwen 是否可训练由两套开关控制
+### 10. Actor 是否启用曾与 Qwen tune mode 错误耦合
 
 - 状态：**已修复（2026-07-21）**
-- 修复：删除 `freeze.qwen` 配置；actor 是否启用只由 `--llm-tune/--vision-tune` 决定，并和 Qwen 参数 tuning 使用同一个解析函数。
+- 修复：删除含义重叠的 `freeze.qwen`，并明确三个独立契约：
+  `--llm-tune/--vision-tune` 决定可训练参数，`actor.enabled` 决定是否计算 PPO，
+  `gradient.representation_to_backbone` 决定 WM/value/SIGReg 是否回传 Backbone。
+  actor 开启但 Backbone 全冻结时会在启动阶段直接报错。
 
 ### 11. README 中的 base Qwen 启动与协议校验冲突
 
@@ -111,8 +115,8 @@ policy prompt/probability、独立 validation 与核心梯度边界；真实多�
   `gradient.representation_to_backbone` 独立控制 WM/value/SIGReg 是否回传
   Backbone，`actor.enabled` 独立控制 PPO。
 - 验证：已新增梯度测试，分别覆盖 joint 模式、frozen representation 模式、WM
-  target stop-gradient 与 value 对 Backbone/StateProjector/ValueHead 的梯度；当前
-  本机缺少 Torch/Pytest，仍待远程执行。
+  target stop-gradient 与 value 对 Backbone/StateProjector/ValueHead 的梯度；本地
+  CPU 回归已通过。
 
 ## P1：分布式风险
 
@@ -133,9 +137,9 @@ policy prompt/probability、独立 validation 与核心梯度边界；真实多�
 ### 17. `history_size > 1` 仍按独立 transition 训练 WM
 
 - 状态：**已修复（2026-07-21）**
-- 修复：编码结果保留 trajectory 与连续 step；RL 按 `H=history_size` 采样同一
-  trajectory 的 H-step window，以 H+1 个状态监督 H 个因果预测。SIGReg 消费
-  完整 `(T=H+1,B,D)` 状态序列，episode 开头使用真实短前缀。
+- 修复：原始 trajectory 保留连续 step；RL 先按 `H=history_size` 采样同一
+  trajectory 的 H-step window，再按显式梯度模式编码 H+1 个状态，以它们监督 H 个
+  因果预测。SIGReg 消费完整 `(T=H+1,B,D)` 状态序列，episode 开头使用真实短前缀。
 - 验证：窗口边界、shape、target 对齐、梯度 stop、可变 history 和 SIGReg 时间轴
   均有单元测试。禁止再用强制 `history_size=1` 或虚构 padding 掩盖问题。
 

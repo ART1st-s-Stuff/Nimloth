@@ -19,6 +19,7 @@ from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch, build_rl_batch
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm.model import WorldModel
 from nimloth.wm.sigreg import SequenceSIGReg
+from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
 
 
@@ -41,6 +42,12 @@ class _Backbone(Backbone):
 
     def save_pretrained(self, output_dir: Path, **_kwargs) -> None:
         raise NotImplementedError
+
+
+class _MultiTokenBackbone(_Backbone):
+    def forward(self, batch: BackboneBatch, **_kwargs) -> BackboneOutput:
+        hidden = self.language_model(batch.tensors["hidden"])
+        return BackboneOutput(torch.stack((hidden, hidden + 0.5), dim=1))
 
 
 class _InputBuilder:
@@ -265,6 +272,44 @@ def test_rl_sigreg_receives_full_history_plus_target_sequence() -> None:
     assert len(recording.inputs) == 1
     assert recording.inputs[0].shape == (3, 2, 2)
     assert output.losses["sigreg"] is not None
+
+
+def test_rl_preserves_multiple_latent_tokens_until_state_projection() -> None:
+    backbone = _MultiTokenBackbone()
+    input_builder = _InputBuilder()
+    agent = Agent(
+        backbone=backbone,
+        wm=WorldModel(
+            state_proj=StateProjector(
+                qwen_hidden_dim=3,
+                lewm_emb_dim=2,
+                projector_hidden_dim=4,
+                latent_token_count=2,
+            ),
+            wm_predictor=_Predictor(),
+            value_head=ValueHead(emb_dim=2, num_actions=8, hidden_dim=2),
+        ),
+    )
+    algorithm = RLAlgorithm(
+        history_size=2,
+        sigreg=None,
+        sigreg_weight=0.0,
+        value_rank_margin=0.1,
+        value_rank_weight=1.0,
+        ppo_clip_ratio=0.2,
+        entropy_weight=0.0,
+    )
+    runtime = RLModelRuntime(
+        agent=agent,
+        input_builder=input_builder,
+        representation_to_backbone=True,
+        policy_replay=None,
+    )
+
+    output = algorithm.training_step(runtime, _batch())
+
+    assert output.losses["wm"] is not None
+    assert output.losses["value"] is not None
 
 
 def test_rl_algorithm_is_pure_compute_configuration() -> None:

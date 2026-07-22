@@ -166,11 +166,13 @@ class RLAlgorithm:
         )
         expected_state_steps = self.history_size + 1
         if (
-            hidden_states.ndim != 3
+            hidden_states.ndim not in (3, 4)
+            or hidden_states.shape[0] != len(batch.windows)
             or hidden_states.shape[1] != expected_state_steps
         ):
             raise ValueError(
-                "RL hidden_states must have shape (B, history_size + 1, D), "
+                "RL hidden_states must have shape (B, history_size + 1, D) "
+                "or (B, history_size + 1, k, D), "
                 f"got {tuple(hidden_states.shape)} for history_size={self.history_size}"
             )
         expected_actions = (
@@ -183,7 +185,7 @@ class RLAlgorithm:
                 f"got {tuple(batch.action_indices.shape)}, expected {expected_actions}"
             )
 
-        state_sequence = runtime.agent.wm.project_state(hidden_states)
+        state_sequence = runtime.agent.wm.project_state_sequence(hidden_states)
         state_context = state_sequence[:, :-1]
         predicted_next_states = runtime.agent.wm.predict_state_sequence(
             state_context,

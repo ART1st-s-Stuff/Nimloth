@@ -52,13 +52,13 @@ class RLModelRuntime:
                     backbone_batch,
                     include_lm_loss=False,
                 ).hidden.detach()
-        if hidden.ndim == 3 and hidden.shape[1] == 1:
-            hidden = hidden[:, 0]
-        if hidden.ndim != 2:
+        if hidden.ndim not in (2, 3) or hidden.shape[0] != expected:
             raise ValueError(
-                "RL currently requires one latent state vector per prompt, "
-                f"got hidden shape {tuple(hidden.shape)}"
+                "RL Backbone hidden must have shape (B*T, D) or (B*T, k, D), "
+                f"got {tuple(hidden.shape)} for B*T={expected}"
             )
+        # Qwen 单 latent token 返回 (B*T,D)，多 token 返回 (B*T,k,D)。
+        # 时间轴只在这里恢复，token 轴继续由 StateProjector 解释。
         return hidden.reshape(batch_size, state_steps, *hidden.shape[1:])
 
 
