@@ -118,3 +118,18 @@
   预测和 target 均为 H 个时间位置。
 - 待远程 SSH 恢复后同步该 feature worktree，并做不上传 W&B 的短 GPU smoke；
   测试后立即清理远程临时输出。
+
+## 2026-07-22：最新 SFT2 checkpoint 的 RL/PPO 提交预检
+
+- superpod 当前最新可用 SFT2 是
+  `.../sft2/29_state8192_t4tok8res_llmlora_vislora_pair2_ws4_ga8_ep5/train/best`；
+  已从实际 `wm_predictor/config.json` 核实 `history_size=4`、
+  `state_token_count=8`、`emb_dim=8192`，Qwen artifact 是 PEFT adapter。
+- 当前 RL CLI 仍明确要求完整 k=1 inject HF checkpoint，在线 policy 构造也把
+  `latent_token_count` 固定为 1。PPO 需要对同一 rollout policy 重放当前动作概率，
+  因此不能用 run 29 的 WM/value 配合旧 k=1 Qwen 冒充最新 SFT2 初始化。
+- 人类已确认使用 preempt 单个 8-GPU 节点并希望观察 value head/PPO；提交已暂停，
+  未占用 GPU、未创建 W&B run 或实验输出，等待决定先补齐 k=8 adapter 在线
+  policy/replay 加载，还是改用最近的完整 k=1 checkpoint。
+- 本地用户工作区修改已提交为 `fb7cb20`；安全策略拒绝向 GitHub push。该提交只含
+  实验规则和 SFT2 value-loss docstring，运行代码的最近已推送提交仍为 `fb4580b`。
