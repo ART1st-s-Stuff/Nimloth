@@ -286,3 +286,18 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   per-rank `B<2`时跳过，必须配套另行设计的可微跨rank SIGReg。另一条路径是保持
   B2并单独批准标准CE数学等价的低显存实现；禁止恢复已经删除的row-by-row/
   activation-offload应急路径。
+
+## 2026-07-23：实现 per-rank B1 + global SIGReg B8
+
+- 人类批准B1/GA8，并让SIGReg对每个microbatch的全局有效state计算。world8时SIGReg
+  B最多为8；GA8只累积八个独立global-B8 loss，不保留state图凑成B64。
+- 提交 `5a3eea4` 已推送。current state全局汇聚后保持detach；online-next state使用
+  可微all-gather，backward将global state梯度送回来源rank，再由DDP平均得到一次全局
+  batch loss对共享Qwen/StateProjector参数的正确梯度。
+- collective支持不同rank本地B不等；先补齐到max local B，再用global valid mask排除
+  补齐和整rank sampler padding。所有rank用相同可恢复microstep seed生成SIGReg随机
+  projection，避免把目标隐式变成多组不同随机loss。
+- K1 control配置已改B1/GA8；checkpoint invariant与日志新增global SIGReg scope/B。
+  superpod定向回归 `27 passed in 8.80s`，其中两进程Gloo+DDP解析测试证明参数梯度
+  等于单次global valid batch参考。尚需扩展回归和8-GPU长prefix smoke；通过前仍无
+  可用于RL的新checkpoint。

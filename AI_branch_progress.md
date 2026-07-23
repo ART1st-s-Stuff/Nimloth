@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-07-23：K1 SFT2 改为 per-rank B1 与 global-batch SIGReg
+
+- 人类批准 per-rank B1，并要求 SIGReg 使用 DDP 全局 batch。K1 control 配置改为
+  B1/GA8；world8 时 optimizer effective batch 仍为64，每个microbatch的SIGReg统计
+  batch最多为8，不跨gradient accumulation保留state图。
+- 提交 `5a3eea4` 已推送。每个rank在主loss backward后只编码本地online-next B1；
+  current state用无梯度all-gather，next state用自定义可微all-gather。不同rank的物理
+  B先补齐，global valid mask排除sampler padding/tail补齐行，只有global B<2才跳过。
+- 所有rank按相同microstep seed采样同一SIGReg随机投影；该上下文结束后恢复各rank
+  原RNG，不改变后续训练随机流。checkpoint invariant记录batch_size与
+  `sigreg_batch_scope=global_valid_states_v1`，CSV/W&B记录global SIGReg B。
+- superpod PyTorch 2.8定向回归 `27 passed`。两进程Gloo+DDP解析测试覆盖不同本地B、
+  整rank padding、全局valid筛选、随机投影一致性和梯度缩放；最终共享参数梯度与单次
+  global batch参考完全一致。扩展回归和8卡B1/GA8长prefix smoke尚未执行。
+
 ## 2026-07-23：SFT2 SIGReg 改为仅新状态侧反传
 
 - 人类确认 SIGReg 数值上仍使用连续的 `(s_t,s_{t+1})`，但 `s_t` 只作为 detached
