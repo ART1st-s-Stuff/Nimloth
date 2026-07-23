@@ -151,6 +151,14 @@ def _validate_split(
         cached_next = materialized["next_enc_rows"][0]
         if cached_next is None or fresh["next_enc"] is None:
             raise ValueError(f"{split}:{index} next encoding is missing")
+        # Reused current rows carry their CE labels on disk. Target-state
+        # collation removes them before Qwen, whereas dedicated next rows never
+        # store labels. Compare the tensors actually consumed by the model.
+        cached_next = {
+            key: value
+            for key, value in cached_next.items()
+            if key != "labels"
+        }
         _assert_encoding_equal(
             cached_next,
             fresh["next_enc"],
