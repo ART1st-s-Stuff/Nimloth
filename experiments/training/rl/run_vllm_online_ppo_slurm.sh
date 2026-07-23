@@ -115,7 +115,7 @@ done
 
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
   --gpus="${head_gpus}" \
-  env RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}" \
+  env RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}" VLLM_HOST_IP="${HEAD_IP}" \
     REPO="${REPO}" RUN_OUT="${RUN_OUT}" RL_CONFIG="${RL_CONFIG}" \
     ENV_REPO="${ENV_REPO:?set ENV_REPO}" MODEL="${MODEL:?set MODEL}" \
     WM_CKPT="${WM_CKPT:-${MODEL}}" \

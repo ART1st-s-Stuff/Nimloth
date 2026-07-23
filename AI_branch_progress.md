@@ -28,6 +28,15 @@
   environment startup。无 trajectory、W&B、optimizer step 或 checkpoint；ID67 已标为
   failed/non-resumable，后续只能使用新 ID/output。
 
+## 2026-07-24：ID68 vLLM 因 driver 网络接口不一致无法 placement
+
+- job `485342` 的 Ray runtime 在 job 专属 temp-dir、10GB object store 下稳定注册
+  1+3+4 GPU；environment health 通过，vLLM 0.11 EngineCore 连接 Ray。
+- vLLM 自动选择 driver IP `10.22.4.78`，而 Ray 节点使用 `10.23.*`，导致首个
+  `node:10.22.4.78 + GPU:1` TP bundle 永远 infeasible。无 GPU model worker、
+  trajectory、W&B、optimizer step 或 checkpoint；ID68 failed/non-resumable。
+- 通用控制器现把 `VLLM_HOST_IP` 显式绑定到 Ray head IP；retry 必须用新 ID/output。
+
 ## 2026-07-23：ID43 epoch1 RL H=4 smoke 预检与 ID3 启动前失败
 
 - ID43 `epoch_001` 是完整 k=1/inject HF checkpoint，WM predictor H=4，

@@ -359,3 +359,11 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - controller 在 health-probe 诊断窗口被终止，此时 pipeline 刚创建 README 并进入
   environment startup；无 trajectory、W&B、optimizer step 或 checkpoint。ID67
   failed/non-resumable，保留日志，新 retry 必须使用新 ID/output。
+
+## 2026-07-24：ID68 vLLM driver IP 与 Ray IP 不一致
+
+- 异构 Ray 1+3+4 GPU 和 environment 均健康；vLLM 0.11 EngineCore 已连接 cluster，
+  但自动把 `10.22.4.78` 作为 driver node constraint，Ray nodes 实际为 `10.23.*`。
+- TP placement 在 GPU worker 前 infeasible；无 trajectory、W&B、optimizer step 或
+  checkpoint，ID68 failed/non-resumable。控制器修复为显式设置
+  `VLLM_HOST_IP=<Ray head 10.23 IP>`，后续使用新 ID/output。
