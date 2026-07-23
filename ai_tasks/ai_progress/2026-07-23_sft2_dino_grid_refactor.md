@@ -174,3 +174,24 @@
   source solely to preserve legacy path-based fingerprint lineage.
 - No training, W&B, OOM, or resumable state was involved. The next SFT2 smoke
   must use this corrected model and a fresh `nimloth-sft2` ID45/output.
+
+## Corrected DINO-grid SFT2 ID45 smoke passed
+
+- Step `485251.10`, W&B `nimloth-sft2/4v68cj6z`, and commit `cf8f9df`
+  ran the corrected k16 untied-head export plus ID33 auxiliary warm start on
+  eight H800 GPUs with per-rank B1 and GA1. Twenty optimizer steps completed
+  with finite CE, WM, DINO-grid, value, and global SIGReg losses; there was no
+  OOM, NaN, NCCL, or DDP failure.
+- Context length reached H4 and the detached online history cache reached 20
+  entries. Global SIGReg B fell from 8 to 5 as short trajectories terminated,
+  giving runtime evidence that terminal transitions participate in the same
+  one-current-step objective. Step 20 reports CE `7.638404`, WM `0.123687`,
+  DINO `0.492780`, value `0.082413`, and SIGReg `2.104651`.
+- Observed peak GPU memory was `60,469 MiB / 81,559 MiB`, so the intended full
+  world8 B1 topology has headroom. The step was intentionally cancelled after
+  the smoke gate to avoid a large bounded-run checkpoint: Slurm state is
+  `CANCELLED by 3738`, elapsed `00:03:16`, exit `0:9`.
+- Cancellation interrupted epoch-end checkpoint output. `epoch_001` lacks the
+  required `wm_predictor/` and `value_head/` trees and `best/` contains only its
+  first model shard; neither directory is resumable or usable. The full run
+  must use a fresh ID46/output and fresh optimizer, with periodic checkpoints.

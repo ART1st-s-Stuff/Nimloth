@@ -1550,3 +1550,21 @@
 - 新旧 processor 的 tokenizer vocab、special IDs、image processor dict 相同，因此
   旧 v1 cache 的预处理语义不变；原 processor source 仅用于兼容旧 path-based
   fingerprint。下一次 SFT2 smoke 使用 corrected export 和新 ID45/output。
+
+## 2026-07-24：corrected DINO-grid SFT2 ID45 smoke 通过
+
+- ID45（step `485251.10`, W&B `nimloth-sft2/4v68cj6z`, commit `cf8f9df`）
+  使用 corrected k16 untied-head export、ID33 auxiliary warm start、权威 FP32 grid
+  auxiliaries 和只读 v1 cache，在 8×H800、per-rank B1、GA1 上完成 20 个有限
+  optimizer steps；无 OOM、NaN、NCCL 或 DDP failure。
+- `context_length` 从 1 到 4，online detached history cache 从 1 到 20；global
+  SIGReg batch size 随轨迹 terminal 从 8 降到 5，证明 terminal transition 也进入
+  当前 step 的一次性 CE/WM/DINO/value/SIGReg 语义。step20 为 CE `7.638404`、
+  WM `0.123687`、DINO `0.492780`、value `0.082413`、SIGReg `2.104651`。
+- 观测到的 GPU 峰值为 `60,469 MiB / 81,559 MiB`，足以支持正式 world8 B1。
+  达到 smoke gate 后主动取消以避免继续写大 checkpoint；Slurm 状态
+  `CANCELLED by 3738`, elapsed `00:03:16`, exit `0:9`。取消发生在 epoch-end 保存
+  期间，`epoch_001` 缺少 `wm_predictor/` 与 `value_head/`，`best/` 也只写入首个
+  shard，因此两者均为不完整产物，不可恢复、不可作为模型使用。
+- 下一步为新的 ID46 全量 3,217 train / 355 val records、2 epochs、world8 B1 GA8；
+  使用 20 分钟 interval checkpoint，fresh optimizer，不从 ID45 resume。
