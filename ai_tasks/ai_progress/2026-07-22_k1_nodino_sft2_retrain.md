@@ -327,3 +327,7 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   epoch/best/final启用，preempt后可由同一目录自动恢复。前4个optimizer step finite，
   physical B1与global SIGReg B8均真实生效，无OOM/traceback/NCCL-DDP错误/NaN/Inf。
   稳态约6.7秒/step，含完整validation/checkpoint的ETA约3.5--3.8小时。任务继续运行。
+- 进度检查时epoch1训练已完成878/1756 optimizer steps，正在跑完整validation；8卡
+  利用率54--100%。累计loss全部finite，最大step peak allocated/reserved约
+  53.26/55.13 GiB，无OOM/traceback/NCCL-DDP错误。tail step因global padding过滤，
+  加权SIGReg B为7.33；已有15GB latest checkpoint。剩余ETA约1小时50分。

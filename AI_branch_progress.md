@@ -17,6 +17,11 @@
   step全部finite，实际B始终1、global SIGReg B始终8；无OOM、traceback、NCCL/DDP
   错误或NaN/Inf。20分钟latest checkpoint、epoch/best/final保存均启用；若preempt，
   同一输出目录自动resume。实测约6.7秒/step，含验证/checkpoint ETA约3.5--3.8小时。
+- epoch1训练部分已完成878/1756 optimizer steps，当前执行epoch1完整validation；8卡
+  GPU利用率54--100%，不是停滞。累计loss全部finite，最大step peak allocated/reserved
+  约53.26/55.13 GiB，无运行错误。tail step因4个global padding样本被valid mask排除，
+  加权日志global SIGReg B为7.33，符合设计。已有15GB `latest`可恢复checkpoint；按
+  实际累计墙钟估计剩余约1小时50分。
 
 ## 2026-07-23：K1 SFT2 改为 per-rank B1 与 global-batch SIGReg
 
