@@ -1528,8 +1528,10 @@
   cache 全量 manifest 对 8-record 前缀的读取，证明 cache-prefix 修复进入真实训练
   路径。首个 WM forward 因 FP32 one-hot action 与 ID33 BF16 action encoder dtype
   不一致而失败；不是 OOM，无 loss/backward/optimizer/checkpoint，不可恢复。
-- grid predictor 现于模块边界将 one-hot action 转为自身参数 dtype，并增加
-  BF16 module + FP32 state 回归；待远程测试后用新 W&B ID/输出目录重试。
+- 初始 one-hot cast 回归进一步暴露 refactor 精度漂移：权威 ID33 的 online encoder、
+  WM、DINO decoder、ValueHead 均为 FP32，当前 builder 却把它们随 Qwen 转成 BF16。
+  builder 现恢复 FP32 grid auxiliaries，仅冻结 SFT1 slot projector 跟随 Qwen dtype，
+  并增加 builder 级 dtype 回归；待远程复测后用新 ID/输出目录重试。
 - 人类指出 `fix/sft1-merge-untied-head` 的 merge bug。核对确认当前 k16 SFT1
   `hf_merged` 缺少 `lm_head.weight`，nested config 仍为 tied；此前 DINO smoke 的
   冻结 CE head 因此无效，不能用于 loss 质量结论。

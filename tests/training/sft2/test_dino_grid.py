@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import json
 
 import torch
 
@@ -14,6 +17,7 @@ from nimloth.training.sft2.dino_grid import (
 from nimloth.training.sft2.batch import SFT2Batch
 from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
+from nimloth.training.sft2.trainer import _build_world_model
 from nimloth.wm.grid import (
     EMATargetGridEncoder,
     GridStateProjector,
@@ -95,6 +99,68 @@ def _runtime() -> tuple[SFT2ModelRuntime, _TensorGridBackbone, GridWorldModel]:
         backbone,
         wm,
     )
+
+
+def test_grid_world_model_keeps_authoritative_fp32_auxiliaries(tmp_path) -> None:
+    slot_projector = SharedSlotProjector(
+        input_dim=6,
+        output_dim=4,
+        hidden_dim=8,
+        grid_tokens=2,
+    )
+    (tmp_path / "grid_state_config.json").write_text(
+        json.dumps(
+            {
+                "grid_tokens": 2,
+                "qwen_hidden_dim": 6,
+                "state_dim": 4,
+                "projector_hidden_dim": 8,
+                "shared_slot_projector": True,
+                "ordering": "row_major",
+            }
+        ),
+        encoding="utf-8",
+    )
+    torch.save(slot_projector.state_dict(), tmp_path / "slot_projector.pt")
+    model = torch.nn.Linear(1, 1, bias=False).to(dtype=torch.bfloat16)
+    model.config = SimpleNamespace(hidden_size=6)
+    args = SimpleNamespace(
+        objective="dino_grid",
+        model=tmp_path,
+        emb_dim=4,
+        latent_token_count=2,
+        grid_encoder_hidden_dim=8,
+        grid_ema_decay=0.99,
+        history_size=2,
+        grid_wm_depth=1,
+        grid_wm_heads=1,
+        grid_wm_dim_head=4,
+        grid_wm_mlp_dim=8,
+        grid_wm_dropout=0.0,
+        grid_decoder_hidden_dim=8,
+        resume=False,
+        grid_warmstart=None,
+    )
+
+    world_model, aux_device = _build_world_model(
+        args,
+        model=model,
+        device=torch.device("cpu"),
+        pair_parallel=False,
+        resume_ckpt_dir=None,
+        train_wm_predictor=True,
+    )
+
+    assert aux_device == torch.device("cpu")
+    assert next(world_model.state_proj.slot_projector.parameters()).dtype == torch.bfloat16
+    for module in (
+        world_model.state_proj.online_encoder,
+        world_model.target_encoder,
+        world_model.wm_predictor,
+        world_model.dino_decoder,
+        world_model.value_head,
+    ):
+        assert next(module.parameters()).dtype == torch.float32
 
 
 def _batch() -> DINOGridSFT2Batch:

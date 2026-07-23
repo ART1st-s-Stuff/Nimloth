@@ -103,6 +103,11 @@ def _build_world_model(
 
     model_dtype = next(model.parameters()).dtype
     if args.objective == "dino_grid":
+        # Match the authoritative ID33 training path: Qwen and the frozen SFT1
+        # slot projector may be BF16, while every trainable grid auxiliary and
+        # the EMA target encoder remain FP32. LeWM's action Embedder also
+        # explicitly computes in FP32.
+        grid_dtype = torch.float32
         slot_projector = load_sft1_slot_projector(
             args.model,
             qwen_hidden_dim=int(model.config.hidden_size),
@@ -114,7 +119,7 @@ def _build_world_model(
         online_encoder = LeWMGridEncoder(
             emb_dim=args.emb_dim,
             hidden_dim=args.grid_encoder_hidden_dim,
-        ).to(device=aux_device, dtype=model_dtype)
+        ).to(device=aux_device, dtype=grid_dtype)
         state_proj = GridStateProjector(
             slot_projector,
             online_encoder,
@@ -134,7 +139,7 @@ def _build_world_model(
                 mlp_dim=args.grid_wm_mlp_dim,
                 dropout=args.grid_wm_dropout,
             )
-        ).to(device=aux_device, dtype=model_dtype)
+        ).to(device=aux_device, dtype=grid_dtype)
         world_model = GridWorldModel(
             state_proj=state_proj,
             target_encoder=target_encoder,
@@ -142,10 +147,10 @@ def _build_world_model(
             dino_decoder=LeWMGridDecoder(
                 emb_dim=args.emb_dim,
                 hidden_dim=args.grid_decoder_hidden_dim,
-            ).to(device=aux_device, dtype=model_dtype),
+            ).to(device=aux_device, dtype=grid_dtype),
             value_head=ValueHead(args.emb_dim).to(
                 device=aux_device,
-                dtype=model_dtype,
+                dtype=grid_dtype,
             ),
         )
         if not args.resume and args.grid_warmstart is not None:

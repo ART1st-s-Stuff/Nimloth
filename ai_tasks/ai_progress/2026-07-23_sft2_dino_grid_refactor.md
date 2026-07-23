@@ -122,9 +122,12 @@
   Conv1d requires input and bias dtypes to match. This was not an OOM; no
   backward, optimizer step, metric, or checkpoint exists, so the run is not
   resumable.
-- The fix casts action one-hot inputs to the grid predictor's own parameter
-  dtype at the module boundary and adds a BF16-module/FP32-state regression.
-  A fresh W&B ID and output directory are required for the next retry.
+- The first narrow cast fix exposed the real refactor drift: authoritative ID33
+  kept online encoder/WM/DINO decoder/ValueHead in FP32, while the new builder
+  cast all auxiliaries to Qwen BF16. The builder now restores FP32 grid
+  auxiliaries and keeps only the frozen SFT1 slot projector at Qwen dtype;
+  a builder-level regression locks this boundary. A fresh W&B ID and output
+  directory are required for the next retry.
 
 ## SFT1 untied lm_head repair is required before retry
 
