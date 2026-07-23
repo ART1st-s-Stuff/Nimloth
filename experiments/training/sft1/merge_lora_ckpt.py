@@ -13,11 +13,41 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 def sync_vocab_metadata(model, vocab_size: int) -> None:
     model.resize_token_embeddings(vocab_size)
+    set_vocab_metadata(model, vocab_size)
+
+
+def set_vocab_metadata(model, vocab_size: int) -> None:
+    """Update vocabulary metadata without changing already-merged weights."""
+
     model.config.vocab_size = vocab_size
     if getattr(model.config, "text_config", None) is not None:
         model.config.text_config.vocab_size = vocab_size
     if getattr(model, "generation_config", None) is not None:
         model.generation_config.vocab_size = vocab_size
+
+
+def finalize_merged_vocab(model, vocab_size: int) -> None:
+    """Validate and describe an untied merged head without re-tying it."""
+
+    input_embeddings = model.get_input_embeddings()
+    output_embeddings = model.get_output_embeddings()
+    if input_embeddings is None or output_embeddings is None:
+        raise RuntimeError("merged model must expose both input and output embeddings")
+
+    input_weight = input_embeddings.weight
+    output_weight = output_embeddings.weight
+    if input_weight.shape[0] != vocab_size or output_weight.shape[0] != vocab_size:
+        raise RuntimeError(
+            "merged vocabulary size mismatch: "
+            f"expected={vocab_size}, input={input_weight.shape[0]}, output={output_weight.shape[0]}"
+        )
+    if input_weight.data_ptr() == output_weight.data_ptr():
+        raise RuntimeError("merged lm_head unexpectedly shares storage with input embeddings")
+
+    set_vocab_metadata(model, vocab_size)
+    model.config.tie_word_embeddings = False
+    if getattr(model.config, "text_config", None) is not None:
+        model.config.text_config.tie_word_embeddings = False
 
 
 def ensure_peft_transformers_compat() -> None:
@@ -64,7 +94,9 @@ def main() -> int:
     peft_model = PeftModel.from_pretrained(base, args.adapter_dir)
     verified_tensors = verify_adapter_loaded(peft_model, args.adapter_dir)
     merged = peft_model.merge_and_unload()
-    sync_vocab_metadata(merged, len(processor.tokenizer))
+    # Resizing here calls tie_weights() and can overwrite the independently
+    # trained lm_head with the input embeddings. The base was already resized.
+    finalize_merged_vocab(merged, len(processor.tokenizer))
     training_state_path = args.adapter_dir / "training_state.pt"
     if training_state_path.is_file():
         training_state = torch.load(training_state_path, map_location="cpu", weights_only=False)
