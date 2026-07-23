@@ -351,3 +351,11 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   FSDP单步update；保留ID43 epoch1的H=4/WM/value/PPO契约。测试桩补全提交
   `f8faf3b` 后，服务器共享 PyTorch 环境的定向测试为 `39 passed, 1 warning`；真实
   GPU vLLM probe 和8卡smoke尚未执行。
+
+## 2026-07-24：ID67 异构 Ray gate 通过但未开始 rollout
+
+- config 驱动的 allocation `485342` 实际分配 dgx-04×1、dgx-06×3、dgx-39×4
+  GPU；每节点显式 GRES Ray 启动后精确达到 TP8 gate。
+- controller 在 health-probe 诊断窗口被终止，此时 pipeline 刚创建 README 并进入
+  environment startup；无 trajectory、W&B、optimizer step 或 checkpoint。ID67
+  failed/non-resumable，保留日志，新 retry 必须使用新 ID/output。

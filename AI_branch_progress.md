@@ -18,6 +18,16 @@
   `f8faf3b` 后，服务器共享 PyTorch 环境的定向测试为 `39 passed, 1 warning`；warning
   是测试刻意触发的 B=1 unbiased std。真实 GPU vLLM probe 和8卡 smoke 尚未运行。
 
+## 2026-07-24：ID67 异构多节点 Ray gate 通过、pipeline 启动时终止
+
+- config 新增 `distributed.nodes/world_size/rollout_tensor_parallel_size`，通用 Slurm
+  控制器按 allocation 的真实 GRES 启动每节点 Ray，并以单 GPU task 启动任意总数
+  FSDP ranks。远端定向测试 `42 passed, 1 warning`。
+- job `485342` 获得 dgx-04×1、dgx-06×3、dgx-39×4 GPU；Ray 精确达到8 GPU gate。
+- 诊断 health probe 时 controller 被终止，恰逢 pipeline 已创建 ID67 README 并开始
+  environment startup。无 trajectory、W&B、optimizer step 或 checkpoint；ID67 已标为
+  failed/non-resumable，后续只能使用新 ID/output。
+
 ## 2026-07-23：ID43 epoch1 RL H=4 smoke 预检与 ID3 启动前失败
 
 - ID43 `epoch_001` 是完整 k=1/inject HF checkpoint，WM predictor H=4，
