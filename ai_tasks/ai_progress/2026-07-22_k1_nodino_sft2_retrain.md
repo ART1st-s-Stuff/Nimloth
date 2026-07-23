@@ -282,5 +282,7 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - job失败后立即取消hold；sacct hold=`CANCELLED` elapsed00:02:10、train step
   `FAILED` elapsed00:01:36，dgx-39恢复idle且8卡全释放。W&B state=`failed`，输出
   README/CSV/log和实验组progress已更新；无checkpoint，不可resume或初始化RL。
-- B2/GA4继续被否决。下一步需人类选择B1/GA8，或单独批准保持标准CE数学语义的
-  低显存实现；禁止恢复已经删除的row-by-row/activation-offload应急路径。
+- B2/GA4继续被否决。裸B1/GA8也不可直接用于正式训练：当前SequenceSIGReg在
+  per-rank `B<2`时跳过，必须配套另行设计的可微跨rank SIGReg。另一条路径是保持
+  B2并单独批准标准CE数学等价的低显存实现；禁止恢复已经删除的row-by-row/
+  activation-offload应急路径。

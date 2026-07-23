@@ -25,8 +25,9 @@
   full CE 还需4.07--4.19 GiB。此时尚未进入 SIGReg。
 - 结论：双图叠加 OOM 已修复，但更长单个 B2 current multimodal prefix 本身仍超出
   80GB。ID41失败并取消，W&B state=`failed`，无 checkpoint；dgx-39 已恢复 idle、
-  8卡全释放。B2/GA4仍不能正式重训或开启RL；下一选择是B1/GA8，或另行批准数学
-  等价的低显存 CE 实现，不能恢复 row/offload 应急路径。
+  8卡全释放。B2/GA4仍不能正式重训或开启RL。裸B1/GA8也不可直接使用，因为当前
+  per-rank `B<2` 会跳过SIGReg；若走B1必须另行设计可微跨rank SIGReg。另一选择是
+  保持B2并批准数学等价的低显存CE实现；不能恢复row/offload应急路径。
 
 ## 2026-07-23：删除 OOM 应急路径并改用在线 detached history cache
 

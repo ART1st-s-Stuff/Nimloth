@@ -26,5 +26,7 @@
    归因于 history 或 SIGReg。
 3. 当前 k1/H4/full-vision 标准 CE 配置下，B2/GA4 视为不安全；在新的完整 gate 通过
    前不得提交正式训练。
-4. 后续只能选择人类批准的 B1/GA8，或另行设计并验证数学等价的低显存 CE；禁止恢复
-   已删除的 row-by-row 或 activation-offload 应急路径。
+4. 裸 B1/GA8 会让当前 per-rank SIGReg 因 `B<2` 跳过，不能直接作为正式方案；若走
+   B1，必须另行设计可微跨 rank SIGReg。另一选择是保持 B2 并设计、验证数学等价的
+   低显存 CE。两条路径都需要人类批准，且禁止恢复已删除的 row-by-row 或
+   activation-offload 应急路径。
