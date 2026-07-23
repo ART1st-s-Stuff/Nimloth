@@ -113,3 +113,23 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   autograd 保存的非 leaf CUDA tensor 搬到 CPU；模型参数、latent 输出和 loss 留在
   GPU，backward 时按原图恢复。k=1 control 显式启用该选项；当前只通过 compileall
   和 diff check，尚未获得 GPU 数值/显存验证。
+
+## 2026-07-23：activation-offload smoke 首步成功
+
+- 人类推送 commit `9d29929` 后，superpod 训练 Python 环境中的 standalone 核心
+  断言通过：多模态 row/grid/pixel 切分、chunk 输出顺序、全局 CE 数值和 CE 梯度。
+- ID37 job `484906`，W&B project `nimloth-sft2`，run
+  `37_smoke_k1nodino_h4_chunk1_cpuoffload_b1_ga1_ws8_stepgate`，internal ID
+  `1ogp76s3`；preempt dgx-17 单节点 8 卡，commit `9d29929`，B=1、GA=1。
+- W&B/日志实际配置核实 H=4、k=1 inject、`backbone_rows_per_forward=1`、
+  `offload_backbone_chunk_activations=true`、vision full + EMA、query adapter、WM 和
+  ValueHead 可训练、无 DINO、复用完成的 v2 cache。
+- 首个 optimizer step finite：total 9.304960、WM MSE 0.275662、value total
+  0.191877（reg 0.015217、rank 0.176660）、CE 9.085517；B=1 下 SIGReg 按既有小
+  batch guard 跳过。forward 44.80s、backward 54.12s、optimizer 2.30s。
+- PyTorch step peak allocated 31.02 GiB、peak reserved 31.08 GiB；实时采样各 rank
+  约 23--49 GiB，显著低于 ID36 的 77--79 GiB。达到 step gate 后主动取消并释放
+  8 卡；取消前 checkpoint 尚未落盘，因此 ID37 不用于 resume 或 RL 初始化。
+- 结论：低显存路径已真实越过 forward、backward 和 optimizer step；可以基于同一
+  commit 提交正式 B=2、GA=4、10 epoch 重训，正式训练需验证 B=2 下 SIGReg finite
+  和周期 checkpoint 后，才可开启 RL。

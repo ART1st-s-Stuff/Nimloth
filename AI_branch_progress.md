@@ -1328,3 +1328,12 @@
   20 MiB--930 MiB 时失败。CSV 只有表头，无 checkpoint，不可 resume，RL 仍未解锁。
 - 后续实现增加 chunk activation CPU offload，只处理 autograd 保存的非参数 CUDA
   tensor，不改变 loss 或 H=4 图结构；尚待下一次 8 卡 smoke 验证。
+
+## 2026-07-23：SFT2 activation-offload 8 卡首步通过
+
+- commit `9d29929` 的 ID37 smoke（job `484906`，W&B `1ogp76s3`）在 preempt
+  dgx-17 8 卡完成首个 finite optimizer step：total 9.304960、WM 0.275662、value
+  0.191877、CE 9.085517；B=1 下 SIGReg 按小 batch guard 跳过。
+- forward/backward/optimizer 分别为 44.80s/54.12s/2.30s；step peak allocated/
+  reserved 为 31.02/31.08 GiB，实时各 rank 约 23--49 GiB。达到 smoke gate 后主动
+  取消，取消前无 checkpoint；正式 B=2 训练和 checkpoint 仍待验证，RL 尚未开启。
