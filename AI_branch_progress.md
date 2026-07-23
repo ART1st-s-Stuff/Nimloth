@@ -19,9 +19,18 @@
 - epoch 内 checkpoint 新增每 rank 的 `history_cache_rank_NNN.pt`；partial resume 同时
   恢复 cache 和 microbatch cursor，避免重算已消费历史。新增/更新测试覆盖先写后读、
   无历史 Qwen、cache checkpoint、padding、跨 rank ownership 和旧选项拒绝。
-- 当前只完成 `compileall`、`git diff --check` 和静态旧路径扫描；本地环境无 pytest。
-  尚需推送后在 superpod PyTorch 2.8 环境跑回归，再以 preempt 8 GPU、B=2/GA=4
-  做至少一个 optimizer-step smoke，才能确认无 OOM 和真实性能。
+- 提交 `0f1412a`（实现）、`ad6846e`（测试契约）和 `0d030bd`（cache 观测指标）均
+  已由 agent 推送。superpod PyTorch 2.8 扩展回归 `110 passed`，最终指标补丁定向
+  回归 `16 passed`。
+- ID40 smoke 使用 preempt job `485157`、dgx-40、8 GPU、B=2/GA=4。全局真实 B
+  分布为 B2=28,072、B1=28，另有4个零 loss padding；旧的全 B1 退化未复现。
+  step1/2 finite 且总计约24.6/16.3秒，cache 指标确认 T1..4 先写后读；峰值显存由
+  47.626 GiB 升至76.952 GiB。第三个 accumulation 周期在更长累计 image prefix 的
+  SIGReg online-next Qwen forward 全 rank OOM（allocated 77.23--77.35 GiB）。
+- job 已取消，dgx-40 idle、8卡释放；无 checkpoint，不能 resume/开启RL。B2/GA4
+  不能用于正式训练。W&B `qf82rxkq` 因进程终止仍显示 running且只同步step1；step2
+  与完整失败证据保存在 ID40 CSV/log/README。下一项保守资源测试应是 B1/GA8，需
+  人类确认后另开 smoke；禁止恢复已删除的 row/offload 应急路径。
 
 ## 2026-07-23：逐 step loss 修正后 B=2/GA=4 smoke 无 OOM
 

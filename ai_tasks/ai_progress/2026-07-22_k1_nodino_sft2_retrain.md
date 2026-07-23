@@ -229,3 +229,24 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - partial checkpoint 将保存每个 rank 的 history cache，并与 microbatch cursor 一起
   恢复。当前实现已通过 compileall/diff check，远端 PyTorch 回归和 8-GPU B2/GA4
   smoke 尚未执行；在这两项通过前仍不能开始正式 SFT2 或 RL。
+
+## 2026-07-23：online-cache 回归通过，但 B2 在长 prefix 仍 OOM
+
+- 实现/测试/观测提交 `0f1412a`、`ad6846e`、`0d030bd` 已由 agent 推送；superpod
+  PyTorch 2.8 扩展回归 `110 passed`，最终观测指标定向回归 `16 passed`。
+- ID40 `40_smoke_k1nodino_h4_onlinecache_b2_ga4_ws8_oomspeed`，W&B internal ID
+  `qf82rxkq`，preempt hold job `485157` 在 dgx-40 使用8 GPU、B2/GA4、H4、k1、
+  无DINO并复用ID34 compact cache。全局 sampler 分布为 B2=28,072、B1=28、
+  零loss padding=4；56,172个真实current transition完整且不重复。
+- step1遍历T1..4，cache entries平均5，finite total/CE/WM/SIGReg/value为
+  7.338828/6.962769/0.277349/1.034820/0.244841；耗时约24.6秒，peak allocated
+  47.626GiB。step2全为T4，cache entries平均13，finite total 7.625444；耗时约
+  16.3秒，但长累计image prefix使peak allocated升至76.952GiB。
+- 第三个accumulation周期在SIGReg的online `s_{t+1}` Qwen forward全rank OOM：
+  allocated 77.23--77.35GiB、仅剩16--98MiB，失败申请20--102MiB。该问题来自
+  current/online-next两份有梯度activation随真实prefix增长，不是历史cache miss、
+  历史重算或allocator碎片。
+- job已取消，dgx-40恢复idle且8卡释放。ID40无checkpoint，不可resume、不可开启
+  RL；B2/GA4正式训练被否决。W&B因进程终止仍显示running且只含step1，step2和
+  OOM证据已保存在输出CSV/log/README。下一步若获批，使用B1/GA8保持effective
+  batch做短smoke；不能恢复已删除的row/offload应急路径。
