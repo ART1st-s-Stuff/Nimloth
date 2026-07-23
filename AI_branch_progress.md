@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-07-23：k=1、无 DINO、H=4 SFT2 首次重训 OOM
+
+- 新 compact cache 已由 job `484435` 完整生成：train 59,389、val 6,054，格式
+  `dedup_sharded_v2`，k=1/inject/BF16；可供 retry 只读复用。
+- preempt 8-GPU job `484439` 在首个 Qwen CE forward OOM，尚需额外约
+  5.0--5.5 GiB；CSV 只有表头、global step 0、无 checkpoint，不能用于 RL。
+- 建议先以 per-rank batch 1 做 finite-step smoke，通过后用 GA8 保持 effective
+  batch 64 正式重提。当前未提交 retry，详见
+  `ai_tasks/ai_progress/2026-07-22_k1_nodino_sft2_retrain.md`。
+
 ## 2026-07-22：SFT2 target-state 归入模型运行期
 
 - 删除容易被误解为第二套神经网络的公共 `AgentTarget`。`Agent` 现在是唯一模型

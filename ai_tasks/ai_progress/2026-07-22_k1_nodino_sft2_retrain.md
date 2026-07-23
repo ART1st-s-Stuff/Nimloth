@@ -47,3 +47,20 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
    参数、首个 finite optimizer step、显存和错误日志。
 3. 持续监控 validation、best/latest checkpoint 和抢占恢复；任务结束时执行
    `on-experiment-end`。
+
+## 2026-07-23：cache 完成，首次 8-GPU 训练 OOM
+
+- cache job `484435` 在 `01:58:24` 后 `COMPLETED 0:0`。train manifest 为
+  `dedup_sharded_v2`、59,389 transitions、464 image shards、232 transition
+  shards、约 71.2 GB；val 为 6,054 transitions、48+24 shards、约 7.25 GB。
+  两者均核实 k=1、inject、BF16、`wm_expand_v1`，cache 可由 retry 只读复用。
+- train job `484439` 在 dgx-39 运行 `00:04:11` 后 `FAILED 1:0`。八个 rank 完成
+  模型、cache、DDP 和 W&B 初始化，但第一个 forward 在 Qwen causal-LM CE 中
+  OOM：rank0 已用约 74.64 GiB、需额外 5.03 GiB；rank2 已用约 76.18 GiB、
+  需额外 5.49 GiB。
+- `train_step_log.csv` 只有表头，global step 0；没有 training state、StateProjector、
+  WM predictor 或 ValueHead checkpoint。因此本次没有训练结果，不能从该目录
+  resume，也不能作为 RL 初始化。
+- 初步建议：保留并只读复用完成的 v2 cache，先用 `batch_size=1` 做短 GPU smoke；
+  若首步 finite，再以 `grad_accum=8` 保持 8-GPU effective batch 64 提交正式 retry。
+  该建议尚未执行。
