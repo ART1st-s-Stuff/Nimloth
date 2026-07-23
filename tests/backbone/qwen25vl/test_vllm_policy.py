@@ -9,6 +9,8 @@ from nimloth.latent import LatentActionTokens
 
 
 class _Tokenizer:
+    unk_token_id = None
+
     def __init__(self) -> None:
         tokens = LatentActionTokens()
         names = [
@@ -21,6 +23,10 @@ class _Tokenizer:
 
     def convert_tokens_to_ids(self, token: str) -> int:
         return self._ids[token]
+
+    def encode(self, token: str, *, add_special_tokens: bool) -> list[int]:
+        assert add_special_tokens is False
+        return [self._ids[token]]
 
 
 class _Engine:
