@@ -59,6 +59,39 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert config.actor.enabled is False
     assert config.gradient.representation_to_backbone is True
     assert config.agent.planning.enabled is False
+    assert config.distributed.nodes == 1
+    assert config.distributed.world_size == 1
+    assert config.distributed.rollout_tensor_parallel_size == 1
+
+
+def test_rl_config_parses_heterogeneous_distributed_topology() -> None:
+    raw = _raw_config()
+    raw["distributed"] = {
+        "nodes": 3,
+        "world_size": 8,
+        "rollout_tensor_parallel_size": 8,
+    }
+
+    config = parse_rl_config(raw)
+
+    assert config.distributed.nodes == 3
+    assert config.distributed.world_size == 8
+    assert config.distributed.rollout_tensor_parallel_size == 8
+
+
+def test_rl_config_rejects_impossible_distributed_topology() -> None:
+    raw = _raw_config()
+    raw["distributed"] = {"nodes": 3, "world_size": 2}
+    with pytest.raises(ValueError, match="nodes cannot exceed"):
+        parse_rl_config(raw)
+
+    raw = _raw_config()
+    raw["distributed"] = {
+        "world_size": 4,
+        "rollout_tensor_parallel_size": 8,
+    }
+    with pytest.raises(ValueError, match="tensor_parallel_size cannot exceed"):
+        parse_rl_config(raw)
 
 
 def test_rl_config_parses_agent_planning() -> None:

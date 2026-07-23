@@ -9,7 +9,8 @@
 | `smoke_test.slurm` | 单 GPU smoke test：加载 SFT2 checkpoint，synthetic data 跑 1 步训练 |
 | `rollout_env.py` | 独立 rollout 脚本：复用 Nimloth action policy，生成完整 RL JSONL（不参与训练） |
 | `run_e2e_smoke.sh` | 训练 split rollout → 两卡 FSDP step → resume step 的端到端 smoke |
-| `run_vllm_online_ppo_smoke.sh` | 8卡 vLLM fresh rollout → 指纹门槛 → 8卡 FSDP PPO step |
+| `run_vllm_online_ppo_smoke.sh` | config-sized vLLM fresh rollout → 指纹门槛 → FSDP PPO step |
+| `run_vllm_online_ppo_slurm.sh` | 按 RL config 在异构多节点 allocation 上编排 Ray-vLLM 与 FSDP |
 | `run_vllm_online_ppo_2node4.sh` | 一个2节点×4卡 hold 内的 Ray-vLLM TP8 → 2×4 FSDP step |
 
 ## 运行模式
@@ -51,12 +52,15 @@ python -m nimloth.training.rl.cli \
 
 `--jsonl-sources` 接受一个或多个 JSONL 文件或目录（目录下递归搜索 `*.jsonl` / `*.jsonl.gz`）。也可以在 config 中设置 `rollout.jsonl_sources`。训练时轮转消费所有轨迹；数据耗尽时自动回到开头（loop）。
 
-### 8 卡 online PPO
+### 多 GPU online PPO
 
-8 卡模式不让 environment 直接调用 FSDP forward。启动器先用当前完整
+多 GPU 模式不让 environment 直接调用 FSDP forward。启动器先用当前完整
 HF artifact 启动 vLLM tensor parallel rollout，写入模型内容指纹 manifest；
-vLLM 退出后，8-rank FSDP trainer 只允许消费该 manifest 一次。下一个
-optimizer step 必须从新 checkpoint 重新 rollout。
+vLLM 退出后，FSDP trainer 只允许消费该 manifest 一次。异构 Slurm 路径从
+`distributed.nodes`、`distributed.world_size` 和
+`distributed.rollout_tensor_parallel_size` 读取资源语义；shell 不固定节点数或
+GPU 总数。每个训练 rank 由 Slurm 绑定一张 GPU，因此允许各节点 GPU 数不同。
+下一个 optimizer step 必须从新 checkpoint 重新 rollout。
 
 没有完整空闲8卡节点时，`run_vllm_online_ppo_2node4.sh` 只接受均匀的两节点、
 每节点4卡 allocation。它先验证 Ray cluster 精确暴露8卡，再调用同一 rollout/

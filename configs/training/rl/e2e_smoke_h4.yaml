@@ -54,3 +54,8 @@ training:
   seed: 42
   log_interval: 1
   save_interval: 1
+
+distributed:
+  nodes: 3
+  world_size: 8
+  rollout_tensor_parallel_size: 8

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run one fresh-policy vLLM rollout followed by one 8-rank FSDP PPO update.
+# Run one fresh-policy vLLM rollout followed by one config-sized FSDP PPO update.
 set -euo pipefail
 
 REPO=${REPO:?set REPO to the committed server worktree}
@@ -15,14 +15,35 @@ WANDB_MODE_REQUESTED=${WANDB_MODE_OVERRIDE:-online}
 ENV_PORT=${ENV_PORT:-8500}
 NUM_EPISODES=${NUM_EPISODES:-4}
 MAX_STEPS=${MAX_STEPS:-5}
-TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-8}
 VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-}
-TRAIN_NNODES=${TRAIN_NNODES:-1}
-TRAIN_GPUS_PER_NODE=${TRAIN_GPUS_PER_NODE:-8}
 
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_TP_SIZE < <(
+  PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
+import sys
+from pathlib import Path
+from nimloth.config.rl import load_rl_config
+config = load_rl_config(Path(sys.argv[1])).distributed
+print(config.nodes, config.world_size, config.rollout_tensor_parallel_size)
+' "${RL_CONFIG}"
+)
+TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-${CONFIG_TP_SIZE}}
+TRAIN_NNODES=${TRAIN_NNODES:-${CONFIG_NODES}}
+TRAIN_WORLD_SIZE=${TRAIN_WORLD_SIZE:-${CONFIG_WORLD_SIZE}}
+[[ "${TENSOR_PARALLEL_SIZE}" == "${CONFIG_TP_SIZE}" ]] || {
+  echo "TENSOR_PARALLEL_SIZE disagrees with distributed.rollout_tensor_parallel_size" >&2
+  exit 1
+}
+[[ "${TRAIN_NNODES}" == "${CONFIG_NODES}" ]] || {
+  echo "TRAIN_NNODES disagrees with distributed.nodes" >&2
+  exit 1
+}
+[[ "${TRAIN_WORLD_SIZE}" == "${CONFIG_WORLD_SIZE}" ]] || {
+  echo "TRAIN_WORLD_SIZE disagrees with distributed.world_size" >&2
+  exit 1
+}
 for path in "${WM_CKPT}/state_proj.pt" "${WM_CKPT}/wm_predictor/predictor.pt" "${WM_CKPT}/value_head/value_head.pt"; do
   [[ -f "${path}" ]] || { echo "missing checkpoint file: ${path}" >&2; exit 1; }
 done
@@ -44,7 +65,7 @@ mkdir -p "${RUN_OUT}" "${ROLLOUT_OUT}" "${TRAIN_OUT}"
 COMMIT=$(git -C "${REPO}" rev-parse HEAD)
 ENV_COMMIT=$(git -C "${ENV_REPO}/external/VAGEN" rev-parse HEAD)
 cat > "${RUN_OUT}/README.md" <<EOF
-# 8-GPU vLLM online PPO smoke
+# vLLM online PPO smoke (${TRAIN_WORLD_SIZE} GPUs)
 
 - status: running
 - Nimloth commit: ${COMMIT}
@@ -53,7 +74,7 @@ cat > "${RUN_OUT}/README.md" <<EOF
 - data: base_train seeds 1..${NUM_EPISODES}
 - rollout: vLLM TP=${TENSOR_PARALLEL_SIZE}, backend=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-local}, ${NUM_EPISODES} episodes, max ${MAX_STEPS} steps
 - freshness: content fingerprint manifest, exactly one PPO consumption
-- update: ${TRAIN_NNODES} nodes x ${TRAIN_GPUS_PER_NODE} ranks, one WM/value/SIGReg/PPO optimizer step
+- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} total ranks, one WM/value/SIGReg/PPO optimizer step
 - frozen: vision tower and StateProjector
 - trainable: Qwen language body, WM predictor and ValueHead
 - W&B: ${WANDB_PROJECT_REQUESTED}/${WANDB_RUN_NAME_REQUESTED}
@@ -76,7 +97,7 @@ export WANDB_RUN_NAME=${WANDB_RUN_NAME_REQUESTED}
 export WANDB_MODE=${WANDB_MODE_REQUESTED}
 export WANDB_DIR=${WANDB_DIR:-${REPO}/.cache/wandb}
 
-VISIBLE=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+VISIBLE=${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((TRAIN_WORLD_SIZE - 1)))}
 IFS=',' read -r -a GPUS <<< "${VISIBLE}"
 if [[ -z "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" ]] && (( ${#GPUS[@]} != TENSOR_PARALLEL_SIZE )); then
   echo "expected ${TENSOR_PARALLEL_SIZE} visible GPUs, got ${VISIBLE}" >&2
@@ -98,7 +119,7 @@ cleanup_env() {
 trap cleanup_env EXIT
 
 {
-  echo "=== 8-GPU vLLM online PPO start $(date -Iseconds) ==="
+  echo "=== ${TRAIN_WORLD_SIZE}-GPU vLLM online PPO start $(date -Iseconds) ==="
   echo "node=$(hostname) gpus=${VISIBLE} env_url=${ENV_URL}"
   echo "nimloth=${COMMIT} vagen=${ENV_COMMIT}"
 } | tee "${LOG}"
@@ -149,6 +170,12 @@ fi
   2>&1 | tee -a "${LOG}"
 
 cleanup_env
+if [[ "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" == ray ]]; then
+  [[ -n "${SLURM_JOB_ID:-}" ]] || { echo "Ray cleanup requires SLURM_JOB_ID" >&2; exit 1; }
+  srun --jobid="${SLURM_JOB_ID}" --overlap --nodes="${TRAIN_NNODES}" \
+    --ntasks="${TRAIN_NNODES}" --ntasks-per-node=1 \
+    "${PYTHON}" -m ray.scripts.scripts stop --force 2>&1 | tee -a "${LOG}"
+fi
 
 TRAIN_ARGS=(
   -m nimloth.training.rl.cli
@@ -166,7 +193,7 @@ TRAIN_ARGS=(
   --output-dir "${TRAIN_OUT}"
 )
 if (( TRAIN_NNODES == 1 )); then
-  "${PYTHON}" -m torch.distributed.run --nproc_per_node="${TRAIN_GPUS_PER_NODE}" -- \
+  "${PYTHON}" -m torch.distributed.run --nproc_per_node="${TRAIN_WORLD_SIZE}" -- \
     "${TRAIN_ARGS[@]}" 2>&1 | tee -a "${LOG}"
 else
   [[ -n "${SLURM_JOB_ID:-}" ]] || { echo "multi-node training requires SLURM_JOB_ID" >&2; exit 1; }
@@ -177,17 +204,16 @@ else
   [[ -n "${RDZV_IP}" ]] || { echo "missing multi-node rendezvous IP" >&2; exit 1; }
   export NIMLOTH_TRAIN_ARGS=$(printf '%q ' "${TRAIN_ARGS[@]}")
   srun --jobid="${SLURM_JOB_ID}" --overlap --nodes="${TRAIN_NNODES}" \
-    --ntasks="${TRAIN_NNODES}" --ntasks-per-node=1 \
+    --ntasks="${TRAIN_WORLD_SIZE}" --gpus-per-task=1 --gpu-bind=single:1 \
     bash -lc '
       set -euo pipefail
       export PYTHONPATH="'"${PYTHONPATH}"'"
-      "'"${PYTHON}"'" -m torch.distributed.run \
-        --nnodes="'"${TRAIN_NNODES}"'" \
-        --nproc_per_node="'"${TRAIN_GPUS_PER_NODE}"'" \
-        --node_rank="${SLURM_PROCID}" \
-        --rdzv_id="'"${SLURM_JOB_ID}"'" \
-        --rdzv_backend=c10d \
-        --rdzv_endpoint="'"${RDZV_IP}"':29671" -- ${NIMLOTH_TRAIN_ARGS}
+      export RANK="${SLURM_PROCID}"
+      export WORLD_SIZE="${SLURM_NTASKS}"
+      export LOCAL_RANK=0
+      export MASTER_ADDR="'"${RDZV_IP}"'"
+      export MASTER_PORT=29671
+      "'"${PYTHON}"'" ${NIMLOTH_TRAIN_ARGS}
     ' 2>&1 | tee -a "${LOG}"
 fi
 
@@ -204,7 +230,7 @@ if bad:
     raise SystemExit(f"non-finite metrics: {bad}")
 final = root / "final"
 required = [final / "rl_state.pt", final / "model.safetensors.index.json"] + [
-    final / f"optimizer_rank_{rank:05d}.pt" for rank in range(8)
+    final / f"optimizer_rank_{rank:05d}.pt" for rank in range(${TRAIN_WORLD_SIZE})
 ]
 missing = [str(path) for path in required if not path.is_file() or path.stat().st_size == 0]
 if missing:
@@ -213,4 +239,4 @@ print(json.dumps({"status": "ALL_OK", "global_step": 1, "finite_metrics": keys})
 PY
 
 sed -i 's/- status: running/- status: completed/' "${RUN_OUT}/README.md"
-echo "=== 8-GPU vLLM online PPO ALL_OK $(date -Iseconds) ===" | tee -a "${LOG}"
+echo "=== ${TRAIN_WORLD_SIZE}-GPU vLLM online PPO ALL_OK $(date -Iseconds) ===" | tee -a "${LOG}"
