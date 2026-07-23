@@ -1568,3 +1568,18 @@
   shard，因此两者均为不完整产物，不可恢复、不可作为模型使用。
 - 下一步为新的 ID46 全量 3,217 train / 355 val records、2 epochs、world8 B1 GA8；
   使用 20 分钟 interval checkpoint，fresh optimizer，不从 ID45 resume。
+
+## 2026-07-24：corrected DINO-grid SFT2 ID46 正式 2-epoch 启动
+
+- ID46（hold `485251`, step `485251.14`, W&B `nimloth-sft2/yapevfpy`, commit
+  `f060a25`）已在 preempt/dgx-42 的 8×H800 上启动；使用全量 3,217/355
+  task-disjoint train/val records、corrected k16 untied-head SFT1、ID33 auxiliary
+  warm start、只读 v1 Qwen/DINO cache、fresh optimizer、per-rank B1/GA8/world8。
+- sampler 运行时确认 59,389 个 train current steps，每个 action 仍只计算一次
+  current-step loss。前 8 个 optimizer steps 的 CE/WM/DINO/value/global SIGReg 均
+  finite，global SIGReg B=8，history/context 正常达到 H4；无 OOM、NaN、NCCL、
+  traceback 或 fatal DDP error。
+- step8：total `5.219125`、CE `4.527827`、WM `0.210067`、DINO `0.482060`、
+  value `0.096401`、SIGReg `3.327872`。8卡显存为 `62,031--62,091 / 81,559
+  MiB`，利用率 `88--100%`；约 `7.4 s/optimizer step`，含 validation/checkpoint
+  当前 ETA `4.5--5.5 h`。20分钟 interval checkpoint 与 epoch/best/final 保存启用。

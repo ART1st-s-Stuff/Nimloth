@@ -195,3 +195,21 @@
   required `wm_predictor/` and `value_head/` trees and `best/` contains only its
   first model shard; neither directory is resumable or usable. The full run
   must use a fresh ID46/output and fresh optimizer, with periodic checkpoints.
+
+## Corrected DINO-grid SFT2 ID46 two-epoch run started
+
+- Hold `485251`, step `485251.14`, W&B `nimloth-sft2/yapevfpy`, and commit
+  `f060a25` started the full 3,217/355 task-disjoint train/validation records on
+  preempt/dgx-42 with eight H800 GPUs, per-rank B1, and GA8. Initialization is
+  the corrected k16 untied-head SFT1 plus ID33 auxiliary warm start with a fresh
+  optimizer; immutable v1 Qwen/DINO caches are read-only.
+- Runtime sampler identity reports all 59,389 training current steps. The first
+  eight optimizer steps have finite CE, WM, DINO, value, and global SIGReg
+  losses with global B8 and H4 history growth. Step 8 is total `5.219125`, CE
+  `4.527827`, WM `0.210067`, DINO `0.482060`, value `0.096401`, and SIGReg
+  `3.327872`; no OOM, NaN, NCCL, traceback, or fatal DDP error occurred.
+- GPU usage is `62,031--62,091 / 81,559 MiB` at 88--100% utilization. The first
+  eight steps average about 7.4 seconds, giving a current 4.5--5.5 hour ETA
+  including full validation/checkpoint overhead. Twenty-minute interval and
+  epoch/best/final checkpoints are enabled; resume must use a complete ID46
+  checkpoint, never the partial ID45 save.
