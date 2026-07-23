@@ -133,3 +133,16 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - 结论：低显存路径已真实越过 forward、backward 和 optimizer step；可以基于同一
   commit 提交正式 B=2、GA=4、10 epoch 重训，正式训练需验证 B=2 下 SIGReg finite
   和周期 checkpoint 后，才可开启 RL。
+
+## 2026-07-23：正式 ID38 已启动并完成首步
+
+- 正式 job `484910`，W&B run
+  `38_k1nodino_h4_chunk1_cpuoffload_all3217_b2_ga4_ws8_bestwm`，internal ID
+  `zc0y6j3c`；preempt dgx-17 单节点 8 卡，B=2、GA=4、10 epochs、20 分钟周期
+  checkpoint，抢占后由输出目录最近 training state 恢复。
+- 首个 GA=4 optimizer step finite：total 7.707960、WM 0.274856、value 0.211024、
+  CE 7.469451；四个 microbatch 合计 forward 152.94s、backward 230.34s，step peak
+  allocated/reserved 48.81/48.98 GiB。
+- 首步 `sigreg_loss` 仍为空，说明图片预算打包出的这四个 rank-local microbatch
+  实际窗口数不足 2，触发小 batch guard；需继续观察后续 batch 是否产生 finite
+  SIGReg。任务保持 RUNNING，首个周期 checkpoint 尚未到时，RL 尚未开启。

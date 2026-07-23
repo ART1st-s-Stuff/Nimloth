@@ -1337,3 +1337,11 @@
 - forward/backward/optimizer 分别为 44.80s/54.12s/2.30s；step peak allocated/
   reserved 为 31.02/31.08 GiB，实时各 rank 约 23--49 GiB。达到 smoke gate 后主动
   取消，取消前无 checkpoint；正式 B=2 训练和 checkpoint 仍待验证，RL 尚未开启。
+
+## 2026-07-23：正式 k=1 无 DINO SFT2 ID38 启动
+
+- job `484910` / W&B `zc0y6j3c` 在 preempt dgx-17 8 卡运行，B=2、GA=4、10
+  epochs、activation offload、20 分钟周期 checkpoint。
+- 首个 optimizer step finite：total 7.707960、WM 0.274856、value 0.211024、CE
+  7.469451，peak allocated/reserved 48.81/48.98 GiB。首步四个 microbatch 均因
+  实际 B<2 跳过 SIGReg，后续 batch 和首个 checkpoint 仍在监控；RL 尚未开启。
