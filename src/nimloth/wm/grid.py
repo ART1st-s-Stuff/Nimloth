@@ -432,7 +432,7 @@ class TemporalSpatialGridPredictor(nn.Module):
         actions = F.one_hot(
             action_context.long(),
             num_classes=self.action_dim,
-        ).float()
+        ).to(dtype=dtype)
         condition = self.action_encoder(actions).unsqueeze(2).expand(
             -1,
             -1,

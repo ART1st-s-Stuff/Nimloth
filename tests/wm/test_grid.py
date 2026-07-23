@@ -50,6 +50,29 @@ def test_temporal_spatial_predictor_is_causal_in_time_and_noncausal_in_space() -
     assert not torch.allclose(same_time_output[:, 0, 0], baseline[:, 0, 0])
 
 
+def test_temporal_spatial_predictor_casts_inputs_to_module_dtype() -> None:
+    predictor = TemporalSpatialGridPredictor(
+        GridPredictorConfig(
+            grid_tokens=2,
+            emb_dim=4,
+            action_dim=3,
+            history_size=2,
+            depth=1,
+            heads=1,
+            dim_head=4,
+            mlp_dim=8,
+            dropout=0.0,
+        )
+    ).to(dtype=torch.bfloat16)
+
+    output = predictor(
+        torch.randn(1, 2, 2, 4, dtype=torch.float32),
+        torch.tensor([[0, 1]]),
+    )
+
+    assert output.dtype == torch.bfloat16
+
+
 def test_grid_state_projector_freezes_sft1_weights_but_backpropagates_to_qwen() -> None:
     slot_projector = SharedSlotProjector(
         input_dim=6,

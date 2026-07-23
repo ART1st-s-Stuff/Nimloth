@@ -1524,3 +1524,9 @@
 - 发现 ID44 attempt 2 被共享 `.env` 覆盖到错误的 `flower` W&B project；目标
   `nimloth-sft2` 实际最高 ID 为43。launcher 已改为凭据加载后恢复显式 project，
   corrected retry 将在目标 project 使用 ID44 和全新输出目录。
+- corrected `nimloth-sft2` ID44（step `485251.6`, W&B `f2d3i7e9`）已通过旧
+  cache 全量 manifest 对 8-record 前缀的读取，证明 cache-prefix 修复进入真实训练
+  路径。首个 WM forward 因 FP32 one-hot action 与 ID33 BF16 action encoder dtype
+  不一致而失败；不是 OOM，无 loss/backward/optimizer/checkpoint，不可恢复。
+- grid predictor 现于模块边界将 one-hot action 转为自身参数 dtype，并增加
+  BF16 module + FP32 state 回归；待远程测试后用新 W&B ID/输出目录重试。

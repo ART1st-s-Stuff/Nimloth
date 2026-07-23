@@ -110,3 +110,18 @@
   export. The target `nimloth-sft2` project still ends at ID43, so the corrected
   retry uses ID44 there but a fresh, distinct output directory. The launcher
   now restores its explicit project identity after loading credentials.
+
+## Corrected nimloth-sft2 ID44 reached the first WM forward
+
+- Step `485251.6`, commit `baa159c`, and W&B `nimloth-sft2/f2d3i7e9`
+  confirmed the corrected project identity and passed model/ID33/NCCL/cache
+  manifest/DataLoader initialization. The full v1 cache successfully served
+  the requested 8-record prefix, so commit `b380387` is runtime-validated.
+- The first real WM forward then failed on every rank before loss completion:
+  FP32 one-hot actions were passed to ID33's BF16 LeWM `action_encoder`, whose
+  Conv1d requires input and bias dtypes to match. This was not an OOM; no
+  backward, optimizer step, metric, or checkpoint exists, so the run is not
+  resumable.
+- The fix casts action one-hot inputs to the grid predictor's own parameter
+  dtype at the module boundary and adds a BF16-module/FP32-state regression.
+  A fresh W&B ID and output directory are required for the next retry.
