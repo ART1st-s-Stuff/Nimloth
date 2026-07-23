@@ -1544,3 +1544,21 @@
   `language_model.lm_head.weight`，仅有`model.embed_tokens.weight`。不能在未证明
   权重相同的情况下用embedding伪造policy head；因此无trajectory、W&B、optimizer
   step或checkpoint，ID73不可恢复。hold`485342`已取消并释放全部1+3+4 GPU。
+
+## 2026-07-24：修复 SFT1 LoRA merge 丢失独立 lm_head
+
+- 根因是 `experiments/training/sft1/merge_lora_ckpt.py` 在 `merge_and_unload()` 后
+  再次调用 `resize_token_embeddings()`；Qwen 的 `tie_weights()` 因 nested text
+  config 仍声明 tied，将已训练的独立 `lm_head` 重新绑定到 input embeddings，随后
+  safetensors 省略重复 head。
+- commit `306295f` 改为 merge 后只同步 vocab metadata，并在保存前强制验证 input/
+  output vocab 尺寸与独立 storage，同时同步顶层和 text config 的
+  `tie_word_embeddings=false`；新增两项回归测试，远端环境 `2 passed`。
+- 真实 epoch5 adapter 重合并 smoke 位于
+  `outputs/experiments/sft1_checkpoint_merge_fix/2026-07-23/1_smoke_ep5_untied_lm_head`：
+  702 个 adapter tensors 校验通过，导出的 `lm_head.weight` 与 adapter head 完全一致，
+  Transformers 重载保持独立 storage，vLLM 0.11.0 完成权重加载、KV-cache 初始化和
+  warmup。首次 vLLM attempt 因遗漏生产环境的 FlashInfer sampler disable 而失败，
+  使用 `VLLM_USE_FLASHINFER_SAMPLER=0` 重试成功。
+- Slurm hold job `485361` 已取消并释放。修复证明现有 SFT1 adapter 无需重训，可从
+  adapter 正确重建 base；SFT2 仍应从该修复导出重新训练后再启动正式 online PPO。
