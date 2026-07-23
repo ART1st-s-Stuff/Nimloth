@@ -207,6 +207,9 @@ class SFT2Algorithm:
             "lambda_sigreg": self.sigreg_weight if include_sigreg else 0.0,
             "lambda_value": self.value_weight,
             "lambda_ce": self.ce_weight,
+            "context_length": float(batch.history_size),
+            "current_batch_size": float(sample_count),
+            "history_cache_entries": float(runtime.history_cache.count),
             "total_loss": float(total.detach().item()),
         }
         metrics["wm_mse"] = float(wm_loss.detach().item())

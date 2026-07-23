@@ -304,6 +304,9 @@ def test_sft2_predictor_receives_full_configured_history_axis() -> None:
     assert seen == [((2, 2, 4), (2, 2))]
     assert output.model_output.predicted_next_state.shape == (2, 4)
     assert output.model_output.action_values.shape == (2, 3)
+    assert output.metrics["context_length"] == 2.0
+    assert output.metrics["current_batch_size"] == 2.0
+    assert output.metrics["history_cache_entries"] == 4.0
 
 
 def test_sft2_sigreg_receives_each_current_next_pair_once() -> None:

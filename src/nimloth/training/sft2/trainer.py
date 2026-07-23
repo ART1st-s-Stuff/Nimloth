@@ -533,6 +533,9 @@ def train_sft2(args=None) -> int:
             "lambda_wm",
             "lambda_sigreg",
             "qwen_lr",
+            "context_length",
+            "current_batch_size",
+            "history_cache_entries",
             "val_wm_mse",
         ),
     )
