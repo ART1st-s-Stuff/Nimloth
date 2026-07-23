@@ -44,6 +44,7 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert not hasattr(args, "offload_backbone_chunk_activations")
     assert args.preprocess_cache_format == "compact"
     assert args.preprocess_cache_image_dtype == "bfloat16"
+    assert args.preprocess_cache_processor_source is None
     assert args.preprocess_workers == 16
 
 

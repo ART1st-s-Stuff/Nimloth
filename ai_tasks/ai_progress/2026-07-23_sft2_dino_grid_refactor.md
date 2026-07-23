@@ -125,3 +125,19 @@
 - The fix casts action one-hot inputs to the grid predictor's own parameter
   dtype at the module boundary and adds a BF16-module/FP32-state regression.
   A fresh W&B ID and output directory are required for the next retry.
+
+## SFT1 untied lm_head repair is required before retry
+
+- Human pointed to `fix/sft1-merge-untied-head`; its commit `306295f` proves
+  that calling `resize_token_embeddings()` after `merge_and_unload()` silently
+  re-tied and overwrote the trained policy head. The fix validates independent
+  input/output storage and updates metadata without resizing merged weights.
+- The k16 SFT1 used by the DINO smoke is affected: its index has
+  `model.embed_tokens.weight` but no `lm_head.weight`, while nested
+  `text_config.tie_word_embeddings=true`. Therefore all earlier DINO smoke
+  attempts used an invalid frozen CE head and cannot validate loss quality.
+- This branch now contains the merge fix and regression, plus a fail-closed
+  prebuilt-cache processor-source field. The k16 epoch5 adapter will be merged
+  into a new output; old Qwen/DINO cache reuse is allowed only after proving
+  the corrected export's processor files are byte-identical to the original
+  cache source. The original SFT1 and cache remain immutable.

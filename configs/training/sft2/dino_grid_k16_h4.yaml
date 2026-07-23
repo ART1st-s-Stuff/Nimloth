@@ -4,7 +4,7 @@ objective:
   name: dino_grid
 
 init:
-  sft1_checkpoint: /project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-19/sft1/18_retry1_dino2l_grid4_k16_prefix_success7309_l1_ep5_b1_ga8_ws8_px602112/final/hf_merged
+  sft1_checkpoint: /project/peilab/atst/nimloth/outputs/experiments/sft1_checkpoint_merge_fix/2026-07-24/2_k16_ep5_untied_lm_head/hf_merged
   wm_predictor_checkpoint: null
   # Warm start only. The old spatial predictor gains a zero-initialized H-axis;
   # this run starts a new optimizer and is not an ID33 resume.
@@ -48,6 +48,10 @@ train:
   gradient_checkpointing: true
   checkpoint_interval_minutes: 20.0
   preprocess_cache_dir: /project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-20/sft2/cache/k16_all3217_px100352_bf16_dino4x4_f32_b8659fe
+  # The corrected SFT1 export changes only model weights/config metadata. The
+  # immutable v1 cache was fingerprinted against this original, byte-identical
+  # processor source path.
+  preprocess_cache_processor_source: /project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-19/sft1/18_retry1_dino2l_grid4_k16_prefix_success7309_l1_ep5_b1_ga8_ws8_px602112/final/hf_merged
   preprocess_cache_format: compact
   preprocess_cache_image_dtype: bfloat16
   preprocess_cache_image_shard_size: 128

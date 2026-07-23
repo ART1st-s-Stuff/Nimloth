@@ -32,6 +32,7 @@ def _cache_fixture(tmp_path, *, cached_count: int):
         latent_token_count=16,
         mask_latent_query_labels=True,
         preprocess_cache_image_dtype="bfloat16",
+        preprocess_cache_processor_source=None,
         model=model_path,
     )
     fingerprint = cache_fingerprint(
@@ -59,6 +60,26 @@ def _cache_fixture(tmp_path, *, cached_count: int):
         encoding="utf-8",
     )
     return cache_dir, jsonl_path, config, SimpleNamespace(tokenizer=_Tokenizer())
+
+
+def test_required_cache_can_keep_its_original_processor_source(tmp_path) -> None:
+    cache_dir, jsonl_path, config, processor = _cache_fixture(
+        tmp_path,
+        cached_count=100,
+    )
+    corrected_model = tmp_path / "corrected_model"
+    corrected_model.mkdir()
+    config.model = corrected_model
+    config.preprocess_cache_processor_source = tmp_path / "model"
+
+    _verify_cache_manifest(
+        cache_dir=cache_dir,
+        jsonl_path=jsonl_path,
+        expected_count=100,
+        allow_prefix_subset=False,
+        config=config,
+        processor=processor,
+    )
 
 
 def test_full_prebuilt_cache_can_serve_an_explicit_prefix_subset(tmp_path) -> None:

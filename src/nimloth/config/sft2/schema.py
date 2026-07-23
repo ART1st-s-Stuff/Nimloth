@@ -57,6 +57,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "attn_implementation"): "attn_implementation",
     ("train", "gradient_checkpointing"): "gradient_checkpointing",
     ("train", "preprocess_cache_dir"): "preprocess_cache_dir",
+    ("train", "preprocess_cache_processor_source"): "preprocess_cache_processor_source",
     ("train", "preprocess_workers"): "preprocess_workers",
     ("train", "preprocess_cache_format"): "preprocess_cache_format",
     ("train", "preprocess_cache_image_dtype"): "preprocess_cache_image_dtype",

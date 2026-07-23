@@ -1530,3 +1530,9 @@
   不一致而失败；不是 OOM，无 loss/backward/optimizer/checkpoint，不可恢复。
 - grid predictor 现于模块边界将 one-hot action 转为自身参数 dtype，并增加
   BF16 module + FP32 state 回归；待远程测试后用新 W&B ID/输出目录重试。
+- 人类指出 `fix/sft1-merge-untied-head` 的 merge bug。核对确认当前 k16 SFT1
+  `hf_merged` 缺少 `lm_head.weight`，nested config 仍为 tied；此前 DINO smoke 的
+  冻结 CE head 因此无效，不能用于 loss 质量结论。
+- 当前分支已移植 merge 后禁止 resize、独立 head/storage 校验和回归，并为旧只读
+  cache 增加显式 processor-source lineage。下一步从同一 k16 epoch5 adapter 生成
+  新的 untied export，验证 processor 文件不变后再重试 SFT2；不覆盖旧产物。

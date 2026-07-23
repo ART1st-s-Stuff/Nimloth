@@ -47,6 +47,18 @@ def _dataloader_workers(config: Any) -> int:
     return 4 if config.preprocess_cache_dir is not None else 0
 
 
+def _cache_processor_source(config: Any) -> Path:
+    source = getattr(config, "preprocess_cache_processor_source", None)
+    if source is None:
+        return Path(config.model)
+    if not config.require_prebuilt_cache:
+        raise ValueError(
+            "preprocess_cache_processor_source is only valid for a required "
+            "prebuilt cache"
+        )
+    return Path(source)
+
+
 def _load_transition_samples(config: Any) -> tuple[list[TransitionSample], list[TransitionSample]]:
     train_samples = TransitionJsonlDataset(
         config.train_jsonl,
@@ -94,7 +106,7 @@ def _verify_cache_manifest(
         mask_latent_query_labels=config.mask_latent_query_labels,
         cache_format=actual_format if compact else LEGACY_CACHE_FORMAT,
         image_dtype=config.preprocess_cache_image_dtype if compact else "float32",
-        processor_source=str(Path(config.model).resolve()),
+        processor_source=str(_cache_processor_source(config).resolve()),
         transition_expansion_version=(
             LEGACY_TRANSITION_EXPANSION_VERSION
             if actual_format == COMPACT_CACHE_FORMAT_V1
@@ -120,6 +132,7 @@ def _build_or_open_cached_datasets(
     val_samples: list[TransitionSample],
 ):
     processor = batch_builder.processor
+    cache_processor_source = _cache_processor_source(config)
     cache_root = Path(config.preprocess_cache_dir)
     train_cache_dir = cache_root / "train"
     val_cache_dir = cache_root / "val"
@@ -127,7 +140,7 @@ def _build_or_open_cached_datasets(
     builder = build_compact_transition_preprocess_cache if compact else build_transition_preprocess_cache
 
     build_kwargs = {
-        "model_path": config.model,
+        "model_path": cache_processor_source,
         "processor": processor,
         "max_length": config.max_length,
         "max_pixels": config.max_pixels,

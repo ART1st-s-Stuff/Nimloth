@@ -143,6 +143,15 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         default=None,
         help="Disk cache for transition prefix processor outputs (enables DataLoader workers).",
     )
+    ap.add_argument(
+        "--preprocess-cache-processor-source",
+        type=Path,
+        default=None,
+        help=(
+            "Original model path recorded by a required prebuilt cache. Use only "
+            "when model weights were re-exported without changing processor files."
+        ),
+    )
     ap.add_argument("--preprocess-workers", type=int, default=4, help="Workers for building preprocess cache.")
     ap.add_argument(
         "--preprocess-cache-format",
