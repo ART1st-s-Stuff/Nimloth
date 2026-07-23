@@ -8,6 +8,8 @@ set -euo pipefail
 
 REPO=${REPO:-/project/peilab/atst/nimloth-dino-grid}
 PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv-vagen-main}
+RUNTIME_HOME=${RUNTIME_HOME:-/project/peilab/atst/nimloth/.home}
+RUNTIME_CACHE_ROOT=${RUNTIME_CACHE_ROOT:-/project/peilab/atst/nimloth/.cache}
 CONFIG=${CONFIG:-${REPO}/configs/training/sft2/dino_grid_k16_h4.yaml}
 TRAIN_JSONL=${TRAIN_JSONL:-/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/converted_strict_k8_b6c811c/train_all.jsonl}
 VAL_JSONL=${VAL_JSONL:-/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/converted_strict_k8_b6c811c/val_all.jsonl}
@@ -18,11 +20,11 @@ NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 mkdir -p "${OUTPUT_DIR}"
 LOG=${OUTPUT_DIR}/train_${SLURM_JOB_ID:-local}.log
 
-export HOME=${REPO}/.home
+export HOME=${RUNTIME_HOME}
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=${HF_HOME}
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
-export UV_CACHE_DIR=${REPO}/.cache/uv
+export UV_CACHE_DIR=${RUNTIME_CACHE_ROOT}/uv
 export VIRTUAL_ENV=${PYTHON_ENV}
 export PATH=${PYTHON_ENV}/bin:${REPO}/.local/bin:${PATH}
 export PYTHONPATH=${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/le-wm
