@@ -19,7 +19,13 @@
   整rank padding、全局valid筛选、随机投影一致性和梯度缩放；最终共享参数梯度与单次
   global batch参考完全一致。ID42在preempt/dgx-40的真实CUDA/NCCL门槛已通过
   (`1 passed`)；首轮仅因测试内SequenceSIGReg未放到CUDA而失败，测试修正提交
-  `948079c`，CPU/Gloo复测也为`1 passed`。8卡B1/GA8长prefix smoke待启动。
+  `948079c`，CPU/Gloo复测也为`1 passed`。
+- ID42 8卡B1/GA8长prefix smoke通过：11个optimizer step全部finite，per-rank B始终
+  为1、每个microbatch的global SIGReg B始终为8；total/CE/WM/SIGReg/ValueHead均有
+  有限日志。最大step peak allocated/reserved显存为53.216/54.932 GiB，无OOM、
+  traceback、NCCL/DDP错误或NaN/Inf。超过4-step完整trajectory门槛后主动取消hold与
+  train step；无checkpoint、不可resume、不能直接初始化RL。该结果只批准B1/global
+  SIGReg正式重训配置的运行可行性，不是训练质量结论。
 
 ## 2026-07-23：SFT2 SIGReg 改为仅新状态侧反传
 

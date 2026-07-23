@@ -305,4 +305,11 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   `1 passed, 1 deselected in 8.25s`，CPU/Gloo复测`1 passed, 1 deselected in 7.90s`。
   首轮NCCL测试失败是测试实例的SequenceSIGReg buffer仍在CPU，并非collective或梯度
   错误；提交`948079c`仅令测试模块跟随worker device，正式trainer原本已显式放置。
-  尚需8-GPU B1/GA8长prefix smoke；通过前仍无可用于RL的新checkpoint。
+- ID42 8-GPU B1/GA8 long-prefix smoke完成11个finite optimizer step后按计划取消，
+  超过4-step门槛并覆盖完整20-action trajectory prefix。所有step均为per-rank B1、
+  global SIGReg B8；total loss `7.7422--9.7174`、CE `7.0504--8.6608`、WM MSE
+  `0.03611--0.26906`、SIGReg `3.5761--4.2034`、ValueHead total
+  `0.02548--0.62099`。最大step peak allocated/reserved显存`53.216/54.932 GiB`，无
+  OOM/traceback/NCCL-DDP错误/NaN/Inf。hold job`485236`与train step已取消并离开
+  squeue；无checkpoint、不可resume，尚无可用于RL的新checkpoint。下一步可按同一
+  B1/global-SIGReg配置提交正式SFT2重训。
