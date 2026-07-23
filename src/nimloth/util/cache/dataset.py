@@ -11,10 +11,11 @@ import torch
 from torch.utils.data import Dataset
 
 from nimloth.util.cache.schema import (
-    COMPACT_CACHE_FORMAT,
+    SUPPORTED_COMPACT_CACHE_FORMATS,
     safe_cache_name,
     transition_sample_id,
 )
+from nimloth.util.cache.encoding import encode_qwen_item_from_image_grids
 from nimloth.agent import bind_image_placeholders
 from nimloth.rollout.transitions import TransitionContextIndex, TransitionSample
 
@@ -159,12 +160,17 @@ class CachedTransitionDataset(Dataset):
         samples: list[TransitionSample],
         *,
         max_open_shards: int = 2,
+        processor: Any | None = None,
+        max_length: int | None = None,
+        latent_token_count: int = 1,
+        mask_latent_query_labels: bool = True,
     ):
         self.cache_dir = cache_dir
         self.samples = samples
         manifest_path = cache_dir / "manifest.json"
         self.manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
-        self.is_compact = self.manifest.get("format") == COMPACT_CACHE_FORMAT
+        self.compact_format = str(self.manifest.get("format", ""))
+        self.is_compact = self.compact_format in SUPPORTED_COMPACT_CACHE_FORMATS
         self.transition_shard_size = int(self.manifest.get("transition_shard_size", 0) or 0)
         self._transition_store = (
             _MmapShardStore(cache_dir / "transitions", max_open_shards=max_open_shards)
@@ -175,6 +181,22 @@ class CachedTransitionDataset(Dataset):
             (sample.record_id, sample.step_index): index
             for index, sample in enumerate(samples)
         }
+        self.processor = processor
+        self.max_length = int(max_length) if max_length is not None else None
+        self.latent_token_count = int(latent_token_count)
+        self.mask_latent_query_labels = bool(mask_latent_query_labels)
+        self._image_index_by_path: dict[str, tuple[int, list[int]]] = {}
+        if self.is_compact:
+            index_path = cache_dir / "image_index.json"
+            index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+            for image_index, location in enumerate(index_payload.get("images", [])):
+                path = str(Path(location["path"]).resolve())
+                grid = [int(value) for value in location.get("grid_thw", [])]
+                if len(grid) != 3:
+                    raise ValueError(
+                        f"compact cache image is missing grid_thw: {path}"
+                    )
+                self._image_index_by_path[path] = (image_index, grid)
         if self.is_compact and self.transition_shard_size <= 0:
             raise ValueError(f"invalid compact transition_shard_size in {manifest_path}")
 
@@ -194,6 +216,54 @@ class CachedTransitionDataset(Dataset):
         if local_index >= len(entries):
             raise IndexError(f"compact cache index {index} missing from shard {shard_index}")
         return dict(entries[local_index])
+
+    def _encode_dedicated_next(
+        self,
+        sample: TransitionSample,
+    ) -> dict[str, torch.Tensor]:
+        """只用 compact grid metadata 编码缺失的 next prompt，不重处理图片。"""
+
+        if (
+            self.processor is None
+            or self.max_length is None
+            or sample.next_prefix_messages is None
+            or sample.next_prefix_image_paths is None
+        ):
+            raise ValueError(
+                "compact cache is missing a dedicated next encoding and the "
+                "read-only compatibility encoder is unavailable"
+            )
+        image_indices: list[int] = []
+        grids: list[list[int]] = []
+        for raw_path in sample.next_prefix_image_paths:
+            path = str(Path(raw_path).resolve())
+            try:
+                image_index, grid = self._image_index_by_path[path]
+            except KeyError as error:
+                raise ValueError(
+                    "compact cache does not contain required next-state image: "
+                    f"{path}"
+                ) from error
+            image_indices.append(image_index)
+            grids.append(grid)
+        messages = bind_image_placeholders(
+            sample.next_prefix_messages,
+            sample.next_prefix_image_paths,
+        )
+        encoded = encode_qwen_item_from_image_grids(
+            messages,
+            torch.tensor(grids, dtype=torch.long).reshape(-1, 3),
+            self.processor,
+            self.max_length,
+            include_labels=False,
+            latent_token_count=self.latent_token_count,
+            mask_latent_query_labels=self.mask_latent_query_labels,
+        )
+        encoded["image_indices"] = torch.tensor(
+            image_indices,
+            dtype=torch.int32,
+        )
+        return encoded
 
     def __getitem__(self, index: int | TransitionContextIndex) -> dict[str, Any]:
         context_index = index if isinstance(index, TransitionContextIndex) else None
@@ -219,6 +289,11 @@ class CachedTransitionDataset(Dataset):
                     entry["next_enc"] = self._compact_entry(next_index)["current_enc"]
                 else:
                     entry["next_enc"] = entry.get("next_enc")
+                    if (
+                        entry["next_enc"] is None
+                        and sample.next_prefix_messages is not None
+                    ):
+                        entry["next_enc"] = self._encode_dedicated_next(sample)
             else:
                 entry["next_cache_index"] = None
                 entry["next_enc"] = None
