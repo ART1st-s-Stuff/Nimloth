@@ -69,10 +69,7 @@ srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
 RAY_STEP_PIDS+=("$!")
 head_ready=false
 for _ in $(seq 1 90); do
-  if timeout 8s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
-    -w "${HEAD_NODE}" --gpus=0 "${PYTHON}" -c \
-    'import socket, sys; s=socket.create_connection((sys.argv[1], int(sys.argv[2])), 3); s.close()' \
-    "${HEAD_IP}" "${RAY_PORT}" >/dev/null 2>&1; then
+  if grep -q "Ray runtime started" "${RAY_LOG_DIR}/${HEAD_NODE}.log"; then
     head_ready=true
     break
   fi
