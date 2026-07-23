@@ -16,8 +16,17 @@
 - `B<2` 的 rank 不伪造 SIGReg 统计量，但使用依赖 online-next state 的零 loss 完成
   第二次 backward，保持与其他有效 rank 的 DDP 调用顺序一致；padding 同样为零 loss。
 - 本地 compileall/diff-check 通过；superpod PyTorch 2.8 的 SFT2、Agent、Qwen、WM
-  和 config 扩展回归 `112 passed`。尚需 preempt 8-GPU B2/GA4 长 prefix smoke；在
-  GPU gate 通过前仍不能开启正式 SFT2 或 RL。
+  和 config 扩展回归 `112 passed`。
+- ID41 long-prefix smoke（W&B `3l0hlbou`，job `485173`，preempt/dgx-39，8×H800，
+  B2/GA4）证明 staged backward 真实生效且 DDP 正常：step1/2 峰值从 ID40 的
+  47.626/76.952 GiB 降到 31.402/49.752 GiB，并首次 finite 完成 step3（peak
+  64.694 GiB）。但第四个 accumulation 周期仍在主阶段 current Qwen 的标准
+  `ForCausalLMLoss -> cross_entropy` 全 rank OOM；当时已分配约73.53--74.55 GiB，
+  full CE 还需4.07--4.19 GiB。此时尚未进入 SIGReg。
+- 结论：双图叠加 OOM 已修复，但更长单个 B2 current multimodal prefix 本身仍超出
+  80GB。ID41失败并取消，W&B state=`failed`，无 checkpoint；dgx-39 已恢复 idle、
+  8卡全释放。B2/GA4仍不能正式重训或开启RL；下一选择是B1/GA8，或另行批准数学
+  等价的低显存 CE 实现，不能恢复 row/offload 应急路径。
 
 ## 2026-07-23：删除 OOM 应急路径并改用在线 detached history cache
 

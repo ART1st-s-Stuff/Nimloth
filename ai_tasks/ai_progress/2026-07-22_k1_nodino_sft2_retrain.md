@@ -264,3 +264,23 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   `112 passed in 19.28s`。仍需 8-GPU B2/GA4 长 prefix smoke 证明真实 DDP
   static-graph 可运行且峰值显存不再随双图叠加 OOM。通过前不启动正式重训，也没有
   可供 RL 使用的新 checkpoint。
+
+## 2026-07-23：ID41 staged-SIGReg 长 prefix smoke 仍在主 CE OOM
+
+- ID41 `41_smoke_k1nodino_h4_stagedsigreg_b2_ga4_ws8_longprefix`，commit
+  `7f952e4`，W&B `3l0hlbou`，preempt hold job `485173` 在 dgx-39 使用8 H800、
+  B2/GA4/H4/k1/no DINO。输入、SFT1 epoch5初始化与ID34只读compact cache均与ID40
+  一致；无resume、无checkpoint。
+- staged primary/SIGReg forward/backward在真实8-rank DDP static graph上正常。
+  step1/2/3均finite，peak allocated为31.402/49.752/64.694GiB；ID40前两步是
+  47.626/76.952GiB，因此分阶段确实释放了双Qwen图，且通过了ID40第三周期失败点。
+- 第四个accumulation周期在主阶段current Qwen forward的标准
+  `ForCausalLMLoss -> cross_entropy`全rank OOM，尚未进入SIGReg。每卡PyTorch已分配
+  约73.53--74.55GiB，full CE尝试再申请4.07--4.19GiB，只剩2.73--3.59GiB。
+  这证明单个更长B2 current multimodal prefix本身仍超过80GB，不是SIGReg双图或
+  allocator碎片。
+- job失败后立即取消hold；sacct hold=`CANCELLED` elapsed00:02:10、train step
+  `FAILED` elapsed00:01:36，dgx-39恢复idle且8卡全释放。W&B state=`failed`，输出
+  README/CSV/log和实验组progress已更新；无checkpoint，不可resume或初始化RL。
+- B2/GA4继续被否决。下一步需人类选择B1/GA8，或单独批准保持标准CE数学语义的
+  低显存实现；禁止恢复已经删除的row-by-row/activation-offload应急路径。
