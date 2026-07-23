@@ -299,5 +299,6 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   projection，避免把目标隐式变成多组不同随机loss。
 - K1 control配置已改B1/GA8；checkpoint invariant与日志新增global SIGReg scope/B。
   superpod定向回归 `27 passed in 8.80s`，其中两进程Gloo+DDP解析测试证明参数梯度
-  等于单次global valid batch参考。尚需扩展回归和8-GPU长prefix smoke；通过前仍无
-  可用于RL的新checkpoint。
+  等于单次global valid batch参考。SFT2、Agent、Qwen、WM、config扩展回归
+  `113 passed, 1 skipped in 21.31s`；skip为需GPU allocation的NCCL门槛。尚需NCCL与
+  8-GPU长prefix smoke；通过前仍无可用于RL的新checkpoint。
