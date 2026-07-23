@@ -9,6 +9,8 @@ RUN_OUT=${RUN_OUT:?set RUN_OUT to a new output directory}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
 RAY_PORT=${RAY_PORT:-6381}
 RAY_LOG_DIR=${RUN_OUT}.ray
+RAY_TMP_DIR=${RAY_TMP_DIR:-/tmp/ray_nimloth_${HOLD_JOB}_${BASHPID}}
+RAY_OBJECT_STORE_BYTES=${RAY_OBJECT_STORE_BYTES:-10000000000}
 
 read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_TP_SIZE < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
@@ -54,11 +56,15 @@ stop_ray
 
 declare -a RAY_STEP_PIDS=()
 head_gpus=${GPU_COUNTS[${HEAD_NODE}]}
+head_cpus=$((head_gpus > 4 ? head_gpus : 4))
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
   --gpus="${head_gpus}" \
   "${PYTHON}" -m ray.scripts.scripts start --head \
     --port="${RAY_PORT}" --node-ip-address="${HEAD_IP}" \
-    --num-cpus=24 --num-gpus="${head_gpus}" --include-dashboard=false --block \
+    --num-cpus="${head_cpus}" --num-gpus="${head_gpus}" \
+    --object-store-memory="${RAY_OBJECT_STORE_BYTES}" \
+    --temp-dir="${RAY_TMP_DIR}" --disable-usage-stats \
+    --include-dashboard=false --block \
   >"${RAY_LOG_DIR}/${HEAD_NODE}.log" 2>&1 &
 RAY_STEP_PIDS+=("$!")
 head_ready=false
@@ -71,7 +77,7 @@ for _ in $(seq 1 90); do
     break
   fi
   kill -0 "${RAY_STEP_PIDS[0]}" 2>/dev/null || {
-    tail -200 "${RAY_LOG_DIR}/${HEAD_NODE}.log" >&2
+    tail -n 200 "${RAY_LOG_DIR}/${HEAD_NODE}.log" >&2
     exit 1
   }
   sleep 2
@@ -79,11 +85,13 @@ done
 [[ "${head_ready}" == true ]] || { echo "Ray head port did not become ready" >&2; exit 1; }
 for node in "${NODES[@]:1}"; do
   node_gpus=${GPU_COUNTS[${node}]}
+  node_cpus=$((node_gpus > 4 ? node_gpus : 4))
   srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${node}" \
     --gpus="${node_gpus}" \
     "${PYTHON}" -m ray.scripts.scripts start \
-      --address="${HEAD_IP}:${RAY_PORT}" --num-cpus=24 \
-      --num-gpus="${node_gpus}" --block \
+      --address="${HEAD_IP}:${RAY_PORT}" --num-cpus="${node_cpus}" \
+      --num-gpus="${node_gpus}" --object-store-memory="${RAY_OBJECT_STORE_BYTES}" \
+      --temp-dir="${RAY_TMP_DIR}" --block \
     >"${RAY_LOG_DIR}/${node}.log" 2>&1 &
   RAY_STEP_PIDS+=("$!")
 done
@@ -97,7 +105,7 @@ for _ in $(seq 1 90); do
   [[ "${resources}" == "${CONFIG_WORLD_SIZE}" ]] && break
   for pid in "${RAY_STEP_PIDS[@]}"; do
     kill -0 "${pid}" 2>/dev/null || {
-      tail -200 "${RAY_LOG_DIR}"/*.log >&2
+      tail -n 200 "${RAY_LOG_DIR}"/*.log >&2
       exit 1
     }
   done
