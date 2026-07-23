@@ -367,3 +367,11 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - TP placement 在 GPU worker 前 infeasible；无 trajectory、W&B、optimizer step 或
   checkpoint，ID68 failed/non-resumable。控制器修复为显式设置
   `VLLM_HOST_IP=<Ray head 10.23 IP>`，后续使用新 ID/output。
+
+## 2026-07-24：ID69 vLLM worker actors 的 IP 仍不一致
+
+- driver绑定10.23后 TP8 placement 成功并创建8个Ray workers；但各worker raylet
+  未注入节点自身 `VLLM_HOST_IP`，actors仍报告10.22，vLLM因3 node IDs/4 IPs在
+  权重加载前拒绝启动。
+- 无 trajectory、W&B、optimizer step或checkpoint，ID69 failed/non-resumable。
+  控制器改为逐节点解析10.23 IP并在raylet启动时注入，后续使用新 ID/output。

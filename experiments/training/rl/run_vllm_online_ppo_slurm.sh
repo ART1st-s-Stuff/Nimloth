@@ -29,19 +29,23 @@ mapfile -t NODES < <(scontrol show hostnames "$(squeue -h -j "${HOLD_JOB}" -o %N
 HEAD_NODE=${NODES[0]}
 JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")
 declare -A GPU_COUNTS
+declare -A NODE_IPS
 total_gpus=0
 for node in "${NODES[@]}"; do
   count=$(sed -n "s/.*Nodes=${node} .*GRES=gpu:\([0-9][0-9]*\).*/\1/p" <<< "${JOB_DETAILS}")
   [[ -n "${count}" ]] || { echo "missing allocated GPU count for ${node}" >&2; exit 1; }
   GPU_COUNTS[${node}]=${count}
+  node_ip=$(srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+    -w "${node}" --gpus=0 hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
+  [[ -n "${node_ip}" ]] || { echo "missing 10.23 IP for ${node}" >&2; exit 1; }
+  NODE_IPS[${node}]=${node_ip}
   total_gpus=$((total_gpus + count))
 done
 (( total_gpus == CONFIG_WORLD_SIZE )) || {
   echo "allocation has ${total_gpus} GPUs, config requests ${CONFIG_WORLD_SIZE}" >&2
   exit 1
 }
-HEAD_IP=$(srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
-  --gpus=0 hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
+HEAD_IP=${NODE_IPS[${HEAD_NODE}]}
 [[ -n "${HEAD_IP}" ]] || { echo "could not resolve Ray head IP" >&2; exit 1; }
 mkdir -p "${RAY_LOG_DIR}"
 
@@ -59,7 +63,7 @@ head_gpus=${GPU_COUNTS[${HEAD_NODE}]}
 head_cpus=$((head_gpus > 4 ? head_gpus : 4))
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
   --gpus="${head_gpus}" \
-  "${PYTHON}" -m ray.scripts.scripts start --head \
+  env VLLM_HOST_IP="${HEAD_IP}" "${PYTHON}" -m ray.scripts.scripts start --head \
     --port="${RAY_PORT}" --node-ip-address="${HEAD_IP}" \
     --num-cpus="${head_cpus}" --num-gpus="${head_gpus}" \
     --object-store-memory="${RAY_OBJECT_STORE_BYTES}" \
@@ -82,10 +86,11 @@ done
 [[ "${head_ready}" == true ]] || { echo "Ray head port did not become ready" >&2; exit 1; }
 for node in "${NODES[@]:1}"; do
   node_gpus=${GPU_COUNTS[${node}]}
+  node_ip=${NODE_IPS[${node}]}
   node_cpus=$((node_gpus > 4 ? node_gpus : 4))
   srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${node}" \
     --gpus="${node_gpus}" \
-    "${PYTHON}" -m ray.scripts.scripts start \
+    env VLLM_HOST_IP="${node_ip}" "${PYTHON}" -m ray.scripts.scripts start \
       --address="${HEAD_IP}:${RAY_PORT}" --num-cpus="${node_cpus}" \
       --num-gpus="${node_gpus}" --object-store-memory="${RAY_OBJECT_STORE_BYTES}" \
       --temp-dir="${RAY_TMP_DIR}" --block \

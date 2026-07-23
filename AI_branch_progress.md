@@ -37,6 +37,15 @@
   trajectory、W&B、optimizer step 或 checkpoint；ID68 failed/non-resumable。
 - 通用控制器现把 `VLLM_HOST_IP` 显式绑定到 Ray head IP；retry 必须用新 ID/output。
 
+## 2026-07-24：ID69 vLLM workers 未继承各节点 10.23 IP
+
+- driver 绑定10.23后 TP8 placement 成功，Ray 在1+3+4 GPU上创建8个SPMD workers。
+- vLLM 随后检测到3个 Ray node IDs却有4个IP：driver使用10.23，worker actors
+  仍使用各节点10.22默认接口，因此在权重加载前拒绝启动。无 trajectory、W&B、
+  optimizer step或checkpoint；ID69 failed/non-resumable。
+- 控制器现于每个raylet启动时注入该节点唯一10.23 `VLLM_HOST_IP`，使子actors继承
+  一致接口；后续使用新 ID/output。
+
 ## 2026-07-23：ID43 epoch1 RL H=4 smoke 预检与 ID3 启动前失败
 
 - ID43 `epoch_001` 是完整 k=1/inject HF checkpoint，WM predictor H=4，
