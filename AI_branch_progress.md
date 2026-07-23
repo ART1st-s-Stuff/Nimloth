@@ -1507,3 +1507,17 @@
 - row=1 执行下 image budget 改按真实单 row 峰值，启动时记录实际 B 分布并拒绝
   `lambda_sigreg>0` 且全 B=1 的任务。静态检查通过，远端语义测试和 GPU smoke
   尚未执行。
+
+## 2026-07-24：DINO-grid 旧 cache terminal 语义与 smoke 前缀修复
+
+- 修复 trajectory 最后动作的 next-state prompt：复用最后真实 observation，并只加
+  target-only assistant query prefix，不增加 CE step。训练仍是每个 action 一个
+  transition；train 的 59,389 transitions 对应 62,606 observations/images。
+- 旧 `dedup_sharded_v1` cache 只读复用：terminal next 仅重建缺失的文本 token 布局，
+  图片 pixels 与 `grid_thw` 均从旧 cache 读取，不重开源图片。完整数据/图片覆盖通过，
+  抽样 current/next（含 terminal）与 fresh processor 张量一致。
+- ID44 attempt 2 已完成模型、ID33、W&B、NCCL 初始化，但在首个 forward 前因全量
+  cache count 与 8-record smoke 前缀 count 被错误要求相等而失败；无 OOM、metric、
+  optimizer step 或 checkpoint，不可恢复。
+- commit `b380387` 仅对显式、无过滤的 `max_records` 前缀允许读取更大的全量 cache；
+  full run 和非前缀过滤仍严格校验 count/fingerprint。远端定向回归 `11 passed`。

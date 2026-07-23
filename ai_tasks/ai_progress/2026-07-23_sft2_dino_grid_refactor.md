@@ -91,3 +91,19 @@
 - Launcher fix adds an explicit checked `MODEL_PATH`, passes `--model`, and
   makes B/GA runtime values explicit in both logs and CLI. Retry may keep ID44
   because attempt 1 created no W&B identity or training artifact.
+
+## ID44 attempt 2 ended at cache preflight
+
+- Step `485251.4` used commit `775c5777546126e73de19c88bfce46b8ec4f0bb2`.
+  The k16 SFT1 model, ID33 warm start, W&B run `k76tiux2`, and NCCL world8 all
+  initialized; no OOM occurred.
+- All ranks then failed before the first training forward because cache
+  manifest validation compared the full v1 cache count (59,389 transitions)
+  with the eight-record smoke prefix count as if both represented full data.
+  There are no metrics, optimizer steps, or checkpoints; ID44 is not resumable.
+- Commit `b380387` fixes this without weakening cache identity checks: an
+  explicit unfiltered `max_records` dataset may read the corresponding prefix
+  from a larger full cache, while full runs and non-prefix filtered datasets
+  retain exact count validation. Remote focused regression is `11 passed`.
+- Because attempt 2 created W&B ID44, the next smoke must use a fresh ID45 and
+  output directory.
