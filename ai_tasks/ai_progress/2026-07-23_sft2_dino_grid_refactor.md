@@ -55,3 +55,25 @@
   and all parameters finite.
 - No GPU/Slurm experiment has started for this branch. GPU smoke remains a
   required gate.
+
+## Planned GPU smoke
+
+- Project/run: `nimloth-sft2`, ID44,
+  `44_smoke_dinogrid_k16_h4_terminalcache_b1_ga1_ws8_px100352`; `smoke` is the
+  comment and params identify k16/H4/read-only terminal cache/B1/GA1/world8.
+- Commit/entry/config: `8dba9d7d13e9dab15211f0428d6aba118584f870`,
+  `experiments/training/sft2/train_dino_grid_world8.sh`,
+  `configs/training/sft2/dino_grid_k16_h4.yaml`.
+- Data: the authoritative 3217/355 task-disjoint records and historical cache;
+  smoke limits train/val to the first eight records. The complete data/cache
+  lineage was already covered by the CPU gate above.
+- Initialization: k16 SFT1 plus ID33 epoch10/step9280 auxiliary warm start;
+  fresh optimizer, no resume. Output is an isolated ID44 smoke directory and
+  is not a formal initialization artifact.
+- Trainable: Qwen vision, online grid encoder, H4 temporal-spatial WM, DINO
+  decoder, and ValueHead. Frozen: Qwen language, SFT1 slot projector, DINO
+  teacher/cache, EMA target encoder; older online history is detached.
+- Resources: reuse preempt hold job `485251` on dgx-42, one node/8 H800,
+  per-rank B1/GA1. No additional allocation. Expected wall time 10--25 minutes;
+  stop after long-prefix/terminal finite evidence. Monitor CE/WM/DINO/value,
+  global SIGReg B, OOM/finite, DDP/NCCL, memory, and step timing.
