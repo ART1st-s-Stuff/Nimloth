@@ -33,6 +33,7 @@ train:
   history_size: 4
   # H=4 的四行分开执行 Qwen，随后恢复完整序列计算 WM/value/SIGReg。
   backbone_rows_per_forward: 1
+  offload_backbone_chunk_activations: true
   # batch_size 表示 LeWM 窗口数 B，不是独立 transition 行数。
   batch_mode: trajectory_image_budget
   max_images_per_batch: 12

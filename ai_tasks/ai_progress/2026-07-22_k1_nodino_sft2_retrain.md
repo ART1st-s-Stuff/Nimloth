@@ -92,3 +92,24 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - 已增加视觉切分、row 顺序、CE 数值及 CE 梯度测试；`compileall` 与
   `git diff --check` 通过。本地 pytest 环境缺少 `_pytest`，数值测试仍需在远端
   环境运行后才能提交 GPU smoke。
+
+## 2026-07-23：chunk=1 GPU smoke 仍 OOM
+
+- commit `aaf16ba` 已由人类推送并同步到 superpod clean worktree。首次提交
+  `484881` 在 dgx-17 获得 8 卡后因漏传 `SKIP_SFT1_DONE=1` 于 1 秒退出；没有加载
+  模型、没有 W&B run，也没有 GPU 实验结果。
+- 正确 retry job `484885` 使用 preempt dgx-17 8 卡，W&B ID36、internal ID
+  `0s8tcq0y`。实际配置核实 `history_size=4`、`backbone_rows_per_forward=1`、
+  batch1/GA1、k=1 inject、vision full、无 DINO，并复用完成的 v2 cache。
+- job 在 `00:05:10` 后 `FAILED 1:0`。chunking 消除了原先全 batch CE 一次额外申请
+  约 5--5.5 GiB 的失败形态，但四个在线 chunk 的 autograd graph 仍同时保留；
+  rank1 在 Qwen MLP 仅剩 12 MiB 时申请 52 MiB，rank3 在后续 chunk LM head 申请
+  930 MiB，rank0 在之后的 no-grad target forward DDP sink 申请 20 MiB 时 OOM。
+- `train_step_log.csv` 仍只有表头、global step 0、没有 checkpoint，不能 resume，
+  仍不能开启 RL。下一步应在不改变 loss 的前提下 offload online chunk 保存的
+  activation，或重构为可分段 backward 并精确保留下游跨 H 梯度；需要再次实现和
+  GPU 验证。
+- 已实现下一版 activation offload：chunk forward 通过 saved-tensor hooks 仅把
+  autograd 保存的非 leaf CUDA tensor 搬到 CPU；模型参数、latent 输出和 loss 留在
+  GPU，backward 时按原图恢复。k=1 control 显式启用该选项；当前只通过 compileall
+  和 diff check，尚未获得 GPU 数值/显存验证。

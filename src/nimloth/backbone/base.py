@@ -48,6 +48,7 @@ class Backbone(nn.Module, ABC):
         *,
         max_rows: int,
         include_lm_loss: bool = False,
+        offload_saved_tensors: bool = False,
     ) -> BackboneOutput:
         """按较小的输入行组执行等价 forward。
 

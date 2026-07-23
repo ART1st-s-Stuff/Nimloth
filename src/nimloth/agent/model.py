@@ -97,6 +97,7 @@ class Agent(nn.Module):
         *,
         include_lm_loss: bool = False,
         backbone_rows_per_forward: int | None = None,
+        offload_backbone_chunk_activations: bool = False,
     ) -> AgentOutput:
         """对 ``(B,H)`` 真实 state/action 窗口执行完整模型前向。"""
 
@@ -116,6 +117,7 @@ class Agent(nn.Module):
                 batch,
                 max_rows=backbone_rows_per_forward,
                 include_lm_loss=include_lm_loss,
+                offload_saved_tensors=offload_backbone_chunk_activations,
             )
         hidden = backbone_output.hidden
         expected_rows = batch_size * history_size

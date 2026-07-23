@@ -67,6 +67,7 @@ class SFT2Algorithm:
         wm_weight_end: float = 1.0,
         wm_warmup_fraction: float = 0.3,
         backbone_rows_per_forward: int | None = None,
+        offload_backbone_chunk_activations: bool = False,
     ) -> None:
         self.history_size = int(history_size)
         if self.history_size < 1:
@@ -87,6 +88,13 @@ class SFT2Algorithm:
         )
         if self.backbone_rows_per_forward is not None and self.backbone_rows_per_forward < 1:
             raise ValueError("backbone_rows_per_forward must be positive")
+        self.offload_backbone_chunk_activations = bool(
+            offload_backbone_chunk_activations
+        )
+        if self.offload_backbone_chunk_activations and self.backbone_rows_per_forward is None:
+            raise ValueError(
+                "offload_backbone_chunk_activations requires backbone_rows_per_forward"
+            )
 
     def wm_weight(self, global_step: int, total_steps: int) -> float:
         """在训练前段用 cosine ramp 增加 WM loss 权重。"""
@@ -154,6 +162,7 @@ class SFT2Algorithm:
             batch.action_indices,
             include_lm_loss=include_lm_loss,
             backbone_rows_per_forward=self.backbone_rows_per_forward,
+            offload_backbone_chunk_activations=self.offload_backbone_chunk_activations,
         )
         target_states = runtime.target_state(batch.next)
         aligned_targets = target_states[

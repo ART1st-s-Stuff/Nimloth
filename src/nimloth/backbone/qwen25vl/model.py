@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -67,6 +68,7 @@ class Qwen25VLBackbone(Backbone):
         *,
         max_rows: int,
         include_lm_loss: bool = False,
+        offload_saved_tensors: bool = False,
     ) -> BackboneOutput:
         root = self.model.module if hasattr(self.model, "module") else self.model
         config = root.config
@@ -79,13 +81,34 @@ class Qwen25VLBackbone(Backbone):
             image_token_id=image_token_id,
             spatial_merge_size=spatial_merge_size,
         )
-        outputs = [
-            self.forward(
-                BackboneBatch(chunk),
-                include_lm_loss=include_lm_loss,
+        def pack_saved_tensor(tensor: torch.Tensor):
+            if not offload_saved_tensors or not tensor.is_cuda or tensor.is_leaf:
+                return False, tensor
+            return True, tensor.device, tensor.detach().to("cpu")
+
+        def unpack_saved_tensor(packed):
+            if not packed[0]:
+                return packed[1]
+            _, device, tensor = packed
+            return tensor.to(device, non_blocking=True)
+
+        outputs: list[BackboneOutput] = []
+        for chunk in chunks:
+            saved_tensor_context = (
+                torch.autograd.graph.saved_tensors_hooks(
+                    pack_saved_tensor,
+                    unpack_saved_tensor,
+                )
+                if offload_saved_tensors
+                else contextlib.nullcontext()
             )
-            for chunk in chunks
-        ]
+            with saved_tensor_context:
+                outputs.append(
+                    self.forward(
+                        BackboneBatch(chunk),
+                        include_lm_loss=include_lm_loss,
+                    )
+                )
         hidden = torch.cat([output.hidden for output in outputs], dim=0)
         if not include_lm_loss:
             return BackboneOutput(hidden=hidden)

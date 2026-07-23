@@ -53,6 +53,12 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Maximum flattened B*H rows in one backbone forward; preserves the full H loss graph.",
     )
     ap.add_argument(
+        "--offload-backbone-chunk-activations",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Store non-parameter CUDA activations from chunked backbone forwards on CPU until backward.",
+    )
+    ap.add_argument(
         "--latent-token-count",
         type=int,
         default=1,

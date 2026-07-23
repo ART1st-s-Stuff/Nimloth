@@ -60,6 +60,7 @@ def test_k1_control_only_changes_latent_capacity_not_runtime_budget() -> None:
     assert args.max_images_per_batch == 12
     assert args.history_size == 4
     assert args.backbone_rows_per_forward == 1
+    assert args.offload_backbone_chunk_activations is True
     assert args.checkpoint_metric == "val_wm_mse"
 
 

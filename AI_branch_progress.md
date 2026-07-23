@@ -1317,3 +1317,14 @@
   `input_ids`、`image_grid_thw` 和 `pixel_values`。
 - 静态验证：`python -m compileall -q src tests`、`git diff --check` 通过；本地
   pytest 安装不完整（缺 `_pytest`），远端 CPU 测试和 8-GPU preempt smoke 待执行。
+
+## 2026-07-23：SFT2 chunk=1 smoke 仍未越过首步
+
+- `484881` 因提交参数漏传 `SKIP_SFT1_DONE=1` 在模型加载前退出；正确 retry
+  `484885`（preempt dgx-17 8 卡，W&B `nimloth-sft2` ID36 / `0s8tcq0y`）实际加载
+  commit `aaf16ba`、k=1 H=4、`backbone_rows_per_forward=1` 和完成的 v2 cache。
+- `484885` 在首个 optimizer step 前 OOM：四个 chunk 的训练 graph 累积后已占用
+  约 77--79 GiB，不同 rank 分别在后续 Qwen chunk 或 target forward 再申请
+  20 MiB--930 MiB 时失败。CSV 只有表头，无 checkpoint，不可 resume，RL 仍未解锁。
+- 后续实现增加 chunk activation CPU offload，只处理 autograd 保存的非参数 CUDA
+  tensor，不改变 loss 或 H=4 图结构；尚待下一次 8 卡 smoke 验证。
