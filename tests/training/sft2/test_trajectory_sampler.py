@@ -180,16 +180,22 @@ def test_random_mode_shuffles_complete_windows_before_batching() -> None:
     epoch_one = list(sampler)
 
     assert epoch_zero != epoch_one
-    windows = sorted(
-        tuple(row.sample_index for row in batch[index : index + 2])
-        for batch in epoch_zero
-        for index in range(0, len(batch), 2)
-    )
+    windows = []
+    for batch in epoch_zero:
+        context_length = batch[0].context_length
+        assert all(row.context_length == context_length for row in batch)
+        windows.extend(
+            tuple(row.sample_index for row in batch[index : index + context_length])
+            for index in range(0, len(batch), context_length)
+        )
+    windows.sort()
     assert windows == [
+        (0,),
         (0, 1),
-        (0, 2),
+        (2,),
         (2, 3),
+        (4,),
         (4, 5),
-        (4, 6),
+        (6,),
         (6, 7),
     ]
