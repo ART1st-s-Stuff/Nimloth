@@ -67,6 +67,7 @@ def _verify_cache_manifest(
     cache_dir: Path,
     jsonl_path: Path,
     expected_count: int,
+    allow_prefix_subset: bool,
     config: Any,
     processor,
 ) -> None:
@@ -101,7 +102,11 @@ def _verify_cache_manifest(
         ),
     )
     actual_fingerprint = manifest.get("base_fingerprint") if compact else manifest.get("fingerprint")
-    if actual_fingerprint != expected_fingerprint or int(manifest.get("count", -1)) != expected_count:
+    actual_count = int(manifest.get("count", -1))
+    count_matches = actual_count == expected_count or (
+        allow_prefix_subset and actual_count > expected_count
+    )
+    if actual_fingerprint != expected_fingerprint or not count_matches:
         raise ValueError(
             f"preprocess cache fingerprint/count mismatch: {cache_dir}; "
             "rebuild the CPU cache for this model, dataset, and config"
@@ -166,6 +171,11 @@ def _build_or_open_cached_datasets(
         cache_dir=train_cache_dir,
         jsonl_path=config.train_jsonl,
         expected_count=len(train_samples),
+        # max_records is applied before expansion, so an unfiltered truncated
+        # dataset is exactly a transition prefix of the full cache.
+        allow_prefix_subset=(
+            config.max_train_records > 0 and not config.success_only
+        ),
         config=config,
         processor=processor,
     )
@@ -173,6 +183,7 @@ def _build_or_open_cached_datasets(
         cache_dir=val_cache_dir,
         jsonl_path=config.val_jsonl,
         expected_count=len(val_samples),
+        allow_prefix_subset=config.max_val_records > 0,
         config=config,
         processor=processor,
     )
