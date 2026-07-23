@@ -158,3 +158,19 @@
   output `Linear`, copies each authoritative adapter tensor to its own module,
   then applies the same vocab/config/storage gates. ID2 is not reused; config
   points to a fresh ID3 export pending validation.
+
+## K16 untied-head restore ID3 completed
+
+- Step `485251.8` on commit `327f34c` produced the isolated corrected export
+  `sft1_checkpoint_merge_fix/2026-07-24/3_k16_ep5_untied_lm_head_restore/hf_merged`.
+- All 698 adapter tensors verified. Exported input embedding and `lm_head` each
+  exactly equal their distinct adapter tensor; safetensors contains both,
+  Transformers reload keeps independent storage, and both config levels are
+  untied. Slot projector SHA256 is
+  `340d90a84a17f7aba3525f2f49e20921fd4f73a6534149587de2b3c875542ce0`.
+- Corrected and old processors have identical tokenizer vocab, special IDs,
+  and image-processor dictionaries. The Qwen/DINO v1 cache therefore retains
+  the same preprocessing semantics; the config records its original processor
+  source solely to preserve legacy path-based fingerprint lineage.
+- No training, W&B, OOM, or resumable state was involved. The next SFT2 smoke
+  must use this corrected model and a fresh `nimloth-sft2` ID45/output.

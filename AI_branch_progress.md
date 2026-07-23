@@ -1543,3 +1543,10 @@
   `modules_to_save`，PEFT merge 后仍共享 module。无 OOM/训练/W&B/可用 export。
 - merge 现识别并分别恢复 adapter 内的完整 input/head，显式创建独立 output Linear
   后再验证；ID2不可恢复，SFT2初始化已指向待生成的全新ID3导出。
+- k16 corrected export ID3（step `485251.8`, commit `327f34c`）完成：698 tensors
+  验证，导出 input/head 各自精确等于 adapter、safetensors 双权重齐全、Transformers
+  重载 storage 独立且两层 config untied；slot projector SHA256 为
+  `340d90a84a17f7aba3525f2f49e20921fd4f73a6534149587de2b3c875542ce0`。
+- 新旧 processor 的 tokenizer vocab、special IDs、image processor dict 相同，因此
+  旧 v1 cache 的预处理语义不变；原 processor source 仅用于兼容旧 path-based
+  fingerprint。下一次 SFT2 smoke 使用 corrected export 和新 ID45/output。
