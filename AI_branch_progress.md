@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-23：启动2-epoch正式SFT2训练
+
+- 人类要求先训练2 epoch。ID43
+  `43_k1nodino_h4_globalsigreg_b1_ga8_ws8_ep2`已在commit
+  `228e44dbd680aa14166ca378529734f2c9398664`启动；hold job`485251`运行于
+  preempt/dgx-42，W&B run ID`cfkr5wej`。
+- 使用已验证的3217 train/355 disjoint heldout记录、ID34只读compact cache和k1
+  inject SFT1 epoch-5 merged初始化；Qwen language body冻结，训练full vision、query
+  adapter、StateProjector、WM predictor与ValueHead，vision EMA开启，无DINO。
+- 配置为per-rank B1/GA8/world8/global SIGReg B8/H4/2 epochs。启动后前4个optimizer
+  step全部finite，实际B始终1、global SIGReg B始终8；无OOM、traceback、NCCL/DDP
+  错误或NaN/Inf。20分钟latest checkpoint、epoch/best/final保存均启用；若preempt，
+  同一输出目录自动resume。实测约6.7秒/step，含验证/checkpoint ETA约3.5--3.8小时。
+
 ## 2026-07-23：K1 SFT2 改为 per-rank B1 与 global-batch SIGReg
 
 - 人类批准 per-rank B1，并要求 SIGReg 使用 DDP 全局 batch。K1 control 配置改为

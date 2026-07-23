@@ -313,3 +313,17 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   OOM/traceback/NCCL-DDP错误/NaN/Inf。hold job`485236`与train step已取消并离开
   squeue；无checkpoint、不可resume，尚无可用于RL的新checkpoint。下一步可按同一
   B1/global-SIGReg配置提交正式SFT2重训。
+
+## 2026-07-23：ID43正式训练2 epoch
+
+- 人类要求先跑2 epoch。运行名`43_k1nodino_h4_globalsigreg_b1_ga8_ws8_ep2`，实验
+  commit`228e44dbd680aa14166ca378529734f2c9398664`，W&B`cfkr5wej`，hold
+  job`485251`，preempt/dgx-42，8×H800。
+- 输入保持为已核验的3217 train/355 disjoint heldout、ID34只读compact cache和
+  k1 inject SFT1 epoch-5 merged初始化；trainable为full vision/query adapter/
+  StateProjector/WM predictor/ValueHead，Qwen language body冻结，vision EMA开启，无
+  DINO。fresh启动，不resume。
+- 正式配置B1/GA8/world8/global SIGReg B8/H4/2 epochs；20分钟latest checkpoint与
+  epoch/best/final启用，preempt后可由同一目录自动恢复。前4个optimizer step finite，
+  physical B1与global SIGReg B8均真实生效，无OOM/traceback/NCCL-DDP错误/NaN/Inf。
+  稳态约6.7秒/step，含完整validation/checkpoint的ETA约3.5--3.8小时。任务继续运行。
