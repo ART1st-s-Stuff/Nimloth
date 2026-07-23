@@ -394,3 +394,13 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   step或checkpoint，不可恢复。
 - 已精确终止allocation内的旧head进程。控制器cleanup改为先终止并等待其保存的
   Ray `srun --block` PID，再执行`ray stop`兜底；新ID改用新端口。
+
+## 2026-07-24：ID72 Qwen2.5-VL 不支持 TP8
+
+- symmetric-memory开关已复制到全部Ray workers；8-rank Gloo/NCCL communicator
+  初始化成功，越过ID70失败点并开始模型构造。
+- vLLM的Qwen2.5-VL vision MLP在`MergedColumnParallelLinear`断言输出维度须整除
+  TP size；该checkpoint不支持TP8。无trajectory、W&B、optimizer step或checkpoint，
+  ID72不可恢复。
+- 分布式config继续指定训练`nodes=3/world_size=8`，rollout TP独立改为模型支持的4；
+  下次使用4卡vLLM rollout后再释放Ray，使用全部8 rank执行FSDP PPO update。

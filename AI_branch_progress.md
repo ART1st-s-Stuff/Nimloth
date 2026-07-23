@@ -1535,3 +1535,7 @@
 - ID71在pipeline前发现ID70的Ray head/GCS残留，6381端口仍保存旧session，因而
   立即失败且无README、环境、rollout或训练产物。控制器cleanup现主动终止并等待
   自己启动的Ray `srun --block` steps，再调用`ray stop`兜底；ID72使用新端口重试。
+- ID72证明symmetric-memory关闭后8-rank Gloo/NCCL communicator正常，并进入模型
+  构造；随后vLLM断言Qwen2.5-VL vision MLP输出维度不能被TP8整除。无trajectory、
+  W&B、optimizer step或checkpoint，不可恢复。config保持训练`world_size=8`，将
+  rollout TP独立改为模型支持的4；ID73将以TP4 rollout、8-rank FSDP update重试。
