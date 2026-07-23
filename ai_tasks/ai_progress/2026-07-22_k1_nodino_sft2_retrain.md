@@ -386,3 +386,11 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   每个actor的分配GPU局部映射为`cuda:0`，不适合该跨rank设备ordinal检查。
 - 无trajectory、W&B、optimizer step或checkpoint；ID70不可恢复。下一次新ID将
   设置`VLLM_ALLREDUCE_USE_SYMM_MEM=0`，保留常规NCCL/custom all-reduce语义。
+
+## 2026-07-24：ID71旧Ray session阻塞
+
+- ID71在pipeline与环境启动前失败：ID70 head节点仍有旧raylet/GCS占用6381，
+  新head读到旧session name并拒绝启动。无README、trajectory、W&B、optimizer
+  step或checkpoint，不可恢复。
+- 已精确终止allocation内的旧head进程。控制器cleanup改为先终止并等待其保存的
+  Ray `srun --block` PID，再执行`ray stop`兜底；新ID改用新端口。

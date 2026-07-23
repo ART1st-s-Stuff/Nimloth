@@ -1532,3 +1532,6 @@
   W&B、optimizer step或checkpoint，ID70不可恢复。
 - 启动器现显式设置`VLLM_ALLREDUCE_USE_SYMM_MEM=0`，改走常规NCCL/custom
   all-reduce；须使用新实验ID和空输出目录重试。
+- ID71在pipeline前发现ID70的Ray head/GCS残留，6381端口仍保存旧session，因而
+  立即失败且无README、环境、rollout或训练产物。控制器cleanup现主动终止并等待
+  自己启动的Ray `srun --block` steps，再调用`ray stop`兜底；ID72使用新端口重试。

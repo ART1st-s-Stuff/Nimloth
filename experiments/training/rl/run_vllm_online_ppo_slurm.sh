@@ -49,7 +49,15 @@ HEAD_IP=${NODE_IPS[${HEAD_NODE}]}
 [[ -n "${HEAD_IP}" ]] || { echo "could not resolve Ray head IP" >&2; exit 1; }
 mkdir -p "${RAY_LOG_DIR}"
 
+declare -a RAY_STEP_PIDS=()
 stop_ray() {
+  for pid in "${RAY_STEP_PIDS[@]}"; do
+    kill "${pid}" 2>/dev/null || true
+  done
+  for pid in "${RAY_STEP_PIDS[@]}"; do
+    wait "${pid}" 2>/dev/null || true
+  done
+  RAY_STEP_PIDS=()
   timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes="${CONFIG_NODES}" \
     --ntasks="${CONFIG_NODES}" --ntasks-per-node=1 --gpus=0 \
     timeout 20s "${PYTHON}" -m ray.scripts.scripts stop --force \
@@ -58,7 +66,6 @@ stop_ray() {
 trap stop_ray EXIT
 stop_ray
 
-declare -a RAY_STEP_PIDS=()
 head_gpus=${GPU_COUNTS[${HEAD_NODE}]}
 head_cpus=$((head_gpus > 4 ? head_gpus : 4))
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
