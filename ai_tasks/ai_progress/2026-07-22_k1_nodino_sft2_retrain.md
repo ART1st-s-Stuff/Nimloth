@@ -185,3 +185,27 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   及 current-step ownership、CE 选择、旧 history 零梯度、短 context、SIGReg pair
   测试。当前仅 `compileall` 与 `git diff --check` 通过，尚未在远端 PyTorch/pytest
   和 GPU 上验证，禁止据此启动正式训练。
+
+## 2026-07-23：current-step-once 回归与 B2/GA4 OOM smoke 通过
+
+- 语义修复提交 `e31ee89`，变长 trajectory sampler 测试的解码修复提交
+  `367e834`，均已由 agent 推送并同步到 superpod。远端定向 PyTorch 回归覆盖
+  current-only CE、WM/value/SIGReg ownership、history detach、变长 sampler、
+  compact-cache metadata 和 selected-row Qwen CE：`38 passed in 11.26s`。
+- ID39 `39_smoke_k1nodino_h4_currentonce_chunk1_cpuoffload_b2_ga4_ws8_oomcheck`
+  使用 preempt job `485076`、dgx-04、8 GPU、B=2/GA=4/H=4/row1/CPU activation
+  offload、k=1 inject、无 DINO；初始化仍为 k=1 SFT1 epoch5 merged，复用完成的
+  compact cache，不从旧 SFT2 resume。W&B internal ID `go89t9yi`。
+- 启动审计明确输出 `sft2_step_ownership=current_step_once_v1`；56,172 个 current
+  steps 全部组成 28,086 个 B=2 microbatches，没有实际 B=1。首个完整 optimizer
+  step finite：total 7.222023、CE 6.902349、WM 0.267141、SIGReg 1.011569、value
+  0.191802（reg 0.016271、rank 0.175531），证明 B=2 SIGReg 未被 guard 跳过。
+- step timing 为 dataloader 0.566s、forward 271.456s、backward 171.523s、optimizer
+  1.476s。PyTorch peak allocated/reserved 23.313/25.566 GiB；实时最高单卡约
+  27.9 GiB。CPU offload 很重，节点 RAM 实时采样最高约 569 GiB，但仍剩约 1.4 TiB。
+- 达到 step1 stop gate 后主动取消，Slurm 状态 `CANCELLED`、elapsed `00:11:39`；
+  无 OOM、CUDA error、NaN、Inf 或 traceback，dgx-04 已恢复 idle、8 GPU 全释放。
+  smoke 禁用 checkpoint，因此不可 resume，也不能直接开启 RL。
+- 结论：旧 formal 的 B=2/GA=4/world8 并行参数在修正语义后已通过 OOM gate；但
+  首步约 445 秒，若有代表性则正式 10 epochs 仍不可接受。下一步应先由人类决定
+  是否提交多步 throughput gate，不能直接把本 smoke 当作正式重训或 RL 产物。

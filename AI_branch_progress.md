@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-07-23：逐 step loss 修正后 B=2/GA=4 smoke 无 OOM
+
+- current-step-once 修复提交 `e31ee89`，变长 sampler 测试修复提交 `367e834`；
+  superpod 定向 PyTorch 回归 `38 passed`。每个 transition 的 CE、WM、ValueHead、
+  SIGReg 现在只计算一次，H=4 的旧历史只作为 detach/no-grad 上下文。
+- ID39 job `485076` 在 preempt `dgx-04` 使用 8 GPU、per-rank B=2、GA=4、H=4、
+  row1 和 CPU activation offload。sampler 实测 56,172 current steps，全部组成
+  28,086 个 B=2 microbatches，没有退化成 B=1。
+- 首个完整 optimizer step finite：total 7.222023、CE 6.902349、WM 0.267141、
+  SIGReg 1.011569、value 0.191802；无 OOM、CUDA error、NaN、Inf 或 traceback。
+  forward/backward/optimizer 为 271.456/171.523/1.476 秒；PyTorch peak
+  allocated/reserved 23.313/25.566 GiB，实时单卡不超过约 27.9 GiB。
+- 达到 smoke stop gate 后主动取消，job 总 elapsed `00:11:39`，dgx-04 已恢复
+  idle、8 卡释放。checkpoint 被显式禁用，因此 ID39 不可 resume、也不能作为 RL
+  初始化。约 445 秒的首步仍很慢；正式 10-epoch 重训前应先做更长 throughput gate，
+  不能仅凭无 OOM 直接提交长期任务。
+
 ## 2026-07-23：k=1、无 DINO、H=4 SFT2 首次重训 OOM
 
 - 新 compact cache 已由 job `484435` 完整生成：train 59,389、val 6,054，格式
