@@ -26,6 +26,11 @@
   decoder和ValueHead全部映射，唯一新增参数为全零`temporal_position`，所有参数
   finite。这是fresh optimizer warm start，不是resume。DINO分支尚未启动GPU/Slurm；
   下一门槛是world8 GPU smoke。
+- ID44 attempt1在既有hold `485251`的step `485251.3`启动，但launcher漏传argparse
+  必填`--model`，八rank在模型加载前以code2退出。没有W&B run、模型/cache加载、
+  optimizer step或checkpoint；step已结束且8卡仍由hold保留。输出README已记录失败。
+  launcher现改为显式校验/传入k16 SFT1 `MODEL_PATH`，并让日志与CLI共同使用真实B/GA；
+  因attempt1没有外部run或训练产物，修复后继续使用ID44 retry。
 
 
 ## 2026-07-23：启动2-epoch正式SFT2训练

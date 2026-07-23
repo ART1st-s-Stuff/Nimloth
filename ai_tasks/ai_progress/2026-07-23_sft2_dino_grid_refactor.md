@@ -77,3 +77,17 @@
   per-rank B1/GA1. No additional allocation. Expected wall time 10--25 minutes;
   stop after long-prefix/terminal finite evidence. Monitor CE/WM/DINO/value,
   global SIGReg B, OOM/finite, DDP/NCCL, memory, and step timing.
+
+## ID44 attempt 1 ended before model load
+
+- Step `485251.3` used the existing preempt hold on dgx-42 and commit
+  `9f9a59204c8abd5133cbada3a4fd1af911d99159`. All eight ranks exited argparse
+  code 2 because the launcher omitted required `--model`, even though the YAML
+  contained `init.sft1_checkpoint`.
+- No model or cache was loaded, no W&B run was created, no optimizer step or
+  checkpoint exists, and the attempt is not resumable. The step ended; only the
+  hold batch remains and all eight GPUs are available inside it. Output README
+  records the exact command/config/data/init and failure.
+- Launcher fix adds an explicit checked `MODEL_PATH`, passes `--model`, and
+  makes B/GA runtime values explicit in both logs and CLI. Retry may keep ID44
+  because attempt 1 created no W&B identity or training artifact.
