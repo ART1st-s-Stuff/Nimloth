@@ -25,56 +25,66 @@ mapfile -t NODES < <(scontrol show hostnames "$(squeue -h -j "${HOLD_JOB}" -o %N
   exit 1
 }
 HEAD_NODE=${NODES[0]}
+JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")
+declare -A GPU_COUNTS
+total_gpus=0
+for node in "${NODES[@]}"; do
+  count=$(sed -n "s/.*Nodes=${node} .*GRES=gpu:\([0-9][0-9]*\).*/\1/p" <<< "${JOB_DETAILS}")
+  [[ -n "${count}" ]] || { echo "missing allocated GPU count for ${node}" >&2; exit 1; }
+  GPU_COUNTS[${node}]=${count}
+  total_gpus=$((total_gpus + count))
+done
+(( total_gpus == CONFIG_WORLD_SIZE )) || {
+  echo "allocation has ${total_gpus} GPUs, config requests ${CONFIG_WORLD_SIZE}" >&2
+  exit 1
+}
 HEAD_IP=$(srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
-  hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
+  --gpus=0 hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
 [[ -n "${HEAD_IP}" ]] || { echo "could not resolve Ray head IP" >&2; exit 1; }
 mkdir -p "${RAY_LOG_DIR}"
 
 stop_ray() {
   srun --jobid="${HOLD_JOB}" --overlap --nodes="${CONFIG_NODES}" \
-    --ntasks="${CONFIG_NODES}" --ntasks-per-node=1 \
+    --ntasks="${CONFIG_NODES}" --ntasks-per-node=1 --gpus=0 \
     "${PYTHON}" -m ray.scripts.scripts stop --force >/dev/null 2>&1 || true
 }
 trap stop_ray EXIT
 stop_ray
 
-export NIMLOTH_RAY_HEAD_IP=${HEAD_IP}
-export NIMLOTH_RAY_PORT=${RAY_PORT}
-export NIMLOTH_PYTHON=${PYTHON}
-srun --jobid="${HOLD_JOB}" --overlap --nodes="${CONFIG_NODES}" \
-  --ntasks="${CONFIG_NODES}" --ntasks-per-node=1 \
-  bash -lc '
-    set -euo pipefail
-    [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]] || {
-      echo "node $(hostname) has no visible allocated GPUs" >&2
-      exit 1
-    }
-    IFS=, read -r -a local_gpus <<< "${CUDA_VISIBLE_DEVICES}"
-    count=${#local_gpus[@]}
-    if (( SLURM_PROCID == 0 )); then
-      exec "${NIMLOTH_PYTHON}" -m ray.scripts.scripts start --head \
-        --port="${NIMLOTH_RAY_PORT}" --node-ip-address="${NIMLOTH_RAY_HEAD_IP}" \
-        --num-cpus="${SLURM_CPUS_PER_TASK:-24}" --num-gpus="${count}" \
-        --include-dashboard=false --block
-    fi
-    sleep 8
-    exec "${NIMLOTH_PYTHON}" -m ray.scripts.scripts start \
-      --address="${NIMLOTH_RAY_HEAD_IP}:${NIMLOTH_RAY_PORT}" \
-      --num-cpus="${SLURM_CPUS_PER_TASK:-24}" --num-gpus="${count}" --block
-  ' >"${RAY_LOG_DIR}/cluster.log" 2>&1 &
-RAY_STEP_PID=$!
+declare -a RAY_STEP_PIDS=()
+head_gpus=${GPU_COUNTS[${HEAD_NODE}]}
+srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
+  --gpus="${head_gpus}" \
+  "${PYTHON}" -m ray.scripts.scripts start --head \
+    --port="${RAY_PORT}" --node-ip-address="${HEAD_IP}" \
+    --num-cpus=24 --num-gpus="${head_gpus}" --include-dashboard=false --block \
+  >"${RAY_LOG_DIR}/${HEAD_NODE}.log" 2>&1 &
+RAY_STEP_PIDS+=("$!")
+sleep 8
+for node in "${NODES[@]:1}"; do
+  node_gpus=${GPU_COUNTS[${node}]}
+  srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${node}" \
+    --gpus="${node_gpus}" \
+    "${PYTHON}" -m ray.scripts.scripts start \
+      --address="${HEAD_IP}:${RAY_PORT}" --num-cpus=24 \
+      --num-gpus="${node_gpus}" --block \
+    >"${RAY_LOG_DIR}/${node}.log" 2>&1 &
+  RAY_STEP_PIDS+=("$!")
+done
 
 resources=""
 for _ in $(seq 1 90); do
   resources=$(srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
-    env RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}" "${PYTHON}" -c \
+    --gpus=0 env RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}" "${PYTHON}" -c \
     'import ray; ray.init(address="auto"); print(int(ray.cluster_resources().get("GPU", 0)))' \
     2>/dev/null | tail -1 || true)
   [[ "${resources}" == "${CONFIG_WORLD_SIZE}" ]] && break
-  kill -0 "${RAY_STEP_PID}" 2>/dev/null || {
-    tail -200 "${RAY_LOG_DIR}/cluster.log" >&2
-    exit 1
-  }
+  for pid in "${RAY_STEP_PIDS[@]}"; do
+    kill -0 "${pid}" 2>/dev/null || {
+      tail -200 "${RAY_LOG_DIR}"/*.log >&2
+      exit 1
+    }
+  done
   sleep 2
 done
 [[ "${resources}" == "${CONFIG_WORLD_SIZE}" ]] || {
@@ -83,6 +93,7 @@ done
 }
 
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
+  --gpus="${head_gpus}" \
   env RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}" \
     REPO="${REPO}" RUN_OUT="${RUN_OUT}" RL_CONFIG="${RL_CONFIG}" \
     ENV_REPO="${ENV_REPO:?set ENV_REPO}" MODEL="${MODEL:?set MODEL}" \
@@ -93,4 +104,6 @@ srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
     VLLM_DISTRIBUTED_EXECUTOR_BACKEND=ray \
     bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_smoke.sh"
 
-wait "${RAY_STEP_PID}" 2>/dev/null || true
+for pid in "${RAY_STEP_PIDS[@]}"; do
+  wait "${pid}" 2>/dev/null || true
+done

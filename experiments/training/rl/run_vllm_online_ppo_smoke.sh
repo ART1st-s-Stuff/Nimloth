@@ -173,7 +173,7 @@ cleanup_env
 if [[ "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" == ray ]]; then
   [[ -n "${SLURM_JOB_ID:-}" ]] || { echo "Ray cleanup requires SLURM_JOB_ID" >&2; exit 1; }
   srun --jobid="${SLURM_JOB_ID}" --overlap --nodes="${TRAIN_NNODES}" \
-    --ntasks="${TRAIN_NNODES}" --ntasks-per-node=1 \
+    --ntasks="${TRAIN_NNODES}" --ntasks-per-node=1 --gpus=0 \
     "${PYTHON}" -m ray.scripts.scripts stop --force 2>&1 | tee -a "${LOG}"
 fi
 
@@ -200,7 +200,7 @@ else
   mapfile -t TRAIN_NODES_LIST < <(scontrol show hostnames "${SLURM_JOB_NODELIST}")
   HEAD_NODE=${TRAIN_NODES_LIST[0]}
   RDZV_IP=$(srun --jobid="${SLURM_JOB_ID}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
-    hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
+    --gpus=0 hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
   [[ -n "${RDZV_IP}" ]] || { echo "missing multi-node rendezvous IP" >&2; exit 1; }
   export NIMLOTH_TRAIN_ARGS=$(printf '%q ' "${TRAIN_ARGS[@]}")
   srun --jobid="${SLURM_JOB_ID}" --overlap --nodes="${TRAIN_NNODES}" \
