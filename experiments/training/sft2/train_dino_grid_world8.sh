@@ -16,6 +16,7 @@ TRAIN_JSONL=${TRAIN_JSONL:-/project/peilab/atst/nimloth/outputs/experiments/vage
 VAL_JSONL=${VAL_JSONL:-/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/converted_strict_k8_b6c811c/val_all.jsonl}
 OUTPUT_DIR=${OUTPUT_DIR:?set OUTPUT_DIR to a new SFT2 run directory}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:?set WANDB_RUN_NAME}
+WANDB_PROJECT_NAME=${WANDB_PROJECT_NAME:-nimloth-sft2}
 NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 BATCH_SIZE=${BATCH_SIZE:-1}
 GRAD_ACCUM=${GRAD_ACCUM:-8}
@@ -37,15 +38,18 @@ export NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_DEBUG=WARN
 export NCCL_IB_DISABLE=1
 export TOKENIZERS_PARALLELISM=true
-export WANDB_PROJECT=${WANDB_PROJECT:-nimloth-sft2}
-export WANDB_MODE=${WANDB_MODE:-online}
-
 if [ -f /project/peilab/atst/flower/.env ]; then
   set -a
   # shellcheck disable=SC1091
   source /project/peilab/atst/flower/.env
   set +a
 fi
+
+# The shared credential file also carries defaults for other projects. Restore
+# the caller-selected SFT2 identity after loading credentials so runs cannot be
+# silently written to that unrelated project.
+export WANDB_PROJECT=${WANDB_PROJECT_NAME}
+export WANDB_MODE=${WANDB_MODE:-online}
 
 for required in "${CONFIG}" "${TRAIN_JSONL}" "${VAL_JSONL}"; do
   if [ ! -s "${required}" ]; then

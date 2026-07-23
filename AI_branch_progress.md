@@ -1521,3 +1521,6 @@
   optimizer step 或 checkpoint，不可恢复。
 - commit `b380387` 仅对显式、无过滤的 `max_records` 前缀允许读取更大的全量 cache；
   full run 和非前缀过滤仍严格校验 count/fingerprint。远端定向回归 `11 passed`。
+- 发现 ID44 attempt 2 被共享 `.env` 覆盖到错误的 `flower` W&B project；目标
+  `nimloth-sft2` 实际最高 ID 为43。launcher 已改为凭据加载后恢复显式 project，
+  corrected retry 将在目标 project 使用 ID44 和全新输出目录。

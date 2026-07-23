@@ -105,5 +105,8 @@
   explicit unfiltered `max_records` dataset may read the corresponding prefix
   from a larger full cache, while full runs and non-prefix filtered datasets
   retain exact count validation. Remote focused regression is `11 passed`.
-- Because attempt 2 created W&B ID44, the next smoke must use a fresh ID45 and
-  output directory.
+- Attempt 2 unexpectedly wrote ID44 to the unrelated `flower` project because
+  the shared credential `.env` overwrote the launcher's earlier project
+  export. The target `nimloth-sft2` project still ends at ID43, so the corrected
+  retry uses ID44 there but a fresh, distinct output directory. The launcher
+  now restores its explicit project identity after loading credentials.
