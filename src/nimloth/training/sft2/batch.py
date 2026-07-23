@@ -33,6 +33,7 @@ class SFT2Batch:
     online_tail: BackboneBatch
     history_size: int
     sample_weights: torch.Tensor
+    next_image_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.history_size < 1:
@@ -67,6 +68,11 @@ class SFT2Batch:
             raise ValueError(
                 "SFT2 batches must be entirely real (weight=1) or padding "
                 f"(weight=0), got {sorted(unique_weights)}"
+            )
+        if self.next_image_paths and len(self.next_image_paths) != self.batch_size:
+            raise ValueError(
+                "SFT2 next-image paths must align with current steps: "
+                f"paths={len(self.next_image_paths)}, B={self.batch_size}"
             )
 
     @property
@@ -316,6 +322,11 @@ class SFT2BatchAssembler:
                 dtype=torch.float32,
                 device=self.device,
             ),
+            next_image_paths=tuple(
+                str(item["next_image_path"])
+                for item in items
+                if item["is_current_step"]
+            ),
         )
 
     def _collate_online_tail(
@@ -499,6 +510,7 @@ class SFT2BatchAssembler:
                 else item["is_current_step"]
             ),
             "loss_weight": float(item.get("loss_weight", 1.0)),
+            "next_image_path": str(item.get("next_image_path", "")),
         }
 
     @staticmethod

@@ -8,6 +8,11 @@ from nimloth.backbone.base import (
     BackboneOutput,
     LoadedBackbone,
 )
+from nimloth.backbone.dino_grid import (
+    CachedDINOGridTargets,
+    DINOIdentity,
+    DINOV2_LARGE_IDENTITY,
+)
 
 
 def load_backbone(*args, **kwargs) -> LoadedBackbone:
@@ -62,6 +67,9 @@ __all__ = [
     "BackboneEMA",
     "BackboneInputBuilder",
     "BackboneOutput",
+    "CachedDINOGridTargets",
+    "DINOIdentity",
+    "DINOV2_LARGE_IDENTITY",
     "backbone_hidden_size",
     "build_action_log_prob_replay",
     "build_agent_policy",

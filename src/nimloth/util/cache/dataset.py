@@ -117,6 +117,7 @@ class CompactCachedTransitionCollator:
                     "context_length": entry.get("context_length"),
                     "is_current_step": entry.get("is_current_step"),
                     "loss_weight": entry.get("loss_weight", 1.0),
+                    "next_image_path": entry.get("next_image_path"),
                 }
             )
 
@@ -230,6 +231,10 @@ class CachedTransitionDataset(Dataset):
             sample.prefix_messages,
             sample.prefix_image_paths,
         )
+        # Image paths are lightweight transition metadata, not preprocessed
+        # tensors. Attach them from the authoritative dataset so old compact
+        # Qwen caches remain reusable by independent supervision sidecars.
+        entry["next_image_path"] = sample.next_image_path
         if sample.next_prefix_messages is not None and sample.next_prefix_image_paths is not None:
             entry["next_messages"] = bind_image_placeholders(
                 sample.next_prefix_messages,
