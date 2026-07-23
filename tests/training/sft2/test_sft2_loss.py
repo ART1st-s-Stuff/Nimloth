@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
+import pytest
 import torch
 
 from nimloth.agent import Agent
@@ -256,16 +257,16 @@ def test_unwrapped_runtime_applies_ema_to_its_own_backbone_model() -> None:
     assert ema.models == [validation_runtime.agent.backbone.model]
 
 
-def test_sft2_training_step_computes_one_current_step_loss_and_detaches_history() -> None:
+def test_sft2_primary_step_computes_one_current_step_loss_and_detaches_history() -> None:
     algorithm, runtime, backbone, projector = _algorithm()
     batch = _batch()
     cached_history = _seed_history(runtime, batch)
 
-    output = algorithm.training_step(runtime, batch, wm_weight=0.5)
+    output = algorithm.training_primary_step(runtime, batch, wm_weight=0.5)
     output.losses["wm"].backward()
 
     assert backbone.calls == 2
-    assert output.model_output.lm_loss is not None
+    assert output.losses["lm"] is not None
     assert projector.outputs[0].grad is not None
     assert projector.outputs[1].grad is not None
     current_grad = batch.current.tensors["hidden"].grad
@@ -281,7 +282,7 @@ def test_sft2_ce_supervises_each_contexts_current_step_only() -> None:
     batch = _batch()
     _seed_history(runtime, batch)
 
-    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
+    output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
 
     expected = batch.current.tensors["hidden"].mean()
     torch.testing.assert_close(output.losses["lm"], expected)
@@ -299,24 +300,32 @@ def test_sft2_predictor_receives_full_configured_history_axis() -> None:
         return state
 
     predictor.forward = record_shape  # type: ignore[method-assign]
-    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
+    output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
 
     assert seen == [((2, 2, 4), (2, 2))]
-    assert output.model_output.predicted_next_state.shape == (2, 4)
-    assert output.model_output.action_values.shape == (2, 3)
+    assert output.current_state.shape == (2, 4)
     assert output.metrics["context_length"] == 2.0
     assert output.metrics["current_batch_size"] == 2.0
     assert output.metrics["history_cache_entries"] == 4.0
 
 
-def test_sft2_sigreg_receives_each_current_next_pair_once() -> None:
+def test_sft2_sigreg_detaches_current_and_updates_online_next_only() -> None:
     recording = _RecordingSIGReg()
     sigreg = SequenceSIGReg(regularizer=recording)
     algorithm, runtime, _, projector = _algorithm(sigreg)
     batch = _batch()
     _seed_history(runtime, batch)
 
-    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
+    primary = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
+    assert recording.inputs == []
+    primary.loss.backward()
+    current_grad_after_primary = projector.outputs[0].grad.clone()
+
+    sigreg_output = algorithm.training_sigreg_step(
+        runtime,
+        batch,
+        detached_current_state=primary.current_state.detach(),
+    )
 
     assert len(recording.inputs) == 1
     assert recording.inputs[0].shape == (2, 2, 4)
@@ -328,11 +337,34 @@ def test_sft2_sigreg_receives_each_current_next_pair_once() -> None:
         dim=0,
     )
     torch.testing.assert_close(recording.inputs[0], expected)
-    assert output.losses["sigreg"] is not None
-    assert output.metrics["sigreg_loss"] > 0.0
-    output.losses["sigreg"].backward()
+    assert sigreg_output.raw_loss is not None
+    assert sigreg_output.metrics["sigreg_loss"] > 0.0
+    sigreg_output.loss.backward()
+    torch.testing.assert_close(projector.outputs[0].grad, current_grad_after_primary)
+    assert projector.outputs[2].grad is not None
     assert batch.online_tail.tensors["hidden"].grad is not None
     assert batch.next.tensors["hidden"].grad is None
+
+    metrics = algorithm.merge_training_metrics(primary.metrics, sigreg_output)
+    assert metrics["total_loss"] == pytest.approx(
+        primary.metrics["total_loss"] + sigreg_output.loss.item()
+    )
+
+
+def test_sft2_sigreg_rejects_current_state_with_gradient() -> None:
+    algorithm, runtime, _, _ = _algorithm(
+        SequenceSIGReg(regularizer=_RecordingSIGReg())
+    )
+    batch = _batch()
+    _seed_history(runtime, batch)
+    primary = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
+
+    with pytest.raises(ValueError, match="current_state must be detached"):
+        algorithm.training_sigreg_step(
+            runtime,
+            batch,
+            detached_current_state=primary.current_state,
+        )
 
 
 def test_sft2_sigreg_skips_single_window_batch() -> None:
@@ -345,10 +377,17 @@ def test_sft2_sigreg_skips_single_window_batch() -> None:
         trajectory_steps=(("rec_A", 0), ("rec_A", 1)),
     )
     _seed_history(runtime, batch)
-    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
+    primary = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
+    output = algorithm.training_sigreg_step(
+        runtime,
+        batch,
+        detached_current_state=primary.current_state.detach(),
+    )
 
     assert recording.inputs == []
-    assert output.losses["sigreg"] is None
+    assert output.raw_loss is None
+    assert output.loss.requires_grad
+    assert output.loss.item() == 0.0
     assert output.metrics["sigreg_skipped_small_batch"] == 1.0
 
 
@@ -363,7 +402,7 @@ def test_sft2_evaluation_does_not_use_training_sigreg_layout() -> None:
     output = algorithm.evaluation_step(runtime, batch)
 
     assert recording.inputs == []
-    assert output.losses["sigreg"] is None
+    assert "sigreg" not in output.losses
     assert output.metrics["lambda_sigreg"] == 0.0
 
 
@@ -376,11 +415,13 @@ def test_sft2_zero_sigreg_weight_does_not_run_module() -> None:
     batch = _batch()
     _seed_history(runtime, batch)
 
-    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
+    output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
+    metrics = algorithm.merge_training_metrics(output.metrics, None)
 
     assert recording.inputs == []
-    assert output.losses["sigreg"] is None
-    assert "sigreg_skipped_small_batch" not in output.metrics
+    assert algorithm.has_sigreg_stage is False
+    assert "sigreg" not in output.losses
+    assert "sigreg_skipped_small_batch" not in metrics
 
 
 def test_online_cache_reuses_a_prior_current_state_without_history_qwen() -> None:
@@ -399,19 +440,20 @@ def test_online_cache_reuses_a_prior_current_state_without_history_qwen() -> Non
         history_size=2,
     )
 
-    algorithm.training_step(runtime, first, wm_weight=1.0)
+    first_output = algorithm.training_primary_step(runtime, first, wm_weight=1.0)
     calls_after_first = backbone.calls
-    output = algorithm.training_step(runtime, second, wm_weight=1.0)
+    output = algorithm.training_primary_step(runtime, second, wm_weight=1.0)
 
     assert calls_after_first == 2
     assert backbone.calls == 4
-    assert output.model_output.state.shape == (2, 2, 4)
+    assert output.current_state.shape == (2, 4)
+    cached_history = runtime.history_cache.history(
+        second.history_keys,
+        reference=output.current_state,
+    )
     torch.testing.assert_close(
-        output.model_output.state[:, 0],
-        runtime.history_cache.history(
-            second.history_keys,
-            reference=output.model_output.state[:, -1],
-        )[:, 0],
+        cached_history[:, 0],
+        first_output.current_state.detach(),
     )
     assert runtime.history_cache.count == 4
 
@@ -421,7 +463,7 @@ def test_online_cache_miss_fails_instead_of_recomputing_history() -> None:
     batch = _batch()
 
     try:
-        algorithm.training_step(runtime, batch, wm_weight=1.0)
+        algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
     except KeyError as error:
         assert "online history cache miss" in str(error)
     else:
@@ -439,7 +481,7 @@ def test_padding_batch_has_zero_loss_and_does_not_write_cache() -> None:
     )
     object.__setattr__(batch, "sample_weights", torch.zeros(2))
 
-    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
+    output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
 
     assert output.sample_count == 0
     assert output.loss.item() == 0.0

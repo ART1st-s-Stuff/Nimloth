@@ -163,15 +163,9 @@ class SFT2TrainingLoop:
             with self.optimization_runtime.accumulation_context(
                 sync_gradients=sync_gradients,
             ):
-                lambda_wm, metrics, loss, sample_count = self._forward_loss(
-                    batch_samples
+                lambda_wm, metrics, sample_count = self._train_microbatch(
+                    batch_samples,
                 )
-                timer_start = self.step_timer.start("backward")
-                self.optimization_runtime.backward(
-                    loss,
-                    grad_accum=self.config.grad_accum,
-                )
-                self.step_timer.stop("backward", timer_start)
             if sample_count > 0:
                 accumulator.update(metrics, count=sample_count)
 
@@ -234,30 +228,55 @@ class SFT2TrainingLoop:
             )
         return train_iterator, consumed
 
-    def _forward_loss(
+    def _train_microbatch(
         self,
         batch_samples: Any,
-    ) -> tuple[float, dict[str, float], Any, int]:
-        """运行共享 forward，并按当前训练步组合全部目标函数。"""
+    ) -> tuple[float, dict[str, float], int]:
+        """先反传单次 CE/WM/value，再构建并反传单向 SIGReg 图。"""
 
-        timer_start = self.step_timer.start("forward")
+        timer_start = self.step_timer.start("forward_primary")
         lambda_wm = self.algorithm.wm_weight(
             self.state.global_step,
             self.total_steps,
         )
         batch = self.batch_builder.prepare(batch_samples)
-        step_output = self.algorithm.training_step(
+        primary = self.algorithm.training_primary_step(
             self.model_runtime,
             batch,
             wm_weight=lambda_wm,
         )
-        self.step_timer.stop("forward", timer_start)
-        return (
-            lambda_wm,
-            step_output.metrics,
-            step_output.loss,
-            step_output.sample_count,
+        self.step_timer.stop("forward_primary", timer_start)
+
+        detached_current_state = primary.current_state.detach()
+        primary_metrics = primary.metrics
+        sample_count = primary.sample_count
+        timer_start = self.step_timer.start("backward_primary")
+        self.optimization_runtime.backward(
+            primary.loss,
+            grad_accum=self.config.grad_accum,
         )
+        self.step_timer.stop("backward_primary", timer_start)
+        # 不让任何主阶段 Tensor 引用跨入下一次 Qwen forward。
+        del primary
+
+        sigreg = None
+        if self.algorithm.has_sigreg_stage:
+            timer_start = self.step_timer.start("forward_sigreg")
+            sigreg = self.algorithm.training_sigreg_step(
+                self.model_runtime,
+                batch,
+                detached_current_state=detached_current_state,
+            )
+            self.step_timer.stop("forward_sigreg", timer_start)
+            timer_start = self.step_timer.start("backward_sigreg")
+            self.optimization_runtime.backward(
+                sigreg.loss,
+                grad_accum=self.config.grad_accum,
+            )
+            self.step_timer.stop("backward_sigreg", timer_start)
+
+        metrics = self.algorithm.merge_training_metrics(primary_metrics, sigreg)
+        return lambda_wm, metrics, sample_count
 
     def _optimizer_step(
         self,

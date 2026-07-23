@@ -11,7 +11,7 @@ RL 只在真实 rollout 时用独立的 planning horizon 自回归预测多个�
 
 | 文件 | 职责 |
 |------|------|
-| `algorithm.py` | 纯单批计算：Agent/target forward、全部 loss 和 WM 权重策略 |
+| `algorithm.py` | 显式的 CE/WM/value 主阶段、SIGReg 阶段及 WM 权重策略 |
 | `trainer.py` | 按执行顺序加载 Agent、设置 DDP/EMA/optimizer 并启动训练 |
 | `batch.py` | SFT2 action/return/next-state 对齐与 terminal mask 装配 |
 | `data/` | dataset、sampler 与 DataLoader |
@@ -41,5 +41,8 @@ T=1..H-1 的短上下文，因此每个拥有真实 next state 的 transition �
 保存每个 rank 的 cache，使恢复后的 sampler cursor 能继续命中历史。
 
 SIGReg 只在训练阶段计算，每个 step 只接收在线 `(s_t,s_{t+1})`；
-EMA/target state 不进入这个统计量。`B<2` 时保留其他目标并记录该批跳过 SIGReg；
+EMA/target state 不进入这个统计量。每个 microbatch 先对唯一一次 CE/WM/value
+执行 backward 并释放 `s_t` 的 Qwen 图，再编码在线 `s_{t+1}`。SIGReg 的 `s_t`
+输入强制 detach，只有 `s_{t+1}` 接收该正则的梯度。`B<2` 时保留其他目标并记录
+该批跳过 SIGReg；该 rank 仍通过依赖在线 state 的零 loss 参与 DDP backward。
 验证集不计算 SIGReg。`batch_size` 表示 current step 数 `B`。

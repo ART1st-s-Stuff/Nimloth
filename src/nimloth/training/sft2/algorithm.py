@@ -9,7 +9,6 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from nimloth.agent import AgentOutput
 from nimloth.training.sft2.batch import SFT2Batch
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import (
@@ -37,21 +36,30 @@ def require_sft2_wm_history(
 
 @dataclass(frozen=True)
 class SFT2StepOutput:
-    """一次 SFT2 前向产生的总 loss、分项 loss 和日志指标。"""
+    """一次 SFT2 主前向产生的 loss、当前 state 和日志指标。"""
 
     loss: torch.Tensor
     losses: dict[str, torch.Tensor | None]
     metrics: dict[str, float]
-    model_output: AgentOutput
+    current_state: torch.Tensor
     sample_count: int
 
 
-class SFT2Algorithm:
-    """定义 SFT2 一个 batch 的完整计算图。
+@dataclass(frozen=True)
+class SFT2SIGRegStepOutput:
+    """主 loss 反传完成后，单独执行的 SIGReg 阶段结果。"""
 
-    训练循环只负责取 batch、backward 和 optimizer step。本类负责当前状态、目标
-    状态、WM/value/SIGReg/CE loss 以及这些 loss 的组合，不依赖 processor、cache、
-    DDP、EMA 的具体实现或 checkpoint。
+    loss: torch.Tensor
+    raw_loss: torch.Tensor | None
+    metrics: dict[str, float]
+
+
+class SFT2Algorithm:
+    """定义 SFT2 一个 batch 的目标函数与两阶段计算图。
+
+    主阶段只计算当前 step 的 CE/WM/value；它反传并释放 Qwen 图后，SIGReg 阶段
+    才以 detached ``s_t`` 和在线 ``s_{t+1}`` 计算正则。这样 SIGReg 数值上仍看见
+    两个连续状态，但梯度只进入新状态侧，也不会同时保留两份 Qwen 激活。
     """
 
     def __init__(
@@ -97,7 +105,13 @@ class SFT2Algorithm:
             self.wm_weight_end - self.wm_weight_start
         ) * cosine
 
-    def training_step(
+    @property
+    def has_sigreg_stage(self) -> bool:
+        """训练是否需要在主 loss 反传后执行独立 SIGReg 阶段。"""
+
+        return self.sigreg is not None and self.sigreg_weight > 0.0
+
+    def training_primary_step(
         self,
         runtime: SFT2ModelRuntime,
         batch: SFT2Batch,
@@ -110,8 +124,60 @@ class SFT2Algorithm:
             wm_weight=wm_weight,
             include_lm_loss=True,
             include_value_ranking=True,
-            include_sigreg=True,
         )
+
+    def training_sigreg_step(
+        self,
+        runtime: SFT2ModelRuntime,
+        batch: SFT2Batch,
+        *,
+        detached_current_state: torch.Tensor,
+    ) -> SFT2SIGRegStepOutput:
+        """只让在线 ``s_{t+1}`` 接收 SIGReg 梯度。
+
+        调用者必须先完成主 loss backward，再调用本方法。小于两个样本的 rank
+        无法估计 SIGReg 分布，但仍用依赖在线 state 的零 loss 参与 DDP backward。
+        """
+
+        if not self.has_sigreg_stage:
+            raise RuntimeError("SFT2 SIGReg stage is disabled")
+        if detached_current_state.requires_grad:
+            raise ValueError("SFT2 SIGReg current_state must be detached")
+
+        next_state = runtime.agent.encode_state(
+            batch.online_tail,
+            include_lm_loss=False,
+        ).state
+        sigreg_loss = self._sigreg_loss(detached_current_state, next_state)
+        if sigreg_loss is None:
+            # 保留在线 Qwen/StateProjector 的 DDP 图参与，但不伪造 B<2 的统计量。
+            backward_loss = next_state.sum() * 0.0
+            metrics = {"sigreg_skipped_small_batch": 1.0}
+        else:
+            backward_loss = self.sigreg_weight * sigreg_loss
+            metrics = {"sigreg_loss": float(sigreg_loss.detach().item())}
+        if batch.is_padding:
+            backward_loss = backward_loss * 0.0
+        return SFT2SIGRegStepOutput(
+            loss=backward_loss,
+            raw_loss=sigreg_loss,
+            metrics=metrics,
+        )
+
+    def merge_training_metrics(
+        self,
+        primary_metrics: dict[str, float],
+        sigreg: SFT2SIGRegStepOutput | None,
+    ) -> dict[str, float]:
+        """把两个显式反传阶段合并为一个 optimizer-step 日志视图。"""
+
+        metrics = dict(primary_metrics)
+        metrics["lambda_sigreg"] = self.sigreg_weight if sigreg is not None else 0.0
+        if sigreg is None:
+            return metrics
+        metrics.update(sigreg.metrics)
+        metrics["total_loss"] += float(sigreg.loss.detach().item())
+        return metrics
 
     def evaluation_step(
         self,
@@ -124,7 +190,6 @@ class SFT2Algorithm:
             wm_weight=1.0,
             include_lm_loss=False,
             include_value_ranking=False,
-            include_sigreg=False,
         )
 
     def _step(
@@ -135,9 +200,8 @@ class SFT2Algorithm:
         wm_weight: float,
         include_lm_loss: bool,
         include_value_ranking: bool,
-        include_sigreg: bool,
     ) -> SFT2StepOutput:
-        """按照 current forward → next target → loss 的顺序完成一次计算。"""
+        """按照 current forward → next target → CE/WM/value 完成主阶段。"""
 
         if not 1 <= batch.history_size <= self.history_size:
             raise ValueError(
@@ -176,23 +240,7 @@ class SFT2Algorithm:
             batch.current_value_targets,
             include_ranking=include_value_ranking,
         )
-        sigreg_loss = None
-        if (
-            include_sigreg
-            and self.sigreg is not None
-            and self.sigreg_weight > 0.0
-        ):
-            sigreg_loss = self._sigreg_loss(
-                model_output.state[:, -1],
-                runtime.agent.encode_state(
-                    batch.online_tail,
-                    include_lm_loss=False,
-                ).state,
-            )
-
         total = wm_weight * wm_loss + self.value_weight * value["loss"]
-        if sigreg_loss is not None and self.sigreg_weight > 0.0:
-            total = total + self.sigreg_weight * sigreg_loss
         if model_output.lm_loss is not None:
             total = total + self.ce_weight * model_output.lm_loss
         sample_count = 0 if batch.is_padding else batch.batch_size
@@ -204,7 +252,7 @@ class SFT2Algorithm:
             "value_rank": float(value["ranking"].detach().item()),
             "value_total": float(value["loss"].detach().item()),
             "lambda_wm": float(wm_weight),
-            "lambda_sigreg": self.sigreg_weight if include_sigreg else 0.0,
+            "lambda_sigreg": 0.0,
             "lambda_value": self.value_weight,
             "lambda_ce": self.ce_weight,
             "context_length": float(batch.history_size),
@@ -213,10 +261,6 @@ class SFT2Algorithm:
             "total_loss": float(total.detach().item()),
         }
         metrics["wm_mse"] = float(wm_loss.detach().item())
-        if sigreg_loss is not None:
-            metrics["sigreg_loss"] = float(sigreg_loss.detach().item())
-        elif include_sigreg and self.sigreg is not None and self.sigreg_weight > 0.0:
-            metrics["sigreg_skipped_small_batch"] = 1.0
         if model_output.lm_loss is not None:
             metrics["lm_ce"] = float(model_output.lm_loss.detach().item())
 
@@ -225,11 +269,10 @@ class SFT2Algorithm:
             losses={
                 "lm": model_output.lm_loss,
                 "wm": wm_loss,
-                "sigreg": sigreg_loss,
                 "value": value["loss"],
             },
             metrics=metrics,
-            model_output=model_output,
+            current_state=model_output.state[:, -1],
             sample_count=sample_count,
         )
 
@@ -288,6 +331,7 @@ class SFT2Algorithm:
 
 __all__ = [
     "SFT2Algorithm",
+    "SFT2SIGRegStepOutput",
     "SFT2StepOutput",
     "require_sft2_wm_history",
 ]
