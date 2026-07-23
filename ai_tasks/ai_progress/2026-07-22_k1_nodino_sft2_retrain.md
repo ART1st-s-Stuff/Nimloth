@@ -206,6 +206,9 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - 达到 step1 stop gate 后主动取消，Slurm 状态 `CANCELLED`、elapsed `00:11:39`；
   无 OOM、CUDA error、NaN、Inf 或 traceback，dgx-04 已恢复 idle、8 GPU 全释放。
   smoke 禁用 checkpoint，因此不可 resume，也不能直接开启 RL。
+- `scancel` 杀死异步 W&B client 后，使用原 internal ID `go89t9yi` 只补传已落盘的
+  step1 指标并 clean finish；最终 state=`finished`、summary 中
+  `smoke_status=goal_reached_then_cancelled`，没有创建重复 run。
 - 结论：旧 formal 的 B=2/GA=4/world8 并行参数在修正语义后已通过 OOM gate；但
   首步约 445 秒，若有代表性则正式 10 epochs 仍不可接受。下一步应先由人类决定
   是否提交多步 throughput gate，不能直接把本 smoke 当作正式重训或 RL 产物。

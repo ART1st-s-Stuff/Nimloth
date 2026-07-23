@@ -20,6 +20,8 @@
   idle、8 卡释放。checkpoint 被显式禁用，因此 ID39 不可 resume、也不能作为 RL
   初始化。约 445 秒的首步仍很慢；正式 10-epoch 重训前应先做更长 throughput gate，
   不能仅凭无 OOM 直接提交长期任务。
+- W&B 原 run `go89t9yi` 已恢复同一 ID 补传落盘 step1 指标并 clean finish，最终
+  state=`finished`、`smoke_status=goal_reached_then_cancelled`，没有创建重复 run。
 
 ## 2026-07-23：k=1、无 DINO、H=4 SFT2 首次重训 OOM
 
