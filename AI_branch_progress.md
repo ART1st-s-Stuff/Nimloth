@@ -1345,3 +1345,12 @@
 - 首个 optimizer step finite：total 7.707960、WM 0.274856、value 0.211024、CE
   7.469451，peak allocated/reserved 48.81/48.98 GiB。首步四个 microbatch 均因
   实际 B<2 跳过 SIGReg，后续 batch 和首个 checkpoint 仍在监控；RL 尚未开启。
+
+## 2026-07-23：ID38 已取消并删除
+
+- sampler 精确统计显示 46,524 个 H=4 windows 全部单独成 batch，实际 B 恒为 1，
+  SIGReg 永远跳过；共需 14,540 optimizer steps，按实测约 339 秒/step，10 epochs
+  ETA 约 57 天。
+- 人类判定速度不可接受并要求立即停止。job `484910` 已取消，dgx-17 的 8 卡全部
+  释放；约 14 GB 的 ID38 输出目录已永久删除，因此无 checkpoint 可恢复、不可用于
+  RL。共享 cache、SFT1、ID37 和 W&B 云端记录未删除。

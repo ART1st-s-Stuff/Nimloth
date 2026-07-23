@@ -146,3 +146,17 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - 首步 `sigreg_loss` 仍为空，说明图片预算打包出的这四个 rank-local microbatch
   实际窗口数不足 2，触发小 batch guard；需继续观察后续 batch 是否产生 finite
   SIGReg。任务保持 RUNNING，首个周期 checkpoint 尚未到时，RL 尚未开启。
+
+## 2026-07-23：ID38 因不可接受的 ETA 停止并删除产物
+
+- 只读 sampler 统计确认 46,524 个有效 H=4 windows 被图片预算打包成 46,524 个
+  microbatches，实际 B 全部为 1；因此 SIGReg 在整个 run 都不会执行。每 rank 每
+  epoch 5,816 microbatches、GA4 后 1,454 optimizer steps，10 epochs 共 14,540
+  steps。
+- 前 8 steps 平均约 339 秒，连续运行 ETA 约 57 天；48 小时 allocation 仅能完成
+  约 500 steps。人类明确判定该速度不可接受并要求立即停止。
+- job `484910` 于 `00:58:20` 被取消，dgx-17 已恢复 idle、8 GPU 全部释放。随后按
+  人类要求永久删除 ID38 输出目录（删除前约 14 GB）；`latest` checkpoint、CSV、
+  本地 W&B 文件及日志均已删除，任务不可 resume，也不能用于 RL。
+- 共享 v2 preprocess cache、ID37 smoke、SFT1 初始化和 W&B 云端 run `zc0y6j3c`
+  未删除。
