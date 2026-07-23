@@ -27,10 +27,15 @@ DDP、optimizer、EMA 或 checkpoint。`SFT2ModelRuntime` 统一持有训练侧 
 target-state 梯度路径与 Backbone EMA；不等长分布式验证只解除这个 runtime 的
 模型包装。
 公共 Backbone input builder 只负责 prompt 到张量的转换；`SFT2BatchAssembler`
-负责把 DataLoader 的扁平行恢复成 `SFT2Batch(B,H)`，并分别装配在线 current、
+负责把 DataLoader 的扁平行恢复成 `SFT2Batch(B,T)`（`1<=T<=H`），并分别装配在线 current、
 在线 final state 与冻结 Backbone 的 next-state target。
 
-SIGReg 只在训练阶段计算。每个窗口用同一个在线 Backbone 编码真实状态
-`s_0 ... s_H`，`SequenceSIGReg` 接收 `(B,H+1,D)`；EMA/target state 不进入这个
-统计量。`B<2` 时保留其他目标并记录该批跳过 SIGReg；验证集不计算 SIGReg。
-`TrajectoryWindowBatchSampler` 明确定义窗口，`batch_size` 表示窗口数 `B`。
+一个样本的统计单位是当前 transition，不是窗口内的每个位置。CE、WM、value 与
+SIGReg 每个 current step 各计算一次；T 只提供最长 H 的真实因果上下文。旧 context
+Backbone/state 在 loss 前 detach，只有最后一行拥有 CE 和 Backbone 梯度。episode
+开头使用 T=1..H-1 的短上下文，因此每个拥有真实 next state 的 transition 每 epoch
+恰好作为一次 current step。
+
+SIGReg 只在训练阶段计算，每个 step 只接收在线 `(s_t,s_{t+1})`；
+EMA/target state 不进入这个统计量。`B<2` 时保留其他目标并记录该批跳过 SIGReg；
+验证集不计算 SIGReg。`batch_size` 表示 current step 数 `B`。

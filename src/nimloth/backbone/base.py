@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from contextlib import AbstractContextManager
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Collection, Mapping, Protocol, Sequence
 
 import torch
 from torch import nn
@@ -49,6 +49,8 @@ class Backbone(nn.Module, ABC):
         max_rows: int,
         include_lm_loss: bool = False,
         offload_saved_tensors: bool = False,
+        gradient_rows: Collection[int] | None = None,
+        lm_loss_rows: Collection[int] | None = None,
     ) -> BackboneOutput:
         """按较小的输入行组执行等价 forward。
 

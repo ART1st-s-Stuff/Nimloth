@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 
 import torch
 from torch import nn
@@ -69,6 +69,8 @@ class Qwen25VLBackbone(Backbone):
         max_rows: int,
         include_lm_loss: bool = False,
         offload_saved_tensors: bool = False,
+        gradient_rows: Collection[int] | None = None,
+        lm_loss_rows: Collection[int] | None = None,
     ) -> BackboneOutput:
         root = self.model.module if hasattr(self.model, "module") else self.model
         config = root.config
@@ -81,6 +83,10 @@ class Qwen25VLBackbone(Backbone):
             image_token_id=image_token_id,
             spatial_merge_size=spatial_merge_size,
         )
+        gradient_row_set = None if gradient_rows is None else set(gradient_rows)
+        lm_loss_row_set = None if lm_loss_rows is None else set(lm_loss_rows)
+        if (gradient_row_set is not None or lm_loss_row_set is not None) and max_rows != 1:
+            raise ValueError("selected Qwen gradient/loss rows require max_rows=1")
         def pack_saved_tensor(tensor: torch.Tensor):
             if not offload_saved_tensors or not tensor.is_cuda or tensor.is_leaf:
                 return False, tensor
@@ -93,7 +99,14 @@ class Qwen25VLBackbone(Backbone):
             return tensor.to(device, non_blocking=True)
 
         outputs: list[BackboneOutput] = []
-        for chunk in chunks:
+        for row_index, chunk in enumerate(chunks):
+            row_has_gradient = (
+                gradient_row_set is None or row_index in gradient_row_set
+            )
+            row_has_lm_loss = (
+                include_lm_loss
+                and (lm_loss_row_set is None or row_index in lm_loss_row_set)
+            )
             saved_tensor_context = (
                 torch.autograd.graph.saved_tensors_hooks(
                     pack_saved_tensor,
@@ -102,11 +115,14 @@ class Qwen25VLBackbone(Backbone):
                 if offload_saved_tensors
                 else contextlib.nullcontext()
             )
-            with saved_tensor_context:
+            gradient_context = (
+                contextlib.nullcontext() if row_has_gradient else torch.no_grad()
+            )
+            with gradient_context, saved_tensor_context:
                 outputs.append(
                     self.forward(
                         BackboneBatch(chunk),
-                        include_lm_loss=include_lm_loss,
+                        include_lm_loss=row_has_lm_loss,
                     )
                 )
         hidden = torch.cat([output.hidden for output in outputs], dim=0)
@@ -117,7 +133,7 @@ class Qwen25VLBackbone(Backbone):
         valid_label_counts: list[int] = []
         for chunk, output in zip(chunks, outputs, strict=True):
             if output.lm_loss is None:
-                raise RuntimeError("Qwen chunk did not return LM loss")
+                continue
             labels = chunk.get("labels")
             if labels is None:
                 raise ValueError("include_lm_loss requires labels")

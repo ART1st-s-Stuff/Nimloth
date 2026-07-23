@@ -1,4 +1,4 @@
-"""SFT2 固定长度轨迹窗口的 DataLoader batch sampler。"""
+"""SFT2 单步 ownership 与真实短历史的 DataLoader batch sampler。"""
 
 from __future__ import annotations
 
@@ -9,13 +9,15 @@ from collections.abc import Iterator, Sequence
 
 from torch.utils.data import Sampler
 
-from nimloth.rollout.transitions import TransitionSample
+from nimloth.rollout.transitions import TransitionContextIndex, TransitionSample
 
 
-class TrajectoryWindowBatchSampler(Sampler[list[int]]):
-    """把 ``B`` 个长度为 ``H`` 的连续 transition 窗口展平成 DataLoader 行。
+class TrajectoryWindowBatchSampler(Sampler[list[TransitionContextIndex]]):
+    """把 ``B`` 个最长为 ``H`` 的单步上下文展平成 DataLoader 行。
 
-    每个窗口对应真实状态 ``s_0 ... s_H`` 和动作 ``a_0 ... a_{H-1}``。
+    每个 transition 恰好作为一次当前 step。episode 开头使用真实的短上下文，
+    后续 step 使用最多 ``H`` 个 state/action；不伪造 padding，也不在重叠窗口中
+    重复计算旧 step 的 loss。
     DataLoader 仍读取逐 transition 数据，但输出索引严格按 window-major、
     time-minor 排列，因此 SFT2 assembler 可以无歧义地恢复 ``(B,H)``。
     """
@@ -34,6 +36,7 @@ class TrajectoryWindowBatchSampler(Sampler[list[int]]):
         drop_last: bool = False,
         max_images_per_batch: int | None = None,
         max_transition_rows_per_batch: int | None = None,
+        backbone_rows_per_forward: int | None = None,
         pad_to_equal_batches: bool = True,
     ) -> None:
         if history_size < 1:
@@ -78,6 +81,7 @@ class TrajectoryWindowBatchSampler(Sampler[list[int]]):
             "drop_last": drop_last,
             "max_images_per_batch": max_images_per_batch,
             "max_transition_rows_per_batch": max_transition_rows_per_batch,
+            "backbone_rows_per_forward": backbone_rows_per_forward,
         }
         self._base_batches = self._pack_windows(
             windows,
@@ -103,7 +107,7 @@ class TrajectoryWindowBatchSampler(Sampler[list[int]]):
         samples: Sequence[TransitionSample],
         history_size: int,
     ) -> list[tuple[int, ...]]:
-        """枚举所有拥有 ``H`` 个动作和 ``H+1`` 个真实状态的滑动窗口。"""
+        """为每个拥有真实 next state 的 step 构造一次最长 ``H`` 的上下文。"""
 
         by_record: dict[str, list[int]] = defaultdict(list)
         for index, sample in enumerate(samples):
@@ -112,23 +116,24 @@ class TrajectoryWindowBatchSampler(Sampler[list[int]]):
         windows: list[tuple[int, ...]] = []
         for indices in by_record.values():
             indices.sort(key=lambda index: samples[index].step_index)
-            for start in range(0, len(indices) - history_size + 1):
-                window = tuple(indices[start : start + history_size])
-                steps = [samples[index].step_index for index in window]
-                if any(
-                    right != left + 1
-                    for left, right in zip(steps, steps[1:])
+            consecutive: list[int] = []
+            for index in indices:
+                if consecutive and (
+                    samples[index].step_index
+                    != samples[consecutive[-1]].step_index + 1
+                ):
+                    consecutive = []
+                consecutive.append(index)
+                sample = samples[index]
+                if (
+                    sample.next_prefix_messages is None
+                    or sample.next_prefix_image_paths is None
                 ):
                     continue
-                # 每个动作都必须有真实 next observation；缺失 target 的 legacy
-                # transition 不能伪装成 LeWM 序列。
-                if not all(
-                    samples[index].next_prefix_messages is not None
-                    and samples[index].next_prefix_image_paths is not None
-                    for index in window
-                ):
-                    continue
-                windows.append(window)
+                windows.append(tuple(consecutive[-history_size:]))
+        # 同一 microbatch 只能共享一个真实 context length；按长度稳定分组后再打包，
+        # 避免每条 trajectory 开头的短上下文都退化成 singleton batch。
+        windows.sort(key=len)
         return windows
 
     @classmethod
@@ -142,41 +147,64 @@ class TrajectoryWindowBatchSampler(Sampler[list[int]]):
         drop_last: bool,
         max_images_per_batch: int | None,
         max_transition_rows_per_batch: int | None,
-    ) -> list[list[int]]:
+        backbone_rows_per_forward: int | None,
+    ) -> list[list[TransitionContextIndex]]:
         """按窗口数及可选图片预算打包，单个超预算窗口仍保留。"""
 
-        batches: list[list[int]] = []
+        batches: list[list[TransitionContextIndex]] = []
         current_windows: list[tuple[int, ...]] = []
         current_images = 0
 
         def flush() -> None:
             nonlocal current_windows, current_images
             if current_windows:
-                batches.append(
-                    [index for window in current_windows for index in window]
-                )
+                rows: list[TransitionContextIndex] = []
+                for window in current_windows:
+                    for position, index in enumerate(window):
+                        rows.append(
+                            TransitionContextIndex(
+                                sample_index=index,
+                                context_length=len(window),
+                                is_current_step=position == len(window) - 1,
+                            )
+                        )
+                batches.append(rows)
             current_windows = []
             current_images = 0
 
         row_limit = max_transition_rows_per_batch
         for window in windows:
-            image_cost = cls._window_image_cost(window, samples)
+            image_cost = cls._window_image_cost(
+                window,
+                samples,
+                sequential_rows=backbone_rows_per_forward == 1,
+            )
             next_window_count = len(current_windows) + 1
+            changes_context_length = bool(
+                current_windows and len(current_windows[0]) != len(window)
+            )
             exceeds_window_count = next_window_count > batch_size
             exceeds_rows = (
                 row_limit is not None
-                and next_window_count * history_size > row_limit
+                and next_window_count * len(window) > row_limit
             )
             exceeds_images = (
-                max_images_per_batch is not None
+                backbone_rows_per_forward != 1
+                and max_images_per_batch is not None
                 and current_images + image_cost > max_images_per_batch
             )
             if current_windows and (
-                exceeds_window_count or exceeds_rows or exceeds_images
+                changes_context_length
+                or exceeds_window_count
+                or exceeds_rows
+                or exceeds_images
             ):
                 flush()
             current_windows.append(window)
-            current_images += image_cost
+            if backbone_rows_per_forward == 1:
+                current_images = max(current_images, image_cost)
+            else:
+                current_images += image_cost
         if current_windows and not (
             drop_last
             and max_images_per_batch is None
@@ -189,34 +217,50 @@ class TrajectoryWindowBatchSampler(Sampler[list[int]]):
     def _window_image_cost(
         window: tuple[int, ...],
         samples: Sequence[TransitionSample],
+        *,
+        sequential_rows: bool,
     ) -> int:
-        """估算三条顺序执行的 forward 中单次最大图片引用数。"""
+        """按实际逐 row forward 估算单次最大图片引用数。"""
 
-        current = sum(len(samples[index].prefix_image_paths) for index in window)
-        targets = sum(
-            len(samples[index].next_prefix_image_paths or ())
-            for index in window
-        )
-        online_tail = len(samples[window[-1]].next_prefix_image_paths or ())
-        return max(current, targets, online_tail)
+        current_images = [len(samples[index].prefix_image_paths) for index in window]
+        next_state = len(samples[window[-1]].next_prefix_image_paths or ())
+        if sequential_rows:
+            return max((*current_images, next_state))
+        return max(sum(current_images), next_state)
 
     @property
     def window_count(self) -> int:
         """返回进入本 sampler 的有效窗口总数，便于启动时校验数据。"""
 
         return sum(
-            len(batch) // self.history_size
+            sum(1 for row in batch if row.is_current_step)
+            for batch in self._base_batches
+        )
+
+    @property
+    def current_steps_per_batch(self) -> tuple[int, ...]:
+        """返回每个全局 microbatch 实际拥有的 current step 数。"""
+
+        return tuple(
+            sum(1 for row in batch if row.is_current_step)
             for batch in self._base_batches
         )
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
 
-    def __iter__(self) -> Iterator[list[int]]:
+    def __iter__(self) -> Iterator[list[TransitionContextIndex]]:
         rng = random.Random(self.seed + self.epoch)
         if self.shuffle and self.shuffle_windows:
-            windows = list(self._windows)
-            rng.shuffle(windows)
+            windows = []
+            for context_length in range(1, self.history_size + 1):
+                same_length = [
+                    window
+                    for window in self._windows
+                    if len(window) == context_length
+                ]
+                rng.shuffle(same_length)
+                windows.extend(same_length)
             batches = self._pack_windows(windows, **self._pack_options)
         else:
             batches = list(self._base_batches)

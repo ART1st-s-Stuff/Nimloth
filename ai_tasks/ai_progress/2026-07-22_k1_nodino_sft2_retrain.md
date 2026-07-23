@@ -160,3 +160,28 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   本地 W&B 文件及日志均已删除，任务不可 resume，也不能用于 RL。
 - 共享 v2 preprocess cache、ID37 smoke、SFT1 初始化和 W&B 云端 run `zc0y6j3c`
   未删除。
+
+## 2026-07-23：纠正隐藏的 multi-step loss 重复计权
+
+- 人类明确指出旧实现错误：`Agent.forward_sequence()` 把重叠 window 的 B*H 行
+  隐藏成一个 `lm_loss`，但实际对同一 transition 重复计算 CE，WM/value 也对 H
+  个位置重复取 loss；这不是标准 SFT 的逐 step 语义。
+- sampler 已改为每个拥有真实 next state 的 transition 恰好拥有一次 current-step
+  loss。episode 开头使用 T=1/2/3 的真实短 context，之后最多 T=H=4；同一
+  microbatch 只打包相同 T，不丢弃开头 step、不伪造 padding。
+- algorithm 显式调用 `forward_step_from_history`，只使用最后一项 action、value
+  target 和 next target。CE 只属于每个 context 的最后一行；旧 Backbone row 在
+  no-grad 下编码，projected history 在进入 WM predictor 前 detach。ValueHead
+  只读取当前 `s_t`，其早期历史由累积 Agent prompt 提供。WM/value 各
+  计算一次，SIGReg 每 step 只计算一次在线 `(s_t,s_{t+1})`。
+- Qwen label 构造已核对为 `last_assistant_span_v1`：即使 current prompt 累积了
+  更早 assistant turn，CE label 也只覆盖最后一个当前 action，不会在单行内
+  重复监督旧 action。
+- 所有 Qwen 路径（history/current、target、SIGReg next）均支持 row=1 顺序 forward；
+  sampler 的 image budget 在该模式下按真实单 row 峰值计算，不再把 H 个累积 prefix
+  图片数相加。新增实际 B 分布启动日志，并在启用 SIGReg 但所有 microbatch B=1
+  时直接拒绝训练。
+- 新增 known error `E0039_do_not_hide_repeated_step_losses_inside_history_forward.md`
+  及 current-step ownership、CE 选择、旧 history 零梯度、短 context、SIGReg pair
+  测试。当前仅 `compileall` 与 `git diff --check` 通过，尚未在远端 PyTorch/pytest
+  和 GPU 上验证，禁止据此启动正式训练。

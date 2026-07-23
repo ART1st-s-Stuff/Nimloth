@@ -249,6 +249,7 @@ def build_data_bundle(
         seed=config.seed,
         max_images_per_batch=image_budget,
         max_transition_rows_per_batch=row_budget,
+        backbone_rows_per_forward=config.backbone_rows_per_forward,
         pad_to_equal_batches=True,
     )
     val_batch_sampler = TrajectoryWindowBatchSampler(
@@ -261,17 +262,27 @@ def build_data_bundle(
         seed=config.seed,
         max_images_per_batch=image_budget,
         max_transition_rows_per_batch=row_budget,
+        backbone_rows_per_forward=config.backbone_rows_per_forward,
         pad_to_equal_batches=False,
     )
     if train_batch_sampler.window_count == 0:
         raise ValueError(
-            "SFT2 training data has no complete LeWM windows: "
+            "SFT2 training data has no transition with a real next state: "
             f"history_size={config.history_size}"
         )
     if val_batch_sampler.window_count == 0:
         raise ValueError(
-            "SFT2 validation data has no complete LeWM windows: "
+            "SFT2 validation data has no transition with a real next state: "
             f"history_size={config.history_size}"
+        )
+    if (
+        float(config.lambda_sigreg) > 0.0
+        and int(config.batch_size) >= 2
+        and max(train_batch_sampler.current_steps_per_batch, default=0) < 2
+    ):
+        raise ValueError(
+            "SIGReg requires actual current-step batch size >= 2, but sampler "
+            "packed every training microbatch as B=1"
         )
 
     train_loader = DataLoader(

@@ -77,36 +77,11 @@ class Agent(nn.Module):
         batch: BackboneBatch,
         *,
         include_lm_loss: bool = False,
+        backbone_rows_per_forward: int | None = None,
+        offload_backbone_chunk_activations: bool = False,
     ) -> AgentStateOutput:
         """把真实 observation batch 编码为 WM state，不执行或模拟动作。"""
 
-        backbone_output = self.backbone(
-            batch,
-            include_lm_loss=include_lm_loss,
-        )
-        return AgentStateOutput(
-            hidden=backbone_output.hidden,
-            state=self.wm.project_state(backbone_output.hidden),
-            lm_loss=backbone_output.lm_loss,
-        )
-
-    def forward_sequence(
-        self,
-        batch: BackboneBatch,
-        action_indices: torch.Tensor,
-        *,
-        include_lm_loss: bool = False,
-        backbone_rows_per_forward: int | None = None,
-        offload_backbone_chunk_activations: bool = False,
-    ) -> AgentOutput:
-        """对 ``(B,H)`` 真实 state/action 窗口执行完整模型前向。"""
-
-        if action_indices.ndim != 2:
-            raise ValueError(
-                "sequence action_indices must have shape (B,H), "
-                f"got {tuple(action_indices.shape)}"
-            )
-        batch_size, history_size = action_indices.shape
         if backbone_rows_per_forward is None:
             backbone_output = self.backbone(
                 batch,
@@ -118,6 +93,60 @@ class Agent(nn.Module):
                 max_rows=backbone_rows_per_forward,
                 include_lm_loss=include_lm_loss,
                 offload_saved_tensors=offload_backbone_chunk_activations,
+            )
+        return AgentStateOutput(
+            hidden=backbone_output.hidden,
+            state=self.wm.project_state(backbone_output.hidden),
+            lm_loss=backbone_output.lm_loss,
+        )
+
+    def forward_step_from_history(
+        self,
+        batch: BackboneBatch,
+        action_indices: torch.Tensor,
+        *,
+        include_lm_loss: bool = False,
+        backbone_rows_per_forward: int | None = None,
+        offload_backbone_chunk_activations: bool = False,
+    ) -> AgentOutput:
+        """对每个当前 step 编码最长 ``H`` 的只读历史上下文。
+
+        CE 与 Backbone 梯度只属于每个 context 的最后一行。旧 state 作为
+        WM 的显式时序 context，但在进入 predictor 前 detach。ValueHead 只读取
+        当前 ``s_t``；其更老历史来自构造 ``s_t`` 的累计 Agent prompt。
+        """
+
+        if action_indices.ndim != 2:
+            raise ValueError(
+                "sequence action_indices must have shape (B,H), "
+                f"got {tuple(action_indices.shape)}"
+            )
+        batch_size, history_size = action_indices.shape
+        current_rows = tuple(
+            range(history_size - 1, batch_size * history_size, history_size)
+        )
+        if (
+            torch.is_grad_enabled()
+            and history_size > 1
+            and backbone_rows_per_forward is None
+        ):
+            raise ValueError(
+                "training a multi-step context requires chunked Backbone forward "
+                "so only the current row owns CE and Backbone gradients"
+            )
+        if backbone_rows_per_forward is None:
+            backbone_output = self.backbone(
+                batch,
+                include_lm_loss=include_lm_loss,
+            )
+        else:
+            backbone_output = self.backbone.forward_chunked(
+                batch,
+                max_rows=backbone_rows_per_forward,
+                include_lm_loss=include_lm_loss,
+                offload_saved_tensors=offload_backbone_chunk_activations,
+                gradient_rows=current_rows,
+                lm_loss_rows=current_rows,
             )
         hidden = backbone_output.hidden
         expected_rows = batch_size * history_size
@@ -132,14 +161,20 @@ class Agent(nn.Module):
             *hidden.shape[1:],
         )
         state_sequence = self.wm.project_state_sequence(hidden_sequence)
+        if history_size > 1:
+            state_sequence = torch.cat(
+                (state_sequence[:, :-1].detach(), state_sequence[:, -1:]),
+                dim=1,
+            )
+        predicted_sequence = self.wm.predict_state_sequence(
+            state_sequence,
+            action_indices,
+        )
         return AgentOutput(
             hidden=hidden_sequence,
             state=state_sequence,
-            predicted_next_state=self.wm.predict_state_sequence(
-                state_sequence,
-                action_indices,
-            ),
-            action_values=self.wm.predict_action_values(state_sequence),
+            predicted_next_state=predicted_sequence[:, -1],
+            action_values=self.wm.predict_action_values(state_sequence[:, -1]),
             lm_loss=(
                 backbone_output.lm_loss if include_lm_loss else None
             ),

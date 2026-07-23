@@ -16,7 +16,8 @@ from nimloth.util.cache.schema import (
     transition_sample_id,
 )
 from nimloth.agent import bind_image_placeholders
-from nimloth.rollout.transitions import TransitionSample
+from nimloth.rollout.transitions import TransitionContextIndex, TransitionSample
+
 
 class _MmapShardStore:
     """Per-DataLoader-worker LRU of mmap-backed torch shards."""
@@ -112,6 +113,8 @@ class CompactCachedTransitionCollator:
                     "success": entry["success"],
                     "messages": entry.get("messages"),
                     "next_messages": entry.get("next_messages"),
+                    "context_length": entry.get("context_length"),
+                    "is_current_step": entry.get("is_current_step"),
                 }
             )
 
@@ -186,7 +189,10 @@ class CachedTransitionDataset(Dataset):
             raise IndexError(f"compact cache index {index} missing from shard {shard_index}")
         return dict(entries[local_index])
 
-    def __getitem__(self, index: int) -> dict[str, Any]:
+    def __getitem__(self, index: int | TransitionContextIndex) -> dict[str, Any]:
+        context_index = index if isinstance(index, TransitionContextIndex) else None
+        if context_index is not None:
+            index = context_index.sample_index
         sample = self.samples[index]
         if self.is_compact:
             entry = self._compact_entry(index)
@@ -218,4 +224,7 @@ class CachedTransitionDataset(Dataset):
                 sample.next_prefix_messages,
                 sample.next_prefix_image_paths,
             )
+        if context_index is not None:
+            entry["context_length"] = context_index.context_length
+            entry["is_current_step"] = context_index.is_current_step
         return entry

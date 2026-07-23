@@ -1354,3 +1354,13 @@
 - 人类判定速度不可接受并要求立即停止。job `484910` 已取消，dgx-17 的 8 卡全部
   释放；约 14 GB 的 ID38 输出目录已永久删除，因此无 checkpoint 可恢复、不可用于
   RL。共享 cache、SFT1、ID37 和 W&B 云端记录未删除。
+
+## 2026-07-23：SFT2 改为标准逐 step loss ownership
+
+- 已确认旧 B*H sequence forward 会让重叠 window 内的 transition 重复计算 CE、
+  WM 和 value，且 `algorithm.py` 隐藏了该真实权重；该实现判错并登记 E0039。
+- 新实现让每个 transition 每 epoch 恰好作为一次 current step，T=1..H 只提供真实
+  历史；CE/WM/value/SIGReg 各计算一次，旧 Backbone/history state 不接收梯度。
+- row=1 执行下 image budget 改按真实单 row 峰值，启动时记录实际 B 分布并拒绝
+  `lambda_sigreg>0` 且全 B=1 的任务。静态检查通过，远端语义测试和 GPU smoke
+  尚未执行。

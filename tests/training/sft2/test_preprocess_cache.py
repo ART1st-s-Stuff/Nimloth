@@ -13,7 +13,7 @@ from nimloth.util.cache import (
     encode_transition_item,
 )
 from nimloth.util.cache.encoding import _expand_qwen_image_tokens
-from nimloth.rollout.transitions import TransitionSample
+from nimloth.rollout.transitions import TransitionContextIndex, TransitionSample
 
 
 class FakeTokenizer:
@@ -290,7 +290,24 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     ]
     dataset = CachedTransitionDataset(cache_dir, samples, max_open_shards=1)
     collator = CompactCachedTransitionCollator(cache_dir, max_open_shards=1)
-    batch = collator([dataset[0], dataset[1]])
+    history_row = dataset[
+        TransitionContextIndex(
+            sample_index=0,
+            context_length=2,
+            is_current_step=False,
+        )
+    ]
+    current_row = dataset[
+        TransitionContextIndex(
+            sample_index=1,
+            context_length=2,
+            is_current_step=True,
+        )
+    ]
+    batch = collator([history_row, current_row])
+
+    assert [item["context_length"] for item in batch["items"]] == [2, 2]
+    assert [item["is_current_step"] for item in batch["items"]] == [False, True]
 
     current_pixels = torch.cat(
         [row["pixel_values"] for row in batch["current_enc_rows"]],

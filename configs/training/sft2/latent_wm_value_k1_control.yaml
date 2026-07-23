@@ -31,10 +31,11 @@ train:
   max_pixels: 100352
   emb_dim: 1024
   history_size: 4
-  # H=4 的四行分开执行 Qwen，随后恢复完整序列计算 WM/value/SIGReg。
+  # H=4 的历史行只做无梯度 context；当前行独占 CE/WM/value/SIGReg。
   backbone_rows_per_forward: 1
+  # current s_t 与 SIGReg 的在线 s_{t+1} 都保留 Backbone 图，B=2 继续 offload。
   offload_backbone_chunk_activations: true
-  # batch_size 表示 LeWM 窗口数 B，不是独立 transition 行数。
+  # batch_size 表示每个 microbatch 最多拥有的 current step 数 B。
   batch_mode: trajectory_image_budget
   max_images_per_batch: 12
   max_steps_per_trajectory: 16

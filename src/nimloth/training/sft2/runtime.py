@@ -24,14 +24,26 @@ class SFT2ModelRuntime:
     agent: Agent
     backbone_ema: BackboneEMA | None = None
 
-    def target_state(self, batch: BackboneBatch) -> torch.Tensor:
+    def target_state(
+        self,
+        batch: BackboneBatch,
+        *,
+        backbone_rows_per_forward: int | None = None,
+    ) -> torch.Tensor:
         """冻结 target Backbone，但保留 target 侧 StateProjector 梯度。"""
 
         with torch.no_grad(), self._backbone_context():
-            hidden = self.agent.backbone(
-                batch,
-                include_lm_loss=False,
-            ).hidden.detach()
+            if backbone_rows_per_forward is None:
+                hidden = self.agent.backbone(
+                    batch,
+                    include_lm_loss=False,
+                ).hidden.detach()
+            else:
+                hidden = self.agent.backbone.forward_chunked(
+                    batch,
+                    max_rows=backbone_rows_per_forward,
+                    include_lm_loss=False,
+                ).hidden.detach()
         return self.agent.wm.project_state(hidden)
 
     def evaluation_context(self) -> AbstractContextManager[object]:

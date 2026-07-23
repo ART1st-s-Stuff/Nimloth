@@ -6,6 +6,7 @@ import json
 import math
 import os
 import random
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -423,6 +424,18 @@ def train_sft2(args=None) -> int:
     train_loader = data.train_loader
     val_loader = data.val_loader
     train_batch_sampler = data.train_batch_sampler
+    if is_main():
+        print(
+            json.dumps(
+                {
+                    "sft2_step_ownership": "current_step_once_v1",
+                    "train_current_steps": train_batch_sampler.window_count,
+                    "actual_current_steps_per_microbatch": dict(
+                        sorted(Counter(train_batch_sampler.current_steps_per_batch).items())
+                    ),
+                }
+            )
+        )
 
     steps_per_epoch = max(1, math.ceil(len(train_loader) / args.grad_accum))
     total_steps = steps_per_epoch * args.epochs
@@ -452,6 +465,7 @@ def train_sft2(args=None) -> int:
         "history_size": int(args.history_size),
         "backbone_rows_per_forward": args.backbone_rows_per_forward,
         "offload_backbone_chunk_activations": args.offload_backbone_chunk_activations,
+        "sample_ownership_version": "current_step_once_v1",
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }

@@ -102,5 +102,5 @@ def test_window_without_final_real_state_is_rejected() -> None:
         "nimloth.backbone.qwen25vl.input.build_qwen_batch",
         side_effect=fake_build,
     ):
-        with pytest.raises(ValueError, match="real next state for every action"):
+        with pytest.raises(ValueError, match="current step requires a real next state"):
             _assembler().prepare([_item("terminal", None)])

@@ -57,6 +57,24 @@ class TransitionSample:
     split: str = "train"
 
 
+@dataclass(frozen=True)
+class TransitionContextIndex:
+    """DataLoader index carrying one step's real context layout."""
+
+    sample_index: int
+    context_length: int
+    is_current_step: bool
+
+
+@dataclass(frozen=True)
+class ContextualTransitionSample:
+    """A transition row annotated with its role in one context window."""
+
+    sample: TransitionSample
+    context_length: int
+    is_current_step: bool
+
+
 def bind_transition_prompt(sample: TransitionSample) -> list[dict[str, Any]]:
     """绑定单步 transition 当前 prompt 的真实图片。"""
 
@@ -323,5 +341,14 @@ class TransitionJsonlDataset(Dataset[TransitionSample]):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, index: int) -> TransitionSample:
+    def __getitem__(
+        self,
+        index: int | TransitionContextIndex,
+    ) -> TransitionSample | ContextualTransitionSample:
+        if isinstance(index, TransitionContextIndex):
+            return ContextualTransitionSample(
+                sample=self.samples[index.sample_index],
+                context_length=index.context_length,
+                is_current_step=index.is_current_step,
+            )
         return self.samples[index]

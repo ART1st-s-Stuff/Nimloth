@@ -39,6 +39,29 @@ class _TensorBackbone(Backbone):
             lm_loss=hidden.mean() if include_lm_loss else None,
         )
 
+    def forward_chunked(
+        self,
+        batch: BackboneBatch,
+        *,
+        max_rows: int,
+        include_lm_loss: bool = False,
+        gradient_rows=None,
+        lm_loss_rows=None,
+        **_kwargs,
+    ) -> BackboneOutput:
+        assert max_rows == 1
+        self.calls += 1
+        source = batch.tensors["hidden"]
+        gradient_rows = set(range(source.shape[0])) if gradient_rows is None else set(gradient_rows)
+        hidden = torch.stack(
+            [row if index in gradient_rows else row.detach() for index, row in enumerate(source)]
+        )
+        loss_rows = list(range(hidden.shape[0])) if lm_loss_rows is None else list(lm_loss_rows)
+        return BackboneOutput(
+            hidden=hidden,
+            lm_loss=hidden[loss_rows].mean() if include_lm_loss else None,
+        )
+
     def with_model(self, model: torch.nn.Module) -> "_TensorBackbone":
         return self
 
@@ -154,6 +177,7 @@ def _algorithm(
             ce_weight=1.0,
             value_rank_margin=0.1,
             value_rank_weight=1.0,
+            backbone_rows_per_forward=1,
         ),
         runtime,
         backbone,
@@ -238,7 +262,7 @@ def test_unwrapped_runtime_applies_ema_to_its_own_backbone_model() -> None:
     assert ema.models == [validation_runtime.agent.backbone.model]
 
 
-def test_sft2_training_step_uses_agent_forward_and_two_sided_projector_gradient() -> None:
+def test_sft2_training_step_computes_one_current_step_loss_and_detaches_history() -> None:
     algorithm, runtime, backbone, projector = _algorithm()
     batch = _batch()
 
@@ -249,8 +273,21 @@ def test_sft2_training_step_uses_agent_forward_and_two_sided_projector_gradient(
     assert output.model_output.lm_loss is not None
     assert projector.outputs[0].grad is not None
     assert projector.outputs[1].grad is not None
-    assert batch.current.tensors["hidden"].grad is not None
+    current_grad = batch.current.tensors["hidden"].grad
+    assert current_grad is not None
+    assert torch.count_nonzero(current_grad.reshape(2, 2, 4)[:, :-1]) == 0
+    assert torch.count_nonzero(current_grad.reshape(2, 2, 4)[:, -1]) > 0
     assert batch.next.tensors["hidden"].grad is None
+
+
+def test_sft2_ce_supervises_each_contexts_current_step_only() -> None:
+    algorithm, runtime, _, _ = _algorithm()
+    batch = _batch()
+
+    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
+
+    expected = batch.current.tensors["hidden"].reshape(2, 2, 4)[:, -1].mean()
+    torch.testing.assert_close(output.losses["lm"], expected)
 
 
 def test_sft2_predictor_receives_full_configured_history_axis() -> None:
@@ -266,10 +303,11 @@ def test_sft2_predictor_receives_full_configured_history_axis() -> None:
     output = algorithm.training_step(runtime, _batch(), wm_weight=1.0)
 
     assert seen == [((2, 2, 4), (2, 2))]
-    assert output.model_output.predicted_next_state.shape == (2, 2, 4)
+    assert output.model_output.predicted_next_state.shape == (2, 4)
+    assert output.model_output.action_values.shape == (2, 3)
 
 
-def test_sft2_sigreg_receives_online_h_plus_one_state_sequence() -> None:
+def test_sft2_sigreg_receives_each_current_next_pair_once() -> None:
     recording = _RecordingSIGReg()
     sigreg = SequenceSIGReg(regularizer=recording)
     algorithm, runtime, _, projector = _algorithm(sigreg)
@@ -278,14 +316,14 @@ def test_sft2_sigreg_receives_online_h_plus_one_state_sequence() -> None:
     output = algorithm.training_step(runtime, batch, wm_weight=1.0)
 
     assert len(recording.inputs) == 1
-    assert recording.inputs[0].shape == (3, 2, 4)
-    expected = torch.cat(
+    assert recording.inputs[0].shape == (2, 2, 4)
+    expected = torch.stack(
         (
-            projector.outputs[0].reshape(2, 2, 4),
-            projector.outputs[2].unsqueeze(1),
+            projector.outputs[0].reshape(2, 2, 4)[:, -1],
+            projector.outputs[2],
         ),
-        dim=1,
-    ).transpose(0, 1)
+        dim=0,
+    )
     torch.testing.assert_close(recording.inputs[0], expected)
     assert output.losses["sigreg"] is not None
     assert output.metrics["sigreg_loss"] > 0.0

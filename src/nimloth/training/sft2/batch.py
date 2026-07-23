@@ -9,7 +9,11 @@ import torch
 
 from nimloth.backbone import BackboneBatch, BackboneInputBuilder
 from nimloth.rollout import TransitionBatch
-from nimloth.rollout.transitions import TransitionSample, transition_training_item
+from nimloth.rollout.transitions import (
+    ContextualTransitionSample,
+    TransitionSample,
+    transition_training_item,
+)
 
 
 @dataclass(frozen=True)
@@ -22,7 +26,7 @@ class CachedNextBatch:
 
 @dataclass(frozen=True)
 class SFT2Batch:
-    """SFT2 的 ``B`` 个连续窗口，每个窗口含 ``H`` 个 transition。"""
+    """SFT2 的 ``B`` 个 current step 及其相同长度真实 context。"""
 
     transitions: TransitionBatch
     online_tail: BackboneBatch
@@ -85,6 +89,19 @@ class SFT2Batch:
             self.history_size,
         )
 
+    @property
+    def current_action_indices(self) -> torch.Tensor:
+        return self.action_indices[:, -1]
+
+    @property
+    def current_value_targets(self) -> torch.Tensor:
+        return self.value_targets[:, -1]
+
+    @property
+    def current_next_indices(self) -> torch.Tensor:
+        return self.next_indices[:, -1]
+
+
 class SFT2BatchBuilder(Protocol):
     """DataLoader 输出到 SFT2 连续窗口 batch 的阶段契约。"""
 
@@ -124,9 +141,18 @@ class SFT2BatchAssembler:
 
     def collate_transition_samples(
         self,
-        batch: list[TransitionSample],
+        batch: list[TransitionSample | ContextualTransitionSample],
     ) -> list[dict[str, Any]]:
-        return [transition_training_item(sample) for sample in batch]
+        items: list[dict[str, Any]] = []
+        for row in batch:
+            if isinstance(row, ContextualTransitionSample):
+                item = transition_training_item(row.sample)
+                item["context_length"] = row.context_length
+                item["is_current_step"] = row.is_current_step
+            else:
+                item = transition_training_item(row)
+            items.append(item)
+        return items
 
     def collate_cached_transition_batch(
         self,
@@ -183,11 +209,11 @@ class SFT2BatchAssembler:
             online_tail = None
             cached_next = None
 
-        self._validate_window_items(items)
+        context_length = self._validate_window_items(items)
         if online_tail is None:
             tail_messages = [
                 items[end - 1].get("next_messages")
-                for end in range(self.history_size, len(items) + 1, self.history_size)
+                for end in range(context_length, len(items) + 1, context_length)
             ]
             if any(messages is None for messages in tail_messages):
                 raise ValueError(
@@ -216,10 +242,11 @@ class SFT2BatchAssembler:
             [
                 key_to_row[self._prompt_key(item["next_messages"])]
                 for item in items
+                if item["is_current_step"]
             ],
             dtype=torch.long,
             device=self.device,
-        )
+        ).repeat_interleave(context_length)
         return SFT2Batch(
             transitions=TransitionBatch(
                 current=current,
@@ -241,7 +268,7 @@ class SFT2BatchAssembler:
                 ),
             ),
             online_tail=online_tail,
-            history_size=self.history_size,
+            history_size=context_length,
         )
 
     def _collate_online_tail(
@@ -251,10 +278,10 @@ class SFT2BatchAssembler:
     ) -> BackboneBatch:
         """只合并每个窗口的最后一个真实 next state，供在线 SIGReg 编码。"""
 
-        self._validate_window_items(items)
+        context_length = self._validate_window_items(items)
         tail_rows = [
             rows[end - 1]
-            for end in range(self.history_size, len(rows) + 1, self.history_size)
+            for end in range(context_length, len(rows) + 1, context_length)
         ]
         if any(row is None for row in tail_rows):
             raise ValueError(
@@ -268,16 +295,27 @@ class SFT2BatchAssembler:
     def _validate_window_items(
         self,
         items: Sequence[dict[str, Any]],
-    ) -> None:
+    ) -> int:
         """在 processor 调用前检查扁平行能否还原为完整连续窗口。"""
 
-        if not items or len(items) % self.history_size != 0:
+        if not items:
+            raise ValueError("SFT2 rows must not be empty")
+        context_lengths = {int(item["context_length"]) for item in items}
+        if len(context_lengths) != 1:
+            raise ValueError("SFT2 batch must contain one context length")
+        context_length = context_lengths.pop()
+        if not 1 <= context_length <= self.history_size:
             raise ValueError(
-                "SFT2 rows must contain complete history windows: "
-                f"rows={len(items)}, history_size={self.history_size}"
+                "SFT2 context length must be in [1, history_size], "
+                f"got {context_length} for history_size={self.history_size}"
             )
-        for start in range(0, len(items), self.history_size):
-            window = items[start : start + self.history_size]
+        if len(items) % context_length != 0:
+            raise ValueError(
+                "SFT2 rows must contain complete context windows: "
+                f"rows={len(items)}, context_length={context_length}"
+            )
+        for start in range(0, len(items), context_length):
+            window = items[start : start + context_length]
             record_ids = {item["record_id"] for item in window}
             steps = [item["step_index"] for item in window]
             if len(record_ids) != 1 or any(
@@ -289,10 +327,16 @@ class SFT2BatchAssembler:
                     "trajectory, got "
                     f"{[(item['record_id'], item['step_index']) for item in window]}"
                 )
-            if any(item.get("next_messages") is None for item in window):
+            if window[-1].get("next_messages") is None:
                 raise ValueError(
-                    "SFT2 history window requires a real next state for every action"
+                    "SFT2 current step requires a real next state"
                 )
+            if [item["is_current_step"] for item in window] != [
+                *([False] * (context_length - 1)),
+                True,
+            ]:
+                raise ValueError("SFT2 context must mark only its final row current")
+        return context_length
 
     def _collate_next(
         self,
@@ -303,6 +347,8 @@ class SFT2BatchAssembler:
         unique_keys: list[str] = []
         seen: set[str] = set()
         for item, row in zip(items, rows, strict=True):
+            if not item["is_current_step"]:
+                continue
             messages = item.get("next_messages")
             if messages is None or row is None:
                 continue
@@ -347,6 +393,8 @@ class SFT2BatchAssembler:
 
         unique_messages: list[list[dict[str, Any]] | None] = [None] * len(unique_keys)
         for item in items:
+            if not item["is_current_step"]:
+                continue
             messages = item.get("next_messages")
             if messages is not None:
                 unique_messages[key_to_row[self._prompt_key(messages)]] = messages
@@ -366,6 +414,8 @@ class SFT2BatchAssembler:
         unique_keys: list[str] = []
         key_to_row: dict[str, int] = {}
         for item in items:
+            if not item["is_current_step"]:
+                continue
             messages = item.get("next_messages")
             if messages is None:
                 continue
@@ -375,8 +425,7 @@ class SFT2BatchAssembler:
                 unique_keys.append(key)
         return unique_keys, key_to_row
 
-    @staticmethod
-    def _metadata(item: dict[str, Any]) -> dict[str, Any]:
+    def _metadata(self, item: dict[str, Any]) -> dict[str, Any]:
         current_messages = item.get("messages")
         if not isinstance(current_messages, list):
             raise ValueError("transition is missing current Agent messages")
@@ -392,6 +441,16 @@ class SFT2BatchAssembler:
             "success": bool(item.get("success", False)),
             "messages": current_messages,
             "next_messages": next_messages,
+            "context_length": int(
+                self.history_size
+                if item.get("context_length") is None
+                else item["context_length"]
+            ),
+            "is_current_step": bool(
+                True
+                if item.get("is_current_step") is None
+                else item["is_current_step"]
+            ),
         }
 
     @staticmethod

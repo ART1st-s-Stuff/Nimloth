@@ -152,26 +152,24 @@ class SFT2Algorithm:
     ) -> SFT2StepOutput:
         """按照 current forward → next target → loss 的顺序完成一次计算。"""
 
-        if batch.history_size != self.history_size:
+        if not 1 <= batch.history_size <= self.history_size:
             raise ValueError(
-                "SFT2 batch history_size does not match algorithm: "
+                "SFT2 batch context length exceeds algorithm history_size: "
                 f"batch={batch.history_size}, algorithm={self.history_size}"
             )
-        model_output = runtime.agent.forward_sequence(
+        # 一个 batch row-group 只拥有一个 current step loss；history 只作为 context。
+        model_output = runtime.agent.forward_step_from_history(
             batch.current,
             batch.action_indices,
             include_lm_loss=include_lm_loss,
             backbone_rows_per_forward=self.backbone_rows_per_forward,
             offload_backbone_chunk_activations=self.offload_backbone_chunk_activations,
         )
-        target_states = runtime.target_state(batch.next)
-        aligned_targets = target_states[
-            batch.next_indices.flatten()
-        ].reshape(
-            batch.batch_size,
-            self.history_size,
-            *target_states.shape[1:],
+        target_states = runtime.target_state(
+            batch.next,
+            backbone_rows_per_forward=self.backbone_rows_per_forward,
         )
+        aligned_targets = target_states[batch.current_next_indices]
 
         wm_loss = F.mse_loss(
             model_output.predicted_next_state,
@@ -179,8 +177,8 @@ class SFT2Algorithm:
         )
         value = self._value_loss(
             model_output.action_values,
-            batch.action_indices,
-            batch.value_targets,
+            batch.current_action_indices,
+            batch.current_value_targets,
             include_ranking=include_value_ranking,
         )
         sigreg_loss = None
@@ -190,10 +188,14 @@ class SFT2Algorithm:
             and self.sigreg_weight > 0.0
         ):
             sigreg_loss = self._sigreg_loss(
-                model_output.state,
+                model_output.state[:, -1],
                 runtime.agent.encode_state(
                     batch.online_tail,
                     include_lm_loss=False,
+                    backbone_rows_per_forward=self.backbone_rows_per_forward,
+                    offload_backbone_chunk_activations=(
+                        self.offload_backbone_chunk_activations
+                    ),
                 ).state,
             )
 
@@ -270,23 +272,21 @@ class SFT2Algorithm:
 
     def _sigreg_loss(
         self,
-        current_states: torch.Tensor,
-        final_state: torch.Tensor,
+        current_state: torch.Tensor,
+        next_state: torch.Tensor,
     ) -> torch.Tensor | None:
-        """用在线 encoder 的 ``H+1`` 个真实状态构造 LeWM SIGReg 输入。"""
+        """为当前 transition 的在线 ``(s_t,s_{t+1})`` 计算一次 SIGReg。"""
 
         if self.sigreg is None or self.sigreg_weight <= 0.0:
             return None
-        if current_states.ndim != 3 or final_state.ndim != 2:
+        if current_state.ndim != 2 or next_state.ndim != 2:
             raise ValueError(
-                "SFT2 SIGReg expects current_states=(B,H,D) and final_state=(B,D), "
-                f"got {tuple(current_states.shape)} and {tuple(final_state.shape)}"
+                "SFT2 SIGReg expects current_state/next_state=(B,D), "
+                f"got {tuple(current_state.shape)} and {tuple(next_state.shape)}"
             )
-        if current_states.shape[0] != final_state.shape[0]:
+        if current_state.shape != next_state.shape:
             raise ValueError("SFT2 SIGReg state batch sizes do not match")
-        return self.sigreg(
-            torch.cat((current_states, final_state.unsqueeze(1)), dim=1)
-        )
+        return self.sigreg(torch.stack((current_state, next_state), dim=1))
 
 __all__ = [
     "SFT2Algorithm",
