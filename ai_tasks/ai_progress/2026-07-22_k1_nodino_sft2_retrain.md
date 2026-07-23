@@ -338,3 +338,15 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   本轮无optimizer step、W&B run或checkpoint，不可resume。
 - hold `485290` 已取消并释放dgx-40。后续不能擅自关闭PPO后声称原测试通过；
   需人类选择两卡actor-disabled H=4 WM/value离线smoke，或单卡direct-online PPO smoke。
+
+## 2026-07-24：引入模块化 vLLM fresh-policy handoff
+
+- 只读核对 VAGEN 后确认其8卡 online PPO 不让 environment 直接调用 FSDP
+  forward，而是使用独立 vLLM inference engine，再回到 FSDP actor update。
+- 实现提交 `89d7662`：`QwenVLLMAgentPolicy` 只返回8个 action-token score，温度/
+  top-p/采样继续使用 Agent 公共契约；`FreshRolloutManifest` 对完整 HF artifact
+  做内容指纹并禁止重复消费。trainer 允许多 rank PPO 消费该 fresh source，
+  但仍拒绝普通 static JSONL。
+- `run_vllm_online_ppo_smoke.sh` 编排同一 allocation 内8卡 vLLM rollout 和8-rank
+  FSDP单步update；保留ID43 epoch1的H=4/WM/value/PPO契约。当前仅静态验证
+  通过，远端 PyTorch/vLLM 测试与真实8卡smoke尚未执行。
