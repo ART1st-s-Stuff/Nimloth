@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-07-23：SFT2 SIGReg 改为仅新状态侧反传
+
+- 人类确认 SIGReg 数值上仍使用连续的 `(s_t,s_{t+1})`，但 `s_t` 只作为 detached
+  条件；SIGReg 梯度只进入在线 `s_{t+1}`。CE/WM/value 对每个 current transition
+  仍只计算和反传一次，不把梯度传回更老 history。
+- 提交 `6ccca36` 将 `algorithm.py` 拆成显式 `training_primary_step` 与
+  `training_sigreg_step`。loop 先 backward CE/WM/value 并删除主阶段 Tensor 引用，
+  再构建 online-next Qwen 图并 backward SIGReg，避免 ID40 同时保留两份 Qwen
+  activation。SIGReg API 会拒绝未 detach 的 current state。
+- `B<2` 的 rank 不伪造 SIGReg 统计量，但使用依赖 online-next state 的零 loss 完成
+  第二次 backward，保持与其他有效 rank 的 DDP 调用顺序一致；padding 同样为零 loss。
+- 本地 compileall/diff-check 通过；superpod PyTorch 2.8 的 SFT2、Agent、Qwen、WM
+  和 config 扩展回归 `112 passed`。尚需 preempt 8-GPU B2/GA4 长 prefix smoke；在
+  GPU gate 通过前仍不能开启正式 SFT2 或 RL。
+
 ## 2026-07-23：删除 OOM 应急路径并改用在线 detached history cache
 
 - 人类选择在线 cache 方案：每条 trajectory lane 固定给一个 rank 并严格按时间

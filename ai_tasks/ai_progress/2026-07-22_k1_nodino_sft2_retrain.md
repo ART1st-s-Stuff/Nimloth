@@ -250,3 +250,17 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   RL；B2/GA4正式训练被否决。W&B因进程终止仍显示running且只含step1，step2和
   OOM证据已保存在输出CSV/log/README。下一步若获批，使用B1/GA8保持effective
   batch做短smoke；不能恢复已删除的row/offload应急路径。
+
+## 2026-07-23：SIGReg 仅对在线 next state 反传
+
+- 人类选择保留 B2/GA4 并修改梯度生命周期：SIGReg 仍计算在线
+  `(s_t,s_{t+1})`，但 `s_t` 强制 detach，只让 `s_{t+1}` 接收 SIGReg 梯度。
+- 提交 `6ccca36` 已推送。每个 microbatch 先执行唯一一次 CE/WM/value forward 与
+  backward，释放当前 Qwen 图后才执行 SIGReg online-next forward/backward；没有
+  恢复 row1、activation offload 或历史重算。
+- 新增回归保护阶段顺序、current-state detach、online-next 梯度、B1 DDP 零 loss
+  和合并后的 total loss。superpod PyTorch 2.8 定向测试 `22 passed in 6.47s`。
+- superpod PyTorch 2.8 的 SFT2、Agent、Qwen、WM 和 config 扩展回归为
+  `112 passed in 19.28s`。仍需 8-GPU B2/GA4 长 prefix smoke 证明真实 DDP
+  static-graph 可运行且峰值显存不再随双图叠加 OOM。通过前不启动正式重训，也没有
+  可供 RL 使用的新 checkpoint。
