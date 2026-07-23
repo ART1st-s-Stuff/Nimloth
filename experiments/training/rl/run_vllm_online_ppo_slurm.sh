@@ -61,7 +61,22 @@ srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
     --num-cpus=24 --num-gpus="${head_gpus}" --include-dashboard=false --block \
   >"${RAY_LOG_DIR}/${HEAD_NODE}.log" 2>&1 &
 RAY_STEP_PIDS+=("$!")
-sleep 8
+head_ready=false
+for _ in $(seq 1 90); do
+  if timeout 8s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+    -w "${HEAD_NODE}" --gpus=0 "${PYTHON}" -c \
+    'import socket, sys; s=socket.create_connection((sys.argv[1], int(sys.argv[2])), 3); s.close()' \
+    "${HEAD_IP}" "${RAY_PORT}" >/dev/null 2>&1; then
+    head_ready=true
+    break
+  fi
+  kill -0 "${RAY_STEP_PIDS[0]}" 2>/dev/null || {
+    tail -200 "${RAY_LOG_DIR}/${HEAD_NODE}.log" >&2
+    exit 1
+  }
+  sleep 2
+done
+[[ "${head_ready}" == true ]] || { echo "Ray head port did not become ready" >&2; exit 1; }
 for node in "${NODES[@]:1}"; do
   node_gpus=${GPU_COUNTS[${node}]}
   srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${node}" \
@@ -75,7 +90,7 @@ done
 
 resources=""
 for _ in $(seq 1 90); do
-  resources=$(srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
+  resources=$(timeout 20s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
     --gpus=0 env RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}" "${PYTHON}" -c \
     'import ray; ray.init(address="auto"); print(int(ray.cluster_resources().get("GPU", 0)))' \
     2>/dev/null | tail -1 || true)
