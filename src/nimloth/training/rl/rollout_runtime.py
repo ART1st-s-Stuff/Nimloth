@@ -7,6 +7,7 @@ from pathlib import Path
 
 from nimloth.agent import AgentPolicy
 from nimloth.rollout import (
+    FreshJSONLRolloutCollector,
     JSONLRolloutCollector,
     RolloutCollector,
 )
@@ -23,13 +24,40 @@ def validate_collector_configuration(
 ) -> None:
     """在加载模型前拒绝静态 PPO 数据和缺失 validation source。"""
 
-    if actor_enabled and isinstance(train_collector, JSONLRolloutCollector):
+    if (
+        actor_enabled
+        and isinstance(train_collector, JSONLRolloutCollector)
+        and not isinstance(train_collector, FreshJSONLRolloutCollector)
+    ):
         raise ValueError(
             "PPO actor requires fresh trajectories from the current policy; "
             "static JSONL rollout is only supported for WM/value training"
         )
     if validation_enabled and eval_collector is None:
         raise ValueError("validation.enabled requires a separate eval collector")
+
+
+def validate_fresh_rollout_policy(train_collector: RolloutCollector) -> None:
+    """只由 rank0 计算大 artifact 指纹，再向所有训练 rank 广播结果。"""
+
+    if not isinstance(train_collector, FreshJSONLRolloutCollector):
+        return
+    import torch.distributed as dist
+
+    distributed = dist.is_available() and dist.is_initialized()
+    rank = dist.get_rank() if distributed else 0
+    error_message: str | None = None
+    if rank == 0:
+        try:
+            train_collector.validate_policy()
+        except Exception as error:
+            error_message = str(error)
+    if distributed:
+        messages = [error_message]
+        dist.broadcast_object_list(messages, src=0)
+        error_message = messages[0]
+    if error_message is not None:
+        raise ValueError(error_message)
 
 
 def validate_online_policy_configuration(
@@ -124,6 +152,7 @@ __all__ = [
     "bind_online_collectors",
     "online_policy_required",
     "validate_collector_configuration",
+    "validate_fresh_rollout_policy",
     "validate_online_policy_configuration",
     "validate_planning_initialization",
 ]

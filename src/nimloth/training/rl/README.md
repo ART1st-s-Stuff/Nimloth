@@ -27,7 +27,8 @@ by the shared Agent template.
 | Mode | `--env-url` | `--use-jsonl-rollout` | Intended use |
 |------|-------------|-----------------------|--------------|
 | Single-GPU online | required | no | local integration and online training |
-| JSONL | not required | yes | offline WM/value training from separately collected trajectories |
+| Static JSONL | not required | yes | offline WM/value training from older trajectories |
+| Fresh vLLM JSONL | not required | yes | one multi-rank PPO update after exact-policy vLLM rollout |
 
 Direct `VAGENNavigationRolloutCollector` use is rejected when `world > 1`: different
 episode lengths and failures would make FSDP ranks execute different Qwen
@@ -36,9 +37,10 @@ collector must use an environment dataset whose name ends in `_train`; eval
 assets cannot be labeled as training data.
 
 The CLI requires one rollout mode explicitly. `actor.enabled` controls PPO and
-is independent of `gradient.representation_to_backbone`. Static JSONL is only
-rejected when PPO is enabled, because its behavior probabilities were produced
-by an older policy. Train and validation use separate collector sources.
+is independent of `gradient.representation_to_backbone`. Static JSONL is
+rejected when PPO is enabled. A `FreshRolloutManifest` binds one vLLM rollout to
+the exact policy artifact by content fingerprint and permits exactly one
+multi-rank PPO consumption. Train and validation use separate collector sources.
 
 ## Data flow
 
@@ -123,6 +125,7 @@ distribution, including masked zero-probability actions.
 | Module | Responsibility |
 |--------|----------------|
 | `nimloth.rollout.windows` | 原始 trajectory 的连续窗口计数与采样 |
+| `nimloth.rollout.fresh` | policy artifact 指纹、fresh manifest 和一次性消费契约 |
 | `algorithm.py` | multi-step WM/SIGReg、value/PPO 和梯度边界；不持有模型或 optimizer |
 | `runtime.py` | prompt→Backbone hidden 的 joint/frozen 模式与可选 policy replay |
 | `loop.py` | collect→sample→forward/backward→validate→save 生命周期 |
@@ -142,8 +145,9 @@ distribution, including masked zero-probability actions.
 - New RL JSONL must use the structured Agent schema. Old records that contain
   only `messages` cannot provide exact policy-state/PPO replay and are rejected
   by the trainer.
-- JSONL cycling is suitable for offline WM/value training only. The trainer
-  fails at startup if a static JSONL source is combined with an enabled actor.
+- JSONL cycling is suitable for offline WM/value training only. PPO accepts
+  only a fresh manifest produced from the exact current policy artifact; that
+  manifest cannot be reused for a second optimizer update or process.
 - `latest/` records resumable progress. `best/` is updated only by the explicit
   held-out `validation.checkpoint_metric` (`success_rate` or `avg_reward`).
 - LoRA plus full Vision saves `vision_full_state.pt` next to the adapter and
@@ -185,3 +189,9 @@ python -m nimloth.training.rl.cli \
   --use-jsonl-rollout \
   --jsonl-sources outputs/rollouts/run_001/trajectories.jsonl
 ```
+
+The 8-GPU online PPO smoke uses
+`experiments/training/rl/run_vllm_online_ppo_smoke.sh`: vLLM first consumes all
+eight GPUs for behavior rollout, exits, and the same eight GPUs then run one
+FSDP update. This process boundary keeps inference ownership out of the trainer
+and makes the policy freshness handoff auditable.

@@ -22,7 +22,7 @@ from nimloth.backbone import (
     resolve_vision_ema,
 )
 from nimloth.config.rl import RLConfig
-from nimloth.rollout import RolloutCollector
+from nimloth.rollout import FreshJSONLRolloutCollector, RolloutCollector
 from nimloth.training.rl.algorithm import RLAlgorithm
 from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
@@ -33,6 +33,7 @@ from nimloth.training.rl.rollout_runtime import (
     bind_online_collectors,
     online_policy_required,
     validate_collector_configuration,
+    validate_fresh_rollout_policy,
     validate_online_policy_configuration,
     validate_planning_initialization,
 )
@@ -273,7 +274,11 @@ def train_rl(
         )
 
     rank, world, _, device = setup_dist()
-    if actor_enabled and world > 1:
+    validate_fresh_rollout_policy(train_collector)
+    if actor_enabled and world > 1 and not isinstance(
+        train_collector,
+        FreshJSONLRolloutCollector,
+    ):
         raise RuntimeError(
             "multi-rank PPO actor is disabled until rollout freshness and FSDP "
             "forward/EMA semantics have dedicated integration coverage"

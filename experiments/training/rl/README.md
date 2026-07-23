@@ -9,6 +9,7 @@
 | `smoke_test.slurm` | 单 GPU smoke test：加载 SFT2 checkpoint，synthetic data 跑 1 步训练 |
 | `rollout_env.py` | 独立 rollout 脚本：复用 Nimloth action policy，生成完整 RL JSONL（不参与训练） |
 | `run_e2e_smoke.sh` | 训练 split rollout → 两卡 FSDP step → resume step 的端到端 smoke |
+| `run_vllm_online_ppo_smoke.sh` | 8卡 vLLM fresh rollout → 指纹门槛 → 8卡 FSDP PPO step |
 
 ## 运行模式
 
@@ -48,6 +49,13 @@ python -m nimloth.training.rl.cli \
 ```
 
 `--jsonl-sources` 接受一个或多个 JSONL 文件或目录（目录下递归搜索 `*.jsonl` / `*.jsonl.gz`）。也可以在 config 中设置 `rollout.jsonl_sources`。训练时轮转消费所有轨迹；数据耗尽时自动回到开头（loop）。
+
+### 8 卡 online PPO
+
+8 卡模式不让 environment 直接调用 FSDP forward。启动器先用当前完整
+HF artifact 启动 vLLM tensor parallel rollout，写入模型内容指纹 manifest；
+vLLM 退出后，8-rank FSDP trainer 只允许消费该 manifest 一次。下一个
+optimizer step 必须从新 checkpoint 重新 rollout。
 
 ### 分布式安全说明
 

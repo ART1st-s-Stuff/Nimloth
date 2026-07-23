@@ -41,6 +41,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--top-p", type=float, default=0.95)
     ap.add_argument("--attn-implementation", default="sdpa")
     ap.add_argument("--max-pixels", type=int, default=3136)
+    ap.add_argument("--backend", choices=("hf", "vllm"), default="hf")
+    ap.add_argument("--tensor-parallel-size", type=int, default=1)
+    ap.add_argument("--max-model-len", type=int, default=32768)
+    ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    ap.add_argument(
+        "--fresh-manifest",
+        type=Path,
+        default=None,
+        help="记录当前 policy artifact 指纹，供随后唯一一次 PPO update 消费",
+    )
     return ap.parse_args(argv)
 
 
@@ -104,19 +114,45 @@ def main(argv: list[str] | None = None) -> int:
             sys.path.insert(0, str(path))
 
     from nimloth.backbone.qwen25vl.policy import QwenAgentPolicy
+    from nimloth.backbone.qwen25vl.loading import load_qwen_processor
+    from nimloth.backbone.qwen25vl.vllm_policy import QwenVLLMAgentPolicy
     from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
+    from nimloth.rollout import FreshRolloutManifest
 
-    model, processor = load_qwen(
-        args.model, args.attn_implementation, args.max_pixels
-    )
-    policy = QwenAgentPolicy(
-        model=model,
-        processor=processor,
-        device=torch.device("cuda"),
-        temperature=args.temperature,
-        top_p=args.top_p,
-        latent_token_count=1,
-    )
+    if args.backend == "vllm":
+        from transformers import AutoConfig
+        from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
+
+        validate_agent_policy_protocol(
+            AutoConfig.from_pretrained(args.model, trust_remote_code=True)
+        )
+        processor = load_qwen_processor(
+            args.model,
+            max_pixels=args.max_pixels,
+            latent_token_count=1,
+        ).processor
+        policy = QwenVLLMAgentPolicy.from_model(
+            str(args.model),
+            processor=processor,
+            tensor_parallel_size=args.tensor_parallel_size,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            max_model_len=args.max_model_len,
+            max_images=args.max_steps + 1,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+        )
+    else:
+        model, processor = load_qwen(
+            args.model, args.attn_implementation, args.max_pixels
+        )
+        policy = QwenAgentPolicy(
+            model=model,
+            processor=processor,
+            device=torch.device("cuda"),
+            temperature=args.temperature,
+            top_p=args.top_p,
+            latent_token_count=1,
+        )
     collector = VAGENNavigationRolloutCollector(
         policy=policy,
         env_url=args.env_url,
@@ -133,11 +169,19 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=args.output_dir,
     )
     validate_trajectories(trajectories)
+    manifest_path = args.fresh_manifest
+    if manifest_path is not None:
+        FreshRolloutManifest.create(
+            policy_path=args.model,
+            trajectory_path=args.output_dir / "trajectories.jsonl",
+            num_trajectories=len(trajectories),
+        ).write(manifest_path)
     print(json.dumps({
         "status": "ALL_OK",
         "num_trajectories": len(trajectories),
         "num_transitions": sum(t.num_steps for t in trajectories),
         "jsonl": str(args.output_dir / "trajectories.jsonl"),
+        "fresh_manifest": str(manifest_path) if manifest_path else None,
     }), flush=True)
     return 0
 
