@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-07-24：DINO-grid SFT2 恢复 terminal transition 与旧 cache 兼容
+
+- 人类指出当前 cache 图像数不是旧版的62,606。核对确认原始3217/355条记录与
+  59,389/6,054个transition从未减少；refactor后的legacy prompt expansion未给每条
+  trajectory最终observation构造next prompt，sampler因此静默丢掉3217/355个最终
+  current step。
+- 修复后最终真实observation使用target-only assistant query prefix，不额外产生CE；
+  每个action仍只拥有一次CE/WM/DINO/value，H=4旧历史仍只从detached online cache
+  读取。新compact cache fingerprint升级为`wm_expand_v2_terminal_next`，不完整旧v2
+  cache不能静默复用。
+- 历史k16 `dedup_sharded_v1` cache新增只读兼容：复用原有current编码、BF16 pixels和
+  `grid_thw`；仅对旧cache未保存的terminal next prompt执行轻量tokenization，不重跑
+  image processor、不改写cache。DINO sidecar继续按next image path读取冻结teacher的
+  4x4x1024目标。
+- 真实全量gate通过：train记录/transition/cache image/sampler current=
+  `3217/59389/62606/59389`，val=`355/6054/6409/6054`；首、中、末terminal抽样的
+  current/next实际模型输入与fresh processor逐tensor一致，DINO fingerprint=
+  `b50d261e2b533f3e`。远程回归`84 passed, 1 skipped`。
+- ID33 epoch10/step9280严格warm start通过：旧online/EMA encoder、spatial WM、DINO
+  decoder和ValueHead全部映射，唯一新增参数为全零`temporal_position`，所有参数
+  finite。这是fresh optimizer warm start，不是resume。DINO分支尚未启动GPU/Slurm；
+  下一门槛是world8 GPU smoke。
+
+
 ## 2026-07-23：启动2-epoch正式SFT2训练
 
 - 人类要求先训练2 epoch。ID43
