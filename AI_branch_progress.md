@@ -11,7 +11,9 @@
 - preempt 8-GPU job `484439` 在首个 Qwen CE forward OOM，尚需额外约
   5.0--5.5 GiB；CSV 只有表头、global step 0、无 checkpoint，不能用于 RL。
 - 建议先以 per-rank batch 1 做 finite-step smoke，通过后用 GA8 保持 effective
-  batch 64 正式重提。当前未提交 retry，详见
+  batch 64 正式重提。该 smoke 随后已执行但仍 OOM：W&B 配置核实 batch1 生效，
+  单个 H=4 window 的四个 prefix 状态和全词表 FP32 CE 已超过 80GB。仅改 GA 无效，
+  需先决定低内存、等价实现或改变输入/CE 实验语义。详见
   `ai_tasks/ai_progress/2026-07-22_k1_nodino_sft2_retrain.md`。
 
 ## 2026-07-22：SFT2 target-state 归入模型运行期

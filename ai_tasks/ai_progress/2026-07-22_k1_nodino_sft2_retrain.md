@@ -63,4 +63,20 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   resume，也不能作为 RL 初始化。
 - 初步建议：保留并只读复用完成的 v2 cache，先用 `batch_size=1` 做短 GPU smoke；
   若首步 finite，再以 `grad_accum=8` 保持 8-GPU effective batch 64 提交正式 retry。
-  该建议尚未执行。
+  该建议随后执行，但未通过，见下一节。
+
+## 2026-07-23：batch1 smoke 仍在单个 H=4 window OOM
+
+- W&B ID35 `35_smoke_k1nodino_h4_b1_ga1_ws8_fullcache_stepgate`，internal ID
+  `0ajvq3sy`；job `484846` 在 dgx-42 使用 preempt 8 GPU。
+- W&B 实际配置文件核实 `batch_size=1`、`batch_size_per_rank=1`、
+  `grad_accum=1`，因此参数覆盖确实生效。此前根据相同显存数值怀疑
+  `EXTRA_TRAIN_ARGS` 丢失是错误判断。
+- job 在 `00:04:45` 后 `FAILED 1:0`，仍于首个 Qwen causal-LM CE forward OOM；
+  rank0/rank2 的占用和额外申请量与 batch2 attempt 基本相同。原因是
+  `trajectory_image_budget` 下 batch2 attempt 的首个 microbatch 也已被图片预算
+  限制为一个 window；而单个 H=4 window 含四个连续 prefix 状态，当前 sequence
+  forward 一次处理全部时间位置，单 window 已无法容纳全词表 FP32 CE logits。
+- CSV 仍只有表头、global step 0、无 checkpoint。仅增加 grad accumulation 无法
+  解决；下一步需要在人类确认后选择保持数学语义的时间位置 chunking/低内存 CE
+  实现，或改变 max_pixels/max_length/lambda_ce 等实验语义并重建对应 cache。
