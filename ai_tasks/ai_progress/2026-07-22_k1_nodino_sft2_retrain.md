@@ -300,5 +300,9 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - K1 control配置已改B1/GA8；checkpoint invariant与日志新增global SIGReg scope/B。
   superpod定向回归 `27 passed in 8.80s`，其中两进程Gloo+DDP解析测试证明参数梯度
   等于单次global valid batch参考。SFT2、Agent、Qwen、WM、config扩展回归
-  `113 passed, 1 skipped in 21.31s`；skip为需GPU allocation的NCCL门槛。尚需NCCL与
-  8-GPU长prefix smoke；通过前仍无可用于RL的新checkpoint。
+  `113 passed, 1 skipped in 21.31s`；原skip为需GPU allocation的NCCL门槛。
+- ID42使用preempt/dgx-40、hold job `485236`。真实两卡CUDA/NCCL门槛复测
+  `1 passed, 1 deselected in 8.25s`，CPU/Gloo复测`1 passed, 1 deselected in 7.90s`。
+  首轮NCCL测试失败是测试实例的SequenceSIGReg buffer仍在CPU，并非collective或梯度
+  错误；提交`948079c`仅令测试模块跟随worker device，正式trainer原本已显式放置。
+  尚需8-GPU B1/GA8长prefix smoke；通过前仍无可用于RL的新checkpoint。
