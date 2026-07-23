@@ -75,7 +75,7 @@ def _global_sigreg_worker(rank: int, init_file: str, backend: str) -> None:
         torch.manual_seed(100 + rank)
         states = torch.stack((global_current, global_next.detach()), dim=1)
         with shared_sigreg_rng(77, states.device):
-            sigreg_loss = SequenceSIGReg(knots=3, num_proj=8)(states)
+            sigreg_loss = SequenceSIGReg(knots=3, num_proj=8).to(device)(states)
         assert sigreg_loss is not None
         gathered_losses = [torch.empty_like(sigreg_loss) for _ in range(2)]
         dist.all_gather(gathered_losses, sigreg_loss)
