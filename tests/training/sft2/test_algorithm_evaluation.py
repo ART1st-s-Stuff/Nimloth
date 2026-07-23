@@ -31,7 +31,10 @@ def test_evaluate_uses_evaluation_step_and_batch_builder() -> None:
 
         def evaluation_step(self, _runtime, batch):
             self.values.append(float(batch))
-            return SimpleNamespace(metrics={"wm_mse": float(batch)})
+            return SimpleNamespace(
+                metrics={"wm_mse": float(batch)},
+                sample_count=1,
+            )
 
     class FakeRuntime:
         agent = SimpleNamespace(trainable_modules=(module,))

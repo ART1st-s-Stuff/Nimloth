@@ -35,6 +35,7 @@ def _write_ckpt(ckpt_dir: Path, *, step: int, epoch: int) -> None:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     (ckpt_dir / "config.json").write_text("{}", encoding="utf-8")
     torch.save({"step": step, "epoch": epoch}, ckpt_dir / "training_state.pt")
+    torch.save({}, ckpt_dir / "history_cache_rank_000.pt")
     _write_aux_markers(ckpt_dir)
 
 
