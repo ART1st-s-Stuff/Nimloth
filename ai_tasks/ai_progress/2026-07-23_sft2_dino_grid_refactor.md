@@ -144,3 +144,17 @@
   into a new output; old Qwen/DINO cache reuse is allowed only after proving
   the corrected export's processor files are byte-identical to the original
   cache source. The original SFT1 and cache remain immutable.
+
+## K16 merge repair ID2 failed closed on PEFT layout difference
+
+- Checkpoint-only step `485251.7` loaded the four-shard vagen79 base and k16
+  epoch5 adapter, then the independent-storage gate rejected the merged model
+  before export. There was no OOM, training, W&B, or usable `hf_merged`.
+- Refined cause: k16 saves complete embedding/head tensors under PEFT's
+  `save_embedding_layers` keys while `adapter_config.json` has no
+  `modules_to_save`; unlike the validated k1 layout, `merge_and_unload()` leaves
+  the two public modules tied.
+- The merge path now detects the saved input/head pair, creates a distinct
+  output `Linear`, copies each authoritative adapter tensor to its own module,
+  then applies the same vocab/config/storage gates. ID2 is not reused; config
+  points to a fresh ID3 export pending validation.

@@ -50,6 +50,77 @@ def finalize_merged_vocab(model, vocab_size: int) -> None:
         model.config.text_config.tie_word_embeddings = False
 
 
+def restore_saved_untied_embeddings(model, adapter_dir: Path) -> tuple[str, str] | None:
+    """Restore full embedding/head tensors that PEFT may merge into tied storage."""
+
+    from safetensors import safe_open
+
+    state_path = adapter_dir / "adapter_model.safetensors"
+    suffixes = {
+        "input": (
+            "embed_tokens.weight",
+            "embed_tokens.modules_to_save.weight",
+        ),
+        "output": (
+            "lm_head.weight",
+            "lm_head.modules_to_save.weight",
+        ),
+    }
+    with safe_open(state_path, framework="pt", device="cpu") as handle:
+        keys = list(handle.keys())
+        selected: dict[str, str] = {}
+        for name, endings in suffixes.items():
+            matches = [key for key in keys if key.endswith(endings)]
+            if len(matches) > 1:
+                raise RuntimeError(
+                    f"adapter contains ambiguous saved {name} weights: {matches}"
+                )
+            if matches:
+                selected[name] = matches[0]
+        if not selected:
+            return None
+        if set(selected) != {"input", "output"}:
+            raise RuntimeError(
+                "adapter must save both input embedding and lm_head when either "
+                f"is present, got {selected}"
+            )
+        saved_input = handle.get_tensor(selected["input"])
+        saved_output = handle.get_tensor(selected["output"])
+
+    input_embeddings = model.get_input_embeddings()
+    if input_embeddings is None:
+        raise RuntimeError("merged model does not expose input embeddings")
+    input_weight = input_embeddings.weight
+    if saved_input.shape != input_weight.shape:
+        raise RuntimeError(
+            "saved input embedding shape mismatch: "
+            f"adapter={tuple(saved_input.shape)}, model={tuple(input_weight.shape)}"
+        )
+    if saved_output.ndim != 2 or saved_output.shape[1] != input_weight.shape[1]:
+        raise RuntimeError(
+            "saved lm_head shape mismatch: "
+            f"adapter={tuple(saved_output.shape)}, hidden={input_weight.shape[1]}"
+        )
+
+    output_embeddings = torch.nn.Linear(
+        int(saved_output.shape[1]),
+        int(saved_output.shape[0]),
+        bias=False,
+        device=input_weight.device,
+        dtype=input_weight.dtype,
+    )
+    model.set_output_embeddings(output_embeddings)
+    with torch.no_grad():
+        input_weight.copy_(saved_input.to(device=input_weight.device, dtype=input_weight.dtype))
+        output_embeddings.weight.copy_(
+            saved_output.to(
+                device=output_embeddings.weight.device,
+                dtype=output_embeddings.weight.dtype,
+            )
+        )
+    return selected["input"], selected["output"]
+
+
 def ensure_peft_transformers_compat() -> None:
     import transformers.integrations.tensor_parallel as transformers_tp
 
@@ -94,6 +165,7 @@ def main() -> int:
     peft_model = PeftModel.from_pretrained(base, args.adapter_dir)
     verified_tensors = verify_adapter_loaded(peft_model, args.adapter_dir)
     merged = peft_model.merge_and_unload()
+    restored_embeddings = restore_saved_untied_embeddings(merged, args.adapter_dir)
     # Resizing here calls tie_weights() and can overwrite the independently
     # trained lm_head with the input embeddings. The base was already resized.
     finalize_merged_vocab(merged, len(processor.tokenizer))
@@ -108,7 +180,10 @@ def main() -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     merged.save_pretrained(args.out_dir, safe_serialization=True)
     processor.save_pretrained(args.out_dir)
-    print(f"merged {verified_tensors} verified adapter tensors -> {args.out_dir}")
+    print(
+        f"merged {verified_tensors} verified adapter tensors; "
+        f"restored_embeddings={restored_embeddings} -> {args.out_dir}"
+    )
     return 0
 
 

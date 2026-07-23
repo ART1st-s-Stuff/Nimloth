@@ -6,8 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from safetensors.torch import save_file
 
-from experiments.training.sft1.merge_lora_ckpt import finalize_merged_vocab
+from experiments.training.sft1.merge_lora_ckpt import (
+    finalize_merged_vocab,
+    restore_saved_untied_embeddings,
+)
 
 
 class FakeMergedModel:
@@ -28,6 +32,9 @@ class FakeMergedModel:
 
     def get_output_embeddings(self) -> torch.nn.Module:
         return self.output_embeddings
+
+    def set_output_embeddings(self, module: torch.nn.Module) -> None:
+        self.output_embeddings = module
 
     def resize_token_embeddings(self, _vocab_size: int) -> None:
         raise AssertionError("merged model must not be resized")
@@ -55,3 +62,27 @@ def test_finalize_merged_vocab_rejects_tied_lm_head() -> None:
 
     with pytest.raises(RuntimeError, match="shares storage"):
         finalize_merged_vocab(model, vocab_size=7)
+
+
+def test_restore_saved_embedding_layers_reconstructs_untied_head(tmp_path) -> None:
+    model = FakeMergedModel(vocab_size=7, tied=True)
+    saved_input = torch.arange(28, dtype=torch.float32).reshape(7, 4)
+    saved_output = saved_input.flip(0).clone()
+    save_file(
+        {
+            "base_model.model.model.language_model.embed_tokens.weight": saved_input,
+            "base_model.model.lm_head.weight": saved_output,
+        },
+        tmp_path / "adapter_model.safetensors",
+    )
+
+    keys = restore_saved_untied_embeddings(model, tmp_path)
+    finalize_merged_vocab(model, vocab_size=7)
+
+    assert keys == (
+        "base_model.model.model.language_model.embed_tokens.weight",
+        "base_model.model.lm_head.weight",
+    )
+    assert torch.equal(model.input_embeddings.weight, saved_input)
+    assert torch.equal(model.output_embeddings.weight, saved_output)
+    assert model.input_embeddings.weight.data_ptr() != model.output_embeddings.weight.data_ptr()

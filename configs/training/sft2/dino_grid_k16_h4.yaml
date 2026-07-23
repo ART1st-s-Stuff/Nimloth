@@ -4,7 +4,7 @@ objective:
   name: dino_grid
 
 init:
-  sft1_checkpoint: /project/peilab/atst/nimloth/outputs/experiments/sft1_checkpoint_merge_fix/2026-07-24/2_k16_ep5_untied_lm_head/hf_merged
+  sft1_checkpoint: /project/peilab/atst/nimloth/outputs/experiments/sft1_checkpoint_merge_fix/2026-07-24/3_k16_ep5_untied_lm_head_restore/hf_merged
   wm_predictor_checkpoint: null
   # Warm start only. The old spatial predictor gains a zero-initialized H-axis;
   # this run starts a new optimizer and is not an ID33 resume.

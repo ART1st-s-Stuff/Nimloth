@@ -1538,3 +1538,8 @@
 - 当前分支已移植 merge 后禁止 resize、独立 head/storage 校验和回归，并为旧只读
   cache 增加显式 processor-source lineage。下一步从同一 k16 epoch5 adapter 生成
   新的 untied export，验证 processor 文件不变后再重试 SFT2；不覆盖旧产物。
+- k16 merge ID2（step `485251.7`）在保存前被独立 storage gate 正确拒绝；原因是
+  k16 通过 `save_embedding_layers` 保存完整 embedding/head，但 adapter config 没有
+  `modules_to_save`，PEFT merge 后仍共享 module。无 OOM/训练/W&B/可用 export。
+- merge 现识别并分别恢复 adapter 内的完整 input/head，显式创建独立 output Linear
+  后再验证；ID2不可恢复，SFT2初始化已指向待生成的全新ID3导出。
