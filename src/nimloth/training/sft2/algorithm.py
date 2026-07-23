@@ -43,6 +43,7 @@ class SFT2StepOutput:
     losses: dict[str, torch.Tensor | None]
     metrics: dict[str, float]
     model_output: AgentOutput
+    sample_count: int
 
 
 class SFT2Algorithm:
@@ -66,8 +67,6 @@ class SFT2Algorithm:
         wm_weight_start: float = 0.1,
         wm_weight_end: float = 1.0,
         wm_warmup_fraction: float = 0.3,
-        backbone_rows_per_forward: int | None = None,
-        offload_backbone_chunk_activations: bool = False,
     ) -> None:
         self.history_size = int(history_size)
         if self.history_size < 1:
@@ -83,18 +82,6 @@ class SFT2Algorithm:
         self.wm_weight_start = float(wm_weight_start)
         self.wm_weight_end = float(wm_weight_end)
         self.wm_warmup_fraction = float(wm_warmup_fraction)
-        self.backbone_rows_per_forward = (
-            None if backbone_rows_per_forward is None else int(backbone_rows_per_forward)
-        )
-        if self.backbone_rows_per_forward is not None and self.backbone_rows_per_forward < 1:
-            raise ValueError("backbone_rows_per_forward must be positive")
-        self.offload_backbone_chunk_activations = bool(
-            offload_backbone_chunk_activations
-        )
-        if self.offload_backbone_chunk_activations and self.backbone_rows_per_forward is None:
-            raise ValueError(
-                "offload_backbone_chunk_activations requires backbone_rows_per_forward"
-            )
 
     def wm_weight(self, global_step: int, total_steps: int) -> float:
         """在训练前段用 cosine ramp 增加 WM loss 权重。"""
@@ -157,18 +144,26 @@ class SFT2Algorithm:
                 "SFT2 batch context length exceeds algorithm history_size: "
                 f"batch={batch.history_size}, algorithm={self.history_size}"
             )
-        # 一个 batch row-group 只拥有一个 current step loss；history 只作为 context。
-        model_output = runtime.agent.forward_step_from_history(
+        # 当前 Qwen 只执行一次；更老 state 来自它们先前 current forward 的 cache。
+        current_encoded = runtime.agent.encode_state(
             batch.current,
-            batch.action_indices,
             include_lm_loss=include_lm_loss,
-            backbone_rows_per_forward=self.backbone_rows_per_forward,
-            offload_backbone_chunk_activations=self.offload_backbone_chunk_activations,
         )
-        target_states = runtime.target_state(
-            batch.next,
-            backbone_rows_per_forward=self.backbone_rows_per_forward,
+        cached_history = runtime.history_cache.history(
+            batch.history_keys,
+            reference=current_encoded.state,
         )
+        model_output = runtime.agent.forward_step_from_history(
+            batch.action_indices,
+            cached_history,
+            encoded_current=current_encoded,
+        )
+        runtime.history_cache.store(
+            batch.current_keys,
+            model_output.state[:, -1],
+            enabled=not batch.is_padding,
+        )
+        target_states = runtime.target_state(batch.next)
         aligned_targets = target_states[batch.current_next_indices]
 
         wm_loss = F.mse_loss(
@@ -192,10 +187,6 @@ class SFT2Algorithm:
                 runtime.agent.encode_state(
                     batch.online_tail,
                     include_lm_loss=False,
-                    backbone_rows_per_forward=self.backbone_rows_per_forward,
-                    offload_backbone_chunk_activations=(
-                        self.offload_backbone_chunk_activations
-                    ),
                 ).state,
             )
 
@@ -204,6 +195,9 @@ class SFT2Algorithm:
             total = total + self.sigreg_weight * sigreg_loss
         if model_output.lm_loss is not None:
             total = total + self.ce_weight * model_output.lm_loss
+        sample_count = 0 if batch.is_padding else batch.batch_size
+        if batch.is_padding:
+            total = total * 0.0
 
         metrics = {
             "value_reg": float(value["regression"].detach().item()),
@@ -233,6 +227,7 @@ class SFT2Algorithm:
             },
             metrics=metrics,
             model_output=model_output,
+            sample_count=sample_count,
         )
 
     def _value_loss(

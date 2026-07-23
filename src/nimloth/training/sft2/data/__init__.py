@@ -1,7 +1,7 @@
 """SFT2 datasets, cache adapters, and distributed samplers."""
 
 from nimloth.training.sft2.data.samplers import (
-    TrajectoryWindowBatchSampler,
+    OnlineHistoryBatchSampler,
 )
 
-__all__ = ["TrajectoryWindowBatchSampler"]
+__all__ = ["OnlineHistoryBatchSampler"]

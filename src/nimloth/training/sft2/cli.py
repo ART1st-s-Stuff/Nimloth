@@ -47,18 +47,6 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         ),
     )
     ap.add_argument(
-        "--backbone-rows-per-forward",
-        type=int,
-        default=None,
-        help="Maximum flattened B*H rows in one backbone forward; preserves the full H loss graph.",
-    )
-    ap.add_argument(
-        "--offload-backbone-chunk-activations",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Store non-parameter CUDA activations from chunked backbone forwards on CPU until backward.",
-    )
-    ap.add_argument(
         "--latent-token-count",
         type=int,
         default=1,
@@ -197,31 +185,11 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     )
     ap.add_argument(
         "--batch-mode",
-        choices=("random", "trajectory", "trajectory_image_budget"),
-        default="trajectory_image_budget",
+        choices=("trajectory_online_cache",),
+        default="trajectory_online_cache",
         help=(
-            "All modes sample fixed LeWM history windows. "
-            "random shuffles individual windows; trajectory keeps adjacent windows "
-            "together; trajectory_image_budget additionally limits forward image cost."
-        ),
-    )
-    ap.add_argument(
-        "--max-steps-per-trajectory",
-        type=int,
-        default=16,
-        help=(
-            "In trajectory_image_budget mode, hard ceiling on flattened "
-            "transition rows B*H per micro-batch (default 16)."
-        ),
-    )
-    ap.add_argument(
-        "--max-images-per-batch",
-        type=int,
-        default=32,
-        help=(
-            "In trajectory_image_budget mode, cap total cumulative "
-            "prefix images per micro-batch (default 32).  Prevents CUDA OOM "
-            "from long trajectories with large image prefixes."
+            "Process rank-local trajectory lanes in time order and reuse detached "
+            "history states from their earlier current-step forwards."
         ),
     )
     # set_defaults must run after add_argument: registering an argument with an

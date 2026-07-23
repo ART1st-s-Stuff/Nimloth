@@ -77,23 +77,13 @@ class Agent(nn.Module):
         batch: BackboneBatch,
         *,
         include_lm_loss: bool = False,
-        backbone_rows_per_forward: int | None = None,
-        offload_backbone_chunk_activations: bool = False,
     ) -> AgentStateOutput:
         """把真实 observation batch 编码为 WM state，不执行或模拟动作。"""
 
-        if backbone_rows_per_forward is None:
-            backbone_output = self.backbone(
-                batch,
-                include_lm_loss=include_lm_loss,
-            )
-        else:
-            backbone_output = self.backbone.forward_chunked(
-                batch,
-                max_rows=backbone_rows_per_forward,
-                include_lm_loss=include_lm_loss,
-                offload_saved_tensors=offload_backbone_chunk_activations,
-            )
+        backbone_output = self.backbone(
+            batch,
+            include_lm_loss=include_lm_loss,
+        )
         return AgentStateOutput(
             hidden=backbone_output.hidden,
             state=self.wm.project_state(backbone_output.hidden),
@@ -102,18 +92,15 @@ class Agent(nn.Module):
 
     def forward_step_from_history(
         self,
-        batch: BackboneBatch,
         action_indices: torch.Tensor,
+        cached_history_states: torch.Tensor,
         *,
-        include_lm_loss: bool = False,
-        backbone_rows_per_forward: int | None = None,
-        offload_backbone_chunk_activations: bool = False,
+        encoded_current: AgentStateOutput,
     ) -> AgentOutput:
-        """对每个当前 step 编码最长 ``H`` 的只读历史上下文。
+        """只编码当前 step，并把 detached cache 作为最长 ``H`` 的 WM context。
 
-        CE 与 Backbone 梯度只属于每个 context 的最后一行。旧 state 作为
-        WM 的显式时序 context，但在进入 predictor 前 detach。ValueHead 只读取
-        当前 ``s_t``；其更老历史来自构造 ``s_t`` 的累计 Agent prompt。
+        CE 与 Backbone 梯度只属于当前 ``s_t``。更老 state 必须来自它们先前
+        作为 current step 时写入的在线 cache；本方法不会重新执行历史 Qwen。
         """
 
         if action_indices.ndim != 2:
@@ -122,62 +109,46 @@ class Agent(nn.Module):
                 f"got {tuple(action_indices.shape)}"
             )
         batch_size, history_size = action_indices.shape
-        current_rows = tuple(
-            range(history_size - 1, batch_size * history_size, history_size)
-        )
+        if cached_history_states.ndim != 3:
+            raise ValueError(
+                "cached history states must have shape (B,T-1,D), "
+                f"got {tuple(cached_history_states.shape)}"
+            )
+        expected_history = (batch_size, history_size - 1)
+        if cached_history_states.shape[:2] != expected_history:
+            raise ValueError(
+                "cached history does not align with action context: "
+                f"states={tuple(cached_history_states.shape[:2])}, "
+                f"expected={expected_history}"
+            )
+        if encoded_current.state.ndim != 2 or encoded_current.state.shape[0] != batch_size:
+            raise ValueError(
+                "current Backbone output must have shape (B,D), "
+                f"got {tuple(encoded_current.state.shape)} for B={batch_size}"
+            )
         if (
-            torch.is_grad_enabled()
+            cached_history_states.shape[-1] != encoded_current.state.shape[-1]
             and history_size > 1
-            and backbone_rows_per_forward is None
         ):
             raise ValueError(
-                "training a multi-step context requires chunked Backbone forward "
-                "so only the current row owns CE and Backbone gradients"
+                "cached/current state dimensions do not match: "
+                f"history={cached_history_states.shape[-1]}, "
+                f"current={encoded_current.state.shape[-1]}"
             )
-        if backbone_rows_per_forward is None:
-            backbone_output = self.backbone(
-                batch,
-                include_lm_loss=include_lm_loss,
-            )
-        else:
-            backbone_output = self.backbone.forward_chunked(
-                batch,
-                max_rows=backbone_rows_per_forward,
-                include_lm_loss=include_lm_loss,
-                offload_saved_tensors=offload_backbone_chunk_activations,
-                gradient_rows=current_rows,
-                lm_loss_rows=current_rows,
-            )
-        hidden = backbone_output.hidden
-        expected_rows = batch_size * history_size
-        if hidden.shape[0] != expected_rows:
-            raise ValueError(
-                "sequence Backbone rows must equal B*H, "
-                f"got {hidden.shape[0]} rows for B={batch_size}, H={history_size}"
-            )
-        hidden_sequence = hidden.reshape(
-            batch_size,
-            history_size,
-            *hidden.shape[1:],
+        state_sequence = torch.cat(
+            (cached_history_states.detach(), encoded_current.state.unsqueeze(1)),
+            dim=1,
         )
-        state_sequence = self.wm.project_state_sequence(hidden_sequence)
-        if history_size > 1:
-            state_sequence = torch.cat(
-                (state_sequence[:, :-1].detach(), state_sequence[:, -1:]),
-                dim=1,
-            )
         predicted_sequence = self.wm.predict_state_sequence(
             state_sequence,
             action_indices,
         )
         return AgentOutput(
-            hidden=hidden_sequence,
+            hidden=encoded_current.hidden,
             state=state_sequence,
             predicted_next_state=predicted_sequence[:, -1],
             action_values=self.wm.predict_action_values(state_sequence[:, -1]),
-            lm_loss=(
-                backbone_output.lm_loss if include_lm_loss else None
-            ),
+            lm_loss=encoded_current.lm_loss,
         )
 
     @property

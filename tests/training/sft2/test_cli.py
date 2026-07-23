@@ -24,26 +24,26 @@ def test_parse_sft2_args_applies_yaml_defaults() -> None:
     assert args.grad_accum == 4
     assert args.lambda_value == 1.0
     assert args.checkpoint_metric == "val_wm_mse"
-    assert args.batch_mode == "trajectory_image_budget"
+    assert args.batch_mode == "trajectory_online_cache"
     assert args.history_size == 4
 
 
-def test_parse_sft2_args_batch_mode() -> None:
-    args = parse_sft2_args(
-        [
-            "--model",
-            "/tmp/model",
-            "--train-jsonl",
-            "/tmp/train.jsonl",
-            "--val-jsonl",
-            "/tmp/val.jsonl",
-            "--output-dir",
-            "/tmp/out",
-            "--batch-mode",
-            "trajectory",
-        ]
-    )
-    assert args.batch_mode == "trajectory"
+def test_parse_sft2_args_rejects_removed_batch_modes() -> None:
+    with pytest.raises(SystemExit):
+        parse_sft2_args(
+            [
+                "--model",
+                "/tmp/model",
+                "--train-jsonl",
+                "/tmp/train.jsonl",
+                "--val-jsonl",
+                "/tmp/val.jsonl",
+                "--output-dir",
+                "/tmp/out",
+                "--batch-mode",
+                "trajectory",
+            ]
+        )
 
 
 def test_production_cli_rejects_packed_forward() -> None:

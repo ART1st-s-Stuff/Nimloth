@@ -14,6 +14,7 @@ from nimloth.rollout.transitions import (
     TransitionSample,
     transition_training_item,
 )
+from nimloth.training.sft2.history_cache import StateKey
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class SFT2Batch:
     transitions: TransitionBatch
     online_tail: BackboneBatch
     history_size: int
+    sample_weights: torch.Tensor
 
     def __post_init__(self) -> None:
         if self.history_size < 1:
@@ -55,6 +57,17 @@ class SFT2Batch:
                     "SFT2 history window must contain consecutive steps from "
                     f"one trajectory, got {window}"
                 )
+        if self.sample_weights.shape != (self.batch_size,):
+            raise ValueError(
+                "SFT2 sample weights must have shape (B,), "
+                f"got {tuple(self.sample_weights.shape)} for B={self.batch_size}"
+            )
+        unique_weights = set(float(value) for value in self.sample_weights.tolist())
+        if not unique_weights.issubset({0.0, 1.0}) or len(unique_weights) != 1:
+            raise ValueError(
+                "SFT2 batches must be entirely real (weight=1) or padding "
+                f"(weight=0), got {sorted(unique_weights)}"
+            )
 
     @property
     def batch_size(self) -> int:
@@ -100,6 +113,26 @@ class SFT2Batch:
     @property
     def current_next_indices(self) -> torch.Tensor:
         return self.next_indices[:, -1]
+
+    @property
+    def history_keys(self) -> tuple[tuple[StateKey, ...], ...]:
+        rows = self.transitions.trajectory_steps
+        return tuple(
+            tuple(rows[start : start + self.history_size - 1])
+            for start in range(0, len(rows), self.history_size)
+        )
+
+    @property
+    def current_keys(self) -> tuple[StateKey, ...]:
+        rows = self.transitions.trajectory_steps
+        return tuple(
+            rows[end - 1]
+            for end in range(self.history_size, len(rows) + 1, self.history_size)
+        )
+
+    @property
+    def is_padding(self) -> bool:
+        return bool(torch.count_nonzero(self.sample_weights).item() == 0)
 
 
 class SFT2BatchBuilder(Protocol):
@@ -149,6 +182,7 @@ class SFT2BatchAssembler:
                 item = transition_training_item(row.sample)
                 item["context_length"] = row.context_length
                 item["is_current_step"] = row.is_current_step
+                item["loss_weight"] = row.loss_weight
             else:
                 item = transition_training_item(row)
             items.append(item)
@@ -161,7 +195,11 @@ class SFT2BatchAssembler:
         """在 DataLoader worker 内合并 legacy cache 张量。"""
 
         items = [self._metadata(entry) for entry in batch]
-        current_rows = [entry["current_enc"] for entry in batch]
+        current_rows = [
+            entry["current_enc"]
+            for entry, item in zip(batch, items, strict=True)
+            if item["is_current_step"]
+        ]
         next_rows = [entry.get("next_enc") for entry in batch]
         return {
             "items": items,
@@ -202,8 +240,8 @@ class SFT2BatchAssembler:
         else:
             items = [self._metadata(item) for item in raw_batch]
             current = self.input_builder.build(
-                [item["messages"] for item in items],
-                [() for _ in items],
+                [item["messages"] for item in items if item["is_current_step"]],
+                [() for item in items if item["is_current_step"]],
                 include_labels=True,
             )
             online_tail = None
@@ -269,6 +307,15 @@ class SFT2BatchAssembler:
             ),
             online_tail=online_tail,
             history_size=context_length,
+            sample_weights=torch.tensor(
+                [
+                    item["loss_weight"]
+                    for item in items
+                    if item["is_current_step"]
+                ],
+                dtype=torch.float32,
+                device=self.device,
+            ),
         )
 
     def _collate_online_tail(
@@ -451,6 +498,7 @@ class SFT2BatchAssembler:
                 if item.get("is_current_step") is None
                 else item["is_current_step"]
             ),
+            "loss_weight": float(item.get("loss_weight", 1.0)),
         }
 
     @staticmethod

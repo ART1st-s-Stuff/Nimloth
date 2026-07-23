@@ -12,6 +12,7 @@ from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.rollout import TransitionBatch
 from nimloth.training.sft2.algorithm import SFT2Algorithm
 from nimloth.training.sft2.batch import SFT2Batch
+from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import SequenceSIGReg, StateProjector, ValueHead, WorldModel
 
@@ -37,29 +38,6 @@ class _TensorBackbone(Backbone):
         return BackboneOutput(
             hidden=hidden,
             lm_loss=hidden.mean() if include_lm_loss else None,
-        )
-
-    def forward_chunked(
-        self,
-        batch: BackboneBatch,
-        *,
-        max_rows: int,
-        include_lm_loss: bool = False,
-        gradient_rows=None,
-        lm_loss_rows=None,
-        **_kwargs,
-    ) -> BackboneOutput:
-        assert max_rows == 1
-        self.calls += 1
-        source = batch.tensors["hidden"]
-        gradient_rows = set(range(source.shape[0])) if gradient_rows is None else set(gradient_rows)
-        hidden = torch.stack(
-            [row if index in gradient_rows else row.detach() for index, row in enumerate(source)]
-        )
-        loss_rows = list(range(hidden.shape[0])) if lm_loss_rows is None else list(lm_loss_rows)
-        return BackboneOutput(
-            hidden=hidden,
-            lm_loss=hidden[loss_rows].mean() if include_lm_loss else None,
         )
 
     def with_model(self, model: torch.nn.Module) -> "_TensorBackbone":
@@ -167,7 +145,9 @@ def _algorithm(
             value_head=ValueHead(emb_dim=4, num_actions=3),
         ),
     )
-    runtime = SFT2ModelRuntime(agent=agent)
+    history_cache = OnlineHistoryStateCache()
+    history_cache.start(epoch=1, phase="train")
+    runtime = SFT2ModelRuntime(agent=agent, history_cache=history_cache)
     return (
         SFT2Algorithm(
             history_size=history_size,
@@ -177,7 +157,6 @@ def _algorithm(
             ce_weight=1.0,
             value_rank_margin=0.1,
             value_rank_weight=1.0,
-            backbone_rows_per_forward=1,
         ),
         runtime,
         backbone,
@@ -200,7 +179,7 @@ def _batch(
     return SFT2Batch(
         transitions=TransitionBatch(
             current=BackboneBatch(
-                {"hidden": torch.randn(row_count, 4, requires_grad=True)}
+                {"hidden": torch.randn(batch_size, 4, requires_grad=True)}
             ),
             next=BackboneBatch(
                 {"hidden": torch.randn(row_count, 4, requires_grad=True)}
@@ -215,7 +194,21 @@ def _batch(
             {"hidden": torch.randn(batch_size, 4, requires_grad=True)}
         ),
         history_size=history_size,
+        sample_weights=torch.ones(batch_size),
     )
+
+
+def _seed_history(runtime: SFT2ModelRuntime, batch: SFT2Batch) -> torch.Tensor:
+    history_steps = batch.history_size - 1
+    if history_steps == 0:
+        return torch.empty((batch.batch_size, 0, 4))
+    values = torch.arange(
+        batch.batch_size * history_steps * 4,
+        dtype=torch.float32,
+    ).reshape(batch.batch_size, history_steps, 4)
+    keys = [key for row in batch.history_keys for key in row]
+    runtime.history_cache.store(keys, values.flatten(0, 1))
+    return values
 
 
 def test_state_projector_accepts_multi_latent_block() -> None:
@@ -252,6 +245,7 @@ def test_unwrapped_runtime_applies_ema_to_its_own_backbone_model() -> None:
     ema = _RecordingEMA()
     validation_runtime = SFT2ModelRuntime(
         agent=agent,
+        history_cache=OnlineHistoryStateCache(),
         backbone_ema=ema,
     ).unwrapped()
 
@@ -265,6 +259,7 @@ def test_unwrapped_runtime_applies_ema_to_its_own_backbone_model() -> None:
 def test_sft2_training_step_computes_one_current_step_loss_and_detaches_history() -> None:
     algorithm, runtime, backbone, projector = _algorithm()
     batch = _batch()
+    cached_history = _seed_history(runtime, batch)
 
     output = algorithm.training_step(runtime, batch, wm_weight=0.5)
     output.losses["wm"].backward()
@@ -275,23 +270,27 @@ def test_sft2_training_step_computes_one_current_step_loss_and_detaches_history(
     assert projector.outputs[1].grad is not None
     current_grad = batch.current.tensors["hidden"].grad
     assert current_grad is not None
-    assert torch.count_nonzero(current_grad.reshape(2, 2, 4)[:, :-1]) == 0
-    assert torch.count_nonzero(current_grad.reshape(2, 2, 4)[:, -1]) > 0
+    assert torch.count_nonzero(current_grad) > 0
+    assert cached_history.grad is None
     assert batch.next.tensors["hidden"].grad is None
+    assert runtime.history_cache.count == 4
 
 
 def test_sft2_ce_supervises_each_contexts_current_step_only() -> None:
     algorithm, runtime, _, _ = _algorithm()
     batch = _batch()
+    _seed_history(runtime, batch)
 
     output = algorithm.training_step(runtime, batch, wm_weight=1.0)
 
-    expected = batch.current.tensors["hidden"].reshape(2, 2, 4)[:, -1].mean()
+    expected = batch.current.tensors["hidden"].mean()
     torch.testing.assert_close(output.losses["lm"], expected)
 
 
 def test_sft2_predictor_receives_full_configured_history_axis() -> None:
     algorithm, runtime, _, _ = _algorithm(history_size=2)
+    batch = _batch()
+    _seed_history(runtime, batch)
     predictor = runtime.agent.wm.wm_predictor
     seen: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
 
@@ -300,7 +299,7 @@ def test_sft2_predictor_receives_full_configured_history_axis() -> None:
         return state
 
     predictor.forward = record_shape  # type: ignore[method-assign]
-    output = algorithm.training_step(runtime, _batch(), wm_weight=1.0)
+    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
 
     assert seen == [((2, 2, 4), (2, 2))]
     assert output.model_output.predicted_next_state.shape == (2, 4)
@@ -312,6 +311,7 @@ def test_sft2_sigreg_receives_each_current_next_pair_once() -> None:
     sigreg = SequenceSIGReg(regularizer=recording)
     algorithm, runtime, _, projector = _algorithm(sigreg)
     batch = _batch()
+    _seed_history(runtime, batch)
 
     output = algorithm.training_step(runtime, batch, wm_weight=1.0)
 
@@ -319,7 +319,7 @@ def test_sft2_sigreg_receives_each_current_next_pair_once() -> None:
     assert recording.inputs[0].shape == (2, 2, 4)
     expected = torch.stack(
         (
-            projector.outputs[0].reshape(2, 2, 4)[:, -1],
+            projector.outputs[0],
             projector.outputs[2],
         ),
         dim=0,
@@ -338,13 +338,11 @@ def test_sft2_sigreg_skips_single_window_batch() -> None:
         SequenceSIGReg(regularizer=recording)
     )
 
-    output = algorithm.training_step(
-        runtime,
-        _batch(
-            trajectory_steps=(("rec_A", 0), ("rec_A", 1)),
-        ),
-        wm_weight=1.0,
+    batch = _batch(
+        trajectory_steps=(("rec_A", 0), ("rec_A", 1)),
     )
+    _seed_history(runtime, batch)
+    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
 
     assert recording.inputs == []
     assert output.losses["sigreg"] is None
@@ -357,7 +355,9 @@ def test_sft2_evaluation_does_not_use_training_sigreg_layout() -> None:
         SequenceSIGReg(regularizer=recording)
     )
 
-    output = algorithm.evaluation_step(runtime, _batch())
+    batch = _batch()
+    _seed_history(runtime, batch)
+    output = algorithm.evaluation_step(runtime, batch)
 
     assert recording.inputs == []
     assert output.losses["sigreg"] is None
@@ -371,12 +371,109 @@ def test_sft2_zero_sigreg_weight_does_not_run_module() -> None:
         sigreg_weight=0.0,
     )
     batch = _batch()
+    _seed_history(runtime, batch)
 
     output = algorithm.training_step(runtime, batch, wm_weight=1.0)
 
     assert recording.inputs == []
     assert output.losses["sigreg"] is None
     assert "sigreg_skipped_small_batch" not in output.metrics
+
+
+def test_online_cache_reuses_a_prior_current_state_without_history_qwen() -> None:
+    algorithm, runtime, backbone, _ = _algorithm(history_size=2, sigreg_weight=0.0)
+    first = _batch(
+        trajectory_steps=(("rec_A", 0), ("rec_B", 0)),
+        history_size=1,
+    )
+    second = _batch(
+        trajectory_steps=(
+            ("rec_A", 0),
+            ("rec_A", 1),
+            ("rec_B", 0),
+            ("rec_B", 1),
+        ),
+        history_size=2,
+    )
+
+    algorithm.training_step(runtime, first, wm_weight=1.0)
+    calls_after_first = backbone.calls
+    output = algorithm.training_step(runtime, second, wm_weight=1.0)
+
+    assert calls_after_first == 2
+    assert backbone.calls == 4
+    assert output.model_output.state.shape == (2, 2, 4)
+    torch.testing.assert_close(
+        output.model_output.state[:, 0],
+        runtime.history_cache.history(
+            second.history_keys,
+            reference=output.model_output.state[:, -1],
+        )[:, 0],
+    )
+    assert runtime.history_cache.count == 4
+
+
+def test_online_cache_miss_fails_instead_of_recomputing_history() -> None:
+    algorithm, runtime, backbone, _ = _algorithm(history_size=2, sigreg_weight=0.0)
+    batch = _batch()
+
+    try:
+        algorithm.training_step(runtime, batch, wm_weight=1.0)
+    except KeyError as error:
+        assert "online history cache miss" in str(error)
+    else:
+        raise AssertionError("missing online history must fail")
+
+    assert backbone.calls == 1
+    assert runtime.history_cache.count == 0
+
+
+def test_padding_batch_has_zero_loss_and_does_not_write_cache() -> None:
+    algorithm, runtime, _, _ = _algorithm(history_size=1, sigreg_weight=0.0)
+    batch = _batch(
+        trajectory_steps=(("rec_A", 0), ("rec_B", 0)),
+        history_size=1,
+    )
+    object.__setattr__(batch, "sample_weights", torch.zeros(2))
+
+    output = algorithm.training_step(runtime, batch, wm_weight=1.0)
+
+    assert output.sample_count == 0
+    assert output.loss.item() == 0.0
+    assert runtime.history_cache.count == 0
+
+
+def test_online_history_cache_checkpoint_round_trip(tmp_path: Path) -> None:
+    cache = OnlineHistoryStateCache()
+    cache.start(epoch=3, phase="train")
+    states = torch.randn(2, 4, requires_grad=True)
+    cache.store((("rec_A", 0), ("rec_B", 0)), states)
+    path = tmp_path / "history_cache_rank_000.pt"
+    cache.save(path)
+
+    restored = OnlineHistoryStateCache()
+    restored.load(path)
+    restored.start(epoch=3, phase="train", resume=True)
+    actual = restored.history(
+        ((('rec_A', 0),), (('rec_B', 0),)),
+        reference=torch.empty(2, 4),
+    )
+
+    torch.testing.assert_close(actual[:, 0], states.detach())
+    assert not actual.requires_grad
+    assert restored.count == 2
+
+
+def test_online_history_cache_rejects_duplicate_current_keys() -> None:
+    cache = OnlineHistoryStateCache()
+    cache.start(epoch=1, phase="train")
+
+    try:
+        cache.store((("rec_A", 0), ("rec_A", 0)), torch.randn(2, 4))
+    except ValueError as error:
+        assert "current step was emitted more than once" in str(error)
+    else:
+        raise AssertionError("duplicate current keys must fail")
 
 
 def test_algorithm_wm_weight_warms_up() -> None:

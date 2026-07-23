@@ -22,7 +22,7 @@ from nimloth.util.cache import (
     cache_fingerprint,
 )
 from nimloth.training.sft2.data.samplers import (
-    TrajectoryWindowBatchSampler,
+    OnlineHistoryBatchSampler,
 )
 from nimloth.rollout.transitions import TransitionJsonlDataset, TransitionSample
 
@@ -33,8 +33,8 @@ class DataBundle:
     val_loader: DataLoader
     train_samples: list[TransitionSample]
     val_samples: list[TransitionSample]
-    train_batch_sampler: TrajectoryWindowBatchSampler
-    val_batch_sampler: TrajectoryWindowBatchSampler
+    train_batch_sampler: OnlineHistoryBatchSampler
+    val_batch_sampler: OnlineHistoryBatchSampler
 
 
 def _dataloader_workers(config: Any) -> int:
@@ -222,37 +222,22 @@ def build_data_bundle(
             prefetch_factor=max(1, int(config.dataloader_prefetch_factor)),
         )
 
-    if config.batch_mode not in {
-        "random",
-        "trajectory",
-        "trajectory_image_budget",
-    }:
-        raise ValueError(f"unsupported SFT2 batch mode: {config.batch_mode!r}")
-    image_budget = (
-        int(config.max_images_per_batch)
-        if config.batch_mode == "trajectory_image_budget"
-        else None
-    )
-    row_budget = (
-        int(config.max_steps_per_trajectory)
-        if config.batch_mode == "trajectory_image_budget"
-        else None
-    )
-    train_batch_sampler = TrajectoryWindowBatchSampler(
+    if config.batch_mode != "trajectory_online_cache":
+        raise ValueError(
+            "SFT2 requires batch_mode='trajectory_online_cache' so detached "
+            "history states are written before use"
+        )
+    train_batch_sampler = OnlineHistoryBatchSampler(
         train_samples,
         history_size=config.history_size,
         batch_size=config.batch_size,
         num_replicas=world_size,
         rank=rank,
         shuffle=True,
-        shuffle_windows=config.batch_mode == "random",
         seed=config.seed,
-        max_images_per_batch=image_budget,
-        max_transition_rows_per_batch=row_budget,
-        backbone_rows_per_forward=config.backbone_rows_per_forward,
         pad_to_equal_batches=True,
     )
-    val_batch_sampler = TrajectoryWindowBatchSampler(
+    val_batch_sampler = OnlineHistoryBatchSampler(
         val_samples,
         history_size=config.history_size,
         batch_size=config.batch_size,
@@ -260,9 +245,6 @@ def build_data_bundle(
         rank=rank,
         shuffle=False,
         seed=config.seed,
-        max_images_per_batch=image_budget,
-        max_transition_rows_per_batch=row_budget,
-        backbone_rows_per_forward=config.backbone_rows_per_forward,
         pad_to_equal_batches=False,
     )
     if train_batch_sampler.window_count == 0:
@@ -275,14 +257,14 @@ def build_data_bundle(
             "SFT2 validation data has no transition with a real next state: "
             f"history_size={config.history_size}"
         )
-    if (
-        float(config.lambda_sigreg) > 0.0
-        and int(config.batch_size) >= 2
-        and max(train_batch_sampler.current_steps_per_batch, default=0) < 2
-    ):
-        raise ValueError(
-            "SIGReg requires actual current-step batch size >= 2, but sampler "
-            "packed every training microbatch as B=1"
+    if is_main():
+        print(
+            json.dumps(
+                {
+                    "online_history_cache_sampler": "trajectory_lane_v1",
+                    "train_padding_batches_rank0": train_batch_sampler.padding_batch_count,
+                }
+            )
         )
 
     train_loader = DataLoader(

@@ -20,8 +20,10 @@
 2. episode 开头使用 T=1..H-1 的真实短上下文；禁止丢弃这些 step 或伪造 padding。
 3. `algorithm.py` 必须显式使用 current action/value/next target，只计算一次
    CE、WM、value 和 SIGReg。
-4. 历史 Backbone/state 路径在进入 WM predictor 前 detach；只有 current row
-   拥有 CE 和 Backbone 梯度。ValueHead 读取当前 `s_t`，更早历史由构造
-   `s_t` 的累计 Agent prompt 提供。
-5. 测试必须统计每个 transition 的 current-step ownership，并验证旧 history 的
-   Backbone 梯度为零。
+4. 每个 state 只在它作为 current step 时执行一次在线 Backbone；detached state
+   写入 rank-local cache，未来窗口直接读取，禁止为了 history 再跑 Backbone。
+   ValueHead 读取当前 `s_t`，更早历史只供 WM predictor 使用且不跨时间回传梯度。
+5. sampler 必须让完整 trajectory lane 在同一 rank 按时间顺序推进；epoch 内恢复
+   必须同时恢复 sampler cursor 和每个 rank 的 history cache。
+6. 测试必须统计每个 transition 的 current-step ownership，并验证 cache 先写后读、
+   cache miss fail-fast、旧 history 无梯度且 padding 不重复真实 loss。

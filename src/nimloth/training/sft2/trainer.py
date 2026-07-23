@@ -44,6 +44,7 @@ from nimloth.training.sft2.loop import (
     SFT2TrainingLoop,
     load_sft2_loop_state,
 )
+from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft2.runtime import (
     SFT2ModelRuntime,
     SFT2OptimizationRuntime,
@@ -277,12 +278,6 @@ def train_sft2(args=None) -> int:
     args.history_size = int(getattr(args, "history_size", 4))
     if args.history_size < 1:
         raise ValueError(f"--history-size must be >= 1, got {args.history_size}")
-    if args.backbone_rows_per_forward is not None and args.backbone_rows_per_forward < 1:
-        raise ValueError("--backbone-rows-per-forward must be >= 1")
-    if args.offload_backbone_chunk_activations and args.backbone_rows_per_forward is None:
-        raise ValueError(
-            "--offload-backbone-chunk-activations requires --backbone-rows-per-forward"
-        )
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     if args.query_tune == "adapter" and uses_lora(args):
@@ -332,8 +327,7 @@ def train_sft2(args=None) -> int:
                     "output_dir": str(args.output_dir),
                     "batch_mode": args.batch_mode,
                     "history_size": args.history_size,
-                    "backbone_rows_per_forward": args.backbone_rows_per_forward,
-                    "offload_backbone_chunk_activations": args.offload_backbone_chunk_activations,
+                    "history_state_cache": "online_detached_state_v1",
                     "latent_token_count": args.latent_token_count,
                     "latent_query_mode": args.latent_query_mode,
                     "query_tune": args.query_tune,
@@ -386,8 +380,17 @@ def train_sft2(args=None) -> int:
         device=aux_device,
         history_size=args.history_size,
     )
+    history_cache = OnlineHistoryStateCache()
+    if resume_ckpt_dir is not None:
+        history_cache_path = resume_ckpt_dir / f"history_cache_rank_{rank:03d}.pt"
+        if not history_cache_path.is_file():
+            raise FileNotFoundError(
+                f"resume checkpoint is missing rank history cache: {history_cache_path}"
+            )
+        history_cache.load(history_cache_path)
     model_runtime = SFT2ModelRuntime(
         agent=agent,
+        history_cache=history_cache,
         backbone_ema=vision_ema,
     )
     optimizer = _build_optimizer(
@@ -424,14 +427,36 @@ def train_sft2(args=None) -> int:
     train_loader = data.train_loader
     val_loader = data.val_loader
     train_batch_sampler = data.train_batch_sampler
+    local_batch_histogram = Counter(train_batch_sampler.current_steps_per_batch)
+    batch_histograms: list[dict[int, int] | None] = [None] * world
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.all_gather_object(
+            batch_histograms,
+            dict(local_batch_histogram),
+        )
+    else:
+        batch_histograms[0] = dict(local_batch_histogram)
+    global_batch_histogram: Counter[int] = Counter()
+    for histogram in batch_histograms:
+        if histogram is not None:
+            global_batch_histogram.update(histogram)
+    owned_current_steps = sum(
+        batch_size * count
+        for batch_size, count in global_batch_histogram.items()
+    )
+    if owned_current_steps != train_batch_sampler.window_count:
+        raise RuntimeError(
+            "online history sampler current-step ownership mismatch: "
+            f"expected={train_batch_sampler.window_count}, actual={owned_current_steps}"
+        )
     if is_main():
         print(
             json.dumps(
                 {
-                    "sft2_step_ownership": "current_step_once_v1",
+                    "sft2_step_ownership": "current_step_once_v2_online_cache",
                     "train_current_steps": train_batch_sampler.window_count,
                     "actual_current_steps_per_microbatch": dict(
-                        sorted(Counter(train_batch_sampler.current_steps_per_batch).items())
+                        sorted(global_batch_histogram.items())
                     ),
                 }
             )
@@ -463,9 +488,8 @@ def train_sft2(args=None) -> int:
         "latent_query_mode": args.latent_query_mode,
         "query_tune": args.query_tune,
         "history_size": int(args.history_size),
-        "backbone_rows_per_forward": args.backbone_rows_per_forward,
-        "offload_backbone_chunk_activations": args.offload_backbone_chunk_activations,
-        "sample_ownership_version": "current_step_once_v1",
+        "history_state_cache": "online_detached_state_v1",
+        "sample_ownership_version": "current_step_once_v2_online_cache",
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }
@@ -485,6 +509,8 @@ def train_sft2(args=None) -> int:
     )
     checkpoint_runtime = SFT2CheckpointRuntime(
         manager=checkpoint_manager,
+        history_cache=history_cache,
+        rank=rank,
         device=device,
         interval_steps=int(args.checkpoint_interval_steps or 0),
         interval_minutes=float(args.checkpoint_interval_minutes),
@@ -536,8 +562,6 @@ def train_sft2(args=None) -> int:
         value_rank_weight=args.value_rank_lambda,
         wm_weight_start=args.lambda_wm_start,
         wm_weight_end=args.lambda_wm_end,
-        backbone_rows_per_forward=args.backbone_rows_per_forward,
-        offload_backbone_chunk_activations=args.offload_backbone_chunk_activations,
     )
 
     loop_state = load_sft2_loop_state(

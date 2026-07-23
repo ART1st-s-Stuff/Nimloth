@@ -33,15 +33,15 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert args.query_tune == "adapter"
     assert args.query_lr == pytest.approx(5e-5)
     assert args.checkpoint_metric == "val_wm_mse"
-    assert args.batch_mode == "trajectory_image_budget"
+    assert args.batch_mode == "trajectory_online_cache"
     assert args.epochs == 10
     assert args.batch_size == 2
     assert args.grad_accum == 4
     assert args.max_length == 12000
     assert args.max_pixels == 100352
-    assert args.max_images_per_batch == 12
     assert args.history_size == 4
-    assert args.backbone_rows_per_forward is None
+    assert not hasattr(args, "backbone_rows_per_forward")
+    assert not hasattr(args, "offload_backbone_chunk_activations")
     assert args.preprocess_cache_format == "compact"
     assert args.preprocess_cache_image_dtype == "bfloat16"
     assert args.preprocess_workers == 16
@@ -57,10 +57,10 @@ def test_k1_control_only_changes_latent_capacity_not_runtime_budget() -> None:
     assert args.batch_size == 2
     assert args.grad_accum == 4
     assert args.max_pixels == 100352
-    assert args.max_images_per_batch == 12
     assert args.history_size == 4
-    assert args.backbone_rows_per_forward == 1
-    assert args.offload_backbone_chunk_activations is True
+    assert args.batch_mode == "trajectory_online_cache"
+    assert not hasattr(args, "backbone_rows_per_forward")
+    assert not hasattr(args, "offload_backbone_chunk_activations")
     assert args.checkpoint_metric == "val_wm_mse"
 
 
@@ -105,3 +105,13 @@ def test_cli_rejects_conflicting_mode_and_legacy_mask() -> None:
 def test_sft2_config_rejects_unknown_fields() -> None:
     with pytest.raises(ValueError, match="unknown SFT2 config field: train.typo"):
         flatten_sft2_yaml_config({"train": {"typo": True}})
+
+
+def test_sft2_config_rejects_removed_oom_emergency_fields() -> None:
+    with pytest.raises(
+        ValueError,
+        match="unknown SFT2 config field: train.offload_backbone_chunk_activations",
+    ):
+        flatten_sft2_yaml_config(
+            {"train": {"offload_backbone_chunk_activations": True}}
+        )

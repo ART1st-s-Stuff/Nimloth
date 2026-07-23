@@ -64,6 +64,7 @@ class TransitionContextIndex:
     sample_index: int
     context_length: int
     is_current_step: bool
+    loss_weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ class ContextualTransitionSample:
     sample: TransitionSample
     context_length: int
     is_current_step: bool
+    loss_weight: float = 1.0
 
 
 def bind_transition_prompt(sample: TransitionSample) -> list[dict[str, Any]]:
@@ -350,5 +352,6 @@ class TransitionJsonlDataset(Dataset[TransitionSample]):
                 sample=self.samples[index.sample_index],
                 context_length=index.context_length,
                 is_current_step=index.is_current_step,
+                loss_weight=index.loss_weight,
             )
         return self.samples[index]

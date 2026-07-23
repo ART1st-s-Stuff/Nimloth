@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-07-23：删除 OOM 应急路径并改用在线 detached history cache
+
+- 人类选择在线 cache 方案：每条 trajectory lane 固定给一个 rank 并严格按时间
+  推进；每个 state 只在它作为 current step 时执行一次在线 Qwen，随后 detached
+  到 CPU cache，供未来最长 H=4 的 WM/value 历史读取。旧 state 不重算，梯度也不
+  回到更老时间点；cache 每个 epoch/validation phase 隔离。
+- 生产 CLI/config/source 已删除 row-by-row Qwen、chunked forward、saved-tensor CPU
+  activation offload、image/row budget和旧随机/trajectory batch mode。当前唯一生产
+  mode 为 `trajectory_online_cache`；current Qwen 输入是 B 行，不再是 B*T 行。
+- 分布式 sampler 按完整 lane group 分 rank，真实 transition 不跨 rank、不重复；为
+  对齐 DDP microbatch 数只追加整批 `loss_weight=0` 的 T=1 padding。cache miss、重复
+  current 写入均 fail-fast。
+- epoch 内 checkpoint 新增每 rank 的 `history_cache_rank_NNN.pt`；partial resume 同时
+  恢复 cache 和 microbatch cursor，避免重算已消费历史。新增/更新测试覆盖先写后读、
+  无历史 Qwen、cache checkpoint、padding、跨 rank ownership 和旧选项拒绝。
+- 当前只完成 `compileall`、`git diff --check` 和静态旧路径扫描；本地环境无 pytest。
+  尚需推送后在 superpod PyTorch 2.8 环境跑回归，再以 preempt 8 GPU、B=2/GA=4
+  做至少一个 optimizer-step smoke，才能确认无 OOM 和真实性能。
+
 ## 2026-07-23：逐 step loss 修正后 B=2/GA=4 smoke 无 OOM
 
 - current-step-once 修复提交 `e31ee89`，变长 sampler 测试修复提交 `367e834`；

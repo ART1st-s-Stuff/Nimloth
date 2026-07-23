@@ -44,6 +44,7 @@ from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
 from nimloth.training.sft2.batch import SFT2BatchAssembler
 from nimloth.agent import Agent
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
+from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.wm import (
     LatentWMPredictor,
     LeWMConfig,
@@ -115,6 +116,7 @@ def run_micro_training_loss(
             max_length=max_length,
         ),
         device=device,
+        history_size=1,
     )
     if use_cached_enc:
         # 生产环境由 CachedTransitionDataset 补回 prompt 元数据；诊断脚本绕过
@@ -155,8 +157,10 @@ def run_micro_training_loss(
         value_rank_weight=1.0,
     )
     lambda_wm = algorithm.wm_weight(0, 100)
+    history_cache = OnlineHistoryStateCache()
+    history_cache.start(epoch=0, phase="diagnosis")
     output = algorithm.training_step(
-        SFT2ModelRuntime(agent=agent),
+        SFT2ModelRuntime(agent=agent, history_cache=history_cache),
         batch_builder.prepare(raw_batch),
         wm_weight=lambda_wm,
     )

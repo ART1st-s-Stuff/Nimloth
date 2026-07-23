@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
-from typing import Any, Collection, Mapping
+from typing import Any, Mapping
 
 import torch
 from torch import nn
 
 from nimloth.backbone.base import Backbone, BackboneBatch, BackboneOutput
-from nimloth.backbone.qwen25vl.batch import split_qwen_batch_rows
 from nimloth.backbone.qwen25vl.checkpoint import save_full_vision_state
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.latent import materialize_query_embedding_adapter
@@ -61,90 +59,6 @@ class Qwen25VLBackbone(Backbone):
             hidden=hidden,
             lm_loss=lm_loss if include_lm_loss else None,
         )
-
-    def forward_chunked(
-        self,
-        batch: BackboneBatch,
-        *,
-        max_rows: int,
-        include_lm_loss: bool = False,
-        offload_saved_tensors: bool = False,
-        gradient_rows: Collection[int] | None = None,
-        lm_loss_rows: Collection[int] | None = None,
-    ) -> BackboneOutput:
-        root = self.model.module if hasattr(self.model, "module") else self.model
-        config = root.config
-        image_token_id = int(config.image_token_id)
-        vision_config = getattr(config, "vision_config", None)
-        spatial_merge_size = int(getattr(vision_config, "spatial_merge_size", 2))
-        chunks = split_qwen_batch_rows(
-            dict(batch.tensors),
-            max_rows=max_rows,
-            image_token_id=image_token_id,
-            spatial_merge_size=spatial_merge_size,
-        )
-        gradient_row_set = None if gradient_rows is None else set(gradient_rows)
-        lm_loss_row_set = None if lm_loss_rows is None else set(lm_loss_rows)
-        if (gradient_row_set is not None or lm_loss_row_set is not None) and max_rows != 1:
-            raise ValueError("selected Qwen gradient/loss rows require max_rows=1")
-        def pack_saved_tensor(tensor: torch.Tensor):
-            if not offload_saved_tensors or not tensor.is_cuda or tensor.is_leaf:
-                return False, tensor
-            return True, tensor.device, tensor.detach().to("cpu")
-
-        def unpack_saved_tensor(packed):
-            if not packed[0]:
-                return packed[1]
-            _, device, tensor = packed
-            return tensor.to(device, non_blocking=True)
-
-        outputs: list[BackboneOutput] = []
-        for row_index, chunk in enumerate(chunks):
-            row_has_gradient = (
-                gradient_row_set is None or row_index in gradient_row_set
-            )
-            row_has_lm_loss = (
-                include_lm_loss
-                and (lm_loss_row_set is None or row_index in lm_loss_row_set)
-            )
-            saved_tensor_context = (
-                torch.autograd.graph.saved_tensors_hooks(
-                    pack_saved_tensor,
-                    unpack_saved_tensor,
-                )
-                if offload_saved_tensors
-                else contextlib.nullcontext()
-            )
-            gradient_context = (
-                contextlib.nullcontext() if row_has_gradient else torch.no_grad()
-            )
-            with gradient_context, saved_tensor_context:
-                outputs.append(
-                    self.forward(
-                        BackboneBatch(chunk),
-                        include_lm_loss=row_has_lm_loss,
-                    )
-                )
-        hidden = torch.cat([output.hidden for output in outputs], dim=0)
-        if not include_lm_loss:
-            return BackboneOutput(hidden=hidden)
-
-        weighted_losses: list[torch.Tensor] = []
-        valid_label_counts: list[int] = []
-        for chunk, output in zip(chunks, outputs, strict=True):
-            if output.lm_loss is None:
-                continue
-            labels = chunk.get("labels")
-            if labels is None:
-                raise ValueError("include_lm_loss requires labels")
-            count = int((labels[:, 1:] != -100).sum().item())
-            if count > 0:
-                weighted_losses.append(output.lm_loss * count)
-                valid_label_counts.append(count)
-        if not valid_label_counts:
-            raise ValueError("Qwen batch contains no shifted CE supervision labels")
-        lm_loss = torch.stack(weighted_losses).sum() / sum(valid_label_counts)
-        return BackboneOutput(hidden=hidden, lm_loss=lm_loss)
 
     def with_model(self, model: nn.Module) -> "Qwen25VLBackbone":
         return Qwen25VLBackbone(

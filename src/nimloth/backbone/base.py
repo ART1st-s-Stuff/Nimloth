@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from contextlib import AbstractContextManager
-from typing import Any, Collection, Mapping, Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 import torch
 from torch import nn
@@ -41,25 +41,6 @@ class Backbone(nn.Module, ABC):
         include_lm_loss: bool = False,
     ) -> BackboneOutput:
         """把 processor 输出编码为 Agent 使用的 latent hidden。"""
-
-    def forward_chunked(
-        self,
-        batch: BackboneBatch,
-        *,
-        max_rows: int,
-        include_lm_loss: bool = False,
-        offload_saved_tensors: bool = False,
-        gradient_rows: Collection[int] | None = None,
-        lm_loss_rows: Collection[int] | None = None,
-    ) -> BackboneOutput:
-        """按较小的输入行组执行等价 forward。
-
-        具体 backbone 必须负责切分自己的多模态张量并保持 loss reduction 语义。
-        """
-
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support chunked backbone forward"
-        )
 
     @property
     @abstractmethod

@@ -67,5 +67,6 @@ def evaluate(
                 break
             agent_batch = batch_builder.prepare(batch)
             output = algorithm.evaluation_step(validation_runtime, agent_batch)
-            accumulator.update(output.metrics)
+            if output.sample_count > 0:
+                accumulator.update(output.metrics, count=output.sample_count)
     return distributed_metric_averages(accumulator)

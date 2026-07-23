@@ -100,9 +100,10 @@ class CompactCachedTransitionCollator:
         items: list[dict[str, Any]] = []
         for entry in batch:
             cache_index = int(entry["cache_index"])
-            row = self._materialize_encoding(entry["current_enc"])
-            materialized[cache_index] = row
-            current_rows.append(row)
+            if bool(entry.get("is_current_step", True)):
+                row = self._materialize_encoding(entry["current_enc"])
+                materialized[cache_index] = row
+                current_rows.append(row)
             items.append(
                 {
                     "id": entry["id"],
@@ -115,11 +116,15 @@ class CompactCachedTransitionCollator:
                     "next_messages": entry.get("next_messages"),
                     "context_length": entry.get("context_length"),
                     "is_current_step": entry.get("is_current_step"),
+                    "loss_weight": entry.get("loss_weight", 1.0),
                 }
             )
 
         next_rows: list[dict[str, torch.Tensor] | None] = []
         for entry in batch:
+            if not bool(entry.get("is_current_step", True)):
+                next_rows.append(None)
+                continue
             next_index = entry.get("next_cache_index")
             if next_index is None:
                 compact_next = entry.get("next_enc")
@@ -202,14 +207,20 @@ class CachedTransitionDataset(Dataset):
                     f"{transition_sample_id(sample)!r}"
                 )
             entry["cache_index"] = index
-            next_index = None
-            if sample.next_prefix_messages is not None:
-                next_index = self._sample_index.get((sample.record_id, sample.step_index + 1))
-            entry["next_cache_index"] = next_index
-            if next_index is not None:
-                entry["next_enc"] = self._compact_entry(next_index)["current_enc"]
+            if context_index is None or context_index.is_current_step:
+                next_index = None
+                if sample.next_prefix_messages is not None:
+                    next_index = self._sample_index.get(
+                        (sample.record_id, sample.step_index + 1)
+                    )
+                entry["next_cache_index"] = next_index
+                if next_index is not None:
+                    entry["next_enc"] = self._compact_entry(next_index)["current_enc"]
+                else:
+                    entry["next_enc"] = entry.get("next_enc")
             else:
-                entry["next_enc"] = entry.get("next_enc")
+                entry["next_cache_index"] = None
+                entry["next_enc"] = None
         else:
             cache_path = self.cache_path_for_sample(sample)
             if not cache_path.is_file():
@@ -227,4 +238,5 @@ class CachedTransitionDataset(Dataset):
         if context_index is not None:
             entry["context_length"] = context_index.context_length
             entry["is_current_step"] = context_index.is_current_step
+            entry["loss_weight"] = context_index.loss_weight
         return entry

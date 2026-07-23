@@ -17,16 +17,10 @@ code lives in `src/nimloth/training/sft2/`.
 | `upload_sft2_eval_wandb.py` | Upload actual greedy-rollout evaluation results |
 
 Configuration is owned by `configs/training/sft2/`. Unknown YAML fields fail
-at startup. The production batch modes are:
-
-- `random`: ordinary transition batches;
-- `trajectory`: consecutive prefixes grouped by trajectory;
-- `trajectory_image_budget`: trajectory prefixes grouped under image/step
-  limits (default).
-
-All three modes run every prefix as an independent Qwen row. Packed/full-
-trajectory Qwen forwards are known to be non-equivalent for image trajectories
-and are confined to `diagnosis/`; they are not accepted by the trainer CLI.
+at startup. Production accepts only `trajectory_online_cache`: complete
+trajectory lanes stay on one rank and advance in time order. A state is encoded
+once when it is the current transition, then reused as detached history. Removed
+row-by-row and activation-offload OOM fallbacks are not accepted by the CLI.
 
 ## Compact preprocess cache
 

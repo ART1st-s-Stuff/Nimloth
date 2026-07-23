@@ -14,6 +14,7 @@ import torch.distributed as dist
 
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
+from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
@@ -52,6 +53,7 @@ def is_trainable_checkpoint_dir(ckpt_dir: Path) -> bool:
         ckpt_dir / "wm_predictor" / "config.json",
         ckpt_dir / "wm_predictor" / "predictor.pt",
         ckpt_dir / "value_head" / "value_head.pt",
+        ckpt_dir / "history_cache_rank_000.pt",
     )
     return all(path.is_file() for path in required) and (
         (ckpt_dir / "config.json").is_file()
@@ -214,6 +216,8 @@ class SFT2CheckpointRuntime:
     """统一 checkpoint 的触发、分布式同步和历史清理策略。"""
 
     manager: SFT2CheckpointManager
+    history_cache: OnlineHistoryStateCache
+    rank: int
     device: torch.device
     interval_steps: int
     interval_minutes: float
@@ -227,15 +231,12 @@ class SFT2CheckpointRuntime:
         epoch: int,
         best_val_wm_mse: float,
     ) -> None:
-        self._barrier()
-        if is_main():
-            self.manager.save(
-                "final",
-                step=step,
-                epoch=epoch,
-                best_val_wm_mse=best_val_wm_mse,
-            )
-        self._barrier()
+        self._save(
+            "final",
+            step=step,
+            epoch=epoch,
+            best_val_wm_mse=best_val_wm_mse,
+        )
 
     def save_periodic(
         self,
@@ -256,30 +257,27 @@ class SFT2CheckpointRuntime:
             save_latest = self._broadcast_bool(save_latest)
 
         if save_latest:
-            self._barrier()
+            self._save(
+                "latest",
+                step=step,
+                epoch=epoch,
+                best_val_wm_mse=best_val_wm_mse,
+                epoch_complete=False,
+                micro_step_in_epoch=micro_step,
+            )
             if is_main():
-                self.manager.save(
-                    "latest",
-                    step=step,
-                    epoch=epoch,
-                    best_val_wm_mse=best_val_wm_mse,
-                    epoch_complete=False,
-                    micro_step_in_epoch=micro_step,
-                )
                 self.last_periodic_time = time.monotonic()
-            self._barrier()
 
         if save_step:
-            self._barrier()
+            self._save(
+                f"step_{step:06d}",
+                step=step,
+                epoch=epoch,
+                best_val_wm_mse=best_val_wm_mse,
+                epoch_complete=False,
+                micro_step_in_epoch=micro_step,
+            )
             if is_main():
-                self.manager.save(
-                    f"step_{step:06d}",
-                    step=step,
-                    epoch=epoch,
-                    best_val_wm_mse=best_val_wm_mse,
-                    epoch_complete=False,
-                    micro_step_in_epoch=micro_step,
-                )
                 self._prune_step_checkpoints()
             self._barrier()
 
@@ -291,21 +289,47 @@ class SFT2CheckpointRuntime:
         best_val_wm_mse: float,
         improved: bool,
     ) -> None:
-        if not is_main():
-            return
-        self.manager.save(
+        self._save(
             f"epoch_{epoch:03d}",
             step=step,
             epoch=epoch,
             best_val_wm_mse=best_val_wm_mse,
         )
         if improved:
-            self.manager.save(
+            self._save(
                 "best",
                 step=step,
                 epoch=epoch,
                 best_val_wm_mse=best_val_wm_mse,
             )
+
+    def _save(
+        self,
+        name: str,
+        *,
+        step: int,
+        epoch: int,
+        best_val_wm_mse: float,
+        epoch_complete: bool = True,
+        micro_step_in_epoch: int = 0,
+    ) -> None:
+        self._barrier()
+        if is_main():
+            self.manager.save(
+                name,
+                step=step,
+                epoch=epoch,
+                best_val_wm_mse=best_val_wm_mse,
+                epoch_complete=epoch_complete,
+                micro_step_in_epoch=micro_step_in_epoch,
+            )
+        self._barrier()
+        self.history_cache.save(
+            self.manager.output_dir
+            / name
+            / f"history_cache_rank_{self.rank:03d}.pt"
+        )
+        self._barrier()
 
     def _prune_step_checkpoints(self) -> None:
         if self.keep_last <= 0:

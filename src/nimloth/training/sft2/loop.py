@@ -134,6 +134,14 @@ class SFT2TrainingLoop:
         """执行一个 epoch，并在全部 rank 完成后统一验证。"""
 
         self._set_sampler_epoch(epoch)
+        resuming_epoch = (
+            epoch == self.state.start_epoch and self.state.resume_micro_step > 0
+        )
+        self.model_runtime.history_cache.start(
+            epoch=epoch,
+            phase="train",
+            resume=resuming_epoch,
+        )
         self.optimization_runtime.zero_grad()
         accumulator = MetricAccumulator()
         train_iterator, micro_index = self._resume_train_iterator(epoch)
@@ -155,14 +163,17 @@ class SFT2TrainingLoop:
             with self.optimization_runtime.accumulation_context(
                 sync_gradients=sync_gradients,
             ):
-                lambda_wm, metrics, loss = self._forward_loss(batch_samples)
+                lambda_wm, metrics, loss, sample_count = self._forward_loss(
+                    batch_samples
+                )
                 timer_start = self.step_timer.start("backward")
                 self.optimization_runtime.backward(
                     loss,
                     grad_accum=self.config.grad_accum,
                 )
                 self.step_timer.stop("backward", timer_start)
-            accumulator.update(metrics)
+            if sample_count > 0:
+                accumulator.update(metrics, count=sample_count)
 
             if sync_gradients:
                 timer_start = self.step_timer.start("optimizer")
@@ -223,7 +234,10 @@ class SFT2TrainingLoop:
             )
         return train_iterator, consumed
 
-    def _forward_loss(self, batch_samples: Any) -> tuple[float, dict[str, float], Any]:
+    def _forward_loss(
+        self,
+        batch_samples: Any,
+    ) -> tuple[float, dict[str, float], Any, int]:
         """运行共享 forward，并按当前训练步组合全部目标函数。"""
 
         timer_start = self.step_timer.start("forward")
@@ -238,7 +252,12 @@ class SFT2TrainingLoop:
             wm_weight=lambda_wm,
         )
         self.step_timer.stop("forward", timer_start)
-        return lambda_wm, step_output.metrics, step_output.loss
+        return (
+            lambda_wm,
+            step_output.metrics,
+            step_output.loss,
+            step_output.sample_count,
+        )
 
     def _optimizer_step(
         self,
@@ -268,6 +287,7 @@ class SFT2TrainingLoop:
     def _validate_and_checkpoint(self, epoch: int) -> None:
         """验证当前模型，并根据 WM MSE 更新 epoch/best checkpoint。"""
 
+        self.model_runtime.history_cache.start(epoch=epoch, phase="val")
         val_metrics = evaluate(
             self.algorithm,
             self.model_runtime,

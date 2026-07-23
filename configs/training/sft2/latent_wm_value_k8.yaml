@@ -35,10 +35,8 @@ train:
   max_pixels: 100352
   emb_dim: 1024
   history_size: 4
-  # 每个样本是 H 个动作和 H+1 个真实状态；B<2 的 batch 跳过 SIGReg。
-  batch_mode: trajectory_image_budget
-  max_images_per_batch: 12
-  max_steps_per_trajectory: 16
+  # 当前 step 独占在线 Qwen/CE；H=4 的旧 state 来自本 epoch 在线 detached cache。
+  batch_mode: trajectory_online_cache
   # Performance knobs: remote H800 environment has flash_attn installed; keep
   # gradient checkpointing enabled by default for memory safety, but CLI now
   # supports --no-gradient-checkpointing for profiling.

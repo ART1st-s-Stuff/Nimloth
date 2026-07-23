@@ -212,3 +212,20 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - 结论：旧 formal 的 B=2/GA=4/world8 并行参数在修正语义后已通过 OOM gate；但
   首步约 445 秒，若有代表性则正式 10 epochs 仍不可接受。下一步应先由人类决定
   是否提交多步 throughput gate，不能直接把本 smoke 当作正式重训或 RL 产物。
+
+## 2026-07-23：改为在线 detached history cache，删除 OOM 应急路径
+
+- 人类明确要求删除 row1/activation-offload 应急路径，并选择在线 cache：trajectory
+  在 rank 内按时间顺序推进，`s_t` 只在当前 step 执行一次在线 Qwen，detached 后
+  缓存；未来 H=4 窗口读取缓存 state，不重新执行历史 Qwen。
+- current CE、WM、ValueHead 与 SIGReg 仍以 current transition 为唯一统计单位；
+  history 只进入 WM predictor，不能把梯度传回旧 optimizer version 的 Backbone/
+  StateProjector。target next 与 SIGReg online-next 继续各自按 current transition
+  计算一次。
+- 生产代码和配置已移除 `backbone_rows_per_forward`、
+  `offload_backbone_chunk_activations`、旧 image/row budget及旧 batch modes。新 sampler
+  固定完整 trajectory lane 的 rank ownership；DDP 对齐只使用零 loss padding batch，
+  不复制真实 transition loss。
+- partial checkpoint 将保存每个 rank 的 history cache，并与 microbatch cursor 一起
+  恢复。当前实现已通过 compileall/diff check，远端 PyTorch 回归和 8-GPU B2/GA4
+  smoke 尚未执行；在这两项通过前仍不能开始正式 SFT2 或 RL。

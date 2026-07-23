@@ -10,6 +10,7 @@ import torch
 
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneBatch, BackboneEMA
+from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.util.optim import (
     OptimizationRuntime,
     qwen_lr_schedule,
@@ -22,28 +23,20 @@ class SFT2ModelRuntime:
     """封装 SFT2 的在线 Agent、target-state 梯度路径与 Backbone EMA。"""
 
     agent: Agent
+    history_cache: OnlineHistoryStateCache
     backbone_ema: BackboneEMA | None = None
 
     def target_state(
         self,
         batch: BackboneBatch,
-        *,
-        backbone_rows_per_forward: int | None = None,
     ) -> torch.Tensor:
         """冻结 target Backbone，但保留 target 侧 StateProjector 梯度。"""
 
         with torch.no_grad(), self._backbone_context():
-            if backbone_rows_per_forward is None:
-                hidden = self.agent.backbone(
-                    batch,
-                    include_lm_loss=False,
-                ).hidden.detach()
-            else:
-                hidden = self.agent.backbone.forward_chunked(
-                    batch,
-                    max_rows=backbone_rows_per_forward,
-                    include_lm_loss=False,
-                ).hidden.detach()
+            hidden = self.agent.backbone(
+                batch,
+                include_lm_loss=False,
+            ).hidden.detach()
         return self.agent.wm.project_state(hidden)
 
     def evaluation_context(self) -> AbstractContextManager[object]:
@@ -64,6 +57,7 @@ class SFT2ModelRuntime:
         agent = self.agent.unwrapped()
         return SFT2ModelRuntime(
             agent=agent,
+            history_cache=self.history_cache,
             backbone_ema=self.backbone_ema,
         )
 
