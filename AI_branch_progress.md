@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-07-24：8卡 vLLM fresh-policy PPO handoff 实现，待远端验证
+## 2026-07-24：8卡 vLLM fresh-policy PPO handoff 实现，CPU 测试通过
 
 - 人类要求参考 VAGEN 引入 vLLM，保持 Nimloth 现有模块化设计。实现提交
   `89d7662`把 behavior rollout 限定在 `backbone/qwen25vl/vllm_policy.py`，把
@@ -14,9 +14,9 @@
   → vLLM 退出 → 同8卡 FSDP WM/value/SIGReg/PPO 单次 update。下一步更新必须用新
   checkpoint 重新 rollout，普通 static JSONL 仍禁止驱动 PPO。
 - 新增 fake-engine/fingerprint/manifest/collector 测试和 8卡 smoke 启动器。本地
-  `compileall`、两个 shell `bash -n` 和 `git diff --check` 通过。本地缺少
-  Torch/pytest/vLLM，尚未运行单元测试、GPU vLLM probe 或8卡 smoke；不得将本阶段
-  表述为运行已通过。
+  `compileall`、两个 shell `bash -n` 和 `git diff --check` 通过。测试桩补全提交
+  `f8faf3b` 后，服务器共享 PyTorch 环境的定向测试为 `39 passed, 1 warning`；warning
+  是测试刻意触发的 B=1 unbiased std。真实 GPU vLLM probe 和8卡 smoke 尚未运行。
 
 ## 2026-07-23：ID43 epoch1 RL H=4 smoke 预检与 ID3 启动前失败
 

@@ -348,5 +348,6 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   做内容指纹并禁止重复消费。trainer 允许多 rank PPO 消费该 fresh source，
   但仍拒绝普通 static JSONL。
 - `run_vllm_online_ppo_smoke.sh` 编排同一 allocation 内8卡 vLLM rollout 和8-rank
-  FSDP单步update；保留ID43 epoch1的H=4/WM/value/PPO契约。当前仅静态验证
-  通过，远端 PyTorch/vLLM 测试与真实8卡smoke尚未执行。
+  FSDP单步update；保留ID43 epoch1的H=4/WM/value/PPO契约。测试桩补全提交
+  `f8faf3b` 后，服务器共享 PyTorch 环境的定向测试为 `39 passed, 1 warning`；真实
+  GPU vLLM probe 和8卡smoke尚未执行。
