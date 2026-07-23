@@ -1539,3 +1539,8 @@
   构造；随后vLLM断言Qwen2.5-VL vision MLP输出维度不能被TP8整除。无trajectory、
   W&B、optimizer step或checkpoint，不可恢复。config保持训练`world_size=8`，将
   rollout TP独立改为模型支持的4；ID73将以TP4 rollout、8-rank FSDP update重试。
+- ID73的TP4 communicator和两个safetensors shard读取均通过，但epoch_001的
+  `config.json`声明`tie_word_embeddings=false`，shards却缺少vLLM必需的
+  `language_model.lm_head.weight`，仅有`model.embed_tokens.weight`。不能在未证明
+  权重相同的情况下用embedding伪造policy head；因此无trajectory、W&B、optimizer
+  step或checkpoint，ID73不可恢复。hold`485342`已取消并释放全部1+3+4 GPU。

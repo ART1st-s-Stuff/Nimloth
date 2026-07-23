@@ -404,3 +404,14 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   ID72不可恢复。
 - 分布式config继续指定训练`nodes=3/world_size=8`，rollout TP独立改为模型支持的4；
   下次使用4卡vLLM rollout后再释放Ray，使用全部8 rank执行FSDP PPO update。
+
+## 2026-07-24：ID73 epoch_001 HF export缺少policy head
+
+- TP4的Ray/Gloo/NCCL初始化以及两个safetensors shard读取均成功，证明config分离
+  和vLLM通信路径可用。
+- checkpoint的`config.json`为`tie_word_embeddings=false`，weight index仅含
+  `model.embed_tokens.weight`，缺少vLLM要求的`language_model.lm_head.weight`。
+  在未证明两者应共享权重前不能用embedding构造近似policy head。
+- 无trajectory、W&B、optimizer step或checkpoint；ID73不可恢复。hold`485342`
+  已取消并确认离开squeue，异构1+3+4 GPU全部释放。RL被完整vLLM兼容policy export
+  阻塞；需修复并验证SFT2 HF保存产物后再用新allocation/ID测试。
