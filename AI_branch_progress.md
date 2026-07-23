@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-07-23：ID43 epoch1 RL H=4 smoke 预检与 ID3 启动前失败
+
+- ID43 `epoch_001` 是完整 k=1/inject HF checkpoint，WM predictor H=4，
+  StateProjector/ValueHead 产物齐全。人类指定 dgx-40 进行 RL feasibility smoke。
+- 实验提交 `2b6211c` 新增 H=4/PPO 配置并参数化现有端到端启动器；
+  schema 解析、`bash -n` 和 diff-check 通过。hold job `485290` 在
+  preempt/dgx-40 占用2 GPU。
+- ID3 在任何环境、rollout、W&B 或训练开始前 fail-fast：外层控制日志预先
+  使 `RUN_OUT` 非空。无 checkpoint，不可 resume；失败 README/日志已保留。同一
+  allocation 将以全新 ID66 目录重试，控制日志改放到 `RUN_OUT` 外。
+  服务器 RL 实验组 `progress.md` 已有 ID65，因此本地旧记录中 ID1/2 为最新编号的
+  结论已失效；重试必须从 ID66 开始。
+- ID66 在 dgx-40 完成4条 `base_train`、20 transitions、每条5步的真实 rollout，
+  reward为`[-0.4,0.0,-0.4,-0.2]`，success0/4不作质量结论。两卡训练在模型加载和
+  W&B初始化前按当前契约 fail-fast：`actor.enabled=true` 禁止与 static JSONL
+  collector组合，因为PPO必须使用当前policy的fresh trajectory。无optimizer step、
+  W&B run或checkpoint，不可resume。hold `485290`已取消并释放dgx-40。下一步需人类
+  选择：两卡actor-disabled的H=4 WM/value离线smoke，或单卡direct-online PPO smoke。
+
 ## 2026-07-23：K1 SFT2 改为 per-rank B1 与 global-batch SIGReg
 
 - 人类批准 per-rank B1，并要求 SIGReg 使用 DDP 全局 batch。K1 control 配置改为

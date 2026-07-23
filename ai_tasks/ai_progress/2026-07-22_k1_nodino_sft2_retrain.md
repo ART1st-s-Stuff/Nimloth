@@ -313,3 +313,28 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   OOM/traceback/NCCL-DDP错误/NaN/Inf。hold job`485236`与train step已取消并离开
   squeue；无checkpoint、不可resume，尚无可用于RL的新checkpoint。下一步可按同一
   B1/global-SIGReg配置提交正式SFT2重训。
+
+## 2026-07-23：epoch_001 RL H=4 smoke ID3 启动前失败
+
+- ID43 `epoch_001` 已核验为完整 k=1/inject HF checkpoint，WM predictor
+  `history_size=4`，StateProjector/ValueHead 产物齐全。
+- RL smoke 实验提交 `2b6211c`：新增 H=4/PPO 配置，并让端到端启动器接受
+  config、episode 数和 max steps。配置经远端当前 schema 解析通过，启动器
+  `bash -n` 与 `git diff --check` 通过。
+- hold job `485290` 在人类指定的 preempt/dgx-40 占用2 GPU。ID3
+  `3_smoke_k1ep1_h4_base4x5_fsdp2_iter2` 在环境服务、rollout、W&B和训练前
+  被启动器拒绝：外层控制日志预先写入 `RUN_OUT`，正确触发禁止复用非空输出的
+  fail-fast。ID3 不可 resume，仅保留 README 和控制日志作为失败证据；新的
+  服务器 RL 实验组实时 `progress.md` 已有 ID65，本地旧记录的 ID1/2 编号已失效。
+  ID66 将把控制日志放在输出目录外后重试。
+
+## 2026-07-23：epoch_001 RL H=4 smoke ID66 rollout通过、PPO训练契约拒绝
+
+- ID66 在 dgx-40 使用 ID43 `epoch_001` 完成 `base_train` seeds1..4 的真实
+  rollout：4 trajectories、20 transitions、每条5 steps，足以构造H=4 windows。reward为
+  `-0.4/0.0/-0.4/-0.2`，success0/4只是smoke现象，不解读为policy质量。
+- 两rank FSDP在模型加载和W&B初始化前fail-fast：当前运行时明确禁止
+  `actor.enabled=true` 与 static JSONL collector，PPO要求从当前policy fresh采样。
+  本轮无optimizer step、W&B run或checkpoint，不可resume。
+- hold `485290` 已取消并释放dgx-40。后续不能擅自关闭PPO后声称原测试通过；
+  需人类选择两卡actor-disabled H=4 WM/value离线smoke，或单卡direct-online PPO smoke。
