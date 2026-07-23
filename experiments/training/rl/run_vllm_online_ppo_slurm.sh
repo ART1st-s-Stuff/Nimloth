@@ -44,9 +44,10 @@ HEAD_IP=$(srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_N
 mkdir -p "${RAY_LOG_DIR}"
 
 stop_ray() {
-  srun --jobid="${HOLD_JOB}" --overlap --nodes="${CONFIG_NODES}" \
+  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes="${CONFIG_NODES}" \
     --ntasks="${CONFIG_NODES}" --ntasks-per-node=1 --gpus=0 \
-    "${PYTHON}" -m ray.scripts.scripts stop --force >/dev/null 2>&1 || true
+    timeout 20s "${PYTHON}" -m ray.scripts.scripts stop --force \
+    >/dev/null 2>&1 || true
 }
 trap stop_ray EXIT
 stop_ray

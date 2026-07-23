@@ -174,7 +174,8 @@ if [[ "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" == ray ]]; then
   [[ -n "${SLURM_JOB_ID:-}" ]] || { echo "Ray cleanup requires SLURM_JOB_ID" >&2; exit 1; }
   srun --jobid="${SLURM_JOB_ID}" --overlap --nodes="${TRAIN_NNODES}" \
     --ntasks="${TRAIN_NNODES}" --ntasks-per-node=1 --gpus=0 \
-    "${PYTHON}" -m ray.scripts.scripts stop --force 2>&1 | tee -a "${LOG}"
+    timeout 20s "${PYTHON}" -m ray.scripts.scripts stop --force \
+    2>&1 | tee -a "${LOG}"
 fi
 
 TRAIN_ARGS=(
