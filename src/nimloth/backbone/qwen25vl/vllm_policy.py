@@ -55,9 +55,13 @@ class QwenVLLMAgentPolicy:
         max_model_len: int,
         max_images: int,
         gpu_memory_utilization: float,
+        distributed_executor_backend: str | None = None,
     ) -> "QwenVLLMAgentPolicy":
         from vllm import LLM
 
+        engine_kwargs: dict[str, Any] = {}
+        if distributed_executor_backend is not None:
+            engine_kwargs["distributed_executor_backend"] = distributed_executor_backend
         engine = LLM(
             model=model_path,
             trust_remote_code=True,
@@ -66,6 +70,7 @@ class QwenVLLMAgentPolicy:
             max_model_len=int(max_model_len),
             gpu_memory_utilization=float(gpu_memory_utilization),
             limit_mm_per_prompt={"image": int(max_images)},
+            **engine_kwargs,
         )
         return cls(
             engine=engine,

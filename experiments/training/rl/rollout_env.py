@@ -46,6 +46,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--max-model-len", type=int, default=32768)
     ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     ap.add_argument(
+        "--vllm-distributed-executor-backend",
+        choices=("mp", "ray"),
+        default=None,
+    )
+    ap.add_argument(
         "--fresh-manifest",
         type=Path,
         default=None,
@@ -140,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             max_model_len=args.max_model_len,
             max_images=args.max_steps + 1,
             gpu_memory_utilization=args.gpu_memory_utilization,
+            distributed_executor_backend=args.vllm_distributed_executor_backend,
         )
     else:
         model, processor = load_qwen(

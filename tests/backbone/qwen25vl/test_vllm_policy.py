@@ -73,3 +73,30 @@ def test_vllm_policy_reuses_agent_sampling_contract(monkeypatch) -> None:
     assert params.allowed_token_ids == list(action_ids)
     assert params.logprobs == 8
     assert use_tqdm is False
+
+
+def test_from_model_forwards_ray_backend(monkeypatch) -> None:
+    captured = {}
+    engine = _Engine(())
+
+    def fake_llm(**kwargs):
+        captured.update(kwargs)
+        return engine
+
+    monkeypatch.setitem(sys.modules, "vllm", SimpleNamespace(LLM=fake_llm))
+    processor = SimpleNamespace(tokenizer=_Tokenizer())
+    policy = QwenVLLMAgentPolicy.from_model(
+        "/model",
+        processor=processor,
+        tensor_parallel_size=8,
+        temperature=0.7,
+        top_p=0.95,
+        max_model_len=32768,
+        max_images=6,
+        gpu_memory_utilization=0.85,
+        distributed_executor_backend="ray",
+    )
+
+    assert policy.engine is engine
+    assert captured["tensor_parallel_size"] == 8
+    assert captured["distributed_executor_backend"] == "ray"

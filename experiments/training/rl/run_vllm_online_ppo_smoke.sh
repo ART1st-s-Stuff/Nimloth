@@ -16,6 +16,9 @@ ENV_PORT=${ENV_PORT:-8500}
 NUM_EPISODES=${NUM_EPISODES:-4}
 MAX_STEPS=${MAX_STEPS:-5}
 TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-8}
+VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-}
+TRAIN_NNODES=${TRAIN_NNODES:-1}
+TRAIN_GPUS_PER_NODE=${TRAIN_GPUS_PER_NODE:-8}
 
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
@@ -48,9 +51,9 @@ cat > "${RUN_OUT}/README.md" <<EOF
 - VAGEN commit: ${ENV_COMMIT}
 - model/WM initialization: ${MODEL}
 - data: base_train seeds 1..${NUM_EPISODES}
-- rollout: vLLM TP=${TENSOR_PARALLEL_SIZE}, ${NUM_EPISODES} episodes, max ${MAX_STEPS} steps
+- rollout: vLLM TP=${TENSOR_PARALLEL_SIZE}, backend=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-local}, ${NUM_EPISODES} episodes, max ${MAX_STEPS} steps
 - freshness: content fingerprint manifest, exactly one PPO consumption
-- update: 8-rank FSDP, one WM/value/SIGReg/PPO optimizer step
+- update: ${TRAIN_NNODES} nodes x ${TRAIN_GPUS_PER_NODE} ranks, one WM/value/SIGReg/PPO optimizer step
 - frozen: vision tower and StateProjector
 - trainable: Qwen language body, WM predictor and ValueHead
 - W&B: ${WANDB_PROJECT_REQUESTED}/${WANDB_RUN_NAME_REQUESTED}
@@ -75,7 +78,7 @@ export WANDB_DIR=${WANDB_DIR:-${REPO}/.cache/wandb}
 
 VISIBLE=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 IFS=',' read -r -a GPUS <<< "${VISIBLE}"
-if (( ${#GPUS[@]} != TENSOR_PARALLEL_SIZE )); then
+if [[ -z "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" ]] && (( ${#GPUS[@]} != TENSOR_PARALLEL_SIZE )); then
   echo "expected ${TENSOR_PARALLEL_SIZE} visible GPUs, got ${VISIBLE}" >&2
   exit 1
 fi
@@ -125,9 +128,16 @@ curl -fsS "${ENV_URL}/health" | tee -a "${LOG}"
 
 export CUDA_VISIBLE_DEVICES=${VISIBLE}
 export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
+VLLM_BACKEND_ARGS=()
+if [[ -n "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" ]]; then
+  VLLM_BACKEND_ARGS=(
+    --vllm-distributed-executor-backend "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}"
+  )
+fi
 "${PYTHON}" "${REPO}/experiments/training/rl/rollout_env.py" \
   --backend vllm \
   --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
+  "${VLLM_BACKEND_ARGS[@]}" \
   --model "${MODEL}" \
   --env-url "${ENV_URL}" \
   --output-dir "${ROLLOUT_OUT}" \
@@ -140,8 +150,8 @@ export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VA
 
 cleanup_env
 
-"${PYTHON}" -m torch.distributed.run --nproc_per_node=8 -- \
-  -m nimloth.training.rl.cli \
+TRAIN_ARGS=(
+  -m nimloth.training.rl.cli
   --config "${RL_CONFIG}" \
   --model "${MODEL}" \
   --llm-tune full --vision-tune freeze --no-vision-ema \
@@ -153,8 +163,33 @@ cleanup_env
   --fresh-rollout-manifest "${MANIFEST}" \
   --attn-implementation sdpa --max-pixels 3136 \
   --experiment-name "${WANDB_RUN_NAME_REQUESTED}" \
-  --output-dir "${TRAIN_OUT}" \
-  2>&1 | tee -a "${LOG}"
+  --output-dir "${TRAIN_OUT}"
+)
+if (( TRAIN_NNODES == 1 )); then
+  "${PYTHON}" -m torch.distributed.run --nproc_per_node="${TRAIN_GPUS_PER_NODE}" -- \
+    "${TRAIN_ARGS[@]}" 2>&1 | tee -a "${LOG}"
+else
+  [[ -n "${SLURM_JOB_ID:-}" ]] || { echo "multi-node training requires SLURM_JOB_ID" >&2; exit 1; }
+  mapfile -t TRAIN_NODES_LIST < <(scontrol show hostnames "${SLURM_JOB_NODELIST}")
+  HEAD_NODE=${TRAIN_NODES_LIST[0]}
+  RDZV_IP=$(srun --jobid="${SLURM_JOB_ID}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
+    hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
+  [[ -n "${RDZV_IP}" ]] || { echo "missing multi-node rendezvous IP" >&2; exit 1; }
+  export NIMLOTH_TRAIN_ARGS=$(printf '%q ' "${TRAIN_ARGS[@]}")
+  srun --jobid="${SLURM_JOB_ID}" --overlap --nodes="${TRAIN_NNODES}" \
+    --ntasks="${TRAIN_NNODES}" --ntasks-per-node=1 \
+    bash -lc '
+      set -euo pipefail
+      export PYTHONPATH="'"${PYTHONPATH}"'"
+      "'"${PYTHON}"'" -m torch.distributed.run \
+        --nnodes="'"${TRAIN_NNODES}"'" \
+        --nproc_per_node="'"${TRAIN_GPUS_PER_NODE}"'" \
+        --node_rank="${SLURM_PROCID}" \
+        --rdzv_id="'"${SLURM_JOB_ID}"'" \
+        --rdzv_backend=c10d \
+        --rdzv_endpoint="'"${RDZV_IP}"':29671" -- ${NIMLOTH_TRAIN_ARGS}
+    ' 2>&1 | tee -a "${LOG}"
+fi
 
 "${PYTHON}" - <<PY | tee -a "${LOG}"
 import csv, json, math

@@ -10,6 +10,7 @@
 | `rollout_env.py` | 独立 rollout 脚本：复用 Nimloth action policy，生成完整 RL JSONL（不参与训练） |
 | `run_e2e_smoke.sh` | 训练 split rollout → 两卡 FSDP step → resume step 的端到端 smoke |
 | `run_vllm_online_ppo_smoke.sh` | 8卡 vLLM fresh rollout → 指纹门槛 → 8卡 FSDP PPO step |
+| `run_vllm_online_ppo_2node4.sh` | 一个2节点×4卡 hold 内的 Ray-vLLM TP8 → 2×4 FSDP step |
 
 ## 运行模式
 
@@ -56,6 +57,10 @@ python -m nimloth.training.rl.cli \
 HF artifact 启动 vLLM tensor parallel rollout，写入模型内容指纹 manifest；
 vLLM 退出后，8-rank FSDP trainer 只允许消费该 manifest 一次。下一个
 optimizer step 必须从新 checkpoint 重新 rollout。
+
+没有完整空闲8卡节点时，`run_vllm_online_ppo_2node4.sh` 只接受均匀的两节点、
+每节点4卡 allocation。它先验证 Ray cluster 精确暴露8卡，再调用同一 rollout/
+trainer 入口；训练阶段使用两个 torchrun agent、每节点4个 rank，总 world size 仍为8。
 
 ### 分布式安全说明
 
