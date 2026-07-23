@@ -325,6 +325,7 @@ def test_sft2_sigreg_detaches_current_and_updates_online_next_only() -> None:
         runtime,
         batch,
         detached_current_state=primary.current_state.detach(),
+        sigreg_seed=123,
     )
 
     assert len(recording.inputs) == 1
@@ -339,6 +340,7 @@ def test_sft2_sigreg_detaches_current_and_updates_online_next_only() -> None:
     torch.testing.assert_close(recording.inputs[0], expected)
     assert sigreg_output.raw_loss is not None
     assert sigreg_output.metrics["sigreg_loss"] > 0.0
+    assert sigreg_output.metrics["sigreg_global_batch_size"] == 2.0
     sigreg_output.loss.backward()
     torch.testing.assert_close(projector.outputs[0].grad, current_grad_after_primary)
     assert projector.outputs[2].grad is not None
@@ -364,6 +366,7 @@ def test_sft2_sigreg_rejects_current_state_with_gradient() -> None:
             runtime,
             batch,
             detached_current_state=primary.current_state,
+            sigreg_seed=123,
         )
 
 
@@ -382,6 +385,7 @@ def test_sft2_sigreg_skips_single_window_batch() -> None:
         runtime,
         batch,
         detached_current_state=primary.current_state.detach(),
+        sigreg_seed=123,
     )
 
     assert recording.inputs == []
@@ -389,6 +393,7 @@ def test_sft2_sigreg_skips_single_window_batch() -> None:
     assert output.loss.requires_grad
     assert output.loss.item() == 0.0
     assert output.metrics["sigreg_skipped_small_batch"] == 1.0
+    assert output.metrics["sigreg_global_batch_size"] == 1.0
 
 
 def test_sft2_evaluation_does_not_use_training_sigreg_layout() -> None:

@@ -23,7 +23,7 @@ from nimloth.training.sft2.runtime import (
     SFT2OptimizationRuntime,
 )
 from nimloth.training.sft2.reporting import SFT2Reporter
-from nimloth.training.sft2.utils import seed_training_micro_step
+from nimloth.training.sft2.utils import global_sigreg_seed, seed_training_micro_step
 from nimloth.util.distributed import is_main
 from nimloth.util.metrics import MetricAccumulator
 from nimloth.util.profiling import StepTimer
@@ -165,6 +165,8 @@ class SFT2TrainingLoop:
             ):
                 lambda_wm, metrics, sample_count = self._train_microbatch(
                     batch_samples,
+                    epoch=epoch,
+                    micro_step=micro_index,
                 )
             if sample_count > 0:
                 accumulator.update(metrics, count=sample_count)
@@ -231,6 +233,9 @@ class SFT2TrainingLoop:
     def _train_microbatch(
         self,
         batch_samples: Any,
+        *,
+        epoch: int,
+        micro_step: int,
     ) -> tuple[float, dict[str, float], int]:
         """先反传单次 CE/WM/value，再构建并反传单向 SIGReg 图。"""
 
@@ -266,6 +271,11 @@ class SFT2TrainingLoop:
                 self.model_runtime,
                 batch,
                 detached_current_state=detached_current_state,
+                sigreg_seed=global_sigreg_seed(
+                    self.config.seed,
+                    epoch,
+                    micro_step,
+                ),
             )
             self.step_timer.stop("forward_sigreg", timer_start)
             timer_start = self.step_timer.start("backward_sigreg")

@@ -47,15 +47,15 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert args.preprocess_workers == 16
 
 
-def test_k1_control_only_changes_latent_capacity_not_runtime_budget() -> None:
+def test_k1_control_uses_b1_ga8_for_global_sigreg_batch() -> None:
     args = parse_sft2_args(["--config", str(K1_CONTROL_CONFIG), *REQUIRED])
 
     assert args.latent_token_count == 1
     assert args.latent_query_mode == "inject"
     assert args.query_tune == "adapter"
     assert args.epochs == 10
-    assert args.batch_size == 2
-    assert args.grad_accum == 4
+    assert args.batch_size == 1
+    assert args.grad_accum == 8
     assert args.max_pixels == 100352
     assert args.history_size == 4
     assert args.batch_mode == "trajectory_online_cache"

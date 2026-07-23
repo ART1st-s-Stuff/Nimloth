@@ -28,6 +28,12 @@ def seed_training_micro_step(base_seed: int, epoch: int, micro_step: int, rank: 
     return seed
 
 
+def global_sigreg_seed(base_seed: int, epoch: int, micro_step: int) -> int:
+    """返回所有 rank 相同、且随已消费 microbatch 可恢复的 SIGReg seed。"""
+
+    return training_micro_seed(base_seed, epoch, micro_step, rank=0)
+
+
 @contextlib.contextmanager
 def preserve_module_modes(
     modules: Iterable[torch.nn.Module],

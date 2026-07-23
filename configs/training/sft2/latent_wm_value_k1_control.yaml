@@ -1,4 +1,4 @@
-# SFT2 k=1 control: identical to the formal k=8 setup except latent token count.
+# SFT2 k=1 control with per-rank B1 and global cross-rank SIGReg batch.
 
 init:
   sft1_checkpoint: null
@@ -19,8 +19,9 @@ tuning:
 
 train:
   epochs: 10
-  batch_size: 2
-  grad_accum: 4
+  # world8 时每个 SIGReg microbatch 使用 global B8；GA8 保持 effective batch 64。
+  batch_size: 1
+  grad_accum: 8
   lr_qwen_start: 1.0e-8
   lr_qwen_peak: 5.0e-7
   state_proj_lr: 1.0e-4

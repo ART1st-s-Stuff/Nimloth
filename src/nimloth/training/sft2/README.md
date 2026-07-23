@@ -43,6 +43,8 @@ T=1..H-1 的短上下文，因此每个拥有真实 next state 的 transition �
 SIGReg 只在训练阶段计算，每个 step 只接收在线 `(s_t,s_{t+1})`；
 EMA/target state 不进入这个统计量。每个 microbatch 先对唯一一次 CE/WM/value
 执行 backward 并释放 `s_t` 的 Qwen 图，再编码在线 `s_{t+1}`。SIGReg 的 `s_t`
-输入强制 detach，只有 `s_{t+1}` 接收该正则的梯度。`B<2` 时保留其他目标并记录
-该批跳过 SIGReg；该 rank 仍通过依赖在线 state 的零 loss 参与 DDP backward。
-验证集不计算 SIGReg。`batch_size` 表示 current step 数 `B`。
+输入强制 detach，只有 `s_{t+1}` 接收该正则的梯度。各 rank 只 all-gather 小型
+state，并用 valid mask 排除 sampler padding；SIGReg 的 `B` 是该 microbatch 的
+全局有效 current-step 数。在线 next state 使用可微 gather，把梯度送回来源 rank；
+所有 rank 使用相同随机投影。只有 global `B<2` 才跳过 SIGReg。验证集不计算
+SIGReg。配置中的 `batch_size` 仍表示每个 rank 的 current step 数。

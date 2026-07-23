@@ -94,10 +94,12 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
             batch,
             *,
             detached_current_state: torch.Tensor,
+            sigreg_seed: int,
         ):
             events.append("sigreg_forward")
             assert batch == "prepared"
             assert detached_current_state.requires_grad is False
+            assert sigreg_seed == 1_010_052
             return SimpleNamespace(
                 loss=torch.tensor(0.3, requires_grad=True),
                 metrics={"sigreg_loss": 3.0},
@@ -127,6 +129,7 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
             step_timing=False,
             step_timing_interval=1,
             grad_accum=4,
+            seed=42,
         ),
         rank=0,
         train_loader=[],
@@ -142,7 +145,11 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
         total_steps=10,
     )
 
-    wm_weight, metrics, sample_count = loop._train_microbatch("raw")
+    wm_weight, metrics, sample_count = loop._train_microbatch(
+        "raw",
+        epoch=1,
+        micro_step=1,
+    )
 
     assert events == [
         "prepare",
