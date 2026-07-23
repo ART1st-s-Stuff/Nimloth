@@ -9,6 +9,7 @@ import torch
 from torch import nn
 
 from nimloth.backbone.base import Backbone, BackboneBatch, BackboneOutput
+from nimloth.backbone.qwen25vl.batch import split_qwen_batch_rows
 from nimloth.backbone.qwen25vl.checkpoint import save_full_vision_state
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.latent import materialize_query_embedding_adapter
@@ -59,6 +60,52 @@ class Qwen25VLBackbone(Backbone):
             hidden=hidden,
             lm_loss=lm_loss if include_lm_loss else None,
         )
+
+    def forward_chunked(
+        self,
+        batch: BackboneBatch,
+        *,
+        max_rows: int,
+        include_lm_loss: bool = False,
+    ) -> BackboneOutput:
+        root = self.model.module if hasattr(self.model, "module") else self.model
+        config = root.config
+        image_token_id = int(config.image_token_id)
+        vision_config = getattr(config, "vision_config", None)
+        spatial_merge_size = int(getattr(vision_config, "spatial_merge_size", 2))
+        chunks = split_qwen_batch_rows(
+            dict(batch.tensors),
+            max_rows=max_rows,
+            image_token_id=image_token_id,
+            spatial_merge_size=spatial_merge_size,
+        )
+        outputs = [
+            self.forward(
+                BackboneBatch(chunk),
+                include_lm_loss=include_lm_loss,
+            )
+            for chunk in chunks
+        ]
+        hidden = torch.cat([output.hidden for output in outputs], dim=0)
+        if not include_lm_loss:
+            return BackboneOutput(hidden=hidden)
+
+        weighted_losses: list[torch.Tensor] = []
+        valid_label_counts: list[int] = []
+        for chunk, output in zip(chunks, outputs, strict=True):
+            if output.lm_loss is None:
+                raise RuntimeError("Qwen chunk did not return LM loss")
+            labels = chunk.get("labels")
+            if labels is None:
+                raise ValueError("include_lm_loss requires labels")
+            count = int((labels[:, 1:] != -100).sum().item())
+            if count > 0:
+                weighted_losses.append(output.lm_loss * count)
+                valid_label_counts.append(count)
+        if not valid_label_counts:
+            raise ValueError("Qwen batch contains no shifted CE supervision labels")
+        lm_loss = torch.stack(weighted_losses).sum() / sum(valid_label_counts)
+        return BackboneOutput(hidden=hidden, lm_loss=lm_loss)
 
     def with_model(self, model: nn.Module) -> "Qwen25VLBackbone":
         return Qwen25VLBackbone(

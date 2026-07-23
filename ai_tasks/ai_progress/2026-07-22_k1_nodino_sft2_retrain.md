@@ -80,3 +80,15 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - CSV 仍只有表头、global step 0、无 checkpoint。仅增加 grad accumulation 无法
   解决；下一步需要在人类确认后选择保持数学语义的时间位置 chunking/低内存 CE
   实现，或改变 max_pixels/max_length/lambda_ce 等实验语义并重建对应 cache。
+
+## 2026-07-23：获批实现 H 行分段 Qwen forward
+
+- 人类确认采用保持实验语义的低显存实现。k=1 control 配置新增
+  `backbone_rows_per_forward: 1`：单个 H=4 window 的四个 prefix 分别执行 Qwen，
+  latent 按原顺序重组为 `(B,H,...)` 后再统一计算 WM、ValueHead 和 SIGReg。
+- CE 没有关闭或降权；每段 HF mean loss 按 shifted non-ignore label 数加权，恢复
+  原始全 batch CE reduction。图片 grid 与 pixel rows 根据每个文本行的 image token
+  数量同步切分，避免文字行和视觉输入错配。
+- 已增加视觉切分、row 顺序、CE 数值及 CE 梯度测试；`compileall` 与
+  `git diff --check` 通过。本地 pytest 环境缺少 `_pytest`，数值测试仍需在远端
+  环境运行后才能提交 GPU smoke。

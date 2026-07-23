@@ -40,6 +40,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "max_pixels"): "max_pixels",
     ("train", "emb_dim"): "emb_dim",
     ("train", "history_size"): "history_size",
+    ("train", "backbone_rows_per_forward"): "backbone_rows_per_forward",
     ("train", "batch_mode"): "batch_mode",
     ("train", "max_images_per_batch"): "max_images_per_batch",
     ("train", "max_steps_per_trajectory"): "max_steps_per_trajectory",

@@ -276,6 +276,8 @@ def train_sft2(args=None) -> int:
     args.history_size = int(getattr(args, "history_size", 4))
     if args.history_size < 1:
         raise ValueError(f"--history-size must be >= 1, got {args.history_size}")
+    if args.backbone_rows_per_forward is not None and args.backbone_rows_per_forward < 1:
+        raise ValueError("--backbone-rows-per-forward must be >= 1")
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     if args.query_tune == "adapter" and uses_lora(args):
@@ -325,6 +327,7 @@ def train_sft2(args=None) -> int:
                     "output_dir": str(args.output_dir),
                     "batch_mode": args.batch_mode,
                     "history_size": args.history_size,
+                    "backbone_rows_per_forward": args.backbone_rows_per_forward,
                     "latent_token_count": args.latent_token_count,
                     "latent_query_mode": args.latent_query_mode,
                     "query_tune": args.query_tune,
@@ -442,6 +445,7 @@ def train_sft2(args=None) -> int:
         "latent_query_mode": args.latent_query_mode,
         "query_tune": args.query_tune,
         "history_size": int(args.history_size),
+        "backbone_rows_per_forward": args.backbone_rows_per_forward,
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }
@@ -512,6 +516,7 @@ def train_sft2(args=None) -> int:
         value_rank_weight=args.value_rank_lambda,
         wm_weight_start=args.lambda_wm_start,
         wm_weight_end=args.lambda_wm_end,
+        backbone_rows_per_forward=args.backbone_rows_per_forward,
     )
 
     loop_state = load_sft2_loop_state(

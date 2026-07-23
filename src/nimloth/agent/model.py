@@ -96,6 +96,7 @@ class Agent(nn.Module):
         action_indices: torch.Tensor,
         *,
         include_lm_loss: bool = False,
+        backbone_rows_per_forward: int | None = None,
     ) -> AgentOutput:
         """对 ``(B,H)`` 真实 state/action 窗口执行完整模型前向。"""
 
@@ -105,10 +106,17 @@ class Agent(nn.Module):
                 f"got {tuple(action_indices.shape)}"
             )
         batch_size, history_size = action_indices.shape
-        backbone_output = self.backbone(
-            batch,
-            include_lm_loss=include_lm_loss,
-        )
+        if backbone_rows_per_forward is None:
+            backbone_output = self.backbone(
+                batch,
+                include_lm_loss=include_lm_loss,
+            )
+        else:
+            backbone_output = self.backbone.forward_chunked(
+                batch,
+                max_rows=backbone_rows_per_forward,
+                include_lm_loss=include_lm_loss,
+            )
         hidden = backbone_output.hidden
         expected_rows = batch_size * history_size
         if hidden.shape[0] != expected_rows:

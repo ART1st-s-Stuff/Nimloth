@@ -1307,3 +1307,13 @@
 - 邻接回归修复了 RCDM 移入 `recon/rcdm/` 后默认 `external/RCDM` 根目录层级错误。
 - 验证：相关 SFT2/common/backbone/WM/eval/recon/RL 测试共 131 项通过（130 项常规测试 + 单独放开 loopback socket 后的 1 项 Gloo 双进程测试）；`compileall`、修改过的 shell/Slurm `bash -n`、`git diff --check` 通过。
 - 对 `training/rl` 完成只读审计，确认仍需优先处理 PPO behavior/new-policy prompt 与概率契约、LoRA+vision-full checkpoint 完整性、validation 数据边界和配置/schema 漂移；本轮未修改 RL 实现。
+
+## 2026-07-23：SFT2 H=4 单 window OOM 的低显存 forward
+
+- 在不改变 k=1、H=4、图片分辨率、cache 数据和 CE/WM/value/SIGReg 权重的前提下，
+  新增 Qwen batch-row chunked forward；k=1 control 每次只执行一个 prefix row，
+  随后恢复完整 H 序列计算下游目标。
+- CE 按 shifted 有效 label 数做跨 chunk 全局加权；Qwen 多模态 batch 会同步切分
+  `input_ids`、`image_grid_thw` 和 `pixel_values`。
+- 静态验证：`python -m compileall -q src tests`、`git diff --check` 通过；本地
+  pytest 安装不完整（缺 `_pytest`），远端 CPU 测试和 8-GPU preempt smoke 待执行。

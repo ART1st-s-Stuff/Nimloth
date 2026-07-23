@@ -47,6 +47,12 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         ),
     )
     ap.add_argument(
+        "--backbone-rows-per-forward",
+        type=int,
+        default=None,
+        help="Maximum flattened B*H rows in one backbone forward; preserves the full H loss graph.",
+    )
+    ap.add_argument(
         "--latent-token-count",
         type=int,
         default=1,

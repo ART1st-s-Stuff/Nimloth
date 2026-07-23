@@ -313,6 +313,84 @@ def collate_qwen_encodings(
     return batch
 
 
+def split_qwen_batch_rows(
+    batch: dict[str, torch.Tensor],
+    *,
+    max_rows: int,
+    image_token_id: int,
+    spatial_merge_size: int,
+) -> list[dict[str, torch.Tensor]]:
+    """沿文本 batch 轴切分 Qwen 输入，同时切分对应的视觉张量。
+
+    ``pixel_values`` 和 ``image_grid_thw`` 没有文本 batch 轴；它们按图片顺序
+    拼接。这里用每行 ``image_token_id`` 的数量和 grid 的 merge 后 token 数，
+    精确恢复每行包含的图片边界。
+    """
+
+    if max_rows < 1:
+        raise ValueError(f"max_rows must be positive, got {max_rows}")
+    input_ids = batch.get("input_ids")
+    if input_ids is None or input_ids.ndim != 2:
+        raise ValueError("Qwen batch input_ids must have shape (rows, sequence)")
+    row_count = int(input_ids.shape[0])
+    if row_count <= max_rows:
+        return [batch]
+
+    grids = batch.get("image_grid_thw")
+    pixels = batch.get("pixel_values")
+    if (grids is None) != (pixels is None):
+        raise ValueError("Qwen batch must contain both image_grid_thw and pixel_values")
+
+    image_ranges: list[tuple[int, int]] = [(0, 0)] * row_count
+    pixel_ranges: list[tuple[int, int]] = [(0, 0)] * row_count
+    if grids is not None and pixels is not None:
+        if grids.ndim != 2 or grids.shape[1] != 3:
+            raise ValueError("image_grid_thw must have shape (images, 3)")
+        merge_length = int(spatial_merge_size) ** 2
+        if merge_length < 1:
+            raise ValueError("spatial_merge_size must be positive")
+        image_cursor = 0
+        pixel_cursor = 0
+        for row in range(row_count):
+            required_tokens = int((input_ids[row] == image_token_id).sum().item())
+            produced_tokens = 0
+            image_start = image_cursor
+            pixel_start = pixel_cursor
+            while produced_tokens < required_tokens:
+                if image_cursor >= int(grids.shape[0]):
+                    raise ValueError("not enough image grids for Qwen text rows")
+                grid_pixels = int(grids[image_cursor].prod().item())
+                if grid_pixels % merge_length != 0:
+                    raise ValueError("image grid is not divisible by spatial merge area")
+                produced_tokens += grid_pixels // merge_length
+                pixel_cursor += grid_pixels
+                image_cursor += 1
+            if produced_tokens != required_tokens:
+                raise ValueError("image grids do not match image tokens in Qwen text row")
+            image_ranges[row] = (image_start, image_cursor)
+            pixel_ranges[row] = (pixel_start, pixel_cursor)
+        if image_cursor != int(grids.shape[0]) or pixel_cursor != int(pixels.shape[0]):
+            raise ValueError("unused Qwen visual tensors remain after row assignment")
+
+    chunks: list[dict[str, torch.Tensor]] = []
+    for start in range(0, row_count, max_rows):
+        end = min(row_count, start + max_rows)
+        chunk = {
+            key: value[start:end]
+            for key, value in batch.items()
+            if key not in {"image_grid_thw", "pixel_values"}
+        }
+        if grids is not None and pixels is not None:
+            image_start = image_ranges[start][0]
+            image_end = image_ranges[end - 1][1]
+            pixel_start = pixel_ranges[start][0]
+            pixel_end = pixel_ranges[end - 1][1]
+            chunk["image_grid_thw"] = grids[image_start:image_end]
+            chunk["pixel_values"] = pixels[pixel_start:pixel_end]
+        chunks.append(chunk)
+    return chunks
+
+
 def build_qwen_batch(
     items: list[dict[str, Any]],
     processor: AutoProcessor,

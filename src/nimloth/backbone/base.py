@@ -42,6 +42,22 @@ class Backbone(nn.Module, ABC):
     ) -> BackboneOutput:
         """把 processor 输出编码为 Agent 使用的 latent hidden。"""
 
+    def forward_chunked(
+        self,
+        batch: BackboneBatch,
+        *,
+        max_rows: int,
+        include_lm_loss: bool = False,
+    ) -> BackboneOutput:
+        """按较小的输入行组执行等价 forward。
+
+        具体 backbone 必须负责切分自己的多模态张量并保持 loss reduction 语义。
+        """
+
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support chunked backbone forward"
+        )
+
     @property
     @abstractmethod
     def model(self) -> nn.Module:
