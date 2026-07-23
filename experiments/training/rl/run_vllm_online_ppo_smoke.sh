@@ -87,6 +87,11 @@ export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
 export TOKENIZERS_PARALLELISM=true
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+# Ray gives each GPU actor its allocated device as local cuda:0.  PyTorch's
+# symmetric-memory rendezvous compares those local ordinals across ranks and
+# can therefore report false overlap on multi-node tensor parallel runs.  Use
+# the regular NCCL/custom-all-reduce path, which preserves the same collectives.
+export VLLM_ALLREDUCE_USE_SYMM_MEM=0
 if [[ -f /project/peilab/atst/flower/.env ]]; then
   set -a
   source /project/peilab/atst/flower/.env

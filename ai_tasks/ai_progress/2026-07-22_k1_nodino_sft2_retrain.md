@@ -375,3 +375,14 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   权重加载前拒绝启动。
 - 无 trajectory、W&B、optimizer step或checkpoint，ID69 failed/non-resumable。
   控制器改为逐节点解析10.23 IP并在raylet启动时注入，后续使用新 ID/output。
+
+## 2026-07-24：ID70 symmetric-memory 初始化失败
+
+- ID70继续使用allocation`485342`的1+3+4异构GPU拓扑和config
+  `nodes3/world8/TP8`。environment、精确Ray GPU gate、TP placement及8 worker创建
+  均通过；同一物理节点的workers共享一个10.23 Ray IP。
+- 权重加载前PyTorch symmetric-memory rendezvous报
+  `detected allocations from overlapping devices from different ranks`。原因是Ray把
+  每个actor的分配GPU局部映射为`cuda:0`，不适合该跨rank设备ordinal检查。
+- 无trajectory、W&B、optimizer step或checkpoint；ID70不可恢复。下一次新ID将
+  设置`VLLM_ALLREDUCE_USE_SYMM_MEM=0`，保留常规NCCL/custom all-reduce语义。

@@ -1520,3 +1520,15 @@
 - row=1 执行下 image budget 改按真实单 row 峰值，启动时记录实际 B 分布并拒绝
   `lambda_sigreg>0` 且全 B=1 的任务。静态检查通过，远端语义测试和 GPU smoke
   尚未执行。
+
+## 2026-07-24：异构 config-driven vLLM PPO ID70
+
+- config 指定 `nodes=3`、`world_size=8`、rollout TP=8；allocation `485342` 的真实
+  GPU 拓扑为 dgx-04×1、dgx-06×3、dgx-39×4。控制器按实际 GRES 启动 Ray，
+  达到精确8 GPU gate；environment health、TP8 placement 和8个worker创建均通过。
+- 每个物理节点最终只对应一个10.23 Ray worker IP，证明逐节点IP绑定修复有效。
+- vLLM 在权重加载前的 PyTorch symmetric-memory rendezvous 失败：Ray 将每个GPU
+  actor的分配设备局部映射为`cuda:0`，被误判为不同rank使用重叠设备。无trajectory、
+  W&B、optimizer step或checkpoint，ID70不可恢复。
+- 启动器现显式设置`VLLM_ALLREDUCE_USE_SYMM_MEM=0`，改走常规NCCL/custom
+  all-reduce；须使用新实验ID和空输出目录重试。
