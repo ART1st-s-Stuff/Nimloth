@@ -1887,3 +1887,5 @@
 - W&B `cwpf65kf`，CSV仅表头，无finite loss、optimizer step或checkpoint，ID91不可恢复。
   修复改用原生Python integer list：PyTorch接受其作为advanced index，Accelerate不会把
   integer list转换为tensor或设备搬运。通过回归后须使用新ID和fresh rollout。
+- commits `995d808`、`460c1c3` 完成native-index实现与测试桩更新；服务器定向测试
+  `3 passed`，完整RL/Qwen suite为`104 passed, 1 warning`。

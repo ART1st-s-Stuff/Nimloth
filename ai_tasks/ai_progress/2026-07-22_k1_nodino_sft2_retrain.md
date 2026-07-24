@@ -532,3 +532,5 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   Accelerate hook搬回Qwen输入GPU，final hidden states仍位于第二GPU，故相同索引错误复现。
 - fresh manifest已消费；W&B `cwpf65kf`，CSV仅表头，无optimizer step/checkpoint，不能
   resume。下一修复使用原生integer list保留PyTorch advanced-index语义且绕开tensor搬运。
+- commits `995d808`、`460c1c3` 已实现并验证native-index；定向测试`3 passed`，完整
+  RL/Qwen suite `104 passed, 1 warning`。仍需新ID真实双卡forward/backward验证。
