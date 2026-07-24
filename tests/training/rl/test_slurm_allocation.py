@@ -8,6 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HELPER = REPO_ROOT / "experiments/training/rl/slurm_allocation.sh"
 CONTROLLER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_slurm.sh"
+PIPELINE = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_smoke.sh"
 
 
 def _load_counts(job_details: str) -> list[str]:
@@ -62,3 +63,15 @@ def test_ray_workers_receive_repo_pythonpath_and_are_import_probed() -> None:
     assert controller.count('env PYTHONPATH="${RAY_PYTHONPATH}"') == 2
     assert "def import_nimloth()" in controller
     assert "import_nimloth.options(resources={resource: 0.001})" in controller
+
+
+def test_pair_parallel_topology_is_config_driven_and_node_local() -> None:
+    controller = CONTROLLER.read_text(encoding="utf-8")
+    pipeline = PIPELINE.read_text(encoding="utf-8")
+
+    assert "config.total_gpus" in controller
+    assert "count % CONFIG_GPUS_PER_RANK" in controller
+    assert "node_gpus % TRAIN_GPUS_PER_RANK" in pipeline
+    assert "node_ranks=$((node_gpus / TRAIN_GPUS_PER_RANK))" in pipeline
+    assert "local_rank<NIMLOTH_NODE_RANKS" in pipeline
+    assert 'NIMLOTH_DDP_GPU_STRIDE="${TRAIN_GPUS_PER_RANK}"' in pipeline

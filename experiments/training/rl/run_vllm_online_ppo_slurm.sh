@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drive vLLM rollout and FSDP PPO on an arbitrary heterogeneous Slurm allocation.
+# Drive vLLM rollout and PPO training on an arbitrary heterogeneous Slurm allocation.
 set -euo pipefail
 
 HOLD_JOB=${HOLD_JOB:?set HOLD_JOB to one running allocation}
@@ -19,13 +19,19 @@ if [[ -n "${PYTHONPATH:-}" ]]; then
   RAY_PYTHONPATH=${RAY_PYTHONPATH}:${PYTHONPATH}
 fi
 
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_TP_SIZE < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
 from nimloth.config.rl import load_rl_config
 config = load_rl_config(Path(sys.argv[1])).distributed
-print(config.nodes, config.world_size, config.rollout_tensor_parallel_size)
+print(
+    config.nodes,
+    config.world_size,
+    config.gpus_per_rank,
+    config.total_gpus,
+    config.rollout_tensor_parallel_size,
+)
 ' "${RL_CONFIG}"
 )
 mapfile -t NODES < <(scontrol show hostnames "$(squeue -h -j "${HOLD_JOB}" -o %N)")
@@ -38,6 +44,7 @@ JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")
 declare -A GPU_COUNTS
 declare -A NODE_IPS
 total_gpus=0
+total_ranks=0
 nimloth_load_slurm_gpu_counts "${JOB_DETAILS}" GPU_COUNTS
 for node in "${NODES[@]}"; do
   count=${GPU_COUNTS[${node}]:-}
@@ -46,10 +53,19 @@ for node in "${NODES[@]}"; do
     -w "${node}" --gpus=0 hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
   [[ -n "${node_ip}" ]] || { echo "missing 10.23 IP for ${node}" >&2; exit 1; }
   NODE_IPS[${node}]=${node_ip}
+  (( count % CONFIG_GPUS_PER_RANK == 0 )) || {
+    echo "node ${node} has ${count} GPUs, not divisible by gpus_per_rank=${CONFIG_GPUS_PER_RANK}" >&2
+    exit 1
+  }
   total_gpus=$((total_gpus + count))
+  total_ranks=$((total_ranks + count / CONFIG_GPUS_PER_RANK))
 done
-(( total_gpus == CONFIG_WORLD_SIZE )) || {
-  echo "allocation has ${total_gpus} GPUs, config requests ${CONFIG_WORLD_SIZE}" >&2
+(( total_gpus == CONFIG_TOTAL_GPUS )) || {
+  echo "allocation has ${total_gpus} GPUs, config requests ${CONFIG_TOTAL_GPUS}" >&2
+  exit 1
+}
+(( total_ranks == CONFIG_WORLD_SIZE )) || {
+  echo "allocation forms ${total_ranks} ranks, config requests ${CONFIG_WORLD_SIZE}" >&2
   exit 1
 }
 HEAD_IP=${NODE_IPS[${HEAD_NODE}]}
@@ -124,7 +140,7 @@ for _ in $(seq 1 90); do
     --gpus=0 env RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}" "${PYTHON}" -c \
     'import ray; ray.init(address="auto"); print(int(ray.cluster_resources().get("GPU", 0)))' \
     2>/dev/null | tail -1 || true)
-  [[ "${resources}" == "${CONFIG_WORLD_SIZE}" ]] && break
+  [[ "${resources}" == "${CONFIG_TOTAL_GPUS}" ]] && break
   for pid in "${RAY_STEP_PIDS[@]}"; do
     kill -0 "${pid}" 2>/dev/null || {
       tail -n 200 "${RAY_LOG_DIR}"/*.log >&2
@@ -133,8 +149,8 @@ for _ in $(seq 1 90); do
   done
   sleep 2
 done
-[[ "${resources}" == "${CONFIG_WORLD_SIZE}" ]] || {
-  echo "Ray exposes ${resources:-0} GPUs, config requests world_size=${CONFIG_WORLD_SIZE}" >&2
+[[ "${resources}" == "${CONFIG_TOTAL_GPUS}" ]] || {
+  echo "Ray exposes ${resources:-0} GPUs, config requests total_gpus=${CONFIG_TOTAL_GPUS}" >&2
   exit 1
 }
 

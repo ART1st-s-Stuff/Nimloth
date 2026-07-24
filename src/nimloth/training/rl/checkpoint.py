@@ -124,6 +124,10 @@ def save_rl_checkpoint(
             "llm_tune": llm_tune,
             "vision_tune": vision_tune,
             "optimizer_world_size": world if fsdp_model else 1,
+            "training_world_size": world,
+            "optimizer_state_layout": (
+                "rank_sharded_fsdp" if fsdp_model else "replicated"
+            ),
         }
         if base_model_path:
             state["base_model_path"] = str(base_model_path)

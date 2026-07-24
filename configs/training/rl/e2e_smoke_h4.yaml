@@ -59,5 +59,6 @@ training:
 
 distributed:
   nodes: 2
-  world_size: 8
+  world_size: 4
+  gpus_per_rank: 2
   rollout_tensor_parallel_size: 4

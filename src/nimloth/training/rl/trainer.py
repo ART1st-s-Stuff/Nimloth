@@ -18,6 +18,7 @@ from nimloth.backbone import (
     build_input_builder,
     build_vision_ema,
     load_backbone,
+    model_output_device,
     resolve_tune_modes,
     resolve_vision_ema,
 )
@@ -69,6 +70,16 @@ class RLResumeState:
     global_step: int = 0
     best_eval_metric: float = float("-inf")
     loaded: bool = False
+
+
+@dataclass(frozen=True)
+class RLDistributedModules:
+    """分布式包装后的 Agent 参数边界与 checkpoint 布局。"""
+
+    model: torch.nn.Module
+    world_model: WorldModel
+    optimizer_state_sharded: bool
+    strategy: str
 
 
 def _is_grid_predictor_checkpoint(path: Path) -> bool:
@@ -315,6 +326,107 @@ def _wrap_llm_fsdp(
     return wrapped
 
 
+def _wrap_trainable_ddp(
+    module: torch.nn.Module,
+    *,
+    device: torch.device,
+) -> torch.nn.Module:
+    """只包装真正可训练的单设备辅助模块。"""
+
+    if not any(parameter.requires_grad for parameter in module.parameters()):
+        return module
+    from torch.nn.parallel import DistributedDataParallel as DDP
+
+    device_index = int(str(device).split(":")[-1])
+    return DDP(
+        module,
+        device_ids=[device_index],
+        output_device=device_index,
+        find_unused_parameters=False,
+        static_graph=True,
+    )
+
+
+def _wrap_world_model_ddp(
+    world_model: WorldModel,
+    *,
+    device: torch.device,
+    world_size: int,
+) -> WorldModel:
+    if world_size <= 1:
+        return world_model
+    state_proj = _wrap_trainable_ddp(world_model.state_proj, device=device)
+    wm_predictor = _wrap_trainable_ddp(world_model.wm_predictor, device=device)
+    value_head = _wrap_trainable_ddp(world_model.value_head, device=device)
+    if isinstance(world_model, GridWorldModel):
+        dino_decoder = _wrap_trainable_ddp(
+            world_model.dino_decoder,
+            device=device,
+        )
+        return GridWorldModel(
+            state_proj=state_proj,  # type: ignore[arg-type]
+            target_encoder=world_model.target_encoder,
+            wm_predictor=wm_predictor,  # type: ignore[arg-type]
+            dino_decoder=dino_decoder,  # type: ignore[arg-type]
+            value_head=value_head,  # type: ignore[arg-type]
+            train_dino_decoder=world_model.train_dino_decoder,
+            update_target_encoder=world_model.update_target_encoder,
+        )
+    return WorldModel(
+        state_proj=state_proj,
+        wm_predictor=wm_predictor,
+        value_head=value_head,
+    )
+
+
+def _wrap_distributed_modules(
+    llm: torch.nn.Module,
+    world_model: WorldModel,
+    *,
+    world_size: int,
+    model_parallel: bool,
+    training_device: torch.device,
+) -> RLDistributedModules:
+    if model_parallel:
+        if world_size > 1:
+            from torch.nn.parallel import DistributedDataParallel as DDP
+
+            llm = DDP(
+                llm,
+                device_ids=None,
+                output_device=None,
+                find_unused_parameters=False,
+                static_graph=True,
+            )
+        strategy = "model_parallel_ddp" if world_size > 1 else "model_parallel"
+        optimizer_state_sharded = False
+    else:
+        llm = _wrap_llm_fsdp(llm, world_size=world_size)
+        strategy = "fsdp" if world_size > 1 else "single_gpu"
+        optimizer_state_sharded = world_size > 1
+    world_model = _wrap_world_model_ddp(
+        world_model,
+        device=training_device,
+        world_size=world_size,
+    )
+    if is_main():
+        print(
+            json.dumps(
+                {
+                    "rl_distributed_strategy": strategy,
+                    "world_size": world_size,
+                    "training_device": str(training_device),
+                }
+            )
+        )
+    return RLDistributedModules(
+        model=llm,
+        world_model=world_model,
+        optimizer_state_sharded=optimizer_state_sharded,
+        strategy=strategy,
+    )
+
+
 def _build_optimizer(
     model: torch.nn.Module,
     world_model: WorldModel,
@@ -359,6 +471,7 @@ def _load_resume_state(
     device: torch.device,
     rank: int,
     world_size: int,
+    optimizer_state_sharded: bool,
     expected_checkpoint_metric: str,
 ) -> RLResumeState:
     """恢复 WM、optimizer 和 iteration 位置。"""
@@ -368,7 +481,7 @@ def _load_resume_state(
     state = load_rl_wm_checkpoint(checkpoint_dir, world_model, device)
     if not state:
         return RLResumeState()
-    if world_size > 1:
+    if optimizer_state_sharded:
         saved_world = int(state.get("optimizer_world_size", 0))
         if saved_world != world_size:
             raise RuntimeError(
@@ -382,8 +495,13 @@ def _load_resume_state(
         optimizer.load_state_dict(
             torch.load(optimizer_path, map_location="cpu", weights_only=False)
         )
-    elif state.get("optimizer") is not None:
-        optimizer.load_state_dict(state["optimizer"])
+    else:
+        saved_optimizer = state.get("optimizer")
+        if saved_optimizer is None:
+            raise RuntimeError(
+                "replicated optimizer checkpoint is missing rl_state.optimizer"
+            )
+        optimizer.load_state_dict(saved_optimizer)
     checkpoint_metric = state.get("checkpoint_metric")
     if checkpoint_metric is not None and checkpoint_metric != expected_checkpoint_metric:
         raise ValueError(
@@ -449,7 +567,14 @@ def train_rl(
             value_head_checkpoint=args.value_head_checkpoint,
         )
 
-    rank, world, _, device = setup_dist()
+    rank, world, _, device = setup_dist(
+        gpu_stride=config.distributed.gpus_per_rank,
+    )
+    if world != config.distributed.world_size:
+        raise RuntimeError(
+            "launched distributed world does not match config: "
+            f"launched={world}, configured={config.distributed.world_size}"
+        )
     validate_fresh_rollout_policy(train_collector)
     if actor_enabled and world > 1 and not isinstance(
         train_collector,
@@ -480,11 +605,18 @@ def train_rl(
             args,
             device=device,
             latent_token_count=latent_token_count,
+            model_parallel_size=config.distributed.gpus_per_rank,
             resume_dir=resume_dir,
             resume_state_path=resume_dir / "rl_state.pt",
         )
         model = loaded.backbone.model
-        world_model = _build_world_model(args, config, llm=model, device=device)
+        training_device = model_output_device(model, default=device)
+        world_model = _build_world_model(
+            args,
+            config,
+            llm=model,
+            device=training_device,
+        )
         if world > 1:
             broadcast_module_state(world_model.state_proj)
             broadcast_module_state(world_model.wm_predictor)
@@ -505,15 +637,24 @@ def train_rl(
             resume_path=(output_dir / "latest" / "vision_ema.pt") if args.resume else None,
             device=device,
         )
-        model = _wrap_llm_fsdp(model, world_size=world)
+        distributed_modules = _wrap_distributed_modules(
+            model,
+            world_model,
+            world_size=world,
+            model_parallel=loaded.pair_parallel,
+            training_device=training_device,
+        )
+        model = distributed_modules.model
+        world_model = distributed_modules.world_model
         optimizer = _build_optimizer(model, world_model, config)
         resume = _load_resume_state(
             checkpoint_dir=loaded.resume_aux_dir,
             world_model=world_model,
             optimizer=optimizer,
-            device=device,
+            device=training_device,
             rank=rank,
             world_size=world,
+            optimizer_state_sharded=distributed_modules.optimizer_state_sharded,
             expected_checkpoint_metric=config.validation.checkpoint_metric,
         )
         agent = Agent(
@@ -596,7 +737,7 @@ def train_rl(
                 SequenceSIGReg(
                     knots=config.predictor.sigreg_knots,
                     num_proj=config.predictor.sigreg_num_proj,
-                ).to(device)
+                ).to(training_device)
                 if config.predictor.lambda_sigreg > 0.0
                 else None
             ),
@@ -637,7 +778,7 @@ def train_rl(
             algorithm=algorithm,
             model_runtime=model_runtime,
             optimization_runtime=optimization_runtime,
-            device=device,
+            device=training_device,
             train_collector=train_collector,
             eval_collector=eval_collector,
             output_dir=output_dir,

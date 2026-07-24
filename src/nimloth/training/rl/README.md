@@ -198,8 +198,13 @@ python -m nimloth.training.rl.cli \
   --jsonl-sources outputs/rollouts/run_001/trajectories.jsonl
 ```
 
-The 8-GPU online PPO smoke uses
+The config-sized online PPO smoke uses
 `experiments/training/rl/run_vllm_online_ppo_smoke.sh`: vLLM first consumes all
-eight GPUs for behavior rollout, exits, and the same eight GPUs then run one
-FSDP update. This process boundary keeps inference ownership out of the trainer
-and makes the policy freshness handoff auditable.
+configured GPUs for behavior rollout, exits, and the same allocation then runs
+one distributed update. `distributed.world_size` is the number of training
+processes; `distributed.gpus_per_rank` is 1 for FSDP or 2 for balanced Qwen
+model parallel plus DDP. Physical GPU count is their product. A model-parallel
+launch validates that every rank's Qwen placement actually covers both local
+GPUs; CPU/disk offload and single-GPU placement are rejected. This process
+boundary keeps inference ownership out of the trainer and makes the policy
+freshness handoff auditable.

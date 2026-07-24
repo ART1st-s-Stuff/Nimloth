@@ -9,8 +9,8 @@
 | `smoke_test.slurm` | 单 GPU smoke test：加载 SFT2 checkpoint，synthetic data 跑 1 步训练 |
 | `rollout_env.py` | 独立 rollout 脚本：复用 Nimloth action policy，生成完整 RL JSONL（不参与训练） |
 | `run_e2e_smoke.sh` | 训练 split rollout → 两卡 FSDP step → resume step 的端到端 smoke |
-| `run_vllm_online_ppo_smoke.sh` | config-sized vLLM fresh rollout → 指纹门槛 → FSDP PPO step |
-| `run_vllm_online_ppo_slurm.sh` | 按 RL config 在异构多节点 allocation 上编排 Ray-vLLM 与 FSDP |
+| `run_vllm_online_ppo_smoke.sh` | config-sized vLLM fresh rollout → 指纹门槛 → distributed PPO step |
+| `run_vllm_online_ppo_slurm.sh` | 按 RL config 在异构多节点 allocation 上编排 Ray-vLLM 与 PPO trainer |
 | `run_vllm_online_ppo_2node4.sh` | 一个2节点×4卡 hold 内的 Ray-vLLM TP8 → 2×4 FSDP step |
 
 ## 运行模式
@@ -56,10 +56,13 @@ python -m nimloth.training.rl.cli \
 
 多 GPU 模式不让 environment 直接调用 FSDP forward。启动器先用当前完整
 HF artifact 启动 vLLM tensor parallel rollout，写入模型内容指纹 manifest；
-vLLM 退出后，FSDP trainer 只允许消费该 manifest 一次。异构 Slurm 路径从
-`distributed.nodes`、`distributed.world_size` 和
+vLLM 退出后，distributed trainer 只允许消费该 manifest 一次。异构 Slurm 路径从
+`distributed.nodes`、`distributed.world_size`、`distributed.gpus_per_rank` 和
 `distributed.rollout_tensor_parallel_size` 读取资源语义；shell 不固定节点数或
-GPU 总数。每个训练 rank 由 Slurm 绑定一张 GPU，因此允许各节点 GPU 数不同。
+GPU 总数。`world_size` 是训练进程数，物理 GPU 总数为
+`world_size * gpus_per_rank`。`gpus_per_rank=1` 使用 FSDP；`gpus_per_rank=2`
+让每个 Qwen 副本均衡分布在同一节点的两张 GPU 上，再在训练 rank 间使用 DDP。
+后者要求每个节点分配的 GPU 数能被 2 整除，不支持跨节点拼接一个模型副本。
 下一个 optimizer step 必须从新 checkpoint 重新 rollout。
 
 没有完整空闲8卡节点时，`run_vllm_online_ppo_2node4.sh` 只接受均匀的两节点、
@@ -70,7 +73,7 @@ trainer 入口；训练阶段使用两个 torchrun agent、每节点4个 rank，
 
 - `JSONLRolloutCollector` 在所有 rank 上返回相同轨迹序列（确定性轮转），保证 FSDP forward 次数一致。
 - Batch 选择使用 per-iteration 确定性 generator（`seed + iteration`），不依赖全局 RNG 状态同步。
-- 非 FSDP 的 `state_proj`、`wm_predictor`、`value_head` 会在 distributed setup 后从 rank0 广播初始参数；因为所有 rank 消费相同数据，它们的本地副本会保持同步。
+- `state_proj`、`wm_predictor`、`value_head` 的可训练副本由 DDP 同步；冻结模块在 distributed setup 后从 rank0 广播初始状态。
 - 所有 rank 必须调用相同的 `collect()` 次数——训练循环已保证这一点。
 
 ## 输出
