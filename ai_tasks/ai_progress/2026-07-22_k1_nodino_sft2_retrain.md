@@ -512,3 +512,14 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   可训练WM/value同步与replicated optimizer checkpoint语义同时补全。
 - 服务器CPU回归`103 passed, 1 warning`；epoch1空权重映射探针确认两卡均被使用。
   尚未验证真实双卡Qwen forward/backward/optimizer，必须以新ID和空输出目录smoke。
+
+## 2026-07-24：ID90 双卡Qwen replay索引设备错误
+
+- ID90在dgx-40×4 + dgx-48×4完成TP4 eager fresh rollout：4 trajectories、20
+  transitions、rewards `-0.1/-0.2/0.0/-0.1`；manifest已被训练一次性消费。
+- 4个rank均确认每个Qwen副本实际跨两张本地GPU，并进入首次turn-credit policy replay；
+  随后final hidden states位于第二张GPU，但`logits_to_keep`位于第一张GPU，Transformers
+  在position indexing处拒绝跨设备索引。
+- CSV只有表头，无finite loss、optimizer step或checkpoint；W&B `qo3lkimp`。ID90因
+  manifest已消费而不可恢复。下一步在两条replay路径统一使用CPU indices，经测试后以
+  ID91和fresh rollout重试。

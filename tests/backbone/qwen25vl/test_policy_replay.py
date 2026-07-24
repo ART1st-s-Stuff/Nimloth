@@ -13,7 +13,10 @@ from nimloth.agent import (
     PolicyTokenTrace,
     PromptTemplateSpec,
 )
-from nimloth.backbone.qwen25vl.policy import replay_policy_token_log_probs
+from nimloth.backbone.qwen25vl.policy import (
+    _logits_to_keep_positions,
+    replay_policy_token_log_probs,
+)
 from nimloth.latent import LatentActionTokens
 
 
@@ -58,6 +61,14 @@ class _Model(torch.nn.Module):
             device=input_ids.device,
         )
         return SimpleNamespace(logits=logits)
+
+
+def test_logits_to_keep_positions_stay_on_cpu_for_device_mapped_qwen() -> None:
+    positions = _logits_to_keep_positions([3, 5])
+
+    assert positions.device.type == "cpu"
+    assert positions.dtype == torch.long
+    assert positions.tolist() == [3, 5]
 
 
 def test_token_replay_keeps_only_masked_positions_and_role_vocabularies() -> None:
@@ -109,6 +120,7 @@ def test_token_replay_keeps_only_masked_positions_and_role_vocabularies() -> Non
     )
 
     assert model.last_input_ids.shape == (1, 8)
+    assert model.last_logits_to_keep.device.type == "cpu"
     assert model.last_logits_to_keep.tolist() == [3, 5]
     assert torch.allclose(
         output.selected_log_probs,

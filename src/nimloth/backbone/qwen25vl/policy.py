@@ -128,11 +128,7 @@ def action_logits_for_messages(
     if action_start_positions.numel() == 0:
         raise RuntimeError("<|action_start|> token not found in Agent policy prompt")
     action_start_position = int(action_start_positions[-1].item())
-    logits_to_keep = torch.tensor(
-        [action_start_position],
-        dtype=torch.long,
-        device=device,
-    )
+    logits_to_keep = _logits_to_keep_positions([action_start_position])
     outputs = model(
         **model_inputs,
         logits_to_keep=logits_to_keep,
@@ -286,6 +282,18 @@ def _row_entropies(log_probs: torch.Tensor) -> torch.Tensor:
     return -terms.sum(dim=-1)
 
 
+def _logits_to_keep_positions(positions: Sequence[int]) -> torch.Tensor:
+    """Build Qwen's position index on CPU for device-mapped model replay.
+
+    Transformers accepts CPU indices for ``logits_to_keep``.  Keeping this
+    tensor on CPU is necessary when Accelerate places the decoder input on one
+    GPU and the final norm/lm_head on another: the hidden states being indexed
+    then no longer share the input device.
+    """
+
+    return torch.tensor(positions, dtype=torch.long)
+
+
 def replay_policy_token_log_probs(
     *,
     samples: Sequence[PolicyReplayInput],
@@ -369,10 +377,8 @@ def replay_policy_token_log_probs(
         selected_indices = [
             index for index, selected in enumerate(trace.loss_mask) if selected
         ]
-        logits_to_keep = torch.tensor(
-            [prompt_length - 1 + index for index in selected_indices],
-            dtype=torch.long,
-            device=device,
+        logits_to_keep = _logits_to_keep_positions(
+            [prompt_length - 1 + index for index in selected_indices]
         )
         outputs = model(
             **model_inputs,

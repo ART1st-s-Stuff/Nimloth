@@ -1862,3 +1862,16 @@
 - 服务器完整 `tests/training/rl tests/backbone/qwen25vl`：`103 passed, 1 warning`。
   corrected epoch1的meta-device probe确认balanced映射覆盖两卡，final norm/lm_head
   位于第二卡。真实多卡forward/backward/optimizer仍需新ID GPU smoke验证。
+
+## 2026-07-24：RL ID90 双卡副本进入 replay 后跨设备索引失败
+
+- ID90 使用 allocation `486283` 的 dgx-40×4 + dgx-48×4，按4个训练rank、每rank
+  两卡运行；TP4 eager rollout完成4条fresh trajectory / 20 transitions，rewards为
+  `-0.1/-0.2/0.0/-0.1`，19轮stop与1轮length truncation均持久化。
+- fresh manifest已消费；4个rank均验证Qwen balanced placement覆盖两张本地GPU并进入
+  首次PPO replay，说明双卡加载、跨rank DDP和训练入口本身均已通过。
+- replay的`logits_to_keep`仍建在输入GPU，而balanced placement使final hidden states与
+  lm_head位于第二张GPU。Transformers在`hidden_states[:, slice_indices, :]`报索引设备
+  不一致；CSV仅表头，无finite loss、optimizer step或checkpoint，W&B为`qo3lkimp`。
+- ID90不可恢复：manifest已消费且无checkpoint。修复要求action-only与turn replay统一
+  使用Transformers支持的CPU position index；通过回归后须用ID91、空输出和fresh rollout。
