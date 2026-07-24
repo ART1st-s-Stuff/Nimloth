@@ -31,7 +31,10 @@
 - ID48 step`486596.2`在terminal-CoT train第51条按P0 fail-fast：SFT1在128 tokens内
   没有自行生成`</think>`；单条512-token诊断仍未close。无正式数据/cache/W&B/
   optimizer/checkpoint，不能resume，也未擅自修改参数重试。异常可观测性补充生成
-  token数和有界continuation预览后，将据真实输出决定是否需要人类澄清生成策略。
+  token数和有界continuation预览。远端`2 passed`后诊断显示实际只生成90 tokens：
+  `Move left.</think,`后漂移到tool/user-turn；正确close与protocol mask无交集，因此是
+  模型真实格式失败。hold`486596`已取消释放8×H800；继续前必须由人类明确失败记录或
+  约束生成策略，禁止猜测。
 
 ## 2026-07-24：SFT2 fixed terminal CoT 删除（待远端回归）
 

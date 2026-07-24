@@ -77,8 +77,13 @@
   无正式JSONL/cache/W&B/optimizer/checkpoint，不可resume；输出README已记录。单条
   诊断把上限临时放到512仍没有close，因此不能擅自把正式上限稍微调大。生成失败异常
   现增加有界continuation预览和生成token数，先判定模型实际输出再请人类决定策略。
+- 可观测性补丁`5ba0f2c`的远端回归`2 passed`。新诊断确认模型只生成90 tokens：
+  `Move left.</think,`后漂移到tool/user-turn文本；正确close token为
+  `[522,26865,29]`，错误为`[522,26865,11]`，且正确close与protocol mask无交集。
+  因此不是mask或token边界bug，而是模型真实格式失败。继续必须由人类明确选择排除
+  格式失败记录、显式约束闭合等策略；禁止猜测。hold`486596`已取消并释放8×H800。
 
 ## 待确认问题
 
-- 无。实验使用上次暂停前已经由人类确认的 terminal CoT 与 SFT2 参数；若远端记录
-  与仓库记录不一致，将停止并请人类确认，不会猜测。
+- terminal CoT出现模型真实格式失败时采用什么数据策略。当前全量生成必须全部合法，
+  因此第51条会使流程fail-fast；旧fixed-terminal cache与静默注入仍禁止。
