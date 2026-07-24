@@ -1779,3 +1779,20 @@
 - resume保持原数据/config/B1 GA8/world8、optimizer、8-rank history cache、CSV、
   W&B ID与输出目录，不创建新实验ID。预计拿到节点后50--60分钟完成；需继续监控到
   checkpoint恢复成功并产生新的finite optimizer step。
+
+## 2026-07-24：DINO-grid SFT2 与 online PPO 合并审查完成
+
+- 按人类确认，将 `feat/sft2-dino-grid-ablation` 和
+  `exp/rl-dinogrid-ep1-online-ppo` 集成到 `nimloth-dev` 对应分支
+  `fix/sft2-review-bugs`。RL 分支此前已在 `f65ec2f` 合入 DINO 实现；本轮补入
+  DINO 分支最后两个 resume 进度提交，并保留双方 `AI_branch_progress.md` 记录。
+- 审查确认 DINO cache lineage、terminal target、FP32 grid auxiliaries、EMA target、
+  checkpoint extras 与 PPO fresh-policy manifest 均 fail-closed。RL commit `bfa9c15`
+  改为从 SFT2 `state_proj.pt` 重建 slot projector；新增回归锁定恢复与冻结边界。
+- 删除已与 TP4 config/per-node 异构 launcher 冲突的固定
+  `run_vllm_online_ppo_2node4.sh`，统一使用 config-driven
+  `run_vllm_online_ppo_slurm.sh`；README 已同步实际每节点一个 Slurm step、节点内多
+  local-rank 的启动方式。
+- 服务器定向回归 `69 passed`；扩展 WM/SFT2/RL/rollout/Qwen/SFT1 merge 回归
+  `173 passed, 1 skipped, 1 expected warning`。静态 `bash -n`、`compileall` 和
+  `git diff --check` 通过。没有启动新实验或 GPU allocation。

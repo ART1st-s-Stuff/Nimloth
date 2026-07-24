@@ -38,7 +38,10 @@
 - `bash -n`：当前 RL/SFT2 生产启动器通过。
 - `python -m compileall`：相关源码和实验入口通过。
 - 本地无 Torch/Pytest；已同步隔离服务器 worktree。首次 collection 因新 worktree 未初始化 `external/le-wm` 失败，初始化该 submodule 后正常收集。
-- 服务器首轮定向回归为 `68 passed, 1 failed`；唯一失败来自新增测试用非生产 `ValueHead(hidden_dim=4)`，而 checkpoint 格式按生产默认 hidden 维恢复。测试 fixture 已改为生产构造，待复跑；这不是源分支运行错误。
+- 服务器首轮定向回归为 `68 passed, 1 failed`；唯一失败来自新增测试用非生产 `ValueHead(hidden_dim=4)`，而 checkpoint 格式按生产默认 hidden 维恢复。测试 fixture 已改为生产构造；这不是源分支运行错误。
+- 修正后同一组定向回归 `69 passed`。
+- 扩展回归覆盖 `tests/wm`、SFT2、RL、rollout、Qwen backbone 与 SFT1 merge：`173 passed, 1 skipped, 1 expected warning`。skip 为既有环境门槛，warning 来自刻意验证单样本 unbiased std。
+- 最终 `bash -n`、`compileall`、`git diff --check` 均通过。
 
 ## 待确认/风险
 
