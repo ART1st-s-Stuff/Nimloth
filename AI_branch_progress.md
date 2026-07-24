@@ -1840,6 +1840,35 @@
 - 修复已推送到 `exp/rl-dinogrid-ep1-online-ppo`；下一步必须使用新实验 ID、全新输出
   和 fresh rollout 重新提交，不能复用 ID83/84。
 
+## 2026-07-24：RL ID85 Ray worker 未继承仓库 Python 路径
+
+- ID85 使用 commit `b271807` 和 corrected ID46 `epoch_001`；config 为2节点、
+  world8、rollout TP4、turn credit CoT32、vLLM eager。Slurm total-GPU 请求获得
+  dgx-06×3 + dgx-40×5，证明异构节点无需固定4+4。
+- Ray 精确8 GPU gate、environment health、TP4 placement及Gloo/NCCL初始化通过。
+  vLLM worker 在加载模型权重前按FQCN导入自定义 logits processor，但Ray actors未
+  继承仓库`PYTHONPATH`，报`ModuleNotFoundError: nimloth`。
+- 无trajectory、W&B、FSDP、optimizer step或checkpoint；ID85不可恢复且输出不得
+  复用。Ray/environment已清理，hold `486119` 暂时保留供修复后的新ID重试。
+
+## 2026-07-24：RL ID86--88 Ray环境和vLLM request processor修复
+
+- commit `68848d9` 将仓库/VAGEN/verl/le-wm路径注入每个raylet，并在加载vLLM前把
+  `nimloth`导入任务精确调度到每个活跃节点。服务器Slurm测试`3 passed`。ID86因
+  detached shell未加载Slurm module而在Ray前失败；无GPU工作、trajectory、W&B、
+  optimizer或checkpoint，不可恢复。
+- ID87在dgx-06×3 + dgx-40×5上证明Ray精确8卡和双节点导入探针有效，TP4完成权重
+  加载、eager warmup及首个真实图片prefill；随后vLLM 0.11因request processor的
+  `functools.partial`仍暴露3个参数而误传prompt IDs，报两参数函数收到3个位置参数。
+  四条轨迹均被丢弃，空rollout门槛阻止FSDP；无optimizer/checkpoint。
+- commit `f2cbef3`改为签名明确为`(output_token_ids, logits)`的闭包；真实vLLM 0.11
+  相关回归`13 passed`。ID88重复真实多模态路径并连续完成两条各5步轨迹，reward
+  `-0.1/-0.2`、耗时73.4/151.4秒，证明单请求约束生成修复生效。
+- ID88因30分钟hold只剩约5分钟，无法安全完成剩余rollout与8-rank FSDP而主动取消；
+  manifest未完成或消费，无W&B/optimizer/checkpoint，partial rollout禁止复用。
+  已提交60分钟、两节点、总8卡且允许异构的preempt hold `486146`，当前
+  `PENDING (Priority)`；normal当前仅4卡、preempt仅2卡空闲，均不能满足config world8。
+
 ## 2026-07-24：DINO 改为单一 SFT2 核心的可配置附加 loss
 
 - 人类指出原 `DINOGridSFT2Algorithm` 复制了完整 current/target、CE、WM、value 和

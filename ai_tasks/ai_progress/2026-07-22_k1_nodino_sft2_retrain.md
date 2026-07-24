@@ -462,3 +462,30 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   RL/Agent/Qwen 相关集合 `113 passed, 1 expected warning`；真实 vLLM 0.11 adapter
   构造和 corrected ID46 epoch1 tokenizer encode/decode 往返通过。
 - 当前代码已推送并同步服务器 worktree；新 GPU 实验尚未提交，必须使用新 ID/output。
+
+## 2026-07-24：ID85 自定义 logits processor 的 Ray import 失败
+
+- `b271807` 以Slurm total GPU语义在hold `486119`获得dgx-06×3 + dgx-40×5；
+  nodes2/world8/TP4、base_train seeds1--4和ID46 epoch1初始化均未改变。
+- Ray 8-GPU、environment、TP4 placement和通信初始化通过；vLLM eager已生效。
+  worker在模型权重加载前无法导入FQCN plugin，因为Ray actor未继承仓库
+  `PYTHONPATH`，根因是launcher环境传播缺口。
+- 无trajectory、W&B、FSDP、optimizer step或checkpoint；ID85 failed/non-resumable。
+  修复必须为Ray runtime显式传播仓库src路径，并用全新ID/output重试。
+
+## 2026-07-24：ID86--88 双节点导入与vLLM签名修复通过真实rollout
+
+- `68848d9`向head/worker raylet传播完整项目`PYTHONPATH`，并新增逐节点Nimloth导入
+  探针。ID86因controller shell未加载Slurm module在Ray前失败；ID87在
+  dgx-06×3 + dgx-40×5上通过8-GPU gate、双节点import、环境、TP4通信、epoch1
+  权重加载和eager warmup。
+- ID87首个真实图片请求在采样时暴露vLLM 0.11接口误判：partial绑定的keyword-only
+  `spec`仍计入签名，使adapter传入prompt/output/logits三个位置参数。`f2cbef3`用明确
+  两参数闭包修复，集群真实vLLM相关测试`13 passed`。
+- ID88连续完成两条5-step真实多模态trajectory，reward `-0.1/-0.2`，未复现图片
+  重处理、Ray import、Inductor或签名崩溃。因原30分钟hold剩余时限不足以安全完成
+  4条rollout加world8 FSDP，主动取消；fresh manifest未完成/消费，无W&B、optimizer
+  或checkpoint，partial输出不得resume。
+- 新的60分钟preempt hold `486146`按`nodes=2/world_size=8`仅请求总8卡、不固定4+4，
+  当前`PENDING (Priority)`。实时AllocTRES显示normal仅4卡、preempt仅2卡空闲，不能
+  降配冒充config要求；获得allocation后用全新ID89从头fresh rollout。
