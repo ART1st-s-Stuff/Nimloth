@@ -28,6 +28,9 @@
   文本精确停止/提取并增加边界回归；hold `486556`仍在dgx-42，正式数据尚未生成。
 - 提交`ebc4d3b`在superpod定向测试`8 passed`；同一21帧真实smoke现成功，terminal CoT
   为3 tokens且manifest完整。正式train/val terminal数据、cache和SFT2仍未开始。
+- 人类指出本RL分支与此前DINO监督SFT2 lineage冲突并要求暂停。hold `486556`已取消；
+  没有正式augmented数据、cache、W&B、optimizer step或checkpoint，解决分支冲突前
+  禁止继续启动。
 
 ## 2026-07-24：DINO-grid SFT2 恢复 terminal transition 与旧 cache 兼容
 

@@ -38,3 +38,6 @@
 - 修复提交`ebc4d3b`后，superpod定向回归`8 passed`；同一条21帧真实GPU smoke使用
   完整确认参数成功，terminal CoT为3 tokens，输出/manifest SHA256和全部生成参数齐全。
   正式train/val augmented JSONL仍未开始。
+- 人类因当前RL分支与此前DINO监督SFT2 lineage存在冲突而要求暂停。hold `486556`
+  已取消并退出队列；未创建正式augmented JSONL、cache、W&B run、optimizer step或
+  checkpoint。冲突解决前不得继续启动。
