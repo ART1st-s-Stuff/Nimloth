@@ -151,3 +151,40 @@ def test_legacy_latent_count_cannot_drift_from_template_spec() -> None:
     trajectory.latent_token_count = 8
     with pytest.raises(RuntimeError, match="does not match the prompt template"):
         validate_trajectories([trajectory])
+
+
+def test_turn_credit_roundtrip_separates_behavior_and_state_prompts() -> None:
+    trajectory = _trajectory()
+    prompt = NimlothPromptTemplate(latent_token_count=1, action_count=8)
+    response = (
+        "<think>Move toward the couch.</think><|latent_state|>"
+        "<|action_start|><|action_(0)|><|action_end|>"
+    )
+    trajectory.assistant_responses = [response]
+    trajectory.policy_credit_assignment = "turn"
+    trajectory.policy_token_ids = [[100, 101, 102, 103]]
+    trajectory.policy_token_log_probs = [[-0.2, None, -0.3, None]]
+    trajectory.policy_loss_masks = [[True, False, True, False]]
+    trajectory.policy_token_roles = [[
+        "reasoning",
+        "injected",
+        "action",
+        "injected",
+    ]]
+    transcript = trajectory.transcript()
+    trajectory.policy_messages = [
+        prompt.build_response_policy_prompt(
+            transcript.policy_prefix(0)
+        ).unbound_messages()
+    ]
+    trajectory.messages = prompt.build_supervised_prompt(transcript).unbound_messages()
+
+    validate_trajectories([trajectory])
+    restored = RolloutTrajectory.from_record(trajectory.to_record())
+
+    assert restored.build_policy_prompt(0).messages[-1]["content"] == "<think>"
+    state_prefix = restored.build_state_prompt(0).messages[-1]["content"]
+    assert state_prefix.endswith("<|latent_state|><|action_start|>")
+    assert "Move toward the couch." in state_prefix
+    assert "<|action_(0)|>" not in state_prefix
+    assert restored.policy_token_trace(0) == trajectory.policy_token_trace(0)
