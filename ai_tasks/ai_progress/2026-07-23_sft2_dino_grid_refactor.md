@@ -234,3 +234,23 @@
   seconds plus observed validation/save overhead, expected remaining wall time
   is about 50-60 minutes after a new world8 allocation starts. No restart was
   performed because the human requested a progress query only.
+
+## ID46 resume attempt 1 queued
+
+- After explicit human authorization to continue, one four-hour preempt
+  one-node/eight-GPU hold `485732` was submitted without a fixed node. No
+  preempt node had all eight GPUs free at submission, so it is currently
+  `PENDING (Resources)`.
+- Output-local `resume_when_hold_runs.sh`, watched by login PID `2929716`, will
+  launch exactly one srun after the hold becomes running. It first requires the
+  remote worktree to remain exactly at experiment commit `f060a25`, then sets
+  `RESUME=1`, the absolute `latest` checkpoint, and W&B run ID `yapevfpy`.
+- The initial watcher exited before polling because non-login bash lacked the
+  Slurm module environment. It now sets the authoritative `SLURM_CONF` and
+  library paths explicitly and is verified alive; the hold remained pending
+  throughout, so no allocation or training step was affected.
+- The resume preserves the original data/config, B1 GA8 world8 topology,
+  optimizer, all rank history caches, CSV, W&B identity, and output directory.
+  It does not create a new experiment ID. Expected runtime after allocation is
+  50-60 minutes; health monitoring must continue through a newly logged finite
+  optimizer step.
