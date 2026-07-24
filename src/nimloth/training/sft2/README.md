@@ -11,8 +11,8 @@ RL 只在真实 rollout 时用独立的 planning horizon 自回归预测多个�
 
 | 文件 | 职责 |
 |------|------|
-| `algorithm.py` | 显式的 CE/WM/value 主阶段、SIGReg 阶段及 WM 权重策略 |
-| `dino_grid.py` | 4x4 DINO sidecar batch 与 decoded-grid objective，不改变公共算法 |
+| `algorithm.py` | 唯一的 CE/WM/value/SIGReg 核心流程，以及可配置附加 loss 契约 |
+| `dino_grid.py` | 只提供 4x4 DINO target 和 decoded-grid 附加 loss，不实现训练流程 |
 | `trainer.py` | 按执行顺序加载 Agent、设置 DDP/EMA/optimizer 并启动训练 |
 | `batch.py` | SFT2 action/return/next-state 对齐与 terminal mask 装配 |
 | `data/` | dataset、sampler 与 DataLoader |
@@ -50,8 +50,9 @@ state，并用 valid mask 排除 sampler padding；SIGReg 的 `B` 是该 microba
 所有 rank 使用相同随机投影。只有 global `B<2` 才跳过 SIGReg。验证集不计算
 SIGReg。配置中的 `batch_size` 仍表示每个 rank 的 current step 数。
 
-DINO-grid variant 使用 k=16 query slots 和 row-major 4x4 teacher tokens。它沿用
-上述一次 CE/H-step cache/单向 SIGReg 语义；额外的 0.5 权重 DINO MSE 只比较
-WM predicted state 经过 decoder 后的输出与 next-image cached target，不直接
-对齐 query representation。teacher cache 由 `backbone/dino_grid.py` 独立校验，
-grid 神经网络由 `wm/grid.py` 拥有。
+DINO-grid 使用 k=16 query slots 和 row-major 4x4 teacher tokens，但不拥有第二套
+SFT2 algorithm。`SFT2Algorithm` 始终执行同一套 current/target、CE、WM、value 与
+SIGReg；配置 `lambda_dino > 0` 时，只在同一个 predicted next state 上追加
+`DINOGridLoss`。该 loss 比较 decoder 输出与 next-image cached target，不直接对齐
+query representation。teacher cache 由 `backbone/dino_grid.py` 校验，grid 神经网络
+由 `wm/grid.py` 拥有，默认配置权重为 0.5。

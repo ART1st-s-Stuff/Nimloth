@@ -24,9 +24,12 @@
 - `DINOGridLoss` 只执行 decoded prediction 与 cached target 的 MSE；原 `DINOGridSFT2Algorithm` 和 `DINOGridSFT2Batch` 已删除。
 - Grid/latent 都通过 `WorldModel.sigreg_state()` 向同一个核心 SIGReg 阶段提供 `(B,D)` 表示。
 - trainer 始终构造唯一 `SFT2Algorithm`；`lambda_dino` 只控制附加 loss 权重并写入 checkpoint invariant。
+- `d770a53` 推送后首轮服务器定向回归 `42 passed`，覆盖 DINO、核心 SFT2 loss/loop/resume、RL algorithm 与 grid WM。
+- 新增同一核心 `training_sigreg_step` 对 grid slots 做 mean-pool 的回归，并用非默认 `lambda_dino=0.25` 证明权重不是硬编码。
 
 ## 验证
 
 - `compileall`、`git diff --check` 通过。
 - 静态扫描确认生产代码不再存在独立 DINO SFT2 algorithm/batch。
-- 服务器 Pytest 待提交同步后执行。
+- 首轮服务器定向回归：`42 passed`。
+- 新增 SIGReg/configurability 测试后待复跑，并需执行扩展回归。

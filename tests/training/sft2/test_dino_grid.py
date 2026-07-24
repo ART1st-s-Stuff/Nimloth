@@ -25,6 +25,7 @@ from nimloth.wm.grid import (
     LeWMGridEncoder,
     SharedSlotProjector,
 )
+from nimloth.wm.sigreg import SequenceSIGReg
 from nimloth.wm.value_head import ValueHead
 
 
@@ -56,6 +57,16 @@ class _TensorGridBackbone(Backbone):
 
     def save_pretrained(self, output_dir: Path, **_kwargs) -> None:
         raise NotImplementedError
+
+
+class _RecordingSIGReg(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.inputs: list[torch.Tensor] = []
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        self.inputs.append(value)
+        return value.pow(2).mean()
 
 
 class _GridPredictor(torch.nn.Module):
@@ -211,7 +222,7 @@ def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() 
         ce_weight=1.0,
         value_rank_margin=0.1,
         value_rank_weight=1.0,
-        auxiliary_losses=(DINOGridLoss(weight=0.5),),
+        auxiliary_losses=(DINOGridLoss(weight=0.25),),
     )
 
     output = algorithm.training_primary_step(
@@ -223,7 +234,7 @@ def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() 
     torch.testing.assert_close(output.losses["lm"], expected_ce)
     assert set(output.losses) == {"lm", "wm", "dino", "value"}
     assert output.current_state.shape == (2, 4, 8)
-    assert output.metrics["lambda_dino"] == 0.5
+    assert output.metrics["lambda_dino"] == 0.25
 
     output.loss.backward()
 
@@ -246,3 +257,30 @@ def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() 
         parameter.grad is None
         for parameter in wm.target_encoder.parameters()
     )
+
+
+def test_grid_sigreg_uses_same_core_stage_with_mean_pooled_slots() -> None:
+    runtime, _backbone, _wm = _runtime()
+    batch = _batch()
+    recording = _RecordingSIGReg()
+    algorithm = SFT2Algorithm(
+        history_size=2,
+        sigreg=SequenceSIGReg(regularizer=recording),
+        sigreg_weight=0.1,
+        value_weight=1.0,
+        ce_weight=1.0,
+        value_rank_margin=0.1,
+        value_rank_weight=1.0,
+        auxiliary_losses=(DINOGridLoss(weight=0.5),),
+    )
+
+    output = algorithm.training_sigreg_step(
+        runtime,
+        batch,
+        detached_current_state=torch.randn(2, 4, 8),
+        sigreg_seed=9,
+    )
+
+    assert output.raw_loss is not None
+    assert len(recording.inputs) == 1
+    assert recording.inputs[0].shape == (2, 2, 8)
