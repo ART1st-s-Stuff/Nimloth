@@ -1942,3 +1942,14 @@
   `history_size=2`固定表示两个transition、三个state prompt以及
   `(B,2,action_count)`的ValueHead输出。
 - 仅修改文档；`git diff --check`通过，未运行Python测试。
+
+## 2026-07-24：人类澄清实验参数为planning horizon 2
+
+- 人类明确此前“预测2轮”指`agent.planning.horizon=2`，不是
+  `predictor.history_size=2`；未按错误解释修改配置或启动GPU作业。
+- 根README新增实验参数确认规则；新增known error E0043，规定自然语言不能唯一映射到
+  配置字段时必须停止并让人类澄清，禁止猜测后启动实验。
+- 修正E0037中过时的SFT2粒度描述：SFT2当前只监督窗口末端current step；RL才在一个
+  采样窗口内同时计算H个因果位置。
+- 当前实现禁止planning与PPO actor同时开启，后续长时实验模式已记录到`AI_issues.md`，
+  等待人类选择；当前无实验在运行。

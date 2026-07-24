@@ -15,7 +15,11 @@ latent 空间自回归多少步。
 ## 正确做法
 
 - `history_size=H` 在 SFT2/RL 中都表示 predictor 可见的最大因果上下文长度。
-- 两阶段都用 H 个连续真实动作和 H+1 个连续真实状态训练 H 个下一状态预测位置。
+- SFT2 的一个样本使用不超过 H 个连续真实 state/action 作为 context；当前实现只对
+  窗口末端 current step 计算 CE、下一状态和 ValueHead 主监督，较老 state 来自它们
+  先前作为 current step 时建立的 detached history cache。
+- RL 的一个采样窗口包含 H 个连续 transition 和 H+1 个真实状态，并在同一次更新中
+  对 H 个因果位置计算下一状态、action value 和可选 PPO 目标。
 - warm-start checkpoint 的 `history_size` 必须与当前配置严格相等，不做形状扩展。
 - SFT2 只消费 VAGEN 离线轨迹，不调用 planner 或 environment。
 - RL 的未来预测长度使用独立的 `agent.planning.horizon=P`；planner 从最近真实

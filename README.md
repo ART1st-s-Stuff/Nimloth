@@ -8,6 +8,16 @@ Nimloth is a Python machine-learning project for building a **World Model Agent*
 对应 YAML、checkpoint metadata 和实验 README 读取；这里定义参数的含义、统计单位和
 边界，不把某一次实验的取值当作项目默认值。
 
+### 实验参数确认规则
+
+- 提交训练、评估、rollout 或 Slurm 作业前，必须把涉及的配置字段写成完整参数名并
+  向人类核对，例如 `predictor.history_size`、`agent.planning.horizon` 和
+  `rl.max_steps_per_episode`。
+- 人类描述没有唯一对应到某个配置字段时，必须停止并请求澄清；禁止根据上下文猜测
+  一个参数后修改配置或启动实验。
+- 一个参数的值不能替代另一个参数。特别是不得用 `history_size` 表达 planning
+  horizon，也不得用 planning horizon 表达 environment episode 长度。
+
 ### 阶段与核心概念
 
 | 阶段 | 标准用词 | 严格含义 | 不得混淆 |
