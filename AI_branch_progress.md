@@ -1971,3 +1971,17 @@
   两套八动作分布，避免beam剪枝造成零support。WM是否更新应与StateProjector、SIGReg、
   Backbone表征梯度分别配置，并在policy update期间固定old behavior snapshot。
 - 本轮仅做只读源码/方案审查与文档纠错，未修改训练代码、未启动实验。
+
+## 2026-07-24：保存RL、planning与CoT credit讨论方案
+
+- 新增`ai_tasks/rl_plan.md`，把人类已确认约束、当前真实实现边界、推荐设计和待确认
+  决策分开记录；明确`agent.planning.horizon=2`，并延续歧义参数必须先确认的规则。
+- 推荐方案记录为planner完整root policy监督Qwen action policy、Qwen真实采样CoT使用
+  per-turn normalized PPO、真实逐步rollout return监督action Q与独立pre-CoT scalar
+  critic；该方案仍待人类正式确认，不表述为已实现或已批准。
+- 计划先补逐步rewards、terminated/truncated和return/bootstrap语义，再保存完整Qwen与
+  planner八动作分布；horizon2的8动作空间优先完整枚举64条序列，避免beam零support。
+- WM predictor、StateProjector、SIGReg和Backbone representation gradient分别配置；
+  当前RL继续关闭DINO。文档列出模块职责、数据契约、分阶段验证门槛和8项待确认问题。
+- 本轮仅修改设计/进度文档，未修改训练代码、未启动实验，也未创建与仓库文档重复的
+  durable memory。
