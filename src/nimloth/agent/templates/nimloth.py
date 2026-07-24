@@ -11,7 +11,6 @@ from nimloth.latent import LatentActionTokens, latent_state_tokens
 
 NIMLOTH_PROMPT_TEMPLATE_ID = "nimloth-latent-action"
 PROMPT_VERSION = "nimloth-agent-v1"
-DEFAULT_THOUGHT = "What should I do next?"
 
 
 class NimlothPromptTemplate:
@@ -22,7 +21,6 @@ class NimlothPromptTemplate:
         *,
         latent_token_count: int,
         action_count: int,
-        thought: str = DEFAULT_THOUGHT,
     ) -> None:
         if latent_token_count < 1:
             raise ValueError("latent_token_count must be >= 1")
@@ -32,31 +30,26 @@ class NimlothPromptTemplate:
                 "action_count must fit the configured action-token vocabulary: "
                 f"got {action_count}, capacity={token_action_count}"
             )
-        if not thought.strip():
-            raise ValueError("prompt thought must be non-empty")
         self.latent_token_count = latent_token_count
         self.action_count = action_count
-        self.thought = thought
 
     @property
     def spec(self) -> PromptTemplateSpec:
         return PromptTemplateSpec(
             identifier=NIMLOTH_PROMPT_TEMPLATE_ID,
             version=PROMPT_VERSION,
-            config={
-                "latent_token_count": self.latent_token_count,
-                "thought": self.thought,
-            },
+            config={"latent_token_count": self.latent_token_count},
         )
 
-    def assistant_prefix(self, *, thought: str | None = None) -> str:
+    def assistant_prefix(self, *, thought: str) -> str:
+        if not thought.strip():
+            raise ValueError("assistant thought must be non-empty")
         tokens = LatentActionTokens()
         latent_block = "".join(
             latent_state_tokens(self.latent_token_count, tokens)
         )
-        resolved_thought = self.thought if thought is None else thought
         return (
-            f"<think>{resolved_thought}</think>"
+            f"<think>{thought}</think>"
             f"{latent_block}{tokens.action_start}"
         )
 
@@ -64,7 +57,7 @@ class NimlothPromptTemplate:
         self,
         action_index: int,
         *,
-        thought: str | None = None,
+        thought: str,
     ) -> str:
         if not 0 <= action_index < self.action_count:
             raise ValueError(
@@ -79,11 +72,33 @@ class NimlothPromptTemplate:
         )
 
     def build_policy_prompt(self, transcript: AgentTranscript) -> AgentPrompt:
-        """构造最后一个 observation 的动作查询。"""
+        """拒绝缺少真实 CoT 的旧 action-only prompt。"""
+
+        raise RuntimeError(
+            "action-only prompt would require a fixed CoT; generate and persist "
+            "the real assistant response instead"
+        )
+
+    def build_state_prompt(
+        self,
+        transcript: AgentTranscript,
+    ) -> AgentPrompt:
+        """拒绝无法从未执行 observation 推导真实 CoT 的旧 state prompt。"""
+
+        raise RuntimeError(
+            "state prompt requires a persisted real CoT for this observation; "
+            "fixed template thoughts are forbidden"
+        )
+
+    def build_response_policy_prompt(
+        self,
+        transcript: AgentTranscript,
+    ) -> AgentPrompt:
+        """构造仅预填 ``<think>`` 的 prompt，供 behavior policy 采样 CoT。"""
 
         if len(transcript.observation_texts) != len(transcript.action_indices) + 1:
             raise ValueError(
-                "policy prompt requires exactly one unacted observation: "
+                "response policy prompt requires exactly one unacted observation: "
                 f"observations={len(transcript.observation_texts)}, "
                 f"actions={len(transcript.action_indices)}"
             )
@@ -91,9 +106,7 @@ class NimlothPromptTemplate:
         messages.append(
             {"role": "user", "content": transcript.observation_texts[-1]}
         )
-        messages.append(
-            {"role": "assistant", "content": self.assistant_prefix()}
-        )
+        messages.append({"role": "assistant", "content": "<think>"})
         return AgentPrompt(
             messages=tuple(messages),
             images=transcript.observation_images,
@@ -117,7 +130,12 @@ class NimlothPromptTemplate:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": transcript.system_prompt}
         ]
-        for step_index, action_index in enumerate(transcript.action_indices):
+        if transcript.action_indices and not transcript.assistant_responses:
+            raise ValueError(
+                "completed transcript requires the real assistant response for "
+                "every action"
+            )
+        for step_index, _action_index in enumerate(transcript.action_indices):
             messages.append(
                 {
                     "role": "user",
@@ -127,7 +145,7 @@ class NimlothPromptTemplate:
             messages.append(
                 {
                     "role": "assistant",
-                    "content": self.assistant_response(action_index),
+                    "content": transcript.assistant_responses[step_index],
                 }
             )
         return messages
@@ -142,7 +160,7 @@ def _from_spec(
             f"unsupported prompt version {spec.version!r} for "
             f"{NIMLOTH_PROMPT_TEMPLATE_ID}; expected {PROMPT_VERSION!r}"
         )
-    allowed = {"latent_token_count", "thought"}
+    allowed = {"latent_token_count"}
     unknown = sorted(set(spec.config) - allowed)
     if unknown:
         raise ValueError(
@@ -151,7 +169,6 @@ def _from_spec(
     return NimlothPromptTemplate(
         latent_token_count=int(spec.config.get("latent_token_count", 1)),
         action_count=action_count,
-        thought=str(spec.config.get("thought", DEFAULT_THOUGHT)),
     )
 
 

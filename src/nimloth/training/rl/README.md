@@ -157,6 +157,12 @@ distribution, including masked zero-probability actions.
 - WM target 的下一状态保持 stop-gradient。ValueHead 不再擅自 detach state；
   StateProjector 与 Backbone 的梯度 ownership 分别由 `freeze.state_proj` 和
   `gradient.representation_to_backbone` 控制，并有梯度测试保护。
+- `actor.credit_assignment: action` 只对 sampled action token 做 PPO；`turn` 让
+  vLLM 采样 CoT，并把同一 environment step 的 Monte Carlo advantage 分配给该轮
+  loss-mask reasoning/action token。当前 critic 是 step/action ValueHead，因此没有
+  实现 token/bi-level GAE，也不会用 turn-wise credit 冒充它们。
+- behavior old log-prob 与 replay 都使用同一 temperature/top-p 分布；注入的 latent
+  query、action boundary 和补全 delimiter 不进入 PPO loss。
 - `agent.planning.enabled: true` 时，在线 rollout 使用 `PlanningPolicy`。每个真实
   environment step 只执行一次 Qwen forward 和一次 `session.step()`，两者之间的
   多步候选搜索全部发生在 WM latent 空间。
@@ -192,8 +198,15 @@ python -m nimloth.training.rl.cli \
   --jsonl-sources outputs/rollouts/run_001/trajectories.jsonl
 ```
 
-The 8-GPU online PPO smoke uses
+The config-sized online PPO smoke uses
 `experiments/training/rl/run_vllm_online_ppo_smoke.sh`: vLLM first consumes all
-eight GPUs for behavior rollout, exits, and the same eight GPUs then run one
-FSDP update. This process boundary keeps inference ownership out of the trainer
-and makes the policy freshness handoff auditable.
+configured GPUs for behavior rollout, exits, and the same allocation then runs
+one distributed update. `distributed.world_size` is the number of training
+processes; `distributed.gpus_per_rank` is 1 for FSDP or 2 for balanced Qwen
+model parallel. Paired replicas finish local backward first, then synchronize
+all trainable gradients in deterministic optimizer-parameter order; whole-model
+multi-device DDP is not used. Physical GPU count is their product. A model-parallel
+launch validates that every rank's Qwen placement actually covers both local
+GPUs; CPU/disk offload and single-GPU placement are rejected. This process
+boundary keeps inference ownership out of the trainer and makes the policy
+freshness handoff auditable.

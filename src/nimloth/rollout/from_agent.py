@@ -36,6 +36,27 @@ def trajectory_from_agent_episode(
     for action in episode.actions:
         if action.policy_prompt.template != episode.prompt_template:
             raise ValueError("Agent episode mixes prompt template specifications")
+    traces = [action.token_trace for action in episode.actions]
+    has_traces = [trace is not None for trace in traces]
+    if any(has_traces) and not all(has_traces):
+        raise ValueError("Agent episode mixes traced and untraced policy actions")
+    credit_assignments = {
+        "turn"
+        if trace is not None
+        and any(
+            role == "reasoning" and selected
+            for role, selected in zip(
+                trace.token_roles,
+                trace.loss_mask,
+                strict=True,
+            )
+        )
+        else "action"
+        for trace in traces
+    }
+    if len(credit_assignments) != 1:
+        raise ValueError("Agent episode mixes PPO credit assignment modes")
+    credit_assignment = credit_assignments.pop()
 
     return RolloutTrajectory(
         record_id=record_id,
@@ -58,6 +79,32 @@ def trajectory_from_agent_episode(
         policy_messages=[
             action.policy_prompt.unbound_messages()
             for action in episode.actions
+        ],
+        assistant_responses=[action.response for action in episode.actions],
+        policy_credit_assignment=credit_assignment,
+        policy_token_ids=[
+            list(trace.token_ids) for trace in traces if trace is not None
+        ],
+        policy_token_log_probs=[
+            list(trace.old_log_probs) for trace in traces if trace is not None
+        ],
+        policy_loss_masks=[
+            list(trace.loss_mask) for trace in traces if trace is not None
+        ],
+        policy_token_roles=[
+            list(trace.token_roles) for trace in traces if trace is not None
+        ],
+        policy_action_token_ids=[
+            list(trace.action_token_ids) for trace in traces if trace is not None
+        ],
+        policy_reasoning_texts=[
+            trace.reasoning_text for trace in traces if trace is not None
+        ],
+        policy_finish_reasons=[
+            trace.finish_reason for trace in traces if trace is not None
+        ],
+        policy_reasoning_truncated=[
+            trace.reasoning_truncated for trace in traces if trace is not None
         ],
         prompt_template_spec=episode.prompt_template,
         prompt_version=episode.prompt_template.version,

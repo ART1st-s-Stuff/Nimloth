@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from nimloth.agent import Agent, AgentRuntime, EpisodeRunner, NimlothPromptTemplate
@@ -157,39 +158,16 @@ def test_planner_replays_complete_candidate_history_at_every_depth() -> None:
     assert torch.isfinite(plan.root_action_scores).any()
 
 
-def test_planning_policy_runs_qwen_and_environment_once_per_decision() -> None:
+def test_planning_policy_fails_until_real_cot_generation_is_implemented() -> None:
     agent, backbone, predictor = _planning_agent()
-    policy = PlanningPolicy(
-        agent=agent,
-        input_builder=_InputBuilder(),
-        horizon=3,
-        beam_width=8,
-        temperature=0.0,
-        top_p=1.0,
-    )
-    runtime = AgentRuntime(
-        policy=policy,
-        action_space=NAVIGATION_ACTION_SPACE,
-        prompt_template=NimlothPromptTemplate(
-            latent_token_count=1,
-            action_count=len(NAVIGATION_ACTION_SPACE),
-        ),
-    )
-    session = _TwoStepSession()
-
-    episode = EpisodeRunner(runtime).run(session, seed=9, max_steps=4)
-
-    assert episode.done and episode.success
-    assert len(episode.actions) == 2
-    assert backbone.forward_count == 2
-    assert [actions.shape[1] for actions in predictor.action_sequences] == [
-        1,
-        2,
-        3,
-        1,
-        2,
-        3,
-    ]
-    assert predictor.real_history_lengths == [1, 1, 1, 2, 2, 2]
-    assert session.step_count == 2
-    assert session.closed
+    with pytest.raises(NotImplementedError, match="real CoT"):
+        PlanningPolicy(
+            agent=agent,
+            input_builder=_InputBuilder(),
+            horizon=3,
+            beam_width=8,
+            temperature=0.0,
+            top_p=1.0,
+        )
+    assert backbone.forward_count == 0
+    assert predictor.action_sequences == []

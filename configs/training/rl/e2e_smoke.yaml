@@ -3,7 +3,6 @@
 
 agent:
   prompt_template: nimloth-latent-action
-  thought: What should I do next?
 
 freeze:
   state_proj: true

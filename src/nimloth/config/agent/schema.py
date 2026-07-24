@@ -26,7 +26,6 @@ class AgentConfig:
     """选择 prompt 模板、决策方式及其与环境无关的参数。"""
 
     prompt_template: str = NIMLOTH_PROMPT_TEMPLATE_ID
-    thought: str = "What should I do next?"
     planning: AgentPlanningConfig = field(default_factory=AgentPlanningConfig)
 
     def prompt_spec(self, *, latent_token_count: int) -> PromptTemplateSpec:
@@ -40,10 +39,7 @@ class AgentConfig:
         return PromptTemplateSpec(
             identifier=self.prompt_template,
             version=PROMPT_VERSION,
-            config={
-                "latent_token_count": latent_token_count,
-                "thought": self.thought,
-            },
+            config={"latent_token_count": latent_token_count},
         )
 
 
@@ -53,18 +49,15 @@ def parse_agent_config(raw: Mapping[str, Any] | None) -> AgentConfig:
     values = {} if raw is None else raw
     if not isinstance(values, Mapping):
         raise ValueError("agent config must be a mapping")
-    allowed = {"prompt_template", "thought", "planning"}
+    allowed = {"prompt_template", "planning"}
     unknown = sorted(set(values) - allowed)
     if unknown:
         raise ValueError(f"unknown agent config field: {unknown[0]}")
     prompt_template = str(
         values.get("prompt_template", NIMLOTH_PROMPT_TEMPLATE_ID)
     )
-    thought = str(values.get("thought", "What should I do next?"))
     if not prompt_template.strip():
         raise ValueError("agent.prompt_template must be non-empty")
-    if not thought.strip():
-        raise ValueError("agent.thought must be non-empty")
     planning_raw = values.get("planning", {})
     if not isinstance(planning_raw, Mapping):
         raise ValueError("agent.planning must be a mapping")
@@ -86,7 +79,6 @@ def parse_agent_config(raw: Mapping[str, Any] | None) -> AgentConfig:
         raise ValueError("agent.planning.beam_width must be >= 1")
     return AgentConfig(
         prompt_template=prompt_template,
-        thought=thought,
         planning=AgentPlanningConfig(
             enabled=enabled,
             horizon=horizon,

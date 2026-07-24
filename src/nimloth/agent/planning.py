@@ -134,7 +134,9 @@ class WorldModelPlanner:
 
 
 class PlanningPolicy:
-    """每个真实 environment step 执行一次 Qwen，再用 WM 搜索首动作。"""
+    """尚未完成真实 CoT 生成边界的 WM planning policy。"""
+
+    prompt_mode = "response"
 
     def __init__(
         self,
@@ -146,6 +148,10 @@ class PlanningPolicy:
         temperature: float,
         top_p: float,
     ) -> None:
+        raise NotImplementedError(
+            "PlanningPolicy is disabled until it generates and persists a real CoT "
+            "before latent-state encoding"
+        )
         self.agent = agent
         self.input_builder = input_builder
         self.planner = WorldModelPlanner(

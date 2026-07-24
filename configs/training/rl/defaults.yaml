@@ -4,7 +4,6 @@
 # --llm-tune/--vision-tune 决定可训练参数；gradient/actor 决定梯度来源。
 agent:
   prompt_template: nimloth-latent-action
-  thought: What should I do next?
   # 每个真实 env step 只运行一次 Qwen；候选动作序列全部由 WM 在 latent 空间模拟。
   planning:
     enabled: true
@@ -24,6 +23,9 @@ actor:
   enabled: false          # PPO 是否启用；与 Backbone 是否接收表征梯度独立
   entropy_coeff: 0.0   # 0 = no entropy bonus (backward compatible)
   clip_ratio: 0.2
+  # action: only sampled action token; turn: sampled CoT and action share step credit.
+  credit_assignment: action
+  max_reasoning_tokens: 64
 
 # --- Predictor ---
 predictor:

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from nimloth.agent import (
     AgentRuntime,
     AgentPrompt,
     NimlothPromptTemplate,
     PolicyDecision,
+    PolicyTokenTrace,
 )
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
 
@@ -77,3 +80,73 @@ def test_navigation_agent_serializes_only_completed_turns() -> None:
         "assistant",
     ]
     assert messages[-1]["content"] == action.response
+
+
+def test_navigation_agent_keeps_policy_generated_response_in_history() -> None:
+    class GeneratedPolicy(_RecordingPolicy):
+        prompt_mode = "response"
+
+        def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
+            self.prompts.append(prompt)
+            return PolicyDecision(
+                action_index=3,
+                action_log_probs=tuple([-math.log(8.0)] * 8),
+                response=(
+                    "<think>Generated reasoning.</think><|latent_state|>"
+                    "<|action_start|><|action_(3)|><|action_end|>"
+                ),
+                token_trace=PolicyTokenTrace(
+                    token_ids=(10, 11, 12),
+                    old_log_probs=(-0.2, -math.log(8.0), None),
+                    loss_mask=(True, True, False),
+                    token_roles=("reasoning", "action", "injected"),
+                    action_token_ids=(8, 9, 10, 11, 12, 13, 14, 15),
+                    reasoning_text="Generated reasoning.",
+                    finish_reason="stop",
+                ),
+            )
+
+    policy = GeneratedPolicy()
+    agent = AgentRuntime(
+        policy=policy,
+        action_space=NAVIGATION_ACTION_SPACE,
+        prompt_template=_template(),
+    )
+    agent.reset(system_prompt="system")
+    agent.observe(text="first <image>", image="image-0")
+    action = agent.act()
+    agent.observe(text="second <image>", image="image-1")
+    agent.act()
+
+    assert policy.prompts[0].messages[-1]["content"] == "<think>"
+    assert policy.prompts[1].messages[2]["content"] == action.response
+
+
+def test_policy_decision_binds_action_and_old_log_prob_to_trace() -> None:
+    trace = PolicyTokenTrace(
+        token_ids=(10, 11),
+        old_log_probs=(-0.3, None),
+        loss_mask=(True, False),
+        token_roles=("action", "injected"),
+        action_token_ids=tuple(range(10, 18)),
+    )
+
+    with pytest.raises(ValueError, match="action log-prob does not match"):
+        PolicyDecision(
+            action_index=0,
+            action_log_probs=tuple([-math.log(8.0)] * 8),
+            token_trace=trace,
+        )
+
+    with pytest.raises(ValueError, match="action does not match"):
+        PolicyDecision(
+            action_index=1,
+            action_log_probs=tuple([-math.log(8.0)] * 8),
+            token_trace=PolicyTokenTrace(
+                token_ids=(10, 11),
+                old_log_probs=(-math.log(8.0), None),
+                loss_mask=(True, False),
+                token_roles=("action", "injected"),
+                action_token_ids=tuple(range(10, 18)),
+            ),
+        )

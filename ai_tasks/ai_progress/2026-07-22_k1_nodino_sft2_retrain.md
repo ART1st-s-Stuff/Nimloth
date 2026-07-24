@@ -503,3 +503,120 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - 无loss行、optimizer step或checkpoint，ID89不可resume。W&B `cugevcpx`显示
   `finished`但无训练指标。hold最终TIMEOUT且已释放。下一步不能降配或缩短credit来
   冒充目标；需实现数学与token参与范围不变的memory-safe policy replay后用新ID重跑。
+## 2026-07-24：ID82 policy replay OOM 与 CoT credit assignment 结论
+
+- ID82（commit `757bfcb`，job `485891`，1/6/1 heterogeneous world8）完成 corrected
+  epoch1 TP4 fresh rollout：4 trajectories / 20 transitions，rewards
+  `0.0/-0.2/-0.1/-0.1`；W&B run `3yhg4w96`。
+- 8-rank FSDP 已进入 PPO replay；OOM 位于 Qwen `lm_head` 的整段 full-vocabulary
+  logits 激活，不是未启用 FSDP，也不是 DINO loss。无 optimizer step/checkpoint，
+  CSV 仅表头，fresh manifest 未消费，ID82 不可恢复。
+- 当前 Nimloth CoT 是 prompt 中的固定模板，behavior policy 只采样 action token；
+  VAGEN 的完整 response token `loss_mask` 与 configurable token/turn credit 尚未移植。
+  若目标包括 CoT PPO，应先扩展 rollout schema/provenance 和 token-level replay/advantage，
+  再决定采用 masked GAE、bi-level GAE、turn-wise GAE 或 action-only 模式。
+- 已更新服务器实验 README 和 `outputs/experiments/training/rl/progress.md`，并取消
+  allocation `485891` 释放 8 GPU。
+
+## 2026-07-24：对齐 VAGEN turn-wise PPO token credit
+
+- commits `804f686`、`e8dbf9a`、`1c9b9ce` 增加可配置
+  `actor.credit_assignment: action|turn`。`action` 保留单 action-token PPO；`turn`
+  使用 vLLM 两段式 behavior：先采样 CoT，再注入 k 个 latent query 与 action
+  boundary，最后在八个 action token 上采样动作。只有真实采样 token 保存 old
+  log-prob/进入 loss mask；注入 token 不进入 PPO。
+- rollout schema 现在保存真实 assistant response、continuation token ids、old
+  log-probs、loss mask 与 reasoning/action/injected role。behavior replay prompt 与 WM
+  state prompt 分开：前者从 `<think>` 开始，后者对已执行 step 使用真实生成 CoT
+  截到 `<|action_start|>`；terminal state 沿用模板 query。
+- 当前 critic 仍是 environment-step/action `ValueHead`，所以 `turn` 采用 VAGEN
+  turn-wise 语义：同一步 normalized Monte Carlo advantage 广播给该轮 loss-mask
+  reasoning/action token。没有实现或声称实现 token/bi-level GAE。
+- 修复现有 vLLM action rollout 在 assistant prefix 后错误保留 `<|im_end|>` 的条件
+  前缀偏差，统一使用 `continue_final_message=True`。PPO replay 使用
+  `logits_to_keep` 只在 mask 位置调用 `lm_head`；服务器 Transformers 4.55.4 源码
+  已确认 tensor position 语义，避免 ID82 的整段 full-vocabulary logits OOM 路径。
+- 服务器 CPU 回归：`tests/training/rl tests/agent tests/backbone/qwen25vl` 为
+  `99 passed, 1 warning`。尚未启动新 GPU rollout/optimizer step；GPU smoke 仍需新的
+  on-experiment-start 确认、新 ID、输出目录和 fresh manifest。
+
+## 2026-07-24：ID83/84 GPU smoke 收尾与 turn-credit 审计
+
+- ID83 在 rollout 前失败于压缩 Slurm GRES 解析；`c879278` 用共享 helper 展开
+  `dgx-[40,48]` 并同时修复 rollout/train 两处读取，两个纯 parser 测试和 `bash -n`
+  通过。ID83 无 trajectory/checkpoint，不可恢复。
+- ID84 获得 `dgx-40:4 + dgx-48:4`，Ray 识别 8 GPU 且 environment health 通过；
+  vLLM 0.11 在生成前的 TP4 profile run rank 3 报 Torch Inductor/Triton
+  `CUDA driver error: invalid argument`。无 W&B、trajectory、FSDP forward、optimizer
+  或 checkpoint；README 已更新，hold `486070` 已取消。
+- 对新 turn-credit 路径只读核对后确认当前不能继续 PPO：第二段 vLLM request 会让
+  已多模态展开的 token prompt 携同图片再次进入 placeholder processing，破坏
+  behavior/replay 条件一致性；token trace validation 没有校验 action token 与实际
+  action/旧动作概率/response 的对应关系。
+- planner 的固定 thought 与训练 state 的真实采样 CoT 存在输入分布漂移；未采样到
+  `</think>` 时的静默注入也没有 truncation/finish-reason provenance。以上问题尚未
+  修改，下一次 GPU PPO 必须在修复并增加真实多模态测试后使用新 ID/fresh rollout。
+
+## 2026-07-24：ID89 rollout成功，首个PPO replay activation OOM
+
+- turn-credit一致性修复后的ID89在dgx-06×3 + dgx-23×5完成TP4 eager rollout：
+  4 trajectories、20 transitions、fresh manifest一次性消费和8-rank训练初始化均通过。
+- 所有rank在第一个HF Qwen policy replay forward OOM，尚未产生loss或optimizer step；
+  每卡约79.16/79.19GiB，失败点为decoder post-attention RMSNorm额外申请约20MiB。
+  无checkpoint且manifest已消费，不能resume。
+- commit `c1a46ae` 将下一次训练改为config驱动的4 ranks×2 GPUs/rank：单副本通过
+  balanced layer placement真实拆到同节点两卡，rank间使用DDP；物理GPU总数仍为8。
+  可训练WM/value同步与replicated optimizer checkpoint语义同时补全。
+- 服务器CPU回归`103 passed, 1 warning`；epoch1空权重映射探针确认两卡均被使用。
+  尚未验证真实双卡Qwen forward/backward/optimizer，必须以新ID和空输出目录smoke。
+
+## 2026-07-24：ID90 双卡Qwen replay索引设备错误
+
+- ID90在dgx-40×4 + dgx-48×4完成TP4 eager fresh rollout：4 trajectories、20
+  transitions、rewards `-0.1/-0.2/0.0/-0.1`；manifest已被训练一次性消费。
+- 4个rank均确认每个Qwen副本实际跨两张本地GPU，并进入首次turn-credit policy replay；
+  随后final hidden states位于第二张GPU，但`logits_to_keep`位于第一张GPU，Transformers
+  在position indexing处拒绝跨设备索引。
+- CSV只有表头，无finite loss、optimizer step或checkpoint；W&B `qo3lkimp`。ID90因
+  manifest已消费而不可恢复。下一步在两条replay路径统一使用CPU indices，经测试后以
+  ID91和fresh rollout重试。
+- commit `39925e1` 完成上述修复；服务器定向测试`3 passed`，完整RL/Qwen suite为
+  `104 passed, 1 warning`。真实双卡forward/backward仍由ID91验证。
+
+## 2026-07-24：ID91暴露Accelerate tensor-kwarg搬运
+
+- ID91 fresh rollout与双卡训练入口均通过，但CPU `logits_to_keep` tensor在forward前被
+  Accelerate hook搬回Qwen输入GPU，final hidden states仍位于第二GPU，故相同索引错误复现。
+- fresh manifest已消费；W&B `cwpf65kf`，CSV仅表头，无optimizer step/checkpoint，不能
+  resume。下一修复使用原生integer list保留PyTorch advanced-index语义且绕开tensor搬运。
+- commits `995d808`、`460c1c3` 已实现并验证native-index；定向测试`3 passed`，完整
+  RL/Qwen suite `104 passed, 1 warning`。仍需新ID真实双卡forward/backward验证。
+
+## 2026-07-24：ID92 replay成功但总loss设备不一致
+
+- native index已在真实双卡Qwen replay越过原索引错误；随后PPO scalar在输入GPU、
+  WM/value/SIGReg total在输出GPU，相加时报设备不一致。无OOM或optimizer step。
+- manifest已消费，W&B `pzp6umsv`，CSV仅表头，无checkpoint，ID92不可resume。修复仅
+  对PPO loss/entropy scalar执行可微device copy，再以新ID/fresh rollout验证backward。
+- commit `9791a3f` 已实现上述对齐；服务器完整RL/Qwen suite `104 passed, 1 warning`。
+
+## 2026-07-24：ID93 multi-device DDP backward collective死锁
+
+- replay与总loss均通过后进入backward；600秒watchdog显示rank0/1与rank2/3分别停在
+  不同collective sequence/shape，确认whole multi-device DDP的bucket/device顺序分叉。
+- W&B `gkn5tmqh`，manifest已消费，CSV仅表头，无optimizer/checkpoint，ID93不可resume。
+  下一实现不包装paired modules为DDP，改由OptimizationRuntime在完整backward后按稳定
+  optimizer参数顺序同步Qwen、WM predictor、ValueHead全部gradient并除以world size。
+- commit `d4d57cf` 已实现；服务器定向测试`7 passed`，扩展完整suite
+  `110 passed, 1 warning`。仍需ID94真实backward/optimizer验证。
+
+## 2026-07-24：ID94 双卡online PPO smoke ALL_OK
+
+- ID94在dgx-40×4 + dgx-48×4完成4条fresh rollout / 20 transitions、turn-credit replay、
+  local backward、deterministic gradient averaging和optimizer；`global_step=1`，无OOM、
+  device error或NCCL timeout。whole-model multi-device DDP已由manual sync正式替代。
+- finite losses：WM `4.529062`、SIGReg `3.200135`、value `0.462340`、actor
+  `-0.029961`、entropy `0.545880`、total `5.275996`；W&B `sea8ua12` finished。
+- `iter_0001/final/latest`均含完整HF、13.09GB optimizer state、WM、ValueHead和grid
+  auxiliaries；hold `486283`已释放。继续训练需新fresh manifest与显式resume流程，ID94
+  manifest不可复用，end-to-end continuation尚未验证。

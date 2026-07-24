@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 import torch
 
@@ -101,14 +101,131 @@ def validate_action_log_probs(
 
 
 @dataclass(frozen=True)
+class PolicyTokenTrace:
+    """一次 policy continuation 的逐 token behavior provenance。
+
+    ``token_ids`` 从 ``AgentPrompt`` 最后一个 token 之后开始，包含模型采样 token
+    与为保持 Nimloth 协议而注入的 token。只有 ``loss_mask=True`` 的位置参加 PPO；
+    注入位置的 ``old_log_probs`` 必须为 ``None``。
+    """
+
+    token_ids: tuple[int, ...]
+    old_log_probs: tuple[float | None, ...]
+    loss_mask: tuple[bool, ...]
+    token_roles: tuple[Literal["reasoning", "action", "injected"], ...]
+    action_token_ids: tuple[int, ...]
+    reasoning_text: str | None = None
+    finish_reason: Literal["stop", "length"] | None = None
+    reasoning_truncated: bool = False
+
+    def __post_init__(self) -> None:
+        lengths = {
+            len(self.token_ids),
+            len(self.old_log_probs),
+            len(self.loss_mask),
+            len(self.token_roles),
+        }
+        if len(lengths) != 1 or not self.token_ids:
+            raise ValueError("policy token trace fields must have one non-empty length")
+        if any(token_id < 0 for token_id in self.token_ids):
+            raise ValueError("policy token ids must be non-negative")
+        if any(token_id < 0 for token_id in self.action_token_ids):
+            raise ValueError("policy action token ids must be non-negative")
+        if not self.action_token_ids or len(set(self.action_token_ids)) != len(
+            self.action_token_ids
+        ):
+            raise ValueError("policy token trace requires unique action token ids")
+        for index, (old_log_prob, selected, role) in enumerate(
+            zip(
+                self.old_log_probs,
+                self.loss_mask,
+                self.token_roles,
+                strict=True,
+            )
+        ):
+            if role not in {"reasoning", "action", "injected"}:
+                raise ValueError(f"unknown policy token role at {index}: {role!r}")
+            if selected:
+                if old_log_prob is None or not math.isfinite(old_log_prob):
+                    raise ValueError(
+                        f"selected policy token {index} requires a finite old log-prob"
+                    )
+                if role == "injected":
+                    raise ValueError("injected policy tokens cannot participate in PPO")
+            elif old_log_prob is not None:
+                raise ValueError(
+                    f"unselected policy token {index} must not store an old log-prob"
+                )
+        if sum(role == "action" for role in self.token_roles) != 1:
+            raise ValueError("policy token trace requires exactly one action token")
+        action_position = self.token_roles.index("action")
+        if not self.loss_mask[action_position]:
+            raise ValueError("the sampled action token must participate in PPO")
+        if self.token_ids[action_position] not in self.action_token_ids:
+            raise ValueError("policy action token is outside the recorded action mapping")
+        has_reasoning = "reasoning" in self.token_roles
+        if has_reasoning:
+            if self.reasoning_text is None:
+                raise ValueError("reasoning token trace requires reasoning_text")
+            if self.finish_reason not in {"stop", "length"}:
+                raise ValueError("reasoning token trace requires a finish reason")
+            if self.reasoning_truncated != (self.finish_reason == "length"):
+                raise ValueError("reasoning truncation must match finish_reason")
+        elif self.reasoning_text is not None or self.finish_reason is not None:
+            raise ValueError("action-only token trace cannot store reasoning metadata")
+        elif self.reasoning_truncated:
+            raise ValueError("action-only token trace cannot be truncated")
+
+    @property
+    def selected_old_log_probs(self) -> tuple[float, ...]:
+        return tuple(
+            float(value)
+            for value, selected in zip(
+                self.old_log_probs,
+                self.loss_mask,
+                strict=True,
+            )
+            if selected and value is not None
+        )
+
+
+@dataclass(frozen=True)
 class PolicyDecision:
-    """Policy 返回的动作 index 与完整 behavior distribution。"""
+    """Policy 返回的动作、behavior distribution 与可选 token provenance。"""
 
     action_index: int
     action_log_probs: tuple[float, ...]
+    response: str | None = None
+    token_trace: PolicyTokenTrace | None = None
 
     def __post_init__(self) -> None:
-        validate_action_log_probs(self.action_index, self.action_log_probs)
+        action_log_probs = validate_action_log_probs(
+            self.action_index,
+            self.action_log_probs,
+        )
+        if self.response is not None and not self.response:
+            raise ValueError("policy response must be non-empty when provided")
+        if self.token_trace is not None:
+            if len(self.token_trace.action_token_ids) != len(action_log_probs):
+                raise ValueError(
+                    "decision distribution and trace action mapping must align"
+                )
+            if not 0 <= self.action_index < len(self.token_trace.action_token_ids):
+                raise ValueError("decision action_index is outside trace action mapping")
+            action_position = self.token_trace.token_roles.index("action")
+            expected_token_id = self.token_trace.action_token_ids[self.action_index]
+            if self.token_trace.token_ids[action_position] != expected_token_id:
+                raise ValueError("decision action does not match policy token trace")
+            trace_log_prob = self.token_trace.old_log_probs[action_position]
+            if trace_log_prob is None or not math.isclose(
+                trace_log_prob,
+                action_log_probs[self.action_index],
+                rel_tol=1e-6,
+                abs_tol=1e-7,
+            ):
+                raise ValueError(
+                    "decision action log-prob does not match policy token trace"
+                )
 
 
 def sample_policy_decision(
@@ -154,6 +271,72 @@ class PolicyReplayInput:
     sampling_temperature: float
     sampling_top_p: float
     latent_token_count: int
+    credit_assignment: Literal["action", "turn"] = "action"
+    token_trace: PolicyTokenTrace | None = None
+    old_action_log_prob: float | None = None
+    assistant_response: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.credit_assignment not in {"action", "turn"}:
+            raise ValueError(
+                f"unsupported PPO credit assignment: {self.credit_assignment!r}"
+            )
+        if self.credit_assignment == "turn":
+            if self.token_trace is None:
+                raise ValueError("turn credit requires a policy token trace")
+            if not any(
+                role == "reasoning" and selected
+                for role, selected in zip(
+                    self.token_trace.token_roles,
+                    self.token_trace.loss_mask,
+                    strict=True,
+                )
+            ):
+                raise ValueError("turn credit requires sampled reasoning tokens")
+            if not self.assistant_response:
+                raise ValueError("turn credit requires the sampled assistant response")
+        if self.token_trace is None:
+            if self.old_action_log_prob is None or not math.isfinite(
+                self.old_action_log_prob
+            ):
+                raise ValueError(
+                    "action-only replay without a token trace requires a finite "
+                    "old action log-prob"
+                )
+        elif self.old_action_log_prob is not None:
+            raise ValueError(
+                "token-trace replay must not duplicate the old action log-prob"
+            )
+        if self.token_trace is not None:
+            if not 0 <= self.action_index < len(self.token_trace.action_token_ids):
+                raise ValueError("replay action_index is outside action token mapping")
+            action_position = self.token_trace.token_roles.index("action")
+            expected_token_id = self.token_trace.action_token_ids[self.action_index]
+            if self.token_trace.token_ids[action_position] != expected_token_id:
+                raise ValueError(
+                    "token trace action does not match replay action_index"
+                )
+
+    @property
+    def selected_old_log_probs(self) -> tuple[float, ...]:
+        if self.token_trace is not None:
+            return self.token_trace.selected_old_log_probs
+        assert self.old_action_log_prob is not None
+        return (float(self.old_action_log_prob),)
+
+
+@dataclass(frozen=True)
+class PolicyReplayOutput:
+    """当前 policy 对 loss-mask token 的重放结果。"""
+
+    selected_log_probs: torch.Tensor
+    entropies: torch.Tensor
+
+    def __post_init__(self) -> None:
+        if self.selected_log_probs.ndim != 1 or self.entropies.ndim != 1:
+            raise ValueError("policy replay outputs must both have shape (N,)")
+        if self.selected_log_probs.shape != self.entropies.shape:
+            raise ValueError("policy replay log-probs and entropies must align")
 
 
 class ActionLogProbReplay(Protocol):
@@ -162,4 +345,4 @@ class ActionLogProbReplay(Protocol):
     def __call__(
         self,
         samples: tuple[PolicyReplayInput, ...],
-    ) -> tuple[torch.Tensor, torch.Tensor]: ...
+    ) -> PolicyReplayOutput: ...

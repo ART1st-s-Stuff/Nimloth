@@ -12,17 +12,36 @@ def is_main() -> bool:
     return int(os.environ.get("RANK", "0")) == 0
 
 
-def setup_dist() -> tuple[int, int, int, torch.device]:
+def setup_dist(
+    *,
+    gpu_stride: int | None = None,
+) -> tuple[int, int, int, torch.device]:
+    if gpu_stride is None:
+        gpu_stride = int(os.environ.get("NIMLOTH_DDP_GPU_STRIDE", "1"))
+    if gpu_stride < 1:
+        raise ValueError(f"gpu_stride must be positive, got {gpu_stride}")
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         rank = int(os.environ["RANK"])
         world = int(os.environ["WORLD_SIZE"])
         local = int(os.environ.get("LOCAL_RANK", "0"))
-        gpu_stride = int(os.environ.get("NIMLOTH_DDP_GPU_STRIDE", "1"))
         primary = local * gpu_stride
+        if torch.cuda.is_available() and primary + gpu_stride > torch.cuda.device_count():
+            raise RuntimeError(
+                "distributed rank GPU group exceeds visible devices: "
+                f"local_rank={local}, gpu_stride={gpu_stride}, "
+                f"visible={torch.cuda.device_count()}"
+            )
         torch.cuda.set_device(primary)
         dist.init_process_group(backend="nccl")
         return rank, world, local, torch.device(f"cuda:{primary}")
-    return 0, 1, 0, torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        if gpu_stride > torch.cuda.device_count():
+            raise RuntimeError(
+                f"gpu_stride={gpu_stride} exceeds visible GPUs={torch.cuda.device_count()}"
+            )
+        torch.cuda.set_device(0)
+        return 0, 1, 0, torch.device("cuda:0")
+    return 0, 1, 0, torch.device("cpu")
 
 
 def cleanup_dist() -> None:

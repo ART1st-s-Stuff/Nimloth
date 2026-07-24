@@ -27,6 +27,13 @@
 - 已核验本地 memory `M0001` 的服务器 Python 证据；当前 SFT2 应显式使用
   `/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3`。该 memory 尚待人类审批，
   CLI 因此拒绝 upvote。
+- 已人工核对 P1：merged tree 保留唯一 `SFT2Algorithm` 与可配置 `DINOGridLoss`；
+  terminal-CoT 只扩展 transition/prompt/cache，不复制训练核心。
+- 已执行 merge 并解决 4 个文本冲突；最新 P0 进一步删除 fixed thought active path。
+  RL 的 current/terminal CoT state replay 与 PlanningPolicy 因未完成而 fail-fast，明确
+  留作 TODO。
+- 本地 `compileall`、`git diff --check` 通过；本机没有 `pytest` 命令，完整测试需在
+  superpod 明确 Python 环境执行。
 
 ## 文件修改
 

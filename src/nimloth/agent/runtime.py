@@ -8,6 +8,7 @@ from typing import Any
 from nimloth.agent.policy import (
     AgentPolicy,
     PolicyDecision,
+    PolicyTokenTrace,
     validate_action_log_probs,
 )
 from nimloth.agent.template import (
@@ -28,6 +29,7 @@ class AgentAction:
     action_log_probs: tuple[float, ...]
     response: str
     policy_prompt: AgentPrompt
+    token_trace: PolicyTokenTrace | None = None
 
     @property
     def prompt_messages(self) -> tuple[dict[str, Any], ...]:
@@ -58,6 +60,7 @@ class AgentRuntime:
         self._observation_texts: list[str] = []
         self._observation_images: list[Any] = []
         self._action_indices: list[int] = []
+        self._assistant_responses: list[str] = []
 
     @property
     def prompt_template_spec(self) -> PromptTemplateSpec:
@@ -87,6 +90,7 @@ class AgentRuntime:
         self._observation_texts.clear()
         self._observation_images.clear()
         self._action_indices.clear()
+        self._assistant_responses.clear()
 
     def observe(self, *, text: str, image: Any) -> None:
         if not self._system_prompt:
@@ -97,24 +101,38 @@ class AgentRuntime:
         self._observation_images.append(image)
 
     def act(self) -> AgentAction:
-        policy_prompt = self._prompt_template.build_policy_prompt(
-            self.transcript()
-        )
+        prompt_mode = getattr(self._policy, "prompt_mode", "action")
+        if prompt_mode == "action":
+            policy_prompt = self._prompt_template.build_policy_prompt(
+                self.transcript()
+            )
+        elif prompt_mode == "response":
+            policy_prompt = self._prompt_template.build_response_policy_prompt(
+                self.transcript()
+            )
+        else:
+            raise ValueError(f"unknown Agent policy prompt mode: {prompt_mode!r}")
         decision = self._policy.select_action(policy_prompt)
         action_log_probs = validate_action_log_probs(
             decision.action_index,
             decision.action_log_probs,
             action_count=len(self._action_space),
         )
+        if not decision.response:
+            raise RuntimeError(
+                "policy must return its real assistant response; fixed CoT fallback "
+                "is forbidden"
+            )
+        response = decision.response
         self._action_indices.append(decision.action_index)
+        self._assistant_responses.append(response)
         return AgentAction(
             action_index=decision.action_index,
             action_key=self._action_space.key_for(decision.action_index),
             action_log_probs=action_log_probs,
-            response=self._prompt_template.assistant_response(
-                decision.action_index
-            ),
+            response=response,
             policy_prompt=policy_prompt,
+            token_trace=decision.token_trace,
         )
 
     def transcript(self) -> AgentTranscript:
@@ -125,6 +143,7 @@ class AgentRuntime:
             observation_texts=tuple(self._observation_texts),
             observation_images=tuple(self._observation_images),
             action_indices=tuple(self._action_indices),
+            assistant_responses=tuple(self._assistant_responses),
         )
 
     def completed_prompt(self) -> AgentPrompt:
@@ -136,6 +155,9 @@ class AgentRuntime:
         """按历史位置重建可审计的 policy prompt。"""
 
         prefix = self.transcript().policy_prefix(step_index)
+        prompt_mode = getattr(self._policy, "prompt_mode", "action")
+        if prompt_mode == "response":
+            return self._prompt_template.build_response_policy_prompt(prefix)
         return self._prompt_template.build_policy_prompt(prefix)
 
 

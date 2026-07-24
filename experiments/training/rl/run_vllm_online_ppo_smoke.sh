@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Run one fresh-policy vLLM rollout followed by one config-sized FSDP PPO update.
+# Run one fresh-policy vLLM rollout followed by one config-sized PPO update.
 set -euo pipefail
 
 REPO=${REPO:?set REPO to the committed server worktree}
+source "${REPO}/experiments/training/rl/slurm_allocation.sh"
 ENV_REPO=${ENV_REPO:?set ENV_REPO to the verified VAGEN worktree}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
 MODEL=${MODEL:?set MODEL to a complete positive-k inject HF checkpoint}
@@ -28,18 +29,28 @@ esac
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_TP_SIZE < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE CREDIT_ASSIGNMENT MAX_REASONING_TOKENS < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
 from nimloth.config.rl import load_rl_config
-config = load_rl_config(Path(sys.argv[1])).distributed
-print(config.nodes, config.world_size, config.rollout_tensor_parallel_size)
+config = load_rl_config(Path(sys.argv[1]))
+print(
+    config.distributed.nodes,
+    config.distributed.world_size,
+    config.distributed.gpus_per_rank,
+    config.distributed.total_gpus,
+    config.distributed.rollout_tensor_parallel_size,
+    config.actor.credit_assignment,
+    config.actor.max_reasoning_tokens,
+)
 ' "${RL_CONFIG}"
 )
 TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-${CONFIG_TP_SIZE}}
 TRAIN_NNODES=${TRAIN_NNODES:-${CONFIG_NODES}}
 TRAIN_WORLD_SIZE=${TRAIN_WORLD_SIZE:-${CONFIG_WORLD_SIZE}}
+TRAIN_GPUS_PER_RANK=${TRAIN_GPUS_PER_RANK:-${CONFIG_GPUS_PER_RANK}}
+TRAIN_TOTAL_GPUS=${TRAIN_TOTAL_GPUS:-${CONFIG_TOTAL_GPUS}}
 [[ "${TENSOR_PARALLEL_SIZE}" == "${CONFIG_TP_SIZE}" ]] || {
   echo "TENSOR_PARALLEL_SIZE disagrees with distributed.rollout_tensor_parallel_size" >&2
   exit 1
@@ -50,6 +61,14 @@ TRAIN_WORLD_SIZE=${TRAIN_WORLD_SIZE:-${CONFIG_WORLD_SIZE}}
 }
 [[ "${TRAIN_WORLD_SIZE}" == "${CONFIG_WORLD_SIZE}" ]] || {
   echo "TRAIN_WORLD_SIZE disagrees with distributed.world_size" >&2
+  exit 1
+}
+[[ "${TRAIN_GPUS_PER_RANK}" == "${CONFIG_GPUS_PER_RANK}" ]] || {
+  echo "TRAIN_GPUS_PER_RANK disagrees with distributed.gpus_per_rank" >&2
+  exit 1
+}
+[[ "${TRAIN_TOTAL_GPUS}" == "${CONFIG_TOTAL_GPUS}" ]] || {
+  echo "TRAIN_TOTAL_GPUS disagrees with distributed.total_gpus" >&2
   exit 1
 }
 for path in "${WM_CKPT}/state_proj.pt" "${WM_CKPT}/wm_predictor/predictor.pt" "${WM_CKPT}/value_head/value_head.pt"; do
@@ -75,7 +94,7 @@ COMMIT=$(git -C "${REPO}" rev-parse HEAD)
 ENV_COMMIT=$(git -C "${ENV_REPO}/external/VAGEN" rev-parse HEAD)
 if [[ "${RUN_ROLLOUT}" == true ]]; then
   cat > "${RUN_OUT}/README.md" <<EOF
-# vLLM online PPO smoke (${TRAIN_WORLD_SIZE} GPUs)
+# vLLM online PPO smoke (${TRAIN_TOTAL_GPUS} GPUs)
 
 - status: running
 - Nimloth commit: ${COMMIT}
@@ -84,7 +103,7 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
 - data: base_train seeds 1..${NUM_EPISODES}
 - rollout: vLLM TP=${TENSOR_PARALLEL_SIZE}, backend=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-local}, ${NUM_EPISODES} episodes, max ${MAX_STEPS} steps
 - freshness: content fingerprint manifest, exactly one PPO consumption
-- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} total ranks, one grid-WM/value/SIGReg/PPO optimizer step; no DINO loss
+- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank, one grid-WM/value/SIGReg/PPO optimizer step; no DINO loss
 - frozen: vision tower, GridStateProjector, EMA target encoder and DINO decoder
 - trainable: Qwen language body, WM predictor and ValueHead
 - W&B: ${WANDB_PROJECT_REQUESTED}/${WANDB_RUN_NAME_REQUESTED}
@@ -124,7 +143,7 @@ export WANDB_RUN_NAME=${WANDB_RUN_NAME_REQUESTED}
 export WANDB_MODE=${WANDB_MODE_REQUESTED}
 export WANDB_DIR=${WANDB_DIR:-${REPO}/.cache/wandb}
 
-VISIBLE=${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((TRAIN_WORLD_SIZE - 1)))}
+VISIBLE=${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((TRAIN_TOTAL_GPUS - 1)))}
 IFS=',' read -r -a GPUS <<< "${VISIBLE}"
 if [[ "${RUN_ROLLOUT}" == true && -z "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" ]] \
     && (( ${#GPUS[@]} != TENSOR_PARALLEL_SIZE )); then
@@ -148,7 +167,7 @@ trap cleanup_env EXIT
 
 if [[ "${RUN_ROLLOUT}" == true ]]; then
   {
-    echo "=== ${TRAIN_WORLD_SIZE}-GPU vLLM online PPO start $(date -Iseconds) ==="
+    echo "=== ${TRAIN_TOTAL_GPUS}-GPU vLLM online PPO start $(date -Iseconds) ==="
     echo "node=$(hostname) gpus=${VISIBLE} env_url=${ENV_URL}"
     echo "nimloth=${COMMIT} vagen=${ENV_COMMIT}"
   } | tee "${LOG}"
@@ -198,6 +217,9 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
     --max-steps "${MAX_STEPS}" \
     --eval-set base_train --split train --seed-offset 1 \
     --temperature 0.7 --top-p 0.95 --max-pixels 3136 \
+    --credit-assignment "${CREDIT_ASSIGNMENT}" \
+    --max-reasoning-tokens "${MAX_REASONING_TOKENS}" \
+    --vllm-enforce-eager \
     2>&1 | tee -a "${LOG}"
   cleanup_env
 fi
@@ -211,6 +233,7 @@ fi
 
 if [[ "${RUN_TRAIN}" == true ]]; then
   export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
+  export NIMLOTH_DDP_GPU_STRIDE=${TRAIN_GPUS_PER_RANK}
 TRAIN_ARGS=(
   -m nimloth.training.rl.cli
   --config "${RL_CONFIG}" \
@@ -238,21 +261,29 @@ else
   [[ -n "${RDZV_IP}" ]] || { echo "missing multi-node rendezvous IP" >&2; exit 1; }
   export NIMLOTH_TRAIN_ARGS=$(printf '%q ' "${TRAIN_ARGS[@]}")
   JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}")
+  declare -A TRAIN_GPU_COUNTS
+  nimloth_load_slurm_gpu_counts "${JOB_DETAILS}" TRAIN_GPU_COUNTS
   TRAIN_STEP_PIDS=()
   rank_offset=0
   for node in "${TRAIN_NODES_LIST[@]}"; do
-    node_gpus=$(sed -n "s/.*Nodes=${node} .*GRES=gpu:\([0-9][0-9]*\).*/\1/p" <<< "${JOB_DETAILS}")
+    node_gpus=${TRAIN_GPU_COUNTS[${node}]:-}
     [[ -n "${node_gpus}" ]] || { echo "missing allocated GPU count for ${node}" >&2; exit 1; }
+    (( node_gpus % TRAIN_GPUS_PER_RANK == 0 )) || {
+      echo "node ${node} has ${node_gpus} GPUs, not divisible by gpus_per_rank=${TRAIN_GPUS_PER_RANK}" >&2
+      exit 1
+    }
+    node_ranks=$((node_gpus / TRAIN_GPUS_PER_RANK))
     srun --jobid="${SLURM_JOB_ID}" --overlap --nodes=1 --ntasks=1 -w "${node}" \
       --gres="gpu:${node_gpus}" \
-      env NIMLOTH_NODE_GPUS="${node_gpus}" NIMLOTH_RANK_OFFSET="${rank_offset}" \
+      env NIMLOTH_NODE_RANKS="${node_ranks}" NIMLOTH_RANK_OFFSET="${rank_offset}" \
+        NIMLOTH_DDP_GPU_STRIDE="${TRAIN_GPUS_PER_RANK}" \
       bash -lc '
       set -euo pipefail
       export PYTHONPATH="'"${PYTHONPATH}"'"
       export MASTER_ADDR="'"${RDZV_IP}"'"
       export MASTER_PORT=29671
       pids=()
-      for ((local_rank=0; local_rank<NIMLOTH_NODE_GPUS; local_rank++)); do
+      for ((local_rank=0; local_rank<NIMLOTH_NODE_RANKS; local_rank++)); do
         export RANK=$((NIMLOTH_RANK_OFFSET + local_rank))
         export WORLD_SIZE="'"${TRAIN_WORLD_SIZE}"'"
         export LOCAL_RANK="${local_rank}"
@@ -266,7 +297,7 @@ else
       exit "${status}"
     ' 2>&1 | tee -a "${LOG}" &
     TRAIN_STEP_PIDS+=("$!")
-    rank_offset=$((rank_offset + node_gpus))
+    rank_offset=$((rank_offset + node_ranks))
   done
   (( rank_offset == TRAIN_WORLD_SIZE )) || {
     echo "node GPU counts sum to ${rank_offset}, expected ${TRAIN_WORLD_SIZE}" >&2
@@ -293,15 +324,24 @@ bad = {key: rows[0].get(key) for key in keys if not math.isfinite(float(rows[0][
 if bad:
     raise SystemExit(f"non-finite metrics: {bad}")
 final = root / "final"
-required = [final / "rl_state.pt", final / "model.safetensors.index.json"] + [
-    final / f"optimizer_rank_{rank:05d}.pt" for rank in range(${TRAIN_WORLD_SIZE})
-]
+required = [final / "rl_state.pt", final / "model.safetensors.index.json"]
+if ${TRAIN_GPUS_PER_RANK} == 1 and ${TRAIN_WORLD_SIZE} > 1:
+    required += [
+        final / f"optimizer_rank_{rank:05d}.pt"
+        for rank in range(${TRAIN_WORLD_SIZE})
+    ]
 missing = [str(path) for path in required if not path.is_file() or path.stat().st_size == 0]
 if missing:
     raise SystemExit(f"missing outputs: {missing}")
+state = __import__("torch").load(final / "rl_state.pt", map_location="cpu", weights_only=False)
+expected_layout = "rank_sharded_fsdp" if ${TRAIN_GPUS_PER_RANK} == 1 and ${TRAIN_WORLD_SIZE} > 1 else "replicated"
+if state.get("optimizer_state_layout") != expected_layout:
+    raise SystemExit(f"optimizer layout mismatch: {state.get('optimizer_state_layout')}")
+if expected_layout == "replicated" and state.get("optimizer") is None:
+    raise SystemExit("replicated optimizer state is missing")
 print(json.dumps({"status": "ALL_OK", "global_step": 1, "finite_metrics": keys}))
 PY
 
 sed -i 's/- status: running/- status: completed/' "${RUN_OUT}/README.md"
-echo "=== ${TRAIN_WORLD_SIZE}-GPU vLLM online PPO ALL_OK $(date -Iseconds) ===" | tee -a "${LOG}"
+echo "=== ${TRAIN_TOTAL_GPUS}-GPU vLLM online PPO ALL_OK $(date -Iseconds) ===" | tee -a "${LOG}"
 fi

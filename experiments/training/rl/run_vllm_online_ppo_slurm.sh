@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Drive vLLM rollout and FSDP PPO on an arbitrary heterogeneous Slurm allocation.
+# Drive vLLM rollout and PPO training on an arbitrary heterogeneous Slurm allocation.
 set -euo pipefail
 
 HOLD_JOB=${HOLD_JOB:?set HOLD_JOB to one running allocation}
 REPO=${REPO:?set REPO to the committed server worktree}
+ENV_REPO=${ENV_REPO:?set ENV_REPO to the verified VAGEN worktree}
+source "${REPO}/experiments/training/rl/slurm_allocation.sh"
 RL_CONFIG=${RL_CONFIG:-${REPO}/configs/training/rl/e2e_smoke_h4.yaml}
 RUN_OUT=${RUN_OUT:?set RUN_OUT to a new output directory}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
@@ -12,14 +14,24 @@ RAY_LOG_DIR=${RUN_OUT}.ray
 RAY_TMP_DIR=${RAY_TMP_DIR:-/tmp/ray_nimloth_${HOLD_JOB}_${BASHPID}}
 RAY_OBJECT_STORE_BYTES=${RAY_OBJECT_STORE_BYTES:-10000000000}
 RAY_AGENT_REGISTER_TIMEOUT_MS=${RAY_AGENT_REGISTER_TIMEOUT_MS:-120000}
+RAY_PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
+if [[ -n "${PYTHONPATH:-}" ]]; then
+  RAY_PYTHONPATH=${RAY_PYTHONPATH}:${PYTHONPATH}
+fi
 
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_TP_SIZE < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
 from nimloth.config.rl import load_rl_config
 config = load_rl_config(Path(sys.argv[1])).distributed
-print(config.nodes, config.world_size, config.rollout_tensor_parallel_size)
+print(
+    config.nodes,
+    config.world_size,
+    config.gpus_per_rank,
+    config.total_gpus,
+    config.rollout_tensor_parallel_size,
+)
 ' "${RL_CONFIG}"
 )
 mapfile -t NODES < <(scontrol show hostnames "$(squeue -h -j "${HOLD_JOB}" -o %N)")
@@ -32,18 +44,28 @@ JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")
 declare -A GPU_COUNTS
 declare -A NODE_IPS
 total_gpus=0
+total_ranks=0
+nimloth_load_slurm_gpu_counts "${JOB_DETAILS}" GPU_COUNTS
 for node in "${NODES[@]}"; do
-  count=$(sed -n "s/.*Nodes=${node} .*GRES=gpu:\([0-9][0-9]*\).*/\1/p" <<< "${JOB_DETAILS}")
+  count=${GPU_COUNTS[${node}]:-}
   [[ -n "${count}" ]] || { echo "missing allocated GPU count for ${node}" >&2; exit 1; }
-  GPU_COUNTS[${node}]=${count}
   node_ip=$(srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
     -w "${node}" --gpus=0 hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
   [[ -n "${node_ip}" ]] || { echo "missing 10.23 IP for ${node}" >&2; exit 1; }
   NODE_IPS[${node}]=${node_ip}
+  (( count % CONFIG_GPUS_PER_RANK == 0 )) || {
+    echo "node ${node} has ${count} GPUs, not divisible by gpus_per_rank=${CONFIG_GPUS_PER_RANK}" >&2
+    exit 1
+  }
   total_gpus=$((total_gpus + count))
+  total_ranks=$((total_ranks + count / CONFIG_GPUS_PER_RANK))
 done
-(( total_gpus == CONFIG_WORLD_SIZE )) || {
-  echo "allocation has ${total_gpus} GPUs, config requests ${CONFIG_WORLD_SIZE}" >&2
+(( total_gpus == CONFIG_TOTAL_GPUS )) || {
+  echo "allocation has ${total_gpus} GPUs, config requests ${CONFIG_TOTAL_GPUS}" >&2
+  exit 1
+}
+(( total_ranks == CONFIG_WORLD_SIZE )) || {
+  echo "allocation forms ${total_ranks} ranks, config requests ${CONFIG_WORLD_SIZE}" >&2
   exit 1
 }
 HEAD_IP=${NODE_IPS[${HEAD_NODE}]}
@@ -71,7 +93,7 @@ head_gpus=${GPU_COUNTS[${HEAD_NODE}]}
 head_cpus=$((head_gpus > 4 ? head_gpus : 4))
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
   --gres="gpu:${head_gpus}" \
-  env VLLM_HOST_IP="${HEAD_IP}" \
+  env PYTHONPATH="${RAY_PYTHONPATH}" VLLM_HOST_IP="${HEAD_IP}" \
     RAY_agent_register_timeout_ms="${RAY_AGENT_REGISTER_TIMEOUT_MS}" \
     "${PYTHON}" -m ray.scripts.scripts start --head \
     --port="${RAY_PORT}" --node-ip-address="${HEAD_IP}" \
@@ -101,7 +123,7 @@ for node in "${NODES[@]:1}"; do
   node_cpus=$((node_gpus > 4 ? node_gpus : 4))
   srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${node}" \
     --gres="gpu:${node_gpus}" \
-    env VLLM_HOST_IP="${node_ip}" \
+    env PYTHONPATH="${RAY_PYTHONPATH}" VLLM_HOST_IP="${node_ip}" \
       RAY_agent_register_timeout_ms="${RAY_AGENT_REGISTER_TIMEOUT_MS}" \
       "${PYTHON}" -m ray.scripts.scripts start \
       --address="${HEAD_IP}:${RAY_PORT}" --node-ip-address="${node_ip}" \
@@ -118,7 +140,7 @@ for _ in $(seq 1 90); do
     --gpus=0 env RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}" "${PYTHON}" -c \
     'import ray; ray.init(address="auto"); print(int(ray.cluster_resources().get("GPU", 0)))' \
     2>/dev/null | tail -1 || true)
-  [[ "${resources}" == "${CONFIG_WORLD_SIZE}" ]] && break
+  [[ "${resources}" == "${CONFIG_TOTAL_GPUS}" ]] && break
   for pid in "${RAY_STEP_PIDS[@]}"; do
     kill -0 "${pid}" 2>/dev/null || {
       tail -n 200 "${RAY_LOG_DIR}"/*.log >&2
@@ -127,10 +149,45 @@ for _ in $(seq 1 90); do
   done
   sleep 2
 done
-[[ "${resources}" == "${CONFIG_WORLD_SIZE}" ]] || {
-  echo "Ray exposes ${resources:-0} GPUs, config requests world_size=${CONFIG_WORLD_SIZE}" >&2
+[[ "${resources}" == "${CONFIG_TOTAL_GPUS}" ]] || {
+  echo "Ray exposes ${resources:-0} GPUs, config requests total_gpus=${CONFIG_TOTAL_GPUS}" >&2
   exit 1
 }
+
+# vLLM imports engine-level logits processors inside Ray workers. Probe every
+# raylet before model initialization so a missing repository path fails with a
+# node-specific import error instead of an opaque distributed-engine failure.
+timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
+  --gpus=0 env RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}" \
+    NIMLOTH_EXPECTED_RAY_NODES="${CONFIG_NODES}" \
+    PYTHONPATH="${RAY_PYTHONPATH}" "${PYTHON}" -c '
+import json
+import os
+
+import ray
+
+ray.init(address="auto")
+
+@ray.remote(num_cpus=0)
+def import_nimloth() -> tuple[str, str]:
+    import nimloth
+    return ray.util.get_node_ip_address(), str(nimloth.__file__)
+
+alive_nodes = [node for node in ray.nodes() if node["Alive"]]
+expected_nodes = int(os.environ["NIMLOTH_EXPECTED_RAY_NODES"])
+if len(alive_nodes) != expected_nodes:
+    raise SystemExit(
+        f"Ray has {len(alive_nodes)} alive nodes, expected {expected_nodes}"
+    )
+checks = []
+for node in alive_nodes:
+    resource = f"node:{node['"'"'NodeManagerAddress'"'"']}"
+    checks.append(
+        import_nimloth.options(resources={resource: 0.001}).remote()
+    )
+results = ray.get(checks)
+print(json.dumps({"nimloth_imports": sorted(results)}))
+' | tee -a "${RAY_LOG_DIR}/import_probe.log"
 
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
   --gres="gpu:${head_gpus}" \

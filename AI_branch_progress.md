@@ -4,6 +4,51 @@
 
 ---
 
+## 2026-07-24：RL 分支合并到 dev，P0 禁止 fixed CoT
+
+- 按人类要求将 `exp/rl-dinogrid-ep1-online-ppo` 合并到 `dev`。人工核对确认 dev 的
+  DINO 改动仍只有一个 `SFT2Algorithm`，DINO 只作为可配置 auxiliary loss；terminal
+  CoT 改动位于 transition/prompt/cache/data-generation 边界，没有恢复独立 DINO
+  algorithm 或 batch。
+- 最新 P0 规则优先：删除模板与 Agent config 中的 fixed thought；SFT1 converter
+  仍只接受数据集实际 thought。普通 completed transcript 必须携带真实 assistant
+  response，terminal SFT2 state 必须读取离线生成并持久化的真实 CoT。
+- 当前 RL 尚未具备 current/terminal state 的完整真实 CoT 持久化和 planner 前置生成
+  边界。因此旧 action-only state prompt、RL state replay、`PlanningPolicy` 和遗留
+  diagnose eval 路径均明确 fail-fast，作为 TODO 保留；不得据此声称 planner PPO 或
+  完整 RL 已实现。
+- 冲突只出现在进度文档和两个 RL launcher 文档/字符串；launcher 统一保留
+  config-driven 异构节点与 `gpus_per_rank` 语义，不恢复固定两节点入口。尚待服务器
+  回归、提交推送和新 ID SFT2 重训。
+
+## 2026-07-24：SFT2 fixed terminal CoT 删除（待远端回归）
+
+- 人类确认 state 必须由真实 CoT 条件化：普通 state 读取真实 assistant response；
+  terminal observation 由本次 SFT2 的 SFT1 初始化 checkpoint 额外生成真实 CoT并
+  持久化，但不执行未来动作。
+- SFT2 transition 展开已删除 `assistant_prefix()` fixed fallback；结构化轨迹也不再用
+  模板伪造响应。新数据必须含 `terminal_assistant_prefix`，cache expansion version为
+  `wm_expand_v3_terminal_cot`，旧 fixed cache 明确失效。
+- 新增离线生成入口，所有会改变生成语义的参数均要求显式传入；模型未自行闭合
+  `</think>` 时失败，不静默注入。
+- 人类已确认 terminal CoT 使用 VAGEN validation sampling：`temperature=0`、
+  `top_p=1.0`、`top_k=-1`、`do_sample=false`、`n=1`；入口显式记录并只接受该组合。
+- 参考VAGEN全量69,776段真实CoT（最大93 tokens）及SFT1 processor后，人类确认
+  `max_reasoning_tokens=128`、`seed=42`、`max_pixels=602112`。
+- 当前只完成代码与文档修改；本机缺少Torch/pytest，superpod SSH 建立host key后约
+  60秒无响应，已按规则中止且未重试。远端定向回归、实际 terminal 数据生成、cache
+  重建与训练均尚未执行，不得声称修复已完成验证。
+- 全部生成参数已确认，尚待远端回归、数据生成、cache重建和新ID SFT2重训。
+- ID47首条21帧terminal生成smoke最初误报128/512 tokens内都没有`</think>`；解码
+  continuation确认实际仅15 tokens，约第5 token已生成`Move left.</think>`。根因是
+  BPE将句点与`</`合并，独立close-token子序列匹配失效。terminal生成现改为按解码
+  文本精确停止/提取并增加边界回归；hold `486556`仍在dgx-42，正式数据尚未生成。
+- 提交`ebc4d3b`在superpod定向测试`8 passed`；同一21帧真实smoke现成功，terminal CoT
+  为3 tokens且manifest完整。正式train/val terminal数据、cache和SFT2仍未开始。
+- 人类指出本RL分支与此前DINO监督SFT2 lineage冲突并要求暂停。hold `486556`已取消；
+  没有正式augmented数据、cache、W&B、optimizer step或checkpoint，解决分支冲突前
+  禁止继续启动。
+
 ## 2026-07-24：DINO-grid SFT2 恢复 terminal transition 与旧 cache 兼容
 
 - 人类指出当前 cache 图像数不是旧版的62,606。核对确认原始3217/355条记录与
@@ -1901,3 +1946,207 @@
 - 服务器定向回归 `43 passed`；扩展回归
   `174 passed, 1 skipped, 1 expected warning`。`compileall`、`git diff --check` 和
   独立 DINO algorithm/batch 静态扫描通过；未启动新实验或 GPU allocation。
+## 2026-07-24：RL ID82 进入 policy replay 后 OOM，暴露 token credit 边界
+
+- commit `757bfcb`，allocation `485891`（dgx-34×1、dgx-39×6、dgx-48×1），
+  corrected ID46 `epoch_001`。TP4 fresh rollout 完成 4 trajectories / 20 transitions，
+  rewards `0.0/-0.2/-0.1/-0.1`；W&B `nimloth-rl/3yhg4w96`。
+- 8 ranks 严格加载 `GridWorldModel`、通过 freshness broadcast，并在 WM/value/SIGReg
+  forward 后进入 PPO policy replay。FSDP `FULL_SHARD` 已启用，但 Qwen `lm_head`
+  为整段 prompt 生成 full-vocabulary logits；约 77.93 GiB 已分配时再申请 262 MiB
+  导致 CUDA OOM。CSV 仅表头，无 optimizer step/checkpoint，manifest 未消费。
+- 当前行为 policy 的 CoT 是模板固定文本，vLLM 只采样一个 action token，因此现有
+  rollout 只保存 action distribution。VAGEN 则保存每轮完整生成 response，通过
+  `loss_mask` 选择生成 token，并支持 masked/bi-level/turn-wise GAE。若 RL 要训练 CoT，
+  必须先让 rollout 真实生成并保存 CoT/action token ids、old log-probs 和 mask；不能
+  给未采样的固定 CoT 事后分配 PPO credit。
+- ID82 不可恢复，实验 README/实验组 progress 已完成收尾；hold `485891` 已取消释放。
+  在 action-only 精确 replay 与 token-level CoT credit 的产品语义确认前不启动新 ID。
+
+## 2026-07-24：RL 对齐 VAGEN turn-wise token credit，CPU 回归通过
+
+- commits `804f686`、`e8dbf9a`、`1c9b9ce` 实现
+  `actor.credit_assignment=action|turn`。turn mode 由 vLLM 先采样 CoT，再注入 latent
+  query/action boundary 并受限采样 action；trajectory 保存真实 response、逐 token
+  old log-prob、loss mask 与 reasoning/action/injected provenance。
+- behavior replay prompt 与 WM state prompt 已拆分。PPO 从 `<think>` continuation
+  teacher-force；WM 对已执行 step 使用真实 CoT 的 latent prefix，terminal state 使用
+  模板 query。注入 token 永不参加 PPO。
+- 当前 ValueHead 是 step/action critic，因此 turn mode 采用同一步 Monte Carlo
+  advantage 广播的 turn-wise credit；没有实现 token/bi-level GAE。
+- 修复 vLLM assistant prefix 后残留 `<|im_end|>` 的 behavior/replay 条件偏差；Qwen
+  replay 通过 tensor `logits_to_keep` 只计算 loss-mask position 的 vocabulary logits，
+  服务器 Transformers 4.55.4 源码已确认该语义。
+- 服务器相关 CPU suite 为 `99 passed, 1 warning`。尚无新 GPU experiment；下一次
+  online PPO 必须使用新 ID/output/fresh manifest，并先触发 on-experiment-start。
+
+## 2026-07-24：RL ID83/84 GPU 启动失败与 turn-credit 一致性阻塞
+
+- ID83 在 rollout 前发现 Slurm `scontrol` 会把相同 per-node GRES 压缩为
+  `Nodes=dgx-[40,48] ... GRES=gpu:4`；旧 launcher 只匹配单节点文本。commit
+  `c879278` 增加共享 node-expression 展开器，并同时接入 Ray rollout 与 FSDP train
+  launcher；压缩均匀分配和逐节点异构分配两个 parser 测试通过。
+- ID84 使用 `dgx-40:4 + dgx-48:4`、corrected ID46 `epoch_001`、TP4/world8。
+  Ray 8 GPU 与 navigation environment 均健康，但 vLLM 0.11 在 TP4 profile run 的
+  rank 3 Torch Inductor/Triton kernel 报 `CUDA driver error: invalid argument`；生成、
+  trajectory、W&B、FSDP 与 optimizer 均未开始。ID84 无 checkpoint、不可恢复，hold
+  `486070` 已取消释放。
+- turn-credit 只读复核确认两个 PPO correctness blocker：第二段 action request 把第一段
+  已多模态展开的 `prompt_token_ids` 与同一图片再次交给 vLLM 0.11 processor，导致再次
+  placeholder update，action behavior 与 HF replay 不再共享同一条件序列；trajectory
+  validation 也未把唯一 action-role token、其 old log-prob 与 `action_index`、
+  `action_log_probs`、`assistant_response` 互相绑定。
+- 另有两个部署/可观测性缺口：WM/value state 对已执行 step 使用采样 CoT，而现有
+  `PlanningPolicy` 仍走固定模板 thought，terminal state 也退回模板；reasoning 达到上限
+  未生成 `</think>` 时会静默注入关闭标记，且未持久化 truncated/finish reason 或指标。
+  修复这些一致性问题前禁止重启 turn-credit PPO。
+
+## 2026-07-24：RL ID89 首次进入 turn-credit replay 后 activation OOM
+
+- ID89 使用 corrected ID46 `epoch_001`、dgx-06×3 + dgx-23×5、Ray 8 GPU、
+  rollout TP4、H=4、turn credit CoT32。vLLM eager 完成 4 trajectories / 20
+  transitions，fresh manifest 只消费一次；19轮正常 stop，1轮 CoT32 length
+  truncation 的 provenance 已持久化。
+- 8个 FSDP rank 均在第一个 PPO `policy_replay` 的 Qwen decoder forward OOM，
+  最早位于 post-attention RMSNorm；每卡约占79.16/79.19GiB，只剩6--20MiB。
+  无首个loss、optimizer step或checkpoint，CSV只有表头，ID89不可恢复。W&B
+  `cugevcpx` 的 finished 仅表示进程结束，不代表训练成功。
+- 这证明 vLLM、多节点通信、freshness 和 replay入口均已通过；当前阻塞是单卡承载
+  完整 replay activation。FSDP 参数分片没有分割单层/单副本 activation。
+
+## 2026-07-24：RL 支持每 rank 两卡的真实模型并行
+
+- commit `c1a46ae` 新增 `distributed.gpus_per_rank`。`world_size` 保持训练进程数，
+  物理GPU总数严格由 `world_size * gpus_per_rank` 推导；当前只支持1或2。
+- `gpus_per_rank=1` 保留原 FSDP；`gpus_per_rank=2` 用 balanced Qwen layer placement
+  让每个副本实际覆盖同节点两卡，再以 DDP 同步4个训练rank。WM predictor、
+  ValueHead及其他可训练辅助模块也正式进入DDP；checkpoint使用replicated optimizer
+  state，不再误用FSDP rank shard恢复规则。
+- launcher按每节点GPU数除以`gpus_per_rank`计算local/global ranks，奇数卡节点在
+  rollout前fail-fast；因此支持2+6、4+4等偶数异构拓扑，不允许一个Qwen副本跨节点。
+- 服务器完整 `tests/training/rl tests/backbone/qwen25vl`：`103 passed, 1 warning`。
+  corrected epoch1的meta-device probe确认balanced映射覆盖两卡，final norm/lm_head
+  位于第二卡。真实多卡forward/backward/optimizer仍需新ID GPU smoke验证。
+
+## 2026-07-24：RL ID90 双卡副本进入 replay 后跨设备索引失败
+
+- ID90 使用 allocation `486283` 的 dgx-40×4 + dgx-48×4，按4个训练rank、每rank
+  两卡运行；TP4 eager rollout完成4条fresh trajectory / 20 transitions，rewards为
+  `-0.1/-0.2/0.0/-0.1`，19轮stop与1轮length truncation均持久化。
+- fresh manifest已消费；4个rank均验证Qwen balanced placement覆盖两张本地GPU并进入
+  首次PPO replay，说明双卡加载、跨rank DDP和训练入口本身均已通过。
+- replay的`logits_to_keep`仍建在输入GPU，而balanced placement使final hidden states与
+  lm_head位于第二张GPU。Transformers在`hidden_states[:, slice_indices, :]`报索引设备
+  不一致；CSV仅表头，无finite loss、optimizer step或checkpoint，W&B为`qo3lkimp`。
+- ID90不可恢复：manifest已消费且无checkpoint。修复要求action-only与turn replay统一
+  使用Transformers支持的CPU position index；通过回归后须用ID91、空输出和fresh rollout。
+- commit `39925e1` 已将两条路径的position index统一为CPU tensor，并增加设备回归断言；
+  服务器完整 `tests/training/rl tests/backbone/qwen25vl` 为 `104 passed, 1 warning`。
+
+## 2026-07-24：RL ID91 证明CPU tensor仍被Accelerate搬回输入GPU
+
+- ID91完成与ID90一致的4条fresh rollout / 20 transitions，manifest已消费；4个双卡
+  rank均进入首个policy replay，无OOM，但仍报相同cross-device position index错误。
+- 服务器实际调用链表明顶层Accelerate hook会在Qwen forward前递归移动tensor kwargs；
+  因此`39925e1`创建的CPU `logits_to_keep`仍被搬到第一张GPU，不能保持CPU索引语义。
+- W&B `cwpf65kf`，CSV仅表头，无finite loss、optimizer step或checkpoint，ID91不可恢复。
+  修复改用原生Python integer list：PyTorch接受其作为advanced index，Accelerate不会把
+  integer list转换为tensor或设备搬运。通过回归后须使用新ID和fresh rollout。
+- commits `995d808`、`460c1c3` 完成native-index实现与测试桩更新；服务器定向测试
+  `3 passed`，完整RL/Qwen suite为`104 passed, 1 warning`。
+
+## 2026-07-24：RL ID92越过索引点，暴露loss scalar设备边界
+
+- ID92完成4条fresh rollout / 20 transitions并消费manifest；native Python
+  `logits_to_keep`在4个rank均越过Transformers hidden-state indexing，证明ID91修复有效。
+- Accelerate随后把Qwen replay输出复制回各副本输入GPU，故PPO loss/entropy位于
+  `cuda:0/2`；WM/value/SIGReg total位于输出GPU `cuda:1/3`。`algorithm.py:272`在两个
+  scalar loss相加时报设备不一致，无OOM。
+- W&B `pzp6umsv`，CSV仅表头，无finite total、backward、optimizer step或checkpoint，
+  ID92不可恢复。修复只把PPO loss/entropy scalar复制到`total.device`；CopyBackward保留
+  到Qwen logits的梯度，且不搬运selected vocabulary logits。
+- commit `9791a3f` 完成scalar对齐；服务器完整RL/Qwen suite为`104 passed, 1 warning`。
+
+## 2026-07-24：RL ID93 backward时整模型多设备DDP collective分叉
+
+- ID93完成4条fresh rollout / 20 transitions；native replay index与loss scalar对齐均
+  通过，首次进入真实backward，无OOM或设备相加错误。
+- 每个副本第二GPU持续100% SM但低功耗、第一GPU空闲；600秒后NCCL watchdog确认
+  collective序列分叉：rank0/1停在seq186、4 elements，rank2/3停在seq187、
+  2,004,003,840 elements。不是正常慢forward，而是whole multi-device DDP死锁。
+- W&B `gkn5tmqh`，manifest已消费，CSV仅表头，无completed backward、optimizer step或
+  checkpoint，ID93不可恢复。修复移除paired Qwen与WM/value的DDP包装；完整local
+  backward后由OptimizationRuntime按optimizer参数组稳定顺序逐gradient all-reduce并取均值。
+- commit `d4d57cf` 完成deterministic manual gradient sync；服务器定向测试`7 passed`，
+  扩展完整RL/Qwen/common suite为`110 passed, 1 warning`。
+
+## 2026-07-24：RL ID94 首次完成双卡副本online PPO optimizer step
+
+- commit `b453522`，allocation `486283` 的 dgx-40×4 + dgx-48×4；TP4 eager完成
+  `base_train` seeds1--4的4条fresh trajectory / 20 transitions，rewards为
+  `-0.1/-0.2/0.0/-0.1`，19轮stop与1轮length truncation，manifest只消费一次。
+- 4 ranks×2 GPUs/rank完成native replay、loss scalar对齐、local backward、按optimizer
+  参数顺序确定性gradient averaging和optimizer step；`global_step=1`，whole-model
+  multi-device DDP不再使用。iteration update耗时6.4秒，无OOM/NCCL/device error。
+- finite metrics：WM MSE `4.529062`、SIGReg `3.200135`、value `0.462340`、actor
+  `-0.029961`、entropy `0.545880`、total `5.275996`、ratio `0.961459`、clip fraction
+  `0.041667`、policy tokens48；success0/4只作为smoke现象，不解释policy质量。
+- W&B `sea8ua12`为finished/global_step1。`iter_0001/final/latest`三套checkpoint完整：
+  两个HF shard、13.09GB replicated optimizer state、WM/ValueHead/state projector/grid
+  auxiliaries均存在且无tmp。hold `486283`已取消释放8卡。
+- `latest`结构上可恢复，但继续训练必须新生成fresh manifest、提高iterations并显式
+  `--resume`；当前one-shot launcher尚未验证这一continuation流程，不能复用ID94 manifest。
+
+## 2026-07-24：根README固定VAGEN到RL术语与关键参数
+
+- 根`README.md`新增中文术语表，按VAGEN环境、behavior rollout、trajectory、SFT1、
+  SFT2、RL/PPO、planning、评估与checkpoint固定概念边界。
+- 新增SFT1/SFT2/RL、VAGEN环境、分布式训练和vLLM rollout TP参数表；参数值继续以
+  具体YAML、checkpoint metadata和实验README为准，不把ID94 smoke值写成项目默认值。
+- 明确禁止“预测2轮”“value”“跑8卡”“FSDP两卡rank”等歧义说法；RL
+  `history_size=2`固定表示两个transition、三个state prompt以及
+  `(B,2,action_count)`的ValueHead输出。
+- 仅修改文档；`git diff --check`通过，未运行Python测试。
+
+## 2026-07-24：人类澄清实验参数为planning horizon 2
+
+- 人类明确此前“预测2轮”指`agent.planning.horizon=2`，不是
+  `predictor.history_size=2`；未按错误解释修改配置或启动GPU作业。
+- 根README新增实验参数确认规则；新增known error E0043，规定自然语言不能唯一映射到
+  配置字段时必须停止并让人类澄清，禁止猜测后启动实验。
+- 修正E0037中过时的SFT2粒度描述：SFT2当前只监督窗口末端current step；RL才在一个
+  采样窗口内同时计算H个因果位置。
+- 当前实现禁止planning与PPO actor同时开启，后续长时实验模式已记录到`AI_issues.md`，
+  等待人类选择；当前无实验在运行。
+
+## 2026-07-24：纠正PPO完成边界并审查planning policy更新方案
+
+- 人类指出此前“PPO已做完”的表述错误；准确边界仅为direct-policy fresh rollout的
+  单次GPU optimizer-step smoke通过，planning policy replay/update与长时多次online
+  闭环均未实现。README新增完成边界，known error新增E0044。
+- 审查确认真实rollout Monte Carlo return可以监督已执行动作的`Q(s,a)`，但当前
+  `AgentEpisode.rewards`落盘时只保留总和，且未持久化terminal/truncation，必须先补齐
+  才能称真实逐步return target。
+- 当前actor advantage为`G_t-Q(s_t,a_t)`，baseline依赖动作，不是标准state baseline；
+  若保留action critic，应改为独立scalar V或按实际behavior分布计算
+  `V(s)=sum_a pi(a|s)Q(s,a)`。
+- planner选择动作时实际behavior是planner root distribution；只保存selected action的
+  Qwen概率可用于planner-guided distillation/AWR，但不足以构成严格on-policy PPO ratio。
+- horizon2只有8个动作、64条两步序列，后续设计可优先考虑完整枚举并保存Qwen与planner
+  两套八动作分布，避免beam剪枝造成零support。WM是否更新应与StateProjector、SIGReg、
+  Backbone表征梯度分别配置，并在policy update期间固定old behavior snapshot。
+- 本轮仅做只读源码/方案审查与文档纠错，未修改训练代码、未启动实验。
+
+## 2026-07-24：保存RL、planning与CoT credit讨论方案
+
+- 新增`ai_tasks/rl_plan.md`，把人类已确认约束、当前真实实现边界、推荐设计和待确认
+  决策分开记录；明确`agent.planning.horizon=2`，并延续歧义参数必须先确认的规则。
+- 推荐方案记录为planner完整root policy监督Qwen action policy、Qwen真实采样CoT使用
+  per-turn normalized PPO、真实逐步rollout return监督action Q与独立pre-CoT scalar
+  critic；该方案仍待人类正式确认，不表述为已实现或已批准。
+- 计划先补逐步rewards、terminated/truncated和return/bootstrap语义，再保存完整Qwen与
+  planner八动作分布；horizon2的8动作空间优先完整枚举64条序列，避免beam零support。
+- WM predictor、StateProjector、SIGReg和Backbone representation gradient分别配置；
+  当前RL继续关闭DINO。文档列出模块职责、数据契约、分阶段验证门槛和8项待确认问题。
+- 本轮仅修改设计/进度文档，未修改训练代码、未启动实验，也未创建与仓库文档重复的
+  durable memory。

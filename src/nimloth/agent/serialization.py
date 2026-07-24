@@ -6,7 +6,6 @@ from typing import Any, Mapping
 
 from nimloth.agent.template import PromptTemplateSpec
 from nimloth.agent.templates.nimloth import (
-    DEFAULT_THOUGHT,
     NIMLOTH_PROMPT_TEMPLATE_ID,
     PROMPT_VERSION,
 )
@@ -28,6 +27,5 @@ def prompt_template_spec_from_record(
         version=str(record.get("prompt_version", PROMPT_VERSION)),
         config={
             "latent_token_count": int(record.get("latent_token_count", 1)),
-            "thought": str(record.get("prompt_thought", DEFAULT_THOUGHT)),
         },
     )

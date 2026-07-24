@@ -54,6 +54,9 @@ class AgentEpisode:
             action_indices=tuple(
                 action.action_index for action in self.actions
             ),
+            assistant_responses=tuple(
+                action.response for action in self.actions
+            ),
         )
 
 

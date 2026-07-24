@@ -119,30 +119,12 @@ def load_wm_modules(wm_checkpoint: str, emb_dim: int = 128):
 
 def build_nimloth_messages(image: Image.Image, nav_instruction: str,
                            action_history: list[str]) -> list[dict]:
-    """Build Nimloth-format prompt for action selection."""
-    messages = [
-        {"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]},
-        {"role": "user", "content": [
-            {"type": "image", "image": image},
-            {"type": "text", "text": f"Observe the scene. {nav_instruction}"},
-        ]},
-    ]
-    for act_name in action_history:
-        idx = ACTION_NAME_TO_IDX.get(act_name, 0)
-        messages.append({"role": "assistant", "content": [
-            {"type": "text", "text": (
-                f"<think>Navigating.</think>"
-                f"<|latent_state|><|action_start|><|action_({idx})|><|action_end|>"
-            )},
-        ]})
-        messages.append({"role": "user", "content": [
-            {"type": "image", "image": image},
-            {"type": "text", "text": f"Observe the scene after {act_name}. {nav_instruction}"},
-        ]})
-    messages.append({"role": "assistant", "content": [
-        {"type": "text", "text": "<think>What should I do next?</think><|latent_state|><|action_start|>"},
-    ]})
-    return messages
+    """Reject the legacy diagnostic path that fabricated CoT text."""
+
+    raise RuntimeError(
+        "diagnose_eval is disabled until it consumes persisted real assistant "
+        "responses, including the terminal CoT"
+    )
 
 
 def select_action_with_full_info(model, processor, image: Image.Image,

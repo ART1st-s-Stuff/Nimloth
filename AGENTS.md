@@ -38,6 +38,15 @@
 - repo 记忆存放在 `.memory/`，本地/环境相关记忆存放在 `.local/memory/`；都不得手动编辑对应的 `memories.jsonl`。
 - 严格遵守禁令，禁止越权做明确声明了禁止agent做、只允许人类做的事。
 
+## CoT 与 state 语义硬规则
+- **禁止 AI 自行发明或填充 fixed CoT。** CoT 是模型实际生成或数据集实际记录的内容，
+  不是 prompt 结构常量。除非人类明确要求固定文本，任何模板默认 thought、占位 thought
+  或“canonical thought”都不得进入训练、评估、规划或部署 state。
+- CoT-conditioned state 必须使用该 observation 对应的真实 CoT。普通 state 读取实际
+  assistant response；terminal observation 额外生成并持久化真实 CoT，但不执行对应动作。
+- 若 terminal CoT 的 checkpoint、采样参数或生成边界没有明确规定，必须停下来询问人类，
+  禁止选择一个看似合理的默认值继续实验。
+
 ## 语言规范
 - 语言清晰：你的所有解释/概念必须清晰明确，禁止充斥看不明白的专业术语，绝对严禁自己发明新词
 - 一致性：在整个项目里相同的概念必须具有相同的名字

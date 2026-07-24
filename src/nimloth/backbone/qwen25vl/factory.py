@@ -34,8 +34,18 @@ from nimloth.latent import (
 from nimloth.util.distributed import is_main
 
 
-def _load_kwargs(device: torch.device) -> tuple[bool, dict[str, Any]]:
-    gpu_stride = int(os.environ.get("NIMLOTH_DDP_GPU_STRIDE", "1"))
+def _load_kwargs(
+    device: torch.device,
+    *,
+    model_parallel_size: int | None,
+) -> tuple[bool, dict[str, Any]]:
+    gpu_stride = (
+        int(os.environ.get("NIMLOTH_DDP_GPU_STRIDE", "1"))
+        if model_parallel_size is None
+        else int(model_parallel_size)
+    )
+    if gpu_stride < 1:
+        raise ValueError(f"model_parallel_size must be positive, got {gpu_stride}")
     enabled = gpu_stride > 1 and torch.cuda.is_available()
     if not enabled:
         return False, {}
@@ -52,10 +62,78 @@ def _load_kwargs(device: torch.device) -> tuple[bool, dict[str, Any]]:
             )
         )
     return True, {
-        "device_map": "auto",
+        # ``auto`` 会把能装进单卡的 3B 模型全部放在第一张卡，无法分摊 PPO
+        # replay activation。``balanced`` 才表达每个训练副本跨卡的真实语义。
+        "device_map": "balanced",
         "max_memory": {index: "74GiB" for index in pair} | {"cpu": "64GiB"},
         "low_cpu_mem_usage": True,
     }
+
+
+def _cuda_device_index(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, torch.device):
+        return value.index if value.type == "cuda" else None
+    if isinstance(value, str) and value.startswith("cuda:"):
+        return int(value.split(":", 1)[1])
+    return None
+
+
+def _validate_model_parallel_placement(
+    model: torch.nn.Module,
+    *,
+    input_device: torch.device,
+    model_parallel_size: int,
+) -> None:
+    if model_parallel_size <= 1:
+        return
+    device_map = getattr(model, "hf_device_map", None)
+    if not isinstance(device_map, dict) or not device_map:
+        raise RuntimeError("multi-GPU Qwen load did not produce hf_device_map")
+    primary_idx = int(str(input_device).split(":")[-1])
+    expected = set(range(primary_idx, primary_idx + model_parallel_size))
+    actual = {
+        index
+        for value in device_map.values()
+        if (index := _cuda_device_index(value)) is not None
+    }
+    offloaded = {
+        str(value)
+        for value in device_map.values()
+        if _cuda_device_index(value) is None
+    }
+    if actual != expected or offloaded:
+        raise RuntimeError(
+            "Qwen model-parallel placement does not match the configured local "
+            f"GPU group: expected={sorted(expected)}, actual={sorted(actual)}, "
+            f"offloaded={sorted(offloaded)}"
+        )
+    if is_main():
+        print(
+            json.dumps(
+                {
+                    "qwen_model_parallel_placement": "validated",
+                    "devices": sorted(actual),
+                }
+            )
+        )
+
+
+def model_output_device(
+    model: torch.nn.Module,
+    *,
+    default: torch.device,
+) -> torch.device:
+    """返回 Qwen final norm/lm_head 所在设备，供下游 WM/value 对齐。"""
+
+    root = getattr(model, "module", model)
+    device_map = getattr(root, "hf_device_map", {}) or {}
+    mapped = device_map.get("lm_head")
+    if mapped is None:
+        mapped = device_map.get("model.language_model.norm")
+    index = _cuda_device_index(mapped)
+    return torch.device(f"cuda:{index}") if index is not None else default
 
 
 def _configure_shape(
@@ -94,6 +172,7 @@ def load_backbone(
     *,
     device: torch.device,
     latent_token_count: int,
+    model_parallel_size: int | None = None,
     resume_dir: Path | None = None,
     resume_state_path: Path | None = None,
 ) -> LoadedBackbone:
@@ -108,7 +187,15 @@ def load_backbone(
     processor = processor_bundle.processor
     token_id_map = processor_bundle.token_id_map
     added_count = processor_bundle.added_special_token_count
-    pair_parallel, load_kwargs = _load_kwargs(device)
+    pair_parallel, load_kwargs = _load_kwargs(
+        device,
+        model_parallel_size=model_parallel_size,
+    )
+    resolved_model_parallel_size = (
+        int(os.environ.get("NIMLOTH_DDP_GPU_STRIDE", "1"))
+        if model_parallel_size is None
+        else int(model_parallel_size)
+    )
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     base_model_path: Path | str = args.model
     resume_applied = False
@@ -183,6 +270,12 @@ def load_backbone(
         query_adapter = install_query_embedding_adapter(model, query_token_ids)
     if not pair_parallel:
         model.to(device)
+    else:
+        _validate_model_parallel_placement(
+            model,
+            input_device=device,
+            model_parallel_size=resolved_model_parallel_size,
+        )
     return LoadedBackbone(
         backbone=Qwen25VLBackbone(
             model,

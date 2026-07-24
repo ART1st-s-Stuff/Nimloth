@@ -40,6 +40,11 @@ def build_vision_ema(*args, **kwargs):
     return build(*args, **kwargs)
 
 
+def model_output_device(*args, **kwargs):
+    from nimloth.backbone.qwen25vl.factory import model_output_device as resolve
+    return resolve(*args, **kwargs)
+
+
 def resolve_tune_modes(args):
     from nimloth.backbone.qwen25vl.tuning import resolve_tune_modes as resolve
     return resolve(args)
@@ -76,6 +81,7 @@ __all__ = [
     "build_input_builder",
     "build_vision_ema",
     "load_backbone",
+    "model_output_device",
     "resolve_tune_modes",
     "resolve_vision_ema",
     "uses_lora",

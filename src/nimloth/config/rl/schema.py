@@ -55,6 +55,8 @@ class ActorConfig:
     enabled: bool = False
     entropy_coeff: float = 0.0
     clip_ratio: float = 0.2
+    credit_assignment: str = "action"
+    max_reasoning_tokens: int = 64
 
 
 @dataclass(frozen=True)
@@ -113,11 +115,18 @@ class TrainingConfig:
 
 @dataclass(frozen=True)
 class DistributedConfig:
-    """一次 RL allocation 的节点数与全局 GPU/rank 数。"""
+    """一次 RL allocation 的训练 rank、每 rank GPU 与 rollout TP。"""
 
     nodes: int = 1
     world_size: int = 1
+    gpus_per_rank: int = 1
     rollout_tensor_parallel_size: int = 1
+
+    @property
+    def total_gpus(self) -> int:
+        """配置要求的物理 GPU 总数。"""
+
+        return self.world_size * self.gpus_per_rank
 
 
 @dataclass(frozen=True)
@@ -165,7 +174,13 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     actor = _section(
         raw,
         "actor",
-        {"enabled", "entropy_coeff", "clip_ratio"},
+        {
+            "enabled",
+            "entropy_coeff",
+            "clip_ratio",
+            "credit_assignment",
+            "max_reasoning_tokens",
+        },
     )
     freeze = _section(raw, "freeze", {"state_proj"})
     gradient = _section(
@@ -210,7 +225,12 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     distributed = _section(
         raw,
         "distributed",
-        {"nodes", "world_size", "rollout_tensor_parallel_size"},
+        {
+            "nodes",
+            "world_size",
+            "gpus_per_rank",
+            "rollout_tensor_parallel_size",
+        },
     )
 
     distributed_config = DistributedConfig(
@@ -219,6 +239,10 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             distributed.get("world_size", 1),
             "distributed.world_size",
         ),
+        gpus_per_rank=_positive_int(
+            distributed.get("gpus_per_rank", 1),
+            "distributed.gpus_per_rank",
+        ),
         rollout_tensor_parallel_size=_positive_int(
             distributed.get("rollout_tensor_parallel_size", 1),
             "distributed.rollout_tensor_parallel_size",
@@ -226,13 +250,15 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     )
     if distributed_config.nodes > distributed_config.world_size:
         raise ValueError("distributed.nodes cannot exceed distributed.world_size")
+    if distributed_config.gpus_per_rank not in {1, 2}:
+        raise ValueError("distributed.gpus_per_rank currently supports only 1 or 2")
     if (
         distributed_config.rollout_tensor_parallel_size
-        > distributed_config.world_size
+        > distributed_config.total_gpus
     ):
         raise ValueError(
             "distributed.rollout_tensor_parallel_size cannot exceed "
-            "distributed.world_size"
+            "distributed total_gpus"
         )
 
     actor_config = ActorConfig(
@@ -243,9 +269,16 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             allow_zero=True,
         ),
         clip_ratio=float(actor.get("clip_ratio", 0.2)),
+        credit_assignment=str(actor.get("credit_assignment", "action")),
+        max_reasoning_tokens=_positive_int(
+            actor.get("max_reasoning_tokens", 64),
+            "actor.max_reasoning_tokens",
+        ),
     )
     if not 0.0 < actor_config.clip_ratio < 1.0:
         raise ValueError("actor.clip_ratio must be in (0, 1)")
+    if actor_config.credit_assignment not in {"action", "turn"}:
+        raise ValueError("actor.credit_assignment must be action or turn")
 
     rollout_config = parse_rollout_config(raw.get("rollout"))
     checkpoint_metric = str(

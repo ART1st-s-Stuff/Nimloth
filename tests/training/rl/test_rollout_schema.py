@@ -54,6 +54,43 @@ def _trajectory() -> RolloutTrajectory:
     )
 
 
+def _turn_trajectory() -> RolloutTrajectory:
+    trajectory = _trajectory()
+    prompt = NimlothPromptTemplate(latent_token_count=1, action_count=8)
+    response = (
+        "<think>Move toward the couch.</think><|latent_state|>"
+        "<|action_start|><|action_(0)|><|action_end|>"
+    )
+    trajectory.assistant_responses = [response]
+    trajectory.policy_credit_assignment = "turn"
+    trajectory.policy_token_ids = [[100, 101, 102, 103]]
+    trajectory.policy_token_log_probs = [[
+        -0.2,
+        None,
+        -math.log(8.0),
+        None,
+    ]]
+    trajectory.policy_loss_masks = [[True, False, True, False]]
+    trajectory.policy_token_roles = [[
+        "reasoning",
+        "injected",
+        "action",
+        "injected",
+    ]]
+    trajectory.policy_action_token_ids = [[102, 202, 203, 204, 205, 206, 207, 208]]
+    trajectory.policy_reasoning_texts = ["Move toward the couch."]
+    trajectory.policy_finish_reasons = ["stop"]
+    trajectory.policy_reasoning_truncated = [False]
+    transcript = trajectory.transcript()
+    trajectory.policy_messages = [
+        prompt.build_response_policy_prompt(
+            transcript.policy_prefix(0)
+        ).unbound_messages()
+    ]
+    trajectory.messages = prompt.build_supervised_prompt(transcript).unbound_messages()
+    return trajectory
+
+
 def test_rl_policy_protocol_requires_positive_k_inject() -> None:
     assert validate_agent_policy_protocol(SimpleNamespace(
         nimloth_latent_token_count=1,
@@ -150,4 +187,58 @@ def test_legacy_latent_count_cannot_drift_from_template_spec() -> None:
     trajectory = _trajectory()
     trajectory.latent_token_count = 8
     with pytest.raises(RuntimeError, match="does not match the prompt template"):
+        validate_trajectories([trajectory])
+
+
+def test_turn_credit_roundtrip_separates_behavior_and_state_prompts() -> None:
+    trajectory = _turn_trajectory()
+
+    validate_trajectories([trajectory])
+    restored = RolloutTrajectory.from_record(trajectory.to_record())
+
+    assert restored.build_policy_prompt(0).messages[-1]["content"] == "<think>"
+    state_prefix = restored.build_state_prompt(0).messages[-1]["content"]
+    assert state_prefix.endswith("<|latent_state|><|action_start|>")
+    assert "Move toward the couch." not in state_prefix
+    assert "<|action_(0)|>" not in state_prefix
+    assert restored.build_state_prompt(1).messages[-1]["content"] == state_prefix
+    assert all(
+        "Move toward the couch." not in str(message["content"])
+        for message in restored.build_state_prompt(1).messages
+    )
+    assert restored.policy_token_trace(0) == trajectory.policy_token_trace(0)
+
+
+def test_turn_trace_action_token_must_match_action_index() -> None:
+    trajectory = _turn_trajectory()
+    trajectory.policy_token_ids[0][2] = 202
+
+    with pytest.raises(RuntimeError, match="does not match action_index"):
+        validate_trajectories([trajectory])
+
+
+def test_turn_trace_action_log_prob_must_match_behavior_distribution() -> None:
+    trajectory = _turn_trajectory()
+    trajectory.policy_token_log_probs[0][2] = -0.3
+
+    with pytest.raises(RuntimeError, match="does not match action_log_probs"):
+        validate_trajectories([trajectory])
+
+
+def test_turn_response_must_match_reasoning_and_action_trace() -> None:
+    trajectory = _turn_trajectory()
+    trajectory.assistant_responses[0] = trajectory.assistant_responses[0].replace(
+        "action_(0)",
+        "action_(1)",
+    )
+
+    with pytest.raises(RuntimeError, match="assistant response does not match"):
+        validate_trajectories([trajectory])
+
+
+def test_reasoning_truncation_metadata_must_be_consistent() -> None:
+    trajectory = _turn_trajectory()
+    trajectory.policy_reasoning_truncated[0] = True
+
+    with pytest.raises(RuntimeError, match="truncation must match finish_reason"):
         validate_trajectories([trajectory])

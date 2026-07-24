@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 import torch
@@ -39,12 +40,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--seed-offset", type=int, default=1)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.95)
+    ap.add_argument(
+        "--credit-assignment",
+        choices=("action", "turn"),
+        default="action",
+    )
+    ap.add_argument("--max-reasoning-tokens", type=int, default=64)
     ap.add_argument("--attn-implementation", default="sdpa")
     ap.add_argument("--max-pixels", type=int, default=3136)
     ap.add_argument("--backend", choices=("hf", "vllm"), default="hf")
     ap.add_argument("--tensor-parallel-size", type=int, default=1)
     ap.add_argument("--max-model-len", type=int, default=32768)
     ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    ap.add_argument("--vllm-enforce-eager", action="store_true")
     ap.add_argument(
         "--vllm-distributed-executor-backend",
         choices=("mp", "ray"),
@@ -160,9 +168,14 @@ def main(argv: list[str] | None = None) -> int:
             max_images=args.max_steps + 1,
             gpu_memory_utilization=args.gpu_memory_utilization,
             latent_token_count=latent_token_count,
+            credit_assignment=args.credit_assignment,
+            max_reasoning_tokens=args.max_reasoning_tokens,
             distributed_executor_backend=args.vllm_distributed_executor_backend,
+            enforce_eager=args.vllm_enforce_eager,
         )
     else:
+        if args.credit_assignment != "action":
+            raise ValueError("turn credit rollout requires --backend vllm")
         from transformers import AutoConfig
         from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 
@@ -206,12 +219,24 @@ def main(argv: list[str] | None = None) -> int:
             trajectory_path=args.output_dir / "trajectories.jsonl",
             num_trajectories=len(trajectories),
         ).write(manifest_path)
+    finish_reasons = Counter(
+        reason
+        for trajectory in trajectories
+        for reason in trajectory.policy_finish_reasons
+        if reason is not None
+    )
     print(json.dumps({
         "status": "ALL_OK",
         "num_trajectories": len(trajectories),
         "num_transitions": sum(t.num_steps for t in trajectories),
         "jsonl": str(args.output_dir / "trajectories.jsonl"),
         "fresh_manifest": str(manifest_path) if manifest_path else None,
+        "reasoning_truncated": sum(
+            int(value)
+            for trajectory in trajectories
+            for value in trajectory.policy_reasoning_truncated
+        ),
+        "reasoning_finish_reasons": dict(sorted(finish_reasons.items())),
     }), flush=True)
     return 0
 

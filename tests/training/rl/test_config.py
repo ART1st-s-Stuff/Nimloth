@@ -57,10 +57,14 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert config.predictor.sigreg_num_proj == 1024
     assert config.predictor.sigreg_knots == 17
     assert config.actor.enabled is False
+    assert config.actor.credit_assignment == "action"
+    assert config.actor.max_reasoning_tokens == 64
     assert config.gradient.representation_to_backbone is True
     assert config.agent.planning.enabled is False
     assert config.distributed.nodes == 1
     assert config.distributed.world_size == 1
+    assert config.distributed.gpus_per_rank == 1
+    assert config.distributed.total_gpus == 1
     assert config.distributed.rollout_tensor_parallel_size == 1
 
 
@@ -68,14 +72,17 @@ def test_rl_config_parses_heterogeneous_distributed_topology() -> None:
     raw = _raw_config()
     raw["distributed"] = {
         "nodes": 3,
-        "world_size": 8,
+        "world_size": 4,
+        "gpus_per_rank": 2,
         "rollout_tensor_parallel_size": 8,
     }
 
     config = parse_rl_config(raw)
 
     assert config.distributed.nodes == 3
-    assert config.distributed.world_size == 8
+    assert config.distributed.world_size == 4
+    assert config.distributed.gpus_per_rank == 2
+    assert config.distributed.total_gpus == 8
     assert config.distributed.rollout_tensor_parallel_size == 8
 
 
@@ -91,6 +98,11 @@ def test_rl_config_rejects_impossible_distributed_topology() -> None:
         "rollout_tensor_parallel_size": 8,
     }
     with pytest.raises(ValueError, match="tensor_parallel_size cannot exceed"):
+        parse_rl_config(raw)
+
+    raw = _raw_config()
+    raw["distributed"] = {"world_size": 2, "gpus_per_rank": 3}
+    with pytest.raises(ValueError, match="gpus_per_rank currently supports"):
         parse_rl_config(raw)
 
 
@@ -109,6 +121,27 @@ def test_rl_config_parses_agent_planning() -> None:
     assert config.agent.planning.enabled is True
     assert config.agent.planning.horizon == 3
     assert config.agent.planning.beam_width == 6
+
+
+def test_rl_config_parses_turn_credit_assignment() -> None:
+    raw = _raw_config()
+    raw["actor"] = {
+        "enabled": True,
+        "credit_assignment": "turn",
+        "max_reasoning_tokens": 32,
+    }
+
+    config = parse_rl_config(raw)
+
+    assert config.actor.credit_assignment == "turn"
+    assert config.actor.max_reasoning_tokens == 32
+
+
+def test_rl_config_rejects_unknown_credit_assignment() -> None:
+    raw = _raw_config()
+    raw["actor"] = {"credit_assignment": "bi_level_gae"}
+    with pytest.raises(ValueError, match="credit_assignment"):
+        parse_rl_config(raw)
 
 
 def test_rl_config_rejects_unknown_checkpoint_metric() -> None:

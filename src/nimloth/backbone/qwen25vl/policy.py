@@ -12,6 +12,7 @@ from nimloth.agent import (
     AgentPrompt,
     PolicyDecision,
     PolicyReplayInput,
+    PolicyReplayOutput,
     behavior_log_probs,
     categorical_entropy_from_log_probs,
     sample_policy_decision,
@@ -64,6 +65,7 @@ def render_policy_messages(
     processor: Any,
     *,
     latent_token_count: int,
+    continue_final_message: bool = True,
 ) -> str:
     """Render a policy prompt without putting runtime images in a JSON cache key.
 
@@ -89,6 +91,7 @@ def render_policy_messages(
         renderable,
         tokenize=False,
         add_generation_prompt=False,
+        continue_final_message=continue_final_message,
     )
     return normalize_latent_state_blocks(text, latent_token_count)
 
@@ -118,8 +121,6 @@ def action_logits_for_messages(
         return_tensors="pt",
     )
     model_inputs = {key: value.to(device) for key, value in inputs.items()}
-    outputs = model(**model_inputs, output_hidden_states=False, return_dict=True)
-
     input_ids = model_inputs["input_ids"][0]
     action_start_positions = (
         input_ids == token_id_map[tokens.action_start]
@@ -127,11 +128,18 @@ def action_logits_for_messages(
     if action_start_positions.numel() == 0:
         raise RuntimeError("<|action_start|> token not found in Agent policy prompt")
     action_start_position = int(action_start_positions[-1].item())
+    logits_to_keep = _logits_to_keep_positions([action_start_position])
+    outputs = model(
+        **model_inputs,
+        logits_to_keep=logits_to_keep,
+        output_hidden_states=False,
+        return_dict=True,
+    )
     action_token_ids = torch.tensor(
         [token_id_map[token] for token in tokens.action_tokens],
         device=outputs.logits.device,
     )
-    return outputs.logits[0, action_start_position, action_token_ids].float()
+    return outputs.logits[0, 0, action_token_ids].float()
 
 
 class QwenAgentPolicy:
@@ -264,6 +272,165 @@ def replay_rollout_action_log_probs(
         )
 
 
+def _row_entropies(log_probs: torch.Tensor) -> torch.Tensor:
+    probabilities = log_probs.exp()
+    terms = torch.where(
+        probabilities > 0,
+        probabilities * log_probs,
+        torch.zeros_like(log_probs),
+    )
+    return -terms.sum(dim=-1)
+
+
+def _logits_to_keep_positions(positions: Sequence[int]) -> list[int]:
+    """Build a native position index for device-mapped Qwen replay.
+
+    A Python list is a valid PyTorch advanced index and Accelerate leaves its
+    integer elements unchanged.  A tensor, including one initially created on
+    CPU, is moved by the top-level device hook to Qwen's input GPU; that is the
+    wrong device when the final norm/lm_head and hidden states are placed on a
+    second GPU.
+    """
+
+    return [int(position) for position in positions]
+
+
+def replay_policy_token_log_probs(
+    *,
+    samples: Sequence[PolicyReplayInput],
+    model: torch.nn.Module,
+    processor: Any,
+    token_id_map: dict[str, int],
+    device: torch.device,
+) -> PolicyReplayOutput:
+    """只在 trajectory loss-mask 位置重放 response token 概率。
+
+    reasoning token 使用完整词表但屏蔽 Nimloth 注入 token；action token 只使用八个
+    action token。``logits_to_keep`` 在 ``lm_head`` 前选择位置，避免生成整段 prompt
+    的 full-vocabulary logits。
+    """
+
+    if not samples or any(sample.token_trace is None for sample in samples):
+        raise ValueError("token policy replay requires a trace for every sample")
+    tokens = LatentActionTokens()
+    action_token_ids = tuple(token_id_map[token] for token in tokens.action_tokens)
+    injected_token_ids = tuple(token_id_map.values())
+    selected_log_probs: list[torch.Tensor] = []
+    entropies: list[torch.Tensor] = []
+
+    for sample in samples:
+        trace = sample.token_trace
+        assert trace is not None
+        if trace.action_token_ids != action_token_ids:
+            raise ValueError(
+                "recorded action token mapping does not match current tokenizer"
+            )
+        if sample.credit_assignment == "turn":
+            assert sample.assistant_response is not None
+            response_prefix = "<think>"
+            if not sample.assistant_response.startswith(response_prefix):
+                raise ValueError("turn response must start with '<think>'")
+            encoded_continuation = tuple(
+                int(value)
+                for value in processor.tokenizer.encode(
+                    sample.assistant_response[len(response_prefix) :],
+                    add_special_tokens=False,
+                )
+            )
+            if encoded_continuation != trace.token_ids:
+                raise ValueError(
+                    "assistant response does not tokenize to the recorded policy trace"
+                )
+        bound_messages = sample.prompt.bound_messages()
+        text = render_policy_messages(
+            bound_messages,
+            processor,
+            latent_token_count=sample.latent_token_count,
+        )
+        images = collect_policy_images(bound_messages)
+        inputs = processor(
+            text=[text],
+            images=[images] if images else None,
+            padding=True,
+            return_tensors="pt",
+        )
+        model_inputs = {key: value.to(device) for key, value in inputs.items()}
+        prompt_length = int(model_inputs["input_ids"].shape[1])
+        continuation = torch.tensor(
+            [trace.token_ids],
+            dtype=model_inputs["input_ids"].dtype,
+            device=device,
+        )
+        model_inputs["input_ids"] = torch.cat(
+            (model_inputs["input_ids"], continuation),
+            dim=1,
+        )
+        if "attention_mask" in model_inputs:
+            extension = torch.ones(
+                (1, continuation.shape[1]),
+                dtype=model_inputs["attention_mask"].dtype,
+                device=device,
+            )
+            model_inputs["attention_mask"] = torch.cat(
+                (model_inputs["attention_mask"], extension),
+                dim=1,
+            )
+        selected_indices = [
+            index for index, selected in enumerate(trace.loss_mask) if selected
+        ]
+        logits_to_keep = _logits_to_keep_positions(
+            [prompt_length - 1 + index for index in selected_indices]
+        )
+        outputs = model(
+            **model_inputs,
+            logits_to_keep=logits_to_keep,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+        selected_token_ids = [trace.token_ids[index] for index in selected_indices]
+        selected_roles = [trace.token_roles[index] for index in selected_indices]
+        for row, token_id, role in zip(
+            outputs.logits[0],
+            selected_token_ids,
+            selected_roles,
+            strict=True,
+        ):
+            logits = row.float()
+            if role == "action":
+                role_logits = logits[
+                    torch.tensor(action_token_ids, dtype=torch.long, device=logits.device)
+                ]
+                try:
+                    selected_index = action_token_ids.index(token_id)
+                except ValueError as error:
+                    raise ValueError(
+                        f"recorded action token id {token_id} is outside action vocabulary"
+                    ) from error
+            elif role == "reasoning":
+                role_logits = logits.clone()
+                role_logits[
+                    torch.tensor(
+                        injected_token_ids,
+                        dtype=torch.long,
+                        device=logits.device,
+                    )
+                ] = float("-inf")
+                selected_index = token_id
+            else:
+                raise ValueError("injected token appeared in PPO loss mask")
+            log_probs = behavior_log_probs(
+                role_logits,
+                temperature=sample.sampling_temperature,
+                top_p=sample.sampling_top_p,
+            )
+            selected_log_probs.append(log_probs[selected_index])
+            entropies.append(_row_entropies(log_probs.unsqueeze(0))[0])
+    return PolicyReplayOutput(
+        selected_log_probs=torch.stack(selected_log_probs),
+        entropies=torch.stack(entropies),
+    )
+
+
 class QwenActionLogProbReplay:
     """保存 Qwen policy 重放所需的 processor 与 token 协议。"""
 
@@ -283,11 +450,27 @@ class QwenActionLogProbReplay:
     def __call__(
         self,
         samples: tuple[PolicyReplayInput, ...],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return replay_rollout_action_log_probs(
+    ) -> PolicyReplayOutput:
+        traced = [sample.token_trace is not None for sample in samples]
+        if any(traced) and not all(traced):
+            raise ValueError("one PPO batch cannot mix traced and legacy policy samples")
+        if all(traced):
+            with evaluating(self.model):
+                return replay_policy_token_log_probs(
+                    samples=samples,
+                    model=self.model,
+                    processor=self.processor,
+                    token_id_map=self.token_id_map,
+                    device=self.device,
+                )
+        selected, distributions = replay_rollout_action_log_probs(
             samples=samples,
             model=self.model,
             processor=self.processor,
             token_id_map=self.token_id_map,
             device=self.device,
+        )
+        return PolicyReplayOutput(
+            selected_log_probs=selected,
+            entropies=_row_entropies(distributions),
         )
