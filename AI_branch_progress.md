@@ -1835,3 +1835,30 @@
   `PlanningPolicy` 仍走固定模板 thought，terminal state 也退回模板；reasoning 达到上限
   未生成 `</think>` 时会静默注入关闭标记，且未持久化 truncated/finish reason 或指标。
   修复这些一致性问题前禁止重启 turn-credit PPO。
+
+## 2026-07-24：RL ID89 首次进入 turn-credit replay 后 activation OOM
+
+- ID89 使用 corrected ID46 `epoch_001`、dgx-06×3 + dgx-23×5、Ray 8 GPU、
+  rollout TP4、H=4、turn credit CoT32。vLLM eager 完成 4 trajectories / 20
+  transitions，fresh manifest 只消费一次；19轮正常 stop，1轮 CoT32 length
+  truncation 的 provenance 已持久化。
+- 8个 FSDP rank 均在第一个 PPO `policy_replay` 的 Qwen decoder forward OOM，
+  最早位于 post-attention RMSNorm；每卡约占79.16/79.19GiB，只剩6--20MiB。
+  无首个loss、optimizer step或checkpoint，CSV只有表头，ID89不可恢复。W&B
+  `cugevcpx` 的 finished 仅表示进程结束，不代表训练成功。
+- 这证明 vLLM、多节点通信、freshness 和 replay入口均已通过；当前阻塞是单卡承载
+  完整 replay activation。FSDP 参数分片没有分割单层/单副本 activation。
+
+## 2026-07-24：RL 支持每 rank 两卡的真实模型并行
+
+- commit `c1a46ae` 新增 `distributed.gpus_per_rank`。`world_size` 保持训练进程数，
+  物理GPU总数严格由 `world_size * gpus_per_rank` 推导；当前只支持1或2。
+- `gpus_per_rank=1` 保留原 FSDP；`gpus_per_rank=2` 用 balanced Qwen layer placement
+  让每个副本实际覆盖同节点两卡，再以 DDP 同步4个训练rank。WM predictor、
+  ValueHead及其他可训练辅助模块也正式进入DDP；checkpoint使用replicated optimizer
+  state，不再误用FSDP rank shard恢复规则。
+- launcher按每节点GPU数除以`gpus_per_rank`计算local/global ranks，奇数卡节点在
+  rollout前fail-fast；因此支持2+6、4+4等偶数异构拓扑，不允许一个Qwen副本跨节点。
+- 服务器完整 `tests/training/rl tests/backbone/qwen25vl`：`103 passed, 1 warning`。
+  corrected epoch1的meta-device probe确认balanced映射覆盖两卡，final norm/lm_head
+  位于第二卡。真实多卡forward/backward/optimizer仍需新ID GPU smoke验证。

@@ -499,3 +499,16 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - planner 的固定 thought 与训练 state 的真实采样 CoT 存在输入分布漂移；未采样到
   `</think>` 时的静默注入也没有 truncation/finish-reason provenance。以上问题尚未
   修改，下一次 GPU PPO 必须在修复并增加真实多模态测试后使用新 ID/fresh rollout。
+
+## 2026-07-24：ID89 rollout成功，首个PPO replay activation OOM
+
+- turn-credit一致性修复后的ID89在dgx-06×3 + dgx-23×5完成TP4 eager rollout：
+  4 trajectories、20 transitions、fresh manifest一次性消费和8-rank训练初始化均通过。
+- 所有rank在第一个HF Qwen policy replay forward OOM，尚未产生loss或optimizer step；
+  每卡约79.16/79.19GiB，失败点为decoder post-attention RMSNorm额外申请约20MiB。
+  无checkpoint且manifest已消费，不能resume。
+- commit `c1a46ae` 将下一次训练改为config驱动的4 ranks×2 GPUs/rank：单副本通过
+  balanced layer placement真实拆到同节点两卡，rank间使用DDP；物理GPU总数仍为8。
+  可训练WM/value同步与replicated optimizer checkpoint语义同时补全。
+- 服务器CPU回归`103 passed, 1 warning`；epoch1空权重映射探针确认两卡均被使用。
+  尚未验证真实双卡Qwen forward/backward/optimizer，必须以新ID和空输出目录smoke。
