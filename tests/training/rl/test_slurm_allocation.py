@@ -7,6 +7,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HELPER = REPO_ROOT / "experiments/training/rl/slurm_allocation.sh"
+CONTROLLER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_slurm.sh"
 
 
 def _load_counts(job_details: str) -> list[str]:
@@ -53,3 +54,11 @@ JOB_GRES=gpu:5
 """
 
     assert _load_counts(details) == ["dgx-10=1", "dgx-12=4"]
+
+
+def test_ray_workers_receive_repo_pythonpath_and_are_import_probed() -> None:
+    controller = CONTROLLER.read_text(encoding="utf-8")
+
+    assert controller.count('env PYTHONPATH="${RAY_PYTHONPATH}"') == 2
+    assert "def import_nimloth()" in controller
+    assert "import_nimloth.options(resources={resource: 0.001})" in controller
