@@ -523,3 +523,5 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - CSV只有表头，无finite loss、optimizer step或checkpoint；W&B `qo3lkimp`。ID90因
   manifest已消费而不可恢复。下一步在两条replay路径统一使用CPU indices，经测试后以
   ID91和fresh rollout重试。
+- commit `39925e1` 完成上述修复；服务器定向测试`3 passed`，完整RL/Qwen suite为
+  `104 passed, 1 warning`。真实双卡forward/backward仍由ID91验证。

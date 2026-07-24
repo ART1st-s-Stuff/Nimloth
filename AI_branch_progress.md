@@ -1875,3 +1875,5 @@
   不一致；CSV仅表头，无finite loss、optimizer step或checkpoint，W&B为`qo3lkimp`。
 - ID90不可恢复：manifest已消费且无checkpoint。修复要求action-only与turn replay统一
   使用Transformers支持的CPU position index；通过回归后须用ID91、空输出和fresh rollout。
+- commit `39925e1` 已将两条路径的position index统一为CPU tensor，并增加设备回归断言；
+  服务器完整 `tests/training/rl tests/backbone/qwen25vl` 为 `104 passed, 1 warning`。
