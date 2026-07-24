@@ -23,11 +23,15 @@ CACHE_METADATA_DIR=${RUN_ROOT}/cache/build_metadata
 TRAIN_OUT=${RUN_ROOT}/train
 TRAIN_JSONL=${DATA_DIR}/train_terminal_cot.jsonl
 VAL_JSONL=${DATA_DIR}/val_terminal_cot.jsonl
-CONTROLLER_LOG=${RUN_ROOT}/controller.log
+CONTROLLER_LOG=${RUN_ROOT}.controller.log
 EXPERIMENT_README=${RUN_ROOT}/README.md
 
 if [[ -e "${RUN_ROOT}" ]]; then
   echo "ERROR RUN_ROOT already exists: ${RUN_ROOT}" >&2
+  exit 1
+fi
+if [[ -e "${CONTROLLER_LOG}" ]]; then
+  echo "ERROR controller log already exists: ${CONTROLLER_LOG}" >&2
   exit 1
 fi
 for required in "${CONFIG}" "${MODEL_PATH}/config.json" \
@@ -71,6 +75,7 @@ printf '%s\n' \
   "- Slurm：job ${SLURM_JOB_ID}，1 node，8 visible GPUs，node ${SLURM_JOB_NODELIST}" \
   "- W&B：nimloth-sft2/${WANDB_RUN_NAME}" \
   "- 输出：${RUN_ROOT}" \
+  "- controller log：${CONTROLLER_LOG}" \
   "- 初始化模型：${MODEL_PATH}" \
   "- auxiliary warm start：ID33（由 ${CONFIG} 固定）；新 optimizer，不 resume ID46。" \
   "- 原始数据：train ${SOURCE_TRAIN_JSONL} (${TRAIN_RECORDS})；val ${SOURCE_VAL_JSONL} (${VAL_RECORDS})。" \

@@ -48,7 +48,8 @@
   ID48、相同已确认训练与terminal-CoT参数，并从SFT1+ID33 warm start启动全新optimizer。
 - 新增单一allocation pipeline：在1节点8卡内依次生成3217/355条terminal CoT、构建
   新compact preprocess cache、再启动world8 SFT2。pipeline校验commit、单节点和实际
-  8张可见GPU，输出完整README和阶段日志；旧fixed-terminal cache无法复用。
+  8张可见GPU，输出完整README和位于run目录旁的controller阶段日志；旧fixed-terminal
+  cache无法复用。
 
 ## 当前启动参数
 
