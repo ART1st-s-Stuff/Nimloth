@@ -552,3 +552,14 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   optimizer参数顺序同步Qwen、WM predictor、ValueHead全部gradient并除以world size。
 - commit `d4d57cf` 已实现；服务器定向测试`7 passed`，扩展完整suite
   `110 passed, 1 warning`。仍需ID94真实backward/optimizer验证。
+
+## 2026-07-24：ID94 双卡online PPO smoke ALL_OK
+
+- ID94在dgx-40×4 + dgx-48×4完成4条fresh rollout / 20 transitions、turn-credit replay、
+  local backward、deterministic gradient averaging和optimizer；`global_step=1`，无OOM、
+  device error或NCCL timeout。whole-model multi-device DDP已由manual sync正式替代。
+- finite losses：WM `4.529062`、SIGReg `3.200135`、value `0.462340`、actor
+  `-0.029961`、entropy `0.545880`、total `5.275996`；W&B `sea8ua12` finished。
+- `iter_0001/final/latest`均含完整HF、13.09GB optimizer state、WM、ValueHead和grid
+  auxiliaries；hold `486283`已释放。继续训练需新fresh manifest与显式resume流程，ID94
+  manifest不可复用，end-to-end continuation尚未验证。

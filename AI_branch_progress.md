@@ -1914,3 +1914,20 @@
   backward后由OptimizationRuntime按optimizer参数组稳定顺序逐gradient all-reduce并取均值。
 - commit `d4d57cf` 完成deterministic manual gradient sync；服务器定向测试`7 passed`，
   扩展完整RL/Qwen/common suite为`110 passed, 1 warning`。
+
+## 2026-07-24：RL ID94 首次完成双卡副本online PPO optimizer step
+
+- commit `b453522`，allocation `486283` 的 dgx-40×4 + dgx-48×4；TP4 eager完成
+  `base_train` seeds1--4的4条fresh trajectory / 20 transitions，rewards为
+  `-0.1/-0.2/0.0/-0.1`，19轮stop与1轮length truncation，manifest只消费一次。
+- 4 ranks×2 GPUs/rank完成native replay、loss scalar对齐、local backward、按optimizer
+  参数顺序确定性gradient averaging和optimizer step；`global_step=1`，whole-model
+  multi-device DDP不再使用。iteration update耗时6.4秒，无OOM/NCCL/device error。
+- finite metrics：WM MSE `4.529062`、SIGReg `3.200135`、value `0.462340`、actor
+  `-0.029961`、entropy `0.545880`、total `5.275996`、ratio `0.961459`、clip fraction
+  `0.041667`、policy tokens48；success0/4只作为smoke现象，不解释policy质量。
+- W&B `sea8ua12`为finished/global_step1。`iter_0001/final/latest`三套checkpoint完整：
+  两个HF shard、13.09GB replicated optimizer state、WM/ValueHead/state projector/grid
+  auxiliaries均存在且无tmp。hold `486283`已取消释放8卡。
+- `latest`结构上可恢复，但继续训练必须新生成fresh manifest、提高iterations并显式
+  `--resume`；当前one-shot launcher尚未验证这一continuation流程，不能复用ID94 manifest。
