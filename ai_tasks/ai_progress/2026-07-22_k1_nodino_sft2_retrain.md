@@ -482,3 +482,20 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - 服务器 CPU 回归：`tests/training/rl tests/agent tests/backbone/qwen25vl` 为
   `99 passed, 1 warning`。尚未启动新 GPU rollout/optimizer step；GPU smoke 仍需新的
   on-experiment-start 确认、新 ID、输出目录和 fresh manifest。
+
+## 2026-07-24：ID83/84 GPU smoke 收尾与 turn-credit 审计
+
+- ID83 在 rollout 前失败于压缩 Slurm GRES 解析；`c879278` 用共享 helper 展开
+  `dgx-[40,48]` 并同时修复 rollout/train 两处读取，两个纯 parser 测试和 `bash -n`
+  通过。ID83 无 trajectory/checkpoint，不可恢复。
+- ID84 获得 `dgx-40:4 + dgx-48:4`，Ray 识别 8 GPU 且 environment health 通过；
+  vLLM 0.11 在生成前的 TP4 profile run rank 3 报 Torch Inductor/Triton
+  `CUDA driver error: invalid argument`。无 W&B、trajectory、FSDP forward、optimizer
+  或 checkpoint；README 已更新，hold `486070` 已取消。
+- 对新 turn-credit 路径只读核对后确认当前不能继续 PPO：第二段 vLLM request 会让
+  已多模态展开的 token prompt 携同图片再次进入 placeholder processing，破坏
+  behavior/replay 条件一致性；token trace validation 没有校验 action token 与实际
+  action/旧动作概率/response 的对应关系。
+- planner 的固定 thought 与训练 state 的真实采样 CoT 存在输入分布漂移；未采样到
+  `</think>` 时的静默注入也没有 truncation/finish-reason provenance。以上问题尚未
+  修改，下一次 GPU PPO 必须在修复并增加真实多模态测试后使用新 ID/fresh rollout。

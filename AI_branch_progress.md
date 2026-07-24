@@ -1814,3 +1814,24 @@
   服务器 Transformers 4.55.4 源码已确认该语义。
 - 服务器相关 CPU suite 为 `99 passed, 1 warning`。尚无新 GPU experiment；下一次
   online PPO 必须使用新 ID/output/fresh manifest，并先触发 on-experiment-start。
+
+## 2026-07-24：RL ID83/84 GPU 启动失败与 turn-credit 一致性阻塞
+
+- ID83 在 rollout 前发现 Slurm `scontrol` 会把相同 per-node GRES 压缩为
+  `Nodes=dgx-[40,48] ... GRES=gpu:4`；旧 launcher 只匹配单节点文本。commit
+  `c879278` 增加共享 node-expression 展开器，并同时接入 Ray rollout 与 FSDP train
+  launcher；压缩均匀分配和逐节点异构分配两个 parser 测试通过。
+- ID84 使用 `dgx-40:4 + dgx-48:4`、corrected ID46 `epoch_001`、TP4/world8。
+  Ray 8 GPU 与 navigation environment 均健康，但 vLLM 0.11 在 TP4 profile run 的
+  rank 3 Torch Inductor/Triton kernel 报 `CUDA driver error: invalid argument`；生成、
+  trajectory、W&B、FSDP 与 optimizer 均未开始。ID84 无 checkpoint、不可恢复，hold
+  `486070` 已取消释放。
+- turn-credit 只读复核确认两个 PPO correctness blocker：第二段 action request 把第一段
+  已多模态展开的 `prompt_token_ids` 与同一图片再次交给 vLLM 0.11 processor，导致再次
+  placeholder update，action behavior 与 HF replay 不再共享同一条件序列；trajectory
+  validation 也未把唯一 action-role token、其 old log-prob 与 `action_index`、
+  `action_log_probs`、`assistant_response` 互相绑定。
+- 另有两个部署/可观测性缺口：WM/value state 对已执行 step 使用采样 CoT，而现有
+  `PlanningPolicy` 仍走固定模板 thought，terminal state 也退回模板；reasoning 达到上限
+  未生成 `</think>` 时会静默注入关闭标记，且未持久化 truncated/finish reason 或指标。
+  修复这些一致性问题前禁止重启 turn-credit PPO。
