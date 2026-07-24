@@ -20,8 +20,14 @@
   缺少 terminal CoT 生成步骤而 fail-fast，作为 TODO 保留；不得据此声称 planner PPO
   或完整 RL 已实现。
 - 冲突只出现在进度文档和两个 RL launcher 文档/字符串；launcher 统一保留
-  config-driven 异构节点与 `gpus_per_rank` 语义，不恢复固定两节点入口。尚待服务器
-  回归、提交推送和新 ID SFT2 重训。
+  config-driven 异构节点与 `gpus_per_rank` 语义，不恢复固定两节点入口。服务器定向
+  回归`213 passed, 1 skipped`；完整suite唯一失败来自独立worktree漏初始化RCDM，补齐
+  submodule后的对应suite为`7 passed`。merge `a87cab5`与P0补丁`628877f`已推送。
+- 上次暂停的ID47没有正式数据/cache/W&B/optimizer/checkpoint。新ID48严格复用已确认
+  参数但从SFT1+ID33 warm start启动全新optimizer：同一单节点8卡allocation依次生成
+  3217/355条真实terminal CoT、建新compact cache、启动2-epoch world8 SFT2。
+  `history_size=4`只表示SFT2历史窗口，不是`planning.horizon`。pipeline会校验commit、
+  实际8张可见GPU和全新输出目录，并持久化完整实验参数；待提交并监控到健康启动。
 
 ## 2026-07-24：SFT2 fixed terminal CoT 删除（待远端回归）
 

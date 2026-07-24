@@ -37,16 +37,36 @@
 - 首轮服务器扩展回归为 `180 passed, 1 skipped, 33 failed`；失败全部是旧测试仍构造
   action-only/fixed-state trajectory。没有恢复错误语义，而是补齐 RL trajectory 的
   current/terminal真实CoT字段和state重建，并把fixtures改为真实response/terminal。
-  `PlanningPolicy`与online collector的terminal生成仍是明确TODO；待第二轮服务器回归。
+  `PlanningPolicy`与online collector的terminal生成仍是明确TODO。
+- 第二轮服务器定向回归为 `213 passed, 1 skipped`。完整suite为
+  `296 passed, 1 skipped, 1 failed`，唯一失败是远端独立worktree未初始化RCDM
+  submodule；初始化后对应adapter suite为`7 passed`。因此全部可用测试通过；这些
+  结果不代表尚未实现的RL online terminal-CoT路径已经完成。
+- merge提交`a87cab5`和P0补丁`628877f`均已推送到`origin/dev`。远端使用独立干净
+  worktree `.worktree/dev-sft2-terminal-cot`，不覆盖旧的dirty dev worktree。
+- 已确认上次暂停实验ID47没有正式数据/cache/W&B/optimizer/checkpoint。重启使用新
+  ID48、相同已确认训练与terminal-CoT参数，并从SFT1+ID33 warm start启动全新optimizer。
+- 新增单一allocation pipeline：在1节点8卡内依次生成3217/355条terminal CoT、构建
+  新compact preprocess cache、再启动world8 SFT2。pipeline校验commit、单节点和实际
+  8张可见GPU，输出完整README和阶段日志；旧fixed-terminal cache无法复用。
 
-## 文件修改
+## 当前启动参数
 
-- 本进度文件。
+- 新ID：`48_terminalcot_dinogrid_k16_h4_untiedhead_fp32aux_all3217_ep2_b1_ga8_ws8_px100352`
+- terminal CoT：`temperature=0, top_p=1, top_k=-1, do_sample=false, n=1,
+  max_reasoning_tokens=128, seed=42, max_pixels=602112, flash_attention_2`。
+- SFT2：2 epochs，world8，per-rank B1，GA8，`history_size=4`（不是
+  `planning.horizon`），checkpoint每20分钟，metric=`val_wm_mse`。
+- 资源：`preempt`单节点8×H800、112 CPU、1000GiB、12小时。只提交一个hold。
 
 ## 验证命令与结果
 
 - `git fetch origin --prune`：成功。
 - `git status --short --branch`：两个目标 worktree 均干净并跟踪同名远端分支。
+- remote targeted tests：`213 passed, 1 skipped, 1 warning`。
+- remote full tests + initialized RCDM adapter rerun：除缺失submodule造成的首次失败外，
+  全部测试通过。
+- `bash -n experiments/training/sft2/run_terminal_cot_dino_grid_pipeline.sh`：通过。
 
 ## 待确认问题
 

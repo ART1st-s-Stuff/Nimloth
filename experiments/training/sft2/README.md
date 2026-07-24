@@ -9,6 +9,7 @@ code lives in `src/nimloth/training/sft2/`.
 | `train_vagen79_default.slurm` | Config-driven 8-GPU training job |
 | `build_preprocess_cache.py` | CPU preprocess-cache entry point |
 | `generate_terminal_cot.py` | 用 SFT1 初始化 checkpoint 离线生成并持久化 terminal CoT |
+| `run_terminal_cot_dino_grid_pipeline.sh` | 在一个 world8 hold 内串行生成 terminal CoT、建新 cache 并启动 DINO-grid SFT2 |
 | `build_compact_cache.slurm` | CPU-only compact-cache job |
 | `submit_cache_then_train.sh` | Cache job followed by dependency-gated training |
 | `submit_default_8gpu.sh` | Default LLM-freeze, vision-full run |
