@@ -445,3 +445,20 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   从自包含的 `state_proj.pt` 重建并做 shape 校验。
 - 尚未产生新的 GPU optimizer step；下一轮必须使用新 W&B ID、全新输出目录和 fresh
   rollout manifest。
+
+## 2026-07-24：online PPO turn rollout/replay 修复，等待新 ID 重提
+
+- ID83 因压缩 Slurm GRES 解析失败而在 rollout 前结束；`c879278` 已修复。ID84 在
+  normal 的 dgx-40×4 + dgx-48×4 完成 Ray/environment/TP4 gate，但 vLLM profile
+  于首次生成前在 Torch Inductor/Triton 报 CUDA driver invalid argument；无
+  trajectory、W&B、FSDP、optimizer step或checkpoint，job `486070` 已取消。
+- `b271807` 删除两段式多模态 vLLM 调用，改为 vLLM 0.11 V1 adapter 驱动的单请求
+  reasoning+action continuation；smoke 使用 eager mode。trace/trajectory/replay
+  严格绑定 action mapping、action_index、旧 action log-prob、response tokenization、
+  finish reason 和 truncation，强制补全 token 不参与 PPO。
+- WM/value 状态不消费 behavior 的随机 CoT，而是按动作重建固定模板历史，与
+  `PlanningPolicy` 部署状态一致；behavior PPO replay 继续使用真实 CoT prompt/trace。
+- 验证：本地 compileall、shell syntax、diff-check 通过；服务器定向 `31 passed`，
+  RL/Agent/Qwen 相关集合 `113 passed, 1 expected warning`；真实 vLLM 0.11 adapter
+  构造和 corrected ID46 epoch1 tokenizer encode/decode 往返通过。
+- 当前代码已推送并同步服务器 worktree；新 GPU 实验尚未提交，必须使用新 ID/output。

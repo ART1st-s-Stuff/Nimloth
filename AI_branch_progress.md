@@ -1816,6 +1816,30 @@
   位于 `state_proj.pt`。RL 按严格 tensor shape 重建并校验 Qwen/predictor 维度，不使用
   `strict=False` 或近似转换。下一步可用新 ID/output 重新启动 online PPO smoke。
 
+## 2026-07-24：RL ID83--84 启动失败与 turn behavior/replay 修复
+
+- ID83 在 rollout 前因 Slurm 压缩 GRES 表达式解析失败；commit `c879278` 修正为按
+  allocation 的逐节点 GPU 数解析。无 environment、rollout、W&B、optimizer step
+  或 checkpoint，ID83 不可恢复。
+- ID84 获得 normal 分区 dgx-40×4 + dgx-48×4；Ray 8 GPU gate、environment 和
+  TP4 placement 均通过，但 vLLM profile 在生成前进入 Torch Inductor/Triton 编译并
+  报 `CUDA driver error: invalid argument`。无 trajectory、W&B、FSDP、optimizer
+  step 或 checkpoint；job `486070` 已取消并释放全部 GPU，ID84 不可恢复。
+- commit `b271807` 将 turn-credit 改为单个多模态 vLLM request：per-request logits
+  processor 在同一 continuation 中采样 reasoning、注入 latent/action 边界并约束
+  action，图片不再被第二次 processor 展开。smoke 显式启用 vLLM eager mode，绕过
+  ID84 的 Inductor 编译路径。
+- token trace 现在绑定 action token mapping、实际 action、behavior action log-prob、
+  assistant response、reasoning finish reason 与 truncation；HF replay 同时校验当前
+  tokenizer mapping 和 response tokenization。强制补全 `</think>` 的 token 不进入
+  PPO，并持久化 `finish_reason=length` 与截断指标。
+- WM/value state prompt 会按动作重建固定模板历史；behavior replay 仍保留真实采样
+  CoT，因此训练 state 与 `PlanningPolicy` 部署 state 使用同一定义。服务器定向回归
+  `31 passed`，RL/Agent/Qwen 扩展回归 `113 passed, 1 expected warning`；真实
+  vLLM 0.11 adapter 和 ID46 epoch1 tokenizer 三-token `</think>` 往返均通过。
+- 修复已推送到 `exp/rl-dinogrid-ep1-online-ppo`；下一步必须使用新实验 ID、全新输出
+  和 fresh rollout 重新提交，不能复用 ID83/84。
+
 ## 2026-07-24：DINO 改为单一 SFT2 核心的可配置附加 loss
 
 - 人类指出原 `DINOGridSFT2Algorithm` 复制了完整 current/target、CE、WM、value 和
