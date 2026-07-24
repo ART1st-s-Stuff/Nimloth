@@ -534,3 +534,10 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   resume。下一修复使用原生integer list保留PyTorch advanced-index语义且绕开tensor搬运。
 - commits `995d808`、`460c1c3` 已实现并验证native-index；定向测试`3 passed`，完整
   RL/Qwen suite `104 passed, 1 warning`。仍需新ID真实双卡forward/backward验证。
+
+## 2026-07-24：ID92 replay成功但总loss设备不一致
+
+- native index已在真实双卡Qwen replay越过原索引错误；随后PPO scalar在输入GPU、
+  WM/value/SIGReg total在输出GPU，相加时报设备不一致。无OOM或optimizer step。
+- manifest已消费，W&B `pzp6umsv`，CSV仅表头，无checkpoint，ID92不可resume。修复仅
+  对PPO loss/entropy scalar执行可微device copy，再以新ID/fresh rollout验证backward。

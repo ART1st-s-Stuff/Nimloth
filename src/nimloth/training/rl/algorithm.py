@@ -269,7 +269,12 @@ class RLAlgorithm:
                 advantages=advantages,
             )
             # policy["loss"] 已取 clipped surrogate 的负号；entropy 作为奖励项减去。
-            total = total + policy["loss"] - self.entropy_weight * policy["entropy"]
+            # Accelerate 会把device-mapped Qwen的输出复制回输入GPU，而WM/value
+            # 位于model output GPU。只复制两个标量到监督loss设备；CopyBackward
+            # 保留PPO到Qwen logits的完整梯度，避免搬运selected vocabulary logits。
+            policy_loss = policy["loss"].to(device=total.device)
+            policy_entropy = policy["entropy"].to(device=total.device)
+            total = total + policy_loss - self.entropy_weight * policy_entropy
 
         metrics = {
             "wm_mse": float(wm_loss.detach().item()),

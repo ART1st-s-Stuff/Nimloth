@@ -1889,3 +1889,14 @@
   integer list转换为tensor或设备搬运。通过回归后须使用新ID和fresh rollout。
 - commits `995d808`、`460c1c3` 完成native-index实现与测试桩更新；服务器定向测试
   `3 passed`，完整RL/Qwen suite为`104 passed, 1 warning`。
+
+## 2026-07-24：RL ID92越过索引点，暴露loss scalar设备边界
+
+- ID92完成4条fresh rollout / 20 transitions并消费manifest；native Python
+  `logits_to_keep`在4个rank均越过Transformers hidden-state indexing，证明ID91修复有效。
+- Accelerate随后把Qwen replay输出复制回各副本输入GPU，故PPO loss/entropy位于
+  `cuda:0/2`；WM/value/SIGReg total位于输出GPU `cuda:1/3`。`algorithm.py:272`在两个
+  scalar loss相加时报设备不一致，无OOM。
+- W&B `pzp6umsv`，CSV仅表头，无finite total、backward、optimizer step或checkpoint，
+  ID92不可恢复。修复只把PPO loss/entropy scalar复制到`total.device`；CopyBackward保留
+  到Qwen logits的梯度，且不搬运selected vocabulary logits。
