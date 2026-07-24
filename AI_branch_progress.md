@@ -1606,9 +1606,12 @@
 - 人类已明确要求继续剩余SFT2。提交唯一一个preempt 1-node/8-GPU/4-hour hold
   `485732`，不锁节点；提交时preempt没有完整空闲8卡节点，当前状态为
   `PENDING (Resources)`。
-- 输出目录内`resume_when_hold_runs.sh`由login-side watcher PID `2891794`等待hold；
+- 输出目录内`resume_when_hold_runs.sh`由login-side watcher PID `2929716`等待hold；
   hold运行后先验证remote worktree仍精确为实验commit `f060a25`，再以
   `RESUME=1`、绝对`RESUME_FROM=latest`、`WANDB_RUN_ID=yapevfpy`启动单个srun。
+- 首个watcher因non-login bash缺失Slurm module环境而在轮询前退出；已改为显式设置
+  权威`SLURM_CONF`与library路径并验证进程存活。hold一直保持pending，未获得allocation，
+  因此该编排问题没有启动或影响任何训练step。
 - resume保持原数据/config/B1 GA8/world8、optimizer、8-rank history cache、CSV、
   W&B ID与输出目录，不创建新实验ID。预计拿到节点后50--60分钟完成；需继续监控到
   checkpoint恢复成功并产生新的finite optimizer step。
