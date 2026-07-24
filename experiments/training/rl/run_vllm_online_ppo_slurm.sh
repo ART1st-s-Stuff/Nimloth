@@ -70,7 +70,7 @@ stop_ray
 head_gpus=${GPU_COUNTS[${HEAD_NODE}]}
 head_cpus=$((head_gpus > 4 ? head_gpus : 4))
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
-  --gpus="${head_gpus}" \
+  --gres="gpu:${head_gpus}" \
   env VLLM_HOST_IP="${HEAD_IP}" \
     RAY_agent_register_timeout_ms="${RAY_AGENT_REGISTER_TIMEOUT_MS}" \
     "${PYTHON}" -m ray.scripts.scripts start --head \
@@ -99,11 +99,12 @@ for node in "${NODES[@]:1}"; do
   node_ip=${NODE_IPS[${node}]}
   node_cpus=$((node_gpus > 4 ? node_gpus : 4))
   srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${node}" \
-    --gpus="${node_gpus}" \
+    --gres="gpu:${node_gpus}" \
     env VLLM_HOST_IP="${node_ip}" \
       RAY_agent_register_timeout_ms="${RAY_AGENT_REGISTER_TIMEOUT_MS}" \
       "${PYTHON}" -m ray.scripts.scripts start \
-      --address="${HEAD_IP}:${RAY_PORT}" --num-cpus="${node_cpus}" \
+      --address="${HEAD_IP}:${RAY_PORT}" --node-ip-address="${node_ip}" \
+      --num-cpus="${node_cpus}" \
       --num-gpus="${node_gpus}" --object-store-memory="${RAY_OBJECT_STORE_BYTES}" \
       --temp-dir="${RAY_TMP_DIR}" --block \
     >"${RAY_LOG_DIR}/${node}.log" 2>&1 &
@@ -131,7 +132,7 @@ done
 }
 
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
-  --gpus="${head_gpus}" \
+  --gres="gpu:${head_gpus}" \
   env RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}" VLLM_HOST_IP="${HEAD_IP}" \
     REPO="${REPO}" RUN_OUT="${RUN_OUT}" RL_CONFIG="${RL_CONFIG}" \
     ENV_REPO="${ENV_REPO:?set ENV_REPO}" MODEL="${MODEL:?set MODEL}" \

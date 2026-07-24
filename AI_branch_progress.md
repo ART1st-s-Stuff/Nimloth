@@ -1694,3 +1694,14 @@
 - 失败发生在environment、vLLM、trajectory、W&B和optimizer之前；无OOM、
   无输出checkpoint，ID74不可恢复。启动器现显式设置
   `RAY_agent_register_timeout_ms=120000`，下次必须使用新ID和空输出目录。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID75 异构单卡 step 阻塞
+
+- ID75 复用 allocation `485730` 和 ID46 `epoch_001`。Ray head 在放宽后的约36秒
+  冷启动成功，dgx-42×6 worker也成功；证明ID74的agent注册超时修复有效。
+- dgx-48×1 worker使用`srun --gpus=1`时持续收到`Requested nodes are busy`，
+  exact-8 GPU gate因此未放行。主动终止controller后，Ray steps由trap清理；失败仍在
+  environment、vLLM、trajectory、W&B和optimizer之前，无输出checkpoint，不可恢复。
+- 同一allocation/node的最小probe确认`--gpus=1`超时，而`--gres=gpu:1`立即成功并
+  暴露`CUDA_VISIBLE_DEVICES=0`。启动器GPU steps已统一改用原生GRES语法；同时为
+  worker显式传入已探测的`--node-ip-address`，避免Ray自动选择另一个10.23网卡地址。
