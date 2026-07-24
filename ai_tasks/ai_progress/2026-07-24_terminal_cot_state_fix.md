@@ -20,5 +20,6 @@
 ## 验证状态
 
 - `git diff --check` 通过；
-- 本机 Python 环境没有 pytest，远端定向回归待执行；
+- 本机 Python 环境没有 Torch/pytest；superpod SSH 建立 host key 后连续约60秒无响应，
+  已按服务器规则中止且未重试，因此远端定向回归待执行；
 - 尚未生成 train/val terminal CoT 数据，尚未重建 cache，也未启动 SFT2/RL 实验。
