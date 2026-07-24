@@ -54,24 +54,26 @@ SFT2 的普通 state 使用 JSONL 中该轮真实 assistant response。最终 ob
 真实 CoT，并写入新 JSONL 的 `terminal_assistant_prefix`。该字段止于注入的
 `action_start`；不会生成或执行未来 action，也不会新增 CE 训练轮次。
 
-terminal CoT 的采样方式已确定为 VAGEN validation 配置：`temperature=0`、
-`top_p=1.0`、`top_k=-1`、`do_sample=false`、`n=1`。生成入口显式接收并记录这些值，
-且拒绝其他组合。使用前仍必须由人类明确 checkpoint、`max_reasoning_tokens`、`seed`
-和 `max_pixels`：
+terminal CoT 的完整生成配置已由人类确认：VAGEN validation sampling
+`temperature=0`、`top_p=1.0`、`top_k=-1`、`do_sample=false`、`n=1`；此外使用
+`max_reasoning_tokens=128`、`seed=42`、`max_pixels=602112`。VAGEN train/val/test
+共69,776段真实 CoT 的最大长度为93 tokens，128不会截断已有数据分布；602112与本次
+SFT1初始化checkpoint的processor一致，使旧512px rollout图像仍按504px条件生成。
+生成入口显式接收并记录全部参数，且拒绝其他sampling组合：
 
 ```bash
 python experiments/training/sft2/generate_terminal_cot.py \
   --model "$SFT1_INIT" \
   --input-jsonl "$SOURCE_JSONL" \
   --output-jsonl "$TERMINAL_COT_JSONL" \
-  --max-pixels "$MAX_PIXELS" \
-  --max-reasoning-tokens "$MAX_REASONING_TOKENS" \
+  --max-pixels 602112 \
+  --max-reasoning-tokens 128 \
   --temperature 0 \
   --top-p 1.0 \
   --top-k -1 \
   --no-do-sample \
   --n 1 \
-  --seed "$SEED"
+  --seed 42
 ```
 
 脚本要求 checkpoint 为可直接加载的 inject-mode HF 导出；模型未在 token 上限内自行

@@ -9,6 +9,9 @@
 - 未明确的生成参数必须询问人类，禁止 agent 猜测。
 - 人类已确认 terminal CoT 使用 VAGEN validation sampling：`temperature=0`、
   `top_p=1.0`、`top_k=-1`、`do_sample=false`、`n=1`。
+- 人类进一步确认参考VAGEN数据使用`max_reasoning_tokens=128`、`seed=42`、
+  `max_pixels=602112`。全量train/val/test共69,776段CoT，最大93 tokens且0段超过128；
+  602112与SFT1初始化checkpoint processor一致，旧512px图像按504px条件生成。
 
 ## 本次修改
 
@@ -25,4 +28,5 @@
 - 本机 Python 环境没有 Torch/pytest；superpod SSH 建立 host key 后连续约60秒无响应，
   已按服务器规则中止且未重试，因此远端定向回归待执行；
 - 尚未生成 train/val terminal CoT 数据，尚未重建 cache，也未启动 SFT2/RL 实验。
-- `max_reasoning_tokens`、`seed` 和 `max_pixels` 仍待人类明确；确认前不得启动生成。
+- 全部生成参数已确认；下一步为远端回归、生成train/val terminal CoT、重建cache并
+  以新实验ID重跑SFT2。

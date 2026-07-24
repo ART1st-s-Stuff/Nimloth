@@ -16,10 +16,12 @@
   `</think>` 时失败，不静默注入。
 - 人类已确认 terminal CoT 使用 VAGEN validation sampling：`temperature=0`、
   `top_p=1.0`、`top_k=-1`、`do_sample=false`、`n=1`；入口显式记录并只接受该组合。
+- 参考VAGEN全量69,776段真实CoT（最大93 tokens）及SFT1 processor后，人类确认
+  `max_reasoning_tokens=128`、`seed=42`、`max_pixels=602112`。
 - 当前只完成代码与文档修改；本机缺少Torch/pytest，superpod SSH 建立host key后约
   60秒无响应，已按规则中止且未重试。远端定向回归、实际 terminal 数据生成、cache
   重建与训练均尚未执行，不得声称修复已完成验证。
-- `max_reasoning_tokens`、`seed` 和 `max_pixels` 尚未确认，确认前不得生成 terminal CoT。
+- 全部生成参数已确认，尚待远端回归、数据生成、cache重建和新ID SFT2重训。
 
 ## 2026-07-24：DINO-grid SFT2 恢复 terminal transition 与旧 cache 兼容
 

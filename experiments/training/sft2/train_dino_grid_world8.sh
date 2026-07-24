@@ -14,6 +14,7 @@ CONFIG=${CONFIG:-${REPO}/configs/training/sft2/dino_grid_k16_h4.yaml}
 MODEL_PATH=${MODEL_PATH:-/project/peilab/atst/nimloth/outputs/experiments/sft1_checkpoint_merge_fix/2026-07-24/3_k16_ep5_untied_lm_head_restore/hf_merged}
 TRAIN_JSONL=${TRAIN_JSONL:-/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/converted_strict_k8_b6c811c/train_all.jsonl}
 VAL_JSONL=${VAL_JSONL:-/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/converted_strict_k8_b6c811c/val_all.jsonl}
+PREPROCESS_CACHE_DIR_OVERRIDE=${PREPROCESS_CACHE_DIR_OVERRIDE:-}
 OUTPUT_DIR=${OUTPUT_DIR:?set OUTPUT_DIR to a new SFT2 run directory}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:?set WANDB_RUN_NAME}
 WANDB_PROJECT_NAME=${WANDB_PROJECT_NAME:-nimloth-sft2}
@@ -70,12 +71,18 @@ if [ "${RESUME:-0}" = "1" ]; then
   fi
 fi
 
+CACHE_ARGS=()
+if [ -n "${PREPROCESS_CACHE_DIR_OVERRIDE}" ]; then
+  CACHE_ARGS=(--preprocess-cache-dir "${PREPROCESS_CACHE_DIR_OVERRIDE}")
+fi
+
 {
   echo "=== DINO-grid SFT2 start $(date --iso-8601=seconds) ==="
   echo "commit: $(git -C "${REPO}" rev-parse HEAD)"
   echo "job/node: ${SLURM_JOB_ID:-local}/${SLURM_JOB_NODELIST:-local}"
   echo "config: ${CONFIG}"
   echo "train/val: ${TRAIN_JSONL} / ${VAL_JSONL}"
+  echo "preprocess cache override: ${PREPROCESS_CACHE_DIR_OVERRIDE:-config default}"
   echo "output: ${OUTPUT_DIR}"
   echo "model: ${MODEL_PATH}"
   echo "world size: ${NPROC_PER_NODE}; per-rank B=${BATCH_SIZE}; grad_accum=${GRAD_ACCUM}"
@@ -98,6 +105,7 @@ PYTHONUNBUFFERED=1 "${PYTHON_ENV}/bin/python3" -m torch.distributed.run \
   --batch-size "${BATCH_SIZE}" \
   --grad-accum "${GRAD_ACCUM}" \
   --wandb-run-name "${WANDB_RUN_NAME}" \
+  "${CACHE_ARGS[@]}" \
   "${RESUME_ARGS[@]}" \
   ${EXTRA_TRAIN_ARGS:-} \
   2>&1 | tee -a "${LOG}"
