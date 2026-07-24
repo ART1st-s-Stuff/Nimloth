@@ -16,6 +16,7 @@ def trajectory_from_agent_episode(
     split: str,
     sampling_temperature: float,
     sampling_top_p: float,
+    terminal_assistant_prefix: str | None = None,
 ) -> RolloutTrajectory:
     """只消费 AgentEpisode，不再从 collector 拼装 prompt 细节。"""
 
@@ -57,6 +58,10 @@ def trajectory_from_agent_episode(
     if len(credit_assignments) != 1:
         raise ValueError("Agent episode mixes PPO credit assignment modes")
     credit_assignment = credit_assignments.pop()
+    if not terminal_assistant_prefix:
+        raise ValueError(
+            "trajectory conversion requires a separately generated terminal CoT prefix"
+        )
 
     return RolloutTrajectory(
         record_id=record_id,
@@ -81,6 +86,7 @@ def trajectory_from_agent_episode(
             for action in episode.actions
         ],
         assistant_responses=[action.response for action in episode.actions],
+        terminal_assistant_prefix=terminal_assistant_prefix,
         policy_credit_assignment=credit_assignment,
         policy_token_ids=[
             list(trace.token_ids) for trace in traces if trace is not None

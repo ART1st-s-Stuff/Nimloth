@@ -34,6 +34,10 @@
   留作 TODO。
 - 本地 `compileall`、`git diff --check` 通过；本机没有 `pytest` 命令，完整测试需在
   superpod 明确 Python 环境执行。
+- 首轮服务器扩展回归为 `180 passed, 1 skipped, 33 failed`；失败全部是旧测试仍构造
+  action-only/fixed-state trajectory。没有恢复错误语义，而是补齐 RL trajectory 的
+  current/terminal真实CoT字段和state重建，并把fixtures改为真实response/terminal。
+  `PlanningPolicy`与online collector的terminal生成仍是明确TODO；待第二轮服务器回归。
 
 ## 文件修改
 

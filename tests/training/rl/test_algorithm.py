@@ -113,11 +113,18 @@ def _trajectory(record_id: str, length: int) -> RolloutTrajectory:
     image_paths = [f"{record_id}_{step}.png" for step in range(length + 1)]
     action_indices = [step % 8 for step in range(length)]
     prompt = NimlothPromptTemplate(latent_token_count=1, action_count=8)
+    action_token_ids = list(range(100, 108))
+    reasoning_texts = [f"Reason {step}." for step in range(length)]
+    assistant_responses = [
+        prompt.assistant_response(action_index, thought=reasoning_texts[step])
+        for step, action_index in enumerate(action_indices)
+    ]
     transcript = AgentTranscript(
         system_prompt=system_prompt,
         observation_texts=tuple(observation_texts),
         observation_images=tuple(image_paths),
         action_indices=tuple(action_indices),
+        assistant_responses=tuple(assistant_responses),
     )
     return RolloutTrajectory(
         record_id=record_id,
@@ -132,12 +139,32 @@ def _trajectory(record_id: str, length: int) -> RolloutTrajectory:
         messages=prompt.build_supervised_prompt(transcript).unbound_messages(),
         system_prompt=system_prompt,
         observation_texts=observation_texts,
+        assistant_responses=assistant_responses,
+        terminal_assistant_prefix=prompt.assistant_prefix(
+            thought="Terminal observation."
+        ),
+        policy_credit_assignment="turn",
         policy_messages=[
-            prompt.build_policy_prompt(
+            prompt.build_response_policy_prompt(
                 transcript.policy_prefix(step)
             ).unbound_messages()
             for step in range(length)
         ],
+        policy_token_ids=[
+            [50 + step, action_token_ids[action_index], 200]
+            for step, action_index in enumerate(action_indices)
+        ],
+        policy_token_log_probs=[
+            [-0.2, -math.log(8.0), None] for _ in action_indices
+        ],
+        policy_loss_masks=[[True, True, False] for _ in action_indices],
+        policy_token_roles=[
+            ["reasoning", "action", "injected"] for _ in action_indices
+        ],
+        policy_action_token_ids=[list(action_token_ids) for _ in action_indices],
+        policy_reasoning_texts=reasoning_texts,
+        policy_finish_reasons=["stop" for _ in action_indices],
+        policy_reasoning_truncated=[False for _ in action_indices],
         prompt_template_spec=prompt.spec,
     )
 

@@ -10,6 +10,7 @@ from nimloth.agent import (
     EpisodeRunner,
     NimlothPromptTemplate,
     PolicyDecision,
+    PolicyTokenTrace,
 )
 from nimloth.environment import EnvironmentObservation, EnvironmentStep
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
@@ -21,6 +22,8 @@ from nimloth.rollout import (
 
 
 class _SequencePolicy:
+    prompt_mode = "response"
+
     def __init__(self, action_indices: tuple[int, ...]) -> None:
         self._action_indices = iter(action_indices)
         self.prompts: list[AgentPrompt] = []
@@ -30,9 +33,24 @@ class _SequencePolicy:
 
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
         self.prompts.append(prompt)
+        action_index = next(self._action_indices)
+        action_token_ids = tuple(range(100, 108))
         return PolicyDecision(
-            action_index=next(self._action_indices),
+            action_index=action_index,
             action_log_probs=tuple([-math.log(8.0)] * 8),
+            response=(
+                f"<think>Reason {len(self.prompts)}.</think><|latent_state|>"
+                f"<|action_start|><|action_({action_index})|><|action_end|>"
+            ),
+            token_trace=PolicyTokenTrace(
+                token_ids=(50 + len(self.prompts), action_token_ids[action_index], 200),
+                old_log_probs=(-0.2, -math.log(8.0), None),
+                loss_mask=(True, True, False),
+                token_roles=("reasoning", "action", "injected"),
+                action_token_ids=action_token_ids,
+                reasoning_text=f"Reason {len(self.prompts)}.",
+                finish_reason="stop",
+            ),
         )
 
 
@@ -119,6 +137,9 @@ def test_agent_episode_is_the_only_input_needed_to_build_rollout() -> None:
         split="train",
         sampling_temperature=0.7,
         sampling_top_p=0.95,
+        terminal_assistant_prefix=(
+            "<think>Terminal observation.</think><|latent_state|><|action_start|>"
+        ),
     )
 
     validate_rollout_trajectory(trajectory)
@@ -143,6 +164,9 @@ def test_legacy_navigation_instruction_key_is_migrated() -> None:
         split="train",
         sampling_temperature=1.0,
         sampling_top_p=1.0,
+        terminal_assistant_prefix=(
+            "<think>Terminal observation.</think><|latent_state|><|action_start|>"
+        ),
     )
     record = trajectory.to_record()
     record.pop("instruction")

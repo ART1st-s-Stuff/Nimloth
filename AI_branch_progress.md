@@ -14,9 +14,11 @@
   仍只接受数据集实际 thought。普通 completed transcript 必须携带真实 assistant
   response，terminal SFT2 state 必须读取离线生成并持久化的真实 CoT。
 - 当前 RL 尚未具备 current/terminal state 的完整真实 CoT 持久化和 planner 前置生成
-  边界。因此旧 action-only state prompt、RL state replay、`PlanningPolicy` 和遗留
-  diagnose eval 路径均明确 fail-fast，作为 TODO 保留；不得据此声称 planner PPO 或
-  完整 RL 已实现。
+  边界。首轮服务器回归的33个失败均来自旧 fixed-state fixtures；trajectory schema
+  随后新增显式 `terminal_assistant_prefix`，current state 从该步真实 response 截到
+  action boundary，terminal state读取持久化CoT。在线 collector/`PlanningPolicy` 仍因
+  缺少 terminal CoT 生成步骤而 fail-fast，作为 TODO 保留；不得据此声称 planner PPO
+  或完整 RL 已实现。
 - 冲突只出现在进度文档和两个 RL launcher 文档/字符串；launcher 统一保留
   config-driven 异构节点与 `gpus_per_rank` 语义，不恢复固定两节点入口。尚待服务器
   回归、提交推送和新 ID SFT2 重训。

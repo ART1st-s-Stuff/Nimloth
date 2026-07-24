@@ -15,6 +15,8 @@ from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
 
 
 class _RecordingPolicy:
+    prompt_mode = "response"
+
     def __init__(self) -> None:
         self.prompts: list[AgentPrompt] = []
 
@@ -23,9 +25,14 @@ class _RecordingPolicy:
 
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
         self.prompts.append(prompt)
+        action_index = len(self.prompts) - 1
         return PolicyDecision(
-            action_index=len(self.prompts) - 1,
+            action_index=action_index,
             action_log_probs=tuple([-math.log(8.0)] * 8),
+            response=(
+                f"<think>Reason {len(self.prompts)}.</think><|latent_state|>"
+                f"<|action_start|><|action_({action_index})|><|action_end|>"
+            ),
         )
 
 

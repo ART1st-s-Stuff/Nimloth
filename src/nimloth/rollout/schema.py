@@ -16,6 +16,7 @@ from nimloth.agent import (
     prompt_template_spec_from_record,
 )
 from nimloth.environment import get_action_space
+from nimloth.latent import LatentActionTokens
 
 
 @dataclass
@@ -36,6 +37,7 @@ class RolloutTrajectory:
     observation_texts: list[str] = field(default_factory=list)
     policy_messages: list[list[dict[str, Any]]] = field(default_factory=list)
     assistant_responses: list[str] = field(default_factory=list)
+    terminal_assistant_prefix: str = ""
     policy_credit_assignment: str = "action"
     policy_token_ids: list[list[int]] = field(default_factory=list)
     policy_token_log_probs: list[list[float | None]] = field(default_factory=list)
@@ -99,12 +101,64 @@ class RolloutTrajectory:
         return template.build_policy_prompt(prefix)
 
     def build_state_prompt(self, step_index: int) -> AgentPrompt:
-        """RL state replay 等待真实 current/terminal CoT 数据契约。"""
+        """用该 observation 已持久化的真实 CoT 重建 state prompt。"""
 
-        raise RuntimeError(
-            "RL state replay is unfinished: every observation, including terminal, "
-            "must have a persisted real CoT before a state prompt can be built"
+        if not 0 <= step_index <= self.num_steps:
+            raise IndexError(
+                f"state step {step_index} outside [0, {self.num_steps}]"
+            )
+        action_space = get_action_space(
+            self.action_space_id,
+            self.action_space_version,
         )
+        template = create_prompt_template(
+            self.resolved_prompt_template_spec(),
+            action_count=len(action_space),
+        )
+        history = AgentTranscript(
+            system_prompt=self.system_prompt,
+            observation_texts=tuple(self.observation_texts[:step_index]),
+            observation_images=tuple(self.image_paths[:step_index]),
+            action_indices=tuple(self.action_indices[:step_index]),
+            assistant_responses=tuple(self.assistant_responses[:step_index]),
+        )
+        messages = template.build_supervised_prompt(history).unbound_messages()
+        messages.append(
+            {"role": "user", "content": self.observation_texts[step_index]}
+        )
+        messages.append(
+            {
+                "role": "assistant",
+                "content": self._state_assistant_prefix(step_index),
+            }
+        )
+        return AgentPrompt(
+            messages=tuple(messages),
+            images=tuple(self.image_paths[: step_index + 1]),
+            template=template.spec,
+        )
+
+    def _state_assistant_prefix(self, step_index: int) -> str:
+        tokens = LatentActionTokens()
+        if step_index == self.num_steps:
+            prefix = self.terminal_assistant_prefix
+        else:
+            if len(self.assistant_responses) != self.num_steps:
+                raise ValueError(
+                    "state replay requires a real assistant response for every action"
+                )
+            response = self.assistant_responses[step_index]
+            boundary = response.find(tokens.action_start)
+            if boundary < 0:
+                raise ValueError(
+                    f"step {step_index} assistant response has no action boundary"
+                )
+            prefix = response[: boundary + len(tokens.action_start)]
+        if not prefix.startswith("<think>") or not prefix.endswith(tokens.action_start):
+            raise ValueError(
+                f"state step {step_index} has no valid persisted real CoT prefix"
+            )
+        return prefix
 
     def policy_token_trace(self, step_index: int) -> PolicyTokenTrace | None:
         """恢复某一步逐 token behavior provenance；旧 action-only 记录返回 ``None``。"""
@@ -197,6 +251,7 @@ class RolloutTrajectory:
             "observation_texts": self.observation_texts,
             "policy_messages": self.policy_messages,
             "assistant_responses": self.assistant_responses,
+            "terminal_assistant_prefix": self.terminal_assistant_prefix,
             "policy_credit_assignment": self.policy_credit_assignment,
             "policy_token_ids": self.policy_token_ids,
             "policy_token_log_probs": self.policy_token_log_probs,
@@ -245,6 +300,9 @@ class RolloutTrajectory:
             observation_texts=list(record.get("observation_texts", [])),
             policy_messages=list(record.get("policy_messages", [])),
             assistant_responses=list(record.get("assistant_responses", [])),
+            terminal_assistant_prefix=str(
+                record.get("terminal_assistant_prefix", "")
+            ),
             policy_credit_assignment=str(
                 record.get("policy_credit_assignment", "action")
             ),

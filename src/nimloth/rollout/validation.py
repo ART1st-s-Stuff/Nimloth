@@ -103,6 +103,15 @@ def _validate_token_provenance(
             f"{prefix}: assistant_responses={len(trajectory.assistant_responses)} "
             f"but actions={trajectory.num_steps}"
         )
+    if len(trajectory.assistant_responses) != trajectory.num_steps:
+        raise ValueError(
+            f"{prefix} requires a real assistant response for every action"
+        )
+    try:
+        for step in range(trajectory.num_steps + 1):
+            trajectory._state_assistant_prefix(step)
+    except ValueError as error:
+        raise ValueError(f"{prefix} has invalid CoT state data: {error}") from error
     trace_fields = (
         trajectory.policy_token_ids,
         trajectory.policy_token_log_probs,
