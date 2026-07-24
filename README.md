@@ -18,6 +18,17 @@ Nimloth is a Python machine-learning project for building a **World Model Agent*
 - 一个参数的值不能替代另一个参数。特别是不得用 `history_size` 表达 planning
   horizon，也不得用 planning horizon 表达 environment episode 长度。
 
+### 当前 RL 完成边界
+
+- 已实现并通过真实 GPU smoke 的范围是 **direct-policy、action/turn-credit、fresh
+  rollout 的单次 PPO optimizer step**：Qwen/vLLM 直接产生 behavior token，HF replay
+  同一 prompt/token 并完成 ratio、clip、backward、gradient synchronization 和 checkpoint。
+- 尚未实现 planning behavior 的 policy replay 或 policy update；不得把 direct-policy
+  smoke 表述为“planning PPO 已完成”或无条件表述为“PPO 已全部完成”。
+- 当前 trajectory 仍只持久化 episode reward 总和，尚未保存逐步 rewards 及明确的
+  terminal/truncation target 语义；长时间、多次 fresh rollout/update 的完整在线闭环也
+  尚未完成运行验证。
+
 ### 阶段与核心概念
 
 | 阶段 | 标准用词 | 严格含义 | 不得混淆 |

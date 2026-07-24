@@ -1953,3 +1953,21 @@
   采样窗口内同时计算H个因果位置。
 - 当前实现禁止planning与PPO actor同时开启，后续长时实验模式已记录到`AI_issues.md`，
   等待人类选择；当前无实验在运行。
+
+## 2026-07-24：纠正PPO完成边界并审查planning policy更新方案
+
+- 人类指出此前“PPO已做完”的表述错误；准确边界仅为direct-policy fresh rollout的
+  单次GPU optimizer-step smoke通过，planning policy replay/update与长时多次online
+  闭环均未实现。README新增完成边界，known error新增E0044。
+- 审查确认真实rollout Monte Carlo return可以监督已执行动作的`Q(s,a)`，但当前
+  `AgentEpisode.rewards`落盘时只保留总和，且未持久化terminal/truncation，必须先补齐
+  才能称真实逐步return target。
+- 当前actor advantage为`G_t-Q(s_t,a_t)`，baseline依赖动作，不是标准state baseline；
+  若保留action critic，应改为独立scalar V或按实际behavior分布计算
+  `V(s)=sum_a pi(a|s)Q(s,a)`。
+- planner选择动作时实际behavior是planner root distribution；只保存selected action的
+  Qwen概率可用于planner-guided distillation/AWR，但不足以构成严格on-policy PPO ratio。
+- horizon2只有8个动作、64条两步序列，后续设计可优先考虑完整枚举并保存Qwen与planner
+  两套八动作分布，避免beam剪枝造成零support。WM是否更新应与StateProjector、SIGReg、
+  Backbone表征梯度分别配置，并在policy update期间固定old behavior snapshot。
+- 本轮仅做只读源码/方案审查与文档纠错，未修改训练代码、未启动实验。

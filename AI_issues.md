@@ -23,3 +23,19 @@
 1. 关闭 PPO actor，直接用 `planning.horizon=2` 做较长的 planning rollout/evaluation；
 2. 保持训练时 direct-policy online PPO，训练后再用 `planning.horizon=2` 做固定评估；
 3. 先实现 planner-compatible PPO，再做 planning-enabled online PPO。
+
+## 2026-07-24：planning rollout后的policy update定义待确认
+
+人类提出的方向已确认包含三部分：真实rollout直接监督ValueHead；在同一次Qwen
+state/action forward保留被planner选中动作的Qwen概率，并用真实return构造policy
+advantage；WM是否训练由配置决定。
+
+审查后仍需人类决定policy objective名称和严格定义：
+
+1. planner作为teacher，Qwen对planner root distribution做policy distillation或
+   advantage-weighted regression；这允许planner采集的数据，但不称on-policy PPO；
+2. 定义包含Qwen logits和planner score的统一随机behavior policy，rollout和replay都
+   使用这个完整分布，再计算严格匹配的old/new ratio。
+
+两条路线都应先补逐步rewards、terminal/truncation和完整八动作Qwen/planner分布；只保存
+selected action的Qwen概率不足以审计entropy、KL、support和behavior mismatch。
