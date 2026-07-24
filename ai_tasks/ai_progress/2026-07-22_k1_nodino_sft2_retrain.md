@@ -432,3 +432,16 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - 无trajectory、W&B、optimizer step或checkpoint；ID73不可恢复。hold`485342`
   已取消并确认离开squeue，异构1+3+4 GPU全部释放。RL被完整vLLM兼容policy export
   阻塞；需修复并验证SFT2 HF保存产物后再用新allocation/ID测试。
+
+## 2026-07-24：corrected DINO-grid epoch1 的 RL 装载路径已修复
+
+- `aa0200c`、`bfa9c15` 正式接入 `GridWorldModel`，不再用旧
+  `LatentWMPredictor` 误读 `TemporalSpatialGridPredictor`。
+- grid RL 的 loss 是 PPO + grid WM MSE + value + SIGReg，不含 DINO loss；
+  `GridStateProjector`、EMA target encoder、DINO decoder 冻结，EMA 在 RL optimizer
+  step 后不更新。Qwen language body、grid WM predictor、ValueHead 可训练。
+- `tests/training/rl` 服务器回归为 `52 passed, 1 warning`。真实 ID46 epoch1
+  checkpoint 严格装载成功，确认 H=4、16 slots 和 optimizer 参数组；slot projector
+  从自包含的 `state_proj.pt` 重建并做 shape 校验。
+- 尚未产生新的 GPU optimizer step；下一轮必须使用新 W&B ID、全新输出目录和 fresh
+  rollout manifest。

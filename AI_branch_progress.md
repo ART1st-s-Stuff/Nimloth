@@ -1764,3 +1764,19 @@
   不能用 `strict=False` 修补，因为 RL 尚未构造 `GridStateProjector`、target encoder、
   DINO decoder，也未定义 grid RL 的训练/冻结和 loss 语义。下一步必须正式接入
   `GridWorldModel` 后才可再开新实验 ID。
+
+## 2026-07-24：DINO-grid epoch1 已可严格装载到 RL
+
+- commits `aa0200c`、`bfa9c15` 为 RL 增加显式 `GridWorldModel` 路径；旧 latent
+  路径继续复用同一次 online projection，不改变原梯度语义。grid WM 使用冻结 EMA
+  encoder 产生 next-state target，value 对 slot mean pooling，SIGReg 沿用 SFT2 的
+  per-time mean-pooled grid 统计单位。
+- RL 不计算 DINO loss；DINO decoder 与 EMA target encoder 均冻结且不更新。
+  当前 H=4 config 也冻结完整 `GridStateProjector`，optimizer 只有 Qwen language body、
+  `TemporalSpatialGridPredictor` 和 `ValueHead`。
+- 服务器回归 `tests/training/rl`: `52 passed, 1 warning`。corrected ID46
+  `epoch_001` 的真实 CPU load 验证为 `GridWorldModel` / 16 slots / H=4；三类冻结模块
+  trainable 参数均为0，optimizer groups 为 `qwen/value_head/wm_predictor`。
+- 该 epoch 不含独立 `grid_state_config.json/slot_projector.pt`；完整 slot projector
+  位于 `state_proj.pt`。RL 按严格 tensor shape 重建并校验 Qwen/predictor 维度，不使用
+  `strict=False` 或近似转换。下一步可用新 ID/output 重新启动 online PPO smoke。

@@ -84,8 +84,8 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
 - data: base_train seeds 1..${NUM_EPISODES}
 - rollout: vLLM TP=${TENSOR_PARALLEL_SIZE}, backend=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-local}, ${NUM_EPISODES} episodes, max ${MAX_STEPS} steps
 - freshness: content fingerprint manifest, exactly one PPO consumption
-- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} total ranks, one WM/value/SIGReg/PPO optimizer step
-- frozen: vision tower and StateProjector
+- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} total ranks, one grid-WM/value/SIGReg/PPO optimizer step; no DINO loss
+- frozen: vision tower, GridStateProjector, EMA target encoder and DINO decoder
 - trainable: Qwen language body, WM predictor and ValueHead
 - W&B: ${WANDB_PROJECT_REQUESTED}/${WANDB_RUN_NAME_REQUESTED}
 - output: ${RUN_OUT}
