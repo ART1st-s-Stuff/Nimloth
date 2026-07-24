@@ -541,3 +541,4 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   WM/value/SIGReg total在输出GPU，相加时报设备不一致。无OOM或optimizer step。
 - manifest已消费，W&B `pzp6umsv`，CSV仅表头，无checkpoint，ID92不可resume。修复仅
   对PPO loss/entropy scalar执行可微device copy，再以新ID/fresh rollout验证backward。
+- commit `9791a3f` 已实现上述对齐；服务器完整RL/Qwen suite `104 passed, 1 warning`。

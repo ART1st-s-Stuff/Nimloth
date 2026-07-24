@@ -1900,3 +1900,4 @@
 - W&B `pzp6umsv`，CSV仅表头，无finite total、backward、optimizer step或checkpoint，
   ID92不可恢复。修复只把PPO loss/entropy scalar复制到`total.device`；CopyBackward保留
   到Qwen logits的梯度，且不搬运selected vocabulary logits。
+- commit `9791a3f` 完成scalar对齐；服务器完整RL/Qwen suite为`104 passed, 1 warning`。
