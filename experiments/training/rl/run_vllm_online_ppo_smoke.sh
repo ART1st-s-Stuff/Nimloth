@@ -16,6 +16,14 @@ ENV_PORT=${ENV_PORT:-8500}
 NUM_EPISODES=${NUM_EPISODES:-4}
 MAX_STEPS=${MAX_STEPS:-5}
 VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-}
+PIPELINE_PHASE=${PIPELINE_PHASE:-all}
+
+case "${PIPELINE_PHASE}" in
+  all) RUN_ROLLOUT=true; RUN_TRAIN=true ;;
+  rollout) RUN_ROLLOUT=true; RUN_TRAIN=false ;;
+  train) RUN_ROLLOUT=false; RUN_TRAIN=true ;;
+  *) echo "PIPELINE_PHASE must be all, rollout, or train" >&2; exit 1 ;;
+esac
 
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
@@ -51,7 +59,8 @@ done
   echo "ENV_REPO does not contain base_train" >&2
   exit 1
 }
-if [[ -e "${RUN_OUT}" ]] && find "${RUN_OUT}" -mindepth 1 -print -quit | grep -q .; then
+if [[ "${RUN_ROLLOUT}" == true && -e "${RUN_OUT}" ]] && \
+    find "${RUN_OUT}" -mindepth 1 -print -quit | grep -q .; then
   echo "refusing to reuse non-empty output directory: ${RUN_OUT}" >&2
   exit 1
 fi
@@ -64,7 +73,8 @@ mkdir -p "${RUN_OUT}" "${ROLLOUT_OUT}" "${TRAIN_OUT}"
 
 COMMIT=$(git -C "${REPO}" rev-parse HEAD)
 ENV_COMMIT=$(git -C "${ENV_REPO}/external/VAGEN" rev-parse HEAD)
-cat > "${RUN_OUT}/README.md" <<EOF
+if [[ "${RUN_ROLLOUT}" == true ]]; then
+  cat > "${RUN_OUT}/README.md" <<EOF
 # vLLM online PPO smoke (${TRAIN_WORLD_SIZE} GPUs)
 
 - status: running
@@ -80,6 +90,13 @@ cat > "${RUN_OUT}/README.md" <<EOF
 - W&B: ${WANDB_PROJECT_REQUESTED}/${WANDB_RUN_NAME_REQUESTED}
 - output: ${RUN_OUT}
 EOF
+else
+  [[ -s "${MANIFEST}" ]] || { echo "missing rollout manifest: ${MANIFEST}" >&2; exit 1; }
+  [[ -s "${ROLLOUT_OUT}/trajectories.jsonl" ]] || {
+    echo "missing rollout trajectories: ${ROLLOUT_OUT}/trajectories.jsonl" >&2
+    exit 1
+  }
+fi
 
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=${HF_HOME}
@@ -128,59 +145,62 @@ cleanup_env() {
 }
 trap cleanup_env EXIT
 
-{
-  echo "=== ${TRAIN_WORLD_SIZE}-GPU vLLM online PPO start $(date -Iseconds) ==="
-  echo "node=$(hostname) gpus=${VISIBLE} env_url=${ENV_URL}"
-  echo "nimloth=${COMMIT} vagen=${ENV_COMMIT}"
-} | tee "${LOG}"
-
-(
-  export CUDA_VISIBLE_DEVICES=${GPUS[0]}
-  export PYTHONPATH=${ENV_REPO}/external/VAGEN
-  source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh"
-  cd "${ENV_REPO}/external/VAGEN"
-  exec "${PYTHON}" -m vagen.server.server \
-    server.host=0.0.0.0 server.port=${ENV_PORT} use_state_reward=False \
-    navigation.devices=[0] navigation.max_workers=1
-) >"${ENV_LOG}" 2>&1 &
-ENV_PID=$!
-for i in $(seq 1 300); do
-  if curl -fsS "${ENV_URL}/health" >/dev/null 2>&1; then
-    echo "env ready after ${i}s" | tee -a "${LOG}"
-    break
-  fi
-  if ! kill -0 "${ENV_PID}" 2>/dev/null; then
-    tail -100 "${ENV_LOG}" | tee -a "${LOG}"
-    exit 1
-  fi
-  sleep 1
-done
-curl -fsS "${ENV_URL}/health" | tee -a "${LOG}"
-
-export CUDA_VISIBLE_DEVICES=${VISIBLE}
-export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
-VLLM_BACKEND_ARGS=()
-if [[ -n "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" ]]; then
-  VLLM_BACKEND_ARGS=(
-    --vllm-distributed-executor-backend "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}"
-  )
+if [[ "${RUN_ROLLOUT}" == true ]]; then
+  {
+    echo "=== ${TRAIN_WORLD_SIZE}-GPU vLLM online PPO start $(date -Iseconds) ==="
+    echo "node=$(hostname) gpus=${VISIBLE} env_url=${ENV_URL}"
+    echo "nimloth=${COMMIT} vagen=${ENV_COMMIT}"
+  } | tee "${LOG}"
 fi
-"${PYTHON}" "${REPO}/experiments/training/rl/rollout_env.py" \
-  --backend vllm \
-  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
-  "${VLLM_BACKEND_ARGS[@]}" \
-  --model "${MODEL}" \
-  --env-url "${ENV_URL}" \
-  --output-dir "${ROLLOUT_OUT}" \
-  --fresh-manifest "${MANIFEST}" \
-  --num-episodes "${NUM_EPISODES}" \
-  --max-steps "${MAX_STEPS}" \
-  --eval-set base_train --split train --seed-offset 1 \
-  --temperature 0.7 --top-p 0.95 --max-pixels 3136 \
-  2>&1 | tee -a "${LOG}"
 
-cleanup_env
-if [[ "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" == ray ]]; then
+if [[ "${RUN_ROLLOUT}" == true ]]; then
+  (
+    export CUDA_VISIBLE_DEVICES=${GPUS[0]}
+    export PYTHONPATH=${ENV_REPO}/external/VAGEN
+    source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh"
+    cd "${ENV_REPO}/external/VAGEN"
+    exec "${PYTHON}" -m vagen.server.server \
+      server.host=0.0.0.0 server.port=${ENV_PORT} use_state_reward=False \
+      navigation.devices=[0] navigation.max_workers=1
+  ) >"${ENV_LOG}" 2>&1 &
+  ENV_PID=$!
+  for i in $(seq 1 300); do
+    if curl -fsS "${ENV_URL}/health" >/dev/null 2>&1; then
+      echo "env ready after ${i}s" | tee -a "${LOG}"
+      break
+    fi
+    if ! kill -0 "${ENV_PID}" 2>/dev/null; then
+      tail -100 "${ENV_LOG}" | tee -a "${LOG}"
+      exit 1
+    fi
+    sleep 1
+  done
+  curl -fsS "${ENV_URL}/health" | tee -a "${LOG}"
+
+  export CUDA_VISIBLE_DEVICES=${VISIBLE}
+  export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
+  VLLM_BACKEND_ARGS=()
+  if [[ -n "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" ]]; then
+    VLLM_BACKEND_ARGS=(
+      --vllm-distributed-executor-backend "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}"
+    )
+  fi
+  "${PYTHON}" "${REPO}/experiments/training/rl/rollout_env.py" \
+    --backend vllm \
+    --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
+    "${VLLM_BACKEND_ARGS[@]}" \
+    --model "${MODEL}" \
+    --env-url "${ENV_URL}" \
+    --output-dir "${ROLLOUT_OUT}" \
+    --fresh-manifest "${MANIFEST}" \
+    --num-episodes "${NUM_EPISODES}" \
+    --max-steps "${MAX_STEPS}" \
+    --eval-set base_train --split train --seed-offset 1 \
+    --temperature 0.7 --top-p 0.95 --max-pixels 3136 \
+    2>&1 | tee -a "${LOG}"
+  cleanup_env
+fi
+if [[ "${PIPELINE_PHASE}" == all && "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" == ray ]]; then
   [[ -n "${SLURM_JOB_ID:-}" ]] || { echo "Ray cleanup requires SLURM_JOB_ID" >&2; exit 1; }
   srun --jobid="${SLURM_JOB_ID}" --overlap --nodes="${TRAIN_NNODES}" \
     --ntasks="${TRAIN_NNODES}" --ntasks-per-node=1 --gpus=0 \
@@ -188,6 +208,9 @@ if [[ "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" == ray ]]; then
     2>&1 | tee -a "${LOG}"
 fi
 
+if [[ "${RUN_TRAIN}" == true ]]; then
+  export CUDA_VISIBLE_DEVICES=${VISIBLE}
+  export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
 TRAIN_ARGS=(
   -m nimloth.training.rl.cli
   --config "${RL_CONFIG}" \
@@ -251,3 +274,4 @@ PY
 
 sed -i 's/- status: running/- status: completed/' "${RUN_OUT}/README.md"
 echo "=== ${TRAIN_WORLD_SIZE}-GPU vLLM online PPO ALL_OK $(date -Iseconds) ===" | tee -a "${LOG}"
+fi

@@ -134,6 +134,7 @@ done
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
   --gres="gpu:${head_gpus}" \
   env RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}" VLLM_HOST_IP="${HEAD_IP}" \
+    PIPELINE_PHASE=rollout \
     REPO="${REPO}" RUN_OUT="${RUN_OUT}" RL_CONFIG="${RL_CONFIG}" \
     ENV_REPO="${ENV_REPO:?set ENV_REPO}" MODEL="${MODEL:?set MODEL}" \
     WM_CKPT="${WM_CKPT:-${MODEL}}" \
@@ -143,6 +144,14 @@ srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
     VLLM_DISTRIBUTED_EXECUTOR_BACKEND=ray \
     bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_smoke.sh"
 
-for pid in "${RAY_STEP_PIDS[@]}"; do
-  wait "${pid}" 2>/dev/null || true
-done
+stop_ray
+
+env SLURM_JOB_ID="${HOLD_JOB}" SLURM_JOB_NODELIST="$(squeue -h -j "${HOLD_JOB}" -o %N)" \
+  PIPELINE_PHASE=train \
+  REPO="${REPO}" RUN_OUT="${RUN_OUT}" RL_CONFIG="${RL_CONFIG}" \
+  ENV_REPO="${ENV_REPO:?set ENV_REPO}" MODEL="${MODEL:?set MODEL}" \
+  WM_CKPT="${WM_CKPT:-${MODEL}}" \
+  WANDB_PROJECT="${WANDB_PROJECT:-nimloth-rl}" \
+  WANDB_RUN_NAME="${WANDB_RUN_NAME:?set WANDB_RUN_NAME}" \
+  WANDB_MODE_OVERRIDE="${WANDB_MODE_OVERRIDE:-online}" \
+  bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_smoke.sh"

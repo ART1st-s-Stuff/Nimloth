@@ -1705,3 +1705,15 @@
 - 同一allocation/node的最小probe确认`--gpus=1`超时，而`--gres=gpu:1`立即成功并
   暴露`CUDA_VISIBLE_DEVICES=0`。启动器GPU steps已统一改用原生GRES语法；同时为
   worker显式传入已探测的`--node-ip-address`，避免Ray自动选择另一个10.23网卡地址。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID76 rollout完成、训练未启动
+
+- ID76 的Ray精确暴露8 GPU（dgx-04×1、dgx-42×6、dgx-48×1），TP4通过Gloo/NCCL、
+  native sampler、corrected epoch1两片权重、KV cache和CUDA graph初始化。
+- `base_train` seeds 1--4的4条fresh trajectory均完成，每条5 transitions，共20条；
+  rewards为`0.0/-0.2/-0.1/-0.1`，manifest和JSONL完整且未被PPO消费。
+- rollout后pipeline在仅含head的外层Slurm step内嵌套请求3节点Ray cleanup，被拒绝
+  `Only allocated 1 nodes asked for 3`；无W&B、optimizer step或训练checkpoint。
+  ID76不可作为完成的RL实验，也不可原地resume。
+- pipeline现支持清晰的`rollout`/`train` phase：顶层controller在head step完成rollout，
+  自己清理Ray并退出该step，再从完整hold上下文启动config-driven多节点FSDP训练。
