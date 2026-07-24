@@ -37,7 +37,8 @@
 
 - `bash -n`：当前 RL/SFT2 生产启动器通过。
 - `python -m compileall`：相关源码和实验入口通过。
-- 本地无 Torch/Pytest；需提交后同步服务器运行定向回归。
+- 本地无 Torch/Pytest；已同步隔离服务器 worktree。首次 collection 因新 worktree 未初始化 `external/le-wm` 失败，初始化该 submodule 后正常收集。
+- 服务器首轮定向回归为 `68 passed, 1 failed`；唯一失败来自新增测试用非生产 `ValueHead(hidden_dim=4)`，而 checkpoint 格式按生产默认 hidden 维恢复。测试 fixture 已改为生产构造，待复跑；这不是源分支运行错误。
 
 ## 待确认/风险
 

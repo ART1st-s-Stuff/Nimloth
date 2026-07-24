@@ -55,7 +55,7 @@ def test_rl_rebuilds_grid_slots_from_sft2_state_checkpoint(tmp_path) -> None:
         ),
         wm_predictor=predictor,
         dino_decoder=LeWMGridDecoder(emb_dim=2, hidden_dim=7),
-        value_head=ValueHead(emb_dim=2, hidden_dim=4),
+        value_head=ValueHead(emb_dim=2),
     )
     torch.save(state_proj.state_dict(), tmp_path / "state_proj.pt")
     predictor.save_checkpoint(tmp_path / "wm_predictor")
