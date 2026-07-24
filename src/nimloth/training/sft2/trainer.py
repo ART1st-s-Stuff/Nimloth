@@ -15,6 +15,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from nimloth.agent import Agent
 from nimloth.backbone import (
+    CachedDINOGridTargets,
+    DINOV2_LARGE_IDENTITY,
     build_input_builder,
     build_vision_ema,
     load_backbone,
@@ -36,10 +38,13 @@ from nimloth.training.sft2.checkpoint import (
 from nimloth.training.sft2.batch import SFT2BatchAssembler
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.data.factory import build_data_bundle
-from nimloth.training.sft2.variant import (
-    SFT2Variant,
-    SFT2VariantBuildContext,
-    resolve_sft2_variant,
+from nimloth.training.sft2.dino_grid import (
+    DINOGridBatchAssembler,
+    DINOGridSFT2Algorithm,
+)
+from nimloth.training.sft2.algorithm import (
+    SFT2Algorithm,
+    require_sft2_wm_history,
 )
 from nimloth.training.sft2.loop import (
     SFT2TrainingLoop,
@@ -55,7 +60,25 @@ from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
 from nimloth.util.csv_log import CSVRecordWriter
 from nimloth.util.wandb import init_wandb_run
 from nimloth.util.optim import OptimizationRuntime
-from nimloth.wm import SequenceSIGReg, WorldModel
+from nimloth.wm import (
+    LeWMConfig,
+    LatentWMPredictor,
+    SequenceSIGReg,
+    StateProjector,
+    ValueHead,
+    WorldModel,
+)
+from nimloth.wm.grid import (
+    EMATargetGridEncoder,
+    GridPredictorConfig,
+    GridStateProjector,
+    GridWorldModel,
+    LeWMGridDecoder,
+    LeWMGridEncoder,
+    TemporalSpatialGridPredictor,
+    load_sft1_slot_projector,
+    warm_start_legacy_grid_components,
+)
 
 
 def _build_world_model(
@@ -66,9 +89,8 @@ def _build_world_model(
     pair_parallel: bool,
     resume_ckpt_dir: Path | None,
     train_wm_predictor: bool,
-    variant: SFT2Variant | None = None,
 ) -> tuple[WorldModel, torch.device]:
-    """由 objective variant 构造模型；公共 trainer 只处理设备与恢复。"""
+    """按 objective 构造并恢复 world-model 子模块。"""
 
     aux_device = device
     if pair_parallel:
@@ -79,15 +101,94 @@ def _build_world_model(
         if mapped is not None:
             aux_device = torch.device(f"cuda:{mapped}")
 
-    selected = variant or resolve_sft2_variant(args.objective)
-    world_model = selected.build_world_model(
-        SFT2VariantBuildContext(
-            args=args,
-            model=model,
-            aux_device=aux_device,
-            model_dtype=next(model.parameters()).dtype,
+    model_dtype = next(model.parameters()).dtype
+    if args.objective == "dino_grid":
+        # Match the authoritative ID33 training path: Qwen and the frozen SFT1
+        # slot projector may be BF16, while every trainable grid auxiliary and
+        # the EMA target encoder remain FP32. LeWM's action Embedder also
+        # explicitly computes in FP32.
+        grid_dtype = torch.float32
+        slot_projector = load_sft1_slot_projector(
+            args.model,
+            qwen_hidden_dim=int(model.config.hidden_size),
+            state_dim=args.emb_dim,
+            grid_tokens=args.latent_token_count,
+            map_location=aux_device,
+            dtype=model_dtype,
+        ).to(aux_device)
+        online_encoder = LeWMGridEncoder(
+            emb_dim=args.emb_dim,
+            hidden_dim=args.grid_encoder_hidden_dim,
+        ).to(device=aux_device, dtype=grid_dtype)
+        state_proj = GridStateProjector(
+            slot_projector,
+            online_encoder,
+        ).to(aux_device)
+        target_encoder = EMATargetGridEncoder(
+            online_encoder,
+            decay=args.grid_ema_decay,
+        ).to(aux_device)
+        wm_predictor = TemporalSpatialGridPredictor(
+            GridPredictorConfig(
+                grid_tokens=args.latent_token_count,
+                emb_dim=args.emb_dim,
+                history_size=args.history_size,
+                depth=args.grid_wm_depth,
+                heads=args.grid_wm_heads,
+                dim_head=args.grid_wm_dim_head,
+                mlp_dim=args.grid_wm_mlp_dim,
+                dropout=args.grid_wm_dropout,
+            )
+        ).to(device=aux_device, dtype=grid_dtype)
+        world_model = GridWorldModel(
+            state_proj=state_proj,
+            target_encoder=target_encoder,
+            wm_predictor=wm_predictor,
+            dino_decoder=LeWMGridDecoder(
+                emb_dim=args.emb_dim,
+                hidden_dim=args.grid_decoder_hidden_dim,
+            ).to(device=aux_device, dtype=grid_dtype),
+            value_head=ValueHead(args.emb_dim).to(
+                device=aux_device,
+                dtype=grid_dtype,
+            ),
         )
-    )
+        if not args.resume and args.grid_warmstart is not None:
+            args.grid_warmstart_metadata = warm_start_legacy_grid_components(
+                world_model,
+                args.grid_warmstart,
+            )
+    else:
+        if args.wm_predictor_checkpoint is not None:
+            wm_predictor = LatentWMPredictor.load_checkpoint(
+                args.wm_predictor_checkpoint,
+                map_location=aux_device,
+            ).to(aux_device)
+            require_sft2_wm_history(
+                wm_predictor,
+                history_size=args.history_size,
+                source=args.wm_predictor_checkpoint,
+            )
+        else:
+            wm_predictor = LatentWMPredictor.create(
+                LeWMConfig(
+                    emb_dim=args.emb_dim,
+                    history_size=args.history_size,
+                )
+            ).to(aux_device)
+        world_model = WorldModel(
+            state_proj=StateProjector(
+                model.config.hidden_size,
+                wm_predictor.emb_dim,
+                latent_token_count=args.latent_token_count,
+            ).to(device=aux_device, dtype=model_dtype),
+            wm_predictor=wm_predictor,
+            value_head=ValueHead(wm_predictor.emb_dim).to(
+                device=aux_device,
+                dtype=model_dtype,
+            ),
+        )
+
     if not train_wm_predictor:
         world_model.wm_predictor.requires_grad_(False)
     resume_state = resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir else None
@@ -114,6 +215,14 @@ def _wrap_sft2_agent(
     """按现有多卡语义包装模型，再组成唯一的神经网络 Agent。"""
 
     model = loaded.backbone.model
+    state_proj = world_model.state_proj
+    wm_predictor = world_model.wm_predictor
+    value_head = world_model.value_head
+    dino_decoder = (
+        world_model.dino_decoder
+        if isinstance(world_model, GridWorldModel)
+        else None
+    )
     static_graph = world_size > 1
     if world_size > 1:
         if loaded.pair_parallel:
@@ -134,22 +243,56 @@ def _wrap_sft2_agent(
                 static_graph=static_graph,
             )
         aux_index = int(str(aux_device).split(":")[-1])
-
-        def wrap_component(_name: str, module: torch.nn.Module) -> torch.nn.Module:
-            return DDP(
-                module,
+        state_proj = DDP(
+            state_proj,
+            device_ids=[aux_index],
+            output_device=aux_index,
+            find_unused_parameters=False,
+            static_graph=static_graph,
+        )
+        value_head = DDP(
+            value_head,
+            device_ids=[aux_index],
+            output_device=aux_index,
+            find_unused_parameters=False,
+            static_graph=static_graph,
+        )
+        if train_wm_predictor:
+            wm_predictor = DDP(
+                wm_predictor,
+                device_ids=[aux_index],
+                output_device=aux_index,
+                find_unused_parameters=False,
+                static_graph=static_graph,
+            )
+        if dino_decoder is not None:
+            dino_decoder = DDP(
+                dino_decoder,
                 device_ids=[aux_index],
                 output_device=aux_index,
                 find_unused_parameters=False,
                 static_graph=static_graph,
             )
 
-        world_model.wrap_distributed_components(wrap_component)
+    if isinstance(world_model, GridWorldModel):
+        wrapped_world_model: WorldModel = GridWorldModel(
+            state_proj=state_proj,
+            target_encoder=world_model.target_encoder,
+            wm_predictor=wm_predictor,
+            dino_decoder=dino_decoder,
+            value_head=value_head,
+        )
+    else:
+        wrapped_world_model = WorldModel(
+            state_proj=state_proj,
+            wm_predictor=wm_predictor,
+            value_head=value_head,
+        )
 
     return (
         Agent(
             backbone=loaded.backbone.with_model(model),
-            wm=world_model,
+            wm=wrapped_world_model,
         ),
         static_graph,
     )
@@ -162,9 +305,8 @@ def _build_optimizer(
     query_adapter: Any,
     train_wm_predictor: bool,
 ) -> torch.optim.Optimizer:
-    """按 WorldModel 声明的具名组件建立参数组。"""
+    """按模块名称建立可审计的 SFT2 参数组。"""
 
-    del train_wm_predictor  # predictor 是否参与已由 requires_grad 唯一决定。
     query_parameter = query_adapter.delta if query_adapter is not None else None
     parameter_groups: list[dict[str, Any]] = [
         {
@@ -175,7 +317,21 @@ def _build_optimizer(
             ],
             "lr": args.lr_qwen_start,
             "name": "qwen",
-        }
+        },
+        {
+            "params": [
+                parameter
+                for parameter in agent.wm.state_proj.parameters()
+                if parameter.requires_grad
+            ],
+            "lr": args.state_proj_lr,
+            "name": "state_proj",
+        },
+        {
+            "params": agent.wm.value_head.parameters(),
+            "lr": args.value_head_lr,
+            "name": "value_head",
+        },
     ]
     if query_parameter is not None:
         parameter_groups.append(
@@ -186,15 +342,33 @@ def _build_optimizer(
                 "name": "query_adapter",
             }
         )
-    for name, module in agent.wm.optimization_components:
-        parameters = [
-            parameter for parameter in module.parameters() if parameter.requires_grad
-        ]
-        if not parameters:
-            continue
-        learning_rate = getattr(args, f"{name}_lr")
+    if train_wm_predictor:
+        predictor = agent.wm.wm_predictor
+        predictor_parameters = (
+            predictor.module.parameters()
+            if hasattr(predictor, "module")
+            else predictor.parameters()
+        )
         parameter_groups.append(
-            {"params": parameters, "lr": learning_rate, "name": name}
+            {
+                "params": list(predictor_parameters),
+                "lr": args.wm_predictor_lr,
+                "name": "wm_predictor",
+            }
+        )
+    if isinstance(agent.wm, GridWorldModel):
+        decoder = agent.wm.dino_decoder
+        decoder_parameters = (
+            decoder.module.parameters()
+            if hasattr(decoder, "module")
+            else decoder.parameters()
+        )
+        parameter_groups.append(
+            {
+                "params": list(decoder_parameters),
+                "lr": args.dino_decoder_lr,
+                "name": "dino_decoder",
+            }
         )
     return torch.optim.AdamW(parameter_groups, weight_decay=args.weight_decay)
 
@@ -212,7 +386,8 @@ def train_sft2(args=None) -> int:
     args.query_tune = str(getattr(args, "query_tune", "freeze"))
     args.query_lr = float(getattr(args, "query_lr", 5e-5))
     args.objective = str(getattr(args, "objective", "latent"))
-    variant = resolve_sft2_variant(args.objective)
+    if args.objective not in {"latent", "dino_grid"}:
+        raise ValueError(f"unsupported SFT2 objective: {args.objective!r}")
     if args.query_tune not in {"freeze", "adapter"}:
         raise ValueError(f"query_tune must be freeze or adapter, got {args.query_tune!r}")
     if args.latent_token_count < 1:
@@ -220,7 +395,30 @@ def train_sft2(args=None) -> int:
     args.history_size = int(getattr(args, "history_size", 4))
     if args.history_size < 1:
         raise ValueError(f"--history-size must be >= 1, got {args.history_size}")
-    variant.validate_args(args)
+    if args.objective == "dino_grid":
+        required = {
+            "latent_token_count": (args.latent_token_count, 16),
+            "history_size": (args.history_size, 4),
+            "emb_dim": (args.emb_dim, 1024),
+            "latent_query_mode": (args.latent_query_mode, "inject"),
+            "lambda_dino": (args.lambda_dino, 0.5),
+            "lambda_sigreg": (args.lambda_sigreg, 0.1),
+            "grid_size": (args.grid_size, 4),
+            "grid_ema_decay": (args.grid_ema_decay, 0.99),
+        }
+        mismatches = {
+            name: values
+            for name, values in required.items()
+            if values[0] != values[1]
+        }
+        if mismatches:
+            raise ValueError(
+                f"authoritative DINO-grid SFT2 invariants mismatch: {mismatches}"
+            )
+        if args.dino_grid_cache is None or args.grid_warmstart is None:
+            raise ValueError(
+                "DINO-grid SFT2 requires --dino-grid-cache and --grid-warmstart"
+            )
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     if args.query_tune == "adapter" and uses_lora(args):
@@ -279,7 +477,16 @@ def train_sft2(args=None) -> int:
                     "preprocess_cache_format": args.preprocess_cache_format,
                     "preprocess_cache_image_dtype": args.preprocess_cache_image_dtype,
                     "require_prebuilt_cache": args.require_prebuilt_cache,
-                    **variant.runtime_metadata(args),
+                    "dino_grid_cache": (
+                        str(args.dino_grid_cache)
+                        if args.dino_grid_cache is not None
+                        else None
+                    ),
+                    "grid_warmstart": (
+                        str(args.grid_warmstart)
+                        if args.grid_warmstart is not None
+                        else None
+                    ),
                 }
             )
         )
@@ -298,7 +505,6 @@ def train_sft2(args=None) -> int:
         pair_parallel=loaded.pair_parallel,
         resume_ckpt_dir=resume_ckpt_dir,
         train_wm_predictor=train_wm_predictor,
-        variant=variant,
     )
     agent, ddp_static_graph = _wrap_sft2_agent(
         loaded,
@@ -326,7 +532,20 @@ def train_sft2(args=None) -> int:
         device=aux_device,
         history_size=args.history_size,
     )
-    batch_builder = variant.build_batch_builder(args, base_batch_builder)
+    if args.objective == "dino_grid":
+        dino_targets = CachedDINOGridTargets.from_cache_root(
+            args.dino_grid_cache,
+            identity=DINOV2_LARGE_IDENTITY,
+            grid_size=args.grid_size,
+        )
+        args.dino_cache_fingerprint = dino_targets.cache_fingerprint
+        batch_builder = DINOGridBatchAssembler(
+            base_batch_builder,
+            dino_targets,
+        )
+    else:
+        args.dino_cache_fingerprint = None
+        batch_builder = base_batch_builder
     history_cache = OnlineHistoryStateCache()
     if resume_ckpt_dir is not None:
         history_cache_path = resume_ckpt_dir / f"history_cache_rank_{rank:03d}.pt"
@@ -445,7 +664,22 @@ def train_sft2(args=None) -> int:
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }
-    checkpoint_invariants.update(variant.checkpoint_invariants(args))
+    if args.objective == "dino_grid":
+        checkpoint_invariants.update(
+            {
+                "grid_tokens": 16,
+                "grid_ordering": "row_major",
+                "dino_grid_size": 4,
+                "dino_identity": vars(DINOV2_LARGE_IDENTITY),
+                "dino_cache_fingerprint": args.dino_cache_fingerprint,
+                "dino_weight": 0.5,
+                "grid_ema_decay": 0.99,
+                "grid_warmstart": str(Path(args.grid_warmstart).resolve()),
+                "grid_warmstart_mode": (
+                    "id33_spatial_plus_zero_temporal_position"
+                ),
+            }
+        )
     checkpoint_manager = SFT2CheckpointManager(
         output_dir=args.output_dir,
         agent=agent,
@@ -478,6 +712,7 @@ def train_sft2(args=None) -> int:
             "global_step",
             "total_loss",
             "wm_mse",
+            "dino_grid_mse",
             "sigreg_loss",
             "sigreg_global_batch_size",
             "value_total",
@@ -485,13 +720,13 @@ def train_sft2(args=None) -> int:
             "value_rank",
             "lm_ce",
             "lambda_wm",
+            "lambda_dino",
             "lambda_sigreg",
             "qwen_lr",
             "context_length",
             "current_batch_size",
             "history_cache_entries",
             "val_wm_mse",
-            *variant.metric_fields,
         ),
     )
     if is_main():
@@ -503,6 +738,11 @@ def train_sft2(args=None) -> int:
         vision_tune=vision_tune,
     )
 
+    algorithm_type = (
+        DINOGridSFT2Algorithm
+        if args.objective == "dino_grid"
+        else SFT2Algorithm
+    )
     algorithm_kwargs = dict(
         history_size=args.history_size,
         sigreg=(
@@ -521,7 +761,9 @@ def train_sft2(args=None) -> int:
         wm_weight_start=args.lambda_wm_start,
         wm_weight_end=args.lambda_wm_end,
     )
-    algorithm = variant.build_algorithm(args, **algorithm_kwargs)
+    if args.objective == "dino_grid":
+        algorithm_kwargs["dino_weight"] = args.lambda_dino
+    algorithm = algorithm_type(**algorithm_kwargs)
 
     loop_state = load_sft2_loop_state(
         resume=args.resume,

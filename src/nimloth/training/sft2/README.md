@@ -11,10 +11,9 @@ RL 只在真实 rollout 时用独立的 planning horizon 自回归预测多个�
 
 | 文件 | 职责 |
 |------|------|
-| `algorithm.py` | latent baseline 的 CE/WM/value 主阶段、SIGReg 阶段及 WM 权重策略 |
-| `variant.py` | objective variant registry 与 latent baseline 组装 |
-| `dino_grid.py` | DINO-grid 自己的模型、sidecar batch、objective、指标和 checkpoint invariants |
-| `trainer.py` | 只编排设备、DDP/EMA/optimizer 和训练生命周期，不识别具体 variant |
+| `algorithm.py` | 显式的 CE/WM/value 主阶段、SIGReg 阶段及 WM 权重策略 |
+| `dino_grid.py` | 4x4 DINO sidecar batch 与 decoded-grid objective，不改变公共算法 |
+| `trainer.py` | 按执行顺序加载 Agent、设置 DDP/EMA/optimizer 并启动训练 |
 | `batch.py` | SFT2 action/return/next-state 对齐与 terminal mask 装配 |
 | `data/` | dataset、sampler 与 DataLoader |
 | `history_cache.py` | rank-local 在线 detached state cache 与 checkpoint 状态 |
@@ -51,8 +50,7 @@ state，并用 valid mask 排除 sampler padding；SIGReg 的 `B` 是该 microba
 所有 rank 使用相同随机投影。只有 global `B<2` 才跳过 SIGReg。验证集不计算
 SIGReg。配置中的 `batch_size` 仍表示每个 rank 的 current step 数。
 
-DINO-grid variant 通过 registry 接入，公共 trainer/checkpoint 不导入其类型或
-artifact 名。它使用 k=16 query slots 和 row-major 4x4 teacher tokens，沿用
+DINO-grid variant 使用 k=16 query slots 和 row-major 4x4 teacher tokens。它沿用
 上述一次 CE/H-step cache/单向 SIGReg 语义；额外的 0.5 权重 DINO MSE 只比较
 WM predicted state 经过 decoder 后的输出与 next-image cached target，不直接
 对齐 query representation。teacher cache 由 `backbone/dino_grid.py` 独立校验，

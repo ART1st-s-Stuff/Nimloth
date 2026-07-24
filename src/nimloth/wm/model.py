@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import torch
 from torch import nn
 
@@ -125,43 +123,10 @@ class WorldModel(nn.Module):
         return rollout(state_history, previous_actions, action_sequences)
 
     @property
-    def optimization_components(self) -> tuple[tuple[str, nn.Module], ...]:
-        """返回训练阶段可按名称配置学习率的组件。"""
-
-        return (
-            ("state_proj", self.state_proj),
-            ("wm_predictor", self.wm_predictor),
-            ("value_head", self.value_head),
-        )
-
-    @property
     def trainable_modules(self) -> tuple[nn.Module, ...]:
-        """返回当前 variant 参与 train/eval 切换的可训练组件。"""
+        """SFT2 应统一切换 train/eval 的 WM 子模块。"""
 
-        return tuple(module for _, module in self.optimization_components)
-
-    @property
-    def broadcast_modules(self) -> tuple[nn.Module, ...]:
-        """返回分布式初始化后需要从 rank0 广播的全部组件。"""
-
-        return self.trainable_modules
-
-    def wrap_distributed_components(
-        self,
-        wrapper: Callable[[str, nn.Module], nn.Module],
-    ) -> "WorldModel":
-        """原位包装有梯度的组件，同时保留具体 WorldModel variant。"""
-
-        for name, module in self.optimization_components:
-            if any(parameter.requires_grad for parameter in module.parameters()):
-                setattr(self, name, wrapper(name, module))
-        return self
-
-    def prepare_for_rl(self, *, freeze_state_proj: bool) -> None:
-        """应用所有 WorldModel 共用的 RL 冻结策略。"""
-
-        if freeze_state_proj:
-            self.state_proj.requires_grad_(False).eval()
+        return (self.state_proj, self.wm_predictor, self.value_head)
 
     @property
     def synchronized_modules(self) -> tuple[nn.Module, ...]:

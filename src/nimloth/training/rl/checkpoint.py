@@ -16,8 +16,11 @@ import torch.distributed as dist
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
 from nimloth.util.distributed import is_main
+from nimloth.wm.predictor import LatentWMPredictor
+from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
 from nimloth.wm.model import WorldModel
+from nimloth.wm.grid import TemporalSpatialGridPredictor
 
 
 def _unwrap(module: torch.nn.Module) -> torch.nn.Module:
@@ -158,11 +161,17 @@ def load_rl_wm_checkpoint(
     pred_dir = ckpt_dir / "wm_predictor"
     if pred_dir.is_dir():
         predictor = _unwrap(wm_predictor)
-        loaded_pred = type(predictor).load_checkpoint(
-            pred_dir,
-            map_location=device,
-        )
-        predictor.load_state_dict(loaded_pred.state_dict())
+        if isinstance(predictor, TemporalSpatialGridPredictor):
+            loaded_pred = TemporalSpatialGridPredictor.load_checkpoint(
+                pred_dir,
+                map_location=device,
+            )
+        else:
+            loaded_pred = LatentWMPredictor.load_checkpoint(
+                pred_dir,
+                map_location=device,
+            )
+        _unwrap(wm_predictor).load_state_dict(loaded_pred.state_dict())
     head_dir = ckpt_dir / "value_head"
     if head_dir.is_dir():
         head = _unwrap(value_head)

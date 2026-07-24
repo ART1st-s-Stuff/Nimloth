@@ -133,9 +133,8 @@ distribution, including masked zero-probability actions.
 | `rollout_runtime.py` | Collector startup constraints and online policy binding |
 | `reporting.py` | RL-specific CSV/W&B metric shape over shared util helpers |
 | `checkpoint_manager.py` | Runtime component state to checkpoint artifact mapping |
-| `trainer.py` | 只编排 Agent、FSDP/EMA/optimizer/resume，不识别具体 WorldModel variant |
-| `checkpoint.py` | 通过 WorldModel 多态接口恢复完整模型与 optimizer |
-| `nimloth.wm.factory` | 根据 predictor config 选择 loader，恢复 variant-specific 模型和 artifact |
+| `trainer.py` | 按执行顺序加载 Agent、设置 FSDP/EMA/optimizer/resume 和 adapters |
+| `checkpoint.py` | 完整模型与 optimizer checkpoint helpers |
 | `cli.py` | CLI adapter and independent train/eval collector selection |
 
 ## Important restrictions

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
+from types import SimpleNamespace
+
 import torch
 
-from nimloth.wm.factory import (
-    load_world_model,
-    world_model_artifacts_are_complete,
-)
+from nimloth.config.rl import parse_rl_config
+from nimloth.training.rl.trainer import _build_world_model
 from nimloth.wm.grid import (
     EMATargetGridEncoder,
     GridPredictorConfig,
@@ -56,16 +57,26 @@ def test_rl_loads_self_contained_grid_state_without_sft1_sidecars(tmp_path) -> N
     source.value_head.save_checkpoint(tmp_path / "value_head")
     source.save_checkpoint_extras(tmp_path)
 
-    assert world_model_artifacts_are_complete(tmp_path)
-
-    loaded = load_world_model(
-        predictor_checkpoint=tmp_path / "wm_predictor",
+    llm = torch.nn.Linear(1, 1, bias=False)
+    llm.config = SimpleNamespace(hidden_size=3)
+    config = parse_rl_config(
+        {
+            "freeze": {"state_proj": True},
+            "predictor": {"emb_dim": 2, "history_size": 2},
+            "validation": {"enabled": False, "envs": 0},
+        }
+    )
+    args = Namespace(
+        model=tmp_path,
+        wm_checkpoint=tmp_path / "wm_predictor",
         state_proj_checkpoint=tmp_path / "state_proj.pt",
         value_head_checkpoint=tmp_path / "value_head",
-        qwen_hidden_dim=3,
-        expected_emb_dim=2,
-        expected_history_size=2,
-        freeze_state_proj=True,
+    )
+
+    loaded = _build_world_model(
+        args,
+        config,
+        llm=llm,
         device=torch.device("cpu"),
     )
 
