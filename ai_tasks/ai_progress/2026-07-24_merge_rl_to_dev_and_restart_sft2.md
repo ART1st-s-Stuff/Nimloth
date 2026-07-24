@@ -72,6 +72,11 @@
   81559MiB且step内`CUDA_VISIBLE_DEVICES=0..7`。probe还确认本集群step设置
   `SLURM_NNODES=1`而不设置`SLURM_JOB_NUM_NODES`，pipeline门禁已在正式运行前修正；
   此时尚未创建ID48 run目录或启动数据生成。
+- ID48 pipeline step`486596.2`在terminal-CoT train第51条
+  `train/shard_001_040/000051`按P0 fail-fast：128 tokens内没有自行生成`</think>`。
+  无正式JSONL/cache/W&B/optimizer/checkpoint，不可resume；输出README已记录。单条
+  诊断把上限临时放到512仍没有close，因此不能擅自把正式上限稍微调大。生成失败异常
+  现增加有界continuation预览和生成token数，先判定模型实际输出再请人类决定策略。
 
 ## 待确认问题
 

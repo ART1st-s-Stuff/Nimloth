@@ -25,6 +25,8 @@ from nimloth.backbone.qwen25vl.policy import (
 from nimloth.latent import LatentActionTokens, latent_state_tokens
 from nimloth.rollout.transitions import TERMINAL_ASSISTANT_PREFIX_FIELD
 
+_CONTINUATION_PREVIEW_CHARS = 1000
+
 
 @dataclass(frozen=True)
 class TerminalCoTGeneration:
@@ -64,6 +66,22 @@ class _StopAfterText(StoppingCriteria):
             spaces_between_special_tokens=False,
         )
         return self._text in continuation
+
+
+def _missing_close_error(
+    *,
+    record_id: str,
+    max_reasoning_tokens: int,
+    continuation_ids: Sequence[int],
+    decoded_continuation: str,
+) -> RuntimeError:
+    preview = decoded_continuation[:_CONTINUATION_PREVIEW_CHARS]
+    return RuntimeError(
+        f"record {record_id!r}: terminal CoT did not emit '</think>' within "
+        f"{max_reasoning_tokens} reasoning tokens; "
+        f"generated_tokens={len(continuation_ids)}; "
+        f"continuation_preview={preview!r}"
+    )
 
 
 def terminal_cot_prompt_messages(record: dict[str, Any]) -> list[dict[str, Any]]:
@@ -190,9 +208,11 @@ def generate_terminal_cot_prefix(
     )
     if close_start < 0 or reasoning_token_count > max_reasoning_tokens:
         record_id = str(record.get("id", ""))
-        raise RuntimeError(
-            f"record {record_id!r}: terminal CoT did not emit '</think>' within "
-            f"{max_reasoning_tokens} reasoning tokens"
+        raise _missing_close_error(
+            record_id=record_id,
+            max_reasoning_tokens=max_reasoning_tokens,
+            continuation_ids=continuation_ids,
+            decoded_continuation=decoded_continuation,
         )
     tokens = LatentActionTokens()
     latent_block = "".join(latent_state_tokens(latent_token_count, tokens))
