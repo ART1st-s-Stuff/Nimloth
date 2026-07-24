@@ -4,6 +4,7 @@ set -euo pipefail
 
 HOLD_JOB=${HOLD_JOB:?set HOLD_JOB to one running allocation}
 REPO=${REPO:?set REPO to the committed server worktree}
+source "${REPO}/experiments/training/rl/slurm_allocation.sh"
 RL_CONFIG=${RL_CONFIG:-${REPO}/configs/training/rl/e2e_smoke_h4.yaml}
 RUN_OUT=${RUN_OUT:?set RUN_OUT to a new output directory}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
@@ -32,10 +33,10 @@ JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")
 declare -A GPU_COUNTS
 declare -A NODE_IPS
 total_gpus=0
+nimloth_load_slurm_gpu_counts "${JOB_DETAILS}" GPU_COUNTS
 for node in "${NODES[@]}"; do
-  count=$(sed -n "s/.*Nodes=${node} .*GRES=gpu:\([0-9][0-9]*\).*/\1/p" <<< "${JOB_DETAILS}")
+  count=${GPU_COUNTS[${node}]:-}
   [[ -n "${count}" ]] || { echo "missing allocated GPU count for ${node}" >&2; exit 1; }
-  GPU_COUNTS[${node}]=${count}
   node_ip=$(srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
     -w "${node}" --gpus=0 hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
   [[ -n "${node_ip}" ]] || { echo "missing 10.23 IP for ${node}" >&2; exit 1; }

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 REPO=${REPO:?set REPO to the committed server worktree}
+source "${REPO}/experiments/training/rl/slurm_allocation.sh"
 ENV_REPO=${ENV_REPO:?set ENV_REPO to the verified VAGEN worktree}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
 MODEL=${MODEL:?set MODEL to a complete positive-k inject HF checkpoint}
@@ -246,10 +247,12 @@ else
   [[ -n "${RDZV_IP}" ]] || { echo "missing multi-node rendezvous IP" >&2; exit 1; }
   export NIMLOTH_TRAIN_ARGS=$(printf '%q ' "${TRAIN_ARGS[@]}")
   JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}")
+  declare -A TRAIN_GPU_COUNTS
+  nimloth_load_slurm_gpu_counts "${JOB_DETAILS}" TRAIN_GPU_COUNTS
   TRAIN_STEP_PIDS=()
   rank_offset=0
   for node in "${TRAIN_NODES_LIST[@]}"; do
-    node_gpus=$(sed -n "s/.*Nodes=${node} .*GRES=gpu:\([0-9][0-9]*\).*/\1/p" <<< "${JOB_DETAILS}")
+    node_gpus=${TRAIN_GPU_COUNTS[${node}]:-}
     [[ -n "${node_gpus}" ]] || { echo "missing allocated GPU count for ${node}" >&2; exit 1; }
     srun --jobid="${SLURM_JOB_ID}" --overlap --nodes=1 --ntasks=1 -w "${node}" \
       --gres="gpu:${node_gpus}" \
