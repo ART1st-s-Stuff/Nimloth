@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+import math
+from typing import Any, Literal, Protocol
 
-import torch
-
-from nimloth.agent import AgentPrompt, PolicyDecision, sample_policy_decision
+from nimloth.agent import AgentPrompt, PolicyDecision, PolicyTokenTrace
 from nimloth.backbone.qwen25vl.policy import (
     collect_policy_images,
     render_policy_messages,
 )
-from nimloth.latent import LatentActionTokens, special_token_ids
+from nimloth.latent import (
+    LatentActionTokens,
+    all_special_tokens_for_latent_count,
+    latent_state_tokens,
+    special_token_ids,
+)
 
 
 class VLLMEngine(Protocol):
@@ -19,7 +23,7 @@ class VLLMEngine(Protocol):
 
 
 class QwenVLLMAgentPolicy:
-    """vLLM 只计算八个 action token 的 score，采样规则继续由 Agent 定义。"""
+    """vLLM behavior policy；支持 action-only 与 turn-credit 两段式生成。"""
 
     def __init__(
         self,
@@ -29,18 +33,30 @@ class QwenVLLMAgentPolicy:
         temperature: float,
         top_p: float,
         latent_token_count: int = 1,
+        credit_assignment: Literal["action", "turn"] = "action",
+        max_reasoning_tokens: int = 64,
     ) -> None:
+        if credit_assignment not in {"action", "turn"}:
+            raise ValueError(
+                f"unsupported PPO credit assignment: {credit_assignment!r}"
+            )
+        if max_reasoning_tokens < 1:
+            raise ValueError("max_reasoning_tokens must be positive")
         self.engine = engine
         self.processor = processor
         self.temperature = float(temperature)
         self.top_p = float(top_p)
         self.latent_token_count = int(latent_token_count)
-        token_map = special_token_ids(
+        self.credit_assignment = credit_assignment
+        self.max_reasoning_tokens = int(max_reasoning_tokens)
+        self.prompt_mode = "response" if credit_assignment == "turn" else "action"
+        self.token_id_map = special_token_ids(
             processor.tokenizer,
             latent_token_count=latent_token_count,
         )
         self.action_token_ids = tuple(
-            token_map[token] for token in LatentActionTokens().action_tokens
+            self.token_id_map[token]
+            for token in LatentActionTokens().action_tokens
         )
 
     @classmethod
@@ -56,6 +72,8 @@ class QwenVLLMAgentPolicy:
         max_images: int,
         gpu_memory_utilization: float,
         latent_token_count: int,
+        credit_assignment: Literal["action", "turn"] = "action",
+        max_reasoning_tokens: int = 64,
         distributed_executor_backend: str | None = None,
     ) -> "QwenVLLMAgentPolicy":
         from vllm import LLM
@@ -71,6 +89,8 @@ class QwenVLLMAgentPolicy:
             max_model_len=int(max_model_len),
             gpu_memory_utilization=float(gpu_memory_utilization),
             limit_mm_per_prompt={"image": int(max_images)},
+            # PPO 保存实际 temperature/top-p behavior 分布，不保存 raw logits 分布。
+            logprobs_mode="processed_logprobs",
             **engine_kwargs,
         )
         return cls(
@@ -79,46 +99,205 @@ class QwenVLLMAgentPolicy:
             temperature=temperature,
             top_p=top_p,
             latent_token_count=latent_token_count,
+            credit_assignment=credit_assignment,
+            max_reasoning_tokens=max_reasoning_tokens,
         )
 
     def reset_episode(self) -> None:
         """vLLM KV cache 按 request 管理，policy 本身无 episode state。"""
 
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
-        from vllm import SamplingParams
+        if self.credit_assignment == "turn":
+            return self._select_response(prompt)
+        return self._select_action_only(prompt)
 
+    def _request(self, prompt: AgentPrompt) -> tuple[dict[str, Any], list[Any]]:
+        bound_messages = prompt.bound_messages()
         text = render_policy_messages(
-            prompt.bound_messages(),
+            bound_messages,
             self.processor,
             latent_token_count=self.latent_token_count,
         )
-        images = collect_policy_images(prompt.bound_messages())
+        images = collect_policy_images(bound_messages)
         request: dict[str, Any] = {"prompt": text}
         if images:
             request["multi_modal_data"] = {"image": images}
+        return request, images
+
+    @staticmethod
+    def _sampled_log_prob(output: Any, position: int, token_id: int) -> float:
+        token_logprobs = output.logprobs[position]
+        if token_id not in token_logprobs:
+            raise RuntimeError(
+                f"vLLM did not return the sampled token log-prob at position {position}"
+            )
+        value = float(token_logprobs[token_id].logprob)
+        if not math.isfinite(value):
+            raise RuntimeError("vLLM returned a non-finite sampled token log-prob")
+        return value
+
+    def _action_decision(
+        self,
+        request: dict[str, Any],
+    ) -> tuple[Any, int, tuple[float, ...]]:
+        from vllm import SamplingParams
+
         params = SamplingParams(
-            temperature=1.0,
-            top_p=1.0,
+            temperature=self.temperature,
+            top_p=self.top_p,
             max_tokens=1,
             logprobs=len(self.action_token_ids),
             allowed_token_ids=list(self.action_token_ids),
             detokenize=False,
         )
         output = self.engine.generate([request], params, use_tqdm=False)[0].outputs[0]
+        if len(output.token_ids) != 1:
+            raise RuntimeError("vLLM action stage must generate exactly one token")
+        action_token_id = int(output.token_ids[0])
+        try:
+            action_index = self.action_token_ids.index(action_token_id)
+        except ValueError as error:
+            raise RuntimeError(
+                f"vLLM generated non-action token id {action_token_id}"
+            ) from error
         token_logprobs = output.logprobs[0]
-        scores = torch.tensor(
-            [
-                float(token_logprobs[token_id].logprob)
-                if token_id in token_logprobs
-                else float("-inf")
-                for token_id in self.action_token_ids
-            ],
-            dtype=torch.float32,
+        action_log_probs = tuple(
+            float(token_logprobs[token_id].logprob)
+            if token_id in token_logprobs
+            else float("-inf")
+            for token_id in self.action_token_ids
         )
-        return sample_policy_decision(
-            scores,
+        if self.temperature == 0.0:
+            action_log_probs = tuple(
+                0.0 if index == action_index else float("-inf")
+                for index in range(len(self.action_token_ids))
+            )
+        return output, action_index, action_log_probs
+
+    def _select_action_only(self, prompt: AgentPrompt) -> PolicyDecision:
+        request, _images = self._request(prompt)
+        _output, action_index, action_log_probs = self._action_decision(request)
+        tokens = LatentActionTokens()
+        return PolicyDecision(
+            action_index=action_index,
+            action_log_probs=action_log_probs,
+            token_trace=PolicyTokenTrace(
+                token_ids=(
+                    self.action_token_ids[action_index],
+                    self.token_id_map[tokens.action_end],
+                ),
+                old_log_probs=(action_log_probs[action_index], None),
+                loss_mask=(True, False),
+                token_roles=("action", "injected"),
+            ),
+        )
+
+    def _select_response(self, prompt: AgentPrompt) -> PolicyDecision:
+        from vllm import SamplingParams
+
+        if prompt.messages[-1].get("content") != "<think>":
+            raise ValueError("turn-credit policy prompt must end with '<think>'")
+        request, images = self._request(prompt)
+        tokens = LatentActionTokens()
+        reasoning_params = SamplingParams(
             temperature=self.temperature,
             top_p=self.top_p,
+            max_tokens=self.max_reasoning_tokens,
+            logprobs=0,
+            stop="</think>",
+            include_stop_str_in_output=True,
+            bad_words=list(
+                all_special_tokens_for_latent_count(
+                    tokens,
+                    latent_token_count=self.latent_token_count,
+                )
+            ),
+            detokenize=True,
+            skip_special_tokens=False,
+        )
+        request_output = self.engine.generate(
+            [request],
+            reasoning_params,
+            use_tqdm=False,
+        )[0]
+        reasoning_output = request_output.outputs[0]
+        reasoning_ids = tuple(int(value) for value in reasoning_output.token_ids)
+        if not reasoning_ids:
+            raise RuntimeError("vLLM turn-credit stage generated no reasoning token")
+        reasoning_log_probs = tuple(
+            0.0
+            if self.temperature == 0.0
+            else self._sampled_log_prob(reasoning_output, index, token_id)
+            for index, token_id in enumerate(reasoning_ids)
+        )
+        reasoning_text = str(reasoning_output.text)
+        close_text = "</think>"
+        close_sampled = reasoning_text.endswith(close_text)
+        thought = (
+            reasoning_text[: -len(close_text)]
+            if close_sampled
+            else reasoning_text
+        )
+
+        continuation_ids = list(reasoning_ids)
+        continuation_log_probs: list[float | None] = list(reasoning_log_probs)
+        loss_mask = [True] * len(reasoning_ids)
+        token_roles: list[Literal["reasoning", "action", "injected"]] = [
+            "reasoning"
+        ] * len(reasoning_ids)
+        if not close_sampled:
+            close_ids = self.processor.tokenizer.encode(
+                close_text,
+                add_special_tokens=False,
+            )
+            continuation_ids.extend(close_ids)
+            continuation_log_probs.extend([None] * len(close_ids))
+            loss_mask.extend([False] * len(close_ids))
+            token_roles.extend(["injected"] * len(close_ids))
+
+        injected_tokens = (
+            *latent_state_tokens(self.latent_token_count, tokens),
+            tokens.action_start,
+        )
+        injected_ids = [self.token_id_map[token] for token in injected_tokens]
+        continuation_ids.extend(injected_ids)
+        continuation_log_probs.extend([None] * len(injected_ids))
+        loss_mask.extend([False] * len(injected_ids))
+        token_roles.extend(["injected"] * len(injected_ids))
+
+        if request_output.prompt_token_ids is None:
+            raise RuntimeError("vLLM did not return prompt token ids for staged action")
+        action_request: dict[str, Any] = {
+            "prompt_token_ids": list(request_output.prompt_token_ids)
+            + continuation_ids,
+        }
+        if images:
+            action_request["multi_modal_data"] = {"image": images}
+        _action_output, action_index, action_log_probs = self._action_decision(
+            action_request
+        )
+        continuation_ids.extend(
+            (self.action_token_ids[action_index], self.token_id_map[tokens.action_end])
+        )
+        continuation_log_probs.extend((action_log_probs[action_index], None))
+        loss_mask.extend((True, False))
+        token_roles.extend(("action", "injected"))
+
+        latent_block = "".join(latent_state_tokens(self.latent_token_count, tokens))
+        response = (
+            f"<think>{thought}</think>{latent_block}{tokens.action_start}"
+            f"{tokens.action_tokens[action_index]}{tokens.action_end}"
+        )
+        return PolicyDecision(
+            action_index=action_index,
+            action_log_probs=action_log_probs,
+            response=response,
+            token_trace=PolicyTokenTrace(
+                token_ids=tuple(continuation_ids),
+                old_log_probs=tuple(continuation_log_probs),
+                loss_mask=tuple(loss_mask),
+                token_roles=tuple(token_roles),
+            ),
         )
 
 

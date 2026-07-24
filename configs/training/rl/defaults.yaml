@@ -24,6 +24,9 @@ actor:
   enabled: false          # PPO 是否启用；与 Backbone 是否接收表征梯度独立
   entropy_coeff: 0.0   # 0 = no entropy bonus (backward compatible)
   clip_ratio: 0.2
+  # action: only sampled action token; turn: sampled CoT and action share step credit.
+  credit_assignment: action
+  max_reasoning_tokens: 64
 
 # --- Predictor ---
 predictor:

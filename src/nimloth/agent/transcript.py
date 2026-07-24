@@ -14,6 +14,7 @@ class AgentTranscript:
     observation_texts: tuple[str, ...]
     observation_images: tuple[Any, ...]
     action_indices: tuple[int, ...]
+    assistant_responses: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.system_prompt.strip():
@@ -31,6 +32,15 @@ class AgentTranscript:
             )
         if any(action_index < 0 for action_index in self.action_indices):
             raise ValueError("action indices must be non-negative")
+        if self.assistant_responses and (
+            len(self.assistant_responses) != len(self.action_indices)
+        ):
+            raise ValueError(
+                "assistant response/action count mismatch: "
+                f"{len(self.assistant_responses)} != {len(self.action_indices)}"
+            )
+        if any(not response for response in self.assistant_responses):
+            raise ValueError("assistant responses must be non-empty")
 
     def policy_prefix(self, step_index: int) -> AgentTranscript:
         """返回选择第 ``step_index`` 个动作之前的状态。"""
@@ -50,4 +60,5 @@ class AgentTranscript:
             observation_texts=self.observation_texts[: step_index + 1],
             observation_images=self.observation_images[: step_index + 1],
             action_indices=self.action_indices[:step_index],
+            assistant_responses=self.assistant_responses[:step_index],
         )

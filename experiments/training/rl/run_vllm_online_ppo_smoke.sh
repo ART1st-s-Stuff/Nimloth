@@ -28,13 +28,19 @@ esac
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_TP_SIZE < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_TP_SIZE CREDIT_ASSIGNMENT MAX_REASONING_TOKENS < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
 from nimloth.config.rl import load_rl_config
-config = load_rl_config(Path(sys.argv[1])).distributed
-print(config.nodes, config.world_size, config.rollout_tensor_parallel_size)
+config = load_rl_config(Path(sys.argv[1]))
+print(
+    config.distributed.nodes,
+    config.distributed.world_size,
+    config.distributed.rollout_tensor_parallel_size,
+    config.actor.credit_assignment,
+    config.actor.max_reasoning_tokens,
+)
 ' "${RL_CONFIG}"
 )
 TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-${CONFIG_TP_SIZE}}
@@ -198,6 +204,8 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
     --max-steps "${MAX_STEPS}" \
     --eval-set base_train --split train --seed-offset 1 \
     --temperature 0.7 --top-p 0.95 --max-pixels 3136 \
+    --credit-assignment "${CREDIT_ASSIGNMENT}" \
+    --max-reasoning-tokens "${MAX_REASONING_TOKENS}" \
     2>&1 | tee -a "${LOG}"
   cleanup_env
 fi

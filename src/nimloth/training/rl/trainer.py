@@ -426,6 +426,14 @@ def train_rl(
         eval_collector=eval_collector,
         validation_enabled=config.validation.enabled,
     )
+    if (
+        actor_enabled
+        and config.actor.credit_assignment == "turn"
+        and not isinstance(train_collector, FreshJSONLRolloutCollector)
+    ):
+        raise ValueError(
+            "actor.credit_assignment=turn requires a fresh vLLM JSONL rollout"
+        )
     needs_online_policy = online_policy_required(
         train_collector,
         eval_collector,
@@ -597,6 +605,7 @@ def train_rl(
             value_rank_weight=config.value_head.lambda_rank,
             ppo_clip_ratio=config.actor.clip_ratio,
             entropy_weight=config.actor.entropy_coeff,
+            credit_assignment=config.actor.credit_assignment,
         )
         model_runtime = RLModelRuntime(
             agent=agent,

@@ -81,6 +81,16 @@ class NimlothPromptTemplate:
     def build_policy_prompt(self, transcript: AgentTranscript) -> AgentPrompt:
         """构造最后一个 observation 的动作查询。"""
 
+        return self.build_state_prompt(transcript)
+
+    def build_state_prompt(
+        self,
+        transcript: AgentTranscript,
+        *,
+        assistant_response: str | None = None,
+    ) -> AgentPrompt:
+        """用模板或该步真实生成的 reasoning 构造 latent state query。"""
+
         if len(transcript.observation_texts) != len(transcript.action_indices) + 1:
             raise ValueError(
                 "policy prompt requires exactly one unacted observation: "
@@ -91,9 +101,43 @@ class NimlothPromptTemplate:
         messages.append(
             {"role": "user", "content": transcript.observation_texts[-1]}
         )
+        assistant_content = self.assistant_prefix()
+        if assistant_response is not None:
+            tokens = LatentActionTokens()
+            before_action, marker, _after_action = assistant_response.partition(
+                tokens.action_start
+            )
+            if not marker or not before_action.startswith("<think>"):
+                raise ValueError(
+                    "generated assistant response does not match Nimloth state prefix"
+                )
+            assistant_content = before_action + marker
         messages.append(
-            {"role": "assistant", "content": self.assistant_prefix()}
+            {"role": "assistant", "content": assistant_content}
         )
+        return AgentPrompt(
+            messages=tuple(messages),
+            images=transcript.observation_images,
+            template=self.spec,
+        )
+
+    def build_response_policy_prompt(
+        self,
+        transcript: AgentTranscript,
+    ) -> AgentPrompt:
+        """构造仅预填 ``<think>`` 的 prompt，供 behavior policy 采样 CoT。"""
+
+        if len(transcript.observation_texts) != len(transcript.action_indices) + 1:
+            raise ValueError(
+                "response policy prompt requires exactly one unacted observation: "
+                f"observations={len(transcript.observation_texts)}, "
+                f"actions={len(transcript.action_indices)}"
+            )
+        messages = self._completed_messages(transcript)
+        messages.append(
+            {"role": "user", "content": transcript.observation_texts[-1]}
+        )
+        messages.append({"role": "assistant", "content": "<think>"})
         return AgentPrompt(
             messages=tuple(messages),
             images=transcript.observation_images,
@@ -127,7 +171,11 @@ class NimlothPromptTemplate:
             messages.append(
                 {
                     "role": "assistant",
-                    "content": self.assistant_response(action_index),
+                    "content": (
+                        transcript.assistant_responses[step_index]
+                        if transcript.assistant_responses
+                        else self.assistant_response(action_index)
+                    ),
                 }
             )
         return messages

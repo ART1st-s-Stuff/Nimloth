@@ -19,6 +19,8 @@ actor:
   enabled: true
   entropy_coeff: 0.01
   clip_ratio: 0.2
+  credit_assignment: turn
+  max_reasoning_tokens: 32
 
 predictor:
   lr: 0.0001

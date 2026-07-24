@@ -38,7 +38,7 @@ class TrajectoryWindow:
         """返回窗口内真实的 H+1 个 policy-state prompt。"""
 
         return tuple(
-            self.trajectory.build_policy_prompt(step_index)
+            self.trajectory.build_state_prompt(step_index)
             for step_index in range(
                 self.start_step,
                 self.start_step + self.history_size + 1,
@@ -49,19 +49,29 @@ class TrajectoryWindow:
         """返回窗口内 H 个动作的 PPO 重放输入。"""
 
         latent_token_count = self.trajectory.resolved_latent_token_count()
-        return tuple(
-            PolicyReplayInput(
+        samples: list[PolicyReplayInput] = []
+        for step_index in range(
+            self.start_step,
+            self.start_step + self.history_size,
+        ):
+            token_trace = self.trajectory.policy_token_trace(step_index)
+            samples.append(PolicyReplayInput(
                 prompt=self.trajectory.build_policy_prompt(step_index),
                 action_index=self.trajectory.action_indices[step_index],
                 sampling_temperature=self.trajectory.sampling_temperature,
                 sampling_top_p=self.trajectory.sampling_top_p,
                 latent_token_count=latent_token_count,
-            )
-            for step_index in range(
-                self.start_step,
-                self.start_step + self.history_size,
-            )
-        )
+                credit_assignment=self.trajectory.policy_credit_assignment,  # type: ignore[arg-type]
+                token_trace=token_trace,
+                old_action_log_prob=(
+                    None
+                    if token_trace is not None
+                    else self.trajectory.action_log_probs[step_index][
+                        self.trajectory.action_indices[step_index]
+                    ]
+                ),
+            ))
+        return tuple(samples)
 
 
 def count_trajectory_windows(

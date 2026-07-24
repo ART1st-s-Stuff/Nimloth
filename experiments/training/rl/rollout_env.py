@@ -39,6 +39,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--seed-offset", type=int, default=1)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.95)
+    ap.add_argument(
+        "--credit-assignment",
+        choices=("action", "turn"),
+        default="action",
+    )
+    ap.add_argument("--max-reasoning-tokens", type=int, default=64)
     ap.add_argument("--attn-implementation", default="sdpa")
     ap.add_argument("--max-pixels", type=int, default=3136)
     ap.add_argument("--backend", choices=("hf", "vllm"), default="hf")
@@ -160,9 +166,13 @@ def main(argv: list[str] | None = None) -> int:
             max_images=args.max_steps + 1,
             gpu_memory_utilization=args.gpu_memory_utilization,
             latent_token_count=latent_token_count,
+            credit_assignment=args.credit_assignment,
+            max_reasoning_tokens=args.max_reasoning_tokens,
             distributed_executor_backend=args.vllm_distributed_executor_backend,
         )
     else:
+        if args.credit_assignment != "action":
+            raise ValueError("turn credit rollout requires --backend vllm")
         from transformers import AutoConfig
         from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 

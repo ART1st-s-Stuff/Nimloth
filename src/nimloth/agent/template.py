@@ -118,6 +118,22 @@ class AgentPromptTemplate(Protocol):
         """构造预测下一动作的 prompt。"""
         ...
 
+    def build_response_policy_prompt(
+        self,
+        transcript: AgentTranscript,
+    ) -> AgentPrompt:
+        """构造从 assistant reasoning 起点开始生成的 prompt。"""
+        ...
+
+    def build_state_prompt(
+        self,
+        transcript: AgentTranscript,
+        *,
+        assistant_response: str | None = None,
+    ) -> AgentPrompt:
+        """构造包含 latent query、但不包含未来 action token 的 state prompt。"""
+        ...
+
     def build_supervised_prompt(self, transcript: AgentTranscript) -> AgentPrompt:
         """构造所有已完成动作轮次的监督 prompt。"""
         ...

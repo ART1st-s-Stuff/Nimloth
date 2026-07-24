@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from nimloth.agent import AgentPrompt, PolicyReplayInput
 from nimloth.rollout import TrajectoryWindow
 from nimloth.rollout.transitions import discounted_action_value_targets
+from nimloth.training.rl.credit import expand_step_advantages
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm import SequenceSIGReg
 
@@ -17,8 +18,8 @@ from nimloth.wm import SequenceSIGReg
 class RLBatch:
     """一次 RL 更新消费的原始连续窗口与逐步监督。
 
-    三个监督张量均为 ``(B,H)``，并按 window-major、time-minor 排列；这个顺序必须
-    与 ``state_prompts`` 和 ``policy_replay_inputs`` 的展开顺序保持一致。
+    action/return 张量为 ``(B,H)``；``old_log_probs`` 按 window-major、time-minor
+    展开后，再按每步 loss-mask token 展开。这个顺序必须与 policy replay 一致。
     """
 
     windows: tuple[TrajectoryWindow, ...]
@@ -74,6 +75,11 @@ def build_rl_batch(
     if len(history_sizes) != 1:
         raise ValueError("one RL batch cannot mix trajectory window lengths")
     history_size = history_sizes.pop()
+    replay_inputs = tuple(
+        sample
+        for window in windows
+        for sample in window.policy_replay_inputs()
+    )
     return RLBatch(
         windows=windows,
         action_indices=torch.tensor(
@@ -99,16 +105,9 @@ def build_rl_batch(
         ),
         old_log_probs=torch.tensor(
             [
-                [
-                    window.trajectory.action_log_probs[step_index][
-                        window.trajectory.action_indices[step_index]
-                    ]
-                    for step_index in range(
-                        window.start_step,
-                        window.start_step + history_size,
-                    )
-                ]
-                for window in windows
+                old_log_prob
+                for sample in replay_inputs
+                for old_log_prob in sample.selected_old_log_probs
             ],
             dtype=torch.float32,
             device=device,
@@ -151,6 +150,7 @@ class RLAlgorithm:
         value_rank_weight: float,
         ppo_clip_ratio: float,
         entropy_weight: float,
+        credit_assignment: str = "action",
     ) -> None:
         self.history_size = int(history_size)
         if self.history_size < 1:
@@ -163,6 +163,11 @@ class RLAlgorithm:
         self.value_rank_weight = float(value_rank_weight)
         self.ppo_clip_ratio = float(ppo_clip_ratio)
         self.entropy_weight = float(entropy_weight)
+        if credit_assignment not in {"action", "turn"}:
+            raise ValueError(
+                f"unsupported PPO credit assignment: {credit_assignment!r}"
+            )
+        self.credit_assignment = credit_assignment
 
     def training_step(
         self,
@@ -236,23 +241,31 @@ class RLAlgorithm:
         if runtime.policy_replay is not None:
             # replay 与上面的监督张量使用相同的 window/time 展开顺序；flatten 后每个
             # ratio 仍对应 rollout 中同一个动作位置。
-            new_log_probs, action_log_probs = runtime.policy_replay(
+            replay_output = runtime.policy_replay(
                 batch.policy_replay_inputs
             )
-            advantages = normalized_monte_carlo_advantages(
+            step_advantages = normalized_monte_carlo_advantages(
                 return_targets=batch.return_targets.flatten().to(
                     device=chosen_values.device,
                     dtype=chosen_values.dtype,
                 ),
                 predicted_values=chosen_values.flatten(),
-            ).to(device=new_log_probs.device, dtype=new_log_probs.dtype)
+            ).to(
+                device=replay_output.selected_log_probs.device,
+                dtype=replay_output.selected_log_probs.dtype,
+            )
+            advantages = expand_step_advantages(
+                step_advantages,
+                batch.policy_replay_inputs,
+                credit_assignment=self.credit_assignment,  # type: ignore[arg-type]
+            )
             policy = self._policy_loss(
-                new_log_probs=new_log_probs,
-                old_log_probs=batch.old_log_probs.flatten().to(
-                    device=new_log_probs.device,
-                    dtype=new_log_probs.dtype,
+                new_log_probs=replay_output.selected_log_probs,
+                old_log_probs=batch.old_log_probs.to(
+                    device=replay_output.selected_log_probs.device,
+                    dtype=replay_output.selected_log_probs.dtype,
                 ),
-                action_log_probs=action_log_probs,
+                entropies=replay_output.entropies,
                 advantages=advantages,
             )
             # policy["loss"] 已取 clipped surrogate 的负号；entropy 作为奖励项减去。
@@ -274,6 +287,7 @@ class RLAlgorithm:
                     "mean_advantage": float(policy["advantages"].mean().item()),
                     "clip_fraction": float(policy["clip_fraction"].item()),
                     "mean_ratio": float(policy["probability_ratio"].mean().item()),
+                    "policy_tokens": float(policy["advantages"].numel()),
                 }
             )
         return RLStepOutput(
@@ -316,14 +330,19 @@ class RLAlgorithm:
         *,
         new_log_probs: torch.Tensor,
         old_log_probs: torch.Tensor,
-        action_log_probs: torch.Tensor,
+        entropies: torch.Tensor,
         advantages: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        """计算逐动作 PPO clipped surrogate 与变换后策略分布的 entropy。
+        """计算逐 loss-mask token PPO clipped surrogate 与实际 behavior entropy。"""
 
-        ``new_log_probs``/``old_log_probs`` 为 ``(B*H,)``，``action_log_probs`` 为
-        ``(B*H,A)``；后者可能含 top-p mask 产生的 ``-inf``。
-        """
+        shapes = {
+            tuple(new_log_probs.shape),
+            tuple(old_log_probs.shape),
+            tuple(entropies.shape),
+            tuple(advantages.shape),
+        }
+        if len(shapes) != 1 or new_log_probs.ndim != 1:
+            raise ValueError("PPO token log-probs, entropy and advantages must align")
 
         probability_ratio = torch.exp(new_log_probs - old_log_probs)
         clipped_ratio = torch.clamp(
@@ -335,13 +354,6 @@ class RLAlgorithm:
             probability_ratio * advantages,
             clipped_ratio * advantages,
         ).mean()
-        probabilities = action_log_probs.exp()
-        # 显式屏蔽零概率动作，避免数值上出现 0 * -inf = NaN。
-        entropy_terms = torch.where(
-            probabilities > 0,
-            probabilities * action_log_probs,
-            torch.zeros_like(action_log_probs),
-        )
         with torch.no_grad():
             clip_fraction = (
                 (probability_ratio - 1.0)
@@ -352,7 +364,7 @@ class RLAlgorithm:
             )
         return {
             "loss": loss,
-            "entropy": -entropy_terms.sum(dim=-1).mean(),
+            "entropy": entropies.mean(),
             "advantages": advantages,
             "probability_ratio": probability_ratio,
             "clip_fraction": clip_fraction,

@@ -55,6 +55,8 @@ class ActorConfig:
     enabled: bool = False
     entropy_coeff: float = 0.0
     clip_ratio: float = 0.2
+    credit_assignment: str = "action"
+    max_reasoning_tokens: int = 64
 
 
 @dataclass(frozen=True)
@@ -165,7 +167,13 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     actor = _section(
         raw,
         "actor",
-        {"enabled", "entropy_coeff", "clip_ratio"},
+        {
+            "enabled",
+            "entropy_coeff",
+            "clip_ratio",
+            "credit_assignment",
+            "max_reasoning_tokens",
+        },
     )
     freeze = _section(raw, "freeze", {"state_proj"})
     gradient = _section(
@@ -243,9 +251,16 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             allow_zero=True,
         ),
         clip_ratio=float(actor.get("clip_ratio", 0.2)),
+        credit_assignment=str(actor.get("credit_assignment", "action")),
+        max_reasoning_tokens=_positive_int(
+            actor.get("max_reasoning_tokens", 64),
+            "actor.max_reasoning_tokens",
+        ),
     )
     if not 0.0 < actor_config.clip_ratio < 1.0:
         raise ValueError("actor.clip_ratio must be in (0, 1)")
+    if actor_config.credit_assignment not in {"action", "turn"}:
+        raise ValueError("actor.credit_assignment must be action or turn")
 
     rollout_config = parse_rollout_config(raw.get("rollout"))
     checkpoint_metric = str(

@@ -44,7 +44,11 @@ def test_runtime_pil_images_are_not_passed_to_chat_template() -> None:
         def apply_chat_template(self, messages, **kwargs):
             image_part = messages[1]["content"][1]
             assert image_part == {"type": "image", "image": "<image>"}
-            assert kwargs == {"tokenize": False, "add_generation_prompt": False}
+            assert kwargs == {
+                "tokenize": False,
+                "add_generation_prompt": False,
+                "continue_final_message": True,
+            }
             return "rendered"
 
     image = Image.new("RGB", (2, 2), "white")
