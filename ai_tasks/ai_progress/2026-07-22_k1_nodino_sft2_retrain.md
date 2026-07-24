@@ -525,3 +525,10 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   ID91和fresh rollout重试。
 - commit `39925e1` 完成上述修复；服务器定向测试`3 passed`，完整RL/Qwen suite为
   `104 passed, 1 warning`。真实双卡forward/backward仍由ID91验证。
+
+## 2026-07-24：ID91暴露Accelerate tensor-kwarg搬运
+
+- ID91 fresh rollout与双卡训练入口均通过，但CPU `logits_to_keep` tensor在forward前被
+  Accelerate hook搬回Qwen输入GPU，final hidden states仍位于第二GPU，故相同索引错误复现。
+- fresh manifest已消费；W&B `cwpf65kf`，CSV仅表头，无optimizer step/checkpoint，不能
+  resume。下一修复使用原生integer list保留PyTorch advanced-index语义且绕开tensor搬运。

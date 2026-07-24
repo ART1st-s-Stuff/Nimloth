@@ -63,12 +63,16 @@ class _Model(torch.nn.Module):
         return SimpleNamespace(logits=logits)
 
 
-def test_logits_to_keep_positions_stay_on_cpu_for_device_mapped_qwen() -> None:
+def test_logits_to_keep_positions_are_native_indices_for_device_mapped_qwen() -> None:
     positions = _logits_to_keep_positions([3, 5])
 
-    assert positions.device.type == "cpu"
-    assert positions.dtype == torch.long
-    assert positions.tolist() == [3, 5]
+    assert positions == [3, 5]
+    assert all(isinstance(position, int) for position in positions)
+    hidden_states = torch.arange(24).reshape(1, 6, 4)
+    assert torch.equal(
+        hidden_states[:, positions, :],
+        hidden_states[:, torch.tensor([3, 5]), :],
+    )
 
 
 def test_token_replay_keeps_only_masked_positions_and_role_vocabularies() -> None:
@@ -120,8 +124,7 @@ def test_token_replay_keeps_only_masked_positions_and_role_vocabularies() -> Non
     )
 
     assert model.last_input_ids.shape == (1, 8)
-    assert model.last_logits_to_keep.device.type == "cpu"
-    assert model.last_logits_to_keep.tolist() == [3, 5]
+    assert model.last_logits_to_keep == [3, 5]
     assert torch.allclose(
         output.selected_log_probs,
         torch.tensor([-math.log(53.0), -math.log(8.0)]),

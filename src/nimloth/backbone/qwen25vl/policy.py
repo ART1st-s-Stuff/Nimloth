@@ -282,16 +282,17 @@ def _row_entropies(log_probs: torch.Tensor) -> torch.Tensor:
     return -terms.sum(dim=-1)
 
 
-def _logits_to_keep_positions(positions: Sequence[int]) -> torch.Tensor:
-    """Build Qwen's position index on CPU for device-mapped model replay.
+def _logits_to_keep_positions(positions: Sequence[int]) -> list[int]:
+    """Build a native position index for device-mapped Qwen replay.
 
-    Transformers accepts CPU indices for ``logits_to_keep``.  Keeping this
-    tensor on CPU is necessary when Accelerate places the decoder input on one
-    GPU and the final norm/lm_head on another: the hidden states being indexed
-    then no longer share the input device.
+    A Python list is a valid PyTorch advanced index and Accelerate leaves its
+    integer elements unchanged.  A tensor, including one initially created on
+    CPU, is moved by the top-level device hook to Qwen's input GPU; that is the
+    wrong device when the final norm/lm_head and hidden states are placed on a
+    second GPU.
     """
 
-    return torch.tensor(positions, dtype=torch.long)
+    return [int(position) for position in positions]
 
 
 def replay_policy_token_log_probs(

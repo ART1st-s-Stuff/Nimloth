@@ -1877,3 +1877,13 @@
   使用Transformers支持的CPU position index；通过回归后须用ID91、空输出和fresh rollout。
 - commit `39925e1` 已将两条路径的position index统一为CPU tensor，并增加设备回归断言；
   服务器完整 `tests/training/rl tests/backbone/qwen25vl` 为 `104 passed, 1 warning`。
+
+## 2026-07-24：RL ID91 证明CPU tensor仍被Accelerate搬回输入GPU
+
+- ID91完成与ID90一致的4条fresh rollout / 20 transitions，manifest已消费；4个双卡
+  rank均进入首个policy replay，无OOM，但仍报相同cross-device position index错误。
+- 服务器实际调用链表明顶层Accelerate hook会在Qwen forward前递归移动tensor kwargs；
+  因此`39925e1`创建的CPU `logits_to_keep`仍被搬到第一张GPU，不能保持CPU索引语义。
+- W&B `cwpf65kf`，CSV仅表头，无finite loss、optimizer step或checkpoint，ID91不可恢复。
+  修复改用原生Python integer list：PyTorch接受其作为advanced index，Accelerate不会把
+  integer list转换为tensor或设备搬运。通过回归后须使用新ID和fresh rollout。
