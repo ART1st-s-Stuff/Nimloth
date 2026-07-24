@@ -52,8 +52,18 @@ class SafeBatchNorm1d(nn.BatchNorm1d):
             # does not corrupt the autograd graph when this module is called
             # multiple times before backward (e.g. state_emb + target_emb in
             # compute_wm_latent_loss).
-            scratch_mean = input.new_empty(self.running_mean.shape)
-            scratch_var = input.new_empty(self.running_var.shape)
+            # BatchNorm updates the supplied running statistics in place.
+            # Scratch buffers must start from the real values; uninitialized
+            # buffers can silently create negative running variances that only
+            # surface as NaNs during validation.
+            scratch_mean = self.running_mean.detach().clone().to(
+                device=input.device,
+                dtype=input.dtype,
+            )
+            scratch_var = self.running_var.detach().clone().to(
+                device=input.device,
+                dtype=input.dtype,
+            )
             out = F.batch_norm(
                 input, scratch_mean, scratch_var,
                 self.weight, self.bias, training=True,

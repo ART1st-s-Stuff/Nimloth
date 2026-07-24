@@ -29,6 +29,12 @@ def _make_record(num_steps: int = 2) -> dict:
         )
         action_indices.append(step % NUM_NAVIGATION_ACTIONS)
     image_paths.append(f"/tmp/img_{num_steps}.png")
+    messages.append(
+        {
+            "role": "user",
+            "content": f"observe <image> step {num_steps}",
+        }
+    )
     return {
         "id": "train/shard_000/000001",
         "split": "train",
@@ -61,7 +67,16 @@ def test_expand_record_transitions_alignment() -> None:
     assert t2.next_image_path == "/tmp/img_3.png"
     assert len(t2.prefix_image_paths) == 3
     assert len(t2.prefix_messages) == 7  # system + 3*(user+assistant)
-    assert t2.next_prefix_messages is None
+    assert t2.next_prefix_messages is not None
+    assert t2.next_prefix_messages[-2]["role"] == "user"
+    assert t2.next_prefix_messages[-1]["role"] == "assistant"
+    assert t2.next_prefix_messages[-1]["content"].endswith("<|action_start|>")
+    assert t2.next_prefix_image_paths == [
+        "/tmp/img_0.png",
+        "/tmp/img_1.png",
+        "/tmp/img_2.png",
+        "/tmp/img_3.png",
+    ]
 
 
 def test_expand_skips_when_no_next_image() -> None:

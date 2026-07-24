@@ -54,20 +54,24 @@ def _trajectory() -> RolloutTrajectory:
     )
 
 
-def test_rl_policy_protocol_requires_k1_inject() -> None:
-    validate_agent_policy_protocol(SimpleNamespace(
+def test_rl_policy_protocol_requires_positive_k_inject() -> None:
+    assert validate_agent_policy_protocol(SimpleNamespace(
         nimloth_latent_token_count=1,
         nimloth_latent_query_mode="inject",
-    ))
-    with pytest.raises(ValueError, match="k=1 inject"):
-        validate_agent_policy_protocol(SimpleNamespace(
-            nimloth_latent_token_count=8,
-            nimloth_latent_query_mode="inject",
-        ))
-    with pytest.raises(ValueError, match="k=1 inject"):
+    )) == 1
+    assert validate_agent_policy_protocol(SimpleNamespace(
+        nimloth_latent_token_count=16,
+        nimloth_latent_query_mode="inject",
+    )) == 16
+    with pytest.raises(ValueError, match="positive-k inject"):
         validate_agent_policy_protocol(SimpleNamespace(
             nimloth_latent_token_count=1,
             nimloth_latent_query_mode="generate",
+        ))
+    with pytest.raises(ValueError, match="positive-k inject"):
+        validate_agent_policy_protocol(SimpleNamespace(
+            nimloth_latent_token_count=0,
+            nimloth_latent_query_mode="inject",
         ))
 
 

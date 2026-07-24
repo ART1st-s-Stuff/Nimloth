@@ -37,7 +37,7 @@ class SFT2ModelRuntime:
                 batch,
                 include_lm_loss=False,
             ).hidden.detach()
-        return self.agent.wm.project_state(hidden)
+        return self.agent.wm.project_target_state(hidden)
 
     def evaluation_context(self) -> AbstractContextManager[object]:
         """让验证阶段的完整 Agent forward 使用 EMA Backbone 权重。"""

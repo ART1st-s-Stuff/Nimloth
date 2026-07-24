@@ -1,0 +1,61 @@
+# H=4 end-to-end RL feasibility smoke for a compatible SFT2 checkpoint.
+
+agent:
+  prompt_template: nimloth-latent-action
+  thought: What should I do next?
+  planning:
+    enabled: false
+    horizon: 4
+    beam_width: 8
+
+freeze:
+  state_proj: true
+
+gradient:
+  representation_to_backbone: true
+  backbone_lr: 0.000001
+
+actor:
+  enabled: true
+  entropy_coeff: 0.01
+  clip_ratio: 0.2
+
+predictor:
+  lr: 0.0001
+  emb_dim: 1024
+  history_size: 4
+  lambda_sigreg: 0.1
+  sigreg_num_proj: 1024
+  sigreg_knots: 17
+
+value_head:
+  lr: 0.0001
+  rank_margin: 0.1
+  lambda_rank: 1.0
+
+rl:
+  iterations: 1
+  envs_per_iteration: 4
+  max_steps_per_episode: 5
+  gamma: 0.99
+  batch_size: 2
+
+rollout:
+  temperature: 0.7
+  top_p: 0.95
+
+validation:
+  enabled: false
+  interval: 1
+  envs: 0
+  checkpoint_metric: success_rate
+
+training:
+  seed: 42
+  log_interval: 1
+  save_interval: 1
+
+distributed:
+  nodes: 3
+  world_size: 8
+  rollout_tensor_parallel_size: 4

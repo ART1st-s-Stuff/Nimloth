@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import torch
+import nimloth.util.cache.dataset as cache_dataset_module
 
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch, encode_qwen_item
 from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
 from nimloth.training.sft2.batch import SFT2BatchAssembler
 from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
+    COMPACT_CACHE_FORMAT_V1,
     CachedTransitionDataset,
     CompactCachedTransitionCollator,
     cache_fingerprint,
@@ -319,3 +321,105 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     assert next_rows[0] is None
     assert next_rows[1] is not None
     assert torch.equal(next_rows[1]["pixel_values"], pixels[2:])
+
+
+def test_v1_cache_synthesizes_terminal_next_from_cached_pixels(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    (cache_dir / "images").mkdir(parents=True)
+    (cache_dir / "transitions").mkdir(parents=True)
+    (cache_dir / "manifest.json").write_text(
+        '{"format":"dedup_sharded_v1","count":1,"transition_shard_size":1}',
+        encoding="utf-8",
+    )
+    image_paths = [tmp_path / "s0.png", tmp_path / "s1.png"]
+    (cache_dir / "image_index.json").write_text(
+        (
+            '{"format":"dedup_sharded_v1","images":['
+            f'{{"path":"{image_paths[0]}","shard":0,"index":0,'
+            '"grid_thw":[1,1,2]},'
+            f'{{"path":"{image_paths[1]}","shard":0,"index":1,'
+            '"grid_thw":[1,1,3]}]}'
+        ),
+        encoding="utf-8",
+    )
+    pixels = torch.arange(10, dtype=torch.float32).reshape(5, 2).to(torch.bfloat16)
+    torch.save(
+        {
+            "pixel_values": pixels,
+            "offsets": torch.tensor([0, 2, 5]),
+            "image_grid_thw": torch.tensor([[1, 1, 2], [1, 1, 3]]),
+        },
+        cache_dir / "images" / "shard_00000.pt",
+    )
+    torch.save(
+        {
+            "entries": [
+                {
+                    "id": "rec:0",
+                    "record_id": "rec",
+                    "step_index": 0,
+                    "action_index": 0,
+                    "action_value_target": 1.0,
+                    "success": True,
+                    "current_enc": {
+                        "input_ids": torch.tensor([1]),
+                        "attention_mask": torch.tensor([1]),
+                        "labels": torch.tensor([1]),
+                        "image_grid_thw": torch.tensor([[1, 1, 2]]),
+                        "image_indices": torch.tensor([0], dtype=torch.int32),
+                    },
+                }
+            ]
+        },
+        cache_dir / "transitions" / "shard_00000.pt",
+    )
+    calls = []
+
+    def fake_encode(messages, grids, *_args, **_kwargs):
+        calls.append((messages, grids.clone()))
+        return {
+            "input_ids": torch.tensor([8, 9]),
+            "attention_mask": torch.ones(2, dtype=torch.long),
+            "image_grid_thw": grids.clone(),
+        }
+
+    monkeypatch.setattr(
+        cache_dataset_module,
+        "encode_qwen_item_from_image_grids",
+        fake_encode,
+    )
+    sample = TransitionSample(
+        record_id="rec",
+        step_index=0,
+        prefix_messages=[{"role": "user", "content": "s0 <image>"}],
+        prefix_image_paths=[str(image_paths[0])],
+        action_index=0,
+        current_image_path=str(image_paths[0]),
+        next_image_path=str(image_paths[1]),
+        next_prefix_messages=[
+            {"role": "user", "content": "s0 <image>"},
+            {"role": "user", "content": "s1 <image>"},
+            {"role": "assistant", "content": "query"},
+        ],
+        next_prefix_image_paths=[str(path) for path in image_paths],
+    )
+    dataset = CachedTransitionDataset(
+        cache_dir,
+        [sample],
+        processor=object(),
+        max_length=128,
+        latent_token_count=16,
+    )
+    assert dataset.compact_format == COMPACT_CACHE_FORMAT_V1
+    row = dataset[TransitionContextIndex(0, 1, True)]
+    repeated = dataset[TransitionContextIndex(0, 1, True)]
+    assert torch.equal(row["next_enc"]["input_ids"], repeated["next_enc"]["input_ids"])
+    assert row["next_enc"]["image_indices"].tolist() == [0, 1]
+    assert calls[0][1].tolist() == [[1, 1, 2], [1, 1, 3]]
+
+    collator = CompactCachedTransitionCollator(cache_dir)
+    batch = collator([row])
+    assert torch.equal(batch["next_enc_rows"][0]["pixel_values"], pixels)

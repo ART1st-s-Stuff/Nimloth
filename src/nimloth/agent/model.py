@@ -109,9 +109,9 @@ class Agent(nn.Module):
                 f"got {tuple(action_indices.shape)}"
             )
         batch_size, history_size = action_indices.shape
-        if cached_history_states.ndim != 3:
+        if cached_history_states.ndim != encoded_current.state.ndim + 1:
             raise ValueError(
-                "cached history states must have shape (B,T-1,D), "
+                "cached history states must have shape (B,T-1,...state), "
                 f"got {tuple(cached_history_states.shape)}"
             )
         expected_history = (batch_size, history_size - 1)
@@ -121,19 +121,20 @@ class Agent(nn.Module):
                 f"states={tuple(cached_history_states.shape[:2])}, "
                 f"expected={expected_history}"
             )
-        if encoded_current.state.ndim != 2 or encoded_current.state.shape[0] != batch_size:
+        if encoded_current.state.ndim < 2 or encoded_current.state.shape[0] != batch_size:
             raise ValueError(
-                "current Backbone output must have shape (B,D), "
+                "current Backbone output must have shape (B,...state), "
                 f"got {tuple(encoded_current.state.shape)} for B={batch_size}"
             )
         if (
-            cached_history_states.shape[-1] != encoded_current.state.shape[-1]
+            tuple(cached_history_states.shape[2:])
+            != tuple(encoded_current.state.shape[1:])
             and history_size > 1
         ):
             raise ValueError(
-                "cached/current state dimensions do not match: "
-                f"history={cached_history_states.shape[-1]}, "
-                f"current={encoded_current.state.shape[-1]}"
+                "cached/current state shapes do not match: "
+                f"history={tuple(cached_history_states.shape[2:])}, "
+                f"current={tuple(encoded_current.state.shape[1:])}"
             )
         state_sequence = torch.cat(
             (cached_history_states.detach(), encoded_current.state.unsqueeze(1)),
@@ -157,9 +158,7 @@ class Agent(nn.Module):
 
         return (
             self.backbone,
-            self.wm.state_proj,
-            self.wm.wm_predictor,
-            self.wm.value_head,
+            *self.wm.trainable_modules,
         )
 
     @property
@@ -168,9 +167,7 @@ class Agent(nn.Module):
 
         return (
             self.backbone.model,
-            self.wm.state_proj,
-            self.wm.wm_predictor,
-            self.wm.value_head,
+            *self.wm.synchronized_modules,
         )
 
     def unwrapped(self) -> "Agent":
@@ -178,11 +175,7 @@ class Agent(nn.Module):
 
         return Agent(
             backbone=self.backbone.with_model(_unwrap(self.backbone.model)),
-            wm=WorldModel(
-                state_proj=_unwrap(self.wm.state_proj),
-                wm_predictor=_unwrap(self.wm.wm_predictor),
-                value_head=_unwrap(self.wm.value_head),
-            ),
+            wm=self.wm.unwrapped(),
         )
 
 

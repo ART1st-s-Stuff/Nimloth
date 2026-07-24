@@ -20,6 +20,7 @@ from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
 from nimloth.wm.model import WorldModel
+from nimloth.wm.grid import TemporalSpatialGridPredictor
 
 
 def _unwrap(module: torch.nn.Module) -> torch.nn.Module:
@@ -101,6 +102,7 @@ def save_rl_checkpoint(
         torch.save(_unwrap(state_proj).state_dict(), out_dir / "state_proj.pt")
         _unwrap(wm_predictor).save_checkpoint(out_dir / "wm_predictor")
         _unwrap(value_head).save_checkpoint(out_dir / "value_head")
+        agent.wm.save_checkpoint_extras(out_dir)
 
         # Qwen model
         if save_llm:
@@ -158,7 +160,17 @@ def load_rl_wm_checkpoint(
         )
     pred_dir = ckpt_dir / "wm_predictor"
     if pred_dir.is_dir():
-        loaded_pred = LatentWMPredictor.load_checkpoint(pred_dir, map_location=device)
+        predictor = _unwrap(wm_predictor)
+        if isinstance(predictor, TemporalSpatialGridPredictor):
+            loaded_pred = TemporalSpatialGridPredictor.load_checkpoint(
+                pred_dir,
+                map_location=device,
+            )
+        else:
+            loaded_pred = LatentWMPredictor.load_checkpoint(
+                pred_dir,
+                map_location=device,
+            )
         _unwrap(wm_predictor).load_state_dict(loaded_pred.state_dict())
     head_dir = ckpt_dir / "value_head"
     if head_dir.is_dir():
@@ -167,6 +179,7 @@ def load_rl_wm_checkpoint(
             head_dir, emb_dim=head.net[0].in_features, map_location=device
         )
         head.load_state_dict(loaded_head.state_dict())
+    wm.load_checkpoint_extras(ckpt_dir, map_location=device)
 
     state_path = ckpt_dir / "rl_state.pt"
     if state_path.is_file():

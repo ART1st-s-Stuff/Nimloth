@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-07-24：DINO-grid SFT2 恢复 terminal transition 与旧 cache 兼容
+
+- 人类指出当前 cache 图像数不是旧版的62,606。核对确认原始3217/355条记录与
+  59,389/6,054个transition从未减少；refactor后的legacy prompt expansion未给每条
+  trajectory最终observation构造next prompt，sampler因此静默丢掉3217/355个最终
+  current step。
+- 修复后最终真实observation使用target-only assistant query prefix，不额外产生CE；
+  每个action仍只拥有一次CE/WM/DINO/value，H=4旧历史仍只从detached online cache
+  读取。新compact cache fingerprint升级为`wm_expand_v2_terminal_next`，不完整旧v2
+  cache不能静默复用。
+- 历史k16 `dedup_sharded_v1` cache新增只读兼容：复用原有current编码、BF16 pixels和
+  `grid_thw`；仅对旧cache未保存的terminal next prompt执行轻量tokenization，不重跑
+  image processor、不改写cache。DINO sidecar继续按next image path读取冻结teacher的
+  4x4x1024目标。
+- 真实全量gate通过：train记录/transition/cache image/sampler current=
+  `3217/59389/62606/59389`，val=`355/6054/6409/6054`；首、中、末terminal抽样的
+  current/next实际模型输入与fresh processor逐tensor一致，DINO fingerprint=
+  `b50d261e2b533f3e`。远程回归`84 passed, 1 skipped`。
+- ID33 epoch10/step9280严格warm start通过：旧online/EMA encoder、spatial WM、DINO
+  decoder和ValueHead全部映射，唯一新增参数为全零`temporal_position`，所有参数
+  finite。这是fresh optimizer warm start，不是resume。DINO分支尚未启动GPU/Slurm；
+  下一门槛是world8 GPU smoke。
+- ID44 attempt1在既有hold `485251`的step `485251.3`启动，但launcher漏传argparse
+  必填`--model`，八rank在模型加载前以code2退出。没有W&B run、模型/cache加载、
+  optimizer step或checkpoint；step已结束且8卡仍由hold保留。输出README已记录失败。
+  launcher现改为显式校验/传入k16 SFT1 `MODEL_PATH`，并让日志与CLI共同使用真实B/GA；
+  因attempt1没有外部run或训练产物，修复后继续使用ID44 retry。
+
+
 ## 2026-07-23：启动2-epoch正式SFT2训练
 
 - 人类要求先训练2 epoch。ID43
@@ -22,6 +51,66 @@
   约53.26/55.13 GiB，无运行错误。tail step因4个global padding样本被valid mask排除，
   加权日志global SIGReg B为7.33，符合设计。已有15GB `latest`可恢复checkpoint；按
   实际累计墙钟估计剩余约1小时50分。
+## 2026-07-24：8卡 vLLM fresh-policy PPO handoff 实现，CPU 测试通过
+
+- 人类要求参考 VAGEN 引入 vLLM，保持 Nimloth 现有模块化设计。实现提交
+  `89d7662`把 behavior rollout 限定在 `backbone/qwen25vl/vllm_policy.py`，把
+  policy artifact 内容指纹、fresh manifest 和一次性消费契约限定在
+  `rollout/fresh.py`；RL trainer 只区分 static JSONL 与已验证 fresh JSONL。
+- 阶段式生命周期为：当前完整 HF policy → 8卡 vLLM TP rollout → 指纹 manifest
+  → vLLM 退出 → 同8卡 FSDP WM/value/SIGReg/PPO 单次 update。下一步更新必须用新
+  checkpoint 重新 rollout，普通 static JSONL 仍禁止驱动 PPO。
+- 新增 fake-engine/fingerprint/manifest/collector 测试和 8卡 smoke 启动器。本地
+  `compileall`、两个 shell `bash -n` 和 `git diff --check` 通过。测试桩补全提交
+  `f8faf3b` 后，服务器共享 PyTorch 环境的定向测试为 `39 passed, 1 warning`；warning
+  是测试刻意触发的 B=1 unbiased std。真实 GPU vLLM probe 和8卡 smoke 尚未运行。
+
+## 2026-07-24：ID67 异构多节点 Ray gate 通过、pipeline 启动时终止
+
+- config 新增 `distributed.nodes/world_size/rollout_tensor_parallel_size`，通用 Slurm
+  控制器按 allocation 的真实 GRES 启动每节点 Ray，并以单 GPU task 启动任意总数
+  FSDP ranks。远端定向测试 `42 passed, 1 warning`。
+- job `485342` 获得 dgx-04×1、dgx-06×3、dgx-39×4 GPU；Ray 精确达到8 GPU gate。
+- 诊断 health probe 时 controller 被终止，恰逢 pipeline 已创建 ID67 README 并开始
+  environment startup。无 trajectory、W&B、optimizer step 或 checkpoint；ID67 已标为
+  failed/non-resumable，后续只能使用新 ID/output。
+
+## 2026-07-24：ID68 vLLM 因 driver 网络接口不一致无法 placement
+
+- job `485342` 的 Ray runtime 在 job 专属 temp-dir、10GB object store 下稳定注册
+  1+3+4 GPU；environment health 通过，vLLM 0.11 EngineCore 连接 Ray。
+- vLLM 自动选择 driver IP `10.22.4.78`，而 Ray 节点使用 `10.23.*`，导致首个
+  `node:10.22.4.78 + GPU:1` TP bundle 永远 infeasible。无 GPU model worker、
+  trajectory、W&B、optimizer step 或 checkpoint；ID68 failed/non-resumable。
+- 通用控制器现把 `VLLM_HOST_IP` 显式绑定到 Ray head IP；retry 必须用新 ID/output。
+
+## 2026-07-24：ID69 vLLM workers 未继承各节点 10.23 IP
+
+- driver 绑定10.23后 TP8 placement 成功，Ray 在1+3+4 GPU上创建8个SPMD workers。
+- vLLM 随后检测到3个 Ray node IDs却有4个IP：driver使用10.23，worker actors
+  仍使用各节点10.22默认接口，因此在权重加载前拒绝启动。无 trajectory、W&B、
+  optimizer step或checkpoint；ID69 failed/non-resumable。
+- 控制器现于每个raylet启动时注入该节点唯一10.23 `VLLM_HOST_IP`，使子actors继承
+  一致接口；后续使用新 ID/output。
+
+## 2026-07-23：ID43 epoch1 RL H=4 smoke 预检与 ID3 启动前失败
+
+- ID43 `epoch_001` 是完整 k=1/inject HF checkpoint，WM predictor H=4，
+  StateProjector/ValueHead 产物齐全。人类指定 dgx-40 进行 RL feasibility smoke。
+- 实验提交 `2b6211c` 新增 H=4/PPO 配置并参数化现有端到端启动器；
+  schema 解析、`bash -n` 和 diff-check 通过。hold job `485290` 在
+  preempt/dgx-40 占用2 GPU。
+- ID3 在任何环境、rollout、W&B 或训练开始前 fail-fast：外层控制日志预先
+  使 `RUN_OUT` 非空。无 checkpoint，不可 resume；失败 README/日志已保留。同一
+  allocation 将以全新 ID66 目录重试，控制日志改放到 `RUN_OUT` 外。
+  服务器 RL 实验组 `progress.md` 已有 ID65，因此本地旧记录中 ID1/2 为最新编号的
+  结论已失效；重试必须从 ID66 开始。
+- ID66 在 dgx-40 完成4条 `base_train`、20 transitions、每条5步的真实 rollout，
+  reward为`[-0.4,0.0,-0.4,-0.2]`，success0/4不作质量结论。两卡训练在模型加载和
+  W&B初始化前按当前契约 fail-fast：`actor.enabled=true` 禁止与 static JSONL
+  collector组合，因为PPO必须使用当前policy的fresh trajectory。无optimizer step、
+  W&B run或checkpoint，不可resume。hold `485290`已取消并释放dgx-40。下一步需人类
+  选择：两卡actor-disabled的H=4 WM/value离线smoke，或单卡direct-online PPO smoke。
 
 ## 2026-07-23：K1 SFT2 改为 per-rank B1 与 global-batch SIGReg
 
@@ -1478,3 +1567,232 @@
 - row=1 执行下 image budget 改按真实单 row 峰值，启动时记录实际 B 分布并拒绝
   `lambda_sigreg>0` 且全 B=1 的任务。静态检查通过，远端语义测试和 GPU smoke
   尚未执行。
+
+## 2026-07-24：DINO-grid 旧 cache terminal 语义与 smoke 前缀修复
+
+- 修复 trajectory 最后动作的 next-state prompt：复用最后真实 observation，并只加
+  target-only assistant query prefix，不增加 CE step。训练仍是每个 action 一个
+  transition；train 的 59,389 transitions 对应 62,606 observations/images。
+- 旧 `dedup_sharded_v1` cache 只读复用：terminal next 仅重建缺失的文本 token 布局，
+  图片 pixels 与 `grid_thw` 均从旧 cache 读取，不重开源图片。完整数据/图片覆盖通过，
+  抽样 current/next（含 terminal）与 fresh processor 张量一致。
+- ID44 attempt 2 已完成模型、ID33、W&B、NCCL 初始化，但在首个 forward 前因全量
+  cache count 与 8-record smoke 前缀 count 被错误要求相等而失败；无 OOM、metric、
+  optimizer step 或 checkpoint，不可恢复。
+- commit `b380387` 仅对显式、无过滤的 `max_records` 前缀允许读取更大的全量 cache；
+  full run 和非前缀过滤仍严格校验 count/fingerprint。远端定向回归 `11 passed`。
+- 发现 ID44 attempt 2 被共享 `.env` 覆盖到错误的 `flower` W&B project；目标
+  `nimloth-sft2` 实际最高 ID 为43。launcher 已改为凭据加载后恢复显式 project，
+  corrected retry 将在目标 project 使用 ID44 和全新输出目录。
+- corrected `nimloth-sft2` ID44（step `485251.6`, W&B `f2d3i7e9`）已通过旧
+  cache 全量 manifest 对 8-record 前缀的读取，证明 cache-prefix 修复进入真实训练
+  路径。首个 WM forward 因 FP32 one-hot action 与 ID33 BF16 action encoder dtype
+  不一致而失败；不是 OOM，无 loss/backward/optimizer/checkpoint，不可恢复。
+- 初始 one-hot cast 回归进一步暴露 refactor 精度漂移：权威 ID33 的 online encoder、
+  WM、DINO decoder、ValueHead 均为 FP32，当前 builder 却把它们随 Qwen 转成 BF16。
+  builder 现恢复 FP32 grid auxiliaries，仅冻结 SFT1 slot projector 跟随 Qwen dtype，
+  并增加 builder 级 dtype 回归；待远程复测后用新 ID/输出目录重试。
+- 人类指出 `fix/sft1-merge-untied-head` 的 merge bug。核对确认当前 k16 SFT1
+  `hf_merged` 缺少 `lm_head.weight`，nested config 仍为 tied；此前 DINO smoke 的
+  冻结 CE head 因此无效，不能用于 loss 质量结论。
+- 当前分支已移植 merge 后禁止 resize、独立 head/storage 校验和回归，并为旧只读
+  cache 增加显式 processor-source lineage。下一步从同一 k16 epoch5 adapter 生成
+  新的 untied export，验证 processor 文件不变后再重试 SFT2；不覆盖旧产物。
+- k16 merge ID2（step `485251.7`）在保存前被独立 storage gate 正确拒绝；原因是
+  k16 通过 `save_embedding_layers` 保存完整 embedding/head，但 adapter config 没有
+  `modules_to_save`，PEFT merge 后仍共享 module。无 OOM/训练/W&B/可用 export。
+- merge 现识别并分别恢复 adapter 内的完整 input/head，显式创建独立 output Linear
+  后再验证；ID2不可恢复，SFT2初始化已指向待生成的全新ID3导出。
+- k16 corrected export ID3（step `485251.8`, commit `327f34c`）完成：698 tensors
+  验证，导出 input/head 各自精确等于 adapter、safetensors 双权重齐全、Transformers
+  重载 storage 独立且两层 config untied；slot projector SHA256 为
+  `340d90a84a17f7aba3525f2f49e20921fd4f73a6534149587de2b3c875542ce0`。
+- 新旧 processor 的 tokenizer vocab、special IDs、image processor dict 相同，因此
+  旧 v1 cache 的预处理语义不变；原 processor source 仅用于兼容旧 path-based
+  fingerprint。下一次 SFT2 smoke 使用 corrected export 和新 ID45/output。
+
+## 2026-07-24：corrected DINO-grid SFT2 ID45 smoke 通过
+
+- ID45（step `485251.10`, W&B `nimloth-sft2/4v68cj6z`, commit `cf8f9df`）
+  使用 corrected k16 untied-head export、ID33 auxiliary warm start、权威 FP32 grid
+  auxiliaries 和只读 v1 cache，在 8×H800、per-rank B1、GA1 上完成 20 个有限
+  optimizer steps；无 OOM、NaN、NCCL 或 DDP failure。
+- `context_length` 从 1 到 4，online detached history cache 从 1 到 20；global
+  SIGReg batch size 随轨迹 terminal 从 8 降到 5，证明 terminal transition 也进入
+  当前 step 的一次性 CE/WM/DINO/value/SIGReg 语义。step20 为 CE `7.638404`、
+  WM `0.123687`、DINO `0.492780`、value `0.082413`、SIGReg `2.104651`。
+- 观测到的 GPU 峰值为 `60,469 MiB / 81,559 MiB`，足以支持正式 world8 B1。
+  达到 smoke gate 后主动取消以避免继续写大 checkpoint；Slurm 状态
+  `CANCELLED by 3738`, elapsed `00:03:16`, exit `0:9`。取消发生在 epoch-end 保存
+  期间，`epoch_001` 缺少 `wm_predictor/` 与 `value_head/`，`best/` 也只写入首个
+  shard，因此两者均为不完整产物，不可恢复、不可作为模型使用。
+- 下一步为新的 ID46 全量 3,217 train / 355 val records、2 epochs、world8 B1 GA8；
+  使用 20 分钟 interval checkpoint，fresh optimizer，不从 ID45 resume。
+
+## 2026-07-24：corrected DINO-grid SFT2 ID46 正式 2-epoch 启动
+
+- ID46（hold `485251`, step `485251.14`, W&B `nimloth-sft2/yapevfpy`, commit
+  `f060a25`）已在 preempt/dgx-42 的 8×H800 上启动；使用全量 3,217/355
+  task-disjoint train/val records、corrected k16 untied-head SFT1、ID33 auxiliary
+  warm start、只读 v1 Qwen/DINO cache、fresh optimizer、per-rank B1/GA8/world8。
+- sampler 运行时确认 59,389 个 train current steps，每个 action 仍只计算一次
+  current-step loss。前 8 个 optimizer steps 的 CE/WM/DINO/value/global SIGReg 均
+  finite，global SIGReg B=8，history/context 正常达到 H4；无 OOM、NaN、NCCL、
+  traceback 或 fatal DDP error。
+- step8：total `5.219125`、CE `4.527827`、WM `0.210067`、DINO `0.482060`、
+  value `0.096401`、SIGReg `3.327872`。8卡显存为 `62,031--62,091 / 81,559
+  MiB`，利用率 `88--100%`；约 `7.4 s/optimizer step`，含 validation/checkpoint
+  当前 ETA `4.5--5.5 h`。20分钟 interval checkpoint 与 epoch/best/final 保存启用。
+
+## 2026-07-24：ID46 在 epoch 2 被 preempt，可从 step1644 恢复
+
+- hold `485251` 在运行 `11:58:33` 后被 Slurm `PREEMPTED`；训练 step
+  `485251.14` 收到 SIGTERM，以 `CANCELLED`, elapsed `05:04:16`, exit `0:15`
+  结束。不是 OOM、NaN、NCCL 或代码异常，W&B `yapevfpy` 因外部终止显示
+  `crashed`。
+- CSV 实际到 epoch2 step `1716/1856`（92.5%）；最近100 step均值为 total
+  `8.9131`、CE `4.2545`、WM `3.9263`、DINO `0.4404`、value `0.1706`、
+  SIGReg `3.4164`。epoch1 step928完整验证为 WM `6.102906`、DINO `1.213561`、
+  value `0.811813`、total `7.521500`；尚无epoch2 validation，不能给出2-epoch趋势。
+- 最新完整 `latest` 为 epoch2 step1644、`micro_step_in_epoch=5728`，runtime
+  checkpoint gate返回`True`：模型、optimizer、WM、ValueHead、DINO、双EMA与8个
+  rank history cache齐全。恢复会重跑72个已记录但未checkpoint的step，剩余212个
+  optimizer step及最终validation/save，重新拿到8卡后ETA约50--60分钟。
+- 当前状态为“需恢复”，没有final/two-epoch结果；查询进度本身不授权重启，未自动
+  申请新hold或恢复。
+## 2026-07-24：异构 config-driven vLLM PPO ID70
+
+- config 指定 `nodes=3`、`world_size=8`、rollout TP=8；allocation `485342` 的真实
+  GPU 拓扑为 dgx-04×1、dgx-06×3、dgx-39×4。控制器按实际 GRES 启动 Ray，
+  达到精确8 GPU gate；environment health、TP8 placement 和8个worker创建均通过。
+- 每个物理节点最终只对应一个10.23 Ray worker IP，证明逐节点IP绑定修复有效。
+- vLLM 在权重加载前的 PyTorch symmetric-memory rendezvous 失败：Ray 将每个GPU
+  actor的分配设备局部映射为`cuda:0`，被误判为不同rank使用重叠设备。无trajectory、
+  W&B、optimizer step或checkpoint，ID70不可恢复。
+- 启动器现显式设置`VLLM_ALLREDUCE_USE_SYMM_MEM=0`，改走常规NCCL/custom
+  all-reduce；须使用新实验ID和空输出目录重试。
+- ID71在pipeline前发现ID70的Ray head/GCS残留，6381端口仍保存旧session，因而
+  立即失败且无README、环境、rollout或训练产物。控制器cleanup现主动终止并等待
+  自己启动的Ray `srun --block` steps，再调用`ray stop`兜底；ID72使用新端口重试。
+- ID72证明symmetric-memory关闭后8-rank Gloo/NCCL communicator正常，并进入模型
+  构造；随后vLLM断言Qwen2.5-VL vision MLP输出维度不能被TP8整除。无trajectory、
+  W&B、optimizer step或checkpoint，不可恢复。config保持训练`world_size=8`，将
+  rollout TP独立改为模型支持的4；ID73将以TP4 rollout、8-rank FSDP update重试。
+- ID73的TP4 communicator和两个safetensors shard读取均通过，但epoch_001的
+  `config.json`声明`tie_word_embeddings=false`，shards却缺少vLLM必需的
+  `language_model.lm_head.weight`，仅有`model.embed_tokens.weight`。不能在未证明
+  权重相同的情况下用embedding伪造policy head；因此无trajectory、W&B、optimizer
+  step或checkpoint，ID73不可恢复。hold`485342`已取消并释放全部1+3+4 GPU。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID74 Ray 冷启动失败
+
+- ID74 指向 corrected SFT2 ID46 `epoch_001`，allocation `485730` 为
+  dgx-04×1、dgx-42×6、dgx-48×1，config 仍为 3 nodes、world8、rollout TP4。
+- Ray GCS 已正常监听6410，raylet和10 GB object store也已启动；但
+  dashboard agent在共享环境冷启动时加载模块约用22秒，超过Ray默认
+  15秒agent注册窗口。raylet因等不到`metrics_agent_port`主动崩溃。
+- 失败发生在environment、vLLM、trajectory、W&B和optimizer之前；无OOM、
+  无输出checkpoint，ID74不可恢复。启动器现显式设置
+  `RAY_agent_register_timeout_ms=120000`，下次必须使用新ID和空输出目录。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID75 异构单卡 step 阻塞
+
+- ID75 复用 allocation `485730` 和 ID46 `epoch_001`。Ray head 在放宽后的约36秒
+  冷启动成功，dgx-42×6 worker也成功；证明ID74的agent注册超时修复有效。
+- dgx-48×1 worker使用`srun --gpus=1`时持续收到`Requested nodes are busy`，
+  exact-8 GPU gate因此未放行。主动终止controller后，Ray steps由trap清理；失败仍在
+  environment、vLLM、trajectory、W&B和optimizer之前，无输出checkpoint，不可恢复。
+- 同一allocation/node的最小probe确认`--gpus=1`超时，而`--gres=gpu:1`立即成功并
+  暴露`CUDA_VISIBLE_DEVICES=0`。启动器GPU steps已统一改用原生GRES语法；同时为
+  worker显式传入已探测的`--node-ip-address`，避免Ray自动选择另一个10.23网卡地址。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID76 rollout完成、训练未启动
+
+- ID76 的Ray精确暴露8 GPU（dgx-04×1、dgx-42×6、dgx-48×1），TP4通过Gloo/NCCL、
+  native sampler、corrected epoch1两片权重、KV cache和CUDA graph初始化。
+- `base_train` seeds 1--4的4条fresh trajectory均完成，每条5 transitions，共20条；
+  rewards为`0.0/-0.2/-0.1/-0.1`，manifest和JSONL完整且未被PPO消费。
+- rollout后pipeline在仅含head的外层Slurm step内嵌套请求3节点Ray cleanup，被拒绝
+  `Only allocated 1 nodes asked for 3`；无W&B、optimizer step或训练checkpoint。
+  ID76不可作为完成的RL实验，也不可原地resume。
+- pipeline现支持清晰的`rollout`/`train` phase：顶层controller在head step完成rollout，
+  自己清理Ray并退出该step，再从完整hold上下文启动config-driven多节点FSDP训练。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID77 rollout完成、phase校验阻止训练
+
+- ID77 从 corrected SFT2 ID46 `epoch_001` 新采集 `base_train` seeds 1--4；vLLM
+  TP4 完整加载两片 checkpoint，4 条 trajectory 各 5 transitions，共 20 条，rewards
+  为 `0.0/-0.2/-0.1/-0.1`。fresh manifest 为 `ALL_OK`，未被 PPO 消费。
+- rollout head step 正常退出，证明 ID76 的嵌套多节点 `srun` 问题已消除；Ray teardown
+  中的 SIGTERM 是 vLLM 明确标注的预期关闭流程。
+- train-only phase 在任何 W&B、模型训练加载、forward 或 optimizer 前被 rollout 专用
+  GPU 校验拒绝：controller 可见 8 GPU，而该校验按 rollout TP4 要求恰好 4，报错
+  `expected 4 visible GPUs, got 0,1,2,3,4,5,6,7`。无训练 checkpoint，ID77 不可
+  原地 resume，也不作为完成的 RL 实验。
+- commit `aa747f7` 将可见 GPU 数校验限制到 `RUN_ROLLOUT=true`；下一次用新 ID、
+  新 rollout 和空输出目录验证 3 节点/world8 FSDP update。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID78 Ray agent 超时
+
+- ID78 在 Ray head 冷启动时失败；dashboard agent 约 19 秒后完成加载，但 raylet 仍按
+  默认 15 秒等待 `metrics_agent_port`，报 `Timed out waiting for file ...metrics_agent_port`。
+- 原先传入的 `RAY_agent_register_timeout_ms=120000` 没有进入 raylet system config；
+  ID77 能启动是冷启动时序恰好通过，不能证明该环境变量有效。失败发生在 worker、
+  environment、vLLM、trajectory、W&B、forward 和 optimizer 之前，无 checkpoint。
+- 已停止 controller 并清理三节点 Ray。commit `06d611f` 在 Ray head CLI 上显式传入
+  `--system-config={"agent_register_timeout_ms":120000}`；后续必须用新 ID 重试。
+
+## 2026-07-24：RL ID79--80 单卡 task NCCL 映射失败
+
+- ID79/80 均完成 corrected epoch1 的 fresh TP4 rollout（4 trajectories / 20
+  transitions，rewards `0.0/-0.2/-0.1/-0.1`），manifest 未被 PPO 消费。
+- train-only phase 已能从完整 allocation 启动 8 ranks，但每 GPU 一个 Slurm task 的
+  独立 GPU cgroup 使同节点 NCCL proxy 在首次 freshness broadcast 报
+  `Cuda failure 101 invalid device ordinal`；无 W&B（ID79）或有效 optimizer step，
+  无 checkpoint。仅移除父级 `CUDA_VISIBLE_DEVICES` 的 ID80 未解决该 NCCL 行为。
+- commit `ce5479e` 改为每物理节点一个 GPU step，在节点内启动 1/6/1 ranks，并以
+  offsets 0/1/7 形成 world8；同节点 ranks 共同看到该节点全部分配 GPU。
+
+## 2026-07-24：RL ID81 证明异构 world8 正常，暴露 GridWorldModel 缺失
+
+- ID81 的 Ray、TP4、新 rollout、top-level train phase和per-node 1/6/1 NCCL ranks
+  全部通过；8 ranks 完成 freshness broadcast，W&B `nimloth-rl/gga0ncgs` 创建。
+- 训练随后在模型 forward 前失败：RL `_build_world_model()` 无条件用旧
+  `LatentWMPredictor` 加载 corrected SFT2 epoch1 的 `TemporalSpatialGridPredictor`
+  checkpoint，出现完整的 missing `predictor.*` / unexpected `layers.*` key mismatch。
+- CSV 仅表头，无 optimizer step、finite metrics或checkpoint；manifest 未被消费。
+  不能用 `strict=False` 修补，因为 RL 尚未构造 `GridStateProjector`、target encoder、
+  DINO decoder，也未定义 grid RL 的训练/冻结和 loss 语义。下一步必须正式接入
+  `GridWorldModel` 后才可再开新实验 ID。
+
+## 2026-07-24：ID46 resume attempt 1 已排队
+
+- 人类已明确要求继续剩余SFT2。提交唯一一个preempt 1-node/8-GPU/4-hour hold
+  `485732`，不锁节点；提交时preempt没有完整空闲8卡节点，当前状态为
+  `PENDING (Resources)`。
+- 输出目录内`resume_when_hold_runs.sh`由login-side watcher PID `2929716`等待hold；
+  hold运行后先验证remote worktree仍精确为实验commit `f060a25`，再以
+  `RESUME=1`、绝对`RESUME_FROM=latest`、`WANDB_RUN_ID=yapevfpy`启动单个srun。
+- 首个watcher因non-login bash缺失Slurm module环境而在轮询前退出；已改为显式设置
+  权威`SLURM_CONF`与library路径并验证进程存活。hold一直保持pending，未获得allocation，
+  因此该编排问题没有启动或影响任何训练step。
+- resume保持原数据/config/B1 GA8/world8、optimizer、8-rank history cache、CSV、
+  W&B ID与输出目录，不创建新实验ID。预计拿到节点后50--60分钟完成；需继续监控到
+  checkpoint恢复成功并产生新的finite optimizer step。
+
+## 2026-07-24：DINO-grid SFT2 与 online PPO 合并审查完成
+
+- 按人类确认，将 `feat/sft2-dino-grid-ablation` 和
+  `exp/rl-dinogrid-ep1-online-ppo` 集成到 `nimloth-dev` 对应分支
+  `fix/sft2-review-bugs`。RL 分支此前已在 `f65ec2f` 合入 DINO 实现；本轮补入
+  DINO 分支最后两个 resume 进度提交，并保留双方 `AI_branch_progress.md` 记录。
+- 审查确认 DINO cache lineage、terminal target、FP32 grid auxiliaries、EMA target、
+  checkpoint extras 与 PPO fresh-policy manifest 均 fail-closed。RL commit `bfa9c15`
+  改为从 SFT2 `state_proj.pt` 重建 slot projector；新增回归锁定恢复与冻结边界。
+- 删除已与 TP4 config/per-node 异构 launcher 冲突的固定
+  `run_vllm_online_ppo_2node4.sh`，统一使用 config-driven
+  `run_vllm_online_ppo_slurm.sh`；README 已同步实际每节点一个 Slurm step、节点内多
+  local-rank 的启动方式。
+- 服务器定向回归 `69 passed`；扩展 WM/SFT2/RL/rollout/Qwen/SFT1 merge 回归
+  `173 passed, 1 skipped, 1 expected warning`。静态 `bash -n`、`compileall` 和
+  `git diff --check` 通过。没有启动新实验或 GPU allocation。

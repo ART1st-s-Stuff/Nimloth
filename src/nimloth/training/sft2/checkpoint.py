@@ -16,9 +16,6 @@ from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
 from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.util.distributed import is_main
-from nimloth.wm.predictor import LatentWMPredictor
-from nimloth.wm.state_proj import StateProjector
-from nimloth.wm.value_head import ValueHead
 from nimloth.wm.model import WorldModel
 
 
@@ -55,10 +52,19 @@ def is_trainable_checkpoint_dir(ckpt_dir: Path) -> bool:
         ckpt_dir / "value_head" / "value_head.pt",
         ckpt_dir / "history_cache_rank_000.pt",
     )
-    return all(path.is_file() for path in required) and (
+    ready = all(path.is_file() for path in required) and (
         (ckpt_dir / "config.json").is_file()
         or (ckpt_dir / "adapter_config.json").is_file()
     )
+    if not ready:
+        return False
+    extras = (
+        ckpt_dir / "target_grid_encoder_ema.pt",
+        ckpt_dir / "dino_grid_decoder.pt",
+        ckpt_dir / "dino_grid_config.json",
+    )
+    present = [path.is_file() for path in extras]
+    return not any(present) or all(present)
 
 
 def find_resume_checkpoint(output_dir: Path) -> Path | None:
@@ -132,6 +138,7 @@ def save_checkpoint(
     pred.save_checkpoint(out_dir / "wm_predictor")
     head = value_head.module if hasattr(value_head, "module") else value_head
     head.save_checkpoint(out_dir / "value_head")
+    agent.wm.save_checkpoint_extras(out_dir)
     state_proj_input_dim = getattr(proj, "input_dim", None)
     if state_proj_input_dim is None:
         net_layers = getattr(getattr(proj, "net", None), "net", None)
@@ -428,7 +435,7 @@ def load_aux_checkpoint(
 
     pred_path = ckpt_dir / "wm_predictor"
     pred = wm_predictor.module if hasattr(wm_predictor, "module") else wm_predictor
-    loaded = LatentWMPredictor.load_checkpoint(pred_path, map_location=device)
+    loaded = type(pred).load_checkpoint(pred_path, map_location=device)
     if loaded.config.history_size != pred.config.history_size:
         raise ValueError(
             "checkpoint WM history_size mismatch: "
@@ -444,3 +451,4 @@ def load_aux_checkpoint(
         map_location=device,
     )
     head.load_state_dict(loaded_head.state_dict())
+    wm.load_checkpoint_extras(ckpt_dir, map_location=device)

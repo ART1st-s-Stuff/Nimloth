@@ -122,6 +122,10 @@ class AgentPromptTemplate(Protocol):
         """构造所有已完成动作轮次的监督 prompt。"""
         ...
 
+    def assistant_prefix(self, *, thought: str | None = None) -> str:
+        """构造 policy state 的 assistant 查询前缀，不包含未来动作。"""
+        ...
+
     def assistant_response(
         self,
         action_index: int,

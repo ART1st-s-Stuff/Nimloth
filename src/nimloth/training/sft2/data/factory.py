@@ -14,7 +14,11 @@ from nimloth.training.sft2.batch import SFT2BatchBuilder
 from nimloth.util.distributed import is_main
 from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
+    COMPACT_CACHE_FORMAT_V1,
+    SUPPORTED_COMPACT_CACHE_FORMATS,
     LEGACY_CACHE_FORMAT,
+    LEGACY_TRANSITION_EXPANSION_VERSION,
+    TRANSITION_EXPANSION_VERSION,
     CachedTransitionDataset,
     CompactCachedTransitionCollator,
     build_compact_transition_preprocess_cache,
@@ -43,6 +47,18 @@ def _dataloader_workers(config: Any) -> int:
     return 4 if config.preprocess_cache_dir is not None else 0
 
 
+def _cache_processor_source(config: Any) -> Path:
+    source = getattr(config, "preprocess_cache_processor_source", None)
+    if source is None:
+        return Path(config.model)
+    if not config.require_prebuilt_cache:
+        raise ValueError(
+            "preprocess_cache_processor_source is only valid for a required "
+            "prebuilt cache"
+        )
+    return Path(source)
+
+
 def _load_transition_samples(config: Any) -> tuple[list[TransitionSample], list[TransitionSample]]:
     train_samples = TransitionJsonlDataset(
         config.train_jsonl,
@@ -63,6 +79,7 @@ def _verify_cache_manifest(
     cache_dir: Path,
     jsonl_path: Path,
     expected_count: int,
+    allow_prefix_subset: bool,
     config: Any,
     processor,
 ) -> None:
@@ -73,6 +90,11 @@ def _verify_cache_manifest(
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     compact = config.preprocess_cache_format == "compact"
+    actual_format = str(manifest.get("format", ""))
+    if compact and actual_format not in SUPPORTED_COMPACT_CACHE_FORMATS:
+        raise ValueError(
+            f"unsupported compact preprocess cache format: {actual_format!r}"
+        )
     expected_fingerprint = cache_fingerprint(
         jsonl_path,
         max_length=config.max_length,
@@ -82,12 +104,21 @@ def _verify_cache_manifest(
         value_gamma=config.value_gamma,
         latent_token_count=config.latent_token_count,
         mask_latent_query_labels=config.mask_latent_query_labels,
-        cache_format=COMPACT_CACHE_FORMAT if compact else LEGACY_CACHE_FORMAT,
+        cache_format=actual_format if compact else LEGACY_CACHE_FORMAT,
         image_dtype=config.preprocess_cache_image_dtype if compact else "float32",
-        processor_source=str(Path(config.model).resolve()),
+        processor_source=str(_cache_processor_source(config).resolve()),
+        transition_expansion_version=(
+            LEGACY_TRANSITION_EXPANSION_VERSION
+            if actual_format == COMPACT_CACHE_FORMAT_V1
+            else TRANSITION_EXPANSION_VERSION
+        ),
     )
     actual_fingerprint = manifest.get("base_fingerprint") if compact else manifest.get("fingerprint")
-    if actual_fingerprint != expected_fingerprint or int(manifest.get("count", -1)) != expected_count:
+    actual_count = int(manifest.get("count", -1))
+    count_matches = actual_count == expected_count or (
+        allow_prefix_subset and actual_count > expected_count
+    )
+    if actual_fingerprint != expected_fingerprint or not count_matches:
         raise ValueError(
             f"preprocess cache fingerprint/count mismatch: {cache_dir}; "
             "rebuild the CPU cache for this model, dataset, and config"
@@ -101,6 +132,7 @@ def _build_or_open_cached_datasets(
     val_samples: list[TransitionSample],
 ):
     processor = batch_builder.processor
+    cache_processor_source = _cache_processor_source(config)
     cache_root = Path(config.preprocess_cache_dir)
     train_cache_dir = cache_root / "train"
     val_cache_dir = cache_root / "val"
@@ -108,7 +140,7 @@ def _build_or_open_cached_datasets(
     builder = build_compact_transition_preprocess_cache if compact else build_transition_preprocess_cache
 
     build_kwargs = {
-        "model_path": config.model,
+        "model_path": cache_processor_source,
         "processor": processor,
         "max_length": config.max_length,
         "max_pixels": config.max_pixels,
@@ -152,6 +184,11 @@ def _build_or_open_cached_datasets(
         cache_dir=train_cache_dir,
         jsonl_path=config.train_jsonl,
         expected_count=len(train_samples),
+        # max_records is applied before expansion, so an unfiltered truncated
+        # dataset is exactly a transition prefix of the full cache.
+        allow_prefix_subset=(
+            config.max_train_records > 0 and not config.success_only
+        ),
         config=config,
         processor=processor,
     )
@@ -159,6 +196,7 @@ def _build_or_open_cached_datasets(
         cache_dir=val_cache_dir,
         jsonl_path=config.val_jsonl,
         expected_count=len(val_samples),
+        allow_prefix_subset=config.max_val_records > 0,
         config=config,
         processor=processor,
     )
@@ -167,11 +205,19 @@ def _build_or_open_cached_datasets(
         train_cache_dir,
         train_samples,
         max_open_shards=config.preprocess_cache_shard_lru,
+        processor=processor,
+        max_length=config.max_length,
+        latent_token_count=config.latent_token_count,
+        mask_latent_query_labels=config.mask_latent_query_labels,
     )
     val_dataset = CachedTransitionDataset(
         val_cache_dir,
         val_samples,
         max_open_shards=config.preprocess_cache_shard_lru,
+        processor=processor,
+        max_length=config.max_length,
+        latent_token_count=config.latent_token_count,
+        mask_latent_query_labels=config.mask_latent_query_labels,
     )
     if train_dataset.is_compact != val_dataset.is_compact:
         raise ValueError("train/val preprocess cache formats differ")

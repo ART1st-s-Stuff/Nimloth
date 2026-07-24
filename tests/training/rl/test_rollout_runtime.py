@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from nimloth.rollout import JSONLRolloutCollector
+from nimloth.rollout import FreshJSONLRolloutCollector, JSONLRolloutCollector
 from nimloth.training.rl.rollout_runtime import (
     validate_collector_configuration,
     validate_online_policy_configuration,
@@ -20,6 +20,16 @@ def test_static_jsonl_cannot_drive_ppo_actor() -> None:
             eval_collector=None,
             validation_enabled=False,
         )
+
+
+def test_fresh_jsonl_can_drive_ppo_actor_without_direct_env() -> None:
+    collector = object.__new__(FreshJSONLRolloutCollector)
+    validate_collector_configuration(
+        actor_enabled=True,
+        train_collector=collector,
+        eval_collector=None,
+        validation_enabled=False,
+    )
 
 
 def test_validation_requires_an_independent_collector() -> None:

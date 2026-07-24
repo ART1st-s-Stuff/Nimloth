@@ -18,6 +18,7 @@ _LOG_COLUMNS = (
     "iteration",
     "global_step",
     "wm_mse",
+    "sigreg_loss",
     "value_loss",
     "total_loss",
     "num_rollouts",

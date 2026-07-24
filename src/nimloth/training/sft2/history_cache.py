@@ -49,9 +49,9 @@ class OnlineHistoryStateCache:
     ) -> torch.Tensor:
         """返回 ``(B,T-1,D)`` detached history；T=1 返回真实空时间轴。"""
 
-        if reference.ndim != 2:
+        if reference.ndim < 2:
             raise ValueError(
-                "current state reference must have shape (B,D), "
+                "current state reference must have shape (B,...state), "
                 f"got {tuple(reference.shape)}"
             )
         if len(keys) != reference.shape[0]:
@@ -64,7 +64,9 @@ class OnlineHistoryStateCache:
             raise ValueError("history cache rows must share one context length")
         history_steps = lengths.pop() if lengths else 0
         if history_steps == 0:
-            return reference.new_empty((reference.shape[0], 0, reference.shape[1]))
+            return reference.new_empty(
+                (reference.shape[0], 0, *reference.shape[1:])
+            )
 
         missing = [key for row in keys for key in row if key not in self._states]
         if missing:
@@ -94,9 +96,9 @@ class OnlineHistoryStateCache:
 
         if not enabled:
             return
-        if states.ndim != 2 or states.shape[0] != len(keys):
+        if states.ndim < 2 or states.shape[0] != len(keys):
             raise ValueError(
-                "current cache states must have shape (B,D) matching keys, "
+                "current cache states must have shape (B,...state) matching keys, "
                 f"got {tuple(states.shape)} for {len(keys)} keys"
             )
         seen: set[StateKey] = set()
@@ -142,8 +144,10 @@ class OnlineHistoryStateCache:
             for record_id, step_index in payload.get("keys", [])
         ]
         states = payload.get("states")
-        if not isinstance(states, torch.Tensor) or states.ndim != 2:
-            raise ValueError("history cache checkpoint states must have shape (N,D)")
+        if not isinstance(states, torch.Tensor) or states.ndim < 2:
+            raise ValueError(
+                "history cache checkpoint states must have shape (N,...state)"
+            )
         if states.shape[0] != len(keys):
             raise ValueError("history cache checkpoint key/state counts do not match")
         self.epoch = int(payload["epoch"]) if payload.get("epoch") is not None else None

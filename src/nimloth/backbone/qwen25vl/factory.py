@@ -230,14 +230,14 @@ def build_agent_policy(
     """构造在线动作 policy；协议检查属于该能力本身。"""
 
     model_config = getattr(getattr(model, "module", model), "config")
-    validate_agent_policy_protocol(model_config)
+    latent_token_count = validate_agent_policy_protocol(model_config)
     return QwenAgentPolicy(
         model=model,
         processor=loaded.processor,
         device=device,
         temperature=temperature,
         top_p=top_p,
-        latent_token_count=1,
+        latent_token_count=latent_token_count,
         token_id_map=loaded.token_id_map,
     )
 

@@ -183,6 +183,10 @@ def expand_record_transitions(
     assistant_msg_indices: list[int] = [
         i for i, msg in enumerate(messages) if msg.get("role") == "assistant"
     ]
+    prompt = create_prompt_template(
+        prompt_template_spec_from_record(record),
+        action_count=len(action_space),
+    )
     for msg_index, msg in enumerate(messages):
         if msg.get("role") != "assistant":
             continue
@@ -205,6 +209,30 @@ def expand_record_transitions(
             if assistant_turn + 2 < len(image_paths):
                 next_prefix_messages = [dict(m) for m in messages[: next_msg_index + 1]]
                 next_prefix_image_paths = [str(p) for p in image_paths[: assistant_turn + 2]]
+        else:
+            next_user_index = next(
+                (
+                    index
+                    for index in range(msg_index + 1, len(messages))
+                    if messages[index].get("role") == "user"
+                ),
+                None,
+            )
+            if next_user_index is None:
+                raise ValueError(
+                    f"record {record_id!r} final action has an image but no "
+                    "post-action user observation"
+                )
+            next_prefix_messages = [
+                *[dict(m) for m in messages[: next_user_index + 1]],
+                {
+                    "role": "assistant",
+                    "content": prompt.assistant_prefix(),
+                },
+            ]
+            next_prefix_image_paths = [
+                str(p) for p in image_paths[: assistant_turn + 2]
+            ]
 
         transitions.append(
             TransitionSample(

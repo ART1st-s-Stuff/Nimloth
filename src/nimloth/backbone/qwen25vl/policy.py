@@ -23,16 +23,17 @@ from nimloth.latent import (
 )
 from nimloth.util.module import evaluating
 
-def validate_agent_policy_protocol(model_config: Any) -> None:
-    """确认 checkpoint 满足当前已实现的 k=1 inject policy 协议。"""
+def validate_agent_policy_protocol(model_config: Any) -> int:
+    """确认 checkpoint 满足 inject policy 协议并返回其 latent token 数。"""
 
     latent_count = int(getattr(model_config, "nimloth_latent_token_count", 1))
     query_mode = getattr(model_config, "nimloth_latent_query_mode", None)
-    if latent_count != 1 or query_mode != "inject":
+    if latent_count < 1 or query_mode != "inject":
         raise ValueError(
-            "Agent action runtime currently requires a k=1 inject checkpoint; "
+            "Agent action runtime requires a positive-k inject checkpoint; "
             f"got latent_token_count={latent_count}, latent_query_mode={query_mode!r}"
         )
+    return latent_count
 
 
 def _rgb_image(value: Any) -> Image.Image:

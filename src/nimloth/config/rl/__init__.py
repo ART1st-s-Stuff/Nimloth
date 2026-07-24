@@ -4,6 +4,7 @@ from nimloth.config.agent import AgentConfig, AgentPlanningConfig
 from nimloth.config.rollout import RolloutConfig
 from nimloth.config.rl.schema import (
     ActorConfig,
+    DistributedConfig,
     FreezeConfig,
     GradientConfig,
     PredictorConfig,
@@ -19,6 +20,7 @@ from nimloth.config.rl.schema import (
 
 __all__ = [
     "ActorConfig",
+    "DistributedConfig",
     "AgentConfig",
     "AgentPlanningConfig",
     "FreezeConfig",
