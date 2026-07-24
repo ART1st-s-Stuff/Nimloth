@@ -489,3 +489,17 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - 新的60分钟preempt hold `486146`按`nodes=2/world_size=8`仅请求总8卡、不固定4+4，
   当前`PENDING (Priority)`。实时AllocTRES显示normal仅4卡、preempt仅2卡空闲，不能
   降配冒充config要求；获得allocation后用全新ID89从头fresh rollout。
+
+## 2026-07-24：ID89 rollout通过，world8 PPO replay activation OOM
+
+- commit `f2cbef3`在hold `486146`获得dgx-06×3 + dgx-23×5；nodes2/world8/TP4、
+  turn credit CoT32、H4、batch2、no DINO和ID46 epoch1初始化均按原config执行。
+- Ray/import/environment/vLLM均健康；4条×5步fresh rollout为`ALL_OK`，rewards
+  `-0.1/-0.2/0.0/-0.1`。20个turn中19个正常stop、1个reasoning length截断；
+  截断元数据和credit mask已落盘。manifest严格消费一次，不可复用。
+- 所有8个FSDP rank在第一次policy replay的Qwen decoder forward OOM；最早发生于
+  `post_attention_layernorm` FP32转换，20MiB申请时每卡约79.16/79.19GiB已占用。
+  后续NCCL/TCPStore错误只是OOM teardown。
+- 无loss行、optimizer step或checkpoint，ID89不可resume。W&B `cugevcpx`显示
+  `finished`但无训练指标。hold最终TIMEOUT且已释放。下一步不能降配或缩短credit来
+  冒充目标；需实现数学与token参与范围不变的memory-safe policy replay后用新ID重跑。

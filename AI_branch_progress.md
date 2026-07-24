@@ -1869,6 +1869,21 @@
   已提交60分钟、两节点、总8卡且允许异构的preempt hold `486146`，当前
   `PENDING (Priority)`；normal当前仅4卡、preempt仅2卡空闲，均不能满足config world8。
 
+## 2026-07-24：RL ID89 fresh rollout完成，首次policy replay OOM
+
+- ID89 使用commit `f2cbef3`、corrected ID46 `epoch_001` 和异构allocation
+  dgx-06×3 + dgx-23×5；Ray 8卡、逐节点import、environment、TP4通信/权重/eager均通过。
+- `base_train` seeds1--4产生4条各5步fresh trajectory，共20 transitions；rewards
+  `-0.1/-0.2/0.0/-0.1`，19个turn为`stop`，1个CoT32为持久化`length`截断。
+  manifest通过`ALL_OK`并被严格消费一次。
+- 8个FSDP rank均在第一个PPO `policy_replay` Qwen forward OOM；最早堆栈位于decoder
+  `post_attention_layernorm`转FP32，额外20MiB申请失败，每卡已使用约79.16/79.19GiB。
+  TCPStore/NCCL broken pipe是rank退出后的次生错误。
+- CSV仅有表头，无finite loss、optimizer step或checkpoint；manifest已消费，ID89
+  不可恢复。W&B `cugevcpx`虽显示`finished`，summary仅有runtime，不能视为成功。
+  hold `486146`最终`TIMEOUT`并离开squeue。下一步需保持精确prompt/token credit/PPO
+  概率的前提下降低policy replay activation显存，再使用新ID和fresh rollout。
+
 ## 2026-07-24：DINO 改为单一 SFT2 核心的可配置附加 loss
 
 - 人类指出原 `DINOGridSFT2Algorithm` 复制了完整 current/target、CE、WM、value 和
