@@ -16,6 +16,7 @@ from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
 from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.util.distributed import is_main
+from nimloth.wm.factory import world_model_artifacts_are_complete
 from nimloth.wm.model import WorldModel
 
 
@@ -46,25 +47,16 @@ def resume_epoch_and_micro_step(state: dict[str, Any]) -> tuple[int, int]:
 def is_trainable_checkpoint_dir(ckpt_dir: Path) -> bool:
     required = (
         ckpt_dir / "training_state.pt",
-        ckpt_dir / "state_proj.pt",
-        ckpt_dir / "wm_predictor" / "config.json",
-        ckpt_dir / "wm_predictor" / "predictor.pt",
-        ckpt_dir / "value_head" / "value_head.pt",
         ckpt_dir / "history_cache_rank_000.pt",
     )
-    ready = all(path.is_file() for path in required) and (
-        (ckpt_dir / "config.json").is_file()
-        or (ckpt_dir / "adapter_config.json").is_file()
+    backbone_ready = (ckpt_dir / "config.json").is_file() or (
+        ckpt_dir / "adapter_config.json"
+    ).is_file()
+    return (
+        all(path.is_file() for path in required)
+        and backbone_ready
+        and world_model_artifacts_are_complete(ckpt_dir)
     )
-    if not ready:
-        return False
-    extras = (
-        ckpt_dir / "target_grid_encoder_ema.pt",
-        ckpt_dir / "dino_grid_decoder.pt",
-        ckpt_dir / "dino_grid_config.json",
-    )
-    present = [path.is_file() for path in extras]
-    return not any(present) or all(present)
 
 
 def find_resume_checkpoint(output_dir: Path) -> Path | None:

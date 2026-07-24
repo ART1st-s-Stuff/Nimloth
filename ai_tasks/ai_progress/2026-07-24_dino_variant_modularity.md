@@ -16,14 +16,24 @@
 
 - 人类确认修复范围为“完整解耦”。
 - 确认当前耦合点散布于 SFT2 trainer 的模型/batch/optimizer/invariants/metrics/algorithm，以及 RL trainer/checkpoint 和 SFT2 checkpoint。
+- RED 提交 `6af3c99` 新增公共编排禁止出现具体 DINO/Grid 类型或 artifact 名的静态边界，以及统一 loader 恢复测试。
+- 新增 SFT2 variant registry；latent 与 DINO-grid 分别拥有模型、batch、algorithm、runtime metadata、metric 和 checkpoint invariant。
+- 新增 WorldModel loader registry；grid loader 自己识别 predictor config、重建组件、声明旧 checkpoint 必需 artifact 并应用 RL 冻结语义。
+- WorldModel 现在多态声明 optimization/broadcast components，并可原位包装 DDP 组件；公共 trainer 不再用 `isinstance` 重建具体模型。
 
 ## 文件修改
 
-- 本进度文件。
+- `src/nimloth/training/sft2/variant.py`、`dino_grid.py`：variant registry 与具体实现。
+- `src/nimloth/wm/factory.py`、`grid_factory.py`：checkpoint loader registry。
+- `src/nimloth/wm/model.py`、`grid.py`：组件和阶段策略多态接口。
+- SFT2/RL trainer/checkpoint：删除 DINO/Grid 具体依赖。
+- `tests/training/sft2/test_variant_boundary.py`、`tests/training/rl/test_grid_checkpoint.py`：架构与恢复契约。
 
 ## 验证
 
-- 待执行。
+- `compileall`、`git diff --check` 通过。
+- 静态扫描确认四个公共 trainer/checkpoint 不含 DINO/Grid 具体类型、模块或 artifact 名。
+- 服务器 Pytest 待提交同步后执行。
 
 ## 风险
 

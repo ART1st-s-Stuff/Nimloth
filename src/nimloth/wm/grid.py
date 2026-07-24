@@ -595,19 +595,28 @@ class GridWorldModel(WorldModel):
                 dist.broadcast(buffer, src=0)
 
     @property
-    def trainable_modules(self) -> tuple[nn.Module, ...]:
-        modules = (
+    def optimization_components(self) -> tuple[tuple[str, nn.Module], ...]:
+        components = super().optimization_components
+        if self.train_dino_decoder:
+            return (*components, ("dino_decoder", self.dino_decoder))
+        return components
+
+    @property
+    def broadcast_modules(self) -> tuple[nn.Module, ...]:
+        return (
             self.state_proj,
             self.wm_predictor,
             self.value_head,
+            self.target_encoder,
+            self.dino_decoder,
         )
-        if self.train_dino_decoder:
-            return (*modules, self.dino_decoder)
-        return modules
 
-    @property
-    def synchronized_modules(self) -> tuple[nn.Module, ...]:
-        return self.trainable_modules
+    def prepare_for_rl(self, *, freeze_state_proj: bool) -> None:
+        super().prepare_for_rl(freeze_state_proj=freeze_state_proj)
+        self.train_dino_decoder = False
+        self.update_target_encoder = False
+        self.target_encoder.requires_grad_(False).eval()
+        self.dino_decoder.requires_grad_(False).eval()
 
     def unwrapped(self) -> "GridWorldModel":
         return GridWorldModel(

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn.functional as F
 
-from nimloth.backbone.dino_grid import CachedDINOGridTargets
+from nimloth.backbone.dino_grid import (
+    CachedDINOGridTargets,
+    DINOV2_LARGE_IDENTITY,
+)
 from nimloth.training.sft2.algorithm import (
     SFT2Algorithm,
     SFT2SIGRegStepOutput,
@@ -18,7 +22,19 @@ from nimloth.training.sft2.algorithm import (
 )
 from nimloth.training.sft2.batch import SFT2Batch, SFT2BatchAssembler
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
-from nimloth.wm.grid import GridWorldModel
+from nimloth.training.sft2.variant import SFT2VariantBuildContext
+from nimloth.wm.grid import (
+    EMATargetGridEncoder,
+    GridPredictorConfig,
+    GridStateProjector,
+    GridWorldModel,
+    LeWMGridDecoder,
+    LeWMGridEncoder,
+    TemporalSpatialGridPredictor,
+    load_sft1_slot_projector,
+    warm_start_legacy_grid_components,
+)
+from nimloth.wm.value_head import ValueHead
 
 
 @dataclass(frozen=True)
@@ -277,8 +293,131 @@ class DINOGridSFT2Algorithm(SFT2Algorithm):
         )
 
 
+class DINOGridSFT2Variant:
+    """DINO-grid 自己拥有模型、数据 sidecar、objective 与 artifact 语义。"""
+
+    name = "dino_grid"
+    metric_fields = ("dino_grid_mse", "lambda_dino")
+
+    def validate_args(self, args: Any) -> None:
+        required = {
+            "latent_token_count": (args.latent_token_count, 16),
+            "history_size": (args.history_size, 4),
+            "emb_dim": (args.emb_dim, 1024),
+            "latent_query_mode": (args.latent_query_mode, "inject"),
+            "lambda_dino": (args.lambda_dino, 0.5),
+            "lambda_sigreg": (args.lambda_sigreg, 0.1),
+            "grid_size": (args.grid_size, 4),
+            "grid_ema_decay": (args.grid_ema_decay, 0.99),
+        }
+        mismatches = {
+            name: values for name, values in required.items() if values[0] != values[1]
+        }
+        if mismatches:
+            raise ValueError(
+                f"authoritative DINO-grid SFT2 invariants mismatch: {mismatches}"
+            )
+        if args.dino_grid_cache is None or args.grid_warmstart is None:
+            raise ValueError(
+                "DINO-grid SFT2 requires --dino-grid-cache and --grid-warmstart"
+            )
+
+    def build_world_model(self, context: SFT2VariantBuildContext) -> GridWorldModel:
+        args = context.args
+        slot_projector = load_sft1_slot_projector(
+            args.model,
+            qwen_hidden_dim=int(context.model.config.hidden_size),
+            state_dim=args.emb_dim,
+            grid_tokens=args.latent_token_count,
+            map_location=context.aux_device,
+            dtype=context.model_dtype,
+        ).to(context.aux_device)
+        online_encoder = LeWMGridEncoder(
+            emb_dim=args.emb_dim,
+            hidden_dim=args.grid_encoder_hidden_dim,
+        ).to(device=context.aux_device, dtype=torch.float32)
+        world_model = GridWorldModel(
+            state_proj=GridStateProjector(slot_projector, online_encoder).to(
+                context.aux_device
+            ),
+            target_encoder=EMATargetGridEncoder(
+                online_encoder,
+                decay=args.grid_ema_decay,
+            ).to(context.aux_device),
+            wm_predictor=TemporalSpatialGridPredictor(
+                GridPredictorConfig(
+                    grid_tokens=args.latent_token_count,
+                    emb_dim=args.emb_dim,
+                    history_size=args.history_size,
+                    depth=args.grid_wm_depth,
+                    heads=args.grid_wm_heads,
+                    dim_head=args.grid_wm_dim_head,
+                    mlp_dim=args.grid_wm_mlp_dim,
+                    dropout=args.grid_wm_dropout,
+                )
+            ).to(device=context.aux_device, dtype=torch.float32),
+            dino_decoder=LeWMGridDecoder(
+                emb_dim=args.emb_dim,
+                hidden_dim=args.grid_decoder_hidden_dim,
+            ).to(device=context.aux_device, dtype=torch.float32),
+            value_head=ValueHead(args.emb_dim).to(
+                device=context.aux_device,
+                dtype=torch.float32,
+            ),
+        )
+        if not args.resume and args.grid_warmstart is not None:
+            args.grid_warmstart_metadata = warm_start_legacy_grid_components(
+                world_model,
+                args.grid_warmstart,
+            )
+        return world_model
+
+    def build_batch_builder(
+        self,
+        args: Any,
+        base: SFT2BatchAssembler,
+    ) -> DINOGridBatchAssembler:
+        targets = CachedDINOGridTargets.from_cache_root(
+            args.dino_grid_cache,
+            identity=DINOV2_LARGE_IDENTITY,
+            grid_size=args.grid_size,
+        )
+        args.dino_cache_fingerprint = targets.cache_fingerprint
+        return DINOGridBatchAssembler(base, targets)
+
+    def build_algorithm(
+        self,
+        args: Any,
+        **common_kwargs: Any,
+    ) -> DINOGridSFT2Algorithm:
+        return DINOGridSFT2Algorithm(
+            dino_weight=args.lambda_dino,
+            **common_kwargs,
+        )
+
+    def checkpoint_invariants(self, args: Any) -> dict[str, Any]:
+        return {
+            "grid_tokens": 16,
+            "grid_ordering": "row_major",
+            "dino_grid_size": 4,
+            "dino_identity": vars(DINOV2_LARGE_IDENTITY),
+            "dino_cache_fingerprint": args.dino_cache_fingerprint,
+            "dino_weight": 0.5,
+            "grid_ema_decay": 0.99,
+            "grid_warmstart": str(Path(args.grid_warmstart).resolve()),
+            "grid_warmstart_mode": "id33_spatial_plus_zero_temporal_position",
+        }
+
+    def runtime_metadata(self, args: Any) -> dict[str, Any]:
+        return {
+            "supervision_cache": str(args.dino_grid_cache),
+            "world_model_warmstart": str(args.grid_warmstart),
+        }
+
+
 __all__ = [
     "DINOGridBatchAssembler",
     "DINOGridSFT2Algorithm",
     "DINOGridSFT2Batch",
+    "DINOGridSFT2Variant",
 ]
