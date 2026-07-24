@@ -8,6 +8,9 @@ PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
 SFT2_ROOT=${SFT2_ROOT:-/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-06-22/sft2_llmlora_visionfull_1epoch_gamma1_ckpt100_keep2_stride2}
 RUN_OUT=${RUN_OUT:-/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-07-11/post_fsdp_fix_e2e_smoke_retry1}
 ENV_PORT=${ENV_PORT:-8500}
+RL_CONFIG=${RL_CONFIG:-${REPO}/configs/training/rl/e2e_smoke.yaml}
+NUM_EPISODES=${NUM_EPISODES:-4}
+MAX_STEPS=${MAX_STEPS:-2}
 
 MODEL=${MODEL:-${SFT2_ROOT}/export_best_hf}
 WM_CKPT=${WM_CKPT:-${SFT2_ROOT}/best}
@@ -19,6 +22,7 @@ WANDB_MODE_REQUESTED=${WANDB_MODE_OVERRIDE:-disabled}
 WANDB_RUN_NAME_REQUESTED=${WANDB_RUN_NAME:-1_smoke_k1ep2_rl_e2e4x2_fsdp2_iter2}
 
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
+[[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 for path in "${WM_CKPT}/state_proj.pt" "${WM_CKPT}/wm_predictor/predictor.pt" "${WM_CKPT}/value_head/value_head.pt"; do
   [[ -f "${path}" ]] || { echo "missing checkpoint file: ${path}" >&2; exit 1; }
@@ -41,8 +45,9 @@ cat > "${RUN_OUT}/README.md" <<EOF
 - status: running
 - Nimloth commit: ${COMMIT}
 - env VAGEN commit: ${ENV_COMMIT}
-- data: navigation base_train, seeds 1..4 (training scenes/tasks)
-- rollout: 4 episodes, at most 2 actions each, Nimloth action-token policy
+- data: navigation base_train, seeds 1..${NUM_EPISODES} (training scenes/tasks)
+- rollout: ${NUM_EPISODES} episodes, at most ${MAX_STEPS} actions each, Nimloth action-token policy
+- RL config: ${RL_CONFIG}
 - model initialization: ${MODEL}
 - WM/value initialization: ${WM_CKPT}
 - trainable: Qwen language model full parameters, WM predictor, value head
@@ -132,8 +137,8 @@ export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VA
   --model "${MODEL}" \
   --env-url "${ENV_URL}" \
   --output-dir "${ROLLOUT_OUT}" \
-  --num-episodes 4 \
-  --max-steps 2 \
+  --num-episodes "${NUM_EPISODES}" \
+  --max-steps "${MAX_STEPS}" \
   --eval-set base_train \
   --split train \
   --seed-offset 1 \
@@ -150,7 +155,7 @@ export CUDA_VISIBLE_DEVICES=${TRAIN_GPUS}
 export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
 TRAIN_ARGS=(
   -m nimloth.training.rl.cli
-  --config "${REPO}/configs/training/rl/e2e_smoke.yaml"
+  --config "${RL_CONFIG}"
   --model "${MODEL}"
   --llm-tune full
   --vision-tune freeze

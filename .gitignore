@@ -41,6 +41,10 @@ outputs/
 logs/
 checkpoints/
 data/
+!src/nimloth/training/sft2/data/
+!src/nimloth/training/sft2/data/**
+src/nimloth/training/sft2/data/**/__pycache__/
+src/nimloth/training/sft2/data/**/*.py[cod]
 
 # Misc
 *.log

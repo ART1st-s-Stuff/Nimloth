@@ -13,10 +13,14 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from nimloth.training.common.dist import is_main
+from nimloth.agent import Agent
+from nimloth.backbone import BackboneEMA
+from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
+from nimloth.wm.model import WorldModel
+from nimloth.wm.grid import TemporalSpatialGridPredictor
 
 
 def _unwrap(module: torch.nn.Module) -> torch.nn.Module:
@@ -47,25 +51,26 @@ def _rank_world() -> tuple[int, int]:
 def save_rl_checkpoint(
     out_dir: Path,
     *,
-    # WM modules
-    state_proj: StateProjector,
-    wm_predictor: LatentWMPredictor,
-    value_head: ValueHead,
-    # Qwen model (may be DDP-wrapped or PeftModel)
-    model: torch.nn.Module | None = None,
-    processor: Any = None,
-    vision_ema: Any = None,
+    agent: Agent,
+    processor: Any,
+    vision_ema: BackboneEMA | None,
+    save_llm: bool = True,
     # Training state
     optimizer: torch.optim.Optimizer | None = None,
     iteration: int = 0,
     global_step: int = 0,
-    best_value_loss: float = float("inf"),
+    best_eval_metric: float = float("-inf"),
+    checkpoint_metric: str = "success_rate",
     # Tune metadata
     lora: bool = False,
     llm_tune: str = "freeze",
     vision_tune: str = "freeze",
     base_model_path: str = "",
 ) -> None:
+    model = agent.backbone.model
+    state_proj = agent.wm.state_proj
+    wm_predictor = agent.wm.wm_predictor
+    value_head = agent.wm.value_head
     rank, world = _rank_world()
     fsdp_model = _is_fsdp(model)
 
@@ -97,33 +102,24 @@ def save_rl_checkpoint(
         torch.save(_unwrap(state_proj).state_dict(), out_dir / "state_proj.pt")
         _unwrap(wm_predictor).save_checkpoint(out_dir / "wm_predictor")
         _unwrap(value_head).save_checkpoint(out_dir / "value_head")
+        agent.wm.save_checkpoint_extras(out_dir)
 
         # Qwen model
-        if model is not None:
-            m = _unwrap(model)
-            if fsdp_model:
-                m.save_pretrained(
-                    out_dir,
-                    state_dict=full_model_state,
-                    safe_serialization=True,
-                )
-            else:
-                m.save_pretrained(out_dir, safe_serialization=True)
-        if processor is not None:
+        if save_llm:
+            agent.backbone.save_pretrained(
+                out_dir,
+                state_dict=full_model_state if fsdp_model else None,
+            )
             processor.save_pretrained(out_dir)
-        if vision_ema is not None:
-            ema = _unwrap(vision_ema) if hasattr(vision_ema, "module") else vision_ema
-            if hasattr(ema, "save_checkpoint"):
-                ema.save_checkpoint(out_dir / "vision_ema.pt")
-            elif hasattr(ema, "shadow") and ema.shadow:
-                torch.save({"shadow": {k: v.cpu() for k, v in ema.shadow.items()}},
-                           out_dir / "vision_ema.pt")
+            if vision_ema is not None and vision_ema.shadow:
+                vision_ema.save_checkpoint(out_dir / "vision_ema.pt")
 
         # Training state
         state: dict[str, Any] = {
             "iteration": iteration,
             "global_step": global_step,
-            "best_value_loss": best_value_loss,
+            "best_eval_metric": best_eval_metric,
+            "checkpoint_metric": checkpoint_metric,
             "lora": lora,
             "llm_tune": llm_tune,
             "vision_tune": vision_tune,
@@ -146,16 +142,17 @@ def save_rl_checkpoint(
 
 def load_rl_wm_checkpoint(
     ckpt_dir: Path,
-    state_proj: StateProjector,
-    wm_predictor: LatentWMPredictor,
-    value_head: ValueHead,
+    wm: WorldModel,
     device: torch.device,
 ) -> dict:
     """Load *only* the WM components from an RL checkpoint.
 
-    Returns the training-state dict (iteration, global_step, best_value_loss,
-    optimizer, …).
+    返回训练状态字典，包括 iteration、global_step、best_eval_metric 和
+    optimizer 等可恢复信息。
     """
+    state_proj = wm.state_proj
+    wm_predictor = wm.wm_predictor
+    value_head = wm.value_head
     sp_path = ckpt_dir / "state_proj.pt"
     if sp_path.is_file():
         _unwrap(state_proj).load_state_dict(
@@ -163,7 +160,17 @@ def load_rl_wm_checkpoint(
         )
     pred_dir = ckpt_dir / "wm_predictor"
     if pred_dir.is_dir():
-        loaded_pred = LatentWMPredictor.load_checkpoint(pred_dir, map_location=device)
+        predictor = _unwrap(wm_predictor)
+        if isinstance(predictor, TemporalSpatialGridPredictor):
+            loaded_pred = TemporalSpatialGridPredictor.load_checkpoint(
+                pred_dir,
+                map_location=device,
+            )
+        else:
+            loaded_pred = LatentWMPredictor.load_checkpoint(
+                pred_dir,
+                map_location=device,
+            )
         _unwrap(wm_predictor).load_state_dict(loaded_pred.state_dict())
     head_dir = ckpt_dir / "value_head"
     if head_dir.is_dir():
@@ -172,6 +179,7 @@ def load_rl_wm_checkpoint(
             head_dir, emb_dim=head.net[0].in_features, map_location=device
         )
         head.load_state_dict(loaded_head.state_dict())
+    wm.load_checkpoint_extras(ckpt_dir, map_location=device)
 
     state_path = ckpt_dir / "rl_state.pt"
     if state_path.is_file():

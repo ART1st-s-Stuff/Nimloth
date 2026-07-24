@@ -13,7 +13,7 @@
 当前 Nimloth RL 已具备 SFT2 warm-start、独立 rollout → JSONL → FSDP training、WM/value loss、可选 Qwen PPO、完整 checkpoint/resume 等基础链路，但存在两个明确边界：
 
 1. RL action/encoding runtime 在 `src/nimloth/training/rl/rollout.py::validate_rl_policy_protocol` 中只允许 `k=1 + inject`；prompt、token 注册、latent 提取和 `StateProjector` 构造也仍按单 query 编写。
-2. `LatentWMPredictor.rollout_states()`、`Planner` 和 `WMAgent` 已有多步推演/fast-path 代码，但 RL 轨迹仍由 Qwen action prior 每步产生，训练仍使用单步 dynamics target；现有两步 RL smoke 不能作为 WM+ValueHead 连续动作验证。
+2. `LatentWMPredictor.rollout_states()` 和 `Planner` 已有多步推演代码，但原 `WMAgent` 是无运行调用方且 prompt/state 契约错误的原型，已于 2026-07-21 删除；RL 轨迹仍由 Qwen action prior 每步产生，训练仍使用单步 dynamics target。现有两步 RL smoke 不能作为 WM+ValueHead 连续动作验证。
 
 ## 2. 目标
 
@@ -82,16 +82,16 @@ WM planner 产生的动作不是 Qwen rollout policy 的采样结果。不得把
 
 ### RL runtime
 
-- `src/nimloth/training/rl/rollout.py`
+- `src/nimloth/backbone/qwen25vl/rollout.py`
   - metadata-driven protocol validation；
   - k-token prompt；
   - `policy_source`、sync/fast-path 信息与合法 behavior log-prob 记录。
-- `src/nimloth/training/rl/trainer.py`
+- `src/nimloth/training/rl/loop.py`
   - k-token latent block encoding；
   - policy-source-aware PPO mask；
   - 连续 trajectory window 与多步 dynamics loss；
   - k/horizon 相关 metrics。
-- `src/nimloth/training/rl/loss.py`
+- `src/nimloth/training/rl/algorithm.py` 与 `src/nimloth/wm/model.py`
   - 多步 dynamics loss；
   - 明确单步/多步 loss 权重和指标。
 - `src/nimloth/training/rl/cli.py`
@@ -104,7 +104,7 @@ WM planner 产生的动作不是 Qwen rollout policy 的采样结果。不得把
 
 - 优先复用 `src/nimloth/latent/`、`src/nimloth/wm/predictor.py`、`src/nimloth/wm/state_proj.py` 和 `src/nimloth/wm/planning.py`。
 - 只有在 RL 所需接口无法由现有公共 API 表达时才修改共享模块。
-- `WMAgent` 当前也按单 latent token 编码；如果将其作为正式 rollout backend，必须同步改为 metadata-driven k-token extraction。
+- 若扩展当前 `NavigationAgent` 作为 WM planner rollout backend，必须使用共享 transcript/prompt，并同步实现 metadata-driven k-token extraction；不得恢复已删除的旧 `WMAgent`。
 
 ### 配置、实验入口与文档
 

@@ -10,30 +10,46 @@ import torch
 
 from nimloth.training.sft2.checkpoint import (
     find_resume_checkpoint,
+    is_trainable_checkpoint_dir,
     load_aux_checkpoint,
     resolve_resume_checkpoint_dir,
     resume_epoch_and_micro_step,
 )
-from nimloth.training.sft2.trainer import _seed_training_micro_step, _training_micro_seed
+from nimloth.training.sft2.algorithm import require_sft2_wm_history
+from nimloth.training.sft2.utils import seed_training_micro_step, training_micro_seed
+from nimloth.wm.lewm import LeWMConfig
+from nimloth.wm.predictor import LatentWMPredictor
+from nimloth.wm.model import WorldModel
+
+
+def _write_aux_markers(ckpt_dir: Path) -> None:
+    torch.save({}, ckpt_dir / "state_proj.pt")
+    (ckpt_dir / "wm_predictor").mkdir()
+    (ckpt_dir / "wm_predictor" / "config.json").write_text("{}", encoding="utf-8")
+    torch.save({}, ckpt_dir / "wm_predictor" / "predictor.pt")
+    (ckpt_dir / "value_head").mkdir()
+    torch.save({}, ckpt_dir / "value_head" / "value_head.pt")
 
 
 def _write_ckpt(ckpt_dir: Path, *, step: int, epoch: int) -> None:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     (ckpt_dir / "config.json").write_text("{}", encoding="utf-8")
     torch.save({"step": step, "epoch": epoch}, ckpt_dir / "training_state.pt")
+    torch.save({}, ckpt_dir / "history_cache_rank_000.pt")
+    _write_aux_markers(ckpt_dir)
 
 
 def test_counter_based_micro_seed_replays_stochastic_operations() -> None:
-    seed = _seed_training_micro_step(42, epoch=3, micro_step=7, rank=1)
+    seed = seed_training_micro_step(42, epoch=3, micro_step=7, rank=1)
     first = (random.random(), torch.rand(4))
     random.random()
     torch.rand(11)
-    assert _seed_training_micro_step(42, epoch=3, micro_step=7, rank=1) == seed
+    assert seed_training_micro_step(42, epoch=3, micro_step=7, rank=1) == seed
     second = (random.random(), torch.rand(4))
 
     assert first[0] == second[0]
     assert torch.equal(first[1], second[1])
-    assert _training_micro_seed(42, 3, 7, 0) != _training_micro_seed(42, 3, 7, 1)
+    assert training_micro_seed(42, 3, 7, 0) != training_micro_seed(42, 3, 7, 1)
 
 
 def test_resume_position_for_epoch_complete_and_legacy_checkpoints() -> None:
@@ -82,14 +98,55 @@ def test_resume_rejects_query_tune_mismatch(tmp_path: Path) -> None:
         },
         ckpt / "training_state.pt",
     )
+    (ckpt / "wm_predictor").mkdir()
+    (ckpt / "wm_predictor" / "config.json").write_text("{}", encoding="utf-8")
+    torch.save({}, ckpt / "wm_predictor" / "predictor.pt")
+    (ckpt / "value_head").mkdir()
+    torch.save({}, ckpt / "value_head" / "value_head.pt")
 
     with pytest.raises(ValueError, match="checkpoint query_tune mismatch"):
         load_aux_checkpoint(
             ckpt,
-            proj,
-            object(),
-            object(),
+            WorldModel(
+                state_proj=proj,
+                wm_predictor=torch.nn.Identity(),
+                value_head=torch.nn.Identity(),
+            ),
             torch.device("cpu"),
             latent_query_mode="inject",
             query_tune="adapter",
+        )
+
+
+def test_resume_checkpoint_requires_all_auxiliary_weights(tmp_path: Path) -> None:
+    ckpt = tmp_path / "checkpoint"
+    _write_ckpt(ckpt, step=1, epoch=1)
+    (ckpt / "value_head" / "value_head.pt").unlink()
+
+    assert not is_trainable_checkpoint_dir(ckpt)
+    with pytest.raises(FileNotFoundError, match="incomplete SFT2 auxiliary checkpoint"):
+        load_aux_checkpoint(
+            ckpt,
+            WorldModel(
+                state_proj=torch.nn.Identity(),
+                wm_predictor=torch.nn.Identity(),
+                value_head=torch.nn.Identity(),
+            ),
+            torch.device("cpu"),
+        )
+
+
+def test_sft2_requires_checkpoint_history_to_match_config() -> None:
+    predictor = LatentWMPredictor.create(LeWMConfig(emb_dim=16, history_size=4))
+
+    require_sft2_wm_history(
+        predictor,
+        history_size=4,
+        source=Path("wm"),
+    )
+    with pytest.raises(ValueError, match="checkpoint=4, config=2"):
+        require_sft2_wm_history(
+            predictor,
+            history_size=2,
+            source=Path("wm"),
         )

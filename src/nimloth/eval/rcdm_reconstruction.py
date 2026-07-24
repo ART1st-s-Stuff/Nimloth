@@ -13,12 +13,13 @@ from PIL import Image
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.rcdm.checkpoint import load_state_dict
-from nimloth.rcdm.config import RCDMConfig, create_model_and_diffusion, rcdm_config_from_args
-from nimloth.rcdm.image_utils import diffusion_tensor_to_pil, image_to_diffusion_tensor, make_horizontal_strip
-from nimloth.training.common.qwen_batch import build_qwen_batch
-from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
-from nimloth.training.sft2.qwen_latent import extract_qwen_latents
+from nimloth.recon.rcdm.checkpoint import load_state_dict
+from nimloth.recon.rcdm.config import RCDMConfig, create_model_and_diffusion, rcdm_config_from_args
+from nimloth.recon.rcdm.image_utils import diffusion_tensor_to_pil, image_to_diffusion_tensor, make_horizontal_strip
+from nimloth.backbone.qwen25vl.batch import build_qwen_batch
+from nimloth.rollout.transitions import collate_transition_training_items
+from nimloth.rollout.transitions import TransitionJsonlDataset
+from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 
@@ -101,13 +102,13 @@ def sample_rcdm_reconstruction(args: argparse.Namespace) -> int:
     model.eval()
 
     sample_fn = diffusion.ddim_sample_loop if args.use_ddim else diffusion.p_sample_loop
-    ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_records, success_only=args.success_only)
+    ds = TransitionJsonlDataset(args.val_jsonl, max_records=args.max_records, success_only=args.success_only)
     loader = torch.utils.data.DataLoader(
         ds,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=0,
-        collate_fn=collate_transition_batch,
+        collate_fn=collate_transition_training_items,
     )
 
     rows: list[dict[str, Any]] = []

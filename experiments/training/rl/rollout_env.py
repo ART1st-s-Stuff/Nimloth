@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Collect RL-compatible navigation trajectories with the Nimloth policy.
+"""使用 Nimloth policy 采集可供 RL 使用的 navigation trajectory。
 
-This is the rollout producer for distributed JSONL training.  It reuses
-``EnvRolloutCollector`` so online and two-stage rollout use the same Nimloth
-special-token action policy and emit the same trajectory schema.
+这是分布式 JSONL 训练使用的 rollout producer。在线采集与两阶段采集共享同一
+套 Agent runner、动作 policy 和 trajectory schema。
 """
 
 from __future__ import annotations
@@ -42,20 +41,44 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--top-p", type=float, default=0.95)
     ap.add_argument("--attn-implementation", default="sdpa")
     ap.add_argument("--max-pixels", type=int, default=3136)
+    ap.add_argument("--backend", choices=("hf", "vllm"), default="hf")
+    ap.add_argument("--tensor-parallel-size", type=int, default=1)
+    ap.add_argument("--max-model-len", type=int, default=32768)
+    ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    ap.add_argument(
+        "--vllm-distributed-executor-backend",
+        choices=("mp", "ray"),
+        default=None,
+    )
+    ap.add_argument(
+        "--fresh-manifest",
+        type=Path,
+        default=None,
+        help="记录当前 policy artifact 指纹，供随后唯一一次 PPO update 消费",
+    )
     return ap.parse_args(argv)
 
 
-def load_qwen(model_path: Path, attn_implementation: str, max_pixels: int):
-    """Load the rollout policy and its processor on the current CUDA device."""
+def load_qwen(
+    model_path: Path,
+    attn_implementation: str,
+    max_pixels: int,
+    *,
+    latent_token_count: int,
+):
+    """在当前 CUDA device 上加载 rollout policy 及 processor。"""
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
+    from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
     from nimloth.latent import add_special_tokens
-    from nimloth.training.rl.rollout import validate_rl_policy_protocol
 
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = max_pixels
-    n_added = add_special_tokens(processor.tokenizer)
+    n_added = add_special_tokens(
+        processor.tokenizer,
+        latent_token_count=latent_token_count,
+    )
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_path,
@@ -65,13 +88,18 @@ def load_qwen(model_path: Path, attn_implementation: str, max_pixels: int):
     )
     if n_added:
         model.resize_token_embeddings(len(processor.tokenizer))
-    validate_rl_policy_protocol(model.config)
+    loaded_count = validate_agent_policy_protocol(model.config)
+    if loaded_count != latent_token_count:
+        raise ValueError(
+            "checkpoint latent token count changed while loading: "
+            f"config={latent_token_count}, model={loaded_count}"
+        )
     model.eval().cuda()
     return model, processor
 
 
 def validate_split(eval_set: str, split: str) -> None:
-    """Prevent evaluation assets from being mislabeled as training data."""
+    """防止 evaluation 数据集被错误标记为训练数据。"""
     if split == "train" and not eval_set.endswith("_train"):
         raise ValueError(f"refusing to label eval dataset {eval_set!r} as training data")
     if split != "train" and eval_set.endswith("_train"):
@@ -79,26 +107,18 @@ def validate_split(eval_set: str, split: str) -> None:
 
 
 def validate_trajectories(records) -> None:
-    """Reject incomplete records before they can enter FSDP training."""
+    """在 trajectory 进入 FSDP 训练前拒绝不完整记录。"""
+    from nimloth.rollout import validate_rollout_trajectory
+
     if not records:
         raise RuntimeError("rollout produced no complete trajectories")
     for record in records:
         if record.split == "train" and not record.image_paths:
             raise RuntimeError(f"training trajectory {record.record_id} has no images")
-        if len(record.image_paths) != record.num_steps + 1:
-            raise RuntimeError(
-                f"trajectory {record.record_id}: images={len(record.image_paths)} "
-                f"but actions={record.num_steps}"
-            )
-        if len(record.action_log_probs) != record.num_steps:
-            raise RuntimeError(
-                f"trajectory {record.record_id}: action_log_probs="
-                f"{len(record.action_log_probs)} but actions={record.num_steps}"
-            )
-        if any(len(log_probs) != 8 for log_probs in record.action_log_probs):
-            raise RuntimeError(f"trajectory {record.record_id} has non-8-way action logits")
-        if not record.nav_instruction:
-            raise RuntimeError(f"trajectory {record.record_id} has no navigation instruction")
+        try:
+            validate_rollout_trajectory(record)
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -112,21 +132,66 @@ def main(argv: list[str] | None = None) -> int:
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
 
-    from nimloth.training.rl.rollout import EnvRolloutCollector
+    from nimloth.backbone.qwen25vl.policy import QwenAgentPolicy
+    from nimloth.backbone.qwen25vl.loading import load_qwen_processor
+    from nimloth.backbone.qwen25vl.vllm_policy import QwenVLLMAgentPolicy
+    from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
+    from nimloth.rollout import FreshRolloutManifest
 
-    model, processor = load_qwen(
-        args.model, args.attn_implementation, args.max_pixels
-    )
-    collector = EnvRolloutCollector(
-        qwen_model=model,
-        processor=processor,
+    if args.backend == "vllm":
+        from transformers import AutoConfig
+        from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
+
+        latent_token_count = validate_agent_policy_protocol(
+            AutoConfig.from_pretrained(args.model, trust_remote_code=True)
+        )
+        processor = load_qwen_processor(
+            args.model,
+            max_pixels=args.max_pixels,
+            latent_token_count=latent_token_count,
+        ).processor
+        policy = QwenVLLMAgentPolicy.from_model(
+            str(args.model),
+            processor=processor,
+            tensor_parallel_size=args.tensor_parallel_size,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            max_model_len=args.max_model_len,
+            max_images=args.max_steps + 1,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            latent_token_count=latent_token_count,
+            distributed_executor_backend=args.vllm_distributed_executor_backend,
+        )
+    else:
+        from transformers import AutoConfig
+        from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
+
+        latent_token_count = validate_agent_policy_protocol(
+            AutoConfig.from_pretrained(args.model, trust_remote_code=True)
+        )
+        model, processor = load_qwen(
+            args.model,
+            args.attn_implementation,
+            args.max_pixels,
+            latent_token_count=latent_token_count,
+        )
+        policy = QwenAgentPolicy(
+            model=model,
+            processor=processor,
+            device=torch.device("cuda"),
+            temperature=args.temperature,
+            top_p=args.top_p,
+            latent_token_count=latent_token_count,
+        )
+    collector = VAGENNavigationRolloutCollector(
+        policy=policy,
         env_url=args.env_url,
-        device=torch.device("cuda"),
         seed_offset=args.seed_offset,
         temperature=args.temperature,
         top_p=args.top_p,
         eval_sets=(args.eval_set,),
         split=args.split,
+        latent_token_count=latent_token_count,
     )
     trajectories = collector.collect(
         num_episodes=args.num_episodes,
@@ -134,11 +199,19 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=args.output_dir,
     )
     validate_trajectories(trajectories)
+    manifest_path = args.fresh_manifest
+    if manifest_path is not None:
+        FreshRolloutManifest.create(
+            policy_path=args.model,
+            trajectory_path=args.output_dir / "trajectories.jsonl",
+            num_trajectories=len(trajectories),
+        ).write(manifest_path)
     print(json.dumps({
         "status": "ALL_OK",
         "num_trajectories": len(trajectories),
         "num_transitions": sum(t.num_steps for t in trajectories),
         "jsonl": str(args.output_dir / "trajectories.jsonl"),
+        "fresh_manifest": str(manifest_path) if manifest_path else None,
     }), flush=True)
     return 0
 

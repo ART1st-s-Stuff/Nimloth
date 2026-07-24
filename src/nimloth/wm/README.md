@@ -1,35 +1,23 @@
-# World Model (`nimloth.wm`)
+# World Model
 
-Nimloth 世界模型层：transition 数据、LeWM predictor 封装、state/value 头，以及与 Qwen latent 的桥接。
+`nimloth.wm` 只定义可训练世界模型及 latent action sequence 模拟能力。
+在线搜索策略属于 `nimloth.agent.planning`。
 
-LeWM 核心算子来自 `external/le-wm`，经 `wm/_vendor_lewm.py` 以最小子集 vendoring；Nimloth 不在运行时 import `external/le-wm` 脚本。
-
-**当前状态**：Nimloth 尚不是完整的 pixel encoder JEPA，但 predictor / loss 复用 LeWM core（ARPredictor / Embedder / MLP / SIGReg）并采用 LeWM-style projector / pred_proj。
-
-## 模块
-
-| 文件 | 内容 |
+| 文件 | 职责 |
 |------|------|
-| `dataset.py` | Nimloth jsonl → `TransitionSample`；折扣 action value target |
-| `collate.py` | transition batch → Qwen messages + metadata |
-| `_vendor_lewm.py` | LeWM `ARPredictor` / `Embedder` / `MLP` / `SIGReg`（上游子集） |
-| `lewm.py` | `LeWMConfig`、`action_one_hot`、`freeze_module` |
-| `predictor.py` | `LatentWMPredictor`（Qwen-latent 动力学，无 pixel encoder） |
-| `state_proj.py` | `StateProjector`：LeWM-style MLP (BatchNorm1d) Qwen hidden → WM emb |
-| `value_head.py` | `ValueHead`：state emb → 每 action 的 value |
-| `reconstruction.py` | `WMImageDecoder`：post-hoc reconstruction diagnostic decoder（不参与 SFT2/RL loss） |
+| `model.py` | `WorldModel`：组合 StateProjector、WMPredictor、ValueHead |
+| `state_proj.py` | backbone hidden → WM state |
+| `predictor.py` | latent 下一状态预测与自回归 sequence 模拟 |
+| `grid.py` | k16 shared-slot state、EMA target、H-step temporal-spatial predictor 与 DINO decoder |
+| `sigreg.py` | SFT2/RL 共用的 ``(B,T,D)`` sequence SIGReg |
+| `value_head.py` | 每个离散动作的 value |
+| `lewm.py`、`_vendor_lewm.py` | LeWM 配置和最小核心算子 |
+| `reconstruction.py` | post-hoc reconstruction 诊断模型 |
 
-### LeWM 结构对齐
+`WorldModel.forward()` 只做神经网络计算。各训练阶段保留自己的 stop-gradient、
+ranking 和 loss 权重策略；SFT2 与 RL 都让 `SequenceSIGReg` 消费真实的
+`H+1` 状态序列。RL 的未来规划长度由 Agent planning horizon 单独控制。
 
-- **ARPredictor**：`input_dim=emb_dim`, `hidden_dim=predictor_hidden_dim`, `output_dim=predictor_hidden_dim`（LeWM 风格：不直接输出 emb_dim）。
-- **pred_proj**：LeWM `MLP(predictor_hidden_dim → predictor_hidden_dim → emb_dim)`，使用 `BatchNorm1d` 归一化。
-- **StateProjector**：LeWM `MLP(qwen_hidden_dim → projector_hidden_dim → emb_dim)`，默认 `projector_hidden_dim=2048`，使用 `BatchNorm1d`。
-- **SIGReg**：Sketch Isotropic Gaussian Regularizer（LeWM §3.3），对 projected embeddings 施加正则化，默认 `lambda_sigreg=0.1`。
-- **MSE target** 使用 detached target embedding（stop-gradient），SIGReg 对 state_proj 的当前和下一状态投影**均有梯度**。
-
-## 与 training 的边界
-
-- **本包**：模型定义、transition 数据与 collate。
-- **`nimloth.training.sft2`**：训练循环（`trainer.py`）、loss 组装、checkpoint、验证。
-
-SFT2 实验入口：`experiments/training/sft2/train.py` → `nimloth.training.sft2.trainer`。
+`GridWorldModel` 保留同一个公共 state/predict/value 接口。它只拥有 trainable
+grid 模块及 EMA target encoder；DINO teacher identity、target cache 和 loss
+仍分别属于 backbone cache 与 SFT2 objective。

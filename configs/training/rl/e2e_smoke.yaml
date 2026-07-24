@@ -1,13 +1,11 @@
 # One-step end-to-end RL pipeline smoke.
 # Rollout is produced separately from a verified *_train navigation dataset.
 
-qwen:
-  model: Qwen/Qwen2.5-VL-3B-Instruct
-  attn_implementation: sdpa
-  max_pixels: 3136
+agent:
+  prompt_template: nimloth-latent-action
+  thought: What should I do next?
 
 freeze:
-  qwen: false
   state_proj: true
 
 actor:
@@ -19,7 +17,6 @@ predictor:
   lr: 0.0001
   emb_dim: 128
   history_size: 1
-  rollout_steps: 1
 
 value_head:
   lr: 0.0001
@@ -32,6 +29,8 @@ rl:
   max_steps_per_episode: 2
   gamma: 0.99
   batch_size: 2
+
+rollout:
   temperature: 0.7
   top_p: 0.95
 

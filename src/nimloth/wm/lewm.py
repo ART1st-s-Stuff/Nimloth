@@ -8,8 +8,11 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from nimloth.latent import LatentActionTokens
 from nimloth.wm._vendor_lewm import ARPredictor, Embedder, MLP, SIGReg
-from nimloth.wm.dataset import NUM_NAVIGATION_ACTIONS
+
+
+DEFAULT_ACTION_COUNT = len(LatentActionTokens().action_tokens)
 
 __all__ = [
     "ARPredictor",
@@ -49,8 +52,18 @@ class SafeBatchNorm1d(nn.BatchNorm1d):
             # does not corrupt the autograd graph when this module is called
             # multiple times before backward (e.g. state_emb + target_emb in
             # compute_wm_latent_loss).
-            scratch_mean = input.new_empty(self.running_mean.shape)
-            scratch_var = input.new_empty(self.running_var.shape)
+            # BatchNorm updates the supplied running statistics in place.
+            # Scratch buffers must start from the real values; uninitialized
+            # buffers can silently create negative running variances that only
+            # surface as NaNs during validation.
+            scratch_mean = self.running_mean.detach().clone().to(
+                device=input.device,
+                dtype=input.dtype,
+            )
+            scratch_var = self.running_var.detach().clone().to(
+                device=input.device,
+                dtype=input.dtype,
+            )
             out = F.batch_norm(
                 input, scratch_mean, scratch_var,
                 self.weight, self.bias, training=True,
@@ -79,7 +92,7 @@ class LeWMConfig:
     """
 
     emb_dim: int = 1024
-    action_dim: int = NUM_NAVIGATION_ACTIONS
+    action_dim: int = DEFAULT_ACTION_COUNT
     predictor_depth: int = 6
     predictor_heads: int = 16
     predictor_mlp_dim: int = 4096
@@ -92,7 +105,10 @@ class LeWMConfig:
     sigreg_knots: int = 17
 
 
-def action_one_hot(indices: torch.Tensor, num_actions: int = NUM_NAVIGATION_ACTIONS) -> torch.Tensor:
+def action_one_hot(
+    indices: torch.Tensor,
+    num_actions: int = DEFAULT_ACTION_COUNT,
+) -> torch.Tensor:
     """indices: (B,) int64 -> (B, 1, num_actions) float."""
 
     one_hot = F.one_hot(indices.long(), num_classes=num_actions).float()

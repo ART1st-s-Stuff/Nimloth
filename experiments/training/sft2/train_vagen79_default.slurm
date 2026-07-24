@@ -61,8 +61,7 @@ ensure_sft1_merged() {
   echo "Output: ${TRAIN_OUT}"
   echo "Latent token count: ${LATENT_TOKEN_COUNT}"
   echo "Latent query mode override: ${LATENT_QUERY_MODE:-<config/default>}"
-  echo "Packed forward: ${PACKED_FORWARD:-0}"
-  echo "Trajectory-aware batching: ${TRAJECTORY_AWARE_BATCHING:-0}"
+  echo "Batch mode override: ${BATCH_MODE:-<config/default>}"
   echo "W&B project: ${WANDB_PROJECT:-nimloth-sft2}"
   echo "W&B run name: ${WANDB_RUN_NAME:-<missing>}"
 } | tee -a "${LOG}"
@@ -129,16 +128,9 @@ TIMING_ARGS=()
 if [ "${STEP_TIMING:-0}" = "1" ]; then
   TIMING_ARGS=(--step-timing --step-timing-interval "${STEP_TIMING_INTERVAL:-50}")
 fi
-PACKED_ARGS=()
-if [ "${PACKED_FORWARD:-0}" = "1" ]; then
-  PACKED_ARGS=(--packed-forward)
-  if [ "${ALLOW_APPROX_TRAJECTORY_ONCE:-0}" = "1" ]; then
-    PACKED_ARGS+=(--allow-approx-trajectory-once)
-  fi
-fi
-TRAJECTORY_BATCH_ARGS=()
-if [ "${TRAJECTORY_AWARE_BATCHING:-0}" = "1" ]; then
-  TRAJECTORY_BATCH_ARGS=(--trajectory-aware-batching)
+BATCH_ARGS=()
+if [ -n "${BATCH_MODE:-}" ]; then
+  BATCH_ARGS=(--batch-mode "${BATCH_MODE}")
 fi
 LATENT_ARGS=(--latent-token-count "${LATENT_TOKEN_COUNT}")
 if [ -n "${LATENT_QUERY_MODE}" ]; then
@@ -157,7 +149,6 @@ if [ -n "${PREPROCESS_CACHE_DIR:-}" ] && [ "${REQUIRE_PREBUILT_CACHE:-0}" != "1"
     "${RESUME_ARGS[@]}" \
     "${WM_PRED_ARGS[@]}" \
     "${PREPROCESS_ARGS[@]}" \
-    "${PACKED_ARGS[@]}" \
     "${LATENT_ARGS[@]}" \
     --model "${MODEL_PATH}" \
     --train-jsonl "${RECORDS_ROOT}/train_all.jsonl" \
@@ -186,8 +177,7 @@ PYTHONUNBUFFERED=1 "${PYTHON_ENV}/bin/python3" -m torch.distributed.run \
   "${WM_PRED_ARGS[@]}" \
   "${PREPROCESS_ARGS[@]}" \
   "${TIMING_ARGS[@]}" \
-  "${PACKED_ARGS[@]}" \
-  "${TRAJECTORY_BATCH_ARGS[@]}" \
+  "${BATCH_ARGS[@]}" \
   "${LATENT_ARGS[@]}" \
   "${WANDB_ARGS[@]}" \
   ${EXTRA_TRAIN_ARGS:-} \

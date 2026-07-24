@@ -21,25 +21,26 @@ from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoConfig, AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.rcdm.checkpoint import (
+from nimloth.recon.rcdm.checkpoint import (
     init_ema_state,
     parse_ema_rates,
     save_training_checkpoint,
     unwrap_model,
     update_ema_state,
 )
-from nimloth.rcdm.config import RCDMConfig, create_model_and_diffusion, rcdm_config_from_args
-from nimloth.rcdm.image_utils import image_to_diffusion_tensor
-from nimloth.rcdm.state_cache import (
+from nimloth.recon.rcdm.config import RCDMConfig, create_model_and_diffusion, rcdm_config_from_args
+from nimloth.recon.rcdm.image_utils import image_to_diffusion_tensor
+from nimloth.recon.rcdm.state_cache import (
     RCDMStateCacheDataset,
     build_rcdm_state_cache,
     collate_rcdm_state_cache_batch,
     state_cache_ready,
 )
-from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
-from nimloth.training.common.qwen_batch import build_qwen_batch
-from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
-from nimloth.training.sft2.qwen_latent import extract_qwen_latents
+from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
+from nimloth.backbone.qwen25vl.batch import build_qwen_batch
+from nimloth.rollout.transitions import collate_transition_training_items
+from nimloth.rollout.transitions import TransitionJsonlDataset
+from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 
@@ -423,10 +424,10 @@ def train_rcdm_sft2(args: argparse.Namespace) -> int:
         else:
             processor, token_id_map, qwen_model, state_proj, wm_predictor = _load_frozen_sft2_modules(args, device)
             cond_dim = wm_predictor.emb_dim
-            train_ds = TransitionQwenDataset(args.train_jsonl, max_records=args.max_train_records, success_only=args.success_only)
-            val_ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_val_records)
-            train_collate = collate_transition_batch
-            val_collate = collate_transition_batch
+            train_ds = TransitionJsonlDataset(args.train_jsonl, max_records=args.max_train_records, success_only=args.success_only)
+            val_ds = TransitionJsonlDataset(args.val_jsonl, max_records=args.max_val_records)
+            train_collate = collate_transition_training_items
+            val_collate = collate_transition_training_items
 
         if args.cache_only:
             if is_main():

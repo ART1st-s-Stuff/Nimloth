@@ -15,15 +15,15 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw
 
-from nimloth.cfm import (
+from nimloth.recon.cfm import (
     CFMConfig,
     TokenConditionedFlowUNet,
     conditional_flow_matching_loss,
     condition_sensitivity,
     sample_euler,
 )
-from nimloth.rcdm.image_utils import diffusion_tensor_to_pil
-from nimloth.rcdm.state_cache import RCDMStateCacheDataset
+from nimloth.recon.rcdm.image_utils import diffusion_tensor_to_pil
+from nimloth.recon.rcdm.state_cache import RCDMStateCacheDataset
 from nimloth.wm.predictor import LatentWMPredictor
 
 

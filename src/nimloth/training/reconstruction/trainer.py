@@ -19,10 +19,11 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.eval.reconstruction import evaluate_reconstruction, image_to_tensor
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
-from nimloth.training.common.qwen_batch import build_qwen_batch
-from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
-from nimloth.training.sft2.qwen_latent import extract_qwen_latents
+from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
+from nimloth.backbone.qwen25vl.batch import build_qwen_batch
+from nimloth.rollout.transitions import collate_transition_training_items
+from nimloth.rollout.transitions import TransitionJsonlDataset
+from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.reconstruction import WMImageDecoder, WMImageDecoderConfig
 from nimloth.wm.state_proj import StateProjector
@@ -123,7 +124,7 @@ def _fixed_val_preview_items(val_ds, max_items: int) -> list[dict]:
 
     by_record: dict[str, dict] = {}
     for idx in range(len(val_ds)):
-        item = collate_transition_batch([val_ds[idx]])[0]
+        item = collate_transition_training_items([val_ds[idx]])[0]
         if not item.get("next_messages"):
             continue
         record_id = str(item.get("id", idx)).split(":", 1)[0]
@@ -212,7 +213,7 @@ def _make_train_loader(args: argparse.Namespace, train_ds, epoch: int):
         generator=generator,
         num_workers=0,
         pin_memory=True,
-        collate_fn=collate_transition_batch,
+        collate_fn=collate_transition_training_items,
     )
 
 
@@ -294,8 +295,8 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
         ).to(device)
         optimizer = torch.optim.AdamW(decoder.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-        train_ds = TransitionQwenDataset(args.train_jsonl, max_records=args.max_train_records, success_only=args.success_only)
-        val_ds = TransitionQwenDataset(args.val_jsonl, max_records=args.max_val_records)
+        train_ds = TransitionJsonlDataset(args.train_jsonl, max_records=args.max_train_records, success_only=args.success_only)
+        val_ds = TransitionJsonlDataset(args.val_jsonl, max_records=args.max_val_records)
         train_sampler = DistributedSampler(train_ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed) if world > 1 else None
         train_loader = DataLoader(
             train_ds,
@@ -304,7 +305,7 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
             shuffle=train_sampler is None,
             num_workers=0,
             pin_memory=True,
-            collate_fn=collate_transition_batch,
+            collate_fn=collate_transition_training_items,
         )
         val_loader = None
         val_preview_items: list[dict] = []
@@ -315,7 +316,7 @@ def train_reconstruction_decoder(args: argparse.Namespace) -> int:
                 shuffle=False,
                 num_workers=0,
                 pin_memory=True,
-                collate_fn=collate_transition_batch,
+                collate_fn=collate_transition_training_items,
             )
             val_preview_items = _fixed_val_preview_items(val_ds, args.wandb_image_samples)
 

@@ -4,6 +4,372 @@
 
 ---
 
+## 2026-07-24：DINO-grid SFT2 恢复 terminal transition 与旧 cache 兼容
+
+- 人类指出当前 cache 图像数不是旧版的62,606。核对确认原始3217/355条记录与
+  59,389/6,054个transition从未减少；refactor后的legacy prompt expansion未给每条
+  trajectory最终observation构造next prompt，sampler因此静默丢掉3217/355个最终
+  current step。
+- 修复后最终真实observation使用target-only assistant query prefix，不额外产生CE；
+  每个action仍只拥有一次CE/WM/DINO/value，H=4旧历史仍只从detached online cache
+  读取。新compact cache fingerprint升级为`wm_expand_v2_terminal_next`，不完整旧v2
+  cache不能静默复用。
+- 历史k16 `dedup_sharded_v1` cache新增只读兼容：复用原有current编码、BF16 pixels和
+  `grid_thw`；仅对旧cache未保存的terminal next prompt执行轻量tokenization，不重跑
+  image processor、不改写cache。DINO sidecar继续按next image path读取冻结teacher的
+  4x4x1024目标。
+- 真实全量gate通过：train记录/transition/cache image/sampler current=
+  `3217/59389/62606/59389`，val=`355/6054/6409/6054`；首、中、末terminal抽样的
+  current/next实际模型输入与fresh processor逐tensor一致，DINO fingerprint=
+  `b50d261e2b533f3e`。远程回归`84 passed, 1 skipped`。
+- ID33 epoch10/step9280严格warm start通过：旧online/EMA encoder、spatial WM、DINO
+  decoder和ValueHead全部映射，唯一新增参数为全零`temporal_position`，所有参数
+  finite。这是fresh optimizer warm start，不是resume。DINO分支尚未启动GPU/Slurm；
+  下一门槛是world8 GPU smoke。
+- ID44 attempt1在既有hold `485251`的step `485251.3`启动，但launcher漏传argparse
+  必填`--model`，八rank在模型加载前以code2退出。没有W&B run、模型/cache加载、
+  optimizer step或checkpoint；step已结束且8卡仍由hold保留。输出README已记录失败。
+  launcher现改为显式校验/传入k16 SFT1 `MODEL_PATH`，并让日志与CLI共同使用真实B/GA；
+  因attempt1没有外部run或训练产物，修复后继续使用ID44 retry。
+
+
+## 2026-07-23：启动2-epoch正式SFT2训练
+
+- 人类要求先训练2 epoch。ID43
+  `43_k1nodino_h4_globalsigreg_b1_ga8_ws8_ep2`已在commit
+  `228e44dbd680aa14166ca378529734f2c9398664`启动；hold job`485251`运行于
+  preempt/dgx-42，W&B run ID`cfkr5wej`。
+- 使用已验证的3217 train/355 disjoint heldout记录、ID34只读compact cache和k1
+  inject SFT1 epoch-5 merged初始化；Qwen language body冻结，训练full vision、query
+  adapter、StateProjector、WM predictor与ValueHead，vision EMA开启，无DINO。
+- 配置为per-rank B1/GA8/world8/global SIGReg B8/H4/2 epochs。启动后前4个optimizer
+  step全部finite，实际B始终1、global SIGReg B始终8；无OOM、traceback、NCCL/DDP
+  错误或NaN/Inf。20分钟latest checkpoint、epoch/best/final保存均启用；若preempt，
+  同一输出目录自动resume。实测约6.7秒/step，含验证/checkpoint ETA约3.5--3.8小时。
+- epoch1训练部分已完成878/1756 optimizer steps，当前执行epoch1完整validation；8卡
+  GPU利用率54--100%，不是停滞。累计loss全部finite，最大step peak allocated/reserved
+  约53.26/55.13 GiB，无运行错误。tail step因4个global padding样本被valid mask排除，
+  加权日志global SIGReg B为7.33，符合设计。已有15GB `latest`可恢复checkpoint；按
+  实际累计墙钟估计剩余约1小时50分。
+## 2026-07-24：8卡 vLLM fresh-policy PPO handoff 实现，CPU 测试通过
+
+- 人类要求参考 VAGEN 引入 vLLM，保持 Nimloth 现有模块化设计。实现提交
+  `89d7662`把 behavior rollout 限定在 `backbone/qwen25vl/vllm_policy.py`，把
+  policy artifact 内容指纹、fresh manifest 和一次性消费契约限定在
+  `rollout/fresh.py`；RL trainer 只区分 static JSONL 与已验证 fresh JSONL。
+- 阶段式生命周期为：当前完整 HF policy → 8卡 vLLM TP rollout → 指纹 manifest
+  → vLLM 退出 → 同8卡 FSDP WM/value/SIGReg/PPO 单次 update。下一步更新必须用新
+  checkpoint 重新 rollout，普通 static JSONL 仍禁止驱动 PPO。
+- 新增 fake-engine/fingerprint/manifest/collector 测试和 8卡 smoke 启动器。本地
+  `compileall`、两个 shell `bash -n` 和 `git diff --check` 通过。测试桩补全提交
+  `f8faf3b` 后，服务器共享 PyTorch 环境的定向测试为 `39 passed, 1 warning`；warning
+  是测试刻意触发的 B=1 unbiased std。真实 GPU vLLM probe 和8卡 smoke 尚未运行。
+
+## 2026-07-24：ID67 异构多节点 Ray gate 通过、pipeline 启动时终止
+
+- config 新增 `distributed.nodes/world_size/rollout_tensor_parallel_size`，通用 Slurm
+  控制器按 allocation 的真实 GRES 启动每节点 Ray，并以单 GPU task 启动任意总数
+  FSDP ranks。远端定向测试 `42 passed, 1 warning`。
+- job `485342` 获得 dgx-04×1、dgx-06×3、dgx-39×4 GPU；Ray 精确达到8 GPU gate。
+- 诊断 health probe 时 controller 被终止，恰逢 pipeline 已创建 ID67 README 并开始
+  environment startup。无 trajectory、W&B、optimizer step 或 checkpoint；ID67 已标为
+  failed/non-resumable，后续只能使用新 ID/output。
+
+## 2026-07-24：ID68 vLLM 因 driver 网络接口不一致无法 placement
+
+- job `485342` 的 Ray runtime 在 job 专属 temp-dir、10GB object store 下稳定注册
+  1+3+4 GPU；environment health 通过，vLLM 0.11 EngineCore 连接 Ray。
+- vLLM 自动选择 driver IP `10.22.4.78`，而 Ray 节点使用 `10.23.*`，导致首个
+  `node:10.22.4.78 + GPU:1` TP bundle 永远 infeasible。无 GPU model worker、
+  trajectory、W&B、optimizer step 或 checkpoint；ID68 failed/non-resumable。
+- 通用控制器现把 `VLLM_HOST_IP` 显式绑定到 Ray head IP；retry 必须用新 ID/output。
+
+## 2026-07-24：ID69 vLLM workers 未继承各节点 10.23 IP
+
+- driver 绑定10.23后 TP8 placement 成功，Ray 在1+3+4 GPU上创建8个SPMD workers。
+- vLLM 随后检测到3个 Ray node IDs却有4个IP：driver使用10.23，worker actors
+  仍使用各节点10.22默认接口，因此在权重加载前拒绝启动。无 trajectory、W&B、
+  optimizer step或checkpoint；ID69 failed/non-resumable。
+- 控制器现于每个raylet启动时注入该节点唯一10.23 `VLLM_HOST_IP`，使子actors继承
+  一致接口；后续使用新 ID/output。
+
+## 2026-07-23：ID43 epoch1 RL H=4 smoke 预检与 ID3 启动前失败
+
+- ID43 `epoch_001` 是完整 k=1/inject HF checkpoint，WM predictor H=4，
+  StateProjector/ValueHead 产物齐全。人类指定 dgx-40 进行 RL feasibility smoke。
+- 实验提交 `2b6211c` 新增 H=4/PPO 配置并参数化现有端到端启动器；
+  schema 解析、`bash -n` 和 diff-check 通过。hold job `485290` 在
+  preempt/dgx-40 占用2 GPU。
+- ID3 在任何环境、rollout、W&B 或训练开始前 fail-fast：外层控制日志预先
+  使 `RUN_OUT` 非空。无 checkpoint，不可 resume；失败 README/日志已保留。同一
+  allocation 将以全新 ID66 目录重试，控制日志改放到 `RUN_OUT` 外。
+  服务器 RL 实验组 `progress.md` 已有 ID65，因此本地旧记录中 ID1/2 为最新编号的
+  结论已失效；重试必须从 ID66 开始。
+- ID66 在 dgx-40 完成4条 `base_train`、20 transitions、每条5步的真实 rollout，
+  reward为`[-0.4,0.0,-0.4,-0.2]`，success0/4不作质量结论。两卡训练在模型加载和
+  W&B初始化前按当前契约 fail-fast：`actor.enabled=true` 禁止与 static JSONL
+  collector组合，因为PPO必须使用当前policy的fresh trajectory。无optimizer step、
+  W&B run或checkpoint，不可resume。hold `485290`已取消并释放dgx-40。下一步需人类
+  选择：两卡actor-disabled的H=4 WM/value离线smoke，或单卡direct-online PPO smoke。
+
+## 2026-07-23：K1 SFT2 改为 per-rank B1 与 global-batch SIGReg
+
+- 人类批准 per-rank B1，并要求 SIGReg 使用 DDP 全局 batch。K1 control 配置改为
+  B1/GA8；world8 时 optimizer effective batch 仍为64，每个microbatch的SIGReg统计
+  batch最多为8，不跨gradient accumulation保留state图。
+- 提交 `5a3eea4` 已推送。每个rank在主loss backward后只编码本地online-next B1；
+  current state用无梯度all-gather，next state用自定义可微all-gather。不同rank的物理
+  B先补齐，global valid mask排除sampler padding/tail补齐行，只有global B<2才跳过。
+- 所有rank按相同microstep seed采样同一SIGReg随机投影；该上下文结束后恢复各rank
+  原RNG，不改变后续训练随机流。checkpoint invariant记录batch_size与
+  `sigreg_batch_scope=global_valid_states_v1`，CSV/W&B记录global SIGReg B。
+- superpod PyTorch 2.8扩展回归 `113 passed, 1 skipped`；两进程Gloo+DDP解析测试覆盖不同本地B、
+  整rank padding、全局valid筛选、随机投影一致性和梯度缩放；最终共享参数梯度与单次
+  global batch参考完全一致。ID42在preempt/dgx-40的真实CUDA/NCCL门槛已通过
+  (`1 passed`)；首轮仅因测试内SequenceSIGReg未放到CUDA而失败，测试修正提交
+  `948079c`，CPU/Gloo复测也为`1 passed`。
+- ID42 8卡B1/GA8长prefix smoke通过：11个optimizer step全部finite，per-rank B始终
+  为1、每个microbatch的global SIGReg B始终为8；total/CE/WM/SIGReg/ValueHead均有
+  有限日志。最大step peak allocated/reserved显存为53.216/54.932 GiB，无OOM、
+  traceback、NCCL/DDP错误或NaN/Inf。超过4-step完整trajectory门槛后主动取消hold与
+  train step；无checkpoint、不可resume、不能直接初始化RL。该结果只批准B1/global
+  SIGReg正式重训配置的运行可行性，不是训练质量结论。
+
+## 2026-07-23：SFT2 SIGReg 改为仅新状态侧反传
+
+- 人类确认 SIGReg 数值上仍使用连续的 `(s_t,s_{t+1})`，但 `s_t` 只作为 detached
+  条件；SIGReg 梯度只进入在线 `s_{t+1}`。CE/WM/value 对每个 current transition
+  仍只计算和反传一次，不把梯度传回更老 history。
+- 提交 `6ccca36` 将 `algorithm.py` 拆成显式 `training_primary_step` 与
+  `training_sigreg_step`。loop 先 backward CE/WM/value 并删除主阶段 Tensor 引用，
+  再构建 online-next Qwen 图并 backward SIGReg，避免 ID40 同时保留两份 Qwen
+  activation。SIGReg API 会拒绝未 detach 的 current state。
+- `B<2` 的 rank 不伪造 SIGReg 统计量，但使用依赖 online-next state 的零 loss 完成
+  第二次 backward，保持与其他有效 rank 的 DDP 调用顺序一致；padding 同样为零 loss。
+- 本地 compileall/diff-check 通过；superpod PyTorch 2.8 的 SFT2、Agent、Qwen、WM
+  和 config 扩展回归 `112 passed`。
+- ID41 long-prefix smoke（W&B `3l0hlbou`，job `485173`，preempt/dgx-39，8×H800，
+  B2/GA4）证明 staged backward 真实生效且 DDP 正常：step1/2 峰值从 ID40 的
+  47.626/76.952 GiB 降到 31.402/49.752 GiB，并首次 finite 完成 step3（peak
+  64.694 GiB）。但第四个 accumulation 周期仍在主阶段 current Qwen 的标准
+  `ForCausalLMLoss -> cross_entropy` 全 rank OOM；当时已分配约73.53--74.55 GiB，
+  full CE 还需4.07--4.19 GiB。此时尚未进入 SIGReg。
+- 结论：双图叠加 OOM 已修复，但更长单个 B2 current multimodal prefix 本身仍超出
+  80GB。ID41失败并取消，W&B state=`failed`，无 checkpoint；dgx-39 已恢复 idle、
+  8卡全释放。B2/GA4仍不能正式重训或开启RL。裸B1/GA8也不可直接使用，因为当前
+  per-rank `B<2` 会跳过SIGReg；若走B1必须另行设计可微跨rank SIGReg。另一选择是
+  保持B2并批准数学等价的低显存CE实现；不能恢复row/offload应急路径。
+
+## 2026-07-23：删除 OOM 应急路径并改用在线 detached history cache
+
+- 人类选择在线 cache 方案：每条 trajectory lane 固定给一个 rank 并严格按时间
+  推进；每个 state 只在它作为 current step 时执行一次在线 Qwen，随后 detached
+  到 CPU cache，供未来最长 H=4 的 WM/value 历史读取。旧 state 不重算，梯度也不
+  回到更老时间点；cache 每个 epoch/validation phase 隔离。
+- 生产 CLI/config/source 已删除 row-by-row Qwen、chunked forward、saved-tensor CPU
+  activation offload、image/row budget和旧随机/trajectory batch mode。当前唯一生产
+  mode 为 `trajectory_online_cache`；current Qwen 输入是 B 行，不再是 B*T 行。
+- 分布式 sampler 按完整 lane group 分 rank，真实 transition 不跨 rank、不重复；为
+  对齐 DDP microbatch 数只追加整批 `loss_weight=0` 的 T=1 padding。cache miss、重复
+  current 写入均 fail-fast。
+- epoch 内 checkpoint 新增每 rank 的 `history_cache_rank_NNN.pt`；partial resume 同时
+  恢复 cache 和 microbatch cursor，避免重算已消费历史。新增/更新测试覆盖先写后读、
+  无历史 Qwen、cache checkpoint、padding、跨 rank ownership 和旧选项拒绝。
+- 提交 `0f1412a`（实现）、`ad6846e`（测试契约）和 `0d030bd`（cache 观测指标）均
+  已由 agent 推送。superpod PyTorch 2.8 扩展回归 `110 passed`，最终指标补丁定向
+  回归 `16 passed`。
+- ID40 smoke 使用 preempt job `485157`、dgx-40、8 GPU、B=2/GA=4。全局真实 B
+  分布为 B2=28,072、B1=28，另有4个零 loss padding；旧的全 B1 退化未复现。
+  step1/2 finite 且总计约24.6/16.3秒，cache 指标确认 T1..4 先写后读；峰值显存由
+  47.626 GiB 升至76.952 GiB。第三个 accumulation 周期在更长累计 image prefix 的
+  SIGReg online-next Qwen forward 全 rank OOM（allocated 77.23--77.35 GiB）。
+- job 已取消，dgx-40 idle、8卡释放；无 checkpoint，不能 resume/开启RL。B2/GA4
+  不能用于正式训练。W&B `qf82rxkq` 因进程终止仍显示 running且只同步step1；step2
+  与完整失败证据保存在 ID40 CSV/log/README。下一项保守资源测试应是 B1/GA8，需
+  人类确认后另开 smoke；禁止恢复已删除的 row/offload 应急路径。
+
+## 2026-07-23：逐 step loss 修正后 B=2/GA=4 smoke 无 OOM
+
+- current-step-once 修复提交 `e31ee89`，变长 sampler 测试修复提交 `367e834`；
+  superpod 定向 PyTorch 回归 `38 passed`。每个 transition 的 CE、WM、ValueHead、
+  SIGReg 现在只计算一次，H=4 的旧历史只作为 detach/no-grad 上下文。
+- ID39 job `485076` 在 preempt `dgx-04` 使用 8 GPU、per-rank B=2、GA=4、H=4、
+  row1 和 CPU activation offload。sampler 实测 56,172 current steps，全部组成
+  28,086 个 B=2 microbatches，没有退化成 B=1。
+- 首个完整 optimizer step finite：total 7.222023、CE 6.902349、WM 0.267141、
+  SIGReg 1.011569、value 0.191802；无 OOM、CUDA error、NaN、Inf 或 traceback。
+  forward/backward/optimizer 为 271.456/171.523/1.476 秒；PyTorch peak
+  allocated/reserved 23.313/25.566 GiB，实时单卡不超过约 27.9 GiB。
+- 达到 smoke stop gate 后主动取消，job 总 elapsed `00:11:39`，dgx-04 已恢复
+  idle、8 卡释放。checkpoint 被显式禁用，因此 ID39 不可 resume、也不能作为 RL
+  初始化。约 445 秒的首步仍很慢；正式 10-epoch 重训前应先做更长 throughput gate，
+  不能仅凭无 OOM 直接提交长期任务。
+- W&B 原 run `go89t9yi` 已恢复同一 ID 补传落盘 step1 指标并 clean finish，最终
+  state=`finished`、`smoke_status=goal_reached_then_cancelled`，没有创建重复 run。
+
+## 2026-07-23：k=1、无 DINO、H=4 SFT2 首次重训 OOM
+
+- 新 compact cache 已由 job `484435` 完整生成：train 59,389、val 6,054，格式
+  `dedup_sharded_v2`，k=1/inject/BF16；可供 retry 只读复用。
+- preempt 8-GPU job `484439` 在首个 Qwen CE forward OOM，尚需额外约
+  5.0--5.5 GiB；CSV 只有表头、global step 0、无 checkpoint，不能用于 RL。
+- 建议先以 per-rank batch 1 做 finite-step smoke，通过后用 GA8 保持 effective
+  batch 64 正式重提。该 smoke 随后已执行但仍 OOM：W&B 配置核实 batch1 生效，
+  单个 H=4 window 的四个 prefix 状态和全词表 FP32 CE 已超过 80GB。仅改 GA 无效，
+  需先决定低内存、等价实现或改变输入/CE 实验语义。详见
+  `ai_tasks/ai_progress/2026-07-22_k1_nodino_sft2_retrain.md`。
+
+## 2026-07-22：SFT2 target-state 归入模型运行期
+
+- 删除容易被误解为第二套神经网络的公共 `AgentTarget`。`Agent` 现在是唯一模型
+  对象；SFT2 特有的 target Backbone stop-gradient、target 侧 StateProjector
+  梯度和 Backbone EMA 均由 `SFT2ModelRuntime` 管理。
+- `SFT2ModelRuntime.unwrapped()` 保留同一 EMA owner，但 EMA context 会根据新
+  runtime 的 Agent 重新选择实际 Backbone model，不再复用捕获旧包装模型的闭包。
+- 生产 trainer、algorithm、validation、诊断脚本和测试已切换到新契约；新增测试
+  保护 unwrapped runtime 的 EMA model ownership。实现提交 `37cbc77` 已推送。
+- 本地 `compileall` 和 staged diff-check 通过；本机环境没有 Torch。superpod
+  连续连接失败，最终明确返回 `Connection timed out during banner exchange`，
+  依服务器规则停止重试。远程 worktree 同步和 pytest 待 VPN 恢复。
+
+## 2026-07-21：SFT2/RL Algorithm 与训练运行期边界统一
+
+- `SFT2Algorithm` 与 `RLAlgorithm` 现在都是普通 Python 单批算法对象：只保存
+  目标函数超参数，不注册模型，不持有 optimizer，也不执行 backward/step/EMA。
+  两阶段分别通过显式 `SFT2ModelRuntime`、`RLModelRuntime` 提供 Agent 及阶段特有
+  的 target/policy replay 能力。
+- 新增公共 `OptimizationRuntime`，统一 backward、梯度裁剪、optimizer step、
+  梯度累积 `no_sync` 与 step 后 EMA callback。`Agent.synchronized_modules` 暴露
+  实际 DDP/FSDP 包装模块，训练代码不再认识 Qwen 的具体包装位置。
+- SFT2 loop 已移除 optimizer、EMA、学习率、W&B/CSV 和 checkpoint 触发细节；
+  这些责任分别进入 `runtime.py`、`reporting.py` 和 `checkpoint.py`。loop 只保留
+  epoch/microbatch、resume cursor、validation 边界与组件编排。
+- 原 `agent.AgentBatch` 实际只描述 rollout transition 训练数据，现已改名为
+  `rollout.TransitionBatch`，builder 协议也归入 rollout；Agent 包只保留神经网络
+  与 episode/prompt/policy 契约。
+- 提交 `7ba215b` 已推送并同步远程。远程在 `WANDB_MODE=disabled` 下完整回归：
+  SFT2 `59 passed`、RL `42 passed, 1 expected warning`、WM/公共优化 `11 passed`；
+  本地 compileall/diff-check 通过。测试缓存已删除，远程原有未跟踪文件未改动。
+
+## 2026-07-21：RL multi-step WM 根本错误修复
+
+- RL 编码结果现在保留 trajectory 边界和连续 step；训练按可配置
+  `H=history_size` 采样同一 trajectory 内的 H-step window，每个 window 包含
+  `H+1` 个状态和 H 个动作，不再把随机 transition 临时扩成长度 1。
+- `LatentWMPredictor` 新增返回全部 H 个因果位置的 sequence API；WM loss 对齐
+  `[s_1,...,s_H]`。自回归 rollout 在 episode 开头使用真实短前缀，不再重复初始
+  state 和 zero action。
+- 新增公共 `SequenceSIGReg`，RL 对完整 `(T=H+1,B,D)` 状态序列计算 SIGReg；
+  SFT2 继续通过 `OneStepSIGReg` 使用固定两状态契约。RL 配置新增严格的 SIGReg
+  权重与投影参数，外部 WM checkpoint 的 history 与配置不一致时直接报错。
+- 提交 `e55b73a` 已推送并同步远程。验证：本地 compileall/diff-check 通过；远程
+  `WANDB_MODE=disabled` 定向回归分别为 `12 passed`、`2 passed`、`10 passed`，
+  另有纯 Torch multi-step/梯度 smoke 通过。测试没有写实验目录，Pytest/Python
+  缓存已清理。
+- 后续运行期边界与 SFT2 loop 拆解已在提交 `7ba215b` 完成，见上一节。
+
+## 2026-07-21：SFT2 SIGReg 时间轴修复
+
+- 已确认旧 `build_trajectory_sigreg_inputs` 同时混淆了时间轴和 batch 轴：它把
+  变长 trajectory 当成 `T`，并对每条轨迹用 `B=1` 分别调用 SIGReg。
+- SFT2 当前是一步上下文、一步预测，因此 LeWM 训练序列固定为
+  `[s_t,s_{t+1}]`。新增 `nimloth.wm.OneStepSIGReg` 统一构造 `(T=2,B,D)`，
+  `B` 是 microbatch 中有下一状态的 transition 数；`B<2` 时明确跳过。
+- SFT2 validation 不再计算随机 SIGReg。trajectory sampler 只负责决定哪些
+  transition 共享 microbatch，不再定义 SIGReg 的 `T`。
+- 人类明确要求 RL 的 `history_size` 必须保持可配置。本轮曾错误尝试把 RL
+  限制为 1，现已完全撤回；提交 `7be6ba2` 不含任何 RL 文件。真正的多步 RL
+  WM/SIGReg 需要另行设计连续上下文输入。
+- 验证：本地 `py_compile` 与 `git diff --check` 通过。本地环境缺少 torch/pytest；
+  superpod SSH 超过 60 秒未进入 shell，依服务器规则停止重试，远程 pytest 待
+  VPN 恢复后执行。
+
+## 2026-07-21：Agent、Backbone 与训练算法边界纠正
+
+- 人类确认神经网络 `Agent` 应当是完整 `nn.Module`，episode 状态机则使用独立的
+  `AgentRuntime`。当前 `Agent` 明确组合 `Backbone` 与 `WorldModel`；后者继续使用
+  项目既有命名 `state_proj / wm_predictor / value_head`，没有迁移为 dynamics。
+- `Backbone` 是可训练模型接口，Qwen2.5-VL 的 processor、latent 提取、policy
+  replay、rollout encoding、cache batch builder 和 artifact 保存均封装在
+  `backbone/qwen25vl`。SFT2/RL 的生产训练代码不再导入具体 Qwen 实现。
+- SFT2 的 `algorithm.py` 现在完整展示 `Agent(current) → target(next) →
+  WM/value/SIGReg/CE → total loss`，并持有 WM 权重策略。原先横向拆出的
+  `components.py`、`objective.py` 和 `schedule.py` 已删除。
+- RL 保留其特有的梯度契约：WM current 更新 projector/predictor，next target
+  stop-gradient，value 输入 detach；transition 采样、WM/value/PPO、backward、
+  梯度裁剪、optimizer 和 EMA 均可在 `RLAlgorithm` 内顺序阅读。原先的
+  `batch/components/objective/update.py` 已删除。
+- VAGEN navigation collector 已归入 `environment/navigation`，只依赖通用
+  `AgentPolicy`；通用 rollout encoding 位于 `nimloth.rollout`，不再让训练包或
+  collector 认识具体神经网络 Agent。
+- 模型边界提交为 `3fb71b6`；训练层级收敛提交为 `c6ec871`。远程 collection
+  进一步发现并修复 `Agent ↔ wm ↔ rollout`（`f2dc8fd`）和
+  `Agent ↔ environment.navigation.collector`（`18123ff`）两处包级循环导入。
+  本地 `compileall`、
+  RL smoke shell 语法、
+  `git diff --check` 与训练目录的具体 Qwen import 扫描通过。本机 Python 和
+  `.venv` 均缺少 torch/pytest；远程 dev worktree 已同步到 `18123ff`，定向回归
+  `49 passed, 1 warning`，完整 `tests/wm tests/training/sft2 tests/training/rl`
+  回归 `101 passed, 1 warning`。warning 来自测试刻意验证单样本 unbiased std。
+- `d023e33` 中的 `NimlothModel` 和“loss 属于 `WorldModel`”是已失效的中间设计；
+  当前源码和本节是有效边界。
+
+## 2026-07-21：SFT2/RL 核心算法可读性重构
+
+- 在分支 `fix/sft2-review-bugs` 为 SFT2/RL 各建立单一核心入口：
+  `training/sft2/algorithm.py` 显式展示 current/next Qwen state、SIGReg、value
+  和 loss 组合；`training/rl/algorithm.py` 显式展示 dynamics、value、PPO 与
+  optimizer update。
+- 该阶段曾把公共 dynamics/value 数学迁入 `wm/objectives.py`；这一设计已由后续
+  完整模型边界纠正，当前公式属于 `WorldModel` 成员方法。SFT2 保留 projector
+  双侧梯度；RL 保留下一状态 target stop-gradient 和 value input detach。
+- Qwen cached batch 合并、下一状态 prompt 去重/EMA forward 与 PPO prompt replay
+  归入 `backbone/qwen25vl`；`util.cache` 不再反向依赖 SFT2 私有 batch helper。
+- RL iteration 生命周期进入 `training/rl/loop.py`，`trainer.py` 缩减为运行模式
+  校验和依赖装配。旧 SFT2 `engine/step/objectives/types` 及 RL
+  `actor/loss/step` 已移除，对应诊断脚本、测试和文档均已迁移。
+- 提交并推送：`3fa6199`（实现）与 `7d7711a`（任务文档路径/验证状态）。本地
+  `compileall`、RL smoke shell 语法和 `git diff --check` 通过。
+- 未完成验证：本机缺少 torch/pytest；远程 SSH 两次只到达 VPN 跳板，未进入
+  superpod。依照服务器规则停止重试，待 VPN 恢复后在远程 `.worktree/dev`
+  运行定向和相邻 pytest。
+
+## 2026-07-21：Agent prompt/runtime 成为 SFT2 与 RL 公共边界
+
+- 在本地分支 `fix/sft2-review-bugs` 将 `src/nimloth/agent/` 从无调用方的 `WMAgent` 原型改为实际使用的结构化 transcript、可注册 prompt template、`Agent` policy runtime 和 `EpisodeRunner`；Qwen2.5-VL 的模型前向与 temperature/top-p 行为分布保留在 `backbone/qwen25vl/policy.py`。
+- environment 通过 `EnvironmentSession.system_prompt` 和带版本动作空间提供环境语义；`moveahead` 等 navigation 指令不再由 Agent prompt 硬编码。`AgentEpisode` 是 runtime 到 rollout 的唯一输入，collector 不再重新拼 transcript/prompt。
+- 公共 `AgentConfig`、`RolloutConfig` 已放在 `nimloth.config.agent` 与 `nimloth.config.rollout`；RL 配置组合这两个对象。trajectory 持久化模板 identifier/version/config，并保留显式 legacy JSONL 迁移。
+- `rollout/schema.py` 的跨字段校验已拆到 `rollout/validation.py`；RL trainer 的 held-out evaluation、collector 约束、CSV/W&B reporting 和 checkpoint 映射分别拆到独立模块，`trainer.py` 只保留迭代顺序。
+- RL 环境 rollout 现在使用环境真实 `system_prompt`、每步 `obs_str` 和按序历史图片；PPO replay、WM state encoding 与 online action query 使用同一模板和完整历史。推理失败不再伪造 moveahead/零概率样本。
+- 新 RL JSONL 保存 prompt version、结构化 observation/action、每步 prompt 审计副本、采样参数和真实 8-way behavior log probabilities；写入前和训练前统一校验，top-p/greedy 的 `-inf` 以标准 JSON `null` round-trip。
+- SFT2 对结构化记录用同一模板生成 supervised current prefix 与 policy-query next prefix；旧 `messages` 数据继续走显式 legacy 读取路径。SFT1 converter 的 assistant action block 也改由 Agent 模板生成并保留原 reasoning。
+- 已删除 `src/nimloth/agent/inference.py`，并更新 Agent/SFT2/RL README、RL 质量清单和已失效的 k>1 计划说明。
+- 新增架构改动已通过 `compileall` 与 `git diff --check`。远程定向回归覆盖 AgentEpisode→Rollout、模板 registry/config、Qwen policy、RL、SFT2 和 transition：`128 passed, 1 warning`；排除远程未初始化 `external/RCDM` 的单一可用性测试后，全仓为 `217 passed, 4 warnings`。warning 均来自既有数值边界或弃用提示。
+
+## 2026-07-20：CFM/RCDM 归入 recon 包
+
+- 在本地分支 `fix/sft2-review-bugs` 将顶层 `nimloth.cfm` 与 `nimloth.rcdm` 迁入 `nimloth.recon.cfm` 和 `nimloth.recon.rcdm`；训练编排继续保留在 `nimloth.training.reconstruction`，评估入口继续保留在 `nimloth.eval`。
+- CFM/RCDM 内部导入、训练与评估依赖以及对应单元测试均已切换到新路径；原顶层包路径不再保留兼容 shim，静态扫描确认当前代码和文档没有旧 import。
+- 顶层 CFM/RCDM 测试移入 `tests/recon/`，新增 recon 包 README 并同步更新 training/reconstruction 导航说明。
+- 验证：`compileall` 与 `git diff --check` 通过；CFM/RCDM/reconstruction 相关测试 `20 passed, 1 deselected`。deselect 的测试要求当前本地未初始化的 `external/RCDM` 子模块。
+
+## 2026-07-20：SFT2 代码目录职责整理
+
+- 在本地分支 `fix/sft2-review-bugs` 继续整理 SFT2 代码，尚未合并回 `dev`。
+- `src/nimloth/training/sft2/` 根目录只保留生产训练、评估、checkpoint 与 trajectory-once 主路径；packed/KV 等价性原型移入 `src/nimloth/training/sft2/diagnosis/`。
+- 一次性 debug、probe、validation、cache estimate 与性能 smoke 脚本移入 `experiments/training/sft2/diagnosis/`；生产 train/cache/eval/submit 入口仍位于父目录。移动后的 Slurm 脚本继续从父目录加载公共环境，并显式调用 `diagnosis/` 内的 Python 脚本。
+- Qwen2.5-VL batching、latent extraction、tuning、vision EMA 与 diagnosis-only monkey patch 统一移入 `src/nimloth/backbone/qwen25vl/`；全仓生产、诊断与测试 import 已切换到新路径。
+- 为避免生产 `trajectory_once.py` 反向依赖 diagnosis，将单样本编码补 batch 维的 helper 提升到 `qwen25vl/batch.py`；静态扫描确认 SFT2 生产包不导入 `diagnosis`。
+- 验证：全目录 `compileall`、诊断 Slurm `bash -n`、`git diff --check` 均通过；相关测试 `93 passed, 1 deselected`。排除未初始化的 `external/VAGEN` 后，其余完整测试为 `165 passed, 2 unrelated failures, 1 deselected`；两个失败分别来自未初始化的 `external/RCDM` 与测试环境缺少 parquet engine。已知 deselect 仍是基线中 `token_id_map` 赋值前使用的问题。
+
+## 2026-07-20：SFT2 模型与训练高优先级缺陷修复
+
+- 在本地分支 `fix/sft2-review-bugs` 修复三项只读审查发现的问题，尚未合并回 `dev`。
+- SFT2 当前仍监督单步 dynamics，因此新建及外部初始化的 WM predictor 明确要求 `history_size=1`；不再以单步训练权重执行未训练的多位置上下文 rollout。旧 `history_size>1` predictor 会 fail-fast，真实多步 dynamics loss 仍属于待人类确认的独立任务。
+- DDP 验证改用不补齐、不重复样本的 rank-strided sampler；验证 forward 使用 unwrapped model 以允许各 rank 不等长迭代，末尾通过 distributed object gather 合并所有 rank 的 metric sums/counts。
+- SFT2 resume 现在要求 `state_proj`、WM predictor config/weights、value head 与 training state 全部存在；WM history 不匹配及 ValueHead 权重缺失均明确报错，禁止随机初始化后静默继续。
+- 验证：compileall 与 `git diff --check` 通过；focused tests `19 passed`（含真实 2-process Gloo 汇总）；相关完整回归 `79 passed, 1 deselected`。deselect 的 `test_two_step_prefix_tokenization_is_stable` 在基线即因 `token_id_map` 赋值前使用而失败，本分支未修改该无关测试。
+
 ## 2026-07-20：RL k>1 与 WM+ValueHead 连续动作任务草案
 
 - 按人类要求先创建新任务 `ai_tasks/rl_kgt1_wm_multiaction_plan.md`，当前仅为待审阅计划，尚未修改 RL 代码或启动实验。
@@ -1035,6 +1401,61 @@
   - 健康启动证据：日志显示 LoRA 注入、`qwen_pair_parallel=true`, `rank0_pair=[0,1]`, vision EMA `shadow_params=582`；`train_step_log.csv` 已写到至少 `global_step=20`，无 OOM/ChildFailedError。
 - 注意：一次后提交的重复 job `457216` 因资源 pending 被取消；实际健康运行的是 `457209`。
 
+## 2026-07-22：SFT2/RL 公共表征管线与梯度契约重构
+
+- 分支：`fix/sft2-review-bugs`；主重构提交 `50ac52b` 已推送。
+- `rollout/windows.py` 现在保存并采样原始连续 trajectory window；不再在 Qwen
+  rollout adapter 中预编码 detached hidden。PPO replay 输入改为公共
+  `AgentPrompt`、动作与采样参数。
+- Backbone 公共边界增加阶段无关的 `BackboneInputBuilder`；Qwen2.5-VL 只实现模型
+  加载、输入、policy/replay、tuning、checkpoint 与 EMA，不再导入 SFT2/RL 或
+  rollout window/return/target 语义。
+- RL 明确拆开三个配置：tune mode 决定 Backbone 可训练参数，`actor.enabled` 决定
+  PPO，`gradient.representation_to_backbone` 决定 WM/value/SIGReg 是否回传
+  Backbone。原始窗口采样后才执行 joint/no-grad Backbone forward。
+- RL multi-step 使用 H+1 个真实状态投影 H 个预测；WM target 只 detach 右移后的
+  next-state view。`WorldModel.project_state_sequence()` 逐时间位置调用
+  StateProjector，避免把时间轴误当成 latent-token 轴，并保留多 token 输入维度。
+- SFT2 的 current/next 对齐、terminal mask、next prompt 去重和 all-terminal DDP
+  dummy forward 归入 `training/sft2/batch.py`，不再由 Qwen transition adapter 定义。
+- 本地验证：RL/SFT2/Agent/Qwen/WM 相关 148 项通过（其中 Gloo 两进程用例在允许
+  loopback socket 后单独通过），recon/eval 邻接回归 27 项通过，合计 175 项；
+  `compileall`、全源码 AST 解析和修改文件 `diff --check` 通过。测试没有启动 W&B
+  或实验任务。
+- 远程状态：`ssh superpod-csejzhang` 只完成主机指纹握手，未获得 shell；本轮没有
+  声称远程测试或 GPU smoke 已运行。
+- 保留未改动的人类工作区内容：`ai_rules/events/on_experiment_start.md`、
+  `src/nimloth/training/sft2/algorithm.py` 的 docstring 修改以及 `.until-done/`。
+- RL 在线决策现在由 `agent.PlanningPolicy` 负责：每个真实 observation 只执行
+  一次 Qwen/StateProjector，`WorldModelPlanner` 从同一真实根状态重放完整候选
+  action sequence，仅将选中的首动作交给 `EpisodeRunner.session.step()`。
+- SFT2 边界已明确：它只消费 VAGEN trajectory 做离线一步 WM/value 初始化，
+  不运行 Agent rollout 或多步 planner；其 StateProjector/WM/ValueHead checkpoint 作为
+  RL planner warm start。
+- SFT2/RL 现在明确区分 LeWM `history_size` 与 RL planning horizon：前者是两阶段
+  必须一致的因果上下文长度，后者才是 RL 在真实 environment step 前自回归
+  预测的未来步数。checkpoint 加载继续严格校验 `history_size`。
+- 删除了只被测试调用且会丢失 history 的 `wm/planning.py`；通用行为分布与
+  采样函数收入 `agent/policy.py`。planner 暂时使用叶节点最大 action-value heuristic，
+  不伪称是累积 return；planner+PPO 和随机初始化的在线 planner 会在启动时被拒绝。
+- 实现后的扩展 CPU 回归共 191 项通过；边界文档和 resume 判定收尾后，又对
+  planning/runner/config/RL runtime/predictor/WorldModel/Qwen policy 重跑 38 项，全部通过。
+  本轮未启动实验或 W&B，远程 GPU smoke 仍未完成。
+- 根据人类澄清，SFT2 不再固定为 `history_size=1`。两阶段现在都以 H 表示 LeWM
+  因果上下文：训练样本含 H 个连续动作和 H+1 个真实状态；RL 的未来规划步数
+  单独使用 `agent.planning.horizon`。
+- SFT2 新增固定窗口 sampler 和 `SFT2Batch(B,H)`；WM 在 H 个位置预测，SIGReg
+  只消费同一在线 Backbone 产生的 `(B,H+1,D)`，EMA next state 仅作为 WM target。
+  compact cache 升级为 v2，显式保存没有 successor transition 的最终 observation。
+- 新增/相关本地 CPU 语义回归 `58 passed`；现有双进程 Gloo 用例受沙箱 socket
+  权限限制未执行成功。测试未启动 W&B 或实验任务，远程 GPU smoke 待补。
+- 邻接回归扩大到 `tests/`：排除本机缺少 `pandas` 的一个 SFT1 用例和受 socket
+  限制的 Gloo 用例后为 `225 passed, 4 warnings`；未把排除后的结果表述为完整
+  全量通过。测试缓存已清理。
+- 重构已提交并推送为 `bdf635e`；提交后相关回归为
+  `161 passed, 1 deselected, 1 warning`。VPN VM 可认证，但到 superpod 的
+  ProxyJump 未建立远端 shell，因此没有运行远程测试或任务。测试缓存再次清理。
+
 ## 2026-06-21：FA2 不能修复 SFT2 packed-forward 多图不等价
 
 - 给 `validate_trajectory_once_2step.py` 与 `validate_2step.slurm` 增加了 `--attn-implementation` / `ATTN_IMPLEMENTATION` 参数化，允许直接对比 `sdpa` 与 `flash_attention_2`。
@@ -1078,3 +1499,300 @@
   - 新增 `--experiment-name`，避免启用 wandb 时引用不存在的 `args.experiment_name`。
   - distributed JSONL/FSDP 模式下，从 rank0 广播非 FSDP 小模块 `state_proj`、`wm_predictor`、`value_head` 初始 state，配合同步 JSONL 数据和确定性 batch，避免本地副本初始参数分叉。
 - 验证：`python -m py_compile src/nimloth/training/rl/*.py tests/training/rl/test_rollout_jsonl.py experiments/training/rl/rollout_env.py` 通过；`bash -n experiments/training/rl/run_inside_allocation.sh experiments/training/rl/*.slurm` 通过；pytest 仍受本地环境限制，系统 Python 无 pytest，复用 dev `.venv` 时 torch import 缺 `libstdc++.so.6`。
+
+## 2026-07-20：SFT2 模块边界与生产路径整理
+
+- SFT2 配置 schema 已归入 `training/sft2/config.py`，未知 YAML 字段会直接报错；生产 checkpoint 指标固定为模型产生的 `val_wm_mse`。
+- 数据层拆为 `data/batch.py`、`data/factory.py`、`data/samplers.py` 和 `data/cache/`；训练与验证统一通过 `SFT2StepRunner.forward`。
+- Qwen transition/checkpoint 适配归入 `backbone/qwen25vl/`；外层 reconstruction/eval 不再依赖 SFT2 私有 dataset。
+- packed/full-trajectory forward 已从生产 CLI、Slurm wrapper 和提交脚本移除，研究实现及 cache 仅保留在 `training/sft2/diagnosis/`。
+- 静态 JSONL success 比例已移到 `wm.statistics` 并明确标记为数据集统计，不再写入 SFT2 validation 或参与 checkpoint 选择。
+- 邻接回归修复了 RCDM 移入 `recon/rcdm/` 后默认 `external/RCDM` 根目录层级错误。
+- 验证：相关 SFT2/common/backbone/WM/eval/recon/RL 测试共 131 项通过（130 项常规测试 + 单独放开 loopback socket 后的 1 项 Gloo 双进程测试）；`compileall`、修改过的 shell/Slurm `bash -n`、`git diff --check` 通过。
+- 对 `training/rl` 完成只读审计，确认仍需优先处理 PPO behavior/new-policy prompt 与概率契约、LoRA+vision-full checkpoint 完整性、validation 数据边界和配置/schema 漂移；本轮未修改 RL 实现。
+
+## 2026-07-23：SFT2 H=4 单 window OOM 的低显存 forward
+
+- 在不改变 k=1、H=4、图片分辨率、cache 数据和 CE/WM/value/SIGReg 权重的前提下，
+  新增 Qwen batch-row chunked forward；k=1 control 每次只执行一个 prefix row，
+  随后恢复完整 H 序列计算下游目标。
+- CE 按 shifted 有效 label 数做跨 chunk 全局加权；Qwen 多模态 batch 会同步切分
+  `input_ids`、`image_grid_thw` 和 `pixel_values`。
+- 静态验证：`python -m compileall -q src tests`、`git diff --check` 通过；本地
+  pytest 安装不完整（缺 `_pytest`），远端 CPU 测试和 8-GPU preempt smoke 待执行。
+
+## 2026-07-23：SFT2 chunk=1 smoke 仍未越过首步
+
+- `484881` 因提交参数漏传 `SKIP_SFT1_DONE=1` 在模型加载前退出；正确 retry
+  `484885`（preempt dgx-17 8 卡，W&B `nimloth-sft2` ID36 / `0s8tcq0y`）实际加载
+  commit `aaf16ba`、k=1 H=4、`backbone_rows_per_forward=1` 和完成的 v2 cache。
+- `484885` 在首个 optimizer step 前 OOM：四个 chunk 的训练 graph 累积后已占用
+  约 77--79 GiB，不同 rank 分别在后续 Qwen chunk 或 target forward 再申请
+  20 MiB--930 MiB 时失败。CSV 只有表头，无 checkpoint，不可 resume，RL 仍未解锁。
+- 后续实现增加 chunk activation CPU offload，只处理 autograd 保存的非参数 CUDA
+  tensor，不改变 loss 或 H=4 图结构；尚待下一次 8 卡 smoke 验证。
+
+## 2026-07-23：SFT2 activation-offload 8 卡首步通过
+
+- commit `9d29929` 的 ID37 smoke（job `484906`，W&B `1ogp76s3`）在 preempt
+  dgx-17 8 卡完成首个 finite optimizer step：total 9.304960、WM 0.275662、value
+  0.191877、CE 9.085517；B=1 下 SIGReg 按小 batch guard 跳过。
+- forward/backward/optimizer 分别为 44.80s/54.12s/2.30s；step peak allocated/
+  reserved 为 31.02/31.08 GiB，实时各 rank 约 23--49 GiB。达到 smoke gate 后主动
+  取消，取消前无 checkpoint；正式 B=2 训练和 checkpoint 仍待验证，RL 尚未开启。
+
+## 2026-07-23：正式 k=1 无 DINO SFT2 ID38 启动
+
+- job `484910` / W&B `zc0y6j3c` 在 preempt dgx-17 8 卡运行，B=2、GA=4、10
+  epochs、activation offload、20 分钟周期 checkpoint。
+- 首个 optimizer step finite：total 7.707960、WM 0.274856、value 0.211024、CE
+  7.469451，peak allocated/reserved 48.81/48.98 GiB。首步四个 microbatch 均因
+  实际 B<2 跳过 SIGReg，后续 batch 和首个 checkpoint 仍在监控；RL 尚未开启。
+
+## 2026-07-23：ID38 已取消并删除
+
+- sampler 精确统计显示 46,524 个 H=4 windows 全部单独成 batch，实际 B 恒为 1，
+  SIGReg 永远跳过；共需 14,540 optimizer steps，按实测约 339 秒/step，10 epochs
+  ETA 约 57 天。
+- 人类判定速度不可接受并要求立即停止。job `484910` 已取消，dgx-17 的 8 卡全部
+  释放；约 14 GB 的 ID38 输出目录已永久删除，因此无 checkpoint 可恢复、不可用于
+  RL。共享 cache、SFT1、ID37 和 W&B 云端记录未删除。
+
+## 2026-07-23：SFT2 改为标准逐 step loss ownership
+
+- 已确认旧 B*H sequence forward 会让重叠 window 内的 transition 重复计算 CE、
+  WM 和 value，且 `algorithm.py` 隐藏了该真实权重；该实现判错并登记 E0039。
+- 新实现让每个 transition 每 epoch 恰好作为一次 current step，T=1..H 只提供真实
+  历史；CE/WM/value/SIGReg 各计算一次，旧 Backbone/history state 不接收梯度。
+- row=1 执行下 image budget 改按真实单 row 峰值，启动时记录实际 B 分布并拒绝
+  `lambda_sigreg>0` 且全 B=1 的任务。静态检查通过，远端语义测试和 GPU smoke
+  尚未执行。
+
+## 2026-07-24：DINO-grid 旧 cache terminal 语义与 smoke 前缀修复
+
+- 修复 trajectory 最后动作的 next-state prompt：复用最后真实 observation，并只加
+  target-only assistant query prefix，不增加 CE step。训练仍是每个 action 一个
+  transition；train 的 59,389 transitions 对应 62,606 observations/images。
+- 旧 `dedup_sharded_v1` cache 只读复用：terminal next 仅重建缺失的文本 token 布局，
+  图片 pixels 与 `grid_thw` 均从旧 cache 读取，不重开源图片。完整数据/图片覆盖通过，
+  抽样 current/next（含 terminal）与 fresh processor 张量一致。
+- ID44 attempt 2 已完成模型、ID33、W&B、NCCL 初始化，但在首个 forward 前因全量
+  cache count 与 8-record smoke 前缀 count 被错误要求相等而失败；无 OOM、metric、
+  optimizer step 或 checkpoint，不可恢复。
+- commit `b380387` 仅对显式、无过滤的 `max_records` 前缀允许读取更大的全量 cache；
+  full run 和非前缀过滤仍严格校验 count/fingerprint。远端定向回归 `11 passed`。
+- 发现 ID44 attempt 2 被共享 `.env` 覆盖到错误的 `flower` W&B project；目标
+  `nimloth-sft2` 实际最高 ID 为43。launcher 已改为凭据加载后恢复显式 project，
+  corrected retry 将在目标 project 使用 ID44 和全新输出目录。
+- corrected `nimloth-sft2` ID44（step `485251.6`, W&B `f2d3i7e9`）已通过旧
+  cache 全量 manifest 对 8-record 前缀的读取，证明 cache-prefix 修复进入真实训练
+  路径。首个 WM forward 因 FP32 one-hot action 与 ID33 BF16 action encoder dtype
+  不一致而失败；不是 OOM，无 loss/backward/optimizer/checkpoint，不可恢复。
+- 初始 one-hot cast 回归进一步暴露 refactor 精度漂移：权威 ID33 的 online encoder、
+  WM、DINO decoder、ValueHead 均为 FP32，当前 builder 却把它们随 Qwen 转成 BF16。
+  builder 现恢复 FP32 grid auxiliaries，仅冻结 SFT1 slot projector 跟随 Qwen dtype，
+  并增加 builder 级 dtype 回归；待远程复测后用新 ID/输出目录重试。
+- 人类指出 `fix/sft1-merge-untied-head` 的 merge bug。核对确认当前 k16 SFT1
+  `hf_merged` 缺少 `lm_head.weight`，nested config 仍为 tied；此前 DINO smoke 的
+  冻结 CE head 因此无效，不能用于 loss 质量结论。
+- 当前分支已移植 merge 后禁止 resize、独立 head/storage 校验和回归，并为旧只读
+  cache 增加显式 processor-source lineage。下一步从同一 k16 epoch5 adapter 生成
+  新的 untied export，验证 processor 文件不变后再重试 SFT2；不覆盖旧产物。
+- k16 merge ID2（step `485251.7`）在保存前被独立 storage gate 正确拒绝；原因是
+  k16 通过 `save_embedding_layers` 保存完整 embedding/head，但 adapter config 没有
+  `modules_to_save`，PEFT merge 后仍共享 module。无 OOM/训练/W&B/可用 export。
+- merge 现识别并分别恢复 adapter 内的完整 input/head，显式创建独立 output Linear
+  后再验证；ID2不可恢复，SFT2初始化已指向待生成的全新ID3导出。
+- k16 corrected export ID3（step `485251.8`, commit `327f34c`）完成：698 tensors
+  验证，导出 input/head 各自精确等于 adapter、safetensors 双权重齐全、Transformers
+  重载 storage 独立且两层 config untied；slot projector SHA256 为
+  `340d90a84a17f7aba3525f2f49e20921fd4f73a6534149587de2b3c875542ce0`。
+- 新旧 processor 的 tokenizer vocab、special IDs、image processor dict 相同，因此
+  旧 v1 cache 的预处理语义不变；原 processor source 仅用于兼容旧 path-based
+  fingerprint。下一次 SFT2 smoke 使用 corrected export 和新 ID45/output。
+
+## 2026-07-24：corrected DINO-grid SFT2 ID45 smoke 通过
+
+- ID45（step `485251.10`, W&B `nimloth-sft2/4v68cj6z`, commit `cf8f9df`）
+  使用 corrected k16 untied-head export、ID33 auxiliary warm start、权威 FP32 grid
+  auxiliaries 和只读 v1 cache，在 8×H800、per-rank B1、GA1 上完成 20 个有限
+  optimizer steps；无 OOM、NaN、NCCL 或 DDP failure。
+- `context_length` 从 1 到 4，online detached history cache 从 1 到 20；global
+  SIGReg batch size 随轨迹 terminal 从 8 降到 5，证明 terminal transition 也进入
+  当前 step 的一次性 CE/WM/DINO/value/SIGReg 语义。step20 为 CE `7.638404`、
+  WM `0.123687`、DINO `0.492780`、value `0.082413`、SIGReg `2.104651`。
+- 观测到的 GPU 峰值为 `60,469 MiB / 81,559 MiB`，足以支持正式 world8 B1。
+  达到 smoke gate 后主动取消以避免继续写大 checkpoint；Slurm 状态
+  `CANCELLED by 3738`, elapsed `00:03:16`, exit `0:9`。取消发生在 epoch-end 保存
+  期间，`epoch_001` 缺少 `wm_predictor/` 与 `value_head/`，`best/` 也只写入首个
+  shard，因此两者均为不完整产物，不可恢复、不可作为模型使用。
+- 下一步为新的 ID46 全量 3,217 train / 355 val records、2 epochs、world8 B1 GA8；
+  使用 20 分钟 interval checkpoint，fresh optimizer，不从 ID45 resume。
+
+## 2026-07-24：corrected DINO-grid SFT2 ID46 正式 2-epoch 启动
+
+- ID46（hold `485251`, step `485251.14`, W&B `nimloth-sft2/yapevfpy`, commit
+  `f060a25`）已在 preempt/dgx-42 的 8×H800 上启动；使用全量 3,217/355
+  task-disjoint train/val records、corrected k16 untied-head SFT1、ID33 auxiliary
+  warm start、只读 v1 Qwen/DINO cache、fresh optimizer、per-rank B1/GA8/world8。
+- sampler 运行时确认 59,389 个 train current steps，每个 action 仍只计算一次
+  current-step loss。前 8 个 optimizer steps 的 CE/WM/DINO/value/global SIGReg 均
+  finite，global SIGReg B=8，history/context 正常达到 H4；无 OOM、NaN、NCCL、
+  traceback 或 fatal DDP error。
+- step8：total `5.219125`、CE `4.527827`、WM `0.210067`、DINO `0.482060`、
+  value `0.096401`、SIGReg `3.327872`。8卡显存为 `62,031--62,091 / 81,559
+  MiB`，利用率 `88--100%`；约 `7.4 s/optimizer step`，含 validation/checkpoint
+  当前 ETA `4.5--5.5 h`。20分钟 interval checkpoint 与 epoch/best/final 保存启用。
+
+## 2026-07-24：ID46 在 epoch 2 被 preempt，可从 step1644 恢复
+
+- hold `485251` 在运行 `11:58:33` 后被 Slurm `PREEMPTED`；训练 step
+  `485251.14` 收到 SIGTERM，以 `CANCELLED`, elapsed `05:04:16`, exit `0:15`
+  结束。不是 OOM、NaN、NCCL 或代码异常，W&B `yapevfpy` 因外部终止显示
+  `crashed`。
+- CSV 实际到 epoch2 step `1716/1856`（92.5%）；最近100 step均值为 total
+  `8.9131`、CE `4.2545`、WM `3.9263`、DINO `0.4404`、value `0.1706`、
+  SIGReg `3.4164`。epoch1 step928完整验证为 WM `6.102906`、DINO `1.213561`、
+  value `0.811813`、total `7.521500`；尚无epoch2 validation，不能给出2-epoch趋势。
+- 最新完整 `latest` 为 epoch2 step1644、`micro_step_in_epoch=5728`，runtime
+  checkpoint gate返回`True`：模型、optimizer、WM、ValueHead、DINO、双EMA与8个
+  rank history cache齐全。恢复会重跑72个已记录但未checkpoint的step，剩余212个
+  optimizer step及最终validation/save，重新拿到8卡后ETA约50--60分钟。
+- 当前状态为“需恢复”，没有final/two-epoch结果；查询进度本身不授权重启，未自动
+  申请新hold或恢复。
+## 2026-07-24：异构 config-driven vLLM PPO ID70
+
+- config 指定 `nodes=3`、`world_size=8`、rollout TP=8；allocation `485342` 的真实
+  GPU 拓扑为 dgx-04×1、dgx-06×3、dgx-39×4。控制器按实际 GRES 启动 Ray，
+  达到精确8 GPU gate；environment health、TP8 placement 和8个worker创建均通过。
+- 每个物理节点最终只对应一个10.23 Ray worker IP，证明逐节点IP绑定修复有效。
+- vLLM 在权重加载前的 PyTorch symmetric-memory rendezvous 失败：Ray 将每个GPU
+  actor的分配设备局部映射为`cuda:0`，被误判为不同rank使用重叠设备。无trajectory、
+  W&B、optimizer step或checkpoint，ID70不可恢复。
+- 启动器现显式设置`VLLM_ALLREDUCE_USE_SYMM_MEM=0`，改走常规NCCL/custom
+  all-reduce；须使用新实验ID和空输出目录重试。
+- ID71在pipeline前发现ID70的Ray head/GCS残留，6381端口仍保存旧session，因而
+  立即失败且无README、环境、rollout或训练产物。控制器cleanup现主动终止并等待
+  自己启动的Ray `srun --block` steps，再调用`ray stop`兜底；ID72使用新端口重试。
+- ID72证明symmetric-memory关闭后8-rank Gloo/NCCL communicator正常，并进入模型
+  构造；随后vLLM断言Qwen2.5-VL vision MLP输出维度不能被TP8整除。无trajectory、
+  W&B、optimizer step或checkpoint，不可恢复。config保持训练`world_size=8`，将
+  rollout TP独立改为模型支持的4；ID73将以TP4 rollout、8-rank FSDP update重试。
+- ID73的TP4 communicator和两个safetensors shard读取均通过，但epoch_001的
+  `config.json`声明`tie_word_embeddings=false`，shards却缺少vLLM必需的
+  `language_model.lm_head.weight`，仅有`model.embed_tokens.weight`。不能在未证明
+  权重相同的情况下用embedding伪造policy head；因此无trajectory、W&B、optimizer
+  step或checkpoint，ID73不可恢复。hold`485342`已取消并释放全部1+3+4 GPU。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID74 Ray 冷启动失败
+
+- ID74 指向 corrected SFT2 ID46 `epoch_001`，allocation `485730` 为
+  dgx-04×1、dgx-42×6、dgx-48×1，config 仍为 3 nodes、world8、rollout TP4。
+- Ray GCS 已正常监听6410，raylet和10 GB object store也已启动；但
+  dashboard agent在共享环境冷启动时加载模块约用22秒，超过Ray默认
+  15秒agent注册窗口。raylet因等不到`metrics_agent_port`主动崩溃。
+- 失败发生在environment、vLLM、trajectory、W&B和optimizer之前；无OOM、
+  无输出checkpoint，ID74不可恢复。启动器现显式设置
+  `RAY_agent_register_timeout_ms=120000`，下次必须使用新ID和空输出目录。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID75 异构单卡 step 阻塞
+
+- ID75 复用 allocation `485730` 和 ID46 `epoch_001`。Ray head 在放宽后的约36秒
+  冷启动成功，dgx-42×6 worker也成功；证明ID74的agent注册超时修复有效。
+- dgx-48×1 worker使用`srun --gpus=1`时持续收到`Requested nodes are busy`，
+  exact-8 GPU gate因此未放行。主动终止controller后，Ray steps由trap清理；失败仍在
+  environment、vLLM、trajectory、W&B和optimizer之前，无输出checkpoint，不可恢复。
+- 同一allocation/node的最小probe确认`--gpus=1`超时，而`--gres=gpu:1`立即成功并
+  暴露`CUDA_VISIBLE_DEVICES=0`。启动器GPU steps已统一改用原生GRES语法；同时为
+  worker显式传入已探测的`--node-ip-address`，避免Ray自动选择另一个10.23网卡地址。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID76 rollout完成、训练未启动
+
+- ID76 的Ray精确暴露8 GPU（dgx-04×1、dgx-42×6、dgx-48×1），TP4通过Gloo/NCCL、
+  native sampler、corrected epoch1两片权重、KV cache和CUDA graph初始化。
+- `base_train` seeds 1--4的4条fresh trajectory均完成，每条5 transitions，共20条；
+  rewards为`0.0/-0.2/-0.1/-0.1`，manifest和JSONL完整且未被PPO消费。
+- rollout后pipeline在仅含head的外层Slurm step内嵌套请求3节点Ray cleanup，被拒绝
+  `Only allocated 1 nodes asked for 3`；无W&B、optimizer step或训练checkpoint。
+  ID76不可作为完成的RL实验，也不可原地resume。
+- pipeline现支持清晰的`rollout`/`train` phase：顶层controller在head step完成rollout，
+  自己清理Ray并退出该step，再从完整hold上下文启动config-driven多节点FSDP训练。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID77 rollout完成、phase校验阻止训练
+
+- ID77 从 corrected SFT2 ID46 `epoch_001` 新采集 `base_train` seeds 1--4；vLLM
+  TP4 完整加载两片 checkpoint，4 条 trajectory 各 5 transitions，共 20 条，rewards
+  为 `0.0/-0.2/-0.1/-0.1`。fresh manifest 为 `ALL_OK`，未被 PPO 消费。
+- rollout head step 正常退出，证明 ID76 的嵌套多节点 `srun` 问题已消除；Ray teardown
+  中的 SIGTERM 是 vLLM 明确标注的预期关闭流程。
+- train-only phase 在任何 W&B、模型训练加载、forward 或 optimizer 前被 rollout 专用
+  GPU 校验拒绝：controller 可见 8 GPU，而该校验按 rollout TP4 要求恰好 4，报错
+  `expected 4 visible GPUs, got 0,1,2,3,4,5,6,7`。无训练 checkpoint，ID77 不可
+  原地 resume，也不作为完成的 RL 实验。
+- commit `aa747f7` 将可见 GPU 数校验限制到 `RUN_ROLLOUT=true`；下一次用新 ID、
+  新 rollout 和空输出目录验证 3 节点/world8 FSDP update。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID78 Ray agent 超时
+
+- ID78 在 Ray head 冷启动时失败；dashboard agent 约 19 秒后完成加载，但 raylet 仍按
+  默认 15 秒等待 `metrics_agent_port`，报 `Timed out waiting for file ...metrics_agent_port`。
+- 原先传入的 `RAY_agent_register_timeout_ms=120000` 没有进入 raylet system config；
+  ID77 能启动是冷启动时序恰好通过，不能证明该环境变量有效。失败发生在 worker、
+  environment、vLLM、trajectory、W&B、forward 和 optimizer 之前，无 checkpoint。
+- 已停止 controller 并清理三节点 Ray。commit `06d611f` 在 Ray head CLI 上显式传入
+  `--system-config={"agent_register_timeout_ms":120000}`；后续必须用新 ID 重试。
+
+## 2026-07-24：RL ID79--80 单卡 task NCCL 映射失败
+
+- ID79/80 均完成 corrected epoch1 的 fresh TP4 rollout（4 trajectories / 20
+  transitions，rewards `0.0/-0.2/-0.1/-0.1`），manifest 未被 PPO 消费。
+- train-only phase 已能从完整 allocation 启动 8 ranks，但每 GPU 一个 Slurm task 的
+  独立 GPU cgroup 使同节点 NCCL proxy 在首次 freshness broadcast 报
+  `Cuda failure 101 invalid device ordinal`；无 W&B（ID79）或有效 optimizer step，
+  无 checkpoint。仅移除父级 `CUDA_VISIBLE_DEVICES` 的 ID80 未解决该 NCCL 行为。
+- commit `ce5479e` 改为每物理节点一个 GPU step，在节点内启动 1/6/1 ranks，并以
+  offsets 0/1/7 形成 world8；同节点 ranks 共同看到该节点全部分配 GPU。
+
+## 2026-07-24：RL ID81 证明异构 world8 正常，暴露 GridWorldModel 缺失
+
+- ID81 的 Ray、TP4、新 rollout、top-level train phase和per-node 1/6/1 NCCL ranks
+  全部通过；8 ranks 完成 freshness broadcast，W&B `nimloth-rl/gga0ncgs` 创建。
+- 训练随后在模型 forward 前失败：RL `_build_world_model()` 无条件用旧
+  `LatentWMPredictor` 加载 corrected SFT2 epoch1 的 `TemporalSpatialGridPredictor`
+  checkpoint，出现完整的 missing `predictor.*` / unexpected `layers.*` key mismatch。
+- CSV 仅表头，无 optimizer step、finite metrics或checkpoint；manifest 未被消费。
+  不能用 `strict=False` 修补，因为 RL 尚未构造 `GridStateProjector`、target encoder、
+  DINO decoder，也未定义 grid RL 的训练/冻结和 loss 语义。下一步必须正式接入
+  `GridWorldModel` 后才可再开新实验 ID。
+
+## 2026-07-24：ID46 resume attempt 1 已排队
+
+- 人类已明确要求继续剩余SFT2。提交唯一一个preempt 1-node/8-GPU/4-hour hold
+  `485732`，不锁节点；提交时preempt没有完整空闲8卡节点，当前状态为
+  `PENDING (Resources)`。
+- 输出目录内`resume_when_hold_runs.sh`由login-side watcher PID `2929716`等待hold；
+  hold运行后先验证remote worktree仍精确为实验commit `f060a25`，再以
+  `RESUME=1`、绝对`RESUME_FROM=latest`、`WANDB_RUN_ID=yapevfpy`启动单个srun。
+- 首个watcher因non-login bash缺失Slurm module环境而在轮询前退出；已改为显式设置
+  权威`SLURM_CONF`与library路径并验证进程存活。hold一直保持pending，未获得allocation，
+  因此该编排问题没有启动或影响任何训练step。
+- resume保持原数据/config/B1 GA8/world8、optimizer、8-rank history cache、CSV、
+  W&B ID与输出目录，不创建新实验ID。预计拿到节点后50--60分钟完成；需继续监控到
+  checkpoint恢复成功并产生新的finite optimizer step。
+
+## 2026-07-24：DINO-grid SFT2 与 online PPO 合并审查完成
+
+- 按人类确认，将 `feat/sft2-dino-grid-ablation` 和
+  `exp/rl-dinogrid-ep1-online-ppo` 集成到 `nimloth-dev` 对应分支
+  `fix/sft2-review-bugs`。RL 分支此前已在 `f65ec2f` 合入 DINO 实现；本轮补入
+  DINO 分支最后两个 resume 进度提交，并保留双方 `AI_branch_progress.md` 记录。
+- 审查确认 DINO cache lineage、terminal target、FP32 grid auxiliaries、EMA target、
+  checkpoint extras 与 PPO fresh-policy manifest 均 fail-closed。RL commit `bfa9c15`
+  改为从 SFT2 `state_proj.pt` 重建 slot projector；新增回归锁定恢复与冻结边界。
+- 删除已与 TP4 config/per-node 异构 launcher 冲突的固定
+  `run_vllm_online_ppo_2node4.sh`，统一使用 config-driven
+  `run_vllm_online_ppo_slurm.sh`；README 已同步实际每节点一个 Slurm step、节点内多
+  local-rank 的启动方式。
+- 服务器定向回归 `69 passed`；扩展 WM/SFT2/RL/rollout/Qwen/SFT1 merge 回归
+  `173 passed, 1 skipped, 1 expected warning`。静态 `bash -n`、`compileall` 和
+  `git diff --check` 通过。没有启动新实验或 GPU allocation。

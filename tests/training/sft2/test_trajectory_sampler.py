@@ -1,133 +1,173 @@
-from nimloth.training.sft2.trajectory_sampler import TrajectoryAwareBatchSampler
-from nimloth.wm.dataset import TransitionSample
+from nimloth.rollout.transitions import TransitionSample
+from nimloth.training.sft2.data.samplers import OnlineHistoryBatchSampler
 
 
-def _sample(record_id: str, step: int) -> TransitionSample:
+def _sample_indices(batches):
+    return [[row.sample_index for row in batch] for batch in batches]
+
+
+def _sample(
+    record_id: str,
+    step: int,
+    *,
+    has_next: bool = True,
+) -> TransitionSample:
     return TransitionSample(
         record_id=record_id,
         step_index=step,
         prefix_messages=[],
-        prefix_image_paths=[""] * (step + 1),  # cumulative prefix images
+        prefix_image_paths=[""] * (step + 1),
         action_index=0,
         current_image_path="",
         next_image_path="",
+        next_prefix_messages=[] if has_next else None,
+        next_prefix_image_paths=[""] * (step + 2) if has_next else None,
     )
 
 
-def test_trajectory_aware_sampler_groups_consecutive_steps() -> None:
-    samples = [_sample("a", 0), _sample("a", 1), _sample("a", 2), _sample("b", 0)]
-    sampler = TrajectoryAwareBatchSampler(samples, batch_size=2, shuffle=False)
+def _assert_cache_order(
+    batches,
+    samples: list[TransitionSample],
+) -> set[int]:
+    seen: set[int] = set()
+    for batch in batches:
+        assert batch
+        context_length = batch[0].context_length
+        assert all(row.context_length == context_length for row in batch)
+        assert len(batch) % context_length == 0
+        for start in range(0, len(batch), context_length):
+            window = batch[start : start + context_length]
+            assert [row.is_current_step for row in window] == [
+                *([False] * (context_length - 1)),
+                True,
+            ]
+            if window[-1].loss_weight == 0.0:
+                assert all(row.loss_weight == 0.0 for row in window)
+                continue
+            for history in window[:-1]:
+                assert history.sample_index in seen
+            current = window[-1].sample_index
+            assert current not in seen
+            seen.add(current)
+            trajectory = [samples[row.sample_index] for row in window]
+            assert len({sample.record_id for sample in trajectory}) == 1
+            assert [sample.step_index for sample in trajectory] == list(
+                range(
+                    trajectory[0].step_index,
+                    trajectory[-1].step_index + 1,
+                )
+            )
+    return seen
 
-    assert list(sampler) == [[0, 1], [2], [3]]
 
-
-def test_trajectory_aware_sampler_partitions_batches_across_ranks() -> None:
-    samples = [_sample("a", 0), _sample("a", 1), _sample("b", 0), _sample("b", 1), _sample("c", 0)]
-
-    rank0 = TrajectoryAwareBatchSampler(
-        samples, batch_size=2, num_replicas=2, rank=0, shuffle=False
-    )
-    rank1 = TrajectoryAwareBatchSampler(
-        samples, batch_size=2, num_replicas=2, rank=1, shuffle=False
-    )
-
-    assert list(rank0) == [[0, 1], [4]]
-    assert list(rank1) == [[2, 3], [0, 1]]
-    assert len(rank0) == len(rank1) == 2
-
-
-def test_full_trajectory_sampler_each_record_is_one_batch() -> None:
-    """With default max_images_per_batch=32, short records span a single batch."""
+def test_online_sampler_emits_each_current_once_after_its_history() -> None:
     samples = [
-        _sample("a", 0), _sample("a", 1), _sample("a", 2),
-        _sample("b", 0), _sample("b", 1),
-        _sample("c", 0),
+        *[_sample("a", step) for step in range(4)],
+        *[_sample("b", step) for step in range(3)],
+        *[_sample("c", step) for step in range(2)],
     ]
-    sampler = TrajectoryAwareBatchSampler(
-        samples, batch_size=2, shuffle=False, full_trajectory=True,
-    )
-    batches = list(sampler)
-    assert len(batches) == 3
-    # Each batch contains all steps of one record, sorted by step_index.
-    record_ids_per_batch = [
-        sorted({samples[i].record_id for i in batch}) for batch in batches
-    ]
-    assert record_ids_per_batch == [["a"], ["b"], ["c"]]
-    # Verify step counts.
-    assert [len(b) for b in batches] == [3, 2, 1]
-
-
-def test_full_trajectory_sampler_ddp_partitions_evenly() -> None:
-    """DDP: each rank gets same number of micro-batches; different trajectories."""
-    samples = [
-        _sample("a", 0), _sample("a", 1),
-        _sample("b", 0),
-        _sample("c", 0), _sample("c", 1),
-        _sample("d", 0),
-    ]
-    rank0 = TrajectoryAwareBatchSampler(
-        samples, batch_size=1,
-        num_replicas=2, rank=0, shuffle=False, full_trajectory=True,
-    )
-    rank1 = TrajectoryAwareBatchSampler(
-        samples, batch_size=1,
-        num_replicas=2, rank=1, shuffle=False, full_trajectory=True,
-    )
-    assert len(rank0) == len(rank1) == 2
-    # Ranks have disjoint record sets.
-    r0_records = {samples[b[0]].record_id for b in rank0}
-    r1_records = {samples[b[0]].record_id for b in rank1}
-    assert r0_records.isdisjoint(r1_records)
-    assert r0_records | r1_records == {"a", "b", "c", "d"}
-
-
-def test_full_trajectory_sampler_ignores_batch_size() -> None:
-    """batch_size irrelevant when full_trajectory=True; max_images_per_batch controls chunking."""
-    samples = [_sample("a", 0), _sample("a", 1)]
-    sampler = TrajectoryAwareBatchSampler(
-        samples, batch_size=1, shuffle=False, full_trajectory=True,
-    )
-    assert len(list(sampler)[0]) == 2  # both steps in one batch (below max_images=32)
-
-
-def test_full_trajectory_chunks_by_image_count() -> None:
-    """Records with cumulative images > max_images_per_batch are split by image ceiling."""
-    # 5 steps: prefix images = 1+2+3+4+5 = 15 (≤32) → one batch
-    # 8 steps: prefix images = 1+2+...+8 = 36 (>32) → must split
-    #   first 7 steps = 28 images → batch1
-    #   step 7 = 8 images → batch2
-    samples = [_sample("a", i) for i in range(8)]
-    sampler = TrajectoryAwareBatchSampler(
-        samples, batch_size=1, shuffle=False, full_trajectory=True,
-        max_images_per_batch=32,
-    )
-    batches = list(sampler)
-    assert len(batches) == 2
-    assert [len(b) for b in batches] == [7, 1]
-
-
-def test_full_trajectory_single_prefix_can_exceed_image_budget() -> None:
-    samples = [_sample("a", i) for i in range(5)]
-    sampler = TrajectoryAwareBatchSampler(
+    sampler = OnlineHistoryBatchSampler(
         samples,
-        batch_size=1,
+        history_size=3,
+        batch_size=2,
         shuffle=False,
-        full_trajectory=True,
-        max_images_per_batch=3,
+        pad_to_equal_batches=False,
     )
     batches = list(sampler)
-    assert batches == [[0, 1], [2], [3], [4]]
+
+    assert _assert_cache_order(batches, samples) == set(range(len(samples)))
+    assert sampler.window_count == len(samples)
+    assert max(sampler.current_steps_per_batch) == 2
 
 
-def test_full_trajectory_hard_step_ceiling() -> None:
-    """max_steps_per_trajectory acts as a hard ceiling even if images are below limit."""
-    samples = [_sample("a", i) for i in range(20)]  # step 0..19, each has only step_index+1 images
-    sampler = TrajectoryAwareBatchSampler(
-        samples, batch_size=1, shuffle=False, full_trajectory=True,
-        max_images_per_batch=1000,  # effectively no image limit
-        max_steps_per_trajectory=6,
+def test_online_sampler_restarts_context_at_gaps() -> None:
+    samples = [
+        _sample("a", 0),
+        _sample("a", 2),
+        _sample("b", 0),
+        _sample("b", 1, has_next=False),
+        _sample("c", 0),
+        _sample("c", 1),
+    ]
+    sampler = OnlineHistoryBatchSampler(
+        samples,
+        history_size=2,
+        batch_size=4,
+        shuffle=False,
+        pad_to_equal_batches=False,
     )
-    batches = list(sampler)
-    # 20 steps / 6 = 4 batches: 6 + 6 + 6 + 2
-    assert len(batches) == 4
-    assert [len(b) for b in batches] == [6, 6, 6, 2]
+
+    assert _assert_cache_order(list(sampler), samples) == {0, 1, 2, 4, 5}
+
+
+def test_distributed_sampler_owns_trajectories_and_pads_only_with_zero_loss() -> None:
+    samples = [
+        *[_sample("a", step) for step in range(4)],
+        *[_sample("b", step) for step in range(4)],
+        *[_sample("c", step) for step in range(3)],
+        *[_sample("d", step) for step in range(2)],
+        _sample("e", 0),
+    ]
+    samplers = [
+        OnlineHistoryBatchSampler(
+            samples,
+            history_size=3,
+            batch_size=2,
+            num_replicas=2,
+            rank=rank,
+            shuffle=False,
+            pad_to_equal_batches=True,
+        )
+        for rank in range(2)
+    ]
+    rank_batches = [list(sampler) for sampler in samplers]
+
+    assert len(rank_batches[0]) == len(rank_batches[1])
+    rank_seen = [
+        _assert_cache_order(batches, samples)
+        for batches in rank_batches
+    ]
+    assert rank_seen[0].isdisjoint(rank_seen[1])
+    assert rank_seen[0] | rank_seen[1] == set(range(len(samples)))
+    assert sum(sampler.padding_batch_count for sampler in samplers) > 0
+
+
+def test_validation_sampler_partitions_without_duplication_or_padding() -> None:
+    samples = [_sample(record, step) for record in "abcde" for step in (0, 1)]
+    samplers = [
+        OnlineHistoryBatchSampler(
+            samples,
+            history_size=2,
+            batch_size=1,
+            num_replicas=3,
+            rank=rank,
+            shuffle=False,
+            pad_to_equal_batches=False,
+        )
+        for rank in range(3)
+    ]
+    rank_seen = [_assert_cache_order(list(sampler), samples) for sampler in samplers]
+
+    assert set().union(*rank_seen) == set(range(len(samples)))
+    assert sum(len(indices) for indices in rank_seen) == len(samples)
+    assert all(sampler.padding_batch_count == 0 for sampler in samplers)
+
+
+def test_epoch_shuffle_changes_group_order_but_not_trajectory_time_order() -> None:
+    samples = [_sample(record, step) for record in "abcdef" for step in range(3)]
+    sampler = OnlineHistoryBatchSampler(
+        samples,
+        history_size=2,
+        batch_size=2,
+        shuffle=True,
+        seed=7,
+        pad_to_equal_batches=False,
+    )
+
+    epoch_zero = list(sampler)
+    sampler.set_epoch(1)
+    epoch_one = list(sampler)
+
+    assert _sample_indices(epoch_zero) != _sample_indices(epoch_one)
+    assert _assert_cache_order(epoch_zero, samples) == set(range(len(samples)))
+    assert _assert_cache_order(epoch_one, samples) == set(range(len(samples)))

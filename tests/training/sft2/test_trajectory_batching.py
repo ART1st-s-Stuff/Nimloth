@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from nimloth.training.sft2.trajectory_batching import (
+from nimloth.training.sft2.diagnosis.trajectory_batching import (
     TrajectoryDistributedBatchSampler,
     assert_packed_batch,
     build_record_trajectory_batches,
     build_trajectory_batch_indices,
 )
-from nimloth.wm.dataset import TransitionSample
+from nimloth.rollout.transitions import TransitionSample
 
 
 def _sample(record_id: str, step_index: int) -> TransitionSample:

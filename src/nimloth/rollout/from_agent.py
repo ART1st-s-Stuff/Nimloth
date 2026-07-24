@@ -1,0 +1,71 @@
+"""把 Agent episode 转换为可持久化 rollout trajectory。"""
+
+from __future__ import annotations
+
+from nimloth.agent import AgentEpisode, create_prompt_template
+from nimloth.environment import get_action_space
+from nimloth.rollout.schema import RolloutTrajectory
+
+
+def trajectory_from_agent_episode(
+    episode: AgentEpisode,
+    *,
+    record_id: str,
+    image_paths: list[str],
+    instruction: str,
+    split: str,
+    sampling_temperature: float,
+    sampling_top_p: float,
+) -> RolloutTrajectory:
+    """只消费 AgentEpisode，不再从 collector 拼装 prompt 细节。"""
+
+    if len(image_paths) != len(episode.observations):
+        raise ValueError(
+            "saved image count must match Agent episode observations: "
+            f"{len(image_paths)} != {len(episode.observations)}"
+        )
+    action_space = get_action_space(
+        episode.action_space_id,
+        episode.action_space_version,
+    )
+    template = create_prompt_template(
+        episode.prompt_template,
+        action_count=len(action_space),
+    )
+    completed_prompt = template.build_supervised_prompt(episode.transcript)
+    for action in episode.actions:
+        if action.policy_prompt.template != episode.prompt_template:
+            raise ValueError("Agent episode mixes prompt template specifications")
+
+    return RolloutTrajectory(
+        record_id=record_id,
+        image_paths=image_paths,
+        action_indices=[action.action_index for action in episode.actions],
+        action_names=[action.action_key for action in episode.actions],
+        action_log_probs=[
+            list(action.action_log_probs) for action in episode.actions
+        ],
+        instruction=instruction,
+        # 成功语义由具体 environment session 判定，公共 rollout 不猜 reward 阈值。
+        success=episode.success,
+        reward=episode.reward,
+        split=split,
+        messages=completed_prompt.unbound_messages(),
+        system_prompt=episode.system_prompt,
+        observation_texts=[
+            observation.text for observation in episode.observations
+        ],
+        policy_messages=[
+            action.policy_prompt.unbound_messages()
+            for action in episode.actions
+        ],
+        prompt_template_spec=episode.prompt_template,
+        prompt_version=episode.prompt_template.version,
+        latent_token_count=int(
+            episode.prompt_template.config.get("latent_token_count", 1)
+        ),
+        sampling_temperature=sampling_temperature,
+        sampling_top_p=sampling_top_p,
+        action_space_id=episode.action_space_id,
+        action_space_version=episode.action_space_version,
+    )

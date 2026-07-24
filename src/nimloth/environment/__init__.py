@@ -1,18 +1,19 @@
-"""Nimloth environment abstraction layer.
+"""Nimloth environment 协议、动作空间和具体后端。"""
 
-Environment managers provide batch lifecycle management (create, reset, step,
-close) over a fleet of parallel task environments.  The common module defines
-the abstract interface and shared types; concrete backends live in subpackages
-(navigation, alfworld, etc.).
-"""
-
-from nimloth.environment.common import BaseEnvManager, EnvConfig, StepResult, TrajectoryRecording
-from nimloth.environment.navigation import NavigationEnvManager
+from nimloth.environment.common import (
+    ActionSpec,
+    DiscreteActionSpace,
+    EnvironmentObservation,
+    EnvironmentSession,
+    EnvironmentStep,
+)
+from nimloth.environment.registry import get_action_space
 
 __all__ = [
-    "BaseEnvManager",
-    "EnvConfig",
-    "NavigationEnvManager",
-    "StepResult",
-    "TrajectoryRecording",
+    "ActionSpec",
+    "DiscreteActionSpace",
+    "EnvironmentObservation",
+    "EnvironmentSession",
+    "EnvironmentStep",
+    "get_action_space",
 ]

@@ -1,896 +1,647 @@
-"""Online RL training loop: rollout → encode → train → repeat.
-
-Qwen model loading is handled inside ``train_rl`` via
-``configure_qwen_tuning`` (supports LLM freeze/lora/full +
-vision freeze/lora/full).  Resume from a previous RL checkpoint
-(``--resume``) reloads the Qwen model, WM heads, and optimizer.
-"""
+"""RL 训练入口：校验运行模式、装配依赖并启动训练循环。"""
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
-import os
-import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-from nimloth.backbone.qwen_tuning import (
-    configure_qwen_tuning,
+from nimloth.agent import Agent, PlanningPolicy
+from nimloth.backbone import (
+    backbone_hidden_size,
+    build_action_log_prob_replay,
+    build_agent_policy,
+    build_input_builder,
+    build_vision_ema,
+    load_backbone,
     resolve_tune_modes,
-    uses_lora,
+    resolve_vision_ema,
 )
-from nimloth.backbone.vision_ema import VisionEncoderEMA, resolve_vision_ema
-from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.training.common.dist import cleanup_dist, is_main, setup_dist
-from nimloth.training.rl.checkpoint import (
-    load_lora_adapter_state,
-    load_rl_wm_checkpoint,
-    save_rl_checkpoint,
+from nimloth.config.rl import RLConfig
+from nimloth.rollout import FreshJSONLRolloutCollector, RolloutCollector
+from nimloth.training.rl.algorithm import RLAlgorithm
+from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
+from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
+from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
+from nimloth.training.rl.reporting import RLReporter
+from nimloth.training.rl.runtime import RLModelRuntime
+from nimloth.training.rl.rollout_runtime import (
+    bind_online_collectors,
+    online_policy_required,
+    validate_collector_configuration,
+    validate_fresh_rollout_policy,
+    validate_online_policy_configuration,
+    validate_planning_initialization,
 )
-from nimloth.training.rl.loss import compute_predictor_loss, compute_value_loss
-from nimloth.training.rl.rollout import (
-    RolloutCollector,
-    RolloutTrajectory,
-    validate_rl_policy_protocol,
+from nimloth.util.distributed import (
+    broadcast_module_state,
+    cleanup_dist,
+    is_main,
+    setup_dist,
 )
-from nimloth.wm.dataset import discounted_action_value_targets
-from nimloth.wm.predictor import LatentWMPredictor
-from nimloth.wm.state_proj import StateProjector
-from nimloth.wm.value_head import ValueHead
-
-
-# ---------------------------------------------------------------------------
-# Latent encoding (Qwen → hidden states)
-# ---------------------------------------------------------------------------
-
-
-def encode_trajectory_hiddens(
-    trajectory: RolloutTrajectory,
-    qwen_model: torch.nn.Module,
-    processor: Any,
-    token_id_map: dict[str, int],
-    device: torch.device,
-) -> list[torch.Tensor]:
-    """Run Qwen on each frame of a trajectory, return hidden states.
-
-    Returns:
-        List of ``(hidden_dim,)`` tensors, one per frame (len = num_steps + 1).
-    """
-    from nimloth.latent.extraction import (
-        LatentActionTokens,
-        extract_latent_state,
-        find_last_latent_state_index,
-        last_hidden_state,
-    )
-    from nimloth.training.common.qwen_batch import build_qwen_batch
-
-    states: list[torch.Tensor] = []
-    tokens = LatentActionTokens()
-
-    # System message from trajectory
-    system_msg = trajectory.messages[0] if trajectory.messages else {
-        "role": "system", "content": "You are a navigation agent."
-    }
-
-    for i, image_path in enumerate(trajectory.image_paths):
-        # Build messages: system + image observation + brief assistant
-        # so Qwen encodes the conversation context including <|latent_state|>.
-        messages = [
-            system_msg,
-            {"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": "Observe the scene from the current viewpoint."},
-            ]},
-            # Include <|latent_state|> in assistant so we can extract it
-            {"role": "assistant", "content": [
-                {"type": "text", "text": f"<|latent_state|>"},
-            ]},
-        ]
-        item = {"messages": messages}
-        enc = build_qwen_batch([item], processor, max_length=999999)  # effectively no truncation
-        model_inputs = {k: v.to(device) for k, v in enc.items()}
-        with torch.no_grad():
-            output = qwen_model(**model_inputs, output_hidden_states=True, return_dict=True)
-        hidden = last_hidden_state(output)
-        latent_idx = find_last_latent_state_index(
-            enc["input_ids"][0], token_id_map, tokens
-        )
-        latent = extract_latent_state(hidden[0:1], latent_idx)  # (1, hidden_dim)
-        states.append(latent.squeeze(0).detach().cpu())
-
-    return states
-
-
-# ---------------------------------------------------------------------------
-# Transition builder
-# ---------------------------------------------------------------------------
-
-
-def build_rl_transitions(
-    trajectories: list[RolloutTrajectory],
-    qwen_model: torch.nn.Module,
-    processor: Any,
-    token_id_map: dict[str, int],
-    device: torch.device,
-    gamma: float = 0.99,
-) -> list[dict[str, torch.Tensor]]:
-    """Encode trajectories → list of transition dicts (CPU tensors)."""
-
-    transitions: list[dict[str, torch.Tensor]] = []
-    for traj in trajectories:
-        hiddens = encode_trajectory_hiddens(
-            traj, qwen_model, processor, token_id_map, device
-        )
-        if len(hiddens) < 2:
-            continue
-
-        record = traj.to_record()
-        value_targets = discounted_action_value_targets(record, gamma=gamma)
-
-        for t in range(traj.num_steps):
-            # old_log_prob for the taken action at step t
-            log_probs = traj.action_log_probs[t] if t < len(traj.action_log_probs) else []
-            old_lp = float(log_probs[traj.action_indices[t]]) if len(log_probs) > traj.action_indices[t] else 0.0
-
-            transitions.append({
-                "qwen_hidden_current": hiddens[t],
-                "qwen_hidden_next": hiddens[t + 1],
-                "action_index": torch.tensor(traj.action_indices[t], dtype=torch.long),
-                "value_target": torch.tensor(
-                    value_targets[t] if t < len(value_targets) else 0.0,
-                    dtype=torch.float32,
-                ),
-                "old_log_prob": old_lp,
-                "nav_instruction": traj.nav_instruction,
-                "action_history_names": traj.action_names[:t],
-                "image_path": traj.image_paths[t],
-            })
-
-    return transitions
-
-
-# ---------------------------------------------------------------------------
-# PPO forward pass (Qwen with gradients)
-# ---------------------------------------------------------------------------
-
-# Action token name → index map (copied from rollout.py to avoid circular import)
-_ACTION_NAME_TO_IDX = {
-    "moveahead": 0, "moveback": 1, "moveright": 2, "moveleft": 3,
-    "rotateright": 4, "rotateleft": 5, "lookup": 6, "lookdown": 7,
-}
-_NAV_SYSTEM_TEXT = (
-    "You are a home robot and perform navigation tasks according to instructions.\n"
-    "Actions you can take: moveahead, moveback, moveright, moveleft, "
-    "rotateright, rotateleft, lookup, lookdown.\n"
-    "Rewards: Format correct: +0.5. Achieve the human instruction: +10.0.\n"
-    "Look at the image carefully and navigate to complete the instruction."
+from nimloth.util.optim import OptimizationRuntime
+from nimloth.wm import (
+    LeWMConfig,
+    LatentWMPredictor,
+    StateProjector,
+    SequenceSIGReg,
+    ValueHead,
+    WorldModel,
+)
+from nimloth.wm.grid import (
+    EMATargetGridEncoder,
+    GridStateProjector,
+    GridWorldModel,
+    LeWMGridDecoder,
+    LeWMGridEncoder,
+    SharedSlotProjector,
+    TemporalSpatialGridPredictor,
 )
 
 
-def compute_new_log_probs_for_batch(
-    ppo_items: list[dict],
-    model,
-    processor,
-    token_id_map: dict[str, int],
-    device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run Qwen forward WITH gradients, returning new log-probs and action logits.
-
-    Each ppo_item must have:
-        - "image_path": path to the observation image
-        - "nav_instruction": navigation instruction
-        - "action_history_names": list of VAGEN text action names before this step
-        - "taken_action_idx": the action that was actually taken
-
-    Returns (new_log_probs, action_logits) where:
-        new_log_probs: (B,) log-prob of taken actions under current policy
-        action_logits: (B, 8) raw logits for all 8 actions
-    """
-    import torch
-    from PIL import Image
-    from nimloth.latent.extraction import LatentActionTokens
-
-    tokens = LatentActionTokens()
-    action_token_ids = [token_id_map[t] for t in tokens.action_tokens]
-
-    texts = []
-    all_images = []
-    for item in ppo_items:
-        # Build the same Nimloth prompt as _select_action_nimloth
-        image_path = item["image_path"]
-        nav_instruction = item["nav_instruction"]
-        # Limit history to last 4 steps to keep image count low (≤5)
-        action_history = item["action_history_names"][-4:]
-        num_images = 1 + len(action_history)
-
-        messages = [
-            {"role": "system", "content": [{"type": "text", "text": _NAV_SYSTEM_TEXT}]},
-            {"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": f"Observe the scene. {nav_instruction}"},
-            ]},
-        ]
-        for act_name in action_history:
-            act_idx = _ACTION_NAME_TO_IDX.get(act_name, 0)
-            messages.append({"role": "assistant", "content": [
-                {"type": "text", "text": (
-                    f"<think>Navigating.</think>"
-                    f"<|latent_state|><|action_start|><|action_({act_idx})|><|action_end|>"
-                )},
-            ]})
-            messages.append({"role": "user", "content": [
-                {"type": "image", "image": image_path},
-                {"type": "text", "text": f"Observe the scene after {act_name}. {nav_instruction}"},
-            ]})
-        messages.append({"role": "assistant", "content": [
-            {"type": "text", "text": "<think>What should I do next?</think><|latent_state|><|action_start|>"},
-        ]})
-
-        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        texts.append(text)
-
-        imgs = [Image.open(image_path).convert("RGB")] * num_images
-        all_images.append(imgs)
-
-    # Process items individually — variable image counts per item prevent batching.
-    new_log_probs_list = []
-    action_logits_list = []
-    for i in range(len(ppo_items)):
-        enc_i = processor(
-            text=[texts[i]], images=all_images[i], padding=True,
-            return_tensors="pt",
-        )
-        model_inputs_i = {k: v.to(device) for k, v in enc_i.items()}
-        outputs_i = model(**model_inputs_i, output_hidden_states=False, return_dict=True)
-        logits_i = outputs_i.logits  # (1, seq_len, vocab)
-
-        input_ids = enc_i["input_ids"][0]
-        as_positions = (input_ids == token_id_map[tokens.action_start]).nonzero(as_tuple=True)[0]
-        if as_positions.numel() == 0:
-            raise RuntimeError("<|action_start|> token not found in PPO prompt")
-        pos = int(as_positions[-1].item())
-        act_ids = torch.tensor(action_token_ids, device=logits_i.device)
-        action_logits_list.append(logits_i[0, pos, act_ids])
-
-        taken_idx = ppo_items[i]["taken_action_idx"]
-        log_probs_i = torch.log_softmax(action_logits_list[-1].float(), dim=-1)
-        new_log_probs_list.append(log_probs_i[taken_idx])
-
-    action_logits = torch.stack(action_logits_list)  # (B, 8)
-    new_log_probs = torch.stack(new_log_probs_list)  # (B,)
-
-    return new_log_probs, action_logits
+@dataclass(frozen=True)
+class RLResumeState:
+    start_iteration: int = 1
+    global_step: int = 0
+    best_eval_metric: float = float("-inf")
+    loaded: bool = False
 
 
-# ---------------------------------------------------------------------------
-# Trainer
-# ---------------------------------------------------------------------------
+def _is_grid_predictor_checkpoint(path: Path) -> bool:
+    config_path = path / "config.json"
+    if not config_path.is_file():
+        return False
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    return "grid_tokens" in raw
 
 
-def _unwrap(m: torch.nn.Module) -> torch.nn.Module:
-    return m.module if hasattr(m, "module") else m
-
-
-def _freeze(module: torch.nn.Module) -> None:
-    module.eval()
-    for p in module.parameters():
-        p.requires_grad = False
-
-
-def _maybe_init_wandb(
+def _grid_mlp_hidden_dim(
+    state: dict[str, torch.Tensor],
     *,
-    rank: int,
-    output_dir: Path,
+    first_weight: str,
+    emb_dim: int,
+) -> int:
+    weight = state.get(first_weight)
+    if weight is None or weight.ndim != 2 or weight.shape[1] != emb_dim:
+        raise ValueError(
+            "cannot infer grid MLP hidden_dim from checkpoint tensor "
+            f"{first_weight!r}"
+        )
+    return int(weight.shape[0])
+
+
+def _build_grid_world_model(
     args: argparse.Namespace,
-    config: dict[str, Any],
-):
-    """Initialize one resumable W&B run after distributed rank is known."""
+    config: RLConfig,
+    *,
+    llm: torch.nn.Module,
+    device: torch.device,
+) -> GridWorldModel:
+    """从完整 SFT2 DINO-grid checkpoint 构造 RL world model。
 
-    if rank != 0:
-        return None
-    mode = os.environ.get("WANDB_MODE", "online")
-    if mode != "disabled" and not os.environ.get("WANDB_API_KEY"):
-        print(json.dumps({"wandb": "skipped", "reason": "WANDB_API_KEY not set"}))
-        return None
-
-    import wandb
-
-    run_id_path = output_dir / "wandb_run_id.txt"
-    requested_run_id = os.environ.get("WANDB_RUN_ID")
-    if requested_run_id is None and run_id_path.is_file():
-        requested_run_id = run_id_path.read_text(encoding="utf-8").strip() or None
-    run = wandb.init(
-        project=os.environ.get("WANDB_PROJECT", "nimloth-rl"),
-        entity=os.environ.get("WANDB_ENTITY"),
-        name=os.environ.get("WANDB_RUN_NAME") or args.experiment_name,
-        id=requested_run_id,
-        resume="allow" if requested_run_id is not None else None,
-        mode=mode,
-        config=config,
-        dir=os.environ.get("WANDB_DIR"),
-    )
-    run_id_path.write_text(f"{run.id}\n", encoding="utf-8")
-    wandb.define_metric("global_step")
-    wandb.define_metric("train/*", step_metric="global_step")
-    print(json.dumps({"wandb": "initialized", "run_id": run.id, "resume": requested_run_id is not None}))
-    return run
-
-
-def _broadcast_module_state(module: torch.nn.Module, src: int = 0) -> None:
-    """Synchronize a small non-FSDP module across ranks.
-
-    JSONL/FSDP mode intentionally makes every rank consume identical data so the
-    small WM/value modules can remain local replicas.  This only works if their
-    initial parameters are identical; CLI construction happens before
-    ``setup_dist()``, so we explicitly broadcast rank-0 state after device setup.
+    RL 不计算 DINO loss，也不更新 DINO decoder 或 EMA target encoder；二者仍
+    严格加载和保存，以保证 checkpoint 可恢复且 grid WM target 语义不变。
     """
 
-    if not (dist.is_available() and dist.is_initialized()):
-        return
-    for tensor in module.state_dict().values():
-        if torch.is_tensor(tensor):
-            dist.broadcast(tensor, src=src)
+    if args.state_proj_checkpoint is None or args.value_head_checkpoint is None:
+        raise ValueError(
+            "grid RL requires --state-proj-checkpoint and --value-head-checkpoint"
+        )
+    wm_checkpoint = Path(args.wm_checkpoint)
+    checkpoint_root = wm_checkpoint.parent
+    predictor = TemporalSpatialGridPredictor.load_checkpoint(
+        wm_checkpoint,
+        map_location="cpu",
+    )
+    if predictor.config.history_size != config.predictor.history_size:
+        raise ValueError(
+            "RL grid WM checkpoint history_size does not match config: "
+            f"checkpoint={predictor.config.history_size}, "
+            f"config={config.predictor.history_size}"
+        )
+    if predictor.config.emb_dim != config.predictor.emb_dim:
+        raise ValueError(
+            "RL grid WM checkpoint emb_dim does not match config: "
+            f"checkpoint={predictor.config.emb_dim}, "
+            f"config={config.predictor.emb_dim}"
+        )
+
+    state_proj_state = torch.load(
+        args.state_proj_checkpoint,
+        map_location="cpu",
+        weights_only=True,
+    )
+    encoder_hidden_dim = _grid_mlp_hidden_dim(
+        state_proj_state,
+        first_weight="online_encoder.net.net.0.weight",
+        emb_dim=predictor.config.emb_dim,
+    )
+    slot_first = state_proj_state.get("slot_projector.net.0.weight")
+    slot_last = state_proj_state.get("slot_projector.net.3.weight")
+    qwen_hidden_dim = backbone_hidden_size(llm.config)
+    if (
+        slot_first is None
+        or slot_last is None
+        or slot_first.ndim != 2
+        or slot_last.ndim != 2
+        or slot_first.shape[1] != qwen_hidden_dim
+        or slot_last.shape[0] != predictor.config.emb_dim
+        or slot_last.shape[1] != slot_first.shape[0]
+    ):
+        raise ValueError(
+            "SFT2 grid state projector is incompatible with the Qwen/predictor "
+            "dimensions"
+        )
+    slot_projector = SharedSlotProjector(
+        input_dim=qwen_hidden_dim,
+        output_dim=predictor.config.emb_dim,
+        hidden_dim=int(slot_first.shape[0]),
+        grid_tokens=predictor.config.grid_tokens,
+    ).to(dtype=slot_first.dtype)
+    state_proj = GridStateProjector(
+        slot_projector,
+        LeWMGridEncoder(
+            emb_dim=predictor.config.emb_dim,
+            hidden_dim=encoder_hidden_dim,
+        ),
+    )
+    state_proj.load_state_dict(state_proj_state)
+
+    metadata_path = checkpoint_root / "dino_grid_config.json"
+    decoder_path = checkpoint_root / "dino_grid_decoder.pt"
+    if not metadata_path.is_file() or not decoder_path.is_file():
+        raise FileNotFoundError(
+            f"incomplete DINO-grid checkpoint extras under {checkpoint_root}"
+        )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    decoder_state = torch.load(
+        decoder_path,
+        map_location="cpu",
+        weights_only=True,
+    )
+    decoder_hidden_dim = _grid_mlp_hidden_dim(
+        decoder_state,
+        first_weight="net.net.0.weight",
+        emb_dim=predictor.config.emb_dim,
+    )
+    target_encoder = EMATargetGridEncoder(
+        state_proj.online_encoder,
+        decay=float(metadata["ema_decay"]),
+    )
+    value_head = ValueHead.load_checkpoint(
+        args.value_head_checkpoint,
+        emb_dim=predictor.config.emb_dim,
+        map_location="cpu",
+    )
+    world_model = GridWorldModel(
+        state_proj=state_proj,
+        target_encoder=target_encoder,
+        wm_predictor=predictor,
+        dino_decoder=LeWMGridDecoder(
+            emb_dim=predictor.config.emb_dim,
+            hidden_dim=decoder_hidden_dim,
+        ),
+        value_head=value_head,
+        train_dino_decoder=False,
+        update_target_encoder=False,
+    )
+    world_model.load_checkpoint_extras(
+        checkpoint_root,
+        map_location=torch.device("cpu"),
+    )
+    world_model.target_encoder.requires_grad_(False).eval()
+    world_model.dino_decoder.requires_grad_(False).eval()
+    if config.freeze.state_proj:
+        world_model.state_proj.requires_grad_(False).eval()
+    return world_model.to(device)
+
+
+def _build_world_model(
+    args: argparse.Namespace,
+    config: RLConfig,
+    *,
+    llm: torch.nn.Module,
+    device: torch.device,
+) -> WorldModel:
+    """构造 RL 使用的 WorldModel，并加载显式指定的子模块 checkpoint。"""
+
+    if args.wm_checkpoint is not None and _is_grid_predictor_checkpoint(
+        Path(args.wm_checkpoint)
+    ):
+        return _build_grid_world_model(
+            args,
+            config,
+            llm=llm,
+            device=device,
+        )
+
+    if args.wm_checkpoint is not None:
+        wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_checkpoint)
+        if wm_predictor.config.history_size != config.predictor.history_size:
+            raise ValueError(
+                "RL WM checkpoint history_size does not match config: "
+                f"checkpoint={wm_predictor.config.history_size}, "
+                f"config={config.predictor.history_size}"
+            )
+    else:
+        wm_predictor = LatentWMPredictor.create(
+            LeWMConfig(
+                emb_dim=config.predictor.emb_dim,
+                history_size=config.predictor.history_size,
+            )
+        )
+    state_proj = StateProjector(
+        qwen_hidden_dim=backbone_hidden_size(llm.config),
+        lewm_emb_dim=wm_predictor.emb_dim,
+    )
+    value_head = ValueHead(emb_dim=wm_predictor.emb_dim)
+
+    if args.state_proj_checkpoint is not None:
+        state_proj.load_state_dict(
+            torch.load(
+                args.state_proj_checkpoint,
+                map_location="cpu",
+                weights_only=True,
+            )
+        )
+    if args.value_head_checkpoint is not None:
+        loaded_head = ValueHead.load_checkpoint(
+            args.value_head_checkpoint,
+            emb_dim=wm_predictor.emb_dim,
+        )
+        value_head.load_state_dict(loaded_head.state_dict())
+
+    if config.freeze.state_proj:
+        state_proj.eval()
+        for parameter in state_proj.parameters():
+            parameter.requires_grad = False
+
+    return WorldModel(
+        state_proj=state_proj.to(device),
+        wm_predictor=wm_predictor.to(device),
+        value_head=value_head.to(device),
+    )
+
+
+def _wrap_llm_fsdp(
+    llm: torch.nn.Module,
+    *,
+    world_size: int,
+) -> torch.nn.Module:
+    if world_size <= 1:
+        return llm
+    from torch.distributed.fsdp import (
+        FullyShardedDataParallel as FSDP,
+        ShardingStrategy,
+    )
+
+    # FULL_SHARD 的局部 embedding 不保证包含 padding row。
+    embedding = llm.get_input_embeddings()
+    if getattr(embedding, "padding_idx", None) is not None:
+        embedding.padding_idx = None
+    wrapped = FSDP(
+        llm,
+        device_id=torch.cuda.current_device(),
+        sharding_strategy=ShardingStrategy.FULL_SHARD,
+        sync_module_states=True,
+        use_orig_params=True,
+    )
+    if is_main():
+        print(json.dumps({"fsdp": "wrapped", "world_size": world_size}))
+    return wrapped
+
+
+def _build_optimizer(
+    model: torch.nn.Module,
+    world_model: WorldModel,
+    config: RLConfig,
+) -> torch.optim.Optimizer:
+    """按 Agent 子模块建立 RL 参数组。"""
+
+    parameter_groups: list[dict[str, Any]] = []
+    qwen_parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
+    if qwen_parameters:
+        parameter_groups.append(
+            {
+                "params": qwen_parameters,
+                "lr": config.gradient.backbone_lr,
+                "name": "qwen",
+            }
+        )
+    for name, module, learning_rate in (
+        ("state_proj", world_model.state_proj, config.predictor.lr),
+        ("value_head", world_model.value_head, config.value_head.lr),
+        ("wm_predictor", world_model.wm_predictor, config.predictor.lr),
+    ):
+        parameters = [
+            parameter for parameter in module.parameters() if parameter.requires_grad
+        ]
+        if parameters:
+            parameter_groups.append(
+                {"params": parameters, "lr": learning_rate, "name": name}
+            )
+    if not parameter_groups:
+        raise ValueError("RL configuration leaves no trainable parameters")
+    return torch.optim.AdamW(parameter_groups, weight_decay=1e-4)
+
+
+def _load_resume_state(
+    *,
+    checkpoint_dir: Path | None,
+    world_model: WorldModel,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    rank: int,
+    world_size: int,
+    expected_checkpoint_metric: str,
+) -> RLResumeState:
+    """恢复 WM、optimizer 和 iteration 位置。"""
+
+    if checkpoint_dir is None:
+        return RLResumeState()
+    state = load_rl_wm_checkpoint(checkpoint_dir, world_model, device)
+    if not state:
+        return RLResumeState()
+    if world_size > 1:
+        saved_world = int(state.get("optimizer_world_size", 0))
+        if saved_world != world_size:
+            raise RuntimeError(
+                f"FSDP optimizer checkpoint world_size={saved_world}, current={world_size}"
+            )
+        optimizer_path = checkpoint_dir / f"optimizer_rank_{rank:05d}.pt"
+        if not optimizer_path.is_file():
+            raise FileNotFoundError(
+                f"missing rank optimizer checkpoint: {optimizer_path}"
+            )
+        optimizer.load_state_dict(
+            torch.load(optimizer_path, map_location="cpu", weights_only=False)
+        )
+    elif state.get("optimizer") is not None:
+        optimizer.load_state_dict(state["optimizer"])
+    checkpoint_metric = state.get("checkpoint_metric")
+    if checkpoint_metric is not None and checkpoint_metric != expected_checkpoint_metric:
+        raise ValueError(
+            "resume checkpoint metric mismatch: "
+            f"saved={checkpoint_metric!r}, configured={expected_checkpoint_metric!r}"
+        )
+    return RLResumeState(
+        start_iteration=int(state.get("iteration", 0)) + 1,
+        global_step=int(state.get("global_step", 0)),
+        best_eval_metric=float(state.get("best_eval_metric", float("-inf"))),
+        loaded=True,
+    )
 
 
 def train_rl(
     *,
     args: argparse.Namespace,
-    config: dict[str, Any],
-    state_proj: StateProjector,
-    wm_predictor: LatentWMPredictor,
-    value_head: ValueHead,
-    collector: RolloutCollector,
+    config: RLConfig,
+    train_collector: RolloutCollector,
+    eval_collector: RolloutCollector | None,
     output_dir: Path,
 ) -> int:
-    """Run the online RL training loop."""
+    """装配 RL runtime；核心 batch 算法见 ``RLAlgorithm``。"""
 
-    # --- unpack config -------------------------------------------------------
-    rl_cfg: dict = config.get("rl", {})
-    freeze_cfg: dict = config.get("freeze", {})
-    pred_cfg: dict = config.get("predictor", {})
-    vh_cfg: dict = config.get("value_head", {})
-    val_cfg: dict = config.get("validation", {})
-    train_cfg: dict = config.get("training", {})
-
-    iterations: int = rl_cfg.get("iterations", 1000)
-    envs_per_iter: int = rl_cfg.get("envs_per_iteration", 8)
-    max_steps_per_ep: int = rl_cfg.get("max_steps_per_episode", 20)
-    gamma: float = rl_cfg.get("gamma", 0.99)
-    batch_size: int = rl_cfg.get("batch_size", 32)
-    # One optimizer step per iteration → 1 iteration = 1 global_step.
-
-    pred_lr: float = float(pred_cfg.get("lr", 1e-3))
-    vh_lr: float = float(vh_cfg.get("lr", 1e-3))
-    rank_margin: float = vh_cfg.get("rank_margin", 0.1)
-    lambda_rank: float = vh_cfg.get("lambda_rank", 1.0)
-
-    # Actor (Qwen PPO) config
-    actor_cfg: dict = config.get("actor", {})
-    actor_enabled: bool = bool(actor_cfg) and not freeze_cfg.get("qwen", True)
-    actor_lr: float = float(actor_cfg.get("lr", 1e-6))
-    entropy_coeff: float = float(actor_cfg.get("entropy_coeff", 0.0))
-    clip_ratio: float = float(actor_cfg.get("clip_ratio", 0.2))
-
-    # Config-controlled freeze is advisory — actual tuning is via --llm-tune / --vision-tune
-    freeze_qwen: bool = freeze_cfg.get("qwen", True)
-    freeze_state_proj: bool = freeze_cfg.get("state_proj", True)
-
-    log_interval: int = train_cfg.get("log_interval", 10)
-    save_interval: int = train_cfg.get("save_interval", 50)
-    val_enabled: bool = val_cfg.get("enabled", True)
-    val_interval: int = val_cfg.get("interval", 50)
-    val_envs: int = val_cfg.get("envs", 16)
-    seed: int = train_cfg.get("seed", 42)
-
-    # --- tuning modes --------------------------------------------------------
     llm_tune, vision_tune = resolve_tune_modes(args)
-    vision_ema_enabled = resolve_vision_ema(args, vision_tune)
+    actor_enabled = config.actor.enabled
+    planning_enabled = config.agent.planning.enabled
+    validate_online_policy_configuration(
+        actor_enabled=actor_enabled,
+        planning_enabled=planning_enabled,
+    )
+    backbone_trainable = llm_tune != "freeze" or vision_tune != "freeze"
+    if actor_enabled and not backbone_trainable:
+        raise ValueError(
+            "actor.enabled requires a trainable --llm-tune or --vision-tune mode"
+        )
+    validate_collector_configuration(
+        actor_enabled=actor_enabled,
+        train_collector=train_collector,
+        eval_collector=eval_collector,
+        validation_enabled=config.validation.enabled,
+    )
+    needs_online_policy = online_policy_required(
+        train_collector,
+        eval_collector,
+    )
+    if not args.resume:
+        # 非 resume 运行可以在加载大模型前完成 planning artifact 校验。
+        validate_planning_initialization(
+            planning_enabled=planning_enabled,
+            online_policy_needed=needs_online_policy,
+            resume_loaded=False,
+            wm_checkpoint=args.wm_checkpoint,
+            state_proj_checkpoint=args.state_proj_checkpoint,
+            value_head_checkpoint=args.value_head_checkpoint,
+        )
 
-    # --- distributed setup ---------------------------------------------------
-    rank, world, local_rank, device = setup_dist()
+    rank, world, _, device = setup_dist()
+    validate_fresh_rollout_policy(train_collector)
+    if actor_enabled and world > 1 and not isinstance(
+        train_collector,
+        FreshJSONLRolloutCollector,
+    ):
+        raise RuntimeError(
+            "multi-rank PPO actor is disabled until rollout freshness and FSDP "
+            "forward/EMA semantics have dedicated integration coverage"
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
-    torch.manual_seed(seed)
-    wandb_run = _maybe_init_wandb(
+    torch.manual_seed(config.training.seed)
+    reporter = RLReporter(
         rank=rank,
         output_dir=output_dir,
-        args=args,
+        run_name=args.experiment_name,
         config=config,
     )
 
-    # --- Qwen model loading --------------------------------------------------
-    processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
-    processor.image_processor.min_pixels = 3136
-    processor.image_processor.max_pixels = args.max_pixels
-    n_added = add_special_tokens(processor.tokenizer)
-    token_id_map = special_token_ids(processor.tokenizer)
-    tokenizer_vocab = len(processor.tokenizer)
+    try:
+        from transformers import AutoConfig
+        from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 
-    resume_ckpt_dir = output_dir / "best"
-    resume_state_path = resume_ckpt_dir / "rl_state.pt"
-    resume_adapter = resume_ckpt_dir / "adapter_config.json"
-    base_model_path = str(args.model)
-
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        attn_implementation=args.attn_implementation,
-        trust_remote_code=True,
-    )
-    validate_rl_policy_protocol(model.config)
-    model_vocab_before = model.get_input_embeddings().weight.shape[0]
-    # Log model embedding info before resize
-    embed = model.get_input_embeddings()
-    pad_idx = getattr(embed, "padding_idx", None)
-    print(json.dumps({
-        "rank": rank,
-        "model_vocab_before": model_vocab_before,
-        "tokenizer_vocab": tokenizer_vocab,
-        "n_added": n_added,
-        "padding_idx": pad_idx,
-        "embed_weight_shape": list(embed.weight.shape),
-    }), flush=True)
-
-    if args.gradient_checkpointing:
-        model.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs={"use_reentrant": False}
+        latent_token_count = validate_agent_policy_protocol(
+            AutoConfig.from_pretrained(args.model, trust_remote_code=True)
         )
-    if n_added > 0:
-        model.resize_token_embeddings(tokenizer_vocab)
-        model_vocab_after = model.get_input_embeddings().weight.shape[0]
-        print(json.dumps({"rank": rank, "resized": True,
-                          "model_vocab_after": model_vocab_after}), flush=True)
-
-    # Resume branches
-    resume_aux_ckpt: Path | None = None  # for loading WM + optimizer later
-
-    if args.resume and resume_state_path.exists() and resume_adapter.exists():
-        if not uses_lora(args):
-            raise ValueError("--resume with LoRA adapter requires llm_tune and/or vision_tune lora")
-        saved = torch.load(resume_state_path, map_location="cpu", weights_only=False)
-        saved_base = saved.get("base_model_path")
-        if saved_base:
-            base_model_path = str(saved_base)
-        if is_main():
-            print(json.dumps({"resume_lora_adapter": str(resume_ckpt_dir),
-                              "base_model_path": base_model_path}))
-        model = configure_qwen_tuning(model, args)
-        load_lora_adapter_state(model, resume_ckpt_dir)
-        resume_aux_ckpt = resume_ckpt_dir
-
-    elif args.resume and resume_state_path.exists() and (resume_ckpt_dir / "config.json").exists():
-        if uses_lora(args):
-            raise ValueError("cannot --resume full HF checkpoint with lora tuning")
-        if is_main():
-            print(json.dumps({"resume_full": str(resume_ckpt_dir)}))
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            resume_ckpt_dir,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            attn_implementation=args.attn_implementation,
-            trust_remote_code=True,
+        resume_dir = output_dir / "latest"
+        loaded = load_backbone(
+            args,
+            device=device,
+            latent_token_count=latent_token_count,
+            resume_dir=resume_dir,
+            resume_state_path=resume_dir / "rl_state.pt",
         )
-        if args.gradient_checkpointing:
-            model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False}
-            )
-        model.resize_token_embeddings(len(processor.tokenizer))
-        model = configure_qwen_tuning(model, args)
-        resume_aux_ckpt = resume_ckpt_dir
-
-    else:
-        model = configure_qwen_tuning(model, args)
-        if is_main():
-            print(json.dumps({"init": "configured_tuning",
-                              "base_model_path": base_model_path,
-                              "llm_tune": llm_tune,
-                              "vision_tune": vision_tune}))
-
-    model.to(device)
-
-    # --- Wire up EnvRolloutCollector with loaded model -----------------------
-    from nimloth.training.rl.rollout import EnvRolloutCollector
-    if isinstance(collector, EnvRolloutCollector):
+        model = loaded.backbone.model
+        world_model = _build_world_model(args, config, llm=model, device=device)
         if world > 1:
+            broadcast_module_state(world_model.state_proj)
+            broadcast_module_state(world_model.wm_predictor)
+            broadcast_module_state(world_model.value_head)
+            if isinstance(world_model, GridWorldModel):
+                broadcast_module_state(world_model.target_encoder)
+                broadcast_module_state(world_model.dino_decoder)
+
+        vision_ema_enabled = resolve_vision_ema(args, vision_tune)
+        if vision_ema_enabled and world > 1:
             raise RuntimeError(
-                "分布式/FSDP trainer 不能直接让 EnvRolloutCollector 使用 FSDP-wrapped Qwen "
-                "做动态 env rollout。各 rank 的 episode 长度、图片数、失败时机不同，会导致 "
-                "FSDP forward 触碰次数和形状不一致，可能 deadlock 或错误训练。\n"
-                "请先使用独立 rollout backend（如 experiments/training/rl/rollout_env.py）"
-                "生成 JSONL 文件，再用 --use-jsonl-rollout --jsonl-sources 指定 JSONL 路径训练。"
+                "Vision EMA 尚未验证 FSDP shard 语义；多卡时请显式关闭 EMA"
             )
-        collector._model = model
-        collector._processor = processor
-        collector._device = device
-        if is_main():
-            print(json.dumps({"env_collector": "wired", "device": str(device)}))
-
-    # --- freeze WM-encoding pathway if requested -----------------------------
-    if freeze_qwen and llm_tune == "freeze" and vision_tune == "freeze":
-        _freeze(model)
-    if freeze_state_proj:
-        _freeze(state_proj)
-
-    state_proj.to(device)
-    wm_predictor.to(device)
-    value_head.to(device)
-    if world > 1:
-        _broadcast_module_state(state_proj)
-        _broadcast_module_state(wm_predictor)
-        _broadcast_module_state(value_head)
-        if is_main():
-            print(json.dumps({"synced_local_wm_modules": True, "world_size": world}))
-
-    # --- Vision EMA -----------------------------------------------------------
-    vision_ema: VisionEncoderEMA | None = None
-    if vision_ema_enabled:
-        vision_ema = VisionEncoderEMA(decay=args.vision_ema_decay)
-        vision_ema.reset(model)
-        ema_path = resume_ckpt_dir / "vision_ema.pt"
-        if args.resume and ema_path.is_file():
-            loaded_ema = VisionEncoderEMA.load_checkpoint(ema_path, map_location=device)
-            vision_ema.decay = loaded_ema.decay
-            vision_ema.shadow = {k: v.to(device) for k, v in loaded_ema.shadow.items()}
-        if is_main():
-            print(json.dumps({"vision_ema": True,
-                              "shadow_params": len(vision_ema.shadow),
-                              "decay": vision_ema.decay}))
-
-    # --- FSDP wrap ------------------------------------------------------------
-    if world > 1:
-        from torch.distributed.fsdp import (
-            FullyShardedDataParallel as FSDP,
-            ShardingStrategy,
+        vision_ema = build_vision_ema(
+            enabled=vision_ema_enabled,
+            decay=args.vision_ema_decay,
+            llm=model,
+            resume_path=(output_dir / "latest" / "vision_ema.pt") if args.resume else None,
+            device=device,
         )
-
-        # FULL_SHARD splits the embedding across ranks. If the padding_idx
-        # row doesn't fall on every rank's shard, FSDP forward hits:
-        #   assert padding_idx < weight.size(0)
-        # Clearing padding_idx is safe: it only zeroes the padding embedding
-        # row during forward, which the model doesn't rely on.
-        embed = model.get_input_embeddings()
-        if hasattr(embed, "padding_idx") and embed.padding_idx is not None:
-            embed.padding_idx = None
-            if is_main():
-                print(json.dumps({"cleared_padding_idx": True}))
-
-        model = FSDP(
-            model,
-            device_id=torch.cuda.current_device(),
-            sharding_strategy=ShardingStrategy.FULL_SHARD,
-            sync_module_states=True,
-            use_orig_params=True,
+        model = _wrap_llm_fsdp(model, world_size=world)
+        optimizer = _build_optimizer(model, world_model, config)
+        resume = _load_resume_state(
+            checkpoint_dir=loaded.resume_aux_dir,
+            world_model=world_model,
+            optimizer=optimizer,
+            device=device,
+            rank=rank,
+            world_size=world,
+            expected_checkpoint_metric=config.validation.checkpoint_metric,
         )
-        if is_main():
-            print(json.dumps({"fsdp": "wrapped", "world_size": world}))
-    # FSDP handles multi-GPU; small modules stay on device if world==1.
-
-    # --- optimizer ------------------------------------------------------------
-    param_groups = [
-        {"params": [p for p in model.parameters() if p.requires_grad], "lr": actor_lr, "name": "qwen"},
-        {"params": state_proj.parameters(), "lr": pred_lr, "name": "state_proj"},
-        {"params": value_head.parameters(), "lr": vh_lr, "name": "value_head"},
-        {"params": wm_predictor.parameters(), "lr": pred_lr, "name": "wm_predictor"},
-    ]
-    optimizer = torch.optim.AdamW(param_groups, weight_decay=1e-4)
-
-    # --- resume training state ------------------------------------------------
-    start_iteration = 1
-    global_step = 0
-    best_value_loss = float("inf")
-    if resume_aux_ckpt is not None:
-        resume_state = load_rl_wm_checkpoint(
-            resume_aux_ckpt, state_proj, wm_predictor, value_head, device
+        agent = Agent(
+            backbone=loaded.backbone.with_model(model),
+            wm=world_model,
         )
-        if resume_state:
-            start_iteration = int(resume_state.get("iteration", 0)) + 1
-            global_step = int(resume_state.get("global_step", 0))
-            best_value_loss = float(resume_state.get("best_value_loss", float("inf")))
-            if world > 1:
-                saved_world = int(resume_state.get("optimizer_world_size", 0))
-                if saved_world != world:
-                    raise RuntimeError(
-                        f"FSDP optimizer checkpoint world_size={saved_world}, current={world}"
-                    )
-                optimizer_path = resume_aux_ckpt / f"optimizer_rank_{rank:05d}.pt"
-                if not optimizer_path.is_file():
-                    raise FileNotFoundError(f"missing rank optimizer checkpoint: {optimizer_path}")
-                optimizer.load_state_dict(
-                    torch.load(optimizer_path, map_location="cpu", weights_only=False)
+        input_builder = build_input_builder(
+            loaded,
+            max_length=999_999,
+            latent_token_count=latent_token_count,
+            mask_latent_query_labels=True,
+        )
+        # resume 只有在 checkpoint state 确实恢复后才算有效，不能只相信 CLI flag。
+        validate_planning_initialization(
+            planning_enabled=planning_enabled,
+            online_policy_needed=needs_online_policy,
+            resume_loaded=resume.loaded,
+            wm_checkpoint=args.wm_checkpoint,
+            state_proj_checkpoint=args.state_proj_checkpoint,
+            value_head_checkpoint=args.value_head_checkpoint,
+        )
+        if needs_online_policy:
+            if planning_enabled:
+                policy = PlanningPolicy(
+                    agent=agent,
+                    input_builder=input_builder,
+                    horizon=config.agent.planning.horizon,
+                    beam_width=config.agent.planning.beam_width,
+                    temperature=config.rollout.temperature,
+                    top_p=config.rollout.top_p,
                 )
-            elif resume_state.get("optimizer") is not None:
-                optimizer.load_state_dict(resume_state["optimizer"])
-            if is_main():
-                print(json.dumps({"resume": True, "start_iteration": start_iteration,
-                                  "global_step": global_step}))
-
-    # --- logging --------------------------------------------------------------
-    log_path = output_dir / "train_step_log.csv"
-    if is_main() and not log_path.exists():
-        with log_path.open("w", newline="") as f:
-            csv.writer(f).writerow([
-                "time", "iteration", "global_step",
-                "wm_mse", "value_loss", "total_loss",
-                "num_rollouts", "num_transitions", "success_rate",
-                "val_success_rate", "val_avg_reward", "val_avg_steps",
-                "actor_loss", "entropy", "clip_fraction", "mean_advantage",
-            ])
-
-    # --- main loop ------------------------------------------------------------
-    for iteration in range(start_iteration, iterations + 1):
-        iter_start = time.time()
-
-        # 1. Collect trajectories -------------------------------------------------
-        if is_main():
-            print(json.dumps({"iteration": iteration, "phase": "rollout",
-                              "num_episodes": envs_per_iter}))
-        trajectories = collector.collect(
-            num_episodes=envs_per_iter,
-            max_steps_per_episode=max_steps_per_ep,
-            output_dir=output_dir / f"rollouts/iter_{iteration:04d}",
-        )
-        if is_main():
-            print(json.dumps({"iteration": iteration,
-                              "trajectories_collected": len(trajectories)}))
-
-        if not trajectories:
-            if is_main():
-                print(json.dumps({"iteration": iteration,
-                                  "warning": "no trajectories collected, skipping"}))
-            continue
-
-        # 2. Encode → transitions ------------------------------------------------
-        transitions = build_rl_transitions(
-            trajectories, model, processor, token_id_map, device, gamma=gamma,
-        )
-        # Free GPU memory before PPO forward (Qwen+LoRA+gradients needs extra VRAM)
-        torch.cuda.empty_cache()
-        if len(transitions) < batch_size:
-            if is_main():
-                print(json.dumps({
-                    "iteration": iteration,
-                    "warning": f"only {len(transitions)} transitions, need {batch_size}",
-                }))
-            continue
-
-        # 3. Train predictor + value head (1 step per iteration) ---------------
-        # 使用 per-iteration 确定性 generator 保证所有 rank 选同一 batch，
-        # 不依赖全局 RNG 状态同步（FSDP 等可能引入细微信号差异）。
-        g = torch.Generator(device="cpu")
-        g.manual_seed(seed + iteration)
-        indices = torch.randperm(len(transitions), generator=g)[:batch_size]
-        batch = [transitions[i] for i in indices]
-
-        hidden_cur = torch.stack([b["qwen_hidden_current"] for b in batch]).to(device)
-        hidden_next = torch.stack([b["qwen_hidden_next"] for b in batch]).to(device)
-        actions = torch.stack([b["action_index"] for b in batch]).to(device)
-        value_targets = torch.stack([b["value_target"] for b in batch]).to(device)
-
-        pred_loss, pred_metrics = compute_predictor_loss(
-            qwen_hidden_current=hidden_cur,
-            qwen_hidden_next=hidden_next,
-            action_indices=actions,
-            state_proj=state_proj,
-            wm_predictor=wm_predictor,
-        )
-
-        sp = _unwrap(state_proj)
-        wm_state = sp(hidden_cur).float().detach()
-        val_loss, val_metrics = compute_value_loss(
-            state_emb=wm_state,
-            action_indices=actions,
-            action_value_targets=value_targets,
-            value_head=value_head,
-            rank_margin=rank_margin,
-            lambda_rank=lambda_rank,
-        )
-
-        # --- PPO actor loss (Qwen update) ---
-        actor_metrics: dict[str, float] = {}
-        if actor_enabled:
-            import gc
-            torch.cuda.empty_cache()
-            gc.collect()
-            from nimloth.training.rl.loss import compute_actor_loss, compute_action_entropy
-
-            # advantages from value head
-            with torch.no_grad():
-                all_values = value_head(wm_state).float()
-                chosen_values = all_values.gather(1, actions.unsqueeze(1)).squeeze(1)
-            advantages = (value_targets.to(device=chosen_values.device, dtype=chosen_values.dtype)
-                          - chosen_values.detach())
-            # unbiased=False 避免 batch size=1 时 std 产生 NaN
-            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
-
-            # Build PPO items
-            ppo_items = []
-            for i in range(len(batch)):
-                b = batch[i]
-                ppo_items.append({
-                    "image_path": b["image_path"],
-                    "nav_instruction": b["nav_instruction"],
-                    "action_history_names": b["action_history_names"],
-                    "taken_action_idx": int(b["action_index"].item()),
-                })
-
-            # Qwen forward with gradients
-            new_log_probs, action_logits = compute_new_log_probs_for_batch(
-                ppo_items, model, processor, token_id_map, device,
-            )
-            old_log_probs = torch.tensor(
-                [b["old_log_prob"] for b in batch],
-                device=new_log_probs.device, dtype=new_log_probs.dtype,
-            )
-
-            actor_loss, actor_metrics = compute_actor_loss(
-                new_log_probs=new_log_probs,
-                old_log_probs=old_log_probs,
-                advantages=advantages.to(device=new_log_probs.device, dtype=new_log_probs.dtype),
-                clip_ratio=clip_ratio,
-            )
-            entropy = compute_action_entropy(action_logits)
-            total_loss = pred_loss + val_loss + actor_loss - entropy_coeff * entropy
-            actor_metrics["entropy"] = float(entropy.detach().item())
-            actor_metrics["mean_advantage"] = float(advantages.mean().item())
-        else:
-            total_loss = pred_loss + val_loss
-
-        optimizer.zero_grad(set_to_none=True)
-        total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            [p for group in optimizer.param_groups for p in group["params"]], 1.0,
-        )
-        optimizer.step()
-        if vision_ema is not None:
-            vision_ema.update(model)
-
-        global_step += 1
-        iter_metrics: dict[str, float] = {
-            "wm_mse": float(pred_metrics.get("wm_mse", 0.0)),
-            "value_loss": float(val_metrics.get("value_loss",
-                                                val_metrics.get("value_total", 0.0))),
-            "total_loss": float(total_loss.detach().item()),
-            "num_rollouts": float(len(trajectories)),
-            "num_transitions": float(len(transitions)),
-            "success_rate": float(
-                sum(1 for t in trajectories if t.success) / max(1, len(trajectories))
-            ),
-        }
-        iter_metrics.update({k: v for k, v in actor_metrics.items() if k != "actor_loss"})
-        iter_metrics["actor_loss"] = float(actor_metrics.get("actor_loss", 0.0))
-
-        if dist.is_available() and dist.is_initialized():
-            dist.barrier()
-
-        # --- validation rollout -------------------------------------------------
-        if val_enabled and iteration % val_interval == 0:
-            val_trajectories = collector.collect(
-                num_episodes=val_envs,
-                max_steps_per_episode=max_steps_per_ep,
-                output_dir=output_dir / f"rollouts/val_{iteration:04d}",
-            )
-            if val_trajectories:
-                val_success = sum(1 for t in val_trajectories if t.success) / len(val_trajectories)
-                val_avg_reward = sum(t.reward for t in val_trajectories) / len(val_trajectories)
-                val_avg_steps = sum(t.num_steps for t in val_trajectories) / len(val_trajectories)
-                iter_metrics["val_success_rate"] = float(val_success)
-                iter_metrics["val_avg_reward"] = float(val_avg_reward)
-                iter_metrics["val_avg_steps"] = float(val_avg_steps)
-                if is_main():
-                    print(json.dumps({
-                        "iteration": iteration,
-                        "val_success_rate": val_success,
-                        "val_avg_reward": val_avg_reward,
-                        "val_num_episodes": len(val_trajectories),
-                    }))
-
-        if dist.is_available() and dist.is_initialized():
-            dist.barrier()
-
-        # --- logging -----------------------------------------------------------
-        current_val = iter_metrics.get("value_loss", float("inf"))
-
-        if is_main() and (iteration % log_interval == 0 or iteration == 1):
-            with log_path.open("a", newline="") as f:
-                csv.writer(f).writerow([
-                    time.time(), iteration, global_step,
-                    iter_metrics.get("wm_mse", ""),
-                    iter_metrics.get("value_loss", ""),
-                    iter_metrics.get("total_loss", ""),
-                    iter_metrics.get("num_rollouts", ""),
-                    iter_metrics.get("num_transitions", ""),
-                    iter_metrics.get("success_rate", ""),
-                    iter_metrics.get("val_success_rate", ""),
-                    iter_metrics.get("val_avg_reward", ""),
-                    iter_metrics.get("val_avg_steps", ""),
-                    iter_metrics.get("actor_loss", ""),
-                    iter_metrics.get("entropy", ""),
-                    iter_metrics.get("clip_fraction", ""),
-                    iter_metrics.get("mean_advantage", ""),
-                ])
-            elapsed = time.time() - iter_start
-            print(json.dumps({
-                "iteration": iteration,
-                "global_step": global_step,
-                "metrics": iter_metrics,
-                "elapsed_s": round(elapsed, 1),
-            }))
-            if wandb_run is not None:
-                wandb_run.log(
-                    {
-                        **{f"train/{key}": value for key, value in iter_metrics.items()},
-                        "global_step": global_step,
-                        "iteration": iteration,
-                    },
-                    step=global_step,
-                )
-
-        # --- checkpoint --------------------------------------------------------
-        if iteration % save_interval == 0:
-            save_rl_checkpoint(
-                output_dir / f"iter_{iteration:04d}",
-                state_proj=state_proj,
-                wm_predictor=wm_predictor,
-                value_head=value_head,
-                model=model,
-                processor=processor,
-                vision_ema=vision_ema,
-                optimizer=optimizer,
-                iteration=iteration,
-                global_step=global_step,
-                best_value_loss=best_value_loss,
-                lora=uses_lora(args),
-                llm_tune=llm_tune,
-                vision_tune=vision_tune,
-                base_model_path=base_model_path,
-            )
-            if current_val < best_value_loss:
-                best_value_loss = current_val
-                save_rl_checkpoint(
-                    resume_ckpt_dir,  # "best/"
-                    state_proj=state_proj,
-                    wm_predictor=wm_predictor,
-                    value_head=value_head,
+            else:
+                policy = build_agent_policy(
+                    loaded,
                     model=model,
-                    processor=processor,
-                    vision_ema=vision_ema,
-                    optimizer=optimizer,
-                    iteration=iteration,
-                    global_step=global_step,
-                    best_value_loss=best_value_loss,
-                    lora=uses_lora(args),
-                    llm_tune=llm_tune,
-                    vision_tune=vision_tune,
-                    base_model_path=base_model_path,
+                    device=device,
+                    temperature=config.rollout.temperature,
+                    top_p=config.rollout.top_p,
                 )
-
-        if dist.is_available() and dist.is_initialized():
-            dist.barrier()
-
-    # --- final checkpoint -----------------------------------------------------
-    save_rl_checkpoint(
-        output_dir / "final",
-        state_proj=state_proj,
-        wm_predictor=wm_predictor,
-        value_head=value_head,
-        model=model,
-        processor=processor,
-        vision_ema=vision_ema,
-        optimizer=optimizer,
-        iteration=iterations,
-        global_step=global_step,
-        best_value_loss=best_value_loss,
-        lora=uses_lora(args),
-        llm_tune=llm_tune,
-        vision_tune=vision_tune,
-        base_model_path=base_model_path,
-    )
-    if wandb_run is not None:
-        wandb_run.finish()
-    cleanup_dist()
-    return 0
+            bind_online_collectors(
+                train_collector=train_collector,
+                eval_collector=eval_collector,
+                policy=policy,
+                latent_token_count=latent_token_count,
+                world_size=world,
+            )
+            if is_main():
+                print(
+                    json.dumps(
+                        {
+                            "agent_policy": (
+                                "wm_planning" if planning_enabled else "qwen_direct"
+                            ),
+                            "planning_horizon": (
+                                config.agent.planning.horizon
+                                if planning_enabled
+                                else None
+                            ),
+                            "planning_beam_width": (
+                                config.agent.planning.beam_width
+                                if planning_enabled
+                                else None
+                            ),
+                        }
+                    )
+                )
+        checkpoint_manager = RLCheckpointManager(
+            config=config,
+            agent=agent,
+            processor=loaded.processor,
+            vision_ema=vision_ema,
+            optimizer=optimizer,
+            base_model_path=str(loaded.base_model_path),
+            llm_tune=llm_tune,
+            vision_tune=vision_tune,
+        )
+        algorithm = RLAlgorithm(
+            history_size=config.predictor.history_size,
+            sigreg=(
+                SequenceSIGReg(
+                    knots=config.predictor.sigreg_knots,
+                    num_proj=config.predictor.sigreg_num_proj,
+                ).to(device)
+                if config.predictor.lambda_sigreg > 0.0
+                else None
+            ),
+            sigreg_weight=config.predictor.lambda_sigreg,
+            value_rank_margin=config.value_head.rank_margin,
+            value_rank_weight=config.value_head.lambda_rank,
+            ppo_clip_ratio=config.actor.clip_ratio,
+            entropy_weight=config.actor.entropy_coeff,
+        )
+        model_runtime = RLModelRuntime(
+            agent=agent,
+            input_builder=input_builder,
+            representation_to_backbone=(
+                config.gradient.representation_to_backbone
+            ),
+            policy_replay=(
+                build_action_log_prob_replay(
+                    loaded,
+                    model=model,
+                    device=device,
+                )
+                if actor_enabled
+                else None
+            ),
+        )
+        optimization_runtime = OptimizationRuntime(
+            optimizer=optimizer,
+            synchronized_modules=agent.synchronized_modules,
+            after_step=(
+                lambda: vision_ema.update(agent.backbone.model)
+                if vision_ema is not None
+                else None
+            ),
+        )
+        loop = RLTrainingLoop(
+            config=config,
+            algorithm=algorithm,
+            model_runtime=model_runtime,
+            optimization_runtime=optimization_runtime,
+            device=device,
+            train_collector=train_collector,
+            eval_collector=eval_collector,
+            output_dir=output_dir,
+            checkpoint_manager=checkpoint_manager,
+            reporter=reporter,
+            start_iteration=resume.start_iteration,
+            state=RLLoopState(
+                global_step=resume.global_step,
+                best_eval_metric=resume.best_eval_metric,
+            ),
+        )
+        loop.run()
+        return 0
+    finally:
+        reporter.finish()
+        cleanup_dist()

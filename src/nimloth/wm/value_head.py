@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from nimloth.wm.dataset import NUM_NAVIGATION_ACTIONS
+from nimloth.wm.lewm import DEFAULT_ACTION_COUNT
 
 
 class ValueHead(nn.Module):
@@ -16,7 +16,7 @@ class ValueHead(nn.Module):
     def __init__(
         self,
         emb_dim: int,
-        num_actions: int = NUM_NAVIGATION_ACTIONS,
+        num_actions: int = DEFAULT_ACTION_COUNT,
         hidden_dim: int | None = None,
     ) -> None:
         super().__init__()
@@ -42,13 +42,14 @@ class ValueHead(nn.Module):
         path: Path,
         *,
         emb_dim: int,
-        num_actions: int = NUM_NAVIGATION_ACTIONS,
+        num_actions: int = DEFAULT_ACTION_COUNT,
         hidden_dim: int | None = None,
         map_location: str | torch.device = "cpu",
     ) -> "ValueHead":
         path = Path(path)
         module = cls(emb_dim=emb_dim, num_actions=num_actions, hidden_dim=hidden_dim)
         state_path = path / "value_head.pt"
-        if state_path.is_file():
-            module.load_state_dict(torch.load(state_path, map_location=map_location, weights_only=True))
+        if not state_path.is_file():
+            raise FileNotFoundError(f"missing ValueHead checkpoint: {state_path}")
+        module.load_state_dict(torch.load(state_path, map_location=map_location, weights_only=True))
         return module

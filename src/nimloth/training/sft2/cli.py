@@ -6,12 +6,12 @@ import argparse
 from pathlib import Path
 
 from nimloth.latent import LATENT_QUERY_MODES, query_labels_are_masked, resolve_latent_query_mode
-from nimloth.training.common.config import apply_yaml_defaults
+from nimloth.config.sft2 import apply_sft2_yaml_defaults
 
 
 def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="SFT2: latent WM + value head alignment")
-    applied_config = apply_yaml_defaults(ap, config_path)
+    applied_config = apply_sft2_yaml_defaults(ap, config_path)
 
     ap.add_argument(
         "--config",
@@ -21,6 +21,18 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     )
     ap.add_argument("--model", type=Path, required=True, help="Init HF dir (SFT1 hf_merged or resume best/)")
     ap.add_argument("--wm-predictor-checkpoint", type=Path, default=None)
+    ap.add_argument(
+        "--objective",
+        choices=("latent", "dino_grid"),
+        default="latent",
+    )
+    ap.add_argument(
+        "--grid-warmstart",
+        type=Path,
+        default=None,
+        help="ID33-format grid auxiliaries used as a non-resume warm start.",
+    )
+    ap.add_argument("--dino-grid-cache", type=Path, default=None)
     ap.add_argument("--train-jsonl", type=Path, required=True)
     ap.add_argument("--val-jsonl", type=Path, required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
@@ -33,10 +45,29 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--state-proj-lr", type=float, default=1e-4)
     ap.add_argument("--wm-predictor-lr", type=float, default=3e-4)
     ap.add_argument("--value-head-lr", type=float, default=3e-4)
+    ap.add_argument("--dino-decoder-lr", type=float, default=1e-4)
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--max-length", type=int, default=12000)
     ap.add_argument("--max-pixels", type=int, default=602112)
     ap.add_argument("--emb-dim", type=int, default=1024)
+    ap.add_argument("--grid-size", type=int, default=4)
+    ap.add_argument("--grid-ema-decay", type=float, default=0.99)
+    ap.add_argument("--grid-encoder-hidden-dim", type=int, default=2048)
+    ap.add_argument("--grid-decoder-hidden-dim", type=int, default=2048)
+    ap.add_argument("--grid-wm-depth", type=int, default=6)
+    ap.add_argument("--grid-wm-heads", type=int, default=16)
+    ap.add_argument("--grid-wm-dim-head", type=int, default=64)
+    ap.add_argument("--grid-wm-mlp-dim", type=int, default=2048)
+    ap.add_argument("--grid-wm-dropout", type=float, default=0.1)
+    ap.add_argument(
+        "--history-size",
+        type=int,
+        default=4,
+        help=(
+            "LeWM causal context length H. SFT2 consumes H consecutive actions "
+            "and H+1 real states; warm-started RL must use the same value."
+        ),
+    )
     ap.add_argument(
         "--latent-token-count",
         type=int,
@@ -67,6 +98,7 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--max-val-batches", type=int, default=-1)
     ap.add_argument("--success-only", action="store_true", help="Train on successful rollouts only")
     ap.add_argument("--lambda-ce", type=float, default=1.0)
+    ap.add_argument("--lambda-dino", type=float, default=0.5)
     ap.add_argument("--lambda-value", type=float, default=1.0)
     ap.add_argument("--value-rank-margin", type=float, default=0.1)
     ap.add_argument("--value-rank-lambda", type=float, default=1.0)
@@ -100,15 +132,25 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--wandb-run-name", default=None)
     ap.add_argument("--no-wandb", action="store_true")
     ap.add_argument(
-        "--early-stop-metric",
-        choices=("val_success_rate", "val_wm_mse"),
-        default="val_success_rate",
+        "--checkpoint-metric",
+        choices=("val_wm_mse",),
+        default="val_wm_mse",
+        help="Model-derived validation metric used to select the best checkpoint.",
     )
     ap.add_argument(
         "--preprocess-cache-dir",
         type=Path,
         default=None,
         help="Disk cache for transition prefix processor outputs (enables DataLoader workers).",
+    )
+    ap.add_argument(
+        "--preprocess-cache-processor-source",
+        type=Path,
+        default=None,
+        help=(
+            "Original model path recorded by a required prebuilt cache. Use only "
+            "when model weights were re-exported without changing processor files."
+        ),
     )
     ap.add_argument("--preprocess-workers", type=int, default=4, help="Workers for building preprocess cache.")
     ap.add_argument(
@@ -174,59 +216,17 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Keep only the last N step_NNNNNN checkpoints when step checkpointing is enabled (0 keeps all).",
     )
     ap.add_argument(
-        "--trajectory-aware-batching",
-        action=argparse.BooleanOptionalAction,
-        default=False,
+        "--batch-mode",
+        choices=("trajectory_online_cache",),
+        default="trajectory_online_cache",
         help=(
-            "Batch consecutive prefixes from the same trajectory as independent rows. "
-            "This improves padding/next-target locality without full-trajectory forward."
+            "Process rank-local trajectory lanes in time order and reuse detached "
+            "history states from their earlier current-step forwards."
         ),
-    )
-    ap.add_argument(
-        "--full-trajectory-batching",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Each micro-batch is one complete trajectory (all transitions for one record). "
-            "Qwen still sees per-prefix independent rows (NOT packed-forward). "
-            "This lets SIGReg access the full trajectory's projected embeddings "
-            "while respecting Qwen-VL prefix non-invariance. "
-            "Micro-batch size = trajectory length (variable). "
-            "Do NOT combine with --packed-forward."
-        ),
-    )
-    ap.add_argument(
-        "--max-steps-per-trajectory",
-        type=int,
-        default=16,
-        help=(
-            "When --full-trajectory-batching is enabled, hard ceiling on steps "
-            "per micro-batch (default 16).  The primary limit is --max-images-per-batch."
-        ),
-    )
-    ap.add_argument(
-        "--max-images-per-batch",
-        type=int,
-        default=32,
-        help=(
-            "When --full-trajectory-batching is enabled, cap total cumulative "
-            "prefix images per micro-batch (default 32).  Prevents CUDA OOM "
-            "from long trajectories with large image prefixes."
-        ),
-    )
-    ap.add_argument(
-        "--packed-forward",
-        action="store_true",
-        help="Use full-trajectory single forward (research-only; not semantic-equivalent for default Qwen-VL SFT2).",
-    )
-    ap.add_argument(
-        "--allow-approx-trajectory-once",
-        action="store_true",
-        help="Explicitly allow non-equivalent trajectory-once packed forward for research/profiling only.",
     )
     # set_defaults must run after add_argument: registering an argument with an
     # explicit default otherwise overwrites the YAML value set earlier.
-    apply_yaml_defaults(ap, applied_config)
+    apply_sft2_yaml_defaults(ap, applied_config)
     ap.set_defaults(config=applied_config)
     return ap
 

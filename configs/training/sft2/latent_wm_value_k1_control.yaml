@@ -1,4 +1,4 @@
-# SFT2 k=1 control: identical to the formal k=8 setup except latent token count.
+# SFT2 k=1 control with per-rank B1 and global cross-rank SIGReg batch.
 
 init:
   sft1_checkpoint: null
@@ -19,8 +19,9 @@ tuning:
 
 train:
   epochs: 10
-  batch_size: 2
-  grad_accum: 4
+  # world8 时每个 SIGReg microbatch 使用 global B8；GA8 保持 effective batch 64。
+  batch_size: 1
+  grad_accum: 8
   lr_qwen_start: 1.0e-8
   lr_qwen_peak: 5.0e-7
   state_proj_lr: 1.0e-4
@@ -30,9 +31,9 @@ train:
   max_length: 12000
   max_pixels: 100352
   emb_dim: 1024
-  full_trajectory_batching: true
-  max_images_per_batch: 12
-  max_steps_per_trajectory: 16
+  history_size: 4
+  # 当前 step 独占在线 Qwen/CE；H=4 的旧 state 来自本 epoch 在线 detached cache。
+  batch_mode: trajectory_online_cache
   attn_implementation: flash_attention_2
   gradient_checkpointing: true
   checkpoint_interval_minutes: 20.0
@@ -65,4 +66,4 @@ loss:
 
 monitor:
   wandb: true
-  early_stop_metric: val_wm_mse
+  checkpoint_metric: val_wm_mse

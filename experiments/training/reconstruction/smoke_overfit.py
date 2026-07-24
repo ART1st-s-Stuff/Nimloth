@@ -14,9 +14,10 @@ from PIL import Image
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.training.common.qwen_batch import build_qwen_batch
-from nimloth.training.sft2.dataset import TransitionQwenDataset, collate_transition_batch
-from nimloth.training.sft2.qwen_latent import extract_qwen_latents
+from nimloth.backbone.qwen25vl.batch import build_qwen_batch
+from nimloth.rollout.transitions import collate_transition_training_items
+from nimloth.rollout.transitions import TransitionJsonlDataset
+from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.reconstruction import WMImageDecoder, WMImageDecoderConfig
 from nimloth.wm.state_proj import StateProjector
@@ -97,8 +98,8 @@ def main() -> int:
         )
     ).to(device)
 
-    ds = TransitionQwenDataset(args.train_jsonl, max_records=args.sample_index + 1)
-    items = collate_transition_batch([ds[args.sample_index]])
+    ds = TransitionJsonlDataset(args.train_jsonl, max_records=args.sample_index + 1)
+    items = collate_transition_training_items([ds[args.sample_index]])
     item = items[0]
     sample_id = str(item.get("id", args.sample_index))
     img_path = item["current_image_path"]

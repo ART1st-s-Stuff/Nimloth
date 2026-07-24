@@ -32,6 +32,20 @@ def test_predict_next_emb_equals_full_context_single_step() -> None:
     assert torch.allclose(out1, out2, atol=1e-6)
 
 
+def test_predict_sequence_returns_every_causal_position() -> None:
+    predictor = _make_predictor(history_size=4)
+    states = torch.randn(3, 4, 64)
+    actions = torch.randint(0, 8, (3, 4))
+
+    predictions = predictor.predict_sequence(states, actions)
+
+    assert predictions.shape == (3, 4, 64)
+    torch.testing.assert_close(
+        predictions[:, -1],
+        predictor._predict_from_context(states, actions),
+    )
+
+
 def test_rollout_states_shape() -> None:
     """rollout_states returns (B, num_steps, emb_dim)."""
     B, num_steps, emb_dim = 2, 5, 64
@@ -61,6 +75,46 @@ def test_rollout_states_different_history_sizes() -> None:
         action_seq = torch.randint(0, 8, (B, num_steps))
         out = predictor.rollout_states(state, action_seq)
         assert out.shape == (B, num_steps, 64)
+
+
+def test_rollout_uses_real_prefix_instead_of_synthetic_padding() -> None:
+    predictor = _make_predictor(history_size=4)
+    observed_lengths: list[int] = []
+
+    def record_context(_module, inputs, _output) -> None:
+        observed_lengths.append(inputs[0].shape[1])
+
+    handle = predictor.predictor.register_forward_hook(record_context)
+    try:
+        predictor.rollout_states(
+            torch.randn(2, 64),
+            torch.randint(0, 8, (2, 5)),
+        )
+    finally:
+        handle.remove()
+
+    assert observed_lengths == [1, 2, 3, 4, 4]
+
+
+def test_rollout_continues_from_real_state_action_history() -> None:
+    predictor = _make_predictor(history_size=4)
+    observed_lengths: list[int] = []
+
+    def record_context(_module, inputs, _output) -> None:
+        observed_lengths.append(inputs[0].shape[1])
+
+    handle = predictor.predictor.register_forward_hook(record_context)
+    try:
+        output = predictor.rollout_from_history(
+            torch.randn(2, 3, 64),
+            torch.randint(0, 8, (2, 2)),
+            torch.randint(0, 8, (2, 3)),
+        )
+    finally:
+        handle.remove()
+
+    assert output.shape == (2, 3, 64)
+    assert observed_lengths == [3, 4, 4]
 
 
 def test_rollout_states_deterministic() -> None:

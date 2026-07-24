@@ -45,5 +45,13 @@ ARPredictor = _module.ARPredictor
 Embedder = _module.Embedder
 MLP = _module.MLP
 SIGReg = _module.SIGReg
+modulate = _module.modulate
 
-__all__ = ["ARPredictor", "Embedder", "MLP", "SIGReg", "lewm_root"]
+__all__ = [
+    "ARPredictor",
+    "Embedder",
+    "MLP",
+    "SIGReg",
+    "lewm_root",
+    "modulate",
+]

@@ -19,6 +19,7 @@ train:
   grad_accum: 4
   max_length: 12000
   max_pixels: 602112
+  history_size: 4
   attn_implementation: sdpa
   gradient_checkpointing: true
   step_timing: true
@@ -32,4 +33,4 @@ loss:
 
 monitor:
   wandb: false
-  early_stop_metric: val_success_rate
+  checkpoint_metric: val_wm_mse

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from nimloth.wm.dataset import NUM_NAVIGATION_ACTIONS, TransitionSample, discounted_action_value_targets, expand_record_transitions
+from nimloth.agent import PROMPT_VERSION
+from nimloth.environment.navigation import NUM_NAVIGATION_ACTIONS
+from nimloth.rollout.transitions import (
+    TransitionSample,
+    discounted_action_value_targets,
+    expand_record_transitions,
+)
 
 
 def _make_record(num_steps: int = 2) -> dict:
@@ -23,6 +29,12 @@ def _make_record(num_steps: int = 2) -> dict:
         )
         action_indices.append(step % NUM_NAVIGATION_ACTIONS)
     image_paths.append(f"/tmp/img_{num_steps}.png")
+    messages.append(
+        {
+            "role": "user",
+            "content": f"observe <image> step {num_steps}",
+        }
+    )
     return {
         "id": "train/shard_000/000001",
         "split": "train",
@@ -55,7 +67,16 @@ def test_expand_record_transitions_alignment() -> None:
     assert t2.next_image_path == "/tmp/img_3.png"
     assert len(t2.prefix_image_paths) == 3
     assert len(t2.prefix_messages) == 7  # system + 3*(user+assistant)
-    assert t2.next_prefix_messages is None
+    assert t2.next_prefix_messages is not None
+    assert t2.next_prefix_messages[-2]["role"] == "user"
+    assert t2.next_prefix_messages[-1]["role"] == "assistant"
+    assert t2.next_prefix_messages[-1]["content"].endswith("<|action_start|>")
+    assert t2.next_prefix_image_paths == [
+        "/tmp/img_0.png",
+        "/tmp/img_1.png",
+        "/tmp/img_2.png",
+        "/tmp/img_3.png",
+    ]
 
 
 def test_expand_skips_when_no_next_image() -> None:
@@ -88,3 +109,30 @@ def test_discounted_action_value_targets() -> None:
     assert len(values) == 3
     assert values[0] == pytest.approx(0.9 ** 2)
     assert values[2] == pytest.approx(1.0)
+
+
+def test_structured_agent_record_uses_shared_prompt_for_sft2_prefixes() -> None:
+    record = {
+        "id": "structured",
+        "split": "train",
+        "success": True,
+        "reward": 1.0,
+        "system_prompt": "system",
+        "observation_texts": ["first <image>", "second <image>", "final <image>"],
+        "image_paths": ["first.png", "second.png", "final.png"],
+        "action_indices": [0, 3],
+        "prompt_version": PROMPT_VERSION,
+        "latent_token_count": 1,
+    }
+
+    transitions = expand_record_transitions(record)
+    assert len(transitions) == 2
+    assert transitions[1].prefix_messages[-1]["content"].endswith(
+        "<|action_(3)|><|action_end|>"
+    )
+    assert transitions[0].next_prefix_messages is not None
+    assert transitions[0].next_prefix_messages[-2]["content"] == "second <image>"
+    assert transitions[0].next_prefix_messages[-1]["content"].endswith(
+        "<|action_start|>"
+    )
+    assert transitions[0].next_prefix_image_paths == ["first.png", "second.png"]
