@@ -1815,3 +1815,21 @@
 - 该 epoch 不含独立 `grid_state_config.json/slot_projector.pt`；完整 slot projector
   位于 `state_proj.pt`。RL 按严格 tensor shape 重建并校验 Qwen/predictor 维度，不使用
   `strict=False` 或近似转换。下一步可用新 ID/output 重新启动 online PPO smoke。
+
+## 2026-07-24：DINO 改为单一 SFT2 核心的可配置附加 loss
+
+- 人类指出原 `DINOGridSFT2Algorithm` 复制了完整 current/target、CE、WM、value 和
+  SIGReg 流程。首次修复又错误地建立完整 training variant；错误提交已由 `5e086e6`
+  普通 revert，代码 tree 恢复到修改前状态。该错误登记为 E0044。
+- 当前只有一个 `SFT2Algorithm`。公共 `SFT2Batch` 可携带具名 auxiliary targets；
+  核心 step 在已有 `predicted_next_state` 上调用配置的 loss components，并统一合并
+  raw/weighted loss 与指标。latent baseline 不配置 component，流程不变。
+- `dino_grid.py` 只保留 target assembler 与 `DINOGridLoss`：对同一 WM prediction
+  解码后与 detached cached DINO target 做 MSE。`lambda_dino` 是普通配置权重，测试
+  使用非默认0.25证明没有硬编码；生产配置仍为0.5。
+- 独立 DINO algorithm/batch 已删除。Grid 与 latent 的 SIGReg 都经过
+  `WorldModel.sigreg_state()` 进入同一个核心 `training_sigreg_step`；grid 只在该接口
+  mean-pool slots，没有复制 gather、RNG 或 backward 流程。
+- 服务器定向回归 `43 passed`；扩展回归
+  `174 passed, 1 skipped, 1 expected warning`。`compileall`、`git diff --check` 和
+  独立 DINO algorithm/batch 静态扫描通过；未启动新实验或 GPU allocation。

@@ -32,4 +32,6 @@
 - `compileall`、`git diff --check` 通过。
 - 静态扫描确认生产代码不再存在独立 DINO SFT2 algorithm/batch。
 - 首轮服务器定向回归：`42 passed`。
-- 新增 SIGReg/configurability 测试后待复跑，并需执行扩展回归。
+- 最终定向回归：`43 passed`，包含非默认 `lambda_dino=0.25`、同一核心 grid SIGReg、梯度边界和 resume。
+- 扩展 WM/SFT2/RL/rollout/Qwen/SFT1 merge 回归：`174 passed, 1 skipped, 1 expected warning`。
+- 最终 `compileall`、`git diff --check` 和独立 DINO algorithm/batch 静态扫描通过。
