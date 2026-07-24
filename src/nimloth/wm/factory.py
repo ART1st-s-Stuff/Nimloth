@@ -55,7 +55,6 @@ def _load_registered_loaders() -> tuple[WorldModelLoader, ...]:
         module_name, class_name = spec.split(":", 1)
         loader_type = getattr(importlib.import_module(module_name), class_name)
         loaders.append(loader_type())
-    loaders.append(LatentWorldModelLoader())
     return tuple(loaders)
 
 
@@ -73,10 +72,10 @@ def _predictor_config(path: Path | None) -> dict[str, object]:
 
 def _resolve_loader(config: Mapping[str, object]) -> WorldModelLoader:
     matches = [loader for loader in _load_registered_loaders() if loader.matches(config)]
-    if len(matches) != 1:
+    if len(matches) > 1:
         names = [loader.name for loader in matches]
         raise ValueError(f"world-model checkpoint matched loaders {names}")
-    return matches[0]
+    return matches[0] if matches else LatentWorldModelLoader()
 
 
 def _validate_dimensions(model: WorldModel, request: WorldModelLoadRequest) -> None:
@@ -154,11 +153,8 @@ class LatentWorldModelLoader:
     name = "latent"
 
     def matches(self, predictor_config: Mapping[str, object]) -> bool:
-        # Fallback loader: concrete variants must claim their configs first.
-        return not any(
-            loader.matches(predictor_config)
-            for loader in _load_registered_loaders()[:-1]
-        )
+        del predictor_config
+        return True
 
     def load(self, request: WorldModelLoadRequest) -> WorldModel:
         if request.predictor_checkpoint is None:

@@ -20,6 +20,8 @@
 - 新增 SFT2 variant registry；latent 与 DINO-grid 分别拥有模型、batch、algorithm、runtime metadata、metric 和 checkpoint invariant。
 - 新增 WorldModel loader registry；grid loader 自己识别 predictor config、重建组件、声明旧 checkpoint 必需 artifact 并应用 RL 冻结语义。
 - WorldModel 现在多态声明 optimization/broadcast components，并可原位包装 DDP 组件；公共 trainer 不再用 `isinstance` 重建具体模型。
+- `1585be2` 已推送后，服务器定向回归 `42 passed`；扩展 WM/SFT2/RL/rollout/Qwen/SFT1 merge 回归 `175 passed, 1 skipped, 1 expected warning`。
+- REFACTOR 清理 loader fallback 解析，并更新 SFT2/RL/WM README 与 codebase map；新增 E0044 防止 variant 细节再次泄漏。
 
 ## 文件修改
 
@@ -33,7 +35,9 @@
 
 - `compileall`、`git diff --check` 通过。
 - 静态扫描确认四个公共 trainer/checkpoint 不含 DINO/Grid 具体类型、模块或 artifact 名。
-- 服务器 Pytest 待提交同步后执行。
+- 服务器定向回归：`42 passed`。
+- 服务器扩展回归：`175 passed, 1 skipped, 1 expected warning`；skip 与 warning 均为既有测试门槛。
+- REFACTOR 后需复跑架构/loader 定向测试并完成最终静态检查。
 
 ## 风险
 
