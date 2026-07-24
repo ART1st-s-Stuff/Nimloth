@@ -4,7 +4,7 @@
 
 - 审查 `feat/sft2-dino-grid-ablation`。
 - 审查 `exp/rl-dinogrid-ep1-online-ppo`（含本地提交 `bfa9c15`）。
-- 将通过审查的内容按 semi-linear 策略合入 `nimloth-dev`，即分支 `fix/sft2-review-bugs`。
+- 将通过审查的内容按 semi-linear 策略合入分支 `dev`。
 
 ## 当前计划
 
@@ -12,11 +12,11 @@
 2. 审查 DINO grid SFT2 与 online PPO 的正确性、checkpoint、split、分布式运行和测试。
 3. 在隔离集成分支 `merge/dino-rl-online-ppo` 合并 DINO 分支的尾部提交并修复阻塞问题。
 4. 运行静态、定向和可用的完整回归。
-5. 将集成分支以 `--no-ff` 合入 `fix/sft2-review-bugs`，更新进度并整理工作区。
+5. 先将集成分支以 `--no-ff` 合入审查分支 `fix/sft2-review-bugs`，再将该审查分支合入目标分支 `dev`，更新进度并整理工作区。
 
 ## 已完成
 
-- 确认目标分支为 `fix/sft2-review-bugs`，DINO 分支为 `feat/sft2-dino-grid-ablation`。
+- 最终目标分支为 `dev`，DINO 分支为 `feat/sft2-dino-grid-ablation`。执行中曾错误地把工作区路径 `nimloth-dev` 解释成 `fix/sft2-review-bugs` 目标语义；人类纠正后已补做正式 `dev` 合并。
 - 三个相关源工作区均 clean；`exp/rl-dinogrid-ep1-online-ppo` 比 origin 多本地提交 `bfa9c15`。
 - RL 分支在 merge commit `f65ec2f` 已整合 DINO 分支到 `62b0120`；DINO 分支随后仅增加 `802c67e`、`309b4cc` 两个进度提交。
 - 从 RL tip `bfa9c15` 创建隔离集成分支与 worktree。
@@ -24,6 +24,7 @@
 - 审查确认 DINO cache lineage、terminal target、FP32 grid auxiliary、EMA target、checkpoint extras 和 RL fresh-policy manifest 均为 fail-closed；RL 每 rank 使用相同窗口以保持 FSDP forward 与未包装小模块梯度一致。
 - 发现固定 `run_vllm_online_ppo_2node4.sh` 已与当前 TP4 config 和异构 per-node launcher 冲突，且会触发 diff-check；删除该废弃入口并把 README 统一到 config-driven launcher。
 - 为本地未推送修复 `bfa9c15` 新增 checkpoint 恢复回归，证明 RL 直接从 SFT2 `state_proj.pt` 重建 slot projector，不依赖 HF 目录中的旧 SFT1 sidecar，并验证 grid auxiliaries 的冻结边界。
+- 审查内容先在 `590d713` 合入 `fix/sft2-review-bugs`，随后以 merge commit `7cd290b` 合入并推送目标 `dev`；最终 `dev` tree 与已验证的审查分支 tree 完全一致。
 
 ## 文件修改
 
@@ -45,5 +46,5 @@
 
 ## 待确认/风险
 
-- `main` 工作区存在人类未提交改动，本任务不触碰 `main`；目标已由人类明确为 `nimloth-dev`。
+- `main` 工作区存在人类未提交改动，本任务未触碰 `main`；最终目标由人类明确为 Git 分支 `dev`。
 - 三个只读子审查 agent 均异常退出，因此当前审查由主 agent 完成，不会把子 agent 失败当作审查结论。

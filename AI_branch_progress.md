@@ -1782,10 +1782,12 @@
 
 ## 2026-07-24：DINO-grid SFT2 与 online PPO 合并审查完成
 
-- 按人类确认，将 `feat/sft2-dino-grid-ablation` 和
-  `exp/rl-dinogrid-ep1-online-ppo` 集成到 `nimloth-dev` 对应分支
-  `fix/sft2-review-bugs`。RL 分支此前已在 `f65ec2f` 合入 DINO 实现；本轮补入
-  DINO 分支最后两个 resume 进度提交，并保留双方 `AI_branch_progress.md` 记录。
+- 将 `feat/sft2-dino-grid-ablation` 和 `exp/rl-dinogrid-ep1-online-ppo`
+  审查集成到 `fix/sft2-review-bugs` 后，再按人类纠正的目标以 merge commit
+  `7cd290b` 合入并推送 Git 分支 `dev`。执行中曾错误地把工作区路径
+  `nimloth-dev` 当成目标分支语义；该错误已登记为 E0043。RL 分支此前已在
+  `f65ec2f` 合入 DINO 实现；本轮补入 DINO 分支最后两个 resume 进度提交，并
+  保留双方 `AI_branch_progress.md` 记录。
 - 审查确认 DINO cache lineage、terminal target、FP32 grid auxiliaries、EMA target、
   checkpoint extras 与 PPO fresh-policy manifest 均 fail-closed。RL commit `bfa9c15`
   改为从 SFT2 `state_proj.pt` 重建 slot projector；新增回归锁定恢复与冻结边界。
