@@ -24,7 +24,7 @@
 - 审查确认 DINO cache lineage、terminal target、FP32 grid auxiliary、EMA target、checkpoint extras 和 RL fresh-policy manifest 均为 fail-closed；RL 每 rank 使用相同窗口以保持 FSDP forward 与未包装小模块梯度一致。
 - 发现固定 `run_vllm_online_ppo_2node4.sh` 已与当前 TP4 config 和异构 per-node launcher 冲突，且会触发 diff-check；删除该废弃入口并把 README 统一到 config-driven launcher。
 - 为本地未推送修复 `bfa9c15` 新增 checkpoint 恢复回归，证明 RL 直接从 SFT2 `state_proj.pt` 重建 slot projector，不依赖 HF 目录中的旧 SFT1 sidecar，并验证 grid auxiliaries 的冻结边界。
-- 审查内容先在 `590d713` 合入 `fix/sft2-review-bugs`，随后以 merge commit `7cd290b` 合入并推送目标 `dev`；最终 `dev` tree 与已验证的审查分支 tree 完全一致。
+- 审查内容先在 `590d713` 合入 `fix/sft2-review-bugs`，随后以 merge commit `7cd290b` 合入并推送目标 `dev`。RL 源分支在审查期间新增的 `757bfcb` 也已审查并以 `8fdbe42` 纳入 `dev`；最终扩展回归仍为 `173 passed, 1 skipped, 1 expected warning`。
 
 ## 文件修改
 
