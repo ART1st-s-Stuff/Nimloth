@@ -42,7 +42,7 @@ done
   echo "ERROR committed worktree does not match EXPECTED_COMMIT" >&2
   exit 1
 }
-[[ "${SLURM_JOB_NUM_NODES:-0}" == "1" ]] || {
+[[ "${SLURM_NNODES:-0}" == "1" ]] || {
   echo "ERROR pipeline requires one allocated node" >&2
   exit 1
 }

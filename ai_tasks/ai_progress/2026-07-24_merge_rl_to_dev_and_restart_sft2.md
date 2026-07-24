@@ -68,6 +68,10 @@
 - remote full tests + initialized RCDM adapter rerun：除缺失submodule造成的首次失败外，
   全部测试通过。
 - `bash -n experiments/training/sft2/run_terminal_cot_dino_grid_pipeline.sh`：通过。
+- hold `486596`已在`preempt/dgx-48`获得1节点8×H800；allocation probe确认每张
+  81559MiB且step内`CUDA_VISIBLE_DEVICES=0..7`。probe还确认本集群step设置
+  `SLURM_NNODES=1`而不设置`SLURM_JOB_NUM_NODES`，pipeline门禁已在正式运行前修正；
+  此时尚未创建ID48 run目录或启动数据生成。
 
 ## 待确认问题
 
