@@ -66,6 +66,24 @@ class WorldModel(nn.Module):
         projected = self.project_state(qwen_hidden.flatten(0, 1))
         return projected.reshape(batch_size, time_steps, *projected.shape[1:])
 
+    def project_training_state_sequences(
+        self,
+        qwen_hidden: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """返回在线 state 和 stop-gradient 目标侧 state 序列。
+
+        标准 latent WM 的两侧共享同一次投影；带独立 target encoder 的 variant
+        可以覆盖本方法，保持 objective 不需要识别具体 WM 类型。
+        """
+
+        online = self.project_state_sequence(qwen_hidden)
+        return online, online
+
+    def sigreg_state_sequence(self, state_sequence: torch.Tensor) -> torch.Tensor:
+        """返回 SIGReg 使用的统计单位；标准 latent WM 保留完整 state。"""
+
+        return state_sequence
+
     def predict_next_state(
         self,
         current_state: torch.Tensor,

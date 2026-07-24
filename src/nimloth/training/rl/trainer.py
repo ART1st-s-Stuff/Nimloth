@@ -52,6 +52,15 @@ from nimloth.wm import (
     ValueHead,
     WorldModel,
 )
+from nimloth.wm.grid import (
+    EMATargetGridEncoder,
+    GridStateProjector,
+    GridWorldModel,
+    LeWMGridDecoder,
+    LeWMGridEncoder,
+    TemporalSpatialGridPredictor,
+    load_sft1_slot_projector,
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +71,141 @@ class RLResumeState:
     loaded: bool = False
 
 
+def _is_grid_predictor_checkpoint(path: Path) -> bool:
+    config_path = path / "config.json"
+    if not config_path.is_file():
+        return False
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    return "grid_tokens" in raw
+
+
+def _grid_mlp_hidden_dim(
+    state: dict[str, torch.Tensor],
+    *,
+    first_weight: str,
+    emb_dim: int,
+) -> int:
+    weight = state.get(first_weight)
+    if weight is None or weight.ndim != 2 or weight.shape[1] != emb_dim:
+        raise ValueError(
+            "cannot infer grid MLP hidden_dim from checkpoint tensor "
+            f"{first_weight!r}"
+        )
+    return int(weight.shape[0])
+
+
+def _build_grid_world_model(
+    args: argparse.Namespace,
+    config: RLConfig,
+    *,
+    llm: torch.nn.Module,
+    device: torch.device,
+) -> GridWorldModel:
+    """从完整 SFT2 DINO-grid checkpoint 构造 RL world model。
+
+    RL 不计算 DINO loss，也不更新 DINO decoder 或 EMA target encoder；二者仍
+    严格加载和保存，以保证 checkpoint 可恢复且 grid WM target 语义不变。
+    """
+
+    if args.state_proj_checkpoint is None or args.value_head_checkpoint is None:
+        raise ValueError(
+            "grid RL requires --state-proj-checkpoint and --value-head-checkpoint"
+        )
+    wm_checkpoint = Path(args.wm_checkpoint)
+    checkpoint_root = wm_checkpoint.parent
+    predictor = TemporalSpatialGridPredictor.load_checkpoint(
+        wm_checkpoint,
+        map_location="cpu",
+    )
+    if predictor.config.history_size != config.predictor.history_size:
+        raise ValueError(
+            "RL grid WM checkpoint history_size does not match config: "
+            f"checkpoint={predictor.config.history_size}, "
+            f"config={config.predictor.history_size}"
+        )
+    if predictor.config.emb_dim != config.predictor.emb_dim:
+        raise ValueError(
+            "RL grid WM checkpoint emb_dim does not match config: "
+            f"checkpoint={predictor.config.emb_dim}, "
+            f"config={config.predictor.emb_dim}"
+        )
+
+    state_proj_state = torch.load(
+        args.state_proj_checkpoint,
+        map_location="cpu",
+        weights_only=True,
+    )
+    encoder_hidden_dim = _grid_mlp_hidden_dim(
+        state_proj_state,
+        first_weight="online_encoder.net.net.0.weight",
+        emb_dim=predictor.config.emb_dim,
+    )
+    slot_projector = load_sft1_slot_projector(
+        args.model,
+        qwen_hidden_dim=backbone_hidden_size(llm.config),
+        state_dim=predictor.config.emb_dim,
+        grid_tokens=predictor.config.grid_tokens,
+        map_location="cpu",
+        dtype=next(llm.parameters()).dtype,
+    )
+    state_proj = GridStateProjector(
+        slot_projector,
+        LeWMGridEncoder(
+            emb_dim=predictor.config.emb_dim,
+            hidden_dim=encoder_hidden_dim,
+        ),
+    )
+    state_proj.load_state_dict(state_proj_state)
+
+    metadata_path = checkpoint_root / "dino_grid_config.json"
+    decoder_path = checkpoint_root / "dino_grid_decoder.pt"
+    if not metadata_path.is_file() or not decoder_path.is_file():
+        raise FileNotFoundError(
+            f"incomplete DINO-grid checkpoint extras under {checkpoint_root}"
+        )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    decoder_state = torch.load(
+        decoder_path,
+        map_location="cpu",
+        weights_only=True,
+    )
+    decoder_hidden_dim = _grid_mlp_hidden_dim(
+        decoder_state,
+        first_weight="net.net.0.weight",
+        emb_dim=predictor.config.emb_dim,
+    )
+    target_encoder = EMATargetGridEncoder(
+        state_proj.online_encoder,
+        decay=float(metadata["ema_decay"]),
+    )
+    value_head = ValueHead.load_checkpoint(
+        args.value_head_checkpoint,
+        emb_dim=predictor.config.emb_dim,
+        map_location="cpu",
+    )
+    world_model = GridWorldModel(
+        state_proj=state_proj,
+        target_encoder=target_encoder,
+        wm_predictor=predictor,
+        dino_decoder=LeWMGridDecoder(
+            emb_dim=predictor.config.emb_dim,
+            hidden_dim=decoder_hidden_dim,
+        ),
+        value_head=value_head,
+        train_dino_decoder=False,
+        update_target_encoder=False,
+    )
+    world_model.load_checkpoint_extras(
+        checkpoint_root,
+        map_location=torch.device("cpu"),
+    )
+    world_model.target_encoder.requires_grad_(False).eval()
+    world_model.dino_decoder.requires_grad_(False).eval()
+    if config.freeze.state_proj:
+        world_model.state_proj.requires_grad_(False).eval()
+    return world_model.to(device)
+
+
 def _build_world_model(
     args: argparse.Namespace,
     config: RLConfig,
@@ -70,6 +214,16 @@ def _build_world_model(
     device: torch.device,
 ) -> WorldModel:
     """构造 RL 使用的 WorldModel，并加载显式指定的子模块 checkpoint。"""
+
+    if args.wm_checkpoint is not None and _is_grid_predictor_checkpoint(
+        Path(args.wm_checkpoint)
+    ):
+        return _build_grid_world_model(
+            args,
+            config,
+            llm=llm,
+            device=device,
+        )
 
     if args.wm_checkpoint is not None:
         wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_checkpoint)
@@ -313,6 +467,9 @@ def train_rl(
             broadcast_module_state(world_model.state_proj)
             broadcast_module_state(world_model.wm_predictor)
             broadcast_module_state(world_model.value_head)
+            if isinstance(world_model, GridWorldModel):
+                broadcast_module_state(world_model.target_encoder)
+                broadcast_module_state(world_model.dino_decoder)
 
         vision_ema_enabled = resolve_vision_ema(args, vision_tune)
         if vision_ema_enabled and world > 1:

@@ -524,6 +524,8 @@ class GridWorldModel(WorldModel):
         wm_predictor: TemporalSpatialGridPredictor,
         dino_decoder: LeWMGridDecoder,
         value_head: ValueHead,
+        train_dino_decoder: bool = True,
+        update_target_encoder: bool = True,
     ) -> None:
         super().__init__(
             state_proj=state_proj,
@@ -532,6 +534,10 @@ class GridWorldModel(WorldModel):
         )
         self.target_encoder = target_encoder
         self.dino_decoder = dino_decoder
+        self.train_dino_decoder = bool(train_dino_decoder)
+        self.update_target_encoder = bool(update_target_encoder)
+        if not self.train_dino_decoder:
+            self.dino_decoder.requires_grad_(False).eval()
 
     def project_target_state(self, qwen_hidden: torch.Tensor) -> torch.Tensor:
         projector = _unwrap(self.state_proj)
@@ -539,18 +545,49 @@ class GridWorldModel(WorldModel):
             projected = projector.project_slots(qwen_hidden)
             return self.target_encoder(projected).float()
 
+    def project_training_state_sequences(
+        self,
+        qwen_hidden: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """在线 grid 作为 predictor 输入，冻结 EMA grid 作为 WM 目标。"""
+
+        if qwen_hidden.ndim < 4:
+            raise ValueError(
+                "grid state sequence hidden must have shape (B,T,N,D), "
+                f"got {tuple(qwen_hidden.shape)}"
+            )
+        batch_size, time_steps = qwen_hidden.shape[:2]
+        flat_hidden = qwen_hidden.flatten(0, 1)
+        online = self.project_state(flat_hidden)
+        target = self.project_target_state(flat_hidden)
+        output_shape = (batch_size, time_steps, *online.shape[1:])
+        return online.reshape(output_shape), target.reshape(output_shape)
+
+    def sigreg_state_sequence(self, state_sequence: torch.Tensor) -> torch.Tensor:
+        """沿用 DINO-grid SFT2：每个时刻先对 16 slots 做 mean pooling。"""
+
+        if state_sequence.ndim != 4:
+            raise ValueError(
+                "grid SIGReg state must have shape (B,T,N,D), "
+                f"got {tuple(state_sequence.shape)}"
+            )
+        return state_sequence.mean(dim=-2)
+
     def decode_prediction(self, predicted_state: torch.Tensor) -> torch.Tensor:
         return self.dino_decoder(predicted_state).float()
 
     def predict_action_values(self, state: torch.Tensor) -> torch.Tensor:
-        if state.ndim != 3:
+        if state.ndim < 3:
             raise ValueError(
-                f"grid value input must have shape (B,N,D), got {tuple(state.shape)}"
+                "grid value input must have shape (...,N,D), "
+                f"got {tuple(state.shape)}"
             )
-        return self.value_head(state.mean(dim=1)).float()
+        return self.value_head(state.mean(dim=-2)).float()
 
     @torch.no_grad()
     def after_optimizer_step(self) -> None:
+        if not self.update_target_encoder:
+            return
         projector = _unwrap(self.state_proj)
         self.target_encoder.update(projector.online_encoder)
         if dist.is_available() and dist.is_initialized():
@@ -559,12 +596,14 @@ class GridWorldModel(WorldModel):
 
     @property
     def trainable_modules(self) -> tuple[nn.Module, ...]:
-        return (
+        modules = (
             self.state_proj,
             self.wm_predictor,
-            self.dino_decoder,
             self.value_head,
         )
+        if self.train_dino_decoder:
+            return (*modules, self.dino_decoder)
+        return modules
 
     @property
     def synchronized_modules(self) -> tuple[nn.Module, ...]:
@@ -577,6 +616,8 @@ class GridWorldModel(WorldModel):
             wm_predictor=_unwrap(self.wm_predictor),
             dino_decoder=_unwrap(self.dino_decoder),
             value_head=_unwrap(self.value_head),
+            train_dino_decoder=self.train_dino_decoder,
+            update_target_encoder=self.update_target_encoder,
         )
 
     def save_checkpoint_extras(self, output_dir: Path) -> None:

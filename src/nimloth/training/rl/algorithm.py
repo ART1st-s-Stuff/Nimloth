@@ -198,17 +198,18 @@ class RLAlgorithm:
                 f"got {tuple(batch.action_indices.shape)}, expected {expected_actions}"
             )
 
-        # 投影后统一为 (B,H+1,D_wm)；多 latent token 只在 StateProjector 内合并。
-        state_sequence = runtime.agent.wm.project_state_sequence(hidden_states)
+        # 标准 latent WM 复用同一份在线 state 作为 target；grid WM 在这里通过
+        # 自己的冻结 EMA encoder 生成 target，objective 不依赖具体 variant。
+        state_sequence, target_state_sequence = (
+            runtime.agent.wm.project_training_state_sequences(hidden_states)
+        )
         state_context = state_sequence[:, :-1]
         predicted_next_states = runtime.agent.wm.predict_state_sequence(
             state_context,
             batch.action_indices,
         )
 
-        # 一个状态可以在当前位置更新 projector，同时在前一位置作为 stop-gradient
-        # target；因此先统一投影，再只 detach 右移后的 target 视图。
-        target_next_states = state_sequence[:, 1:].detach()
+        target_next_states = target_state_sequence[:, 1:].detach()
         action_values = runtime.agent.wm.predict_action_values(state_context)
 
         # WM 与 value 共享 state_context，但监督目标和梯度边界各自独立。
@@ -220,9 +221,11 @@ class RLAlgorithm:
         )
         total = wm_loss + value_loss
 
-        # SequenceSIGReg 接收 (B,T,D)，内部才转成 LeWM 需要的 (T,B,D)。
+        # 各 WM variant 明确选择 SIGReg 的统计单位；grid 与 SFT2 一致，对 slot
+        # mean pooling 后再把 (B,T,D) 交给 SequenceSIGReg。
+        sigreg_states = runtime.agent.wm.sigreg_state_sequence(state_sequence)
         sigreg_loss = (
-            self.sigreg(state_sequence)
+            self.sigreg(sigreg_states)
             if self.sigreg is not None and self.sigreg_weight > 0.0
             else None
         )

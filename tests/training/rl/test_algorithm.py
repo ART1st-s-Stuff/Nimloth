@@ -18,6 +18,16 @@ from nimloth.rollout import (
 from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch, build_rl_batch
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm.model import WorldModel
+from nimloth.wm.grid import (
+    EMATargetGridEncoder,
+    GridPredictorConfig,
+    GridStateProjector,
+    GridWorldModel,
+    LeWMGridDecoder,
+    LeWMGridEncoder,
+    SharedSlotProjector,
+    TemporalSpatialGridPredictor,
+)
 from nimloth.wm.sigreg import SequenceSIGReg
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
@@ -310,6 +320,84 @@ def test_rl_preserves_multiple_latent_tokens_until_state_projection() -> None:
 
     assert output.losses["wm"] is not None
     assert output.losses["value"] is not None
+
+
+def test_grid_rl_uses_ema_targets_and_mean_pooled_sigreg_without_dino_loss() -> None:
+    backbone = _MultiTokenBackbone()
+    input_builder = _InputBuilder()
+    online_encoder = LeWMGridEncoder(emb_dim=2, hidden_dim=4)
+    state_proj = GridStateProjector(
+        SharedSlotProjector(
+            input_dim=3,
+            output_dim=2,
+            hidden_dim=4,
+            grid_tokens=2,
+        ),
+        online_encoder,
+    ).requires_grad_(False).eval()
+    target_encoder = EMATargetGridEncoder(online_encoder, decay=0.99)
+    dino_decoder = LeWMGridDecoder(emb_dim=2, hidden_dim=4)
+    world_model = GridWorldModel(
+        state_proj=state_proj,
+        target_encoder=target_encoder,
+        wm_predictor=TemporalSpatialGridPredictor(
+            GridPredictorConfig(
+                grid_tokens=2,
+                emb_dim=2,
+                history_size=2,
+                depth=1,
+                heads=1,
+                dim_head=2,
+                mlp_dim=4,
+                dropout=0.0,
+            )
+        ),
+        dino_decoder=dino_decoder,
+        value_head=ValueHead(emb_dim=2, num_actions=8, hidden_dim=2),
+        train_dino_decoder=False,
+        update_target_encoder=False,
+    )
+    agent = Agent(backbone=backbone, wm=world_model)
+    recording = _RecordingSIGReg()
+    algorithm = RLAlgorithm(
+        history_size=2,
+        sigreg=SequenceSIGReg(regularizer=recording),
+        sigreg_weight=0.1,
+        value_rank_margin=0.1,
+        value_rank_weight=1.0,
+        ppo_clip_ratio=0.2,
+        entropy_weight=0.0,
+    )
+    runtime = RLModelRuntime(
+        agent=agent,
+        input_builder=input_builder,
+        representation_to_backbone=True,
+        policy_replay=None,
+    )
+
+    output = algorithm.training_step(runtime, _batch())
+    output.loss.backward()
+
+    assert recording.inputs[0].shape == (3, 2, 2)
+    assert set(output.losses) == {"wm", "sigreg", "value", "policy"}
+    assert output.losses["wm"] is not None
+    assert output.losses["value"] is not None
+    assert backbone.model.weight.grad is not None
+    assert any(
+        parameter.grad is not None
+        for parameter in world_model.wm_predictor.parameters()
+    )
+    assert any(
+        parameter.grad is not None
+        for parameter in world_model.value_head.parameters()
+    )
+    assert all(parameter.grad is None for parameter in state_proj.parameters())
+    assert all(
+        parameter.grad is None for parameter in target_encoder.parameters()
+    )
+    assert all(
+        parameter.grad is None for parameter in dino_decoder.parameters()
+    )
 
 
 def test_rl_algorithm_is_pure_compute_configuration() -> None:
