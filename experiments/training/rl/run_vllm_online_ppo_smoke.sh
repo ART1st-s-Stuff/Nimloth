@@ -237,18 +237,48 @@ else
     --gpus=0 hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
   [[ -n "${RDZV_IP}" ]] || { echo "missing multi-node rendezvous IP" >&2; exit 1; }
   export NIMLOTH_TRAIN_ARGS=$(printf '%q ' "${TRAIN_ARGS[@]}")
-  srun --jobid="${SLURM_JOB_ID}" --overlap --nodes="${TRAIN_NNODES}" \
-    --ntasks="${TRAIN_WORLD_SIZE}" --gpus-per-task=1 --gpu-bind=single:1 \
-    bash -lc '
+  JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}")
+  TRAIN_STEP_PIDS=()
+  rank_offset=0
+  for node in "${TRAIN_NODES_LIST[@]}"; do
+    node_gpus=$(sed -n "s/.*Nodes=${node} .*GRES=gpu:\([0-9][0-9]*\).*/\1/p" <<< "${JOB_DETAILS}")
+    [[ -n "${node_gpus}" ]] || { echo "missing allocated GPU count for ${node}" >&2; exit 1; }
+    srun --jobid="${SLURM_JOB_ID}" --overlap --nodes=1 --ntasks=1 -w "${node}" \
+      --gres="gpu:${node_gpus}" \
+      env NIMLOTH_NODE_GPUS="${node_gpus}" NIMLOTH_RANK_OFFSET="${rank_offset}" \
+      bash -lc '
       set -euo pipefail
       export PYTHONPATH="'"${PYTHONPATH}"'"
-      export RANK="${SLURM_PROCID}"
-      export WORLD_SIZE="${SLURM_NTASKS}"
-      export LOCAL_RANK=0
       export MASTER_ADDR="'"${RDZV_IP}"'"
       export MASTER_PORT=29671
-      "'"${PYTHON}"'" ${NIMLOTH_TRAIN_ARGS}
-    ' 2>&1 | tee -a "${LOG}"
+      pids=()
+      for ((local_rank=0; local_rank<NIMLOTH_NODE_GPUS; local_rank++)); do
+        export RANK=$((NIMLOTH_RANK_OFFSET + local_rank))
+        export WORLD_SIZE="'"${TRAIN_WORLD_SIZE}"'"
+        export LOCAL_RANK="${local_rank}"
+        "'"${PYTHON}"'" ${NIMLOTH_TRAIN_ARGS} &
+        pids+=("$!")
+      done
+      status=0
+      for pid in "${pids[@]}"; do
+        wait "${pid}" || status=$?
+      done
+      exit "${status}"
+    ' 2>&1 | tee -a "${LOG}" &
+    TRAIN_STEP_PIDS+=("$!")
+    rank_offset=$((rank_offset + node_gpus))
+  done
+  (( rank_offset == TRAIN_WORLD_SIZE )) || {
+    echo "node GPU counts sum to ${rank_offset}, expected ${TRAIN_WORLD_SIZE}" >&2
+    exit 1
+  }
+  train_status=0
+  for pid in "${TRAIN_STEP_PIDS[@]}"; do
+    wait "${pid}" || train_status=$?
+  done
+  if (( train_status != 0 )); then
+    exit "${train_status}"
+  fi
 fi
 
 "${PYTHON}" - <<PY | tee -a "${LOG}"
