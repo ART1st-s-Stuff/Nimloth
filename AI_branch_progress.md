@@ -1683,3 +1683,14 @@
   `language_model.lm_head.weight`，仅有`model.embed_tokens.weight`。不能在未证明
   权重相同的情况下用embedding伪造policy head；因此无trajectory、W&B、optimizer
   step或checkpoint，ID73不可恢复。hold`485342`已取消并释放全部1+3+4 GPU。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID74 Ray 冷启动失败
+
+- ID74 指向 corrected SFT2 ID46 `epoch_001`，allocation `485730` 为
+  dgx-04×1、dgx-42×6、dgx-48×1，config 仍为 3 nodes、world8、rollout TP4。
+- Ray GCS 已正常监听6410，raylet和10 GB object store也已启动；但
+  dashboard agent在共享环境冷启动时加载模块约用22秒，超过Ray默认
+  15秒agent注册窗口。raylet因等不到`metrics_agent_port`主动崩溃。
+- 失败发生在environment、vLLM、trajectory、W&B和optimizer之前；无OOM、
+  无输出checkpoint，ID74不可恢复。启动器现显式设置
+  `RAY_agent_register_timeout_ms=120000`，下次必须使用新ID和空输出目录。
