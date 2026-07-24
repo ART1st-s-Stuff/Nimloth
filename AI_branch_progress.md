@@ -1912,3 +1912,5 @@
 - W&B `gkn5tmqh`，manifest已消费，CSV仅表头，无completed backward、optimizer step或
   checkpoint，ID93不可恢复。修复移除paired Qwen与WM/value的DDP包装；完整local
   backward后由OptimizationRuntime按optimizer参数组稳定顺序逐gradient all-reduce并取均值。
+- commit `d4d57cf` 完成deterministic manual gradient sync；服务器定向测试`7 passed`，
+  扩展完整RL/Qwen/common suite为`110 passed, 1 warning`。

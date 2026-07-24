@@ -550,3 +550,5 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - W&B `gkn5tmqh`，manifest已消费，CSV仅表头，无optimizer/checkpoint，ID93不可resume。
   下一实现不包装paired modules为DDP，改由OptimizationRuntime在完整backward后按稳定
   optimizer参数顺序同步Qwen、WM predictor、ValueHead全部gradient并除以world size。
+- commit `d4d57cf` 已实现；服务器定向测试`7 passed`，扩展完整suite
+  `110 passed, 1 warning`。仍需ID94真实backward/optimizer验证。
