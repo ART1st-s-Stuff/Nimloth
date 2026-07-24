@@ -1583,3 +1583,20 @@
   value `0.096401`、SIGReg `3.327872`。8卡显存为 `62,031--62,091 / 81,559
   MiB`，利用率 `88--100%`；约 `7.4 s/optimizer step`，含 validation/checkpoint
   当前 ETA `4.5--5.5 h`。20分钟 interval checkpoint 与 epoch/best/final 保存启用。
+
+## 2026-07-24：ID46 在 epoch 2 被 preempt，可从 step1644 恢复
+
+- hold `485251` 在运行 `11:58:33` 后被 Slurm `PREEMPTED`；训练 step
+  `485251.14` 收到 SIGTERM，以 `CANCELLED`, elapsed `05:04:16`, exit `0:15`
+  结束。不是 OOM、NaN、NCCL 或代码异常，W&B `yapevfpy` 因外部终止显示
+  `crashed`。
+- CSV 实际到 epoch2 step `1716/1856`（92.5%）；最近100 step均值为 total
+  `8.9131`、CE `4.2545`、WM `3.9263`、DINO `0.4404`、value `0.1706`、
+  SIGReg `3.4164`。epoch1 step928完整验证为 WM `6.102906`、DINO `1.213561`、
+  value `0.811813`、total `7.521500`；尚无epoch2 validation，不能给出2-epoch趋势。
+- 最新完整 `latest` 为 epoch2 step1644、`micro_step_in_epoch=5728`，runtime
+  checkpoint gate返回`True`：模型、optimizer、WM、ValueHead、DINO、双EMA与8个
+  rank history cache齐全。恢复会重跑72个已记录但未checkpoint的step，剩余212个
+  optimizer step及最终validation/save，重新拿到8卡后ETA约50--60分钟。
+- 当前状态为“需恢复”，没有final/two-epoch结果；查询进度本身不授权重启，未自动
+  申请新hold或恢复。

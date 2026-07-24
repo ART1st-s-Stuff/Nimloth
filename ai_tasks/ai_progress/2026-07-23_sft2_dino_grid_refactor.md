@@ -213,3 +213,24 @@
   including full validation/checkpoint overhead. Twenty-minute interval and
   epoch/best/final checkpoints are enabled; resume must use a complete ID46
   checkpoint, never the partial ID45 save.
+
+## ID46 was preempted in epoch 2 and is resumable
+
+- Hold `485251` was `PREEMPTED` after `11:58:33`. Training step `485251.14`
+  received SIGTERM and ended `CANCELLED` after `05:04:16`, exit `0:15`; W&B
+  `yapevfpy` is consequently `crashed`. This was allocation preemption, with no
+  OOM, NaN, NCCL, traceback, or training-code failure.
+- The CSV reached epoch 2 step `1716 / 1856` (92.5%). Last-100-step means are
+  total `8.9131`, CE `4.2545`, WM `3.9263`, DINO `0.4404`, value `0.1706`, and
+  SIGReg `3.4164`. Epoch-1 step-928 validation is WM `6.102906`, DINO
+  `1.213561`, value `0.811813`, and total `7.521500`; epoch-2 validation did not
+  run, so no two-epoch trend conclusion is available.
+- The newest complete `latest` is epoch 2 step `1644`,
+  `micro_step_in_epoch=5728`, and passes the runtime trainable-checkpoint gate.
+  Both model shards, optimizer/training state, WM predictor, ValueHead, DINO
+  modules, both EMA states, and all eight rank history caches are present.
+- Resume replays 72 logged-but-uncheckpointed steps and has 212 optimizer steps
+  plus final validation/save remaining. At the last-100-step mean of 12.13
+  seconds plus observed validation/save overhead, expected remaining wall time
+  is about 50-60 minutes after a new world8 allocation starts. No restart was
+  performed because the human requested a progress query only.
