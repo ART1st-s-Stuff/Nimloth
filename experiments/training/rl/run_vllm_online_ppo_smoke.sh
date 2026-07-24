@@ -210,7 +210,6 @@ if [[ "${PIPELINE_PHASE}" == all && "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" == ra
 fi
 
 if [[ "${RUN_TRAIN}" == true ]]; then
-  export CUDA_VISIBLE_DEVICES=${VISIBLE}
   export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
 TRAIN_ARGS=(
   -m nimloth.training.rl.cli
