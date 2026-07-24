@@ -58,8 +58,8 @@ from nimloth.wm.grid import (
     GridWorldModel,
     LeWMGridDecoder,
     LeWMGridEncoder,
+    SharedSlotProjector,
     TemporalSpatialGridPredictor,
-    load_sft1_slot_projector,
 )
 
 
@@ -140,14 +140,28 @@ def _build_grid_world_model(
         first_weight="online_encoder.net.net.0.weight",
         emb_dim=predictor.config.emb_dim,
     )
-    slot_projector = load_sft1_slot_projector(
-        args.model,
-        qwen_hidden_dim=backbone_hidden_size(llm.config),
-        state_dim=predictor.config.emb_dim,
+    slot_first = state_proj_state.get("slot_projector.net.0.weight")
+    slot_last = state_proj_state.get("slot_projector.net.3.weight")
+    qwen_hidden_dim = backbone_hidden_size(llm.config)
+    if (
+        slot_first is None
+        or slot_last is None
+        or slot_first.ndim != 2
+        or slot_last.ndim != 2
+        or slot_first.shape[1] != qwen_hidden_dim
+        or slot_last.shape[0] != predictor.config.emb_dim
+        or slot_last.shape[1] != slot_first.shape[0]
+    ):
+        raise ValueError(
+            "SFT2 grid state projector is incompatible with the Qwen/predictor "
+            "dimensions"
+        )
+    slot_projector = SharedSlotProjector(
+        input_dim=qwen_hidden_dim,
+        output_dim=predictor.config.emb_dim,
+        hidden_dim=int(slot_first.shape[0]),
         grid_tokens=predictor.config.grid_tokens,
-        map_location="cpu",
-        dtype=next(llm.parameters()).dtype,
-    )
+    ).to(dtype=slot_first.dtype)
     state_proj = GridStateProjector(
         slot_projector,
         LeWMGridEncoder(
