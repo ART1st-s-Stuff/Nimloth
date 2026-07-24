@@ -1731,3 +1731,13 @@
   原地 resume，也不作为完成的 RL 实验。
 - commit `aa747f7` 将可见 GPU 数校验限制到 `RUN_ROLLOUT=true`；下一次用新 ID、
   新 rollout 和空输出目录验证 3 节点/world8 FSDP update。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID78 Ray agent 超时
+
+- ID78 在 Ray head 冷启动时失败；dashboard agent 约 19 秒后完成加载，但 raylet 仍按
+  默认 15 秒等待 `metrics_agent_port`，报 `Timed out waiting for file ...metrics_agent_port`。
+- 原先传入的 `RAY_agent_register_timeout_ms=120000` 没有进入 raylet system config；
+  ID77 能启动是冷启动时序恰好通过，不能证明该环境变量有效。失败发生在 worker、
+  environment、vLLM、trajectory、W&B、forward 和 optimizer 之前，无 checkpoint。
+- 已停止 controller 并清理三节点 Ray。commit `06d611f` 在 Ray head CLI 上显式传入
+  `--system-config={"agent_register_timeout_ms":120000}`；后续必须用新 ID 重试。
