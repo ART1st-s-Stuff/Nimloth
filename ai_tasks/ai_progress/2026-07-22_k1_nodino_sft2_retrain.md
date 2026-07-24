@@ -445,3 +445,18 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   从自包含的 `state_proj.pt` 重建并做 shape 校验。
 - 尚未产生新的 GPU optimizer step；下一轮必须使用新 W&B ID、全新输出目录和 fresh
   rollout manifest。
+
+## 2026-07-24：ID82 policy replay OOM 与 CoT credit assignment 结论
+
+- ID82（commit `757bfcb`，job `485891`，1/6/1 heterogeneous world8）完成 corrected
+  epoch1 TP4 fresh rollout：4 trajectories / 20 transitions，rewards
+  `0.0/-0.2/-0.1/-0.1`；W&B run `3yhg4w96`。
+- 8-rank FSDP 已进入 PPO replay；OOM 位于 Qwen `lm_head` 的整段 full-vocabulary
+  logits 激活，不是未启用 FSDP，也不是 DINO loss。无 optimizer step/checkpoint，
+  CSV 仅表头，fresh manifest 未消费，ID82 不可恢复。
+- 当前 Nimloth CoT 是 prompt 中的固定模板，behavior policy 只采样 action token；
+  VAGEN 的完整 response token `loss_mask` 与 configurable token/turn credit 尚未移植。
+  若目标包括 CoT PPO，应先扩展 rollout schema/provenance 和 token-level replay/advantage，
+  再决定采用 masked GAE、bi-level GAE、turn-wise GAE 或 action-only 模式。
+- 已更新服务器实验 README 和 `outputs/experiments/training/rl/progress.md`，并取消
+  allocation `485891` 释放 8 GPU。

@@ -1780,3 +1780,20 @@
 - 该 epoch 不含独立 `grid_state_config.json/slot_projector.pt`；完整 slot projector
   位于 `state_proj.pt`。RL 按严格 tensor shape 重建并校验 Qwen/predictor 维度，不使用
   `strict=False` 或近似转换。下一步可用新 ID/output 重新启动 online PPO smoke。
+
+## 2026-07-24：RL ID82 进入 policy replay 后 OOM，暴露 token credit 边界
+
+- commit `757bfcb`，allocation `485891`（dgx-34×1、dgx-39×6、dgx-48×1），
+  corrected ID46 `epoch_001`。TP4 fresh rollout 完成 4 trajectories / 20 transitions，
+  rewards `0.0/-0.2/-0.1/-0.1`；W&B `nimloth-rl/3yhg4w96`。
+- 8 ranks 严格加载 `GridWorldModel`、通过 freshness broadcast，并在 WM/value/SIGReg
+  forward 后进入 PPO policy replay。FSDP `FULL_SHARD` 已启用，但 Qwen `lm_head`
+  为整段 prompt 生成 full-vocabulary logits；约 77.93 GiB 已分配时再申请 262 MiB
+  导致 CUDA OOM。CSV 仅表头，无 optimizer step/checkpoint，manifest 未消费。
+- 当前行为 policy 的 CoT 是模板固定文本，vLLM 只采样一个 action token，因此现有
+  rollout 只保存 action distribution。VAGEN 则保存每轮完整生成 response，通过
+  `loss_mask` 选择生成 token，并支持 masked/bi-level/turn-wise GAE。若 RL 要训练 CoT，
+  必须先让 rollout 真实生成并保存 CoT/action token ids、old log-probs 和 mask；不能
+  给未采样的固定 CoT 事后分配 PPO credit。
+- ID82 不可恢复，实验 README/实验组 progress 已完成收尾；hold `485891` 已取消释放。
+  在 action-only 精确 replay 与 token-level CoT credit 的产品语义确认前不启动新 ID。
