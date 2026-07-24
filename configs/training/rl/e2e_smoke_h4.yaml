@@ -58,6 +58,6 @@ training:
   save_interval: 1
 
 distributed:
-  nodes: 3
+  nodes: 2
   world_size: 8
   rollout_tensor_parallel_size: 4
