@@ -57,7 +57,7 @@ class _Model(torch.nn.Module):
         self.last_input_ids = input_ids
         self.last_logits_to_keep = logits_to_keep
         logits = self.scale * torch.zeros(
-            (1, logits_to_keep.numel(), 64),
+            (1, len(logits_to_keep), 64),
             device=input_ids.device,
         )
         return SimpleNamespace(logits=logits)
