@@ -26,6 +26,8 @@
   continuation确认实际仅15 tokens，约第5 token已生成`Move left.</think>`。根因是
   BPE将句点与`</`合并，独立close-token子序列匹配失效。terminal生成现改为按解码
   文本精确停止/提取并增加边界回归；hold `486556`仍在dgx-42，正式数据尚未生成。
+- 提交`ebc4d3b`在superpod定向测试`8 passed`；同一21帧真实smoke现成功，terminal CoT
+  为3 tokens且manifest完整。正式train/val terminal数据、cache和SFT2仍未开始。
 
 ## 2026-07-24：DINO-grid SFT2 恢复 terminal transition 与旧 cache 兼容
 

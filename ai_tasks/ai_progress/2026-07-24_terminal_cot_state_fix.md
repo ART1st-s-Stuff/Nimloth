@@ -35,3 +35,6 @@
   解码为`Move left.</think>`。根因是BPE把句点与`</`合并，代码却查找独立编码的
   `</think>` token子序列。修复改为对continuation解码文本精确查找/停止，并新增跨
   merged-token boundary回归；正式augmented JSONL/cache/SFT2仍未创建。
+- 修复提交`ebc4d3b`后，superpod定向回归`8 passed`；同一条21帧真实GPU smoke使用
+  完整确认参数成功，terminal CoT为3 tokens，输出/manifest SHA256和全部生成参数齐全。
+  正式train/val augmented JSONL仍未开始。
