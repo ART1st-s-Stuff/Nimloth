@@ -1717,3 +1717,17 @@
   ID76不可作为完成的RL实验，也不可原地resume。
 - pipeline现支持清晰的`rollout`/`train` phase：顶层controller在head step完成rollout，
   自己清理Ray并退出该step，再从完整hold上下文启动config-driven多节点FSDP训练。
+
+## 2026-07-24：corrected DINO-grid epoch1 RL ID77 rollout完成、phase校验阻止训练
+
+- ID77 从 corrected SFT2 ID46 `epoch_001` 新采集 `base_train` seeds 1--4；vLLM
+  TP4 完整加载两片 checkpoint，4 条 trajectory 各 5 transitions，共 20 条，rewards
+  为 `0.0/-0.2/-0.1/-0.1`。fresh manifest 为 `ALL_OK`，未被 PPO 消费。
+- rollout head step 正常退出，证明 ID76 的嵌套多节点 `srun` 问题已消除；Ray teardown
+  中的 SIGTERM 是 vLLM 明确标注的预期关闭流程。
+- train-only phase 在任何 W&B、模型训练加载、forward 或 optimizer 前被 rollout 专用
+  GPU 校验拒绝：controller 可见 8 GPU，而该校验按 rollout TP4 要求恰好 4，报错
+  `expected 4 visible GPUs, got 0,1,2,3,4,5,6,7`。无训练 checkpoint，ID77 不可
+  原地 resume，也不作为完成的 RL 实验。
+- commit `aa747f7` 将可见 GPU 数校验限制到 `RUN_ROLLOUT=true`；下一次用新 ID、
+  新 rollout 和空输出目录验证 3 节点/world8 FSDP update。
