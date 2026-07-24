@@ -331,3 +331,104 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   利用率54--100%。累计loss全部finite，最大step peak allocated/reserved约
   53.26/55.13 GiB，无OOM/traceback/NCCL-DDP错误。tail step因global padding过滤，
   加权SIGReg B为7.33；已有15GB latest checkpoint。剩余ETA约1小时50分。
+## 2026-07-23：epoch_001 RL H=4 smoke ID3 启动前失败
+
+- ID43 `epoch_001` 已核验为完整 k=1/inject HF checkpoint，WM predictor
+  `history_size=4`，StateProjector/ValueHead 产物齐全。
+- RL smoke 实验提交 `2b6211c`：新增 H=4/PPO 配置，并让端到端启动器接受
+  config、episode 数和 max steps。配置经远端当前 schema 解析通过，启动器
+  `bash -n` 与 `git diff --check` 通过。
+- hold job `485290` 在人类指定的 preempt/dgx-40 占用2 GPU。ID3
+  `3_smoke_k1ep1_h4_base4x5_fsdp2_iter2` 在环境服务、rollout、W&B和训练前
+  被启动器拒绝：外层控制日志预先写入 `RUN_OUT`，正确触发禁止复用非空输出的
+  fail-fast。ID3 不可 resume，仅保留 README 和控制日志作为失败证据；新的
+  服务器 RL 实验组实时 `progress.md` 已有 ID65，本地旧记录的 ID1/2 编号已失效。
+  ID66 将把控制日志放在输出目录外后重试。
+
+## 2026-07-23：epoch_001 RL H=4 smoke ID66 rollout通过、PPO训练契约拒绝
+
+- ID66 在 dgx-40 使用 ID43 `epoch_001` 完成 `base_train` seeds1..4 的真实
+  rollout：4 trajectories、20 transitions、每条5 steps，足以构造H=4 windows。reward为
+  `-0.4/0.0/-0.4/-0.2`，success0/4只是smoke现象，不解读为policy质量。
+- 两rank FSDP在模型加载和W&B初始化前fail-fast：当前运行时明确禁止
+  `actor.enabled=true` 与 static JSONL collector，PPO要求从当前policy fresh采样。
+  本轮无optimizer step、W&B run或checkpoint，不可resume。
+- hold `485290` 已取消并释放dgx-40。后续不能擅自关闭PPO后声称原测试通过；
+  需人类选择两卡actor-disabled H=4 WM/value离线smoke，或单卡direct-online PPO smoke。
+
+## 2026-07-24：引入模块化 vLLM fresh-policy handoff
+
+- 只读核对 VAGEN 后确认其8卡 online PPO 不让 environment 直接调用 FSDP
+  forward，而是使用独立 vLLM inference engine，再回到 FSDP actor update。
+- 实现提交 `89d7662`：`QwenVLLMAgentPolicy` 只返回8个 action-token score，温度/
+  top-p/采样继续使用 Agent 公共契约；`FreshRolloutManifest` 对完整 HF artifact
+  做内容指纹并禁止重复消费。trainer 允许多 rank PPO 消费该 fresh source，
+  但仍拒绝普通 static JSONL。
+- `run_vllm_online_ppo_smoke.sh` 编排同一 allocation 内8卡 vLLM rollout 和8-rank
+  FSDP单步update；保留ID43 epoch1的H=4/WM/value/PPO契约。测试桩补全提交
+  `f8faf3b` 后，服务器共享 PyTorch 环境的定向测试为 `39 passed, 1 warning`；真实
+  GPU vLLM probe 和8卡smoke尚未执行。
+
+## 2026-07-24：ID67 异构 Ray gate 通过但未开始 rollout
+
+- config 驱动的 allocation `485342` 实际分配 dgx-04×1、dgx-06×3、dgx-39×4
+  GPU；每节点显式 GRES Ray 启动后精确达到 TP8 gate。
+- controller 在 health-probe 诊断窗口被终止，此时 pipeline 刚创建 README 并进入
+  environment startup；无 trajectory、W&B、optimizer step 或 checkpoint。ID67
+  failed/non-resumable，保留日志，新 retry 必须使用新 ID/output。
+
+## 2026-07-24：ID68 vLLM driver IP 与 Ray IP 不一致
+
+- 异构 Ray 1+3+4 GPU 和 environment 均健康；vLLM 0.11 EngineCore 已连接 cluster，
+  但自动把 `10.22.4.78` 作为 driver node constraint，Ray nodes 实际为 `10.23.*`。
+- TP placement 在 GPU worker 前 infeasible；无 trajectory、W&B、optimizer step 或
+  checkpoint，ID68 failed/non-resumable。控制器修复为显式设置
+  `VLLM_HOST_IP=<Ray head 10.23 IP>`，后续使用新 ID/output。
+
+## 2026-07-24：ID69 vLLM worker actors 的 IP 仍不一致
+
+- driver绑定10.23后 TP8 placement 成功并创建8个Ray workers；但各worker raylet
+  未注入节点自身 `VLLM_HOST_IP`，actors仍报告10.22，vLLM因3 node IDs/4 IPs在
+  权重加载前拒绝启动。
+- 无 trajectory、W&B、optimizer step或checkpoint，ID69 failed/non-resumable。
+  控制器改为逐节点解析10.23 IP并在raylet启动时注入，后续使用新 ID/output。
+
+## 2026-07-24：ID70 symmetric-memory 初始化失败
+
+- ID70继续使用allocation`485342`的1+3+4异构GPU拓扑和config
+  `nodes3/world8/TP8`。environment、精确Ray GPU gate、TP placement及8 worker创建
+  均通过；同一物理节点的workers共享一个10.23 Ray IP。
+- 权重加载前PyTorch symmetric-memory rendezvous报
+  `detected allocations from overlapping devices from different ranks`。原因是Ray把
+  每个actor的分配GPU局部映射为`cuda:0`，不适合该跨rank设备ordinal检查。
+- 无trajectory、W&B、optimizer step或checkpoint；ID70不可恢复。下一次新ID将
+  设置`VLLM_ALLREDUCE_USE_SYMM_MEM=0`，保留常规NCCL/custom all-reduce语义。
+
+## 2026-07-24：ID71旧Ray session阻塞
+
+- ID71在pipeline与环境启动前失败：ID70 head节点仍有旧raylet/GCS占用6381，
+  新head读到旧session name并拒绝启动。无README、trajectory、W&B、optimizer
+  step或checkpoint，不可恢复。
+- 已精确终止allocation内的旧head进程。控制器cleanup改为先终止并等待其保存的
+  Ray `srun --block` PID，再执行`ray stop`兜底；新ID改用新端口。
+
+## 2026-07-24：ID72 Qwen2.5-VL 不支持 TP8
+
+- symmetric-memory开关已复制到全部Ray workers；8-rank Gloo/NCCL communicator
+  初始化成功，越过ID70失败点并开始模型构造。
+- vLLM的Qwen2.5-VL vision MLP在`MergedColumnParallelLinear`断言输出维度须整除
+  TP size；该checkpoint不支持TP8。无trajectory、W&B、optimizer step或checkpoint，
+  ID72不可恢复。
+- 分布式config继续指定训练`nodes=3/world_size=8`，rollout TP独立改为模型支持的4；
+  下次使用4卡vLLM rollout后再释放Ray，使用全部8 rank执行FSDP PPO update。
+
+## 2026-07-24：ID73 epoch_001 HF export缺少policy head
+
+- TP4的Ray/Gloo/NCCL初始化以及两个safetensors shard读取均成功，证明config分离
+  和vLLM通信路径可用。
+- checkpoint的`config.json`为`tie_word_embeddings=false`，weight index仅含
+  `model.embed_tokens.weight`，缺少vLLM要求的`language_model.lm_head.weight`。
+  在未证明两者应共享权重前不能用embedding构造近似policy head。
+- 无trajectory、W&B、optimizer step或checkpoint；ID73不可恢复。hold`485342`
+  已取消并确认离开squeue，异构1+3+4 GPU全部释放。RL被完整vLLM兼容policy export
+  阻塞；需修复并验证SFT2 HF保存产物后再用新allocation/ID测试。

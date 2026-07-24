@@ -112,6 +112,15 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True)
+class DistributedConfig:
+    """一次 RL allocation 的节点数与全局 GPU/rank 数。"""
+
+    nodes: int = 1
+    world_size: int = 1
+    rollout_tensor_parallel_size: int = 1
+
+
+@dataclass(frozen=True)
 class RLConfig:
     """训练代码唯一接收的 RL 配置对象。"""
 
@@ -125,6 +134,7 @@ class RLConfig:
     rl: RLLoopConfig
     validation: ValidationConfig
     training: TrainingConfig
+    distributed: DistributedConfig
 
     def to_dict(self) -> dict[str, Any]:
         """生成适合日志与 W&B 序列化的普通字典。"""
@@ -146,6 +156,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "rl",
         "validation",
         "training",
+        "distributed",
     }
     unknown_sections = sorted(set(raw) - allowed_sections)
     if unknown_sections:
@@ -196,6 +207,33 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         {"enabled", "interval", "envs", "checkpoint_metric"},
     )
     training = _section(raw, "training", {"seed", "log_interval", "save_interval"})
+    distributed = _section(
+        raw,
+        "distributed",
+        {"nodes", "world_size", "rollout_tensor_parallel_size"},
+    )
+
+    distributed_config = DistributedConfig(
+        nodes=_positive_int(distributed.get("nodes", 1), "distributed.nodes"),
+        world_size=_positive_int(
+            distributed.get("world_size", 1),
+            "distributed.world_size",
+        ),
+        rollout_tensor_parallel_size=_positive_int(
+            distributed.get("rollout_tensor_parallel_size", 1),
+            "distributed.rollout_tensor_parallel_size",
+        ),
+    )
+    if distributed_config.nodes > distributed_config.world_size:
+        raise ValueError("distributed.nodes cannot exceed distributed.world_size")
+    if (
+        distributed_config.rollout_tensor_parallel_size
+        > distributed_config.world_size
+    ):
+        raise ValueError(
+            "distributed.rollout_tensor_parallel_size cannot exceed "
+            "distributed.world_size"
+        )
 
     actor_config = ActorConfig(
         enabled=_boolean(actor.get("enabled", False), "actor.enabled"),
@@ -318,6 +356,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 "training.save_interval",
             ),
         ),
+        distributed=distributed_config,
     )
 
 

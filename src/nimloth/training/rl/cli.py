@@ -26,7 +26,7 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
     # 必填运行参数
     ap.add_argument("--config", type=Path, required=True, help="YAML config file")
     ap.add_argument("--model", type=Path, required=True,
-                    help="完整的 k=1 inject HF checkpoint；不能直接传 PEFT adapter 目录")
+                    help="完整的 positive-k inject HF checkpoint；不能直接传 PEFT adapter 目录")
     ap.add_argument("--output-dir", type=Path, required=True)
 
     # 模型微调方式
@@ -61,6 +61,12 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--jsonl-sources", type=Path, nargs="+", default=None,
                     help="JSONL 文件或目录列表，用于 JSONL rollout collector（与 --use-jsonl-rollout 配合）")
     ap.add_argument(
+        "--fresh-rollout-manifest",
+        type=Path,
+        default=None,
+        help="vLLM fresh rollout manifest；需 --use-jsonl-rollout 且仅可消费一次",
+    )
+    ap.add_argument(
         "--eval-jsonl-sources",
         type=Path,
         nargs="+",
@@ -94,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     """解析参数、创建阶段组件并启动 RL 训练。"""
     from nimloth.util.distributed import is_main
     from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
-    from nimloth.rollout import JSONLRolloutCollector
+    from nimloth.rollout import FreshJSONLRolloutCollector, JSONLRolloutCollector
     from nimloth.training.rl.trainer import train_rl
 
     args = parse_rl_args(argv)
@@ -102,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--env-url and --use-jsonl-rollout are mutually exclusive")
     if not args.env_url and not args.use_jsonl_rollout:
         raise ValueError("choose --env-url or --use-jsonl-rollout explicitly")
+    if args.fresh_rollout_manifest is not None and not args.use_jsonl_rollout:
+        raise ValueError("--fresh-rollout-manifest requires --use-jsonl-rollout")
     config = load_rl_config(args.config)
     config = merge_rl_config_overrides(args, config)
 
@@ -161,12 +169,19 @@ def main(argv: list[str] | None = None) -> int:
         jsonl_sources = args.jsonl_sources or [
             Path(path) for path in config.rollout.jsonl_train_sources
         ]
-        if not jsonl_sources:
+        if not jsonl_sources and args.fresh_rollout_manifest is None:
             raise ValueError(
                 "JSONL rollout mode requires --jsonl-sources or "
                 "rollout.jsonl_train_sources"
             )
-        train_collector = JSONLRolloutCollector(sources=jsonl_sources)
+        train_collector = (
+            FreshJSONLRolloutCollector(
+                args.fresh_rollout_manifest,
+                model_path=args.model,
+            )
+            if args.fresh_rollout_manifest is not None
+            else JSONLRolloutCollector(sources=jsonl_sources)
+        )
         eval_collector = None
         if config.validation.enabled:
             eval_sources = args.eval_jsonl_sources or [

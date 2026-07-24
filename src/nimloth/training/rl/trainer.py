@@ -22,7 +22,7 @@ from nimloth.backbone import (
     resolve_vision_ema,
 )
 from nimloth.config.rl import RLConfig
-from nimloth.rollout import RolloutCollector
+from nimloth.rollout import FreshJSONLRolloutCollector, RolloutCollector
 from nimloth.training.rl.algorithm import RLAlgorithm
 from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
@@ -33,6 +33,7 @@ from nimloth.training.rl.rollout_runtime import (
     bind_online_collectors,
     online_policy_required,
     validate_collector_configuration,
+    validate_fresh_rollout_policy,
     validate_online_policy_configuration,
     validate_planning_initialization,
 )
@@ -273,7 +274,11 @@ def train_rl(
         )
 
     rank, world, _, device = setup_dist()
-    if actor_enabled and world > 1:
+    validate_fresh_rollout_policy(train_collector)
+    if actor_enabled and world > 1 and not isinstance(
+        train_collector,
+        FreshJSONLRolloutCollector,
+    ):
         raise RuntimeError(
             "multi-rank PPO actor is disabled until rollout freshness and FSDP "
             "forward/EMA semantics have dedicated integration coverage"
@@ -288,11 +293,17 @@ def train_rl(
     )
 
     try:
+        from transformers import AutoConfig
+        from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
+
+        latent_token_count = validate_agent_policy_protocol(
+            AutoConfig.from_pretrained(args.model, trust_remote_code=True)
+        )
         resume_dir = output_dir / "latest"
         loaded = load_backbone(
             args,
             device=device,
-            latent_token_count=1,
+            latent_token_count=latent_token_count,
             resume_dir=resume_dir,
             resume_state_path=resume_dir / "rl_state.pt",
         )
@@ -333,7 +344,7 @@ def train_rl(
         input_builder = build_input_builder(
             loaded,
             max_length=999_999,
-            latent_token_count=1,
+            latent_token_count=latent_token_count,
             mask_latent_query_labels=True,
         )
         # resume 只有在 checkpoint state 确实恢复后才算有效，不能只相信 CLI flag。
@@ -367,7 +378,7 @@ def train_rl(
                 train_collector=train_collector,
                 eval_collector=eval_collector,
                 policy=policy,
-                latent_token_count=1,
+                latent_token_count=latent_token_count,
                 world_size=world,
             )
             if is_main():
