@@ -10,10 +10,9 @@ import torch
 from nimloth.agent import Agent
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.rollout import TransitionBatch
-from nimloth.training.sft2.dino_grid import (
-    DINOGridSFT2Algorithm,
-    DINOGridSFT2Batch,
-)
+import nimloth.training.sft2.dino_grid as dino_grid_module
+from nimloth.training.sft2.algorithm import SFT2Algorithm
+from nimloth.training.sft2.dino_grid import DINOGridLoss
 from nimloth.training.sft2.batch import SFT2Batch
 from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
@@ -163,14 +162,14 @@ def test_grid_world_model_keeps_authoritative_fp32_auxiliaries(tmp_path) -> None
         assert next(module.parameters()).dtype == torch.float32
 
 
-def _batch() -> DINOGridSFT2Batch:
+def _batch() -> SFT2Batch:
     trajectory_steps = (
         ("rec_A", 0),
         ("rec_A", 1),
         ("rec_B", 0),
         ("rec_B", 1),
     )
-    base = SFT2Batch(
+    return SFT2Batch(
         transitions=TransitionBatch(
             current=BackboneBatch(
                 {"hidden": torch.randn(2, 4, 6, requires_grad=True)}
@@ -190,10 +189,7 @@ def _batch() -> DINOGridSFT2Batch:
         history_size=2,
         sample_weights=torch.ones(2),
         next_image_paths=("a.png", "b.png"),
-    )
-    return DINOGridSFT2Batch(
-        base=base,
-        target_grid=torch.randn(2, 4, 8),
+        auxiliary_targets={"dino_grid": torch.randn(2, 4, 8)},
     )
 
 
@@ -206,7 +202,8 @@ def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() 
         (("rec_A", 0), ("rec_B", 0)),
         older_states,
     )
-    algorithm = DINOGridSFT2Algorithm(
+    assert not hasattr(dino_grid_module, "DINOGridSFT2Algorithm")
+    algorithm = SFT2Algorithm(
         history_size=2,
         sigreg=None,
         sigreg_weight=0.0,
@@ -214,7 +211,7 @@ def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() 
         ce_weight=1.0,
         value_rank_margin=0.1,
         value_rank_weight=1.0,
-        dino_weight=0.5,
+        auxiliary_losses=(DINOGridLoss(weight=0.5),),
     )
 
     output = algorithm.training_primary_step(
@@ -222,7 +219,7 @@ def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() 
         batch,
         wm_weight=1.0,
     )
-    expected_ce = batch.base.current.tensors["hidden"].mean()
+    expected_ce = batch.current.tensors["hidden"].mean()
     torch.testing.assert_close(output.losses["lm"], expected_ce)
     assert set(output.losses) == {"lm", "wm", "dino", "value"}
     assert output.current_state.shape == (2, 4, 8)
@@ -231,8 +228,8 @@ def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() 
     output.loss.backward()
 
     assert backbone.calls == 2
-    assert batch.base.current.tensors["hidden"].grad is not None
-    assert batch.base.next.tensors["hidden"].grad is None
+    assert batch.current.tensors["hidden"].grad is not None
+    assert batch.next.tensors["hidden"].grad is None
     assert older_states.grad is None
     projector = wm.state_proj
     assert all(
