@@ -54,8 +54,10 @@ SFT2 的普通 state 使用 JSONL 中该轮真实 assistant response。最终 ob
 真实 CoT，并写入新 JSONL 的 `terminal_assistant_prefix`。该字段止于注入的
 `action_start`；不会生成或执行未来 action，也不会新增 CE 训练轮次。
 
-生成入口不会为影响语义的参数提供默认值。使用前必须由人类明确 checkpoint、
-`max_reasoning_tokens`、`temperature`、`top_p`、`seed` 和 `max_pixels`：
+terminal CoT 的采样方式已确定为 VAGEN validation 配置：`temperature=0`、
+`top_p=1.0`、`top_k=-1`、`do_sample=false`、`n=1`。生成入口显式接收并记录这些值，
+且拒绝其他组合。使用前仍必须由人类明确 checkpoint、`max_reasoning_tokens`、`seed`
+和 `max_pixels`：
 
 ```bash
 python experiments/training/sft2/generate_terminal_cot.py \
@@ -64,8 +66,11 @@ python experiments/training/sft2/generate_terminal_cot.py \
   --output-jsonl "$TERMINAL_COT_JSONL" \
   --max-pixels "$MAX_PIXELS" \
   --max-reasoning-tokens "$MAX_REASONING_TOKENS" \
-  --temperature "$TEMPERATURE" \
-  --top-p "$TOP_P" \
+  --temperature 0 \
+  --top-p 1.0 \
+  --top-k -1 \
+  --no-do-sample \
+  --n 1 \
   --seed "$SEED"
 ```
 

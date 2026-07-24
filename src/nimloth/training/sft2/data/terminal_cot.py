@@ -118,6 +118,9 @@ def generate_terminal_cot_prefix(
     max_reasoning_tokens: int,
     temperature: float,
     top_p: float,
+    top_k: int,
+    do_sample: bool,
+    n: int,
 ) -> TerminalCoTGeneration:
     """Generate terminal CoT and append only the injected state query prefix."""
 
@@ -152,7 +155,8 @@ def generate_terminal_cot_prefix(
         pad_token_id = processor.tokenizer.eos_token_id
     generation_kwargs: dict[str, Any] = {
         "max_new_tokens": max_reasoning_tokens + len(close_ids),
-        "do_sample": temperature > 0.0,
+        "do_sample": do_sample,
+        "num_return_sequences": n,
         "logits_processor": LogitsProcessorList(
             [_MaskNimlothProtocolTokens(protocol_ids)]
         ),
@@ -161,8 +165,12 @@ def generate_terminal_cot_prefix(
         ),
         "pad_token_id": pad_token_id,
     }
-    if temperature > 0.0:
-        generation_kwargs.update(temperature=temperature, top_p=top_p)
+    if do_sample:
+        generation_kwargs.update(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+        )
     output_ids = model.generate(**model_inputs, **generation_kwargs)
     continuation_ids = tuple(
         int(token_id)

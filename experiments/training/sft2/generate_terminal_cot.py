@@ -59,6 +59,13 @@ def main() -> int:
     parser.add_argument("--max-reasoning-tokens", type=int, required=True)
     parser.add_argument("--temperature", type=float, required=True)
     parser.add_argument("--top-p", type=float, required=True)
+    parser.add_argument("--top-k", type=int, required=True)
+    parser.add_argument(
+        "--do-sample",
+        action=argparse.BooleanOptionalAction,
+        required=True,
+    )
+    parser.add_argument("--n", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--attn-implementation", default="sdpa")
@@ -70,6 +77,18 @@ def main() -> int:
         raise ValueError("--temperature must be non-negative")
     if not 0.0 < args.top_p <= 1.0:
         raise ValueError("--top-p must be in (0, 1]")
+    sampling_config = (
+        args.temperature,
+        args.top_p,
+        args.top_k,
+        args.do_sample,
+        args.n,
+    )
+    if sampling_config != (0.0, 1.0, -1, False, 1):
+        raise ValueError(
+            "terminal CoT sampling must match VAGEN validation: "
+            "temperature=0, top_p=1, top_k=-1, do_sample=false, n=1"
+        )
     if args.input_jsonl.resolve() == args.output_jsonl.resolve():
         raise ValueError("input and output JSONL must be different files")
 
@@ -117,6 +136,9 @@ def main() -> int:
                 max_reasoning_tokens=args.max_reasoning_tokens,
                 temperature=args.temperature,
                 top_p=args.top_p,
+                top_k=args.top_k,
+                do_sample=args.do_sample,
+                n=args.n,
             )
             reasoning_token_counts.append(generated.reasoning_token_count)
             yield {**record, TERMINAL_ASSISTANT_PREFIX_FIELD: generated.prefix}
@@ -137,6 +159,9 @@ def main() -> int:
         "max_reasoning_tokens": args.max_reasoning_tokens,
         "temperature": args.temperature,
         "top_p": args.top_p,
+        "top_k": args.top_k,
+        "do_sample": args.do_sample,
+        "n": args.n,
         "seed": args.seed,
         "attn_implementation": args.attn_implementation,
         "reasoning_tokens": {
