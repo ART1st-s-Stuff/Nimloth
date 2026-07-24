@@ -460,3 +460,25 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
   再决定采用 masked GAE、bi-level GAE、turn-wise GAE 或 action-only 模式。
 - 已更新服务器实验 README 和 `outputs/experiments/training/rl/progress.md`，并取消
   allocation `485891` 释放 8 GPU。
+
+## 2026-07-24：对齐 VAGEN turn-wise PPO token credit
+
+- commits `804f686`、`e8dbf9a`、`1c9b9ce` 增加可配置
+  `actor.credit_assignment: action|turn`。`action` 保留单 action-token PPO；`turn`
+  使用 vLLM 两段式 behavior：先采样 CoT，再注入 k 个 latent query 与 action
+  boundary，最后在八个 action token 上采样动作。只有真实采样 token 保存 old
+  log-prob/进入 loss mask；注入 token 不进入 PPO。
+- rollout schema 现在保存真实 assistant response、continuation token ids、old
+  log-probs、loss mask 与 reasoning/action/injected role。behavior replay prompt 与 WM
+  state prompt 分开：前者从 `<think>` 开始，后者对已执行 step 使用真实生成 CoT
+  截到 `<|action_start|>`；terminal state 沿用模板 query。
+- 当前 critic 仍是 environment-step/action `ValueHead`，所以 `turn` 采用 VAGEN
+  turn-wise 语义：同一步 normalized Monte Carlo advantage 广播给该轮 loss-mask
+  reasoning/action token。没有实现或声称实现 token/bi-level GAE。
+- 修复现有 vLLM action rollout 在 assistant prefix 后错误保留 `<|im_end|>` 的条件
+  前缀偏差，统一使用 `continue_final_message=True`。PPO replay 使用
+  `logits_to_keep` 只在 mask 位置调用 `lm_head`；服务器 Transformers 4.55.4 源码
+  已确认 tensor position 语义，避免 ID82 的整段 full-vocabulary logits OOM 路径。
+- 服务器 CPU 回归：`tests/training/rl tests/agent tests/backbone/qwen25vl` 为
+  `99 passed, 1 warning`。尚未启动新 GPU rollout/optimizer step；GPU smoke 仍需新的
+  on-experiment-start 确认、新 ID、输出目录和 fresh manifest。

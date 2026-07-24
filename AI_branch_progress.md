@@ -1797,3 +1797,20 @@
   给未采样的固定 CoT 事后分配 PPO credit。
 - ID82 不可恢复，实验 README/实验组 progress 已完成收尾；hold `485891` 已取消释放。
   在 action-only 精确 replay 与 token-level CoT credit 的产品语义确认前不启动新 ID。
+
+## 2026-07-24：RL 对齐 VAGEN turn-wise token credit，CPU 回归通过
+
+- commits `804f686`、`e8dbf9a`、`1c9b9ce` 实现
+  `actor.credit_assignment=action|turn`。turn mode 由 vLLM 先采样 CoT，再注入 latent
+  query/action boundary 并受限采样 action；trajectory 保存真实 response、逐 token
+  old log-prob、loss mask 与 reasoning/action/injected provenance。
+- behavior replay prompt 与 WM state prompt 已拆分。PPO 从 `<think>` continuation
+  teacher-force；WM 对已执行 step 使用真实 CoT 的 latent prefix，terminal state 使用
+  模板 query。注入 token 永不参加 PPO。
+- 当前 ValueHead 是 step/action critic，因此 turn mode 采用同一步 Monte Carlo
+  advantage 广播的 turn-wise credit；没有实现 token/bi-level GAE。
+- 修复 vLLM assistant prefix 后残留 `<|im_end|>` 的 behavior/replay 条件偏差；Qwen
+  replay 通过 tensor `logits_to_keep` 只计算 loss-mask position 的 vocabulary logits，
+  服务器 Transformers 4.55.4 源码已确认该语义。
+- 服务器相关 CPU suite 为 `99 passed, 1 warning`。尚无新 GPU experiment；下一次
+  online PPO 必须使用新 ID/output/fresh manifest，并先触发 on-experiment-start。
