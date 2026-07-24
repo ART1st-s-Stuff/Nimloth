@@ -203,7 +203,9 @@ The config-sized online PPO smoke uses
 configured GPUs for behavior rollout, exits, and the same allocation then runs
 one distributed update. `distributed.world_size` is the number of training
 processes; `distributed.gpus_per_rank` is 1 for FSDP or 2 for balanced Qwen
-model parallel plus DDP. Physical GPU count is their product. A model-parallel
+model parallel. Paired replicas finish local backward first, then synchronize
+all trainable gradients in deterministic optimizer-parameter order; whole-model
+multi-device DDP is not used. Physical GPU count is their product. A model-parallel
 launch validates that every rank's Qwen placement actually covers both local
 GPUs; CPU/disk offload and single-GPU placement are rejected. This process
 boundary keeps inference ownership out of the trainer and makes the policy

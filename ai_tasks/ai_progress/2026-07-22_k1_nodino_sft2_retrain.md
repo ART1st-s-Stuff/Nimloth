@@ -542,3 +542,11 @@ ValueHead 和 PPO 验证提供兼容 checkpoint；不使用 DINO teacher、featu
 - manifest已消费，W&B `pzp6umsv`，CSV仅表头，无checkpoint，ID92不可resume。修复仅
   对PPO loss/entropy scalar执行可微device copy，再以新ID/fresh rollout验证backward。
 - commit `9791a3f` 已实现上述对齐；服务器完整RL/Qwen suite `104 passed, 1 warning`。
+
+## 2026-07-24：ID93 multi-device DDP backward collective死锁
+
+- replay与总loss均通过后进入backward；600秒watchdog显示rank0/1与rank2/3分别停在
+  不同collective sequence/shape，确认whole multi-device DDP的bucket/device顺序分叉。
+- W&B `gkn5tmqh`，manifest已消费，CSV仅表头，无optimizer/checkpoint，ID93不可resume。
+  下一实现不包装paired modules为DDP，改由OptimizationRuntime在完整backward后按稳定
+  optimizer参数顺序同步Qwen、WM predictor、ValueHead全部gradient并除以world size。

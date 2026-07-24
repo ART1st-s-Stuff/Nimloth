@@ -79,6 +79,7 @@ class RLDistributedModules:
     model: torch.nn.Module
     world_model: WorldModel
     optimizer_state_sharded: bool
+    manual_gradient_sync: bool
     strategy: str
 
 
@@ -388,27 +389,25 @@ def _wrap_distributed_modules(
     training_device: torch.device,
 ) -> RLDistributedModules:
     if model_parallel:
-        if world_size > 1:
-            from torch.nn.parallel import DistributedDataParallel as DDP
-
-            llm = DDP(
-                llm,
-                device_ids=None,
-                output_device=None,
-                find_unused_parameters=False,
-                static_graph=True,
-            )
-        strategy = "model_parallel_ddp" if world_size > 1 else "model_parallel"
+        # 一个训练process拥有多张GPU时，整模型DDP会按各rank的device placement
+        # 异步rebuild buckets；跨节点若bucket/device顺序不同，会让collective序列
+        # 分叉。保留未包装模块，在完整backward后由OptimizationRuntime按optimizer
+        # 参数顺序同步梯度，所有rank因此发出相同shape/order的collective。
+        strategy = (
+            "model_parallel_manual_sync" if world_size > 1 else "model_parallel"
+        )
         optimizer_state_sharded = False
+        manual_gradient_sync = world_size > 1
     else:
         llm = _wrap_llm_fsdp(llm, world_size=world_size)
         strategy = "fsdp" if world_size > 1 else "single_gpu"
         optimizer_state_sharded = world_size > 1
-    world_model = _wrap_world_model_ddp(
-        world_model,
-        device=training_device,
-        world_size=world_size,
-    )
+        manual_gradient_sync = False
+        world_model = _wrap_world_model_ddp(
+            world_model,
+            device=training_device,
+            world_size=world_size,
+        )
     if is_main():
         print(
             json.dumps(
@@ -423,6 +422,7 @@ def _wrap_distributed_modules(
         model=llm,
         world_model=world_model,
         optimizer_state_sharded=optimizer_state_sharded,
+        manual_gradient_sync=manual_gradient_sync,
         strategy=strategy,
     )
 
@@ -767,6 +767,7 @@ def train_rl(
         optimization_runtime = OptimizationRuntime(
             optimizer=optimizer,
             synchronized_modules=agent.synchronized_modules,
+            manual_gradient_sync=distributed_modules.manual_gradient_sync,
             after_step=(
                 lambda: vision_ema.update(agent.backbone.model)
                 if vision_ema is not None

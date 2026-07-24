@@ -1901,3 +1901,14 @@
   ID92不可恢复。修复只把PPO loss/entropy scalar复制到`total.device`；CopyBackward保留
   到Qwen logits的梯度，且不搬运selected vocabulary logits。
 - commit `9791a3f` 完成scalar对齐；服务器完整RL/Qwen suite为`104 passed, 1 warning`。
+
+## 2026-07-24：RL ID93 backward时整模型多设备DDP collective分叉
+
+- ID93完成4条fresh rollout / 20 transitions；native replay index与loss scalar对齐均
+  通过，首次进入真实backward，无OOM或设备相加错误。
+- 每个副本第二GPU持续100% SM但低功耗、第一GPU空闲；600秒后NCCL watchdog确认
+  collective序列分叉：rank0/1停在seq186、4 elements，rank2/3停在seq187、
+  2,004,003,840 elements。不是正常慢forward，而是whole multi-device DDP死锁。
+- W&B `gkn5tmqh`，manifest已消费，CSV仅表头，无completed backward、optimizer step或
+  checkpoint，ID93不可恢复。修复移除paired Qwen与WM/value的DDP包装；完整local
+  backward后由OptimizationRuntime按optimizer参数组稳定顺序逐gradient all-reduce并取均值。
