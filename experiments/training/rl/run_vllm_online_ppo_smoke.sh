@@ -87,6 +87,11 @@ export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
 export TOKENIZERS_PARALLELISM=true
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export FLASHINFER_WORKSPACE_DIR=${FLASHINFER_WORKSPACE_DIR:-/project/peilab/atst/nimloth/.cache/flashinfer}
+mkdir -p "${FLASHINFER_WORKSPACE_DIR}"
+# The cluster image cannot JIT FlashInfer's sampler extension reliably. vLLM's
+# native sampler preserves the same requested temperature/top-p distribution.
+export VLLM_USE_FLASHINFER_SAMPLER=0
 # Ray gives each GPU actor its allocated device as local cuda:0.  PyTorch's
 # symmetric-memory rendezvous compares those local ordinals across ranks and
 # can therefore report false overlap on multi-node tensor parallel runs.  Use
