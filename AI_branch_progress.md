@@ -1600,3 +1600,15 @@
   optimizer step及最终validation/save，重新拿到8卡后ETA约50--60分钟。
 - 当前状态为“需恢复”，没有final/two-epoch结果；查询进度本身不授权重启，未自动
   申请新hold或恢复。
+
+## 2026-07-24：ID46 resume attempt 1 已排队
+
+- 人类已明确要求继续剩余SFT2。提交唯一一个preempt 1-node/8-GPU/4-hour hold
+  `485732`，不锁节点；提交时preempt没有完整空闲8卡节点，当前状态为
+  `PENDING (Resources)`。
+- 输出目录内`resume_when_hold_runs.sh`由login-side watcher PID `2891794`等待hold；
+  hold运行后先验证remote worktree仍精确为实验commit `f060a25`，再以
+  `RESUME=1`、绝对`RESUME_FROM=latest`、`WANDB_RUN_ID=yapevfpy`启动单个srun。
+- resume保持原数据/config/B1 GA8/world8、optimizer、8-rank history cache、CSV、
+  W&B ID与输出目录，不创建新实验ID。预计拿到节点后50--60分钟完成；需继续监控到
+  checkpoint恢复成功并产生新的finite optimizer step。
