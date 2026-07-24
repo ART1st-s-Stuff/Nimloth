@@ -1741,3 +1741,26 @@
   environment、vLLM、trajectory、W&B、forward 和 optimizer 之前，无 checkpoint。
 - 已停止 controller 并清理三节点 Ray。commit `06d611f` 在 Ray head CLI 上显式传入
   `--system-config={"agent_register_timeout_ms":120000}`；后续必须用新 ID 重试。
+
+## 2026-07-24：RL ID79--80 单卡 task NCCL 映射失败
+
+- ID79/80 均完成 corrected epoch1 的 fresh TP4 rollout（4 trajectories / 20
+  transitions，rewards `0.0/-0.2/-0.1/-0.1`），manifest 未被 PPO 消费。
+- train-only phase 已能从完整 allocation 启动 8 ranks，但每 GPU 一个 Slurm task 的
+  独立 GPU cgroup 使同节点 NCCL proxy 在首次 freshness broadcast 报
+  `Cuda failure 101 invalid device ordinal`；无 W&B（ID79）或有效 optimizer step，
+  无 checkpoint。仅移除父级 `CUDA_VISIBLE_DEVICES` 的 ID80 未解决该 NCCL 行为。
+- commit `ce5479e` 改为每物理节点一个 GPU step，在节点内启动 1/6/1 ranks，并以
+  offsets 0/1/7 形成 world8；同节点 ranks 共同看到该节点全部分配 GPU。
+
+## 2026-07-24：RL ID81 证明异构 world8 正常，暴露 GridWorldModel 缺失
+
+- ID81 的 Ray、TP4、新 rollout、top-level train phase和per-node 1/6/1 NCCL ranks
+  全部通过；8 ranks 完成 freshness broadcast，W&B `nimloth-rl/gga0ncgs` 创建。
+- 训练随后在模型 forward 前失败：RL `_build_world_model()` 无条件用旧
+  `LatentWMPredictor` 加载 corrected SFT2 epoch1 的 `TemporalSpatialGridPredictor`
+  checkpoint，出现完整的 missing `predictor.*` / unexpected `layers.*` key mismatch。
+- CSV 仅表头，无 optimizer step、finite metrics或checkpoint；manifest 未被消费。
+  不能用 `strict=False` 修补，因为 RL 尚未构造 `GridStateProjector`、target encoder、
+  DINO decoder，也未定义 grid RL 的训练/冻结和 loss 语义。下一步必须正式接入
+  `GridWorldModel` 后才可再开新实验 ID。
