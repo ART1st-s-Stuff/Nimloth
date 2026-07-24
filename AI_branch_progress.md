@@ -1931,3 +1931,14 @@
   auxiliaries均存在且无tmp。hold `486283`已取消释放8卡。
 - `latest`结构上可恢复，但继续训练必须新生成fresh manifest、提高iterations并显式
   `--resume`；当前one-shot launcher尚未验证这一continuation流程，不能复用ID94 manifest。
+
+## 2026-07-24：根README固定VAGEN到RL术语与关键参数
+
+- 根`README.md`新增中文术语表，按VAGEN环境、behavior rollout、trajectory、SFT1、
+  SFT2、RL/PPO、planning、评估与checkpoint固定概念边界。
+- 新增SFT1/SFT2/RL、VAGEN环境、分布式训练和vLLM rollout TP参数表；参数值继续以
+  具体YAML、checkpoint metadata和实验README为准，不把ID94 smoke值写成项目默认值。
+- 明确禁止“预测2轮”“value”“跑8卡”“FSDP两卡rank”等歧义说法；RL
+  `history_size=2`固定表示两个transition、三个state prompt以及
+  `(B,2,action_count)`的ValueHead输出。
+- 仅修改文档；`git diff --check`通过，未运行Python测试。
