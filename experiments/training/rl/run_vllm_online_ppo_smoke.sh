@@ -126,7 +126,8 @@ export WANDB_DIR=${WANDB_DIR:-${REPO}/.cache/wandb}
 
 VISIBLE=${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((TRAIN_WORLD_SIZE - 1)))}
 IFS=',' read -r -a GPUS <<< "${VISIBLE}"
-if [[ -z "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" ]] && (( ${#GPUS[@]} != TENSOR_PARALLEL_SIZE )); then
+if [[ "${RUN_ROLLOUT}" == true && -z "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" ]] \
+    && (( ${#GPUS[@]} != TENSOR_PARALLEL_SIZE )); then
   echo "expected ${TENSOR_PARALLEL_SIZE} visible GPUs, got ${VISIBLE}" >&2
   exit 1
 fi
