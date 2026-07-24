@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-24：SFT2 fixed terminal CoT 删除（待远端回归）
+
+- 人类确认 state 必须由真实 CoT 条件化：普通 state 读取真实 assistant response；
+  terminal observation 由本次 SFT2 的 SFT1 初始化 checkpoint 额外生成真实 CoT并
+  持久化，但不执行未来动作。
+- SFT2 transition 展开已删除 `assistant_prefix()` fixed fallback；结构化轨迹也不再用
+  模板伪造响应。新数据必须含 `terminal_assistant_prefix`，cache expansion version为
+  `wm_expand_v3_terminal_cot`，旧 fixed cache 明确失效。
+- 新增离线生成入口，所有会改变生成语义的参数均要求显式传入；模型未自行闭合
+  `</think>` 时失败，不静默注入。
+- 当前只完成代码与文档修改；本机缺少pytest，远端定向回归、实际 terminal 数据生成、
+  cache重建与训练均尚未执行，不得声称修复已完成验证。
+
 ## 2026-07-24：DINO-grid SFT2 恢复 terminal transition 与旧 cache 兼容
 
 - 人类指出当前 cache 图像数不是旧版的62,606。核对确认原始3217/355条记录与

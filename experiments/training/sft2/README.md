@@ -8,6 +8,7 @@ code lives in `src/nimloth/training/sft2/`.
 | `train.py` | Thin entry point for `nimloth.training.sft2.trainer` |
 | `train_vagen79_default.slurm` | Config-driven 8-GPU training job |
 | `build_preprocess_cache.py` | CPU preprocess-cache entry point |
+| `generate_terminal_cot.py` | 用 SFT1 初始化 checkpoint 离线生成并持久化 terminal CoT |
 | `build_compact_cache.slurm` | CPU-only compact-cache job |
 | `submit_cache_then_train.sh` | Cache job followed by dependency-gated training |
 | `submit_default_8gpu.sh` | Default LLM-freeze, vision-full run |
@@ -45,3 +46,30 @@ actual agent quality must be measured by a rollout evaluator.
 
 Outputs go to `outputs/experiments/training/sft2/<date>/<experiment>/`, with
 Slurm logs under `outputs/experiments/training/sft2/slurm/`.
+
+## CoT-conditioned state 数据
+
+SFT2 的普通 state 使用 JSONL 中该轮真实 assistant response。最终 observation 没有
+后续已执行动作，因此必须在训练前用**本次 SFT2 的 SFT1 初始化 checkpoint**额外生成
+真实 CoT，并写入新 JSONL 的 `terminal_assistant_prefix`。该字段止于注入的
+`action_start`；不会生成或执行未来 action，也不会新增 CE 训练轮次。
+
+生成入口不会为影响语义的参数提供默认值。使用前必须由人类明确 checkpoint、
+`max_reasoning_tokens`、`temperature`、`top_p`、`seed` 和 `max_pixels`：
+
+```bash
+python experiments/training/sft2/generate_terminal_cot.py \
+  --model "$SFT1_INIT" \
+  --input-jsonl "$SOURCE_JSONL" \
+  --output-jsonl "$TERMINAL_COT_JSONL" \
+  --max-pixels "$MAX_PIXELS" \
+  --max-reasoning-tokens "$MAX_REASONING_TOKENS" \
+  --temperature "$TEMPERATURE" \
+  --top-p "$TOP_P" \
+  --seed "$SEED"
+```
+
+脚本要求 checkpoint 为可直接加载的 inject-mode HF 导出；模型未在 token 上限内自行
+生成 `</think>` 时直接失败，不静默补闭合标记。输出旁保存 checkpoint 路径、输入/输出
+SHA256 与全部生成参数。SFT2 config 必须改指向生成后的新 JSONL，并重建 preprocess
+cache；旧 fixed-terminal cache 不兼容。

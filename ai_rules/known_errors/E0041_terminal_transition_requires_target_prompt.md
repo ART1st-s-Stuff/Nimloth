@@ -16,9 +16,9 @@ action之后虽然有真实 observation，但没有再执行一个 action；这�
 ## 正确做法
 
 1. 每个已执行 action 都必须对应真实 post-action observation 和 next-state prompt。
-2. 最终 observation 使用 target-only assistant query prefix，不伪造未来 action，
-   也不产生第二次 CE。
+2. 最终 observation 使用 SFT1 初始化 checkpoint 额外生成并持久化的真实 CoT，随后
+   注入 latent query 与 `action_start`；不生成/执行未来 action，也不产生第二次 CE。
 3. cache gate 同时核对 record、transition、唯一图像和 sampler current-step 数；
    sampler ownership 必须等于 transition 数。
-4. 改变 next-prompt expansion 时必须升级 cache fingerprint；旧 cache 只能通过显式、
-   可验证的只读兼容层复用。
+4. 改变 next-prompt expansion 时必须升级 cache fingerprint。包含 fixed terminal CoT
+   的旧 cache 不得复用，必须基于持久化真实 terminal CoT 的新 JSONL 重建。

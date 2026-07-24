@@ -9,15 +9,25 @@ from typing import Any, Iterator
 
 from torch.utils.data import Dataset
 
-from nimloth.agent import (
-    AgentTranscript,
-    bind_image_placeholders,
-    create_prompt_template,
-    prompt_template_spec_from_record,
-)
+from nimloth.agent import bind_image_placeholders
 from nimloth.environment import get_action_space
 
 DEFAULT_VALUE_GAMMA = 1.0
+TERMINAL_ASSISTANT_PREFIX_FIELD = "terminal_assistant_prefix"
+
+
+def terminal_assistant_prefix(record: dict[str, Any]) -> str:
+    """读取离线生成并持久化的 terminal CoT state prefix。"""
+
+    value = record.get(TERMINAL_ASSISTANT_PREFIX_FIELD)
+    if not isinstance(value, str) or not value.strip():
+        record_id = str(record.get("id", ""))
+        raise ValueError(
+            f"record {record_id!r} is missing {TERMINAL_ASSISTANT_PREFIX_FIELD!r}; "
+            "generate terminal CoT with the SFT1 initialization checkpoint "
+            "before building SFT2 transitions"
+        )
+    return value
 
 
 def discounted_action_value_targets(
@@ -183,10 +193,6 @@ def expand_record_transitions(
     assistant_msg_indices: list[int] = [
         i for i, msg in enumerate(messages) if msg.get("role") == "assistant"
     ]
-    prompt = create_prompt_template(
-        prompt_template_spec_from_record(record),
-        action_count=len(action_space),
-    )
     for msg_index, msg in enumerate(messages):
         if msg.get("role") != "assistant":
             continue
@@ -227,7 +233,7 @@ def expand_record_transitions(
                 *[dict(m) for m in messages[: next_user_index + 1]],
                 {
                     "role": "assistant",
-                    "content": prompt.assistant_prefix(),
+                    "content": terminal_assistant_prefix(record),
                 },
             ]
             next_prefix_image_paths = [
@@ -282,39 +288,66 @@ def _expand_structured_agent_transitions(
             f"actions={len(action_indices)}; expected one final image"
         )
 
-    prompt = create_prompt_template(
-        prompt_template_spec_from_record(record),
-        action_count=action_count,
+    assistant_responses = tuple(
+        str(response) for response in record.get("assistant_responses", [])
     )
+    if len(assistant_responses) != len(action_indices):
+        raise ValueError(
+            f"record {record_id!r}: assistant_responses={len(assistant_responses)} "
+            f"but actions={len(action_indices)}"
+        )
+    terminal_prefix = terminal_assistant_prefix(record)
     value_targets = discounted_action_value_targets(record, gamma=value_gamma)
     transitions: list[TransitionSample] = []
     for step_index, action_index in enumerate(action_indices):
-        current = AgentTranscript(
-            system_prompt=system_prompt,
-            observation_texts=observation_texts[: step_index + 1],
-            observation_images=image_paths[: step_index + 1],
-            action_indices=action_indices[: step_index + 1],
+        if not 0 <= action_index < action_count:
+            raise ValueError(
+                f"record {record_id!r} step {step_index}: action_index "
+                f"{action_index} out of range [0, {action_count})"
+            )
+        current_messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt}
+        ]
+        for history_index in range(step_index + 1):
+            current_messages.extend(
+                (
+                    {
+                        "role": "user",
+                        "content": observation_texts[history_index],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": assistant_responses[history_index],
+                    },
+                )
+            )
+        next_messages = [dict(message) for message in current_messages]
+        next_messages.append(
+            {
+                "role": "user",
+                "content": observation_texts[step_index + 1],
+            }
         )
-        next_state = AgentTranscript(
-            system_prompt=system_prompt,
-            observation_texts=observation_texts[: step_index + 2],
-            observation_images=image_paths[: step_index + 2],
-            action_indices=action_indices[: step_index + 1],
+        next_messages.append(
+            {
+                "role": "assistant",
+                "content": (
+                    assistant_responses[step_index + 1]
+                    if step_index + 1 < len(action_indices)
+                    else terminal_prefix
+                ),
+            }
         )
         transitions.append(
             TransitionSample(
                 record_id=record_id,
                 step_index=step_index,
-                prefix_messages=(
-                    prompt.build_supervised_prompt(current).unbound_messages()
-                ),
+                prefix_messages=current_messages,
                 prefix_image_paths=list(image_paths[: step_index + 1]),
                 action_index=action_index,
                 current_image_path=image_paths[step_index],
                 next_image_path=image_paths[step_index + 1],
-                next_prefix_messages=(
-                    prompt.build_policy_prompt(next_state).unbound_messages()
-                ),
+                next_prefix_messages=next_messages,
                 next_prefix_image_paths=list(image_paths[: step_index + 2]),
                 action_value_target=float(value_targets[step_index]),
                 success=success,

@@ -43,6 +43,9 @@ def _make_record(num_steps: int = 2) -> dict:
         "image_paths": image_paths,
         "action_indices": action_indices,
         "reward": 1.0,
+        "terminal_assistant_prefix": (
+            "<think>terminal thought</think><|latent_state|><|action_start|>"
+        ),
     }
 
 
@@ -70,7 +73,9 @@ def test_expand_record_transitions_alignment() -> None:
     assert t2.next_prefix_messages is not None
     assert t2.next_prefix_messages[-2]["role"] == "user"
     assert t2.next_prefix_messages[-1]["role"] == "assistant"
-    assert t2.next_prefix_messages[-1]["content"].endswith("<|action_start|>")
+    assert t2.next_prefix_messages[-1]["content"] == (
+        "<think>terminal thought</think><|latent_state|><|action_start|>"
+    )
     assert t2.next_prefix_image_paths == [
         "/tmp/img_0.png",
         "/tmp/img_1.png",
@@ -121,6 +126,19 @@ def test_structured_agent_record_uses_shared_prompt_for_sft2_prefixes() -> None:
         "observation_texts": ["first <image>", "second <image>", "final <image>"],
         "image_paths": ["first.png", "second.png", "final.png"],
         "action_indices": [0, 3],
+        "assistant_responses": [
+            (
+                "<think>first thought</think><|latent_state|>"
+                "<|action_start|><|action_(0)|><|action_end|>"
+            ),
+            (
+                "<think>second thought</think><|latent_state|>"
+                "<|action_start|><|action_(3)|><|action_end|>"
+            ),
+        ],
+        "terminal_assistant_prefix": (
+            "<think>terminal thought</think><|latent_state|><|action_start|>"
+        ),
         "prompt_version": PROMPT_VERSION,
         "latent_token_count": 1,
     }
@@ -133,6 +151,18 @@ def test_structured_agent_record_uses_shared_prompt_for_sft2_prefixes() -> None:
     assert transitions[0].next_prefix_messages is not None
     assert transitions[0].next_prefix_messages[-2]["content"] == "second <image>"
     assert transitions[0].next_prefix_messages[-1]["content"].endswith(
-        "<|action_start|>"
+        "<|action_(3)|><|action_end|>"
     )
     assert transitions[0].next_prefix_image_paths == ["first.png", "second.png"]
+
+    assert transitions[1].next_prefix_messages is not None
+    assert transitions[1].next_prefix_messages[-1]["content"] == (
+        "<think>terminal thought</think><|latent_state|><|action_start|>"
+    )
+
+
+def test_expand_requires_persisted_terminal_cot() -> None:
+    record = _make_record(num_steps=1)
+    del record["terminal_assistant_prefix"]
+    with pytest.raises(ValueError, match="generate terminal CoT"):
+        expand_record_transitions(record)
