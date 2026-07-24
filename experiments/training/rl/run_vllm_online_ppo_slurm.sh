@@ -77,6 +77,7 @@ srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
     --port="${RAY_PORT}" --node-ip-address="${HEAD_IP}" \
     --num-cpus="${head_cpus}" --num-gpus="${head_gpus}" \
     --object-store-memory="${RAY_OBJECT_STORE_BYTES}" \
+    --system-config="{\"agent_register_timeout_ms\":${RAY_AGENT_REGISTER_TIMEOUT_MS}}" \
     --temp-dir="${RAY_TMP_DIR}" --disable-usage-stats \
     --include-dashboard=false --block \
   >"${RAY_LOG_DIR}/${HEAD_NODE}.log" 2>&1 &
