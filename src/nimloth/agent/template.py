@@ -128,8 +128,6 @@ class AgentPromptTemplate(Protocol):
     def build_state_prompt(
         self,
         transcript: AgentTranscript,
-        *,
-        assistant_response: str | None = None,
     ) -> AgentPrompt:
         """构造包含 latent query、但不包含未来 action token 的 state prompt。"""
         ...

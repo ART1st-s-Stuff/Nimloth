@@ -86,10 +86,8 @@ class NimlothPromptTemplate:
     def build_state_prompt(
         self,
         transcript: AgentTranscript,
-        *,
-        assistant_response: str | None = None,
     ) -> AgentPrompt:
-        """用模板或该步真实生成的 reasoning 构造 latent state query。"""
+        """用固定模板构造 policy-independent latent state query。"""
 
         if len(transcript.observation_texts) != len(transcript.action_indices) + 1:
             raise ValueError(
@@ -101,19 +99,8 @@ class NimlothPromptTemplate:
         messages.append(
             {"role": "user", "content": transcript.observation_texts[-1]}
         )
-        assistant_content = self.assistant_prefix()
-        if assistant_response is not None:
-            tokens = LatentActionTokens()
-            before_action, marker, _after_action = assistant_response.partition(
-                tokens.action_start
-            )
-            if not marker or not before_action.startswith("<think>"):
-                raise ValueError(
-                    "generated assistant response does not match Nimloth state prefix"
-                )
-            assistant_content = before_action + marker
         messages.append(
-            {"role": "assistant", "content": assistant_content}
+            {"role": "assistant", "content": self.assistant_prefix()}
         )
         return AgentPrompt(
             messages=tuple(messages),

@@ -94,6 +94,18 @@ def trajectory_from_agent_episode(
         policy_token_roles=[
             list(trace.token_roles) for trace in traces if trace is not None
         ],
+        policy_action_token_ids=[
+            list(trace.action_token_ids) for trace in traces if trace is not None
+        ],
+        policy_reasoning_texts=[
+            trace.reasoning_text for trace in traces if trace is not None
+        ],
+        policy_finish_reasons=[
+            trace.finish_reason for trace in traces if trace is not None
+        ],
+        policy_reasoning_truncated=[
+            trace.reasoning_truncated for trace in traces if trace is not None
+        ],
         prompt_template_spec=episode.prompt_template,
         prompt_version=episode.prompt_template.version,
         latent_token_count=int(

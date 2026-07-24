@@ -39,6 +39,9 @@ def _sample(selected_reasoning_tokens: int) -> PolicyReplayInput:
             "action",
             "injected",
         ),
+        action_token_ids=tuple(range(30, 38)),
+        reasoning_text="reasoning",
+        finish_reason="stop",
     )
     return PolicyReplayInput(
         prompt=prompt,
@@ -48,6 +51,10 @@ def _sample(selected_reasoning_tokens: int) -> PolicyReplayInput:
         latent_token_count=1,
         credit_assignment="turn",
         token_trace=trace,
+        assistant_response=(
+            "<think>reasoning</think><|latent_state|><|action_start|>"
+            "<|action_(0)|><|action_end|>"
+        ),
     )
 
 

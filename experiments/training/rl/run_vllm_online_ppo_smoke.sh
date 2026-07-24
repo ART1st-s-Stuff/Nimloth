@@ -207,6 +207,7 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
     --temperature 0.7 --top-p 0.95 --max-pixels 3136 \
     --credit-assignment "${CREDIT_ASSIGNMENT}" \
     --max-reasoning-tokens "${MAX_REASONING_TOKENS}" \
+    --vllm-enforce-eager \
     2>&1 | tee -a "${LOG}"
   cleanup_env
 fi

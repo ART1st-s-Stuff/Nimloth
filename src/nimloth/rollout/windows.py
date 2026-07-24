@@ -63,6 +63,11 @@ class TrajectoryWindow:
                 latent_token_count=latent_token_count,
                 credit_assignment=self.trajectory.policy_credit_assignment,  # type: ignore[arg-type]
                 token_trace=token_trace,
+                assistant_response=(
+                    self.trajectory.assistant_responses[step_index]
+                    if token_trace is not None
+                    else None
+                ),
                 old_action_log_prob=(
                     None
                     if token_trace is not None

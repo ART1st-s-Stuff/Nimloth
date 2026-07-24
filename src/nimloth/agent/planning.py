@@ -136,6 +136,8 @@ class WorldModelPlanner:
 class PlanningPolicy:
     """每个真实 environment step 执行一次 Qwen，再用 WM 搜索首动作。"""
 
+    prompt_mode = "action"
+
     def __init__(
         self,
         *,

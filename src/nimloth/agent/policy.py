@@ -113,6 +113,10 @@ class PolicyTokenTrace:
     old_log_probs: tuple[float | None, ...]
     loss_mask: tuple[bool, ...]
     token_roles: tuple[Literal["reasoning", "action", "injected"], ...]
+    action_token_ids: tuple[int, ...]
+    reasoning_text: str | None = None
+    finish_reason: Literal["stop", "length"] | None = None
+    reasoning_truncated: bool = False
 
     def __post_init__(self) -> None:
         lengths = {
@@ -125,6 +129,12 @@ class PolicyTokenTrace:
             raise ValueError("policy token trace fields must have one non-empty length")
         if any(token_id < 0 for token_id in self.token_ids):
             raise ValueError("policy token ids must be non-negative")
+        if any(token_id < 0 for token_id in self.action_token_ids):
+            raise ValueError("policy action token ids must be non-negative")
+        if not self.action_token_ids or len(set(self.action_token_ids)) != len(
+            self.action_token_ids
+        ):
+            raise ValueError("policy token trace requires unique action token ids")
         for index, (old_log_prob, selected, role) in enumerate(
             zip(
                 self.old_log_probs,
@@ -151,6 +161,20 @@ class PolicyTokenTrace:
         action_position = self.token_roles.index("action")
         if not self.loss_mask[action_position]:
             raise ValueError("the sampled action token must participate in PPO")
+        if self.token_ids[action_position] not in self.action_token_ids:
+            raise ValueError("policy action token is outside the recorded action mapping")
+        has_reasoning = "reasoning" in self.token_roles
+        if has_reasoning:
+            if self.reasoning_text is None:
+                raise ValueError("reasoning token trace requires reasoning_text")
+            if self.finish_reason not in {"stop", "length"}:
+                raise ValueError("reasoning token trace requires a finish reason")
+            if self.reasoning_truncated != (self.finish_reason == "length"):
+                raise ValueError("reasoning truncation must match finish_reason")
+        elif self.reasoning_text is not None or self.finish_reason is not None:
+            raise ValueError("action-only token trace cannot store reasoning metadata")
+        elif self.reasoning_truncated:
+            raise ValueError("action-only token trace cannot be truncated")
 
     @property
     def selected_old_log_probs(self) -> tuple[float, ...]:
@@ -175,9 +199,33 @@ class PolicyDecision:
     token_trace: PolicyTokenTrace | None = None
 
     def __post_init__(self) -> None:
-        validate_action_log_probs(self.action_index, self.action_log_probs)
+        action_log_probs = validate_action_log_probs(
+            self.action_index,
+            self.action_log_probs,
+        )
         if self.response is not None and not self.response:
             raise ValueError("policy response must be non-empty when provided")
+        if self.token_trace is not None:
+            if len(self.token_trace.action_token_ids) != len(action_log_probs):
+                raise ValueError(
+                    "decision distribution and trace action mapping must align"
+                )
+            if not 0 <= self.action_index < len(self.token_trace.action_token_ids):
+                raise ValueError("decision action_index is outside trace action mapping")
+            action_position = self.token_trace.token_roles.index("action")
+            expected_token_id = self.token_trace.action_token_ids[self.action_index]
+            if self.token_trace.token_ids[action_position] != expected_token_id:
+                raise ValueError("decision action does not match policy token trace")
+            trace_log_prob = self.token_trace.old_log_probs[action_position]
+            if trace_log_prob is None or not math.isclose(
+                trace_log_prob,
+                action_log_probs[self.action_index],
+                rel_tol=1e-6,
+                abs_tol=1e-7,
+            ):
+                raise ValueError(
+                    "decision action log-prob does not match policy token trace"
+                )
 
 
 def sample_policy_decision(
@@ -226,6 +274,7 @@ class PolicyReplayInput:
     credit_assignment: Literal["action", "turn"] = "action"
     token_trace: PolicyTokenTrace | None = None
     old_action_log_prob: float | None = None
+    assistant_response: str | None = None
 
     def __post_init__(self) -> None:
         if self.credit_assignment not in {"action", "turn"}:
@@ -244,6 +293,8 @@ class PolicyReplayInput:
                 )
             ):
                 raise ValueError("turn credit requires sampled reasoning tokens")
+            if not self.assistant_response:
+                raise ValueError("turn credit requires the sampled assistant response")
         if self.token_trace is None:
             if self.old_action_log_prob is None or not math.isfinite(
                 self.old_action_log_prob
@@ -256,6 +307,15 @@ class PolicyReplayInput:
             raise ValueError(
                 "token-trace replay must not duplicate the old action log-prob"
             )
+        if self.token_trace is not None:
+            if not 0 <= self.action_index < len(self.token_trace.action_token_ids):
+                raise ValueError("replay action_index is outside action token mapping")
+            action_position = self.token_trace.token_roles.index("action")
+            expected_token_id = self.token_trace.action_token_ids[self.action_index]
+            if self.token_trace.token_ids[action_position] != expected_token_id:
+                raise ValueError(
+                    "token trace action does not match replay action_index"
+                )
 
     @property
     def selected_old_log_probs(self) -> tuple[float, ...]:

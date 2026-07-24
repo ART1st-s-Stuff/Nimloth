@@ -41,6 +41,10 @@ class RolloutTrajectory:
     policy_token_log_probs: list[list[float | None]] = field(default_factory=list)
     policy_loss_masks: list[list[bool]] = field(default_factory=list)
     policy_token_roles: list[list[str]] = field(default_factory=list)
+    policy_action_token_ids: list[list[int]] = field(default_factory=list)
+    policy_reasoning_texts: list[str | None] = field(default_factory=list)
+    policy_finish_reasons: list[str | None] = field(default_factory=list)
+    policy_reasoning_truncated: list[bool] = field(default_factory=list)
     prompt_template_spec: PromptTemplateSpec | None = None
     # 下面两个字段只为读取旧 JSONL 保留；新记录以 prompt_template_spec 为准。
     prompt_version: str = PROMPT_VERSION
@@ -95,7 +99,7 @@ class RolloutTrajectory:
         return template.build_policy_prompt(prefix)
 
     def build_state_prompt(self, step_index: int) -> AgentPrompt:
-        """重建 state encoder 使用的 latent query prompt。"""
+        """用固定 latent query 重建 policy-independent state prompt。"""
 
         action_space = get_action_space(
             self.action_space_id,
@@ -105,14 +109,18 @@ class RolloutTrajectory:
             self.resolved_prompt_template_spec(),
             action_count=len(action_space),
         )
-        response = (
-            self.assistant_responses[step_index]
-            if step_index < len(self.assistant_responses)
-            else None
+        transcript = self.transcript().policy_prefix(step_index)
+        canonical_transcript = AgentTranscript(
+            system_prompt=transcript.system_prompt,
+            observation_texts=transcript.observation_texts,
+            observation_images=transcript.observation_images,
+            action_indices=transcript.action_indices,
+            # WM/value 与 PlanningPolicy 都按动作重建固定模板响应，避免把
+            # behavior policy 的随机 CoT 变成另一套 latent state 定义。
+            assistant_responses=(),
         )
         return template.build_state_prompt(
-            self.transcript().policy_prefix(step_index),
-            assistant_response=response,
+            canonical_transcript,
         )
 
     def policy_token_trace(self, step_index: int) -> PolicyTokenTrace | None:
@@ -123,6 +131,10 @@ class RolloutTrajectory:
             self.policy_token_log_probs,
             self.policy_loss_masks,
             self.policy_token_roles,
+            self.policy_action_token_ids,
+            self.policy_reasoning_texts,
+            self.policy_finish_reasons,
+            self.policy_reasoning_truncated,
         )
         if all(not field for field in fields):
             return None
@@ -133,6 +145,14 @@ class RolloutTrajectory:
             old_log_probs=tuple(self.policy_token_log_probs[step_index]),
             loss_mask=tuple(bool(value) for value in self.policy_loss_masks[step_index]),
             token_roles=tuple(self.policy_token_roles[step_index]),  # type: ignore[arg-type]
+            action_token_ids=tuple(
+                int(value) for value in self.policy_action_token_ids[step_index]
+            ),
+            reasoning_text=self.policy_reasoning_texts[step_index],
+            finish_reason=self.policy_finish_reasons[step_index],  # type: ignore[arg-type]
+            reasoning_truncated=bool(
+                self.policy_reasoning_truncated[step_index]
+            ),
         )
 
     def build_policy_messages(
@@ -199,6 +219,10 @@ class RolloutTrajectory:
             "policy_token_log_probs": self.policy_token_log_probs,
             "policy_loss_masks": self.policy_loss_masks,
             "policy_token_roles": self.policy_token_roles,
+            "policy_action_token_ids": self.policy_action_token_ids,
+            "policy_reasoning_texts": self.policy_reasoning_texts,
+            "policy_finish_reasons": self.policy_finish_reasons,
+            "policy_reasoning_truncated": self.policy_reasoning_truncated,
             "prompt_template": prompt_spec.to_record(),
             # 同时写出旧字段，便于已有工具在迁移期继续读取。
             "prompt_version": prompt_spec.version,
@@ -256,6 +280,22 @@ class RolloutTrajectory:
             policy_token_roles=[
                 [str(value) for value in row]
                 for row in record.get("policy_token_roles", [])
+            ],
+            policy_action_token_ids=[
+                [int(value) for value in row]
+                for row in record.get("policy_action_token_ids", [])
+            ],
+            policy_reasoning_texts=[
+                None if value is None else str(value)
+                for value in record.get("policy_reasoning_texts", [])
+            ],
+            policy_finish_reasons=[
+                None if value is None else str(value)
+                for value in record.get("policy_finish_reasons", [])
+            ],
+            policy_reasoning_truncated=[
+                bool(value)
+                for value in record.get("policy_reasoning_truncated", [])
             ],
             prompt_template_spec=prompt_template_spec,
             prompt_version=prompt_template_spec.version,

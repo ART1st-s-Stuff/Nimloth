@@ -312,6 +312,26 @@ def replay_policy_token_log_probs(
     for sample in samples:
         trace = sample.token_trace
         assert trace is not None
+        if trace.action_token_ids != action_token_ids:
+            raise ValueError(
+                "recorded action token mapping does not match current tokenizer"
+            )
+        if sample.credit_assignment == "turn":
+            assert sample.assistant_response is not None
+            response_prefix = "<think>"
+            if not sample.assistant_response.startswith(response_prefix):
+                raise ValueError("turn response must start with '<think>'")
+            encoded_continuation = tuple(
+                int(value)
+                for value in processor.tokenizer.encode(
+                    sample.assistant_response[len(response_prefix) :],
+                    add_special_tokens=False,
+                )
+            )
+            if encoded_continuation != trace.token_ids:
+                raise ValueError(
+                    "assistant response does not tokenize to the recorded policy trace"
+                )
         bound_messages = sample.prompt.bound_messages()
         text = render_policy_messages(
             bound_messages,

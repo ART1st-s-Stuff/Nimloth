@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from nimloth.agent import (
@@ -16,6 +18,18 @@ from nimloth.latent import LatentActionTokens
 
 
 class _Processor:
+    class Tokenizer:
+        def encode(self, text, *, add_special_tokens):
+            assert add_special_tokens is False
+            if text == (
+                "reason</think><|latent_state|><|action_start|>"
+                "<|action_(2)|><|action_end|>"
+            ):
+                return [5, 20, 25, 22]
+            return [63]
+
+    tokenizer = Tokenizer()
+
     def apply_chat_template(self, messages, **kwargs):
         assert kwargs["continue_final_message"] is True
         return "prompt"
@@ -67,6 +81,9 @@ def test_token_replay_keeps_only_masked_positions_and_role_vocabularies() -> Non
         old_log_probs=(-0.2, None, -0.3, None),
         loss_mask=(True, False, True, False),
         token_roles=("reasoning", "injected", "action", "injected"),
+        action_token_ids=tuple(range(23, 31)),
+        reasoning_text="reason",
+        finish_reason="stop",
     )
     sample = PolicyReplayInput(
         prompt=prompt,
@@ -76,6 +93,10 @@ def test_token_replay_keeps_only_masked_positions_and_role_vocabularies() -> Non
         latent_token_count=1,
         credit_assignment="turn",
         token_trace=trace,
+        assistant_response=(
+            "<think>reason</think><|latent_state|><|action_start|>"
+            "<|action_(2)|><|action_end|>"
+        ),
     )
     model = _Model()
 
@@ -97,3 +118,51 @@ def test_token_replay_keeps_only_masked_positions_and_role_vocabularies() -> Non
         output.entropies,
         torch.tensor([math.log(53.0), math.log(8.0)]),
     )
+
+
+def test_token_replay_rejects_response_that_does_not_match_trace() -> None:
+    tokens = LatentActionTokens()
+    token_id_map = {
+        tokens.latent_state: 20,
+        tokens.action_start: 21,
+        tokens.action_end: 22,
+        **{
+            token: 23 + index
+            for index, token in enumerate(tokens.action_tokens)
+        },
+    }
+    trace = PolicyTokenTrace(
+        token_ids=(5, 20, 25, 22),
+        old_log_probs=(-0.2, None, -0.3, None),
+        loss_mask=(True, False, True, False),
+        token_roles=("reasoning", "injected", "action", "injected"),
+        action_token_ids=tuple(range(23, 31)),
+        reasoning_text="reason",
+        finish_reason="stop",
+    )
+    sample = PolicyReplayInput(
+        prompt=AgentPrompt(
+            messages=({"role": "assistant", "content": "<think>"},),
+            images=(),
+            template=PromptTemplateSpec("test", "v1"),
+        ),
+        action_index=2,
+        sampling_temperature=1.0,
+        sampling_top_p=1.0,
+        latent_token_count=1,
+        credit_assignment="turn",
+        token_trace=trace,
+        assistant_response=(
+            "<think>reason</think><|latent_state|><|action_start|>"
+            "<|action_(2)|><|action_end|>"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="does not tokenize"):
+        replay_policy_token_log_probs(
+            samples=(replace(sample, assistant_response="<think>different</think>"),),
+            model=_Model(),
+            processor=_Processor(),
+            token_id_map=token_id_map,
+            device=torch.device("cpu"),
+        )

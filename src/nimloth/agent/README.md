@@ -28,8 +28,9 @@ trace)`。`PolicyTokenTrace` 区分 reasoning、action 与 injected token；只�
 rollout transition 类型。
 
 `build_response_policy_prompt()` 属于 behavior 生成入口；`build_state_prompt()`
-属于 latent state encoder 入口。turn-credit rollout 中，前者只预填 `<think>`，
-后者使用该步真实生成 response 截到 `<|action_start|>`，两者不得互换。
+属于 latent state encoder 入口。turn-credit rollout 中，前者只预填 `<think>` 并
+保留实际采样 CoT 供 PPO replay；后者按动作重建固定模板历史和 latent query，使
+WM/value 训练状态与 `PlanningPolicy` 部署状态使用同一定义。两者不得互换。
 
 ## Planning 契约
 

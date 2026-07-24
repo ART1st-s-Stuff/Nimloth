@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import math
+
 from nimloth.agent import create_prompt_template, validate_action_log_probs
 from nimloth.environment import get_action_space
+from nimloth.latent import LatentActionTokens, latent_state_tokens
 from nimloth.rollout.schema import RolloutTrajectory
 
 
@@ -37,7 +40,7 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
     if trajectory.action_names != expected_names:
         raise ValueError(f"{prefix}: action names do not match action indices")
     _validate_behavior_probabilities(trajectory, action_count=len(action_space))
-    _validate_token_provenance(trajectory)
+    _validate_token_provenance(trajectory, action_count=len(action_space))
 
     if len(trajectory.policy_messages) != trajectory.num_steps:
         raise ValueError(
@@ -82,7 +85,11 @@ def _validate_behavior_probabilities(
             ) from error
 
 
-def _validate_token_provenance(trajectory: RolloutTrajectory) -> None:
+def _validate_token_provenance(
+    trajectory: RolloutTrajectory,
+    *,
+    action_count: int,
+) -> None:
     prefix = f"trajectory {trajectory.record_id}"
     if trajectory.policy_credit_assignment not in {"action", "turn"}:
         raise ValueError(
@@ -101,6 +108,10 @@ def _validate_token_provenance(trajectory: RolloutTrajectory) -> None:
         trajectory.policy_token_log_probs,
         trajectory.policy_loss_masks,
         trajectory.policy_token_roles,
+        trajectory.policy_action_token_ids,
+        trajectory.policy_reasoning_texts,
+        trajectory.policy_finish_reasons,
+        trajectory.policy_reasoning_truncated,
     )
     populated = [bool(field) for field in trace_fields]
     if any(populated) and not all(populated):
@@ -117,6 +128,30 @@ def _validate_token_provenance(trajectory: RolloutTrajectory) -> None:
         except ValueError as error:
             raise ValueError(f"{prefix} step {step} has invalid token trace: {error}") from error
         assert trace is not None
+        if len(trace.action_token_ids) != action_count:
+            raise ValueError(
+                f"{prefix} step {step} action token mapping has "
+                f"{len(trace.action_token_ids)} entries, expected {action_count}"
+            )
+        action_index = trajectory.action_indices[step]
+        action_position = trace.token_roles.index("action")
+        expected_action_token_id = trace.action_token_ids[action_index]
+        if trace.token_ids[action_position] != expected_action_token_id:
+            raise ValueError(
+                f"{prefix} step {step} token trace action does not match action_index"
+            )
+        old_action_log_prob = trace.old_log_probs[action_position]
+        expected_old_log_prob = trajectory.action_log_probs[step][action_index]
+        if old_action_log_prob is None or not math.isclose(
+            old_action_log_prob,
+            expected_old_log_prob,
+            rel_tol=1e-6,
+            abs_tol=1e-7,
+        ):
+            raise ValueError(
+                f"{prefix} step {step} token trace action log-prob does not match "
+                "action_log_probs"
+            )
         selected_roles = [
             role
             for role, selected in zip(
@@ -135,6 +170,21 @@ def _validate_token_provenance(trajectory: RolloutTrajectory) -> None:
             raise ValueError(
                 f"{prefix} step {step} turn credit has no reasoning token"
             )
+        if trajectory.policy_credit_assignment == "turn":
+            if not trajectory.assistant_responses:
+                raise ValueError(f"{prefix} turn credit requires assistant responses")
+            tokens = LatentActionTokens()
+            expected_response = (
+                f"<think>{trace.reasoning_text}</think>"
+                f"{''.join(latent_state_tokens(trajectory.resolved_latent_token_count(), tokens))}"
+                f"{tokens.action_start}{tokens.action_tokens[action_index]}"
+                f"{tokens.action_end}"
+            )
+            if trajectory.assistant_responses[step] != expected_response:
+                raise ValueError(
+                    f"{prefix} step {step} assistant response does not match "
+                    "token trace reasoning/action"
+                )
 
 
 def _validate_prompt_contract(

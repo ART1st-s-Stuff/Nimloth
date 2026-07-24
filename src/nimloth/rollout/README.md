@@ -32,5 +32,5 @@ Backbone hidden。VAGEN navigation collector 属于
 `nimloth.environment.navigation.collector`，不属于本包。
 
 turn-credit trajectory 同时保留两种可重建输入：behavior replay prompt 从
-`<think>` 开始；state prompt 使用该步真实 CoT 的 latent query prefix。窗口模块只
-负责保持顺序，不计算 advantage。
+`<think>` 开始并保留实际采样 CoT；state prompt 按动作重建固定模板历史与 latent
+query，从而与 planner 部署输入一致。窗口模块只负责保持顺序，不计算 advantage。
