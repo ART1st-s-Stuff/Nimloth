@@ -22,7 +22,6 @@ from nimloth.backbone.qwen25vl.policy import (
     collect_policy_images,
     render_policy_messages,
 )
-from nimloth.backbone.qwen25vl.turn_generation import find_token_subsequence
 from nimloth.latent import LatentActionTokens, latent_state_tokens
 from nimloth.rollout.transitions import TERMINAL_ASSISTANT_PREFIX_FIELD
 
@@ -46,9 +45,11 @@ class _MaskNimlothProtocolTokens(LogitsProcessor):
         return scores
 
 
-class _StopAfterTokenSequence(StoppingCriteria):
-    def __init__(self, token_ids: Sequence[int]) -> None:
-        self._token_ids = tuple(int(token_id) for token_id in token_ids)
+class _StopAfterText(StoppingCriteria):
+    def __init__(self, tokenizer: Any, *, start_length: int, text: str) -> None:
+        self._tokenizer = tokenizer
+        self._start_length = int(start_length)
+        self._text = text
 
     def __call__(
         self,
@@ -56,19 +57,13 @@ class _StopAfterTokenSequence(StoppingCriteria):
         scores: torch.FloatTensor,
         **kwargs: Any,
     ) -> bool:
-        width = len(self._token_ids)
-        if input_ids.shape[1] < width:
-            return False
-        return bool(
-            torch.equal(
-                input_ids[0, -width:],
-                torch.tensor(
-                    self._token_ids,
-                    dtype=input_ids.dtype,
-                    device=input_ids.device,
-                ),
-            )
+        continuation = self._tokenizer.decode(
+            input_ids[0, self._start_length :].tolist(),
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+            spaces_between_special_tokens=False,
         )
+        return self._text in continuation
 
 
 def terminal_cot_prompt_messages(record: dict[str, Any]) -> list[dict[str, Any]]:
@@ -161,7 +156,13 @@ def generate_terminal_cot_prefix(
             [_MaskNimlothProtocolTokens(protocol_ids)]
         ),
         "stopping_criteria": StoppingCriteriaList(
-            [_StopAfterTokenSequence(close_ids)]
+            [
+                _StopAfterText(
+                    processor.tokenizer,
+                    start_length=model_inputs["input_ids"].shape[1],
+                    text="</think>",
+                )
+            ]
         ),
         "pad_token_id": pad_token_id,
     }
@@ -176,26 +177,30 @@ def generate_terminal_cot_prefix(
         int(token_id)
         for token_id in output_ids[0, model_inputs["input_ids"].shape[1] :].tolist()
     )
-    close_start = find_token_subsequence(continuation_ids, close_ids)
-    if close_start is None or close_start > max_reasoning_tokens:
+    decoded_continuation = processor.tokenizer.decode(
+        list(continuation_ids),
+        skip_special_tokens=False,
+        clean_up_tokenization_spaces=False,
+        spaces_between_special_tokens=False,
+    )
+    close_start = decoded_continuation.find("</think>")
+    thought = decoded_continuation[:close_start] if close_start >= 0 else ""
+    reasoning_token_count = len(
+        processor.tokenizer.encode(thought, add_special_tokens=False)
+    )
+    if close_start < 0 or reasoning_token_count > max_reasoning_tokens:
         record_id = str(record.get("id", ""))
         raise RuntimeError(
             f"record {record_id!r}: terminal CoT did not emit '</think>' within "
             f"{max_reasoning_tokens} reasoning tokens"
         )
-    thought = processor.tokenizer.decode(
-        list(continuation_ids[:close_start]),
-        skip_special_tokens=False,
-        clean_up_tokenization_spaces=False,
-        spaces_between_special_tokens=False,
-    )
     tokens = LatentActionTokens()
     latent_block = "".join(latent_state_tokens(latent_token_count, tokens))
     return TerminalCoTGeneration(
         prefix=(
             f"<think>{thought}</think>{latent_block}{tokens.action_start}"
         ),
-        reasoning_token_count=close_start,
+        reasoning_token_count=reasoning_token_count,
     )
 
 

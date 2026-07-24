@@ -30,3 +30,8 @@
 - 尚未生成 train/val terminal CoT 数据，尚未重建 cache，也未启动 SFT2/RL 实验。
 - 全部生成参数已确认；下一步为远端回归、生成train/val terminal CoT、重建cache并
   以新实验ID重跑SFT2。
+- ID47在hold `486556`/dgx-42上执行首条21帧真实terminal生成smoke，入口先误报128
+  tokens内未闭合；512诊断也同样误报。实际continuation仅15 tokens，并在约第5 token
+  解码为`Move left.</think>`。根因是BPE把句点与`</`合并，代码却查找独立编码的
+  `</think>` token子序列。修复改为对continuation解码文本精确查找/停止，并新增跨
+  merged-token boundary回归；正式augmented JSONL/cache/SFT2仍未创建。

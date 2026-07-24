@@ -22,6 +22,10 @@
   60秒无响应，已按规则中止且未重试。远端定向回归、实际 terminal 数据生成、cache
   重建与训练均尚未执行，不得声称修复已完成验证。
 - 全部生成参数已确认，尚待远端回归、数据生成、cache重建和新ID SFT2重训。
+- ID47首条21帧terminal生成smoke最初误报128/512 tokens内都没有`</think>`；解码
+  continuation确认实际仅15 tokens，约第5 token已生成`Move left.</think>`。根因是
+  BPE将句点与`</`合并，独立close-token子序列匹配失效。terminal生成现改为按解码
+  文本精确停止/提取并增加边界回归；hold `486556`仍在dgx-42，正式数据尚未生成。
 
 ## 2026-07-24：DINO-grid SFT2 恢复 terminal transition 与旧 cache 兼容
 
