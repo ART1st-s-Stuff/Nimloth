@@ -6,7 +6,7 @@ import contextlib
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Protocol, Sequence
 
 import torch
 import torch.distributed as dist
@@ -55,6 +55,29 @@ class SFT2SIGRegStepOutput:
     loss: torch.Tensor
     raw_loss: torch.Tensor | None
     metrics: dict[str, float]
+
+
+@dataclass(frozen=True)
+class SFT2AuxiliaryLossOutput:
+    """一个可配置附加 loss 对核心 SFT2 step 的增量。"""
+
+    name: str
+    raw_loss: torch.Tensor
+    weighted_loss: torch.Tensor
+    metrics: dict[str, float]
+
+
+class SFT2AuxiliaryLoss(Protocol):
+    """附加监督只消费核心 step 已产生的 prediction，不重做训练流程。"""
+
+    name: str
+
+    def __call__(
+        self,
+        world_model: torch.nn.Module,
+        batch: SFT2Batch,
+        predicted_next_state: torch.Tensor,
+    ) -> SFT2AuxiliaryLossOutput: ...
 
 
 class _DifferentiableAllGather(torch.autograd.Function):
@@ -198,6 +221,7 @@ class SFT2Algorithm:
         wm_weight_start: float = 0.1,
         wm_weight_end: float = 1.0,
         wm_warmup_fraction: float = 0.3,
+        auxiliary_losses: Sequence[SFT2AuxiliaryLoss] = (),
     ) -> None:
         self.history_size = int(history_size)
         if self.history_size < 1:
@@ -213,6 +237,10 @@ class SFT2Algorithm:
         self.wm_weight_start = float(wm_weight_start)
         self.wm_weight_end = float(wm_weight_end)
         self.wm_warmup_fraction = float(wm_warmup_fraction)
+        self.auxiliary_losses = tuple(auxiliary_losses)
+        names = [component.name for component in self.auxiliary_losses]
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate SFT2 auxiliary loss names: {names}")
 
     def wm_weight(self, global_step: int, total_steps: int) -> float:
         """在训练前段用 cosine ramp 增加 WM loss 权重。"""
@@ -269,9 +297,11 @@ class SFT2Algorithm:
             batch.online_tail,
             include_lm_loss=False,
         ).state
+        sigreg_current = runtime.agent.wm.sigreg_state(detached_current_state)
+        sigreg_next = runtime.agent.wm.sigreg_state(next_state)
         global_current, global_next, global_batch_size = gather_global_sigreg_states(
-            detached_current_state,
-            next_state,
+            sigreg_current,
+            sigreg_next,
             batch.sample_weights > 0.0,
         )
         with shared_sigreg_rng(sigreg_seed, global_next.device):
@@ -360,6 +390,14 @@ class SFT2Algorithm:
             model_output.predicted_next_state,
             aligned_targets,
         )
+        auxiliary = tuple(
+            component(
+                runtime.agent.wm,
+                batch,
+                model_output.predicted_next_state,
+            )
+            for component in self.auxiliary_losses
+        )
         value = self._value_loss(
             model_output.action_values,
             batch.current_action_indices,
@@ -367,6 +405,8 @@ class SFT2Algorithm:
             include_ranking=include_value_ranking,
         )
         total = wm_weight * wm_loss + self.value_weight * value["loss"]
+        for output in auxiliary:
+            total = total + output.weighted_loss
         if model_output.lm_loss is not None:
             total = total + self.ce_weight * model_output.lm_loss
         sample_count = 0 if batch.is_padding else batch.batch_size
@@ -387,16 +427,20 @@ class SFT2Algorithm:
             "total_loss": float(total.detach().item()),
         }
         metrics["wm_mse"] = float(wm_loss.detach().item())
+        losses: dict[str, torch.Tensor | None] = {
+            "lm": model_output.lm_loss,
+            "wm": wm_loss,
+            "value": value["loss"],
+        }
+        for output in auxiliary:
+            losses[output.name] = output.raw_loss
+            metrics.update(output.metrics)
         if model_output.lm_loss is not None:
             metrics["lm_ce"] = float(model_output.lm_loss.detach().item())
 
         return SFT2StepOutput(
             loss=total,
-            losses={
-                "lm": model_output.lm_loss,
-                "wm": wm_loss,
-                "value": value["loss"],
-            },
+            losses=losses,
             metrics=metrics,
             current_state=model_output.state[:, -1],
             sample_count=sample_count,
@@ -457,6 +501,8 @@ class SFT2Algorithm:
 
 __all__ = [
     "SFT2Algorithm",
+    "SFT2AuxiliaryLoss",
+    "SFT2AuxiliaryLossOutput",
     "SFT2SIGRegStepOutput",
     "SFT2StepOutput",
     "gather_global_sigreg_states",

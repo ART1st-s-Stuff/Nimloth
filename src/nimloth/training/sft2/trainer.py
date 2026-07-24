@@ -38,10 +38,7 @@ from nimloth.training.sft2.checkpoint import (
 from nimloth.training.sft2.batch import SFT2BatchAssembler
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.data.factory import build_data_bundle
-from nimloth.training.sft2.dino_grid import (
-    DINOGridBatchAssembler,
-    DINOGridSFT2Algorithm,
-)
+from nimloth.training.sft2.dino_grid import DINOGridBatchAssembler, DINOGridLoss
 from nimloth.training.sft2.algorithm import (
     SFT2Algorithm,
     require_sft2_wm_history,
@@ -401,7 +398,6 @@ def train_sft2(args=None) -> int:
             "history_size": (args.history_size, 4),
             "emb_dim": (args.emb_dim, 1024),
             "latent_query_mode": (args.latent_query_mode, "inject"),
-            "lambda_dino": (args.lambda_dino, 0.5),
             "lambda_sigreg": (args.lambda_sigreg, 0.1),
             "grid_size": (args.grid_size, 4),
             "grid_ema_decay": (args.grid_ema_decay, 0.99),
@@ -672,7 +668,7 @@ def train_sft2(args=None) -> int:
                 "dino_grid_size": 4,
                 "dino_identity": vars(DINOV2_LARGE_IDENTITY),
                 "dino_cache_fingerprint": args.dino_cache_fingerprint,
-                "dino_weight": 0.5,
+                "dino_weight": float(args.lambda_dino),
                 "grid_ema_decay": 0.99,
                 "grid_warmstart": str(Path(args.grid_warmstart).resolve()),
                 "grid_warmstart_mode": (
@@ -738,10 +734,10 @@ def train_sft2(args=None) -> int:
         vision_tune=vision_tune,
     )
 
-    algorithm_type = (
-        DINOGridSFT2Algorithm
+    auxiliary_losses = (
+        (DINOGridLoss(weight=args.lambda_dino),)
         if args.objective == "dino_grid"
-        else SFT2Algorithm
+        else ()
     )
     algorithm_kwargs = dict(
         history_size=args.history_size,
@@ -760,10 +756,9 @@ def train_sft2(args=None) -> int:
         value_rank_weight=args.value_rank_lambda,
         wm_weight_start=args.lambda_wm_start,
         wm_weight_end=args.lambda_wm_end,
+        auxiliary_losses=auxiliary_losses,
     )
-    if args.objective == "dino_grid":
-        algorithm_kwargs["dino_weight"] = args.lambda_dino
-    algorithm = algorithm_type(**algorithm_kwargs)
+    algorithm = SFT2Algorithm(**algorithm_kwargs)
 
     loop_state = load_sft2_loop_state(
         resume=args.resume,

@@ -17,6 +17,16 @@
 4. 清理 trainer 的 algorithm 分叉，验证 loss 权重、梯度、checkpoint/resume 和 latent baseline 不变。
 5. 更新 README、known error、进度；运行定向和扩展回归后提交推送 `dev`。
 
+## 已完成
+
+- RED 提交 `9e11523` 要求 DINO 通过 `SFT2Algorithm(auxiliary_losses=...)` 接入，并禁止独立 DINO algorithm。
+- `SFT2Batch` 新增通用 `auxiliary_targets`；核心 algorithm 新增通用附加 loss 输出契约。
+- `DINOGridLoss` 只执行 decoded prediction 与 cached target 的 MSE；原 `DINOGridSFT2Algorithm` 和 `DINOGridSFT2Batch` 已删除。
+- Grid/latent 都通过 `WorldModel.sigreg_state()` 向同一个核心 SIGReg 阶段提供 `(B,D)` 表示。
+- trainer 始终构造唯一 `SFT2Algorithm`；`lambda_dino` 只控制附加 loss 权重并写入 checkpoint invariant。
+
 ## 验证
 
-- 待执行。
+- `compileall`、`git diff --check` 通过。
+- 静态扫描确认生产代码不再存在独立 DINO SFT2 algorithm/batch。
+- 服务器 Pytest 待提交同步后执行。

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence
 
 import torch
@@ -34,6 +34,7 @@ class SFT2Batch:
     history_size: int
     sample_weights: torch.Tensor
     next_image_paths: tuple[str, ...] = ()
+    auxiliary_targets: dict[str, torch.Tensor] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.history_size < 1:
@@ -74,6 +75,14 @@ class SFT2Batch:
                 "SFT2 next-image paths must align with current steps: "
                 f"paths={len(self.next_image_paths)}, B={self.batch_size}"
             )
+        for name, target in self.auxiliary_targets.items():
+            if not name or not isinstance(target, torch.Tensor):
+                raise ValueError("SFT2 auxiliary targets require non-empty tensor entries")
+            if target.ndim < 1 or target.shape[0] != self.batch_size:
+                raise ValueError(
+                    f"SFT2 auxiliary target {name!r} must start with B={self.batch_size}, "
+                    f"got {tuple(target.shape)}"
+                )
 
     @property
     def batch_size(self) -> int:

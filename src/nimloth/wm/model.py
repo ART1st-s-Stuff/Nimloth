@@ -79,6 +79,15 @@ class WorldModel(nn.Module):
         online = self.project_state_sequence(qwen_hidden)
         return online, online
 
+    def sigreg_state(self, state: torch.Tensor) -> torch.Tensor:
+        """返回单个时间位置用于 SIGReg 的 ``(B,D)`` 表示。"""
+
+        if state.ndim != 2:
+            raise ValueError(
+                f"standard latent SIGReg state must have shape (B,D), got {tuple(state.shape)}"
+            )
+        return state
+
     def sigreg_state_sequence(self, state_sequence: torch.Tensor) -> torch.Tensor:
         """返回 SIGReg 使用的统计单位；标准 latent WM 保留完整 state。"""
 

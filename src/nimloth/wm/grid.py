@@ -563,8 +563,18 @@ class GridWorldModel(WorldModel):
         output_shape = (batch_size, time_steps, *online.shape[1:])
         return online.reshape(output_shape), target.reshape(output_shape)
 
+    def sigreg_state(self, state: torch.Tensor) -> torch.Tensor:
+        """单个时刻先对 slots 做 mean pooling，交给公共 SFT2 SIGReg。"""
+
+        if state.ndim != 3:
+            raise ValueError(
+                "grid SIGReg state must have shape (B,N,D), "
+                f"got {tuple(state.shape)}"
+            )
+        return state.mean(dim=-2)
+
     def sigreg_state_sequence(self, state_sequence: torch.Tensor) -> torch.Tensor:
-        """沿用 DINO-grid SFT2：每个时刻先对 16 slots 做 mean pooling。"""
+        """RL sequence 每个时刻先对 slots 做 mean pooling。"""
 
         if state_sequence.ndim != 4:
             raise ValueError(
