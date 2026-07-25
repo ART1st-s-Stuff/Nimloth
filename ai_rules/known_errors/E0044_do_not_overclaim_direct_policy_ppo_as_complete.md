@@ -20,8 +20,9 @@ rollout、HF token replay、PPO loss、backward、gradient synchronization和che
 - 未验证多次fresh rollout/update闭环前，禁止称完整online PPO训练已经跑通。
 - 分别汇报已实现机制、真实运行验证范围、尚未实现机制和已知目标语义缺口。
 
-## 证据
+## 证据边界
 
-- `src/nimloth/training/rl/rollout_runtime.py`显式拒绝同时开启planning和actor。
-- `src/nimloth/agent/planning.py`只保存planner root behavior分布，没有Qwen token trace。
-- `src/nimloth/rollout/from_agent.py`只把逐步reward求和后写入trajectory。
+上述三项是ID94时期的历史实现边界，后续源码已增加planner distillation、token trace和
+逐步reward，不能再用当前源码复述旧状态。历史事实记录在
+`AI_branch_progress.md`的“RL ID94”与“planner-distillation”段落；新路径仍须单独报告
+CPU/interface门禁和真实GPU验证范围。

@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-07-25：H=2 greedy planner + CoT token PPO/reference KL CPU门禁通过
+
+- 人类最终确认：`planning.horizon=2`逐深度greedy且整次planning只产生1条候选；
+  `planner_distillation_weight=1.0`；planner action不参加PPO或reference KL；WM训练；
+  reward KL暂不实现。配置为`rl.gamma=1`、token gamma/lambda均为1、DINO/SIGReg/ranking
+  关闭，Qwen actor对齐VAGEN的lr/AdamW decay/clip/entropy/采样/512完整response上限。
+- commits `5e141bb`、`49bbf0a`、`8c771db`实现：逐深度greedy trace与确定性
+  behavior/teacher分离；Qwen action交叉熵蒸馏；冻结SFT2 reference独立重放并由fresh
+  manifest绑定指纹；VAGEN `low_var_kl × 0.001`只覆盖真实采样CoT；TokenValueHead输入
+  detach，critic loss不再回传Qwen；完整response上限扣除协议开销后再得到reasoning预算。
+- reward KL没有实现，严格schema会拒绝对应未知字段；actor KL不修改environment reward、
+  return、advantage或value target。若未来实现reward KL，必须增加互斥校验，禁止和actor
+  KL同时启用。
+- 本地`compileall`、两个shell `bash -n`、`git diff --check`通过。本地环境无Torch/
+  pytest；服务器`.venv-vagen-main`定向回归先暴露2个错误fixture，修正后为`69 passed`；
+  扩大`tests/training/rl tests/agent tests/backbone/qwen25vl tests/rollout
+  tests/wm/test_grid.py`为`157 passed, 1 expected warning`。新H=2配置在服务器解析确认
+  `beam_width=None`，reference CLI help与shell语法通过。
+- 尚未启动GPU、Slurm、rollout、reference forward、optimizer step或W&B。CPU/interface
+  门禁不能证明真实图片vLLM hidden capture、冻结reference多GPU加载或训练数值正确；下一步
+  必须按on-experiment-start门禁获取匹配config的allocation并持续监控GPU correctness smoke。
+
 ## 2026-07-25：planner-distillation RL CPU/interface 门禁通过
 
 - 人类授权开始 RL，但新 planner-distillation/token-credit 路径的数值、规模和资源配置

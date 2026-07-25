@@ -93,3 +93,20 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
   run 的 resolved config 核实 actor lr/clip/entropy、KL、采样、optimizer 和 batch 参数；
   当前 Nimloth 尚无固定 reference KL，且 TokenValueHead/actor 的参数与梯度职责不等同于
   VAGEN 独立 critic，因此仍需明确“对齐”的范围并补齐所需实现后才能启动。
+
+## 2026-07-25 H=2 greedy/reference-KL 实现结果
+
+- 已确认且写入`configs/training/rl/planner_greedy_h2_smoke.yaml`：H=2逐深度greedy只保留
+  1条候选；distillation weight=1；WM训练；Qwen actor lr=1e-6、AdamW decay=0.01、
+  clip=0.2、entropy=0.01、response cap=512、temperature=0.7、top-p=0.95；reference
+  low-var KL=0.001；environment/token gamma=1；DINO/SIGReg/ranking关闭。
+- planner trace保存H行完整action-value，验证每一步确为argmax；behavior与teacher分字段
+  保存且均为首动作确定性分布。planner action从token PPO mask和reference KL中排除；
+  Qwen action head只通过交叉熵拟合greedy teacher。
+- rollout后新增冻结reference独立重放阶段，在训练模型加载前为每个selected CoT token
+  写入full-vocabulary log-prob；fresh manifest升级为v3并绑定reference artifact指纹。
+  actor loss使用VAGEN实际执行的`low_var_kl`，没有实现reward KL。
+- TokenValueHead接收detached Qwen hidden，critic MSE只训练token head；PPO、action
+  distillation和reference KL仍可训练Qwen。CSV/W&B新增token value、distillation和KL指标。
+- commits `5e141bb`、`49bbf0a`、`8c771db`已推送`dev`。服务器扩大CPU/interface回归
+  `157 passed, 1 expected warning`；尚无GPU实验或optimizer-step证据。
