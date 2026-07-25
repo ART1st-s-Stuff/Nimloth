@@ -39,3 +39,16 @@ advantage；WM是否训练由配置决定。
 
 两条路线都应先补逐步rewards、terminal/truncation和完整八动作Qwen/planner分布；只保存
 selected action的Qwen概率不足以审计entropy、KL、support和behavior mismatch。
+
+## 2026-07-25：远程代码与环境清理范围待确认
+
+登录节点只读审计已完成，尚未删除任何内容。精确证据和目录分组见
+`ai_tasks/ai_progress/2026-07-25_remote_cleanup.md`。
+
+需要人类确认：
+
+1. 是否删除除当前 `.worktree/dev-rl-planner-distill` 外所有**完全干净**、且 HEAD 仍被
+   远端分支引用的历史 worktree；所有含未提交内容或 submodule 修改的目录保留。
+2. 是否删除当前仓库无引用的 `.venv_vllm`；`.venv`、`.venv-vagen-main`、
+   `.venv_vllm128_tmp` 仍有代码引用，默认保留。
+3. 是否另行删除已合并到 `dev` 的远端分支引用，还是本轮只清理服务器 worktree 目录。
