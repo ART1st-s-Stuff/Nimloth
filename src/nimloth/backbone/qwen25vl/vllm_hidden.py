@@ -136,7 +136,9 @@ class PolicyStateCaptureWorkerExtension:
                     (token_id, hidden[index].detach().clone())
                 )
 
-    def nimloth_pop_policy_state_capture(self) -> dict[str, torch.Tensor]:
+    def nimloth_pop_policy_state_capture(
+        self,
+    ) -> dict[str, list[float] | list[list[float]]]:
         self._nimloth_capture_active = False
         entries = list(getattr(self, "_nimloth_capture_entries", []))
         self._nimloth_capture_entries = []
@@ -173,9 +175,12 @@ class PolicyStateCaptureWorkerExtension:
         action_logits = logits[0].index_select(0, action_indices)
         if not torch.isfinite(action_logits).all():
             raise RuntimeError("vLLM returned non-finite raw action logits")
+        # vLLM V1 UtilityResult intentionally omits arbitrary nested Python
+        # type metadata unless insecure serialization is enabled. Return plain
+        # numeric containers and rebuild tensors in the trusted frontend.
         return {
-            "latent_hidden": latent_hidden.float().cpu(),
-            "action_logits": action_logits.float().cpu(),
+            "latent_hidden": latent_hidden.float().cpu().tolist(),
+            "action_logits": action_logits.float().cpu().tolist(),
         }
 
     def nimloth_abort_policy_state_capture(self) -> bool:
@@ -211,17 +216,43 @@ def pop_policy_state_capture(engine: Any) -> VLLMPolicyState:
     results = engine.collective_rpc("nimloth_pop_policy_state_capture")
     if not results or not all(isinstance(value, dict) for value in results):
         raise RuntimeError("vLLM workers returned incomplete policy states")
-    reference = results[0]
+    tensors: list[dict[str, torch.Tensor]] = []
+    for rank, result in enumerate(results):
+        rank_tensors: dict[str, torch.Tensor] = {}
+        for field in ("latent_hidden", "action_logits"):
+            value = result.get(field)
+            try:
+                tensor = torch.as_tensor(value, dtype=torch.float32)
+            except (TypeError, ValueError, RuntimeError) as exc:
+                raise RuntimeError(
+                    f"vLLM TP rank {rank} returned invalid {field}: "
+                    f"{type(value).__name__}"
+                ) from exc
+            if field == "latent_hidden" and tensor.ndim != 2:
+                raise RuntimeError(
+                    f"vLLM TP rank {rank} latent_hidden must be rank 2"
+                )
+            if field == "action_logits" and tensor.ndim != 1:
+                raise RuntimeError(
+                    f"vLLM TP rank {rank} action_logits must be rank 1"
+                )
+            if not torch.isfinite(tensor).all():
+                raise RuntimeError(
+                    f"vLLM TP rank {rank} returned non-finite {field}"
+                )
+            rank_tensors[field] = tensor
+        tensors.append(rank_tensors)
+
+    reference = tensors[0]
     for field in ("latent_hidden", "action_logits"):
-        value = reference.get(field)
-        if not isinstance(value, torch.Tensor):
-            raise RuntimeError(f"vLLM policy state is missing tensor field {field}")
-        for rank, rank_result in enumerate(results[1:], start=1):
-            rank_value = rank_result.get(field)
-            if (
-                not isinstance(rank_value, torch.Tensor)
-                or rank_value.shape != value.shape
-                or not torch.allclose(rank_value, value, rtol=1e-4, atol=1e-5)
+        value = reference[field]
+        for rank, rank_result in enumerate(tensors[1:], start=1):
+            rank_value = rank_result[field]
+            if rank_value.shape != value.shape or not torch.allclose(
+                rank_value,
+                value,
+                rtol=1e-4,
+                atol=1e-5,
             ):
                 raise RuntimeError(
                     f"vLLM TP rank {rank} policy state field {field} differs "

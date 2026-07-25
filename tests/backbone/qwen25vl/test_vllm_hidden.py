@@ -67,11 +67,11 @@ def test_worker_returns_last_complete_policy_state_sequence() -> None:
 
     result = worker.nimloth_pop_policy_state_capture()
 
-    assert result["latent_hidden"].tolist() == [
+    assert result["latent_hidden"] == [
         [101.0, 101.5],
         [102.0, 102.5],
     ]
-    assert result["action_logits"].tolist() == [1030.0, 2060.0]
+    assert result["action_logits"] == [1030.0, 2060.0]
 
 
 def test_frontend_requires_tensor_parallel_policy_state_parity() -> None:
@@ -113,8 +113,8 @@ def test_worker_reads_v1_multimodal_runner_token_buffer() -> None:
 
     result = worker.nimloth_pop_policy_state_capture()
 
-    assert result["latent_hidden"].tolist() == [
+    assert result["latent_hidden"] == [
         [101.0, 101.5],
         [102.0, 102.5],
     ]
-    assert result["action_logits"].tolist() == [1030.0, 2060.0]
+    assert result["action_logits"] == [1030.0, 2060.0]

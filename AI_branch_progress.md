@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-07-25：ID97 capture成功但V1 UtilityResult安全序列化丢失tensor类型
+
+- multimodal token-buffer修复`b5c00c5`通过服务器`158 passed, 1 expected warning`。
+  ID97不再出现worker `captured=()`，但前端在四个episode均拒绝RPC结果：字段存在，值却
+  不是`torch.Tensor`，最终0条完整trajectory并正常非零退出。
+- 核对安装版`vllm/v1/serial_utils.py`确认：默认安全模式下`UtilityResult`对任意嵌套结果
+  不保留类型信息；tensor经msgpack传输后成为原生容器。禁止开启insecure serialization。
+- 待提交修复让worker显式返回普通float list，前端重建float32 tensor并继续做shape、finite、
+  TP一致性校验。ID97只有0-byte trajectory占位文件，无manifest/reference/W&B训练run/
+  optimizer/checkpoint，不可resume；Ray/环境/端口已清理，hold仍保留。
+
 ## 2026-07-25：ID96真实vLLM rollout暴露multimodal hidden capture缺口
 
 - Ray节点修复`50c1a56`通过服务器`157 passed, 1 expected warning`。ID96在同一hold

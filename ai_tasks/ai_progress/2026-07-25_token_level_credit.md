@@ -136,3 +136,14 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
 - ID96已停止并清理；只有0-byte trajectory占位文件，无fresh manifest/reference/W&B训练
   run/optimizer/checkpoint，不可resume。修复必须读取同一次forward对应的runner token buffer，
   禁止退回HF二次重放冒充vLLM rollout hidden state。
+
+## 2026-07-25 ID97 V1 UtilityResult返回类型失败边界
+
+- `b5c00c5`服务器回归`158 passed, 1 expected warning`；ID97真实GPU不再报告
+  `captured=()`，确认同一次multimodal forward已经找到完整latent/action边界序列。
+- 前端仍拒绝四次结果，因为`latent_hidden`字段经V1 utility RPC后不是`torch.Tensor`。
+  安装版`serial_utils.py`显示默认安全模式不保存任意嵌套result的Python类型；不能为此开启
+  `VLLM_ALLOW_INSECURE_SERIALIZATION`。
+- 正确传输契约是worker输出普通float list，前端显式重建float32 tensor，再执行shape、finite
+  和TP parity校验。ID97无有效trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，
+  不可resume且已完成清理。
