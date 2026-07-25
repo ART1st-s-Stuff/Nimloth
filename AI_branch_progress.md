@@ -4,7 +4,39 @@
 
 ---
 
-## 2026-07-26：ID104验证真实exhaustive H=2 rollout，第三条首动作卡住
+## 2026-07-26：ID105完成真实exhaustive H=2的8-GPU correctness闭环
+
+- commit`5976453`使用corrected SFT2 ID46 `epoch_001`、`base_train` seeds1--4、4 nodes×2
+  H800、4个两卡model-parallel rank和vLLM TP4完成ID105。4条episode共20个transition，奖励
+  为`-0.2/0.0/0.0/-0.4`，success 0/4；finish reason为14个`stop`和6个`length`。
+- 独立验证全部20个planner trace：`search_mode=exhaustive`、`horizon=2`，每次都保存且仅保存
+  `8^2=64`个唯一动作序列，集合等于`product(range(8), repeat=2)`；root score为该root下
+  leaf score最大值，实际执行动作等于全局最佳候选的第一个动作。planner action的PPO mask为0，
+  `old_log_prob=None`，因此只进入action-head distillation，不进入Qwen PPO/reference KL。
+- 4条trajectory均由冻结reference完成token-level replay，包含6个512-token截断response；
+  reference log-prob与权威behavior token ID逐token对齐，fingerprint为
+  `f067b6f57461972dccd9c7cb8cbc94db1c0f842980480019b59bcc05478bac9a`。
+- 四个训练rank完成`global_step=1`，实际策略为`model_parallel_manual_sync`。关键有限指标：
+  `total_loss=8.61216`、`wm_mse=4.07261`、`value_loss=0.976862`、
+  `actor_loss=0.0055686`、`token_value_loss=1.48507`、
+  `action_distillation_loss=2.07895`、`mean_ratio=0.943226`、
+  `clip_fraction=0.2`、`policy_tokens=40`。fresh consumption已从`in_progress`提交为
+  `committed`且绑定`global_step=1`和`train/latest`。
+- `iter_0001/latest/final`均包含完整HF双分片、非空`rl_state.pt`、state projection、
+  DINO-grid WM、trajectory value head和token value head，无临时文件。独立validator输出
+  `ID105_VALID`，pipeline最终输出`ALL_OK`。W&B run`2seslnuc`在线状态为`finished`，
+  summary的`global_step=1`和`total_loss=8.612163543701172`与本地产物一致。
+- 本次同时精确定位ID104边界：ID105在同一generation阶段出现6次208--304秒的完整512-token
+  CoT生成，而`capture_pop`约21--207毫秒、64分支planner约19--54毫秒。因此ID104不能称为
+  已确认planner死锁；它是在缺少阶段日志时被主动终止的、运行上不可接受的慢generation。
+- hold`487582`在controller结束后自动取消；cleanup job`487585`独立确认四个节点无相关
+  Ray/vLLM/environment/train进程，6405/8605/29805无监听。完整实验记录已写入远端README和
+  launch contract。
+- 本次只证明当前实现的GPU correctness契约：算法仍是environment Monte Carlo return +
+  turn内token GAE，不是VAGEN Bi-Level GAE；0/4 success不能作为policy/WM质量证据，也没有
+  held-out评估。下一项工程问题是隔离跨节点TP4长CoT decode吞吐，不能为提速而缩短或伪造CoT。
+
+## 2026-07-26：ID104验证真实exhaustive H=2 rollout，第三条首动作长时间未返回
 
 - commits`20c596a`、`6e93fb1`、`942f5df`、`746ba23`已推送`origin/dev`。它们修复
   behavior/replay概率support、fresh artifact事务、KL数值、launcher门禁，并把H=2 smoke
@@ -14,16 +46,18 @@
   SFT2 epoch1、`base_train` seeds1--4、TP4、4 nodes×2 H800和exhaustive H=2启动；Ray四个
   物理节点、环境health、真实checkpoint加载与双cache关闭均通过。
 - episode0完成5 steps/reward`-0.1`/`33.0s`，episode1完成5 steps/reward`0.0`/`75.2s`；
-  episode2 reset后首个`policy.select_action`超过10分钟不返回。当时TP4进程存活，3张GPU
+  episode2 reset后首个`policy.select_action`超过10分钟未返回。当时TP4进程存活，3张GPU
   100%利用率、1张低利用率，无traceback/CUDA/NCCL/actor timeout可用于确定具体子阶段。
+  后续ID105的阶段日志证明同类边界可由208--304秒的长generation组成，所以这里不再将其
+  描述为已确认卡死或planner问题。
 - 为防止把选择性`2/4`episode送入PPO，主动终止controller并取消hold`487573`。
   ID104只留下12张诊断图像和日志；无trajectory JSONL、manifest、reference、W&B run、
   optimizer step或checkpoint，不可resume。清理job`487581`确认原四节点无相关进程，
   6404/8604/29804无监听。
-- 日志缺口使本次只能定位到同步policy/planner边界。已增加`generation`、
+- 当时的日志缺口使本次只能定位到同步policy/planner边界。已增加`generation`、
   `capture_pop`、`planner`与terminal generation的开始/完成事件，不改变动作、
   候选score、概率或梯度语义；服务器定向回归`14 passed`，完整相关回归
-  `176 passed, 1 warning`。下次必须用新ID、空输出和fresh rollout。
+  `176 passed, 1 warning`。ID105随后用新ID、空输出和fresh rollout完成闭环。
 
 ## 2026-07-26：ID103完成一次真实8-GPU H=2 planner online PPO更新
 

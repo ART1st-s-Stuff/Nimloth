@@ -51,6 +51,18 @@ turn 内 token GAE”，不冒充 VAGEN Bi-Level GAE。
 - 针对该诊断缺口，已添加generation/capture-pop/planner/terminal-generation串行阶段事件；
   它们只提供时序证据，不改变RL语义。服务器定向回归`14 passed`，扩大相关回归
   `176 passed, 1 warning`。
+- commit`5976453`上的ID105已完成最终8-GPU correctness smoke：4条真实episode、20个
+  transition、冻结reference replay、四rank model-parallel update、`global_step=1`、fresh
+  consumption提交及`iter_0001/latest/final`三套完整checkpoint全部通过独立验证。
+- 全部20个planner trace均严格包含H=2下8动作空间的64个唯一序列，执行动作等于最佳候选
+  root；planner action在每个transition都被排除出PPO/reference KL。由此验证了当前planner
+  实际模拟多分支，不再把单候选`B=1`写死。
+- ID105的阶段日志显示慢点在vLLM generation：6个完整512-token CoT调用耗时208--304秒，
+  而hidden capture-pop为毫秒级、64分支planner为19--54毫秒。ID104因此不能判定为planner
+  deadlock；后续性能调查应保持真实CoT和当前语义不变。
+- ID105 W&B run`2seslnuc`状态为`finished`；hold`487582`已释放，cleanup job`487585`确认
+  进程和端口清空。success仍为0/4且没有held-out评估，因此本任务只完成语义/correctness
+  闭环，不声称policy或WM质量达标。
 
 ## 验证记录
 
@@ -70,9 +82,26 @@ turn 内 token GAE”，不冒充 VAGEN Bi-Level GAE。
 - `planner_exhaustive_h2_smoke.yaml`经真实`load_rl_config`解析并核对horizon、search、
   episode/max-step和temperature/top-p：`CONFIG_OK`。
 - ID104已验证真实vLLM TP4、真实多图输入、hidden capture与exhaustive H=2 planner能连续
-  完成10个environment actions；第11个动作边界卡住使完整batch未形成。因此同checkpoint
-  跨vLLM/HF ratio、reference KL、GPU optimizer step、事务commit和checkpoint完整性仍未验证；
-  CPU回归不能代替这些门槛。
+  完成10个environment actions；第11个动作边界被主动停止，使完整batch未形成。ID105随后
+  完成4条trajectory和全部GPU门槛：跨vLLM/HF replay/reference对齐、真实optimizer step、
+  事务commit和checkpoint完整性均由独立validator确认。
+
+## GPU最终验证：ID105
+
+- 输出目录：`outputs/experiments/training/rl/2026-07-26/105_smoke_exhaustiveh2_k16_ep1_tokgae1_refkl001_wmtrain_mp2_vllmtp4_ws4`
+  （服务器共享项目路径下）；相邻launch contract记录了精确checkpoint、data split、节点、
+  配置、命令、终态和清理证据。
+- rollout：4 records、20 transitions，reward=`[-0.2, 0.0, 0.0, -0.4]`，
+  finish reason=`14 stop + 6 length`；所有严格JSON、manifest hash和跨字段检查通过。
+- planner：20/20 traces为exhaustive H=2，每条64个唯一候选；candidate、root聚合、执行动作和
+  PPO mask契约全部通过独立重读验证。
+- update：`global_step=1`，`total_loss=8.612163543701172`，所有要求的loss/ratio/entropy/
+  count指标有限；消费记录为`committed`。
+- checkpoints：`iter_0001/latest/final`的两份HF shard分别合计`8129660968` bytes，且各组件
+  与训练状态完整；validator最终输出`ID105_VALID`，pipeline输出`ALL_OK`。
+- 实验README和launch contract上传后逐文件SHA-256核对一致；W&B run
+  `art2nd-hong-kong-university-of-science-and-technology/nimloth-rl/2seslnuc`在线状态为
+  `finished`。
 
 ## Memory复核
 
