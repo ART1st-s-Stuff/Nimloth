@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 from nimloth.agent import AgentPrompt, PolicyDecision, PolicyTokenTrace
 from nimloth.backbone.qwen25vl.policy import (
@@ -57,6 +57,7 @@ class QwenVLLMAgentPolicy:
         credit_assignment: Literal["action", "turn", "token"] = "action",
         max_response_tokens: int = 64,
         capture_policy_state: bool = False,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         if credit_assignment not in {"action", "turn", "token"}:
             raise ValueError(
@@ -72,6 +73,7 @@ class QwenVLLMAgentPolicy:
         self.credit_assignment = credit_assignment
         self.max_response_tokens = int(max_response_tokens)
         self.capture_policy_state = bool(capture_policy_state)
+        self._progress_callback = progress_callback
         if self.capture_policy_state and credit_assignment not in {"turn", "token"}:
             raise ValueError("policy-state capture requires turn or token credit")
         self.prompt_mode = (
@@ -106,6 +108,7 @@ class QwenVLLMAgentPolicy:
         capture_policy_state: bool = False,
         enable_prefix_caching: bool = False,
         mm_processor_cache_gb: float = 0.0,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> "QwenVLLMAgentPolicy":
         from vllm import LLM
 
@@ -151,7 +154,12 @@ class QwenVLLMAgentPolicy:
             credit_assignment=credit_assignment,
             max_response_tokens=max_response_tokens,
             capture_policy_state=capture_policy_state,
+            progress_callback=progress_callback,
         )
+
+    def _progress(self, stage: str) -> None:
+        if self._progress_callback is not None:
+            self._progress_callback(stage)
 
     def reset_episode(self) -> None:
         """vLLM KV cache 按 request 管理，policy 本身无 episode state。"""
@@ -171,6 +179,7 @@ class QwenVLLMAgentPolicy:
         if not self.capture_policy_state:
             raise RuntimeError("this vLLM policy was not configured for state capture")
         tokens = LatentActionTokens()
+        self._progress("capture_start")
         start_policy_state_capture(
             self.engine,
             latent_token_ids=tuple(
@@ -181,10 +190,16 @@ class QwenVLLMAgentPolicy:
             action_token_ids=self.action_token_ids,
         )
         try:
+            self._progress("generation_start")
             decision = self._select_response(prompt)
+            self._progress("generation_done")
+            self._progress("capture_pop_start")
             policy_state = pop_policy_state_capture(self.engine)
+            self._progress("capture_pop_done")
         except Exception:
+            self._progress("capture_abort_start")
             abort_policy_state_capture(self.engine)
+            self._progress("capture_abort_done")
             raise
         if policy_state.latent_hidden.shape[0] != self.latent_token_count:
             raise RuntimeError(
@@ -206,7 +221,9 @@ class QwenVLLMAgentPolicy:
 
         if self.credit_assignment not in {"turn", "token"}:
             raise RuntimeError("terminal state CoT requires turn/token generation")
+        self._progress("terminal_generation_start")
         decision = self._select_response(prompt)
+        self._progress("terminal_generation_done")
         assert decision.response is not None
         boundary = decision.response.rfind(LatentActionTokens().action_start)
         if boundary < 0:

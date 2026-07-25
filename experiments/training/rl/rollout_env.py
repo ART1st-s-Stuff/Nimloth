@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -210,6 +211,15 @@ def main(argv: list[str] | None = None) -> int:
     from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
     from nimloth.rollout import FreshRolloutManifest
 
+    def report_policy_progress(stage: str) -> None:
+        print(
+            json.dumps({
+                "rl_policy_stage": stage,
+                "monotonic_s": round(time.monotonic(), 3),
+            }),
+            flush=True,
+        )
+
     if args.backend == "vllm":
         from transformers import AutoConfig
         from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
@@ -239,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
             capture_policy_state=args.planner_enabled,
             enable_prefix_caching=args.vllm_enable_prefix_caching,
             mm_processor_cache_gb=args.vllm_mm_processor_cache_gb,
+            progress_callback=report_policy_progress,
         )
         if args.planner_enabled:
             from nimloth.agent import PlanningPolicy
@@ -270,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
                 search_mode=args.planning_search_mode,
                 beam_width=args.planning_beam_width,
                 planner_device=planner_device,
+                progress_callback=report_policy_progress,
             )
     else:
         if args.credit_assignment != "action":

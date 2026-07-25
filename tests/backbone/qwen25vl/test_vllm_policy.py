@@ -5,6 +5,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from nimloth.backbone.qwen25vl import vllm_policy as module
 from nimloth.backbone.qwen25vl.vllm_policy import QwenVLLMAgentPolicy
@@ -137,6 +138,49 @@ def test_from_model_forwards_ray_backend(monkeypatch) -> None:
     assert captured["enable_prefix_caching"] is True
     assert captured["mm_processor_cache_gb"] == 2.5
     assert policy.latent_token_count == 16
+
+
+def test_policy_state_progress_identifies_generation_and_capture_boundaries(
+    monkeypatch,
+) -> None:
+    stages: list[str] = []
+    processor = SimpleNamespace(tokenizer=_Tokenizer())
+    policy = QwenVLLMAgentPolicy(
+        engine=SimpleNamespace(),
+        processor=processor,
+        temperature=0.7,
+        top_p=0.95,
+        latent_token_count=16,
+        credit_assignment="token",
+        capture_policy_state=True,
+        progress_callback=stages.append,
+    )
+    decision = SimpleNamespace()
+    monkeypatch.setattr(policy, "_select_response", lambda _prompt: decision)
+    monkeypatch.setattr(
+        module,
+        "start_policy_state_capture",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        module,
+        "pop_policy_state_capture",
+        lambda _engine: module.VLLMPolicyState(
+            latent_hidden=torch.zeros((16, 4)),
+            action_logits=torch.zeros(8),
+        ),
+    )
+
+    result = policy.select_response_with_state(SimpleNamespace())
+
+    assert result.qwen_decision is decision
+    assert stages == [
+        "capture_start",
+        "generation_start",
+        "generation_done",
+        "capture_pop_start",
+        "capture_pop_done",
+    ]
 
 
 def test_from_model_registers_turn_logits_adapter_and_eager_mode(monkeypatch) -> None:

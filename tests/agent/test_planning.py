@@ -242,12 +242,14 @@ class _TurnPolicy:
 
 def test_planning_policy_uses_batched_lookahead_and_excludes_action_from_ppo() -> None:
     world_model, predictor = _planning_world_model()
+    stages: list[str] = []
     policy = PlanningPolicy(
         turn_policy=_TurnPolicy(),
         world_model=world_model,
         horizon=2,
         search_mode="exhaustive",
         planner_device=torch.device("cpu"),
+        progress_callback=stages.append,
     )
     prompt = AgentPrompt(
         messages=({"role": "assistant", "content": "<think>"},),
@@ -267,3 +269,4 @@ def test_planning_policy_uses_batched_lookahead_and_excludes_action_from_ppo() -
     assert decision.token_trace.old_log_probs[action_position] is None
     assert f"<|action_({decision.action_index})|>" in decision.response
     assert predictor.real_history_lengths == [1]
+    assert stages == ["planner_start", "planner_done"]

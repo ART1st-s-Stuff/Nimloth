@@ -4,18 +4,26 @@
 
 ---
 
-## 2026-07-25：RL语义修复已推送；GPU启动受superpod SSH阻断
+## 2026-07-26：ID104验证真实exhaustive H=2 rollout，第三条首动作卡住
 
 - commits`20c596a`、`6e93fb1`、`942f5df`、`746ba23`已推送`origin/dev`。它们修复
   behavior/replay概率support、fresh artifact事务、KL数值、launcher门禁，并把H=2 smoke
   从单候选greedy改为可模拟64个两步分支的exhaustive planner；当前算法仍明确为environment
   MC return + turn内token GAE，不称VAGEN Bi-Level GAE。
-- 人类已授权GPU correctness smoke。预检时VPN跳板可登录、superpod端口TCP可连接，但
-  8秒内不返回SSH banner，ProxyJump在key exchange前被remote host关闭。当前尚未同步server
-  worktree，也未核验checkpoint、空输出、W&B ID或空闲GPU，更未提交Slurm/GPU作业。
-- SSH恢复后使用新ID和空输出，从corrected SFT2 epoch1做`base_train` seeds1--4、H=2
-  exhaustive planner、TP4、4 ranks×2 GPUs/rank的一次fresh rollout/reference/update
-  correctness smoke；提交前仍以live checkpoint、partition和allocation预检为准。
+- 服务器相关回归在commit`bf74102`为`175 passed, 1 warning`。ID104使用corrected
+  SFT2 epoch1、`base_train` seeds1--4、TP4、4 nodes×2 H800和exhaustive H=2启动；Ray四个
+  物理节点、环境health、真实checkpoint加载与双cache关闭均通过。
+- episode0完成5 steps/reward`-0.1`/`33.0s`，episode1完成5 steps/reward`0.0`/`75.2s`；
+  episode2 reset后首个`policy.select_action`超过10分钟不返回。当时TP4进程存活，3张GPU
+  100%利用率、1张低利用率，无traceback/CUDA/NCCL/actor timeout可用于确定具体子阶段。
+- 为防止把选择性`2/4`episode送入PPO，主动终止controller并取消hold`487573`。
+  ID104只留下12张诊断图像和日志；无trajectory JSONL、manifest、reference、W&B run、
+  optimizer step或checkpoint，不可resume。清理job`487581`确认原四节点无相关进程，
+  6404/8604/29804无监听。
+- 日志缺口使本次只能定位到同步policy/planner边界。已增加`generation`、
+  `capture_pop`、`planner`与terminal generation的开始/完成事件，不改变动作、
+  候选score、概率或梯度语义；服务器定向回归`14 passed`，完整相关回归
+  `176 passed, 1 warning`。下次必须用新ID、空输出和fresh rollout。
 
 ## 2026-07-26：ID103完成一次真实8-GPU H=2 planner online PPO更新
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import product
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import torch
 
@@ -242,6 +242,7 @@ class PlanningPolicy:
         search_mode: str,
         beam_width: int | None = None,
         planner_device: torch.device,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         if turn_policy.credit_assignment != "token":
             raise ValueError("planner policy requires token-level Qwen CoT credit")
@@ -254,6 +255,7 @@ class PlanningPolicy:
             beam_width=beam_width,
         )
         self.planner_device = planner_device
+        self._progress_callback = progress_callback
         predictor = world_model.wm_predictor
         predictor_config = getattr(predictor, "config", None)
         self.history_size = int(getattr(predictor_config, "history_size", 0))
@@ -278,6 +280,8 @@ class PlanningPolicy:
         qwen_decision = generated.qwen_decision
         if qwen_decision.token_trace is None or qwen_decision.response is None:
             raise RuntimeError("vLLM planning turn lacks token/response provenance")
+        if self._progress_callback is not None:
+            self._progress_callback("planner_start")
         with evaluating(self.world_model), torch.no_grad():
             latent_hidden = generated.policy_state.latent_hidden.to(
                 self.planner_device
@@ -309,6 +313,8 @@ class PlanningPolicy:
                 device=plan.candidate_scores.device,
             )
             behavior_log_probs[action_index] = 0.0
+        if self._progress_callback is not None:
+            self._progress_callback("planner_done")
 
         qwen_log_probs = torch.log_softmax(
             generated.policy_state.action_logits,

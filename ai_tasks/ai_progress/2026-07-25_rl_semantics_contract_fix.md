@@ -41,11 +41,16 @@ turn 内 token GAE”，不冒充 VAGEN Bi-Level GAE。
 - reference `low_var_kl`在最终clamp已饱和区间内预先约束exp输入，避免极端log-ratio溢出。
 - vLLM缓存开关改为显式参数；默认仍关闭，等待同版本真实多图A/B parity验证后再启用。
 - 删除无操作的online-policy validation wrapper，并同步代码/配置/README/方案文档。
-- 四个实现/文档/测试提交已推送到`origin/dev`，远端`dev`到达`746ba23`。
-- 人类已授权GPU correctness smoke；启动前预检确认本机可登录VPN跳板，且跳板到
-  `superpod.ust.hk:22`可建立TCP，但8秒内没有SSH banner，ProxyJump最终报
-  `kex_exchange_identification: Connection closed by remote host`。因此尚不能核验server
-  worktree、checkpoint、空输出、W&B ID或当前GPU资源，也未提交Slurm/启动训练。
+- 四个实现/文档/测试提交与后续进度提交已推送到`origin/dev`，启动commit为
+  `bf74102`。服务器相关回归为`175 passed, 1 warning`。
+- ID104 GPU correctness smoke完成两条真实exhaustive-H=2 episode（各5 steps，奖励
+  `-0.1/0.0`），第三条reset后首个policy action超过10分钟不返回。无异常栈可再细分
+  generation、hidden capture collective与planner，所以不声称已找到根因。
+- 已主动终止ID104并释放8张H800；无完整trajectory、manifest、reference、W&B、
+  optimizer或checkpoint，不可resume。四节点进程和端口已独立核验清理。
+- 针对该诊断缺口，已添加generation/capture-pop/planner/terminal-generation串行阶段事件；
+  它们只提供时序证据，不改变RL语义。服务器定向回归`14 passed`，扩大相关回归
+  `176 passed, 1 warning`。
 
 ## 验证记录
 
@@ -64,5 +69,15 @@ turn 内 token GAE”，不冒充 VAGEN Bi-Level GAE。
   `169 passed, 1 expected warning`。vLLM policy stub测试包含在通过范围内。
 - `planner_exhaustive_h2_smoke.yaml`经真实`load_rl_config`解析并核对horizon、search、
   episode/max-step和temperature/top-p：`CONFIG_OK`。
-- 尚未验证真实vLLM、真实图片、同checkpoint跨vLLM/HF ratio或GPU optimizer step；
-  这些必须作为独立运行门槛，不能由CPU测试代替。
+- ID104已验证真实vLLM TP4、真实多图输入、hidden capture与exhaustive H=2 planner能连续
+  完成10个environment actions；第11个动作边界卡住使完整batch未形成。因此同checkpoint
+  跨vLLM/HF ratio、reference KL、GPU optimizer step、事务commit和checkpoint完整性仍未验证；
+  CPU回归不能代替这些门槛。
+
+## Memory复核
+
+- 本任务使用的local memory `M0001`、`M0007`、`M0008`、`M0012`已重新`get`。
+  `M0001`和`M0007`的evidence仍直接支持环境与data split结论；`M0008`、`M0012`的结论
+  被当前launcher/进度和实机结果支持，但它们保存的`AI_branch_progress.md`行号已漂移。
+- 上层约束未授权修改memory，所以本次未执行upvote/set/add，也没有运行任何
+  human-only memory命令。
