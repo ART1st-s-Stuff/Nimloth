@@ -26,12 +26,21 @@ class _Processor:
     class Tokenizer:
         def encode(self, text, *, add_special_tokens):
             assert add_special_tokens is False
-            if text == (
-                "reason</think><|latent_state|><|action_start|>"
-                "<|action_(2)|><|action_end|>"
-            ):
-                return [5, 20, 25, 22]
+            del text
             return [63]
+
+        def decode(self, token_ids, **kwargs):
+            assert kwargs == {
+                "skip_special_tokens": False,
+                "clean_up_tokenization_spaces": False,
+                "spaces_between_special_tokens": False,
+            }
+            if list(token_ids) == [5, 20, 25, 22]:
+                return (
+                    "reason</think><|latent_state|><|action_start|>"
+                    "<|action_(2)|><|action_end|>"
+                )
+            return "different"
 
     tokenizer = Tokenizer()
 
@@ -132,11 +141,18 @@ def test_token_replay_keeps_only_masked_positions_and_role_vocabularies() -> Non
         ),
     )
     model = _Model()
+    processor = _Processor()
+    assert tuple(
+        processor.tokenizer.encode(
+            sample.assistant_response[len("<think>") :],
+            add_special_tokens=False,
+        )
+    ) != trace.token_ids
 
     output = replay_policy_token_log_probs(
         samples=(sample,),
         model=model,
-        processor=_Processor(),
+        processor=processor,
         token_id_map=token_id_map,
         device=torch.device("cpu"),
     )
@@ -191,7 +207,7 @@ def test_token_replay_rejects_response_that_does_not_match_trace() -> None:
         ),
     )
 
-    with pytest.raises(ValueError, match="does not tokenize"):
+    with pytest.raises(ValueError, match="does not decode"):
         replay_policy_token_log_probs(
             samples=(replace(sample, assistant_response="<think>different</think>"),),
             model=_Model(),

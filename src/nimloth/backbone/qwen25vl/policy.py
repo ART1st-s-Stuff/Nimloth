@@ -338,16 +338,17 @@ def replay_policy_token_log_probs(
             response_prefix = "<think>"
             if not sample.assistant_response.startswith(response_prefix):
                 raise ValueError("turn response must start with '<think>'")
-            encoded_continuation = tuple(
-                int(value)
-                for value in processor.tokenizer.encode(
-                    sample.assistant_response[len(response_prefix) :],
-                    add_special_tokens=False,
-                )
+            decoded_continuation = processor.tokenizer.decode(
+                list(trace.token_ids),
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+                spaces_between_special_tokens=False,
             )
-            if encoded_continuation != trace.token_ids:
+            if decoded_continuation != sample.assistant_response[
+                len(response_prefix) :
+            ]:
                 raise ValueError(
-                    "assistant response does not tokenize to the recorded policy trace"
+                    "recorded policy trace does not decode to the assistant response"
                 )
         bound_messages = sample.prompt.bound_messages()
         text = render_policy_messages(
