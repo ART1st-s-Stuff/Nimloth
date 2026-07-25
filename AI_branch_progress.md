@@ -10,6 +10,8 @@
   Slurm `PATH/SLURM_CONF`，`squeue`解析到站点module提示wrapper，其输出被误当节点列表，
   随即由config节点数门禁拒绝。无W&B run、rollout、manifest或训练产物，不可resume；
   normal hold `487451`仍保留给修复后的新ID。
+- 修复`9ad695a`让controller在首次Slurm调用前固定集群二进制与配置；服务器`env -i`
+  非登录验证通过，Slurm定向测试`5 passed`，完整相关套件`162 passed, 1 warning`。
 
 - ID100使用`83e5773`同时关闭vLLM prefix与processor cache，Ray四节点/TP4/epoch1加载
   均通过。episode0终态请求在前端明确失败：一段实际采样CoT包含字面量

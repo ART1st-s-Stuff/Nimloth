@@ -153,6 +153,8 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
 - ID101在Ray/GPU前失败：detached controller未固定Slurm `PATH/SLURM_CONF`，站点
   `squeue` wrapper的module提示被当成节点列表。无W&B/rollout/manifest/训练产物，不可
   resume；hold `487451`保留。launcher修复后必须用新ID和空输出。
+- 修复`9ad695a`已在controller内部固定Slurm客户端；服务器`env -i`非登录验证、定向
+  `5 passed`及完整相关测试`162 passed, 1 warning`通过，下一步使用ID102。
 
 - ID100在双cache关闭下越过六张真实图片：episode1/2分别完成5步，reward -0.3/0.0。
   episode0终态prompt前端报错直接给出根因：采样CoT生成了`<|image_pad|>`，导致7个
