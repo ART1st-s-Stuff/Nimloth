@@ -141,9 +141,9 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
 - reference KL actor loss: weight=${REFERENCE_KL_WEIGHT}; no reward KL
 - reference model: ${REFERENCE_MODEL}
 - freshness: policy/planner/trajectory content fingerprints; consumption commits only after a post-update checkpoint
-- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank, one grid-WM/value/SIGReg/PPO optimizer step; no DINO loss
+- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank, one grid-WM/value/PPO optimizer step; no DINO/SIGReg/ranking loss
 - frozen: vision tower, GridStateProjector, EMA target encoder and DINO decoder
-- trainable: Qwen language body, WM predictor and ValueHead
+- trainable: Qwen language body, WM predictor, ValueHead and TokenValueHead
 - W&B: ${WANDB_PROJECT_REQUESTED}/${WANDB_RUN_NAME_REQUESTED}
 - output: ${RUN_OUT}
 EOF
