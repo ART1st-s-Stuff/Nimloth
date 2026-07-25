@@ -71,7 +71,7 @@ training:
   save_interval: 1
 
 distributed:
-  nodes: 2
+  nodes: 3
   world_size: 4
   gpus_per_rank: 2
   rollout_tensor_parallel_size: 4
