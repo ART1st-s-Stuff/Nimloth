@@ -2185,3 +2185,21 @@
   当前RL继续关闭DINO。文档列出模块职责、数据契约、分阶段验证门槛和8项待确认问题。
 - 本轮仅修改设计/进度文档，未修改训练代码、未启动实验，也未创建与仓库文档重复的
   durable memory。
+
+## 2026-07-25：direct-policy token-level credit实现
+
+- 人类要求取消SFT2并立即转向RL；resume hold `486826`已取消。取消前只验证了terminal
+  数据与partial cache续建，cache仍为32 shards，没有train目录、W&B、optimizer step或
+  checkpoint。
+- `dev`提交`60ea738`实现真实逐步rewards、terminated/truncated、显式truncation
+  bootstrap门禁，以及独立TokenValueHead和turn内逐token GAE。token critic读取同一次
+  Qwen replay中selected-token的pre-lm-head hidden state，不给模板/injected token credit。
+- token head已进入optimizer、distributed gradient sync、checkpoint/resume及metadata
+  校验；token模式缺少gamma、lambda、critic lr/loss weight/hidden dim或truncation策略时
+  fail-fast，避免猜测实验参数。
+- 当前算法准确边界为真实environment Monte Carlo return + turn内token GAE；尚无高层
+  turn GAE、planner root policy或planner action distillation，不能称完整VAGEN Bi-Level
+  GAE或planning PPO。
+- 本地compileall与diff-check通过；服务器定向回归`56 passed`。扩大回归首次为
+  `134 passed, 1 failed`，唯一失败是fake policy未声明其reasoning+action mask属于turn
+  credit；生产校验正确，fixture已补显式契约，等待最终重跑。尚未启动GPU RL。

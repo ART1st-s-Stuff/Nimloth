@@ -23,6 +23,7 @@ from nimloth.rollout import (
 
 class _SequencePolicy:
     prompt_mode = "response"
+    credit_assignment = "turn"
 
     def __init__(self, action_indices: tuple[int, ...]) -> None:
         self._action_indices = iter(action_indices)

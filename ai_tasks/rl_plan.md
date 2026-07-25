@@ -1,6 +1,6 @@
 # RL 训练与 planning 方案
 
-本文记录截至 2026-07-24 关于 Nimloth RL、World Model planning、ValueHead、
+本文记录截至 2026-07-25 关于 Nimloth RL、World Model planning、ValueHead、
 Qwen action policy 和 CoT credit assignment 的讨论结果。本文是设计与实施计划，
 不是已完成实现的声明；实际实验参数仍以经过人类逐项确认的配置为准。
 
@@ -48,6 +48,10 @@ Qwen action policy 和 CoT credit assignment 的讨论结果。本文是设计�
 - 当前 direct-policy actor 支持 `action` 和 `turn` credit。`turn` credit 是把同一个
   environment-step Monte Carlo advantage 广播给该轮参与 loss 的 reasoning/action
   token；它不是 token-level GAE，也不是 VAGEN Bi-Level GAE。
+- direct-policy actor 已增加 `token` credit：trajectory 持久化逐步 reward 和
+  `terminated/truncated`；Qwen replay 在每个实际采样 token 前的 hidden state 上运行
+  独立 TokenValueHead；每个 turn 内用逐 token GAE 计算 CoT/action advantage。高层监督
+  仍是完整真实 environment rollout 的 Monte Carlo return。
 - fresh manifest 能把 rollout 绑定到 policy artifact，并限制一次性消费。
 
 ### 3.2 尚未实现或尚未验证
@@ -55,11 +59,12 @@ Qwen action policy 和 CoT credit assignment 的讨论结果。本文是设计�
 - planner behavior 的 policy replay 或 policy update 尚未实现。因此不能声称
   “planning PPO 已完成”或“PPO 已全部完成”。
 - 尚未验证多次迭代的 fresh rollout -> update -> 新 checkpoint -> 新 rollout 在线闭环。
-- trajectory 持久化当前只保留 episode reward 总和，没有完整保存逐步 rewards、
-  `terminated` 和 `truncated`。现有 discounted target 把总 reward 当成末步稀疏奖励，
-  不能覆盖中间奖励、step penalty 和截断 bootstrap 的正确语义。
+- `token` credit 尚未完成真实 GPU optimizer-step 验证，也没有完成多次在线闭环验证。
+- 当前 truncation 只实现了显式 `rl.truncated_bootstrap=zero`；若要从最后真实 state 的
+  value bootstrap，仍需实现并由人类确认配置语义。
 - 当前 actor advantage 使用 `G_t - Q(s_t,a_t)`。该 baseline 依赖已执行动作，不是标准
-  policy-gradient 的 action-independent baseline。
+  policy-gradient 的 action-independent baseline；该问题仍适用于 `action/turn` 模式，
+  `token` 模式改用独立 TokenValueHead。
 - 当前 planner 只用预测叶状态上的 `max_a Q(s,a)` 评分，没有 reward head、done head
   或逐步累计 return。增大 horizon 可能只会放大 WM 误差，不能直接解释成更好的长期规划。
 
@@ -148,7 +153,7 @@ A_t = G_t - stopgrad(V_turn(s_t))
 
 ## 6. CoT credit assignment
 
-### 6.1 初版建议
+### 6.1 已保留的 turn-level 基线
 
 在没有 token critic 前，使用 turn-level Monte Carlo credit：
 
@@ -163,7 +168,25 @@ A_t = G_t - stopgrad(V_turn(s_t))
 这是 turn-level credit，不称为 VAGEN Bi-Level GAE。真正的 Bi-Level GAE 需要至少显式的
 turn reward、token critic、`gamma_turn`、`gamma_token` 和对应 lambda 定义，属于后续阶段。
 
-### 6.2 CoT 必须真正影响 behavior
+### 6.2 当前 token-level 实现
+
+`actor.credit_assignment=token` 使用独立 TokenValueHead 预测每个实际 sampled token 之前
+的 value。对每个 environment turn：
+
+1. 完整真实 trajectory 先按 `rl.gamma` 计算该 step 的 Monte Carlo return `G_t`；
+2. 该 turn 最后一个 selected action token 的 immediate reward 设为 `G_t`，更早的
+   selected reasoning token reward 设为 0；
+3. 用显式 `token_credit.gamma` 和 `token_credit.gae_lambda` 在本 turn 内反向计算 GAE；
+4. turn 边界处 reset，不把下一个 environment turn 的 token critic 当作本 turn 的
+   bootstrap；
+5. PPO 使用 detach 后的全 batch token advantage，TokenValueHead 用未归一化 lambda
+   return 做 MSE；模板和 injected token 始终不进入两项 loss。
+
+因此当前算法的精确名称是“真实 environment Monte Carlo return + turn 内 token GAE”。
+它已经提供逐 token critic 与 CoT credit，但还不是完整 VAGEN Bi-Level GAE：当前没有独立
+的 high-level turn GAE、`gamma_turn/lambda_turn` 或高层 critic。实验报告必须保留这个边界。
+
+### 6.3 CoT 必须真正影响 behavior
 
 只有 CoT 对 planner 最终动作分布有因果影响时，环境 reward 才能合理训练 CoT。当前
 `PlanningPolicy` 使用固定 thought 的 action prompt，planner 搜索也不消费真实采样 CoT；
@@ -227,11 +250,13 @@ distribution 和 planner behavior distribution 逐项一致。
 | `agent/runtime` / rollout collector | 按真实 behavior 采样 CoT 和 planner action、执行 environment、保存完整 trace |
 | `rollout` | trajectory schema、freshness、逐步 rewards/done/truncation、严格一致性验证和窗口采样 |
 | `training/rl/credit` | turn/token mask、advantage 广播与每 turn 归一化 |
+| `training/rl/token_value` | sampled-token critic 的结构和独立 checkpoint 契约 |
 | `training/rl/algorithm` | Q/value、action distillation、CoT PPO、WM/SIGReg loss 及明确的 detach 边界 |
 | `training/rl/runtime` | 模型调用、FSDP/paired-GPU 执行、optimizer ownership 和 checkpoint |
 
-现有 hidden capture 已能在 Qwen forward 中取得 model output；实现时应复用同一次 forward
-提取 action logits，避免为 state 和 action distribution 重复进行完整多模态编码。
+Qwen replay 通过 `lm_head` 前向 hook 复用同一次 teacher-forced forward 的 selected-token
+hidden states；`logits_to_keep` 只保留 loss-mask 位置，避免为了 token critic 再做一次完整
+多模态编码或保存全序列 vocabulary logits。
 
 ## 10. 配置边界建议
 
@@ -258,6 +283,17 @@ agent:
 定义。DINO 在当前 RL 计划中保持关闭。
 
 ## 11. 实施顺序与验证门槛
+
+### 2026-07-25 实现检查点
+
+- 阶段 A 的逐步 rewards、`terminated/truncated`、真实 terminal return 和显式 truncation
+  策略已经实现；token 模式当前只接受明确的 zero bootstrap，尚未实现 learned bootstrap。
+- direct-policy 已实现独立 TokenValueHead 与 turn 内 token GAE，并把其结构、optimizer
+  参数组、分布式同步、checkpoint/resume metadata 纳入训练生命周期。
+- 这次实现不包含阶段 B 的 planner root policy，也不包含 planner action distillation；
+  `PlanningPolicy` 的 PPO/update TODO 不因此变成已完成。
+- CPU 定向回归已通过；真实 GPU token-credit optimizer step 和多 iteration 在线闭环仍是
+  启动实验前后的必要验证门槛。
 
 ### 阶段 A：修正 rollout/value 基础语义
 
@@ -299,7 +335,8 @@ agent:
    planner-augmented behavior PPO。
 2. planner root policy 的精确定义：leaf score、Qwen prior 融合方式、temperature，
    以及未来 reward/done head 的训练目标。
-3. CoT credit 是否采用每 turn token-count 归一化。
+3. `turn` credit 是否采用每 turn token-count 归一化；`token` credit 当前采用全 batch
+   token advantage 标准化，不得与该待确认项混称。
 4. 是否新增独立的 scalar Turn ValueHead，或选择 group/leave-one-out baseline。
 5. action ValueHead ranking loss是否默认关闭。
 6. truncation 是否 bootstrap，以及 bootstrap 使用哪个冻结版本的 value。
