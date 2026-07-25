@@ -60,3 +60,22 @@ selected action的Qwen概率不足以审计entropy、KL、support和behavior mis
 完全干净，`.venv_vllm` 和失效 worktree 注册也仍在。继续需要人类额外确认：是否仅对
 这 7 个已列明路径使用 `git worktree remove --force`，随后按原确认范围清除失效注册和
 `.venv_vllm`。
+
+## 2026-07-25：planner-distillation RL 启动参数待确认
+
+人类已授权开始 RL，但新路径没有可合法继承的完整旧配置。提交 GPU 任务前仍需明确：
+
+1. 实验范围：先做一轮 correctness smoke，还是直接给出正式的 episodes、每条最大 steps、
+   iterations 和停止条件。
+2. 算法参数：`agent.planning.teacher_temperature`、
+   `actor.planner_distillation_weight`、`agent.planning.device`、
+   `predictor.train_wm`、`token_credit.gamma`、`token_credit.gae_lambda`、
+   `token_credit.value_lr`、`token_credit.value_loss_weight`、
+   `token_credit.hidden_dim`；当前 truncation 只能显式选择
+   `rl.truncated_bootstrap=zero`。
+3. rollout 参数：Qwen `temperature`、`top_p`、`max_reasoning_tokens`；terminal CoT 使用
+   同一组数值的协议已经确认，但数值本身仍需固定。
+4. 资源：partition、物理 GPU 总数、`rollout_tensor_parallel_size`、训练 `world_size` 和
+   `gpus_per_rank`。总 GPU 必须由 config 推导，不能根据旧实验猜测为 8。
+5. 模块边界：是否沿用 full Qwen language + ValueHead + TokenValueHead 训练、vision 和
+   StateProjector 冻结；WM 由上面的 `predictor.train_wm` 决定，DINO 已确认关闭。

@@ -46,3 +46,19 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
   fixture 补齐显式契约后，完整 `tests/training/rl tests/agent
   tests/backbone/qwen25vl` 回归为 `135 passed, 1 expected warning`。
 - 尚未启动 GPU experiment、rollout、W&B 或 optimizer step。
+
+## 2026-07-25 planner-distillation RL 启动门禁
+
+- 人类已明确“可以开始 RL”，但尚未给出新路径强制要求的数值和实验规模；按此前
+  “参数未明确必须停下来确认”的规定，尚未提交 Slurm、GPU、rollout 或训练任务。
+- 已确认可继承：corrected SFT2 `epoch_001` lineage、`planning.horizon=2`、64 条
+  exhaustive candidate、planner distribution 采样环境动作、CoT token PPO、action
+  distillation、DINO loss 关闭，以及 terminal observation 使用同 checkpoint/同采样
+  参数生成到 `action_start` 并持久化真实 CoT、丢弃草稿 action。
+- 仍需人类明确：`agent.planning.teacher_temperature`、
+  `actor.planner_distillation_weight`、`agent.planning.device`、
+  `predictor.train_wm`，全部 token-credit 数值、实验 episode/iteration/step 预算、
+  rollout sampling 数值、partition 和物理 GPU/TP/world-size/gpus-per-rank 布局。
+- 新 vLLM selected-hidden worker extension 当前只有 compile/static 边界；启动 GPU 前还要
+  在远程 vLLM 0.11 环境完成 CPU/interface regression，再做一轮真实图片 GPU correctness
+  smoke。未通过 smoke 前不得直接解释长期 success rate。
