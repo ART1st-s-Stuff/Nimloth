@@ -9,6 +9,7 @@ import torch
 
 from nimloth.agent import (
     AgentPrompt,
+    PlannerPolicyTrace,
     PolicyReplayInput,
     PolicyTokenTrace,
     PromptTemplateSpec,
@@ -248,8 +249,75 @@ def test_token_credit_replay_captures_only_selected_hidden_states() -> None:
         token_value_head=token_value_head,
     )
 
-    assert output.token_values is not None
     assert output.token_values.shape == (2,)
     output.token_values.sum().backward()
     assert model.scale.grad is not None
     assert all(parameter.grad is not None for parameter in token_value_head.parameters())
+
+
+def test_planner_replay_returns_raw_action_distribution_without_action_ppo() -> None:
+    tokens = LatentActionTokens()
+    token_id_map = {
+        tokens.latent_state: 20,
+        tokens.action_start: 21,
+        tokens.action_end: 22,
+        **{
+            token: 23 + index
+            for index, token in enumerate(tokens.action_tokens)
+        },
+    }
+    uniform = tuple([-math.log(8.0)] * 8)
+    sample = PolicyReplayInput(
+        prompt=AgentPrompt(
+            messages=({"role": "assistant", "content": "<think>"},),
+            images=(),
+            template=PromptTemplateSpec("test", "v1"),
+        ),
+        action_index=2,
+        sampling_temperature=1.0,
+        sampling_top_p=1.0,
+        latent_token_count=1,
+        credit_assignment="token",
+        token_trace=PolicyTokenTrace(
+            token_ids=(5, 20, 25, 22),
+            old_log_probs=(-0.2, None, None, None),
+            loss_mask=(True, False, False, False),
+            token_roles=("reasoning", "injected", "action", "injected"),
+            action_token_ids=tuple(range(23, 31)),
+            reasoning_text="reason",
+            finish_reason="stop",
+        ),
+        assistant_response=(
+            "<think>reason</think><|latent_state|><|action_start|>"
+            "<|action_(2)|><|action_end|>"
+        ),
+        planner_trace=PlannerPolicyTrace(
+            qwen_action_log_probs=uniform,
+            candidate_sequences=tuple((index,) for index in range(8)),
+            candidate_scores=tuple([0.0] * 8),
+            root_action_scores=tuple([0.0] * 8),
+            planner_action_log_probs=uniform,
+            horizon=1,
+            teacher_temperature=1.0,
+        ),
+    )
+    model = _TokenModel()
+    model.lm_head.weight.data.zero_()
+
+    output = replay_policy_token_log_probs(
+        samples=(sample,),
+        model=model,
+        processor=_Processor(),
+        token_id_map=token_id_map,
+        device=torch.device("cpu"),
+        token_value_head=TokenValueHead(input_dim=4, hidden_dim=3),
+    )
+
+    assert model.last_logits_to_keep == [3, 5]
+    assert output.selected_log_probs.shape == (1,)
+    assert output.token_values.shape == (1,)
+    assert output.action_log_probs.shape == (1, 8)
+    assert torch.allclose(
+        output.action_log_probs,
+        torch.full((1, 8), -math.log(8.0)),
+    )

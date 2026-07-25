@@ -112,6 +112,20 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--fresh-rollout-manifest requires --use-jsonl-rollout")
     config = load_rl_config(args.config)
     config = merge_rl_config_overrides(args, config)
+    if config.agent.planning.enabled and args.fresh_rollout_manifest is not None:
+        missing = [
+            name
+            for name, value in (
+                ("--wm-checkpoint", args.wm_checkpoint),
+                ("--state-proj-checkpoint", args.state_proj_checkpoint),
+                ("--value-head-checkpoint", args.value_head_checkpoint),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError(
+                "planner fresh rollout requires " + ", ".join(missing)
+            )
 
     output_dir = Path(args.output_dir).resolve()
 
@@ -178,6 +192,15 @@ def main(argv: list[str] | None = None) -> int:
             FreshJSONLRolloutCollector(
                 args.fresh_rollout_manifest,
                 model_path=args.model,
+                planner_artifacts=(
+                    {
+                        "wm_predictor": args.wm_checkpoint,
+                        "state_projector": args.state_proj_checkpoint,
+                        "value_head": args.value_head_checkpoint,
+                    }
+                    if config.agent.planning.enabled
+                    else None
+                ),
             )
             if args.fresh_rollout_manifest is not None
             else JSONLRolloutCollector(sources=jsonl_sources)

@@ -42,13 +42,11 @@ def test_validation_requires_an_independent_collector() -> None:
         )
 
 
-def test_planning_policy_rejects_qwen_ppo_replay() -> None:
-    with pytest.raises(ValueError, match="planner behavior probability replay"):
-        validate_online_policy_configuration(
-            actor_enabled=True,
-            planning_enabled=True,
-        )
-
+def test_planner_actor_configuration_is_supported_by_traced_jsonl() -> None:
+    validate_online_policy_configuration(
+        actor_enabled=True,
+        planning_enabled=True,
+    )
     validate_online_policy_configuration(
         actor_enabled=False,
         planning_enabled=True,

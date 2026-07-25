@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from itertools import product
 
 from nimloth.agent import create_prompt_template, validate_action_log_probs
 from nimloth.environment import get_action_space
@@ -165,6 +166,12 @@ def _validate_token_provenance(
         return
     if not all(len(field) == trajectory.num_steps for field in trace_fields):
         raise ValueError(f"{prefix} policy token trace count does not match actions")
+    planner_enabled = bool(trajectory.planner_policy_traces)
+    if planner_enabled:
+        if len(trajectory.planner_policy_traces) != trajectory.num_steps:
+            raise ValueError(f"{prefix} planner trace count does not match actions")
+        if trajectory.policy_credit_assignment != "token":
+            raise ValueError(f"{prefix} planner behavior requires token credit")
     for step in range(trajectory.num_steps):
         try:
             trace = trajectory.policy_token_trace(step)
@@ -185,7 +192,32 @@ def _validate_token_provenance(
             )
         old_action_log_prob = trace.old_log_probs[action_position]
         expected_old_log_prob = trajectory.action_log_probs[step][action_index]
-        if old_action_log_prob is None or not math.isclose(
+        if planner_enabled:
+            planner_trace = trajectory.planner_policy_trace(step)
+            assert planner_trace is not None
+            if trace.loss_mask[action_position] or old_action_log_prob is not None:
+                raise ValueError(
+                    f"{prefix} step {step} planner action must be excluded from PPO"
+                )
+            if any(
+                not math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-7)
+                for actual, expected in zip(
+                    trajectory.action_log_probs[step],
+                    planner_trace.planner_action_log_probs,
+                    strict=True,
+                )
+            ):
+                raise ValueError(
+                    f"{prefix} step {step} behavior does not match planner policy"
+                )
+            expected_candidates = set(
+                product(range(action_count), repeat=planner_trace.horizon)
+            )
+            if set(planner_trace.candidate_sequences) != expected_candidates:
+                raise ValueError(
+                    f"{prefix} step {step} planner trace is not exhaustive"
+                )
+        elif old_action_log_prob is None or not math.isclose(
             old_action_log_prob,
             expected_old_log_prob,
             rel_tol=1e-6,
@@ -213,6 +245,10 @@ def _validate_token_provenance(
             raise ValueError(
                 f"{prefix} step {step} {trajectory.policy_credit_assignment} "
                 "credit has no reasoning token"
+            )
+        if planner_enabled and "action" in selected_roles:
+            raise ValueError(
+                f"{prefix} step {step} planner action cannot receive Qwen PPO credit"
             )
         if trajectory.policy_credit_assignment in {"turn", "token"}:
             if not trajectory.assistant_responses:

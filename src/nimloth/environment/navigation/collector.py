@@ -147,6 +147,7 @@ class VAGENNavigationRolloutCollector:
                     split=self._split,
                     sampling_temperature=self._temperature,
                     sampling_top_p=self._top_p,
+                    terminal_assistant_prefix=runtime.terminal_state_prefix(),
                 )
                 trajectories.append(trajectory)
                 self._log(

@@ -29,7 +29,7 @@ esac
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE CREDIT_ASSIGNMENT MAX_REASONING_TOKENS < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE CREDIT_ASSIGNMENT MAX_REASONING_TOKENS PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNER_TEACHER_TEMPERATURE PLANNER_DEVICE < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -43,6 +43,11 @@ print(
     config.distributed.rollout_tensor_parallel_size,
     config.actor.credit_assignment,
     config.actor.max_reasoning_tokens,
+    str(config.agent.planning.enabled).lower(),
+    config.agent.planning.horizon,
+    config.agent.planning.search_mode,
+    config.agent.planning.teacher_temperature,
+    config.agent.planning.device,
 )
 ' "${RL_CONFIG}"
 )
@@ -205,10 +210,40 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
       --vllm-distributed-executor-backend "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}"
     )
   fi
+  PLANNER_ARGS=()
+  if [[ "${PLANNING_ENABLED}" == true ]]; then
+    [[ "${CREDIT_ASSIGNMENT}" == token ]] || {
+      echo "planner rollout requires token credit" >&2
+      exit 1
+    }
+    [[ "${PLANNING_SEARCH_MODE}" != None ]] || {
+      echo "missing agent.planning.search_mode" >&2
+      exit 1
+    }
+    [[ "${PLANNER_TEACHER_TEMPERATURE}" != None ]] || {
+      echo "missing agent.planning.teacher_temperature" >&2
+      exit 1
+    }
+    [[ "${PLANNER_DEVICE}" != None ]] || {
+      echo "missing agent.planning.device" >&2
+      exit 1
+    }
+    PLANNER_ARGS=(
+      --planner-enabled
+      --planning-horizon "${PLANNING_HORIZON}"
+      --planning-search-mode "${PLANNING_SEARCH_MODE}"
+      --planner-teacher-temperature "${PLANNER_TEACHER_TEMPERATURE}"
+      --planner-device "${PLANNER_DEVICE}"
+      --wm-checkpoint "${WM_CKPT}/wm_predictor"
+      --state-proj-checkpoint "${WM_CKPT}/state_proj.pt"
+      --value-head-checkpoint "${WM_CKPT}/value_head"
+    )
+  fi
   "${PYTHON}" "${REPO}/experiments/training/rl/rollout_env.py" \
     --backend vllm \
     --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
     "${VLLM_BACKEND_ARGS[@]}" \
+    "${PLANNER_ARGS[@]}" \
     --model "${MODEL}" \
     --env-url "${ENV_URL}" \
     --output-dir "${ROLLOUT_OUT}" \

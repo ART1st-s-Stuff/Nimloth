@@ -319,6 +319,10 @@ def replay_policy_token_log_probs(
     selected_log_probs: list[torch.Tensor] = []
     entropies: list[torch.Tensor] = []
     selected_hidden_states: list[torch.Tensor] = []
+    replayed_action_log_probs: list[torch.Tensor] = []
+    planner_samples = [sample.planner_trace is not None for sample in samples]
+    if any(planner_samples) and not all(planner_samples):
+        raise ValueError("one policy batch cannot mix planner and direct actions")
 
     for sample in samples:
         trace = sample.token_trace
@@ -380,8 +384,12 @@ def replay_policy_token_log_probs(
         selected_indices = [
             index for index, selected in enumerate(trace.loss_mask) if selected
         ]
+        replay_indices = list(selected_indices)
+        action_position = trace.token_roles.index("action")
+        if sample.planner_trace is not None:
+            replay_indices.append(action_position)
         logits_to_keep = _logits_to_keep_positions(
-            [prompt_length - 1 + index for index in selected_indices]
+            [prompt_length - 1 + index for index in replay_indices]
         )
         captured: dict[str, torch.Tensor] = {}
         handle = None
@@ -417,12 +425,12 @@ def replay_policy_token_log_probs(
             hidden = captured.get("hidden")
             if hidden is None or hidden.ndim != 3 or hidden.shape[:2] != (
                 1,
-                len(selected_indices),
+                len(replay_indices),
             ):
                 raise RuntimeError(
                     "Qwen lm_head hook did not capture selected token hidden states"
                 )
-            selected_hidden_states.append(hidden[0])
+            selected_hidden_states.append(hidden[0, : len(selected_indices)])
         selected_token_ids = [trace.token_ids[index] for index in selected_indices]
         selected_roles = [trace.token_roles[index] for index in selected_indices]
         for row, token_id, role in zip(
@@ -461,6 +469,16 @@ def replay_policy_token_log_probs(
             )
             selected_log_probs.append(log_probs[selected_index])
             entropies.append(_row_entropies(log_probs.unsqueeze(0))[0])
+        if sample.planner_trace is not None:
+            action_logits = outputs.logits[0, len(selected_indices)].float()
+            restricted = action_logits[
+                torch.tensor(
+                    action_token_ids,
+                    dtype=torch.long,
+                    device=action_logits.device,
+                )
+            ]
+            replayed_action_log_probs.append(torch.log_softmax(restricted, dim=-1))
     token_values = None
     if selected_hidden_states:
         assert token_value_head is not None
@@ -469,6 +487,11 @@ def replay_policy_token_log_probs(
         selected_log_probs=torch.stack(selected_log_probs),
         entropies=torch.stack(entropies),
         token_values=token_values,
+        action_log_probs=(
+            torch.stack(replayed_action_log_probs)
+            if replayed_action_log_probs
+            else None
+        ),
     )
 
 

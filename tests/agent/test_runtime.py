@@ -35,6 +35,10 @@ class _RecordingPolicy:
             ),
         )
 
+    def generate_state_prefix(self, prompt: AgentPrompt) -> str:
+        self.prompts.append(prompt)
+        return "<think>Terminal reasoning.</think><|latent_state|><|action_start|>"
+
 
 def _template() -> NimlothPromptTemplate:
     return NimlothPromptTemplate(latent_token_count=1, action_count=8)
@@ -87,6 +91,22 @@ def test_navigation_agent_serializes_only_completed_turns() -> None:
         "assistant",
     ]
     assert messages[-1]["content"] == action.response
+
+
+def test_navigation_agent_generates_real_terminal_state_prefix() -> None:
+    agent = AgentRuntime(
+        policy=_RecordingPolicy(),
+        action_space=NAVIGATION_ACTION_SPACE,
+        prompt_template=_template(),
+    )
+    agent.reset(system_prompt="system")
+    agent.observe(text="first <image>", image="image-0")
+    agent.act()
+    agent.observe(text="terminal <image>", image="image-1")
+
+    prefix = agent.terminal_state_prefix()
+
+    assert prefix.endswith("<|action_start|>")
 
 
 def test_navigation_agent_keeps_policy_generated_response_in_history() -> None:

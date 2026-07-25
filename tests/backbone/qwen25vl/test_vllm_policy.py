@@ -157,6 +157,34 @@ def test_from_model_registers_turn_logits_adapter_and_eager_mode(monkeypatch) ->
     assert captured["enforce_eager"] is True
 
 
+def test_from_model_registers_policy_state_worker_extension(monkeypatch) -> None:
+    captured = {}
+
+    def fake_llm(**kwargs):
+        captured.update(kwargs)
+        return _Engine(())
+
+    monkeypatch.setitem(sys.modules, "vllm", SimpleNamespace(LLM=fake_llm))
+    QwenVLLMAgentPolicy.from_model(
+        "/model",
+        processor=SimpleNamespace(tokenizer=_Tokenizer()),
+        tensor_parallel_size=4,
+        temperature=0.7,
+        top_p=0.95,
+        max_model_len=32768,
+        max_images=6,
+        gpu_memory_utilization=0.85,
+        latent_token_count=16,
+        credit_assignment="token",
+        enforce_eager=True,
+        capture_policy_state=True,
+    )
+
+    assert captured["worker_extension_cls"].endswith(
+        ":PolicyStateCaptureWorkerExtension"
+    )
+
+
 def test_turn_credit_generates_reasoning_then_constrained_action(monkeypatch) -> None:
     processor = SimpleNamespace(tokenizer=_Tokenizer())
     action_ids = tuple(

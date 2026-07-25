@@ -1,17 +1,30 @@
-"""Agent 的慢速 observation 编码与快速 World Model 规划。"""
+"""Use a real vLLM CoT state for exhaustive latent World Model planning."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+from typing import Any, Protocol
 
 import torch
 
-from nimloth.agent.model import Agent
-from nimloth.agent.policy import PolicyDecision, sample_policy_decision
+from nimloth.agent.policy import PlannerPolicyTrace, PolicyDecision, PolicyTokenTrace
 from nimloth.agent.template import AgentPrompt
-from nimloth.backbone.base import BackboneInputBuilder
+from nimloth.latent import LatentActionTokens
 from nimloth.util.module import evaluating
 from nimloth.wm.model import WorldModel
+
+
+class VLLMTurnStatePolicy(Protocol):
+    """Narrow interface supplied by ``QwenVLLMAgentPolicy``."""
+
+    credit_assignment: str
+
+    def reset_episode(self) -> None: ...
+
+    def select_response_with_state(self, prompt: AgentPrompt) -> Any: ...
+
+    def generate_state_prefix(self, prompt: AgentPrompt) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -35,15 +48,15 @@ class WorldModelPlanner:
         world_model: WorldModel,
         *,
         horizon: int,
-        beam_width: int,
+        search_mode: str,
     ) -> None:
         if horizon < 1:
             raise ValueError(f"planning horizon must be positive, got {horizon}")
-        if beam_width < 1:
-            raise ValueError(f"planning beam_width must be positive, got {beam_width}")
+        if search_mode != "exhaustive":
+            raise ValueError("Qwen planner distillation requires exhaustive search")
         self.world_model = world_model
         self.horizon = int(horizon)
-        self.beam_width = int(beam_width)
+        self.search_mode = search_mode
 
     def plan(
         self,
@@ -110,12 +123,11 @@ class WorldModelPlanner:
             if not torch.isfinite(expanded_scores).all():
                 raise ValueError("planning produced non-finite leaf action values")
 
-            keep = min(self.beam_width, expanded_sequences.shape[0])
-            scores, indices = expanded_scores.topk(keep)
-            sequences = expanded_sequences.index_select(0, indices)
+            # Correctness path: retain every A**horizon sequence.  A future
+            # approximate search mode must define a new auditable policy.
+            scores = expanded_scores
+            sequences = expanded_sequences
 
-        # PPO 尚未支持 planner replay，但 rollout 仍记录真实 behavior distribution。
-        # 已被 beam 剪枝的根动作保留为 -inf，不会被后续采样选中。
         root_scores = torch.full(
             (action_count,),
             float("-inf"),
@@ -134,34 +146,35 @@ class WorldModelPlanner:
 
 
 class PlanningPolicy:
-    """尚未完成真实 CoT 生成边界的 WM planning policy。"""
+    """Sample Qwen CoT, plan from its hidden state, then execute planner action."""
 
     prompt_mode = "response"
+    credit_assignment = "token"
 
     def __init__(
         self,
         *,
-        agent: Agent,
-        input_builder: BackboneInputBuilder,
+        turn_policy: VLLMTurnStatePolicy,
+        world_model: WorldModel,
         horizon: int,
-        beam_width: int,
-        temperature: float,
-        top_p: float,
+        search_mode: str,
+        teacher_temperature: float,
+        planner_device: torch.device,
     ) -> None:
-        raise NotImplementedError(
-            "PlanningPolicy is disabled until it generates and persists a real CoT "
-            "before latent-state encoding"
-        )
-        self.agent = agent
-        self.input_builder = input_builder
+        if turn_policy.credit_assignment != "token":
+            raise ValueError("planner policy requires token-level Qwen CoT credit")
+        if teacher_temperature <= 0.0 or not math.isfinite(teacher_temperature):
+            raise ValueError("planner teacher_temperature must be positive")
+        self.turn_policy = turn_policy
+        self.world_model = world_model
         self.planner = WorldModelPlanner(
-            agent.wm,
+            world_model,
             horizon=horizon,
-            beam_width=beam_width,
+            search_mode=search_mode,
         )
-        self.temperature = float(temperature)
-        self.top_p = float(top_p)
-        predictor = agent.wm.wm_predictor
+        self.teacher_temperature = float(teacher_temperature)
+        self.planner_device = planner_device
+        predictor = world_model.wm_predictor
         predictor_config = getattr(predictor, "config", None)
         self.history_size = int(getattr(predictor_config, "history_size", 0))
         if self.history_size < 1:
@@ -174,26 +187,25 @@ class PlanningPolicy:
     def reset_episode(self) -> None:
         """清除上一个 episode 的真实 latent 历史。"""
 
+        self.turn_policy.reset_episode()
         self._state_history.clear()
         self._action_history.clear()
 
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
-        """编码当前真实 observation，模拟候选序列并只返回要执行的首动作。"""
+        """Generate one CoT, enumerate the latent plan, and replace its action."""
 
-        with evaluating(self.agent), torch.no_grad():
-            batch = self.input_builder.build(
-                [prompt.unbound_messages()],
-                [prompt.images],
-                include_labels=False,
-            )
-            encoded = self.agent.encode_state(
-                batch,
-                include_lm_loss=False,
-            )
-            state = encoded.state
+        generated = self.turn_policy.select_response_with_state(prompt)
+        qwen_decision = generated.qwen_decision
+        if qwen_decision.token_trace is None or qwen_decision.response is None:
+            raise RuntimeError("vLLM planning turn lacks token/response provenance")
+        with evaluating(self.world_model), torch.no_grad():
+            latent_hidden = generated.policy_state.latent_hidden.to(
+                self.planner_device
+            ).unsqueeze(0)
+            state = self.world_model.project_state(latent_hidden)
             if state.ndim != 2 or state.shape[0] != 1:
                 raise ValueError(
-                    "planning state encoder must return shape (1,D), "
+                    "planning state projector must return shape (1,D), "
                     f"got {tuple(state.shape)}"
                 )
             self._state_history.append(state.detach())
@@ -207,13 +219,81 @@ class PlanningPolicy:
                 device=state.device,
             )
             plan = self.planner.plan(state_history, previous_actions)
-            decision = sample_policy_decision(
-                plan.root_action_scores,
-                temperature=self.temperature,
-                top_p=self.top_p,
+            planner_log_probs = torch.log_softmax(
+                plan.root_action_scores / self.teacher_temperature,
+                dim=-1,
             )
-            self._action_history.append(decision.action_index)
-            return decision
+            action_index = int(
+                torch.multinomial(planner_log_probs.exp(), 1).item()
+            )
+
+        qwen_log_probs = torch.log_softmax(
+            generated.policy_state.action_logits,
+            dim=-1,
+        )
+        trace = qwen_decision.token_trace
+        action_position = trace.token_roles.index("action")
+        new_token_ids = list(trace.token_ids)
+        new_token_ids[action_position] = trace.action_token_ids[action_index]
+        new_old_log_probs = list(trace.old_log_probs)
+        new_old_log_probs[action_position] = None
+        new_loss_mask = list(trace.loss_mask)
+        new_loss_mask[action_position] = False
+
+        tokens = LatentActionTokens()
+        old_suffix = (
+            f"{tokens.action_start}{tokens.action_tokens[qwen_decision.action_index]}"
+            f"{tokens.action_end}"
+        )
+        if not qwen_decision.response.endswith(old_suffix):
+            raise RuntimeError("Qwen response action suffix does not match its trace")
+        response = (
+            qwen_decision.response[: -len(old_suffix)]
+            + f"{tokens.action_start}{tokens.action_tokens[action_index]}"
+            + tokens.action_end
+        )
+        planner_trace = PlannerPolicyTrace(
+            qwen_action_log_probs=tuple(
+                float(value) for value in qwen_log_probs.cpu().tolist()
+            ),
+            candidate_sequences=tuple(
+                tuple(int(value) for value in row)
+                for row in plan.candidate_sequences.cpu().tolist()
+            ),
+            candidate_scores=tuple(
+                float(value) for value in plan.candidate_scores.cpu().tolist()
+            ),
+            root_action_scores=tuple(
+                float(value) for value in plan.root_action_scores.cpu().tolist()
+            ),
+            planner_action_log_probs=tuple(
+                float(value) for value in planner_log_probs.cpu().tolist()
+            ),
+            horizon=self.planner.horizon,
+            teacher_temperature=self.teacher_temperature,
+        )
+        self._action_history.append(action_index)
+        return PolicyDecision(
+            action_index=action_index,
+            action_log_probs=planner_trace.planner_action_log_probs,
+            response=response,
+            token_trace=PolicyTokenTrace(
+                token_ids=tuple(new_token_ids),
+                old_log_probs=tuple(new_old_log_probs),
+                loss_mask=tuple(new_loss_mask),
+                token_roles=trace.token_roles,
+                action_token_ids=trace.action_token_ids,
+                reasoning_text=trace.reasoning_text,
+                finish_reason=trace.finish_reason,
+                reasoning_truncated=trace.reasoning_truncated,
+            ),
+            planner_trace=planner_trace,
+        )
+
+    def generate_state_prefix(self, prompt: AgentPrompt) -> str:
+        """Terminal states need a real CoT but do not run planner or environment."""
+
+        return self.turn_policy.generate_state_prefix(prompt)
 
 
 __all__ = ["PlanningPolicy", "WorldModelPlan", "WorldModelPlanner"]

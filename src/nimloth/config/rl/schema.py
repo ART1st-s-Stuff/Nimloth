@@ -57,6 +57,7 @@ class ActorConfig:
     clip_ratio: float = 0.2
     credit_assignment: str = "action"
     max_reasoning_tokens: int = 64
+    planner_distillation_weight: float | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ class PredictorConfig:
     lambda_sigreg: float = 0.1
     sigreg_num_proj: int = 1024
     sigreg_knots: int = 17
+    train_wm: bool = True
 
 
 @dataclass(frozen=True)
@@ -194,6 +196,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "clip_ratio",
             "credit_assignment",
             "max_reasoning_tokens",
+            "planner_distillation_weight",
         },
     )
     token_credit = _section(
@@ -217,6 +220,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "lambda_sigreg",
             "sigreg_num_proj",
             "sigreg_knots",
+            "train_wm",
         },
     )
     value_head = _section(
@@ -294,6 +298,14 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             actor.get("max_reasoning_tokens", 64),
             "actor.max_reasoning_tokens",
         ),
+        planner_distillation_weight=(
+            _positive_float(
+                actor["planner_distillation_weight"],
+                "actor.planner_distillation_weight",
+            )
+            if "planner_distillation_weight" in actor
+            else None
+        ),
     )
     if not 0.0 < actor_config.clip_ratio < 1.0:
         raise ValueError("actor.clip_ratio must be in (0, 1)")
@@ -358,6 +370,49 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 + ", ".join(missing_token_fields)
             )
 
+    agent_config = parse_agent_config(raw.get("agent"))
+    if actor_config.enabled and agent_config.planning.enabled:
+        raw_agent = raw.get("agent")
+        raw_planning = (
+            raw_agent.get("planning", {})
+            if isinstance(raw_agent, Mapping)
+            else {}
+        )
+        if "horizon" not in raw_planning:
+            raise ValueError(
+                "planner distillation requires explicit agent.planning.horizon"
+            )
+        if actor_config.credit_assignment != "token":
+            raise ValueError(
+                "planner distillation requires actor.credit_assignment=token"
+            )
+        if agent_config.planning.search_mode != "exhaustive":
+            raise ValueError(
+                "planner distillation requires agent.planning.search_mode=exhaustive"
+            )
+        if "beam_width" in raw_planning:
+            raise ValueError(
+                "agent.planning.beam_width must be omitted for exhaustive search"
+            )
+        if agent_config.planning.teacher_temperature is None:
+            raise ValueError(
+                "planner distillation requires explicit "
+                "agent.planning.teacher_temperature"
+            )
+        if agent_config.planning.device is None:
+            raise ValueError(
+                "planner distillation requires explicit agent.planning.device"
+            )
+        if actor_config.planner_distillation_weight is None:
+            raise ValueError(
+                "planner distillation requires explicit "
+                "actor.planner_distillation_weight"
+            )
+        if "train_wm" not in predictor:
+            raise ValueError(
+                "planner distillation requires explicit predictor.train_wm"
+            )
+
     rollout_config = parse_rollout_config(raw.get("rollout"))
     checkpoint_metric = str(
         validation.get("checkpoint_metric", "success_rate")
@@ -394,7 +449,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     )
 
     return RLConfig(
-        agent=parse_agent_config(raw.get("agent")),
+        agent=agent_config,
         actor=actor_config,
         token_credit=token_credit_config,
         freeze=FreezeConfig(
@@ -432,6 +487,10 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             sigreg_knots=_positive_int(
                 predictor.get("sigreg_knots", 17),
                 "predictor.sigreg_knots",
+            ),
+            train_wm=_boolean(
+                predictor.get("train_wm", True),
+                "predictor.train_wm",
             ),
         ),
         value_head=ValueHeadConfig(

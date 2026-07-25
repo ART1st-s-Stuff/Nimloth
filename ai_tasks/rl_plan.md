@@ -54,10 +54,16 @@ Qwen action policy 和 CoT credit assignment 的讨论结果。本文是设计�
   仍是完整真实 environment rollout 的 Monte Carlo return。
 - fresh manifest 能把 rollout 绑定到 policy artifact，并限制一次性消费。
 
-### 3.2 尚未实现或尚未验证
+### 3.2 已实现、尚待真实 GPU 验证
 
-- planner behavior 的 policy replay 或 policy update 尚未实现。因此不能声称
-  “planning PPO 已完成”或“PPO 已全部完成”。
+- planner behavior 已按已确认方案实现为action distillation，不称为planning PPO：
+  action owner是`pi_plan`，Qwen action head拟合完整planner root分布，action token不进入
+  PPO；Qwen真实采样的reasoning token使用token-level PPO。
+- vLLM rollout通过worker extension从同一次真实多模态forward截取K个latent hidden和
+  action boundary hidden，并用已加载模型的`compute_logits`得到8维raw action logits；
+  不加载第二份HF Qwen，也不重复处理图片prompt。
+- `planning.horizon=2`、`search_mode=exhaustive`时保存全部64条候选及其leaf score；每个
+  root score是该根动作下候选score最大值，`pi_plan=softmax(root/teacher_temperature)`。
 - 尚未验证多次迭代的 fresh rollout -> update -> 新 checkpoint -> 新 rollout 在线闭环。
 - `token` credit 尚未完成真实 GPU optimizer-step 验证，也没有完成多次在线闭环验证。
 - 当前 truncation 只实现了显式 `rl.truncated_bootstrap=zero`；若要从最后真实 state 的
@@ -192,11 +198,10 @@ turn reward、token critic、`gamma_turn`、`gamma_token` 和对应 lambda 定�
 `PlanningPolicy` 使用固定 thought 的 action prompt，planner 搜索也不消费真实采样 CoT；
 该路径不能直接开启 CoT PPO。
 
-推荐优先保持 WM state 的定义稳定，让 CoT 影响 Qwen action prior，再让 planner 在搜索中
-使用该 prior。对于 `planning.horizon=2` 的 8 动作空间，可以完整枚举 64 个两步序列；
-planner root score 如何融合 Qwen prior、WM leaf value 以及未来 reward/done prediction，
-仍需在实施前由人类确认。若 planner 完全忽略 Qwen prior/CoT，则必须关闭该样本的 CoT
-policy loss。
+当前实现让真实CoT直接决定latent query hidden，因此planner搜索状态依赖CoT；初版teacher
+不融合Qwen action prior。reasoning token由Qwen采样并进入token PPO，planner替换的action
+token明确标为loss-mask false。若后续实验证明WM projector抹掉CoT差异，必须停止把环境
+reward解释为有效CoT监督，并先量化state/planner分布对CoT扰动的敏感性。
 
 ## 7. Planning horizon 扩展
 
@@ -256,31 +261,30 @@ distribution 和 planner behavior distribution 逐项一致。
 
 Qwen replay 通过 `lm_head` 前向 hook 复用同一次 teacher-forced forward 的 selected-token
 hidden states；`logits_to_keep` 只保留 loss-mask 位置，避免为了 token critic 再做一次完整
-多模态编码或保存全序列 vocabulary logits。
+多模态编码或保存全序列 vocabulary logits。rollout侧则由vLLM worker hook直接截取同一次
+生成forward的selected hidden，不存在独立HF Qwen rollout worker。
 
-## 10. 配置边界建议
-
-以下是待实施的配置职责，字段名在写 schema 前仍需人类确认：
+## 10. 当前已实现配置边界
 
 ```yaml
-updates:
-  actor_cot: true
-  actor_action_distillation: true
-  action_value_head: true
-  turn_value_head: true
-  wm_predictor: false
-  state_projector: false
-  sigreg: false
-  backbone_from_wm: false
-
 agent:
   planning:
     enabled: true
     horizon: 2
+    search_mode: exhaustive
+    teacher_temperature: REQUIRED
+    device: REQUIRED
+actor:
+  enabled: true
+  credit_assignment: token
+  planner_distillation_weight: REQUIRED
+predictor:
+  train_wm: REQUIRED
 ```
 
-`wm_predictor`、`state_projector`、`sigreg`、`backbone_from_wm` 的冻结和梯度语义必须分别
-定义。DINO 在当前 RL 计划中保持关闭。
+`teacher_temperature`、distillation weight、planner device及所有token credit数值仍等待
+人类逐项给定；代码没有填默认实验值。`freeze.state_proj`、`lambda_sigreg`和
+`gradient.representation_to_backbone`继续独立控制其职责。DINO loss在当前RL保持关闭。
 
 ## 11. 实施顺序与验证门槛
 
@@ -290,10 +294,8 @@ agent:
   策略已经实现；token 模式当前只接受明确的 zero bootstrap，尚未实现 learned bootstrap。
 - direct-policy 已实现独立 TokenValueHead 与 turn 内 token GAE，并把其结构、optimizer
   参数组、分布式同步、checkpoint/resume metadata 纳入训练生命周期。
-- 这次实现不包含阶段 B 的 planner root policy，也不包含 planner action distillation；
-  `PlanningPolicy` 的 PPO/update TODO 不因此变成已完成。
-- CPU 定向回归已通过；真实 GPU token-credit optimizer step 和多 iteration 在线闭环仍是
-  启动实验前后的必要验证门槛。
+- 阶段B/C的代码契约已实现；在真实vLLM TP+图片、真实SFT2 planner checkpoint和GPU
+  optimizer step通过前，只能称“实现待验证”，不能称实验完成。
 
 ### 阶段 A：修正 rollout/value 基础语义
 
@@ -329,15 +331,13 @@ agent:
 
 ## 12. 尚待人类确认
 
-以下内容仍是建议，不能据此直接改训练语义或启动实验：
+以下内容仍未确认，不能据此启动实验：
 
-1. 是否正式采用“planner action distillation + CoT PPO”的组合，而不是统一
-   planner-augmented behavior PPO。
-2. planner root policy 的精确定义：leaf score、Qwen prior 融合方式、temperature，
-   以及未来 reward/done head 的训练目标。
-3. `turn` credit 是否采用每 turn token-count 归一化；`token` credit 当前采用全 batch
+1. `agent.planning.teacher_temperature`、`actor.planner_distillation_weight`、
+   `agent.planning.device`及token credit的全部具体数值。
+2. `turn` credit 是否采用每 turn token-count 归一化；`token` credit 当前采用全 batch
    token advantage 标准化，不得与该待确认项混称。
-4. 是否新增独立的 scalar Turn ValueHead，或选择 group/leave-one-out baseline。
+3. 是否新增独立的 scalar Turn ValueHead，或选择 group/leave-one-out baseline。
 5. action ValueHead ranking loss是否默认关闭。
 6. truncation 是否 bootstrap，以及 bootstrap 使用哪个冻结版本的 value。
 7. WM、StateProjector、SIGReg、Backbone representation gradient 的最终配置字段名和默认值。

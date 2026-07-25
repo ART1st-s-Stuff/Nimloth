@@ -71,6 +71,9 @@ def save_rl_checkpoint(
     credit_assignment: str = "action",
     token_credit_config: dict[str, Any] | None = None,
     truncated_bootstrap: str | None = None,
+    planner_config: dict[str, Any] | None = None,
+    planner_distillation_weight: float | None = None,
+    train_world_model: bool = True,
 ) -> None:
     model = agent.backbone.model
     state_proj = agent.wm.state_proj
@@ -141,6 +144,9 @@ def save_rl_checkpoint(
             "credit_assignment": credit_assignment,
             "token_credit_config": token_credit_config,
             "truncated_bootstrap": truncated_bootstrap,
+            "planner_config": planner_config,
+            "planner_distillation_weight": planner_distillation_weight,
+            "train_world_model": bool(train_world_model),
         }
         if base_model_path:
             state["base_model_path"] = str(base_model_path)

@@ -11,7 +11,7 @@ from typing import Any
 
 import torch
 
-from nimloth.agent import Agent, PlanningPolicy
+from nimloth.agent import Agent
 from nimloth.backbone import (
     backbone_hidden_size,
     build_action_log_prob_replay,
@@ -462,6 +462,8 @@ def _build_optimizer(
         ("value_head", world_model.value_head, config.value_head.lr),
         ("wm_predictor", world_model.wm_predictor, config.predictor.lr),
     ):
+        if name == "wm_predictor" and not config.predictor.train_wm:
+            continue
         parameters = [
             parameter for parameter in module.parameters() if parameter.requires_grad
         ]
@@ -502,6 +504,9 @@ def _load_resume_state(
     expected_credit_assignment: str,
     expected_token_credit_config: dict[str, Any],
     expected_truncated_bootstrap: str | None,
+    expected_planner_config: dict[str, Any],
+    expected_planner_distillation_weight: float | None,
+    expected_train_world_model: bool,
 ) -> RLResumeState:
     """恢复 WM、optimizer 和 iteration 位置。"""
 
@@ -554,6 +559,23 @@ def _load_resume_state(
             raise ValueError("resume token credit config mismatch")
         if state.get("truncated_bootstrap") != expected_truncated_bootstrap:
             raise ValueError("resume truncation bootstrap config mismatch")
+    saved_planner_config = state.get("planner_config")
+    if (
+        expected_planner_config.get("enabled", False)
+        and saved_planner_config != expected_planner_config
+    ) or (
+        saved_planner_config is not None
+        and saved_planner_config != expected_planner_config
+    ):
+        raise ValueError("resume planner config mismatch")
+    saved_distillation_weight = state.get("planner_distillation_weight")
+    if saved_distillation_weight != expected_planner_distillation_weight and (
+        saved_distillation_weight is not None
+        or expected_planner_distillation_weight is not None
+    ):
+        raise ValueError("resume planner distillation weight mismatch")
+    if state.get("train_world_model", True) != expected_train_world_model:
+        raise ValueError("resume train_world_model config mismatch")
     return RLResumeState(
         start_iteration=int(state.get("iteration", 0)) + 1,
         global_step=int(state.get("global_step", 0)),
@@ -664,6 +686,8 @@ def train_rl(
             llm=model,
             device=training_device,
         )
+        if not config.predictor.train_wm:
+            world_model.wm_predictor.requires_grad_(False).eval()
         token_value_head: torch.nn.Module | None = None
         if config.actor.credit_assignment == "token":
             assert config.token_credit.hidden_dim is not None
@@ -735,6 +759,11 @@ def train_rl(
             expected_credit_assignment=config.actor.credit_assignment,
             expected_token_credit_config=asdict(config.token_credit),
             expected_truncated_bootstrap=config.rl.truncated_bootstrap,
+            expected_planner_config=asdict(config.agent.planning),
+            expected_planner_distillation_weight=(
+                config.actor.planner_distillation_weight
+            ),
+            expected_train_world_model=config.predictor.train_wm,
         )
         agent = Agent(
             backbone=loaded.backbone.with_model(model),
@@ -757,13 +786,9 @@ def train_rl(
         )
         if needs_online_policy:
             if planning_enabled:
-                policy = PlanningPolicy(
-                    agent=agent,
-                    input_builder=input_builder,
-                    horizon=config.agent.planning.horizon,
-                    beam_width=config.agent.planning.beam_width,
-                    temperature=config.rollout.temperature,
-                    top_p=config.rollout.top_p,
+                raise RuntimeError(
+                    "planner policy requires the independent vLLM rollout backend; "
+                    "collect a fresh traced JSONL before distributed training"
                 )
             else:
                 policy = build_agent_policy(
@@ -830,6 +855,10 @@ def train_rl(
             token_gamma=config.token_credit.gamma,
             token_gae_lambda=config.token_credit.gae_lambda,
             token_value_loss_weight=config.token_credit.value_loss_weight,
+            planner_distillation_weight=(
+                config.actor.planner_distillation_weight
+            ),
+            train_world_model=config.predictor.train_wm,
         )
         model_runtime = RLModelRuntime(
             agent=agent,

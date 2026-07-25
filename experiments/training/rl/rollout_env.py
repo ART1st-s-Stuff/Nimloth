@@ -58,6 +58,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("mp", "ray"),
         default=None,
     )
+    ap.add_argument("--planner-enabled", action="store_true")
+    ap.add_argument("--planning-horizon", type=int, default=None)
+    ap.add_argument(
+        "--planning-search-mode",
+        choices=("exhaustive",),
+        default=None,
+    )
+    ap.add_argument("--planner-teacher-temperature", type=float, default=None)
+    ap.add_argument("--planner-device", default=None)
+    ap.add_argument("--wm-checkpoint", type=Path, default=None)
+    ap.add_argument("--state-proj-checkpoint", type=Path, default=None)
+    ap.add_argument("--value-head-checkpoint", type=Path, default=None)
     ap.add_argument(
         "--fresh-manifest",
         type=Path,
@@ -134,6 +146,50 @@ def main(argv: list[str] | None = None) -> int:
     validate_split(args.eval_set, args.split)
     if not torch.cuda.is_available():
         raise RuntimeError("rollout_env requires CUDA")
+    if args.planner_enabled:
+        missing = [
+            name
+            for name, value in (
+                ("planning_horizon", args.planning_horizon),
+                ("planning_search_mode", args.planning_search_mode),
+                ("planner_teacher_temperature", args.planner_teacher_temperature),
+                ("planner_device", args.planner_device),
+                ("wm_checkpoint", args.wm_checkpoint),
+                ("state_proj_checkpoint", args.state_proj_checkpoint),
+                ("value_head_checkpoint", args.value_head_checkpoint),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError(
+                "planner rollout requires explicit arguments: " + ", ".join(missing)
+            )
+        if args.backend != "vllm":
+            raise ValueError("planner rollout requires --backend vllm")
+        if args.credit_assignment != "token":
+            raise ValueError("planner rollout requires --credit-assignment token")
+        if not args.vllm_enforce_eager:
+            raise ValueError("planner rollout requires --vllm-enforce-eager")
+        if args.planning_horizon is not None and args.planning_horizon < 1:
+            raise ValueError("planning_horizon must be positive")
+        if (
+            args.planner_teacher_temperature is not None
+            and args.planner_teacher_temperature <= 0.0
+        ):
+            raise ValueError("planner_teacher_temperature must be positive")
+    elif any(
+        value is not None
+        for value in (
+            args.planning_horizon,
+            args.planning_search_mode,
+            args.planner_teacher_temperature,
+            args.planner_device,
+            args.wm_checkpoint,
+            args.state_proj_checkpoint,
+            args.value_head_checkpoint,
+        )
+    ):
+        raise ValueError("planner arguments require --planner-enabled")
 
     repo_root = Path(__file__).resolve().parents[3]
     for path in (repo_root / "src", repo_root / "external" / "VAGEN"):
@@ -172,7 +228,40 @@ def main(argv: list[str] | None = None) -> int:
             max_reasoning_tokens=args.max_reasoning_tokens,
             distributed_executor_backend=args.vllm_distributed_executor_backend,
             enforce_eager=args.vllm_enforce_eager,
+            capture_policy_state=args.planner_enabled,
         )
+        if args.planner_enabled:
+            from nimloth.agent import PlanningPolicy
+            from nimloth.training.rl.planning_loader import (
+                load_planning_world_model,
+            )
+
+            assert args.planner_device is not None
+            planner_device = torch.device(args.planner_device)
+            assert args.wm_checkpoint is not None
+            assert args.state_proj_checkpoint is not None
+            assert args.value_head_checkpoint is not None
+            world_model = load_planning_world_model(
+                qwen_config=AutoConfig.from_pretrained(
+                    args.model,
+                    trust_remote_code=True,
+                ),
+                wm_checkpoint=args.wm_checkpoint,
+                state_proj_checkpoint=args.state_proj_checkpoint,
+                value_head_checkpoint=args.value_head_checkpoint,
+                device=planner_device,
+            )
+            assert args.planning_horizon is not None
+            assert args.planning_search_mode is not None
+            assert args.planner_teacher_temperature is not None
+            policy = PlanningPolicy(
+                turn_policy=policy,
+                world_model=world_model,
+                horizon=args.planning_horizon,
+                search_mode=args.planning_search_mode,
+                teacher_temperature=args.planner_teacher_temperature,
+                planner_device=planner_device,
+            )
     else:
         if args.credit_assignment != "action":
             raise ValueError(
@@ -220,6 +309,15 @@ def main(argv: list[str] | None = None) -> int:
             policy_path=args.model,
             trajectory_path=args.output_dir / "trajectories.jsonl",
             num_trajectories=len(trajectories),
+            planner_artifacts=(
+                {
+                    "wm_predictor": args.wm_checkpoint,
+                    "state_projector": args.state_proj_checkpoint,
+                    "value_head": args.value_head_checkpoint,
+                }
+                if args.planner_enabled
+                else None
+            ),
         ).write(manifest_path)
     finish_reasons = Counter(
         reason

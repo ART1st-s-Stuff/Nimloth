@@ -182,13 +182,17 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   `zero`；未确认时配置解析直接失败，不猜测实验参数。
 - behavior old log-prob 与 replay 都使用同一 temperature/top-p 分布；注入的 latent
   query、action boundary 和补全 delimiter 不进入 PPO loss。
-- `agent.planning.enabled: true` 时，在线 rollout 使用 `PlanningPolicy`。每个真实
-  environment step 只执行一次 Qwen forward 和一次 `session.step()`，两者之间的
-  多步候选搜索全部发生在 WM latent 空间。
+- `agent.planning.enabled: true` 且actor开启时，独立vLLM rollout先让Qwen生成真实
+  CoT；worker extension从同一次多模态forward截取latent hidden和action boundary
+  hidden，不加载第二份HF Qwen。多步候选搜索随后全部发生在WM latent空间。
 - planner 当前用叶节点最大 action-value 作为搜索启发式；模型尚无 reward/done
   head，因此不会把中间 Q-value 相加并伪装成 model-predicted return。
-- planner behavior 尚未实现可微且可重放的 PPO 概率，所以
-  `agent.planning.enabled` 与 `actor.enabled` 同时开启会在加载模型前报错。
+- planner action从`softmax(root_scores/teacher_temperature)`采样；trajectory保存Qwen
+  raw八动作分布、planner八动作分布和完整候选分数。训练时action token不参加PPO，
+  Qwen action head拟合planner分布；真实Qwen reasoning token继续做token-level PPO。
+- 当前planner distillation只允许`search_mode=exhaustive`；`planning.horizon=2`时完整
+  保存8²=64条候选。temperature、planner device、distillation weight和token credit
+  参数都必须显式配置，缺失时在模型/GPU启动前失败。
 - 在线 planning 必须从完整 RL resume 或显式 WM、StateProjector、ValueHead
   checkpoint 启动；随机初始化的 planner 不允许控制真实 environment。
 - SFT2 和 RL 对 `history_size` 使用相同的 LeWM 语义，warm-start checkpoint

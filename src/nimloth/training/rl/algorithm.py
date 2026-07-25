@@ -156,6 +156,8 @@ class RLAlgorithm:
         token_gamma: float | None = None,
         token_gae_lambda: float | None = None,
         token_value_loss_weight: float | None = None,
+        planner_distillation_weight: float | None = None,
+        train_world_model: bool = True,
     ) -> None:
         self.history_size = int(history_size)
         if self.history_size < 1:
@@ -176,6 +178,8 @@ class RLAlgorithm:
         self.token_gamma = token_gamma
         self.token_gae_lambda = token_gae_lambda
         self.token_value_loss_weight = token_value_loss_weight
+        self.planner_distillation_weight = planner_distillation_weight
+        self.train_world_model = bool(train_world_model)
         if self.credit_assignment == "token" and any(
             value is None
             for value in (
@@ -222,26 +226,31 @@ class RLAlgorithm:
 
         # 标准 latent WM 复用同一份在线 state 作为 target；grid WM 在这里通过
         # 自己的冻结 EMA encoder 生成 target，objective 不依赖具体 variant。
-        state_sequence, target_state_sequence = (
-            runtime.agent.wm.project_training_state_sequences(hidden_states)
-        )
+        if self.train_world_model:
+            state_sequence, target_state_sequence = (
+                runtime.agent.wm.project_training_state_sequences(hidden_states)
+            )
+        else:
+            state_sequence = runtime.agent.wm.project_state_sequence(hidden_states)
+            target_state_sequence = state_sequence
         state_context = state_sequence[:, :-1]
-        predicted_next_states = runtime.agent.wm.predict_state_sequence(
-            state_context,
-            batch.action_indices,
-        )
-
-        target_next_states = target_state_sequence[:, 1:].detach()
         action_values = runtime.agent.wm.predict_action_values(state_context)
 
         # WM 与 value 共享 state_context，但监督目标和梯度边界各自独立。
-        wm_loss = F.mse_loss(predicted_next_states, target_next_states)
+        wm_loss: torch.Tensor | None = None
+        if self.train_world_model:
+            predicted_next_states = runtime.agent.wm.predict_state_sequence(
+                state_context,
+                batch.action_indices,
+            )
+            target_next_states = target_state_sequence[:, 1:].detach()
+            wm_loss = F.mse_loss(predicted_next_states, target_next_states)
         value_loss, chosen_values = self._value_loss(
             action_values,
             batch.action_indices,
             batch.return_targets,
         )
-        total = wm_loss + value_loss
+        total = value_loss if wm_loss is None else wm_loss + value_loss
 
         # 各 WM variant 明确选择 SIGReg 的统计单位；grid 与 SFT2 一致，对 slot
         # mean pooling 后再把 (B,T,D) 交给 SequenceSIGReg。
@@ -256,12 +265,46 @@ class RLAlgorithm:
 
         policy: dict[str, torch.Tensor] | None = None
         token_value_loss: torch.Tensor | None = None
+        action_distillation_loss: torch.Tensor | None = None
+        action_distillation_kl: torch.Tensor | None = None
         if runtime.policy_replay is not None:
             # replay 与上面的监督张量使用相同的 window/time 展开顺序；flatten 后每个
             # ratio 仍对应 rollout 中同一个动作位置。
             replay_output = runtime.policy_replay(
                 batch.policy_replay_inputs
             )
+            planner_traces = [
+                sample.planner_trace for sample in batch.policy_replay_inputs
+            ]
+            planner_batch = all(trace is not None for trace in planner_traces)
+            if any(trace is not None for trace in planner_traces) and not planner_batch:
+                raise ValueError("one RL batch cannot mix planner and direct behavior")
+            if planner_batch:
+                if self.planner_distillation_weight is None:
+                    raise ValueError(
+                        "planner behavior requires explicit distillation weight"
+                    )
+                if replay_output.action_log_probs is None:
+                    raise RuntimeError(
+                        "planner replay returned no Qwen action distribution"
+                    )
+                teacher_log_probs = torch.tensor(
+                    [
+                        trace.planner_action_log_probs
+                        for trace in planner_traces
+                        if trace is not None
+                    ],
+                    dtype=replay_output.action_log_probs.dtype,
+                    device=replay_output.action_log_probs.device,
+                )
+                teacher_probs = teacher_log_probs.exp().detach()
+                action_distillation_loss = -(
+                    teacher_probs * replay_output.action_log_probs
+                ).sum(dim=-1).mean()
+                action_distillation_kl = (
+                    teacher_probs
+                    * (teacher_log_probs - replay_output.action_log_probs)
+                ).sum(dim=-1).mean()
             if self.credit_assignment == "token":
                 if replay_output.token_values is None:
                     raise RuntimeError("token credit replay returned no token values")
@@ -322,9 +365,13 @@ class RLAlgorithm:
                 total = total + self.token_value_loss_weight * token_value_loss.to(
                     device=total.device
                 )
+            if action_distillation_loss is not None:
+                total = total + self.planner_distillation_weight * (
+                    action_distillation_loss.to(device=total.device)
+                )
 
         metrics = {
-            "wm_mse": float(wm_loss.detach().item()),
+            "wm_mse": float(wm_loss.detach().item()) if wm_loss is not None else 0.0,
             "sigreg_loss": (
                 float(sigreg_loss.detach().item()) if sigreg_loss is not None else 0.0
             ),
@@ -334,6 +381,16 @@ class RLAlgorithm:
             "token_value_loss": (
                 float(token_value_loss.detach().item())
                 if token_value_loss is not None
+                else 0.0
+            ),
+            "action_distillation_loss": (
+                float(action_distillation_loss.detach().item())
+                if action_distillation_loss is not None
+                else 0.0
+            ),
+            "action_distillation_kl": (
+                float(action_distillation_kl.detach().item())
+                if action_distillation_kl is not None
                 else 0.0
             ),
         }
@@ -355,6 +412,7 @@ class RLAlgorithm:
                 "value": value_loss,
                 "policy": policy["loss"] if policy else None,
                 "token_value": token_value_loss,
+                "action_distillation": action_distillation_loss,
             },
             metrics=metrics,
         )

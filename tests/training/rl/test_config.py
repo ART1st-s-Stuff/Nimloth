@@ -165,6 +165,50 @@ def test_rl_config_requires_explicit_token_credit_semantics() -> None:
     assert config.rl.truncated_bootstrap == "zero"
 
 
+def test_planner_distillation_requires_explicit_teacher_and_loss_weight() -> None:
+    raw = _raw_config()
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 2,
+            "search_mode": "exhaustive",
+        }
+    }
+    raw["actor"] = {
+        "enabled": True,
+        "credit_assignment": "token",
+    }
+    raw["token_credit"] = {
+        "gamma": 0.95,
+        "gae_lambda": 0.9,
+        "value_lr": 1e-4,
+        "value_loss_weight": 0.5,
+        "hidden_dim": 256,
+    }
+    raw["rl"]["truncated_bootstrap"] = "zero"
+
+    with pytest.raises(ValueError, match="teacher_temperature"):
+        parse_rl_config(raw)
+
+    raw["agent"]["planning"]["teacher_temperature"] = 0.7
+    with pytest.raises(ValueError, match="planning.device"):
+        parse_rl_config(raw)
+
+    raw["agent"]["planning"]["device"] = "cpu"
+    with pytest.raises(ValueError, match="planner_distillation_weight"):
+        parse_rl_config(raw)
+
+    raw["actor"]["planner_distillation_weight"] = 0.3
+    with pytest.raises(ValueError, match="predictor.train_wm"):
+        parse_rl_config(raw)
+
+    raw["predictor"]["train_wm"] = False
+    config = parse_rl_config(raw)
+    assert config.agent.planning.horizon == 2
+    assert config.agent.planning.teacher_temperature == 0.7
+    assert config.actor.planner_distillation_weight == 0.3
+
+
 def test_rl_config_rejects_unknown_credit_assignment() -> None:
     raw = _raw_config()
     raw["actor"] = {"credit_assignment": "bi_level_gae"}

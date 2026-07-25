@@ -2,55 +2,19 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
 import torch
 
-from nimloth.agent import Agent, AgentRuntime, EpisodeRunner, NimlothPromptTemplate
+from nimloth.agent import (
+    AgentPrompt,
+    PolicyDecision,
+    PolicyTokenTrace,
+    PromptTemplateSpec,
+)
 from nimloth.agent.planning import PlanningPolicy, WorldModelPlanner
-from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
-from nimloth.environment import EnvironmentObservation, EnvironmentStep
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
+from nimloth.backbone.qwen25vl.vllm_hidden import VLLMPolicyState
+from nimloth.backbone.qwen25vl.vllm_policy import QwenTurnGeneration
 from nimloth.wm import WorldModel
-
-
-class _CountingBackbone(Backbone):
-    def __init__(self) -> None:
-        super().__init__()
-        self.language_model = torch.nn.Identity()
-        self.forward_count = 0
-
-    @property
-    def model(self) -> torch.nn.Module:
-        return self.language_model
-
-    def forward(self, batch: BackboneBatch, **_kwargs) -> BackboneOutput:
-        self.forward_count += 1
-        return BackboneOutput(batch.tensors["hidden"])
-
-    def with_model(self, model: torch.nn.Module) -> "_CountingBackbone":
-        view = _CountingBackbone()
-        view.language_model = model
-        return view
-
-    def save_pretrained(self, output_dir: Path, **_kwargs) -> None:
-        raise NotImplementedError
-
-
-class _InputBuilder:
-    processor = None
-
-    def build(self, messages, images, *, include_labels: bool) -> BackboneBatch:
-        assert len(messages) == len(images) == 1
-        assert not include_labels
-        return BackboneBatch({"hidden": torch.tensor([[0.25, -0.25]])})
-
-    def collate_encoded(self, rows, *, include_labels: bool) -> BackboneBatch:
-        raise NotImplementedError
-
-    def cache_key(self, messages, images) -> str:
-        raise NotImplementedError
 
 
 class _RecordingPredictor(torch.nn.Module):
@@ -95,56 +59,25 @@ class _ActionValueHead(torch.nn.Module):
         return -(state[:, :1] - targets.unsqueeze(0)).square()
 
 
-class _TwoStepSession:
-    action_space = NAVIGATION_ACTION_SPACE
-    system_prompt = "Choose a navigation action."
-
-    def __init__(self) -> None:
-        self.step_count = 0
-        self.closed = False
-
-    def reset(self, *, seed: int) -> EnvironmentObservation:
-        assert seed == 9
-        return EnvironmentObservation("initial observation <image>", "image-0")
-
-    def step(self, *, action_index: int, response: str) -> EnvironmentStep:
-        assert 0 <= action_index < len(NAVIGATION_ACTION_SPACE)
-        assert response
-        self.step_count += 1
-        return EnvironmentStep(
-            observation=EnvironmentObservation(
-                f"observation {self.step_count} <image>",
-                f"image-{self.step_count}",
-            ),
-            reward=1.0,
-            done=self.step_count == 2,
-            success=self.step_count == 2,
-        )
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def _planning_agent() -> tuple[Agent, _CountingBackbone, _RecordingPredictor]:
-    backbone = _CountingBackbone()
+def _planning_world_model() -> tuple[WorldModel, _RecordingPredictor]:
     predictor = _RecordingPredictor()
     return (
-        Agent(
-            backbone=backbone,
-            wm=WorldModel(
-                state_proj=torch.nn.Identity(),
-                wm_predictor=predictor,
-                value_head=_ActionValueHead(len(NAVIGATION_ACTION_SPACE)),
-            ),
+        WorldModel(
+            state_proj=torch.nn.Identity(),
+            wm_predictor=predictor,
+            value_head=_ActionValueHead(len(NAVIGATION_ACTION_SPACE)),
         ),
-        backbone,
         predictor,
     )
 
 
 def test_planner_replays_complete_candidate_history_at_every_depth() -> None:
-    agent, _, predictor = _planning_agent()
-    planner = WorldModelPlanner(agent.wm, horizon=3, beam_width=8)
+    world_model, predictor = _planning_world_model()
+    planner = WorldModelPlanner(
+        world_model,
+        horizon=3,
+        search_mode="exhaustive",
+    )
 
     plan = planner.plan(
         torch.tensor([[[0.25, -0.25]]]),
@@ -152,22 +85,69 @@ def test_planner_replays_complete_candidate_history_at_every_depth() -> None:
     )
 
     assert [actions.shape[1] for actions in predictor.action_sequences] == [1, 2, 3]
-    assert plan.candidate_sequences.shape == (8, 3)
-    assert plan.candidate_scores.shape == (8,)
+    assert plan.candidate_sequences.shape == (8**3, 3)
+    assert plan.candidate_scores.shape == (8**3,)
     assert plan.root_action_scores.shape == (len(NAVIGATION_ACTION_SPACE),)
-    assert torch.isfinite(plan.root_action_scores).any()
+    assert torch.isfinite(plan.root_action_scores).all()
 
 
-def test_planning_policy_fails_until_real_cot_generation_is_implemented() -> None:
-    agent, backbone, predictor = _planning_agent()
-    with pytest.raises(NotImplementedError, match="real CoT"):
-        PlanningPolicy(
-            agent=agent,
-            input_builder=_InputBuilder(),
-            horizon=3,
-            beam_width=8,
-            temperature=0.0,
-            top_p=1.0,
+class _TurnPolicy:
+    credit_assignment = "token"
+
+    def reset_episode(self) -> None:
+        pass
+
+    def select_response_with_state(self, _prompt):
+        return QwenTurnGeneration(
+            qwen_decision=PolicyDecision(
+                action_index=2,
+                action_log_probs=tuple([-torch.log(torch.tensor(8.0)).item()] * 8),
+                response=(
+                    "<think>real cot</think><|latent_state|><|action_start|>"
+                    "<|action_(2)|><|action_end|>"
+                ),
+                token_trace=PolicyTokenTrace(
+                    token_ids=(5, 20, 25, 22),
+                    old_log_probs=(-0.2, None, -torch.log(torch.tensor(8.0)).item(), None),
+                    loss_mask=(True, False, True, False),
+                    token_roles=("reasoning", "injected", "action", "injected"),
+                    action_token_ids=tuple(range(23, 31)),
+                    reasoning_text="real cot",
+                    finish_reason="stop",
+                ),
+            ),
+            policy_state=VLLMPolicyState(
+                latent_hidden=torch.tensor([[0.25, -0.25]]),
+                action_logits=torch.arange(8, dtype=torch.float32),
+            ),
         )
-    assert backbone.forward_count == 0
-    assert predictor.action_sequences == []
+
+    def generate_state_prefix(self, _prompt):
+        return "<think>terminal</think><|latent_state|><|action_start|>"
+
+
+def test_planning_policy_uses_same_turn_hidden_and_excludes_action_from_ppo() -> None:
+    world_model, predictor = _planning_world_model()
+    policy = PlanningPolicy(
+        turn_policy=_TurnPolicy(),
+        world_model=world_model,
+        horizon=2,
+        search_mode="exhaustive",
+        teacher_temperature=1.0,
+        planner_device=torch.device("cpu"),
+    )
+    prompt = AgentPrompt(
+        messages=({"role": "assistant", "content": "<think>"},),
+        images=(),
+        template=PromptTemplateSpec("test", "v1"),
+    )
+
+    decision = policy.select_action(prompt)
+
+    assert decision.planner_trace is not None
+    assert len(decision.planner_trace.candidate_sequences) == 64
+    action_position = decision.token_trace.token_roles.index("action")
+    assert decision.token_trace.loss_mask[action_position] is False
+    assert decision.token_trace.old_log_probs[action_position] is None
+    assert f"<|action_({decision.action_index})|>" in decision.response
+    assert predictor.real_history_lengths == [1, 1]

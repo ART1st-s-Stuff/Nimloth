@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Any, Mapping
 
 from nimloth.agent import (
@@ -19,6 +20,9 @@ class AgentPlanningConfig:
     enabled: bool = False
     horizon: int = 4
     beam_width: int = 8
+    search_mode: str | None = None
+    teacher_temperature: float | None = None
+    device: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,7 +66,15 @@ def parse_agent_config(raw: Mapping[str, Any] | None) -> AgentConfig:
     if not isinstance(planning_raw, Mapping):
         raise ValueError("agent.planning must be a mapping")
     unknown_planning = sorted(
-        set(planning_raw) - {"enabled", "horizon", "beam_width"}
+        set(planning_raw)
+        - {
+            "enabled",
+            "horizon",
+            "beam_width",
+            "search_mode",
+            "teacher_temperature",
+            "device",
+        }
     )
     if unknown_planning:
         raise ValueError(
@@ -77,11 +89,35 @@ def parse_agent_config(raw: Mapping[str, Any] | None) -> AgentConfig:
         raise ValueError("agent.planning.horizon must be >= 1")
     if beam_width < 1:
         raise ValueError("agent.planning.beam_width must be >= 1")
+    search_mode = (
+        str(planning_raw["search_mode"])
+        if "search_mode" in planning_raw
+        else None
+    )
+    if search_mode not in {None, "beam", "exhaustive"}:
+        raise ValueError(
+            "agent.planning.search_mode must be beam or exhaustive"
+        )
+    teacher_temperature = (
+        float(planning_raw["teacher_temperature"])
+        if "teacher_temperature" in planning_raw
+        else None
+    )
+    if teacher_temperature is not None and (
+        teacher_temperature <= 0.0 or not math.isfinite(teacher_temperature)
+    ):
+        raise ValueError("agent.planning.teacher_temperature must be > 0")
+    device = str(planning_raw["device"]) if "device" in planning_raw else None
+    if device is not None and not device.strip():
+        raise ValueError("agent.planning.device must be non-empty")
     return AgentConfig(
         prompt_template=prompt_template,
         planning=AgentPlanningConfig(
             enabled=enabled,
             horizon=horizon,
             beam_width=beam_width,
+            search_mode=search_mode,
+            teacher_temperature=teacher_temperature,
+            device=device,
         ),
     )

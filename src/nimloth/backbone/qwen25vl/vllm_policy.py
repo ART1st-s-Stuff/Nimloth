@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 from nimloth.agent import AgentPrompt, PolicyDecision, PolicyTokenTrace
@@ -14,6 +15,12 @@ from nimloth.backbone.qwen25vl.turn_generation import (
     TurnGenerationSpec,
     find_token_subsequence,
 )
+from nimloth.backbone.qwen25vl.vllm_hidden import (
+    VLLMPolicyState,
+    abort_policy_state_capture,
+    pop_policy_state_capture,
+    start_policy_state_capture,
+)
 from nimloth.latent import (
     LatentActionTokens,
     latent_state_tokens,
@@ -23,6 +30,16 @@ from nimloth.latent import (
 
 class VLLMEngine(Protocol):
     def generate(self, prompts, sampling_params, *, use_tqdm: bool = False): ...
+
+    def collective_rpc(self, method, args=()): ...
+
+
+@dataclass(frozen=True)
+class QwenTurnGeneration:
+    """One real Qwen CoT plus selected states from that same vLLM forward."""
+
+    qwen_decision: PolicyDecision
+    policy_state: VLLMPolicyState
 
 
 class QwenVLLMAgentPolicy:
@@ -38,6 +55,7 @@ class QwenVLLMAgentPolicy:
         latent_token_count: int = 1,
         credit_assignment: Literal["action", "turn", "token"] = "action",
         max_reasoning_tokens: int = 64,
+        capture_policy_state: bool = False,
     ) -> None:
         if credit_assignment not in {"action", "turn", "token"}:
             raise ValueError(
@@ -52,6 +70,9 @@ class QwenVLLMAgentPolicy:
         self.latent_token_count = int(latent_token_count)
         self.credit_assignment = credit_assignment
         self.max_reasoning_tokens = int(max_reasoning_tokens)
+        self.capture_policy_state = bool(capture_policy_state)
+        if self.capture_policy_state and credit_assignment not in {"turn", "token"}:
+            raise ValueError("policy-state capture requires turn or token credit")
         self.prompt_mode = (
             "response" if credit_assignment in {"turn", "token"} else "action"
         )
@@ -81,6 +102,7 @@ class QwenVLLMAgentPolicy:
         max_reasoning_tokens: int = 64,
         distributed_executor_backend: str | None = None,
         enforce_eager: bool = False,
+        capture_policy_state: bool = False,
     ) -> "QwenVLLMAgentPolicy":
         from vllm import LLM
 
@@ -91,6 +113,15 @@ class QwenVLLMAgentPolicy:
             engine_kwargs["logits_processors"] = [
                 "nimloth.backbone.qwen25vl.vllm_logits:TurnResponseLogitsProcessor"
             ]
+        if capture_policy_state:
+            if not enforce_eager:
+                raise ValueError(
+                    "vLLM policy-state capture requires enforce_eager=True"
+                )
+            engine_kwargs["worker_extension_cls"] = (
+                "nimloth.backbone.qwen25vl.vllm_hidden:"
+                "PolicyStateCaptureWorkerExtension"
+            )
         engine = LLM(
             model=model_path,
             trust_remote_code=True,
@@ -112,6 +143,7 @@ class QwenVLLMAgentPolicy:
             latent_token_count=latent_token_count,
             credit_assignment=credit_assignment,
             max_reasoning_tokens=max_reasoning_tokens,
+            capture_policy_state=capture_policy_state,
         )
 
     def reset_episode(self) -> None:
@@ -121,6 +153,60 @@ class QwenVLLMAgentPolicy:
         if self.credit_assignment in {"turn", "token"}:
             return self._select_response(prompt)
         return self._select_action_only(prompt)
+
+    def select_response_with_state(self, prompt: AgentPrompt) -> QwenTurnGeneration:
+        """Generate one CoT and expose its latent/action-boundary states.
+
+        Capture brackets the same vLLM request used for the real response.  A
+        failed generation always clears worker state before the error escapes.
+        """
+
+        if not self.capture_policy_state:
+            raise RuntimeError("this vLLM policy was not configured for state capture")
+        tokens = LatentActionTokens()
+        start_policy_state_capture(
+            self.engine,
+            latent_token_ids=tuple(
+                self.token_id_map[token]
+                for token in latent_state_tokens(self.latent_token_count, tokens)
+            ),
+            action_start_token_id=self.token_id_map[tokens.action_start],
+            action_token_ids=self.action_token_ids,
+        )
+        try:
+            decision = self._select_response(prompt)
+            policy_state = pop_policy_state_capture(self.engine)
+        except Exception:
+            abort_policy_state_capture(self.engine)
+            raise
+        if policy_state.latent_hidden.shape[0] != self.latent_token_count:
+            raise RuntimeError(
+                "vLLM returned the wrong number of latent hidden rows: "
+                f"{policy_state.latent_hidden.shape[0]} != {self.latent_token_count}"
+            )
+        if policy_state.action_logits.shape != (len(self.action_token_ids),):
+            raise RuntimeError(
+                "vLLM returned an invalid restricted action-logit shape: "
+                f"{tuple(policy_state.action_logits.shape)}"
+            )
+        return QwenTurnGeneration(
+            qwen_decision=decision,
+            policy_state=policy_state,
+        )
+
+    def generate_state_prefix(self, prompt: AgentPrompt) -> str:
+        """Generate a real terminal CoT prefix without executing its draft action."""
+
+        if self.credit_assignment not in {"turn", "token"}:
+            raise RuntimeError("terminal state CoT requires turn/token generation")
+        decision = self._select_response(prompt)
+        assert decision.response is not None
+        boundary = decision.response.rfind(LatentActionTokens().action_start)
+        if boundary < 0:
+            raise RuntimeError("terminal Qwen response has no action boundary")
+        return decision.response[
+            : boundary + len(LatentActionTokens().action_start)
+        ]
 
     def _request(self, prompt: AgentPrompt) -> tuple[dict[str, Any], list[Any]]:
         bound_messages = prompt.bound_messages()
@@ -348,4 +434,4 @@ class QwenVLLMAgentPolicy:
         )
 
 
-__all__ = ["QwenVLLMAgentPolicy", "VLLMEngine"]
+__all__ = ["QwenTurnGeneration", "QwenVLLMAgentPolicy", "VLLMEngine"]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,6 +38,28 @@ def policy_artifact_fingerprint(model_dir: Path) -> str:
     return digest.hexdigest()
 
 
+def auxiliary_artifact_fingerprint(path: Path) -> str:
+    """Hash one planner module file/directory including its relative layout."""
+
+    root = Path(path).resolve()
+    if root.is_file():
+        files = (root,)
+        base = root.parent
+    elif root.is_dir():
+        files = tuple(sorted(candidate for candidate in root.rglob("*") if candidate.is_file()))
+        base = root
+    else:
+        raise FileNotFoundError(f"planner artifact does not exist: {root}")
+    digest = hashlib.sha256()
+    for candidate in files:
+        digest.update(str(candidate.relative_to(base)).encode("utf-8"))
+        digest.update(b"\0")
+        with candidate.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class FreshRolloutManifest:
     """vLLM rollout 与随后唯一一次 PPO update 的连接证据。"""
@@ -48,6 +70,8 @@ class FreshRolloutManifest:
     trajectory_path: str
     num_trajectories: int
     created_at: str
+    planner_fingerprints: dict[str, str] = field(default_factory=dict)
+    planner_paths: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def create(
@@ -56,14 +80,24 @@ class FreshRolloutManifest:
         policy_path: Path,
         trajectory_path: Path,
         num_trajectories: int,
+        planner_artifacts: dict[str, Path] | None = None,
     ) -> "FreshRolloutManifest":
+        artifacts = planner_artifacts or {}
         return cls(
-            format_version=1,
+            format_version=2 if artifacts else 1,
             policy_fingerprint=policy_artifact_fingerprint(policy_path),
             policy_path=str(Path(policy_path).resolve()),
             trajectory_path=str(Path(trajectory_path).resolve()),
             num_trajectories=int(num_trajectories),
             created_at=datetime.now(timezone.utc).isoformat(),
+            planner_fingerprints={
+                name: auxiliary_artifact_fingerprint(path)
+                for name, path in sorted(artifacts.items())
+            },
+            planner_paths={
+                name: str(Path(path).resolve())
+                for name, path in sorted(artifacts.items())
+            },
         )
 
     def write(self, path: Path) -> None:
@@ -74,7 +108,7 @@ class FreshRolloutManifest:
     def read(cls, path: Path) -> "FreshRolloutManifest":
         payload = json.loads(path.read_text(encoding="utf-8"))
         manifest = cls(**payload)
-        if manifest.format_version != 1:
+        if manifest.format_version not in {1, 2}:
             raise ValueError(
                 f"unsupported fresh rollout manifest version {manifest.format_version}"
             )
@@ -84,10 +118,17 @@ class FreshRolloutManifest:
 class FreshJSONLRolloutCollector(JSONLRolloutCollector):
     """仅允许与当前 policy artifact 匹配的 JSONL 被 PPO 消费一次。"""
 
-    def __init__(self, manifest_path: Path, *, model_path: Path) -> None:
+    def __init__(
+        self,
+        manifest_path: Path,
+        *,
+        model_path: Path,
+        planner_artifacts: dict[str, Path] | None = None,
+    ) -> None:
         self.manifest_path = Path(manifest_path).resolve()
         self.manifest = FreshRolloutManifest.read(self.manifest_path)
         self.model_path = Path(model_path).resolve()
+        self.planner_artifacts = planner_artifacts or {}
         super().__init__([Path(self.manifest.trajectory_path)], loop=False)
 
     def validate_policy(self) -> None:
@@ -97,6 +138,18 @@ class FreshJSONLRolloutCollector(JSONLRolloutCollector):
                 "fresh rollout policy fingerprint mismatch: "
                 f"manifest={self.manifest.policy_fingerprint}, current={actual}"
             )
+        if set(self.planner_artifacts) != set(self.manifest.planner_fingerprints):
+            raise ValueError(
+                "fresh rollout planner artifact set does not match the manifest"
+            )
+        for name, path in self.planner_artifacts.items():
+            actual = auxiliary_artifact_fingerprint(path)
+            expected = self.manifest.planner_fingerprints[name]
+            if actual != expected:
+                raise ValueError(
+                    f"fresh rollout planner fingerprint mismatch for {name}: "
+                    f"manifest={expected}, current={actual}"
+                )
 
     def _claim_once(self) -> None:
         claim_path = self.manifest_path.with_suffix(self.manifest_path.suffix + ".consumed")
@@ -128,5 +181,6 @@ class FreshJSONLRolloutCollector(JSONLRolloutCollector):
 __all__ = [
     "FreshJSONLRolloutCollector",
     "FreshRolloutManifest",
+    "auxiliary_artifact_fingerprint",
     "policy_artifact_fingerprint",
 ]

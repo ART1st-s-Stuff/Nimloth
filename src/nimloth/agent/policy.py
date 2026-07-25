@@ -101,6 +101,91 @@ def validate_action_log_probs(
 
 
 @dataclass(frozen=True)
+class PlannerPolicyTrace:
+    """Planner teacher and Qwen student distributions for one real action.
+
+    Candidate sequences/scores make the root policy reconstructable instead of
+    trusting a precomputed distribution that may no longer match its search.
+    """
+
+    qwen_action_log_probs: tuple[float, ...]
+    candidate_sequences: tuple[tuple[int, ...], ...]
+    candidate_scores: tuple[float, ...]
+    root_action_scores: tuple[float, ...]
+    planner_action_log_probs: tuple[float, ...]
+    horizon: int
+    teacher_temperature: float
+
+    def __post_init__(self) -> None:
+        action_count = len(self.root_action_scores)
+        if action_count < 2:
+            raise ValueError("planner trace requires at least two actions")
+        if self.horizon < 1:
+            raise ValueError("planner trace horizon must be positive")
+        if self.teacher_temperature <= 0.0 or not math.isfinite(
+            self.teacher_temperature
+        ):
+            raise ValueError("planner teacher_temperature must be finite and positive")
+        validate_action_log_probs(
+            0,
+            self.qwen_action_log_probs,
+            action_count=action_count,
+        )
+        validate_action_log_probs(
+            0,
+            self.planner_action_log_probs,
+            action_count=action_count,
+        )
+        if len(self.candidate_sequences) != len(self.candidate_scores):
+            raise ValueError("planner candidate sequences and scores must align")
+        if not self.candidate_sequences:
+            raise ValueError("planner trace requires candidate sequences")
+        if len(set(self.candidate_sequences)) != len(self.candidate_sequences):
+            raise ValueError("planner candidate sequences must be unique")
+        if any(
+            len(sequence) != self.horizon
+            or any(not 0 <= action < action_count for action in sequence)
+            for sequence in self.candidate_sequences
+        ):
+            raise ValueError("planner candidate sequence is outside the action space")
+        if any(not math.isfinite(value) for value in self.candidate_scores):
+            raise ValueError("planner candidate scores must be finite")
+        if any(not math.isfinite(value) for value in self.root_action_scores):
+            raise ValueError("planner root action scores must be finite")
+
+        for action_index, root_score in enumerate(self.root_action_scores):
+            scores = [
+                score
+                for sequence, score in zip(
+                    self.candidate_sequences,
+                    self.candidate_scores,
+                    strict=True,
+                )
+                if sequence[0] == action_index
+            ]
+            if not scores or not math.isclose(
+                root_score,
+                max(scores),
+                rel_tol=1e-6,
+                abs_tol=1e-6,
+            ):
+                raise ValueError(
+                    "planner root score must equal the best candidate for each action"
+                )
+
+        expected = torch.log_softmax(
+            torch.tensor(self.root_action_scores, dtype=torch.float64)
+            / self.teacher_temperature,
+            dim=-1,
+        )
+        actual = torch.tensor(self.planner_action_log_probs, dtype=torch.float64)
+        if not torch.allclose(expected, actual, rtol=1e-6, atol=1e-6):
+            raise ValueError(
+                "planner action distribution does not match root scores/temperature"
+            )
+
+
+@dataclass(frozen=True)
 class PolicyTokenTrace:
     """一次 policy continuation 的逐 token behavior provenance。
 
@@ -159,8 +244,6 @@ class PolicyTokenTrace:
         if sum(role == "action" for role in self.token_roles) != 1:
             raise ValueError("policy token trace requires exactly one action token")
         action_position = self.token_roles.index("action")
-        if not self.loss_mask[action_position]:
-            raise ValueError("the sampled action token must participate in PPO")
         if self.token_ids[action_position] not in self.action_token_ids:
             raise ValueError("policy action token is outside the recorded action mapping")
         has_reasoning = "reasoning" in self.token_roles
@@ -197,6 +280,7 @@ class PolicyDecision:
     action_log_probs: tuple[float, ...]
     response: str | None = None
     token_trace: PolicyTokenTrace | None = None
+    planner_trace: PlannerPolicyTrace | None = None
 
     def __post_init__(self) -> None:
         action_log_probs = validate_action_log_probs(
@@ -217,14 +301,34 @@ class PolicyDecision:
             if self.token_trace.token_ids[action_position] != expected_token_id:
                 raise ValueError("decision action does not match policy token trace")
             trace_log_prob = self.token_trace.old_log_probs[action_position]
-            if trace_log_prob is None or not math.isclose(
-                trace_log_prob,
-                action_log_probs[self.action_index],
-                rel_tol=1e-6,
-                abs_tol=1e-7,
+            action_selected = self.token_trace.loss_mask[action_position]
+            if self.planner_trace is None:
+                if not action_selected or trace_log_prob is None or not math.isclose(
+                    trace_log_prob,
+                    action_log_probs[self.action_index],
+                    rel_tol=1e-6,
+                    abs_tol=1e-7,
+                ):
+                    raise ValueError(
+                        "decision action log-prob does not match policy token trace "
+                        "or the direct action is not selected for PPO"
+                    )
+            elif action_selected or trace_log_prob is not None:
+                raise ValueError("planner-owned action must not participate in Qwen PPO")
+        if self.planner_trace is not None:
+            if self.token_trace is None:
+                raise ValueError("planner decision requires a token trace")
+            planner_probs = self.planner_trace.planner_action_log_probs
+            if len(planner_probs) != len(action_log_probs) or any(
+                not math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-7)
+                for actual, expected in zip(
+                    action_log_probs,
+                    planner_probs,
+                    strict=True,
+                )
             ):
                 raise ValueError(
-                    "decision action log-prob does not match policy token trace"
+                    "decision behavior distribution must equal the planner distribution"
                 )
 
 
@@ -275,6 +379,7 @@ class PolicyReplayInput:
     token_trace: PolicyTokenTrace | None = None
     old_action_log_prob: float | None = None
     assistant_response: str | None = None
+    planner_trace: PlannerPolicyTrace | None = None
 
     def __post_init__(self) -> None:
         if self.credit_assignment not in {"action", "turn", "token"}:
@@ -322,6 +427,14 @@ class PolicyReplayInput:
                 raise ValueError(
                     "token trace action does not match replay action_index"
                 )
+        if self.planner_trace is not None:
+            if self.token_trace is None:
+                raise ValueError("planner replay requires a token trace")
+            action_position = self.token_trace.token_roles.index("action")
+            if self.token_trace.loss_mask[action_position]:
+                raise ValueError("planner action cannot participate in Qwen PPO replay")
+            if self.credit_assignment != "token":
+                raise ValueError("planner distillation currently requires token credit")
 
     @property
     def selected_old_log_probs(self) -> tuple[float, ...]:
@@ -338,6 +451,7 @@ class PolicyReplayOutput:
     selected_log_probs: torch.Tensor
     entropies: torch.Tensor
     token_values: torch.Tensor | None = None
+    action_log_probs: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.selected_log_probs.ndim != 1 or self.entropies.ndim != 1:
@@ -351,6 +465,9 @@ class PolicyReplayOutput:
                 raise ValueError(
                     "policy replay token values must align with selected log-probs"
                 )
+        if self.action_log_probs is not None:
+            if self.action_log_probs.ndim != 2:
+                raise ValueError("replayed action log-probs must have shape (B,A)")
 
 
 class ActionLogProbReplay(Protocol):

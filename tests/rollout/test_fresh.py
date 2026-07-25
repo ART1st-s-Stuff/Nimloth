@@ -64,3 +64,29 @@ def test_fresh_manifest_rejects_second_claim(tmp_path: Path) -> None:
     second = FreshJSONLRolloutCollector(manifest_path, model_path=model)
     with pytest.raises(RuntimeError, match="already consumed"):
         second._claim_once()
+
+
+def test_fresh_manifest_binds_planner_modules(tmp_path: Path) -> None:
+    model = _policy_artifact(tmp_path / "model")
+    planner = tmp_path / "wm_predictor"
+    planner.mkdir()
+    (planner / "predictor.pt").write_bytes(b"wm")
+    trajectories = tmp_path / "trajectories.jsonl"
+    _trajectory_jsonl(trajectories)
+    manifest_path = tmp_path / "fresh.json"
+    FreshRolloutManifest.create(
+        policy_path=model,
+        trajectory_path=trajectories,
+        num_trajectories=1,
+        planner_artifacts={"wm_predictor": planner},
+    ).write(manifest_path)
+
+    collector = FreshJSONLRolloutCollector(
+        manifest_path,
+        model_path=model,
+        planner_artifacts={"wm_predictor": planner},
+    )
+    collector.validate_policy()
+    (planner / "predictor.pt").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="planner fingerprint mismatch"):
+        collector.validate_policy()

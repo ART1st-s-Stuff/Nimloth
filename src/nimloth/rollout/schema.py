@@ -10,6 +10,7 @@ from nimloth.agent import (
     PROMPT_VERSION,
     AgentPrompt,
     AgentTranscript,
+    PlannerPolicyTrace,
     PolicyTokenTrace,
     PromptTemplateSpec,
     create_prompt_template,
@@ -50,6 +51,7 @@ class RolloutTrajectory:
     policy_reasoning_texts: list[str | None] = field(default_factory=list)
     policy_finish_reasons: list[str | None] = field(default_factory=list)
     policy_reasoning_truncated: list[bool] = field(default_factory=list)
+    planner_policy_traces: list[PlannerPolicyTrace] = field(default_factory=list)
     prompt_template_spec: PromptTemplateSpec | None = None
     # 下面两个字段只为读取旧 JSONL 保留；新记录以 prompt_template_spec 为准。
     prompt_version: str = PROMPT_VERSION
@@ -195,6 +197,15 @@ class RolloutTrajectory:
             ),
         )
 
+    def planner_policy_trace(self, step_index: int) -> PlannerPolicyTrace | None:
+        """Return the reconstructable planner teacher trace for one step."""
+
+        if not self.planner_policy_traces:
+            return None
+        if len(self.planner_policy_traces) != self.num_steps:
+            raise ValueError("planner policy trace count does not match trajectory steps")
+        return self.planner_policy_traces[step_index]
+
     def build_policy_messages(
         self,
         step_index: int,
@@ -267,6 +278,22 @@ class RolloutTrajectory:
             "policy_reasoning_texts": self.policy_reasoning_texts,
             "policy_finish_reasons": self.policy_finish_reasons,
             "policy_reasoning_truncated": self.policy_reasoning_truncated,
+            "planner_policy_traces": [
+                {
+                    "qwen_action_log_probs": list(trace.qwen_action_log_probs),
+                    "candidate_sequences": [
+                        list(sequence) for sequence in trace.candidate_sequences
+                    ],
+                    "candidate_scores": list(trace.candidate_scores),
+                    "root_action_scores": list(trace.root_action_scores),
+                    "planner_action_log_probs": list(
+                        trace.planner_action_log_probs
+                    ),
+                    "horizon": trace.horizon,
+                    "teacher_temperature": trace.teacher_temperature,
+                }
+                for trace in self.planner_policy_traces
+            ],
             "prompt_template": prompt_spec.to_record(),
             # 同时写出旧字段，便于已有工具在迁移期继续读取。
             "prompt_version": prompt_spec.version,
@@ -346,6 +373,29 @@ class RolloutTrajectory:
             policy_reasoning_truncated=[
                 bool(value)
                 for value in record.get("policy_reasoning_truncated", [])
+            ],
+            planner_policy_traces=[
+                PlannerPolicyTrace(
+                    qwen_action_log_probs=tuple(
+                        float(value) for value in raw["qwen_action_log_probs"]
+                    ),
+                    candidate_sequences=tuple(
+                        tuple(int(value) for value in sequence)
+                        for sequence in raw["candidate_sequences"]
+                    ),
+                    candidate_scores=tuple(
+                        float(value) for value in raw["candidate_scores"]
+                    ),
+                    root_action_scores=tuple(
+                        float(value) for value in raw["root_action_scores"]
+                    ),
+                    planner_action_log_probs=tuple(
+                        float(value) for value in raw["planner_action_log_probs"]
+                    ),
+                    horizon=int(raw["horizon"]),
+                    teacher_temperature=float(raw["teacher_temperature"]),
+                )
+                for raw in record.get("planner_policy_traces", [])
             ],
             prompt_template_spec=prompt_template_spec,
             prompt_version=prompt_template_spec.version,

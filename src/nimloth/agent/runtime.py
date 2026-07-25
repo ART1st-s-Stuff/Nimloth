@@ -8,6 +8,7 @@ from typing import Any, Literal
 from nimloth.agent.policy import (
     AgentPolicy,
     PolicyDecision,
+    PlannerPolicyTrace,
     PolicyTokenTrace,
     validate_action_log_probs,
 )
@@ -30,6 +31,7 @@ class AgentAction:
     response: str
     policy_prompt: AgentPrompt
     token_trace: PolicyTokenTrace | None = None
+    planner_trace: PlannerPolicyTrace | None = None
     credit_assignment: Literal["action", "turn", "token"] = "action"
 
     @property
@@ -139,6 +141,7 @@ class AgentRuntime:
             response=response,
             policy_prompt=policy_prompt,
             token_trace=decision.token_trace,
+            planner_trace=decision.planner_trace,
             credit_assignment=credit_assignment,
         )
 
@@ -157,6 +160,22 @@ class AgentRuntime:
         """返回所有已完成动作轮次的监督 prompt。"""
 
         return self._prompt_template.build_supervised_prompt(self.transcript())
+
+    def terminal_state_prefix(self) -> str:
+        """Generate the final observed state's real CoT without taking an action."""
+
+        if len(self._observation_texts) != len(self._action_indices) + 1:
+            raise RuntimeError("terminal state prefix requires one unacted observation")
+        generate = getattr(self._policy, "generate_state_prefix", None)
+        if generate is None:
+            raise RuntimeError("policy cannot generate a terminal state CoT")
+        prompt = self._prompt_template.build_response_policy_prompt(
+            self.transcript()
+        )
+        prefix = generate(prompt)
+        if not isinstance(prefix, str) or not prefix.startswith("<think>"):
+            raise RuntimeError("policy returned an invalid terminal state prefix")
+        return prefix
 
     def policy_prompt_for_step(self, step_index: int) -> AgentPrompt:
         """按历史位置重建可审计的 policy prompt。"""

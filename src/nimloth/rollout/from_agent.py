@@ -38,9 +38,13 @@ def trajectory_from_agent_episode(
         if action.policy_prompt.template != episode.prompt_template:
             raise ValueError("Agent episode mixes prompt template specifications")
     traces = [action.token_trace for action in episode.actions]
+    planner_traces = [action.planner_trace for action in episode.actions]
     has_traces = [trace is not None for trace in traces]
     if any(has_traces) and not all(has_traces):
         raise ValueError("Agent episode mixes traced and untraced policy actions")
+    has_planner_traces = [trace is not None for trace in planner_traces]
+    if any(has_planner_traces) and not all(has_planner_traces):
+        raise ValueError("Agent episode mixes planner and direct policy actions")
     credit_assignments = {action.credit_assignment for action in episode.actions}
     if len(credit_assignments) != 1:
         raise ValueError("Agent episode mixes PPO credit assignment modes")
@@ -103,6 +107,9 @@ def trajectory_from_agent_episode(
         ],
         policy_reasoning_truncated=[
             trace.reasoning_truncated for trace in traces if trace is not None
+        ],
+        planner_policy_traces=[
+            trace for trace in planner_traces if trace is not None
         ],
         prompt_template_spec=episode.prompt_template,
         prompt_version=episode.prompt_template.version,

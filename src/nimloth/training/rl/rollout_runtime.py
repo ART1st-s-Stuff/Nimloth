@@ -65,13 +65,9 @@ def validate_online_policy_configuration(
     actor_enabled: bool,
     planning_enabled: bool,
 ) -> None:
-    """拒绝把 planner 动作错误地交给 Qwen PPO replay。"""
+    """Planner actor is supported through fresh traced vLLM JSONL rollout."""
 
-    if actor_enabled and planning_enabled:
-        raise ValueError(
-            "agent.planning.enabled cannot be combined with actor.enabled until "
-            "planner behavior probability replay is implemented"
-        )
+    _ = actor_enabled, planning_enabled
 
 
 def validate_planning_initialization(

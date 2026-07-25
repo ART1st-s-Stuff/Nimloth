@@ -93,10 +93,8 @@ def token_level_gae(
         if sample.credit_assignment != "token" or sample.token_trace is None:
             raise ValueError("token GAE requires token-credit traced samples")
         count = sum(sample.token_trace.loss_mask)
-        if count < 2:
-            raise ValueError(
-                "token credit requires at least one reasoning token and one action token"
-            )
+        if count < 1:
+            raise ValueError("token credit requires at least one reasoning token")
         counts.append(count)
     if sum(counts) != token_values.numel():
         raise ValueError(

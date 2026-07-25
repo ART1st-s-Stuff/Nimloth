@@ -66,4 +66,9 @@ class RLCheckpointManager:
             credit_assignment=self._config.actor.credit_assignment,
             token_credit_config=asdict(self._config.token_credit),
             truncated_bootstrap=self._config.rl.truncated_bootstrap,
+            planner_config=asdict(self._config.agent.planning),
+            planner_distillation_weight=(
+                self._config.actor.planner_distillation_weight
+            ),
+            train_world_model=self._config.predictor.train_wm,
         )

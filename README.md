@@ -127,9 +127,12 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 |---|---|---|
 | `agent.prompt_template` | policy/state prompt 的版本化模板 | rollout、state encoding 和 replay 必须使用同一模板 spec |
 | CoT-conditioned state | 使用当前 observation 对应的真实 assistant CoT | 禁止配置固定 thought；terminal CoT 必须额外生成并持久化 |
-| `agent.planning.enabled` | 是否启用 WM latent planning | 当前 planner behavior 与 PPO actor 不能同时启用 |
+| `agent.planning.enabled` | 是否启用 WM latent planning | 与actor同时开启时，action走planner distillation，CoT走token PPO；只接受fresh traced rollout |
 | `agent.planning.horizon` | 每个候选序列在 latent 空间向未来模拟的动作数 `P` | 不执行环境；不得用 `history_size` 表达 |
-| `agent.planning.beam_width` | 每层保留的候选序列数 | 影响搜索开销，不改变训练 batch size |
+| `agent.planning.search_mode` | planner候选搜索方式 | 当前Qwen distillation只实现`exhaustive`；H=2、8动作时保存全部64条序列 |
+| `agent.planning.beam_width` | beam模式每层保留的候选序列数 | `exhaustive`模式必须省略，禁止配置一个不会生效的值 |
+| `agent.planning.teacher_temperature` | 将8维root score变成`pi_plan`的温度 | 必须显式配置；planner action直接从该分布采样，不再做top-p |
+| `agent.planning.device` | rollout端StateProjector、WM predictor和ValueHead所在设备 | 必须显式配置；vLLM Qwen仍按rollout TP独立管理设备 |
 | `gradient.representation_to_backbone` | WM/value/SIGReg 是否把表征梯度传回 Backbone | 与 `actor.enabled` 独立 |
 | `gradient.backbone_lr` | RL 中 Backbone 的统一学习率 | 实际可训练范围仍由 LLM/vision tune 配置决定 |
 | `freeze.state_proj` | 是否冻结 StateProjector | 不决定 ValueHead 或 WM predictor 是否训练 |
@@ -138,11 +141,13 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `actor.entropy_coeff` | behavior sampling 分布上的 entropy bonus 权重 | entropy 使用相同 temperature/top-p 变换后的分布 |
 | `actor.credit_assignment` | `action`、`turn`或`token` | `turn`广播step advantage；`token`使用独立逐token critic和turn内GAE |
 | `actor.max_reasoning_tokens` | turn-credit 最多采样的 reasoning token 数 | 截断和 finish reason 必须持久化 |
+| `actor.planner_distillation_weight` | `KL(stopgrad(pi_plan) || pi_Qwen)`等价交叉熵项的权重 | planner actor开启时必须显式为正；action token不进入PPO ratio |
 | `token_credit.gamma`、`gae_lambda` | token MDP内的折扣率与GAE系数 | 只在`credit_assignment=token`时生效，必须显式配置 |
 | `token_credit.value_lr`、`value_loss_weight`、`hidden_dim` | TokenValueHead学习率、loss权重和MLP hidden维度 | 预测每个loss-mask token生成前的value，不替代action `Q(s,a)` |
 | `predictor.history_size` | RL 窗口中的 transition 数 `H` | state 数为 `H+1`；必须和 SFT2 WM checkpoint 的 history 语义兼容 |
 | `predictor.emb_dim` | RL WM embedding 维度 | 必须匹配 warm-start 组件 |
 | `predictor.lr` | WM predictor 学习率 | 不等于 Backbone 或 ValueHead 学习率 |
+| `predictor.train_wm` | RL update是否计算WM target/loss并训练predictor | `false`时predictor冻结；不影响真实rollout对ValueHead和actor的监督 |
 | `predictor.lambda_sigreg` | RL SIGReg 权重 | 当前 RL 不计算 DINO loss |
 | `value_head.lr` | RL ValueHead 学习率 | 对窗口内 `H` 个 environment step 计算 action value |
 | `value_head.rank_margin`、`lambda_rank` | action-value ranking margin/权重 | `lambda_rank=0` 时只有 return regression |
@@ -152,7 +157,7 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `rl.gamma` | Monte Carlo return 折扣率 | 先对完整 episode 计算，再切 trajectory window |
 | `rl.truncated_bootstrap` | 时间上限truncation的bootstrap策略 | token模式必须显式配置；当前仅实现`zero`，不会把truncated猜成terminal |
 | `rl.batch_size` | 每次 optimizer update 采样的 trajectory window 数 | 每个窗口贡献 `H` 个 value/action 位置 |
-| `rollout.temperature`、`rollout.top_p` | behavior policy 采样参数 | 必须随 trajectory 保存并在 PPO replay 中复用 |
+| `rollout.temperature`、`rollout.top_p` | Qwen CoT behavior的采样参数 | 必须随trajectory保存并在CoT PPO replay复用；planner action使用独立teacher temperature |
 | `rollout.train_datasets`、`eval_datasets` | 训练和评估环境资产 | 两者必须具有经核实的不重叠 scene 语义 |
 | `validation.enabled`、`interval`、`envs` | 是否验证、验证间隔和 episode 数 | `interval` 的单位是 RL iteration；`envs` 的单位是 episode |
 | `validation.checkpoint_metric` | `best` checkpoint 的选择指标 | 例如 held-out `success_rate` 或 `avg_reward` |
@@ -172,6 +177,7 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | intra-rank model parallel | 一个 rank 内把 Qwen 放到多张 GPU | 与 FSDP、跨 rank gradient synchronization 是不同维度 |
 | gradient synchronization | 各 training replica 对 trainable gradient 求和/平均 | 多 GPU model-parallel replica 必须使用确定一致的参数顺序 |
 | `distributed.rollout_tensor_parallel_size` | 一个 vLLM rollout engine 使用的 tensor-parallel GPU 数 | 只描述 rollout 推理拓扑，不等于训练 `world_size` |
+| vLLM selected hidden capture | 同一次真实多模态rollout forward截取latent token和action boundary hidden | 只返回`K×D` hidden与8维raw action logits；禁止另起HF Qwen重复编码prompt |
 
 ### 禁止歧义的表达
 
