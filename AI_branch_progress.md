@@ -2396,3 +2396,6 @@
   `169 passed, 1 expected warning`。
 - 尚未验证真实vLLM、真实图片、同checkpoint跨vLLM/HF ratio或GPU optimizer step；
   CPU结果不能替代这些门槛。vLLM cache默认保持关闭，启用前仍需同版本多图A/B parity。
+- 最终launcher逐行检查发现episode/max-step校验一度误插入`python -c`引号内；已修复并
+  单独AST验证config读取和post-validator两个inline Python片段。说明`bash -n`只能验证
+  shell语法，不能替代嵌入Python preflight。

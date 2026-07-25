@@ -47,7 +47,10 @@ turn 内 token GAE”，不冒充 VAGEN Bi-Level GAE。
 
 - `git diff --check`：通过。
 - 全部`src/**/*.py`、`tests/**/*.py`及`rollout_env.py`使用`ast.parse`：通过。
-- `bash -n experiments/training/rl/run_vllm_online_ppo_smoke.sh`：通过。
+- `bash -n experiments/training/rl/run_vllm_online_ppo_smoke.sh`：通过；另将config读取和
+  最终validator两个inline Python片段独立提取、替换shell占位后执行`ast.parse`：通过。
+- 最终逐行检查曾发现episode/max-step shell校验误入`python -c`引号；已移到process
+  substitution之后。这个问题`bash -n`无法发现，修复后config snippet实际AST通过。
 - 使用本机Nix store中的PyTorch 2.12/pytest 9/PyYAML 6运行9个直接受影响测试文件：
   `78 passed, 1 expected warning`。
 - 增加3条训练循环fault-injection测试：step前失败回滚、step开始后失败保留claim、

@@ -57,6 +57,8 @@ print(
     config.agent.planning.beam_width,
     config.agent.planning.device,
 )
+' "${RL_CONFIG}"
+)
 NUM_EPISODES=${NUM_EPISODES:-${CONFIG_NUM_EPISODES}}
 MAX_STEPS=${MAX_STEPS:-${CONFIG_MAX_STEPS}}
 [[ "${NUM_EPISODES}" == "${CONFIG_NUM_EPISODES}" ]] || {
@@ -71,8 +73,6 @@ MAX_STEPS=${MAX_STEPS:-${CONFIG_MAX_STEPS}}
   echo "VLLM_ENABLE_PREFIX_CACHING must be true or false" >&2
   exit 1
 }
-' "${RL_CONFIG}"
-)
 if [[ "${REFERENCE_KL_WEIGHT}" != 0.0 ]]; then
   [[ -f "${REFERENCE_MODEL}/config.json" ]] || {
     echo "missing reference model: ${REFERENCE_MODEL}" >&2
