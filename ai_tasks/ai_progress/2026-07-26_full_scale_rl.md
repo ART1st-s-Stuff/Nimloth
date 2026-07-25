@@ -36,7 +36,9 @@ token PPO、冻结reference KL和DINO-grid WM语义上启动正式多迭代RL；
 
 ## 存储与恢复决策
 
-- 2026-07-26检查共享`/project`只剩约442GB；ID105总计70GB，单套完整checkpoint约23GB。
+- 预规划时一次路径级检查给出约442GB安全余量；正式启动前全局`df`显示2.8PB可用，但全局
+  空间不证明用户/project quota。ID105总计70GB，单套完整checkpoint约23GB，因此仍按
+  约180--220GB的保守本run预算和逐轮监控执行。
 - 正式配置每10次保留一个`iter_NNNN`，预计6个周期checkpoint，加`latest/final`与rollout
   后约180--220GB。
 - 每次更新前把`latest`移动为不可变policy input，避免manifest指向的路径在本次update中
@@ -66,3 +68,16 @@ token PPO、冻结reference KL和DINO-grid WM语义上启动正式多迭代RL；
 4. 获取normal 4节点×2卡hold，启动后台controller和生命周期watcher。
 5. 持续监控至少到Ray、environment、checkpoint加载和首条真实trajectory健康；随后继续
    监控iteration完成、W&B、fresh transaction及磁盘。
+
+## 正式启动状态（2026-07-26 05:27 +08:00）
+
+- commit`c787ed0`已推送`origin/dev`并同步到服务器固定worktree；服务器真实Python相关回归
+  `175 passed, 1 warning`，纯preflight确认Nimloth/VAGEN/checkpoint/dataset/config/topology。
+- normal hold`487586`通过backfill运行到2026-07-27 05:22:50 +08:00；实际GRES为
+  dgx-10(0,7)、dgx-24(5,7)、dgx-31(0,3)、dgx-51(2,3)。
+- 后台controller PID721711，独立生命周期watcher PID722069；watcher只在controller退出后
+  取消hold487586。实验输出、controller/Ray/watcher日志与launch contract均使用ID106唯一
+  路径，首轮transaction于05:25:29以seed offset1开始。
+- Ray已确认4个唯一10.23地址、8 GPU和逐节点固定worktree import；environment health在14秒
+  后通过，真实epoch1已进入vLLM TP4 eager权重/KV初始化。当前尚无完整trajectory、W&B run、
+  optimizer step或checkpoint，因此还不能声称首轮训练完成。

@@ -22,11 +22,15 @@
   4个两卡model-parallel rank和vLLM TP4。
 - 为避免update原地改写manifest绑定的policy，下一轮开始前把`latest`移动成不可变
   `policy_inputs/iter_NNNN`并显式resume；post-update checkpoint与fresh consumption提交后才
-  进入下一轮。共享盘只剩约442GB，因此每10轮保留周期checkpoint，自动清理仅限本run更旧
-  的policy snapshot，带固定路径门禁并写相邻日志。
-- 本地相关回归为`174 passed, 1 warning`；三个shell语法、inline Python AST、compileall与
-  diff检查通过。下一步是提交推送、服务器真实环境preflight、固定launch contract并申请
-  normal 4节点×2卡hold；在远端首轮健康验证前不宣称正式训练已经开始。
+  进入下一轮。路径级预规划曾给出约442GB安全余量，启动前全局`df`为2.8PB可用但不能证明
+  用户quota；因此仍按180--220GB保守预算每10轮保留周期checkpoint。自动清理仅限本run
+  更旧的policy snapshot，带固定路径门禁并写相邻日志。
+- commit`c787ed0`已推送；服务器真实环境相关回归`175 passed, 1 warning`且正式preflight
+  通过。normal hold`487586`实际分配dgx-10/24/31/51各2卡，运行到2026-07-27 05:22:50
+  +08:00；controller PID721711、生命周期watcher PID722069。
+- ID106首轮于05:25:29开始。Ray已验证4个唯一10.23地址、8 GPU和逐节点固定worktree
+  import；environment health在14秒后通过，真实epoch1进入vLLM TP4 eager权重/KV初始化。
+  当前仍无完整trajectory、W&B run、optimizer step或checkpoint，不把启动健康写成训练完成。
 
 ## 2026-07-26：ID105完成真实exhaustive H=2的8-GPU correctness闭环
 
