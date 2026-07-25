@@ -41,7 +41,11 @@ mapfile -t NODES < <(scontrol show hostnames "$(squeue -h -j "${HOLD_JOB}" -o %N
   echo "config requests ${CONFIG_NODES} nodes, allocation has: ${NODES[*]}" >&2
   exit 1
 }
-HEAD_NODE=${NODES[0]}
+HEAD_NODE=${RAY_HEAD_NODE:-${NODES[0]}}
+if [[ ! " ${NODES[*]} " =~ " ${HEAD_NODE} " ]]; then
+  echo "RAY_HEAD_NODE=${HEAD_NODE} is not in allocation: ${NODES[*]}" >&2
+  exit 1
+fi
 JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")
 declare -A GPU_COUNTS
 declare -A NODE_IPS
