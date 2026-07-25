@@ -67,6 +67,12 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
         help="vLLM fresh rollout manifest；需 --use-jsonl-rollout 且仅可消费一次",
     )
     ap.add_argument(
+        "--reference-model",
+        type=Path,
+        default=None,
+        help="frozen reference checkpoint used for actor-side token KL",
+    )
+    ap.add_argument(
         "--eval-jsonl-sources",
         type=Path,
         nargs="+",
@@ -112,6 +118,15 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--fresh-rollout-manifest requires --use-jsonl-rollout")
     config = load_rl_config(args.config)
     config = merge_rl_config_overrides(args, config)
+    if config.actor.reference_kl_loss_weight > 0.0:
+        if args.fresh_rollout_manifest is None:
+            raise ValueError("reference KL requires --fresh-rollout-manifest")
+        if args.reference_model is None:
+            raise ValueError("reference KL requires --reference-model")
+    elif args.reference_model is not None:
+        raise ValueError(
+            "--reference-model requires positive actor.reference_kl_loss_weight"
+        )
     if config.agent.planning.enabled and args.fresh_rollout_manifest is not None:
         missing = [
             name
@@ -201,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
                     if config.agent.planning.enabled
                     else None
                 ),
+                reference_model_path=args.reference_model,
             )
             if args.fresh_rollout_manifest is not None
             else JSONLRolloutCollector(sources=jsonl_sources)

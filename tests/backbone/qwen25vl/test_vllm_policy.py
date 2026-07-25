@@ -243,7 +243,7 @@ def test_turn_credit_generates_reasoning_then_constrained_action(monkeypatch) ->
         top_p=0.95,
         latent_token_count=1,
         credit_assignment="turn",
-        max_reasoning_tokens=8,
+        max_response_tokens=13,
     )
     prompt = SimpleNamespace(
         messages=({"role": "assistant", "content": "<think>"},),
@@ -330,7 +330,7 @@ def test_turn_credit_records_forced_reasoning_close_as_truncation(monkeypatch) -
         temperature=0.7,
         top_p=0.95,
         credit_assignment="turn",
-        max_reasoning_tokens=2,
+        max_response_tokens=7,
     )
     decision = policy.select_action(SimpleNamespace(
         messages=({"role": "assistant", "content": "<think>"},),

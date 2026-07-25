@@ -102,46 +102,33 @@ def validate_action_log_probs(
 
 @dataclass(frozen=True)
 class PlannerPolicyTrace:
-    """Planner teacher and Qwen student distributions for one real action.
+    """Greedy planner teacher and Qwen student distributions for one action.
 
-    Candidate sequences/scores make the root policy reconstructable instead of
-    trusting a precomputed distribution that may no longer match its search.
+    The single candidate plus every depth's action-value row makes the greedy
+    decision reconstructable instead of trusting a precomputed distribution.
     """
 
     qwen_action_log_probs: tuple[float, ...]
     candidate_sequences: tuple[tuple[int, ...], ...]
     candidate_scores: tuple[float, ...]
-    root_action_scores: tuple[float, ...]
-    planner_action_log_probs: tuple[float, ...]
+    greedy_step_action_values: tuple[tuple[float, ...], ...]
+    teacher_action_log_probs: tuple[float, ...]
+    behavior_action_log_probs: tuple[float, ...]
     horizon: int
-    teacher_temperature: float
+    search_mode: str
 
     def __post_init__(self) -> None:
-        action_count = len(self.root_action_scores)
+        action_count = len(self.qwen_action_log_probs)
         if action_count < 2:
             raise ValueError("planner trace requires at least two actions")
         if self.horizon < 1:
             raise ValueError("planner trace horizon must be positive")
-        if self.teacher_temperature <= 0.0 or not math.isfinite(
-            self.teacher_temperature
-        ):
-            raise ValueError("planner teacher_temperature must be finite and positive")
-        validate_action_log_probs(
-            0,
-            self.qwen_action_log_probs,
-            action_count=action_count,
-        )
-        validate_action_log_probs(
-            0,
-            self.planner_action_log_probs,
-            action_count=action_count,
-        )
+        if self.search_mode != "greedy":
+            raise ValueError("planner trace search_mode must be greedy")
         if len(self.candidate_sequences) != len(self.candidate_scores):
             raise ValueError("planner candidate sequences and scores must align")
-        if not self.candidate_sequences:
-            raise ValueError("planner trace requires candidate sequences")
-        if len(set(self.candidate_sequences)) != len(self.candidate_sequences):
-            raise ValueError("planner candidate sequences must be unique")
+        if len(self.candidate_sequences) != 1:
+            raise ValueError("greedy planner trace requires exactly one candidate")
         if any(
             len(sequence) != self.horizon
             or any(not 0 <= action < action_count for action in sequence)
@@ -150,39 +137,46 @@ class PlannerPolicyTrace:
             raise ValueError("planner candidate sequence is outside the action space")
         if any(not math.isfinite(value) for value in self.candidate_scores):
             raise ValueError("planner candidate scores must be finite")
-        if any(not math.isfinite(value) for value in self.root_action_scores):
-            raise ValueError("planner root action scores must be finite")
-
-        for action_index, root_score in enumerate(self.root_action_scores):
-            scores = [
-                score
-                for sequence, score in zip(
-                    self.candidate_sequences,
-                    self.candidate_scores,
-                    strict=True,
-                )
-                if sequence[0] == action_index
-            ]
-            if not scores or not math.isclose(
-                root_score,
-                max(scores),
-                rel_tol=1e-6,
-                abs_tol=1e-6,
-            ):
-                raise ValueError(
-                    "planner root score must equal the best candidate for each action"
-                )
-
-        expected = torch.log_softmax(
-            torch.tensor(self.root_action_scores, dtype=torch.float64)
-            / self.teacher_temperature,
-            dim=-1,
-        )
-        actual = torch.tensor(self.planner_action_log_probs, dtype=torch.float64)
-        if not torch.allclose(expected, actual, rtol=1e-6, atol=1e-6):
+        if len(self.greedy_step_action_values) != self.horizon or any(
+            len(row) != action_count
+            or any(not math.isfinite(value) for value in row)
+            for row in self.greedy_step_action_values
+        ):
             raise ValueError(
-                "planner action distribution does not match root scores/temperature"
+                "planner trace requires one finite action-value row per horizon step"
             )
+        sequence = self.candidate_sequences[0]
+        action_index = sequence[0]
+        validate_action_log_probs(
+            action_index,
+            self.qwen_action_log_probs,
+            action_count=action_count,
+        )
+        validate_action_log_probs(
+            action_index,
+            self.teacher_action_log_probs,
+            action_count=action_count,
+        )
+        validate_action_log_probs(
+            action_index,
+            self.behavior_action_log_probs,
+            action_count=action_count,
+        )
+        for depth, row in enumerate(self.greedy_step_action_values):
+            if sequence[depth] != max(range(action_count), key=row.__getitem__):
+                raise ValueError("planner candidate does not follow greedy action values")
+        for name, log_probs in (
+            ("teacher", self.teacher_action_log_probs),
+            ("behavior", self.behavior_action_log_probs),
+        ):
+            expected = tuple(
+                0.0 if index == action_index else float("-inf")
+                for index in range(action_count)
+            )
+            if log_probs != expected:
+                raise ValueError(
+                    f"greedy planner {name} distribution must be deterministic"
+                )
 
 
 @dataclass(frozen=True)
@@ -202,6 +196,7 @@ class PolicyTokenTrace:
     reasoning_text: str | None = None
     finish_reason: Literal["stop", "length"] | None = None
     reasoning_truncated: bool = False
+    reference_log_probs: tuple[float | None, ...] | None = None
 
     def __post_init__(self) -> None:
         lengths = {
@@ -258,6 +253,28 @@ class PolicyTokenTrace:
             raise ValueError("action-only token trace cannot store reasoning metadata")
         elif self.reasoning_truncated:
             raise ValueError("action-only token trace cannot be truncated")
+        if self.reference_log_probs is not None:
+            if len(self.reference_log_probs) != len(self.token_ids):
+                raise ValueError("reference log-probs must align with policy tokens")
+            for index, (value, selected, role) in enumerate(
+                zip(
+                    self.reference_log_probs,
+                    self.loss_mask,
+                    self.token_roles,
+                    strict=True,
+                )
+            ):
+                should_have_reference = selected and role == "reasoning"
+                if should_have_reference:
+                    if value is None or not math.isfinite(value):
+                        raise ValueError(
+                            f"selected reasoning token {index} requires a finite "
+                            "reference log-prob"
+                        )
+                elif value is not None:
+                    raise ValueError(
+                        "reference KL may only cover selected reasoning tokens"
+                    )
 
     @property
     def selected_old_log_probs(self) -> tuple[float, ...]:
@@ -269,6 +286,21 @@ class PolicyTokenTrace:
                 strict=True,
             )
             if selected and value is not None
+        )
+
+    @property
+    def selected_reference_log_probs(self) -> tuple[float, ...] | None:
+        if self.reference_log_probs is None:
+            return None
+        return tuple(
+            float(value)
+            for value, selected, role in zip(
+                self.reference_log_probs,
+                self.loss_mask,
+                self.token_roles,
+                strict=True,
+            )
+            if selected and role == "reasoning" and value is not None
         )
 
 
@@ -318,7 +350,7 @@ class PolicyDecision:
         if self.planner_trace is not None:
             if self.token_trace is None:
                 raise ValueError("planner decision requires a token trace")
-            planner_probs = self.planner_trace.planner_action_log_probs
+            planner_probs = self.planner_trace.behavior_action_log_probs
             if len(planner_probs) != len(action_log_probs) or any(
                 not math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-7)
                 for actual, expected in zip(
@@ -443,6 +475,12 @@ class PolicyReplayInput:
         assert self.old_action_log_prob is not None
         return (float(self.old_action_log_prob),)
 
+    @property
+    def selected_reference_log_probs(self) -> tuple[float, ...] | None:
+        if self.token_trace is None:
+            return None
+        return self.token_trace.selected_reference_log_probs
+
 
 @dataclass(frozen=True)
 class PolicyReplayOutput:
@@ -452,6 +490,7 @@ class PolicyReplayOutput:
     entropies: torch.Tensor
     token_values: torch.Tensor | None = None
     action_log_probs: torch.Tensor | None = None
+    selected_full_log_probs: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.selected_log_probs.ndim != 1 or self.entropies.ndim != 1:
@@ -468,6 +507,9 @@ class PolicyReplayOutput:
         if self.action_log_probs is not None:
             if self.action_log_probs.ndim != 2:
                 raise ValueError("replayed action log-probs must have shape (B,A)")
+        if self.selected_full_log_probs is not None:
+            if self.selected_full_log_probs.ndim != 1:
+                raise ValueError("full-vocabulary log-probs must have shape (R,)")
 
 
 class ActionLogProbReplay(Protocol):

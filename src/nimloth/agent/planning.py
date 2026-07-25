@@ -1,9 +1,8 @@
-"""Use a real vLLM CoT state for exhaustive latent World Model planning."""
+"""Use a real vLLM CoT state for greedy latent World Model planning."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Any, Protocol
 
 import torch
@@ -29,11 +28,11 @@ class VLLMTurnStatePolicy(Protocol):
 
 @dataclass(frozen=True)
 class WorldModelPlan:
-    """一次搜索保留的候选序列以及每个根动作的最终 score。"""
+    """一次 greedy 搜索的唯一候选及逐深度 action-value 证据。"""
 
     candidate_sequences: torch.Tensor
     candidate_scores: torch.Tensor
-    root_action_scores: torch.Tensor
+    greedy_step_action_values: torch.Tensor
 
 
 class WorldModelPlanner:
@@ -52,8 +51,8 @@ class WorldModelPlanner:
     ) -> None:
         if horizon < 1:
             raise ValueError(f"planning horizon must be positive, got {horizon}")
-        if search_mode != "exhaustive":
-            raise ValueError("Qwen planner distillation requires exhaustive search")
+        if search_mode != "greedy":
+            raise ValueError("Qwen planner distillation requires greedy search")
         self.world_model = world_model
         self.horizon = int(horizon)
         self.search_mode = search_mode
@@ -78,74 +77,48 @@ class WorldModelPlanner:
                 f"got {tuple(previous_actions.shape)}, expected {expected_actions}"
             )
 
-        current_state = state_history[:, -1]
-        action_values = self.world_model.predict_action_values(current_state)
-        if action_values.ndim != 2 or action_values.shape[0] != 1:
-            raise ValueError(
-                "value head must return one action row for online planning, "
-                f"got {tuple(action_values.shape)}"
-            )
-        action_count = action_values.shape[-1]
-        actions = torch.arange(
-            action_count,
-            device=state_history.device,
-            dtype=torch.long,
-        )
         sequences = torch.empty(
             (1, 0),
             device=state_history.device,
             dtype=torch.long,
         )
+        decision_state = state_history[:, -1]
+        step_action_values: list[torch.Tensor] = []
 
         for _depth in range(self.horizon):
-            parent_count = sequences.shape[0]
-            expanded_sequences = torch.cat(
-                (
-                    sequences.repeat_interleave(action_count, dim=0),
-                    actions.repeat(parent_count).unsqueeze(1),
-                ),
-                dim=1,
-            )
-            # 每一层都从相同的真实 history 重放完整候选序列。
-            candidate_count = expanded_sequences.shape[0]
-            candidate_states = state_history.expand(
-                candidate_count,
-                *state_history.shape[1:],
-            )
-            candidate_previous_actions = previous_actions.expand(
-                candidate_count,
-                -1,
-            )
+            action_values = self.world_model.predict_action_values(decision_state)
+            if action_values.ndim != 2 or action_values.shape[0] != 1:
+                raise ValueError(
+                    "value head must return one action row for online planning, "
+                    f"got {tuple(action_values.shape)}"
+                )
+            if not torch.isfinite(action_values).all():
+                raise ValueError("planning produced non-finite action values")
+            step_action_values.append(action_values.squeeze(0))
+            chosen_action = action_values.argmax(dim=-1, keepdim=True)
+            sequences = torch.cat((sequences, chosen_action), dim=1)
+
+            # 每一层都从相同的真实 history 重放当前唯一的 greedy 前缀。
             predicted_states = self.world_model.simulate_action_sequences(
-                candidate_states,
-                candidate_previous_actions,
-                expanded_sequences,
+                state_history,
+                previous_actions,
+                sequences,
             )
-            leaf_states = predicted_states[:, -1]
-            leaf_action_values = self.world_model.predict_action_values(leaf_states)
-            expanded_scores = leaf_action_values.max(dim=-1).values
-            if not torch.isfinite(expanded_scores).all():
-                raise ValueError("planning produced non-finite leaf action values")
+            decision_state = predicted_states[:, -1]
 
-            # Correctness path: retain every A**horizon sequence.  A future
-            # approximate search mode must define a new auditable policy.
-            scores = expanded_scores
-            sequences = expanded_sequences
-
-        root_scores = torch.full(
-            (action_count,),
-            float("-inf"),
-            device=state_history.device,
-            dtype=scores.dtype,
-        )
-        for action_index in range(action_count):
-            action_scores = scores[sequences[:, 0] == action_index]
-            if action_scores.numel() > 0:
-                root_scores[action_index] = action_scores.max()
+        leaf_action_values = self.world_model.predict_action_values(decision_state)
+        if leaf_action_values.ndim != 2 or leaf_action_values.shape[0] != 1:
+            raise ValueError(
+                "value head must return one leaf action row for online planning, "
+                f"got {tuple(leaf_action_values.shape)}"
+            )
+        scores = leaf_action_values.max(dim=-1).values
+        if not torch.isfinite(scores).all():
+            raise ValueError("planning produced a non-finite candidate score")
         return WorldModelPlan(
             candidate_sequences=sequences,
             candidate_scores=scores,
-            root_action_scores=root_scores,
+            greedy_step_action_values=torch.stack(step_action_values, dim=0),
         )
 
 
@@ -162,13 +135,10 @@ class PlanningPolicy:
         world_model: WorldModel,
         horizon: int,
         search_mode: str,
-        teacher_temperature: float,
         planner_device: torch.device,
     ) -> None:
         if turn_policy.credit_assignment != "token":
             raise ValueError("planner policy requires token-level Qwen CoT credit")
-        if teacher_temperature <= 0.0 or not math.isfinite(teacher_temperature):
-            raise ValueError("planner teacher_temperature must be positive")
         self.turn_policy = turn_policy
         self.world_model = world_model
         self.planner = WorldModelPlanner(
@@ -176,7 +146,6 @@ class PlanningPolicy:
             horizon=horizon,
             search_mode=search_mode,
         )
-        self.teacher_temperature = float(teacher_temperature)
         self.planner_device = planner_device
         predictor = world_model.wm_predictor
         predictor_config = getattr(predictor, "config", None)
@@ -223,13 +192,15 @@ class PlanningPolicy:
                 device=state.device,
             )
             plan = self.planner.plan(state_history, previous_actions)
-            planner_log_probs = torch.log_softmax(
-                plan.root_action_scores / self.teacher_temperature,
-                dim=-1,
+            action_index = int(plan.candidate_sequences[0, 0].item())
+            action_count = plan.greedy_step_action_values.shape[-1]
+            behavior_log_probs = torch.full(
+                (action_count,),
+                float("-inf"),
+                dtype=plan.greedy_step_action_values.dtype,
+                device=plan.greedy_step_action_values.device,
             )
-            action_index = int(
-                torch.multinomial(planner_log_probs.exp(), 1).item()
-            )
+            behavior_log_probs[action_index] = 0.0
 
         qwen_log_probs = torch.log_softmax(
             generated.policy_state.action_logits,
@@ -267,19 +238,23 @@ class PlanningPolicy:
             candidate_scores=tuple(
                 float(value) for value in plan.candidate_scores.cpu().tolist()
             ),
-            root_action_scores=tuple(
-                float(value) for value in plan.root_action_scores.cpu().tolist()
+            greedy_step_action_values=tuple(
+                tuple(float(value) for value in row)
+                for row in plan.greedy_step_action_values.cpu().tolist()
             ),
-            planner_action_log_probs=tuple(
-                float(value) for value in planner_log_probs.cpu().tolist()
+            teacher_action_log_probs=tuple(
+                float(value) for value in behavior_log_probs.cpu().tolist()
+            ),
+            behavior_action_log_probs=tuple(
+                float(value) for value in behavior_log_probs.cpu().tolist()
             ),
             horizon=self.planner.horizon,
-            teacher_temperature=self.teacher_temperature,
+            search_mode=self.planner.search_mode,
         )
         self._action_history.append(action_index)
         return PolicyDecision(
             action_index=action_index,
-            action_log_probs=planner_trace.planner_action_log_probs,
+            action_log_probs=planner_trace.behavior_action_log_probs,
             response=response,
             token_trace=PolicyTokenTrace(
                 token_ids=tuple(new_token_ids),

@@ -187,12 +187,17 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   hidden，不加载第二份HF Qwen。多步候选搜索随后全部发生在WM latent空间。
 - planner 当前用叶节点最大 action-value 作为搜索启发式；模型尚无 reward/done
   head，因此不会把中间 Q-value 相加并伪装成 model-predicted return。
-- planner action从`softmax(root_scores/teacher_temperature)`采样；trajectory保存Qwen
-  raw八动作分布、planner八动作分布和完整候选分数。训练时action token不参加PPO，
-  Qwen action head拟合planner分布；真实Qwen reasoning token继续做token-level PPO。
-- 当前planner distillation只允许`search_mode=exhaustive`；`planning.horizon=2`时完整
-  保存8²=64条候选。temperature、planner device、distillation weight和token credit
-  参数都必须显式配置，缺失时在模型/GPU启动前失败。
+- planner当前只允许`search_mode=greedy`。每个预测state都选择ValueHead最高动作，
+  因此`planning.horizon=2`仍只产生一条两动作候选；trajectory额外保存两个深度各自的
+  完整action-value行，验证器据此重建并核对greedy选择。
+- planner behavior和teacher都是首动作上的确定性分布，不需要teacher temperature。
+  action token不参加PPO或reference KL；Qwen action head以显式
+  `actor.planner_distillation_weight`拟合该动作。
+- reference KL是actor loss，不改变environment reward、return、advantage或value
+  target。冻结reference在独立重放阶段只为采样CoT token写入log-prob；manifest绑定
+  reference checkpoint指纹。reward KL尚未实现，任何对应配置会被严格schema拒绝。
+- `actor.max_response_tokens`限制完整CoT+协议+action response；实现先扣除协议开销再得到
+  reasoning预算。当前VAGEN对齐实验使用512，而不是把512误写成reasoning-only上限。
 - 在线 planning 必须从完整 RL resume 或显式 WM、StateProjector、ValueHead
   checkpoint 启动；随机初始化的 planner 不允许控制真实 environment。
 - SFT2 和 RL 对 `history_size` 使用相同的 LeWM 语义，warm-start checkpoint

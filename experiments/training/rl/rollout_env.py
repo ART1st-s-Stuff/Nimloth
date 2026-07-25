@@ -45,7 +45,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("action", "turn", "token"),
         default="action",
     )
-    ap.add_argument("--max-reasoning-tokens", type=int, default=64)
+    ap.add_argument("--max-response-tokens", type=int, default=64)
     ap.add_argument("--attn-implementation", default="sdpa")
     ap.add_argument("--max-pixels", type=int, default=3136)
     ap.add_argument("--backend", choices=("hf", "vllm"), default="hf")
@@ -62,10 +62,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--planning-horizon", type=int, default=None)
     ap.add_argument(
         "--planning-search-mode",
-        choices=("exhaustive",),
+        choices=("greedy",),
         default=None,
     )
-    ap.add_argument("--planner-teacher-temperature", type=float, default=None)
     ap.add_argument("--planner-device", default=None)
     ap.add_argument("--wm-checkpoint", type=Path, default=None)
     ap.add_argument("--state-proj-checkpoint", type=Path, default=None)
@@ -152,7 +151,6 @@ def main(argv: list[str] | None = None) -> int:
             for name, value in (
                 ("planning_horizon", args.planning_horizon),
                 ("planning_search_mode", args.planning_search_mode),
-                ("planner_teacher_temperature", args.planner_teacher_temperature),
                 ("planner_device", args.planner_device),
                 ("wm_checkpoint", args.wm_checkpoint),
                 ("state_proj_checkpoint", args.state_proj_checkpoint),
@@ -172,17 +170,11 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("planner rollout requires --vllm-enforce-eager")
         if args.planning_horizon is not None and args.planning_horizon < 1:
             raise ValueError("planning_horizon must be positive")
-        if (
-            args.planner_teacher_temperature is not None
-            and args.planner_teacher_temperature <= 0.0
-        ):
-            raise ValueError("planner_teacher_temperature must be positive")
     elif any(
         value is not None
         for value in (
             args.planning_horizon,
             args.planning_search_mode,
-            args.planner_teacher_temperature,
             args.planner_device,
             args.wm_checkpoint,
             args.state_proj_checkpoint,
@@ -225,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
             gpu_memory_utilization=args.gpu_memory_utilization,
             latent_token_count=latent_token_count,
             credit_assignment=args.credit_assignment,
-            max_reasoning_tokens=args.max_reasoning_tokens,
+            max_response_tokens=args.max_response_tokens,
             distributed_executor_backend=args.vllm_distributed_executor_backend,
             enforce_eager=args.vllm_enforce_eager,
             capture_policy_state=args.planner_enabled,
@@ -253,13 +245,11 @@ def main(argv: list[str] | None = None) -> int:
             )
             assert args.planning_horizon is not None
             assert args.planning_search_mode is not None
-            assert args.planner_teacher_temperature is not None
             policy = PlanningPolicy(
                 turn_policy=policy,
                 world_model=world_model,
                 horizon=args.planning_horizon,
                 search_mode=args.planning_search_mode,
-                teacher_temperature=args.planner_teacher_temperature,
                 planner_device=planner_device,
             )
     else:

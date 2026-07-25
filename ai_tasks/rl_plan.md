@@ -4,11 +4,12 @@
 Qwen action policy 和 CoT credit assignment 的讨论结果。本文是设计与实施计划，
 不是已完成实现的声明；实际实验参数仍以经过人类逐项确认的配置为准。
 
-> 2026-07-25 修订：人类已撤销下文 H=2 exhaustive 64 条候选的实验方案，要求先做
-> greedy。下文 exhaustive 内容只保留为历史设计背景，不再是当前启动配置。greedy 的
-> root support、continuation 和 deterministic behavior/soft teacher 边界仍待明确，禁止
-> 在确认前把旧实现改名为 greedy。当前另已确认使用 Slurm、目标约 8 张物理 GPU、
-> `rl.gamma=1.0`，Qwen 训练参数以真实 VAGEN 源 run 的 resolved config 为准。
+> 2026-07-25 最终确认：当前`planning.horizon=2`的`greedy`定义为逐深度只取
+> ValueHead最高动作，因此整次planning只有1条两动作候选；执行首动作。behavior和
+> distillation teacher均为该首动作上的确定性分布，不再使用teacher temperature。
+> `actor.planner_distillation_weight=1.0`。Qwen真实采样CoT使用token PPO，并加入冻结
+> reference的actor-side `low_var_kl × 0.001`；planner action不参加PPO或KL。reward KL
+> 尚未实现，不加入本次方案。WM训练、DINO关闭、`rl.gamma=1.0`。
 
 ## 1. 已确认的约束
 

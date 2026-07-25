@@ -7,6 +7,7 @@ source "${REPO}/experiments/training/rl/slurm_allocation.sh"
 ENV_REPO=${ENV_REPO:?set ENV_REPO to the verified VAGEN worktree}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
 MODEL=${MODEL:?set MODEL to a complete positive-k inject HF checkpoint}
+REFERENCE_MODEL=${REFERENCE_MODEL:-${MODEL}}
 WM_CKPT=${WM_CKPT:-${MODEL}}
 RL_CONFIG=${RL_CONFIG:-${REPO}/configs/training/rl/e2e_smoke_h4.yaml}
 RUN_OUT=${RUN_OUT:?set a new exclusive output directory}
@@ -20,16 +21,17 @@ VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-}
 PIPELINE_PHASE=${PIPELINE_PHASE:-all}
 
 case "${PIPELINE_PHASE}" in
-  all) RUN_ROLLOUT=true; RUN_TRAIN=true ;;
-  rollout) RUN_ROLLOUT=true; RUN_TRAIN=false ;;
-  train) RUN_ROLLOUT=false; RUN_TRAIN=true ;;
-  *) echo "PIPELINE_PHASE must be all, rollout, or train" >&2; exit 1 ;;
+  all) RUN_ROLLOUT=true; RUN_REFERENCE=true; RUN_TRAIN=true ;;
+  rollout) RUN_ROLLOUT=true; RUN_REFERENCE=false; RUN_TRAIN=false ;;
+  reference) RUN_ROLLOUT=false; RUN_REFERENCE=true; RUN_TRAIN=false ;;
+  train) RUN_ROLLOUT=false; RUN_REFERENCE=false; RUN_TRAIN=true ;;
+  *) echo "PIPELINE_PHASE must be all, rollout, reference, or train" >&2; exit 1 ;;
 esac
 
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE CREDIT_ASSIGNMENT MAX_REASONING_TOKENS PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNER_TEACHER_TEMPERATURE PLANNER_DEVICE < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE CREDIT_ASSIGNMENT MAX_RESPONSE_TOKENS REFERENCE_KL_WEIGHT PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNER_DEVICE < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -42,15 +44,21 @@ print(
     config.distributed.total_gpus,
     config.distributed.rollout_tensor_parallel_size,
     config.actor.credit_assignment,
-    config.actor.max_reasoning_tokens,
+    config.actor.max_response_tokens,
+    config.actor.reference_kl_loss_weight,
     str(config.agent.planning.enabled).lower(),
     config.agent.planning.horizon,
     config.agent.planning.search_mode,
-    config.agent.planning.teacher_temperature,
     config.agent.planning.device,
 )
 ' "${RL_CONFIG}"
 )
+if [[ "${REFERENCE_KL_WEIGHT}" != 0.0 ]]; then
+  [[ -f "${REFERENCE_MODEL}/config.json" ]] || {
+    echo "missing reference model: ${REFERENCE_MODEL}" >&2
+    exit 1
+  }
+fi
 TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-${CONFIG_TP_SIZE}}
 TRAIN_NNODES=${TRAIN_NNODES:-${CONFIG_NODES}}
 TRAIN_WORLD_SIZE=${TRAIN_WORLD_SIZE:-${CONFIG_WORLD_SIZE}}
@@ -220,10 +228,6 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
       echo "missing agent.planning.search_mode" >&2
       exit 1
     }
-    [[ "${PLANNER_TEACHER_TEMPERATURE}" != None ]] || {
-      echo "missing agent.planning.teacher_temperature" >&2
-      exit 1
-    }
     [[ "${PLANNER_DEVICE}" != None ]] || {
       echo "missing agent.planning.device" >&2
       exit 1
@@ -232,7 +236,6 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
       --planner-enabled
       --planning-horizon "${PLANNING_HORIZON}"
       --planning-search-mode "${PLANNING_SEARCH_MODE}"
-      --planner-teacher-temperature "${PLANNER_TEACHER_TEMPERATURE}"
       --planner-device "${PLANNER_DEVICE}"
       --wm-checkpoint "${WM_CKPT}/wm_predictor"
       --state-proj-checkpoint "${WM_CKPT}/state_proj.pt"
@@ -253,16 +256,31 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
     --eval-set base_train --split train --seed-offset 1 \
     --temperature 0.7 --top-p 0.95 --max-pixels 3136 \
     --credit-assignment "${CREDIT_ASSIGNMENT}" \
-    --max-reasoning-tokens "${MAX_REASONING_TOKENS}" \
+    --max-response-tokens "${MAX_RESPONSE_TOKENS}" \
     --vllm-enforce-eager \
     2>&1 | tee -a "${LOG}"
   cleanup_env
 fi
-if [[ "${PIPELINE_PHASE}" == all && "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" == ray ]]; then
+if [[ "${RUN_REFERENCE}" == true && "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" == ray ]]; then
   [[ -n "${SLURM_JOB_ID:-}" ]] || { echo "Ray cleanup requires SLURM_JOB_ID" >&2; exit 1; }
   srun --jobid="${SLURM_JOB_ID}" --overlap --nodes="${TRAIN_NNODES}" \
     --ntasks="${TRAIN_NNODES}" --ntasks-per-node=1 --gpus=0 \
     timeout 20s "${PYTHON}" -m ray.scripts.scripts stop --force \
+    2>&1 | tee -a "${LOG}"
+fi
+
+if [[ "${RUN_REFERENCE}" == true ]]; then
+  [[ "${REFERENCE_KL_WEIGHT}" != 0.0 ]] || {
+    echo "reference phase requires positive actor.reference_kl_loss_weight" >&2
+    exit 1
+  }
+  export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
+  "${PYTHON}" -m nimloth.training.rl.reference_replay \
+    --manifest "${MANIFEST}" \
+    --reference-model "${REFERENCE_MODEL}" \
+    --output-dir "${RUN_OUT}/reference" \
+    --model-parallel-size "${TRAIN_GPUS_PER_RANK}" \
+    --attn-implementation sdpa --max-pixels 3136 \
     2>&1 | tee -a "${LOG}"
 fi
 
@@ -284,6 +302,9 @@ TRAIN_ARGS=(
   --experiment-name "${WANDB_RUN_NAME_REQUESTED}" \
   --output-dir "${TRAIN_OUT}"
 )
+if [[ "${REFERENCE_KL_WEIGHT}" != 0.0 ]]; then
+  TRAIN_ARGS+=(--reference-model "${REFERENCE_MODEL}")
+fi
 if (( TRAIN_NNODES == 1 )); then
   "${PYTHON}" -m torch.distributed.run --nproc_per_node="${TRAIN_WORLD_SIZE}" -- \
     "${TRAIN_ARGS[@]}" 2>&1 | tee -a "${LOG}"

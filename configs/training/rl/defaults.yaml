@@ -26,7 +26,7 @@ actor:
   clip_ratio: 0.2
   # action: only sampled action token; turn: sampled CoT and action share step credit.
   credit_assignment: action
-  max_reasoning_tokens: 64
+  max_response_tokens: 64
 
 # --- Predictor ---
 predictor:

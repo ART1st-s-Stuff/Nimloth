@@ -54,22 +54,22 @@ class QwenVLLMAgentPolicy:
         top_p: float,
         latent_token_count: int = 1,
         credit_assignment: Literal["action", "turn", "token"] = "action",
-        max_reasoning_tokens: int = 64,
+        max_response_tokens: int = 64,
         capture_policy_state: bool = False,
     ) -> None:
         if credit_assignment not in {"action", "turn", "token"}:
             raise ValueError(
                 f"unsupported PPO credit assignment: {credit_assignment!r}"
             )
-        if max_reasoning_tokens < 1:
-            raise ValueError("max_reasoning_tokens must be positive")
+        if max_response_tokens < 1:
+            raise ValueError("max_response_tokens must be positive")
         self.engine = engine
         self.processor = processor
         self.temperature = float(temperature)
         self.top_p = float(top_p)
         self.latent_token_count = int(latent_token_count)
         self.credit_assignment = credit_assignment
-        self.max_reasoning_tokens = int(max_reasoning_tokens)
+        self.max_response_tokens = int(max_response_tokens)
         self.capture_policy_state = bool(capture_policy_state)
         if self.capture_policy_state and credit_assignment not in {"turn", "token"}:
             raise ValueError("policy-state capture requires turn or token credit")
@@ -99,7 +99,7 @@ class QwenVLLMAgentPolicy:
         gpu_memory_utilization: float,
         latent_token_count: int,
         credit_assignment: Literal["action", "turn", "token"] = "action",
-        max_reasoning_tokens: int = 64,
+        max_response_tokens: int = 64,
         distributed_executor_backend: str | None = None,
         enforce_eager: bool = False,
         capture_policy_state: bool = False,
@@ -142,7 +142,7 @@ class QwenVLLMAgentPolicy:
             top_p=top_p,
             latent_token_count=latent_token_count,
             credit_assignment=credit_assignment,
-            max_reasoning_tokens=max_reasoning_tokens,
+            max_response_tokens=max_response_tokens,
             capture_policy_state=capture_policy_state,
         )
 
@@ -309,13 +309,20 @@ class QwenVLLMAgentPolicy:
             tokens.action_start,
         )
         injected_ids = tuple(self.token_id_map[token] for token in injected_tokens)
+        protocol_overhead = len(close_ids) + len(injected_ids) + 2
+        max_reasoning_tokens = self.max_response_tokens - protocol_overhead
+        if max_reasoning_tokens < 1:
+            raise ValueError(
+                "max_response_tokens is too small for the turn protocol: "
+                f"{self.max_response_tokens} <= {protocol_overhead}"
+            )
         spec = TurnGenerationSpec(
             close_token_ids=close_ids,
             injected_token_ids=injected_ids,
             action_token_ids=self.action_token_ids,
             action_end_token_id=self.token_id_map[tokens.action_end],
             protocol_token_ids=tuple(self.token_id_map.values()),
-            max_reasoning_tokens=self.max_reasoning_tokens,
+            max_reasoning_tokens=max_reasoning_tokens,
         )
         params = SamplingParams(
             temperature=self.temperature,
@@ -368,13 +375,13 @@ class QwenVLLMAgentPolicy:
                 for index in range(len(self.action_token_ids))
             )
 
-        reasoning_truncated = close_end > self.max_reasoning_tokens
+        reasoning_truncated = close_end > spec.max_reasoning_tokens
         token_roles: list[Literal["reasoning", "action", "injected"]] = []
         loss_mask: list[bool] = []
         old_log_probs: list[float | None] = []
         for index, token_id in enumerate(continuation_ids):
             if index < close_end:
-                sampled = index < self.max_reasoning_tokens
+                sampled = index < spec.max_reasoning_tokens
                 role: Literal["reasoning", "action", "injected"] = (
                     "reasoning" if sampled else "injected"
                 )

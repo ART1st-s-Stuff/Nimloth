@@ -251,7 +251,7 @@ def test_token_credit_replay_captures_only_selected_hidden_states() -> None:
 
     assert output.token_values.shape == (2,)
     output.token_values.sum().backward()
-    assert model.scale.grad is not None
+    assert model.scale.grad is None
     assert all(parameter.grad is not None for parameter in token_value_head.parameters())
 
 
@@ -293,12 +293,32 @@ def test_planner_replay_returns_raw_action_distribution_without_action_ppo() -> 
         ),
         planner_trace=PlannerPolicyTrace(
             qwen_action_log_probs=uniform,
-            candidate_sequences=tuple((index,) for index in range(8)),
-            candidate_scores=tuple([0.0] * 8),
-            root_action_scores=tuple([0.0] * 8),
-            planner_action_log_probs=uniform,
+            candidate_sequences=((2,),),
+            candidate_scores=(0.0,),
+            greedy_step_action_values=((0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0),),
+            teacher_action_log_probs=(
+                float("-inf"),
+                float("-inf"),
+                0.0,
+                float("-inf"),
+                float("-inf"),
+                float("-inf"),
+                float("-inf"),
+                float("-inf"),
+            ),
+            behavior_action_log_probs=(
+                float("-inf"),
+                float("-inf"),
+                0.0,
+                float("-inf"),
+                float("-inf"),
+                float("-inf"),
+                float("-inf"),
+                float("-inf"),
+                float("-inf"),
+            ),
             horizon=1,
-            teacher_temperature=1.0,
+            search_mode="greedy",
         ),
     )
     model = _TokenModel()
@@ -317,6 +337,7 @@ def test_planner_replay_returns_raw_action_distribution_without_action_ppo() -> 
     assert output.selected_log_probs.shape == (1,)
     assert output.token_values.shape == (1,)
     assert output.action_log_probs.shape == (1, 8)
+    assert output.selected_full_log_probs.shape == (1,)
     assert torch.allclose(
         output.action_log_probs,
         torch.full((1, 8), -math.log(8.0)),

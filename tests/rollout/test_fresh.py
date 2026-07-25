@@ -90,3 +90,38 @@ def test_fresh_manifest_binds_planner_modules(tmp_path: Path) -> None:
     (planner / "predictor.pt").write_bytes(b"changed")
     with pytest.raises(ValueError, match="planner fingerprint mismatch"):
         collector.validate_policy()
+
+
+def test_fresh_manifest_binds_frozen_reference_and_enriched_jsonl(
+    tmp_path: Path,
+) -> None:
+    model = _policy_artifact(tmp_path / "model")
+    reference = _policy_artifact(tmp_path / "reference", payload=b"reference")
+    behavior = tmp_path / "behavior.jsonl"
+    enriched = tmp_path / "enriched.jsonl"
+    _trajectory_jsonl(behavior)
+    _trajectory_jsonl(enriched)
+    manifest_path = tmp_path / "fresh.json"
+    manifest = FreshRolloutManifest.create(
+        policy_path=model,
+        trajectory_path=behavior,
+        num_trajectories=1,
+    ).with_reference(
+        reference_policy_path=reference,
+        trajectory_path=enriched,
+    )
+    manifest.write(manifest_path)
+
+    restored = FreshRolloutManifest.read(manifest_path)
+    assert restored.format_version == 3
+    assert restored.trajectory_path == str(enriched.resolve())
+    assert restored.behavior_trajectory_path == str(behavior.resolve())
+    collector = FreshJSONLRolloutCollector(
+        manifest_path,
+        model_path=model,
+        reference_model_path=reference,
+    )
+    collector.validate_policy()
+    (reference / "model.safetensors").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="reference fingerprint mismatch"):
+        collector.validate_policy()

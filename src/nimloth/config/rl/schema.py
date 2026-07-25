@@ -56,8 +56,10 @@ class ActorConfig:
     entropy_coeff: float = 0.0
     clip_ratio: float = 0.2
     credit_assignment: str = "action"
-    max_reasoning_tokens: int = 64
+    max_response_tokens: int = 64
     planner_distillation_weight: float | None = None
+    reference_kl_loss_weight: float = 0.0
+    reference_kl_loss_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,7 @@ class GradientConfig:
 
     representation_to_backbone: bool = True
     backbone_lr: float = 1e-6
+    backbone_weight_decay: float = 1e-4
 
 
 @dataclass(frozen=True)
@@ -195,8 +198,10 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "entropy_coeff",
             "clip_ratio",
             "credit_assignment",
-            "max_reasoning_tokens",
+            "max_response_tokens",
             "planner_distillation_weight",
+            "reference_kl_loss_weight",
+            "reference_kl_loss_type",
         },
     )
     token_credit = _section(
@@ -208,7 +213,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     gradient = _section(
         raw,
         "gradient",
-        {"representation_to_backbone", "backbone_lr"},
+        {"representation_to_backbone", "backbone_lr", "backbone_weight_decay"},
     )
     predictor = _section(
         raw,
@@ -294,9 +299,9 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         ),
         clip_ratio=float(actor.get("clip_ratio", 0.2)),
         credit_assignment=str(actor.get("credit_assignment", "action")),
-        max_reasoning_tokens=_positive_int(
-            actor.get("max_reasoning_tokens", 64),
-            "actor.max_reasoning_tokens",
+        max_response_tokens=_positive_int(
+            actor.get("max_response_tokens", 64),
+            "actor.max_response_tokens",
         ),
         planner_distillation_weight=(
             _positive_float(
@@ -306,11 +311,33 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             if "planner_distillation_weight" in actor
             else None
         ),
+        reference_kl_loss_weight=_positive_float(
+            actor.get("reference_kl_loss_weight", 0.0),
+            "actor.reference_kl_loss_weight",
+            allow_zero=True,
+        ),
+        reference_kl_loss_type=(
+            str(actor["reference_kl_loss_type"])
+            if "reference_kl_loss_type" in actor
+            else None
+        ),
     )
     if not 0.0 < actor_config.clip_ratio < 1.0:
         raise ValueError("actor.clip_ratio must be in (0, 1)")
     if actor_config.credit_assignment not in {"action", "turn", "token"}:
         raise ValueError("actor.credit_assignment must be action, turn, or token")
+    if actor_config.reference_kl_loss_weight > 0.0:
+        if actor_config.reference_kl_loss_type != "low_var_kl":
+            raise ValueError(
+                "positive actor.reference_kl_loss_weight requires "
+                "actor.reference_kl_loss_type=low_var_kl"
+            )
+        if actor_config.credit_assignment != "token":
+            raise ValueError("reference KL loss currently requires token credit")
+    elif actor_config.reference_kl_loss_type is not None:
+        raise ValueError(
+            "actor.reference_kl_loss_type must be omitted when KL weight is zero"
+        )
 
     token_credit_config = TokenCreditConfig(
         gamma=(
@@ -386,18 +413,13 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             raise ValueError(
                 "planner distillation requires actor.credit_assignment=token"
             )
-        if agent_config.planning.search_mode != "exhaustive":
+        if agent_config.planning.search_mode != "greedy":
             raise ValueError(
-                "planner distillation requires agent.planning.search_mode=exhaustive"
+                "planner distillation requires agent.planning.search_mode=greedy"
             )
         if "beam_width" in raw_planning:
             raise ValueError(
-                "agent.planning.beam_width must be omitted for exhaustive search"
-            )
-        if agent_config.planning.teacher_temperature is None:
-            raise ValueError(
-                "planner distillation requires explicit "
-                "agent.planning.teacher_temperature"
+                "agent.planning.beam_width must be omitted for greedy search"
             )
         if agent_config.planning.device is None:
             raise ValueError(
@@ -414,6 +436,11 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             )
 
     rollout_config = parse_rollout_config(raw.get("rollout"))
+    if (
+        actor_config.reference_kl_loss_weight > 0.0
+        and rollout_config.temperature <= 0.0
+    ):
+        raise ValueError("reference KL loss requires positive rollout.temperature")
     checkpoint_metric = str(
         validation.get("checkpoint_metric", "success_rate")
     )
@@ -466,6 +493,11 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             backbone_lr=_positive_float(
                 gradient.get("backbone_lr", 1e-6),
                 "gradient.backbone_lr",
+            ),
+            backbone_weight_decay=_positive_float(
+                gradient.get("backbone_weight_decay", 1e-4),
+                "gradient.backbone_weight_decay",
+                allow_zero=True,
             ),
         ),
         predictor=PredictorConfig(

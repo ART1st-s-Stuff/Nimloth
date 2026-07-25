@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import torch
+import pytest
 
 from nimloth.agent import (
     Agent,
@@ -122,6 +123,22 @@ class _TokenReplay(torch.nn.Module):
             selected_log_probs=self.log_probs,
             entropies=torch.ones_like(self.log_probs),
             token_values=self.token_values,
+        )
+
+
+class _ReferenceTokenReplay(_TokenReplay):
+    def __init__(self, token_count: int, reasoning_count: int) -> None:
+        super().__init__(token_count)
+        self.full_log_probs = torch.nn.Parameter(
+            torch.full((reasoning_count,), -0.2)
+        )
+
+    def forward(self, _samples) -> PolicyReplayOutput:
+        return PolicyReplayOutput(
+            selected_log_probs=self.log_probs,
+            entropies=torch.ones_like(self.log_probs),
+            token_values=self.token_values,
+            selected_full_log_probs=self.full_log_probs,
         )
 
 
@@ -433,6 +450,7 @@ def test_grid_rl_uses_ema_targets_and_mean_pooled_sigreg_without_dino_loss() -> 
         "policy",
         "token_value",
         "action_distillation",
+        "reference_kl",
     }
     assert output.losses["wm"] is not None
     assert output.losses["value"] is not None
@@ -503,3 +521,48 @@ def test_token_credit_trains_policy_and_token_critic_separately() -> None:
     assert output.losses["token_value"] is not None
     assert token_replay.log_probs.grad is not None
     assert token_replay.token_values.grad is not None
+
+
+def test_reference_kl_is_actor_loss_only_and_uses_reasoning_tokens() -> None:
+    trajectory = _trajectory("token-reference", 2)
+    trajectory.policy_credit_assignment = "token"
+    trajectory.rewards = [0.0, 1.0]
+    trajectory.reward = 1.0
+    trajectory.terminated = True
+    trajectory.policy_reference_token_log_probs = [
+        [-0.4, None, None],
+        [-0.4, None, None],
+    ]
+    windows = sample_trajectory_windows(
+        [trajectory],
+        history_size=2,
+        batch_size=1,
+        seed=1,
+    )
+    batch = build_rl_batch(windows, gamma=1.0, device=torch.device("cpu"))
+    token_replay = _ReferenceTokenReplay(token_count=4, reasoning_count=2)
+    _, base_runtime, *_ = _algorithm()
+    runtime = replace(base_runtime, policy_replay=token_replay)
+    algorithm = RLAlgorithm(
+        history_size=2,
+        sigreg=None,
+        sigreg_weight=0.0,
+        value_rank_margin=0.1,
+        value_rank_weight=0.0,
+        ppo_clip_ratio=0.2,
+        entropy_weight=0.0,
+        credit_assignment="token",
+        token_gamma=1.0,
+        token_gae_lambda=1.0,
+        token_value_loss_weight=1.0,
+        reference_kl_loss_weight=0.001,
+        reference_kl_loss_type="low_var_kl",
+    )
+
+    output = algorithm.training_step(runtime, batch)
+    output.loss.backward()
+
+    expected = math.exp(-0.2) + 0.2 - 1.0
+    assert output.metrics["reference_kl_loss"] == pytest.approx(expected)
+    assert output.losses["reference_kl"] is not None
+    assert token_replay.full_log_probs.grad is not None

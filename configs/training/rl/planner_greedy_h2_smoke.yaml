@@ -1,45 +1,59 @@
-# H=4 end-to-end RL feasibility smoke for a compatible SFT2 checkpoint.
+# H=2 single-candidate greedy planner distillation smoke.
 
 agent:
   prompt_template: nimloth-latent-action
   planning:
-    enabled: false
-    horizon: 4
-    beam_width: 8
+    enabled: true
+    horizon: 2
+    search_mode: greedy
+    device: cuda:0
 
 freeze:
   state_proj: true
 
 gradient:
-  representation_to_backbone: true
+  representation_to_backbone: false
   backbone_lr: 0.000001
+  backbone_weight_decay: 0.01
 
 actor:
   enabled: true
   entropy_coeff: 0.01
   clip_ratio: 0.2
-  credit_assignment: turn
-  max_response_tokens: 32
+  credit_assignment: token
+  max_response_tokens: 512
+  planner_distillation_weight: 1.0
+  reference_kl_loss_weight: 0.001
+  reference_kl_loss_type: low_var_kl
+
+token_credit:
+  gamma: 1.0
+  gae_lambda: 1.0
+  value_lr: 0.00001
+  value_loss_weight: 1.0
+  hidden_dim: 1024
 
 predictor:
   lr: 0.0001
   emb_dim: 1024
   history_size: 4
-  lambda_sigreg: 0.1
+  lambda_sigreg: 0.0
   sigreg_num_proj: 1024
   sigreg_knots: 17
+  train_wm: true
 
 value_head:
   lr: 0.0001
   rank_margin: 0.1
-  lambda_rank: 1.0
+  lambda_rank: 0.0
 
 rl:
   iterations: 1
   envs_per_iteration: 4
   max_steps_per_episode: 5
-  gamma: 0.99
+  gamma: 1.0
   batch_size: 2
+  truncated_bootstrap: zero
 
 rollout:
   temperature: 0.7

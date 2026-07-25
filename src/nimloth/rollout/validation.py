@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from itertools import product
 
 from nimloth.agent import create_prompt_template, validate_action_log_probs
 from nimloth.environment import get_action_space
@@ -203,19 +202,16 @@ def _validate_token_provenance(
                 not math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-7)
                 for actual, expected in zip(
                     trajectory.action_log_probs[step],
-                    planner_trace.planner_action_log_probs,
+                    planner_trace.behavior_action_log_probs,
                     strict=True,
                 )
             ):
                 raise ValueError(
                     f"{prefix} step {step} behavior does not match planner policy"
                 )
-            expected_candidates = set(
-                product(range(action_count), repeat=planner_trace.horizon)
-            )
-            if set(planner_trace.candidate_sequences) != expected_candidates:
+            if len(planner_trace.candidate_sequences) != 1:
                 raise ValueError(
-                    f"{prefix} step {step} planner trace is not exhaustive"
+                    f"{prefix} step {step} greedy planner must have one candidate"
                 )
         elif old_action_log_prob is None or not math.isclose(
             old_action_log_prob,

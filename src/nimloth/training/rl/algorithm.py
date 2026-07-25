@@ -157,6 +157,8 @@ class RLAlgorithm:
         token_gae_lambda: float | None = None,
         token_value_loss_weight: float | None = None,
         planner_distillation_weight: float | None = None,
+        reference_kl_loss_weight: float = 0.0,
+        reference_kl_loss_type: str | None = None,
         train_world_model: bool = True,
     ) -> None:
         self.history_size = int(history_size)
@@ -179,6 +181,17 @@ class RLAlgorithm:
         self.token_gae_lambda = token_gae_lambda
         self.token_value_loss_weight = token_value_loss_weight
         self.planner_distillation_weight = planner_distillation_weight
+        self.reference_kl_loss_weight = float(reference_kl_loss_weight)
+        self.reference_kl_loss_type = reference_kl_loss_type
+        if self.reference_kl_loss_weight < 0.0:
+            raise ValueError("reference KL loss weight must be non-negative")
+        if self.reference_kl_loss_weight > 0.0:
+            if self.reference_kl_loss_type != "low_var_kl":
+                raise ValueError("reference KL loss requires low_var_kl")
+            if self.credit_assignment != "token":
+                raise ValueError("reference KL loss requires token credit")
+        elif self.reference_kl_loss_type is not None:
+            raise ValueError("reference KL type requires a positive loss weight")
         self.train_world_model = bool(train_world_model)
         if self.credit_assignment == "token" and any(
             value is None
@@ -267,6 +280,7 @@ class RLAlgorithm:
         token_value_loss: torch.Tensor | None = None
         action_distillation_loss: torch.Tensor | None = None
         action_distillation_kl: torch.Tensor | None = None
+        reference_kl_loss: torch.Tensor | None = None
         if runtime.policy_replay is not None:
             # replay 与上面的监督张量使用相同的 window/time 展开顺序；flatten 后每个
             # ratio 仍对应 rollout 中同一个动作位置。
@@ -290,7 +304,7 @@ class RLAlgorithm:
                     )
                 teacher_log_probs = torch.tensor(
                     [
-                        trace.planner_action_log_probs
+                        trace.teacher_action_log_probs
                         for trace in planner_traces
                         if trace is not None
                     ],
@@ -305,6 +319,44 @@ class RLAlgorithm:
                     teacher_probs
                     * (teacher_log_probs - replay_output.action_log_probs)
                 ).sum(dim=-1).mean()
+            if self.reference_kl_loss_weight > 0.0:
+                if replay_output.selected_full_log_probs is None:
+                    raise RuntimeError(
+                        "reference KL requires current full-vocabulary log-probs"
+                    )
+                reference_rows = [
+                    sample.selected_reference_log_probs
+                    for sample in batch.policy_replay_inputs
+                ]
+                if any(row is None for row in reference_rows):
+                    raise ValueError(
+                        "reference KL requires frozen reference log-probs on every step"
+                    )
+                reference_log_probs = torch.tensor(
+                    [
+                        value
+                        for row in reference_rows
+                        if row is not None
+                        for value in row
+                    ],
+                    dtype=replay_output.selected_full_log_probs.dtype,
+                    device=replay_output.selected_full_log_probs.device,
+                )
+                if reference_log_probs.shape != (
+                    replay_output.selected_full_log_probs.shape
+                ):
+                    raise ValueError(
+                        "reference/current CoT log-prob counts do not align"
+                    )
+                # VAGEN low_var_kl: exp(ref-logp) - (ref-logp) - 1.
+                # Reference values are constants persisted before actor updates.
+                log_ratio = (
+                    reference_log_probs
+                    - replay_output.selected_full_log_probs
+                )
+                reference_kl_loss = (
+                    log_ratio.exp() - log_ratio - 1.0
+                ).clamp(-10.0, 10.0).mean()
             if self.credit_assignment == "token":
                 if replay_output.token_values is None:
                     raise RuntimeError("token credit replay returned no token values")
@@ -369,6 +421,10 @@ class RLAlgorithm:
                 total = total + self.planner_distillation_weight * (
                     action_distillation_loss.to(device=total.device)
                 )
+            if reference_kl_loss is not None:
+                total = total + self.reference_kl_loss_weight * (
+                    reference_kl_loss.to(device=total.device)
+                )
 
         metrics = {
             "wm_mse": float(wm_loss.detach().item()) if wm_loss is not None else 0.0,
@@ -393,6 +449,11 @@ class RLAlgorithm:
                 if action_distillation_kl is not None
                 else 0.0
             ),
+            "reference_kl_loss": (
+                float(reference_kl_loss.detach().item())
+                if reference_kl_loss is not None
+                else 0.0
+            ),
         }
         if policy is not None:
             metrics.update(
@@ -413,6 +474,7 @@ class RLAlgorithm:
                 "policy": policy["loss"] if policy else None,
                 "token_value": token_value_loss,
                 "action_distillation": action_distillation_loss,
+                "reference_kl": reference_kl_loss,
             },
             metrics=metrics,
         )

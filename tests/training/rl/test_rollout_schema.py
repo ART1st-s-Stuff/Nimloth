@@ -195,6 +195,18 @@ def test_turn_credit_roundtrip_separates_behavior_and_state_prompts() -> None:
     assert restored.policy_token_trace(0) == trajectory.policy_token_trace(0)
 
 
+def test_reference_log_probs_roundtrip_only_on_selected_reasoning() -> None:
+    trajectory = _turn_trajectory()
+    trajectory.policy_reference_token_log_probs = [[-0.7, None, None]]
+
+    validate_trajectories([trajectory])
+    restored = RolloutTrajectory.from_record(trajectory.to_record())
+
+    trace = restored.policy_token_trace(0)
+    assert trace is not None
+    assert trace.selected_reference_log_probs == (-0.7,)
+
+
 def test_turn_trace_action_token_must_match_action_index() -> None:
     trajectory = _turn_trajectory()
     trajectory.policy_token_ids[0][1] = 202

@@ -303,6 +303,7 @@ def replay_policy_token_log_probs(
     token_id_map: dict[str, int],
     device: torch.device,
     token_value_head: torch.nn.Module | None = None,
+    compute_token_values: bool = True,
 ) -> PolicyReplayOutput:
     """只在 trajectory loss-mask 位置重放 response token 概率。
 
@@ -317,6 +318,7 @@ def replay_policy_token_log_probs(
     action_token_ids = tuple(token_id_map[token] for token in tokens.action_tokens)
     injected_token_ids = tuple(token_id_map.values())
     selected_log_probs: list[torch.Tensor] = []
+    selected_full_log_probs: list[torch.Tensor] = []
     entropies: list[torch.Tensor] = []
     selected_hidden_states: list[torch.Tensor] = []
     replayed_action_log_probs: list[torch.Tensor] = []
@@ -393,7 +395,7 @@ def replay_policy_token_log_probs(
         )
         captured: dict[str, torch.Tensor] = {}
         handle = None
-        if sample.credit_assignment == "token":
+        if sample.credit_assignment == "token" and compute_token_values:
             if token_value_head is None:
                 raise ValueError("token credit replay requires a TokenValueHead")
             root = getattr(model, "module", model)
@@ -421,7 +423,7 @@ def replay_policy_token_log_probs(
         finally:
             if handle is not None:
                 handle.remove()
-        if sample.credit_assignment == "token":
+        if sample.credit_assignment == "token" and compute_token_values:
             hidden = captured.get("hidden")
             if hidden is None or hidden.ndim != 3 or hidden.shape[:2] != (
                 1,
@@ -469,6 +471,12 @@ def replay_policy_token_log_probs(
             )
             selected_log_probs.append(log_probs[selected_index])
             entropies.append(_row_entropies(log_probs.unsqueeze(0))[0])
+            if role == "reasoning":
+                full_log_probs = torch.log_softmax(
+                    logits / sample.sampling_temperature,
+                    dim=-1,
+                )
+                selected_full_log_probs.append(full_log_probs[token_id])
         if sample.planner_trace is not None:
             action_logits = outputs.logits[0, len(selected_indices)].float()
             restricted = action_logits[
@@ -482,7 +490,9 @@ def replay_policy_token_log_probs(
     token_values = None
     if selected_hidden_states:
         assert token_value_head is not None
-        token_values = token_value_head(torch.cat(selected_hidden_states, dim=0))
+        token_values = token_value_head(
+            torch.cat(selected_hidden_states, dim=0).detach()
+        )
     return PolicyReplayOutput(
         selected_log_probs=torch.stack(selected_log_probs),
         entropies=torch.stack(entropies),
@@ -490,6 +500,11 @@ def replay_policy_token_log_probs(
         action_log_probs=(
             torch.stack(replayed_action_log_probs)
             if replayed_action_log_probs
+            else None
+        ),
+        selected_full_log_probs=(
+            torch.stack(selected_full_log_probs)
+            if selected_full_log_probs
             else None
         ),
     )

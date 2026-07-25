@@ -138,11 +138,11 @@ def test_planning_loader_preserves_grid_rollout_and_value_contract(tmp_path) -> 
     plan = WorldModelPlanner(
         planning_model,
         horizon=2,
-        search_mode="exhaustive",
+        search_mode="greedy",
     ).plan(
         state.unsqueeze(1),
         torch.empty((1, 0), dtype=torch.long),
     )
-    assert plan.candidate_sequences.shape == (64, 2)
-    assert plan.candidate_scores.shape == (64,)
-    assert plan.root_action_scores.shape == (8,)
+    assert plan.candidate_sequences.shape == (1, 2)
+    assert plan.candidate_scores.shape == (1,)
+    assert plan.greedy_step_action_values.shape == (2, 8)

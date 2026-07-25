@@ -58,7 +58,7 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert config.predictor.sigreg_knots == 17
     assert config.actor.enabled is False
     assert config.actor.credit_assignment == "action"
-    assert config.actor.max_reasoning_tokens == 64
+    assert config.actor.max_response_tokens == 64
     assert config.gradient.representation_to_backbone is True
     assert config.agent.planning.enabled is False
     assert config.distributed.nodes == 1
@@ -128,13 +128,13 @@ def test_rl_config_parses_turn_credit_assignment() -> None:
     raw["actor"] = {
         "enabled": True,
         "credit_assignment": "turn",
-        "max_reasoning_tokens": 32,
+        "max_response_tokens": 32,
     }
 
     config = parse_rl_config(raw)
 
     assert config.actor.credit_assignment == "turn"
-    assert config.actor.max_reasoning_tokens == 32
+    assert config.actor.max_response_tokens == 32
 
 
 def test_rl_config_requires_explicit_token_credit_semantics() -> None:
@@ -165,13 +165,13 @@ def test_rl_config_requires_explicit_token_credit_semantics() -> None:
     assert config.rl.truncated_bootstrap == "zero"
 
 
-def test_planner_distillation_requires_explicit_teacher_and_loss_weight() -> None:
+def test_planner_distillation_requires_greedy_and_explicit_loss_weight() -> None:
     raw = _raw_config()
     raw["agent"] = {
         "planning": {
             "enabled": True,
             "horizon": 2,
-            "search_mode": "exhaustive",
+            "search_mode": "greedy",
         }
     }
     raw["actor"] = {
@@ -187,10 +187,6 @@ def test_planner_distillation_requires_explicit_teacher_and_loss_weight() -> Non
     }
     raw["rl"]["truncated_bootstrap"] = "zero"
 
-    with pytest.raises(ValueError, match="teacher_temperature"):
-        parse_rl_config(raw)
-
-    raw["agent"]["planning"]["teacher_temperature"] = 0.7
     with pytest.raises(ValueError, match="planning.device"):
         parse_rl_config(raw)
 
@@ -202,11 +198,42 @@ def test_planner_distillation_requires_explicit_teacher_and_loss_weight() -> Non
     with pytest.raises(ValueError, match="predictor.train_wm"):
         parse_rl_config(raw)
 
-    raw["predictor"]["train_wm"] = False
+    raw["predictor"]["train_wm"] = True
     config = parse_rl_config(raw)
     assert config.agent.planning.horizon == 2
-    assert config.agent.planning.teacher_temperature == 0.7
     assert config.actor.planner_distillation_weight == 0.3
+    assert config.predictor.train_wm is True
+
+
+def test_reference_kl_requires_explicit_low_var_loss_type() -> None:
+    raw = _raw_config()
+    raw["actor"] = {
+        "enabled": True,
+        "credit_assignment": "token",
+        "reference_kl_loss_weight": 0.001,
+    }
+    raw["token_credit"] = {
+        "gamma": 1.0,
+        "gae_lambda": 1.0,
+        "value_lr": 1e-5,
+        "value_loss_weight": 1.0,
+        "hidden_dim": 256,
+    }
+    raw["rl"]["truncated_bootstrap"] = "zero"
+    with pytest.raises(ValueError, match="reference_kl_loss_type=low_var_kl"):
+        parse_rl_config(raw)
+
+    raw["actor"]["reference_kl_loss_type"] = "low_var_kl"
+    config = parse_rl_config(raw)
+    assert config.actor.reference_kl_loss_weight == 0.001
+    assert config.actor.reference_kl_loss_type == "low_var_kl"
+
+
+def test_reward_kl_is_rejected_as_unimplemented() -> None:
+    raw = _raw_config()
+    raw["actor"] = {"reward_kl_weight": 0.001}
+    with pytest.raises(ValueError, match="unknown RL config field"):
+        parse_rl_config(raw)
 
 
 def test_rl_config_rejects_unknown_credit_assignment() -> None:

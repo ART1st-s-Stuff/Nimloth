@@ -31,6 +31,12 @@ _LOG_COLUMNS = (
     "entropy",
     "clip_fraction",
     "mean_advantage",
+    "token_value_loss",
+    "action_distillation_loss",
+    "action_distillation_kl",
+    "reference_kl_loss",
+    "mean_ratio",
+    "policy_tokens",
 )
 
 

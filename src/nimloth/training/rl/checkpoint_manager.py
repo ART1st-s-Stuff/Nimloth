@@ -70,5 +70,9 @@ class RLCheckpointManager:
             planner_distillation_weight=(
                 self._config.actor.planner_distillation_weight
             ),
+            reference_kl_config={
+                "weight": self._config.actor.reference_kl_loss_weight,
+                "type": self._config.actor.reference_kl_loss_type,
+            },
             train_world_model=self._config.predictor.train_wm,
         )

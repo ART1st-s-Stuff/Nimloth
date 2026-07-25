@@ -45,6 +45,9 @@ class RolloutTrajectory:
     policy_credit_assignment: str = "action"
     policy_token_ids: list[list[int]] = field(default_factory=list)
     policy_token_log_probs: list[list[float | None]] = field(default_factory=list)
+    policy_reference_token_log_probs: list[list[float | None]] = field(
+        default_factory=list
+    )
     policy_loss_masks: list[list[bool]] = field(default_factory=list)
     policy_token_roles: list[list[str]] = field(default_factory=list)
     policy_action_token_ids: list[list[int]] = field(default_factory=list)
@@ -182,6 +185,12 @@ class RolloutTrajectory:
             return None
         if not all(len(field) == self.num_steps for field in fields):
             raise ValueError("policy token trace fields do not match trajectory steps")
+        if self.policy_reference_token_log_probs and len(
+            self.policy_reference_token_log_probs
+        ) != self.num_steps:
+            raise ValueError(
+                "policy reference log-probs do not match trajectory steps"
+            )
         return PolicyTokenTrace(
             token_ids=tuple(int(value) for value in self.policy_token_ids[step_index]),
             old_log_probs=tuple(self.policy_token_log_probs[step_index]),
@@ -194,6 +203,11 @@ class RolloutTrajectory:
             finish_reason=self.policy_finish_reasons[step_index],  # type: ignore[arg-type]
             reasoning_truncated=bool(
                 self.policy_reasoning_truncated[step_index]
+            ),
+            reference_log_probs=(
+                tuple(self.policy_reference_token_log_probs[step_index])
+                if self.policy_reference_token_log_probs
+                else None
             ),
         )
 
@@ -272,6 +286,9 @@ class RolloutTrajectory:
             "policy_credit_assignment": self.policy_credit_assignment,
             "policy_token_ids": self.policy_token_ids,
             "policy_token_log_probs": self.policy_token_log_probs,
+            "policy_reference_token_log_probs": (
+                self.policy_reference_token_log_probs
+            ),
             "policy_loss_masks": self.policy_loss_masks,
             "policy_token_roles": self.policy_token_roles,
             "policy_action_token_ids": self.policy_action_token_ids,
@@ -285,12 +302,17 @@ class RolloutTrajectory:
                         list(sequence) for sequence in trace.candidate_sequences
                     ],
                     "candidate_scores": list(trace.candidate_scores),
-                    "root_action_scores": list(trace.root_action_scores),
-                    "planner_action_log_probs": list(
-                        trace.planner_action_log_probs
+                    "greedy_step_action_values": [
+                        list(row) for row in trace.greedy_step_action_values
+                    ],
+                    "teacher_action_log_probs": list(
+                        trace.teacher_action_log_probs
+                    ),
+                    "behavior_action_log_probs": list(
+                        trace.behavior_action_log_probs
                     ),
                     "horizon": trace.horizon,
-                    "teacher_temperature": trace.teacher_temperature,
+                    "search_mode": trace.search_mode,
                 }
                 for trace in self.planner_policy_traces
             ],
@@ -350,6 +372,10 @@ class RolloutTrajectory:
                 [None if value is None else float(value) for value in row]
                 for row in record.get("policy_token_log_probs", [])
             ],
+            policy_reference_token_log_probs=[
+                [None if value is None else float(value) for value in row]
+                for row in record.get("policy_reference_token_log_probs", [])
+            ],
             policy_loss_masks=[
                 [bool(value) for value in row]
                 for row in record.get("policy_loss_masks", [])
@@ -386,14 +412,18 @@ class RolloutTrajectory:
                     candidate_scores=tuple(
                         float(value) for value in raw["candidate_scores"]
                     ),
-                    root_action_scores=tuple(
-                        float(value) for value in raw["root_action_scores"]
+                    greedy_step_action_values=tuple(
+                        tuple(float(value) for value in row)
+                        for row in raw["greedy_step_action_values"]
                     ),
-                    planner_action_log_probs=tuple(
-                        float(value) for value in raw["planner_action_log_probs"]
+                    teacher_action_log_probs=tuple(
+                        float(value) for value in raw["teacher_action_log_probs"]
+                    ),
+                    behavior_action_log_probs=tuple(
+                        float(value) for value in raw["behavior_action_log_probs"]
                     ),
                     horizon=int(raw["horizon"]),
-                    teacher_temperature=float(raw["teacher_temperature"]),
+                    search_mode=str(raw["search_mode"]),
                 )
                 for raw in record.get("planner_policy_traces", [])
             ],

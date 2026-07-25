@@ -454,6 +454,7 @@ def _build_optimizer(
             {
                 "params": qwen_parameters,
                 "lr": config.gradient.backbone_lr,
+                "weight_decay": config.gradient.backbone_weight_decay,
                 "name": "qwen",
             }
         )
@@ -506,6 +507,7 @@ def _load_resume_state(
     expected_truncated_bootstrap: str | None,
     expected_planner_config: dict[str, Any],
     expected_planner_distillation_weight: float | None,
+    expected_reference_kl_config: dict[str, Any],
     expected_train_world_model: bool,
 ) -> RLResumeState:
     """恢复 WM、optimizer 和 iteration 位置。"""
@@ -574,6 +576,12 @@ def _load_resume_state(
         or expected_planner_distillation_weight is not None
     ):
         raise ValueError("resume planner distillation weight mismatch")
+    saved_reference_kl_config = state.get(
+        "reference_kl_config",
+        {"weight": 0.0, "type": None},
+    )
+    if saved_reference_kl_config != expected_reference_kl_config:
+        raise ValueError("resume reference KL config mismatch")
     if state.get("train_world_model", True) != expected_train_world_model:
         raise ValueError("resume train_world_model config mismatch")
     return RLResumeState(
@@ -763,6 +771,10 @@ def train_rl(
             expected_planner_distillation_weight=(
                 config.actor.planner_distillation_weight
             ),
+            expected_reference_kl_config={
+                "weight": config.actor.reference_kl_loss_weight,
+                "type": config.actor.reference_kl_loss_type,
+            },
             expected_train_world_model=config.predictor.train_wm,
         )
         agent = Agent(
@@ -858,6 +870,8 @@ def train_rl(
             planner_distillation_weight=(
                 config.actor.planner_distillation_weight
             ),
+            reference_kl_loss_weight=config.actor.reference_kl_loss_weight,
+            reference_kl_loss_type=config.actor.reference_kl_loss_type,
             train_world_model=config.predictor.train_wm,
         )
         model_runtime = RLModelRuntime(

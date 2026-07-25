@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -72,6 +72,9 @@ class FreshRolloutManifest:
     created_at: str
     planner_fingerprints: dict[str, str] = field(default_factory=dict)
     planner_paths: dict[str, str] = field(default_factory=dict)
+    reference_policy_fingerprint: str | None = None
+    reference_policy_path: str | None = None
+    behavior_trajectory_path: str | None = None
 
     @classmethod
     def create(
@@ -104,11 +107,32 @@ class FreshRolloutManifest:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.__dict__, indent=2) + "\n", encoding="utf-8")
 
+    def with_reference(
+        self,
+        *,
+        reference_policy_path: Path,
+        trajectory_path: Path,
+    ) -> "FreshRolloutManifest":
+        """Bind frozen reference provenance and the enriched trajectory artifact."""
+
+        if self.reference_policy_fingerprint is not None:
+            raise ValueError("fresh rollout manifest already has a reference policy")
+        return replace(
+            self,
+            format_version=3,
+            trajectory_path=str(Path(trajectory_path).resolve()),
+            reference_policy_fingerprint=policy_artifact_fingerprint(
+                reference_policy_path
+            ),
+            reference_policy_path=str(Path(reference_policy_path).resolve()),
+            behavior_trajectory_path=self.trajectory_path,
+        )
+
     @classmethod
     def read(cls, path: Path) -> "FreshRolloutManifest":
         payload = json.loads(path.read_text(encoding="utf-8"))
         manifest = cls(**payload)
-        if manifest.format_version not in {1, 2}:
+        if manifest.format_version not in {1, 2, 3}:
             raise ValueError(
                 f"unsupported fresh rollout manifest version {manifest.format_version}"
             )
@@ -124,11 +148,17 @@ class FreshJSONLRolloutCollector(JSONLRolloutCollector):
         *,
         model_path: Path,
         planner_artifacts: dict[str, Path] | None = None,
+        reference_model_path: Path | None = None,
     ) -> None:
         self.manifest_path = Path(manifest_path).resolve()
         self.manifest = FreshRolloutManifest.read(self.manifest_path)
         self.model_path = Path(model_path).resolve()
         self.planner_artifacts = planner_artifacts or {}
+        self.reference_model_path = (
+            Path(reference_model_path).resolve()
+            if reference_model_path is not None
+            else None
+        )
         super().__init__([Path(self.manifest.trajectory_path)], loop=False)
 
     def validate_policy(self) -> None:
@@ -149,6 +179,25 @@ class FreshJSONLRolloutCollector(JSONLRolloutCollector):
                 raise ValueError(
                     f"fresh rollout planner fingerprint mismatch for {name}: "
                     f"manifest={expected}, current={actual}"
+                )
+        if self.manifest.reference_policy_fingerprint is None:
+            if self.reference_model_path is not None:
+                raise ValueError(
+                    "fresh rollout manifest has no frozen reference policy"
+                )
+        else:
+            if self.reference_model_path is None:
+                raise ValueError(
+                    "reference-enriched fresh rollout requires reference model path"
+                )
+            actual_reference = policy_artifact_fingerprint(
+                self.reference_model_path
+            )
+            if actual_reference != self.manifest.reference_policy_fingerprint:
+                raise ValueError(
+                    "fresh rollout reference fingerprint mismatch: "
+                    f"manifest={self.manifest.reference_policy_fingerprint}, "
+                    f"current={actual_reference}"
                 )
 
     def _claim_once(self) -> None:

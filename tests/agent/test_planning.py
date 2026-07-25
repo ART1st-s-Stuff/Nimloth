@@ -78,12 +78,12 @@ def _planning_world_model() -> tuple[WorldModel, _RecordingPredictor]:
     )
 
 
-def test_planner_replays_complete_candidate_history_at_every_depth() -> None:
+def test_planner_replays_one_greedy_prefix_at_every_depth() -> None:
     world_model, predictor = _planning_world_model()
     planner = WorldModelPlanner(
         world_model,
         horizon=3,
-        search_mode="exhaustive",
+        search_mode="greedy",
     )
 
     plan = planner.plan(
@@ -92,10 +92,13 @@ def test_planner_replays_complete_candidate_history_at_every_depth() -> None:
     )
 
     assert [actions.shape[1] for actions in predictor.action_sequences] == [1, 2, 3]
-    assert plan.candidate_sequences.shape == (8**3, 3)
-    assert plan.candidate_scores.shape == (8**3,)
-    assert plan.root_action_scores.shape == (len(NAVIGATION_ACTION_SPACE),)
-    assert torch.isfinite(plan.root_action_scores).all()
+    assert plan.candidate_sequences.tolist() == [[0, 1, 3]]
+    assert plan.candidate_scores.shape == (1,)
+    assert plan.greedy_step_action_values.shape == (
+        3,
+        len(NAVIGATION_ACTION_SPACE),
+    )
+    assert torch.isfinite(plan.greedy_step_action_values).all()
 
 
 class _TurnPolicy:
@@ -139,8 +142,7 @@ def test_planning_policy_uses_same_turn_hidden_and_excludes_action_from_ppo() ->
         turn_policy=_TurnPolicy(),
         world_model=world_model,
         horizon=2,
-        search_mode="exhaustive",
-        teacher_temperature=1.0,
+        search_mode="greedy",
         planner_device=torch.device("cpu"),
     )
     prompt = AgentPrompt(
@@ -152,7 +154,10 @@ def test_planning_policy_uses_same_turn_hidden_and_excludes_action_from_ppo() ->
     decision = policy.select_action(prompt)
 
     assert decision.planner_trace is not None
-    assert len(decision.planner_trace.candidate_sequences) == 64
+    assert len(decision.planner_trace.candidate_sequences) == 1
+    assert decision.planner_trace.candidate_sequences == ((0, 1),)
+    assert decision.action_log_probs[0] == 0.0
+    assert all(value == float("-inf") for value in decision.action_log_probs[1:])
     action_position = decision.token_trace.token_roles.index("action")
     assert decision.token_trace.loss_mask[action_position] is False
     assert decision.token_trace.old_log_probs[action_position] is None

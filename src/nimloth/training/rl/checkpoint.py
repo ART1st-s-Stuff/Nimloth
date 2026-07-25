@@ -73,6 +73,7 @@ def save_rl_checkpoint(
     truncated_bootstrap: str | None = None,
     planner_config: dict[str, Any] | None = None,
     planner_distillation_weight: float | None = None,
+    reference_kl_config: dict[str, Any] | None = None,
     train_world_model: bool = True,
 ) -> None:
     model = agent.backbone.model
@@ -146,6 +147,7 @@ def save_rl_checkpoint(
             "truncated_bootstrap": truncated_bootstrap,
             "planner_config": planner_config,
             "planner_distillation_weight": planner_distillation_weight,
+            "reference_kl_config": reference_kl_config,
             "train_world_model": bool(train_world_model),
         }
         if base_model_path:
