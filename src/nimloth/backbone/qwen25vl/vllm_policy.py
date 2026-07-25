@@ -130,6 +130,10 @@ class QwenVLLMAgentPolicy:
             max_model_len=int(max_model_len),
             gpu_memory_utilization=float(gpu_memory_utilization),
             limit_mm_per_prompt={"image": int(max_images)},
+            # Prompts grow by adding image-conditioned turns. vLLM 0.11 V1
+            # can otherwise reuse a text-token prefix whose multimodal
+            # placeholder/embedding slice no longer matches the new request.
+            enable_prefix_caching=False,
             # PPO 保存实际 temperature/top-p behavior 分布，不保存 raw logits 分布。
             logprobs_mode="processed_logprobs",
             enforce_eager=bool(enforce_eager),

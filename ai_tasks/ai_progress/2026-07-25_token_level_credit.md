@@ -147,3 +147,13 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
 - 正确传输契约是worker输出普通float list，前端显式重建float32 tensor，再执行shape、finite
   和TP parity校验。ID97无有效trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，
   不可resume且已完成清理。
+
+## 2026-07-25 ID98 多模态prefix cache失败边界
+
+- `d8d4c8c`服务器回归`158 passed, 1 expected warning`；ID98真实GPU连续完成多次
+  policy-state capture/RPC并生成step00..05图片，确认前两个修复实际生效。
+- prompt增长到6张历史图时，vLLM V1为新3260-token request复用2272个computed prefix tokens，
+  随后在Qwen image embedding masked scatter触发CUDA数量断言并杀死EngineCore。dump中六个
+  image feature/placeholder均存在，阻断点是prefix-cache后的多模态调度切片。
+- Qwen多模态rollout必须显式关闭vLLM prefix caching；不能继续依赖默认true。ID98无完整
+  trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，不可resume且已清理。

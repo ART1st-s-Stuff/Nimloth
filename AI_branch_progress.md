@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-07-25：ID98 hidden/RPC连续通过，六图prompt被vLLM prefix cache击穿
+
+- 安全RPC修复`d8d4c8c`通过服务器`158 passed, 1 expected warning`。ID98第一条episode
+  连续执行多个真实CoT+H=2 planner决策并落盘step00..05图片，证明hidden capture与RPC
+  已越过ID96/97阻断点。
+- 第六图prompt时vLLM V1日志显示新3260-token请求复用`num_computed_tokens=2272`，随后
+  CUDA `masked_scatter_size_check`确认图片placeholder数量超过当前embedding source并杀死
+  EngineCore。该请求的六个真实图片feature均存在，问题发生在多模态prefix复用切片。
+- 待提交修复在Qwen多模态vLLM入口显式`enable_prefix_caching=False`；仅牺牲跨请求前缀复用
+  性能，不改变prompt、采样或PPO分布。ID98无完整trajectory/manifest/reference/W&B训练run/
+  optimizer/checkpoint，不可resume，已完成Ray/端口清理。
+
 ## 2026-07-25：ID97 capture成功但V1 UtilityResult安全序列化丢失tensor类型
 
 - multimodal token-buffer修复`b5c00c5`通过服务器`158 passed, 1 expected warning`。
