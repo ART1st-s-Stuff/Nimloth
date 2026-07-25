@@ -148,6 +148,20 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
   和TP parity校验。ID97无有效trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，
   不可resume且已完成清理。
 
+## 2026-07-26 ID103截断CoT必须按原token IDs重放
+
+- ID103使用commit`f74a695`和hold`487451`完成四条真实H=2 greedy rollout；奖励
+  `-0.4/-0.3/0.0/-0.4`，success 0/4。4 records/20 transitions/280个planner JSON null
+  严格加载校验通过，fresh manifest完整；16 turn为stop，4 turn明确记录length truncation。
+- reference replay拒绝首个truncated turn。诊断确认保存的512个vLLM IDs decode后就是环境
+  assistant response，但文本重新encode为1362--1418 tokens；这是byte-level decode在截断
+  边界不可逆，不能用re-encode结果替代behavior trace。16个stop turn均一致。
+- commit`5d7930d`改为校验`decode(saved IDs)==response`并原样追加保存IDs；不可逆tokenizer
+  回归纳入测试。服务器定向`5 passed`，完整相关套件`164 passed, 1 warning`。
+- ID103无W&B/PPO/optimizer/checkpoint，manifest未reference-enrich或消费；实验README和
+  launch contract记录可从reference phase继续，且Ray/端口已清理。禁止重新采样或修改这批
+  behavior trajectory。
+
 ## 2026-07-26 ID102 planner严格JSON失败与修复
 
 - 按用户要求，已从W&B project`nimloth-rl`永久删除32个历史失败/无效run及其artifact，

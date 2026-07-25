@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-07-26：ID103通过strict JSON后在截断CoT reference replay失败
+
+- commit`f74a695`、hold`487451`完成与ID102同参数的4条真实H=2 greedy rollout；奖励
+  `-0.4/-0.3/0.0/-0.4`，success 0/4。strict JSON真实门禁通过：4 records、20 transitions、
+  280个planner `null`均可加载并跨字段校验，fresh manifest绑定behavior及三个planner
+  checkpoint。finish reasons为16 stop、4 length truncation。
+- 冻结reference replay在首个length-truncated sample失败。逐step诊断确认16个stop全部
+  re-encode一致；4个truncated trace的真实长度均为512，但decode后的文本重新encode会变成
+  1362--1418 tokens。byte-level tokenizer decode在强制截断边界不保证可逆；旧校验错误地把
+  `encode(response)==trace IDs`当成必要条件。
+- 正确契约是保存的vLLM token IDs为权威behavior continuation，replay原样追加，并检查这些
+  IDs decode后等于环境实际使用的assistant response。commit`5d7930d`修复该契约，定向
+  policy replay为`5 passed`，完整相关回归`164 passed, 1 warning`。
+- ID103尚无W&B、PPO、optimizer或checkpoint；manifest未reference-enrich、未被训练消费。
+  完整rollout可从reference phase继续，禁止重新生成或修改behavior trajectory。Ray/端口已清理，
+  normal hold仍保留。
+
 ## 2026-07-26：ID102真实rollout完成后暴露planner严格JSON缺口
 
 - 用户要求清理W&B中的历史失败RL run。已永久删除`nimloth-rl`中32个失败或已判定无效的
