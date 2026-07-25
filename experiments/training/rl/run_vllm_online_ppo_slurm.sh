@@ -10,6 +10,8 @@ RL_CONFIG=${RL_CONFIG:-${REPO}/configs/training/rl/e2e_smoke_h4.yaml}
 RUN_OUT=${RUN_OUT:?set RUN_OUT to a new output directory}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
 RAY_PORT=${RAY_PORT:-6381}
+ENV_PORT=${ENV_PORT:-8500}
+TRAIN_MASTER_PORT=${TRAIN_MASTER_PORT:-29671}
 RAY_LOG_DIR=${RUN_OUT}.ray
 RAY_TMP_DIR=${RAY_TMP_DIR:-/tmp/ray_nimloth_${HOLD_JOB}_${BASHPID}}
 RAY_OBJECT_STORE_BYTES=${RAY_OBJECT_STORE_BYTES:-10000000000}
@@ -199,6 +201,7 @@ srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
     WANDB_PROJECT="${WANDB_PROJECT:-nimloth-rl}" \
     WANDB_RUN_NAME="${WANDB_RUN_NAME:?set WANDB_RUN_NAME}" \
     WANDB_MODE_OVERRIDE="${WANDB_MODE_OVERRIDE:-online}" \
+    ENV_PORT="${ENV_PORT}" TRAIN_MASTER_PORT="${TRAIN_MASTER_PORT}" \
     VLLM_DISTRIBUTED_EXECUTOR_BACKEND=ray \
     bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_smoke.sh"
 
@@ -214,6 +217,7 @@ srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
     WANDB_PROJECT="${WANDB_PROJECT:-nimloth-rl}" \
     WANDB_RUN_NAME="${WANDB_RUN_NAME:?set WANDB_RUN_NAME}" \
     WANDB_MODE_OVERRIDE="${WANDB_MODE_OVERRIDE:-online}" \
+    ENV_PORT="${ENV_PORT}" TRAIN_MASTER_PORT="${TRAIN_MASTER_PORT}" \
     bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_smoke.sh"
 
 env SLURM_JOB_ID="${HOLD_JOB}" SLURM_JOB_NODELIST="$(squeue -h -j "${HOLD_JOB}" -o %N)" \
@@ -225,4 +229,5 @@ env SLURM_JOB_ID="${HOLD_JOB}" SLURM_JOB_NODELIST="$(squeue -h -j "${HOLD_JOB}" 
   WANDB_PROJECT="${WANDB_PROJECT:-nimloth-rl}" \
   WANDB_RUN_NAME="${WANDB_RUN_NAME:?set WANDB_RUN_NAME}" \
   WANDB_MODE_OVERRIDE="${WANDB_MODE_OVERRIDE:-online}" \
+  ENV_PORT="${ENV_PORT}" TRAIN_MASTER_PORT="${TRAIN_MASTER_PORT}" \
   bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_smoke.sh"

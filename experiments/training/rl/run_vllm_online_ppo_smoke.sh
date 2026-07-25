@@ -15,6 +15,7 @@ WANDB_PROJECT_REQUESTED=${WANDB_PROJECT:-nimloth-rl}
 WANDB_RUN_NAME_REQUESTED=${WANDB_RUN_NAME:?set WANDB_RUN_NAME}
 WANDB_MODE_REQUESTED=${WANDB_MODE_OVERRIDE:-online}
 ENV_PORT=${ENV_PORT:-8500}
+TRAIN_MASTER_PORT=${TRAIN_MASTER_PORT:-29671}
 NUM_EPISODES=${NUM_EPISODES:-4}
 MAX_STEPS=${MAX_STEPS:-5}
 VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-}
@@ -115,6 +116,11 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
 - model/WM initialization: ${MODEL}
 - data: base_train seeds 1..${NUM_EPISODES}
 - rollout: vLLM TP=${TENSOR_PARALLEL_SIZE}, backend=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-local}, ${NUM_EPISODES} episodes, max ${MAX_STEPS} steps
+- config: ${RL_CONFIG}
+- planning: enabled=${PLANNING_ENABLED}, horizon=${PLANNING_HORIZON}, search=${PLANNING_SEARCH_MODE}, one greedy plan candidate
+- response credit: ${CREDIT_ASSIGNMENT}, max full response tokens=${MAX_RESPONSE_TOKENS}
+- reference KL actor loss: weight=${REFERENCE_KL_WEIGHT}; no reward KL
+- reference model: ${REFERENCE_MODEL}
 - freshness: content fingerprint manifest, exactly one PPO consumption
 - update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank, one grid-WM/value/SIGReg/PPO optimizer step; no DINO loss
 - frozen: vision tower, GridStateProjector, EMA target encoder and DINO decoder
@@ -337,7 +343,7 @@ else
       set -euo pipefail
       export PYTHONPATH="'"${PYTHONPATH}"'"
       export MASTER_ADDR="'"${RDZV_IP}"'"
-      export MASTER_PORT=29671
+      export MASTER_PORT="'"${TRAIN_MASTER_PORT}"'"
       pids=()
       for ((local_rank=0; local_rank<NIMLOTH_NODE_RANKS; local_rank++)); do
         export RANK=$((NIMLOTH_RANK_OFFSET + local_rank))
