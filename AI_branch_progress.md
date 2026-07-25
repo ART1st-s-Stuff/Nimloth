@@ -2391,7 +2391,8 @@
   默认关闭等待真实多图A/B parity。
 - commit `20c596a`完成实现；`git diff --check`、238个Python文件AST、launcher
   `bash -n`和新planner YAML真实配置解析通过。本机Nix store依赖下，9个直接影响文件
-  `78 passed, 1 expected warning`；扩大RL/agent/Qwen/rollout CPU回归（排除缺少vLLM
-  无法收集的`test_vllm_logits.py`）为`166 passed, 1 expected warning`。
+  `78 passed, 1 expected warning`；另有3条fresh训练循环fault-injection测试通过；扩大
+  RL/agent/Qwen/rollout CPU回归（排除缺少vLLM无法收集的`test_vllm_logits.py`）为
+  `169 passed, 1 expected warning`。
 - 尚未验证真实vLLM、真实图片、同checkpoint跨vLLM/HF ratio或GPU optimizer step；
   CPU结果不能替代这些门槛。vLLM cache默认保持关闭，启用前仍需同版本多图A/B parity。

@@ -50,9 +50,11 @@ turn 内 token GAE”，不冒充 VAGEN Bi-Level GAE。
 - `bash -n experiments/training/rl/run_vllm_online_ppo_smoke.sh`：通过。
 - 使用本机Nix store中的PyTorch 2.12/pytest 9/PyYAML 6运行9个直接受影响测试文件：
   `78 passed, 1 expected warning`。
+- 增加3条训练循环fault-injection测试：step前失败回滚、step开始后失败保留claim、
+  成功路径先写post-update checkpoint再commit，定向`3 passed`。
 - 扩大到`tests/agent`、`tests/backbone/qwen25vl`、`tests/rollout`和
   `tests/training/rl`：排除本机缺少vLLM而无法收集的`test_vllm_logits.py`后，
-  `166 passed, 1 expected warning`。vLLM policy stub测试包含在通过范围内。
+  `169 passed, 1 expected warning`。vLLM policy stub测试包含在通过范围内。
 - `planner_exhaustive_h2_smoke.yaml`经真实`load_rl_config`解析并核对horizon、search、
   episode/max-step和temperature/top-p：`CONFIG_OK`。
 - 尚未验证真实vLLM、真实图片、同checkpoint跨vLLM/HF ratio或GPU optimizer step；
