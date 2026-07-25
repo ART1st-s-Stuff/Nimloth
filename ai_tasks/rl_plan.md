@@ -4,6 +4,12 @@
 Qwen action policy 和 CoT credit assignment 的讨论结果。本文是设计与实施计划，
 不是已完成实现的声明；实际实验参数仍以经过人类逐项确认的配置为准。
 
+> 2026-07-25 修订：人类已撤销下文 H=2 exhaustive 64 条候选的实验方案，要求先做
+> greedy。下文 exhaustive 内容只保留为历史设计背景，不再是当前启动配置。greedy 的
+> root support、continuation 和 deterministic behavior/soft teacher 边界仍待明确，禁止
+> 在确认前把旧实现改名为 greedy。当前另已确认使用 Slurm、目标约 8 张物理 GPU、
+> `rl.gamma=1.0`，Qwen 训练参数以真实 VAGEN 源 run 的 resolved config 为准。
+
 ## 1. 已确认的约束
 
 1. 当前目标实验中的“预测 2 轮”明确指

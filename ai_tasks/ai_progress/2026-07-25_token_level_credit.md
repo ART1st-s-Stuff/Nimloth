@@ -78,3 +78,18 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
   `resolve_obj_by_qualname` 直接解析成功，扩大回归再次 `148 passed, 1 warning`。
 - CPU/interface 门禁现已通过；仍未验证真实图片、TP workers 同步 hidden/action logits
   或 GPU optimizer step，因此仍须先做 GPU correctness smoke。
+
+## 2026-07-25 人类修订启动方向
+
+- 本次 RL 明确使用 Slurm；此前“登录节点直接运行”只针对远程文件处理，不适用于 GPU
+  RL。资源按提交前实时空闲情况凑卡，当前目标约 8 张物理 GPU，不固定 normal 分区或
+  固定节点。
+- 人类撤销 H=2 exhaustive 64 条候选方案，要求先使用 greedy。当前代码和 trajectory
+  校验只支持 exhaustive；greedy 是全局单路径，还是为每个 root action 保留一条 greedy
+  continuation，仍会改变 Qwen 蒸馏目标与真实 behavior distribution，必须确认后实现，
+  禁止把旧 exhaustive 配置直接改名启动。
+- action ValueHead 的 environment return 使用 `rl.gamma=1.0`。
+- Qwen 训练参数应对齐真实 VAGEN 源 run，而不是按 Nimloth 默认值猜测。已从服务器源
+  run 的 resolved config 核实 actor lr/clip/entropy、KL、采样、optimizer 和 batch 参数；
+  当前 Nimloth 尚无固定 reference KL，且 TokenValueHead/actor 的参数与梯度职责不等同于
+  VAGEN 独立 critic，因此仍需明确“对齐”的范围并补齐所需实现后才能启动。
