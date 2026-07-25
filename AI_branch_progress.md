@@ -32,6 +32,13 @@
   import；environment health在14秒后通过，真实epoch1进入vLLM TP4 eager权重/KV初始化。
   当前仍无完整trajectory、W&B run、optimizer step或checkpoint，不把启动健康写成训练完成。
 
+- ID106最后可验证的rollout进度为6/8条完整episode，全部20步、全部success false，
+  reward为`-1.6/-1.9/-0.8/-1.2/-2.0/-1.9`。seed7已完成17/20个动作并在生成第18个；
+  观察到最长约748.5秒的真实completion，四个TP worker和四张rollout GPU仍在计算且
+  无Ray/vLLM/NCCL/timeout异常，因此记为严重decode吞吐长尾，不记为已确认死锁。随后
+  superpod登录服务开始在SSH banner前丢弃新连接；跳板和目标TCP 22可达，该监控
+  中断不会终止独立的Slurm/controller，恢复连接前不对之后的实验进度作断言。
+
 ## 2026-07-26：ID105完成真实exhaustive H=2的8-GPU correctness闭环
 
 - commit`5976453`使用corrected SFT2 ID46 `epoch_001`、`base_train` seeds1--4、4 nodes×2

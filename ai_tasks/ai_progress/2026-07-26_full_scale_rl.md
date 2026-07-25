@@ -81,3 +81,15 @@ token PPO、冻结reference KL和DINO-grid WM语义上启动正式多迭代RL；
 - Ray已确认4个唯一10.23地址、8 GPU和逐节点固定worktree import；environment health在14秒
   后通过，真实epoch1已进入vLLM TP4 eager权重/KV初始化。当前尚无完整trajectory、W&B run、
   optimizer step或checkpoint，因此还不能声称首轮训练完成。
+
+## 首轮rollout最后可验证状态
+
+- seeds1--6均完成20个真实环境动作和单独的terminal CoT，交替使用
+  `base_train/common_sense_train`；reward为`-1.6/-1.9/-0.8/-1.2/-2.0/-1.9`，
+  success全为false。seed7最后确认已完成17/20个动作并在解码第18个。
+- seed7出现多次长completion，最长一次约748.5秒。只读诊断显示四个TP Ray
+  worker存活、四张rollout GPU有计算负载，无NCCL/timeout/exception；已观察的长请求
+  都最终返回并继续下一环境步，因此当前结论是严重decode长尾，不是已确认死锁。
+- 随后目标SSH服务在banner前丢弃新连接；VPN跳板可达且跳板到目标TCP 22可达。
+  该问题只中断监控会话，不依赖SSH会话的Slurm/controller会继续运行；在恢复并重新
+  核对PID/hold/日志前，不将失联时间内的任何进度写成已验证事实。
