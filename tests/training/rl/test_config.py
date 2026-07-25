@@ -201,6 +201,7 @@ def test_planner_distillation_requires_greedy_and_explicit_loss_weight() -> None
     raw["predictor"]["train_wm"] = True
     config = parse_rl_config(raw)
     assert config.agent.planning.horizon == 2
+    assert config.agent.planning.beam_width is None
     assert config.actor.planner_distillation_weight == 0.3
     assert config.predictor.train_wm is True
 

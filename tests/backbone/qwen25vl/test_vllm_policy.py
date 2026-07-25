@@ -271,6 +271,8 @@ def test_turn_credit_generates_reasoning_then_constrained_action(monkeypatch) ->
         "multi_modal_data": {"image": ["image"]},
     }
     params = engine.requests[0][1]
+    assert params.max_tokens == 15
+    assert params.extra_args["nimloth_turn_response"]["max_reasoning_tokens"] == 8
     assert params.stop_token_ids == [
         processor.tokenizer.convert_tokens_to_ids(LatentActionTokens().action_end)
     ]

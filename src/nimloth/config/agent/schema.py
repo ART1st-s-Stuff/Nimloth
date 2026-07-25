@@ -18,7 +18,7 @@ class AgentPlanningConfig:
 
     enabled: bool = False
     horizon: int = 4
-    beam_width: int = 8
+    beam_width: int | None = None
     search_mode: str | None = None
     device: str | None = None
 
@@ -81,10 +81,14 @@ def parse_agent_config(raw: Mapping[str, Any] | None) -> AgentConfig:
     if not isinstance(enabled, bool):
         raise ValueError("agent.planning.enabled must be a boolean")
     horizon = int(planning_raw.get("horizon", 4))
-    beam_width = int(planning_raw.get("beam_width", 8))
+    beam_width = (
+        int(planning_raw["beam_width"])
+        if "beam_width" in planning_raw
+        else None
+    )
     if horizon < 1:
         raise ValueError("agent.planning.horizon must be >= 1")
-    if beam_width < 1:
+    if beam_width is not None and beam_width < 1:
         raise ValueError("agent.planning.beam_width must be >= 1")
     search_mode = (
         str(planning_raw["search_mode"])

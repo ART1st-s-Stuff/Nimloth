@@ -119,22 +119,27 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if output.selected_full_log_probs is None:
                     raise RuntimeError("reference replay produced no CoT log-probs")
-                values = iter(
+                values = [
                     float(value)
                     for value in output.selected_full_log_probs.cpu().tolist()
-                )
+                ]
                 row: list[float | None] = []
+                value_index = 0
                 for selected, role in zip(
                     trace.loss_mask,
                     trace.token_roles,
                     strict=True,
                 ):
-                    row.append(next(values) if selected and role == "reasoning" else None)
-                try:
-                    next(values)
-                except StopIteration:
-                    pass
-                else:
+                    if selected and role == "reasoning":
+                        if value_index >= len(values):
+                            raise RuntimeError(
+                                "reference log-prob count is shorter than trace"
+                            )
+                        row.append(values[value_index])
+                        value_index += 1
+                    else:
+                        row.append(None)
+                if value_index != len(values):
                     raise RuntimeError("reference log-prob count exceeds trace")
                 reference_rows.append(row)
             enriched.append(
