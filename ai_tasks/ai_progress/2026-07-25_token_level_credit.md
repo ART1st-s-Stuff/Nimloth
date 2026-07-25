@@ -162,6 +162,24 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
   launch contract记录可从reference phase继续，且Ray/端口已清理。禁止重新采样或修改这批
   behavior trajectory。
 
+## 2026-07-26 ID103从原manifest完成reference与一次PPO更新
+
+- 在commit`c82624c`上跳过rollout，只运行`PIPELINE_PHASE=reference`和
+  `PIPELINE_PHASE=train`。4条trajectory均完成冻结reference replay，fresh manifest被恰好
+  消费一次；4节点、4 ranks×2 GPUs/rank完成`global_step=1`。
+- 训练消费4 rollouts/20 transitions，success 0/4。有限指标包括`total_loss=8.7146139145`、
+  `wm_mse=4.1258172989`、`value_loss=1.0432713032`、`actor_loss=0.0015075535`、
+  `token_value_loss=1.4724029303`、`action_distillation_loss=2.0794415474`、
+  `entropy=0.7826808095`、`mean_ratio=0.9300449491`。
+- W&B run`dcicosvm`为finished。`iter_0001/latest/final`三套checkpoint完整、无临时文件；
+  Ray/vLLM/environment进程和端口均清理，hold`487451`已释放。该smoke证明真实闭环与保存
+  契约，success仍为0，不能据此声称RL质量改善。
+- W&B中的`action_distillation_kl`为NaN。根因是deterministic greedy teacher用`-inf`
+  表示未选动作，诊断式直接产生`0 * -inf`；优化所用distillation loss和total loss均有限。
+  commit`2220103`在相减前把teacher的非有限log-prob替换为零，使零概率项保持为零，并加入
+  H=2 deterministic planner回归。定向测试`2 passed`，远程完整`tests/`为
+  `333 passed, 1 skipped, 4 warnings`。不回填历史W&B NaN。
+
 ## 2026-07-26 ID102 planner严格JSON失败与修复
 
 - 按用户要求，已从W&B project`nimloth-rl`永久删除32个历史失败/无效run及其artifact，

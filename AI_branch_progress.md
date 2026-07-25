@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-07-26：ID103通过strict JSON后在截断CoT reference replay失败
+## 2026-07-26：ID103完成一次真实8-GPU H=2 planner online PPO更新
 
 - commit`f74a695`、hold`487451`完成与ID102同参数的4条真实H=2 greedy rollout；奖励
   `-0.4/-0.3/0.0/-0.4`，success 0/4。strict JSON真实门禁通过：4 records、20 transitions、
@@ -17,9 +17,17 @@
 - 正确契约是保存的vLLM token IDs为权威behavior continuation，replay原样追加，并检查这些
   IDs decode后等于环境实际使用的assistant response。commit`5d7930d`修复该契约，定向
   policy replay为`5 passed`，完整相关回归`164 passed, 1 warning`。
-- ID103尚无W&B、PPO、optimizer或checkpoint；manifest未reference-enrich、未被训练消费。
-  完整rollout可从reference phase继续，禁止重新生成或修改behavior trajectory。Ray/端口已清理，
-  normal hold仍保留。
+- 随后在commit`c82624c`只重跑reference和train phase：4条trajectory完成reference enrichment，
+  fresh manifest被恰好消费一次；4 ranks×2 GPUs/rank完成`global_step=1`。关键指标为
+  `total_loss=8.7146`、`wm_mse=4.1258`、`value_loss=1.0433`、`actor_loss=0.00151`、
+  `token_value_loss=1.4724`、`action_distillation_loss=2.0794`、`success_rate=0`。
+- W&B run`art2nd-hong-kong-university-of-science-and-technology/nimloth-rl/dcicosvm`
+  状态为finished。`iter_0001/latest/final`三套checkpoint均包含完整HF双分片、
+  `rl_state.pt`和DINO-grid组件，无临时文件。实验进程/端口已清理，hold`487451`已释放。
+- `action_distillation_kl`诊断值为NaN；根因是greedy teacher未选动作的`-inf`参与
+  `0 * (-inf - log pi)`。优化实际使用独立且有限的distillation loss，总loss也有限。
+  commit`2220103`修复诊断计算并增加deterministic H=2回归；远程`tests/`为
+  `333 passed, 1 skipped`。历史W&B记录保留真实NaN，不做事后伪改。
 
 ## 2026-07-26：ID102真实rollout完成后暴露planner严格JSON缺口
 
