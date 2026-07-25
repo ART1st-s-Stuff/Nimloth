@@ -296,26 +296,11 @@ def test_planner_replay_returns_raw_action_distribution_without_action_ppo() -> 
             candidate_sequences=((2,),),
             candidate_scores=(0.0,),
             greedy_step_action_values=((0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0),),
-            teacher_action_log_probs=(
-                float("-inf"),
-                float("-inf"),
-                0.0,
-                float("-inf"),
-                float("-inf"),
-                float("-inf"),
-                float("-inf"),
-                float("-inf"),
+            teacher_action_log_probs=tuple(
+                0.0 if index == 2 else float("-inf") for index in range(8)
             ),
-            behavior_action_log_probs=(
-                float("-inf"),
-                float("-inf"),
-                0.0,
-                float("-inf"),
-                float("-inf"),
-                float("-inf"),
-                float("-inf"),
-                float("-inf"),
-                float("-inf"),
+            behavior_action_log_probs=tuple(
+                0.0 if index == 2 else float("-inf") for index in range(8)
             ),
             horizon=1,
             search_mode="greedy",
