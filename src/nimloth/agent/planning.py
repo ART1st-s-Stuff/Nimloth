@@ -65,9 +65,10 @@ class WorldModelPlanner:
     ) -> WorldModelPlan:
         """从最近的真实 state/action 上下文搜索未来动作。"""
 
-        if state_history.ndim != 3 or state_history.shape[0] != 1:
+        if state_history.ndim not in (3, 4) or state_history.shape[0] != 1:
             raise ValueError(
-                "online planning requires state_history with shape (1,L,D), "
+                "online planning requires state_history with shape "
+                "(1,L,D) or (1,L,N,D), "
                 f"got {tuple(state_history.shape)}"
             )
         expected_actions = (1, state_history.shape[1] - 1)
@@ -107,7 +108,10 @@ class WorldModelPlanner:
             )
             # 每一层都从相同的真实 history 重放完整候选序列。
             candidate_count = expanded_sequences.shape[0]
-            candidate_states = state_history.expand(candidate_count, -1, -1)
+            candidate_states = state_history.expand(
+                candidate_count,
+                *state_history.shape[1:],
+            )
             candidate_previous_actions = previous_actions.expand(
                 candidate_count,
                 -1,
@@ -203,9 +207,9 @@ class PlanningPolicy:
                 self.planner_device
             ).unsqueeze(0)
             state = self.world_model.project_state(latent_hidden)
-            if state.ndim != 2 or state.shape[0] != 1:
+            if state.ndim not in (2, 3) or state.shape[0] != 1:
                 raise ValueError(
-                    "planning state projector must return shape (1,D), "
+                    "planning state projector must return shape (1,D) or (1,N,D), "
                     f"got {tuple(state.shape)}"
                 )
             self._state_history.append(state.detach())

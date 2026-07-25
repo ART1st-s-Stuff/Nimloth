@@ -17,6 +17,18 @@ from nimloth.wm.grid import (
 )
 
 
+class _PlanningGridWorldModel(WorldModel):
+    """Rollout-time grid WM with the same mean-pooled ValueHead contract."""
+
+    def predict_action_values(self, state: torch.Tensor) -> torch.Tensor:
+        if state.ndim < 3:
+            raise ValueError(
+                "grid value input must have shape (...,N,D), "
+                f"got {tuple(state.shape)}"
+            )
+        return self.value_head(state.mean(dim=-2)).float()
+
+
 def _is_grid_predictor_checkpoint(path: Path) -> bool:
     config_path = path / "config.json"
     if not config_path.is_file():
@@ -127,7 +139,10 @@ def load_planning_world_model(
         emb_dim=emb_dim,
         map_location="cpu",
     )
-    world_model = WorldModel(
+    world_model_type = _PlanningGridWorldModel if _is_grid_predictor_checkpoint(
+        wm_checkpoint
+    ) else WorldModel
+    world_model = world_model_type(
         state_proj=state_proj,
         wm_predictor=predictor,
         value_head=value_head,

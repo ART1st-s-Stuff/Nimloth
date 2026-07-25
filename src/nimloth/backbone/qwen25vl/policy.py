@@ -434,7 +434,7 @@ def replay_policy_token_log_probs(
         selected_token_ids = [trace.token_ids[index] for index in selected_indices]
         selected_roles = [trace.token_roles[index] for index in selected_indices]
         for row, token_id, role in zip(
-            outputs.logits[0],
+            outputs.logits[0, : len(selected_indices)],
             selected_token_ids,
             selected_roles,
             strict=True,

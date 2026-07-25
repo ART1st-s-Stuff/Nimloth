@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import torch
 
 from nimloth.config.rl import parse_rl_config
+from nimloth.agent.planning import WorldModelPlanner
+from nimloth.training.rl.planning_loader import load_planning_world_model
 from nimloth.training.rl.trainer import _build_world_model
 from nimloth.wm.grid import (
     EMATargetGridEncoder,
@@ -93,3 +95,54 @@ def test_rl_loads_self_contained_grid_state_without_sft1_sidecars(tmp_path) -> N
     )
     assert loaded.train_dino_decoder is False
     assert loaded.update_target_encoder is False
+
+
+def test_planning_loader_preserves_grid_rollout_and_value_contract(tmp_path) -> None:
+    state_proj = GridStateProjector(
+        SharedSlotProjector(
+            input_dim=3,
+            output_dim=2,
+            hidden_dim=5,
+            grid_tokens=2,
+        ),
+        LeWMGridEncoder(emb_dim=2, hidden_dim=4),
+    )
+    predictor = TemporalSpatialGridPredictor(
+        GridPredictorConfig(
+            grid_tokens=2,
+            emb_dim=2,
+            history_size=2,
+            depth=1,
+            heads=1,
+            dim_head=2,
+            mlp_dim=4,
+            dropout=0.0,
+        )
+    )
+    value_head = ValueHead(emb_dim=2)
+    torch.save(state_proj.state_dict(), tmp_path / "state_proj.pt")
+    predictor.save_checkpoint(tmp_path / "wm_predictor")
+    value_head.save_checkpoint(tmp_path / "value_head")
+
+    planning_model = load_planning_world_model(
+        qwen_config=SimpleNamespace(hidden_size=3),
+        wm_checkpoint=tmp_path / "wm_predictor",
+        state_proj_checkpoint=tmp_path / "state_proj.pt",
+        value_head_checkpoint=tmp_path / "value_head",
+        device=torch.device("cpu"),
+    )
+    state = planning_model.project_state(torch.randn(1, 2, 3))
+    assert state.shape == (1, 2, 2)
+    assert planning_model.predict_action_values(state).shape == (1, 8)
+
+    plan = WorldModelPlanner(
+        planning_model,
+        horizon=2,
+        search_mode="exhaustive",
+    ).plan(
+        state.unsqueeze(1),
+        torch.empty((1, 0), dtype=torch.long),
+    )
+    assert plan.candidate_sequences.shape == (64, 2)
+    assert plan.candidate_scores.shape == (64,)
+    assert plan.root_action_scores.shape == (8,)

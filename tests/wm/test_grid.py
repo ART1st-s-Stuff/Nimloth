@@ -73,6 +73,30 @@ def test_temporal_spatial_predictor_accepts_bfloat16_state_in_fp32_module() -> N
     assert output.dtype == torch.float32
 
 
+def test_temporal_spatial_predictor_rolls_out_from_real_grid_history() -> None:
+    predictor = TemporalSpatialGridPredictor(
+        GridPredictorConfig(
+            grid_tokens=2,
+            emb_dim=4,
+            action_dim=3,
+            history_size=2,
+            depth=1,
+            heads=1,
+            dim_head=4,
+            mlp_dim=8,
+            dropout=0.0,
+        )
+    )
+
+    predicted = predictor.rollout_from_history(
+        torch.randn(2, 2, 2, 4),
+        torch.tensor([[0], [1]]),
+        torch.tensor([[1, 2, 0], [2, 0, 1]]),
+    )
+
+    assert predicted.shape == (2, 3, 2, 4)
+
+
 def test_grid_state_projector_freezes_sft1_weights_but_backpropagates_to_qwen() -> None:
     slot_projector = SharedSlotProjector(
         input_dim=6,

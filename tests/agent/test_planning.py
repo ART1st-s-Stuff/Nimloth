@@ -59,11 +59,18 @@ class _ActionValueHead(torch.nn.Module):
         return -(state[:, :1] - targets.unsqueeze(0)).square()
 
 
+class _FirstTokenProjector(torch.nn.Module):
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        if hidden.ndim != 3 or hidden.shape[1] != 1:
+            raise ValueError(f"expected one latent token, got {tuple(hidden.shape)}")
+        return hidden[:, 0]
+
+
 def _planning_world_model() -> tuple[WorldModel, _RecordingPredictor]:
     predictor = _RecordingPredictor()
     return (
         WorldModel(
-            state_proj=torch.nn.Identity(),
+            state_proj=_FirstTokenProjector(),
             wm_predictor=predictor,
             value_head=_ActionValueHead(len(NAVIGATION_ACTION_SPACE)),
         ),

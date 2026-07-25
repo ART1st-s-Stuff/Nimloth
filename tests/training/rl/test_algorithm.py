@@ -432,9 +432,11 @@ def test_grid_rl_uses_ema_targets_and_mean_pooled_sigreg_without_dino_loss() -> 
         "value",
         "policy",
         "token_value",
+        "action_distillation",
     }
     assert output.losses["wm"] is not None
     assert output.losses["value"] is not None
+    assert output.losses["action_distillation"] is None
     assert backbone.model.weight.grad is not None
     assert any(
         parameter.grad is not None

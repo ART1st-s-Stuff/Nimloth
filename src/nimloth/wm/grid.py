@@ -481,6 +481,65 @@ class TemporalSpatialGridPredictor(nn.Module):
             )[:, -1]
         return self.predict_sequence(state, action_indices)
 
+    def rollout_from_history(
+        self,
+        state_history: torch.Tensor,
+        previous_actions: torch.Tensor,
+        future_actions: torch.Tensor,
+    ) -> torch.Tensor:
+        """从真实 grid state 历史自回归模拟未来动作序列。"""
+
+        expected_tail = (self.grid_tokens, self.emb_dim)
+        if (
+            state_history.ndim != 4
+            or tuple(state_history.shape[2:]) != expected_tail
+        ):
+            raise ValueError(
+                "grid state_history must have shape "
+                f"(B,L,{self.grid_tokens},{self.emb_dim}), "
+                f"got {tuple(state_history.shape)}"
+            )
+        batch_size, history_steps = state_history.shape[:2]
+        if not 1 <= history_steps <= self.config.history_size:
+            raise ValueError(
+                "real grid history length must be in [1, history_size], "
+                f"got L={history_steps}, history_size={self.config.history_size}"
+            )
+        expected_previous = (batch_size, history_steps - 1)
+        if previous_actions.shape != expected_previous:
+            raise ValueError(
+                "previous_actions must align with all but the last grid state, "
+                f"got {tuple(previous_actions.shape)}, expected {expected_previous}"
+            )
+        if (
+            future_actions.ndim != 2
+            or future_actions.shape[0] != batch_size
+            or future_actions.shape[1] < 1
+        ):
+            raise ValueError(
+                "future_actions must have shape (B,P) with P>=1, "
+                f"got {tuple(future_actions.shape)}"
+            )
+
+        all_states = state_history
+        all_actions = torch.cat((previous_actions, future_actions), dim=1)
+        predicted: list[torch.Tensor] = []
+        for future_step in range(future_actions.shape[1]):
+            state_index = history_steps - 1 + future_step
+            context_start = max(
+                0,
+                state_index - self.config.history_size + 1,
+            )
+            state_context = all_states[:, context_start : state_index + 1]
+            action_context = all_actions[:, context_start : state_index + 1]
+            next_state = self.predict_sequence(
+                state_context,
+                action_context,
+            )[:, -1]
+            predicted.append(next_state)
+            all_states = torch.cat((all_states, next_state.unsqueeze(1)), dim=1)
+        return torch.stack(predicted, dim=1)
+
     def save_checkpoint(self, path: str | Path) -> None:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
