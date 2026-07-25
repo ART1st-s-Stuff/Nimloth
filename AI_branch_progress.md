@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-25：ID96真实vLLM rollout暴露multimodal hidden capture缺口
+
+- Ray节点修复`50c1a56`通过服务器`157 passed, 1 expected warning`。ID96在同一hold
+  `487333`正确建立4个唯一Ray node，TP=4加载全部SFT2权重并完成KV cache/environment
+  health；第一条真实`base_train` episode已开始，因此验证范围越过了ID95。
+- 首次policy-state collective RPC失败：期望16个latent token加action-start共17行，四个
+  worker均返回`captured=()`。核对集群vLLM 0.11 V1源码确认，多模态模型始终以
+  `input_ids=None, inputs_embeds=...`调用forward，token ID只保存在runner
+  `input_ids.gpu`；旧hook只读取forward参数，因此真实多模态路径静默跳过全部行。
+- ID96已停止并清理，无完整trajectory/fresh manifest、reference replay、W&B训练run、
+  optimizer step或checkpoint，不可resume。待提交修复从同一V1 runner token buffer按hidden
+  行数读取对齐token ID，并新增multimodal回归；GPU验证通过前不得声称hidden capture成功。
+
 ## 2026-07-25：ID95 Ray head放置失败，未产生rollout；修复待重启
 
 - ID95按已确认H=2 greedy/token GAE/reference actor KL方案启动在preempt hold
@@ -15,8 +28,8 @@
 - 环境health已通过、vLLM开始engine初始化后人工停止。没有trajectory/fresh manifest、
   reference replay、W&B训练run、optimizer step或RL checkpoint；ID95不可resume，重试必须
   使用新ID和新输出。四节点Ray、环境step及6395/8595/29795端口已清理，hold仍保留。
-- 当前未提交修复把worker迭代改为按节点名跳过实际head，并要求alive Ray node address
-  唯一；验证与新ID GPU重启完成前，仍不能声称GPU rollout或PPO通过。
+- 修复`50c1a56`把worker迭代改为按节点名跳过实际head，并要求alive Ray node address
+  唯一；服务器回归`157 passed, 1 expected warning`，ID96实机确认四个唯一地址。
 
 ## 2026-07-25：H=2 greedy planner + CoT token PPO/reference KL CPU门禁通过
 

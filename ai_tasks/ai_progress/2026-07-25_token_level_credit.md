@@ -124,3 +124,15 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
   记录启动契约、失败原因、清理和不可resume边界；重试必须使用新ID/新输出。
 - 待提交修复：worker遍历所有allocation节点并按名称跳过实际head；import probe同时验证
   alive node address唯一。四节点Ray/环境step/端口均已清理，hold `487333`保留供修复后重试。
+
+## 2026-07-25 ID96真实multimodal hidden capture失败边界
+
+- Ray放置修复`50c1a56`通过服务器`157 passed, 1 expected warning`；ID96实机确认4个唯一
+  Ray地址、TP=4权重/KV cache完成、environment health通过并开始第一条`base_train` episode。
+- policy-state RPC期望16个latent token和1个action-start token，但四个worker都返回
+  `captured=()`。集群vLLM 0.11 V1源码显示，多模态model forward固定接收
+  `input_ids=None`和`inputs_embeds`，对齐token ID保存在`model_runner.input_ids.gpu`；旧hook
+  只读forward参数，所以真实图片路径没有记录任何hidden row。
+- ID96已停止并清理；只有0-byte trajectory占位文件，无fresh manifest/reference/W&B训练
+  run/optimizer/checkpoint，不可resume。修复必须读取同一次forward对应的runner token buffer，
+  禁止退回HF二次重放冒充vLLM rollout hidden state。

@@ -42,6 +42,26 @@ def _input_ids(args: tuple[Any, ...], kwargs: dict[str, Any]) -> torch.Tensor | 
     return value if isinstance(value, torch.Tensor) else None
 
 
+def _runner_input_ids(model_runner: Any, row_count: int) -> torch.Tensor | None:
+    """Read the V1 runner token buffer used for multimodal embedding input.
+
+    vLLM 0.11 always calls multimodal models with ``input_ids=None`` and
+    ``inputs_embeds=...``.  The aligned token IDs remain in the runner's
+    persistent ``input_ids.gpu`` buffer, so state capture must read that same
+    buffer instead of trying to recover IDs from embeddings.
+    """
+
+    input_buffer = getattr(getattr(model_runner, "input_ids", None), "gpu", None)
+    if not isinstance(input_buffer, torch.Tensor) or input_buffer.ndim != 1:
+        return None
+    if input_buffer.numel() < row_count:
+        raise RuntimeError(
+            "vLLM runner input ID buffer is shorter than model hidden states: "
+            f"{input_buffer.numel()} < {row_count}"
+        )
+    return input_buffer[:row_count]
+
+
 class PolicyStateCaptureWorkerExtension:
     """vLLM ``worker_extension_cls`` for one serial Nimloth rollout request.
 
@@ -94,11 +114,13 @@ class PolicyStateCaptureWorkerExtension:
     ) -> None:
         if not getattr(self, "_nimloth_capture_active", False):
             return
+        hidden = _hidden_tensor(output)
         input_ids = _input_ids(args, kwargs)
+        if input_ids is None:
+            input_ids = _runner_input_ids(self.model_runner, hidden.shape[0])
         if input_ids is None:
             return
         flat_ids = input_ids.reshape(-1)
-        hidden = _hidden_tensor(output)
         if hidden.shape[0] != flat_ids.numel():
             raise RuntimeError(
                 "vLLM input IDs do not align with captured hidden states: "

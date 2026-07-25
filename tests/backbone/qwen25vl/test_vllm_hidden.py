@@ -13,7 +13,10 @@ from nimloth.backbone.qwen25vl.vllm_hidden import (
 
 
 class _Model(torch.nn.Module):
-    def forward(self, input_ids=None, **_kwargs):
+    def forward(self, input_ids=None, inputs_embeds=None, **_kwargs):
+        if input_ids is None:
+            assert inputs_embeds is not None
+            input_ids = inputs_embeds[:, 0].long()
         return torch.stack(
             (input_ids.float(), input_ids.float() + 0.5),
             dim=-1,
@@ -26,7 +29,18 @@ class _Model(torch.nn.Module):
 
 class _Worker(PolicyStateCaptureWorkerExtension):
     def __init__(self) -> None:
-        self.model_runner = type("Runner", (), {"model": _Model()})()
+        self.model_runner = type(
+            "Runner",
+            (),
+            {
+                "model": _Model(),
+                "input_ids": type(
+                    "InputBuffer",
+                    (),
+                    {"gpu": torch.empty(0, dtype=torch.long)},
+                )(),
+            },
+        )()
 
 
 class _Engine:
@@ -85,3 +99,22 @@ def test_worker_rejects_missing_action_boundary() -> None:
 
     with pytest.raises(RuntimeError, match="policy state sequence"):
         worker.nimloth_pop_policy_state_capture()
+
+
+def test_worker_reads_v1_multimodal_runner_token_buffer() -> None:
+    worker = _Worker()
+    _start(worker)
+    token_ids = torch.tensor([101, 102, 103])
+    worker.model_runner.input_ids.gpu = token_ids
+    worker.model_runner.model(
+        input_ids=None,
+        inputs_embeds=token_ids.float().unsqueeze(-1),
+    )
+
+    result = worker.nimloth_pop_policy_state_capture()
+
+    assert result["latent_hidden"].tolist() == [
+        [101.0, 101.5],
+        [102.0, 102.5],
+    ]
+    assert result["action_logits"].tolist() == [1030.0, 2060.0]
