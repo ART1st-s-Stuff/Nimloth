@@ -42,6 +42,7 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
 - 本地 `compileall` 与 `git diff --check` 通过；本机 Python 没有 pytest。
 - 服务器定向测试：`56 passed`。
 - 扩大回归首次得到 `134 passed, 1 failed`；唯一失败是测试 fake policy 选择
-  reasoning+action token 却未显式声明 `turn` credit。生产校验正确拒绝该不一致，测试
-  fixture 已补齐显式契约，等待最终重跑。
+  reasoning+action token 却未显式声明 `turn` credit。生产校验正确拒绝该不一致；测试
+  fixture 补齐显式契约后，完整 `tests/training/rl tests/agent
+  tests/backbone/qwen25vl` 回归为 `135 passed, 1 expected warning`。
 - 尚未启动 GPU experiment、rollout、W&B 或 optimizer step。

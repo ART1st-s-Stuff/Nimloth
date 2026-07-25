@@ -2202,4 +2202,5 @@
   GAE或planning PPO。
 - 本地compileall与diff-check通过；服务器定向回归`56 passed`。扩大回归首次为
   `134 passed, 1 failed`，唯一失败是fake policy未声明其reasoning+action mask属于turn
-  credit；生产校验正确，fixture已补显式契约，等待最终重跑。尚未启动GPU RL。
+  credit；生产校验正确。fixture补齐显式契约后，完整RL/agent/Qwen回归为
+  `135 passed, 1 expected warning`。尚未启动GPU RL。
