@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import math
 import sys
 from types import SimpleNamespace
-import math
+
+import pytest
 
 from nimloth.backbone.qwen25vl import vllm_policy as module
 from nimloth.backbone.qwen25vl.vllm_policy import QwenVLLMAgentPolicy
@@ -11,6 +13,11 @@ from nimloth.latent import LatentActionTokens, all_special_tokens_for_latent_cou
 
 class _Tokenizer:
     unk_token_id = None
+    all_special_ids = (900, 901)
+    added_tokens_decoder = {
+        902: SimpleNamespace(special=True),
+        903: SimpleNamespace(special=False),
+    }
 
     def __init__(self) -> None:
         tokens = LatentActionTokens()
@@ -230,7 +237,11 @@ def test_turn_credit_generates_reasoning_then_constrained_action(monkeypatch) ->
             )
             return [SimpleNamespace(outputs=[output], prompt_token_ids=[1, 2])]
 
-    monkeypatch.setattr(module, "render_policy_messages", lambda *args, **kwargs: "prompt")
+    monkeypatch.setattr(
+        module,
+        "render_policy_messages",
+        lambda *args, **kwargs: "prompt<|image_pad|>",
+    )
     monkeypatch.setattr(module, "collect_policy_images", lambda messages: ["image"])
     monkeypatch.setitem(
         sys.modules,
@@ -269,7 +280,7 @@ def test_turn_credit_generates_reasoning_then_constrained_action(monkeypatch) ->
     assert len(engine.requests) == 1
     request = engine.requests[0][0][0]
     assert request == {
-        "prompt": "prompt",
+        "prompt": "prompt<|image_pad|>",
         "multi_modal_data": {"image": ["image"]},
     }
     params = engine.requests[0][1]
@@ -281,6 +292,107 @@ def test_turn_credit_generates_reasoning_then_constrained_action(monkeypatch) ->
     assert params.extra_args["nimloth_turn_response"]["action_token_ids"] == list(
         action_ids
     )
+    forbidden_ids = params.extra_args["nimloth_turn_response"][
+        "forbidden_reasoning_token_ids"
+    ]
+    assert 900 in forbidden_ids
+    assert 901 in forbidden_ids
+    assert 902 in forbidden_ids
+    assert 903 not in forbidden_ids
+    assert set(action_ids).issubset(forbidden_ids)
+
+
+def test_turn_credit_rejects_forbidden_control_token_in_reasoning(
+    monkeypatch,
+) -> None:
+    processor = SimpleNamespace(tokenizer=_Tokenizer())
+    tokens = LatentActionTokens()
+    action_ids = tuple(
+        processor.tokenizer.convert_tokens_to_ids(token)
+        for token in tokens.action_tokens
+    )
+
+    class Engine:
+        def generate(self, prompts, sampling_params, *, use_tqdm=False):
+            del prompts, sampling_params, use_tqdm
+            ids = [
+                900,
+                501,
+                502,
+                503,
+                processor.tokenizer.convert_tokens_to_ids(tokens.latent_state),
+                processor.tokenizer.convert_tokens_to_ids(tokens.action_start),
+                action_ids[0],
+                processor.tokenizer.convert_tokens_to_ids(tokens.action_end),
+            ]
+            action_logprobs = {
+                token_id: SimpleNamespace(logprob=-math.log(len(action_ids)))
+                for token_id in action_ids
+            }
+            return [
+                SimpleNamespace(
+                    outputs=[
+                        SimpleNamespace(
+                            token_ids=ids,
+                            logprobs=[
+                                {token_id: SimpleNamespace(logprob=-0.2)}
+                                if index == 0
+                                else action_logprobs
+                                if index == 6
+                                else {token_id: SimpleNamespace(logprob=0.0)}
+                                for index, token_id in enumerate(ids)
+                            ],
+                        )
+                    ]
+                )
+            ]
+
+    monkeypatch.setattr(
+        module,
+        "render_policy_messages",
+        lambda *args, **kwargs: "prompt",
+    )
+    monkeypatch.setattr(module, "collect_policy_images", lambda messages: [])
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm",
+        SimpleNamespace(SamplingParams=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+    policy = QwenVLLMAgentPolicy(
+        engine=Engine(),
+        processor=processor,
+        temperature=0.7,
+        top_p=0.95,
+        credit_assignment="turn",
+        max_response_tokens=16,
+    )
+
+    with pytest.raises(RuntimeError, match="forbidden control token ids"):
+        policy.select_action(
+            SimpleNamespace(
+                messages=({"role": "assistant", "content": "<think>"},),
+                bound_messages=lambda: [],
+            )
+        )
+
+
+def test_request_rejects_unbound_image_placeholder(monkeypatch) -> None:
+    processor = SimpleNamespace(tokenizer=_Tokenizer())
+    policy = QwenVLLMAgentPolicy(
+        engine=SimpleNamespace(),
+        processor=processor,
+        temperature=0.7,
+        top_p=0.95,
+    )
+    monkeypatch.setattr(
+        module,
+        "render_policy_messages",
+        lambda *args, **kwargs: "<|image_pad|><|image_pad|>",
+    )
+    monkeypatch.setattr(module, "collect_policy_images", lambda messages: ["image"])
+
+    with pytest.raises(ValueError, match="placeholders do not match bound images"):
+        policy._request(SimpleNamespace(bound_messages=lambda: []))
 
 
 def test_turn_credit_records_forced_reasoning_close_as_truncation(monkeypatch) -> None:

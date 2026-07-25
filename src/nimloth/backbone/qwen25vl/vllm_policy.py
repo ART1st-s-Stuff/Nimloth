@@ -223,6 +223,12 @@ class QwenVLLMAgentPolicy:
             latent_token_count=self.latent_token_count,
         )
         images = collect_policy_images(bound_messages)
+        placeholder_count = text.count("<|image_pad|>")
+        if placeholder_count != len(images):
+            raise ValueError(
+                "Qwen policy prompt image placeholders do not match bound images: "
+                f"{placeholder_count} != {len(images)}"
+            )
         request: dict[str, Any] = {"prompt": text}
         if images:
             request["multi_modal_data"] = {"image": images}
@@ -316,6 +322,27 @@ class QwenVLLMAgentPolicy:
             tokens.action_start,
         )
         injected_ids = tuple(self.token_id_map[token] for token in injected_tokens)
+        tokenizer = self.processor.tokenizer
+        tokenizer_control_ids = {
+            int(value)
+            for value in getattr(tokenizer, "all_special_ids", ())
+            if value is not None
+        }
+        tokenizer_control_ids.update(
+            int(token_id)
+            for token_id, token in getattr(
+                tokenizer,
+                "added_tokens_decoder",
+                {},
+            ).items()
+            if getattr(token, "special", False)
+        )
+        forbidden_reasoning_ids = tuple(
+            sorted(
+                (tokenizer_control_ids | set(self.token_id_map.values()))
+                - set(close_ids)
+            )
+        )
         protocol_overhead = len(close_ids) + len(injected_ids) + 2
         max_reasoning_tokens = self.max_response_tokens - protocol_overhead
         if max_reasoning_tokens < 1:
@@ -328,7 +355,7 @@ class QwenVLLMAgentPolicy:
             injected_token_ids=injected_ids,
             action_token_ids=self.action_token_ids,
             action_end_token_id=self.token_id_map[tokens.action_end],
-            protocol_token_ids=tuple(self.token_id_map.values()),
+            forbidden_reasoning_token_ids=forbidden_reasoning_ids,
             max_reasoning_tokens=max_reasoning_tokens,
         )
         params = SamplingParams(
@@ -352,6 +379,15 @@ class QwenVLLMAgentPolicy:
         close_start = find_token_subsequence(continuation_ids, close_ids)
         if close_start is None:
             raise RuntimeError("vLLM turn response did not contain '</think>'")
+        forbidden_reasoning = set(spec.forbidden_reasoning_token_ids)
+        invalid_reasoning_ids = sorted(
+            set(continuation_ids[:close_start]) & forbidden_reasoning
+        )
+        if invalid_reasoning_ids:
+            raise RuntimeError(
+                "vLLM reasoning contained forbidden control token ids: "
+                f"{invalid_reasoning_ids}"
+            )
         close_end = close_start + len(close_ids)
         expected_prefix_end = close_end + len(injected_ids)
         if continuation_ids[close_end:expected_prefix_end] != injected_ids:

@@ -19,7 +19,7 @@ class TurnGenerationSpec:
     injected_token_ids: tuple[int, ...]
     action_token_ids: tuple[int, ...]
     action_end_token_id: int
-    protocol_token_ids: tuple[int, ...]
+    forbidden_reasoning_token_ids: tuple[int, ...]
     max_reasoning_tokens: int
 
     def __post_init__(self) -> None:
@@ -41,7 +41,9 @@ class TurnGenerationSpec:
                 "injected_token_ids": list(self.injected_token_ids),
                 "action_token_ids": list(self.action_token_ids),
                 "action_end_token_id": self.action_end_token_id,
-                "protocol_token_ids": list(self.protocol_token_ids),
+                "forbidden_reasoning_token_ids": list(
+                    self.forbidden_reasoning_token_ids
+                ),
                 "max_reasoning_tokens": self.max_reasoning_tokens,
             }
         }
@@ -60,8 +62,8 @@ class TurnGenerationSpec:
             ),
             action_token_ids=tuple(int(value) for value in raw["action_token_ids"]),
             action_end_token_id=int(raw["action_end_token_id"]),
-            protocol_token_ids=tuple(
-                int(value) for value in raw["protocol_token_ids"]
+            forbidden_reasoning_token_ids=tuple(
+                int(value) for value in raw["forbidden_reasoning_token_ids"]
             ),
             max_reasoning_tokens=int(raw["max_reasoning_tokens"]),
         )
@@ -143,7 +145,7 @@ def apply_turn_response_logits(
     if allowed is None:
         masked[
             torch.tensor(
-                spec.protocol_token_ids,
+                spec.forbidden_reasoning_token_ids,
                 dtype=torch.long,
                 device=masked.device,
             )

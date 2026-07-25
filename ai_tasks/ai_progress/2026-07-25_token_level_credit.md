@@ -148,15 +148,27 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
   和TP parity校验。ID97无有效trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，
   不可resume且已完成清理。
 
-## 2026-07-25 ID99证伪prefix-cache归因并定位content-hash复用边界
+## 2026-07-26 ID100确认CoT伪image token根因
+
+- ID100在双cache关闭下越过六张真实图片：episode1/2分别完成5步，reward -0.3/0.0。
+  episode0终态prompt前端报错直接给出根因：采样CoT生成了`<|image_pad|>`，导致7个
+  placeholder对应6张图片；ID98/99 CUDA masked scatter是同一数量错配进入EngineCore后的
+  表现。
+- 根因确认后主动停止，避免缺失trajectory的选择性batch进入PPO；无loop-final trajectory
+  flush、manifest、reference、W&B训练run、optimizer或checkpoint，ID100不可resume。
+- hold `487333`随后在2026-07-26 00:27:22 UTC被抢占，已离开`squeue`，修复后的新ID
+  必须重新申请满足配置总卡数的allocation。
+- 修复要求reasoning logits屏蔽tokenizer全部special tokens，同时在生成结果和prompt绑定处
+  fail-fast验证；不能只依赖processor/CUDA报错。
+
+## 2026-07-25 ID99证伪prefix-cache归因；content-hash候选被ID100证伪
 
 - ID99在`enable_prefix_caching=False`下重现同一CUDA断言；失败请求明确为
   `num_computed_tokens=0`、`num_common_prefix_blocks=[0]`，所以ID98的prefix-cache根因判断
   已失效。
-- 该请求6个image placeholder长度均为81，后5张相同观测共用一个内容hash，且
-  `scheduled_encoder_inputs={}`。vLLM 0.11只有在prefix与processor cache同时关闭时才自动
-  生成逐request、逐item UUID。当前最小修复增加`mm_processor_cache_gb=0`，仍需下一次真实
-  六图GPU请求证明问题解决。
+- 该请求6个真实image feature中后5张共用内容hash，且`scheduled_encoder_inputs={}`，所以
+  当时把content-hash复用列为候选。ID100关闭processor cache后六图请求成功，并直接捕获
+  生成的额外`<|image_pad|>`，因此content-hash不是根因。
 - ID99无有效trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，不可resume且
   已清理。
 

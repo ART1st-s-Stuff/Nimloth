@@ -125,12 +125,17 @@ def validate_split(eval_set: str, split: str) -> None:
         raise ValueError(f"training dataset {eval_set!r} must use --split train")
 
 
-def validate_trajectories(records) -> None:
+def validate_trajectories(records, *, expected_count: int | None = None) -> None:
     """在 trajectory 进入 FSDP 训练前拒绝不完整记录。"""
     from nimloth.rollout import validate_rollout_trajectory
 
     if not records:
         raise RuntimeError("rollout produced no complete trajectories")
+    if expected_count is not None and len(records) != expected_count:
+        raise RuntimeError(
+            "rollout produced an incomplete trajectory batch: "
+            f"{len(records)} != {expected_count}"
+        )
     for record in records:
         if record.split == "train" and not record.image_paths:
             raise RuntimeError(f"training trajectory {record.record_id} has no images")
@@ -292,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         max_steps_per_episode=args.max_steps,
         output_dir=args.output_dir,
     )
-    validate_trajectories(trajectories)
+    validate_trajectories(trajectories, expected_count=args.num_episodes)
     manifest_path = args.fresh_manifest
     if manifest_path is not None:
         FreshRolloutManifest.create(

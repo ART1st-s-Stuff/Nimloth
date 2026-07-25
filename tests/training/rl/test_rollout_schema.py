@@ -123,6 +123,11 @@ def test_complete_trajectory_schema_passes() -> None:
     validate_trajectories([_trajectory()])
 
 
+def test_rollout_batch_rejects_missing_trajectory() -> None:
+    with pytest.raises(RuntimeError, match="incomplete trajectory batch"):
+        validate_trajectories([_trajectory()], expected_count=2)
+
+
 def test_missing_final_observation_is_rejected() -> None:
     trajectory = _trajectory()
     trajectory.image_paths.pop()

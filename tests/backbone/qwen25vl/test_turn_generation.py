@@ -15,7 +15,7 @@ def _spec() -> TurnGenerationSpec:
         injected_token_ids=(20, 21),
         action_token_ids=(30, 31, 32),
         action_end_token_id=40,
-        protocol_token_ids=(20, 21, 30, 31, 32, 40),
+        forbidden_reasoning_token_ids=(20, 21, 30, 31, 32, 40, 50, 51),
         max_reasoning_tokens=4,
     )
 
@@ -47,7 +47,9 @@ def test_turn_logits_mask_protocol_during_reasoning_and_force_boundaries() -> No
     logits = torch.arange(64, dtype=torch.float32)
 
     reasoning = apply_turn_response_logits((1,), logits, spec=spec)
-    assert torch.isneginf(reasoning[list(spec.protocol_token_ids)]).all()
+    assert torch.isneginf(
+        reasoning[list(spec.forbidden_reasoning_token_ids)]
+    ).all()
     assert reasoning[5] == logits[5]
 
     action = apply_turn_response_logits(

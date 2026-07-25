@@ -15,7 +15,7 @@ def test_request_processor_has_vllm_two_argument_signature() -> None:
         injected_token_ids=(3,),
         action_token_ids=(4, 5),
         action_end_token_id=6,
-        protocol_token_ids=(3, 4, 5, 6),
+        forbidden_reasoning_token_ids=(3, 4, 5, 6, 7),
         max_reasoning_tokens=1,
     )
     adapter = object.__new__(TurnResponseLogitsProcessor)

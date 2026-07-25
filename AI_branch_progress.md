@@ -4,19 +4,36 @@
 
 ---
 
-## 2026-07-25：ID99证伪prefix-cache归因，定位多模态content-hash复用边界
+## 2026-07-26：ID100确认CoT生成伪image token才是多模态崩溃根因
+
+- ID100使用`83e5773`同时关闭vLLM prefix与processor cache，Ray四节点/TP4/epoch1加载
+  均通过。episode0终态请求在前端明确失败：一段实际采样CoT包含字面量
+  `<|image_pad|>`，历史prompt因此有7个image placeholder但只有6张真实图片，HF processor
+  报`IndexError: index 6 is out of bounds ... size 6`。
+- EngineCore在该前端错误后保持存活；episode1完成5步/reward -0.3，episode2完成5步/
+  reward 0.0，均使用六张真实图片。这证明dual-cache-off路径可工作，也证伪ID99的
+  content-hash根因候选；ID98/99的CUDA masked scatter是伪placeholder进入EngineCore后的
+  同类数量不匹配。
+- 监控发现根因后主动停止，避免少于4条的选择性样本进入PPO；episode3后续
+  `ActorUnavailableError`来自主动Ray teardown。collector未完成loop-final flush，所以
+  trajectory文件为空；无manifest/reference/W&B训练run/optimizer/checkpoint，不可resume。
+- ID100使用的hold `487333`随后在2026-07-26 00:27:22 UTC被抢占，运行01:05:12后
+  已离开`squeue`，不能用于修复后重试。
+- 待提交修复把reasoning阶段禁用集合从Nimloth protocol tokens扩展到tokenizer全部special
+  tokens，并在behavior输出和prompt绑定处增加双重验证，禁止伪chat/vision/image token进入
+  历史。修复后必须用新ID重跑真实GPU。
+
+## 2026-07-25：ID99证伪prefix-cache归因；content-hash候选又被ID100证伪
 
 - ID99使用`ca37e63`且vLLM启动配置明确为`enable_prefix_caching=False`；失败请求的
   `num_computed_tokens=0`、`num_common_prefix_blocks=[0]`，但第六图prompt仍触发与ID98
   相同的CUDA `masked_scatter_size_check`。因此“prefix cache是根因”的旧结论已证伪。
-- 失败请求有6个长度均为81的image placeholder；后5张相同观测被vLLM映射到同一个内容
-  hash，且调度日志为`scheduled_encoder_inputs={}`，即全部embedding来自encoder cache。
-  安装版vLLM 0.11源码表明：只有同时关闭prefix cache和processor cache时，processor才会
-  自动用`request-id + modality + index`为每个图像occurrence生成独立identifier。
-- 待GPU验证的最小修复是在现有`enable_prefix_caching=False`基础上增加
-  `mm_processor_cache_gb=0`，不改变prompt、采样或PPO目标，只禁用跨request多模态预处理/
-  encoder复用。ID99无完整trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，
-  不可resume；Ray与端口已清理，hold仍保留。
+- 失败请求有6个真实image feature；后5张相同观测共用内容hash，且
+  `scheduled_encoder_inputs={}`，因此当时把content-hash复用列为候选。ID100关闭processor
+  cache后六图请求可成功，随后直接捕获额外生成的`<|image_pad|>`，所以该候选也已证伪。
+- `mm_processor_cache_gb=0`仍保留为隔离重复图像occurrence的保守correctness配置，但不得
+  再描述为根因修复。ID99无完整trajectory/manifest/reference/W&B训练run/optimizer/
+  checkpoint，不可resume；Ray与端口已清理。
 
 ## 2026-07-25：ID98确认六图prompt失败，但prefix-cache根因判断已被ID99证伪
 
