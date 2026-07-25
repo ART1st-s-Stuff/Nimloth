@@ -52,3 +52,11 @@ selected action的Qwen概率不足以审计entropy、KL、support和behavior mis
 2. 是否删除当前仓库无引用的 `.venv_vllm`；`.venv`、`.venv-vagen-main`、
    `.venv_vllm128_tmp` 仍有代码引用，默认保留。
 3. 是否另行删除已合并到 `dev` 的远端分支引用，还是本轮只清理服务器 worktree 目录。
+
+### 部分执行状态
+
+人类已确认上述保守范围。7 个已合并远端分支已删除；普通 `git worktree remove` 因目标
+含已初始化 submodule 被 Git 拒绝，后续步骤按 `set -e` 停止。7 个目标 worktree 复核仍
+完全干净，`.venv_vllm` 和失效 worktree 注册也仍在。继续需要人类额外确认：是否仅对
+这 7 个已列明路径使用 `git worktree remove --force`，随后按原确认范围清除失效注册和
+`.venv_vllm`。

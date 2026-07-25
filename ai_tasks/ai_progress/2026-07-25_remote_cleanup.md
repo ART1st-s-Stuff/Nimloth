@@ -30,4 +30,13 @@
 
 ## 尚未执行
 
-- 未删除任何 worktree、分支、环境、代码或实验产物。
+- 人类确认保守清理范围后，7 个已合并远端分支已用一次 atomic push 删除：
+  `exp/rl-dinogrid-ep1-online-ppo`、`exp/rl-k1ep1-h4-smoke`、
+  `feat/sft2-dino-grid-ablation`、`fix/sft2-review-bugs`、
+  `merge/dino-rl-online-ppo`、`merge/rl-feasibility`、`progress/SFT2`。
+- 随后的首个 `git worktree remove` 因 worktree 含已初始化 submodule 被 Git 拒绝；即使
+  porcelain status 为零，仍需显式 `--force`。命令使用 `set -e`，因此 7 个目标
+  worktree、失效注册和 `.venv_vllm` 均尚未删除，复核确认它们仍在原位且 7 个
+  worktree 仍完全干净。
+- 继续前需人类确认是否对这 7 个精确且已复核干净的 worktree 使用
+  `git worktree remove --force`。该确认不扩大其他清理范围。
