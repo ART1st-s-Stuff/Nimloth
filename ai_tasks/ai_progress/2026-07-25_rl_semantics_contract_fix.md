@@ -48,5 +48,12 @@ turn 内 token GAE”，不冒充 VAGEN Bi-Level GAE。
 - `git diff --check`：通过。
 - 全部`src/**/*.py`、`tests/**/*.py`及`rollout_env.py`使用`ast.parse`：通过。
 - `bash -n experiments/training/rl/run_vllm_online_ppo_smoke.sh`：通过。
-- 本地Python缺少`torch`、`pytest`和`yaml`，尚未执行PyTorch测试；需要同步已提交代码后
-  在服务器现有环境运行CPU suite。
+- 使用本机Nix store中的PyTorch 2.12/pytest 9/PyYAML 6运行9个直接受影响测试文件：
+  `78 passed, 1 expected warning`。
+- 扩大到`tests/agent`、`tests/backbone/qwen25vl`、`tests/rollout`和
+  `tests/training/rl`：排除本机缺少vLLM而无法收集的`test_vllm_logits.py`后，
+  `166 passed, 1 expected warning`。vLLM policy stub测试包含在通过范围内。
+- `planner_exhaustive_h2_smoke.yaml`经真实`load_rl_config`解析并核对horizon、search、
+  episode/max-step和temperature/top-p：`CONFIG_OK`。
+- 尚未验证真实vLLM、真实图片、同checkpoint跨vLLM/HF ratio或GPU optimizer step；
+  这些必须作为独立运行门槛，不能由CPU测试代替。

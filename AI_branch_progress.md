@@ -2389,5 +2389,9 @@
 - launcher参数改由RL YAML解析，validator补齐token/planner/reference指标、组件checkpoint
   和fresh commit状态；low-var KL增加等价饱和区间的安全exp输入；vLLM cache改为显式开关，
   默认关闭等待真实多图A/B parity。
-- 当前只完成`git diff --check`、Python AST和launcher `bash -n`静态验证；本地无
-  `torch/pytest/yaml`，服务器CPU回归与真实vLLM/GPU语义smoke尚未执行。
+- commit `20c596a`完成实现；`git diff --check`、238个Python文件AST、launcher
+  `bash -n`和新planner YAML真实配置解析通过。本机Nix store依赖下，9个直接影响文件
+  `78 passed, 1 expected warning`；扩大RL/agent/Qwen/rollout CPU回归（排除缺少vLLM
+  无法收集的`test_vllm_logits.py`）为`166 passed, 1 expected warning`。
+- 尚未验证真实vLLM、真实图片、同checkpoint跨vLLM/HF ratio或GPU optimizer step；
+  CPU结果不能替代这些门槛。vLLM cache默认保持关闭，启用前仍需同版本多图A/B parity。
