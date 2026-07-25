@@ -315,9 +315,17 @@ class RLAlgorithm:
                 action_distillation_loss = -(
                     teacher_probs * replay_output.action_log_probs
                 ).sum(dim=-1).mean()
+                # Greedy planner uses -inf outside the selected action.  Replace
+                # those values before the subtraction so zero-probability terms
+                # remain exactly zero instead of producing 0 * -inf = NaN.
+                safe_teacher_log_probs = torch.where(
+                    torch.isfinite(teacher_log_probs),
+                    teacher_log_probs,
+                    torch.zeros_like(teacher_log_probs),
+                )
                 action_distillation_kl = (
                     teacher_probs
-                    * (teacher_log_probs - replay_output.action_log_probs)
+                    * (safe_teacher_log_probs - replay_output.action_log_probs)
                 ).sum(dim=-1).mean()
             if self.reference_kl_loss_weight > 0.0:
                 if replay_output.selected_full_log_probs is None:

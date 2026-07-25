@@ -13,6 +13,7 @@ from nimloth.agent import (
     Agent,
     AgentTranscript,
     NimlothPromptTemplate,
+    PlannerPolicyTrace,
     PolicyReplayOutput,
 )
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
@@ -139,6 +140,22 @@ class _ReferenceTokenReplay(_TokenReplay):
             entropies=torch.ones_like(self.log_probs),
             token_values=self.token_values,
             selected_full_log_probs=self.full_log_probs,
+        )
+
+
+class _PlannerTokenReplay(_TokenReplay):
+    def __init__(self, token_count: int, action_count: int) -> None:
+        super().__init__(token_count)
+        self.action_logits = torch.nn.Parameter(
+            torch.zeros(token_count, action_count)
+        )
+
+    def forward(self, _samples) -> PolicyReplayOutput:
+        return PolicyReplayOutput(
+            selected_log_probs=self.log_probs,
+            entropies=torch.ones_like(self.log_probs),
+            token_values=self.token_values,
+            action_log_probs=self.action_logits.log_softmax(dim=-1),
         )
 
 
@@ -566,3 +583,78 @@ def test_reference_kl_is_actor_loss_only_and_uses_reasoning_tokens() -> None:
     assert output.metrics["reference_kl_loss"] == pytest.approx(expected)
     assert output.losses["reference_kl"] is not None
     assert token_replay.full_log_probs.grad is not None
+
+
+def test_greedy_planner_distillation_kl_is_finite_for_deterministic_teacher() -> None:
+    trajectory = _trajectory("planner-token", 2)
+    trajectory.policy_credit_assignment = "token"
+    trajectory.policy_token_log_probs = [
+        [-0.2, None, None] for _ in trajectory.action_indices
+    ]
+    trajectory.policy_loss_masks = [
+        [True, False, False] for _ in trajectory.action_indices
+    ]
+    uniform = tuple([-math.log(8.0)] * 8)
+    planner_traces = []
+    planner_behavior = []
+    for action_index in trajectory.action_indices:
+        deterministic = tuple(
+            0.0 if index == action_index else float("-inf")
+            for index in range(8)
+        )
+        values = tuple(
+            1.0 if index == action_index else 0.0 for index in range(8)
+        )
+        planner_traces.append(
+            PlannerPolicyTrace(
+                qwen_action_log_probs=uniform,
+                candidate_sequences=((action_index, action_index),),
+                candidate_scores=(2.0,),
+                greedy_step_action_values=(values, values),
+                teacher_action_log_probs=deterministic,
+                behavior_action_log_probs=deterministic,
+                horizon=2,
+                search_mode="greedy",
+            )
+        )
+        planner_behavior.append(list(deterministic))
+    trajectory.planner_policy_traces = planner_traces
+    trajectory.action_log_probs = planner_behavior
+    trajectory.rewards = [0.0, 1.0]
+    trajectory.reward = 1.0
+    trajectory.terminated = True
+
+    windows = sample_trajectory_windows(
+        [trajectory],
+        history_size=2,
+        batch_size=1,
+        seed=1,
+    )
+    batch = build_rl_batch(windows, gamma=1.0, device=torch.device("cpu"))
+    token_replay = _PlannerTokenReplay(token_count=2, action_count=8)
+    _, base_runtime, *_ = _algorithm()
+    runtime = replace(base_runtime, policy_replay=token_replay)
+    algorithm = RLAlgorithm(
+        history_size=2,
+        sigreg=None,
+        sigreg_weight=0.0,
+        value_rank_margin=0.1,
+        value_rank_weight=0.0,
+        ppo_clip_ratio=0.2,
+        entropy_weight=0.0,
+        credit_assignment="token",
+        token_gamma=1.0,
+        token_gae_lambda=1.0,
+        token_value_loss_weight=1.0,
+        planner_distillation_weight=1.0,
+    )
+
+    output = algorithm.training_step(runtime, batch)
+    output.loss.backward()
+
+    expected = math.log(8.0)
+    assert output.metrics["action_distillation_loss"] == pytest.approx(expected)
+    assert output.metrics["action_distillation_kl"] == pytest.approx(expected)
+    assert math.isfinite(output.metrics["action_distillation_kl"])
+    assert token_replay.action_logits.grad is not None
+    assert torch.isfinite(token_replay.action_logits.grad).all()
