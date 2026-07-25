@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from nimloth.rollout.schema import RolloutTrajectory
 from nimloth.rollout.validation import validate_rollout_trajectory
@@ -16,17 +17,34 @@ def save_trajectories(
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = output_dir / "trajectories.jsonl"
-    with jsonl_path.open("w", encoding="utf-8") as stream:
-        for trajectory in trajectories:
-            validate_rollout_trajectory(trajectory)
-            stream.write(
-                json.dumps(
-                    trajectory.to_record(),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                )
-                + "\n"
+    lines: list[str] = []
+    for trajectory in trajectories:
+        validate_rollout_trajectory(trajectory)
+        lines.append(
+            json.dumps(
+                trajectory.to_record(),
+                ensure_ascii=False,
+                allow_nan=False,
             )
+            + "\n"
+        )
+
+    temporary_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output_dir,
+            prefix=".trajectories.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary_path = Path(stream.name)
+            stream.writelines(lines)
+        temporary_path.replace(jsonl_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
     return jsonl_path
 
 

@@ -12,9 +12,15 @@ import pytest
 from nimloth.agent import (
     AgentTranscript,
     NimlothPromptTemplate,
+    PlannerPolicyTrace,
 )
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
-from nimloth.rollout import JSONLRolloutCollector, RolloutTrajectory
+from nimloth.rollout import (
+    JSONLRolloutCollector,
+    RolloutTrajectory,
+    load_trajectories,
+    save_trajectories,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +214,71 @@ def test_masked_action_probabilities_use_strict_json_null(tmp_path: Path) -> Non
     assert "null" in payload
     loaded = JSONLRolloutCollector(sources=[path]).collect(num_episodes=1)[0]
     assert loaded.action_log_probs[0] == [0.0] + [float("-inf")] * 7
+
+
+def test_planner_probabilities_round_trip_through_strict_json(tmp_path: Path) -> None:
+    trajectory = _make_traj("planner_greedy", num_steps=1)
+    selected_action = trajectory.action_indices[0]
+    deterministic = tuple(
+        0.0 if index == selected_action else float("-inf")
+        for index in range(8)
+    )
+    trajectory.action_log_probs = [list(deterministic)]
+    trajectory.rewards = [0.0]
+    trajectory.truncated = True
+    trajectory.policy_credit_assignment = "token"
+    trajectory.policy_token_log_probs[0][1] = None
+    trajectory.policy_loss_masks[0][1] = False
+    trajectory.planner_policy_traces = [
+        PlannerPolicyTrace(
+            qwen_action_log_probs=deterministic,
+            candidate_sequences=((selected_action, selected_action),),
+            candidate_scores=(0.0,),
+            greedy_step_action_values=(
+                tuple(
+                    1.0 if index == selected_action else 0.0
+                    for index in range(8)
+                ),
+                tuple(
+                    1.0 if index == selected_action else 0.0
+                    for index in range(8)
+                ),
+            ),
+            teacher_action_log_probs=deterministic,
+            behavior_action_log_probs=deterministic,
+            horizon=2,
+            search_mode="greedy",
+        )
+    ]
+
+    jsonl_path = save_trajectories([trajectory], tmp_path)
+
+    payload = jsonl_path.read_text(encoding="utf-8")
+    assert "Infinity" not in payload
+    raw_trace = json.loads(payload)["planner_policy_traces"][0]
+    for name in (
+        "qwen_action_log_probs",
+        "teacher_action_log_probs",
+        "behavior_action_log_probs",
+    ):
+        assert raw_trace[name] == [0.0] + [None] * 7
+    loaded_trace = load_trajectories(jsonl_path)[0].planner_policy_traces[0]
+    assert loaded_trace.qwen_action_log_probs == deterministic
+    assert loaded_trace.teacher_action_log_probs == deterministic
+    assert loaded_trace.behavior_action_log_probs == deterministic
+
+
+def test_failed_serialization_does_not_replace_existing_jsonl(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "trajectories.jsonl"
+    jsonl_path.write_text("existing\n", encoding="utf-8")
+    trajectory = _make_traj("invalid_json", num_steps=1)
+    trajectory.sampling_temperature = float("nan")
+
+    with pytest.raises(ValueError, match="Out of range float values"):
+        save_trajectories([trajectory], tmp_path)
+
+    assert jsonl_path.read_text(encoding="utf-8") == "existing\n"
+    assert not list(tmp_path.glob(".trajectories.*.tmp"))
 
 
 # ---------------------------------------------------------------------------

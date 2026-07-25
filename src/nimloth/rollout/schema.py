@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,6 +19,22 @@ from nimloth.agent import (
 )
 from nimloth.environment import get_action_space
 from nimloth.latent import LatentActionTokens
+
+
+def _encode_log_probabilities(values: Sequence[float]) -> list[float | None]:
+    """Encode impossible actions as strict-JSON ``null`` values."""
+
+    return [None if value == float("-inf") else value for value in values]
+
+
+def _decode_log_probabilities(
+    values: Sequence[float | None],
+) -> tuple[float, ...]:
+    """Restore strict-JSON ``null`` values to impossible-action log probabilities."""
+
+    return tuple(
+        float("-inf") if value is None else float(value) for value in values
+    )
 
 
 @dataclass
@@ -272,7 +289,7 @@ class RolloutTrajectory:
             "action_indices": self.action_indices,
             "action_names": self.action_names,
             "action_log_probs": [
-                [None if value == float("-inf") else value for value in row]
+                _encode_log_probabilities(row)
                 for row in self.action_log_probs
             ],
             "instruction": self.instruction,
@@ -297,7 +314,9 @@ class RolloutTrajectory:
             "policy_reasoning_truncated": self.policy_reasoning_truncated,
             "planner_policy_traces": [
                 {
-                    "qwen_action_log_probs": list(trace.qwen_action_log_probs),
+                    "qwen_action_log_probs": _encode_log_probabilities(
+                        trace.qwen_action_log_probs
+                    ),
                     "candidate_sequences": [
                         list(sequence) for sequence in trace.candidate_sequences
                     ],
@@ -305,10 +324,10 @@ class RolloutTrajectory:
                     "greedy_step_action_values": [
                         list(row) for row in trace.greedy_step_action_values
                     ],
-                    "teacher_action_log_probs": list(
+                    "teacher_action_log_probs": _encode_log_probabilities(
                         trace.teacher_action_log_probs
                     ),
-                    "behavior_action_log_probs": list(
+                    "behavior_action_log_probs": _encode_log_probabilities(
                         trace.behavior_action_log_probs
                     ),
                     "horizon": trace.horizon,
@@ -341,7 +360,7 @@ class RolloutTrajectory:
             action_indices=list(record.get("action_indices", [])),
             action_names=list(record.get("action_names", [])),
             action_log_probs=[
-                [float("-inf") if value is None else float(value) for value in row]
+                list(_decode_log_probabilities(row))
                 for row in record.get("action_log_probs", [])
             ],
             instruction=str(
@@ -402,8 +421,8 @@ class RolloutTrajectory:
             ],
             planner_policy_traces=[
                 PlannerPolicyTrace(
-                    qwen_action_log_probs=tuple(
-                        float(value) for value in raw["qwen_action_log_probs"]
+                    qwen_action_log_probs=_decode_log_probabilities(
+                        raw["qwen_action_log_probs"]
                     ),
                     candidate_sequences=tuple(
                         tuple(int(value) for value in sequence)
@@ -416,11 +435,11 @@ class RolloutTrajectory:
                         tuple(float(value) for value in row)
                         for row in raw["greedy_step_action_values"]
                     ),
-                    teacher_action_log_probs=tuple(
-                        float(value) for value in raw["teacher_action_log_probs"]
+                    teacher_action_log_probs=_decode_log_probabilities(
+                        raw["teacher_action_log_probs"]
                     ),
-                    behavior_action_log_probs=tuple(
-                        float(value) for value in raw["behavior_action_log_probs"]
+                    behavior_action_log_probs=_decode_log_probabilities(
+                        raw["behavior_action_log_probs"]
                     ),
                     horizon=int(raw["horizon"]),
                     search_mode=str(raw["search_mode"]),
