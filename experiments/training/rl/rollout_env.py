@@ -53,6 +53,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--max-model-len", type=int, default=32768)
     ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     ap.add_argument("--vllm-enforce-eager", action="store_true")
+    ap.add_argument("--vllm-enable-prefix-caching", action="store_true")
+    ap.add_argument("--vllm-mm-processor-cache-gb", type=float, default=0.0)
     ap.add_argument(
         "--vllm-distributed-executor-backend",
         choices=("mp", "ray"),
@@ -62,9 +64,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--planning-horizon", type=int, default=None)
     ap.add_argument(
         "--planning-search-mode",
-        choices=("greedy",),
+        choices=("greedy", "exhaustive", "beam"),
         default=None,
     )
+    ap.add_argument("--planning-beam-width", type=int, default=None)
     ap.add_argument("--planner-device", default=None)
     ap.add_argument("--wm-checkpoint", type=Path, default=None)
     ap.add_argument("--state-proj-checkpoint", type=Path, default=None)
@@ -150,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
     validate_split(args.eval_set, args.split)
     if not torch.cuda.is_available():
         raise RuntimeError("rollout_env requires CUDA")
+    if args.vllm_mm_processor_cache_gb < 0.0:
+        raise ValueError("vllm_mm_processor_cache_gb must be non-negative")
     if args.planner_enabled:
         missing = [
             name
@@ -175,11 +180,17 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("planner rollout requires --vllm-enforce-eager")
         if args.planning_horizon is not None and args.planning_horizon < 1:
             raise ValueError("planning_horizon must be positive")
+        if args.planning_search_mode == "beam":
+            if args.planning_beam_width is None or args.planning_beam_width < 1:
+                raise ValueError("beam planner requires a positive beam width")
+        elif args.planning_beam_width is not None:
+            raise ValueError("planning_beam_width is only valid for beam search")
     elif any(
         value is not None
         for value in (
             args.planning_horizon,
             args.planning_search_mode,
+            args.planning_beam_width,
             args.planner_device,
             args.wm_checkpoint,
             args.state_proj_checkpoint,
@@ -226,6 +237,8 @@ def main(argv: list[str] | None = None) -> int:
             distributed_executor_backend=args.vllm_distributed_executor_backend,
             enforce_eager=args.vllm_enforce_eager,
             capture_policy_state=args.planner_enabled,
+            enable_prefix_caching=args.vllm_enable_prefix_caching,
+            mm_processor_cache_gb=args.vllm_mm_processor_cache_gb,
         )
         if args.planner_enabled:
             from nimloth.agent import PlanningPolicy
@@ -255,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
                 world_model=world_model,
                 horizon=args.planning_horizon,
                 search_mode=args.planning_search_mode,
+                beam_width=args.planning_beam_width,
                 planner_device=planner_device,
             )
     else:

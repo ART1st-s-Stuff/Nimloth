@@ -413,13 +413,21 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             raise ValueError(
                 "planner distillation requires actor.credit_assignment=token"
             )
-        if agent_config.planning.search_mode != "greedy":
+        if agent_config.planning.search_mode is None:
             raise ValueError(
-                "planner distillation requires agent.planning.search_mode=greedy"
+                "planner distillation requires explicit agent.planning.search_mode"
             )
-        if "beam_width" in raw_planning:
+        if (
+            agent_config.planning.search_mode == "beam"
+            and "beam_width" not in raw_planning
+        ):
+            raise ValueError("beam planner requires explicit agent.planning.beam_width")
+        if (
+            agent_config.planning.search_mode != "beam"
+            and "beam_width" in raw_planning
+        ):
             raise ValueError(
-                "agent.planning.beam_width must be omitted for greedy search"
+                "agent.planning.beam_width is only valid for beam search"
             )
         if agent_config.planning.device is None:
             raise ValueError(

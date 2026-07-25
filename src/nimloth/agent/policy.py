@@ -102,20 +102,17 @@ def validate_action_log_probs(
 
 @dataclass(frozen=True)
 class PlannerPolicyTrace:
-    """Greedy planner teacher and Qwen student distributions for one action.
-
-    The single candidate plus every depth's action-value row makes the greedy
-    decision reconstructable instead of trusting a precomputed distribution.
-    """
+    """Planner candidates and teacher/Qwen distributions for one action."""
 
     qwen_action_log_probs: tuple[float, ...]
     candidate_sequences: tuple[tuple[int, ...], ...]
     candidate_scores: tuple[float, ...]
-    greedy_step_action_values: tuple[tuple[float, ...], ...]
+    root_action_scores: tuple[float, ...]
     teacher_action_log_probs: tuple[float, ...]
     behavior_action_log_probs: tuple[float, ...]
     horizon: int
     search_mode: str
+    beam_width: int | None = None
 
     def __post_init__(self) -> None:
         action_count = len(self.qwen_action_log_probs)
@@ -123,30 +120,68 @@ class PlannerPolicyTrace:
             raise ValueError("planner trace requires at least two actions")
         if self.horizon < 1:
             raise ValueError("planner trace horizon must be positive")
-        if self.search_mode != "greedy":
-            raise ValueError("planner trace search_mode must be greedy")
+        if self.search_mode not in {"greedy", "exhaustive", "beam"}:
+            raise ValueError(
+                "planner trace search_mode must be greedy, exhaustive, or beam"
+            )
+        if self.search_mode == "beam":
+            if self.beam_width is None or self.beam_width < 1:
+                raise ValueError("beam planner trace requires a positive beam_width")
+        elif self.beam_width is not None:
+            raise ValueError("beam_width is only valid for beam planner traces")
         if len(self.candidate_sequences) != len(self.candidate_scores):
             raise ValueError("planner candidate sequences and scores must align")
-        if len(self.candidate_sequences) != 1:
+        if not self.candidate_sequences:
+            raise ValueError("planner trace requires at least one candidate")
+        if self.search_mode == "greedy" and len(self.candidate_sequences) != 1:
             raise ValueError("greedy planner trace requires exactly one candidate")
+        if (
+            self.search_mode == "exhaustive"
+            and len(self.candidate_sequences) != action_count**self.horizon
+        ):
+            raise ValueError(
+                "exhaustive planner trace must contain every action sequence"
+            )
+        if (
+            self.search_mode == "beam"
+            and len(self.candidate_sequences) > self.beam_width
+        ):
+            raise ValueError("beam planner trace exceeds beam_width")
         if any(
             len(sequence) != self.horizon
             or any(not 0 <= action < action_count for action in sequence)
             for sequence in self.candidate_sequences
         ):
             raise ValueError("planner candidate sequence is outside the action space")
+        if len(set(self.candidate_sequences)) != len(self.candidate_sequences):
+            raise ValueError("planner candidate sequences must be unique")
         if any(not math.isfinite(value) for value in self.candidate_scores):
             raise ValueError("planner candidate scores must be finite")
-        if len(self.greedy_step_action_values) != self.horizon or any(
-            len(row) != action_count
-            or any(not math.isfinite(value) for value in row)
-            for row in self.greedy_step_action_values
+        if len(self.root_action_scores) != action_count or any(
+            math.isnan(value) or value == float("inf")
+            for value in self.root_action_scores
         ):
             raise ValueError(
-                "planner trace requires one finite action-value row per horizon step"
+                "planner root scores require one finite-or-negative-infinity value "
+                "per action"
             )
-        sequence = self.candidate_sequences[0]
-        action_index = sequence[0]
+        expected_root_scores = [float("-inf")] * action_count
+        for sequence, score in zip(
+            self.candidate_sequences,
+            self.candidate_scores,
+            strict=True,
+        ):
+            expected_root_scores[sequence[0]] = max(
+                expected_root_scores[sequence[0]],
+                score,
+            )
+        if tuple(expected_root_scores) != self.root_action_scores:
+            raise ValueError("planner root scores do not match candidate scores")
+        best_candidate = max(
+            range(len(self.candidate_scores)),
+            key=self.candidate_scores.__getitem__,
+        )
+        action_index = self.candidate_sequences[best_candidate][0]
         validate_action_log_probs(
             action_index,
             self.qwen_action_log_probs,
@@ -162,9 +197,6 @@ class PlannerPolicyTrace:
             self.behavior_action_log_probs,
             action_count=action_count,
         )
-        for depth, row in enumerate(self.greedy_step_action_values):
-            if sequence[depth] != max(range(action_count), key=row.__getitem__):
-                raise ValueError("planner candidate does not follow greedy action values")
         for name, log_probs in (
             ("teacher", self.teacher_action_log_probs),
             ("behavior", self.behavior_action_log_probs),
@@ -175,7 +207,7 @@ class PlannerPolicyTrace:
             )
             if log_probs != expected:
                 raise ValueError(
-                    f"greedy planner {name} distribution must be deterministic"
+                    f"planner {name} distribution must match the selected candidate"
                 )
 
 

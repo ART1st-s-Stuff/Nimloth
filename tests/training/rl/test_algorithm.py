@@ -23,7 +23,12 @@ from nimloth.rollout import (
     count_trajectory_windows,
     sample_trajectory_windows,
 )
-from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch, build_rl_batch
+from nimloth.training.rl.algorithm import (
+    RLAlgorithm,
+    RLBatch,
+    build_rl_batch,
+    low_variance_kl,
+)
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm.model import WorldModel
 from nimloth.wm.grid import (
@@ -585,7 +590,23 @@ def test_reference_kl_is_actor_loss_only_and_uses_reasoning_tokens() -> None:
     assert token_replay.full_log_probs.grad is not None
 
 
-def test_greedy_planner_distillation_kl_is_finite_for_deterministic_teacher() -> None:
+def test_low_variance_kl_stays_finite_for_extreme_log_ratios() -> None:
+    log_ratio = torch.tensor(
+        [-1000.0, -10.0, 0.0, 2.0, 1000.0],
+        requires_grad=True,
+    )
+
+    penalty = low_variance_kl(log_ratio)
+    penalty.sum().backward()
+
+    assert torch.isfinite(penalty).all()
+    assert torch.isfinite(log_ratio.grad).all()
+    assert penalty[0].item() == pytest.approx(10.0)
+    assert penalty[2].item() == pytest.approx(0.0)
+    assert penalty[-1].item() == pytest.approx(10.0)
+
+
+def test_planner_distillation_kl_is_finite_for_deterministic_teacher() -> None:
     trajectory = _trajectory("planner-token", 2)
     trajectory.policy_credit_assignment = "token"
     trajectory.policy_token_log_probs = [
@@ -602,15 +623,15 @@ def test_greedy_planner_distillation_kl_is_finite_for_deterministic_teacher() ->
             0.0 if index == action_index else float("-inf")
             for index in range(8)
         )
-        values = tuple(
-            1.0 if index == action_index else 0.0 for index in range(8)
-        )
         planner_traces.append(
             PlannerPolicyTrace(
                 qwen_action_log_probs=uniform,
                 candidate_sequences=((action_index, action_index),),
                 candidate_scores=(2.0,),
-                greedy_step_action_values=(values, values),
+                root_action_scores=tuple(
+                    2.0 if index == action_index else float("-inf")
+                    for index in range(8)
+                ),
                 teacher_action_log_probs=deterministic,
                 behavior_action_log_probs=deterministic,
                 horizon=2,

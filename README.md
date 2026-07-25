@@ -26,7 +26,7 @@ Nimloth is a Python machine-learning project for building a **World Model Agent*
 - 已实现 planner action distillation、逐 token GAE、逐步 reward 与
   terminal/truncation 语义；这些新路径尚未完成真实 GPU optimizer-step 验证，因此仍
   不得表述为“planning RL 已完成”。
-- 当前 planner action 由 WM/ValueHead greedy planner 决定，不参加 Qwen PPO ratio；
+- 当前 planner action 由 WM/ValueHead latent candidate search 决定，不参加 Qwen PPO ratio；
   Qwen 只对真实采样 CoT token 做 PPO，并用独立交叉熵拟合 planner action。
 - 长时间、多次 fresh rollout/update 的完整在线闭环尚未完成运行验证。
 
@@ -55,7 +55,7 @@ Nimloth is a Python machine-learning project for building a **World Model Agent*
 | Return 与 advantage | Monte Carlo return、return target、baseline、advantage | return 先在完整 episode 上计算再切窗口；token模式使用独立TokenValueHead和turn内逐token GAE | action `Q(s,a)` 与 token critic 是不同参数和统计单位 |
 | PPO replay | policy replay、new log-prob、probability ratio、clip、entropy | 对已记录的同一 prompt、图片、采样参数和动作重新计算当前策略概率，并构造 PPO loss | replay 不重新执行环境，也不重新采样动作 |
 | Credit assignment | action credit、turn credit、token credit、policy token | token credit只覆盖Qwen真实采样且被loss mask选中的token，并使用独立TokenValueHead | planner action、模板和注入token不参加CoT PPO |
-| WM planning | planning horizon、greedy path、latent rollout、executed first action | 当前greedy从每个预测state取ValueHead最高动作，H步只形成一条候选，向环境执行首动作 | planning horizon不等于`history_size`或episode最大步数 |
+| WM planning | planning horizon、candidate sequence、latent rollout、executed first action | planner在WM latent空间模拟候选动作序列，以叶节点ValueHead启发式选出序列并向环境执行首动作 | planning horizon不等于`history_size`或episode最大步数；当前没有reward/done head |
 | 评估 | training-rollout success、held-out success、success rate、average reward | success rate 的统计单位是 episode；泛化评估必须使用与训练场景不重叠的数据 | 少量训练 rollout 的 success 不能替代 held-out evaluation |
 | Checkpoint | initialization、component checkpoint、`latest`、`best`、`final`、resume | initialization 是训练起点；component checkpoint 保存 WM/value 等模块；`latest` 用于恢复；`best` 由显式验证指标选择 | policy artifact 与完整 optimizer-resume checkpoint 不等价 |
 
@@ -130,8 +130,8 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | CoT-conditioned state | 使用当前 observation 对应的真实 assistant CoT | 禁止配置固定 thought；terminal CoT 必须额外生成并持久化 |
 | `agent.planning.enabled` | 是否启用 WM latent planning | 与actor同时开启时，action走planner distillation，CoT走token PPO；只接受fresh traced rollout |
 | `agent.planning.horizon` | 每个候选序列在 latent 空间向未来模拟的动作数 `P` | 不执行环境；不得用 `history_size` 表达 |
-| `agent.planning.search_mode` | planner候选搜索方式 | 当前实验只接受`greedy`；H=2仍只保存1条两动作候选及两行完整action-value证据 |
-| `agent.planning.beam_width` | beam模式每层保留的候选序列数 | 当前greedy distillation配置必须省略；不会读取一个无效值 |
+| `agent.planning.search_mode` | planner候选搜索方式 | `greedy`为单路径基线；`exhaustive`批量模拟全部`action_count ** horizon`候选；`beam`逐层扩展和裁剪 |
+| `agent.planning.beam_width` | beam模式每层保留的候选序列数 | `beam`必须显式配置；其他搜索模式必须省略 |
 | `agent.planning.device` | rollout端StateProjector、WM predictor和ValueHead所在设备 | 必须显式配置；vLLM Qwen仍按rollout TP独立管理设备 |
 | `gradient.representation_to_backbone` | WM/value/SIGReg 是否把表征梯度传回 Backbone | 与 `actor.enabled` 独立 |
 | `gradient.backbone_lr` | RL 中 Backbone 的统一学习率 | 实际可训练范围仍由 LLM/vision tune 配置决定 |
@@ -142,7 +142,7 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `actor.entropy_coeff` | behavior sampling 分布上的 entropy bonus 权重 | entropy 使用相同 temperature/top-p 变换后的分布 |
 | `actor.credit_assignment` | `action`、`turn`或`token` | `turn`广播step advantage；`token`使用独立逐token critic和turn内GAE |
 | `actor.max_response_tokens` | 一次CoT+协议边界+action完整response的token上限 | 当前VAGEN对齐实验为512；实现会扣除协议token后得到reasoning预算，截断状态必须持久化 |
-| `actor.planner_distillation_weight` | `-log pi_Qwen(a_greedy|prompt)`交叉熵项的权重 | 当前确认为`1.0`；planner action不进入PPO ratio |
+| `actor.planner_distillation_weight` | `-log pi_Qwen(a_planner|prompt)`交叉熵项的权重 | 当前确认为`1.0`；planner action不进入PPO ratio |
 | `actor.reference_kl_loss_weight`、`reference_kl_loss_type` | Qwen CoT相对冻结reference的actor loss KL权重与估计器 | 当前为`0.001/low_var_kl`；只覆盖采样CoT，planner action不参与 |
 | `token_credit.gamma`、`gae_lambda` | token MDP内的折扣率与GAE系数 | 只在`credit_assignment=token`时生效，必须显式配置 |
 | `token_credit.value_lr`、`value_loss_weight`、`hidden_dim` | TokenValueHead学习率、loss权重和MLP hidden维度 | 预测每个loss-mask token生成前的value，不替代action `Q(s,a)` |
@@ -159,7 +159,7 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `rl.gamma` | Monte Carlo return 折扣率 | 先对完整 episode 计算，再切 trajectory window |
 | `rl.truncated_bootstrap` | 时间上限truncation的bootstrap策略 | token模式必须显式配置；当前仅实现`zero`，不会把truncated猜成terminal |
 | `rl.batch_size` | 每次 optimizer update 采样的 trajectory window 数 | 每个窗口贡献 `H` 个 value/action 位置 |
-| `rollout.temperature`、`rollout.top_p` | Qwen CoT behavior的采样参数 | 必须随trajectory保存并在CoT PPO replay复用；greedy planner action不使用采样温度 |
+| `rollout.temperature`、`rollout.top_p` | Qwen CoT behavior的采样参数 | 必须随trajectory保存并在CoT PPO replay复用；确定性planner action不使用采样温度 |
 | `rollout.train_datasets`、`eval_datasets` | 训练和评估环境资产 | 两者必须具有经核实的不重叠 scene 语义 |
 | `validation.enabled`、`interval`、`envs` | 是否验证、验证间隔和 episode 数 | `interval` 的单位是 RL iteration；`envs` 的单位是 episode |
 | `validation.checkpoint_metric` | `best` checkpoint 的选择指标 | 例如 held-out `success_rate` 或 `avg_reward` |

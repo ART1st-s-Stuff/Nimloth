@@ -39,8 +39,10 @@ assets cannot be labeled as training data.
 The CLI requires one rollout mode explicitly. `actor.enabled` controls PPO and
 is independent of `gradient.representation_to_backbone`. Static JSONL is
 rejected when PPO is enabled. A `FreshRolloutManifest` binds one vLLM rollout to
-the exact policy artifact by content fingerprint and permits exactly one
-multi-rank PPO consumption. Train and validation use separate collector sources.
+the exact policy, planner, trajectory, and optional reference artifacts by content
+fingerprint. Consumption is marked in-progress before optimization and committed
+only after a resumable post-update checkpoint exists. Train and validation use
+separate collector sources.
 
 ## Data flow
 
@@ -142,7 +144,7 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
 | Module | Responsibility |
 |--------|----------------|
 | `nimloth.rollout.windows` | 原始 trajectory 的连续窗口计数与采样 |
-| `nimloth.rollout.fresh` | policy artifact 指纹、fresh manifest 和一次性消费契约 |
+| `nimloth.rollout.fresh` | policy/planner/trajectory指纹、fresh manifest和事务式消费契约 |
 | `algorithm.py` | multi-step WM/SIGReg、value/PPO 和梯度边界；不持有模型或 optimizer |
 | `runtime.py` | prompt→Backbone hidden 的 joint/frozen 模式与可选 policy replay |
 | `loop.py` | collect→sample→forward/backward→validate→save 生命周期 |
@@ -165,8 +167,9 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   only `messages` cannot provide exact policy-state/PPO replay and are rejected
   by the trainer.
 - JSONL cycling is suitable for offline WM/value training only. PPO accepts
-  only a fresh manifest produced from the exact current policy artifact; that
-  manifest cannot be reused for a second optimizer update or process.
+  only a fresh manifest whose current policy/planner and immutable trajectory
+  fingerprints all match; a committed or unresolved in-progress consumption
+  cannot be reused for another optimizer update.
 - `latest/` records resumable progress. `best/` is updated only by the explicit
   held-out `validation.checkpoint_metric` (`success_rate` or `avg_reward`).
 - LoRA plus full Vision saves `vision_full_state.pt` next to the adapter and
@@ -187,9 +190,10 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   hidden，不加载第二份HF Qwen。多步候选搜索随后全部发生在WM latent空间。
 - planner 当前用叶节点最大 action-value 作为搜索启发式；模型尚无 reward/done
   head，因此不会把中间 Q-value 相加并伪装成 model-predicted return。
-- planner当前只允许`search_mode=greedy`。每个预测state都选择ValueHead最高动作，
-  因此`planning.horizon=2`仍只产生一条两动作候选；trajectory额外保存两个深度各自的
-  完整action-value行，验证器据此重建并核对greedy选择。
+- planner支持`greedy`、`exhaustive`和`beam`。`exhaustive`批量模拟全部
+  `action_count ** horizon`条latent动作序列；`beam`逐层批量扩展并按叶节点启发式裁剪；
+  `greedy`仅保留为单路径快速基线。trajectory保存最终候选序列、叶节点评分和按首动作
+  聚合的root score，当前H=2 planner smoke使用`exhaustive`。
 - planner behavior和teacher都是首动作上的确定性分布，不需要teacher temperature。
   action token不参加PPO或reference KL；Qwen action head以显式
   `actor.planner_distillation_weight`拟合该动作。

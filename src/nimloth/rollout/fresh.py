@@ -4,13 +4,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from typing import Any
 
 import torch.distributed as dist
 
 from nimloth.rollout.source import JSONLRolloutCollector
+
+
+def file_artifact_fingerprint(path: Path) -> str:
+    """Hash one immutable rollout artifact by bytes."""
+
+    artifact = Path(path).resolve()
+    if not artifact.is_file():
+        raise FileNotFoundError(f"rollout artifact does not exist: {artifact}")
+    digest = hashlib.sha256()
+    with artifact.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def policy_artifact_fingerprint(model_dir: Path) -> str:
@@ -68,13 +84,15 @@ class FreshRolloutManifest:
     policy_fingerprint: str
     policy_path: str
     trajectory_path: str
+    trajectory_fingerprint: str
     num_trajectories: int
     created_at: str
     planner_fingerprints: dict[str, str] = field(default_factory=dict)
     planner_paths: dict[str, str] = field(default_factory=dict)
     reference_policy_fingerprint: str | None = None
     reference_policy_path: str | None = None
-    behavior_trajectory_path: str | None = None
+    behavior_trajectory_path: str = ""
+    behavior_trajectory_fingerprint: str = ""
 
     @classmethod
     def create(
@@ -86,11 +104,14 @@ class FreshRolloutManifest:
         planner_artifacts: dict[str, Path] | None = None,
     ) -> "FreshRolloutManifest":
         artifacts = planner_artifacts or {}
+        resolved_trajectory = Path(trajectory_path).resolve()
+        trajectory_fingerprint = file_artifact_fingerprint(resolved_trajectory)
         return cls(
-            format_version=2 if artifacts else 1,
+            format_version=4,
             policy_fingerprint=policy_artifact_fingerprint(policy_path),
             policy_path=str(Path(policy_path).resolve()),
-            trajectory_path=str(Path(trajectory_path).resolve()),
+            trajectory_path=str(resolved_trajectory),
+            trajectory_fingerprint=trajectory_fingerprint,
             num_trajectories=int(num_trajectories),
             created_at=datetime.now(timezone.utc).isoformat(),
             planner_fingerprints={
@@ -101,11 +122,30 @@ class FreshRolloutManifest:
                 name: str(Path(path).resolve())
                 for name, path in sorted(artifacts.items())
             },
+            behavior_trajectory_path=str(resolved_trajectory),
+            behavior_trajectory_fingerprint=trajectory_fingerprint,
         )
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.__dict__, indent=2) + "\n", encoding="utf-8")
+        temporary_path: Path | None = None
+        try:
+            with NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary_path = Path(stream.name)
+                stream.write(json.dumps(self.__dict__, indent=2) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary_path.replace(path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def with_reference(
         self,
@@ -117,22 +157,41 @@ class FreshRolloutManifest:
 
         if self.reference_policy_fingerprint is not None:
             raise ValueError("fresh rollout manifest already has a reference policy")
+        resolved_trajectory = Path(trajectory_path).resolve()
         return replace(
             self,
-            format_version=3,
-            trajectory_path=str(Path(trajectory_path).resolve()),
+            trajectory_path=str(resolved_trajectory),
+            trajectory_fingerprint=file_artifact_fingerprint(resolved_trajectory),
             reference_policy_fingerprint=policy_artifact_fingerprint(
                 reference_policy_path
             ),
             reference_policy_path=str(Path(reference_policy_path).resolve()),
-            behavior_trajectory_path=self.trajectory_path,
         )
+
+    def validate_trajectory_artifacts(self) -> None:
+        """Reject changed behavior or reference-enriched trajectory bytes."""
+
+        actual = file_artifact_fingerprint(Path(self.trajectory_path))
+        if actual != self.trajectory_fingerprint:
+            raise ValueError(
+                "fresh rollout trajectory fingerprint mismatch: "
+                f"manifest={self.trajectory_fingerprint}, current={actual}"
+            )
+        behavior_actual = file_artifact_fingerprint(
+            Path(self.behavior_trajectory_path)
+        )
+        if behavior_actual != self.behavior_trajectory_fingerprint:
+            raise ValueError(
+                "fresh behavior trajectory fingerprint mismatch: "
+                f"manifest={self.behavior_trajectory_fingerprint}, "
+                f"current={behavior_actual}"
+            )
 
     @classmethod
     def read(cls, path: Path) -> "FreshRolloutManifest":
         payload = json.loads(path.read_text(encoding="utf-8"))
         manifest = cls(**payload)
-        if manifest.format_version not in {1, 2, 3}:
+        if manifest.format_version != 4:
             raise ValueError(
                 f"unsupported fresh rollout manifest version {manifest.format_version}"
             )
@@ -162,6 +221,7 @@ class FreshJSONLRolloutCollector(JSONLRolloutCollector):
         super().__init__([Path(self.manifest.trajectory_path)], loop=False)
 
     def validate_policy(self) -> None:
+        self.manifest.validate_trajectory_artifacts()
         actual = policy_artifact_fingerprint(self.model_path)
         if actual != self.manifest.policy_fingerprint:
             raise ValueError(
@@ -200,19 +260,21 @@ class FreshJSONLRolloutCollector(JSONLRolloutCollector):
                     f"current={actual_reference}"
                 )
 
-    def _claim_once(self) -> None:
-        claim_path = self.manifest_path.with_suffix(self.manifest_path.suffix + ".consumed")
+    @property
+    def consumption_path(self) -> Path:
+        return self.manifest_path.with_suffix(
+            self.manifest_path.suffix + ".consumption.json"
+        )
+
+    def _distributed_rank_zero(self, operation) -> None:  # type: ignore[no-untyped-def]
         distributed = dist.is_available() and dist.is_initialized()
         rank = dist.get_rank() if distributed else 0
         error_message: str | None = None
         if rank == 0:
             try:
-                descriptor = claim_path.open("x", encoding="utf-8")
-            except FileExistsError:
-                error_message = f"fresh rollout manifest was already consumed: {claim_path}"
-            else:
-                with descriptor:
-                    descriptor.write(self.manifest.policy_fingerprint + "\n")
+                operation()
+            except Exception as error:
+                error_message = str(error)
         if distributed:
             messages = [error_message]
             dist.broadcast_object_list(messages, src=0)
@@ -220,16 +282,150 @@ class FreshJSONLRolloutCollector(JSONLRolloutCollector):
         if error_message is not None:
             raise RuntimeError(error_message)
 
+    def begin_consumption(self, *, output_dir: Path, global_step: int) -> str:
+        """Atomically mark a validated batch as in-progress before optimizer work."""
+
+        manifest_fingerprint = file_artifact_fingerprint(self.manifest_path)
+        consumption_id = hashlib.sha256(
+            (
+                manifest_fingerprint
+                + str(Path(output_dir).resolve())
+                + str(global_step)
+            ).encode("utf-8")
+        ).hexdigest()
+
+        def begin() -> None:
+            path = self.consumption_path
+            temporary_path: Path | None = None
+            try:
+                with NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=path.parent,
+                    prefix=f".{path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as stream:
+                    temporary_path = Path(stream.name)
+                    json.dump(
+                        {
+                            "state": "in_progress",
+                            "consumption_id": consumption_id,
+                            "manifest_fingerprint": manifest_fingerprint,
+                            "trajectory_fingerprint": (
+                                self.manifest.trajectory_fingerprint
+                            ),
+                            "policy_fingerprint": self.manifest.policy_fingerprint,
+                            "output_dir": str(Path(output_dir).resolve()),
+                            "starting_global_step": int(global_step),
+                        },
+                        stream,
+                        indent=2,
+                    )
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.link(temporary_path, path)
+            except FileExistsError as error:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                raise RuntimeError(
+                    "fresh rollout consumption already exists: "
+                    f"state={payload.get('state')}, path={path}"
+                ) from error
+            finally:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
+
+        self._distributed_rank_zero(begin)
+        return consumption_id
+
+    def abort_consumption(self, consumption_id: str) -> None:
+        """Release a claim only when no optimizer step could have completed."""
+
+        def abort() -> None:
+            path = self.consumption_path
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                payload.get("state") != "in_progress"
+                or payload.get("consumption_id") != consumption_id
+            ):
+                raise RuntimeError("fresh rollout consumption abort state mismatch")
+            path.unlink()
+
+        self._distributed_rank_zero(abort)
+
+    def commit_consumption(
+        self,
+        consumption_id: str,
+        *,
+        checkpoint_path: Path,
+        global_step: int,
+    ) -> None:
+        """Commit consumption only after a durable post-update checkpoint exists."""
+
+        def commit() -> None:
+            path = self.consumption_path
+            payload: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                payload.get("state") != "in_progress"
+                or payload.get("consumption_id") != consumption_id
+            ):
+                raise RuntimeError("fresh rollout consumption commit state mismatch")
+            checkpoint = Path(checkpoint_path).resolve()
+            if not checkpoint.is_dir() or not (checkpoint / "rl_state.pt").is_file():
+                raise RuntimeError(
+                    f"fresh rollout commit requires complete checkpoint: {checkpoint}"
+                )
+            committed = {
+                **payload,
+                "state": "committed",
+                "checkpoint_path": str(checkpoint),
+                "committed_global_step": int(global_step),
+            }
+            temporary: Path | None = None
+            try:
+                with NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=path.parent,
+                    prefix=f".{path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as stream:
+                    temporary = Path(stream.name)
+                    stream.write(json.dumps(committed, indent=2) + "\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                temporary.replace(path)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+
+        self._distributed_rank_zero(commit)
+
     def collect(self, **kwargs):  # type: ignore[no-untyped-def]
         if self._call_count > 0:
             raise RuntimeError("fresh rollout collector can only be consumed once")
-        self._claim_once()
-        return super().collect(**kwargs)
+        self.manifest.validate_trajectory_artifacts()
+        requested = int(kwargs.get("num_episodes", 0))
+        if requested != self.manifest.num_trajectories:
+            raise ValueError(
+                "fresh rollout must consume the complete manifest batch: "
+                f"requested={requested}, manifest={self.manifest.num_trajectories}"
+            )
+        trajectories = super().collect(**kwargs)
+        if len(trajectories) != self.manifest.num_trajectories:
+            raise ValueError(
+                "fresh rollout trajectory count does not match manifest: "
+                f"loaded={len(trajectories)}, manifest={self.manifest.num_trajectories}"
+            )
+        return trajectories
 
 
 __all__ = [
     "FreshJSONLRolloutCollector",
     "FreshRolloutManifest",
     "auxiliary_artifact_fingerprint",
+    "file_artifact_fingerprint",
     "policy_artifact_fingerprint",
 ]

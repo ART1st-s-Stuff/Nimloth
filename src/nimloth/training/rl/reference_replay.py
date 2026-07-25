@@ -83,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = FreshRolloutManifest.read(args.manifest)
     if manifest.reference_policy_fingerprint is not None:
         raise ValueError("manifest is already reference-enriched")
+    manifest.validate_trajectory_artifacts()
     trajectories = load_trajectories(Path(manifest.trajectory_path))
     if len(trajectories) != manifest.num_trajectories:
         raise ValueError("manifest trajectory count does not match JSONL")
@@ -154,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         reference_policy_path=args.reference_model,
         trajectory_path=trajectory_path,
     )
+    updated.validate_trajectory_artifacts()
     updated.write(args.manifest)
     print(
         json.dumps(

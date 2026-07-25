@@ -7,7 +7,6 @@ import pytest
 from nimloth.rollout import FreshJSONLRolloutCollector, JSONLRolloutCollector
 from nimloth.training.rl.rollout_runtime import (
     validate_collector_configuration,
-    validate_online_policy_configuration,
     validate_planning_initialization,
 )
 
@@ -40,17 +39,6 @@ def test_validation_requires_an_independent_collector() -> None:
             eval_collector=None,
             validation_enabled=True,
         )
-
-
-def test_planner_actor_configuration_is_supported_by_traced_jsonl() -> None:
-    validate_online_policy_configuration(
-        actor_enabled=True,
-        planning_enabled=True,
-    )
-    validate_online_policy_configuration(
-        actor_enabled=False,
-        planning_enabled=True,
-    )
 
 
 def test_online_planning_requires_trained_model_modules() -> None:

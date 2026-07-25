@@ -60,16 +60,6 @@ def validate_fresh_rollout_policy(train_collector: RolloutCollector) -> None:
         raise ValueError(error_message)
 
 
-def validate_online_policy_configuration(
-    *,
-    actor_enabled: bool,
-    planning_enabled: bool,
-) -> None:
-    """Planner actor is supported through fresh traced vLLM JSONL rollout."""
-
-    _ = actor_enabled, planning_enabled
-
-
 def validate_planning_initialization(
     *,
     planning_enabled: bool,
@@ -149,6 +139,5 @@ __all__ = [
     "online_policy_required",
     "validate_collector_configuration",
     "validate_fresh_rollout_policy",
-    "validate_online_policy_configuration",
     "validate_planning_initialization",
 ]

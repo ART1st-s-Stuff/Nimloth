@@ -165,13 +165,13 @@ def test_rl_config_requires_explicit_token_credit_semantics() -> None:
     assert config.rl.truncated_bootstrap == "zero"
 
 
-def test_planner_distillation_requires_greedy_and_explicit_loss_weight() -> None:
+def test_planner_distillation_requires_explicit_search_and_loss_weight() -> None:
     raw = _raw_config()
     raw["agent"] = {
         "planning": {
             "enabled": True,
             "horizon": 2,
-            "search_mode": "greedy",
+            "search_mode": "exhaustive",
         }
     }
     raw["actor"] = {
@@ -204,6 +204,42 @@ def test_planner_distillation_requires_greedy_and_explicit_loss_weight() -> None
     assert config.agent.planning.beam_width is None
     assert config.actor.planner_distillation_weight == 0.3
     assert config.predictor.train_wm is True
+
+
+def test_planner_beam_width_matches_search_mode() -> None:
+    raw = _raw_config()
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 2,
+            "search_mode": "beam",
+            "device": "cpu",
+        }
+    }
+    raw["actor"] = {
+        "enabled": True,
+        "credit_assignment": "token",
+        "planner_distillation_weight": 0.3,
+    }
+    raw["token_credit"] = {
+        "gamma": 0.95,
+        "gae_lambda": 0.9,
+        "value_lr": 1e-4,
+        "value_loss_weight": 0.5,
+        "hidden_dim": 256,
+    }
+    raw["rl"]["truncated_bootstrap"] = "zero"
+    raw["predictor"]["train_wm"] = True
+
+    with pytest.raises(ValueError, match="beam_width"):
+        parse_rl_config(raw)
+
+    raw["agent"]["planning"]["beam_width"] = 4
+    assert parse_rl_config(raw).agent.planning.beam_width == 4
+
+    raw["agent"]["planning"]["search_mode"] = "exhaustive"
+    with pytest.raises(ValueError, match="only valid for beam"):
+        parse_rl_config(raw)
 
 
 def test_reference_kl_requires_explicit_low_var_loss_type() -> None:

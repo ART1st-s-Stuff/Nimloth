@@ -126,12 +126,16 @@ def test_from_model_forwards_ray_backend(monkeypatch) -> None:
         gpu_memory_utilization=0.85,
         latent_token_count=16,
         distributed_executor_backend="ray",
+        enable_prefix_caching=True,
+        mm_processor_cache_gb=2.5,
     )
 
     assert policy.engine is engine
     assert captured["tensor_parallel_size"] == 8
     assert captured["distributed_executor_backend"] == "ray"
     assert captured["logprobs_mode"] == "processed_logprobs"
+    assert captured["enable_prefix_caching"] is True
+    assert captured["mm_processor_cache_gb"] == 2.5
     assert policy.latent_token_count == 16
 
 

@@ -24,6 +24,41 @@ from nimloth.latent import (
 )
 from nimloth.util.module import evaluating
 
+
+def reasoning_forbidden_token_ids(
+    tokenizer: Any,
+    token_id_map: dict[str, int],
+    *,
+    close_token_ids: Sequence[int] = (),
+) -> tuple[int, ...]:
+    """Return the exact token support excluded from sampled reasoning.
+
+    vLLM behavior generation and HF PPO replay must call this same function;
+    otherwise an unchanged policy can produce a non-unit importance ratio.
+    """
+
+    tokenizer_control_ids = {
+        int(value)
+        for value in getattr(tokenizer, "all_special_ids", ())
+        if value is not None
+    }
+    tokenizer_control_ids.update(
+        int(token_id)
+        for token_id, token in getattr(
+            tokenizer,
+            "added_tokens_decoder",
+            {},
+        ).items()
+        if getattr(token, "special", False)
+    )
+    return tuple(
+        sorted(
+            (tokenizer_control_ids | set(token_id_map.values()))
+            - {int(value) for value in close_token_ids}
+        )
+    )
+
+
 def validate_agent_policy_protocol(model_config: Any) -> int:
     """确认 checkpoint 满足 inject policy 协议并返回其 latent token 数。"""
 
@@ -316,7 +351,16 @@ def replay_policy_token_log_probs(
         raise ValueError("token policy replay requires a trace for every sample")
     tokens = LatentActionTokens()
     action_token_ids = tuple(token_id_map[token] for token in tokens.action_tokens)
-    injected_token_ids = tuple(token_id_map.values())
+    tokenizer = processor.tokenizer
+    close_token_ids = tuple(
+        int(value)
+        for value in tokenizer.encode("</think>", add_special_tokens=False)
+    )
+    forbidden_reasoning_token_ids = reasoning_forbidden_token_ids(
+        tokenizer,
+        token_id_map,
+        close_token_ids=close_token_ids,
+    )
     selected_log_probs: list[torch.Tensor] = []
     selected_full_log_probs: list[torch.Tensor] = []
     entropies: list[torch.Tensor] = []
@@ -457,7 +501,7 @@ def replay_policy_token_log_probs(
                 role_logits = logits.clone()
                 role_logits[
                     torch.tensor(
-                        injected_token_ids,
+                        forbidden_reasoning_token_ids,
                         dtype=torch.long,
                         device=logits.device,
                     )

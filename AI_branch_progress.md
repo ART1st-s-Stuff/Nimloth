@@ -2373,3 +2373,21 @@
   `134 passed, 1 failed`，唯一失败是fake policy未声明其reasoning+action mask属于turn
   credit；生产校验正确。fixture补齐显式契约后，完整RL/agent/Qwen回归为
   `135 passed, 1 expected warning`。尚未启动GPU RL。
+
+## 2026-07-25：RL语义契约修复与多候选planner实现中
+
+- 人类明确当前算法不是VAGEN Bi-Level GAE；名称继续限定为“真实environment Monte
+  Carlo return + turn内token GAE”。本轮直接在`nimloth-dev`修改，不创建新worktree。
+- vLLM behavior与HF replay改为共享reasoning forbidden-token support；fresh manifest
+  v4新增behavior/enriched trajectory字节指纹和完整batch计数校验。
+- fresh消费从“读取前写死consumed标记”改为事务状态：optimizer前写`in_progress`，
+  optimizer尚未开始的失败可回滚；step开始后保留状态，post-update `latest` checkpoint
+  完成后才写`committed`，避免丢批次或重复更新。
+- planner公共结构不再写死单候选。`exhaustive`批量模拟全部`A^H`候选，`beam`逐层扩展，
+  `greedy`保留为显式基线；H=2 smoke配置切到64候选exhaustive，并增加未来leaf分支使
+  root动作从0反转到7的构造测试。
+- launcher参数改由RL YAML解析，validator补齐token/planner/reference指标、组件checkpoint
+  和fresh commit状态；low-var KL增加等价饱和区间的安全exp输入；vLLM cache改为显式开关，
+  默认关闭等待真实多图A/B parity。
+- 当前只完成`git diff --check`、Python AST和launcher `bash -n`静态验证；本地无
+  `torch/pytest/yaml`，服务器CPU回归与真实vLLM/GPU语义smoke尚未执行。

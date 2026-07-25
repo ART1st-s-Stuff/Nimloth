@@ -24,6 +24,12 @@ from nimloth.training.rl.token_value import TokenValueHead
 
 class _Processor:
     class Tokenizer:
+        all_special_ids = (60, 61)
+        added_tokens_decoder = {
+            62: SimpleNamespace(special=True),
+            58: SimpleNamespace(special=False),
+        }
+
         def encode(self, text, *, add_special_tokens):
             assert add_special_tokens is False
             del text
@@ -120,7 +126,7 @@ def test_token_replay_keeps_only_masked_positions_and_role_vocabularies() -> Non
     )
     trace = PolicyTokenTrace(
         token_ids=(5, 20, 25, 22),
-        old_log_probs=(-0.2, None, -0.3, None),
+        old_log_probs=(-math.log(50.0), None, -math.log(8.0), None),
         loss_mask=(True, False, True, False),
         token_roles=("reasoning", "injected", "action", "injected"),
         action_token_ids=tuple(range(23, 31)),
@@ -161,11 +167,18 @@ def test_token_replay_keeps_only_masked_positions_and_role_vocabularies() -> Non
     assert model.last_logits_to_keep == [3, 5]
     assert torch.allclose(
         output.selected_log_probs,
-        torch.tensor([-math.log(53.0), -math.log(8.0)]),
+        torch.tensor([-math.log(50.0), -math.log(8.0)]),
     )
     assert torch.allclose(
         output.entropies,
-        torch.tensor([math.log(53.0), math.log(8.0)]),
+        torch.tensor([math.log(50.0), math.log(8.0)]),
+    )
+    old_log_probs = torch.tensor(
+        [value for value in trace.old_log_probs if value is not None]
+    )
+    assert torch.allclose(
+        torch.exp(output.selected_log_probs - old_log_probs),
+        torch.ones(2),
     )
 
 
@@ -311,7 +324,16 @@ def test_planner_replay_returns_raw_action_distribution_without_action_ppo() -> 
             qwen_action_log_probs=uniform,
             candidate_sequences=((2,),),
             candidate_scores=(0.0,),
-            greedy_step_action_values=((0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0),),
+            root_action_scores=(
+                float("-inf"),
+                float("-inf"),
+                0.0,
+                float("-inf"),
+                float("-inf"),
+                float("-inf"),
+                float("-inf"),
+                float("-inf"),
+            ),
             teacher_action_log_probs=tuple(
                 0.0 if index == 2 else float("-inf") for index in range(8)
             ),

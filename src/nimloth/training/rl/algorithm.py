@@ -57,6 +57,17 @@ class RLStepOutput:
     metrics: dict[str, float]
 
 
+def low_variance_kl(log_ratio: torch.Tensor) -> torch.Tensor:
+    """Evaluate VAGEN's clamped low-variance KL without overflowing exp().
+
+    The final penalty is already saturated at 10 outside this input interval,
+    so clamping the exponent input preserves the value and zero-gradient region.
+    """
+
+    safe_log_ratio = log_ratio.clamp(min=-11.0, max=3.0)
+    return (safe_log_ratio.exp() - safe_log_ratio - 1.0).clamp(-10.0, 10.0)
+
+
 def build_rl_batch(
     windows: tuple[TrajectoryWindow, ...],
     *,
@@ -315,7 +326,7 @@ class RLAlgorithm:
                 action_distillation_loss = -(
                     teacher_probs * replay_output.action_log_probs
                 ).sum(dim=-1).mean()
-                # Greedy planner uses -inf outside the selected action.  Replace
+                # The deterministic planner uses -inf outside its action.  Replace
                 # those values before the subtraction so zero-probability terms
                 # remain exactly zero instead of producing 0 * -inf = NaN.
                 safe_teacher_log_probs = torch.where(
@@ -362,9 +373,7 @@ class RLAlgorithm:
                     reference_log_probs
                     - replay_output.selected_full_log_probs
                 )
-                reference_kl_loss = (
-                    log_ratio.exp() - log_ratio - 1.0
-                ).clamp(-10.0, 10.0).mean()
+                reference_kl_loss = low_variance_kl(log_ratio).mean()
             if self.credit_assignment == "token":
                 if replay_output.token_values is None:
                     raise RuntimeError("token credit replay returned no token values")
@@ -562,5 +571,6 @@ __all__ = [
     "RLBatch",
     "RLStepOutput",
     "build_rl_batch",
+    "low_variance_kl",
     "normalized_monte_carlo_advantages",
 ]

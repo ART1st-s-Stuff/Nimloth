@@ -234,15 +234,9 @@ def test_planner_probabilities_round_trip_through_strict_json(tmp_path: Path) ->
             qwen_action_log_probs=deterministic,
             candidate_sequences=((selected_action, selected_action),),
             candidate_scores=(0.0,),
-            greedy_step_action_values=(
-                tuple(
-                    1.0 if index == selected_action else 0.0
-                    for index in range(8)
-                ),
-                tuple(
-                    1.0 if index == selected_action else 0.0
-                    for index in range(8)
-                ),
+            root_action_scores=tuple(
+                0.0 if index == selected_action else float("-inf")
+                for index in range(8)
             ),
             teacher_action_log_probs=deterministic,
             behavior_action_log_probs=deterministic,

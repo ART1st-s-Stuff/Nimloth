@@ -126,10 +126,38 @@ class RLTrainingLoop:
             ),
             device=self.device,
         )
-        self.optimization_runtime.zero_grad()
-        step_output = self.algorithm.training_step(self.model_runtime, batch)
-        self.optimization_runtime.backward(step_output.loss)
-        self.optimization_runtime.step()
+        begin_consumption = getattr(self.train_collector, "begin_consumption", None)
+        abort_consumption = getattr(self.train_collector, "abort_consumption", None)
+        commit_consumption = getattr(self.train_collector, "commit_consumption", None)
+        consumption_hooks = (
+            begin_consumption,
+            abort_consumption,
+            commit_consumption,
+        )
+        if any(hook is not None for hook in consumption_hooks) and not all(
+            hook is not None for hook in consumption_hooks
+        ):
+            raise TypeError("fresh rollout collector has an incomplete consumption API")
+        consumption_id = (
+            begin_consumption(
+                output_dir=self.output_dir,
+                global_step=self.state.global_step,
+            )
+            if begin_consumption is not None
+            else None
+        )
+        optimizer_step_started = False
+        try:
+            self.optimization_runtime.zero_grad()
+            step_output = self.algorithm.training_step(self.model_runtime, batch)
+            self.optimization_runtime.backward(step_output.loss)
+            optimizer_step_started = True
+            self.optimization_runtime.step()
+        except Exception:
+            if consumption_id is not None and not optimizer_step_started:
+                assert abort_consumption is not None
+                abort_consumption(consumption_id)
+            raise
         self.state.global_step += 1
         rollout_metrics = summarize_rollouts(trajectories)
         metrics = {
@@ -144,6 +172,22 @@ class RLTrainingLoop:
         self._barrier()
         self._log(iteration, metrics, started_at=started_at)
         self._save_periodic(iteration)
+        if consumption_id is not None:
+            checkpoint_dir = self.output_dir / "latest"
+            if iteration % self.config.training.save_interval != 0:
+                self.checkpoint_manager.save(
+                    checkpoint_dir,
+                    iteration=iteration,
+                    global_step=self.state.global_step,
+                    best_eval_metric=self.state.best_eval_metric,
+                )
+            self._barrier()
+            assert commit_consumption is not None
+            commit_consumption(
+                consumption_id,
+                checkpoint_path=checkpoint_dir,
+                global_step=self.state.global_step,
+            )
         self._barrier()
 
     def _validate(self, iteration: int, metrics: dict[str, float]) -> None:

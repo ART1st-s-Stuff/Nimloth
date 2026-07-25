@@ -321,9 +321,9 @@ class RolloutTrajectory:
                         list(sequence) for sequence in trace.candidate_sequences
                     ],
                     "candidate_scores": list(trace.candidate_scores),
-                    "greedy_step_action_values": [
-                        list(row) for row in trace.greedy_step_action_values
-                    ],
+                    "root_action_scores": _encode_log_probabilities(
+                        trace.root_action_scores
+                    ),
                     "teacher_action_log_probs": _encode_log_probabilities(
                         trace.teacher_action_log_probs
                     ),
@@ -332,6 +332,7 @@ class RolloutTrajectory:
                     ),
                     "horizon": trace.horizon,
                     "search_mode": trace.search_mode,
+                    "beam_width": trace.beam_width,
                 }
                 for trace in self.planner_policy_traces
             ],
@@ -431,9 +432,8 @@ class RolloutTrajectory:
                     candidate_scores=tuple(
                         float(value) for value in raw["candidate_scores"]
                     ),
-                    greedy_step_action_values=tuple(
-                        tuple(float(value) for value in row)
-                        for row in raw["greedy_step_action_values"]
+                    root_action_scores=_decode_log_probabilities(
+                        raw["root_action_scores"]
                     ),
                     teacher_action_log_probs=_decode_log_probabilities(
                         raw["teacher_action_log_probs"]
@@ -443,6 +443,11 @@ class RolloutTrajectory:
                     ),
                     horizon=int(raw["horizon"]),
                     search_mode=str(raw["search_mode"]),
+                    beam_width=(
+                        int(raw["beam_width"])
+                        if raw.get("beam_width") is not None
+                        else None
+                    ),
                 )
                 for raw in record.get("planner_policy_traces", [])
             ],

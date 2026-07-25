@@ -209,10 +209,6 @@ def _validate_token_provenance(
                 raise ValueError(
                     f"{prefix} step {step} behavior does not match planner policy"
                 )
-            if len(planner_trace.candidate_sequences) != 1:
-                raise ValueError(
-                    f"{prefix} step {step} greedy planner must have one candidate"
-                )
         elif old_action_log_prob is None or not math.isclose(
             old_action_log_prob,
             expected_old_log_prob,

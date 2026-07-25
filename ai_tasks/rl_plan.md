@@ -4,9 +4,10 @@
 Qwen action policy 和 CoT credit assignment 的讨论结果。本文是设计与实施计划，
 不是已完成实现的声明；实际实验参数仍以经过人类逐项确认的配置为准。
 
-> 2026-07-25 最终确认：当前`planning.horizon=2`的`greedy`定义为逐深度只取
-> ValueHead最高动作，因此整次planning只有1条两动作候选；执行首动作。behavior和
-> distillation teacher均为该首动作上的确定性分布，不再使用teacher temperature。
+> 2026-07-25 最终确认：`greedy`只保留为显式单路径基线；当前
+> `planning.horizon=2`正确性配置使用`exhaustive`，批量模拟全部64条两动作候选，按
+> leaf score选择候选并执行首动作。behavior和distillation teacher均为该首动作上的
+> 确定性分布，不使用teacher temperature。
 > `actor.planner_distillation_weight=1.0`。Qwen真实采样CoT使用token PPO，并加入冻结
 > reference的actor-side `low_var_kl × 0.001`；planner action不参加PPO或KL。reward KL
 > 尚未实现，不加入本次方案。WM训练、DINO关闭、`rl.gamma=1.0`。
@@ -59,7 +60,8 @@ Qwen action policy 和 CoT credit assignment 的讨论结果。本文是设计�
   `terminated/truncated`；Qwen replay 在每个实际采样 token 前的 hidden state 上运行
   独立 TokenValueHead；每个 turn 内用逐 token GAE 计算 CoT/action advantage。高层监督
   仍是完整真实 environment rollout 的 Monte Carlo return。
-- fresh manifest 能把 rollout 绑定到 policy artifact，并限制一次性消费。
+- fresh manifest把rollout绑定到policy/planner/trajectory/reference内容指纹；训练在
+  optimizer前写入in-progress状态，并只在post-update checkpoint完成后提交消费。
 
 ### 3.2 已实现、尚待真实 GPU 验证
 
@@ -70,7 +72,8 @@ Qwen action policy 和 CoT credit assignment 的讨论结果。本文是设计�
   action boundary hidden，并用已加载模型的`compute_logits`得到8维raw action logits；
   不加载第二份HF Qwen，也不重复处理图片prompt。
 - `planning.horizon=2`、`search_mode=exhaustive`时保存全部64条候选及其leaf score；每个
-  root score是该根动作下候选score最大值，`pi_plan=softmax(root/teacher_temperature)`。
+  root score是该根动作下候选score最大值，执行最高分候选的首动作，behavior/teacher
+  是该动作上的确定性分布。
 - 尚未验证多次迭代的 fresh rollout -> update -> 新 checkpoint -> 新 rollout 在线闭环。
 - `token` credit 尚未完成真实 GPU optimizer-step 验证，也没有完成多次在线闭环验证。
 - 当前 truncation 只实现了显式 `rl.truncated_bootstrap=zero`；若要从最后真实 state 的
@@ -202,10 +205,7 @@ turn reward、token critic、`gamma_turn`、`gamma_token` 和对应 lambda 定�
 ### 6.3 CoT 必须真正影响 behavior
 
 只有 CoT 对 planner 最终动作分布有因果影响时，环境 reward 才能合理训练 CoT。当前
-`PlanningPolicy` 使用固定 thought 的 action prompt，planner 搜索也不消费真实采样 CoT；
-该路径不能直接开启 CoT PPO。
-
-当前实现让真实CoT直接决定latent query hidden，因此planner搜索状态依赖CoT；初版teacher
+实现让真实CoT直接决定latent query hidden，因此planner搜索状态依赖CoT；当前teacher
 不融合Qwen action prior。reasoning token由Qwen采样并进入token PPO，planner替换的action
 token明确标为loss-mask false。若后续实验证明WM projector抹掉CoT差异，必须停止把环境
 reward解释为有效CoT监督，并先量化state/planner分布对CoT扰动的敏感性。
@@ -218,9 +218,9 @@ reward解释为有效CoT监督，并先量化state/planner分布对CoT扰动的�
 剪枝让部分根动作变成零 support，并保存：
 
 - 8 维 Qwen action logits/probabilities；
-- 8 维 planner root scores 和最终 root probabilities；
+- 8 维 planner root scores 和确定性 behavior/teacher 分布；
 - 64 条候选序列的 score 或足以重建 root policy 的审计数据；
-- planner 使用的 checkpoint fingerprint、horizon、temperature、beam/search 参数。
+- planner 使用的 checkpoint fingerprint、horizon、beam/search 参数。
 
 ### 7.2 更长 horizon
 
@@ -279,7 +279,6 @@ agent:
     enabled: true
     horizon: 2
     search_mode: exhaustive
-    teacher_temperature: REQUIRED
     device: REQUIRED
 actor:
   enabled: true
@@ -289,8 +288,8 @@ predictor:
   train_wm: REQUIRED
 ```
 
-`teacher_temperature`、distillation weight、planner device及所有token credit数值仍等待
-人类逐项给定；代码没有填默认实验值。`freeze.state_proj`、`lambda_sigreg`和
+distillation weight、planner device及所有token credit数值必须由实验配置显式给定。
+`freeze.state_proj`、`lambda_sigreg`和
 `gradient.representation_to_backbone`继续独立控制其职责。DINO loss在当前RL保持关闭。
 
 ## 11. 实施顺序与验证门槛
@@ -316,7 +315,7 @@ predictor:
 1. 同一次 Qwen forward 输出 state hidden 和完整 action logits。
 2. `planning.horizon=2` 对 64 条序列完整枚举。
 3. 保存、校验完整 Qwen/planner 八动作分布和 selected action ownership。
-4. 明确 planner root policy 的 score、temperature、prior 融合和 stochastic sampling。
+4. 保存leaf score到root score的聚合证据，并验证确定性selected action ownership。
 
 ### 阶段 C：训练 objective
 
@@ -340,8 +339,8 @@ predictor:
 
 以下内容仍未确认，不能据此启动实验：
 
-1. `agent.planning.teacher_temperature`、`actor.planner_distillation_weight`、
-   `agent.planning.device`及token credit的全部具体数值。
+1. 新实验使用的`actor.planner_distillation_weight`、`agent.planning.device`及token
+   credit具体数值仍须逐次确认；当前smoke配置中的值不自动成为其他实验默认值。
 2. `turn` credit 是否采用每 turn token-count 归一化；`token` credit 当前采用全 batch
    token advantage 标准化，不得与该待确认项混称。
 3. 是否新增独立的 scalar Turn ValueHead，或选择 group/leave-one-out baseline。

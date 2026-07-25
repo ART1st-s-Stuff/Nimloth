@@ -9,6 +9,7 @@ from typing import Any, Literal, Protocol
 from nimloth.agent import AgentPrompt, PolicyDecision, PolicyTokenTrace
 from nimloth.backbone.qwen25vl.policy import (
     collect_policy_images,
+    reasoning_forbidden_token_ids,
     render_policy_messages,
 )
 from nimloth.backbone.qwen25vl.turn_generation import (
@@ -103,6 +104,8 @@ class QwenVLLMAgentPolicy:
         distributed_executor_backend: str | None = None,
         enforce_eager: bool = False,
         capture_policy_state: bool = False,
+        enable_prefix_caching: bool = False,
+        mm_processor_cache_gb: float = 0.0,
     ) -> "QwenVLLMAgentPolicy":
         from vllm import LLM
 
@@ -130,13 +133,10 @@ class QwenVLLMAgentPolicy:
             max_model_len=int(max_model_len),
             gpu_memory_utilization=float(gpu_memory_utilization),
             limit_mm_per_prompt={"image": int(max_images)},
-            # Agent prompts repeatedly include the full image history.  With
-            # both caches disabled, vLLM 0.11 assigns every image occurrence a
-            # request-local identifier instead of aliasing identical frames by
-            # their content hash.  This keeps encoder outputs one-to-one with
-            # the placeholders in the behavior request.
-            enable_prefix_caching=False,
-            mm_processor_cache_gb=0,
+            # Cache behavior is an explicit rollout setting because vLLM
+            # version/model combinations must be parity-tested before enabling it.
+            enable_prefix_caching=bool(enable_prefix_caching),
+            mm_processor_cache_gb=float(mm_processor_cache_gb),
             # PPO 保存实际 temperature/top-p behavior 分布，不保存 raw logits 分布。
             logprobs_mode="processed_logprobs",
             enforce_eager=bool(enforce_eager),
@@ -322,26 +322,10 @@ class QwenVLLMAgentPolicy:
             tokens.action_start,
         )
         injected_ids = tuple(self.token_id_map[token] for token in injected_tokens)
-        tokenizer = self.processor.tokenizer
-        tokenizer_control_ids = {
-            int(value)
-            for value in getattr(tokenizer, "all_special_ids", ())
-            if value is not None
-        }
-        tokenizer_control_ids.update(
-            int(token_id)
-            for token_id, token in getattr(
-                tokenizer,
-                "added_tokens_decoder",
-                {},
-            ).items()
-            if getattr(token, "special", False)
-        )
-        forbidden_reasoning_ids = tuple(
-            sorted(
-                (tokenizer_control_ids | set(self.token_id_map.values()))
-                - set(close_ids)
-            )
+        forbidden_reasoning_ids = reasoning_forbidden_token_ids(
+            self.processor.tokenizer,
+            self.token_id_map,
+            close_token_ids=close_ids,
         )
         protocol_overhead = len(close_ids) + len(injected_ids) + 2
         max_reasoning_tokens = self.max_response_tokens - protocol_overhead

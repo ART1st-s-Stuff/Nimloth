@@ -1,11 +1,11 @@
-# H=2 single-candidate greedy planner distillation smoke.
+# H=2 exhaustive latent-branch planner distillation smoke.
 
 agent:
   prompt_template: nimloth-latent-action
   planning:
     enabled: true
     horizon: 2
-    search_mode: greedy
+    search_mode: exhaustive
     device: cuda:0
 
 freeze:

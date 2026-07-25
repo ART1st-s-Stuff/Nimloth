@@ -37,7 +37,6 @@ from nimloth.training.rl.rollout_runtime import (
     online_policy_required,
     validate_collector_configuration,
     validate_fresh_rollout_policy,
-    validate_online_policy_configuration,
     validate_planning_initialization,
 )
 from nimloth.util.distributed import (
@@ -605,10 +604,6 @@ def train_rl(
     llm_tune, vision_tune = resolve_tune_modes(args)
     actor_enabled = config.actor.enabled
     planning_enabled = config.agent.planning.enabled
-    validate_online_policy_configuration(
-        actor_enabled=actor_enabled,
-        planning_enabled=planning_enabled,
-    )
     backbone_trainable = llm_tune != "freeze" or vision_tune != "freeze"
     if actor_enabled and not backbone_trainable:
         raise ValueError(
