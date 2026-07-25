@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-07-26：全规模RL改为逐轮fresh rollout并准备启动ID106
+
+- 人类已授权直接在`nimloth-dev`修改、push并开启GPU实验。正式配置固定为60次online
+  iteration，每次8条episode、最多20个step，H=2 exhaustive planner、512-token真实CoT、
+  turn内token GAE、冻结初始reference的`low_var_kl × 0.001`；当前算法仍明确不是VAGEN
+  Bi-Level GAE。
+- 旧vLLM入口只能保证一批fresh rollout对应一次update，不能把`rl.iterations`直接改为60后
+  重复消费同一manifest。新outer loop每轮从当前不可变policy/WM checkpoint采集rollout，
+  完成冻结reference replay后只推进一个optimizer step，再由下一轮加载新checkpoint。
+- 配置使用`base_train`与`common_sense_train`轮转以及不重叠seed块；60轮共480条episode，
+  远端两个dataset各有1200条task，因此该run不是完整数据集遍历。held-out validation保持
+  关闭，避免把训练数据冒充评估；policy/WM质量需要后续单独采集held-out artifact验证。
+- 初始化与冻结边界沿用ID105已验证链路：corrected SFT2 ID46`epoch_001`；训练Qwen language
+  body、DINO-grid WM predictor、ValueHead与TokenValueHead，冻结vision、GridStateProjector、
+  EMA target encoder与DINO decoder，关闭DINO/SIGReg/ranking loss。拓扑为4 nodes×2 H800、
+  4个两卡model-parallel rank和vLLM TP4。
+- 为避免update原地改写manifest绑定的policy，下一轮开始前把`latest`移动成不可变
+  `policy_inputs/iter_NNNN`并显式resume；post-update checkpoint与fresh consumption提交后才
+  进入下一轮。共享盘只剩约442GB，因此每10轮保留周期checkpoint，自动清理仅限本run更旧
+  的policy snapshot，带固定路径门禁并写相邻日志。
+- 本地相关回归为`174 passed, 1 warning`；三个shell语法、inline Python AST、compileall与
+  diff检查通过。下一步是提交推送、服务器真实环境preflight、固定launch contract并申请
+  normal 4节点×2卡hold；在远端首轮健康验证前不宣称正式训练已经开始。
+
 ## 2026-07-26：ID105完成真实exhaustive H=2的8-GPU correctness闭环
 
 - commit`5976453`使用corrected SFT2 ID46 `epoch_001`、`base_train` seeds1--4、4 nodes×2

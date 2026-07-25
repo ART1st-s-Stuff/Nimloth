@@ -7,7 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from experiments.training.rl.rollout_env import validate_split, validate_trajectories
+from experiments.training.rl.rollout_env import (
+    parse_args,
+    validate_split,
+    validate_trajectories,
+)
 from nimloth.agent import AgentTranscript, NimlothPromptTemplate
 from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
@@ -101,6 +105,21 @@ def test_training_split_requires_training_dataset() -> None:
         validate_split("base", "train")
     with pytest.raises(ValueError, match="must use --split train"):
         validate_split("base_train", "eval")
+
+
+def test_rollout_cli_accepts_multiple_training_datasets() -> None:
+    args = parse_args(
+        [
+            "--model", "model",
+            "--env-url", "http://env",
+            "--output-dir", "output",
+            "--eval-sets", "base_train", "common_sense_train",
+            "--split", "train",
+        ]
+    )
+
+    assert args.eval_set is None
+    assert args.eval_sets == ["base_train", "common_sense_train"]
 
 
 def test_env_collector_enforces_training_dataset() -> None:

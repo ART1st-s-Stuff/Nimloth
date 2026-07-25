@@ -672,7 +672,11 @@ def train_rl(
         latent_token_count = validate_agent_policy_protocol(
             AutoConfig.from_pretrained(args.model, trust_remote_code=True)
         )
-        resume_dir = output_dir / "latest"
+        resume_dir = (
+            Path(args.resume_checkpoint).resolve()
+            if args.resume_checkpoint is not None
+            else output_dir / "latest"
+        )
         loaded = load_backbone(
             args,
             device=device,
@@ -730,7 +734,7 @@ def train_rl(
             enabled=vision_ema_enabled,
             decay=args.vision_ema_decay,
             llm=model,
-            resume_path=(output_dir / "latest" / "vision_ema.pt") if args.resume else None,
+            resume_path=(resume_dir / "vision_ema.pt") if args.resume else None,
             device=device,
         )
         distributed_modules = _wrap_distributed_modules(
@@ -910,6 +914,7 @@ def train_rl(
             output_dir=output_dir,
             checkpoint_manager=checkpoint_manager,
             reporter=reporter,
+            write_final_checkpoint=not args.defer_final_checkpoint,
             start_iteration=resume.start_iteration,
             state=RLLoopState(
                 global_step=resume.global_step,

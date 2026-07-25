@@ -9,6 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 HELPER = REPO_ROOT / "experiments/training/rl/slurm_allocation.sh"
 CONTROLLER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_slurm.sh"
 PIPELINE = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_smoke.sh"
+FULL_RUNNER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_full.sh"
 
 
 def _load_counts(job_details: str) -> list[str]:
@@ -86,3 +87,21 @@ def test_pair_parallel_topology_is_config_driven_and_node_local() -> None:
     assert "node_ranks=$((node_gpus / TRAIN_GPUS_PER_RANK))" in pipeline
     assert "local_rank<NIMLOTH_NODE_RANKS" in pipeline
     assert 'NIMLOTH_DDP_GPU_STRIDE="${TRAIN_GPUS_PER_RANK}"' in pipeline
+
+
+def test_full_runner_uses_one_fresh_manifest_per_resumed_update() -> None:
+    runner = FULL_RUNNER.read_text(encoding="utf-8")
+    controller = CONTROLLER.read_text(encoding="utf-8")
+    pipeline = PIPELINE.read_text(encoding="utf-8")
+
+    assert 'for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++))' in runner
+    assert 'mv "${TRAIN_OUT}/latest" "${snapshot}"' in runner
+    assert 'RESUME_CHECKPOINT="${resume_checkpoint}"' in runner
+    assert 'SEED_OFFSET="${seed_offset}"' in runner
+    assert 'bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_slurm.sh"' in runner
+    assert controller.count('ITERATION="${ITERATION}" TOTAL_ITERATIONS="${TOTAL_ITERATIONS}"') == 3
+    assert '--eval-sets "${TRAIN_DATASETS[@]}"' in pipeline
+    assert '--rl-iterations "${ITERATION}"' in pipeline
+    assert 'TRAIN_ARGS+=(--resume-checkpoint "${RESUME_CHECKPOINT}")' in pipeline
+    assert 'TRAIN_ARGS+=(--defer-final-checkpoint)' in pipeline
+    assert 'PREFLIGHT_OK commit=${COMMIT}' in pipeline

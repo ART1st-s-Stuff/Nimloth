@@ -1,4 +1,4 @@
-# H=2 exhaustive latent-branch planner distillation smoke.
+# Formal multi-iteration RL run using the GPU-validated H=2 planner semantics.
 
 agent:
   prompt_template: nimloth-latent-action
@@ -48,29 +48,34 @@ value_head:
   lambda_rank: 0.0
 
 rl:
-  iterations: 1
-  envs_per_iteration: 4
-  max_steps_per_episode: 5
+  iterations: 60
+  envs_per_iteration: 8
+  max_steps_per_episode: 20
   gamma: 1.0
-  batch_size: 2
+  batch_size: 32
   truncated_bootstrap: zero
 
 rollout:
   train_datasets:
     - base_train
+    - common_sense_train
   temperature: 0.7
   top_p: 0.95
 
+# Fresh vLLM rollout is external to the trainer. Held-out evaluation must use a
+# separately collected artifact and is not silently aliased to training data.
 validation:
   enabled: false
-  interval: 1
+  interval: 5
   envs: 0
   checkpoint_metric: success_rate
 
 training:
   seed: 42
   log_interval: 1
-  save_interval: 1
+  # ID105 used about 23 GB per complete checkpoint. Six periodic checkpoints,
+  # latest, and final fit the measured shared-filesystem budget.
+  save_interval: 10
 
 distributed:
   nodes: 4

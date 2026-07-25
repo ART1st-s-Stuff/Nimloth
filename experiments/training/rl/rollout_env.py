@@ -36,7 +36,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--num-episodes", type=int, default=8)
     ap.add_argument("--max-steps", type=int, default=20)
-    ap.add_argument("--eval-set", choices=_NAV_DATASETS, required=True)
+    dataset_group = ap.add_mutually_exclusive_group(required=True)
+    dataset_group.add_argument("--eval-set", choices=_NAV_DATASETS)
+    dataset_group.add_argument(
+        "--eval-sets",
+        choices=_NAV_DATASETS,
+        nargs="+",
+        help="Round-robin over multiple datasets while preserving one seed stream",
+    )
     ap.add_argument("--split", choices=("train", "val", "test", "eval"), required=True)
     ap.add_argument("--seed-offset", type=int, default=1)
     ap.add_argument("--temperature", type=float, default=0.7)
@@ -151,7 +158,9 @@ def validate_trajectories(records, *, expected_count: int | None = None) -> None
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    validate_split(args.eval_set, args.split)
+    eval_sets = tuple(args.eval_sets or (args.eval_set,))
+    for eval_set in eval_sets:
+        validate_split(eval_set, args.split)
     if not torch.cuda.is_available():
         raise RuntimeError("rollout_env requires CUDA")
     if args.vllm_mm_processor_cache_gb < 0.0:
@@ -314,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
         seed_offset=args.seed_offset,
         temperature=args.temperature,
         top_p=args.top_p,
-        eval_sets=(args.eval_set,),
+        eval_sets=eval_sets,
         split=args.split,
         latent_token_count=latent_token_count,
     )
@@ -352,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
         "num_transitions": sum(t.num_steps for t in trajectories),
         "jsonl": str(args.output_dir / "trajectories.jsonl"),
         "fresh_manifest": str(manifest_path) if manifest_path else None,
+        "eval_sets": eval_sets,
         "reasoning_truncated": sum(
             int(value)
             for trajectory in trajectories

@@ -87,12 +87,29 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
     # 训练控制
     ap.add_argument("--resume", action="store_true",
                     help="Resume from --output-dir/latest/")
+    ap.add_argument(
+        "--resume-checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit immutable checkpoint used by --resume; defaults to "
+            "--output-dir/latest"
+        ),
+    )
     ap.add_argument("--seed", type=int, default=None,
                     help="Override seed from config")
     ap.add_argument("--rl-iterations", type=int, default=None,
                     help="Override rl.iterations from config")
     ap.add_argument("--rl-envs-per-iteration", type=int, default=None,
                     help="Override rl.envs_per_iteration from config")
+    ap.add_argument(
+        "--defer-final-checkpoint",
+        action="store_true",
+        help=(
+            "Write only latest at process exit; an external fresh-rollout "
+            "orchestrator will resume the next iteration and write final later"
+        ),
+    )
 
     return ap
 
@@ -110,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     from nimloth.training.rl.trainer import train_rl
 
     args = parse_rl_args(argv)
+    if args.resume_checkpoint is not None and not args.resume:
+        raise ValueError("--resume-checkpoint requires --resume")
     if args.env_url and args.use_jsonl_rollout:
         raise ValueError("--env-url and --use-jsonl-rollout are mutually exclusive")
     if not args.env_url and not args.use_jsonl_rollout:

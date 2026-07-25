@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
-from nimloth.config.rl import merge_rl_config_overrides, parse_rl_config
+from nimloth.config.rl import load_rl_config, merge_rl_config_overrides, parse_rl_config
 from nimloth.training.rl.cli import main
 
 
@@ -84,6 +85,29 @@ def test_rl_config_parses_heterogeneous_distributed_topology() -> None:
     assert config.distributed.gpus_per_rank == 2
     assert config.distributed.total_gpus == 8
     assert config.distributed.rollout_tensor_parallel_size == 8
+
+
+def test_formal_h2_config_preserves_validated_online_contract() -> None:
+    root = Path(__file__).resolve().parents[3]
+    config = load_rl_config(
+        root / "configs/training/rl/planner_exhaustive_h2_full.yaml"
+    )
+
+    assert config.rl.iterations == 60
+    assert config.rl.envs_per_iteration == 8
+    assert config.rl.max_steps_per_episode == 20
+    assert config.rl.batch_size == 32
+    assert config.rollout.train_datasets == (
+        "base_train",
+        "common_sense_train",
+    )
+    assert config.agent.planning.horizon == 2
+    assert config.agent.planning.search_mode == "exhaustive"
+    assert config.actor.credit_assignment == "token"
+    assert config.actor.max_response_tokens == 512
+    assert config.training.save_interval == 10
+    assert config.validation.enabled is False
+    assert config.distributed.total_gpus == 8
 
 
 def test_rl_config_rejects_impossible_distributed_topology() -> None:

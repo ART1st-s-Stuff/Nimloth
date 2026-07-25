@@ -11,6 +11,7 @@
 | `run_e2e_smoke.sh` | 训练 split rollout → 两卡 FSDP step → resume step 的端到端 smoke |
 | `run_vllm_online_ppo_smoke.sh` | config-sized vLLM fresh rollout → 指纹门槛 → distributed PPO step |
 | `run_vllm_online_ppo_slurm.sh` | 按 RL config 在异构多节点 allocation 上编排 Ray-vLLM 与 PPO trainer |
+| `run_vllm_online_ppo_full.sh` | 每次迭代重新采集 fresh rollout，并从上一步 checkpoint 恢复的正式多迭代入口 |
 
 ## 运行模式
 
@@ -62,10 +63,17 @@ GPU 总数。控制器为每个物理节点启动一个持有该节点全部已�
 step，再按节点内 GPU 数启动 local ranks，因此允许各节点 GPU 数不同。
 `world_size` 是训练进程数，物理 GPU 总数为
 `world_size * gpus_per_rank`。`gpus_per_rank=1` 使用 FSDP；`gpus_per_rank=2`
-让每个 Qwen 副本均衡分布在同一节点的两张 GPU 上，再在训练 rank 间使用 DDP。
+让每个 Qwen 副本均衡分布在同一节点的两张 GPU 上，再按相同 optimizer 参数顺序在
+训练 rank 间显式同步梯度。
 后者要求每个节点分配的 GPU 数能被 2 整除，不支持跨节点拼接一个模型副本。
 下一个 optimizer step 必须从新 checkpoint 重新 rollout。均匀两节点四卡也统一使用
 `run_vllm_online_ppo_slurm.sh`，不维护固定节点拓扑的另一套入口。
+
+正式多迭代训练使用`run_vllm_online_ppo_full.sh`。它为每个iteration分配不重叠seed块，
+用更新前的不可变policy snapshot完成rollout/reference replay，再执行恰好一次update；
+下一轮只有在fresh consumption提交且`latest`完整后才开始。中间进程退出只写`latest`，
+目标iteration完成时才写`final`。为控制共享盘占用，外层入口只保留最近一个更新前policy
+snapshot；更早snapshot的删除会写入相邻iteration progress log。
 
 ### 分布式安全说明
 

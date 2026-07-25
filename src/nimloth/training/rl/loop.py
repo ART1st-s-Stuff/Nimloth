@@ -53,6 +53,7 @@ class RLTrainingLoop:
     output_dir: Path
     checkpoint_manager: RLCheckpointManager
     reporter: RLReporter
+    write_final_checkpoint: bool
     start_iteration: int
     state: RLLoopState
 
@@ -63,10 +64,10 @@ class RLTrainingLoop:
         ):
             self._run_iteration(iteration)
 
-        for checkpoint_dir in (
-            self.output_dir / "final",
-            self.output_dir / "latest",
-        ):
+        checkpoint_dirs = [self.output_dir / "latest"]
+        if self.write_final_checkpoint:
+            checkpoint_dirs.insert(0, self.output_dir / "final")
+        for checkpoint_dir in checkpoint_dirs:
             self.checkpoint_manager.save(
                 checkpoint_dir,
                 iteration=self.config.rl.iterations,

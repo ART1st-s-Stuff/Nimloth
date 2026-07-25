@@ -242,3 +242,11 @@ launch validates that every rank's Qwen placement actually covers both local
 GPUs; CPU/disk offload and single-GPU placement are rejected. This process
 boundary keeps inference ownership out of the trainer and makes the policy
 freshness handoff auditable.
+
+Formal online training wraps that single-update boundary with
+`run_vllm_online_ppo_full.sh`. Every optimizer step gets a newly fingerprinted
+rollout from the preceding checkpoint. `--resume-checkpoint` lets the trainer
+load an immutable pre-update snapshot while writing the successor to
+`output/latest`; `--defer-final-checkpoint` avoids duplicating a large `final`
+artifact until the configured last iteration. These flags change checkpoint
+lifecycle only, not the rollout, loss, gradient, or optimizer semantics.

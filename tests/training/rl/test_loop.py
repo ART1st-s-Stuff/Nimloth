@@ -124,6 +124,7 @@ def _training_loop(
             output_dir=tmp_path,
             checkpoint_manager=_CheckpointManager(),  # type: ignore[arg-type]
             reporter=_Reporter(),  # type: ignore[arg-type]
+            write_final_checkpoint=True,
             start_iteration=1,
             state=RLLoopState(global_step=0, best_eval_metric=float("-inf")),
         ),
@@ -173,3 +174,17 @@ def test_fresh_consumption_commits_after_post_update_checkpoint(
 
     assert collector.events == ["collect", "begin", "commit"]
     assert loop.state.global_step == 1
+
+
+def test_deferred_final_checkpoint_keeps_only_resumable_latest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, _collector = _training_loop(tmp_path, monkeypatch)
+    loop.config.rl.iterations = 1
+    loop.write_final_checkpoint = False
+
+    loop.run()
+
+    assert (tmp_path / "latest" / "rl_state.pt").is_file()
+    assert not (tmp_path / "final").exists()
