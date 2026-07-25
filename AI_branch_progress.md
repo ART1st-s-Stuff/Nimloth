@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-07-26：ID102真实rollout完成后暴露planner严格JSON缺口
+
+- 用户要求清理W&B中的历史失败RL run。已永久删除`nimloth-rl`中32个失败或已判定无效的
+  run及其artifact；逐项复查后保留13个成功或仍有有效结论的run。ID102在W&B初始化前失败，
+  实际凭证查询确认没有产生W&B run。
+- ID102使用commit`fa74448`、normal hold`487451`的4节点×2卡、vLLM TP4和corrected
+  SFT2 epoch1。Ray/环境/vLLM、双cache关闭、hidden-state扩展和真实多模态路径均通过；四条
+  5-step rollout奖励为`-0.4/-0.3/0.0/-0.4`，success为0/4。
+- collector随后在严格JSON保存时失败：greedy planner的teacher/behavior分布合法地用
+  `-inf`表示未选动作，但nested`planner_policy_traces`没有执行`null <-> -inf`转换。
+  `trajectories.jsonl`为0字节；manifest、reference replay、PPO、checkpoint和W&B均未开始，
+  ID102不可恢复。实验README/launch contract已更新，Ray与端口清理完成。
+- commit`b4f5f9f`统一top-level behavior及planner Qwen/teacher/behavior动作分布的严格JSON
+  codec，并让trajectory写入在完整校验/序列化后原子替换目标。服务器新增定向测试`2 passed`，
+  完整相关回归`164 passed, 1 warning`。下一次必须使用新ID、空输出和fresh rollout。
+
 ## 2026-07-26：ID100确认CoT生成伪image token才是多模态崩溃根因
 
 - 后续ID101在Ray/GPU前的controller preflight立即失败：detached non-login shell未固定

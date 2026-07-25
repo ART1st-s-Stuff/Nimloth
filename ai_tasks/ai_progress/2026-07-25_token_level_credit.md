@@ -148,6 +148,19 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
   和TP parity校验。ID97无有效trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，
   不可resume且已完成清理。
 
+## 2026-07-26 ID102 planner严格JSON失败与修复
+
+- 按用户要求，已从W&B project`nimloth-rl`永久删除32个历史失败/无效run及其artifact，
+  并复查只剩13个成功或保留结论的run。ID102没有创建W&B run。
+- ID102在commit`fa74448`和hold`487451`上完成四条真实多模态H=2 greedy rollout；奖励
+  `-0.4/-0.3/0.0/-0.4`，success 0/4。随后`save_trajectories`因nested planner确定性分布
+  的`-inf`不符合strict JSON而失败，留下0字节JSONL；无manifest/reference/PPO/checkpoint，
+  不可resume。实验README/launch contract和进程/端口清理已完成。
+- commit`b4f5f9f`把behavior及planner Qwen/teacher/behavior log-prob统一编码为
+  `-inf -> null`并在加载时还原，同时先完整序列化、再临时文件原子替换。服务器定向新增
+  测试`2 passed`，完整`tests/training/rl tests/agent tests/backbone/qwen25vl tests/rollout
+  tests/wm/test_grid.py`为`164 passed, 1 warning`。后续用新ID fresh重试。
+
 ## 2026-07-26 ID100确认CoT伪image token根因
 
 - ID101在Ray/GPU前失败：detached controller未固定Slurm `PATH/SLURM_CONF`，站点
