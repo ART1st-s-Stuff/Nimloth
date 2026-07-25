@@ -5,6 +5,7 @@ import torch
 from nimloth.training.sft2.data.terminal_cot import (
     _CONTINUATION_PREVIEW_CHARS,
     _StopAfterText,
+    TerminalCoTFormatError,
     _missing_close_error,
 )
 
@@ -44,6 +45,7 @@ def test_missing_terminal_close_reports_bounded_continuation_preview() -> None:
     )
 
     message = str(error)
+    assert isinstance(error, TerminalCoTFormatError)
     assert "record 'train/example'" in message
     assert "generated_tokens=131" in message
     assert "x" * _CONTINUATION_PREVIEW_CHARS in message

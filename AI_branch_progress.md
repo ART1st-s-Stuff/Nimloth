@@ -35,6 +35,14 @@
   `Move left.</think,`后漂移到tool/user-turn；正确close与protocol mask无交集，因此是
   模型真实格式失败。hold`486596`已取消释放8×H800；继续前必须由人类明确失败记录或
   约束生成策略，禁止猜测。
+- 人类随后明确选择排除terminal-CoT格式失败trajectory。新生成契约只排除类型化
+  `TerminalCoTFormatError`，保存逐条sidecar与输入/有效/排除计数和SHA256；所有其他错误
+  继续fail-fast，禁止修补close token。pipeline在建cache前验证完整核算，并按实际有效
+  train/val数量解析W&B名称。
+- 旧fixed CoT对ID46实际legacy JSONL的直接污染点只有每条trajectory的terminal `s_T`：
+  它作为最后一个transition的WM target和SIGReg online-next state；不直接进入CE/value，
+  也没有后续history。旧structured-agent路径曾模板化所有response，但ID46未使用该格式；
+  P0修复已同时覆盖两类数据。
 
 ## 2026-07-24：SFT2 fixed terminal CoT 删除（待远端回归）
 

@@ -8,6 +8,7 @@ set -euo pipefail
 REPO=${REPO:?set REPO to the committed server worktree}
 RUN_ROOT=${RUN_ROOT:?set RUN_ROOT to a new experiment root}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:?set WANDB_RUN_NAME}
+WANDB_RUN_NAME_TEMPLATE=${WANDB_RUN_NAME}
 EXPECTED_COMMIT=${EXPECTED_COMMIT:?set EXPECTED_COMMIT}
 PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv-vagen-main}
 CONFIG=${CONFIG:-${REPO}/configs/training/sft2/dino_grid_k16_h4.yaml}
@@ -65,20 +66,20 @@ export TOKENIZERS_PARALLELISM=false
 
 echo "pipeline_start=$(date --iso-8601=seconds)"
 echo "commit=${EXPECTED_COMMIT} job=${SLURM_JOB_ID} node=${SLURM_JOB_NODELIST}"
-echo "run_root=${RUN_ROOT} wandb=nimloth-sft2/${WANDB_RUN_NAME}"
+echo "run_root=${RUN_ROOT} wandb_template=nimloth-sft2/${WANDB_RUN_NAME_TEMPLATE}"
 
 printf '%s\n' \
-  "# ${WANDB_RUN_NAME}" \
+  "# Terminal-CoT filtered DINO-grid SFT2" \
   "" \
   "- 状态：pipeline 已启动；terminal CoT、preprocess cache、SFT2 依次执行。" \
   "- 代码：dev@${EXPECTED_COMMIT}" \
   "- Slurm：job ${SLURM_JOB_ID}，1 node，8 visible GPUs，node ${SLURM_JOB_NODELIST}" \
-  "- W&B：nimloth-sft2/${WANDB_RUN_NAME}" \
+  "- W&B name template：nimloth-sft2/${WANDB_RUN_NAME_TEMPLATE}" \
   "- 输出：${RUN_ROOT}" \
   "- controller log：${CONTROLLER_LOG}" \
   "- 初始化模型：${MODEL_PATH}" \
   "- auxiliary warm start：ID33（由 ${CONFIG} 固定）；新 optimizer，不 resume ID46。" \
-  "- 原始数据：train ${SOURCE_TRAIN_JSONL} (${TRAIN_RECORDS})；val ${SOURCE_VAL_JSONL} (${VAL_RECORDS})。" \
+  "- 原始数据：train ${SOURCE_TRAIN_JSONL} (${TRAIN_RECORDS})；val ${SOURCE_VAL_JSONL} (${VAL_RECORDS})。terminal CoT格式失败trajectory显式排除并写sidecar。" \
   "- terminal CoT：temperature=0，top_p=1.0，top_k=-1，do_sample=false，n=1，max_reasoning_tokens=128，seed=42，max_pixels=602112，flash_attention_2。" \
   "- SFT2：2 epochs，world_size=8，per-rank batch_size=1，gradient_accumulation=8，history_size=4；history_size 不是 planning.horizon。" \
   "- 调参：Qwen LLM freeze，vision full，vision EMA=0.999；grid EMA=0.99。" \
@@ -105,16 +106,83 @@ generate_terminal_cot() {
     --no-do-sample \
     --n 1 \
     --seed 42 \
-    --attn-implementation flash_attention_2
+    --attn-implementation flash_attention_2 \
+    --format-failure-policy exclude
+}
+
+validate_terminal_cot_artifacts() {
+  local output_jsonl=$1
+  local expected_input_records=$2
+  "${PYTHON_ENV}/bin/python3" - "${output_jsonl}" "${expected_input_records}" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+output_path = Path(sys.argv[1])
+expected_input_count = int(sys.argv[2])
+manifest_path = output_path.with_suffix(output_path.suffix + ".manifest.json")
+excluded_path = output_path.with_suffix(output_path.suffix + ".excluded.jsonl")
+
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+if manifest.get("format") != "nimloth_terminal_cot_v2":
+    raise ValueError(f"unexpected terminal CoT manifest format: {manifest.get('format')!r}")
+if manifest.get("format_failure_policy") != "exclude":
+    raise ValueError("terminal CoT artifacts were not generated with explicit exclusion")
+
+def records(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+valid = records(output_path)
+excluded = records(excluded_path)
+valid_count = int(manifest.get("record_count", -1))
+excluded_count = int(manifest.get("excluded_record_count", -1))
+input_count = int(manifest.get("input_record_count", -1))
+if (input_count, len(valid), len(excluded)) != (
+    expected_input_count,
+    valid_count,
+    excluded_count,
+):
+    raise ValueError("terminal CoT manifest and JSONL counts disagree")
+if valid_count + excluded_count != input_count or valid_count <= 0:
+    raise ValueError("terminal CoT exclusion accounting is incomplete")
+if any(not str(record.get("terminal_assistant_prefix", "")).strip() for record in valid):
+    raise ValueError("valid terminal CoT JSONL contains a missing prefix")
+if any(record.get("error_type") != "TerminalCoTFormatError" for record in excluded):
+    raise ValueError("exclusion sidecar contains a non-format failure")
+if manifest.get("output_sha256") != sha256(output_path):
+    raise ValueError("terminal CoT output SHA256 mismatch")
+if manifest.get("excluded_records_sha256") != sha256(excluded_path):
+    raise ValueError("terminal CoT exclusion SHA256 mismatch")
+print(valid_count, excluded_count)
+PY
 }
 
 generate_terminal_cot "${SOURCE_TRAIN_JSONL}" "${TRAIN_JSONL}"
 echo "phase=terminal_cot_val_start"
 generate_terminal_cot "${SOURCE_VAL_JSONL}" "${VAL_JSONL}"
-[[ "$(wc -l < "${TRAIN_JSONL}")" -eq "${TRAIN_RECORDS}" ]]
-[[ "$(wc -l < "${VAL_JSONL}")" -eq "${VAL_RECORDS}" ]]
 [[ -s "${TRAIN_JSONL}.manifest.json" && -s "${VAL_JSONL}.manifest.json" ]]
-echo "terminal_cot_data=ready train=${TRAIN_RECORDS} val=${VAL_RECORDS}"
+read -r TRAIN_VALID_RECORDS TRAIN_EXCLUDED_RECORDS < <(
+  validate_terminal_cot_artifacts "${TRAIN_JSONL}" "${TRAIN_RECORDS}"
+)
+read -r VAL_VALID_RECORDS VAL_EXCLUDED_RECORDS < <(
+  validate_terminal_cot_artifacts "${VAL_JSONL}" "${VAL_RECORDS}"
+)
+WANDB_RUN_NAME=${WANDB_RUN_NAME_TEMPLATE//\{train_records\}/${TRAIN_VALID_RECORDS}}
+WANDB_RUN_NAME=${WANDB_RUN_NAME//\{val_records\}/${VAL_VALID_RECORDS}}
+echo "terminal_cot_data=ready train_valid=${TRAIN_VALID_RECORDS} train_excluded=${TRAIN_EXCLUDED_RECORDS} val_valid=${VAL_VALID_RECORDS} val_excluded=${VAL_EXCLUDED_RECORDS}"
+echo "wandb_resolved=nimloth-sft2/${WANDB_RUN_NAME}"
+printf '%s\n' \
+  "- terminal CoT audit：train valid/excluded=${TRAIN_VALID_RECORDS}/${TRAIN_EXCLUDED_RECORDS}；val valid/excluded=${VAL_VALID_RECORDS}/${VAL_EXCLUDED_RECORDS}。" \
+  "- W&B resolved：nimloth-sft2/${WANDB_RUN_NAME}" \
+  >> "${EXPERIMENT_README}"
 
 echo "phase=preprocess_cache_start"
 "${PYTHON_ENV}/bin/python3" \

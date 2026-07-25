@@ -34,6 +34,10 @@ class TerminalCoTGeneration:
     reasoning_token_count: int
 
 
+class TerminalCoTFormatError(RuntimeError):
+    """The model returned a terminal response without a valid CoT close."""
+
+
 class _MaskNimlothProtocolTokens(LogitsProcessor):
     def __init__(self, token_ids: Sequence[int]) -> None:
         self._token_ids = tuple(int(token_id) for token_id in token_ids)
@@ -74,9 +78,9 @@ def _missing_close_error(
     max_reasoning_tokens: int,
     continuation_ids: Sequence[int],
     decoded_continuation: str,
-) -> RuntimeError:
+) -> TerminalCoTFormatError:
     preview = decoded_continuation[:_CONTINUATION_PREVIEW_CHARS]
-    return RuntimeError(
+    return TerminalCoTFormatError(
         f"record {record_id!r}: terminal CoT did not emit '</think>' within "
         f"{max_reasoning_tokens} reasoning tokens; "
         f"generated_tokens={len(continuation_ids)}; "
@@ -254,6 +258,7 @@ def write_augmented_records(
 
 __all__ = [
     "TerminalCoTGeneration",
+    "TerminalCoTFormatError",
     "generate_terminal_cot_prefix",
     "terminal_cot_prompt_messages",
     "write_augmented_records",

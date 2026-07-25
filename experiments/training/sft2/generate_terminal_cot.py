@@ -23,6 +23,7 @@ from nimloth.backbone.qwen25vl.loading import load_qwen_processor
 from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 from nimloth.rollout.transitions import TERMINAL_ASSISTANT_PREFIX_FIELD
 from nimloth.training.sft2.data.terminal_cot import (
+    TerminalCoTFormatError,
     generate_terminal_cot_prefix,
     write_augmented_records,
 )
@@ -69,6 +70,15 @@ def main() -> int:
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--attn-implementation", default="sdpa")
+    parser.add_argument(
+        "--format-failure-policy",
+        choices=("fail", "exclude"),
+        default="fail",
+        help=(
+            "fail preserves strict generation; exclude writes an auditable "
+            "sidecar and omits only TerminalCoTFormatError records"
+        ),
+    )
     args = parser.parse_args()
 
     if args.max_reasoning_tokens < 1:
@@ -123,37 +133,73 @@ def main() -> int:
     model.eval()
 
     reasoning_token_counts: list[int] = []
+    excluded_records: list[dict[str, Any]] = []
 
     def augmented_records() -> Iterator[dict[str, Any]]:
         for record_index, record in enumerate(_records(args.input_jsonl), start=1):
-            generated = generate_terminal_cot_prefix(
-                record=record,
-                model=model,
-                processor=processor_bundle.processor,
-                token_id_map=processor_bundle.token_id_map,
-                device=device,
-                latent_token_count=latent_token_count,
-                max_reasoning_tokens=args.max_reasoning_tokens,
-                temperature=args.temperature,
-                top_p=args.top_p,
-                top_k=args.top_k,
-                do_sample=args.do_sample,
-                n=args.n,
-            )
+            try:
+                generated = generate_terminal_cot_prefix(
+                    record=record,
+                    model=model,
+                    processor=processor_bundle.processor,
+                    token_id_map=processor_bundle.token_id_map,
+                    device=device,
+                    latent_token_count=latent_token_count,
+                    max_reasoning_tokens=args.max_reasoning_tokens,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    top_k=args.top_k,
+                    do_sample=args.do_sample,
+                    n=args.n,
+                )
+            except TerminalCoTFormatError as error:
+                if args.format_failure_policy == "fail":
+                    raise
+                exclusion = {
+                    "input_record_index": record_index,
+                    "id": str(record.get("id", "")),
+                    "error_type": type(error).__name__,
+                    "reason": str(error),
+                }
+                excluded_records.append(exclusion)
+                print(
+                    json.dumps({"excluded_terminal_cot_record": exclusion}),
+                    flush=True,
+                )
+                continue
             reasoning_token_counts.append(generated.reasoning_token_count)
             yield {**record, TERMINAL_ASSISTANT_PREFIX_FIELD: generated.prefix}
             if record_index % 10 == 0:
-                print(json.dumps({"generated_records": record_index}), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "processed_records": record_index,
+                            "generated_records": len(reasoning_token_counts),
+                            "excluded_records": len(excluded_records),
+                        }
+                    ),
+                    flush=True,
+                )
 
     record_count = write_augmented_records(args.output_jsonl, augmented_records())
+    input_record_count = record_count + len(excluded_records)
+    excluded_path = args.output_jsonl.with_suffix(
+        args.output_jsonl.suffix + ".excluded.jsonl"
+    )
+    write_augmented_records(excluded_path, excluded_records)
     manifest = {
-        "format": "nimloth_terminal_cot_v1",
+        "format": "nimloth_terminal_cot_v2",
         "model": str(args.model.resolve()),
         "input_jsonl": str(args.input_jsonl.resolve()),
         "input_sha256": _sha256(args.input_jsonl),
+        "input_record_count": input_record_count,
         "output_jsonl": str(args.output_jsonl.resolve()),
         "output_sha256": _sha256(args.output_jsonl),
         "record_count": record_count,
+        "format_failure_policy": args.format_failure_policy,
+        "excluded_records_jsonl": str(excluded_path.resolve()),
+        "excluded_records_sha256": _sha256(excluded_path),
+        "excluded_record_count": len(excluded_records),
         "latent_token_count": latent_token_count,
         "max_pixels": args.max_pixels,
         "max_reasoning_tokens": args.max_reasoning_tokens,

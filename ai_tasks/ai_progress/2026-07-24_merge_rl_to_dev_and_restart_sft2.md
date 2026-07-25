@@ -85,5 +85,12 @@
 
 ## 待确认问题
 
-- terminal CoT出现模型真实格式失败时采用什么数据策略。当前全量生成必须全部合法，
-  因此第51条会使流程fail-fast；旧fixed-terminal cache与静默注入仍禁止。
+- 人类已确认排除terminal-CoT格式失败trajectory。实现只捕获专门的
+  `TerminalCoTFormatError`，保存record ID/输入序号/原因/continuation预览sidecar；
+  manifest必须满足`valid+excluded=input`并记录SHA256。其他加载、图片、JSON、CUDA
+  错误仍fail-fast，且仍禁止静默注入close token。
+- 对ID46实际legacy数据，旧fixed CoT只直接进入每条trajectory的terminal `s_T`：污染
+  最后一个transition的WM target和online-next SIGReg，不直接进入CE/value，也不会成为
+  后续history。DINO target本身来自next image，但共享predicted state联合训练会受间接
+  影响。旧structured-agent路径曾模板化所有response，不过ID46未使用该格式；当前两条
+  路径均已修复。

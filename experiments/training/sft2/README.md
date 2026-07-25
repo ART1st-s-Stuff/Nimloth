@@ -74,10 +74,13 @@ python experiments/training/sft2/generate_terminal_cot.py \
   --top-k -1 \
   --no-do-sample \
   --n 1 \
-  --seed 42
+  --seed 42 \
+  --format-failure-policy exclude
 ```
 
 脚本要求 checkpoint 为可直接加载的 inject-mode HF 导出；模型未在 token 上限内自行
-生成 `</think>` 时直接失败，不静默补闭合标记。输出旁保存 checkpoint 路径、输入/输出
-SHA256 与全部生成参数。SFT2 config 必须改指向生成后的新 JSONL，并重建 preprocess
-cache；旧 fixed-terminal cache 不兼容。
+生成 `</think>` 时绝不静默补闭合标记。默认策略仍为`fail`；显式选择`exclude`时，只
+排除`TerminalCoTFormatError` trajectory，并保存包含record ID、原因和continuation
+预览的sidecar。模型加载、图片、JSON和CUDA等其他错误仍会中止。manifest记录输入、
+有效、排除数量及双方SHA256，且必须满足`有效+排除=输入`。SFT2 config必须指向生成后
+的有效JSONL并重建preprocess cache；旧fixed-terminal cache不兼容。
