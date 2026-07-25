@@ -65,6 +65,17 @@ def test_ray_workers_receive_repo_pythonpath_and_are_import_probed() -> None:
     assert "import_nimloth.options(resources={resource: 0.001})" in controller
 
 
+def test_controller_pins_slurm_client_for_non_login_shells() -> None:
+    controller = CONTROLLER.read_text(encoding="utf-8")
+
+    assert "/cm/shared/apps/slurm/current/bin" in controller
+    assert "/cm/shared/apps/slurm/var/etc/slurm/slurm.conf" in controller
+    assert 'export PATH="${SLURM_BIN_DIR}:${PATH}"' in controller
+    assert controller.index('export PATH="${SLURM_BIN_DIR}:${PATH}"') < (
+        controller.index("squeue -h")
+    )
+
+
 def test_pair_parallel_topology_is_config_driven_and_node_local() -> None:
     controller = CONTROLLER.read_text(encoding="utf-8")
     pipeline = PIPELINE.read_text(encoding="utf-8")

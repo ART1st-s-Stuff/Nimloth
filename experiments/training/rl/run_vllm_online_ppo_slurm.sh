@@ -2,6 +2,19 @@
 # Drive vLLM rollout and PPO training on an arbitrary heterogeneous Slurm allocation.
 set -euo pipefail
 
+SLURM_BIN_DIR=${SLURM_BIN_DIR:-/cm/shared/apps/slurm/current/bin}
+SLURM_CONF=${SLURM_CONF:-/cm/shared/apps/slurm/var/etc/slurm/slurm.conf}
+[[ -x "${SLURM_BIN_DIR}/squeue" ]] || {
+  echo "missing fixed Slurm client: ${SLURM_BIN_DIR}/squeue" >&2
+  exit 1
+}
+[[ -r "${SLURM_CONF}" ]] || {
+  echo "missing Slurm config: ${SLURM_CONF}" >&2
+  exit 1
+}
+export SLURM_CONF
+export PATH="${SLURM_BIN_DIR}:${PATH}"
+
 HOLD_JOB=${HOLD_JOB:?set HOLD_JOB to one running allocation}
 REPO=${REPO:?set REPO to the committed server worktree}
 ENV_REPO=${ENV_REPO:?set ENV_REPO to the verified VAGEN worktree}
