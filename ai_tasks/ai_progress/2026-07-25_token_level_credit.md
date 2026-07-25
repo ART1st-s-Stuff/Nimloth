@@ -158,8 +158,11 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
   flush、manifest、reference、W&B训练run、optimizer或checkpoint，ID100不可resume。
 - hold `487333`随后在2026-07-26 00:27:22 UTC被抢占，已离开`squeue`，修复后的新ID
   必须重新申请满足配置总卡数的allocation。
-- 修复要求reasoning logits屏蔽tokenizer全部special tokens，同时在生成结果和prompt绑定处
-  fail-fast验证；不能只依赖processor/CUDA报错。
+- 修复`e3bc727`已让reasoning logits屏蔽tokenizer的`all_special_ids`、所有标记
+  `special=True`的added control tokens以及Nimloth protocol tokens；生成结果、prompt图片
+  绑定和指定trajectory批次数量均会fail-fast。服务器相关测试`161 passed, 1 warning`；
+  epoch1真实tokenizer断言确认image/video/vision/chat控制token全部覆盖，且`</think>`未被
+  屏蔽。尚需新ID真实GPU闭环。
 
 ## 2026-07-25 ID99证伪prefix-cache归因；content-hash候选被ID100证伪
 

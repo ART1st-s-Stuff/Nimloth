@@ -19,9 +19,11 @@
   trajectory文件为空；无manifest/reference/W&B训练run/optimizer/checkpoint，不可resume。
 - ID100使用的hold `487333`随后在2026-07-26 00:27:22 UTC被抢占，运行01:05:12后
   已离开`squeue`，不能用于修复后重试。
-- 待提交修复把reasoning阶段禁用集合从Nimloth protocol tokens扩展到tokenizer全部special
-  tokens，并在behavior输出和prompt绑定处增加双重验证，禁止伪chat/vision/image token进入
-  历史。修复后必须用新ID重跑真实GPU。
+- 修复提交`e3bc727`把reasoning禁用集合扩展到tokenizer的`all_special_ids`、
+  `added_tokens_decoder`中`special=True`的控制token以及Nimloth protocol tokens；并在
+  behavior输出、prompt图片绑定及rollout批次数量处增加fail-fast验证。服务器相关测试
+  `161 passed, 1 warning`，真实epoch1 tokenizer断言确认image/video/vision/chat控制token均
+  被覆盖且普通`</think>`三token序列未被屏蔽。下一门槛是新ID真实GPU闭环。
 
 ## 2026-07-25：ID99证伪prefix-cache归因；content-hash候选又被ID100证伪
 
