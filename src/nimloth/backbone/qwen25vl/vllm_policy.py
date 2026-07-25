@@ -119,7 +119,7 @@ class QwenVLLMAgentPolicy:
                     "vLLM policy-state capture requires enforce_eager=True"
                 )
             engine_kwargs["worker_extension_cls"] = (
-                "nimloth.backbone.qwen25vl.vllm_hidden:"
+                "nimloth.backbone.qwen25vl.vllm_hidden."
                 "PolicyStateCaptureWorkerExtension"
             )
         engine = LLM(

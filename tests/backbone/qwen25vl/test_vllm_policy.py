@@ -180,8 +180,9 @@ def test_from_model_registers_policy_state_worker_extension(monkeypatch) -> None
         capture_policy_state=True,
     )
 
-    assert captured["worker_extension_cls"].endswith(
-        ":PolicyStateCaptureWorkerExtension"
+    assert captured["worker_extension_cls"] == (
+        "nimloth.backbone.qwen25vl.vllm_hidden."
+        "PolicyStateCaptureWorkerExtension"
     )
 
 
