@@ -123,7 +123,8 @@ for _ in $(seq 1 90); do
   sleep 2
 done
 [[ "${head_ready}" == true ]] || { echo "Ray head port did not become ready" >&2; exit 1; }
-for node in "${NODES[@]:1}"; do
+for node in "${NODES[@]}"; do
+  [[ "${node}" == "${HEAD_NODE}" ]] && continue
   node_gpus=${GPU_COUNTS[${node}]}
   node_ip=${NODE_IPS[${node}]}
   node_cpus=$((node_gpus > 4 ? node_gpus : 4))
@@ -184,6 +185,11 @@ expected_nodes = int(os.environ["NIMLOTH_EXPECTED_RAY_NODES"])
 if len(alive_nodes) != expected_nodes:
     raise SystemExit(
         f"Ray has {len(alive_nodes)} alive nodes, expected {expected_nodes}"
+    )
+node_addresses = [node["NodeManagerAddress"] for node in alive_nodes]
+if len(set(node_addresses)) != expected_nodes:
+    raise SystemExit(
+        "Ray node addresses are not unique: " + ", ".join(node_addresses)
     )
 checks = []
 for node in alive_nodes:

@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-25：ID95 Ray head放置失败，未产生rollout；修复待重启
+
+- ID95按已确认H=2 greedy/token GAE/reference actor KL方案启动在preempt hold
+  `487333`：dgx-02/22/34/40各2卡，4个两卡rank，总8卡；SFT2初始化为ID46
+  `epoch_001`，数据为`base_train` seeds1..4，commit=`21ee7b6`。
+- 为避开低主存节点，启动时显式选择dgx-22作为Ray/reference head。控制器worker循环却仍
+  跳过排序节点列表的第一个元素，而非跳过实际head；因此漏掉dgx-02并在dgx-22重复注册
+  Ray node。旧import probe只检查alive node数量，重复物理地址仍错误通过。
+- 环境health已通过、vLLM开始engine初始化后人工停止。没有trajectory/fresh manifest、
+  reference replay、W&B训练run、optimizer step或RL checkpoint；ID95不可resume，重试必须
+  使用新ID和新输出。四节点Ray、环境step及6395/8595/29795端口已清理，hold仍保留。
+- 当前未提交修复把worker迭代改为按节点名跳过实际head，并要求alive Ray node address
+  唯一；验证与新ID GPU重启完成前，仍不能声称GPU rollout或PPO通过。
+
 ## 2026-07-25：H=2 greedy planner + CoT token PPO/reference KL CPU门禁通过
 
 - 人类最终确认：`planning.horizon=2`逐深度greedy且整次planning只产生1条候选；

@@ -110,3 +110,17 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
   distillation和reference KL仍可训练Qwen。CSV/W&B新增token value、distillation和KL指标。
 - commits `5e141bb`、`49bbf0a`、`8c771db`已推送`dev`。服务器扩大CPU/interface回归
   `157 passed, 1 expected warning`；尚无GPU实验或optimizer-step证据。
+
+## 2026-07-25 ID95 GPU启动失败边界
+
+- preempt hold `487333`实际得到dgx-02/22/34/40各2 GPU；配置为4 nodes、world size 4、
+  每rank 2 GPU、rollout TP=4，总8 GPU。ID95使用SFT2 ID46 `epoch_001`、`base_train`
+  seeds1..4和commit `21ee7b6`。
+- 显式`RAY_HEAD_NODE=dgx-22`后，worker循环仍使用`${NODES[@]:1}`，导致跳过dgx-02、
+  在dgx-22重复启动worker。Ray错误报告4个alive node和8 GPU，但实际地址只有3个唯一值；
+  import probe因此给出假通过。
+- 环境health通过、vLLM开始engine初始化时人工停止。没有trajectory/fresh manifest、
+  reference replay、W&B训练run、optimizer step或checkpoint。输出README已标记failed且
+  记录启动契约、失败原因、清理和不可resume边界；重试必须使用新ID/新输出。
+- 待提交修复：worker遍历所有allocation节点并按名称跳过实际head；import probe同时验证
+  alive node address唯一。四节点Ray/环境step/端口均已清理，hold `487333`保留供修复后重试。
