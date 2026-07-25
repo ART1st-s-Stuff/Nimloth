@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import torch
 
 from nimloth.agent import (
@@ -8,7 +10,7 @@ from nimloth.agent import (
     PolicyReplayInput,
     PolicyTokenTrace,
 )
-from nimloth.training.rl.credit import expand_step_advantages
+from nimloth.training.rl.credit import expand_step_advantages, token_level_gae
 
 
 def _sample(selected_reasoning_tokens: int) -> PolicyReplayInput:
@@ -66,3 +68,51 @@ def test_turn_credit_broadcasts_step_advantage_to_selected_response_tokens() -> 
     )
 
     assert actual.tolist() == [1.5, 1.5, -2.0, -2.0, -2.0]
+
+
+def test_token_level_gae_uses_separate_value_for_each_selected_token() -> None:
+    samples = (replace(_sample(1), credit_assignment="token"),)
+
+    actual = token_level_gae(
+        torch.tensor([2.0]),
+        torch.tensor([0.5, 1.0]),
+        samples,
+        gamma=1.0,
+        gae_lambda=1.0,
+    )
+
+    assert torch.allclose(actual.returns, torch.tensor([2.0, 2.0]))
+    assert torch.allclose(actual.advantages, torch.tensor([1.0, -1.0]))
+
+
+def test_token_level_gae_resets_at_each_turn_boundary() -> None:
+    samples = (
+        replace(_sample(1), credit_assignment="token"),
+        replace(_sample(1), credit_assignment="token"),
+    )
+
+    actual = token_level_gae(
+        torch.tensor([2.0, -1.0]),
+        torch.zeros(4),
+        samples,
+        gamma=0.5,
+        gae_lambda=1.0,
+    )
+
+    assert torch.allclose(actual.returns, torch.tensor([1.0, 2.0, -0.5, -1.0]))
+
+
+def test_token_level_gae_rejects_missing_token_values() -> None:
+    sample = replace(_sample(2), credit_assignment="token")
+    try:
+        token_level_gae(
+            torch.tensor([1.0]),
+            torch.zeros(2),
+            (sample,),
+            gamma=1.0,
+            gae_lambda=1.0,
+        )
+    except ValueError as error:
+        assert "do not align" in str(error)
+    else:  # pragma: no cover
+        raise AssertionError("token/value alignment must be validated")

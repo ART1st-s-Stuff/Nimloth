@@ -31,6 +31,9 @@ class RolloutTrajectory:
     instruction: str = ""
     success: bool = False
     reward: float = 0.0
+    rewards: list[float] = field(default_factory=list)
+    terminated: bool = False
+    truncated: bool = False
     split: str = "train"
     messages: list[dict[str, Any]] = field(default_factory=list)
     system_prompt: str = ""
@@ -96,7 +99,7 @@ class RolloutTrajectory:
             action_count=len(action_space),
         )
         prefix = self.transcript().policy_prefix(step_index)
-        if self.policy_credit_assignment == "turn":
+        if self.policy_credit_assignment in {"turn", "token"}:
             return template.build_response_policy_prompt(prefix)
         return template.build_policy_prompt(prefix)
 
@@ -236,6 +239,9 @@ class RolloutTrajectory:
             "split": self.split,
             "success": self.success,
             "reward": self.reward,
+            "rewards": self.rewards,
+            "terminated": self.terminated,
+            "truncated": self.truncated,
             "messages": self.messages,
             "image_paths": self.image_paths,
             "action_indices": self.action_indices,
@@ -294,6 +300,9 @@ class RolloutTrajectory:
             ),
             success=bool(record.get("success", False)),
             reward=float(record.get("reward", 0.0)),
+            rewards=[float(value) for value in record.get("rewards", [])],
+            terminated=bool(record.get("terminated", False)),
+            truncated=bool(record.get("truncated", False)),
             split=str(record.get("split", "train")),
             messages=list(record.get("messages", [])),
             system_prompt=str(record.get("system_prompt", "")),

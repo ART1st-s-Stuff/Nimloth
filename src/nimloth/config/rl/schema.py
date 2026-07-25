@@ -60,6 +60,17 @@ class ActorConfig:
 
 
 @dataclass(frozen=True)
+class TokenCreditConfig:
+    """Parameters required only by true token-level GAE credit."""
+
+    gamma: float | None = None
+    gae_lambda: float | None = None
+    value_lr: float | None = None
+    value_loss_weight: float | None = None
+    hidden_dim: int | None = None
+
+
+@dataclass(frozen=True)
 class FreezeConfig:
     state_proj: bool = True
 
@@ -96,6 +107,7 @@ class RLLoopConfig:
     max_steps_per_episode: int = 20
     gamma: float = 0.99
     batch_size: int = 32
+    truncated_bootstrap: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +147,7 @@ class RLConfig:
 
     agent: AgentConfig
     actor: ActorConfig
+    token_credit: TokenCreditConfig
     freeze: FreezeConfig
     gradient: GradientConfig
     predictor: PredictorConfig
@@ -157,6 +170,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     allowed_sections = {
         "agent",
         "actor",
+        "token_credit",
         "freeze",
         "gradient",
         "predictor",
@@ -181,6 +195,11 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "credit_assignment",
             "max_reasoning_tokens",
         },
+    )
+    token_credit = _section(
+        raw,
+        "token_credit",
+        {"gamma", "gae_lambda", "value_lr", "value_loss_weight", "hidden_dim"},
     )
     freeze = _section(raw, "freeze", {"state_proj"})
     gradient = _section(
@@ -214,6 +233,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "max_steps_per_episode",
             "gamma",
             "batch_size",
+            "truncated_bootstrap",
         },
     )
     validation = _section(
@@ -277,8 +297,66 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     )
     if not 0.0 < actor_config.clip_ratio < 1.0:
         raise ValueError("actor.clip_ratio must be in (0, 1)")
-    if actor_config.credit_assignment not in {"action", "turn"}:
-        raise ValueError("actor.credit_assignment must be action or turn")
+    if actor_config.credit_assignment not in {"action", "turn", "token"}:
+        raise ValueError("actor.credit_assignment must be action, turn, or token")
+
+    token_credit_config = TokenCreditConfig(
+        gamma=(
+            _positive_float(
+                token_credit["gamma"],
+                "token_credit.gamma",
+                allow_zero=True,
+            )
+            if "gamma" in token_credit
+            else None
+        ),
+        gae_lambda=(
+            _positive_float(
+                token_credit["gae_lambda"],
+                "token_credit.gae_lambda",
+                allow_zero=True,
+            )
+            if "gae_lambda" in token_credit
+            else None
+        ),
+        value_lr=(
+            _positive_float(token_credit["value_lr"], "token_credit.value_lr")
+            if "value_lr" in token_credit
+            else None
+        ),
+        value_loss_weight=(
+            _positive_float(
+                token_credit["value_loss_weight"],
+                "token_credit.value_loss_weight",
+                allow_zero=True,
+            )
+            if "value_loss_weight" in token_credit
+            else None
+        ),
+        hidden_dim=(
+            _positive_int(token_credit["hidden_dim"], "token_credit.hidden_dim")
+            if "hidden_dim" in token_credit
+            else None
+        ),
+    )
+    if token_credit_config.gamma is not None and token_credit_config.gamma > 1.0:
+        raise ValueError("token_credit.gamma must be in [0, 1]")
+    if (
+        token_credit_config.gae_lambda is not None
+        and token_credit_config.gae_lambda > 1.0
+    ):
+        raise ValueError("token_credit.gae_lambda must be in [0, 1]")
+    if actor_config.credit_assignment == "token":
+        missing_token_fields = [
+            name
+            for name, value in asdict(token_credit_config).items()
+            if value is None
+        ]
+        if missing_token_fields:
+            raise ValueError(
+                "token credit requires explicit token_credit fields: "
+                + ", ".join(missing_token_fields)
+            )
 
     rollout_config = parse_rollout_config(raw.get("rollout"))
     checkpoint_metric = str(
@@ -292,6 +370,19 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     gamma = float(loop.get("gamma", 0.99))
     if not 0.0 <= gamma <= 1.0:
         raise ValueError("rl.gamma must be in [0, 1]")
+    truncated_bootstrap = (
+        str(loop["truncated_bootstrap"])
+        if "truncated_bootstrap" in loop
+        else None
+    )
+    if truncated_bootstrap not in {None, "zero"}:
+        raise ValueError(
+            "rl.truncated_bootstrap currently supports only explicit 'zero'"
+        )
+    if actor_config.credit_assignment == "token" and truncated_bootstrap is None:
+        raise ValueError(
+            "token credit requires explicit rl.truncated_bootstrap"
+        )
     validation_enabled = _boolean(
         validation.get("enabled", True),
         "validation.enabled",
@@ -305,6 +396,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     return RLConfig(
         agent=parse_agent_config(raw.get("agent")),
         actor=actor_config,
+        token_credit=token_credit_config,
         freeze=FreezeConfig(
             state_proj=_boolean(
                 freeze.get("state_proj", True),
@@ -368,6 +460,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             ),
             gamma=gamma,
             batch_size=_positive_int(loop.get("batch_size", 32), "rl.batch_size"),
+            truncated_bootstrap=truncated_bootstrap,
         ),
         validation=ValidationConfig(
             enabled=validation_enabled,

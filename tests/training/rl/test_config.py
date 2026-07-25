@@ -137,6 +137,34 @@ def test_rl_config_parses_turn_credit_assignment() -> None:
     assert config.actor.max_reasoning_tokens == 32
 
 
+def test_rl_config_requires_explicit_token_credit_semantics() -> None:
+    raw = _raw_config()
+    raw["actor"] = {"enabled": True, "credit_assignment": "token"}
+    with pytest.raises(ValueError, match="explicit token_credit fields"):
+        parse_rl_config(raw)
+
+    raw["token_credit"] = {
+        "gamma": 0.95,
+        "gae_lambda": 0.9,
+        "value_lr": 1e-4,
+        "value_loss_weight": 0.5,
+        "hidden_dim": 256,
+    }
+    with pytest.raises(ValueError, match="truncated_bootstrap"):
+        parse_rl_config(raw)
+
+    raw["rl"]["truncated_bootstrap"] = "zero"
+    config = parse_rl_config(raw)
+
+    assert config.actor.credit_assignment == "token"
+    assert config.token_credit.gamma == 0.95
+    assert config.token_credit.gae_lambda == 0.9
+    assert config.token_credit.value_lr == 1e-4
+    assert config.token_credit.value_loss_weight == 0.5
+    assert config.token_credit.hidden_dim == 256
+    assert config.rl.truncated_bootstrap == "zero"
+
+
 def test_rl_config_rejects_unknown_credit_assignment() -> None:
     raw = _raw_config()
     raw["actor"] = {"credit_assignment": "bi_level_gae"}

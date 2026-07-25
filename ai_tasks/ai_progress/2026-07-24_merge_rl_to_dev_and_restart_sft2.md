@@ -114,3 +114,8 @@
   log已存在、重新验证terminal manifest与SHA256，并拒绝任何已有`train/`输出；随后
   只让cache builder按`build_state.json`续建缺失shard，cache完成后仍以新optimizer
   启动训练，不恢复任何训练状态。
+- resume hold`486826`在`preempt/dgx-02`通过全部续跑门禁：重新验证train
+  `3211/6`、val`355/0`及SHA，cache builder明确输出`to_build=457`，证明复用旧32个
+  shards。人类随后要求立即停止SFT2并切换RL；step运行5分14秒后人工取消，shard数仍
+  为32，且没有train目录、W&B、optimizer step或checkpoint。服务器实验README已记录
+  取消原因与将来的严格恢复方法。

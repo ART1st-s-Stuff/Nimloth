@@ -54,6 +54,7 @@ def test_pair_parallel_uses_deterministic_manual_gradient_sync() -> None:
     wrapped = _wrap_distributed_modules(
         model,
         world_model,
+        None,
         world_size=4,
         model_parallel=True,
         training_device=torch.device("cuda:1"),

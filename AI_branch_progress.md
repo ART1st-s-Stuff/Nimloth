@@ -51,6 +51,10 @@
   新增严格的`RESUME_PREPARED_DATA_CACHE=1`：复核terminal artifacts，只续建同一
   fingerprint下缺失的原子cache shards，并在发现任何`train/`输出时拒绝运行；cache
   完成后仍启动全新optimizer。
+- 人类随后要求停止SFT2并立即切换RL。resume hold`486826`在preempt/dgx-02确认
+  terminal audit仍为train`3211/6`、val`355/0`，并正确识别只需续建457个shards；
+  运行5分14秒后人工取消。取消时仍为32个完整原子shards，未创建train/W&B/
+  optimizer/checkpoint；以后仍可用严格prepared-data/cache边界恢复。
 
 ## 2026-07-24：SFT2 fixed terminal CoT 删除（待远端回归）
 

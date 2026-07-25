@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ class RLCheckpointManager:
         base_model_path: str,
         llm_tune: str,
         vision_tune: str,
+        token_value_head: torch.nn.Module | None = None,
     ) -> None:
         self._config = config
         self._agent = agent
@@ -36,6 +38,7 @@ class RLCheckpointManager:
         self._base_model_path = base_model_path
         self._llm_tune = llm_tune
         self._vision_tune = vision_tune
+        self._token_value_head = token_value_head
 
     def save(
         self,
@@ -59,4 +62,8 @@ class RLCheckpointManager:
             llm_tune=self._llm_tune,
             vision_tune=self._vision_tune,
             base_model_path=self._base_model_path,
+            token_value_head=self._token_value_head,
+            credit_assignment=self._config.actor.credit_assignment,
+            token_credit_config=asdict(self._config.token_credit),
+            truncated_bootstrap=self._config.rl.truncated_bootstrap,
         )

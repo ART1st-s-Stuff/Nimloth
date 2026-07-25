@@ -21,6 +21,7 @@ from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
 from nimloth.wm.model import WorldModel
 from nimloth.wm.grid import TemporalSpatialGridPredictor
+from nimloth.training.rl.token_value import TokenValueHead
 
 
 def _unwrap(module: torch.nn.Module) -> torch.nn.Module:
@@ -66,6 +67,10 @@ def save_rl_checkpoint(
     llm_tune: str = "freeze",
     vision_tune: str = "freeze",
     base_model_path: str = "",
+    token_value_head: torch.nn.Module | None = None,
+    credit_assignment: str = "action",
+    token_credit_config: dict[str, Any] | None = None,
+    truncated_bootstrap: str | None = None,
 ) -> None:
     model = agent.backbone.model
     state_proj = agent.wm.state_proj
@@ -102,6 +107,11 @@ def save_rl_checkpoint(
         torch.save(_unwrap(state_proj).state_dict(), out_dir / "state_proj.pt")
         _unwrap(wm_predictor).save_checkpoint(out_dir / "wm_predictor")
         _unwrap(value_head).save_checkpoint(out_dir / "value_head")
+        if token_value_head is not None:
+            token_head = _unwrap(token_value_head)
+            if not isinstance(token_head, TokenValueHead):
+                raise TypeError("token_value_head must unwrap to TokenValueHead")
+            token_head.save_checkpoint(out_dir / "token_value_head")
         agent.wm.save_checkpoint_extras(out_dir)
 
         # Qwen model
@@ -128,6 +138,9 @@ def save_rl_checkpoint(
             "optimizer_state_layout": (
                 "rank_sharded_fsdp" if fsdp_model else "replicated"
             ),
+            "credit_assignment": credit_assignment,
+            "token_credit_config": token_credit_config,
+            "truncated_bootstrap": truncated_bootstrap,
         }
         if base_model_path:
             state["base_model_path"] = str(base_model_path)

@@ -22,8 +22,8 @@ EnvironmentSession -> Agent/EpisodeRunner -> AgentEpisode
                                           -> RolloutTrajectory/JSONL
 ```
 
-prompt 模板、动作空间、真实 assistant response、逐 token behavior log-prob 与
-loss mask 都随 `AgentEpisode` 进入 trajectory。collector
+prompt 模板、动作空间、真实 assistant response、逐 token behavior log-prob、
+loss mask、逐步reward与`terminated`/`truncated`都随 `AgentEpisode` 进入trajectory。collector
 只选择具体 environment、policy 和保存位置，不得复制 prompt 构造逻辑，也不得在
 公共适配器中猜测某个环境的 reward/success 语义。
 
@@ -31,7 +31,8 @@ loss mask 都随 `AgentEpisode` 进入 trajectory。collector
 Backbone hidden。VAGEN navigation collector 属于
 `nimloth.environment.navigation.collector`，不属于本包。
 
-turn-credit trajectory 的 behavior replay prompt 从 `<think>` 开始并保留实际采样
+turn/token-credit trajectory 的 behavior replay prompt 从 `<think>` 开始并保留实际采样
 CoT。current/terminal state prompt 的真实 CoT 持久化契约仍是 RL TODO；完成前 state
 replay 与 planner 明确 fail-fast，不能退回固定 thought。窗口模块只负责保持顺序，
-不计算 advantage。
+不计算 advantage。fresh逐步reward用于完整episode return；真正terminal从0
+bootstrap，时间上限truncation必须由训练配置显式选择bootstrap语义。

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
 from nimloth.training.rl.reporting import RLReporter
 from nimloth.training.rl.runtime import RLModelRuntime
+from nimloth.training.rl.token_value import TokenValueHead
 from nimloth.training.rl.rollout_runtime import (
     bind_online_collectors,
     online_policy_required,
@@ -78,6 +80,7 @@ class RLDistributedModules:
 
     model: torch.nn.Module
     world_model: WorldModel
+    token_value_head: torch.nn.Module | None
     optimizer_state_sharded: bool
     manual_gradient_sync: bool
     strategy: str
@@ -383,6 +386,7 @@ def _wrap_world_model_ddp(
 def _wrap_distributed_modules(
     llm: torch.nn.Module,
     world_model: WorldModel,
+    token_value_head: torch.nn.Module | None,
     *,
     world_size: int,
     model_parallel: bool,
@@ -408,6 +412,11 @@ def _wrap_distributed_modules(
             device=training_device,
             world_size=world_size,
         )
+        if token_value_head is not None:
+            token_value_head = _wrap_trainable_ddp(
+                token_value_head,
+                device=training_device,
+            )
     if is_main():
         print(
             json.dumps(
@@ -421,6 +430,7 @@ def _wrap_distributed_modules(
     return RLDistributedModules(
         model=llm,
         world_model=world_model,
+        token_value_head=token_value_head,
         optimizer_state_sharded=optimizer_state_sharded,
         manual_gradient_sync=manual_gradient_sync,
         strategy=strategy,
@@ -430,6 +440,7 @@ def _wrap_distributed_modules(
 def _build_optimizer(
     model: torch.nn.Module,
     world_model: WorldModel,
+    token_value_head: torch.nn.Module | None,
     config: RLConfig,
 ) -> torch.optim.Optimizer:
     """按 Agent 子模块建立 RL 参数组。"""
@@ -458,6 +469,21 @@ def _build_optimizer(
             parameter_groups.append(
                 {"params": parameters, "lr": learning_rate, "name": name}
             )
+    if token_value_head is not None:
+        assert config.token_credit.value_lr is not None
+        token_value_parameters = [
+            parameter
+            for parameter in token_value_head.parameters()
+            if parameter.requires_grad
+        ]
+        if token_value_parameters:
+            parameter_groups.append(
+                {
+                    "params": token_value_parameters,
+                    "lr": config.token_credit.value_lr,
+                    "name": "token_value_head",
+                }
+            )
     if not parameter_groups:
         raise ValueError("RL configuration leaves no trainable parameters")
     return torch.optim.AdamW(parameter_groups, weight_decay=1e-4)
@@ -473,6 +499,9 @@ def _load_resume_state(
     world_size: int,
     optimizer_state_sharded: bool,
     expected_checkpoint_metric: str,
+    expected_credit_assignment: str,
+    expected_token_credit_config: dict[str, Any],
+    expected_truncated_bootstrap: str | None,
 ) -> RLResumeState:
     """恢复 WM、optimizer 和 iteration 位置。"""
 
@@ -508,6 +537,23 @@ def _load_resume_state(
             "resume checkpoint metric mismatch: "
             f"saved={checkpoint_metric!r}, configured={expected_checkpoint_metric!r}"
         )
+    saved_credit_assignment = state.get("credit_assignment")
+    if (
+        saved_credit_assignment is not None
+        and str(saved_credit_assignment) != expected_credit_assignment
+    ):
+        raise ValueError(
+            "resume credit assignment mismatch: "
+            f"saved={saved_credit_assignment!r}, "
+            f"configured={expected_credit_assignment!r}"
+        )
+    if expected_credit_assignment == "token":
+        if saved_credit_assignment is None:
+            raise ValueError("resume token credit checkpoint lacks credit metadata")
+        if state.get("token_credit_config") != expected_token_credit_config:
+            raise ValueError("resume token credit config mismatch")
+        if state.get("truncated_bootstrap") != expected_truncated_bootstrap:
+            raise ValueError("resume truncation bootstrap config mismatch")
     return RLResumeState(
         start_iteration=int(state.get("iteration", 0)) + 1,
         global_step=int(state.get("global_step", 0)),
@@ -546,11 +592,12 @@ def train_rl(
     )
     if (
         actor_enabled
-        and config.actor.credit_assignment == "turn"
+        and config.actor.credit_assignment in {"turn", "token"}
         and not isinstance(train_collector, FreshJSONLRolloutCollector)
     ):
         raise ValueError(
-            "actor.credit_assignment=turn requires a fresh vLLM JSONL rollout"
+            f"actor.credit_assignment={config.actor.credit_assignment} requires "
+            "a fresh vLLM JSONL rollout"
         )
     needs_online_policy = online_policy_required(
         train_collector,
@@ -617,10 +664,32 @@ def train_rl(
             llm=model,
             device=training_device,
         )
+        token_value_head: torch.nn.Module | None = None
+        if config.actor.credit_assignment == "token":
+            assert config.token_credit.hidden_dim is not None
+            token_value_head = TokenValueHead(
+                input_dim=backbone_hidden_size(model.config),
+                hidden_dim=config.token_credit.hidden_dim,
+            ).to(training_device)
+            if loaded.resume_aux_dir is not None:
+                resumed_token_head = TokenValueHead.load_checkpoint(
+                    loaded.resume_aux_dir / "token_value_head",
+                    map_location=training_device,
+                )
+                if (
+                    resumed_token_head.input_dim != token_value_head.input_dim
+                    or resumed_token_head.hidden_dim != token_value_head.hidden_dim
+                ):
+                    raise ValueError(
+                        "resume TokenValueHead dimensions do not match RL config/model"
+                    )
+                token_value_head.load_state_dict(resumed_token_head.state_dict())
         if world > 1:
             broadcast_module_state(world_model.state_proj)
             broadcast_module_state(world_model.wm_predictor)
             broadcast_module_state(world_model.value_head)
+            if token_value_head is not None:
+                broadcast_module_state(token_value_head)
             if isinstance(world_model, GridWorldModel):
                 broadcast_module_state(world_model.target_encoder)
                 broadcast_module_state(world_model.dino_decoder)
@@ -640,13 +709,20 @@ def train_rl(
         distributed_modules = _wrap_distributed_modules(
             model,
             world_model,
+            token_value_head,
             world_size=world,
             model_parallel=loaded.pair_parallel,
             training_device=training_device,
         )
         model = distributed_modules.model
         world_model = distributed_modules.world_model
-        optimizer = _build_optimizer(model, world_model, config)
+        token_value_head = distributed_modules.token_value_head
+        optimizer = _build_optimizer(
+            model,
+            world_model,
+            token_value_head,
+            config,
+        )
         resume = _load_resume_state(
             checkpoint_dir=loaded.resume_aux_dir,
             world_model=world_model,
@@ -656,6 +732,9 @@ def train_rl(
             world_size=world,
             optimizer_state_sharded=distributed_modules.optimizer_state_sharded,
             expected_checkpoint_metric=config.validation.checkpoint_metric,
+            expected_credit_assignment=config.actor.credit_assignment,
+            expected_token_credit_config=asdict(config.token_credit),
+            expected_truncated_bootstrap=config.rl.truncated_bootstrap,
         )
         agent = Agent(
             backbone=loaded.backbone.with_model(model),
@@ -730,6 +809,7 @@ def train_rl(
             base_model_path=str(loaded.base_model_path),
             llm_tune=llm_tune,
             vision_tune=vision_tune,
+            token_value_head=token_value_head,
         )
         algorithm = RLAlgorithm(
             history_size=config.predictor.history_size,
@@ -747,6 +827,9 @@ def train_rl(
             ppo_clip_ratio=config.actor.clip_ratio,
             entropy_weight=config.actor.entropy_coeff,
             credit_assignment=config.actor.credit_assignment,
+            token_gamma=config.token_credit.gamma,
+            token_gae_lambda=config.token_credit.gae_lambda,
+            token_value_loss_weight=config.token_credit.value_loss_weight,
         )
         model_runtime = RLModelRuntime(
             agent=agent,
@@ -759,6 +842,7 @@ def train_rl(
                     loaded,
                     model=model,
                     device=device,
+                    token_value_head=token_value_head,
                 )
                 if actor_enabled
                 else None
@@ -766,7 +850,10 @@ def train_rl(
         )
         optimization_runtime = OptimizationRuntime(
             optimizer=optimizer,
-            synchronized_modules=agent.synchronized_modules,
+            synchronized_modules=(
+                *agent.synchronized_modules,
+                *((token_value_head,) if token_value_head is not None else ()),
+            ),
             manual_gradient_sync=distributed_modules.manual_gradient_sync,
             after_step=(
                 lambda: vision_ema.update(agent.backbone.model)

@@ -75,7 +75,8 @@ For every step `t`, a complete trajectory stores:
 - `action_indices[0:t+1]` and action names;
 - the exact unbound `policy_messages[t]` used during rollout;
 - the normalized eight-way behavior `action_log_probs[t]`;
-- `sampling_temperature`, `sampling_top_p`, reward, and success metadata.
+- `sampling_temperature`、`sampling_top_p`、逐步`rewards`、聚合`reward`、
+  `terminated`/`truncated`和success metadata。
 
 There is always one final observation/image after the last action. Before
 training, each saved policy prompt is rebuilt from the structured transcript
@@ -120,6 +121,22 @@ same prompt and the same temperature/top-p transformation as the recorded
 behavior policy. The entropy term is calculated from that transformed
 distribution, including masked zero-probability actions.
 
+`actor.credit_assignment: token`启用真正的turn内token GAE。Qwen同一次replay
+forward通过`logits_to_keep`只保留loss-mask位置；TokenValueHead读取这些位置进入
+`lm_head`前的hidden state，对每个sampled reasoning/action token分别预测value。
+environment-step Monte Carlo return放在该turn最后一个sampled token上，前面的token
+immediate reward为0，再用显式`token_credit.gamma`和`gae_lambda`反向计算：
+
+```text
+delta_i = r_i + gamma_token * V_token(i+1) - V_token(i)
+A_i     = delta_i + gamma_token * lambda_token * A_(i+1)
+```
+
+policy advantage会在所有loss-mask token上whiten；critic return不whiten。注入token
+仍不参与policy或critic loss。该实现是“真实environment return + turn内token GAE”，
+没有把它称为完整VAGEN bi-level GAE：高层目前使用逐步reward的Monte Carlo return，
+没有另做跨turn high-level GAE。
+
 ## Modules
 
 | Module | Responsibility |
@@ -159,8 +176,10 @@ distribution, including masked zero-probability actions.
   `gradient.representation_to_backbone` 控制，并有梯度测试保护。
 - `actor.credit_assignment: action` 只对 sampled action token 做 PPO；`turn` 让
   vLLM 采样 CoT，并把同一 environment step 的 Monte Carlo advantage 分配给该轮
-  loss-mask reasoning/action token。当前 critic 是 step/action ValueHead，因此没有
-  实现 token/bi-level GAE，也不会用 turn-wise credit 冒充它们。
+  loss-mask reasoning/action token；`token`使用独立TokenValueHead计算逐token GAE。
+  token模式要求显式配置`token_credit.gamma`、`gae_lambda`、`value_lr`、
+  `value_loss_weight`、`hidden_dim`，并显式选择`rl.truncated_bootstrap`。当前只实现
+  `zero`；未确认时配置解析直接失败，不猜测实验参数。
 - behavior old log-prob 与 replay 都使用同一 temperature/top-p 分布；注入的 latent
   query、action boundary 和补全 delimiter 不进入 PPO loss。
 - `agent.planning.enabled: true` 时，在线 rollout 使用 `PlanningPolicy`。每个真实

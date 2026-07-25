@@ -12,6 +12,7 @@ from nimloth.agent import AgentTranscript, NimlothPromptTemplate
 from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
 from nimloth.rollout import RolloutTrajectory
+from nimloth.rollout.transitions import discounted_action_value_targets
 
 
 def _trajectory() -> RolloutTrajectory:
@@ -227,3 +228,58 @@ def test_reasoning_truncation_metadata_must_be_consistent() -> None:
 
     with pytest.raises(RuntimeError, match="truncation must match finish_reason"):
         validate_trajectories([trajectory])
+
+
+def test_step_rewards_and_episode_status_roundtrip() -> None:
+    trajectory = _trajectory()
+    trajectory.reward = 1.5
+    trajectory.rewards = [1.5]
+    trajectory.terminated = True
+
+    validate_trajectories([trajectory])
+    restored = RolloutTrajectory.from_record(trajectory.to_record())
+
+    assert restored.rewards == [1.5]
+    assert restored.terminated is True
+    assert restored.truncated is False
+
+
+def test_token_credit_requires_step_reward_provenance() -> None:
+    trajectory = _trajectory()
+    trajectory.policy_credit_assignment = "token"
+    with pytest.raises(RuntimeError, match="token credit requires step rewards"):
+        validate_trajectories([trajectory])
+
+    trajectory.rewards = [0.0]
+    trajectory.truncated = True
+    validate_trajectories([trajectory])
+
+
+def test_step_reward_returns_preserve_intermediate_rewards() -> None:
+    record = {
+        "action_indices": [0, 1, 2],
+        "reward": 2.5,
+        "rewards": [1.0, -0.5, 2.0],
+        "terminated": True,
+        "truncated": False,
+    }
+
+    assert discounted_action_value_targets(record, gamma=0.5) == [1.25, 0.5, 2.0]
+
+
+def test_truncated_return_requires_explicit_bootstrap() -> None:
+    record = {
+        "action_indices": [0, 1],
+        "reward": 0.0,
+        "rewards": [-0.1, 0.1],
+        "terminated": False,
+        "truncated": True,
+    }
+
+    with pytest.raises(ValueError, match="explicit value bootstrap"):
+        discounted_action_value_targets(record, gamma=0.9)
+    assert discounted_action_value_targets(
+        record,
+        gamma=0.9,
+        truncated_bootstrap=2.0,
+    ) == pytest.approx([1.61, 1.9])

@@ -34,17 +34,44 @@ def discounted_action_value_targets(
     record: dict[str, Any],
     *,
     gamma: float = DEFAULT_VALUE_GAMMA,
+    truncated_bootstrap: float | None = None,
 ) -> list[float]:
     """计算 trajectory 中每个已执行动作的折扣 Monte Carlo return。
 
-    当前数据只有 trajectory 级稀疏 reward，因此第 ``t`` 步的目标为
-    ``reward * gamma ** (T - 1 - t)``。
+    fresh rollout 使用逐步 ``rewards``。真正 terminal 从0 bootstrap；truncated
+    trajectory必须由调用方显式提供bootstrap值，避免把时间上限猜成terminal。
+    旧JSONL没有逐步reward/status时，保留trajectory级稀疏reward兼容路径。
     """
 
     action_indices = list(record.get("action_indices", []))
     n = len(action_indices)
     if n == 0:
         return []
+    step_rewards = record.get("rewards")
+    if step_rewards:
+        rewards = [float(value) for value in step_rewards]
+        if len(rewards) != n:
+            raise ValueError(
+                f"trajectory rewards/actions mismatch: {len(rewards)} != {n}"
+            )
+        terminated = bool(record.get("terminated", False))
+        truncated = bool(record.get("truncated", False))
+        if terminated == truncated:
+            raise ValueError(
+                "trajectory with step rewards must be exactly one of "
+                "terminated or truncated"
+            )
+        if truncated and truncated_bootstrap is None:
+            raise ValueError(
+                "truncated trajectory requires an explicit value bootstrap"
+            )
+        running = 0.0 if terminated else float(truncated_bootstrap)
+        returns = [0.0] * n
+        for step in range(n - 1, -1, -1):
+            running = rewards[step] + gamma * running
+            returns[step] = running
+        return returns
+
     terminal = float(record.get("reward", 0.0) or 0.0)
     return [terminal * (gamma ** (n - 1 - t)) for t in range(n)]
 

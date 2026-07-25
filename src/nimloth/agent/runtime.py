@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from nimloth.agent.policy import (
     AgentPolicy,
@@ -30,6 +30,7 @@ class AgentAction:
     response: str
     policy_prompt: AgentPrompt
     token_trace: PolicyTokenTrace | None = None
+    credit_assignment: Literal["action", "turn", "token"] = "action"
 
     @property
     def prompt_messages(self) -> tuple[dict[str, Any], ...]:
@@ -124,6 +125,11 @@ class AgentRuntime:
                 "is forbidden"
             )
         response = decision.response
+        credit_assignment = getattr(self._policy, "credit_assignment", "action")
+        if credit_assignment not in {"action", "turn", "token"}:
+            raise ValueError(
+                f"unsupported policy credit assignment: {credit_assignment!r}"
+            )
         self._action_indices.append(decision.action_index)
         self._assistant_responses.append(response)
         return AgentAction(
@@ -133,6 +139,7 @@ class AgentRuntime:
             response=response,
             policy_prompt=policy_prompt,
             token_trace=decision.token_trace,
+            credit_assignment=credit_assignment,
         )
 
     def transcript(self) -> AgentTranscript:

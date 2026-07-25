@@ -42,7 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--top-p", type=float, default=0.95)
     ap.add_argument(
         "--credit-assignment",
-        choices=("action", "turn"),
+        choices=("action", "turn", "token"),
         default="action",
     )
     ap.add_argument("--max-reasoning-tokens", type=int, default=64)
@@ -175,7 +175,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         if args.credit_assignment != "action":
-            raise ValueError("turn credit rollout requires --backend vllm")
+            raise ValueError(
+                f"{args.credit_assignment} credit rollout requires --backend vllm"
+            )
         from transformers import AutoConfig
         from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 

@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from nimloth.agent import AgentPrompt, PolicyReplayInput
 from nimloth.rollout import TrajectoryWindow
 from nimloth.rollout.transitions import discounted_action_value_targets
-from nimloth.training.rl.credit import expand_step_advantages
+from nimloth.training.rl.credit import expand_step_advantages, token_level_gae
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm import SequenceSIGReg
 
@@ -61,6 +61,7 @@ def build_rl_batch(
     windows: tuple[TrajectoryWindow, ...],
     *,
     gamma: float,
+    truncated_bootstrap: float | None = None,
     device: torch.device,
 ) -> RLBatch:
     """把已采样窗口的动作、return 和行为概率整理为 ``(B,H)`` 张量。
@@ -97,6 +98,7 @@ def build_rl_batch(
                 discounted_action_value_targets(
                     window.trajectory.to_record(),
                     gamma=gamma,
+                    truncated_bootstrap=truncated_bootstrap,
                 )[window.start_step : window.start_step + history_size]
                 for window in windows
             ],
@@ -151,6 +153,9 @@ class RLAlgorithm:
         ppo_clip_ratio: float,
         entropy_weight: float,
         credit_assignment: str = "action",
+        token_gamma: float | None = None,
+        token_gae_lambda: float | None = None,
+        token_value_loss_weight: float | None = None,
     ) -> None:
         self.history_size = int(history_size)
         if self.history_size < 1:
@@ -163,11 +168,23 @@ class RLAlgorithm:
         self.value_rank_weight = float(value_rank_weight)
         self.ppo_clip_ratio = float(ppo_clip_ratio)
         self.entropy_weight = float(entropy_weight)
-        if credit_assignment not in {"action", "turn"}:
+        if credit_assignment not in {"action", "turn", "token"}:
             raise ValueError(
                 f"unsupported PPO credit assignment: {credit_assignment!r}"
             )
         self.credit_assignment = credit_assignment
+        self.token_gamma = token_gamma
+        self.token_gae_lambda = token_gae_lambda
+        self.token_value_loss_weight = token_value_loss_weight
+        if self.credit_assignment == "token" and any(
+            value is None
+            for value in (
+                self.token_gamma,
+                self.token_gae_lambda,
+                self.token_value_loss_weight,
+            )
+        ):
+            raise ValueError("token credit requires explicit token GAE parameters")
 
     def training_step(
         self,
@@ -238,27 +255,53 @@ class RLAlgorithm:
             total = total + self.sigreg_weight * sigreg_loss
 
         policy: dict[str, torch.Tensor] | None = None
+        token_value_loss: torch.Tensor | None = None
         if runtime.policy_replay is not None:
             # replay 与上面的监督张量使用相同的 window/time 展开顺序；flatten 后每个
             # ratio 仍对应 rollout 中同一个动作位置。
             replay_output = runtime.policy_replay(
                 batch.policy_replay_inputs
             )
-            step_advantages = normalized_monte_carlo_advantages(
-                return_targets=batch.return_targets.flatten().to(
-                    device=chosen_values.device,
-                    dtype=chosen_values.dtype,
-                ),
-                predicted_values=chosen_values.flatten(),
-            ).to(
-                device=replay_output.selected_log_probs.device,
-                dtype=replay_output.selected_log_probs.dtype,
-            )
-            advantages = expand_step_advantages(
-                step_advantages,
-                batch.policy_replay_inputs,
-                credit_assignment=self.credit_assignment,  # type: ignore[arg-type]
-            )
+            if self.credit_assignment == "token":
+                if replay_output.token_values is None:
+                    raise RuntimeError("token credit replay returned no token values")
+                assert self.token_gamma is not None
+                assert self.token_gae_lambda is not None
+                assert self.token_value_loss_weight is not None
+                token_credit = token_level_gae(
+                    batch.return_targets.flatten(),
+                    replay_output.token_values,
+                    batch.policy_replay_inputs,
+                    gamma=self.token_gamma,
+                    gae_lambda=self.token_gae_lambda,
+                )
+                advantages = token_credit.advantages.to(
+                    device=replay_output.selected_log_probs.device,
+                    dtype=replay_output.selected_log_probs.dtype,
+                )
+                token_value_loss = F.mse_loss(
+                    replay_output.token_values,
+                    token_credit.returns.to(
+                        device=replay_output.token_values.device,
+                        dtype=replay_output.token_values.dtype,
+                    ),
+                )
+            else:
+                step_advantages = normalized_monte_carlo_advantages(
+                    return_targets=batch.return_targets.flatten().to(
+                        device=chosen_values.device,
+                        dtype=chosen_values.dtype,
+                    ),
+                    predicted_values=chosen_values.flatten(),
+                ).to(
+                    device=replay_output.selected_log_probs.device,
+                    dtype=replay_output.selected_log_probs.dtype,
+                )
+                advantages = expand_step_advantages(
+                    step_advantages,
+                    batch.policy_replay_inputs,
+                    credit_assignment=self.credit_assignment,  # type: ignore[arg-type]
+                )
             policy = self._policy_loss(
                 new_log_probs=replay_output.selected_log_probs,
                 old_log_probs=batch.old_log_probs.to(
@@ -275,6 +318,10 @@ class RLAlgorithm:
             policy_loss = policy["loss"].to(device=total.device)
             policy_entropy = policy["entropy"].to(device=total.device)
             total = total + policy_loss - self.entropy_weight * policy_entropy
+            if token_value_loss is not None:
+                total = total + self.token_value_loss_weight * token_value_loss.to(
+                    device=total.device
+                )
 
         metrics = {
             "wm_mse": float(wm_loss.detach().item()),
@@ -284,6 +331,11 @@ class RLAlgorithm:
             "value_loss": float(value_loss.detach().item()),
             "total_loss": float(total.detach().item()),
             "actor_loss": float(policy["loss"].detach().item()) if policy else 0.0,
+            "token_value_loss": (
+                float(token_value_loss.detach().item())
+                if token_value_loss is not None
+                else 0.0
+            ),
         }
         if policy is not None:
             metrics.update(
@@ -302,6 +354,7 @@ class RLAlgorithm:
                 "sigreg": sigreg_loss,
                 "value": value_loss,
                 "policy": policy["loss"] if policy else None,
+                "token_value": token_value_loss,
             },
             metrics=metrics,
         )

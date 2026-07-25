@@ -36,10 +36,10 @@ class QwenVLLMAgentPolicy:
         temperature: float,
         top_p: float,
         latent_token_count: int = 1,
-        credit_assignment: Literal["action", "turn"] = "action",
+        credit_assignment: Literal["action", "turn", "token"] = "action",
         max_reasoning_tokens: int = 64,
     ) -> None:
-        if credit_assignment not in {"action", "turn"}:
+        if credit_assignment not in {"action", "turn", "token"}:
             raise ValueError(
                 f"unsupported PPO credit assignment: {credit_assignment!r}"
             )
@@ -52,7 +52,9 @@ class QwenVLLMAgentPolicy:
         self.latent_token_count = int(latent_token_count)
         self.credit_assignment = credit_assignment
         self.max_reasoning_tokens = int(max_reasoning_tokens)
-        self.prompt_mode = "response" if credit_assignment == "turn" else "action"
+        self.prompt_mode = (
+            "response" if credit_assignment in {"turn", "token"} else "action"
+        )
         self.token_id_map = special_token_ids(
             processor.tokenizer,
             latent_token_count=latent_token_count,
@@ -75,7 +77,7 @@ class QwenVLLMAgentPolicy:
         max_images: int,
         gpu_memory_utilization: float,
         latent_token_count: int,
-        credit_assignment: Literal["action", "turn"] = "action",
+        credit_assignment: Literal["action", "turn", "token"] = "action",
         max_reasoning_tokens: int = 64,
         distributed_executor_backend: str | None = None,
         enforce_eager: bool = False,
@@ -85,7 +87,7 @@ class QwenVLLMAgentPolicy:
         engine_kwargs: dict[str, Any] = {}
         if distributed_executor_backend is not None:
             engine_kwargs["distributed_executor_backend"] = distributed_executor_backend
-        if credit_assignment == "turn":
+        if credit_assignment in {"turn", "token"}:
             engine_kwargs["logits_processors"] = [
                 "nimloth.backbone.qwen25vl.vllm_logits:TurnResponseLogitsProcessor"
             ]
@@ -116,7 +118,7 @@ class QwenVLLMAgentPolicy:
         """vLLM KV cache 按 request 管理，policy 本身无 episode state。"""
 
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
-        if self.credit_assignment == "turn":
+        if self.credit_assignment in {"turn", "token"}:
             return self._select_response(prompt)
         return self._select_action_only(prompt)
 

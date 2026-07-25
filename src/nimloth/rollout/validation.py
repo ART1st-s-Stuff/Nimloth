@@ -29,6 +29,7 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
             f"{prefix}: action_names={len(trajectory.action_names)} "
             f"but actions={trajectory.num_steps}"
         )
+    _validate_reward_provenance(trajectory)
 
     action_space = get_action_space(
         trajectory.action_space_id,
@@ -57,6 +58,36 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
         raise ValueError(f"{prefix} has a negative sampling temperature")
     if not 0.0 < trajectory.sampling_top_p <= 1.0:
         raise ValueError(f"{prefix} has sampling_top_p outside (0, 1]")
+
+
+def _validate_reward_provenance(trajectory: RolloutTrajectory) -> None:
+    """校验 fresh rollout 的逐步 reward 与 episode 结束语义。"""
+
+    prefix = f"trajectory {trajectory.record_id}"
+    if trajectory.rewards:
+        if len(trajectory.rewards) != trajectory.num_steps:
+            raise ValueError(
+                f"{prefix}: rewards={len(trajectory.rewards)} "
+                f"but actions={trajectory.num_steps}"
+            )
+        if trajectory.terminated == trajectory.truncated:
+            raise ValueError(
+                f"{prefix} with step rewards must be exactly one of "
+                "terminated or truncated"
+            )
+        if not math.isclose(
+            trajectory.reward,
+            sum(trajectory.rewards),
+            rel_tol=1e-6,
+            abs_tol=1e-7,
+        ):
+            raise ValueError(
+                f"{prefix} aggregate reward does not equal the step rewards"
+            )
+    elif trajectory.terminated or trajectory.truncated:
+        raise ValueError(f"{prefix} has episode status without step rewards")
+    elif trajectory.policy_credit_assignment == "token":
+        raise ValueError(f"{prefix} token credit requires step rewards and status")
 
 
 def _validate_behavior_probabilities(
@@ -91,7 +122,7 @@ def _validate_token_provenance(
     action_count: int,
 ) -> None:
     prefix = f"trajectory {trajectory.record_id}"
-    if trajectory.policy_credit_assignment not in {"action", "turn"}:
+    if trajectory.policy_credit_assignment not in {"action", "turn", "token"}:
         raise ValueError(
             f"{prefix} has unsupported policy_credit_assignment "
             f"{trajectory.policy_credit_assignment!r}"
@@ -125,8 +156,11 @@ def _validate_token_provenance(
     populated = [bool(field) for field in trace_fields]
     if any(populated) and not all(populated):
         raise ValueError(f"{prefix} has incomplete policy token trace fields")
-    if trajectory.policy_credit_assignment == "turn" and not all(populated):
-        raise ValueError(f"{prefix} turn credit requires policy token traces")
+    if trajectory.policy_credit_assignment in {"turn", "token"} and not all(populated):
+        raise ValueError(
+            f"{prefix} {trajectory.policy_credit_assignment} credit requires "
+            "policy token traces"
+        )
     if not any(populated):
         return
     if not all(len(field) == trajectory.num_steps for field in trace_fields):
@@ -177,9 +211,10 @@ def _validate_token_provenance(
                 )
         elif "reasoning" not in selected_roles:
             raise ValueError(
-                f"{prefix} step {step} turn credit has no reasoning token"
+                f"{prefix} step {step} {trajectory.policy_credit_assignment} "
+                "credit has no reasoning token"
             )
-        if trajectory.policy_credit_assignment == "turn":
+        if trajectory.policy_credit_assignment in {"turn", "token"}:
             if not trajectory.assistant_responses:
                 raise ValueError(f"{prefix} turn credit requires assistant responses")
             tokens = LatentActionTokens()

@@ -119,6 +119,11 @@ class RLTrainingLoop:
         batch = build_rl_batch(
             windows,
             gamma=self.config.rl.gamma,
+            truncated_bootstrap=(
+                0.0
+                if self.config.rl.truncated_bootstrap == "zero"
+                else None
+            ),
             device=self.device,
         )
         self.optimization_runtime.zero_grad()

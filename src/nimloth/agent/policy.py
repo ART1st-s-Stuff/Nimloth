@@ -271,19 +271,21 @@ class PolicyReplayInput:
     sampling_temperature: float
     sampling_top_p: float
     latent_token_count: int
-    credit_assignment: Literal["action", "turn"] = "action"
+    credit_assignment: Literal["action", "turn", "token"] = "action"
     token_trace: PolicyTokenTrace | None = None
     old_action_log_prob: float | None = None
     assistant_response: str | None = None
 
     def __post_init__(self) -> None:
-        if self.credit_assignment not in {"action", "turn"}:
+        if self.credit_assignment not in {"action", "turn", "token"}:
             raise ValueError(
                 f"unsupported PPO credit assignment: {self.credit_assignment!r}"
             )
-        if self.credit_assignment == "turn":
+        if self.credit_assignment in {"turn", "token"}:
             if self.token_trace is None:
-                raise ValueError("turn credit requires a policy token trace")
+                raise ValueError(
+                    f"{self.credit_assignment} credit requires a policy token trace"
+                )
             if not any(
                 role == "reasoning" and selected
                 for role, selected in zip(
@@ -292,9 +294,13 @@ class PolicyReplayInput:
                     strict=True,
                 )
             ):
-                raise ValueError("turn credit requires sampled reasoning tokens")
+                raise ValueError(
+                    f"{self.credit_assignment} credit requires sampled reasoning tokens"
+                )
             if not self.assistant_response:
-                raise ValueError("turn credit requires the sampled assistant response")
+                raise ValueError(
+                    f"{self.credit_assignment} credit requires the sampled assistant response"
+                )
         if self.token_trace is None:
             if self.old_action_log_prob is None or not math.isfinite(
                 self.old_action_log_prob
@@ -331,12 +337,20 @@ class PolicyReplayOutput:
 
     selected_log_probs: torch.Tensor
     entropies: torch.Tensor
+    token_values: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.selected_log_probs.ndim != 1 or self.entropies.ndim != 1:
             raise ValueError("policy replay outputs must both have shape (N,)")
         if self.selected_log_probs.shape != self.entropies.shape:
             raise ValueError("policy replay log-probs and entropies must align")
+        if self.token_values is not None:
+            if self.token_values.ndim != 1:
+                raise ValueError("policy replay token values must have shape (N,)")
+            if self.token_values.shape != self.selected_log_probs.shape:
+                raise ValueError(
+                    "policy replay token values must align with selected log-probs"
+                )
 
 
 class ActionLogProbReplay(Protocol):

@@ -136,8 +136,10 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `actor.enabled` | 是否启用 Qwen PPO actor loss | 开启后只接受与当前策略绑定的 fresh rollout |
 | `actor.clip_ratio` | PPO probability ratio 裁剪范围 | ratio 为 `exp(new_log_prob-old_log_prob)` |
 | `actor.entropy_coeff` | behavior sampling 分布上的 entropy bonus 权重 | entropy 使用相同 temperature/top-p 变换后的分布 |
-| `actor.credit_assignment` | `action` 或 `turn` | 决定每个 environment-step advantage 分配到哪些 policy token |
+| `actor.credit_assignment` | `action`、`turn`或`token` | `turn`广播step advantage；`token`使用独立逐token critic和turn内GAE |
 | `actor.max_reasoning_tokens` | turn-credit 最多采样的 reasoning token 数 | 截断和 finish reason 必须持久化 |
+| `token_credit.gamma`、`gae_lambda` | token MDP内的折扣率与GAE系数 | 只在`credit_assignment=token`时生效，必须显式配置 |
+| `token_credit.value_lr`、`value_loss_weight`、`hidden_dim` | TokenValueHead学习率、loss权重和MLP hidden维度 | 预测每个loss-mask token生成前的value，不替代action `Q(s,a)` |
 | `predictor.history_size` | RL 窗口中的 transition 数 `H` | state 数为 `H+1`；必须和 SFT2 WM checkpoint 的 history 语义兼容 |
 | `predictor.emb_dim` | RL WM embedding 维度 | 必须匹配 warm-start 组件 |
 | `predictor.lr` | WM predictor 学习率 | 不等于 Backbone 或 ValueHead 学习率 |
@@ -148,6 +150,7 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `rl.envs_per_iteration` | 每次 iteration 采集的 episode 数 | 不是 transition/window 数 |
 | `rl.max_steps_per_episode` | 每条真实 episode 最多执行的环境动作数 `E` | 与 planning horizon、reasoning token 数无关 |
 | `rl.gamma` | Monte Carlo return 折扣率 | 先对完整 episode 计算，再切 trajectory window |
+| `rl.truncated_bootstrap` | 时间上限truncation的bootstrap策略 | token模式必须显式配置；当前仅实现`zero`，不会把truncated猜成terminal |
 | `rl.batch_size` | 每次 optimizer update 采样的 trajectory window 数 | 每个窗口贡献 `H` 个 value/action 位置 |
 | `rollout.temperature`、`rollout.top_p` | behavior policy 采样参数 | 必须随 trajectory 保存并在 PPO replay 中复用 |
 | `rollout.train_datasets`、`eval_datasets` | 训练和评估环境资产 | 两者必须具有经核实的不重叠 scene 语义 |

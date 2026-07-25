@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import torch
 
-from nimloth.agent import Agent, AgentTranscript, NimlothPromptTemplate
+from nimloth.agent import (
+    Agent,
+    AgentTranscript,
+    NimlothPromptTemplate,
+    PolicyReplayOutput,
+)
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
 from nimloth.rollout import (
@@ -103,6 +109,20 @@ class _RecordingSIGReg(torch.nn.Module):
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         self.inputs.append(states)
         return states.pow(2).mean()
+
+
+class _TokenReplay(torch.nn.Module):
+    def __init__(self, token_count: int) -> None:
+        super().__init__()
+        self.log_probs = torch.nn.Parameter(torch.zeros(token_count))
+        self.token_values = torch.nn.Parameter(torch.zeros(token_count))
+
+    def forward(self, _samples) -> PolicyReplayOutput:
+        return PolicyReplayOutput(
+            selected_log_probs=self.log_probs,
+            entropies=torch.ones_like(self.log_probs),
+            token_values=self.token_values,
+        )
 
 
 def _trajectory(record_id: str, length: int) -> RolloutTrajectory:
@@ -406,7 +426,13 @@ def test_grid_rl_uses_ema_targets_and_mean_pooled_sigreg_without_dino_loss() -> 
     output.loss.backward()
 
     assert recording.inputs[0].shape == (3, 2, 2)
-    assert set(output.losses) == {"wm", "sigreg", "value", "policy"}
+    assert set(output.losses) == {
+        "wm",
+        "sigreg",
+        "value",
+        "policy",
+        "token_value",
+    }
     assert output.losses["wm"] is not None
     assert output.losses["value"] is not None
     assert backbone.model.weight.grad is not None
@@ -433,3 +459,45 @@ def test_rl_algorithm_is_pure_compute_configuration() -> None:
     assert not isinstance(algorithm, torch.nn.Module)
     assert not hasattr(algorithm, "agent")
     assert not hasattr(algorithm, "optimizer")
+
+
+def test_token_credit_trains_policy_and_token_critic_separately() -> None:
+    trajectory = _trajectory("token", 2)
+    trajectory.policy_credit_assignment = "token"
+    trajectory.rewards = [0.0, 1.0]
+    trajectory.reward = 1.0
+    trajectory.terminated = True
+    windows = sample_trajectory_windows(
+        [trajectory],
+        history_size=2,
+        batch_size=1,
+        seed=1,
+    )
+    batch = build_rl_batch(
+        windows,
+        gamma=0.99,
+        device=torch.device("cpu"),
+    )
+    token_replay = _TokenReplay(token_count=4)
+    _, base_runtime, *_ = _algorithm()
+    runtime = replace(base_runtime, policy_replay=token_replay)
+    algorithm = RLAlgorithm(
+        history_size=2,
+        sigreg=None,
+        sigreg_weight=0.0,
+        value_rank_margin=0.1,
+        value_rank_weight=0.0,
+        ppo_clip_ratio=0.2,
+        entropy_weight=0.0,
+        credit_assignment="token",
+        token_gamma=1.0,
+        token_gae_lambda=1.0,
+        token_value_loss_weight=1.0,
+    )
+
+    output = algorithm.training_step(runtime, batch)
+    output.loss.backward()
+
+    assert output.losses["token_value"] is not None
+    assert token_replay.log_probs.grad is not None
+    assert token_replay.token_values.grad is not None

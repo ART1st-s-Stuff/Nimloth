@@ -340,6 +340,7 @@ def build_action_log_prob_replay(
     *,
     model: torch.nn.Module,
     device: torch.device,
+    token_value_head: torch.nn.Module | None = None,
 ):
     """构造 PPO 当前策略概率重放器。"""
 
@@ -350,6 +351,7 @@ def build_action_log_prob_replay(
         processor=loaded.processor,
         token_id_map=loaded.token_id_map,
         device=device,
+        token_value_head=token_value_head,
     )
 
 

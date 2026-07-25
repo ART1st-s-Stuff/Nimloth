@@ -302,6 +302,7 @@ def replay_policy_token_log_probs(
     processor: Any,
     token_id_map: dict[str, int],
     device: torch.device,
+    token_value_head: torch.nn.Module | None = None,
 ) -> PolicyReplayOutput:
     """只在 trajectory loss-mask 位置重放 response token 概率。
 
@@ -317,6 +318,7 @@ def replay_policy_token_log_probs(
     injected_token_ids = tuple(token_id_map.values())
     selected_log_probs: list[torch.Tensor] = []
     entropies: list[torch.Tensor] = []
+    selected_hidden_states: list[torch.Tensor] = []
 
     for sample in samples:
         trace = sample.token_trace
@@ -325,7 +327,7 @@ def replay_policy_token_log_probs(
             raise ValueError(
                 "recorded action token mapping does not match current tokenizer"
             )
-        if sample.credit_assignment == "turn":
+        if sample.credit_assignment in {"turn", "token"}:
             assert sample.assistant_response is not None
             response_prefix = "<think>"
             if not sample.assistant_response.startswith(response_prefix):
@@ -381,12 +383,46 @@ def replay_policy_token_log_probs(
         logits_to_keep = _logits_to_keep_positions(
             [prompt_length - 1 + index for index in selected_indices]
         )
-        outputs = model(
-            **model_inputs,
-            logits_to_keep=logits_to_keep,
-            output_hidden_states=False,
-            return_dict=True,
-        )
+        captured: dict[str, torch.Tensor] = {}
+        handle = None
+        if sample.credit_assignment == "token":
+            if token_value_head is None:
+                raise ValueError("token credit replay requires a TokenValueHead")
+            root = getattr(model, "module", model)
+            get_output_embeddings = getattr(root, "get_output_embeddings", None)
+            lm_head = get_output_embeddings() if get_output_embeddings else None
+            if not isinstance(lm_head, torch.nn.Module):
+                raise RuntimeError("could not locate Qwen lm_head for token critic")
+
+            def capture_lm_head_input(
+                _module: torch.nn.Module,
+                inputs: tuple[torch.Tensor, ...],
+            ) -> None:
+                if not inputs:
+                    raise RuntimeError("Qwen lm_head received no hidden states")
+                captured["hidden"] = inputs[0]
+
+            handle = lm_head.register_forward_pre_hook(capture_lm_head_input)
+        try:
+            outputs = model(
+                **model_inputs,
+                logits_to_keep=logits_to_keep,
+                output_hidden_states=False,
+                return_dict=True,
+            )
+        finally:
+            if handle is not None:
+                handle.remove()
+        if sample.credit_assignment == "token":
+            hidden = captured.get("hidden")
+            if hidden is None or hidden.ndim != 3 or hidden.shape[:2] != (
+                1,
+                len(selected_indices),
+            ):
+                raise RuntimeError(
+                    "Qwen lm_head hook did not capture selected token hidden states"
+                )
+            selected_hidden_states.append(hidden[0])
         selected_token_ids = [trace.token_ids[index] for index in selected_indices]
         selected_roles = [trace.token_roles[index] for index in selected_indices]
         for row, token_id, role in zip(
@@ -425,9 +461,14 @@ def replay_policy_token_log_probs(
             )
             selected_log_probs.append(log_probs[selected_index])
             entropies.append(_row_entropies(log_probs.unsqueeze(0))[0])
+    token_values = None
+    if selected_hidden_states:
+        assert token_value_head is not None
+        token_values = token_value_head(torch.cat(selected_hidden_states, dim=0))
     return PolicyReplayOutput(
         selected_log_probs=torch.stack(selected_log_probs),
         entropies=torch.stack(entropies),
+        token_values=token_values,
     )
 
 
@@ -441,11 +482,13 @@ class QwenActionLogProbReplay:
         processor: Any,
         token_id_map: dict[str, int],
         device: torch.device,
+        token_value_head: torch.nn.Module | None = None,
     ) -> None:
         self.model = model
         self.processor = processor
         self.token_id_map = token_id_map
         self.device = device
+        self.token_value_head = token_value_head
 
     def __call__(
         self,
@@ -462,6 +505,7 @@ class QwenActionLogProbReplay:
                     processor=self.processor,
                     token_id_map=self.token_id_map,
                     device=self.device,
+                    token_value_head=self.token_value_head,
                 )
         selected, distributions = replay_rollout_action_log_probs(
             samples=samples,

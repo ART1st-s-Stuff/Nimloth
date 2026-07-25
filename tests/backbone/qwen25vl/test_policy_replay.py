@@ -18,6 +18,7 @@ from nimloth.backbone.qwen25vl.policy import (
     replay_policy_token_log_probs,
 )
 from nimloth.latent import LatentActionTokens
+from nimloth.training.rl.token_value import TokenValueHead
 
 
 class _Processor:
@@ -61,6 +62,22 @@ class _Model(torch.nn.Module):
             device=input_ids.device,
         )
         return SimpleNamespace(logits=logits)
+
+
+class _TokenModel(_Model):
+    def __init__(self) -> None:
+        super().__init__()
+        self.lm_head = torch.nn.Linear(4, 64, bias=False)
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def forward(self, *, input_ids, logits_to_keep, **kwargs):
+        del kwargs
+        self.last_input_ids = input_ids
+        self.last_logits_to_keep = logits_to_keep
+        hidden = self.scale * torch.ones((1, len(logits_to_keep), 4))
+        return SimpleNamespace(logits=self.lm_head(hidden))
 
 
 def test_logits_to_keep_positions_are_native_indices_for_device_mapped_qwen() -> None:
@@ -181,3 +198,58 @@ def test_token_replay_rejects_response_that_does_not_match_trace() -> None:
             token_id_map=token_id_map,
             device=torch.device("cpu"),
         )
+
+
+def test_token_credit_replay_captures_only_selected_hidden_states() -> None:
+    tokens = LatentActionTokens()
+    token_id_map = {
+        tokens.latent_state: 20,
+        tokens.action_start: 21,
+        tokens.action_end: 22,
+        **{
+            token: 23 + index
+            for index, token in enumerate(tokens.action_tokens)
+        },
+    }
+    sample = PolicyReplayInput(
+        prompt=AgentPrompt(
+            messages=({"role": "assistant", "content": "<think>"},),
+            images=(),
+            template=PromptTemplateSpec("test", "v1"),
+        ),
+        action_index=2,
+        sampling_temperature=1.0,
+        sampling_top_p=1.0,
+        latent_token_count=1,
+        credit_assignment="token",
+        token_trace=PolicyTokenTrace(
+            token_ids=(5, 20, 25, 22),
+            old_log_probs=(-0.2, None, -0.3, None),
+            loss_mask=(True, False, True, False),
+            token_roles=("reasoning", "injected", "action", "injected"),
+            action_token_ids=tuple(range(23, 31)),
+            reasoning_text="reason",
+            finish_reason="stop",
+        ),
+        assistant_response=(
+            "<think>reason</think><|latent_state|><|action_start|>"
+            "<|action_(2)|><|action_end|>"
+        ),
+    )
+    model = _TokenModel()
+    token_value_head = TokenValueHead(input_dim=4, hidden_dim=3)
+
+    output = replay_policy_token_log_probs(
+        samples=(sample,),
+        model=model,
+        processor=_Processor(),
+        token_id_map=token_id_map,
+        device=torch.device("cpu"),
+        token_value_head=token_value_head,
+    )
+
+    assert output.token_values is not None
+    assert output.token_values.shape == (2,)
+    output.token_values.sum().backward()
+    assert model.scale.grad is not None
+    assert all(parameter.grad is not None for parameter in token_value_head.parameters())

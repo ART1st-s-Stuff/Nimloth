@@ -41,23 +41,12 @@ def trajectory_from_agent_episode(
     has_traces = [trace is not None for trace in traces]
     if any(has_traces) and not all(has_traces):
         raise ValueError("Agent episode mixes traced and untraced policy actions")
-    credit_assignments = {
-        "turn"
-        if trace is not None
-        and any(
-            role == "reasoning" and selected
-            for role, selected in zip(
-                trace.token_roles,
-                trace.loss_mask,
-                strict=True,
-            )
-        )
-        else "action"
-        for trace in traces
-    }
+    credit_assignments = {action.credit_assignment for action in episode.actions}
     if len(credit_assignments) != 1:
         raise ValueError("Agent episode mixes PPO credit assignment modes")
     credit_assignment = credit_assignments.pop()
+    if credit_assignment in {"turn", "token"} and not all(has_traces):
+        raise ValueError(f"{credit_assignment} credit requires token traces")
     if not terminal_assistant_prefix:
         raise ValueError(
             "trajectory conversion requires a separately generated terminal CoT prefix"
@@ -75,6 +64,9 @@ def trajectory_from_agent_episode(
         # 成功语义由具体 environment session 判定，公共 rollout 不猜 reward 阈值。
         success=episode.success,
         reward=episode.reward,
+        rewards=list(episode.rewards),
+        terminated=episode.done,
+        truncated=not episode.done,
         split=split,
         messages=completed_prompt.unbound_messages(),
         system_prompt=episode.system_prompt,
