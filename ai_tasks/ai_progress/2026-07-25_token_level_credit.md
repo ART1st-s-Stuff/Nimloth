@@ -62,3 +62,19 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
 - 新 vLLM selected-hidden worker extension 当前只有 compile/static 边界；启动 GPU 前还要
   在远程 vLLM 0.11 环境完成 CPU/interface regression，再做一轮真实图片 GPU correctness
   smoke。未通过 smoke 前不得直接解释长期 success rate。
+
+### CPU/interface 门禁结果
+
+- 首次远程定向测试进入真实用例后为 `76 passed, 3 failed`，确认并修复：planner 的
+  grid state/history shape、grid predictor 缺少 `rollout_from_history`、rollout-time
+  grid ValueHead 缺少 slot mean-pooling，以及 planner replay 把额外 action logit row
+  混入 CoT selected rows。提交 `927cf01`。
+- 新增真实 grid checkpoint loader -> state -> H=2 exhaustive planner 回归；定向测试
+  `86 passed`，扩大 `tests/training/rl tests/agent tests/backbone/qwen25vl
+  tests/wm/test_grid.py` 回归 `148 passed, 1 expected warning`。
+- 安装版 vLLM 0.11 静态核对确认 Qwen `forward` 返回 hidden/IntermediateTensors、
+  `compute_logits(hidden_states)` 接口存在，`LLM.collective_rpc` 接口匹配；同时发现
+  `worker_extension_cls` 错用冒号 FQCN。修复提交 `5534da0` 后，安装版
+  `resolve_obj_by_qualname` 直接解析成功，扩大回归再次 `148 passed, 1 warning`。
+- CPU/interface 门禁现已通过；仍未验证真实图片、TP workers 同步 hidden/action logits
+  或 GPU optimizer step，因此仍须先做 GPU correctness smoke。

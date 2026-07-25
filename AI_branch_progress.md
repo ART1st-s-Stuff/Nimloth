@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-07-25：planner-distillation RL CPU/interface 门禁通过
+
+- 人类授权开始 RL，但新 planner-distillation/token-credit 路径的数值、规模和资源配置
+  尚未确认，因此尚未提交 GPU、Slurm、rollout、W&B 或训练任务。
+- 远程首次真实定向回归 `76 passed, 3 failed`，暴露首版实现未保持 corrected SFT2
+  grid WM state 形状、grid predictor 无 history rollout、轻量 planning loader 遗漏
+  grid ValueHead mean-pooling，以及 replay 额外 action row 混入 CoT rows。修复
+  `927cf01` 增加 grid checkpoint -> H=2 64-sequence search 回归。
+- 安装版 vLLM 0.11 的 `worker_extension_cls` 实际只接受 `module.Class`，而首版 fake
+  测试错误接受了 `module:Class`；`5534da0` 修正并由安装版 resolver 直接验证。
+  logits processor 的冒号语法由其独立 loader 明确支持，未错误联动修改。
+- 当前远程扩大回归为 `148 passed, 1 expected warning`，测试 worktree detached 在
+  `5534da0` 且干净。CPU/interface 门禁通过；真实图片 TP hidden capture 与一次 GPU
+  planner rollout/update 仍未验证，不能据此声称 planner RL 已运行。
+- 启动仍需人类明确 teacher temperature、distillation weight、planner device、WM
+  train flag、token-credit 数值、rollout sampling、实验预算和 config-derived 资源布局。
+
 ## 2026-07-24：RL 分支合并到 dev，P0 禁止 fixed CoT
 
 - 按人类要求将 `exp/rl-dinogrid-ep1-online-ppo` 合并到 `dev`。人工核对确认 dev 的
