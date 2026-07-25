@@ -41,7 +41,11 @@ turn 内 token GAE”，不冒充 VAGEN Bi-Level GAE。
 - reference `low_var_kl`在最终clamp已饱和区间内预先约束exp输入，避免极端log-ratio溢出。
 - vLLM缓存开关改为显式参数；默认仍关闭，等待同版本真实多图A/B parity验证后再启用。
 - 删除无操作的online-policy validation wrapper，并同步代码/配置/README/方案文档。
-- 未启动训练或GPU实验。
+- 四个实现/文档/测试提交已推送到`origin/dev`，远端`dev`到达`746ba23`。
+- 人类已授权GPU correctness smoke；启动前预检确认本机可登录VPN跳板，且跳板到
+  `superpod.ust.hk:22`可建立TCP，但8秒内没有SSH banner，ProxyJump最终报
+  `kex_exchange_identification: Connection closed by remote host`。因此尚不能核验server
+  worktree、checkpoint、空输出、W&B ID或当前GPU资源，也未提交Slurm/启动训练。
 
 ## 验证记录
 

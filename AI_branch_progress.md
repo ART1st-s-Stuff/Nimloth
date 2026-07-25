@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-25：RL语义修复已推送；GPU启动受superpod SSH阻断
+
+- commits`20c596a`、`6e93fb1`、`942f5df`、`746ba23`已推送`origin/dev`。它们修复
+  behavior/replay概率support、fresh artifact事务、KL数值、launcher门禁，并把H=2 smoke
+  从单候选greedy改为可模拟64个两步分支的exhaustive planner；当前算法仍明确为environment
+  MC return + turn内token GAE，不称VAGEN Bi-Level GAE。
+- 人类已授权GPU correctness smoke。预检时VPN跳板可登录、superpod端口TCP可连接，但
+  8秒内不返回SSH banner，ProxyJump在key exchange前被remote host关闭。当前尚未同步server
+  worktree，也未核验checkpoint、空输出、W&B ID或空闲GPU，更未提交Slurm/GPU作业。
+- SSH恢复后使用新ID和空输出，从corrected SFT2 epoch1做`base_train` seeds1--4、H=2
+  exhaustive planner、TP4、4 ranks×2 GPUs/rank的一次fresh rollout/reference/update
+  correctness smoke；提交前仍以live checkpoint、partition和allocation预检为准。
+
 ## 2026-07-26：ID103完成一次真实8-GPU H=2 planner online PPO更新
 
 - commit`f74a695`、hold`487451`完成与ID102同参数的4条真实H=2 greedy rollout；奖励
