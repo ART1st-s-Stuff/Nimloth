@@ -84,3 +84,9 @@ python experiments/training/sft2/generate_terminal_cot.py \
 预览的sidecar。模型加载、图片、JSON和CUDA等其他错误仍会中止。manifest记录输入、
 有效、排除数量及双方SHA256，且必须满足`有效+排除=输入`。SFT2 config必须指向生成后
 的有效JSONL并重建preprocess cache；旧fixed-terminal cache不兼容。
+
+若单一 allocation pipeline 在训练开始前被抢占，且已完成 terminal CoT manifest、
+只留下带 `build_state.json` 的原子 cache shards，可设置
+`RESUME_PREPARED_DATA_CACHE=1` 对同一 `RUN_ROOT` 续跑。入口会重新校验有效/排除计数
+和SHA256，跳过数据生成并让cache builder按fingerprint续建缺失shard；只要
+`train/` 已存在就拒绝该模式，防止把“续cache”误当成optimizer/checkpoint恢复。

@@ -43,6 +43,14 @@
   它作为最后一个transition的WM target和SIGReg online-next state；不直接进入CE/value，
   也没有后续history。旧structured-agent路径曾模板化所有response，但ID46未使用该格式；
   P0修复已同时覆盖两类数据。
+- 显式排除实现`c1e49fd`通过服务器`9 passed`和真实失败样本GPU smoke。ID49正式审计
+  得到train `3211 valid / 6 excluded`、val `355 / 0`；排除sidecar、输入/有效/排除
+  计数与SHA256完整。有效train展开为59,269 transitions、62,480 unique images。
+- ID49 job`486777`在preprocess cache完成32/489个train image shards后被调度器
+  `PREEMPTED`；没有代码错误，也尚无train输出、W&B、optimizer或checkpoint。pipeline
+  新增严格的`RESUME_PREPARED_DATA_CACHE=1`：复核terminal artifacts，只续建同一
+  fingerprint下缺失的原子cache shards，并在发现任何`train/`输出时拒绝运行；cache
+  完成后仍启动全新optimizer。
 
 ## 2026-07-24：SFT2 fixed terminal CoT 删除（待远端回归）
 

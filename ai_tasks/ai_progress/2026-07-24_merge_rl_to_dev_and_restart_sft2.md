@@ -83,7 +83,7 @@
   因此不是mask或token边界bug，而是模型真实格式失败。继续必须由人类明确选择排除
   格式失败记录、显式约束闭合等策略；禁止猜测。hold`486596`已取消并释放8×H800。
 
-## 待确认问题
+## 已确认问题
 
 - 人类已确认排除terminal-CoT格式失败trajectory。实现只捕获专门的
   `TerminalCoTFormatError`，保存record ID/输入序号/原因/continuation预览sidecar；
@@ -94,3 +94,23 @@
   后续history。DINO target本身来自next image，但共享predicted state联合训练会受间接
   影响。旧structured-agent路径曾模板化所有response，不过ID46未使用该格式；当前两条
   路径均已修复。
+
+## ID49 显式排除与第一次正式运行
+
+- 提交`c1e49fd`把格式失败改为可审计的窄排除：只捕获
+  `TerminalCoTFormatError`；有效JSONL、排除sidecar、manifest计数与SHA256形成闭环，
+  其他错误仍fail-fast。服务器定向回归`9 passed`；真实失败样本GPU smoke得到
+  `valid=0/excluded=1`，没有注入闭合token。
+- ID49使用和暂停实验相同训练参数。正式生成审计结果为train
+  `3211 valid / 6 excluded`、val `355 / 0`；6条排除记录分别是
+  `train/shard_001_040/000051`、`train/shard_081_120/000043`、
+  `train/shard_161_200/000097`、`train/shard_241_280/000050`、
+  `train/shard_321_360/000037`、`train/shard_401_440/000079`。
+- train有效数据展开为59,269个transitions、62,480张unique images、489个image
+  shards。job`486777`在完成32个image shards后被调度器抢占；Slurm为
+  `PREEMPTED`，没有traceback/OOM/NaN。此时尚未创建train输出、W&B、optimizer或
+  checkpoint，完整terminal数据和带fingerprint的原子partial cache可安全续建。
+- pipeline新增`RESUME_PREPARED_DATA_CACHE=1`边界：要求同一RUN_ROOT/controller
+  log已存在、重新验证terminal manifest与SHA256，并拒绝任何已有`train/`输出；随后
+  只让cache builder按`build_state.json`续建缺失shard，cache完成后仍以新optimizer
+  启动训练，不恢复任何训练状态。

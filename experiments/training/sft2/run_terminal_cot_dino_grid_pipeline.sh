@@ -10,6 +10,7 @@ RUN_ROOT=${RUN_ROOT:?set RUN_ROOT to a new experiment root}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:?set WANDB_RUN_NAME}
 WANDB_RUN_NAME_TEMPLATE=${WANDB_RUN_NAME}
 EXPECTED_COMMIT=${EXPECTED_COMMIT:?set EXPECTED_COMMIT}
+RESUME_PREPARED_DATA_CACHE=${RESUME_PREPARED_DATA_CACHE:-0}
 PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv-vagen-main}
 CONFIG=${CONFIG:-${REPO}/configs/training/sft2/dino_grid_k16_h4.yaml}
 MODEL_PATH=${MODEL_PATH:-/project/peilab/atst/nimloth/outputs/experiments/sft1_checkpoint_merge_fix/2026-07-24/3_k16_ep5_untied_lm_head_restore/hf_merged}
@@ -27,14 +28,36 @@ VAL_JSONL=${DATA_DIR}/val_terminal_cot.jsonl
 CONTROLLER_LOG=${RUN_ROOT}.controller.log
 EXPERIMENT_README=${RUN_ROOT}/README.md
 
-if [[ -e "${RUN_ROOT}" ]]; then
-  echo "ERROR RUN_ROOT already exists: ${RUN_ROOT}" >&2
-  exit 1
-fi
-if [[ -e "${CONTROLLER_LOG}" ]]; then
-  echo "ERROR controller log already exists: ${CONTROLLER_LOG}" >&2
-  exit 1
-fi
+case "${RESUME_PREPARED_DATA_CACHE}" in
+  0)
+    if [[ -e "${RUN_ROOT}" ]]; then
+      echo "ERROR RUN_ROOT already exists: ${RUN_ROOT}" >&2
+      exit 1
+    fi
+    if [[ -e "${CONTROLLER_LOG}" ]]; then
+      echo "ERROR controller log already exists: ${CONTROLLER_LOG}" >&2
+      exit 1
+    fi
+    ;;
+  1)
+    [[ -d "${RUN_ROOT}" ]] || {
+      echo "ERROR prepared-data resume requires existing RUN_ROOT: ${RUN_ROOT}" >&2
+      exit 1
+    }
+    [[ -f "${CONTROLLER_LOG}" ]] || {
+      echo "ERROR prepared-data resume requires existing controller log: ${CONTROLLER_LOG}" >&2
+      exit 1
+    }
+    [[ ! -e "${TRAIN_OUT}" ]] || {
+      echo "ERROR prepared-data resume is forbidden after train output exists: ${TRAIN_OUT}" >&2
+      exit 1
+    }
+    ;;
+  *)
+    echo "ERROR RESUME_PREPARED_DATA_CACHE must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
 for required in "${CONFIG}" "${MODEL_PATH}/config.json" \
   "${SOURCE_TRAIN_JSONL}" "${SOURCE_VAL_JSONL}"; do
   [[ -s "${required}" ]] || { echo "ERROR missing input: ${required}" >&2; exit 1; }
@@ -67,8 +90,10 @@ export TOKENIZERS_PARALLELISM=false
 echo "pipeline_start=$(date --iso-8601=seconds)"
 echo "commit=${EXPECTED_COMMIT} job=${SLURM_JOB_ID} node=${SLURM_JOB_NODELIST}"
 echo "run_root=${RUN_ROOT} wandb_template=nimloth-sft2/${WANDB_RUN_NAME_TEMPLATE}"
+echo "resume_prepared_data_cache=${RESUME_PREPARED_DATA_CACHE}"
 
-printf '%s\n' \
+if [[ "${RESUME_PREPARED_DATA_CACHE}" == "0" ]]; then
+  printf '%s\n' \
   "# Terminal-CoT filtered DINO-grid SFT2" \
   "" \
   "- 状态：pipeline 已启动；terminal CoT、preprocess cache、SFT2 依次执行。" \
@@ -86,9 +111,18 @@ printf '%s\n' \
   "- loss：CE=1，WM=0.1->1，DINO=0.5，value=1，SIGReg=0.1。" \
   "- checkpoint：每20分钟；选择指标 val_wm_mse。" \
   "- 训练数据与 preprocess cache 均在本 run 内新建，旧 fixed-terminal cache 不复用。" \
-  > "${EXPERIMENT_README}"
-
-echo "phase=terminal_cot_train_start"
+    > "${EXPERIMENT_README}"
+else
+  printf '%s\n' \
+    "" \
+    "## 预处理缓存续跑 $(date --iso-8601=seconds)" \
+    "" \
+    "- 代码：dev@${EXPECTED_COMMIT}" \
+    "- Slurm：job ${SLURM_JOB_ID}，node ${SLURM_JOB_NODELIST}" \
+    "- 边界：复用并重新校验已完成的 terminal CoT 数据；仅续建原子 preprocess cache shard。" \
+    "- optimizer：训练尚未开始，不加载 optimizer；cache 完成后仍从新 optimizer 启动 SFT2。" \
+    >> "${EXPERIMENT_README}"
+fi
 
 generate_terminal_cot() {
   local source_jsonl=$1
@@ -165,9 +199,14 @@ print(valid_count, excluded_count)
 PY
 }
 
-generate_terminal_cot "${SOURCE_TRAIN_JSONL}" "${TRAIN_JSONL}"
-echo "phase=terminal_cot_val_start"
-generate_terminal_cot "${SOURCE_VAL_JSONL}" "${VAL_JSONL}"
+if [[ "${RESUME_PREPARED_DATA_CACHE}" == "0" ]]; then
+  echo "phase=terminal_cot_train_start"
+  generate_terminal_cot "${SOURCE_TRAIN_JSONL}" "${TRAIN_JSONL}"
+  echo "phase=terminal_cot_val_start"
+  generate_terminal_cot "${SOURCE_VAL_JSONL}" "${VAL_JSONL}"
+else
+  echo "phase=terminal_cot_resume_gate"
+fi
 [[ -s "${TRAIN_JSONL}.manifest.json" && -s "${VAL_JSONL}.manifest.json" ]]
 read -r TRAIN_VALID_RECORDS TRAIN_EXCLUDED_RECORDS < <(
   validate_terminal_cot_artifacts "${TRAIN_JSONL}" "${TRAIN_RECORDS}"
