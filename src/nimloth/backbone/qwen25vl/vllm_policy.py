@@ -130,10 +130,13 @@ class QwenVLLMAgentPolicy:
             max_model_len=int(max_model_len),
             gpu_memory_utilization=float(gpu_memory_utilization),
             limit_mm_per_prompt={"image": int(max_images)},
-            # Prompts grow by adding image-conditioned turns. vLLM 0.11 V1
-            # can otherwise reuse a text-token prefix whose multimodal
-            # placeholder/embedding slice no longer matches the new request.
+            # Agent prompts repeatedly include the full image history.  With
+            # both caches disabled, vLLM 0.11 assigns every image occurrence a
+            # request-local identifier instead of aliasing identical frames by
+            # their content hash.  This keeps encoder outputs one-to-one with
+            # the placeholders in the behavior request.
             enable_prefix_caching=False,
+            mm_processor_cache_gb=0,
             # PPO 保存实际 temperature/top-p behavior 分布，不保存 raw logits 分布。
             logprobs_mode="processed_logprobs",
             enforce_eager=bool(enforce_eager),

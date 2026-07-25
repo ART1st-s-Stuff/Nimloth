@@ -4,17 +4,30 @@
 
 ---
 
-## 2026-07-25：ID98 hidden/RPC连续通过，六图prompt被vLLM prefix cache击穿
+## 2026-07-25：ID99证伪prefix-cache归因，定位多模态content-hash复用边界
+
+- ID99使用`ca37e63`且vLLM启动配置明确为`enable_prefix_caching=False`；失败请求的
+  `num_computed_tokens=0`、`num_common_prefix_blocks=[0]`，但第六图prompt仍触发与ID98
+  相同的CUDA `masked_scatter_size_check`。因此“prefix cache是根因”的旧结论已证伪。
+- 失败请求有6个长度均为81的image placeholder；后5张相同观测被vLLM映射到同一个内容
+  hash，且调度日志为`scheduled_encoder_inputs={}`，即全部embedding来自encoder cache。
+  安装版vLLM 0.11源码表明：只有同时关闭prefix cache和processor cache时，processor才会
+  自动用`request-id + modality + index`为每个图像occurrence生成独立identifier。
+- 待GPU验证的最小修复是在现有`enable_prefix_caching=False`基础上增加
+  `mm_processor_cache_gb=0`，不改变prompt、采样或PPO目标，只禁用跨request多模态预处理/
+  encoder复用。ID99无完整trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，
+  不可resume；Ray与端口已清理，hold仍保留。
+
+## 2026-07-25：ID98确认六图prompt失败，但prefix-cache根因判断已被ID99证伪
 
 - 安全RPC修复`d8d4c8c`通过服务器`158 passed, 1 expected warning`。ID98第一条episode
   连续执行多个真实CoT+H=2 planner决策并落盘step00..05图片，证明hidden capture与RPC
   已越过ID96/97阻断点。
 - 第六图prompt时vLLM V1日志显示新3260-token请求复用`num_computed_tokens=2272`，随后
   CUDA `masked_scatter_size_check`确认图片placeholder数量超过当前embedding source并杀死
-  EngineCore。该请求的六个真实图片feature均存在，问题发生在多模态prefix复用切片。
-- 待提交修复在Qwen多模态vLLM入口显式`enable_prefix_caching=False`；仅牺牲跨请求前缀复用
-  性能，不改变prompt、采样或PPO分布。ID98无完整trajectory/manifest/reference/W&B训练run/
-  optimizer/checkpoint，不可resume，已完成Ray/端口清理。
+  EngineCore。该请求的六个真实图片feature均存在；当时据此怀疑多模态prefix复用切片，
+  但ID99关闭prefix cache后原样复现，所以该归因不成立。ID98无完整trajectory/manifest/
+  reference/W&B训练run/optimizer/checkpoint，不可resume，已完成Ray/端口清理。
 
 ## 2026-07-25：ID97 capture成功但V1 UtilityResult安全序列化丢失tensor类型
 

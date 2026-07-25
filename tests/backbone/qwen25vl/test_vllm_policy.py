@@ -156,6 +156,7 @@ def test_from_model_registers_turn_logits_adapter_and_eager_mode(monkeypatch) ->
     ]
     assert captured["enforce_eager"] is True
     assert captured["enable_prefix_caching"] is False
+    assert captured["mm_processor_cache_gb"] == 0
 
 
 def test_from_model_registers_policy_state_worker_extension(monkeypatch) -> None:

@@ -148,12 +148,24 @@ VAGEN Bi-Level GAE，也不能声称 planning PPO 已完成。
   和TP parity校验。ID97无有效trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，
   不可resume且已完成清理。
 
-## 2026-07-25 ID98 多模态prefix cache失败边界
+## 2026-07-25 ID99证伪prefix-cache归因并定位content-hash复用边界
+
+- ID99在`enable_prefix_caching=False`下重现同一CUDA断言；失败请求明确为
+  `num_computed_tokens=0`、`num_common_prefix_blocks=[0]`，所以ID98的prefix-cache根因判断
+  已失效。
+- 该请求6个image placeholder长度均为81，后5张相同观测共用一个内容hash，且
+  `scheduled_encoder_inputs={}`。vLLM 0.11只有在prefix与processor cache同时关闭时才自动
+  生成逐request、逐item UUID。当前最小修复增加`mm_processor_cache_gb=0`，仍需下一次真实
+  六图GPU请求证明问题解决。
+- ID99无有效trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，不可resume且
+  已清理。
+
+## 2026-07-25 ID98 六图失败边界（prefix-cache归因已被ID99证伪）
 
 - `d8d4c8c`服务器回归`158 passed, 1 expected warning`；ID98真实GPU连续完成多次
   policy-state capture/RPC并生成step00..05图片，确认前两个修复实际生效。
 - prompt增长到6张历史图时，vLLM V1为新3260-token request复用2272个computed prefix tokens，
   随后在Qwen image embedding masked scatter触发CUDA数量断言并杀死EngineCore。dump中六个
-  image feature/placeholder均存在，阻断点是prefix-cache后的多模态调度切片。
-- Qwen多模态rollout必须显式关闭vLLM prefix caching；不能继续依赖默认true。ID98无完整
+  image feature/placeholder均存在；这是当时怀疑prefix cache的证据，但不是充分的根因证明。
+- ID99关闭prefix cache后原样复现，因此不得继续把ID98写成prefix-cache根因。ID98无完整
   trajectory/manifest/reference/W&B训练run/optimizer/checkpoint，不可resume且已清理。
