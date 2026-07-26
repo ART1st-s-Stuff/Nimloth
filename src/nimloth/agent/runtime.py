@@ -36,6 +36,7 @@ class AgentAction:
     token_trace: PolicyTokenTrace | None = None
     planner_trace: PlannerPolicyTrace | None = None
     state_latent_hidden: torch.Tensor | None = None
+    world_model_state: torch.Tensor | None = None
     credit_assignment: Literal["action", "turn", "token"] = "action"
 
     @property
@@ -147,6 +148,7 @@ class AgentRuntime:
             token_trace=decision.token_trace,
             planner_trace=decision.planner_trace,
             state_latent_hidden=decision.state_latent_hidden,
+            world_model_state=decision.world_model_state,
             credit_assignment=credit_assignment,
         )
 

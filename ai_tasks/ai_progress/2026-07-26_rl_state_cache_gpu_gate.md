@@ -2,13 +2,15 @@
 
 ## Purpose
 
-Validate commit `82d4d0e` beyond CPU tests: a real 20-step multimodal greedy-planner
-rollout must persist all `T + 1` Qwen latent states, training must consume the sampled
-cache without the former state-sequence Qwen OOM, and the official multi-device DDP
-boundary must complete one finite optimizer step and checkpoint.
+Validate the corrected segment semantics beyond CPU tests: a real 20-step multimodal
+greedy-planner rollout must persist sparse Qwen anchors plus the dense mixed sequence
+of anchor/predicted WM states. Segment TD backward, detached episode ValueHead MC
+backward, and the official multi-device DDP boundary must complete one finite optimizer
+step and checkpoint without retaining all Qwen replay graphs.
 
-This gate validates the current Nimloth objective. It remains environment Monte Carlo
-return plus within-turn token GAE and is explicitly not VAGEN Bi-Level GAE.
+This gate validates the current Nimloth objective. It is WM endpoint TD, Qwen action
+distillation, and environment Monte Carlo ValueHead regression. It is explicitly not
+VAGEN Bi-Level GAE.
 
 ## Launch contract
 
@@ -19,12 +21,13 @@ return plus within-turn token GAE and is explicitly not VAGEN Bi-Level GAE.
 - Initialization and frozen reference:
   `/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-24/sft2/46_dinogrid_k16_h4_untiedhead_fp32aux_v1cache_all3217_ep2_b1_ga8_ws8_px100352/epoch_001`.
 - Planner: horizon 2, greedy, real CoT, maximum full response length 512 tokens.
-- WM: DINO-grid `history_size=4`; one sampled batch of two continuous windows.
-- Trainable: Qwen language body, TemporalSpatialGridPredictor, ValueHead and
-  TokenValueHead.
+- WM: DINO-grid `history_size=4`; no sampled training windows. Each planner segment
+  retains at most four mixed real/predicted states as causal context.
+- Trainable: Qwen language body, TemporalSpatialGridPredictor and ValueHead.
 - Frozen: vision tower, GridStateProjector, EMA target encoder and DINO decoder.
-- Losses: WM, trajectory value, token PPO/value, greedy planner distillation, and
-  frozen-reference low-variance KL weight 0.001; no DINO, SIGReg or ranking loss.
+- Losses: WM segment endpoint MSE, greedy planner action distillation and detached
+  full-episode ValueHead MC loss; no token PPO/value, reference KL, DINO, SIGReg or
+  ranking loss.
 - Resources: normal partition, two nodes, two H800 GPUs per node; rollout vLLM TP4;
   training two ranks times two-GPU model parallel; official
   `DistributedDataParallel(device_ids=None)` around the complete RL step.
@@ -40,13 +43,31 @@ return plus within-turn token GAE and is explicitly not VAGEN Bi-Level GAE.
 
 ## Required evidence
 
-- Four valid trajectories with `T + 1` finite cached states and greedy planner traces.
+- Four valid trajectories with sparse finite Qwen anchors, `T + 1` finite mixed WM
+  states and one greedy planner trace per segment.
 - No state-path HF Qwen forward during training.
 - Finite total/component losses and gradients on both ranks.
 - No DDP/NCCL hang or collective mismatch.
 - Exactly one optimizer/global step, changed trainable parameters, unchanged frozen
   parameters, committed fresh-consumption marker, and complete `latest`/`final`
   checkpoints.
+
+## Corrected implementation status
+
+- The former `TrajectoryWindow` replay workaround has been removed from the planner
+  path. `TemporalDifferenceStep` follows consecutive Qwen anchors and replays every
+  actually executed action in that segment; the terminal-short segment is retained.
+- Every TD forward is followed immediately by backward. A final MC forward uses only
+  detached mixed WM states and updates ValueHead. One optimizer step follows all TD/MC
+  backward calls, so parameters remain fixed across the collected episode batch.
+- The greedy WM actor owns behavior and Qwen receives action distillation only. A
+  separate action-training provenance interface reserves future PPO semantics but
+  rejects PPO until Qwen samples and owns the executed action.
+- Pair-parallel training uses official DDP dynamic unused-parameter handling for the
+  alternating TD/MC parameter subsets. No manual gradient averaging remains.
+- Local targeted tests pass as recorded in `AI_branch_progress.md`. The replacement
+  GPU gate has not run yet; ID107 and ID108 below remain historical failed attempts,
+  not evidence for the corrected implementation.
 
 ## ID107 result: environment cold-start failure
 
@@ -71,3 +92,40 @@ return plus within-turn token GAE and is explicitly not VAGEN Bi-Level GAE.
   vLLM. Per the human's explicit limit, both this prewarm's total wall time and
   normal navigation requests are capped at 300 seconds; a timeout rejects the
   node and the experiment moves to another node rather than waiting longer.
+
+## ID108 result: state-cache path passed, token replay OOM
+
+- Commit `1c238a9` ran under preempt allocation `488111` on `dgx-11,dgx-22`,
+  two H800s per node. `dgx-22` was explicitly the Ray and environment head. A
+  real create/prompt/reset/close prewarm completed in 2.536 seconds under the
+  300-second wall-time cap.
+- All four `base_train` episodes completed 20 steps, for 80 transitions. An
+  independent artifact check found, per trajectory, 20 actions, 21 observations
+  and images, 21 finite cached states with shape `(16, 2048)`, 20 greedy
+  horizon-2 planner traces, and a nonempty separately generated terminal CoT.
+  Rewards were -1.9, -1.6, -1.6 and -1.9; success was 0/4. These are mechanics
+  facts and not a policy-quality result.
+- Frozen-reference replay completed all four trajectories and recorded policy
+  fingerprint `f067b6f57461972dccd9c7cb8cbc94db1c0f842980480019b59bcc05478bac9a`.
+  This proves that the real state cache and immutable token replay artifacts
+  reached the training boundary.
+- Both official DDP ranks validated two-GPU Qwen placement and entered the first
+  policy replay forward. Both then OOMed on the second model-parallel GPU: rank 0
+  had 42.75 MiB free and rank 1 had 30.12 MiB free while requesting 74 MiB;
+  PyTorch had allocated 77.95 GiB on each affected GPU. The current replay loop
+  retains every selected turn's Qwen activation graph until one monolithic
+  backward, so long real histories accumulate rather than release per replay
+  chunk. No NCCL hang or cross-device error occurred.
+- `train_step_log.csv` has only its header. No backward, optimizer/global step,
+  checkpoint or consumption commit completed. The pre-optimizer consumption
+  transaction was aborted, leaving no consumption marker. The rollout and
+  reference JSONL may be reused after fingerprint validation, but there is no
+  training checkpoint to resume.
+- W&B run `ui4uj84d` closed without training metrics. The controller exited and
+  allocation `488111` was cancelled and released after 00:16:23.
+- At the end of ID108, the proposed next step was microbatch/chunk replay while
+  preserving token-GAE normalization. The later human clarification superseded that
+  proposal: the corrected implementation above uses executed WM segments, action
+  distillation and detached episode MC instead. Reducing semantic history, truncating
+  recorded responses, manual cross-rank gradient averaging or increasing the
+  AI2-THOR timeout remain invalid fixes.

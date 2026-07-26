@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-07-26：RL改为Qwen锚点、WM整段执行和episode末一次optimizer step
+
+- 人类明确当前不是VAGEN Bi-Level GAE，并纠正了此前“每个environment step都运行Qwen”
+  的假设。现在Qwen只在segment锚点和terminal observation运行；greedy planner产生并实际
+  消费完整`planning.horizon`动作段。段内state保留WM预测，下一锚点真实Qwen state只校正
+  上一段预测终点；未执行的计划尾部在提前terminal时丢弃，不生成固定或占位CoT。
+- trajectory现在分开保存稀疏`state_anchor_steps/state_latent_hiddens`和稠密
+  `world_model_states`。后者由Qwen anchor与WM预测state混合组成；`history_size`只限制每个
+  WM预测位置的最大因果上下文，不再决定Qwen forward次数或训练window。
+- 当前环境动作由greedy WM/ValueHead actor拥有。Qwen只在每个segment锚点拟合实际执行的
+  planner首动作，使用显式`action_objective=distillation`；action token不进入PPO/reference
+  KL。`ActionTrainingTrace`保留未来action PPO接口，但只有Qwen拥有行为且Qwen采样动作等于
+  环境实际动作时才允许，当前planner配置会fail fast。
+- planner训练不再采样`TrajectoryWindow`。每对相邻anchor形成一个TD step：重建当前anchor
+  StateProjector图，自回归重放该段实际动作，以终点Qwen target监督WM，同时重放一个Qwen
+  response做action distillation并立即backward。所有TD完成后，ValueHead使用detached完整
+  episode state和MC return单独backward；所有episode的backward结束后只调用一次optimizer
+  step。该结构不会保留完整history的Qwen计算图。
+- paired模型并行路径继续只用官方`DistributedDataParallel(device_ids=None)`；由于TD和MC
+  forward使用不同参数子集，planner模式启用官方`find_unused_parameters=True`，未恢复任何
+  手工gradient averaging或自定义collective。
+- 本地Python 3.13最终Agent/RL/Qwen replay定向回归为`140 passed, 1 warning`；compileall、
+  三份planner配置加载、三个shell入口`bash -n`和`git diff --check`均通过。Nimloth主测试集
+  为`356 passed, 1 skipped, 4 warnings`，另有两个既有SFT2 Gloo测试因沙箱禁止本地socket
+  而失败；完整仓库收集还缺本地VAGEN/VERL、vLLM、PEFT和pandas依赖。GPU门禁尚未启动，
+  当前不能声称真实Qwen、显存、两rank collective或checkpoint已经验证。
+
 ## 2026-07-26：ID107在AI2-THOR冷启动失败，navigation readiness改为真实prewarm
 
 - ID107使用commit`66918a5`、preempt hold`488085`、`dgx-11,dgx-22`各2张H800
@@ -2575,3 +2602,25 @@
 - 最终launcher逐行检查发现episode/max-step校验一度误插入`python -c`引号内；已修复并
   单独AST验证config读取和post-validator两个inline Python片段。说明`bash -n`只能验证
   shell语法，不能替代嵌入Python preflight。
+
+## 2026-07-26：ID108通过真实state-cache rollout，训练首个Qwen replay因显存失败
+
+- commit `1c238a9` 在preempt allocation `488111`上运行；使用`dgx-11,dgx-22`
+  各2张H800，显式指定`dgx-22`为Ray/environment head。真实AI2-THOR预热在300秒
+  上限内用2.536秒完成，未再次出现ID107的lazy initialization超时。
+- 4条`base_train` trajectory均完成20步，共80 transitions；每条独立校验为21个
+  observation/image、21个finite `(16,2048)` rollout Qwen hidden、20个greedy H=2
+  planner trace和非空真实terminal CoT。reference replay也完成4条并写入冻结reference
+  log-prob。success 0/4只记录为本次mechanics gate现象，不解释策略质量。
+- 训练两rank均完成双卡Qwen placement和官方完整step DDP装配，但在首次Qwen token
+  replay forward中于每个副本第二卡OOM：约77.95 GiB已由PyTorch分配，只剩
+  42.75/30.12 MiB时再申请74 MiB失败。根因是同一RL step在单次backward前保留多个
+  长history CoT replay forward的activation graph；不是AI2-THOR、Ray、设备映射或
+  NCCL collective问题。
+- CSV只有表头，无completed backward、optimizer/global step、consumption commit或
+  checkpoint。fresh消费在optimizer前回滚，没有残留consumption文件；rollout和
+  reference-enriched JSONL保持不可变，可在指纹校验后用于memory-safe训练重试。
+  W&B `ui4uj84d`已关闭但无训练指标。allocation已取消释放。
+- 下一步先实现loss/gradient等价的replay microbatch/chunk，保持官方DDP reducer和
+  batch级token advantage/critic target归一化，不通过缩短真实CoT、降低history_size、
+  手工gradient all-reduce或放宽300秒环境上限掩盖问题。

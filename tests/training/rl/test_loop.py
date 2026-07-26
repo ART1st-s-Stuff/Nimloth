@@ -99,6 +99,7 @@ def _training_loop(
     )
     collector = _FreshCollector()
     config = SimpleNamespace(
+        agent=SimpleNamespace(planning=SimpleNamespace(enabled=False)),
         rl=SimpleNamespace(
             envs_per_iteration=1,
             max_steps_per_episode=1,
@@ -189,3 +190,17 @@ def test_deferred_final_checkpoint_keeps_only_resumable_latest(
 
     assert (tmp_path / "latest" / "rl_state.pt").is_file()
     assert not (tmp_path / "final").exists()
+
+
+def test_planner_update_rejects_an_incomplete_episode_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, collector = _training_loop(tmp_path, monkeypatch)
+    loop.config.agent.planning.enabled = True
+    loop.config.rl.batch_size = 2
+
+    with pytest.raises(RuntimeError, match="planner episode batch is incomplete"):
+        loop._run_iteration(1)
+
+    assert collector.events == ["collect"]

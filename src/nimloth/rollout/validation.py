@@ -43,6 +43,7 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
     _validate_behavior_probabilities(trajectory, action_count=len(action_space))
     _validate_token_provenance(trajectory, action_count=len(action_space))
     _validate_state_latent_hiddens(trajectory)
+    _validate_world_model_states(trajectory)
 
     if len(trajectory.policy_messages) != trajectory.num_steps:
         raise ValueError(
@@ -92,7 +93,7 @@ def _validate_reward_provenance(trajectory: RolloutTrajectory) -> None:
 
 
 def _validate_state_latent_hiddens(trajectory: RolloutTrajectory) -> None:
-    """校验 rollout Qwen forward 为每个真实 state 保存的 latent hidden。"""
+    """Validate Qwen hiddens only at real slow-path anchor states."""
 
     prefix = f"trajectory {trajectory.record_id}"
     states = trajectory.state_latent_hiddens
@@ -100,10 +101,24 @@ def _validate_state_latent_hiddens(trajectory: RolloutTrajectory) -> None:
         raise ValueError(f"{prefix} planner trajectory has no captured Qwen states")
     if not states:
         return
-    if len(states) != trajectory.num_steps + 1:
+    anchor_steps = trajectory.state_anchor_steps or list(
+        range(trajectory.num_steps + 1)
+    )
+    if len(states) != len(anchor_steps):
+        expected_name = "anchors" if trajectory.state_anchor_steps else "states"
         raise ValueError(
             f"{prefix}: state_latent_hiddens={len(states)} "
-            f"but states={trajectory.num_steps + 1}"
+            f"but {expected_name}={len(anchor_steps)}"
+        )
+    if anchor_steps != sorted(set(anchor_steps)) or any(
+        not 0 <= step <= trajectory.num_steps for step in anchor_steps
+    ):
+        raise ValueError(f"{prefix} has invalid state anchor steps")
+    if trajectory.state_anchor_steps and (
+        anchor_steps[0] != 0 or anchor_steps[-1] != trajectory.num_steps
+    ):
+        raise ValueError(
+            f"{prefix} planner anchors must include initial and terminal states"
         )
     latent_token_count = trajectory.resolved_latent_token_count()
     hidden_dim: int | None = None
@@ -123,6 +138,44 @@ def _validate_state_latent_hiddens(trajectory: RolloutTrajectory) -> None:
             raise ValueError(f"{prefix} state {step} hidden dimension changed")
         if not all(math.isfinite(float(value)) for hidden in state for value in hidden):
             raise ValueError(f"{prefix} state {step} has non-finite latent hidden")
+
+
+def _validate_world_model_states(trajectory: RolloutTrajectory) -> None:
+    """Validate the dense mixed sequence of Qwen anchors and WM predictions."""
+
+    prefix = f"trajectory {trajectory.record_id}"
+    states = trajectory.world_model_states
+    if trajectory.planner_policy_traces and not states:
+        raise ValueError(f"{prefix} planner trajectory has no retained WM states")
+    if not states:
+        return
+    if len(states) != trajectory.num_steps + 1:
+        raise ValueError(
+            f"{prefix}: world_model_states={len(states)} "
+            f"but states={trajectory.num_steps + 1}"
+        )
+    shape: tuple[int, ...] | None = None
+    for step, state in enumerate(states):
+        if not isinstance(state, list) or not state:
+            raise ValueError(f"{prefix} WM state {step} is empty")
+        if isinstance(state[0], list):
+            rows = state
+            row_dims = {len(row) for row in rows if isinstance(row, list)}
+            if len(rows) != sum(isinstance(row, list) for row in rows):
+                raise ValueError(f"{prefix} WM state {step} is ragged")
+            if len(row_dims) != 1 or 0 in row_dims:
+                raise ValueError(f"{prefix} WM state {step} is ragged")
+            current_shape = (len(rows), row_dims.pop())
+            values = [value for row in rows for value in row]
+        else:
+            current_shape = (len(state),)
+            values = state
+        if shape is None:
+            shape = current_shape
+        elif current_shape != shape:
+            raise ValueError(f"{prefix} WM state {step} shape changed")
+        if not all(math.isfinite(float(value)) for value in values):
+            raise ValueError(f"{prefix} WM state {step} has non-finite values")
 
 
 def _validate_behavior_probabilities(
@@ -173,8 +226,11 @@ def _validate_token_provenance(
         raise ValueError(
             f"{prefix} requires a real assistant response for every action"
         )
+    state_steps = trajectory.state_anchor_steps or list(
+        range(trajectory.num_steps + 1)
+    )
     try:
-        for step in range(trajectory.num_steps + 1):
+        for step in state_steps:
             trajectory._state_assistant_prefix(step)
     except ValueError as error:
         raise ValueError(f"{prefix} has invalid CoT state data: {error}") from error
@@ -191,6 +247,11 @@ def _validate_token_provenance(
     populated = [bool(field) for field in trace_fields]
     if any(populated) and not all(populated):
         raise ValueError(f"{prefix} has incomplete policy token trace fields")
+    planner_enabled = bool(trajectory.planner_policy_traces)
+    if planner_enabled and not all(populated):
+        raise ValueError(f"{prefix} planner trajectory requires anchor token traces")
+    if trajectory.policy_step_indices and not all(populated):
+        raise ValueError(f"{prefix} policy step indices require token traces")
     if trajectory.policy_credit_assignment in {"turn", "token"} and not all(populated):
         raise ValueError(
             f"{prefix} {trajectory.policy_credit_assignment} credit requires "
@@ -198,15 +259,22 @@ def _validate_token_provenance(
         )
     if not any(populated):
         return
-    if not all(len(field) == trajectory.num_steps for field in trace_fields):
+    trace_steps = trajectory.policy_step_indices or list(range(trajectory.num_steps))
+    if trajectory.policy_step_indices and (
+        trace_steps != sorted(set(trace_steps))
+        or any(not 0 <= step < trajectory.num_steps for step in trace_steps)
+    ):
+        raise ValueError(f"{prefix} has invalid policy step indices")
+    if not all(len(field) == len(trace_steps) for field in trace_fields):
         raise ValueError(f"{prefix} policy token trace count does not match actions")
-    planner_enabled = bool(trajectory.planner_policy_traces)
     if planner_enabled:
-        if len(trajectory.planner_policy_traces) != trajectory.num_steps:
+        if len(trajectory.planner_policy_traces) != len(trace_steps):
             raise ValueError(f"{prefix} planner trace count does not match actions")
-        if trajectory.policy_credit_assignment != "token":
-            raise ValueError(f"{prefix} planner behavior requires token credit")
-    for step in range(trajectory.num_steps):
+        if trajectory.policy_credit_assignment != "action":
+            raise ValueError(f"{prefix} planner distillation requires action credit")
+        if trajectory.state_anchor_steps[:-1] != trace_steps:
+            raise ValueError(f"{prefix} policy and state anchor steps do not align")
+    for step in trace_steps:
         try:
             trace = trajectory.policy_token_trace(step)
         except ValueError as error:
@@ -229,9 +297,14 @@ def _validate_token_provenance(
         if planner_enabled:
             planner_trace = trajectory.planner_policy_trace(step)
             assert planner_trace is not None
-            if trace.loss_mask[action_position] or old_action_log_prob is not None:
+            if planner_trace.action_training.objective == "distillation":
+                if trace.loss_mask[action_position] or old_action_log_prob is not None:
+                    raise ValueError(
+                        f"{prefix} step {step} planner action must be excluded from PPO"
+                    )
+            elif not trace.loss_mask[action_position] or old_action_log_prob is None:
                 raise ValueError(
-                    f"{prefix} step {step} planner action must be excluded from PPO"
+                    f"{prefix} step {step} action PPO requires old behavior log-prob"
                 )
             if any(
                 not math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-7)
@@ -263,7 +336,19 @@ def _validate_token_provenance(
             )
             if selected
         ]
-        if trajectory.policy_credit_assignment == "action":
+        if planner_enabled:
+            planner_trace = trajectory.planner_policy_trace(step)
+            assert planner_trace is not None
+            if planner_trace.action_training.objective == "distillation":
+                if selected_roles:
+                    raise ValueError(
+                        f"{prefix} step {step} distillation cannot select PPO tokens"
+                    )
+            elif selected_roles != ["action"]:
+                raise ValueError(
+                    f"{prefix} step {step} action PPO must select only action token"
+                )
+        elif trajectory.policy_credit_assignment == "action":
             if selected_roles != ["action"]:
                 raise ValueError(
                     f"{prefix} step {step} action credit must select only action token"
@@ -273,11 +358,18 @@ def _validate_token_provenance(
                 f"{prefix} step {step} {trajectory.policy_credit_assignment} "
                 "credit has no reasoning token"
             )
-        if planner_enabled and "action" in selected_roles:
+        if (
+            planner_enabled
+            and planner_trace.action_training.objective == "distillation"
+            and "action" in selected_roles
+        ):
             raise ValueError(
                 f"{prefix} step {step} planner action cannot receive Qwen PPO credit"
             )
-        if trajectory.policy_credit_assignment in {"turn", "token"}:
+        if (
+            trajectory.policy_credit_assignment in {"turn", "token"}
+            or "reasoning" in trace.token_roles
+        ):
             if not trajectory.assistant_responses:
                 raise ValueError(f"{prefix} turn credit requires assistant responses")
             tokens = LatentActionTokens()

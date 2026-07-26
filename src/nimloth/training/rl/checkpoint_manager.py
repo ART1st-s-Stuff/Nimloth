@@ -63,6 +63,7 @@ class RLCheckpointManager:
             vision_tune=self._vision_tune,
             base_model_path=self._base_model_path,
             token_value_head=self._token_value_head,
+            action_objective=self._config.actor.action_objective,
             credit_assignment=self._config.actor.credit_assignment,
             token_credit_config=asdict(self._config.token_credit),
             truncated_bootstrap=self._config.rl.truncated_bootstrap,

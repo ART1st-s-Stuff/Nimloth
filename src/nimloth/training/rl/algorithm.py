@@ -10,6 +10,10 @@ from nimloth.agent import AgentPrompt, PolicyReplayInput
 from nimloth.rollout import TrajectoryWindow
 from nimloth.rollout.transitions import discounted_action_value_targets
 from nimloth.training.rl.credit import expand_step_advantages, token_level_gae
+from nimloth.training.rl.episodes import (
+    EpisodeTrainingBatch,
+    TemporalDifferenceStep,
+)
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm import SequenceSIGReg
 
@@ -175,6 +179,7 @@ class RLAlgorithm:
         value_rank_weight: float,
         ppo_clip_ratio: float,
         entropy_weight: float,
+        action_objective: str = "ppo",
         credit_assignment: str = "action",
         token_gamma: float | None = None,
         token_gae_lambda: float | None = None,
@@ -195,6 +200,9 @@ class RLAlgorithm:
         self.value_rank_weight = float(value_rank_weight)
         self.ppo_clip_ratio = float(ppo_clip_ratio)
         self.entropy_weight = float(entropy_weight)
+        if action_objective not in {"distillation", "ppo"}:
+            raise ValueError("action objective must be distillation or ppo")
+        self.action_objective = action_objective
         if credit_assignment not in {"action", "turn", "token"}:
             raise ValueError(
                 f"unsupported PPO credit assignment: {credit_assignment!r}"
@@ -225,6 +233,206 @@ class RLAlgorithm:
             )
         ):
             raise ValueError("token credit requires explicit token GAE parameters")
+
+    def _predict_executed_segment(
+        self,
+        runtime: RLModelRuntime,
+        state_history: torch.Tensor,
+        previous_actions: torch.Tensor,
+        segment_actions: torch.Tensor,
+    ) -> torch.Tensor:
+        """Replay executed actions autoregressively through the wrapped WM."""
+
+        all_states = state_history
+        all_actions = torch.cat((previous_actions, segment_actions), dim=1)
+        history_steps = state_history.shape[1]
+        predictions: list[torch.Tensor] = []
+        for segment_index in range(segment_actions.shape[1]):
+            state_index = history_steps - 1 + segment_index
+            context_start = max(0, state_index - self.history_size + 1)
+            state_context = all_states[:, context_start : state_index + 1]
+            action_context = all_actions[:, context_start : state_index + 1]
+            predicted_sequence = runtime.agent.wm.predict_state_sequence(
+                state_context,
+                action_context,
+            )
+            next_state = predicted_sequence[:, -1]
+            predictions.append(next_state)
+            all_states = torch.cat((all_states, next_state.unsqueeze(1)), dim=1)
+        return torch.stack(predictions, dim=1)
+
+    def temporal_difference_step(
+        self,
+        runtime: RLModelRuntime,
+        step: TemporalDifferenceStep,
+        *,
+        total_td_steps: int,
+    ) -> RLStepOutput:
+        """Replay one Qwen anchor and its executed WM segment, then form TD loss."""
+
+        if total_td_steps < 1:
+            raise ValueError("total_td_steps must be positive")
+        if self.sigreg is not None and self.sigreg_weight > 0.0:
+            raise ValueError("episode TD training does not yet define SIGReg units")
+        if self.action_objective != "distillation":
+            raise ValueError(
+                "greedy planner TD steps require action distillation; action PPO "
+                "requires Qwen-owned sampled behavior"
+            )
+        if self.planner_distillation_weight is None:
+            raise ValueError("planner TD step requires a distillation weight")
+        if runtime.policy_replay is None:
+            raise RuntimeError("planner TD step requires Qwen action replay")
+
+        saved_context = runtime.prepare_world_model_states(
+            step.retained_state_context(self.history_size)
+        )
+        start_hidden = runtime.prepare_anchor_hidden(
+            step.anchor_hidden(step.start_step)
+        )
+        start_state = runtime.agent.wm.project_state(start_hidden.unsqueeze(0))
+        prior_states = saved_context[:-1].unsqueeze(0)
+        state_history = torch.cat(
+            (prior_states, start_state.unsqueeze(1)),
+            dim=1,
+        )
+        previous_actions = step.previous_actions(self.history_size).to(
+            device=state_history.device
+        ).unsqueeze(0)
+        segment_actions = torch.tensor(
+            [step.action_indices],
+            dtype=torch.long,
+            device=state_history.device,
+        )
+        predicted_states = self._predict_executed_segment(
+            runtime,
+            state_history,
+            previous_actions,
+            segment_actions,
+        )
+        with torch.no_grad():
+            target_hidden = runtime.prepare_anchor_hidden(
+                step.anchor_hidden(step.end_step)
+            )
+            target_state = runtime.agent.wm.project_target_state(
+                target_hidden.unsqueeze(0)
+            ).detach()
+        wm_loss = (
+            F.mse_loss(predicted_states[:, -1], target_state)
+            if self.train_world_model
+            else predicted_states[:, -1].sum() * 0.0
+        )
+
+        replay_input = step.action_replay_input()
+        planner_trace = replay_input.planner_trace
+        assert planner_trace is not None
+        if planner_trace.action_training.objective != self.action_objective:
+            raise ValueError("rollout action objective does not match training config")
+        replay_output = runtime.policy_replay((replay_input,))
+        if replay_output.action_log_probs is None:
+            raise RuntimeError("distillation replay returned no Qwen action logits")
+        teacher = planner_trace.action_training.teacher_action_log_probs
+        if teacher is None:
+            raise ValueError("distillation trace has no teacher distribution")
+        teacher_log_probs = torch.tensor(
+            teacher,
+            dtype=replay_output.action_log_probs.dtype,
+            device=replay_output.action_log_probs.device,
+        )
+        teacher_probs = teacher_log_probs.exp().detach()
+        action_distillation_loss = -(
+            teacher_probs * replay_output.action_log_probs[0]
+        ).sum()
+        safe_teacher_log_probs = torch.where(
+            torch.isfinite(teacher_log_probs),
+            teacher_log_probs,
+            torch.zeros_like(teacher_log_probs),
+        )
+        action_distillation_kl = (
+            teacher_probs
+            * (safe_teacher_log_probs - replay_output.action_log_probs[0])
+        ).sum()
+
+        normalized_wm_loss = wm_loss / total_td_steps
+        normalized_action_loss = action_distillation_loss / total_td_steps
+        total = normalized_wm_loss + self.planner_distillation_weight * (
+            normalized_action_loss.to(device=normalized_wm_loss.device)
+        )
+        return RLStepOutput(
+            loss=total,
+            losses={
+                "wm": normalized_wm_loss,
+                "sigreg": None,
+                "value": None,
+                "policy": None,
+                "token_value": None,
+                "action_distillation": normalized_action_loss,
+                "reference_kl": None,
+            },
+            metrics={
+                "wm_mse": float(normalized_wm_loss.detach().item()),
+                "sigreg_loss": 0.0,
+                "value_loss": 0.0,
+                "total_loss": float(total.detach().item()),
+                "actor_loss": 0.0,
+                "token_value_loss": 0.0,
+                "action_distillation_loss": float(
+                    normalized_action_loss.detach().item()
+                ),
+                "action_distillation_kl": float(
+                    (action_distillation_kl / total_td_steps).detach().item()
+                ),
+                "reference_kl_loss": 0.0,
+                "policy_tokens": 0.0,
+            },
+        )
+
+    def monte_carlo_step(
+        self,
+        runtime: RLModelRuntime,
+        episodes: tuple[EpisodeTrainingBatch, ...],
+    ) -> RLStepOutput:
+        """Fit ValueHead on full-episode returns using only detached WM states."""
+
+        if not episodes:
+            raise ValueError("MC step requires at least one episode")
+        states = runtime.prepare_value_states(
+            torch.cat([episode.action_states for episode in episodes], dim=0)
+        )
+        actions = torch.cat([episode.action_indices for episode in episodes], dim=0)
+        actions = actions.to(device=states.device)
+        returns = torch.cat([episode.return_targets for episode in episodes], dim=0)
+        returns = returns.to(device=states.device)
+        action_values = runtime.agent.wm.predict_action_values(states.detach())
+        value_loss, _chosen_values = self._value_loss(
+            action_values,
+            actions,
+            returns,
+        )
+        return RLStepOutput(
+            loss=value_loss,
+            losses={
+                "wm": None,
+                "sigreg": None,
+                "value": value_loss,
+                "policy": None,
+                "token_value": None,
+                "action_distillation": None,
+                "reference_kl": None,
+            },
+            metrics={
+                "wm_mse": 0.0,
+                "sigreg_loss": 0.0,
+                "value_loss": float(value_loss.detach().item()),
+                "total_loss": float(value_loss.detach().item()),
+                "actor_loss": 0.0,
+                "token_value_loss": 0.0,
+                "action_distillation_loss": 0.0,
+                "action_distillation_kl": 0.0,
+                "reference_kl_loss": 0.0,
+                "policy_tokens": 0.0,
+            },
+        )
 
     def training_step(
         self,
@@ -310,8 +518,6 @@ class RLAlgorithm:
 
         policy: dict[str, torch.Tensor] | None = None
         token_value_loss: torch.Tensor | None = None
-        action_distillation_loss: torch.Tensor | None = None
-        action_distillation_kl: torch.Tensor | None = None
         reference_kl_loss: torch.Tensor | None = None
         if runtime.policy_replay is not None:
             # replay 与上面的监督张量使用相同的 window/time 展开顺序；flatten 后每个
@@ -326,39 +532,9 @@ class RLAlgorithm:
             if any(trace is not None for trace in planner_traces) and not planner_batch:
                 raise ValueError("one RL batch cannot mix planner and direct behavior")
             if planner_batch:
-                if self.planner_distillation_weight is None:
-                    raise ValueError(
-                        "planner behavior requires explicit distillation weight"
-                    )
-                if replay_output.action_log_probs is None:
-                    raise RuntimeError(
-                        "planner replay returned no Qwen action distribution"
-                    )
-                teacher_log_probs = torch.tensor(
-                    [
-                        trace.teacher_action_log_probs
-                        for trace in planner_traces
-                        if trace is not None
-                    ],
-                    dtype=replay_output.action_log_probs.dtype,
-                    device=replay_output.action_log_probs.device,
+                raise ValueError(
+                    "planner trajectories must use complete-episode TD/MC training"
                 )
-                teacher_probs = teacher_log_probs.exp().detach()
-                action_distillation_loss = -(
-                    teacher_probs * replay_output.action_log_probs
-                ).sum(dim=-1).mean()
-                # The deterministic planner uses -inf outside its action.  Replace
-                # those values before the subtraction so zero-probability terms
-                # remain exactly zero instead of producing 0 * -inf = NaN.
-                safe_teacher_log_probs = torch.where(
-                    torch.isfinite(teacher_log_probs),
-                    teacher_log_probs,
-                    torch.zeros_like(teacher_log_probs),
-                )
-                action_distillation_kl = (
-                    teacher_probs
-                    * (safe_teacher_log_probs - replay_output.action_log_probs)
-                ).sum(dim=-1).mean()
             if self.reference_kl_loss_weight > 0.0:
                 if replay_output.selected_full_log_probs is None:
                     raise RuntimeError(
@@ -455,10 +631,6 @@ class RLAlgorithm:
                 total = total + self.token_value_loss_weight * token_value_loss.to(
                     device=total.device
                 )
-            if action_distillation_loss is not None:
-                total = total + self.planner_distillation_weight * (
-                    action_distillation_loss.to(device=total.device)
-                )
             if reference_kl_loss is not None:
                 total = total + self.reference_kl_loss_weight * (
                     reference_kl_loss.to(device=total.device)
@@ -477,16 +649,8 @@ class RLAlgorithm:
                 if token_value_loss is not None
                 else 0.0
             ),
-            "action_distillation_loss": (
-                float(action_distillation_loss.detach().item())
-                if action_distillation_loss is not None
-                else 0.0
-            ),
-            "action_distillation_kl": (
-                float(action_distillation_kl.detach().item())
-                if action_distillation_kl is not None
-                else 0.0
-            ),
+            "action_distillation_loss": 0.0,
+            "action_distillation_kl": 0.0,
             "reference_kl_loss": (
                 float(reference_kl_loss.detach().item())
                 if reference_kl_loss is not None
@@ -511,7 +675,7 @@ class RLAlgorithm:
                 "value": value_loss,
                 "policy": policy["loss"] if policy else None,
                 "token_value": token_value_loss,
-                "action_distillation": action_distillation_loss,
+                "action_distillation": None,
                 "reference_kl": reference_kl_loss,
             },
             metrics=metrics,

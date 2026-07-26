@@ -11,8 +11,8 @@ from nimloth.training.rl.rollout_runtime import (
 )
 
 
-def test_static_jsonl_cannot_drive_ppo_actor() -> None:
-    with pytest.raises(ValueError, match="PPO actor requires fresh trajectories"):
+def test_static_jsonl_cannot_drive_online_actor_training() -> None:
+    with pytest.raises(ValueError, match="actor training requires fresh trajectories"):
         validate_collector_configuration(
             actor_enabled=True,
             train_collector=JSONLRolloutCollector(),

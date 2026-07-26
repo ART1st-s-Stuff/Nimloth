@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run one numbered fresh-policy vLLM rollout followed by one PPO update.
+# Run one numbered fresh-policy vLLM rollout followed by one RL update.
 set -euo pipefail
 
 REPO=${REPO:?set REPO to the committed server worktree}
@@ -9,7 +9,7 @@ PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
 MODEL=${MODEL:?set MODEL to a complete positive-k inject HF checkpoint}
 REFERENCE_MODEL=${REFERENCE_MODEL:-${MODEL}}
 WM_CKPT=${WM_CKPT:-${MODEL}}
-RL_CONFIG=${RL_CONFIG:-${REPO}/configs/training/rl/planner_exhaustive_h2_smoke.yaml}
+RL_CONFIG=${RL_CONFIG:-${REPO}/configs/training/rl/planner_greedy_h2_state_cache_t20_gate.yaml}
 RUN_OUT=${RUN_OUT:?set a new exclusive output directory}
 WANDB_PROJECT_REQUESTED=${WANDB_PROJECT:-nimloth-rl}
 WANDB_RUN_NAME_REQUESTED=${WANDB_RUN_NAME:?set WANDB_RUN_NAME}
@@ -36,7 +36,7 @@ esac
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE CREDIT_ASSIGNMENT MAX_RESPONSE_TOKENS REFERENCE_KL_WEIGHT CONFIG_ITERATIONS CONFIG_NUM_EPISODES CONFIG_MAX_STEPS ROLLOUT_TEMPERATURE ROLLOUT_TOP_P PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE TRAIN_DATASETS_CSV < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE ACTION_OBJECTIVE CREDIT_ASSIGNMENT MAX_RESPONSE_TOKENS REFERENCE_KL_WEIGHT CONFIG_ITERATIONS CONFIG_NUM_EPISODES CONFIG_MAX_STEPS ROLLOUT_TEMPERATURE ROLLOUT_TOP_P PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE TRAIN_DATASETS_CSV < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -48,6 +48,7 @@ print(
     config.distributed.gpus_per_rank,
     config.distributed.total_gpus,
     config.distributed.rollout_tensor_parallel_size,
+    config.actor.action_objective,
     config.actor.credit_assignment,
     config.actor.max_response_tokens,
     config.actor.reference_kl_loss_weight,
@@ -68,6 +69,10 @@ print(
 NUM_EPISODES=${NUM_EPISODES:-${CONFIG_NUM_EPISODES}}
 MAX_STEPS=${MAX_STEPS:-${CONFIG_MAX_STEPS}}
 TOTAL_ITERATIONS=${TOTAL_ITERATIONS:-${CONFIG_ITERATIONS}}
+if [[ "${RUN_REFERENCE}" == true && "${REFERENCE_KL_WEIGHT}" == 0.0 ]]; then
+  echo "skipping frozen-reference replay because reference KL is disabled"
+  RUN_REFERENCE=false
+fi
 [[ "${RUN_MODE}" == smoke || "${RUN_MODE}" == full ]] || {
   echo "RUN_MODE must be smoke or full" >&2
   exit 1
@@ -205,7 +210,7 @@ mkdir -p "${RUN_OUT}" "${ROLLOUT_OUT}" "${TRAIN_OUT}"
 
 if [[ "${RUN_ROLLOUT}" == true && "${ITERATION}" == 1 ]]; then
   cat > "${RUN_OUT}/README.md" <<EOF
-# vLLM online PPO ${RUN_MODE} run (${TRAIN_TOTAL_GPUS} GPUs)
+# vLLM online RL ${RUN_MODE} run (${TRAIN_TOTAL_GPUS} GPUs)
 
 - status: running
 - Nimloth commit: ${COMMIT}
@@ -216,13 +221,13 @@ if [[ "${RUN_ROLLOUT}" == true && "${ITERATION}" == 1 ]]; then
 - rollout: vLLM TP=${TENSOR_PARALLEL_SIZE}, backend=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-local}
 - config: ${RL_CONFIG}
 - planning: enabled=${PLANNING_ENABLED}, horizon=${PLANNING_HORIZON}, search=${PLANNING_SEARCH_MODE}, beam_width=${PLANNING_BEAM_WIDTH}
-- response credit: ${CREDIT_ASSIGNMENT}, max full response tokens=${MAX_RESPONSE_TOKENS}
+- action objective: ${ACTION_OBJECTIVE}; credit=${CREDIT_ASSIGNMENT}; max Qwen response tokens=${MAX_RESPONSE_TOKENS}
 - reference KL actor loss: weight=${REFERENCE_KL_WEIGHT}; no reward KL
 - reference model: ${REFERENCE_MODEL}
 - freshness: policy/planner/trajectory content fingerprints; consumption commits only after a post-update checkpoint
-- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank; one fresh grid-WM/value/PPO optimizer step per iteration; no DINO/SIGReg/ranking loss
+- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank; segment TD backward plus detached full-episode ValueHead MC backward, then one optimizer step
 - frozen: vision tower, GridStateProjector, EMA target encoder and DINO decoder
-- trainable: Qwen language body, WM predictor, ValueHead and TokenValueHead
+- trainable: Qwen language body, WM predictor and ValueHead
 - W&B: ${WANDB_PROJECT_REQUESTED}/${WANDB_RUN_NAME_REQUESTED}
 - output: ${RUN_OUT}
 EOF
@@ -284,7 +289,7 @@ trap cleanup_env EXIT
 
 if [[ "${RUN_ROLLOUT}" == true ]]; then
   {
-    echo "=== ${TRAIN_TOTAL_GPUS}-GPU vLLM online PPO ${ITERATION_TAG}/${TOTAL_ITERATIONS} start $(date -Iseconds) ==="
+    echo "=== ${TRAIN_TOTAL_GPUS}-GPU vLLM online RL ${ITERATION_TAG}/${TOTAL_ITERATIONS} start $(date -Iseconds) ==="
     echo "node=$(hostname) gpus=${VISIBLE} env_url=${ENV_URL}"
     echo "nimloth=${COMMIT} vagen=${ENV_COMMIT}"
     echo "datasets=${TRAIN_DATASETS_CSV} seed_offset=${SEED_OFFSET}"
@@ -347,8 +352,12 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
   )
   PLANNER_ARGS=()
   if [[ "${PLANNING_ENABLED}" == true ]]; then
-    [[ "${CREDIT_ASSIGNMENT}" == token ]] || {
-      echo "planner rollout requires token credit" >&2
+    [[ "${CREDIT_ASSIGNMENT}" == action ]] || {
+      echo "planner rollout requires action credit" >&2
+      exit 1
+    }
+    [[ "${ACTION_OBJECTIVE}" == distillation ]] || {
+      echo "planner rollout requires action distillation" >&2
       exit 1
     }
     [[ "${PLANNING_SEARCH_MODE}" != None ]] || {
@@ -393,6 +402,7 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
     --eval-sets "${TRAIN_DATASETS[@]}" --split train --seed-offset "${SEED_OFFSET}" \
     --temperature "${ROLLOUT_TEMPERATURE}" --top-p "${ROLLOUT_TOP_P}" --max-pixels 3136 \
     --credit-assignment "${CREDIT_ASSIGNMENT}" \
+    --action-objective "${ACTION_OBJECTIVE}" \
     --max-response-tokens "${MAX_RESPONSE_TOKENS}" \
     --vllm-enforce-eager \
     2>&1 | tee -a "${LOG}"
@@ -407,10 +417,6 @@ if [[ "${RUN_REFERENCE}" == true && "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" == ra
 fi
 
 if [[ "${RUN_REFERENCE}" == true ]]; then
-  [[ "${REFERENCE_KL_WEIGHT}" != 0.0 ]] || {
-    echo "reference phase requires positive actor.reference_kl_loss_weight" >&2
-    exit 1
-  }
   export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
   "${PYTHON}" -m nimloth.training.rl.reference_replay \
     --manifest "${MANIFEST}" \
@@ -436,6 +442,7 @@ TRAIN_ARGS=(
   --use-jsonl-rollout \
   --fresh-rollout-manifest "${MANIFEST}" \
   --rl-iterations "${ITERATION}" \
+  --rl-envs-per-iteration "${NUM_EPISODES}" \
   --attn-implementation sdpa --max-pixels 3136 \
   --experiment-name "${WANDB_RUN_NAME_REQUESTED}" \
   --output-dir "${TRAIN_OUT}"
@@ -524,22 +531,20 @@ if len(rows) != ${ITERATION} or int(rows[-1]["global_step"]) != ${ITERATION}:
     raise SystemExit(
         f"expected ${ITERATION} optimizer steps ending at global_step=${ITERATION}: {rows}"
     )
-keys = (
+keys = [
     "wm_mse",
     "value_loss",
     "sigreg_loss",
     "actor_loss",
-    "entropy",
-    "clip_fraction",
-    "mean_advantage",
     "token_value_loss",
     "action_distillation_loss",
     "action_distillation_kl",
     "reference_kl_loss",
-    "mean_ratio",
     "policy_tokens",
     "total_loss",
-)
+]
+if "${ACTION_OBJECTIVE}" == "ppo":
+    keys += ["entropy", "clip_fraction", "mean_advantage", "mean_ratio"]
 bad = {key: rows[-1].get(key) for key in keys if not math.isfinite(float(rows[-1][key]))}
 if bad:
     raise SystemExit(f"non-finite metrics: {bad}")
@@ -551,9 +556,12 @@ required = [
     checkpoint / "wm_predictor" / "config.json",
     checkpoint / "wm_predictor" / "predictor.pt",
     checkpoint / "value_head" / "value_head.pt",
-    checkpoint / "token_value_head" / "config.json",
-    checkpoint / "token_value_head" / "token_value_head.pt",
 ]
+if "${CREDIT_ASSIGNMENT}" == "token":
+    required += [
+        checkpoint / "token_value_head" / "config.json",
+        checkpoint / "token_value_head" / "token_value_head.pt",
+    ]
 if ${TRAIN_GPUS_PER_RANK} == 1 and ${TRAIN_WORLD_SIZE} > 1:
     required += [
         checkpoint / f"optimizer_rank_{rank:05d}.pt"
@@ -599,5 +607,5 @@ fi
 printf '%s\n' \
   "- ${ITERATION_TAG}: completed at $(date -Iseconds); seeds ${SEED_OFFSET}..$((SEED_OFFSET + NUM_EPISODES - 1)); checkpoint=train/${CHECKPOINT_LABEL}" \
   >> "${RUN_OUT}/README.md"
-echo "=== ${TRAIN_TOTAL_GPUS}-GPU vLLM online PPO ${ITERATION_TAG} ALL_OK $(date -Iseconds) ===" | tee -a "${LOG}"
+echo "=== ${TRAIN_TOTAL_GPUS}-GPU vLLM online RL ${ITERATION_TAG} ALL_OK $(date -Iseconds) ===" | tee -a "${LOG}"
 fi

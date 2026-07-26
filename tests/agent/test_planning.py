@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from nimloth.agent import (
@@ -24,6 +25,7 @@ class _RecordingPredictor(torch.nn.Module):
         self.config = type("PredictorConfig", (), {"history_size": history_size})()
         self.action_sequences: list[torch.Tensor] = []
         self.real_history_lengths: list[int] = []
+        self.state_histories: list[torch.Tensor] = []
 
     def forward(self, state, actions):
         raise AssertionError("planner must use rollout_states()")
@@ -36,6 +38,7 @@ class _RecordingPredictor(torch.nn.Module):
     ) -> torch.Tensor:
         self.action_sequences.append(action_sequences.detach().clone())
         self.real_history_lengths.append(state_history.shape[1])
+        self.state_histories.append(state_history.detach().clone())
         assert previous_actions.shape[1] == state_history.shape[1] - 1
         current = state_history[:, -1]
         predicted: list[torch.Tensor] = []
@@ -209,10 +212,15 @@ def test_beam_planner_expands_multiple_candidates_at_each_depth() -> None:
 class _TurnPolicy:
     credit_assignment = "token"
 
+    def __init__(self) -> None:
+        self.action_calls = 0
+        self.terminal_calls = 0
+
     def reset_episode(self) -> None:
         pass
 
     def select_response_with_state(self, _prompt):
+        self.action_calls += 1
         return QwenTurnGeneration(
             qwen_decision=PolicyDecision(
                 action_index=2,
@@ -238,6 +246,7 @@ class _TurnPolicy:
         )
 
     def generate_state(self, _prompt):
+        self.terminal_calls += 1
         return PolicyState(
             assistant_prefix=(
                 "<think>terminal</think><|latent_state|><|action_start|>"
@@ -249,8 +258,9 @@ class _TurnPolicy:
 def test_planning_policy_uses_batched_lookahead_and_excludes_action_from_ppo() -> None:
     world_model, predictor = _planning_world_model()
     stages: list[str] = []
+    turn_policy = _TurnPolicy()
     policy = PlanningPolicy(
-        turn_policy=_TurnPolicy(),
+        turn_policy=turn_policy,
         world_model=world_model,
         horizon=2,
         search_mode="exhaustive",
@@ -275,5 +285,53 @@ def test_planning_policy_uses_batched_lookahead_and_excludes_action_from_ppo() -
     assert decision.token_trace.loss_mask[action_position] is False
     assert decision.token_trace.old_log_probs[action_position] is None
     assert f"<|action_({decision.action_index})|>" in decision.response
-    assert predictor.real_history_lengths == [1]
+    assert predictor.real_history_lengths == [1, 1]
     assert stages == ["planner_start", "planner_done"]
+
+
+def test_planning_policy_executes_full_segment_before_next_qwen_anchor() -> None:
+    world_model, predictor = _planning_world_model()
+    turn_policy = _TurnPolicy()
+    policy = PlanningPolicy(
+        turn_policy=turn_policy,
+        world_model=world_model,
+        horizon=2,
+        search_mode="greedy",
+        planner_device=torch.device("cpu"),
+    )
+    prompt = AgentPrompt(
+        messages=({"role": "assistant", "content": "<think>"},),
+        images=(),
+        template=PromptTemplateSpec("test", "v1"),
+    )
+
+    anchor_action = policy.select_action(prompt)
+    predicted_action = policy.select_action(prompt)
+    next_anchor_action = policy.select_action(prompt)
+
+    assert turn_policy.action_calls == 2
+    assert anchor_action.token_trace is not None
+    assert anchor_action.planner_trace is not None
+    assert anchor_action.world_model_state.tolist() == [0.25, -0.25]
+    assert predicted_action.token_trace is None
+    assert predicted_action.planner_trace is None
+    assert not predicted_action.response.startswith("<think>")
+    assert predicted_action.world_model_state.tolist() != [0.25, -0.25]
+    assert next_anchor_action.world_model_state.tolist() == [0.25, -0.25]
+    assert predictor.state_histories[-1].tolist() == [
+        [[1.25, -1.25], [0.25, -0.25]]
+    ]
+
+
+def test_planning_policy_rejects_ppo_while_greedy_actor_owns_behavior() -> None:
+    world_model, _predictor = _planning_world_model()
+
+    with pytest.raises(ValueError, match="world-model actor owns"):
+        PlanningPolicy(
+            turn_policy=_TurnPolicy(),
+            world_model=world_model,
+            horizon=2,
+            search_mode="greedy",
+            planner_device=torch.device("cpu"),
+            action_objective="ppo",
+        )

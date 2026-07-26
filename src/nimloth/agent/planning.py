@@ -9,6 +9,7 @@ from typing import Any, Callable, Protocol
 import torch
 
 from nimloth.agent.policy import (
+    ActionTrainingTrace,
     PlannerPolicyTrace,
     PolicyDecision,
     PolicyState,
@@ -39,6 +40,16 @@ class WorldModelPlan:
     candidate_sequences: torch.Tensor
     candidate_scores: torch.Tensor
     root_action_scores: torch.Tensor
+
+
+@dataclass(frozen=True)
+class _PlannedStep:
+    """One environment action and the WM states immediately around it."""
+
+    action_index: int
+    action_count: int
+    current_state: torch.Tensor
+    predicted_next_state: torch.Tensor
 
 
 class WorldModelPlanner:
@@ -233,10 +244,10 @@ class WorldModelPlanner:
 
 
 class PlanningPolicy:
-    """Sample Qwen CoT, plan from its hidden state, then execute planner action."""
+    """Correct a Qwen anchor, then execute one complete WM-planned segment."""
 
     prompt_mode = "response"
-    credit_assignment = "token"
+    credit_assignment = "action"
 
     def __init__(
         self,
@@ -247,10 +258,19 @@ class PlanningPolicy:
         search_mode: str,
         beam_width: int | None = None,
         planner_device: torch.device,
+        action_objective: str = "distillation",
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
-        if turn_policy.credit_assignment != "token":
-            raise ValueError("planner policy requires token-level Qwen CoT credit")
+        if turn_policy.credit_assignment not in {"turn", "token"}:
+            raise ValueError("planner policy requires real Qwen response generation")
+        if action_objective not in {"distillation", "ppo"}:
+            raise ValueError("action objective must be distillation or ppo")
+        if action_objective == "ppo":
+            raise ValueError(
+                "action PPO is unavailable while the world-model actor owns "
+                "environment behavior; switch behavior ownership to sampled Qwen "
+                "actions before enabling PPO"
+            )
         self.turn_policy = turn_policy
         self.world_model = world_model
         self.planner = WorldModelPlanner(
@@ -260,6 +280,7 @@ class PlanningPolicy:
             beam_width=beam_width,
         )
         self.planner_device = planner_device
+        self.action_objective = action_objective
         self._progress_callback = progress_callback
         predictor = world_model.wm_predictor
         predictor_config = getattr(predictor, "config", None)
@@ -270,16 +291,23 @@ class PlanningPolicy:
             )
         self._state_history: list[torch.Tensor] = []
         self._action_history: list[int] = []
+        self._pending_steps: list[_PlannedStep] = []
+        self._pending_anchor: tuple[Any, WorldModelPlan] | None = None
 
     def reset_episode(self) -> None:
-        """清除上一个 episode 的真实 latent 历史。"""
+        """Clear mixed real/predicted history and an unused planned tail."""
 
         self.turn_policy.reset_episode()
         self._state_history.clear()
         self._action_history.clear()
+        self._pending_steps.clear()
+        self._pending_anchor = None
 
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
-        """Generate one CoT, enumerate the latent plan, and replace its action."""
+        """Run Qwen only at a segment anchor; otherwise consume the queued plan."""
+
+        if self._pending_steps:
+            return self._consume_planned_step()
 
         generated = self.turn_policy.select_response_with_state(prompt)
         qwen_decision = generated.qwen_decision
@@ -288,51 +316,112 @@ class PlanningPolicy:
         if self._progress_callback is not None:
             self._progress_callback("planner_start")
         with evaluating(self.world_model), torch.no_grad():
-            latent_hidden = generated.policy_state.latent_hidden.to(
-                self.planner_device
-            ).unsqueeze(0)
-            state = self.world_model.project_state(latent_hidden)
-            if state.ndim not in (2, 3) or state.shape[0] != 1:
-                raise ValueError(
-                    "planning state projector must return shape (1,D) or (1,N,D), "
-                    f"got {tuple(state.shape)}"
-                )
-            self._state_history.append(state.detach())
-            if len(self._state_history) > self.history_size:
-                self._state_history.pop(0)
-                self._action_history.pop(0)
-            state_history = torch.stack(self._state_history, dim=1)
+            state = self._project_hidden(generated.policy_state.latent_hidden)
+            self._correct_anchor(state)
+            context_start = max(0, len(self._state_history) - self.history_size)
+            state_history = torch.stack(
+                self._state_history[context_start:],
+                dim=1,
+            )
             previous_actions = torch.tensor(
-                [self._action_history],
+                [self._action_history[context_start:]],
                 dtype=torch.long,
                 device=state.device,
             )
             plan = self.planner.plan(state_history, previous_actions)
             best_candidate = int(plan.candidate_scores.argmax().item())
-            action_index = int(plan.candidate_sequences[best_candidate, 0].item())
-            action_count = plan.root_action_scores.shape[0]
-            behavior_log_probs = torch.full(
-                (action_count,),
-                float("-inf"),
-                dtype=plan.candidate_scores.dtype,
-                device=plan.candidate_scores.device,
+            selected_actions = plan.candidate_sequences[
+                best_candidate : best_candidate + 1
+            ]
+            predicted_states = self.world_model.simulate_action_sequences(
+                state_history,
+                previous_actions,
+                selected_actions,
             )
-            behavior_log_probs[action_index] = 0.0
+            current_states = torch.cat(
+                (state.unsqueeze(1), predicted_states[:, :-1]),
+                dim=1,
+            )
+            self._pending_steps = [
+                _PlannedStep(
+                    action_index=int(action_index),
+                    action_count=int(plan.root_action_scores.shape[0]),
+                    current_state=current_states[:, step_index].detach(),
+                    predicted_next_state=predicted_states[:, step_index].detach(),
+                )
+                for step_index, action_index in enumerate(
+                    selected_actions[0].tolist()
+                )
+            ]
+            self._pending_anchor = (generated, plan)
         if self._progress_callback is not None:
             self._progress_callback("planner_done")
 
-        qwen_log_probs = torch.log_softmax(
-            generated.policy_state.action_logits,
-            dim=-1,
+        return self._consume_planned_step()
+
+    def _project_hidden(self, latent_hidden: torch.Tensor) -> torch.Tensor:
+        state = self.world_model.project_state(
+            latent_hidden.to(self.planner_device).unsqueeze(0)
         )
+        if state.ndim not in (2, 3) or state.shape[0] != 1:
+            raise ValueError(
+                "planning state projector must return shape (1,D) or (1,N,D), "
+                f"got {tuple(state.shape)}"
+            )
+        return state.detach()
+
+    def _correct_anchor(self, actual_state: torch.Tensor) -> None:
+        if self._state_history:
+            if len(self._state_history) != len(self._action_history) + 1:
+                raise RuntimeError("planner state/action history is misaligned")
+            self._state_history[-1] = actual_state
+        else:
+            if self._action_history:
+                raise RuntimeError("planner has actions without an initial state")
+            self._state_history.append(actual_state)
+
+    @staticmethod
+    def _action_only_response(action_index: int) -> str:
+        tokens = LatentActionTokens()
+        return (
+            f"{tokens.action_start}{tokens.action_tokens[action_index]}"
+            f"{tokens.action_end}"
+        )
+
+    def _consume_planned_step(self) -> PolicyDecision:
+        if not self._pending_steps:
+            raise RuntimeError("planner has no action ready for execution")
+        step = self._pending_steps.pop(0)
+        if not torch.equal(step.current_state, self._state_history[-1]):
+            raise RuntimeError("queued planner state does not match retained history")
+        self._action_history.append(step.action_index)
+        self._state_history.append(step.predicted_next_state)
+
+        behavior_log_probs = tuple(
+            0.0 if index == step.action_index else float("-inf")
+            for index in range(step.action_count)
+        )
+        world_model_state = (
+            step.current_state.squeeze(0).detach().cpu().float().clone()
+        )
+        if self._pending_anchor is None:
+            return PolicyDecision(
+                action_index=step.action_index,
+                action_log_probs=behavior_log_probs,
+                response=self._action_only_response(step.action_index),
+                world_model_state=world_model_state,
+            )
+
+        generated, plan = self._pending_anchor
+        self._pending_anchor = None
+        qwen_decision = generated.qwen_decision
+
         trace = qwen_decision.token_trace
         action_position = trace.token_roles.index("action")
         new_token_ids = list(trace.token_ids)
-        new_token_ids[action_position] = trace.action_token_ids[action_index]
-        new_old_log_probs = list(trace.old_log_probs)
-        new_old_log_probs[action_position] = None
-        new_loss_mask = list(trace.loss_mask)
-        new_loss_mask[action_position] = False
+        new_token_ids[action_position] = trace.action_token_ids[step.action_index]
+        new_old_log_probs = [None] * len(trace.old_log_probs)
+        new_loss_mask = [False] * len(trace.loss_mask)
 
         tokens = LatentActionTokens()
         old_suffix = (
@@ -343,12 +432,12 @@ class PlanningPolicy:
             raise RuntimeError("Qwen response action suffix does not match its trace")
         response = (
             qwen_decision.response[: -len(old_suffix)]
-            + f"{tokens.action_start}{tokens.action_tokens[action_index]}"
+            + f"{tokens.action_start}{tokens.action_tokens[step.action_index]}"
             + tokens.action_end
         )
         planner_trace = PlannerPolicyTrace(
             qwen_action_log_probs=tuple(
-                float(value) for value in qwen_log_probs.cpu().tolist()
+                float(value) for value in qwen_decision.action_log_probs
             ),
             candidate_sequences=tuple(
                 tuple(int(value) for value in row)
@@ -360,19 +449,20 @@ class PlanningPolicy:
             root_action_scores=tuple(
                 float(value) for value in plan.root_action_scores.cpu().tolist()
             ),
-            teacher_action_log_probs=tuple(
-                float(value) for value in behavior_log_probs.cpu().tolist()
-            ),
-            behavior_action_log_probs=tuple(
-                float(value) for value in behavior_log_probs.cpu().tolist()
+            action_training=ActionTrainingTrace(
+                objective="distillation",
+                behavior_owner="world_model",
+                executed_action_index=step.action_index,
+                teacher_action_log_probs=behavior_log_probs,
+                behavior_action_log_probs=behavior_log_probs,
             ),
             horizon=self.planner.horizon,
             search_mode=self.planner.search_mode,
+            qwen_sampled_action_index=qwen_decision.action_index,
             beam_width=self.planner.beam_width,
         )
-        self._action_history.append(action_index)
         return PolicyDecision(
-            action_index=action_index,
+            action_index=step.action_index,
             action_log_probs=planner_trace.behavior_action_log_probs,
             response=response,
             token_trace=PolicyTokenTrace(
@@ -389,15 +479,27 @@ class PlanningPolicy:
             state_latent_hidden=(
                 generated.policy_state.latent_hidden.detach().cpu().clone()
             ),
+            world_model_state=world_model_state,
         )
 
     def generate_state(self, prompt: AgentPrompt) -> PolicyState:
         """Terminal state 生成真实 CoT/hidden，但不运行 planner 或 environment。"""
 
-        state = self.turn_policy.generate_state(prompt)
-        if state.latent_hidden is None:
+        qwen_state = self.turn_policy.generate_state(prompt)
+        if qwen_state.latent_hidden is None:
             raise RuntimeError("planner terminal state has no captured Qwen hidden")
-        return state
+        with evaluating(self.world_model), torch.no_grad():
+            actual_state = self._project_hidden(qwen_state.latent_hidden)
+            self._pending_steps.clear()
+            self._pending_anchor = None
+            self._correct_anchor(actual_state)
+        return PolicyState(
+            assistant_prefix=qwen_state.assistant_prefix,
+            latent_hidden=qwen_state.latent_hidden,
+            world_model_state=(
+                actual_state.squeeze(0).detach().cpu().float().clone()
+            ),
+        )
 
 
 __all__ = ["PlanningPolicy", "WorldModelPlan", "WorldModelPlanner"]

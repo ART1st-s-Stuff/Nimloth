@@ -22,7 +22,7 @@ def validate_collector_configuration(
     eval_collector: RolloutCollector | None,
     validation_enabled: bool,
 ) -> None:
-    """在加载模型前拒绝静态 PPO 数据和缺失 validation source。"""
+    """在加载模型前拒绝静态 actor 数据和缺失 validation source。"""
 
     if (
         actor_enabled
@@ -30,7 +30,7 @@ def validate_collector_configuration(
         and not isinstance(train_collector, FreshJSONLRolloutCollector)
     ):
         raise ValueError(
-            "PPO actor requires fresh trajectories from the current policy; "
+            "actor training requires fresh trajectories from the current policy; "
             "static JSONL rollout is only supported for WM/value training"
         )
     if validation_enabled and eval_collector is None:

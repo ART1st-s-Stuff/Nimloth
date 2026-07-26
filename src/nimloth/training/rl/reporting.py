@@ -23,6 +23,8 @@ _LOG_COLUMNS = (
     "total_loss",
     "num_rollouts",
     "num_transitions",
+    "num_td_steps",
+    "num_wm_windows",
     "success_rate",
     "val_success_rate",
     "val_avg_reward",

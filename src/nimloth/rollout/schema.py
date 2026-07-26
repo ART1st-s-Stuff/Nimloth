@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nimloth.agent import (
+    ActionTrainingTrace,
     NIMLOTH_PROMPT_TEMPLATE_ID,
     PROMPT_VERSION,
     AgentPrompt,
@@ -37,6 +38,77 @@ def _decode_log_probabilities(
     )
 
 
+WorldModelStateRecord = list[float] | list[list[float]]
+
+
+def _decode_world_model_state(values: list[Any]) -> WorldModelStateRecord:
+    if values and isinstance(values[0], list):
+        return [[float(value) for value in row] for row in values]
+    return [float(value) for value in values]
+
+
+def _planner_trace_from_record(raw: dict[str, Any]) -> PlannerPolicyTrace:
+    action_training_raw = raw.get("action_training")
+    if action_training_raw is None:
+        behavior = _decode_log_probabilities(raw["behavior_action_log_probs"])
+        executed_action = max(range(len(behavior)), key=behavior.__getitem__)
+        action_training = ActionTrainingTrace(
+            objective="distillation",
+            behavior_owner="world_model",
+            executed_action_index=executed_action,
+            behavior_action_log_probs=behavior,
+            teacher_action_log_probs=_decode_log_probabilities(
+                raw["teacher_action_log_probs"]
+            ),
+        )
+    else:
+        teacher = action_training_raw.get("teacher_action_log_probs")
+        action_training = ActionTrainingTrace(
+            objective=str(action_training_raw["objective"]),  # type: ignore[arg-type]
+            behavior_owner=str(action_training_raw["behavior_owner"]),  # type: ignore[arg-type]
+            executed_action_index=int(
+                action_training_raw["executed_action_index"]
+            ),
+            behavior_action_log_probs=_decode_log_probabilities(
+                action_training_raw["behavior_action_log_probs"]
+            ),
+            teacher_action_log_probs=(
+                _decode_log_probabilities(teacher)
+                if teacher is not None
+                else None
+            ),
+            sampled_action_index=(
+                int(action_training_raw["sampled_action_index"])
+                if action_training_raw.get("sampled_action_index") is not None
+                else None
+            ),
+        )
+    return PlannerPolicyTrace(
+        qwen_action_log_probs=_decode_log_probabilities(
+            raw["qwen_action_log_probs"]
+        ),
+        candidate_sequences=tuple(
+            tuple(int(value) for value in sequence)
+            for sequence in raw["candidate_sequences"]
+        ),
+        candidate_scores=tuple(float(value) for value in raw["candidate_scores"]),
+        root_action_scores=_decode_log_probabilities(raw["root_action_scores"]),
+        action_training=action_training,
+        horizon=int(raw["horizon"]),
+        search_mode=str(raw["search_mode"]),
+        qwen_sampled_action_index=(
+            int(raw["qwen_sampled_action_index"])
+            if raw.get("qwen_sampled_action_index") is not None
+            else None
+        ),
+        beam_width=(
+            int(raw["beam_width"])
+            if raw.get("beam_width") is not None
+            else None
+        ),
+    )
+
+
 @dataclass
 class RolloutTrajectory:
     """一个完整 Agent episode 及其 behavior policy 来源信息。"""
@@ -59,8 +131,11 @@ class RolloutTrajectory:
     policy_messages: list[list[dict[str, Any]]] = field(default_factory=list)
     assistant_responses: list[str] = field(default_factory=list)
     terminal_assistant_prefix: str = ""
+    state_anchor_steps: list[int] = field(default_factory=list)
     state_latent_hiddens: list[list[list[float]]] = field(default_factory=list)
+    world_model_states: list[WorldModelStateRecord] = field(default_factory=list)
     policy_credit_assignment: str = "action"
+    policy_step_indices: list[int] = field(default_factory=list)
     policy_token_ids: list[list[int]] = field(default_factory=list)
     policy_token_log_probs: list[list[float | None]] = field(default_factory=list)
     policy_reference_token_log_probs: list[list[float | None]] = field(
@@ -122,7 +197,13 @@ class RolloutTrajectory:
             action_count=len(action_space),
         )
         prefix = self.transcript().policy_prefix(step_index)
-        if self.policy_credit_assignment in {"turn", "token"}:
+        trace = self.policy_token_trace(step_index)
+        if self.planner_policy_traces or self.policy_credit_assignment in {
+            "turn",
+            "token",
+        } or (
+            trace is not None and "reasoning" in trace.token_roles
+        ):
             return template.build_response_policy_prompt(prefix)
         return template.build_policy_prompt(prefix)
 
@@ -133,6 +214,8 @@ class RolloutTrajectory:
             raise IndexError(
                 f"state step {step_index} outside [0, {self.num_steps}]"
             )
+        if self.state_anchor_steps and step_index not in self.state_anchor_steps:
+            raise ValueError(f"state step {step_index} is not a Qwen anchor")
         action_space = get_action_space(
             self.action_space_id,
             self.action_space_version,
@@ -201,29 +284,39 @@ class RolloutTrajectory:
         )
         if all(not field for field in fields):
             return None
-        if not all(len(field) == self.num_steps for field in fields):
+        row_count = len(self.policy_step_indices) or self.num_steps
+        if not all(len(field) == row_count for field in fields):
             raise ValueError("policy token trace fields do not match trajectory steps")
         if self.policy_reference_token_log_probs and len(
             self.policy_reference_token_log_probs
-        ) != self.num_steps:
+        ) != row_count:
             raise ValueError(
                 "policy reference log-probs do not match trajectory steps"
             )
+        if self.policy_step_indices:
+            try:
+                row_index = self.policy_step_indices.index(step_index)
+            except ValueError:
+                return None
+        else:
+            if not 0 <= step_index < self.num_steps:
+                raise IndexError(f"policy step {step_index} is outside trajectory")
+            row_index = step_index
         return PolicyTokenTrace(
-            token_ids=tuple(int(value) for value in self.policy_token_ids[step_index]),
-            old_log_probs=tuple(self.policy_token_log_probs[step_index]),
-            loss_mask=tuple(bool(value) for value in self.policy_loss_masks[step_index]),
-            token_roles=tuple(self.policy_token_roles[step_index]),  # type: ignore[arg-type]
+            token_ids=tuple(int(value) for value in self.policy_token_ids[row_index]),
+            old_log_probs=tuple(self.policy_token_log_probs[row_index]),
+            loss_mask=tuple(bool(value) for value in self.policy_loss_masks[row_index]),
+            token_roles=tuple(self.policy_token_roles[row_index]),  # type: ignore[arg-type]
             action_token_ids=tuple(
-                int(value) for value in self.policy_action_token_ids[step_index]
+                int(value) for value in self.policy_action_token_ids[row_index]
             ),
-            reasoning_text=self.policy_reasoning_texts[step_index],
-            finish_reason=self.policy_finish_reasons[step_index],  # type: ignore[arg-type]
+            reasoning_text=self.policy_reasoning_texts[row_index],
+            finish_reason=self.policy_finish_reasons[row_index],  # type: ignore[arg-type]
             reasoning_truncated=bool(
-                self.policy_reasoning_truncated[step_index]
+                self.policy_reasoning_truncated[row_index]
             ),
             reference_log_probs=(
-                tuple(self.policy_reference_token_log_probs[step_index])
+                tuple(self.policy_reference_token_log_probs[row_index])
                 if self.policy_reference_token_log_probs
                 else None
             ),
@@ -234,9 +327,17 @@ class RolloutTrajectory:
 
         if not self.planner_policy_traces:
             return None
-        if len(self.planner_policy_traces) != self.num_steps:
+        row_count = len(self.policy_step_indices) or self.num_steps
+        if len(self.planner_policy_traces) != row_count:
             raise ValueError("planner policy trace count does not match trajectory steps")
-        return self.planner_policy_traces[step_index]
+        if self.policy_step_indices:
+            try:
+                row_index = self.policy_step_indices.index(step_index)
+            except ValueError:
+                return None
+        else:
+            row_index = step_index
+        return self.planner_policy_traces[row_index]
 
     def build_policy_messages(
         self,
@@ -301,8 +402,11 @@ class RolloutTrajectory:
             "policy_messages": self.policy_messages,
             "assistant_responses": self.assistant_responses,
             "terminal_assistant_prefix": self.terminal_assistant_prefix,
+            "state_anchor_steps": self.state_anchor_steps,
             "state_latent_hiddens": self.state_latent_hiddens,
+            "world_model_states": self.world_model_states,
             "policy_credit_assignment": self.policy_credit_assignment,
+            "policy_step_indices": self.policy_step_indices,
             "policy_token_ids": self.policy_token_ids,
             "policy_token_log_probs": self.policy_token_log_probs,
             "policy_reference_token_log_probs": (
@@ -326,14 +430,32 @@ class RolloutTrajectory:
                     "root_action_scores": _encode_log_probabilities(
                         trace.root_action_scores
                     ),
-                    "teacher_action_log_probs": _encode_log_probabilities(
-                        trace.teacher_action_log_probs
-                    ),
-                    "behavior_action_log_probs": _encode_log_probabilities(
-                        trace.behavior_action_log_probs
-                    ),
+                    "action_training": {
+                        "objective": trace.action_training.objective,
+                        "behavior_owner": trace.action_training.behavior_owner,
+                        "executed_action_index": (
+                            trace.action_training.executed_action_index
+                        ),
+                        "behavior_action_log_probs": _encode_log_probabilities(
+                            trace.action_training.behavior_action_log_probs
+                        ),
+                        "teacher_action_log_probs": (
+                            _encode_log_probabilities(
+                                trace.action_training.teacher_action_log_probs
+                            )
+                            if trace.action_training.teacher_action_log_probs
+                            is not None
+                            else None
+                        ),
+                        "sampled_action_index": (
+                            trace.action_training.sampled_action_index
+                        ),
+                    },
                     "horizon": trace.horizon,
                     "search_mode": trace.search_mode,
+                    "qwen_sampled_action_index": (
+                        trace.qwen_sampled_action_index
+                    ),
                     "beam_width": trace.beam_width,
                 }
                 for trace in self.planner_policy_traces
@@ -383,6 +505,9 @@ class RolloutTrajectory:
             terminal_assistant_prefix=str(
                 record.get("terminal_assistant_prefix", "")
             ),
+            state_anchor_steps=[
+                int(value) for value in record.get("state_anchor_steps", [])
+            ],
             state_latent_hiddens=[
                 [
                     [float(value) for value in hidden]
@@ -390,9 +515,16 @@ class RolloutTrajectory:
                 ]
                 for state in record.get("state_latent_hiddens", [])
             ],
+            world_model_states=[
+                _decode_world_model_state(state)
+                for state in record.get("world_model_states", [])
+            ],
             policy_credit_assignment=str(
                 record.get("policy_credit_assignment", "action")
             ),
+            policy_step_indices=[
+                int(value) for value in record.get("policy_step_indices", [])
+            ],
             policy_token_ids=[
                 [int(value) for value in row]
                 for row in record.get("policy_token_ids", [])
@@ -430,34 +562,7 @@ class RolloutTrajectory:
                 for value in record.get("policy_reasoning_truncated", [])
             ],
             planner_policy_traces=[
-                PlannerPolicyTrace(
-                    qwen_action_log_probs=_decode_log_probabilities(
-                        raw["qwen_action_log_probs"]
-                    ),
-                    candidate_sequences=tuple(
-                        tuple(int(value) for value in sequence)
-                        for sequence in raw["candidate_sequences"]
-                    ),
-                    candidate_scores=tuple(
-                        float(value) for value in raw["candidate_scores"]
-                    ),
-                    root_action_scores=_decode_log_probabilities(
-                        raw["root_action_scores"]
-                    ),
-                    teacher_action_log_probs=_decode_log_probabilities(
-                        raw["teacher_action_log_probs"]
-                    ),
-                    behavior_action_log_probs=_decode_log_probabilities(
-                        raw["behavior_action_log_probs"]
-                    ),
-                    horizon=int(raw["horizon"]),
-                    search_mode=str(raw["search_mode"]),
-                    beam_width=(
-                        int(raw["beam_width"])
-                        if raw.get("beam_width") is not None
-                        else None
-                    ),
-                )
+                _planner_trace_from_record(raw)
                 for raw in record.get("planner_policy_traces", [])
             ],
             prompt_template_spec=prompt_template_spec,

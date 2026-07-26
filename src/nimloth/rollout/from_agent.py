@@ -37,29 +37,55 @@ def trajectory_from_agent_episode(
     for action in episode.actions:
         if action.policy_prompt.template != episode.prompt_template:
             raise ValueError("Agent episode mixes prompt template specifications")
-    traces = [action.token_trace for action in episode.actions]
-    planner_traces = [action.planner_trace for action in episode.actions]
-    has_traces = [trace is not None for trace in traces]
-    if any(has_traces) and not all(has_traces):
-        raise ValueError("Agent episode mixes traced and untraced policy actions")
-    has_planner_traces = [trace is not None for trace in planner_traces]
-    if any(has_planner_traces) and not all(has_planner_traces):
-        raise ValueError("Agent episode mixes planner and direct policy actions")
+    trace_rows = [
+        (step, action.token_trace)
+        for step, action in enumerate(episode.actions)
+        if action.token_trace is not None
+    ]
+    planner_rows = [
+        (step, action.planner_trace)
+        for step, action in enumerate(episode.actions)
+        if action.planner_trace is not None
+    ]
+    trace_steps = [step for step, _trace in trace_rows]
+    planner_steps = [step for step, _trace in planner_rows]
+    if planner_rows and trace_steps != planner_steps:
+        raise ValueError("planner anchor must carry its Qwen token provenance")
+    if trace_rows and len(trace_rows) != len(episode.actions) and not planner_rows:
+        raise ValueError("direct policy episode mixes traced and untraced actions")
     credit_assignments = {action.credit_assignment for action in episode.actions}
     if len(credit_assignments) != 1:
         raise ValueError("Agent episode mixes PPO credit assignment modes")
     credit_assignment = credit_assignments.pop()
-    if credit_assignment in {"turn", "token"} and not all(has_traces):
+    if credit_assignment in {"turn", "token"} and len(trace_rows) != len(
+        episode.actions
+    ):
         raise ValueError(f"{credit_assignment} credit requires token traces")
-    action_states = [action.state_latent_hidden for action in episode.actions]
-    populated_action_states = [state is not None for state in action_states]
-    if any(populated_action_states) and not all(populated_action_states):
-        raise ValueError("trajectory conversion cannot mix cached and uncached actions")
-    if any(populated_action_states) != (terminal_state.latent_hidden is not None):
-        raise ValueError("terminal Qwen state cache does not match action state cache")
-    cached_states = [state for state in action_states if state is not None]
+    cached_state_rows = [
+        (step, action.state_latent_hidden)
+        for step, action in enumerate(episode.actions)
+        if action.state_latent_hidden is not None
+    ]
+    if cached_state_rows and [step for step, _state in cached_state_rows] != trace_steps:
+        raise ValueError("Qwen state cache must align with policy anchor steps")
+    if bool(cached_state_rows) != (terminal_state.latent_hidden is not None):
+        raise ValueError("terminal Qwen state cache does not match action anchors")
+    state_anchor_steps = [step for step, _state in cached_state_rows]
+    cached_states = [state for _step, state in cached_state_rows]
     if terminal_state.latent_hidden is not None:
+        state_anchor_steps.append(len(episode.actions))
         cached_states.append(terminal_state.latent_hidden)
+
+    world_model_states = [
+        action.world_model_state for action in episode.actions
+    ]
+    has_world_model_states = [state is not None for state in world_model_states]
+    if any(has_world_model_states) and not all(has_world_model_states):
+        raise ValueError("planner episode requires a state for every executed action")
+    if any(has_world_model_states) != (terminal_state.world_model_state is not None):
+        raise ValueError("terminal world-model state does not match planner trajectory")
+    if any(has_world_model_states):
+        world_model_states.append(terminal_state.world_model_state)
 
     return RolloutTrajectory(
         record_id=record_id,
@@ -88,37 +114,51 @@ def trajectory_from_agent_episode(
         ],
         assistant_responses=[action.response for action in episode.actions],
         terminal_assistant_prefix=terminal_state.assistant_prefix,
+        state_anchor_steps=state_anchor_steps,
         state_latent_hiddens=[
             state.detach().cpu().float().tolist()
             for state in cached_states
+            if state is not None
+        ],
+        world_model_states=[
+            state.detach().cpu().float().tolist()
+            for state in world_model_states
+            if state is not None
         ],
         policy_credit_assignment=credit_assignment,
+        policy_step_indices=trace_steps,
         policy_token_ids=[
-            list(trace.token_ids) for trace in traces if trace is not None
+            list(trace.token_ids) for _step, trace in trace_rows if trace is not None
         ],
         policy_token_log_probs=[
-            list(trace.old_log_probs) for trace in traces if trace is not None
+            list(trace.old_log_probs)
+            for _step, trace in trace_rows
+            if trace is not None
         ],
         policy_loss_masks=[
-            list(trace.loss_mask) for trace in traces if trace is not None
+            list(trace.loss_mask) for _step, trace in trace_rows if trace is not None
         ],
         policy_token_roles=[
-            list(trace.token_roles) for trace in traces if trace is not None
+            list(trace.token_roles) for _step, trace in trace_rows if trace is not None
         ],
         policy_action_token_ids=[
-            list(trace.action_token_ids) for trace in traces if trace is not None
+            list(trace.action_token_ids)
+            for _step, trace in trace_rows
+            if trace is not None
         ],
         policy_reasoning_texts=[
-            trace.reasoning_text for trace in traces if trace is not None
+            trace.reasoning_text for _step, trace in trace_rows if trace is not None
         ],
         policy_finish_reasons=[
-            trace.finish_reason for trace in traces if trace is not None
+            trace.finish_reason for _step, trace in trace_rows if trace is not None
         ],
         policy_reasoning_truncated=[
-            trace.reasoning_truncated for trace in traces if trace is not None
+            trace.reasoning_truncated
+            for _step, trace in trace_rows
+            if trace is not None
         ],
         planner_policy_traces=[
-            trace for trace in planner_traces if trace is not None
+            trace for _step, trace in planner_rows if trace is not None
         ],
         prompt_template_spec=episode.prompt_template,
         prompt_version=episode.prompt_template.version,

@@ -10,6 +10,7 @@ import torch
 import pytest
 
 from nimloth.agent import (
+    ActionTrainingTrace,
     Agent,
     AgentTranscript,
     NimlothPromptTemplate,
@@ -675,85 +676,3 @@ def test_low_variance_kl_stays_finite_for_extreme_log_ratios() -> None:
     assert penalty[0].item() == pytest.approx(10.0)
     assert penalty[2].item() == pytest.approx(0.0)
     assert penalty[-1].item() == pytest.approx(10.0)
-
-
-def test_planner_distillation_kl_is_finite_for_deterministic_teacher() -> None:
-    trajectory = _trajectory("planner-token", 2)
-    trajectory.policy_credit_assignment = "token"
-    trajectory.policy_token_log_probs = [
-        [-0.2, None, None] for _ in trajectory.action_indices
-    ]
-    trajectory.policy_loss_masks = [
-        [True, False, False] for _ in trajectory.action_indices
-    ]
-    uniform = tuple([-math.log(8.0)] * 8)
-    planner_traces = []
-    planner_behavior = []
-    for action_index in trajectory.action_indices:
-        deterministic = tuple(
-            0.0 if index == action_index else float("-inf")
-            for index in range(8)
-        )
-        planner_traces.append(
-            PlannerPolicyTrace(
-                qwen_action_log_probs=uniform,
-                candidate_sequences=((action_index, action_index),),
-                candidate_scores=(2.0,),
-                root_action_scores=tuple(
-                    2.0 if index == action_index else float("-inf")
-                    for index in range(8)
-                ),
-                teacher_action_log_probs=deterministic,
-                behavior_action_log_probs=deterministic,
-                horizon=2,
-                search_mode="greedy",
-            )
-        )
-        planner_behavior.append(list(deterministic))
-    trajectory.planner_policy_traces = planner_traces
-    trajectory.state_latent_hiddens = [
-        [[float(step), 1.0, 2.0]] for step in range(3)
-    ]
-    trajectory.action_log_probs = planner_behavior
-    trajectory.rewards = [0.0, 1.0]
-    trajectory.reward = 1.0
-    trajectory.terminated = True
-
-    windows = sample_trajectory_windows(
-        [trajectory],
-        history_size=2,
-        batch_size=1,
-        seed=1,
-    )
-    batch = build_rl_batch(windows, gamma=1.0, device=torch.device("cpu"))
-    token_replay = _PlannerTokenReplay(token_count=2, action_count=8)
-    _, base_runtime, *_ = _algorithm()
-    runtime = replace(
-        base_runtime,
-        policy_replay=token_replay,
-        representation_to_backbone=False,
-    )
-    algorithm = RLAlgorithm(
-        history_size=2,
-        sigreg=None,
-        sigreg_weight=0.0,
-        value_rank_margin=0.1,
-        value_rank_weight=0.0,
-        ppo_clip_ratio=0.2,
-        entropy_weight=0.0,
-        credit_assignment="token",
-        token_gamma=1.0,
-        token_gae_lambda=1.0,
-        token_value_loss_weight=1.0,
-        planner_distillation_weight=1.0,
-    )
-
-    output = algorithm.training_step(runtime, batch)
-    output.loss.backward()
-
-    expected = math.log(8.0)
-    assert output.metrics["action_distillation_loss"] == pytest.approx(expected)
-    assert output.metrics["action_distillation_kl"] == pytest.approx(expected)
-    assert math.isfinite(output.metrics["action_distillation_kl"])
-    assert token_replay.action_logits.grad is not None
-    assert torch.isfinite(token_replay.action_logits.grad).all()

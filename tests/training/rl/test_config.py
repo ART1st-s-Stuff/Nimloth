@@ -58,6 +58,7 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert config.predictor.sigreg_num_proj == 1024
     assert config.predictor.sigreg_knots == 17
     assert config.actor.enabled is False
+    assert config.actor.action_objective == "ppo"
     assert config.actor.credit_assignment == "action"
     assert config.actor.max_response_tokens == 64
     assert config.gradient.representation_to_backbone is True
@@ -96,14 +97,15 @@ def test_formal_h2_config_preserves_validated_online_contract() -> None:
     assert config.rl.iterations == 60
     assert config.rl.envs_per_iteration == 8
     assert config.rl.max_steps_per_episode == 20
-    assert config.rl.batch_size == 32
+    assert config.rl.batch_size == 8
     assert config.rollout.train_datasets == (
         "base_train",
         "common_sense_train",
     )
     assert config.agent.planning.horizon == 2
     assert config.agent.planning.search_mode == "exhaustive"
-    assert config.actor.credit_assignment == "token"
+    assert config.actor.action_objective == "distillation"
+    assert config.actor.credit_assignment == "action"
     assert config.actor.max_response_tokens == 512
     assert config.training.save_interval == 10
     assert config.validation.enabled is False
@@ -132,11 +134,21 @@ def test_rl_config_rejects_impossible_distributed_topology() -> None:
 
 def test_rl_config_parses_agent_planning() -> None:
     raw = _raw_config()
+    raw["rl"].update({"envs_per_iteration": 2, "batch_size": 2})
+    raw["actor"] = {
+        "enabled": True,
+        "action_objective": "distillation",
+        "credit_assignment": "action",
+        "planner_distillation_weight": 0.3,
+    }
+    raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
     raw["agent"] = {
         "planning": {
             "enabled": True,
             "horizon": 3,
+            "search_mode": "beam",
             "beam_width": 6,
+            "device": "cpu",
         }
     }
 
@@ -145,6 +157,37 @@ def test_rl_config_parses_agent_planning() -> None:
     assert config.agent.planning.enabled is True
     assert config.agent.planning.horizon == 3
     assert config.agent.planning.beam_width == 6
+
+
+def test_planner_episode_training_requires_every_collected_episode() -> None:
+    raw = _raw_config()
+    raw["rl"].update({"envs_per_iteration": 2, "batch_size": 1})
+    raw["actor"] = {
+        "enabled": True,
+        "action_objective": "distillation",
+        "credit_assignment": "action",
+        "planner_distillation_weight": 0.3,
+    }
+    raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 2,
+            "search_mode": "greedy",
+            "device": "cpu",
+        }
+    }
+
+    with pytest.raises(ValueError, match="batch_size to equal rl.envs_per_iteration"):
+        parse_rl_config(raw)
+
+
+def test_planner_episode_training_requires_action_replay() -> None:
+    raw = _raw_config()
+    raw["agent"] = {"planning": {"enabled": True}}
+
+    with pytest.raises(ValueError, match="actor.enabled=true"):
+        parse_rl_config(raw)
 
 
 def test_rl_config_parses_turn_credit_assignment() -> None:
@@ -191,6 +234,7 @@ def test_rl_config_requires_explicit_token_credit_semantics() -> None:
 
 def test_planner_distillation_requires_explicit_search_and_loss_weight() -> None:
     raw = _raw_config()
+    raw["rl"]["batch_size"] = 8
     raw["agent"] = {
         "planning": {
             "enabled": True,
@@ -200,14 +244,8 @@ def test_planner_distillation_requires_explicit_search_and_loss_weight() -> None
     }
     raw["actor"] = {
         "enabled": True,
-        "credit_assignment": "token",
-    }
-    raw["token_credit"] = {
-        "gamma": 0.95,
-        "gae_lambda": 0.9,
-        "value_lr": 1e-4,
-        "value_loss_weight": 0.5,
-        "hidden_dim": 256,
+        "action_objective": "distillation",
+        "credit_assignment": "action",
     }
     raw["rl"]["truncated_bootstrap"] = "zero"
 
@@ -223,6 +261,7 @@ def test_planner_distillation_requires_explicit_search_and_loss_weight() -> None
         parse_rl_config(raw)
 
     raw["predictor"]["train_wm"] = True
+    raw["predictor"]["lambda_sigreg"] = 0.0
     config = parse_rl_config(raw)
     assert config.agent.planning.horizon == 2
     assert config.agent.planning.beam_width is None
@@ -232,6 +271,7 @@ def test_planner_distillation_requires_explicit_search_and_loss_weight() -> None
 
 def test_planner_beam_width_matches_search_mode() -> None:
     raw = _raw_config()
+    raw["rl"]["batch_size"] = 8
     raw["agent"] = {
         "planning": {
             "enabled": True,
@@ -242,18 +282,12 @@ def test_planner_beam_width_matches_search_mode() -> None:
     }
     raw["actor"] = {
         "enabled": True,
-        "credit_assignment": "token",
+        "action_objective": "distillation",
+        "credit_assignment": "action",
         "planner_distillation_weight": 0.3,
     }
-    raw["token_credit"] = {
-        "gamma": 0.95,
-        "gae_lambda": 0.9,
-        "value_lr": 1e-4,
-        "value_loss_weight": 0.5,
-        "hidden_dim": 256,
-    }
     raw["rl"]["truncated_bootstrap"] = "zero"
-    raw["predictor"]["train_wm"] = True
+    raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
 
     with pytest.raises(ValueError, match="beam_width"):
         parse_rl_config(raw)

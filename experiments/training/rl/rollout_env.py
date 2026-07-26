@@ -53,6 +53,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("action", "turn", "token"),
         default="action",
     )
+    ap.add_argument(
+        "--action-objective",
+        choices=("distillation", "ppo"),
+        default="ppo",
+    )
     ap.add_argument("--max-response-tokens", type=int, default=64)
     ap.add_argument("--attn-implementation", default="sdpa")
     ap.add_argument("--max-pixels", type=int, default=3136)
@@ -84,7 +89,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--fresh-manifest",
         type=Path,
         default=None,
-        help="记录当前 policy artifact 指纹，供随后唯一一次 PPO update 消费",
+        help="记录当前 policy artifact 指纹，供随后唯一一次 RL update 消费",
     )
     return ap.parse_args(argv)
 
@@ -184,8 +189,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.backend != "vllm":
             raise ValueError("planner rollout requires --backend vllm")
-        if args.credit_assignment != "token":
-            raise ValueError("planner rollout requires --credit-assignment token")
+        if args.credit_assignment != "action":
+            raise ValueError("planner rollout requires --credit-assignment action")
+        if args.action_objective != "distillation":
+            raise ValueError(
+                "greedy planner rollout requires --action-objective distillation"
+            )
         if not args.vllm_enforce_eager:
             raise ValueError("planner rollout requires --vllm-enforce-eager")
         if args.planning_horizon is not None and args.planning_horizon < 1:
@@ -251,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
             max_images=args.max_steps + 1,
             gpu_memory_utilization=args.gpu_memory_utilization,
             latent_token_count=latent_token_count,
-            credit_assignment=args.credit_assignment,
+            credit_assignment=("token" if args.planner_enabled else args.credit_assignment),
             max_response_tokens=args.max_response_tokens,
             distributed_executor_backend=args.vllm_distributed_executor_backend,
             enforce_eager=args.vllm_enforce_eager,
@@ -290,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
                 search_mode=args.planning_search_mode,
                 beam_width=args.planning_beam_width,
                 planner_device=planner_device,
+                action_objective=args.action_objective,
                 progress_callback=report_policy_progress,
             )
     else:

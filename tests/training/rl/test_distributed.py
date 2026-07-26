@@ -114,3 +114,19 @@ def test_pair_parallel_training_step_uses_multidevice_ddp(monkeypatch) -> None:
     assert wrapped.kwargs["output_device"] is None
     assert wrapped.kwargs["find_unused_parameters"] is False
     assert wrapped.kwargs["static_graph"] is True
+
+
+def test_planner_pair_parallel_uses_official_dynamic_ddp(monkeypatch) -> None:
+    monkeypatch.setattr(torch.nn.parallel, "DistributedDataParallel", _FakeDDP)
+
+    wrapped = _wrap_training_step_ddp(  # type: ignore[arg-type]
+        nn.Linear(4, 1),
+        world_size=2,
+        model_parallel=True,
+        allow_unused_parameters=True,
+    )
+
+    assert isinstance(wrapped, _FakeDDP)
+    assert wrapped.kwargs["device_ids"] is None
+    assert wrapped.kwargs["find_unused_parameters"] is True
+    assert wrapped.kwargs["static_graph"] is False

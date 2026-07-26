@@ -68,6 +68,7 @@ def save_rl_checkpoint(
     vision_tune: str = "freeze",
     base_model_path: str = "",
     token_value_head: torch.nn.Module | None = None,
+    action_objective: str = "ppo",
     credit_assignment: str = "action",
     token_credit_config: dict[str, Any] | None = None,
     truncated_bootstrap: str | None = None,
@@ -143,6 +144,7 @@ def save_rl_checkpoint(
                 "rank_sharded_fsdp" if fsdp_model else "replicated"
             ),
             "credit_assignment": credit_assignment,
+            "action_objective": action_objective,
             "token_credit_config": token_credit_config,
             "truncated_bootstrap": truncated_bootstrap,
             "planner_config": planner_config,

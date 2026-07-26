@@ -377,7 +377,9 @@ def replay_policy_token_log_probs(
             raise ValueError(
                 "recorded action token mapping does not match current tokenizer"
             )
-        if sample.credit_assignment in {"turn", "token"}:
+        if sample.credit_assignment in {"turn", "token"} or (
+            sample.planner_trace is not None
+        ):
             assert sample.assistant_response is not None
             response_prefix = "<think>"
             if not sample.assistant_response.startswith(response_prefix):
@@ -433,8 +435,13 @@ def replay_policy_token_log_probs(
         ]
         replay_indices = list(selected_indices)
         action_position = trace.token_roles.index("action")
+        planner_action_row: int | None = None
         if sample.planner_trace is not None:
-            replay_indices.append(action_position)
+            if action_position in selected_indices:
+                planner_action_row = selected_indices.index(action_position)
+            else:
+                planner_action_row = len(replay_indices)
+                replay_indices.append(action_position)
         logits_to_keep = _logits_to_keep_positions(
             [prompt_length - 1 + index for index in replay_indices]
         )
@@ -523,7 +530,8 @@ def replay_policy_token_log_probs(
                 )
                 selected_full_log_probs.append(full_log_probs[token_id])
         if sample.planner_trace is not None:
-            action_logits = outputs.logits[0, len(selected_indices)].float()
+            assert planner_action_row is not None
+            action_logits = outputs.logits[0, planner_action_row].float()
             restricted = action_logits[
                 torch.tensor(
                     action_token_ids,
@@ -539,8 +547,16 @@ def replay_policy_token_log_probs(
             torch.cat(selected_hidden_states, dim=0).detach()
         )
     return PolicyReplayOutput(
-        selected_log_probs=torch.stack(selected_log_probs),
-        entropies=torch.stack(entropies),
+        selected_log_probs=(
+            torch.stack(selected_log_probs)
+            if selected_log_probs
+            else torch.empty(0, device=device)
+        ),
+        entropies=(
+            torch.stack(entropies)
+            if entropies
+            else torch.empty(0, device=device)
+        ),
         token_values=token_values,
         action_log_probs=(
             torch.stack(replayed_action_log_probs)
@@ -579,7 +595,9 @@ class QwenActionLogProbReplay:
     ) -> PolicyReplayOutput:
         traced = [sample.token_trace is not None for sample in samples]
         if any(traced) and not all(traced):
-            raise ValueError("one PPO batch cannot mix traced and legacy policy samples")
+            raise ValueError(
+                "one policy replay batch cannot mix traced and legacy samples"
+            )
         if all(traced):
             with evaluating(self.model):
                 return replay_policy_token_log_probs(

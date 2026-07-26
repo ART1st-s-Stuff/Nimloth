@@ -53,6 +53,7 @@ def _boolean(value: Any, field: str) -> bool:
 @dataclass(frozen=True)
 class ActorConfig:
     enabled: bool = False
+    action_objective: str = "ppo"
     entropy_coeff: float = 0.0
     clip_ratio: float = 0.2
     credit_assignment: str = "action"
@@ -195,6 +196,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "actor",
         {
             "enabled",
+            "action_objective",
             "entropy_coeff",
             "clip_ratio",
             "credit_assignment",
@@ -292,6 +294,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
 
     actor_config = ActorConfig(
         enabled=_boolean(actor.get("enabled", False), "actor.enabled"),
+        action_objective=str(actor.get("action_objective", "ppo")),
         entropy_coeff=_positive_float(
             actor.get("entropy_coeff", 0.0),
             "actor.entropy_coeff",
@@ -324,6 +327,8 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     )
     if not 0.0 < actor_config.clip_ratio < 1.0:
         raise ValueError("actor.clip_ratio must be in (0, 1)")
+    if actor_config.action_objective not in {"distillation", "ppo"}:
+        raise ValueError("actor.action_objective must be distillation or ppo")
     if actor_config.credit_assignment not in {"action", "turn", "token"}:
         raise ValueError("actor.credit_assignment must be action, turn, or token")
     if actor_config.reference_kl_loss_weight > 0.0:
@@ -397,7 +402,23 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 + ", ".join(missing_token_fields)
             )
 
+    sigreg_weight = _positive_float(
+        predictor.get("lambda_sigreg", 0.1),
+        "predictor.lambda_sigreg",
+        allow_zero=True,
+    )
+    value_rank_weight = _positive_float(
+        value_head.get("lambda_rank", 0.0),
+        "value_head.lambda_rank",
+        allow_zero=True,
+    )
     agent_config = parse_agent_config(raw.get("agent"))
+    if agent_config.planning.enabled and not actor_config.enabled:
+        raise ValueError("planner episode training requires actor.enabled=true")
+    if actor_config.action_objective == "distillation" and not (
+        actor_config.enabled and agent_config.planning.enabled
+    ):
+        raise ValueError("action distillation requires an enabled planner actor")
     if actor_config.enabled and agent_config.planning.enabled:
         raw_agent = raw.get("agent")
         raw_planning = (
@@ -409,9 +430,16 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             raise ValueError(
                 "planner distillation requires explicit agent.planning.horizon"
             )
-        if actor_config.credit_assignment != "token":
+        if actor_config.action_objective != "distillation":
             raise ValueError(
-                "planner distillation requires actor.credit_assignment=token"
+                "world-model planner behavior currently requires "
+                "actor.action_objective=distillation"
+            )
+        if actor_config.entropy_coeff != 0.0:
+            raise ValueError("action distillation requires actor.entropy_coeff=0")
+        if actor_config.credit_assignment != "action":
+            raise ValueError(
+                "planner distillation requires actor.credit_assignment=action"
             )
         if agent_config.planning.search_mode is None:
             raise ValueError(
@@ -441,6 +469,14 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         if "train_wm" not in predictor:
             raise ValueError(
                 "planner distillation requires explicit predictor.train_wm"
+            )
+        if sigreg_weight != 0.0:
+            raise ValueError(
+                "planner episode training requires predictor.lambda_sigreg=0"
+            )
+        if value_rank_weight != 0.0:
+            raise ValueError(
+                "planner episode training requires value_head.lambda_rank=0"
             )
 
     rollout_config = parse_rollout_config(raw.get("rollout"))
@@ -482,6 +518,16 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "validation.envs",
         allow_zero=not validation_enabled,
     )
+    envs_per_iteration = _positive_int(
+        loop.get("envs_per_iteration", 8),
+        "rl.envs_per_iteration",
+    )
+    batch_size = _positive_int(loop.get("batch_size", 32), "rl.batch_size")
+    if agent_config.planning.enabled and batch_size != envs_per_iteration:
+        raise ValueError(
+            "planner episode training requires rl.batch_size to equal "
+            "rl.envs_per_iteration"
+        )
 
     return RLConfig(
         agent=agent_config,
@@ -515,11 +561,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 predictor.get("history_size", 4),
                 "predictor.history_size",
             ),
-            lambda_sigreg=_positive_float(
-                predictor.get("lambda_sigreg", 0.1),
-                "predictor.lambda_sigreg",
-                allow_zero=True,
-            ),
+            lambda_sigreg=sigreg_weight,
             sigreg_num_proj=_positive_int(
                 predictor.get("sigreg_num_proj", 1024),
                 "predictor.sigreg_num_proj",
@@ -540,25 +582,18 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 "value_head.rank_margin",
                 allow_zero=True,
             ),
-            lambda_rank=_positive_float(
-                value_head.get("lambda_rank", 0.0),
-                "value_head.lambda_rank",
-                allow_zero=True,
-            ),
+            lambda_rank=value_rank_weight,
         ),
         rollout=rollout_config,
         rl=RLLoopConfig(
             iterations=_positive_int(loop.get("iterations", 1000), "rl.iterations"),
-            envs_per_iteration=_positive_int(
-                loop.get("envs_per_iteration", 8),
-                "rl.envs_per_iteration",
-            ),
+            envs_per_iteration=envs_per_iteration,
             max_steps_per_episode=_positive_int(
                 loop.get("max_steps_per_episode", 20),
                 "rl.max_steps_per_episode",
             ),
             gamma=gamma,
-            batch_size=_positive_int(loop.get("batch_size", 32), "rl.batch_size"),
+            batch_size=batch_size,
             truncated_bootstrap=truncated_bootstrap,
         ),
         validation=ValidationConfig(
@@ -604,5 +639,13 @@ def merge_rl_config_overrides(
     if args.rl_iterations is not None:
         loop = replace(loop, iterations=args.rl_iterations)
     if args.rl_envs_per_iteration is not None:
-        loop = replace(loop, envs_per_iteration=args.rl_envs_per_iteration)
+        loop = replace(
+            loop,
+            envs_per_iteration=args.rl_envs_per_iteration,
+            batch_size=(
+                args.rl_envs_per_iteration
+                if config.agent.planning.enabled
+                else loop.batch_size
+            ),
+        )
     return replace(config, rl=loop, training=training)

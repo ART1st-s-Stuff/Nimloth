@@ -11,8 +11,8 @@ warm start；SFT2 本身不运行这条 rollout 路径。
 |-------|----------------|
 | `nimloth.agent` | Transcript、prompt、Qwen→WM planning policy 与 episode runner |
 | `nimloth.environment` | Action vocabulary, environment session, and VAGEN navigation adapter |
-| `nimloth.backbone.qwen25vl` | Qwen Backbone、prompt 输入、policy 与 PPO replay 适配 |
-| `nimloth.rollout` | Trajectory schema、JSONL、连续窗口与 behavior provenance |
+| `nimloth.backbone.qwen25vl` | Qwen Backbone、prompt 输入与 policy replay 适配 |
+| `nimloth.rollout` | Trajectory schema、JSONL、锚点/预测 state 与 behavior provenance |
 | `nimloth.config.agent`, `nimloth.config.rollout` | Stage-independent Agent and rollout configuration |
 | `nimloth.config.rl` | Strict typed RL-phase configuration |
 | `nimloth.training.rl` | RL 算法、组件装配、optimizer、checkpoint 和训练循环 |
@@ -28,7 +28,7 @@ by the shared Agent template.
 |------|-------------|-----------------------|--------------|
 | Single-GPU online | required | no | local integration and online training |
 | Static JSONL | not required | yes | offline WM/value training from older trajectories |
-| Fresh vLLM JSONL | not required | yes | one multi-rank PPO update after exact-policy vLLM rollout |
+| Fresh vLLM JSONL | not required | yes | one multi-rank RL update after exact-policy vLLM rollout |
 
 Direct `VAGENNavigationRolloutCollector` use is rejected when `world > 1`: different
 episode lengths and failures would make FSDP ranks execute different Qwen
@@ -36,9 +36,10 @@ forwards. Generate JSONL separately for distributed training. A training
 collector must use an environment dataset whose name ends in `_train`; eval
 assets cannot be labeled as training data.
 
-The CLI requires one rollout mode explicitly. `actor.enabled` controls PPO and
-is independent of `gradient.representation_to_backbone`. Static JSONL is
-rejected when PPO is enabled. A `FreshRolloutManifest` binds one vLLM rollout to
+The CLI requires one rollout mode explicitly. `actor.enabled` controls Qwen
+action training and is independent of `gradient.representation_to_backbone`.
+Static JSONL is rejected when online actor provenance is required. A
+`FreshRolloutManifest` binds one vLLM rollout to
 the exact policy, planner, trajectory, and optional reference artifacts by content
 fingerprint. Consumption is marked in-progress before optimization and committed
 only after a resumable post-update checkpoint exists. Train and validation use
@@ -52,22 +53,23 @@ environment system_prompt + obs_str + images
                     v
        AgentRuntime / AgentPromptTemplate
                     |
-          Qwen 编码当前真实 state（一次）
+          Qwen 编码 segment 锚点 state
                     |
-       WM 搜索候选 action sequence（不执行 env）
+       校正上一预测终点并搜索 action sequence
                     |
-       选择首动作 → EpisodeRunner.session.step（一次）
+       逐步执行整段 action；段内沿用 WM 预测 state
                     |
                     v
- RolloutTrajectory (structured transcript + audit prompt)
+ RolloutTrajectory (Qwen anchors + dense mixed WM states)
              |                       |
              v                       v
- raw trajectory window sample   exact PPO prompt replay
+ segment endpoint WM replay     anchor action distillation
              |                       |
-             v                       |
- shared Backbone input builder       |
-             |                       |
-             +---- predictor/value/actor training
+             +------ backward -------+
+                         |
+             detached full-episode ValueHead MC backward
+                         |
+                  one optimizer step
 ```
 
 For every step `t`, a complete trajectory stores:
@@ -90,13 +92,45 @@ in memory, serialized as JSON `null`, and restored as `-inf` when read.
 
 ## Training semantics
 
-With `H = predictor.history_size`, sampling first selects `H` consecutive
-actions and `H + 1` states from the same raw trajectory. Windows never cross
-episode boundaries. A fresh planner rollout stores the pre-StateProjector Qwen
-latent hidden from the same forward that generated each real CoT, including a
-separately generated terminal state. Training slices those `T + 1` cached rows
-to the sampled window and runs the current StateProjector on them; it does not
-send the whole `history_size` state sequence through Qwen again.
+Planner rollout和训练使用同一个segment边界。设`P = planning.horizon`，Qwen只在
+step `0, P, 2P, ...`及terminal observation运行；若episode提前结束，最后一段可以
+短于`P`。trajectory保存两组不同数据：稀疏的Qwen anchor hidden，以及每个动作前
+state加terminal state组成的稠密混合序列。混合序列中的anchor来自Qwen，段内state
+来自WM预测。
+
+训练使用完整episode，不采样window：
+
+```text
+for each consecutive pair of Qwen anchors:
+    context = detached retained mixed states[-history_size:]
+    state = state_proj(start_anchor_hidden)       # current graph
+    context[-1] = state
+    predicted = autoregressive_wm(context, executed_segment_actions)
+    target = stop_gradient(project_target_state(end_anchor_hidden))
+    L_td = mse(predicted[-1], target)
+
+    qwen_action_log_probs = replay(start_anchor_response)
+    L_action = CE(greedy_wm_action, qwen_action_log_probs)
+    backward((L_td + lambda_action * L_action) / total_segments)
+
+value_states = stop_gradient(all action-current mixed states)
+L_value = value_head_mc(value_states, all executed actions, full_episode_returns)
+backward(L_value)
+optimizer.step()  # exactly once after every TD/MC backward
+```
+
+因此`history_size`只限制WM predictor在一个预测位置最多能看到多少个过去state；它
+不决定Qwen调用次数、segment长度、episode训练样本数或需要保留多少张Qwen计算图。
+每个TD backward完成后即可释放该段Qwen replay和WM activation；参数梯度累积到完整
+episode batch结束，所有相关参数期间保持不变。ValueHead输入显式detach，只由MC目标训练。
+
+当前action objective是`distillation`：greedy WM/ValueHead actor拥有并执行环境动作，
+Qwen只模仿segment首动作。`action_objective: ppo`的schema/provenance接口已经保留，但
+planner会拒绝它，直到行为所有权改成Qwen且Qwen采样动作与环境执行动作完全一致。
+
+以下连续window路径只服务于未启用planner的旧离线/直接policy训练。With
+`H = predictor.history_size`, it selects `H` consecutive actions and `H + 1`
+states from the same raw trajectory; windows never cross episode boundaries.
 
 ```text
 hidden    = rollout_qwen_hidden[:, window_start:window_start+H+1]
@@ -117,10 +151,10 @@ L_value   = regression(Q[action], discounted_returns) + ranking_loss
   Backbone；下一状态仍只在 WM target 分支 stop-gradient。该模式不能消费
   detached rollout state cache。
 - `gradient.representation_to_backbone: false`：有 rollout cache 时不执行 state
-  Qwen forward，只重跑 StateProjector；旧的无 cache 离线 trajectory 按时间位置
-  分成 `H + 1` 次、每次 `B` 个 prompt 的 no-grad Qwen forward。StateProjector
-  是否训练仍只由 `freeze.state_proj` 决定。
-- `actor.enabled`：单独控制 PPO。Backbone 的可训练参数范围继续由
+  Qwen forward；planner只在每个稀疏anchor上重跑当前StateProjector。旧的无cache
+  离线trajectory按时间位置分成`H + 1`次、每次`B`个prompt的no-grad Qwen forward。
+  StateProjector是否训练仍只由`freeze.state_proj`决定。
+- `actor.enabled`：单独控制 Qwen action objective。Backbone 的可训练参数范围继续由
   `--llm-tune/--vision-tune` 决定，学习率由 `gradient.backbone_lr` 统一管理。
 
 When actor training is enabled, PPO recomputes `new_log_prob` from the exact
@@ -190,21 +224,22 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   `zero`；未确认时配置解析直接失败，不猜测实验参数。
 - behavior old log-prob 与 replay 都使用同一 temperature/top-p 分布；注入的 latent
   query、action boundary 和补全 delimiter 不进入 PPO loss。
-- `agent.planning.enabled: true` 且actor开启时，独立vLLM rollout先让Qwen生成真实
-  CoT；worker extension从同一次多模态forward截取latent hidden和action boundary
-  hidden，不加载第二份HF Qwen。每个动作state及额外terminal state的pre-project
-  latent hidden随trajectory持久化；训练时它只替代state编码，PPO仍重放当前Qwen的
-  sampled token概率。多步候选搜索随后全部发生在WM latent空间。
+- `agent.planning.enabled: true`时，独立vLLM rollout在每个segment锚点让Qwen生成
+  真实CoT；worker extension从同一次多模态forward截取latent hidden，不加载第二份
+  HF Qwen。段内只持久化WM预测state和实际执行动作，不制造Qwen hidden或CoT。
+  terminal observation单独生成真实CoT/hidden，用于校正最后预测终点。
 - planner 当前用叶节点最大 action-value 作为搜索启发式；模型尚无 reward/done
   head，因此不会把中间 Q-value 相加并伪装成 model-predicted return。
-- planner支持`greedy`、`exhaustive`和`beam`。`exhaustive`批量模拟全部
+- planner支持`greedy`、`exhaustive`和`beam`。当前首轮方案固定为`greedy`。
+  `exhaustive`批量模拟全部
   `action_count ** horizon`条latent动作序列；`beam`逐层批量扩展并按叶节点启发式裁剪；
-  首轮正式方案按人类要求使用`greedy`单路径规划；其他模式保留为后续对照能力。
-  trajectory保存最终候选序列、叶节点评分和按首动作聚合的root score。历史H=2
+  其他模式只保留为后续对照能力。trajectory在每个segment锚点保存最终候选序列、
+  叶节点评分和按首动作聚合的root score。历史H=2
   exhaustive smoke仅是旧实验事实，不是后续默认方案。
-- planner behavior和teacher都是首动作上的确定性分布，不需要teacher temperature。
-  action token不参加PPO或reference KL；Qwen action head以显式
-  `actor.planner_distillation_weight`拟合该动作。
+- planner behavior和teacher都是segment首动作上的确定性分布，不需要teacher
+  temperature。action token不参加PPO或reference KL；Qwen action head以显式
+  `actor.planner_distillation_weight`拟合该动作。未来action PPO只有在Qwen拥有行为、
+  Qwen采样动作等于环境实际动作、且old behavior distribution可重放时才能启用。
 - reference KL是actor loss，不改变environment reward、return、advantage或value
   target。冻结reference在独立重放阶段只为采样CoT token写入log-prob；manifest绑定
   reference checkpoint指纹。reward KL尚未实现，任何对应配置会被严格schema拒绝。
@@ -238,16 +273,18 @@ python -m nimloth.training.rl.cli \
   --jsonl-sources outputs/rollouts/run_001/trajectories.jsonl
 ```
 
-The config-sized online PPO smoke uses
+The config-sized online RL smoke uses
 `experiments/training/rl/run_vllm_online_ppo_smoke.sh`: vLLM first consumes all
 configured GPUs for behavior rollout, exits, and the same allocation then runs
 one distributed update. `distributed.world_size` is the number of training
 processes; `distributed.gpus_per_rank` is 1 for FSDP or 2 for balanced Qwen
-model parallel. Each paired replica registers Qwen, the world model, and the
-token value head under one RL training-step module. Distributed replicas wrap
+model parallel. Each paired replica registers Qwen, the world model, and any
+configured token value head under one RL training-step module. Distributed replicas wrap
 that complete multi-device module once with official
 `DistributedDataParallel(device_ids=None)`, so one reducer owns every gradient
-that contributes to the total loss. Physical GPU count is the product of world
+that contributes to the losses. Planner TD and MC calls use different parameter
+subsets, so the official reducer uses dynamic unused-parameter detection; there
+is no manual gradient averaging. Physical GPU count is the product of world
 size and GPUs per rank. A model-parallel launch validates that every rank's Qwen
 placement actually covers both local GPUs; CPU/disk offload and single-GPU
 placement are rejected. This process boundary keeps inference ownership out of

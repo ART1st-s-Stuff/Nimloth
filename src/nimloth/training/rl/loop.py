@@ -22,6 +22,7 @@ from nimloth.training.rl.algorithm import (
     RLStepOutput,
     build_rl_batch,
 )
+from nimloth.training.rl.episodes import build_episode_training_batches
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.evaluation import (
     evaluate_rollout_collector,
@@ -45,7 +46,7 @@ class RLTrainingLoop:
     """按 iteration 执行 collect → sample → encode/update → evaluate。"""
 
     config: RLConfig
-    training_step: Callable[[RLBatch], RLStepOutput]
+    training_step: Callable[..., RLStepOutput]
     optimization_runtime: OptimizationRuntime
     device: torch.device
     train_collector: RolloutCollector
@@ -100,33 +101,51 @@ class RLTrainingLoop:
         num_transitions = sum(
             trajectory.num_steps for trajectory in trajectories
         )
-        num_windows = count_trajectory_windows(
-            trajectories,
-            history_size=self.config.predictor.history_size,
+        truncated_bootstrap = (
+            0.0 if self.config.rl.truncated_bootstrap == "zero" else None
         )
-        if num_windows < self.config.rl.batch_size:
-            self._warn_skip(
-                iteration,
-                f"only {num_windows} sequence windows, need {self.config.rl.batch_size}",
+        episode_batches = None
+        batch = None
+        if self.config.agent.planning.enabled:
+            if len(trajectories) != self.config.rl.batch_size:
+                raise RuntimeError(
+                    "planner episode batch is incomplete: "
+                    f"{len(trajectories)} != {self.config.rl.batch_size}"
+                )
+            episode_batches = build_episode_training_batches(
+                trajectories,
+                gamma=self.config.rl.gamma,
+                truncated_bootstrap=truncated_bootstrap,
             )
-            return
-
-        windows = sample_trajectory_windows(
-            trajectories,
-            history_size=self.config.predictor.history_size,
-            batch_size=self.config.rl.batch_size,
-            seed=self.config.training.seed + iteration,
-        )
-        batch = build_rl_batch(
-            windows,
-            gamma=self.config.rl.gamma,
-            truncated_bootstrap=(
-                0.0
-                if self.config.rl.truncated_bootstrap == "zero"
-                else None
-            ),
-            device=self.device,
-        )
+            total_td_steps = sum(
+                len(episode.td_steps) for episode in episode_batches
+            )
+            training_unit_metrics = {"num_td_steps": float(total_td_steps)}
+        else:
+            num_windows = count_trajectory_windows(
+                trajectories,
+                history_size=self.config.predictor.history_size,
+            )
+            if num_windows < self.config.rl.batch_size:
+                self._warn_skip(
+                    iteration,
+                    f"only {num_windows} sequence windows, "
+                    f"need {self.config.rl.batch_size}",
+                )
+                return
+            windows = sample_trajectory_windows(
+                trajectories,
+                history_size=self.config.predictor.history_size,
+                batch_size=self.config.rl.batch_size,
+                seed=self.config.training.seed + iteration,
+            )
+            batch = build_rl_batch(
+                windows,
+                gamma=self.config.rl.gamma,
+                truncated_bootstrap=truncated_bootstrap,
+                device=self.device,
+            )
+            training_unit_metrics = {"num_wm_windows": float(num_windows)}
         begin_consumption = getattr(self.train_collector, "begin_consumption", None)
         abort_consumption = getattr(self.train_collector, "abort_consumption", None)
         commit_consumption = getattr(self.train_collector, "commit_consumption", None)
@@ -150,8 +169,24 @@ class RLTrainingLoop:
         optimizer_step_started = False
         try:
             self.optimization_runtime.zero_grad()
-            step_output = self.training_step(batch)
-            self.optimization_runtime.backward(step_output.loss)
+            step_metrics: dict[str, float] = {}
+            if episode_batches is not None:
+                for episode in episode_batches:
+                    for td_step in episode.td_steps:
+                        output = self.training_step(td_step, total_td_steps)
+                        self.optimization_runtime.backward(output.loss)
+                        self._accumulate_metrics(step_metrics, output.metrics)
+                        del output
+                mc_output = self.training_step(episode_batches)
+                self.optimization_runtime.backward(mc_output.loss)
+                self._accumulate_metrics(step_metrics, mc_output.metrics)
+                del mc_output
+            else:
+                assert batch is not None
+                output = self.training_step(batch)
+                self.optimization_runtime.backward(output.loss)
+                self._accumulate_metrics(step_metrics, output.metrics)
+                del output
             optimizer_step_started = True
             self.optimization_runtime.step()
         except Exception:
@@ -162,10 +197,10 @@ class RLTrainingLoop:
         self.state.global_step += 1
         rollout_metrics = summarize_rollouts(trajectories)
         metrics = {
-            **step_output.metrics,
+            **step_metrics,
             "num_rollouts": float(len(trajectories)),
             "num_transitions": float(num_transitions),
-            "num_wm_windows": float(num_windows),
+            **training_unit_metrics,
             "success_rate": float(rollout_metrics["success_rate"]),
         }
         self._barrier()
@@ -190,6 +225,14 @@ class RLTrainingLoop:
                 global_step=self.state.global_step,
             )
         self._barrier()
+
+    @staticmethod
+    def _accumulate_metrics(
+        totals: dict[str, float],
+        current: dict[str, float],
+    ) -> None:
+        for name, value in current.items():
+            totals[name] = totals.get(name, 0.0) + value
 
     def _validate(self, iteration: int, metrics: dict[str, float]) -> None:
         if not (

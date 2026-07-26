@@ -26,6 +26,10 @@ from nimloth.backbone import (
 from nimloth.config.rl import RLConfig
 from nimloth.rollout import FreshJSONLRolloutCollector, RolloutCollector
 from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch, RLStepOutput
+from nimloth.training.rl.episodes import (
+    EpisodeTrainingBatch,
+    TemporalDifferenceStep,
+)
 from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
@@ -101,7 +105,23 @@ class RLTrainingStepModule(torch.nn.Module):
         self._algorithm = algorithm
         self._runtime = runtime
 
-    def forward(self, batch: RLBatch) -> RLStepOutput:
+    def forward(
+        self,
+        batch: RLBatch | TemporalDifferenceStep | tuple[EpisodeTrainingBatch, ...],
+        total_td_steps: int | None = None,
+    ) -> RLStepOutput:
+        if isinstance(batch, TemporalDifferenceStep):
+            if total_td_steps is None:
+                raise ValueError("TD forward requires total_td_steps")
+            return self._algorithm.temporal_difference_step(
+                self._runtime,
+                batch,
+                total_td_steps=total_td_steps,
+            )
+        if isinstance(batch, tuple):
+            if total_td_steps is not None:
+                raise ValueError("MC forward does not accept total_td_steps")
+            return self._algorithm.monte_carlo_step(self._runtime, batch)
         return self._algorithm.training_step(self._runtime, batch)
 
 
@@ -454,6 +474,7 @@ def _wrap_training_step_ddp(
     *,
     world_size: int,
     model_parallel: bool,
+    allow_unused_parameters: bool = False,
 ) -> torch.nn.Module:
     """用一个官方 DDP reducer 同步多设备 RL loss 的全部可训练参数。"""
 
@@ -465,8 +486,8 @@ def _wrap_training_step_ddp(
         training_step,
         device_ids=None,
         output_device=None,
-        find_unused_parameters=False,
-        static_graph=True,
+        find_unused_parameters=allow_unused_parameters,
+        static_graph=not allow_unused_parameters,
     )
 
 
@@ -535,6 +556,7 @@ def _load_resume_state(
     world_size: int,
     optimizer_state_sharded: bool,
     expected_checkpoint_metric: str,
+    expected_action_objective: str,
     expected_credit_assignment: str,
     expected_token_credit_config: dict[str, Any],
     expected_truncated_bootstrap: str | None,
@@ -578,6 +600,13 @@ def _load_resume_state(
             f"saved={checkpoint_metric!r}, configured={expected_checkpoint_metric!r}"
         )
     saved_credit_assignment = state.get("credit_assignment")
+    saved_action_objective = state.get("action_objective", "ppo")
+    if saved_action_objective != expected_action_objective:
+        raise ValueError(
+            "resume action objective mismatch: "
+            f"saved={saved_action_objective!r}, "
+            f"configured={expected_action_objective!r}"
+        )
     if (
         saved_credit_assignment is not None
         and str(saved_credit_assignment) != expected_credit_assignment
@@ -692,7 +721,7 @@ def train_rl(
         FreshJSONLRolloutCollector,
     ):
         raise RuntimeError(
-            "multi-rank PPO actor is disabled until rollout freshness and FSDP "
+            "multi-rank actor training is disabled until rollout freshness and FSDP "
             "forward/EMA semantics have dedicated integration coverage"
         )
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -802,6 +831,7 @@ def train_rl(
             world_size=world,
             optimizer_state_sharded=distributed_modules.optimizer_state_sharded,
             expected_checkpoint_metric=config.validation.checkpoint_metric,
+            expected_action_objective=config.actor.action_objective,
             expected_credit_assignment=config.actor.credit_assignment,
             expected_token_credit_config=asdict(config.token_credit),
             expected_truncated_bootstrap=config.rl.truncated_bootstrap,
@@ -901,6 +931,7 @@ def train_rl(
             value_rank_weight=config.value_head.lambda_rank,
             ppo_clip_ratio=config.actor.clip_ratio,
             entropy_weight=config.actor.entropy_coeff,
+            action_objective=config.actor.action_objective,
             credit_assignment=config.actor.credit_assignment,
             token_gamma=config.token_credit.gamma,
             token_gae_lambda=config.token_credit.gae_lambda,
@@ -937,6 +968,7 @@ def train_rl(
             ),
             world_size=world,
             model_parallel=loaded.pair_parallel,
+            allow_unused_parameters=planning_enabled,
         )
         optimization_runtime = OptimizationRuntime(
             optimizer=optimizer,

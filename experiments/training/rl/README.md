@@ -9,8 +9,8 @@
 | `smoke_test.slurm` | 单 GPU smoke test：加载 SFT2 checkpoint，synthetic data 跑 1 步训练 |
 | `rollout_env.py` | 独立 rollout 脚本：复用 Nimloth action policy，生成完整 RL JSONL（不参与训练） |
 | `run_e2e_smoke.sh` | 训练 split rollout → 两卡 FSDP step → resume step 的端到端 smoke |
-| `run_vllm_online_ppo_smoke.sh` | config-sized vLLM fresh rollout → 指纹门槛 → distributed PPO step |
-| `run_vllm_online_ppo_slurm.sh` | 按 RL config 在异构多节点 allocation 上编排 Ray-vLLM 与 PPO trainer |
+| `run_vllm_online_ppo_smoke.sh` | config-sized vLLM fresh rollout → 指纹门槛 → distributed RL step |
+| `run_vllm_online_ppo_slurm.sh` | 按 RL config 在异构多节点 allocation 上编排 Ray-vLLM 与 RL trainer |
 | `run_vllm_online_ppo_full.sh` | 每次迭代重新采集 fresh rollout，并从上一步 checkpoint 恢复的正式多迭代入口 |
 
 ## 运行模式
@@ -52,7 +52,7 @@ python -m nimloth.training.rl.cli \
 
 `--jsonl-sources` 接受一个或多个 JSONL 文件或目录（目录下递归搜索 `*.jsonl` / `*.jsonl.gz`）。也可以在 config 中设置 `rollout.jsonl_sources`。训练时轮转消费所有轨迹；数据耗尽时自动回到开头（loop）。
 
-### 多 GPU online PPO
+### 多 GPU online RL
 
 多 GPU 模式不让 environment 直接调用 FSDP forward。启动器先用当前完整
 HF artifact 启动 vLLM tensor parallel rollout，写入模型内容指纹 manifest；
@@ -63,8 +63,8 @@ GPU 总数。控制器为每个物理节点启动一个持有该节点全部已�
 step，再按节点内 GPU 数启动 local ranks，因此允许各节点 GPU 数不同。
 `world_size` 是训练进程数，物理 GPU 总数为
 `world_size * gpus_per_rank`。`gpus_per_rank=1` 使用 FSDP；`gpus_per_rank=2`
-让每个 Qwen 副本均衡分布在同一节点的两张 GPU 上，再按相同 optimizer 参数顺序在
-训练 rank 间显式同步梯度。
+让每个 Qwen 副本均衡分布在同一节点的两张 GPU 上，再由包住完整training-step模块的
+官方`DistributedDataParallel(device_ids=None)`同步各rank梯度；没有手工gradient averaging。
 后者要求每个节点分配的 GPU 数能被 2 整除，不支持跨节点拼接一个模型副本。
 下一个 optimizer step 必须从新 checkpoint 重新 rollout。均匀两节点四卡也统一使用
 `run_vllm_online_ppo_slurm.sh`，不维护固定节点拓扑的另一套入口。
