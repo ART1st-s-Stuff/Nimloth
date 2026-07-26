@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-07-26：补齐planner segment契约与outer-runner中断恢复
+
+- 审查确认两个P1缺口。第一，旧校验只绑定planner选中序列的首动作，但WM会监督重放两个
+  anchor之间的全部动作；现在每段必须非空、长度不超过horizon，并严格等于greedy planner
+  选中candidate的相应前缀。提前terminal产生的短前缀继续合法；篡改第二动作和超horizon
+  均会在写盘/训练前失败。
+- 第二，旧full runner用`train_step_log.csv`推断完成轮次，并在下一轮前移动`latest`；移动后
+  或当前轮commit前中断无法自动恢复。现在以连续的committed fresh-consumption记录为完成
+  依据，复用已移动的`policy_inputs/iter_N`；当前轮未提交的latest、rollout/reference/Ray
+  输出和多出的CSV行会保留到邻接`.recovery`目录，再从上一轮checkpoint重试。目标轮已经
+  commit但只缺`final`别名时，会从同一checkpoint恢复hardlink alias，不重复optimizer step。
+- 实现位于commits`f53b70f`、`5e91546`和`70f850b`，精确server HEAD为
+  `70f850b09e9fbb4e3d13c685807a91b29b5f8446`。定向测试`8 passed`；Agent/Qwen/config/
+  rollout/RL扩展回归`212 passed, 1 warning`，warning为既有B=1 unbiased std测试。
+  shell语法、Python编译和`git diff --check`通过。
+- 原ID111 hold`489691`在allocation前因上述已确认P1门禁主动取消，Slurm为
+  `CANCELLED by 3738, elapsed 00:00:00`；watcher已退出，正式输出和W&B run均未创建。
+  当前只完成CPU/进程级验证，尚未重新启动GPU gate。
+
 ## 2026-07-26：ID110因rollout/replay processor分辨率漂移取消
 
 - ID110在commit`0640772`、preempt hold`489632`、`dgx-02,dgx-22`各2张H800上运行。
@@ -27,11 +46,8 @@
   server worktree未初始化`external/RCDM`。compileall、shell语法和diff检查均通过。
 - continuation gate的两节点hold`489688`因预计等待约17小时在未运行前取消；commit`867d5bc`
   将gate改为单节点4卡、两个node-local DDP rank各自两卡Qwen模型并行，总GPU/world size/
-  batch/loss不变并去掉跨节点通信，服务器回归32 passed。新hold`489691`仍因Priority等待，
-  Slurm最新预计启动时间为`2026-07-27T20:07:57+08:00`。原watcher的12小时期限早于预计启动；
-  已在不取消hold的前提下替换为30小时版本PID`3665292`，allocation后会检查精确commit、
-  4张空闲H800、host memory、端口和旧进程再启动。当前ID111输出仍不存在，没有提交第二个
-  竞争hold。
+  batch/loss不变并去掉跨节点通信，服务器回归32 passed。后续hold`489691`因上方两个P1
+  代码门禁在allocation前取消；watcher已退出，ID111输出仍不存在。
 - 此前32--40是累计GPU-hours，墙钟估计为8--10小时。进一步大幅降墙钟时间需减少每轮重建
   vLLM/HF的生命周期成本；已安装vLLM0.11有官方level-2 sleep和reload_weights，但现有每phase
   独立process runner必须先设计持久engine/trainer及更新后planner-WM reload契约，当前尚未把

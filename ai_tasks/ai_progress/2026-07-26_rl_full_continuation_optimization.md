@@ -36,9 +36,21 @@ episode Monte Carlo ValueHead regression.
 - Added a real outer-runner process test with a fake iteration executable. It verifies
   that step1 `latest` is relocated to `policy_inputs/iter_0002`, used as step2 Qwen/WM/
   resume input, and that a completed two-step run is idempotent on controller restart.
+- Follow-up review fixed two release-blocking contracts. Planner trajectories now bind
+  every anchor-bounded executed segment to the selected candidate prefix and horizon.
+  The outer runner now derives completion from committed fresh-consumption records,
+  reuses an already-relocated policy snapshot, archives an uncommitted attempt, truncates
+  only speculative CSV rows after preserving the original, and reconstructs a missing
+  final alias from the committed checkpoint without repeating an optimizer step.
+- Process tests inject interruption before current-iteration output, after a speculative
+  CSV/checkpoint but before consumption commit, and after final consumption commit but
+  before the final alias.
 
 ## Validation so far
 
+- Current exact server commit `70f850b09e9fbb4e3d13c685807a91b29b5f8446`
+  passes 8 focused episode/continuation tests and 212 Agent/Qwen/config/rollout/RL tests.
+  The only warning is the pre-existing explicit B=1 unbiased-standard-deviation warning.
 - Targeted checkpoint/config/loop/launcher tests: `37 passed`.
 - Expanded Agent/RL/Qwen/rollout tests, excluding the locally unavailable vLLM import
   test: `195 passed, 1 expected warning`.
@@ -86,8 +98,8 @@ capture contract. It is intentionally not mixed into this checkpoint/continuatio
    RL/WM tests. The full suite reached 383 passed and 1 skipped; its only failure is the
    server worktree's unrelated uninitialized `external/RCDM` submodule. Compileall,
    shell syntax and diff checks pass.
-3. Run a new two-iteration real GPU gate from ID46. It must prove native-resolution HF
-   replay fits and step2 vLLM/planner fingerprints
+3. Run a new two-iteration real GPU gate from ID46 after refreshing the launch contract.
+   It must prove native-resolution HF replay fits and step2 vLLM/planner fingerprints
    come from step1, optimizer state resumes, both steps are finite, checkpoint hardlinks
    share inodes, fresh consumption commits twice, and only one physical checkpoint copy is
    written for each completed global step.
@@ -100,15 +112,11 @@ capture contract. It is intentionally not mixed into this checkpoint/continuatio
   gate to one node with two node-local two-GPU model-parallel ranks; total GPUs, world size,
   batch and losses stay unchanged while cross-node Ray/DDP communication is removed. Exact
   server topology/config/outer-runner tests passed: `32 passed`.
-- The replacement single-node four-GPU preempt hold is `489691`. It is pending on priority;
-  a login-node watcher PID `3665292` checks exact commit, four visible idle H800s, host-memory
-  headroom, ports and stale processes before starting the controller, and cancels the hold on
-  any preflight failure. The original 12-hour watcher deadline preceded Slurm's estimated
-  start; it was replaced without cancelling the hold by a 30-hour version. ID111 output
-  remains absent while pending.
-- The live cluster currently has no free GPU. Slurm's latest estimate for the real hold is
-  `2026-07-27T20:07:57+08:00`; test-only requests show preempt remains materially earlier than
-  normal. No second competing hold is submitted.
+- The replacement single-node four-GPU preempt hold `489691` was cancelled before allocation
+  after review confirmed the two P1 gates above. Slurm recorded `CANCELLED by 3738` with zero
+  elapsed runtime; watcher PID `3665292` exited, and ID111 produced no output or W&B run.
+- No replacement GPU hold has been submitted yet. The server worktree is detached at the exact
+  tested commit above; `external/le-wm` retains only its unrelated pre-existing dirty state.
 - The earlier `32--40 GPU-hours` figure meant aggregate GPU allocation; measured-wall estimate
   was `8--10 hours`. Current code preserves 60 fresh-policy updates, so further large wall-time
   reduction must target repeated vLLM/HF lifecycle cost. Installed vLLM 0.11 exposes official
