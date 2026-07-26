@@ -90,6 +90,8 @@ token PPO、冻结reference KL和DINO-grid WM语义上启动正式多迭代RL；
 - seed7出现多次长completion，最长一次约748.5秒。只读诊断显示四个TP Ray
   worker存活、四张rollout GPU有计算负载，无NCCL/timeout/exception；已观察的长请求
   都最终返回并继续下一环境步，因此当前结论是严重decode长尾，不是已确认死锁。
-- 随后目标SSH服务在banner前丢弃新连接；VPN跳板可达且跳板到目标TCP 22可达。
-  该问题只中断监控会话，不依赖SSH会话的Slurm/controller会继续运行；在恢复并重新
-  核对PID/hold/日志前，不将失联时间内的任何进度写成已验证事实。
+- 随后superpod连接在SSH banner前关闭。VPN跳板自身可达，但跳板到目标的TCP探测是
+  透明代理假阳性：目标22以及负对照端口1/12345/65534均显示connect成功，Ray dashboard、
+  environment和SSH协议请求却都收到空回复。因此不能把故障定位为sshd，也不能据端口
+  推断作业健康；在恢复可认证SSH并重新核对PID/hold/日志前，不将失联时间内的任何进度
+  写成已验证事实。

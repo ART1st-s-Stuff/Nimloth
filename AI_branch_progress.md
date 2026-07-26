@@ -36,8 +36,10 @@
   reward为`-1.6/-1.9/-0.8/-1.2/-2.0/-1.9`。seed7已完成17/20个动作并在生成第18个；
   观察到最长约748.5秒的真实completion，四个TP worker和四张rollout GPU仍在计算且
   无Ray/vLLM/NCCL/timeout异常，因此记为严重decode吞吐长尾，不记为已确认死锁。随后
-  superpod登录服务开始在SSH banner前丢弃新连接；跳板和目标TCP 22可达，该监控
-  中断不会终止独立的Slurm/controller，恢复连接前不对之后的实验进度作断言。
+  superpod连接开始在SSH banner前关闭。VPN跳板自身可达，但从跳板对目标的TCP探测存在
+  透明代理假阳性：目标22以及负对照端口1/12345/65534全都显示connect成功，HTTP请求却均
+  空回复。因此不能把故障定位为sshd，也不能用这些端口推断Ray/environment或作业健康；
+  恢复可认证SSH前不对之后的实验进度作断言。
 
 ## 2026-07-26：ID105完成真实exhaustive H=2的8-GPU correctness闭环
 
