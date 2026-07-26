@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-07-26：ID109完成真实20-step retained-segment TD与官方DDP门禁
+
+- commit`77a4dcf`在normal hold`489548`使用`dgx-31,dgx-51`各2张H800完成ID109；
+  rollout为vLLM TP4，训练为2个官方`DDP(device_ids=None)` rank、每rank两卡Qwen模型并行，
+  没有手工梯度通信。W&B run`6x3pfrlt`最终状态`finished`。
+- 真实navigation create/prompt/reset/close prewarm在固定300秒上限内用3.417秒通过。
+  `base_train` seeds1--4完成4条20-step episode，共80 transitions、40个实际执行H=2 segment；
+  rewards为`-1.8/-1.4/-1.0/-1.8`、success0/4，因此只作为机械正确性证据。
+- 独立artifact审计确认每条trajectory有20 actions、21 observations、21个finite
+  `[16,1024]` mixed WM states；真实Qwen anchors严格位于`0,2,...,20`，action-training record
+  与planner trace严格位于`0,2,...,18`，terminal observation均保存独立真实CoT/hidden。
+- 两rank完成40次segment TD backward、detached完整episode MC ValueHead backward和一次
+  optimizer step，训练循环耗时19.4秒；global_step=1。finite指标为WM MSE6.9742574、
+  ValueHead loss3.7526605、action distillation KL2.0795645、total12.8064825；PPO/
+  TokenValueHead、reference KL、SIGReg和ranking均按配置关闭或为0。
+- `iter_0001/latest/final`与replicated optimizer state完整，fresh consumption已commit到step1。
+  逐tensor审计确认Qwen language body、88个WM predictor tensor和4个ValueHead tensor发生
+  finite变化；vision、StateProjector、EMA target encoder、DINO decoder与初始化完全相同。
+- launcher validator输出`ITERATION_OK`，controller输出`ALL_OK`；controller/Ray/environment/
+  train/W&B进程和三个端口均清理，hold在00:17:13后释放。完整命令、topology、resume边界与
+  初步分析记录在远端ID109 README、邻接launch contract和RL实验组`progress.md`。
+- 结论边界：真实GPU证据支持当前segment endpoint WM MSE + greedy action distillation +
+  detached episode MC ValueHead的执行、显存和官方DDP/checkpoint语义；它仍不是VAGEN
+  Bi-Level GAE，也不证明未来PPO action ownership或policy quality。
+
 ## 2026-07-26：RL改为Qwen锚点、WM整段执行和episode末一次optimizer step
 
 - 人类明确当前不是VAGEN Bi-Level GAE，并纠正了此前“每个environment step都运行Qwen”
@@ -28,8 +53,8 @@
 - 本地Python 3.13最终Agent/RL/Qwen replay定向回归为`140 passed, 1 warning`；compileall、
   三份planner配置加载、三个shell入口`bash -n`和`git diff --check`均通过。Nimloth主测试集
   为`356 passed, 1 skipped, 4 warnings`，另有两个既有SFT2 Gloo测试因沙箱禁止本地socket
-  而失败；完整仓库收集还缺本地VAGEN/VERL、vLLM、PEFT和pandas依赖。GPU门禁尚未启动，
-  当前不能声称真实Qwen、显存、两rank collective或checkpoint已经验证。
+  而失败；完整仓库收集还缺本地VAGEN/VERL、vLLM、PEFT和pandas依赖。该commit提交时GPU
+  门禁尚未启动；随后上方ID109已补齐真实Qwen、显存、两rank collective和checkpoint证据。
 
 ## 2026-07-26：ID107在AI2-THOR冷启动失败，navigation readiness改为真实prewarm
 

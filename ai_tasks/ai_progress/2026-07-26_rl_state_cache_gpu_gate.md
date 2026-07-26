@@ -1,4 +1,4 @@
-# ID107 RL rollout-state cache GPU gate
+# RL retained-segment state GPU gate (ID107--ID109)
 
 ## Purpose
 
@@ -66,8 +66,41 @@ VAGEN Bi-Level GAE.
 - Pair-parallel training uses official DDP dynamic unused-parameter handling for the
   alternating TD/MC parameter subsets. No manual gradient averaging remains.
 - Local targeted tests pass as recorded in `AI_branch_progress.md`. The replacement
-  GPU gate has not run yet; ID107 and ID108 below remain historical failed attempts,
-  not evidence for the corrected implementation.
+  GPU gate is now complete as ID109 below; ID107 and ID108 remain historical failed
+  attempts, not evidence for the corrected implementation.
+
+## ID109 result: retained segment training and official DDP passed
+
+- Commit `77a4dcfa4b8348484adbb8e64ff371e1a199242a` ran on normal hold `489548`,
+  `dgx-31,dgx-51` with two H800s each. Rollout used Ray/vLLM TP4. Training used two
+  official `DistributedDataParallel(device_ids=None)` ranks, each owning a two-GPU
+  model-parallel Qwen; no manual gradient communication was present.
+- The fixed-300-second real navigation prewarm passed in 3.417 seconds. Four
+  `base_train` seeds1--4 episodes completed 20 steps each, for 80 transitions and 40
+  actually executed H=2 segments. Rewards were -1.8/-1.4/-1.0/-1.8 and success0/4;
+  these are mechanics results only.
+- Independent artifact audit passed. Every trajectory has 20 actions, 21 observations,
+  21 finite `[16,1024]` mixed WM states, real Qwen anchors at `0,2,...,20`, policy
+  records/planner traces at `0,2,...,18`, and a nonempty separately generated terminal
+  CoT/hidden.
+- Both ranks completed 40 immediate segment TD backwards, the detached complete-episode
+  MC ValueHead backward and one optimizer step in 19.4 seconds. Finite metrics were WM
+  MSE6.9742574, ValueHead3.7526605, action-distillation KL2.0795645 and total12.8064825.
+  PPO/TokenValueHead, reference KL, SIGReg and value ranking stayed disabled/zero.
+- `iter_0001/latest/final` and replicated optimizer state are complete at iteration/
+  global_step1; fresh consumption is committed at step1. Tensor audit confirmed changed
+  Qwen language body, 88 changed WM predictor tensors and 4 changed ValueHead tensors;
+  vision, StateProjector, EMA target encoder and DINO decoder were exactly unchanged.
+- W&B run `6x3pfrlt` is `finished`; launcher emitted `ITERATION_OK` and controller emitted
+  `ALL_OK`. Controller/Ray/environment/train/W&B processes and ports were clean before
+  hold cancellation at elapsed00:17:13.
+- Output:
+  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-07-26/109_smoke_greedyh2_k16_segmenttd_ep4x20_mp2ddp2_vllmtp4_ws2`.
+  Its README and adjacent launch contract contain the actual command, topology, results,
+  cleanup and resume boundary.
+- Conclusion: this passes the requested real-GPU mechanics gate for current retained
+  segment endpoint WM MSE, greedy action distillation and detached episode MC ValueHead.
+  It remains explicitly not VAGEN Bi-Level GAE, PPO action ownership or a quality result.
 
 ## ID107 result: environment cold-start failure
 
