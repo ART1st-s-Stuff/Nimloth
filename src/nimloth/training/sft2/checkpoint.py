@@ -371,7 +371,7 @@ class SFT2CheckpointRuntime:
             dist.barrier()
 
 
-def load_aux_checkpoint(
+def load_world_model_checkpoint(
     ckpt_dir: Path,
     wm: WorldModel,
     device: torch.device,
@@ -392,7 +392,9 @@ def load_aux_checkpoint(
     )
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
-        raise FileNotFoundError(f"incomplete SFT2 auxiliary checkpoint; missing: {missing}")
+        raise FileNotFoundError(
+            f"incomplete SFT2 world-model checkpoint; missing: {missing}"
+        )
 
     proj = state_proj.module if hasattr(state_proj, "module") else state_proj
     training_state = torch.load(

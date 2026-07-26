@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from nimloth.training.sft2.algorithm import SFT2Algorithm
+from nimloth.training.common import action_value_loss
 from nimloth.wm.value_head import ValueHead
 
 
@@ -18,51 +18,56 @@ def _bias_only_head(bias: torch.Tensor) -> ValueHead:
     return head
 
 
-def _algorithm() -> SFT2Algorithm:
-    # 这里只测试算法成员中的 value 目标，不运行 Agent forward。
-    return SFT2Algorithm(
-        history_size=1,
-        sigreg=None,
-        sigreg_weight=0.0,
-        value_weight=1.0,
-        ce_weight=0.0,
-        value_rank_margin=0.1,
-        value_rank_weight=1.0,
-    )
-
-
 def test_value_ranking_zero_when_chosen_is_best() -> None:
     values = _bias_only_head(torch.tensor([2.0, 0.5, 0.1]))(torch.randn(1, 4))
-    result = _algorithm()._value_loss(
+    result = action_value_loss(
         values,
         torch.tensor([0]),
         torch.tensor([2.0]),
-        include_ranking=True,
+        ranking_margin=0.1,
+        ranking_weight=1.0,
     )
-    assert result["ranking"].item() == 0.0
-    assert result["loss"].item() == result["regression"].item()
+    assert result.ranking.item() == 0.0
+    assert result.loss.item() == result.monte_carlo_mse.item()
 
 
 def test_value_ranking_positive_when_unchosen_beats_chosen() -> None:
     values = _bias_only_head(torch.tensor([0.5, 2.0, 0.1]))(torch.randn(1, 4))
-    result = _algorithm()._value_loss(
+    result = action_value_loss(
         values,
         torch.tensor([0]),
         torch.tensor([1.0]),
-        include_ranking=True,
+        ranking_margin=0.1,
+        ranking_weight=1.0,
     )
-    assert result["ranking"].item() > 0.0
+    assert result.ranking.item() > 0.0
 
 
 def test_value_loss_backprops_to_head_and_input_state() -> None:
     head = ValueHead(emb_dim=16, num_actions=8)
     state = torch.randn(3, 16, requires_grad=True)
-    result = _algorithm()._value_loss(
+    result = action_value_loss(
         head(state),
         torch.tensor([0, 3, 5]),
         torch.tensor([1.0, 0.0, -0.5]),
-        include_ranking=True,
+        ranking_margin=0.1,
+        ranking_weight=1.0,
     )
-    result["loss"].backward()
+    result.loss.backward()
     assert head.net[0].weight.grad is not None
     assert state.grad is not None
+
+
+def test_value_mse_uses_only_the_executed_actions() -> None:
+    action_values = torch.tensor([[1.0, 10.0], [20.0, 3.0]])
+    result = action_value_loss(
+        action_values,
+        torch.tensor([0, 1]),
+        torch.tensor([2.0, 5.0]),
+        ranking_margin=0.1,
+        ranking_weight=0.0,
+    )
+
+    torch.testing.assert_close(result.selected_action_values, torch.tensor([1.0, 3.0]))
+    torch.testing.assert_close(result.monte_carlo_mse, torch.tensor(2.5))
+    torch.testing.assert_close(result.loss, result.monte_carlo_mse)

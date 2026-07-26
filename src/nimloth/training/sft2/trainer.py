@@ -32,13 +32,13 @@ from nimloth.latent import (
 from nimloth.training.sft2.checkpoint import (
     SFT2CheckpointManager,
     SFT2CheckpointRuntime,
-    load_aux_checkpoint,
+    load_world_model_checkpoint,
     resolve_resume_checkpoint_dir,
 )
 from nimloth.training.sft2.batch import SFT2BatchAssembler
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.training.sft2.data.factory import build_data_bundle
-from nimloth.training.sft2.dino_grid import DINOGridBatchAssembler, DINOGridLoss
+from nimloth.training.sft2.dino_grid import DINOGridBatchAssembler
 from nimloth.training.sft2.algorithm import (
     SFT2Algorithm,
     require_sft2_wm_history,
@@ -89,19 +89,19 @@ def _build_world_model(
 ) -> tuple[WorldModel, torch.device]:
     """按 objective 构造并恢复 world-model 子模块。"""
 
-    aux_device = device
+    world_model_device = device
     if pair_parallel:
         device_map = getattr(model, "hf_device_map", {}) or {}
         mapped = device_map.get("lm_head") or device_map.get(
             "model.language_model.norm"
         )
         if mapped is not None:
-            aux_device = torch.device(f"cuda:{mapped}")
+            world_model_device = torch.device(f"cuda:{mapped}")
 
     model_dtype = next(model.parameters()).dtype
     if args.objective == "dino_grid":
         # Match the authoritative ID33 training path: Qwen and the frozen SFT1
-        # slot projector may be BF16, while every trainable grid auxiliary and
+        # slot projector may be BF16, while every trainable grid world-model module and
         # the EMA target encoder remain FP32. LeWM's action Embedder also
         # explicitly computes in FP32.
         grid_dtype = torch.float32
@@ -110,21 +110,21 @@ def _build_world_model(
             qwen_hidden_dim=int(model.config.hidden_size),
             state_dim=args.emb_dim,
             grid_tokens=args.latent_token_count,
-            map_location=aux_device,
+            map_location=world_model_device,
             dtype=model_dtype,
-        ).to(aux_device)
+        ).to(world_model_device)
         online_encoder = LeWMGridEncoder(
             emb_dim=args.emb_dim,
             hidden_dim=args.grid_encoder_hidden_dim,
-        ).to(device=aux_device, dtype=grid_dtype)
+        ).to(device=world_model_device, dtype=grid_dtype)
         state_proj = GridStateProjector(
             slot_projector,
             online_encoder,
-        ).to(aux_device)
+        ).to(world_model_device)
         target_encoder = EMATargetGridEncoder(
             online_encoder,
             decay=args.grid_ema_decay,
-        ).to(aux_device)
+        ).to(world_model_device)
         wm_predictor = TemporalSpatialGridPredictor(
             GridPredictorConfig(
                 grid_tokens=args.latent_token_count,
@@ -136,7 +136,7 @@ def _build_world_model(
                 mlp_dim=args.grid_wm_mlp_dim,
                 dropout=args.grid_wm_dropout,
             )
-        ).to(device=aux_device, dtype=grid_dtype)
+        ).to(device=world_model_device, dtype=grid_dtype)
         world_model = GridWorldModel(
             state_proj=state_proj,
             target_encoder=target_encoder,
@@ -144,9 +144,9 @@ def _build_world_model(
             dino_decoder=LeWMGridDecoder(
                 emb_dim=args.emb_dim,
                 hidden_dim=args.grid_decoder_hidden_dim,
-            ).to(device=aux_device, dtype=grid_dtype),
+            ).to(device=world_model_device, dtype=grid_dtype),
             value_head=ValueHead(args.emb_dim).to(
-                device=aux_device,
+                device=world_model_device,
                 dtype=grid_dtype,
             ),
         )
@@ -159,8 +159,8 @@ def _build_world_model(
         if args.wm_predictor_checkpoint is not None:
             wm_predictor = LatentWMPredictor.load_checkpoint(
                 args.wm_predictor_checkpoint,
-                map_location=aux_device,
-            ).to(aux_device)
+                map_location=world_model_device,
+            ).to(world_model_device)
             require_sft2_wm_history(
                 wm_predictor,
                 history_size=args.history_size,
@@ -172,16 +172,16 @@ def _build_world_model(
                     emb_dim=args.emb_dim,
                     history_size=args.history_size,
                 )
-            ).to(aux_device)
+            ).to(world_model_device)
         world_model = WorldModel(
             state_proj=StateProjector(
                 model.config.hidden_size,
                 wm_predictor.emb_dim,
                 latent_token_count=args.latent_token_count,
-            ).to(device=aux_device, dtype=model_dtype),
+            ).to(device=world_model_device, dtype=model_dtype),
             wm_predictor=wm_predictor,
             value_head=ValueHead(wm_predictor.emb_dim).to(
-                device=aux_device,
+                device=world_model_device,
                 dtype=model_dtype,
             ),
         )
@@ -190,14 +190,14 @@ def _build_world_model(
         world_model.wm_predictor.requires_grad_(False)
     resume_state = resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir else None
     if args.resume and resume_state is not None and resume_state.exists():
-        load_aux_checkpoint(
+        load_world_model_checkpoint(
             resume_ckpt_dir,
             world_model,
-            aux_device,
+            world_model_device,
             latent_query_mode=args.latent_query_mode,
             query_tune=args.query_tune,
         )
-    return world_model, aux_device
+    return world_model, world_model_device
 
 
 def _wrap_sft2_agent(
@@ -205,7 +205,7 @@ def _wrap_sft2_agent(
     world_model: WorldModel,
     *,
     device: torch.device,
-    aux_device: torch.device,
+    world_model_device: torch.device,
     world_size: int,
     train_wm_predictor: bool,
 ) -> tuple[Agent, bool]:
@@ -239,34 +239,34 @@ def _wrap_sft2_agent(
                 find_unused_parameters=False,
                 static_graph=static_graph,
             )
-        aux_index = int(str(aux_device).split(":")[-1])
+        world_model_device_index = int(str(world_model_device).split(":")[-1])
         state_proj = DDP(
             state_proj,
-            device_ids=[aux_index],
-            output_device=aux_index,
+            device_ids=[world_model_device_index],
+            output_device=world_model_device_index,
             find_unused_parameters=False,
             static_graph=static_graph,
         )
         value_head = DDP(
             value_head,
-            device_ids=[aux_index],
-            output_device=aux_index,
+            device_ids=[world_model_device_index],
+            output_device=world_model_device_index,
             find_unused_parameters=False,
             static_graph=static_graph,
         )
         if train_wm_predictor:
             wm_predictor = DDP(
                 wm_predictor,
-                device_ids=[aux_index],
-                output_device=aux_index,
+                device_ids=[world_model_device_index],
+                output_device=world_model_device_index,
                 find_unused_parameters=False,
                 static_graph=static_graph,
             )
         if dino_decoder is not None:
             dino_decoder = DDP(
                 dino_decoder,
-                device_ids=[aux_index],
-                output_device=aux_index,
+                device_ids=[world_model_device_index],
+                output_device=world_model_device_index,
                 find_unused_parameters=False,
                 static_graph=static_graph,
             )
@@ -494,7 +494,7 @@ def train_sft2(args=None) -> int:
         resume_dir=resume_ckpt_dir,
         resume_state_path=resume_state_path,
     )
-    world_model, aux_device = _build_world_model(
+    world_model, world_model_device = _build_world_model(
         args,
         model=loaded.backbone.model,
         device=device,
@@ -506,7 +506,7 @@ def train_sft2(args=None) -> int:
         loaded,
         world_model,
         device=device,
-        aux_device=aux_device,
+        world_model_device=world_model_device,
         world_size=world,
         train_wm_predictor=train_wm_predictor,
     )
@@ -525,7 +525,7 @@ def train_sft2(args=None) -> int:
     )
     base_batch_builder = SFT2BatchAssembler(
         input_builder=input_builder,
-        device=aux_device,
+        device=world_model_device,
         history_size=args.history_size,
     )
     if args.objective == "dino_grid":
@@ -712,7 +712,7 @@ def train_sft2(args=None) -> int:
             "sigreg_loss",
             "sigreg_global_batch_size",
             "value_total",
-            "value_reg",
+            "value_mc_mse",
             "value_rank",
             "lm_ce",
             "lambda_wm",
@@ -734,18 +734,13 @@ def train_sft2(args=None) -> int:
         vision_tune=vision_tune,
     )
 
-    auxiliary_losses = (
-        (DINOGridLoss(weight=args.lambda_dino),)
-        if args.objective == "dino_grid"
-        else ()
-    )
     algorithm_kwargs = dict(
         history_size=args.history_size,
         sigreg=(
             SequenceSIGReg(
                 knots=args.sigreg_knots,
                 num_proj=args.sigreg_num_proj,
-            ).to(device=aux_device)
+            ).to(device=world_model_device)
             if args.lambda_sigreg > 0.0
             else None
         ),
@@ -756,7 +751,7 @@ def train_sft2(args=None) -> int:
         value_rank_weight=args.value_rank_lambda,
         wm_weight_start=args.lambda_wm_start,
         wm_weight_end=args.lambda_wm_end,
-        auxiliary_losses=auxiliary_losses,
+        dino_grid_weight=(args.lambda_dino if args.objective == "dino_grid" else 0.0),
     )
     algorithm = SFT2Algorithm(**algorithm_kwargs)
 

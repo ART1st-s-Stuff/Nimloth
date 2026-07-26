@@ -933,7 +933,6 @@ def train_rl(
             value_rank_weight=config.value_head.lambda_rank,
             ppo_clip_ratio=config.actor.clip_ratio,
             entropy_weight=config.actor.entropy_coeff,
-            action_objective=config.actor.action_objective,
             credit_assignment=config.actor.credit_assignment,
             token_gamma=config.token_credit.gamma,
             token_gae_lambda=config.token_credit.gae_lambda,
@@ -942,7 +941,6 @@ def train_rl(
                 config.actor.planner_distillation_weight
             ),
             reference_kl_loss_weight=config.actor.reference_kl_loss_weight,
-            reference_kl_loss_type=config.actor.reference_kl_loss_type,
             train_world_model=config.predictor.train_wm,
         )
         model_runtime = RLModelRuntime(

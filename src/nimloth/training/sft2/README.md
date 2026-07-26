@@ -52,7 +52,13 @@ SIGReg。配置中的 `batch_size` 仍表示每个 rank 的 current step 数。
 
 DINO-grid 使用 k=16 query slots 和 row-major 4x4 teacher tokens，但不拥有第二套
 SFT2 algorithm。`SFT2Algorithm` 始终执行同一套 current/target、CE、WM、value 与
-SIGReg；配置 `lambda_dino > 0` 时，只在同一个 predicted next state 上追加
-`DINOGridLoss`。该 loss 比较 decoder 输出与 next-image cached target，不直接对齐
-query representation。teacher cache 由 `backbone/dino_grid.py` 校验，grid 神经网络
-由 `wm/grid.py` 拥有，默认配置权重为 0.5。
+SIGReg；DINO-grid batch 显式携带 `dino_grid_target`，算法在同一个
+predicted next state 上计算 decoder 输出与 next-image cached target 的 MSE，再乘
+`lambda_dino`。它不直接对齐 query representation。teacher cache 由
+`backbone/dino_grid.py` 校验，grid 神经网络由 `wm/grid.py` 拥有，默认配置
+权重为 0.5。
+
+SFT2 的 value 目标是完整 episode 上先计算、再切到 current step 的 Monte
+Carlo return。`training/common/value.py` 与 RL 共用同一个 objective：ValueHead 只
+回归实际执行动作的 MC return，并可选添加执行动作高于未执行动作的
+ranking 约束。

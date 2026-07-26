@@ -12,7 +12,6 @@ from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.rollout import TransitionBatch
 import nimloth.training.sft2.dino_grid as dino_grid_module
 from nimloth.training.sft2.algorithm import SFT2Algorithm
-from nimloth.training.sft2.dino_grid import DINOGridLoss
 from nimloth.training.sft2.batch import SFT2Batch
 from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
@@ -111,7 +110,7 @@ def _runtime() -> tuple[SFT2ModelRuntime, _TensorGridBackbone, GridWorldModel]:
     )
 
 
-def test_grid_world_model_keeps_authoritative_fp32_auxiliaries(tmp_path) -> None:
+def test_grid_world_model_keeps_trainable_grid_modules_in_fp32(tmp_path) -> None:
     slot_projector = SharedSlotProjector(
         input_dim=6,
         output_dim=4,
@@ -152,7 +151,7 @@ def test_grid_world_model_keeps_authoritative_fp32_auxiliaries(tmp_path) -> None
         grid_warmstart=None,
     )
 
-    world_model, aux_device = _build_world_model(
+    world_model, world_model_device = _build_world_model(
         args,
         model=model,
         device=torch.device("cpu"),
@@ -161,7 +160,7 @@ def test_grid_world_model_keeps_authoritative_fp32_auxiliaries(tmp_path) -> None
         train_wm_predictor=True,
     )
 
-    assert aux_device == torch.device("cpu")
+    assert world_model_device == torch.device("cpu")
     assert next(world_model.state_proj.slot_projector.parameters()).dtype == torch.bfloat16
     for module in (
         world_model.state_proj.online_encoder,
@@ -200,7 +199,7 @@ def _batch() -> SFT2Batch:
         history_size=2,
         sample_weights=torch.ones(2),
         next_image_paths=("a.png", "b.png"),
-        auxiliary_targets={"dino_grid": torch.randn(2, 4, 8)},
+        dino_grid_target=torch.randn(2, 4, 8),
     )
 
 
@@ -222,7 +221,7 @@ def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() 
         ce_weight=1.0,
         value_rank_margin=0.1,
         value_rank_weight=1.0,
-        auxiliary_losses=(DINOGridLoss(weight=0.25),),
+        dino_grid_weight=0.25,
     )
 
     output = algorithm.training_primary_step(
@@ -271,7 +270,7 @@ def test_grid_sigreg_uses_same_core_stage_with_mean_pooled_slots() -> None:
         ce_weight=1.0,
         value_rank_margin=0.1,
         value_rank_weight=1.0,
-        auxiliary_losses=(DINOGridLoss(weight=0.5),),
+        dino_grid_weight=0.5,
     )
 
     output = algorithm.training_sigreg_step(

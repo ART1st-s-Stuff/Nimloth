@@ -274,7 +274,6 @@ def test_episode_td_replays_mixed_history_then_mc_only_updates_value_head() -> N
         value_rank_weight=0.0,
         ppo_clip_ratio=0.2,
         entropy_weight=0.0,
-        action_objective="distillation",
         credit_assignment="action",
         planner_distillation_weight=1.0,
     )

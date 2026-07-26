@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
 
 import torch
@@ -34,7 +34,7 @@ class SFT2Batch:
     history_size: int
     sample_weights: torch.Tensor
     next_image_paths: tuple[str, ...] = ()
-    auxiliary_targets: dict[str, torch.Tensor] = field(default_factory=dict)
+    dino_grid_target: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.history_size < 1:
@@ -75,14 +75,14 @@ class SFT2Batch:
                 "SFT2 next-image paths must align with current steps: "
                 f"paths={len(self.next_image_paths)}, B={self.batch_size}"
             )
-        for name, target in self.auxiliary_targets.items():
-            if not name or not isinstance(target, torch.Tensor):
-                raise ValueError("SFT2 auxiliary targets require non-empty tensor entries")
-            if target.ndim < 1 or target.shape[0] != self.batch_size:
-                raise ValueError(
-                    f"SFT2 auxiliary target {name!r} must start with B={self.batch_size}, "
-                    f"got {tuple(target.shape)}"
-                )
+        if self.dino_grid_target is not None and (
+            self.dino_grid_target.ndim < 1
+            or self.dino_grid_target.shape[0] != self.batch_size
+        ):
+            raise ValueError(
+                "SFT2 DINO-grid target must start with the current batch size "
+                f"B={self.batch_size}, got {tuple(self.dino_grid_target.shape)}"
+            )
 
     @property
     def batch_size(self) -> int:

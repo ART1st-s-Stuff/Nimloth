@@ -11,7 +11,7 @@ import torch
 from nimloth.training.sft2.checkpoint import (
     find_resume_checkpoint,
     is_trainable_checkpoint_dir,
-    load_aux_checkpoint,
+    load_world_model_checkpoint,
     resolve_resume_checkpoint_dir,
     resume_epoch_and_micro_step,
 )
@@ -105,7 +105,7 @@ def test_resume_rejects_query_tune_mismatch(tmp_path: Path) -> None:
     torch.save({}, ckpt / "value_head" / "value_head.pt")
 
     with pytest.raises(ValueError, match="checkpoint query_tune mismatch"):
-        load_aux_checkpoint(
+        load_world_model_checkpoint(
             ckpt,
             WorldModel(
                 state_proj=proj,
@@ -118,14 +118,14 @@ def test_resume_rejects_query_tune_mismatch(tmp_path: Path) -> None:
         )
 
 
-def test_resume_checkpoint_requires_all_auxiliary_weights(tmp_path: Path) -> None:
+def test_resume_checkpoint_requires_all_world_model_weights(tmp_path: Path) -> None:
     ckpt = tmp_path / "checkpoint"
     _write_ckpt(ckpt, step=1, epoch=1)
     (ckpt / "value_head" / "value_head.pt").unlink()
 
     assert not is_trainable_checkpoint_dir(ckpt)
-    with pytest.raises(FileNotFoundError, match="incomplete SFT2 auxiliary checkpoint"):
-        load_aux_checkpoint(
+    with pytest.raises(FileNotFoundError, match="incomplete SFT2 world-model checkpoint"):
+        load_world_model_checkpoint(
             ckpt,
             WorldModel(
                 state_proj=torch.nn.Identity(),

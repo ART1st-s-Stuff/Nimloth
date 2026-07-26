@@ -9,6 +9,7 @@ from nimloth.backbone.qwen25vl.batch import build_qwen_batch
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.rollout.transitions import collate_transition_training_items
 from nimloth.rollout.transitions import expand_record_transitions
+from nimloth.training.common import action_value_loss
 from nimloth.training.sft2.diagnosis.trajectory_once import (
     forward_trajectory_once,
     supervised_token_count,
@@ -16,7 +17,7 @@ from nimloth.training.sft2.diagnosis.trajectory_once import (
 from nimloth.wm.model import WorldModel
 
 
-def _auxiliary_losses(
+def _world_model_and_value_losses(
     *,
     current_hidden: torch.Tensor,
     next_hidden: torch.Tensor | None,
@@ -51,17 +52,19 @@ def _auxiliary_losses(
         device=current_hidden.device,
     )
     values = wm.predict_action_values(wm.project_state(current_hidden))
-    chosen = values.gather(1, actions.unsqueeze(1)).squeeze(1)
     targets = torch.tensor(
         [item["action_value_target"] for item in items],
-        dtype=chosen.dtype,
-        device=chosen.device,
+        dtype=values.dtype,
+        device=values.device,
     )
-    regression = F.mse_loss(chosen, targets)
-    chosen_mask = F.one_hot(actions, num_classes=values.shape[1]).bool()
-    max_other = values.masked_fill(chosen_mask, float("-inf")).max(dim=1).values
-    ranking = F.relu(0.1 + max_other - chosen).mean()
-    return dynamics_loss, regression + ranking
+    value = action_value_loss(
+        values,
+        actions,
+        targets,
+        ranking_margin=0.1,
+        ranking_weight=1.0,
+    )
+    return dynamics_loss, value.loss
 
 
 @torch.no_grad()
@@ -113,7 +116,7 @@ def legacy_record_losses(
         )
     else:
         next_hidden = None
-    wm_loss, value_loss = _auxiliary_losses(
+    wm_loss, value_loss = _world_model_and_value_losses(
         current_hidden=current,
         next_hidden=next_hidden,
         items=items,
@@ -165,7 +168,7 @@ def packed_record_losses(
         if eligible and trajectory.next_latents is not None
         else None
     )
-    wm_loss, value_loss = _auxiliary_losses(
+    wm_loss, value_loss = _world_model_and_value_losses(
         current_hidden=trajectory.current_latents,
         next_hidden=next_hidden,
         items=items,

@@ -650,7 +650,6 @@ def test_reference_kl_is_actor_loss_only_and_uses_reasoning_tokens() -> None:
         token_gae_lambda=1.0,
         token_value_loss_weight=1.0,
         reference_kl_loss_weight=0.001,
-        reference_kl_loss_type="low_var_kl",
     )
 
     output = algorithm.training_step(runtime, batch)

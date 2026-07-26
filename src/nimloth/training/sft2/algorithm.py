@@ -6,13 +6,15 @@ import contextlib
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Protocol, Sequence
+from typing import Iterator
 
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from nimloth.training.common import action_value_loss
 from nimloth.training.sft2.batch import SFT2Batch
+from nimloth.training.sft2.dino_grid import dino_grid_mse
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import (
     LatentWMPredictor,
@@ -55,29 +57,6 @@ class SFT2SIGRegStepOutput:
     loss: torch.Tensor
     raw_loss: torch.Tensor | None
     metrics: dict[str, float]
-
-
-@dataclass(frozen=True)
-class SFT2AuxiliaryLossOutput:
-    """一个可配置附加 loss 对核心 SFT2 step 的增量。"""
-
-    name: str
-    raw_loss: torch.Tensor
-    weighted_loss: torch.Tensor
-    metrics: dict[str, float]
-
-
-class SFT2AuxiliaryLoss(Protocol):
-    """附加监督只消费核心 step 已产生的 prediction，不重做训练流程。"""
-
-    name: str
-
-    def __call__(
-        self,
-        world_model: torch.nn.Module,
-        batch: SFT2Batch,
-        predicted_next_state: torch.Tensor,
-    ) -> SFT2AuxiliaryLossOutput: ...
 
 
 class _DifferentiableAllGather(torch.autograd.Function):
@@ -221,7 +200,7 @@ class SFT2Algorithm:
         wm_weight_start: float = 0.1,
         wm_weight_end: float = 1.0,
         wm_warmup_fraction: float = 0.3,
-        auxiliary_losses: Sequence[SFT2AuxiliaryLoss] = (),
+        dino_grid_weight: float = 0.0,
     ) -> None:
         self.history_size = int(history_size)
         if self.history_size < 1:
@@ -237,10 +216,7 @@ class SFT2Algorithm:
         self.wm_weight_start = float(wm_weight_start)
         self.wm_weight_end = float(wm_weight_end)
         self.wm_warmup_fraction = float(wm_warmup_fraction)
-        self.auxiliary_losses = tuple(auxiliary_losses)
-        names = [component.name for component in self.auxiliary_losses]
-        if len(set(names)) != len(names):
-            raise ValueError(f"duplicate SFT2 auxiliary loss names: {names}")
+        self.dino_grid_weight = float(dino_grid_weight)
 
     def wm_weight(self, global_step: int, total_steps: int) -> float:
         """在训练前段用 cosine ramp 增加 WM loss 权重。"""
@@ -390,23 +366,27 @@ class SFT2Algorithm:
             model_output.predicted_next_state,
             aligned_targets,
         )
-        auxiliary = tuple(
-            component(
+        dino_loss = (
+            dino_grid_mse(
                 runtime.agent.wm,
-                batch,
                 model_output.predicted_next_state,
+                batch.dino_grid_target,
             )
-            for component in self.auxiliary_losses
+            if batch.dino_grid_target is not None
+            else None
         )
-        value = self._value_loss(
+        value = action_value_loss(
             model_output.action_values,
             batch.current_action_indices,
             batch.current_value_targets,
-            include_ranking=include_value_ranking,
+            ranking_margin=self.value_rank_margin,
+            ranking_weight=(
+                self.value_rank_weight if include_value_ranking else 0.0
+            ),
         )
-        total = wm_weight * wm_loss + self.value_weight * value["loss"]
-        for output in auxiliary:
-            total = total + output.weighted_loss
+        total = wm_weight * wm_loss + self.value_weight * value.loss
+        if dino_loss is not None:
+            total = total + self.dino_grid_weight * dino_loss
         if model_output.lm_loss is not None:
             total = total + self.ce_weight * model_output.lm_loss
         sample_count = 0 if batch.is_padding else batch.batch_size
@@ -414,13 +394,14 @@ class SFT2Algorithm:
             total = total * 0.0
 
         metrics = {
-            "value_reg": float(value["regression"].detach().item()),
-            "value_rank": float(value["ranking"].detach().item()),
-            "value_total": float(value["loss"].detach().item()),
+            "value_mc_mse": float(value.monte_carlo_mse.detach().item()),
+            "value_rank": float(value.ranking.detach().item()),
+            "value_total": float(value.loss.detach().item()),
             "lambda_wm": float(wm_weight),
             "lambda_sigreg": 0.0,
             "lambda_value": self.value_weight,
             "lambda_ce": self.ce_weight,
+            "lambda_dino": self.dino_grid_weight,
             "context_length": float(batch.history_size),
             "current_batch_size": float(sample_count),
             "history_cache_entries": float(runtime.history_cache.count),
@@ -430,11 +411,11 @@ class SFT2Algorithm:
         losses: dict[str, torch.Tensor | None] = {
             "lm": model_output.lm_loss,
             "wm": wm_loss,
-            "value": value["loss"],
+            "value": value.loss,
         }
-        for output in auxiliary:
-            losses[output.name] = output.raw_loss
-            metrics.update(output.metrics)
+        if dino_loss is not None:
+            losses["dino"] = dino_loss
+            metrics["dino_grid_mse"] = float(dino_loss.detach().item())
         if model_output.lm_loss is not None:
             metrics["lm_ce"] = float(model_output.lm_loss.detach().item())
 
@@ -445,41 +426,6 @@ class SFT2Algorithm:
             current_state=model_output.state[:, -1],
             sample_count=sample_count,
         )
-
-    def _value_loss(
-        self,
-        all_values: torch.Tensor,
-        action_indices: torch.Tensor,
-        return_targets: torch.Tensor,
-        *,
-        include_ranking: bool,
-    ) -> dict[str, torch.Tensor]:
-        """Value head loss"""
-
-        chosen_values = all_values.gather(
-            -1,
-            action_indices.unsqueeze(-1),
-        ).squeeze(-1)
-        targets = return_targets.to(device=all_values.device, dtype=all_values.dtype)
-        regression = F.mse_loss(chosen_values, targets)
-        chosen_mask = F.one_hot(
-            action_indices,
-            num_classes=all_values.shape[-1],
-        ).bool()
-        max_other = all_values.masked_fill(
-            chosen_mask,
-            float("-inf"),
-        ).max(dim=-1).values
-        ranking = F.relu(
-            self.value_rank_margin + max_other - chosen_values
-        ).mean()
-        rank_weight = self.value_rank_weight if include_ranking else 0.0
-        return {
-            "loss": regression + rank_weight * ranking,
-            "regression": regression,
-            "ranking": ranking,
-            "chosen_values": chosen_values,
-        }
 
     def _sigreg_loss(
         self,
@@ -501,8 +447,6 @@ class SFT2Algorithm:
 
 __all__ = [
     "SFT2Algorithm",
-    "SFT2AuxiliaryLoss",
-    "SFT2AuxiliaryLossOutput",
     "SFT2SIGRegStepOutput",
     "SFT2StepOutput",
     "gather_global_sigreg_states",
