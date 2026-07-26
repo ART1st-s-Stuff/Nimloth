@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-07-26：SFT2/RL algorithm 显式化 MC value 目标与 DINO-grid 命名
+
+- 审查确认 SFT2 原本已使用完整episode预先计算的 discounted Monte Carlo
+  return 回归实际执行动作；不应再添加一份重复MSE。该目标已提取到
+  `training/common/value.py`，SFT2、RL complete-episode MC、RL direct PPO和SFT2轨迹等价
+  诊断共用同一个`action_value_loss`：输出明确分为`monte_carlo_mse`、ranking和
+  `selected_action_values`。
+- SFT2删除仅有DINO-grid一个实现却使用通用`auxiliary_targets`/Protocol/loss
+  component的过度封装。batch、loss权重、device和checkpoint loader现在分别使用
+  `dino_grid_target`、`dino_grid_weight`、`world_model_device`和
+  `load_world_model_checkpoint`。训练CSV中原来模糊的`value_reg`更名为
+  `value_mc_mse`。
+- RL `training_step` 现在按 state hidden -> WM/value -> SIGReg -> policy replay -> loss
+  merge 顺序阅读。已由`RLConfig`、episode batch和policy trace保证的重复参数检查
+  从algorithm删除；rollout cache来源、reference token数和replay输出等真实边界检查
+  保留在batch/runtime或对应helper。
+- 代码commits为`94d6b015`和`05376c1e38d8c1ef1be8a926801f36baf7487d09`，已推送
+  `origin/dev`。`compileall`、`git diff --check`和静态调用链扫描通过；新增公共
+  objective测试覆盖“MSE只选执行动作”以及ValueHead/state梯度。当前还不能声称
+  pytest回归通过：本地环境无torch/pytest，superpod SSH连续两次被代理以
+  `UNKNOWN port 65535`立即关闭，按项目规则已停止重试。
+
 ## 2026-07-26：补齐planner segment契约与outer-runner中断恢复
 
 - 审查确认两个P1缺口。第一，旧校验只绑定planner选中序列的首动作，但WM会监督重放两个
