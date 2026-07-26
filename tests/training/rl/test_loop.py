@@ -40,9 +40,19 @@ class _FreshCollector:
 
 
 class _CheckpointManager:
+    def __init__(self) -> None:
+        self.saved: list[Path] = []
+        self.linked: list[tuple[Path, Path]] = []
+
     def save(self, path: Path, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+        self.saved.append(path)
         path.mkdir(parents=True, exist_ok=True)
         (path / "rl_state.pt").write_bytes(b"state")
+
+    def link_snapshot(self, source: Path, path: Path) -> None:
+        self.linked.append((source, path))
+        path.mkdir(parents=True, exist_ok=False)
+        (path / "rl_state.pt").write_bytes((source / "rl_state.pt").read_bytes())
 
 
 class _Reporter:
@@ -190,6 +200,25 @@ def test_deferred_final_checkpoint_keeps_only_resumable_latest(
 
     assert (tmp_path / "latest" / "rl_state.pt").is_file()
     assert not (tmp_path / "final").exists()
+    assert loop.checkpoint_manager.saved == [tmp_path / "latest"]
+    assert loop.checkpoint_manager.linked == []
+
+
+def test_final_periodic_checkpoint_serializes_once_and_links_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, _collector = _training_loop(tmp_path, monkeypatch)
+    loop.config.rl.iterations = 1
+    loop.config.training.save_interval = 1
+
+    loop.run()
+
+    assert loop.checkpoint_manager.saved == [tmp_path / "latest"]
+    assert loop.checkpoint_manager.linked == [
+        (tmp_path / "latest", tmp_path / "iter_0001"),
+        (tmp_path / "latest", tmp_path / "final"),
+    ]
 
 
 def test_planner_update_rejects_an_incomplete_episode_batch(

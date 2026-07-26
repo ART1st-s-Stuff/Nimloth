@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
@@ -57,6 +57,10 @@ class RLTrainingLoop:
     write_final_checkpoint: bool
     start_iteration: int
     state: RLLoopState
+    _latest_checkpoint_global_step: int | None = field(
+        init=False,
+        default=None,
+    )
 
     def run(self) -> RLLoopState:
         for iteration in range(
@@ -65,15 +69,12 @@ class RLTrainingLoop:
         ):
             self._run_iteration(iteration)
 
-        checkpoint_dirs = [self.output_dir / "latest"]
+        latest = self.output_dir / "latest"
+        self._ensure_latest_checkpoint(self.config.rl.iterations)
         if self.write_final_checkpoint:
-            checkpoint_dirs.insert(0, self.output_dir / "final")
-        for checkpoint_dir in checkpoint_dirs:
-            self.checkpoint_manager.save(
-                checkpoint_dir,
-                iteration=self.config.rl.iterations,
-                global_step=self.state.global_step,
-                best_eval_metric=self.state.best_eval_metric,
+            self.checkpoint_manager.link_snapshot(
+                latest,
+                self.output_dir / "final",
             )
         return self.state
 
@@ -210,13 +211,7 @@ class RLTrainingLoop:
         self._save_periodic(iteration)
         if consumption_id is not None:
             checkpoint_dir = self.output_dir / "latest"
-            if iteration % self.config.training.save_interval != 0:
-                self.checkpoint_manager.save(
-                    checkpoint_dir,
-                    iteration=iteration,
-                    global_step=self.state.global_step,
-                    best_eval_metric=self.state.best_eval_metric,
-                )
+            self._ensure_latest_checkpoint(iteration)
             self._barrier()
             assert commit_consumption is not None
             commit_consumption(
@@ -292,16 +287,33 @@ class RLTrainingLoop:
     def _save_periodic(self, iteration: int) -> None:
         if iteration % self.config.training.save_interval != 0:
             return
-        for checkpoint_dir in (
-            self.output_dir / f"iter_{iteration:04d}",
+        iteration_checkpoint = self.output_dir / f"iter_{iteration:04d}"
+        latest = self.output_dir / "latest"
+        if iteration == self.config.rl.iterations:
+            self._ensure_latest_checkpoint(iteration)
+            self.checkpoint_manager.link_snapshot(latest, iteration_checkpoint)
+            return
+        self.checkpoint_manager.save(
+            iteration_checkpoint,
+            iteration=iteration,
+            global_step=self.state.global_step,
+            best_eval_metric=self.state.best_eval_metric,
+        )
+        self._save_latest_checkpoint(iteration)
+
+    def _ensure_latest_checkpoint(self, iteration: int) -> None:
+        if self._latest_checkpoint_global_step == self.state.global_step:
+            return
+        self._save_latest_checkpoint(iteration)
+
+    def _save_latest_checkpoint(self, iteration: int) -> None:
+        self.checkpoint_manager.save(
             self.output_dir / "latest",
-        ):
-            self.checkpoint_manager.save(
-                checkpoint_dir,
-                iteration=iteration,
-                global_step=self.state.global_step,
-                best_eval_metric=self.state.best_eval_metric,
-            )
+            iteration=iteration,
+            global_step=self.state.global_step,
+            best_eval_metric=self.state.best_eval_metric,
+        )
+        self._latest_checkpoint_global_step = self.state.global_step
 
     def _print_phase(self, iteration: int) -> None:
         if is_main():

@@ -91,7 +91,7 @@ def test_rl_config_parses_heterogeneous_distributed_topology() -> None:
 def test_formal_h2_config_preserves_validated_online_contract() -> None:
     root = Path(__file__).resolve().parents[3]
     config = load_rl_config(
-        root / "configs/training/rl/planner_exhaustive_h2_full.yaml"
+        root / "configs/training/rl/planner_greedy_h2_full.yaml"
     )
 
     assert config.rl.iterations == 60
@@ -103,13 +103,30 @@ def test_formal_h2_config_preserves_validated_online_contract() -> None:
         "common_sense_train",
     )
     assert config.agent.planning.horizon == 2
-    assert config.agent.planning.search_mode == "exhaustive"
+    assert config.agent.planning.search_mode == "greedy"
     assert config.actor.action_objective == "distillation"
     assert config.actor.credit_assignment == "action"
     assert config.actor.max_response_tokens == 512
     assert config.training.save_interval == 10
     assert config.validation.enabled is False
-    assert config.distributed.total_gpus == 8
+    assert config.distributed.total_gpus == 4
+
+
+def test_continuation_gate_uses_two_fresh_greedy_updates() -> None:
+    root = Path(__file__).resolve().parents[3]
+    config = load_rl_config(
+        root / "configs/training/rl/planner_greedy_h2_continuation_gate.yaml"
+    )
+
+    assert config.rl.iterations == 2
+    assert config.rl.envs_per_iteration == 4
+    assert config.rl.batch_size == 4
+    assert config.rollout.train_datasets == (
+        "base_train",
+        "common_sense_train",
+    )
+    assert config.agent.planning.search_mode == "greedy"
+    assert config.distributed.total_gpus == 4
 
 
 def test_rl_config_rejects_impossible_distributed_topology() -> None:

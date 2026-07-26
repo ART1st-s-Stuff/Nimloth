@@ -11,8 +11,11 @@ HOLD_JOB=${HOLD_JOB:?set HOLD_JOB to one running allocation}
 REPO=${REPO:?set REPO to the committed server worktree}
 ENV_REPO=${ENV_REPO:?set ENV_REPO to the verified VAGEN worktree}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
-RL_CONFIG=${RL_CONFIG:-${REPO}/configs/training/rl/planner_exhaustive_h2_full.yaml}
+RL_CONFIG=${RL_CONFIG:-${REPO}/configs/training/rl/planner_greedy_h2_full.yaml}
 RUN_OUT=${RUN_OUT:?set RUN_OUT to the exclusive formal-run output directory}
+FORMAL_OUTPUT_ROOT=${FORMAL_OUTPUT_ROOT:-/project/peilab/atst/nimloth/outputs/experiments/training/rl}
+FORMAL_OUTPUT_ROOT=${FORMAL_OUTPUT_ROOT%/}
+ITERATION_RUNNER=${ITERATION_RUNNER:-${REPO}/experiments/training/rl/run_vllm_online_ppo_slurm.sh}
 INITIAL_MODEL=${INITIAL_MODEL:?set INITIAL_MODEL to the complete SFT2 HF checkpoint}
 INITIAL_WM_CKPT=${INITIAL_WM_CKPT:-${INITIAL_MODEL}}
 REFERENCE_MODEL=${REFERENCE_MODEL:-${INITIAL_MODEL}}
@@ -24,8 +27,12 @@ TRAIN_MASTER_PORT_BASE=${TRAIN_MASTER_PORT_BASE:-29800}
 
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing config: ${RL_CONFIG}" >&2; exit 1; }
+[[ -x "${ITERATION_RUNNER}" ]] || {
+  echo "missing iteration runner: ${ITERATION_RUNNER}" >&2
+  exit 1
+}
 case "${RUN_OUT}" in
-  /project/peilab/atst/nimloth/outputs/experiments/training/rl/*) ;;
+  "${FORMAL_OUTPUT_ROOT}"/*) ;;
   *) echo "RUN_OUT is outside the formal RL output root: ${RUN_OUT}" >&2; exit 1 ;;
 esac
 [[ -f "${INITIAL_MODEL}/config.json" ]] || {
@@ -51,6 +58,7 @@ TOTAL_ITERATIONS=${TOTAL_ITERATIONS:-${CONFIG_ITERATIONS}}
 TRAIN_OUT=${RUN_OUT}/train
 POLICY_INPUT_ROOT=${TRAIN_OUT}/policy_inputs
 PROGRESS_LOG=${RUN_OUT}.iteration_progress.log
+mkdir -p "${FORMAL_OUTPUT_ROOT}"
 CURRENT_ITERATION=0
 
 record_exit() {
@@ -149,7 +157,7 @@ os.replace(temporary, path)
     ENV_PORT="$((ENV_PORT_BASE + iteration))" \
     TRAIN_MASTER_PORT="$((TRAIN_MASTER_PORT_BASE + iteration))" \
     RAY_HEAD_NODE="${RAY_HEAD_NODE:-}" \
-    bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_slurm.sh"
+    "${ITERATION_RUNNER}"
 
   [[ -s "${TRAIN_OUT}/latest/rl_state.pt" ]] || {
     echo "iteration ${iteration} completed without latest checkpoint" >&2

@@ -72,12 +72,15 @@ step，再按节点内 GPU 数启动 local ranks，因此允许各节点 GPU 数
 正式多迭代训练使用`run_vllm_online_ppo_full.sh`。它为每个iteration分配不重叠seed块，
 用更新前的不可变policy snapshot完成rollout/reference replay，再执行恰好一次update；
 下一轮只有在fresh consumption提交且`latest`完整后才开始。中间进程退出只写`latest`，
-目标iteration完成时才写`final`。为控制共享盘占用，外层入口只保留最近一个更新前policy
-snapshot；更早snapshot的删除会写入相邻iteration progress log。
+目标iteration完成时才写`final`。默认正式配置是greedy H=2、两节点四卡；额外DDP副本
+不会增加有效episode batch。每个global step只序列化一次完整模型与optimizer，属于同一
+训练状态的`iter_NNNN`、`latest`和`final`使用同文件系统硬链接，不重复写入或占用三份
+checkpoint数据。外层入口只保留最近一个更新前policy snapshot；更早snapshot的删除会
+写入相邻iteration progress log。
 
 ### 分布式安全说明
 
-- `JSONLRolloutCollector` 在所有 rank 上返回相同轨迹序列（确定性轮转），保证 FSDP forward 次数一致。
+- `JSONLRolloutCollector` 在所有 rank 上返回相同轨迹序列（确定性轮转），保证forward次数一致；当前DDP rank不是数据shard，不能把`envs_per_iteration`再乘`world_size`宣称为有效batch。
 - Batch 选择使用 per-iteration 确定性 generator（`seed + iteration`），不依赖全局 RNG 状态同步。
 - `state_proj`、`wm_predictor`、`value_head` 的可训练副本由 DDP 同步；冻结模块在 distributed setup 后从 rank0 广播初始状态。
 - 所有 rank 必须调用相同的 `collect()` 次数——训练循环已保证这一点。

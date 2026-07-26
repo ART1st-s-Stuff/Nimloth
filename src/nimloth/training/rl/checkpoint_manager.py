@@ -11,7 +11,10 @@ import torch
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
 from nimloth.config.rl import RLConfig
-from nimloth.training.rl.checkpoint import save_rl_checkpoint
+from nimloth.training.rl.checkpoint import (
+    link_checkpoint_snapshot,
+    save_rl_checkpoint,
+)
 
 
 class RLCheckpointManager:
@@ -77,3 +80,8 @@ class RLCheckpointManager:
             },
             train_world_model=self._config.predictor.train_wm,
         )
+
+    def link_snapshot(self, source: Path, path: Path) -> None:
+        """Expose the same completed state under an immutable checkpoint name."""
+
+        link_checkpoint_snapshot(source, path)

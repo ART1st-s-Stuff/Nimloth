@@ -7,6 +7,9 @@ model state (LoRA adapters, full-finetune weights, vision EMA).
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -158,6 +161,39 @@ def save_rl_checkpoint(
             state["optimizer"] = optimizer.state_dict()
         torch.save(state, out_dir / "rl_state.pt")
 
+    if world > 1:
+        dist.barrier()
+
+
+def link_checkpoint_snapshot(source_dir: Path, out_dir: Path) -> None:
+    """Create an immutable checkpoint alias without serializing tensors again."""
+
+    source = Path(source_dir).resolve()
+    destination = Path(out_dir).resolve()
+    rank, world = _rank_world()
+    if rank == 0:
+        if not (source / "rl_state.pt").is_file():
+            raise FileNotFoundError(f"checkpoint snapshot source is incomplete: {source}")
+        if destination.exists():
+            raise FileExistsError(f"checkpoint snapshot already exists: {destination}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary_root = Path(
+            tempfile.mkdtemp(
+                prefix=f".{destination.name}.link-",
+                dir=destination.parent,
+            )
+        )
+        temporary_snapshot = temporary_root / destination.name
+        try:
+            shutil.copytree(
+                source,
+                temporary_snapshot,
+                copy_function=os.link,
+                symlinks=True,
+            )
+            temporary_snapshot.replace(destination)
+        finally:
+            shutil.rmtree(temporary_root, ignore_errors=True)
     if world > 1:
         dist.barrier()
 

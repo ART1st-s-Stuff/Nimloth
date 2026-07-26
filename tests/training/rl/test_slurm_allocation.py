@@ -94,11 +94,12 @@ def test_full_runner_uses_one_fresh_manifest_per_resumed_update() -> None:
     controller = CONTROLLER.read_text(encoding="utf-8")
     pipeline = PIPELINE.read_text(encoding="utf-8")
 
+    assert "planner_greedy_h2_full.yaml" in runner
     assert 'for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++))' in runner
     assert 'mv "${TRAIN_OUT}/latest" "${snapshot}"' in runner
     assert 'RESUME_CHECKPOINT="${resume_checkpoint}"' in runner
     assert 'SEED_OFFSET="${seed_offset}"' in runner
-    assert 'bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_slurm.sh"' in runner
+    assert '"${ITERATION_RUNNER}"' in runner
     assert controller.count('ITERATION="${ITERATION}" TOTAL_ITERATIONS="${TOTAL_ITERATIONS}"') == 3
     assert '--eval-sets "${TRAIN_DATASETS[@]}"' in pipeline
     assert '--rl-iterations "${ITERATION}"' in pipeline

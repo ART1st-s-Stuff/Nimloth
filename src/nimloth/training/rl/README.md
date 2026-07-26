@@ -294,6 +294,8 @@ Formal online training wraps that single-update boundary with
 `run_vllm_online_ppo_full.sh`. Every optimizer step gets a newly fingerprinted
 rollout from the preceding checkpoint. `--resume-checkpoint` lets the trainer
 load an immutable pre-update snapshot while writing the successor to
-`output/latest`; `--defer-final-checkpoint` avoids duplicating a large `final`
-artifact until the configured last iteration. These flags change checkpoint
-lifecycle only, not the rollout, loss, gradient, or optimizer semantics.
+`output/latest`. A completed training state is serialized once; periodic and
+final names are immutable hard-linked snapshots of those exact bytes.
+`--defer-final-checkpoint` postpones the final name until the configured last
+iteration. These flags change checkpoint lifecycle only, not the rollout,
+loss, gradient, or optimizer semantics.
