@@ -6,6 +6,16 @@
 
 ## 2026-07-26：RL window复用rollout Qwen state，移除history展平forward
 
+- 人类解除暂不测试限制后，commit`f5ac65a`在superpod固定
+  `.venv-vagen-main/bin/python3`完成三层CPU回归：改动定向`78 passed, 1 warning`，
+  Agent/RL/rollout/Qwen相关套件`183 passed, 1 warning`，仓库完整suite
+  `355 passed, 1 skipped, 4 warnings`。warning均来自既有单样本std、PyTorch
+  Transformer、Pillow弃用和测试tensor转scalar；没有新增失败。本地`.venv`指向系统
+  Python 3.14且没有pytest，因此本地命令未进入测试，不计作代码失败。
+- CPU结果确认公共接口、cache shape/dtype、StateProjector梯度、Qwen state-path绕过、
+  terminal capture、schema roundtrip和官方DDP包装的测试定义一致；它仍不能证明真实
+  vLLM/HF hidden数值、GPU显存、两卡模型并行或多rank collective。下一门禁是greedy
+  planner真实20步fresh rollout加一次完整GPU optimizer step。
 - 已重新确认ID106的state路径：`history_size=H`的每个训练window曾把`H + 1`个完整
   多模态prefix按window-major展平为`B * (H + 1)`，一次送进HF Qwen。planner在真实
   vLLM CoT forward中已经取得每个当前observation的latent hidden，但此前只用于在线
