@@ -28,19 +28,10 @@
 - continuation gate的两节点hold`489688`因预计等待约17小时在未运行前取消；commit`867d5bc`
   将gate改为单节点4卡、两个node-local DDP rank各自两卡Qwen模型并行，总GPU/world size/
   batch/loss不变并去掉跨节点通信，服务器回归32 passed。新hold`489691`仍因Priority等待，
-  watcher PID`3538879`会在allocation后先检查精确commit、4张空闲H800、host memory、端口和
-  旧进程再启动；当前ID111输出仍不存在。live集群无free GPU，Slurm最新预计启动时间为
-  `2026-07-27T20:27:31+08:00`，没有提交第二个竞争hold。
-- 此前32--40是累计GPU-hours，墙钟估计为8--10小时。进一步大幅降墙钟时间需减少每轮重建
-  vLLM/HF的生命周期成本；已安装vLLM0.11有官方level-2 sleep和reload_weights，但现有每phase
-  独立process runner必须先设计持久engine/trainer及更新后planner-WM reload契约，当前尚未把
-  该未验证方案写成正式实现。
-- continuation gate的两节点hold`489688`因预计等待约17小时在未运行前取消；commit`867d5bc`
-  将gate改为单节点4卡、两个node-local DDP rank各自两卡Qwen模型并行，总GPU/world size/
-  batch/loss不变并去掉跨节点通信，服务器回归32 passed。新hold`489691`仍因Priority等待，
-  watcher PID`3538879`会在allocation后先检查精确commit、4张空闲H800、host memory、端口和
-  旧进程再启动；当前ID111输出仍不存在。live集群无free GPU，Slurm最新预计启动时间为
-  `2026-07-27T20:27:31+08:00`，没有提交第二个竞争hold。
+  Slurm最新预计启动时间为`2026-07-27T20:07:57+08:00`。原watcher的12小时期限早于预计启动；
+  已在不取消hold的前提下替换为30小时版本PID`3665292`，allocation后会检查精确commit、
+  4张空闲H800、host memory、端口和旧进程再启动。当前ID111输出仍不存在，没有提交第二个
+  竞争hold。
 - 此前32--40是累计GPU-hours，墙钟估计为8--10小时。进一步大幅降墙钟时间需减少每轮重建
   vLLM/HF的生命周期成本；已安装vLLM0.11有官方level-2 sleep和reload_weights，但现有每phase
   独立process runner必须先设计持久engine/trainer及更新后planner-WM reload契约，当前尚未把

@@ -101,32 +101,13 @@ capture contract. It is intentionally not mixed into this checkpoint/continuatio
   batch and losses stay unchanged while cross-node Ray/DDP communication is removed. Exact
   server topology/config/outer-runner tests passed: `32 passed`.
 - The replacement single-node four-GPU preempt hold is `489691`. It is pending on priority;
-  a login-node watcher PID `3538879` checks exact commit, four visible idle H800s, host-memory
+  a login-node watcher PID `3665292` checks exact commit, four visible idle H800s, host-memory
   headroom, ports and stale processes before starting the controller, and cancels the hold on
-  any preflight failure. ID111 output remains absent while pending.
+  any preflight failure. The original 12-hour watcher deadline preceded Slurm's estimated
+  start; it was replaced without cancelling the hold by a 30-hour version. ID111 output
+  remains absent while pending.
 - The live cluster currently has no free GPU. Slurm's latest estimate for the real hold is
-  `2026-07-27T20:27:31+08:00`; test-only requests show preempt remains materially earlier than
-  normal. No second competing hold is submitted.
-- The earlier `32--40 GPU-hours` figure meant aggregate GPU allocation; measured-wall estimate
-  was `8--10 hours`. Current code preserves 60 fresh-policy updates, so further large wall-time
-  reduction must target repeated vLLM/HF lifecycle cost. Installed vLLM 0.11 exposes official
-  level-2 sleep and in-place weight reload, but the current process-per-phase runner cannot use
-  it without a persistent engine/trainer orchestration and planner-WM reload contract. This is
-  a prospective optimization, not yet implemented or presented as validated.
-
-## ID111 launch state and topology optimization
-
-- The original two-node x two-GPU hold `489688` was cancelled before running after Slurm
-  estimated an approximately 17-hour wait. Commit `867d5bc` changes only the continuation
-  gate to one node with two node-local two-GPU model-parallel ranks; total GPUs, world size,
-  batch and losses stay unchanged while cross-node Ray/DDP communication is removed. Exact
-  server topology/config/outer-runner tests passed: `32 passed`.
-- The replacement single-node four-GPU preempt hold is `489691`. It is pending on priority;
-  a login-node watcher PID `3538879` checks exact commit, four visible idle H800s, host-memory
-  headroom, ports and stale processes before starting the controller, and cancels the hold on
-  any preflight failure. ID111 output remains absent while pending.
-- The live cluster currently has no free GPU. Slurm's latest estimate for the real hold is
-  `2026-07-27T20:27:31+08:00`; test-only requests show preempt remains materially earlier than
+  `2026-07-27T20:07:57+08:00`; test-only requests show preempt remains materially earlier than
   normal. No second competing hold is submitted.
 - The earlier `32--40 GPU-hours` figure meant aggregate GPU allocation; measured-wall estimate
   was `8--10 hours`. Current code preserves 60 fresh-policy updates, so further large wall-time
