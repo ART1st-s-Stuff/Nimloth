@@ -7,6 +7,7 @@ import torch
 from nimloth.agent import (
     AgentPrompt,
     PolicyDecision,
+    PolicyState,
     PolicyTokenTrace,
     PromptTemplateSpec,
 )
@@ -236,8 +237,13 @@ class _TurnPolicy:
             ),
         )
 
-    def generate_state_prefix(self, _prompt):
-        return "<think>terminal</think><|latent_state|><|action_start|>"
+    def generate_state(self, _prompt):
+        return PolicyState(
+            assistant_prefix=(
+                "<think>terminal</think><|latent_state|><|action_start|>"
+            ),
+            latent_hidden=torch.tensor([[0.5, -0.5]]),
+        )
 
 
 def test_planning_policy_uses_batched_lookahead_and_excludes_action_from_ppo() -> None:
@@ -260,6 +266,7 @@ def test_planning_policy_uses_batched_lookahead_and_excludes_action_from_ppo() -
     decision = policy.select_action(prompt)
 
     assert decision.planner_trace is not None
+    assert decision.state_latent_hidden.tolist() == [[0.25, -0.25]]
     assert len(decision.planner_trace.candidate_sequences) == 64
     assert decision.planner_trace.search_mode == "exhaustive"
     assert decision.action_log_probs[0] == 0.0

@@ -60,6 +60,7 @@ def _trajectory() -> RolloutTrajectory:
         terminal_assistant_prefix=prompt.assistant_prefix(
             thought="Terminal observation."
         ),
+        state_latent_hiddens=[[[0.0, 1.0]], [[1.0, 2.0]]],
         policy_credit_assignment="turn",
         policy_messages=[policy_messages],
         policy_token_ids=[[100, 102, 103]],
@@ -217,6 +218,23 @@ def test_turn_credit_roundtrip_separates_behavior_and_state_prompts() -> None:
         for message in terminal_prompt.messages
     )
     assert restored.policy_token_trace(0) == trajectory.policy_token_trace(0)
+    assert restored.state_latent_hiddens == trajectory.state_latent_hiddens
+
+
+def test_state_latent_hidden_must_cover_every_observation() -> None:
+    trajectory = _trajectory()
+    trajectory.state_latent_hiddens.pop()
+
+    with pytest.raises(RuntimeError, match="state_latent_hiddens=1 but states=2"):
+        validate_trajectories([trajectory])
+
+
+def test_state_latent_hidden_must_match_prompt_latent_count() -> None:
+    trajectory = _trajectory()
+    trajectory.state_latent_hiddens[0].append([2.0, 3.0])
+
+    with pytest.raises(RuntimeError, match="has 2 latent rows, expected 1"):
+        validate_trajectories([trajectory])
 
 
 def test_reference_log_probs_roundtrip_only_on_selected_reasoning() -> None:

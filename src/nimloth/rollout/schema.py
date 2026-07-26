@@ -59,6 +59,7 @@ class RolloutTrajectory:
     policy_messages: list[list[dict[str, Any]]] = field(default_factory=list)
     assistant_responses: list[str] = field(default_factory=list)
     terminal_assistant_prefix: str = ""
+    state_latent_hiddens: list[list[list[float]]] = field(default_factory=list)
     policy_credit_assignment: str = "action"
     policy_token_ids: list[list[int]] = field(default_factory=list)
     policy_token_log_probs: list[list[float | None]] = field(default_factory=list)
@@ -300,6 +301,7 @@ class RolloutTrajectory:
             "policy_messages": self.policy_messages,
             "assistant_responses": self.assistant_responses,
             "terminal_assistant_prefix": self.terminal_assistant_prefix,
+            "state_latent_hiddens": self.state_latent_hiddens,
             "policy_credit_assignment": self.policy_credit_assignment,
             "policy_token_ids": self.policy_token_ids,
             "policy_token_log_probs": self.policy_token_log_probs,
@@ -381,6 +383,13 @@ class RolloutTrajectory:
             terminal_assistant_prefix=str(
                 record.get("terminal_assistant_prefix", "")
             ),
+            state_latent_hiddens=[
+                [
+                    [float(value) for value in hidden]
+                    for hidden in state
+                ]
+                for state in record.get("state_latent_hiddens", [])
+            ],
             policy_credit_assignment=str(
                 record.get("policy_credit_assignment", "action")
             ),

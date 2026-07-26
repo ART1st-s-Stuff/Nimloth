@@ -74,6 +74,10 @@ def _make_traj(record_id: str, num_steps: int = 3) -> RolloutTrajectory:
         terminal_assistant_prefix=prompt.assistant_prefix(
             thought="Terminal observation."
         ),
+        state_latent_hiddens=[
+            [[float(step), float(step + 1)]]
+            for step in range(num_steps + 1)
+        ],
         policy_credit_assignment="turn",
         policy_messages=[
             prompt.build_response_policy_prompt(

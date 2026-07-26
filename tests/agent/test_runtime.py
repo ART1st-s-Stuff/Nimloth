@@ -3,12 +3,14 @@ from __future__ import annotations
 import math
 
 import pytest
+import torch
 
 from nimloth.agent import (
     AgentRuntime,
     AgentPrompt,
     NimlothPromptTemplate,
     PolicyDecision,
+    PolicyState,
     PolicyTokenTrace,
 )
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
@@ -33,11 +35,18 @@ class _RecordingPolicy:
                 f"<think>Reason {len(self.prompts)}.</think><|latent_state|>"
                 f"<|action_start|><|action_({action_index})|><|action_end|>"
             ),
+            state_latent_hidden=torch.tensor([[float(action_index), 1.0]]),
         )
 
-    def generate_state_prefix(self, prompt: AgentPrompt) -> str:
+    def generate_state(self, prompt: AgentPrompt) -> PolicyState:
         self.prompts.append(prompt)
-        return "<think>Terminal reasoning.</think><|latent_state|><|action_start|>"
+        return PolicyState(
+            assistant_prefix=(
+                "<think>Terminal reasoning.</think>"
+                "<|latent_state|><|action_start|>"
+            ),
+            latent_hidden=torch.tensor([[2.0, 1.0]]),
+        )
 
 
 def _template() -> NimlothPromptTemplate:
@@ -93,7 +102,7 @@ def test_navigation_agent_serializes_only_completed_turns() -> None:
     assert messages[-1]["content"] == action.response
 
 
-def test_navigation_agent_generates_real_terminal_state_prefix() -> None:
+def test_navigation_agent_generates_real_terminal_state() -> None:
     agent = AgentRuntime(
         policy=_RecordingPolicy(),
         action_space=NAVIGATION_ACTION_SPACE,
@@ -104,9 +113,10 @@ def test_navigation_agent_generates_real_terminal_state_prefix() -> None:
     agent.act()
     agent.observe(text="terminal <image>", image="image-1")
 
-    prefix = agent.terminal_state_prefix()
+    state = agent.terminal_state()
 
-    assert prefix.endswith("<|action_start|>")
+    assert state.assistant_prefix.endswith("<|action_start|>")
+    assert state.latent_hidden.tolist() == [[2.0, 1.0]]
 
 
 def test_navigation_agent_keeps_policy_generated_response_in_history() -> None:

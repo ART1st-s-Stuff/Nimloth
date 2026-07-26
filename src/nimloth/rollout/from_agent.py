@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nimloth.agent import AgentEpisode, create_prompt_template
+from nimloth.agent import AgentEpisode, PolicyState, create_prompt_template
 from nimloth.environment import get_action_space
 from nimloth.rollout.schema import RolloutTrajectory
 
@@ -16,7 +16,7 @@ def trajectory_from_agent_episode(
     split: str,
     sampling_temperature: float,
     sampling_top_p: float,
-    terminal_assistant_prefix: str | None = None,
+    terminal_state: PolicyState,
 ) -> RolloutTrajectory:
     """只消费 AgentEpisode，不再从 collector 拼装 prompt 细节。"""
 
@@ -51,10 +51,15 @@ def trajectory_from_agent_episode(
     credit_assignment = credit_assignments.pop()
     if credit_assignment in {"turn", "token"} and not all(has_traces):
         raise ValueError(f"{credit_assignment} credit requires token traces")
-    if not terminal_assistant_prefix:
-        raise ValueError(
-            "trajectory conversion requires a separately generated terminal CoT prefix"
-        )
+    action_states = [action.state_latent_hidden for action in episode.actions]
+    populated_action_states = [state is not None for state in action_states]
+    if any(populated_action_states) and not all(populated_action_states):
+        raise ValueError("trajectory conversion cannot mix cached and uncached actions")
+    if any(populated_action_states) != (terminal_state.latent_hidden is not None):
+        raise ValueError("terminal Qwen state cache does not match action state cache")
+    cached_states = [state for state in action_states if state is not None]
+    if terminal_state.latent_hidden is not None:
+        cached_states.append(terminal_state.latent_hidden)
 
     return RolloutTrajectory(
         record_id=record_id,
@@ -82,7 +87,11 @@ def trajectory_from_agent_episode(
             for action in episode.actions
         ],
         assistant_responses=[action.response for action in episode.actions],
-        terminal_assistant_prefix=terminal_assistant_prefix,
+        terminal_assistant_prefix=terminal_state.assistant_prefix,
+        state_latent_hiddens=[
+            state.detach().cpu().float().tolist()
+            for state in cached_states
+        ],
         policy_credit_assignment=credit_assignment,
         policy_token_ids=[
             list(trace.token_ids) for trace in traces if trace is not None

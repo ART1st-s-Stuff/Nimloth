@@ -91,13 +91,15 @@ in memory, serialized as JSON `null`, and restored as `-inf` when read.
 ## Training semantics
 
 With `H = predictor.history_size`, sampling first selects `H` consecutive
-actions and `H + 1` prompts from the same raw trajectory. Only the sampled
-windows enter the Backbone, so joint mode retains a real autograd graph and
-windows never cross episode boundaries. The final prompt includes the real
-next observation and all earlier turns.
+actions and `H + 1` states from the same raw trajectory. Windows never cross
+episode boundaries. A fresh planner rollout stores the pre-StateProjector Qwen
+latent hidden from the same forward that generated each real CoT, including a
+separately generated terminal state. Training slices those `T + 1` cached rows
+to the sampled window and runs the current StateProjector on them; it does not
+send the whole `history_size` state sequence through Qwen again.
 
 ```text
-hidden    = backbone(policy_prompt_0..H)
+hidden    = rollout_qwen_hidden[:, window_start:window_start+H+1]
 states    = state_proj(hidden)
 context   = states[:, :H]
 targets   = stop_gradient(states[:, 1:H+1])
@@ -112,9 +114,12 @@ L_value   = regression(Q[action], discounted_returns) + ranking_loss
 梯度模式是显式配置：
 
 - `gradient.representation_to_backbone: true`：WM、value 和 SIGReg 均可训练
-  Backbone；下一状态仍只在 WM target 分支 stop-gradient。
-- `gradient.representation_to_backbone: false`：Backbone forward 在 no-grad 下
-  执行；StateProjector 是否训练仍只由 `freeze.state_proj` 决定。
+  Backbone；下一状态仍只在 WM target 分支 stop-gradient。该模式不能消费
+  detached rollout state cache。
+- `gradient.representation_to_backbone: false`：有 rollout cache 时不执行 state
+  Qwen forward，只重跑 StateProjector；旧的无 cache 离线 trajectory 按时间位置
+  分成 `H + 1` 次、每次 `B` 个 prompt 的 no-grad Qwen forward。StateProjector
+  是否训练仍只由 `freeze.state_proj` 决定。
 - `actor.enabled`：单独控制 PPO。Backbone 的可训练参数范围继续由
   `--llm-tune/--vision-tune` 决定，学习率由 `gradient.backbone_lr` 统一管理。
 
@@ -187,13 +192,16 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   query、action boundary 和补全 delimiter 不进入 PPO loss。
 - `agent.planning.enabled: true` 且actor开启时，独立vLLM rollout先让Qwen生成真实
   CoT；worker extension从同一次多模态forward截取latent hidden和action boundary
-  hidden，不加载第二份HF Qwen。多步候选搜索随后全部发生在WM latent空间。
+  hidden，不加载第二份HF Qwen。每个动作state及额外terminal state的pre-project
+  latent hidden随trajectory持久化；训练时它只替代state编码，PPO仍重放当前Qwen的
+  sampled token概率。多步候选搜索随后全部发生在WM latent空间。
 - planner 当前用叶节点最大 action-value 作为搜索启发式；模型尚无 reward/done
   head，因此不会把中间 Q-value 相加并伪装成 model-predicted return。
 - planner支持`greedy`、`exhaustive`和`beam`。`exhaustive`批量模拟全部
   `action_count ** horizon`条latent动作序列；`beam`逐层批量扩展并按叶节点启发式裁剪；
-  `greedy`仅保留为单路径快速基线。trajectory保存最终候选序列、叶节点评分和按首动作
-  聚合的root score，当前H=2 planner smoke使用`exhaustive`。
+  首轮正式方案按人类要求使用`greedy`单路径规划；其他模式保留为后续对照能力。
+  trajectory保存最终候选序列、叶节点评分和按首动作聚合的root score。历史H=2
+  exhaustive smoke仅是旧实验事实，不是后续默认方案。
 - planner behavior和teacher都是首动作上的确定性分布，不需要teacher temperature。
   action token不参加PPO或reference KL；Qwen action head以显式
   `actor.planner_distillation_weight`拟合该动作。

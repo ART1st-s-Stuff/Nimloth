@@ -8,7 +8,12 @@ from typing import Any, Callable, Protocol
 
 import torch
 
-from nimloth.agent.policy import PlannerPolicyTrace, PolicyDecision, PolicyTokenTrace
+from nimloth.agent.policy import (
+    PlannerPolicyTrace,
+    PolicyDecision,
+    PolicyState,
+    PolicyTokenTrace,
+)
 from nimloth.agent.template import AgentPrompt
 from nimloth.latent import LatentActionTokens
 from nimloth.util.module import evaluating
@@ -24,7 +29,7 @@ class VLLMTurnStatePolicy(Protocol):
 
     def select_response_with_state(self, prompt: AgentPrompt) -> Any: ...
 
-    def generate_state_prefix(self, prompt: AgentPrompt) -> str: ...
+    def generate_state(self, prompt: AgentPrompt) -> PolicyState: ...
 
 
 @dataclass(frozen=True)
@@ -381,12 +386,18 @@ class PlanningPolicy:
                 reasoning_truncated=trace.reasoning_truncated,
             ),
             planner_trace=planner_trace,
+            state_latent_hidden=(
+                generated.policy_state.latent_hidden.detach().cpu().clone()
+            ),
         )
 
-    def generate_state_prefix(self, prompt: AgentPrompt) -> str:
-        """Terminal states need a real CoT but do not run planner or environment."""
+    def generate_state(self, prompt: AgentPrompt) -> PolicyState:
+        """Terminal state 生成真实 CoT/hidden，但不运行 planner 或 environment。"""
 
-        return self.turn_policy.generate_state_prefix(prompt)
+        state = self.turn_policy.generate_state(prompt)
+        if state.latent_hidden is None:
+            raise RuntimeError("planner terminal state has no captured Qwen hidden")
+        return state
 
 
 __all__ = ["PlanningPolicy", "WorldModelPlan", "WorldModelPlanner"]

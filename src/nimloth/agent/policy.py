@@ -336,6 +336,34 @@ class PolicyTokenTrace:
         )
 
 
+def _validate_state_latent_hidden(latent_hidden: torch.Tensor) -> None:
+    if (
+        latent_hidden.ndim != 2
+        or latent_hidden.shape[0] < 1
+        or latent_hidden.shape[1] < 1
+    ):
+        raise ValueError(
+            "policy state latent_hidden must have shape (K,D), "
+            f"got {tuple(latent_hidden.shape)}"
+        )
+    if not torch.isfinite(latent_hidden).all():
+        raise ValueError("policy state latent_hidden must be finite")
+
+
+@dataclass(frozen=True)
+class PolicyState:
+    """一次真实 state generation 产生的 CoT 前缀与 Qwen latent hidden。"""
+
+    assistant_prefix: str
+    latent_hidden: torch.Tensor | None = None
+
+    def __post_init__(self) -> None:
+        if not self.assistant_prefix:
+            raise ValueError("policy state assistant_prefix must be non-empty")
+        if self.latent_hidden is not None:
+            _validate_state_latent_hidden(self.latent_hidden)
+
+
 @dataclass(frozen=True)
 class PolicyDecision:
     """Policy 返回的动作、behavior distribution 与可选 token provenance。"""
@@ -345,6 +373,7 @@ class PolicyDecision:
     response: str | None = None
     token_trace: PolicyTokenTrace | None = None
     planner_trace: PlannerPolicyTrace | None = None
+    state_latent_hidden: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         action_log_probs = validate_action_log_probs(
@@ -353,6 +382,8 @@ class PolicyDecision:
         )
         if self.response is not None and not self.response:
             raise ValueError("policy response must be non-empty when provided")
+        if self.state_latent_hidden is not None:
+            _validate_state_latent_hidden(self.state_latent_hidden)
         if self.token_trace is not None:
             if len(self.token_trace.action_token_ids) != len(action_log_probs):
                 raise ValueError(
@@ -382,6 +413,8 @@ class PolicyDecision:
         if self.planner_trace is not None:
             if self.token_trace is None:
                 raise ValueError("planner decision requires a token trace")
+            if self.state_latent_hidden is None:
+                raise ValueError("planner decision requires its captured Qwen state")
             planner_probs = self.planner_trace.behavior_action_log_probs
             if len(planner_probs) != len(action_log_probs) or any(
                 not math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-7)

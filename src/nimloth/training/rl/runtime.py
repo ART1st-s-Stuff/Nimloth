@@ -34,32 +34,68 @@ class RLModelRuntime:
             raise ValueError(
                 f"RL state prompt count must be {expected}, got {len(prompts)}"
             )
-        backbone_batch = self.input_builder.build(
-            [prompt.unbound_messages() for prompt in prompts],
-            [prompt.images for prompt in prompts],
-            include_labels=False,
-        )
-        if self.representation_to_backbone:
-            hidden = self.agent.backbone(
-                backbone_batch,
-                include_lm_loss=False,
-            ).hidden
-        else:
-            # 冻结表征模式只截断 WM/value/SIGReg 到 Backbone 的梯度；PPO replay
-            # 仍可按 actor 配置独立训练同一个 Backbone。
-            with evaluating(self.agent.backbone), torch.no_grad():
+        step_outputs: list[torch.Tensor] = []
+        for step in range(state_steps):
+            step_prompts = prompts[step::state_steps]
+            backbone_batch = self.input_builder.build(
+                [prompt.unbound_messages() for prompt in step_prompts],
+                [prompt.images for prompt in step_prompts],
+                include_labels=False,
+            )
+            if self.representation_to_backbone:
                 hidden = self.agent.backbone(
                     backbone_batch,
                     include_lm_loss=False,
-                ).hidden.detach()
-        if hidden.ndim not in (2, 3) or hidden.shape[0] != expected:
+                ).hidden
+            else:
+                # 冻结表征模式只截断 WM/value/SIGReg 到 Backbone 的梯度；PPO replay
+                # 仍可按 actor 配置独立训练同一个 Backbone。
+                with evaluating(self.agent.backbone), torch.no_grad():
+                    hidden = self.agent.backbone(
+                        backbone_batch,
+                        include_lm_loss=False,
+                    ).hidden.detach()
+            if hidden.ndim not in (2, 3) or hidden.shape[0] != batch_size:
+                raise ValueError(
+                    "one RL state-step Backbone output must have shape "
+                    f"(B,D) or (B,K,D), got {tuple(hidden.shape)} for B={batch_size}"
+                )
+            step_outputs.append(hidden)
+        return torch.stack(step_outputs, dim=1)
+
+    def prepare_cached_state_sequence(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        batch_size: int,
+        state_steps: int,
+    ) -> torch.Tensor:
+        """把 rollout captured hidden 移到 StateProjector，且不建立 Qwen 图。"""
+
+        if self.representation_to_backbone:
             raise ValueError(
-                "RL Backbone hidden must have shape (B*T, D) or (B*T, k, D), "
-                f"got {tuple(hidden.shape)} for B*T={expected}"
+                "rollout-cached Qwen states require "
+                "gradient.representation_to_backbone=false"
             )
-        # Qwen 单 latent token 返回 (B*T,D)，多 token 返回 (B*T,k,D)。
-        # 时间轴只在这里恢复，token 轴继续由 StateProjector 解释。
-        return hidden.reshape(batch_size, state_steps, *hidden.shape[1:])
+        state_proj = self.agent.wm.state_proj
+        projector = getattr(state_proj, "module", state_proj)
+        expected_shape = (
+            batch_size,
+            state_steps,
+            int(projector.latent_token_count),
+            int(projector.qwen_hidden_dim),
+        )
+        if tuple(hidden_states.shape) != expected_shape:
+            raise ValueError(
+                "cached Qwen states must have shape "
+                f"{expected_shape}, got {tuple(hidden_states.shape)}"
+            )
+        parameter = next(state_proj.parameters())
+        return hidden_states.detach().to(
+            device=parameter.device,
+            dtype=parameter.dtype,
+            non_blocking=True,
+        )
 
 
 __all__ = ["RLModelRuntime"]

@@ -23,16 +23,20 @@ EnvironmentSession -> Agent/EpisodeRunner -> AgentEpisode
 ```
 
 prompt 模板、动作空间、真实 assistant response、逐 token behavior log-prob、
-loss mask、逐步reward与`terminated`/`truncated`都随 `AgentEpisode` 进入trajectory。collector
-只选择具体 environment、policy 和保存位置，不得复制 prompt 构造逻辑，也不得在
-公共适配器中猜测某个环境的 reward/success 语义。
+loss mask、逐步reward与`terminated`/`truncated`都随 `AgentEpisode` 进入trajectory。
+planner rollout还保存每个动作state和terminal state同一次Qwen forward产生的
+pre-StateProjector latent hidden。collector只选择具体 environment、policy 和保存位置，
+不得复制 prompt 构造逻辑，也不得在公共适配器中猜测某个环境的 reward/success 语义。
 
-窗口保留原始 Agent prompt 与 behavior provenance，不提前固化为 detached
-Backbone hidden。VAGEN navigation collector 属于
+窗口始终保留原始 Agent prompt 与 behavior provenance。普通trajectory不提前固化
+Backbone hidden；planner trajectory可额外携带rollout captured Qwen latent hidden，
+但只能在训练显式关闭representation-to-Backbone梯度时用于state路径。它是Qwen输出、
+不是KV cache或投影后的WM state。VAGEN navigation collector 属于
 `nimloth.environment.navigation.collector`，不属于本包。
 
 turn/token-credit trajectory 的 behavior replay prompt 从 `<think>` 开始并保留实际采样
-CoT。current/terminal state prompt 的真实 CoT 持久化契约仍是 RL TODO；完成前 state
-replay 与 planner 明确 fail-fast，不能退回固定 thought。窗口模块只负责保持顺序，
-不计算 advantage。fresh逐步reward用于完整episode return；真正terminal从0
-bootstrap，时间上限truncation必须由训练配置显式选择bootstrap语义。
+CoT。terminal observation额外生成并持久化真实CoT，不执行其draft action。planner
+trajectory若缺少任一`T + 1` state hidden会在读取/训练前失败，不能退回固定thought或
+重新把`B * (H + 1)`完整prefix一次送进Qwen。窗口模块只负责保持顺序，不计算
+advantage。fresh逐步reward用于完整episode return；真正terminal从0 bootstrap，
+时间上限truncation必须由训练配置显式选择bootstrap语义。

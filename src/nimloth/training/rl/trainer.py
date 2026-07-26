@@ -643,6 +643,11 @@ def train_rl(
         raise ValueError(
             "actor.enabled requires a trainable --llm-tune or --vision-tune mode"
         )
+    if planning_enabled and config.gradient.representation_to_backbone:
+        raise ValueError(
+            "planner RL consumes rollout-captured Qwen states and requires "
+            "gradient.representation_to_backbone=false"
+        )
     validate_collector_configuration(
         actor_enabled=actor_enabled,
         train_collector=train_collector,

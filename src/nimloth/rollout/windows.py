@@ -45,6 +45,17 @@ class TrajectoryWindow:
             )
         )
 
+    def cached_state_latent_hiddens(self) -> torch.Tensor | None:
+        """返回 rollout 同一次 Qwen forward 保存的 ``(H+1,K,D)`` hidden。"""
+
+        states = self.trajectory.state_latent_hiddens
+        if not states:
+            return None
+        selected = states[
+            self.start_step : self.start_step + self.history_size + 1
+        ]
+        return torch.tensor(selected, dtype=torch.float32)
+
     def policy_replay_inputs(self) -> tuple[PolicyReplayInput, ...]:
         """返回窗口内 H 个动作的 PPO 重放输入。"""
 

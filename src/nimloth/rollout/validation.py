@@ -42,6 +42,7 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
         raise ValueError(f"{prefix}: action names do not match action indices")
     _validate_behavior_probabilities(trajectory, action_count=len(action_space))
     _validate_token_provenance(trajectory, action_count=len(action_space))
+    _validate_state_latent_hiddens(trajectory)
 
     if len(trajectory.policy_messages) != trajectory.num_steps:
         raise ValueError(
@@ -88,6 +89,40 @@ def _validate_reward_provenance(trajectory: RolloutTrajectory) -> None:
         raise ValueError(f"{prefix} has episode status without step rewards")
     elif trajectory.policy_credit_assignment == "token":
         raise ValueError(f"{prefix} token credit requires step rewards and status")
+
+
+def _validate_state_latent_hiddens(trajectory: RolloutTrajectory) -> None:
+    """校验 rollout Qwen forward 为每个真实 state 保存的 latent hidden。"""
+
+    prefix = f"trajectory {trajectory.record_id}"
+    states = trajectory.state_latent_hiddens
+    if trajectory.planner_policy_traces and not states:
+        raise ValueError(f"{prefix} planner trajectory has no captured Qwen states")
+    if not states:
+        return
+    if len(states) != trajectory.num_steps + 1:
+        raise ValueError(
+            f"{prefix}: state_latent_hiddens={len(states)} "
+            f"but states={trajectory.num_steps + 1}"
+        )
+    latent_token_count = trajectory.resolved_latent_token_count()
+    hidden_dim: int | None = None
+    for step, state in enumerate(states):
+        if len(state) != latent_token_count:
+            raise ValueError(
+                f"{prefix} state {step} has {len(state)} latent rows, "
+                f"expected {latent_token_count}"
+            )
+        row_dims = {len(hidden) for hidden in state}
+        if len(row_dims) != 1 or not row_dims or 0 in row_dims:
+            raise ValueError(f"{prefix} state {step} has ragged latent hidden rows")
+        state_hidden_dim = row_dims.pop()
+        if hidden_dim is None:
+            hidden_dim = state_hidden_dim
+        elif state_hidden_dim != hidden_dim:
+            raise ValueError(f"{prefix} state {step} hidden dimension changed")
+        if not all(math.isfinite(float(value)) for hidden in state for value in hidden):
+            raise ValueError(f"{prefix} state {step} has non-finite latent hidden")
 
 
 def _validate_behavior_probabilities(

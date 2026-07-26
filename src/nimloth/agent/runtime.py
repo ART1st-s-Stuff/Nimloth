@@ -5,10 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import torch
+
 from nimloth.agent.policy import (
     AgentPolicy,
     PolicyDecision,
     PlannerPolicyTrace,
+    PolicyState,
     PolicyTokenTrace,
     validate_action_log_probs,
 )
@@ -32,6 +35,7 @@ class AgentAction:
     policy_prompt: AgentPrompt
     token_trace: PolicyTokenTrace | None = None
     planner_trace: PlannerPolicyTrace | None = None
+    state_latent_hidden: torch.Tensor | None = None
     credit_assignment: Literal["action", "turn", "token"] = "action"
 
     @property
@@ -142,6 +146,7 @@ class AgentRuntime:
             policy_prompt=policy_prompt,
             token_trace=decision.token_trace,
             planner_trace=decision.planner_trace,
+            state_latent_hidden=decision.state_latent_hidden,
             credit_assignment=credit_assignment,
         )
 
@@ -161,21 +166,23 @@ class AgentRuntime:
 
         return self._prompt_template.build_supervised_prompt(self.transcript())
 
-    def terminal_state_prefix(self) -> str:
-        """Generate the final observed state's real CoT without taking an action."""
+    def terminal_state(self) -> PolicyState:
+        """生成最后 observation 的真实 CoT 和同一次 Qwen forward state。"""
 
         if len(self._observation_texts) != len(self._action_indices) + 1:
             raise RuntimeError("terminal state prefix requires one unacted observation")
-        generate = getattr(self._policy, "generate_state_prefix", None)
+        generate = getattr(self._policy, "generate_state", None)
         if generate is None:
-            raise RuntimeError("policy cannot generate a terminal state CoT")
+            raise RuntimeError("policy cannot generate a terminal Qwen state")
         prompt = self._prompt_template.build_response_policy_prompt(
             self.transcript()
         )
-        prefix = generate(prompt)
-        if not isinstance(prefix, str) or not prefix.startswith("<think>"):
-            raise RuntimeError("policy returned an invalid terminal state prefix")
-        return prefix
+        state = generate(prompt)
+        if not isinstance(state, PolicyState) or not state.assistant_prefix.startswith(
+            "<think>"
+        ):
+            raise RuntimeError("policy returned an invalid terminal state")
+        return state
 
     def policy_prompt_for_step(self, step_index: int) -> AgentPrompt:
         """按历史位置重建可审计的 policy prompt。"""

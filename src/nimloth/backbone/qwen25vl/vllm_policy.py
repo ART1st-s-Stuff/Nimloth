@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal, Protocol
 
-from nimloth.agent import AgentPrompt, PolicyDecision, PolicyTokenTrace
+from nimloth.agent import AgentPrompt, PolicyDecision, PolicyState, PolicyTokenTrace
 from nimloth.backbone.qwen25vl.policy import (
     collect_policy_images,
     reasoning_forbidden_token_ids,
@@ -166,6 +166,14 @@ class QwenVLLMAgentPolicy:
 
     def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
         if self.credit_assignment in {"turn", "token"}:
+            if self.capture_policy_state:
+                generated = self.select_response_with_state(prompt)
+                return replace(
+                    generated.qwen_decision,
+                    state_latent_hidden=(
+                        generated.policy_state.latent_hidden.detach().cpu().clone()
+                    ),
+                )
             return self._select_response(prompt)
         return self._select_action_only(prompt)
 
@@ -176,10 +184,18 @@ class QwenVLLMAgentPolicy:
         failed generation always clears worker state before the error escapes.
         """
 
+        return self._generate_response_with_state(prompt, stage_prefix="")
+
+    def _generate_response_with_state(
+        self,
+        prompt: AgentPrompt,
+        *,
+        stage_prefix: str,
+    ) -> QwenTurnGeneration:
         if not self.capture_policy_state:
             raise RuntimeError("this vLLM policy was not configured for state capture")
         tokens = LatentActionTokens()
-        self._progress("capture_start")
+        self._progress(f"{stage_prefix}capture_start")
         start_policy_state_capture(
             self.engine,
             latent_token_ids=tuple(
@@ -190,16 +206,16 @@ class QwenVLLMAgentPolicy:
             action_token_ids=self.action_token_ids,
         )
         try:
-            self._progress("generation_start")
+            self._progress(f"{stage_prefix}generation_start")
             decision = self._select_response(prompt)
-            self._progress("generation_done")
-            self._progress("capture_pop_start")
+            self._progress(f"{stage_prefix}generation_done")
+            self._progress(f"{stage_prefix}capture_pop_start")
             policy_state = pop_policy_state_capture(self.engine)
-            self._progress("capture_pop_done")
+            self._progress(f"{stage_prefix}capture_pop_done")
         except Exception:
-            self._progress("capture_abort_start")
+            self._progress(f"{stage_prefix}capture_abort_start")
             abort_policy_state_capture(self.engine)
-            self._progress("capture_abort_done")
+            self._progress(f"{stage_prefix}capture_abort_done")
             raise
         if policy_state.latent_hidden.shape[0] != self.latent_token_count:
             raise RuntimeError(
@@ -216,21 +232,35 @@ class QwenVLLMAgentPolicy:
             policy_state=policy_state,
         )
 
-    def generate_state_prefix(self, prompt: AgentPrompt) -> str:
-        """Generate a real terminal CoT prefix without executing its draft action."""
+    def generate_state(self, prompt: AgentPrompt) -> PolicyState:
+        """生成 terminal CoT/hidden，不执行其中的 draft action。"""
 
         if self.credit_assignment not in {"turn", "token"}:
             raise RuntimeError("terminal state CoT requires turn/token generation")
-        self._progress("terminal_generation_start")
-        decision = self._select_response(prompt)
-        self._progress("terminal_generation_done")
+        if self.capture_policy_state:
+            generated = self._generate_response_with_state(
+                prompt,
+                stage_prefix="terminal_",
+            )
+            decision = generated.qwen_decision
+            latent_hidden = (
+                generated.policy_state.latent_hidden.detach().cpu().clone()
+            )
+        else:
+            self._progress("terminal_generation_start")
+            decision = self._select_response(prompt)
+            self._progress("terminal_generation_done")
+            latent_hidden = None
         assert decision.response is not None
         boundary = decision.response.rfind(LatentActionTokens().action_start)
         if boundary < 0:
             raise RuntimeError("terminal Qwen response has no action boundary")
-        return decision.response[
-            : boundary + len(LatentActionTokens().action_start)
-        ]
+        return PolicyState(
+            assistant_prefix=decision.response[
+                : boundary + len(LatentActionTokens().action_start)
+            ],
+            latent_hidden=latent_hidden,
+        )
 
     def _request(self, prompt: AgentPrompt) -> tuple[dict[str, Any], list[Any]]:
         bound_messages = prompt.bound_messages()

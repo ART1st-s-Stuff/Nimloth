@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import math
 
+import torch
+
 from nimloth.agent import (
     AgentRuntime,
     AgentPrompt,
     EpisodeRunner,
     NimlothPromptTemplate,
     PolicyDecision,
+    PolicyState,
     PolicyTokenTrace,
 )
 from nimloth.environment import EnvironmentObservation, EnvironmentStep
@@ -51,6 +54,9 @@ class _SequencePolicy:
                 action_token_ids=action_token_ids,
                 reasoning_text=f"Reason {len(self.prompts)}.",
                 finish_reason="stop",
+            ),
+            state_latent_hidden=torch.tensor(
+                [[float(len(self.prompts)), float(action_index)]]
             ),
         )
 
@@ -138,8 +144,12 @@ def test_agent_episode_is_the_only_input_needed_to_build_rollout() -> None:
         split="train",
         sampling_temperature=0.7,
         sampling_top_p=0.95,
-        terminal_assistant_prefix=(
-            "<think>Terminal observation.</think><|latent_state|><|action_start|>"
+        terminal_state=PolicyState(
+            assistant_prefix=(
+                "<think>Terminal observation.</think>"
+                "<|latent_state|><|action_start|>"
+            ),
+            latent_hidden=torch.tensor([[3.0, 0.0]]),
         ),
     )
 
@@ -150,6 +160,11 @@ def test_agent_episode_is_the_only_input_needed_to_build_rollout() -> None:
     assert restored.prompt_template_spec == episode.prompt_template
     assert restored.instruction == "walk forward"
     assert restored.action_names == ["moveahead", "rotateright"]
+    assert restored.state_latent_hiddens == [
+        [[1.0, 0.0]],
+        [[2.0, 4.0]],
+        [[3.0, 0.0]],
+    ]
     assert restored.policy_messages == [
         action.policy_prompt.unbound_messages() for action in episode.actions
     ]
@@ -165,8 +180,12 @@ def test_legacy_navigation_instruction_key_is_migrated() -> None:
         split="train",
         sampling_temperature=1.0,
         sampling_top_p=1.0,
-        terminal_assistant_prefix=(
-            "<think>Terminal observation.</think><|latent_state|><|action_start|>"
+        terminal_state=PolicyState(
+            assistant_prefix=(
+                "<think>Terminal observation.</think>"
+                "<|latent_state|><|action_start|>"
+            ),
+            latent_hidden=torch.tensor([[3.0, 0.0]]),
         ),
     )
     record = trajectory.to_record()

@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-07-26：RL window复用rollout Qwen state，移除history展平forward
+
+- 已重新确认ID106的state路径：`history_size=H`的每个训练window曾把`H + 1`个完整
+  多模态prefix按window-major展平为`B * (H + 1)`，一次送进HF Qwen。planner在真实
+  vLLM CoT forward中已经取得每个当前observation的latent hidden，但此前只用于在线
+  planning，trajectory没有保存；terminal observation也只保存了CoT prefix。
+- 现在planner action把同一次vLLM forward的pre-StateProjector latent hidden传入
+  `AgentEpisode`；terminal observation额外生成一次真实CoT并同时捕获hidden，不执行
+  draft action。trajectory持久化并校验完整`T + 1`序列、latent token数、hidden维度和
+  finite值；旧ID106 planner artifact因没有该字段会fail closed，不能静默复用。
+- RL从连续window直接切片`(B,H+1,K,D)` cache，并按StateProjector实际device/dtype迁移；
+  当前StateProjector仍正常forward和训练。该路径显式要求
+  `gradient.representation_to_backbone=false`。PPO token replay保持不变，仍使用当前Qwen
+  重放保存的token IDs/log-prob mask，cache不替代actor梯度。
+- 无cache的非planner离线trajectory保留在线Qwen编码，但改为按时间位置执行`H + 1`次、
+  每次仅`B`个prompt，不再构造单次`B * (H + 1)` state batch。首轮正式planner仍按人类
+  要求使用greedy；本改动没有改写历史exhaustive artifact或实验结论。
+- 按人类要求本阶段暂未运行pytest、import/compile或GPU门禁；当前只完成实现与测试定义，
+  后续需与其他修复合并后统一验证loss/gradient、DDP collective、checkpoint和真实20步
+  单次optimizer step。
+
 ## 2026-07-26：移除 paired-RL 手工梯度同步，改为单一官方 DDP forward 边界
 
 - 人类否决了 ID93 后在 `OptimizationRuntime` 内逐参数 `all_reduce` 的 workaround。该实现

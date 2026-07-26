@@ -47,6 +47,18 @@ class RLBatch:
             for sample in window.policy_replay_inputs()
         )
 
+    @property
+    def cached_state_latent_hiddens(self) -> torch.Tensor | None:
+        """返回 ``(B,H+1,K,D)`` rollout hidden；一个 batch 禁止混用来源。"""
+
+        rows = [window.cached_state_latent_hiddens() for window in self.windows]
+        populated = [row is not None for row in rows]
+        if any(populated) and not all(populated):
+            raise ValueError("one RL batch cannot mix cached and uncached Qwen states")
+        if not any(populated):
+            return None
+        return torch.stack([row for row in rows if row is not None], dim=0)
+
 
 @dataclass(frozen=True)
 class RLStepOutput:
@@ -221,13 +233,22 @@ class RLAlgorithm:
     ) -> RLStepOutput:
         """构造 RL 计算图并计算 WM、value 与可选 PPO 目标。"""
 
-        # state_prompts 按 window-major 展开，因此 runtime 可无歧义地恢复 (B,H+1)。
-        hidden_states = runtime.encode_state_sequence(
-            batch.state_prompts,
-            batch_size=len(batch.windows),
-            state_steps=self.history_size + 1,
-        )
         expected_state_steps = self.history_size + 1
+        cached_hidden_states = batch.cached_state_latent_hiddens
+        if cached_hidden_states is None:
+            # 旧离线 trajectory 没有 rollout hidden 时，按时间位置逐次执行 Qwen；
+            # 每次 forward 只有 B 个 prompt，不把 history_size 展平进 Qwen batch。
+            hidden_states = runtime.encode_state_sequence(
+                batch.state_prompts,
+                batch_size=len(batch.windows),
+                state_steps=expected_state_steps,
+            )
+        else:
+            hidden_states = runtime.prepare_cached_state_sequence(
+                cached_hidden_states,
+                batch_size=len(batch.windows),
+                state_steps=expected_state_steps,
+            )
         if (
             hidden_states.ndim not in (3, 4)
             or hidden_states.shape[0] != len(batch.windows)

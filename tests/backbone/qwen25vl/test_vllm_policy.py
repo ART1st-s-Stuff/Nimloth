@@ -155,7 +155,14 @@ def test_policy_state_progress_identifies_generation_and_capture_boundaries(
         capture_policy_state=True,
         progress_callback=stages.append,
     )
-    decision = SimpleNamespace()
+    decision = module.PolicyDecision(
+        action_index=0,
+        action_log_probs=(0.0, *([float("-inf")] * 7)),
+        response=(
+            "<think>terminal cot</think><|latent_state|><|action_start|>"
+            "<|action_(0)|><|action_end|>"
+        ),
+    )
     monkeypatch.setattr(policy, "_select_response", lambda _prompt: decision)
     monkeypatch.setattr(
         module,
@@ -171,16 +178,57 @@ def test_policy_state_progress_identifies_generation_and_capture_boundaries(
         ),
     )
 
-    result = policy.select_response_with_state(SimpleNamespace())
+    result = policy.generate_state(SimpleNamespace())
 
-    assert result.qwen_decision is decision
+    assert result.assistant_prefix == (
+        "<think>terminal cot</think><|latent_state|><|action_start|>"
+    )
+    assert result.latent_hidden.shape == (16, 4)
     assert stages == [
-        "capture_start",
-        "generation_start",
-        "generation_done",
-        "capture_pop_start",
-        "capture_pop_done",
+        "terminal_capture_start",
+        "terminal_generation_start",
+        "terminal_generation_done",
+        "terminal_capture_pop_start",
+        "terminal_capture_pop_done",
     ]
+
+
+def test_captured_turn_action_carries_same_forward_state(monkeypatch) -> None:
+    processor = SimpleNamespace(tokenizer=_Tokenizer())
+    policy = QwenVLLMAgentPolicy(
+        engine=SimpleNamespace(),
+        processor=processor,
+        temperature=0.7,
+        top_p=0.95,
+        latent_token_count=16,
+        credit_assignment="token",
+        capture_policy_state=True,
+    )
+    qwen_decision = module.PolicyDecision(
+        action_index=0,
+        action_log_probs=(0.0, *([float("-inf")] * 7)),
+        response=(
+            "<think>real cot</think><|latent_state|><|action_start|>"
+            "<|action_(0)|><|action_end|>"
+        ),
+    )
+    latent_hidden = torch.arange(64, dtype=torch.float32).reshape(16, 4)
+    monkeypatch.setattr(
+        policy,
+        "select_response_with_state",
+        lambda _prompt: module.QwenTurnGeneration(
+            qwen_decision=qwen_decision,
+            policy_state=module.VLLMPolicyState(
+                latent_hidden=latent_hidden,
+                action_logits=torch.zeros(8),
+            ),
+        ),
+    )
+
+    decision = policy.select_action(SimpleNamespace())
+
+    assert torch.equal(decision.state_latent_hidden, latent_hidden)
+    assert decision.state_latent_hidden is not latent_hidden
 
 
 def test_from_model_registers_turn_logits_adapter_and_eager_mode(monkeypatch) -> None:

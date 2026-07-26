@@ -14,9 +14,12 @@ Backbone；训练参数是否可更新被一次隐藏的预处理决定。
 
 ## 正确做法
 
-- rollout 只保存原始 trajectory，并先按连续边界采样 `H+1` 个状态的窗口。
-- 训练 runtime 在采样后执行 Backbone forward；是否使用 `no_grad` 由显式的表征
-  梯度模式决定。
+- rollout 必须保存原始 trajectory，并先按连续边界采样 `H+1` 个状态的窗口。
+- 默认由训练 runtime 在采样后执行 Backbone forward；是否使用 `no_grad` 由显式的
+  表征梯度模式决定。
+- planner可额外保存真实CoT同一次Qwen forward的pre-StateProjector latent hidden，
+  但训练只有在`representation_to_backbone=false`时才能消费它，并且必须重新执行当前
+  StateProjector。该cache不得静默改变表征梯度策略。
 - WM target 只 detach 右移后的 next-state view，不能提前 detach 整段 state。
 - tune mode 只决定哪些 Backbone 参数可训练；`actor.enabled` 只决定是否计算 PPO；
   表征 loss 是否进入 Backbone 使用独立配置。

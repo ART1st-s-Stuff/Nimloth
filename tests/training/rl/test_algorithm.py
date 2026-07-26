@@ -77,7 +77,7 @@ class _InputBuilder:
     processor = None
 
     def __init__(self) -> None:
-        self.last_hidden: torch.Tensor | None = None
+        self.hidden_batches: list[torch.Tensor] = []
 
     def build(self, messages, images, *, include_labels: bool) -> BackboneBatch:
         del messages, include_labels
@@ -85,8 +85,9 @@ class _InputBuilder:
         for prompt_images in images:
             step = float(str(prompt_images[-1]).rsplit("_", 1)[-1].split(".")[0])
             rows.append([step, step + 1.0, step + 2.0])
-        self.last_hidden = torch.tensor(rows, requires_grad=True)
-        return BackboneBatch({"hidden": self.last_hidden})
+        hidden = torch.tensor(rows, requires_grad=True)
+        self.hidden_batches.append(hidden)
+        return BackboneBatch({"hidden": hidden})
 
     def collate_encoded(self, rows, *, include_labels: bool) -> BackboneBatch:
         raise NotImplementedError
@@ -106,6 +107,21 @@ class _Predictor(torch.nn.Module):
         _action_indices: torch.Tensor,
     ) -> torch.Tensor:
         return self.linear(state)
+
+
+class _StateProjector(torch.nn.Linear):
+    qwen_hidden_dim = 3
+    latent_token_count = 1
+
+    def __init__(self) -> None:
+        super().__init__(3, 2, bias=False)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        if hidden.ndim == 3:
+            if tuple(hidden.shape[1:]) != (1, 3):
+                raise ValueError(f"unexpected cached hidden shape {tuple(hidden.shape)}")
+            hidden = hidden[:, 0]
+        return super().forward(hidden)
 
 
 class _RecordingSIGReg(torch.nn.Module):
@@ -250,13 +266,13 @@ def _algorithm(
     RLModelRuntime,
     _InputBuilder,
     _Backbone,
-    torch.nn.Linear,
+    _StateProjector,
     _Predictor,
     ValueHead,
 ]:
     backbone = _Backbone()
     input_builder = _InputBuilder()
-    state_proj = torch.nn.Linear(3, 2, bias=False)
+    state_proj = _StateProjector()
     predictor = _Predictor()
     value_head = ValueHead(emb_dim=2, num_actions=8, hidden_dim=2)
     agent = Agent(
@@ -323,14 +339,69 @@ def test_rl_wm_stops_gradient_on_final_target_but_trains_backbone() -> None:
 
     output.losses["wm"].backward()
 
-    assert builder.last_hidden is not None
-    assert builder.last_hidden.grad is not None
-    gradient = builder.last_hidden.grad.reshape(2, 3, 3)
+    assert len(builder.hidden_batches) == 3
+    assert all(hidden.shape == (2, 3) for hidden in builder.hidden_batches)
+    assert all(hidden.grad is not None for hidden in builder.hidden_batches)
+    gradient = torch.stack(
+        [hidden.grad for hidden in builder.hidden_batches if hidden.grad is not None],
+        dim=1,
+    )
     assert bool(gradient[:, :-1].abs().sum() > 0)
     assert torch.count_nonzero(gradient[:, -1]) == 0
     assert backbone.model.weight.grad is not None
     assert state_proj.weight.grad is not None
     assert predictor.linear.weight.grad is not None
+
+
+def test_cached_rollout_states_bypass_qwen_but_train_state_projector() -> None:
+    batch = _batch()
+    for window_index, window in enumerate(batch.windows):
+        window.trajectory.state_latent_hiddens = [
+            [[float(window_index + step), 1.0, 2.0]]
+            for step in range(3)
+        ]
+    algorithm, runtime, builder, backbone, state_proj, _, value_head = _algorithm(
+        representation_to_backbone=False
+    )
+
+    output = algorithm.training_step(runtime, batch)
+    output.losses["value"].backward()
+
+    assert builder.hidden_batches == []
+    assert backbone.model.weight.grad is None
+    assert state_proj.weight.grad is not None
+    assert value_head.net[0].weight.grad is not None
+
+
+def test_cached_rollout_states_require_frozen_qwen_representation() -> None:
+    batch = _batch()
+    for window in batch.windows:
+        window.trajectory.state_latent_hiddens = [
+            [[float(step), 1.0, 2.0]]
+            for step in range(3)
+        ]
+    algorithm, runtime, *_ = _algorithm(representation_to_backbone=True)
+
+    with pytest.raises(
+        ValueError,
+        match="representation_to_backbone=false",
+    ):
+        algorithm.training_step(runtime, batch)
+
+
+def test_cached_rollout_states_use_state_projector_dtype() -> None:
+    _, runtime, *_rest, state_proj, _predictor, _value_head = _algorithm(
+        representation_to_backbone=False
+    )
+    state_proj.to(dtype=torch.float64)
+
+    prepared = runtime.prepare_cached_state_sequence(
+        torch.zeros((2, 3, 1, 3), dtype=torch.float32),
+        batch_size=2,
+        state_steps=3,
+    )
+
+    assert prepared.dtype == torch.float64
 
 
 def test_frozen_representation_mode_blocks_only_backbone_gradient() -> None:
@@ -640,6 +711,9 @@ def test_planner_distillation_kl_is_finite_for_deterministic_teacher() -> None:
         )
         planner_behavior.append(list(deterministic))
     trajectory.planner_policy_traces = planner_traces
+    trajectory.state_latent_hiddens = [
+        [[float(step), 1.0, 2.0]] for step in range(3)
+    ]
     trajectory.action_log_probs = planner_behavior
     trajectory.rewards = [0.0, 1.0]
     trajectory.reward = 1.0
@@ -654,7 +728,11 @@ def test_planner_distillation_kl_is_finite_for_deterministic_teacher() -> None:
     batch = build_rl_batch(windows, gamma=1.0, device=torch.device("cpu"))
     token_replay = _PlannerTokenReplay(token_count=2, action_count=8)
     _, base_runtime, *_ = _algorithm()
-    runtime = replace(base_runtime, policy_replay=token_replay)
+    runtime = replace(
+        base_runtime,
+        policy_replay=token_replay,
+        representation_to_backbone=False,
+    )
     algorithm = RLAlgorithm(
         history_size=2,
         sigreg=None,
