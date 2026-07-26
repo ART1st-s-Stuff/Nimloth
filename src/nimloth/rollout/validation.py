@@ -44,6 +44,7 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
     _validate_token_provenance(trajectory, action_count=len(action_space))
     _validate_state_latent_hiddens(trajectory)
     _validate_world_model_states(trajectory)
+    _validate_planner_segments(trajectory)
 
     if len(trajectory.policy_messages) != trajectory.num_steps:
         raise ValueError(
@@ -176,6 +177,30 @@ def _validate_world_model_states(trajectory: RolloutTrajectory) -> None:
             raise ValueError(f"{prefix} WM state {step} shape changed")
         if not all(math.isfinite(float(value)) for value in values):
             raise ValueError(f"{prefix} WM state {step} has non-finite values")
+
+
+def _validate_planner_segments(trajectory: RolloutTrajectory) -> None:
+    """Bind every anchor-bounded action segment to its selected plan."""
+
+    if not trajectory.planner_policy_traces:
+        return
+    prefix = f"trajectory {trajectory.record_id}"
+    anchors = trajectory.state_anchor_steps
+    if len(anchors) != len(trajectory.planner_policy_traces) + 1:
+        raise ValueError(f"{prefix} planner anchors do not bound every action trace")
+    for trace, start_step, end_step in zip(
+        trajectory.planner_policy_traces,
+        anchors,
+        anchors[1:],
+        strict=True,
+    ):
+        segment = trajectory.action_indices[start_step:end_step]
+        try:
+            trace.validate_executed_prefix(segment)
+        except ValueError as error:
+            raise ValueError(
+                f"{prefix} anchor {start_step} has invalid planner segment: {error}"
+            ) from error
 
 
 def _validate_behavior_probabilities(

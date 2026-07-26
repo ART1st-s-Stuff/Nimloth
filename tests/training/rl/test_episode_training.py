@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
+import pytest
 import torch
 
 from nimloth.agent import (
@@ -16,7 +18,10 @@ from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
 from nimloth.rollout import RolloutTrajectory
 from nimloth.training.rl.algorithm import RLAlgorithm
-from nimloth.training.rl.episodes import build_episode_training_batches
+from nimloth.training.rl.episodes import (
+    TemporalDifferenceStep,
+    build_episode_training_batches,
+)
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm import WorldModel
 
@@ -188,6 +193,48 @@ def _planner_trajectory() -> RolloutTrajectory:
         planner_policy_traces=traces,
         prompt_template_spec=prompt.spec,
     )
+
+
+def test_planner_trajectory_rejects_a_tampered_segment_tail() -> None:
+    trajectory = _planner_trajectory()
+    trace = trajectory.planner_policy_traces[0]
+    trajectory.planner_policy_traces[0] = replace(
+        trace,
+        candidate_sequences=((0, 7),),
+    )
+
+    with pytest.raises(ValueError, match="selected candidate prefix"):
+        build_episode_training_batches(
+            [trajectory],
+            gamma=1.0,
+            truncated_bootstrap=0.0,
+        )
+
+    with pytest.raises(ValueError, match="selected candidate prefix"):
+        TemporalDifferenceStep(trajectory=trajectory, start_step=0, end_step=2)
+
+
+def test_planner_trace_accepts_a_short_terminal_prefix() -> None:
+    trace = _planner_trajectory().planner_policy_traces[0]
+
+    trace.validate_executed_prefix((trace.selected_candidate_sequence[0],))
+
+
+def test_planner_trajectory_rejects_a_segment_longer_than_its_horizon() -> None:
+    trajectory = _planner_trajectory()
+    trace = trajectory.planner_policy_traces[0]
+    trajectory.planner_policy_traces[0] = replace(
+        trace,
+        candidate_sequences=((0,),),
+        horizon=1,
+    )
+
+    with pytest.raises(ValueError, match="exceeds its horizon"):
+        build_episode_training_batches(
+            [trajectory],
+            gamma=1.0,
+            truncated_bootstrap=0.0,
+        )
 
 
 def test_episode_td_replays_mixed_history_then_mc_only_updates_value_head() -> None:

@@ -32,8 +32,7 @@ class TemporalDifferenceStep:
         trace = self.trajectory.planner_policy_trace(self.start_step)
         if trace is None:
             raise ValueError("TD step start has no planner action trace")
-        if trace.action_training.executed_action_index != self.action_indices[0]:
-            raise ValueError("planner action trace does not match the executed segment")
+        trace.validate_executed_prefix(self.action_indices)
 
     @property
     def action_indices(self) -> tuple[int, ...]:

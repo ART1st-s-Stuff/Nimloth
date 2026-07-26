@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -239,11 +240,7 @@ class PlannerPolicyTrace:
             )
         if tuple(expected_root_scores) != self.root_action_scores:
             raise ValueError("planner root scores do not match candidate scores")
-        best_candidate = max(
-            range(len(self.candidate_scores)),
-            key=self.candidate_scores.__getitem__,
-        )
-        best_planner_action = self.candidate_sequences[best_candidate][0]
+        best_planner_action = self.selected_candidate_sequence[0]
         action_index = self.action_training.executed_action_index
         if len(self.action_training.behavior_action_log_probs) != action_count:
             raise ValueError("planner action-training action count changed")
@@ -282,6 +279,34 @@ class PlannerPolicyTrace:
     @property
     def teacher_action_log_probs(self) -> tuple[float, ...] | None:
         return self.action_training.teacher_action_log_probs
+
+    @property
+    def selected_candidate_sequence(self) -> tuple[int, ...]:
+        """Return the candidate selected by the planner's stable argmax rule."""
+
+        best_candidate = max(
+            range(len(self.candidate_scores)),
+            key=self.candidate_scores.__getitem__,
+        )
+        return self.candidate_sequences[best_candidate]
+
+    def validate_executed_prefix(self, action_indices: Sequence[int]) -> None:
+        """Bind an executed segment to the selected planner candidate."""
+
+        executed = tuple(int(action_index) for action_index in action_indices)
+        if not executed:
+            raise ValueError("executed planner segment must contain an action")
+        if len(executed) > self.horizon:
+            raise ValueError(
+                "executed planner segment exceeds its horizon: "
+                f"actions={len(executed)}, horizon={self.horizon}"
+            )
+        expected = self.selected_candidate_sequence[: len(executed)]
+        if executed != expected:
+            raise ValueError(
+                "executed planner segment does not match the selected candidate "
+                f"prefix: executed={executed}, expected={expected}"
+            )
 
     @property
     def behavior_action_log_probs(self) -> tuple[float, ...]:

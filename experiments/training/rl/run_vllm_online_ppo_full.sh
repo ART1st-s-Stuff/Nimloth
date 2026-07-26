@@ -40,18 +40,26 @@ esac
   exit 1
 }
 
-read -r CONFIG_ITERATIONS CONFIG_EPISODES < <(
+read -r CONFIG_ITERATIONS CONFIG_EPISODES CONFIG_LOG_INTERVAL < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
 from nimloth.config.rl import load_rl_config
 config = load_rl_config(Path(sys.argv[1]))
-print(config.rl.iterations, config.rl.envs_per_iteration)
+print(
+    config.rl.iterations,
+    config.rl.envs_per_iteration,
+    config.training.log_interval,
+)
 ' "${RL_CONFIG}"
 )
 TOTAL_ITERATIONS=${TOTAL_ITERATIONS:-${CONFIG_ITERATIONS}}
 [[ "${TOTAL_ITERATIONS}" == "${CONFIG_ITERATIONS}" ]] || {
   echo "TOTAL_ITERATIONS disagrees with rl.iterations" >&2
+  exit 1
+}
+[[ "${CONFIG_LOG_INTERVAL}" == 1 ]] || {
+  echo "resume-safe full runner requires training.log_interval=1" >&2
   exit 1
 }
 
@@ -70,28 +78,20 @@ record_exit() {
 }
 trap record_exit EXIT
 
-last_completed=0
-if [[ -s "${TRAIN_OUT}/train_step_log.csv" ]]; then
-  last_completed=$("${PYTHON}" -c '
-import csv, sys
-rows = list(csv.DictReader(open(sys.argv[1], encoding="utf-8")))
-print(int(rows[-1]["global_step"]) if rows else 0)
-' "${TRAIN_OUT}/train_step_log.csv")
+read -r last_completed START_ITERATION discarded_log_rows recovery_archive < <(
+  PYTHONPATH="${REPO}/src" "${PYTHON}" \
+    -m nimloth.training.rl.continuation \
+    prepare-run "${RUN_OUT}" "${TOTAL_ITERATIONS}"
+)
+if [[ "${recovery_archive}" != - ]]; then
+  printf '%s iteration=%s status=recovered_interrupted_attempt discarded_log_rows=%s archive=%s\n' \
+    "$(date -Iseconds)" "${START_ITERATION}" \
+    "${discarded_log_rows}" "${recovery_archive}" >> "${PROGRESS_LOG}"
 fi
 
 if (( last_completed >= TOTAL_ITERATIONS )); then
-  [[ -s "${TRAIN_OUT}/final/rl_state.pt" ]] || {
-    echo "step log reached target but final checkpoint is missing" >&2
-    exit 1
-  }
   echo "formal RL run already completed at global_step=${last_completed}"
   exit 0
-fi
-
-START_ITERATION=$((last_completed + 1))
-if (( START_ITERATION > 1 )) && [[ ! -s "${TRAIN_OUT}/latest/rl_state.pt" ]]; then
-  echo "latest checkpoint is missing after global_step=${last_completed}; inspect policy_inputs before recovery" >&2
-  exit 1
 fi
 
 for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
@@ -103,33 +103,12 @@ for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
     model=${INITIAL_MODEL}
     wm_checkpoint=${INITIAL_WM_CKPT}
   else
-    mkdir -p "${POLICY_INPUT_ROOT}"
-    snapshot=${POLICY_INPUT_ROOT}/${iteration_tag}
-    [[ ! -e "${snapshot}" ]] || {
-      echo "policy input already exists for ${iteration_tag}: ${snapshot}" >&2
-      exit 1
-    }
-    mv "${TRAIN_OUT}/latest" "${snapshot}"
+    snapshot=$(PYTHONPATH="${REPO}/src" "${PYTHON}" \
+      -m nimloth.training.rl.continuation \
+      prepare-policy "${RUN_OUT}" "${iteration}")
     model=${snapshot}
     wm_checkpoint=${snapshot}
     resume_checkpoint=${snapshot}
-
-    previous_manifest=${RUN_OUT}/rollouts/$(printf 'iter_%04d' "$((iteration - 1))")/fresh_policy_manifest.json
-    previous_consumption=${previous_manifest}.consumption.json
-    "${PYTHON}" -c '
-import json, os, sys
-from datetime import datetime, timezone
-from pathlib import Path
-path, old_path, new_path = map(Path, sys.argv[1:])
-payload = json.loads(path.read_text(encoding="utf-8"))
-if Path(payload.get("checkpoint_path", "")) != old_path:
-    raise SystemExit(f"consumption checkpoint relocation mismatch: {payload}")
-payload["checkpoint_path"] = str(new_path)
-payload["checkpoint_relocated_at"] = datetime.now(timezone.utc).isoformat()
-temporary = path.with_suffix(path.suffix + ".tmp")
-temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-os.replace(temporary, path)
-' "${previous_consumption}" "${TRAIN_OUT}/latest" "${snapshot}"
   fi
 
   printf '%s iteration=%s status=starting model=%s seed_offset=%s\n' \
@@ -163,6 +142,9 @@ os.replace(temporary, path)
     echo "iteration ${iteration} completed without latest checkpoint" >&2
     exit 1
   }
+  PYTHONPATH="${REPO}/src" "${PYTHON}" \
+    -m nimloth.training.rl.continuation \
+    validate-iteration "${RUN_OUT}" "${iteration}" "${TRAIN_OUT}/latest"
   printf '%s iteration=%s status=completed checkpoint=%s\n' \
     "$(date -Iseconds)" "${iteration}" "${TRAIN_OUT}/latest" >> "${PROGRESS_LOG}"
 
