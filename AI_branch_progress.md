@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-07-26：移除 paired-RL 手工梯度同步，改为单一官方 DDP forward 边界
+
+- 人类否决了 ID93 后在 `OptimizationRuntime` 内逐参数 `all_reduce` 的 workaround。该实现
+  绕过了 DDP reducer，却自行承担 `grad is None`、参数顺序、初始状态一致性和通信生命周期，
+  不能作为经过验证的 DDP/FSDP 替代方案；对应字段、同步方法和单元测试已删除。
+- ID93只确认同一个RL loss涉及的旧分布式包装发生collective序列/shape分叉，不能据此断言
+  官方多设备DDP本身不可用。paired路径现在保留原始Qwen/WorldModel/TokenValueHead，完整装配
+  后把它们注册到一个`RLTrainingStepModule`，训练循环只调用这个模块的`forward(batch)`。
+- `world_size > 1`的paired副本仅包装一次官方
+  `DistributedDataParallel(device_ids=None, output_device=None, static_graph=True)`；一个reducer
+  负责total loss涉及的全部可训练参数。checkpoint、resume和EMA继续持有原模块引用，artifact
+  布局未改变；单GPU/FSDP路径保持原有包装。
+- 按人类要求本阶段没有运行pytest、导入/编译门禁或GPU实验；只完成静态引用检查和
+  `git diff --check`。因此当前结论是“workaround已移除、官方DDP结构已接入”，不是分布式
+  正确性已验证。真实多rank loss/gradient/checkpoint等价性须等其余问题合并后统一测试。
+
 ## 2026-07-26：ID106完成rollout/reference后在首个训练forward OOM
 
 - 人类已授权直接在`nimloth-dev`修改、push并开启GPU实验。正式配置固定为60次online

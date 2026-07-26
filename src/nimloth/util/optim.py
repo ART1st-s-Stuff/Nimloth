@@ -9,7 +9,6 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
 import torch
-import torch.distributed as dist
 
 
 def qwen_lr_schedule(
@@ -56,7 +55,6 @@ class OptimizationRuntime:
     synchronized_modules: tuple[torch.nn.Module, ...] = ()
     max_grad_norm: float = 1.0
     enable_no_sync: bool = False
-    manual_gradient_sync: bool = False
     after_step: Callable[[], None] | None = None
 
     def zero_grad(self) -> None:
@@ -82,24 +80,6 @@ class OptimizationRuntime:
         if divisor < 1:
             raise ValueError(f"backward divisor must be positive, got {divisor}")
         (loss / divisor).backward()
-        if self.manual_gradient_sync:
-            self._synchronize_gradients()
-
-    def _synchronize_gradients(self) -> None:
-        """平均完整backward后的梯度，保持跨设备参数collective顺序确定。"""
-
-        if not dist.is_available() or not dist.is_initialized():
-            raise RuntimeError("manual gradient synchronization requires torch.distributed")
-        world_size = dist.get_world_size()
-        if world_size <= 1:
-            return
-        for group in self.optimizer.param_groups:
-            for parameter in group["params"]:
-                gradient = parameter.grad
-                if gradient is None:
-                    continue
-                dist.all_reduce(gradient, op=dist.ReduceOp.SUM)
-                gradient.div_(world_size)
 
     def step(self) -> None:
         parameters = [

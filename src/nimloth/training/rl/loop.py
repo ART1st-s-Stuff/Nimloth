@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,7 +18,8 @@ from nimloth.rollout import (
     sample_trajectory_windows,
 )
 from nimloth.training.rl.algorithm import (
-    RLAlgorithm,
+    RLBatch,
+    RLStepOutput,
     build_rl_batch,
 )
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
@@ -26,7 +28,6 @@ from nimloth.training.rl.evaluation import (
     summarize_rollouts,
 )
 from nimloth.training.rl.reporting import RLReporter
-from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.util.distributed import is_main
 from nimloth.util.optim import OptimizationRuntime
 
@@ -44,8 +45,7 @@ class RLTrainingLoop:
     """按 iteration 执行 collect → sample → encode/update → evaluate。"""
 
     config: RLConfig
-    algorithm: RLAlgorithm
-    model_runtime: RLModelRuntime
+    training_step: Callable[[RLBatch], RLStepOutput]
     optimization_runtime: OptimizationRuntime
     device: torch.device
     train_collector: RolloutCollector
@@ -150,7 +150,7 @@ class RLTrainingLoop:
         optimizer_step_started = False
         try:
             self.optimization_runtime.zero_grad()
-            step_output = self.algorithm.training_step(self.model_runtime, batch)
+            step_output = self.training_step(batch)
             self.optimization_runtime.backward(step_output.loss)
             optimizer_step_started = True
             self.optimization_runtime.step()

@@ -65,11 +65,11 @@ class _Optimization:
             raise RuntimeError("step failed")
 
 
-class _Algorithm:
+class _TrainingStep:
     def __init__(self, *, fail_forward: bool = False) -> None:
         self.fail_forward = fail_forward
 
-    def training_step(self, _runtime, _batch):  # type: ignore[no-untyped-def]
+    def __call__(self, _batch):  # type: ignore[no-untyped-def]
         if self.fail_forward:
             raise RuntimeError("forward failed")
         return SimpleNamespace(
@@ -113,8 +113,9 @@ def _training_loop(
     return (
         RLTrainingLoop(
             config=config,  # type: ignore[arg-type]
-            algorithm=_Algorithm(fail_forward=fail_forward),  # type: ignore[arg-type]
-            model_runtime=object(),  # type: ignore[arg-type]
+            training_step=_TrainingStep(  # type: ignore[arg-type]
+                fail_forward=fail_forward
+            ),
             optimization_runtime=_Optimization(  # type: ignore[arg-type]
                 fail_step=fail_step
             ),

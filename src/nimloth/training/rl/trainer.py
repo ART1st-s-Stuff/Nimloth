@@ -25,7 +25,7 @@ from nimloth.backbone import (
 )
 from nimloth.config.rl import RLConfig
 from nimloth.rollout import FreshJSONLRolloutCollector, RolloutCollector
-from nimloth.training.rl.algorithm import RLAlgorithm
+from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch, RLStepOutput
 from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
@@ -81,8 +81,28 @@ class RLDistributedModules:
     world_model: WorldModel
     token_value_head: torch.nn.Module | None
     optimizer_state_sharded: bool
-    manual_gradient_sync: bool
     strategy: str
+
+
+class RLTrainingStepModule(torch.nn.Module):
+    """注册一次 RL loss 涉及的模块，并提供统一的 DDP forward 边界。"""
+
+    def __init__(
+        self,
+        *,
+        algorithm: RLAlgorithm,
+        runtime: RLModelRuntime,
+        token_value_head: torch.nn.Module | None,
+    ) -> None:
+        super().__init__()
+        self.agent = runtime.agent
+        self.token_value_head = token_value_head
+        self.sigreg = algorithm.sigreg
+        self._algorithm = algorithm
+        self._runtime = runtime
+
+    def forward(self, batch: RLBatch) -> RLStepOutput:
+        return self._algorithm.training_step(self._runtime, batch)
 
 
 def _is_grid_predictor_checkpoint(path: Path) -> bool:
@@ -392,20 +412,14 @@ def _wrap_distributed_modules(
     training_device: torch.device,
 ) -> RLDistributedModules:
     if model_parallel:
-        # 一个训练process拥有多张GPU时，整模型DDP会按各rank的device placement
-        # 异步rebuild buckets；跨节点若bucket/device顺序不同，会让collective序列
-        # 分叉。保留未包装模块，在完整backward后由OptimizationRuntime按optimizer
-        # 参数顺序同步梯度，所有rank因此发出相同shape/order的collective。
-        strategy = (
-            "model_parallel_manual_sync" if world_size > 1 else "model_parallel"
-        )
+        # 多设备模块不能传单一 device_ids；完整 RL training step 会在装配完成后
+        # 由一个 DDP(device_ids=None) 统一包装。
+        strategy = "model_parallel_ddp" if world_size > 1 else "model_parallel"
         optimizer_state_sharded = False
-        manual_gradient_sync = world_size > 1
     else:
         llm = _wrap_llm_fsdp(llm, world_size=world_size)
         strategy = "fsdp" if world_size > 1 else "single_gpu"
         optimizer_state_sharded = world_size > 1
-        manual_gradient_sync = False
         world_model = _wrap_world_model_ddp(
             world_model,
             device=training_device,
@@ -431,8 +445,28 @@ def _wrap_distributed_modules(
         world_model=world_model,
         token_value_head=token_value_head,
         optimizer_state_sharded=optimizer_state_sharded,
-        manual_gradient_sync=manual_gradient_sync,
         strategy=strategy,
+    )
+
+
+def _wrap_training_step_ddp(
+    training_step: RLTrainingStepModule,
+    *,
+    world_size: int,
+    model_parallel: bool,
+) -> torch.nn.Module:
+    """用一个官方 DDP reducer 同步多设备 RL loss 的全部可训练参数。"""
+
+    if world_size <= 1 or not model_parallel:
+        return training_step
+    from torch.nn.parallel import DistributedDataParallel as DDP
+
+    return DDP(
+        training_step,
+        device_ids=None,
+        output_device=None,
+        find_unused_parameters=False,
+        static_graph=True,
     )
 
 
@@ -890,13 +924,25 @@ def train_rl(
                 else None
             ),
         )
+        training_step = _wrap_training_step_ddp(
+            RLTrainingStepModule(
+                algorithm=algorithm,
+                runtime=model_runtime,
+                token_value_head=token_value_head,
+            ),
+            world_size=world,
+            model_parallel=loaded.pair_parallel,
+        )
         optimization_runtime = OptimizationRuntime(
             optimizer=optimizer,
             synchronized_modules=(
-                *agent.synchronized_modules,
-                *((token_value_head,) if token_value_head is not None else ()),
+                (training_step,)
+                if distributed_modules.strategy == "model_parallel_ddp"
+                else (
+                    *agent.synchronized_modules,
+                    *((token_value_head,) if token_value_head is not None else ()),
+                )
             ),
-            manual_gradient_sync=distributed_modules.manual_gradient_sync,
             after_step=(
                 lambda: vision_ema.update(agent.backbone.model)
                 if vision_ema is not None
@@ -905,8 +951,7 @@ def train_rl(
         )
         loop = RLTrainingLoop(
             config=config,
-            algorithm=algorithm,
-            model_runtime=model_runtime,
+            training_step=training_step,
             optimization_runtime=optimization_runtime,
             device=training_device,
             train_collector=train_collector,
