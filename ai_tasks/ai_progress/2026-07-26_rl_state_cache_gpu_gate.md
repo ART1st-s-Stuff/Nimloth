@@ -47,3 +47,27 @@ return plus within-turn token GAE and is explicitly not VAGEN Bi-Level GAE.
 - Exactly one optimizer/global step, changed trainable parameters, unchanged frozen
   parameters, committed fresh-consumption marker, and complete `latest`/`final`
   checkpoints.
+
+## ID107 result: environment cold-start failure
+
+- Commit `66918a5` ran under preempt hold `488085` on `dgx-11,dgx-22`, two
+  H800s per node. Ray exposed all four GPUs and imported the exact worktree on
+  both nodes; the real checkpoint loaded successfully under vLLM TP4.
+- The HTTP health endpoint became ready after 13 seconds, but navigation itself
+  starts lazily. Episode 0's first `POST /environments` spent about 607 seconds
+  constructing AI2-THOR/Unity and exceeded the then-current 600-second client
+  timeout. The environment log recorded its first successful `Initialize` about
+  seven seconds after the client had already timed out.
+- Once one of four attempts was discarded, the strict four-trajectory gate could
+  no longer pass. The controller was stopped and the allocation cancelled instead
+  of waiting for three more possible timeouts. Ray actor and connection errors
+  after shutdown are cleanup effects, not the original failure.
+- The run produced zero valid trajectories and an empty JSONL. It has no manifest,
+  reference replay, W&B training run, optimizer step, consumption marker, or
+  checkpoint and is not resumable. Its remote README and adjacent launch contract
+  retain the complete evidence; the output must not be reused.
+- The HTTP health route is therefore not a sufficient navigation readiness gate.
+  The retry will first complete a real create/reset/close prewarm before loading
+  vLLM. Per the human's explicit limit, both this prewarm's total wall time and
+  normal navigation requests are capped at 300 seconds; a timeout rejects the
+  node and the experiment moves to another node rather than waiting longer.

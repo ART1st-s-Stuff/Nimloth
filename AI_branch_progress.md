@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-07-26：ID107在AI2-THOR冷启动失败，navigation readiness改为真实prewarm
+
+- ID107使用commit`66918a5`、preempt hold`488085`、`dgx-11,dgx-22`各2张H800
+  启动真实20-step greedy state-cache门禁。Ray两节点/4 GPU、逐节点固定worktree import、
+  环境HTTP health和真实checkpoint vLLM TP4加载均通过。
+- HTTP health只证明Flask监听；navigation在首次create时才启动AI2-THOR/Unity。episode0的
+  `POST /environments`耗时约607秒，超过当时600秒client timeout；服务端在client超时约
+  7秒后才记录首个成功`Initialize`。该轨迹被丢弃后，4次尝试不再可能产生严格要求的4条
+  trajectory，因此主动停止controller并取消hold，避免继续浪费GPU。
+- shutdown开始后的Ray actor unavailable、remote disconnect和connection refused是清理
+  次生错误，不是原始根因。最终只有0字节trajectory JSONL，无valid trajectory、manifest、
+  reference、W&B训练run、optimizer step、consumption marker或checkpoint；ID107不可resume，
+  远端README和launch contract已记录失败边界。
+- launcher现在在加载vLLM前执行真实navigation create/prompt/reset/close prewarm。按人类
+  明确限制，prewarm完整生命周期由外层`timeout`硬限制最多300秒，正式VAGEN请求也从600秒
+  改为300秒；节点未在门限内通过就拒绝该节点并换节点，不通过增加timeout掩盖模拟器故障。
+
 ## 2026-07-26：RL window复用rollout Qwen state，移除history展平forward
 
 - 人类解除暂不测试限制后，commit`f5ac65a`在superpod固定

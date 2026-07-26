@@ -13,6 +13,7 @@ from nimloth.environment.navigation.action_space import NAVIGATION_ACTION_SPACE
 
 
 _INSTRUCTION_RE = re.compile(r"Human Instruction:\s*(.+?)(?:\n|$)")
+NAVIGATION_REQUEST_TIMEOUT_SECONDS = 300
 
 
 def instruction_from_observation(observation_text: str) -> str:

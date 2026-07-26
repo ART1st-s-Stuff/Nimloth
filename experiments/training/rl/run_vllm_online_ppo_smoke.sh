@@ -15,6 +15,7 @@ WANDB_PROJECT_REQUESTED=${WANDB_PROJECT:-nimloth-rl}
 WANDB_RUN_NAME_REQUESTED=${WANDB_RUN_NAME:?set WANDB_RUN_NAME}
 WANDB_MODE_REQUESTED=${WANDB_MODE_OVERRIDE:-online}
 ENV_PORT=${ENV_PORT:-8500}
+ENV_PREWARM_TIMEOUT=${ENV_PREWARM_TIMEOUT:-300}
 TRAIN_MASTER_PORT=${TRAIN_MASTER_PORT:-29671}
 VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-}
 VLLM_ENABLE_PREFIX_CACHING=${VLLM_ENABLE_PREFIX_CACHING:-false}
@@ -97,6 +98,14 @@ TOTAL_ITERATIONS=${TOTAL_ITERATIONS:-${CONFIG_ITERATIONS}}
 }
 [[ "${PREFLIGHT_ONLY}" == false || "${PREFLIGHT_ONLY}" == true ]] || {
   echo "PREFLIGHT_ONLY must be true or false" >&2
+  exit 1
+}
+[[ "${ENV_PREWARM_TIMEOUT}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "ENV_PREWARM_TIMEOUT must be a positive integer" >&2
+  exit 1
+}
+(( ENV_PREWARM_TIMEOUT <= 300 )) || {
+  echo "ENV_PREWARM_TIMEOUT must not exceed 300 seconds" >&2
   exit 1
 }
 IFS=',' read -r -a TRAIN_DATASETS <<< "${TRAIN_DATASETS_CSV}"
@@ -305,6 +314,22 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
     sleep 1
   done
   curl -fsS "${ENV_URL}/health" | tee -a "${LOG}"
+
+  # The HTTP health route only proves that Flask is listening.  AI2-THOR starts
+  # lazily on the first navigation create request and can spend minutes in a
+  # cold Unity/Vulkan initialization.  Complete one real lifecycle before vLLM
+  # reserves rollout GPU memory, so rollout never treats a shallow health check
+  # as navigation readiness.
+  echo "navigation prewarm start timeout=${ENV_PREWARM_TIMEOUT}s" | tee -a "${LOG}"
+  PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN timeout \
+    --signal=TERM --kill-after=10s "${ENV_PREWARM_TIMEOUT}s" \
+    "${PYTHON}" -m nimloth.environment.navigation.prewarm \
+      --env-url "${ENV_URL}" \
+      --eval-set "${TRAIN_DATASETS[0]}" \
+      --seed "${SEED_OFFSET}" \
+      --timeout-seconds "${ENV_PREWARM_TIMEOUT}" \
+      --env-id "nimloth-navigation-prewarm-${ITERATION_TAG}" \
+    2>&1 | tee -a "${LOG}"
 
   export CUDA_VISIBLE_DEVICES=${VISIBLE}
   export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm

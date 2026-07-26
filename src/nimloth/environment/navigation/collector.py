@@ -17,6 +17,7 @@ from nimloth.agent import (
 from nimloth.config.agent import AgentConfig
 from nimloth.environment.navigation.action_space import NAVIGATION_ACTION_SPACE
 from nimloth.environment.navigation.vagen import (
+    NAVIGATION_REQUEST_TIMEOUT_SECONDS,
     VAGENNavigationSession,
     instruction_from_observation,
 )
@@ -75,7 +76,10 @@ class VAGENNavigationRolloutCollector:
         if self._client is None:
             from vagen.server.client import BatchEnvClient
 
-            self._client = BatchEnvClient(base_url=self._env_url, timeout=600)
+            self._client = BatchEnvClient(
+                base_url=self._env_url,
+                timeout=NAVIGATION_REQUEST_TIMEOUT_SECONDS,
+            )
         return self._client
 
     def collect(
