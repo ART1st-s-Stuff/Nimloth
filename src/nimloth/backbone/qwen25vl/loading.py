@@ -21,14 +21,20 @@ class QwenProcessorBundle:
 def load_qwen_processor(
     model_path: str | Path,
     *,
-    max_pixels: int,
+    max_pixels: int | None,
     latent_token_count: int = 1,
 ) -> QwenProcessorBundle:
-    """加载 processor，并建立当前 latent/action token 契约。"""
+    """加载 processor，并建立当前 latent/action token 契约。
+
+    ``max_pixels=None`` 保留 checkpoint 自带的图像处理语义。显式值只用于
+    调试或经批准的分辨率覆盖，调用方还必须把同一覆盖传给推理后端。
+    """
 
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-    processor.image_processor.min_pixels = 3136
-    processor.image_processor.max_pixels = max_pixels
+    if max_pixels is not None:
+        if max_pixels <= 0:
+            raise ValueError("max_pixels must be positive")
+        processor.image_processor.max_pixels = int(max_pixels)
     added_count = add_special_tokens(
         processor.tokenizer,
         latent_token_count=latent_token_count,
@@ -41,6 +47,13 @@ def load_qwen_processor(
         ),
         added_special_token_count=added_count,
     )
+
+
+def qwen_processor_pixel_bounds(processor: Any) -> tuple[int, int]:
+    """返回实际生效的 Qwen image processor 像素上下界。"""
+
+    image_processor = processor.image_processor
+    return int(image_processor.min_pixels), int(image_processor.max_pixels)
 
 
 def qwen_hidden_size(model_config: Any) -> int:

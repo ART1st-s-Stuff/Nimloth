@@ -115,7 +115,10 @@ def test_from_model_forwards_ray_backend(monkeypatch) -> None:
         return engine
 
     monkeypatch.setitem(sys.modules, "vllm", SimpleNamespace(LLM=fake_llm))
-    processor = SimpleNamespace(tokenizer=_Tokenizer())
+    processor = SimpleNamespace(
+        tokenizer=_Tokenizer(),
+        image_processor=SimpleNamespace(min_pixels=3136, max_pixels=100352),
+    )
     policy = QwenVLLMAgentPolicy.from_model(
         "/model",
         processor=processor,
@@ -137,7 +140,38 @@ def test_from_model_forwards_ray_backend(monkeypatch) -> None:
     assert captured["logprobs_mode"] == "processed_logprobs"
     assert captured["enable_prefix_caching"] is True
     assert captured["mm_processor_cache_gb"] == 2.5
+    assert "mm_processor_kwargs" not in captured
     assert policy.latent_token_count == 16
+
+
+def test_from_model_forwards_explicit_pixel_override_to_vllm(monkeypatch) -> None:
+    captured = {}
+
+    def fake_llm(**kwargs):
+        captured.update(kwargs)
+        return _Engine(())
+
+    monkeypatch.setitem(sys.modules, "vllm", SimpleNamespace(LLM=fake_llm))
+    QwenVLLMAgentPolicy.from_model(
+        "/model",
+        processor=SimpleNamespace(
+            tokenizer=_Tokenizer(),
+            image_processor=SimpleNamespace(min_pixels=3136, max_pixels=50176),
+        ),
+        max_pixels=50176,
+        tensor_parallel_size=4,
+        temperature=0.7,
+        top_p=0.95,
+        max_model_len=32768,
+        max_images=6,
+        gpu_memory_utilization=0.85,
+        latent_token_count=16,
+    )
+
+    assert captured["mm_processor_kwargs"] == {
+        "min_pixels": 3136,
+        "max_pixels": 50176,
+    }
 
 
 def test_policy_state_progress_identifies_generation_and_capture_boundaries(

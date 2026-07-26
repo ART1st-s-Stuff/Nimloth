@@ -400,7 +400,7 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
     --num-episodes "${NUM_EPISODES}" \
     --max-steps "${MAX_STEPS}" \
     --eval-sets "${TRAIN_DATASETS[@]}" --split train --seed-offset "${SEED_OFFSET}" \
-    --temperature "${ROLLOUT_TEMPERATURE}" --top-p "${ROLLOUT_TOP_P}" --max-pixels 3136 \
+    --temperature "${ROLLOUT_TEMPERATURE}" --top-p "${ROLLOUT_TOP_P}" \
     --credit-assignment "${CREDIT_ASSIGNMENT}" \
     --action-objective "${ACTION_OBJECTIVE}" \
     --max-response-tokens "${MAX_RESPONSE_TOKENS}" \
@@ -423,7 +423,7 @@ if [[ "${RUN_REFERENCE}" == true ]]; then
     --reference-model "${REFERENCE_MODEL}" \
     --output-dir "${REFERENCE_OUT}" \
     --model-parallel-size "${TRAIN_GPUS_PER_RANK}" \
-    --attn-implementation sdpa --max-pixels 3136 \
+    --attn-implementation sdpa \
     2>&1 | tee -a "${LOG}"
 fi
 
@@ -443,7 +443,7 @@ TRAIN_ARGS=(
   --fresh-rollout-manifest "${MANIFEST}" \
   --rl-iterations "${ITERATION}" \
   --rl-envs-per-iteration "${NUM_EPISODES}" \
-  --attn-implementation sdpa --max-pixels 3136 \
+  --attn-implementation sdpa \
   --experiment-name "${WANDB_RUN_NAME_REQUESTED}" \
   --output-dir "${TRAIN_OUT}"
 )

@@ -753,6 +753,8 @@ def train_rl(
             resume_dir=resume_dir,
             resume_state_path=resume_dir / "rl_state.pt",
         )
+        if isinstance(train_collector, FreshJSONLRolloutCollector):
+            train_collector.manifest.validate_processor(loaded.processor)
         model = loaded.backbone.model
         training_device = model_output_device(model, default=device)
         world_model = _build_world_model(

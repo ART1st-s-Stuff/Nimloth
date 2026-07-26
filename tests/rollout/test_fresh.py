@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,15 @@ def _trajectory_jsonl(path: Path) -> None:
     path.write_text("{}\n", encoding="utf-8")
 
 
+def _processor(max_pixels: int = 100352):
+    return SimpleNamespace(
+        image_processor=SimpleNamespace(
+            min_pixels=3136,
+            max_pixels=max_pixels,
+        )
+    )
+
+
 def test_policy_fingerprint_tracks_weight_contents(tmp_path: Path) -> None:
     model = _policy_artifact(tmp_path / "model")
     before = policy_artifact_fingerprint(model)
@@ -40,6 +50,7 @@ def test_fresh_manifest_validates_exact_policy(tmp_path: Path) -> None:
         policy_path=model,
         trajectory_path=trajectories,
         num_trajectories=1,
+        processor=_processor(),
     ).write(manifest_path)
 
     collector = FreshJSONLRolloutCollector(manifest_path, model_path=model)
@@ -58,6 +69,7 @@ def test_fresh_manifest_consumption_is_transactional(tmp_path: Path) -> None:
         policy_path=model,
         trajectory_path=trajectories,
         num_trajectories=1,
+        processor=_processor(),
     ).write(manifest_path)
     first = FreshJSONLRolloutCollector(manifest_path, model_path=model)
     consumption_id = first.begin_consumption(
@@ -103,6 +115,7 @@ def test_fresh_manifest_binds_planner_modules(tmp_path: Path) -> None:
         policy_path=model,
         trajectory_path=trajectories,
         num_trajectories=1,
+        processor=_processor(),
         planner_artifacts={"wm_predictor": planner},
     ).write(manifest_path)
 
@@ -131,6 +144,7 @@ def test_fresh_manifest_binds_frozen_reference_and_enriched_jsonl(
         policy_path=model,
         trajectory_path=behavior,
         num_trajectories=1,
+        processor=_processor(),
     ).with_reference(
         reference_policy_path=reference,
         trajectory_path=enriched,
@@ -138,7 +152,9 @@ def test_fresh_manifest_binds_frozen_reference_and_enriched_jsonl(
     manifest.write(manifest_path)
 
     restored = FreshRolloutManifest.read(manifest_path)
-    assert restored.format_version == 4
+    assert restored.format_version == 5
+    assert restored.processor_min_pixels == 3136
+    assert restored.processor_max_pixels == 100352
     assert restored.trajectory_path == str(enriched.resolve())
     assert restored.behavior_trajectory_path == str(behavior.resolve())
     collector = FreshJSONLRolloutCollector(
@@ -161,12 +177,29 @@ def test_fresh_manifest_rejects_changed_trajectory_bytes(tmp_path: Path) -> None
         policy_path=model,
         trajectory_path=trajectories,
         num_trajectories=1,
+        processor=_processor(),
     ).write(manifest_path)
 
     trajectories.write_text('{"changed": true}\n', encoding="utf-8")
     collector = FreshJSONLRolloutCollector(manifest_path, model_path=model)
     with pytest.raises(ValueError, match="trajectory fingerprint mismatch"):
         collector.validate_policy()
+
+
+def test_fresh_manifest_rejects_processor_resolution_drift(tmp_path: Path) -> None:
+    model = _policy_artifact(tmp_path / "model")
+    trajectories = tmp_path / "trajectories.jsonl"
+    _trajectory_jsonl(trajectories)
+    manifest = FreshRolloutManifest.create(
+        policy_path=model,
+        trajectory_path=trajectories,
+        num_trajectories=1,
+        processor=_processor(),
+    )
+
+    manifest.validate_processor(_processor())
+    with pytest.raises(ValueError, match="processor pixel bounds mismatch"):
+        manifest.validate_processor(_processor(max_pixels=3136))
 
 
 def test_fresh_collector_requires_the_complete_manifest_batch(tmp_path: Path) -> None:
@@ -178,6 +211,7 @@ def test_fresh_collector_requires_the_complete_manifest_batch(tmp_path: Path) ->
         policy_path=model,
         trajectory_path=trajectories,
         num_trajectories=2,
+        processor=_processor(),
     ).write(manifest_path)
     collector = FreshJSONLRolloutCollector(manifest_path, model_path=model)
     collector._all_trajectories = [object()]  # type: ignore[list-item]
@@ -203,6 +237,7 @@ def test_reference_manifest_keeps_behavior_bytes_bound(tmp_path: Path) -> None:
         policy_path=model,
         trajectory_path=behavior,
         num_trajectories=1,
+        processor=_processor(),
     ).with_reference(
         reference_policy_path=reference,
         trajectory_path=enriched,

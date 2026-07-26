@@ -43,7 +43,12 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
     # 模型加载
     ap.add_argument("--attn-implementation", default="flash_attention_2")
     ap.add_argument("--gradient-checkpointing", action="store_true", default=True)
-    ap.add_argument("--max-pixels", type=int, default=602112)
+    ap.add_argument(
+        "--max-pixels",
+        type=int,
+        default=None,
+        help="Optional override; by default preserve the policy checkpoint processor",
+    )
 
     # WM warm-start
     ap.add_argument("--wm-checkpoint", type=Path, default=None,

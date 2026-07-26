@@ -33,7 +33,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model-parallel-size", type=int, default=1)
     parser.add_argument("--attn-implementation", default="sdpa")
-    parser.add_argument("--max-pixels", type=int, default=3136)
+    parser.add_argument(
+        "--max-pixels",
+        type=int,
+        default=None,
+        help="Optional override; by default preserve the reference checkpoint processor",
+    )
     return parser.parse_args(argv)
 
 
@@ -100,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("reference model latent token count does not match rollout")
 
     loaded = _load_reference(args, latent_token_count)
+    manifest.validate_processor(loaded.processor)
     model = loaded.backbone.model
     enriched = []
     with evaluating(model), torch.no_grad():

@@ -63,11 +63,27 @@ Concurrent multi-episode rollout could save at most about one further hour under
 observed timings, but it requires separate stateful planners plus a batched vLLM state
 capture contract. It is intentionally not mixed into this checkpoint/continuation fix.
 
+## ID110 gate result: cancelled on processor semantic drift
+
+- ID110 update 1 completed four 20-step episodes and one finite official-DDP optimizer
+  step, wrote a complete checkpoint, committed fresh consumption, and update 2 loaded
+  that checkpoint. This mechanically validated the optimized checkpoint relocation path.
+- The result is not valid RL evidence. ID46 records `max_pixels=100352`; vLLM used that
+  artifact-native processor for behavior rollout while the launcher forced HF reference/
+  training replay to `3136`. Saving the HF processor changed update 2's artifact to 3136.
+- The job was intentionally cancelled during update-2 rollout. ID110 is non-resumable;
+  the next gate must use a new ID and start from ID46.
+- The previous 8--10 hour estimate is now provisional: rollout timing already reflected
+  native 100352 preprocessing, but HF training timing reflected 3136. Native-resolution
+  replay memory and speed must be measured before launching 60 updates.
+
 ## Pending gate
 
-1. Run syntax, config, compile and broader regression checks.
-2. Commit and push the exact worktree.
-3. Run a two-iteration real GPU gate. It must prove step2 vLLM and planner fingerprints
+1. Preserve checkpoint-native processor bounds by default, forward any explicit override
+   to vLLM, bind resolved bounds into the fresh manifest, and validate them in replay.
+2. Run syntax, config, compile and broader regression checks, then commit and push.
+3. Run a new two-iteration real GPU gate from ID46. It must prove native-resolution HF
+   replay fits and step2 vLLM/planner fingerprints
    come from step1, optimizer state resumes, both steps are finite, checkpoint hardlinks
    share inodes, fresh consumption commits twice, and only one physical checkpoint copy is
    written for each completed global step.

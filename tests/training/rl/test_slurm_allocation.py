@@ -106,3 +106,9 @@ def test_full_runner_uses_one_fresh_manifest_per_resumed_update() -> None:
     assert 'TRAIN_ARGS+=(--resume-checkpoint "${RESUME_CHECKPOINT}")' in pipeline
     assert 'TRAIN_ARGS+=(--defer-final-checkpoint)' in pipeline
     assert 'PREFLIGHT_OK commit=${COMMIT}' in pipeline
+
+
+def test_current_vllm_pipeline_preserves_checkpoint_processor_resolution() -> None:
+    pipeline = PIPELINE.read_text(encoding="utf-8")
+
+    assert "--max-pixels" not in pipeline

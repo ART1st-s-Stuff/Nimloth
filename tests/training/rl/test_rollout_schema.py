@@ -121,6 +121,7 @@ def test_rollout_cli_accepts_multiple_training_datasets() -> None:
 
     assert args.eval_set is None
     assert args.eval_sets == ["base_train", "common_sense_train"]
+    assert args.max_pixels is None
 
 
 def test_env_collector_enforces_training_dataset() -> None:

@@ -87,6 +87,8 @@ class FreshRolloutManifest:
     trajectory_fingerprint: str
     num_trajectories: int
     created_at: str
+    processor_min_pixels: int | None = None
+    processor_max_pixels: int | None = None
     planner_fingerprints: dict[str, str] = field(default_factory=dict)
     planner_paths: dict[str, str] = field(default_factory=dict)
     reference_policy_fingerprint: str | None = None
@@ -101,19 +103,25 @@ class FreshRolloutManifest:
         policy_path: Path,
         trajectory_path: Path,
         num_trajectories: int,
+        processor: Any,
         planner_artifacts: dict[str, Path] | None = None,
     ) -> "FreshRolloutManifest":
+        from nimloth.backbone.qwen25vl.loading import qwen_processor_pixel_bounds
+
         artifacts = planner_artifacts or {}
         resolved_trajectory = Path(trajectory_path).resolve()
         trajectory_fingerprint = file_artifact_fingerprint(resolved_trajectory)
+        min_pixels, max_pixels = qwen_processor_pixel_bounds(processor)
         return cls(
-            format_version=4,
+            format_version=5,
             policy_fingerprint=policy_artifact_fingerprint(policy_path),
             policy_path=str(Path(policy_path).resolve()),
             trajectory_path=str(resolved_trajectory),
             trajectory_fingerprint=trajectory_fingerprint,
             num_trajectories=int(num_trajectories),
             created_at=datetime.now(timezone.utc).isoformat(),
+            processor_min_pixels=min_pixels,
+            processor_max_pixels=max_pixels,
             planner_fingerprints={
                 name: auxiliary_artifact_fingerprint(path)
                 for name, path in sorted(artifacts.items())
@@ -187,11 +195,26 @@ class FreshRolloutManifest:
                 f"current={behavior_actual}"
             )
 
+    def validate_processor(self, processor: Any) -> None:
+        """拒绝与 rollout 行为不同的图像处理分辨率。"""
+
+        from nimloth.backbone.qwen25vl.loading import qwen_processor_pixel_bounds
+
+        if self.processor_min_pixels is None or self.processor_max_pixels is None:
+            raise ValueError("fresh rollout manifest lacks processor pixel bounds")
+        actual = qwen_processor_pixel_bounds(processor)
+        expected = (self.processor_min_pixels, self.processor_max_pixels)
+        if actual != expected:
+            raise ValueError(
+                "fresh rollout processor pixel bounds mismatch: "
+                f"manifest={expected}, current={actual}"
+            )
+
     @classmethod
     def read(cls, path: Path) -> "FreshRolloutManifest":
         payload = json.loads(path.read_text(encoding="utf-8"))
         manifest = cls(**payload)
-        if manifest.format_version != 4:
+        if manifest.format_version not in {4, 5}:
             raise ValueError(
                 f"unsupported fresh rollout manifest version {manifest.format_version}"
             )

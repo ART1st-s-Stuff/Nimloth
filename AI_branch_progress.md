@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-07-26：ID110因rollout/replay processor分辨率漂移取消
+
+- ID110在commit`0640772`、preempt hold`489632`、`dgx-02,dgx-22`各2张H800上运行。
+  update1完成`base_train/common_sense_train`交替的4条20-step episode、80 transitions和一次
+  官方两rank DDP optimizer step；finite均值为WM MSE5.7663993、ValueHead3.0158718、
+  action distillation KL2.0796991、total10.8619701，global step到1。完整checkpoint和fresh
+  consumption生成后被outer runner移到`policy_inputs/iter_0002`，update2已成功加载并进入rollout。
+- 该结果语义无效：ID46 checkpoint的processor为`max_pixels=100352`，update1 vLLM behavior
+  由artifact创建processor并使用100352；launcher却给HF reference/training replay强制传入3136。
+  保存processor又把update2 artifact改成3136，造成同一update内behavior/replay不一致且相邻
+  update行为预处理发生变化。因此主动取消hold，ID110任何trajectory/checkpoint都不得续训或
+  作为RL正确性证据；新门禁必须以新ID从ID46重新开始。
+- AI2-THOR两次真实prewarm分别10.864秒和2.609秒，均满足300秒上限；Slurm最终
+  `CANCELLED by 3738`、elapsed00:13:10，实验进程和allocation均已退出。此前8--10小时估算
+  暂时失效，因为rollout计时是原生100352而训练计时是3136；需先验证原生分辨率HF replay的
+  显存和耗时，再决定全规模训练。
+
 ## 2026-07-26：ID109完成真实20-step retained-segment TD与官方DDP门禁
 
 - commit`77a4dcf`在normal hold`489548`使用`dgx-31,dgx-51`各2张H800完成ID109；

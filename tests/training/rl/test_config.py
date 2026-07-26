@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from nimloth.config.rl import load_rl_config, merge_rl_config_overrides, parse_rl_config
-from nimloth.training.rl.cli import main
+from nimloth.training.rl.cli import main, parse_rl_args
 
 
 def _raw_config() -> dict:
@@ -127,6 +127,18 @@ def test_continuation_gate_uses_two_fresh_greedy_updates() -> None:
     )
     assert config.agent.planning.search_mode == "greedy"
     assert config.distributed.total_gpus == 4
+
+
+def test_rl_cli_preserves_checkpoint_processor_by_default() -> None:
+    args = parse_rl_args(
+        [
+            "--config", "config.yaml",
+            "--model", "model",
+            "--output-dir", "output",
+        ]
+    )
+
+    assert args.max_pixels is None
 
 
 def test_rl_config_rejects_impossible_distributed_topology() -> None:

@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal, Protocol
 
 from nimloth.agent import AgentPrompt, PolicyDecision, PolicyState, PolicyTokenTrace
+from nimloth.backbone.qwen25vl.loading import qwen_processor_pixel_bounds
 from nimloth.backbone.qwen25vl.policy import (
     collect_policy_images,
     reasoning_forbidden_token_ids,
@@ -94,6 +95,7 @@ class QwenVLLMAgentPolicy:
         model_path: str,
         *,
         processor: Any,
+        max_pixels: int | None = None,
         tensor_parallel_size: int,
         temperature: float,
         top_p: float,
@@ -113,6 +115,17 @@ class QwenVLLMAgentPolicy:
         from vllm import LLM
 
         engine_kwargs: dict[str, Any] = {}
+        if max_pixels is not None:
+            min_pixels, resolved_max_pixels = qwen_processor_pixel_bounds(processor)
+            if resolved_max_pixels != int(max_pixels):
+                raise ValueError(
+                    "vLLM max_pixels override does not match the loaded processor: "
+                    f"requested={max_pixels}, processor={resolved_max_pixels}"
+                )
+            engine_kwargs["mm_processor_kwargs"] = {
+                "min_pixels": min_pixels,
+                "max_pixels": resolved_max_pixels,
+            }
         if distributed_executor_backend is not None:
             engine_kwargs["distributed_executor_backend"] = distributed_executor_backend
         if credit_assignment in {"turn", "token"}:

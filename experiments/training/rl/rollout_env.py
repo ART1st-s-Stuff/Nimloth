@@ -60,7 +60,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     ap.add_argument("--max-response-tokens", type=int, default=64)
     ap.add_argument("--attn-implementation", default="sdpa")
-    ap.add_argument("--max-pixels", type=int, default=3136)
+    ap.add_argument(
+        "--max-pixels",
+        type=int,
+        default=None,
+        help="Optional override; by default preserve the policy checkpoint processor",
+    )
     ap.add_argument("--backend", choices=("hf", "vllm"), default="hf")
     ap.add_argument("--tensor-parallel-size", type=int, default=1)
     ap.add_argument("--max-model-len", type=int, default=32768)
@@ -97,23 +102,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def load_qwen(
     model_path: Path,
     attn_implementation: str,
-    max_pixels: int,
+    max_pixels: int | None,
     *,
     latent_token_count: int,
 ):
     """在当前 CUDA device 上加载 rollout policy 及 processor。"""
-    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+    from transformers import Qwen2_5_VLForConditionalGeneration
 
+    from nimloth.backbone.qwen25vl.loading import load_qwen_processor
     from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
-    from nimloth.latent import add_special_tokens
 
-    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-    processor.image_processor.min_pixels = 3136
-    processor.image_processor.max_pixels = max_pixels
-    n_added = add_special_tokens(
-        processor.tokenizer,
+    processor_bundle = load_qwen_processor(
+        model_path,
+        max_pixels=max_pixels,
         latent_token_count=latent_token_count,
     )
+    processor = processor_bundle.processor
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_path,
@@ -121,7 +125,7 @@ def load_qwen(
         attn_implementation=attn_implementation,
         trust_remote_code=True,
     )
-    if n_added:
+    if processor_bundle.added_special_token_count:
         model.resize_token_embeddings(len(processor.tokenizer))
     loaded_count = validate_agent_policy_protocol(model.config)
     if loaded_count != latent_token_count:
@@ -224,7 +228,10 @@ def main(argv: list[str] | None = None) -> int:
             sys.path.insert(0, str(path))
 
     from nimloth.backbone.qwen25vl.policy import QwenAgentPolicy
-    from nimloth.backbone.qwen25vl.loading import load_qwen_processor
+    from nimloth.backbone.qwen25vl.loading import (
+        load_qwen_processor,
+        qwen_processor_pixel_bounds,
+    )
     from nimloth.backbone.qwen25vl.vllm_policy import QwenVLLMAgentPolicy
     from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
     from nimloth.rollout import FreshRolloutManifest
@@ -253,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         policy = QwenVLLMAgentPolicy.from_model(
             str(args.model),
             processor=processor,
+            max_pixels=args.max_pixels,
             tensor_parallel_size=args.tensor_parallel_size,
             temperature=args.temperature,
             top_p=args.top_p,
@@ -349,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
             policy_path=args.model,
             trajectory_path=args.output_dir / "trajectories.jsonl",
             num_trajectories=len(trajectories),
+            processor=processor,
             planner_artifacts=(
                 {
                     "wm_predictor": args.wm_checkpoint,
@@ -371,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         "num_transitions": sum(t.num_steps for t in trajectories),
         "jsonl": str(args.output_dir / "trajectories.jsonl"),
         "fresh_manifest": str(manifest_path) if manifest_path else None,
+        "processor_pixel_bounds": list(qwen_processor_pixel_bounds(processor)),
         "eval_sets": eval_sets,
         "reasoning_truncated": sum(
             int(value)
