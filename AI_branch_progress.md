@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-07-26：全规模RL改为逐轮fresh rollout并准备启动ID106
+## 2026-07-26：ID106完成rollout/reference后在首个训练forward OOM
 
 - 人类已授权直接在`nimloth-dev`修改、push并开启GPU实验。正式配置固定为60次online
   iteration，每次8条episode、最多20个step，H=2 exhaustive planner、512-token真实CoT、
@@ -28,11 +28,11 @@
 - commit`c787ed0`已推送；服务器真实环境相关回归`175 passed, 1 warning`且正式preflight
   通过。normal hold`487586`实际分配dgx-10/24/31/51各2卡，运行到2026-07-27 05:22:50
   +08:00；controller PID721711、生命周期watcher PID722069。
-- ID106首轮于05:25:29开始。Ray已验证4个唯一10.23地址、8 GPU和逐节点固定worktree
+- ID106首轮于05:25:29开始。启动早期Ray已验证4个唯一10.23地址、8 GPU和逐节点固定worktree
   import；environment health在14秒后通过，真实epoch1进入vLLM TP4 eager权重/KV初始化。
-  当前仍无完整trajectory、W&B run、optimizer step或checkpoint，不把启动健康写成训练完成。
+  当时尚无完整trajectory、W&B run、optimizer step或checkpoint，未把启动健康写成训练完成。
 
-- ID106最后可验证的rollout进度为6/8条完整episode，全部20步、全部success false，
+- ID106失联前最后可验证的rollout进度为6/8条完整episode，全部20步、全部success false，
   reward为`-1.6/-1.9/-0.8/-1.2/-2.0/-1.9`。seed7已完成17/20个动作并在生成第18个；
   观察到最长约748.5秒的真实completion，四个TP worker和四张rollout GPU仍在计算且
   无Ray/vLLM/NCCL/timeout异常，因此记为严重decode吞吐长尾，不记为已确认死锁。随后
@@ -40,6 +40,26 @@
   透明代理假阳性：目标22以及负对照端口1/12345/65534全都显示connect成功，HTTP请求却均
   空回复。因此不能把故障定位为sshd，也不能用这些端口推断Ray/environment或作业健康；
   恢复可认证SSH前不对之后的实验进度作断言。
+- SSH恢复后的最终核验确认全部8条trajectory已完成并落盘，共160 transitions、168张图，
+  rewards为`-1.6/-1.9/-0.8/-1.2/-2.0/-1.9/-0.7/-0.9`，success0/8、全部20步
+  truncated；145个completion正常stop，15个length并持久化truncated provenance。
+- frozen-reference replay及独立artifact审计均为`ALL_OK`。全部behavior/reference record
+  通过schema、真实CoT、token mask/reference log-prob校验；160个planner trace每个都包含
+  且仅包含64个唯一H=2动作对，best-candidate首动作与实际动作一致。
+- 随后四个training rank在第一次state-sequence Qwen SDPA forward OOM：每进程已占约
+  69.96GiB、仅余约9.21GiB，却需新增38.52GiB。失败在backward/optimizer前；CSV仅表头，
+  optimizer/global step为0，无finite loss及`latest/iter_0001/final` checkpoint。
+- fresh consumption claim已事务回滚且marker不存在，所以immutable rollout/reference批次
+  仍未消费；但ID106没有RL checkpoint，不能checkpoint resume。它只能在重验全部fingerprint
+  后作为同一初始policy的独立train-only retry输入，不能重启ID106 outer controller伪装resume。
+- watcher于08:07:05 +08:00取消hold`487586`；Slurm cleanup step在四节点完成，作业离开
+  `squeue`且无相关进程。W&B client ID`zomtjamg`日志称同步5个文件，但结束后API查不到run，
+  因此远端可见性/状态不作结论。
+- 本次只验证正式20步history下的rollout/planner/reference artifact语义，没有执行RL
+  loss、backward、manual gradient averaging、update或checkpoint；下一门禁是语义等价的
+  state-sequence microbatch/chunk及真实最大history GPU optimizer-step验证。trajectory还应
+  直接持久化dataset名和seed，避免只能从launch/runtime日志恢复provenance。人类已接管，
+  本会话不重启训练。
 
 ## 2026-07-26：ID105完成真实exhaustive H=2的8-GPU correctness闭环
 

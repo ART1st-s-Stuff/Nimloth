@@ -1,4 +1,4 @@
-# 2026-07-26 full-scale RL overnight run
+# 2026-07-26 full-scale RL overnight run（已结束）
 
 ## 目标
 
@@ -95,3 +95,46 @@ token PPO、冻结reference KL和DINO-grid WM语义上启动正式多迭代RL；
   environment和SSH协议请求却都收到空回复。因此不能把故障定位为sshd，也不能据端口
   推断作业健康；在恢复可认证SSH并重新核对PID/hold/日志前，不将失联时间内的任何进度
   写成已验证事实。
+
+## 实验结束与人类接管（2026-07-26 13:35 +08:00核验）
+
+- SSH恢复后核验确认：ID106已在08:07:03 +08:00因iteration1 controller exit1失败，
+  iteration2从未启动。hold`487586`于08:07:05被watcher取消，Slurm终态
+  `CANCELLED by 3738`；四节点cleanup step `.43`完成，作业已离开`squeue`，controller、
+  watcher和ID106训练进程均不再存活。
+- rollout实际完成8/8：每条20个真实动作和独立terminal CoT，共160 transitions、168张图，
+  rewards为`-1.6/-1.9/-0.8/-1.2/-2.0/-1.9/-0.7/-0.9`，success0/8，全部按20步
+  truncated。finish reason为145个stop、15个length，15个均持久化
+  `reasoning_truncated=true`。
+- frozen reference replay完整`ALL_OK`。独立审计用当前`RolloutTrajectory.from_record`和
+  `validate_rollout_trajectory`读取behavior/reference全部8条，并逐步检查160个planner
+  trace：每步恰好64个唯一H=2候选、最优候选首动作等于执行动作，token ID/loss mask/
+  reference log-prob对齐；结果`ALL_OK`。behavior/reference SHA256分别为
+  `0b1b4fbc4eb3811581ac963f66b31a64bdbbf61460801dedbef86d111be7dfbb`和
+  `24cc89ab0dc84ecc07ec1f92ef5dea904c0bf1eb449d8b15da03ab42343d8f17`。
+- 四个training rank均在第一次`algorithm.training_step`的state-sequence Qwen SDPA
+  attention forward OOM；每个进程当时约用69.96GiB、仅余9.21GiB，却尝试新增38.52GiB。
+  失败发生在backward/optimizer之前；CSV仅表头，没有finite loss、gradient sync、
+  optimizer/global step或`latest/iter_0001/final` checkpoint。
+- fresh consumption的pre-optimizer claim已事务回滚，`.consumption.json`不存在。这意味着
+  已校验的immutable behavior/reference batch仍未被训练消费；但ID106没有RL checkpoint，
+  不能执行checkpoint resume。若人类复用该批次，应以单独标识的train-only retry从同一
+  初始policy运行，并重新验证policy/planner/reference全部fingerprint，禁止把它写成ID106
+  resume或重启60轮controller。
+- W&B client run ID为`zomtjamg`，日志显示run URL并同步5个文件；结束后API查询却无法找到
+  该run，因此远端可见性/终态未验证，不能用`finished`等词替它补结论。
+- 语义边界：本次验证了正式20步历史下的真实CoT、H=2 exhaustive planner和reference
+  artifact契约，没有执行PPO/WM/token-value/planner-distillation loss、反传或更新，不能
+  作为RL update语义或policy质量证据；算法仍是environment Monte Carlo return加turn内
+  token GAE，不是VAGEN Bi-Level GAE。
+- 建议修复：把state-sequence Qwen编码改成保持同一统计目标与梯度的microbatch/chunk加
+  gradient accumulation，先在小shape证明与未分块loss/gradient等价，再用真实20步最大
+  history做有限GPU门禁；门禁必须覆盖finite loss、完整backward和manual gradient
+  averaging、optimizer step、trainable/frozen parameter delta、fresh commit及完整checkpoint。
+  另外trajectory本体目前只保存`split=train`，dataset名和seed仍需从launch/runtime日志
+  恢复，后续应直接持久化这两个provenance字段。
+- 人类已明确接管；本会话不重启训练、不修改训练实现。仅完成实验结束记录与证据交接。
+- 结束时重新`get`并核对本任务使用的local memory M0001/M0007/M0008/M0012：Python环境、
+  train asset、W&B entity来源和paired-GPU gradient-sync证据仍成立；M0008因本文件头部新增
+  内容导致原AI_branch evidence行号漂移，已改到当前实际run URL证据。四条memory仍均为
+  `pending-human-verification`，CLI拒绝upvote；未新建与本实验README/进度重复的memory。
