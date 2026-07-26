@@ -375,7 +375,7 @@ class SFT2Algorithm:
             if batch.dino_grid_target is not None
             else None
         )
-        value = action_value_loss(
+        value_objective = action_value_loss(
             model_output.action_values,
             batch.current_action_indices,
             batch.current_value_targets,
@@ -384,7 +384,7 @@ class SFT2Algorithm:
                 self.value_rank_weight if include_value_ranking else 0.0
             ),
         )
-        total = wm_weight * wm_loss + self.value_weight * value.loss
+        total = wm_weight * wm_loss + self.value_weight * value_objective.loss
         if dino_loss is not None:
             total = total + self.dino_grid_weight * dino_loss
         if model_output.lm_loss is not None:
@@ -394,9 +394,11 @@ class SFT2Algorithm:
             total = total * 0.0
 
         metrics = {
-            "value_mc_mse": float(value.monte_carlo_mse.detach().item()),
-            "value_rank": float(value.ranking.detach().item()),
-            "value_total": float(value.loss.detach().item()),
+            "value_mc_mse": float(
+                value_objective.monte_carlo_mse.detach().item()
+            ),
+            "value_rank": float(value_objective.ranking.detach().item()),
+            "value_total": float(value_objective.loss.detach().item()),
             "lambda_wm": float(wm_weight),
             "lambda_sigreg": 0.0,
             "lambda_value": self.value_weight,
@@ -411,7 +413,7 @@ class SFT2Algorithm:
         losses: dict[str, torch.Tensor | None] = {
             "lm": model_output.lm_loss,
             "wm": wm_loss,
-            "value": value.loss,
+            "value": value_objective.loss,
         }
         if dino_loss is not None:
             losses["dino"] = dino_loss

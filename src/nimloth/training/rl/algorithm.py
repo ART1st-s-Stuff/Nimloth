@@ -194,7 +194,7 @@ class RLAlgorithm:
         reference_kl_loss_weight: float = 0.0,
         train_world_model: bool = True,
     ) -> None:
-        """Consume values already validated by ``RLConfig``."""
+        """消费已经由 ``RLConfig`` 校验过的算法参数。"""
 
         self.history_size = int(history_size)
         self.sigreg = sigreg
@@ -368,7 +368,7 @@ class RLAlgorithm:
         returns = torch.cat([episode.return_targets for episode in episodes], dim=0)
         returns = returns.to(device=states.device)
         action_values = runtime.agent.wm.predict_action_values(states.detach())
-        value = action_value_loss(
+        value_objective = action_value_loss(
             action_values,
             actions,
             returns,
@@ -376,11 +376,11 @@ class RLAlgorithm:
             ranking_weight=self.value_rank_weight,
         )
         return RLStepOutput(
-            loss=value.loss,
+            loss=value_objective.loss,
             losses={
                 "wm": None,
                 "sigreg": None,
-                "value": value.loss,
+                "value": value_objective.loss,
                 "policy": None,
                 "token_value": None,
                 "action_distillation": None,
@@ -389,10 +389,12 @@ class RLAlgorithm:
             metrics={
                 "wm_mse": 0.0,
                 "sigreg_loss": 0.0,
-                "value_loss": float(value.loss.detach().item()),
-                "value_mc_mse": float(value.monte_carlo_mse.detach().item()),
-                "value_rank": float(value.ranking.detach().item()),
-                "total_loss": float(value.loss.detach().item()),
+                "value_loss": float(value_objective.loss.detach().item()),
+                "value_mc_mse": float(
+                    value_objective.monte_carlo_mse.detach().item()
+                ),
+                "value_rank": float(value_objective.ranking.detach().item()),
+                "total_loss": float(value_objective.loss.detach().item()),
                 "actor_loss": 0.0,
                 "token_value_loss": 0.0,
                 "action_distillation_loss": 0.0,
@@ -432,14 +434,18 @@ class RLAlgorithm:
             )
             target_next_states = target_state_sequence[:, 1:].detach()
             wm_loss = F.mse_loss(predicted_next_states, target_next_states)
-        value = action_value_loss(
+        value_objective = action_value_loss(
             action_values,
             batch.action_indices,
             batch.return_targets,
             ranking_margin=self.value_rank_margin,
             ranking_weight=self.value_rank_weight,
         )
-        total = value.loss if wm_loss is None else wm_loss + value.loss
+        total = (
+            value_objective.loss
+            if wm_loss is None
+            else wm_loss + value_objective.loss
+        )
 
         # 各 WM variant 明确选择 SIGReg 的统计单位；grid 与 SFT2 一致，对 slot
         # mean pooling 后再把 (B,T,D) 交给 SequenceSIGReg。
@@ -455,7 +461,7 @@ class RLAlgorithm:
         policy, token_value_loss, reference_kl_loss = self._policy_replay_losses(
             runtime,
             batch,
-            value,
+            value_objective,
         )
         if policy is not None:
             # policy["loss"] 已取 clipped surrogate 的负号；entropy 作为奖励项减去。
@@ -480,9 +486,11 @@ class RLAlgorithm:
             "sigreg_loss": (
                 float(sigreg_loss.detach().item()) if sigreg_loss is not None else 0.0
             ),
-            "value_loss": float(value.loss.detach().item()),
-            "value_mc_mse": float(value.monte_carlo_mse.detach().item()),
-            "value_rank": float(value.ranking.detach().item()),
+            "value_loss": float(value_objective.loss.detach().item()),
+            "value_mc_mse": float(
+                value_objective.monte_carlo_mse.detach().item()
+            ),
+            "value_rank": float(value_objective.ranking.detach().item()),
             "total_loss": float(total.detach().item()),
             "actor_loss": float(policy["loss"].detach().item()) if policy else 0.0,
             "token_value_loss": (
@@ -513,7 +521,7 @@ class RLAlgorithm:
             losses={
                 "wm": wm_loss,
                 "sigreg": sigreg_loss,
-                "value": value.loss,
+                "value": value_objective.loss,
                 "policy": policy["loss"] if policy else None,
                 "token_value": token_value_loss,
                 "action_distillation": None,
@@ -547,7 +555,7 @@ class RLAlgorithm:
         self,
         runtime: RLModelRuntime,
         batch: RLBatch,
-        value: ActionValueLoss,
+        value_objective: ActionValueLoss,
     ) -> tuple[
         dict[str, torch.Tensor] | None,
         torch.Tensor | None,
@@ -587,10 +595,10 @@ class RLAlgorithm:
         else:
             step_advantages = normalized_monte_carlo_advantages(
                 return_targets=batch.return_targets.flatten().to(
-                    device=value.selected_action_values.device,
-                    dtype=value.selected_action_values.dtype,
+                    device=value_objective.selected_action_values.device,
+                    dtype=value_objective.selected_action_values.dtype,
                 ),
-                predicted_values=value.selected_action_values.flatten(),
+                predicted_values=value_objective.selected_action_values.flatten(),
             ).to(
                 device=replay_output.selected_log_probs.device,
                 dtype=replay_output.selected_log_probs.dtype,

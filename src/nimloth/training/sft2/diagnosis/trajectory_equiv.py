@@ -57,14 +57,14 @@ def _world_model_and_value_losses(
         dtype=values.dtype,
         device=values.device,
     )
-    value = action_value_loss(
+    value_objective = action_value_loss(
         values,
         actions,
         targets,
         ranking_margin=0.1,
         ranking_weight=1.0,
     )
-    return dynamics_loss, value.loss
+    return dynamics_loss, value_objective.loss
 
 
 @torch.no_grad()
