@@ -190,7 +190,7 @@ def _validate_planner_segments(trajectory: RolloutTrajectory) -> None:
         raise ValueError(f"{prefix} planner anchors do not bound every action trace")
     for trace, start_step, end_step in zip(
         trajectory.planner_policy_traces,
-        anchors,
+        anchors[:-1],
         anchors[1:],
         strict=True,
     ):
