@@ -79,9 +79,13 @@ capture contract. It is intentionally not mixed into this checkpoint/continuatio
 
 ## Pending gate
 
-1. Preserve checkpoint-native processor bounds by default, forward any explicit override
-   to vLLM, bind resolved bounds into the fresh manifest, and validate them in replay.
-2. Run syntax, config, compile and broader regression checks, then commit and push.
+1. Completed in commit `7c6de05`: checkpoint-native processor bounds are now the
+   default, an explicit override is forwarded to vLLM, fresh manifest v5 binds the
+   resolved bounds, and reference/training replay validate them before optimization.
+2. Exact server-commit validation passed 81 targeted tests and 219 Agent/Qwen/rollout/
+   RL/WM tests. The full suite reached 383 passed and 1 skipped; its only failure is the
+   server worktree's unrelated uninitialized `external/RCDM` submodule. Compileall,
+   shell syntax and diff checks pass.
 3. Run a new two-iteration real GPU gate from ID46. It must prove native-resolution HF
    replay fits and step2 vLLM/planner fingerprints
    come from step1, optimizer state resumes, both steps are finite, checkpoint hardlinks

@@ -20,6 +20,11 @@
   `CANCELLED by 3738`、elapsed00:13:10，实验进程和allocation均已退出。此前8--10小时估算
   暂时失效，因为rollout计时是原生100352而训练计时是3136；需先验证原生分辨率HF replay的
   显存和耗时，再决定全规模训练。
+- commit`7c6de05`已修复：RL默认保留checkpoint的processor像素上下界；显式覆盖会同步传给
+  vLLM；fresh manifest v5持久化实际上下界，reference replay和训练加载后在optimizer前校验。
+  current vLLM launcher不再硬编码3136。精确服务器commit定向回归81 passed，扩展Agent/Qwen/
+  rollout/RL/WM回归219 passed；全suite为383 passed、1 skipped、1个无关失败，失败仅因为该
+  server worktree未初始化`external/RCDM`。compileall、shell语法和diff检查均通过。
 
 ## 2026-07-26：ID109完成真实20-step retained-segment TD与官方DDP门禁
 
