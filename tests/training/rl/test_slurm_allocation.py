@@ -10,6 +10,7 @@ HELPER = REPO_ROOT / "experiments/training/rl/slurm_allocation.sh"
 CONTROLLER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_slurm.sh"
 PIPELINE = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_smoke.sh"
 FULL_RUNNER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_full.sh"
+CONTINUATION = REPO_ROOT / "src/nimloth/training/rl/continuation.py"
 
 
 def _load_counts(job_details: str) -> list[str]:
@@ -92,12 +93,19 @@ def test_pair_parallel_topology_is_config_driven_and_node_local() -> None:
 
 def test_full_runner_uses_one_fresh_manifest_per_resumed_update() -> None:
     runner = FULL_RUNNER.read_text(encoding="utf-8")
+    continuation = CONTINUATION.read_text(encoding="utf-8")
     controller = CONTROLLER.read_text(encoding="utf-8")
     pipeline = PIPELINE.read_text(encoding="utf-8")
 
     assert "planner_greedy_h2_full.yaml" in runner
-    assert 'for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++))' in runner
-    assert 'mv "${TRAIN_OUT}/latest" "${snapshot}"' in runner
+    assert (
+        "for ((iteration=START_ITERATION; "
+        "iteration<=TOTAL_ITERATIONS; iteration++))" in runner
+    )
+    assert 'prepare-policy "${RUN_OUT}" "${iteration}"' in runner
+    assert "latest.rename(snapshot)" in continuation
+    assert "relocate_consumption_checkpoint(" in continuation
+    assert "validate_committed_iteration(" in continuation
     assert 'RESUME_CHECKPOINT="${resume_checkpoint}"' in runner
     assert 'SEED_OFFSET="${seed_offset}"' in runner
     assert '"${ITERATION_RUNNER}"' in runner
