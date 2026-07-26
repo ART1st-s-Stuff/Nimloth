@@ -126,6 +126,9 @@ def test_continuation_gate_uses_two_fresh_greedy_updates() -> None:
         "common_sense_train",
     )
     assert config.agent.planning.search_mode == "greedy"
+    assert config.distributed.nodes == 1
+    assert config.distributed.world_size == 2
+    assert config.distributed.gpus_per_rank == 2
     assert config.distributed.total_gpus == 4
 
 

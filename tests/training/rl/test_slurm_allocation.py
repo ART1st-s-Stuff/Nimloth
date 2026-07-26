@@ -87,6 +87,7 @@ def test_pair_parallel_topology_is_config_driven_and_node_local() -> None:
     assert "node_ranks=$((node_gpus / TRAIN_GPUS_PER_RANK))" in pipeline
     assert "local_rank<NIMLOTH_NODE_RANKS" in pipeline
     assert 'NIMLOTH_DDP_GPU_STRIDE="${TRAIN_GPUS_PER_RANK}"' in pipeline
+    assert '--nproc_per_node="${TRAIN_WORLD_SIZE}"' in pipeline
 
 
 def test_full_runner_uses_one_fresh_manifest_per_resumed_update() -> None:
