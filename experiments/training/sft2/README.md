@@ -12,6 +12,7 @@ code lives in `src/nimloth/training/sft2/`.
 | `generate_terminal_cot.py` | 用 SFT1 初始化 checkpoint 离线生成并持久化 terminal CoT |
 | `run_terminal_cot_dino_grid_pipeline.sh` | 在一个 world8 hold 内串行生成 terminal CoT、建新 cache 并启动 DINO-grid SFT2 |
 | `build_compact_cache.slurm` | CPU-only compact-cache job |
+| `resume_preprocess_cache.slurm` | 从原子 image shards 继续指定 terminal-CoT compact cache |
 | `submit_cache_then_train.sh` | Cache job followed by dependency-gated training |
 | `submit_default_8gpu.sh` | Default LLM-freeze, vision-full run |
 | `submit_llmvis_lora_8gpu.sh` | LLM and vision LoRA variant |
@@ -24,6 +25,11 @@ at startup. Production accepts only `trajectory_online_cache`: complete
 trajectory lanes stay on one rank and advance in time order. A state is encoded
 once when it is the current transition, then reused as detached history. Removed
 row-by-row and activation-offload OOM fallbacks are not accepted by the CLI.
+
+`history_size=H`和`prediction_horizon=T`是独立参数。`T>1`当前要求`H=1`：每个
+sliding window从一个真实`state_t`出发，严格使用原始rollout中连续`T`个action，
+递归预测`state_{t+1:t+T}`，并让每个位置分别接受WM latent、DINO-grid和已执行action
+Monte Carlo value监督。未执行action不进入SFT2 value loss。
 
 ## Historical DINO-grid result status
 

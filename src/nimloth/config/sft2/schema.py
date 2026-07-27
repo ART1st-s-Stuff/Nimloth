@@ -42,6 +42,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "max_pixels"): "max_pixels",
     ("train", "emb_dim"): "emb_dim",
     ("train", "history_size"): "history_size",
+    ("train", "prediction_horizon"): "prediction_horizon",
     ("grid", "size"): "grid_size",
     ("grid", "wm_depth"): "grid_wm_depth",
     ("grid", "wm_heads"): "grid_wm_heads",

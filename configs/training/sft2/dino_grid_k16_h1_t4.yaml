@@ -1,0 +1,85 @@
+# SFT2 — k16 DINO grid, one-state context H=1 and recorded-action rollout T=4.
+
+objective:
+  name: dino_grid
+
+init:
+  sft1_checkpoint: /project/peilab/atst/nimloth/outputs/experiments/sft1_checkpoint_merge_fix/2026-07-24/3_k16_ep5_untied_lm_head_restore/hf_merged
+
+supervision:
+  dino_grid_cache: /project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-20/sft2/cache/k16_all3217_px100352_bf16_dino4x4_f32_b8659fe
+
+data:
+  # Reuse the audited real-terminal-CoT records from ID49. Six malformed train
+  # trajectories were explicitly excluded; val retained all 355 records.
+  train_jsonl: /project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-25/sft2/49_terminalcot_validonly_dinogrid_k16_h4_untiedhead_fp32aux_ep2_b1_ga8_ws8_px100352/data/train_terminal_cot.jsonl
+  val_jsonl: /project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-25/sft2/49_terminalcot_validonly_dinogrid_k16_h4_untiedhead_fp32aux_ep2_b1_ga8_ws8_px100352/data/val_terminal_cot.jsonl
+  include_failed_rollouts: true
+
+tuning:
+  llm_tune: freeze
+  vision_tune: full
+  vision_ema: true
+  vision_ema_decay: 0.999
+  lora_r: 64
+  lora_alpha: 128
+
+train:
+  epochs: 2
+  batch_size: 1
+  grad_accum: 8
+  lr_qwen_start: 1.0e-8
+  lr_qwen_peak: 5.0e-7
+  state_proj_lr: 1.0e-4
+  wm_predictor_lr: 3.0e-4
+  value_head_lr: 1.0e-4
+  train_wm_predictor: true
+  max_length: 12000
+  max_pixels: 100352
+  emb_dim: 1024
+  history_size: 1
+  prediction_horizon: 4
+  batch_mode: trajectory_online_cache
+  attn_implementation: flash_attention_2
+  gradient_checkpointing: true
+  checkpoint_interval_minutes: 20.0
+  preprocess_cache_dir: /project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-25/sft2/49_terminalcot_validonly_dinogrid_k16_h4_untiedhead_fp32aux_ep2_b1_ga8_ws8_px100352/cache/preprocess
+  # ID49's partial cache was fingerprinted against the corrected SFT1 export.
+  preprocess_cache_processor_source: /project/peilab/atst/nimloth/outputs/experiments/sft1_checkpoint_merge_fix/2026-07-24/3_k16_ep5_untied_lm_head_restore/hf_merged
+  preprocess_cache_image_dtype: bfloat16
+  preprocess_cache_image_shard_size: 128
+  preprocess_cache_transition_shard_size: 256
+  preprocess_cache_shard_lru: 2
+  require_prebuilt_cache: true
+  preprocess_workers: 16
+  dataloader_workers: 4
+  dataloader_prefetch_factor: 2
+
+latent:
+  token_count: 16
+  query_mode: inject
+  query_tune: freeze
+  query_lr: 5.0e-5
+
+grid:
+  size: 4
+  wm_depth: 6
+  wm_heads: 16
+  wm_dim_head: 64
+  wm_mlp_dim: 2048
+  wm_dropout: 0.1
+
+loss:
+  lambda_wm_start: 0.1
+  lambda_wm_end: 1.0
+  lambda_ce: 1.0
+  lambda_dino: 0.5
+  lambda_value: 1.0
+  lambda_sigreg: 0.1
+  sigreg_num_proj: 1024
+  sigreg_knots: 17
+  value_gamma: 1.0
+
+monitor:
+  wandb: true
+  checkpoint_metric: val_wm_mse

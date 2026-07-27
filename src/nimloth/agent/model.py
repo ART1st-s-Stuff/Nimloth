@@ -35,6 +35,17 @@ class AgentOutput:
     lm_loss: torch.Tensor | None
 
 
+@dataclass(frozen=True)
+class AgentRolloutOutput:
+    """One real state followed by a differentiable predicted-state rollout."""
+
+    hidden: torch.Tensor
+    current_state: torch.Tensor
+    predicted_states: torch.Tensor
+    predicted_action_values: torch.Tensor
+    lm_loss: torch.Tensor | None
+
+
 class Agent(nn.Module):
     """组合可训练 Backbone 与 WorldModel 的唯一模型边界。
 
@@ -158,6 +169,51 @@ class Agent(nn.Module):
             lm_loss=encoded_current.lm_loss,
         )
 
+    def forward_action_rollout(
+        self,
+        action_sequences: torch.Tensor,
+        *,
+        encoded_current: AgentStateOutput,
+    ) -> AgentRolloutOutput:
+        """Roll out recorded future actions from one real current state.
+
+        This SFT2 path deliberately starts with ``H=1``.  Every later state is
+        the preceding WM prediction, so no future real state is fed back into
+        the predictor (targets are consumed only by the objective).
+        """
+
+        if action_sequences.ndim != 2 or action_sequences.shape[1] < 1:
+            raise ValueError(
+                "action_sequences must have shape (B,T) with T>=1, "
+                f"got {tuple(action_sequences.shape)}"
+            )
+        batch_size = action_sequences.shape[0]
+        if (
+            encoded_current.state.ndim < 2
+            or encoded_current.state.shape[0] != batch_size
+        ):
+            raise ValueError(
+                "current state batch does not align with action rollout: "
+                f"state={tuple(encoded_current.state.shape)}, "
+                f"actions={tuple(action_sequences.shape)}"
+            )
+        state_history = encoded_current.state.unsqueeze(1)
+        previous_actions = action_sequences.new_empty((batch_size, 0))
+        predicted_states = self.wm.simulate_action_sequences(
+            state_history,
+            previous_actions,
+            action_sequences,
+        )
+        return AgentRolloutOutput(
+            hidden=encoded_current.hidden,
+            current_state=encoded_current.state,
+            predicted_states=predicted_states,
+            predicted_action_values=self.wm.predict_action_values(
+                predicted_states
+            ),
+            lm_loss=encoded_current.lm_loss,
+        )
+
     @property
     def trainable_modules(self) -> tuple[nn.Module, ...]:
         """返回需要统一切换 train/eval mode 的完整模型边界。"""
@@ -185,4 +241,4 @@ class Agent(nn.Module):
         )
 
 
-__all__ = ["Agent", "AgentOutput", "AgentStateOutput"]
+__all__ = ["Agent", "AgentOutput", "AgentRolloutOutput", "AgentStateOutput"]

@@ -1,4 +1,4 @@
-"""16-slot spatial state and H-step temporal-spatial world model."""
+"""16-slot spatial state and H-context temporal-spatial world model."""
 
 from __future__ import annotations
 

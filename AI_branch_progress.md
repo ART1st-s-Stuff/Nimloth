@@ -2840,3 +2840,25 @@
 - Nix CPU定向回归先后为`26 passed`、`20 passed`；扩展SFT2/WM/Agent及共享RL value回归
   为`143 passed, 1 skipped`。`compileall`和`git diff --check`通过。未运行GPU训练、
   vLLM或正式实验。
+
+## 2026-07-27：SFT2 H=1、原始action四步预测实现并通过CPU回归
+
+- 人类确认`history_size`是WM输入历史`H`，本次固定`H=1`；新增独立训练展开参数
+  `prediction_horizon=T=4`。sampler只生成同一原始rollout内四条连续transition的完整
+  滑窗，不跨record/step缺口，不padding伪造未来action或state。
+- 每个窗口只编码一次真实当前state；WM依次执行原始数据中的四个action并自回归得到
+  四个预测state，后续step不teacher-force真实latent。四个真实下一observation state和
+  DINO grid都是detached target，WM latent与DINO MSE覆盖全部四个位置。
+- ValueHead在四个预测state上分别回归对应原始transition的`gamma=1` Monte Carlo
+  return；只gather实际action slot，SFT2 rank loss保持删除。CE仍只属于窗口当前prompt，
+  SIGReg保持真实在线`(s_t,s_{t+1})`语义。
+- 新增`dino_grid_k16_h1_t4.yaml`、cache续建Slurm脚本和多节点world-size 8 launcher；
+  使用ID49已审计的真实terminal-CoT train/val、corrected SFT1初始化、DINO sidecar及
+  32/489 partial preprocess cache，但不会resume旧SFT2 optimizer/checkpoint。
+- 本地SFT2/WM/Agent回归为`127 passed, 1 skipped`；共享接口相关RL/grid回归为
+  `29 passed`。compileall、launcher/cache脚本`bash -n`和`git diff --check`均通过。
+  本地旧`.venv`因系统Python从3.13切到3.14而失效，验证改用完整Nix Python 3.13环境；
+  两条Gloo测试在允许loopback socket的环境运行通过。
+- 重连后集群查询显示normal空闲20/48 GPU、preempt空闲11/32 GPU，当前用户无Slurm
+  任务。尚未提交cache续建或GPU smoke；正式任务仍需按实验启动规则记录精确commit、
+  W&B递增ID、输出目录、2节点×4 GPU资源与实测时间。

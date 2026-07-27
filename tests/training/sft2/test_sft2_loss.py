@@ -12,7 +12,7 @@ from nimloth.agent import Agent
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.rollout import TransitionBatch
 from nimloth.training.sft2.algorithm import SFT2Algorithm
-from nimloth.training.sft2.batch import SFT2Batch
+from nimloth.training.sft2.batch import SFT2Batch, SFT2RolloutBatch
 from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import SequenceSIGReg, StateProjector, ValueHead, WorldModel
@@ -105,6 +105,21 @@ class _Predictor(torch.nn.Module):
     ) -> torch.Tensor:
         return self.net(state)
 
+    def rollout_from_history(
+        self,
+        state_history: torch.Tensor,
+        previous_actions: torch.Tensor,
+        future_actions: torch.Tensor,
+    ) -> torch.Tensor:
+        assert state_history.shape[1] == 1
+        assert previous_actions.shape[1] == 0
+        state = state_history[:, -1]
+        predicted = []
+        for step in range(future_actions.shape[1]):
+            state = self.net(state) + future_actions[:, step].float().unsqueeze(-1)
+            predicted.append(state)
+        return torch.stack(predicted, dim=1)
+
 
 class _RecordingProjector(torch.nn.Linear):
     def __init__(self) -> None:
@@ -136,6 +151,7 @@ def _algorithm(
     *,
     history_size: int = 2,
     sigreg_weight: float = 0.1,
+    prediction_horizon: int = 1,
 ):
     backbone = _TensorBackbone()
     projector = _RecordingProjector()
@@ -157,6 +173,7 @@ def _algorithm(
             sigreg_weight=sigreg_weight,
             value_weight=1.0,
             ce_weight=1.0,
+            prediction_horizon=prediction_horizon,
         ),
         runtime,
         backbone,
@@ -209,6 +226,42 @@ def _seed_history(runtime: SFT2ModelRuntime, batch: SFT2Batch) -> torch.Tensor:
     keys = [key for row in batch.history_keys for key in row]
     runtime.history_cache.store(keys, values.flatten(0, 1))
     return values
+
+
+def _rollout_batch() -> SFT2RolloutBatch:
+    horizon = 4
+    batch_size = 2
+    trajectory_steps = tuple(
+        (record_id, step)
+        for record_id in ("rec_A", "rec_B")
+        for step in range(horizon)
+    )
+    return SFT2RolloutBatch(
+        transitions=TransitionBatch(
+            current=BackboneBatch(
+                {"hidden": torch.randn(batch_size, 4, requires_grad=True)}
+            ),
+            next=BackboneBatch(
+                {
+                    "hidden": torch.randn(
+                        batch_size * horizon,
+                        4,
+                        requires_grad=True,
+                    )
+                }
+            ),
+            action_indices=torch.tensor([2, 0, 1, 2, 1, 2, 0, 1]),
+            value_targets=torch.tensor([8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]),
+            next_indices=torch.arange(batch_size * horizon),
+            non_terminal_mask=torch.ones(batch_size * horizon, dtype=torch.bool),
+            trajectory_steps=trajectory_steps,
+        ),
+        online_tail=BackboneBatch(
+            {"hidden": torch.randn(batch_size, 4, requires_grad=True)}
+        ),
+        prediction_horizon=horizon,
+        sample_weights=torch.ones(batch_size),
+    )
 
 
 def test_state_projector_accepts_multi_latent_block() -> None:
@@ -345,6 +398,70 @@ def test_sft2_value_scores_predicted_next_and_only_executed_action_slots() -> No
     ).bool()
     assert torch.count_nonzero(action_value_grad[executed_mask]) == batch.batch_size
     assert torch.count_nonzero(action_value_grad[~executed_mask]) == 0
+
+
+def test_sft2_t4_rollout_uses_recorded_actions_and_supervises_all_four_states() -> None:
+    torch.manual_seed(0)
+    algorithm, runtime, backbone, projector = _algorithm(
+        history_size=1,
+        prediction_horizon=4,
+        sigreg_weight=0.0,
+    )
+    batch = _rollout_batch()
+    predictor = runtime.agent.wm.wm_predictor
+    value_head = runtime.agent.wm.value_head
+    with torch.no_grad():
+        projector.weight.copy_(torch.eye(4))
+        predictor.net.weight.copy_(torch.eye(4))
+    captured: dict[str, torch.Tensor] = {}
+
+    def record_values(
+        _module: torch.nn.Module,
+        inputs: tuple[torch.Tensor, ...],
+        output: torch.Tensor,
+    ) -> None:
+        inputs[0].retain_grad()
+        output.retain_grad()
+        captured["predicted_states"] = inputs[0]
+        captured["action_values"] = output
+
+    hook = value_head.register_forward_hook(record_values)
+    try:
+        output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
+        output.loss.backward()
+    finally:
+        hook.remove()
+
+    predicted = captured["predicted_states"]
+    expected_steps = []
+    state = projector.outputs[0]
+    for step in range(4):
+        state = state + batch.action_sequences[:, step].float().unsqueeze(-1)
+        expected_steps.append(state)
+    torch.testing.assert_close(predicted, torch.stack(expected_steps, dim=1))
+    assert predicted.shape == (2, 4, 4)
+    assert output.metrics["prediction_horizon"] == 4.0
+    assert set(output.losses) == {"lm", "wm", "value"}
+    assert backbone.calls == 2
+    assert batch.next.tensors["hidden"].grad is None
+    assert predictor.net.weight.grad is not None
+    assert torch.count_nonzero(predictor.net.weight.grad) > 0
+    assert projector.outputs[0].grad is not None
+    assert torch.count_nonzero(projector.outputs[0].grad) > 0
+
+    action_value_grad = captured["action_values"].grad
+    assert action_value_grad is not None
+    executed_mask = torch.nn.functional.one_hot(
+        batch.action_sequences,
+        num_classes=action_value_grad.shape[-1],
+    ).bool()
+    assert torch.count_nonzero(action_value_grad[executed_mask]) == 8
+    assert torch.count_nonzero(action_value_grad[~executed_mask]) == 0
+    assert predicted.grad is not None
+    assert all(
+        torch.count_nonzero(predicted.grad[:, step]) > 0
+        for step in range(4)
+    )
 
 
 def test_sft2_predictor_receives_full_configured_history_axis() -> None:

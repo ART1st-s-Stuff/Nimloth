@@ -6,6 +6,7 @@ import pytest
 
 from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.config.sft2 import flatten_sft2_yaml_config
+from nimloth.config.io import load_yaml_config
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -13,6 +14,9 @@ K8_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8.yaml"
 K1_CONTROL_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k1_control.yaml"
 DINO_GRID_CONFIG = (
     ROOT / "configs" / "training" / "sft2" / "dino_grid_k16_h4.yaml"
+)
+DINO_GRID_H1_T4_CONFIG = (
+    ROOT / "configs" / "training" / "sft2" / "dino_grid_k16_h1_t4.yaml"
 )
 REQUIRED = [
     "--model",
@@ -102,6 +106,20 @@ def test_dino_grid_config_has_no_retired_wm_ema_or_decoder_options() -> None:
     assert not hasattr(args, "grid_decoder_hidden_dim")
     assert not hasattr(args, "dino_decoder_lr")
     assert not hasattr(args, "grid_warmstart")
+
+
+def test_dino_grid_h1_t4_config_uses_real_value_and_recorded_rollout_contract() -> None:
+    args = parse_sft2_args(["--config", str(DINO_GRID_H1_T4_CONFIG), *REQUIRED])
+
+    assert args.objective == "dino_grid"
+    assert args.history_size == 1
+    assert args.prediction_horizon == 4
+    assert args.value_gamma == 1.0
+    assert args.lambda_value == 1.0
+    assert args.lambda_dino == 0.5
+    assert not hasattr(args, "value_rank_lambda")
+    flattened = flatten_sft2_yaml_config(load_yaml_config(DINO_GRID_H1_T4_CONFIG))
+    assert "terminal_cot" in str(flattened["train_jsonl"])
 
 
 def test_sft2_config_rejects_unknown_fields() -> None:

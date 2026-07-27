@@ -13,7 +13,7 @@ from nimloth.rollout import TransitionBatch
 import nimloth.training.sft2.dino_grid as dino_grid_module
 from nimloth.training.common import world_model_loss
 from nimloth.training.sft2.algorithm import SFT2Algorithm
-from nimloth.training.sft2.batch import SFT2Batch
+from nimloth.training.sft2.batch import SFT2Batch, SFT2RolloutBatch
 from nimloth.training.sft2.dino_grid import DINOGridBatchAssembler
 from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
@@ -77,6 +77,21 @@ class _GridPredictor(torch.nn.Module):
         _actions: torch.Tensor,
     ) -> torch.Tensor:
         return self.net(states)
+
+    def rollout_from_history(
+        self,
+        state_history: torch.Tensor,
+        previous_actions: torch.Tensor,
+        future_actions: torch.Tensor,
+    ) -> torch.Tensor:
+        assert state_history.shape[1] == 1
+        assert previous_actions.shape[1] == 0
+        state = state_history[:, -1]
+        predicted = []
+        for _step in range(future_actions.shape[1]):
+            state = self.net(state)
+            predicted.append(state)
+        return torch.stack(predicted, dim=1)
 
 
 def _runtime() -> tuple[SFT2ModelRuntime, _TensorGridBackbone, GridWorldModel]:
@@ -226,6 +241,82 @@ def test_dino_grid_batch_assembler_loads_only_current_next_images() -> None:
     assert targets.loaded_paths == [("a.png", "b.png")]
     assert prepared.dino_grid_target is not None
     assert prepared.dino_grid_target.shape == (2, 4, 8)
+
+
+def test_dino_grid_batch_assembler_loads_all_t4_rollout_targets_in_order() -> None:
+    horizon = 4
+    paths = tuple(f"next-{index}.png" for index in range(8))
+    batch = SFT2RolloutBatch(
+        transitions=TransitionBatch(
+            current=BackboneBatch({"hidden": torch.randn(2, 4, 6)}),
+            next=BackboneBatch({"hidden": torch.randn(8, 4, 6)}),
+            action_indices=torch.tensor([2, 0, 1, 2, 1, 2, 0, 1]),
+            value_targets=torch.arange(8, dtype=torch.float32),
+            next_indices=torch.arange(8),
+            non_terminal_mask=torch.ones(8, dtype=torch.bool),
+            trajectory_steps=tuple(
+                (record_id, step)
+                for record_id in ("rec_A", "rec_B")
+                for step in range(horizon)
+            ),
+        ),
+        online_tail=BackboneBatch({"hidden": torch.randn(2, 4, 6)}),
+        prediction_horizon=horizon,
+        sample_weights=torch.ones(2),
+        next_image_paths=paths,
+    )
+
+    class BaseAssembler:
+        processor = None
+
+        @staticmethod
+        def prepare(_raw_batch):  # type: ignore[no-untyped-def]
+            return batch
+
+    class Targets:
+        grid_size = 4
+        identity = SimpleNamespace(hidden_size=1024)
+
+        def __init__(self) -> None:
+            self.loaded_paths: tuple[str, ...] = ()
+
+        def load(self, loaded_paths, *, device):  # type: ignore[no-untyped-def]
+            self.loaded_paths = tuple(loaded_paths)
+            return torch.arange(8 * 4 * 8, device=device).reshape(8, 4, 8)
+
+    targets = Targets()
+    prepared = DINOGridBatchAssembler(
+        BaseAssembler(),  # type: ignore[arg-type]
+        targets,  # type: ignore[arg-type]
+    ).prepare(object())
+
+    assert targets.loaded_paths == paths
+    assert prepared.dino_grid_target is not None
+    assert prepared.dino_grid_target.shape == (2, 4, 4, 8)
+    torch.testing.assert_close(
+        prepared.dino_grid_target.flatten(0, 1),
+        torch.arange(8 * 4 * 8).reshape(8, 4, 8),
+    )
+
+    runtime, _backbone, _wm = _runtime()
+    algorithm = SFT2Algorithm(
+        history_size=1,
+        prediction_horizon=4,
+        sigreg=None,
+        sigreg_weight=0.0,
+        value_weight=1.0,
+        ce_weight=1.0,
+        dino_grid_weight=0.5,
+    )
+    output = algorithm.training_primary_step(runtime, prepared, wm_weight=1.0)
+
+    assert set(output.losses) == {"lm", "wm", "dino", "value"}
+    assert output.metrics["prediction_horizon"] == 4.0
+    output.loss.backward()
+    assert all(
+        parameter.grad is not None
+        for parameter in runtime.agent.wm.wm_predictor.parameters()
+    )
 
 
 def test_dino_loss_directly_supervises_predicted_state() -> None:

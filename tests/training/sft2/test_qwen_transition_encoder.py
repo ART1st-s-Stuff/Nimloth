@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
-from nimloth.training.sft2.batch import SFT2BatchAssembler
+from nimloth.training.sft2.batch import SFT2BatchAssembler, SFT2RolloutBatch
 
 
 def _assembler() -> SFT2BatchAssembler:
@@ -21,6 +21,20 @@ def _assembler() -> SFT2BatchAssembler:
         ),
         device=torch.device("cpu"),
         history_size=1,
+    )
+
+
+def _rollout_assembler() -> SFT2BatchAssembler:
+    processor = MagicMock()
+    processor.tokenizer.pad_token_id = 0
+    return SFT2BatchAssembler(
+        input_builder=Qwen25VLInputBuilder(
+            processor=processor,
+            max_length=32,
+        ),
+        device=torch.device("cpu"),
+        history_size=1,
+        prediction_horizon=4,
     )
 
 
@@ -103,3 +117,41 @@ def test_window_without_final_real_state_is_rejected() -> None:
     ):
         with pytest.raises(ValueError, match="current step requires a real next state"):
             _assembler().prepare([_item("terminal", None)])
+
+
+def test_prepare_t4_rollout_keeps_recorded_actions_and_all_next_targets() -> None:
+    items = []
+    for step, action in enumerate((2, 0, 1, 2)):
+        item = _item(
+            f"record:{step}",
+            [{"role": "user", "content": f"next-{step}"}],
+        )
+        item.update(
+            step_index=step,
+            action_index=action,
+            action_value_target=float(10 + step),
+            prediction_horizon=4,
+            rollout_position=step,
+            is_current_step=step == 0,
+            needs_next_state=True,
+            next_image_path=f"image-{step}.png",
+        )
+        items.append(item)
+    batch_sizes: list[int] = []
+
+    def fake_build(rows, _processor, _max_length, **_kwargs):
+        batch_sizes.append(len(rows))
+        return {"input_ids": torch.zeros((len(rows), 4), dtype=torch.long)}
+
+    with patch(
+        "nimloth.backbone.qwen25vl.input.build_qwen_batch",
+        side_effect=fake_build,
+    ):
+        batch = _rollout_assembler().prepare(items)
+
+    assert isinstance(batch, SFT2RolloutBatch)
+    assert batch_sizes == [1, 1, 4]
+    assert batch.action_sequences.tolist() == [[2, 0, 1, 2]]
+    assert batch.value_target_sequences.tolist() == [[10.0, 11.0, 12.0, 13.0]]
+    assert batch.next_indices.tolist() == [[0, 1, 2, 3]]
+    assert batch.next_image_paths == tuple(f"image-{step}.png" for step in range(4))

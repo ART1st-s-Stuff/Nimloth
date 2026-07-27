@@ -1,5 +1,8 @@
 from nimloth.rollout.transitions import TransitionSample
-from nimloth.training.sft2.data.samplers import OnlineHistoryBatchSampler
+from nimloth.training.sft2.data.samplers import (
+    FutureRolloutBatchSampler,
+    OnlineHistoryBatchSampler,
+)
 
 
 def _sample_indices(batches):
@@ -171,3 +174,58 @@ def test_epoch_shuffle_changes_group_order_but_not_trajectory_time_order() -> No
     assert _sample_indices(epoch_zero) != _sample_indices(epoch_one)
     assert _assert_cache_order(epoch_zero, samples) == set(range(len(samples)))
     assert _assert_cache_order(epoch_one, samples) == set(range(len(samples)))
+
+
+def test_future_rollout_sampler_emits_sliding_recorded_t4_windows() -> None:
+    samples = [
+        *[_sample("a", step) for step in range(6)],
+        *[_sample("b", step) for step in range(3)],
+    ]
+    sampler = FutureRolloutBatchSampler(
+        samples,
+        prediction_horizon=4,
+        batch_size=1,
+        shuffle=False,
+        pad_to_equal_batches=False,
+    )
+
+    batches = list(sampler)
+    windows = [
+        tuple(row.sample_index for row in batch)
+        for batch in batches
+    ]
+
+    assert windows == [
+        (0, 1, 2, 3),
+        (1, 2, 3, 4),
+        (2, 3, 4, 5),
+    ]
+    assert sampler.window_count == 3
+    for batch in batches:
+        assert [row.rollout_position for row in batch] == [0, 1, 2, 3]
+        assert all(row.prediction_horizon == 4 for row in batch)
+
+
+def test_future_rollout_sampler_never_crosses_gap_or_record_boundary() -> None:
+    samples = [
+        *[_sample("a", step) for step in (0, 1, 3, 4, 5, 6)],
+        *[_sample("b", step) for step in range(4)],
+    ]
+    sampler = FutureRolloutBatchSampler(
+        samples,
+        prediction_horizon=4,
+        batch_size=2,
+        shuffle=False,
+        pad_to_equal_batches=False,
+    )
+
+    windows = []
+    for batch in sampler:
+        for start in range(0, len(batch), 4):
+            window = batch[start : start + 4]
+            trajectory = [samples[row.sample_index] for row in window]
+            windows.append(
+                (trajectory[0].record_id, tuple(sample.step_index for sample in trajectory))
+            )
+
+    assert set(windows) == {("a", (3, 4, 5, 6)), ("b", (0, 1, 2, 3))}

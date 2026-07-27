@@ -59,6 +59,15 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         ),
     )
     ap.add_argument(
+        "--prediction-horizon",
+        type=int,
+        default=1,
+        help=(
+            "Autoregressive SFT2 target length T. T>1 uses consecutive actions "
+            "from the recorded rollout and currently requires history_size=1."
+        ),
+    )
+    ap.add_argument(
         "--latent-token-count",
         type=int,
         default=1,

@@ -333,10 +333,19 @@ def train_sft2(args=None) -> int:
     args.history_size = int(getattr(args, "history_size", 4))
     if args.history_size < 1:
         raise ValueError(f"--history-size must be >= 1, got {args.history_size}")
+    args.prediction_horizon = int(getattr(args, "prediction_horizon", 1))
+    if args.prediction_horizon < 1:
+        raise ValueError(
+            f"--prediction-horizon must be >= 1, got {args.prediction_horizon}"
+        )
+    if args.prediction_horizon > 1 and args.history_size != 1:
+        raise ValueError(
+            "multi-step SFT2 training requires --history-size 1, "
+            f"got H={args.history_size}, T={args.prediction_horizon}"
+        )
     if args.objective == "dino_grid":
         required = {
             "latent_token_count": (args.latent_token_count, 16),
-            "history_size": (args.history_size, 4),
             "emb_dim": (args.emb_dim, 1024),
             "latent_query_mode": (args.latent_query_mode, "inject"),
             "lambda_sigreg": (args.lambda_sigreg, 0.1),
@@ -403,6 +412,7 @@ def train_sft2(args=None) -> int:
                     "output_dir": str(args.output_dir),
                     "batch_mode": args.batch_mode,
                     "history_size": args.history_size,
+                    "prediction_horizon": args.prediction_horizon,
                     "history_state_cache": "online_detached_state_v1",
                     "latent_token_count": args.latent_token_count,
                     "latent_query_mode": args.latent_query_mode,
@@ -459,6 +469,7 @@ def train_sft2(args=None) -> int:
         input_builder=input_builder,
         device=world_model_device,
         history_size=args.history_size,
+        prediction_horizon=args.prediction_horizon,
     )
     if args.objective == "dino_grid":
         dino_targets = CachedDINOGridTargets.from_cache_root(
@@ -585,6 +596,7 @@ def train_sft2(args=None) -> int:
         "latent_query_mode": args.latent_query_mode,
         "query_tune": args.query_tune,
         "history_size": int(args.history_size),
+        "prediction_horizon": int(args.prediction_horizon),
         "history_state_cache": "online_detached_state_v1",
         "sigreg_batch_scope": "global_valid_states_v1",
         "sample_ownership_version": "current_step_once_v2_online_cache",
@@ -602,7 +614,11 @@ def train_sft2(args=None) -> int:
                 "dino_cache_fingerprint": args.dino_cache_fingerprint,
                 "dino_weight": float(args.lambda_dino),
                 "grid_state_format": "trainable_sft1_projector_v2",
-                "dino_supervision": "direct_predicted_state_mse",
+                "dino_supervision": (
+                    "autoregressive_predicted_state_sequence_mse_v1"
+                    if args.prediction_horizon > 1
+                    else "direct_predicted_state_mse"
+                ),
             }
         )
     checkpoint_manager = SFT2CheckpointManager(
@@ -648,6 +664,7 @@ def train_sft2(args=None) -> int:
             "lambda_sigreg",
             "qwen_lr",
             "context_length",
+            "prediction_horizon",
             "current_batch_size",
             "history_cache_entries",
             "val_wm_mse",
@@ -678,6 +695,7 @@ def train_sft2(args=None) -> int:
         wm_weight_start=args.lambda_wm_start,
         wm_weight_end=args.lambda_wm_end,
         dino_grid_weight=(args.lambda_dino if args.objective == "dino_grid" else 0.0),
+        prediction_horizon=args.prediction_horizon,
     )
     algorithm = SFT2Algorithm(**algorithm_kwargs)
 

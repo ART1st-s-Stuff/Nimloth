@@ -11,6 +11,7 @@ from nimloth.backbone import BackboneBatch, BackboneInputBuilder
 from nimloth.rollout import TransitionBatch
 from nimloth.rollout.transitions import (
     ContextualTransitionSample,
+    RolloutTransitionSample,
     TransitionSample,
     transition_training_item,
 )
@@ -150,6 +151,113 @@ class SFT2Batch:
         return bool(torch.count_nonzero(self.sample_weights).item() == 0)
 
 
+@dataclass(frozen=True)
+class SFT2RolloutBatch:
+    """``B`` fixed-length future rollouts starting from one real state each."""
+
+    transitions: TransitionBatch
+    online_tail: BackboneBatch
+    prediction_horizon: int
+    sample_weights: torch.Tensor
+    next_image_paths: tuple[str, ...] = ()
+    dino_grid_target: torch.Tensor | None = None
+
+    def __post_init__(self) -> None:
+        if self.prediction_horizon < 1:
+            raise ValueError("SFT2 prediction_horizon must be positive")
+        row_count = len(self.transitions.trajectory_steps)
+        if row_count == 0 or row_count % self.prediction_horizon != 0:
+            raise ValueError(
+                "SFT2 rollout rows must contain complete future windows: "
+                f"rows={row_count}, T={self.prediction_horizon}"
+            )
+        for start in range(0, row_count, self.prediction_horizon):
+            window = self.transitions.trajectory_steps[
+                start : start + self.prediction_horizon
+            ]
+            record_ids = {record_id for record_id, _step in window}
+            steps = [step for _record_id, step in window]
+            if len(record_ids) != 1 or any(
+                right != left + 1
+                for left, right in zip(steps, steps[1:])
+            ):
+                raise ValueError(
+                    "SFT2 rollout window must contain consecutive recorded "
+                    f"actions from one trajectory, got {window}"
+                )
+        if self.sample_weights.shape != (self.batch_size,):
+            raise ValueError(
+                "SFT2 rollout sample weights must have shape (B,), "
+                f"got {tuple(self.sample_weights.shape)} for B={self.batch_size}"
+            )
+        unique_weights = set(float(value) for value in self.sample_weights.tolist())
+        if not unique_weights.issubset({0.0, 1.0}) or len(unique_weights) != 1:
+            raise ValueError(
+                "SFT2 rollout batches must be entirely real or padding, "
+                f"got {sorted(unique_weights)}"
+            )
+        expected_targets = self.batch_size * self.prediction_horizon
+        if self.next_image_paths and len(self.next_image_paths) != expected_targets:
+            raise ValueError(
+                "SFT2 rollout next-image paths must align with every target: "
+                f"paths={len(self.next_image_paths)}, expected={expected_targets}"
+            )
+        if self.dino_grid_target is not None and (
+            self.dino_grid_target.ndim < 2
+            or tuple(self.dino_grid_target.shape[:2])
+            != (self.batch_size, self.prediction_horizon)
+        ):
+            raise ValueError(
+                "SFT2 rollout DINO target must start with (B,T), got "
+                f"{tuple(self.dino_grid_target.shape)}"
+            )
+
+    @property
+    def batch_size(self) -> int:
+        return len(self.transitions.trajectory_steps) // self.prediction_horizon
+
+    @property
+    def current(self) -> BackboneBatch:
+        return self.transitions.current
+
+    @property
+    def next(self) -> BackboneBatch:
+        return self.transitions.next
+
+    @property
+    def action_sequences(self) -> torch.Tensor:
+        return self.transitions.action_indices.reshape(
+            self.batch_size,
+            self.prediction_horizon,
+        )
+
+    @property
+    def value_target_sequences(self) -> torch.Tensor:
+        return self.transitions.value_targets.reshape(
+            self.batch_size,
+            self.prediction_horizon,
+        )
+
+    @property
+    def next_indices(self) -> torch.Tensor:
+        return self.transitions.next_indices.reshape(
+            self.batch_size,
+            self.prediction_horizon,
+        )
+
+    @property
+    def current_keys(self) -> tuple[StateKey, ...]:
+        rows = self.transitions.trajectory_steps
+        return tuple(
+            rows[start]
+            for start in range(0, len(rows), self.prediction_horizon)
+        )
+
+    @property
+    def is_padding(self) -> bool:
+        return bool(torch.count_nonzero(self.sample_weights).item() == 0)
+
+
 class SFT2BatchBuilder(Protocol):
     """DataLoader 输出到 SFT2 连续窗口 batch 的阶段契约。"""
 
@@ -157,7 +265,7 @@ class SFT2BatchBuilder(Protocol):
 
     def collate_transition_samples(self, batch: list[Any]) -> Any: ...
 
-    def prepare(self, raw_batch: Any) -> SFT2Batch: ...
+    def prepare(self, raw_batch: Any) -> SFT2Batch | SFT2RolloutBatch: ...
 
 
 class SFT2BatchAssembler:
@@ -169,12 +277,21 @@ class SFT2BatchAssembler:
         input_builder: BackboneInputBuilder,
         device: torch.device,
         history_size: int,
+        prediction_horizon: int = 1,
     ) -> None:
         self.input_builder = input_builder
         self.device = device
         self.history_size = int(history_size)
+        self.prediction_horizon = int(prediction_horizon)
         if self.history_size < 1:
             raise ValueError("SFT2 history_size must be positive")
+        if self.prediction_horizon < 1:
+            raise ValueError("SFT2 prediction_horizon must be positive")
+        if self.prediction_horizon > 1 and self.history_size != 1:
+            raise ValueError(
+                "multi-step SFT2 rollout currently requires history_size=1, "
+                f"got H={self.history_size}, T={self.prediction_horizon}"
+            )
 
     @property
     def processor(self) -> Any:
@@ -184,7 +301,9 @@ class SFT2BatchAssembler:
 
     def collate_transition_samples(
         self,
-        batch: list[TransitionSample | ContextualTransitionSample],
+        batch: list[
+            TransitionSample | ContextualTransitionSample | RolloutTransitionSample
+        ],
     ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         for row in batch:
@@ -193,15 +312,22 @@ class SFT2BatchAssembler:
                 item["context_length"] = row.context_length
                 item["is_current_step"] = row.is_current_step
                 item["loss_weight"] = row.loss_weight
+            elif isinstance(row, RolloutTransitionSample):
+                item = transition_training_item(row.sample)
+                item["prediction_horizon"] = row.prediction_horizon
+                item["rollout_position"] = row.rollout_position
+                item["is_current_step"] = row.rollout_position == 0
+                item["needs_next_state"] = True
+                item["loss_weight"] = row.loss_weight
             else:
                 item = transition_training_item(row)
             items.append(item)
         return items
 
-    def prepare(self, raw_batch: Any) -> SFT2Batch:
+    def prepare(self, raw_batch: Any) -> SFT2Batch | SFT2RolloutBatch:
         """构造 current/next 模型输入和对齐后的 transition target。"""
 
-        if isinstance(raw_batch, SFT2Batch):
+        if isinstance(raw_batch, (SFT2Batch, SFT2RolloutBatch)):
             return raw_batch
         if isinstance(raw_batch, dict) and "current_enc_rows" in raw_batch:
             # compact cache 只在 worker 内恢复 mmap row，统一的输入 builder
@@ -211,10 +337,16 @@ class SFT2BatchAssembler:
                 raw_batch["current_enc_rows"],
                 include_labels=True,
             )
-            online_tail = self._collate_online_tail(
-                items,
-                raw_batch["next_enc_rows"],
-            )
+            if self._is_future_rollout(items):
+                online_tail = self._collate_rollout_online_tail(
+                    items,
+                    raw_batch["next_enc_rows"],
+                )
+            else:
+                online_tail = self._collate_online_tail(
+                    items,
+                    raw_batch["next_enc_rows"],
+                )
             cached_next = self._collate_next(
                 items,
                 raw_batch["next_enc_rows"],
@@ -228,6 +360,14 @@ class SFT2BatchAssembler:
             )
             online_tail = None
             cached_next = None
+
+        if self._is_future_rollout(items):
+            return self._prepare_future_rollout(
+                items,
+                current=current,
+                online_tail=online_tail,
+                cached_next=cached_next,
+            )
 
         context_length = self._validate_window_items(items)
         if online_tail is None:
@@ -305,6 +445,81 @@ class SFT2BatchAssembler:
             ),
         )
 
+    def _prepare_future_rollout(
+        self,
+        items: Sequence[dict[str, Any]],
+        *,
+        current: BackboneBatch,
+        online_tail: BackboneBatch | None,
+        cached_next: CachedNextBatch | None,
+    ) -> SFT2RolloutBatch:
+        horizon = self._validate_rollout_items(items)
+        if online_tail is None:
+            first_next_messages = [
+                items[start].get("next_messages")
+                for start in range(0, len(items), horizon)
+            ]
+            if any(messages is None for messages in first_next_messages):
+                raise ValueError("SFT2 rollout requires a real first next state")
+            online_tail = self.input_builder.build(
+                [messages for messages in first_next_messages if messages is not None],
+                [() for _ in first_next_messages],
+                include_labels=False,
+            )
+
+        unique_keys, key_to_row = self._next_prompt_index(items)
+        next_batch = self._next_batch(
+            items,
+            unique_keys,
+            key_to_row,
+            cached_next,
+        )
+        next_indices = torch.tensor(
+            [
+                key_to_row[self._prompt_key(item["next_messages"])]
+                for item in items
+            ],
+            dtype=torch.long,
+            device=self.device,
+        )
+        return SFT2RolloutBatch(
+            transitions=TransitionBatch(
+                current=current,
+                next=next_batch,
+                action_indices=torch.tensor(
+                    [item["action_index"] for item in items],
+                    dtype=torch.long,
+                    device=self.device,
+                ),
+                value_targets=torch.tensor(
+                    [item["action_value_target"] for item in items],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                next_indices=next_indices,
+                non_terminal_mask=torch.ones(
+                    len(items),
+                    dtype=torch.bool,
+                    device=self.device,
+                ),
+                trajectory_steps=tuple(
+                    self._trajectory_step(item) for item in items
+                ),
+            ),
+            online_tail=online_tail,
+            prediction_horizon=horizon,
+            sample_weights=torch.tensor(
+                [
+                    item["loss_weight"]
+                    for item in items
+                    if item["rollout_position"] == 0
+                ],
+                dtype=torch.float32,
+                device=self.device,
+            ),
+            next_image_paths=tuple(str(item["next_image_path"]) for item in items),
+        )
+
     def _collate_online_tail(
         self,
         items: Sequence[dict[str, Any]],
@@ -325,6 +540,75 @@ class SFT2BatchAssembler:
             [row for row in tail_rows if row is not None],
             include_labels=False,
         )
+
+    def _collate_rollout_online_tail(
+        self,
+        items: Sequence[dict[str, Any]],
+        rows: Sequence[dict[str, torch.Tensor] | None],
+    ) -> BackboneBatch:
+        """Collate the real ``s_{t+1}`` used by the unchanged SIGReg stage."""
+
+        horizon = self._validate_rollout_items(items)
+        first_rows = [rows[start] for start in range(0, len(rows), horizon)]
+        if any(row is None for row in first_rows):
+            raise ValueError("SFT2 cached rollout is missing its first next state")
+        return self.input_builder.collate_encoded(
+            [row for row in first_rows if row is not None],
+            include_labels=False,
+        )
+
+    def _validate_rollout_items(
+        self,
+        items: Sequence[dict[str, Any]],
+    ) -> int:
+        if not items:
+            raise ValueError("SFT2 rollout rows must not be empty")
+        horizons = {int(item["prediction_horizon"]) for item in items}
+        if horizons != {self.prediction_horizon}:
+            raise ValueError(
+                "SFT2 rollout horizon does not match assembler: "
+                f"batch={sorted(horizons)}, configured={self.prediction_horizon}"
+            )
+        horizon = horizons.pop()
+        if len(items) % horizon != 0:
+            raise ValueError(
+                f"SFT2 rows do not contain complete T={horizon} rollout windows"
+            )
+        for start in range(0, len(items), horizon):
+            window = items[start : start + horizon]
+            record_ids = {item["record_id"] for item in window}
+            steps = [item["step_index"] for item in window]
+            positions = [item["rollout_position"] for item in window]
+            coordinates = [
+                (item["record_id"], item["step_index"], item["rollout_position"])
+                for item in window
+            ]
+            if (
+                len(record_ids) != 1
+                or any(
+                    right != left + 1
+                    for left, right in zip(steps, steps[1:])
+                )
+                or positions != list(range(horizon))
+            ):
+                raise ValueError(
+                    "SFT2 rollout must use consecutive recorded transitions in "
+                    f"order, got {coordinates}"
+                )
+            if [item["is_current_step"] for item in window] != [
+                True,
+                *([False] * (horizon - 1)),
+            ]:
+                raise ValueError("SFT2 rollout must mark only its first row current")
+            if any(item.get("next_messages") is None for item in window):
+                raise ValueError("SFT2 rollout requires all T real next states")
+            if not all(item["needs_next_state"] for item in window):
+                raise ValueError("SFT2 rollout must encode every next-state target")
+        return horizon
+
+    @staticmethod
+    def _is_future_rollout(items: Sequence[dict[str, Any]]) -> bool:
+        return bool(items and items[0].get("prediction_horizon") is not None)
 
     def _validate_window_items(
         self,
@@ -381,7 +665,7 @@ class SFT2BatchAssembler:
         unique_keys: list[str] = []
         seen: set[str] = set()
         for item, row in zip(items, rows, strict=True):
-            if not item["is_current_step"]:
+            if not item["needs_next_state"]:
                 continue
             messages = item.get("next_messages")
             if messages is None or row is None:
@@ -427,7 +711,7 @@ class SFT2BatchAssembler:
 
         unique_messages: list[list[dict[str, Any]] | None] = [None] * len(unique_keys)
         for item in items:
-            if not item["is_current_step"]:
+            if not item["needs_next_state"]:
                 continue
             messages = item.get("next_messages")
             if messages is not None:
@@ -448,7 +732,7 @@ class SFT2BatchAssembler:
         unique_keys: list[str] = []
         key_to_row: dict[str, int] = {}
         for item in items:
-            if not item["is_current_step"]:
+            if not item["needs_next_state"]:
                 continue
             messages = item.get("next_messages")
             if messages is None:
@@ -485,6 +769,24 @@ class SFT2BatchAssembler:
                 if item.get("is_current_step") is None
                 else item["is_current_step"]
             ),
+            "prediction_horizon": (
+                None
+                if item.get("prediction_horizon") is None
+                else int(item["prediction_horizon"])
+            ),
+            "rollout_position": (
+                None
+                if item.get("rollout_position") is None
+                else int(item["rollout_position"])
+            ),
+            "needs_next_state": bool(
+                item.get(
+                    "needs_next_state",
+                    True
+                    if item.get("is_current_step") is None
+                    else item["is_current_step"],
+                )
+            ),
             "loss_weight": float(item.get("loss_weight", 1.0)),
             "next_image_path": str(item.get("next_image_path", "")),
         }
@@ -502,4 +804,5 @@ __all__ = [
     "SFT2Batch",
     "SFT2BatchAssembler",
     "SFT2BatchBuilder",
+    "SFT2RolloutBatch",
 ]

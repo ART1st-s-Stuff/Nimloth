@@ -16,7 +16,11 @@ from nimloth.util.cache.schema import (
     transition_sample_id,
 )
 from nimloth.agent import bind_image_placeholders
-from nimloth.rollout.transitions import TransitionContextIndex, TransitionSample
+from nimloth.rollout.transitions import (
+    TransitionContextIndex,
+    TransitionRolloutIndex,
+    TransitionSample,
+)
 
 
 class _MmapShardStore:
@@ -119,6 +123,9 @@ class CompactCachedTransitionCollator:
                     "next_messages": entry.get("next_messages"),
                     "context_length": entry.get("context_length"),
                     "is_current_step": entry.get("is_current_step"),
+                    "prediction_horizon": entry.get("prediction_horizon"),
+                    "rollout_position": entry.get("rollout_position"),
+                    "needs_next_state": entry.get("needs_next_state"),
                     "loss_weight": entry.get("loss_weight", 1.0),
                     "next_image_path": entry.get("next_image_path"),
                 }
@@ -126,7 +133,12 @@ class CompactCachedTransitionCollator:
 
         next_rows: list[dict[str, torch.Tensor] | None] = []
         for entry in batch:
-            if not bool(entry.get("is_current_step", True)):
+            if not bool(
+                entry.get(
+                    "needs_next_state",
+                    entry.get("is_current_step", True),
+                )
+            ):
                 next_rows.append(None)
                 continue
             next_index = entry.get("next_cache_index")
@@ -216,10 +228,15 @@ class CachedTransitionDataset(Dataset):
             )
         return dict(entries[local_index])
 
-    def __getitem__(self, index: int | TransitionContextIndex) -> dict[str, Any]:
+    def __getitem__(
+        self,
+        index: int | TransitionContextIndex | TransitionRolloutIndex,
+    ) -> dict[str, Any]:
         context_index = index if isinstance(index, TransitionContextIndex) else None
-        if context_index is not None:
-            index = context_index.sample_index
+        rollout_index = index if isinstance(index, TransitionRolloutIndex) else None
+        annotated_index = context_index or rollout_index
+        if annotated_index is not None:
+            index = annotated_index.sample_index
         sample = self.samples[index]
         entry = self._compact_entry(index)
         if entry.get("id") != transition_sample_id(sample):
@@ -228,7 +245,11 @@ class CachedTransitionDataset(Dataset):
                 f"{transition_sample_id(sample)!r}"
             )
         entry["cache_index"] = index
-        if context_index is None or context_index.is_current_step:
+        if (
+            annotated_index is None
+            or (context_index is not None and context_index.is_current_step)
+            or rollout_index is not None
+        ):
             next_index = None
             if sample.next_prefix_messages is not None:
                 next_index = self._sample_index.get(
@@ -269,4 +290,10 @@ class CachedTransitionDataset(Dataset):
             entry["context_length"] = context_index.context_length
             entry["is_current_step"] = context_index.is_current_step
             entry["loss_weight"] = context_index.loss_weight
+        elif rollout_index is not None:
+            entry["prediction_horizon"] = rollout_index.prediction_horizon
+            entry["rollout_position"] = rollout_index.rollout_position
+            entry["is_current_step"] = rollout_index.rollout_position == 0
+            entry["needs_next_state"] = True
+            entry["loss_weight"] = rollout_index.loss_weight
         return entry

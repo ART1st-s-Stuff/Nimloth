@@ -12,7 +12,7 @@ import torch
 import torch.distributed as dist
 
 from nimloth.training.common import action_value_loss, world_model_loss
-from nimloth.training.sft2.batch import SFT2Batch
+from nimloth.training.sft2.batch import SFT2Batch, SFT2RolloutBatch
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import (
     LatentWMPredictor,
@@ -20,7 +20,7 @@ from nimloth.wm import (
 )
 
 
-SFT2_VALUE_OBJECTIVE = "predicted_next_executed_action_mc_v1"
+SFT2_VALUE_OBJECTIVE = "predicted_rollout_executed_action_mc_v2"
 
 
 def require_sft2_wm_history(
@@ -200,6 +200,7 @@ class SFT2Algorithm:
         wm_weight_end: float = 1.0,
         wm_warmup_fraction: float = 0.3,
         dino_grid_weight: float = 0.0,
+        prediction_horizon: int = 1,
     ) -> None:
         self.history_size = int(history_size)
         if self.history_size < 1:
@@ -214,6 +215,14 @@ class SFT2Algorithm:
         self.wm_weight_end = float(wm_weight_end)
         self.wm_warmup_fraction = float(wm_warmup_fraction)
         self.dino_grid_weight = float(dino_grid_weight)
+        self.prediction_horizon = int(prediction_horizon)
+        if self.prediction_horizon < 1:
+            raise ValueError("prediction_horizon must be positive")
+        if self.prediction_horizon > 1 and self.history_size != 1:
+            raise ValueError(
+                "multi-step SFT2 rollout requires history_size=1, "
+                f"got H={self.history_size}, T={self.prediction_horizon}"
+            )
 
     def wm_weight(self, global_step: int, total_steps: int) -> float:
         """在训练前段用 cosine ramp 增加 WM loss 权重。"""
@@ -238,7 +247,7 @@ class SFT2Algorithm:
     def training_primary_step(
         self,
         runtime: SFT2ModelRuntime,
-        batch: SFT2Batch,
+        batch: SFT2Batch | SFT2RolloutBatch,
         *,
         wm_weight: float,
     ) -> SFT2StepOutput:
@@ -252,7 +261,7 @@ class SFT2Algorithm:
     def training_sigreg_step(
         self,
         runtime: SFT2ModelRuntime,
-        batch: SFT2Batch,
+        batch: SFT2Batch | SFT2RolloutBatch,
         *,
         detached_current_state: torch.Tensor,
         sigreg_seed: int,
@@ -310,7 +319,7 @@ class SFT2Algorithm:
     def evaluation_step(
         self,
         runtime: SFT2ModelRuntime,
-        batch: SFT2Batch,
+        batch: SFT2Batch | SFT2RolloutBatch,
     ) -> SFT2StepOutput:
         return self._step(
             runtime,
@@ -322,12 +331,20 @@ class SFT2Algorithm:
     def _step(
         self,
         runtime: SFT2ModelRuntime,
-        batch: SFT2Batch,
+        batch: SFT2Batch | SFT2RolloutBatch,
         *,
         wm_weight: float,
         include_lm_loss: bool,
     ) -> SFT2StepOutput:
         """按照 current forward → next target → CE/WM/value 完成主阶段。"""
+
+        if isinstance(batch, SFT2RolloutBatch):
+            return self._rollout_step(
+                runtime,
+                batch,
+                wm_weight=wm_weight,
+                include_lm_loss=include_lm_loss,
+            )
 
         if not 1 <= batch.history_size <= self.history_size:
             raise ValueError(
@@ -386,6 +403,7 @@ class SFT2Algorithm:
             "lambda_ce": self.ce_weight,
             "lambda_dino": self.dino_grid_weight,
             "context_length": float(batch.history_size),
+            "prediction_horizon": 1.0,
             "current_batch_size": float(sample_count),
             "history_cache_entries": float(runtime.history_cache.count),
             "total_loss": float(total.detach().item()),
@@ -409,6 +427,96 @@ class SFT2Algorithm:
             losses=losses,
             metrics=metrics,
             current_state=model_output.state[:, -1],
+            sample_count=sample_count,
+        )
+
+    def _rollout_step(
+        self,
+        runtime: SFT2ModelRuntime,
+        batch: SFT2RolloutBatch,
+        *,
+        wm_weight: float,
+        include_lm_loss: bool,
+    ) -> SFT2StepOutput:
+        """Roll out recorded actions and supervise every predicted future state."""
+
+        if self.history_size != 1 or batch.prediction_horizon != self.prediction_horizon:
+            raise ValueError(
+                "SFT2 rollout batch does not match algorithm H/T: "
+                f"algorithm=({self.history_size},{self.prediction_horizon}), "
+                f"batch=(1,{batch.prediction_horizon})"
+            )
+        current_encoded = runtime.agent.encode_state(
+            batch.current,
+            include_lm_loss=include_lm_loss,
+        )
+        model_output = runtime.agent.forward_action_rollout(
+            batch.action_sequences,
+            encoded_current=current_encoded,
+        )
+        runtime.history_cache.store(
+            batch.current_keys,
+            model_output.current_state,
+            enabled=not batch.is_padding,
+        )
+
+        next_states = runtime.encode_next_state(batch.next)
+        expected_next_states = next_states[batch.next_indices.flatten()].reshape(
+            batch.batch_size,
+            batch.prediction_horizon,
+            *next_states.shape[1:],
+        )
+        wm_objective = world_model_loss(
+            model_output.predicted_states,
+            expected_next_states,
+            state_weight=wm_weight,
+            dino_grid_target=batch.dino_grid_target,
+            dino_grid_weight=self.dino_grid_weight,
+        )
+        value_objective = action_value_loss(
+            model_output.predicted_action_values,
+            batch.action_sequences,
+            batch.value_target_sequences,
+        )
+        total = wm_objective.loss + self.value_weight * value_objective.loss
+        if model_output.lm_loss is not None:
+            total = total + self.ce_weight * model_output.lm_loss
+        sample_count = 0 if batch.is_padding else batch.batch_size
+        if batch.is_padding:
+            total = total * 0.0
+
+        metrics = {
+            "value_mc_mse": float(value_objective.monte_carlo_mse.detach().item()),
+            "value_total": float(value_objective.loss.detach().item()),
+            "lambda_wm": float(wm_weight),
+            "lambda_sigreg": 0.0,
+            "lambda_value": self.value_weight,
+            "lambda_ce": self.ce_weight,
+            "lambda_dino": self.dino_grid_weight,
+            "context_length": 1.0,
+            "prediction_horizon": float(batch.prediction_horizon),
+            "current_batch_size": float(sample_count),
+            "history_cache_entries": float(runtime.history_cache.count),
+            "total_loss": float(total.detach().item()),
+            "wm_mse": float(wm_objective.state_mse.detach().item()),
+        }
+        losses: dict[str, torch.Tensor | None] = {
+            "lm": model_output.lm_loss,
+            "wm": wm_objective.state_mse,
+            "value": value_objective.loss,
+        }
+        if wm_objective.dino_grid_mse is not None:
+            losses["dino"] = wm_objective.dino_grid_mse
+            metrics["dino_grid_mse"] = float(
+                wm_objective.dino_grid_mse.detach().item()
+            )
+        if model_output.lm_loss is not None:
+            metrics["lm_ce"] = float(model_output.lm_loss.detach().item())
+        return SFT2StepOutput(
+            loss=total,
+            losses=losses,
+            metrics=metrics,
+            current_state=model_output.current_state,
             sample_count=sample_count,
         )
 

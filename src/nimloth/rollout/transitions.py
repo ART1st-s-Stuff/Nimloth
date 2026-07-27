@@ -122,6 +122,35 @@ class ContextualTransitionSample:
     loss_weight: float = 1.0
 
 
+@dataclass(frozen=True)
+class TransitionRolloutIndex:
+    """DataLoader index for one position in a future-action rollout window."""
+
+    sample_index: int
+    prediction_horizon: int
+    rollout_position: int
+    loss_weight: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.prediction_horizon < 1:
+            raise ValueError("prediction_horizon must be positive")
+        if not 0 <= self.rollout_position < self.prediction_horizon:
+            raise ValueError(
+                "rollout_position must be in [0, prediction_horizon), "
+                f"got {self.rollout_position} for T={self.prediction_horizon}"
+            )
+
+
+@dataclass(frozen=True)
+class RolloutTransitionSample:
+    """A transition annotated with its position in a future rollout window."""
+
+    sample: TransitionSample
+    prediction_horizon: int
+    rollout_position: int
+    loss_weight: float = 1.0
+
+
 def bind_transition_prompt(sample: TransitionSample) -> list[dict[str, Any]]:
     """绑定单步 transition 当前 prompt 的真实图片。"""
 
@@ -363,13 +392,20 @@ class TransitionJsonlDataset(Dataset[TransitionSample]):
 
     def __getitem__(
         self,
-        index: int | TransitionContextIndex,
-    ) -> TransitionSample | ContextualTransitionSample:
+        index: int | TransitionContextIndex | TransitionRolloutIndex,
+    ) -> TransitionSample | ContextualTransitionSample | RolloutTransitionSample:
         if isinstance(index, TransitionContextIndex):
             return ContextualTransitionSample(
                 sample=self.samples[index.sample_index],
                 context_length=index.context_length,
                 is_current_step=index.is_current_step,
+                loss_weight=index.loss_weight,
+            )
+        if isinstance(index, TransitionRolloutIndex):
+            return RolloutTransitionSample(
+                sample=self.samples[index.sample_index],
+                prediction_horizon=index.prediction_horizon,
+                rollout_position=index.rollout_position,
                 loss_weight=index.loss_weight,
             )
         return self.samples[index]

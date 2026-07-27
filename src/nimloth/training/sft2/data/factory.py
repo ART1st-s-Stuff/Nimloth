@@ -21,6 +21,7 @@ from nimloth.util.cache import (
     cache_fingerprint,
 )
 from nimloth.training.sft2.data.samplers import (
+    FutureRolloutBatchSampler,
     OnlineHistoryBatchSampler,
 )
 from nimloth.rollout.transitions import TransitionJsonlDataset, TransitionSample
@@ -32,8 +33,8 @@ class DataBundle:
     val_loader: DataLoader
     train_samples: list[TransitionSample]
     val_samples: list[TransitionSample]
-    train_batch_sampler: OnlineHistoryBatchSampler
-    val_batch_sampler: OnlineHistoryBatchSampler
+    train_batch_sampler: OnlineHistoryBatchSampler | FutureRolloutBatchSampler
+    val_batch_sampler: OnlineHistoryBatchSampler | FutureRolloutBatchSampler
 
 
 def _dataloader_workers(config: Any) -> int:
@@ -252,41 +253,69 @@ def build_data_bundle(
             "SFT2 requires batch_mode='trajectory_online_cache' so detached "
             "history states are written before use"
         )
-    train_batch_sampler = OnlineHistoryBatchSampler(
-        train_samples,
-        history_size=config.history_size,
-        batch_size=config.batch_size,
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=True,
-        seed=config.seed,
-        pad_to_equal_batches=True,
-    )
-    val_batch_sampler = OnlineHistoryBatchSampler(
-        val_samples,
-        history_size=config.history_size,
-        batch_size=config.batch_size,
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=False,
-        seed=config.seed,
-        pad_to_equal_batches=False,
-    )
+    prediction_horizon = int(getattr(config, "prediction_horizon", 1))
+    if prediction_horizon > 1:
+        train_batch_sampler = FutureRolloutBatchSampler(
+            train_samples,
+            prediction_horizon=prediction_horizon,
+            batch_size=config.batch_size,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            seed=config.seed,
+            pad_to_equal_batches=True,
+        )
+        val_batch_sampler = FutureRolloutBatchSampler(
+            val_samples,
+            prediction_horizon=prediction_horizon,
+            batch_size=config.batch_size,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            seed=config.seed,
+            pad_to_equal_batches=False,
+        )
+    else:
+        train_batch_sampler = OnlineHistoryBatchSampler(
+            train_samples,
+            history_size=config.history_size,
+            batch_size=config.batch_size,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            seed=config.seed,
+            pad_to_equal_batches=True,
+        )
+        val_batch_sampler = OnlineHistoryBatchSampler(
+            val_samples,
+            history_size=config.history_size,
+            batch_size=config.batch_size,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            seed=config.seed,
+            pad_to_equal_batches=False,
+        )
     if train_batch_sampler.window_count == 0:
         raise ValueError(
             "SFT2 training data has no transition with a real next state: "
-            f"history_size={config.history_size}"
+            f"history_size={config.history_size}, prediction_horizon={prediction_horizon}"
         )
     if val_batch_sampler.window_count == 0:
         raise ValueError(
             "SFT2 validation data has no transition with a real next state: "
-            f"history_size={config.history_size}"
+            f"history_size={config.history_size}, prediction_horizon={prediction_horizon}"
         )
     if is_main():
         print(
             json.dumps(
                 {
-                    "online_history_cache_sampler": "trajectory_lane_v1",
+                    "sft2_window_sampler": (
+                        "future_rollout_v1"
+                        if prediction_horizon > 1
+                        else "trajectory_history_v1"
+                    ),
+                    "prediction_horizon": prediction_horizon,
                     "train_padding_batches_rank0": train_batch_sampler.padding_batch_count,
                 }
             )

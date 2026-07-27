@@ -19,7 +19,12 @@ from nimloth.agent.planning import (
     WorldModelPlan,
     WorldModelPlanner,
 )
-from nimloth.agent.model import Agent, AgentOutput, AgentStateOutput
+from nimloth.agent.model import (
+    Agent,
+    AgentOutput,
+    AgentRolloutOutput,
+    AgentStateOutput,
+)
 from nimloth.agent.registry import create_prompt_template
 from nimloth.agent.serialization import prompt_template_spec_from_record
 from nimloth.agent.runner import AgentEpisode, EpisodeRunner
@@ -47,6 +52,7 @@ __all__ = [
     "AgentPrompt",
     "AgentPromptTemplate",
     "AgentOutput",
+    "AgentRolloutOutput",
     "AgentRuntime",
     "AgentStateOutput",
     "AgentTranscript",

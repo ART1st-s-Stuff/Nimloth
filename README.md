@@ -45,10 +45,10 @@ Nimloth is a Python machine-learning project for building a **World Model Agent*
 | SFT1 数据 | VAGEN rollout record、Nimloth SFT record、supervised prompt、CE label | 将旧动作格式转换为 Nimloth latent/action 格式后，监督 Qwen 输出格式和动作 | `train_all` 包含失败轨迹；`train_success` 只是成功子集，不代表模型成功率 |
 | SFT1 协议 | latent query token count `k`、`inject`、`generate` | `k` 是 latent query token 数；`inject` 注入并屏蔽 query token CE；`generate` 监督模型生成 query token | `k` 不等于 `history_size`，也不自动等于图片 patch 数 |
 | SFT1 产物 | adapter、merged HF artifact、DINO-grid projector sidecar | adapter 只保存增量参数；DINO-grid SFT1 额外导出 `slot_projector.pt` 与 `grid_state_config.json`，SFT2 加载后继续训练 | 不得把 LoRA adapter 目录当作完整 HF checkpoint |
-| SFT2 数据 | `TransitionSample`、trajectory lane、context window、current step、history cache | 一个样本包含同一 trajectory 的连续上下文；旧 state 可来自按时间顺序建立的 detached history cache | SFT2 窗口有多个上下文 step，但主 loss 只监督窗口末端的 current step |
+| SFT2 数据 | `TransitionSample`、history context、future rollout window、history cache | `T=1`路径可使用最多`H`个真实/缓存历史状态；`T>1`路径从一个真实当前状态出发，并读取同一trajectory的连续future action/target | future rollout不得跨trajectory、填充动作或改用模型策略动作 |
 | 状态表征 | Backbone hidden、StateProjector、online state、target state | Qwen hidden 经 StateProjector 得到 WM state；SFT2 的 target Backbone 可使用视觉 EMA，但 WM 不维护另一套 state encoder | prompt history、Qwen hidden 和 WM state 是三种不同对象 |
-| Grid WM | grid slot、SFT1 projector、WM predictor、predicted next state | SFT1 projector 输出的 DINO-aligned grid 直接作为 state，并在 SFT2 继续训练；predictor 根据真实 state/action context 预测下一状态 | `history_size` 是训练上下文，不是 planner 未来搜索长度 |
-| SFT2/RL WM 目标 | WM state loss、DINO grid loss | 都约束 predicted next state；前者对齐Qwen state target，后者对齐真实next image的frozen DINO target | SFT2从离线cache读target；RL按trajectory图像路径在线计算并缓存target |
+| Grid WM | grid slot、SFT1 projector、WM predictor、predicted state rollout | SFT1 projector 输出的 DINO-aligned grid 直接作为 state，并在 SFT2 继续训练；predictor 可从`H`步上下文自回归预测`T`个状态 | `history_size=H`、`prediction_horizon=T`和planner horizon是三个参数 |
+| SFT2/RL WM 目标 | WM state loss、DINO grid loss | 都约束 predicted state；SFT2 `T>1`时四步latent与DINO target逐位置对齐 | SFT2从离线cache读target；RL按trajectory图像路径在线计算并缓存target |
 | ValueHead | action value、chosen action value | ValueHead 对传入的 WM state 为每个离散动作输出一个 action value；SFT2及planner transition objective传入预测下一状态并只监督实际执行动作对应的值 | 不简称为单一 state value `V(s)`；未执行动作没有反事实 return target |
 | RL fresh rollout | current policy artifact、vLLM behavior rollout、policy fingerprint、fresh manifest | vLLM 使用当前策略生成新 trajectory；manifest 把 trajectory 与策略内容指纹绑定 | fresh manifest 只能被一个 PPO 更新消费一次，不能循环复用 |
 | RL 窗口 | `history_size=H`、trajectory window、RL batch | 每个窗口有 `H` 个连续 transition、`H+1` 个真实 state prompt；batch 是若干窗口 | batch size 统计窗口数，不是 episode 数、step 数或 token 数 |
@@ -103,7 +103,8 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `data.include_failed_rollouts` | 是否让失败轨迹参与训练 | 会改变 value/WM 数据分布 |
 | `tuning.llm_tune`、`tuning.vision_tune` | LLM 和视觉 Backbone 的训练范围 | `freeze`、`full`、LoRA 等模式必须分别记录 |
 | `tuning.vision_ema`、`vision_ema_decay` | 是否维护视觉 Backbone EMA 及衰减率 | EMA 权重用于 target/evaluation 的范围必须明确 |
-| `train.history_size` | SFT2 最大真实 context 长度 `H` | 一个 batch 样本仍只监督窗口末端 current step |
+| `train.history_size` | SFT2 最大真实 context 长度 `H` | `H=1`表示预测时只输入当前或最近一个预测state |
+| `train.prediction_horizon` | SFT2 自回归监督长度 `T` | `T>1`读取原始rollout连续action；每个预测state都有独立WM/DINO/value target；当前实现要求`H=1` |
 | `train.batch_mode` | trajectory 上下文的组织方式 | 生产路径为 `trajectory_online_cache` |
 | `train.emb_dim` | WM state embedding 维度 | 必须和 StateProjector、WM predictor、ValueHead checkpoint 匹配 |
 | `train.state_proj_lr` | StateProjector 学习率 | 与 Backbone、WM、ValueHead 参数组分开 |
@@ -114,7 +115,7 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `loss.lambda_ce` | LM CE 权重 | 监督当前 step 的格式/输出 token |
 | `loss.lambda_wm_start`、`lambda_wm_end` | WM loss warmup 起止权重 | 不等于 environment worldmodeling reward weight |
 | `loss.lambda_dino` | SFT2 predicted-state DINO-grid MSE 权重 | RL 对应字段为 `predictor.lambda_dino`，两者调用同一公共 WM objective |
-| `loss.lambda_value` | ValueHead loss 权重 | 只包含预测下一状态上已执行 action slot 的 Monte Carlo 回归 |
+| `loss.lambda_value` | ValueHead loss 权重 | 对每个预测状态只回归原始rollout实际执行action的Monte Carlo return；不包含rank loss |
 | `loss.lambda_sigreg` | SIGReg 权重 | 统计单位和跨 rank 聚合方式必须随实现记录 |
 | `loss.value_gamma` | SFT2 action-value target 的折扣率 | 当前 target 来自完整 trajectory 的稀疏 Monte Carlo return |
 | `monitor.checkpoint_metric` | SFT2 checkpoint 选择指标 | `val_wm_mse` 只衡量 WM；不能冒充 agent rollout success |
@@ -182,14 +183,14 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 
 | 不再单独使用 | 必须改写为 |
 |---|---|
-| “预测 2 轮” | `history_size=2`、`planning.horizon=2` 或 `max_steps_per_episode=2`，三选一并写出参数名 |
+| “预测 2 轮” | `history_size=2`、`prediction_horizon=2`、`planning.horizon=2` 或 `max_steps_per_episode=2`，明确写出参数名 |
 | “value” | action value `Q(s,a)`、chosen action value、return target、value loss 或 checkpoint metric |
 | “rollout 历史” | 完整 transcript prefix、完整 trajectory、`H` 步 latent window 或 PPO replay window |
 | “跑 8 卡” | node 分布、physical GPU 数、`world_size`、`gpus_per_rank` 和 rollout TP |
 | “FSDP 两卡 rank” | 单卡 FSDP rank，或两卡 intra-rank model-parallel replica |
 | “replay” | PPO policy replay 或 environment trajectory replay；当前 PPO replay 不执行环境 |
 | “成功率变了” | 指明 split/scene、checkpoint、采样配置、episode 数、成功数和置信区间 |
-| “SFT2 预测 H 步” | SFT2 使用长度不超过 `H` 的 context，但主 loss 监督末端 current step；若指 planner，写 planning horizon |
+| “SFT2 预测 H 步” | 分开写输入历史`history_size=H`和训练展开`prediction_horizon=T`；若指planner，写`planning.horizon` |
 
 特别地，RL 中设置 `history_size=2` 表示每个训练窗口含两个真实 transition 和
 三个 state prompt，ValueHead 产生形状为 `(B, 2, action_count)` 的 action value；

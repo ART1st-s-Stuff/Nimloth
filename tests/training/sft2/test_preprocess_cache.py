@@ -12,7 +12,11 @@ from nimloth.util.cache import (
     encode_transition_item,
 )
 from nimloth.util.cache.encoding import _expand_qwen_image_tokens
-from nimloth.rollout.transitions import TransitionContextIndex, TransitionSample
+from nimloth.rollout.transitions import (
+    TransitionContextIndex,
+    TransitionRolloutIndex,
+    TransitionSample,
+)
 
 
 class FakeTokenizer:
@@ -329,6 +333,30 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     assert next_rows[0] is None
     assert next_rows[1] is not None
     assert torch.equal(next_rows[1]["pixel_values"], pixels[2:])
+
+    rollout_batch = collator(
+        [
+            dataset[
+                TransitionRolloutIndex(
+                    sample_index=0,
+                    prediction_horizon=2,
+                    rollout_position=0,
+                )
+            ],
+            dataset[
+                TransitionRolloutIndex(
+                    sample_index=1,
+                    prediction_horizon=2,
+                    rollout_position=1,
+                )
+            ],
+        ]
+    )
+    assert len(rollout_batch["current_enc_rows"]) == 1
+    assert [item["rollout_position"] for item in rollout_batch["items"]] == [0, 1]
+    assert all(
+        row is not None for row in rollout_batch["next_enc_rows"]
+    )
 
 
 def test_v1_cache_is_rejected_and_must_be_rebuilt(tmp_path) -> None:
