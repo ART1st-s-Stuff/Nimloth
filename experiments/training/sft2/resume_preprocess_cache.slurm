@@ -23,6 +23,9 @@ PREPROCESS_CACHE_DIR=${PREPROCESS_CACHE_DIR:?set PREPROCESS_CACHE_DIR}
 CACHE_METADATA_DIR=${CACHE_METADATA_DIR:?set CACHE_METADATA_DIR}
 CACHE_LOG=${CACHE_LOG:?set CACHE_LOG beside the owning experiment output}
 PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv-vagen-main}
+CACHE_MODE=${CACHE_MODE:-resume}
+MAX_TRAIN_RECORDS=${MAX_TRAIN_RECORDS:--1}
+MAX_VAL_RECORDS=${MAX_VAL_RECORDS:--1}
 
 actual_commit=$(git -C "${REPO}" rev-parse HEAD)
 if [[ "${actual_commit}" != "${EXPECTED_COMMIT}" ]]; then
@@ -39,9 +42,31 @@ for required in "${CONFIG}" "${TRAIN_JSONL}" "${VAL_JSONL}" "${MODEL_PATH}/confi
     exit 1
   fi
 done
-if [[ ! -s "${PREPROCESS_CACHE_DIR}/train/build_state.json" ]]; then
-  echo "ERROR resumable train cache build_state missing" >&2
-  exit 1
+case "${CACHE_MODE}" in
+  resume)
+    if [[ ! -s "${PREPROCESS_CACHE_DIR}/train/build_state.json" ]]; then
+      echo "ERROR resumable train cache build_state missing" >&2
+      exit 1
+    fi
+    ;;
+  fresh)
+    if [[ -e "${PREPROCESS_CACHE_DIR}" ]]; then
+      echo "ERROR fresh cache target already exists: ${PREPROCESS_CACHE_DIR}" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "ERROR CACHE_MODE must be fresh or resume, got ${CACHE_MODE}" >&2
+    exit 1
+    ;;
+esac
+
+RECORD_ARGS=()
+if (( MAX_TRAIN_RECORDS > 0 )); then
+  RECORD_ARGS+=(--max-train-records "${MAX_TRAIN_RECORDS}")
+fi
+if (( MAX_VAL_RECORDS > 0 )); then
+  RECORD_ARGS+=(--max-val-records "${MAX_VAL_RECORDS}")
 fi
 
 mkdir -p "${CACHE_METADATA_DIR}" "$(dirname "${CACHE_LOG}")"
@@ -56,14 +81,18 @@ export TOKENIZERS_PARALLELISM=false
 mkdir -p "${XDG_CACHE_HOME}"
 
 {
-  echo "cache_resume_start=$(date --iso-8601=seconds)"
+  echo "cache_build_start=$(date --iso-8601=seconds)"
   echo "job=${SLURM_JOB_ID} node=${SLURM_JOB_NODELIST}"
   echo "commit=${actual_commit}"
   echo "config=${CONFIG}"
   echo "train_jsonl=${TRAIN_JSONL}"
   echo "val_jsonl=${VAL_JSONL}"
   echo "cache=${PREPROCESS_CACHE_DIR}"
-  echo "initial_train_image_shards=$(find "${PREPROCESS_CACHE_DIR}/train/images" -maxdepth 1 -name 'shard_*.pt' -type f | wc -l)"
+  echo "cache_mode=${CACHE_MODE}"
+  echo "max_train_records=${MAX_TRAIN_RECORDS} max_val_records=${MAX_VAL_RECORDS}"
+  if [[ "${CACHE_MODE}" == "resume" ]]; then
+    echo "initial_train_image_shards=$(find "${PREPROCESS_CACHE_DIR}/train/images" -maxdepth 1 -name 'shard_*.pt' -type f | wc -l)"
+  fi
 } | tee -a "${CACHE_LOG}"
 
 "${PYTHON_ENV}/bin/python3" \
@@ -76,6 +105,7 @@ mkdir -p "${XDG_CACHE_HOME}"
   --preprocess-cache-dir "${PREPROCESS_CACHE_DIR}" \
   --preprocess-cache-processor-source "${MODEL_PATH}" \
   --preprocess-workers "${SLURM_CPUS_PER_TASK}" \
+  "${RECORD_ARGS[@]}" \
   2>&1 | tee -a "${CACHE_LOG}"
 
 for manifest in \
@@ -87,4 +117,4 @@ for manifest in \
   fi
 done
 touch "${PREPROCESS_CACHE_DIR}/cache_done.flag"
-echo "cache_resume_done=$(date --iso-8601=seconds)" | tee -a "${CACHE_LOG}"
+echo "cache_build_done=$(date --iso-8601=seconds)" | tee -a "${CACHE_LOG}"

@@ -49,6 +49,7 @@
 ## 待完成
 
 - 提交并同步当前精确代码版本，在独立远端 worktree 做 preflight。
-- 续建 ID49 preprocessing cache；完成后运行真实数据单卡和 2 节点 × 4 GPU smoke。
+- 先用隔离的 8-record 真实数据 prefix cache 运行单卡和 2 节点 × 4 GPU smoke；通过后
+  再原子续建 ID49 全量 preprocessing cache。smoke cache 与正式 cache 不共用写路径。
 - smoke 通过后确定未占用 W&B ID、正式输出目录和实测耗时，启动 world-size 8 正式
   SFT2，并监控至少首个 optimizer step 和首个可恢复 checkpoint。

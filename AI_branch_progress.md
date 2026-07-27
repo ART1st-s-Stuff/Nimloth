@@ -2855,6 +2855,9 @@
 - 新增`dino_grid_k16_h1_t4.yaml`、cache续建Slurm脚本和多节点world-size 8 launcher；
   使用ID49已审计的真实terminal-CoT train/val、corrected SFT1初始化、DINO sidecar及
   32/489 partial preprocess cache，但不会resume旧SFT2 optimizer/checkpoint。
+- cache Slurm入口区分`fresh`和`resume`：前者拒绝已有目标并只为smoke建立隔离的真实
+  8-record prefix cache；后者要求原子`build_state.json`并续建正式ID49 cache，避免smoke
+  写入污染正式缓存。
 - 本地SFT2/WM/Agent回归为`127 passed, 1 skipped`；共享接口相关RL/grid回归为
   `29 passed`。compileall、launcher/cache脚本`bash -n`和`git diff --check`均通过。
   本地旧`.venv`因系统Python从3.13切到3.14而失效，验证改用完整Nix Python 3.13环境；

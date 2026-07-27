@@ -12,7 +12,7 @@ code lives in `src/nimloth/training/sft2/`.
 | `generate_terminal_cot.py` | 用 SFT1 初始化 checkpoint 离线生成并持久化 terminal CoT |
 | `run_terminal_cot_dino_grid_pipeline.sh` | 在一个 world8 hold 内串行生成 terminal CoT、建新 cache 并启动 DINO-grid SFT2 |
 | `build_compact_cache.slurm` | CPU-only compact-cache job |
-| `resume_preprocess_cache.slurm` | 从原子 image shards 继续指定 terminal-CoT compact cache |
+| `resume_preprocess_cache.slurm` | 新建隔离 smoke prefix cache，或从原子 image shards 续建正式 compact cache |
 | `submit_cache_then_train.sh` | Cache job followed by dependency-gated training |
 | `submit_default_8gpu.sh` | Default LLM-freeze, vision-full run |
 | `submit_llmvis_lora_8gpu.sh` | LLM and vision LoRA variant |
