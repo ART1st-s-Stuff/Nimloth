@@ -81,7 +81,6 @@ class TrajectoryWindow:
                     if token_trace is not None
                     else None
                 ),
-                planner_trace=self.trajectory.planner_policy_trace(step_index),
                 old_action_log_prob=(
                     None
                     if token_trace is not None

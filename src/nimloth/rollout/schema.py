@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nimloth.agent import (
-    ActionTrainingTrace,
     NIMLOTH_PROMPT_TEMPLATE_ID,
     AgentPrompt,
     AgentTranscript,
@@ -52,43 +51,46 @@ def _decode_world_model_state(values: list[Any]) -> WorldModelStateRecord:
 
 
 def _planner_trace_from_record(raw: dict[str, Any]) -> PlannerPolicyTrace:
-    action_training_raw = raw["action_training"]
-    teacher = action_training_raw["teacher_action_log_probs"]
-    sampled_action = action_training_raw["sampled_action_index"]
-    action_training = ActionTrainingTrace(
-        objective=str(action_training_raw["objective"]),  # type: ignore[arg-type]
-        behavior_owner=str(
-            action_training_raw["behavior_owner"]
-        ),  # type: ignore[arg-type]
-        executed_action_index=int(action_training_raw["executed_action_index"]),
-        behavior_action_log_probs=_decode_log_probabilities(
-            action_training_raw["behavior_action_log_probs"]
-        ),
-        teacher_action_log_probs=(
-            _decode_log_probabilities(teacher) if teacher is not None else None
-        ),
-        sampled_action_index=(
-            int(sampled_action) if sampled_action is not None else None
-        ),
-    )
-    qwen_sampled_action = raw["qwen_sampled_action_index"]
+    required_fields = {
+        "candidate_sequences",
+        "candidate_scores",
+        "root_action_scores",
+        "executed_action_index",
+        "horizon",
+        "search_mode",
+        "beam_width",
+    }
+    actual_fields = set(raw)
+    if actual_fields != required_fields:
+        legacy_fields = {
+            "action_training",
+            "behavior_action_log_probs",
+            "qwen_action_log_probs",
+            "qwen_sampled_action_index",
+            "teacher_action_log_probs",
+        }
+        if actual_fields & legacy_fields or "executed_action_index" not in raw:
+            raise ValueError(
+                "legacy planner trace cannot be loaded by receding-horizon "
+                "training; recollect the trajectory"
+            )
+        missing = sorted(required_fields - actual_fields)
+        unknown = sorted(actual_fields - required_fields)
+        raise ValueError(
+            "planner trace fields do not match the current schema: "
+            f"missing={missing}, unknown={unknown}"
+        )
     beam_width = raw["beam_width"]
     return PlannerPolicyTrace(
-        qwen_action_log_probs=_decode_log_probabilities(
-            raw["qwen_action_log_probs"]
-        ),
         candidate_sequences=tuple(
             tuple(int(value) for value in sequence)
             for sequence in raw["candidate_sequences"]
         ),
         candidate_scores=tuple(float(value) for value in raw["candidate_scores"]),
         root_action_scores=_decode_log_probabilities(raw["root_action_scores"]),
-        action_training=action_training,
+        executed_action_index=int(raw["executed_action_index"]),
         horizon=int(raw["horizon"]),
         search_mode=str(raw["search_mode"]),
-        qwen_sampled_action_index=(
-            int(qwen_sampled_action) if qwen_sampled_action is not None else None
-        ),
         beam_width=int(beam_width) if beam_width is not None else None,
     )
 
@@ -300,7 +302,7 @@ class RolloutTrajectory:
         )
 
     def planner_policy_trace(self, step_index: int) -> PlannerPolicyTrace | None:
-        """Return the reconstructable planner teacher trace for one step."""
+        """Return the independently recomputed planner search for one step."""
 
         if not self.planner_policy_traces:
             return None
@@ -396,9 +398,6 @@ class RolloutTrajectory:
             "policy_reasoning_truncated": self.policy_reasoning_truncated,
             "planner_policy_traces": [
                 {
-                    "qwen_action_log_probs": _encode_log_probabilities(
-                        trace.qwen_action_log_probs
-                    ),
                     "candidate_sequences": [
                         list(sequence) for sequence in trace.candidate_sequences
                     ],
@@ -406,32 +405,9 @@ class RolloutTrajectory:
                     "root_action_scores": _encode_log_probabilities(
                         trace.root_action_scores
                     ),
-                    "action_training": {
-                        "objective": trace.action_training.objective,
-                        "behavior_owner": trace.action_training.behavior_owner,
-                        "executed_action_index": (
-                            trace.action_training.executed_action_index
-                        ),
-                        "behavior_action_log_probs": _encode_log_probabilities(
-                            trace.action_training.behavior_action_log_probs
-                        ),
-                        "teacher_action_log_probs": (
-                            _encode_log_probabilities(
-                                trace.action_training.teacher_action_log_probs
-                            )
-                            if trace.action_training.teacher_action_log_probs
-                            is not None
-                            else None
-                        ),
-                        "sampled_action_index": (
-                            trace.action_training.sampled_action_index
-                        ),
-                    },
+                    "executed_action_index": trace.executed_action_index,
                     "horizon": trace.horizon,
                     "search_mode": trace.search_mode,
-                    "qwen_sampled_action_index": (
-                        trace.qwen_sampled_action_index
-                    ),
                     "beam_width": trace.beam_width,
                 }
                 for trace in self.planner_policy_traces

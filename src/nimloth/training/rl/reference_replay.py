@@ -75,7 +75,6 @@ def _replay_input(trajectory, step: int) -> PolicyReplayInput:  # type: ignore[n
         credit_assignment=trajectory.policy_credit_assignment,
         token_trace=trajectory.policy_token_trace(step),
         assistant_response=trajectory.assistant_responses[step],
-        planner_trace=trajectory.planner_policy_trace(step),
     )
 
 
@@ -92,6 +91,11 @@ def main(argv: list[str] | None = None) -> int:
     trajectories = load_trajectories(Path(manifest.trajectory_path))
     if len(trajectories) != manifest.num_trajectories:
         raise ValueError("manifest trajectory count does not match JSONL")
+    if any(trajectory.planner_policy_traces for trajectory in trajectories):
+        raise ValueError(
+            "planner trajectories have no Qwen policy objective and must not "
+            "enter frozen-reference policy replay"
+        )
     latent_counts = {
         trajectory.resolved_latent_token_count() for trajectory in trajectories
     }

@@ -5,7 +5,6 @@ from __future__ import annotations
 from argparse import Namespace
 from types import SimpleNamespace
 
-import pytest
 import torch
 
 from nimloth.config.rl import parse_rl_config
@@ -128,54 +127,3 @@ def test_planning_loader_preserves_grid_rollout_and_value_contract(tmp_path) -> 
     assert plan.candidate_sequences.shape == (1, 2)
     assert plan.candidate_scores.shape == (1,)
     assert plan.root_action_scores.shape == (8,)
-
-
-def test_rl_rejects_retired_double_projector_checkpoint(tmp_path) -> None:
-    predictor = TemporalSpatialGridPredictor(
-        GridPredictorConfig(
-            grid_tokens=2,
-            emb_dim=2,
-            history_size=2,
-            depth=1,
-            heads=1,
-            dim_head=2,
-            mlp_dim=4,
-            dropout=0.0,
-        )
-    )
-    predictor.save_checkpoint(tmp_path / "wm_predictor")
-    ValueHead(emb_dim=2).save_checkpoint(tmp_path / "value_head")
-    torch.save(
-        {
-            "slot_projector.net.0.weight": torch.randn(5, 3),
-            "slot_projector.net.3.weight": torch.randn(2, 5),
-            "online_encoder.net.net.0.weight": torch.randn(4, 2),
-        },
-        tmp_path / "state_proj.pt",
-    )
-    llm = torch.nn.Linear(1, 1, bias=False)
-    llm.config = SimpleNamespace(hidden_size=3)
-    config = parse_rl_config(
-        {
-            "gradient": {
-                "state_source": "recompute",
-                "representation_to_backbone": True,
-            },
-            "predictor": {"emb_dim": 2, "history_size": 2},
-            "validation": {"enabled": False, "envs": 0},
-        }
-    )
-    args = Namespace(
-        model=tmp_path,
-        wm_checkpoint=tmp_path / "wm_predictor",
-        state_proj_checkpoint=tmp_path / "state_proj.pt",
-        value_head_checkpoint=tmp_path / "value_head",
-    )
-
-    with pytest.raises(ValueError, match="trainable SFT1 projector format"):
-        _build_world_model(
-            args,
-            config,
-            llm=llm,
-            device=torch.device("cpu"),
-        )

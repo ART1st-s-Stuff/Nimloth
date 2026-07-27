@@ -102,7 +102,7 @@ def test_training_reader_rejects_unmigrated_record() -> None:
         expand_record_transitions(_legacy_record())
 
 
-def test_legacy_planner_semantics_must_be_declared_during_migration() -> None:
+def test_legacy_planner_trajectory_must_be_recollected() -> None:
     record = _legacy_record()
     record["planner_policy_traces"] = [
         {
@@ -117,25 +117,8 @@ def test_legacy_planner_semantics_must_be_declared_during_migration() -> None:
         }
     ]
 
-    with pytest.raises(ValueError, match="legacy planner trace"):
+    with pytest.raises(ValueError, match="cannot be migrated.*recollect"):
         _migrate(record)
-
-    migrated = migrate_trajectory_record(
-        record,
-        missing_action_space_id="navigation",
-        missing_action_space_version=1,
-        missing_reward_provenance=TRAJECTORY_REWARD_PROVENANCE,
-        legacy_planner_semantics="distillation_world_model",
-    )
-    action_training = migrated["planner_policy_traces"][0]["action_training"]
-    assert action_training == {
-        "objective": "distillation",
-        "behavior_owner": "world_model",
-        "executed_action_index": 0,
-        "behavior_action_log_probs": [0.0, None],
-        "teacher_action_log_probs": [0.0, None],
-        "sampled_action_index": None,
-    }
 
 
 def test_jsonl_migration_writes_auditable_manifest_without_overwrite(tmp_path) -> None:

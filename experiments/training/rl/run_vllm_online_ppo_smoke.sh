@@ -36,7 +36,7 @@ esac
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE ACTION_OBJECTIVE CREDIT_ASSIGNMENT MAX_RESPONSE_TOKENS REFERENCE_KL_WEIGHT CONFIG_ITERATIONS CONFIG_NUM_EPISODES CONFIG_MAX_STEPS ROLLOUT_TEMPERATURE ROLLOUT_TOP_P PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE TRAIN_DATASETS_CSV < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE ACTOR_ENABLED CREDIT_ASSIGNMENT MAX_RESPONSE_TOKENS REFERENCE_KL_WEIGHT CONFIG_ITERATIONS CONFIG_NUM_EPISODES CONFIG_MAX_STEPS ROLLOUT_TEMPERATURE ROLLOUT_TOP_P PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE TRAIN_DATASETS_CSV < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -48,7 +48,7 @@ print(
     config.distributed.gpus_per_rank,
     config.distributed.total_gpus,
     config.distributed.rollout_tensor_parallel_size,
-    config.actor.action_objective,
+    str(config.actor.enabled).lower(),
     config.actor.credit_assignment,
     config.actor.max_response_tokens,
     config.actor.reference_kl_loss_weight,
@@ -221,11 +221,11 @@ if [[ "${RUN_ROLLOUT}" == true && "${ITERATION}" == 1 ]]; then
 - rollout: vLLM TP=${TENSOR_PARALLEL_SIZE}, backend=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-local}
 - config: ${RL_CONFIG}
 - planning: enabled=${PLANNING_ENABLED}, horizon=${PLANNING_HORIZON}, search=${PLANNING_SEARCH_MODE}, beam_width=${PLANNING_BEAM_WIDTH}
-- action objective: ${ACTION_OBJECTIVE}; credit=${CREDIT_ASSIGNMENT}; max Qwen response tokens=${MAX_RESPONSE_TOKENS}
+- direct Qwen PPO enabled: ${ACTOR_ENABLED}; credit=${CREDIT_ASSIGNMENT}; max Qwen response tokens=${MAX_RESPONSE_TOKENS}
 - reference KL actor loss: weight=${REFERENCE_KL_WEIGHT}; no reward KL
 - reference model: ${REFERENCE_MODEL}
 - freshness: policy/planner/trajectory content fingerprints; consumption commits only after a post-update checkpoint
-- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank; segment TD backward plus detached full-episode ValueHead MC backward, then one optimizer step
+- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank; one differentiable full-prefix Qwen→WM→ValueHead backward per real transition, then one optimizer step
 - frozen: vision tower and the configured grid StateProjector
 - trainable: Qwen language body, WM predictor and ValueHead
 - W&B: ${WANDB_PROJECT_REQUESTED}/${WANDB_RUN_NAME_REQUESTED}
@@ -356,8 +356,8 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
       echo "planner rollout requires action credit" >&2
       exit 1
     }
-    [[ "${ACTION_OBJECTIVE}" == distillation ]] || {
-      echo "planner rollout requires action distillation" >&2
+    [[ "${ACTOR_ENABLED}" == false ]] || {
+      echo "planner rollout forbids direct Qwen PPO" >&2
       exit 1
     }
     [[ "${PLANNING_SEARCH_MODE}" != None ]] || {
@@ -402,7 +402,6 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
     --eval-sets "${TRAIN_DATASETS[@]}" --split train --seed-offset "${SEED_OFFSET}" \
     --temperature "${ROLLOUT_TEMPERATURE}" --top-p "${ROLLOUT_TOP_P}" \
     --credit-assignment "${CREDIT_ASSIGNMENT}" \
-    --action-objective "${ACTION_OBJECTIVE}" \
     --max-response-tokens "${MAX_RESPONSE_TOKENS}" \
     --vllm-enforce-eager \
     2>&1 | tee -a "${LOG}"
@@ -537,13 +536,11 @@ keys = [
     "sigreg_loss",
     "actor_loss",
     "token_value_loss",
-    "action_distillation_loss",
-    "action_distillation_kl",
     "reference_kl_loss",
     "policy_tokens",
     "total_loss",
 ]
-if "${ACTION_OBJECTIVE}" == "ppo":
+if "${ACTOR_ENABLED}" == "true":
     keys += ["entropy", "clip_fraction", "mean_advantage", "mean_ratio"]
 bad = {key: rows[-1].get(key) for key in keys if not math.isfinite(float(rows[-1][key]))}
 if bad:

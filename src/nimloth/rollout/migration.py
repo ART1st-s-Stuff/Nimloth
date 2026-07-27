@@ -31,7 +31,6 @@ _REMOVED_LEGACY_FIELDS = frozenset(
         "latent_token_count",
     }
 )
-_LEGACY_PLANNER_SEMANTICS = "distillation_world_model"
 
 
 def _required_unversioned_fields(record: Mapping[str, Any]) -> None:
@@ -51,64 +50,16 @@ def _required_unversioned_fields(record: Mapping[str, Any]) -> None:
 
 def _migrate_planner_traces(
     traces: Any,
-    *,
-    legacy_planner_semantics: str | None,
 ) -> list[dict[str, Any]]:
     if not isinstance(traces, list):
         raise ValueError("planner_policy_traces must be a list")
-    migrated_traces: list[dict[str, Any]] = []
-    for index, raw_trace in enumerate(traces):
-        if not isinstance(raw_trace, Mapping):
-            raise ValueError(f"planner trace {index} must be an object")
-        trace = dict(raw_trace)
-        action_training = trace.get("action_training")
-        if action_training is None:
-            if legacy_planner_semantics != _LEGACY_PLANNER_SEMANTICS:
-                raise ValueError(
-                    "legacy planner trace has no action_training; pass "
-                    f"--legacy-planner-semantics={_LEGACY_PLANNER_SEMANTICS} "
-                    "only after confirming the source semantics"
-                )
-            behavior = trace.pop("behavior_action_log_probs", None)
-            teacher = trace.pop("teacher_action_log_probs", None)
-            if not isinstance(behavior, list) or not behavior:
-                raise ValueError(
-                    f"legacy planner trace {index} has no behavior probabilities"
-                )
-            finite_behavior = [
-                float("-inf") if value is None else float(value)
-                for value in behavior
-            ]
-            best_value = max(finite_behavior)
-            best_actions = [
-                action
-                for action, value in enumerate(finite_behavior)
-                if value == best_value
-            ]
-            if len(best_actions) != 1:
-                raise ValueError(
-                    f"legacy planner trace {index} has no unique executed action"
-                )
-            trace["action_training"] = {
-                "objective": "distillation",
-                "behavior_owner": "world_model",
-                "executed_action_index": best_actions[0],
-                "behavior_action_log_probs": behavior,
-                "teacher_action_log_probs": teacher,
-                "sampled_action_index": None,
-            }
-        else:
-            if not isinstance(action_training, Mapping):
-                raise ValueError(
-                    f"planner trace {index} action_training must be an object"
-                )
-            current_action_training = dict(action_training)
-            current_action_training.setdefault("sampled_action_index", None)
-            trace["action_training"] = current_action_training
-        trace.setdefault("qwen_sampled_action_index", None)
-        trace.setdefault("beam_width", None)
-        migrated_traces.append(trace)
-    return migrated_traces
+    if traces:
+        raise ValueError(
+            "legacy planner trajectories cannot be migrated to per-step "
+            "receding-horizon training: they do not contain a real Qwen state and "
+            "independent search trace for every executed action; recollect them"
+        )
+    return []
 
 
 def _validate_reward_fields(
@@ -214,7 +165,6 @@ def migrate_trajectory_record(
     missing_action_space_id: str | None,
     missing_action_space_version: int | None,
     missing_reward_provenance: str | None,
-    legacy_planner_semantics: str | None = None,
 ) -> dict[str, Any]:
     """迁移一条记录；只补调用者明确声明且原记录缺失的语义。"""
 
@@ -324,7 +274,6 @@ def migrate_trajectory_record(
     if "planner_policy_traces" in record:
         migrated["planner_policy_traces"] = _migrate_planner_traces(
             record["planner_policy_traces"],
-            legacy_planner_semantics=legacy_planner_semantics,
         )
     has_legacy_prompt_fields = any(
         field in record for field in ("prompt_version", "latent_token_count")
@@ -386,7 +335,6 @@ def migrate_trajectory_jsonl(
     missing_action_space_id: str | None,
     missing_action_space_version: int | None,
     missing_reward_provenance: str | None,
-    legacy_planner_semantics: str | None = None,
 ) -> dict[str, Any]:
     """原子写出迁移后的 JSONL 与可审计 manifest。"""
 
@@ -420,7 +368,6 @@ def migrate_trajectory_jsonl(
                             missing_action_space_id=missing_action_space_id,
                             missing_action_space_version=missing_action_space_version,
                             missing_reward_provenance=missing_reward_provenance,
-                            legacy_planner_semantics=legacy_planner_semantics,
                         )
                     except Exception as error:
                         raise ValueError(
@@ -450,7 +397,6 @@ def migrate_trajectory_jsonl(
             "action_space_id": missing_action_space_id,
             "action_space_version": missing_action_space_version,
             "reward_provenance": missing_reward_provenance,
-            "legacy_planner_semantics": legacy_planner_semantics,
         },
     }
     with NamedTemporaryFile(
@@ -480,10 +426,6 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         "--missing-reward-provenance",
         choices=sorted(REWARD_PROVENANCE_VALUES),
     )
-    parser.add_argument(
-        "--legacy-planner-semantics",
-        choices=(_LEGACY_PLANNER_SEMANTICS,),
-    )
     return parser.parse_args(argv)
 
 
@@ -495,7 +437,6 @@ def main(argv: Iterable[str] | None = None) -> None:
         missing_action_space_id=args.missing_action_space_id,
         missing_action_space_version=args.missing_action_space_version,
         missing_reward_provenance=args.missing_reward_provenance,
-        legacy_planner_semantics=args.legacy_planner_semantics,
     )
     print(json.dumps(manifest, ensure_ascii=False))
 

@@ -57,22 +57,7 @@ def load_planning_world_model(
             map_location="cpu",
             weights_only=True,
         )
-        if not isinstance(state, dict):
-            raise ValueError("grid state projector checkpoint must be a state dict")
-        projector_first = state.get("net.0.weight")
-        projector_last = state.get("net.3.weight")
-        if (
-            projector_first is None
-            or projector_last is None
-            or projector_first.ndim != 2
-            or projector_last.ndim != 2
-            or projector_first.shape[1] != qwen_hidden_dim
-            or projector_last.shape[0] != predictor.config.emb_dim
-            or projector_last.shape[1] != projector_first.shape[0]
-        ):
-            raise ValueError(
-                "state_proj.pt is not the current trainable SFT1 projector format"
-            )
+        projector_first = state["net.0.weight"]
         state_proj = SharedSlotProjector(
             input_dim=qwen_hidden_dim,
             output_dim=predictor.config.emb_dim,

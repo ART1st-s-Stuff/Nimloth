@@ -37,7 +37,7 @@ class AgentAction:
     planner_trace: PlannerPolicyTrace | None = None
     state_latent_hidden: torch.Tensor | None = None
     world_model_state: torch.Tensor | None = None
-    credit_assignment: Literal["action", "turn", "token"] = "action"
+    credit_assignment: Literal["action", "turn", "token", "none"] = "action"
 
     @property
     def prompt_messages(self) -> tuple[dict[str, Any], ...]:
@@ -133,7 +133,7 @@ class AgentRuntime:
             )
         response = decision.response
         credit_assignment = getattr(self._policy, "credit_assignment", "action")
-        if credit_assignment not in {"action", "turn", "token"}:
+        if credit_assignment not in {"action", "turn", "token", "none"}:
             raise ValueError(
                 f"unsupported policy credit assignment: {credit_assignment!r}"
             )

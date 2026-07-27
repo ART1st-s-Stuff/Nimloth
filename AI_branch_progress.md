@@ -22,11 +22,34 @@
   `EMATargetGridEncoder`、`LeWMGridDecoder` 和 ID33 warm-start；SFT2 optimizer 的
   `state_proj` 参数组直接拥有可训练 `SharedSlotProjector`。SFT2 predicted state 与
   cached DINO grid 直接 MSE；RL trainer 与 rollout planning loader 只加载新的
-  `state_proj.pt + wm_predictor + value_head`，旧双层 checkpoint 明确拒绝。
+  `state_proj.pt + wm_predictor + value_head`。没有旧格式兼容或专用拒绝分支；按新结构
+  严格加载时，旧 state dict 由缺 key 或 tensor shape 不匹配的原生异常终止。
 - checkpoint/config 同步删除 WM EMA、encoder/decoder 和 warm-start 字段；视觉 Backbone
-  EMA 保留。基线提交为 `8de44bf`；本次语义修正尚未提交。
-- 小规模验证：定向 CPU 单元测试 `21 passed in 3.51s`；受影响 Python `compileall`、
-  三个 launcher `bash -n` 和 `git diff --check` 通过。没有运行 GPU、分布式或全仓测试。
+  EMA 保留。基线提交为 `8de44bf`，projector语义修正提交为`d87f5cb8`。
+- 人类进一步纠正“RL不计算DINO loss”的旧结论。`training/common/world_model.py`现统一
+  计算state MSE和可选predicted-state DINO-grid MSE；SFT2使用离线cache target，RL按
+  trajectory真实next-image路径使用固定revision的frozen DINOv2 teacher并缓存target。
+  正式greedy H=2配置为`lambda_wm=1.0`、`lambda_dino=0.5`。
+- SFT2 很早就存在下一状态监督分支更新共享 projector 的错误；后来新增的
+  `project_target_state()` 又把它包装成仿佛存在独立 target projector 的接口。现已删除
+  该接口并修正 SFT2、RL planner TD 与 RL sequence objective：下一状态监督值同时截断
+  Backbone 与 StateProjector；projector 只从同一 state 的 current/start 路径训练。
+  planner TD 直接读取 rollout 保存的真实终点 anchor state。该错误已登记为
+  `ai_rules/known_errors/E0067_remove_retired_target_projector_interfaces.md`。
+- 最新小规模验证：定向 CPU 单元测试 `78 passed in 6.71s`，其中两rank Gloo测试仅使用
+  本机loopback；受影响Python编译与`git diff --check`通过。没有运行GPU或全规模测试；
+  本次RL DINO修正尚未提交。
+- `RLTrainingLoop._run_iteration` 已补充中文阶段注释，明确两条训练路线、每轮一次
+  optimizer update、fresh rollout 消费事务的回滚边界，以及 checkpoint 落盘后再提交
+  消费记录的顺序；没有改动控制流。定向 `test_loop.py` 为 `6 passed`，语法编译与
+  `git diff --check`通过。
+- RL DINO target I/O 已移出 `RLAlgorithm`。planner 路线在 fresh consumption 开始前，
+  按 episode/TD 顺序一次加载本轮所有真实 endpoint target 到 CPU，再与展平的 TD steps
+  严格顺序对齐；每个 TD 只把自己的 target 搬到训练设备。sequence 路线同样先把全部
+  next-image targets 装入 `RLBatch`，algorithm 不再读取图像路径或调用 frozen teacher。
+  SFT2 复核确认每批只加载并使用当前 `B` 个 next-image targets，没有同类丢弃问题，
+  因此未改生产代码，只补调用契约测试。定向 CPU/Gloo 回归 `39 passed in 15.13s`；
+  compileall 与 `git diff --check`通过，未运行 GPU 测试，改动尚未提交。
 
 ## 2026-07-26：RL TD 注释、直接算法接口与模块级官方 DDP
 
@@ -833,7 +856,8 @@
 
 - 删除容易被误解为第二套神经网络的公共 `AgentTarget`。`Agent` 现在是唯一模型
   对象；SFT2 特有的 target Backbone stop-gradient、target 侧 StateProjector
-  梯度和 Backbone EMA 均由 `SFT2ModelRuntime` 管理。
+  梯度和 Backbone EMA 当时均由 `SFT2ModelRuntime` 管理。其中 target 侧
+  StateProjector 梯度已在 2026-07-27 确认错误并删除，当前语义见本文件顶部。
 - `SFT2ModelRuntime.unwrapped()` 保留同一 EMA owner，但 EMA context 会根据新
   runtime 的 Agent 重新选择实际 Backbone model，不再复用捕获旧包装模型的闭包。
 - 生产 trainer、algorithm、validation、诊断脚本和测试已切换到新契约；新增测试
@@ -2782,3 +2806,19 @@
 - 下一步先实现loss/gradient等价的replay microbatch/chunk，保持官方DDP reducer和
   batch级token advantage/critic target归一化，不通过缩短真实CoT、降低history_size、
   手工gradient all-reduce或放宽300秒环境上限掩盖问题。
+
+## 2026-07-27：RL Actor改为每步重规划和完整prefix value反传
+
+- 人类确认Actor为WM+ValueHead：每个真实environment step搜索`k`步，只执行最高value
+  候选的首动作；候选尾部不执行，下一步用真实observation重新运行Qwen和planner。
+- planner不再训练Qwen action prior。已删除planned-action queue、Qwen action
+  distillation/replay及其trace/config/checkpoint/metric；planner token全部关闭PPO mask。
+- planner训练按真实transition重算完整真实prefix的Qwen state。历史token/CoT是固定输入，
+  但当前forward处理全部历史的激活参与`ValueHead(hat{s}_{t+1}) -> WM -> StateProjector ->
+  Qwen`反传；每个step单独backward，不连接以前step的旧autograd graph。
+- trajectory现在要求每个action有真实Qwen state和独立search trace；旧稀疏segment
+  planner rollout无法忠实迁移，必须重新采集。planner resume使用新objective metadata
+  拒绝旧distillation optimizer状态。
+- 五份planner配置已切到`recompute + representation_to_backbone=true`并关闭direct Qwen
+  PPO；正式路线仍保持greedy。静态验证为compileall、launcher `bash -n`和diff-check通过；
+  本地环境缺少PyTorch/pytest，尚无CPU数值、GPU、vLLM或DDP运行结果。

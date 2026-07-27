@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from nimloth.training.rl import loop as loop_module
+from nimloth.training.rl.algorithm import RLBatch
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
 
 
@@ -78,10 +79,50 @@ class _Optimization:
 class _Algorithm:
     def __init__(self, *, fail_forward: bool = False) -> None:
         self.fail_forward = fail_forward
+        self.train_world_model = True
+        self.dino_grid_weight = 0.0
 
     def sequence_step(self, _runtime, _batch):  # type: ignore[no-untyped-def]
         if self.fail_forward:
             raise RuntimeError("forward failed")
+        return SimpleNamespace(
+            loss=torch.tensor(1.0, requires_grad=True),
+            metrics={"total_loss": 1.0},
+        )
+
+
+class _DINOGridTargets:
+    def __init__(self) -> None:
+        self.loaded_paths: list[tuple[str, ...]] = []
+
+    def load(self, paths, *, device):  # type: ignore[no-untyped-def]
+        assert device == torch.device("cpu")
+        current_paths = tuple(str(path) for path in paths)
+        self.loaded_paths.append(current_paths)
+        return torch.stack(
+            [torch.full((2,), float(index + 1)) for index in range(len(paths))]
+        )
+
+
+class _PlannerAlgorithm:
+    train_world_model = True
+    dino_grid_weight = 0.5
+
+    def __init__(self) -> None:
+        self.received_targets: list[torch.Tensor] = []
+
+    def actor_transition_step(
+        self,
+        _runtime,
+        _transition,
+        *,
+        return_target: torch.Tensor,
+        total_transitions: int,
+        dino_grid_target: torch.Tensor,
+    ):  # type: ignore[no-untyped-def]
+        assert total_transitions == 2
+        assert return_target.ndim == 0
+        self.received_targets.append(dino_grid_target.clone())
         return SimpleNamespace(
             loss=torch.tensor(1.0, requires_grad=True),
             metrics={"total_loss": 1.0},
@@ -101,7 +142,22 @@ def _training_loop(
         "sample_trajectory_windows",
         lambda *_a, **_k: (object(),),
     )
-    monkeypatch.setattr(loop_module, "build_rl_batch", lambda *_a, **_k: object())
+    window = SimpleNamespace(
+        trajectory=SimpleNamespace(image_paths=("step_0.png", "step_1.png")),
+        start_step=0,
+        history_size=1,
+    )
+    batch = RLBatch(
+        windows=(window,),  # type: ignore[arg-type]
+        action_indices=torch.zeros((1, 1), dtype=torch.long),
+        return_targets=torch.zeros((1, 1)),
+        old_log_probs=torch.zeros(1),
+    )
+    monkeypatch.setattr(
+        loop_module,
+        "build_rl_batch",
+        lambda *_a, **_k: batch,
+    )
     monkeypatch.setattr(
         loop_module,
         "summarize_rollouts",
@@ -187,6 +243,108 @@ def test_fresh_consumption_commits_after_post_update_checkpoint(
 
     assert collector.events == ["collect", "begin", "commit"]
     assert loop.state.global_step == 1
+
+
+def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, _collector = _training_loop(tmp_path, monkeypatch)
+    loop.config.agent.planning.enabled = True
+    loop.config.agent.planning.horizon = 2
+    episode_a_transition = SimpleNamespace(
+        next_image_path="episode_a_step_1.png",
+    )
+    episode_b_transition = SimpleNamespace(
+        next_image_path="episode_b_step_1.png",
+    )
+    monkeypatch.setattr(
+        loop_module,
+        "build_episode_training_batches",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(
+                transitions=(episode_a_transition,),
+                return_targets=torch.tensor([1.0]),
+            ),
+            SimpleNamespace(
+                transitions=(episode_b_transition,),
+                return_targets=torch.tensor([2.0]),
+            ),
+        ),
+    )
+    source = _DINOGridTargets()
+    algorithm = _PlannerAlgorithm()
+    loop.algorithm = algorithm  # type: ignore[assignment]
+    loop.model_runtime = SimpleNamespace(  # type: ignore[assignment]
+        dino_grid_targets=source
+    )
+
+    loop._run_iteration(1)
+
+    assert source.loaded_paths == [
+        ("episode_a_step_1.png", "episode_b_step_1.png")
+    ]
+    assert len(algorithm.received_targets) == 2
+    torch.testing.assert_close(
+        algorithm.received_targets[0],
+        torch.tensor([[1.0, 1.0]]),
+    )
+    torch.testing.assert_close(
+        algorithm.received_targets[1],
+        torch.tensor([[2.0, 2.0]]),
+    )
+
+
+def test_sequence_dino_targets_are_loaded_and_reshaped_before_algorithm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, _collector = _training_loop(tmp_path, monkeypatch)
+    window = SimpleNamespace(
+        trajectory=SimpleNamespace(
+            image_paths=("step_0.png", "step_1.png", "step_2.png")
+        ),
+        start_step=0,
+        history_size=2,
+    )
+    batch = RLBatch(
+        windows=(window,),  # type: ignore[arg-type]
+        action_indices=torch.zeros((1, 2), dtype=torch.long),
+        return_targets=torch.zeros((1, 2)),
+        old_log_probs=torch.zeros(2),
+    )
+    monkeypatch.setattr(
+        loop_module,
+        "build_rl_batch",
+        lambda *_args, **_kwargs: batch,
+    )
+    source = _DINOGridTargets()
+    algorithm = _Algorithm()
+    algorithm.dino_grid_weight = 0.5
+    received: list[torch.Tensor] = []
+
+    def sequence_step(_runtime, prepared):  # type: ignore[no-untyped-def]
+        assert prepared.dino_grid_target is not None
+        received.append(prepared.dino_grid_target)
+        return SimpleNamespace(
+            loss=torch.tensor(1.0, requires_grad=True),
+            metrics={"total_loss": 1.0},
+        )
+
+    algorithm.sequence_step = sequence_step  # type: ignore[method-assign]
+    loop.algorithm = algorithm  # type: ignore[assignment]
+    loop.model_runtime = SimpleNamespace(  # type: ignore[assignment]
+        dino_grid_targets=source
+    )
+
+    loop._run_iteration(1)
+
+    assert source.loaded_paths == [("step_1.png", "step_2.png")]
+    assert len(received) == 1
+    torch.testing.assert_close(
+        received[0],
+        torch.tensor([[[1.0, 1.0], [2.0, 2.0]]]),
+    )
 
 
 def test_deferred_final_checkpoint_keeps_only_resumable_latest(

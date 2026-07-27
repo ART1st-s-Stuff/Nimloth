@@ -1,16 +1,16 @@
-# RL 训练与 planning 方案
+# RL 训练与 planning 方案（已退役历史方案）
 
-本文记录截至 2026-07-25 关于 Nimloth RL、World Model planning、ValueHead、
-Qwen action policy 和 CoT credit assignment 的讨论结果。本文是设计与实施计划，
-不是已完成实现的声明；实际实验参数仍以经过人类逐项确认的配置为准。
+本文保留截至 2026-07-25 关于 planner distillation、Qwen policy credit
+和长期 PPO 方案的历史讨论，不再是当前 planner 的实施依据。
 
-> 2026-07-25 最终确认：`greedy`只保留为显式单路径基线；当前
-> `planning.horizon=2`正确性配置使用`exhaustive`，批量模拟全部64条两动作候选，按
-> leaf score选择候选并执行首动作。behavior和distillation teacher均为该首动作上的
-> 确定性分布，不使用teacher temperature。
-> `actor.planner_distillation_weight=1.0`。Qwen真实采样CoT使用token PPO，并加入冻结
-> reference的actor-side `low_var_kl × 0.001`；planner action不参加PPO或KL。reward KL
-> 尚未实现，不加入本次方案。WM训练、DINO关闭、`rl.gamma=1.0`。
+> 2026-07-27 最新人类指令已覆盖本文中所有 planner distillation、
+> planner action PPO 和稀疏多步执行方案。当前依据是
+> `ai_tasks/ai_progress/2026-07-27_rl_actor_receding_horizon_refactor.md`：
+> WM + ValueHead 每个真实 environment step 重新搜索 `k` 步，只执行最佳
+> 候选的首动作；不监督 Qwen action prior；每个 transition 使用独立的
+> 完整真实 prefix Qwen graph，让 predicted-next-state value loss 经 WM 回传到
+> 当前 forward 内的全部历史 token 激活。以下内容仅用于追溯旧设计，
+> 不得用于启动、恢复或解释当前 planner 实验。
 
 ## 1. 已确认的约束
 
@@ -26,7 +26,7 @@ Qwen action policy 和 CoT credit assignment 的讨论结果。本文是设计�
    objective，计划保存完整 action space 的 Qwen 分布以及 planner root 分布。
 5. 是否训练 World Model 必须由配置控制。WM predictor、StateProjector、SIGReg 以及
    WM/value loss 是否向 Backbone 传递表征梯度不能被一个含糊开关隐式绑定。
-6. 当前 RL 暂不使用 DINO loss。
+6. RL 训练 grid WM 时必须使用与 SFT2 相同的 state MSE 和 predicted-state DINO MSE。
 
 ## 2. 统一用词和参数边界
 
@@ -278,19 +278,23 @@ agent:
   planning:
     enabled: true
     horizon: 2
-    search_mode: exhaustive
+    search_mode: greedy
     device: REQUIRED
 actor:
   enabled: true
-  credit_assignment: token
+  action_objective: distillation
+  credit_assignment: action
   planner_distillation_weight: REQUIRED
 predictor:
   train_wm: REQUIRED
+  lambda_wm: REQUIRED
+  lambda_dino: REQUIRED
 ```
 
 distillation weight、planner device及所有token credit数值必须由实验配置显式给定。
 `freeze.state_proj`、`lambda_sigreg`和
-`gradient.representation_to_backbone`继续独立控制其职责。DINO loss在当前RL保持关闭。
+`gradient.representation_to_backbone`继续独立控制其职责。SFT2和RL调用同一个公共
+WM objective；SFT2读取离线DINO cache，RL使用真实next-image的frozen DINO target。
 
 ## 11. 实施顺序与验证门槛
 

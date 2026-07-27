@@ -17,8 +17,7 @@
 本包中的任何模块都不得导入 `nimloth.training`。
 
 训练读取器只接受`record_format: nimloth_trajectory_v1`。旧的`messages`交替列表、
-`nav_instruction`、`prompt_version`/`latent_token_count`和旧planner trace只在迁移命令
-中解析：
+`nav_instruction`和`prompt_version`/`latent_token_count`只在迁移命令中解析：
 
 ```bash
 python -m nimloth.rollout.migration \
@@ -31,8 +30,8 @@ python -m nimloth.rollout.migration \
 
 这些`--missing-*`参数是调用者对源数据语义的声明，会写入manifest。迁移器只拆分
 源记录真实存在的system/user/assistant文本，不生成CoT、token trace、Qwen hidden或
-WM state。旧planner trace若缺少行为所有权，还必须显式声明
-`--legacy-planner-semantics=distillation_world_model`。
+WM state。旧planner记录缺少每个真实step的Qwen state和独立search trace，无法忠实
+迁移到当前receding-horizon contract；必须重新采集。
 
 在线调用链为：
 
@@ -49,14 +48,15 @@ pre-StateProjector latent hidden。collector只选择具体 environment、policy
 不得复制 prompt 构造逻辑，也不得在公共适配器中猜测某个环境的 reward/success 语义。
 
 窗口始终保留原始 Agent prompt 与 behavior provenance。普通trajectory不提前固化
-Backbone hidden；planner trajectory可额外携带rollout captured Qwen latent hidden，
-但只能在训练显式关闭representation-to-Backbone梯度时用于state路径。它是Qwen输出、
-不是KV cache或投影后的WM state。VAGEN navigation collector 属于
+Backbone hidden；planner trajectory额外携带每个step的rollout Qwen latent hidden和
+投影state用于审计及固定next-state target。训练value路径仍从真实CoT重建完整prefix并
+重新执行Qwen，不把这些hidden或vLLM KV cache接回旧graph。VAGEN navigation collector 属于
 `nimloth.environment.navigation.collector`，不属于本包。
 
 turn/token-credit trajectory 的 behavior replay prompt 从 `<think>` 开始并保留实际采样
 CoT。terminal observation额外生成并持久化真实CoT，不执行其draft action。planner
-trajectory若缺少任一`T + 1` state hidden会在读取/训练前失败，不能退回固定thought或
-重新把`B * (H + 1)`完整prefix一次送进Qwen。窗口模块只负责保持顺序，不计算
+trajectory若缺少任一`T + 1` state hidden会在读取/训练前失败，不能退回固定thought。
+planner训练逐真实transition重算一次完整prefix并立即backward，不同时保留多个step的
+Qwen graph。窗口模块只负责保持顺序，不计算
 advantage。fresh逐步reward用于完整episode return；真正terminal从0 bootstrap，
 时间上限truncation必须由训练配置显式选择bootstrap语义。

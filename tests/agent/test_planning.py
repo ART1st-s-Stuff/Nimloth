@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 import torch
 
 from nimloth.agent import (
@@ -240,7 +239,9 @@ class _TurnPolicy:
                 ),
             ),
             policy_state=VLLMPolicyState(
-                latent_hidden=torch.tensor([[0.25, -0.25]]),
+                latent_hidden=torch.tensor(
+                    [[0.25 * self.action_calls, -0.25 * self.action_calls]]
+                ),
                 action_logits=torch.arange(8, dtype=torch.float32),
             ),
         )
@@ -285,11 +286,11 @@ def test_planning_policy_uses_batched_lookahead_and_excludes_action_from_ppo() -
     assert decision.token_trace.loss_mask[action_position] is False
     assert decision.token_trace.old_log_probs[action_position] is None
     assert f"<|action_({decision.action_index})|>" in decision.response
-    assert predictor.real_history_lengths == [1, 1]
+    assert predictor.real_history_lengths == [1]
     assert stages == ["planner_start", "planner_done"]
 
 
-def test_planning_policy_executes_full_segment_before_next_qwen_anchor() -> None:
+def test_planning_policy_replans_every_step_from_real_qwen_state() -> None:
     world_model, predictor = _planning_world_model()
     turn_policy = _TurnPolicy()
     policy = PlanningPolicy(
@@ -305,33 +306,24 @@ def test_planning_policy_executes_full_segment_before_next_qwen_anchor() -> None
         template=PromptTemplateSpec("test", "v1"),
     )
 
-    anchor_action = policy.select_action(prompt)
-    predicted_action = policy.select_action(prompt)
-    next_anchor_action = policy.select_action(prompt)
+    first_action = policy.select_action(prompt)
+    second_action = policy.select_action(prompt)
+    third_action = policy.select_action(prompt)
 
-    assert turn_policy.action_calls == 2
-    assert anchor_action.token_trace is not None
-    assert anchor_action.planner_trace is not None
-    assert anchor_action.world_model_state.tolist() == [0.25, -0.25]
-    assert predicted_action.token_trace is None
-    assert predicted_action.planner_trace is None
-    assert not predicted_action.response.startswith("<think>")
-    assert predicted_action.world_model_state.tolist() != [0.25, -0.25]
-    assert next_anchor_action.world_model_state.tolist() == [0.25, -0.25]
+    assert turn_policy.action_calls == 3
+    assert all(
+        decision.token_trace is not None and decision.planner_trace is not None
+        for decision in (first_action, second_action, third_action)
+    )
+    assert first_action.world_model_state.tolist() == [0.25, -0.25]
+    assert second_action.world_model_state.tolist() == [0.5, -0.5]
+    assert third_action.world_model_state.tolist() == [0.75, -0.75]
+    assert all(
+        decision.response.startswith("<think>real cot</think>")
+        for decision in (first_action, second_action, third_action)
+    )
+    # history_size=2: the third search starts from the two latest real Qwen
+    # states.  No predicted tail from either previous search is retained.
     assert predictor.state_histories[-1].tolist() == [
-        [[1.25, -1.25], [0.25, -0.25]]
+        [[0.5, -0.5], [0.75, -0.75]]
     ]
-
-
-def test_planning_policy_rejects_ppo_while_greedy_actor_owns_behavior() -> None:
-    world_model, _predictor = _planning_world_model()
-
-    with pytest.raises(ValueError, match="world-model actor owns"):
-        PlanningPolicy(
-            turn_policy=_TurnPolicy(),
-            world_model=world_model,
-            horizon=2,
-            search_mode="greedy",
-            planner_device=torch.device("cpu"),
-            action_objective="ppo",
-        )

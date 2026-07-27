@@ -63,6 +63,11 @@ selected action的Qwen概率不足以审计entropy、KL、support和behavior mis
 
 ## 2026-07-25：planner-distillation RL 启动参数待确认
 
+> 已于 2026-07-27 被人类的 receding-horizon Actor 方案覆盖。当前
+> planner 取消 Qwen action distillation/PPO，不得根据以下历史清单启动实验。
+> 当前设计与验证边界见
+> `ai_tasks/ai_progress/2026-07-27_rl_actor_receding_horizon_refactor.md`。
+
 人类已授权开始 RL，但新路径没有可合法继承的完整旧配置。提交 GPU 任务前仍需明确：
 
 1. 实验范围：先做一轮 correctness smoke，还是直接给出正式的 episodes、每条最大 steps、

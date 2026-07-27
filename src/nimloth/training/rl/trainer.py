@@ -13,6 +13,8 @@ import torch
 
 from nimloth.agent import Agent
 from nimloth.backbone import (
+    DINOV2_LARGE_IDENTITY,
+    FrozenDINOGridTargets,
     backbone_hidden_size,
     build_action_log_prob_replay,
     build_agent_policy,
@@ -124,22 +126,8 @@ def _build_grid_world_model(
         map_location="cpu",
         weights_only=True,
     )
-    projector_first = state_proj_state.get("net.0.weight")
-    projector_last = state_proj_state.get("net.3.weight")
+    projector_first = state_proj_state["net.0.weight"]
     qwen_hidden_dim = backbone_hidden_size(llm.config)
-    if (
-        projector_first is None
-        or projector_last is None
-        or projector_first.ndim != 2
-        or projector_last.ndim != 2
-        or projector_first.shape[1] != qwen_hidden_dim
-        or projector_last.shape[0] != predictor.config.emb_dim
-        or projector_last.shape[1] != projector_first.shape[0]
-    ):
-        raise ValueError(
-            "SFT2 state_proj.pt is not the trainable SFT1 projector format "
-            "required by the current grid WM"
-        )
     state_proj = SharedSlotProjector(
         input_dim=qwen_hidden_dim,
         output_dim=predictor.config.emb_dim,
@@ -445,12 +433,11 @@ def _load_resume_state(
     world_size: int,
     optimizer_state_sharded: bool,
     expected_checkpoint_metric: str,
-    expected_action_objective: str,
     expected_credit_assignment: str,
     expected_token_credit_config: dict[str, Any],
     expected_truncated_bootstrap: str | None,
     expected_planner_config: dict[str, Any],
-    expected_planner_distillation_weight: float | None,
+    expected_planner_training_objective: str | None,
     expected_reference_kl_config: dict[str, Any],
     expected_train_world_model: bool,
 ) -> RLResumeState:
@@ -489,13 +476,6 @@ def _load_resume_state(
             f"saved={checkpoint_metric!r}, configured={expected_checkpoint_metric!r}"
         )
     saved_credit_assignment = state.get("credit_assignment")
-    saved_action_objective = state.get("action_objective", "ppo")
-    if saved_action_objective != expected_action_objective:
-        raise ValueError(
-            "resume action objective mismatch: "
-            f"saved={saved_action_objective!r}, "
-            f"configured={expected_action_objective!r}"
-        )
     if (
         saved_credit_assignment is not None
         and str(saved_credit_assignment) != expected_credit_assignment
@@ -521,12 +501,8 @@ def _load_resume_state(
         and saved_planner_config != expected_planner_config
     ):
         raise ValueError("resume planner config mismatch")
-    saved_distillation_weight = state.get("planner_distillation_weight")
-    if saved_distillation_weight != expected_planner_distillation_weight and (
-        saved_distillation_weight is not None
-        or expected_planner_distillation_weight is not None
-    ):
-        raise ValueError("resume planner distillation weight mismatch")
+    if state.get("planner_training_objective") != expected_planner_training_objective:
+        raise ValueError("resume planner training objective mismatch")
     saved_reference_kl_config = state.get(
         "reference_kl_config",
         {"weight": 0.0, "type": None},
@@ -559,12 +535,20 @@ def train_rl(
     backbone_trainable = llm_tune != "freeze" or vision_tune != "freeze"
     if actor_enabled and not backbone_trainable:
         raise ValueError(
-            "actor.enabled requires a trainable --llm-tune or --vision-tune mode"
+            "Qwen policy training requires a trainable --llm-tune or "
+            "--vision-tune mode"
         )
-    if planning_enabled and config.gradient.representation_to_backbone:
+    if planning_enabled and llm_tune == "freeze":
         raise ValueError(
-            "planner RL consumes rollout-captured Qwen states and requires "
-            "gradient.representation_to_backbone=false"
+            "planner value training requires trainable Qwen language parameters; "
+            "--llm-tune cannot be freeze"
+        )
+    if planning_enabled and (
+        config.gradient.state_source != "recompute"
+        or not config.gradient.representation_to_backbone
+    ):
+        raise ValueError(
+            "planner RL requires differentiable full-prefix Qwen recomputation"
         )
     validate_collector_configuration(
         actor_enabled=actor_enabled,
@@ -655,7 +639,7 @@ def train_rl(
         if not config.predictor.train_wm:
             world_model.wm_predictor.requires_grad_(False).eval()
         token_value_head: torch.nn.Module | None = None
-        if config.actor.credit_assignment == "token":
+        if actor_enabled and config.actor.credit_assignment == "token":
             assert config.token_credit.hidden_dim is not None
             token_value_head = TokenValueHead(
                 input_dim=backbone_hidden_size(model.config),
@@ -718,13 +702,16 @@ def train_rl(
             world_size=world,
             optimizer_state_sharded=distributed_modules.optimizer_state_sharded,
             expected_checkpoint_metric=config.validation.checkpoint_metric,
-            expected_action_objective=config.actor.action_objective,
-            expected_credit_assignment=config.actor.credit_assignment,
+            expected_credit_assignment=(
+                "none" if planning_enabled else config.actor.credit_assignment
+            ),
             expected_token_credit_config=asdict(config.token_credit),
             expected_truncated_bootstrap=config.rl.truncated_bootstrap,
             expected_planner_config=asdict(config.agent.planning),
-            expected_planner_distillation_weight=(
-                config.actor.planner_distillation_weight
+            expected_planner_training_objective=(
+                "receding_horizon_transition_mc_v1"
+                if planning_enabled
+                else None
             ),
             expected_reference_kl_config={
                 "weight": config.actor.reference_kl_loss_weight,
@@ -805,7 +792,6 @@ def train_rl(
         )
         algorithm = RLAlgorithm(
             history_size=config.predictor.history_size,
-            wm_prediction_steps=config.agent.planning.horizon,
             sigreg=(
                 SequenceSIGReg(
                     knots=config.predictor.sigreg_knots,
@@ -823,12 +809,20 @@ def train_rl(
             token_gamma=config.token_credit.gamma,
             token_gae_lambda=config.token_credit.gae_lambda,
             token_value_loss_weight=config.token_credit.value_loss_weight,
-            planner_distillation_weight=(
-                config.actor.planner_distillation_weight
-            ),
             reference_kl_loss_weight=config.actor.reference_kl_loss_weight,
             train_world_model=config.predictor.train_wm,
+            world_model_weight=config.predictor.lambda_wm,
+            dino_grid_weight=config.predictor.lambda_dino,
         )
+        dino_grid_targets = None
+        if config.predictor.train_wm and config.predictor.lambda_dino > 0.0:
+            if not isinstance(agent.wm, GridWorldModel):
+                raise ValueError("RL DINO-grid loss requires a grid world model")
+            dino_grid_targets = FrozenDINOGridTargets.from_pretrained(
+                DINOV2_LARGE_IDENTITY,
+                device=device,
+                dtype=torch.bfloat16,
+            )
         model_runtime = RLModelRuntime(
             agent=agent,
             input_builder=input_builder,
@@ -846,6 +840,7 @@ def train_rl(
                 if actor_enabled
                 else None
             ),
+            dino_grid_targets=dino_grid_targets,
         )
         optimization_runtime = OptimizationRuntime(
             optimizer=optimizer,

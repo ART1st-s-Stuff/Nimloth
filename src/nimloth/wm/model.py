@@ -49,11 +49,6 @@ class WorldModel(nn.Module):
 
         return self.state_proj(qwen_hidden).float()
 
-    def project_target_state(self, qwen_hidden: torch.Tensor) -> torch.Tensor:
-        """用同一个 StateProjector 映射 target Backbone hidden。"""
-
-        return self.project_state(qwen_hidden)
-
     def project_state_sequence(self, qwen_hidden: torch.Tensor) -> torch.Tensor:
         """逐时间位置投影 ``(B,T,...)`` Backbone hidden 序列。"""
 

@@ -11,12 +11,13 @@ import torch.nn.functional as F
 from nimloth.agent import AgentPrompt, PolicyReplayInput, PolicyReplayOutput
 from nimloth.rollout import TrajectoryWindow
 from nimloth.rollout.transitions import discounted_action_value_targets
-from nimloth.training.common import ActionValueLoss, action_value_loss
-from nimloth.training.rl.credit import expand_step_advantages, token_level_gae
-from nimloth.training.rl.episodes import (
-    EpisodeTrainingBatch,
-    TemporalDifferenceStep,
+from nimloth.training.common import (
+    ActionValueLoss,
+    action_value_loss,
+    world_model_loss,
 )
+from nimloth.training.rl.credit import expand_step_advantages, token_level_gae
+from nimloth.training.rl.episodes import ExecutedTransition
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.util.module import move_to_device
 from nimloth.wm import SequenceSIGReg
@@ -28,12 +29,15 @@ class RLBatch:
 
     action/return 张量为 ``(B,H)``；``old_log_probs`` 按 window-major、time-minor
     展开后，再按每步 loss-mask token 展开。这个顺序必须与 policy replay 一致。
+    可选 DINO target 已在训练 loop 中与 ``(B,H)`` next observations 对齐；algorithm
+    不负责读取图像或调用 frozen teacher。
     """
 
     windows: tuple[TrajectoryWindow, ...]
     action_indices: torch.Tensor
     return_targets: torch.Tensor
     old_log_probs: torch.Tensor
+    dino_grid_target: torch.Tensor | None = None
 
     @property
     def state_prompts(self) -> tuple[AgentPrompt, ...]:
@@ -62,6 +66,18 @@ class RLBatch:
         return torch.stack(
             [window.rollout_state_hiddens() for window in self.windows],
             dim=0,
+        )
+
+    @property
+    def next_image_paths(self) -> tuple[str, ...]:
+        """按 batch/time 顺序展开 H 个 next observation 图像。"""
+
+        return tuple(
+            path
+            for window in self.windows
+            for path in window.trajectory.image_paths[
+                window.start_step + 1 : window.start_step + 1 + window.history_size
+            ]
         )
 
 
@@ -104,15 +120,15 @@ def build_rl_batch(
     if len(history_sizes) != 1:
         raise ValueError("one RL batch cannot mix trajectory window lengths")
     history_size = history_sizes.pop()
+    if any(window.trajectory.planner_policy_traces for window in windows):
+        raise ValueError(
+            "planner trajectories use complete-episode transition training, not RLBatch"
+        )
     replay_inputs = tuple(
         sample
         for window in windows
         for sample in window.policy_replay_inputs()
     )
-    if any(sample.planner_trace is not None for sample in replay_inputs):
-        raise ValueError(
-            "planner trajectories use complete-episode TD/MC training, not RLBatch"
-        )
     return RLBatch(
         windows=windows,
         action_indices=torch.tensor(
@@ -169,16 +185,15 @@ def normalized_monte_carlo_advantages(
 class RLAlgorithm:
     """定义 RL 一个 batch 的完整计算图。
 
-    下一状态保持 stop-gradient；Backbone 是否接收 WM/value/SIGReg 梯度由
-    ``RLModelRuntime`` 的显式模式决定，StateProjector 是否训练只由参数冻结状态
-    决定。policy replay、optimizer、rollout 生命周期和 checkpoint 由运行期管理。
+    WM 的下一状态监督值保持固定。StateProjector 只从 current/start state 路径训练；
+    Backbone 是否接收 WM/value/SIGReg 梯度由 ``RLModelRuntime`` 的显式模式决定。
+    policy replay、optimizer、rollout 生命周期和 checkpoint 由运行期管理。
     """
 
     def __init__(
         self,
         *,
         history_size: int,
-        wm_prediction_steps: int,
         sigreg: SequenceSIGReg | None,
         sigreg_weight: float,
         value_rank_margin: float,
@@ -189,14 +204,14 @@ class RLAlgorithm:
         token_gamma: float | None = None,
         token_gae_lambda: float | None = None,
         token_value_loss_weight: float | None = None,
-        planner_distillation_weight: float | None = None,
         reference_kl_loss_weight: float = 0.0,
         train_world_model: bool = True,
+        world_model_weight: float = 1.0,
+        dino_grid_weight: float = 0.0,
     ) -> None:
         """消费已经由 ``RLConfig`` 校验过的算法参数。"""
 
         self.history_size = int(history_size)
-        self.wm_prediction_steps = int(wm_prediction_steps)
         self.sigreg = sigreg
         self.sigreg_weight = float(sigreg_weight)
         self.value_rank_margin = float(value_rank_margin)
@@ -207,233 +222,154 @@ class RLAlgorithm:
         self.token_gamma = token_gamma
         self.token_gae_lambda = token_gae_lambda
         self.token_value_loss_weight = token_value_loss_weight
-        self.planner_distillation_weight = planner_distillation_weight
         self.reference_kl_loss_weight = float(reference_kl_loss_weight)
         self.train_world_model = bool(train_world_model)
+        self.world_model_weight = float(world_model_weight)
+        self.dino_grid_weight = float(dino_grid_weight)
 
-    def _predictor_replay(
+    def actor_transition_step(
         self,
         runtime: RLModelRuntime,
-        state_history: torch.Tensor,
-        actions_history: torch.Tensor,
-        actions: torch.Tensor,
-    ) -> torch.Tensor:
-        """让 WM 按 config 指定的步数，自回归预测后续 state。
-
-        ``state_history`` 和 ``previous_actions`` 是预测起点之前保留的
-        WM 上下文。每预测一步，就把新 state 追加到上下文；下一步只能读取
-        最近 ``history_size`` 个 state/action，不会重新调用 Qwen。
-
-        ``self.wm_prediction_steps`` 直接来自 ``agent.planning.horizon``。episode
-        最后一段可能提前结束，此时 actions 已由 episode 构造阶段校验为合法短尾，
-        这里只预测实际剩余步数。
-        """
-
-        all_states = state_history
-        all_actions = torch.cat((actions_history, actions), dim=1)
-        history_steps = state_history.shape[1]
-        prediction_steps = min(self.wm_prediction_steps, actions.shape[1])
-        predictions: list[torch.Tensor] = []
-        for prediction_index in range(prediction_steps):
-            state_index = history_steps - 1 + prediction_index
-            context_start = max(0, state_index - self.history_size + 1)
-            state_context = all_states[:, context_start : state_index + 1]
-            action_context = all_actions[:, context_start : state_index + 1]
-            predicted_sequence = runtime.agent.wm.predict_state_sequence(
-                state_context,
-                action_context,
-            )
-            next_state = predicted_sequence[:, -1]
-            predictions.append(next_state)
-            all_states = torch.cat((all_states, next_state.unsqueeze(1)), dim=1)
-        return torch.stack(predictions, dim=1)
-
-    def temporal_difference_step(
-        self,
-        runtime: RLModelRuntime,
-        step: TemporalDifferenceStep,
+        transition: ExecutedTransition,
         *,
-        total_td_steps: int,
+        return_target: torch.Tensor,
+        total_transitions: int,
+        dino_grid_target: torch.Tensor | None = None,
     ) -> RLStepOutput:
-        """计算一个相邻 Qwen anchor 之间的 WM 与动作蒸馏损失。
+        """Train one executed transition through Qwen, WM, and ValueHead.
 
-        让Qwen
-
-        输入 segment 覆盖 ``start_step`` 到 ``end_step`` 之间实际执行的动作。
-        起点 Qwen hidden 会重新经过可训练 StateProjector；终点 anchor 只作为
-        stop-gradient 监督目标。segment 内的中间 state 全由 WM 自回归产生。
-
-        一个 episode 会对每个 segment 分别调用本方法并立即 backward，最后再做
-        一次 episode 级 MC ValueHead backward。所有 backward 共用一次 optimizer
-        step，所以这里按 ``total_td_steps`` 归一化，避免 segment 数量改变 TD 总权重。
+        Qwen is recomputed on the complete persisted prefix for this environment
+        step.  The previous-history tokens are fixed inputs, while every activation
+        in this current forward remains in the graph.  The value target is applied
+        to the executed-action slot on the predicted next state, so its gradient
+        reaches ValueHead -> WM -> StateProjector -> the complete Qwen prefix.
         """
 
-        if runtime.policy_replay is None:
-            raise RuntimeError("planner TD step requires Qwen action replay")
+        if total_transitions < 1:
+            raise ValueError("total_transitions must be positive")
+        if runtime.state_source != "recompute" or not runtime.representation_to_backbone:
+            raise RuntimeError(
+                "planner transition training requires differentiable full-prefix "
+                "Qwen recomputation"
+            )
 
-        history_states = move_to_device(
-            step.retained_state_context(self.history_size),
+        hidden = runtime.encode_state_prompts((transition.state_prompt,))
+        hidden = move_to_device(hidden, runtime.agent.wm.state_proj)
+        current_state = runtime.agent.wm.project_state(hidden)
+
+        stored_history = move_to_device(
+            transition.state_history(self.history_size),
             runtime.agent.wm.wm_predictor,
         )
-        start_hidden = move_to_device(
-            step.llm_hidden_at_step(step.start_step),
-            runtime.agent.wm.state_proj,
-        )
-        # 从最后一个state开始重算投影，为predictor训练重建计算图
-        start_state = runtime.agent.wm.project_state(start_hidden.unsqueeze(0))
-        history_states = torch.cat(
-            (history_states[:-1].unsqueeze(0), start_state.unsqueeze(1)),
+        current_state = current_state.to(device=stored_history.device)
+        state_context = torch.cat(
+            (stored_history[:-1].unsqueeze(0), current_state.unsqueeze(1)),
             dim=1,
         )
-        # 重建predictor计算图
-        history_actions = step.previous_actions(self.history_size).to(
-            device=history_states.device
-        ).unsqueeze(0)
-        actions = torch.tensor(
-            [step.action_indices],
-            dtype=torch.long,
-            device=history_states.device,
+        previous_actions = transition.previous_actions(self.history_size).to(
+            device=state_context.device
         )
-        predicted_states = self._predictor_replay(
-            runtime,
-            history_states,
-            history_actions,
-            actions,
-        )
-
-        # 终点 Qwen anchor 是监督目标，不允许 WM loss 更新 Qwen 或 target projector。
-        with torch.no_grad():
-            target_hidden = move_to_device(
-                step.llm_hidden_at_step(step.end_step),
-                runtime.agent.wm.state_proj,
+        action_context = torch.cat(
+            (
+                previous_actions,
+                torch.tensor(
+                    [transition.action_index],
+                    dtype=torch.long,
+                    device=state_context.device,
+                ),
             )
-            target_state = runtime.agent.wm.project_target_state(
-                target_hidden.unsqueeze(0)
-            ).detach()
-        wm_loss = (
-            F.mse_loss(predicted_states[:, -1], target_state)
-            if self.train_world_model
-            else predicted_states[:, -1].sum() * 0.0
+        ).unsqueeze(0)
+        predicted_next_state = runtime.agent.wm.predict_state_sequence(
+            state_context,
+            action_context,
+        )[:, -1]
+
+        expected_next_state = move_to_device(
+            transition.actual_next_state(),
+            predicted_next_state,
+        ).unsqueeze(0).detach()
+        wm_objective = None
+        if self.train_world_model:
+            current_dino_target = (
+                dino_grid_target.to(
+                    device=predicted_next_state.device,
+                    dtype=torch.float32,
+                    non_blocking=True,
+                )
+                if dino_grid_target is not None
+                else None
+            )
+            wm_objective = world_model_loss(
+                predicted_next_state,
+                expected_next_state,
+                state_weight=self.world_model_weight,
+                dino_grid_target=current_dino_target,
+                dino_grid_weight=self.dino_grid_weight,
+            )
+            weighted_wm_loss = wm_objective.loss
+            wm_mse = wm_objective.state_mse
+        else:
+            weighted_wm_loss = predicted_next_state.sum() * 0.0
+            wm_mse = weighted_wm_loss
+
+        action_values = runtime.agent.wm.predict_action_values(predicted_next_state)
+        executed_action = torch.tensor(
+            [transition.action_index],
+            dtype=torch.long,
+            device=action_values.device,
+        )
+        value_objective = action_value_loss(
+            action_values,
+            executed_action,
+            return_target.reshape(1).to(device=action_values.device),
+            ranking_margin=self.value_rank_margin,
+            ranking_weight=self.value_rank_weight,
         )
 
-        # 当前 planner 语义是动作蒸馏：重放起点 Qwen response，让 Qwen 的动作分布
-        # 拟合 planner teacher。它不是 PPO，也不要求 Qwen 实际采样该执行动作。
-        replay_input = step.action_replay_input()
-        planner_trace = replay_input.planner_trace
-        assert planner_trace is not None
-        replay_output = runtime.policy_replay((replay_input,))
-        if replay_output.action_log_probs is None:
-            raise RuntimeError("distillation replay returned no Qwen action logits")
-        teacher = planner_trace.action_training.teacher_action_log_probs
-        assert teacher is not None
-        teacher_log_probs = torch.tensor(
-            teacher,
-            dtype=replay_output.action_log_probs.dtype,
-            device=replay_output.action_log_probs.device,
+        normalized_wm_loss = weighted_wm_loss / total_transitions
+        normalized_wm_mse = wm_mse / total_transitions
+        normalized_dino_mse = (
+            wm_objective.dino_grid_mse / total_transitions
+            if wm_objective is not None and wm_objective.dino_grid_mse is not None
+            else None
         )
-        teacher_probs = teacher_log_probs.exp().detach()
-        action_distillation_loss = -(
-            teacher_probs * replay_output.action_log_probs[0]
-        ).sum()
-        safe_teacher_log_probs = torch.where(
-            torch.isfinite(teacher_log_probs),
-            teacher_log_probs,
-            torch.zeros_like(teacher_log_probs),
-        )
-        action_distillation_kl = (
-            teacher_probs
-            * (safe_teacher_log_probs - replay_output.action_log_probs[0])
-        ).sum()
-
-        # 每个 TD loss 都会单独 backward；归一化后，一个 episode 内所有 segment
-        # 的梯度总量等价于先对 segment loss 求平均再 backward。
-        normalized_wm_loss = wm_loss / total_td_steps
-        normalized_action_loss = action_distillation_loss / total_td_steps
-        distillation_weight = cast(float, self.planner_distillation_weight)
-        total = normalized_wm_loss + distillation_weight * (
-            normalized_action_loss.to(device=normalized_wm_loss.device)
+        normalized_value_loss = value_objective.loss / total_transitions
+        total = normalized_wm_loss + normalized_value_loss.to(
+            device=normalized_wm_loss.device
         )
         return RLStepOutput(
             loss=total,
             losses={
-                "wm": normalized_wm_loss,
+                "wm": normalized_wm_mse,
+                "dino": normalized_dino_mse,
                 "sigreg": None,
-                "value": None,
+                "value": normalized_value_loss,
                 "policy": None,
                 "token_value": None,
-                "action_distillation": normalized_action_loss,
                 "reference_kl": None,
             },
             metrics={
-                "wm_mse": float(normalized_wm_loss.detach().item()),
+                "wm_mse": float(normalized_wm_mse.detach().item()),
+                "dino_grid_mse": (
+                    float(normalized_dino_mse.detach().item())
+                    if normalized_dino_mse is not None
+                    else 0.0
+                ),
+                "lambda_wm": self.world_model_weight,
+                "lambda_dino": self.dino_grid_weight,
                 "sigreg_loss": 0.0,
-                "value_loss": 0.0,
-                "value_mc_mse": 0.0,
-                "value_rank": 0.0,
+                "value_loss": float(normalized_value_loss.detach().item()),
+                "value_mc_mse": float(
+                    (value_objective.monte_carlo_mse / total_transitions)
+                    .detach()
+                    .item()
+                ),
+                "value_rank": float(
+                    (value_objective.ranking / total_transitions).detach().item()
+                ),
                 "total_loss": float(total.detach().item()),
                 "actor_loss": 0.0,
                 "token_value_loss": 0.0,
-                "action_distillation_loss": float(
-                    normalized_action_loss.detach().item()
-                ),
-                "action_distillation_kl": float(
-                    (action_distillation_kl / total_td_steps).detach().item()
-                ),
-                "reference_kl_loss": 0.0,
-                "policy_tokens": 0.0,
-            },
-        )
-
-    def monte_carlo_step(
-        self,
-        runtime: RLModelRuntime,
-        episodes: tuple[EpisodeTrainingBatch, ...],
-    ) -> RLStepOutput:
-        """用完整 episode 的 MC return 拟合 ValueHead，输入 state 全部 detach。"""
-
-        states = move_to_device(
-            torch.cat(
-                [episode.action_states for episode in episodes],
-                dim=0,
-            ).detach(),
-            runtime.agent.wm.value_head,
-        )
-        actions = torch.cat([episode.action_indices for episode in episodes], dim=0)
-        actions = actions.to(device=states.device)
-        returns = torch.cat([episode.return_targets for episode in episodes], dim=0)
-        returns = returns.to(device=states.device)
-        action_values = runtime.agent.wm.predict_action_values(states)
-        value_objective = action_value_loss(
-            action_values,
-            actions,
-            returns,
-            ranking_margin=self.value_rank_margin,
-            ranking_weight=self.value_rank_weight,
-        )
-        return RLStepOutput(
-            loss=value_objective.loss,
-            losses={
-                "wm": None,
-                "sigreg": None,
-                "value": value_objective.loss,
-                "policy": None,
-                "token_value": None,
-                "action_distillation": None,
-                "reference_kl": None,
-            },
-            metrics={
-                "wm_mse": 0.0,
-                "sigreg_loss": 0.0,
-                "value_loss": float(value_objective.loss.detach().item()),
-                "value_mc_mse": float(
-                    value_objective.monte_carlo_mse.detach().item()
-                ),
-                "value_rank": float(value_objective.ranking.detach().item()),
-                "total_loss": float(value_objective.loss.detach().item()),
-                "actor_loss": 0.0,
-                "token_value_loss": 0.0,
-                "action_distillation_loss": 0.0,
-                "action_distillation_kl": 0.0,
                 "reference_kl_loss": 0.0,
                 "policy_tokens": 0.0,
             },
@@ -453,14 +389,31 @@ class RLAlgorithm:
         action_values = runtime.agent.wm.predict_action_values(state_context)
 
         # WM 与 value 共享 state_context，但监督目标和梯度边界各自独立。
-        wm_loss: torch.Tensor | None = None
+        wm_objective = None
         if self.train_world_model:
             predicted_next_states = runtime.agent.wm.predict_state_sequence(
                 state_context,
                 batch.action_indices,
             )
-            target_next_states = state_sequence[:, 1:].detach()
-            wm_loss = F.mse_loss(predicted_next_states, target_next_states)
+            # 下一状态只作为固定监督值；同一状态在它作为 current state 时训练
+            # StateProjector，不能让监督值反向靠近当前预测。
+            expected_next_states = state_sequence[:, 1:].detach()
+            dino_grid_target = (
+                batch.dino_grid_target.to(
+                    device=predicted_next_states.device,
+                    dtype=torch.float32,
+                    non_blocking=True,
+                )
+                if batch.dino_grid_target is not None
+                else None
+            )
+            wm_objective = world_model_loss(
+                predicted_next_states,
+                expected_next_states,
+                state_weight=self.world_model_weight,
+                dino_grid_target=dino_grid_target,
+                dino_grid_weight=self.dino_grid_weight,
+            )
         value_objective = action_value_loss(
             action_values,
             batch.action_indices,
@@ -470,8 +423,8 @@ class RLAlgorithm:
         )
         total = (
             value_objective.loss
-            if wm_loss is None
-            else wm_loss + value_objective.loss
+            if wm_objective is None
+            else wm_objective.loss + value_objective.loss
         )
 
         # 各 WM variant 明确选择 SIGReg 的统计单位；grid 与 SFT2 一致，对 slot
@@ -509,7 +462,19 @@ class RLAlgorithm:
                 )
 
         metrics = {
-            "wm_mse": float(wm_loss.detach().item()) if wm_loss is not None else 0.0,
+            "wm_mse": (
+                float(wm_objective.state_mse.detach().item())
+                if wm_objective is not None
+                else 0.0
+            ),
+            "dino_grid_mse": (
+                float(wm_objective.dino_grid_mse.detach().item())
+                if wm_objective is not None
+                and wm_objective.dino_grid_mse is not None
+                else 0.0
+            ),
+            "lambda_wm": self.world_model_weight,
+            "lambda_dino": self.dino_grid_weight,
             "sigreg_loss": (
                 float(sigreg_loss.detach().item()) if sigreg_loss is not None else 0.0
             ),
@@ -525,8 +490,6 @@ class RLAlgorithm:
                 if token_value_loss is not None
                 else 0.0
             ),
-            "action_distillation_loss": 0.0,
-            "action_distillation_kl": 0.0,
             "reference_kl_loss": (
                 float(reference_kl_loss.detach().item())
                 if reference_kl_loss is not None
@@ -546,12 +509,18 @@ class RLAlgorithm:
         return RLStepOutput(
             loss=total,
             losses={
-                "wm": wm_loss,
+                "wm": (
+                    wm_objective.state_mse if wm_objective is not None else None
+                ),
+                "dino": (
+                    wm_objective.dino_grid_mse
+                    if wm_objective is not None
+                    else None
+                ),
                 "sigreg": sigreg_loss,
                 "value": value_objective.loss,
                 "policy": policy["loss"] if policy else None,
                 "token_value": token_value_loss,
-                "action_distillation": None,
                 "reference_kl": reference_kl_loss,
             },
             metrics=metrics,

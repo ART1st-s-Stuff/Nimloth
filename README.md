@@ -23,7 +23,7 @@ Nimloth is a Python machine-learning project for building a **World Model Agent*
 - 已实现并通过真实 GPU smoke 的范围是 **direct-policy、action/turn-credit、fresh
   rollout 的单次 PPO optimizer step**：Qwen/vLLM 直接产生 behavior token，HF replay
   同一 prompt/token 并完成 ratio、clip、backward、gradient synchronization 和 checkpoint。
-- 已实现 planner action distillation、逐 token GAE、逐步 reward 与
+- 已实现每步receding-horizon planner、value梯度穿过WM/Qwen、逐 token GAE、逐步 reward 与
   terminal/truncation 语义；这些新路径尚未完成真实 GPU optimizer-step 验证，因此仍
   不得表述为“planning RL 已完成”。
 - 当前 planner action 由 WM/ValueHead latent candidate search 决定，不参加 Qwen PPO ratio；
@@ -48,7 +48,7 @@ Nimloth is a Python machine-learning project for building a **World Model Agent*
 | SFT2 数据 | `TransitionSample`、trajectory lane、context window、current step、history cache | 一个样本包含同一 trajectory 的连续上下文；旧 state 可来自按时间顺序建立的 detached history cache | SFT2 窗口有多个上下文 step，但主 loss 只监督窗口末端的 current step |
 | 状态表征 | Backbone hidden、StateProjector、online state、target state | Qwen hidden 经 StateProjector 得到 WM state；SFT2 的 target Backbone 可使用视觉 EMA，但 WM 不维护另一套 state encoder | prompt history、Qwen hidden 和 WM state 是三种不同对象 |
 | Grid WM | grid slot、SFT1 projector、WM predictor、predicted next state | SFT1 projector 输出的 DINO-aligned grid 直接作为 state，并在 SFT2 继续训练；predictor 根据真实 state/action context 预测下一状态 | `history_size` 是训练上下文，不是 planner 未来搜索长度 |
-| SFT2 目标 | LM CE、WM loss、DINO grid loss、SIGReg、value loss、ranking loss | 分别约束输出格式、latent dynamics、视觉 target、表征分布、执行动作的 return 和动作排序 | DINO loss 属于当前 DINO-grid SFT2 objective；当前 RL objective 不计算 DINO loss |
+| SFT2/RL WM 目标 | WM state loss、DINO grid loss | 都约束 predicted next state；前者对齐Qwen state target，后者对齐真实next image的frozen DINO target | SFT2从离线cache读target；RL按trajectory图像路径在线计算并缓存target |
 | ValueHead | action value、chosen action value、`Q(s,a)` | ValueHead 对每个离散动作输出一个 action value；chosen action value 是实际执行动作对应的值 | 不简称为单一 state value `V(s)`；当前实现是 action critic |
 | RL fresh rollout | current policy artifact、vLLM behavior rollout、policy fingerprint、fresh manifest | vLLM 使用当前策略生成新 trajectory；manifest 把 trajectory 与策略内容指纹绑定 | fresh manifest 只能被一个 PPO 更新消费一次，不能循环复用 |
 | RL 窗口 | `history_size=H`、trajectory window、RL batch | 每个窗口有 `H` 个连续 transition、`H+1` 个真实 state prompt；batch 是若干窗口 | batch size 统计窗口数，不是 episode 数、step 数或 token 数 |
@@ -113,7 +113,7 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `grid.wm_depth`、`wm_heads`、`wm_dim_head`、`wm_mlp_dim`、`wm_dropout` | temporal-spatial predictor 容量 | checkpoint 加载时必须匹配结构 |
 | `loss.lambda_ce` | LM CE 权重 | 监督当前 step 的格式/输出 token |
 | `loss.lambda_wm_start`、`lambda_wm_end` | WM loss warmup 起止权重 | 不等于 environment worldmodeling reward weight |
-| `loss.lambda_dino` | DINO grid reconstruction/target loss 权重 | 只属于相应 SFT2 objective |
+| `loss.lambda_dino` | SFT2 predicted-state DINO-grid MSE 权重 | RL 对应字段为 `predictor.lambda_dino`，两者调用同一公共 WM objective |
 | `loss.lambda_value` | ValueHead loss 权重 | 包含回归及可选 ranking 项 |
 | `loss.lambda_sigreg` | SIGReg 权重 | 统计单位和跨 rank 聚合方式必须随实现记录 |
 | `loss.value_gamma` | SFT2 action-value target 的折扣率 | 当前 target 来自完整 trajectory 的稀疏 Monte Carlo return |
@@ -126,7 +126,7 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 |---|---|---|
 | `agent.prompt_template` | policy/state prompt 的版本化模板 | rollout、state encoding 和 replay 必须使用同一模板 spec |
 | CoT-conditioned state | 使用当前 observation 对应的真实 assistant CoT | 禁止配置固定 thought；terminal CoT 必须额外生成并持久化 |
-| `agent.planning.enabled` | 是否启用 WM latent planning | 与actor同时开启时，action走planner distillation，CoT走token PPO；只接受fresh traced rollout |
+| `agent.planning.enabled` | 是否启用 WM latent planning | 每个真实step重新规划，只执行最佳候选首动作；不训练Qwen action prior |
 | `agent.planning.horizon` | 每个候选序列在 latent 空间向未来模拟的动作数 `P` | 不执行环境；不得用 `history_size` 表达 |
 | `agent.planning.search_mode` | planner候选搜索方式 | `greedy`为单路径基线；`exhaustive`批量模拟全部`action_count ** horizon`候选；`beam`逐层扩展和裁剪 |
 | `agent.planning.beam_width` | beam模式每层保留的候选序列数 | `beam`必须显式配置；其他搜索模式必须省略 |
@@ -140,15 +140,15 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `actor.entropy_coeff` | behavior sampling 分布上的 entropy bonus 权重 | entropy 使用相同 temperature/top-p 变换后的分布 |
 | `actor.credit_assignment` | `action`、`turn`或`token` | `turn`广播step advantage；`token`使用独立逐token critic和turn内GAE |
 | `actor.max_response_tokens` | 一次CoT+协议边界+action完整response的token上限 | 当前VAGEN对齐实验为512；实现会扣除协议token后得到reasoning预算，截断状态必须持久化 |
-| `actor.planner_distillation_weight` | `-log pi_Qwen(a_planner|prompt)`交叉熵项的权重 | 当前确认为`1.0`；planner action不进入PPO ratio |
-| `actor.reference_kl_loss_weight`、`reference_kl_loss_type` | Qwen CoT相对冻结reference的actor loss KL权重与估计器 | 当前为`0.001/low_var_kl`；只覆盖采样CoT，planner action不参与 |
+| `actor.reference_kl_loss_weight`、`reference_kl_loss_type` | Qwen CoT相对冻结reference的actor loss KL权重与估计器 | 仅用于直接Qwen PPO路线；planner不做policy replay |
 | `token_credit.gamma`、`gae_lambda` | token MDP内的折扣率与GAE系数 | 只在`credit_assignment=token`时生效，必须显式配置 |
 | `token_credit.value_lr`、`value_loss_weight`、`hidden_dim` | TokenValueHead学习率、loss权重和MLP hidden维度 | 预测每个loss-mask token生成前的value，不替代action `Q(s,a)` |
 | `predictor.history_size` | RL 窗口中的 transition 数 `H` | state 数为 `H+1`；必须和 SFT2 WM checkpoint 的 history 语义兼容 |
 | `predictor.emb_dim` | RL WM embedding 维度 | 必须匹配 warm-start 组件 |
 | `predictor.lr` | WM predictor 学习率 | 不等于 Backbone 或 ValueHead 学习率 |
-| `predictor.train_wm` | RL update是否计算WM target/loss并训练predictor | `false`时predictor冻结；不影响真实rollout对ValueHead和actor的监督 |
-| `predictor.lambda_sigreg` | RL SIGReg 权重 | 当前 RL 不计算 DINO loss |
+| `predictor.train_wm` | RL update是否计算WM target/loss并训练predictor | planner路线必须为`true`，保证value梯度同时更新WM actor并继续传回Qwen |
+| `predictor.lambda_wm`、`lambda_dino` | RL state MSE 与 predicted-state DINO-grid MSE 权重 | DINO-grid正式配置当前为`1.0/0.5` |
+| `predictor.lambda_sigreg` | RL SIGReg 权重 | 与两个WM监督项分别配置 |
 | `value_head.lr` | RL ValueHead 学习率 | 对窗口内 `H` 个 environment step 计算 action value |
 | `value_head.rank_margin`、`lambda_rank` | action-value ranking margin/权重 | `lambda_rank=0` 时只有 return regression |
 | `rl.iterations` | RL optimizer update 次数 `I` | 在线 PPO 每次更新都需要匹配当前策略的新鲜 behavior rollout |

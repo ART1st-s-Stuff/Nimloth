@@ -20,5 +20,5 @@ ranking 和 loss 权重策略；SFT2 与 RL 都让 `SequenceSIGReg` 消费真实
 
 `GridWorldModel` 保留同一个公共 state/predict/value 接口。它直接把 SFT1
 `SharedSlotProjector` 的输出作为 grid state，并在 SFT2 继续训练该 projector；
-DINO teacher identity、target cache 和 direct predicted-state loss 仍分别属于
-backbone cache 与 SFT2 objective。WM 本身不维护 EMA 参数。
+DINO teacher target 属于 backbone，SFT2/RL 共用的 direct predicted-state loss
+属于 `training/common`。WM 本身不维护 EMA 参数。

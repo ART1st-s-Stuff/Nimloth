@@ -1,7 +1,6 @@
 """公共 Agent transcript、模板、policy、runtime 与 episode runner。"""
 
 from nimloth.agent.policy import (
-    ActionTrainingTrace,
     ActionLogProbReplay,
     AgentPolicy,
     PolicyReplayInput,
@@ -43,7 +42,6 @@ __all__ = [
     "Agent",
     "AgentAction",
     "ActionLogProbReplay",
-    "ActionTrainingTrace",
     "AgentEpisode",
     "AgentPolicy",
     "AgentPrompt",

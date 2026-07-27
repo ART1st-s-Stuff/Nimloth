@@ -66,13 +66,18 @@ class RLCheckpointManager:
             vision_tune=self._vision_tune,
             base_model_path=self._base_model_path,
             token_value_head=self._token_value_head,
-            action_objective=self._config.actor.action_objective,
-            credit_assignment=self._config.actor.credit_assignment,
+            credit_assignment=(
+                "none"
+                if self._config.agent.planning.enabled
+                else self._config.actor.credit_assignment
+            ),
             token_credit_config=asdict(self._config.token_credit),
             truncated_bootstrap=self._config.rl.truncated_bootstrap,
             planner_config=asdict(self._config.agent.planning),
-            planner_distillation_weight=(
-                self._config.actor.planner_distillation_weight
+            planner_training_objective=(
+                "receding_horizon_transition_mc_v1"
+                if self._config.agent.planning.enabled
+                else None
             ),
             reference_kl_config={
                 "weight": self._config.actor.reference_kl_loss_weight,

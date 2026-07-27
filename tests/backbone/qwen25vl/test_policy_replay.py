@@ -3,15 +3,12 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import Literal
 
 import pytest
 import torch
 
 from nimloth.agent import (
-    ActionTrainingTrace,
     AgentPrompt,
-    PlannerPolicyTrace,
     PolicyReplayInput,
     PolicyTokenTrace,
     PromptTemplateSpec,
@@ -96,69 +93,6 @@ class _TokenModel(_Model):
         self.last_logits_to_keep = logits_to_keep
         hidden = self.scale * torch.ones((1, len(logits_to_keep), 4))
         return SimpleNamespace(logits=self.lm_head(hidden))
-
-
-def _planner_replay_sample(
-    objective: Literal["distillation", "ppo"],
-) -> PolicyReplayInput:
-    uniform = tuple([-math.log(8.0)] * 8)
-    deterministic = tuple(
-        0.0 if index == 2 else float("-inf") for index in range(8)
-    )
-    action_selected = objective == "ppo"
-    return PolicyReplayInput(
-        prompt=AgentPrompt(
-            messages=({"role": "assistant", "content": "<think>"},),
-            images=(),
-            template=PromptTemplateSpec("test", "v1"),
-        ),
-        action_index=2,
-        sampling_temperature=1.0,
-        sampling_top_p=1.0,
-        latent_token_count=1,
-        credit_assignment="action",
-        token_trace=PolicyTokenTrace(
-            token_ids=(5, 20, 25, 22),
-            old_log_probs=(
-                None,
-                None,
-                uniform[2] if action_selected else None,
-                None,
-            ),
-            loss_mask=(False, False, action_selected, False),
-            token_roles=("reasoning", "injected", "action", "injected"),
-            action_token_ids=tuple(range(23, 31)),
-            reasoning_text="reason",
-            finish_reason="stop",
-        ),
-        assistant_response=(
-            "<think>reason</think><|latent_state|><|action_start|>"
-            "<|action_(2)|><|action_end|>"
-        ),
-        planner_trace=PlannerPolicyTrace(
-            qwen_action_log_probs=uniform,
-            candidate_sequences=((2,),),
-            candidate_scores=(0.0,),
-            root_action_scores=tuple(
-                0.0 if index == 2 else float("-inf") for index in range(8)
-            ),
-            action_training=ActionTrainingTrace(
-                objective=objective,
-                behavior_owner=("qwen" if action_selected else "world_model"),
-                executed_action_index=2,
-                teacher_action_log_probs=(
-                    None if action_selected else deterministic
-                ),
-                behavior_action_log_probs=(
-                    uniform if action_selected else deterministic
-                ),
-                sampled_action_index=2 if action_selected else None,
-            ),
-            horizon=1,
-            search_mode="greedy",
-            qwen_sampled_action_index=2,
-        ),
-    )
 
 
 def test_logits_to_keep_positions_are_native_indices_for_device_mapped_qwen() -> None:
@@ -347,65 +281,3 @@ def test_token_credit_replay_captures_only_selected_hidden_states() -> None:
     output.token_values.sum().backward()
     assert model.scale.grad is None
     assert all(parameter.grad is not None for parameter in token_value_head.parameters())
-
-
-def test_planner_replay_returns_raw_action_distribution_without_action_ppo() -> None:
-    tokens = LatentActionTokens()
-    token_id_map = {
-        tokens.latent_state: 20,
-        tokens.action_start: 21,
-        tokens.action_end: 22,
-        **{
-            token: 23 + index
-            for index, token in enumerate(tokens.action_tokens)
-        },
-    }
-    sample = _planner_replay_sample("distillation")
-    model = _TokenModel()
-    model.lm_head.weight.data.zero_()
-
-    output = replay_policy_token_log_probs(
-        samples=(sample,),
-        model=model,
-        processor=_Processor(),
-        token_id_map=token_id_map,
-        device=torch.device("cpu"),
-        token_value_head=TokenValueHead(input_dim=4, hidden_dim=3),
-    )
-
-    assert model.last_logits_to_keep == [5]
-    assert output.selected_log_probs.shape == (0,)
-    assert output.token_values is None
-    assert output.action_log_probs.shape == (1, 8)
-    assert output.selected_full_log_probs is None
-    assert torch.allclose(
-        output.action_log_probs,
-        torch.full((1, 8), -math.log(8.0)),
-    )
-
-
-def test_future_planner_action_ppo_reuses_selected_action_logits() -> None:
-    tokens = LatentActionTokens()
-    token_id_map = {
-        tokens.latent_state: 20,
-        tokens.action_start: 21,
-        tokens.action_end: 22,
-        **{
-            token: 23 + index
-            for index, token in enumerate(tokens.action_tokens)
-        },
-    }
-    model = _Model()
-
-    output = replay_policy_token_log_probs(
-        samples=(_planner_replay_sample("ppo"),),
-        model=model,
-        processor=_Processor(),
-        token_id_map=token_id_map,
-        device=torch.device("cpu"),
-    )
-
-    assert model.last_logits_to_keep == [5]
-    assert output.selected_log_probs.shape == (1,)
-    assert output.action_log_probs.shape == (1, 8)
-    assert torch.allclose(output.selected_log_probs, output.action_log_probs[:, 2])

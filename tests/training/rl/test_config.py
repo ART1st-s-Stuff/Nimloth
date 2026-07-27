@@ -28,13 +28,6 @@ def _raw_config() -> dict:
     }
 
 
-def _use_rollout_states(raw: dict) -> None:
-    raw["gradient"] = {
-        "state_source": "rollout",
-        "representation_to_backbone": False,
-    }
-
-
 def test_rl_config_rejects_unimplemented_fields() -> None:
     raw = _raw_config()
     raw["qwen"] = {"model": "ignored-before"}
@@ -65,10 +58,11 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert overridden.training.seed == 7
     assert overridden.rollout.train_datasets == ("base_train",)
     assert config.predictor.lambda_sigreg == 0.1
+    assert config.predictor.lambda_wm == 1.0
+    assert config.predictor.lambda_dino == 0.0
     assert config.predictor.sigreg_num_proj == 1024
     assert config.predictor.sigreg_knots == 17
     assert config.actor.enabled is False
-    assert config.actor.action_objective == "ppo"
     assert config.actor.credit_assignment == "action"
     assert config.actor.max_response_tokens == 64
     assert config.gradient.representation_to_backbone is True
@@ -115,10 +109,13 @@ def test_formal_h2_config_preserves_validated_online_contract() -> None:
     )
     assert config.agent.planning.horizon == 2
     assert config.agent.planning.search_mode == "greedy"
-    assert config.actor.action_objective == "distillation"
+    assert config.actor.enabled is False
     assert config.actor.credit_assignment == "action"
     assert config.actor.max_response_tokens == 512
-    assert config.gradient.state_source == "rollout"
+    assert config.gradient.state_source == "recompute"
+    assert config.gradient.representation_to_backbone is True
+    assert config.predictor.lambda_wm == 1.0
+    assert config.predictor.lambda_dino == 0.5
     assert config.training.save_interval == 10
     assert config.validation.enabled is False
     assert config.distributed.total_gpus == 4
@@ -178,13 +175,10 @@ def test_rl_config_rejects_impossible_distributed_topology() -> None:
 
 def test_rl_config_parses_agent_planning() -> None:
     raw = _raw_config()
-    _use_rollout_states(raw)
     raw["rl"].update({"envs_per_iteration": 2, "batch_size": 2})
     raw["actor"] = {
-        "enabled": True,
-        "action_objective": "distillation",
+        "enabled": False,
         "credit_assignment": "action",
-        "planner_distillation_weight": 0.3,
     }
     raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
     raw["agent"] = {
@@ -206,13 +200,10 @@ def test_rl_config_parses_agent_planning() -> None:
 
 def test_planner_episode_training_requires_every_collected_episode() -> None:
     raw = _raw_config()
-    _use_rollout_states(raw)
     raw["rl"].update({"envs_per_iteration": 2, "batch_size": 1})
     raw["actor"] = {
-        "enabled": True,
-        "action_objective": "distillation",
+        "enabled": False,
         "credit_assignment": "action",
-        "planner_distillation_weight": 0.3,
     }
     raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
     raw["agent"] = {
@@ -228,12 +219,20 @@ def test_planner_episode_training_requires_every_collected_episode() -> None:
         parse_rl_config(raw)
 
 
-def test_planner_episode_training_requires_action_replay() -> None:
+def test_planner_rejects_direct_qwen_ppo() -> None:
     raw = _raw_config()
-    _use_rollout_states(raw)
-    raw["agent"] = {"planning": {"enabled": True}}
+    raw["actor"] = {"enabled": True}
+    raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 2,
+            "search_mode": "greedy",
+            "device": "cpu",
+        }
+    }
 
-    with pytest.raises(ValueError, match="actor.enabled=true"):
+    with pytest.raises(ValueError, match="actor.enabled must be false"):
         parse_rl_config(raw)
 
 
@@ -279,9 +278,8 @@ def test_rl_config_requires_explicit_token_credit_semantics() -> None:
     assert config.rl.truncated_bootstrap == "zero"
 
 
-def test_planner_distillation_requires_explicit_search_and_loss_weight() -> None:
+def test_planner_requires_explicit_search_and_trainable_world_model() -> None:
     raw = _raw_config()
-    _use_rollout_states(raw)
     raw["rl"]["batch_size"] = 8
     raw["agent"] = {
         "planning": {
@@ -290,22 +288,18 @@ def test_planner_distillation_requires_explicit_search_and_loss_weight() -> None
             "search_mode": "exhaustive",
         }
     }
-    raw["actor"] = {
-        "enabled": True,
-        "action_objective": "distillation",
-        "credit_assignment": "action",
-    }
+    raw["actor"] = {"enabled": False, "credit_assignment": "action"}
     raw["rl"]["truncated_bootstrap"] = "zero"
 
     with pytest.raises(ValueError, match="planning.device"):
         parse_rl_config(raw)
 
     raw["agent"]["planning"]["device"] = "cpu"
-    with pytest.raises(ValueError, match="planner_distillation_weight"):
+    with pytest.raises(ValueError, match="predictor.train_wm"):
         parse_rl_config(raw)
 
-    raw["actor"]["planner_distillation_weight"] = 0.3
-    with pytest.raises(ValueError, match="predictor.train_wm"):
+    raw["predictor"]["train_wm"] = False
+    with pytest.raises(ValueError, match="train_wm=true"):
         parse_rl_config(raw)
 
     raw["predictor"]["train_wm"] = True
@@ -313,13 +307,11 @@ def test_planner_distillation_requires_explicit_search_and_loss_weight() -> None
     config = parse_rl_config(raw)
     assert config.agent.planning.horizon == 2
     assert config.agent.planning.beam_width is None
-    assert config.actor.planner_distillation_weight == 0.3
     assert config.predictor.train_wm is True
 
 
 def test_planner_beam_width_matches_search_mode() -> None:
     raw = _raw_config()
-    _use_rollout_states(raw)
     raw["rl"]["batch_size"] = 8
     raw["agent"] = {
         "planning": {
@@ -330,10 +322,8 @@ def test_planner_beam_width_matches_search_mode() -> None:
         }
     }
     raw["actor"] = {
-        "enabled": True,
-        "action_objective": "distillation",
+        "enabled": False,
         "credit_assignment": "action",
-        "planner_distillation_weight": 0.3,
     }
     raw["rl"]["truncated_bootstrap"] = "zero"
     raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})

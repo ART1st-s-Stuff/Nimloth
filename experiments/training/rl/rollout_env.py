@@ -53,11 +53,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("action", "turn", "token"),
         default="action",
     )
-    ap.add_argument(
-        "--action-objective",
-        choices=("distillation", "ppo"),
-        default="ppo",
-    )
     ap.add_argument("--max-response-tokens", type=int, default=64)
     ap.add_argument("--attn-implementation", default="sdpa")
     ap.add_argument(
@@ -195,10 +190,6 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("planner rollout requires --backend vllm")
         if args.credit_assignment != "action":
             raise ValueError("planner rollout requires --credit-assignment action")
-        if args.action_objective != "distillation":
-            raise ValueError(
-                "greedy planner rollout requires --action-objective distillation"
-            )
         if not args.vllm_enforce_eager:
             raise ValueError("planner rollout requires --vllm-enforce-eager")
         if args.planning_horizon is not None and args.planning_horizon < 1:
@@ -307,7 +298,6 @@ def main(argv: list[str] | None = None) -> int:
                 search_mode=args.planning_search_mode,
                 beam_width=args.planning_beam_width,
                 planner_device=planner_device,
-                action_objective=args.action_objective,
                 progress_callback=report_policy_progress,
             )
     else:

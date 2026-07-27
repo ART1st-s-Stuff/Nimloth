@@ -157,7 +157,7 @@ def _validate_state_latent_hiddens(trajectory: RolloutTrajectory) -> None:
 
 
 def _validate_world_model_states(trajectory: RolloutTrajectory) -> None:
-    """Validate the dense mixed sequence of Qwen anchors and WM predictions."""
+    """Validate the dense sequence of real Qwen-projected environment states."""
 
     prefix = f"trajectory {trajectory.record_id}"
     states = trajectory.world_model_states
@@ -195,26 +195,28 @@ def _validate_world_model_states(trajectory: RolloutTrajectory) -> None:
 
 
 def _validate_planner_segments(trajectory: RolloutTrajectory) -> None:
-    """Bind every anchor-bounded action segment to its selected plan."""
+    """Bind each environment action to one independently recomputed plan."""
 
     if not trajectory.planner_policy_traces:
         return
     prefix = f"trajectory {trajectory.record_id}"
-    anchors = trajectory.state_anchor_steps
-    if len(anchors) != len(trajectory.planner_policy_traces) + 1:
-        raise ValueError(f"{prefix} planner anchors do not bound every action trace")
-    for trace, start_step, end_step in zip(
-        trajectory.planner_policy_traces,
-        anchors[:-1],
-        anchors[1:],
-        strict=True,
+    expected_anchors = list(range(trajectory.num_steps + 1))
+    if trajectory.state_anchor_steps != expected_anchors:
+        raise ValueError(f"{prefix} planner must capture every real state")
+    if len(trajectory.planner_policy_traces) != trajectory.num_steps:
+        raise ValueError(f"{prefix} planner requires one trace per action")
+    for step, (trace, action_index) in enumerate(
+        zip(
+            trajectory.planner_policy_traces,
+            trajectory.action_indices,
+            strict=True,
+        )
     ):
-        segment = trajectory.action_indices[start_step:end_step]
         try:
-            trace.validate_executed_prefix(segment)
+            trace.validate_executed_action(action_index)
         except ValueError as error:
             raise ValueError(
-                f"{prefix} anchor {start_step} has invalid planner segment: {error}"
+                f"{prefix} step {step} has invalid planner action: {error}"
             ) from error
 
 
@@ -250,7 +252,7 @@ def _validate_token_provenance(
     action_count: int,
 ) -> None:
     prefix = f"trajectory {trajectory.record_id}"
-    if trajectory.policy_credit_assignment not in {"action", "turn", "token"}:
+    if trajectory.policy_credit_assignment not in {"action", "turn", "token", "none"}:
         raise ValueError(
             f"{prefix} has unsupported policy_credit_assignment "
             f"{trajectory.policy_credit_assignment!r}"
@@ -310,8 +312,8 @@ def _validate_token_provenance(
     if planner_enabled:
         if len(trajectory.planner_policy_traces) != len(trace_steps):
             raise ValueError(f"{prefix} planner trace count does not match actions")
-        if trajectory.policy_credit_assignment != "action":
-            raise ValueError(f"{prefix} planner distillation requires action credit")
+        if trajectory.policy_credit_assignment != "none":
+            raise ValueError(f"{prefix} planner must not assign Qwen policy credit")
         if trajectory.state_anchor_steps[:-1] != trace_steps:
             raise ValueError(f"{prefix} policy and state anchor steps do not align")
     for step in trace_steps:
@@ -337,14 +339,9 @@ def _validate_token_provenance(
         if planner_enabled:
             planner_trace = trajectory.planner_policy_trace(step)
             assert planner_trace is not None
-            if planner_trace.action_training.objective == "distillation":
-                if trace.loss_mask[action_position] or old_action_log_prob is not None:
-                    raise ValueError(
-                        f"{prefix} step {step} planner action must be excluded from PPO"
-                    )
-            elif not trace.loss_mask[action_position] or old_action_log_prob is None:
+            if trace.loss_mask[action_position] or old_action_log_prob is not None:
                 raise ValueError(
-                    f"{prefix} step {step} action PPO requires old behavior log-prob"
+                    f"{prefix} step {step} planner action must be excluded from PPO"
                 )
             if any(
                 not math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-7)
@@ -377,16 +374,9 @@ def _validate_token_provenance(
             if selected
         ]
         if planner_enabled:
-            planner_trace = trajectory.planner_policy_trace(step)
-            assert planner_trace is not None
-            if planner_trace.action_training.objective == "distillation":
-                if selected_roles:
-                    raise ValueError(
-                        f"{prefix} step {step} distillation cannot select PPO tokens"
-                    )
-            elif selected_roles != ["action"]:
+            if selected_roles:
                 raise ValueError(
-                    f"{prefix} step {step} action PPO must select only action token"
+                    f"{prefix} step {step} planner cannot select PPO tokens"
                 )
         elif trajectory.policy_credit_assignment == "action":
             if selected_roles != ["action"]:
@@ -397,14 +387,6 @@ def _validate_token_provenance(
             raise ValueError(
                 f"{prefix} step {step} {trajectory.policy_credit_assignment} "
                 "credit has no reasoning token"
-            )
-        if (
-            planner_enabled
-            and planner_trace.action_training.objective == "distillation"
-            and "action" in selected_roles
-        ):
-            raise ValueError(
-                f"{prefix} step {step} planner action cannot receive Qwen PPO credit"
             )
         if (
             trajectory.policy_credit_assignment in {"turn", "token"}

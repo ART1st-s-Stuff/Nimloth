@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import torch
 
 from nimloth.agent import ActionLogProbReplay, Agent, AgentPrompt
-from nimloth.backbone import BackboneInputBuilder
+from nimloth.backbone import BackboneInputBuilder, DINOGridTargets
 from nimloth.util.module import evaluating
 
 
@@ -20,6 +20,40 @@ class RLModelRuntime:
     state_source: str
     representation_to_backbone: bool
     policy_replay: ActionLogProbReplay | None
+    dino_grid_targets: DINOGridTargets | None = None
+
+    def encode_state_prompts(
+        self,
+        prompts: tuple[AgentPrompt, ...],
+    ) -> torch.Tensor:
+        """Recompute complete real prefixes while retaining the Qwen graph."""
+
+        if self.state_source != "recompute":
+            raise ValueError("encode_state_prompts requires state_source=recompute")
+        if not prompts:
+            raise ValueError("state prompt batch must not be empty")
+        backbone_batch = self.input_builder.build(
+            [prompt.unbound_messages() for prompt in prompts],
+            [prompt.images for prompt in prompts],
+            include_labels=False,
+        )
+        if self.representation_to_backbone:
+            hidden = self.agent.backbone(
+                backbone_batch,
+                include_lm_loss=False,
+            ).hidden
+        else:
+            with evaluating(self.agent.backbone), torch.no_grad():
+                hidden = self.agent.backbone(
+                    backbone_batch,
+                    include_lm_loss=False,
+                ).hidden.detach()
+        if hidden.ndim not in (2, 3) or hidden.shape[0] != len(prompts):
+            raise ValueError(
+                "RL Backbone output must have shape (B,D) or (B,K,D), "
+                f"got {tuple(hidden.shape)} for B={len(prompts)}"
+            )
+        return hidden
 
     def encode_state_sequence(
         self,
@@ -40,29 +74,7 @@ class RLModelRuntime:
         step_outputs: list[torch.Tensor] = []
         for step in range(state_steps):
             step_prompts = prompts[step::state_steps]
-            backbone_batch = self.input_builder.build(
-                [prompt.unbound_messages() for prompt in step_prompts],
-                [prompt.images for prompt in step_prompts],
-                include_labels=False,
-            )
-            if self.representation_to_backbone:
-                hidden = self.agent.backbone(
-                    backbone_batch,
-                    include_lm_loss=False,
-                ).hidden
-            else:
-                # 冻结表征模式只截断 WM/value/SIGReg 到 Backbone 的梯度；PPO replay
-                # 仍可按 actor 配置独立训练同一个 Backbone。
-                with evaluating(self.agent.backbone), torch.no_grad():
-                    hidden = self.agent.backbone(
-                        backbone_batch,
-                        include_lm_loss=False,
-                    ).hidden.detach()
-            if hidden.ndim not in (2, 3) or hidden.shape[0] != batch_size:
-                raise ValueError(
-                    "one RL state-step Backbone output must have shape "
-                    f"(B,D) or (B,K,D), got {tuple(hidden.shape)} for B={batch_size}"
-                )
+            hidden = self.encode_state_prompts(step_prompts)
             step_outputs.append(hidden)
         return torch.stack(step_outputs, dim=1)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import torch
@@ -21,7 +21,10 @@ from nimloth.training.rl.algorithm import (
     RLBatch,
     build_rl_batch,
 )
-from nimloth.training.rl.episodes import build_episode_training_batches
+from nimloth.training.rl.episodes import (
+    ExecutedTransition,
+    build_episode_training_batches,
+)
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.evaluation import (
     evaluate_rollout_collector,
@@ -80,8 +83,13 @@ class RLTrainingLoop:
         return self.state
 
     def _run_iteration(self, iteration: int) -> None:
+        """采集一批轨迹，并用这批轨迹完成恰好一次参数更新。"""
+
         started_at = time.time()
         self._print_phase(iteration)
+
+        # rollout 只负责产生训练数据；尚未得到可训练 batch 时不占用 fresh
+        # rollout，也不会推进 global_step。
         trajectories = self.train_collector.collect(
             num_episodes=self.config.rl.envs_per_iteration,
             max_steps_per_episode=self.config.rl.max_steps_per_episode,
@@ -106,8 +114,15 @@ class RLTrainingLoop:
         truncated_bootstrap = (
             0.0 if self.config.rl.truncated_bootstrap == "zero" else None
         )
+
+        # planner 路线保留完整 episode，并对每个真实环境 transition 重算完整
+        # Qwen prefix，再联合计算一步 WM 与 MC value loss。无 planner 路线继续
+        # 使用固定长度 sequence objective。两条路线都只执行一次 optimizer.step()。
         episode_batches = None
         batch = None
+        actor_transitions: tuple[ExecutedTransition, ...] = ()
+        transition_returns: tuple[torch.Tensor, ...] = ()
+        transition_dino_grid_targets: tuple[torch.Tensor | None, ...] = ()
         if self.config.agent.planning.enabled:
             if len(trajectories) != self.config.rl.batch_size:
                 raise RuntimeError(
@@ -116,14 +131,25 @@ class RLTrainingLoop:
                 )
             episode_batches = build_episode_training_batches(
                 trajectories,
-                wm_prediction_steps=self.config.agent.planning.horizon,
                 gamma=self.config.rl.gamma,
                 truncated_bootstrap=truncated_bootstrap,
             )
-            total_td_steps = sum(
-                len(episode.td_steps) for episode in episode_batches
+            actor_transitions = tuple(
+                transition
+                for episode in episode_batches
+                for transition in episode.transitions
             )
-            training_unit_metrics = {"num_td_steps": float(total_td_steps)}
+            transition_returns = tuple(
+                target
+                for episode in episode_batches
+                for target in episode.return_targets.unbind(0)
+            )
+            transition_dino_grid_targets = (
+                self._dino_grid_targets_for_actor_transitions(actor_transitions)
+            )
+            training_unit_metrics = {
+                "num_actor_transitions": float(len(actor_transitions))
+            }
         else:
             num_windows = count_trajectory_windows(
                 trajectories,
@@ -148,7 +174,11 @@ class RLTrainingLoop:
                 truncated_bootstrap=truncated_bootstrap,
                 device=self.device,
             )
+            batch = self._with_sequence_dino_grid_target(batch)
             training_unit_metrics = {"num_wm_windows": float(num_windows)}
+
+        # FreshRolloutCollector 用这组三阶段 hook 提供消费事务；普通在线 collector
+        # 没有这些方法。三者必须同时存在，避免只标记开始却无法回滚或提交。
         begin_consumption = getattr(self.train_collector, "begin_consumption", None)
         abort_consumption = getattr(self.train_collector, "abort_consumption", None)
         commit_consumption = getattr(self.train_collector, "commit_consumption", None)
@@ -169,28 +199,32 @@ class RLTrainingLoop:
             if begin_consumption is not None
             else None
         )
+
+        # 一个 iteration 内累积所有 objective 的梯度，最后统一更新参数。只有在
+        # optimizer.step() 尚未开始时，异常才可以确定参数未变并安全释放 fresh
+        # rollout；step 一旦开始，消费记录必须保留为 in_progress 供恢复逻辑处理。
         optimizer_step_started = False
         try:
             self.optimization_runtime.zero_grad()
             step_metrics: dict[str, float] = {}
             if episode_batches is not None:
-                for episode in episode_batches:
-                    for td_step in episode.td_steps:
-                        output = self.algorithm.temporal_difference_step(
-                            self.model_runtime,
-                            td_step,
-                            total_td_steps=total_td_steps,
-                        )
-                        self.optimization_runtime.backward(output.loss)
-                        self._accumulate_metrics(step_metrics, output.metrics)
-                        del output
-                mc_output = self.algorithm.monte_carlo_step(
-                    self.model_runtime,
-                    episode_batches,
-                )
-                self.optimization_runtime.backward(mc_output.loss)
-                self._accumulate_metrics(step_metrics, mc_output.metrics)
-                del mc_output
+                total_actor_transitions = len(actor_transitions)
+                for transition, return_target, dino_grid_target in zip(
+                    actor_transitions,
+                    transition_returns,
+                    transition_dino_grid_targets,
+                    strict=True,
+                ):
+                    output = self.algorithm.actor_transition_step(
+                        self.model_runtime,
+                        transition,
+                        return_target=return_target,
+                        total_transitions=total_actor_transitions,
+                        dino_grid_target=dino_grid_target,
+                    )
+                    self.optimization_runtime.backward(output.loss)
+                    self._accumulate_metrics(step_metrics, output.metrics)
+                    del output
             else:
                 assert batch is not None
                 output = self.algorithm.sequence_step(
@@ -207,6 +241,9 @@ class RLTrainingLoop:
                 assert abort_consumption is not None
                 abort_consumption(consumption_id)
             raise
+
+        # global_step 统计成功完成的 optimizer update，而不是 rollout 或 backward
+        # 次数，因此每个成功 iteration 只递增一次。
         self.state.global_step += 1
         rollout_metrics = summarize_rollouts(trajectories)
         metrics = {
@@ -216,11 +253,18 @@ class RLTrainingLoop:
             **training_unit_metrics,
             "success_rate": float(rollout_metrics["success_rate"]),
         }
+
+        # 所有 rank 先完成训练，再进入 validation、日志和 checkpoint 阶段，避免
+        # 某个 rank 提前开始下一阶段而破坏 collective 的调用顺序。
         self._barrier()
         self._validate(iteration, metrics)
         self._barrier()
         self._log(iteration, metrics, started_at=started_at)
         self._save_periodic(iteration)
+
+        # fresh rollout 只有在更新后的 latest checkpoint 已经完整落盘后才算消费
+        # 成功。这样 committed 记录总能指向可恢复的模型状态，即使本轮不保存周期
+        # checkpoint，也会在这里补写 latest。
         if consumption_id is not None:
             checkpoint_dir = self.output_dir / "latest"
             self._ensure_latest_checkpoint(iteration)
@@ -233,13 +277,60 @@ class RLTrainingLoop:
             )
         self._barrier()
 
+    def _load_dino_grid_target_batch(
+        self,
+        image_paths: tuple[str, ...],
+    ) -> torch.Tensor | None:
+        """在训练前一次读取当前更新实际需要的 frozen DINO targets。"""
+
+        if not (
+            self.algorithm.train_world_model
+            and self.algorithm.dino_grid_weight != 0.0
+        ):
+            return None
+        source = self.model_runtime.dino_grid_targets
+        if source is None:
+            raise RuntimeError("RL DINO-grid loss has no frozen DINO target source")
+        return source.load(
+            image_paths,
+            device=torch.device("cpu"),
+        ).to(dtype=torch.float32)
+
+    def _dino_grid_targets_for_actor_transitions(
+        self,
+        transitions: tuple[ExecutedTransition, ...],
+    ) -> tuple[torch.Tensor | None, ...]:
+        """按 transition 顺序装配 next-image target，再逐个搬上 GPU。"""
+
+        targets = self._load_dino_grid_target_batch(
+            tuple(transition.next_image_path for transition in transitions)
+        )
+        if targets is None:
+            return (None,) * len(transitions)
+        return tuple(target.unsqueeze(0) for target in targets.unbind(0))
+
+    def _with_sequence_dino_grid_target(self, batch: RLBatch) -> RLBatch:
+        """把扁平 next-image targets 还原成 sequence objective 的 ``(B,H,...)``。"""
+
+        targets = self._load_dino_grid_target_batch(batch.next_image_paths)
+        if targets is None:
+            return batch
+        target_shape = (*batch.action_indices.shape, *targets.shape[1:])
+        return replace(
+            batch,
+            dino_grid_target=targets.reshape(target_shape),
+        )
+
     @staticmethod
     def _accumulate_metrics(
         totals: dict[str, float],
         current: dict[str, float],
     ) -> None:
         for name, value in current.items():
-            totals[name] = totals.get(name, 0.0) + value
+            if name.startswith("lambda_"):
+                totals[name] = value
+            else:
+                totals[name] = totals.get(name, 0.0) + value
 
     def _validate(self, iteration: int, metrics: dict[str, float]) -> None:
         if not (

@@ -79,10 +79,11 @@ then the expanded SFT2/RL/WM regression. Do not claim completion before those te
   retired config fields, and the ID33 warm-start path.
 - SFT2 loads the SFT1 `SharedSlotProjector` in FP32 and trains it directly. Its output is
   the grid state; predicted next state receives direct cached-DINO MSE. The target
-  Backbone remains frozen/vision-EMA-controlled while the shared target-side projector
-  keeps the standard SFT2 gradient path.
+  state branch freezes both the Backbone and shared projector; the projector trains when
+  that state appears as the current state.
 - RL training and planning loaders reconstruct the direct projector from the new
-  `state_proj.pt`; a focused test proves the retired nested state dict is rejected.
+  `state_proj.pt`; there is no old-format compatibility or dedicated rejection branch,
+  so ordinary key/shape errors surface from strict loading.
 - Focused CPU tests passed: `21 passed in 3.51s`. Affected-source `compileall`, three
   launcher `bash -n` checks, and `git diff --check` passed. No GPU, distributed, or full
   repository test was run.
@@ -111,6 +112,35 @@ then the expanded SFT2/RL/WM regression. Do not claim completion before those te
   optional vLLM/PEFT/pandas tests lack dependencies. No GPU experiment was run.
 - Changes remain uncommitted as requested; the unrelated `external/le-wm` state was untouched.
 
+## 2026-07-27 follow-up: RL restores the shared DINO WM objective
+
+- Human corrected the stale conclusion that RL should omit DINO loss. Grid-WM training in
+  SFT2 and RL now calls `training/common/world_model.py` for the same weighted state MSE and
+  predicted-state DINO-grid MSE.
+- SFT2 keeps its validated offline DINO cache. RL aligns each prediction with the real next
+  observation image from the trajectory and uses the pinned frozen DINOv2-large teacher;
+  computed targets are cached by image path.
+- Greedy H=2 grid configs explicitly set `lambda_wm=1.0` and `lambda_dino=0.5`. Planner TD
+  target paths use Qwen anchor endpoints; non-planner sequence targets use every next image
+  in batch/time order.
+- Focused CPU tests passed: `56 passed in 6.94s`, including a two-rank loopback Gloo unit
+  test. No GPU or full-scale training was run. These follow-up changes are not committed yet.
+
+### Fixed WM target correction
+
+- Removed `WorldModel.project_target_state()`, which had become a misleading alias after
+  removal of the WM EMA target encoder. There is no target projector or target WM.
+- The target-side shared-projector gradient was an older SFT2 behavior, not introduced by
+  this follow-up. It was incorrect because the WM supervision value could move toward the
+  current prediction even though the same state trains the projector when used as current.
+- SFT2 and both RL WM entry points now keep the complete next-state supervision value fixed.
+  Planner TD reads the actual endpoint anchor state saved by rollout instead of reprojecting
+  endpoint Qwen hidden.
+- Isolated tests set the predictor Jacobian to current state to zero and verify that the
+  fixed supervision branch produces no StateProjector gradient.
+- Focused CPU regression passed: `78 passed in 6.71s`, including the two-rank loopback
+  Gloo/DDP update test. No GPU or full-scale training was run. Changes remain uncommitted.
+
 ## Follow-up: direct RL algorithm API, module-level DDP, and Chinese comments
 
 - Added detailed Chinese documentation around retained history, autoregressive segment
@@ -129,6 +159,27 @@ then the expanded SFT2/RL/WM regression. Do not claim completion before those te
   script to the current `RLModelRuntime` and `RLBatch` contract.
 - Translated the remaining English-only docstrings and explanatory comments under
   `src/nimloth/training/rl` to Chinese.
+- Documented `RLTrainingLoop._run_iteration` in place: the comments now separate rollout
+  collection, planner/non-planner training-unit construction, single-update gradient
+  accumulation, fresh-rollout recovery, and post-update checkpoint commit.
 - Validation: complete `tests/training/rl` passed (`122 passed, 1 warning`), including a
   two-rank Gloo TD-to-MC optimizer-step parameter consistency test. No GPU run, commit, or
   push was performed.
+- The loop-only follow-up passed `tests/training/rl/test_loop.py` (`6 passed`), Python
+  syntax compilation, and `git diff --check`; it did not change the loop control flow.
+
+## Follow-up: explicit DINO target assembly
+
+- Removed image-path and frozen-DINO I/O from `RLAlgorithm`. Planner training now loads
+  all endpoint targets once before fresh-rollout consumption, keeps the batch on CPU, and
+  aligns one target to each flattened TD step by order. Sequence training puts its full
+  `(B,H,...)` target tensor into `RLBatch` before calling the algorithm.
+- `TemporalDifferenceStep.end_image_path` names the exact planner supervision image; the
+  old all-anchor load, `anchors.index(end_step) - 1`, and per-TD whole-batch transfers are
+  gone. Different episodes may share the same numerical end step without key collisions.
+- SFT2 was inspected rather than mechanically rewritten: its assembler loads exactly the
+  current batch's `B` next images and all `B` targets enter the same loss. A recording
+  provider test now guards this contract.
+- Focused CPU regression passed (`39 passed in 15.13s`), including the two-process Gloo
+  TD-to-MC DDP update test. Affected `compileall` and `git diff --check` passed; no GPU test,
+  commit, or push was performed.

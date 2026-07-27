@@ -50,7 +50,7 @@ def trajectory_from_agent_episode(
     trace_steps = [step for step, _trace in trace_rows]
     planner_steps = [step for step, _trace in planner_rows]
     if planner_rows and trace_steps != planner_steps:
-        raise ValueError("planner anchor must carry its Qwen token provenance")
+        raise ValueError("every planner step must carry its Qwen token provenance")
     if trace_rows and len(trace_rows) != len(episode.actions) and not planner_rows:
         raise ValueError("direct policy episode mixes traced and untraced actions")
     credit_assignments = {action.credit_assignment for action in episode.actions}
@@ -61,6 +61,13 @@ def trajectory_from_agent_episode(
         episode.actions
     ):
         raise ValueError(f"{credit_assignment} credit requires token traces")
+    if planner_rows:
+        expected_steps = list(range(len(episode.actions)))
+        if planner_steps != expected_steps or credit_assignment != "none":
+            raise ValueError(
+                "receding-horizon planner requires one trace per action and no "
+                "Qwen policy credit"
+            )
     cached_state_rows = [
         (step, action.state_latent_hidden)
         for step, action in enumerate(episode.actions)

@@ -146,7 +146,6 @@ optimizer = torch.optim.AdamW(
 
 algorithm = RLAlgorithm(
     history_size=history_size,
-    wm_prediction_steps=2,
     sigreg=None,
     sigreg_weight=0.0,
     value_rank_margin=0.1,

@@ -53,21 +53,17 @@ environment system_prompt + obs_str + images
                     v
        AgentRuntime / AgentPromptTemplate
                     |
-          Qwen 编码 segment 锚点 state
+       Qwen 编码当前真实step的CoT state
                     |
-       校正上一预测终点并搜索 action sequence
+          WM+ValueHead搜索action sequence
                     |
-       逐步执行整段 action；段内沿用 WM 预测 state
+          只执行最佳候选的首动作
                     |
                     v
- RolloutTrajectory (Qwen anchors + dense mixed WM states)
-             |                       |
-             v                       v
- segment endpoint WM replay     anchor action distillation
-             |                       |
-             +------ backward -------+
+ RolloutTrajectory (每步真实Qwen state + 独立search trace)
                          |
-             detached full-episode ValueHead MC backward
+                         v
+      完整prefix Qwen -> WM预测next state -> ValueHead MC
                          |
                   one optimizer step
 ```
@@ -92,41 +88,47 @@ in memory, serialized as JSON `null`, and restored as `-inf` when read.
 
 ## Training semantics
 
-Planner rollout和训练使用同一个segment边界。设`P = planning.horizon`，Qwen只在
-step `0, P, 2P, ...`及terminal observation运行；若episode提前结束，最后一段可以
-短于`P`。trajectory保存两组不同数据：稀疏的Qwen anchor hidden，以及每个动作前
-state加terminal state组成的稠密混合序列。混合序列中的anchor来自Qwen，段内state
-来自WM预测。
+Planner在每个真实environment step重新运行Qwen和搜索。设`P = planning.horizon`，
+`P`只表示每次搜索向前模拟的候选长度；environment只执行最佳候选的首动作。trajectory
+保存每一步真实CoT、Qwen hidden、投影state和独立search trace，不把上一轮候选尾部
+当作下一步的真实state或实际动作。
 
 训练使用完整episode，不采样window：
 
 ```text
-for each consecutive pair of Qwen anchors:
-    context = detached retained mixed states[-history_size:]
-    state = state_proj(start_anchor_hidden)       # current graph
-    context[-1] = state
-    predicted = autoregressive_wm(context, executed_segment_actions)
-    target = stop_gradient(project_target_state(end_anchor_hidden))
-    L_td = mse(predicted[-1], target)
+for each real transition t:
+    prefix_t = persisted prompt + all previous real history + current real CoT
+    hidden_t = qwen(prefix_t)                     # current differentiable graph
+    state_t = state_proj(hidden_t)
+    context = detached_real_states[-history_size:]
+    context[-1] = state_t
+    predicted_next = wm(context, previous_actions + executed_action_t)[-1]
 
-    qwen_action_log_probs = replay(start_anchor_response)
-    L_action = CE(greedy_wm_action, qwen_action_log_probs)
-    backward((L_td + lambda_action * L_action) / total_segments)
+    expected_next = saved_real_state[t+1]         # fixed target
+    L_state = mse(predicted_next, expected_next)
+    L_dino = mse(predicted_next, frozen_dino(next_image_t))
+    action_values = value_head(predicted_next)
+    L_value = mse(action_values[executed_action_t], full_episode_return_t)
+    backward((lambda_wm * L_state + lambda_dino * L_dino
+              + L_value) / total_real_transitions)
 
-value_states = stop_gradient(all action-current mixed states)
-L_value = value_head_mc(value_states, all executed actions, full_episode_returns)
-backward(L_value)
-optimizer.step()  # exactly once after every TD/MC backward
+optimizer.step()  # exactly once after all transition backward calls
 ```
 
-因此`history_size`只限制WM predictor在一个预测位置最多能看到多少个过去state；它
-不决定Qwen调用次数、segment长度、episode训练样本数或需要保留多少张Qwen计算图。
-每个TD backward完成后即可释放该段Qwen replay和WM activation；参数梯度累积到完整
-episode batch结束，所有相关参数期间保持不变。ValueHead输入显式detach，只由MC目标训练。
+`history_size`只限制WM predictor在一个预测位置最多读取多少个真实过去state；它不决定
+Qwen调用次数或搜索长度。每个transition重新构建一次完整prefix的Qwen graph：历史
+token/CoT是固定输入，但这次forward中处理历史的激活参与反传。backward结束后释放该
+step的graph，不连接以前step已经释放的graph。ValueHead输入是可微的
+`predicted_next`，所以MC value梯度依次经过ValueHead、WM、StateProjector和本次完整
+Qwen prefix。planner配置固定`value_head.lambda_rank=0`，MC项只直接监督执行action的slot。
+SFT2 与 RL 的 state MSE 和 predicted-state DINO MSE 由同一个公共 objective 计算；
+SFT2 从离线 cache 读取 DINO target，RL 按轨迹中的真实 next-image 路径使用固定
+revision 的 frozen DINOv2 teacher，并缓存已计算的 target。RL loop 在 objective
+开始前批量装配本轮实际需要的 target；algorithm 只接收已经与真实transition或
+sequence next observation 对齐的 tensor，不读取其他 step 的图像。
 
-当前action objective是`distillation`：greedy WM/ValueHead actor拥有并执行环境动作，
-Qwen只模仿segment首动作。`action_objective: ppo`的schema/provenance接口已经保留，但
-planner会拒绝它，直到行为所有权改成Qwen且Qwen采样动作与环境执行动作完全一致。
+planner不包含Qwen action objective：不重放Qwen action logits，也不蒸馏或PPO训练
+Qwen action prior。`actor.enabled`只表示未启用planner时的直接Qwen PPO路线。
 
 以下连续window路径只服务于未启用planner的离线/直接policy训练。With
 `H = predictor.history_size`, it selects `H` consecutive actions and `H + 1`
@@ -149,10 +151,13 @@ state来源与梯度模式是显式配置：
 
 - `gradient.state_source: recompute`：按时间位置执行Qwen state forward；可配合
   `gradient.representation_to_backbone: true`让WM、value和SIGReg训练Backbone，
-  下一状态仍只在WM target分支stop-gradient。
+  WM的下一状态监督值整体detach；同一个state在它作为current state时训练
+  StateProjector。
 - `gradient.state_source: rollout`：只读取trajectory明确保存的Qwen hidden，不执行
   state Qwen forward，且必须设置`gradient.representation_to_backbone: false`。
-  planner训练固定使用这一模式；缺少任一anchor hidden时直接失败。
+  该模式只用于不需要把representation loss传回Qwen的非planner路线。
+- planner固定要求`gradient.state_source: recompute`和
+  `gradient.representation_to_backbone: true`，并在每个真实transition重算完整prefix。
 - 两种来源不会在batch内自动切换，也不会根据字段是否为空推断。StateProjector是否
   训练仍只由`freeze.state_proj`决定。
 - `actor.enabled`：单独控制 Qwen action objective。Backbone 的可训练参数范围继续由
@@ -185,7 +190,7 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
 |--------|----------------|
 | `nimloth.rollout.windows` | 原始 trajectory 的连续窗口计数与采样 |
 | `nimloth.rollout.fresh` | policy/planner/trajectory指纹、fresh manifest和事务式消费契约 |
-| `algorithm.py` | multi-step WM/SIGReg、value/PPO 和梯度边界；不持有模型或 optimizer |
+| `algorithm.py` | planner transition或连续sequence的WM/value/PPO计算图；不持有模型或optimizer |
 | `runtime.py` | prompt→Backbone hidden 的 joint/frozen 模式与可选 policy replay |
 | `loop.py` | collect→sample→forward/backward→validate→save 生命周期 |
 | `evaluation.py` | Held-out rollout collection and checkpoint metric selection |
@@ -215,9 +220,10 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   held-out `validation.checkpoint_metric` (`success_rate` or `avg_reward`).
 - LoRA plus full Vision saves `vision_full_state.pt` next to the adapter and
   restores both through the shared Qwen checkpoint helper.
-- WM target 的下一状态保持 stop-gradient。ValueHead 不再擅自 detach state；
-  StateProjector 与 Backbone 的梯度 ownership 分别由 `freeze.state_proj` 和
-  `gradient.representation_to_backbone` 控制，并有梯度测试保护。
+- WM的下一状态监督值不更新Backbone或StateProjector；StateProjector只从
+  current/start state路径训练。ValueHead不擅自detach current state；StateProjector
+  与Backbone的梯度ownership分别由`freeze.state_proj`和
+  `gradient.representation_to_backbone`控制，并有梯度测试保护。
 - `actor.credit_assignment: action` 只对 sampled action token 做 PPO；`turn` 让
   vLLM 采样 CoT，并把同一 environment step 的 Monte Carlo advantage 分配给该轮
   loss-mask reasoning/action token；`token`使用独立TokenValueHead计算逐token GAE。
@@ -226,22 +232,20 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   `zero`；未确认时配置解析直接失败，不猜测实验参数。
 - rollout behavior log-prob 与 replay 都使用同一 temperature/top-p 分布；注入的 latent
   query、action boundary 和补全 delimiter 不进入 PPO loss。
-- `agent.planning.enabled: true`时，独立vLLM rollout在每个segment锚点让Qwen生成
+- `agent.planning.enabled: true`时，独立vLLM rollout在每个environment step让Qwen生成
   真实CoT；worker extension从同一次多模态forward截取latent hidden，不加载第二份
-  HF Qwen。段内只持久化WM预测state和实际执行动作，不制造Qwen hidden或CoT。
-  terminal observation单独生成真实CoT/hidden，用于校正最后预测终点。
+  HF Qwen。每次搜索只执行首动作，下一步用真实observation重新规划；terminal
+  observation仍额外生成真实CoT/hidden作为最后一个固定state target。
 - planner 当前用叶节点最大 action-value 作为搜索启发式；模型尚无 reward/done
   head，因此不会把中间 Q-value 相加并伪装成 model-predicted return。
 - planner支持`greedy`、`exhaustive`和`beam`。当前首轮方案固定为`greedy`。
   `exhaustive`批量模拟全部
   `action_count ** horizon`条latent动作序列；`beam`逐层批量扩展并按叶节点启发式裁剪；
-  其他模式只保留为后续对照能力。trajectory在每个segment锚点保存最终候选序列、
+  其他模式只保留为后续对照能力。trajectory在每个真实step保存最终候选序列、
   叶节点评分和按首动作聚合的root score。历史H=2
   exhaustive smoke仅是旧实验事实，不是后续默认方案。
-- planner behavior和teacher都是segment首动作上的确定性分布，不需要teacher
-  temperature。action token不参加PPO或reference KL；Qwen action head以显式
-  `actor.planner_distillation_weight`拟合该动作。未来action PPO只有在Qwen拥有行为、
-  Qwen采样动作等于环境实际动作、且old behavior distribution可重放时才能启用。
+- planner behavior是首动作上的确定性分布。所有planner response token的PPO mask均关闭；
+  action token不参加蒸馏、PPO或reference KL。Qwen的训练信号来自可微的value/WM state路径。
 - reference KL是actor loss，不改变environment reward、return、advantage或value
   target。冻结reference在独立重放阶段只为采样CoT token写入log-prob；manifest绑定
   reference checkpoint指纹。reward KL尚未实现，任何对应配置会被严格schema拒绝。

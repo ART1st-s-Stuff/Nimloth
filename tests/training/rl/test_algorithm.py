@@ -10,11 +10,9 @@ import torch
 import pytest
 
 from nimloth.agent import (
-    ActionTrainingTrace,
     Agent,
     AgentTranscript,
     NimlothPromptTemplate,
-    PlannerPolicyTrace,
     PolicyReplayOutput,
 )
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
@@ -289,7 +287,6 @@ def _algorithm(
     return (
         RLAlgorithm(
             history_size=2,
-            wm_prediction_steps=2,
             sigreg=sigreg,
             sigreg_weight=0.1 if sigreg is not None else 0.0,
             value_rank_margin=0.1,
@@ -338,7 +335,7 @@ def test_sequence_batch_preserves_trajectory_boundaries_and_alignment() -> None:
         ]
 
 
-def test_rl_wm_stops_gradient_on_final_target_but_trains_backbone() -> None:
+def test_rl_wm_blocks_supervision_hidden_gradient_but_trains_current_backbone() -> None:
     algorithm, runtime, builder, backbone, state_proj, predictor, _ = _algorithm()
     output = algorithm.sequence_step(runtime, _batch())
 
@@ -356,6 +353,26 @@ def test_rl_wm_stops_gradient_on_final_target_but_trains_backbone() -> None:
     assert backbone.model.weight.grad is not None
     assert state_proj.weight.grad is not None
     assert predictor.linear.weight.grad is not None
+
+
+def test_sequence_wm_does_not_train_projector_from_expected_next_states() -> None:
+    algorithm, runtime, _, backbone, state_proj, predictor, _ = _algorithm()
+    with torch.no_grad():
+        state_proj.weight.fill_(1.0)
+        predictor.linear.weight.zero_()
+
+    output = algorithm.sequence_step(runtime, _batch())
+    assert output.losses["wm"] is not None
+    output.losses["wm"].backward()
+
+    # predictor 对 current state 的 Jacobian 为零；固定监督值不能产生另一条
+    # StateProjector 梯度路径。
+    assert state_proj.weight.grad is None or (
+        torch.count_nonzero(state_proj.weight.grad) == 0
+    )
+    assert backbone.model.weight.grad is None or (
+        torch.count_nonzero(backbone.model.weight.grad) == 0
+    )
 
 
 def test_rollout_saved_states_bypass_qwen_but_train_state_projector() -> None:
@@ -486,7 +503,6 @@ def test_rl_preserves_multiple_latent_tokens_until_state_projection() -> None:
     )
     algorithm = RLAlgorithm(
         history_size=2,
-        wm_prediction_steps=2,
         sigreg=None,
         sigreg_weight=0.0,
         value_rank_margin=0.1,
@@ -508,7 +524,7 @@ def test_rl_preserves_multiple_latent_tokens_until_state_projection() -> None:
     assert output.losses["value"] is not None
 
 
-def test_grid_rl_uses_projector_states_and_mean_pooled_sigreg_without_dino_loss() -> None:
+def test_grid_rl_uses_same_state_and_dino_losses_as_sft2() -> None:
     backbone = _MultiTokenBackbone()
     input_builder = _InputBuilder()
     state_proj = SharedSlotProjector(
@@ -537,13 +553,28 @@ def test_grid_rl_uses_projector_states_and_mean_pooled_sigreg_without_dino_loss(
     recording = _RecordingSIGReg()
     algorithm = RLAlgorithm(
         history_size=2,
-        wm_prediction_steps=2,
         sigreg=SequenceSIGReg(regularizer=recording),
         sigreg_weight=0.1,
         value_rank_margin=0.1,
         value_rank_weight=1.0,
         ppo_clip_ratio=0.2,
         entropy_weight=0.0,
+        world_model_weight=0.75,
+        dino_grid_weight=0.25,
+    )
+    batch = _batch()
+    flat_dino_targets = torch.stack(
+        [
+            torch.full((2, 2), float(index + 1))
+            for index, _path in enumerate(batch.next_image_paths)
+        ]
+    )
+    batch = replace(
+        batch,
+        dino_grid_target=flat_dino_targets.reshape(
+            *batch.action_indices.shape,
+            *flat_dino_targets.shape[1:],
+        ),
     )
     runtime = RLModelRuntime(
         agent=agent,
@@ -553,22 +584,22 @@ def test_grid_rl_uses_projector_states_and_mean_pooled_sigreg_without_dino_loss(
         policy_replay=None,
     )
 
-    output = algorithm.sequence_step(runtime, _batch())
+    output = algorithm.sequence_step(runtime, batch)
     output.loss.backward()
 
     assert recording.inputs[0].shape == (3, 2, 2)
     assert set(output.losses) == {
         "wm",
+        "dino",
         "sigreg",
         "value",
         "policy",
         "token_value",
-        "action_distillation",
         "reference_kl",
     }
     assert output.losses["wm"] is not None
+    assert output.losses["dino"] is not None
     assert output.losses["value"] is not None
-    assert output.losses["action_distillation"] is None
     assert backbone.model.weight.grad is not None
     assert any(
         parameter.grad is not None
@@ -578,6 +609,11 @@ def test_grid_rl_uses_projector_states_and_mean_pooled_sigreg_without_dino_loss(
         parameter.grad is not None
         for parameter in world_model.value_head.parameters()
     )
+    expected_wm_total = (
+        0.75 * output.losses["wm"] + 0.25 * output.losses["dino"]
+    )
+    expected_non_wm = output.losses["value"] + 0.1 * output.losses["sigreg"]
+    torch.testing.assert_close(output.loss, expected_wm_total + expected_non_wm)
     assert all(parameter.grad is None for parameter in state_proj.parameters())
 
 
@@ -612,7 +648,6 @@ def test_token_credit_trains_policy_and_token_critic_separately() -> None:
     runtime = replace(base_runtime, policy_replay=token_replay)
     algorithm = RLAlgorithm(
         history_size=2,
-        wm_prediction_steps=2,
         sigreg=None,
         sigreg_weight=0.0,
         value_rank_margin=0.1,
@@ -656,7 +691,6 @@ def test_reference_kl_is_actor_loss_only_and_uses_reasoning_tokens() -> None:
     runtime = replace(base_runtime, policy_replay=token_replay)
     algorithm = RLAlgorithm(
         history_size=2,
-        wm_prediction_steps=2,
         sigreg=None,
         sigreg_weight=0.0,
         value_rank_margin=0.1,

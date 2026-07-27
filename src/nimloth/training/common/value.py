@@ -26,7 +26,11 @@ def action_value_loss(
     ranking_margin: float,
     ranking_weight: float,
 ) -> ActionValueLoss:
-    """回归执行动作的 MC return，并可选鼓励其高于未执行动作。"""
+    """回归执行动作的 MC return，并可选鼓励其高于未执行动作。
+
+    调用方决定评分 state。Planner transition 明确传入 ``hat{s}_{t+1}``，且
+    ``lambda_rank=0``，因此 MC loss 只直接更新实际执行 action 对应的 value slot。
+    """
 
     selected_action_values = action_values.gather(
         -1,

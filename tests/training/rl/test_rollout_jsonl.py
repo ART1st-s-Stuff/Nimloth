@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from nimloth.agent import (
-    ActionTrainingTrace,
     AgentTranscript,
     NimlothPromptTemplate,
     PlannerPolicyTrace,
@@ -234,7 +233,7 @@ def test_planner_probabilities_round_trip_through_strict_json(tmp_path: Path) ->
     trajectory.rewards = [0.0]
     trajectory.reward_provenance = STEP_REWARD_PROVENANCE
     trajectory.truncated = True
-    trajectory.policy_credit_assignment = "action"
+    trajectory.policy_credit_assignment = "none"
     trajectory.policy_token_log_probs[0] = [None] * len(
         trajectory.policy_token_log_probs[0]
     )
@@ -246,20 +245,13 @@ def test_planner_probabilities_round_trip_through_strict_json(tmp_path: Path) ->
     trajectory.world_model_states = [[0.0, 1.0], [1.0, 2.0]]
     trajectory.planner_policy_traces = [
         PlannerPolicyTrace(
-            qwen_action_log_probs=deterministic,
             candidate_sequences=((selected_action, selected_action),),
             candidate_scores=(0.0,),
             root_action_scores=tuple(
                 0.0 if index == selected_action else float("-inf")
                 for index in range(8)
             ),
-            action_training=ActionTrainingTrace(
-                objective="distillation",
-                behavior_owner="world_model",
-                executed_action_index=selected_action,
-                teacher_action_log_probs=deterministic,
-                behavior_action_log_probs=deterministic,
-            ),
+            executed_action_index=selected_action,
             horizon=2,
             search_mode="greedy",
         )
@@ -270,17 +262,19 @@ def test_planner_probabilities_round_trip_through_strict_json(tmp_path: Path) ->
     payload = jsonl_path.read_text(encoding="utf-8")
     assert "Infinity" not in payload
     raw_trace = json.loads(payload)["planner_policy_traces"][0]
-    assert raw_trace["qwen_action_log_probs"] == [0.0] + [None] * 7
-    assert raw_trace["action_training"]["teacher_action_log_probs"] == (
-        [0.0] + [None] * 7
-    )
-    assert raw_trace["action_training"]["behavior_action_log_probs"] == (
-        [0.0] + [None] * 7
-    )
+    assert raw_trace["root_action_scores"] == [0.0] + [None] * 7
+    assert raw_trace["executed_action_index"] == selected_action
+    assert "qwen_action_log_probs" not in raw_trace
+    assert "action_training" not in raw_trace
     loaded_trace = load_trajectories(jsonl_path)[0].planner_policy_traces[0]
-    assert loaded_trace.qwen_action_log_probs == deterministic
-    assert loaded_trace.teacher_action_log_probs == deterministic
     assert loaded_trace.behavior_action_log_probs == deterministic
+
+    legacy_record = trajectory.to_record()
+    legacy_trace = legacy_record["planner_policy_traces"][0]
+    legacy_trace.pop("executed_action_index")
+    legacy_trace["qwen_action_log_probs"] = [0.0] + [None] * 7
+    with pytest.raises(ValueError, match="legacy planner trace.*recollect"):
+        RolloutTrajectory.from_record(legacy_record)
 
 
 def test_failed_serialization_does_not_replace_existing_jsonl(tmp_path: Path) -> None:

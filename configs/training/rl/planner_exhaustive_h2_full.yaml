@@ -1,4 +1,4 @@
-# Formal multi-iteration RL run using the GPU-validated H=2 planner semantics.
+# Multi-iteration RL run using the exhaustive H=2 planner semantics.
 
 agent:
   prompt_template: nimloth-latent-action
@@ -12,25 +12,25 @@ freeze:
   state_proj: true
 
 gradient:
-  state_source: rollout
-  representation_to_backbone: false
+  state_source: recompute
+  representation_to_backbone: true
   backbone_lr: 0.000001
   backbone_weight_decay: 0.01
 
 actor:
-  enabled: true
-  action_objective: distillation
+  enabled: false
   entropy_coeff: 0.0
   clip_ratio: 0.2
   credit_assignment: action
   max_response_tokens: 512
-  planner_distillation_weight: 1.0
   reference_kl_loss_weight: 0.0
 
 predictor:
   lr: 0.0001
   emb_dim: 1024
   history_size: 4
+  lambda_wm: 1.0
+  lambda_dino: 0.5
   lambda_sigreg: 0.0
   sigreg_num_proj: 1024
   sigreg_knots: 17

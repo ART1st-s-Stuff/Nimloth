@@ -53,12 +53,10 @@ def _boolean(value: Any, field: str) -> bool:
 @dataclass(frozen=True)
 class ActorConfig:
     enabled: bool = False
-    action_objective: str = "ppo"
     entropy_coeff: float = 0.0
     clip_ratio: float = 0.2
     credit_assignment: str = "action"
     max_response_tokens: int = 64
-    planner_distillation_weight: float | None = None
     reference_kl_loss_weight: float = 0.0
     reference_kl_loss_type: str | None = None
 
@@ -199,12 +197,10 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "actor",
         {
             "enabled",
-            "action_objective",
             "entropy_coeff",
             "clip_ratio",
             "credit_assignment",
             "max_response_tokens",
-            "planner_distillation_weight",
             "reference_kl_loss_weight",
             "reference_kl_loss_type",
         },
@@ -304,7 +300,6 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
 
     actor_config = ActorConfig(
         enabled=_boolean(actor.get("enabled", False), "actor.enabled"),
-        action_objective=str(actor.get("action_objective", "ppo")),
         entropy_coeff=_positive_float(
             actor.get("entropy_coeff", 0.0),
             "actor.entropy_coeff",
@@ -315,14 +310,6 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         max_response_tokens=_positive_int(
             actor.get("max_response_tokens", 64),
             "actor.max_response_tokens",
-        ),
-        planner_distillation_weight=(
-            _positive_float(
-                actor["planner_distillation_weight"],
-                "actor.planner_distillation_weight",
-            )
-            if "planner_distillation_weight" in actor
-            else None
         ),
         reference_kl_loss_weight=_positive_float(
             actor.get("reference_kl_loss_weight", 0.0),
@@ -337,11 +324,11 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     )
     if not 0.0 < actor_config.clip_ratio < 1.0:
         raise ValueError("actor.clip_ratio must be in (0, 1)")
-    if actor_config.action_objective not in {"distillation", "ppo"}:
-        raise ValueError("actor.action_objective must be distillation or ppo")
     if actor_config.credit_assignment not in {"action", "turn", "token"}:
         raise ValueError("actor.credit_assignment must be action, turn, or token")
     if actor_config.reference_kl_loss_weight > 0.0:
+        if not actor_config.enabled:
+            raise ValueError("reference KL loss requires actor.enabled=true")
         if actor_config.reference_kl_loss_type != "low_var_kl":
             raise ValueError(
                 "positive actor.reference_kl_loss_weight requires "
@@ -433,13 +420,12 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         allow_zero=True,
     )
     agent_config = parse_agent_config(raw.get("agent"))
-    if agent_config.planning.enabled and not actor_config.enabled:
-        raise ValueError("planner episode training requires actor.enabled=true")
-    if actor_config.action_objective == "distillation" and not (
-        actor_config.enabled and agent_config.planning.enabled
-    ):
-        raise ValueError("action distillation requires an enabled planner actor")
-    if actor_config.enabled and agent_config.planning.enabled:
+    if agent_config.planning.enabled:
+        if actor_config.enabled:
+            raise ValueError(
+                "world-model planning owns behavior; actor.enabled must be false "
+                "because Qwen receives value gradients instead of policy supervision"
+            )
         raw_agent = raw.get("agent")
         raw_planning = (
             raw_agent.get("planning", {})
@@ -448,22 +434,18 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         )
         if "horizon" not in raw_planning:
             raise ValueError(
-                "planner distillation requires explicit agent.planning.horizon"
-            )
-        if actor_config.action_objective != "distillation":
-            raise ValueError(
-                "world-model planner behavior currently requires "
-                "actor.action_objective=distillation"
+                "planner training requires explicit agent.planning.horizon"
             )
         if actor_config.entropy_coeff != 0.0:
-            raise ValueError("action distillation requires actor.entropy_coeff=0")
+            raise ValueError("planner training requires actor.entropy_coeff=0")
         if actor_config.credit_assignment != "action":
             raise ValueError(
-                "planner distillation requires actor.credit_assignment=action"
+                "planner training does not use Qwen policy credit; keep "
+                "actor.credit_assignment=action"
             )
         if agent_config.planning.search_mode is None:
             raise ValueError(
-                "planner distillation requires explicit agent.planning.search_mode"
+                "planner training requires explicit agent.planning.search_mode"
             )
         if (
             agent_config.planning.search_mode == "beam"
@@ -479,16 +461,16 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             )
         if agent_config.planning.device is None:
             raise ValueError(
-                "planner distillation requires explicit agent.planning.device"
-            )
-        if actor_config.planner_distillation_weight is None:
-            raise ValueError(
-                "planner distillation requires explicit "
-                "actor.planner_distillation_weight"
+                "planner training requires explicit agent.planning.device"
             )
         if "train_wm" not in predictor:
             raise ValueError(
-                "planner distillation requires explicit predictor.train_wm"
+                "planner training requires explicit predictor.train_wm"
+            )
+        if not _boolean(predictor["train_wm"], "predictor.train_wm"):
+            raise ValueError(
+                "planner training requires predictor.train_wm=true so value "
+                "gradients update the world-model actor"
             )
         if sigreg_weight != 0.0:
             raise ValueError(
@@ -563,8 +545,13 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "gradient.representation_to_backbone=true requires "
             "gradient.state_source=recompute"
         )
-    if agent_config.planning.enabled and state_source != "rollout":
-        raise ValueError("planner training requires gradient.state_source=rollout")
+    if agent_config.planning.enabled and (
+        state_source != "recompute" or not representation_to_backbone
+    ):
+        raise ValueError(
+            "planner training requires gradient.state_source=recompute and "
+            "gradient.representation_to_backbone=true"
+        )
 
     return RLConfig(
         agent=agent_config,

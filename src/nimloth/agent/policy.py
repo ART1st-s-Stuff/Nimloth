@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -102,83 +101,19 @@ def validate_action_log_probs(
 
 
 @dataclass(frozen=True)
-class ActionTrainingTrace:
-    """Executed-action provenance for the configured Qwen action objective.
-
-    Distillation means the deterministic world-model actor owns the environment
-    action and Qwen learns to imitate it.  PPO is only valid when Qwen itself
-    sampled the executed action and its old behavior distribution is replayable.
-    """
-
-    objective: Literal["distillation", "ppo"]
-    behavior_owner: Literal["world_model", "qwen"]
-    executed_action_index: int
-    behavior_action_log_probs: tuple[float, ...]
-    teacher_action_log_probs: tuple[float, ...] | None = None
-    sampled_action_index: int | None = None
-
-    def __post_init__(self) -> None:
-        action_count = len(self.behavior_action_log_probs)
-        if action_count < 2:
-            raise ValueError("action training trace requires at least two actions")
-        validate_action_log_probs(
-            self.executed_action_index,
-            self.behavior_action_log_probs,
-            action_count=action_count,
-        )
-        if self.objective == "distillation":
-            if self.behavior_owner != "world_model":
-                raise ValueError(
-                    "distillation requires world_model to own the executed action"
-                )
-            if self.sampled_action_index is not None:
-                raise ValueError("deterministic actor action must not be marked sampled")
-            if self.teacher_action_log_probs is None:
-                raise ValueError("distillation requires a teacher distribution")
-            expected = tuple(
-                0.0 if index == self.executed_action_index else float("-inf")
-                for index in range(action_count)
-            )
-            if self.teacher_action_log_probs != expected:
-                raise ValueError(
-                    "distillation teacher must select the executed actor action"
-                )
-            if self.behavior_action_log_probs != expected:
-                raise ValueError(
-                    "greedy world-model behavior must be deterministic"
-                )
-        elif self.objective == "ppo":
-            if self.behavior_owner != "qwen":
-                raise ValueError("action PPO requires Qwen to own behavior")
-            if self.sampled_action_index != self.executed_action_index:
-                raise ValueError(
-                    "action PPO requires the executed action to equal Qwen's sample"
-                )
-            if self.teacher_action_log_probs is not None:
-                raise ValueError("action PPO must not store a distillation teacher")
-        else:
-            raise ValueError(
-                "action objective must be distillation or ppo, "
-                f"got {self.objective!r}"
-            )
-
-
-@dataclass(frozen=True)
 class PlannerPolicyTrace:
-    """Planner search evidence plus an explicit action-training contract."""
+    """One receding-horizon search and the root action it executed."""
 
-    qwen_action_log_probs: tuple[float, ...]
     candidate_sequences: tuple[tuple[int, ...], ...]
     candidate_scores: tuple[float, ...]
     root_action_scores: tuple[float, ...]
-    action_training: ActionTrainingTrace
+    executed_action_index: int
     horizon: int
     search_mode: str
-    qwen_sampled_action_index: int | None = None
     beam_width: int | None = None
 
     def __post_init__(self) -> None:
-        action_count = len(self.qwen_action_log_probs)
+        action_count = len(self.root_action_scores)
         if action_count < 2:
             raise ValueError("planner trace requires at least two actions")
         if self.horizon < 1:
@@ -240,45 +175,10 @@ class PlannerPolicyTrace:
             )
         if tuple(expected_root_scores) != self.root_action_scores:
             raise ValueError("planner root scores do not match candidate scores")
-        best_planner_action = self.selected_candidate_sequence[0]
-        action_index = self.action_training.executed_action_index
-        if len(self.action_training.behavior_action_log_probs) != action_count:
-            raise ValueError("planner action-training action count changed")
-        if (
-            self.action_training.objective == "distillation"
-            and action_index != best_planner_action
-        ):
+        if self.executed_action_index != self.selected_candidate_sequence[0]:
             raise ValueError(
-                "distillation must execute the best planner candidate's first action"
+                "planner must execute the best candidate's first action"
             )
-        qwen_action_index = self.qwen_sampled_action_index
-        if qwen_action_index is None:
-            qwen_action_index = max(
-                range(action_count),
-                key=self.qwen_action_log_probs.__getitem__,
-            )
-        validate_action_log_probs(
-            qwen_action_index,
-            self.qwen_action_log_probs,
-            action_count=action_count,
-        )
-        if self.qwen_sampled_action_index is not None and not (
-            0 <= self.qwen_sampled_action_index < action_count
-        ):
-            raise ValueError("Qwen sampled action is outside the action space")
-        if self.action_training.objective == "ppo":
-            if self.qwen_sampled_action_index != action_index:
-                raise ValueError("planner action PPO requires the recorded Qwen sample")
-            if self.action_training.behavior_action_log_probs != (
-                self.qwen_action_log_probs
-            ):
-                raise ValueError(
-                    "planner action PPO behavior must equal Qwen's old distribution"
-                )
-
-    @property
-    def teacher_action_log_probs(self) -> tuple[float, ...] | None:
-        return self.action_training.teacher_action_log_probs
 
     @property
     def selected_candidate_sequence(self) -> tuple[int, ...]:
@@ -290,27 +190,22 @@ class PlannerPolicyTrace:
         )
         return self.candidate_sequences[best_candidate]
 
-    def validate_executed_prefix(self, action_indices: Sequence[int]) -> None:
-        """Bind an executed segment to the selected planner candidate."""
+    def validate_executed_action(self, action_index: int) -> None:
+        """Bind one real environment action to this search result."""
 
-        executed = tuple(int(action_index) for action_index in action_indices)
-        if not executed:
-            raise ValueError("executed planner segment must contain an action")
-        if len(executed) > self.horizon:
+        if int(action_index) != self.executed_action_index:
             raise ValueError(
-                "executed planner segment exceeds its horizon: "
-                f"actions={len(executed)}, horizon={self.horizon}"
-            )
-        expected = self.selected_candidate_sequence[: len(executed)]
-        if executed != expected:
-            raise ValueError(
-                "executed planner segment does not match the selected candidate "
-                f"prefix: executed={executed}, expected={expected}"
+                "executed action does not match planner trace: "
+                f"executed={int(action_index)}, "
+                f"planned={self.executed_action_index}"
             )
 
     @property
     def behavior_action_log_probs(self) -> tuple[float, ...]:
-        return self.action_training.behavior_action_log_probs
+        return tuple(
+            0.0 if index == self.executed_action_index else float("-inf")
+            for index in range(len(self.root_action_scores))
+        )
 
 
 @dataclass(frozen=True)
@@ -526,24 +421,11 @@ class PolicyDecision:
                         "decision action log-prob does not match policy token trace "
                         "or the direct action is not selected for PPO"
                     )
-            elif self.planner_trace.action_training.objective == "distillation":
+            else:
                 if action_selected or trace_log_prob is not None:
                     raise ValueError(
-                        "distilled planner action must not participate in Qwen PPO"
+                        "planner-controlled tokens must not participate in Qwen PPO"
                     )
-            elif (
-                not action_selected
-                or trace_log_prob is None
-                or not math.isclose(
-                    trace_log_prob,
-                    action_log_probs[self.action_index],
-                    rel_tol=1e-6,
-                    abs_tol=1e-7,
-                )
-            ):
-                raise ValueError(
-                    "action PPO trace must record the executed Qwen sample"
-                )
         if self.planner_trace is not None:
             if self.token_trace is None:
                 raise ValueError("planner decision requires a token trace")
@@ -563,6 +445,7 @@ class PolicyDecision:
                 )
             if self.world_model_state is None:
                 raise ValueError("planner decision requires its current world-model state")
+            self.planner_trace.validate_executed_action(self.action_index)
 
 
 def sample_policy_decision(
@@ -601,7 +484,7 @@ class AgentPolicy(Protocol):
 
 @dataclass(frozen=True)
 class PolicyReplayInput:
-    """Replay one saved Qwen response for distillation or PPO."""
+    """Replay one saved Qwen response for direct-Qwen PPO."""
 
     prompt: AgentPrompt
     action_index: int
@@ -612,7 +495,6 @@ class PolicyReplayInput:
     token_trace: PolicyTokenTrace | None = None
     old_action_log_prob: float | None = None
     assistant_response: str | None = None
-    planner_trace: PlannerPolicyTrace | None = None
 
     def __post_init__(self) -> None:
         if self.credit_assignment not in {"action", "turn", "token"}:
@@ -660,20 +542,6 @@ class PolicyReplayInput:
                 raise ValueError(
                     "token trace action does not match replay action_index"
                 )
-        if self.planner_trace is not None:
-            if self.token_trace is None:
-                raise ValueError("planner replay requires a token trace")
-            if not self.assistant_response:
-                raise ValueError("planner replay requires its saved anchor response")
-            action_position = self.token_trace.token_roles.index("action")
-            objective = self.planner_trace.action_training.objective
-            selected = self.token_trace.loss_mask[action_position]
-            if objective == "distillation" and selected:
-                raise ValueError("distilled planner action cannot enter PPO replay")
-            if objective == "ppo" and not selected:
-                raise ValueError("action PPO replay requires the sampled action token")
-            if self.credit_assignment != "action":
-                raise ValueError("planner action training requires action credit")
 
     @property
     def selected_old_log_probs(self) -> tuple[float, ...]:
@@ -696,7 +564,6 @@ class PolicyReplayOutput:
     selected_log_probs: torch.Tensor
     entropies: torch.Tensor
     token_values: torch.Tensor | None = None
-    action_log_probs: torch.Tensor | None = None
     selected_full_log_probs: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
@@ -711,9 +578,6 @@ class PolicyReplayOutput:
                 raise ValueError(
                     "policy replay token values must align with selected log-probs"
                 )
-        if self.action_log_probs is not None:
-            if self.action_log_probs.ndim != 2:
-                raise ValueError("replayed action log-probs must have shape (B,A)")
         if self.selected_full_log_probs is not None:
             if self.selected_full_log_probs.ndim != 1:
                 raise ValueError("full-vocabulary log-probs must have shape (R,)")
