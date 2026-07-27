@@ -14,8 +14,8 @@
 | `lewm.py`、`_vendor_lewm.py` | LeWM 配置和最小核心算子 |
 | `reconstruction.py` | post-hoc reconstruction 诊断模型 |
 
-`WorldModel.forward()` 只做神经网络计算。各训练阶段保留自己的 stop-gradient、
-ranking 和 loss 权重策略；SFT2 与 RL 都让 `SequenceSIGReg` 消费真实的
+`WorldModel.forward()` 只做神经网络计算。各训练阶段保留自己的 stop-gradient
+和 loss 权重策略；SFT2 与 RL 都让 `SequenceSIGReg` 消费真实的
 `H+1` 状态序列。RL 的未来规划长度由 Agent planning horizon 单独控制。
 
 `GridWorldModel` 保留同一个公共 state/predict/value 接口。它直接把 SFT1

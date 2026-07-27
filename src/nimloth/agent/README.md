@@ -17,7 +17,7 @@ episode runtime。两者名称和职责明确分开：
 
 `Agent.encode_state(BackboneBatch)` 是 Qwen→StateProjector 的公共状态入口；
 planning在每个真实environment step和terminal observation调用它。`Agent.forward(..., action_indices)`
-在此基础上继续计算 WM prediction 与 action values，供 SFT2 离线训练使用。
+在此基础上依次计算 WM predicted next state 及其 action values，供 SFT2 离线训练使用。
 SFT2 不调用 planning policy 或 episode runner。processor、
 cache、EMA、optimizer、checkpoint 与 environment 状态均不进入 `Agent.state_dict()`。
 rollout transition 的 batch 契约属于 `nimloth.rollout`，不属于 Agent 模型接口。

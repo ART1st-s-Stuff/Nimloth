@@ -2822,3 +2822,21 @@
 - 五份planner配置已切到`recompute + representation_to_backbone=true`并关闭direct Qwen
   PPO；正式路线仍保持greedy。静态验证为compileall、launcher `bash -n`和diff-check通过；
   本地环境缺少PyTorch/pytest，尚无CPU数值、GPU、vLLM或DDP运行结果。
+
+## 2026-07-27：SFT2 value监督对齐预测下一状态与执行action
+
+- 人类要求修复SFT2 value语义。SFT2现在执行
+  `s_t -> WM -> hat{s}_{t+1} -> ValueHead`，只用完整trajectory的`G_t`回归实际执行
+  `a_t`对应的slot；ValueHead梯度会经过WM predictor、StateProjector和当前Qwen state。
+- `AgentOutput.action_values`改为语义明确的`predicted_next_action_values`；完整Agent和
+  WorldModel forward都先得到预测下一状态再调用ValueHead。SFT2 latent/grid两条路径共用
+  同一流程，grid仍在ValueHead前对预测slots做mean pooling。
+- SFT2 ranking配置、CLI字段、YAML字段、loss分支和日志字段已删除。公共
+  `action_value_loss()`仅在显式非零`ranking_weight`时读取未执行action；默认MC路径只
+  gather执行slot，未执行slot没有直接loss或梯度。
+- SFT2 checkpoint invariant新增
+  `value_objective=predicted_next_executed_action_mc_v1`，禁止旧optimizer/history状态静默
+  resume到新目标；旧组件权重仍可按初始化契约加载。
+- Nix CPU定向回归先后为`26 passed`、`20 passed`；扩展SFT2/WM/Agent及共享RL value回归
+  为`143 passed, 1 skipped`。`compileall`和`git diff --check`通过。未运行GPU训练、
+  vLLM或正式实验。

@@ -20,6 +20,9 @@ from nimloth.wm import (
 )
 
 
+SFT2_VALUE_OBJECTIVE = "predicted_next_executed_action_mc_v1"
+
+
 def require_sft2_wm_history(
     wm_predictor: LatentWMPredictor,
     *,
@@ -193,8 +196,6 @@ class SFT2Algorithm:
         sigreg_weight: float,
         value_weight: float,
         ce_weight: float,
-        value_rank_margin: float,
-        value_rank_weight: float,
         wm_weight_start: float = 0.1,
         wm_weight_end: float = 1.0,
         wm_warmup_fraction: float = 0.3,
@@ -209,8 +210,6 @@ class SFT2Algorithm:
         self.sigreg_weight = float(sigreg_weight)
         self.value_weight = float(value_weight)
         self.ce_weight = float(ce_weight)
-        self.value_rank_margin = float(value_rank_margin)
-        self.value_rank_weight = float(value_rank_weight)
         self.wm_weight_start = float(wm_weight_start)
         self.wm_weight_end = float(wm_weight_end)
         self.wm_warmup_fraction = float(wm_warmup_fraction)
@@ -248,7 +247,6 @@ class SFT2Algorithm:
             batch,
             wm_weight=wm_weight,
             include_lm_loss=True,
-            include_value_ranking=True,
         )
 
     def training_sigreg_step(
@@ -319,7 +317,6 @@ class SFT2Algorithm:
             batch,
             wm_weight=1.0,
             include_lm_loss=False,
-            include_value_ranking=False,
         )
 
     def _step(
@@ -329,7 +326,6 @@ class SFT2Algorithm:
         *,
         wm_weight: float,
         include_lm_loss: bool,
-        include_value_ranking: bool,
     ) -> SFT2StepOutput:
         """按照 current forward → next target → CE/WM/value 完成主阶段。"""
 
@@ -368,13 +364,9 @@ class SFT2Algorithm:
             dino_grid_weight=self.dino_grid_weight,
         )
         value_objective = action_value_loss(
-            model_output.action_values,
+            model_output.predicted_next_action_values,
             batch.current_action_indices,
             batch.current_value_targets,
-            ranking_margin=self.value_rank_margin,
-            ranking_weight=(
-                self.value_rank_weight if include_value_ranking else 0.0
-            ),
         )
         total = wm_objective.loss + self.value_weight * value_objective.loss
         if model_output.lm_loss is not None:
@@ -387,7 +379,6 @@ class SFT2Algorithm:
             "value_mc_mse": float(
                 value_objective.monte_carlo_mse.detach().item()
             ),
-            "value_rank": float(value_objective.ranking.detach().item()),
             "value_total": float(value_objective.loss.detach().item()),
             "lambda_wm": float(wm_weight),
             "lambda_sigreg": 0.0,
@@ -443,6 +434,7 @@ __all__ = [
     "SFT2Algorithm",
     "SFT2SIGRegStepOutput",
     "SFT2StepOutput",
+    "SFT2_VALUE_OBJECTIVE",
     "gather_global_sigreg_states",
     "require_sft2_wm_history",
     "shared_sigreg_rng",

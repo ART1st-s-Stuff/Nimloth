@@ -31,7 +31,7 @@ class AgentOutput:
     hidden: torch.Tensor
     state: torch.Tensor
     predicted_next_state: torch.Tensor
-    action_values: torch.Tensor
+    predicted_next_action_values: torch.Tensor
     lm_loss: torch.Tensor | None
 
 
@@ -61,14 +61,17 @@ class Agent(nn.Module):
             batch,
             include_lm_loss=include_lm_loss,
         )
+        predicted_next_state = self.wm.predict_next_state(
+            encoded.state,
+            action_indices,
+        )
         return AgentOutput(
             hidden=encoded.hidden,
             state=encoded.state,
-            predicted_next_state=self.wm.predict_next_state(
-                encoded.state,
-                action_indices,
+            predicted_next_state=predicted_next_state,
+            predicted_next_action_values=self.wm.predict_action_values(
+                predicted_next_state
             ),
-            action_values=self.wm.predict_action_values(encoded.state),
             lm_loss=encoded.lm_loss,
         )
 
@@ -144,11 +147,14 @@ class Agent(nn.Module):
             state_sequence,
             action_indices,
         )
+        predicted_next_state = predicted_sequence[:, -1]
         return AgentOutput(
             hidden=encoded_current.hidden,
             state=state_sequence,
-            predicted_next_state=predicted_sequence[:, -1],
-            action_values=self.wm.predict_action_values(state_sequence[:, -1]),
+            predicted_next_state=predicted_next_state,
+            predicted_next_action_values=self.wm.predict_action_values(
+                predicted_next_state
+            ),
             lm_loss=encoded_current.lm_loss,
         )
 

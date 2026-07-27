@@ -274,8 +274,6 @@ def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() 
         sigreg_weight=0.0,
         value_weight=1.0,
         ce_weight=1.0,
-        value_rank_margin=0.1,
-        value_rank_weight=1.0,
         dino_grid_weight=0.25,
     )
 
@@ -315,8 +313,6 @@ def test_grid_sigreg_uses_same_core_stage_with_mean_pooled_slots() -> None:
         sigreg_weight=0.1,
         value_weight=1.0,
         ce_weight=1.0,
-        value_rank_margin=0.1,
-        value_rank_weight=1.0,
         dino_grid_weight=0.5,
     )
 

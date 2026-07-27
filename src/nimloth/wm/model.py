@@ -38,10 +38,13 @@ class WorldModel(nn.Module):
         """执行一次完整的 state projection、WM prediction 和 value forward。"""
 
         state = self.project_state(qwen_hidden)
+        predicted_next_state = self.predict_next_state(state, action_indices)
         return {
             "state": state,
-            "predicted_next_state": self.predict_next_state(state, action_indices),
-            "action_values": self.predict_action_values(state),
+            "predicted_next_state": predicted_next_state,
+            "predicted_next_action_values": self.predict_action_values(
+                predicted_next_state
+            ),
         }
 
     def project_state(self, qwen_hidden: torch.Tensor) -> torch.Tensor:

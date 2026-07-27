@@ -119,6 +119,15 @@ def test_sft2_config_rejects_removed_oom_emergency_fields() -> None:
         )
 
 
+@pytest.mark.parametrize("field", ["value_rank_margin", "value_rank_lambda"])
+def test_sft2_config_rejects_retired_value_ranking_fields(field: str) -> None:
+    with pytest.raises(
+        ValueError,
+        match=f"unknown SFT2 config field: loss.{field}",
+    ):
+        flatten_sft2_yaml_config({"loss": {field: 1.0}})
+
+
 def test_sft2_config_rejects_retired_grid_ema_and_decoder_fields() -> None:
     with pytest.raises(
         ValueError,

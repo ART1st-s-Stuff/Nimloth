@@ -49,7 +49,7 @@ Nimloth is a Python machine-learning project for building a **World Model Agent*
 | 状态表征 | Backbone hidden、StateProjector、online state、target state | Qwen hidden 经 StateProjector 得到 WM state；SFT2 的 target Backbone 可使用视觉 EMA，但 WM 不维护另一套 state encoder | prompt history、Qwen hidden 和 WM state 是三种不同对象 |
 | Grid WM | grid slot、SFT1 projector、WM predictor、predicted next state | SFT1 projector 输出的 DINO-aligned grid 直接作为 state，并在 SFT2 继续训练；predictor 根据真实 state/action context 预测下一状态 | `history_size` 是训练上下文，不是 planner 未来搜索长度 |
 | SFT2/RL WM 目标 | WM state loss、DINO grid loss | 都约束 predicted next state；前者对齐Qwen state target，后者对齐真实next image的frozen DINO target | SFT2从离线cache读target；RL按trajectory图像路径在线计算并缓存target |
-| ValueHead | action value、chosen action value、`Q(s,a)` | ValueHead 对每个离散动作输出一个 action value；chosen action value 是实际执行动作对应的值 | 不简称为单一 state value `V(s)`；当前实现是 action critic |
+| ValueHead | action value、chosen action value | ValueHead 对传入的 WM state 为每个离散动作输出一个 action value；SFT2及planner transition objective传入预测下一状态并只监督实际执行动作对应的值 | 不简称为单一 state value `V(s)`；未执行动作没有反事实 return target |
 | RL fresh rollout | current policy artifact、vLLM behavior rollout、policy fingerprint、fresh manifest | vLLM 使用当前策略生成新 trajectory；manifest 把 trajectory 与策略内容指纹绑定 | fresh manifest 只能被一个 PPO 更新消费一次，不能循环复用 |
 | RL 窗口 | `history_size=H`、trajectory window、RL batch | 每个窗口有 `H` 个连续 transition、`H+1` 个真实 state prompt；batch 是若干窗口 | batch size 统计窗口数，不是 episode 数、step 数或 token 数 |
 | Return 与 advantage | Monte Carlo return、return target、baseline、advantage | return 先在完整 episode 上计算再切窗口；token模式使用独立TokenValueHead和turn内逐token GAE | action `Q(s,a)` 与 token critic 是不同参数和统计单位 |
@@ -108,16 +108,15 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `train.emb_dim` | WM state embedding 维度 | 必须和 StateProjector、WM predictor、ValueHead checkpoint 匹配 |
 | `train.state_proj_lr` | StateProjector 学习率 | 与 Backbone、WM、ValueHead 参数组分开 |
 | `train.wm_predictor_lr` | WM predictor 学习率 | 训练 latent dynamics |
-| `train.value_head_lr` | ValueHead 学习率 | 训练每个动作的 `Q(s,a)` |
+| `train.value_head_lr` | ValueHead 学习率 | 对预测下一状态的已执行 action slot 回归完整 trajectory return |
 | `grid.size` | 二维 grid 边长 | slot 数通常为 `grid.size²`；不能与 latent token count 自动画等号 |
 | `grid.wm_depth`、`wm_heads`、`wm_dim_head`、`wm_mlp_dim`、`wm_dropout` | temporal-spatial predictor 容量 | checkpoint 加载时必须匹配结构 |
 | `loss.lambda_ce` | LM CE 权重 | 监督当前 step 的格式/输出 token |
 | `loss.lambda_wm_start`、`lambda_wm_end` | WM loss warmup 起止权重 | 不等于 environment worldmodeling reward weight |
 | `loss.lambda_dino` | SFT2 predicted-state DINO-grid MSE 权重 | RL 对应字段为 `predictor.lambda_dino`，两者调用同一公共 WM objective |
-| `loss.lambda_value` | ValueHead loss 权重 | 包含回归及可选 ranking 项 |
+| `loss.lambda_value` | ValueHead loss 权重 | 只包含预测下一状态上已执行 action slot 的 Monte Carlo 回归 |
 | `loss.lambda_sigreg` | SIGReg 权重 | 统计单位和跨 rank 聚合方式必须随实现记录 |
 | `loss.value_gamma` | SFT2 action-value target 的折扣率 | 当前 target 来自完整 trajectory 的稀疏 Monte Carlo return |
-| `loss.value_rank_margin`、`value_rank_lambda` | chosen action 与其他动作的 ranking margin/权重 | ranking 是辅助约束，不是额外 reward |
 | `monitor.checkpoint_metric` | SFT2 checkpoint 选择指标 | `val_wm_mse` 只衡量 WM；不能冒充 agent rollout success |
 
 #### RL、PPO 与 planning

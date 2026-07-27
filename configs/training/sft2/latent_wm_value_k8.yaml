@@ -67,8 +67,6 @@ loss:
   lambda_sigreg: 0.1
   sigreg_num_proj: 1024
   sigreg_knots: 17
-  value_rank_margin: 0.1
-  value_rank_lambda: 1.0
   value_gamma: 1.0
 
 monitor:

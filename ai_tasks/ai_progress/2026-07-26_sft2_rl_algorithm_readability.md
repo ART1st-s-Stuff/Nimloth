@@ -183,3 +183,26 @@ then the expanded SFT2/RL/WM regression. Do not claim completion before those te
 - Focused CPU regression passed (`39 passed in 15.13s`), including the two-process Gloo
   TD-to-MC DDP update test. Affected `compileall` and `git diff --check` passed; no GPU test,
   commit, or push was performed.
+
+## 2026-07-27 follow-up: SFT2 predicted-next executed-action value objective
+
+- Human requested removal of SFT2 supervision on unexecuted action values and alignment
+  with the confirmed planner chain
+  `s_t -> WM -> predicted_next_state -> ValueHead`.
+- `AgentOutput` now exposes `predicted_next_action_values`; both complete Agent forward
+  paths and `WorldModel.forward()` score the predicted next state. SFT2 uses that tensor
+  for the current transition's Monte Carlo target, so value gradients reach ValueHead,
+  WM predictor, StateProjector, and the online current-state Backbone path.
+- SFT2 no longer has ranking parameters in its algorithm, CLI, YAML schema, production
+  configs, logs, or documentation. The shared value helper skips the unexecuted-action
+  branch entirely when ranking weight is zero; ranking remains available only to callers
+  that explicitly request a nonzero weight.
+- The checkpoint training invariant is now
+  `value_objective=predicted_next_executed_action_mc_v1`. Full resume from an older SFT2
+  optimizer/history state fails closed instead of changing objectives mid-run.
+- Regression tests verify the exact ValueHead input, nonzero value gradients through the
+  predictor/current StateProjector, zero direct gradients on every unexecuted output slot,
+  and a zero-ranking path that remains finite when an unexecuted value is NaN.
+- Nix CPU validation passed: focused groups reported `26 passed` and `20 passed`; expanded
+  SFT2/WM/Agent plus shared RL value paths reported `143 passed, 1 skipped`.
+  `compileall` and `git diff --check` also passed. No GPU or training experiment was run.

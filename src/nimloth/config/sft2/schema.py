@@ -76,8 +76,6 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("loss", "lambda_ce"): "lambda_ce",
     ("loss", "lambda_dino"): "lambda_dino",
     ("loss", "lambda_value"): "lambda_value",
-    ("loss", "value_rank_margin"): "value_rank_margin",
-    ("loss", "value_rank_lambda"): "value_rank_lambda",
     ("loss", "value_gamma"): "value_gamma",
     ("loss", "lambda_sigreg"): "lambda_sigreg",
     ("loss", "sigreg_num_proj"): "sigreg_num_proj",

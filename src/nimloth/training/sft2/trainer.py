@@ -41,6 +41,7 @@ from nimloth.training.sft2.data.factory import build_data_bundle
 from nimloth.training.sft2.dino_grid import DINOGridBatchAssembler
 from nimloth.training.sft2.algorithm import (
     SFT2Algorithm,
+    SFT2_VALUE_OBJECTIVE,
     require_sft2_wm_history,
 )
 from nimloth.training.sft2.loop import (
@@ -587,6 +588,7 @@ def train_sft2(args=None) -> int:
         "history_state_cache": "online_detached_state_v1",
         "sigreg_batch_scope": "global_valid_states_v1",
         "sample_ownership_version": "current_step_once_v2_online_cache",
+        "value_objective": SFT2_VALUE_OBJECTIVE,
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }
@@ -640,7 +642,6 @@ def train_sft2(args=None) -> int:
             "sigreg_global_batch_size",
             "value_total",
             "value_mc_mse",
-            "value_rank",
             "lm_ce",
             "lambda_wm",
             "lambda_dino",
@@ -674,8 +675,6 @@ def train_sft2(args=None) -> int:
         sigreg_weight=args.lambda_sigreg,
         value_weight=args.lambda_value,
         ce_weight=args.lambda_ce,
-        value_rank_margin=args.value_rank_margin,
-        value_rank_weight=args.value_rank_lambda,
         wm_weight_start=args.lambda_wm_start,
         wm_weight_end=args.lambda_wm_end,
         dino_grid_weight=(args.lambda_dino if args.objective == "dino_grid" else 0.0),

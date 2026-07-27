@@ -25,33 +25,24 @@ def _world_model_and_value_losses(
     eligible_indices: list[int],
     wm: WorldModel,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    if eligible_indices:
-        assert next_hidden is not None
-        selected_current = current_hidden[eligible_indices]
-        projected = wm.project_state(
-            torch.cat([selected_current, next_hidden], dim=0)
-        )
-        predicted = wm.predict_next_state(
-            projected[: len(eligible_indices)],
-            torch.tensor(
-                [items[index]["action_index"] for index in eligible_indices],
-                dtype=torch.long,
-                device=current_hidden.device,
-            ),
-        )
-        dynamics_loss = F.mse_loss(
-            predicted,
-            projected[len(eligible_indices) :],
-        )
-    else:
-        dynamics_loss = torch.zeros((), device=current_hidden.device)
-
     actions = torch.tensor(
         [item["action_index"] for item in items],
         dtype=torch.long,
         device=current_hidden.device,
     )
-    values = wm.predict_action_values(wm.project_state(current_hidden))
+    current_state = wm.project_state(current_hidden)
+    predicted_next_state = wm.predict_next_state(current_state, actions)
+    if eligible_indices:
+        assert next_hidden is not None
+        target_next_state = wm.project_state(next_hidden)
+        dynamics_loss = F.mse_loss(
+            predicted_next_state[eligible_indices],
+            target_next_state,
+        )
+    else:
+        dynamics_loss = torch.zeros((), device=current_hidden.device)
+
+    values = wm.predict_action_values(predicted_next_state)
     targets = torch.tensor(
         [item["action_value_target"] for item in items],
         dtype=values.dtype,
@@ -61,8 +52,6 @@ def _world_model_and_value_losses(
         values,
         actions,
         targets,
-        ranking_margin=0.1,
-        ranking_weight=1.0,
     )
     return dynamics_loss, value_objective.loss
 

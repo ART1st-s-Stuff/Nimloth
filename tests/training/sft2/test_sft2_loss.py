@@ -157,8 +157,6 @@ def _algorithm(
             sigreg_weight=sigreg_weight,
             value_weight=1.0,
             ce_weight=1.0,
-            value_rank_margin=0.1,
-            value_rank_weight=1.0,
         ),
         runtime,
         backbone,
@@ -288,6 +286,65 @@ def test_sft2_ce_supervises_each_contexts_current_step_only() -> None:
 
     expected = batch.current.tensors["hidden"].mean()
     torch.testing.assert_close(output.losses["lm"], expected)
+
+
+def test_sft2_value_scores_predicted_next_and_only_executed_action_slots() -> None:
+    torch.manual_seed(0)
+    algorithm, runtime, _, projector = _algorithm()
+    batch = _batch()
+    _seed_history(runtime, batch)
+    batch.transitions.value_targets.fill_(1000.0)
+    predictor = runtime.agent.wm.wm_predictor
+    value_head = runtime.agent.wm.value_head
+    with torch.no_grad():
+        predictor.net.weight.copy_(2.0 * torch.eye(4))
+    captured: dict[str, torch.Tensor] = {}
+
+    def record_prediction(
+        _module: torch.nn.Module,
+        _inputs: tuple[torch.Tensor, ...],
+        output: torch.Tensor,
+    ) -> None:
+        output.retain_grad()
+        captured["predicted_sequence"] = output
+
+    def record_values(
+        _module: torch.nn.Module,
+        inputs: tuple[torch.Tensor, ...],
+        output: torch.Tensor,
+    ) -> None:
+        output.retain_grad()
+        captured["value_input"] = inputs[0]
+        captured["action_values"] = output
+
+    prediction_hook = predictor.register_forward_hook(record_prediction)
+    value_hook = value_head.register_forward_hook(record_values)
+    try:
+        output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
+        output.losses["value"].backward()
+    finally:
+        prediction_hook.remove()
+        value_hook.remove()
+
+    predicted_sequence = captured["predicted_sequence"]
+    torch.testing.assert_close(captured["value_input"], predicted_sequence[:, -1])
+    torch.testing.assert_close(captured["value_input"], 2.0 * projector.outputs[0])
+    assert predicted_sequence.grad is not None
+    assert torch.count_nonzero(predicted_sequence.grad[:, -1]) > 0
+    assert torch.count_nonzero(predicted_sequence.grad[:, :-1]) == 0
+    assert predictor.net.weight.grad is not None
+    assert torch.count_nonzero(predictor.net.weight.grad) > 0
+    assert projector.outputs[0].grad is not None
+    assert torch.count_nonzero(projector.outputs[0].grad) > 0
+
+    action_value_grad = captured["action_values"].grad
+    assert action_value_grad is not None
+    executed_mask = torch.nn.functional.one_hot(
+        batch.current_action_indices,
+        num_classes=action_value_grad.shape[-1],
+    ).bool()
+    assert torch.count_nonzero(action_value_grad[executed_mask]) == batch.batch_size
+    assert torch.count_nonzero(action_value_grad[~executed_mask]) == 0
 
 
 def test_sft2_predictor_receives_full_configured_history_axis() -> None:

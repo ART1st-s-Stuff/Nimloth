@@ -59,15 +59,36 @@ def test_value_loss_backprops_to_head_and_input_state() -> None:
 
 
 def test_value_mse_uses_only_the_executed_actions() -> None:
-    action_values = torch.tensor([[1.0, 10.0], [20.0, 3.0]])
+    action_values = torch.tensor(
+        [[1.0, 10.0], [20.0, 3.0]],
+        requires_grad=True,
+    )
     result = action_value_loss(
         action_values,
         torch.tensor([0, 1]),
         torch.tensor([2.0, 5.0]),
-        ranking_margin=0.1,
-        ranking_weight=0.0,
     )
+    result.loss.backward()
 
     torch.testing.assert_close(result.selected_action_values, torch.tensor([1.0, 3.0]))
     torch.testing.assert_close(result.monte_carlo_mse, torch.tensor(2.5))
     torch.testing.assert_close(result.loss, result.monte_carlo_mse)
+    torch.testing.assert_close(
+        action_values.grad,
+        torch.tensor([[-1.0, 0.0], [0.0, -2.0]]),
+    )
+
+
+def test_zero_ranking_weight_does_not_read_unexecuted_values() -> None:
+    action_values = torch.tensor([[1.0, float("nan")]], requires_grad=True)
+
+    result = action_value_loss(
+        action_values,
+        torch.tensor([0]),
+        torch.tensor([2.0]),
+    )
+    result.loss.backward()
+
+    assert torch.isfinite(result.loss)
+    assert result.ranking.item() == 0.0
+    torch.testing.assert_close(action_values.grad, torch.tensor([[-2.0, 0.0]]))

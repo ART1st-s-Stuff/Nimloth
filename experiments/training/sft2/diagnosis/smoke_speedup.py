@@ -155,8 +155,6 @@ def run_micro_training_loss(
         sigreg_weight=0.0,
         value_weight=1.0,
         ce_weight=1.0,
-        value_rank_margin=0.1,
-        value_rank_weight=1.0,
     )
     lambda_wm = algorithm.wm_weight(0, 100)
     history_cache = OnlineHistoryStateCache()

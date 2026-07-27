@@ -23,6 +23,8 @@ def test_parse_sft2_args_applies_yaml_defaults() -> None:
     assert args.batch_size == 2
     assert args.grad_accum == 4
     assert args.lambda_value == 1.0
+    assert not hasattr(args, "value_rank_margin")
+    assert not hasattr(args, "value_rank_lambda")
     assert args.checkpoint_metric == "val_wm_mse"
     assert args.batch_mode == "trajectory_online_cache"
     assert args.history_size == 4

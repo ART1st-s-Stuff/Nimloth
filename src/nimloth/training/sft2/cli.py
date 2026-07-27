@@ -84,8 +84,6 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--lambda-ce", type=float, default=1.0)
     ap.add_argument("--lambda-dino", type=float, default=0.5)
     ap.add_argument("--lambda-value", type=float, default=1.0)
-    ap.add_argument("--value-rank-margin", type=float, default=0.1)
-    ap.add_argument("--value-rank-lambda", type=float, default=1.0)
     ap.add_argument("--value-gamma", type=float, default=1.0)
     ap.add_argument("--lambda-sigreg", type=float, default=0.1)
     ap.add_argument("--sigreg-num-proj", type=int, default=1024)
