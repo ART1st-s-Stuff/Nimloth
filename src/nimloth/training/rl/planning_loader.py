@@ -10,8 +10,6 @@ import torch
 from nimloth.backbone import backbone_hidden_size
 from nimloth.wm import LatentWMPredictor, StateProjector, ValueHead, WorldModel
 from nimloth.wm.grid import (
-    GridStateProjector,
-    LeWMGridEncoder,
     SharedSlotProjector,
     TemporalSpatialGridPredictor,
 )
@@ -37,18 +35,6 @@ def _is_grid_predictor_checkpoint(path: Path) -> bool:
     return "grid_tokens" in raw
 
 
-def _grid_hidden_dim(
-    state: dict[str, torch.Tensor],
-    *,
-    key: str,
-    emb_dim: int,
-) -> int:
-    weight = state.get(key)
-    if weight is None or weight.ndim != 2 or weight.shape[1] != emb_dim:
-        raise ValueError(f"cannot infer grid projector hidden dimension from {key}")
-    return int(weight.shape[0])
-
-
 def load_planning_world_model(
     *,
     qwen_config,
@@ -57,10 +43,11 @@ def load_planning_world_model(
     value_head_checkpoint: Path,
     device: torch.device,
 ) -> WorldModel:
-    """加载 projector、predictor 和动作 ValueHead，不加载 DINO 辅助模块。"""
+    """加载 rollout planning 所需的 projector、predictor 和动作 ValueHead。"""
 
     qwen_hidden_dim = backbone_hidden_size(qwen_config)
-    if _is_grid_predictor_checkpoint(wm_checkpoint):
+    is_grid = _is_grid_predictor_checkpoint(wm_checkpoint)
+    if is_grid:
         predictor = TemporalSpatialGridPredictor.load_checkpoint(
             wm_checkpoint,
             map_location="cpu",
@@ -72,36 +59,26 @@ def load_planning_world_model(
         )
         if not isinstance(state, dict):
             raise ValueError("grid state projector checkpoint must be a state dict")
-        slot_first = state.get("slot_projector.net.0.weight")
-        slot_last = state.get("slot_projector.net.3.weight")
+        projector_first = state.get("net.0.weight")
+        projector_last = state.get("net.3.weight")
         if (
-            slot_first is None
-            or slot_last is None
-            or slot_first.ndim != 2
-            or slot_last.ndim != 2
-            or slot_first.shape[1] != qwen_hidden_dim
-            or slot_last.shape[0] != predictor.config.emb_dim
-            or slot_last.shape[1] != slot_first.shape[0]
+            projector_first is None
+            or projector_last is None
+            or projector_first.ndim != 2
+            or projector_last.ndim != 2
+            or projector_first.shape[1] != qwen_hidden_dim
+            or projector_last.shape[0] != predictor.config.emb_dim
+            or projector_last.shape[1] != projector_first.shape[0]
         ):
             raise ValueError(
-                "grid state projector is incompatible with Qwen/WM dimensions"
+                "state_proj.pt is not the current trainable SFT1 projector format"
             )
-        state_proj = GridStateProjector(
-            SharedSlotProjector(
-                input_dim=qwen_hidden_dim,
-                output_dim=predictor.config.emb_dim,
-                hidden_dim=int(slot_first.shape[0]),
-                grid_tokens=predictor.config.grid_tokens,
-            ).to(dtype=slot_first.dtype),
-            LeWMGridEncoder(
-                emb_dim=predictor.config.emb_dim,
-                hidden_dim=_grid_hidden_dim(
-                    state,
-                    key="online_encoder.net.net.0.weight",
-                    emb_dim=predictor.config.emb_dim,
-                ),
-            ),
-        )
+        state_proj = SharedSlotProjector(
+            input_dim=qwen_hidden_dim,
+            output_dim=predictor.config.emb_dim,
+            hidden_dim=int(projector_first.shape[0]),
+            grid_tokens=predictor.config.grid_tokens,
+        ).to(dtype=projector_first.dtype)
         state_proj.load_state_dict(state)
         emb_dim = predictor.config.emb_dim
     else:
@@ -139,9 +116,7 @@ def load_planning_world_model(
         emb_dim=emb_dim,
         map_location="cpu",
     )
-    world_model_type = _PlanningGridWorldModel if _is_grid_predictor_checkpoint(
-        wm_checkpoint
-    ) else WorldModel
+    world_model_type = _PlanningGridWorldModel if is_grid else WorldModel
     world_model = world_model_type(
         state_proj=state_proj,
         wm_predictor=predictor,

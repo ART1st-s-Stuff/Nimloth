@@ -1,5 +1,20 @@
 # 2026-07-23 SFT2 DINO grid refactor and retraining
 
+## 2026-07-27 semantic invalidation
+
+- This file preserves the historical execution record, but its old architecture is no
+  longer authoritative. ID33, ID45, ID46, and every downstream checkpoint derived from
+  them used a frozen SFT1 projector followed by another online encoder, a WM EMA target
+  encoder, and a DINO decoder.
+- Human confirmed the current contract: SFT1 may pretrain the DINO projector; SFT2 must
+  continue training that same projector, use its output directly as state, directly
+  supervise predicted state with the DINO target, and use no WM EMA.
+- Therefore the old loss numbers, memory measurements, and checkpoint mechanics remain
+  historical observations only. They are not evidence for the corrected state semantics.
+  The outputs are retained and must not be deleted or silently migrated.
+- ID44 never produced a complete usable checkpoint. ID48 and ID49 stopped before SFT2
+  training, so their data-generation/cache records are not mislabeled as model results.
+
 ## Goal
 
 - Train a second SFT2 variant with 16 Qwen query slots aligned to the frozen

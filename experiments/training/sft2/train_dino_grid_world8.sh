@@ -86,10 +86,10 @@ fi
   echo "output: ${OUTPUT_DIR}"
   echo "model: ${MODEL_PATH}"
   echo "world size: ${NPROC_PER_NODE}; per-rank B=${BATCH_SIZE}; grad_accum=${GRAD_ACCUM}"
-  echo "objective: one current-step CE + latent WM + 0.5 decoded DINO grid + value; global SIGReg=0.1"
-  echo "trainable: Qwen vision, online grid encoder, H4 temporal-spatial WM, DINO decoder, value head"
-  echo "frozen: Qwen LLM, SFT1 slot projector, DINO cache/teacher, EMA target encoder, detached old history"
-  echo "initialization: ID33 auxiliary warm start plus zero temporal_position; new optimizer, not resume"
+  echo "objective: one current-step CE + WM + 0.5 direct predicted-state DINO grid + value; global SIGReg=0.1"
+  echo "trainable: Qwen vision, SFT1 DINO-grid projector, H4 temporal-spatial WM, value head"
+  echo "frozen: Qwen LLM, DINO cache/teacher, detached old history"
+  echo "initialization: SFT1 Qwen and DINO-grid projector; new WM predictor, ValueHead and optimizer"
 } | tee -a "${LOG}"
 
 PYTHONUNBUFFERED=1 "${PYTHON_ENV}/bin/python3" -m torch.distributed.run \

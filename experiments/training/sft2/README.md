@@ -25,6 +25,14 @@ trajectory lanes stay on one rank and advance in time order. A state is encoded
 once when it is the current transition, then reused as detached history. Removed
 row-by-row and activation-offload OOM fallbacks are not accepted by the CLI.
 
+## Historical DINO-grid result status
+
+ID33, ID45 and ID46 used the retired frozen-projector plus online-encoder/WM-EMA/decoder
+state path. Their output directories and recorded metrics must be preserved, but they are
+not valid evidence for the current SFT2 state semantics and cannot initialize the current
+checkpoint format. ID44 did not produce a complete checkpoint; ID48 and ID49 stopped
+before SFT2 training.
+
 ## Compact preprocess cache
 
 当前唯一支持的`dedup_sharded_v2` compact cache会去重image tensor并保存terminal

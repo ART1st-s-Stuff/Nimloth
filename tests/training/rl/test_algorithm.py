@@ -38,12 +38,8 @@ from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.util.module import move_to_device
 from nimloth.wm.model import WorldModel
 from nimloth.wm.grid import (
-    EMATargetGridEncoder,
     GridPredictorConfig,
-    GridStateProjector,
     GridWorldModel,
-    LeWMGridDecoder,
-    LeWMGridEncoder,
     SharedSlotProjector,
     TemporalSpatialGridPredictor,
 )
@@ -512,24 +508,17 @@ def test_rl_preserves_multiple_latent_tokens_until_state_projection() -> None:
     assert output.losses["value"] is not None
 
 
-def test_grid_rl_uses_ema_targets_and_mean_pooled_sigreg_without_dino_loss() -> None:
+def test_grid_rl_uses_projector_states_and_mean_pooled_sigreg_without_dino_loss() -> None:
     backbone = _MultiTokenBackbone()
     input_builder = _InputBuilder()
-    online_encoder = LeWMGridEncoder(emb_dim=2, hidden_dim=4)
-    state_proj = GridStateProjector(
-        SharedSlotProjector(
-            input_dim=3,
-            output_dim=2,
-            hidden_dim=4,
-            grid_tokens=2,
-        ),
-        online_encoder,
+    state_proj = SharedSlotProjector(
+        input_dim=3,
+        output_dim=2,
+        hidden_dim=4,
+        grid_tokens=2,
     ).requires_grad_(False).eval()
-    target_encoder = EMATargetGridEncoder(online_encoder, decay=0.99)
-    dino_decoder = LeWMGridDecoder(emb_dim=2, hidden_dim=4)
     world_model = GridWorldModel(
         state_proj=state_proj,
-        target_encoder=target_encoder,
         wm_predictor=TemporalSpatialGridPredictor(
             GridPredictorConfig(
                 grid_tokens=2,
@@ -542,10 +531,7 @@ def test_grid_rl_uses_ema_targets_and_mean_pooled_sigreg_without_dino_loss() -> 
                 dropout=0.0,
             )
         ),
-        dino_decoder=dino_decoder,
         value_head=ValueHead(emb_dim=2, num_actions=8, hidden_dim=2),
-        train_dino_decoder=False,
-        update_target_encoder=False,
     )
     agent = Agent(backbone=backbone, wm=world_model)
     recording = _RecordingSIGReg()
@@ -593,12 +579,6 @@ def test_grid_rl_uses_ema_targets_and_mean_pooled_sigreg_without_dino_loss() -> 
         for parameter in world_model.value_head.parameters()
     )
     assert all(parameter.grad is None for parameter in state_proj.parameters())
-    assert all(
-        parameter.grad is None for parameter in target_encoder.parameters()
-    )
-    assert all(
-        parameter.grad is None for parameter in dino_decoder.parameters()
-    )
 
 
 def test_rl_algorithm_is_pure_compute_configuration() -> None:

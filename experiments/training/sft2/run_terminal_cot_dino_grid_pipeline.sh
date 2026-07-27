@@ -105,11 +105,11 @@ if [[ "${RESUME_PREPARED_DATA_CACHE}" == "0" ]]; then
   "- 输出：${RUN_ROOT}" \
   "- controller log：${CONTROLLER_LOG}" \
   "- 初始化模型：${MODEL_PATH}" \
-  "- auxiliary warm start：ID33（由 ${CONFIG} 固定）；新 optimizer，不 resume ID46。" \
+  "- 初始化：从 SFT1 加载并继续训练同一个 DINO-grid projector；WM predictor、ValueHead 使用新 optimizer，不加载旧 DINO-grid SFT2 checkpoint。" \
   "- 原始数据：train ${SOURCE_TRAIN_JSONL} (${TRAIN_RECORDS})；val ${SOURCE_VAL_JSONL} (${VAL_RECORDS})。迁移命令显式声明 navigation@1 与 trajectory_terminal_reward；terminal CoT格式失败trajectory显式排除并写sidecar。" \
   "- terminal CoT：temperature=0，top_p=1.0，top_k=-1，do_sample=false，n=1，max_reasoning_tokens=128，seed=42，max_pixels=602112，flash_attention_2。" \
   "- SFT2：2 epochs，world_size=8，per-rank batch_size=1，gradient_accumulation=8，history_size=4；history_size 不是 planning.horizon。" \
-  "- 调参：Qwen LLM freeze，vision full，vision EMA=0.999；grid EMA=0.99。" \
+  "- 调参：Qwen LLM freeze，vision full，vision EMA=0.999；WM 不使用 EMA。" \
   "- loss：CE=1，WM=0.1->1，DINO=0.5，value=1，SIGReg=0.1。" \
   "- checkpoint：每20分钟；选择指标 val_wm_mse。" \
   "- 训练数据与 preprocess cache 均在本 run 内新建，旧 fixed-terminal cache 不复用。" \

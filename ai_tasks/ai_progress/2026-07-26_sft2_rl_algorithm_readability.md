@@ -60,17 +60,32 @@ When SSH connectivity is restored, update the existing server worktree to exact 
 `05376c1e38d8c1ef1be8a926801f36baf7487d09` and run the focused common/SFT2/RL tests,
 then the expanded SFT2/RL/WM regression. Do not claim completion before those tests pass.
 
-## 2026-07-27 critical correction: grid projector stage ownership
+## 2026-07-27 correction to the projector conclusion
 
-- Human clarified that `SharedSlotProjector` belongs to SFT2 and was not part of the
-  intended SFT1 training objective.
-- History shows commit `6c1828a0` added that projector to the SFT1 optimizer and DINO-grid
-  loss, then current SFT2 froze it and introduced another trainable `LeWMGridEncoder` plus
-  EMA target. This is a confirmed stage-ownership error, not a naming issue.
-- Existing DINO-grid SFT2/RL checkpoints implement that unintended pipeline and cannot
-  establish the intended SFT1-to-SFT2 semantics.
-- No model, loader, or checkpoint code has yet been changed for this correction. The
-  authoritative SFT2 target-state/gradient contract must be confirmed before refactoring.
+- Human clarified that SFT1 DINO supervision of `SharedSlotProjector` is acceptable. The
+  previous conclusion that the projector must belong only to SFT2 was wrong.
+- The actual defect is the SFT2 double path: freezing the SFT1 projector, adding another
+  online grid encoder, adding a WM EMA target for that encoder, and decoding the resulting
+  state back to DINO space.
+- The corrected contract reuses the SFT1 projector as the trainable SFT2 StateProjector;
+  its output is the WM state and predicted state receives direct DINO MSE. WM uses no EMA.
+- ID33/ID45/ID46 and derived RL checkpoints are retained historical artifacts but are
+  invalid as evidence for the corrected state semantics. No compatibility conversion is
+  provided.
+
+### Implemented and validated
+
+- Removed the second grid encoder, WM EMA target encoder, DINO decoder, checkpoint extras,
+  retired config fields, and the ID33 warm-start path.
+- SFT2 loads the SFT1 `SharedSlotProjector` in FP32 and trains it directly. Its output is
+  the grid state; predicted next state receives direct cached-DINO MSE. The target
+  Backbone remains frozen/vision-EMA-controlled while the shared target-side projector
+  keeps the standard SFT2 gradient path.
+- RL training and planning loaders reconstruct the direct projector from the new
+  `state_proj.pt`; a focused test proves the retired nested state dict is rejected.
+- Focused CPU tests passed: `21 passed in 3.51s`. Affected-source `compileall`, three
+  launcher `bash -n` checks, and `git diff --check` passed. No GPU, distributed, or full
+  repository test was run.
 
 ## Follow-up: explicit data migration and source contracts
 

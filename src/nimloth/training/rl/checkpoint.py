@@ -120,7 +120,6 @@ def save_rl_checkpoint(
             if not isinstance(token_head, TokenValueHead):
                 raise TypeError("token_value_head must unwrap to TokenValueHead")
             token_head.save_checkpoint(out_dir / "token_value_head")
-        agent.wm.save_checkpoint_extras(out_dir)
 
         # Qwen 模型
         if save_llm:
@@ -244,7 +243,6 @@ def load_rl_wm_checkpoint(
             head_dir, emb_dim=head.net[0].in_features, map_location=device
         )
         head.load_state_dict(loaded_head.state_dict())
-    wm.load_checkpoint_extras(ckpt_dir, map_location=device)
 
     state_path = ckpt_dir / "rl_state.pt"
     if state_path.is_file():

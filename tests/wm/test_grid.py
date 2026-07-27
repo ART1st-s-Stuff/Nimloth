@@ -5,8 +5,6 @@ import torch
 from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.wm.grid import (
     GridPredictorConfig,
-    GridStateProjector,
-    LeWMGridEncoder,
     SharedSlotProjector,
     TemporalSpatialGridPredictor,
 )
@@ -97,23 +95,20 @@ def test_temporal_spatial_predictor_rolls_out_from_real_grid_history() -> None:
     assert predicted.shape == (2, 3, 2, 4)
 
 
-def test_grid_state_projector_freezes_sft1_weights_but_backpropagates_to_qwen() -> None:
-    slot_projector = SharedSlotProjector(
+def test_sft1_slot_projector_remains_trainable_in_sft2() -> None:
+    projector = SharedSlotProjector(
         input_dim=6,
         output_dim=8,
         hidden_dim=12,
         grid_tokens=4,
-    ).requires_grad_(False)
-    online_encoder = LeWMGridEncoder(emb_dim=8, hidden_dim=16)
-    projector = GridStateProjector(slot_projector, online_encoder)
+    )
     hidden = torch.randn(2, 4, 6, requires_grad=True)
 
     projector(hidden).square().mean().backward()
 
     assert hidden.grad is not None
     assert torch.count_nonzero(hidden.grad) > 0
-    assert all(parameter.grad is None for parameter in slot_projector.parameters())
-    assert any(parameter.grad is not None for parameter in online_encoder.parameters())
+    assert any(parameter.grad is not None for parameter in projector.parameters())
 
 
 def test_online_history_cache_round_trips_grid_states(tmp_path) -> None:

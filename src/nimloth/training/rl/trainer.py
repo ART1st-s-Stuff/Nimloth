@@ -55,11 +55,7 @@ from nimloth.wm import (
     WorldModel,
 )
 from nimloth.wm.grid import (
-    EMATargetGridEncoder,
-    GridStateProjector,
     GridWorldModel,
-    LeWMGridDecoder,
-    LeWMGridEncoder,
     SharedSlotProjector,
     TemporalSpatialGridPredictor,
 )
@@ -92,21 +88,6 @@ def _is_grid_predictor_checkpoint(path: Path) -> bool:
     return "grid_tokens" in raw
 
 
-def _grid_mlp_hidden_dim(
-    state: dict[str, torch.Tensor],
-    *,
-    first_weight: str,
-    emb_dim: int,
-) -> int:
-    weight = state.get(first_weight)
-    if weight is None or weight.ndim != 2 or weight.shape[1] != emb_dim:
-        raise ValueError(
-            "cannot infer grid MLP hidden_dim from checkpoint tensor "
-            f"{first_weight!r}"
-        )
-    return int(weight.shape[0])
-
-
 def _build_grid_world_model(
     args: argparse.Namespace,
     config: RLConfig,
@@ -114,18 +95,13 @@ def _build_grid_world_model(
     llm: torch.nn.Module,
     device: torch.device,
 ) -> GridWorldModel:
-    """从完整 SFT2 DINO-grid checkpoint 构造 RL world model。
-
-    RL 不计算 DINO loss，也不更新 DINO decoder 或 EMA target encoder；二者仍
-    严格加载和保存，以保证 checkpoint 可恢复且 grid WM target 语义不变。
-    """
+    """从 SFT2 checkpoint 构造使用同一 projector state 的 RL world model。"""
 
     if args.state_proj_checkpoint is None or args.value_head_checkpoint is None:
         raise ValueError(
             "grid RL requires --state-proj-checkpoint and --value-head-checkpoint"
         )
     wm_checkpoint = Path(args.wm_checkpoint)
-    checkpoint_root = wm_checkpoint.parent
     predictor = TemporalSpatialGridPredictor.load_checkpoint(
         wm_checkpoint,
         map_location="cpu",
@@ -148,63 +124,29 @@ def _build_grid_world_model(
         map_location="cpu",
         weights_only=True,
     )
-    encoder_hidden_dim = _grid_mlp_hidden_dim(
-        state_proj_state,
-        first_weight="online_encoder.net.net.0.weight",
-        emb_dim=predictor.config.emb_dim,
-    )
-    slot_first = state_proj_state.get("slot_projector.net.0.weight")
-    slot_last = state_proj_state.get("slot_projector.net.3.weight")
+    projector_first = state_proj_state.get("net.0.weight")
+    projector_last = state_proj_state.get("net.3.weight")
     qwen_hidden_dim = backbone_hidden_size(llm.config)
     if (
-        slot_first is None
-        or slot_last is None
-        or slot_first.ndim != 2
-        or slot_last.ndim != 2
-        or slot_first.shape[1] != qwen_hidden_dim
-        or slot_last.shape[0] != predictor.config.emb_dim
-        or slot_last.shape[1] != slot_first.shape[0]
+        projector_first is None
+        or projector_last is None
+        or projector_first.ndim != 2
+        or projector_last.ndim != 2
+        or projector_first.shape[1] != qwen_hidden_dim
+        or projector_last.shape[0] != predictor.config.emb_dim
+        or projector_last.shape[1] != projector_first.shape[0]
     ):
         raise ValueError(
-            "SFT2 grid state projector is incompatible with the Qwen/predictor "
-            "dimensions"
+            "SFT2 state_proj.pt is not the trainable SFT1 projector format "
+            "required by the current grid WM"
         )
-    slot_projector = SharedSlotProjector(
+    state_proj = SharedSlotProjector(
         input_dim=qwen_hidden_dim,
         output_dim=predictor.config.emb_dim,
-        hidden_dim=int(slot_first.shape[0]),
+        hidden_dim=int(projector_first.shape[0]),
         grid_tokens=predictor.config.grid_tokens,
-    ).to(dtype=slot_first.dtype)
-    state_proj = GridStateProjector(
-        slot_projector,
-        LeWMGridEncoder(
-            emb_dim=predictor.config.emb_dim,
-            hidden_dim=encoder_hidden_dim,
-        ),
-    )
+    ).to(dtype=projector_first.dtype)
     state_proj.load_state_dict(state_proj_state)
-
-    metadata_path = checkpoint_root / "dino_grid_config.json"
-    decoder_path = checkpoint_root / "dino_grid_decoder.pt"
-    if not metadata_path.is_file() or not decoder_path.is_file():
-        raise FileNotFoundError(
-            f"incomplete DINO-grid checkpoint extras under {checkpoint_root}"
-        )
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    decoder_state = torch.load(
-        decoder_path,
-        map_location="cpu",
-        weights_only=True,
-    )
-    decoder_hidden_dim = _grid_mlp_hidden_dim(
-        decoder_state,
-        first_weight="net.net.0.weight",
-        emb_dim=predictor.config.emb_dim,
-    )
-    target_encoder = EMATargetGridEncoder(
-        state_proj.online_encoder,
-        decay=float(metadata["ema_decay"]),
-    )
     value_head = ValueHead.load_checkpoint(
         args.value_head_checkpoint,
         emb_dim=predictor.config.emb_dim,
@@ -212,22 +154,9 @@ def _build_grid_world_model(
     )
     world_model = GridWorldModel(
         state_proj=state_proj,
-        target_encoder=target_encoder,
         wm_predictor=predictor,
-        dino_decoder=LeWMGridDecoder(
-            emb_dim=predictor.config.emb_dim,
-            hidden_dim=decoder_hidden_dim,
-        ),
         value_head=value_head,
-        train_dino_decoder=False,
-        update_target_encoder=False,
     )
-    world_model.load_checkpoint_extras(
-        checkpoint_root,
-        map_location=torch.device("cpu"),
-    )
-    world_model.target_encoder.requires_grad_(False).eval()
-    world_model.dino_decoder.requires_grad_(False).eval()
     if config.freeze.state_proj:
         world_model.state_proj.requires_grad_(False).eval()
     return world_model.to(device)
@@ -381,18 +310,10 @@ def _wrap_world_model_ddp(
     wm_predictor = _wrap_trainable_ddp(world_model.wm_predictor, device=device)
     value_head = _wrap_trainable_ddp(world_model.value_head, device=device)
     if isinstance(world_model, GridWorldModel):
-        dino_decoder = _wrap_trainable_ddp(
-            world_model.dino_decoder,
-            device=device,
-        )
         return GridWorldModel(
             state_proj=state_proj,  # type: ignore[arg-type]
-            target_encoder=world_model.target_encoder,
             wm_predictor=wm_predictor,  # type: ignore[arg-type]
-            dino_decoder=dino_decoder,  # type: ignore[arg-type]
             value_head=value_head,  # type: ignore[arg-type]
-            train_dino_decoder=world_model.train_dino_decoder,
-            update_target_encoder=world_model.update_target_encoder,
         )
     return WorldModel(
         state_proj=state_proj,
@@ -759,10 +680,6 @@ def train_rl(
             broadcast_module_state(world_model.value_head)
             if token_value_head is not None:
                 broadcast_module_state(token_value_head)
-            if isinstance(world_model, GridWorldModel):
-                broadcast_module_state(world_model.target_encoder)
-                broadcast_module_state(world_model.dino_decoder)
-
         vision_ema_enabled = resolve_vision_ema(args, vision_tune)
         if vision_ema_enabled and world > 1:
             raise RuntimeError(

@@ -50,7 +50,7 @@ class WorldModel(nn.Module):
         return self.state_proj(qwen_hidden).float()
 
     def project_target_state(self, qwen_hidden: torch.Tensor) -> torch.Tensor:
-        """把 frozen/EMA Backbone hidden 映射为 stop-gradient 侧目标 state。"""
+        """用同一个 StateProjector 映射 target Backbone hidden。"""
 
         return self.project_state(qwen_hidden)
 
@@ -65,19 +65,6 @@ class WorldModel(nn.Module):
         batch_size, time_steps = qwen_hidden.shape[:2]
         projected = self.project_state(qwen_hidden.flatten(0, 1))
         return projected.reshape(batch_size, time_steps, *projected.shape[1:])
-
-    def project_training_state_sequences(
-        self,
-        qwen_hidden: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """返回在线 state 和 stop-gradient 目标侧 state 序列。
-
-        标准 latent WM 的两侧共享同一次投影；带独立 target encoder 的 variant
-        可以覆盖本方法，保持 objective 不需要识别具体 WM 类型。
-        """
-
-        online = self.project_state_sequence(qwen_hidden)
-        return online, online
 
     def sigreg_state(self, state: torch.Tensor) -> torch.Tensor:
         """返回单个时间位置用于 SIGReg 的 ``(B,D)`` 表示。"""
@@ -142,15 +129,6 @@ class WorldModel(nn.Module):
         """需要参与 DDP accumulation/no_sync 的实际包装模块。"""
 
         return self.trainable_modules
-
-    def after_optimizer_step(self) -> None:
-        """供带 EMA 辅助模块的 WM 在 optimizer step 后更新；默认无操作。"""
-
-    def save_checkpoint_extras(self, output_dir) -> None:
-        """保存 variant-specific state；标准 latent WM 没有额外状态。"""
-
-    def load_checkpoint_extras(self, checkpoint_dir, *, map_location) -> None:
-        """恢复 variant-specific state；标准 latent WM 没有额外状态。"""
 
     def unwrapped(self) -> "WorldModel":
         """返回去除子模块 DDP wrapper 的同构模型视图。"""

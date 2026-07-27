@@ -4,18 +4,29 @@
 
 ---
 
-## 2026-07-27：确认 DINO-grid projector 被错误前移到 SFT1
+## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 
-- 人类明确 `SharedSlotProjector` 应由 SFT2 创建和训练，SFT1 不拥有该 projector。
-  源码历史核对确认提交 `6c1828a0` 曾把它加入 SFT1 optimizer，用 DINO grid MSE
-  训练并随 SFT1 checkpoint 导出；当前 SFT2 随后把它冻结、再增加
-  `LeWMGridEncoder + EMATargetGridEncoder`。
-- 因此旧的“冻结 SFT1 projector，再训练 online grid encoder”的阶段归属错误，
-  Grid EMA 的既有设计理由也失效。现有 DINO-grid SFT2/RL checkpoint 只能证明这条
-  错误实现的机械行为，不能证明人类指定的 SFT1→SFT2 语义正确。
-- 已登记 `ai_rules/known_errors/E0065_do_not_move_sft2_grid_projector_into_sft1.md`。
-  当前只完成问题确认，尚未修改模型/loader/checkpoint，尚未测试。修复前必须先确认
-  SFT2 target-state 与 stop-gradient 的权威语义，不能自行再发明替代 encoder/EMA。
+- 人类最终确认：SFT1 使用 DINO grid 监督 `SharedSlotProjector` 是合理的；SFT2 应继续
+  训练同一个 projector。此前把该 projector 冻结、再增加 `LeWMGridEncoder`、WM EMA
+  target encoder 和 DINO decoder，才是错误的双层 state 路径。
+- 当前修正目标为 `state = SharedSlotProjector(qwen_hidden)`：SFT2 直接继续训练 SFT1
+  权重，temporal-spatial WM 直接预测该 state，predicted state 直接接受 DINO grid MSE。
+  WM 不维护 EMA；视觉 Backbone EMA 仍是独立的 Qwen 训练选项。
+- **历史结果标记：ID33、ID45、ID46（包括 ID46 resume checkpoint）及所有从这些
+  checkpoint 初始化的 RL 实验使用旧双层/WM-EMA state 语义，保留文件与历史指标，
+  但不得作为当前 SFT2/WM/RL 语义或质量证据。** ID44 没有形成完整 checkpoint；
+  ID48/ID49 停在 terminal-CoT/cache 阶段，没有产生 SFT2 模型，因此不属于错误模型结果。
+- 新代码不兼容旧 DINO-grid SFT2 checkpoint，也不提供转换 fallback。已将 E0065 修正为
+  `ai_rules/known_errors/E0065_do_not_hide_sft1_projector_behind_grid_encoder.md`。
+- 现已完成 SFT2/RL 主路径修改：删除 `GridStateProjector`、`LeWMGridEncoder`、
+  `EMATargetGridEncoder`、`LeWMGridDecoder` 和 ID33 warm-start；SFT2 optimizer 的
+  `state_proj` 参数组直接拥有可训练 `SharedSlotProjector`。SFT2 predicted state 与
+  cached DINO grid 直接 MSE；RL trainer 与 rollout planning loader 只加载新的
+  `state_proj.pt + wm_predictor + value_head`，旧双层 checkpoint 明确拒绝。
+- checkpoint/config 同步删除 WM EMA、encoder/decoder 和 warm-start 字段；视觉 Backbone
+  EMA 保留。基线提交为 `8de44bf`；本次语义修正尚未提交。
+- 小规模验证：定向 CPU 单元测试 `21 passed in 3.51s`；受影响 Python `compileall`、
+  三个 launcher `bash -n` 和 `git diff --check` 通过。没有运行 GPU、分布式或全仓测试。
 
 ## 2026-07-26：RL TD 注释、直接算法接口与模块级官方 DDP
 

@@ -26,12 +26,6 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         choices=("latent", "dino_grid"),
         default="latent",
     )
-    ap.add_argument(
-        "--grid-warmstart",
-        type=Path,
-        default=None,
-        help="ID33-format grid auxiliaries used as a non-resume warm start.",
-    )
     ap.add_argument("--dino-grid-cache", type=Path, default=None)
     ap.add_argument("--train-jsonl", type=Path, required=True)
     ap.add_argument("--val-jsonl", type=Path, required=True)
@@ -45,15 +39,11 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--state-proj-lr", type=float, default=1e-4)
     ap.add_argument("--wm-predictor-lr", type=float, default=3e-4)
     ap.add_argument("--value-head-lr", type=float, default=3e-4)
-    ap.add_argument("--dino-decoder-lr", type=float, default=1e-4)
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--max-length", type=int, default=12000)
     ap.add_argument("--max-pixels", type=int, default=602112)
     ap.add_argument("--emb-dim", type=int, default=1024)
     ap.add_argument("--grid-size", type=int, default=4)
-    ap.add_argument("--grid-ema-decay", type=float, default=0.99)
-    ap.add_argument("--grid-encoder-hidden-dim", type=int, default=2048)
-    ap.add_argument("--grid-decoder-hidden-dim", type=int, default=2048)
     ap.add_argument("--grid-wm-depth", type=int, default=6)
     ap.add_argument("--grid-wm-heads", type=int, default=16)
     ap.add_argument("--grid-wm-dim-head", type=int, default=64)

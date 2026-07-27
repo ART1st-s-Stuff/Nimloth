@@ -368,7 +368,6 @@ class SFT2Algorithm:
         )
         dino_loss = (
             dino_grid_mse(
-                runtime.agent.wm,
                 model_output.predicted_next_state,
                 batch.dino_grid_target,
             )

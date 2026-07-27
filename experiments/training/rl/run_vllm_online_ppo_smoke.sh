@@ -226,7 +226,7 @@ if [[ "${RUN_ROLLOUT}" == true && "${ITERATION}" == 1 ]]; then
 - reference model: ${REFERENCE_MODEL}
 - freshness: policy/planner/trajectory content fingerprints; consumption commits only after a post-update checkpoint
 - update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank; segment TD backward plus detached full-episode ValueHead MC backward, then one optimizer step
-- frozen: vision tower, GridStateProjector, EMA target encoder and DINO decoder
+- frozen: vision tower and the configured grid StateProjector
 - trainable: Qwen language body, WM predictor and ValueHead
 - W&B: ${WANDB_PROJECT_REQUESTED}/${WANDB_RUN_NAME_REQUESTED}
 - output: ${RUN_OUT}

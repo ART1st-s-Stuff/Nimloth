@@ -11,6 +11,9 @@ from nimloth.config.sft2 import flatten_sft2_yaml_config
 ROOT = Path(__file__).resolve().parents[3]
 K8_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8.yaml"
 K1_CONTROL_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k1_control.yaml"
+DINO_GRID_CONFIG = (
+    ROOT / "configs" / "training" / "sft2" / "dino_grid_k16_h4.yaml"
+)
 REQUIRED = [
     "--model",
     "/tmp/model",
@@ -89,6 +92,18 @@ def test_cli_values_override_yaml_defaults() -> None:
     assert args.preprocess_workers == 1
 
 
+def test_dino_grid_config_has_no_retired_wm_ema_or_decoder_options() -> None:
+    args = parse_sft2_args(["--config", str(DINO_GRID_CONFIG), *REQUIRED])
+
+    assert args.objective == "dino_grid"
+    assert args.latent_token_count == 16
+    assert not hasattr(args, "grid_ema_decay")
+    assert not hasattr(args, "grid_encoder_hidden_dim")
+    assert not hasattr(args, "grid_decoder_hidden_dim")
+    assert not hasattr(args, "dino_decoder_lr")
+    assert not hasattr(args, "grid_warmstart")
+
+
 def test_sft2_config_rejects_unknown_fields() -> None:
     with pytest.raises(ValueError, match="unknown SFT2 config field: train.typo"):
         flatten_sft2_yaml_config({"train": {"typo": True}})
@@ -102,3 +117,11 @@ def test_sft2_config_rejects_removed_oom_emergency_fields() -> None:
         flatten_sft2_yaml_config(
             {"train": {"offload_backbone_chunk_activations": True}}
         )
+
+
+def test_sft2_config_rejects_retired_grid_ema_and_decoder_fields() -> None:
+    with pytest.raises(
+        ValueError,
+        match="unknown SFT2 config field: grid.ema_decay",
+    ):
+        flatten_sft2_yaml_config({"grid": {"ema_decay": 0.99}})

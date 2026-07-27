@@ -52,22 +52,17 @@ class DINOGridBatchAssembler:
 
 
 def dino_grid_mse(
-    world_model: torch.nn.Module,
     predicted_next_state: torch.Tensor,
     target: torch.Tensor,
 ) -> torch.Tensor:
-    """比较 WM 解码出的 next-image grid 与 cached DINO target。"""
+    """直接监督 WM 预测的 next state 对齐 cached DINO grid。"""
 
-    decode = getattr(world_model, "decode_prediction", None)
-    if decode is None:
-        raise TypeError("DINO-grid objective requires WorldModel.decode_prediction()")
-    decoded = decode(predicted_next_state)
-    if decoded.shape != target.shape:
+    if predicted_next_state.shape != target.shape:
         raise ValueError(
-            "decoded WM prediction and DINO-grid target must match: "
-            f"{tuple(decoded.shape)} != {tuple(target.shape)}"
+            "WM predicted state and DINO-grid target must match: "
+            f"{tuple(predicted_next_state.shape)} != {tuple(target.shape)}"
         )
-    return F.mse_loss(decoded.float(), target.detach().float())
+    return F.mse_loss(predicted_next_state.float(), target.detach().float())
 
 
 __all__ = ["DINOGridBatchAssembler", "dino_grid_mse"]

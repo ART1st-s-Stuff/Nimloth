@@ -15,8 +15,8 @@ RL 只在真实 rollout 时用独立的 planning horizon 自回归预测多个�
 | 文件 | 职责 |
 |------|------|
 | `algorithm.py` | 唯一的 CE/WM/value/SIGReg 核心流程，以及可配置附加 loss 契约 |
-| `dino_grid.py` | 只提供 4x4 DINO target 和 decoded-grid 附加 loss，不实现训练流程 |
-| `trainer.py` | 按执行顺序加载 Agent、设置 DDP/EMA/optimizer 并启动训练 |
+| `dino_grid.py` | 只提供 4x4 DINO target 和 predicted-state DINO loss，不实现训练流程 |
+| `trainer.py` | 按执行顺序加载 Agent、设置 DDP/视觉 Backbone EMA/optimizer 并启动训练 |
 | `batch.py` | SFT2 action/return/next-state 对齐与 terminal mask 装配 |
 | `data/` | dataset、sampler 与 DataLoader |
 | `history_cache.py` | rank-local 在线 detached state cache 与 checkpoint 状态 |
@@ -45,7 +45,7 @@ T=1..H-1 的短上下文，因此每个拥有真实 next state 的 transition �
 保存每个 rank 的 cache，使恢复后的 sampler cursor 能继续命中历史。
 
 SIGReg 只在训练阶段计算，每个 step 只接收在线 `(s_t,s_{t+1})`；
-EMA/target state 不进入这个统计量。每个 microbatch 先对唯一一次 CE/WM/value
+WM target state 不进入这个统计量。每个 microbatch 先对唯一一次 CE/WM/value
 执行 backward 并释放 `s_t` 的 Qwen 图，再编码在线 `s_{t+1}`。SIGReg 的 `s_t`
 输入强制 detach，只有 `s_{t+1}` 接收该正则的梯度。各 rank 只 all-gather 小型
 state，并用 valid mask 排除 sampler padding；SIGReg 的 `B` 是该 microbatch 的
@@ -54,12 +54,14 @@ state，并用 valid mask 排除 sampler padding；SIGReg 的 `B` 是该 microba
 SIGReg。配置中的 `batch_size` 仍表示每个 rank 的 current step 数。
 
 DINO-grid 使用 k=16 query slots 和 row-major 4x4 teacher tokens，但不拥有第二套
-SFT2 algorithm。`SFT2Algorithm` 始终执行同一套 current/target、CE、WM、value 与
-SIGReg；DINO-grid batch 显式携带 `dino_grid_target`，算法在同一个
-predicted next state 上计算 decoder 输出与 next-image cached target 的 MSE，再乘
-`lambda_dino`。它不直接对齐 query representation。teacher cache 由
-`backbone/dino_grid.py` 校验，grid 神经网络由 `wm/grid.py` 拥有，默认配置
-权重为 0.5。
+SFT2 algorithm。SFT1 用 DINO target 预训练 `SharedSlotProjector`，SFT2 加载后继续
+训练同一个 projector；它的输出就是 WM state，不再串接第二层 state encoder，也没有
+WM EMA target encoder。`SFT2Algorithm` 始终执行同一套 current/target、CE、WM、value
+与 SIGReg；DINO-grid batch 显式携带 `dino_grid_target`，算法直接比较 predicted next
+state 与 next-image cached target 的 MSE，再乘 `lambda_dino`。teacher cache 由
+`backbone/dino_grid.py` 校验，temporal-spatial predictor 由 `wm/grid.py` 拥有。
+SFT2 target forward 仍冻结 target Backbone，但在其 hidden 上调用的是同一个可训练
+projector；这沿用标准 SFT2 的 target-side projector 梯度，不引入第二套 target 参数。
 
 SFT2 的 value 目标是完整 episode 上先计算、再切到 current step 的 Monte
 Carlo return。`training/common/value.py` 与 RL 共用同一个 objective：ValueHead 只

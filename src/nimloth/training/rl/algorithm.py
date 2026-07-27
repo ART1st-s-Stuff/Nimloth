@@ -448,15 +448,7 @@ class RLAlgorithm:
 
         hidden_states = self._state_hidden_sequence(runtime, batch)
 
-        # 标准 latent WM 复用同一份在线 state 作为 target；grid WM 在这里通过
-        # 自己的冻结 EMA encoder 生成 target，objective 不依赖具体 variant。
-        if self.train_world_model:
-            state_sequence, target_state_sequence = (
-                runtime.agent.wm.project_training_state_sequences(hidden_states)
-            )
-        else:
-            state_sequence = runtime.agent.wm.project_state_sequence(hidden_states)
-            target_state_sequence = state_sequence
+        state_sequence = runtime.agent.wm.project_state_sequence(hidden_states)
         state_context = state_sequence[:, :-1]
         action_values = runtime.agent.wm.predict_action_values(state_context)
 
@@ -467,7 +459,7 @@ class RLAlgorithm:
                 state_context,
                 batch.action_indices,
             )
-            target_next_states = target_state_sequence[:, 1:].detach()
+            target_next_states = state_sequence[:, 1:].detach()
             wm_loss = F.mse_loss(predicted_next_states, target_next_states)
         value_objective = action_value_loss(
             action_values,

@@ -192,7 +192,7 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
 | `rollout_runtime.py` | Collector startup constraints and online policy binding |
 | `reporting.py` | RL-specific CSV/W&B metric shape over shared util helpers |
 | `checkpoint_manager.py` | Runtime component state to checkpoint artifact mapping |
-| `trainer.py` | 按执行顺序加载 Agent、设置 FSDP/EMA/optimizer/resume 和 adapters |
+| `trainer.py` | 按执行顺序加载 Agent、设置 FSDP/视觉 Backbone EMA/optimizer/resume 和 adapters |
 | `checkpoint.py` | 完整模型与 optimizer checkpoint helpers |
 | `cli.py` | CLI adapter and independent train/eval collector selection |
 

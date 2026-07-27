@@ -44,10 +44,10 @@ Nimloth is a Python machine-learning project for building a **World Model Agent*
 | 轨迹数据 | transcript、trajectory、transition、record | transcript 是完整对话历史；trajectory 是完整 episode；transition 是一个真实状态转移；record 是持久化记录 | JSONL 一行通常是一条 trajectory，不是一条 transition |
 | SFT1 数据 | VAGEN rollout record、Nimloth SFT record、supervised prompt、CE label | 将旧动作格式转换为 Nimloth latent/action 格式后，监督 Qwen 输出格式和动作 | `train_all` 包含失败轨迹；`train_success` 只是成功子集，不代表模型成功率 |
 | SFT1 协议 | latent query token count `k`、`inject`、`generate` | `k` 是 latent query token 数；`inject` 注入并屏蔽 query token CE；`generate` 监督模型生成 query token | `k` 不等于 `history_size`，也不自动等于图片 patch 数 |
-| SFT1 产物 | adapter、merged HF artifact | adapter 只保存增量参数；merged HF artifact 是合并后可供 Transformers、vLLM、SFT2 或 RL 加载的完整策略产物 | 不得把 LoRA adapter 目录当作完整 HF checkpoint |
+| SFT1 产物 | adapter、merged HF artifact、DINO-grid projector sidecar | adapter 只保存增量参数；DINO-grid SFT1 额外导出 `slot_projector.pt` 与 `grid_state_config.json`，SFT2 加载后继续训练 | 不得把 LoRA adapter 目录当作完整 HF checkpoint |
 | SFT2 数据 | `TransitionSample`、trajectory lane、context window、current step、history cache | 一个样本包含同一 trajectory 的连续上下文；旧 state 可来自按时间顺序建立的 detached history cache | SFT2 窗口有多个上下文 step，但主 loss 只监督窗口末端的 current step |
-| 状态表征 | Backbone hidden、StateProjector、online state、target state | Qwen hidden 经 StateProjector 得到 WM state；online state 接收训练梯度；target state 按 objective 的 EMA/stop-gradient 规则产生 | prompt history、Qwen hidden 和 WM state 是三种不同对象 |
-| Grid WM | grid slot、EMA target encoder、WM predictor、predicted next state | grid state 由多个 slot 表示；predictor 根据真实 state/action context 预测下一状态 | `history_size` 是训练上下文，不是 planner 未来搜索长度 |
+| 状态表征 | Backbone hidden、StateProjector、online state、target state | Qwen hidden 经 StateProjector 得到 WM state；SFT2 的 target Backbone 可使用视觉 EMA，但 WM 不维护另一套 state encoder | prompt history、Qwen hidden 和 WM state 是三种不同对象 |
+| Grid WM | grid slot、SFT1 projector、WM predictor、predicted next state | SFT1 projector 输出的 DINO-aligned grid 直接作为 state，并在 SFT2 继续训练；predictor 根据真实 state/action context 预测下一状态 | `history_size` 是训练上下文，不是 planner 未来搜索长度 |
 | SFT2 目标 | LM CE、WM loss、DINO grid loss、SIGReg、value loss、ranking loss | 分别约束输出格式、latent dynamics、视觉 target、表征分布、执行动作的 return 和动作排序 | DINO loss 属于当前 DINO-grid SFT2 objective；当前 RL objective 不计算 DINO loss |
 | ValueHead | action value、chosen action value、`Q(s,a)` | ValueHead 对每个离散动作输出一个 action value；chosen action value 是实际执行动作对应的值 | 不简称为单一 state value `V(s)`；当前实现是 action critic |
 | RL fresh rollout | current policy artifact、vLLM behavior rollout、policy fingerprint、fresh manifest | vLLM 使用当前策略生成新 trajectory；manifest 把 trajectory 与策略内容指纹绑定 | fresh manifest 只能被一个 PPO 更新消费一次，不能循环复用 |
@@ -99,7 +99,7 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | 参数 | 含义 | 关键边界 |
 |---|---|---|
 | `init.sft1_checkpoint` | SFT2 的 Qwen/策略初始化 | 必须是完整、可加载并带正确 latent/action metadata 的 HF artifact |
-| `init.wm_predictor_checkpoint`、`init.grid_warmstart` | WM 组件初始化或 warm start | warm start 不自动恢复 optimizer，不等于 resume |
+| `init.wm_predictor_checkpoint` | 标准 latent WM predictor 初始化 | 不自动恢复 optimizer，不等于 resume |
 | `data.include_failed_rollouts` | 是否让失败轨迹参与训练 | 会改变 value/WM 数据分布 |
 | `tuning.llm_tune`、`tuning.vision_tune` | LLM 和视觉 Backbone 的训练范围 | `freeze`、`full`、LoRA 等模式必须分别记录 |
 | `tuning.vision_ema`、`vision_ema_decay` | 是否维护视觉 Backbone EMA 及衰减率 | EMA 权重用于 target/evaluation 的范围必须明确 |
@@ -108,10 +108,8 @@ navigation v1 动作空间固定为八个 action key：`moveahead`、`moveback`�
 | `train.emb_dim` | WM state embedding 维度 | 必须和 StateProjector、WM predictor、ValueHead checkpoint 匹配 |
 | `train.state_proj_lr` | StateProjector 学习率 | 与 Backbone、WM、ValueHead 参数组分开 |
 | `train.wm_predictor_lr` | WM predictor 学习率 | 训练 latent dynamics |
-| `train.dino_decoder_lr` | DINO decoder 学习率 | 只在 DINO decoder 可训练时有效 |
 | `train.value_head_lr` | ValueHead 学习率 | 训练每个动作的 `Q(s,a)` |
 | `grid.size` | 二维 grid 边长 | slot 数通常为 `grid.size²`；不能与 latent token count 自动画等号 |
-| `grid.ema_decay` | grid target encoder EMA 衰减率 | 与视觉 Backbone EMA 是不同 EMA |
 | `grid.wm_depth`、`wm_heads`、`wm_dim_head`、`wm_mlp_dim`、`wm_dropout` | temporal-spatial predictor 容量 | checkpoint 加载时必须匹配结构 |
 | `loss.lambda_ce` | LM CE 权重 | 监督当前 step 的格式/输出 token |
 | `loss.lambda_wm_start`、`lambda_wm_end` | WM loss warmup 起止权重 | 不等于 environment worldmodeling reward weight |

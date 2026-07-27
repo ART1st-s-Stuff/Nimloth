@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import copy
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
 
 import torch
-import torch.distributed as dist
 import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
 
-from nimloth.wm._vendor_lewm import Embedder, MLP, modulate
-from nimloth.wm.lewm import SafeBatchNorm1d
+from nimloth.wm._vendor_lewm import Embedder, modulate
 from nimloth.wm.model import WorldModel
-from nimloth.wm.value_head import ValueHead
 
 
 def _unwrap(module: nn.Module) -> nn.Module:
@@ -69,7 +64,7 @@ def load_sft1_slot_projector(
     map_location: str | torch.device = "cpu",
     dtype: torch.dtype | None = None,
 ) -> SharedSlotProjector:
-    """加载 SFT1 明确保存的 row-major 16-slot 表征接口。"""
+    """加载 SFT1 的 row-major 16-slot projector，供 SFT2 继续训练。"""
 
     checkpoint = Path(checkpoint)
     config_path = checkpoint / "grid_state_config.json"
@@ -103,122 +98,9 @@ def load_sft1_slot_projector(
     projector.load_state_dict(
         torch.load(state_path, map_location=map_location, weights_only=True)
     )
-    projector.requires_grad_(False).eval()
     if dtype is not None:
         projector.to(dtype=dtype)
     return projector
-
-
-class _LeWMGridMLP(nn.Module):
-    """逐 slot 应用 refactor 前权威版本的 LeWM MLP。"""
-
-    def __init__(self, *, emb_dim: int = 1024, hidden_dim: int = 2048) -> None:
-        super().__init__()
-        self.emb_dim = int(emb_dim)
-        self.hidden_dim = int(hidden_dim)
-        self.net = MLP(
-            input_dim=self.emb_dim,
-            hidden_dim=self.hidden_dim,
-            output_dim=self.emb_dim,
-            norm_fn=SafeBatchNorm1d,
-        )
-
-    def forward(self, grid: torch.Tensor) -> torch.Tensor:
-        if grid.ndim != 3 or grid.shape[-1] != self.emb_dim:
-            raise ValueError(
-                f"expected grid (B, N, {self.emb_dim}), got {tuple(grid.shape)}"
-            )
-        batch, slots, _ = grid.shape
-        weight = next(self.parameters())
-        output = self.net(
-            grid.reshape(batch * slots, self.emb_dim).to(dtype=weight.dtype)
-        )
-        return output.reshape(batch, slots, self.emb_dim)
-
-
-class LeWMGridEncoder(_LeWMGridMLP):
-    """DINO-grid SFT2 的 trainable online state encoder。"""
-
-
-class LeWMGridDecoder(_LeWMGridMLP):
-    """把 predicted latent grid 解码到 DINO token 空间。"""
-
-
-class GridStateProjector(nn.Module):
-    """冻结 SFT1 slot projector，训练逐-slot LeWM encoder。"""
-
-    def __init__(
-        self,
-        slot_projector: SharedSlotProjector,
-        online_encoder: LeWMGridEncoder,
-    ) -> None:
-        super().__init__()
-        self.slot_projector = slot_projector.requires_grad_(False)
-        self.online_encoder = online_encoder
-        self.qwen_hidden_dim = slot_projector.qwen_hidden_dim
-        self.input_dim = slot_projector.qwen_hidden_dim
-        self.latent_token_count = slot_projector.grid_tokens
-        self.grid_tokens = slot_projector.grid_tokens
-        self.emb_dim = online_encoder.emb_dim
-
-    def train(self, mode: bool = True) -> "GridStateProjector":
-        super().train(mode)
-        self.slot_projector.eval()
-        return self
-
-    def project_slots(self, hidden: torch.Tensor) -> torch.Tensor:
-        """保留对 Qwen hidden 的输入梯度，但不更新 SFT1 projector 权重。"""
-
-        return self.slot_projector(hidden).float()
-
-    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
-        return self.online_encoder(self.project_slots(hidden))
-
-
-class EMATargetGridEncoder(nn.Module):
-    """online grid encoder 的 frozen EMA target。"""
-
-    def __init__(self, online_encoder: LeWMGridEncoder, *, decay: float = 0.99) -> None:
-        super().__init__()
-        if not 0.0 < decay < 1.0:
-            raise ValueError(f"EMA decay must be in (0, 1), got {decay}")
-        self.decay = float(decay)
-        self.encoder = copy.deepcopy(online_encoder)
-        self.encoder.requires_grad_(False).eval()
-
-    def train(self, mode: bool = True) -> "EMATargetGridEncoder":
-        super().train(mode)
-        self.encoder.eval()
-        return self
-
-    @torch.no_grad()
-    def update(self, online_encoder: LeWMGridEncoder) -> None:
-        online = _unwrap(online_encoder)
-        for target_parameter, online_parameter in zip(
-            self.encoder.parameters(),
-            online.parameters(),
-            strict=True,
-        ):
-            target_parameter.mul_(self.decay).add_(
-                online_parameter.detach(),
-                alpha=1.0 - self.decay,
-            )
-        for target_buffer, online_buffer in zip(
-            self.encoder.buffers(),
-            online.buffers(),
-            strict=True,
-        ):
-            if target_buffer.is_floating_point():
-                target_buffer.mul_(self.decay).add_(
-                    online_buffer.detach(),
-                    alpha=1.0 - self.decay,
-                )
-            else:
-                target_buffer.copy_(online_buffer)
-
-    @torch.no_grad()
-    def forward(self, projected_grid: torch.Tensor) -> torch.Tensor:
-        return self.encoder(projected_grid).detach()
 
 
 class _GridAttention(nn.Module):
@@ -573,54 +455,7 @@ class TemporalSpatialGridPredictor(nn.Module):
 
 
 class GridWorldModel(WorldModel):
-    """16-slot WM：在线/EMA state、temporal-spatial predictor、DINO decoder。"""
-
-    def __init__(
-        self,
-        *,
-        state_proj: GridStateProjector,
-        target_encoder: EMATargetGridEncoder,
-        wm_predictor: TemporalSpatialGridPredictor,
-        dino_decoder: LeWMGridDecoder,
-        value_head: ValueHead,
-        train_dino_decoder: bool = True,
-        update_target_encoder: bool = True,
-    ) -> None:
-        super().__init__(
-            state_proj=state_proj,
-            wm_predictor=wm_predictor,
-            value_head=value_head,
-        )
-        self.target_encoder = target_encoder
-        self.dino_decoder = dino_decoder
-        self.train_dino_decoder = bool(train_dino_decoder)
-        self.update_target_encoder = bool(update_target_encoder)
-        if not self.train_dino_decoder:
-            self.dino_decoder.requires_grad_(False).eval()
-
-    def project_target_state(self, qwen_hidden: torch.Tensor) -> torch.Tensor:
-        projector = _unwrap(self.state_proj)
-        with torch.no_grad():
-            projected = projector.project_slots(qwen_hidden)
-            return self.target_encoder(projected).float()
-
-    def project_training_state_sequences(
-        self,
-        qwen_hidden: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """在线 grid 作为 predictor 输入，冻结 EMA grid 作为 WM 目标。"""
-
-        if qwen_hidden.ndim < 4:
-            raise ValueError(
-                "grid state sequence hidden must have shape (B,T,N,D), "
-                f"got {tuple(qwen_hidden.shape)}"
-            )
-        batch_size, time_steps = qwen_hidden.shape[:2]
-        flat_hidden = qwen_hidden.flatten(0, 1)
-        online = self.project_state(flat_hidden)
-        target = self.project_target_state(flat_hidden)
-        output_shape = (batch_size, time_steps, *online.shape[1:])
-        return online.reshape(output_shape), target.reshape(output_shape)
+    """16-slot WM；state 就是可训练的 SFT1 projector 输出。"""
 
     def sigreg_state(self, state: torch.Tensor) -> torch.Tensor:
         """单个时刻先对 slots 做 mean pooling，交给公共 SFT2 SIGReg。"""
@@ -642,9 +477,6 @@ class GridWorldModel(WorldModel):
             )
         return state_sequence.mean(dim=-2)
 
-    def decode_prediction(self, predicted_state: torch.Tensor) -> torch.Tensor:
-        return self.dino_decoder(predicted_state).float()
-
     def predict_action_values(self, state: torch.Tensor) -> torch.Tensor:
         if state.ndim < 3:
             raise ValueError(
@@ -653,206 +485,18 @@ class GridWorldModel(WorldModel):
             )
         return self.value_head(state.mean(dim=-2)).float()
 
-    @torch.no_grad()
-    def after_optimizer_step(self) -> None:
-        if not self.update_target_encoder:
-            return
-        projector = _unwrap(self.state_proj)
-        self.target_encoder.update(projector.online_encoder)
-        if dist.is_available() and dist.is_initialized():
-            for buffer in self.target_encoder.buffers():
-                dist.broadcast(buffer, src=0)
-
-    @property
-    def trainable_modules(self) -> tuple[nn.Module, ...]:
-        modules = (
-            self.state_proj,
-            self.wm_predictor,
-            self.value_head,
-        )
-        if self.train_dino_decoder:
-            return (*modules, self.dino_decoder)
-        return modules
-
-    @property
-    def synchronized_modules(self) -> tuple[nn.Module, ...]:
-        return self.trainable_modules
-
     def unwrapped(self) -> "GridWorldModel":
         return GridWorldModel(
             state_proj=_unwrap(self.state_proj),
-            target_encoder=self.target_encoder,
             wm_predictor=_unwrap(self.wm_predictor),
-            dino_decoder=_unwrap(self.dino_decoder),
             value_head=_unwrap(self.value_head),
-            train_dino_decoder=self.train_dino_decoder,
-            update_target_encoder=self.update_target_encoder,
         )
-
-    def save_checkpoint_extras(self, output_dir: Path) -> None:
-        torch.save(
-            self.target_encoder.state_dict(),
-            output_dir / "target_grid_encoder_ema.pt",
-        )
-        torch.save(
-            _unwrap(self.dino_decoder).state_dict(),
-            output_dir / "dino_grid_decoder.pt",
-        )
-        metadata = {
-            "format": "sft2_dino_grid_v1",
-            "grid_tokens": int(_unwrap(self.state_proj).grid_tokens),
-            "state_dim": int(_unwrap(self.state_proj).emb_dim),
-            "ema_decay": float(self.target_encoder.decay),
-        }
-        (output_dir / "dino_grid_config.json").write_text(
-            json.dumps(metadata, indent=2),
-            encoding="utf-8",
-        )
-
-    def load_checkpoint_extras(
-        self,
-        checkpoint_dir: Path,
-        *,
-        map_location: torch.device,
-    ) -> None:
-        config_path = checkpoint_dir / "dino_grid_config.json"
-        target_path = checkpoint_dir / "target_grid_encoder_ema.pt"
-        decoder_path = checkpoint_dir / "dino_grid_decoder.pt"
-        missing = [
-            str(path)
-            for path in (config_path, target_path, decoder_path)
-            if not path.is_file()
-        ]
-        if missing:
-            raise FileNotFoundError(
-                f"incomplete DINO grid checkpoint extras: {missing}"
-            )
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        projector = _unwrap(self.state_proj)
-        expected = {
-            "format": "sft2_dino_grid_v1",
-            "grid_tokens": int(projector.grid_tokens),
-            "state_dim": int(projector.emb_dim),
-            "ema_decay": float(self.target_encoder.decay),
-        }
-        mismatches = {
-            key: (config.get(key), value)
-            for key, value in expected.items()
-            if config.get(key) != value
-        }
-        if mismatches:
-            raise ValueError(f"DINO grid checkpoint mismatch: {mismatches}")
-        self.target_encoder.load_state_dict(
-            torch.load(target_path, map_location=map_location, weights_only=True)
-        )
-        _unwrap(self.dino_decoder).load_state_dict(
-            torch.load(decoder_path, map_location=map_location, weights_only=True)
-        )
-
-
-def warm_start_legacy_grid_components(
-    world_model: GridWorldModel,
-    checkpoint: str | Path,
-) -> dict[str, Any]:
-    """从 ID33 格式加载可证明兼容的 grid 辅助权重。
-
-    旧 predictor 只有一个 spatial step。当前 predictor 复用它的全部参数，
-    新增的 H-step temporal position 保持零初始化；这不是 resume。
-    """
-
-    checkpoint = Path(checkpoint)
-    state_path = checkpoint / "config.json"
-    required = (
-        state_path,
-        checkpoint / "online_encoder.pt",
-        checkpoint / "target_encoder_ema.pt",
-        checkpoint / "grid_wm.pt",
-        checkpoint / "dino_decoder.pt",
-        checkpoint / "value_head" / "value_head.pt",
-    )
-    missing = [str(path) for path in required if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(
-            f"legacy DINO grid warm start is incomplete: {missing}"
-        )
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    invariants = {
-        "grid_tokens": 16,
-        "state_dim": 1024,
-        "dino_weight": 0.5,
-        "sigreg_weight": 0.1,
-        "ema_decay": 0.99,
-        "encoder_decoder": "LeWM_MLP_per_slot",
-        "dino_target": "next_rgb_final_patch_adaptive_pool_4x4",
-    }
-    mismatches = {
-        key: (state.get(key), value)
-        for key, value in invariants.items()
-        if state.get(key) != value
-    }
-    if mismatches:
-        raise ValueError(f"legacy DINO grid warm-start mismatch: {mismatches}")
-
-    projector = _unwrap(world_model.state_proj)
-    projector.online_encoder.load_state_dict(
-        torch.load(
-            checkpoint / "online_encoder.pt",
-            map_location="cpu",
-            weights_only=True,
-        )
-    )
-    world_model.target_encoder.load_state_dict(
-        torch.load(
-            checkpoint / "target_encoder_ema.pt",
-            map_location="cpu",
-            weights_only=True,
-        )
-    )
-    _unwrap(world_model.dino_decoder).load_state_dict(
-        torch.load(
-            checkpoint / "dino_decoder.pt",
-            map_location="cpu",
-            weights_only=True,
-        )
-    )
-    predictor = _unwrap(world_model.wm_predictor)
-    incompatible = predictor.load_state_dict(
-        torch.load(
-            checkpoint / "grid_wm.pt",
-            map_location="cpu",
-            weights_only=True,
-        ),
-        strict=False,
-    )
-    if incompatible.missing_keys != ["temporal_position"] or incompatible.unexpected_keys:
-        raise ValueError(
-            "legacy grid predictor is not compatible with H-step extension: "
-            f"missing={incompatible.missing_keys}, "
-            f"unexpected={incompatible.unexpected_keys}"
-        )
-    loaded_value = ValueHead.load_checkpoint(
-        checkpoint / "value_head",
-        emb_dim=projector.emb_dim,
-    )
-    _unwrap(world_model.value_head).load_state_dict(loaded_value.state_dict())
-    return {
-        "source": str(checkpoint.resolve()),
-        "source_epoch": int(state["epoch"]),
-        "source_step": int(state["step"]),
-        "predictor_new_parameters": ["temporal_position"],
-        "resume": False,
-    }
 
 
 __all__ = [
-    "EMATargetGridEncoder",
     "GridPredictorConfig",
-    "GridStateProjector",
     "GridWorldModel",
-    "LeWMGridDecoder",
-    "LeWMGridEncoder",
     "SharedSlotProjector",
     "TemporalSpatialGridPredictor",
     "load_sft1_slot_projector",
-    "warm_start_legacy_grid_components",
 ]

@@ -56,15 +56,7 @@ def is_trainable_checkpoint_dir(ckpt_dir: Path) -> bool:
         (ckpt_dir / "config.json").is_file()
         or (ckpt_dir / "adapter_config.json").is_file()
     )
-    if not ready:
-        return False
-    extras = (
-        ckpt_dir / "target_grid_encoder_ema.pt",
-        ckpt_dir / "dino_grid_decoder.pt",
-        ckpt_dir / "dino_grid_config.json",
-    )
-    present = [path.is_file() for path in extras]
-    return not any(present) or all(present)
+    return ready
 
 
 def find_resume_checkpoint(output_dir: Path) -> Path | None:
@@ -138,7 +130,6 @@ def save_checkpoint(
     pred.save_checkpoint(out_dir / "wm_predictor")
     head = value_head.module if hasattr(value_head, "module") else value_head
     head.save_checkpoint(out_dir / "value_head")
-    agent.wm.save_checkpoint_extras(out_dir)
     state_proj_input_dim = getattr(proj, "input_dim", None)
     if state_proj_input_dim is None:
         net_layers = getattr(getattr(proj, "net", None), "net", None)
@@ -453,4 +444,3 @@ def load_world_model_checkpoint(
         map_location=device,
     )
     head.load_state_dict(loaded_head.state_dict())
-    wm.load_checkpoint_extras(ckpt_dir, map_location=device)

@@ -17,11 +17,7 @@ from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.training.sft2.trainer import _build_world_model
 from nimloth.wm.grid import (
-    EMATargetGridEncoder,
-    GridStateProjector,
     GridWorldModel,
-    LeWMGridDecoder,
-    LeWMGridEncoder,
     SharedSlotProjector,
 )
 from nimloth.wm.sigreg import SequenceSIGReg
@@ -88,14 +84,10 @@ def _runtime() -> tuple[SFT2ModelRuntime, _TensorGridBackbone, GridWorldModel]:
         output_dim=8,
         hidden_dim=12,
         grid_tokens=4,
-    ).requires_grad_(False)
-    online_encoder = LeWMGridEncoder(emb_dim=8, hidden_dim=16)
-    state_proj = GridStateProjector(slot_projector, online_encoder)
+    )
     wm = GridWorldModel(
-        state_proj=state_proj,
-        target_encoder=EMATargetGridEncoder(online_encoder, decay=0.99),
+        state_proj=slot_projector,
         wm_predictor=_GridPredictor(8),
-        dino_decoder=LeWMGridDecoder(emb_dim=8, hidden_dim=16),
         value_head=ValueHead(emb_dim=8, hidden_dim=8, num_actions=3),
     )
     cache = OnlineHistoryStateCache()
@@ -138,17 +130,13 @@ def test_grid_world_model_keeps_trainable_grid_modules_in_fp32(tmp_path) -> None
         model=tmp_path,
         emb_dim=4,
         latent_token_count=2,
-        grid_encoder_hidden_dim=8,
-        grid_ema_decay=0.99,
         history_size=2,
         grid_wm_depth=1,
         grid_wm_heads=1,
         grid_wm_dim_head=4,
         grid_wm_mlp_dim=8,
         grid_wm_dropout=0.0,
-        grid_decoder_hidden_dim=8,
         resume=False,
-        grid_warmstart=None,
     )
 
     world_model, world_model_device = _build_world_model(
@@ -161,12 +149,13 @@ def test_grid_world_model_keeps_trainable_grid_modules_in_fp32(tmp_path) -> None
     )
 
     assert world_model_device == torch.device("cpu")
-    assert next(world_model.state_proj.slot_projector.parameters()).dtype == torch.bfloat16
+    assert next(world_model.state_proj.parameters()).dtype == torch.float32
+    assert all(
+        parameter.requires_grad
+        for parameter in world_model.state_proj.parameters()
+    )
     for module in (
-        world_model.state_proj.online_encoder,
-        world_model.target_encoder,
         world_model.wm_predictor,
-        world_model.dino_decoder,
         world_model.value_head,
     ):
         assert next(module.parameters()).dtype == torch.float32
@@ -201,6 +190,28 @@ def _batch() -> SFT2Batch:
         next_image_paths=("a.png", "b.png"),
         dino_grid_target=torch.randn(2, 4, 8),
     )
+
+
+def test_dino_loss_directly_supervises_predicted_state() -> None:
+    predicted_state = torch.zeros(1, 4, 8, requires_grad=True)
+    target = torch.ones(1, 4, 8)
+
+    loss = dino_grid_module.dino_grid_mse(predicted_state, target)
+    loss.backward()
+
+    torch.testing.assert_close(loss, torch.tensor(1.0))
+    assert predicted_state.grad is not None
+    assert torch.count_nonzero(predicted_state.grad) == predicted_state.numel()
+
+
+def test_grid_target_freezes_backbone_but_trains_the_shared_projector() -> None:
+    runtime, _backbone, wm = _runtime()
+    next_batch = _batch().next
+
+    runtime.target_state(next_batch).sum().backward()
+
+    assert next_batch.tensors["hidden"].grad is None
+    assert any(parameter.grad is not None for parameter in wm.state_proj.parameters())
 
 
 def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() -> None:
@@ -242,20 +253,11 @@ def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() 
     assert batch.next.tensors["hidden"].grad is None
     assert older_states.grad is None
     projector = wm.state_proj
-    assert all(
-        parameter.grad is None
-        for parameter in projector.slot_projector.parameters()
-    )
     assert any(
         parameter.grad is not None
-        for parameter in projector.online_encoder.parameters()
+        for parameter in projector.parameters()
     )
     assert any(parameter.grad is not None for parameter in wm.wm_predictor.parameters())
-    assert any(parameter.grad is not None for parameter in wm.dino_decoder.parameters())
-    assert all(
-        parameter.grad is None
-        for parameter in wm.target_encoder.parameters()
-    )
 
 
 def test_grid_sigreg_uses_same_core_stage_with_mean_pooled_slots() -> None:
