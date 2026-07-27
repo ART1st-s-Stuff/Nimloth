@@ -6,6 +6,7 @@ code lives in `src/nimloth/training/sft2/`.
 | File | Purpose |
 |------|---------|
 | `train.py` | Thin entry point for `nimloth.training.sft2.trainer` |
+| `python -m nimloth.rollout.migration` | 把未版本化trajectory JSONL离线迁移并写manifest |
 | `train_vagen79_default.slurm` | Config-driven 8-GPU training job |
 | `build_preprocess_cache.py` | CPU preprocess-cache entry point |
 | `generate_terminal_cot.py` | 用 SFT1 初始化 checkpoint 离线生成并持久化 terminal CoT |
@@ -26,8 +27,8 @@ row-by-row and activation-offload OOM fallbacks are not accepted by the CLI.
 
 ## Compact preprocess cache
 
-`preprocess_cache_format: compact` deduplicates image tensors while preserving
-the independent per-prefix forward contract. Build it before reserving GPUs:
+当前唯一支持的`dedup_sharded_v2` compact cache会去重image tensor并保存terminal
+next-state encoding。先迁移JSONL，再在预留GPU前构建cache：
 
 ```bash
 export PREPROCESS_CACHE_DIR=/path/to/cache

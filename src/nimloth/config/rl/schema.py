@@ -83,6 +83,7 @@ class FreezeConfig:
 class GradientConfig:
     """控制表征目标是否穿过 StateProjector 回传到 Backbone。"""
 
+    state_source: str
     representation_to_backbone: bool = True
     backbone_lr: float = 1e-6
     backbone_weight_decay: float = 1e-4
@@ -215,7 +216,12 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     gradient = _section(
         raw,
         "gradient",
-        {"representation_to_backbone", "backbone_lr", "backbone_weight_decay"},
+        {
+            "state_source",
+            "representation_to_backbone",
+            "backbone_lr",
+            "backbone_weight_decay",
+        },
     )
     predictor = _section(
         raw,
@@ -529,6 +535,23 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "rl.envs_per_iteration"
         )
 
+    if "state_source" not in gradient:
+        raise ValueError("gradient.state_source must be explicit")
+    state_source = str(gradient["state_source"])
+    if state_source not in {"recompute", "rollout"}:
+        raise ValueError("gradient.state_source must be recompute or rollout")
+    representation_to_backbone = _boolean(
+        gradient.get("representation_to_backbone", True),
+        "gradient.representation_to_backbone",
+    )
+    if representation_to_backbone and state_source != "recompute":
+        raise ValueError(
+            "gradient.representation_to_backbone=true requires "
+            "gradient.state_source=recompute"
+        )
+    if agent_config.planning.enabled and state_source != "rollout":
+        raise ValueError("planner training requires gradient.state_source=rollout")
+
     return RLConfig(
         agent=agent_config,
         actor=actor_config,
@@ -540,10 +563,8 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             )
         ),
         gradient=GradientConfig(
-            representation_to_backbone=_boolean(
-                gradient.get("representation_to_backbone", True),
-                "gradient.representation_to_backbone",
-            ),
+            state_source=state_source,
+            representation_to_backbone=representation_to_backbone,
             backbone_lr=_positive_float(
                 gradient.get("backbone_lr", 1e-6),
                 "gradient.backbone_lr",

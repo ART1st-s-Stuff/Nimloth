@@ -25,11 +25,7 @@ from nimloth.backbone import (
 )
 from nimloth.config.rl import RLConfig
 from nimloth.rollout import FreshJSONLRolloutCollector, RolloutCollector
-from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch, RLStepOutput
-from nimloth.training.rl.episodes import (
-    EpisodeTrainingBatch,
-    TemporalDifferenceStep,
-)
+from nimloth.training.rl.algorithm import RLAlgorithm
 from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
@@ -86,43 +82,6 @@ class RLDistributedModules:
     token_value_head: torch.nn.Module | None
     optimizer_state_sharded: bool
     strategy: str
-
-
-class RLTrainingStepModule(torch.nn.Module):
-    """注册一次 RL loss 涉及的模块，并提供统一的 DDP forward 边界。"""
-
-    def __init__(
-        self,
-        *,
-        algorithm: RLAlgorithm,
-        runtime: RLModelRuntime,
-        token_value_head: torch.nn.Module | None,
-    ) -> None:
-        super().__init__()
-        self.agent = runtime.agent
-        self.token_value_head = token_value_head
-        self.sigreg = algorithm.sigreg
-        self._algorithm = algorithm
-        self._runtime = runtime
-
-    def forward(
-        self,
-        batch: RLBatch | TemporalDifferenceStep | tuple[EpisodeTrainingBatch, ...],
-        total_td_steps: int | None = None,
-    ) -> RLStepOutput:
-        if isinstance(batch, TemporalDifferenceStep):
-            if total_td_steps is None:
-                raise ValueError("TD forward requires total_td_steps")
-            return self._algorithm.temporal_difference_step(
-                self._runtime,
-                batch,
-                total_td_steps=total_td_steps,
-            )
-        if isinstance(batch, tuple):
-            if total_td_steps is not None:
-                raise ValueError("MC forward does not accept total_td_steps")
-            return self._algorithm.monte_carlo_step(self._runtime, batch)
-        return self._algorithm.training_step(self._runtime, batch)
 
 
 def _is_grid_predictor_checkpoint(path: Path) -> bool:
@@ -390,6 +349,26 @@ def _wrap_trainable_ddp(
     )
 
 
+def _wrap_model_parallel_llm_ddp(
+    llm: torch.nn.Module,
+    *,
+    world_size: int,
+) -> torch.nn.Module:
+    """用官方 DDP 同步一个跨多张 GPU 放置的 Qwen 模型。"""
+
+    if world_size <= 1:
+        return llm
+    from torch.nn.parallel import DistributedDataParallel as DDP
+
+    return DDP(
+        llm,
+        device_ids=None,
+        output_device=None,
+        find_unused_parameters=False,
+        static_graph=True,
+    )
+
+
 def _wrap_world_model_ddp(
     world_model: WorldModel,
     *,
@@ -432,8 +411,19 @@ def _wrap_distributed_modules(
     training_device: torch.device,
 ) -> RLDistributedModules:
     if model_parallel:
-        # 多设备模块不能传单一 device_ids；完整 RL training step 会在装配完成后
-        # 由一个 DDP(device_ids=None) 统一包装。
+        # Qwen 横跨多张 GPU，因此使用 device_ids=None；WM 各子模块仍位于
+        # training_device，由单设备 DDP 分别同步。算法层不承担分布式分派。
+        llm = _wrap_model_parallel_llm_ddp(llm, world_size=world_size)
+        world_model = _wrap_world_model_ddp(
+            world_model,
+            device=training_device,
+            world_size=world_size,
+        )
+        if token_value_head is not None:
+            token_value_head = _wrap_trainable_ddp(
+                token_value_head,
+                device=training_device,
+            )
         strategy = "model_parallel_ddp" if world_size > 1 else "model_parallel"
         optimizer_state_sharded = False
     else:
@@ -466,28 +456,6 @@ def _wrap_distributed_modules(
         token_value_head=token_value_head,
         optimizer_state_sharded=optimizer_state_sharded,
         strategy=strategy,
-    )
-
-
-def _wrap_training_step_ddp(
-    training_step: RLTrainingStepModule,
-    *,
-    world_size: int,
-    model_parallel: bool,
-    allow_unused_parameters: bool = False,
-) -> torch.nn.Module:
-    """用一个官方 DDP reducer 同步多设备 RL loss 的全部可训练参数。"""
-
-    if world_size <= 1 or not model_parallel:
-        return training_step
-    from torch.nn.parallel import DistributedDataParallel as DDP
-
-    return DDP(
-        training_step,
-        device_ids=None,
-        output_device=None,
-        find_unused_parameters=allow_unused_parameters,
-        static_graph=not allow_unused_parameters,
     )
 
 
@@ -920,6 +888,7 @@ def train_rl(
         )
         algorithm = RLAlgorithm(
             history_size=config.predictor.history_size,
+            wm_prediction_steps=config.agent.planning.horizon,
             sigreg=(
                 SequenceSIGReg(
                     knots=config.predictor.sigreg_knots,
@@ -946,6 +915,7 @@ def train_rl(
         model_runtime = RLModelRuntime(
             agent=agent,
             input_builder=input_builder,
+            state_source=config.gradient.state_source,
             representation_to_backbone=(
                 config.gradient.representation_to_backbone
             ),
@@ -960,25 +930,11 @@ def train_rl(
                 else None
             ),
         )
-        training_step = _wrap_training_step_ddp(
-            RLTrainingStepModule(
-                algorithm=algorithm,
-                runtime=model_runtime,
-                token_value_head=token_value_head,
-            ),
-            world_size=world,
-            model_parallel=loaded.pair_parallel,
-            allow_unused_parameters=planning_enabled,
-        )
         optimization_runtime = OptimizationRuntime(
             optimizer=optimizer,
             synchronized_modules=(
-                (training_step,)
-                if distributed_modules.strategy == "model_parallel_ddp"
-                else (
-                    *agent.synchronized_modules,
-                    *((token_value_head,) if token_value_head is not None else ()),
-                )
+                *agent.synchronized_modules,
+                *((token_value_head,) if token_value_head is not None else ()),
             ),
             after_step=(
                 lambda: vision_ema.update(agent.backbone.model)
@@ -988,7 +944,8 @@ def train_rl(
         )
         loop = RLTrainingLoop(
             config=config,
-            training_step=training_step,
+            algorithm=algorithm,
+            model_runtime=model_runtime,
             optimization_runtime=optimization_runtime,
             device=training_device,
             train_collector=train_collector,

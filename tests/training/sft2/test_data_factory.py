@@ -5,8 +5,8 @@ import pytest
 
 from nimloth.training.sft2.data.factory import _verify_cache_manifest
 from nimloth.util.cache import (
-    COMPACT_CACHE_FORMAT_V1,
-    LEGACY_TRANSITION_EXPANSION_VERSION,
+    COMPACT_CACHE_FORMAT,
+    TRANSITION_EXPANSION_VERSION,
     cache_fingerprint,
 )
 
@@ -25,7 +25,6 @@ def _cache_fixture(tmp_path, *, cached_count: int):
     cache_dir.mkdir()
     config = SimpleNamespace(
         require_prebuilt_cache=True,
-        preprocess_cache_format="compact",
         max_length=128,
         max_pixels=100352,
         value_gamma=1.0,
@@ -44,15 +43,15 @@ def _cache_fixture(tmp_path, *, cached_count: int):
         value_gamma=config.value_gamma,
         latent_token_count=config.latent_token_count,
         mask_latent_query_labels=config.mask_latent_query_labels,
-        cache_format=COMPACT_CACHE_FORMAT_V1,
+        cache_format=COMPACT_CACHE_FORMAT,
         image_dtype=config.preprocess_cache_image_dtype,
         processor_source=str(model_path.resolve()),
-        transition_expansion_version=LEGACY_TRANSITION_EXPANSION_VERSION,
+        transition_expansion_version=TRANSITION_EXPANSION_VERSION,
     )
     (cache_dir / "manifest.json").write_text(
         json.dumps(
             {
-                "format": COMPACT_CACHE_FORMAT_V1,
+                "format": COMPACT_CACHE_FORMAT,
                 "base_fingerprint": fingerprint,
                 "count": cached_count,
             }
@@ -60,6 +59,27 @@ def _cache_fixture(tmp_path, *, cached_count: int):
         encoding="utf-8",
     )
     return cache_dir, jsonl_path, config, SimpleNamespace(tokenizer=_Tokenizer())
+
+
+def test_v1_prebuilt_cache_requires_rebuild(tmp_path) -> None:
+    cache_dir, jsonl_path, config, processor = _cache_fixture(
+        tmp_path,
+        cached_count=100,
+    )
+    manifest_path = cache_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["format"] = "dedup_sharded_v1"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Rebuild the cache"):
+        _verify_cache_manifest(
+            cache_dir=cache_dir,
+            jsonl_path=jsonl_path,
+            expected_count=100,
+            allow_prefix_subset=False,
+            config=config,
+            processor=processor,
+        )
 
 
 def test_required_cache_can_keep_its_original_processor_source(tmp_path) -> None:

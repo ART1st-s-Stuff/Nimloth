@@ -4,6 +4,8 @@
 评估、SFT2 和 RL 统一使用这套 schema。
 
 - `schema.py`：统一 trajectory 记录、序列化和 prompt 重建。
+- `record_format.py`：当前持久化版本、reward来源和最小结构契约。
+- `migration.py`：把未版本化JSONL离线转换为当前格式并写SHA256 manifest。
 - `validation.py`：落盘和训练前的跨字段完整性校验。
 - `from_agent.py`：把 `AgentEpisode` 转成 trajectory，不参与 environment 交互。
 - `storage.py`：JSONL 持久化。
@@ -13,6 +15,24 @@
 - `batch.py`：阶段 assembler 与算法之间的 transition batch 契约。
 
 本包中的任何模块都不得导入 `nimloth.training`。
+
+训练读取器只接受`record_format: nimloth_trajectory_v1`。旧的`messages`交替列表、
+`nav_instruction`、`prompt_version`/`latent_token_count`和旧planner trace只在迁移命令
+中解析：
+
+```bash
+python -m nimloth.rollout.migration \
+  --source old.jsonl \
+  --output migrated.jsonl \
+  --missing-action-space-id navigation \
+  --missing-action-space-version 1 \
+  --missing-reward-provenance trajectory_terminal_reward
+```
+
+这些`--missing-*`参数是调用者对源数据语义的声明，会写入manifest。迁移器只拆分
+源记录真实存在的system/user/assistant文本，不生成CoT、token trace、Qwen hidden或
+WM state。旧planner trace若缺少行为所有权，还必须显式声明
+`--legacy-planner-semantics=distillation_world_model`。
 
 在线调用链为：
 

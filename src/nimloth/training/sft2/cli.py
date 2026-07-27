@@ -72,7 +72,7 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         "--latent-token-count",
         type=int,
         default=1,
-        help="Number of latent query tokens per step (1 keeps legacy single-token behavior).",
+        help="Number of latent query tokens per step.",
     )
     ap.add_argument(
         "--latent-query-mode",
@@ -87,12 +87,6 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Optionally tune a small additive latent-query embedding adapter.",
     )
     ap.add_argument("--query-lr", type=float, default=5e-5)
-    ap.add_argument(
-        "--mask-latent-query-labels",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Deprecated compatibility alias: true=inject, false=generate.",
-    )
     ap.add_argument("--max-train-records", type=int, default=-1)
     ap.add_argument("--max-val-records", type=int, default=-1)
     ap.add_argument("--max-val-batches", type=int, default=-1)
@@ -153,12 +147,6 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         ),
     )
     ap.add_argument("--preprocess-workers", type=int, default=4, help="Workers for building preprocess cache.")
-    ap.add_argument(
-        "--preprocess-cache-format",
-        choices=("compact", "legacy"),
-        default="compact",
-        help="compact deduplicates images into mmap shards; legacy stores full pixels per prefix.",
-    )
     ap.add_argument(
         "--preprocess-cache-image-dtype",
         choices=("bfloat16", "float16", "float32"),
@@ -239,7 +227,6 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = ap.parse_args(remaining)
     args.latent_query_mode = resolve_latent_query_mode(
         args.latent_query_mode,
-        args.mask_latent_query_labels,
         default="inject",
     )
     args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)

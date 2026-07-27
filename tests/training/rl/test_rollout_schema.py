@@ -16,6 +16,7 @@ from nimloth.agent import AgentTranscript, NimlothPromptTemplate
 from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
 from nimloth.rollout import RolloutTrajectory
+from nimloth.rollout.record_format import STEP_REWARD_PROVENANCE
 from nimloth.rollout.transitions import discounted_action_value_targets
 
 
@@ -50,10 +51,10 @@ def _trajectory() -> RolloutTrajectory:
         action_names=["moveahead"],
         action_log_probs=[[-math.log(8.0)] * 8],
         instruction="Move near the couch.",
+        reward_provenance=STEP_REWARD_PROVENANCE,
+        rewards=[0.0],
+        terminated=True,
         split="train",
-        messages=(
-            prompt.build_supervised_prompt(full_transcript).unbound_messages()
-        ),
         system_prompt=system_prompt,
         observation_texts=list(observation_texts),
         assistant_responses=[response],
@@ -177,11 +178,10 @@ def test_missing_policy_prompt_is_rejected() -> None:
         validate_trajectories([trajectory])
 
 
-def test_stale_prompt_version_is_rejected() -> None:
+def test_missing_prompt_template_is_rejected() -> None:
     trajectory = _trajectory()
     trajectory.prompt_template_spec = None
-    trajectory.prompt_version = "old-prompt"
-    with pytest.raises(RuntimeError, match="unsupported prompt version"):
+    with pytest.raises(RuntimeError, match="no prompt_template_spec"):
         validate_trajectories([trajectory])
 
 
@@ -189,13 +189,6 @@ def test_policy_prompt_must_match_structured_transcript() -> None:
     trajectory = _trajectory()
     trajectory.policy_messages[0][-1]["content"] = "different prompt"
     with pytest.raises(RuntimeError, match="does not match the shared Agent template"):
-        validate_trajectories([trajectory])
-
-
-def test_legacy_latent_count_cannot_drift_from_template_spec() -> None:
-    trajectory = _trajectory()
-    trajectory.latent_token_count = 8
-    with pytest.raises(RuntimeError, match="does not match the prompt template"):
         validate_trajectories([trajectory])
 
 
@@ -302,11 +295,16 @@ def test_step_rewards_and_episode_status_roundtrip() -> None:
 def test_token_credit_requires_step_reward_provenance() -> None:
     trajectory = _trajectory()
     trajectory.policy_credit_assignment = "token"
+    trajectory.reward_provenance = "trajectory_terminal_reward"
+    trajectory.rewards = []
+    trajectory.terminated = False
     with pytest.raises(RuntimeError, match="token credit requires step rewards"):
         validate_trajectories([trajectory])
 
+    trajectory.reward_provenance = "step_rewards"
     trajectory.rewards = [0.0]
     trajectory.truncated = True
+    trajectory.terminated = False
     validate_trajectories([trajectory])
 
 
@@ -314,6 +312,7 @@ def test_step_reward_returns_preserve_intermediate_rewards() -> None:
     record = {
         "action_indices": [0, 1, 2],
         "reward": 2.5,
+        "reward_provenance": STEP_REWARD_PROVENANCE,
         "rewards": [1.0, -0.5, 2.0],
         "terminated": True,
         "truncated": False,
@@ -326,6 +325,7 @@ def test_truncated_return_requires_explicit_bootstrap() -> None:
     record = {
         "action_indices": [0, 1],
         "reward": 0.0,
+        "reward_provenance": STEP_REWARD_PROVENANCE,
         "rewards": [-0.1, 0.1],
         "terminated": False,
         "truncated": True,

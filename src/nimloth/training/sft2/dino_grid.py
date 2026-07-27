@@ -34,12 +34,6 @@ class DINOGridBatchAssembler:
     def collate_transition_samples(self, batch: list[Any]) -> Any:
         return self.base.collate_transition_samples(batch)
 
-    def collate_cached_transition_batch(
-        self,
-        batch: list[dict[str, Any]],
-    ) -> Any:
-        return self.base.collate_cached_transition_batch(batch)
-
     def prepare(self, raw_batch: Any) -> SFT2Batch:
         base = self.base.prepare(raw_batch)
         if len(base.next_image_paths) != base.batch_size or any(

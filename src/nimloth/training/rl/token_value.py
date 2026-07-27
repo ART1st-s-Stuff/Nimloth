@@ -1,4 +1,4 @@
-"""Qwen sampled-token critic used by token-level PPO credit."""
+"""token 级 PPO credit 使用的 Qwen sampled-token critic。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from torch import nn
 
 
 class TokenValueHead(nn.Module):
-    """Map the hidden state before each sampled token to a scalar value."""
+    """把每个 sampled token 之前的 hidden state 映射为一个标量 value。"""
 
     def __init__(self, input_dim: int, hidden_dim: int) -> None:
         super().__init__()

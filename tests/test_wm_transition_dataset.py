@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from nimloth.agent import PROMPT_VERSION
 from nimloth.environment.navigation import NUM_NAVIGATION_ACTIONS
+from nimloth.rollout.record_format import (
+    TRAJECTORY_RECORD_FORMAT,
+    TRAJECTORY_REWARD_PROVENANCE,
+)
 from nimloth.rollout.transitions import (
     TransitionSample,
     discounted_action_value_targets,
@@ -12,37 +15,34 @@ from nimloth.rollout.transitions import (
 
 
 def _make_record(num_steps: int = 2) -> dict:
-    messages = [{"role": "system", "content": "sys"}]
     image_paths = []
     action_indices = []
+    observation_texts = []
+    assistant_responses = []
     for step in range(num_steps):
         image_paths.append(f"/tmp/img_{step}.png")
-        messages.append({"role": "user", "content": f"observe <image> step {step}"})
-        messages.append(
-            {
-                "role": "assistant",
-                "content": (
-                    f"<think>t{step}</think><|latent_state|>"
-                    f"<|action_start|><|action_({step % NUM_NAVIGATION_ACTIONS})|><|action_end|>"
-                ),
-            }
+        observation_texts.append(f"observe <image> step {step}")
+        assistant_responses.append(
+            f"<think>t{step}</think><|latent_state|>"
+            f"<|action_start|><|action_({step % NUM_NAVIGATION_ACTIONS})|><|action_end|>"
         )
         action_indices.append(step % NUM_NAVIGATION_ACTIONS)
     image_paths.append(f"/tmp/img_{num_steps}.png")
-    messages.append(
-        {
-            "role": "user",
-            "content": f"observe <image> step {num_steps}",
-        }
-    )
+    observation_texts.append(f"observe <image> step {num_steps}")
     return {
+        "record_format": TRAJECTORY_RECORD_FORMAT,
         "id": "train/shard_000/000001",
         "split": "train",
         "success": True,
-        "messages": messages,
+        "system_prompt": "sys",
+        "observation_texts": observation_texts,
+        "assistant_responses": assistant_responses,
         "image_paths": image_paths,
         "action_indices": action_indices,
+        "action_space_id": "navigation",
+        "action_space_version": 1,
         "reward": 1.0,
+        "reward_provenance": TRAJECTORY_REWARD_PROVENANCE,
         "terminal_assistant_prefix": (
             "<think>terminal thought</think><|latent_state|><|action_start|>"
         ),
@@ -84,10 +84,11 @@ def test_expand_record_transitions_alignment() -> None:
     ]
 
 
-def test_expand_skips_when_no_next_image() -> None:
+def test_expand_rejects_missing_next_image() -> None:
     record = _make_record(num_steps=1)
     record["image_paths"] = ["/tmp/img_0.png"]
-    assert expand_record_transitions(record) == []
+    with pytest.raises(ValueError, match="expected one final image"):
+        expand_record_transitions(record)
 
 
 def test_expand_rejects_invalid_action_index() -> None:
@@ -109,7 +110,11 @@ def test_expand_record_transitions_configurable_value_gamma() -> None:
 
 
 def test_discounted_action_value_targets() -> None:
-    record = {"action_indices": [0, 1, 2], "reward": 1.0}
+    record = {
+        "action_indices": [0, 1, 2],
+        "reward": 1.0,
+        "reward_provenance": TRAJECTORY_REWARD_PROVENANCE,
+    }
     values = discounted_action_value_targets(record, gamma=0.9)
     assert len(values) == 3
     assert values[0] == pytest.approx(0.9 ** 2)
@@ -118,14 +123,18 @@ def test_discounted_action_value_targets() -> None:
 
 def test_structured_agent_record_uses_shared_prompt_for_sft2_prefixes() -> None:
     record = {
+        "record_format": TRAJECTORY_RECORD_FORMAT,
         "id": "structured",
         "split": "train",
         "success": True,
         "reward": 1.0,
+        "reward_provenance": TRAJECTORY_REWARD_PROVENANCE,
         "system_prompt": "system",
         "observation_texts": ["first <image>", "second <image>", "final <image>"],
         "image_paths": ["first.png", "second.png", "final.png"],
         "action_indices": [0, 3],
+        "action_space_id": "navigation",
+        "action_space_version": 1,
         "assistant_responses": [
             (
                 "<think>first thought</think><|latent_state|>"
@@ -139,8 +148,6 @@ def test_structured_agent_record_uses_shared_prompt_for_sft2_prefixes() -> None:
         "terminal_assistant_prefix": (
             "<think>terminal thought</think><|latent_state|><|action_start|>"
         ),
-        "prompt_version": PROMPT_VERSION,
-        "latent_token_count": 1,
     }
 
     transitions = expand_record_transitions(record)
@@ -163,6 +170,6 @@ def test_structured_agent_record_uses_shared_prompt_for_sft2_prefixes() -> None:
 
 def test_expand_requires_persisted_terminal_cot() -> None:
     record = _make_record(num_steps=1)
-    del record["terminal_assistant_prefix"]
+    record["terminal_assistant_prefix"] = ""
     with pytest.raises(ValueError, match="generate terminal CoT"):
         expand_record_transitions(record)

@@ -1,4 +1,4 @@
-"""Load only the SFT2 modules required by rollout-time WM planning."""
+"""只加载 rollout 阶段 WM planning 所需的 SFT2 模块。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from nimloth.wm.grid import (
 
 
 class _PlanningGridWorldModel(WorldModel):
-    """Rollout-time grid WM with the same mean-pooled ValueHead contract."""
+    """rollout 阶段使用、保持相同 mean-pool ValueHead 契约的 grid WM。"""
 
     def predict_action_values(self, state: torch.Tensor) -> torch.Tensor:
         if state.ndim < 3:
@@ -57,7 +57,7 @@ def load_planning_world_model(
     value_head_checkpoint: Path,
     device: torch.device,
 ) -> WorldModel:
-    """Load projector, predictor and action value head without DINO auxiliaries."""
+    """加载 projector、predictor 和动作 ValueHead，不加载 DINO 辅助模块。"""
 
     qwen_hidden_dim = backbone_hidden_size(qwen_config)
     if _is_grid_predictor_checkpoint(wm_checkpoint):

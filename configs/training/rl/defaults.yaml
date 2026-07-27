@@ -16,6 +16,7 @@ freeze:
 
 # WM/value/SIGReg 默认共同训练 Backbone；关闭后只训练 WM 侧可训练参数。
 gradient:
+  state_source: recompute
   representation_to_backbone: true
   backbone_lr: 1e-6
 

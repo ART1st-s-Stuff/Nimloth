@@ -64,6 +64,10 @@ def test_rl_loads_self_contained_grid_state_without_sft1_sidecars(tmp_path) -> N
     config = parse_rl_config(
         {
             "freeze": {"state_proj": True},
+            "gradient": {
+                "state_source": "recompute",
+                "representation_to_backbone": True,
+            },
             "predictor": {"emb_dim": 2, "history_size": 2},
             "validation": {"enabled": False, "envs": 0},
         }

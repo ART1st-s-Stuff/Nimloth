@@ -40,7 +40,7 @@ export NCCL_DEBUG=WARN
   echo "Output: ${TRAIN_OUT}"
 } | tee -a "${LOG}"
 
-# ---- Verify SFT2 checkpoint ----
+# ---- 校验 SFT2 checkpoint ----
 echo "=== Checking SFT2 best checkpoint ===" | tee -a "${LOG}"
 for f in state_proj.pt wm_predictor/predictor.pt value_head/value_head.pt; do
   if [ ! -f "${SFT2_BEST}/${f}" ]; then
@@ -50,7 +50,7 @@ for f in state_proj.pt wm_predictor/predictor.pt value_head/value_head.pt; do
   echo "  OK: ${SFT2_BEST}/${f}" | tee -a "${LOG}"
 done
 
-# ---- Smoke test: load checkpoint, run 1 training step with synthetic data ----
+# ---- 加载 checkpoint，并用 synthetic data 运行一步训练 ----
 echo "=== Running RL smoke test ===" | tee -a "${LOG}"
 
 python3 -c "
@@ -71,6 +71,7 @@ from nimloth.backbone.qwen25vl.model import Qwen25VLBackbone
 from nimloth.wm.model import WorldModel
 from nimloth.training.rl.checkpoint import save_rl_checkpoint
 from nimloth.training.rl.algorithm import RLAlgorithm, RLBatch
+from nimloth.training.rl.runtime import RLModelRuntime
 
 sft2_best = Path('${SFT2_BEST}')
 out_dir = Path('${TRAIN_OUT}')
@@ -79,19 +80,19 @@ emb_dim = 128
 
 print(json.dumps({'step': 'loading_checkpoint'}))
 
-# Load StateProjector
+# 加载 StateProjector
 state_proj = StateProjector(qwen_hidden_dim=2048, lewm_emb_dim=emb_dim).to(device)
 sp_path = sft2_best / 'state_proj.pt'
 state_proj.load_state_dict(torch.load(sp_path, map_location=device, weights_only=True))
 state_proj.eval()
 print(json.dumps({'loaded': 'state_proj'}))
 
-# Load LatentWMPredictor
+# 加载 LatentWMPredictor
 wm_predictor = LatentWMPredictor.load_checkpoint(sft2_best / 'wm_predictor', map_location=device).to(device)
 wm_predictor.train()
 print(json.dumps({'loaded': 'wm_predictor', 'history_size': wm_predictor.config.history_size}))
 
-# Load ValueHead
+# 加载 ValueHead
 value_head = ValueHead.load_checkpoint(sft2_best / 'value_head', emb_dim=emb_dim, map_location=device).to(device)
 value_head.train()
 print(json.dumps({'loaded': 'value_head'}))
@@ -111,63 +112,84 @@ agent = Agent(
     ),
 )
 
-# Synthetic batch: random Qwen hidden states
+# 构造随机 Qwen hidden state sequence
 B = 8
 hidden = 2048
-hidden_cur = torch.randn(B, hidden, device=device)
-hidden_next = torch.randn(B, hidden, device=device)
-actions = torch.randint(0, 8, (B,), device=device)
-value_targets = torch.randn(B, device=device)
+history_size = wm_predictor.config.history_size
+hidden_sequence = torch.randn(
+    B,
+    history_size + 1,
+    state_proj.latent_token_count,
+    hidden,
+    device=device,
+)
+actions = torch.randint(0, 8, (B, history_size), device=device)
+value_targets = torch.randn(B, history_size, device=device)
+
+class SyntheticWindow:
+    def __init__(self, state_hiddens):
+        self._state_hiddens = state_hiddens
+
+    def rollout_state_hiddens(self):
+        return self._state_hiddens
+
+windows = tuple(SyntheticWindow(row) for row in hidden_sequence)
 
 print(json.dumps({'step': 'training', 'batch_size': B}))
 
 optimizer = torch.optim.AdamW(
-    list(wm_predictor.parameters()) + list(value_head.parameters()),
+    list(state_proj.parameters())
+    + list(wm_predictor.parameters())
+    + list(value_head.parameters()),
     lr=1e-4
 )
 
 algorithm = RLAlgorithm(
-    agent=agent,
-    optimizer=optimizer,
-    device=device,
-    vision_ema=None,
-    policy_replay=None,
+    history_size=history_size,
+    wm_prediction_steps=2,
+    sigreg=None,
+    sigreg_weight=0.0,
     value_rank_margin=0.1,
     value_rank_weight=1.0,
     ppo_clip_ratio=0.2,
     entropy_weight=0.0,
 )
-output = algorithm.training_step(RLBatch(
-    transitions=(),
-    current_hidden=hidden_cur,
-    next_hidden=hidden_next,
+runtime = RLModelRuntime(
+    agent=agent,
+    input_builder=None,
+    state_source='rollout',
+    representation_to_backbone=False,
+    policy_replay=None,
+)
+output = algorithm.sequence_step(runtime, RLBatch(
+    windows=windows,
     action_indices=actions,
     return_targets=value_targets,
-    old_log_probs=torch.zeros(B, device=device),
+    old_log_probs=torch.empty(0, device=device),
 ))
 pred_loss = output.losses['wm']
 print(json.dumps({'pred_loss': float(pred_loss.item()), 'wm_mse': float(pred_loss.item())}))
 
-# Value loss (project current hidden first)
+# Value loss
 val_loss = output.losses['value']
 print(json.dumps({'val_loss': float(val_loss.item())}))
 
-# Backward
+# 反向传播与参数更新
 total_loss = output.loss
 optimizer.zero_grad()
 total_loss.backward()
 optimizer.step()
 print(json.dumps({'step': 'backward_done', 'total_loss': float(total_loss.item())}))
 
-# Test multi-step rollout
+# 测试多步 WM rollout
 wm_predictor.eval()
 with torch.no_grad():
-    s = state_proj(hidden_cur[:2]).float()
+    s = state_proj(hidden_sequence[:2, 0]).float()
     a_seq = torch.randint(0, 8, (2, 5), device=device)
     rollout = wm_predictor.rollout_states(s, a_seq)
     print(json.dumps({'rollout_shape': list(rollout.shape)}))
 
-# Save checkpoint
+# 保存 checkpoint
 save_rl_checkpoint(
     out_dir / 'best',
     agent=agent,
@@ -181,7 +203,7 @@ save_rl_checkpoint(
 )
 print(json.dumps({'checkpoint': 'saved', 'path': str(out_dir / 'best')}))
 
-# Verify
+# 校验 checkpoint
 rl_state = torch.load(out_dir / 'best' / 'rl_state.pt', map_location='cpu', weights_only=False)
 print(json.dumps({'rl_state': {k: v for k, v in rl_state.items() if k != 'optimizer'}}))
 

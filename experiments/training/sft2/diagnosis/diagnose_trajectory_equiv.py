@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
+from nimloth.agent import bind_image_placeholders
 from nimloth.backbone.qwen25vl.batch import batch_single_encoding, encode_qwen_item
 from nimloth.backbone.qwen25vl.latent import forward_qwen_last_hidden
 from nimloth.latent import (
@@ -19,10 +21,12 @@ from nimloth.latent import (
     find_last_latent_state_index,
     special_token_ids,
 )
+from nimloth.rollout.transitions import (
+    bind_transition_prompt,
+    expand_record_transitions,
+    load_jsonl_records,
+)
 from nimloth.training.sft2.diagnosis.trajectory_forward import _prefix_latent
-from nimloth.agent import bind_image_placeholders
-from nimloth.rollout.transitions import bind_transition_prompt
-from nimloth.rollout.transitions import expand_record_transitions, load_jsonl_records
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,6 +37,25 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--max-length", type=int, default=12000)
     ap.add_argument("--max-pixels", type=int, default=602112)
     return ap.parse_args()
+
+
+def _episode_messages(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """从当前结构化 trajectory 字段重建包含末状态的完整消息。"""
+
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": str(record["system_prompt"])}
+    ]
+    assistant_responses = record["assistant_responses"]
+    for step_index, observation in enumerate(record["observation_texts"]):
+        messages.append({"role": "user", "content": str(observation)})
+        if step_index < len(assistant_responses):
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": str(assistant_responses[step_index]),
+                }
+            )
+    return bind_image_placeholders(messages, record["image_paths"])
 
 
 @torch.no_grad()
@@ -46,34 +69,64 @@ def main() -> int:
     add_special_tokens(processor.tokenizer)
     token_id_map = special_token_ids(processor.tokenizer)
 
-    record = load_jsonl_records(args.train_jsonl, max_records=args.record_index + 1)[args.record_index]
+    records = load_jsonl_records(
+        args.train_jsonl,
+        max_records=args.record_index + 1,
+    )
+    record = records[args.record_index]
     transitions = expand_record_transitions(record)
-    image_paths = [str(p) for p in record.get("image_paths", [])]
-    full_messages = bind_image_placeholders(list(record.get("messages", [])), image_paths)
-    full_enc = encode_qwen_item(full_messages, processor, args.max_length, include_labels=False)
+    full_messages = _episode_messages(record)
+    full_enc = encode_qwen_item(
+        full_messages,
+        processor,
+        args.max_length,
+        include_labels=False,
+    )
     full_ids = full_enc["input_ids"].tolist()
     full_indices = find_all_latent_state_indices(full_enc["input_ids"], token_id_map)
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        args.model, torch_dtype=torch.bfloat16, attn_implementation="sdpa", trust_remote_code=True
+        args.model,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+        trust_remote_code=True,
     )
     model.resize_token_embeddings(len(processor.tokenizer))
     model.to(device).eval()
-    full_hidden = forward_qwen_last_hidden(model, batch_single_encoding(full_enc), device)
+    full_hidden = forward_qwen_last_hidden(
+        model,
+        batch_single_encoding(full_enc),
+        device,
+    )
 
     steps = []
     for sample in transitions[:8]:
         step = sample.step_index
         prefix_msgs = bind_transition_prompt(sample)
-        prefix_enc = encode_qwen_item(prefix_msgs, processor, args.max_length, include_labels=False)
+        prefix_enc = encode_qwen_item(
+            prefix_msgs,
+            processor,
+            args.max_length,
+            include_labels=False,
+        )
         prefix_ids = prefix_enc["input_ids"].tolist()
-        prefix_latent_pos = find_last_latent_state_index(prefix_enc["input_ids"], token_id_map)
-        prefix_latent = _prefix_latent(model, sample, processor, token_id_map, device, args.max_length)
+        prefix_latent_pos = find_last_latent_state_index(
+            prefix_enc["input_ids"],
+            token_id_map,
+        )
+        prefix_latent = _prefix_latent(
+            model,
+            sample,
+            processor,
+            token_id_map,
+            device,
+            args.max_length,
+        )
         full_latent_aligned = extract_latent_state(full_hidden[0], prefix_latent_pos)
         wrong_idx = full_indices[step] if step < len(full_indices) else None
-        full_latent_wrong = (
-            extract_latent_state(full_hidden[0], wrong_idx) if wrong_idx is not None else None
-        )
+        full_latent_wrong = None
+        if wrong_idx is not None:
+            full_latent_wrong = extract_latent_state(full_hidden[0], wrong_idx)
         steps.append(
             {
                 "step_index": step,
@@ -81,7 +134,9 @@ def main() -> int:
                 "aligned_full_latent_idx": prefix_latent_pos,
                 "wrong_full_latent_idx_step": wrong_idx,
                 "prefix_ids_eq_full_prefix": full_ids[: len(prefix_ids)] == prefix_ids,
-                "max_latent_abs_diff_aligned": float((prefix_latent - full_latent_aligned).abs().max().item()),
+                "max_latent_abs_diff_aligned": float(
+                    (prefix_latent - full_latent_aligned).abs().max().item()
+                ),
                 "max_latent_abs_diff_wrong_idx": (
                     float((prefix_latent - full_latent_wrong).abs().max().item())
                     if full_latent_wrong is not None

@@ -14,7 +14,10 @@ from nimloth.training.rl.cli import main, parse_rl_args
 def _raw_config() -> dict:
     return {
         "freeze": {"state_proj": True},
-        "gradient": {"representation_to_backbone": True},
+        "gradient": {
+            "state_source": "recompute",
+            "representation_to_backbone": True,
+        },
         "predictor": {"emb_dim": 128, "history_size": 1},
         "rollout": {
             "train_datasets": ["base_train"],
@@ -22,6 +25,13 @@ def _raw_config() -> dict:
         },
         "validation": {"checkpoint_metric": "success_rate"},
         "rl": {"iterations": 10},
+    }
+
+
+def _use_rollout_states(raw: dict) -> None:
+    raw["gradient"] = {
+        "state_source": "rollout",
+        "representation_to_backbone": False,
     }
 
 
@@ -62,6 +72,7 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert config.actor.credit_assignment == "action"
     assert config.actor.max_response_tokens == 64
     assert config.gradient.representation_to_backbone is True
+    assert config.gradient.state_source == "recompute"
     assert config.agent.planning.enabled is False
     assert config.distributed.nodes == 1
     assert config.distributed.world_size == 1
@@ -107,6 +118,7 @@ def test_formal_h2_config_preserves_validated_online_contract() -> None:
     assert config.actor.action_objective == "distillation"
     assert config.actor.credit_assignment == "action"
     assert config.actor.max_response_tokens == 512
+    assert config.gradient.state_source == "rollout"
     assert config.training.save_interval == 10
     assert config.validation.enabled is False
     assert config.distributed.total_gpus == 4
@@ -166,6 +178,7 @@ def test_rl_config_rejects_impossible_distributed_topology() -> None:
 
 def test_rl_config_parses_agent_planning() -> None:
     raw = _raw_config()
+    _use_rollout_states(raw)
     raw["rl"].update({"envs_per_iteration": 2, "batch_size": 2})
     raw["actor"] = {
         "enabled": True,
@@ -193,6 +206,7 @@ def test_rl_config_parses_agent_planning() -> None:
 
 def test_planner_episode_training_requires_every_collected_episode() -> None:
     raw = _raw_config()
+    _use_rollout_states(raw)
     raw["rl"].update({"envs_per_iteration": 2, "batch_size": 1})
     raw["actor"] = {
         "enabled": True,
@@ -216,6 +230,7 @@ def test_planner_episode_training_requires_every_collected_episode() -> None:
 
 def test_planner_episode_training_requires_action_replay() -> None:
     raw = _raw_config()
+    _use_rollout_states(raw)
     raw["agent"] = {"planning": {"enabled": True}}
 
     with pytest.raises(ValueError, match="actor.enabled=true"):
@@ -266,6 +281,7 @@ def test_rl_config_requires_explicit_token_credit_semantics() -> None:
 
 def test_planner_distillation_requires_explicit_search_and_loss_weight() -> None:
     raw = _raw_config()
+    _use_rollout_states(raw)
     raw["rl"]["batch_size"] = 8
     raw["agent"] = {
         "planning": {
@@ -303,6 +319,7 @@ def test_planner_distillation_requires_explicit_search_and_loss_weight() -> None
 
 def test_planner_beam_width_matches_search_mode() -> None:
     raw = _raw_config()
+    _use_rollout_states(raw)
     raw["rl"]["batch_size"] = 8
     raw["agent"] = {
         "planning": {
@@ -367,6 +384,20 @@ def test_rl_config_rejects_unknown_credit_assignment() -> None:
     raw = _raw_config()
     raw["actor"] = {"credit_assignment": "bi_level_gae"}
     with pytest.raises(ValueError, match="credit_assignment"):
+        parse_rl_config(raw)
+
+
+def test_rl_config_requires_explicit_state_source() -> None:
+    raw = _raw_config()
+    del raw["gradient"]["state_source"]
+    with pytest.raises(ValueError, match="gradient.state_source must be explicit"):
+        parse_rl_config(raw)
+
+
+def test_rl_config_rejects_rollout_states_with_backbone_gradient() -> None:
+    raw = _raw_config()
+    raw["gradient"]["state_source"] = "rollout"
+    with pytest.raises(ValueError, match="requires gradient.state_source=recompute"):
         parse_rl_config(raw)
 
 

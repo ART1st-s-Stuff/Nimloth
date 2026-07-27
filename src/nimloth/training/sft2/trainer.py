@@ -376,7 +376,6 @@ def train_sft2(args=None) -> int:
     args.latent_token_count = int(getattr(args, "latent_token_count", 1))
     args.latent_query_mode = resolve_latent_query_mode(
         getattr(args, "latent_query_mode", None),
-        getattr(args, "mask_latent_query_labels", None),
         default="inject",
     )
     args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)
@@ -470,7 +469,6 @@ def train_sft2(args=None) -> int:
                     "latent_query_mode": args.latent_query_mode,
                     "query_tune": args.query_tune,
                     "mask_latent_query_labels": args.mask_latent_query_labels,
-                    "preprocess_cache_format": args.preprocess_cache_format,
                     "preprocess_cache_image_dtype": args.preprocess_cache_image_dtype,
                     "require_prebuilt_cache": args.require_prebuilt_cache,
                     "dino_grid_cache": (

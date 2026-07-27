@@ -4,6 +4,61 @@
 
 ---
 
+## 2026-07-27：确认 DINO-grid projector 被错误前移到 SFT1
+
+- 人类明确 `SharedSlotProjector` 应由 SFT2 创建和训练，SFT1 不拥有该 projector。
+  源码历史核对确认提交 `6c1828a0` 曾把它加入 SFT1 optimizer，用 DINO grid MSE
+  训练并随 SFT1 checkpoint 导出；当前 SFT2 随后把它冻结、再增加
+  `LeWMGridEncoder + EMATargetGridEncoder`。
+- 因此旧的“冻结 SFT1 projector，再训练 online grid encoder”的阶段归属错误，
+  Grid EMA 的既有设计理由也失效。现有 DINO-grid SFT2/RL checkpoint 只能证明这条
+  错误实现的机械行为，不能证明人类指定的 SFT1→SFT2 语义正确。
+- 已登记 `ai_rules/known_errors/E0065_do_not_move_sft2_grid_projector_into_sft1.md`。
+  当前只完成问题确认，尚未修改模型/loader/checkpoint，尚未测试。修复前必须先确认
+  SFT2 target-state 与 stop-gradient 的权威语义，不能自行再发明替代 encoder/EMA。
+
+## 2026-07-26：RL TD 注释、直接算法接口与模块级官方 DDP
+
+- `RLAlgorithm.temporal_difference_step` 现在逐段说明 retained history、起点
+  StateProjector 梯度、WM segment 自回归、终点 stop-gradient target、Qwen 动作蒸馏及
+  `total_td_steps` 归一化；`_predict_executed_segment` 也明确 segment 中间 state 只来自
+  WM，不会额外调用 Qwen。
+- `RLTrainingLoop` 不再把 `RLBatch`、单个 TD step 和 episode tuple 交给同一个
+  `Callable[..., RLStepOutput]`，也没有额外 facade/request。loop 直接调用
+  `RLAlgorithm.temporal_difference_step()`、`monte_carlo_step()`和`sequence_step()`。
+  `RLTrainingStepModule`及`RLTrainingSteps`已完全删除。
+- 分布式同步下沉到参数所有者：模型并行Qwen使用官方
+  `DDP(device_ids=None)`；StateProjector、WM predictor、ValueHead和可选TokenValueHead
+  使用各自的单设备DDP。两rank最小实验确认同一DDP模块可以多次forward、包含no-grad
+  target forward、最后一次backward，并得到一致梯度；没有手工梯度同步。
+- `src/nimloth/training/rl` 中残留的纯英文模块说明、docstring 和解释性注释已改为中文；
+  旧 synthetic smoke 脚本同步到当前 `RLModelRuntime + sequence_step` API，没有增加旧接口别名。
+- 验证：完整 `tests/training/rl` 为 `122 passed, 1 warning`，其中包含两 rank
+  Gloo 的 TD→MC→optimizer step 参数一致性测试；warning 是既有的 B=1 unbiased std
+  对照测试。本轮未提交、未 push、未运行 GPU smoke。
+
+## 2026-07-26：旧trajectory离线迁移与当前训练格式收口
+
+- 人类明确要求旧数据通过迁移工具处理，训练代码不得根据字段是否存在自动兼容。新增
+  `nimloth.rollout.migration`：把未版本化的`messages`交替记录无损拆成结构化transcript，
+  显式迁移`nav_instruction`、旧prompt identity和旧planner action-training字段，输出
+  `record_format=nimloth_trajectory_v1`及SHA256 manifest。缺失action space、reward来源或
+  planner行为所有权必须由命令行声明；迁移器不生成CoT、token trace、Qwen hidden或WM state。
+- `RolloutTrajectory.from_record`、transition dataset、terminal-CoT输入和Qwen policy replay
+  只接受当前契约。删除prompt/action-space/reward/planner trace的运行时默认与action-only
+  replay fallback；完整prompt不再以`messages`和结构化transcript两份副本同时持久化。
+- RL state来源改为显式`gradient.state_source=recompute|rollout`。planner配置固定使用
+  `rollout`且关闭representation-to-Backbone梯度；离线非planner配置使用`recompute`。
+  batch不再根据hidden字段是否为空切换路径，也不存在“一个batch混用两种来源”的兼容分支。
+- SFT2生产路径只接受`dedup_sharded_v2` compact preprocess cache；v1缺少当前terminal
+  next-state encoding，不能二进制伪迁移，必须用`build_preprocess_cache.py`从迁移后的JSONL
+  重建。旧cache builder、reader fallback、legacy collator和CLI format开关均已移除。
+- 验证：受影响定向回归`106 passed`；Nimloth其余可收集测试分组后合计
+  `384 passed, 1 skipped`。其中两个Gloo文件在沙箱外loopback通过`3 passed, 1 skipped`，
+  outer-runner fault-injection为`4 passed`。`compileall`、migration CLI、pipeline `bash -n`
+  和`git diff --check`通过。完整仓库直接收集仍受external/VAGEN/VERL及本地缺少vLLM、PEFT、
+  pandas阻塞；本轮未运行GPU语义实验。代码尚未提交或push，`external/le-wm`未触碰。
+
 ## 2026-07-26：SFT2/RL algorithm 显式化 MC value 目标与 DINO-grid 命名
 
 - 审查确认 SFT2 原本已使用完整episode预先计算的 discounted Monte Carlo
@@ -175,18 +230,14 @@
   后续需与其他修复合并后统一验证loss/gradient、DDP collective、checkpoint和真实20步
   单次optimizer step。
 
-## 2026-07-26：移除 paired-RL 手工梯度同步，改为单一官方 DDP forward 边界
+## 2026-07-26：移除 paired-RL 手工梯度同步（后续 composite DDP 方案已废弃）
 
 - 人类否决了 ID93 后在 `OptimizationRuntime` 内逐参数 `all_reduce` 的 workaround。该实现
   绕过了 DDP reducer，却自行承担 `grad is None`、参数顺序、初始状态一致性和通信生命周期，
   不能作为经过验证的 DDP/FSDP 替代方案；对应字段、同步方法和单元测试已删除。
 - ID93只确认同一个RL loss涉及的旧分布式包装发生collective序列/shape分叉，不能据此断言
-  官方多设备DDP本身不可用。paired路径现在保留原始Qwen/WorldModel/TokenValueHead，完整装配
-  后把它们注册到一个`RLTrainingStepModule`，训练循环只调用这个模块的`forward(batch)`。
-- `world_size > 1`的paired副本仅包装一次官方
-  `DistributedDataParallel(device_ids=None, output_device=None, static_graph=True)`；一个reducer
-  负责total loss涉及的全部可训练参数。checkpoint、resume和EMA继续持有原模块引用，artifact
-  布局未改变；单GPU/FSDP路径保持原有包装。
+  官方多设备DDP本身不可用。随后引入的composite `RLTrainingStepModule`把分布式同步与三种
+  objective分派混在一起，也是不合理设计，已由本页顶部记录的模块级官方DDP替代。
 - 按人类要求本阶段没有运行pytest、导入/编译门禁或GPU实验；只完成静态引用检查和
   `git diff --check`。因此当前结论是“workaround已移除、官方DDP结构已接入”，不是分布式
   正确性已验证。真实多rank loss/gradient/checkpoint等价性须等其余问题合并后统一测试。

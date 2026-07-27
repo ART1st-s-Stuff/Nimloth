@@ -12,6 +12,7 @@ freeze:
   state_proj: true
 
 gradient:
+  state_source: rollout
   representation_to_backbone: false
   backbone_lr: 0.000001
   backbone_weight_decay: 0.01

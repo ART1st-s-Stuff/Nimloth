@@ -42,7 +42,7 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert args.history_size == 4
     assert not hasattr(args, "backbone_rows_per_forward")
     assert not hasattr(args, "offload_backbone_chunk_activations")
-    assert args.preprocess_cache_format == "compact"
+    assert not hasattr(args, "preprocess_cache_format")
     assert args.preprocess_cache_image_dtype == "bfloat16"
     assert args.preprocess_cache_processor_source is None
     assert args.preprocess_workers == 16
@@ -87,20 +87,6 @@ def test_cli_values_override_yaml_defaults() -> None:
     assert args.mask_latent_query_labels is False
     assert args.epochs == 2
     assert args.preprocess_workers == 1
-
-
-def test_cli_rejects_conflicting_mode_and_legacy_mask() -> None:
-    with pytest.raises(ValueError, match="conflicting latent query settings"):
-        parse_sft2_args(
-            [
-                "--config",
-                str(K8_CONFIG),
-                *REQUIRED,
-                "--latent-query-mode",
-                "inject",
-                "--no-mask-latent-query-labels",
-            ]
-        )
 
 
 def test_sft2_config_rejects_unknown_fields() -> None:

@@ -50,7 +50,7 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
         help="Optional override; by default preserve the policy checkpoint processor",
     )
 
-    # WM warm-start
+    # WM 预训练权重加载
     ap.add_argument("--wm-checkpoint", type=Path, default=None,
                     help="Warm-start WM predictor checkpoint dir")
     ap.add_argument("--state-proj-checkpoint", type=Path, default=None,

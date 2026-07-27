@@ -23,6 +23,8 @@ DATA_DIR=${RUN_ROOT}/data
 CACHE_DIR=${RUN_ROOT}/cache/preprocess
 CACHE_METADATA_DIR=${RUN_ROOT}/cache/build_metadata
 TRAIN_OUT=${RUN_ROOT}/train
+MIGRATED_TRAIN_JSONL=${DATA_DIR}/train_structured.jsonl
+MIGRATED_VAL_JSONL=${DATA_DIR}/val_structured.jsonl
 TRAIN_JSONL=${DATA_DIR}/train_terminal_cot.jsonl
 VAL_JSONL=${DATA_DIR}/val_terminal_cot.jsonl
 CONTROLLER_LOG=${RUN_ROOT}.controller.log
@@ -94,9 +96,9 @@ echo "resume_prepared_data_cache=${RESUME_PREPARED_DATA_CACHE}"
 
 if [[ "${RESUME_PREPARED_DATA_CACHE}" == "0" ]]; then
   printf '%s\n' \
-  "# Terminal-CoT filtered DINO-grid SFT2" \
+  "# Migrated terminal-CoT filtered DINO-grid SFT2" \
   "" \
-  "- 状态：pipeline 已启动；terminal CoT、preprocess cache、SFT2 依次执行。" \
+  "- 状态：pipeline 已启动；旧 JSONL 迁移、terminal CoT、preprocess cache、SFT2 依次执行。" \
   "- 代码：dev@${EXPECTED_COMMIT}" \
   "- Slurm：job ${SLURM_JOB_ID}，1 node，8 visible GPUs，node ${SLURM_JOB_NODELIST}" \
   "- W&B name template：nimloth-sft2/${WANDB_RUN_NAME_TEMPLATE}" \
@@ -104,7 +106,7 @@ if [[ "${RESUME_PREPARED_DATA_CACHE}" == "0" ]]; then
   "- controller log：${CONTROLLER_LOG}" \
   "- 初始化模型：${MODEL_PATH}" \
   "- auxiliary warm start：ID33（由 ${CONFIG} 固定）；新 optimizer，不 resume ID46。" \
-  "- 原始数据：train ${SOURCE_TRAIN_JSONL} (${TRAIN_RECORDS})；val ${SOURCE_VAL_JSONL} (${VAL_RECORDS})。terminal CoT格式失败trajectory显式排除并写sidecar。" \
+  "- 原始数据：train ${SOURCE_TRAIN_JSONL} (${TRAIN_RECORDS})；val ${SOURCE_VAL_JSONL} (${VAL_RECORDS})。迁移命令显式声明 navigation@1 与 trajectory_terminal_reward；terminal CoT格式失败trajectory显式排除并写sidecar。" \
   "- terminal CoT：temperature=0，top_p=1.0，top_k=-1，do_sample=false，n=1，max_reasoning_tokens=128，seed=42，max_pixels=602112，flash_attention_2。" \
   "- SFT2：2 epochs，world_size=8，per-rank batch_size=1，gradient_accumulation=8，history_size=4；history_size 不是 planning.horizon。" \
   "- 调参：Qwen LLM freeze，vision full，vision EMA=0.999；grid EMA=0.99。" \
@@ -123,6 +125,17 @@ else
     "- optimizer：训练尚未开始，不加载 optimizer；cache 完成后仍从新 optimizer 启动 SFT2。" \
     >> "${EXPERIMENT_README}"
 fi
+
+migrate_trajectory_jsonl() {
+  local source_jsonl=$1
+  local output_jsonl=$2
+  "${PYTHON_ENV}/bin/python3" -m nimloth.rollout.migration \
+    --source "${source_jsonl}" \
+    --output "${output_jsonl}" \
+    --missing-action-space-id navigation \
+    --missing-action-space-version 1 \
+    --missing-reward-provenance trajectory_terminal_reward
+}
 
 generate_terminal_cot() {
   local source_jsonl=$1
@@ -200,13 +213,18 @@ PY
 }
 
 if [[ "${RESUME_PREPARED_DATA_CACHE}" == "0" ]]; then
+  echo "phase=trajectory_migration_train_start"
+  migrate_trajectory_jsonl "${SOURCE_TRAIN_JSONL}" "${MIGRATED_TRAIN_JSONL}"
+  echo "phase=trajectory_migration_val_start"
+  migrate_trajectory_jsonl "${SOURCE_VAL_JSONL}" "${MIGRATED_VAL_JSONL}"
   echo "phase=terminal_cot_train_start"
-  generate_terminal_cot "${SOURCE_TRAIN_JSONL}" "${TRAIN_JSONL}"
+  generate_terminal_cot "${MIGRATED_TRAIN_JSONL}" "${TRAIN_JSONL}"
   echo "phase=terminal_cot_val_start"
-  generate_terminal_cot "${SOURCE_VAL_JSONL}" "${VAL_JSONL}"
+  generate_terminal_cot "${MIGRATED_VAL_JSONL}" "${VAL_JSONL}"
 else
   echo "phase=terminal_cot_resume_gate"
 fi
+[[ -s "${MIGRATED_TRAIN_JSONL}.manifest.json" && -s "${MIGRATED_VAL_JSONL}.manifest.json" ]]
 [[ -s "${TRAIN_JSONL}.manifest.json" && -s "${VAL_JSONL}.manifest.json" ]]
 read -r TRAIN_VALID_RECORDS TRAIN_EXCLUDED_RECORDS < <(
   validate_terminal_cot_artifacts "${TRAIN_JSONL}" "${TRAIN_RECORDS}"

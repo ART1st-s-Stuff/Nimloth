@@ -11,6 +11,7 @@ freeze:
   state_proj: true
 
 gradient:
+  state_source: recompute
   representation_to_backbone: true
   backbone_lr: 0.000001
 

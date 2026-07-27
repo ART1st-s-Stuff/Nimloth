@@ -22,6 +22,7 @@ from nimloth.rollout import (
     trajectory_from_agent_episode,
     validate_rollout_trajectory,
 )
+from nimloth.rollout.migration import migrate_trajectory_record
 
 
 class _SequencePolicy:
@@ -189,6 +190,14 @@ def test_legacy_navigation_instruction_key_is_migrated() -> None:
         ),
     )
     record = trajectory.to_record()
+    record.pop("record_format")
+    record["nav_instruction"] = record["instruction"]
     record.pop("instruction")
 
-    assert RolloutTrajectory.from_record(record).instruction == "walk forward"
+    migrated = migrate_trajectory_record(
+        record,
+        missing_action_space_id=None,
+        missing_action_space_version=None,
+        missing_reward_provenance=None,
+    )
+    assert RolloutTrajectory.from_record(migrated).instruction == "walk forward"

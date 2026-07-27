@@ -45,12 +45,14 @@ class TrajectoryWindow:
             )
         )
 
-    def cached_state_latent_hiddens(self) -> torch.Tensor | None:
-        """返回 rollout 同一次 Qwen forward 保存的 ``(H+1,K,D)`` hidden。"""
+    def rollout_state_hiddens(self) -> torch.Tensor:
+        """返回 rollout 时保存的 ``(H+1,K,D)`` Qwen state hidden。"""
 
         states = self.trajectory.state_latent_hiddens
         if not states:
-            return None
+            raise ValueError(
+                f"trajectory {self.record_id!r} has no rollout-saved Qwen states"
+            )
         selected = states[
             self.start_step : self.start_step + self.history_size + 1
         ]

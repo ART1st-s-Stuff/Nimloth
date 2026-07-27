@@ -1,4 +1,4 @@
-"""Episode-level training records for retained world-model predictions."""
+"""保留 WM 预测 state 的 episode 级训练数据。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from nimloth.rollout.transitions import discounted_action_value_targets
 
 @dataclass(frozen=True)
 class TemporalDifferenceStep:
-    """One executed WM segment bounded by two real Qwen anchor states."""
+    """由两个真实 Qwen anchor 限定的一段已执行 WM 动作序列。"""
 
     trajectory: RolloutTrajectory
     start_step: int
@@ -22,10 +22,17 @@ class TemporalDifferenceStep:
 
     def __post_init__(self) -> None:
         anchors = self.trajectory.state_anchor_steps
-        if not anchors or self.start_step not in anchors or self.end_step not in anchors:
+        if (
+            not anchors
+            or self.start_step not in anchors
+            or self.end_step not in anchors
+        ):
             raise ValueError("TD step endpoints must both be Qwen anchors")
         start_index = anchors.index(self.start_step)
-        if start_index + 1 >= len(anchors) or anchors[start_index + 1] != self.end_step:
+        if (
+            start_index + 1 >= len(anchors)
+            or anchors[start_index + 1] != self.end_step
+        ):
             raise ValueError("TD step must connect consecutive Qwen anchors")
         if self.start_step >= self.end_step:
             raise ValueError("TD step must contain at least one executed action")
@@ -41,7 +48,7 @@ class TemporalDifferenceStep:
         )
 
     def retained_state_context(self, history_size: int) -> torch.Tensor:
-        """Return up to ``history_size`` mixed states ending at this anchor."""
+        """返回以当前 anchor 结尾、长度不超过 ``history_size`` 的 state。"""
 
         if history_size < 1:
             raise ValueError("history_size must be positive")
@@ -60,7 +67,7 @@ class TemporalDifferenceStep:
             dtype=torch.long,
         )
 
-    def anchor_hidden(self, step: int) -> torch.Tensor:
+    def llm_hidden_at_step(self, step: int) -> torch.Tensor:
         try:
             anchor_index = self.trajectory.state_anchor_steps.index(step)
         except ValueError as error:
@@ -90,7 +97,7 @@ class TemporalDifferenceStep:
 
 @dataclass(frozen=True)
 class EpisodeTrainingBatch:
-    """A complete episode with TD segments and full-horizon MC targets."""
+    """一个完整 episode 的 TD segments 与全程 MC targets。"""
 
     trajectory: RolloutTrajectory
     td_steps: tuple[TemporalDifferenceStep, ...]
@@ -122,10 +129,11 @@ class EpisodeTrainingBatch:
 def build_episode_training_batches(
     trajectories: Sequence[RolloutTrajectory],
     *,
+    wm_prediction_steps: int,
     gamma: float,
     truncated_bootstrap: float | None,
 ) -> tuple[EpisodeTrainingBatch, ...]:
-    """Build complete-episode supervision without sampling latent windows."""
+    """构造完整 episode 监督，不采样 latent window。"""
 
     batches: list[EpisodeTrainingBatch] = []
     for trajectory in trajectories:
@@ -133,14 +141,24 @@ def build_episode_training_batches(
         if not trajectory.planner_policy_traces:
             raise ValueError("episode TD training requires planner trajectories")
         anchors = trajectory.state_anchor_steps
-        td_steps = tuple(
-            TemporalDifferenceStep(
-                trajectory=trajectory,
-                start_step=start,
-                end_step=end,
+        td_steps: list[TemporalDifferenceStep] = []
+        for start, end in zip(anchors, anchors[1:]):
+            expected_end = min(
+                start + wm_prediction_steps,
+                trajectory.num_steps,
             )
-            for start, end in zip(anchors, anchors[1:])
-        )
+            if end != expected_end:
+                raise ValueError(
+                    "Qwen state steps do not match configured WM prediction steps: "
+                    f"start={start}, end={end}, expected_end={expected_end}"
+                )
+            td_steps.append(
+                TemporalDifferenceStep(
+                    trajectory=trajectory,
+                    start_step=start,
+                    end_step=end,
+                )
+            )
         targets = discounted_action_value_targets(
             trajectory.to_record(),
             gamma=gamma,
@@ -149,7 +167,7 @@ def build_episode_training_batches(
         batches.append(
             EpisodeTrainingBatch(
                 trajectory=trajectory,
-                td_steps=td_steps,
+                td_steps=tuple(td_steps),
                 return_targets=torch.tensor(targets, dtype=torch.float32),
             )
         )

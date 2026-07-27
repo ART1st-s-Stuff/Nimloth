@@ -56,7 +56,7 @@ def expand_step_advantages(
 
 @dataclass(frozen=True)
 class TokenCreditOutput:
-    """Token GAE policy advantages and unnormalized critic return targets."""
+    """Token GAE 的 policy advantage 与未归一化 critic return target。"""
 
     advantages: torch.Tensor
     returns: torch.Tensor
@@ -70,13 +70,12 @@ def token_level_gae(
     gamma: float,
     gae_lambda: float,
 ) -> TokenCreditOutput:
-    """Run low-level GAE inside each sampled turn.
+    """在每个采样 turn 内计算底层 GAE。
 
-    Each environment-step Monte Carlo return is placed at the final selected
-    token of its turn. Earlier selected tokens have zero immediate reward. The
-    critic predicts a separate value before every selected token. Turns are
-    independent at this level; environment-step discounting already belongs to
-    ``turn_returns``.
+    每个环境 step 的 Monte Carlo return 放在该 turn 最后一个被选 token 上；
+    更早的 token 即时 reward 为零。critic 在每个被选 token 之前分别预测 value。
+    各 turn 在这一层相互独立，因为环境 step 之间的折扣已经包含在
+    ``turn_returns`` 中。
     """
 
     if turn_returns.ndim != 1 or len(samples) != turn_returns.numel():

@@ -17,6 +17,7 @@ class RLModelRuntime:
 
     agent: Agent
     input_builder: BackboneInputBuilder
+    state_source: str
     representation_to_backbone: bool
     policy_replay: ActionLogProbReplay | None
 
@@ -29,6 +30,8 @@ class RLModelRuntime:
     ) -> torch.Tensor:
         """按配置保留或截断表征目标到 Backbone 的计算图。"""
 
+        if self.state_source != "recompute":
+            raise ValueError("encode_state_sequence requires state_source=recompute")
         expected = batch_size * state_steps
         if len(prompts) != expected:
             raise ValueError(
@@ -63,15 +66,19 @@ class RLModelRuntime:
             step_outputs.append(hidden)
         return torch.stack(step_outputs, dim=1)
 
-    def prepare_cached_state_sequence(
+    def validate_rollout_state_hiddens(
         self,
         hidden_states: torch.Tensor,
         *,
         batch_size: int,
         state_steps: int,
-    ) -> torch.Tensor:
-        """把 rollout captured hidden 移到 StateProjector，且不建立 Qwen 图。"""
+    ) -> None:
+        """校验 rollout hidden 与当前 StateProjector 的输入形状一致。"""
 
+        if self.state_source != "rollout":
+            raise ValueError(
+                "validate_rollout_state_hiddens requires state_source=rollout"
+            )
         if self.representation_to_backbone:
             raise ValueError(
                 "rollout-cached Qwen states require "
@@ -90,49 +97,6 @@ class RLModelRuntime:
                 "cached Qwen states must have shape "
                 f"{expected_shape}, got {tuple(hidden_states.shape)}"
             )
-        parameter = next(state_proj.parameters())
-        return hidden_states.detach().to(
-            device=parameter.device,
-            dtype=parameter.dtype,
-            non_blocking=True,
-        )
-
-    @staticmethod
-    def _module_device_dtype(
-        module: torch.nn.Module,
-        fallback: torch.Tensor,
-    ) -> tuple[torch.device, torch.dtype]:
-        parameter = next(module.parameters(), None)
-        if parameter is None:
-            return fallback.device, fallback.dtype
-        return parameter.device, parameter.dtype
-
-    def prepare_anchor_hidden(self, hidden: torch.Tensor) -> torch.Tensor:
-        """Move one cached Qwen anchor hidden to the StateProjector."""
-
-        device, dtype = self._module_device_dtype(
-            self.agent.wm.state_proj,
-            hidden,
-        )
-        return hidden.detach().to(device=device, dtype=dtype, non_blocking=True)
-
-    def prepare_world_model_states(self, states: torch.Tensor) -> torch.Tensor:
-        """Move persisted mixed states to the WM device as detached constants."""
-
-        device, dtype = self._module_device_dtype(
-            self.agent.wm.wm_predictor,
-            states,
-        )
-        return states.detach().to(device=device, dtype=dtype, non_blocking=True)
-
-    def prepare_value_states(self, states: torch.Tensor) -> torch.Tensor:
-        """Move value-only states without connecting Qwen or WM gradients."""
-
-        device, dtype = self._module_device_dtype(
-            self.agent.wm.value_head,
-            states,
-        )
-        return states.detach().to(device=device, dtype=dtype, non_blocking=True)
 
 
 __all__ = ["RLModelRuntime"]

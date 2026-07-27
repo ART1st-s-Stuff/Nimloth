@@ -24,6 +24,10 @@ from nimloth.rollout import (
     count_trajectory_windows,
     sample_trajectory_windows,
 )
+from nimloth.rollout.record_format import (
+    STEP_REWARD_PROVENANCE,
+    TRAJECTORY_REWARD_PROVENANCE,
+)
 from nimloth.training.rl.algorithm import (
     RLAlgorithm,
     RLBatch,
@@ -31,6 +35,7 @@ from nimloth.training.rl.algorithm import (
     low_variance_kl,
 )
 from nimloth.training.rl.runtime import RLModelRuntime
+from nimloth.util.module import move_to_device
 from nimloth.wm.model import WorldModel
 from nimloth.wm.grid import (
     EMATargetGridEncoder,
@@ -204,6 +209,7 @@ def _trajectory(record_id: str, length: int) -> RolloutTrajectory:
     )
     return RolloutTrajectory(
         record_id=record_id,
+        reward_provenance=TRAJECTORY_REWARD_PROVENANCE,
         image_paths=image_paths,
         action_indices=action_indices,
         action_names=[
@@ -212,7 +218,6 @@ def _trajectory(record_id: str, length: int) -> RolloutTrajectory:
         action_log_probs=[[-math.log(8.0)] * 8 for _ in action_indices],
         instruction="test",
         reward=1.0,
-        messages=prompt.build_supervised_prompt(transcript).unbound_messages(),
         system_prompt=system_prompt,
         observation_texts=observation_texts,
         assistant_responses=assistant_responses,
@@ -261,6 +266,7 @@ def _batch() -> RLBatch:
 def _algorithm(
     *,
     sigreg: SequenceSIGReg | None = None,
+    state_source: str = "recompute",
     representation_to_backbone: bool = True,
 ) -> tuple[
     RLAlgorithm,
@@ -287,6 +293,7 @@ def _algorithm(
     return (
         RLAlgorithm(
             history_size=2,
+            wm_prediction_steps=2,
             sigreg=sigreg,
             sigreg_weight=0.1 if sigreg is not None else 0.0,
             value_rank_margin=0.1,
@@ -297,6 +304,7 @@ def _algorithm(
         RLModelRuntime(
             agent=agent,
             input_builder=input_builder,
+            state_source=state_source,
             representation_to_backbone=representation_to_backbone,
             policy_replay=None,
         ),
@@ -336,7 +344,7 @@ def test_sequence_batch_preserves_trajectory_boundaries_and_alignment() -> None:
 
 def test_rl_wm_stops_gradient_on_final_target_but_trains_backbone() -> None:
     algorithm, runtime, builder, backbone, state_proj, predictor, _ = _algorithm()
-    output = algorithm.training_step(runtime, _batch())
+    output = algorithm.sequence_step(runtime, _batch())
 
     output.losses["wm"].backward()
 
@@ -354,7 +362,7 @@ def test_rl_wm_stops_gradient_on_final_target_but_trains_backbone() -> None:
     assert predictor.linear.weight.grad is not None
 
 
-def test_cached_rollout_states_bypass_qwen_but_train_state_projector() -> None:
+def test_rollout_saved_states_bypass_qwen_but_train_state_projector() -> None:
     batch = _batch()
     for window_index, window in enumerate(batch.windows):
         window.trajectory.state_latent_hiddens = [
@@ -362,10 +370,11 @@ def test_cached_rollout_states_bypass_qwen_but_train_state_projector() -> None:
             for step in range(3)
         ]
     algorithm, runtime, builder, backbone, state_proj, _, value_head = _algorithm(
+        state_source="rollout",
         representation_to_backbone=False
     )
 
-    output = algorithm.training_step(runtime, batch)
+    output = algorithm.sequence_step(runtime, batch)
     output.losses["value"].backward()
 
     assert builder.hidden_batches == []
@@ -374,42 +383,63 @@ def test_cached_rollout_states_bypass_qwen_but_train_state_projector() -> None:
     assert value_head.net[0].weight.grad is not None
 
 
-def test_cached_rollout_states_require_frozen_qwen_representation() -> None:
+def test_rollout_saved_states_require_frozen_qwen_representation() -> None:
     batch = _batch()
     for window in batch.windows:
         window.trajectory.state_latent_hiddens = [
             [[float(step), 1.0, 2.0]]
             for step in range(3)
         ]
-    algorithm, runtime, *_ = _algorithm(representation_to_backbone=True)
+    algorithm, runtime, *_ = _algorithm(
+        state_source="rollout",
+        representation_to_backbone=True,
+    )
 
     with pytest.raises(
         ValueError,
         match="representation_to_backbone=false",
     ):
-        algorithm.training_step(runtime, batch)
+        algorithm.sequence_step(runtime, batch)
 
 
-def test_cached_rollout_states_use_state_projector_dtype() -> None:
+def test_rollout_saved_states_use_state_projector_dtype() -> None:
     _, runtime, *_rest, state_proj, _predictor, _value_head = _algorithm(
+        state_source="rollout",
         representation_to_backbone=False
     )
     state_proj.to(dtype=torch.float64)
 
-    prepared = runtime.prepare_cached_state_sequence(
-        torch.zeros((2, 3, 1, 3), dtype=torch.float32),
+    hidden_states = torch.zeros((2, 3, 1, 3), dtype=torch.float32)
+    runtime.validate_rollout_state_hiddens(
+        hidden_states,
         batch_size=2,
         state_steps=3,
     )
+    prepared = move_to_device(hidden_states, state_proj)
 
     assert prepared.dtype == torch.float64
+
+
+def test_rollout_state_source_rejects_a_window_without_saved_states() -> None:
+    batch = _batch()
+    first_window = batch.windows[0]
+    first_window.trajectory.state_latent_hiddens = [
+        [[float(step), 1.0, 2.0]]
+        for step in range(3)
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="has no rollout-saved Qwen states",
+    ):
+        _ = batch.rollout_state_hiddens
 
 
 def test_frozen_representation_mode_blocks_only_backbone_gradient() -> None:
     algorithm, runtime, _, backbone, state_proj, _, value_head = _algorithm(
         representation_to_backbone=False
     )
-    output = algorithm.training_step(runtime, _batch())
+    output = algorithm.sequence_step(runtime, _batch())
 
     output.losses["value"].backward()
 
@@ -420,7 +450,7 @@ def test_frozen_representation_mode_blocks_only_backbone_gradient() -> None:
 
 def test_joint_value_loss_updates_backbone_and_state_projector() -> None:
     algorithm, runtime, _, backbone, state_proj, _, value_head = _algorithm()
-    output = algorithm.training_step(runtime, _batch())
+    output = algorithm.sequence_step(runtime, _batch())
 
     output.losses["value"].backward()
 
@@ -435,7 +465,7 @@ def test_rl_sigreg_receives_full_history_plus_target_sequence() -> None:
         sigreg=SequenceSIGReg(regularizer=recording),
     )
 
-    output = algorithm.training_step(runtime, _batch())
+    output = algorithm.sequence_step(runtime, _batch())
 
     assert len(recording.inputs) == 1
     assert recording.inputs[0].shape == (3, 2, 2)
@@ -460,6 +490,7 @@ def test_rl_preserves_multiple_latent_tokens_until_state_projection() -> None:
     )
     algorithm = RLAlgorithm(
         history_size=2,
+        wm_prediction_steps=2,
         sigreg=None,
         sigreg_weight=0.0,
         value_rank_margin=0.1,
@@ -470,11 +501,12 @@ def test_rl_preserves_multiple_latent_tokens_until_state_projection() -> None:
     runtime = RLModelRuntime(
         agent=agent,
         input_builder=input_builder,
+        state_source="recompute",
         representation_to_backbone=True,
         policy_replay=None,
     )
 
-    output = algorithm.training_step(runtime, _batch())
+    output = algorithm.sequence_step(runtime, _batch())
 
     assert output.losses["wm"] is not None
     assert output.losses["value"] is not None
@@ -519,6 +551,7 @@ def test_grid_rl_uses_ema_targets_and_mean_pooled_sigreg_without_dino_loss() -> 
     recording = _RecordingSIGReg()
     algorithm = RLAlgorithm(
         history_size=2,
+        wm_prediction_steps=2,
         sigreg=SequenceSIGReg(regularizer=recording),
         sigreg_weight=0.1,
         value_rank_margin=0.1,
@@ -529,11 +562,12 @@ def test_grid_rl_uses_ema_targets_and_mean_pooled_sigreg_without_dino_loss() -> 
     runtime = RLModelRuntime(
         agent=agent,
         input_builder=input_builder,
+        state_source="recompute",
         representation_to_backbone=True,
         policy_replay=None,
     )
 
-    output = algorithm.training_step(runtime, _batch())
+    output = algorithm.sequence_step(runtime, _batch())
     output.loss.backward()
 
     assert recording.inputs[0].shape == (3, 2, 2)
@@ -578,6 +612,7 @@ def test_rl_algorithm_is_pure_compute_configuration() -> None:
 def test_token_credit_trains_policy_and_token_critic_separately() -> None:
     trajectory = _trajectory("token", 2)
     trajectory.policy_credit_assignment = "token"
+    trajectory.reward_provenance = STEP_REWARD_PROVENANCE
     trajectory.rewards = [0.0, 1.0]
     trajectory.reward = 1.0
     trajectory.terminated = True
@@ -597,6 +632,7 @@ def test_token_credit_trains_policy_and_token_critic_separately() -> None:
     runtime = replace(base_runtime, policy_replay=token_replay)
     algorithm = RLAlgorithm(
         history_size=2,
+        wm_prediction_steps=2,
         sigreg=None,
         sigreg_weight=0.0,
         value_rank_margin=0.1,
@@ -609,7 +645,7 @@ def test_token_credit_trains_policy_and_token_critic_separately() -> None:
         token_value_loss_weight=1.0,
     )
 
-    output = algorithm.training_step(runtime, batch)
+    output = algorithm.sequence_step(runtime, batch)
     output.loss.backward()
 
     assert output.losses["token_value"] is not None
@@ -620,6 +656,7 @@ def test_token_credit_trains_policy_and_token_critic_separately() -> None:
 def test_reference_kl_is_actor_loss_only_and_uses_reasoning_tokens() -> None:
     trajectory = _trajectory("token-reference", 2)
     trajectory.policy_credit_assignment = "token"
+    trajectory.reward_provenance = STEP_REWARD_PROVENANCE
     trajectory.rewards = [0.0, 1.0]
     trajectory.reward = 1.0
     trajectory.terminated = True
@@ -639,6 +676,7 @@ def test_reference_kl_is_actor_loss_only_and_uses_reasoning_tokens() -> None:
     runtime = replace(base_runtime, policy_replay=token_replay)
     algorithm = RLAlgorithm(
         history_size=2,
+        wm_prediction_steps=2,
         sigreg=None,
         sigreg_weight=0.0,
         value_rank_margin=0.1,
@@ -652,7 +690,7 @@ def test_reference_kl_is_actor_loss_only_and_uses_reasoning_tokens() -> None:
         reference_kl_loss_weight=0.001,
     )
 
-    output = algorithm.training_step(runtime, batch)
+    output = algorithm.sequence_step(runtime, batch)
     output.loss.backward()
 
     expected = math.exp(-0.2) + 0.2 - 1.0

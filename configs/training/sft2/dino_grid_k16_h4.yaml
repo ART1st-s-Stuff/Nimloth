@@ -52,7 +52,6 @@ train:
   # immutable v1 cache was fingerprinted against this original, byte-identical
   # processor source path.
   preprocess_cache_processor_source: /project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-19/sft1/18_retry1_dino2l_grid4_k16_prefix_success7309_l1_ep5_b1_ga8_ws8_px602112/final/hf_merged
-  preprocess_cache_format: compact
   preprocess_cache_image_dtype: bfloat16
   preprocess_cache_image_shard_size: 128
   preprocess_cache_transition_shard_size: 256

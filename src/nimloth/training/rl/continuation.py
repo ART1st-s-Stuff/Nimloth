@@ -1,4 +1,4 @@
-"""Crash-consistent state transitions for the full online-RL runner."""
+"""完整 online-RL runner 的崩溃一致状态转换。"""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _validate_committed_payload(payload: dict[str, Any], iteration: int) -> None
 
 
 def find_last_completed_iteration(run_output: Path, total_iterations: int) -> int:
-    """Return the contiguous consumption-committed prefix."""
+    """返回 consumption 已连续提交的 iteration 前缀长度。"""
 
     last_completed = 0
     found_incomplete = False
@@ -68,7 +68,7 @@ def validate_committed_iteration(
     iteration: int,
     expected_checkpoint: Path,
 ) -> None:
-    """Validate the durable marker used to advance the outer loop."""
+    """校验 outer loop 推进 iteration 时依赖的持久化标记。"""
 
     payload = _read_consumption(run_output, iteration)
     _validate_committed_payload(payload, iteration)
@@ -144,7 +144,7 @@ def _reconcile_step_log(
     last_completed: int,
     archive: RecoveryArchive,
 ) -> int:
-    """Remove log rows whose update lacks a committed consumption marker."""
+    """删除没有对应 committed consumption 标记的训练日志行。"""
 
     step_log = run_output / "train" / "train_step_log.csv"
     if not step_log.is_file() or step_log.stat().st_size == 0:
@@ -191,7 +191,7 @@ def prepare_policy_input(
     iteration: int,
     archive: RecoveryArchive,
 ) -> Path:
-    """Prepare or reuse the immutable pre-update policy for one iteration."""
+    """为一个 iteration 准备或复用更新前的不可变 policy。"""
 
     if iteration <= 1:
         raise ValueError("iteration 1 uses the initial model, not a policy snapshot")
@@ -254,7 +254,7 @@ class PreparedRun:
 
 
 def prepare_run(run_output: Path, total_iterations: int) -> PreparedRun:
-    """Reconcile durable state and archive an interrupted current attempt."""
+    """核对持久化状态，并归档被中断的当前尝试。"""
 
     last_completed = find_last_completed_iteration(run_output, total_iterations)
     start_iteration = last_completed + 1

@@ -9,7 +9,6 @@ from typing import Any
 from nimloth.agent import (
     ActionTrainingTrace,
     NIMLOTH_PROMPT_TEMPLATE_ID,
-    PROMPT_VERSION,
     AgentPrompt,
     AgentTranscript,
     PlannerPolicyTrace,
@@ -20,6 +19,11 @@ from nimloth.agent import (
 )
 from nimloth.environment import get_action_space
 from nimloth.latent import LatentActionTokens
+from nimloth.rollout.record_format import (
+    STRUCTURED_TRAJECTORY_FIELDS,
+    TRAJECTORY_RECORD_FORMAT,
+    require_trajectory_record,
+)
 
 
 def _encode_log_probabilities(values: Sequence[float]) -> list[float | None]:
@@ -48,41 +52,27 @@ def _decode_world_model_state(values: list[Any]) -> WorldModelStateRecord:
 
 
 def _planner_trace_from_record(raw: dict[str, Any]) -> PlannerPolicyTrace:
-    action_training_raw = raw.get("action_training")
-    if action_training_raw is None:
-        behavior = _decode_log_probabilities(raw["behavior_action_log_probs"])
-        executed_action = max(range(len(behavior)), key=behavior.__getitem__)
-        action_training = ActionTrainingTrace(
-            objective="distillation",
-            behavior_owner="world_model",
-            executed_action_index=executed_action,
-            behavior_action_log_probs=behavior,
-            teacher_action_log_probs=_decode_log_probabilities(
-                raw["teacher_action_log_probs"]
-            ),
-        )
-    else:
-        teacher = action_training_raw.get("teacher_action_log_probs")
-        action_training = ActionTrainingTrace(
-            objective=str(action_training_raw["objective"]),  # type: ignore[arg-type]
-            behavior_owner=str(action_training_raw["behavior_owner"]),  # type: ignore[arg-type]
-            executed_action_index=int(
-                action_training_raw["executed_action_index"]
-            ),
-            behavior_action_log_probs=_decode_log_probabilities(
-                action_training_raw["behavior_action_log_probs"]
-            ),
-            teacher_action_log_probs=(
-                _decode_log_probabilities(teacher)
-                if teacher is not None
-                else None
-            ),
-            sampled_action_index=(
-                int(action_training_raw["sampled_action_index"])
-                if action_training_raw.get("sampled_action_index") is not None
-                else None
-            ),
-        )
+    action_training_raw = raw["action_training"]
+    teacher = action_training_raw["teacher_action_log_probs"]
+    sampled_action = action_training_raw["sampled_action_index"]
+    action_training = ActionTrainingTrace(
+        objective=str(action_training_raw["objective"]),  # type: ignore[arg-type]
+        behavior_owner=str(
+            action_training_raw["behavior_owner"]
+        ),  # type: ignore[arg-type]
+        executed_action_index=int(action_training_raw["executed_action_index"]),
+        behavior_action_log_probs=_decode_log_probabilities(
+            action_training_raw["behavior_action_log_probs"]
+        ),
+        teacher_action_log_probs=(
+            _decode_log_probabilities(teacher) if teacher is not None else None
+        ),
+        sampled_action_index=(
+            int(sampled_action) if sampled_action is not None else None
+        ),
+    )
+    qwen_sampled_action = raw["qwen_sampled_action_index"]
+    beam_width = raw["beam_width"]
     return PlannerPolicyTrace(
         qwen_action_log_probs=_decode_log_probabilities(
             raw["qwen_action_log_probs"]
@@ -97,15 +87,9 @@ def _planner_trace_from_record(raw: dict[str, Any]) -> PlannerPolicyTrace:
         horizon=int(raw["horizon"]),
         search_mode=str(raw["search_mode"]),
         qwen_sampled_action_index=(
-            int(raw["qwen_sampled_action_index"])
-            if raw.get("qwen_sampled_action_index") is not None
-            else None
+            int(qwen_sampled_action) if qwen_sampled_action is not None else None
         ),
-        beam_width=(
-            int(raw["beam_width"])
-            if raw.get("beam_width") is not None
-            else None
-        ),
+        beam_width=int(beam_width) if beam_width is not None else None,
     )
 
 
@@ -114,6 +98,7 @@ class RolloutTrajectory:
     """一个完整 Agent episode 及其 behavior policy 来源信息。"""
 
     record_id: str
+    reward_provenance: str
     image_paths: list[str] = field(default_factory=list)
     action_indices: list[int] = field(default_factory=list)
     action_names: list[str] = field(default_factory=list)
@@ -125,7 +110,6 @@ class RolloutTrajectory:
     terminated: bool = False
     truncated: bool = False
     split: str = "train"
-    messages: list[dict[str, Any]] = field(default_factory=list)
     system_prompt: str = ""
     observation_texts: list[str] = field(default_factory=list)
     policy_messages: list[list[dict[str, Any]]] = field(default_factory=list)
@@ -149,9 +133,6 @@ class RolloutTrajectory:
     policy_reasoning_truncated: list[bool] = field(default_factory=list)
     planner_policy_traces: list[PlannerPolicyTrace] = field(default_factory=list)
     prompt_template_spec: PromptTemplateSpec | None = None
-    # 下面两个字段只为读取旧 JSONL 保留；新记录以 prompt_template_spec 为准。
-    prompt_version: str = PROMPT_VERSION
-    latent_token_count: int = 1
     sampling_temperature: float = 1.0
     sampling_top_p: float = 1.0
     action_space_id: str = "navigation"
@@ -162,25 +143,21 @@ class RolloutTrajectory:
         return len(self.action_indices)
 
     def resolved_prompt_template_spec(self) -> PromptTemplateSpec:
-        """返回新式 spec，或把内存中的旧字段显式迁移。"""
+        """返回该 trajectory 明确保存的 prompt spec。"""
 
-        if self.prompt_template_spec is not None:
-            return self.prompt_template_spec
-        return prompt_template_spec_from_record(
-            {
-                "prompt_version": self.prompt_version,
-                "latent_token_count": self.latent_token_count,
-            }
-        )
+        if self.prompt_template_spec is None:
+            raise ValueError("trajectory has no prompt_template_spec")
+        return self.prompt_template_spec
 
     def resolved_latent_token_count(self) -> int:
-        """返回模板声明的 latent 数量，旧模板则读取兼容字段。"""
+        """返回模板声明的 latent 数量。"""
 
         spec = self.resolved_prompt_template_spec()
-        if spec.identifier == NIMLOTH_PROMPT_TEMPLATE_ID:
-            value = int(spec.config.get("latent_token_count", 1))
-        else:
-            value = self.latent_token_count
+        if spec.identifier != NIMLOTH_PROMPT_TEMPLATE_ID:
+            raise ValueError(
+                "trajectory prompt template does not declare Nimloth latent states"
+            )
+        value = int(spec.config["latent_token_count"])
         if value < 1:
             raise ValueError("latent_token_count must be >= 1")
         return value
@@ -270,7 +247,7 @@ class RolloutTrajectory:
         return prefix
 
     def policy_token_trace(self, step_index: int) -> PolicyTokenTrace | None:
-        """恢复某一步逐 token behavior provenance；旧 action-only 记录返回 ``None``。"""
+        """恢复某一步逐 token behavior provenance；未记录 trace 时返回 ``None``。"""
 
         fields = (
             self.policy_token_ids,
@@ -379,14 +356,15 @@ class RolloutTrajectory:
     def to_record(self) -> dict[str, Any]:
         prompt_spec = self.resolved_prompt_template_spec()
         return {
+            "record_format": TRAJECTORY_RECORD_FORMAT,
             "id": self.record_id,
             "split": self.split,
             "success": self.success,
             "reward": self.reward,
+            "reward_provenance": self.reward_provenance,
             "rewards": self.rewards,
             "terminated": self.terminated,
             "truncated": self.truncated,
-            "messages": self.messages,
             "image_paths": self.image_paths,
             "action_indices": self.action_indices,
             "action_names": self.action_names,
@@ -395,8 +373,6 @@ class RolloutTrajectory:
                 for row in self.action_log_probs
             ],
             "instruction": self.instruction,
-            # 迁移期继续写旧 key，旧训练工具仍可读取。
-            "nav_instruction": self.instruction,
             "system_prompt": self.system_prompt,
             "observation_texts": self.observation_texts,
             "policy_messages": self.policy_messages,
@@ -461,9 +437,6 @@ class RolloutTrajectory:
                 for trace in self.planner_policy_traces
             ],
             "prompt_template": prompt_spec.to_record(),
-            # 同时写出旧字段，便于已有工具在迁移期继续读取。
-            "prompt_version": prompt_spec.version,
-            "latent_token_count": self.resolved_latent_token_count(),
             "sampling_temperature": self.sampling_temperature,
             "sampling_top_p": self.sampling_top_p,
             "action_space_id": self.action_space_id,
@@ -472,105 +445,121 @@ class RolloutTrajectory:
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "RolloutTrajectory":
-        prompt_template_spec = prompt_template_spec_from_record(record)
-        latent_token_count = int(
-            prompt_template_spec.config.get(
-                "latent_token_count",
-                record.get("latent_token_count", 1),
-            )
+        required_fields = STRUCTURED_TRAJECTORY_FIELDS | frozenset(
+            {
+                "action_names",
+                "action_log_probs",
+                "instruction",
+                "rewards",
+                "terminated",
+                "truncated",
+                "terminal_assistant_prefix",
+                "policy_messages",
+                "state_anchor_steps",
+                "state_latent_hiddens",
+                "world_model_states",
+                "policy_credit_assignment",
+                "policy_step_indices",
+                "policy_token_ids",
+                "policy_token_log_probs",
+                "policy_reference_token_log_probs",
+                "policy_loss_masks",
+                "policy_token_roles",
+                "policy_action_token_ids",
+                "policy_reasoning_texts",
+                "policy_finish_reasons",
+                "policy_reasoning_truncated",
+                "planner_policy_traces",
+                "prompt_template",
+                "sampling_temperature",
+                "sampling_top_p",
+            }
         )
+        require_trajectory_record(record, required_fields=required_fields)
+        prompt_template_spec = prompt_template_spec_from_record(record)
         return cls(
-            record_id=str(record.get("id", "")),
-            image_paths=list(record.get("image_paths", [])),
-            action_indices=list(record.get("action_indices", [])),
-            action_names=list(record.get("action_names", [])),
+            record_id=str(record["id"]),
+            image_paths=list(record["image_paths"]),
+            action_indices=list(record["action_indices"]),
+            action_names=list(record["action_names"]),
             action_log_probs=[
                 list(_decode_log_probabilities(row))
-                for row in record.get("action_log_probs", [])
+                for row in record["action_log_probs"]
             ],
-            instruction=str(
-                record.get("instruction", record.get("nav_instruction", ""))
-            ),
-            success=bool(record.get("success", False)),
-            reward=float(record.get("reward", 0.0)),
-            rewards=[float(value) for value in record.get("rewards", [])],
-            terminated=bool(record.get("terminated", False)),
-            truncated=bool(record.get("truncated", False)),
-            split=str(record.get("split", "train")),
-            messages=list(record.get("messages", [])),
-            system_prompt=str(record.get("system_prompt", "")),
-            observation_texts=list(record.get("observation_texts", [])),
-            policy_messages=list(record.get("policy_messages", [])),
-            assistant_responses=list(record.get("assistant_responses", [])),
-            terminal_assistant_prefix=str(
-                record.get("terminal_assistant_prefix", "")
-            ),
+            instruction=str(record["instruction"]),
+            success=bool(record["success"]),
+            reward=float(record["reward"]),
+            reward_provenance=str(record["reward_provenance"]),
+            rewards=[float(value) for value in record["rewards"]],
+            terminated=bool(record["terminated"]),
+            truncated=bool(record["truncated"]),
+            split=str(record["split"]),
+            system_prompt=str(record["system_prompt"]),
+            observation_texts=list(record["observation_texts"]),
+            policy_messages=list(record["policy_messages"]),
+            assistant_responses=list(record["assistant_responses"]),
+            terminal_assistant_prefix=str(record["terminal_assistant_prefix"]),
             state_anchor_steps=[
-                int(value) for value in record.get("state_anchor_steps", [])
+                int(value) for value in record["state_anchor_steps"]
             ],
             state_latent_hiddens=[
                 [
                     [float(value) for value in hidden]
                     for hidden in state
                 ]
-                for state in record.get("state_latent_hiddens", [])
+                for state in record["state_latent_hiddens"]
             ],
             world_model_states=[
                 _decode_world_model_state(state)
-                for state in record.get("world_model_states", [])
+                for state in record["world_model_states"]
             ],
-            policy_credit_assignment=str(
-                record.get("policy_credit_assignment", "action")
-            ),
+            policy_credit_assignment=str(record["policy_credit_assignment"]),
             policy_step_indices=[
-                int(value) for value in record.get("policy_step_indices", [])
+                int(value) for value in record["policy_step_indices"]
             ],
             policy_token_ids=[
                 [int(value) for value in row]
-                for row in record.get("policy_token_ids", [])
+                for row in record["policy_token_ids"]
             ],
             policy_token_log_probs=[
                 [None if value is None else float(value) for value in row]
-                for row in record.get("policy_token_log_probs", [])
+                for row in record["policy_token_log_probs"]
             ],
             policy_reference_token_log_probs=[
                 [None if value is None else float(value) for value in row]
-                for row in record.get("policy_reference_token_log_probs", [])
+                for row in record["policy_reference_token_log_probs"]
             ],
             policy_loss_masks=[
                 [bool(value) for value in row]
-                for row in record.get("policy_loss_masks", [])
+                for row in record["policy_loss_masks"]
             ],
             policy_token_roles=[
                 [str(value) for value in row]
-                for row in record.get("policy_token_roles", [])
+                for row in record["policy_token_roles"]
             ],
             policy_action_token_ids=[
                 [int(value) for value in row]
-                for row in record.get("policy_action_token_ids", [])
+                for row in record["policy_action_token_ids"]
             ],
             policy_reasoning_texts=[
                 None if value is None else str(value)
-                for value in record.get("policy_reasoning_texts", [])
+                for value in record["policy_reasoning_texts"]
             ],
             policy_finish_reasons=[
                 None if value is None else str(value)
-                for value in record.get("policy_finish_reasons", [])
+                for value in record["policy_finish_reasons"]
             ],
             policy_reasoning_truncated=[
                 bool(value)
-                for value in record.get("policy_reasoning_truncated", [])
+                for value in record["policy_reasoning_truncated"]
             ],
             planner_policy_traces=[
                 _planner_trace_from_record(raw)
-                for raw in record.get("planner_policy_traces", [])
+                for raw in record["planner_policy_traces"]
             ],
             prompt_template_spec=prompt_template_spec,
-            prompt_version=prompt_template_spec.version,
-            latent_token_count=latent_token_count,
-            sampling_temperature=float(record.get("sampling_temperature", 1.0)),
-            sampling_top_p=float(record.get("sampling_top_p", 1.0)),
-            # 旧轨迹没有版本字段，按当时唯一存在的 navigation@1 解释。
-            action_space_id=str(record.get("action_space_id", "navigation")),
-            action_space_version=int(record.get("action_space_version", 1)),
+            sampling_temperature=float(record["sampling_temperature"]),
+            sampling_top_p=float(record["sampling_top_p"]),
+            action_space_id=str(record["action_space_id"]),
+            action_space_version=int(record["action_space_version"]),
         )

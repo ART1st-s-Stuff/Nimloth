@@ -1,7 +1,7 @@
-"""RL checkpoint save/load helpers (WM + Qwen).
+"""RL checkpoint 保存与加载工具（WM + Qwen）。
 
-Covers both the WM modules (state_proj, predictor, value_head) and Qwen
-model state (LoRA adapters, full-finetune weights, vision EMA).
+覆盖 WM 模块（state_proj、predictor、value_head）与 Qwen 模型状态
+（LoRA adapter、全量微调权重、vision EMA）。
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def _rank_world() -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Save
+# 保存
 # ---------------------------------------------------------------------------
 
 
@@ -59,13 +59,13 @@ def save_rl_checkpoint(
     processor: Any,
     vision_ema: BackboneEMA | None,
     save_llm: bool = True,
-    # Training state
+    # 训练状态
     optimizer: torch.optim.Optimizer | None = None,
     iteration: int = 0,
     global_step: int = 0,
     best_eval_metric: float = float("-inf"),
     checkpoint_metric: str = "success_rate",
-    # Tune metadata
+    # 调优方式元数据
     lora: bool = False,
     llm_tune: str = "freeze",
     vision_tune: str = "freeze",
@@ -92,7 +92,7 @@ def save_rl_checkpoint(
     if world > 1:
         dist.barrier()
 
-    # FSDP full-state collection is collective: every rank must enter it.
+    # FSDP 完整 state 收集是 collective；每个 rank 都必须进入该调用。
     full_model_state = None
     if fsdp_model:
         from torch.distributed.fsdp import (
@@ -105,13 +105,13 @@ def save_rl_checkpoint(
         with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, policy):
             full_model_state = model.state_dict()
 
-    # Raw optimizer states are rank-local FSDP shards. Saving one file per rank
-    # supports exact same-world-size resume while also covering the local WM heads.
+    # 原始 optimizer state 是 rank-local FSDP shard。每个 rank 单独保存一份，
+    # 既支持相同 world size 的精确恢复，也覆盖本 rank 的 WM heads。
     if optimizer is not None and fsdp_model:
         torch.save(optimizer.state_dict(), out_dir / f"optimizer_rank_{rank:05d}.pt")
 
     if rank == 0:
-        # WM modules
+        # WM 模块
         torch.save(_unwrap(state_proj).state_dict(), out_dir / "state_proj.pt")
         _unwrap(wm_predictor).save_checkpoint(out_dir / "wm_predictor")
         _unwrap(value_head).save_checkpoint(out_dir / "value_head")
@@ -122,7 +122,7 @@ def save_rl_checkpoint(
             token_head.save_checkpoint(out_dir / "token_value_head")
         agent.wm.save_checkpoint_extras(out_dir)
 
-        # Qwen model
+        # Qwen 模型
         if save_llm:
             agent.backbone.save_pretrained(
                 out_dir,
@@ -132,7 +132,7 @@ def save_rl_checkpoint(
             if vision_ema is not None and vision_ema.shadow:
                 vision_ema.save_checkpoint(out_dir / "vision_ema.pt")
 
-        # Training state
+        # 训练状态
         state: dict[str, Any] = {
             "iteration": iteration,
             "global_step": global_step,
@@ -166,14 +166,16 @@ def save_rl_checkpoint(
 
 
 def link_checkpoint_snapshot(source_dir: Path, out_dir: Path) -> None:
-    """Create an immutable checkpoint alias without serializing tensors again."""
+    """为同一 checkpoint 创建不可变别名，不重复序列化 tensor。"""
 
     source = Path(source_dir).resolve()
     destination = Path(out_dir).resolve()
     rank, world = _rank_world()
     if rank == 0:
         if not (source / "rl_state.pt").is_file():
-            raise FileNotFoundError(f"checkpoint snapshot source is incomplete: {source}")
+            raise FileNotFoundError(
+                f"checkpoint snapshot source is incomplete: {source}"
+            )
         if destination.exists():
             raise FileExistsError(f"checkpoint snapshot already exists: {destination}")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -199,7 +201,7 @@ def link_checkpoint_snapshot(source_dir: Path, out_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Load
+# 加载
 # ---------------------------------------------------------------------------
 
 
@@ -208,7 +210,7 @@ def load_rl_wm_checkpoint(
     wm: WorldModel,
     device: torch.device,
 ) -> dict:
-    """Load *only* the WM components from an RL checkpoint.
+    """只从 RL checkpoint 加载 WM 组件。
 
     返回训练状态字典，包括 iteration、global_step、best_eval_metric 和
     optimizer 等可恢复信息。
@@ -251,9 +253,10 @@ def load_rl_wm_checkpoint(
 
 
 def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
-    """Load LoRA adapter weights into *model* (which must already be PeftModel).
+    """把 LoRA adapter 权重加载到已经构造为 PeftModel 的 ``model``。
 
-    Mirrors :func:`nimloth.training.sft2.checkpoint.load_lora_adapter_state`.
+    行为与 :func:`nimloth.training.sft2.checkpoint.load_lora_adapter_state`
+    保持一致。
     """
     adapter_file = adapter_dir / "adapter_model.safetensors"
     if adapter_file.is_file():
@@ -275,7 +278,3 @@ def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
                 }
             })
         )
-
-
-# Alias for backward compatibility
-load_rl_checkpoint = load_rl_wm_checkpoint

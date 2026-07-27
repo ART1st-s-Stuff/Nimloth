@@ -99,11 +99,11 @@ def trajectory_from_agent_episode(
         # 成功语义由具体 environment session 判定，公共 rollout 不猜 reward 阈值。
         success=episode.success,
         reward=episode.reward,
+        reward_provenance="step_rewards",
         rewards=list(episode.rewards),
         terminated=episode.done,
         truncated=not episode.done,
         split=split,
-        messages=completed_prompt.unbound_messages(),
         system_prompt=episode.system_prompt,
         observation_texts=[
             observation.text for observation in episode.observations
@@ -161,10 +161,6 @@ def trajectory_from_agent_episode(
             trace for _step, trace in planner_rows if trace is not None
         ],
         prompt_template_spec=episode.prompt_template,
-        prompt_version=episode.prompt_template.version,
-        latent_token_count=int(
-            episode.prompt_template.config.get("latent_token_count", 1)
-        ),
         sampling_temperature=sampling_temperature,
         sampling_top_p=sampling_top_p,
         action_space_id=episode.action_space_id,

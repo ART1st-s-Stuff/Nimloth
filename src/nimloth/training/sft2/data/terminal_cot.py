@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import torch
+
+from nimloth.rollout.record_format import require_trajectory_record
 from transformers import (
     LogitsProcessor,
     LogitsProcessorList,
@@ -91,34 +93,30 @@ def _missing_close_error(
 def terminal_cot_prompt_messages(record: dict[str, Any]) -> list[dict[str, Any]]:
     """Build the final-observation prompt ending at the start of real CoT."""
 
-    system_prompt = str(record.get("system_prompt", ""))
+    require_trajectory_record(record)
+    system_prompt = str(record["system_prompt"])
     observation_texts = tuple(
-        str(text) for text in record.get("observation_texts", [])
+        str(text) for text in record["observation_texts"]
     )
-    if system_prompt and observation_texts:
-        action_indices = tuple(int(index) for index in record.get("action_indices", []))
-        assistant_responses = tuple(
-            str(response) for response in record.get("assistant_responses", [])
-        )
-        if len(observation_texts) != len(action_indices) + 1:
-            raise ValueError("structured record requires one final observation")
-        if len(assistant_responses) != len(action_indices):
-            raise ValueError("structured record assistant response/action mismatch")
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_prompt}
-        ]
-        for step_index, response in enumerate(assistant_responses):
-            messages.extend(
-                (
-                    {"role": "user", "content": observation_texts[step_index]},
-                    {"role": "assistant", "content": response},
-                )
+    action_indices = tuple(int(index) for index in record["action_indices"])
+    assistant_responses = tuple(
+        str(response) for response in record["assistant_responses"]
+    )
+    if len(observation_texts) != len(action_indices) + 1:
+        raise ValueError("structured record requires one final observation")
+    if len(assistant_responses) != len(action_indices):
+        raise ValueError("structured record assistant response/action mismatch")
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt}
+    ]
+    for step_index, response in enumerate(assistant_responses):
+        messages.extend(
+            (
+                {"role": "user", "content": observation_texts[step_index]},
+                {"role": "assistant", "content": response},
             )
-        messages.append({"role": "user", "content": observation_texts[-1]})
-    else:
-        messages = [dict(message) for message in record.get("messages", [])]
-        if not messages or messages[-1].get("role") != "user":
-            raise ValueError("legacy record must end with the final user observation")
+        )
+    messages.append({"role": "user", "content": observation_texts[-1]})
     messages.append({"role": "assistant", "content": "<think>"})
     return messages
 
@@ -142,7 +140,7 @@ def generate_terminal_cot_prefix(
     """Generate terminal CoT and append only the injected state query prefix."""
 
     messages = terminal_cot_prompt_messages(record)
-    image_paths = tuple(str(path) for path in record.get("image_paths", []))
+    image_paths = tuple(str(path) for path in record["image_paths"])
     bound_messages = bind_image_placeholders(messages, image_paths)
     text = render_policy_messages(
         bound_messages,
@@ -211,7 +209,7 @@ def generate_terminal_cot_prefix(
         processor.tokenizer.encode(thought, add_special_tokens=False)
     )
     if close_start < 0 or reasoning_token_count > max_reasoning_tokens:
-        record_id = str(record.get("id", ""))
+        record_id = str(record["id"])
         raise _missing_close_error(
             record_id=record_id,
             max_reasoning_tokens=max_reasoning_tokens,

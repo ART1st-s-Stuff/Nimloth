@@ -5,6 +5,9 @@ from dataclasses import replace
 
 import pytest
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from nimloth.agent import (
     ActionTrainingTrace,
@@ -17,6 +20,7 @@ from nimloth.agent import (
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
 from nimloth.rollout import RolloutTrajectory
+from nimloth.rollout.record_format import STEP_REWARD_PROVENANCE
 from nimloth.training.rl.algorithm import RLAlgorithm
 from nimloth.training.rl.episodes import (
     TemporalDifferenceStep,
@@ -142,6 +146,7 @@ def _planner_trajectory() -> RolloutTrajectory:
         )
     return RolloutTrajectory(
         record_id="planner_episode",
+        reward_provenance=STEP_REWARD_PROVENANCE,
         image_paths=images,
         action_indices=actions,
         action_names=[NAVIGATION_ACTION_SPACE.key_for(index) for index in actions],
@@ -150,7 +155,6 @@ def _planner_trajectory() -> RolloutTrajectory:
         reward=1.0,
         rewards=[0.0, 0.0, 0.0, 1.0],
         terminated=True,
-        messages=prompt.build_supervised_prompt(transcript).unbound_messages(),
         system_prompt="Navigate.",
         observation_texts=observations,
         policy_messages=[
@@ -206,6 +210,7 @@ def test_planner_trajectory_rejects_a_tampered_segment_tail() -> None:
     with pytest.raises(ValueError, match="selected candidate prefix"):
         build_episode_training_batches(
             [trajectory],
+            wm_prediction_steps=2,
             gamma=1.0,
             truncated_bootstrap=0.0,
         )
@@ -220,6 +225,19 @@ def test_planner_trace_accepts_a_short_terminal_prefix() -> None:
     trace.validate_executed_prefix((trace.selected_candidate_sequence[0],))
 
 
+def test_episode_training_uses_configured_wm_prediction_steps() -> None:
+    with pytest.raises(
+        ValueError,
+        match="configured WM prediction steps",
+    ):
+        build_episode_training_batches(
+            [_planner_trajectory()],
+            wm_prediction_steps=3,
+            gamma=1.0,
+            truncated_bootstrap=0.0,
+        )
+
+
 def test_planner_trajectory_rejects_a_segment_longer_than_its_horizon() -> None:
     trajectory = _planner_trajectory()
     trace = trajectory.planner_policy_traces[0]
@@ -232,6 +250,7 @@ def test_planner_trajectory_rejects_a_segment_longer_than_its_horizon() -> None:
     with pytest.raises(ValueError, match="exceeds its horizon"):
         build_episode_training_batches(
             [trajectory],
+            wm_prediction_steps=2,
             gamma=1.0,
             truncated_bootstrap=0.0,
         )
@@ -240,6 +259,7 @@ def test_planner_trajectory_rejects_a_segment_longer_than_its_horizon() -> None:
 def test_episode_td_replays_mixed_history_then_mc_only_updates_value_head() -> None:
     episode = build_episode_training_batches(
         [_planner_trajectory()],
+        wm_prediction_steps=2,
         gamma=1.0,
         truncated_bootstrap=0.0,
     )[0]
@@ -263,11 +283,13 @@ def test_episode_td_replays_mixed_history_then_mc_only_updates_value_head() -> N
             ),
         ),
         input_builder=_UnusedInputBuilder(),  # type: ignore[arg-type]
+        state_source="rollout",
         representation_to_backbone=False,
         policy_replay=replay,
     )
     algorithm = RLAlgorithm(
         history_size=4,
+        wm_prediction_steps=2,
         sigreg=None,
         sigreg_weight=0.0,
         value_rank_margin=0.1,
@@ -302,3 +324,97 @@ def test_episode_td_replays_mixed_history_then_mc_only_updates_value_head() -> N
     assert projector.weight.grad is None
     assert predictor.state.weight.grad is None
     assert replay.logits.grad is None
+
+
+def _distributed_td_mc_worker(
+    rank: int,
+    world_size: int,
+    rendezvous_path: str,
+) -> None:
+    dist.init_process_group(
+        "gloo",
+        init_method=f"file://{rendezvous_path}",
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        torch.manual_seed(123)
+        trajectory = _planner_trajectory()
+        trajectory.world_model_states = [
+            [value + 0.25 * rank for value in state]
+            for state in trajectory.world_model_states
+        ]
+        episode = build_episode_training_batches(
+            [trajectory],
+            wm_prediction_steps=2,
+            gamma=1.0,
+            truncated_bootstrap=0.0,
+        )[0]
+        projector = DDP(_StateProjector(), static_graph=True)
+        predictor = DDP(_SequencePredictor(), static_graph=True)
+        value_head = DDP(torch.nn.Linear(2, 8), static_graph=True)
+        replay = DDP(_ActionReplay(), static_graph=True)
+        runtime = RLModelRuntime(
+            agent=Agent(
+                backbone=_UnusedBackbone(),
+                wm=WorldModel(
+                    state_proj=projector,
+                    wm_predictor=predictor,
+                    value_head=value_head,
+                ),
+            ),
+            input_builder=_UnusedInputBuilder(),  # type: ignore[arg-type]
+            state_source="rollout",
+            representation_to_backbone=False,
+            policy_replay=replay,
+        )
+        algorithm = RLAlgorithm(
+            history_size=4,
+            wm_prediction_steps=2,
+            sigreg=None,
+            sigreg_weight=0.0,
+            value_rank_margin=0.1,
+            value_rank_weight=0.0,
+            ppo_clip_ratio=0.2,
+            entropy_weight=0.0,
+            credit_assignment="action",
+            planner_distillation_weight=1.0,
+        )
+        parameters = [
+            *projector.parameters(),
+            *predictor.parameters(),
+            *value_head.parameters(),
+            *replay.parameters(),
+        ]
+        optimizer = torch.optim.SGD(parameters, lr=0.05)
+        optimizer.zero_grad(set_to_none=True)
+        for td_step in episode.td_steps:
+            output = algorithm.temporal_difference_step(
+                runtime,
+                td_step,
+                total_td_steps=len(episode.td_steps),
+            )
+            output.loss.backward()
+        mc_output = algorithm.monte_carlo_step(runtime, (episode,))
+        mc_output.loss.backward()
+        optimizer.step()
+
+        flattened = torch.cat(
+            [parameter.detach().flatten() for parameter in parameters]
+        )
+        replicas = [torch.empty_like(flattened) for _ in range(world_size)]
+        dist.all_gather(replicas, flattened)
+        for replica in replicas[1:]:
+            torch.testing.assert_close(replicas[0], replica, rtol=0.0, atol=0.0)
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.skipif(not dist.is_available(), reason="torch.distributed is unavailable")
+def test_module_level_ddp_synchronizes_td_then_mc_update(tmp_path) -> None:
+    mp.spawn(
+        _distributed_td_mc_worker,
+        args=(2, str(tmp_path / "td-mc-ddp-init")),
+        nprocs=2,
+        join=True,
+    )

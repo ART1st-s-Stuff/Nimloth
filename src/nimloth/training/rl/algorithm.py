@@ -18,6 +18,7 @@ from nimloth.training.rl.episodes import (
     TemporalDifferenceStep,
 )
 from nimloth.training.rl.runtime import RLModelRuntime
+from nimloth.util.module import move_to_device
 from nimloth.wm import SequenceSIGReg
 
 
@@ -55,16 +56,13 @@ class RLBatch:
         )
 
     @property
-    def cached_state_latent_hiddens(self) -> torch.Tensor | None:
-        """返回 ``(B,H+1,K,D)`` rollout hidden；一个 batch 禁止混用来源。"""
+    def rollout_state_hiddens(self) -> torch.Tensor:
+        """堆叠 rollout 时保存的 ``(B,H+1,K,D)`` Qwen state hidden。"""
 
-        rows = [window.cached_state_latent_hiddens() for window in self.windows]
-        populated = [row is not None for row in rows]
-        if any(populated) and not all(populated):
-            raise ValueError("one RL batch cannot mix cached and uncached Qwen states")
-        if not any(populated):
-            return None
-        return torch.stack([row for row in rows if row is not None], dim=0)
+        return torch.stack(
+            [window.rollout_state_hiddens() for window in self.windows],
+            dim=0,
+        )
 
 
 @dataclass(frozen=True)
@@ -77,10 +75,10 @@ class RLStepOutput:
 
 
 def low_variance_kl(log_ratio: torch.Tensor) -> torch.Tensor:
-    """Evaluate VAGEN's clamped low-variance KL without overflowing exp().
+    """计算 VAGEN 截断后的低方差 KL，并避免 ``exp`` 溢出。
 
-    The final penalty is already saturated at 10 outside this input interval,
-    so clamping the exponent input preserves the value and zero-gradient region.
+    最终惩罚在该输入区间之外已经饱和到 10，因此先截断指数输入不会改变
+    输出值及其零梯度区间。
     """
 
     safe_log_ratio = log_ratio.clamp(min=-11.0, max=3.0)
@@ -180,6 +178,7 @@ class RLAlgorithm:
         self,
         *,
         history_size: int,
+        wm_prediction_steps: int,
         sigreg: SequenceSIGReg | None,
         sigreg_weight: float,
         value_rank_margin: float,
@@ -197,6 +196,7 @@ class RLAlgorithm:
         """消费已经由 ``RLConfig`` 校验过的算法参数。"""
 
         self.history_size = int(history_size)
+        self.wm_prediction_steps = int(wm_prediction_steps)
         self.sigreg = sigreg
         self.sigreg_weight = float(sigreg_weight)
         self.value_rank_margin = float(value_rank_margin)
@@ -211,21 +211,31 @@ class RLAlgorithm:
         self.reference_kl_loss_weight = float(reference_kl_loss_weight)
         self.train_world_model = bool(train_world_model)
 
-    def _predict_executed_segment(
+    def _predictor_replay(
         self,
         runtime: RLModelRuntime,
         state_history: torch.Tensor,
-        previous_actions: torch.Tensor,
-        segment_actions: torch.Tensor,
+        actions_history: torch.Tensor,
+        actions: torch.Tensor,
     ) -> torch.Tensor:
-        """Replay executed actions autoregressively through the wrapped WM."""
+        """让 WM 按 config 指定的步数，自回归预测后续 state。
+
+        ``state_history`` 和 ``previous_actions`` 是预测起点之前保留的
+        WM 上下文。每预测一步，就把新 state 追加到上下文；下一步只能读取
+        最近 ``history_size`` 个 state/action，不会重新调用 Qwen。
+
+        ``self.wm_prediction_steps`` 直接来自 ``agent.planning.horizon``。episode
+        最后一段可能提前结束，此时 actions 已由 episode 构造阶段校验为合法短尾，
+        这里只预测实际剩余步数。
+        """
 
         all_states = state_history
-        all_actions = torch.cat((previous_actions, segment_actions), dim=1)
+        all_actions = torch.cat((actions_history, actions), dim=1)
         history_steps = state_history.shape[1]
+        prediction_steps = min(self.wm_prediction_steps, actions.shape[1])
         predictions: list[torch.Tensor] = []
-        for segment_index in range(segment_actions.shape[1]):
-            state_index = history_steps - 1 + segment_index
+        for prediction_index in range(prediction_steps):
+            state_index = history_steps - 1 + prediction_index
             context_start = max(0, state_index - self.history_size + 1)
             state_context = all_states[:, context_start : state_index + 1]
             action_context = all_actions[:, context_start : state_index + 1]
@@ -245,40 +255,57 @@ class RLAlgorithm:
         *,
         total_td_steps: int,
     ) -> RLStepOutput:
-        """Replay one Qwen anchor and its executed WM segment, then form TD loss."""
+        """计算一个相邻 Qwen anchor 之间的 WM 与动作蒸馏损失。
+
+        让Qwen
+
+        输入 segment 覆盖 ``start_step`` 到 ``end_step`` 之间实际执行的动作。
+        起点 Qwen hidden 会重新经过可训练 StateProjector；终点 anchor 只作为
+        stop-gradient 监督目标。segment 内的中间 state 全由 WM 自回归产生。
+
+        一个 episode 会对每个 segment 分别调用本方法并立即 backward，最后再做
+        一次 episode 级 MC ValueHead backward。所有 backward 共用一次 optimizer
+        step，所以这里按 ``total_td_steps`` 归一化，避免 segment 数量改变 TD 总权重。
+        """
 
         if runtime.policy_replay is None:
             raise RuntimeError("planner TD step requires Qwen action replay")
 
-        saved_context = runtime.prepare_world_model_states(
-            step.retained_state_context(self.history_size)
+        history_states = move_to_device(
+            step.retained_state_context(self.history_size),
+            runtime.agent.wm.wm_predictor,
         )
-        start_hidden = runtime.prepare_anchor_hidden(
-            step.anchor_hidden(step.start_step)
+        start_hidden = move_to_device(
+            step.llm_hidden_at_step(step.start_step),
+            runtime.agent.wm.state_proj,
         )
+        # 从最后一个state开始重算投影，为predictor训练重建计算图
         start_state = runtime.agent.wm.project_state(start_hidden.unsqueeze(0))
-        prior_states = saved_context[:-1].unsqueeze(0)
-        state_history = torch.cat(
-            (prior_states, start_state.unsqueeze(1)),
+        history_states = torch.cat(
+            (history_states[:-1].unsqueeze(0), start_state.unsqueeze(1)),
             dim=1,
         )
-        previous_actions = step.previous_actions(self.history_size).to(
-            device=state_history.device
+        # 重建predictor计算图
+        history_actions = step.previous_actions(self.history_size).to(
+            device=history_states.device
         ).unsqueeze(0)
-        segment_actions = torch.tensor(
+        actions = torch.tensor(
             [step.action_indices],
             dtype=torch.long,
-            device=state_history.device,
+            device=history_states.device,
         )
-        predicted_states = self._predict_executed_segment(
+        predicted_states = self._predictor_replay(
             runtime,
-            state_history,
-            previous_actions,
-            segment_actions,
+            history_states,
+            history_actions,
+            actions,
         )
+
+        # 终点 Qwen anchor 是监督目标，不允许 WM loss 更新 Qwen 或 target projector。
         with torch.no_grad():
-            target_hidden = runtime.prepare_anchor_hidden(
-                step.anchor_hidden(step.end_step)
+            target_hidden = move_to_device(
+                step.llm_hidden_at_step(step.end_step),
+                runtime.agent.wm.state_proj,
             )
             target_state = runtime.agent.wm.project_target_state(
                 target_hidden.unsqueeze(0)
@@ -289,6 +316,8 @@ class RLAlgorithm:
             else predicted_states[:, -1].sum() * 0.0
         )
 
+        # 当前 planner 语义是动作蒸馏：重放起点 Qwen response，让 Qwen 的动作分布
+        # 拟合 planner teacher。它不是 PPO，也不要求 Qwen 实际采样该执行动作。
         replay_input = step.action_replay_input()
         planner_trace = replay_input.planner_trace
         assert planner_trace is not None
@@ -316,6 +345,8 @@ class RLAlgorithm:
             * (safe_teacher_log_probs - replay_output.action_log_probs[0])
         ).sum()
 
+        # 每个 TD loss 都会单独 backward；归一化后，一个 episode 内所有 segment
+        # 的梯度总量等价于先对 segment loss 求平均再 backward。
         normalized_wm_loss = wm_loss / total_td_steps
         normalized_action_loss = action_distillation_loss / total_td_steps
         distillation_weight = cast(float, self.planner_distillation_weight)
@@ -358,16 +389,20 @@ class RLAlgorithm:
         runtime: RLModelRuntime,
         episodes: tuple[EpisodeTrainingBatch, ...],
     ) -> RLStepOutput:
-        """Fit ValueHead on full-episode returns using only detached WM states."""
+        """用完整 episode 的 MC return 拟合 ValueHead，输入 state 全部 detach。"""
 
-        states = runtime.prepare_value_states(
-            torch.cat([episode.action_states for episode in episodes], dim=0)
+        states = move_to_device(
+            torch.cat(
+                [episode.action_states for episode in episodes],
+                dim=0,
+            ).detach(),
+            runtime.agent.wm.value_head,
         )
         actions = torch.cat([episode.action_indices for episode in episodes], dim=0)
         actions = actions.to(device=states.device)
         returns = torch.cat([episode.return_targets for episode in episodes], dim=0)
         returns = returns.to(device=states.device)
-        action_values = runtime.agent.wm.predict_action_values(states.detach())
+        action_values = runtime.agent.wm.predict_action_values(states)
         value_objective = action_value_loss(
             action_values,
             actions,
@@ -404,7 +439,7 @@ class RLAlgorithm:
             },
         )
 
-    def training_step(
+    def sequence_step(
         self,
         runtime: RLModelRuntime,
         batch: RLBatch,
@@ -535,15 +570,19 @@ class RLAlgorithm:
         runtime: RLModelRuntime,
         batch: RLBatch,
     ) -> torch.Tensor:
-        """优先使用 rollout 保存的 Qwen hidden；旧数据才按时间位置重算。"""
+        """按显式 state source 读取 rollout hidden 或重新执行 Qwen。"""
 
         state_steps = self.history_size + 1
-        cached = batch.cached_state_latent_hiddens
-        if cached is not None:
-            return runtime.prepare_cached_state_sequence(
-                cached,
+        if runtime.state_source == "rollout":
+            hidden_states = batch.rollout_state_hiddens
+            runtime.validate_rollout_state_hiddens(
+                hidden_states,
                 batch_size=len(batch.windows),
                 state_steps=state_steps,
+            )
+            return move_to_device(
+                hidden_states.detach(),
+                runtime.agent.wm.state_proj,
             )
         return runtime.encode_state_sequence(
             batch.state_prompts,
@@ -653,7 +692,7 @@ class RLAlgorithm:
         )
         if reference_log_probs.shape != current_log_probs.shape:
             raise RuntimeError("reference/current CoT log-prob counts do not align")
-        # VAGEN low_var_kl: exp(ref-logp) - (ref-logp) - 1.
+        # VAGEN 低方差 KL：exp(ref-logp) - (ref-logp) - 1。
         return low_variance_kl(reference_log_probs - current_log_probs).mean()
 
     def _policy_loss(

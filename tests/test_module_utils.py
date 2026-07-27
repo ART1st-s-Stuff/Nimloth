@@ -2,7 +2,24 @@
 
 import torch
 
-from nimloth.util.module import evaluating
+from nimloth.util.module import evaluating, move_to_device
+
+
+def test_move_to_device_accepts_device_module_and_tensor_targets() -> None:
+    source = torch.ones(2, dtype=torch.float32)
+    module = torch.nn.Linear(2, 2, dtype=torch.float64)
+    reference = torch.zeros(2, dtype=torch.float64)
+
+    assert move_to_device(source, torch.device("cpu")).dtype == torch.float32
+    assert move_to_device(source, module).dtype == torch.float64
+    assert move_to_device(source, reference).dtype == torch.float64
+
+
+def test_move_to_device_preserves_integer_dtype() -> None:
+    source = torch.ones(2, dtype=torch.long)
+    reference = torch.zeros(2, dtype=torch.float64)
+
+    assert move_to_device(source, reference).dtype == torch.long
 
 
 def test_evaluating_restores_original_training_mode() -> None:

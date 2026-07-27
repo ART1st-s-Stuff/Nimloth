@@ -220,93 +220,6 @@ class QwenAgentPolicy:
             )
 
 
-def batch_action_log_probs(
-    *,
-    model: torch.nn.Module,
-    processor: Any,
-    token_id_map: dict[str, int],
-    messages: Sequence[list[dict[str, Any]]],
-    taken_action_indices: Sequence[int],
-    temperatures: Sequence[float],
-    top_ps: Sequence[float],
-    device: torch.device,
-    latent_token_count: int = 1,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Recompute PPO probabilities with the same prompts and sampling transform."""
-
-    lengths = {
-        len(messages),
-        len(taken_action_indices),
-        len(temperatures),
-        len(top_ps),
-    }
-    if len(lengths) != 1:
-        raise ValueError("PPO policy batch fields must have equal lengths")
-
-    selected: list[torch.Tensor] = []
-    distributions: list[torch.Tensor] = []
-    for prompt, action_index, temperature, top_p in zip(
-        messages,
-        taken_action_indices,
-        temperatures,
-        top_ps,
-        strict=True,
-    ):
-        logits = action_logits_for_messages(
-            model=model,
-            processor=processor,
-            token_id_map=token_id_map,
-            messages=prompt,
-            device=device,
-            latent_token_count=latent_token_count,
-        )
-        log_probs = behavior_log_probs(
-            logits,
-            temperature=float(temperature),
-            top_p=float(top_p),
-        )
-        selected.append(log_probs[int(action_index)])
-        distributions.append(log_probs)
-    return torch.stack(selected), torch.stack(distributions)
-
-
-def replay_rollout_action_log_probs(
-    *,
-    samples: Sequence[PolicyReplayInput],
-    model: torch.nn.Module,
-    processor: Any,
-    token_id_map: dict[str, int],
-    device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """用当前 Qwen 重放 rollout 时保存的完整 prompt 与采样变换。"""
-
-    if not samples:
-        raise ValueError("PPO policy batch must not be empty")
-    latent_token_counts = {
-        int(sample.latent_token_count) for sample in samples
-    }
-    if len(latent_token_counts) != 1:
-        raise ValueError("one PPO batch cannot mix latent token counts")
-    bound_messages = [sample.prompt.bound_messages() for sample in samples]
-    # eval mode 关闭 dropout 但不关闭梯度，保证 PPO old/new policy 可比较。
-    with evaluating(model):
-        return batch_action_log_probs(
-            model=model,
-            processor=processor,
-            token_id_map=token_id_map,
-            messages=bound_messages,
-            taken_action_indices=[
-                sample.action_index for sample in samples
-            ],
-            temperatures=[
-                sample.sampling_temperature for sample in samples
-            ],
-            top_ps=[sample.sampling_top_p for sample in samples],
-            device=device,
-            latent_token_count=latent_token_counts.pop(),
-        )
-
-
 def _row_entropies(log_probs: torch.Tensor) -> torch.Tensor:
     probabilities = log_probs.exp()
     terms = torch.where(
@@ -593,29 +506,17 @@ class QwenActionLogProbReplay:
         self,
         samples: tuple[PolicyReplayInput, ...],
     ) -> PolicyReplayOutput:
-        traced = [sample.token_trace is not None for sample in samples]
-        if any(traced) and not all(traced):
+        if any(sample.token_trace is None for sample in samples):
             raise ValueError(
-                "one policy replay batch cannot mix traced and legacy samples"
+                "policy replay requires persisted token traces; historical "
+                "action-only records must not enter the current actor objective"
             )
-        if all(traced):
-            with evaluating(self.model):
-                return replay_policy_token_log_probs(
-                    samples=samples,
-                    model=self.model,
-                    processor=self.processor,
-                    token_id_map=self.token_id_map,
-                    device=self.device,
-                    token_value_head=self.token_value_head,
-                )
-        selected, distributions = replay_rollout_action_log_probs(
-            samples=samples,
-            model=self.model,
-            processor=self.processor,
-            token_id_map=self.token_id_map,
-            device=self.device,
-        )
-        return PolicyReplayOutput(
-            selected_log_probs=selected,
-            entropies=_row_entropies(distributions),
-        )
+        with evaluating(self.model):
+            return replay_policy_token_log_probs(
+                samples=samples,
+                model=self.model,
+                processor=self.processor,
+                token_id_map=self.token_id_map,
+                device=self.device,
+                token_value_head=self.token_value_head,
+            )

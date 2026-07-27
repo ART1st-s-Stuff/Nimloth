@@ -82,6 +82,6 @@ class RLCheckpointManager:
         )
 
     def link_snapshot(self, source: Path, path: Path) -> None:
-        """Expose the same completed state under an immutable checkpoint name."""
+        """用不可变 checkpoint 名称指向同一份已完成状态。"""
 
         link_checkpoint_snapshot(source, path)

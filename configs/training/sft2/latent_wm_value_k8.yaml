@@ -45,7 +45,6 @@ train:
   checkpoint_interval_minutes: 20.0
   # Deduplicated cache: each image processor tensor is stored once as BF16;
   # token prefixes and image tensors are mmap-loaded from medium-size shards.
-  preprocess_cache_format: compact
   preprocess_cache_image_dtype: bfloat16
   preprocess_cache_image_shard_size: 128
   preprocess_cache_transition_shard_size: 256

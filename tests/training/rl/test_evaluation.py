@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nimloth.rollout import RolloutTrajectory
+from nimloth.rollout.record_format import TRAJECTORY_REWARD_PROVENANCE
 from nimloth.training.rl.evaluation import (
     evaluate_rollout_collector,
     summarize_rollouts,
@@ -25,12 +26,14 @@ def _trajectories() -> list[RolloutTrajectory]:
     return [
         RolloutTrajectory(
             record_id="success",
+            reward_provenance=TRAJECTORY_REWARD_PROVENANCE,
             action_indices=[0, 1],
             success=True,
             reward=10.0,
         ),
         RolloutTrajectory(
             record_id="failure",
+            reward_provenance=TRAJECTORY_REWARD_PROVENANCE,
             action_indices=[0],
             success=False,
             reward=-1.0,

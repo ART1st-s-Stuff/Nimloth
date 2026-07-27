@@ -11,11 +11,10 @@ import torch
 from torch.utils.data import Dataset
 
 from nimloth.util.cache.schema import (
-    SUPPORTED_COMPACT_CACHE_FORMATS,
+    COMPACT_CACHE_FORMAT,
     safe_cache_name,
     transition_sample_id,
 )
-from nimloth.util.cache.encoding import encode_qwen_item_from_image_grids
 from nimloth.agent import bind_image_placeholders
 from nimloth.rollout.transitions import TransitionContextIndex, TransitionSample
 
@@ -78,7 +77,10 @@ class CompactCachedTransitionCollator:
             )
         return self._image_store
 
-    def _materialize_encoding(self, compact: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    def _materialize_encoding(
+        self,
+        compact: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
         out = {key: value for key, value in compact.items() if key != "image_indices"}
         image_indices = compact.get("image_indices")
         if image_indices is None or image_indices.numel() == 0:
@@ -141,7 +143,9 @@ class CompactCachedTransitionCollator:
             if row is None:
                 compact_next = entry.get("next_enc")
                 if compact_next is None:
-                    raise ValueError("compact next encoding missing for WM-eligible transition")
+                    raise ValueError(
+                        "compact next encoding missing for WM-eligible transition"
+                    )
                 row = self._materialize_encoding(compact_next)
                 materialized[next_index] = row
             next_rows.append(row)
@@ -160,45 +164,38 @@ class CachedTransitionDataset(Dataset):
         samples: list[TransitionSample],
         *,
         max_open_shards: int = 2,
-        processor: Any | None = None,
-        max_length: int | None = None,
-        latent_token_count: int = 1,
-        mask_latent_query_labels: bool = True,
     ):
         self.cache_dir = cache_dir
         self.samples = samples
         manifest_path = cache_dir / "manifest.json"
-        self.manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+        self.manifest = (
+            json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest_path.is_file()
+            else {}
+        )
         self.compact_format = str(self.manifest.get("format", ""))
-        self.is_compact = self.compact_format in SUPPORTED_COMPACT_CACHE_FORMATS
-        self.transition_shard_size = int(self.manifest.get("transition_shard_size", 0) or 0)
-        self._transition_store = (
-            _MmapShardStore(cache_dir / "transitions", max_open_shards=max_open_shards)
-            if self.is_compact
-            else None
+        if self.compact_format != COMPACT_CACHE_FORMAT:
+            raise ValueError(
+                "training requires compact cache format "
+                f"{COMPACT_CACHE_FORMAT!r}; got {self.compact_format!r}. "
+                "Rebuild the cache from the migrated trajectory JSONL"
+            )
+        self.is_compact = True
+        self.transition_shard_size = int(
+            self.manifest.get("transition_shard_size", 0) or 0
+        )
+        self._transition_store = _MmapShardStore(
+            cache_dir / "transitions",
+            max_open_shards=max_open_shards,
         )
         self._sample_index = {
             (sample.record_id, sample.step_index): index
             for index, sample in enumerate(samples)
         }
-        self.processor = processor
-        self.max_length = int(max_length) if max_length is not None else None
-        self.latent_token_count = int(latent_token_count)
-        self.mask_latent_query_labels = bool(mask_latent_query_labels)
-        self._image_index_by_path: dict[str, tuple[int, list[int]]] = {}
-        if self.is_compact:
-            index_path = cache_dir / "image_index.json"
-            index_payload = json.loads(index_path.read_text(encoding="utf-8"))
-            for image_index, location in enumerate(index_payload.get("images", [])):
-                path = str(Path(location["path"]).resolve())
-                grid = [int(value) for value in location.get("grid_thw", [])]
-                if len(grid) != 3:
-                    raise ValueError(
-                        f"compact cache image is missing grid_thw: {path}"
-                    )
-                self._image_index_by_path[path] = (image_index, grid)
-        if self.is_compact and self.transition_shard_size <= 0:
-            raise ValueError(f"invalid compact transition_shard_size in {manifest_path}")
+        if self.transition_shard_size <= 0:
+            raise ValueError(
+                f"invalid compact transition_shard_size in {manifest_path}"
+            )
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -214,103 +211,56 @@ class CachedTransitionDataset(Dataset):
         shard = self._transition_store.get(shard_index)
         entries = shard["entries"]
         if local_index >= len(entries):
-            raise IndexError(f"compact cache index {index} missing from shard {shard_index}")
-        return dict(entries[local_index])
-
-    def _encode_dedicated_next(
-        self,
-        sample: TransitionSample,
-    ) -> dict[str, torch.Tensor]:
-        """只用 compact grid metadata 编码缺失的 next prompt，不重处理图片。"""
-
-        if (
-            self.processor is None
-            or self.max_length is None
-            or sample.next_prefix_messages is None
-            or sample.next_prefix_image_paths is None
-        ):
-            raise ValueError(
-                "compact cache is missing a dedicated next encoding and the "
-                "read-only compatibility encoder is unavailable"
+            raise IndexError(
+                f"compact cache index {index} missing from shard {shard_index}"
             )
-        image_indices: list[int] = []
-        grids: list[list[int]] = []
-        for raw_path in sample.next_prefix_image_paths:
-            path = str(Path(raw_path).resolve())
-            try:
-                image_index, grid = self._image_index_by_path[path]
-            except KeyError as error:
-                raise ValueError(
-                    "compact cache does not contain required next-state image: "
-                    f"{path}"
-                ) from error
-            image_indices.append(image_index)
-            grids.append(grid)
-        messages = bind_image_placeholders(
-            sample.next_prefix_messages,
-            sample.next_prefix_image_paths,
-        )
-        encoded = encode_qwen_item_from_image_grids(
-            messages,
-            torch.tensor(grids, dtype=torch.long).reshape(-1, 3),
-            self.processor,
-            self.max_length,
-            include_labels=False,
-            latent_token_count=self.latent_token_count,
-            mask_latent_query_labels=self.mask_latent_query_labels,
-        )
-        encoded["image_indices"] = torch.tensor(
-            image_indices,
-            dtype=torch.int32,
-        )
-        return encoded
+        return dict(entries[local_index])
 
     def __getitem__(self, index: int | TransitionContextIndex) -> dict[str, Any]:
         context_index = index if isinstance(index, TransitionContextIndex) else None
         if context_index is not None:
             index = context_index.sample_index
         sample = self.samples[index]
-        if self.is_compact:
-            entry = self._compact_entry(index)
-            if entry.get("id") != transition_sample_id(sample):
-                raise ValueError(
-                    f"compact cache/sample mismatch at {index}: {entry.get('id')!r} != "
-                    f"{transition_sample_id(sample)!r}"
+        entry = self._compact_entry(index)
+        if entry.get("id") != transition_sample_id(sample):
+            raise ValueError(
+                f"compact cache/sample mismatch at {index}: {entry.get('id')!r} != "
+                f"{transition_sample_id(sample)!r}"
+            )
+        entry["cache_index"] = index
+        if context_index is None or context_index.is_current_step:
+            next_index = None
+            if sample.next_prefix_messages is not None:
+                next_index = self._sample_index.get(
+                    (sample.record_id, sample.step_index + 1)
                 )
-            entry["cache_index"] = index
-            if context_index is None or context_index.is_current_step:
-                next_index = None
-                if sample.next_prefix_messages is not None:
-                    next_index = self._sample_index.get(
-                        (sample.record_id, sample.step_index + 1)
+            entry["next_cache_index"] = next_index
+            if next_index is not None:
+                entry["next_enc"] = self._compact_entry(next_index)["current_enc"]
+            elif sample.next_prefix_messages is not None:
+                next_encoding = entry.get("next_enc")
+                if next_encoding is None:
+                    raise ValueError(
+                        "current compact cache is missing the terminal next-state "
+                        "encoding; rebuild it from the migrated trajectory JSONL"
                     )
-                entry["next_cache_index"] = next_index
-                if next_index is not None:
-                    entry["next_enc"] = self._compact_entry(next_index)["current_enc"]
-                else:
-                    entry["next_enc"] = entry.get("next_enc")
-                    if (
-                        entry["next_enc"] is None
-                        and sample.next_prefix_messages is not None
-                    ):
-                        entry["next_enc"] = self._encode_dedicated_next(sample)
+                entry["next_enc"] = next_encoding
             else:
-                entry["next_cache_index"] = None
                 entry["next_enc"] = None
         else:
-            cache_path = self.cache_path_for_sample(sample)
-            if not cache_path.is_file():
-                raise FileNotFoundError(f"missing preprocess cache: {cache_path}")
-            entry = torch.load(cache_path, map_location="cpu", weights_only=True)
+            entry["next_cache_index"] = None
+            entry["next_enc"] = None
         entry["messages"] = bind_image_placeholders(
             sample.prefix_messages,
             sample.prefix_image_paths,
         )
-        # Image paths are lightweight transition metadata, not preprocessed
-        # tensors. Attach them from the authoritative dataset so old compact
-        # Qwen caches remain reusable by independent supervision sidecars.
+        # Image paths are transition metadata used by independent supervision
+        # sidecars; preprocessed Qwen shards intentionally do not own them.
         entry["next_image_path"] = sample.next_image_path
-        if sample.next_prefix_messages is not None and sample.next_prefix_image_paths is not None:
+        if (
+            sample.next_prefix_messages is not None
+            and sample.next_prefix_image_paths is not None
+        ):
             entry["next_messages"] = bind_image_placeholders(
                 sample.next_prefix_messages,
                 sample.next_prefix_image_paths,

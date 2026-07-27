@@ -157,11 +157,6 @@ class SFT2BatchBuilder(Protocol):
 
     def collate_transition_samples(self, batch: list[Any]) -> Any: ...
 
-    def collate_cached_transition_batch(
-        self,
-        batch: list[dict[str, Any]],
-    ) -> Any: ...
-
     def prepare(self, raw_batch: Any) -> SFT2Batch: ...
 
 
@@ -203,40 +198,12 @@ class SFT2BatchAssembler:
             items.append(item)
         return items
 
-    def collate_cached_transition_batch(
-        self,
-        batch: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """在 DataLoader worker 内合并 legacy cache 张量。"""
-
-        items = [self._metadata(entry) for entry in batch]
-        current_rows = [
-            entry["current_enc"]
-            for entry, item in zip(batch, items, strict=True)
-            if item["is_current_step"]
-        ]
-        next_rows = [entry.get("next_enc") for entry in batch]
-        return {
-            "items": items,
-            "current": self.input_builder.collate_encoded(
-                current_rows,
-                include_labels=True,
-            ),
-            "online_tail": self._collate_online_tail(items, next_rows),
-            "next": self._collate_next(items, next_rows),
-        }
-
     def prepare(self, raw_batch: Any) -> SFT2Batch:
         """构造 current/next 模型输入和对齐后的 transition target。"""
 
         if isinstance(raw_batch, SFT2Batch):
             return raw_batch
-        if isinstance(raw_batch, dict) and "current" in raw_batch:
-            items = [self._metadata(item) for item in raw_batch["items"]]
-            current = raw_batch["current"]
-            online_tail = raw_batch.get("online_tail")
-            cached_next = raw_batch.get("next")
-        elif isinstance(raw_batch, dict) and "current_enc_rows" in raw_batch:
+        if isinstance(raw_batch, dict) and "current_enc_rows" in raw_batch:
             # compact cache 只在 worker 内恢复 mmap row，统一的输入 builder
             # 负责最后的 backend collate。
             items = [self._metadata(item) for item in raw_batch["items"]]

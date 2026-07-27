@@ -1,4 +1,4 @@
-"""Persist frozen-reference CoT log-probs between vLLM rollout and PPO."""
+"""在 vLLM rollout 与 PPO 之间持久化冻结 reference 的 CoT log-prob。"""
 
 from __future__ import annotations
 

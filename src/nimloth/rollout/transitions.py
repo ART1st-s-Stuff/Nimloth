@@ -11,6 +11,11 @@ from torch.utils.data import Dataset
 
 from nimloth.agent import bind_image_placeholders
 from nimloth.environment import get_action_space
+from nimloth.rollout.record_format import (
+    STEP_REWARD_PROVENANCE,
+    TRAJECTORY_REWARD_PROVENANCE,
+    require_trajectory_record,
+)
 
 DEFAULT_VALUE_GAMMA = 1.0
 TERMINAL_ASSISTANT_PREFIX_FIELD = "terminal_assistant_prefix"
@@ -19,9 +24,10 @@ TERMINAL_ASSISTANT_PREFIX_FIELD = "terminal_assistant_prefix"
 def terminal_assistant_prefix(record: dict[str, Any]) -> str:
     """读取离线生成并持久化的 terminal CoT state prefix。"""
 
+    require_trajectory_record(record)
     value = record.get(TERMINAL_ASSISTANT_PREFIX_FIELD)
     if not isinstance(value, str) or not value.strip():
-        record_id = str(record.get("id", ""))
+        record_id = str(record["id"])
         raise ValueError(
             f"record {record_id!r} is missing {TERMINAL_ASSISTANT_PREFIX_FIELD!r}; "
             "generate terminal CoT with the SFT1 initialization checkpoint "
@@ -38,24 +44,25 @@ def discounted_action_value_targets(
 ) -> list[float]:
     """计算 trajectory 中每个已执行动作的折扣 Monte Carlo return。
 
-    fresh rollout 使用逐步 ``rewards``。真正 terminal 从0 bootstrap；truncated
-    trajectory必须由调用方显式提供bootstrap值，避免把时间上限猜成terminal。
-    旧JSONL没有逐步reward/status时，保留trajectory级稀疏reward兼容路径。
+    ``reward_provenance`` 明确区分逐步 reward 与 trajectory 级 terminal reward。
+    真正 terminal 从0 bootstrap；truncated trajectory必须由调用方显式提供
+    bootstrap值，避免把时间上限猜成terminal。
     """
 
-    action_indices = list(record.get("action_indices", []))
+    action_indices = list(record["action_indices"])
     n = len(action_indices)
     if n == 0:
         return []
-    step_rewards = record.get("rewards")
-    if step_rewards:
+    provenance = record["reward_provenance"]
+    if provenance == STEP_REWARD_PROVENANCE:
+        step_rewards = record["rewards"]
         rewards = [float(value) for value in step_rewards]
         if len(rewards) != n:
             raise ValueError(
                 f"trajectory rewards/actions mismatch: {len(rewards)} != {n}"
             )
-        terminated = bool(record.get("terminated", False))
-        truncated = bool(record.get("truncated", False))
+        terminated = bool(record["terminated"])
+        truncated = bool(record["truncated"])
         if terminated == truncated:
             raise ValueError(
                 "trajectory with step rewards must be exactly one of "
@@ -71,9 +78,10 @@ def discounted_action_value_targets(
             running = rewards[step] + gamma * running
             returns[step] = running
         return returns
-
-    terminal = float(record.get("reward", 0.0) or 0.0)
-    return [terminal * (gamma ** (n - 1 - t)) for t in range(n)]
+    if provenance == TRAJECTORY_REWARD_PROVENANCE:
+        terminal = float(record["reward"])
+        return [terminal * (gamma ** (n - 1 - t)) for t in range(n)]
+    raise ValueError(f"unsupported reward_provenance {provenance!r}")
 
 
 @dataclass(frozen=True)
@@ -181,111 +189,32 @@ def expand_record_transitions(
     observation，``image_paths[t + 1]`` 是执行该动作后的 observation。
     """
 
-    image_paths = list(record.get("image_paths", []))
-    action_indices = list(record.get("action_indices", []))
-    record_id = str(record.get("id", ""))
-    success = bool(record.get("success", False))
-    split = str(record.get("split", "train"))
+    require_trajectory_record(record)
+    image_paths = list(record["image_paths"])
+    action_indices = list(record["action_indices"])
+    record_id = str(record["id"])
+    success = bool(record["success"])
+    split = str(record["split"])
     action_space = get_action_space(
-        str(record.get("action_space_id", "navigation")),
-        int(record.get("action_space_version", 1)),
+        str(record["action_space_id"]),
+        int(record["action_space_version"]),
     )
 
     if not image_paths or not action_indices:
         return []
 
-    system_prompt = str(record.get("system_prompt", ""))
-    observation_texts = tuple(str(text) for text in record.get("observation_texts", []))
-    if system_prompt and observation_texts:
-        return _expand_structured_agent_transitions(
-            record=record,
-            record_id=record_id,
-            system_prompt=system_prompt,
-            observation_texts=observation_texts,
-            image_paths=tuple(str(path) for path in image_paths),
-            action_indices=tuple(int(index) for index in action_indices),
-            success=success,
-            split=split,
-            value_gamma=value_gamma,
-            action_count=len(action_space),
-        )
-
-    messages = list(record.get("messages", []))
-    if not messages:
-        return []
-
-    value_targets = discounted_action_value_targets(record, gamma=value_gamma)
-    transitions: list[TransitionSample] = []
-    assistant_turn = 0
-    assistant_msg_indices: list[int] = [
-        i for i, msg in enumerate(messages) if msg.get("role") == "assistant"
-    ]
-    for msg_index, msg in enumerate(messages):
-        if msg.get("role") != "assistant":
-            continue
-        if assistant_turn >= len(action_indices):
-            break
-        if assistant_turn + 1 >= len(image_paths):
-            break
-
-        action_index = int(action_indices[assistant_turn])
-        if not 0 <= action_index < len(action_space):
-            raise ValueError(
-                f"record {record_id!r} step {assistant_turn}: action_index {action_index} "
-                f"out of range [0, {len(action_space)})"
-            )
-
-        next_prefix_messages: list[dict[str, Any]] | None = None
-        next_prefix_image_paths: list[str] | None = None
-        if assistant_turn + 1 < len(assistant_msg_indices):
-            next_msg_index = assistant_msg_indices[assistant_turn + 1]
-            if assistant_turn + 2 < len(image_paths):
-                next_prefix_messages = [dict(m) for m in messages[: next_msg_index + 1]]
-                next_prefix_image_paths = [str(p) for p in image_paths[: assistant_turn + 2]]
-        else:
-            next_user_index = next(
-                (
-                    index
-                    for index in range(msg_index + 1, len(messages))
-                    if messages[index].get("role") == "user"
-                ),
-                None,
-            )
-            if next_user_index is None:
-                raise ValueError(
-                    f"record {record_id!r} final action has an image but no "
-                    "post-action user observation"
-                )
-            next_prefix_messages = [
-                *[dict(m) for m in messages[: next_user_index + 1]],
-                {
-                    "role": "assistant",
-                    "content": terminal_assistant_prefix(record),
-                },
-            ]
-            next_prefix_image_paths = [
-                str(p) for p in image_paths[: assistant_turn + 2]
-            ]
-
-        transitions.append(
-            TransitionSample(
-                record_id=record_id,
-                step_index=assistant_turn,
-                prefix_messages=[dict(m) for m in messages[: msg_index + 1]],
-                prefix_image_paths=[str(p) for p in image_paths[: assistant_turn + 1]],
-                action_index=action_index,
-                current_image_path=str(image_paths[assistant_turn]),
-                next_image_path=str(image_paths[assistant_turn + 1]),
-                next_prefix_messages=next_prefix_messages,
-                next_prefix_image_paths=next_prefix_image_paths,
-                action_value_target=float(value_targets[assistant_turn]),
-                success=success,
-                split=split,
-            )
-        )
-        assistant_turn += 1
-
-    return transitions
+    return _expand_structured_agent_transitions(
+        record=record,
+        record_id=record_id,
+        system_prompt=str(record["system_prompt"]),
+        observation_texts=tuple(str(text) for text in record["observation_texts"]),
+        image_paths=tuple(str(path) for path in image_paths),
+        action_indices=tuple(int(index) for index in action_indices),
+        success=success,
+        split=split,
+        value_gamma=value_gamma,
+        action_count=len(action_space),
+    )
 
 
 def _expand_structured_agent_transitions(
@@ -316,7 +245,7 @@ def _expand_structured_agent_transitions(
         )
 
     assistant_responses = tuple(
-        str(response) for response in record.get("assistant_responses", [])
+        str(response) for response in record["assistant_responses"]
     )
     if len(assistant_responses) != len(action_indices):
         raise ValueError(
@@ -393,9 +322,10 @@ def iter_transitions_from_jsonl(
     value_gamma: float = DEFAULT_VALUE_GAMMA,
 ) -> Iterator[TransitionSample]:
     for record in load_jsonl_records(path, max_records=max_records):
-        if success_only and not record.get("success", False):
+        require_trajectory_record(record)
+        if success_only and not record["success"]:
             continue
-        if split is not None and str(record.get("split", "")) != split:
+        if split is not None and str(record["split"]) != split:
             continue
         yield from expand_record_transitions(record, value_gamma=value_gamma)
 

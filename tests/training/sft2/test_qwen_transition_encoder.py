@@ -7,9 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from nimloth.backbone import BackboneBatch
 from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
-from nimloth.training.sft2.batch import CachedNextBatch, SFT2BatchAssembler
+from nimloth.training.sft2.batch import SFT2BatchAssembler
 
 
 def _assembler() -> SFT2BatchAssembler:
@@ -61,24 +60,24 @@ def test_prepare_deduplicates_identical_next_prompts() -> None:
     assert batch.transitions.non_terminal_mask.tolist() == [True, True]
 
 
-def test_prepare_uses_worker_prebatched_next_cache() -> None:
+def test_prepare_uses_worker_materialized_compact_rows() -> None:
     next_messages = [{"role": "user", "content": "next"}]
     assembler = _assembler()
-    cached = CachedNextBatch(
-        keys=(assembler.input_builder.cache_key(next_messages, ()),),
-        batch=BackboneBatch(
-            {"input_ids": torch.ones((1, 3), dtype=torch.long)}
-        ),
-    )
     raw = {
         "items": [_item("a", next_messages)],
-        "current": BackboneBatch(
-            {"input_ids": torch.ones((1, 2), dtype=torch.long)}
-        ),
-        "online_tail": BackboneBatch(
-            {"input_ids": torch.ones((1, 3), dtype=torch.long)}
-        ),
-        "next": cached,
+        "current_enc_rows": [
+            {
+                "input_ids": torch.ones(2, dtype=torch.long),
+                "attention_mask": torch.ones(2, dtype=torch.long),
+                "labels": torch.ones(2, dtype=torch.long),
+            }
+        ],
+        "next_enc_rows": [
+            {
+                "input_ids": torch.ones(3, dtype=torch.long),
+                "attention_mask": torch.ones(3, dtype=torch.long),
+            }
+        ],
     }
 
     with patch("nimloth.backbone.qwen25vl.input.build_qwen_batch") as build:

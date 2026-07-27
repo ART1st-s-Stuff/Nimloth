@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate read-only reuse of the historical k=16 Qwen/DINO cache."""
+"""Validate current k=16 Qwen/DINO cache contents against source JSONL."""
 
 from __future__ import annotations
 
@@ -20,9 +20,9 @@ from nimloth.rollout.transitions import (
 )
 from nimloth.training.sft2.data.samplers import OnlineHistoryBatchSampler
 from nimloth.util.cache import (
-    COMPACT_CACHE_FORMAT_V1,
+    COMPACT_CACHE_FORMAT,
     DEFAULT_MIN_PIXELS,
-    LEGACY_TRANSITION_EXPANSION_VERSION,
+    TRANSITION_EXPANSION_VERSION,
     CachedTransitionDataset,
     CompactCachedTransitionCollator,
     cache_fingerprint,
@@ -90,13 +90,13 @@ def _validate_split(
         value_gamma=1.0,
         latent_token_count=16,
         mask_latent_query_labels=True,
-        cache_format=COMPACT_CACHE_FORMAT_V1,
+        cache_format=COMPACT_CACHE_FORMAT,
         image_dtype="bfloat16",
         processor_source=str(model_path.resolve()),
-        transition_expansion_version=LEGACY_TRANSITION_EXPANSION_VERSION,
+        transition_expansion_version=TRANSITION_EXPANSION_VERSION,
     )
     if manifest.get("base_fingerprint") != expected_base_fingerprint:
-        raise ValueError(f"{split} v1 cache fingerprint does not match inputs")
+        raise ValueError(f"{split} cache fingerprint does not match inputs")
     if int(manifest.get("count", -1)) != len(samples):
         raise ValueError(f"{split} cache transition count mismatch")
     if not all(
@@ -126,10 +126,6 @@ def _validate_split(
     dataset = CachedTransitionDataset(
         cache_dir,
         samples,
-        processor=processor,
-        max_length=max_length,
-        latent_token_count=16,
-        mask_latent_query_labels=True,
     )
     collator = CompactCachedTransitionCollator(cache_dir)
     for index in _selected_indices(samples):
@@ -216,7 +212,7 @@ def main() -> None:
         grid_size=4,
     )
     result["dino_cache_fingerprint"] = dino_targets.cache_fingerprint
-    result["status"] = "compatible_read_only_v1"
+    result["status"] = "current_cache_valid"
     print(json.dumps(result, indent=2))
 
 

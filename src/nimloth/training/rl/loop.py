@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,8 +17,8 @@ from nimloth.rollout import (
     sample_trajectory_windows,
 )
 from nimloth.training.rl.algorithm import (
+    RLAlgorithm,
     RLBatch,
-    RLStepOutput,
     build_rl_batch,
 )
 from nimloth.training.rl.episodes import build_episode_training_batches
@@ -29,6 +28,7 @@ from nimloth.training.rl.evaluation import (
     summarize_rollouts,
 )
 from nimloth.training.rl.reporting import RLReporter
+from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.util.distributed import is_main
 from nimloth.util.optim import OptimizationRuntime
 
@@ -46,7 +46,8 @@ class RLTrainingLoop:
     """按 iteration 执行 collect → sample → encode/update → evaluate。"""
 
     config: RLConfig
-    training_step: Callable[..., RLStepOutput]
+    algorithm: RLAlgorithm
+    model_runtime: RLModelRuntime
     optimization_runtime: OptimizationRuntime
     device: torch.device
     train_collector: RolloutCollector
@@ -115,6 +116,7 @@ class RLTrainingLoop:
                 )
             episode_batches = build_episode_training_batches(
                 trajectories,
+                wm_prediction_steps=self.config.agent.planning.horizon,
                 gamma=self.config.rl.gamma,
                 truncated_bootstrap=truncated_bootstrap,
             )
@@ -174,17 +176,27 @@ class RLTrainingLoop:
             if episode_batches is not None:
                 for episode in episode_batches:
                     for td_step in episode.td_steps:
-                        output = self.training_step(td_step, total_td_steps)
+                        output = self.algorithm.temporal_difference_step(
+                            self.model_runtime,
+                            td_step,
+                            total_td_steps=total_td_steps,
+                        )
                         self.optimization_runtime.backward(output.loss)
                         self._accumulate_metrics(step_metrics, output.metrics)
                         del output
-                mc_output = self.training_step(episode_batches)
+                mc_output = self.algorithm.monte_carlo_step(
+                    self.model_runtime,
+                    episode_batches,
+                )
                 self.optimization_runtime.backward(mc_output.loss)
                 self._accumulate_metrics(step_metrics, mc_output.metrics)
                 del mc_output
             else:
                 assert batch is not None
-                output = self.training_step(batch)
+                output = self.algorithm.sequence_step(
+                    self.model_runtime,
+                    batch,
+                )
                 self.optimization_runtime.backward(output.loss)
                 self._accumulate_metrics(step_metrics, output.metrics)
                 del output
@@ -330,7 +342,11 @@ class RLTrainingLoop:
     @staticmethod
     def _warn_skip(iteration: int, reason: str) -> None:
         if is_main():
-            print(json.dumps({"iteration": iteration, "warning": f"{reason}, skipping"}))
+            print(
+                json.dumps(
+                    {"iteration": iteration, "warning": f"{reason}, skipping"}
+                )
+            )
 
     @staticmethod
     def _barrier() -> None:

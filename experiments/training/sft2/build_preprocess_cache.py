@@ -13,7 +13,6 @@ from nimloth.training.sft2.cli import parse_sft2_args
 from nimloth.util.cache import (
     DEFAULT_MIN_PIXELS,
     build_compact_transition_preprocess_cache,
-    build_transition_preprocess_cache,
 )
 
 
@@ -24,8 +23,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
-    args.latent_token_count = int(getattr(args, "latent_token_count", 1))
-    args.mask_latent_query_labels = bool(getattr(args, "mask_latent_query_labels", True))
     processor.image_processor.min_pixels = DEFAULT_MIN_PIXELS
     processor.image_processor.max_pixels = args.max_pixels
     add_special_tokens(processor.tokenizer, latent_token_count=args.latent_token_count)
@@ -43,21 +40,12 @@ def main(argv: list[str] | None = None) -> int:
         mask_latent_query_labels=args.mask_latent_query_labels,
     )
 
-    builder = (
-        build_compact_transition_preprocess_cache
-        if args.preprocess_cache_format == "compact"
-        else build_transition_preprocess_cache
-    )
-    compact_kwargs = (
-        {
-            "image_dtype": args.preprocess_cache_image_dtype,
-            "image_shard_size": args.preprocess_cache_image_shard_size,
-            "transition_shard_size": args.preprocess_cache_transition_shard_size,
-        }
-        if args.preprocess_cache_format == "compact"
-        else {}
-    )
-    builder(
+    compact_kwargs = {
+        "image_dtype": args.preprocess_cache_image_dtype,
+        "image_shard_size": args.preprocess_cache_image_shard_size,
+        "transition_shard_size": args.preprocess_cache_transition_shard_size,
+    }
+    build_compact_transition_preprocess_cache(
         jsonl_path=Path(args.train_jsonl),
         cache_dir=cache_root / "train",
         max_records=args.max_train_records,
@@ -66,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         **build_kwargs,
         **compact_kwargs,
     )
-    builder(
+    build_compact_transition_preprocess_cache(
         jsonl_path=Path(args.val_jsonl),
         cache_dir=cache_root / "val",
         max_records=args.max_val_records,

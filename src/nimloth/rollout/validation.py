@@ -7,6 +7,10 @@ import math
 from nimloth.agent import create_prompt_template, validate_action_log_probs
 from nimloth.environment import get_action_space
 from nimloth.latent import LatentActionTokens, latent_state_tokens
+from nimloth.rollout.record_format import (
+    STEP_REWARD_PROVENANCE,
+    TRAJECTORY_REWARD_PROVENANCE,
+)
 from nimloth.rollout.schema import RolloutTrajectory
 
 
@@ -67,7 +71,7 @@ def _validate_reward_provenance(trajectory: RolloutTrajectory) -> None:
     """校验 fresh rollout 的逐步 reward 与 episode 结束语义。"""
 
     prefix = f"trajectory {trajectory.record_id}"
-    if trajectory.rewards:
+    if trajectory.reward_provenance == STEP_REWARD_PROVENANCE:
         if len(trajectory.rewards) != trajectory.num_steps:
             raise ValueError(
                 f"{prefix}: rewards={len(trajectory.rewards)} "
@@ -87,9 +91,20 @@ def _validate_reward_provenance(trajectory: RolloutTrajectory) -> None:
             raise ValueError(
                 f"{prefix} aggregate reward does not equal the step rewards"
             )
-    elif trajectory.terminated or trajectory.truncated:
-        raise ValueError(f"{prefix} has episode status without step rewards")
-    elif trajectory.policy_credit_assignment == "token":
+    elif trajectory.reward_provenance == TRAJECTORY_REWARD_PROVENANCE:
+        if trajectory.rewards or trajectory.terminated or trajectory.truncated:
+            raise ValueError(
+                f"{prefix} trajectory reward cannot include step reward/status fields"
+            )
+    else:
+        raise ValueError(
+            f"{prefix} has unsupported reward provenance "
+            f"{trajectory.reward_provenance!r}"
+        )
+    if (
+        trajectory.reward_provenance != STEP_REWARD_PROVENANCE
+        and trajectory.policy_credit_assignment == "token"
+    ):
         raise ValueError(f"{prefix} token credit requires step rewards and status")
 
 
@@ -418,18 +433,9 @@ def _validate_prompt_contract(
 ) -> None:
     prefix = f"trajectory {trajectory.record_id}"
     prompt_spec = trajectory.resolved_prompt_template_spec()
-    if trajectory.prompt_version != prompt_spec.version:
-        raise ValueError(
-            f"{prefix} prompt_version {trajectory.prompt_version!r} does not "
-            f"match template version {prompt_spec.version!r}"
-        )
     # 创建模板本身会验证 identifier、version 与 config。
     create_prompt_template(prompt_spec, action_count=action_count)
-    if trajectory.latent_token_count != trajectory.resolved_latent_token_count():
-        raise ValueError(
-            f"{prefix} latent_token_count {trajectory.latent_token_count} does "
-            "not match the prompt template"
-        )
+    trajectory.resolved_latent_token_count()
     for step, policy_messages in enumerate(trajectory.policy_messages):
         expected_messages = trajectory.build_policy_messages(step, bind_images=False)
         if policy_messages != expected_messages:
@@ -437,8 +443,3 @@ def _validate_prompt_contract(
                 f"{prefix} step {step} policy prompt does not match the "
                 "shared Agent template"
             )
-    expected_completed = trajectory.build_completed_messages(bind_images=False)
-    if trajectory.messages != expected_completed:
-        raise ValueError(
-            f"{prefix} completed messages do not match the shared Agent template"
-        )

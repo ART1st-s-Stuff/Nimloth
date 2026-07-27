@@ -1,4 +1,4 @@
-"""构建 compact 和 legacy 两种 Qwen transition 预处理缓存。"""
+"""构建当前 compact Qwen transition 预处理缓存。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import math
 import os
 import shutil
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -19,17 +19,13 @@ from nimloth.latent import add_special_tokens
 from nimloth.util.distributed import is_main
 from nimloth.util.cache.encoding import (
     encode_qwen_item_from_image_grids,
-    encode_transition_item,
 )
 from nimloth.util.cache.schema import (
     CE_MASK_VERSION,
     COMPACT_CACHE_FORMAT,
     DEFAULT_MIN_PIXELS,
-    LEGACY_CACHE_FORMAT,
     TRANSITION_EXPANSION_VERSION,
     cache_fingerprint,
-    safe_cache_name,
-    transition_sample_id,
 )
 from nimloth.rollout.transitions import (
     TransitionJsonlDataset,
@@ -85,25 +81,6 @@ def _init_compact_cache_worker(
     )
     _COMPACT_PATH_TO_IMAGE_INDEX = path_to_image_index
     _COMPACT_IMAGE_GRIDS = image_grids
-
-
-def _cache_one_transition(task: tuple[dict[str, Any], str]) -> tuple[str, bool, str]:
-    item, out_path = task
-    try:
-        assert _CACHE_PROCESSOR is not None
-        encoded = encode_transition_item(
-            item,
-            _CACHE_PROCESSOR,
-            _CACHE_MAX_LENGTH,
-            latent_token_count=_CACHE_LATENT_TOKEN_COUNT,
-            mask_latent_query_labels=_CACHE_MASK_LATENT_QUERY_LABELS,
-        )
-        path = Path(out_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(encoded, path)
-        return item["id"], True, ""
-    except Exception as exc:  # noqa: BLE001
-        return item["id"], False, str(exc)
 
 
 def _cache_image_dtype(name: str) -> torch.dtype:
@@ -611,128 +588,3 @@ def build_compact_transition_preprocess_cache(
     build_state_path.unlink(missing_ok=True)
     if is_main():
         print(json.dumps({"preprocess_cache": "done_compact", **manifest}))
-
-
-def build_transition_preprocess_cache(
-    *,
-    jsonl_path: Path,
-    cache_dir: Path,
-    model_path: Path,
-    processor: AutoProcessor,
-    max_length: int,
-    max_pixels: int,
-    min_pixels: int = DEFAULT_MIN_PIXELS,
-    max_records: int = -1,
-    success_only: bool = False,
-    preprocess_workers: int = 4,
-    force: bool = False,
-    value_gamma: float = 1.0,
-    latent_token_count: int = 1,
-    mask_latent_query_labels: bool = True,
-) -> None:
-    samples = TransitionJsonlDataset(
-        jsonl_path,
-        max_records=max_records,
-        success_only=success_only,
-        value_gamma=value_gamma,
-    ).samples
-    fingerprint = cache_fingerprint(
-        jsonl_path,
-        max_length=max_length,
-        max_pixels=max_pixels,
-        min_pixels=min_pixels,
-        vocab_size=len(processor.tokenizer),
-        value_gamma=value_gamma,
-        latent_token_count=latent_token_count,
-        mask_latent_query_labels=mask_latent_query_labels,
-        processor_source=str(model_path.resolve()),
-    )
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = cache_dir / "manifest.json"
-    if not force and manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if (
-            manifest.get("fingerprint") == fingerprint
-            and manifest.get("count") == len(samples)
-            and manifest.get("max_length") == max_length
-        ):
-            missing = sum(
-                1
-                for sample in samples
-                if not (cache_dir / f"{safe_cache_name(transition_sample_id(sample))}.pt").is_file()
-            )
-            if missing == 0:
-                if is_main():
-                    print(json.dumps({"preprocess_cache": "hit", "dir": str(cache_dir), "count": len(samples)}))
-                return
-
-    tasks: list[tuple[dict[str, Any], str]] = []
-    for sample in samples:
-        item = collate_transition_training_items([sample])[0]
-        out_path = cache_dir / f"{safe_cache_name(item['id'])}.pt"
-        if not force and out_path.is_file():
-            continue
-        tasks.append((item, str(out_path)))
-
-    if is_main():
-        print(
-            json.dumps(
-                {
-                    "preprocess_cache": "build",
-                    "dir": str(cache_dir),
-                    "fingerprint": fingerprint,
-                    "total": len(samples),
-                    "to_build": len(tasks),
-                    "workers": preprocess_workers,
-                }
-            )
-        )
-
-    if tasks:
-        workers = max(1, preprocess_workers)
-        failures: list[str] = []
-        with ProcessPoolExecutor(
-            max_workers=workers,
-            initializer=_init_cache_worker,
-            initargs=(
-                str(model_path),
-                min_pixels,
-                max_pixels,
-                max_length,
-                latent_token_count,
-                mask_latent_query_labels,
-            ),
-        ) as pool:
-            futures = [pool.submit(_cache_one_transition, task) for task in tasks]
-            for fut in as_completed(futures):
-                sample_id, ok, err = fut.result()
-                if not ok:
-                    failures.append(f"{sample_id}: {err}")
-        if failures:
-            raise RuntimeError(f"preprocess cache failed for {len(failures)} samples; first={failures[0]}")
-
-    if is_main():
-        total_bytes = sum(path.stat().st_size for path in cache_dir.glob("*.pt"))
-        print(json.dumps({"preprocess_cache": "done", "dir": str(cache_dir), "count": len(samples), "total_bytes": total_bytes}))
-
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "fingerprint": fingerprint,
-                "count": len(samples),
-                "max_length": max_length,
-                "max_pixels": max_pixels,
-                "min_pixels": min_pixels,
-                "value_gamma": value_gamma,
-                "latent_token_count": latent_token_count,
-                "latent_query_mode": "inject" if mask_latent_query_labels else "generate",
-                "mask_latent_query_labels": mask_latent_query_labels,
-                "ce_mask_version": CE_MASK_VERSION,
-                "transition_expansion_version": TRANSITION_EXPANSION_VERSION,
-                "dir": str(cache_dir),
-                "total_bytes": sum(path.stat().st_size for path in cache_dir.glob("*.pt")),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )

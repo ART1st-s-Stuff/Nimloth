@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import torch
 from torch import nn
 
 from nimloth.training.rl.trainer import (
-    RLTrainingStepModule,
     _wrap_distributed_modules,
-    _wrap_training_step_ddp,
     _wrap_world_model_ddp,
 )
 from nimloth.wm import WorldModel
@@ -22,34 +18,6 @@ class _FakeDDP(nn.Module):
 
     def forward(self, *args, **kwargs):
         return self.module(*args, **kwargs)
-
-
-class _FakeAlgorithm:
-    def __init__(self) -> None:
-        self.sigreg = nn.Linear(4, 4)
-
-    def training_step(self, runtime, batch):  # type: ignore[no-untyped-def]
-        return runtime.agent(batch)
-
-
-def test_training_step_module_registers_complete_loss_modules() -> None:
-    agent = nn.Linear(4, 4)
-    token_value_head = nn.Linear(4, 1)
-    algorithm = _FakeAlgorithm()
-    training_step = RLTrainingStepModule(
-        algorithm=algorithm,  # type: ignore[arg-type]
-        runtime=SimpleNamespace(agent=agent),  # type: ignore[arg-type]
-        token_value_head=token_value_head,
-    )
-
-    assert training_step.agent is agent
-    assert training_step.token_value_head is token_value_head
-    assert training_step.sigreg is algorithm.sigreg
-    assert set(training_step.parameters()) == {
-        *agent.parameters(),
-        *token_value_head.parameters(),
-        *algorithm.sigreg.parameters(),
-    }
 
 
 def test_world_model_ddp_wraps_only_trainable_modules(monkeypatch) -> None:
@@ -75,8 +43,10 @@ def test_world_model_ddp_wraps_only_trainable_modules(monkeypatch) -> None:
     assert wrapped.value_head.kwargs["static_graph"] is True
 
 
-def test_pair_parallel_reserves_one_complete_step_ddp_boundary() -> None:
+def test_pair_parallel_wraps_actual_parameter_modules(monkeypatch) -> None:
+    monkeypatch.setattr(torch.nn.parallel, "DistributedDataParallel", _FakeDDP)
     model = nn.Linear(4, 4)
+    token_value_head = nn.Linear(4, 1)
     world_model = WorldModel(
         state_proj=nn.Linear(4, 4),
         wm_predictor=nn.Linear(4, 4),
@@ -86,47 +56,23 @@ def test_pair_parallel_reserves_one_complete_step_ddp_boundary() -> None:
     wrapped = _wrap_distributed_modules(
         model,
         world_model,
-        None,
+        token_value_head,
         world_size=4,
         model_parallel=True,
         training_device=torch.device("cuda:1"),
     )
 
-    assert wrapped.model is model
-    assert wrapped.world_model is world_model
+    assert isinstance(wrapped.model, _FakeDDP)
+    assert wrapped.model.module is model
+    assert wrapped.model.kwargs["device_ids"] is None
+    assert wrapped.model.kwargs["output_device"] is None
+    assert wrapped.model.kwargs["find_unused_parameters"] is False
+    assert wrapped.model.kwargs["static_graph"] is True
+    assert isinstance(wrapped.world_model.state_proj, _FakeDDP)
+    assert isinstance(wrapped.world_model.wm_predictor, _FakeDDP)
+    assert isinstance(wrapped.world_model.value_head, _FakeDDP)
+    assert wrapped.world_model.state_proj.kwargs["device_ids"] == [1]
+    assert isinstance(wrapped.token_value_head, _FakeDDP)
+    assert wrapped.token_value_head.module is token_value_head
     assert wrapped.strategy == "model_parallel_ddp"
     assert wrapped.optimizer_state_sharded is False
-
-
-def test_pair_parallel_training_step_uses_multidevice_ddp(monkeypatch) -> None:
-    monkeypatch.setattr(torch.nn.parallel, "DistributedDataParallel", _FakeDDP)
-    training_step = nn.Linear(4, 1)
-
-    wrapped = _wrap_training_step_ddp(  # type: ignore[arg-type]
-        training_step,
-        world_size=4,
-        model_parallel=True,
-    )
-
-    assert isinstance(wrapped, _FakeDDP)
-    assert wrapped.module is training_step
-    assert wrapped.kwargs["device_ids"] is None
-    assert wrapped.kwargs["output_device"] is None
-    assert wrapped.kwargs["find_unused_parameters"] is False
-    assert wrapped.kwargs["static_graph"] is True
-
-
-def test_planner_pair_parallel_uses_official_dynamic_ddp(monkeypatch) -> None:
-    monkeypatch.setattr(torch.nn.parallel, "DistributedDataParallel", _FakeDDP)
-
-    wrapped = _wrap_training_step_ddp(  # type: ignore[arg-type]
-        nn.Linear(4, 1),
-        world_size=2,
-        model_parallel=True,
-        allow_unused_parameters=True,
-    )
-
-    assert isinstance(wrapped, _FakeDDP)
-    assert wrapped.kwargs["device_ids"] is None
-    assert wrapped.kwargs["find_unused_parameters"] is True
-    assert wrapped.kwargs["static_graph"] is False

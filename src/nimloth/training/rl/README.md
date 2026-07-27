@@ -27,7 +27,7 @@ by the shared Agent template.
 | Mode | `--env-url` | `--use-jsonl-rollout` | Intended use |
 |------|-------------|-----------------------|--------------|
 | Single-GPU online | required | no | local integration and online training |
-| Static JSONL | not required | yes | offline WM/value training from older trajectories |
+| Static JSONL | not required | yes | offline WM/value training from migrated current-format trajectories |
 | Fresh vLLM JSONL | not required | yes | one multi-rank RL update after exact-policy vLLM rollout |
 
 Direct `VAGENNavigationRolloutCollector` use is rejected when `world > 1`: different
@@ -128,7 +128,7 @@ episode batch结束，所有相关参数期间保持不变。ValueHead输入显�
 Qwen只模仿segment首动作。`action_objective: ppo`的schema/provenance接口已经保留，但
 planner会拒绝它，直到行为所有权改成Qwen且Qwen采样动作与环境执行动作完全一致。
 
-以下连续window路径只服务于未启用planner的旧离线/直接policy训练。With
+以下连续window路径只服务于未启用planner的离线/直接policy训练。With
 `H = predictor.history_size`, it selects `H` consecutive actions and `H + 1`
 states from the same raw trajectory; windows never cross episode boundaries.
 
@@ -145,15 +145,16 @@ Q         = value_head(context)
 L_value   = regression(Q[action], discounted_returns) + ranking_loss
 ```
 
-梯度模式是显式配置：
+state来源与梯度模式是显式配置：
 
-- `gradient.representation_to_backbone: true`：WM、value 和 SIGReg 均可训练
-  Backbone；下一状态仍只在 WM target 分支 stop-gradient。该模式不能消费
-  detached rollout state cache。
-- `gradient.representation_to_backbone: false`：有 rollout cache 时不执行 state
-  Qwen forward；planner只在每个稀疏anchor上重跑当前StateProjector。旧的无cache
-  离线trajectory按时间位置分成`H + 1`次、每次`B`个prompt的no-grad Qwen forward。
-  StateProjector是否训练仍只由`freeze.state_proj`决定。
+- `gradient.state_source: recompute`：按时间位置执行Qwen state forward；可配合
+  `gradient.representation_to_backbone: true`让WM、value和SIGReg训练Backbone，
+  下一状态仍只在WM target分支stop-gradient。
+- `gradient.state_source: rollout`：只读取trajectory明确保存的Qwen hidden，不执行
+  state Qwen forward，且必须设置`gradient.representation_to_backbone: false`。
+  planner训练固定使用这一模式；缺少任一anchor hidden时直接失败。
+- 两种来源不会在batch内自动切换，也不会根据字段是否为空推断。StateProjector是否
+  训练仍只由`freeze.state_proj`决定。
 - `actor.enabled`：单独控制 Qwen action objective。Backbone 的可训练参数范围继续由
   `--llm-tune/--vision-tune` 决定，学习率由 `gradient.backbone_lr` 统一管理。
 
@@ -202,9 +203,10 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   checkpoint metadata and shared by behavior rollout, PPO replay, and batch
   construction. A plain base Qwen checkpoint and a standalone PEFT adapter
   directory do not satisfy this artifact contract.
-- New RL JSONL must use the structured Agent schema. Old records that contain
-  only `messages` cannot provide exact policy-state/PPO replay and are rejected
-  by the trainer.
+- RL/SFT2 JSONL必须带`record_format: nimloth_trajectory_v1`并使用结构化Agent字段。
+  未版本化记录先运行`python -m nimloth.rollout.migration`；训练读取器不做字段别名、
+  prompt默认值或reward语义兼容。旧记录无法提供的token trace、planner state和真实
+  terminal CoT不会由迁移器伪造；对应训练目标会拒绝这类记录。
 - JSONL cycling is suitable for offline WM/value training only. PPO accepts
   only a fresh manifest whose current policy/planner and immutable trajectory
   fingerprints all match; a committed or unresolved in-progress consumption
@@ -222,7 +224,7 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   token模式要求显式配置`token_credit.gamma`、`gae_lambda`、`value_lr`、
   `value_loss_weight`、`hidden_dim`，并显式选择`rl.truncated_bootstrap`。当前只实现
   `zero`；未确认时配置解析直接失败，不猜测实验参数。
-- behavior old log-prob 与 replay 都使用同一 temperature/top-p 分布；注入的 latent
+- rollout behavior log-prob 与 replay 都使用同一 temperature/top-p 分布；注入的 latent
   query、action boundary 和补全 delimiter 不进入 PPO loss。
 - `agent.planning.enabled: true`时，独立vLLM rollout在每个segment锚点让Qwen生成
   真实CoT；worker extension从同一次多模态forward截取latent hidden，不加载第二份

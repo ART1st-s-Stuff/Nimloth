@@ -37,7 +37,6 @@ train:
   attn_implementation: flash_attention_2
   gradient_checkpointing: true
   checkpoint_interval_minutes: 20.0
-  preprocess_cache_format: compact
   preprocess_cache_image_dtype: bfloat16
   preprocess_cache_image_shard_size: 128
   preprocess_cache_transition_shard_size: 256

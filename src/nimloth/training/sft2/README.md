@@ -8,6 +8,9 @@ SFT2 是离线初始化阶段：它只消费 VAGEN 已生成的 trajectory，不
 它产出的 StateProjector、WM predictor 和 ValueHead checkpoint 用作 RL 在线规划的
 warm start。SFT2 与 RL 的 `history_size` 含义和 checkpoint 形状必须一致；
 RL 只在真实 rollout 时用独立的 planning horizon 自回归预测多个未来 step。
+输入JSONL必须先迁移为当前versioned trajectory格式；训练dataset不解析旧`messages`
+布局或字段别名。preprocess cache只接受`dedup_sharded_v2`，v1/逐transition cache需从
+迁移后的JSONL重新构建，因为旧cache缺少当前terminal next-state encoding。
 
 | 文件 | 职责 |
 |------|------|

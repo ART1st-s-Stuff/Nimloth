@@ -22,6 +22,10 @@ from nimloth.rollout import (
     load_trajectories,
     save_trajectories,
 )
+from nimloth.rollout.record_format import (
+    STEP_REWARD_PROVENANCE,
+    TRAJECTORY_REWARD_PROVENANCE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +61,7 @@ def _make_traj(record_id: str, num_steps: int = 3) -> RolloutTrajectory:
     )
     return RolloutTrajectory(
         record_id=record_id,
+        reward_provenance=TRAJECTORY_REWARD_PROVENANCE,
         image_paths=image_paths,
         action_indices=action_indices,
         action_names=[
@@ -66,9 +71,6 @@ def _make_traj(record_id: str, num_steps: int = 3) -> RolloutTrajectory:
         instruction="Go to the couch.",
         success=(num_steps % 2 == 0),
         reward=10.0 if num_steps % 2 == 0 else 0.0,
-        messages=(
-            prompt.build_supervised_prompt(transcript).unbound_messages()
-        ),
         system_prompt=system_prompt,
         observation_texts=observation_texts,
         assistant_responses=assistant_responses,
@@ -230,6 +232,7 @@ def test_planner_probabilities_round_trip_through_strict_json(tmp_path: Path) ->
     )
     trajectory.action_log_probs = [list(deterministic)]
     trajectory.rewards = [0.0]
+    trajectory.reward_provenance = STEP_REWARD_PROVENANCE
     trajectory.truncated = True
     trajectory.policy_credit_assignment = "action"
     trajectory.policy_token_log_probs[0] = [None] * len(
