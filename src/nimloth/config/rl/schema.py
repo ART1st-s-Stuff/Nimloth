@@ -94,6 +94,8 @@ class PredictorConfig:
     lr: float = 1e-3
     emb_dim: int = 128
     history_size: int = 4
+    lambda_wm: float = 1.0
+    lambda_dino: float = 0.0
     lambda_sigreg: float = 0.1
     sigreg_num_proj: int = 1024
     sigreg_knots: int = 17
@@ -230,6 +232,8 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "lr",
             "emb_dim",
             "history_size",
+            "lambda_wm",
+            "lambda_dino",
             "lambda_sigreg",
             "sigreg_num_proj",
             "sigreg_knots",
@@ -413,6 +417,16 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "predictor.lambda_sigreg",
         allow_zero=True,
     )
+    world_model_weight = _positive_float(
+        predictor.get("lambda_wm", 1.0),
+        "predictor.lambda_wm",
+        allow_zero=True,
+    )
+    dino_grid_weight = _positive_float(
+        predictor.get("lambda_dino", 0.0),
+        "predictor.lambda_dino",
+        allow_zero=True,
+    )
     value_rank_weight = _positive_float(
         value_head.get("lambda_rank", 0.0),
         "value_head.lambda_rank",
@@ -582,6 +596,8 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 predictor.get("history_size", 4),
                 "predictor.history_size",
             ),
+            lambda_wm=world_model_weight,
+            lambda_dino=dino_grid_weight,
             lambda_sigreg=sigreg_weight,
             sigreg_num_proj=_positive_int(
                 predictor.get("sigreg_num_proj", 1024),

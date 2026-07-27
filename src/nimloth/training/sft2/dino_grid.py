@@ -1,12 +1,9 @@
-"""SFT2 DINO-grid target 装配与显式的 grid 重建 loss。"""
+"""SFT2 DINO-grid target 装配。"""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from typing import Any
-
-import torch
-import torch.nn.functional as F
 
 from nimloth.backbone.dino_grid import CachedDINOGridTargets
 from nimloth.training.sft2.batch import SFT2Batch, SFT2BatchAssembler
@@ -49,20 +46,4 @@ class DINOGridBatchAssembler:
                 device=base.sample_weights.device,
             ),
         )
-
-
-def dino_grid_mse(
-    predicted_next_state: torch.Tensor,
-    target: torch.Tensor,
-) -> torch.Tensor:
-    """直接监督 WM 预测的 next state 对齐 cached DINO grid。"""
-
-    if predicted_next_state.shape != target.shape:
-        raise ValueError(
-            "WM predicted state and DINO-grid target must match: "
-            f"{tuple(predicted_next_state.shape)} != {tuple(target.shape)}"
-        )
-    return F.mse_loss(predicted_next_state.float(), target.detach().float())
-
-
-__all__ = ["DINOGridBatchAssembler", "dino_grid_mse"]
+__all__ = ["DINOGridBatchAssembler"]

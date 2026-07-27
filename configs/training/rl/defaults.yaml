@@ -6,7 +6,7 @@ agent:
   prompt_template: nimloth-latent-action
   # 每个真实 env step 只运行一次 Qwen；候选动作序列全部由 WM 在 latent 空间模拟。
   planning:
-    # Planner distillation需要显式填写horizon/search/temperature/device及actor权重。
+    # Planner需要显式填写horizon/search/device；训练固定重算完整Qwen prefix。
     enabled: false
     horizon: 4
     beam_width: 8

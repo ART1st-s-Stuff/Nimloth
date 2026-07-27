@@ -10,8 +10,10 @@ from nimloth.backbone.base import (
 )
 from nimloth.backbone.dino_grid import (
     CachedDINOGridTargets,
+    DINOGridTargets,
     DINOIdentity,
     DINOV2_LARGE_IDENTITY,
+    FrozenDINOGridTargets,
 )
 
 
@@ -73,8 +75,10 @@ __all__ = [
     "BackboneInputBuilder",
     "BackboneOutput",
     "CachedDINOGridTargets",
+    "DINOGridTargets",
     "DINOIdentity",
     "DINOV2_LARGE_IDENTITY",
+    "FrozenDINOGridTargets",
     "backbone_hidden_size",
     "build_action_log_prob_replay",
     "build_agent_policy",

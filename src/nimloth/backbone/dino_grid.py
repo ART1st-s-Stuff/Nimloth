@@ -1,7 +1,7 @@
-"""只读 DINO spatial-grid target cache。
+"""DINO spatial-grid target 的在线 teacher 与只读 cache。
 
-本模块只负责证明并读取 frozen teacher 预计算目标。它不参与 Qwen forward，
-也不拥有 SFT2 loss 或 world-model decoder。
+本模块只负责产生或读取 frozen teacher target。它不参与 Qwen forward，
+也不拥有 SFT2/RL loss 或 world-model 参数。
 """
 
 from __future__ import annotations
@@ -11,9 +11,10 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Protocol, Sequence
 
 import torch
+from PIL import Image
 
 
 DINO_GRID_CACHE_FORMAT = "dino_grid_sharded_v1"
@@ -45,6 +46,145 @@ DINOV2_LARGE_IDENTITY = DINOIdentity(
     processor_fingerprint="7d65a7de8788e87d",
     hidden_size=1024,
 )
+
+
+class DINOGridTargets(Protocol):
+    """按图像路径读取 frozen DINO spatial-grid target。"""
+
+    identity: DINOIdentity
+    grid_size: int
+
+    def load(
+        self,
+        paths: Sequence[str | Path],
+        *,
+        device: torch.device,
+    ) -> torch.Tensor:
+        ...
+
+
+def _processor_fingerprint(processor: Any) -> str:
+    to_dict = getattr(processor, "to_dict", None)
+    payload = (
+        to_dict()
+        if callable(to_dict)
+        else {"class": type(processor).__qualname__}
+    )
+    return _json_fingerprint(payload)
+
+
+class FrozenDINOGridTargets:
+    """在线计算并缓存 frozen DINOv2 的 row-major pooled patch grid。"""
+
+    def __init__(
+        self,
+        *,
+        model: torch.nn.Module,
+        image_processor: Any,
+        identity: DINOIdentity,
+        grid_size: int = 4,
+        batch_size: int = 32,
+    ) -> None:
+        self.model = model.requires_grad_(False).eval()
+        self.image_processor = image_processor
+        self.identity = identity
+        self.grid_size = int(grid_size)
+        self.batch_size = int(batch_size)
+        self._cached_targets: dict[str, torch.Tensor] = {}
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        identity: DINOIdentity,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+        grid_size: int = 4,
+        batch_size: int = 32,
+    ) -> "FrozenDINOGridTargets":
+        """按固定 revision 加载 RL 使用的 frozen DINO teacher。"""
+
+        from transformers import AutoImageProcessor, AutoModel
+
+        processor = AutoImageProcessor.from_pretrained(
+            identity.source,
+            revision=identity.revision,
+            trust_remote_code=True,
+        )
+        if _processor_fingerprint(processor) != identity.processor_fingerprint:
+            raise ValueError("loaded DINO processor does not match its identity")
+        model = AutoModel.from_pretrained(
+            identity.source,
+            revision=identity.revision,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+        ).to(device=device, dtype=dtype)
+        return cls(
+            model=model,
+            image_processor=processor,
+            identity=identity,
+            grid_size=grid_size,
+            batch_size=batch_size,
+        )
+
+    @property
+    def grid_tokens(self) -> int:
+        return self.grid_size**2
+
+    def _encode(self, paths: Sequence[str]) -> torch.Tensor:
+        images: list[Image.Image] = []
+        for path in paths:
+            with Image.open(path) as image:
+                images.append(image.convert("RGB"))
+        processed = self.image_processor(images=images, return_tensors="pt")
+        model_parameter = next(self.model.parameters())
+        pixel_values = processed["pixel_values"].to(
+            device=model_parameter.device,
+            dtype=model_parameter.dtype,
+        )
+        hidden = self.model(pixel_values=pixel_values).last_hidden_state
+        patch_size = int(self.model.config.patch_size)
+        patch_height = int(pixel_values.shape[-2]) // patch_size
+        patch_width = int(pixel_values.shape[-1]) // patch_size
+        patch_count = patch_height * patch_width
+        spatial_tokens = hidden[:, -patch_count:, :].reshape(
+            len(paths),
+            patch_height,
+            patch_width,
+            self.identity.hidden_size,
+        )
+        pooled = torch.nn.functional.adaptive_avg_pool2d(
+            spatial_tokens.permute(0, 3, 1, 2).float(),
+            (self.grid_size, self.grid_size),
+        )
+        return pooled.permute(0, 2, 3, 1).reshape(
+            len(paths),
+            self.grid_tokens,
+            self.identity.hidden_size,
+        )
+
+    @torch.no_grad()
+    def load(
+        self,
+        paths: Sequence[str | Path],
+        *,
+        device: torch.device,
+    ) -> torch.Tensor:
+        resolved = [str(Path(path).resolve()) for path in paths]
+        missing = tuple(
+            dict.fromkeys(
+                path for path in resolved if path not in self._cached_targets
+            )
+        )
+        for start in range(0, len(missing), self.batch_size):
+            current_paths = missing[start : start + self.batch_size]
+            current_targets = self._encode(current_paths).detach().cpu()
+            self._cached_targets.update(
+                zip(current_paths, current_targets, strict=True)
+            )
+        return torch.stack(
+            [self._cached_targets[path] for path in resolved]
+        ).to(device=device, dtype=torch.float32, non_blocking=True)
 
 
 def _image_index(cache_split_dir: Path) -> tuple[list[str], str]:
@@ -237,7 +377,9 @@ class CachedDINOGridTargets:
 
 __all__ = [
     "CachedDINOGridTargets",
+    "DINOGridTargets",
     "DINOIdentity",
     "DINO_GRID_CACHE_FORMAT",
     "DINOV2_LARGE_IDENTITY",
+    "FrozenDINOGridTargets",
 ]

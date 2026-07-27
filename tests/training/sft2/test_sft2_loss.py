@@ -113,7 +113,8 @@ class _RecordingProjector(torch.nn.Linear):
 
     def forward(self, hidden: torch.Tensor) -> torch.Tensor:
         output = super().forward(hidden)
-        output.retain_grad()
+        if output.requires_grad:
+            output.retain_grad()
         self.outputs.append(output)
         return output
 
@@ -268,7 +269,8 @@ def test_sft2_primary_step_computes_one_current_step_loss_and_detaches_history()
     assert backbone.calls == 2
     assert output.losses["lm"] is not None
     assert projector.outputs[0].grad is not None
-    assert projector.outputs[1].grad is not None
+    assert not projector.outputs[1].requires_grad
+    assert projector.outputs[1].grad is None
     current_grad = batch.current.tensors["hidden"].grad
     assert current_grad is not None
     assert torch.count_nonzero(current_grad) > 0

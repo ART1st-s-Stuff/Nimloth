@@ -15,12 +15,12 @@ RL 只在真实 rollout 时用独立的 planning horizon 自回归预测多个�
 | 文件 | 职责 |
 |------|------|
 | `algorithm.py` | 唯一的 CE/WM/value/SIGReg 核心流程，以及可配置附加 loss 契约 |
-| `dino_grid.py` | 只提供 4x4 DINO target 和 predicted-state DINO loss，不实现训练流程 |
+| `dino_grid.py` | 只把 cached 4x4 DINO target 装入 SFT2 batch，不实现训练流程 |
 | `trainer.py` | 按执行顺序加载 Agent、设置 DDP/视觉 Backbone EMA/optimizer 并启动训练 |
 | `batch.py` | SFT2 action/return/next-state 对齐与 terminal mask 装配 |
 | `data/` | dataset、sampler 与 DataLoader |
 | `history_cache.py` | rank-local 在线 detached state cache 与 checkpoint 状态 |
-| `runtime.py` | Agent/target 执行视图、梯度更新与 Qwen LR 运行期 |
+| `runtime.py` | Agent、固定下一状态监督值、梯度更新与 Qwen LR 运行期 |
 | `loop.py` | epoch/microbatch 驱动、resume cursor 和 validation 边界 |
 | `evaluate.py` | validation 与分布式指标聚合 |
 | `reporting.py` | CSV、W&B 与 epoch 摘要 |
@@ -29,7 +29,7 @@ RL 只在真实 rollout 时用独立的 planning horizon 自回归预测多个�
 
 `SFT2Algorithm` 是普通 Python 算法对象，不注册参数，也不处理 processor、DDP、
 optimizer、EMA 或 checkpoint。`SFT2ModelRuntime` 统一持有训练侧 Agent、在线历史
-cache、target-state 梯度路径与 Backbone EMA；不等长分布式验证只解除这个 runtime
+cache、固定下一状态监督值与 Backbone EMA；不等长分布式验证只解除这个 runtime
 的模型包装。
 公共 Backbone input builder 只负责 prompt 到张量的转换；`SFT2BatchAssembler`
 负责把 DataLoader 的扁平行恢复成 `SFT2Batch(B,T)`（`1<=T<=H`），并分别装配在线 current、
@@ -58,10 +58,12 @@ SFT2 algorithm。SFT1 用 DINO target 预训练 `SharedSlotProjector`，SFT2 加
 训练同一个 projector；它的输出就是 WM state，不再串接第二层 state encoder，也没有
 WM EMA target encoder。`SFT2Algorithm` 始终执行同一套 current/target、CE、WM、value
 与 SIGReg；DINO-grid batch 显式携带 `dino_grid_target`，算法直接比较 predicted next
-state 与 next-image cached target 的 MSE，再乘 `lambda_dino`。teacher cache 由
+state 与 next-image cached target 的 MSE，再乘 `lambda_dino`。这两个 WM loss
+由 `training/common/world_model.py` 与 RL 共用；teacher cache 由
 `backbone/dino_grid.py` 校验，temporal-spatial predictor 由 `wm/grid.py` 拥有。
-SFT2 target forward 仍冻结 target Backbone，但在其 hidden 上调用的是同一个可训练
-projector；这沿用标准 SFT2 的 target-side projector 梯度，不引入第二套 target 参数。
+SFT2 的下一状态监督分支同时冻结 Backbone 与共享 projector。projector 只在 state
+作为 current state 时训练；监督值不能反向靠近 predicted state。这里没有第二套
+target 参数或 WM EMA。
 
 SFT2 的 value 目标是完整 episode 上先计算、再切到 current step 的 Monte
 Carlo return。`training/common/value.py` 与 RL 共用同一个 objective：ValueHead 只

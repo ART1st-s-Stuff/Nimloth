@@ -26,6 +26,8 @@ predictor:
   lr: 0.0001
   emb_dim: 1024
   history_size: 4
+  lambda_wm: 1.0
+  lambda_dino: 0.5
   lambda_sigreg: 0.1
   sigreg_num_proj: 1024
   sigreg_knots: 17

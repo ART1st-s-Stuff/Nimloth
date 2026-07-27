@@ -11,8 +11,10 @@ from nimloth.agent import Agent
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.rollout import TransitionBatch
 import nimloth.training.sft2.dino_grid as dino_grid_module
+from nimloth.training.common import world_model_loss
 from nimloth.training.sft2.algorithm import SFT2Algorithm
 from nimloth.training.sft2.batch import SFT2Batch
+from nimloth.training.sft2.dino_grid import DINOGridBatchAssembler
 from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.training.sft2.trainer import _build_world_model
@@ -192,26 +194,68 @@ def _batch() -> SFT2Batch:
     )
 
 
+def test_dino_grid_batch_assembler_loads_only_current_next_images() -> None:
+    batch = _batch()
+
+    class BaseAssembler:
+        processor = None
+
+        @staticmethod
+        def prepare(_raw_batch) -> SFT2Batch:  # type: ignore[no-untyped-def]
+            return batch
+
+    class Targets:
+        grid_size = 4
+        identity = SimpleNamespace(hidden_size=1024)
+
+        def __init__(self) -> None:
+            self.loaded_paths: list[tuple[str, ...]] = []
+
+        def load(self, paths, *, device):  # type: ignore[no-untyped-def]
+            self.loaded_paths.append(tuple(str(path) for path in paths))
+            return torch.ones((len(paths), 4, 8), device=device)
+
+    targets = Targets()
+    assembler = DINOGridBatchAssembler(
+        BaseAssembler(),  # type: ignore[arg-type]
+        targets,  # type: ignore[arg-type]
+    )
+
+    prepared = assembler.prepare(object())
+
+    assert targets.loaded_paths == [("a.png", "b.png")]
+    assert prepared.dino_grid_target is not None
+    assert prepared.dino_grid_target.shape == (2, 4, 8)
+
+
 def test_dino_loss_directly_supervises_predicted_state() -> None:
     predicted_state = torch.zeros(1, 4, 8, requires_grad=True)
     target = torch.ones(1, 4, 8)
 
-    loss = dino_grid_module.dino_grid_mse(predicted_state, target)
-    loss.backward()
+    objective = world_model_loss(
+        predicted_state,
+        predicted_state.detach(),
+        state_weight=1.0,
+        dino_grid_target=target,
+        dino_grid_weight=1.0,
+    )
+    assert objective.dino_grid_mse is not None
+    objective.dino_grid_mse.backward()
 
-    torch.testing.assert_close(loss, torch.tensor(1.0))
+    torch.testing.assert_close(objective.dino_grid_mse, torch.tensor(1.0))
     assert predicted_state.grad is not None
     assert torch.count_nonzero(predicted_state.grad) == predicted_state.numel()
 
 
-def test_grid_target_freezes_backbone_but_trains_the_shared_projector() -> None:
+def test_grid_target_freezes_backbone_and_shared_projector() -> None:
     runtime, _backbone, wm = _runtime()
     next_batch = _batch().next
 
-    runtime.target_state(next_batch).sum().backward()
+    expected_next_state = runtime.encode_next_state(next_batch)
 
+    assert not expected_next_state.requires_grad
     assert next_batch.tensors["hidden"].grad is None
-    assert any(parameter.grad is not None for parameter in wm.state_proj.parameters())
+    assert all(parameter.grad is None for parameter in wm.state_proj.parameters())
 
 
 def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() -> None:
@@ -252,6 +296,7 @@ def test_dino_grid_primary_step_keeps_one_ce_and_explicit_gradient_boundaries() 
     assert batch.current.tensors["hidden"].grad is not None
     assert batch.next.tensors["hidden"].grad is None
     assert older_states.grad is None
+    assert any(parameter.grad is not None for parameter in wm.state_proj.parameters())
     projector = wm.state_proj
     assert any(
         parameter.grad is not None

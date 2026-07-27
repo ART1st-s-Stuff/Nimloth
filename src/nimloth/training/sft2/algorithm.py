@@ -10,11 +10,9 @@ from typing import Iterator
 
 import torch
 import torch.distributed as dist
-import torch.nn.functional as F
 
-from nimloth.training.common import action_value_loss
+from nimloth.training.common import action_value_loss, world_model_loss
 from nimloth.training.sft2.batch import SFT2Batch
-from nimloth.training.sft2.dino_grid import dino_grid_mse
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import (
     LatentWMPredictor,
@@ -359,20 +357,15 @@ class SFT2Algorithm:
             model_output.state[:, -1],
             enabled=not batch.is_padding,
         )
-        target_states = runtime.target_state(batch.next)
-        aligned_targets = target_states[batch.current_next_indices]
+        next_states = runtime.encode_next_state(batch.next)
+        expected_next_states = next_states[batch.current_next_indices]
 
-        wm_loss = F.mse_loss(
+        wm_objective = world_model_loss(
             model_output.predicted_next_state,
-            aligned_targets,
-        )
-        dino_loss = (
-            dino_grid_mse(
-                model_output.predicted_next_state,
-                batch.dino_grid_target,
-            )
-            if batch.dino_grid_target is not None
-            else None
+            expected_next_states,
+            state_weight=wm_weight,
+            dino_grid_target=batch.dino_grid_target,
+            dino_grid_weight=self.dino_grid_weight,
         )
         value_objective = action_value_loss(
             model_output.action_values,
@@ -383,9 +376,7 @@ class SFT2Algorithm:
                 self.value_rank_weight if include_value_ranking else 0.0
             ),
         )
-        total = wm_weight * wm_loss + self.value_weight * value_objective.loss
-        if dino_loss is not None:
-            total = total + self.dino_grid_weight * dino_loss
+        total = wm_objective.loss + self.value_weight * value_objective.loss
         if model_output.lm_loss is not None:
             total = total + self.ce_weight * model_output.lm_loss
         sample_count = 0 if batch.is_padding else batch.batch_size
@@ -408,15 +399,17 @@ class SFT2Algorithm:
             "history_cache_entries": float(runtime.history_cache.count),
             "total_loss": float(total.detach().item()),
         }
-        metrics["wm_mse"] = float(wm_loss.detach().item())
+        metrics["wm_mse"] = float(wm_objective.state_mse.detach().item())
         losses: dict[str, torch.Tensor | None] = {
             "lm": model_output.lm_loss,
-            "wm": wm_loss,
+            "wm": wm_objective.state_mse,
             "value": value_objective.loss,
         }
-        if dino_loss is not None:
-            losses["dino"] = dino_loss
-            metrics["dino_grid_mse"] = float(dino_loss.detach().item())
+        if wm_objective.dino_grid_mse is not None:
+            losses["dino"] = wm_objective.dino_grid_mse
+            metrics["dino_grid_mse"] = float(
+                wm_objective.dino_grid_mse.detach().item()
+            )
         if model_output.lm_loss is not None:
             metrics["lm_ce"] = float(model_output.lm_loss.detach().item())
 

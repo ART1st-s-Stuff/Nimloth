@@ -20,24 +20,24 @@ from nimloth.util.optim import (
 
 @dataclass(frozen=True)
 class SFT2ModelRuntime:
-    """封装 SFT2 的在线 Agent、target-state 梯度路径与 Backbone EMA。"""
+    """封装 SFT2 的在线 Agent、下一 observation 编码与 Backbone EMA。"""
 
     agent: Agent
     history_cache: OnlineHistoryStateCache
     backbone_ema: BackboneEMA | None = None
 
-    def target_state(
+    def encode_next_state(
         self,
         batch: BackboneBatch,
     ) -> torch.Tensor:
-        """冻结 target Backbone，但保留 target 侧 StateProjector 梯度。"""
+        """以固定 Backbone 与 StateProjector 编码 WM 的下一状态监督值。"""
 
         with torch.no_grad(), self._backbone_context():
             hidden = self.agent.backbone(
                 batch,
                 include_lm_loss=False,
             ).hidden.detach()
-        return self.agent.wm.project_target_state(hidden)
+            return self.agent.wm.project_state(hidden)
 
     def evaluation_context(self) -> AbstractContextManager[object]:
         """让验证阶段的完整 Agent forward 使用 EMA Backbone 权重。"""
