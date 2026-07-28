@@ -64,6 +64,22 @@ def test_migration_extracts_real_transcript_and_removes_legacy_fields() -> None:
     assert "state_latent_hiddens" not in migrated
 
 
+def test_migration_preserves_terminal_cot_and_final_transition_target() -> None:
+    record = _legacy_record()
+    record["terminal_assistant_prefix"] = "<think>terminal real thought</think>"
+
+    migrated = _migrate(record)
+    transitions = expand_record_transitions(migrated, value_gamma=1.0)
+
+    assert migrated["terminal_assistant_prefix"] == record["terminal_assistant_prefix"]
+    assert migrated["action_indices"] == record["action_indices"]
+    assert transitions[-1].next_prefix_messages is not None
+    assert (
+        transitions[-1].next_prefix_messages[-1]["content"]
+        == record["terminal_assistant_prefix"]
+    )
+
+
 def test_migration_requires_explicit_missing_semantics() -> None:
     with pytest.raises(ValueError, match="action-space identity"):
         migrate_trajectory_record(

@@ -7,8 +7,10 @@ code lives in `src/nimloth/training/sft2/`.
 |------|---------|
 | `train.py` | Thin entry point for `nimloth.training.sft2.trainer` |
 | `python -m nimloth.rollout.migration` | 把未版本化trajectory JSONL离线迁移并写manifest |
+| `python -m nimloth.rollout.migration_validation` | 逐记录复核迁移结果、terminal CoT、action、transition和hash |
 | `train_vagen79_default.slurm` | Config-driven 8-GPU training job |
 | `build_preprocess_cache.py` | CPU preprocess-cache entry point |
+| `migrate_terminal_cot_data.slurm` | 原子迁移已审计 terminal-CoT JSONL 到当前 trajectory schema |
 | `generate_terminal_cot.py` | 用 SFT1 初始化 checkpoint 离线生成并持久化 terminal CoT |
 | `run_terminal_cot_dino_grid_pipeline.sh` | 在一个 world8 hold 内串行生成 terminal CoT、建新 cache 并启动 DINO-grid SFT2 |
 | `build_compact_cache.slurm` | CPU-only compact-cache job |

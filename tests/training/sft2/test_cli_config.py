@@ -119,7 +119,13 @@ def test_dino_grid_h1_t4_config_uses_real_value_and_recorded_rollout_contract() 
     assert args.lambda_dino == 0.5
     assert not hasattr(args, "value_rank_lambda")
     flattened = flatten_sft2_yaml_config(load_yaml_config(DINO_GRID_H1_T4_CONFIG))
-    assert "terminal_cot" in str(flattened["train_jsonl"])
+    assert str(flattened["train_jsonl"]).endswith(
+        "train_terminal_cot_migrated.jsonl"
+    )
+    assert str(flattened["val_jsonl"]).endswith(
+        "val_terminal_cot_migrated.jsonl"
+    )
+    assert "/52_terminalcot_" in str(flattened["preprocess_cache_dir"])
 
 
 def test_sft2_config_rejects_unknown_fields() -> None:

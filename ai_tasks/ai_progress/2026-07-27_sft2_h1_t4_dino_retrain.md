@@ -42,14 +42,24 @@
   `Operation not permitted` 不属于代码失败。
 - 重连后资源查询成功：normal 分区空闲 20/48 GPU，preempt 分区空闲 11/32 GPU；
   当前用户无运行中 Slurm 任务，尚未占用 GPU 或启动训练。
-- ID49 preprocess cache 可精确续建：train image shards 为 32/489；没有 optimizer、
-  checkpoint 或 W&B 训练状态。本次只复用其真实 terminal-CoT 数据、DINO sidecar 和
-  processor-fingerprinted 预处理 cache，不 resume 旧 SFT2 optimizer。
+- 代码已提交并推送为 `c1e983ac` 与 `e664c49f`；clean server worktree 固定在
+  `e664c49f9cb291de94697ef2c5d0a7ffd04b0280`。远端 exact-environment 定向回归为
+  `55 passed in 68.55s`，并通过 compileall、shell syntax 和 diff-check。
+- ID50 的 8-train/8-val fresh CPU cache smoke job `494514` 在读取第一条记录时正确失败：
+  ID49 已审计 terminal-CoT JSONL 仍是没有 `record_format` 的 legacy trajectory，而当前
+  reader 只接受 `nimloth_trajectory_v1`。任务最终状态 `FAILED 1:0`、耗时 `00:01:12`，
+  没有 GPU/W&B/optimizer/checkpoint/cache manifest/done marker。
+- 先前关于续建 ID49 partial cache（train image shards 32/489）的结论失效。迁移后的
+  JSONL fingerprint 必然改变，因此旧 partial cache 不能作为本次训练的 resume source。
+  strict reader 与 fingerprint gate 不会放宽。
 
 ## 待完成
 
-- 提交并同步当前精确代码版本，在独立远端 worktree 做 preflight。
-- 先用隔离的 8-record 真实数据 prefix cache 运行单卡和 2 节点 × 4 GPU smoke；通过后
-  再原子续建 ID49 全量 preprocessing cache。smoke cache 与正式 cache 不共用写路径。
+- 按 source SHA256 gate 使用官方 migration CLI，把 ID49 train/val terminal-CoT JSONL
+  无损迁移到 ID52 run-owned data 目录；核对所有 record id、action、terminal CoT、
+  record/transition count 以及 manifest/output hash。
+- 从 migrated JSONL fresh 重建隔离的 8-record cache，依次运行单卡和 2 节点 × 4 GPU
+  smoke；通过后从同一 migrated JSONL fresh 构建 ID52 全量 preprocessing cache。
+  smoke cache 与正式 cache 不共用写路径。
 - smoke 通过后确定未占用 W&B ID、正式输出目录和实测耗时，启动 world-size 8 正式
   SFT2，并监控至少首个 optimizer step 和首个可恢复 checkpoint。

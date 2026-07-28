@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
+
+- H=1/T=4 实现已提交为 `c1e983ac`，隔离 smoke cache 提交为 `e664c49f`；本地
+  SFT2/WM/Agent 回归 `127 passed, 1 skipped`，关联 RL/grid 回归 `29 passed`，远端
+  exact-commit 定向回归 `55 passed`。远端 clean worktree 固定在 `e664c49f`。
+- ID50 的 8-train/8-val CPU cache smoke job `494514` 在 `intel-02` 运行 1分12秒后以
+  `FAILED 1:0` 结束。当前 strict reader 在读取首条 ID49 terminal-CoT JSONL 时正确报错：
+  `trajectory record must be migrated to 'nimloth_trajectory_v1'; got None`。该任务没有
+  GPU、W&B、optimizer、checkpoint、cache manifest 或 done marker；输出目录仅保留完整
+  `cache/cache_build.log` 与失败分析 `README.md`。
+- 先前“可续建 ID49 的 32/489 preprocess image shards”结论已经失效。ID49 terminal-CoT
+  JSONL 虽通过内容审计，但仍是没有 `record_format` 的 legacy record；当前训练格式明确
+  要求先离线迁移。迁移会改变 JSONL fingerprint，因此 ID49 partial cache 不能作为本次
+  H=1/T=4 的 resume source，也不能绕过 fingerprint 复用。
+- 后续使用仓库官方 `nimloth.rollout.migration`，按已核验 source SHA256 将 ID49 train/val
+  无损迁移到 ID52 formal run 自有 data 目录。迁移前后必须验证 record id、action sequence、
+  terminal CoT、record/transition count 与 manifest hash；随后 ID50 smoke cache 和 ID52
+  formal cache 均从 migrated JSONL fresh rebuild。strict reader 与 fingerprint 校验保持不变。
+
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 
 - 人类最终确认：SFT1 使用 DINO grid 监督 `SharedSlotProjector` 是合理的；SFT2 应继续
