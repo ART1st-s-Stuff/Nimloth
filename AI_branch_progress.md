@@ -56,6 +56,18 @@
   14.11s`；真实ID50 `step_000015`的CPU loader gate成功恢复H=1、K=16、D=1024三个模块，
   权重均finite，且仍为epoch1未完成、micro-step15。代码与真实checkpoint门禁均通过，可从
   同一step15和W&B run `9hcisto1`再次恢复单卡smoke。
+- ID50单卡恢复smoke已通过：精确代码`829d9dca`，normal hold`494535`在`dgx-09`
+  暴露1张H800；训练step `494535.1`为`COMPLETED 0:0`（2分47秒，MaxRSS
+  `38787360K`），hold随后取消释放。恢复严格跳过15/17 micro-batches；因step15回滚而确定性
+  重放step16，再完成含真实terminal CoT的step17及1个val batch。W&B原run `9hcisto1`为
+  `finished`/global step17；step16重复日志被W&B拒收但CSV保留两次，step17/val正常同步。
+  step17 train WM/DINO/value分别`0.267765/0.918687/0.033514`，val为
+  `0.578651/1.221469/1.563365`，全部finite。`epoch_001/best/final`均为完整epoch-complete
+  checkpoint且`SFT2_DONE`存在。CPU post-validator `494540`完成`0:0`：fresh-process加载
+  40.65亿参数Qwen、1464个optimizer tensors、EMA、H1 WM、ValueHead，并通过
+  `(1,1,16,1024)->(1,4,16,1024)` rollout/value `(1,4,8)` finite gate。首个validator
+  `494539`仅因错误期待完成epoch的micro cursor为17而失败；契约实际归零，修正后通过。
+  单卡smoke不覆盖B1 world8全局SIGReg，正式训练前仍需分布式ID51 smoke。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 

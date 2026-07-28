@@ -83,6 +83,16 @@
   `step_000015`执行生产`load_world_model_checkpoint()`成功：H=1、K=16、D=1024，三个模块
   权重均finite，checkpoint仍为epoch1/micro-step15未完成。第二次resume的代码与真实
   checkpoint门禁均已通过。
+- ID50单卡resume以精确代码`829d9dca`在hold`494535`/`dgx-09`完成；训练step
+  `494535.1`为`COMPLETED 0:0`（2分47秒），H800已释放。数据位置严格skip 15/17，重放
+  checkpoint之后的step16并完成terminal step17与1个validation batch。W&B同一run
+  `9hcisto1`已`finished`/global step17；重复step16的W&B log被拒绝但step17/val完整。
+  train step17 WM/DINO/value MSE为`0.267765/0.918687/0.033514`；val为
+  `0.578651/1.221469/1.563365`，均finite。`epoch_001/best/final`与`SFT2_DONE`齐全。
+  post-validator `494540`为`COMPLETED 0:0`，fresh-process完整加载Qwen、optimizer、EMA、
+  H1 WM和ValueHead，并验证4-step rollout/value输出finite。validator `494539`先因错误
+  断言completed-epoch micro cursor=17失败；契约实际为0，修正后通过，训练主体未受影响。
+  下一门禁是ID51 world-size-8 smoke，以覆盖单卡B1会跳过的global SIGReg/DDP路径。
 
 ## 待完成
 
