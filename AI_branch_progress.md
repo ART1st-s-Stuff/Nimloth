@@ -22,6 +22,12 @@
   无损迁移到 ID52 formal run 自有 data 目录。迁移前后必须验证 record id、action sequence、
   terminal CoT、record/transition count 与 manifest hash；随后 ID50 smoke cache 和 ID52
   formal cache 均从 migrated JSONL fresh rebuild。strict reader 与 fingerprint 校验保持不变。
+- 迁移修复提交 `03dd18fc` 已推送并在新 clean server worktree 验证：迁移/H1-T4定向
+  回归 `64 passed in 13.12s`，compileall、3个 shell syntax、diff-check 与 clean gate 通过。
+  ID52 CPU migration job `494521` 在 `intel-01` 以 `COMPLETED 0:0` 运行37秒；train/val
+  全量验证分别为3211/355 records、59269/6054 transitions，ID唯一、原始action与terminal
+  CoT逐条不变，manifest/hash一致。migrated output SHA256分别为`d43ada06...`与`4c092fb4...`。
+  该阶段没有GPU、W&B、cache、optimizer或checkpoint；下一门槛是ID50 isolated fresh cache。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 

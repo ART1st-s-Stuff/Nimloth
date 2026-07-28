@@ -52,12 +52,16 @@
 - 先前关于续建 ID49 partial cache（train image shards 32/489）的结论失效。迁移后的
   JSONL fingerprint 必然改变，因此旧 partial cache 不能作为本次训练的 resume source。
   strict reader 与 fingerprint gate 不会放宽。
+- 修复提交 `03dd18fc` 已推送；新 clean server worktree 的迁移/H1-T4 定向回归为
+  `64 passed in 13.12s`，compileall、shell syntax、diff-check 和 tracked clean gate 通过。
+- ID52 CPU migration Slurm `494521` 已 `COMPLETED 0:0`（37秒，`intel-01`，peak RSS
+  `512304K`）。train/val逐条验证分别覆盖3211/355 records与59269/6054 transitions；
+  IDs唯一，原始rollout action和terminal CoT全部不变，manifest与source/output hash一致。
+  migrated JSONL SHA256为train `d43ada06d66c0b5cafa50e9da8ecc354445ca3b9686d1639b18050a981247b97`、
+  val `4c092fb4069fb71ad92bca73566d5f20f572569a093bf4712467ca137615212e`。
 
 ## 待完成
 
-- 按 source SHA256 gate 使用官方 migration CLI，把 ID49 train/val terminal-CoT JSONL
-  无损迁移到 ID52 run-owned data 目录；核对所有 record id、action、terminal CoT、
-  record/transition count 以及 manifest/output hash。
 - 从 migrated JSONL fresh 重建隔离的 8-record cache，依次运行单卡和 2 节点 × 4 GPU
   smoke；通过后从同一 migrated JSONL fresh 构建 ID52 全量 preprocessing cache。
   smoke cache 与正式 cache 不共用写路径。
