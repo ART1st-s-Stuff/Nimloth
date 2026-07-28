@@ -74,6 +74,10 @@
   有labels。远端相关回归`58 passed in 12.52s`；真实ID50最后窗口steps16--19、recorded
   actions`[1,3,1,3]`的label presence为`[true,true,true,false]`，修复后的生产assembler
   已成功输出4-row label-free next batch。代码gate通过，训练smoke仍待从step15恢复完成。
+- 首次step15 resume使用hold`494533`/`dgx-21`；W&B `9hcisto1`正确resume，但在任何新
+  microbatch前，SFT2 checkpoint loader因调用未导入的`ValueHead`触发`NameError`。
+  step `494533.1`在1分02秒`FAILED 1:0`，hold已取消，step15未改变。需增加完整WM-owned
+  modules save-load回归与真实step15 loader gate后再恢复。
 
 ## 待完成
 

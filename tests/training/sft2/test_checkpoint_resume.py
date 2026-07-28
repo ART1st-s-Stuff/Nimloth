@@ -20,6 +20,7 @@ from nimloth.training.sft2.utils import seed_training_micro_step, training_micro
 from nimloth.wm.lewm import LeWMConfig
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.model import WorldModel
+from nimloth.wm.value_head import ValueHead
 
 
 def _write_aux_markers(ckpt_dir: Path) -> None:
@@ -134,6 +135,68 @@ def test_resume_checkpoint_requires_all_world_model_weights(tmp_path: Path) -> N
             ),
             torch.device("cpu"),
         )
+
+
+def test_load_world_model_checkpoint_restores_all_owned_modules(
+    tmp_path: Path,
+) -> None:
+    ckpt = tmp_path / "checkpoint"
+    ckpt.mkdir()
+    config = LeWMConfig(
+        emb_dim=4,
+        predictor_depth=1,
+        predictor_heads=1,
+        predictor_mlp_dim=8,
+        predictor_hidden_dim=4,
+        history_size=1,
+    )
+    source_proj = torch.nn.Linear(4, 4)
+    source_proj.latent_token_count = 1
+    source_proj.qwen_hidden_dim = 4
+    source_proj.input_dim = 4
+    source_predictor = LatentWMPredictor.create(config)
+    source_value_head = ValueHead(emb_dim=4)
+    torch.save(source_proj.state_dict(), ckpt / "state_proj.pt")
+    source_predictor.save_checkpoint(ckpt / "wm_predictor")
+    source_value_head.save_checkpoint(ckpt / "value_head")
+    torch.save(
+        {
+            "latent_token_count": 1,
+            "latent_query_mode": "inject",
+            "query_tune": "freeze",
+            "qwen_hidden_dim": 4,
+            "state_proj_input_dim": 4,
+        },
+        ckpt / "training_state.pt",
+    )
+
+    target_proj = torch.nn.Linear(4, 4)
+    target_proj.latent_token_count = 1
+    target_proj.qwen_hidden_dim = 4
+    target_proj.input_dim = 4
+    target_predictor = LatentWMPredictor.create(config)
+    target_value_head = ValueHead(emb_dim=4)
+    target = WorldModel(
+        state_proj=target_proj,
+        wm_predictor=target_predictor,
+        value_head=target_value_head,
+    )
+
+    load_world_model_checkpoint(
+        ckpt,
+        target,
+        torch.device("cpu"),
+        latent_query_mode="inject",
+        query_tune="freeze",
+    )
+
+    for expected, actual in (
+        (source_proj, target_proj),
+        (source_predictor, target_predictor),
+        (source_value_head, target_value_head),
+    ):
+        for name, tensor in expected.state_dict().items():
+            torch.testing.assert_close(actual.state_dict()[name], tensor)
 
 
 def test_sft2_requires_checkpoint_history_to_match_config() -> None:

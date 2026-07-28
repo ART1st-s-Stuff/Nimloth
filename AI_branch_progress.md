@@ -46,6 +46,11 @@
   ID50真实最后窗口steps16--19、actions`[1,3,1,3]`复现next labels
   `[true,true,true,false]`，生产assembler现成功输出4-row无labels next batch。代码阻塞已清除，
   单卡smoke仍需从完整`step_000015`恢复并完成val/final后才能判定通过。
+- 首次resume hold`494533`在`dgx-21`启动，W&B `9hcisto1`正确resume且两组Qwen shards
+  加载成功，但在任何新microbatch前因`load_world_model_checkpoint()`引用未导入的
+  `ValueHead`而`NameError`；step `494533.1`为`FAILED 1:0`（1分02秒），hold已取消。
+  step15保持不变。需显式import并新增projector/predictor/ValueHead完整save-load回归，远端
+  CPU与真实step15 loader gate通过前不得重试。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 

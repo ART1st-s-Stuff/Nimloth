@@ -17,6 +17,7 @@ from nimloth.backbone import BackboneEMA
 from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.util.distributed import is_main
 from nimloth.wm.model import WorldModel
+from nimloth.wm.value_head import ValueHead
 
 
 def read_checkpoint_step(ckpt_dir: Path) -> int:
