@@ -78,6 +78,11 @@
   microbatch前，SFT2 checkpoint loader因调用未导入的`ValueHead`触发`NameError`。
   step `494533.1`在1分02秒`FAILED 1:0`，hold已取消，step15未改变。需增加完整WM-owned
   modules save-load回归与真实step15 loader gate后再恢复。
+- resume loader修复提交`63082ac3`已增加`ValueHead`导入和projector/predictor/ValueHead
+  完整save-load回归；远端相关CPU回归`76 passed in 14.11s`。对实际ID50
+  `step_000015`执行生产`load_world_model_checkpoint()`成功：H=1、K=16、D=1024，三个模块
+  权重均finite，checkpoint仍为epoch1/micro-step15未完成。第二次resume的代码与真实
+  checkpoint门禁均已通过。
 
 ## 待完成
 

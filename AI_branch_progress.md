@@ -51,6 +51,11 @@
   `ValueHead`而`NameError`；step `494533.1`为`FAILED 1:0`（1分02秒），hold已取消。
   step15保持不变。需显式import并新增projector/predictor/ValueHead完整save-load回归，远端
   CPU与真实step15 loader gate通过前不得重试。
+- resume loader修复提交`63082ac3`已显式导入`ValueHead`，并新增WM-owned projector、
+  predictor、ValueHead完整save-load回归。superpod固定Python环境相关回归`76 passed in
+  14.11s`；真实ID50 `step_000015`的CPU loader gate成功恢复H=1、K=16、D=1024三个模块，
+  权重均finite，且仍为epoch1未完成、micro-step15。代码与真实checkpoint门禁均通过，可从
+  同一step15和W&B run `9hcisto1`再次恢复单卡smoke。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 
