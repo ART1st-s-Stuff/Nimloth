@@ -41,6 +41,11 @@
   cache row”和“正确不含labels的terminal-CoT next row”，而`collate_encoded(...,
   include_labels=False)`在移除labels前调用通用collator，导致`KeyError: 'labels'`。smoke未通过；
   必须修正无label collation并加terminal回归后，才可从step15恢复同一ID50。
+- 修复提交`4f66b8d3`令target-state路径在collate前逐row移除labels，CE路径则要求每row
+  都含labels，避免静默丢监督。远端相关回归`58 passed in 12.52s`及static/clean gates通过；
+  ID50真实最后窗口steps16--19、actions`[1,3,1,3]`复现next labels
+  `[true,true,true,false]`，生产assembler现成功输出4-row无labels next batch。代码阻塞已清除，
+  单卡smoke仍需从完整`step_000015`恢复并完成val/final后才能判定通过。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 

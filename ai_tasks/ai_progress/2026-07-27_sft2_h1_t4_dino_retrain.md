@@ -70,6 +70,10 @@
   next encoding正确没有labels，与前三个含labels next row一起进入include-labels-false
   collate时触发`KeyError: 'labels'`。hold已取消、GPU已释放；没有epoch val/final/done，
   单卡smoke未通过。修复和terminal回归通过后可从step15恢复同一ID50/W&B run。
+- 修复提交`4f66b8d3`在无label target路径collate前逐row删除labels，并令CE路径强制所有row
+  有labels。远端相关回归`58 passed in 12.52s`；真实ID50最后窗口steps16--19、recorded
+  actions`[1,3,1,3]`的label presence为`[true,true,true,false]`，修复后的生产assembler
+  已成功输出4-row label-free next batch。代码gate通过，训练smoke仍待从step15恢复完成。
 
 ## 待完成
 
