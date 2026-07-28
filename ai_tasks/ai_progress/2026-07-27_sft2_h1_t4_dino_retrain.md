@@ -59,11 +59,16 @@
   IDs唯一，原始rollout action和terminal CoT全部不变，manifest与source/output hash一致。
   migrated JSONL SHA256为train `d43ada06d66c0b5cafa50e9da8ecc354445ca3b9686d1639b18050a981247b97`、
   val `4c092fb4069fb71ad92bca73566d5f20f572569a093bf4712467ca137615212e`。
+- ID50 migrated-data fresh cache Slurm `494524` 已 `COMPLETED 0:0`（32秒，`intel-02`）。
+  train/val为138/99 transitions、146/107 unique images，fingerprint分别为
+  `deacbccea6eec498`/`66186fbb54ef56bf`；格式、BF16、gamma1、terminal-CoT expansion、
+  manifests与done flag完整。生产reader全量加载train 114/114、val 75/75个H=1/T=4
+  窗口，确认每窗同rollout连续4步、recorded action对齐及1 current+4 next encoding。
 
 ## 待完成
 
-- 从 migrated JSONL fresh 重建隔离的 8-record cache，依次运行单卡和 2 节点 × 4 GPU
-  smoke；通过后从同一 migrated JSONL fresh 构建 ID52 全量 preprocessing cache。
-  smoke cache 与正式 cache 不共用写路径。
+- 使用已验证的隔离 8-record cache，依次运行单卡和 2 节点 × 4 GPU smoke；通过后从
+  同一 migrated JSONL fresh 构建 ID52 全量 preprocessing cache。smoke cache 与正式
+  cache 不共用写路径。
 - smoke 通过后确定未占用 W&B ID、正式输出目录和实测耗时，启动 world-size 8 正式
   SFT2，并监控至少首个 optimizer step 和首个可恢复 checkpoint。

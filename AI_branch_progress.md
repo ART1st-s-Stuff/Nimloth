@@ -28,6 +28,12 @@
   全量验证分别为3211/355 records、59269/6054 transitions，ID唯一、原始action与terminal
   CoT逐条不变，manifest/hash一致。migrated output SHA256分别为`d43ada06...`与`4c092fb4...`。
   该阶段没有GPU、W&B、cache、optimizer或checkpoint；下一门槛是ID50 isolated fresh cache。
+- ID50 migrated-data fresh cache job `494524` 在 `intel-02` 以 `COMPLETED 0:0` 运行32秒。
+  train/val cache分别为138/99 transitions、146/107 unique images，fingerprint为
+  `deacbccea6eec498`/`66186fbb54ef56bf`；均为`dedup_sharded_v2`、BF16、gamma1和
+  `wm_expand_v3_terminal_cot`，manifest与done flag完整。生产reader进一步加载了全部
+  H=1/T=4窗口（train 114/114，val 75/75），逐窗确认同rollout连续4步、原始action对齐、
+  1个current与4个next BF16 encoding可materialize。CPU cache gate通过，尚无GPU/W&B训练。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 
