@@ -34,6 +34,13 @@
   `wm_expand_v3_terminal_cot`，manifest与done flag完整。生产reader进一步加载了全部
   H=1/T=4窗口（train 114/114，val 75/75），逐窗确认同rollout连续4步、原始action对齐、
   1个current与4个next BF16 encoding可materialize。CPU cache gate通过，尚无GPU/W&B训练。
+- ID50 单卡hold `494528`在`dgx-09`运行；train step `494528.1`于4分46秒后
+  `FAILED 1:0`，W&B `9hcisto1`标记failed，hold随后取消并释放GPU。17个真实H1/T4窗口
+  已完成optimizer step1--15，computed total/WM/DINO/value-MC/CE均finite，并留下完整可训练
+  `step_000015`；没有epoch validation/final/done。最后窗口混合“含labels的非terminal next
+  cache row”和“正确不含labels的terminal-CoT next row”，而`collate_encoded(...,
+  include_labels=False)`在移除labels前调用通用collator，导致`KeyError: 'labels'`。smoke未通过；
+  必须修正无label collation并加terminal回归后，才可从step15恢复同一ID50。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 

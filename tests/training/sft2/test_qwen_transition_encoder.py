@@ -155,3 +155,60 @@ def test_prepare_t4_rollout_keeps_recorded_actions_and_all_next_targets() -> Non
     assert batch.value_target_sequences.tolist() == [[10.0, 11.0, 12.0, 13.0]]
     assert batch.next_indices.tolist() == [[0, 1, 2, 3]]
     assert batch.next_image_paths == tuple(f"image-{step}.png" for step in range(4))
+
+
+def _encoded_row(value: int, *, labels: bool) -> dict[str, torch.Tensor]:
+    row = {
+        "input_ids": torch.tensor([value, value + 1]),
+        "attention_mask": torch.ones(2, dtype=torch.long),
+    }
+    if labels:
+        row["labels"] = torch.tensor([value, value + 1])
+    return row
+
+
+def test_prepare_cached_t4_accepts_unlabelled_terminal_next_state() -> None:
+    items = []
+    next_rows = []
+    for step, action in enumerate((2, 0, 1, 2)):
+        item = _item(
+            f"record:{step}",
+            [{"role": "user", "content": f"next-{step}"}],
+        )
+        item.update(
+            step_index=step,
+            action_index=action,
+            action_value_target=float(10 + step),
+            prediction_horizon=4,
+            rollout_position=step,
+            is_current_step=step == 0,
+            needs_next_state=True,
+            next_image_path=f"image-{step}.png",
+        )
+        items.append(item)
+        next_rows.append(_encoded_row(10 + step, labels=step < 3))
+    raw = {
+        "items": items,
+        "current_enc_rows": [_encoded_row(1, labels=True)],
+        "next_enc_rows": next_rows,
+    }
+
+    batch = _rollout_assembler().prepare(raw)
+
+    assert isinstance(batch, SFT2RolloutBatch)
+    assert batch.next.tensors["input_ids"].shape == (4, 2)
+    assert "labels" not in batch.next.tensors
+    assert "labels" not in batch.online_tail.tensors
+    assert batch.action_sequences.tolist() == [[2, 0, 1, 2]]
+
+
+def test_supervised_cached_rows_require_labels_on_every_row() -> None:
+    processor = MagicMock()
+    processor.tokenizer.pad_token_id = 0
+    builder = Qwen25VLInputBuilder(processor=processor, max_length=32)
+
+    with pytest.raises(ValueError, match="must all contain labels"):
+        builder.collate_encoded(
+            [_encoded_row(1, labels=True), _encoded_row(2, labels=False)],
+            include_labels=True,
+        )

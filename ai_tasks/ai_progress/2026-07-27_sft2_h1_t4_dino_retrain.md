@@ -64,10 +64,17 @@
   `deacbccea6eec498`/`66186fbb54ef56bf`；格式、BF16、gamma1、terminal-CoT expansion、
   manifests与done flag完整。生产reader全量加载train 114/114、val 75/75个H=1/T=4
   窗口，确认每窗同rollout连续4步、recorded action对齐及1 current+4 next encoding。
+- ID50单卡hold `494528`在`dgx-09`启动，W&B `9hcisto1`使用正确run name。17个真实窗口
+  已完成step1--15且total/WM/DINO/value-MC/CE全部finite，`step_000015`为完整可训练
+  checkpoint；但train step `494528.1`随后`FAILED 1:0`。最后一个T4窗口的terminal-CoT
+  next encoding正确没有labels，与前三个含labels next row一起进入include-labels-false
+  collate时触发`KeyError: 'labels'`。hold已取消、GPU已释放；没有epoch val/final/done，
+  单卡smoke未通过。修复和terminal回归通过后可从step15恢复同一ID50/W&B run。
 
 ## 待完成
 
-- 使用已验证的隔离 8-record cache，依次运行单卡和 2 节点 × 4 GPU smoke；通过后从
+- 修复mixed terminal-next label collation并通过回归，从step15恢复完成单卡smoke；随后
+  运行2节点×4GPU smoke；通过后从
   同一 migrated JSONL fresh 构建 ID52 全量 preprocessing cache。smoke cache 与正式
   cache 不共用写路径。
 - smoke 通过后确定未占用 W&B ID、正式输出目录和实测耗时，启动 world-size 8 正式

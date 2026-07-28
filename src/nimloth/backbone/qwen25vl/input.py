@@ -60,12 +60,31 @@ class Qwen25VLInputBuilder:
         *,
         include_labels: bool,
     ) -> BackboneBatch:
+        prepared_rows = list(rows)
+        if include_labels:
+            missing = [
+                index
+                for index, row in enumerate(prepared_rows)
+                if "labels" not in row
+            ]
+            if missing:
+                raise ValueError(
+                    "supervised Qwen encoding rows must all contain labels; "
+                    f"missing rows={missing}"
+                )
+        else:
+            # Target-state forwards never consume CE labels.  Compact-cache
+            # batches may legitimately mix ordinary next states (which reuse a
+            # supervised current encoding) with the terminal CoT state (which
+            # has no action labels), so normalize every row before collation.
+            prepared_rows = [
+                {key: value for key, value in row.items() if key != "labels"}
+                for row in prepared_rows
+            ]
         encoding = collate_qwen_encodings(
-            list(rows),
+            prepared_rows,
             self.processor.tokenizer.pad_token_id,
         )
-        if not include_labels:
-            encoding.pop("labels", None)
         return BackboneBatch(encoding)
 
     def cache_key(

@@ -277,6 +277,11 @@ def collate_qwen_encodings(
 
     if not rows:
         raise ValueError("Qwen encoding rows must not be empty")
+    label_presence = ["labels" in row for row in rows]
+    if any(label_presence) and not all(label_presence):
+        raise ValueError(
+            "Qwen encoding rows must either all contain labels or all omit labels"
+        )
     if len(rows) == 1:
         return {
             key: value.unsqueeze(0) if value.ndim == 1 else value
@@ -296,7 +301,7 @@ def collate_qwen_encodings(
             batch_first=True,
             padding_value=0,
         )
-    if "labels" in rows[0]:
+    if all(label_presence):
         batch["labels"] = pad_sequence(
             [row["labels"] for row in rows],
             batch_first=True,
