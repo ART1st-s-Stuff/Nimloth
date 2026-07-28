@@ -68,6 +68,15 @@
   `(1,1,16,1024)->(1,4,16,1024)` rollout/value `(1,4,8)` finite gate。首个validator
   `494539`仅因错误期待完成epoch的micro cursor为17而失败；契约实际归零，修正后通过。
   单卡smoke不覆盖B1 world8全局SIGReg，正式训练前仍需分布式ID51 smoke。
+- ID51 world-size-8 smoke已完成CPU launch preflight并提交唯一normal hold`494549`：精确
+  代码`936366fe`，动态4节点×2 H800、每节点2 local ranks、world8、B1/GA8，沿用正式
+  ID52拓扑；SFT1重新初始化H1 WM/ValueHead/optimizer，使用迁移train/val前8 records和
+  ID50对应prebuilt cache，不resume ID50。W&B live max ID为50，预留新run名
+  `51_smoke_dinogrid_k16_h1_t4_ws8_b1_ga8_real8`。提交时只有两个节点各有至少2张空闲
+  GPU，hold为`PENDING(Priority)`，Slurm估计本地时间06:23:16启动；尚无W&B/output。
+  远端单一watcher PID`2552482`每30秒仅监控此hold，RUNNING后执行full-allocation
+  cgroup/rank/非默认端口gate和已审核launcher，结束后无论成败自动scancel释放资源；日志、
+  PID和result均保存在ID51目录，禁止并行追加hold。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 

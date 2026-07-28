@@ -93,6 +93,12 @@
   H1 WM和ValueHead，并验证4-step rollout/value输出finite。validator `494539`先因错误
   断言completed-epoch micro cursor=17失败；契约实际为0，修正后通过，训练主体未受影响。
   下一门禁是ID51 world-size-8 smoke，以覆盖单卡B1会跳过的global SIGReg/DDP路径。
+- ID51分布式smoke已通过提交前preflight：精确代码`936366fe`，4节点×2 H800、world8、
+  B1/GA8，使用迁移数据前8条与对应prebuilt cache，从SFT1重新初始化H1 WM/ValueHead/
+  optimizer，W&B ID51 live未占用。唯一hold`494549`因当前仅两节点满足每节点2空闲GPU而
+  `PENDING(Priority)`，预计本地06:23:16；尚无train输出/W&B run。远端watcher PID
+  `2552482`每30秒检查真实状态，allocation到达后运行完整4×2 cgroup/rank/port gate与训练，
+  最终自动释放hold；不得提交第二个hold。ID51通过前不得开始ID52正式训练。
 
 ## 待完成
 
