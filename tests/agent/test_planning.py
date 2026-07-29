@@ -22,30 +22,14 @@ class _RecordingPredictor(torch.nn.Module):
     def __init__(self, *, history_size: int = 2) -> None:
         super().__init__()
         self.config = type("PredictorConfig", (), {"history_size": history_size})()
-        self.action_sequences: list[torch.Tensor] = []
-        self.real_history_lengths: list[int] = []
-        self.state_histories: list[torch.Tensor] = []
+        self.action_contexts: list[torch.Tensor] = []
+        self.state_contexts: list[torch.Tensor] = []
 
-    def forward(self, state, actions):
-        raise AssertionError("planner must use rollout_states()")
-
-    def rollout_from_history(
-        self,
-        state_history: torch.Tensor,
-        previous_actions: torch.Tensor,
-        action_sequences: torch.Tensor,
-    ) -> torch.Tensor:
-        self.action_sequences.append(action_sequences.detach().clone())
-        self.real_history_lengths.append(state_history.shape[1])
-        self.state_histories.append(state_history.detach().clone())
-        assert previous_actions.shape[1] == state_history.shape[1] - 1
-        current = state_history[:, -1]
-        predicted: list[torch.Tensor] = []
-        for step in range(action_sequences.shape[1]):
-            delta = action_sequences[:, step].to(current.dtype).unsqueeze(-1) + 1.0
-            current = current + torch.cat((delta, -delta), dim=-1)
-            predicted.append(current)
-        return torch.stack(predicted, dim=1)
+    def forward(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        self.action_contexts.append(actions.detach().clone())
+        self.state_contexts.append(states.detach().clone())
+        delta = actions.to(states.dtype).unsqueeze(-1) + 1.0
+        return states + torch.cat((delta, -delta), dim=-1)
 
 
 class _ActionValueHead(torch.nn.Module):
@@ -94,7 +78,14 @@ def test_planner_replays_one_greedy_prefix_at_every_depth() -> None:
         torch.empty((1, 0), dtype=torch.long),
     )
 
-    assert [actions.shape[1] for actions in predictor.action_sequences] == [1, 2, 3]
+    assert [actions.shape[1] for actions in predictor.action_contexts] == [
+        1,
+        1,
+        2,
+        1,
+        2,
+        2,
+    ]
     assert plan.candidate_sequences.tolist() == [[0, 1, 3]]
     assert plan.candidate_scores.shape == (1,)
     assert plan.root_action_scores.shape == (len(NAVIGATION_ACTION_SPACE),)
@@ -116,7 +107,8 @@ def test_exhaustive_planner_simulates_all_action_sequences_as_one_batch() -> Non
     )
 
     action_count = len(NAVIGATION_ACTION_SPACE)
-    assert predictor.action_sequences[0].shape == (action_count**2, 2)
+    assert predictor.action_contexts[0].shape == (action_count**2, 1)
+    assert predictor.action_contexts[1].shape == (action_count**2, 2)
     assert plan.candidate_sequences.shape == (action_count**2, 2)
     assert plan.candidate_sequences[0].tolist() == [0, 0]
     assert plan.candidate_sequences[-1].tolist() == [action_count - 1] * 2
@@ -125,24 +117,21 @@ def test_exhaustive_planner_simulates_all_action_sequences_as_one_batch() -> Non
 
 
 class _FirstActionPredictor(torch.nn.Module):
-    def rollout_from_history(
+    def __init__(self) -> None:
+        super().__init__()
+        self.config = type("PredictorConfig", (), {"history_size": 1})()
+
+    def forward(
         self,
-        state_history: torch.Tensor,
-        previous_actions: torch.Tensor,
-        action_sequences: torch.Tensor,
+        states: torch.Tensor,
+        actions: torch.Tensor,
     ) -> torch.Tensor:
-        del previous_actions
-        current = state_history[:, -1]
-        predicted = []
-        for action in action_sequences.unbind(dim=1):
-            first_action = torch.where(
-                current[:, 0] == 0,
-                action.to(current.dtype),
-                current[:, 1],
-            )
-            current = torch.stack((current[:, 0] + 1, first_action), dim=-1)
-            predicted.append(current)
-        return torch.stack(predicted, dim=1)
+        first_action = torch.where(
+            states[..., 0] == 0,
+            actions.to(states.dtype),
+            states[..., 1],
+        )
+        return torch.stack((states[..., 0] + 1, first_action), dim=-1)
 
 
 class _LookaheadValueHead(torch.nn.Module):
@@ -199,10 +188,13 @@ def test_beam_planner_expands_multiple_candidates_at_each_depth() -> None:
     )
 
     action_count = len(NAVIGATION_ACTION_SPACE)
-    assert [tuple(actions.shape) for actions in predictor.action_sequences] == [
+    assert [tuple(actions.shape) for actions in predictor.action_contexts] == [
         (action_count, 1),
+        (4 * action_count, 1),
         (4 * action_count, 2),
-        (4 * action_count, 3),
+        (4 * action_count, 1),
+        (4 * action_count, 2),
+        (4 * action_count, 2),
     ]
     assert plan.candidate_sequences.shape == (4, 3)
     assert plan.candidate_scores.shape == (4,)
@@ -286,7 +278,7 @@ def test_planning_policy_uses_batched_lookahead_and_excludes_action_from_ppo() -
     assert decision.token_trace.loss_mask[action_position] is False
     assert decision.token_trace.old_log_probs[action_position] is None
     assert f"<|action_({decision.action_index})|>" in decision.response
-    assert predictor.real_history_lengths == [1]
+    assert predictor.state_contexts[0].shape[1] == 1
     assert stages == ["planner_start", "planner_done"]
 
 
@@ -324,6 +316,6 @@ def test_planning_policy_replans_every_step_from_real_qwen_state() -> None:
     )
     # history_size=2: the third search starts from the two latest real Qwen
     # states.  No predicted tail from either previous search is retained.
-    assert predictor.state_histories[-1].tolist() == [
+    assert predictor.state_contexts[-2].tolist() == [
         [[0.5, -0.5], [0.75, -0.75]]
     ]

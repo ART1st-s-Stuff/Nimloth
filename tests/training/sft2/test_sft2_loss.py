@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -94,16 +95,17 @@ class _RecordingEMA:
 
 
 class _Predictor(torch.nn.Module):
-    def __init__(self, dimension: int) -> None:
+    def __init__(self, dimension: int, *, history_size: int) -> None:
         super().__init__()
+        self.config = SimpleNamespace(history_size=history_size)
         self.net = torch.nn.Linear(dimension, dimension, bias=False)
 
     def forward(
         self,
         state: torch.Tensor,
-        _action_indices: torch.Tensor,
+        action_indices: torch.Tensor,
     ) -> torch.Tensor:
-        return self.net(state)
+        return self.net(state) + action_indices.to(state.dtype).unsqueeze(-1)
 
     def rollout_from_history(
         self,
@@ -159,7 +161,7 @@ def _algorithm(
         backbone=backbone,
         wm=WorldModel(
             state_proj=projector,
-            wm_predictor=_Predictor(4),
+            wm_predictor=_Predictor(4, history_size=history_size),
             value_head=ValueHead(emb_dim=4, num_actions=3),
         ),
     )

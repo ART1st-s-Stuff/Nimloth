@@ -69,6 +69,7 @@ class _RecordingSIGReg(torch.nn.Module):
 class _GridPredictor(torch.nn.Module):
     def __init__(self, dimension: int) -> None:
         super().__init__()
+        self.config = SimpleNamespace(history_size=2)
         self.net = torch.nn.Linear(dimension, dimension, bias=False)
 
     def forward(

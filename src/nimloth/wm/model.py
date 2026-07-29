@@ -107,14 +107,59 @@ class WorldModel(nn.Module):
         previous_actions: torch.Tensor,
         action_sequences: torch.Tensor,
     ) -> torch.Tensor:
-        """从真实历史出发模拟候选动作，不接触 environment。"""
+        """从真实历史出发模拟候选动作，不接触 environment。
 
-        rollout = getattr(self.wm_predictor, "rollout_from_history", None)
-        if rollout is None:
-            raise TypeError(
-                "wm_predictor must implement rollout_from_history() for planning"
+        自回归展开必须通过 ``wm_predictor.__call__``，因为 SFT2 会直接把
+        predictor 包在 DDP 中。读取 ``.module.rollout_from_history`` 虽然能拿到
+        自定义方法，却会绕过 DDP forward/reducer，导致多卡梯度不同步。
+        """
+
+        if state_history.ndim < 3:
+            raise ValueError(
+                "state_history must have shape (B,L,...state), "
+                f"got {tuple(state_history.shape)}"
             )
-        return rollout(state_history, previous_actions, action_sequences)
+        batch_size, history_steps = state_history.shape[:2]
+        predictor = _unwrap(self.wm_predictor)
+        config = getattr(predictor, "config", None)
+        history_size = getattr(config, "history_size", None)
+        if history_size is None:
+            raise TypeError("wm_predictor.config.history_size is required for rollout")
+        history_size = int(history_size)
+        if not 1 <= history_steps <= history_size:
+            raise ValueError(
+                "real state history length must be in [1, history_size], "
+                f"got L={history_steps}, history_size={history_size}"
+            )
+        expected_previous = (batch_size, history_steps - 1)
+        if previous_actions.shape != expected_previous:
+            raise ValueError(
+                "previous_actions must align with all but the last real state, "
+                f"got {tuple(previous_actions.shape)}, expected {expected_previous}"
+            )
+        if (
+            action_sequences.ndim != 2
+            or action_sequences.shape[0] != batch_size
+            or action_sequences.shape[1] < 1
+        ):
+            raise ValueError(
+                "action_sequences must have shape (B,P) with P>=1, "
+                f"got {tuple(action_sequences.shape)}"
+            )
+
+        all_states = state_history
+        all_actions = torch.cat((previous_actions, action_sequences), dim=1)
+        predicted: list[torch.Tensor] = []
+        for future_step in range(action_sequences.shape[1]):
+            state_index = history_steps - 1 + future_step
+            context_start = max(0, state_index - history_size + 1)
+            state_context = all_states[:, context_start : state_index + 1]
+            action_context = all_actions[:, context_start : state_index + 1]
+            predicted_context = self.wm_predictor(state_context, action_context)
+            next_state = predicted_context[:, -1]
+            predicted.append(next_state)
+            all_states = torch.cat((all_states, next_state.unsqueeze(1)), dim=1)
+        return torch.stack(predicted, dim=1)
 
     @property
     def trainable_modules(self) -> tuple[nn.Module, ...]:

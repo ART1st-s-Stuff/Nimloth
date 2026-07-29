@@ -5,6 +5,7 @@ import torch
 from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
 from nimloth.wm.grid import (
     GridPredictorConfig,
+    GridWorldModel,
     SharedSlotProjector,
     TemporalSpatialGridPredictor,
 )
@@ -93,6 +94,43 @@ def test_temporal_spatial_predictor_rolls_out_from_real_grid_history() -> None:
     )
 
     assert predicted.shape == (2, 3, 2, 4)
+
+
+def test_grid_world_model_forward_rollout_matches_predictor_reference() -> None:
+    predictor = TemporalSpatialGridPredictor(
+        GridPredictorConfig(
+            grid_tokens=2,
+            emb_dim=4,
+            action_dim=3,
+            history_size=2,
+            depth=1,
+            heads=1,
+            dim_head=4,
+            mlp_dim=8,
+            dropout=0.0,
+        )
+    ).eval()
+    world_model = GridWorldModel(
+        state_proj=torch.nn.Identity(),
+        wm_predictor=predictor,
+        value_head=torch.nn.Identity(),
+    )
+    state_history = torch.randn(2, 2, 2, 4)
+    previous_actions = torch.tensor([[0], [1]])
+    future_actions = torch.tensor([[1, 2, 0], [2, 0, 1]])
+
+    expected = predictor.rollout_from_history(
+        state_history,
+        previous_actions,
+        future_actions,
+    )
+    actual = world_model.simulate_action_sequences(
+        state_history,
+        previous_actions,
+        future_actions,
+    )
+
+    torch.testing.assert_close(actual, expected)
 
 
 def test_sft1_slot_projector_remains_trainable_in_sft2() -> None:
