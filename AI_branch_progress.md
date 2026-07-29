@@ -108,6 +108,25 @@
   validator `495571`以`COMPLETED 0:0`fresh-load完整Qwen、optimizer、EMA、8个rank history
   cache、H1 WM和ValueHead，并得到finite的`(1,4,16,1024)` rollout及`(1,4,8)` value。
   分布式门禁已解除；下一步从既有已验证migrated JSONL fresh构建ID53正式全量cache。
+- 对提速所需的world-size-16做了只读容量核验（当前commit `9524f0a7`）。
+  训练核心的NCCL/DDP、data factory和trajectory sampler均使用运行时`world_size`，没有
+  world8上限。全量数据实测world16每epoch生成3103个分布式micro-batches，完整覆盖
+  49,638个训练window（末batch 10个零loss padding）；val各16 ranks合计4,989 windows，
+  无padding或丢样。但ID53当前formal launcher明确写死4 nodes×2 local ranks/`NNODES=4`/
+  `NPROC_PER_NODE=2`，不能原样启动world16；尚无world16 GPU/NCCL/end-to-end smoke证据。
+- B1/GA8从world8改到world16会把effective global batch从64加倍到128，每epochoptimizer
+  steps从776减半到388（两epoch 1552→776）。若保持global batch和optimizer/LR时间轴，
+  world16应配GA4；但每microbatch的global SIGReg统计样本仍从约8增到约16，因而不是
+  与world8完全等价的优化语义。Checkpoint invariants包含`world_size`/`grad_accum`/
+  `train_micro_batches`且history cache按rank保存，所以world8 checkpoint不能直接resume为world16；
+  未启动正式GPU训练时可以改为world16 fresh run，已构建的preprocessing cache与world size无关。
+- ID53 CPU cache job `495702`于2026-07-29 08:43 UTC `COMPLETED 0:0`（2:05:09），
+  train/val manifests与`cache_done.flag`齐全。独立validator `495754`亦`COMPLETED 0:0`
+  （5:12），生产reader全量加载49,638 train和4,989 val H1/T4 windows，recorded actions、
+  gamma1 targets和抽样BF16 materialization全部通过。正式world8 cache gate已打开。
+- 人类指出ID53全量cache只申8 CPU cores是资源配置错误。后续全量cache必须
+  至少64 CPU cores，提交后核验`ReqTRES`/`AllocTRES`；分区无法满足时必须先说明，
+  不得默认降配。已登记`ai_rules/known_errors/E0068_full_cache_must_request_at_least_64_cpus.md`。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 

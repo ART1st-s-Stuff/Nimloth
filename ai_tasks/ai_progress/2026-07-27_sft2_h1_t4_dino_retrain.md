@@ -125,10 +125,26 @@
   batch至少5且无skip。W&B `wut6xqhg`已`finished`。独立CPU validator `495571`为
   `COMPLETED 0:0`，fresh-load完整Qwen/optimizer/EMA/8 rank history caches/H1 WM/ValueHead，
   并执行finite的4-state rollout与value计算。ID52分布式门禁解除，正式阶段使用ID53。
+- world-size-16提速容量只读核验（commit `9524f0a7`）：核心DDP/data/sampler路径不写死
+  world8。全量migrated数据探针在world16下每epoch产生3103 distributed micro-batches，
+  完整覆盖49,638 train windows，仅末batch有10个零loss padding；val覆盖4,989/4,989
+  windows、无padding。当前ID53 `run_node.sh`/`launch_from_login.sh`/`hold.slurm`仍写死
+  4 nodes×2 ranks，不能原样变成world16；world16尚未做GPU/NCCL/end-to-end smoke。
+- 优化语义：world8+B1+GA8的effective global batch=64、每epoch776 optimizer steps；world16
+  若保持GA8则分别变为128和388。world16+GA4可恢复global batch=64与776 steps/epoch，
+  但global SIGReg每microbatch的统计样本仍从约8增加到约16。`world_size`/`grad_accum`/
+  `train_micro_batches`是checkpoint invariants，且history cache按rank持久化，因此world8断点
+  不允许resume为world16。Preprocessing cache与world size无关，可作为fresh world16 run的输入。
+- ID53 CPU cache `495702`已`COMPLETED 0:0`（2:05:09）；train/val fingerprints分别为
+  `ac7835348d6eade1`/`d857dc4ef51a70be`，共49,638/4,989 H1/T4 windows。独立
+  validator `495754` `COMPLETED 0:0`（5:12），全量生产reader加载、recorded action、
+  gamma1 value target与抽样BF16 materialization通过；正式world8 cache gate已打开。
+- 资源复盘：job `495702`在224-core `intel-01`上仅申请8 CPU cores，导致全量cache
+  耗时超过2小时。人类要求今后全量cache至少64 CPU cores，且必须核验
+  `ReqTRES`/`AllocTRES`；不得因为partition/QoS限制而静默降到8 cores。
 
 ## 待完成
 
-- 从同一migrated JSONL fresh构建并严格验证ID53全量preprocessing cache；smoke cache与
-  正式cache不共用写路径。
-- cache通过后确定未占用W&B ID、正式空输出目录和实测耗时，启动world-size 8正式SFT2，
-  并监控至少首个optimizer step和首个可恢复checkpoint。
+- 人类要求立即启动已通过分布式smoke的world8+B1+GA8正式SFT2。提交前复核空输出、
+  W&B ID53、动态4×2 H800 allocation与刚通过的全量cache；启动后监控首个finite
+  optimizer step和首个可恢复checkpoint。
