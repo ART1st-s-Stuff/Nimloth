@@ -40,7 +40,7 @@ CHILD_ATTEMPTS=()
 mkdir -p "${EVAL_OUTPUT}" "${EVAL_OUTPUT}/eval_sets" "${ATTEMPT_ROOT}"
 
 export PATH=${ROOT}/.venv-vagen-main/bin:${PATH}
-export PYTHONPATH=${EVAL_WORKTREE}/src:${ROOT}/external/VAGEN:${ROOT}/external/VAGEN/verl:${ROOT}/external/le-wm:${PYTHONPATH:-}
+export PYTHONPATH=${EVAL_WORKTREE}/src:${EVAL_WORKTREE}/external/VAGEN:${EVAL_WORKTREE}/external/VAGEN/verl:${EVAL_WORKTREE}/external/le-wm:${PYTHONPATH:-}
 export HOME=${ROOT}/.home
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=${HF_HOME}
@@ -106,7 +106,7 @@ if (contract.history_size, contract.prediction_horizon, contract.action_count) !
 print(json.dumps(contract.__dict__, default=str, sort_keys=True), flush=True)
 PY
 
-"${PY}" - "${ROOT}/external/VAGEN/vagen/env/navigation/datasets" <<'PY'
+"${PY}" - "${EVAL_WORKTREE}/external/VAGEN/vagen/env/navigation/datasets" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -124,9 +124,9 @@ PY
   bash -lc "
     set -euo pipefail
     export PATH='${ROOT}/.venv-vagen-main/bin':\"\${PATH}\"
-    export PYTHONPATH='${ROOT}/external/VAGEN:${ROOT}/external/VAGEN/verl'
+    export PYTHONPATH='${EVAL_WORKTREE}/external/VAGEN:${EVAL_WORKTREE}/external/VAGEN/verl'
     source '${EVAL_WORKTREE}/experiments/training/baseline/setup_ai2thor_env.sh'
-    cd '${ROOT}/external/VAGEN'
+    cd '${EVAL_WORKTREE}/external/VAGEN'
     exec '${PY}' -m vagen.server.server \\
       server.host=0.0.0.0 server.port='${ENV_PORT}' \\
       use_state_reward=False navigation.devices='[0]' navigation.max_workers=16
