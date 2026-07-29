@@ -86,6 +86,17 @@
   rollout/backward同步回归。CSV仅header；无optimizer step、SIGReg、val、checkpoint或done。
   W&B `6btnjnaw`为`crashed`且summary空；hold已取消、8卡已释放、无resume源。正式训练
   当前blocked，必须修复后用新output/W&B ID重跑world8 smoke。
+- ID51的DDP rollout根因已由提交`55a80ad1`修复，测试fixture对action conditioning的
+  校正为`58f30e98`。`WorldModel.simulate_action_sequences()`现在逐预测步调用DDP wrapper的
+  标准`forward()`，不再在wrapper上查找自定义方法，也不通过`.module`绕过reducer；H窗口
+  截断、previous action与未来recorded action的配对和原实现严格等价。新增真实Gloo
+  双进程回归用`static_graph=True`包裹`TemporalSpatialGridPredictor`，连续两轮执行H1/T4
+  rollout、backward和optimizer step，并逐元素确认两rank完整梯度一致且非零。superpod固定
+  Python环境的完整SFT2、grid/latent WM与planner CPU回归为`114 passed, 1 skipped in
+  70.40s`；skip仅为显式NCCL可选门禁。代码门禁已解除，下一步必须用新ID、空输出和新W&B
+  identity重跑与正式拓扑一致的world8 smoke。W&B live max为51，因此重试使用ID52；原先
+  预留ID52的迁移数据目录继续作为不可变数据源，正式cache/训练identity顺延为ID53。新smoke
+  通过前正式训练仍blocked。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 

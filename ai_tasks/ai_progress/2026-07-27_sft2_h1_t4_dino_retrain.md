@@ -107,12 +107,19 @@
   checkpoint或done；W&B `6btnjnaw`为`crashed`/空summary，hold已释放且不可resume。
   需修复parameter-owning DDP forward、增加多进程rollout/backward回归，再用新identity
   通过world8 smoke；此前禁止正式SFT2训练及full cache启动。
+- DDP rollout修复提交`55a80ad1`令`WorldModel`在每个未来步通过包裹predictor的标准
+  `forward()`执行相同的自回归上下文截断；测试fixture action语义校正提交`58f30e98`。
+  新增Gloo双进程`static_graph=True`回归，真实grid predictor连续两轮H1/T4 forward、
+  backward、optimizer step均完成，且两rank梯度逐元素相同、非零。superpod固定解释器下
+  完整SFT2、grid/latent WM、planner回归`114 passed, 1 skipped in 70.40s`，唯一skip是需GPU
+  的显式NCCL测试。W&B live max为51，故world8重试使用ID52和全新空输出；原ID52目录中的
+  已验证迁移数据保持原路径不变，正式cache/W&B/训练identity顺延为ID53。正式训练继续以
+  新smoke通过为前置。
 
 ## 待完成
 
-- 修复mixed terminal-next label collation并通过回归，从step15恢复完成单卡smoke；随后
-  运行2节点×4GPU smoke；通过后从
-  同一 migrated JSONL fresh 构建 ID52 全量 preprocessing cache。smoke cache 与正式
+- 用新ID、空输出和新W&B identity重跑4节点×2GPU world8 smoke；通过后从
+  同一 migrated JSONL fresh 构建 ID53 全量 preprocessing cache。smoke cache 与正式
   cache 不共用写路径。
 - smoke 通过后确定未占用 W&B ID、正式输出目录和实测耗时，启动 world-size 8 正式
   SFT2，并监控至少首个 optimizer step 和首个可恢复 checkpoint。
