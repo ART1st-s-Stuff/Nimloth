@@ -9,6 +9,7 @@ import pytest
 
 from experiments.training.rl.rollout_env import (
     parse_args,
+    summarize_eval_set_rollouts,
     validate_split,
     validate_trajectories,
 )
@@ -139,6 +140,41 @@ def test_env_collector_enforces_training_dataset() -> None:
             eval_sets=("base",),
             split="train",
         )
+
+
+def test_eval_collector_can_assign_the_same_seed_range_per_dataset() -> None:
+    collector = VAGENNavigationRolloutCollector(
+        None,
+        "http://env",
+        eval_sets=("base", "common_sense"),
+        split="eval",
+        seed_offset=5,
+        seed_per_eval_set=True,
+    )
+
+    assert [collector._next_episode_identity(index) for index in range(4)] == [
+        ("rl_base_000005", "base", 5),
+        ("rl_common_sense_000005", "common_sense", 5),
+        ("rl_base_000006", "base", 6),
+        ("rl_common_sense_000006", "common_sense", 6),
+    ]
+
+
+def test_rollout_metrics_report_overall_and_each_eval_set() -> None:
+    records = [_trajectory() for _ in range(4)]
+    records[0].success = True
+    records[2].success = True
+    records[0].reward = 10.0
+    records[2].reward = 10.0
+
+    metrics = summarize_eval_set_rollouts(
+        records,
+        ("base", "common_sense"),
+    )
+
+    assert metrics["overall"]["success_rate"] == 0.5
+    assert metrics["by_eval_set"]["base"]["success_rate"] == 1.0
+    assert metrics["by_eval_set"]["common_sense"]["success_rate"] == 0.0
 
 
 def test_complete_trajectory_schema_passes() -> None:

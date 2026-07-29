@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from itertools import product
 from typing import Any, Callable, Protocol
 
@@ -39,13 +40,46 @@ class WorldModelPlan:
     candidate_sequences: torch.Tensor
     candidate_scores: torch.Tensor
     root_action_scores: torch.Tensor
+    selected_action_index: int
+    candidate_visit_counts: torch.Tensor | None = None
+    root_visit_counts: torch.Tensor | None = None
+
+
+@dataclass
+class _MCTSNode:
+    """One deterministic latent state in the UCT tree."""
+
+    state: torch.Tensor
+    sequence: tuple[int, ...]
+    children: dict[int, "_MCTSNode"] = field(default_factory=dict)
+    visit_count: int = 0
+    value_sum: float = 0.0
+
+    @property
+    def mean_value(self) -> float:
+        if self.visit_count < 1:
+            raise RuntimeError("MCTS node has no backed-up value")
+        return self.value_sum / self.visit_count
+
+
+@dataclass
+class _MCTSLeafStats:
+    visit_count: int = 0
+    value_sum: float = 0.0
+
+    @property
+    def mean_value(self) -> float:
+        if self.visit_count < 1:
+            raise RuntimeError("MCTS leaf has no evaluation")
+        return self.value_sum / self.visit_count
 
 
 class WorldModelPlanner:
     """在 latent 空间搜索动作，不拥有也不调用 environment。
 
-    当前模型没有 reward/done head，因此搜索只使用叶节点的最大 action-value 作为
-    启发式 score。它不是环境 return 的替代品，也不会把各步 Q-value 错误累加。
+    当前模型没有 reward/done head，因此搜索只使用叶节点 action-value 作为启发式
+    score。greedy/exhaustive/beam 保留旧的 leaf max；MCTS 使用 SFT2 实际监督的
+    最后一条 simulated edge value。两者都不会把各步 MC return 错误累加。
     """
 
     def __init__(
@@ -55,21 +89,41 @@ class WorldModelPlanner:
         horizon: int,
         search_mode: str,
         beam_width: int | None = None,
+        mcts_num_simulations: int | None = None,
+        mcts_exploration_constant: float | None = None,
     ) -> None:
         if horizon < 1:
             raise ValueError(f"planning horizon must be positive, got {horizon}")
-        if search_mode not in {"greedy", "exhaustive", "beam"}:
+        if search_mode not in {"greedy", "exhaustive", "beam", "mcts"}:
             raise ValueError(
-                "planning search_mode must be greedy, exhaustive, or beam"
+                "planning search_mode must be greedy, exhaustive, beam, or mcts"
             )
         if search_mode == "beam" and (beam_width is None or beam_width < 1):
             raise ValueError("beam search requires a positive beam_width")
         if search_mode != "beam" and beam_width is not None:
             raise ValueError("beam_width is only valid for beam search")
+        if search_mode == "mcts":
+            if mcts_num_simulations is None or mcts_num_simulations < 1:
+                raise ValueError("MCTS requires a positive num_simulations")
+            if (
+                mcts_exploration_constant is None
+                or not math.isfinite(mcts_exploration_constant)
+                or mcts_exploration_constant < 0.0
+            ):
+                raise ValueError(
+                    "MCTS requires a finite non-negative exploration_constant"
+                )
+        elif (
+            mcts_num_simulations is not None
+            or mcts_exploration_constant is not None
+        ):
+            raise ValueError("MCTS parameters are only valid for mcts search")
         self.world_model = world_model
         self.horizon = int(horizon)
         self.search_mode = search_mode
         self.beam_width = beam_width
+        self.mcts_num_simulations = mcts_num_simulations
+        self.mcts_exploration_constant = mcts_exploration_constant
 
     def _score_sequences(
         self,
@@ -117,6 +171,162 @@ class WorldModelPlanner:
             if selected.numel() > 0:
                 root_scores[action_index] = selected.max()
         return root_scores
+
+    def _mcts_child_state(
+        self,
+        state: torch.Tensor,
+        action_index: int,
+    ) -> torch.Tensor:
+        """Advance one predicted step under the required H=1 SFT2 contract."""
+
+        action = torch.tensor(
+            [[action_index]],
+            dtype=torch.long,
+            device=state.device,
+        )
+        predicted = self.world_model.simulate_action_sequences(
+            state.unsqueeze(1),
+            torch.empty((1, 0), dtype=torch.long, device=state.device),
+            action,
+        )
+        return predicted[:, -1]
+
+    def _select_uct_child(self, node: _MCTSNode) -> _MCTSNode:
+        assert self.mcts_exploration_constant is not None
+        if node.visit_count < 1:
+            raise RuntimeError("cannot select from an unvisited MCTS node")
+        log_parent_visits = math.log(node.visit_count)
+
+        def uct_score(item: tuple[int, _MCTSNode]) -> tuple[float, int]:
+            action_index, child = item
+            if child.visit_count < 1:
+                raise RuntimeError("expanded MCTS child has no visit")
+            exploration = self.mcts_exploration_constant * math.sqrt(
+                log_parent_visits / child.visit_count
+            )
+            # Stable tie-break: the lower navigation action index wins.
+            return child.mean_value + exploration, -action_index
+
+        return max(node.children.items(), key=uct_score)[1]
+
+    def _plan_mcts(
+        self,
+        state_history: torch.Tensor,
+        previous_actions: torch.Tensor,
+        *,
+        action_count: int,
+    ) -> WorldModelPlan:
+        """Run deterministic UCT and back up the supervised SFT2 leaf value.
+
+        Every simulation reaches exactly ``horizon`` predicted transitions.  The
+        leaf is scored with the same quantity trained by SFT2 T-step value loss:
+        ``Q_tilde(predicted_state_K, final_simulated_action)``.  These MC-return
+        predictions are not accumulated across depth.
+        """
+
+        predictor = getattr(self.world_model.wm_predictor, "module", None)
+        predictor = predictor or self.world_model.wm_predictor
+        history_size = int(
+            getattr(getattr(predictor, "config", None), "history_size", 0)
+        )
+        if history_size != 1 or state_history.shape[1] != 1:
+            raise ValueError(
+                "MCTS evaluation requires SFT2 history_size=1 and one real state; "
+                f"checkpoint H={history_size}, input L={state_history.shape[1]}"
+            )
+        if previous_actions.shape != (1, 0):
+            raise ValueError("H=1 MCTS must not receive previous actions")
+        assert self.mcts_num_simulations is not None
+        if self.mcts_num_simulations < action_count:
+            raise ValueError(
+                "MCTS num_simulations must visit every root action at least once: "
+                f"simulations={self.mcts_num_simulations}, actions={action_count}"
+            )
+
+        root = _MCTSNode(state=state_history[:, -1], sequence=())
+        leaf_stats: dict[tuple[int, ...], _MCTSLeafStats] = {}
+        for _simulation in range(self.mcts_num_simulations):
+            node = root
+            path = [root]
+            while len(node.sequence) < self.horizon:
+                if len(node.children) < action_count:
+                    action_index = next(
+                        action
+                        for action in range(action_count)
+                        if action not in node.children
+                    )
+                    child = _MCTSNode(
+                        state=self._mcts_child_state(node.state, action_index),
+                        sequence=(*node.sequence, action_index),
+                    )
+                    node.children[action_index] = child
+                    node = child
+                else:
+                    node = self._select_uct_child(node)
+                path.append(node)
+
+            final_action = node.sequence[-1]
+            leaf_action_values = self.world_model.predict_action_values(node.state)
+            if leaf_action_values.shape != (1, action_count):
+                raise ValueError(
+                    "value head action count changed at the MCTS leaf"
+                )
+            leaf_value = float(leaf_action_values[0, final_action].item())
+            if not math.isfinite(leaf_value):
+                raise ValueError("MCTS leaf evaluation produced a non-finite value")
+
+            stats = leaf_stats.setdefault(node.sequence, _MCTSLeafStats())
+            stats.visit_count += 1
+            stats.value_sum += leaf_value
+            for visited in path:
+                visited.visit_count += 1
+                visited.value_sum += leaf_value
+
+        if len(root.children) != action_count:
+            raise RuntimeError("MCTS did not expand every root action")
+        root_visit_counts = torch.tensor(
+            [root.children[action].visit_count for action in range(action_count)],
+            dtype=torch.long,
+            device=state_history.device,
+        )
+        root_action_scores = torch.tensor(
+            [root.children[action].mean_value for action in range(action_count)],
+            dtype=torch.float32,
+            device=state_history.device,
+        )
+        selected_action_index = max(
+            range(action_count),
+            key=lambda action: (
+                int(root_visit_counts[action].item()),
+                float(root_action_scores[action].item()),
+                -action,
+            ),
+        )
+
+        sequences = tuple(sorted(leaf_stats))
+        candidate_sequences = torch.tensor(
+            sequences,
+            dtype=torch.long,
+            device=state_history.device,
+        )
+        candidate_scores = torch.tensor(
+            [leaf_stats[sequence].mean_value for sequence in sequences],
+            dtype=torch.float32,
+            device=state_history.device,
+        )
+        candidate_visit_counts = torch.tensor(
+            [leaf_stats[sequence].visit_count for sequence in sequences],
+            dtype=torch.long,
+            device=state_history.device,
+        )
+        return WorldModelPlan(
+            candidate_sequences=candidate_sequences,
+            candidate_scores=candidate_scores,
+            root_action_scores=root_action_scores,
+            selected_action_index=selected_action_index,
+            candidate_visit_counts=candidate_visit_counts,
+            root_visit_counts=root_visit_counts,
+        )
 
     def plan(
         self,
@@ -188,7 +398,7 @@ class WorldModelPlanner:
                 previous_actions,
                 sequences,
             )
-        else:
+        elif self.search_mode == "beam":
             assert self.beam_width is not None
             sequences = torch.empty(
                 (1, 0),
@@ -221,6 +431,14 @@ class WorldModelPlanner:
                 sequences = sequences[selected]
                 scores = scores[selected]
 
+        else:
+            return self._plan_mcts(
+                state_history,
+                previous_actions,
+                action_count=action_count,
+            )
+
+        selected_candidate = int(scores.argmax().item())
         return WorldModelPlan(
             candidate_sequences=sequences,
             candidate_scores=scores,
@@ -228,6 +446,9 @@ class WorldModelPlanner:
                 sequences,
                 scores,
                 action_count=action_count,
+            ),
+            selected_action_index=int(
+                sequences[selected_candidate, 0].item()
             ),
         )
 
@@ -246,6 +467,8 @@ class PlanningPolicy:
         horizon: int,
         search_mode: str,
         beam_width: int | None = None,
+        mcts_num_simulations: int | None = None,
+        mcts_exploration_constant: float | None = None,
         planner_device: torch.device,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
@@ -258,6 +481,8 @@ class PlanningPolicy:
             horizon=horizon,
             search_mode=search_mode,
             beam_width=beam_width,
+            mcts_num_simulations=mcts_num_simulations,
+            mcts_exploration_constant=mcts_exploration_constant,
         )
         self.planner_device = planner_device
         self._progress_callback = progress_callback
@@ -301,8 +526,7 @@ class PlanningPolicy:
                 device=state.device,
             )
             plan = self.planner.plan(state_history, previous_actions)
-            best_candidate = int(plan.candidate_scores.argmax().item())
-            action_index = int(plan.candidate_sequences[best_candidate, 0].item())
+            action_index = int(plan.selected_action_index)
             self._action_history.append(action_index)
         if self._progress_callback is not None:
             self._progress_callback("planner_done")
@@ -374,6 +598,24 @@ class PlanningPolicy:
             horizon=self.planner.horizon,
             search_mode=self.planner.search_mode,
             beam_width=self.planner.beam_width,
+            candidate_visit_counts=(
+                tuple(
+                    int(value)
+                    for value in plan.candidate_visit_counts.cpu().tolist()
+                )
+                if plan.candidate_visit_counts is not None
+                else None
+            ),
+            root_visit_counts=(
+                tuple(
+                    int(value)
+                    for value in plan.root_visit_counts.cpu().tolist()
+                )
+                if plan.root_visit_counts is not None
+                else None
+            ),
+            num_simulations=self.planner.mcts_num_simulations,
+            exploration_constant=self.planner.mcts_exploration_constant,
         )
         return PolicyDecision(
             action_index=action_index,

@@ -25,6 +25,7 @@ RL 只在真实 rollout 时用独立的 planning horizon 自回归预测多个�
 | `evaluate.py` | validation 与分布式指标聚合 |
 | `reporting.py` | CSV、W&B 与 epoch 摘要 |
 | `checkpoint.py` | SFT2 artifact、恢复状态与保存触发策略 |
+| `mcts_evaluation.py` | pre-RL MCTS评估所需的完整checkpoint、H/K和value语义门禁 |
 | `diagnosis/` | 不进入生产训练的 packed/KV 等价性诊断 |
 
 `SFT2Algorithm` 是普通 Python 算法对象，不注册参数，也不处理 processor、DDP、
@@ -66,6 +67,15 @@ SFT2 的下一状态监督分支同时冻结 Backbone 与共享 projector。proj
 target 参数或 WM EMA。
 
 SFT2 的 value 目标是完整 episode 上先计算、再切到 current step 的 Monte
-Carlo return。`training/common/value.py` 与 RL 共用同一个 objective：ValueHead 只
-回归实际执行动作的 MC return，并可选添加执行动作高于未执行动作的
-ranking 约束。
+Carlo return。`training/common/value.py` 与 RL 共用同一个基础objective；当前SFT2
+只回归实际执行动作的MC return，rank loss已关闭且未执行action slot没有直接loss。
+
+## Pre-RL MCTS rollout evaluation
+
+`experiments/training/sft2/eval_mcts_rollout.py`只接受epoch-complete的完整HF SFT2
+checkpoint。入口从`training_state.pt.training_invariants`读取`history_size`和
+`prediction_horizon=K`，要求DINO-grid、`history_size=1`和
+`predicted_rollout_executed_action_mc_v2`，随后每个真实environment step重新生成
+Qwen CoT/state并执行K-step UCT-MCTS。leaf evaluation严格使用
+`Q_tilde(predicted_state_K, final_simulated_action)`；各深度的MC return不相加。
+评估不会进入RL optimizer，也不会生成fresh-consumption manifest。

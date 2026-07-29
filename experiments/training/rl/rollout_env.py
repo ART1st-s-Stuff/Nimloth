@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from collections import Counter
@@ -46,6 +47,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     ap.add_argument("--split", choices=("train", "val", "test", "eval"), required=True)
     ap.add_argument("--seed-offset", type=int, default=1)
+    ap.add_argument(
+        "--seed-per-eval-set",
+        action="store_true",
+        help="Give every eval set the same independent seed range",
+    )
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.95)
     ap.add_argument(
@@ -77,10 +83,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--planning-horizon", type=int, default=None)
     ap.add_argument(
         "--planning-search-mode",
-        choices=("greedy", "exhaustive", "beam"),
+        choices=("greedy", "exhaustive", "beam", "mcts"),
         default=None,
     )
     ap.add_argument("--planning-beam-width", type=int, default=None)
+    ap.add_argument("--mcts-num-simulations", type=int, default=None)
+    ap.add_argument("--mcts-exploration-constant", type=float, default=None)
     ap.add_argument("--planner-device", default=None)
     ap.add_argument("--wm-checkpoint", type=Path, default=None)
     ap.add_argument("--state-proj-checkpoint", type=Path, default=None)
@@ -160,9 +168,30 @@ def validate_trajectories(records, *, expected_count: int | None = None) -> None
             raise RuntimeError(str(error)) from error
 
 
+def summarize_eval_set_rollouts(records, eval_sets: tuple[str, ...]) -> dict:
+    """按 collector 的无丢失 round-robin 顺序汇总真实 episode 指标。"""
+
+    from nimloth.training.rl.evaluation import summarize_rollouts
+
+    if not eval_sets:
+        raise ValueError("rollout metrics require at least one eval_set")
+    grouped = {eval_set: [] for eval_set in eval_sets}
+    for episode_index, record in enumerate(records):
+        grouped[eval_sets[episode_index % len(eval_sets)]].append(record)
+    return {
+        "overall": summarize_rollouts(records),
+        "by_eval_set": {
+            eval_set: summarize_rollouts(items)
+            for eval_set, items in grouped.items()
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     eval_sets = tuple(args.eval_sets or (args.eval_set,))
+    if len(set(eval_sets)) != len(eval_sets):
+        raise ValueError(f"duplicate eval_sets are not allowed: {eval_sets}")
     for eval_set in eval_sets:
         validate_split(eval_set, args.split)
     if not torch.cuda.is_available():
@@ -199,6 +228,23 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("beam planner requires a positive beam width")
         elif args.planning_beam_width is not None:
             raise ValueError("planning_beam_width is only valid for beam search")
+        if args.planning_search_mode == "mcts":
+            if args.mcts_num_simulations is None or args.mcts_num_simulations < 1:
+                raise ValueError("MCTS rollout requires positive num_simulations")
+            if (
+                args.mcts_exploration_constant is None
+                or not math.isfinite(args.mcts_exploration_constant)
+                or args.mcts_exploration_constant < 0.0
+            ):
+                raise ValueError(
+                    "MCTS rollout requires a finite non-negative "
+                    "exploration_constant"
+                )
+        elif (
+            args.mcts_num_simulations is not None
+            or args.mcts_exploration_constant is not None
+        ):
+            raise ValueError("MCTS arguments require --planning-search-mode mcts")
     elif any(
         value is not None
         for value in (
@@ -209,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
             args.wm_checkpoint,
             args.state_proj_checkpoint,
             args.value_head_checkpoint,
+            args.mcts_num_simulations,
+            args.mcts_exploration_constant,
         )
     ):
         raise ValueError("planner arguments require --planner-enabled")
@@ -297,6 +345,8 @@ def main(argv: list[str] | None = None) -> int:
                 horizon=args.planning_horizon,
                 search_mode=args.planning_search_mode,
                 beam_width=args.planning_beam_width,
+                mcts_num_simulations=args.mcts_num_simulations,
+                mcts_exploration_constant=args.mcts_exploration_constant,
                 planner_device=planner_device,
                 progress_callback=report_policy_progress,
             )
@@ -334,6 +384,7 @@ def main(argv: list[str] | None = None) -> int:
         eval_sets=eval_sets,
         split=args.split,
         latent_token_count=latent_token_count,
+        seed_per_eval_set=args.seed_per_eval_set,
     )
     trajectories = collector.collect(
         num_episodes=args.num_episodes,
@@ -364,21 +415,43 @@ def main(argv: list[str] | None = None) -> int:
         for reason in trajectory.policy_finish_reasons
         if reason is not None
     )
-    print(json.dumps({
+    metrics = summarize_eval_set_rollouts(trajectories, eval_sets)
+    summary_path = args.output_dir / "rollout_summary.json"
+    summary = {
         "status": "ALL_OK",
         "num_trajectories": len(trajectories),
         "num_transitions": sum(t.num_steps for t in trajectories),
         "jsonl": str(args.output_dir / "trajectories.jsonl"),
+        "summary_json": str(summary_path),
         "fresh_manifest": str(manifest_path) if manifest_path else None,
         "processor_pixel_bounds": list(qwen_processor_pixel_bounds(processor)),
         "eval_sets": eval_sets,
+        "seed_per_eval_set": args.seed_per_eval_set,
+        "metrics": metrics,
+        "planning": (
+            {
+                "history_size": int(policy.history_size),
+                "horizon": args.planning_horizon,
+                "search_mode": args.planning_search_mode,
+                "beam_width": args.planning_beam_width,
+                "mcts_num_simulations": args.mcts_num_simulations,
+                "mcts_exploration_constant": args.mcts_exploration_constant,
+            }
+            if args.planner_enabled
+            else None
+        ),
         "reasoning_truncated": sum(
             int(value)
             for trajectory in trajectories
             for value in trajectory.policy_reasoning_truncated
         ),
         "reasoning_finish_reasons": dict(sorted(finish_reasons.items())),
-    }), flush=True)
+    }
+    summary_path.write_text(
+        json.dumps(summary, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(summary), flush=True)
     return 0
 
 

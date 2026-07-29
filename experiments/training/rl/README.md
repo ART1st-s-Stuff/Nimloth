@@ -7,7 +7,7 @@
 | 文件 | 用途 |
 |------|------|
 | `smoke_test.slurm` | 单 GPU smoke test：加载 SFT2 checkpoint，synthetic data 跑 1 步训练 |
-| `rollout_env.py` | 独立 rollout 脚本：复用 Nimloth action policy，生成完整 RL JSONL（不参与训练） |
+| `rollout_env.py` | 独立 rollout 脚本：复用 Nimloth action/planning policy，生成完整JSONL及逐eval-set episode指标（不参与训练） |
 | `run_e2e_smoke.sh` | 训练 split rollout → 两卡 FSDP step → resume step 的端到端 smoke |
 | `run_vllm_online_ppo_smoke.sh` | config-sized vLLM fresh rollout → 指纹门槛 → distributed RL step |
 | `run_vllm_online_ppo_slurm.sh` | 按 RL config 在异构多节点 allocation 上编排 Ray-vLLM 与 RL trainer |
@@ -51,6 +51,11 @@ python -m nimloth.training.rl.cli \
 ```
 
 `--jsonl-sources` 接受一个或多个 JSONL 文件或目录（目录下递归搜索 `*.jsonl` / `*.jsonl.gz`）。也可以在 config 中设置 `rollout.jsonl_sources`。训练时轮转消费所有轨迹；数据耗尽时自动回到开头（loop）。
+
+planner rollout支持`greedy/exhaustive/beam/mcts`。MCTS必须显式传入
+`--mcts-num-simulations`和`--mcts-exploration-constant`；`--seed-per-eval-set`
+让多个held-out dataset各自使用同一seed区间。SFT2完成后、RL之前的H=1/K自动绑定
+入口位于`experiments/training/sft2/eval_mcts_rollout.py`。
 
 ### 多 GPU online RL
 

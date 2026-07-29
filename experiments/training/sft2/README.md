@@ -21,6 +21,7 @@ code lives in `src/nimloth/training/sft2/`.
 | `resolve_sft1_init_for_sft2.sh` | Resolve/merge the SFT1 initialization checkpoint |
 | `upload_sft2_wandb_from_csv.py` | Upload training CSV history |
 | `upload_sft2_eval_wandb.py` | Upload actual greedy-rollout evaluation results |
+| `eval_mcts_rollout.py` | 从完整SFT2 checkpoint自动读取H=1/K并执行真实pre-RL MCTS成功率评估 |
 
 Configuration is owned by `configs/training/sft2/`. Unknown YAML fields fail
 at startup. Production accepts only `trajectory_online_cache`: complete
@@ -61,6 +62,27 @@ Static JSONL success-label prevalence can be inspected with
 `diagnosis/report_dataset_success.py`. It is a dataset statistic, not a model
 metric and never selects SFT2 checkpoints. Model selection uses `val_wm_mse`;
 actual agent quality must be measured by a rollout evaluator.
+
+当前最终SFT2评估入口为`eval_mcts_rollout.py`。影响结果的dataset/split、每类episode数、
+seed、CoT sampling、MCTS simulations和UCT exploration constant都必须显式提供；每个
+eval-set使用相同且独立的seed区间。示例：
+
+```bash
+python experiments/training/sft2/eval_mcts_rollout.py \
+  --sft2-checkpoint /path/to/sft2/final \
+  --env-url http://127.0.0.1:8000 \
+  --output-dir /path/to/new/eval-output \
+  --eval-sets base common_sense complex_instruction visual_appearance long_horizon \
+  --split test --episodes-per-eval-set 60 --seed-offset 1 --max-steps 20 \
+  --temperature 0.7 --top-p 0.95 --max-response-tokens 512 \
+  --num-simulations 100 --exploration-constant 1.0 \
+  --tensor-parallel-size 4 --planner-device cuda:0
+```
+
+这段命令只是参数示例，不是已批准的正式实验配置；启动前仍须按实验规则确认资源、
+checkpoint、split和输出目录。
+成功率、平均reward和平均步数会同时写入输出目录的`rollout_summary.json`，并按
+overall及每个eval-set分别汇总。
 
 Outputs go to `outputs/experiments/training/sft2/<date>/<experiment>/`, with
 Slurm logs under `outputs/experiments/training/sft2/slurm/`.

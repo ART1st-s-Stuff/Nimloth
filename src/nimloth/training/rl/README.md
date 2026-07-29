@@ -236,13 +236,16 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   真实CoT；worker extension从同一次多模态forward截取latent hidden，不加载第二份
   HF Qwen。每次搜索只执行首动作，下一步用真实observation重新规划；terminal
   observation仍额外生成真实CoT/hidden作为最后一个固定state target。
-- planner 当前用叶节点最大 action-value 作为搜索启发式；模型尚无 reward/done
-  head，因此不会把中间 Q-value 相加并伪装成 model-predicted return。
-- planner支持`greedy`、`exhaustive`和`beam`。当前首轮方案固定为`greedy`。
+- planner只用叶节点action-value作为搜索启发式；模型尚无reward/done head，
+  因此不会把中间MC-return prediction相加并伪装成model-predicted return。
+- planner支持`greedy`、`exhaustive`、`beam`和`mcts`。当前RL首轮方案仍固定为
+  `greedy`；MCTS首先用于SFT2完成后、RL开始前的独立成功率评估。
   `exhaustive`批量模拟全部
   `action_count ** horizon`条latent动作序列；`beam`逐层批量扩展并按叶节点启发式裁剪；
-  其他模式只保留为后续对照能力。trajectory在每个真实step保存最终候选序列、
-  叶节点评分和按首动作聚合的root score。历史H=2
+  H=1 MCTS以SFT2的`prediction_horizon=K`为树深，用UCT选择节点，并以
+  `Q_tilde(predicted_state_K, final_simulated_action)`做leaf evaluation。trajectory
+  在每个真实step保存候选序列、叶值和root score；MCTS还保存candidate/root visits、
+  simulation数和exploration常数。历史H=2
   exhaustive smoke仅是旧实验事实，不是后续默认方案。
 - planner behavior是首动作上的确定性分布。所有planner response token的PPO mask均关闭；
   action token不参加蒸馏、PPO或reference KL。Qwen的训练信号来自可微的value/WM state路径。

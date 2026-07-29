@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from nimloth.agent import (
@@ -173,6 +174,95 @@ def test_exhaustive_lookahead_can_reverse_the_root_greedy_action() -> None:
     assert exhaustive_action == len(NAVIGATION_ACTION_SPACE) - 1
 
 
+class _MCTSIncomingActionPredictor(torch.nn.Module):
+    def __init__(self, *, history_size: int = 1) -> None:
+        super().__init__()
+        self.config = type(
+            "PredictorConfig", (), {"history_size": history_size}
+        )()
+
+    def forward(
+        self,
+        states: torch.Tensor,
+        actions: torch.Tensor,
+    ) -> torch.Tensor:
+        action = actions.to(states.dtype)
+        first_action = torch.where(
+            states[..., 0] == 0,
+            action,
+            states[..., 1],
+        )
+        return torch.stack(
+            (states[..., 0] + 1, first_action, action),
+            dim=-1,
+        )
+
+
+class _MCTSIncomingActionValueHead(torch.nn.Module):
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        action_count = len(NAVIGATION_ACTION_SPACE)
+        values = state.new_full((state.shape[0], action_count), 1000.0)
+        incoming_action = state[:, 2].long().unsqueeze(-1)
+        # Only this incoming-action slot follows the SFT2 executed-action target.
+        return values.scatter(1, incoming_action, state[:, 1:2])
+
+
+class _ZeroMCTSProjector(torch.nn.Module):
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return hidden.new_zeros((hidden.shape[0], 3))
+
+
+def test_mcts_uses_h1_k_step_incoming_action_leaf_value() -> None:
+    world_model = WorldModel(
+        state_proj=torch.nn.Identity(),
+        wm_predictor=_MCTSIncomingActionPredictor(),
+        value_head=_MCTSIncomingActionValueHead(),
+    )
+    action_count = len(NAVIGATION_ACTION_SPACE)
+    plan = WorldModelPlanner(
+        world_model,
+        horizon=4,
+        search_mode="mcts",
+        mcts_num_simulations=64,
+        mcts_exploration_constant=1.0,
+    ).plan(
+        torch.tensor([[[0.0, 0.0, 0.0]]]),
+        torch.empty((1, 0), dtype=torch.long),
+    )
+
+    assert plan.selected_action_index == action_count - 1
+    assert plan.candidate_sequences.shape[1] == 4
+    assert plan.candidate_visit_counts is not None
+    assert int(plan.candidate_visit_counts.sum()) == 64
+    assert plan.root_visit_counts is not None
+    assert int(plan.root_visit_counts.sum()) == 64
+    torch.testing.assert_close(
+        plan.root_action_scores,
+        torch.arange(action_count, dtype=torch.float32),
+    )
+
+
+def test_mcts_rejects_non_h1_predictor() -> None:
+    world_model = WorldModel(
+        state_proj=torch.nn.Identity(),
+        wm_predictor=_MCTSIncomingActionPredictor(history_size=2),
+        value_head=_MCTSIncomingActionValueHead(),
+    )
+    planner = WorldModelPlanner(
+        world_model,
+        horizon=4,
+        search_mode="mcts",
+        mcts_num_simulations=8,
+        mcts_exploration_constant=1.0,
+    )
+
+    with pytest.raises(ValueError, match="history_size=1"):
+        planner.plan(
+            torch.tensor([[[0.0, 0.0, 0.0]]]),
+            torch.empty((1, 0), dtype=torch.long),
+        )
+
+
 def test_beam_planner_expands_multiple_candidates_at_each_depth() -> None:
     world_model, predictor = _planning_world_model()
     planner = WorldModelPlanner(
@@ -280,6 +370,40 @@ def test_planning_policy_uses_batched_lookahead_and_excludes_action_from_ppo() -
     assert f"<|action_({decision.action_index})|>" in decision.response
     assert predictor.state_contexts[0].shape[1] == 1
     assert stages == ["planner_start", "planner_done"]
+
+
+def test_planning_policy_records_mcts_visits_and_executes_selected_root() -> None:
+    world_model = WorldModel(
+        state_proj=_ZeroMCTSProjector(),
+        wm_predictor=_MCTSIncomingActionPredictor(),
+        value_head=_MCTSIncomingActionValueHead(),
+    )
+    policy = PlanningPolicy(
+        turn_policy=_TurnPolicy(),
+        world_model=world_model,
+        horizon=2,
+        search_mode="mcts",
+        mcts_num_simulations=16,
+        mcts_exploration_constant=1.0,
+        planner_device=torch.device("cpu"),
+    )
+    prompt = AgentPrompt(
+        messages=({"role": "assistant", "content": "<think>"},),
+        images=(),
+        template=PromptTemplateSpec("test", "v1"),
+    )
+
+    decision = policy.select_action(prompt)
+
+    trace = decision.planner_trace
+    assert trace is not None
+    assert trace.search_mode == "mcts"
+    assert trace.num_simulations == 16
+    assert trace.root_visit_counts is not None
+    assert sum(trace.root_visit_counts) == 16
+    assert trace.candidate_visit_counts is not None
+    assert sum(trace.candidate_visit_counts) == 16
+    assert decision.action_index == len(NAVIGATION_ACTION_SPACE) - 1
 
 
 def test_planning_policy_replans_every_step_from_real_qwen_state() -> None:

@@ -277,6 +277,34 @@ def test_planner_probabilities_round_trip_through_strict_json(tmp_path: Path) ->
         RolloutTrajectory.from_record(legacy_record)
 
 
+def test_mcts_trace_roundtrips_visit_and_value_statistics() -> None:
+    action_count = len(NAVIGATION_ACTION_SPACE)
+    trajectory = _make_traj("planner_mcts", num_steps=1)
+    trajectory.planner_policy_traces = [
+        PlannerPolicyTrace(
+            candidate_sequences=tuple((action,) for action in range(action_count)),
+            candidate_scores=tuple(float(action) for action in range(action_count)),
+            root_action_scores=tuple(float(action) for action in range(action_count)),
+            executed_action_index=action_count - 1,
+            horizon=1,
+            search_mode="mcts",
+            candidate_visit_counts=(1,) * action_count,
+            root_visit_counts=(1,) * action_count,
+            num_simulations=action_count,
+            exploration_constant=1.0,
+        )
+    ]
+
+    restored = RolloutTrajectory.from_record(trajectory.to_record())
+    trace = restored.planner_policy_traces[0]
+
+    assert trace.search_mode == "mcts"
+    assert trace.root_visit_counts == (1,) * action_count
+    assert trace.candidate_visit_counts == (1,) * action_count
+    assert trace.num_simulations == action_count
+    assert trace.executed_action_index == action_count - 1
+
+
 def test_failed_serialization_does_not_replace_existing_jsonl(tmp_path: Path) -> None:
     jsonl_path = tmp_path / "trajectories.jsonl"
     jsonl_path.write_text("existing\n", encoding="utf-8")

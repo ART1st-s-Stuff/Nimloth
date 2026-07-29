@@ -3005,3 +3005,20 @@
 - 重连后集群查询显示normal空闲20/48 GPU、preempt空闲11/32 GPU，当前用户无Slurm
   任务。尚未提交cache续建或GPU smoke；正式任务仍需按实验启动规则记录精确commit、
   W&B递增ID、输出目录、2节点×4 GPU资源与实测时间。
+
+## 2026-07-29：新增SFT2完成后、RL前的H=1/K步MCTS真实rollout评估
+
+- 新增独立入口`experiments/training/sft2/eval_mcts_rollout.py`：从epoch-complete完整
+  SFT2 checkpoint自动读取`history_size=1`和`prediction_horizon=K`，严格要求
+  DINO-grid及`predicted_rollout_executed_action_mc_v2`，并校验WM与ValueHead动作维度。
+- 每个真实environment step都重新生成当前Qwen CoT/state，从唯一真实state执行K步
+  UCT-MCTS，只执行visit count优先、backed-up mean次优所选的根动作；候选尾部不进入
+  environment，下一步使用真实observation重新规划。
+- MCTS leaf严格读取SFT2实际受监督的
+  `Q_tilde(predicted_state_K, final_simulated_action)`；不读取未执行slot，也不累加多个
+  深度的MC-return prediction。simulation数和exploration常数必须由评估命令显式给出。
+- rollout trace新增candidate/root visit count、backed-up mean和MCTS参数；collector支持
+  多held-out dataset使用相同独立seed区间。输出同时保存overall及逐dataset的
+  `success_rate/avg_reward/avg_steps`到`rollout_summary.json`。
+- Python 3.13完整相关CPU回归为`271 passed, 1 skipped, 1 warning`；`py_compile`和
+  `git diff --check`通过。尚未运行真实GPU/vLLM/VAGEN评估，因此当前没有pre-RL成功率。

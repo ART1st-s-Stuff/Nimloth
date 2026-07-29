@@ -36,16 +36,20 @@ latent hidden。禁止用固定 thought 补齐没有运行 Qwen 的中间 state�
 
 `PlanningPolicy` 在每个environment step都让Qwen对当前真实observation生成CoT和
 state，再从最多`history_size`个真实state/action出发搜索长度为
-`planning.horizon`的候选动作序列。planner选择叶节点value最高的候选，只把它的
-首动作交给environment。候选尾部只用于搜索，永远不直接执行；下一步拿到真实
+`planning.horizon`的候选动作序列。greedy/exhaustive/beam按候选叶值选择；MCTS
+按UCT visit count和backed-up leaf mean选择根动作。所有模式只把选中的首动作交给
+environment。候选尾部只用于搜索，永远不直接执行；下一步拿到真实
 observation后重新运行Qwen并重新规划。
 
 环境动作由WM+ValueHead actor决定。planner保存确定性的行为分布和search trace，
 但不保存Qwen action prior，不对Qwen action logits做蒸馏或PPO。Qwen只通过
 WM/ValueHead的可微state路径接收梯度。
 
-当前 WM 没有 reward/done head，因此search明确使用叶节点最大 action-value
-作为启发式 score，不逐步累加 Q-value，也不声称该 score 是预测 return。
+当前 WM 没有 reward/done head，因此search只使用叶节点action-value启发式，
+不逐步累加MC-return prediction。greedy/exhaustive/beam保留leaf max；H=1/K-step
+SFT2 MCTS使用训练时实际受监督的
+`Q_tilde(predicted_state_K, final_simulated_action)`作为leaf evaluation。MCTS trace
+额外保存candidate/root visits、backed-up mean、simulation数和UCT exploration常数。
 
 ## Episode 契约
 

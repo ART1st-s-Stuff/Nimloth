@@ -41,6 +41,7 @@ class VAGENNavigationRolloutCollector:
         split: str = "eval",
         agent_config: AgentConfig | None = None,
         latent_token_count: int = 1,
+        seed_per_eval_set: bool = False,
     ) -> None:
         if not eval_sets:
             raise ValueError("rollout collector requires at least one eval_set")
@@ -51,6 +52,10 @@ class VAGENNavigationRolloutCollector:
             )
         self._env_url = env_url.rstrip("/")
         self._episode_counter = seed_offset
+        self._seed_per_eval_set = bool(seed_per_eval_set)
+        self._eval_set_counters = {
+            eval_set: int(seed_offset) for eval_set in eval_sets
+        }
         self._temperature = temperature
         self._top_p = top_p
         self._eval_sets = eval_sets
@@ -59,6 +64,18 @@ class VAGENNavigationRolloutCollector:
         self._client: Any | None = None
         self._policy = policy
         self._latent_token_count = int(latent_token_count)
+
+    def _next_episode_identity(self, episode_index: int) -> tuple[str, str, int]:
+        eval_set = self._eval_sets[episode_index % len(self._eval_sets)]
+        if self._seed_per_eval_set:
+            seed = self._eval_set_counters[eval_set]
+            self._eval_set_counters[eval_set] += 1
+            episode_id = f"rl_{eval_set}_{seed:06d}"
+        else:
+            seed = self._episode_counter
+            self._episode_counter += 1
+            episode_id = f"rl_{seed:06d}"
+        return episode_id, eval_set, seed
 
     def bind_policy(
         self,
@@ -105,10 +122,7 @@ class VAGENNavigationRolloutCollector:
 
         trajectories: list[RolloutTrajectory] = []
         for episode_index in range(num_episodes):
-            seed = self._episode_counter
-            self._episode_counter += 1
-            episode_id = f"rl_{seed:06d}"
-            eval_set = self._eval_sets[episode_index % len(self._eval_sets)]
+            episode_id, eval_set, seed = self._next_episode_identity(episode_index)
             started_at = time.monotonic()
             self._log(rl_ep=episode_index, id=episode_id, eval_set=eval_set)
 

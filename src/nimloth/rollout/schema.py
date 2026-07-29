@@ -60,8 +60,14 @@ def _planner_trace_from_record(raw: dict[str, Any]) -> PlannerPolicyTrace:
         "search_mode",
         "beam_width",
     }
+    mcts_fields = {
+        "candidate_visit_counts",
+        "root_visit_counts",
+        "num_simulations",
+        "exploration_constant",
+    }
     actual_fields = set(raw)
-    if actual_fields != required_fields:
+    if actual_fields not in (required_fields, required_fields | mcts_fields):
         legacy_fields = {
             "action_training",
             "behavior_action_log_probs",
@@ -74,8 +80,13 @@ def _planner_trace_from_record(raw: dict[str, Any]) -> PlannerPolicyTrace:
                 "legacy planner trace cannot be loaded by receding-horizon "
                 "training; recollect the trajectory"
             )
-        missing = sorted(required_fields - actual_fields)
-        unknown = sorted(actual_fields - required_fields)
+        expected_fields = (
+            required_fields | mcts_fields
+            if raw.get("search_mode") == "mcts"
+            else required_fields
+        )
+        missing = sorted(expected_fields - actual_fields)
+        unknown = sorted(actual_fields - expected_fields)
         raise ValueError(
             "planner trace fields do not match the current schema: "
             f"missing={missing}, unknown={unknown}"
@@ -92,6 +103,26 @@ def _planner_trace_from_record(raw: dict[str, Any]) -> PlannerPolicyTrace:
         horizon=int(raw["horizon"]),
         search_mode=str(raw["search_mode"]),
         beam_width=int(beam_width) if beam_width is not None else None,
+        candidate_visit_counts=(
+            tuple(int(value) for value in raw["candidate_visit_counts"])
+            if raw.get("candidate_visit_counts") is not None
+            else None
+        ),
+        root_visit_counts=(
+            tuple(int(value) for value in raw["root_visit_counts"])
+            if raw.get("root_visit_counts") is not None
+            else None
+        ),
+        num_simulations=(
+            int(raw["num_simulations"])
+            if raw.get("num_simulations") is not None
+            else None
+        ),
+        exploration_constant=(
+            float(raw["exploration_constant"])
+            if raw.get("exploration_constant") is not None
+            else None
+        ),
     )
 
 
@@ -409,6 +440,18 @@ class RolloutTrajectory:
                     "horizon": trace.horizon,
                     "search_mode": trace.search_mode,
                     "beam_width": trace.beam_width,
+                    "candidate_visit_counts": (
+                        list(trace.candidate_visit_counts)
+                        if trace.candidate_visit_counts is not None
+                        else None
+                    ),
+                    "root_visit_counts": (
+                        list(trace.root_visit_counts)
+                        if trace.root_visit_counts is not None
+                        else None
+                    ),
+                    "num_simulations": trace.num_simulations,
+                    "exploration_constant": trace.exploration_constant,
                 }
                 for trace in self.planner_policy_traces
             ],

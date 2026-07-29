@@ -111,6 +111,10 @@ class PlannerPolicyTrace:
     horizon: int
     search_mode: str
     beam_width: int | None = None
+    candidate_visit_counts: tuple[int, ...] | None = None
+    root_visit_counts: tuple[int, ...] | None = None
+    num_simulations: int | None = None
+    exploration_constant: float | None = None
 
     def __post_init__(self) -> None:
         action_count = len(self.root_action_scores)
@@ -118,15 +122,39 @@ class PlannerPolicyTrace:
             raise ValueError("planner trace requires at least two actions")
         if self.horizon < 1:
             raise ValueError("planner trace horizon must be positive")
-        if self.search_mode not in {"greedy", "exhaustive", "beam"}:
+        if self.search_mode not in {"greedy", "exhaustive", "beam", "mcts"}:
             raise ValueError(
-                "planner trace search_mode must be greedy, exhaustive, or beam"
+                "planner trace search_mode must be greedy, exhaustive, beam, or mcts"
             )
         if self.search_mode == "beam":
             if self.beam_width is None or self.beam_width < 1:
                 raise ValueError("beam planner trace requires a positive beam_width")
         elif self.beam_width is not None:
             raise ValueError("beam_width is only valid for beam planner traces")
+        mcts_fields = (
+            self.candidate_visit_counts,
+            self.root_visit_counts,
+            self.num_simulations,
+            self.exploration_constant,
+        )
+        if self.search_mode == "mcts":
+            if any(value is None for value in mcts_fields):
+                raise ValueError("MCTS planner trace requires all MCTS statistics")
+            assert self.num_simulations is not None
+            assert self.exploration_constant is not None
+            if self.num_simulations < action_count:
+                raise ValueError(
+                    "MCTS planner trace must visit every root action"
+                )
+            if (
+                not math.isfinite(self.exploration_constant)
+                or self.exploration_constant < 0.0
+            ):
+                raise ValueError(
+                    "MCTS exploration_constant must be finite and non-negative"
+                )
+        elif any(value is not None for value in mcts_fields):
+            raise ValueError("MCTS statistics are only valid for MCTS traces")
         if len(self.candidate_sequences) != len(self.candidate_scores):
             raise ValueError("planner candidate sequences and scores must align")
         if not self.candidate_sequences:
@@ -163,27 +191,103 @@ class PlannerPolicyTrace:
                 "planner root scores require one finite-or-negative-infinity value "
                 "per action"
             )
-        expected_root_scores = [float("-inf")] * action_count
-        for sequence, score in zip(
+        if self.search_mode == "mcts":
+            self._validate_mcts_statistics(action_count)
+        else:
+            expected_root_scores = [float("-inf")] * action_count
+            for sequence, score in zip(
+                self.candidate_sequences,
+                self.candidate_scores,
+                strict=True,
+            ):
+                expected_root_scores[sequence[0]] = max(
+                    expected_root_scores[sequence[0]],
+                    score,
+                )
+            if tuple(expected_root_scores) != self.root_action_scores:
+                raise ValueError("planner root scores do not match candidate scores")
+            if self.executed_action_index != self.selected_candidate_sequence[0]:
+                raise ValueError(
+                    "planner must execute the best candidate's first action"
+                )
+
+    def _validate_mcts_statistics(self, action_count: int) -> None:
+        assert self.candidate_visit_counts is not None
+        assert self.root_visit_counts is not None
+        assert self.num_simulations is not None
+        if len(self.candidate_visit_counts) != len(self.candidate_sequences):
+            raise ValueError("MCTS candidate visit counts must align with candidates")
+        if any(count < 1 for count in self.candidate_visit_counts):
+            raise ValueError("MCTS candidate visit counts must be positive")
+        if sum(self.candidate_visit_counts) != self.num_simulations:
+            raise ValueError("MCTS candidate visits must sum to num_simulations")
+        if len(self.root_visit_counts) != action_count or any(
+            count < 1 for count in self.root_visit_counts
+        ):
+            raise ValueError(
+                "MCTS root visit counts require one positive count per action"
+            )
+        if sum(self.root_visit_counts) != self.num_simulations:
+            raise ValueError("MCTS root visits must sum to num_simulations")
+
+        expected_root_visits = [0] * action_count
+        expected_root_value_sums = [0.0] * action_count
+        for sequence, score, count in zip(
             self.candidate_sequences,
             self.candidate_scores,
+            self.candidate_visit_counts,
             strict=True,
         ):
-            expected_root_scores[sequence[0]] = max(
-                expected_root_scores[sequence[0]],
-                score,
+            root_action = sequence[0]
+            expected_root_visits[root_action] += count
+            expected_root_value_sums[root_action] += score * count
+        if tuple(expected_root_visits) != self.root_visit_counts:
+            raise ValueError("MCTS root visits do not match candidate visits")
+        expected_root_scores = tuple(
+            value_sum / count
+            for value_sum, count in zip(
+                expected_root_value_sums,
+                expected_root_visits,
+                strict=True,
             )
-        if tuple(expected_root_scores) != self.root_action_scores:
-            raise ValueError("planner root scores do not match candidate scores")
-        if self.executed_action_index != self.selected_candidate_sequence[0]:
+        )
+        if any(
+            not math.isclose(actual, expected, rel_tol=1e-5, abs_tol=1e-6)
+            for actual, expected in zip(
+                self.root_action_scores,
+                expected_root_scores,
+                strict=True,
+            )
+        ):
+            raise ValueError("MCTS root scores do not match backed-up candidate values")
+        selected_action = max(
+            range(action_count),
+            key=lambda action: (
+                self.root_visit_counts[action],
+                self.root_action_scores[action],
+                -action,
+            ),
+        )
+        if self.executed_action_index != selected_action:
             raise ValueError(
-                "planner must execute the best candidate's first action"
+                "MCTS must execute the root action selected by visits and value"
             )
 
     @property
     def selected_candidate_sequence(self) -> tuple[int, ...]:
         """Return the candidate selected by the planner's stable argmax rule."""
 
+        if self.search_mode == "mcts":
+            candidates = [
+                index
+                for index, sequence in enumerate(self.candidate_sequences)
+                if sequence[0] == self.executed_action_index
+            ]
+            best_candidate = max(
+                candidates,
+                key=lambda index: (self.candidate_scores[index], -index),
+            )
+            return self.candidate_sequences[best_candidate]
         best_candidate = max(
             range(len(self.candidate_scores)),
             key=self.candidate_scores.__getitem__,
