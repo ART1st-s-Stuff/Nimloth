@@ -113,8 +113,8 @@ step从H=1的当前Qwen latent state运行K=4 MCTS，只执行胜出根动作的
   AI2-THOR Controller，再选择通过的卡给环境；下一步需恢复逐卡筛选，同时把判定从“能
   reset/有尺寸”加强为“真实frame有非零动态范围”，然后才允许Qwen/MCTS启动。
 - 逐卡render probe与物理卡固定修复已提交`c3461064`，远端exact回归`17 passed`。ID62/
-  job `496893`在`preempt/dgx-44`取得2 GPU/40 CPU；两卡直接probe均在约12秒返回动态
-  范围246的真实frame，VAGEN create/reset/close prewarm在4.355秒返回动态范围255，
+  job `496893`在`preempt/dgx-44`取得2 GPU/40 CPU；两个直接probe子进程均在约12秒返回
+  动态范围246的真实frame，VAGEN create/reset/close prewarm在4.355秒返回动态范围255，
   随后才启动Qwen worker。审计probe日志同时发现Slurm把allocation内GPU重编号为0/1，
   在各子进程里改`CUDA_VISIBLE_DEVICES`但固定`gpu_device=0`会重复probe ordinal 0；本次
   选择的ordinal 0已实际通过，不影响ID62有效性，但正式任务前已进一步改为保留完整
