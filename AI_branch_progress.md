@@ -97,6 +97,17 @@
   identity重跑与正式拓扑一致的world8 smoke。W&B live max为51，因此重试使用ID52；原先
   预留ID52的迁移数据目录继续作为不可变数据源，正式cache/训练identity顺延为ID53。新smoke
   通过前正式训练仍blocked。
+- ID52 world-size-8 smoke 已通过。精确代码`30e5e4f0`；normal hold `495566`在
+  `dgx-[14,18,29,54]`以4节点×2 H800运行，完整cgroup/rank/port gate通过。核心step
+  `495566.1`以`COMPLETED 0:0`运行5分57秒，完成3个finite optimizer steps、validation、
+  `epoch_001/best/final`完整checkpoint与`SFT2_DONE`，随后watcher释放全部8卡。末步train
+  WM/DINO/value/SIGReg为`1.175624/1.652063/0.356775/2.562645`；validation
+  WM/DINO/value为`1.270767/1.604670/0.271709`。每步均记录H=1/T=4。global SIGReg
+  batch平均`7.75/5.875/5.0`精确对应114个有效window与22个distributed sampler padding，
+  所有SIGReg调用的全局有效样本数均至少5且无skip。W&B `wut6xqhg`为`finished`。独立CPU
+  validator `495571`以`COMPLETED 0:0`fresh-load完整Qwen、optimizer、EMA、8个rank history
+  cache、H1 WM和ValueHead，并得到finite的`(1,4,16,1024)` rollout及`(1,4,8)` value。
+  分布式门禁已解除；下一步从既有已验证migrated JSONL fresh构建ID53正式全量cache。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 

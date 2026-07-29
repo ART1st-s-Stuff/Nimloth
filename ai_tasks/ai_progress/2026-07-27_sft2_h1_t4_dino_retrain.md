@@ -115,11 +115,20 @@
   的显式NCCL测试。W&B live max为51，故world8重试使用ID52和全新空输出；原ID52目录中的
   已验证迁移数据保持原路径不变，正式cache/W&B/训练identity顺延为ID53。正式训练继续以
   新smoke通过为前置。
+- ID52 world-size-8 smoke 已通过：精确代码`30e5e4f0`，hold `495566`在
+  `dgx-[14,18,29,54]`提供4×2 H800；核心step `495566.1`为`COMPLETED 0:0`（5分57秒），
+  完成3个finite optimizer steps、validation、完整`epoch_001/best/final` checkpoint和
+  `SFT2_DONE`，watcher随后释放8卡。末步train WM/DINO/value/SIGReg为
+  `1.175624/1.652063/0.356775/2.562645`，validation WM/DINO/value为
+  `1.270767/1.604670/0.271709`，全部为H=1/T=4。global SIGReg batch平均
+  `7.75/5.875/5.0`精确反映114个有效window和22个sampler padding，所有调用全局有效
+  batch至少5且无skip。W&B `wut6xqhg`已`finished`。独立CPU validator `495571`为
+  `COMPLETED 0:0`，fresh-load完整Qwen/optimizer/EMA/8 rank history caches/H1 WM/ValueHead，
+  并执行finite的4-state rollout与value计算。ID52分布式门禁解除，正式阶段使用ID53。
 
 ## 待完成
 
-- 用新ID、空输出和新W&B identity重跑4节点×2GPU world8 smoke；通过后从
-  同一 migrated JSONL fresh 构建 ID53 全量 preprocessing cache。smoke cache 与正式
-  cache 不共用写路径。
-- smoke 通过后确定未占用 W&B ID、正式输出目录和实测耗时，启动 world-size 8 正式
-  SFT2，并监控至少首个 optimizer step 和首个可恢复 checkpoint。
+- 从同一migrated JSONL fresh构建并严格验证ID53全量preprocessing cache；smoke cache与
+  正式cache不共用写路径。
+- cache通过后确定未占用W&B ID、正式空输出目录和实测耗时，启动world-size 8正式SFT2，
+  并监控至少首个optimizer step和首个可恢复checkpoint。
