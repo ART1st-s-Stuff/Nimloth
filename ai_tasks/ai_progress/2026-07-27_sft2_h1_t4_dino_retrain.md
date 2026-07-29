@@ -99,6 +99,14 @@
   `PENDING(Priority)`，预计本地06:23:16；尚无train输出/W&B run。远端watcher PID
   `2552482`每30秒检查真实状态，allocation到达后运行完整4×2 cgroup/rank/port gate与训练，
   最终自动释放hold；不得提交第二个hold。ID51通过前不得开始ID52正式训练。
+- ID51实际获得`dgx-[09,21,27,30]`的4×2 H800 allocation；cgroup/rank/rendezvous、
+  Qwen加载、NCCL和sampler gate通过，但step`494549.1`在首次真实forward时`FAILED 1:0`
+  （3分31秒）。根因是world8把trainable `wm_predictor`单独包装为DDP，随后
+  `simulate_action_sequences()`却在DDP wrapper上调用自定义`rollout_from_history()`；单卡
+  不包装因而ID50未暴露。不能用`.module`绕过同步边界。无optimizer step、SIGReg、val、
+  checkpoint或done；W&B `6btnjnaw`为`crashed`/空summary，hold已释放且不可resume。
+  需修复parameter-owning DDP forward、增加多进程rollout/backward回归，再用新identity
+  通过world8 smoke；此前禁止正式SFT2训练及full cache启动。
 
 ## 待完成
 

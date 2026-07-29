@@ -77,6 +77,15 @@
   远端单一watcher PID`2552482`每30秒仅监控此hold，RUNNING后执行full-allocation
   cgroup/rank/非默认端口gate和已审核launcher，结束后无论成败自动scancel释放资源；日志、
   PID和result均保存在ID51目录，禁止并行追加hold。
+- ID51最终未通过：hold`494549`在`dgx-[09,21,27,30]`获得4节点×2 H800，full-allocation
+  cgroup/rank/端口gate、模型加载、8-rank NCCL和sampler均通过；训练step`494549.1`在
+  3分31秒`FAILED 1:0`。所有rank首次真实forward时，`wm_predictor`已被DDP包装，而
+  `WorldModel.simulate_action_sequences()`在wrapper上查找自定义
+  `rollout_from_history()`，触发`TypeError`。ID50单卡未包装所以无法暴露此bug。禁止用
+  `.module`绕开DDP reducer；需让rollout经parameter-owning DDP forward并新增真实多进程
+  rollout/backward同步回归。CSV仅header；无optimizer step、SIGReg、val、checkpoint或done。
+  W&B `6btnjnaw`为`crashed`且summary空；hold已取消、8卡已释放、无resume源。正式训练
+  当前blocked，必须修复后用新output/W&B ID重跑world8 smoke。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 
