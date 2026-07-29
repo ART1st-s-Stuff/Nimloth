@@ -113,7 +113,7 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 for name in ("base", "common_sense", "complex_instruction", "visual_appearance", "long_horizon"):
-    records = json.loads((root / f"{name}.json").read_text())
+    records = json.loads((root / f"{name}.json").read_text())["tasks"]
     if len(records) != 60:
         raise RuntimeError(f"{name} expected 60 eval tasks, got {len(records)}")
     print(json.dumps({"eval_set": name, "tasks": len(records)}), flush=True)
