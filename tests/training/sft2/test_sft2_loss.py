@@ -95,7 +95,7 @@ class _RecordingEMA:
 
 
 class _Predictor(torch.nn.Module):
-    def __init__(self, dimension: int, *, history_size: int) -> None:
+    def __init__(self, dimension: int, *, history_size: int = 2) -> None:
         super().__init__()
         self.config = SimpleNamespace(history_size=history_size)
         self.net = torch.nn.Linear(dimension, dimension, bias=False)
@@ -383,7 +383,11 @@ def test_sft2_value_scores_predicted_next_and_only_executed_action_slots() -> No
 
     predicted_sequence = captured["predicted_sequence"]
     torch.testing.assert_close(captured["value_input"], predicted_sequence[:, -1])
-    torch.testing.assert_close(captured["value_input"], 2.0 * projector.outputs[0])
+    expected_prediction = (
+        2.0 * projector.outputs[0]
+        + batch.current_action_indices.to(projector.outputs[0].dtype).unsqueeze(-1)
+    )
+    torch.testing.assert_close(captured["value_input"], expected_prediction)
     assert predicted_sequence.grad is not None
     assert torch.count_nonzero(predicted_sequence.grad[:, -1]) > 0
     assert torch.count_nonzero(predicted_sequence.grad[:, :-1]) == 0
