@@ -32,8 +32,13 @@ EPISODES_PER_SET=${EPISODES_PER_SET:-60}
 SHARDS_PER_SET=${SHARDS_PER_SET:-2}
 EPISODES_PER_SHARD=$((EPISODES_PER_SET / SHARDS_PER_SET))
 GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.42}
+RENDER_PREFLIGHT_ONLY=${RENDER_PREFLIGHT_ONLY:-false}
 if (( ${#EVAL_SETS[@]} < 1 || SHARDS_PER_SET < 1 || EPISODES_PER_SET % SHARDS_PER_SET != 0 )); then
   echo "invalid evaluation shard layout" >&2
+  exit 2
+fi
+if test "${RENDER_PREFLIGHT_ONLY}" != true && test "${RENDER_PREFLIGHT_ONLY}" != false; then
+  echo "RENDER_PREFLIGHT_ONLY must be true or false" >&2
   exit 2
 fi
 ENV_LOG=${EVAL_OUTPUT}/env_server_${SLURM_JOB_ID}.log
@@ -109,6 +114,7 @@ trap cleanup EXIT
   echo "episodes_per_shard=${EPISODES_PER_SHARD}"
   echo "gpu_memory_utilization_per_engine=${GPU_MEMORY_UTILIZATION}"
   echo "ai2thor_job_home=${AI2THOR_JOB_HOME}"
+  echo "render_preflight_only=${RENDER_PREFLIGHT_ONLY}"
   echo "mcts=H1_K4_sim100_c1"
   echo "sampling=temp0.7_top_p0.95_max_tokens512"
   echo "resources=partition_${SLURM_JOB_PARTITION}_nodes_${SLURM_JOB_NUM_NODES}_gpus_per_node_${SLURM_GPUS_ON_NODE:-unknown}_cpus_${SLURM_CPUS_PER_TASK:-unknown}_mem_mb_${SLURM_MEM_PER_NODE:-unknown}"
@@ -180,6 +186,10 @@ echo "environment_ready=${ENV_URL}" | tee -a "${CONTROLLER_LOG}"
   --env-url "${ENV_URL}" --eval-set base --seed 1 \
   --env-id "sft2-mcts-render-prewarm-${SLURM_JOB_ID}" \
   | tee -a "${CONTROLLER_LOG}"
+if test "${RENDER_PREFLIGHT_ONLY}" = true; then
+  echo "render_preflight_only_done=true" | tee -a "${CONTROLLER_LOG}"
+  exit 0
+fi
 
 for eval_set in "${EVAL_SETS[@]}"; do
   completed_shards=0
