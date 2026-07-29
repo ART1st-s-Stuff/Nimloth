@@ -16,7 +16,7 @@ from experiments.training.rl.rollout_env import (
 from nimloth.agent import AgentTranscript, NimlothPromptTemplate
 from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
-from nimloth.rollout import RolloutTrajectory
+from nimloth.rollout import RolloutTrajectory, save_trajectories
 from nimloth.rollout.record_format import STEP_REWARD_PROVENANCE
 from nimloth.rollout.transitions import discounted_action_value_targets
 
@@ -158,6 +158,50 @@ def test_eval_collector_can_assign_the_same_seed_range_per_dataset() -> None:
         ("rl_base_000006", "base", 6),
         ("rl_common_sense_000006", "common_sense", 6),
     ]
+
+
+def test_eval_collector_resumes_contiguous_persisted_seed_prefix(tmp_path) -> None:
+    records = [_trajectory(), _trajectory()]
+    records[0].record_id = "rl_base_train_000005"
+    records[1].record_id = "rl_base_train_000006"
+    save_trajectories(records, tmp_path)
+    collector = VAGENNavigationRolloutCollector(
+        None,
+        "http://env",
+        eval_sets=("base_train",),
+        split="train",
+        seed_offset=5,
+        seed_per_eval_set=True,
+    )
+
+    restored = collector._load_resume_prefix(tmp_path, num_episodes=4)
+
+    assert [record.record_id for record in restored] == [
+        "rl_base_train_000005",
+        "rl_base_train_000006",
+    ]
+    assert collector._next_episode_identity(2) == (
+        "rl_base_train_000007",
+        "base_train",
+        7,
+    )
+
+
+def test_eval_collector_rejects_noncontiguous_resume_prefix(tmp_path) -> None:
+    record = _trajectory()
+    record.record_id = "rl_base_train_000006"
+    save_trajectories([record], tmp_path)
+    collector = VAGENNavigationRolloutCollector(
+        None,
+        "http://env",
+        eval_sets=("base_train",),
+        split="train",
+        seed_offset=5,
+        seed_per_eval_set=True,
+    )
+
+    with pytest.raises(ValueError, match="contiguous requested seed prefix"):
+        collector._load_resume_prefix(tmp_path, num_episodes=4)
 
 
 def test_rollout_metrics_report_overall_and_each_eval_set() -> None:

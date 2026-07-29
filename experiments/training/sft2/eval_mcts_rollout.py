@@ -37,6 +37,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--sft2-checkpoint", type=Path, required=True)
     ap.add_argument("--env-url", required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
+    ap.add_argument("--resume", action="store_true")
     ap.add_argument(
         "--eval-sets",
         choices=_HELD_OUT_DATASETS,
@@ -148,18 +149,44 @@ def build_rollout_argv(
                 args.vllm_distributed_executor_backend,
             )
         )
+    if args.resume:
+        rollout_args.append("--resume-existing-rollouts")
     return rollout_args
+
+
+def write_or_validate_contract(
+    output_dir: Path,
+    metadata: dict[str, object],
+    *,
+    resume: bool,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    contract_path = output_dir / "evaluation_contract.json"
+    other_entries = [path for path in output_dir.iterdir() if path != contract_path]
+    if contract_path.exists():
+        if not resume:
+            raise FileExistsError(
+                f"refusing to overwrite evaluation output: {output_dir}"
+            )
+        existing = json.loads(contract_path.read_text(encoding="utf-8"))
+        if existing != metadata:
+            raise ValueError("resume evaluation contract does not match requested run")
+        return
+    if other_entries:
+        raise FileExistsError(
+            "evaluation output has artifacts but no contract: "
+            f"{output_dir}"
+        )
+    contract_path.write_text(
+        json.dumps(metadata, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.output_dir.exists() and any(args.output_dir.iterdir()):
-        raise FileExistsError(
-            f"refusing to overwrite non-empty evaluation output: {args.output_dir}"
-        )
     contract = load_sft2_mcts_evaluation_contract(args.sft2_checkpoint)
     rollout_args = build_rollout_argv(args, contract)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
     metadata = {
         "evaluation": "sft2_pre_rl_mcts_v1",
         "sft2_checkpoint": str(contract.checkpoint),
@@ -179,9 +206,10 @@ def main(argv: list[str] | None = None) -> int:
         "top_p": args.top_p,
         "max_response_tokens": args.max_response_tokens,
     }
-    (args.output_dir / "evaluation_contract.json").write_text(
-        json.dumps(metadata, indent=2) + "\n",
-        encoding="utf-8",
+    write_or_validate_contract(
+        args.output_dir,
+        metadata,
+        resume=args.resume,
     )
     print(json.dumps({"preflight": metadata}), flush=True)
     return rollout_main(rollout_args)

@@ -10,6 +10,7 @@ import torch
 from experiments.training.sft2.eval_mcts_rollout import (
     build_rollout_argv,
     parse_args,
+    write_or_validate_contract,
 )
 from nimloth.training.sft2.algorithm import SFT2_VALUE_OBJECTIVE
 from nimloth.training.sft2.mcts_evaluation import (
@@ -143,3 +144,52 @@ def test_eval_entry_requires_at_least_one_simulation_per_root_action(tmp_path) -
 
     with pytest.raises(ValueError, match="visit every root action"):
         build_rollout_argv(args, contract)
+
+
+def test_eval_resume_forwards_rollout_resume_flag(tmp_path) -> None:
+    contract = load_sft2_mcts_evaluation_contract(_checkpoint(tmp_path))
+    args = parse_args(
+        [
+            "--sft2-checkpoint", str(contract.checkpoint),
+            "--env-url", "http://env",
+            "--output-dir", str(tmp_path / "eval"),
+            "--resume",
+            "--eval-sets", "base",
+            "--split", "test",
+            "--episodes-per-eval-set", "30",
+            "--seed-offset", "31",
+            "--max-steps", "20",
+            "--temperature", "0.7",
+            "--top-p", "0.95",
+            "--max-response-tokens", "512",
+            "--num-simulations", "100",
+            "--exploration-constant", "1.0",
+            "--tensor-parallel-size", "1",
+            "--planner-device", "cuda:0",
+        ]
+    )
+
+    assert "--resume-existing-rollouts" in build_rollout_argv(args, contract)
+
+
+def test_eval_resume_requires_exact_existing_contract(tmp_path) -> None:
+    output = tmp_path / "eval"
+    metadata = {"history_size": 1, "prediction_horizon": 4}
+    write_or_validate_contract(output, metadata, resume=False)
+    write_or_validate_contract(output, metadata, resume=True)
+
+    with pytest.raises(ValueError, match="does not match"):
+        write_or_validate_contract(
+            output,
+            {"history_size": 1, "prediction_horizon": 3},
+            resume=True,
+        )
+
+
+def test_eval_fresh_run_rejects_existing_contract(tmp_path) -> None:
+    output = tmp_path / "eval"
+    metadata = {"history_size": 1, "prediction_horizon": 4}
+    write_or_validate_contract(output, metadata, resume=False)
+
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        write_or_validate_contract(output, metadata, resume=False)

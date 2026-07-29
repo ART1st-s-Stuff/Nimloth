@@ -29,15 +29,16 @@ ENV_PORT=$((18400 + SLURM_JOB_ID % 1000))
 ENV_URL=http://127.0.0.1:${ENV_PORT}
 EVAL_SETS=(base common_sense complex_instruction visual_appearance long_horizon)
 EPISODES_PER_SET=60
-ATTEMPT_ROOT=${EVAL_OUTPUT}/.attempts/job_${SLURM_JOB_ID}_restart_${SLURM_RESTART_COUNT:-0}
+SHARDS_PER_SET=2
+EPISODES_PER_SHARD=$((EPISODES_PER_SET / SHARDS_PER_SET))
+GPU_MEMORY_UTILIZATION=0.42
 ENV_LOG=${EVAL_OUTPUT}/env_server_${SLURM_JOB_ID}.log
 CONTROLLER_LOG=${EVAL_OUTPUT}/controller_${SLURM_JOB_ID}.log
 ENV_STEP_PID=
 CHILD_PIDS=()
 CHILD_SETS=()
-CHILD_ATTEMPTS=()
 
-mkdir -p "${EVAL_OUTPUT}" "${EVAL_OUTPUT}/eval_sets" "${ATTEMPT_ROOT}"
+mkdir -p "${EVAL_OUTPUT}" "${EVAL_OUTPUT}/eval_sets" "${EVAL_OUTPUT}/.attempts"
 
 export PATH=${ROOT}/.venv-vagen-main/bin:${PATH}
 export PYTHONPATH=${EVAL_WORKTREE}/src:${EVAL_WORKTREE}/external/VAGEN:${EVAL_WORKTREE}/external/VAGEN/verl:${EVAL_WORKTREE}/external/le-wm:${PYTHONPATH:-}
@@ -51,12 +52,20 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export WANDB_DIR=${EVAL_OUTPUT}/wandb
 mkdir -p "${HOME}" "${WANDB_DIR}" /project/peilab/atst/nimloth/outputs/experiments/sft2_mcts_pre_rl/slurm
+REQUESTED_WANDB_ENTITY=${WANDB_ENTITY}
+REQUESTED_WANDB_PROJECT=${WANDB_PROJECT}
+REQUESTED_WANDB_RUN_NAME=${WANDB_RUN_NAME}
+REQUESTED_WANDB_RUN_ID=${WANDB_RUN_ID}
 if test -f /project/peilab/atst/flower/.env; then
   set -a
   # shellcheck disable=SC1091
   source /project/peilab/atst/flower/.env
   set +a
 fi
+export WANDB_ENTITY=${REQUESTED_WANDB_ENTITY}
+export WANDB_PROJECT=${REQUESTED_WANDB_PROJECT}
+export WANDB_RUN_NAME=${REQUESTED_WANDB_RUN_NAME}
+export WANDB_RUN_ID=${REQUESTED_WANDB_RUN_ID}
 
 cleanup() {
   set +e
@@ -79,6 +88,9 @@ trap cleanup EXIT
   echo "output=${EVAL_OUTPUT}"
   echo "eval_sets=${EVAL_SETS[*]}"
   echo "episodes_per_set=${EPISODES_PER_SET}"
+  echo "shards_per_set=${SHARDS_PER_SET}"
+  echo "episodes_per_shard=${EPISODES_PER_SHARD}"
+  echo "gpu_memory_utilization_per_engine=${GPU_MEMORY_UTILIZATION}"
   echo "mcts=H1_K4_sim100_c1"
   echo "sampling=temp0.7_top_p0.95_max_tokens512"
   echo "resources=normal_1node_6gpu_128cpu_512G"
@@ -147,14 +159,17 @@ curl -fsS --max-time 10 "${ENV_URL}/health" >/dev/null
 echo "environment_ready=${ENV_URL}" | tee -a "${CONTROLLER_LOG}"
 
 for eval_set in "${EVAL_SETS[@]}"; do
-  final_dir=${EVAL_OUTPUT}/eval_sets/${eval_set}
-  if test -s "${final_dir}/rollout_summary.json"; then
+  completed_shards=0
+  for (( shard_index=0; shard_index<SHARDS_PER_SET; shard_index++ )); do
+    shard_name=$(printf 'shard_%02d' "${shard_index}")
+    if test -s "${EVAL_OUTPUT}/eval_sets/${eval_set}/${shard_name}/rollout_summary.json"; then
+      completed_shards=$((completed_shards + 1))
+    fi
+  done
+  if (( completed_shards == SHARDS_PER_SET )); then
     echo "resume_skip=${eval_set}" | tee -a "${CONTROLLER_LOG}"
     continue
   fi
-  attempt_dir=${ATTEMPT_ROOT}/${eval_set}
-  log_path=${EVAL_OUTPUT}/${eval_set}_${SLURM_JOB_ID}.log
-  mkdir -p "${attempt_dir}"
   "${SL}/srun" --exclusive --exact --nodes=1 --ntasks=1 --gres=gpu:1 --cpus-per-task=20 \
     bash -lc "
       set -euo pipefail
@@ -163,25 +178,15 @@ for eval_set in "${EVAL_SETS[@]}"; do
       export HOME='${HOME}' HF_HOME='${HF_HOME}' TRANSFORMERS_CACHE='${TRANSFORMERS_CACHE}' TORCH_HOME='${TORCH_HOME}'
       export TOKENIZERS_PARALLELISM=true VLLM_WORKER_MULTIPROC_METHOD=spawn
       export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-      export TRITON_CACHE_DIR='/tmp/triton_mcts_${SLURM_JOB_ID}_${eval_set}'
-      export XDG_CACHE_HOME='/tmp/xdg_mcts_${SLURM_JOB_ID}_${eval_set}'
-      mkdir -p \"\${TRITON_CACHE_DIR}\" \"\${XDG_CACHE_HOME}\"
-      cd '${EVAL_WORKTREE}'
-      exec '${PY}' experiments/training/sft2/eval_mcts_rollout.py \\
-        --sft2-checkpoint '${SFT2_CHECKPOINT}' \\
-        --env-url '${ENV_URL}' \\
-        --output-dir '${attempt_dir}' \\
-        --eval-sets '${eval_set}' --split test \\
-        --episodes-per-eval-set '${EPISODES_PER_SET}' --seed-offset 1 --max-steps 20 \\
-        --temperature 0.7 --top-p 0.95 --max-response-tokens 512 \\
-        --num-simulations 100 --exploration-constant 1.0 \\
-        --tensor-parallel-size 1 --planner-device cuda:0 \\
-        --max-model-len 32768 --gpu-memory-utilization 0.60 \\
-        --vllm-mm-processor-cache-gb 0
-    " > "${log_path}" 2>&1 &
+      export EVAL_WORKTREE='${EVAL_WORKTREE}' SFT2_CHECKPOINT='${SFT2_CHECKPOINT}'
+      export EVAL_OUTPUT='${EVAL_OUTPUT}' EVAL_SET='${eval_set}' ENV_URL='${ENV_URL}'
+      export PY='${PY}' SHARDS_PER_SET='${SHARDS_PER_SET}'
+      export EPISODES_PER_SET='${EPISODES_PER_SET}' SEED_OFFSET=1
+      export GPU_MEMORY_UTILIZATION='${GPU_MEMORY_UTILIZATION}'
+      exec bash '${EVAL_WORKTREE}/experiments/training/sft2/run_mcts_eval_shards.sh'
+    " > "${EVAL_OUTPUT}/${eval_set}_${SLURM_JOB_ID}.log" 2>&1 &
   CHILD_PIDS+=("$!")
   CHILD_SETS+=("${eval_set}")
-  CHILD_ATTEMPTS+=("${attempt_dir}")
 done
 
 failed=0
@@ -190,10 +195,14 @@ for index in "${!CHILD_PIDS[@]}"; do
   wait "${CHILD_PIDS[$index]}"
   code=$?
   eval_set=${CHILD_SETS[$index]}
-  attempt_dir=${CHILD_ATTEMPTS[$index]}
-  final_dir=${EVAL_OUTPUT}/eval_sets/${eval_set}
-  if test "${code}" -eq 0 && test -s "${attempt_dir}/rollout_summary.json"; then
-    mv "${attempt_dir}" "${final_dir}"
+  complete=true
+  for (( shard_index=0; shard_index<SHARDS_PER_SET; shard_index++ )); do
+    shard_name=$(printf 'shard_%02d' "${shard_index}")
+    if ! test -s "${EVAL_OUTPUT}/eval_sets/${eval_set}/${shard_name}/rollout_summary.json"; then
+      complete=false
+    fi
+  done
+  if test "${code}" -eq 0 && test "${complete}" = true; then
     echo "eval_set_done=${eval_set}" | tee -a "${CONTROLLER_LOG}"
   else
     echo "eval_set_failed=${eval_set} exit=${code}" | tee -a "${CONTROLLER_LOG}"
@@ -209,6 +218,8 @@ fi
   --output-dir "${EVAL_OUTPUT}" \
   --eval-sets "${EVAL_SETS[@]}" \
   --episodes-per-eval-set "${EPISODES_PER_SET}" \
+  --shards-per-eval-set "${SHARDS_PER_SET}" \
+  --seed-offset 1 \
   --wandb-entity "${WANDB_ENTITY}" \
   --wandb-project "${WANDB_PROJECT}" \
   --wandb-run-name "${WANDB_RUN_NAME}" \

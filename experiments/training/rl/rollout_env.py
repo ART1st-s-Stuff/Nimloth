@@ -35,6 +35,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--model", type=Path, required=True, help="Full HF policy checkpoint")
     ap.add_argument("--env-url", required=True, help="VAGEN env server base URL")
     ap.add_argument("--output-dir", type=Path, required=True)
+    ap.add_argument(
+        "--resume-existing-rollouts",
+        action="store_true",
+        help="Resume a contiguous atomically persisted trajectory prefix",
+    )
     ap.add_argument("--num-episodes", type=int, default=8)
     ap.add_argument("--max-steps", type=int, default=20)
     dataset_group = ap.add_mutually_exclusive_group(required=True)
@@ -390,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
         num_episodes=args.num_episodes,
         max_steps_per_episode=args.max_steps,
         output_dir=args.output_dir,
+        resume_existing=args.resume_existing_rollouts,
     )
     validate_trajectories(trajectories, expected_count=args.num_episodes)
     manifest_path = args.fresh_manifest

@@ -23,7 +23,7 @@ from nimloth.environment.navigation.vagen import (
 )
 from nimloth.rollout.from_agent import trajectory_from_agent_episode
 from nimloth.rollout.schema import RolloutTrajectory
-from nimloth.rollout.storage import save_trajectories
+from nimloth.rollout.storage import load_trajectories, save_trajectories
 
 
 class VAGENNavigationRolloutCollector:
@@ -105,6 +105,7 @@ class VAGENNavigationRolloutCollector:
         num_episodes: int,
         max_steps_per_episode: int = 20,
         output_dir: Path | None = None,
+        resume_existing: bool = False,
     ) -> list[RolloutTrajectory]:
         if self._policy is None:
             raise RuntimeError("rollout collector has no bound Agent")
@@ -120,8 +121,18 @@ class VAGENNavigationRolloutCollector:
             output=str(target_dir),
         )
 
-        trajectories: list[RolloutTrajectory] = []
-        for episode_index in range(num_episodes):
+        trajectories = (
+            self._load_resume_prefix(target_dir, num_episodes=num_episodes)
+            if resume_existing
+            else []
+        )
+        if trajectories:
+            self._log(
+                rl_collect="resume",
+                trajectories=len(trajectories),
+                next_episode=len(trajectories),
+            )
+        for episode_index in range(len(trajectories), num_episodes):
             episode_id, eval_set, seed = self._next_episode_identity(episode_index)
             started_at = time.monotonic()
             self._log(rl_ep=episode_index, id=episode_id, eval_set=eval_set)
@@ -168,6 +179,9 @@ class VAGENNavigationRolloutCollector:
                     terminal_state=runtime.terminal_state(),
                 )
                 trajectories.append(trajectory)
+                # 每个真实episode完成后立即原子重写短JSONL前缀，确保抢占不会丢失
+                # 已完成样本，也不会留下半行JSON。
+                save_trajectories(trajectories, target_dir)
                 self._log(
                     rl_ep=episode_index,
                     done=True,
@@ -183,6 +197,8 @@ class VAGENNavigationRolloutCollector:
                     warning="discarding failed trajectory",
                     error=str(error),
                 )
+                if resume_existing:
+                    raise
 
         jsonl_path = save_trajectories(trajectories, target_dir)
         self._log(
@@ -190,6 +206,38 @@ class VAGENNavigationRolloutCollector:
             trajectories=len(trajectories),
             jsonl_path=str(jsonl_path),
         )
+        return trajectories
+
+    def _load_resume_prefix(
+        self,
+        target_dir: Path,
+        *,
+        num_episodes: int,
+    ) -> list[RolloutTrajectory]:
+        jsonl_path = target_dir / "trajectories.jsonl"
+        if not jsonl_path.exists():
+            return []
+        trajectories = load_trajectories(jsonl_path)
+        if len(trajectories) > num_episodes:
+            raise ValueError(
+                "resume trajectory count exceeds requested episodes: "
+                f"{len(trajectories)} > {num_episodes}"
+            )
+        for episode_index, trajectory in enumerate(trajectories):
+            expected_id, _eval_set, _seed = self._next_episode_identity(
+                episode_index
+            )
+            if trajectory.record_id != expected_id:
+                raise ValueError(
+                    "resume trajectories must be the contiguous requested seed "
+                    f"prefix: index={episode_index}, expected={expected_id!r}, "
+                    f"actual={trajectory.record_id!r}"
+                )
+            if trajectory.split != self._split:
+                raise ValueError(
+                    "resume trajectory split does not match collector: "
+                    f"{trajectory.split!r} != {self._split!r}"
+                )
         return trajectories
 
     @staticmethod

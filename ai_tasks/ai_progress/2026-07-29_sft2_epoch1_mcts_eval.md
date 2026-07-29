@@ -52,6 +52,22 @@ step从H=1的当前Qwen latent state运行K=4 MCTS，只执行胜出根动作的
   assets的`tasks`数组均为60条。输出README已在正式输出根目录写入，W&B run ID为
   `809f5bed`（只在五类结果成功聚合后创建run）。
 - 正式normal job `496818`已于`2026-07-30T00:26:11+08:00`提交，唯一请求为单节点
-  6 GPU/128 CPU/512 GiB/6小时；当前`PENDING (Priority)`、尚未分配GPU。Slurm当前
-  估计`2026-07-30T05:41:09+08:00`在`dgx-14`启动；未提交重复任务。分散到2/3/6节点
+  6 GPU/128 CPU/512 GiB/6小时；提交后初始状态为`PENDING (Priority)`，Slurm一度估计
+  `2026-07-30T05:41:09+08:00`在`dgx-14`启动。未提交重复任务。分散到2/3/6节点
   的test-only方案没有更早调度时间，因此保留用户要求的normal正式任务。
+- job `496818`实际于`2026-07-30T00:37:01+08:00`提前在`dgx-09`启动，`AllocTRES`为
+  6 GPU/128 CPU。环境服务和五个TP1 worker均健康；运行8分13秒时五类均已完成至少一条
+  真实rollout，共完成8/300、成功0/8。当前0%只是小样本临时值，不能作为最终success
+  rate；没有discarded trajectory、OOM、EngineCore failure或运行时异常。失败episode均跑满
+  20步、约2.7分钟，按当前吞吐预计总耗时约2.5--3小时。
+- 运行日志发现服务器`.env`在batch启动后把导出的W&B project从约定的`nimloth-sft2`
+  覆盖成了`flower`。核心rollout与本地聚合输出不受影响；最终需要向`nimloth-sft2`补记
+  聚合指标，并在后续启动器中避免`.env`覆盖显式实验参数。正在运行的exact worktree未改动。
+- 吞吐诊断：真实step的Qwen/CoT generation中位数约5.7秒，100次K4 MCTS约0.56秒；
+  单卡每次只有一个串行episode，推理GPU采样利用率约45--50%，因此失败episode跑满20步
+  需要约150--180秒。修复保持H1/K4/sim100/真实CoT语义不变：每个eval-set拆成两个
+  30-seed连续分片，同一推理GPU启动两个独立vLLM engine（每个memory utilization 0.42）；
+  每完成一个episode立即原子落盘，重启严格验证并恢复连续seed前缀；聚合器验证10个分片
+  合同与完整1--60 seed范围。W&B显式字段在source `.env`后恢复。相关CPU回归为
+  `65 passed, 1 warning`，Python compile、两个shell入口`bash -n`和`git diff --check`通过。
+  在1-GPU双engine真实smoke通过前不停止job `496818`。
