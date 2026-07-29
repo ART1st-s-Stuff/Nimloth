@@ -3066,3 +3066,22 @@
 - 第二epoch统计预示记录动作上的预测会改善，但不能推出MCTS rollout必然改善：value
   validation只回归原始rollout实际动作，未度量8-action argmax下的未执行动作外推。
   需用epoch2与epoch1做同seed、有效render门禁的paired rollout再判断success rate。
+
+## 2026-07-30：ID63 epoch2正式MCTS eval以10路有效并行启动
+
+- 使用完整`epoch_002`和exact clean commit`eda89c63`启动300条真实VAGEN test rollout：
+  H1/K4、每真实step重新生成当前Qwen state、100次simulation，只执行胜出根action；五类
+  eval scene各60条/seeds1--60，sampling与ID62有效render smoke一致，纯推理且W&B只在
+  严格全量聚合后创建。
+- 主batch-owned controller job`496936`在`normal/dgx-29`获得6×H800/128 CPU/384 GiB：
+  ordinal1/3/4/5通过真实render probe（dynamic range246），env选ordinal1且VAGEN prewarm
+  dynamic range255；五张policy GPU各启两个TP1 engine，目标10路并行。
+- 原`visual_appearance/shard_00`在第一episode前遇到双engine encoder profiling显存竞态，
+  可用KV cache报告-2.50 GiB并初始化失败；其余九个engine健康推进且不重跑。补充batch job
+  `496938`在`normal/dgx-27`以独立H800补做同合同seeds1--30，KV cache为536,928 tokens，
+  有效并行恢复到10路。
+- `2026-07-30T03:02:41+08:00`两项job均为RUNNING，按开始标记约111/300 episodes；当前
+  没有正式success rate。主job会因保留原child failure而预计非零退出，待十个shard全部
+  完成后必须另起batch-owned严格aggregator并以精确300-seed `ALL_OK`发布W&B/最终指标。
+- 完整合同、job、错误隔离和聚合门禁见
+  `ai_tasks/ai_progress/2026-07-30_sft2_epoch2_mcts_eval.md`。
