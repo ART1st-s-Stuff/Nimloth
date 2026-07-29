@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import time
@@ -26,6 +27,7 @@ class DirectRenderProbeResult:
     image_width: int
     image_height: int
     image_dynamic_range: int
+    gpu_device: int
     cuda_visible_devices: str
     cuda_vulkan_mapping: dict[str, int]
 
@@ -34,9 +36,12 @@ def probe_navigation_render(
     controller_factory: Callable[..., Any],
     *,
     scene: str = "FloorPlan1",
+    gpu_device: int = 0,
 ) -> DirectRenderProbeResult:
     """创建Controller并要求reset返回非纯色RGB frame。"""
 
+    if gpu_device < 0:
+        raise ValueError("gpu_device must be non-negative")
     started_at = time.monotonic()
     controller = controller_factory(
         agentMode="default",
@@ -47,7 +52,7 @@ def probe_navigation_render(
         width=255,
         height=255,
         fieldOfView=100,
-        gpu_device=0,
+        gpu_device=gpu_device,
         server_timeout=60,
         server_start_timeout=60,
     )
@@ -64,12 +69,17 @@ def probe_navigation_render(
     mapping = json.loads(mapping_path.read_text())
     if not isinstance(mapping, dict) or not mapping:
         raise RuntimeError(f"invalid CUDA/Vulkan mapping: {mapping!r}")
+    if str(gpu_device) not in mapping:
+        raise RuntimeError(
+            f"CUDA/Vulkan mapping has no GPU ordinal {gpu_device}: {mapping!r}"
+        )
     return DirectRenderProbeResult(
         scene=scene,
         elapsed_seconds=round(time.monotonic() - started_at, 3),
         image_width=image.width,
         image_height=image.height,
         image_dynamic_range=navigation_image_dynamic_range(image),
+        gpu_device=gpu_device,
         cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES", ""),
         cuda_vulkan_mapping={str(key): int(value) for key, value in mapping.items()},
     )
@@ -79,8 +89,14 @@ def main() -> int:
     from ai2thor.controller import Controller
     from ai2thor.platform import CloudRendering
 
+    parser = argparse.ArgumentParser(
+        description="Validate one allocated AI2-THOR GPU ordinal",
+    )
+    parser.add_argument("--gpu-device", type=int, required=True)
+    args = parser.parse_args()
     result = probe_navigation_render(
-        lambda **kwargs: Controller(platform=CloudRendering, **kwargs)
+        lambda **kwargs: Controller(platform=CloudRendering, **kwargs),
+        gpu_device=args.gpu_device,
     )
     print(json.dumps({"status": "AI2THOR_RENDER_OK", **asdict(result)}), flush=True)
     return 0

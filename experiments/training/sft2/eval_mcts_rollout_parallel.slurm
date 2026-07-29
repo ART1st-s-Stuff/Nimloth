@@ -40,7 +40,8 @@ if test "${RENDER_PREFLIGHT_ONLY}" != true && test "${RENDER_PREFLIGHT_ONLY}" !=
   echo "RENDER_PREFLIGHT_ONLY must be true or false" >&2
   exit 2
 fi
-IFS=',' read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES:?CUDA_VISIBLE_DEVICES is required}"
+ALLOCATED_CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:?CUDA_VISIBLE_DEVICES is required}
+IFS=',' read -r -a ALLOCATED_GPUS <<< "${ALLOCATED_CUDA_VISIBLE_DEVICES}"
 for index in "${!ALLOCATED_GPUS[@]}"; do
   ALLOCATED_GPUS[$index]=$(echo "${ALLOCATED_GPUS[$index]}" | xargs)
 done
@@ -188,11 +189,12 @@ for gpu in "${ALLOCATED_GPUS[@]}"; do
   prepare_ai2thor_home "${probe_home}"
   (
     set -euo pipefail
-    export CUDA_VISIBLE_DEVICES="${gpu}"
+    export CUDA_VISIBLE_DEVICES="${ALLOCATED_CUDA_VISIBLE_DEVICES}"
     export AI2THOR_HOME_ROOT="${probe_home}"
     source "${EVAL_WORKTREE}/experiments/training/baseline/setup_ai2thor_env.sh"
     timeout --signal=TERM 150s "${PY}" \
-      -m nimloth.environment.navigation.direct_render_probe
+      -m nimloth.environment.navigation.direct_render_probe \
+      --gpu-device "${gpu}"
   ) > "${probe_log}" 2>&1 &
   PROBE_PIDS+=("$!")
   PROBE_GPUS+=("${gpu}")
@@ -234,7 +236,7 @@ echo "selected_env_gpu=${ENV_GPU} policy_gpus=${POLICY_GPUS[*]:-}" | tee -a "${C
 # passed the render probe; nested srun ordinal remapping would lose that fact.
 (
   set -euo pipefail
-  export CUDA_VISIBLE_DEVICES="${ENV_GPU}"
+  export CUDA_VISIBLE_DEVICES="${ALLOCATED_CUDA_VISIBLE_DEVICES}"
   export PATH="${ROOT}/.venv-vagen-main/bin:${PATH}"
   export PYTHONPATH="${EVAL_WORKTREE}/external/VAGEN:${EVAL_WORKTREE}/external/VAGEN/verl"
   export AI2THOR_HOME_ROOT="${ENV_GPU_HOME}"
@@ -242,7 +244,7 @@ echo "selected_env_gpu=${ENV_GPU} policy_gpus=${POLICY_GPUS[*]:-}" | tee -a "${C
   cd "${EVAL_WORKTREE}/external/VAGEN"
   exec "${PY}" -m vagen.server.server \
     server.host=0.0.0.0 server.port="${ENV_PORT}" \
-    use_state_reward=False navigation.devices='[0]' navigation.max_workers=16
+    use_state_reward=False navigation.devices="[${ENV_GPU}]" navigation.max_workers=16
 ) > "${ENV_LOG}" 2>&1 &
 ENV_STEP_PID=$!
 
