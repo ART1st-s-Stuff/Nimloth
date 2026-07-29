@@ -141,8 +141,13 @@
   5个finite optimizer steps、validation、`step_000005/epoch_001/best/final`及16份rank
   history cache完整，退出码0。正式ID56在同一hold以WS16+B1+GA4启动，保持effective
   global batch 64和每epoch776 optimizer steps；W&B `qwx1zq6k`。全量sampler覆盖49,638
-  windows，已观测前4个finite optimizer steps且每步global SIGReg样本数为16；20分钟
-  checkpoint周期，当前仍在运行。
+  windows，共记录213个finite optimizer steps且每步global SIGReg样本数为16；无
+  traceback、OOM或non-finite metric。正式step `496027.8`运行36分49秒后于18:02:13
+  被取消，hold `496027`随后于18:07:20被preempt；无epoch validation、`final`或done flag。
+- ID56可从自身完整`train_ws16/latest`恢复：checkpoint为step122、epoch1、micro-step
+  488/3103、`epoch_complete=false`，含optimizer、完整HF模型、EMA、H1/T4 WM、ValueHead
+  和16份rank history cache。日志中的step123--213未checkpoint；恢复必须保持同一
+  commit/config/data/cache、WS16+B1+GA4和W&B `qwx1zq6k`。当前用户无Slurm任务。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 
@@ -3022,3 +3027,30 @@
   `success_rate/avg_reward/avg_steps`到`rollout_summary.json`。
 - Python 3.13完整相关CPU回归为`271 passed, 1 skipped, 1 warning`；`py_compile`和
   `git diff --check`通过。尚未运行真实GPU/vLLM/VAGEN评估，因此当前没有pre-RL成功率。
+
+## 2026-07-29：ID56在normal分区以WS16恢复并稳定推进
+
+- ID56从唯一完整断点`train_ws16/latest`恢复：断点为global step122、epoch1、
+  micro-step488/3103，16份rank history cache及optimizer状态完整；保持精确代码
+  `9524f0a740c1033504ff3e9da862627cf1796ac1`、WS16/B1/GA4、H1/T4、原数据与W&B
+  `qwx1zq6k`。
+- 前几次normal异构拓扑尝试在训练前资源门禁失败，或暴露出每物理节点仅获得2个CPU的
+  cgroup问题；唯一短暂进入训练的`496325`只重放step123--126，因速度约43--51秒/step
+  主动停止，且`latest`仍为step122，所以没有形成新的可恢复优化状态。
+- 当前唯一正式controller job为`496336`：normal分区`dgx-[26,30]`，每节点8张H800、
+  64 CPU，共16 GPU/128 CPU。batch job拥有controller，节点内各启动8个local rank；
+  Slurm `ReqTRES/AllocTRES`均为`cpu=128,gres/gpu=16`，训练进程实际affinity也覆盖每节点
+  64个CPU。
+- 实时检查时job为`RUNNING`，已从step122恢复推进到step143；当前轨迹step123--143
+  全部关键loss有限，最近平均约6.8秒/optimizer step，没有traceback、OOM、NCCL failure
+  或non-finite。`sft2_done.flag`尚未出现，`latest`仍为step122，必须等下一次周期checkpoint
+  落盘后才能把运行态进度称为新的durable resume点。
+- 本地CSV含原运行step1--213及两次resume的重复step号；当前轨迹应按job `496336`启动后
+  每个step的最后一条记录解释。W&B因已有step211，会拒绝resume重放的step123--211；
+  通过step211后才会恢复单调追加，这不影响本地训练或checkpoint。
+- `496336`已完整完成epoch1：global step776的validation WM/DINO/value/total分别为
+  `0.536340/0.927470/0.161920/1.161995`，全部finite；`epoch_001`和`best`完整checkpoint
+  分别在22:15--22:16落盘，checkpoint metric为`val_wm_mse`。
+- 23:41实时检查时job仍为`RUNNING`，已进入epoch2并推进到global step1300/1552；
+  epoch2完成524/776 steps，最新loss有限，23:33的周期`latest`已完整落盘。日志仍无
+  traceback、OOM、NCCL failure或non-finite；`sft2_done.flag`尚未出现。

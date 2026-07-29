@@ -160,10 +160,38 @@
   `sft2_done.flag`存在，launcher退出0。
 - 正式ID56在同一hold以WS16+B1+GA4 fresh启动，W&B `qwx1zq6k`，输出
   `56_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16_px100352/train_ws16`。全量sampler覆盖
-  49,638 windows；已完成前4个finite optimizer steps，每步global SIGReg样本数为16。
-  配置每20分钟写完整checkpoint，当前训练仍在运行。
+  49,638 windows，共记录step1--213，全部关键loss finite且global SIGReg样本数为16。
+  正式step`496027.8`运行36分49秒后于18:02:13被取消；hold`496027`随后在18:07:20
+  被preempt。没有traceback/OOM/non-finite、validation、epoch completion、`final`或
+  `sft2_done.flag`；中止属于外部任务终止，不是已确认的模型/数据失败。
+- ID56的完整`train_ws16/latest`写于step122、epoch1、micro-step488/3103，包含optimizer、
+  完整HF模型、EMA、H1/T4 predictor、ValueHead和16份rank history cache；读取成功，
+  checkpoint invariants为WS16/GA4/H1/T4及当前value objective。step123--213未持久化。
+  实验输出README已按结束事件记录终态、实际controller命令和恢复契约。
+- ID56当前由唯一Slurm batch controller `496336`在normal分区恢复运行：`dgx-[26,30]`
+  各8张H800、64 CPU，共WS16/128 CPU；`ReqTRES/AllocTRES`均精确为
+  `cpu=128,gres/gpu=16`，两个训练进程组的实际CPU affinity也各覆盖64 CPU。
+  它保持commit `9524f0a740c1033504ff3e9da862627cf1796ac1`、同一config/data/cache、
+  B1/GA4和W&B `qwx1zq6k`，从step122、micro-step488正确恢复。
+- `496336`实时检查已推进到step143，当前job轨迹step123--143全部关键loss有限，最近
+  平均约6.8秒/optimizer step；没有traceback、OOM、NCCL failure或non-finite。
+  先前normal尝试中，`496325`因每节点训练cgroup实际仅2 CPU导致约43--51秒/step而停止；
+  其重放step123--126未进入`latest`，不属于当前优化状态。其余尝试都在训练前资源门禁
+  失败或取消。
+- 当前`latest`仍是step122，`sft2_done.flag`尚不存在；下一次周期checkpoint之前，
+  step123--143只属于运行态与CSV。CSV已有旧step1--213及resume重复step号，当前轨迹按
+  `496336`启动后的最后一条同step记录解释；W&B会拒绝小于其已有step211的重放日志，
+  通过step211后再正常追加。
+- `496336`已完整完成epoch1：global step776的validation WM/DINO/value/total分别为
+  `0.5363402869615843/0.9274697258492036/0.16192005572335066/1.161995206096173`，
+  全部finite；`epoch_001`和`best`完整checkpoint在22:15--22:16落盘，checkpoint metric
+  为`val_wm_mse`。这是正式ID56首个完整epoch，不再只是训练mechanics或部分断点证据。
+- 23:41实时检查时job仍为`RUNNING`，已进入epoch2并推进到global step1300/1552；
+  epoch2完成524/776 optimizer steps，当前最新loss有限，23:33的周期`latest`已完整落盘。
+  日志仍无traceback、OOM、NCCL failure或non-finite；`sft2_done.flag`尚未出现。
 
 ## 待完成
 
-- 持续监控ID56到首个完整周期checkpoint，核验`latest`、optimizer/training state及
-  16份rank history cache；如preempt则只能从ID56自身完整checkpoint按WS16/GA4恢复。
+- 持续监控`496336`剩余epoch2、最终validation、`final`和`sft2_done.flag`；训练结束后
+  运行独立validator与on-experiment-end记录。不要把CSV重复step或W&B拒绝的历史重放
+  误判为optimizer重复。
