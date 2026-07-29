@@ -127,6 +127,22 @@
 - 人类指出ID53全量cache只申8 CPU cores是资源配置错误。后续全量cache必须
   至少64 CPU cores，提交后核验`ReqTRES`/`AllocTRES`；分区无法满足时必须先说明，
   不得默认降配。已登记`ai_rules/known_errors/E0068_full_cache_must_request_at_least_64_cpus.md`。
+- ID53正式world8 hold `496005`在`dgx-[18,21,31,46]`通过4×2 H800、rank、
+  rendezvous、cache和sampler门禁，随后完成9个finite optimizer steps；训练日志没有
+  traceback、OOM或non-finite metric。但job在7分52秒被提交UID取消，login-owned
+  launcher退出143，W&B `a67863fe`为`crashed`。取消前尚未到20分钟checkpoint周期，
+  因而没有`latest`或任何可resume checkpoint，ID53 output/W&B identity不得复用。
+- 根因属于controller ownership：外部login watcher绑定约8分钟执行生命周期，且其
+  EXIT cleanup是该实验唯一`scancel`路径。人类随后明确要求world size 16；未启动的
+  ID55 world8 retry作废。preempt hold `496027`在`dgx-[03,39,55-56]`占用4×4 H800、
+  128 CPUs。ID54首次core因8条smoke数据只有8个trajectory lane groups、少于16 ranks而
+  在optimizer前失败；W&B `inc6tqjo`无metric/checkpoint，hold保持运行。
+- ID55改用前16条真实trajectory和完整ID53 cache后通过真实WS16 smoke：W&B `j966puhi`，
+  5个finite optimizer steps、validation、`step_000005/epoch_001/best/final`及16份rank
+  history cache完整，退出码0。正式ID56在同一hold以WS16+B1+GA4启动，保持effective
+  global batch 64和每epoch776 optimizer steps；W&B `qwx1zq6k`。全量sampler覆盖49,638
+  windows，已观测前4个finite optimizer steps且每步global SIGReg样本数为16；20分钟
+  checkpoint周期，当前仍在运行。
 
 ## 2026-07-27：DINO-grid state 语义修正与历史结果失效标记
 

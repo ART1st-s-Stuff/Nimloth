@@ -142,9 +142,28 @@
 - 资源复盘：job `495702`在224-core `intel-01`上仅申请8 CPU cores，导致全量cache
   耗时超过2小时。人类要求今后全量cache至少64 CPU cores，且必须核验
   `ReqTRES`/`AllocTRES`；不得因为partition/QoS限制而静默降到8 cores。
+- ID53 formal hold `496005`在4节点×2 H800/world8上完成9个finite optimizer steps，
+  四位置WM/DINO/executed-action value和global SIGReg均实际运行；训练日志没有模型、
+  数据、DDP、OOM或数值错误。随后job在7分52秒显示`CANCELLED by 3738`，launcher与
+  training step均以signal 15结束，W&B `a67863fe`为`crashed`。没有任何checkpoint目录，
+  因而ID53不能resume或复用identity；已验证ID53 preprocessing cache仍有效。
+- 失败根因是login-owned watcher生命周期：它绑定外部约8分钟执行边界，并在退出时
+  释放allocation。人类随后明确要求world size 16，因此未启动的ID55 world8 retry作废。
+  preempt hold `496027`在`dgx-[03,39,55-56]`占用4×4 H800、128 CPUs、400 GiB。
+- ID54首次WS16 core `496027.4`因8-record fixture只有8个trajectory lane groups、少于
+  16 ranks而在optimizer前失败；W&B `inc6tqjo`为`failed`，无metric/checkpoint/done，
+  hold没有释放。CPU sampler验证前16条真实trajectory产生240 windows、17 distributed
+  microbatches、5 optimizer steps且每个global microbatch有12--16个有效样本。
+- ID55 WS16+B1+GA4 smoke已通过：W&B `j966puhi`，5个train step全部finite；validation
+  WM/DINO/value/total为`1.154761/1.449312/0.368020/2.247437`。完整写出
+  `step_000005/epoch_001/best/final`，每份含training state和16份rank history cache，
+  `sft2_done.flag`存在，launcher退出0。
+- 正式ID56在同一hold以WS16+B1+GA4 fresh启动，W&B `qwx1zq6k`，输出
+  `56_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16_px100352/train_ws16`。全量sampler覆盖
+  49,638 windows；已完成前4个finite optimizer steps，每步global SIGReg样本数为16。
+  配置每20分钟写完整checkpoint，当前训练仍在运行。
 
 ## 待完成
 
-- 人类要求立即启动已通过分布式smoke的world8+B1+GA8正式SFT2。提交前复核空输出、
-  W&B ID53、动态4×2 H800 allocation与刚通过的全量cache；启动后监控首个finite
-  optimizer step和首个可恢复checkpoint。
+- 持续监控ID56到首个完整周期checkpoint，核验`latest`、optimizer/training state及
+  16份rank history cache；如preempt则只能从ID56自身完整checkpoint按WS16/GA4恢复。
