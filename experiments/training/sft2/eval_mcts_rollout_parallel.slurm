@@ -38,11 +38,24 @@ if (( ${#EVAL_SETS[@]} < 1 || SHARDS_PER_SET < 1 || EPISODES_PER_SET % SHARDS_PE
 fi
 ENV_LOG=${EVAL_OUTPUT}/env_server_${SLURM_JOB_ID}.log
 CONTROLLER_LOG=${EVAL_OUTPUT}/controller_${SLURM_JOB_ID}.log
+AI2THOR_JOB_HOME=${EVAL_OUTPUT}/.runtime/ai2thor_home_${SLURM_JOB_ID}
+AI2THOR_SHARED_HOME=/project/peilab/atst/flower/.ai2thor-home
 ENV_STEP_PID=
 CHILD_PIDS=()
 CHILD_SETS=()
 
 mkdir -p "${EVAL_OUTPUT}" "${EVAL_OUTPUT}/eval_sets" "${EVAL_OUTPUT}/.attempts"
+mkdir -p "${AI2THOR_JOB_HOME}/.ai2thor"
+if test -e "${AI2THOR_JOB_HOME}/.ai2thor/releases"; then
+  test -L "${AI2THOR_JOB_HOME}/.ai2thor/releases"
+else
+  ln -s "${AI2THOR_SHARED_HOME}/.ai2thor/releases" \
+    "${AI2THOR_JOB_HOME}/.ai2thor/releases"
+fi
+# AI2-THOR把CUDA index到Vulkan index的映射缓存在HOME。复用其他节点或
+# allocation生成的映射时，Unity可能落到错误物理GPU并静默返回全黑frame。
+# job-local HOME只复用不可变release，映射必须在本allocation内重新生成。
+test ! -e "${AI2THOR_JOB_HOME}/.ai2thor/cuda-vulkan-mapping.json"
 
 export PATH=${ROOT}/.venv-vagen-main/bin:${PATH}
 export PYTHONPATH=${EVAL_WORKTREE}/src:${EVAL_WORKTREE}/external/VAGEN:${EVAL_WORKTREE}/external/VAGEN/verl:${EVAL_WORKTREE}/external/le-wm:${PYTHONPATH:-}
@@ -95,6 +108,7 @@ trap cleanup EXIT
   echo "shards_per_set=${SHARDS_PER_SET}"
   echo "episodes_per_shard=${EPISODES_PER_SHARD}"
   echo "gpu_memory_utilization_per_engine=${GPU_MEMORY_UTILIZATION}"
+  echo "ai2thor_job_home=${AI2THOR_JOB_HOME}"
   echo "mcts=H1_K4_sim100_c1"
   echo "sampling=temp0.7_top_p0.95_max_tokens512"
   echo "resources=partition_${SLURM_JOB_PARTITION}_nodes_${SLURM_JOB_NUM_NODES}_gpus_per_node_${SLURM_GPUS_ON_NODE:-unknown}_cpus_${SLURM_CPUS_PER_TASK:-unknown}_mem_mb_${SLURM_MEM_PER_NODE:-unknown}"
@@ -141,6 +155,7 @@ PY
     set -euo pipefail
     export PATH='${ROOT}/.venv-vagen-main/bin':\"\${PATH}\"
     export PYTHONPATH='${EVAL_WORKTREE}/external/VAGEN:${EVAL_WORKTREE}/external/VAGEN/verl'
+    export AI2THOR_HOME_ROOT='${AI2THOR_JOB_HOME}'
     source '${EVAL_WORKTREE}/experiments/training/baseline/setup_ai2thor_env.sh'
     cd '${EVAL_WORKTREE}/external/VAGEN'
     exec '${PY}' -m vagen.server.server \\
@@ -161,6 +176,10 @@ for _ in $(seq 1 120); do
 done
 curl -fsS --max-time 10 "${ENV_URL}/health" >/dev/null
 echo "environment_ready=${ENV_URL}" | tee -a "${CONTROLLER_LOG}"
+"${PY}" -m nimloth.environment.navigation.prewarm \
+  --env-url "${ENV_URL}" --eval-set base --seed 1 \
+  --env-id "sft2-mcts-render-prewarm-${SLURM_JOB_ID}" \
+  | tee -a "${CONTROLLER_LOG}"
 
 for eval_set in "${EVAL_SETS[@]}"; do
   completed_shards=0

@@ -10,6 +10,7 @@ from typing import Any
 
 from nimloth.environment.navigation.vagen import (
     NAVIGATION_REQUEST_TIMEOUT_SECONDS,
+    navigation_image_dynamic_range,
     navigation_environment_config,
     observation_image,
     observation_text,
@@ -27,6 +28,7 @@ class NavigationPrewarmResult:
     observation_chars: int
     image_width: int
     image_height: int
+    image_dynamic_range: int
 
 
 def prewarm_navigation_client(
@@ -58,6 +60,7 @@ def prewarm_navigation_client(
             observation_chars=len(text),
             image_width=image.width,
             image_height=image.height,
+            image_dynamic_range=navigation_image_dynamic_range(image),
         )
     finally:
         client.close_batch([env_id])

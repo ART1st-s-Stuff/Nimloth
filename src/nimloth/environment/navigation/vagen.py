@@ -39,15 +39,15 @@ def observation_image(raw_observation: Any) -> Image.Image:
     """把 VAGEN observation 中的第一张图转换为 RGB PIL image。"""
 
     if isinstance(raw_observation, Image.Image):
-        return raw_observation.convert("RGB")
+        return validate_navigation_image(raw_observation)
     if hasattr(raw_observation, "shape"):
-        return Image.fromarray(raw_observation).convert("RGB")
+        return validate_navigation_image(Image.fromarray(raw_observation))
     if not isinstance(raw_observation, dict):
         raise ValueError(f"unknown observation type: {type(raw_observation)}")
 
     for key in ("image", "rgb", "pixels"):
         if key in raw_observation:
-            return _image_value(raw_observation[key])
+            return validate_navigation_image(_image_value(raw_observation[key]))
 
     multi_modal_data = raw_observation.get("multi_modal_data", {})
     if isinstance(multi_modal_data, dict):
@@ -64,10 +64,31 @@ def observation_image(raw_observation: Any) -> Image.Image:
         )
         for values in values_by_priority:
             if isinstance(values, list) and values:
-                return _image_value(values[0])
+                return validate_navigation_image(_image_value(values[0]))
     raise ValueError(
         f"cannot extract image from observation keys {list(raw_observation.keys())}"
     )
+
+
+def validate_navigation_image(image: Image.Image) -> Image.Image:
+    """拒绝AI2-THOR/Vulkan故障产生的纯色伪观测。"""
+
+    rgb = image.convert("RGB")
+    extrema = rgb.getextrema()
+    dynamic_range = max(high - low for low, high in extrema)
+    if dynamic_range == 0:
+        raise RuntimeError(
+            "navigation observation is a uniform image; "
+            f"AI2-THOR/Vulkan rendering is invalid: extrema={extrema}"
+        )
+    return rgb
+
+
+def navigation_image_dynamic_range(image: Image.Image) -> int:
+    """返回RGB通道内最大的像素动态范围，供启动门禁记录。"""
+
+    extrema = image.convert("RGB").getextrema()
+    return max(high - low for low, high in extrema)
 
 
 def _image_value(value: Any) -> Image.Image:

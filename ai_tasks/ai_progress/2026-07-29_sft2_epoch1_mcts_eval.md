@@ -71,3 +71,31 @@ step从H=1的当前Qwen latent state运行K=4 MCTS，只执行胜出根动作的
   合同与完整1--60 seed范围。W&B显式字段在source `.env`后恢复。相关CPU回归为
   `65 passed, 1 warning`，Python compile、两个shell入口`bash -n`和`git diff --check`通过。
   在1-GPU双engine真实smoke通过前不停止job `496818`。
+
+## 2026-07-30：黑帧使ID57结果无效，已停止并修复启动门禁
+
+- 加速smoke ID58/job `496856`在`normal/dgx-29`取得2×H800/40 CPU。两个vLLM engine
+  均能在同一H800加载（每个约18.3 GiB KV cache）；shard0完成seed1的20步episode，
+  shard1在创建第二个AI2-THOR environment时等待300秒后HTTP timeout。严格controller因
+  分片不全退出5，job最终`FAILED`，没有聚合或W&B发布。
+- shard0首次提供了可逐episode审计的轨迹：目标为Pot，20步MCTS全部执行`turn_right`；
+  每步root action 4都是ValueHead最高分，top simulated sequence长期为`[4,4,0,0]`或
+  `[4,4,1,0]`。17/20条Qwen reasoning因512-token上限截断，文本大量乱码。
+- 更关键的是，shard0的21张真实observation全部为相同的255×255纯黑RGB PNG。进一步
+  扫描仍运行的ID57/job `496818`：取消前五类完成83/300（17/17/16/17/16），全部0成功；
+  其1,743张已保存observation也全部纯黑、只有一个SHA256
+  `e5bfb29c66104406931a7bbebd9b4443df980ca7902bc4ee4c75d6a672e017cb`。
+  因此0/83不是checkpoint真实成功率，整个ID57评估无效。
+- job `496818`已于`2026-07-30T01:30:02+08:00`主动取消，最终Slurm为
+  `CANCELLED by 3738`、runtime53分01秒。ID57与ID58输出均新增`END_STATUS.md`，保留
+  全部日志/图片；没有有效partial trajectory可resume，也禁止与修复后结果聚合。
+- 根因证据：启动器复用共享HOME中的
+  `/project/peilab/atst/flower/.ai2thor-home/.ai2thor/cuda-vulkan-mapping.json`；该文件
+  生成于旧节点/allocation，内容是旧的CUDA index到Vulkan index映射。AI2-THOR按该缓存
+  启动Unity时可能选择错误物理Vulkan device，进程仍存活但静默返回全黑frame。当前
+  AI2-THOR prewarm只检查图片尺寸，未检查像素，因此没有fail closed。
+- 修复进行中：评估controller为每个Slurm job建立独立AI2-THOR HOME，仅软链共享的
+  immutable release并强制本allocation重新生成CUDA/Vulkan mapping；在加载rollout worker
+  前执行真实create/reset/close prewarm。`observation_image()`现对每一个真实observation
+  检查RGB通道动态范围，纯色frame立即抛错；prewarm记录`image_dynamic_range`。
+  新增纯色图失败回归，当前定向CPU测试`3 passed`，shell syntax与diff check通过。
