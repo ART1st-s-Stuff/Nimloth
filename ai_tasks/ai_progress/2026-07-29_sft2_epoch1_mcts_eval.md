@@ -39,9 +39,19 @@ step从H=1的当前Qwen latent state运行K=4 MCTS，只执行胜出根动作的
 ## 当前状态
 
 - MCTS真实rollout实现及原有相关CPU回归已完成：`271 passed, 1 skipped, 1 warning`。
-- 新增五路并行Slurm controller和严格聚合器；聚合器新增测试`2 passed`，Python compile、
-  Slurm `bash -n`和`git diff --check`通过。
-- 集群快照：normal共有27张空闲GPU，其中`dgx-52/dgx-54`各显示8张空闲但为
-  `IDLE+PLANNED`；提交时不固定节点，由Slurm选择满足单节点6卡的实际资源。
-- 尚未提交GPU job；提交前仍需完成代码commit/push、独立远端worktree、exact-environment
-  checkpoint/入口preflight和实验输出README。
+  新增五路并行Slurm controller和严格聚合器；聚合器新增测试`2 passed`。
+- 代码提交并推送到`dev`：主要实现`52aae8e3`，随后修正启动器只能引用detached
+  worktree内锁定的VAGEN/le-wm子模块（`bf4cf22c`），并按实际JSON包装读取五个数据集的
+  `tasks`字段（`4ccd2e8a936ac22c37349d6c2a1ca9c08ced2a5d`）。
+- exact remote worktree为
+  `/project/peilab/atst/nimloth/.worktree/sft2-mcts-eval-bf4cf22c`，HEAD已核验为
+  `4ccd2e8a936ac22c37349d6c2a1ca9c08ced2a5d`且clean；VAGEN=`192c35a9`、
+  le-wm=`8edfeb33`。显式使用`.venv-vagen-main/bin/python3`的远端回归为
+  `58 passed, 1 warning`，Python compile、Slurm `bash -n`通过。
+- exact checkpoint preflight输出epoch1/step776/H1/K4/8 actions；五个锁定VAGEN eval
+  assets的`tasks`数组均为60条。输出README已在正式输出根目录写入，W&B run ID为
+  `809f5bed`（只在五类结果成功聚合后创建run）。
+- 正式normal job `496818`已于`2026-07-30T00:26:11+08:00`提交，唯一请求为单节点
+  6 GPU/128 CPU/512 GiB/6小时；当前`PENDING (Priority)`、尚未分配GPU。Slurm当前
+  估计`2026-07-30T05:41:09+08:00`在`dgx-14`启动；未提交重复任务。分散到2/3/6节点
+  的test-only方案没有更早调度时间，因此保留用户要求的normal正式任务。
