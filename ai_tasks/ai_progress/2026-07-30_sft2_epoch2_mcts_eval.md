@@ -65,3 +65,24 @@ observation重新规划。
   并更新本进度记录。
 - 本地/远端launch脚本`bash -n`通过；remote worktree HEAD、clean状态、checkpoint合同、
   五类60-task数据、render dynamic range和两项Slurm allocation均已核验。
+
+## 最终结果
+
+- 主job`496936`运行41分41秒后为`FAILED 5:0`：原因是controller保留了最初失败的
+  `visual_appearance/shard_00` child；其他九个shard均完整并原子进入`eval_sets/`。
+- 补充job`496938`为`COMPLETED 0:0`、22分19秒，缺失的visual seeds1--30 shard自身
+  summary为`ALL_OK`。CPU聚合job`496971`为`COMPLETED 0:0`、36秒。
+- 聚合器核对十个evaluation contract、五类各精确seeds1--60、每shard30条、finite metrics，
+  最终`rollout_summary.json`和`mcts_eval_done.flag=ALL_OK`已生成；正式总量为300 trajectories、
+  5,330 real-environment transitions。
+- 最终overall为49/300 success，success rate=`0.163333`，average reward=`0.697333`，
+  average steps=`17.766667`。
+- 分项：base 9/60=`15.00%`；common_sense 8/60=`13.33%`；complex_instruction
+  9/60=`15.00%`；long_horizon 9/60=`15.00%`；visual_appearance 14/60=`23.33%`。
+- 5,330次Qwen response中608次因512-token上限结束、4,722次正常stop；截断主要集中于
+  common_sense和complex_instruction。这是质量信号，尚不能单独证明失败原因。平均
+  17.77/20 steps说明多数episode仍运行到或接近step上限。
+- W&B `nimloth-sft2/63e2eval`已成功同步并finished：
+  `https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth-sft2/runs/63e2eval`。
+- 实验目的已达到，无需resume；主Slurm非零终态不改变十个shard与严格聚合均通过的核心
+  结论。输出保留全部图片、trajectory、MCTS trace、shard summary和日志。

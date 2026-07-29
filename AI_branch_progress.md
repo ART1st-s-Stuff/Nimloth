@@ -3085,3 +3085,13 @@
   完成后必须另起batch-owned严格aggregator并以精确300-seed `ALL_OK`发布W&B/最终指标。
 - 完整合同、job、错误隔离和聚合门禁见
   `ai_tasks/ai_progress/2026-07-30_sft2_epoch2_mcts_eval.md`。
+- ID63已正式完成：主job`496936`因保留原visual child失败而为`FAILED 5:0`，但九个有效
+  shard完整；补充job`496938`和严格CPU聚合job`496971`均`COMPLETED 0:0`。十个shard、
+  五类各seeds1--60、共300 trajectories/5,330 transitions通过合同校验并生成
+  `mcts_eval_done.flag=ALL_OK`。
+- epoch2 MCTS真实rollout最终49/300 success=`16.33%`，平均reward=`0.6973`、平均steps
+  `17.7667/20`；base/common_sense/complex_instruction/long_horizon/visual_appearance分别为
+  `15.00%/13.33%/15.00%/15.00%/23.33%`。W&B `nimloth-sft2/63e2eval`已同步完成。
+- 5,330次Qwen response中608次触发512-token上限，主要集中在common_sense和
+  complex_instruction；该统计是后续质量分析信号，不能单独归因失败。实验无需resume，
+  全部轨迹、图片、MCTS trace、summary和日志保留在ID63输出目录。
