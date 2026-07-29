@@ -99,3 +99,16 @@ step从H=1的当前Qwen latent state运行K=4 MCTS，只执行胜出根动作的
   前执行真实create/reset/close prewarm。`observation_image()`现对每一个真实observation
   检查RGB通道动态范围，纯色frame立即抛错；prewarm记录`image_dynamic_range`。
   新增纯色图失败回归，当前定向CPU测试`3 passed`，shell syntax与diff check通过。
+- fail-closed修复和远端回归已提交并推送：`16f6ffdd`；render-only gate为
+  `c355dd37`。完整远端定向回归为`43 passed`，exact worktree HEAD为
+  `c355dd3756281e7687ca4733a7d8670c05a93496`。
+- ID60/job `496878`在`normal/dgx-09`用job-local HOME生成新映射`{"0":0}`；Unity识别
+  NVIDIA H800并建立render texture/FIFO，但Controller握手300秒未完成，最终
+  `FAILED 1:0`、运行5分20秒，没有产生图片、Qwen或MCTS结果。
+- ID61/job `496883`在`normal/dgx-29`复现同类失败：environment HTTP服务健康，但第一次
+  create environment在300秒后超时，最终`FAILED 1:0`、运行5分17秒；没有产生图片、
+  Qwen、MCTS或W&B结果。两次失败均为门禁正确拒绝，不能作为checkpoint评估。
+- 历史SFT1有效rollout输出中，dgx-38/dgx-44等节点的环境服务能快速完成大量Initialize，
+  迁移到SFT2的数据图片为正常512×512非黑RGB。旧流程会在6张allocated GPU上逐卡创建
+  AI2-THOR Controller，再选择通过的卡给环境；下一步需恢复逐卡筛选，同时把判定从“能
+  reset/有尺寸”加强为“真实frame有非零动态范围”，然后才允许Qwen/MCTS启动。

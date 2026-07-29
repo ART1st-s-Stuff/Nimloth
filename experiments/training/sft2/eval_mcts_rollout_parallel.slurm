@@ -24,7 +24,6 @@ set -euo pipefail
 
 ROOT=/project/peilab/atst/nimloth
 PY=${ROOT}/.venv-vagen-main/bin/python3
-SL=/cm/shared/apps/slurm/current/bin
 ENV_PORT=$((18400 + SLURM_JOB_ID % 1000))
 ENV_URL=http://127.0.0.1:${ENV_PORT}
 read -r -a EVAL_SETS <<< "${EVAL_SETS_OVERRIDE:-base common_sense complex_instruction visual_appearance long_horizon}"
@@ -41,26 +40,34 @@ if test "${RENDER_PREFLIGHT_ONLY}" != true && test "${RENDER_PREFLIGHT_ONLY}" !=
   echo "RENDER_PREFLIGHT_ONLY must be true or false" >&2
   exit 2
 fi
+IFS=',' read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES:?CUDA_VISIBLE_DEVICES is required}"
+for index in "${!ALLOCATED_GPUS[@]}"; do
+  ALLOCATED_GPUS[$index]=$(echo "${ALLOCATED_GPUS[$index]}" | xargs)
+done
+if (( ${#ALLOCATED_GPUS[@]} < 1 )); then
+  echo "no allocated GPU is visible" >&2
+  exit 2
+fi
+if test "${RENDER_PREFLIGHT_ONLY}" = false && (( ${#ALLOCATED_GPUS[@]} < ${#EVAL_SETS[@]} + 1 )); then
+  echo "evaluation needs one render GPU plus one policy GPU per eval set" >&2
+  exit 2
+fi
 ENV_LOG=${EVAL_OUTPUT}/env_server_${SLURM_JOB_ID}.log
 CONTROLLER_LOG=${EVAL_OUTPUT}/controller_${SLURM_JOB_ID}.log
-AI2THOR_JOB_HOME=${EVAL_OUTPUT}/.runtime/ai2thor_home_${SLURM_JOB_ID}
+AI2THOR_RUNTIME_ROOT=${EVAL_OUTPUT}/.runtime/ai2thor_${SLURM_JOB_ID}
 AI2THOR_SHARED_HOME=/project/peilab/atst/flower/.ai2thor-home
 ENV_STEP_PID=
 CHILD_PIDS=()
 CHILD_SETS=()
+CHILD_GPUS=()
+PROBE_PIDS=()
+PROBE_GPUS=()
+PROBE_HOMES=()
+GOOD_ENV_GPUS=()
+GOOD_ENV_HOMES=()
 
 mkdir -p "${EVAL_OUTPUT}" "${EVAL_OUTPUT}/eval_sets" "${EVAL_OUTPUT}/.attempts"
-mkdir -p "${AI2THOR_JOB_HOME}/.ai2thor"
-if test -e "${AI2THOR_JOB_HOME}/.ai2thor/releases"; then
-  test -L "${AI2THOR_JOB_HOME}/.ai2thor/releases"
-else
-  ln -s "${AI2THOR_SHARED_HOME}/.ai2thor/releases" \
-    "${AI2THOR_JOB_HOME}/.ai2thor/releases"
-fi
-# AI2-THOR把CUDA index到Vulkan index的映射缓存在HOME。复用其他节点或
-# allocation生成的映射时，Unity可能落到错误物理GPU并静默返回全黑frame。
-# job-local HOME只复用不可变release，映射必须在本allocation内重新生成。
-test ! -e "${AI2THOR_JOB_HOME}/.ai2thor/cuda-vulkan-mapping.json"
+mkdir -p "${AI2THOR_RUNTIME_ROOT}"
 
 export PATH=${ROOT}/.venv-vagen-main/bin:${PATH}
 export PYTHONPATH=${EVAL_WORKTREE}/src:${EVAL_WORKTREE}/external/VAGEN:${EVAL_WORKTREE}/external/VAGEN/verl:${EVAL_WORKTREE}/external/le-wm:${PYTHONPATH:-}
@@ -91,6 +98,9 @@ export WANDB_RUN_ID=${REQUESTED_WANDB_RUN_ID}
 
 cleanup() {
   set +e
+  for pid in "${PROBE_PIDS[@]:-}"; do
+    kill "${pid}" >/dev/null 2>&1 || true
+  done
   for pid in "${CHILD_PIDS[@]:-}"; do
     kill "${pid}" >/dev/null 2>&1 || true
   done
@@ -100,6 +110,19 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+prepare_ai2thor_home() {
+  local ai2thor_home=$1
+  mkdir -p "${ai2thor_home}/.ai2thor"
+  if test -e "${ai2thor_home}/.ai2thor/releases"; then
+    test -L "${ai2thor_home}/.ai2thor/releases"
+  else
+    ln -s "${AI2THOR_SHARED_HOME}/.ai2thor/releases" \
+      "${ai2thor_home}/.ai2thor/releases"
+  fi
+  # 每张allocated GPU使用独立HOME并在当前allocation内重建映射。
+  rm -f "${ai2thor_home}/.ai2thor/cuda-vulkan-mapping.json"
+}
 
 {
   echo "time=$(date --iso-8601=seconds)"
@@ -113,7 +136,8 @@ trap cleanup EXIT
   echo "shards_per_set=${SHARDS_PER_SET}"
   echo "episodes_per_shard=${EPISODES_PER_SHARD}"
   echo "gpu_memory_utilization_per_engine=${GPU_MEMORY_UTILIZATION}"
-  echo "ai2thor_job_home=${AI2THOR_JOB_HOME}"
+  echo "allocated_gpus=${ALLOCATED_GPUS[*]}"
+  echo "ai2thor_runtime_root=${AI2THOR_RUNTIME_ROOT}"
   echo "render_preflight_only=${RENDER_PREFLIGHT_ONLY}"
   echo "mcts=H1_K4_sim100_c1"
   echo "sampling=temp0.7_top_p0.95_max_tokens512"
@@ -155,19 +179,71 @@ for name in ("base", "common_sense", "complex_instruction", "visual_appearance",
     print(json.dumps({"eval_set": name, "tasks": len(records)}), flush=True)
 PY
 
-# One dedicated GPU owns the real AI2-THOR/VAGEN environment service.
-"${SL}/srun" --exclusive --exact --nodes=1 --ntasks=1 --gres=gpu:1 --cpus-per-task=16 \
-  bash -lc "
+# AI2-THOR能在错误Vulkan device上保持Unity进程存活但返回全黑frame。并行probe
+# allocation内每张GPU；只有直接Controller reset拿到非纯色真实frame才可承载env。
+for gpu in "${ALLOCATED_GPUS[@]}"; do
+  safe_gpu=${gpu//[^a-zA-Z0-9_.-]/_}
+  probe_home=${AI2THOR_RUNTIME_ROOT}/gpu_${safe_gpu}
+  probe_log=${EVAL_OUTPUT}/render_probe_gpu_${safe_gpu}_${SLURM_JOB_ID}.log
+  prepare_ai2thor_home "${probe_home}"
+  (
     set -euo pipefail
-    export PATH='${ROOT}/.venv-vagen-main/bin':\"\${PATH}\"
-    export PYTHONPATH='${EVAL_WORKTREE}/external/VAGEN:${EVAL_WORKTREE}/external/VAGEN/verl'
-    export AI2THOR_HOME_ROOT='${AI2THOR_JOB_HOME}'
-    source '${EVAL_WORKTREE}/experiments/training/baseline/setup_ai2thor_env.sh'
-    cd '${EVAL_WORKTREE}/external/VAGEN'
-    exec '${PY}' -m vagen.server.server \\
-      server.host=0.0.0.0 server.port='${ENV_PORT}' \\
-      use_state_reward=False navigation.devices='[0]' navigation.max_workers=16
-  " > "${ENV_LOG}" 2>&1 &
+    export CUDA_VISIBLE_DEVICES="${gpu}"
+    export AI2THOR_HOME_ROOT="${probe_home}"
+    source "${EVAL_WORKTREE}/experiments/training/baseline/setup_ai2thor_env.sh"
+    timeout --signal=TERM 150s "${PY}" \
+      -m nimloth.environment.navigation.direct_render_probe
+  ) > "${probe_log}" 2>&1 &
+  PROBE_PIDS+=("$!")
+  PROBE_GPUS+=("${gpu}")
+  PROBE_HOMES+=("${probe_home}")
+done
+
+for index in "${!PROBE_PIDS[@]}"; do
+  gpu=${PROBE_GPUS[$index]}
+  if wait "${PROBE_PIDS[$index]}"; then
+    GOOD_ENV_GPUS+=("${gpu}")
+    GOOD_ENV_HOMES+=("${PROBE_HOMES[$index]}")
+    echo "render_probe_ok_gpu=${gpu}" | tee -a "${CONTROLLER_LOG}"
+  else
+    safe_gpu=${gpu//[^a-zA-Z0-9_.-]/_}
+    echo "render_probe_failed_gpu=${gpu}" | tee -a "${CONTROLLER_LOG}"
+    tail -100 "${EVAL_OUTPUT}/render_probe_gpu_${safe_gpu}_${SLURM_JOB_ID}.log" >&2 || true
+  fi
+done
+if (( ${#GOOD_ENV_GPUS[@]} < 1 )); then
+  echo "no allocated GPU passed the non-uniform AI2-THOR render probe" >&2
+  exit 4
+fi
+
+ENV_GPU=${GOOD_ENV_GPUS[0]}
+ENV_GPU_HOME=${GOOD_ENV_HOMES[0]}
+POLICY_GPUS=()
+for gpu in "${ALLOCATED_GPUS[@]}"; do
+  if test "${gpu}" != "${ENV_GPU}"; then
+    POLICY_GPUS+=("${gpu}")
+  fi
+done
+if test "${RENDER_PREFLIGHT_ONLY}" = false && (( ${#POLICY_GPUS[@]} < ${#EVAL_SETS[@]} )); then
+  echo "not enough policy GPUs remain after selecting render GPU ${ENV_GPU}" >&2
+  exit 4
+fi
+echo "selected_env_gpu=${ENV_GPU} policy_gpus=${POLICY_GPUS[*]:-}" | tee -a "${CONTROLLER_LOG}"
+
+# Direct CUDA_VISIBLE_DEVICES pinning preserves the exact physical GPU that
+# passed the render probe; nested srun ordinal remapping would lose that fact.
+(
+  set -euo pipefail
+  export CUDA_VISIBLE_DEVICES="${ENV_GPU}"
+  export PATH="${ROOT}/.venv-vagen-main/bin:${PATH}"
+  export PYTHONPATH="${EVAL_WORKTREE}/external/VAGEN:${EVAL_WORKTREE}/external/VAGEN/verl"
+  export AI2THOR_HOME_ROOT="${ENV_GPU_HOME}"
+  source "${EVAL_WORKTREE}/experiments/training/baseline/setup_ai2thor_env.sh"
+  cd "${EVAL_WORKTREE}/external/VAGEN"
+  exec "${PY}" -m vagen.server.server \
+    server.host=0.0.0.0 server.port="${ENV_PORT}" \
+    use_state_reward=False navigation.devices='[0]' navigation.max_workers=16
+) > "${ENV_LOG}" 2>&1 &
 ENV_STEP_PID=$!
 
 for _ in $(seq 1 120); do
@@ -191,6 +267,7 @@ if test "${RENDER_PREFLIGHT_ONLY}" = true; then
   exit 0
 fi
 
+policy_gpu_index=0
 for eval_set in "${EVAL_SETS[@]}"; do
   completed_shards=0
   for (( shard_index=0; shard_index<SHARDS_PER_SET; shard_index++ )); do
@@ -203,23 +280,27 @@ for eval_set in "${EVAL_SETS[@]}"; do
     echo "resume_skip=${eval_set}" | tee -a "${CONTROLLER_LOG}"
     continue
   fi
-  "${SL}/srun" --exclusive --exact --nodes=1 --ntasks=1 --gres=gpu:1 --cpus-per-task=20 \
-    bash -lc "
-      set -euo pipefail
-      export PATH='${ROOT}/.venv-vagen-main/bin':\"\${PATH}\"
-      export PYTHONPATH='${PYTHONPATH}'
-      export HOME='${HOME}' HF_HOME='${HF_HOME}' TRANSFORMERS_CACHE='${TRANSFORMERS_CACHE}' TORCH_HOME='${TORCH_HOME}'
-      export TOKENIZERS_PARALLELISM=true VLLM_WORKER_MULTIPROC_METHOD=spawn
-      export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-      export EVAL_WORKTREE='${EVAL_WORKTREE}' SFT2_CHECKPOINT='${SFT2_CHECKPOINT}'
-      export EVAL_OUTPUT='${EVAL_OUTPUT}' EVAL_SET='${eval_set}' ENV_URL='${ENV_URL}'
-      export PY='${PY}' SHARDS_PER_SET='${SHARDS_PER_SET}'
-      export EPISODES_PER_SET='${EPISODES_PER_SET}' SEED_OFFSET=1
-      export GPU_MEMORY_UTILIZATION='${GPU_MEMORY_UTILIZATION}'
-      exec bash '${EVAL_WORKTREE}/experiments/training/sft2/run_mcts_eval_shards.sh'
-    " > "${EVAL_OUTPUT}/${eval_set}_${SLURM_JOB_ID}.log" 2>&1 &
+  policy_gpu=${POLICY_GPUS[$policy_gpu_index]}
+  policy_gpu_index=$((policy_gpu_index + 1))
+  (
+    set -euo pipefail
+    export CUDA_VISIBLE_DEVICES="${policy_gpu}"
+    export PATH="${ROOT}/.venv-vagen-main/bin:${PATH}"
+    export PYTHONPATH="${PYTHONPATH}"
+    export HOME="${HOME}" HF_HOME="${HF_HOME}" TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE}" TORCH_HOME="${TORCH_HOME}"
+    export TOKENIZERS_PARALLELISM=true VLLM_WORKER_MULTIPROC_METHOD=spawn
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    export EVAL_WORKTREE="${EVAL_WORKTREE}" SFT2_CHECKPOINT="${SFT2_CHECKPOINT}"
+    export EVAL_OUTPUT="${EVAL_OUTPUT}" EVAL_SET="${eval_set}" ENV_URL="${ENV_URL}"
+    export PY="${PY}" SHARDS_PER_SET="${SHARDS_PER_SET}"
+    export EPISODES_PER_SET="${EPISODES_PER_SET}" SEED_OFFSET=1
+    export GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION}"
+    exec bash "${EVAL_WORKTREE}/experiments/training/sft2/run_mcts_eval_shards.sh"
+  ) > "${EVAL_OUTPUT}/${eval_set}_${SLURM_JOB_ID}.log" 2>&1 &
   CHILD_PIDS+=("$!")
   CHILD_SETS+=("${eval_set}")
+  CHILD_GPUS+=("${policy_gpu}")
+  echo "eval_set_start=${eval_set} policy_gpu=${policy_gpu}" | tee -a "${CONTROLLER_LOG}"
 done
 
 failed=0
@@ -228,6 +309,7 @@ for index in "${!CHILD_PIDS[@]}"; do
   wait "${CHILD_PIDS[$index]}"
   code=$?
   eval_set=${CHILD_SETS[$index]}
+  policy_gpu=${CHILD_GPUS[$index]}
   complete=true
   for (( shard_index=0; shard_index<SHARDS_PER_SET; shard_index++ )); do
     shard_name=$(printf 'shard_%02d' "${shard_index}")
@@ -236,9 +318,9 @@ for index in "${!CHILD_PIDS[@]}"; do
     fi
   done
   if test "${code}" -eq 0 && test "${complete}" = true; then
-    echo "eval_set_done=${eval_set}" | tee -a "${CONTROLLER_LOG}"
+    echo "eval_set_done=${eval_set} policy_gpu=${policy_gpu}" | tee -a "${CONTROLLER_LOG}"
   else
-    echo "eval_set_failed=${eval_set} exit=${code}" | tee -a "${CONTROLLER_LOG}"
+    echo "eval_set_failed=${eval_set} policy_gpu=${policy_gpu} exit=${code}" | tee -a "${CONTROLLER_LOG}"
     failed=1
   fi
 done
