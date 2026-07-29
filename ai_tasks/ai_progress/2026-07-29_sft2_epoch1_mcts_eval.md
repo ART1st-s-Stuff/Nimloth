@@ -119,3 +119,21 @@ step从H=1的当前Qwen latent state运行K=4 MCTS，只执行胜出根动作的
   在各子进程里改`CUDA_VISIBLE_DEVICES`但固定`gpu_device=0`会重复probe ordinal 0；本次
   选择的ordinal 0已实际通过，不影响ID62有效性，但正式任务前已进一步改为保留完整
   allocation visibility并显式用`gpu_device=<ordinal>`逐卡验证和固定环境device。
+- ID62/job `496893`最终`COMPLETED 0:0`、5分34秒、严格聚合`ALL_OK`，W&B
+  `62smokerender2`已finished。两条base test轨迹/40 transitions均跑满20步且失败，
+  success 0/2、平均reward -1.25；这是有效非黑画面上的质量smoke，不是正式300条指标。
+  42张PNG有7个不同hash；重复图来自失败动作/相机到极限后真实状态不变，而非渲染故障。
+- 有效动作分布为look_up22、move_left11、look_down6、move_forward1，其余0；25/40步
+  `last_action_success=false`。MCTS root value持续压低两个turn action并选look_up/moveleft，
+  导致不转向、撞墙和相机上下循环。Qwen reasoning未截断，但非常短且泛化，例如Pot的
+  20步均为`Move to the Pot`，无法纠正ValueHead选择。
+- 全量train JSONL只含trajectory-terminal reward；gamma1使同episode每个执行action都取
+  相同0.2或1.2 target。3211 episodes/59269 transitions中success613（19.09%）；action
+  覆盖极不均衡：moveahead52.76%、moveleft23.12%、moveright14.49%，look_up仅271次
+  （0.46%）且target全部0.2。SFT2又只监督当前state实际执行slot，因此其他slot在该state
+  无直接loss。smoke却22/40选择look_up，构成明确的离线action-value外推失真证据；当前
+  leaf-only MCTS也没有immediate reward/invalid-action model来惩罚模拟中的失败动作。
+- Slurm allocation-local ordinal精确probe后续修复为`eda89c63`并已推送；远端exact worktree
+  `eda89c630b98136a58040a402ea780bd52039349`定向回归`18 passed`、shell/compile通过且
+  清理测试生成的`le-wm/__pycache__`后tracked/untracked均clean。正式300条评估不得使用
+  早于该提交的逐卡选择逻辑。
