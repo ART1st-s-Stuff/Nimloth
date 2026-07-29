@@ -3054,3 +3054,15 @@
 - 23:41实时检查时job仍为`RUNNING`，已进入epoch2并推进到global step1300/1552；
   epoch2完成524/776 steps，最新loss有限，23:33的周期`latest`已完整落盘。日志仍无
   traceback、OOM、NCCL failure或non-finite；`sft2_done.flag`尚未出现。
+- `496336`已完成epoch2/global step1552的validation并完整写出`epoch_002`、`best`、
+  `final`。epoch2的WM/DINO/value/total为`0.444932/0.898673/0.132444/1.026712`，
+  相比epoch1下降17.04%/3.10%/18.20%/11.64%；epoch2成为新的WM-best。
+- `epoch_002`的training state标记`epoch_complete=true`，WS16/H1/T4/value-objective
+  不变量正确；其state projector、predictor、ValueHead与`best`、`final`逐字节相同，
+  W&B最终同步完成。CSV按同epoch/step保留最后一条后正好是2×776 unique optimizer steps。
+- Slurm作业仍以exit1结束：两个node-local step在训练、validation、checkpoint和W&B均
+  完成后返回1，未生成`sft2_done.flag`。现有日志无traceback/OOM/NCCL/non-finite，具体
+  cleanup失败原因未确认；因此终态应区分“核心两epoch训练完成”和“batch wrapper失败”。
+- 第二epoch统计预示记录动作上的预测会改善，但不能推出MCTS rollout必然改善：value
+  validation只回归原始rollout实际动作，未度量8-action argmax下的未执行动作外推。
+  需用epoch2与epoch1做同seed、有效render门禁的paired rollout再判断success rate。

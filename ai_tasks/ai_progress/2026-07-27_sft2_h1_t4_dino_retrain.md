@@ -189,9 +189,27 @@
 - 23:41实时检查时job仍为`RUNNING`，已进入epoch2并推进到global step1300/1552；
   epoch2完成524/776 optimizer steps，当前最新loss有限，23:33的周期`latest`已完整落盘。
   日志仍无traceback、OOM、NCCL failure或non-finite；`sft2_done.flag`尚未出现。
+- `496336`随后完整完成epoch2和global step1552 validation。epoch2的WM/DINO/value/total
+  分别为`0.4449315244639223/0.8986731716878764/0.13244377001634458/
+  1.0267118809695808`，较epoch1分别下降17.04%/3.10%/18.20%/11.64%；checkpoint
+  metric仍为`val_wm_mse`，因此epoch2成为新`best`。
+- `epoch_002`、`best`和`final`均完整写出；三者的state projector、WM predictor和
+  ValueHead逐字节相同。`epoch_002/training_state.pt`记录step1552、epoch2、
+  `epoch_complete=true`以及WS16/H1/T4和
+  `predicted_rollout_executed_action_mc_v2`不变量，W&B也已完成最终同步。
+- Slurm batch最终仍记为`FAILED(exit 1)`：两个node-local `srun`在上述验证、保存和W&B
+  同步之后返回1，因而launcher写出`resume_failed_496336.flag`且没有`sft2_done.flag`。
+  日志没有traceback、OOM、NCCL failure或non-finite，无法从现有证据确认具体cleanup
+  子进程失败原因；这属于batch-wrapper终态失败，不能反推epoch2模型文件缺失。
+- CSV共有95条resume/retry重复train row；按`(epoch, global_step)`保留最后一条后，
+  两个epoch各有776步、总计1552步。epoch2训练均值WM/DINO/value MSE分别为
+  `0.444371/0.838664/0.078237`；但这些value统计只覆盖rollout实际执行动作，仍不覆盖
+  MCTS对8个action value取最大值时的未执行动作外推。
 
 ## 待完成
 
-- 持续监控`496336`剩余epoch2、最终validation、`final`和`sft2_done.flag`；训练结束后
-  运行独立validator与on-experiment-end记录。不要把CSV重复step或W&B拒绝的历史重放
-  误判为optimizer重复。
+- 使用`epoch_002`做与epoch1相同seed、相同有效渲染门禁的paired MCTS rollout，才能
+  判断success rate是否实际改善。当前validation改进只能证明记录动作上的WM/DINO/value
+  拟合更好，不能证明8-action argmax规划更好。
+- 若要把Slurm终态也修成成功，需要单独复现并定位训练结束后node-local Python child返回1
+  的cleanup问题；无需为取得epoch2模型而恢复训练。
