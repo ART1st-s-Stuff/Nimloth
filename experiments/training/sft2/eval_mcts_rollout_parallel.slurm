@@ -27,11 +27,15 @@ PY=${ROOT}/.venv-vagen-main/bin/python3
 SL=/cm/shared/apps/slurm/current/bin
 ENV_PORT=$((18400 + SLURM_JOB_ID % 1000))
 ENV_URL=http://127.0.0.1:${ENV_PORT}
-EVAL_SETS=(base common_sense complex_instruction visual_appearance long_horizon)
-EPISODES_PER_SET=60
-SHARDS_PER_SET=2
+read -r -a EVAL_SETS <<< "${EVAL_SETS_OVERRIDE:-base common_sense complex_instruction visual_appearance long_horizon}"
+EPISODES_PER_SET=${EPISODES_PER_SET:-60}
+SHARDS_PER_SET=${SHARDS_PER_SET:-2}
 EPISODES_PER_SHARD=$((EPISODES_PER_SET / SHARDS_PER_SET))
-GPU_MEMORY_UTILIZATION=0.42
+GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.42}
+if (( ${#EVAL_SETS[@]} < 1 || SHARDS_PER_SET < 1 || EPISODES_PER_SET % SHARDS_PER_SET != 0 )); then
+  echo "invalid evaluation shard layout" >&2
+  exit 2
+fi
 ENV_LOG=${EVAL_OUTPUT}/env_server_${SLURM_JOB_ID}.log
 CONTROLLER_LOG=${EVAL_OUTPUT}/controller_${SLURM_JOB_ID}.log
 ENV_STEP_PID=
@@ -93,7 +97,7 @@ trap cleanup EXIT
   echo "gpu_memory_utilization_per_engine=${GPU_MEMORY_UTILIZATION}"
   echo "mcts=H1_K4_sim100_c1"
   echo "sampling=temp0.7_top_p0.95_max_tokens512"
-  echo "resources=normal_1node_6gpu_128cpu_512G"
+  echo "resources=partition_${SLURM_JOB_PARTITION}_nodes_${SLURM_JOB_NUM_NODES}_gpus_per_node_${SLURM_GPUS_ON_NODE:-unknown}_cpus_${SLURM_CPUS_PER_TASK:-unknown}_mem_mb_${SLURM_MEM_PER_NODE:-unknown}"
   echo "wandb=${WANDB_ENTITY}/${WANDB_PROJECT}/${WANDB_RUN_NAME}/${WANDB_RUN_ID}"
 } | tee "${CONTROLLER_LOG}"
 
