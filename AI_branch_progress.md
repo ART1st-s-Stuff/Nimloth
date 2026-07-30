@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-07-30：ID56-aligned CFM 首轮完成，checkpoint 选择修复中
+## 2026-07-30：ID56-aligned CFM 首轮完成，未实现可靠WM补偿
 
 - 人类指出 ID47 使用了 ID56 SFT2 state、但没有重训匹配的 CFM，并要求尽快重训。
   新分支 `exp/id56-cfm-retrain` 从已完成的 ID56 WM reconstruction 分支继续；旧 ID47
@@ -64,6 +64,18 @@
   要求output完全为空，因而在任何checkpoint forward、W&B或metrics前退出；目录只有README，
   不可resume。已登记`E0077`，evaluator改为只允许batch预建README、继续拒绝所有其他文件；
   修复后使用新ID53，不复用ID52。
+- ID53 checkpoint sweep job 498462在`dgx-03`以`COMPLETED 0:0`结束，耗时5分19秒；
+  W&B `nimloth-recon/rr4evxmo`已finished。17个候选在完全相同的ID51 states、GT、noise、
+  Euler50/CFG2下完成。原ID45初始化以actual/predicted L1 `0.240510/0.255730`排名第一；
+  最好的已训练候选为step26,000的`0.261497/0.278986`，仍未超过初始化；flow-selected
+  step10,000为`0.281274/0.298920`。因此checkpoint重选只能纠正ID50内部排名，不能使本轮
+  重训成为整体改善。
+- 已对ID47/ID51全部160个保存PNG做严格配对结构审计，GT crop逐像素相同。ID51 actual列
+  SSIM从0.517992升至0.529199、56.25%帧更好；WM-predicted列却从0.538279降至0.516977、
+  仅36.875%帧更好。视觉上新decoder常把旧的拉伸/色块伪影变成更清晰可辨的房间结构，
+  但predicted-state输出与对应GT总体更不对齐。结论是ID50学到了不同且有时更真实的图像先验，
+  没有实现可靠WM-error compensation；若继续，应保留旧image prior，只小步适配condition path，
+  并用固定matched reconstruction而非异种随机flow MSE选点。
 
 ---
 

@@ -45,11 +45,10 @@ versus autoregressive WM-predicted reconstruction.
 
 ## Pending
 
-- Run the fixed matched-noise reconstruction sweep over the completed ID50
-  checkpoints and the unchanged ID45 initialization.
-- If a trained checkpoint beats the initialization, run one final visual audit
-  for that checkpoint; otherwise retain the failed-quality conclusion and do
-  not claim compensation success.
+- Human decision on a second recipe. The evidence-backed next attempt would
+  preserve the ID45 image prior, make a much smaller condition-path update, and
+  select with fixed matched reconstruction metrics. Do not describe ID50 as
+  successful WM-error compensation.
 
 ## Failed lifecycle 498307-498309
 
@@ -95,3 +94,17 @@ versus autoregressive WM-predicted reconstruction.
   created; the directory contains only the failed README. `E0077` records the
   integration error. The evaluator now permits only that lifecycle README and
   still rejects every other pre-existing file; retry uses new identity ID53.
+- ID53 retry job 498462 completed on `dgx-03` in 5:19 with exit `0:0`; W&B
+  `rr4evxmo` finished. All 17 candidates used identical ID51 states, GT, noise,
+  Euler50, and CFG2. The unchanged ID45 initialization ranks first at
+  actual/predicted L1 `0.240510/0.255730`; the best trained checkpoint is step
+  26,000 at `0.261497/0.278986`. Step 10,000 reproduces ID51 exactly at
+  `0.281274/0.298920`, confirming sweep determinism and the original selection
+  mismatch. No trained ID50 checkpoint beats initialization.
+- A post-hoc paired audit of all 160 saved ID47/ID51 PNG strips verifies
+  pixel-identical GT crops. Actual-state SSIM improves `0.517992 -> 0.529199`
+  with 56.25% frames better; predicted-state SSIM degrades
+  `0.538279 -> 0.516977` with only 36.875% better. Visual inspection finds less
+  stretching and more recognizable rooms in many new samples, but overall
+  predicted-to-GT alignment is worse. ID50 changed the image prior without
+  delivering reliable WM-error compensation.
