@@ -108,3 +108,14 @@ def test_parent_eval_uses_short_runtime_socket_root() -> None:
         "session_2026-07-30_13-30-30_495439_136071/sockets/plasma_store"
     )
     assert len(representative_ray_socket.encode()) < 107
+
+
+def test_parent_eval_adds_validation_seed_keys_to_hydra_schema() -> None:
+    repo = Path(__file__).resolve().parents[3]
+    script = (
+        repo / "experiments/training/sft1/run_parent_checkpoint_eval_arm.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "+data.seed=42 +data.base_seed=42 +data.validation_shuffle=False" in script
+    assert "    data.seed=42" not in script
+    assert " data.validation_shuffle=False" not in script

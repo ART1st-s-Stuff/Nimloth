@@ -324,7 +324,7 @@ PY
     data.train_files="${CONTROL_DIR}/train_placeholder.parquet" \
     data.val_files="${CONTROL_DIR}/test300.parquet" \
     data.train_batch_size=24 data.val_batch_size=24 \
-    data.seed=42 +data.base_seed=42 data.validation_shuffle=False \
+    +data.seed=42 +data.base_seed=42 +data.validation_shuffle=False \
     data.max_prompt_length=3000 data.max_response_length=20000 \
     data.max_trajectory_length=23000 data.truncation=left \
     algorithm.adv_estimator=reinforce_plus_plus algorithm.kl_ctrl.kl_coef=0.0 \

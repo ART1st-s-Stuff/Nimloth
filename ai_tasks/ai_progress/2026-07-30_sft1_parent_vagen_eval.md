@@ -76,3 +76,16 @@ SFT2 前的真实策略成功率。
 - 修复把arm runtime root收短为`/tmp/npe-${SLURM_JOB_ID}-${ARM}`，cleanup只删除经过精确
   guard的该目录，并增加静态socket长度回归；该错误登记为`E0069`。重试使用新的attempt2
   output以及新的W&B names/IDs。
+
+## Attempt 2：保留健康SFT1并单独补跑VAGEN
+
+- socket修复commit `2d226a82`通过远端`3 passed`与92/107-byte代表性Ray socket gate。
+  preempt job`498036`随即在`dgx-[55-56]`启动，两边render/env prewarm再次通过；VAGEN Ray
+  head和五个SFT1 vLLM均越过attempt1失败点。
+- VAGEN随后在实际trainer入口的Hydra compose阶段失败：`data.seed`和
+  `data.validation_shuffle`不属于structured schema，新增key必须用`+data.*`。尚未加载
+  VAGEN模型、生成trajectory/validation dump或创建W&B run。
+- SFT1 arm没有同类错误，五个vLLM继续加载；不能为了VAGEN配置错误重跑已健康的SFT1。
+  修复改为`+data.seed=42 +data.base_seed=42 +data.validation_shuffle=False`，并用完整正式
+  override集合执行`--cfg job` compose gate。VAGEN将以新output/W&B identity在独立单节点
+  batch中立即补跑，最终聚合SFT1 attempt2与VAGEN补跑结果。

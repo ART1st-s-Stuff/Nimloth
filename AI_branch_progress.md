@@ -29,6 +29,11 @@
   都因运行时目录位于过长output path下而超过AF_UNIX 107-byte限制。没有trajectory、W&B、
   optimizer或checkpoint，attempt1不可resume。修复使用短节点本地`/tmp/npe-<job>-<arm>`
   runtime root，并登记`E0069`；重试必须使用新output/W&B identity。
+- socket修复后的preempt retry `498036`在`dgx-[55-56]`立即启动；两边再次通过render/env
+  prewarm，Ray和五个SFT1 vLLM均越过原socket失败点。随后VAGEN arm因Hydra structured
+  config中`data.seed`/`data.validation_shuffle`不是预定义key而退出；正确形式为`+data.*`。
+  SFT1 arm保持运行并继续加载，不因VAGEN失败重启。VAGEN修复通过完整命令`--cfg job` compose
+  gate后，使用独立batch节点和新attempt identity并行补跑；错误登记为`E0070`。
 
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 
