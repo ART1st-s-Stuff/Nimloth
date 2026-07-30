@@ -23,7 +23,8 @@
   shape为`(1,4,16,1024)`，两个 CFM 均 strict load。已新增1×H800、32 CPU、128GB、1小时
   的 batch lifecycle。on-experiment-start 发现 Nimloth root 没有 `.env`，launcher 已改用
   服务器权威 `/project/peilab/atst/flower/.env` 只加载凭据后恢复显式 `nimloth-recon`
-  identity；正式启动仍需完成剩余门禁和新 output/W&B identity。
+  identity；输出 `contract.json` 强制记录注入的精确 commit、W&B/output、validation split
+  与全部冻结模块，并在 resume 时逐字段校验。正式启动仍需完成剩余门禁。
 
 ---
 

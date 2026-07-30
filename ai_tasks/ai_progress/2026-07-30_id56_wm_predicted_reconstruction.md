@@ -39,6 +39,9 @@ ViT-token CFM 和旧 SFT1 DINO-grid CFM 分别作为正对照和 decoder-lineage
 - on-experiment-start 现场门禁确认 `${ROOT}/.env` 不存在；W&B 凭据的既有权威来源为
   `/project/peilab/atst/flower/.env`。launcher 已改为从该文件加载凭据后恢复显式
   `WANDB_PROJECT=nimloth-recon`，避免 `.env` 默认 project 覆盖本实验 identity。
+- 提交前记录审计补充强制 `--git-commit`；evaluator 在任何 Qwen/CFM forward 前写出的
+  `contract.json` 现在包含精确 commit、W&B project/run、output、validation split 语义和
+  全部冻结模块，resume 时逐字段拒绝不同合同。
 
 ## 文件修改
 

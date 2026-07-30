@@ -610,6 +610,7 @@ def evaluate(args: argparse.Namespace) -> int:
     )
     contract = {
         "protocol": PROTOCOL,
+        "git_commit": args.git_commit,
         "columns": list(COLUMNS),
         "num_runs": len(selections),
         "num_rows": len(rows),
@@ -627,6 +628,16 @@ def evaluate(args: argparse.Namespace) -> int:
         "dino_grid_cfm_checkpoint": str(args.dino_grid_cfm_checkpoint),
         "qwen_cfm_checkpoint": str(args.qwen_cfm_checkpoint),
         "selections": str(args.selections),
+        "output_dir": str(args.output_dir),
+        "dataset_split": (
+            "validation split; selected held-out diverse40 trajectories"
+        ),
+        "module_updates": (
+            "none; Qwen, state projector, WM predictor, value head, and both "
+            "CFM decoders are frozen"
+        ),
+        "wandb_project": args.wandb_project,
+        "wandb_run_name": args.wandb_run_name,
         "backbone_weights": "online checkpoint weights; vision_ema.pt is not applied",
     }
     contract_path = args.output_dir / "contract.json"
@@ -791,6 +802,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--qwen-cfm-checkpoint", type=Path, required=True)
     parser.add_argument("--selections", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--git-commit", required=True)
     parser.add_argument("--horizon", type=int, default=4)
     parser.add_argument("--max-length", type=int, default=12000)
     parser.add_argument("--max-pixels", type=int, default=100352)

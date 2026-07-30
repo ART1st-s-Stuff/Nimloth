@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from nimloth.eval.dino_grid_wm_reconstruction import (
+    build_parser,
     calculate_metrics,
     prepare_protocol_rows,
 )
@@ -184,3 +185,13 @@ def test_diverse40_selection_is_forty_five_action_runs() -> None:
     assert len(selections) == 40
     assert [selection["run_index"] for selection in selections] == list(range(40))
     assert all(len(selection["expected_actions"]) == 5 for selection in selections)
+
+
+def test_cli_requires_exact_git_commit() -> None:
+    parser = build_parser()
+    required = {
+        action.dest
+        for action in parser._actions
+        if getattr(action, "required", False)
+    }
+    assert "git_commit" in required

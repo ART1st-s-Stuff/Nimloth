@@ -121,6 +121,7 @@ exec "${PYTHON}" -u -m nimloth.eval.dino_grid_wm_reconstruction \
   --qwen-cfm-checkpoint "${QWEN_CFM_CHECKPOINT}" \
   --selections "${SELECTIONS}" \
   --output-dir "${OUTPUT_DIR}" \
+  --git-commit "${EXPECTED_COMMIT}" \
   --horizon 4 \
   --steps 50 \
   --cfg-scale 2.0 \
