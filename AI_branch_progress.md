@@ -23,11 +23,13 @@
   strict warm-start、非空输出保护和 grid evaluator 独立采样模式。新 evaluator 在保留旧 SFT1
   CFM control 的同时，只用新 ID56-aligned CFM 解码 ID56 actual/predicted 两列；旧 ID47
   参数保持兼容。
-- 实现提交 `4a502d09` 已推送并同步到 superpod clean worktree；固定
-  `external/le-wm@8edfeb3`。远端新 cache 测试 `2 passed`，CFM/evaluator 定向回归
-  `16 passed, 2 warnings`。真实 artifact preflight 确认 train/val 为 59,269/6,054、
-  ID53 fingerprints 为 `ac7835348d6eade1`/`d857dc4ef51a70be`、ID56 grid shape
-  `[16,1024]`，旧 ID45 CFM 在相同模型结构下 180 keys strict load，best step 29,000。
+- 初始 current-only 实现为 `4a502d09`；人类纠正补偿语义后的实现为 `8848aae1`，已推送
+  并同步到 superpod clean worktree，固定 `external/le-wm@8edfeb3`。修正后 cache/CFM/
+  evaluator 定向回归 `20 passed, 1 warning`。真实 artifact preflight 除此前确认的
+  train/val 59,269/6,054 transitions、ID53 fingerprints
+  `ac7835348d6eade1`/`d857dc4ef51a70be`、旧 ID45 CFM 180 keys strict load 外，又确认
+  ID56 WM predictor 为 H=1、92,418,120 参数，strict load 后单步输出 `[1,16,1024]`
+  且全部 finite。
 - W&B `nimloth-recon` 和服务器 output 均确认 ID48/ID49 未占用；当前 preempt 有36张空闲
   H800，normal仅1张。人类本轮要求“越快越好”，并已在上一轮批准使用 preempt；启动合同
   因此采用 preempt 16×H800 cache build，再用1×H800训练和1×H800评估。新身份为

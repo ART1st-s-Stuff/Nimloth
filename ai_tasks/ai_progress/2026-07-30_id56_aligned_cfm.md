@@ -34,11 +34,12 @@ versus autoregressive WM-predicted reconstruction.
 - Human clarified that CFM should compensate frozen-WM errors like ValueHead;
   replaced the interim actual-next design with predicted-next/actual-next pairs.
 - Local Python/shell syntax and staged diff checks pass.
-- The earlier current-only implementation passed remote targeted tests; the
-  corrected predicted-next pair contract still requires a fresh remote run.
+- Corrected predicted-next pair tests pass remotely: `20 passed, 1 warning`.
 - Real artifact preflight passes: 59,269/6,054 exact rows, ID53 fingerprints
   `ac7835348d6eade1`/`d857dc4ef51a70be`, ID56 `[16,1024]` projector output,
   and strict ID45 CFM architecture/weight initialization at source step 29,000.
+- ID56 H=1 WM predictor strict-load preflight passes: 92,418,120 parameters,
+  finite `[1,16,1024]` single-step output.
 - Live resources: preempt 36 free H800, normal 1. ID48/ID49 are unused in both
   server outputs and live W&B.
 
