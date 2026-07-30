@@ -89,3 +89,15 @@ SFT2 前的真实策略成功率。
   修复改为`+data.seed=42 +data.base_seed=42 +data.validation_shuffle=False`，并用完整正式
   override集合执行`--cfg job` compose gate。VAGEN将以新output/W&B identity在独立单节点
   batch中立即补跑，最终聚合SFT1 attempt2与VAGEN补跑结果。
+- 后续确认SFT1的五个vLLM均完成权重、encoder profile和KV cache初始化，但正式reset时五个
+  单eval-set collector都生成`rl_000001`。共享env server按该ID保存环境，五个并发reset覆盖
+  同一个实例，导致AI2-THOR FIFO出现`KeyError: 73`、closed file和HTTP500；没有trajectory
+  成功落盘。修复使用collector现有`--seed-per-eval-set`，得到
+  `rl_<eval_set>_<seed>`唯一ID且仍保持每类seeds1--60，finalizer同步严格核对该identity。
+  attempt2不可resume；SFT1使用新独立attempt立即补跑。
+- VAGEN standalone job`498043`在`dgx-03`通过checkpoint、render、env prewarm和短socket
+  Ray启动，但完整trainer命令仍在Hydra compose阶段失败：
+  `trainer.assert_val_env_composition`已存在于schema，不能使用`+`；
+  `trainer.val_env_composition`已存在但为`null`，需要一次覆盖完整五类mapping。未加载模型、
+  未生成trajectory/validation dump/W&B。修复后必须对完整正式命令执行成功的`--cfg job`
+  gate，不能再用只覆盖data键的最小compose代替。

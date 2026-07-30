@@ -34,6 +34,16 @@
   config中`data.seed`/`data.validation_shuffle`不是预定义key而退出；正确形式为`+data.*`。
   SFT1 arm保持运行并继续加载，不因VAGEN失败重启。VAGEN修复通过完整命令`--cfg job` compose
   gate后，使用独立batch节点和新attempt identity并行补跑；错误登记为`E0070`。
+- attempt2的五个SFT1 vLLM均完成模型/KV cache初始化，但五个独立collector随后同时使用
+  `rl_000001`连接同一env server，environment ID冲突令不同AI2-THOR FIFO流互相破坏并全部
+  返回HTTP500。没有成功trajectory。修复复用现有`--seed-per-eval-set`，ID变为
+  `rl_<eval_set>_<seed>`而seed仍严格为每类1--60；错误登记为`E0071`，SFT1以新attempt
+  独立补跑，VAGEN standalone job`498043`不受影响。
+- VAGEN standalone `498043`实际又在Hydra compose阶段退出：
+  `trainer.assert_val_env_composition`已是schema已有键，错误地加`+`会被拒绝；其
+  `val_env_composition`父键已存在但为`null`，应一次覆盖完整五类mapping。该job仍未加载
+  模型或生成trajectory/W&B。`E0070`已补充“新增键加`+`、已有键不加、null mapping整体
+  覆盖”；下一次提交前必须让完整正式override命令明确返回0。
 
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 

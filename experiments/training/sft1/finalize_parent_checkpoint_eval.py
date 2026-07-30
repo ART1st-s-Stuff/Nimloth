@@ -102,7 +102,10 @@ def _finalize_sft1(output_dir: Path, episodes_per_set: int) -> tuple[dict[str, A
             raise ValueError(
                 f"{eval_set} incomplete: status={summary.get('status')!r} rows={len(rows)}"
             )
-        expected_ids = [f"rl_{seed:06d}" for seed in range(1, episodes_per_set + 1)]
+        expected_ids = [
+            f"rl_{eval_set}_{seed:06d}"
+            for seed in range(1, episodes_per_set + 1)
+        ]
         actual_ids = [str(row.get("id")) for row in rows]
         if actual_ids != expected_ids:
             raise ValueError(f"{eval_set} does not contain the requested contiguous seed range")
@@ -110,6 +113,8 @@ def _finalize_sft1(output_dir: Path, episodes_per_set: int) -> tuple[dict[str, A
         rewards: list[float] = []
         steps: list[int] = []
         for row in rows:
+            if row.get("split") != "test":
+                raise ValueError(f"{eval_set} row is not marked as heldout test data")
             prompt_spec = row.get("prompt_template", {})
             config = prompt_spec.get("config", {}) if isinstance(prompt_spec, dict) else {}
             if int(config.get("latent_token_count", -1)) != 16:

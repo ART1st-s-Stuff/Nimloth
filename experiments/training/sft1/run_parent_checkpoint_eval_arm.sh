@@ -230,7 +230,8 @@ if [[ "${ARM}" == sft1 ]]; then
         --model "${MODEL_PATH}" --env-url "${ENV_URL}" \
         --output-dir "${dataset_dir}" --resume-existing-rollouts \
         --num-episodes "${EPISODES_PER_SET}" --max-steps 20 \
-        --eval-set "${eval_set}" --split eval --seed-offset 1 \
+        --eval-set "${eval_set}" --split test --seed-offset 1 \
+        --seed-per-eval-set \
         --temperature 0 --top-p 1 --credit-assignment token \
         --max-response-tokens 512 --navigation-profile vagen_eval \
         --backend vllm --tensor-parallel-size 1 --max-model-len 32768 \
@@ -362,12 +363,8 @@ PY
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     trainer.logger="['console']" trainer.val_before_train=True trainer.val_only=True \
     trainer.n_gpus_per_node=4 trainer.nnodes=1 trainer.save_freq=-1 trainer.test_freq=-1 \
-    +trainer.assert_val_env_composition=True \
-    '+trainer.val_env_composition.navigation_base_test={count:60,eval_set:base}' \
-    '+trainer.val_env_composition.navigation_common_test={count:60,eval_set:common_sense}' \
-    '+trainer.val_env_composition.navigation_complex_instruction_test={count:60,eval_set:complex_instruction}' \
-    '+trainer.val_env_composition.navigation_visual_appearance_test={count:60,eval_set:visual_appearance}' \
-    '+trainer.val_env_composition.navigation_long_horizon_test={count:60,eval_set:long_horizon}' \
+    trainer.assert_val_env_composition=True \
+    'trainer.val_env_composition={navigation_base_test:{count:60,eval_set:base},navigation_common_test:{count:60,eval_set:common_sense},navigation_complex_instruction_test:{count:60,eval_set:complex_instruction},navigation_visual_appearance_test:{count:60,eval_set:visual_appearance},navigation_long_horizon_test:{count:60,eval_set:long_horizon}}' \
     trainer.project_name=nimloth-sft1 trainer.experiment_name="${WANDB_RUN_NAME}" \
     trainer.default_local_dir="${ARM_OUTPUT}/checkpoints_unused" \
     trainer.validation_data_dir="${VALIDATION_DIR}" \

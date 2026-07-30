@@ -32,7 +32,8 @@ def test_finalize_sft1_requires_exact_k16_injected_action_protocol(tmp_path: Pat
             json.dumps({"status": "ALL_OK"}), encoding="utf-8"
         )
         row = {
-            "id": "rl_000001",
+            "id": f"rl_{eval_set}_000001",
+            "split": "test",
             "success": eval_set == "base",
             "reward": 1.0 if eval_set == "base" else 0.0,
             "image_paths": [_image(root / "image.png")],
@@ -119,3 +120,15 @@ def test_parent_eval_adds_validation_seed_keys_to_hydra_schema() -> None:
     assert "+data.seed=42 +data.base_seed=42 +data.validation_shuffle=False" in script
     assert "    data.seed=42" not in script
     assert " data.validation_shuffle=False" not in script
+    assert "trainer.assert_val_env_composition=True" in script
+    assert "+trainer.assert_val_env_composition" not in script
+    assert "trainer.val_env_composition={navigation_base_test:" in script
+
+
+def test_parent_eval_parallel_sft1_uses_unique_environment_ids() -> None:
+    repo = Path(__file__).resolve().parents[3]
+    script = (
+        repo / "experiments/training/sft1/run_parent_checkpoint_eval_arm.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "--seed-per-eval-set" in script

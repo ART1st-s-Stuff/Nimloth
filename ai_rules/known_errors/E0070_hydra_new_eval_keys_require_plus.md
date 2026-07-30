@@ -9,5 +9,7 @@ VAGEN parent评估在trainer启动时以`Could not override 'data.seed'`退出�
 ## 正确做法
 
 - 对schema中不存在的新键使用`+data.seed=42`等显式add override。
+- 对已经存在的键直接override，禁止加`+`；若现有父键为`null`，应一次替换完整mapping，
+  不要向`null`父键逐项追加子键。
 - 提交昂贵任务前，用完整正式override集合运行Hydra `--cfg job` compose gate。
 - compose失败不属于checkpoint、GPU或模型质量结果；不得靠删除seed合同绕过。
