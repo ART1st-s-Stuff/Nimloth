@@ -42,6 +42,7 @@ class VAGENNavigationRolloutCollector:
         agent_config: AgentConfig | None = None,
         latent_token_count: int = 1,
         seed_per_eval_set: bool = False,
+        navigation_profile: str = "current",
     ) -> None:
         if not eval_sets:
             raise ValueError("rollout collector requires at least one eval_set")
@@ -64,6 +65,7 @@ class VAGENNavigationRolloutCollector:
         self._client: Any | None = None
         self._policy = policy
         self._latent_token_count = int(latent_token_count)
+        self._navigation_profile = navigation_profile
 
     def _next_episode_identity(self, episode_index: int) -> tuple[str, str, int]:
         eval_set = self._eval_sets[episode_index % len(self._eval_sets)]
@@ -151,6 +153,7 @@ class VAGENNavigationRolloutCollector:
                 client=self.client,
                 episode_id=episode_id,
                 eval_set=eval_set,
+                navigation_profile=self._navigation_profile,
             )
             try:
                 episode = EpisodeRunner(runtime).run(

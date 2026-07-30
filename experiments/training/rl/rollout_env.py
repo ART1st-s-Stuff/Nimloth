@@ -65,6 +65,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="action",
     )
     ap.add_argument("--max-response-tokens", type=int, default=64)
+    ap.add_argument(
+        "--navigation-profile",
+        choices=("current", "vagen_eval"),
+        default="current",
+        help="Use vagen_eval to reproduce the parent VAGEN checkpoint's eval dynamics.",
+    )
     ap.add_argument("--attn-implementation", default="sdpa")
     ap.add_argument(
         "--max-pixels",
@@ -390,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
         split=args.split,
         latent_token_count=latent_token_count,
         seed_per_eval_set=args.seed_per_eval_set,
+        navigation_profile=args.navigation_profile,
     )
     trajectories = collector.collect(
         num_episodes=args.num_episodes,

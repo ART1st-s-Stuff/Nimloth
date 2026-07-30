@@ -91,6 +91,60 @@ def navigation_image_dynamic_range(image: Image.Image) -> int:
     return max(high - low for low, high in extrema)
 
 
+def vagen_eval_nimloth_system_prompt() -> str:
+    """Rebuild the parent VAGEN eval prompt with Nimloth action tokens."""
+
+    from vagen.env.navigation.nimloth_format import NIMLOTH_EVAL_FORMAT_INSTRUCTION
+    from vagen.env.navigation.prompt import _SOURCE_EVAL_BASE_SYSTEM_PROMPT
+
+    hints = """\
+Hints:
+1. Choose exactly one valid action for the current step. Do not combine actions.
+2. If the target object is far away, move toward it one step at a time across multiple turns.
+3. If you seem to be stuck, use one action such as look_down, turn_left, or turn_right to inspect another view.
+4. Output the action only inside the required <|action_start|><|action_(idx)|><|action_end|> XML tag."""
+    action_count = (
+        "You must take exactly one action in each response. "
+        "Do not output multiple actions and do not use '|'."
+    )
+    return "\n\n".join(
+        (
+            _SOURCE_EVAL_BASE_SYSTEM_PROMPT,
+            hints,
+            f"{action_count}\n{NIMLOTH_EVAL_FORMAT_INSTRUCTION}",
+        )
+    )
+
+
+def vagen_eval_nimloth_observation_text(
+    raw_observation: Any,
+    *,
+    initial: bool,
+) -> str:
+    """Match the SFT1-converted source-eval observation wording exactly."""
+
+    text = observation_text(raw_observation)
+    if not initial:
+        return text.replace("After your answer,", "After your action,").replace(
+            "Decide your next action.", "Decide your next action(s)."
+        )
+    instruction = instruction_from_observation(text)
+    if not instruction:
+        raise ValueError("VAGEN initial observation has no navigation instruction")
+    from vagen.env.navigation.nimloth_format import NIMLOTH_EVAL_FORMAT_INSTRUCTION
+
+    action_count = (
+        "You must take exactly one action in each response. "
+        "Do not output multiple actions and do not use '|'."
+    )
+    return (
+        "[Initial Observation]:\n<image>\n"
+        f"Human Instruction: {instruction}\n"
+        "Decide your next action(s).\n"
+        f"{action_count}\n{NIMLOTH_EVAL_FORMAT_INSTRUCTION}"
+    )
+
+
 def _image_value(value: Any) -> Image.Image:
     if isinstance(value, Image.Image):
         return value.convert("RGB")
@@ -103,10 +157,16 @@ def _image_value(value: Any) -> Image.Image:
     raise ValueError(f"unsupported environment image value: {type(value)}")
 
 
-def navigation_environment_config(eval_set: str) -> dict[str, Any]:
+def navigation_environment_config(
+    eval_set: str,
+    *,
+    profile: str = "current",
+) -> dict[str, Any]:
     """构造当前 Nimloth navigation rollout 使用的 VAGEN 配置。"""
 
-    return {
+    if profile not in {"current", "vagen_eval"}:
+        raise ValueError(f"unknown navigation profile: {profile!r}")
+    config = {
         "env_name": "navigation",
         "env_config": {
             "render_mode": "vision",
@@ -123,6 +183,21 @@ def navigation_environment_config(eval_set: str) -> dict[str, Any]:
             "gpu_device": 0,
         },
     }
+    if profile == "vagen_eval":
+        config["env_config"].update(
+            {
+                "action_sep": "|",
+                "example_count": 0,
+                # The current server applies format_reward on non-source modes;
+                # 0.01 reproduces source VAGEN's per-turn effective reward.
+                "format_reward": 0.01,
+                "per_turn_format_reward": 0.01,
+                "success_reward": 1.0,
+                "success_threshold": 1.0,
+                "step_length": 0.3,
+            }
+        )
+    return config
 
 
 class VAGENNavigationSession:
@@ -135,11 +210,13 @@ class VAGENNavigationSession:
         episode_id: str,
         eval_set: str,
         failure_penalty: float = 0.1,
+        navigation_profile: str = "current",
     ) -> None:
         self._client = client
         self._episode_id = episode_id
         self._eval_set = eval_set
         self._failure_penalty = failure_penalty
+        self._navigation_profile = navigation_profile
         self._system_prompt = ""
         self._created = False
 
@@ -155,11 +232,18 @@ class VAGENNavigationSession:
 
     def reset(self, *, seed: int) -> EnvironmentObservation:
         self._client.create_environments_batch(
-            {self._episode_id: navigation_environment_config(self._eval_set)}
+            {
+                self._episode_id: navigation_environment_config(
+                    self._eval_set,
+                    profile=self._navigation_profile,
+                )
+            }
         )
         self._created = True
         prompts = self._client.get_system_prompts_batch([self._episode_id])
         self._system_prompt = str(prompts.get(self._episode_id, ""))
+        if self._navigation_profile == "vagen_eval":
+            self._system_prompt = vagen_eval_nimloth_system_prompt()
         if not self._system_prompt:
             raise RuntimeError(
                 f"environment {self._episode_id} returned an empty system prompt"
@@ -168,7 +252,11 @@ class VAGENNavigationSession:
             {self._episode_id: seed}
         )[self._episode_id]
         return EnvironmentObservation(
-            text=observation_text(raw_observation),
+            text=(
+                vagen_eval_nimloth_observation_text(raw_observation, initial=True)
+                if self._navigation_profile == "vagen_eval"
+                else observation_text(raw_observation)
+            ),
             image=observation_image(raw_observation),
             info=dict(info) if isinstance(info, dict) else {},
         )
@@ -186,7 +274,11 @@ class VAGENNavigationSession:
         success = bool(info_dict.get("task_success", False)) or adjusted_reward >= 10.0
         return EnvironmentStep(
             observation=EnvironmentObservation(
-                text=observation_text(raw_observation),
+                text=(
+                    vagen_eval_nimloth_observation_text(raw_observation, initial=False)
+                    if self._navigation_profile == "vagen_eval"
+                    else observation_text(raw_observation)
+                ),
                 image=observation_image(raw_observation),
                 info=info_dict,
             ),

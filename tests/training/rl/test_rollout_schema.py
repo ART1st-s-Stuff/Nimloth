@@ -16,6 +16,10 @@ from experiments.training.rl.rollout_env import (
 from nimloth.agent import AgentTranscript, NimlothPromptTemplate
 from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
+from nimloth.environment.navigation.vagen import (
+    navigation_environment_config,
+    vagen_eval_nimloth_observation_text,
+)
 from nimloth.rollout import RolloutTrajectory, save_trajectories
 from nimloth.rollout.record_format import STEP_REWARD_PROVENANCE
 from nimloth.rollout.transitions import discounted_action_value_targets
@@ -124,6 +128,64 @@ def test_rollout_cli_accepts_multiple_training_datasets() -> None:
     assert args.eval_set is None
     assert args.eval_sets == ["base_train", "common_sense_train"]
     assert args.max_pixels is None
+
+
+def test_vagen_eval_navigation_profile_is_an_explicit_rollout_setting() -> None:
+    args = parse_args(
+        [
+            "--model", "model",
+            "--env-url", "http://env",
+            "--output-dir", "output",
+            "--eval-set", "base",
+            "--split", "eval",
+            "--navigation-profile", "vagen_eval",
+        ]
+    )
+
+    assert args.navigation_profile == "vagen_eval"
+    current = navigation_environment_config("base")["env_config"]
+    historical = navigation_environment_config("base", profile="vagen_eval")[
+        "env_config"
+    ]
+    assert current["step_length"] == 0.5
+    assert current["success_threshold"] == 1.5
+    assert historical["step_length"] == 0.3
+    assert historical["success_threshold"] == 1.0
+    assert historical["format_reward"] == 0.01
+    assert historical["per_turn_format_reward"] == 0.01
+    assert historical["success_reward"] == 1.0
+
+    with pytest.raises(ValueError, match="unknown navigation profile"):
+        navigation_environment_config("base", profile="approximate")
+
+
+def test_vagen_eval_nimloth_observation_uses_source_prompt_wording() -> None:
+    initial = vagen_eval_nimloth_observation_text(
+        {
+            "obs_str": (
+                "[Initial Observation]:\n<image>\n"
+                "Human Instruction: go to the couch\n"
+                "Decide your next action.\ncurrent format text"
+            )
+        },
+        initial=True,
+    )
+    later = vagen_eval_nimloth_observation_text(
+        {
+            "obs_str": (
+                "After your answer, the extracted valid action is ['move_forward'].\n"
+                "<image>\nDecide your next action."
+            )
+        },
+        initial=False,
+    )
+
+    assert "Human Instruction: go to the couch" in initial
+    assert "Decide your next action(s)." in initial
+    assert "<|action_start|><|action_(idx)|><|action_end|>" in initial
+    assert "current format text" not in initial
+    assert later.startswith("After your action,")
+    assert later.endswith("Decide your next action(s).")
 
 
 def test_env_collector_enforces_training_dataset() -> None:
