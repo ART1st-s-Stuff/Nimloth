@@ -107,3 +107,9 @@ SFT2 前的真实策略成功率。
   `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`；该变量来自共用脚本，和VERL使用的
   vLLM memory pool明确不兼容。VAGEN arm改为在启动Ray前unset，确保raylet与workers均不
   继承该设置；SFT1保留原配置且不重启。
+- allocator修复后的VAGEN job`498076`进一步通过4卡FSDP、CuMemAllocator和vLLM权重加载，
+  随后在首次采样的FlashInfer JIT阶段失败。节点默认`/usr/bin/nvcc`实际是依赖`colorama`
+  的Python tutorial包装器，4个worker均报`ModuleNotFoundError`及`Ninja build failed`；
+  没有开始300条validation、没有trajectory/W&B/optimizer/checkpoint，不能resume。VAGEN
+  greedy评估改为在Ray启动前设置`VLLM_USE_FLASHINFER_SAMPLER=0`，使用vLLM等价PyTorch
+  sampler且不改变采样超参数；错误登记为`E0073`，以新output/W&B identity立即补跑。

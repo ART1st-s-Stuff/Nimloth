@@ -67,6 +67,10 @@ else
   # VERL's vLLM sharding manager uses CuMemAllocator memory pools, which reject
   # PyTorch expandable segments. Unset before Ray starts so workers inherit it.
   unset PYTORCH_CUDA_ALLOC_CONF
+  # FlashInfer otherwise JIT-compiles its sampling kernels on first use. The
+  # superpod's default /usr/bin/nvcc is a tutorial wrapper, not a CUDA compiler.
+  # Greedy evaluation uses vLLM's equivalent PyTorch sampler instead.
+  export VLLM_USE_FLASHINFER_SAMPLER=0
 fi
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export WANDB_DIR=${ARM_OUTPUT}/wandb

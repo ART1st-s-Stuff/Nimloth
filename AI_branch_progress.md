@@ -49,6 +49,12 @@
   `expandable_segments:True`与memory pool不兼容。该变量来自共用arm脚本，只对SFT1保留；
   VAGEN在Ray启动前unset以保证所有worker继承正确环境。错误登记为`E0072`，VAGEN使用
   新attempt重提，SFT1不重启。
+- allocator修复后的VAGEN `498076`已越过原错误并完成4卡vLLM权重加载，但首次采样触发
+  FlashInfer JIT时，superpod默认`/usr/bin/nvcc`实际为缺少`colorama`的Python tutorial
+  包装器，导致4个worker的Ninja编译全部失败。该attempt未开始正式validation且不可resume。
+  greedy合同不依赖FlashInfer，VAGEN在Ray前设置`VLLM_USE_FLASHINFER_SAMPLER=0`改用vLLM
+  PyTorch sampler；采样、数据、checkpoint和环境配置不变，错误登记为`E0073`并用新identity
+  立即补跑。
 
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 

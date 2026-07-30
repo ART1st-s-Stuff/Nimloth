@@ -143,3 +143,14 @@ def test_vagen_parent_unsets_expandable_segments_before_ray() -> None:
     unset_index = script.index("unset PYTORCH_CUDA_ALLOC_CONF")
     ray_index = script.index('"${RAY_CLI}" start --head')
     assert unset_index < ray_index
+
+
+def test_vagen_parent_disables_flashinfer_sampler_before_ray() -> None:
+    repo = Path(__file__).resolve().parents[3]
+    script = (
+        repo / "experiments/training/sft1/run_parent_checkpoint_eval_arm.sh"
+    ).read_text(encoding="utf-8")
+
+    sampler_index = script.index("export VLLM_USE_FLASHINFER_SAMPLER=0")
+    ray_index = script.index('"${RAY_CLI}" start --head')
+    assert sampler_index < ray_index
