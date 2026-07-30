@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-07-30：ID56 WM-predicted reconstruction 实现中
+
+- 人类确认使用当前 ID56 epoch2 checkpoint 与旧 reconstruction checkpoint 做冻结评估，
+  首阶段请求 1 张 H800、预计 30--60 分钟；不训练 Qwen、WM、projector 或 CFM。
+- 新实验分支为 `exp/id56-wm-reconstruction`。评估协议固定比较五列：GT、旧 Qwen
+  ViT-token CFM、旧 SFT1 DINO-grid CFM、ID56 actual grid、ID56 自回归 WM-predicted
+  grid；所有 CFM 列使用相同 noise、Euler50、CFG2。
+- 主评估只覆盖 ID56 训练目标内的 `t+1...t+4`。每条轨迹从真实 `s_t` 开始，使用记录的
+  四个 action 自回归展开，后续预测不重新注入真实 state。评估器严格校验 current JSONL、
+  旧 DINO cache、旧 Qwen cache 的 record、step、action 和 image path。
+- 已新增 `nimloth.eval.dino_grid_wm_reconstruction`、diverse40 selection 配置和定向回归。
+  状态编码按轨迹原子保存，可在相同合同下 resume；metadata 明确使用 checkpoint online
+  backbone weights，不应用 `vision_ema.pt`。本地无 torch/pytest，仅完成 py_compile 与
+  diff-check；必须在 superpod 固定环境通过测试、真实 checkpoint 预检和正式启动门禁后运行。
+
+---
+
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
 - 为回答 SFT2 前两代策略的真实成功率，新增配对评估：使用 SFT2 初始化所用的
