@@ -17,7 +17,11 @@
 - 已新增 `nimloth.eval.dino_grid_wm_reconstruction`、diverse40 selection 配置和定向回归。
   状态编码按轨迹原子保存，可在相同合同下 resume；metadata 明确使用 checkpoint online
   backbone weights，不应用 `vision_ema.pt`。本地无 torch/pytest，仅完成 py_compile 与
-  diff-check；必须在 superpod 固定环境通过测试、真实 checkpoint 预检和正式启动门禁后运行。
+  diff-check。首个实现提交为 `4be03b13`；superpod clean worktree 初始化固定
+  `external/le-wm@8edfeb3` 后定向回归 `7 passed`。真实 artifact 预检确认40条/160行严格
+  对齐、cache fingerprints 为 `fee377fa57374b9a`/`4607b340bd4c84c6`，ID56 WM rollout
+  shape为`(1,4,16,1024)`，两个 CFM 均 strict load。已新增1×H800、32 CPU、128GB、1小时
+  的 batch lifecycle；正式启动仍需完成 on-experiment-start 门禁和新 output/W&B identity。
 
 ---
 

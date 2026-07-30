@@ -25,12 +25,24 @@ ViT-token CFM 和旧 SFT1 DINO-grid CFM 分别作为正对照和 decoder-lineage
   保护、合同校验、轨迹级 state 编码原子恢复和 W&B 上传。
 - 添加 diverse40 配置与定向单元测试。本地 `py_compile`、`git diff --check` 通过；本地
   Python 缺少 torch/pytest，因此功能测试待 superpod。
+- 推送首个实现提交 `4be03b13`，并在 superpod 建立同提交 clean detached worktree。
+  首次 pytest collection 因 worktree 未初始化 `external/le-wm` 失败，没有进入测试；按已核验
+  门禁初始化固定 submodule commit `8edfeb3` 后，定向 suite 为 `7 passed, 1 warning`。
+- 真实 artifact CPU preflight 通过：40 runs/160 rows 的 current JSONL、旧 DINO cache、
+  旧 Qwen cache 全部严格对齐；cache fingerprints 分别为 `fee377fa57374b9a` 和
+  `4607b340bd4c84c6`；ID56 projector/WM/ValueHead strict load 并生成
+  `(1,4,16,1024)` rollout。旧 DINO/Qwen CFM strict load，条件形状分别为
+  `16x1024`/`16x512`。
+- 新增正式 Slurm batch lifecycle：固定1×H800、32 CPU、128GB、1小时，校验精确commit、
+  clean worktree、submodule、完整artifact、W&B凭据和实际80GB-class单GPU allocation 后，
+  执行冻结 Euler50/CFG2 评估；支持相同合同的显式 `RESUME=1`。
 
 ## 文件修改
 
 - `src/nimloth/eval/dino_grid_wm_reconstruction.py`
 - `configs/eval/reconstruction/id56_wm_predicted_diverse40.json`
 - `tests/eval/test_dino_grid_wm_reconstruction.py`
+- `experiments/eval/id56_wm_predicted_reconstruction.slurm`
 - `AI_branch_progress.md`
 - 本进度文件
 
@@ -40,9 +52,11 @@ ViT-token CFM 和旧 SFT1 DINO-grid CFM 分别作为正对照和 decoder-lineage
 - `git diff --check`：通过。
 - 本地 `pytest`：未运行；环境没有 pytest，且系统 Python 没有 torch。这是环境边界，
   不能作为代码测试失败或通过的证据。
+- superpod：`7 passed, 1 warning in 13.29s`；warning为既有 PyTorch nested-tensor提示。
+- superpod真实artifact preflight：40 runs、160 rows、两个cache、两个CFM和ID56 WM完整通过。
+- `bash -n experiments/eval/id56_wm_predicted_reconstruction.slurm`：通过。
 
 ## 待完成
 
-- superpod 定向 pytest、真实 cache/checkpoint loader 与 1-run 小样 preflight。
 - 正式 on-experiment-start、Slurm/W&B/output identity 和 1-H800 运行。
 - 完成后 on-experiment-end、输出/W&B/指标审计和进度归档。
