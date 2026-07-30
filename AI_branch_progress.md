@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已入队
+
+- 为回答 SFT2 前两代策略的真实成功率，新增配对评估：使用 SFT2 初始化所用的
+  SFT1 merged checkpoint，以及该 SFT1 的 VAGEN step79 parent checkpoint；两边均评估
+  与 SFT2 epoch2 相同的五类 test scenes、每类 seeds1--60，共各300条。
+- 评估超参数固定为原 VAGEN eval：greedy、temperature0、top-p1、top-k-1、每轮最多
+  512 tokens、最多20轮、每轮一个action；环境采用source-eval dynamics。SFT1使用
+  k16 Nimloth action tokens，VAGEN使用source-compatible XML action。
+- 实现与合同提交为`d4e78d21`并已推送。superpod clean worktree中仓库定向回归
+  `32 passed`、VAGEN兼容性回归`8 passed`；两个checkpoint的全部shard、SFT1
+  `inject/k=16`及action tokens、VAGEN无Nimloth注入协议均通过预检。
+- Slurm job`498024`已提交到normal分区，请求2节点×6 H800、每节点120 CPU；同一allocation
+  内两个arm同时运行。当前为`PENDING(Priority)`，提交时集群没有任一节点空出6张GPU，
+  Slurm最新预计`2026-07-31 11:35 UTC`启动。
+- 输出目录为`outputs/experiments/sft1_parent_vagen_eval/2026-07-30/
+  1_test300_vagen_eval_contract`；W&B project为`nimloth-sft1`，runs为
+  `19_sft1parent_k16inject_test300_greedy_t20_r512`与
+  `20_vagenparent_step79_xml_test300_greedy_t20_r512`。任务只做冻结推理，不创建optimizer
+  或checkpoint；正式结论必须等待两边各300条严格聚合和done flag。
+
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 
 - H=1/T=4 实现已提交为 `c1e983ac`，隔离 smoke cache 提交为 `e664c49f`；本地
