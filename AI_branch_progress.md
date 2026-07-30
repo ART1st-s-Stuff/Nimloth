@@ -55,6 +55,12 @@
   greedy合同不依赖FlashInfer，VAGEN在Ray前设置`VLLM_USE_FLASHINFER_SAMPLER=0`改用vLLM
   PyTorch sampler；采样、数据、checkpoint和环境配置不变，错误登记为`E0073`并用新identity
   立即补跑。
+- 修复commit `f55dc56d`经远端`7 passed`及vLLM env gate后，VAGEN job`498090`已在preempt
+  `dgx-15`占用6 GPU/120 CPU。6卡render、checkpoint/env prewarm、精确300行数据、Ray、
+  4卡FSDP/vLLM load均通过；日志明确fallback到PyTorch-native sampler，越过旧失败时间后
+  已开始真实validation并初始化24个正式环境，关键错误模式为0。新output为attempt8，W&B
+  使用ID28/`vgp28300`。SFT1 `498066`保持原任务，截至同一快照完成286/300；未完成计数不作为
+  正式success rate。
 
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 

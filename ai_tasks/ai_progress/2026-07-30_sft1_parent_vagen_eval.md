@@ -113,3 +113,13 @@ SFT2 前的真实策略成功率。
   没有开始300条validation、没有trajectory/W&B/optimizer/checkpoint，不能resume。VAGEN
   greedy评估改为在Ray启动前设置`VLLM_USE_FLASHINFER_SAMPLER=0`，使用vLLM等价PyTorch
   sampler且不改变采样超参数；错误登记为`E0073`，以新output/W&B identity立即补跑。
+- 修复commit `f55dc56d`在远端clean worktree通过`7 passed`及vLLM环境读取gate。VAGEN
+  attempt8 job`498090`随即在preempt `dgx-15`以6 GPU/120 CPU启动；6个render probe、
+  checkpoint、255×255真实env prewarm、严格300行数据、Ray、完整config、4卡FSDP/vLLM
+  load均通过。日志明确显示FlashInfer sampler disabled并fallback到PyTorch-native sampler；
+  运行超过旧失败时间后已初始化24个正式validation环境，两个关键日志中上述错误模式计数为0。
+  输出为`8_vagen_only_test300_torchsampler`，W&B identity为
+  `28_vagenparent_step79_xml_test300_greedy_t20_r512_torchsampler`/`vgp28300`。
+- 同时SFT1 job`498066`未重启；截至约21分钟已原子落盘286/300，分类完成数为
+  `60/60/60/60/46`，当前成功数为`15/14/14/15/1`。这是未完成快照，正式成功率只能在
+  finalizer通过精确300条门禁后报告。
