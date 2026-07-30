@@ -39,7 +39,9 @@ ENV_PORT=$((18400 + ARM_PORT_OFFSET + SLURM_JOB_ID % 800))
 RAY_PORT=$((26400 + SLURM_JOB_ID % 800))
 RAY_DASHBOARD_PORT=$((27400 + SLURM_JOB_ID % 800))
 ENV_URL=http://127.0.0.1:${ENV_PORT}
-RUNTIME_ROOT=${ARM_OUTPUT}/.runtime/${SLURM_JOB_ID}
+# vLLM and Ray create AF_UNIX sockets below TMPDIR/RAY_TMPDIR. Keep this root
+# short enough for Linux's 107-byte sockaddr_un limit even after their suffixes.
+RUNTIME_ROOT=/tmp/npe-${SLURM_JOB_ID}-${ARM}
 AI2THOR_SHARED_HOME=/project/peilab/atst/flower/.ai2thor-home
 ENV_PID=
 RAY_PID=
@@ -82,6 +84,9 @@ cleanup() {
   if [[ -n "${ENV_PID}" ]]; then
     kill "${ENV_PID}" >/dev/null 2>&1 || true
     wait "${ENV_PID}" >/dev/null 2>&1 || true
+  fi
+  if [[ "${RUNTIME_ROOT}" == "/tmp/npe-${SLURM_JOB_ID}-${ARM}" ]]; then
+    rm -rf -- "${RUNTIME_ROOT}"
   fi
 }
 trap cleanup EXIT

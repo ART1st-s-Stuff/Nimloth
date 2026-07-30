@@ -93,3 +93,18 @@ def test_finalize_vagen_requires_stable_exact_task_identity(tmp_path: Path) -> N
     assert metrics["overall"]["success_rate"] == 0.2
     assert diagnostics["metadata_mismatches"] == 0
     assert diagnostics["action_format_rate"] == 1.0
+
+
+def test_parent_eval_uses_short_runtime_socket_root() -> None:
+    repo = Path(__file__).resolve().parents[3]
+    script = (
+        repo / "experiments/training/sft1/run_parent_checkpoint_eval_arm.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "RUNTIME_ROOT=/tmp/npe-${SLURM_JOB_ID}-${ARM}" in script
+    assert "RUNTIME_ROOT=${ARM_OUTPUT}" not in script
+    representative_ray_socket = (
+        "/tmp/npe-498026-vagen/ray/ray/"
+        "session_2026-07-30_13-30-30_495439_136071/sockets/plasma_store"
+    )
+    assert len(representative_ray_socket.encode()) < 107

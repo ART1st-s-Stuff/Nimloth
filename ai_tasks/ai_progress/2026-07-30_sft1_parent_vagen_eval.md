@@ -59,3 +59,20 @@ SFT2 前的真实策略成功率。
 - 两个arm各自finalizer必须核对精确300条task identity、action格式、图片存在且非uniform、
   finite metrics及`ALL_OK`，之后才写summary/W&B/done flag。
 - 顶层`comparison.json`和`done.flag`生成后才能报告两代parent的正式success rate。
+
+## Attempt 1：preempt立即启动后失败
+
+- 人类要求立即开始后，normal job`498024`仍无可用的两台6卡节点；提交时preempt有七台
+  完整空闲8卡节点。因此取消未运行的normal job，改在不改变数据、checkpoint和推理合同的
+  前提下使用preempt。
+- preempt job`498026`在`dgx-[55-56]`立即获得2×6 H800。两边checkpoint preflight、
+  逐卡render probe、真实env reset/close prewarm均通过；两边255x255 frame dynamic range
+  都为255。
+- job运行`00:02:25`后`FAILED 5:0`。SFT1的五个vLLM进程均在ZMQ bind时报错，VAGEN的
+  Ray head在plasma-store socket创建时报错；共同根因是`TMPDIR/RAY_TMPDIR`位于
+  过长的attempt output路径，生成的AF_UNIX socket path超过107 bytes。
+- 没有生成trajectory或VAGEN validation dump，也没有创建W&B run、optimizer或checkpoint；
+  attempt1不是模型质量结果，不能resume。远端output已写入`FAILURE.md`。
+- 修复把arm runtime root收短为`/tmp/npe-${SLURM_JOB_ID}-${ARM}`，cleanup只删除经过精确
+  guard的该目录，并增加静态socket长度回归；该错误登记为`E0069`。重试使用新的attempt2
+  output以及新的W&B names/IDs。

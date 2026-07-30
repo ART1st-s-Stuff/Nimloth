@@ -23,6 +23,12 @@
   `19_sft1parent_k16inject_test300_greedy_t20_r512`与
   `20_vagenparent_step79_xml_test300_greedy_t20_r512`。任务只做冻结推理，不创建optimizer
   或checkpoint；正式结论必须等待两边各300条严格聚合和done flag。
+- 人类要求立即启动后，normal `498024`仍因资源等待，已取消且未运行。preempt job
+  `498026`立即在`dgx-[55-56]`获得12张H800，但运行2分25秒后`FAILED 5:0`：两边的
+  checkpoint/render/env prewarm均通过，SFT1 vLLM的ZMQ socket和VAGEN Ray plasma socket
+  都因运行时目录位于过长output path下而超过AF_UNIX 107-byte限制。没有trajectory、W&B、
+  optimizer或checkpoint，attempt1不可resume。修复使用短节点本地`/tmp/npe-<job>-<arm>`
+  runtime root，并登记`E0069`；重试必须使用新output/W&B identity。
 
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 

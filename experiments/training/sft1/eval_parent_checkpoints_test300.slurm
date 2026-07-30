@@ -67,7 +67,7 @@ cat > "${OUTPUT_ROOT}/README.md" <<EOF
 - Modules: every model parameter is frozen; validation only, no optimizer and no checkpoint output.
 - Resume: SFT1 atomically resumes contiguous per-dataset episode prefixes. VAGEN emits one strict 300-row dump; a failed body must use a new attempt directory.
 - W&B: ${WANDB_ENTITY}/${WANDB_PROJECT}; ${SFT1_WANDB_RUN_NAME} (${SFT1_WANDB_RUN_ID}) and ${VAGEN_WANDB_RUN_NAME} (${VAGEN_WANDB_RUN_ID}).
-- Slurm: ${SLURM_JOB_ID}, normal, nodes=${NODES[*]}, 6 GPUs and 120 CPUs per node, 3 hour limit.
+- Slurm: ${SLURM_JOB_ID}, partition=${SLURM_JOB_PARTITION}, nodes=${NODES[*]}, 6 GPUs and 120 CPUs per node, 3 hour limit.
 EOF
 
 {
@@ -78,7 +78,7 @@ EOF
   echo "output=${OUTPUT_ROOT}"
   echo "sft1_checkpoint=${SFT1_MODEL}"
   echo "vagen_checkpoint=${VAGEN_MODEL}"
-  echo "resources=normal_nodes2_gpu6_per_node_cpu120_per_node_mem480G_per_node"
+  echo "resources=partition_${SLURM_JOB_PARTITION}_nodes2_gpu6_per_node_cpu120_per_node_mem480G_per_node"
 } | tee "${CONTROLLER_LOG}"
 
 COMMON_EXPORTS=(
