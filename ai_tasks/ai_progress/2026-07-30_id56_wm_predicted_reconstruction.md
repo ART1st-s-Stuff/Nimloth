@@ -36,6 +36,9 @@ ViT-token CFM 和旧 SFT1 DINO-grid CFM 分别作为正对照和 decoder-lineage
 - 新增正式 Slurm batch lifecycle：固定1×H800、32 CPU、128GB、1小时，校验精确commit、
   clean worktree、submodule、完整artifact、W&B凭据和实际80GB-class单GPU allocation 后，
   执行冻结 Euler50/CFG2 评估；支持相同合同的显式 `RESUME=1`。
+- on-experiment-start 现场门禁确认 `${ROOT}/.env` 不存在；W&B 凭据的既有权威来源为
+  `/project/peilab/atst/flower/.env`。launcher 已改为从该文件加载凭据后恢复显式
+  `WANDB_PROJECT=nimloth-recon`，避免 `.env` 默认 project 覆盖本实验 identity。
 
 ## 文件修改
 

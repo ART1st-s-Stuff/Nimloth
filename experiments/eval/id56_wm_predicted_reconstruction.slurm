@@ -11,6 +11,7 @@ set -euo pipefail
 
 ROOT=/project/peilab/atst/nimloth
 PYTHON=${ROOT}/.venv-vagen-main/bin/python3
+WANDB_ENV=/project/peilab/atst/flower/.env
 
 : "${WORKTREE:?set WORKTREE to the clean remote worktree}"
 : "${EXPECTED_COMMIT:?set EXPECTED_COMMIT to the exact evaluator commit}"
@@ -58,15 +59,15 @@ for required_path in \
 done
 
 explicit_wandb_project=nimloth-recon
-if [[ -f "${ROOT}/.env" ]]; then
+if [[ -f "${WANDB_ENV}" ]]; then
   set -a
   # shellcheck disable=SC1091
-  source "${ROOT}/.env"
+  source "${WANDB_ENV}"
   set +a
 fi
 export WANDB_PROJECT=${explicit_wandb_project}
 if [[ -z "${WANDB_API_KEY:-}" ]]; then
-  echo "WANDB_API_KEY is missing after loading ${ROOT}/.env" >&2
+  echo "WANDB_API_KEY is missing after loading ${WANDB_ENV}" >&2
   exit 2
 fi
 

@@ -21,7 +21,9 @@
   `external/le-wm@8edfeb3` 后定向回归 `7 passed`。真实 artifact 预检确认40条/160行严格
   对齐、cache fingerprints 为 `fee377fa57374b9a`/`4607b340bd4c84c6`，ID56 WM rollout
   shape为`(1,4,16,1024)`，两个 CFM 均 strict load。已新增1×H800、32 CPU、128GB、1小时
-  的 batch lifecycle；正式启动仍需完成 on-experiment-start 门禁和新 output/W&B identity。
+  的 batch lifecycle。on-experiment-start 发现 Nimloth root 没有 `.env`，launcher 已改用
+  服务器权威 `/project/peilab/atst/flower/.env` 只加载凭据后恢复显式 `nimloth-recon`
+  identity；正式启动仍需完成剩余门禁和新 output/W&B identity。
 
 ---
 
