@@ -132,3 +132,14 @@ def test_parent_eval_parallel_sft1_uses_unique_environment_ids() -> None:
     ).read_text(encoding="utf-8")
 
     assert "--seed-per-eval-set" in script
+
+
+def test_vagen_parent_unsets_expandable_segments_before_ray() -> None:
+    repo = Path(__file__).resolve().parents[3]
+    script = (
+        repo / "experiments/training/sft1/run_parent_checkpoint_eval_arm.sh"
+    ).read_text(encoding="utf-8")
+
+    unset_index = script.index("unset PYTORCH_CUDA_ALLOC_CONF")
+    ray_index = script.index('"${RAY_CLI}" start --head')
+    assert unset_index < ray_index

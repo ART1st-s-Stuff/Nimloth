@@ -61,7 +61,13 @@ export TRANSFORMERS_CACHE=${HF_HOME}
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
 export TOKENIZERS_PARALLELISM=true
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+if [[ "${ARM}" == sft1 ]]; then
+  export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+else
+  # VERL's vLLM sharding manager uses CuMemAllocator memory pools, which reject
+  # PyTorch expandable segments. Unset before Ray starts so workers inherit it.
+  unset PYTORCH_CUDA_ALLOC_CONF
+fi
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export WANDB_DIR=${ARM_OUTPUT}/wandb
 export RAY_TMPDIR=${RUNTIME_ROOT}/ray

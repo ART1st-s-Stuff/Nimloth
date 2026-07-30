@@ -44,6 +44,11 @@
   `val_env_composition`父键已存在但为`null`，应一次覆盖完整五类mapping。该job仍未加载
   模型或生成trajectory/W&B。`E0070`已补充“新增键加`+`、已有键不加、null mapping整体
   覆盖”；下一次提交前必须让完整正式override命令明确返回0。
+- 两条独立重试中，SFT1 `498066`已健康完成多类真实episode并原子落盘；VAGEN `498061`
+  通过完整Hydra、4卡FSDP权重加载后，在vLLM CuMemAllocator初始化时报
+  `expandable_segments:True`与memory pool不兼容。该变量来自共用arm脚本，只对SFT1保留；
+  VAGEN在Ray启动前unset以保证所有worker继承正确环境。错误登记为`E0072`，VAGEN使用
+  新attempt重提，SFT1不重启。
 
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 

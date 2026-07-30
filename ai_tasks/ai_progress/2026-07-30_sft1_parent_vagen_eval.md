@@ -101,3 +101,9 @@ SFT2 前的真实策略成功率。
   `trainer.val_env_composition`已存在但为`null`，需要一次覆盖完整五类mapping。未加载模型、
   未生成trajectory/validation dump/W&B。修复后必须对完整正式命令执行成功的`--cfg job`
   gate，不能再用只覆盖data键的最小compose代替。
+- 修复后完整Hydra命令明确返回`FULL_HYDRA_COMPOSE_OK`。SFT1 job`498066`已用全submodule
+  worktree和唯一env IDs完成多个真实episode并持续落盘。VAGEN job`498061`也通过完整config、
+  dataset composition及4个rank的4-shard权重加载，但在构建vLLM CuMemAllocator时拒绝
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`；该变量来自共用脚本，和VERL使用的
+  vLLM memory pool明确不兼容。VAGEN arm改为在启动Ray前unset，确保raylet与workers均不
+  继承该设置；SFT1保留原配置且不重启。
