@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-07-30：ID56 WM-predicted reconstruction 实现中
+## 2026-07-30：ID56 WM-predicted reconstruction 已完成
 
 - 人类确认使用当前 ID56 epoch2 checkpoint 与旧 reconstruction checkpoint 做冻结评估，
   首阶段请求 1 张 H800、预计 30--60 分钟；不训练 Qwen、WM、projector 或 CFM。
@@ -27,6 +27,17 @@
   与全部冻结模块，并在 resume 时逐字段校验。两次 `sbatch` 预提交分别因缺少强制 account、
   使用未注册的 typed GRES 被Slurm拒绝，均未创建job/output/W&B；launcher现固定有效
   `account=peilab`、已确认`preempt`和集群通用`gpu:1`，并在allocation内验证≥75GiB显存。
+- 正式 job `498250` 在 `dgx-03` 的1张真实H800上以 `COMPLETED 0:0` 结束，耗时2分04秒，
+  MaxRSS约3.4GiB；精确commit为`48841e74`。W&B `nimloth-recon/4e6cuqua`为`finished`，
+  output为`.../2026-07-30/reconstruction/47_id56e2_dinogrid_actual_wmpred_diverse40_euler50_cfg2`。
+- 完整性审计通过：160个五列strip、40个run sheet、4个contact sheet均可解码；40个轨迹级
+  resume state和`[160,16,1024]` actual/predicted state全部finite；每个horizon严格40帧，
+  W&B live summary与`metadata.json`一致。输出README和实验组`progress.md`均已更新。
+- 总体image L1为Qwen 0.279882、old SFT1 DINO 0.235079、ID56 actual 0.240510、ID56
+  predicted 0.255730。predicted→actual state MSE从h1的0.146799增至h4的0.453273，cosine
+  从0.930851降至0.738905，重建输出距离从0.090445增至0.173167，显示自回归误差积累。
+  但ID56 actual与old SFT1 state cosine仅0.443890，且actual列本身也出现旧decoder伪影；
+  因此该结果只支持WM/decoder诊断，不证明rollout质量，也不能把全部视觉退化归因于WM。
 
 ---
 

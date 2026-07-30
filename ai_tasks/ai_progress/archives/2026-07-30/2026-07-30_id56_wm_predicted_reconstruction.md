@@ -6,7 +6,7 @@
 轨迹上生成真实 state 与自回归 WM-predicted state 的匹配噪声 reconstruction；旧 Qwen
 ViT-token CFM 和旧 SFT1 DINO-grid CFM 分别作为正对照和 decoder-lineage 对照。
 
-## 当前计划
+## 执行计划（已完成）
 
 1. 在独立实验 worktree 实现严格对齐、冻结加载、轨迹级 resume、指标与 contact sheet。
 2. 本地静态检查；superpod 固定环境运行定向测试和真实 artifact CPU/GPU preflight。
@@ -46,6 +46,16 @@ ViT-token CFM 和旧 SFT1 DINO-grid CFM 分别作为正对照和 decoder-lineage
   `account=peilab`。第二次未创建 job，因为 Slurm 只注册通用 `gres/gpu=8`，不支持
   `gpu:h800:1` 类型请求。launcher 已固定已确认的 `peilab + preempt + gpu:1`，并保留
   allocation 内显存至少75GiB的运行时门禁；两次失败均未分配资源、创建output或W&B。
+- 正式 job `498250` 在 `dgx-03` 的1张NVIDIA H800上完成，Slurm为`COMPLETED 0:0`，
+  elapsed 2分04秒，batch MaxRSS 3,584,412KiB。精确commit `48841e74fac581e...`；
+  W&B `nimloth-recon/4e6cuqua`为`finished`。
+- 独立审计确认160 strips、40 run sheets、4 contact sheets、40 atomic trajectory states、
+  actual/predicted `[160,16,1024]` tensors和所有metrics均完整finite；W&B live summary匹配。
+- 初步结果：总体image L1为Qwen 0.279882、old DINO 0.235079、ID56 actual 0.240510、
+  ID56 predicted 0.255730。h1→h4的predicted/actual state MSE为0.146799→0.453273，
+  cosine为0.930851→0.738905，output L1为0.090445→0.173167。视觉检查确认粗布局/色调
+  常能保留但随horizon漂移；old CFM对ID56 actual也有明显伪影，不能把全部退化归因于WM。
+- output `README.md`、`metadata.json`和实验组`progress.md`已完成更新；本任务无需resume。
 
 ## 文件修改
 
@@ -62,11 +72,10 @@ ViT-token CFM 和旧 SFT1 DINO-grid CFM 分别作为正对照和 decoder-lineage
 - `git diff --check`：通过。
 - 本地 `pytest`：未运行；环境没有 pytest，且系统 Python 没有 torch。这是环境边界，
   不能作为代码测试失败或通过的证据。
-- superpod：`7 passed, 1 warning in 13.29s`；warning为既有 PyTorch nested-tensor提示。
+- superpod最终定向suite：`8 passed, 1 warning in 11.41s`；warning为既有PyTorch提示。
 - superpod真实artifact preflight：40 runs、160 rows、两个cache、两个CFM和ID56 WM完整通过。
 - `bash -n experiments/eval/id56_wm_predicted_reconstruction.slurm`：通过。
 
 ## 待完成
 
-- 正式 on-experiment-start、Slurm/W&B/output identity 和 1-H800 运行。
-- 完成后 on-experiment-end、输出/W&B/指标审计和进度归档。
+- 无。本文件在完成提交中归档。
