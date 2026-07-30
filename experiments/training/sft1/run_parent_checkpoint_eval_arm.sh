@@ -382,7 +382,7 @@ PY
     trainer.total_training_steps=1 trainer.resume_mode=disable \
     rollout_manager.max_turns=20 rollout_manager.max_trajectory_length=23000 \
     rollout_manager.n_trajectory=1 rollout_manager.use_service=True \
-    rollout_manager.base_url="${ENV_URL}" rollout_manager.timeout=120 \
+    rollout_manager.base_url="${ENV_URL}" rollout_manager.timeout=500 \
     rollout_manager.max_workers=8 rollout_manager.use_multi_turn_reward=False \
     rollout_manager.use_loss_mask=True rollout_manager.use_gae_mask=True \
     critic.model.path="${MODEL_PATH}" +ray_kwargs.ray_init.address=auto \

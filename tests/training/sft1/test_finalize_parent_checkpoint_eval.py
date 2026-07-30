@@ -154,3 +154,13 @@ def test_vagen_parent_disables_flashinfer_sampler_before_ray() -> None:
     sampler_index = script.index("export VLLM_USE_FLASHINFER_SAMPLER=0")
     ray_index = script.index('"${RAY_CLI}" start --head')
     assert sampler_index < ray_index
+
+
+def test_vagen_parent_uses_navigation_service_timeout() -> None:
+    repo = Path(__file__).resolve().parents[3]
+    script = (
+        repo / "experiments/training/sft1/run_parent_checkpoint_eval_arm.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'rollout_manager.base_url="${ENV_URL}" rollout_manager.timeout=500' in script
+    assert 'rollout_manager.base_url="${ENV_URL}" rollout_manager.timeout=120' not in script

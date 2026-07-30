@@ -123,3 +123,10 @@ SFT2 前的真实策略成功率。
 - 同时SFT1 job`498066`未重启；截至约21分钟已原子落盘286/300，分类完成数为
   `60/60/60/60/46`，当前成功数为`15/14/14/15/1`。这是未完成快照，正式成功率只能在
   finalizer通过精确300条门禁后报告。
+- VAGEN `498090`随后在`00:05:10`失败。sampler修复已生效：4卡KV cache/warmup完成，
+  日志进入`validation at global step 0 begins`且没有FlashInfer JIT错误；实际阻塞是首个
+  `val_batch_size=24`环境批次的HTTP create。服务端记录24次AI2-THOR initialization，但
+  客户端沿用短`rollout_manager.timeout=120`并先触发`ReadTimeout`，尚未进入rollout loop或
+  生成trajectory/W&B结果，attempt8不可resume。VAGEN官方navigation脚本使用500秒、基础
+  trainer默认1200秒；修复恢复为500秒，不改变batch、数据、采样或环境语义，登记`E0074`
+  并以新output/W&B identity重试。

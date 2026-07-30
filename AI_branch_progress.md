@@ -61,6 +61,11 @@
   已开始真实validation并初始化24个正式环境，关键错误模式为0。新output为attempt8，W&B
   使用ID28/`vgp28300`。SFT1 `498066`保持原任务，截至同一快照完成286/300；未完成计数不作为
   正式success rate。
+- `498090`最终在首个24环境validation batch的create请求上于120秒超时。4卡vLLM
+  KV cache/warmup及PyTorch sampler均已通过，服务端也记录24次AI2-THOR初始化；但尚未进入
+  rollout loop或生成trajectory/W&B，不能作为模型结果且不可resume。VAGEN官方navigation
+  脚本timeout为500秒（基础trainer默认1200秒），因此评估恢复`rollout_manager.timeout=500`；
+  该运维等待不改变val batch、seed、采样或环境，错误登记为`E0074`并使用新identity重试。
 
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 
