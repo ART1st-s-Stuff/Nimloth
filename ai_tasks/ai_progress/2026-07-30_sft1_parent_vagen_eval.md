@@ -149,3 +149,12 @@ SFT2 前的真实策略成功率。
   warmup及PyTorch sampler均通过。首批24环境完成create并进入多轮生成；运行7分15秒时已
   越过旧120秒边界，vLLM log有22次持续cache reset周期，未见ReadTimeout/HTTP fatal。
   当前job健康但尚未生成最终300行dump，不能提前报告VAGEN success rate。
+- VAGEN job`498106`最终在`00:21:09`以`COMPLETED 0:0`结束；`validation/0.jsonl`恰好
+  300行，strict finalizer、W&B和`done.flag=ALL_OK`均通过。正式结果为
+  `166/300=55.33%`：base `42/60=70.0%`、common sense `42/60=70.0%`、complex
+  instruction `44/60=73.33%`、visual appearance `38/60=63.33%`、long horizon
+  `0/60=0%`。XML action格式300/300，metadata mismatch 0，4583张255×255图片无uniform frame。
+- 最终对比为SFT1 `60/300=20.0%` versus VAGEN `166/300=55.33%`，SFT1低35.33个百分点。
+  两边各自summary/done均为ALL_OK，W&B为`s1p26300`/`vgp30300`。服务器canonical输出新增
+  `2026-07-30/comparison.json`，两个attempt结束说明及实验组`progress.md`；当前用户无剩余
+  Slurm job。本评估目标完成。

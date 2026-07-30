@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已入队
+## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
 - 为回答 SFT2 前两代策略的真实成功率，新增配对评估：使用 SFT2 初始化所用的
   SFT1 merged checkpoint，以及该 SFT1 的 VAGEN step79 parent checkpoint；两边均评估
@@ -80,6 +80,15 @@
   render/prewarm/data/Ray和4卡FSDP/vLLM/KV/warmup均通过，首批24环境已进入多轮生成。
   运行7分15秒时越过旧120秒timeout边界且有22次连续cache reset，无ReadTimeout/HTTP fatal；
   最终300行dump尚未生成，因此暂不报告VAGEN正式success rate。
+- VAGEN `498106`最终于`00:21:09`以`COMPLETED 0:0`结束，300/300 validation dump、
+  strict finalizer、W&B与`done.flag=ALL_OK`全部通过。正式success rate为`166/300=55.33%`：
+  base `42/60=70.0%`、common sense `42/60=70.0%`、complex instruction
+  `44/60=73.33%`、visual appearance `38/60=63.33%`、long horizon `0/60=0%`；
+  XML action 300/300，metadata mismatch 0，4583张255图无uniform frame。
+- 最终同合同对比：SFT1 `60/300=20.0%`，比VAGEN parent低35.33个百分点；只有long horizon
+  为SFT1 `3.33%`高于VAGEN `0%`，其余四类SFT1均明显更低。canonical对比写入服务器
+  `outputs/experiments/sft1_parent_vagen_eval/2026-07-30/comparison.json`，实验组`progress.md`
+  已更新；W&B runs为`s1p26300`与`vgp30300`，当前用户无剩余Slurm job。
 
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 
