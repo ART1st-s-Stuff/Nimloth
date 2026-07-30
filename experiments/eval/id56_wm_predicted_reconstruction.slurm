@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=id56-wm-recon
+#SBATCH --account=peilab
+#SBATCH --partition=preempt
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:h800:1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=128G
 #SBATCH --time=01:00:00

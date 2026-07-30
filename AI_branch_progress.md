@@ -24,7 +24,9 @@
   的 batch lifecycle。on-experiment-start 发现 Nimloth root 没有 `.env`，launcher 已改用
   服务器权威 `/project/peilab/atst/flower/.env` 只加载凭据后恢复显式 `nimloth-recon`
   identity；输出 `contract.json` 强制记录注入的精确 commit、W&B/output、validation split
-  与全部冻结模块，并在 resume 时逐字段校验。正式启动仍需完成剩余门禁。
+  与全部冻结模块，并在 resume 时逐字段校验。两次 `sbatch` 预提交分别因缺少强制 account、
+  使用未注册的 typed GRES 被Slurm拒绝，均未创建job/output/W&B；launcher现固定有效
+  `account=peilab`、已确认`preempt`和集群通用`gpu:1`，并在allocation内验证≥75GiB显存。
 
 ---
 

@@ -42,6 +42,10 @@ ViT-token CFM 和旧 SFT1 DINO-grid CFM 分别作为正对照和 decoder-lineage
 - 提交前记录审计补充强制 `--git-commit`；evaluator 在任何 Qwen/CFM forward 前写出的
   `contract.json` 现在包含精确 commit、W&B project/run、output、validation split 语义和
   全部冻结模块，resume 时逐字段拒绝不同合同。
+- 首次 `sbatch` 因集群新门禁缺 `--account` 被拒绝；读取当前 user association 后确认
+  `account=peilab`。第二次未创建 job，因为 Slurm 只注册通用 `gres/gpu=8`，不支持
+  `gpu:h800:1` 类型请求。launcher 已固定已确认的 `peilab + preempt + gpu:1`，并保留
+  allocation 内显存至少75GiB的运行时门禁；两次失败均未分配资源、创建output或W&B。
 
 ## 文件修改
 
