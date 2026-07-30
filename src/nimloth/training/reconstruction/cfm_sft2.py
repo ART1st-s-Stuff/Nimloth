@@ -73,7 +73,7 @@ def load_state_image_split(
     rows: list[dict[str, Any]] = []
     for index in range(count):
         item = dataset[index]
-        states[index].copy_(item["state_emb"].to(dtype=torch.float16))
+        states[index].copy_(item["state_emb"].reshape(-1).to(dtype=torch.float16))
         images[index].copy_(_load_image_uint8(item["current_image_path"], image_size))
         rows.append(
             {
@@ -92,6 +92,55 @@ def load_state_image_split(
                 "total": count,
             }), flush=True)
     return LoadedStateImageSplit(states, images, rows, manifest)
+
+
+def resolve_condition_token_shape(manifest: dict[str, Any]) -> tuple[int, int]:
+    """Resolve the cache-native token layout used by the CFM condition path."""
+
+    flat_dim = int(manifest["cond_dim"])
+    representation = str(manifest.get("representation", "projected"))
+    state_shape = tuple(int(value) for value in manifest.get("state_shape", ()))
+    if representation in {"qwen_query_hidden", "dino_grid_state"}:
+        if len(state_shape) != 2:
+            raise ValueError(
+                f"{representation} cache needs [K,D] state_shape, got {state_shape}"
+            )
+        if math.prod(state_shape) != flat_dim:
+            raise ValueError(
+                f"{representation} state_shape {state_shape} does not match "
+                f"cond_dim={flat_dim}"
+            )
+        return state_shape
+    return 1, flat_dim
+
+
+def initialize_from_cfm(
+    model: TokenConditionedFlowUNet,
+    checkpoint: Path,
+) -> dict[str, Any]:
+    """Strictly initialize from a CFM with the identical architecture."""
+
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    invariants = payload.get("invariants")
+    if not isinstance(invariants, dict):
+        raise ValueError("CFM initialization checkpoint lacks invariants")
+    source_config = invariants.get("cfm_config")
+    current_config = model.config.to_metadata()
+    if source_config != current_config:
+        raise ValueError(
+            "CFM initialization architecture mismatch:\n"
+            + json.dumps(
+                {"checkpoint": source_config, "current": current_config},
+                indent=2,
+            )
+        )
+    model.load_state_dict(payload["model"], strict=True)
+    return {
+        "checkpoint": str(checkpoint),
+        "source_step": int(payload.get("step", -1)),
+        "source_best_val": float(payload.get("best_val", float("nan"))),
+        "strict_model_load": True,
+    }
 
 
 def _atomic_torch_save(payload: Any, path: Path) -> None:
@@ -119,6 +168,13 @@ def _checkpoint_invariants(
         "train_items": int(train_split.states.shape[0]),
         "val_items": int(val_split.states.shape[0]),
         "latent_token_count": int(args.latent_token_count),
+        "condition_dropout": float(args.condition_dropout),
+        "init_cfm_checkpoint": (
+            str(args.init_cfm_checkpoint)
+            if args.init_cfm_checkpoint is not None
+            else None
+        ),
+        "skip_samples": bool(args.skip_samples),
     }
 
 
@@ -184,6 +240,8 @@ def _init_wandb(args: argparse.Namespace, metadata: dict[str, Any]):
     try:
         import wandb
     except Exception as exc:
+        if args.require_wandb:
+            raise RuntimeError("W&B import is required for this run") from exc
         print(json.dumps({"wandb_init_skipped": str(exc)}))
         return None
     run_id_path = args.output_dir / "wandb_run_id.txt"
@@ -201,6 +259,8 @@ def _init_wandb(args: argparse.Namespace, metadata: dict[str, Any]):
             dir=str(args.output_dir),
         )
     except Exception as exc:
+        if args.require_wandb:
+            raise RuntimeError("W&B initialization is required for this run") from exc
         print(json.dumps({"wandb_init_skipped": str(exc)}))
         return None
     if getattr(run, "id", None):
@@ -335,6 +395,14 @@ def _save_reconstruction_samples(
 
 def train_cfm_sft2(args: argparse.Namespace) -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if not 0.0 <= args.condition_dropout < 1.0:
+        raise ValueError("condition_dropout must be in [0, 1)")
+    resume_requested = bool(args.resume or args.resume_checkpoint is not None)
+    if args.output_dir.exists() and any(args.output_dir.iterdir()) and not resume_requested:
+        raise FileExistsError(
+            f"CFM output directory is not empty: {args.output_dir}; "
+            "use a new output or an explicit resume"
+        )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
@@ -357,15 +425,31 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
     condition_dim = int(train_split.states.shape[1])
     if val_split.states.shape[1] != condition_dim:
         raise ValueError("CFM train/val condition dimensions differ")
+    token_count, token_dim = resolve_condition_token_shape(train_split.manifest)
+    val_token_shape = resolve_condition_token_shape(val_split.manifest)
+    if val_token_shape != (token_count, token_dim):
+        raise ValueError(
+            "CFM train/val token shapes differ: "
+            f"train={(token_count, token_dim)}, val={val_token_shape}"
+        )
+    if token_count * token_dim != condition_dim:
+        raise ValueError(
+            "CFM token shape does not match flat condition width: "
+            f"{token_count}*{token_dim} != {condition_dim}"
+        )
     config = CFMConfig(
         image_size=args.image_size,
-        token_count=1,
-        token_dim=condition_dim,
+        token_count=token_count,
+        token_dim=token_dim,
         base_channels=args.base_channels,
         condition_dim=args.condition_dim,
         time_dim=args.time_dim,
     )
     model = TokenConditionedFlowUNet(config).to(device)
+    initialization = None
+    if args.init_cfm_checkpoint is not None:
+        initialization = initialize_from_cfm(model, args.init_cfm_checkpoint)
+        print(json.dumps({"cfm_initialization": initialization}), flush=True)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
@@ -379,19 +463,30 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
     planned_steps = args.epochs * steps_per_epoch
     total_steps = args.max_steps if args.max_steps > 0 else planned_steps
     metadata = {
-        "task": "sft2_k8_direct_conditional_flow_matching_reconstruction",
+        "task": "direct_conditional_flow_matching_reconstruction",
         "source_checkpoint": str(args.source_checkpoint),
         "state_cache_dir": str(args.state_cache_dir),
-        "wm_checkpoint": str(args.wm_checkpoint),
+        "wm_checkpoint": (
+            str(args.wm_checkpoint) if args.wm_checkpoint is not None else None
+        ),
         "split_semantics": (
             "same train-cache subset for explicit tiny-overfit diagnostics"
             if args.validation_cache_split == "train"
             else "strict-valid train_all for training; disjoint val_all for validation only"
         ),
-        "target": "current_128px_image_from_current_projected_sft2_state",
+        "target": (
+            "current_128px_image_from_dino_grid_state"
+            if train_split.manifest.get("representation") == "dino_grid_state"
+            else "current_128px_image_from_current_projected_sft2_state"
+        ),
         "trainable_modules": "TokenConditionedFlowUNet only",
-        "frozen_modules": "SFT2 Qwen, StateProjector, WM predictor; WM predictor loaded only for post-train samples",
+        "frozen_modules": (
+            "SFT2 Qwen, StateProjector, WM predictor; training reads only the "
+            "frozen state cache"
+        ),
         "invariants": invariants,
+        "initialization": initialization,
+        "condition_dropout": args.condition_dropout,
         "epochs": args.epochs,
         "planned_steps": planned_steps,
         "total_steps": total_steps,
@@ -454,6 +549,9 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         condition = train_split.states[indices].to(
             device=device, dtype=torch.float32
         )
+        if args.condition_dropout > 0:
+            drop = torch.rand(condition.shape[0], device=device) < args.condition_dropout
+            condition = condition.masked_fill(drop[:, None], 0.0)
         target = train_split.images_uint8[indices].to(
             device=device, dtype=torch.float32
         ).div(127.5).sub(1.0)
@@ -567,21 +665,25 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         args.output_dir / "best.pt", map_location=device, weights_only=False
     )
     model.load_state_dict(best_payload["model"], strict=True)
-    wm_predictor = LatentWMPredictor.load_checkpoint(
-        args.wm_checkpoint, map_location=device
-    ).to(device).eval()
-    for parameter in wm_predictor.parameters():
-        parameter.requires_grad_(False)
-    sample_paths = _save_reconstruction_samples(
-        model=model,
-        split=val_split,
-        wm_predictor=wm_predictor,
-        output_dir=args.output_dir,
-        device=device,
-        ode_steps=args.sample_ode_steps,
-        num_items=args.sample_items,
-        seed=args.seed + 30_000,
-    )
+    sample_paths: dict[str, str] = {}
+    if not args.skip_samples:
+        if args.wm_checkpoint is None:
+            raise ValueError("post-train samples require --wm-checkpoint")
+        wm_predictor = LatentWMPredictor.load_checkpoint(
+            args.wm_checkpoint, map_location=device
+        ).to(device).eval()
+        for parameter in wm_predictor.parameters():
+            parameter.requires_grad_(False)
+        sample_paths = _save_reconstruction_samples(
+            model=model,
+            split=val_split,
+            wm_predictor=wm_predictor,
+            output_dir=args.output_dir,
+            device=device,
+            ode_steps=args.sample_ode_steps,
+            num_items=args.sample_items,
+            seed=args.seed + 30_000,
+        )
     if wandb_run is not None:
         import wandb
 
@@ -606,6 +708,7 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         "best_checkpoint": str(args.output_dir / "best.pt"),
         "final_checkpoint": str(final_path),
         "sample_contact_sheets": sample_paths,
+        "initialization": initialization,
         "elapsed_sec": time.time() - start_time,
     }
     (args.output_dir / "summary.json").write_text(
@@ -622,7 +725,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Train direct-state conditional flow matching for SFT2 visualization"
     )
     parser.add_argument("--state-cache-dir", type=Path, required=True)
-    parser.add_argument("--wm-checkpoint", type=Path, required=True)
+    parser.add_argument("--wm-checkpoint", type=Path, default=None)
     parser.add_argument("--source-checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--latent-token-count", type=int, default=8)
@@ -636,6 +739,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument("--condition-dropout", type=float, default=0.0)
+    parser.add_argument("--init-cfm-checkpoint", type=Path, default=None)
     parser.add_argument("--log-interval", type=int, default=100)
     parser.add_argument("--eval-interval", type=int, default=500)
     parser.add_argument("--eval-max-items", type=int, default=1024)
@@ -650,6 +755,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sample-items", type=int, default=8)
     parser.add_argument("--sample-ode-steps", type=int, nargs="+", default=[5, 50])
+    parser.add_argument("--skip-samples", action="store_true")
     parser.add_argument("--seed", type=int, default=20260708)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--resume-checkpoint", type=Path, default=None)
@@ -657,6 +763,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--wandb-id", default=None)
     parser.add_argument("--no-wandb", action="store_true")
+    parser.add_argument("--require-wandb", action="store_true")
     return parser
 
 

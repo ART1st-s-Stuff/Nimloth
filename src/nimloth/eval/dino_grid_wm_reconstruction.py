@@ -2,8 +2,8 @@
 
 The evaluator encodes real states with one SFT2 checkpoint, rolls its world
 model forward with recorded actions, and visualizes both actual and predicted
-grids through the same older DINO-grid CFM decoder.  The older Qwen-token and
-SFT1 DINO-grid reconstructions are retained as positive and lineage controls.
+grids through a CFM trained on actual states from that same checkpoint.  The
+older Qwen-token and SFT1 DINO-grid reconstructions remain lineage controls.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ ACTION_NAMES = (
     "look_down",
 )
 
-COLUMNS = (
+LEGACY_COLUMNS = (
     "GT",
     "Qwen ViT-token CFM",
     "old SFT1 DINO-grid CFM",
@@ -57,7 +57,31 @@ COLUMNS = (
     "ID56 WM-predicted grid",
 )
 
-PROTOCOL = "id56_actual_vs_autoregressive_wm_predicted_dino_grid_v1"
+ALIGNED_COLUMNS = (
+    "GT",
+    "Qwen ViT-token CFM",
+    "old SFT1 DINO-grid CFM",
+    "ID56 actual grid (aligned CFM)",
+    "ID56 WM-predicted grid (aligned CFM)",
+)
+
+LEGACY_PROTOCOL = "id56_actual_vs_autoregressive_wm_predicted_dino_grid_v1"
+ALIGNED_PROTOCOL = "id56_actual_vs_autoregressive_wm_predicted_aligned_cfm_v2"
+
+# Preserve the original public constants for the completed legacy run.
+COLUMNS = LEGACY_COLUMNS
+PROTOCOL = LEGACY_PROTOCOL
+
+
+def _uses_aligned_cfm(args: argparse.Namespace) -> bool:
+    has_cache = args.id56_dino_grid_cache is not None
+    has_checkpoint = args.id56_dino_grid_cfm_checkpoint is not None
+    if has_cache != has_checkpoint:
+        raise ValueError(
+            "aligned reconstruction requires both --id56-dino-grid-cache and "
+            "--id56-dino-grid-cfm-checkpoint"
+        )
+    return has_cache
 
 
 def _freeze(module: torch.nn.Module) -> None:
@@ -261,6 +285,23 @@ def validate_dino_cfm_lineage(
     shape = (int(config.get("token_count", -1)), int(config.get("token_dim", -1)))
     if shape != (16, 1024):
         raise ValueError(f"DINO-grid CFM condition shape must be (16, 1024), got {shape}")
+
+
+def validate_id56_state_cache_lineage(
+    manifest: dict[str, Any],
+    checkpoint: Path,
+) -> None:
+    if manifest.get("representation") != "dino_grid_state":
+        raise ValueError("ID56 CFM state cache must use dino_grid_state representation")
+    shape = tuple(int(value) for value in manifest.get("state_shape", ()))
+    if shape != (16, 1024):
+        raise ValueError(f"ID56 CFM state cache shape must be (16, 1024), got {shape}")
+    source = manifest.get("source_checkpoint")
+    if Path(str(source)).resolve() != checkpoint.resolve():
+        raise ValueError(
+            "ID56 state cache/checkpoint lineage mismatch: "
+            f"cache={source!r}, evaluation={str(checkpoint)!r}"
+        )
 
 
 def _load_qwen_checkpoint(
@@ -546,21 +587,28 @@ def _wandb_upload(
 
     id_path = args.output_dir / "wandb_run_id.txt"
     run_id = id_path.read_text(encoding="utf-8").strip() if id_path.is_file() else None
+    aligned = _uses_aligned_cfm(args)
+    protocol = ALIGNED_PROTOCOL if aligned else LEGACY_PROTOCOL
+    wandb_config = {
+        "protocol": protocol,
+        "horizon": args.horizon,
+        "steps": args.steps,
+        "cfg_scale": args.cfg_scale,
+        "matched_noise": True,
+        "sft2_checkpoint": str(args.sft2_checkpoint),
+        "dino_grid_cfm_checkpoint": str(args.dino_grid_cfm_checkpoint),
+    }
+    if aligned:
+        wandb_config["id56_dino_grid_cfm_checkpoint"] = str(
+            args.id56_dino_grid_cfm_checkpoint
+        )
     run = wandb.init(
         project=args.wandb_project,
         name=args.wandb_run_name,
         id=run_id,
         resume="must" if run_id else None,
         dir=str(args.output_dir),
-        config={
-            "protocol": PROTOCOL,
-            "horizon": args.horizon,
-            "steps": args.steps,
-            "cfg_scale": args.cfg_scale,
-            "matched_noise": True,
-            "sft2_checkpoint": str(args.sft2_checkpoint),
-            "dino_grid_cfm_checkpoint": str(args.dino_grid_cfm_checkpoint),
-        },
+        config=wandb_config,
     )
     id_path.write_text(run.id + "\n", encoding="utf-8")
     payload: dict[str, Any] = dict(metrics)
@@ -576,6 +624,9 @@ def _wandb_upload(
 
 @torch.no_grad()
 def evaluate(args: argparse.Namespace) -> int:
+    aligned = _uses_aligned_cfm(args)
+    protocol = ALIGNED_PROTOCOL if aligned else LEGACY_PROTOCOL
+    columns = ALIGNED_COLUMNS if aligned else LEGACY_COLUMNS
     if args.horizon != 4:
         raise ValueError(
             "this formal ID56 protocol requires horizon=4; use a separate explicitly "
@@ -601,6 +652,16 @@ def evaluate(args: argparse.Namespace) -> int:
         state_shape=(16, 512),
     )
     validate_dino_cfm_lineage(args.dino_grid_cfm_checkpoint, old_grid_manifest)
+    id56_grid_manifest = None
+    if aligned:
+        assert args.id56_dino_grid_cache is not None
+        assert args.id56_dino_grid_cfm_checkpoint is not None
+        id56_grid_manifest = _manifest(args.id56_dino_grid_cache)
+        validate_id56_state_cache_lineage(id56_grid_manifest, args.sft2_checkpoint)
+        validate_dino_cfm_lineage(
+            args.id56_dino_grid_cfm_checkpoint,
+            id56_grid_manifest,
+        )
     rows, trajectory_samples, cached_states = prepare_protocol_rows(
         selections=selections,
         current_samples=_sample_index(args.val_jsonl),
@@ -609,9 +670,9 @@ def evaluate(args: argparse.Namespace) -> int:
         horizon=args.horizon,
     )
     contract = {
-        "protocol": PROTOCOL,
+        "protocol": protocol,
         "git_commit": args.git_commit,
-        "columns": list(COLUMNS),
+        "columns": list(columns),
         "num_runs": len(selections),
         "num_rows": len(rows),
         "horizon": args.horizon,
@@ -633,13 +694,26 @@ def evaluate(args: argparse.Namespace) -> int:
             "validation split; selected held-out diverse40 trajectories"
         ),
         "module_updates": (
-            "none; Qwen, state projector, WM predictor, value head, and both "
-            "CFM decoders are frozen"
+            "none; Qwen, state projector, WM predictor, value head, and all "
+            "three CFM decoders are frozen"
+            if aligned
+            else "none; Qwen, state projector, WM predictor, value head, and both CFM decoders are frozen"
         ),
         "wandb_project": args.wandb_project,
         "wandb_run_name": args.wandb_run_name,
         "backbone_weights": "online checkpoint weights; vision_ema.pt is not applied",
     }
+    if aligned:
+        assert id56_grid_manifest is not None
+        contract.update(
+            {
+                "id56_dino_grid_cache": str(args.id56_dino_grid_cache),
+                "id56_dino_grid_fingerprint": id56_grid_manifest["fingerprint"],
+                "id56_dino_grid_cfm_checkpoint": str(
+                    args.id56_dino_grid_cfm_checkpoint
+                ),
+            }
+        )
     contract_path = args.output_dir / "contract.json"
     if contract_path.is_file():
         existing = json.loads(contract_path.read_text(encoding="utf-8"))
@@ -683,7 +757,12 @@ def evaluate(args: argparse.Namespace) -> int:
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    dino_cfm = _load_current_cfm(args.dino_grid_cfm_checkpoint, device)
+    old_dino_cfm = _load_current_cfm(args.dino_grid_cfm_checkpoint, device)
+    id56_dino_cfm = (
+        _load_current_cfm(args.id56_dino_grid_cfm_checkpoint, device)
+        if aligned
+        else old_dino_cfm
+    )
     qwen_cfm = _load_legacy_cfm(args.qwen_cfm_checkpoint, device)
     generator = torch.Generator(device="cpu").manual_seed(args.seed)
     noise = torch.randn(len(rows), 3, 128, 128, generator=generator)
@@ -698,7 +777,7 @@ def evaluate(args: argparse.Namespace) -> int:
             device=device,
         ),
         "old_dino_grid": _sample_cfg(
-            dino_cfm,
+            old_dino_cfm,
             states["old_grid"].flatten(1),
             noise,
             steps=args.steps,
@@ -707,7 +786,7 @@ def evaluate(args: argparse.Namespace) -> int:
             device=device,
         ),
         "id56_actual": _sample_cfg(
-            dino_cfm,
+            id56_dino_cfm,
             states["id56_actual"].flatten(1),
             noise,
             steps=args.steps,
@@ -716,7 +795,7 @@ def evaluate(args: argparse.Namespace) -> int:
             device=device,
         ),
         "id56_predicted": _sample_cfg(
-            dino_cfm,
+            id56_dino_cfm,
             states["id56_predicted"].flatten(1),
             noise,
             steps=args.steps,
@@ -750,7 +829,7 @@ def evaluate(args: argparse.Namespace) -> int:
             ],
             [
                 f"run{row['run_index']} t+{row['horizon']} {row['action_name']} GT",
-                *COLUMNS[1:],
+                *columns[1:],
             ],
         )
         path = args.output_dir / (
@@ -799,6 +878,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--old-dino-grid-cache", type=Path, required=True)
     parser.add_argument("--qwen-cache", type=Path, required=True)
     parser.add_argument("--dino-grid-cfm-checkpoint", type=Path, required=True)
+    parser.add_argument("--id56-dino-grid-cache", type=Path, default=None)
+    parser.add_argument(
+        "--id56-dino-grid-cfm-checkpoint",
+        type=Path,
+        default=None,
+    )
     parser.add_argument("--qwen-cfm-checkpoint", type=Path, required=True)
     parser.add_argument("--selections", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)

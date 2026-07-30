@@ -195,3 +195,6 @@ def test_cli_requires_exact_git_commit() -> None:
         if getattr(action, "required", False)
     }
     assert "git_commit" in required
+    destinations = {action.dest for action in parser._actions}
+    assert "id56_dino_grid_cache" in destinations
+    assert "id56_dino_grid_cfm_checkpoint" in destinations

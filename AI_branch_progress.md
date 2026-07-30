@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-07-30：ID56-aligned CFM 重训准备中
+
+- 人类指出 ID47 使用了 ID56 SFT2 state、但没有重训匹配的 CFM，并要求尽快重训。
+  新分支 `exp/id56-cfm-retrain` 从已完成的 ID56 WM reconstruction 分支继续；旧 ID47
+  保持可复现，不覆盖其 output/W&B。
+- 已核实 CFM 需要使用 ID52 migrated train 的完整 59,269 个逐步 state，严格不重叠的
+  validation 为 6,054 个；49,638 是 SFT2 的连续四步 window 数，不能误作 CFM state 数。
+  ID53 compact preprocess cache 正是 ID56 使用的输入 cache，train/val fingerprints 分别为
+  `ac7835348d6eade1`/`d857dc4ef51a70be`。
+- 实现中的新 cache builder 冻结 ID56 epoch2 online Qwen 与 shared DINO-grid projector，
+  通过多 rank 连续分片生成 `[16,1024]` actual states；每个 shard 原子落盘，同一 world-size、
+  checkpoint/data/cache/commit 合同下可续建。明确不应用 `vision_ema.pt`。
+- CFM trainer 已补齐 cache-native `[K,D]` condition、CFG 所需 condition dropout、同构 CFM
+  strict warm-start、非空输出保护和 grid evaluator 独立采样模式。新 evaluator 在保留旧 SFT1
+  CFM control 的同时，只用新 ID56-aligned CFM 解码 ID56 actual/predicted 两列；旧 ID47
+  参数保持兼容。
+- 待完成：远端定向回归和真实 artifact preflight；人类确认 preempt 16×H800 cache build +
+  1×H800 CFM/eval 资源合同后，提交全新 `nimloth-recon` ID48/ID49 lifecycle。
+
+---
+
 ## 2026-07-30：ID56 WM-predicted reconstruction 已完成
 
 - 人类确认使用当前 ID56 epoch2 checkpoint 与旧 reconstruction checkpoint 做冻结评估，

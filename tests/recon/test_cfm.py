@@ -9,7 +9,11 @@ from nimloth.recon.cfm import (
     sample_euler,
 )
 from nimloth.recon.rcdm.image_utils import image_to_diffusion_tensor
-from nimloth.training.reconstruction.cfm_sft2 import _load_image_uint8
+from nimloth.training.reconstruction.cfm_sft2 import (
+    _load_image_uint8,
+    initialize_from_cfm,
+    resolve_condition_token_shape,
+)
 from nimloth.training.reconstruction.residual_cfm_sft2 import biased_flow_loss
 
 
@@ -103,3 +107,53 @@ def test_cfm_euler_sampling_is_deterministic() -> None:
     )
     assert first.shape == noise.shape
     torch.testing.assert_close(first, second, rtol=1e-4, atol=3e-6)
+
+
+def test_dino_grid_manifest_resolves_sixteen_condition_tokens() -> None:
+    assert resolve_condition_token_shape(
+        {
+            "representation": "dino_grid_state",
+            "state_shape": [16, 1024],
+            "cond_dim": 16 * 1024,
+        }
+    ) == (16, 1024)
+    with pytest.raises(ValueError, match="does not match"):
+        resolve_condition_token_shape(
+            {
+                "representation": "dino_grid_state",
+                "state_shape": [16, 1024],
+                "cond_dim": 1024,
+            }
+        )
+
+
+def test_cfm_initialization_requires_identical_architecture(tmp_path) -> None:
+    source = _tiny_model()
+    checkpoint = tmp_path / "source.pt"
+    torch.save(
+        {
+            "model": source.state_dict(),
+            "step": 17,
+            "best_val": 0.25,
+            "invariants": {"cfm_config": source.config.to_metadata()},
+        },
+        checkpoint,
+    )
+    target = _tiny_model()
+    result = initialize_from_cfm(target, checkpoint)
+    assert result["source_step"] == 17
+    for left, right in zip(source.parameters(), target.parameters(), strict=True):
+        torch.testing.assert_close(left, right)
+
+    mismatched = TokenConditionedFlowUNet(
+        CFMConfig(
+            image_size=16,
+            token_count=2,
+            token_dim=6,
+            base_channels=4,
+            condition_dim=8,
+            time_dim=16,
+        )
+    )
+    with pytest.raises(ValueError, match="architecture mismatch"):
+        initialize_from_cfm(mismatched, checkpoint)

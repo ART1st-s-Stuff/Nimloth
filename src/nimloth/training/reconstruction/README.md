@@ -96,6 +96,30 @@ The cache fingerprint, model config, data sizes, k, optimizer hyperparameters,
 and seed must match. The final gate saves 5-step and 50-step ODE contact sheets
 for current-state and WM-predicted-next reconstruction.
 
+For a DINO-grid checkpoint whose projector/backbone changed after the original
+CFM was trained, first build a checkpoint-aligned cache from the immutable SFT2
+compact preprocessing cache:
+
+```bash
+python -m torch.distributed.run ... \
+  -m nimloth.training.reconstruction.cache_dino_grid_states \
+  --sft2-checkpoint /path/to/sft2/epoch_002 \
+  --train-jsonl /path/to/train.jsonl \
+  --val-jsonl /path/to/val.jsonl \
+  --preprocess-cache-dir /path/to/compact/preprocess \
+  --preprocess-cache-processor-source /path/to/sft1/init \
+  --output-dir /path/to/aligned_state_cache \
+  --git-commit <exact_commit>
+```
+
+The distributed cache writer uses the checkpoint's online backbone weights,
+freezes the backbone/projector, writes atomic rank shards, and resumes only
+under an identical world-size and artifact contract. `cfm_sft2` detects its
+`[K,D]` cache shape. Use `--condition-dropout 0.15` when the downstream probe
+uses CFG and `--init-cfm-checkpoint` only for a strict identical-architecture
+warm start. `--skip-samples` omits the legacy single-vector WM sample hook when
+a separate grid-WM evaluator owns the final reconstruction.
+
 ## Sample from RCDM
 
 Sample from a trained RCDM checkpoint:
