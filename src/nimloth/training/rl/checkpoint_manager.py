@@ -11,6 +11,7 @@ import torch
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
 from nimloth.config.rl import RLConfig
+from nimloth.training.rl.algorithm import PLANNER_TRAINING_OBJECTIVE
 from nimloth.training.rl.checkpoint import (
     link_checkpoint_snapshot,
     save_rl_checkpoint,
@@ -75,7 +76,7 @@ class RLCheckpointManager:
             truncated_bootstrap=self._config.rl.truncated_bootstrap,
             planner_config=asdict(self._config.agent.planning),
             planner_training_objective=(
-                "receding_horizon_transition_mc_v1"
+                PLANNER_TRAINING_OBJECTIVE
                 if self._config.agent.planning.enabled
                 else None
             ),

@@ -343,7 +343,7 @@ def test_sft2_ce_supervises_each_contexts_current_step_only() -> None:
     torch.testing.assert_close(output.losses["lm"], expected)
 
 
-def test_sft2_value_scores_predicted_next_and_only_executed_action_slots() -> None:
+def test_sft2_value_scores_current_state_and_only_executed_action_slots() -> None:
     torch.manual_seed(0)
     algorithm, runtime, _, projector = _algorithm()
     batch = _batch()
@@ -382,17 +382,9 @@ def test_sft2_value_scores_predicted_next_and_only_executed_action_slots() -> No
         value_hook.remove()
 
     predicted_sequence = captured["predicted_sequence"]
-    torch.testing.assert_close(captured["value_input"], predicted_sequence[:, -1])
-    expected_prediction = (
-        2.0 * projector.outputs[0]
-        + batch.current_action_indices.to(projector.outputs[0].dtype).unsqueeze(-1)
-    )
-    torch.testing.assert_close(captured["value_input"], expected_prediction)
-    assert predicted_sequence.grad is not None
-    assert torch.count_nonzero(predicted_sequence.grad[:, -1]) > 0
-    assert torch.count_nonzero(predicted_sequence.grad[:, :-1]) == 0
-    assert predictor.net.weight.grad is not None
-    assert torch.count_nonzero(predictor.net.weight.grad) > 0
+    torch.testing.assert_close(captured["value_input"], projector.outputs[0])
+    assert predicted_sequence.grad is None
+    assert predictor.net.weight.grad is None
     assert projector.outputs[0].grad is not None
     assert torch.count_nonzero(projector.outputs[0].grad) > 0
 
@@ -406,7 +398,7 @@ def test_sft2_value_scores_predicted_next_and_only_executed_action_slots() -> No
     assert torch.count_nonzero(action_value_grad[~executed_mask]) == 0
 
 
-def test_sft2_t4_rollout_uses_recorded_actions_and_supervises_all_four_states() -> None:
+def test_sft2_t4_rollout_aligns_recorded_actions_with_four_decision_states() -> None:
     torch.manual_seed(0)
     algorithm, runtime, backbone, projector = _algorithm(
         history_size=1,
@@ -419,7 +411,18 @@ def test_sft2_t4_rollout_uses_recorded_actions_and_supervises_all_four_states() 
     with torch.no_grad():
         projector.weight.copy_(torch.eye(4))
         predictor.net.weight.copy_(torch.eye(4))
-    captured: dict[str, torch.Tensor] = {}
+    captured: dict[str, torch.Tensor | list[torch.Tensor]] = {
+        "successor_states": []
+    }
+
+    def record_predictions(
+        _module: torch.nn.Module,
+        _inputs: tuple[torch.Tensor, ...],
+        output: torch.Tensor,
+    ) -> None:
+        successors = captured["successor_states"]
+        assert isinstance(successors, list)
+        successors.append(output[:, -1])
 
     def record_values(
         _module: torch.nn.Module,
@@ -428,24 +431,39 @@ def test_sft2_t4_rollout_uses_recorded_actions_and_supervises_all_four_states() 
     ) -> None:
         inputs[0].retain_grad()
         output.retain_grad()
-        captured["predicted_states"] = inputs[0]
+        captured["decision_states"] = inputs[0]
         captured["action_values"] = output
 
-    hook = value_head.register_forward_hook(record_values)
+    predictor_hook = predictor.register_forward_hook(record_predictions)
+    value_hook = value_head.register_forward_hook(record_values)
     try:
         output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
-        output.loss.backward()
+        output.losses["value"].backward()
     finally:
-        hook.remove()
+        predictor_hook.remove()
+        value_hook.remove()
 
-    predicted = captured["predicted_states"]
-    expected_steps = []
+    decision_states = captured["decision_states"]
+    successor_list = captured["successor_states"]
+    assert isinstance(decision_states, torch.Tensor)
+    assert isinstance(successor_list, list)
+    successor_states = torch.stack(successor_list, dim=1)
+    expected_decisions = []
+    expected_successors = []
     state = projector.outputs[0]
     for step in range(4):
+        expected_decisions.append(state)
         state = state + batch.action_sequences[:, step].float().unsqueeze(-1)
-        expected_steps.append(state)
-    torch.testing.assert_close(predicted, torch.stack(expected_steps, dim=1))
-    assert predicted.shape == (2, 4, 4)
+        expected_successors.append(state)
+    torch.testing.assert_close(
+        decision_states,
+        torch.stack(expected_decisions, dim=1),
+    )
+    torch.testing.assert_close(
+        successor_states,
+        torch.stack(expected_successors, dim=1),
+    )
+    assert decision_states.shape == (2, 4, 4)
     assert output.metrics["prediction_horizon"] == 4.0
     assert set(output.losses) == {"lm", "wm", "value"}
     assert backbone.calls == 2
@@ -463,9 +481,9 @@ def test_sft2_t4_rollout_uses_recorded_actions_and_supervises_all_four_states() 
     ).bool()
     assert torch.count_nonzero(action_value_grad[executed_mask]) == 8
     assert torch.count_nonzero(action_value_grad[~executed_mask]) == 0
-    assert predicted.grad is not None
+    assert decision_states.grad is not None
     assert all(
-        torch.count_nonzero(predicted.grad[:, step]) > 0
+        torch.count_nonzero(decision_states.grad[:, step]) > 0
         for step in range(4)
     )
 

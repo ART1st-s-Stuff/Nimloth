@@ -31,7 +31,7 @@ class AgentOutput:
     hidden: torch.Tensor
     state: torch.Tensor
     predicted_next_state: torch.Tensor
-    predicted_next_action_values: torch.Tensor
+    action_values: torch.Tensor
     lm_loss: torch.Tensor | None
 
 
@@ -41,8 +41,9 @@ class AgentRolloutOutput:
 
     hidden: torch.Tensor
     current_state: torch.Tensor
+    decision_states: torch.Tensor
     predicted_states: torch.Tensor
-    predicted_action_values: torch.Tensor
+    action_values: torch.Tensor
     lm_loss: torch.Tensor | None
 
 
@@ -80,9 +81,7 @@ class Agent(nn.Module):
             hidden=encoded.hidden,
             state=encoded.state,
             predicted_next_state=predicted_next_state,
-            predicted_next_action_values=self.wm.predict_action_values(
-                predicted_next_state
-            ),
+            action_values=self.wm.predict_action_values(encoded.state),
             lm_loss=encoded.lm_loss,
         )
 
@@ -163,9 +162,7 @@ class Agent(nn.Module):
             hidden=encoded_current.hidden,
             state=state_sequence,
             predicted_next_state=predicted_next_state,
-            predicted_next_action_values=self.wm.predict_action_values(
-                predicted_next_state
-            ),
+            action_values=self.wm.predict_action_values(state_sequence[:, -1]),
             lm_loss=encoded_current.lm_loss,
         )
 
@@ -204,13 +201,19 @@ class Agent(nn.Module):
             previous_actions,
             action_sequences,
         )
+        # action_sequences[:, j] is chosen from decision_states[:, j] and
+        # produces predicted_states[:, j].  Keeping both axes explicit prevents
+        # an incoming action from being mislabeled as Q(successor, action).
+        decision_states = torch.cat(
+            (encoded_current.state.unsqueeze(1), predicted_states[:, :-1]),
+            dim=1,
+        )
         return AgentRolloutOutput(
             hidden=encoded_current.hidden,
             current_state=encoded_current.state,
+            decision_states=decision_states,
             predicted_states=predicted_states,
-            predicted_action_values=self.wm.predict_action_values(
-                predicted_states
-            ),
+            action_values=self.wm.predict_action_values(decision_states),
             lm_loss=encoded_current.lm_loss,
         )
 

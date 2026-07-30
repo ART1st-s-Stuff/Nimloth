@@ -63,7 +63,7 @@ environment system_prompt + obs_str + images
  RolloutTrajectory (每步真实Qwen state + 独立search trace)
                          |
                          v
-      完整prefix Qwen -> WM预测next state -> ValueHead MC
+      完整prefix Qwen -> current-state ValueHead MC + WM预测next state
                          |
                   one optimizer step
 ```
@@ -107,7 +107,7 @@ for each real transition t:
     expected_next = saved_real_state[t+1]         # fixed target
     L_state = mse(predicted_next, expected_next)
     L_dino = mse(predicted_next, frozen_dino(next_image_t))
-    action_values = value_head(predicted_next)
+    action_values = value_head(state_t)
     L_value = mse(action_values[executed_action_t], full_episode_return_t)
     backward((lambda_wm * L_state + lambda_dino * L_dino
               + L_value) / total_real_transitions)
@@ -118,9 +118,10 @@ optimizer.step()  # exactly once after all transition backward calls
 `history_size`只限制WM predictor在一个预测位置最多读取多少个真实过去state；它不决定
 Qwen调用次数或搜索长度。每个transition重新构建一次完整prefix的Qwen graph：历史
 token/CoT是固定输入，但这次forward中处理历史的激活参与反传。backward结束后释放该
-step的graph，不连接以前step已经释放的graph。ValueHead输入是可微的
-`predicted_next`，所以MC value梯度依次经过ValueHead、WM、StateProjector和本次完整
-Qwen prefix。planner配置固定`value_head.lambda_rank=0`，MC项只直接监督执行action的slot。
+step的graph，不连接以前step已经释放的graph。ValueHead输入是可微的当前`state_t`，
+所以MC value梯度经过ValueHead、StateProjector和本次完整Qwen prefix；WM predictor
+由独立的state/DINO loss以及多步rollout中后续decision-state value训练。planner配置固定
+`value_head.lambda_rank=0`，MC项只直接监督执行action的slot。
 SFT2 与 RL 的 state MSE 和 predicted-state DINO MSE 由同一个公共 objective 计算；
 SFT2 从离线 cache 读取 DINO target，RL 按轨迹中的真实 next-image 路径使用固定
 revision 的 frozen DINOv2 teacher，并缓存已计算的 target。RL loop 在 objective
@@ -243,7 +244,7 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   `exhaustive`批量模拟全部
   `action_count ** horizon`条latent动作序列；`beam`逐层批量扩展并按叶节点启发式裁剪；
   H=1 MCTS以SFT2的`prediction_horizon=K`为树深，用UCT选择节点，并以
-  `Q_tilde(predicted_state_K, final_simulated_action)`做leaf evaluation。trajectory
+  `Q(predicted_state_{K-1}, final_simulated_action)`做leaf evaluation。trajectory
   在每个真实step保存候选序列、叶值和root score；MCTS还保存candidate/root visits、
   simulation数和exploration常数。历史H=2
   exhaustive smoke仅是旧实验事实，不是后续默认方案。

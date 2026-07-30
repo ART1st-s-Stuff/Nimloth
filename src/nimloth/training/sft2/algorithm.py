@@ -20,7 +20,7 @@ from nimloth.wm import (
 )
 
 
-SFT2_VALUE_OBJECTIVE = "predicted_rollout_executed_action_mc_v2"
+SFT2_VALUE_OBJECTIVE = "decision_state_executed_action_mc_v3"
 
 
 def require_sft2_wm_history(
@@ -381,7 +381,7 @@ class SFT2Algorithm:
             dino_grid_weight=self.dino_grid_weight,
         )
         value_objective = action_value_loss(
-            model_output.predicted_next_action_values,
+            model_output.action_values,
             batch.current_action_indices,
             batch.current_value_targets,
         )
@@ -474,7 +474,7 @@ class SFT2Algorithm:
             dino_grid_weight=self.dino_grid_weight,
         )
         value_objective = action_value_loss(
-            model_output.predicted_action_values,
+            model_output.action_values,
             batch.action_sequences,
             batch.value_target_sequences,
         )

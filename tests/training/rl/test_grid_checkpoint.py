@@ -5,11 +5,13 @@ from __future__ import annotations
 from argparse import Namespace
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from nimloth.config.rl import parse_rl_config
 from nimloth.agent.planning import WorldModelPlanner
 from nimloth.training.rl.planning_loader import load_planning_world_model
+from nimloth.training.sft2.algorithm import SFT2_VALUE_OBJECTIVE
 from nimloth.training.rl.trainer import _build_world_model
 from nimloth.wm.grid import (
     GridPredictorConfig,
@@ -104,6 +106,14 @@ def test_planning_loader_preserves_grid_rollout_and_value_contract(tmp_path) -> 
     torch.save(state_proj.state_dict(), tmp_path / "state_proj.pt")
     predictor.save_checkpoint(tmp_path / "wm_predictor")
     value_head.save_checkpoint(tmp_path / "value_head")
+    torch.save(
+        {
+            "training_invariants": {
+                "value_objective": SFT2_VALUE_OBJECTIVE,
+            }
+        },
+        tmp_path / "training_state.pt",
+    )
 
     planning_model = load_planning_world_model(
         qwen_config=SimpleNamespace(hidden_size=3),
@@ -127,3 +137,26 @@ def test_planning_loader_preserves_grid_rollout_and_value_contract(tmp_path) -> 
     assert plan.candidate_sequences.shape == (1, 2)
     assert plan.candidate_scores.shape == (1,)
     assert plan.root_action_scores.shape == (8,)
+
+
+def test_planning_loader_rejects_incoming_action_value_semantics(tmp_path) -> None:
+    (tmp_path / "wm_predictor").mkdir()
+    (tmp_path / "state_proj.pt").touch()
+    (tmp_path / "value_head").mkdir()
+    torch.save(
+        {
+            "training_invariants": {
+                "value_objective": "predicted_rollout_executed_action_mc_v2",
+            }
+        },
+        tmp_path / "training_state.pt",
+    )
+
+    with pytest.raises(ValueError, match="incompatible SFT2 value objective"):
+        load_planning_world_model(
+            qwen_config=SimpleNamespace(hidden_size=3),
+            wm_checkpoint=tmp_path / "wm_predictor",
+            state_proj_checkpoint=tmp_path / "state_proj.pt",
+            value_head_checkpoint=tmp_path / "value_head",
+            device=torch.device("cpu"),
+        )

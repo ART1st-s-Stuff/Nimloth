@@ -188,13 +188,13 @@ def main(argv: list[str] | None = None) -> int:
     contract = load_sft2_mcts_evaluation_contract(args.sft2_checkpoint)
     rollout_args = build_rollout_argv(args, contract)
     metadata = {
-        "evaluation": "sft2_pre_rl_mcts_v1",
+        "evaluation": "sft2_pre_rl_mcts_v2",
         "sft2_checkpoint": str(contract.checkpoint),
         "checkpoint_step": contract.step,
         "checkpoint_epoch": contract.epoch,
         "history_size": contract.history_size,
         "prediction_horizon": contract.prediction_horizon,
-        "leaf_value": "predicted_state_K_final_simulated_action_mc",
+        "leaf_value": "decision_state_K_minus_1_final_action_mc",
         "num_simulations": args.num_simulations,
         "exploration_constant": args.exploration_constant,
         "eval_sets": args.eval_sets,

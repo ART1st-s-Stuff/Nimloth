@@ -69,13 +69,17 @@ target 参数或 WM EMA。
 SFT2 的 value 目标是完整 episode 上先计算、再切到 current step 的 Monte
 Carlo return。`training/common/value.py` 与 RL 共用同一个基础objective；当前SFT2
 只回归实际执行动作的MC return，rank loss已关闭且未执行action slot没有直接loss。
+T步rollout中，WM/DINO监督`[hat{s}_{t+1},...,hat{s}_{t+T}]`，value则监督标准
+outgoing Q的决策state序列`[s_t,hat{s}_{t+1},...,hat{s}_{t+T-1}]`与
+`[a_t,...,a_{t+T-1}]`。两条序列相差一个时间位置，禁止把incoming action配到
+它产生的successor state。
 
 ## Pre-RL MCTS rollout evaluation
 
 `experiments/training/sft2/eval_mcts_rollout.py`只接受epoch-complete的完整HF SFT2
 checkpoint。入口从`training_state.pt.training_invariants`读取`history_size`和
 `prediction_horizon=K`，要求DINO-grid、`history_size=1`和
-`predicted_rollout_executed_action_mc_v2`，随后每个真实environment step重新生成
+`decision_state_executed_action_mc_v3`，随后每个真实environment step重新生成
 Qwen CoT/state并执行K-step UCT-MCTS。leaf evaluation严格使用
-`Q_tilde(predicted_state_K, final_simulated_action)`；各深度的MC return不相加。
+`Q(predicted_state_{K-1}, final_simulated_action)`；各深度的MC return不相加。
 评估不会进入RL optimizer，也不会生成fresh-consumption manifest。

@@ -77,9 +77,9 @@ class _MCTSLeafStats:
 class WorldModelPlanner:
     """在 latent 空间搜索动作，不拥有也不调用 environment。
 
-    当前模型没有 reward/done head，因此搜索只使用叶节点 action-value 作为启发式
-    score。greedy/exhaustive/beam 保留旧的 leaf max；MCTS 使用 SFT2 实际监督的
-    最后一条 simulated edge value。两者都不会把各步 MC return 错误累加。
+    当前模型没有 reward/done head，因此搜索只使用候选路径最后一条 simulated
+    edge 的标准 outgoing action-value 作为启发式 score。所有搜索模式都不会把
+    各步 MC return 错误累加。
     """
 
     def __init__(
@@ -142,18 +142,26 @@ class WorldModelPlanner:
             expanded_previous,
             sequences,
         )
-        leaf_action_values = self.world_model.predict_action_values(
-            predicted_states[:, -1]
+        final_decision_state = (
+            expanded_history[:, -1]
+            if sequences.shape[1] == 1
+            else predicted_states[:, -2]
+        )
+        final_action_values = self.world_model.predict_action_values(
+            final_decision_state
         )
         if (
-            leaf_action_values.ndim != 2
-            or leaf_action_values.shape[0] != candidate_count
+            final_action_values.ndim != 2
+            or final_action_values.shape[0] != candidate_count
         ):
             raise ValueError(
                 "value head must return one action row per planning candidate, "
-                f"got {tuple(leaf_action_values.shape)}"
+                f"got {tuple(final_action_values.shape)}"
             )
-        scores = leaf_action_values.max(dim=-1).values
+        scores = final_action_values.gather(
+            dim=-1,
+            index=sequences[:, -1:].to(device=final_action_values.device),
+        ).squeeze(-1)
         if not torch.isfinite(scores).all():
             raise ValueError("planning produced a non-finite candidate score")
         return scores
@@ -216,12 +224,13 @@ class WorldModelPlanner:
         *,
         action_count: int,
     ) -> WorldModelPlan:
-        """Run deterministic UCT and back up the supervised SFT2 leaf value.
+        """Run deterministic UCT and back up the final simulated edge value.
 
         Every simulation reaches exactly ``horizon`` predicted transitions.  The
-        leaf is scored with the same quantity trained by SFT2 T-step value loss:
-        ``Q_tilde(predicted_state_K, final_simulated_action)``.  These MC-return
-        predictions are not accumulated across depth.
+        K-action path is scored as ``Q(predicted_state_{K-1}, action_K)``: the
+        final action is outgoing from its decision state, and the state it produces
+        is never mislabeled as that action's source.  MC-return predictions are not
+        accumulated across depth.
         """
 
         predictor = getattr(self.world_model.wm_predictor, "module", None)
@@ -266,7 +275,10 @@ class WorldModelPlanner:
                 path.append(node)
 
             final_action = node.sequence[-1]
-            leaf_action_values = self.world_model.predict_action_values(node.state)
+            final_decision_state = path[-2].state
+            leaf_action_values = self.world_model.predict_action_values(
+                final_decision_state
+            )
             if leaf_action_values.shape != (1, action_count):
                 raise ValueError(
                     "value head action count changed at the MCTS leaf"
@@ -381,10 +393,7 @@ class WorldModelPlanner:
                     sequences,
                 )
                 decision_state = predicted_states[:, -1]
-            leaf_action_values = self.world_model.predict_action_values(decision_state)
-            if leaf_action_values.shape != (1, action_count):
-                raise ValueError("value head action count changed at the greedy leaf")
-            scores = leaf_action_values.max(dim=-1).values
+            scores = action_values.gather(dim=-1, index=chosen_action).squeeze(-1)
             if not torch.isfinite(scores).all():
                 raise ValueError("planning produced a non-finite candidate score")
         elif self.search_mode == "exhaustive":

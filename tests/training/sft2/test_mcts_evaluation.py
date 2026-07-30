@@ -24,6 +24,7 @@ def _checkpoint(
     history_size: int = 1,
     horizon: int = 4,
     value_action_count: int = 8,
+    value_objective: str = SFT2_VALUE_OBJECTIVE,
 ):
     checkpoint = tmp_path / "final"
     (checkpoint / "wm_predictor").mkdir(parents=True)
@@ -56,7 +57,7 @@ def _checkpoint(
                 "objective": "dino_grid",
                 "history_size": history_size,
                 "prediction_horizon": horizon,
-                "value_objective": SFT2_VALUE_OBJECTIVE,
+                "value_objective": value_objective,
             },
         },
         checkpoint / "training_state.pt",
@@ -85,6 +86,16 @@ def test_contract_rejects_value_head_action_count_mismatch(tmp_path) -> None:
     with pytest.raises(ValueError, match="action counts disagree"):
         load_sft2_mcts_evaluation_contract(
             _checkpoint(tmp_path, value_action_count=7)
+        )
+
+
+def test_contract_rejects_incoming_action_value_checkpoint(tmp_path) -> None:
+    with pytest.raises(ValueError, match="value objective"):
+        load_sft2_mcts_evaluation_contract(
+            _checkpoint(
+                tmp_path,
+                value_objective="predicted_rollout_executed_action_mc_v2",
+            )
         )
 
 

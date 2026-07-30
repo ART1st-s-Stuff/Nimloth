@@ -42,7 +42,7 @@ def _world_model_and_value_losses(
     else:
         dynamics_loss = torch.zeros((), device=current_hidden.device)
 
-    values = wm.predict_action_values(predicted_next_state)
+    values = wm.predict_action_values(current_state)
     targets = torch.tensor(
         [item["action_value_target"] for item in items],
         dtype=values.dtype,

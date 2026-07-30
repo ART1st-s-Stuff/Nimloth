@@ -3181,3 +3181,21 @@
 - 5,330次Qwen response中608次触发512-token上限，主要集中在common_sense和
   complex_instruction；该统计是后续质量分析信号，不能单独归因失败。实验无需resume，
   全部轨迹、图片、MCTS trace、summary和日志保留在ID63输出目录。
+
+## 2026-07-30：ValueHead修正为标准outgoing Q，旧SFT2 checkpoint失效
+
+- 已确认旧实现把执行`a_t`得到的预测successor `hat{s}_{t+1}`继续与`a_t`配对，实际学习
+  `Q(hat{s}_{t+1},a_t)`。现统一为标准`Q(s_t,a_t)`：T步WM/DINO监督
+  `[hat{s}_{t+1},...,hat{s}_{t+T}]`，value监督决策state
+  `[s_t,hat{s}_{t+1},...,hat{s}_{t+T-1}]`上的对应执行动作与MC return。
+- greedy/exhaustive/beam/MCTS统一用K动作路径最后一条edge
+  `Q(hat{s}_{t+K-1},a_{t+K-1})`评分；真实environment仍只执行胜出序列最早的根动作。
+- SFT2 value objective升级为`decision_state_executed_action_mc_v3`，planning RL objective
+  升级为`receding_horizon_decision_state_mc_v2`；rollout warm-start与RL resume均拒绝旧语义。
+- 定向回归`51 passed`；扩大套件`283 passed, 1 skipped`，其中三个受沙箱网络限制的Gloo
+  用例在沙箱外复跑为`4 passed, 1 skipped`。另一个VAGEN schema用例因所选Nix环境缺少
+  外部包的可选`gym`依赖未运行成功，与本次Value/Q改动无关；compileall和diff-check通过。
+- 因此此前epoch1/epoch2及ID63使用的
+  `predicted_rollout_executed_action_mc_v2` checkpoint不能代表修正后的planner，加载器已
+  fail closed；必须重训SFT2后重新评估success rate。完整记录见
+  `ai_tasks/ai_progress/archives/2026-07-30/2026-07-30_value_q_alignment_fix.md`。

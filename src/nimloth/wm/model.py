@@ -42,9 +42,7 @@ class WorldModel(nn.Module):
         return {
             "state": state,
             "predicted_next_state": predicted_next_state,
-            "predicted_next_action_values": self.predict_action_values(
-                predicted_next_state
-            ),
+            "action_values": self.predict_action_values(state),
         }
 
     def project_state(self, qwen_hidden: torch.Tensor) -> torch.Tensor:

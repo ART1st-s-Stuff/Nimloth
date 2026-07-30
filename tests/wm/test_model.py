@@ -71,10 +71,10 @@ def test_agent_owns_backbone_wm_and_runs_complete_forward() -> None:
     assert output.hidden.shape == (2, 3)
     assert output.state.shape == (2, 2)
     assert output.predicted_next_state.shape == (2, 2)
-    assert output.predicted_next_action_values.shape == (2, 4)
+    assert output.action_values.shape == (2, 4)
     torch.testing.assert_close(
-        output.predicted_next_action_values,
-        value_head(output.predicted_next_state),
+        output.action_values,
+        value_head(output.state),
     )
     assert output.lm_loss is not None
     assert set(agent.state_dict()) == {
@@ -97,10 +97,10 @@ def test_world_model_forward_uses_all_owned_modules() -> None:
 
     assert output["state"].shape == (2, 2)
     assert output["predicted_next_state"].shape == (2, 2)
-    assert output["predicted_next_action_values"].shape == (2, 3)
+    assert output["action_values"].shape == (2, 3)
     torch.testing.assert_close(
-        output["predicted_next_action_values"],
-        model.value_head(output["predicted_next_state"]),
+        output["action_values"],
+        model.value_head(output["state"]),
     )
 
 

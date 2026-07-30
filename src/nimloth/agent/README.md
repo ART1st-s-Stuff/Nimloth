@@ -17,9 +17,11 @@ episode runtime。两者名称和职责明确分开：
 
 `Agent.encode_state(BackboneBatch)` 是 Qwen→StateProjector 的公共状态入口；
 planning在每个真实environment step和terminal observation调用它。`Agent.forward(..., action_indices)`
-在此基础上依次计算 WM predicted next state 及其 action values，供 SFT2 离线训练使用。
+在此基础上分别计算当前决策state的标准`Q(s_t,a)`和WM predicted next state，供SFT2
+离线训练使用。
 `Agent.forward_action_rollout()`从一个真实state出发，严格使用调用方提供的
-recorded action sequence递归产生`T`个预测state及各自action values。
+recorded action sequence递归产生`T`个预测successor state；value的`T`个决策state
+固定为`[s_t,hat{s}_{t+1},...,hat{s}_{t+T-1}]`，与动作逐位置对齐。
 SFT2 不调用 planning policy 或 episode runner。processor、
 cache、EMA、optimizer、checkpoint 与 environment 状态均不进入 `Agent.state_dict()`。
 rollout transition 的 batch 契约属于 `nimloth.rollout`，不属于 Agent 模型接口。
@@ -46,9 +48,9 @@ observation后重新运行Qwen并重新规划。
 WM/ValueHead的可微state路径接收梯度。
 
 当前 WM 没有 reward/done head，因此search只使用叶节点action-value启发式，
-不逐步累加MC-return prediction。greedy/exhaustive/beam保留leaf max；H=1/K-step
-SFT2 MCTS使用训练时实际受监督的
-`Q_tilde(predicted_state_K, final_simulated_action)`作为leaf evaluation。MCTS trace
+不逐步累加MC-return prediction。长度K的候选序列使用最后一条simulated edge的
+标准outgoing value `Q(predicted_state_{K-1}, action_K)`评分；不会把产生
+`predicted_state_K`的incoming action当成该successor的outgoing action。MCTS trace
 额外保存candidate/root visits、backed-up mean、simulation数和UCT exploration常数。
 
 ## Episode 契约

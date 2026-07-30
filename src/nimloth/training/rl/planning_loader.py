@@ -8,6 +8,8 @@ from pathlib import Path
 import torch
 
 from nimloth.backbone import backbone_hidden_size
+from nimloth.training.rl.algorithm import PLANNER_TRAINING_OBJECTIVE
+from nimloth.training.sft2.algorithm import SFT2_VALUE_OBJECTIVE
 from nimloth.wm import LatentWMPredictor, StateProjector, ValueHead, WorldModel
 from nimloth.wm.grid import (
     SharedSlotProjector,
@@ -35,6 +37,65 @@ def _is_grid_predictor_checkpoint(path: Path) -> bool:
     return "grid_tokens" in raw
 
 
+def validate_planning_value_semantics(
+    *,
+    wm_checkpoint: Path,
+    state_proj_checkpoint: Path,
+    value_head_checkpoint: Path,
+) -> Path:
+    """Reject component sets whose action slots were trained on successor states."""
+
+    wm_checkpoint = Path(wm_checkpoint).resolve()
+    state_proj_checkpoint = Path(state_proj_checkpoint).resolve()
+    value_head_checkpoint = Path(value_head_checkpoint).resolve()
+    roots = {
+        wm_checkpoint.parent,
+        state_proj_checkpoint.parent,
+        value_head_checkpoint.parent,
+    }
+    if len(roots) != 1:
+        raise ValueError(
+            "planning components must share one checkpoint root so value semantics "
+            "can be verified"
+        )
+    root = roots.pop()
+    sft2_state_path = root / "training_state.pt"
+    rl_state_path = root / "rl_state.pt"
+    if sft2_state_path.is_file():
+        state = torch.load(
+            sft2_state_path,
+            map_location="cpu",
+            weights_only=False,
+            mmap=True,
+        )
+        invariants = state.get("training_invariants") if isinstance(state, dict) else None
+        actual = invariants.get("value_objective") if isinstance(invariants, dict) else None
+        if actual != SFT2_VALUE_OBJECTIVE:
+            raise ValueError(
+                "planning checkpoint uses an incompatible SFT2 value objective: "
+                f"expected={SFT2_VALUE_OBJECTIVE!r}, actual={actual!r}"
+            )
+        return root
+    if rl_state_path.is_file():
+        state = torch.load(
+            rl_state_path,
+            map_location="cpu",
+            weights_only=False,
+            mmap=True,
+        )
+        actual = state.get("planner_training_objective") if isinstance(state, dict) else None
+        if actual != PLANNER_TRAINING_OBJECTIVE:
+            raise ValueError(
+                "planning checkpoint uses an incompatible RL value objective: "
+                f"expected={PLANNER_TRAINING_OBJECTIVE!r}, actual={actual!r}"
+            )
+        return root
+    raise FileNotFoundError(
+        "planning component root has no training_state.pt or rl_state.pt; "
+        f"cannot verify outgoing Q(s,a) semantics: {root}"
+    )
+
+
 def load_planning_world_model(
     *,
     qwen_config,
@@ -45,6 +106,11 @@ def load_planning_world_model(
 ) -> WorldModel:
     """加载 rollout planning 所需的 projector、predictor 和动作 ValueHead。"""
 
+    validate_planning_value_semantics(
+        wm_checkpoint=wm_checkpoint,
+        state_proj_checkpoint=state_proj_checkpoint,
+        value_head_checkpoint=value_head_checkpoint,
+    )
     qwen_hidden_dim = backbone_hidden_size(qwen_config)
     is_grid = _is_grid_predictor_checkpoint(wm_checkpoint)
     if is_grid:
@@ -111,4 +177,4 @@ def load_planning_world_model(
     return world_model
 
 
-__all__ = ["load_planning_world_model"]
+__all__ = ["load_planning_world_model", "validate_planning_value_semantics"]

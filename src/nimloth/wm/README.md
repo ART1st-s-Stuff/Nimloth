@@ -18,6 +18,8 @@
 和 loss 权重策略；SFT2 与 RL 都让 `SequenceSIGReg` 消费真实的
 `H+1` 状态序列。SFT2 的自回归监督长度由`prediction_horizon=T`控制；RL 的
 未来规划长度由 Agent planning horizon 单独控制。
+ValueHead严格表示从输入state出发的outgoing `Q(s,a)`；执行`a_t`后得到的
+successor `s_{t+1}`不能继续与`a_t`配对。
 
 `GridWorldModel` 保留同一个公共 state/predict/value 接口。它直接把 SFT1
 `SharedSlotProjector` 的输出作为 grid state，并在 SFT2 继续训练该 projector；

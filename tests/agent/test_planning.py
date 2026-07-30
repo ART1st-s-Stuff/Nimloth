@@ -198,13 +198,17 @@ class _MCTSIncomingActionPredictor(torch.nn.Module):
         )
 
 
-class _MCTSIncomingActionValueHead(torch.nn.Module):
+class _MCTSOutgoingActionValueHead(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.state_depths: list[int] = []
+
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         action_count = len(NAVIGATION_ACTION_SPACE)
-        values = state.new_full((state.shape[0], action_count), 1000.0)
-        incoming_action = state[:, 2].long().unsqueeze(-1)
-        # Only this incoming-action slot follows the SFT2 executed-action target.
-        return values.scatter(1, incoming_action, state[:, 1:2])
+        self.state_depths.extend(int(value) for value in state[:, 0].tolist())
+        # The synthetic decision state remembers the root action.  Every outgoing
+        # slot has that value so the test isolates which temporal state was read.
+        return state[:, 1:2].expand(-1, action_count)
 
 
 class _ZeroMCTSProjector(torch.nn.Module):
@@ -212,11 +216,12 @@ class _ZeroMCTSProjector(torch.nn.Module):
         return hidden.new_zeros((hidden.shape[0], 3))
 
 
-def test_mcts_uses_h1_k_step_incoming_action_leaf_value() -> None:
+def test_mcts_uses_h1_k_step_final_outgoing_action_value() -> None:
+    value_head = _MCTSOutgoingActionValueHead()
     world_model = WorldModel(
         state_proj=torch.nn.Identity(),
         wm_predictor=_MCTSIncomingActionPredictor(),
-        value_head=_MCTSIncomingActionValueHead(),
+        value_head=value_head,
     )
     action_count = len(NAVIGATION_ACTION_SPACE)
     plan = WorldModelPlanner(
@@ -240,13 +245,14 @@ def test_mcts_uses_h1_k_step_incoming_action_leaf_value() -> None:
         plan.root_action_scores,
         torch.arange(action_count, dtype=torch.float32),
     )
+    assert set(value_head.state_depths) == {0, 3}
 
 
 def test_mcts_rejects_non_h1_predictor() -> None:
     world_model = WorldModel(
         state_proj=torch.nn.Identity(),
         wm_predictor=_MCTSIncomingActionPredictor(history_size=2),
-        value_head=_MCTSIncomingActionValueHead(),
+        value_head=_MCTSOutgoingActionValueHead(),
     )
     planner = WorldModelPlanner(
         world_model,
@@ -376,7 +382,7 @@ def test_planning_policy_records_mcts_visits_and_executes_selected_root() -> Non
     world_model = WorldModel(
         state_proj=_ZeroMCTSProjector(),
         wm_predictor=_MCTSIncomingActionPredictor(),
-        value_head=_MCTSIncomingActionValueHead(),
+        value_head=_MCTSOutgoingActionValueHead(),
     )
     policy = PlanningPolicy(
         turn_policy=_TurnPolicy(),

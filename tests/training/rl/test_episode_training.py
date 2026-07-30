@@ -276,7 +276,7 @@ def test_planned_tail_is_diagnostic_and_is_not_bound_to_later_actions() -> None:
     )
 
 
-def test_value_loss_on_predicted_next_state_reaches_full_prefix_qwen_and_wm() -> None:
+def test_value_loss_on_current_state_reaches_full_prefix_qwen_but_not_wm() -> None:
     episode = build_episode_training_batches(
         [_planner_trajectory()],
         gamma=1.0,
@@ -291,14 +291,14 @@ def test_value_loss_on_predicted_next_state_reaches_full_prefix_qwen_and_wm() ->
         return_target=torch.tensor(5.0),
         total_transitions=1,
     )
-    output.loss.backward()
+    output.losses["value"].backward()
 
     assert runtime.policy_replay is None
     assert builder.assistant_counts == [3]
     assert value_head.last_state is not None
     assert value_head.last_state.grad_fn is not None
     assert projector.weight.grad is not None
-    assert predictor.state.weight.grad is not None
+    assert predictor.state.weight.grad is None
     assert backbone.module.weight.grad is not None
     # Column 0 is multiplied by the number of previous assistant responses in
     # the current full-prefix forward.  Its gradient proves that previous-history

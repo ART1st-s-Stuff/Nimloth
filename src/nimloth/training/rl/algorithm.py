@@ -23,6 +23,9 @@ from nimloth.util.module import move_to_device
 from nimloth.wm import SequenceSIGReg
 
 
+PLANNER_TRAINING_OBJECTIVE = "receding_horizon_decision_state_mc_v2"
+
+
 @dataclass(frozen=True)
 class RLBatch:
     """一次 RL 更新消费的原始连续窗口与逐步监督。
@@ -241,8 +244,9 @@ class RLAlgorithm:
         Qwen is recomputed on the complete persisted prefix for this environment
         step.  The previous-history tokens are fixed inputs, while every activation
         in this current forward remains in the graph.  The value target is applied
-        to the executed-action slot on the predicted next state, so its gradient
-        reaches ValueHead -> WM -> StateProjector -> the complete Qwen prefix.
+        to the executed-action slot on the current decision state.  Its gradient
+        reaches ValueHead -> StateProjector -> the complete Qwen prefix; WM and DINO
+        losses independently supervise the predicted successor state.
         """
 
         if total_transitions < 1:
@@ -312,7 +316,7 @@ class RLAlgorithm:
             weighted_wm_loss = predicted_next_state.sum() * 0.0
             wm_mse = weighted_wm_loss
 
-        action_values = runtime.agent.wm.predict_action_values(predicted_next_state)
+        action_values = runtime.agent.wm.predict_action_values(current_state)
         executed_action = torch.tensor(
             [transition.action_index],
             dtype=torch.long,
@@ -703,6 +707,7 @@ class RLAlgorithm:
 
 
 __all__ = [
+    "PLANNER_TRAINING_OBJECTIVE",
     "RLAlgorithm",
     "RLBatch",
     "RLStepOutput",

@@ -27,10 +27,11 @@ from nimloth.backbone import (
 )
 from nimloth.config.rl import RLConfig
 from nimloth.rollout import FreshJSONLRolloutCollector, RolloutCollector
-from nimloth.training.rl.algorithm import RLAlgorithm
+from nimloth.training.rl.algorithm import PLANNER_TRAINING_OBJECTIVE, RLAlgorithm
 from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
+from nimloth.training.rl.planning_loader import validate_planning_value_semantics
 from nimloth.training.rl.reporting import RLReporter
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.training.rl.token_value import TokenValueHead
@@ -159,6 +160,19 @@ def _build_world_model(
 ) -> WorldModel:
     """构造 RL 使用的 WorldModel，并加载显式指定的子模块 checkpoint。"""
 
+    explicit_planning_modules = (
+        args.wm_checkpoint,
+        args.state_proj_checkpoint,
+        args.value_head_checkpoint,
+    )
+    if config.agent.planning.enabled and all(
+        path is not None for path in explicit_planning_modules
+    ):
+        validate_planning_value_semantics(
+            wm_checkpoint=args.wm_checkpoint,
+            state_proj_checkpoint=args.state_proj_checkpoint,
+            value_head_checkpoint=args.value_head_checkpoint,
+        )
     if args.wm_checkpoint is not None and _is_grid_predictor_checkpoint(
         Path(args.wm_checkpoint)
     ):
@@ -709,7 +723,7 @@ def train_rl(
             expected_truncated_bootstrap=config.rl.truncated_bootstrap,
             expected_planner_config=asdict(config.agent.planning),
             expected_planner_training_objective=(
-                "receding_horizon_transition_mc_v1"
+                PLANNER_TRAINING_OBJECTIVE
                 if planning_enabled
                 else None
             ),

@@ -83,7 +83,7 @@ def load_sft2_mcts_evaluation_contract(
         )
     if invariants.get("value_objective") != SFT2_VALUE_OBJECTIVE:
         raise ValueError(
-            "MCTS evaluation requires the predicted-rollout executed-action "
+            "MCTS evaluation requires the decision-state executed-action "
             f"value objective {SFT2_VALUE_OBJECTIVE!r}; "
             f"got {invariants.get('value_objective')!r}"
         )
