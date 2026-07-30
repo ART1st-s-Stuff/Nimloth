@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-07-30：ID56-aligned CFM 重训准备中
+## 2026-07-30：ID56-aligned CFM 首轮完成，checkpoint 选择修复中
 
 - 人类指出 ID47 使用了 ID56 SFT2 state、但没有重训匹配的 CFM，并要求尽快重训。
   新分支 `exp/id56-cfm-retrain` 从已完成的 ID56 WM reconstruction 分支继续；旧 ID47
@@ -41,6 +41,25 @@
   W&B 或 checkpoint；eval 498309 随即取消。该链不可恢复，ID48/ID49 不复用。cache 脚本
   改为固定 `/cm/shared/apps/slurm/current/bin/{scontrol,srun}` 与权威 `SLURM_CONF`，并增加
   `summary.json` 后置条件；下一组身份顺延为 ID50/ID51。
+- 修复后 lifecycle 498310/498311/498312 使用 commit `93fe4bb6`。cache 498310 在
+  `dgx-[55-56]` 以16×H800完成，`COMPLETED 0:0`、11分28秒；train manifest 为
+  59,269 transitions / 118,538 pairs（actual-current 与 WM-predicted-next 各59,269），
+  val 为6,054 / 12,108（各6,054），row semantics 与 summary 后置条件均通过。
+- CFM ID50 job 498311 在`dgx-03`以`COMPLETED 0:0`结束，耗时47分17秒；训练
+  118,538 items / 29,640 steps，严格ID45 warm-start且fresh optimizer。保存的`best.pt`
+  为step10,000、180个model tensors全部finite、SHA256
+  `1390b39fb30e94a696f167bf961bc14d0bbc3fd3cb1d74a4d8db778f8029c9c5`；当时1,024-item
+  flow MSE为0.032679，最后checkpoint在完整12,108-item validation上为0.040925。
+  W&B `nimloth-recon/g5wsfasm`已finished。
+- ID51 job 498312 自动启动并在1分48秒后`COMPLETED 0:0`；160行、4个contact sheet、
+  matched-noise Euler50/CFG2合同完整，W&B `p832xdxr`已finished。但新CFM没有改善视觉指标：
+  actual-state→GT L1从旧ID47的0.240510恶化至0.281274，WM-predicted→GT从0.255730恶化至
+  0.298919，predicted优于actual的帧占比从0.4625降至0.38125。因此本轮只证明正确数据合同
+  下完成了训练，不支持“CFM补偿成功”。
+- 收尾审计确认trainer用`seed + step`生成每次validation的noise/time，导致不同checkpoint
+  flow MSE不可直接排名；已登记`E0076`并改为固定validation seed且写入resume invariants。
+  下一门槛是在ID51同一held-out diverse40状态、GT和matched noise上冻结扫描所有ID50
+  checkpoint与原ID45初始化，再决定是否存在可用checkpoint；不盲目重训第二遍。
 
 ---
 

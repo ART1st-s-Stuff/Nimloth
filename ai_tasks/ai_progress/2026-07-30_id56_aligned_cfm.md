@@ -45,8 +45,11 @@ versus autoregressive WM-predicted reconstruction.
 
 ## Pending
 
-- Launch and monitor cache, CFM, and aligned reconstruction.
-- Run on-experiment-end audit and record final metrics/artifacts.
+- Run the fixed matched-noise reconstruction sweep over the completed ID50
+  checkpoints and the unchanged ID45 initialization.
+- If a trained checkpoint beats the initialization, run one final visual audit
+  for that checkpoint; otherwise retain the failed-quality conclusion and do
+  not claim compensation success.
 
 ## Failed lifecycle 498307-498309
 
@@ -61,3 +64,28 @@ versus autoregressive WM-predicted reconstruction.
 - Fix: use absolute Slurm binaries plus authoritative `SLURM_CONF`, and fail the
   batch job unless the cache completion summary exists. Retry identities are
   ID50/ID51.
+
+## Completed lifecycle 498310-498312
+
+- Commit `93fe4bb6`; preempt 16-GPU cache 498310 completed on `dgx-[55-56]`
+  in 11:28 with exit `0:0`.
+- Train manifest: 59,269 transitions, 118,538 pairs, split equally between
+  actual-current and WM-predicted-next; fingerprint `22c62903361fda39`.
+- Disjoint val manifest: 6,054 transitions, 12,108 equally split pairs;
+  fingerprint `5eb34b5263a0afbd`. Completion summary and exact row semantics pass.
+- ID50 CFM 498311 completed on `dgx-03` in 47:17 with exit `0:0`. It trained
+  29,640 steps; the recorded best is step 10,000 / subset flow MSE `0.0326791`,
+  while the final checkpoint full-val flow MSE is `0.0409250`. The best payload
+  has 180 finite model tensors and SHA256
+  `1390b39fb30e94a696f167bf961bc14d0bbc3fd3cb1d74a4d8db778f8029c9c5`.
+  W&B run `g5wsfasm` is finished.
+- ID51 498312 completed on `dgx-03` in 1:48 with exit `0:0`; W&B `p832xdxr`
+  finished. The exact 160-row matched protocol produced actual/predicted image
+  L1 `0.281274/0.298919`, worse than ID47 `0.240510/0.255730`. Predicted-better
+  frame fraction also fell from `0.4625` to `0.38125`. The training mechanics
+  succeeded, but the requested decoder compensation did not.
+- Audit found checkpoint selection used `seed + step` for validation flow noise
+  and time, so the stored best compares different random statistics. `E0076`
+  records the failure; future training now uses one fixed validation seed in
+  metadata and resume invariants. A frozen diverse40 checkpoint sweep is the
+  next bounded diagnostic before considering any second training run.

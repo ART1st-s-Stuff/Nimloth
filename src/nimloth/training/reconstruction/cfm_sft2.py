@@ -172,6 +172,7 @@ def _checkpoint_invariants(
         "val_items": int(val_split.states.shape[0]),
         "latent_token_count": int(args.latent_token_count),
         "condition_dropout": float(args.condition_dropout),
+        "validation_seed": int(args.seed + 10_000),
         "init_cfm_checkpoint": (
             str(args.init_cfm_checkpoint)
             if args.init_cfm_checkpoint is not None
@@ -506,6 +507,7 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         "total_steps": total_steps,
         "eval_interval": args.eval_interval,
         "eval_max_items": args.eval_max_items,
+        "validation_seed": args.seed + 10_000,
         "save_interval": args.save_interval,
         "wandb": {
             "project": args.wandb_project,
@@ -586,7 +588,9 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
                 device,
                 batch_size=args.batch_size,
                 max_items=args.eval_max_items,
-                seed=args.seed + 10_000 + step,
+                # Rank checkpoints with common random numbers. A
+                # step-dependent seed makes the validation values incomparable.
+                seed=args.seed + 10_000,
             )
             if last_eval["correct_flow_mse"] < best_val:
                 best_val = last_eval["correct_flow_mse"]
@@ -673,7 +677,7 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         device,
         batch_size=args.batch_size,
         max_items=-1,
-        seed=args.seed + 20_000 + total_steps,
+        seed=args.seed + 20_000,
     )
     best_payload = torch.load(
         args.output_dir / "best.pt", map_location=device, weights_only=False

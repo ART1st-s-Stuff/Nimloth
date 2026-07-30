@@ -19,7 +19,7 @@ WANDB_ENV=/project/peilab/atst/flower/.env
 : "${EXPECTED_COMMIT:?set EXPECTED_COMMIT to the exact trainer commit}"
 : "${STATE_CACHE_DIR:?set STATE_CACHE_DIR to the completed ID56 cache root}"
 : "${RUN_ROOT:?set RUN_ROOT to a new run-owned directory}"
-: "${WANDB_RUN_NAME:?set WANDB_RUN_NAME to the ID48 run identity}"
+: "${WANDB_RUN_NAME:?set WANDB_RUN_NAME to a new formal run identity}"
 
 SFT2_CHECKPOINT=${SFT2_CHECKPOINT:-${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-29/sft2/56_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16_px100352/train_ws16/epoch_002}
 INIT_CFM=${INIT_CFM:-${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-19/reconstruction/45_sft1e5_dinogrid16x1024_cfm_ep30_b32_drop015/train/best.pt}
@@ -68,7 +68,7 @@ if [[ "${RESUME:-0}" != 1 ]]; then
   fi
   mkdir -p "${RUN_ROOT}"
   cat > "${RUN_ROOT}/README.md" <<EOF
-# ID56-aligned DINO-grid CFM (ID48)
+# ID56-aligned DINO-grid CFM (${WANDB_RUN_NAME})
 
 - Git commit: ${EXPECTED_COMMIT}
 - Source checkpoint: ${SFT2_CHECKPOINT}
