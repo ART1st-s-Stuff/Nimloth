@@ -25,6 +25,20 @@ def _atomic_json(path: Path, payload: Any) -> None:
     temporary.replace(path)
 
 
+def prepare_output_dir(path: Path) -> None:
+    """Allow only the run README created by the enclosing batch lifecycle."""
+
+    if path.exists():
+        unexpected = sorted(
+            item.name for item in path.iterdir() if item.name != "README.md"
+        )
+        if unexpected:
+            raise FileExistsError(
+                f"checkpoint sweep output has unexpected files: {unexpected}"
+            )
+    path.mkdir(parents=True, exist_ok=True)
+
+
 def reconstruction_metrics(
     *,
     actual_images: torch.Tensor,
@@ -114,9 +128,7 @@ def _checkpoint_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 @torch.no_grad()
 def run(args: argparse.Namespace) -> int:
-    if args.output_dir.exists() and any(args.output_dir.iterdir()):
-        raise FileExistsError(f"checkpoint sweep output is not empty: {args.output_dir}")
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_output_dir(args.output_dir)
     started = time.time()
 
     source_metadata = json.loads(

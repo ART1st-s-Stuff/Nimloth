@@ -89,3 +89,9 @@ versus autoregressive WM-predicted reconstruction.
   records the failure; future training now uses one fixed validation seed in
   metadata and resume invariants. A frozen diverse40 checkpoint sweep is the
   next bounded diagnostic before considering any second training run.
+- The first sweep identity ID52 / job 498453 failed after 14 seconds because the
+  batch script created its run README before an evaluator that required a fully
+  empty output. No checkpoint forward, W&B, metrics, or resumable artifact was
+  created; the directory contains only the failed README. `E0077` records the
+  integration error. The evaluator now permits only that lifecycle README and
+  still rejects every other pre-existing file; retry uses new identity ID53.

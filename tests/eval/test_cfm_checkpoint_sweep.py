@@ -3,7 +3,19 @@ from __future__ import annotations
 import pytest
 import torch
 
-from nimloth.eval.cfm_checkpoint_sweep import reconstruction_metrics
+from nimloth.eval.cfm_checkpoint_sweep import prepare_output_dir, reconstruction_metrics
+
+
+def test_prepare_output_dir_allows_only_lifecycle_readme(tmp_path) -> None:
+    output = tmp_path / "run"
+    output.mkdir()
+    (output / "README.md").write_text("running\n", encoding="utf-8")
+
+    prepare_output_dir(output)
+
+    (output / "contract.json").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="contract.json"):
+        prepare_output_dir(output)
 
 
 def test_reconstruction_metrics_preserve_matched_row_and_horizon_units() -> None:

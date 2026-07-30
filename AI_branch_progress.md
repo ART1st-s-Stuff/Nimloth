@@ -60,6 +60,10 @@
   flow MSE不可直接排名；已登记`E0076`并改为固定validation seed且写入resume invariants。
   下一门槛是在ID51同一held-out diverse40状态、GT和matched noise上冻结扫描所有ID50
   checkpoint与原ID45初始化，再决定是否存在可用checkpoint；不盲目重训第二遍。
+- Sweep首次identity ID52 / job 498453在14秒内失败：batch先创建运行README，evaluator却
+  要求output完全为空，因而在任何checkpoint forward、W&B或metrics前退出；目录只有README，
+  不可resume。已登记`E0077`，evaluator改为只允许batch预建README、继续拒绝所有其他文件；
+  修复后使用新ID53，不复用ID52。
 
 ---
 
