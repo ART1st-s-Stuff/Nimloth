@@ -142,3 +142,10 @@ SFT2 前的真实策略成功率。
   `WANDB_PROJECT=nimloth-sft1`被默认`flower`覆盖。controller在26秒探针阶段发现后立即取消，
   没有W&B run、正式env prewarm、model load或rollout。修复在source前保存本次entity/project/
   run name/run ID并在加载API key后恢复；attempt9不可复用，使用新attempt与ID重提。
+- identity修复commit `1976e6e2`在远端clean worktree通过`9 passed`。VAGEN attempt10
+  job`498106`在preempt `dgx-03`使用6 GPU/120 CPU启动，controller确认W&B为
+  `nimloth-sft1/30_vagenparent_step79_xml_test300_greedy_t20_r512_timeout500_identityfix`
+  (`vgp30300`)；6卡render、真实255 prewarm、300行数据、Ray、4卡FSDP/vLLM/KV cache/
+  warmup及PyTorch sampler均通过。首批24环境完成create并进入多轮生成；运行7分15秒时已
+  越过旧120秒边界，vLLM log有22次持续cache reset周期，未见ReadTimeout/HTTP fatal。
+  当前job健康但尚未生成最终300行dump，不能提前报告VAGEN success rate。

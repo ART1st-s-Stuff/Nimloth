@@ -75,6 +75,11 @@
   `498102`启动时让`.env`默认值把显式project从`nimloth-sft1`覆盖为`flower`；controller
   发现后于26秒render probe阶段主动取消，未创建W&B run/model/rollout。修复改为source前保存
   并在API key加载后恢复完整显式W&B identity，`E0075`同步补充；新attempt重新提交。
+- identity修复`1976e6e2`远端`9 passed`后，VAGEN attempt10 job`498106`已在preempt
+  `dgx-03`以6 GPU/120 CPU健康运行。W&B identity正确为project`nimloth-sft1`/ID30；
+  render/prewarm/data/Ray和4卡FSDP/vLLM/KV/warmup均通过，首批24环境已进入多轮生成。
+  运行7分15秒时越过旧120秒timeout边界且有22次连续cache reset，无ReadTimeout/HTTP fatal；
+  最终300行dump尚未生成，因此暂不报告VAGEN正式success rate。
 
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 
