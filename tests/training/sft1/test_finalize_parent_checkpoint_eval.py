@@ -164,3 +164,15 @@ def test_vagen_parent_uses_navigation_service_timeout() -> None:
 
     assert 'rollout_manager.base_url="${ENV_URL}" rollout_manager.timeout=500' in script
     assert 'rollout_manager.base_url="${ENV_URL}" rollout_manager.timeout=120' not in script
+
+
+def test_parent_eval_loads_wandb_credentials_before_gpu_work() -> None:
+    repo = Path(__file__).resolve().parents[3]
+    script = (
+        repo / "experiments/training/sft1/run_parent_checkpoint_eval_arm.sh"
+    ).read_text(encoding="utf-8")
+
+    credential_index = script.index('WANDB_API_KEY:?WANDB_API_KEY is required')
+    render_index = script.index("# AI2-THOR can stay alive")
+    assert "source /project/peilab/atst/flower/.env" in script
+    assert credential_index < render_index

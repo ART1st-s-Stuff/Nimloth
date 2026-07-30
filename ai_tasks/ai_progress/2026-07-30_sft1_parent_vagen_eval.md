@@ -130,3 +130,10 @@ SFT2 前的真实策略成功率。
   生成trajectory/W&B结果，attempt8不可resume。VAGEN官方navigation脚本使用500秒、基础
   trainer默认1200秒；修复恢复为500秒，不改变batch、数据、采样或环境语义，登记`E0074`
   并以新output/W&B identity重试。
+- SFT1 `498066`在`00:25:46`完成全部300条及严格finalizer，本地`summary.json`为
+  `status=ALL_OK`：总体success rate `60/300=20.0%`；分类依次为base `15/60=25.0%`、
+  common sense `14/60=23.33%`、complex instruction `14/60=23.33%`、visual appearance
+  `15/60=25.0%`、long horizon `2/60=3.33%`。5348/5348 response action格式有效，5648张
+  255×255图片无uniform frame。batch最后只在W&B init处因未加载`.env`、缺少API key而退出，
+  所以Slurm为FAILED且暂缺`done.flag`；核心结果有效，不重跑rollout。脚本新增GPU工作前加载
+  `.env`和凭据门禁（`E0075`），现有输出将用纯CPU finalizer补W&B/done flag。

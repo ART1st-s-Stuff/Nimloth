@@ -66,6 +66,11 @@
   rollout loop或生成trajectory/W&B，不能作为模型结果且不可resume。VAGEN官方navigation
   脚本timeout为500秒（基础trainer默认1200秒），因此评估恢复`rollout_manager.timeout=500`；
   该运维等待不改变val batch、seed、采样或环境，错误登记为`E0074`并使用新identity重试。
+- SFT1 `498066`已完成严格300条并写出`summary.json status=ALL_OK`：总体`60/300=20.0%`；
+  五类成功分别`15/14/14/15/2`，action格式5348/5348有效，5648张255图无uniform frame。
+  Slurm仅在最终W&B init因未加载服务器`.env`而失败，所以无需重跑rollout；将从现有输出
+  纯CPU补传W&B并写done flag。parent脚本新增占GPU前的`.env`加载与`WANDB_API_KEY`门禁，
+  错误登记为`E0075`，也防止VAGEN评估在完成后出现同类收尾失败。
 
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 

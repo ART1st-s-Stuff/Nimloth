@@ -55,6 +55,16 @@ GOOD_ENV_HOMES=()
 mkdir -p "${ARM_OUTPUT}" "${ARM_OUTPUT}/eval_sets" "${RUNTIME_ROOT}"
 export PATH=${ROOT}/.venv-vagen-main/bin:${PATH}
 export PYTHONPATH=${EVAL_WORKTREE}/src:${VAGEN_DIR}:${VAGEN_DIR}/verl:${PYTHONPATH:-}
+if [[ -f /project/peilab/atst/flower/.env ]]; then
+  set -a
+  source /project/peilab/atst/flower/.env
+  set +a
+elif [[ -f /project/peilab/atst/.env ]]; then
+  set -a
+  source /project/peilab/atst/.env
+  set +a
+fi
+: "${WANDB_API_KEY:?WANDB_API_KEY is required for the finalizer}"
 export HOME=${ROOT}/.home
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=${HF_HOME}
