@@ -137,3 +137,8 @@ SFT2 前的真实策略成功率。
   255×255图片无uniform frame。batch最后只在W&B init处因未加载`.env`、缺少API key而退出，
   所以Slurm为FAILED且暂缺`done.flag`；核心结果有效，不重跑rollout。脚本新增GPU工作前加载
   `.env`和凭据门禁（`E0075`），现有输出将用纯CPU finalizer补W&B/done flag。
+- SFT1 post-hoc finalizer已成功登录W&B并生成`done.flag=ALL_OK`，原300条结果正式收尾完成。
+  首版凭据门禁在VAGEN attempt9 job`498102`暴露配置污染：source `.env`后显式
+  `WANDB_PROJECT=nimloth-sft1`被默认`flower`覆盖。controller在26秒探针阶段发现后立即取消，
+  没有W&B run、正式env prewarm、model load或rollout。修复在source前保存本次entity/project/
+  run name/run ID并在加载API key后恢复；attempt9不可复用，使用新attempt与ID重提。

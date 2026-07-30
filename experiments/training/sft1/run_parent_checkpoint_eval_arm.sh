@@ -14,6 +14,10 @@ fi
 : "${WANDB_PROJECT:?WANDB_PROJECT is required}"
 : "${WANDB_RUN_NAME:?WANDB_RUN_NAME is required}"
 : "${WANDB_RUN_ID:?WANDB_RUN_ID is required}"
+EVAL_WANDB_ENTITY=${WANDB_ENTITY}
+EVAL_WANDB_PROJECT=${WANDB_PROJECT}
+EVAL_WANDB_RUN_NAME=${WANDB_RUN_NAME}
+EVAL_WANDB_RUN_ID=${WANDB_RUN_ID}
 
 ROOT=/project/peilab/atst/nimloth
 PY=${ROOT}/.venv-vagen-main/bin/python3
@@ -65,6 +69,10 @@ elif [[ -f /project/peilab/atst/.env ]]; then
   set +a
 fi
 : "${WANDB_API_KEY:?WANDB_API_KEY is required for the finalizer}"
+export WANDB_ENTITY=${EVAL_WANDB_ENTITY}
+export WANDB_PROJECT=${EVAL_WANDB_PROJECT}
+export WANDB_RUN_NAME=${EVAL_WANDB_RUN_NAME}
+export WANDB_RUN_ID=${EVAL_WANDB_RUN_ID}
 export HOME=${ROOT}/.home
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=${HF_HOME}

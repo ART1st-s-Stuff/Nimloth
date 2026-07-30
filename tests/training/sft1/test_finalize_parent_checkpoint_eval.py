@@ -172,7 +172,9 @@ def test_parent_eval_loads_wandb_credentials_before_gpu_work() -> None:
         repo / "experiments/training/sft1/run_parent_checkpoint_eval_arm.sh"
     ).read_text(encoding="utf-8")
 
+    save_index = script.index("EVAL_WANDB_PROJECT=${WANDB_PROJECT}")
+    source_index = script.index("source /project/peilab/atst/flower/.env")
     credential_index = script.index('WANDB_API_KEY:?WANDB_API_KEY is required')
+    restore_index = script.index("export WANDB_PROJECT=${EVAL_WANDB_PROJECT}")
     render_index = script.index("# AI2-THOR can stay alive")
-    assert "source /project/peilab/atst/flower/.env" in script
-    assert credential_index < render_index
+    assert save_index < source_index < credential_index < restore_index < render_index

@@ -71,6 +71,10 @@
   Slurm仅在最终W&B init因未加载服务器`.env`而失败，所以无需重跑rollout；将从现有输出
   纯CPU补传W&B并写done flag。parent脚本新增占GPU前的`.env`加载与`WANDB_API_KEY`门禁，
   错误登记为`E0075`，也防止VAGEN评估在完成后出现同类收尾失败。
+- SFT1 post-hoc finalizer已成功登录W&B并写出`done.flag=ALL_OK`。首次凭据修复却在VAGEN
+  `498102`启动时让`.env`默认值把显式project从`nimloth-sft1`覆盖为`flower`；controller
+  发现后于26秒render probe阶段主动取消，未创建W&B run/model/rollout。修复改为source前保存
+  并在API key加载后恢复完整显式W&B identity，`E0075`同步补充；新attempt重新提交。
 
 ## 2026-07-28：SFT2 H=1/T=4 smoke 发现 ID49 trajectory 尚未迁移
 
