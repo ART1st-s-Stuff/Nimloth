@@ -9,19 +9,30 @@
 - 人类指出 ID47 使用了 ID56 SFT2 state、但没有重训匹配的 CFM，并要求尽快重训。
   新分支 `exp/id56-cfm-retrain` 从已完成的 ID56 WM reconstruction 分支继续；旧 ID47
   保持可复现，不覆盖其 output/W&B。
-- 已核实 CFM 需要使用 ID52 migrated train 的完整 59,269 个逐步 state，严格不重叠的
-  validation 为 6,054 个；49,638 是 SFT2 的连续四步 window 数，不能误作 CFM state 数。
+- 已核实输入为 ID52 migrated train 的完整 59,269 个 transition，严格不重叠的
+  validation 为 6,054 个；49,638 是 SFT2 的连续四步 window 数，不能误作 transition 数。
   ID53 compact preprocess cache 正是 ID56 使用的输入 cache，train/val fingerprints 分别为
   `ac7835348d6eade1`/`d857dc4ef51a70be`。
-- 实现中的新 cache builder 冻结 ID56 epoch2 online Qwen 与 shared DINO-grid projector，
-  通过多 rank 连续分片生成 `[16,1024]` actual states；每个 shard 原子落盘，同一 world-size、
-  checkpoint/data/cache/commit 合同下可续建。明确不应用 `vision_ema.pt`。
+- 人类进一步明确 CFM 应像 ValueHead 一样补偿 WM 误差。cache builder 因此为每个
+  transition 生成两个等权 pair：`actual s_t -> current image` 与
+  `WM(s_t,a_t) -> actual next image`，train/val 分别为 118,538/12,108 个 pair；不使用
+  `actual s_{t+1}` 替代 predicted-next condition。ID56 epoch2 online Qwen、shared
+  DINO-grid projector 和 WM predictor 全部冻结，明确不应用 `vision_ema.pt`。每个 shard
+  原子落盘，同一 world-size、checkpoint/data/cache/commit 合同下可续建。
 - CFM trainer 已补齐 cache-native `[K,D]` condition、CFG 所需 condition dropout、同构 CFM
   strict warm-start、非空输出保护和 grid evaluator 独立采样模式。新 evaluator 在保留旧 SFT1
   CFM control 的同时，只用新 ID56-aligned CFM 解码 ID56 actual/predicted 两列；旧 ID47
   参数保持兼容。
-- 待完成：远端定向回归和真实 artifact preflight；人类确认 preempt 16×H800 cache build +
-  1×H800 CFM/eval 资源合同后，提交全新 `nimloth-recon` ID48/ID49 lifecycle。
+- 实现提交 `4a502d09` 已推送并同步到 superpod clean worktree；固定
+  `external/le-wm@8edfeb3`。远端新 cache 测试 `2 passed`，CFM/evaluator 定向回归
+  `16 passed, 2 warnings`。真实 artifact preflight 确认 train/val 为 59,269/6,054、
+  ID53 fingerprints 为 `ac7835348d6eade1`/`d857dc4ef51a70be`、ID56 grid shape
+  `[16,1024]`，旧 ID45 CFM 在相同模型结构下 180 keys strict load，best step 29,000。
+- W&B `nimloth-recon` 和服务器 output 均确认 ID48/ID49 未占用；当前 preempt 有36张空闲
+  H800，normal仅1张。人类本轮要求“越快越好”，并已在上一轮批准使用 preempt；启动合同
+  因此采用 preempt 16×H800 cache build，再用1×H800训练和1×H800评估。新身份为
+  `48_id56e2_curactual_wmprednext_cfm_warm_ep8_b32_drop015` 与
+  `49_id56e2_alignedcfm_actual_wmpred_diverse40_euler50_cfg2`。
 
 ---
 

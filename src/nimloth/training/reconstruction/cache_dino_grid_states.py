@@ -28,11 +28,16 @@ from nimloth.rollout.transitions import TransitionJsonlDataset, TransitionSample
 from nimloth.training.sft2.data.factory import _verify_cache_manifest
 from nimloth.util.cache import CachedTransitionDataset, CompactCachedTransitionCollator
 from nimloth.util.distributed import cleanup_dist, setup_dist
-from nimloth.wm.grid import GridPredictorConfig, SharedSlotProjector
+from nimloth.wm.grid import (
+    GridPredictorConfig,
+    SharedSlotProjector,
+    TemporalSpatialGridPredictor,
+)
 
 
-CACHE_VERSION = "id56_dino_grid_state_cache_v1"
+CACHE_VERSION = "id56_dino_grid_cfm_compensation_cache_v2"
 GRID_SHAPE = (16, 1024)
+ROW_SEMANTICS = "actual_current_and_wm_predicted_next_per_transition_v1"
 
 
 def contiguous_rank_bounds(total: int, rank: int, world_size: int) -> tuple[int, int]:
@@ -76,6 +81,7 @@ def _checkpoint_identity(checkpoint: Path) -> dict[str, Any]:
         checkpoint / "model.safetensors.index.json",
         checkpoint / "state_proj.pt",
         checkpoint / "wm_predictor" / "config.json",
+        checkpoint / "wm_predictor" / "predictor.pt",
     ]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
@@ -171,7 +177,17 @@ def _load_frozen_modules(args: argparse.Namespace, device: torch.device):
         processor.tokenizer,
         latent_token_count=args.latent_token_count,
     )
-    return processor, token_ids, model, projector
+    predictor = TemporalSpatialGridPredictor.load_checkpoint(
+        args.sft2_checkpoint / "wm_predictor",
+        map_location=device,
+    ).to(device)
+    predictor.eval().requires_grad_(False)
+    predictor_shape = (predictor.config.grid_tokens, predictor.config.emb_dim)
+    if predictor_shape != GRID_SHAPE:
+        raise ValueError(
+            f"ID56 WM predictor grid shape mismatch: {predictor_shape} != {GRID_SHAPE}"
+        )
+    return processor, token_ids, model, projector, predictor
 
 
 def _preprocess_config(args: argparse.Namespace) -> SimpleNamespace:
@@ -213,16 +229,56 @@ def _validate_preprocess_cache(
     return manifests
 
 
-def _cache_row(sample: TransitionSample) -> dict[str, Any]:
+def _cache_row(sample: TransitionSample, *, pair_type: str) -> dict[str, Any]:
+    if pair_type == "actual_current":
+        target_image_path = str(sample.current_image_path)
+    elif pair_type == "wm_predicted_next":
+        target_image_path = str(sample.next_image_path)
+    else:
+        raise ValueError(f"unsupported CFM pair type: {pair_type!r}")
     return {
-        "id": f"{sample.record_id}:{sample.step_index}",
+        "id": f"{sample.record_id}:{sample.step_index}:{pair_type}",
         "record_id": sample.record_id,
         "step_index": int(sample.step_index),
+        "transition_step": int(sample.step_index),
+        "pair_type": pair_type,
         "action_index": int(sample.action_index),
         "success": bool(sample.success),
-        "current_image_path": str(sample.current_image_path),
+        # The generic CFM loader treats current_image_path as its target image.
+        "current_image_path": target_image_path,
         "next_image_path": str(sample.next_image_path),
+        "source_current_image_path": str(sample.current_image_path),
+        "target_image_path": target_image_path,
     }
+
+
+def _interleave_cfm_states(
+    actual_current: torch.Tensor,
+    wm_predicted_next: torch.Tensor,
+) -> torch.Tensor:
+    if actual_current.shape != wm_predicted_next.shape:
+        raise ValueError(
+            "current/predicted CFM state shape mismatch: "
+            f"{tuple(actual_current.shape)} != {tuple(wm_predicted_next.shape)}"
+        )
+    return torch.stack((actual_current, wm_predicted_next), dim=1).flatten(0, 1)
+
+
+def _build_cfm_state_pairs(
+    predictor: torch.nn.Module,
+    actual_current: torch.Tensor,
+    actions: torch.Tensor,
+) -> torch.Tensor:
+    wm_predicted_next = predictor(actual_current, actions)
+    return _interleave_cfm_states(actual_current, wm_predicted_next)
+
+
+def _cfm_pair_rows(samples: list[TransitionSample]) -> list[dict[str, Any]]:
+    return [
+        _cache_row(sample, pair_type=pair_type)
+        for sample in samples
+        for pair_type in ("actual_current", "wm_predicted_next")
+    ]
 
 
 def _shard_path(
@@ -270,6 +326,7 @@ def _encode_split(
     token_id_map: dict[str, int],
     model: torch.nn.Module,
     projector: torch.nn.Module,
+    predictor: torch.nn.Module,
     device: torch.device,
     rank: int,
     world_size: int,
@@ -307,13 +364,14 @@ def _encode_split(
         if _valid_shard(
             path,
             contract_fingerprint=contract_fingerprint,
-            start=start,
-            end=end,
+            start=2 * start,
+            end=2 * end,
         ):
             continue
         shard_states: list[torch.Tensor] = []
         for batch_start in range(start, end, args.encode_batch_size):
             batch_end = min(batch_start + args.encode_batch_size, end)
+            batch_samples = samples[batch_start:batch_end]
             raw = collator([dataset[index] for index in range(batch_start, batch_end)])
             encoding = input_builder.collate_encoded(
                 raw["current_enc_rows"],
@@ -326,24 +384,37 @@ def _encode_split(
                 device,
                 latent_token_count=args.latent_token_count,
             )
-            state = projector(hidden).detach().float().cpu()
-            if tuple(state.shape[1:]) != GRID_SHAPE:
+            actual_current = projector(hidden).detach()
+            if tuple(actual_current.shape[1:]) != GRID_SHAPE:
                 raise ValueError(
-                    f"encoded ID56 grid shape mismatch: {tuple(state.shape)}"
+                    "encoded ID56 grid shape mismatch: "
+                    f"{tuple(actual_current.shape)}"
                 )
-            if not torch.isfinite(state).all():
+            actions = torch.tensor(
+                [int(sample.action_index) for sample in batch_samples],
+                dtype=torch.long,
+                device=device,
+            )
+            state_pairs = _build_cfm_state_pairs(
+                predictor,
+                actual_current,
+                actions,
+            ).detach().float().cpu()
+            if not torch.isfinite(state_pairs).all():
                 raise ValueError(
                     f"non-finite ID56 grid state in {split} [{batch_start},{batch_end})"
                 )
-            shard_states.append(state.to(dtype=torch.float16))
+            shard_states.append(state_pairs.to(dtype=torch.float16))
         states = torch.cat(shard_states)
         _atomic_torch_save(
             {
                 "contract_fingerprint": contract_fingerprint,
-                "start": start,
-                "end": end,
+                "start": 2 * start,
+                "end": 2 * end,
+                "transition_start": start,
+                "transition_end": end,
                 "state_emb": states,
-                "rows": [_cache_row(sample) for sample in samples[start:end]],
+                "rows": _cfm_pair_rows(samples[start:end]),
             },
             path,
         )
@@ -353,8 +424,10 @@ def _encode_split(
                     "state_cache": "shard_done",
                     "split": split,
                     "rank": rank,
-                    "start": start,
-                    "end": end,
+                    "transition_start": start,
+                    "transition_end": end,
+                    "pair_start": 2 * start,
+                    "pair_end": 2 * end,
                     "path": str(path),
                 }
             ),
@@ -382,9 +455,11 @@ def _finalize_split(
             world_size=world_size,
             shard_size=args.state_cache_shard_size,
         ):
-            if start != expected_start:
+            pair_start = 2 * start
+            pair_end = 2 * end
+            if pair_start != expected_start:
                 raise ValueError(
-                    f"state-cache range gap before {split} index {start}; "
+                    f"state-cache range gap before {split} index {pair_start}; "
                     f"expected {expected_start}"
                 )
             path = _shard_path(
@@ -395,24 +470,27 @@ def _finalize_split(
             if not _valid_shard(
                 path,
                 contract_fingerprint=contract_fingerprint,
-                start=start,
-                end=end,
+                start=pair_start,
+                end=pair_end,
             ):
                 raise ValueError(f"invalid or missing completed state shard: {path}")
             shards.append(
                 {
                     "file": path.name,
-                    "count": end - start,
-                    "start": start,
-                    "end": end,
+                    "count": pair_end - pair_start,
+                    "start": pair_start,
+                    "end": pair_end,
+                    "transition_start": start,
+                    "transition_end": end,
                     "rank": rank,
                 }
             )
             total_bytes += path.stat().st_size
-            expected_start = end
-    if expected_start != len(samples):
+            expected_start = pair_end
+    if expected_start != 2 * len(samples):
         raise ValueError(
-            f"state-cache coverage mismatch for {split}: {expected_start} != {len(samples)}"
+            "state-cache coverage mismatch for "
+            f"{split}: {expected_start} != {2 * len(samples)}"
         )
     fingerprint = hashlib.sha256(
         f"{contract_fingerprint}|{split}|{preprocess_manifest['fingerprint']}".encode()
@@ -423,9 +501,15 @@ def _finalize_split(
             "version": CACHE_VERSION,
             "split": split,
             "representation": "dino_grid_state",
+            "row_semantics": ROW_SEMANTICS,
             "state_shape": list(GRID_SHAPE),
             "latent_token_count": GRID_SHAPE[0],
-            "count": len(samples),
+            "count": 2 * len(samples),
+            "transition_count": len(samples),
+            "pair_type_counts": {
+                "actual_current": len(samples),
+                "wm_predicted_next": len(samples),
+            },
             "cond_dim": math.prod(GRID_SHAPE),
             "state_dtype": "float16",
             "compression": "none",
@@ -467,7 +551,9 @@ def run(args: argparse.Namespace) -> int:
                 value_gamma=1.0,
             ).samples,
         }
-        processor, token_id_map, model, projector = _load_frozen_modules(args, device)
+        processor, token_id_map, model, projector, predictor = _load_frozen_modules(
+            args, device
+        )
         preprocess_manifests = _validate_preprocess_cache(
             args=args,
             processor=processor,
@@ -484,8 +570,12 @@ def run(args: argparse.Namespace) -> int:
                 split: manifest["fingerprint"]
                 for split, manifest in preprocess_manifests.items()
             },
-            "counts": {
+            "transition_counts": {
                 split: len(samples) for split, samples in samples_by_split.items()
+            },
+            "cfm_pair_counts": {
+                split: 2 * len(samples)
+                for split, samples in samples_by_split.items()
             },
             "world_size": world_size,
             "max_length": args.max_length,
@@ -495,9 +585,16 @@ def run(args: argparse.Namespace) -> int:
             "encode_batch_size": args.encode_batch_size,
             "state_cache_shard_size": args.state_cache_shard_size,
             "state_shape": list(GRID_SHAPE),
+            "row_semantics": ROW_SEMANTICS,
             "dataset_split": "train JSONL for CFM optimization; disjoint val JSONL for model selection only",
+            "cfm_pairs": (
+                "actual current state -> current image plus frozen-WM predicted "
+                "next state -> actual next image for every transition"
+            ),
             "trainable_modules": "none during cache build",
-            "frozen_modules": "ID56 online Qwen backbone and shared DINO-grid projector",
+            "frozen_modules": (
+                "ID56 online Qwen backbone, shared DINO-grid projector, and WM predictor"
+            ),
         }
         fingerprint = _contract_fingerprint(contract)
         contract["fingerprint"] = fingerprint
@@ -527,6 +624,7 @@ def run(args: argparse.Namespace) -> int:
                 token_id_map=token_id_map,
                 model=model,
                 projector=projector,
+                predictor=predictor,
                 device=device,
                 rank=rank,
                 world_size=world_size,
@@ -551,8 +649,11 @@ def run(args: argparse.Namespace) -> int:
                 {
                     "status": "completed",
                     "contract_fingerprint": fingerprint,
-                    "train_items": len(samples_by_split["train"]),
-                    "val_items": len(samples_by_split["val"]),
+                    "train_transitions": len(samples_by_split["train"]),
+                    "val_transitions": len(samples_by_split["val"]),
+                    "train_items": 2 * len(samples_by_split["train"]),
+                    "val_items": 2 * len(samples_by_split["val"]),
+                    "row_semantics": ROW_SEMANTICS,
                     "state_shape": list(GRID_SHAPE),
                 },
             )

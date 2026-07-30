@@ -8,6 +8,7 @@ from nimloth.eval.dino_grid_wm_reconstruction import (
     build_parser,
     calculate_metrics,
     prepare_protocol_rows,
+    validate_id56_state_cache_lineage,
 )
 from nimloth.rollout.transitions import TransitionSample
 
@@ -198,3 +199,20 @@ def test_cli_requires_exact_git_commit() -> None:
     destinations = {action.dest for action in parser._actions}
     assert "id56_dino_grid_cache" in destinations
     assert "id56_dino_grid_cfm_checkpoint" in destinations
+
+
+def test_id56_cache_lineage_requires_wm_compensation_pairs(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    manifest = {
+        "representation": "dino_grid_state",
+        "row_semantics": "actual_current_and_wm_predicted_next_per_transition_v1",
+        "state_shape": [16, 1024],
+        "source_checkpoint": str(checkpoint),
+    }
+    validate_id56_state_cache_lineage(manifest, checkpoint)
+    manifest.pop("row_semantics")
+    with pytest.raises(ValueError, match="WM-predicted-next"):
+        validate_id56_state_cache_lineage(manifest, checkpoint)

@@ -112,13 +112,18 @@ python -m torch.distributed.run ... \
   --git-commit <exact_commit>
 ```
 
-The distributed cache writer uses the checkpoint's online backbone weights,
-freezes the backbone/projector, writes atomic rank shards, and resumes only
-under an identical world-size and artifact contract. `cfm_sft2` detects its
-`[K,D]` cache shape. Use `--condition-dropout 0.15` when the downstream probe
-uses CFG and `--init-cfm-checkpoint` only for a strict identical-architecture
-warm start. `--skip-samples` omits the legacy single-vector WM sample hook when
-a separate grid-WM evaluator owns the final reconstruction.
+The distributed cache writer uses the checkpoint's online backbone weights and
+creates two equally weighted pairs per transition: actual current state to
+current image, and frozen-WM predicted next state to the actual next image. The
+second pair intentionally lets CFM learn systematic decoder-side compensation
+for WM prediction error, matching the predicted-state input used by ValueHead.
+The backbone, projector, and WM predictor remain frozen. Atomic rank shards can
+resume only under an identical world-size and artifact contract. `cfm_sft2`
+detects the `[K,D]` cache shape. Use `--condition-dropout 0.15` when the
+downstream probe uses CFG and `--init-cfm-checkpoint` only for a strict
+identical-architecture warm start. `--skip-samples` omits the legacy
+single-vector WM sample hook when a separate grid-WM evaluator owns the final
+reconstruction.
 
 ## Sample from RCDM
 

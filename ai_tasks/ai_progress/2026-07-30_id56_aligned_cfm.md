@@ -2,21 +2,22 @@
 
 ## Goal
 
-Train a CFM on actual DINO-grid states from the exact ID56 epoch-2 online
-backbone/projector, then rerun the matched-noise actual versus autoregressive
-WM-predicted reconstruction.
+Train a CFM on both actual-current and frozen-WM-predicted-next DINO-grid states
+from the exact ID56 epoch-2 checkpoint, then rerun the matched-noise actual
+versus autoregressive WM-predicted reconstruction.
 
 ## Fixed contract
 
 - Source checkpoint: ID56 `train_ws16/epoch_002`; online backbone weights.
-- Data: ID52 migrated train/val JSONL; 59,269 train states and 6,054 disjoint
-  validation states.
+- Data: ID52 migrated train/val JSONL; 59,269/6,054 transitions become
+  118,538/12,108 balanced CFM pairs.
 - Input acceleration: immutable ID53 compact preprocess cache.
-- Cache build: frozen Qwen/projector, `[16,1024]` float16 states, atomic shards,
-  exact-contract resume.
+- Cache build: frozen Qwen/projector/WM; each transition contributes actual
+  current -> current image and WM predicted next -> actual next image. States
+  are `[16,1024]` float16 with atomic shards and exact-contract resume.
 - CFM: only `TokenConditionedFlowUNet` trains; old ID45 CFM is a strict
   identical-architecture initialization, with a fresh optimizer.
-- Recipe: 128px, batch 32, 15 epochs, lr `3e-5`, weight decay `1e-4`, condition
+- Recipe: 128px, batch 32, 8 epochs, lr `3e-5`, weight decay `1e-4`, condition
   dropout `0.15`, best checkpoint selected by disjoint validation flow MSE.
 - Final eval: 40 held-out trajectories, t+1 through t+4, Euler50, CFG2,
   matched noise; old SFT1 CFM remains a control and the new CFM decodes only
@@ -30,12 +31,18 @@ WM-predicted reconstruction.
 - Extended evaluator with an optional aligned-CFM path while preserving legacy
   ID47 CLI behavior.
 - Added Slurm lifecycle scripts for 16-GPU cache, 1-GPU CFM, and 1-GPU eval.
-- Added targeted unit tests; local syntax and full remote tests are pending.
+- Human clarified that CFM should compensate frozen-WM errors like ValueHead;
+  replaced the interim actual-next design with predicted-next/actual-next pairs.
+- Local Python/shell syntax and staged diff checks pass.
+- The earlier current-only implementation passed remote targeted tests; the
+  corrected predicted-next pair contract still requires a fresh remote run.
+- Real artifact preflight passes: 59,269/6,054 exact rows, ID53 fingerprints
+  `ac7835348d6eade1`/`d857dc4ef51a70be`, ID56 `[16,1024]` projector output,
+  and strict ID45 CFM architecture/weight initialization at source step 29,000.
+- Live resources: preempt 36 free H800, normal 1. ID48/ID49 are unused in both
+  server outputs and live W&B.
 
 ## Pending
 
-- Receive explicit partition/GPU confirmation.
-- Commit/push, create clean remote worktree, initialize `external/le-wm`.
-- Run remote tests and real-artifact CPU/GPU preflight.
 - Launch and monitor cache, CFM, and aligned reconstruction.
 - Run on-experiment-end audit and record final metrics/artifacts.

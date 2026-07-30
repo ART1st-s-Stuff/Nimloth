@@ -80,6 +80,7 @@ def load_state_image_split(
                 "id": str(item.get("id", index)),
                 "record_id": str(item.get("record_id", "")),
                 "step_index": int(item.get("step_index", -1)),
+                "pair_type": str(item.get("pair_type", "")),
                 "action_index": int(item["action_index"]),
                 "current_image_path": str(item["current_image_path"]),
                 "next_image_path": str(item["next_image_path"]),
@@ -165,6 +166,8 @@ def _checkpoint_invariants(
         "seed": int(args.seed),
         "train_cache_fingerprint": str(train_split.manifest["fingerprint"]),
         "val_cache_fingerprint": str(val_split.manifest["fingerprint"]),
+        "train_row_semantics": train_split.manifest.get("row_semantics"),
+        "val_row_semantics": val_split.manifest.get("row_semantics"),
         "train_items": int(train_split.states.shape[0]),
         "val_items": int(val_split.states.shape[0]),
         "latent_token_count": int(args.latent_token_count),
@@ -422,6 +425,14 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
         max_items=args.max_val_items,
         expected_latent_token_count=args.latent_token_count,
     )
+    if args.required_row_semantics is not None:
+        for split_name, split in (("train", train_split), ("val", val_split)):
+            actual = split.manifest.get("row_semantics")
+            if actual != args.required_row_semantics:
+                raise ValueError(
+                    f"CFM {split_name} cache row semantics mismatch: "
+                    f"expected={args.required_row_semantics!r}, actual={actual!r}"
+                )
     condition_dim = int(train_split.states.shape[1])
     if val_split.states.shape[1] != condition_dim:
         raise ValueError("CFM train/val condition dimensions differ")
@@ -475,7 +486,10 @@ def train_cfm_sft2(args: argparse.Namespace) -> int:
             else "strict-valid train_all for training; disjoint val_all for validation only"
         ),
         "target": (
-            "current_128px_image_from_dino_grid_state"
+            "current_or_next_128px_image_from_actual_current_or_wm_predicted_next_state"
+            if train_split.manifest.get("row_semantics")
+            == "actual_current_and_wm_predicted_next_per_transition_v1"
+            else "current_128px_image_from_dino_grid_state"
             if train_split.manifest.get("representation") == "dino_grid_state"
             else "current_128px_image_from_current_projected_sft2_state"
         ),
@@ -740,6 +754,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--condition-dropout", type=float, default=0.0)
+    parser.add_argument("--required-row-semantics", default=None)
     parser.add_argument("--init-cfm-checkpoint", type=Path, default=None)
     parser.add_argument("--log-interval", type=int, default=100)
     parser.add_argument("--eval-interval", type=int, default=500)

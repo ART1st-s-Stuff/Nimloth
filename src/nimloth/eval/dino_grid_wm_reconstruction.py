@@ -293,6 +293,12 @@ def validate_id56_state_cache_lineage(
 ) -> None:
     if manifest.get("representation") != "dino_grid_state":
         raise ValueError("ID56 CFM state cache must use dino_grid_state representation")
+    expected_semantics = "actual_current_and_wm_predicted_next_per_transition_v1"
+    if manifest.get("row_semantics") != expected_semantics:
+        raise ValueError(
+            "ID56 CFM state cache must contain actual-current/current-image and "
+            "WM-predicted-next/actual-next-image pairs"
+        )
     shape = tuple(int(value) for value in manifest.get("state_shape", ()))
     if shape != (16, 1024):
         raise ValueError(f"ID56 CFM state cache shape must be (16, 1024), got {shape}")

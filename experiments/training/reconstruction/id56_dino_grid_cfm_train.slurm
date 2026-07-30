@@ -76,8 +76,9 @@ if [[ "${RESUME:-0}" != 1 ]]; then
 - Initialization: strict model weights from ${INIT_CFM}; fresh optimizer
 - Trainable: TokenConditionedFlowUNet only
 - Frozen: ID56 Qwen, DINO-grid projector, WM, ValueHead
+- Pairs: actual current -> current image; frozen-WM predicted next -> actual next image
 - Split: cache/train for optimization; disjoint cache/val for model selection
-- Recipe: 128px, 16x1024 condition, batch32, 15 epochs, lr3e-5, condition dropout0.15
+- Recipe: 128px, 16x1024 condition, batch32, 8 epochs, lr3e-5, condition dropout0.15
 - Resume: checkpoint_*.pt plus the same output/cache/invariants and W&B identity
 - W&B: ${WANDB_PROJECT}/${WANDB_RUN_NAME}
 EOF
@@ -117,12 +118,13 @@ exec "${PYTHON}" -u -m nimloth.training.reconstruction.cfm_sft2 \
   --base-channels 64 \
   --condition-dim 256 \
   --time-dim 512 \
-  --epochs 15 \
+  --epochs 8 \
   --batch-size 32 \
   --lr 3e-5 \
   --weight-decay 1e-4 \
   --grad-clip 1.0 \
   --condition-dropout 0.15 \
+  --required-row-semantics actual_current_and_wm_predicted_next_per_transition_v1 \
   --init-cfm-checkpoint "${INIT_CFM}" \
   --log-interval 100 \
   --eval-interval 1000 \

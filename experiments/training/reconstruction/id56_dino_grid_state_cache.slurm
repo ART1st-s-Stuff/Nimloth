@@ -44,6 +44,7 @@ for path in \
   "${SFT2_CHECKPOINT}/model.safetensors.index.json" \
   "${SFT2_CHECKPOINT}/state_proj.pt" \
   "${SFT2_CHECKPOINT}/wm_predictor/config.json" \
+  "${SFT2_CHECKPOINT}/wm_predictor/predictor.pt" \
   "${TRAIN_JSONL}" \
   "${VAL_JSONL}" \
   "${PREPROCESS_CACHE}/train/manifest.json" \
@@ -68,7 +69,6 @@ export NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_DEBUG=WARN
 export NCCL_IB_DISABLE=1
 export NCCL_SOCKET_IFNAME='^lo,docker0,virbr0'
-export GLOO_SOCKET_IFNAME='^lo,docker0,virbr0'
 export OMP_NUM_THREADS=4
 
 module load slurm >/dev/null 2>&1 || true

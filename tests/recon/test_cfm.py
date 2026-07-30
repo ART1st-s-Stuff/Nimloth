@@ -11,6 +11,7 @@ from nimloth.recon.cfm import (
 from nimloth.recon.rcdm.image_utils import image_to_diffusion_tensor
 from nimloth.training.reconstruction.cfm_sft2 import (
     _load_image_uint8,
+    build_arg_parser,
     initialize_from_cfm,
     resolve_condition_token_shape,
 )
@@ -125,6 +126,11 @@ def test_dino_grid_manifest_resolves_sixteen_condition_tokens() -> None:
                 "cond_dim": 1024,
             }
         )
+
+
+def test_cfm_cli_can_require_explicit_pair_semantics() -> None:
+    destinations = {action.dest for action in build_arg_parser()._actions}
+    assert "required_row_semantics" in destinations
 
 
 def test_cfm_initialization_requires_identical_architecture(tmp_path) -> None:
