@@ -47,3 +47,17 @@ versus autoregressive WM-predicted reconstruction.
 
 - Launch and monitor cache, CFM, and aligned reconstruction.
 - Run on-experiment-end audit and record final metrics/artifacts.
+
+## Failed lifecycle 498307-498309
+
+- Commit: `e8db6222`; intended cache/CFM/eval contract was the fixed contract
+  above, using preempt 16/1/1 H800 and IDs 48/49.
+- Cache 498307 allocated `dgx-[55-56]` but bare `srun` resolved to the cluster
+  warning wrapper. It exited zero after three seconds without creating the
+  cache directory or `summary.json`.
+- CFM 498308 then failed before output/W&B initialization because the cache
+  summary was absent. Eval 498309 was cancelled. There are no checkpoints or
+  resumable artifacts, so IDs 48/49 will not be reused.
+- Fix: use absolute Slurm binaries plus authoritative `SLURM_CONF`, and fail the
+  batch job unless the cache completion summary exists. Retry identities are
+  ID50/ID51.

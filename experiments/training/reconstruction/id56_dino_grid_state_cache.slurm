@@ -13,6 +13,8 @@ set -euo pipefail
 
 ROOT=/project/peilab/atst/nimloth
 PYTHON=${ROOT}/.venv-vagen-main/bin/python3
+SLURM_BIN=/cm/shared/apps/slurm/current/bin
+export SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 
 : "${WORKTREE:?set WORKTREE to the clean remote worktree}"
 : "${EXPECTED_COMMIT:?set EXPECTED_COMMIT to the exact cache-builder commit}"
@@ -71,8 +73,7 @@ export NCCL_IB_DISABLE=1
 export NCCL_SOCKET_IFNAME='^lo,docker0,virbr0'
 export OMP_NUM_THREADS=4
 
-module load slurm >/dev/null 2>&1 || true
-MASTER_ADDR=$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)
+MASTER_ADDR=$("${SLURM_BIN}/scontrol" show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)
 MASTER_PORT=$((20000 + SLURM_JOB_ID % 20000))
 export MASTER_ADDR MASTER_PORT
 export NNODES=${SLURM_NNODES}
@@ -80,7 +81,7 @@ export NPROC_PER_NODE=8
 
 echo "cache launch commit=${EXPECTED_COMMIT} job=${SLURM_JOB_ID} nodes=${SLURM_JOB_NODELIST} world=$((NNODES * NPROC_PER_NODE)) output=${OUTPUT_DIR}"
 
-srun \
+"${SLURM_BIN}/srun" \
   --nodes="${NNODES}" \
   --ntasks="${NNODES}" \
   --ntasks-per-node=1 \
@@ -114,3 +115,8 @@ srun \
       --encode-batch-size 1 \
       --state-cache-shard-size 128
   '
+
+if [[ ! -f "${OUTPUT_DIR}/summary.json" ]]; then
+  echo "cache command returned without a completed summary: ${OUTPUT_DIR}" >&2
+  exit 2
+fi

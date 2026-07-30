@@ -35,6 +35,12 @@
   因此采用 preempt 16×H800 cache build，再用1×H800训练和1×H800评估。新身份为
   `48_id56e2_curactual_wmprednext_cfm_warm_ep8_b32_drop015` 与
   `49_id56e2_alignedcfm_actual_wmpred_diverse40_euler50_cfg2`。
+- 首次 lifecycle 498307/498308/498309 未进入实验计算：cache allocation 498307 获得
+  `dgx-[55-56]`，但 batch shell 中裸 `srun` 命中集群提示 wrapper，3秒后错误返回0且没有
+  创建 cache 目录/summary；afterok CFM 498308 因缺少 summary 在1秒内失败，未创建输出、
+  W&B 或 checkpoint；eval 498309 随即取消。该链不可恢复，ID48/ID49 不复用。cache 脚本
+  改为固定 `/cm/shared/apps/slurm/current/bin/{scontrol,srun}` 与权威 `SLURM_CONF`，并增加
+  `summary.json` 后置条件；下一组身份顺延为 ID50/ID51。
 
 ---
 
