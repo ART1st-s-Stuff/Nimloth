@@ -22,7 +22,6 @@
   缺少 pytest；superpod clean worktree 固定提交 9b0c9ff2，使用
   .venv-vagen-main/bin/python3 运行完整 SFT2 与 ValueHead objective CPU 回归为
   114 passed, 1 skipped in 72.22s，skip 仅为显式可选 GPU/NCCL 门禁。
-- 当前尚未提交 Slurm 任务、创建训练输出或创建 W&B run。
 - ID64 只读 preflight 已在 commit 8d9c4b79 完成并写出
   preflight.json status=passed：生产 reader 全量加载 49,638 train 和 4,989 val
   H1/T4 windows，cache fingerprint/shard/BF16 materialization、DINO coverage、
@@ -30,6 +29,12 @@
   microbatches、776 optimizer steps，2 epochs 共 1,552 steps；global SIGReg
   每个 microbatch 有 6--16 个有效 states。该阶段没有 GPU、W&B run、optimizer、
   checkpoint 或 cache 写入。
+- ID64 正式 SFT2 已提交为 normal job 500294，状态为 PENDING(Priority)。Slurm
+  ReqTRES 为 2 nodes、16 GPU、128 CPU、1600 GiB，TresPerNode=gres:gpu:8，
+  walltime 8h；提交前 normal 仅 15 张空闲 GPU，test-only 保守预计
+  2026-08-04 03:10 UTC 启动。当前没有训练输出、W&B run、optimizer 或 checkpoint，
+  必须等实际 allocation 的两节点 H800/rank gate 和首批 finite optimizer steps 后
+  才能称为健康运行。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 

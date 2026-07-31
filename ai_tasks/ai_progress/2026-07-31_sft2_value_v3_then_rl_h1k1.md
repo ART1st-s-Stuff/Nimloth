@@ -40,7 +40,6 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   .venv 的 pytest 入口因解释器链接失效而缺包；superpod clean worktree 固定
   9b0c9ff2，使用 .venv-vagen-main/bin/python3 的完整 SFT2 与 ValueHead objective
   CPU 回归为 114 passed, 1 skipped in 72.22s，skip 仅为显式可选 GPU/NCCL 门禁。
-- 尚未提交 Slurm job、创建训练输出或创建 W&B run。
 - ID64 只读 preflight 已完成，commit 为 8d9c4b79，W&B run name 为
   64_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16_px100352，
   requested run id 为 fcd9b34a。preflight.json 为 status=passed：
@@ -50,3 +49,10 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   共 1,552 steps；每个 global SIGReg microbatch 有 6--16 个有效 states。preflight
   仅在 ID64 新目录写日志/报告，没有修改 cache，没有创建 GPU job、W&B run、
   optimizer 或 checkpoint。
+- 正式训练已提交为 Slurm job 500294：normal、2 节点×8 H800、每节点64 CPU/
+  800 GiB、world size16、8小时上限。scontrol 核验 ReqTRES=cpu128/mem1600G/
+  gres-gpu16，TresPerNode=gres-gpu8。
+- 当前为 PENDING(Priority)。提交前 normal 只有15张空闲GPU，test-only 保守预计
+  2026-08-04 03:10 UTC 才能启动；preempt 当时有两台完整8卡节点，但人类已确认
+  normal，因此没有擅自切换分区。尚无训练输出、W&B run、optimizer/checkpoint；
+  allocation 后仍需两节点 H800/rank 门禁和首批 finite optimizer-step 健康检查。
