@@ -41,3 +41,12 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   9b0c9ff2，使用 .venv-vagen-main/bin/python3 的完整 SFT2 与 ValueHead objective
   CPU 回归为 114 passed, 1 skipped in 72.22s，skip 仅为显式可选 GPU/NCCL 门禁。
 - 尚未提交 Slurm job、创建训练输出或创建 W&B run。
+- ID64 只读 preflight 已完成，commit 为 8d9c4b79，W&B run name 为
+  64_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16_px100352，
+  requested run id 为 fcd9b34a。preflight.json 为 status=passed：
+  49,638/4,989 个 train/val H1/T4 windows 全量读取；输入哈希、cache
+  fingerprints/shards、BF16 materialization、DINO coverage 和 W&B 唯一性均通过。
+- WS16/B1/GA4 调度为每 epoch 3,103 microbatches、776 optimizer steps，两 epoch
+  共 1,552 steps；每个 global SIGReg microbatch 有 6--16 个有效 states。preflight
+  仅在 ID64 新目录写日志/报告，没有修改 cache，没有创建 GPU job、W&B run、
+  optimizer 或 checkpoint。

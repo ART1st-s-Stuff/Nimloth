@@ -23,6 +23,13 @@
   .venv-vagen-main/bin/python3 运行完整 SFT2 与 ValueHead objective CPU 回归为
   114 passed, 1 skipped in 72.22s，skip 仅为显式可选 GPU/NCCL 门禁。
 - 当前尚未提交 Slurm 任务、创建训练输出或创建 W&B run。
+- ID64 只读 preflight 已在 commit 8d9c4b79 完成并写出
+  preflight.json status=passed：生产 reader 全量加载 49,638 train 和 4,989 val
+  H1/T4 windows，cache fingerprint/shard/BF16 materialization、DINO coverage、
+  输入 SHA256、W&B ID64/name 唯一性均通过。WS16/B1/GA4 为每 epoch 3,103
+  microbatches、776 optimizer steps，2 epochs 共 1,552 steps；global SIGReg
+  每个 microbatch 有 6--16 个有效 states。该阶段没有 GPU、W&B run、optimizer、
+  checkpoint 或 cache 写入。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
