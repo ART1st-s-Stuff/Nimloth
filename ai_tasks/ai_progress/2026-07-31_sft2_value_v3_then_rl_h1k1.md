@@ -59,5 +59,7 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - 已新增WS8 batch入口并把node launcher参数化为可校验的nodes/local ranks/GA合同；
   修复正式batch/node入口误写为字面量反斜杠加美元符号、导致运行时变量不会展开的
   问题。job 500294没有allocation，因此没有执行过该错误路径。5项静态合同、4个
-  shell入口语法、3个Python文件编译和diff检查通过；远端精确commit CPU回归、
-  全量只读preflight和实际8卡健康门禁仍待执行。
+  shell入口语法、3个Python文件编译和diff检查通过。superpod clean worktree固定
+  `77acc219`后，显式`.venv-vagen-main/bin/python3`完整CPU回归为116 passed、
+  1 skipped（48.68s），skip仅为可选GPU/NCCL门禁；全量只读preflight和实际8卡
+  健康门禁仍待执行。

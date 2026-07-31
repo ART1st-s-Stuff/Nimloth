@@ -38,8 +38,10 @@
 - 单/双节点启动链已共用参数化node launcher，并按WS8设置1 node、8 H800、
   world size8、B1/GA8、12小时上限。另修复了正式batch/node脚本中会阻止shell变量
   展开的反斜杠转义；旧job从未运行到该路径。5项静态启动合同、4个shell入口
-  `bash -n`、3个Python文件编译和`git diff --check`通过；仍需在远端精确commit上
-  完成完整CPU回归和WS8只读preflight，不能据此声称GPU训练健康。
+  `bash -n`、3个Python文件编译和`git diff --check`通过。superpod clean worktree
+  固定代码commit `77acc219`，使用显式`.venv-vagen-main/bin/python3`运行完整SFT2与
+  ValueHead objective CPU回归为116 passed、1 skipped（48.68s）；skip仅为可选
+  GPU/NCCL门禁。WS8全量只读preflight与实际8卡健康门禁仍待执行。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
