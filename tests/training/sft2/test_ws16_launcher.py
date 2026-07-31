@@ -1,16 +1,17 @@
-"""Static contracts for the batch-owned world-size-16 SFT2 launcher."""
+"""Static contracts for the batch-owned SFT2 launchers."""
 
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-SLURM = ROOT / "experiments/training/sft2/train_dino_grid_ws16.slurm"
-NODE = ROOT / "experiments/training/sft2/run_dino_grid_ws16_node.sh"
+WS16 = ROOT / "experiments/training/sft2/train_dino_grid_ws16.slurm"
+WS8 = ROOT / "experiments/training/sft2/train_dino_grid_ws8.slurm"
+NODE = ROOT / "experiments/training/sft2/run_dino_grid_node.sh"
 WORLD = ROOT / "experiments/training/sft2/train_dino_grid_world8.sh"
 
 
 def test_slurm_owns_full_two_node_allocation() -> None:
-    text = SLURM.read_text(encoding="utf-8")
+    text = WS16.read_text(encoding="utf-8")
     assert "#SBATCH --nodes=2" in text
     assert "#SBATCH --ntasks-per-node=1" in text
     assert "#SBATCH --gres=gpu:8" in text
@@ -21,17 +22,37 @@ def test_slurm_owns_full_two_node_allocation() -> None:
 
 
 def test_launcher_fails_closed_on_commit_output_and_h800_topology() -> None:
-    slurm = SLURM.read_text(encoding="utf-8")
+    slurm = WS16.read_text(encoding="utf-8")
     node = NODE.read_text(encoding="utf-8")
     assert "EXPECTED_COMMIT" in slurm
     assert "fresh SFT2 output is non-empty" in slurm
-    assert 'GPU_COUNT}" -eq 8' in node
+    assert 'GPU_COUNT}" -eq "${NPROC_PER_NODE_EXPECTED}"' in node
     assert "grep -c 'H800'" in node
-    assert "local_ranks=0-7" in node
-    assert "NPROC_PER_NODE=8" in node
-    assert "NNODES=2" in node
-    assert "GRAD_ACCUM=4" in node
+    assert "local_ranks=0-${LOCAL_LAST}" in node
+    assert "NPROC_PER_NODE_EXPECTED" in node
+    assert "EXPECTED_NNODES" in node
+    assert "GRAD_ACCUM_EXPECTED" in node
     assert "RESUME=0" in node
+
+
+def test_ws8_uses_one_full_node_and_preserves_effective_batch() -> None:
+    text = WS8.read_text(encoding="utf-8")
+    assert "#SBATCH --nodes=1" in text
+    assert "#SBATCH --ntasks=1" in text
+    assert "#SBATCH --gres=gpu:8" in text
+    assert "#SBATCH --cpus-per-task=64" in text
+    assert "EXPECTED_NNODES=1" in text
+    assert "NPROC_PER_NODE_EXPECTED=8" in text
+    assert "GRAD_ACCUM_EXPECTED=8" in text
+    assert "--expected-world-size 8" in text
+    assert "--expected-grad-accum 8" in text
+    assert "scancel" not in text
+    assert "nohup" not in text
+
+
+def test_launchers_expand_runtime_variables() -> None:
+    for path in (WS16, WS8, NODE):
+        assert r"\${" not in path.read_text(encoding="utf-8")
 
 
 def test_wandb_identity_survives_shared_credential_defaults() -> None:

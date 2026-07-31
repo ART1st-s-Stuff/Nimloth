@@ -47,6 +47,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-output", type=Path, required=True)
     parser.add_argument("--result-json", type=Path, required=True)
     parser.add_argument("--world-size", type=int, default=16)
+    parser.add_argument("--nodes", type=int, default=2)
+    parser.add_argument("--gpus-per-node", type=int, default=8)
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--wandb-entity", required=True)
@@ -268,8 +270,10 @@ def distributed_schedule(
 
 def main() -> None:
     args = parse_args()
-    assert args.world_size == 16
-    assert args.grad_accum == 4
+    assert args.nodes > 0
+    assert args.gpus_per_node > 0
+    assert args.world_size == args.nodes * args.gpus_per_node
+    assert args.grad_accum > 0
     assert len(args.wandb_run_id) == 8
     assert git_output(args.repo, "rev-parse", "HEAD") == args.expected_commit
     assert not git_output(
@@ -367,10 +371,10 @@ def main() -> None:
         },
         "topology": {
             "partition": "normal",
-            "nodes": 2,
-            "gpus_per_node": 8,
+            "nodes": args.nodes,
+            "gpus_per_node": args.gpus_per_node,
             "gpu_type": "H800",
-            "local_ranks": 8,
+            "local_ranks": args.gpus_per_node,
             "world_size": args.world_size,
             "grad_accum": args.grad_accum,
         },

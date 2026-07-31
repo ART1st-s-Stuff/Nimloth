@@ -49,10 +49,15 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   共 1,552 steps；每个 global SIGReg microbatch 有 6--16 个有效 states。preflight
   仅在 ID64 新目录写日志/报告，没有修改 cache，没有创建 GPU job、W&B run、
   optimizer 或 checkpoint。
-- 正式训练已提交为 Slurm job 500294：normal、2 节点×8 H800、每节点64 CPU/
-  800 GiB、world size16、8小时上限。scontrol 核验 ReqTRES=cpu128/mem1600G/
-  gres-gpu16，TresPerNode=gres-gpu8。
-- 当前为 PENDING(Priority)。提交前 normal 只有15张空闲GPU，test-only 保守预计
-  2026-08-04 03:10 UTC 才能启动；preempt 当时有两台完整8卡节点，但人类已确认
-  normal，因此没有擅自切换分区。尚无训练输出、W&B run、optimizer/checkpoint；
-  allocation 后仍需两节点 H800/rank 门禁和首批 finite optimizer-step 健康检查。
+- ID64正式job 500294原请求normal、2节点×8 H800、WS16/B1/GA4；人类随后要求
+  改为单节点8卡。该job在PENDING时取消，sacct为CANCELLED by 3738、elapsed
+  00:00:00、Start=None且无AllocTRES。
+- ID64没有训练目录、W&B run、optimizer、checkpoint或done marker，不能resume；
+  cache未修改。服务器ID64 README和实验组progress已记录取消原因与证据。
+- 新重试使用ID65独立output/W&B identity，normal单节点8 H800、WS8/B1/GA8；
+  effective global batch保持64，预期仍为每epoch776、两epoch1,552 optimizer steps。
+- 已新增WS8 batch入口并把node launcher参数化为可校验的nodes/local ranks/GA合同；
+  修复正式batch/node入口误写为字面量反斜杠加美元符号、导致运行时变量不会展开的
+  问题。job 500294没有allocation，因此没有执行过该错误路径。5项静态合同、4个
+  shell入口语法、3个Python文件编译和diff检查通过；远端精确commit CPU回归、
+  全量只读preflight和实际8卡健康门禁仍待执行。

@@ -1,16 +1,16 @@
 #!/bin/bash
-#SBATCH --job-name=sft2-value-v3-ws16
+#SBATCH --job-name=sft2-value-v3-ws8
 #SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/slurm/%x_%j.out
 #SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/slurm/%x_%j.err
 #SBATCH --account=peilab
 #SBATCH --partition=normal
-#SBATCH --nodes=2
-#SBATCH --ntasks=2
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=64
 #SBATCH --gres=gpu:8
 #SBATCH --mem=800G
-#SBATCH --time=08:00:00
+#SBATCH --time=12:00:00
 
 set -euo pipefail
 
@@ -28,8 +28,8 @@ set -euo pipefail
 : "${WANDB_RUN_ID:?}"
 : "${EXPECTED_STEPS:?}"
 
-test "${SLURM_NNODES}" -eq 2
-test "${SLURM_NTASKS}" -eq 2
+test "${SLURM_NNODES}" -eq 1
+test "${SLURM_NTASKS}" -eq 1
 test "$(git -C "${REPO}" rev-parse HEAD)" = "${EXPECTED_COMMIT}"
 test -z "$(git -C "${REPO}" status --porcelain --untracked-files=no)"
 for required in \
@@ -49,15 +49,15 @@ CONTROLLER_LOG="${RUN_OUTPUT}.controller_${SLURM_JOB_ID}.log"
 exec > >(tee -a "${CONTROLLER_LOG}") 2>&1
 
 mapfile -t HOSTS < <(scontrol show hostnames "${SLURM_JOB_NODELIST}")
-test "${#HOSTS[@]}" -eq 2
+test "${#HOSTS[@]}" -eq 1
 export MASTER_ADDR="${HOSTS[0]}"
 export MASTER_PORT=$((20000 + SLURM_JOB_ID % 20000))
 export REPO EXPECTED_COMMIT RUN_ROOT RUN_OUTPUT MODEL_PATH TRAIN_JSONL VAL_JSONL
 export PREPROCESS_CACHE WANDB_ENTITY WANDB_PROJECT_NAME WANDB_RUN_NAME WANDB_RUN_ID
 export MASTER_ADDR MASTER_PORT
-export EXPECTED_NNODES=2
+export EXPECTED_NNODES=1
 export NPROC_PER_NODE_EXPECTED=8
-export GRAD_ACCUM_EXPECTED=4
+export GRAD_ACCUM_EXPECTED=8
 
 {
   echo "# SFT2 value-v3 formal run"
@@ -65,8 +65,7 @@ export GRAD_ACCUM_EXPECTED=4
   echo "- job: ${SLURM_JOB_ID}"
   echo "- commit: ${EXPECTED_COMMIT}"
   echo "- nodes: ${SLURM_JOB_NODELIST}"
-  echo "- rendezvous: ${MASTER_ADDR}:${MASTER_PORT}"
-  echo "- topology: 2 nodes x 8 H800; world size 16; B1; GA4"
+  echo "- topology: 1 node x 8 H800; world size 8; B1; GA8"
   echo "- objective: H=1/T=4, decision-state executed-action MC ValueHead, no rank loss"
   echo "- init: ${MODEL_PATH}"
   echo "- preprocess cache: ${PREPROCESS_CACHE} (read-only reuse)"
@@ -77,8 +76,8 @@ export GRAD_ACCUM_EXPECTED=4
 
 echo "start=$(date --iso-8601=seconds) job=${SLURM_JOB_ID} nodes=${SLURM_JOB_NODELIST}"
 srun \
-  --nodes=2 \
-  --ntasks=2 \
+  --nodes=1 \
+  --ntasks=1 \
   --ntasks-per-node=1 \
   --cpus-per-task=64 \
   --gres=gpu:8 \
@@ -89,8 +88,8 @@ srun \
   "${REPO}/experiments/training/sft2/validate_dino_grid_training_output.py" \
   --output-dir "${RUN_OUTPUT}" \
   --expected-step "${EXPECTED_STEPS}" \
-  --expected-world-size 16 \
-  --expected-grad-accum 4 \
+  --expected-world-size 8 \
+  --expected-grad-accum 8 \
   --expected-wandb-run-id "${WANDB_RUN_ID}" \
   --result-json "${RUN_ROOT}/completion_validation.json"
 echo "finished=$(date --iso-8601=seconds) job=${SLURM_JOB_ID}"

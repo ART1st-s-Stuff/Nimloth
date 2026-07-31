@@ -22,6 +22,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--expected-step", type=int, required=True)
+    parser.add_argument("--expected-world-size", type=int, required=True)
+    parser.add_argument("--expected-grad-accum", type=int, required=True)
+    parser.add_argument("--expected-epochs", type=int, default=2)
     parser.add_argument("--expected-wandb-run-id", required=True)
     parser.add_argument("--result-json", type=Path, required=True)
     return parser.parse_args()
@@ -45,11 +48,11 @@ def main() -> None:
     )
     invariants = state["training_invariants"]
     assert int(state["step"]) == args.expected_step
-    assert int(state["epoch"]) == 2
+    assert int(state["epoch"]) == args.expected_epochs
     assert state["epoch_complete"] is True
-    assert invariants["world_size"] == 16
+    assert invariants["world_size"] == args.expected_world_size
     assert invariants["batch_size"] == 1
-    assert invariants["grad_accum"] == 4
+    assert invariants["grad_accum"] == args.expected_grad_accum
     assert invariants["history_size"] == 1
     assert invariants["prediction_horizon"] == 4
     assert invariants["value_objective"] == SFT2_VALUE_OBJECTIVE
@@ -91,6 +94,8 @@ def main() -> None:
         "checkpoint": str(final),
         "step": int(state["step"]),
         "epoch": int(state["epoch"]),
+        "world_size": invariants["world_size"],
+        "grad_accum": invariants["grad_accum"],
         "value_objective": invariants["value_objective"],
         "history_size": contract.history_size,
         "prediction_horizon": contract.prediction_horizon,

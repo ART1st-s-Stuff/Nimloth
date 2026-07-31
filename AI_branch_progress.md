@@ -6,8 +6,9 @@
 
 ## 2026-07-31：corrected ValueHead SFT2 重训启动准备
 
-- 人类批准先重训 corrected SFT2，再进入 H=1/K=1 RL。SFT2 使用
-  decision-state executed-action MC v3，H=1/T=4、2 epochs、WS16/B1/GA4，
+- 人类批准先重训 corrected SFT2，再进入 H=1/K=1 RL；随后在 ID64 尚未获得
+  allocation 时把拓扑改为单节点8卡。SFT2 使用 decision-state executed-action
+  MC v3，H=1/T=4、2 epochs、WS8/B1/GA8，
   从 SFT1 merged checkpoint 和 fresh optimizer 初始化，不加载旧 successor-state
   SFT2 权重。
 - 已建立独立分支/worktree exp/sft2-value-v3-rl-h1k1，并新增 batch-owned
@@ -29,12 +30,16 @@
   microbatches、776 optimizer steps，2 epochs 共 1,552 steps；global SIGReg
   每个 microbatch 有 6--16 个有效 states。该阶段没有 GPU、W&B run、optimizer、
   checkpoint 或 cache 写入。
-- ID64 正式 SFT2 已提交为 normal job 500294，状态为 PENDING(Priority)。Slurm
-  ReqTRES 为 2 nodes、16 GPU、128 CPU、1600 GiB，TresPerNode=gres:gpu:8，
-  walltime 8h；提交前 normal 仅 15 张空闲 GPU，test-only 保守预计
-  2026-08-04 03:10 UTC 启动。当前没有训练输出、W&B run、optimizer 或 checkpoint，
-  必须等实际 allocation 的两节点 H800/rank gate 和首批 finite optimizer steps 后
-  才能称为健康运行。
+- 人类要求改用1节点×8 H800后，ID64 job 500294在PENDING状态被取消：
+  sacct为CANCELLED by 3738、elapsed 00:00:00、Start=None、无AllocTRES。
+  train_ws16、W&B run、optimizer、checkpoint和done marker均不存在，cache未修改；
+  ID64不可resume。取消metadata与实验组progress已写入服务器。新WS8重试使用独立
+  ID65 output/W&B identity；B1/GA8保持effective global batch64与总计1,552 steps。
+- 单/双节点启动链已共用参数化node launcher，并按WS8设置1 node、8 H800、
+  world size8、B1/GA8、12小时上限。另修复了正式batch/node脚本中会阻止shell变量
+  展开的反斜杠转义；旧job从未运行到该路径。5项静态启动合同、4个shell入口
+  `bash -n`、3个Python文件编译和`git diff --check`通过；仍需在远端精确commit上
+  完成完整CPU回归和WS8只读preflight，不能据此声称GPU训练健康。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
