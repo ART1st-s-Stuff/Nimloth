@@ -19,8 +19,9 @@
   一致性校验；该校验不写 cache。
 - 新启动器静态合同 3 项通过；三个 shell 入口 bash -n、两个 Python 入口 py_compile、
   git diff --check 均通过。本地旧 .venv 的 pytest console entry 仍因解释器链接失效而
-  缺少 pytest，因此完整 SFT2/ValueHead CPU 回归将在 superpod 固定
-  .venv-vagen-main/bin/python3 上执行后才允许提交 GPU job。
+  缺少 pytest；superpod clean worktree 固定提交 9b0c9ff2，使用
+  .venv-vagen-main/bin/python3 运行完整 SFT2 与 ValueHead objective CPU 回归为
+  114 passed, 1 skipped in 72.22s，skip 仅为显式可选 GPU/NCCL 门禁。
 - 当前尚未提交 Slurm 任务、创建训练输出或创建 W&B run。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成

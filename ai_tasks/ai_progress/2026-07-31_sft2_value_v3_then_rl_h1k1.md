@@ -37,6 +37,7 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - 已新增 batch-owned WS16 启动器、节点/rank/H800 门禁、cache 只读 preflight、
   W&B identity 保留与训练完成 checkpoint validator。
 - 启动器静态合同 3 项、bash syntax、Python compile 和 diff-check 通过。本地旧
-  .venv 的 pytest 入口因解释器链接失效而缺包；完整相关 CPU 回归转到 superpod
-  固定解释器执行。
+  .venv 的 pytest 入口因解释器链接失效而缺包；superpod clean worktree 固定
+  9b0c9ff2，使用 .venv-vagen-main/bin/python3 的完整 SFT2 与 ValueHead objective
+  CPU 回归为 114 passed, 1 skipped in 72.22s，skip 仅为显式可选 GPU/NCCL 门禁。
 - 尚未提交 Slurm job、创建训练输出或创建 W&B run。
