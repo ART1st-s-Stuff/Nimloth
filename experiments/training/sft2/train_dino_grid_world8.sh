@@ -17,6 +17,8 @@ PREPROCESS_CACHE_DIR_OVERRIDE=${PREPROCESS_CACHE_DIR_OVERRIDE:-}
 OUTPUT_DIR=${OUTPUT_DIR:?set OUTPUT_DIR to a new SFT2 run directory}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:?set WANDB_RUN_NAME}
 WANDB_PROJECT_NAME=${WANDB_PROJECT_NAME:-nimloth-sft2}
+WANDB_ENTITY_REQUESTED=${WANDB_ENTITY:-}
+WANDB_RUN_ID_REQUESTED=${WANDB_RUN_ID:-}
 NPROC_PER_NODE=${NPROC_PER_NODE:-8}
 NNODES=${NNODES:-1}
 NODE_RANK=${NODE_RANK:-0}
@@ -52,6 +54,12 @@ fi
 # the caller-selected SFT2 identity after loading credentials so runs cannot be
 # silently written to that unrelated project.
 export WANDB_PROJECT=${WANDB_PROJECT_NAME}
+if [ -n "${WANDB_ENTITY_REQUESTED}" ]; then
+  export WANDB_ENTITY=${WANDB_ENTITY_REQUESTED}
+fi
+if [ -n "${WANDB_RUN_ID_REQUESTED}" ]; then
+  export WANDB_RUN_ID=${WANDB_RUN_ID_REQUESTED}
+fi
 export WANDB_MODE=${WANDB_MODE:-online}
 mkdir -p "${XDG_CACHE_HOME}" "${WANDB_DIR}"
 
@@ -90,7 +98,7 @@ fi
   echo "model: ${MODEL_PATH}"
   echo "topology: nnodes=${NNODES}; node_rank=${NODE_RANK}; local_ranks=${NPROC_PER_NODE}; world_size=$((NNODES * NPROC_PER_NODE))"
   echo "per-rank B=${BATCH_SIZE}; grad_accum=${GRAD_ACCUM}"
-  echo "objective: one current-step CE + four-step recorded-action WM/DINO/value rollout; global SIGReg=0.1"
+  echo "objective: one current-step CE; four-step recorded-action WM/DINO rollout; decision-state Q(s_t,a_t) MC on each executed action; global SIGReg=0.1"
   echo "trainable: Qwen vision, SFT1 DINO-grid projector, H1 temporal-spatial WM, value head"
   echo "frozen: Qwen LLM, DINO cache/teacher, detached old history"
   echo "initialization: SFT1 Qwen and DINO-grid projector; new H1 WM predictor, ValueHead and optimizer"

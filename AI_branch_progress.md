@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-07-31：corrected ValueHead SFT2 重训启动准备
+
+- 人类批准先重训 corrected SFT2，再进入 H=1/K=1 RL。SFT2 使用
+  decision-state executed-action MC v3，H=1/T=4、2 epochs、WS16/B1/GA4，
+  从 SFT1 merged checkpoint 和 fresh optimizer 初始化，不加载旧 successor-state
+  SFT2 权重。
+- 已建立独立分支/worktree exp/sft2-value-v3-rl-h1k1，并新增 batch-owned
+  2节点×8 H800 启动器、节点/rank/H800 门禁、W&B identity 保留、训练完成 checkpoint
+  validator 和实验进度文件。controller 生命周期完全在 Slurm batch 内，不使用
+  login watcher、nohup 或 controller-side scancel。
+- 已确认不会重建 preprocess cache：直接只读复用 ID53 完整 cache。提交训练前只用
+  当前 commit 重跑生产 reader、fingerprint、shard、DINO coverage 和 H1/T4 window
+  一致性校验；该校验不写 cache。
+- 新启动器静态合同 3 项通过；三个 shell 入口 bash -n、两个 Python 入口 py_compile、
+  git diff --check 均通过。本地旧 .venv 的 pytest console entry 仍因解释器链接失效而
+  缺少 pytest，因此完整 SFT2/ValueHead CPU 回归将在 superpod 固定
+  .venv-vagen-main/bin/python3 上执行后才允许提交 GPU job。
+- 当前尚未提交 Slurm 任务、创建训练输出或创建 W&B run。
+
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
 - 为回答 SFT2 前两代策略的真实成功率，新增配对评估：使用 SFT2 初始化所用的
