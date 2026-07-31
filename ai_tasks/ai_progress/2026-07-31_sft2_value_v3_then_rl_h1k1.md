@@ -63,3 +63,8 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `77acc219`后，显式`.venv-vagen-main/bin/python3`完整CPU回归为116 passed、
   1 skipped（48.68s），skip仅为可选GPU/NCCL门禁；全量只读preflight和实际8卡
   健康门禁仍待执行。
+- WS8提交前实时门禁：`/project/peilab/atst` 50 TiB配额仅余3 GiB（整个后端仍约
+  2.8 PiB free），`/scratch`约255 TiB free；ID65目录不存在且当前没有本账号job。
+  normal空闲GPU为`dgx-09` 2张加`dgx-52` 6张，没有完整8卡节点。W&B live最大
+  numeric ID为63；为ID65预留的run id是`245bc9d6`。因低于80 GiB空间门禁，尚未
+  运行preflight或提交；需人类选择project释放/扩容，或明确批准scratch-backed输出。

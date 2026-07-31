@@ -42,6 +42,12 @@
   固定代码commit `77acc219`，使用显式`.venv-vagen-main/bin/python3`运行完整SFT2与
   ValueHead objective CPU回归为116 passed、1 skipped（48.68s）；skip仅为可选
   GPU/NCCL门禁。WS8全量只读preflight与实际8卡健康门禁仍待执行。
+- 提交前实时门禁发现`/project/peilab/atst`的50 TiB配额仅余3 GiB，低于80 GiB
+  安全阈值；整个`/project`后端仍有约2.8 PiB，`/scratch`约有255 TiB，因此是该
+  namespace配额而非集群磁盘耗尽。ID65目录仍不存在、无Slurm/W&B/训练写入。
+  normal当前仅`dgx-09`空2卡、`dgx-52`空6卡，没有完整8卡节点；账号无活跃job。
+  W&B `nimloth-sft2`最大在线数字ID仍为63，ID65和opaque ID `245bc9d6`待用。
+  在人类决定释放/扩容project配额或批准scratch-backed输出前，不运行preflight或提交。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
