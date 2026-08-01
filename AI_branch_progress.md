@@ -35,6 +35,9 @@
   2026-08-04 03:10 UTC 启动。当前没有训练输出、W&B run、optimizer 或 checkpoint，
   必须等实际 allocation 的两节点 H800/rank gate 和首批 finite optimizer steps 后
   才能称为健康运行。
+- job 500294 后续在 allocation 前取消，`Elapsed=0`且无节点/W&B/训练产物。提交脚本中
+  运行时变量被错误写成带反斜杠的字面量，若分配节点会在模型加载前失败；该问题登记为
+  E0076，修复后使用新 commit、新实验 ID、空输出与新 W&B identity 重做 preflight。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 

@@ -42,3 +42,8 @@ def test_wandb_identity_survives_shared_credential_defaults() -> None:
     assert entity_restore_index > source_index
     assert run_id_restore_index > source_index
     assert "decision-state Q(s_t,a_t) MC" in text
+
+
+def test_launchers_expand_runtime_variables() -> None:
+    for path in (SLURM, NODE):
+        assert r"\${" not in path.read_text(encoding="utf-8")

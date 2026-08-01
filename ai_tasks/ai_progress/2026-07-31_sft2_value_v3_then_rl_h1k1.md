@@ -56,3 +56,7 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   2026-08-04 03:10 UTC 才能启动；preempt 当时有两台完整8卡节点，但人类已确认
   normal，因此没有擅自切换分区。尚无训练输出、W&B run、optimizer/checkpoint；
   allocation 后仍需两节点 H800/rank 门禁和首批 finite optimizer-step 健康检查。
+- job 500294 后续在 allocation 前被取消：`Elapsed=0`、无节点、W&B、optimizer 或
+  checkpoint。复核发现已提交的 batch/node shell 把运行时变量写成带反斜杠的字面量；
+  虽然该错误未在 GPU 上执行，但脚本若获得节点会在模型加载前失败。现登记 E0076，
+  修复后必须使用新 commit、新 ID、空输出和新 W&B identity 重做 preflight/提交。
