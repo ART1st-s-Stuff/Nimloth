@@ -56,6 +56,9 @@
   ID65全量49,638/4,989 windows、cache/DINO/W&B/输入hash和WS24调度全部passed。
   正式preempt job`500845`已提交，请求3×8 H800/world24、B1/GA4、192 CPU/2400 GiB、
   8小时；当前`PENDING(Priority)`，候选`dgx-[01,55-56]`，第三节点仍被别人占1张卡。
+- 后续新作业占走`dgx-01` 7卡及`dgx-55` 2卡；live AllocTRES显示preempt全分区
+  仅余16张可用GPU，任何拓扑都无法立即组成WS24。`500845`现为`PENDING(Resources)`，
+  Slurm预测`2026-08-04 23:43:11`，尚无allocation/W&B/optimizer step。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 

@@ -97,3 +97,9 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   192 CPU、2400 GiB、8小时。提交时`dgx-55/56`完整空闲，`dgx-01`被其他用户1-GPU
   job占用，因此`500845`为`PENDING(Priority)`，Slurm候选节点为`dgx-[01,55-56]`；
   尚无allocation/W&B/model load/optimizer step，必须继续监控到24-rank和finite step。
+- `500844`释放`dgx-01`后，其他用户array `500847`立即占用该节点7卡并占`dgx-55`
+  1卡，job`500855`再占`dgx-55` 1卡。逐节点`AllocTRES`复核表明当前preempt全部
+  可用GPU仅16张：`dgx-01` 1、`dgx-55` 7、`dgx-56` 8，其他可响应节点均8/8已分配，
+  `dgx-23`为DOWN+NOT_RESPONDING。因此无论拓扑是否放宽都无法立即组成WS24。
+  `500845`保持`PENDING(Resources)`，Slurm当前预测最早`2026-08-04 23:43:11`；
+  禁止把排队表述为训练已启动，也不得静默降为WS16。
