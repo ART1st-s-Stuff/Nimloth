@@ -133,3 +133,6 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   首次正式job`500930`因无allocation且预计较晚而取消；替代`500936`立即获得12卡，随后
   因batch将合法0-byte `cache_done.flag`误用`test -s`而1秒失败，未进入controller/model/
   W&B/optimizer。已登记E0078并将sentinel门禁窄修为`test -f`。
+- normal出现8+4+4后，人类要求立即占住；heterogeneous hold`500941`已在`dgx-24`
+  取得8 H800、`dgx-26/40`各取得4 H800，总计16卡并为`RUNNING`。正式映射采用物理
+  8+4+4、逻辑4个4-GPU agent/world16，B1/GA4 effective global batch恢复为64。

@@ -74,6 +74,9 @@
   正式`500936`立即获得normal 4+4+2+2共12 H800，但batch错误地对`touch`产生的合法
   0-byte `cache_done.flag`使用`test -s`，1秒失败且未进入模型/W&B/optimizer；E0078已
   登记，formal batch sentinel门禁改为`test -f`并保留其他输入的`test -s`。
+- normal释放8+4+4后，已用单一heterogeneous hold`500941`占住`dgx-24:8`与
+  `dgx-26/40:4+4`，共16 H800且当前`RUNNING`。正式SFT2将使用4个4-GPU agent/world16，
+  保持B1/GA4和effective global batch64，再以batch-owned controller替换hold。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
