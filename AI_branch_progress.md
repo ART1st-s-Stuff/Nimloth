@@ -59,6 +59,10 @@
 - 后续新作业占走`dgx-01` 7卡及`dgx-55` 2卡；live AllocTRES显示preempt全分区
   仅余16张可用GPU，任何拓扑都无法立即组成WS24。`500845`现为`PENDING(Resources)`，
   Slurm预测`2026-08-04 23:43:11`，尚无allocation/W&B/optimizer step。
+- 人类改为normal凑24卡后，已提交ID66 CPU preflight`500864`和依赖训练`500865`，
+  并取消旧preempt`500845`。preflight已`COMPLETED 0:0`；normal训练固定commit
+  `75f0adc4`，拓扑6节点×4 H800/world24，当前`PENDING(Priority)`，候选
+  `dgx-[09,14,24,26,30,40]`，预测`2026-08-02 07:21:13`，尚未开始训练。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 

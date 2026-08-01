@@ -103,3 +103,14 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `dgx-23`为DOWN+NOT_RESPONDING。因此无论拓扑是否放宽都无法立即组成WS24。
   `500845`保持`PENDING(Resources)`，Slurm当前预测最早`2026-08-04 23:43:11`；
   禁止把排队表述为训练已启动，也不得静默降为WS16。
+- 人类随后明确改用normal分区凑24卡。live normal共有33张空闲GPU，但按节点分布只有
+  5台具备至少4张；为保持torchrun同构local world size，正式拓扑改为6节点×4 H800、
+  world24、每节点32 CPU/200 GiB，B1/GA4和1036 steps不变。代码commit`75f0adc4`。
+- 新ID66使用空输出和W&B run id`1xjm320d`。CPU preflight job`500864`与normal训练
+  job`500865`用`afterok`一次性提交，随后旧preempt `500845`取消（Elapsed=0）。
+  `500864`在`intel-01`以`COMPLETED 0:0`运行6分11秒；全量门禁passed。
+- `500865`已解除依赖并为`PENDING(Priority)`，请求6节点/24 GPU/192 CPU/1200 GiB，
+  Slurm候选`dgx-[09,14,24,26,30,40]`，当前预测`2026-08-02 07:21:13`。尚无allocation、
+  W&B或optimizer step。preflight JSON的展示字段`local_ranks`沿用旧常量8，但硬断言与
+  launcher均为6×4；该展示bug已在后续commit`d502b88d`修正，已排队job仍固定于
+  `75f0adc4`并由运行时GPU_COUNT=4/local ranks0--3门禁。
