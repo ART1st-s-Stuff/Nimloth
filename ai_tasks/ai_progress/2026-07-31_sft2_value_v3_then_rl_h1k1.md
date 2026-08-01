@@ -140,3 +140,7 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   正式`500945`提交后，hold`500941`释放，因`dgx-24`新reservation只能预计07:21启动。
   替代normal 4+4+4+2+1+1 hold`500950`已取得16 H800；改用16个1-GPU agent保持
   world16/B1/GA4/effective batch64，并直接在该1小时allocation内启动。
+- ID70 full preflight`500955`已通过；首次allocation probe未进入模型/W&B，发现多component
+  `srun`的`SLURM_PROCID`按component重置，且裸`nvidia-smi`看到物理节点全部allocation，
+  不能核验per-task绑定。修正为het-group offsets 0/12/14和按`CUDA_VISIBLE_DEVICES`
+  查询唯一GPU；失败ID70不复用。

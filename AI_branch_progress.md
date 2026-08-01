@@ -80,6 +80,9 @@
 - ID69 8+4+4 full preflight`500944`通过并确认1,552 steps；正式`500945`受dgx-24新
   reservation影响预计07:21。当前替代hold`500950`已取得normal 4+4+4+2+1+1共16 H800，
   准备以16个1-GPU agent维持world16/B1/GA4并在该1小时allocation内直接训练。
+- ID70 preflight`500955`通过，但allocation probe确认component内`SLURM_PROCID`各自从0
+  开始且裸`nvidia-smi`不能代表per-task GPU binding；未进入模型/W&B。launcher改为
+  het-group offsets 0/12/14，并用`CUDA_VISIBLE_DEVICES`选择唯一GPU；ID70不复用。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
