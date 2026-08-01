@@ -25,8 +25,9 @@ test "$(git -C "${REPO}" rev-parse HEAD)" = "${EXPECTED_COMMIT}"
 test -z "$(git -C "${REPO}" status --porcelain --untracked-files=no)"
 test -f "${PREPROCESS_CACHE}/cache_done.flag"
 
-GPU_NAMES=$(nvidia-smi --query-gpu=name --format=csv,noheader)
-GPU_COUNT=$(printf '%s\n' "${GPU_NAMES}" | sed '/^[[:space:]]*$/d' | wc -l)
+GPU_ROWS=$(nvidia-smi --query-gpu=uuid,name --format=csv,noheader,nounits)
+GPU_NAMES=$(printf '%s\n' "${GPU_ROWS}" | cut -d, -f2- | sed 's/^[[:space:]]*//')
+GPU_COUNT=$(printf '%s\n' "${GPU_ROWS}" | sed '/^[[:space:]]*$/d' | wc -l)
 test "${GPU_COUNT}" -eq 4
 test "$(printf '%s\n' "${GPU_NAMES}" | grep -c 'H800')" -eq 4
 GLOBAL_FIRST=$((NODE_RANK * 4))
@@ -38,8 +39,12 @@ GLOBAL_LAST=$((GLOBAL_FIRST + 3))
   echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-missing}"
   echo "local_ranks=0-3 global_ranks=${GLOBAL_FIRST}-${GLOBAL_LAST}"
   echo "gpu_count=${GPU_COUNT}"
-  printf 'gpu_name=%s\n' "${GPU_NAMES}"
+  printf '%s\n' "${GPU_ROWS}" | sed 's/^/gpu=/'
 } | tee "${RUN_ROOT}/allocation_${SLURM_JOB_ID}_node${NODE_RANK}.log"
+
+if [ "${NODE_MODE:-train}" = "probe" ]; then
+  exit 0
+fi
 
 export PYTHON_ENV=/project/peilab/atst/nimloth/.venv-vagen-main
 export RUNTIME_CACHE_ROOT=/project/peilab/atst/nimloth/.cache
