@@ -407,7 +407,7 @@ def main() -> None:
             "nodes": args.nodes,
             "gpus_per_node": args.gpus_per_node,
             "gpu_type": "H800",
-            "local_ranks": 8,
+            "local_ranks": args.gpus_per_node,
             "world_size": args.world_size,
             "grad_accum": args.grad_accum,
         },
