@@ -170,3 +170,7 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   agent和16个唯一H800。ID74已从step117恢复同一W&B `d52u5anf`，日志确认跳过468
   microbatches、恢复optimizer，并产生至少step120的finite真实更新；step118--141为
   checkpoint之后的预期重放，W&B在重新超过旧step140前拒绝重复step，CSV保留两段记录。
+- 恢复轨迹已越过旧水位到finite step142；W&B API独立确认同一run `d52u5anf`为
+  `running`且summary global step142。原后继空hold`500997`在未分配资源、Elapsed=0时
+  取消；替换为依赖`afterany:500990`的batch-owned正式resume job`500999`，同一精确
+  8+4+4节点、1小时上限、显式step117 checkpoint门禁，避免下一段依赖login会话启动。
