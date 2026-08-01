@@ -183,3 +183,7 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `500990`后依次为`500999 -> 501002 -> 501005 -> 501007`，每段只在前段结束后申请
   同一normal 8+4+4、1小时，并在启动前验证当时最新完整checkpoint。四个后继当前均为
   `PENDING(Dependency)`、未占资源；若前段已生成done flag，resume门禁会拒绝重复训练。
+- 本段首次周期checkpoint已在step229/epoch1/micro916完整覆盖`latest`；重新加载确认
+  optimizer存在，16份rank history cache非空，不变量为world16/B1/GA4/H1/T4、
+  DINO-grid和`decision_state_executed_action_mc_v3`。保存期间`training_state.pt`会短暂
+  原位变成0字节，因此只在训练继续到step232后把step229认定为新的durable恢复点。
