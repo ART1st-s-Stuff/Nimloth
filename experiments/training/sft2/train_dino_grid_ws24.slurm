@@ -1,15 +1,15 @@
 #!/bin/bash
-#SBATCH --job-name=sft2-value-v3-ws24
+#SBATCH --job-name=sft2-value-v3-ws24-normal
 #SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/slurm/%x_%j.out
 #SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/slurm/%x_%j.err
 #SBATCH --account=peilab
-#SBATCH --partition=preempt
-#SBATCH --nodes=3
-#SBATCH --ntasks=3
+#SBATCH --partition=normal
+#SBATCH --nodes=6
+#SBATCH --ntasks=6
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=64
-#SBATCH --gres=gpu:8
-#SBATCH --mem=800G
+#SBATCH --cpus-per-task=32
+#SBATCH --gres=gpu:4
+#SBATCH --mem=200G
 #SBATCH --time=08:00:00
 
 set -euo pipefail
@@ -28,9 +28,9 @@ set -euo pipefail
 : "${WANDB_RUN_ID:?}"
 : "${EXPECTED_STEPS:?}"
 
-test "${SLURM_JOB_PARTITION}" = "preempt"
-test "${SLURM_NNODES}" -eq 3
-test "${SLURM_NTASKS}" -eq 3
+test "${SLURM_JOB_PARTITION}" = "normal"
+test "${SLURM_NNODES}" -eq 6
+test "${SLURM_NTASKS}" -eq 6
 test "$(git -C "${REPO}" rev-parse HEAD)" = "${EXPECTED_COMMIT}"
 test -z "$(git -C "${REPO}" status --porcelain --untracked-files=no)"
 for required in \
@@ -50,7 +50,7 @@ CONTROLLER_LOG="${RUN_OUTPUT}.controller_${SLURM_JOB_ID}.log"
 exec > >(tee -a "${CONTROLLER_LOG}") 2>&1
 
 mapfile -t HOSTS < <(scontrol show hostnames "${SLURM_JOB_NODELIST}")
-test "${#HOSTS[@]}" -eq 3
+test "${#HOSTS[@]}" -eq 6
 export MASTER_ADDR="${HOSTS[0]}"
 export MASTER_PORT=$((20000 + SLURM_JOB_ID % 20000))
 export REPO EXPECTED_COMMIT RUN_ROOT RUN_OUTPUT MODEL_PATH TRAIN_JSONL VAL_JSONL
@@ -64,7 +64,7 @@ export MASTER_ADDR MASTER_PORT
   echo "- commit: ${EXPECTED_COMMIT}"
   echo "- nodes: ${SLURM_JOB_NODELIST}"
   echo "- rendezvous: ${MASTER_ADDR}:${MASTER_PORT}"
-  echo "- topology: 3 nodes x 8 H800; world size 24; B1; GA4; effective global batch 96"
+  echo "- topology: 6 nodes x 4 H800; world size 24; B1; GA4; effective global batch 96"
   echo "- objective: H=1/T=4, decision-state executed-action MC ValueHead, no rank loss"
   echo "- init: ${MODEL_PATH}"
   echo "- preprocess cache: ${PREPROCESS_CACHE} (read-only reuse)"
@@ -75,11 +75,11 @@ export MASTER_ADDR MASTER_PORT
 
 echo "start=$(date --iso-8601=seconds) job=${SLURM_JOB_ID} nodes=${SLURM_JOB_NODELIST}"
 srun \
-  --nodes=3 \
-  --ntasks=3 \
+  --nodes=6 \
+  --ntasks=6 \
   --ntasks-per-node=1 \
-  --cpus-per-task=64 \
-  --gres=gpu:8 \
+  --cpus-per-task=32 \
+  --gres=gpu:4 \
   --kill-on-bad-exit=1 \
   bash "${REPO}/experiments/training/sft2/run_dino_grid_ws24_node.sh"
 

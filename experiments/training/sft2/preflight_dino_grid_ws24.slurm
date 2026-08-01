@@ -27,6 +27,9 @@ set -euo pipefail
 : "${WANDB_PROJECT_NAME:?}"
 : "${WANDB_RUN_NAME:?}"
 : "${WANDB_RUN_ID:?}"
+: "${TRAIN_PARTITION:?}"
+: "${TRAIN_NODES:?}"
+: "${TRAIN_GPUS_PER_NODE:?}"
 
 test "$(git -C "${REPO}" rev-parse HEAD)" = "${EXPECTED_COMMIT}"
 test -z "$(git -C "${REPO}" status --porcelain --untracked-files=no)"
@@ -71,9 +74,9 @@ export PYTHONPYCACHEPREFIX=/tmp/nimloth-ws24-preflight-${SLURM_JOB_ID}
   --world-size 24 \
   --grad-accum 4 \
   --epochs 2 \
-  --partition preempt \
-  --nodes 3 \
-  --gpus-per-node 8 \
+  --partition "${TRAIN_PARTITION}" \
+  --nodes "${TRAIN_NODES}" \
+  --gpus-per-node "${TRAIN_GPUS_PER_NODE}" \
   --wandb-entity "${WANDB_ENTITY}" \
   --wandb-project "${WANDB_PROJECT_NAME}" \
   --wandb-run-name "${WANDB_RUN_NAME}" \

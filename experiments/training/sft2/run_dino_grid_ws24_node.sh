@@ -18,25 +18,25 @@ set -euo pipefail
 : "${SLURM_PROCID:?}"
 
 NODE_RANK=${SLURM_PROCID}
-test "${SLURM_NTASKS}" -eq 3
+test "${SLURM_NTASKS}" -eq 6
 test "${NODE_RANK}" -ge 0
-test "${NODE_RANK}" -lt 3
+test "${NODE_RANK}" -lt 6
 test "$(git -C "${REPO}" rev-parse HEAD)" = "${EXPECTED_COMMIT}"
 test -z "$(git -C "${REPO}" status --porcelain --untracked-files=no)"
 test -f "${PREPROCESS_CACHE}/cache_done.flag"
 
 GPU_NAMES=$(nvidia-smi --query-gpu=name --format=csv,noheader)
 GPU_COUNT=$(printf '%s\n' "${GPU_NAMES}" | sed '/^[[:space:]]*$/d' | wc -l)
-test "${GPU_COUNT}" -eq 8
-test "$(printf '%s\n' "${GPU_NAMES}" | grep -c 'H800')" -eq 8
-GLOBAL_FIRST=$((NODE_RANK * 8))
-GLOBAL_LAST=$((GLOBAL_FIRST + 7))
+test "${GPU_COUNT}" -eq 4
+test "$(printf '%s\n' "${GPU_NAMES}" | grep -c 'H800')" -eq 4
+GLOBAL_FIRST=$((NODE_RANK * 4))
+GLOBAL_LAST=$((GLOBAL_FIRST + 3))
 {
   echo "time=$(date --iso-8601=seconds)"
   echo "job=${SLURM_JOB_ID} host=$(hostname) node_rank=${NODE_RANK}"
   echo "master=${MASTER_ADDR}:${MASTER_PORT}"
   echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-missing}"
-  echo "local_ranks=0-7 global_ranks=${GLOBAL_FIRST}-${GLOBAL_LAST}"
+  echo "local_ranks=0-3 global_ranks=${GLOBAL_FIRST}-${GLOBAL_LAST}"
   echo "gpu_count=${GPU_COUNT}"
   printf 'gpu_name=%s\n' "${GPU_NAMES}"
 } | tee "${RUN_ROOT}/allocation_${SLURM_JOB_ID}_node${NODE_RANK}.log"
@@ -47,8 +47,8 @@ export CONFIG="${REPO}/configs/training/sft2/dino_grid_k16_h1_t4.yaml"
 export PREPROCESS_CACHE_DIR_OVERRIDE="${PREPROCESS_CACHE}"
 export OUTPUT_DIR="${RUN_OUTPUT}"
 export WANDB_MODE=online
-export NPROC_PER_NODE=8
-export NNODES=3
+export NPROC_PER_NODE=4
+export NNODES=6
 export NODE_RANK
 export BATCH_SIZE=1
 export GRAD_ACCUM=4
