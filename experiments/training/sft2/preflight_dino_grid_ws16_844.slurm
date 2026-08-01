@@ -75,8 +75,8 @@ export PYTHONPYCACHEPREFIX=/tmp/nimloth-ws16-844-preflight-${SLURM_JOB_ID}
   --nodes 3 \
   --gpus-per-node 1 \
   --gpus-per-node-list 8,4,4 \
-  --agent-count 16 \
-  --gpus-per-agent 1 \
+  --agent-count 3 \
+  --gpus-per-agent-list 8,4,4 \
   --wandb-entity "${WANDB_ENTITY}" \
   --wandb-project "${WANDB_PROJECT_NAME}" \
   --wandb-run-name "${WANDB_RUN_NAME}" \

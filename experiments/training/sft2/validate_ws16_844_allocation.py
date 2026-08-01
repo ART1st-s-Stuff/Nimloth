@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate sixteen logical 1-GPU agents on an 8+4+4 allocation."""
+"""Validate three variable-local-world agents on an 8+4+4 allocation."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def path_host(path: Path) -> str:
 
 def validate_allocation(run_root: Path, job_id: str) -> dict[str, object]:
     paths = sorted(run_root.glob(f"allocation_{job_id}_agent*.log"))
-    assert len(paths) == 16, f"expected 16 logical agents, got {len(paths)}"
+    assert len(paths) == 3, f"expected 3 logical agents, got {len(paths)}"
     ranks: set[int] = set()
     host_uuids: dict[str, set[str]] = {}
     all_uuids: set[str] = set()
@@ -43,22 +43,23 @@ def validate_allocation(run_root: Path, job_id: str) -> dict[str, object]:
             for line in lines
             if line.startswith("gpu=")
         ]
-        assert len(gpu_rows) == 1
+        expected_gpus = 8 if rank == 0 else 4
+        assert len(gpu_rows) == expected_gpus
         assert all("H800" in row for row in gpu_rows)
         uuids = {row.split(",", 1)[0].strip() for row in gpu_rows}
-        assert len(uuids) == 1
+        assert len(uuids) == expected_gpus
         assert not (host_uuids.setdefault(host, set()) & uuids)
         host_uuids[host].update(uuids)
         assert not (all_uuids & uuids)
         all_uuids.update(uuids)
 
     host_task_counts = Counter(path_host(path) for path in paths)
-    assert ranks == set(range(16))
-    assert sorted(host_task_counts.values()) == [4, 4, 8]
+    assert ranks == set(range(3))
+    assert sorted(host_task_counts.values()) == [1, 1, 1]
     assert sorted(len(uuids) for uuids in host_uuids.values()) == [4, 4, 8]
     assert len(all_uuids) == 16
     return {
-        "logical_agents": 16,
+        "logical_agents": 3,
         "physical_nodes": 3,
         "gpu_uuids": 16,
         "tasks_per_host": sorted(host_task_counts.values()),

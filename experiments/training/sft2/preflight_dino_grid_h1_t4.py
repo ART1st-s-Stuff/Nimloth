@@ -55,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpus-per-node-list")
     parser.add_argument("--agent-count", type=int)
     parser.add_argument("--gpus-per-agent", type=int)
+    parser.add_argument("--gpus-per-agent-list")
     parser.add_argument("--wandb-entity", required=True)
     parser.add_argument("--wandb-project", required=True)
     parser.add_argument("--wandb-run-name", required=True)
@@ -303,8 +304,19 @@ def main() -> None:
         else args.gpus_per_node
     )
     assert agent_count > 0
-    assert gpus_per_agent > 0
-    assert args.world_size == agent_count * gpus_per_agent
+    if args.gpus_per_agent_list is None:
+        assert gpus_per_agent > 0
+        assert args.world_size == agent_count * gpus_per_agent
+        logical_gpu_layout = [gpus_per_agent] * agent_count
+    else:
+        assert args.gpus_per_agent is None
+        logical_gpu_layout = [
+            int(value) for value in args.gpus_per_agent_list.split(",")
+        ]
+        assert len(logical_gpu_layout) == agent_count
+        assert all(value > 0 for value in logical_gpu_layout)
+        assert args.world_size == sum(logical_gpu_layout)
+        gpus_per_agent = logical_gpu_layout
     assert args.grad_accum == 4
     assert len(args.wandb_run_id) == 8
     assert git_output(args.repo, "rev-parse", "HEAD") == args.expected_commit

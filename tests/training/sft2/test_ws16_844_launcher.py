@@ -17,15 +17,17 @@ def test_ws16_844_launcher_contract() -> None:
     assert 'test "${SLURM_HET_SIZE}" -eq 2' in slurm
     assert "--het-group=0" in slurm
     assert "--het-group=1" in slurm
-    assert "--ntasks=8" in slurm
-    assert "--gpus-per-task=1" in slurm
-    assert "map_gpu:0,1,2,3,4,5,6,7" in slurm
-    assert "16 agents x 1 H800" in slurm
+    assert "--ntasks=1" in slurm
+    assert "--ntasks=2" in slurm
+    assert "--gpus-per-task=8" in slurm
+    assert "--gpus-per-task=4" in slurm
+    assert "local world sizes 8+4+4" in slurm
     assert "--expected-world-size 16" in slurm
-    assert 'test "${SLURM_NTASKS}" -eq 16' in node
-    assert 'test "${GPU_COUNT}" -eq 1' in node
-    assert "NPROC_PER_NODE=1" in node
-    assert "NNODES=16" in node
+    assert 'test "${SLURM_NTASKS}" -eq 3' in node
+    assert "EXPECTED_LOCAL_WORLD_SIZE=8" in node
+    assert "EXPECTED_LOCAL_WORLD_SIZE=4" in node
+    assert "NPROC_PER_NODE=${EXPECTED_LOCAL_WORLD_SIZE}" in node
+    assert "NNODES=3" in node
     assert "GRAD_ACCUM=4" in node
     assert "RESUME=0" in node
     assert 'test -f "${PREPROCESS_CACHE}/cache_done.flag"' in slurm
@@ -38,8 +40,8 @@ def test_ws16_844_preflight_contract() -> None:
     text = PREFLIGHT.read_text(encoding="utf-8")
     assert "--world-size 16" in text
     assert "--gpus-per-node-list 8,4,4" in text
-    assert "--agent-count 16" in text
-    assert "--gpus-per-agent 1" in text
+    assert "--agent-count 3" in text
+    assert "--gpus-per-agent-list 8,4,4" in text
     assert "--grad-accum 4" in text
 
 
@@ -48,16 +50,19 @@ def test_ws16_844_validator_accepts_disjoint_gpu_sets(tmp_path: Path) -> None:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    hosts = ["eight"] * 8 + ["four0"] * 4 + ["four1"] * 4
+    hosts = ["eight", "four0", "four1"]
     for rank, host in enumerate(hosts):
-        gpu_rows = f"gpu=GPU-{rank}, NVIDIA H800"
+        gpu_rows = "\n".join(
+            f"gpu=GPU-{rank}-{local_rank}, NVIDIA H800"
+            for local_rank in range(8 if rank == 0 else 4)
+        )
         tmp_path.joinpath(f"allocation_123_agent{rank}.log").write_text(
             f"job=123 host={host} agent_rank={rank}\n"
-            f"gpu_count=1\n{gpu_rows}\n",
+            f"gpu_count={8 if rank == 0 else 4}\n{gpu_rows}\n",
             encoding="utf-8",
         )
     result = module.validate_allocation(tmp_path, "123")
-    assert result["logical_agents"] == 16
+    assert result["logical_agents"] == 3
     assert result["physical_nodes"] == 3
     assert result["gpu_uuids"] == 16
 
