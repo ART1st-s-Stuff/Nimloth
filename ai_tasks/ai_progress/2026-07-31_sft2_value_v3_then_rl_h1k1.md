@@ -14,14 +14,16 @@ selected/executed action，禁用 ranking loss 和 PPO。
 - cache：只读复用已完整验证的 ID53 compact preprocess cache；ValueHead 的
   decision-state 对齐不改变预处理 cache 内容。提交前只做当前 commit 的读取校验，
   不重建、不覆盖 cache。
-- 训练：H=1，T=4，2 epochs，16×H800，per-rank B1，GA4，fresh optimizer。
+- 训练：H=1，T=4，2 epochs，24×H800（preempt 3节点×8卡），per-rank B1，
+  GA4，effective global batch 96，fresh optimizer。该 WS24 合同由人类在
+  2026-08-01 明确覆盖此前 WS16 合同。
 - trainable：Qwen vision、StateProjector、WM predictor、ValueHead。
 - frozen：Qwen LLM、DINO teacher/cache、latent query。
 - loss：当前步 CE；4 个 successor 的 WM/DINO；4 个 decision state 上对应
   executed action 的 Monte Carlo ValueHead MSE；全局 SIGReg；无 ranking loss。
 - 监控：W&B nimloth-sft2，训练/验证 loss 与 val_wm_mse；20 分钟周期
   latest 和 epoch/best/final checkpoint。
-- 生命周期：Slurm batch job 自持两节点控制器，不使用登录节点 watcher，
+- 生命周期：Slurm batch job 自持三节点控制器，不使用登录节点 watcher，
   不在控制器中调用 scancel。
 
 ## RL 后续门禁
@@ -60,3 +62,13 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   checkpoint。复核发现已提交的 batch/node shell 把运行时变量写成带反斜杠的字面量；
   虽然该错误未在 GPU 上执行，但脚本若获得节点会在模型加载前失败。现登记 E0076，
   修复后必须使用新 commit、新 ID、空输出和新 W&B identity 重做 preflight/提交。
+- 人类随后明确要求直接使用 preempt 的三台完整8卡节点，即3×8 H800/WS24；此前
+  “只用其中两台组成WS16”的解释失效。WS24 保持 B1/GA4，因此有效全局batch由64
+  变为96；49,638个train windows对应每epoch约2,069个microbatches、518个optimizer
+  steps，2 epochs预计1,036步，最终以当前commit的生产sampler preflight为准。
+- 已新增batch-owned WS24 launcher：3个Slurm task、每节点1个task并在节点内启动8个
+  local ranks，global ranks为0--23；preflight拓扑改为显式partition/nodes/GPU参数，
+  completion validator显式检查world size24。两个WS16/WS24 launcher静态合同共7项、
+  shell syntax、Python compile和diff-check已通过。尚未提交；superpod跳板
+  `10.88.0.3`连续两次在SSH握手后立即断开，需连接恢复后完成实时资源、W&B/new-ID、
+  cache只读验证、远端clean exact-commit回归和正式提交。

@@ -7,7 +7,8 @@
 ## 2026-07-31：corrected ValueHead SFT2 重训启动准备
 
 - 人类批准先重训 corrected SFT2，再进入 H=1/K=1 RL。SFT2 使用
-  decision-state executed-action MC v3，H=1/T=4、2 epochs、WS16/B1/GA4，
+  decision-state executed-action MC v3，H=1/T=4、2 epochs；2026-08-01 人类
+  最终明确使用 preempt 3节点×8 H800，即WS24/B1/GA4（effective global batch96），
   从 SFT1 merged checkpoint 和 fresh optimizer 初始化，不加载旧 successor-state
   SFT2 权重。
 - 已建立独立分支/worktree exp/sft2-value-v3-rl-h1k1，并新增 batch-owned
@@ -38,6 +39,12 @@
 - job 500294 后续在 allocation 前取消，`Elapsed=0`且无节点/W&B/训练产物。提交脚本中
   运行时变量被错误写成带反斜杠的字面量，若分配节点会在模型加载前失败；该问题登记为
   E0076，修复后使用新 commit、新实验 ID、空输出与新 W&B identity 重做 preflight。
+- 旧WS16重提合同现已由人类的WS24指令覆盖。独立分支切换为
+  `exp/sft2-value-v3-h1t4-ws24-preempt`，新增batch-owned三节点WS24 launcher和显式
+  world-size completion gate；保持cache只读复用、fresh optimizer和20分钟checkpoint。
+  预计每epoch2,069 microbatches/518 optimizer steps、两epoch1,036步，须以远端生产
+  preflight实测为准。当前本地静态/compile/syntax门禁通过，但superpod VPN跳板连接被
+  `10.88.0.3`立即断开，尚未提交Slurm/W&B或创建训练输出。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 

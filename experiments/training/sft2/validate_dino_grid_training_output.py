@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--expected-step", type=int, required=True)
+    parser.add_argument("--expected-world-size", type=int, default=16)
     parser.add_argument("--expected-wandb-run-id", required=True)
     parser.add_argument("--result-json", type=Path, required=True)
     return parser.parse_args()
@@ -47,7 +48,7 @@ def main() -> None:
     assert int(state["step"]) == args.expected_step
     assert int(state["epoch"]) == 2
     assert state["epoch_complete"] is True
-    assert invariants["world_size"] == 16
+    assert invariants["world_size"] == args.expected_world_size
     assert invariants["batch_size"] == 1
     assert invariants["grad_accum"] == 4
     assert invariants["history_size"] == 1
