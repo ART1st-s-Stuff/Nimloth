@@ -91,6 +91,9 @@
 - ID73的16个1-GPU `torchrun` agents也在NCCL同主机P2P初始化报相同device ordinal错误，
   未到optimizer step；需改为每物理节点一个torchrun agent，本地world分别8/4/4，并先
   通过最小NCCL all-reduce probe验证可变local world size。
+- 8/4/4 variable-local-world最小NCCL all-reduce已16 ranks通过；正式实现commit
+  `1f6ea55f`远端18 tests通过。ID74 full preflight`500985`通过，W&B `d52u5anf`，
+  已越过DDP初始化并健康训练到至少optimizer step23；各loss有限，16卡100%利用。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 

@@ -87,6 +87,8 @@ if [ -n "${PREPROCESS_CACHE_DIR_OVERRIDE}" ]; then
   CACHE_ARGS=(--preprocess-cache-dir "${PREPROCESS_CACHE_DIR_OVERRIDE}")
 fi
 
+EXPECTED_WORLD_SIZE=${EXPECTED_WORLD_SIZE:-$((NNODES * NPROC_PER_NODE))}
+
 {
   echo "=== DINO-grid SFT2 start $(date --iso-8601=seconds) ==="
   echo "commit: $(git -C "${REPO}" rev-parse HEAD)"
@@ -96,7 +98,7 @@ fi
   echo "preprocess cache override: ${PREPROCESS_CACHE_DIR_OVERRIDE:-config default}"
   echo "output: ${OUTPUT_DIR}"
   echo "model: ${MODEL_PATH}"
-  echo "topology: nnodes=${NNODES}; node_rank=${NODE_RANK}; local_ranks=${NPROC_PER_NODE}; world_size=$((NNODES * NPROC_PER_NODE))"
+  echo "topology: nnodes=${NNODES}; node_rank=${NODE_RANK}; local_ranks=${NPROC_PER_NODE}; world_size=${EXPECTED_WORLD_SIZE}"
   echo "per-rank B=${BATCH_SIZE}; grad_accum=${GRAD_ACCUM}"
   echo "objective: one current-step CE; four-step recorded-action WM/DINO rollout; decision-state Q(s_t,a_t) MC on each executed action; global SIGReg=0.1"
   echo "trainable: Qwen vision, SFT1 DINO-grid projector, H1 temporal-spatial WM, value head"

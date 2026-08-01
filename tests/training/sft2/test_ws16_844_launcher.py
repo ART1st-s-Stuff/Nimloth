@@ -28,6 +28,7 @@ def test_ws16_844_launcher_contract() -> None:
     assert "EXPECTED_LOCAL_WORLD_SIZE=4" in node
     assert "NPROC_PER_NODE=${EXPECTED_LOCAL_WORLD_SIZE}" in node
     assert "NNODES=3" in node
+    assert "EXPECTED_WORLD_SIZE=16" in node
     assert "GRAD_ACCUM=4" in node
     assert "RESUME=0" in node
     assert 'test -f "${PREPROCESS_CACHE}/cache_done.flag"' in slurm

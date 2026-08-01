@@ -152,3 +152,6 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - ID73 full preflight和16×1-GPU allocation probe均通过，但16个独立`torchrun` agents
   在同一物理主机仍触发NCCL P2P `invalid device ordinal`，未到optimizer step。后续必须
   每物理节点只启动一个torchrun agent（8/4/4 local world），先跑最小all-reduce验证。
+- 8/4/4 variable-local-world最小NCCL probe已16-rank all-reduce通过；正式commit
+  `1f6ea55f`远端18 tests通过。ID74 full preflight`500985`通过，W&B `d52u5anf`，已健康
+  训练到至少optimizer step23；total/WM/DINO/Value/LM loss均有限，16卡利用率100%。
