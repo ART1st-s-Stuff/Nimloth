@@ -16,16 +16,9 @@ set -euo pipefail
 : "${MASTER_ADDR:?}"
 : "${MASTER_PORT:?}"
 : "${SLURM_PROCID:?}"
-: "${SLURM_HET_GROUP:?}"
 : "${CUDA_VISIBLE_DEVICES:?}"
 
-case "${SLURM_HET_GROUP}" in
-  0) AGENT_OFFSET=0 ;;
-  1) AGENT_OFFSET=12 ;;
-  2) AGENT_OFFSET=14 ;;
-  *) echo "unexpected heterogeneous group: ${SLURM_HET_GROUP}" >&2; exit 1 ;;
-esac
-AGENT_RANK=$((AGENT_OFFSET + SLURM_PROCID))
+AGENT_RANK=${SLURM_PROCID}
 test "${AGENT_RANK}" -ge 0
 test "${AGENT_RANK}" -lt 16
 test "$(git -C "${REPO}" rev-parse HEAD)" = "${EXPECTED_COMMIT}"
@@ -41,7 +34,7 @@ test "${GPU_COUNT}" -eq 1
 test "$(printf '%s\n' "${GPU_ROWS}" | grep -c 'H800')" -eq 1
 {
   echo "time=$(date --iso-8601=seconds)"
-  echo "job=${SLURM_JOB_ID} host=$(hostname) het_group=${SLURM_HET_GROUP} local_procid=${SLURM_PROCID} agent_rank=${AGENT_RANK}"
+  echo "job=${SLURM_JOB_ID} host=$(hostname) agent_rank=${AGENT_RANK}"
   echo "master=${MASTER_ADDR}:${MASTER_PORT}"
   echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-missing}"
   echo "local_ranks=0 global_ranks=${AGENT_RANK}"

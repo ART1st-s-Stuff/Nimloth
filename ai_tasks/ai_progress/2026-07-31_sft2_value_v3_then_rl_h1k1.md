@@ -144,3 +144,8 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `srun`的`SLURM_PROCID`按component重置，且裸`nvidia-smi`看到物理节点全部allocation，
   不能核验per-task绑定。修正为het-group offsets 0/12/14和按`CUDA_VISIBLE_DEVICES`
   查询唯一GPU；失败ID70不复用。
+- 实机trace随后确认`SLURM_PROCID`跨heterogeneous components全局连续，offset结论失效。
+  ID71只完成full preflight和16-GPU probe，旧hold到时前未进入模型/W&B。normal 8+4+4
+  hold`500977`已取得；ID72 full preflight通过且W&B已建立，但4个4-GPU agent在8卡节点
+  拆成两个`torchrun`，DDP参数校验报NCCL `invalid device ordinal`，未到optimizer step。
+  启动合同改为16个1-GPU agent，按物理节点显式`map_gpu`后再启动新ID。

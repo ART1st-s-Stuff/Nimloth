@@ -1,7 +1,7 @@
 #!/bin/bash
 # Resource components are supplied on the sbatch command line:
-#   component 0: 1 physical node, 2 tasks/node, 4 GPUs/task (8 GPUs/node)
-#   component 1: 2 physical nodes, 1 task/node, 4 GPUs/task (4 GPUs/node)
+#   component 0: 1 physical node, 8 tasks/node, 1 GPU/task (8 GPUs/node)
+#   component 1: 2 physical nodes, 4 tasks/node, 1 GPU/task (4 GPUs/node)
 #SBATCH --job-name=sft2-value-v3-ws16-844
 #SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/slurm/%x_%j.out
 #SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/slurm/%x_%j.err
@@ -58,7 +58,7 @@ export MASTER_ADDR MASTER_PORT
   echo "- job: ${SLURM_JOB_ID}"
   echo "- commit: ${EXPECTED_COMMIT}"
   echo "- physical topology: group0=${SLURM_JOB_NODELIST_HET_GROUP_0} 8; group1=${SLURM_JOB_NODELIST_HET_GROUP_1} 4+4"
-  echo "- logical topology: 4 agents x 4 H800; world size 16; B1; GA4; effective global batch 64"
+  echo "- logical topology: 16 agents x 1 H800; world size 16; B1; GA4; effective global batch 64"
   echo "- objective: H=1/T=4, decision-state executed-action MC ValueHead, no rank loss"
   echo "- rendezvous: ${MASTER_ADDR}:${MASTER_PORT}"
   echo "- init: ${MODEL_PATH}"
@@ -70,11 +70,14 @@ export MASTER_ADDR MASTER_PORT
 
 echo "probe_start=$(date --iso-8601=seconds) job=${SLURM_JOB_ID}"
 NODE_MODE=probe srun \
-  --het-group=0,1 \
-  --gpus-per-task=4 \
-  --gpu-bind=closest \
-  --cpus-per-task=32 \
+  --het-group=0 --nodes=1 --ntasks=8 --ntasks-per-node=8 \
+  --gpus-per-task=1 --gpu-bind=map_gpu:0,1,2,3,4,5,6,7 \
+  --cpus-per-task=20 \
   --kill-on-bad-exit=1 \
+  bash "${REPO}/experiments/training/sft2/run_dino_grid_ws16_844_node.sh" \
+  : --het-group=1 --nodes=2 --ntasks=8 --ntasks-per-node=4 \
+  --gpus-per-task=1 --gpu-bind=map_gpu:0,1,2,3 \
+  --cpus-per-task=20 --kill-on-bad-exit=1 \
   bash "${REPO}/experiments/training/sft2/run_dino_grid_ws16_844_node.sh"
 
 /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \
@@ -84,11 +87,14 @@ NODE_MODE=probe srun \
 
 echo "train_start=$(date --iso-8601=seconds) job=${SLURM_JOB_ID}"
 NODE_MODE=train srun \
-  --het-group=0,1 \
-  --gpus-per-task=4 \
-  --gpu-bind=closest \
-  --cpus-per-task=32 \
+  --het-group=0 --nodes=1 --ntasks=8 --ntasks-per-node=8 \
+  --gpus-per-task=1 --gpu-bind=map_gpu:0,1,2,3,4,5,6,7 \
+  --cpus-per-task=20 \
   --kill-on-bad-exit=1 \
+  bash "${REPO}/experiments/training/sft2/run_dino_grid_ws16_844_node.sh" \
+  : --het-group=1 --nodes=2 --ntasks=8 --ntasks-per-node=4 \
+  --gpus-per-task=1 --gpu-bind=map_gpu:0,1,2,3 \
+  --cpus-per-task=20 --kill-on-bad-exit=1 \
   bash "${REPO}/experiments/training/sft2/run_dino_grid_ws16_844_node.sh"
 
 /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3 \

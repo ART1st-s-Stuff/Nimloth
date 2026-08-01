@@ -25,9 +25,8 @@ def test_ws16_444211_contract() -> None:
     assert "NPROC_PER_NODE=1" in node
     assert "NNODES=16" in node
     assert "RESUME=0" in node
-    assert "AGENT_OFFSET=0" in node
-    assert "AGENT_OFFSET=12" in node
-    assert "AGENT_OFFSET=14" in node
+    assert "AGENT_OFFSET" not in node
+    assert "AGENT_RANK=${SLURM_PROCID}" in node
     assert 'nvidia-smi -i "${CUDA_VISIBLE_DEVICES}"' in node
     assert "assert ranks == set(range(16))" in validator
     assert "assert len(all_uuids) == 16" in validator

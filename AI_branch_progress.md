@@ -83,6 +83,11 @@
 - ID70 preflight`500955`通过，但allocation probe确认component内`SLURM_PROCID`各自从0
   开始且裸`nvidia-smi`不能代表per-task GPU binding；未进入模型/W&B。launcher改为
   het-group offsets 0/12/14，并用`CUDA_VISIBLE_DEVICES`选择唯一GPU；ID70不复用。
+- 后续实机trace推翻上述component-local rank判断：heterogeneous `srun`的`SLURM_PROCID`
+  实际为全局连续rank。ID71在旧1小时hold结束前只完成preflight/probe，未进模型/W&B。
+  新hold`500977`已取得normal 8+4+4。ID72用4个4-GPU agent在同一8卡节点拆两个
+  `torchrun`，DDP初始化报NCCL `invalid device ordinal`，未到optimizer step；改为16个
+  1-GPU agent并用显式`map_gpu`隔离。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
