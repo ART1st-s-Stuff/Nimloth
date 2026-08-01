@@ -128,3 +128,8 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - ID67 CPU preflight `500926`因提交命令手工抄错完整commit hash，在最前置commit门禁
   1秒失败（`FAILED 1:0`），未进入数据、模型、W&B或GPU。ID67不可复用；后续必须从
   `git rev-parse HEAD`取得真实`03413ed8d8260afd973aa44316f67813b1ddb576`并用新identity。
+- ID68 full preflight `500929`已`COMPLETED 0:0`（8:07），world12物理4+4+2+2、逻辑
+  6×2、49,638/4,989 windows、DINO coverage、W&B freshness均通过，总计2,070 steps。
+  首次正式job`500930`因无allocation且预计较晚而取消；替代`500936`立即获得12卡，随后
+  因batch将合法0-byte `cache_done.flag`误用`test -s`而1秒失败，未进入controller/model/
+  W&B/optimizer。已登记E0078并将sentinel门禁窄修为`test -f`。

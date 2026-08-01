@@ -29,6 +29,8 @@ def test_ws12_launcher_uses_six_uniform_two_gpu_agents() -> None:
     assert "NNODES=6" in node
     assert "GRAD_ACCUM=4" in node
     assert "RESUME=0" in node
+    assert 'test -f "${PREPROCESS_CACHE}/cache_done.flag"' in slurm
+    assert '"${PREPROCESS_CACHE}/cache_done.flag" \\' not in slurm
     assert "scancel" not in slurm
     assert "nohup" not in slurm
 

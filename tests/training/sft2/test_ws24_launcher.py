@@ -40,6 +40,8 @@ def test_launcher_fails_closed_on_normal_ws24_h800_topology() -> None:
     assert "NNODES=6" in node
     assert "GRAD_ACCUM=4" in node
     assert "RESUME=0" in node
+    assert 'test -f "${PREPROCESS_CACHE}/cache_done.flag"' in slurm
+    assert '"${PREPROCESS_CACHE}/cache_done.flag" \\' not in slurm
     assert "--expected-world-size 24" in slurm
 
 
@@ -90,6 +92,8 @@ def test_heterogeneous_launcher_uses_six_uniform_logical_agents() -> None:
     assert "NODE_MODE=probe" in text
     assert "NODE_MODE=train" in text
     assert "6 agents x 4 H800" in text
+    assert 'test -f "${PREPROCESS_CACHE}/cache_done.flag"' in text
+    assert '"${PREPROCESS_CACHE}/cache_done.flag" \\' not in text
     assert "assert ranks == set(range(6))" in validator
     assert "assert len(all_uuids) == 24" in validator
     assert r"\${" not in text

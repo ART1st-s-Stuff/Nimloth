@@ -37,10 +37,10 @@ for required in \
   "${MODEL_PATH}/config.json" \
   "${TRAIN_JSONL}" \
   "${VAL_JSONL}" \
-  "${PREPROCESS_CACHE}/cache_done.flag" \
   "${RUN_ROOT}/preflight.json"; do
   test -s "${required}"
 done
+test -f "${PREPROCESS_CACHE}/cache_done.flag"
 if [ -d "${RUN_OUTPUT}" ] && [ -n "$(find "${RUN_OUTPUT}" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
   echo "ERROR fresh SFT2 output is non-empty: ${RUN_OUTPUT}" >&2
   exit 1
