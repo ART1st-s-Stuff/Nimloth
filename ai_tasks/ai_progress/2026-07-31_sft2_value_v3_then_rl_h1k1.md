@@ -114,3 +114,11 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   W&B或optimizer step。preflight JSON的展示字段`local_ranks`沿用旧常量8，但硬断言与
   launcher均为6×4；该展示bug已在后续commit`d502b88d`修正，已排队job仍固定于
   `75f0adc4`并由运行时GPU_COUNT=4/local ranks0--3门禁。
+- 已实现非对称物理拓扑支持，commit`32ccb011`：Slurm heterogeneous allocation可将
+  8卡节点拆成两个各见4张卡的torchrun agent，跨het-group单一`srun`使用唯一全局
+  `SLURM_PROCID`，保持6个逻辑agent×4卡/world24。模型加载前强制核验6个agent、
+  4个物理节点、同机GPU UUID不重叠和全局24个唯一UUID；远端fixture回归`7 passed`。
+- live test-only比较：`2×8+2×4`与`1×8+4×4`的1h--8h请求均预测
+  `2026-08-04 14:25--14:26`，晚于现有6×4 job`500865`的`2026-08-02 07:21`。
+  原因是normal两台完整8卡节点均为`IDLE+PLANNED`，其余未预留节点合计仅16张可调度GPU。
+  因此保留更早的`500865`，未提交更慢的异构替代作业。

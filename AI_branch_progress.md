@@ -63,6 +63,9 @@
   并取消旧preempt`500845`。preflight已`COMPLETED 0:0`；normal训练固定commit
   `75f0adc4`，拓扑6节点×4 H800/world24，当前`PENDING(Priority)`，候选
   `dgx-[09,14,24,26,30,40]`，预测`2026-08-02 07:21:13`，尚未开始训练。
+- 非对称物理拓扑`2×8+2×4`已在`32ccb011`实现，逻辑仍为6×4/world24并带GPU UUID
+  去重门禁，远端`7 passed`。但test-only显示`2×8+2×4`和`1×8+4×4`均预计8月4日，
+  因两台8卡节点为`IDLE+PLANNED`；现有6×4 `500865`预计8月2日，故未替换。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
