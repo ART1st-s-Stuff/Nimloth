@@ -99,6 +99,16 @@
   commit`13fd4320`为controller增加显式`RESUME=1`和绝对checkpoint门禁，要求Qwen、
   StateProjector、WM、ValueHead、training state及16份rank history cache完整；shell syntax、
   diff-check和3项静态launcher检查通过，尚待远端完整定向回归。
+- 第一段job`500977`因1小时hold到时以signal15暂停，最后logged step141；无OOM、
+  traceback、NCCL或non-finite。`latest`为完整step117/epoch1/micro468，含optimizer、
+  Qwen/StateProjector、vision EMA、WM、ValueHead和16份rank history cache；保存不变量
+  明确为world16/B1/GA4/H1/T4/decision-state value-v3。输出README已记录实际srun、输入、
+  split、指标、暂停原因和恢复方法。
+- 后继hold`500990`于04:40:33+08在相同`dgx-24:8 + dgx-26/40:4+4`启动；commit
+  `2c490a3c`远端resume/launcher回归`13 passed`，新allocation验证3个物理节点、3个
+  agent和16个唯一H800。ID74已从step117恢复同一W&B `d52u5anf`，日志确认跳过468
+  microbatches、恢复optimizer，并产生至少step120的finite真实更新；step118--141为
+  checkpoint之后的预期重放，W&B在重新超过旧step140前拒绝重复step，CSV保留两段记录。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
