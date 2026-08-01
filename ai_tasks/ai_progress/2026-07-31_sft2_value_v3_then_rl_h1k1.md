@@ -79,5 +79,7 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - ID65首次全量preflight由SSH会话直接拥有；连接在约5分钟后被远端关闭，进程继续到
   约8分钟后消失，但未写出`preflight.json`且stdout/stderr已丢失，无法判定后段assertion
   或session cleanup。该attempt不放行训练，也不重复使用残留进程；问题登记为E0077。
-  已新增CPU-only、batch-owned preflight脚本，使用normal单节点16 CPU/32 GiB、不请求GPU，
+  已新增CPU-only、batch-owned preflight脚本，使用cpu单节点16 CPU/32 GiB、不请求GPU，
   日志写在`RUN_OUTPUT`旁，并把atomic `preflight.json`作为正式训练提交的硬门禁。
+  首次误用normal分区的提交被Slurm以`QOSMinGRES`在创建job前拒绝；live `sinfo`确认
+  纯CPU分区名为`cpu`，已修正静态合同，未通过申请H800绕过门禁。

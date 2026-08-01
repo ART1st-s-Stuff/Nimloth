@@ -48,6 +48,8 @@
 - 连接恢复后远端`92efac9c` clean worktree完成`141 passed, 1 skipped`扩展回归与
   `8 passed` launcher门禁。ID65首次全量preflight因SSH连接中断后最终无result/log而无效，
   未放行训练；已登记E0077并改为CPU-only Slurm batch自持preflight，要求atomic JSON。
+  CPU preflight脚本的分区已由会触发`QOSMinGRES`的normal修正为集群实际`cpu`分区；
+  被拒绝的提交没有创建job或占用GPU。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
