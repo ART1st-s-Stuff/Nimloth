@@ -118,6 +118,10 @@
   与完整Qwen language body通过full-prefix重算训练；4 GPU为2个同步rank×2 GPU，vLLM
   rollout TP4，4条base_train episode各20步。远端严格RL schema与全部字段assert通过；
   尚未运行RL GPU、rollout或optimizer，必须等ID74完整final门禁。
+- 为覆盖当前约10.4秒/step的剩余SFT2时间，已建立batch-owned顺序依赖链：运行中
+  `500990`后依次为`500999 -> 501002 -> 501005 -> 501007`，每段只在前段结束后申请
+  同一normal 8+4+4、1小时，并在启动前验证当时最新完整checkpoint。四个后继当前均为
+  `PENDING(Dependency)`、未占资源；若前段已生成done flag，resume门禁会拒绝重复训练。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
