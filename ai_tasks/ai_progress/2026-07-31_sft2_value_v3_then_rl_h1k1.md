@@ -174,3 +174,8 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `running`且summary global step142。原后继空hold`500997`在未分配资源、Elapsed=0时
   取消；替换为依赖`afterany:500990`的batch-owned正式resume job`500999`，同一精确
   8+4+4节点、1小时上限、显式step117 checkpoint门禁，避免下一段依赖login会话启动。
+- 已为SFT2完成后的真实RL单步门禁新增`planner_greedy_h1_smoke.yaml`：planner horizon1、
+  predictor history1、DINO0.5、StateProjector冻结、direct PPO关闭，ValueHead/WM predictor
+  与完整Qwen language body通过full-prefix重算训练；4 GPU为2个同步rank×2 GPU，vLLM
+  rollout TP4，4条base_train episode各20步。远端严格RL schema与全部字段assert通过；
+  尚未运行RL GPU、rollout或optimizer，必须等ID74完整final门禁。

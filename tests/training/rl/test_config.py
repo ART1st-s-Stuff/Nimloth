@@ -121,6 +121,29 @@ def test_formal_h2_config_preserves_validated_online_contract() -> None:
     assert config.distributed.total_gpus == 4
 
 
+def test_h1_smoke_trains_qwen_wm_and_value_without_direct_ppo() -> None:
+    root = Path(__file__).resolve().parents[3]
+    config = load_rl_config(
+        root / "configs/training/rl/planner_greedy_h1_smoke.yaml"
+    )
+
+    assert config.agent.planning.horizon == 1
+    assert config.agent.planning.search_mode == "greedy"
+    assert config.freeze.state_proj is True
+    assert config.gradient.state_source == "recompute"
+    assert config.gradient.representation_to_backbone is True
+    assert config.actor.enabled is False
+    assert config.predictor.history_size == 1
+    assert config.predictor.train_wm is True
+    assert config.predictor.lambda_wm == 1.0
+    assert config.predictor.lambda_dino == 0.5
+    assert config.value_head.lambda_rank == 0.0
+    assert config.rl.iterations == 1
+    assert config.rl.envs_per_iteration == config.rl.batch_size == 4
+    assert config.rl.max_steps_per_episode == 20
+    assert config.distributed.total_gpus == 4
+
+
 def test_continuation_gate_uses_two_fresh_greedy_updates() -> None:
     root = Path(__file__).resolve().parents[3]
     config = load_rl_config(
