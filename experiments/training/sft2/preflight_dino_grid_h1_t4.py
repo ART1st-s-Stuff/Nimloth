@@ -52,6 +52,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--partition", default="normal")
     parser.add_argument("--nodes", type=int, default=2)
     parser.add_argument("--gpus-per-node", type=int, default=8)
+    parser.add_argument("--gpus-per-node-list")
+    parser.add_argument("--agent-count", type=int)
+    parser.add_argument("--gpus-per-agent", type=int)
     parser.add_argument("--wandb-entity", required=True)
     parser.add_argument("--wandb-project", required=True)
     parser.add_argument("--wandb-run-name", required=True)
@@ -284,7 +287,24 @@ def main() -> None:
     assert args.partition in {"normal", "preempt"}
     assert args.nodes > 0
     assert args.gpus_per_node > 0
-    assert args.world_size == args.nodes * args.gpus_per_node
+    if args.gpus_per_node_list is None:
+        physical_gpu_layout = [args.gpus_per_node] * args.nodes
+    else:
+        physical_gpu_layout = [
+            int(value) for value in args.gpus_per_node_list.split(",")
+        ]
+        assert len(physical_gpu_layout) == args.nodes
+        assert all(value > 0 for value in physical_gpu_layout)
+    assert args.world_size == sum(physical_gpu_layout)
+    agent_count = args.agent_count if args.agent_count is not None else args.nodes
+    gpus_per_agent = (
+        args.gpus_per_agent
+        if args.gpus_per_agent is not None
+        else args.gpus_per_node
+    )
+    assert agent_count > 0
+    assert gpus_per_agent > 0
+    assert args.world_size == agent_count * gpus_per_agent
     assert args.grad_accum == 4
     assert len(args.wandb_run_id) == 8
     assert git_output(args.repo, "rev-parse", "HEAD") == args.expected_commit
@@ -405,9 +425,11 @@ def main() -> None:
         "topology": {
             "partition": args.partition,
             "nodes": args.nodes,
-            "gpus_per_node": args.gpus_per_node,
+            "gpus_per_node": physical_gpu_layout,
+            "agent_count": agent_count,
+            "gpus_per_agent": gpus_per_agent,
             "gpu_type": "H800",
-            "local_ranks": args.gpus_per_node,
+            "local_ranks_per_agent": gpus_per_agent,
             "world_size": args.world_size,
             "grad_accum": args.grad_accum,
         },

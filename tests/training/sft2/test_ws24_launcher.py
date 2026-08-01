@@ -54,8 +54,8 @@ def test_preflight_and_completion_gates_accept_only_explicit_topology() -> None:
     assert 'parser.add_argument("--partition"' in preflight
     assert 'parser.add_argument("--nodes"' in preflight
     assert 'parser.add_argument("--gpus-per-node"' in preflight
-    assert "args.world_size == args.nodes * args.gpus_per_node" in preflight
-    assert '"local_ranks": args.gpus_per_node' in preflight
+    assert "args.world_size == sum(physical_gpu_layout)" in preflight
+    assert '"local_ranks_per_agent": gpus_per_agent' in preflight
     assert 'parser.add_argument("--expected-world-size"' in validator
     assert 'invariants["world_size"] == args.expected_world_size' in validator
     assert '"preprocess_cache_access": "read_only_reuse"' in preflight
