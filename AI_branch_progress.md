@@ -50,6 +50,8 @@
   未放行训练；已登记E0077并改为CPU-only Slurm batch自持preflight，要求atomic JSON。
   CPU preflight脚本的分区已由会触发`QOSMinGRES`的normal修正为集群实际`cpu`分区；
   被拒绝的提交没有创建job或占用GPU。
+  cpu分区16-CPU请求又被`QOSMaxCpuPerNode`在创建job前拒绝，已按单进程reader实际需求
+  修正为8 CPU；两次拒绝均未创建Slurm job。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 

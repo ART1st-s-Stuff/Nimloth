@@ -64,7 +64,7 @@ def test_full_preflight_is_batch_owned_and_cpu_only() -> None:
     text = PREFLIGHT_SLURM.read_text(encoding="utf-8")
     assert "#SBATCH --partition=cpu" in text
     assert "#SBATCH --nodes=1" in text
-    assert "#SBATCH --cpus-per-task=16" in text
+    assert "#SBATCH --cpus-per-task=8" in text
     assert "#SBATCH --time=00:30:00" in text
     assert "#SBATCH --gres" not in text
     assert "nohup" not in text
