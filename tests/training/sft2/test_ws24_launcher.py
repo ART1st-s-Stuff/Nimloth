@@ -53,3 +53,7 @@ def test_preflight_and_completion_gates_accept_only_explicit_topology() -> None:
     assert "args.world_size == args.nodes * args.gpus_per_node" in preflight
     assert 'parser.add_argument("--expected-world-size"' in validator
     assert 'invariants["world_size"] == args.expected_world_size' in validator
+    assert '"preprocess_cache_access": "read_only_reuse"' in preflight
+    assert '"checkpoint_interval_minutes"' in preflight
+    assert '"qwen_vision"' in preflight
+    assert '"value_head"' in preflight

@@ -91,6 +91,8 @@ def validate_config(
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     train = config["train"]
     loss = config["loss"]
+    tuning = config["tuning"]
+    latent = config["latent"]
     assert config["objective"]["name"] == "dino_grid"
     assert train["epochs"] == epochs
     assert train["batch_size"] == 1
@@ -98,6 +100,11 @@ def validate_config(
     assert train["prediction_horizon"] == 4
     assert train["batch_mode"] == "trajectory_online_cache"
     assert train["require_prebuilt_cache"] is True
+    assert train["train_wm_predictor"] is True
+    assert train["checkpoint_interval_minutes"] == 20.0
+    assert tuning["llm_tune"] == "freeze"
+    assert tuning["vision_tune"] == "full"
+    assert latent["query_tune"] == "freeze"
     assert loss["value_gamma"] == 1.0
     assert loss["lambda_value"] == 1.0
     assert "rank" not in json.dumps(loss).lower()
@@ -109,6 +116,9 @@ def validate_config(
         "history_size": 1,
         "prediction_horizon": 4,
         "value_objective": SFT2_VALUE_OBJECTIVE,
+        "checkpoint_interval_minutes": float(
+            train["checkpoint_interval_minutes"]
+        ),
     }
 
 
@@ -351,6 +361,24 @@ def main() -> None:
             "recorded_action_sequence": True,
             "value_gamma": 1.0,
         },
+        "inputs": {
+            "config": str(args.config.resolve()),
+            "model_init": str(args.model.resolve()),
+            "train_jsonl": str(args.train_jsonl.resolve()),
+            "val_jsonl": str(args.val_jsonl.resolve()),
+            "preprocess_cache": str(args.preprocess_cache.resolve()),
+            "preprocess_cache_access": "read_only_reuse",
+            "dino_cache": str(args.dino_cache.resolve()),
+        },
+        "modules": {
+            "trainable": [
+                "qwen_vision",
+                "state_projector",
+                "wm_predictor",
+                "value_head",
+            ],
+            "frozen": ["qwen_llm", "dino_teacher_cache", "latent_query"],
+        },
         "data": {
             "train": train_result,
             "val": val_result,
@@ -370,6 +398,9 @@ def main() -> None:
             ),
             "fresh_optimizer": True,
             "resume": False,
+            "checkpoint_interval_minutes": config[
+                "checkpoint_interval_minutes"
+            ],
         },
         "topology": {
             "partition": args.partition,
