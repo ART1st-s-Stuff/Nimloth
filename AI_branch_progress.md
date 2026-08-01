@@ -77,6 +77,9 @@
 - normal释放8+4+4后，已用单一heterogeneous hold`500941`占住`dgx-24:8`与
   `dgx-26/40:4+4`，共16 H800且当前`RUNNING`。正式SFT2将使用4个4-GPU agent/world16，
   保持B1/GA4和effective global batch64，再以batch-owned controller替换hold。
+- ID69 8+4+4 full preflight`500944`通过并确认1,552 steps；正式`500945`受dgx-24新
+  reservation影响预计07:21。当前替代hold`500950`已取得normal 4+4+4+2+1+1共16 H800，
+  准备以16个1-GPU agent维持world16/B1/GA4并在该1小时allocation内直接训练。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 

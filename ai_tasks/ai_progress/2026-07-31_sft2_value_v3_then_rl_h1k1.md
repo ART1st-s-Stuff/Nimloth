@@ -136,3 +136,7 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - normal出现8+4+4后，人类要求立即占住；heterogeneous hold`500941`已在`dgx-24`
   取得8 H800、`dgx-26/40`各取得4 H800，总计16卡并为`RUNNING`。正式映射采用物理
   8+4+4、逻辑4个4-GPU agent/world16，B1/GA4 effective global batch恢复为64。
+- ID69 world16 8+4+4 full preflight`500944`已`COMPLETED 0:0`并确认1,552 steps。
+  正式`500945`提交后，hold`500941`释放，因`dgx-24`新reservation只能预计07:21启动。
+  替代normal 4+4+4+2+1+1 hold`500950`已取得16 H800；改用16个1-GPU agent保持
+  world16/B1/GA4/effective batch64，并直接在该1小时allocation内启动。
