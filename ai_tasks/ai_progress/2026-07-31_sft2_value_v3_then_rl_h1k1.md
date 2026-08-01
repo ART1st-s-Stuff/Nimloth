@@ -85,3 +85,15 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   纯CPU分区名为`cpu`，已修正静态合同，未通过申请H800绕过门禁。
   cpu分区的16-CPU请求随后又在创建job前被`QOSMaxCpuPerNode`拒绝；该reader为单进程，
   因此按集群上限修正为8 CPU，不改变全量校验内容。
+- 最终训练代码固定为`3a7f81ba`。CPU-only preflight job`500843`在`intel-01`
+  运行7分56秒并`COMPLETED 0:0`；ID65 `preflight.json status=passed`：train/val
+  49,638/4,989个H1/T4 windows全量加载，DINO missing 0/0，ID53 cache明确只读复用，
+  输入hash、BF16 materialization、W&B ID/name唯一性、commit/clean/配额均通过。
+- WS24生产sampler实测每epoch2,069 microbatches、518 optimizer steps，两epoch1,036步；
+  global SIGReg每个microbatch有6--24个有效states，仅18个padding slots/epoch。
+  trainable为Qwen vision、StateProjector、WM predictor、ValueHead；Qwen LLM、DINO
+  teacher/cache、latent query冻结；fresh optimizer、20分钟latest checkpoint。
+- 正式preempt训练已提交为job`500845`：3节点×8 H800、world size24、B1/GA4、
+  192 CPU、2400 GiB、8小时。提交时`dgx-55/56`完整空闲，`dgx-01`被其他用户1-GPU
+  job占用，因此`500845`为`PENDING(Priority)`，Slurm候选节点为`dgx-[01,55-56]`；
+  尚无allocation/W&B/model load/optimizer step，必须继续监控到24-rank和finite step。

@@ -52,6 +52,10 @@
   被拒绝的提交没有创建job或占用GPU。
   cpu分区16-CPU请求又被`QOSMaxCpuPerNode`在创建job前拒绝，已按单进程reader实际需求
   修正为8 CPU；两次拒绝均未创建Slurm job。
+- 最终commit`3a7f81ba`的CPU preflight job`500843`已`COMPLETED 0:0`（7:56），
+  ID65全量49,638/4,989 windows、cache/DINO/W&B/输入hash和WS24调度全部passed。
+  正式preempt job`500845`已提交，请求3×8 H800/world24、B1/GA4、192 CPU/2400 GiB、
+  8小时；当前`PENDING(Priority)`，候选`dgx-[01,55-56]`，第三节点仍被别人占1张卡。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
