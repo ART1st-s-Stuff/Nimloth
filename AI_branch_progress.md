@@ -66,6 +66,10 @@
 - 非对称物理拓扑`2×8+2×4`已在`32ccb011`实现，逻辑仍为6×4/world24并带GPU UUID
   去重门禁，远端`7 passed`。但test-only显示`2×8+2×4`和`1×8+4×4`均预计8月4日，
   因两台8卡节点为`IDLE+PLANNED`；现有6×4 `500865`预计8月2日，故未替换。
+- 人类随后指定normal `4+4+2+2`。旧WS24 `500865`已取消且`Elapsed=0`；新commit
+  `03413ed8`实现物理4+4+2+2、逻辑6×2/world12和GPU UUID门禁，远端`11 passed`。
+  ID67 CPU preflight `500926`因手工抄错完整commit hash在commit gate 1秒失败，无GPU、
+  W&B、模型或训练产物且不可复用；新提交使用真实hash与新实验identity。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 

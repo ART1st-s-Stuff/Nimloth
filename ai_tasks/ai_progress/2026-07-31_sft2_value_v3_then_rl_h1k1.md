@@ -122,3 +122,9 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `2026-08-04 14:25--14:26`，晚于现有6×4 job`500865`的`2026-08-02 07:21`。
   原因是normal两台完整8卡节点均为`IDLE+PLANNED`，其余未预留节点合计仅16张可调度GPU。
   因此保留更早的`500865`，未提交更慢的异构替代作业。
+- 人类改为normal物理`4+4+2+2`后，旧WS24 job`500865`已取消，`Elapsed=0`、无
+  allocation/训练产物。commit`03413ed8`新增6个2-GPU agent/world12 launcher、物理
+  4+4+2+2与全局12个GPU UUID门禁；远端目标commit回归`11 passed`。
+- ID67 CPU preflight `500926`因提交命令手工抄错完整commit hash，在最前置commit门禁
+  1秒失败（`FAILED 1:0`），未进入数据、模型、W&B或GPU。ID67不可复用；后续必须从
+  `git rev-parse HEAD`取得真实`03413ed8d8260afd973aa44316f67813b1ddb576`并用新identity。
