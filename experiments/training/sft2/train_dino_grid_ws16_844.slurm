@@ -22,6 +22,12 @@ set -euo pipefail
 : "${WANDB_RUN_ID:?}"
 : "${EXPECTED_STEPS:?}"
 
+RESUME=${RESUME:-0}
+case "${RESUME}" in
+  0|1) ;;
+  *) echo "ERROR RESUME must be 0 or 1, got ${RESUME}" >&2; exit 1 ;;
+esac
+
 test "${SLURM_HET_SIZE}" -eq 2
 test "$(git -C "${REPO}" rev-parse HEAD)" = "${EXPECTED_COMMIT}"
 test -z "$(git -C "${REPO}" status --porcelain --untracked-files=no)"
@@ -33,7 +39,24 @@ for required in \
   test -s "${required}"
 done
 test -f "${PREPROCESS_CACHE}/cache_done.flag"
-if [ -d "${RUN_OUTPUT}" ] && [ -n "$(find "${RUN_OUTPUT}" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+if [ "${RESUME}" = 1 ]; then
+  : "${RESUME_FROM:?set RESUME_FROM to the validated checkpoint directory}"
+  test "${RESUME_FROM#/}" != "${RESUME_FROM}"
+  test -d "${RUN_OUTPUT}"
+  test ! -e "${RUN_OUTPUT}/sft2_done.flag"
+  for required in \
+    "${RESUME_FROM}/training_state.pt" \
+    "${RESUME_FROM}/state_proj.pt" \
+    "${RESUME_FROM}/wm_predictor/config.json" \
+    "${RESUME_FROM}/wm_predictor/predictor.pt" \
+    "${RESUME_FROM}/value_head/value_head.pt"; do
+    test -s "${required}"
+  done
+  for rank in $(seq 0 15); do
+    test -s "${RESUME_FROM}/history_cache_rank_$(printf '%03d' "${rank}").pt"
+  done
+  test -s "${RESUME_FROM}/config.json" || test -s "${RESUME_FROM}/adapter_config.json"
+elif [ -d "${RUN_OUTPUT}" ] && [ -n "$(find "${RUN_OUTPUT}" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
   echo "ERROR fresh SFT2 output is non-empty: ${RUN_OUTPUT}" >&2
   exit 1
 fi
@@ -50,6 +73,7 @@ export MASTER_ADDR="${HOSTS0[0]}"
 export MASTER_PORT=$((20000 + SLURM_JOB_ID % 20000))
 export REPO EXPECTED_COMMIT RUN_ROOT RUN_OUTPUT MODEL_PATH TRAIN_JSONL VAL_JSONL
 export PREPROCESS_CACHE WANDB_ENTITY WANDB_PROJECT_NAME WANDB_RUN_NAME WANDB_RUN_ID
+export RESUME RESUME_FROM
 export MASTER_ADDR MASTER_PORT
 
 {
@@ -65,8 +89,12 @@ export MASTER_ADDR MASTER_PORT
   echo "- preprocess cache: ${PREPROCESS_CACHE} (read-only reuse)"
   echo "- W&B: ${WANDB_ENTITY}/${WANDB_PROJECT_NAME}/${WANDB_RUN_NAME} (${WANDB_RUN_ID})"
   echo "- output: ${RUN_OUTPUT}"
-  echo "- resume: false; fresh optimizer; 20-minute latest checkpoints"
-} > "${RUN_ROOT}/README.md"
+  if [ "${RESUME}" = 1 ]; then
+    echo "- resume: true; checkpoint=${RESUME_FROM}; same optimizer and W&B identity"
+  else
+    echo "- resume: false; fresh optimizer; 20-minute latest checkpoints"
+  fi
+} >> "${RUN_ROOT}/README.md"
 
 echo "probe_start=$(date --iso-8601=seconds) job=${SLURM_JOB_ID}"
 NODE_MODE=probe srun \

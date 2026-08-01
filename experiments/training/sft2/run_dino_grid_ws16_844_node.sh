@@ -62,7 +62,7 @@ export EXPECTED_WORLD_SIZE=16
 export NODE_RANK=${AGENT_RANK}
 export BATCH_SIZE=1
 export GRAD_ACCUM=4
-export RESUME=0
+export RESUME=${RESUME:-0}
 unset EXTRA_TRAIN_ARGS
 
 exec bash "${REPO}/experiments/training/sft2/train_dino_grid_world8.sh"

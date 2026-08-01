@@ -30,7 +30,11 @@ def test_ws16_844_launcher_contract() -> None:
     assert "NNODES=3" in node
     assert "EXPECTED_WORLD_SIZE=16" in node
     assert "GRAD_ACCUM=4" in node
-    assert "RESUME=0" in node
+    assert "RESUME=${RESUME:-0}" in node
+    assert 'RESUME=${RESUME:-0}' in slurm
+    assert ': "${RESUME_FROM:?set RESUME_FROM to the validated checkpoint directory}"' in slurm
+    assert '"${RESUME_FROM}/history_cache_rank_$(printf \'%03d\' "${rank}").pt"' in slurm
+    assert 'export RESUME RESUME_FROM' in slurm
     assert 'test -f "${PREPROCESS_CACHE}/cache_done.flag"' in slurm
     assert '"${PREPROCESS_CACHE}/cache_done.flag" \\' not in slurm
     assert "scancel" not in slurm
