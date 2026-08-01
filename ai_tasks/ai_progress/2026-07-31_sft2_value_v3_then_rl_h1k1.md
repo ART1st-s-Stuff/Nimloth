@@ -149,3 +149,6 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   hold`500977`已取得；ID72 full preflight通过且W&B已建立，但4个4-GPU agent在8卡节点
   拆成两个`torchrun`，DDP参数校验报NCCL `invalid device ordinal`，未到optimizer step。
   启动合同改为16个1-GPU agent，按物理节点显式`map_gpu`后再启动新ID。
+- ID73 full preflight和16×1-GPU allocation probe均通过，但16个独立`torchrun` agents
+  在同一物理主机仍触发NCCL P2P `invalid device ordinal`，未到optimizer step。后续必须
+  每物理节点只启动一个torchrun agent（8/4/4 local world），先跑最小all-reduce验证。

@@ -88,6 +88,9 @@
   新hold`500977`已取得normal 8+4+4。ID72用4个4-GPU agent在同一8卡节点拆两个
   `torchrun`，DDP初始化报NCCL `invalid device ordinal`，未到optimizer step；改为16个
   1-GPU agent并用显式`map_gpu`隔离。
+- ID73的16个1-GPU `torchrun` agents也在NCCL同主机P2P初始化报相同device ordinal错误，
+  未到optimizer step；需改为每物理节点一个torchrun agent，本地world分别8/4/4，并先
+  通过最小NCCL all-reduce probe验证可变local world size。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
