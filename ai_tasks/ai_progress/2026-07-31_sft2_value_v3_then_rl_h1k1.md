@@ -155,3 +155,8 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - 8/4/4 variable-local-world最小NCCL probe已16-rank all-reduce通过；正式commit
   `1f6ea55f`远端18 tests通过。ID74 full preflight`500985`通过，W&B `d52u5anf`，已健康
   训练到至少optimizer step23；total/WM/DINO/Value/LM loss均有限，16卡利用率100%。
+- ID74已继续推进到至少step93；job`500977`的1小时hold将在04:39:42+08到期，后继
+  exact 8+4+4 hold`500990`以`afterany`等待。commit`13fd4320`把同一controller改为
+  显式可恢复：resume时必须给出绝对checkpoint路径，并在启动前验证Qwen/StateProjector、
+  WM predictor、ValueHead、training state和16份rank history cache完整；当前仅完成
+  shell syntax、diff-check和3项静态launcher检查，仍需首个latest落盘后做远端完整验证。

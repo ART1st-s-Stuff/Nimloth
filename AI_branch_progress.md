@@ -94,6 +94,11 @@
 - 8/4/4 variable-local-world最小NCCL all-reduce已16 ranks通过；正式实现commit
   `1f6ea55f`远端18 tests通过。ID74 full preflight`500985`通过，W&B `d52u5anf`，
   已越过DDP初始化并健康训练到至少optimizer step23；各loss有限，16卡100%利用。
+- ID74已继续稳定推进到至少step93，CSV确认实际world16/global batch16且各项loss有限；
+  当前1小时hold `500977`将在04:39:42+08到期，依赖hold `500990`等待接管同一8+4+4。
+  commit`13fd4320`为controller增加显式`RESUME=1`和绝对checkpoint门禁，要求Qwen、
+  StateProjector、WM、ValueHead、training state及16份rank history cache完整；shell syntax、
+  diff-check和3项静态launcher检查通过，尚待远端完整定向回归。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
