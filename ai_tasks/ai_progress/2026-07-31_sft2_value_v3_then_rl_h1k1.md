@@ -72,3 +72,12 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   shell syntax、Python compile和diff-check已通过。尚未提交；superpod跳板
   `10.88.0.3`连续两次在SSH握手后立即断开，需连接恢复后完成实时资源、W&B/new-ID、
   cache只读验证、远端clean exact-commit回归和正式提交。
+- superpod连接恢复后，最终代码更新到`92efac9c`；远端clean worktree的SFT2/WM/latent/
+  planner回归为`141 passed, 1 skipped in 35.16s`，launcher定向回归`8 passed`。
+  W&B `nimloth-sft2` live max ID为63，但ID64已被旧preflight和取消作业占用，因此新实验
+  使用ID65、run id `6oz3cm0f`，禁止复用ID64。
+- ID65首次全量preflight由SSH会话直接拥有；连接在约5分钟后被远端关闭，进程继续到
+  约8分钟后消失，但未写出`preflight.json`且stdout/stderr已丢失，无法判定后段assertion
+  或session cleanup。该attempt不放行训练，也不重复使用残留进程；问题登记为E0077。
+  已新增CPU-only、batch-owned preflight脚本，使用normal单节点16 CPU/32 GiB、不请求GPU，
+  日志写在`RUN_OUTPUT`旁，并把atomic `preflight.json`作为正式训练提交的硬门禁。

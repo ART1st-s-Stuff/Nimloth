@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 SLURM = ROOT / "experiments/training/sft2/train_dino_grid_ws24.slurm"
 NODE = ROOT / "experiments/training/sft2/run_dino_grid_ws24_node.sh"
+PREFLIGHT_SLURM = ROOT / "experiments/training/sft2/preflight_dino_grid_ws24.slurm"
 PREFLIGHT = ROOT / "experiments/training/sft2/preflight_dino_grid_h1_t4.py"
 VALIDATOR = ROOT / "experiments/training/sft2/validate_dino_grid_training_output.py"
 
@@ -57,3 +58,17 @@ def test_preflight_and_completion_gates_accept_only_explicit_topology() -> None:
     assert '"checkpoint_interval_minutes"' in preflight
     assert '"qwen_vision"' in preflight
     assert '"value_head"' in preflight
+
+
+def test_full_preflight_is_batch_owned_and_cpu_only() -> None:
+    text = PREFLIGHT_SLURM.read_text(encoding="utf-8")
+    assert "#SBATCH --partition=normal" in text
+    assert "#SBATCH --nodes=1" in text
+    assert "#SBATCH --cpus-per-task=16" in text
+    assert "#SBATCH --time=00:30:00" in text
+    assert "#SBATCH --gres" not in text
+    assert "nohup" not in text
+    assert "--world-size 24" in text
+    assert "--partition preempt" in text
+    assert 'LOG="${RUN_OUTPUT}.preflight_${SLURM_JOB_ID}.log"' in text
+    assert r"\${" not in text

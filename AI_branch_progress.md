@@ -45,6 +45,9 @@
   预计每epoch2,069 microbatches/518 optimizer steps、两epoch1,036步，须以远端生产
   preflight实测为准。当前本地静态/compile/syntax门禁通过，但superpod VPN跳板连接被
   `10.88.0.3`立即断开，尚未提交Slurm/W&B或创建训练输出。
+- 连接恢复后远端`92efac9c` clean worktree完成`141 passed, 1 skipped`扩展回归与
+  `8 passed` launcher门禁。ID65首次全量preflight因SSH连接中断后最终无result/log而无效，
+  未放行训练；已登记E0077并改为CPU-only Slurm batch自持preflight，要求atomic JSON。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
