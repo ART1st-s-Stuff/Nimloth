@@ -3359,7 +3359,8 @@
   2个同步rank、每rank 2 GPU，vLLM TP4。远端配置硬断言与31项回归通过；使用正确
   `train_ws16/epoch_001`路径的CPU preflight为`PREFLIGHT_OK`，W&B ID113精确run name为
   0命中。定向`dgx-46`的normal job`502499`已提交，4 H800/64 CPU/160 GiB/2小时；当前
-  `PENDING(Priority)`且无预计开始时间，尚未获得GPU或形成任何训练证据。
+  `PENDING(Priority)`，最新非约束预计开始时间为`2026-08-02T23:05:00Z`；尚未获得GPU
+  或形成任何训练证据。
 - 共享workspace曾并发产生另一条ID113/job`502498`；为避免资源与数字ID竞争，它已在无
   allocation、`Elapsed=00:00:00`时取消，没有任何运行产物。唯一保留并监控的ID113为
   `502499`。

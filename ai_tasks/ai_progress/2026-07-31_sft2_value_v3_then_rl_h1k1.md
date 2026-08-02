@@ -228,8 +228,9 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - ID113 output/name为
   `113_smoke_ep1_greedyh1_k16_dino05_qwenwmvalue_ep4x20_1n2r2g_vllmtp4_dgx46`，launch
   contract已落盘。normal job`502499`定向`dgx-46`请求4 H800、64 CPU、160 GiB、2小时；
-  提交后仍为`PENDING(Priority)`且StartTime unknown。`dgx-46`实时仅被其他用户占2/8卡，
-  但Slurm尚未backfill本job；当前仍无GPU、Ray/vLLM、rollout、真实DDP或optimizer证据。
+  提交后仍为`PENDING(Priority)`，最新非约束StartTime为`2026-08-02T23:05:00Z`。
+  `dgx-46`实时仅被其他用户占2/8卡，但Slurm尚未backfill本job；当前仍无GPU、Ray/vLLM、
+  rollout、真实DDP或optimizer证据。
 - 共享workspace并发产生的另一个ID113/job`502498`已主动取消以消除重复排队：sacct为
   `CANCELLED/Elapsed=00:00:00/NodeList=None assigned/ExitCode=0:0`，没有output、W&B、
   Ray/vLLM、rollout、DDP、optimizer或checkpoint。其邻接progress已记录终态；唯一保留
