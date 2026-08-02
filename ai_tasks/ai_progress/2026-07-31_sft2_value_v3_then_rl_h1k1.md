@@ -234,3 +234,9 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `CANCELLED/Elapsed=00:00:00/NodeList=None assigned/ExitCode=0:0`，没有output、W&B、
   Ray/vLLM、rollout、DDP、optimizer或checkpoint。其邻接progress已记录终态；唯一保留
   并监控的canonical ID113是job`502499`。
+- 当前normal priority阻塞与旧SFT2链相关：头任务`502449`优先级1088，高于RL的996，两个
+  heterogeneous component分别给出约15:03/17:03估计；后继`502452/502454`仍为dependency。
+  尝试用标准`hold/holdu`及带`Account=peilab`的Priority0 update可逆暂停头任务，均被站点
+  权限插件拒绝且任务状态未改变。固定dgx-46的1h45/1h/30m test-only均进一步推迟到21:13Z，
+  说明缩短时限也不能立即backfill。未取消SFT2链、未提交低时限近似实验；canonical
+  `502499`保持`PENDING(Priority)`并继续等待健康启动门禁。

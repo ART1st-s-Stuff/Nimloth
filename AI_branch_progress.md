@@ -3363,3 +3363,8 @@
 - 共享workspace曾并发产生另一条ID113/job`502498`；为避免资源与数字ID竞争，它已在无
   allocation、`Elapsed=00:00:00`时取消，没有任何运行产物。唯一保留并监控的ID113为
   `502499`。
+- 当前normal阻塞已进一步定位：旧SFT2续训头任务`502449`优先级1088，高于RL的996，并有
+  15:03/17:03调度估计。为优先执行人类指定的dgx-46 RL，曾尝试对仍pending的SFT2做可逆
+  user hold，但站点权限插件拒绝`hold/holdu`以及带Account的Priority0 update，SFT2状态
+  未改变。固定dgx-46的1h45/1h/30m test-only此时又都预计21:13Z，缩短walltime也不能
+  backfill；因此没有取消SFT2链或提交不能保证完成的近似RL，`502499`继续等待Priority。
