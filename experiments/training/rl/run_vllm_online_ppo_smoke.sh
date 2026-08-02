@@ -472,15 +472,46 @@ if (( TRAIN_NNODES == 1 )); then
     "${TRAIN_ARGS[@]}" 2>&1 | tee -a "${LOG}"
 else
   [[ -n "${SLURM_JOB_ID:-}" ]] || { echo "multi-node training requires SLURM_JOB_ID" >&2; exit 1; }
-  mapfile -t TRAIN_NODES_LIST < <(scontrol show hostnames "${SLURM_JOB_NODELIST}")
+  TRAIN_NODES_LIST=()
+  declare -A TRAIN_GPU_COUNTS
+  declare -A TRAIN_HET_GROUPS
+  if [[ -n "${NIMLOTH_TRAIN_NODE_SPECS:-}" ]]; then
+    IFS=',' read -r -a TRAIN_NODE_SPECS <<< "${NIMLOTH_TRAIN_NODE_SPECS}"
+    for node_spec in "${TRAIN_NODE_SPECS[@]}"; do
+      IFS=':' read -r node node_gpus het_group extra <<< "${node_spec}"
+      [[ -n "${node}" && "${node_gpus}" =~ ^[1-9][0-9]*$ && "${het_group}" =~ ^-?[0-9]+$ && -z "${extra}" ]] || {
+        echo "invalid NIMLOTH_TRAIN_NODE_SPECS entry: ${node_spec}" >&2
+        exit 1
+      }
+      [[ -z "${TRAIN_GPU_COUNTS[${node}]:-}" ]] || {
+        echo "duplicate training node spec: ${node}" >&2
+        exit 1
+      }
+      TRAIN_NODES_LIST+=("${node}")
+      TRAIN_GPU_COUNTS[${node}]=${node_gpus}
+      TRAIN_HET_GROUPS[${node}]=${het_group}
+    done
+  else
+    mapfile -t TRAIN_NODES_LIST < <(scontrol show hostnames "${SLURM_JOB_NODELIST}")
+    JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}")
+    nimloth_load_slurm_gpu_counts "${JOB_DETAILS}" TRAIN_GPU_COUNTS
+    for node in "${TRAIN_NODES_LIST[@]}"; do
+      TRAIN_HET_GROUPS[${node}]=-1
+    done
+  fi
+  (( ${#TRAIN_NODES_LIST[@]} == TRAIN_NNODES )) || {
+    echo "training node specs contain ${#TRAIN_NODES_LIST[@]} nodes, expected ${TRAIN_NNODES}" >&2
+    exit 1
+  }
   HEAD_NODE=${TRAIN_NODES_LIST[0]}
-  RDZV_IP=$(srun --jobid="${SLURM_JOB_ID}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" \
-    --gpus=0 hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
+  RDZV_SRUN_ARGS=(--jobid="${SLURM_JOB_ID}" --overlap --nodes=1 --ntasks=1 -w "${HEAD_NODE}" --gpus=0)
+  head_het_group=${TRAIN_HET_GROUPS[${HEAD_NODE}]}
+  if (( head_het_group >= 0 )); then
+    RDZV_SRUN_ARGS+=(--het-group="${head_het_group}")
+  fi
+  RDZV_IP=$(srun "${RDZV_SRUN_ARGS[@]}" hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
   [[ -n "${RDZV_IP}" ]] || { echo "missing multi-node rendezvous IP" >&2; exit 1; }
   export NIMLOTH_TRAIN_ARGS=$(printf '%q ' "${TRAIN_ARGS[@]}")
-  JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}")
-  declare -A TRAIN_GPU_COUNTS
-  nimloth_load_slurm_gpu_counts "${JOB_DETAILS}" TRAIN_GPU_COUNTS
   TRAIN_STEP_PIDS=()
   rank_offset=0
   for node in "${TRAIN_NODES_LIST[@]}"; do
@@ -491,8 +522,12 @@ else
       exit 1
     }
     node_ranks=$((node_gpus / TRAIN_GPUS_PER_RANK))
-    srun --jobid="${SLURM_JOB_ID}" --overlap --nodes=1 --ntasks=1 -w "${node}" \
-      --gres="gpu:${node_gpus}" \
+    TRAIN_SRUN_ARGS=(--jobid="${SLURM_JOB_ID}" --overlap --nodes=1 --ntasks=1 -w "${node}" --gres="gpu:${node_gpus}")
+    het_group=${TRAIN_HET_GROUPS[${node}]}
+    if (( het_group >= 0 )); then
+      TRAIN_SRUN_ARGS+=(--het-group="${het_group}")
+    fi
+    srun "${TRAIN_SRUN_ARGS[@]}" \
       env NIMLOTH_NODE_RANKS="${node_ranks}" NIMLOTH_RANK_OFFSET="${rank_offset}" \
         NIMLOTH_DDP_GPU_STRIDE="${TRAIN_GPUS_PER_RANK}" \
       bash -lc '

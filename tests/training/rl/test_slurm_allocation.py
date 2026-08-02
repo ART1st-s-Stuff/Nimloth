@@ -16,6 +16,9 @@ PARALLEL_CONTROLLER = (
 )
 SHARD_RUNNER = REPO_ROOT / "experiments/training/rl/run_vllm_rollout_shard.sh"
 CONTINUATION = REPO_ROOT / "src/nimloth/training/rl/continuation.py"
+HETERO_32_CONFIG = (
+    REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_32gpu_88844.yaml"
+)
 
 
 def _load_counts(job_details: str) -> list[str]:
@@ -132,11 +135,14 @@ def test_parallel_controller_uses_eight_isolated_tp4_workers_then_world16() -> N
     controller = PARALLEL_CONTROLLER.read_text(encoding="utf-8")
     shard_runner = SHARD_RUNNER.read_text(encoding="utf-8")
 
-    assert 'CONFIG_NODES}" == 4' in controller
+    assert 'CONFIG_NODES}" == 4 || "${CONFIG_NODES}" == 5' in controller
     assert 'CONFIG_WORLD_SIZE}" == 16' in controller
     assert 'CONFIG_TOTAL_GPUS}" == 32' in controller
     assert 'ROLLOUT_WORKERS:-8' in controller
-    assert 'WORKERS_PER_NODE:-2' in controller
+    assert 'workers_per_node=$((node_gpus / TP_SIZE))' in controller
+    assert 'global_worker=$((NIMLOTH_WORKER_OFFSET + local_worker))' in controller
+    assert 'NODE_SPECS+=("${node}:${node_gpus}:${het_group}")' in controller
+    assert 'NIMLOTH_TRAIN_NODE_SPECS="${NIMLOTH_TRAIN_NODE_SPECS}"' in controller
     assert 'SHARD_GPU_VISIBLE="${shard_visible}"' in controller
     assert 'SHARD_SEED="${shard_seed}"' in controller
     assert 'SHARD_EVAL_SET="${dataset}"' in controller
@@ -145,3 +151,20 @@ def test_parallel_controller_uses_eight_isolated_tp4_workers_then_world16() -> N
     assert '--vllm-distributed-executor-backend mp' in shard_runner
     assert 'export VLLM_WORKER_MULTIPROC_METHOD=spawn' in shard_runner
     assert '--num-episodes 1' in shard_runner
+
+
+def test_true32_heterogeneous_topology_is_explicitly_routed_by_het_group() -> None:
+    controller = PARALLEL_CONTROLLER.read_text(encoding="utf-8")
+    pipeline = PIPELINE.read_text(encoding="utf-8")
+    config = HETERO_32_CONFIG.read_text(encoding="utf-8")
+
+    assert 'SLURM_JOB_NODELIST_HET_GROUP_${het_group}' in controller
+    assert 'SRUN_ARGS+=(--het-group="${het_group}")' in controller
+    assert 'NIMLOTH_HET_GPUS_PER_NODE' in controller
+    assert 'TRAIN_HET_GROUPS[${node}]=${het_group}' in pipeline
+    assert 'RDZV_SRUN_ARGS+=(--het-group="${head_het_group}")' in pipeline
+    assert 'TRAIN_SRUN_ARGS+=(--het-group="${het_group}")' in pipeline
+    assert "nodes: 5" in config
+    assert "world_size: 16" in config
+    assert "gpus_per_rank: 2" in config
+    assert "rollout_tensor_parallel_size: 4" in config
