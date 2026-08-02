@@ -132,6 +132,7 @@ SEED_OFFSET=${SEED_OFFSET:-$(( (ITERATION - 1) * NUM_EPISODES + 1 ))}
   echo "SEED_OFFSET must be a positive integer" >&2
   exit 1
 }
+SEED_RANGE_DESCRIPTION=${SEED_RANGE_DESCRIPTION:-${SEED_OFFSET}..$((SEED_OFFSET + NUM_EPISODES - 1))}
 if [[ "${REFERENCE_KL_WEIGHT}" != 0.0 ]]; then
   [[ -f "${REFERENCE_MODEL}/config.json" ]] || {
     echo "missing reference model: ${REFERENCE_MODEL}" >&2
@@ -648,7 +649,7 @@ else
   CHECKPOINT_LABEL=latest
 fi
 printf '%s\n' \
-  "- ${ITERATION_TAG}: completed at $(date -Iseconds); seeds ${SEED_OFFSET}..$((SEED_OFFSET + NUM_EPISODES - 1)); checkpoint=train/${CHECKPOINT_LABEL}" \
+  "- ${ITERATION_TAG}: completed at $(date -Iseconds); seeds ${SEED_RANGE_DESCRIPTION}; checkpoint=train/${CHECKPOINT_LABEL}" \
   >> "${RUN_OUT}/README.md"
 echo "=== ${TRAIN_TOTAL_GPUS}-GPU vLLM online RL ${ITERATION_TAG} ALL_OK $(date -Iseconds) ===" | tee -a "${LOG}"
 fi

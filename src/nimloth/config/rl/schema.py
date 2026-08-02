@@ -120,6 +120,7 @@ class RLLoopConfig:
 @dataclass(frozen=True)
 class ValidationConfig:
     enabled: bool = True
+    external: bool = False
     interval: int = 50
     envs: int = 16
     checkpoint_metric: str = "success_rate"
@@ -256,7 +257,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     validation = _section(
         raw,
         "validation",
-        {"enabled", "interval", "envs", "checkpoint_metric"},
+        {"enabled", "external", "interval", "envs", "checkpoint_metric"},
     )
     training = _section(raw, "training", {"seed", "log_interval", "save_interval"})
     distributed = _section(
@@ -515,10 +516,18 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         validation.get("enabled", True),
         "validation.enabled",
     )
+    validation_external = _boolean(
+        validation.get("external", False),
+        "validation.external",
+    )
+    if validation_enabled and validation_external:
+        raise ValueError(
+            "validation.enabled and validation.external are mutually exclusive"
+        )
     validation_envs = _positive_int(
         validation.get("envs", 16),
         "validation.envs",
-        allow_zero=not validation_enabled,
+        allow_zero=not (validation_enabled or validation_external),
     )
     envs_per_iteration = _positive_int(
         loop.get("envs_per_iteration", 8),
@@ -622,6 +631,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         ),
         validation=ValidationConfig(
             enabled=validation_enabled,
+            external=validation_external,
             interval=_positive_int(
                 validation.get("interval", 50),
                 "validation.interval",

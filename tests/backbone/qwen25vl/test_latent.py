@@ -14,10 +14,12 @@ class _FakeQwen(nn.Module):
         super().__init__()
         self.model = SimpleNamespace(language_model=SimpleNamespace(norm=nn.LayerNorm(4)))
         self.output_hidden_states_seen: bool | None = None
+        self.logits_to_keep_seen = None
 
     def forward(self, input_ids, output_hidden_states: bool, return_dict: bool, **kwargs):
         assert return_dict is True
         self.output_hidden_states_seen = output_hidden_states
+        self.logits_to_keep_seen = kwargs.get("logits_to_keep")
         batch, seq_len = input_ids.shape
         hidden = torch.arange(batch * seq_len * 4, dtype=torch.float32).reshape(batch, seq_len, 4)
         final_hidden = self.model.language_model.norm(hidden)
@@ -40,6 +42,7 @@ def test_extract_qwen_latents_uses_final_norm_hook_without_all_hidden_states() -
     )
 
     assert model.output_hidden_states_seen is False
+    assert model.logits_to_keep_seen == 1
     assert loss is not None
     expected = model.model.language_model.norm(
         torch.arange(1 * 3 * 4, dtype=torch.float32).reshape(1, 3, 4)
@@ -75,3 +78,20 @@ def test_extract_qwen_latents_can_return_multi_token_block() -> None:
     )[0, 1:4]
     assert latent.shape == (1, 3, 4)
     torch.testing.assert_close(latent[0], expected_hidden)
+
+
+def test_extract_qwen_latents_keeps_full_supervised_lm_loss() -> None:
+    tokens = LatentActionTokens()
+    token_id_map = {token: i + 10 for i, token in enumerate(tokens.all_special_tokens)}
+    input_ids = torch.tensor([[1, token_id_map[tokens.latent_state], 2]])
+    model = _FakeQwen()
+
+    _latent, loss = extract_qwen_latents(
+        model,
+        {"input_ids": input_ids, "labels": input_ids.clone()},
+        token_id_map,
+        torch.device("cpu"),
+    )
+
+    assert model.logits_to_keep_seen is None
+    assert loss is not None

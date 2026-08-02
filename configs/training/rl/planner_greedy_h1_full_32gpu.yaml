@@ -43,23 +43,27 @@ value_head:
 
 rl:
   iterations: 60
-  envs_per_iteration: 8
+  envs_per_iteration: 128
   max_steps_per_episode: 20
   gamma: 1.0
-  batch_size: 8
+  batch_size: 128
   truncated_bootstrap: zero
 
 rollout:
   train_datasets:
     - base_train
     - common_sense_train
+  eval_datasets:
+    - base
+    - common_sense
   temperature: 0.7
   top_p: 0.95
 
 validation:
   enabled: false
+  external: true
   interval: 10
-  envs: 0
+  envs: 120
   checkpoint_metric: success_rate
 
 training:

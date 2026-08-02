@@ -10,7 +10,11 @@ WM_CKPT=${WM_CKPT:-${MODEL}}
 RL_CONFIG=${RL_CONFIG:?set RL_CONFIG}
 SHARD_INDEX=${SHARD_INDEX:?set SHARD_INDEX}
 SHARD_SEED=${SHARD_SEED:?set SHARD_SEED}
-SHARD_EVAL_SET=${SHARD_EVAL_SET:?set SHARD_EVAL_SET}
+SHARD_EVAL_SETS=${SHARD_EVAL_SETS:?set SHARD_EVAL_SETS to a dataset CSV}
+SHARD_SPLIT=${SHARD_SPLIT:-train}
+SHARD_NUM_EPISODES=${SHARD_NUM_EPISODES:-1}
+SHARD_SEED_PER_EVAL_SET=${SHARD_SEED_PER_EVAL_SET:-false}
+SHARD_NAVIGATION_PROFILE=${SHARD_NAVIGATION_PROFILE:-current}
 SHARD_GPU_VISIBLE=${SHARD_GPU_VISIBLE:?set SHARD_GPU_VISIBLE}
 SHARD_OUT=${SHARD_OUT:?set SHARD_OUT}
 ENV_PORT=${ENV_PORT:?set ENV_PORT}
@@ -23,10 +27,38 @@ VLLM_MM_PROCESSOR_CACHE_GB=${VLLM_MM_PROCESSOR_CACHE_GB:-0}
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
 [[ "${SHARD_INDEX}" =~ ^[0-9]+$ ]] || { echo "invalid SHARD_INDEX" >&2; exit 1; }
 [[ "${SHARD_SEED}" =~ ^[1-9][0-9]*$ ]] || { echo "invalid SHARD_SEED" >&2; exit 1; }
-[[ "${SHARD_EVAL_SET}" == *_train ]] || {
-  echo "rollout shard requires a training dataset" >&2
+[[ "${SHARD_NUM_EPISODES}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "SHARD_NUM_EPISODES must be positive" >&2
   exit 1
 }
+[[ "${SHARD_SPLIT}" == train || "${SHARD_SPLIT}" == eval ]] || {
+  echo "SHARD_SPLIT must be train or eval" >&2
+  exit 1
+}
+[[ "${SHARD_SEED_PER_EVAL_SET}" == false || "${SHARD_SEED_PER_EVAL_SET}" == true ]] || {
+  echo "SHARD_SEED_PER_EVAL_SET must be true or false" >&2
+  exit 1
+}
+[[ "${SHARD_NAVIGATION_PROFILE}" == current || "${SHARD_NAVIGATION_PROFILE}" == vagen_eval ]] || {
+  echo "unsupported navigation profile: ${SHARD_NAVIGATION_PROFILE}" >&2
+  exit 1
+}
+IFS=',' read -r -a SHARD_DATASETS <<< "${SHARD_EVAL_SETS}"
+(( ${#SHARD_DATASETS[@]} > 0 )) || { echo "rollout shard has no datasets" >&2; exit 1; }
+for dataset in "${SHARD_DATASETS[@]}"; do
+  [[ -n "${dataset}" ]] || { echo "rollout shard has an empty dataset" >&2; exit 1; }
+  if [[ "${SHARD_SPLIT}" == train ]]; then
+    [[ "${dataset}" == *_train ]] || {
+      echo "training rollout shard requires only *_train datasets" >&2
+      exit 1
+    }
+  else
+    [[ "${dataset}" != *_train ]] || {
+      echo "held-out eval shard cannot use a training dataset" >&2
+      exit 1
+    }
+  fi
+done
 [[ "${ENV_PREWARM_TIMEOUT}" =~ ^[1-9][0-9]*$ ]] || {
   echo "ENV_PREWARM_TIMEOUT must be positive" >&2
   exit 1
@@ -78,10 +110,12 @@ IFS=',' read -r -a SHARD_GPUS <<< "${SHARD_GPU_VISIBLE}"
 for path in "${WM_CKPT}/state_proj.pt" "${WM_CKPT}/wm_predictor/predictor.pt" "${WM_CKPT}/value_head/value_head.pt"; do
   [[ -s "${path}" ]] || { echo "missing planner checkpoint: ${path}" >&2; exit 1; }
 done
-[[ -f "${ENV_REPO}/external/VAGEN/vagen/env/navigation/datasets/${SHARD_EVAL_SET}.json" ]] || {
-  echo "missing rollout dataset: ${SHARD_EVAL_SET}" >&2
-  exit 1
-}
+for dataset in "${SHARD_DATASETS[@]}"; do
+  [[ -f "${ENV_REPO}/external/VAGEN/vagen/env/navigation/datasets/${dataset}.json" ]] || {
+    echo "missing rollout dataset: ${dataset}" >&2
+    exit 1
+  }
+done
 if [[ -e "${SHARD_OUT}" ]] && find "${SHARD_OUT}" -mindepth 1 -print -quit | grep -q .; then
   echo "refusing to reuse non-empty rollout shard: ${SHARD_OUT}" >&2
   exit 1
@@ -149,7 +183,7 @@ PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN timeout \
   --signal=TERM --kill-after=10s "${ENV_PREWARM_TIMEOUT}s" \
   "${PYTHON}" -m nimloth.environment.navigation.prewarm \
     --env-url "${ENV_URL}" \
-    --eval-set "${SHARD_EVAL_SET}" \
+    --eval-set "${SHARD_DATASETS[0]}" \
     --seed "${SHARD_SEED}" \
     --timeout-seconds "${ENV_PREWARM_TIMEOUT}" \
     --env-id "nimloth-navigation-shard-${SHARD_INDEX}-${SHARD_SEED}"
@@ -179,6 +213,10 @@ if [[ "${PLANNING_SEARCH_MODE}" == beam ]]; then
   }
   PLANNER_ARGS+=(--planning-beam-width "${PLANNING_BEAM_WIDTH}")
 fi
+SEED_ARGS=()
+if [[ "${SHARD_SEED_PER_EVAL_SET}" == true ]]; then
+  SEED_ARGS+=(--seed-per-eval-set)
+fi
 
 "${PYTHON}" "${REPO}/experiments/training/rl/rollout_env.py" \
   --backend vllm \
@@ -189,13 +227,17 @@ fi
   --env-url "${ENV_URL}" \
   --output-dir "${SHARD_OUT}" \
   --fresh-manifest "${SHARD_OUT}/fresh_policy_manifest.json" \
-  --num-episodes 1 \
+  --num-episodes "${SHARD_NUM_EPISODES}" \
   --max-steps "${MAX_STEPS}" \
-  --eval-set "${SHARD_EVAL_SET}" --split train --seed-offset "${SHARD_SEED}" \
-  --temperature "${TEMPERATURE}" --top-p "${TOP_P}" \
+  --eval-sets "${SHARD_DATASETS[@]}" --split "${SHARD_SPLIT}" \
+  --seed-offset "${SHARD_SEED}" \
+  --temperature "${SHARD_TEMPERATURE:-${TEMPERATURE}}" \
+  --top-p "${SHARD_TOP_P:-${TOP_P}}" \
+  --navigation-profile "${SHARD_NAVIGATION_PROFILE}" \
   --credit-assignment "${CREDIT}" \
   --max-response-tokens "${MAX_RESPONSE_TOKENS}" \
   --vllm-enforce-eager \
+  "${SEED_ARGS[@]}" \
   2>&1 | tee "${ROLLOUT_LOG}"
 
 [[ -s "${SHARD_OUT}/fresh_policy_manifest.json" ]] || {
@@ -207,4 +249,4 @@ fi
   exit 1
 }
 cleanup_env
-echo "ROLLOUT_SHARD_OK index=${SHARD_INDEX} seed=${SHARD_SEED} dataset=${SHARD_EVAL_SET} gpus=${SHARD_GPU_VISIBLE}"
+echo "ROLLOUT_SHARD_OK index=${SHARD_INDEX} seed=${SHARD_SEED} datasets=${SHARD_EVAL_SETS} episodes=${SHARD_NUM_EPISODES} split=${SHARD_SPLIT} gpus=${SHARD_GPU_VISIBLE}"

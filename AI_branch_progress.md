@@ -3442,3 +3442,20 @@
   train以`resume=allow`重开，所以rollout期间API显示finished是预期状态。依赖
   `afterany:503166`的第二个8小时normal 4卡段为job`503172`，会从最后committed iteration续跑；
   两段均排除dgx-51。
+
+## 2026-08-03：ID119在iter11训练forward OOM后终止
+
+- job `503242+0/+1`最终为`FAILED 6:0`、总运行58分37秒；人类要求通过
+  `srun`暂停时allocation已释放，因此本次没有发生对活动任务的交互式暂停。
+- iter6--10均完整提交；对应episode/transition/success为
+  `8/114/0.375`、`8/127/0.375`、`8/83/0.625`、`8/126/0.25`、
+  `8/160/0.0`。最新durable恢复点是`train/iter_0010`，其`rl_state.pt`
+  13,090,012,153 bytes，记录`iteration=global_step=10`。
+- iter11已完成8条/160 transitions的fresh rollout，但rank14在重算长prefix时于
+  Qwen `lm_head(hidden_states[:, slice_indices, :])`尝试再分配4.18 GiB并OOM；其他
+  ranks随后NCCL timeout。失败发生在`optimizer.step()`之前，iter11 consumption仍为
+  `in_progress`，不存在有效iter11 checkpoint。
+- 恢复必须使用新output/W&B identity，从完整iter10 checkpoint继续global step11；
+  在全局rollout batch与评估合同变更后，不得复用未提交的iter11 rollout。实际运行
+  commit已实现每条真实transition全局只归一个rank；先前根据旧checkout得出的
+  “每rank重复全批”结论已失效。

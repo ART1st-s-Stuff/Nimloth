@@ -74,7 +74,8 @@ step，再按节点内 GPU 数启动 local ranks，因此允许各节点 GPU 数
 下一个 optimizer step 必须从新 checkpoint 重新 rollout。均匀两节点四卡也统一使用
 `run_vllm_online_ppo_slurm.sh`，不维护固定节点拓扑的另一套入口。
 
-正式多迭代训练使用`run_vllm_online_ppo_full.sh`。它为每个iteration分配不重叠seed块，
+正式多迭代训练使用`run_vllm_online_ppo_full.sh`。它为每个iteration的每个训练dataset
+分配不重叠seed块，
 用更新前的不可变policy snapshot完成rollout/reference replay，再执行恰好一次update；
 下一轮只有在fresh consumption提交且`latest`完整后才开始。中间进程退出只写`latest`，
 目标iteration完成时才写`final`。默认正式配置是greedy H=2、两节点四卡；额外DDP副本
@@ -82,10 +83,17 @@ step，再按节点内 GPU 数启动 local ranks，因此允许各节点 GPU 数
 训练状态的`iter_NNNN`、`latest`和`final`使用同文件系统硬链接，不重复写入或占用三份
 checkpoint数据。外层入口只保留最近一个更新前policy snapshot；更早snapshot的删除会
 写入相邻iteration progress log。
+当`validation.external=true`时，外层入口在到期checkpoint完整提交后调用同一并行
+rollout controller。当前32-GPU正式合同每10个iteration使用greedy sampling
+评估held-out `base/common_sense`各seeds 1--60，结果写入
+`evaluation/eval_step_log.csv`与独立eW&B eval run；评估rollout不进入optimizer。
 
 ### 分布式安全说明
 
-- `JSONLRolloutCollector` 在所有 rank 上返回相同轨迹序列（确定性轮转），保证forward次数一致；当前DDP rank不是数据shard，不能把`envs_per_iteration`再乘`world_size`宣称为有效batch。
+- `JSONLRolloutCollector` 在所有rank上返回同一个全局轨迹序列，但planner训练把
+  真实transition按rank-strided index全局唯一分配；每条真实transition只在一个rank
+  上forward/backward。尾部不整除时，其他rank对一条实transition构建零loss graph
+  padding，只为保持DDP collective序列一致，不把padding计入有效batch。
 - Batch 选择使用 per-iteration 确定性 generator（`seed + iteration`），不依赖全局 RNG 状态同步。
 - `state_proj`、`wm_predictor`、`value_head` 的可训练副本由 DDP 同步；冻结模块在 distributed setup 后从 rank0 广播初始状态。
 - 所有 rank 必须调用相同的 `collect()` 次数——训练循环已保证这一点。
@@ -96,6 +104,9 @@ checkpoint数据。外层入口只保留最近一个更新前policy snapshot；�
 outputs/experiments/training/rl/<date>/<name>/
 ├── README.md
 ├── train_step_log.csv
+├── evaluation/
+│   ├── eval_step_log.csv
+│   └── iter_NNNN/          # fixed-seed held-out rollout and summary
 ├── best/                  # best checkpoint (state_proj, predictor, value_head, optimizer)
 ├── iter_NNNN/             # periodic checkpoints
 ├── rollouts/              # per-iteration trajectory JSONL

@@ -67,6 +67,7 @@ rl:
 # --- Validation ---
 validation:
   enabled: true
+  external: false           # true delegates held-out rollout to the Slurm controller
   interval: 50              # run validation every N iterations
   envs: 16                  # number of envs for validation rollout
   checkpoint_metric: success_rate

@@ -29,6 +29,7 @@ ROLLOUT_WORKERS=${ROLLOUT_WORKERS:-8}
 NIMLOTH_HET_GPUS_PER_NODE=${NIMLOTH_HET_GPUS_PER_NODE:-}
 RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-}
 RUN_INITIAL_GLOBAL_STEP=${RUN_INITIAL_GLOBAL_STEP:-0}
+PIPELINE_MODE=${PIPELINE_MODE:-train}
 
 source "${REPO}/experiments/training/rl/slurm_allocation.sh"
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
@@ -37,7 +38,7 @@ source "${REPO}/experiments/training/rl/slurm_allocation.sh"
   exit 1
 }
 
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS TP_SIZE CONFIG_ITERATIONS NUM_EPISODES MAX_STEPS ACTOR_ENABLED REFERENCE_KL_WEIGHT TRAIN_DATASETS_CSV < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS TP_SIZE CONFIG_ITERATIONS NUM_EPISODES MAX_STEPS ACTOR_ENABLED REFERENCE_KL_WEIGHT TRAIN_DATASETS_CSV VALIDATION_ENABLED VALIDATION_EXTERNAL VALIDATION_INTERVAL VALIDATION_ENVS EVAL_DATASETS_CSV < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -55,9 +56,18 @@ print(
     str(config.actor.enabled).lower(),
     config.actor.reference_kl_loss_weight,
     ",".join(config.rollout.train_datasets),
+    str(config.validation.enabled).lower(),
+    str(config.validation.external).lower(),
+    config.validation.interval,
+    config.validation.envs,
+    ",".join(config.rollout.eval_datasets),
 )
 ' "${RL_CONFIG}"
 )
+[[ "${PIPELINE_MODE}" == train || "${PIPELINE_MODE}" == eval ]] || {
+  echo "PIPELINE_MODE must be train or eval" >&2
+  exit 1
+}
 [[ "${CONFIG_NODES}" == 4 || "${CONFIG_NODES}" == 5 ]] || {
   echo "parallel runner requires four or five physical nodes" >&2
   exit 1
@@ -74,10 +84,11 @@ print(
   echo "parallel runner requires eight TP4 rollout workers" >&2
   exit 1
 }
-[[ "${NUM_EPISODES}" == "${ROLLOUT_WORKERS}" ]] || {
-  echo "parallel runner currently requires one episode per rollout worker" >&2
+(( NUM_EPISODES % ROLLOUT_WORKERS == 0 )) || {
+  echo "rollout episodes must divide evenly across TP workers" >&2
   exit 1
 }
+EPISODES_PER_WORKER=$((NUM_EPISODES / ROLLOUT_WORKERS))
 [[ "${TOTAL_ITERATIONS}" == "${CONFIG_ITERATIONS}" ]] || {
   echo "TOTAL_ITERATIONS disagrees with rl.iterations" >&2
   exit 1
@@ -177,6 +188,203 @@ NIMLOTH_TRAIN_NODELIST=$(IFS=,; echo "${NODES[*]}")
 
 IFS=',' read -r -a TRAIN_DATASETS <<< "${TRAIN_DATASETS_CSV}"
 (( ${#TRAIN_DATASETS[@]} > 0 )) || { echo "no rollout datasets configured" >&2; exit 1; }
+(( EPISODES_PER_WORKER % ${#TRAIN_DATASETS[@]} == 0 )) || {
+  echo "each rollout worker must cover every training dataset equally" >&2
+  exit 1
+}
+SEEDS_PER_DATASET_PER_WORKER=$((EPISODES_PER_WORKER / ${#TRAIN_DATASETS[@]}))
+SEED_RANGE_END=$((SEED_OFFSET + ROLLOUT_WORKERS * SEEDS_PER_DATASET_PER_WORKER - 1))
+
+if [[ "${PIPELINE_MODE}" == eval ]]; then
+  [[ "${VALIDATION_ENABLED}" == false && "${VALIDATION_EXTERNAL}" == true ]] || {
+    echo "parallel held-out eval requires validation.external=true and validation.enabled=false" >&2
+    exit 1
+  }
+  (( ITERATION % VALIDATION_INTERVAL == 0 )) || {
+    echo "iteration ${ITERATION} is not due for interval-${VALIDATION_INTERVAL} eval" >&2
+    exit 1
+  }
+  IFS=',' read -r -a EVAL_DATASETS <<< "${EVAL_DATASETS_CSV}"
+  (( ${#EVAL_DATASETS[@]} == 2 )) || {
+    echo "fixed held-out eval requires exactly two datasets" >&2
+    exit 1
+  }
+  [[ "${EVAL_DATASETS[0]}" == base && "${EVAL_DATASETS[1]}" == common_sense ]] || {
+    echo "fixed held-out eval requires base,common_sense" >&2
+    exit 1
+  }
+  (( VALIDATION_ENVS == 120 )) || {
+    echo "fixed held-out eval requires 120 episodes" >&2
+    exit 1
+  }
+  (( ROLLOUT_WORKERS % ${#EVAL_DATASETS[@]} == 0 )) || {
+    echo "eval datasets must divide evenly across rollout workers" >&2
+    exit 1
+  }
+  EVAL_WORKERS_PER_DATASET=$((ROLLOUT_WORKERS / ${#EVAL_DATASETS[@]}))
+  (( VALIDATION_ENVS % ROLLOUT_WORKERS == 0 )) || {
+    echo "eval episodes must divide evenly across rollout workers" >&2
+    exit 1
+  }
+  EVAL_EPISODES_PER_WORKER=$((VALIDATION_ENVS / ROLLOUT_WORKERS))
+  EVAL_SEEDS_PER_DATASET=$((EVAL_WORKERS_PER_DATASET * EVAL_EPISODES_PER_WORKER))
+  (( EVAL_SEEDS_PER_DATASET == 60 )) || {
+    echo "fixed held-out eval requires seeds 1..60 per dataset" >&2
+    exit 1
+  }
+  [[ -s "${MODEL}/rl_state.pt" ]] || {
+    echo "held-out eval checkpoint is incomplete: ${MODEL}" >&2
+    exit 1
+  }
+
+  ITERATION_TAG=$(printf 'iter_%04d' "${ITERATION}")
+  EVAL_ROOT=${RUN_OUT}/evaluation
+  EVAL_OUT=${EVAL_ROOT}/${ITERATION_TAG}
+  EVAL_SHARD_ROOT=${EVAL_OUT}/shards
+  EVAL_LOG=${EVAL_ROOT}/eval_pipeline.log
+  EVAL_DONE=${EVAL_OUT}/eval_done.flag
+  if [[ -s "${EVAL_DONE}" ]]; then
+    echo "held-out eval already completed: ${EVAL_DONE}"
+    exit 0
+  fi
+  if [[ -s "${EVAL_OUT}/rollout_summary.json" ]]; then
+    PYTHONPATH="${REPO}/src" WANDB_PROJECT="${WANDB_PROJECT}" \
+      WANDB_RUN_NAME="${WANDB_RUN_NAME}-eval" WANDB_MODE="${WANDB_MODE_OVERRIDE}" \
+      "${PYTHON}" "${REPO}/experiments/training/rl/record_eval_summary.py" \
+        --summary "${EVAL_OUT}/rollout_summary.json" \
+        --evaluation-root "${EVAL_ROOT}" \
+        --iteration "${ITERATION}" \
+        --eval-sets "${EVAL_DATASETS[@]}" \
+        --seeds-per-eval-set "${EVAL_SEEDS_PER_DATASET}" \
+        --wandb-project "${WANDB_PROJECT}" \
+        --wandb-run-name "${WANDB_RUN_NAME}-eval"
+    printf 'ALL_OK iteration=%s checkpoint=%s\n' "${ITERATION}" "${MODEL}" > "${EVAL_DONE}"
+    exit 0
+  fi
+  if [[ -e "${EVAL_OUT}" ]] && find "${EVAL_OUT}" -mindepth 1 -print -quit | grep -q .; then
+    recovery_path=${EVAL_OUT}.failed_$(date +%Y%m%dT%H%M%S)
+    mv "${EVAL_OUT}" "${recovery_path}"
+    printf '%s iteration=%s status=archived_partial_eval path=%s\n' \
+      "$(date -Iseconds)" "${ITERATION}" "${recovery_path}" >> "${RUN_OUT}.iteration_progress.log"
+  fi
+  mkdir -p "${EVAL_SHARD_ROOT}"
+
+  EVAL_NODE_STEP_PIDS=()
+  eval_worker_offset=0
+  for node_index in "${!NODES[@]}"; do
+    node=${NODES[${node_index}]}
+    node_gpus=${NODE_GPU_COUNTS[${node_index}]}
+    het_group=${NODE_HET_GROUPS[${node_index}]}
+    workers_per_node=$((node_gpus / TP_SIZE))
+    node_log=${EVAL_SHARD_ROOT}/node_${node_index}_${node}.log
+    SRUN_ARGS=(--jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w "${node}" --gres="gpu:${node_gpus}")
+    if (( het_group >= 0 )); then
+      SRUN_ARGS+=(--het-group="${het_group}")
+    fi
+    srun "${SRUN_ARGS[@]}" \
+      env NIMLOTH_WORKER_OFFSET="${eval_worker_offset}" \
+        NIMLOTH_WORKERS_PER_NODE="${workers_per_node}" \
+        NIMLOTH_EXPECTED_NODE_GPUS="${node_gpus}" \
+        NIMLOTH_TP_SIZE="${TP_SIZE}" \
+        NIMLOTH_EVAL_DATASETS="${EVAL_DATASETS_CSV}" \
+        NIMLOTH_EVAL_WORKERS_PER_DATASET="${EVAL_WORKERS_PER_DATASET}" \
+        NIMLOTH_EVAL_EPISODES_PER_WORKER="${EVAL_EPISODES_PER_WORKER}" \
+        REPO="${REPO}" ENV_REPO="${ENV_REPO}" PYTHON="${PYTHON}" \
+        MODEL="${MODEL}" WM_CKPT="${MODEL}" RL_CONFIG="${RL_CONFIG}" \
+        SHARD_ROOT="${EVAL_SHARD_ROOT}" ENV_PORT_BASE="$((ENV_PORT_BASE + 100))" \
+        ENV_PREWARM_TIMEOUT="${ENV_PREWARM_TIMEOUT}" \
+        bash -lc '
+        set -euo pipefail
+        IFS="," read -r -a allocated_gpus <<< "${CUDA_VISIBLE_DEVICES}"
+        (( ${#allocated_gpus[@]} == NIMLOTH_EXPECTED_NODE_GPUS )) || exit 1
+        IFS="," read -r -a eval_datasets <<< "${NIMLOTH_EVAL_DATASETS}"
+        worker_pids=()
+        for ((local_worker=0; local_worker<NIMLOTH_WORKERS_PER_NODE; local_worker++)); do
+          global_worker=$((NIMLOTH_WORKER_OFFSET + local_worker))
+          dataset_index=$((global_worker / NIMLOTH_EVAL_WORKERS_PER_DATASET))
+          dataset_worker=$((global_worker % NIMLOTH_EVAL_WORKERS_PER_DATASET))
+          dataset=${eval_datasets[${dataset_index}]}
+          shard_seed=$((1 + dataset_worker * NIMLOTH_EVAL_EPISODES_PER_WORKER))
+          first_gpu=$((local_worker * NIMLOTH_TP_SIZE))
+          shard_visible=""
+          for ((offset=0; offset<NIMLOTH_TP_SIZE; offset++)); do
+            gpu=${allocated_gpus[$((first_gpu + offset))]}
+            [[ -z "${shard_visible}" ]] || shard_visible+=","
+            shard_visible+="${gpu}"
+          done
+          shard_tag=$(printf "shard_%02d" "${global_worker}")
+          env REPO="${REPO}" ENV_REPO="${ENV_REPO}" PYTHON="${PYTHON}" \
+            MODEL="${MODEL}" WM_CKPT="${WM_CKPT}" RL_CONFIG="${RL_CONFIG}" \
+            SHARD_INDEX="${global_worker}" SHARD_SEED="${shard_seed}" \
+            SHARD_EVAL_SETS="${dataset}" SHARD_SPLIT=eval \
+            SHARD_NUM_EPISODES="${NIMLOTH_EVAL_EPISODES_PER_WORKER}" \
+            SHARD_SEED_PER_EVAL_SET=true SHARD_NAVIGATION_PROFILE=vagen_eval \
+            SHARD_TEMPERATURE=0 SHARD_TOP_P=1 \
+            SHARD_GPU_VISIBLE="${shard_visible}" \
+            SHARD_OUT="${SHARD_ROOT}/${shard_tag}" \
+            ENV_PORT="$((ENV_PORT_BASE + local_worker))" \
+            ENV_PREWARM_TIMEOUT="${ENV_PREWARM_TIMEOUT}" \
+            bash "${REPO}/experiments/training/rl/run_vllm_rollout_shard.sh" &
+          worker_pids+=("$!")
+        done
+        status=0
+        for pid in "${worker_pids[@]}"; do
+          wait "${pid}" || status=$?
+        done
+        exit "${status}"
+      ' >"${node_log}" 2>&1 &
+    EVAL_NODE_STEP_PIDS+=("$!")
+    eval_worker_offset=$((eval_worker_offset + workers_per_node))
+  done
+  (( eval_worker_offset == ROLLOUT_WORKERS )) || exit 1
+
+  eval_status=0
+  for pid in "${EVAL_NODE_STEP_PIDS[@]}"; do
+    wait "${pid}" || eval_status=$?
+  done
+  if (( eval_status != 0 )); then
+    tail -n 200 "${EVAL_SHARD_ROOT}"/node_*.log >&2
+    exit "${eval_status}"
+  fi
+
+  EVAL_MERGE_ARGS=()
+  for ((shard_index=0; shard_index<ROLLOUT_WORKERS; shard_index++)); do
+    dataset_index=$((shard_index / EVAL_WORKERS_PER_DATASET))
+    dataset_worker=$((shard_index % EVAL_WORKERS_PER_DATASET))
+    dataset=${EVAL_DATASETS[${dataset_index}]}
+    shard_seed=$((1 + dataset_worker * EVAL_EPISODES_PER_WORKER))
+    shard_tag=$(printf 'shard_%02d' "${shard_index}")
+    EVAL_MERGE_ARGS+=(
+      --shard-manifest "${EVAL_SHARD_ROOT}/${shard_tag}/fresh_policy_manifest.json"
+      --shard-eval-sets "${dataset}"
+      --shard-seed-offset "${shard_seed}"
+      --shard-num-episodes "${EVAL_EPISODES_PER_WORKER}"
+    )
+  done
+  PYTHONPATH="${REPO}/src:${ENV_REPO}/external/VAGEN" "${PYTHON}" \
+    "${REPO}/experiments/training/rl/merge_rollout_shards.py" \
+    "${EVAL_MERGE_ARGS[@]}" \
+    --output-dir "${EVAL_OUT}" \
+    --split eval \
+    --seed-per-eval-set \
+    2>&1 | tee -a "${EVAL_LOG}"
+  PYTHONPATH="${REPO}/src" WANDB_PROJECT="${WANDB_PROJECT}" \
+    WANDB_RUN_NAME="${WANDB_RUN_NAME}-eval" WANDB_MODE="${WANDB_MODE_OVERRIDE}" \
+    "${PYTHON}" "${REPO}/experiments/training/rl/record_eval_summary.py" \
+      --summary "${EVAL_OUT}/rollout_summary.json" \
+      --evaluation-root "${EVAL_ROOT}" \
+      --iteration "${ITERATION}" \
+      --eval-sets "${EVAL_DATASETS[@]}" \
+      --seeds-per-eval-set "${EVAL_SEEDS_PER_DATASET}" \
+      --wandb-project "${WANDB_PROJECT}" \
+      --wandb-run-name "${WANDB_RUN_NAME}-eval"
+  printf 'ALL_OK iteration=%s checkpoint=%s\n' "${ITERATION}" "${MODEL}" > "${EVAL_DONE}"
+  printf '%s\n' \
+    "- ${ITERATION_TAG}: held-out eval ALL_OK; base/common_sense seeds 1..60; summary=evaluation/${ITERATION_TAG}/rollout_summary.json" \
+    >> "${RUN_OUT}/README.md"
+  exit 0
+fi
+
 ITERATION_TAG=$(printf 'iter_%04d' "${ITERATION}")
 ROLLOUT_OUT=${RUN_OUT}/rollouts/${ITERATION_TAG}
 SHARD_ROOT=${ROLLOUT_OUT}/shards
@@ -215,10 +423,10 @@ if (( ITERATION == FIRST_ITERATION )); then
 - Nimloth commit: ${COMMIT}
 - VAGEN commit: ${ENV_COMMIT}
 - model/WM initialization: ${MODEL}
-- data: ${TRAIN_DATASETS_CSV}; global round-robin with seeds starting at ${SEED_OFFSET}
+- data: ${TRAIN_DATASETS_CSV}; independent per-dataset seeds ${SEED_OFFSET}..${SEED_RANGE_END}
 - schedule: resume after global step ${RUN_INITIAL_GLOBAL_STEP}, train through ${TOTAL_ITERATIONS}; ${NUM_EPISODES} episodes/iteration, max ${MAX_STEPS} steps/episode
 - allocation: ${NIMLOTH_TRAIN_NODE_SPECS}
-- rollout: 8 independent workers x vLLM TP4; workers are assigned from each node's allocated GPU count
+- rollout: 8 independent workers x vLLM TP4, ${EPISODES_PER_WORKER} episodes/worker; workers are assigned from each node's allocated GPU count
 - update: ${CONFIG_NODES} nodes, 16 synchronized ranks x 2 GPUs/rank; every real transition is assigned to exactly one rank
 - uneven transition counts: equal-count graph padding with zero loss; DDP loss scale preserves the global transition mean
 - planning: DINO supervised H=1, history_size=1
@@ -247,6 +455,8 @@ for node_index in "${!NODES[@]}"; do
       NIMLOTH_EXPECTED_NODE_GPUS="${node_gpus}" \
       NIMLOTH_TP_SIZE="${TP_SIZE}" \
       NIMLOTH_SEED_OFFSET="${SEED_OFFSET}" \
+      NIMLOTH_EPISODES_PER_WORKER="${EPISODES_PER_WORKER}" \
+      NIMLOTH_SEEDS_PER_DATASET_PER_WORKER="${SEEDS_PER_DATASET_PER_WORKER}" \
       NIMLOTH_DATASETS="${TRAIN_DATASETS_CSV}" \
       REPO="${REPO}" ENV_REPO="${ENV_REPO}" PYTHON="${PYTHON}" \
       MODEL="${MODEL}" WM_CKPT="${WM_CKPT}" RL_CONFIG="${RL_CONFIG}" \
@@ -263,8 +473,7 @@ for node_index in "${!NODES[@]}"; do
       worker_pids=()
       for ((local_worker=0; local_worker<NIMLOTH_WORKERS_PER_NODE; local_worker++)); do
         global_worker=$((NIMLOTH_WORKER_OFFSET + local_worker))
-        shard_seed=$((NIMLOTH_SEED_OFFSET + global_worker))
-        dataset=${datasets[$((global_worker % ${#datasets[@]}))]}
+        shard_seed=$((NIMLOTH_SEED_OFFSET + global_worker * NIMLOTH_SEEDS_PER_DATASET_PER_WORKER))
         first_gpu=$((local_worker * NIMLOTH_TP_SIZE))
         shard_visible=""
         for ((offset=0; offset<NIMLOTH_TP_SIZE; offset++)); do
@@ -277,7 +486,10 @@ for node_index in "${!NODES[@]}"; do
           REPO="${REPO}" ENV_REPO="${ENV_REPO}" PYTHON="${PYTHON}" \
           MODEL="${MODEL}" WM_CKPT="${WM_CKPT}" RL_CONFIG="${RL_CONFIG}" \
           SHARD_INDEX="${global_worker}" SHARD_SEED="${shard_seed}" \
-          SHARD_EVAL_SET="${dataset}" SHARD_GPU_VISIBLE="${shard_visible}" \
+          SHARD_EVAL_SETS="${NIMLOTH_DATASETS}" SHARD_SPLIT=train \
+          SHARD_NUM_EPISODES="${NIMLOTH_EPISODES_PER_WORKER}" \
+          SHARD_SEED_PER_EVAL_SET=true SHARD_NAVIGATION_PROFILE=current \
+          SHARD_GPU_VISIBLE="${shard_visible}" \
           SHARD_OUT="${SHARD_ROOT}/${shard_tag}" \
           ENV_PORT="$((ENV_PORT_BASE + local_worker))" \
           ENV_PREWARM_TIMEOUT="${ENV_PREWARM_TIMEOUT}" \
@@ -310,15 +522,20 @@ fi
 MERGE_ARGS=()
 for ((shard_index=0; shard_index<ROLLOUT_WORKERS; shard_index++)); do
   shard_tag=$(printf 'shard_%02d' "${shard_index}")
-  MERGE_ARGS+=(--shard-manifest "${SHARD_ROOT}/${shard_tag}/fresh_policy_manifest.json")
+  shard_seed=$((SEED_OFFSET + shard_index * SEEDS_PER_DATASET_PER_WORKER))
+  MERGE_ARGS+=(
+    --shard-manifest "${SHARD_ROOT}/${shard_tag}/fresh_policy_manifest.json"
+    --shard-eval-sets "${TRAIN_DATASETS_CSV}"
+    --shard-seed-offset "${shard_seed}"
+    --shard-num-episodes "${EPISODES_PER_WORKER}"
+  )
 done
 PYTHONPATH="${REPO}/src:${ENV_REPO}/external/VAGEN" "${PYTHON}" \
   "${REPO}/experiments/training/rl/merge_rollout_shards.py" \
   "${MERGE_ARGS[@]}" \
   --output-dir "${ROLLOUT_OUT}" \
-  --seed-offset "${SEED_OFFSET}" \
-  --num-episodes "${NUM_EPISODES}" \
-  --eval-sets "${TRAIN_DATASETS[@]}" \
+  --split train \
+  --seed-per-eval-set \
   2>&1 | tee -a "${LOG}"
 
 env SLURM_JOB_ID="${HOLD_JOB}" SLURM_JOB_NODELIST="${NIMLOTH_TRAIN_NODELIST}" \
@@ -329,6 +546,7 @@ env SLURM_JOB_ID="${HOLD_JOB}" SLURM_JOB_NODELIST="${NIMLOTH_TRAIN_NODELIST}" \
   REFERENCE_MODEL="${REFERENCE_MODEL}" RESUME_CHECKPOINT="${RESUME_CHECKPOINT}" \
   ITERATION="${ITERATION}" TOTAL_ITERATIONS="${TOTAL_ITERATIONS}" \
   RUN_MODE=full SEED_OFFSET="${SEED_OFFSET}" \
+  SEED_RANGE_DESCRIPTION="per-dataset ${SEED_OFFSET}..${SEED_RANGE_END}" \
   RUN_INITIAL_GLOBAL_STEP="${RUN_INITIAL_GLOBAL_STEP}" \
   WANDB_PROJECT="${WANDB_PROJECT}" WANDB_RUN_NAME="${WANDB_RUN_NAME}" \
   WANDB_MODE_OVERRIDE="${WANDB_MODE_OVERRIDE}" \

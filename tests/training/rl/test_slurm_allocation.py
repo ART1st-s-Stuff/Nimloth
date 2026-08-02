@@ -146,12 +146,18 @@ def test_parallel_controller_uses_eight_isolated_tp4_workers_then_world16() -> N
     assert 'NIMLOTH_TRAIN_NODE_SPECS="${NIMLOTH_TRAIN_NODE_SPECS}"' in controller
     assert 'SHARD_GPU_VISIBLE="${shard_visible}"' in controller
     assert 'SHARD_SEED="${shard_seed}"' in controller
-    assert 'SHARD_EVAL_SET="${dataset}"' in controller
+    assert 'SHARD_EVAL_SETS="${NIMLOTH_DATASETS}"' in controller
+    assert 'SHARD_NUM_EPISODES="${NIMLOTH_EPISODES_PER_WORKER}"' in controller
+    assert 'SHARD_SEED_PER_EVAL_SET=true' in controller
+    assert 'PIPELINE_MODE}" == eval' in controller
+    assert 'SHARD_NAVIGATION_PROFILE=vagen_eval' in controller
+    assert 'SHARD_TEMPERATURE=0 SHARD_TOP_P=1' in controller
     assert 'merge_rollout_shards.py' in controller
     assert 'PIPELINE_PHASE=train' in controller
     assert '--vllm-distributed-executor-backend mp' in shard_runner
     assert 'export VLLM_WORKER_MULTIPROC_METHOD=spawn' in shard_runner
-    assert '--num-episodes 1' in shard_runner
+    assert '--num-episodes "${SHARD_NUM_EPISODES}"' in shard_runner
+    assert '--navigation-profile "${SHARD_NAVIGATION_PROFILE}"' in shard_runner
 
 
 def test_true32_heterogeneous_topology_is_explicitly_routed_by_het_group() -> None:

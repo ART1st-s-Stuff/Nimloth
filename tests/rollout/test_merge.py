@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import math
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -82,18 +86,43 @@ def _shard(
     root: Path,
     *,
     policy: Path,
-    record_id: str,
+    record_id: str | tuple[str, ...],
 ) -> Path:
     root.mkdir()
-    trajectory_path = save_trajectories([_trajectory(record_id)], root)
+    record_ids = (record_id,) if isinstance(record_id, str) else record_id
+    trajectory_path = save_trajectories(
+        [_trajectory(item) for item in record_ids],
+        root,
+    )
     manifest_path = root / "fresh_policy_manifest.json"
     FreshRolloutManifest.create(
         policy_path=policy,
         trajectory_path=trajectory_path,
-        num_trajectories=1,
+        num_trajectories=len(record_ids),
         processor=_processor(),
     ).write(manifest_path)
     return manifest_path
+
+
+def _summary(
+    manifest: Path,
+    *,
+    num_trajectories: int,
+    eval_sets: tuple[str, ...],
+    seed_per_eval_set: bool,
+) -> None:
+    (manifest.parent / "rollout_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "ALL_OK",
+                "num_trajectories": num_trajectories,
+                "eval_sets": list(eval_sets),
+                "seed_per_eval_set": seed_per_eval_set,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_merge_fresh_rollout_shards_preserves_global_order(tmp_path: Path) -> None:
@@ -164,3 +193,81 @@ def test_merge_fresh_rollout_shards_rejects_consumed_input(tmp_path: Path) -> No
             output_dir=tmp_path / "merged",
             expected_record_ids=("rl_000001",),
         )
+
+
+def test_parallel_merge_accepts_multi_episode_seed_per_dataset_shards(
+    tmp_path: Path,
+) -> None:
+    policy = _policy_artifact(tmp_path / "policy")
+    eval_sets = ("base_train", "common_sense_train")
+    shard_0 = _shard(
+        tmp_path / "shard_0",
+        policy=policy,
+        record_id=(
+            "rl_base_train_000001",
+            "rl_common_sense_train_000001",
+            "rl_base_train_000002",
+            "rl_common_sense_train_000002",
+        ),
+    )
+    shard_1 = _shard(
+        tmp_path / "shard_1",
+        policy=policy,
+        record_id=(
+            "rl_base_train_000003",
+            "rl_common_sense_train_000003",
+            "rl_base_train_000004",
+            "rl_common_sense_train_000004",
+        ),
+    )
+    _summary(
+        shard_0,
+        num_trajectories=4,
+        eval_sets=eval_sets,
+        seed_per_eval_set=True,
+    )
+    _summary(
+        shard_1,
+        num_trajectories=4,
+        eval_sets=eval_sets,
+        seed_per_eval_set=True,
+    )
+    repo_root = Path(__file__).resolve().parents[2]
+    environment = {**os.environ, "PYTHONPATH": str(repo_root / "src")}
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "experiments/training/rl/merge_rollout_shards.py"),
+            "--shard-manifest",
+            str(shard_0),
+            "--shard-eval-sets",
+            ",".join(eval_sets),
+            "--shard-seed-offset",
+            "1",
+            "--shard-num-episodes",
+            "4",
+            "--shard-manifest",
+            str(shard_1),
+            "--shard-eval-sets",
+            ",".join(eval_sets),
+            "--shard-seed-offset",
+            "3",
+            "--shard-num-episodes",
+            "4",
+            "--seed-per-eval-set",
+            "--split",
+            "train",
+            "--output-dir",
+            str(tmp_path / "merged"),
+        ],
+        check=True,
+        env=environment,
+    )
+
+    summary = json.loads(
+        (tmp_path / "merged/rollout_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["num_trajectories"] == 8
+    assert summary["seed_per_eval_set"] is True
+    assert summary["eval_sets"] == list(eval_sets)

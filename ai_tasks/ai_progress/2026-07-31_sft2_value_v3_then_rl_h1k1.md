@@ -366,3 +366,20 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - job继续占用同一32卡执行iter7；全新seed49--56的8个environment prewarm已全部通过，
   没有重复已提交的seed41--48。当前结论仅证明true32 rollout、strict merge、world16真实
   update及step6 checkpoint链健康；长期优化质量仍需后续iterations和评估证据。
+
+## 2026-08-03：ID119终止与128-rollout/eval10改造起点
+
+- Slurm `503242+0/+1`已在检查前以`FAILED 6:0`终止并释放allocation；因此无法
+  通过`srun`进入活动任务暂停。ID119 README已记录实际终态。
+- iter6--10已commit，最新完整恢复点为`train/iter_0010`（global step10）。iter11完成
+  8条/160 transitions rollout后，rank14在Qwen长prefix的全序列`lm_head`上OOM，之后
+  触发NCCL timeout；该次forward早于optimizer step，consumption仍`in_progress`，不可计为
+  step11或复用其rollout。
+- 实际运行commit `0aff39b9`已包含true transition rank sharding：每条真实transition
+  全局只计算一次，不整除时用零loss graph padding保持DDP collective序列。先前基于旧
+  checkout得出的“每rank重复全批”结论已失效，本次只把全局唯一rollout batch由8扩到
+  128，不重写sharding。
+- 人类要求保持DINO监督、H=1、T=4，RL训练ValueHead/WM/Qwen；新合同为
+  每iteration全局128条train-split rollout后更新一次，每10 iteration用当前checkpoint执行
+  VAGEN heldout `base`/`common_sense`各seeds1--60、共120条的greedy eval。实现、回归、
+  新output与资源门禁待完成。

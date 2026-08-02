@@ -17,6 +17,7 @@ RUN_OUT=${RUN_OUT:?set RUN_OUT to the exclusive formal-run output directory}
 FORMAL_OUTPUT_ROOT=${FORMAL_OUTPUT_ROOT:-/project/peilab/atst/nimloth/outputs/experiments/training/rl}
 FORMAL_OUTPUT_ROOT=${FORMAL_OUTPUT_ROOT%/}
 ITERATION_RUNNER=${ITERATION_RUNNER:-${REPO}/experiments/training/rl/run_vllm_online_ppo_slurm.sh}
+EVALUATION_RUNNER=${EVALUATION_RUNNER:-${ITERATION_RUNNER}}
 INITIAL_MODEL=${INITIAL_MODEL:?set INITIAL_MODEL to the complete SFT2 HF checkpoint}
 INITIAL_WM_CKPT=${INITIAL_WM_CKPT:-${INITIAL_MODEL}}
 INITIAL_RESUME_CHECKPOINT=${INITIAL_RESUME_CHECKPOINT:-}
@@ -33,6 +34,10 @@ TRAIN_MASTER_PORT_BASE=${TRAIN_MASTER_PORT_BASE:-29800}
   echo "missing iteration runner: ${ITERATION_RUNNER}" >&2
   exit 1
 }
+[[ -f "${EVALUATION_RUNNER}" ]] || {
+  echo "missing evaluation runner: ${EVALUATION_RUNNER}" >&2
+  exit 1
+}
 case "${RUN_OUT}" in
   "${FORMAL_OUTPUT_ROOT}"/*) ;;
   *) echo "RUN_OUT is outside the formal RL output root: ${RUN_OUT}" >&2; exit 1 ;;
@@ -42,7 +47,7 @@ esac
   exit 1
 }
 
-read -r CONFIG_ITERATIONS CONFIG_EPISODES CONFIG_LOG_INTERVAL < <(
+read -r CONFIG_ITERATIONS CONFIG_EPISODES CONFIG_LOG_INTERVAL TRAIN_DATASET_COUNT VALIDATION_ENABLED VALIDATION_EXTERNAL VALIDATION_INTERVAL VALIDATION_ENVS EVAL_DATASETS_CSV < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -52,6 +57,12 @@ print(
     config.rl.iterations,
     config.rl.envs_per_iteration,
     config.training.log_interval,
+    len(config.rollout.train_datasets),
+    str(config.validation.enabled).lower(),
+    str(config.validation.external).lower(),
+    config.validation.interval,
+    config.validation.envs,
+    ",".join(config.rollout.eval_datasets),
 )
 ' "${RL_CONFIG}"
 )
@@ -64,6 +75,25 @@ TOTAL_ITERATIONS=${TOTAL_ITERATIONS:-${CONFIG_ITERATIONS}}
   echo "resume-safe full runner requires training.log_interval=1" >&2
   exit 1
 }
+(( TRAIN_DATASET_COUNT > 0 && CONFIG_EPISODES % TRAIN_DATASET_COUNT == 0 )) || {
+  echo "training episodes must divide evenly across configured datasets" >&2
+  exit 1
+}
+SEEDS_PER_DATASET_PER_ITERATION=$((CONFIG_EPISODES / TRAIN_DATASET_COUNT))
+if [[ "${VALIDATION_EXTERNAL}" == true ]]; then
+  [[ "${VALIDATION_ENABLED}" == false ]] || {
+    echo "external validation requires built-in validation to be disabled" >&2
+    exit 1
+  }
+  [[ "${VALIDATION_INTERVAL}" == 10 && "${VALIDATION_ENVS}" == 120 ]] || {
+    echo "formal external validation requires 120 episodes every 10 iterations" >&2
+    exit 1
+  }
+  [[ "${EVAL_DATASETS_CSV}" == base,common_sense ]] || {
+    echo "formal external validation requires held-out base,common_sense" >&2
+    exit 1
+  }
+fi
 if [[ -n "${INITIAL_RESUME_CHECKPOINT}" ]]; then
   [[ -s "${INITIAL_RESUME_CHECKPOINT}/rl_state.pt" ]] || {
     echo "initial resume checkpoint has no rl_state.pt: ${INITIAL_RESUME_CHECKPOINT}" >&2
@@ -124,6 +154,63 @@ if [[ "${recovery_archive}" != - ]]; then
     "${discarded_log_rows}" "${recovery_archive}" >> "${PROGRESS_LOG}"
 fi
 
+run_due_evaluation() {
+  local evaluated_iteration=$1
+  local evaluated_checkpoint=$2
+  if [[ "${VALIDATION_EXTERNAL}" != true ]] || (( evaluated_iteration % VALIDATION_INTERVAL != 0 )); then
+    return 0
+  fi
+  local evaluation_tag
+  evaluation_tag=$(printf 'iter_%04d' "${evaluated_iteration}")
+  local done_flag=${RUN_OUT}/evaluation/${evaluation_tag}/eval_done.flag
+  if [[ -s "${done_flag}" ]]; then
+    return 0
+  fi
+  [[ -s "${evaluated_checkpoint}/rl_state.pt" ]] || {
+    echo "due evaluation checkpoint is missing: ${evaluated_checkpoint}" >&2
+    return 1
+  }
+  EVALUATION_ENV=(
+    HOLD_JOB="${HOLD_JOB}"
+    REPO="${REPO}"
+    ENV_REPO="${ENV_REPO}"
+    PYTHON="${PYTHON}"
+    RL_CONFIG="${RL_CONFIG}"
+    RUN_OUT="${RUN_OUT}"
+    MODEL="${evaluated_checkpoint}"
+    WM_CKPT="${evaluated_checkpoint}"
+    REFERENCE_MODEL="${REFERENCE_MODEL}"
+    RESUME_CHECKPOINT="${evaluated_checkpoint}"
+    WANDB_PROJECT="${WANDB_PROJECT}"
+    WANDB_RUN_NAME="${WANDB_RUN_NAME}"
+    WANDB_MODE_OVERRIDE="${WANDB_MODE_OVERRIDE:-online}"
+    PIPELINE_MODE=eval
+    ITERATION="${evaluated_iteration}"
+    TOTAL_ITERATIONS="${TOTAL_ITERATIONS}"
+    SEED_OFFSET=1
+    ENV_PORT="$((ENV_PORT_BASE + evaluated_iteration))"
+    TRAIN_MASTER_PORT="$((TRAIN_MASTER_PORT_BASE + evaluated_iteration))"
+    RUN_INITIAL_GLOBAL_STEP="${INITIAL_GLOBAL_STEP}"
+  )
+  if [[ -x "${EVALUATION_RUNNER}" ]]; then
+    env "${EVALUATION_ENV[@]}" "${EVALUATION_RUNNER}"
+  else
+    env "${EVALUATION_ENV[@]}" bash "${EVALUATION_RUNNER}"
+  fi
+  [[ -s "${done_flag}" ]] || {
+    echo "evaluation runner returned without a durable done flag: ${done_flag}" >&2
+    return 1
+  }
+  printf '%s iteration=%s status=evaluated checkpoint=%s\n' \
+    "$(date -Iseconds)" "${evaluated_iteration}" "${evaluated_checkpoint}" >> "${PROGRESS_LOG}"
+}
+
+# If a controller stopped after committing a due training step but before its
+# external eval completed, finish that eval before collecting the next policy
+# batch.  The initialization checkpoint predates this run and is not backfilled.
+if (( last_completed > INITIAL_GLOBAL_STEP )); then
+  run_due_evaluation "${last_completed}" "${TRAIN_OUT}/latest"
+fi
 if (( last_completed >= TOTAL_ITERATIONS )); then
   echo "formal RL run already completed at global_step=${last_completed}"
   exit 0
@@ -132,7 +219,7 @@ fi
 for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
   CURRENT_ITERATION=${iteration}
   iteration_tag=$(printf 'iter_%04d' "${iteration}")
-  seed_offset=$(( (iteration - 1) * CONFIG_EPISODES + 1 ))
+  seed_offset=$(( (iteration - 1) * SEEDS_PER_DATASET_PER_ITERATION + 1 ))
   resume_checkpoint=""
   if (( iteration == FIRST_ITERATION )); then
     model=${INITIAL_MODEL}
@@ -187,6 +274,7 @@ for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
   PYTHONPATH="${REPO}/src" "${PYTHON}" \
     -m nimloth.training.rl.continuation \
     validate-iteration "${RUN_OUT}" "${iteration}" "${TRAIN_OUT}/latest"
+  run_due_evaluation "${iteration}" "${TRAIN_OUT}/latest"
   printf '%s iteration=%s status=completed checkpoint=%s\n' \
     "$(date -Iseconds)" "${iteration}" "${TRAIN_OUT}/latest" >> "${PROGRESS_LOG}"
 

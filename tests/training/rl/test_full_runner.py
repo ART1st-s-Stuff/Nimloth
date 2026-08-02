@@ -136,6 +136,28 @@ if iteration == total:
     path.chmod(0o755)
 
 
+def _write_fake_evaluation_runner(path: Path) -> None:
+    path.write_text(
+        """#!/usr/bin/env python3
+import os
+from pathlib import Path
+
+assert os.environ["PIPELINE_MODE"] == "eval"
+iteration = int(os.environ["ITERATION"])
+root = Path(os.environ["RUN_OUT"])
+assert iteration == 10
+assert Path(os.environ["MODEL"]) == root / "train/latest"
+target = root / "evaluation" / f"iter_{iteration:04d}"
+target.mkdir(parents=True)
+(target / "eval_done.flag").write_text("ALL_OK\\n", encoding="utf-8")
+with (root.parent / "fake_eval_calls.txt").open("a", encoding="utf-8") as stream:
+    stream.write(f"{iteration}\\n")
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
 def _runner_environment(tmp_path: Path, *, failure_mode: str = "") -> dict[str, str]:
     initial_model = tmp_path / "initial_model"
     initial_model.mkdir()
@@ -273,3 +295,33 @@ def test_full_runner_can_continue_optimizer_state_in_a_new_output(tmp_path: Path
     )
     assert consumption["starting_global_step"] == 1
     assert consumption["committed_global_step"] == 2
+
+
+def test_full_runner_runs_external_eval_once_at_iteration_ten(tmp_path: Path) -> None:
+    config_path = tmp_path / "external_eval.yaml"
+    config_text = CONTINUATION_CONFIG.read_text(encoding="utf-8")
+    config_text = config_text.replace("iterations: 2", "iterations: 10")
+    config_text = config_text.replace(
+        "  temperature: 0.7",
+        "  eval_datasets:\n    - base\n    - common_sense\n  temperature: 0.7",
+    )
+    config_text = config_text.replace(
+        "validation:\n  enabled: false\n  interval: 2\n  envs: 0",
+        "validation:\n  enabled: false\n  external: true\n  interval: 10\n  envs: 120",
+    )
+    config_path.write_text(config_text, encoding="utf-8")
+    evaluation_runner = tmp_path / "fake_evaluation.py"
+    _write_fake_evaluation_runner(evaluation_runner)
+    environment = _runner_environment(tmp_path)
+    environment["RL_CONFIG"] = str(config_path)
+    environment["EVALUATION_RUNNER"] = str(evaluation_runner)
+
+    subprocess.run([str(FULL_RUNNER)], check=True, env=environment)
+    subprocess.run([str(FULL_RUNNER)], check=True, env=environment)
+
+    assert (tmp_path / "formal/fake_eval_calls.txt").read_text(
+        encoding="utf-8"
+    ) == "10\n"
+    assert (
+        Path(environment["RUN_OUT"]) / "evaluation/iter_0010/eval_done.flag"
+    ).is_file()

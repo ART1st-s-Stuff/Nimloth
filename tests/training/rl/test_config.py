@@ -75,6 +75,28 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert config.distributed.rollout_tensor_parallel_size == 1
 
 
+def test_external_validation_is_explicit_and_excludes_builtin_validation() -> None:
+    raw = _raw_config()
+    raw["validation"] = {
+        "enabled": False,
+        "external": True,
+        "interval": 10,
+        "envs": 120,
+        "checkpoint_metric": "success_rate",
+    }
+
+    config = parse_rl_config(raw)
+
+    assert config.validation.enabled is False
+    assert config.validation.external is True
+    assert config.validation.interval == 10
+    assert config.validation.envs == 120
+
+    raw["validation"]["enabled"] = True
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        parse_rl_config(raw)
+
+
 def test_rl_config_parses_heterogeneous_distributed_topology() -> None:
     raw = _raw_config()
     raw["distributed"] = {
@@ -169,6 +191,7 @@ def test_formal_h1_config_preserves_corrected_online_contract() -> None:
         "common_sense_train",
     )
     assert config.validation.enabled is False
+    assert config.validation.external is False
     assert config.training.save_interval == 10
     assert config.distributed.nodes == 1
     assert config.distributed.world_size == 2
@@ -194,11 +217,16 @@ def test_formal_h1_32gpu_config_preserves_objective_and_true_sharded_layout() ->
     assert config.predictor.lambda_wm == 1.0
     assert config.predictor.lambda_dino == 0.5
     assert config.rl.iterations == 60
-    assert config.rl.envs_per_iteration == config.rl.batch_size == 8
+    assert config.rl.envs_per_iteration == config.rl.batch_size == 128
     assert config.rollout.train_datasets == (
         "base_train",
         "common_sense_train",
     )
+    assert config.rollout.eval_datasets == ("base", "common_sense")
+    assert config.validation.enabled is False
+    assert config.validation.external is True
+    assert config.validation.interval == 10
+    assert config.validation.envs == 120
     assert config.distributed.nodes == 4
     assert config.distributed.world_size == 16
     assert config.distributed.gpus_per_rank == 2
