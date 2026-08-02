@@ -3360,12 +3360,6 @@
   `train_ws16/epoch_001`路径的CPU preflight为`PREFLIGHT_OK`，W&B ID113精确run name为
   0命中。定向`dgx-46`的normal job`502499`已提交，4 H800/64 CPU/160 GiB/2小时；当前
   `PENDING(Priority)`且无预计开始时间，尚未获得GPU或形成任何训练证据。
-- `502480`随后在未分配资源前于`2026-08-02T14:47:28Z`被UID 3738取消：`Elapsed=0`、
-  `NodeList=None assigned`，无controller log/output/W&B/Ray/rollout/DDP/optimizer/checkpoint，
-  ID112目标未尝试且不可resume。人类随后指定`dgx-46`；该节点实时8卡中仅占2卡，但固定
-  1节点×4卡的Slurm test-only即使缩到15分钟也预计19:26Z，受normal priority门禁，不能
-  把Slurm账面空卡当成立即可占用资源。下一次需用新的identity和显式1×4配置。
-- commit`2ae6475c`把同一H1 smoke改为单节点world2、每rank2 GPU，远端shell与31项RL回归、
-  exact login preflight均通过；preflight同时纠正checkpoint实际路径为
-  `train_ws16/epoch_001`。ID113 batch job`502498`已按人类指定固定`normal/dgx-46`，请求
-  4 H800/32 CPU/160 GiB/2小时；当前`PENDING(Priority)`且尚无预计开始时间，未产生运行证据。
+- 共享workspace曾并发产生另一条ID113/job`502498`；为避免资源与数字ID竞争，它已在无
+  allocation、`Elapsed=00:00:00`时取消，没有任何运行产物。唯一保留并监控的ID113为
+  `502499`。
