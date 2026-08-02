@@ -97,6 +97,9 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export FLASHINFER_WORKSPACE_DIR=${FLASHINFER_WORKSPACE_DIR:-/project/peilab/atst/nimloth/.cache/flashinfer}
 export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_ALLREDUCE_USE_SYMM_MEM=0
+# Planner construction initializes CUDA before vLLM creates its TP workers.
+# The vLLM default is fork, which cannot reinitialize CUDA in those children.
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 mkdir -p "${FLASHINFER_WORKSPACE_DIR}"
 
 export CUDA_VISIBLE_DEVICES=${SHARD_GPU_VISIBLE}
