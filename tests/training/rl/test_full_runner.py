@@ -180,6 +180,18 @@ def test_full_runner_relocates_checkpoint_and_resumes_next_policy(
     assert calls.read_text(encoding="utf-8") == "1\n2\n"
 
 
+def test_full_runner_uses_its_batch_allocation_when_hold_job_is_absent(
+    tmp_path: Path,
+) -> None:
+    environment = _runner_environment(tmp_path)
+    environment.pop("HOLD_JOB")
+    environment["SLURM_JOB_ID"] = "test-batch-allocation"
+
+    subprocess.run([str(FULL_RUNNER)], check=True, env=environment)
+
+    _assert_completed_run(environment)
+
+
 @pytest.mark.parametrize(
     "failure_mode",
     ["before_outputs", "after_speculative_checkpoint"],

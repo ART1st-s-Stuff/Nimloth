@@ -7,7 +7,8 @@ SLURM_CONF=${SLURM_CONF:-/cm/shared/apps/slurm/var/etc/slurm/slurm.conf}
 export SLURM_CONF
 export PATH="${SLURM_BIN_DIR}:${PATH}"
 
-HOLD_JOB=${HOLD_JOB:?set HOLD_JOB to one running allocation}
+HOLD_JOB=${HOLD_JOB:-${SLURM_JOB_ID:-}}
+HOLD_JOB=${HOLD_JOB:?set HOLD_JOB or run as a Slurm batch job}
 REPO=${REPO:?set REPO to the committed server worktree}
 ENV_REPO=${ENV_REPO:?set ENV_REPO to the verified VAGEN worktree}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
