@@ -187,3 +187,13 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   optimizer存在，16份rank history cache非空，不变量为world16/B1/GA4/H1/T4、
   DINO-grid和`decision_state_executed_action_mc_v3`。保存期间`training_state.pt`会短暂
   原位变成0字节，因此只在训练继续到step232后把step229认定为新的durable恢复点。
+- batch-owned `500999`与`501002`各运行至一小时时限，有限loss日志推进到epoch2 step874；
+  W&B `d52u5anf`当前为`crashed`且summary global step873。目标仍为step1552，没有
+  `final`/`epoch_002`/done/completion validation，因此RL门禁未打开。
+- 当前durable `latest`加载为step785、epoch2、micro36、epoch未完成，optimizer与16份
+  history cache完整，训练不变量仍是world16/B1/GA4/H1/T4/DINO-grid/value-v3；后续日志
+  786--874需重放。`501005`和`501007`在获得8+4+4后均于2秒exit1，发生在controller
+  重定向之前，probe/model/W&B/optimizer均未启动且零字节日志无法证明具体失败test。
+- 当前相同门禁逐项重查通过。launcher已前置controller日志，并用`STARTUP_GATE`记录失败
+  位置；不改变模型、目标、数据、优化器或resume语义。14:00+08实时normal仅约11卡可用、
+  preempt无空闲，暂不能安全组成world16，下一段将保持同一identity从step785排队恢复。

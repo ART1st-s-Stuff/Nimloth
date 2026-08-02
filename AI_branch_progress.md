@@ -126,6 +126,16 @@
   optimizer存在，16份rank history cache非空，不变量为world16/B1/GA4/H1/T4、
   DINO-grid和`decision_state_executed_action_mc_v3`。保存期间`training_state.pt`会短暂
   原位变成0字节，因此只在训练继续到step232后把step229认定为新的durable恢复点。
+- batch-owned `500999`和`501002`随后各跑满一小时，local CSV推进到epoch2 step874；W&B
+  `d52u5anf`因时限段结束为`crashed`，summary global step873。ID74仍未完成：没有
+  `final`、`epoch_002`、`sft2_done.flag`或completion validation，不能放行RL。
+- 当前完整`latest`已用mmap load深检：step785、epoch2、micro36、epoch未完成、optimizer
+  存在、16份history cache非空，world16/B1/GA4/H1/T4/DINO/value-v3不变量不变；786--874
+  将在续跑中重放。后继`501005`与`501007`虽取得同一8+4+4 allocation，却在controller
+  重定向前2秒静默exit1，未进入probe/model/W&B/optimizer；当时具体失败test无日志可恢复。
+  当前commit/input/cache/checkpoint门禁均重新通过，launcher已把门禁日志前置并标记失败项。
+- 2026-08-02 14:00+08资源快照为normal约11卡空闲、preempt无空闲，暂不能组成合法
+  world16；下一段将保持同一ID/W&B/checkpoint排队，资源到位后恢复。RL继续等待SFT2 final。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 

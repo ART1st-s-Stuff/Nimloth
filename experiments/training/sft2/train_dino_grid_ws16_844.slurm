@@ -28,9 +28,20 @@ case "${RESUME}" in
   *) echo "ERROR RESUME must be 0 or 1, got ${RESUME}" >&2; exit 1 ;;
 esac
 
+mkdir -p "${RUN_ROOT}"
+CONTROLLER_LOG="${RUN_OUTPUT}.controller_${SLURM_JOB_ID}.log"
+exec > >(tee -a "${CONTROLLER_LOG}") 2>&1
+STARTUP_GATE=initialization
+trap 'rc=$?; if [ "${rc}" -ne 0 ]; then echo "ERROR startup_gate=${STARTUP_GATE} rc=${rc}"; fi' EXIT
+
+echo "startup_gate_begin=$(date --iso-8601=seconds) job=${SLURM_JOB_ID}"
+STARTUP_GATE=slurm_het_size
 test "${SLURM_HET_SIZE}" -eq 2
+STARTUP_GATE=repo_commit
 test "$(git -C "${REPO}" rev-parse HEAD)" = "${EXPECTED_COMMIT}"
+STARTUP_GATE=repo_clean
 test -z "$(git -C "${REPO}" status --porcelain --untracked-files=no)"
+STARTUP_GATE=required_inputs
 for required in \
   "${MODEL_PATH}/config.json" \
   "${TRAIN_JSONL}" \
@@ -38,12 +49,15 @@ for required in \
   "${RUN_ROOT}/preflight.json"; do
   test -s "${required}"
 done
+STARTUP_GATE=preprocess_cache_sentinel
 test -f "${PREPROCESS_CACHE}/cache_done.flag"
 if [ "${RESUME}" = 1 ]; then
   : "${RESUME_FROM:?set RESUME_FROM to the validated checkpoint directory}"
+  STARTUP_GATE=resume_output_state
   test "${RESUME_FROM#/}" != "${RESUME_FROM}"
   test -d "${RUN_OUTPUT}"
   test ! -e "${RUN_OUTPUT}/sft2_done.flag"
+  STARTUP_GATE=resume_checkpoint_files
   for required in \
     "${RESUME_FROM}/training_state.pt" \
     "${RESUME_FROM}/state_proj.pt" \
@@ -60,9 +74,8 @@ elif [ -d "${RUN_OUTPUT}" ] && [ -n "$(find "${RUN_OUTPUT}" -mindepth 1 -maxdept
   echo "ERROR fresh SFT2 output is non-empty: ${RUN_OUTPUT}" >&2
   exit 1
 fi
-mkdir -p "${RUN_ROOT}"
-CONTROLLER_LOG="${RUN_OUTPUT}.controller_${SLURM_JOB_ID}.log"
-exec > >(tee -a "${CONTROLLER_LOG}") 2>&1
+STARTUP_GATE=passed
+echo "startup_gate_passed=$(date --iso-8601=seconds) job=${SLURM_JOB_ID}"
 
 mapfile -t HOSTS0 < <(scontrol show hostnames "${SLURM_JOB_NODELIST_HET_GROUP_0}")
 mapfile -t HOSTS1 < <(scontrol show hostnames "${SLURM_JOB_NODELIST_HET_GROUP_1}")

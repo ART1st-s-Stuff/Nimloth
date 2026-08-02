@@ -37,6 +37,11 @@ def test_ws16_844_launcher_contract() -> None:
     assert 'export RESUME RESUME_FROM' in slurm
     assert 'test -f "${PREPROCESS_CACHE}/cache_done.flag"' in slurm
     assert '"${PREPROCESS_CACHE}/cache_done.flag" \\' not in slurm
+    assert slurm.index('exec > >(tee -a "${CONTROLLER_LOG}") 2>&1') < slurm.index(
+        'test "${SLURM_HET_SIZE}" -eq 2'
+    )
+    assert 'ERROR startup_gate=${STARTUP_GATE} rc=${rc}' in slurm
+    assert "STARTUP_GATE=resume_checkpoint_files" in slurm
     assert "scancel" not in slurm
     assert "nohup" not in slurm
 
