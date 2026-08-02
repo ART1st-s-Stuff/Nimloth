@@ -3340,3 +3340,20 @@
   `predicted_rollout_executed_action_mc_v2` checkpoint不能代表修正后的planner，加载器已
   fail closed；必须重训SFT2后重新评估success rate。完整记录见
   `ai_tasks/ai_progress/archives/2026-07-30/2026-07-30_value_q_alignment_fix.md`。
+
+## 2026-08-02：从 corrected SFT2 epoch1 提交 H=1 RL smoke
+
+- 人类明确批准不等待ID74 epoch2/final，改从已完整落盘的`epoch_001`启动RL。该checkpoint
+  为global step776、`epoch_complete=true`、H1/T4、world16，ValueHead objective为
+  `decision_state_executed_action_mc_v3`；完整HF权重、StateProjector、WM predictor、
+  ValueHead、optimizer和16份rank history cache均已核验。
+- RL固定为DINO监督、planner horizon1/history1；StateProjector和vision冻结，训练完整Qwen
+  language body、WM predictor与ValueHead。direct PPO/reference KL关闭。首轮只跑4条
+  `base_train` episode、每条最多20步，并要求2个同步rank各2 GPU、vLLM TP4及恰好一次
+  finite optimizer step，不能把CPU/FakeDDP门禁当成真实多卡结果。
+- batch-owned full controller支持以自身`SLURM_JOB_ID`持有allocation，commit固定为
+  `db7c855dceb989986b55e131f132c1039fb95b1f`；远端定向回归31项、shell syntax、checkpoint、
+  数据、依赖和W&B identity preflight通过。ID112 normal job`502480`已提交，请求2节点、
+  每节点2张H800、共4 GPU/64 CPU/160 GiB、2小时。当前仍为`PENDING(Priority)`，Slurm
+  预计`2026-08-02T17:19:28Z`开始；尚无allocation、W&B run、rollout、DDP或optimizer step，
+  因而还不能称为健康启动。
