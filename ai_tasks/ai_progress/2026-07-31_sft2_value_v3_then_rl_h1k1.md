@@ -271,3 +271,19 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `rl_state.pt`。
   该smoke无需resume；正式长时RL应从`train/final`作为初始checkpoint，使用新ID、
   新W&B identity和空输出目录，不得重复消费这批rollout。
+
+## 2026-08-02：SFT2链NCCL终止，ID114 formal RL待确认
+
+- SFT2 `502449/502452/502454`均在`dgx-39:8 + dgx-13:4 + dgx-18:4`启动后，于DDP
+  parameter-shape验证阶段因rank10/dgx-13连接`10.24.0.47`报NCCL `No route to host`失败；
+  三段没有optimizer step或新checkpoint。`latest`仍是step785/epoch2-incomplete，完整
+  `epoch_001`未改变；输出README已记录终态，盲目重提该8+4+4 launcher被禁止。
+- formal config commit`803cb832`固定60 iterations、每轮8条×最多20步，训练资产
+  `base_train/common_sense_train` round-robin；H1/history1/DINO0.5，训练Qwen language、
+  WM predictor、ValueHead，冻结vision/StateProjector，单节点world2×2 GPU、rollout TP4。
+  新远端worktree、bash syntax、31项回归和exact login preflight均通过。
+- 拟议ID114从RL113 `train/final` fresh初始化，W&B max ID113、exact ID114 0命中、输出为空。
+  实测外推约9--10小时/36--40 GPUh，两个8小时batch段可按iteration-level latest/consumption
+  自动恢复；每10轮保留checkpoint，估计峰值新增约200GB。当前normal只有3张空闲卡，
+  unpinned 4卡8小时test-only估计03日01:03+08启动，dgx-46固定请求估计14:11；正式提交
+  等待人类确认60轮规模和不固定normal节点策略。

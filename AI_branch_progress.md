@@ -3403,3 +3403,20 @@
 - 本smoke已完成，无需resume同一iteration。若要开始正式长时RL，应以
   `train/final`为初始checkpoint，使用新实验ID、空输出目录和新W&B identity，不得重复
   消费`iter_0001`的fresh rollout。
+
+## 2026-08-02：旧SFT2续训链终止，formal RL预检完成
+
+- 旧SFT2 jobs`502449 -> 502452 -> 502454`均获得同一normal物理拓扑
+  `dgx-39:8 + dgx-13:4 + dgx-18:4`，但分别在11分53秒、10分18秒、10分18秒时于
+  DDP参数shape验证阶段失败。rank10/dgx-13反复连接`10.24.0.47`报NCCL
+  `No route to host/ncclRemoteError`；没有optimizer step或新checkpoint。`latest`仍为
+  07:26写出的step785/epoch2-incomplete，完整`epoch_001`未改变，故不影响RL113/114 lineage。
+- commit`803cb832`包含formal H1 config：60 iterations，每轮8条、最多20步，
+  `base_train/common_sense_train` round-robin；planner H1/history1/DINO0.5，训练Qwen language、
+  WM predictor、ValueHead，冻结vision/StateProjector，world2×2 GPU、vLLM TP4。远端bash
+  syntax和31项RL回归通过，login preflight为`PREFLIGHT_OK iteration=1/60`。
+- 拟议ID114以RL113 `train/final`初始化；W&B numeric max为113且ID114 exact name为0命中，
+  输出不存在。按RL113实测估算60轮约9--10小时、36--40 GPUh；每10轮immutable checkpoint
+  加rolling snapshot和rollout，峰值新增存储约200GB。normal当前仅3张可用GPU；不固定
+  节点的8小时test-only最早估计`2026-08-03T01:03:03+08:00`，固定dgx-46则约14:11。
+  正式提交仍等待人类确认该60轮/资源量级。
