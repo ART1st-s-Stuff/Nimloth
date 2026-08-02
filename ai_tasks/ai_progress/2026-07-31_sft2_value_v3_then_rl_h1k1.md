@@ -342,4 +342,27 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   commit`1c055438`恢复已验证的组内首卡renderer，同时保留spawn修复，远端回归`8 passed`。
 - ID118/job`503233`使用空输出、新W&B名、normal 4节点×8卡、`--exclude=dgx-32`，继续从
   ID114 global step5和未提交iter6 seed block41--48启动。精确CPU preflight通过；当前仅
-  `dgx-24/40/52`三个健康全节点空闲，job为`PENDING(Priority)`、未占GPU且尚无启动证据。
+  `dgx-24/40/52`三个健康全节点空闲，job终止前为`PENDING(Resources)`、未占GPU且尚无启动证据。
+
+## 2026-08-03：ID119异构true32正式RL健康启动并提交step6
+
+- commit`50490a71`把8个TP4 rollout worker和16个双卡训练rank按节点实际GPU数动态分配；
+  commit`0aff39b9`新增可复现的`3x8 + 2x4` heterogeneous Slurm入口。新5节点配置只改变
+  physical node count，仍为world16、2 GPU/rank、total32、rollout TP4；远端bash门禁和
+  39项定向回归通过，exact preflight输出`iteration=6/60, nodes=5, world=16, total_gpus=32`。
+- Slurm `--test-only`接受normal、排除`dgx-32`的`3x8 + 2x4`请求，并解析到健康资源
+  `dgx-24/40/52 + dgx-26/46`。仍未获得GPU且没有output/W&B的ID118/job`503233`随后取消；
+  ID119 heterogeneous job`503242+0/503242+1`立即在上述五节点RUNNING，实际GPU数为
+  `8+8+8+4+4=32`。
+- iter6的8个navigation prewarm均在2.6--4.3秒通过，8个独立vLLM TP4 engine完成；strict
+  merge得到record ID`rl_000041`--`rl_000048`、8 trajectories、114 transitions，整体
+  success rate 0.375。五节点训练按`4+4+4+2+2=16` ranks运行，每rank 2 GPU；fresh
+  consumption从`starting_global_step=5`进入in_progress。
+- step6完成唯一一次optimizer update并写入有限指标：`wm_mse=0.4614005907`、
+  `dino_grid_mse=0.8577285591`、`value_loss=11.7325083244`、`total_loss=12.6227733069`；
+  actor/token-value/reference-KL均为0。consumption已原子提交到global step6，完整
+  13,090,012,153-byte checkpoint迁移到`train/policy_inputs/iter_0007`。W&B run为
+  `v6h03cze`。
+- job继续占用同一32卡执行iter7；全新seed49--56的8个environment prewarm已全部通过，
+  没有重复已提交的seed41--48。当前结论仅证明true32 rollout、strict merge、world16真实
+  update及step6 checkpoint链健康；长期优化质量仍需后续iterations和评估证据。
