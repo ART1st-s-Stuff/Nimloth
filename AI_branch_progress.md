@@ -3376,3 +3376,26 @@
   KV cache 3,366,496 tokens，四卡显存约70--71 GiB；engine ready后已进入`rl_ep=0`
   真实采集。至此健康启动成立；两rank训练和finite optimizer step尚未发生，不能把启动
   证据当成RL更新完成。随后SSH连续立即断开，但batch-owned controller不依赖该会话。
+
+## 2026-08-02：ID113 RL mechanics smoke完成
+
+- canonical job `502499`已在`normal/dgx-46`以`COMPLETED 0:0`结束：
+  `2026-08-02T15:06:36--15:14:18+08:00`，实际用时7分42秒，分配4张H800、64 CPU、
+  160 GiB。配置只执行1个iteration，所以这是全链路mechanics smoke，不是正式持续RL训练。
+- vLLM TP4完成4条`base_train` trajectory，共80 transitions，平均reward
+  `-1.775`、平均20步、success `0/4 = 0%`。这些只是4条smoke样本现象，不是策略质量结论。
+- 两个同步训rank各2 GPU完成一次真实backward/optimizer step；`global_step=1`
+  的有限指标为`wm_mse=0.1131076391`、`dino_grid_mse=0.9224451296`、
+  `value_loss=value_mc_mse=2.6039159307`、`total_loss=3.1782461395`。
+  `actor_loss/token_value_loss/reference_kl_loss/policy_tokens=0`与关闭direct PPO/KL的合同一致。
+- 实际参数边界是训练完整Qwen language body、WM predictor和ValueHead；Qwen vision、
+  DINO teacher和配置的grid StateProjector冻结。日志最终同时给出`ITERATION_OK`与
+  `ALL_OK`，未见traceback、OOM、NCCL failure或non-finite。DDP grad-stride和
+  multi-device CUDA timing警告只影响性能/统计，未导致本次step失败。
+- post-update产物完整：`train/iter_0001`、`train/latest`和`train/final`均存在，
+  包含Qwen分片、WM predictor、ValueHead、StateProjector与`rl_state.pt`；rollout
+  consumption marker为`committed`，`starting_global_step=0`、`committed_global_step=1`。
+  W&B run `xc52jj3s`已同步完成。
+- 本smoke已完成，无需resume同一iteration。若要开始正式长时RL，应以
+  `train/final`为初始checkpoint，使用新实验ID、空输出目录和新W&B identity，不得重复
+  消费`iter_0001`的fresh rollout。

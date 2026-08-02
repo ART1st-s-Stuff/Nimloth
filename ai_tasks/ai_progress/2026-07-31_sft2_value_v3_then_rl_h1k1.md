@@ -249,3 +249,21 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   KV cache为3,366,496 tokens，四卡约70--71 GiB，随后打印Supported task generate并开始
   `rl_ep=0`真实trajectory。当前已达到Ray/env/vLLM/rollout健康启动；尚未完成4条episode、
   两rank DDP update、finite global step1或checkpoint，后续结果不得提前宣称。
+
+## 2026-08-02：ID113 RL mechanics smoke终态
+
+- Slurm job `502499`在`normal/dgx-46`从15:06:36运行到15:14:18+08:00，
+  `COMPLETED 0:0`，共7分42秒；实际资源为4 H800/64 CPU/160 GiB。配置为
+  `iterations=1`、4条episode、每条最多20步，故它是mechanics smoke，不是正式长时RL。
+- rollout完成4/4条`base_train`、80 transitions，平均reward `-1.775`、平均20步、
+  success 0/4。两个同步rank各2 GPU完成一次真实backward和optimizer step，
+  `global_step=1`；有限指标为`wm_mse=0.1131076391`、
+  `dino_grid_mse=0.9224451296`、`value_mc_mse=2.6039159307`、
+  `total_loss=3.1782461395`。actor/token-value/reference-KL均为0，符合关闭相应路径的合同。
+- 实际参数边界为训练完整Qwen language body、WM predictor和ValueHead；冻结vision、
+  DINO teacher和grid StateProjector。最终日志为`ITERATION_OK`和`ALL_OK`，无
+  traceback/OOM/NCCL failure/non-finite；只有未导致失败的性能/弃用警告。
+- `train/iter_0001`、`train/latest`和`train/final`均包含完整post-update产物；
+  fresh rollout consumption marker已在checkpoint后以step1提交。W&B run `xc52jj3s`已同步完成。
+  该smoke无需resume；正式长时RL应从`train/final`作为初始checkpoint，使用新ID、
+  新W&B identity和空输出目录，不得重复消费这批rollout。
