@@ -3396,6 +3396,10 @@
   包含Qwen分片、WM predictor、ValueHead、StateProjector与`rl_state.pt`；rollout
   consumption marker为`committed`，`starting_global_step=0`、`committed_global_step=1`。
   W&B run `xc52jj3s`已同步完成。
+- 初始化与`train/final`逐tensor复核确认参数ownership：Qwen non-vision变化`396/435`，
+  WM predictor变化`88/88`，ValueHead变化`4/4`；冻结Qwen vision变化`0/390`，
+  StateProjector变化`0/6`。W&B API实时状态为`finished`且summary与本地CSV一致；final
+  checkpoint索引825个Qwen tensors、2个完整shard和非空13,090,012,153-byte `rl_state.pt`。
 - 本smoke已完成，无需resume同一iteration。若要开始正式长时RL，应以
   `train/final`为初始checkpoint，使用新实验ID、空输出目录和新W&B identity，不得重复
   消费`iter_0001`的fresh rollout。

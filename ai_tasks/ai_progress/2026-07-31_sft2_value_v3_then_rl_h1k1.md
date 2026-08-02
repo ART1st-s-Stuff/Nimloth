@@ -265,5 +265,9 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   traceback/OOM/NCCL failure/non-finite；只有未导致失败的性能/弃用警告。
 - `train/iter_0001`、`train/latest`和`train/final`均包含完整post-update产物；
   fresh rollout consumption marker已在checkpoint后以step1提交。W&B run `xc52jj3s`已同步完成。
+- 初始化与final的逐tensor复核为：Qwen non-vision变化`396/435`、WM predictor `88/88`、
+  ValueHead `4/4`；冻结Qwen vision变化`0/390`、StateProjector `0/6`。W&B API为`finished`
+  且summary与CSV一致；final索引825个Qwen tensors、2个shard及非空13,090,012,153-byte
+  `rl_state.pt`。
   该smoke无需resume；正式长时RL应从`train/final`作为初始checkpoint，使用新ID、
   新W&B identity和空输出目录，不得重复消费这批rollout。
