@@ -287,3 +287,19 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   自动恢复；每10轮保留checkpoint，估计峰值新增约200GB。当前normal只有3张空闲卡，
   unpinned 4卡8小时test-only估计03日01:03+08启动，dgx-46固定请求估计14:11；正式提交
   等待人类确认60轮规模和不固定normal节点策略。
+
+## 2026-08-02：ID114提交、节点拒绝与健康恢复
+
+- 使用RL113已验证的Slurm合同`account=peilab,normal,gres/gpu=4,1 node,64 CPU,160 GiB,
+  8h`启动。job`503149`在dgx-51通过Ray 4卡/import probe/env health，但真实navigation
+  prewarm超过未修改的300秒门禁，以exit124停止；没有trajectory、W&B、train log、checkpoint
+  或consumption。partial输出232 KiB，README记录终态，continuation将其归档后安全重启
+  iteration1。
+- recovery job`503166`排除dgx-51并在dgx-26立即运行；prewarm用时10.45秒。iteration1的
+  8条train-split trajectory共160 transitions，avg reward -1.70、success0、reasoning truncation0。
+  两rank finite step1为`wm_mse=0.10538474,dino_grid_mse=0.78158767,value_loss=2.27762794,
+  total_loss=2.77380653`，direct actor/token-value/reference-KL保持0。
+- fresh consumption已从step0 commit到1，完整checkpoint已原子移动到
+  `train/policy_inputs/iter_0002`；iteration2从该policy和seed offset9开始。W&B持久run ID为
+  `xpumz7a9`。第二段job`503172`依赖`afterany:503166`，使用同一输出、恢复合同和dgx-51排除，
+  第一段到时后自动从最后committed iteration续跑。

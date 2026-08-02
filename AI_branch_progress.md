@@ -3420,3 +3420,25 @@
   加rolling snapshot和rollout，峰值新增存储约200GB。normal当前仅3张可用GPU；不固定
   节点的8小时test-only最早估计`2026-08-03T01:03:03+08:00`，固定dgx-46则约14:11。
   正式提交仍等待人类确认该60轮/资源量级。
+
+## 2026-08-02：ID114 formal RL已健康启动
+
+- 人类要求立即启动后，ID114按已披露合同提交：commit`803cb832`、RL113 `train/final`
+  初始化、`base_train/common_sense_train`、60轮×8条×最多20步、H1/history1/DINO0.5，
+  训练Qwen language/WM predictor/ValueHead，冻结vision/StateProjector，normal单节点4卡、
+  world2×2 GPU、vLLM TP4。最初两次`sbatch`在入队前分别因遗漏`--account`和错误typed
+  GRES被Slurm拒绝，没有job/GPU占用；随后改用RL113已验证的`--account=peilab`与
+  `--gres=gpu:4`。
+- job`503149`在`normal/dgx-51`取得4 GPU/64 CPU/160 GiB后，Ray 4卡和env health通过，
+  但真实AI2-THOR prewarm在300秒硬门禁超时，以`FAILED 124:0`结束。没有rollout、W&B、
+  optimizer step、checkpoint或consumption；232 KiB partial输出已由continuation归档，未放宽
+  timeout。
+- 排除dgx-51的recovery job`503166`立即在`normal/dgx-26`运行；prewarm 10.45秒通过。
+  iteration1完成8条/160 transitions，avg reward -1.70、success0/8、无reasoning truncation；
+  双rank global step1有限：WM0.10538474、DINO-grid0.78158767、ValueHead2.27762794、
+  total2.77380653。consumption已commit，13,090,012,153-byte checkpoint移动至
+  `train/policy_inputs/iter_0002`，iteration2已从该不可变policy开始。
+- W&B run ID`xpumz7a9`持久化在`train/wandb_run_id.txt`；每轮train phase结束会finish，下一轮
+  train以`resume=allow`重开，所以rollout期间API显示finished是预期状态。依赖
+  `afterany:503166`的第二个8小时normal 4卡段为job`503172`，会从最后committed iteration续跑；
+  两段均排除dgx-51。
