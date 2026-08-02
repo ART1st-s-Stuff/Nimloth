@@ -19,6 +19,7 @@ CONTINUATION = REPO_ROOT / "src/nimloth/training/rl/continuation.py"
 HETERO_32_CONFIG = (
     REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_32gpu_88844.yaml"
 )
+HETERO_32_BATCH = REPO_ROOT / "experiments/training/rl/train_true32_88844.slurm"
 
 
 def _load_counts(job_details: str) -> list[str]:
@@ -157,6 +158,7 @@ def test_true32_heterogeneous_topology_is_explicitly_routed_by_het_group() -> No
     controller = PARALLEL_CONTROLLER.read_text(encoding="utf-8")
     pipeline = PIPELINE.read_text(encoding="utf-8")
     config = HETERO_32_CONFIG.read_text(encoding="utf-8")
+    batch = HETERO_32_BATCH.read_text(encoding="utf-8")
 
     assert 'SLURM_JOB_NODELIST_HET_GROUP_${het_group}' in controller
     assert 'SRUN_ARGS+=(--het-group="${het_group}")' in controller
@@ -168,3 +170,8 @@ def test_true32_heterogeneous_topology_is_explicitly_routed_by_het_group() -> No
     assert "world_size: 16" in config
     assert "gpus_per_rank: 2" in config
     assert "rollout_tensor_parallel_size: 4" in config
+    assert 'test "${SLURM_HET_SIZE}" -eq 2' in batch
+    assert 'test "${#HET_NODES_8[@]}" -eq 3' in batch
+    assert 'test "${#HET_NODES_4[@]}" -eq 2' in batch
+    assert "export NIMLOTH_HET_GPUS_PER_NODE=8,4" in batch
+    assert 'exec bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_full.sh"' in batch
