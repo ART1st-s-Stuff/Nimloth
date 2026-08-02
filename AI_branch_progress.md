@@ -3351,12 +3351,15 @@
   language body、WM predictor与ValueHead。direct PPO/reference KL关闭。首轮只跑4条
   `base_train` episode、每条最多20步，并要求2个同步rank各2 GPU、vLLM TP4及恰好一次
   finite optimizer step，不能把CPU/FakeDDP门禁当成真实多卡结果。
-- batch-owned full controller支持以自身`SLURM_JOB_ID`持有allocation，commit固定为
-  `db7c855dceb989986b55e131f132c1039fb95b1f`；远端定向回归31项、shell syntax、checkpoint、
-  数据、依赖和W&B identity preflight通过。ID112 normal job`502480`已提交，请求2节点、
-  每节点2张H800、共4 GPU/64 CPU/160 GiB、2小时。当前仍为`PENDING(Priority)`，Slurm
-  预计`2026-08-02T17:19:28Z`开始；尚无allocation、W&B run、rollout、DDP或optimizer step，
-  因而还不能称为健康启动。
+- 首次ID112/job`502480`以2节点×2卡提交，但人类随后指定`dgx-46`；该job在无allocation、
+  `Elapsed=00:00:00`时取消，没有controller、W&B、rollout、DDP或optimizer产物。复查同时
+  发现其提交参数漏写checkpoint路径中的`train_ws16/`，若获得资源也会在模型门禁立即失败。
+  ID112不可resume，终态合同和邻接progress已记录。
+- commit`75b21b9ea2bc207f85cea4bec94b9b3ca54333a7`新增单机4卡等价拓扑：1个物理节点、
+  2个同步rank、每rank 2 GPU，vLLM TP4。远端配置硬断言与31项回归通过；使用正确
+  `train_ws16/epoch_001`路径的CPU preflight为`PREFLIGHT_OK`，W&B ID113精确run name为
+  0命中。定向`dgx-46`的normal job`502499`已提交，4 H800/64 CPU/160 GiB/2小时；当前
+  `PENDING(Priority)`且无预计开始时间，尚未获得GPU或形成任何训练证据。
 - `502480`随后在未分配资源前于`2026-08-02T14:47:28Z`被UID 3738取消：`Elapsed=0`、
   `NodeList=None assigned`，无controller log/output/W&B/Ray/rollout/DDP/optimizer/checkpoint，
   ID112目标未尝试且不可resume。人类随后指定`dgx-46`；该节点实时8卡中仅占2卡，但固定

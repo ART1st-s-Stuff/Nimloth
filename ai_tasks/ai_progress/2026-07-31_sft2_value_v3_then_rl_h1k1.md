@@ -204,7 +204,7 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   尚无GPU/训练启动。随后superpod跳板再次立即断开，队列本身不依赖SSH；恢复连接后须实时
   重查并监控到probe、DDP和finite optimizer step，RL仍等待ID74 final门禁。
 
-## 2026-08-02：ID112 epoch1 RL smoke 已提交、等待调度
+## 2026-08-02：ID112取消，ID113定向dgx-46等待调度
 
 - 人类明确批准打开原先“等待ID74 final”的门禁，改用已完整验证的`epoch_001`：global
   step776、`epoch_complete=true`、H1/T4、world16、ValueHead objective
@@ -215,15 +215,21 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   direct PPO/reference KL关闭；训练完整Qwen language body、WM predictor与ValueHead。
   数据为4条`base_train` episode、各最多20步；首个门禁要求2个同步rank各2 GPU、vLLM TP4、
   episode末恰好一次finite optimizer step和完整checkpoint。
-- commit`db7c855dceb989986b55e131f132c1039fb95b1f`新增batch-owned controller fallback并
-  通过远端31项定向回归、shell syntax及完整CPU preflight；远端代码worktree固定于该
-  commit。输出identity为
-  `112_smoke_ep1_greedyh1_k16_dino05_qwenwmvalue_ep4x20_mp2ddp2_vllmtp4_ws2`，邻接
-  launch contract已落盘。
-- normal batch job`502480`已提交：2节点×2 H800、64 CPU、160 GiB、2小时。当前状态为
-  `PENDING(Priority)`，Slurm预计`2026-08-02T17:19:28Z`启动；尚无allocation、W&B run、
-  rollout、真实DDP或optimizer step。任务保留排队，资源到位后必须继续监控Ray四卡、
-  AI2-THOR、vLLM TP4、四条trajectory、两rank训练和finite step，才能判为健康启动。
+- ID112/job`502480`先以2节点×2 H800提交。人类随后指定`dgx-46`，该job在未分配节点、
+  `Elapsed=00:00:00`时取消；没有controller log、output、W&B run、Ray/vLLM、rollout、
+  DDP、optimizer step或checkpoint，不可resume。复核还发现ID112参数中的checkpoint路径
+  漏写`train_ws16/`，若实际启动会在最前置模型门禁失败；终态已写入邻接launch contract
+  和`112_*.progress.md`。
+- commit`75b21b9ea2bc207f85cea4bec94b9b3ca54333a7`新增
+  `planner_greedy_h1_smoke_1x4.yaml`：单物理节点、world2、每rank 2 GPU、总4 GPU、vLLM
+  TP4，其余目标/数据/冻结边界不变。远端配置硬断言和31项定向回归通过；用正确
+  `train_ws16/epoch_001`路径的CPU preflight通过。项目凭据下W&B entity为
+  `art2nd-hong-kong-university-of-science-and-technology`，ID113精确run name查询0命中。
+- ID113 output/name为
+  `113_smoke_ep1_greedyh1_k16_dino05_qwenwmvalue_ep4x20_1n2r2g_vllmtp4_dgx46`，launch
+  contract已落盘。normal job`502499`定向`dgx-46`请求4 H800、64 CPU、160 GiB、2小时；
+  提交后仍为`PENDING(Priority)`且StartTime unknown。`dgx-46`实时仅被其他用户占2/8卡，
+  但Slurm尚未backfill本job；当前仍无GPU、Ray/vLLM、rollout、真实DDP或optimizer证据。
 - `502480`在未获得allocation前于`2026-08-02T14:47:28Z`被UID 3738取消；sacct为
   `CANCELLED/Elapsed=00:00:00/NodeList=None assigned/ExitCode=0:0`。没有controller log、
   output目录、W&B run、Ray/vLLM、environment rollout、DDP、optimizer或checkpoint；ID112
