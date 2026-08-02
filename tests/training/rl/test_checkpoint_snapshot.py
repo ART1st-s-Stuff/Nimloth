@@ -63,3 +63,55 @@ def test_resume_rejects_old_incoming_action_planner_objective(
             expected_reference_kl_config={"weight": 0.0, "type": None},
             expected_train_world_model=True,
         )
+
+
+def test_replicated_optimizer_can_resume_across_training_world_sizes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_parameter = torch.nn.Parameter(torch.ones(()))
+    source_optimizer = torch.optim.AdamW([source_parameter])
+    source_parameter.square().backward()
+    source_optimizer.step()
+    planner_config = {"enabled": True}
+    state = {
+        "iteration": 5,
+        "global_step": 5,
+        "optimizer": source_optimizer.state_dict(),
+        "optimizer_world_size": 1,
+        "training_world_size": 2,
+        "optimizer_state_layout": "replicated",
+        "planner_config": planner_config,
+        "planner_training_objective": PLANNER_TRAINING_OBJECTIVE,
+        "reference_kl_config": {"weight": 0.0, "type": None},
+        "train_world_model": True,
+    }
+    monkeypatch.setattr(
+        "nimloth.training.rl.trainer.load_rl_wm_checkpoint",
+        lambda *_args, **_kwargs: state,
+    )
+    resumed_parameter = torch.nn.Parameter(torch.ones(()))
+    resumed_optimizer = torch.optim.AdamW([resumed_parameter])
+
+    resumed = _load_resume_state(
+        checkpoint_dir=tmp_path,
+        world_model=object(),  # type: ignore[arg-type]
+        optimizer=resumed_optimizer,
+        device=torch.device("cpu"),
+        rank=7,
+        world_size=16,
+        optimizer_state_sharded=False,
+        expected_checkpoint_metric="success_rate",
+        expected_credit_assignment="none",
+        expected_token_credit_config={},
+        expected_truncated_bootstrap=None,
+        expected_planner_config=planner_config,
+        expected_planner_training_objective=PLANNER_TRAINING_OBJECTIVE,
+        expected_reference_kl_config={"weight": 0.0, "type": None},
+        expected_train_world_model=True,
+    )
+
+    assert resumed.loaded is True
+    assert resumed.start_iteration == 6
+    assert resumed.global_step == 5
+    assert resumed_optimizer.state_dict()["state"]
