@@ -40,12 +40,22 @@ def _validate_committed_payload(payload: dict[str, Any], iteration: int) -> None
         )
 
 
-def find_last_completed_iteration(run_output: Path, total_iterations: int) -> int:
+def find_last_completed_iteration(
+    run_output: Path,
+    total_iterations: int,
+    *,
+    initial_global_step: int = 0,
+) -> int:
     """返回 consumption 已连续提交的 iteration 前缀长度。"""
 
-    last_completed = 0
+    if not 0 <= initial_global_step < total_iterations:
+        raise ValueError(
+            "initial_global_step must be in [0, total_iterations): "
+            f"initial={initial_global_step}, total={total_iterations}"
+        )
+    last_completed = initial_global_step
     found_incomplete = False
-    for iteration in range(1, total_iterations + 1):
+    for iteration in range(initial_global_step + 1, total_iterations + 1):
         path = consumption_path(run_output, iteration)
         if not path.is_file():
             found_incomplete = True
@@ -143,6 +153,8 @@ def _reconcile_step_log(
     run_output: Path,
     last_completed: int,
     archive: RecoveryArchive,
+    *,
+    initial_global_step: int = 0,
 ) -> int:
     """删除没有对应 committed consumption 标记的训练日志行。"""
 
@@ -157,16 +169,25 @@ def _reconcile_step_log(
             fieldnames = reader.fieldnames
             rows = list(reader)
         steps = [int(row["global_step"]) for row in rows]
-        if steps != list(range(1, len(rows) + 1)):
+        expected_steps = list(
+            range(
+                initial_global_step + 1,
+                initial_global_step + len(rows) + 1,
+            )
+        )
+        if steps != expected_steps:
             raise RuntimeError(f"non-contiguous train step log: {steps}")
         logged_steps = len(rows)
 
-    if logged_steps < last_completed:
+    committed_rows = last_completed - initial_global_step
+    if committed_rows < 0:
+        raise RuntimeError("last completed step precedes the initialization step")
+    if logged_steps < committed_rows:
         raise RuntimeError(
             "train step log trails committed checkpoints: "
-            f"log={logged_steps}, committed={last_completed}"
+            f"log={logged_steps}, committed={committed_rows}"
         )
-    if logged_steps == last_completed:
+    if logged_steps == committed_rows:
         return 0
     if fieldnames is None:
         raise RuntimeError("train step log has no header")
@@ -177,13 +198,13 @@ def _reconcile_step_log(
         with temporary.open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(rows[:last_completed])
+            writer.writerows(rows[:committed_rows])
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, step_log)
     finally:
         temporary.unlink(missing_ok=True)
-    return logged_steps - last_completed
+    return logged_steps - committed_rows
 
 
 def prepare_policy_input(
@@ -253,13 +274,27 @@ class PreparedRun:
     recovery_archive: Path | None
 
 
-def prepare_run(run_output: Path, total_iterations: int) -> PreparedRun:
+def prepare_run(
+    run_output: Path,
+    total_iterations: int,
+    *,
+    initial_global_step: int = 0,
+) -> PreparedRun:
     """核对持久化状态，并归档被中断的当前尝试。"""
 
-    last_completed = find_last_completed_iteration(run_output, total_iterations)
+    last_completed = find_last_completed_iteration(
+        run_output,
+        total_iterations,
+        initial_global_step=initial_global_step,
+    )
     start_iteration = last_completed + 1
     archive = RecoveryArchive(run_output, start_iteration)
-    discarded = _reconcile_step_log(run_output, last_completed, archive)
+    discarded = _reconcile_step_log(
+        run_output,
+        last_completed,
+        archive,
+        initial_global_step=initial_global_step,
+    )
 
     if last_completed >= total_iterations:
         train_output = run_output / "train"
@@ -276,7 +311,7 @@ def prepare_run(run_output: Path, total_iterations: int) -> PreparedRun:
             from nimloth.training.rl.checkpoint import link_checkpoint_snapshot
 
             link_checkpoint_snapshot(checkpoint, final)
-    elif start_iteration == 1:
+    elif start_iteration == initial_global_step + 1:
         if run_output.exists() and any(run_output.iterdir()):
             archive.move(run_output, "run_out")
     else:
@@ -297,6 +332,7 @@ def _parser() -> argparse.ArgumentParser:
     prepare = subparsers.add_parser("prepare-run")
     prepare.add_argument("run_output", type=Path)
     prepare.add_argument("total_iterations", type=int)
+    prepare.add_argument("--initial-global-step", type=int, default=0)
 
     policy = subparsers.add_parser("prepare-policy")
     policy.add_argument("run_output", type=Path)
@@ -312,7 +348,11 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _parser().parse_args()
     if args.command == "prepare-run":
-        prepared = prepare_run(args.run_output, args.total_iterations)
+        prepared = prepare_run(
+            args.run_output,
+            args.total_iterations,
+            initial_global_step=args.initial_global_step,
+        )
         print(
             prepared.last_completed,
             prepared.start_iteration,

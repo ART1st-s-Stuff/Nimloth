@@ -176,6 +176,36 @@ def test_formal_h1_config_preserves_corrected_online_contract() -> None:
     assert config.distributed.total_gpus == 4
 
 
+def test_formal_h1_32gpu_config_preserves_objective_and_true_sharded_layout() -> None:
+    root = Path(__file__).resolve().parents[3]
+    config = load_rl_config(
+        root / "configs/training/rl/planner_greedy_h1_full_32gpu.yaml"
+    )
+
+    assert config.agent.planning.horizon == 1
+    assert config.agent.planning.search_mode == "greedy"
+    assert config.freeze.state_proj is True
+    assert config.gradient.state_source == "recompute"
+    assert config.gradient.representation_to_backbone is True
+    assert config.actor.enabled is False
+    assert config.actor.reference_kl_loss_weight == 0.0
+    assert config.predictor.history_size == 1
+    assert config.predictor.train_wm is True
+    assert config.predictor.lambda_wm == 1.0
+    assert config.predictor.lambda_dino == 0.5
+    assert config.rl.iterations == 60
+    assert config.rl.envs_per_iteration == config.rl.batch_size == 8
+    assert config.rollout.train_datasets == (
+        "base_train",
+        "common_sense_train",
+    )
+    assert config.distributed.nodes == 4
+    assert config.distributed.world_size == 16
+    assert config.distributed.gpus_per_rank == 2
+    assert config.distributed.rollout_tensor_parallel_size == 4
+    assert config.distributed.total_gpus == 32
+
+
 def test_continuation_gate_uses_two_fresh_greedy_updates() -> None:
     root = Path(__file__).resolve().parents[3]
     config = load_rl_config(

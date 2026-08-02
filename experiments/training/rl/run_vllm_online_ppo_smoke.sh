@@ -24,6 +24,7 @@ PIPELINE_PHASE=${PIPELINE_PHASE:-all}
 PREFLIGHT_ONLY=${PREFLIGHT_ONLY:-false}
 RUN_MODE=${RUN_MODE:-smoke}
 ITERATION=${ITERATION:-1}
+RUN_INITIAL_GLOBAL_STEP=${RUN_INITIAL_GLOBAL_STEP:-0}
 
 case "${PIPELINE_PHASE}" in
   all) RUN_ROLLOUT=true; RUN_REFERENCE=true; RUN_TRAIN=true ;;
@@ -79,6 +80,14 @@ fi
 }
 [[ "${ITERATION}" =~ ^[1-9][0-9]*$ ]] || {
   echo "ITERATION must be a positive integer" >&2
+  exit 1
+}
+[[ "${RUN_INITIAL_GLOBAL_STEP}" =~ ^[0-9]+$ ]] || {
+  echo "RUN_INITIAL_GLOBAL_STEP must be a non-negative integer" >&2
+  exit 1
+}
+(( RUN_INITIAL_GLOBAL_STEP < ITERATION )) || {
+  echo "RUN_INITIAL_GLOBAL_STEP must precede ITERATION" >&2
   exit 1
 }
 [[ "${TOTAL_ITERATIONS}" == "${CONFIG_ITERATIONS}" ]] || {
@@ -526,9 +535,11 @@ import csv, json, math
 from pathlib import Path
 root = Path("${TRAIN_OUT}")
 rows = list(csv.DictReader((root / "train_step_log.csv").open()))
-if len(rows) != ${ITERATION} or int(rows[-1]["global_step"]) != ${ITERATION}:
+expected_rows = ${ITERATION} - ${RUN_INITIAL_GLOBAL_STEP}
+if len(rows) != expected_rows or int(rows[-1]["global_step"]) != ${ITERATION}:
     raise SystemExit(
-        f"expected ${ITERATION} optimizer steps ending at global_step=${ITERATION}: {rows}"
+        f"expected {expected_rows} optimizer steps ending at "
+        f"global_step=${ITERATION}: {rows}"
     )
 keys = [
     "wm_mse",

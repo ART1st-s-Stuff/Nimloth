@@ -44,6 +44,53 @@ class RLLoopState:
     best_eval_metric: float
 
 
+@dataclass(frozen=True)
+class _PlannerTransitionWork:
+    """One rank-local planner forward, including collective-safe padding."""
+
+    global_index: int
+    is_padding: bool
+
+
+def _planner_transition_work(
+    total_transitions: int,
+    *,
+    rank: int,
+    world_size: int,
+) -> tuple[_PlannerTransitionWork, ...]:
+    """Shard transitions once globally while keeping equal DDP forward counts.
+
+    DDP requires every rank to execute the same ordered set of synchronized
+    module forwards/backwards.  When ``total_transitions`` is not divisible by
+    ``world_size``, shorter ranks therefore replay a real transition with a
+    zero-weight loss.  Padding never contributes metrics or gradients.
+    """
+
+    if total_transitions < 1:
+        raise ValueError("planner training requires at least one transition")
+    if world_size < 1:
+        raise ValueError("world_size must be positive")
+    if not 0 <= rank < world_size:
+        raise ValueError(f"rank {rank} is outside world_size {world_size}")
+
+    forwards_per_rank = (total_transitions + world_size - 1) // world_size
+    work: list[_PlannerTransitionWork] = []
+    for local_index in range(forwards_per_rank):
+        global_index = local_index * world_size + rank
+        is_padding = global_index >= total_transitions
+        if is_padding:
+            # All ranks hold the complete immutable rollout batch, so any valid
+            # item can provide the graph-only padding forward.
+            global_index = rank % total_transitions
+        work.append(
+            _PlannerTransitionWork(
+                global_index=global_index,
+                is_padding=is_padding,
+            )
+        )
+    return tuple(work)
+
+
 @dataclass
 class RLTrainingLoop:
     """按 iteration 执行 collect → sample → encode/update → evaluate。"""
@@ -122,6 +169,9 @@ class RLTrainingLoop:
         batch = None
         actor_transitions: tuple[ExecutedTransition, ...] = ()
         transition_returns: tuple[torch.Tensor, ...] = ()
+        planner_work: tuple[_PlannerTransitionWork, ...] = ()
+        local_actor_transitions: tuple[ExecutedTransition, ...] = ()
+        local_transition_returns: tuple[torch.Tensor, ...] = ()
         transition_dino_grid_targets: tuple[torch.Tensor | None, ...] = ()
         if self.config.agent.planning.enabled:
             if len(trajectories) != self.config.rl.batch_size:
@@ -144,8 +194,22 @@ class RLTrainingLoop:
                 for episode in episode_batches
                 for target in episode.return_targets.unbind(0)
             )
+            rank, world_size = self._distributed_rank_world()
+            planner_work = _planner_transition_work(
+                len(actor_transitions),
+                rank=rank,
+                world_size=world_size,
+            )
+            local_actor_transitions = tuple(
+                actor_transitions[item.global_index] for item in planner_work
+            )
+            local_transition_returns = tuple(
+                transition_returns[item.global_index] for item in planner_work
+            )
             transition_dino_grid_targets = (
-                self._dino_grid_targets_for_actor_transitions(actor_transitions)
+                self._dino_grid_targets_for_actor_transitions(
+                    local_actor_transitions
+                )
             )
             training_unit_metrics = {
                 "num_actor_transitions": float(len(actor_transitions))
@@ -209,9 +273,11 @@ class RLTrainingLoop:
             step_metrics: dict[str, float] = {}
             if episode_batches is not None:
                 total_actor_transitions = len(actor_transitions)
-                for transition, return_target, dino_grid_target in zip(
-                    actor_transitions,
-                    transition_returns,
+                _, training_world_size = self._distributed_rank_world()
+                for work, transition, return_target, dino_grid_target in zip(
+                    planner_work,
+                    local_actor_transitions,
+                    local_transition_returns,
                     transition_dino_grid_targets,
                     strict=True,
                 ):
@@ -222,8 +288,15 @@ class RLTrainingLoop:
                         total_transitions=total_actor_transitions,
                         dino_grid_target=dino_grid_target,
                     )
-                    self.optimization_runtime.backward(output.loss)
-                    self._accumulate_metrics(step_metrics, output.metrics)
+                    loss_weight = (
+                        0.0 if work.is_padding else float(training_world_size)
+                    )
+                    self.optimization_runtime.backward(output.loss * loss_weight)
+                    self._accumulate_metrics(
+                        step_metrics,
+                        output.metrics,
+                        include=not work.is_padding,
+                    )
                     del output
             else:
                 assert batch is not None
@@ -236,6 +309,8 @@ class RLTrainingLoop:
                 del output
             optimizer_step_started = True
             self.optimization_runtime.step()
+            if episode_batches is not None:
+                step_metrics = self._reduce_planner_step_metrics(step_metrics)
         except Exception:
             if consumption_id is not None and not optimizer_step_started:
                 assert abort_consumption is not None
@@ -325,12 +400,53 @@ class RLTrainingLoop:
     def _accumulate_metrics(
         totals: dict[str, float],
         current: dict[str, float],
+        *,
+        include: bool = True,
     ) -> None:
         for name, value in current.items():
             if name.startswith("lambda_"):
                 totals[name] = value
             else:
-                totals[name] = totals.get(name, 0.0) + value
+                totals[name] = totals.get(name, 0.0) + (value if include else 0.0)
+
+    def _reduce_planner_step_metrics(
+        self,
+        metrics: dict[str, float],
+    ) -> dict[str, float]:
+        """Return global planner metrics after rank-local transition sharding."""
+
+        if not (dist.is_available() and dist.is_initialized()):
+            return metrics
+        names = tuple(sorted(metrics))
+        gathered_names: list[tuple[str, ...] | None] = [
+            None for _ in range(dist.get_world_size())
+        ]
+        dist.all_gather_object(gathered_names, names)
+        if any(current != names for current in gathered_names):
+            raise RuntimeError(
+                "planner metric keys differ across distributed training ranks"
+            )
+        values = torch.tensor(
+            [metrics[name] for name in names],
+            dtype=torch.float64,
+            device=self.device,
+        )
+        dist.all_reduce(values, op=dist.ReduceOp.SUM)
+        world_size = dist.get_world_size()
+        return {
+            name: (
+                float(values[index].item()) / world_size
+                if name.startswith("lambda_")
+                else float(values[index].item())
+            )
+            for index, name in enumerate(names)
+        }
+
+    @staticmethod
+    def _distributed_rank_world() -> tuple[int, int]:
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_rank(), dist.get_world_size()
+        return 0, 1
 
     def _validate(self, iteration: int, metrics: dict[str, float]) -> None:
         if not (

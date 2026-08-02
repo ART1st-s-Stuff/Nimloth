@@ -8,7 +8,11 @@ import torch
 
 from nimloth.training.rl import loop as loop_module
 from nimloth.training.rl.algorithm import RLBatch
-from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
+from nimloth.training.rl.loop import (
+    RLLoopState,
+    RLTrainingLoop,
+    _planner_transition_work,
+)
 
 
 class _FreshCollector:
@@ -295,6 +299,44 @@ def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     )
 
 
+def test_planner_dino_targets_load_only_the_rank_local_transition_shard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, _collector = _training_loop(tmp_path, monkeypatch)
+    loop.config.agent.planning.enabled = True
+    episode_a_transition = SimpleNamespace(next_image_path="episode_a_step_1.png")
+    episode_b_transition = SimpleNamespace(next_image_path="episode_b_step_1.png")
+    monkeypatch.setattr(
+        loop_module,
+        "build_episode_training_batches",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(
+                transitions=(episode_a_transition,),
+                return_targets=torch.tensor([1.0]),
+            ),
+            SimpleNamespace(
+                transitions=(episode_b_transition,),
+                return_targets=torch.tensor([2.0]),
+            ),
+        ),
+    )
+    source = _DINOGridTargets()
+    algorithm = _PlannerAlgorithm()
+    loop.algorithm = algorithm  # type: ignore[assignment]
+    loop.model_runtime = SimpleNamespace(dino_grid_targets=source)  # type: ignore[assignment]
+    monkeypatch.setattr(loop, "_distributed_rank_world", lambda: (1, 2))
+
+    loop._run_iteration(1)
+
+    assert source.loaded_paths == [("episode_b_step_1.png",)]
+    assert len(algorithm.received_targets) == 1
+    torch.testing.assert_close(
+        algorithm.received_targets[0],
+        torch.tensor([[1.0, 1.0]]),
+    )
+
+
 def test_sequence_dino_targets_are_loaded_and_reshaped_before_algorithm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -392,3 +434,83 @@ def test_planner_update_rejects_an_incomplete_episode_batch(
         loop._run_iteration(1)
 
     assert collector.events == ["collect"]
+
+
+def test_planner_transition_work_shards_each_real_item_once_and_pads() -> None:
+    shards = tuple(
+        _planner_transition_work(10, rank=rank, world_size=4)
+        for rank in range(4)
+    )
+
+    assert {len(shard) for shard in shards} == {3}
+    real_indices = sorted(
+        item.global_index
+        for shard in shards
+        for item in shard
+        if not item.is_padding
+    )
+    assert real_indices == list(range(10))
+    assert sum(item.is_padding for shard in shards for item in shard) == 2
+
+
+def test_planner_transition_work_pads_ranks_when_batch_is_smaller_than_world() -> None:
+    shards = tuple(
+        _planner_transition_work(2, rank=rank, world_size=4)
+        for rank in range(4)
+    )
+
+    assert {len(shard) for shard in shards} == {1}
+    assert [shard[0].is_padding for shard in shards] == [False, False, True, True]
+    assert [shard[0].global_index for shard in shards] == [0, 1, 0, 1]
+
+
+def test_planner_ddp_loss_scaling_matches_unsharded_mean_gradient() -> None:
+    inputs = torch.tensor([0.5, -1.0, 2.0, 3.0, -0.25])
+    single_parameter = torch.tensor(0.75, requires_grad=True)
+    single_loss = torch.stack(
+        [(single_parameter * value).square() for value in inputs]
+    ).mean()
+    single_loss.backward()
+    assert single_parameter.grad is not None
+
+    world_size = 3
+    rank_gradients: list[torch.Tensor] = []
+    for rank in range(world_size):
+        parameter = torch.tensor(0.75, requires_grad=True)
+        for item in _planner_transition_work(
+            len(inputs),
+            rank=rank,
+            world_size=world_size,
+        ):
+            normalized = (
+                parameter * inputs[item.global_index]
+            ).square() / len(inputs)
+            weight = 0.0 if item.is_padding else float(world_size)
+            (normalized * weight).backward()
+        assert parameter.grad is not None
+        rank_gradients.append(parameter.grad)
+
+    ddp_averaged_gradient = torch.stack(rank_gradients).mean()
+    torch.testing.assert_close(ddp_averaged_gradient, single_parameter.grad)
+
+
+@pytest.mark.parametrize(
+    ("total_transitions", "rank", "world_size", "match"),
+    [
+        (0, 0, 1, "at least one transition"),
+        (1, 0, 0, "world_size must be positive"),
+        (1, 1, 1, "outside world_size"),
+    ],
+)
+def test_planner_transition_work_rejects_invalid_layout(
+    total_transitions: int,
+    rank: int,
+    world_size: int,
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        _planner_transition_work(
+            total_transitions,
+            rank=rank,
+            world_size=world_size,
+        )

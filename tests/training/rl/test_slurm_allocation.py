@@ -10,6 +10,11 @@ HELPER = REPO_ROOT / "experiments/training/rl/slurm_allocation.sh"
 CONTROLLER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_slurm.sh"
 PIPELINE = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_smoke.sh"
 FULL_RUNNER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_full.sh"
+PARALLEL_CONTROLLER = (
+    REPO_ROOT
+    / "experiments/training/rl/run_vllm_online_ppo_parallel_slurm.sh"
+)
+SHARD_RUNNER = REPO_ROOT / "experiments/training/rl/run_vllm_rollout_shard.sh"
 CONTINUATION = REPO_ROOT / "src/nimloth/training/rl/continuation.py"
 
 
@@ -121,3 +126,21 @@ def test_current_vllm_pipeline_preserves_checkpoint_processor_resolution() -> No
     pipeline = PIPELINE.read_text(encoding="utf-8")
 
     assert "--max-pixels" not in pipeline
+
+
+def test_parallel_controller_uses_eight_isolated_tp4_workers_then_world16() -> None:
+    controller = PARALLEL_CONTROLLER.read_text(encoding="utf-8")
+    shard_runner = SHARD_RUNNER.read_text(encoding="utf-8")
+
+    assert 'CONFIG_NODES}" == 4' in controller
+    assert 'CONFIG_WORLD_SIZE}" == 16' in controller
+    assert 'CONFIG_TOTAL_GPUS}" == 32' in controller
+    assert 'ROLLOUT_WORKERS:-8' in controller
+    assert 'WORKERS_PER_NODE:-2' in controller
+    assert 'SHARD_GPU_VISIBLE="${shard_visible}"' in controller
+    assert 'SHARD_SEED="${shard_seed}"' in controller
+    assert 'SHARD_EVAL_SET="${dataset}"' in controller
+    assert 'merge_rollout_shards.py' in controller
+    assert 'PIPELINE_PHASE=train' in controller
+    assert '--vllm-distributed-executor-backend mp' in shard_runner
+    assert '--num-episodes 1' in shard_runner

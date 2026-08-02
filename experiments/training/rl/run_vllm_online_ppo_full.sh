@@ -19,6 +19,7 @@ FORMAL_OUTPUT_ROOT=${FORMAL_OUTPUT_ROOT%/}
 ITERATION_RUNNER=${ITERATION_RUNNER:-${REPO}/experiments/training/rl/run_vllm_online_ppo_slurm.sh}
 INITIAL_MODEL=${INITIAL_MODEL:?set INITIAL_MODEL to the complete SFT2 HF checkpoint}
 INITIAL_WM_CKPT=${INITIAL_WM_CKPT:-${INITIAL_MODEL}}
+INITIAL_RESUME_CHECKPOINT=${INITIAL_RESUME_CHECKPOINT:-}
 REFERENCE_MODEL=${REFERENCE_MODEL:-${INITIAL_MODEL}}
 WANDB_PROJECT=${WANDB_PROJECT:-nimloth-rl}
 WANDB_RUN_NAME=${WANDB_RUN_NAME:?set WANDB_RUN_NAME}
@@ -28,7 +29,7 @@ TRAIN_MASTER_PORT_BASE=${TRAIN_MASTER_PORT_BASE:-29800}
 
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing config: ${RL_CONFIG}" >&2; exit 1; }
-[[ -x "${ITERATION_RUNNER}" ]] || {
+[[ -f "${ITERATION_RUNNER}" ]] || {
   echo "missing iteration runner: ${ITERATION_RUNNER}" >&2
   exit 1
 }
@@ -63,6 +64,38 @@ TOTAL_ITERATIONS=${TOTAL_ITERATIONS:-${CONFIG_ITERATIONS}}
   echo "resume-safe full runner requires training.log_interval=1" >&2
   exit 1
 }
+if [[ -n "${INITIAL_RESUME_CHECKPOINT}" ]]; then
+  [[ -s "${INITIAL_RESUME_CHECKPOINT}/rl_state.pt" ]] || {
+    echo "initial resume checkpoint has no rl_state.pt: ${INITIAL_RESUME_CHECKPOINT}" >&2
+    exit 1
+  }
+  CHECKPOINT_GLOBAL_STEP=$("${PYTHON}" -c '
+import sys
+import torch
+state = torch.load(sys.argv[1], map_location="cpu", weights_only=False, mmap=True)
+print(int(state.get("global_step", -1)))
+' "${INITIAL_RESUME_CHECKPOINT}/rl_state.pt")
+  INITIAL_GLOBAL_STEP=${INITIAL_GLOBAL_STEP:-${CHECKPOINT_GLOBAL_STEP}}
+  [[ "${INITIAL_GLOBAL_STEP}" == "${CHECKPOINT_GLOBAL_STEP}" ]] || {
+    echo "INITIAL_GLOBAL_STEP disagrees with initial resume checkpoint" >&2
+    exit 1
+  }
+else
+  INITIAL_GLOBAL_STEP=${INITIAL_GLOBAL_STEP:-0}
+  [[ "${INITIAL_GLOBAL_STEP}" == 0 ]] || {
+    echo "nonzero INITIAL_GLOBAL_STEP requires INITIAL_RESUME_CHECKPOINT" >&2
+    exit 1
+  }
+fi
+[[ "${INITIAL_GLOBAL_STEP}" =~ ^[0-9]+$ ]] || {
+  echo "INITIAL_GLOBAL_STEP must be a non-negative integer" >&2
+  exit 1
+}
+(( INITIAL_GLOBAL_STEP < TOTAL_ITERATIONS )) || {
+  echo "initial checkpoint already reached the configured training horizon" >&2
+  exit 1
+}
+FIRST_ITERATION=$((INITIAL_GLOBAL_STEP + 1))
 
 TRAIN_OUT=${RUN_OUT}/train
 POLICY_INPUT_ROOT=${TRAIN_OUT}/policy_inputs
@@ -82,7 +115,8 @@ trap record_exit EXIT
 read -r last_completed START_ITERATION discarded_log_rows recovery_archive < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" \
     -m nimloth.training.rl.continuation \
-    prepare-run "${RUN_OUT}" "${TOTAL_ITERATIONS}"
+    prepare-run "${RUN_OUT}" "${TOTAL_ITERATIONS}" \
+    --initial-global-step "${INITIAL_GLOBAL_STEP}"
 )
 if [[ "${recovery_archive}" != - ]]; then
   printf '%s iteration=%s status=recovered_interrupted_attempt discarded_log_rows=%s archive=%s\n' \
@@ -100,9 +134,10 @@ for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
   iteration_tag=$(printf 'iter_%04d' "${iteration}")
   seed_offset=$(( (iteration - 1) * CONFIG_EPISODES + 1 ))
   resume_checkpoint=""
-  if (( iteration == 1 )); then
+  if (( iteration == FIRST_ITERATION )); then
     model=${INITIAL_MODEL}
     wm_checkpoint=${INITIAL_WM_CKPT}
+    resume_checkpoint=${INITIAL_RESUME_CHECKPOINT}
   else
     snapshot=$(PYTHONPATH="${REPO}/src" "${PYTHON}" \
       -m nimloth.training.rl.continuation \
@@ -115,29 +150,35 @@ for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
   printf '%s iteration=%s status=starting model=%s seed_offset=%s\n' \
     "$(date -Iseconds)" "${iteration}" "${model}" "${seed_offset}" >> "${PROGRESS_LOG}"
 
-  env \
-    HOLD_JOB="${HOLD_JOB}" \
-    REPO="${REPO}" \
-    ENV_REPO="${ENV_REPO}" \
-    PYTHON="${PYTHON}" \
-    RL_CONFIG="${RL_CONFIG}" \
-    RUN_OUT="${RUN_OUT}" \
-    MODEL="${model}" \
-    WM_CKPT="${wm_checkpoint}" \
-    REFERENCE_MODEL="${REFERENCE_MODEL}" \
-    RESUME_CHECKPOINT="${resume_checkpoint}" \
-    WANDB_PROJECT="${WANDB_PROJECT}" \
-    WANDB_RUN_NAME="${WANDB_RUN_NAME}" \
-    WANDB_MODE_OVERRIDE="${WANDB_MODE_OVERRIDE:-online}" \
-    RUN_MODE=full \
-    ITERATION="${iteration}" \
-    TOTAL_ITERATIONS="${TOTAL_ITERATIONS}" \
-    SEED_OFFSET="${seed_offset}" \
-    RAY_PORT="$((RAY_PORT_BASE + iteration))" \
-    ENV_PORT="$((ENV_PORT_BASE + iteration))" \
-    TRAIN_MASTER_PORT="$((TRAIN_MASTER_PORT_BASE + iteration))" \
-    RAY_HEAD_NODE="${RAY_HEAD_NODE:-}" \
-    "${ITERATION_RUNNER}"
+  ITERATION_ENV=(
+    HOLD_JOB="${HOLD_JOB}"
+    REPO="${REPO}"
+    ENV_REPO="${ENV_REPO}"
+    PYTHON="${PYTHON}"
+    RL_CONFIG="${RL_CONFIG}"
+    RUN_OUT="${RUN_OUT}"
+    MODEL="${model}"
+    WM_CKPT="${wm_checkpoint}"
+    REFERENCE_MODEL="${REFERENCE_MODEL}"
+    RESUME_CHECKPOINT="${resume_checkpoint}"
+    WANDB_PROJECT="${WANDB_PROJECT}"
+    WANDB_RUN_NAME="${WANDB_RUN_NAME}"
+    WANDB_MODE_OVERRIDE="${WANDB_MODE_OVERRIDE:-online}"
+    RUN_MODE=full
+    ITERATION="${iteration}"
+    TOTAL_ITERATIONS="${TOTAL_ITERATIONS}"
+    SEED_OFFSET="${seed_offset}"
+    RAY_PORT="$((RAY_PORT_BASE + iteration))"
+    ENV_PORT="$((ENV_PORT_BASE + iteration))"
+    TRAIN_MASTER_PORT="$((TRAIN_MASTER_PORT_BASE + iteration))"
+    RAY_HEAD_NODE="${RAY_HEAD_NODE:-}"
+    RUN_INITIAL_GLOBAL_STEP="${INITIAL_GLOBAL_STEP}"
+  )
+  if [[ -x "${ITERATION_RUNNER}" ]]; then
+    env "${ITERATION_ENV[@]}" "${ITERATION_RUNNER}"
+  else
+    env "${ITERATION_ENV[@]}" bash "${ITERATION_RUNNER}"
+  fi
 
   [[ -s "${TRAIN_OUT}/latest/rl_state.pt" ]] || {
     echo "iteration ${iteration} completed without latest checkpoint" >&2

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -37,6 +39,7 @@ def append_step(path: Path, iteration: int) -> None:
 
 iteration = int(os.environ["ITERATION"])
 total = int(os.environ["TOTAL_ITERATIONS"])
+initial_global_step = int(os.environ.get("RUN_INITIAL_GLOBAL_STEP", "0"))
 failure_mode = os.environ.get("FAKE_FAILURE_MODE", "")
 root = Path(os.environ["RUN_OUT"])
 train = root / "train"
@@ -48,9 +51,11 @@ failure_marker = root.parent / f"fake_failure_{failure_mode}.done"
 with (root.parent / "fake_calls.txt").open("a", encoding="utf-8") as stream:
     stream.write(f"{iteration}\\n")
 
-if iteration == 1:
+if iteration == initial_global_step + 1:
     assert Path(os.environ["MODEL"]) == Path(os.environ["INITIAL_MODEL"])
-    assert os.environ["RESUME_CHECKPOINT"] == ""
+    assert os.environ["RESUME_CHECKPOINT"] == os.environ.get(
+        "INITIAL_RESUME_CHECKPOINT", ""
+    )
     (root / "README.md").parent.mkdir(parents=True, exist_ok=True)
     (root / "README.md").write_text("running\\n", encoding="utf-8")
 else:
@@ -241,3 +246,30 @@ def test_full_runner_recovers_a_committed_iteration_missing_only_final_alias(
     _assert_completed_run(environment)
     calls = tmp_path / "formal/fake_calls.txt"
     assert calls.read_text(encoding="utf-8") == "1\n2\n"
+
+
+def test_full_runner_can_continue_optimizer_state_in_a_new_output(tmp_path: Path) -> None:
+    environment = _runner_environment(tmp_path)
+    initial_resume = tmp_path / "initial_resume"
+    initial_resume.mkdir()
+    torch.save(
+        {"iteration": 1, "global_step": 1},
+        initial_resume / "rl_state.pt",
+    )
+    environment["INITIAL_RESUME_CHECKPOINT"] = str(initial_resume)
+
+    subprocess.run([str(FULL_RUNNER)], check=True, env=environment)
+
+    run_output = Path(environment["RUN_OUT"])
+    assert (run_output / "train/final/rl_state.pt").read_bytes() == b"step=2"
+    with (run_output / "train/train_step_log.csv").open(encoding="utf-8") as stream:
+        assert [row["global_step"] for row in csv.DictReader(stream)] == ["2"]
+    assert (tmp_path / "formal/fake_calls.txt").read_text(encoding="utf-8") == "2\n"
+    consumption = json.loads(
+        (
+            run_output
+            / "rollouts/iter_0002/fresh_policy_manifest.json.consumption.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert consumption["starting_global_step"] == 1
+    assert consumption["committed_global_step"] == 2

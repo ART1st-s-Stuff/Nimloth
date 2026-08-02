@@ -303,3 +303,20 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `train/policy_inputs/iter_0002`；iteration2从该policy和seed offset9开始。W&B持久run ID为
   `xpumz7a9`。第二段job`503172`依赖`afterany:503166`，使用同一输出、恢复合同和dgx-51排除，
   第一段到时后自动从最后committed iteration续跑。
+
+## 2026-08-02：true 32-GPU ID115实现中
+
+- 人类确认真实32卡布局：8个独立TP4 rollout worker，随后16个同步双卡训练rank。目标保持
+  DINO监督H1/history1，训练Qwen language、WM predictor、ValueHead，冻结Qwen vision和
+  StateProjector；direct PPO/reference KL关闭。
+- planner训练现按rank确定性分片真实transition。每rank执行`ceil(N/world_size)`次forward；
+  不整除尾部使用零loss图padding。真实loss在DDP平均前乘world size，保持原全局
+  `sum(loss_i)/N`目标；普通metrics跨rank求和，lambda常数取平均。
+- 新增strict fresh-rollout合并器和四节点controller。每个8卡节点启动两个隔离的local TP4
+  vLLM worker，各有独立GPU mask、navigation服务、seed和round-robin dataset；只有8个单episode
+  shard的policy/planner/processor、record ID顺序和未消费状态全部一致时才生成合并manifest。
+- continuation现支持非零初始化global step。ID115可从ID114 replicated optimizer跨world2→16
+  继续下一global iteration和seed，不重置或重标旧进度，并维持fresh consumption事务边界。
+- 本地`bash -n`、外置pycache的Python语法检查与`git diff --check`通过。本地无PyTorch/pytest
+  环境；focused CPU回归、committed remote preflight和真实32卡单步门禁仍待执行。尚未取消
+  ID114 job，也未提交ID115。

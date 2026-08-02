@@ -3,6 +3,7 @@
 from nimloth.rollout.batch import TransitionBatch, TransitionBatchBuilder
 from nimloth.rollout.from_agent import trajectory_from_agent_episode
 from nimloth.rollout.fresh import FreshJSONLRolloutCollector, FreshRolloutManifest
+from nimloth.rollout.merge import merge_fresh_rollout_shards
 from nimloth.rollout.schema import RolloutTrajectory
 from nimloth.rollout.source import JSONLRolloutCollector, RolloutCollector
 from nimloth.rollout.storage import load_trajectories, save_trajectories
@@ -24,6 +25,7 @@ __all__ = [
     "TransitionBatchBuilder",
     "trajectory_from_agent_episode",
     "load_trajectories",
+    "merge_fresh_rollout_shards",
     "count_trajectory_windows",
     "sample_trajectory_windows",
     "save_trajectories",
