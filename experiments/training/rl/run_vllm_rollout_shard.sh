@@ -120,10 +120,7 @@ cleanup_env() {
 trap cleanup_env EXIT
 
 (
-  # Keep the renderer inside this shard's isolated TP4 group, but avoid the
-  # leading device: dgx-32 repeatedly hung AI2-THOR initialization there while
-  # the second device in the same group remained healthy.
-  export CUDA_VISIBLE_DEVICES=${SHARD_GPUS[1]}
+  export CUDA_VISIBLE_DEVICES=${SHARD_GPUS[0]}
   export PYTHONPATH=${ENV_REPO}/external/VAGEN
   source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh"
   cd "${ENV_REPO}/external/VAGEN"
