@@ -241,3 +241,11 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   权限插件拒绝且任务状态未改变。固定dgx-46的1h45/1h/30m test-only均进一步推迟到21:13Z，
   说明缩短时限也不能立即backfill。未取消SFT2链、未提交低时限近似实验；canonical
   `502499`保持`PENDING(Priority)`并继续等待健康启动门禁。
+- `502499`最终于`2026-08-02T15:06:36Z`由backfill调度到`dgx-46`，实际AllocTRES为4 H800/
+  64 CPU/160 GiB，job为RUNNING。四张唯一GPU初始空闲；Ray head
+  `10.23.1.117:6741`和Nimloth import probe通过，navigation server 16秒ready，真实
+  `base_train` seed1 prewarm耗时10.439秒、图像255×255、dynamic range223。
+- vLLM 0.11.0以TP4/NCCL 2.27.3加载corrected epoch1两片权重，四rank连接完成；每rank
+  KV cache为3,366,496 tokens，四卡约70--71 GiB，随后打印Supported task generate并开始
+  `rl_ep=0`真实trajectory。当前已达到Ray/env/vLLM/rollout健康启动；尚未完成4条episode、
+  两rank DDP update、finite global step1或checkpoint，后续结果不得提前宣称。

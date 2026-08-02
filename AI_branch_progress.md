@@ -3369,3 +3369,10 @@
   user hold，但站点权限插件拒绝`hold/holdu`以及带Account的Priority0 update，SFT2状态
   未改变。固定dgx-46的1h45/1h/30m test-only此时又都预计21:13Z，缩短walltime也不能
   backfill；因此没有取消SFT2链或提交不能保证完成的近似RL，`502499`继续等待Priority。
+- 调度随后于`2026-08-02T15:06:36Z`同时放行SFT2和ID113；`502499`在`dgx-46`取得4张
+  H800/64 CPU/160 GiB。四张唯一GPU可见，Ray连接`10.23.1.117:6741`并导入commit
+  `75b21b9e`；navigation server 16秒ready，真实`base_train` seed1预热图像255×255、
+  dynamic range223。vLLM TP4/NCCL已在四卡完成checkpoint加载和KV初始化，每rank
+  KV cache 3,366,496 tokens，四卡显存约70--71 GiB；engine ready后已进入`rl_ep=0`
+  真实采集。至此健康启动成立；两rank训练和finite optimizer step尚未发生，不能把启动
+  证据当成RL更新完成。随后SSH连续立即断开，但batch-owned controller不依赖该会话。
