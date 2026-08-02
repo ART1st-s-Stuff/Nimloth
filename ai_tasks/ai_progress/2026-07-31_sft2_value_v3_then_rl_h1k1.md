@@ -224,3 +224,21 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `PENDING(Priority)`，Slurm预计`2026-08-02T17:19:28Z`启动；尚无allocation、W&B run、
   rollout、真实DDP或optimizer step。任务保留排队，资源到位后必须继续监控Ray四卡、
   AI2-THOR、vLLM TP4、四条trajectory、两rank训练和finite step，才能判为健康启动。
+- `502480`在未获得allocation前于`2026-08-02T14:47:28Z`被UID 3738取消；sacct为
+  `CANCELLED/Elapsed=00:00:00/NodeList=None assigned/ExitCode=0:0`。没有controller log、
+  output目录、W&B run、Ray/vLLM、environment rollout、DDP、optimizer或checkpoint；ID112
+  没有产生任何数值或分布式证据，不能resume，重试必须使用新ID/name/空output。
+- 人类指定改看`dgx-46`。live节点为`MIXED`，8卡只分配2卡、CPU 16/224，但固定该节点的
+  1×4 test-only：2小时预计19:48Z，1小时/30分钟/15分钟均预计约19:26Z，说明normal
+  priority仍阻止立即backfill；不能通过缩短walltime抢占。若继续该节点，需新增1节点、
+  world2、每rank2 GPU配置并重跑精确launcher门禁，再以新identity提交。
+- 单节点配置commit`2ae6475c5a7bfc1a017bdf46a5d8170e49d59798`已完成：nodes1、world2、
+  每rank2 GPU、rollout TP4，其余训练/冻结/目标/数据不变。远端shell syntax和31项RL定向
+  回归通过；exact login preflight报告commit/VAGEN正确、`base_train` seeds1--4、4×20、
+  1n/world2/2GPU-per-rank/TP4。首次preflight也发现并纠正ID112提交命令遗漏`train_ws16/`
+  的checkpoint路径；因ID112从未allocation，该错误没有运行影响。
+- 新identity为
+  `113_smoke_ep1_greedyh1_k16_dino05_qwenwmvalue_ep4x20_1n4g_mp2ddp2_vllmtp4_ws2_dgx46`，
+  输出和W&B exact name均在提交前为空。batch job`502498`固定`normal/dgx-46`，请求4 H800、
+  32 CPU、160 GiB、2小时；提交后为`PENDING(Priority)`且`squeue --start`尚无时间，尚无
+  allocation/controller/W&B/rollout/DDP/optimizer证据。
