@@ -144,4 +144,5 @@ def test_parallel_controller_uses_eight_isolated_tp4_workers_then_world16() -> N
     assert 'PIPELINE_PHASE=train' in controller
     assert '--vllm-distributed-executor-backend mp' in shard_runner
     assert 'export VLLM_WORKER_MULTIPROC_METHOD=spawn' in shard_runner
+    assert 'export CUDA_VISIBLE_DEVICES=${SHARD_GPUS[1]}' in shard_runner
     assert '--num-episodes 1' in shard_runner
