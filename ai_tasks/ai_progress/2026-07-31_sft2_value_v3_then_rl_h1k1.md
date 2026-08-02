@@ -197,3 +197,9 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - 当前相同门禁逐项重查通过。launcher已前置controller日志，并用`STARTUP_GATE`记录失败
   位置；不改变模型、目标、数据、优化器或resume语义。14:00+08实时normal仅约11卡可用、
   preempt无空闲，暂不能安全组成world16，下一段将保持同一identity从step785排队恢复。
+- 修复以`b184a65b`推送并固定到远端，bash syntax和launcher定向回归`4 passed`。normal
+  `sbatch --test-only`接受不固定节点的8+4+4合同；preempt估计更迟。正式batch-owned链为
+  `502449 -> 502452 -> 502454`，各1小时、同一output/W&B/latest resume；首段当前
+  `PENDING(Resources)`且两component估计2026-08-03 07:50/05:30+08，后两段只等dependency，
+  尚无GPU/训练启动。随后superpod跳板再次立即断开，队列本身不依赖SSH；恢复连接后须实时
+  重查并监控到probe、DDP和finite optimizer step，RL仍等待ID74 final门禁。

@@ -136,6 +136,14 @@
   当前commit/input/cache/checkpoint门禁均重新通过，launcher已把门禁日志前置并标记失败项。
 - 2026-08-02 14:00+08资源快照为normal约11卡空闲、preempt无空闲，暂不能组成合法
   world16；下一段将保持同一ID/W&B/checkpoint排队，资源到位后恢复。RL继续等待SFT2 final。
+- launcher日志修复固定并推送为`b184a65b`；远端同commit的bash syntax与launcher回归
+  `4 passed`，superproject tracked状态clean。normal test-only接受任意节点8+4+4合同；preempt
+  预计更晚，因此正式提交normal batch-owned链`502449 -> 502452 -> 502454`，每段1小时、
+  最多48 GPU-hours。提交后`502449`为`PENDING(Resources)`，两component调度估计分别为
+  2026-08-03 07:50/05:30+08，后两段为`PENDING(Dependency)`，均尚未占卡或启动训练。
+- 队列确认后superpod跳板再次立即断开。Slurm batch链不依赖当前SSH，但远端README追加job
+  IDs、实验组`progress.md`同步和健康启动监控暂被连接阻塞；连接恢复后必须先重新查询状态，
+  不得依据上述估计操作。RL依旧没有提交。
 
 ## 2026-07-30：SFT1 parent 与 VAGEN parent 同合同 success-rate 评估已完成
 
