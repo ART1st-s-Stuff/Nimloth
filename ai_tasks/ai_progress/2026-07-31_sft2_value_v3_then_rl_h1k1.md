@@ -320,3 +320,26 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - 本地`bash -n`、外置pycache的Python语法检查与`git diff --check`通过。本地无PyTorch/pytest
   环境；focused CPU回归、committed remote preflight和真实32卡单步门禁仍待执行。尚未取消
   ID114 job，也未提交ID115。
+
+## 2026-08-03：true 32-GPU启动门禁与异常节点排除
+
+- ID114 job`503166`的iter6训练失败根因已从日志确认：rank0停在1,057,800元素
+  ALLREDUCE，rank1已进入下一次1元素ALLREDUCE，10分钟后NCCL watchdog超时。恢复job
+  `503172`在相同iter6训练阶段取消；最后committed global step仍为5，可恢复checkpoint为
+  `train/policy_inputs/iter_0006`，iter6 consumption保持`in_progress`且没有`iter_0007`。
+- true32实现commit`f51a875c`已通过远端focused回归和world2→world16 replicated optimizer
+  回归。ID115/job`503221`实际获得`dgx-24/32/40/52`四个全8卡节点，但8个TP4 worker在
+  vLLM默认fork下报`Cannot re-initialize CUDA in forked subprocess`；无完整shard、merge、
+  W&B、DDP或optimizer。commit`6d84fe7b`强制`VLLM_WORKER_MULTIPROC_METHOD=spawn`，远端
+  controller回归`8 passed`。
+- ID116/job`503224`在相同32卡拓扑上证明spawn修复有效：7个独立TP4 engine共28个worker
+  均初始化并完成7个单episode shard。唯一`shard_02`在`dgx-32`首个TP4组的AI2-THOR
+  navigation prewarm超过300秒，以exit124停止；strict merge未运行，故没有全局fresh
+  manifest、W&B或训练更新。
+- ID117/job`503229`把renderer移到每组第二张GPU进行定向判别；六个非`dgx-32`renderer
+  均3--4秒通过，而`dgx-32`两组都停在首次navigation observation前。该结果否定“只换组内
+  GPU即可”的临时假设，确认应在Slurm层排除该节点；ID117在无merge/W&B/update时取消。
+  commit`1c055438`恢复已验证的组内首卡renderer，同时保留spawn修复，远端回归`8 passed`。
+- ID118/job`503233`使用空输出、新W&B名、normal 4节点×8卡、`--exclude=dgx-32`，继续从
+  ID114 global step5和未提交iter6 seed block41--48启动。精确CPU preflight通过；当前仅
+  `dgx-24/40/52`三个健康全节点空闲，job为`PENDING(Priority)`、未占GPU且尚无启动证据。
