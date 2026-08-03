@@ -3538,3 +3538,9 @@
   新output和W&B ID121 train/eval identity均有效或未占用。随后资源刷新为
   `1+3+5+8+7=24`，已无法立即组成`8+6+6+2`；按动态最大并行要求，当前增量再新增
   `8+6+4+2=20`配置：4个TP4 worker、10个双卡训练rank。仍未提交Slurm或占用GPU。
+- 20卡适配已commit/push为`c65b62ab`，远端定向回归`48 passed in 3.49s`、exact preflight
+  `iteration11/60, seed81, episodes16, nodes4, world10, total20, TP4`通过；formal job
+  `504917+0/+1/+2/+3`已提交但四组件均为纯PENDING、elapsed0。提交后完整8卡节点被其他
+  planned job取走，20卡关键组件预计推迟至09:45。当前增量新增不依赖8卡节点的
+  `6+4+2=12`兼容入口：2个TP4 worker各8条，训练world6×2 GPU；待回归后将取消未占卡的
+  20卡job并只保留12卡正式作业。

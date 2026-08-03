@@ -44,6 +44,13 @@ SIXTEEN_ROLLOUT_20_GPU_CONFIG = (
 SIXTEEN_ROLLOUT_20_GPU_BATCH = (
     REPO_ROOT / "experiments/training/rl/train_20gpu_8642.slurm"
 )
+SIXTEEN_ROLLOUT_12_GPU_CONFIG = (
+    REPO_ROOT
+    / "configs/training/rl/planner_greedy_h1_full_16rollout_12gpu_642.yaml"
+)
+SIXTEEN_ROLLOUT_12_GPU_BATCH = (
+    REPO_ROOT / "experiments/training/rl/train_12gpu_642.slurm"
+)
 
 
 def _load_counts(job_details: str) -> list[str]:
@@ -272,4 +279,21 @@ def test_20gpu_8642_routes_four_tp4_workers_and_ten_training_ranks() -> None:
     assert '[[ "${#HET_NODES_2[@]}" == 1 ]]' in batch
     assert "export NIMLOTH_HET_GPUS_PER_NODE=8,6,4,2" in batch
     assert "export ROLLOUT_WORKERS=4" in batch
+    assert "--ignore-submodules=untracked" in batch
+
+
+def test_12gpu_642_routes_two_tp4_workers_and_six_training_ranks() -> None:
+    config = SIXTEEN_ROLLOUT_12_GPU_CONFIG.read_text(encoding="utf-8")
+    batch = SIXTEEN_ROLLOUT_12_GPU_BATCH.read_text(encoding="utf-8")
+
+    assert "envs_per_iteration: 16" in config
+    assert "batch_size: 16" in config
+    assert "nodes: 3" in config
+    assert "world_size: 6" in config
+    assert "gpus_per_rank: 2" in config
+    assert '[[ "${#HET_NODES_6[@]}" == 1 ]]' in batch
+    assert '[[ "${#HET_NODES_4[@]}" == 1 ]]' in batch
+    assert '[[ "${#HET_NODES_2[@]}" == 1 ]]' in batch
+    assert "export NIMLOTH_HET_GPUS_PER_NODE=6,4,2" in batch
+    assert "export ROLLOUT_WORKERS=2" in batch
     assert "--ignore-submodules=untracked" in batch

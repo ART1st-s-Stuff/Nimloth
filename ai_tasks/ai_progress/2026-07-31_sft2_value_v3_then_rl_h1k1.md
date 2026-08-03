@@ -445,3 +445,9 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - 提交前再次刷新时normal变为`1+3+5+8+7=24`，只有一个节点可提供6卡，22卡拓扑不能立即
   形成。现按实时最大兼容资源切换为`8+6+4+2=20`、world10；rollout worker数和16条/update
   合同不变。20卡配置与batch入口已完成静态门禁，待commit/push/远端回归后立即test-only。
+- 20卡版本`c65b62ab`已推送同步，远端`48 passed in 3.49s`和exact preflight通过；formal
+  heterogeneous job `504917+0..+3`已入队但尚未allocation/output/W&B。随后`dgx-37`完整
+  8卡被planned作业占用，20卡组件0预计09:45，其他组件也必须等待整体allocation。
+- 为避免空等，当前新增`6+4+2=12` fallback：两个TP4 worker各8条、三个节点world6×2卡，
+  16-rollout/eval10/目标/冻结/resume合同全不变。当前静态门禁通过；待远端回归和test-only
+  确认更早启动后，取消elapsed0的20卡job并只提交一个12卡batch-owned作业。

@@ -1,0 +1,82 @@
+# Formal 60-iteration H=1 planner RL with 16 global rollouts per update on
+# a 6+4+2 GPU allocation.
+
+agent:
+  prompt_template: nimloth-latent-action
+  planning:
+    enabled: true
+    horizon: 1
+    search_mode: greedy
+    device: cuda:0
+
+freeze:
+  state_proj: true
+
+gradient:
+  state_source: recompute
+  representation_to_backbone: true
+  backbone_lr: 0.000001
+  backbone_weight_decay: 0.01
+
+actor:
+  enabled: false
+  entropy_coeff: 0.0
+  clip_ratio: 0.2
+  credit_assignment: action
+  max_response_tokens: 512
+  reference_kl_loss_weight: 0.0
+
+predictor:
+  lr: 0.0001
+  emb_dim: 1024
+  history_size: 1
+  lambda_wm: 1.0
+  lambda_dino: 0.5
+  lambda_sigreg: 0.0
+  sigreg_num_proj: 1024
+  sigreg_knots: 17
+  train_wm: true
+
+value_head:
+  lr: 0.0001
+  rank_margin: 0.1
+  lambda_rank: 0.0
+
+rl:
+  iterations: 60
+  envs_per_iteration: 16
+  max_steps_per_episode: 20
+  gamma: 1.0
+  batch_size: 16
+  truncated_bootstrap: zero
+
+rollout:
+  train_datasets:
+    - base_train
+    - common_sense_train
+  eval_datasets:
+    - base
+    - common_sense
+  temperature: 0.7
+  top_p: 0.95
+
+validation:
+  enabled: false
+  external: true
+  interval: 10
+  envs: 120
+  checkpoint_metric: success_rate
+
+training:
+  seed: 42
+  log_interval: 1
+  save_interval: 10
+
+# The 6- and 4-GPU nodes host one TP4 rollout worker each. Four GPUs are idle
+# only during rollout. Training uses six two-GPU ranks, so every allocated GPU
+# participates in each model update.
+distributed:
+  nodes: 3
+  world_size: 6
+  gpus_per_rank: 2
+  rollout_tensor_parallel_size: 4
