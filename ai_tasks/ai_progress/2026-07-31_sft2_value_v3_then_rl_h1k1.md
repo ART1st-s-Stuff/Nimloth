@@ -439,3 +439,9 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - 已新增22卡heterogeneous batch入口和回归，并移除“单节点GPU数必须整除TP4”的错误限制；
   6卡节点现在合法提供一个TP4 worker，余下2卡只在rollout阶段闲置。静态门禁通过；待commit、
   push、远端固定Python回归、exact preflight与新identity非复用检查后才能正式提交。
+- 22卡版本已以`00bc0a38`推送同步；远端定向回归`46 passed in 3.49s`，exact preflight为
+  `iteration=11/60, seed_offset=81, episodes=16, nodes=4, world=11, total_gpus=22, TP4`。
+  step10 checkpoint、VAGEN commit/split资产、output absent和W&B ID121 train/eval零匹配均通过。
+- 提交前再次刷新时normal变为`1+3+5+8+7=24`，只有一个节点可提供6卡，22卡拓扑不能立即
+  形成。现按实时最大兼容资源切换为`8+6+4+2=20`、world10；rollout worker数和16条/update
+  合同不变。20卡配置与batch入口已完成静态门禁，待commit/push/远端回归后立即test-only。

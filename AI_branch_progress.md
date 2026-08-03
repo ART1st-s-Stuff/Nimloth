@@ -3533,3 +3533,8 @@
   `envs_per_iteration=batch_size=16, nodes=4, world_size=11, gpus_per_rank=2`。shell syntax、
   Python test源码compile和diff whitespace门禁通过；本地没有pytest，完整回归须在提交同步后
   使用服务器固定Python执行。尚未提交Slurm或占用GPU。
+- 上述22卡实现已commit/push为`00bc0a38`并同步远端；配置/Slurm定向回归`46 passed in
+  3.49s`，exact preflight通过且确认step10 optimizer、VAGEN `192c35a9`、四个split资产、
+  新output和W&B ID121 train/eval identity均有效或未占用。随后资源刷新为
+  `1+3+5+8+7=24`，已无法立即组成`8+6+6+2`；按动态最大并行要求，当前增量再新增
+  `8+6+4+2=20`配置：4个TP4 worker、10个双卡训练rank。仍未提交Slurm或占用GPU。

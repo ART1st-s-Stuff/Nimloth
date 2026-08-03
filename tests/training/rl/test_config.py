@@ -343,6 +343,34 @@ def test_formal_h1_16rollout_22gpu_8662_preserves_objective_and_eval() -> None:
     assert config.distributed.total_gpus == 22
 
 
+def test_formal_h1_16rollout_20gpu_8642_changes_only_distributed_layout() -> None:
+    root = Path(__file__).resolve().parents[3]
+    config22 = load_rl_config(
+        root
+        / "configs/training/rl/planner_greedy_h1_full_16rollout_22gpu_8662.yaml"
+    )
+    config20 = load_rl_config(
+        root
+        / "configs/training/rl/planner_greedy_h1_full_16rollout_20gpu_8642.yaml"
+    )
+
+    assert config20.agent == config22.agent
+    assert config20.freeze == config22.freeze
+    assert config20.gradient == config22.gradient
+    assert config20.actor == config22.actor
+    assert config20.predictor == config22.predictor
+    assert config20.value_head == config22.value_head
+    assert config20.rl == config22.rl
+    assert config20.rollout == config22.rollout
+    assert config20.validation == config22.validation
+    assert config20.training == config22.training
+    assert config20.distributed.nodes == 4
+    assert config20.distributed.world_size == 10
+    assert config20.distributed.gpus_per_rank == 2
+    assert config20.distributed.rollout_tensor_parallel_size == 4
+    assert config20.distributed.total_gpus == 20
+
+
 def test_continuation_gate_uses_two_fresh_greedy_updates() -> None:
     root = Path(__file__).resolve().parents[3]
     config = load_rl_config(
