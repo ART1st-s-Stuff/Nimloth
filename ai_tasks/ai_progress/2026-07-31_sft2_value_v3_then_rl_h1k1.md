@@ -466,3 +466,15 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `6+6+6+4+2=24`。已新增对应config和batch-owned入口：三张6卡节点与一张4卡节点形成
   4个TP4 worker，每worker4条；五节点world12×2卡参与更新，另2卡节点只在rollout闲置。
   4小时test-only已接受并预计04:10；静态门禁通过，远端回归/identity检查后以新ID122重提。
+
+## 2026-08-04：ID122在排除坏节点后健康启动
+
+- 24卡commit`30f8aa37`推送同步后远端定向回归`52 passed in 3.72s`。提交前资源再次变化，
+  第三个6卡节点不可用，故24卡identity/contract只标记superseded且从未提交；最终使用已验证
+  的12卡`6+4+2`入口和新ID122空output/W&B identity。
+- job `504963+0..+2`于00:11:26 +08立即在`dgx-46:6,dgx-29:4,dgx-09:2`运行4小时，
+  排除`dgx-32,dgx-37,dgx-51`。两处real navigation prewarm 3.357/3.454秒通过，两个TP4
+  vLLM engine完成分布式初始化和step10权重加载。
+- 00:14:37时两个worker分别写出2/1条完整trajectory并继续采集，未见Traceback/OOM/node
+  error。健康启动门禁已满足；下一关键证据是16条全局strict merge和world6有限optimizer
+  step11，当前不得宣称已更新或产生新checkpoint。

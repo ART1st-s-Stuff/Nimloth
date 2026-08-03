@@ -3559,3 +3559,16 @@
   拓扑为`6+6+6+4+2=24`。当前增量新增24卡配置/batch：4个TP4 worker各4条、训练
   world12×2 GPU，16-rollout/eval10/目标/冻结合同不变。4小时Slurm test-only接受请求并估计
   04:10启动；静态shell/Python/diff门禁通过，待commit/push/远端回归后使用新ID122。
+
+## 2026-08-04：ID122 12-GPU RL健康启动
+
+- 24卡实现commit`30f8aa37`已推送同步，远端配置/Slurm回归`52 passed in 3.72s`；但最终
+  资源刷新时第三个6卡节点消失，24卡合同在提交前标记superseded。为避免继续等待，仅多2卡
+  才需新建的14卡拓扑未采用；使用已有验证的`6+4+2=12`配置和新ID122，仍保持全局16条、
+  2个TP4 worker各8条、world6×2卡更新。
+- ID122 job `504963+0/+1/+2`在normal立即获得`dgx-46:6 + dgx-29:4 + dgx-09:2`，4小时，
+  明确排除`dgx-32,dgx-37,dgx-51`。两个rollout节点真实navigation prewarm分别3.357秒
+  （seed81）和3.454秒（seed85）通过；两个TP4引擎完成NCCL/Gloo初始化并加载ID119 step10。
+- 00:14:37 +08时两个worker已分别durable写出2条和1条完整trajectory，正在继续后续episode，
+  日志无Traceback/OOM/node error。当前只证明allocation/prewarm/TP4/真实rollout健康；
+  16条strict merge、world6 optimizer step11、consumption/checkpoint和后续eval尚未完成。
