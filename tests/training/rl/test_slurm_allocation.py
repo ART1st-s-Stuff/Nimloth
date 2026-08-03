@@ -203,6 +203,7 @@ def test_eight_gpu_422_routes_one_tp4_worker_and_four_training_ranks() -> None:
     assert '[[ "${#HET_NODES_2[@]}" == 2 ]]' in batch
     assert "export NIMLOTH_HET_GPUS_PER_NODE=4,2" in batch
     assert "export ROLLOUT_WORKERS=1" in batch
+    assert "--ignore-submodules=untracked" in batch
     assert "node_gpus % CONFIG_GPUS_PER_RANK" in controller
     assert 'EVAL_ALL_DATASETS_PER_WORKER=true' in controller
     assert 'dataset=${NIMLOTH_EVAL_DATASETS}' in controller

@@ -41,7 +41,7 @@ actual_commit=$(git -C "${REPO}" rev-parse HEAD)
   echo "commit gate failed: ${actual_commit} != ${EXPECTED_COMMIT}" >&2
   exit 1
 }
-[[ -z "$(git -C "${REPO}" status --porcelain --untracked-files=no)" ]] || {
+[[ -z "$(git -C "${REPO}" status --porcelain --untracked-files=no --ignore-submodules=untracked)" ]] || {
   echo "tracked worktree is dirty" >&2
   exit 1
 }
