@@ -3544,3 +3544,7 @@
   planned job取走，20卡关键组件预计推迟至09:45。当前增量新增不依赖8卡节点的
   `6+4+2=12`兼容入口：2个TP4 worker各8条，训练world6×2 GPU；待回归后将取消未占卡的
   20卡job并只保留12卡正式作业。
+- 20卡`504917+0..+3`已在条件门禁确认四组件均`PENDING/0:00`后取消；sacct终态全部
+  `CANCELLED by 3738, elapsed=00:00:00, AllocTRES empty`。没有output、W&B、rollout、
+  optimizer、consumption或checkpoint；ID119 `iter_0010`仍是唯一恢复边界。该job合同已补记
+  实际终态和替换原因为12卡更早启动。

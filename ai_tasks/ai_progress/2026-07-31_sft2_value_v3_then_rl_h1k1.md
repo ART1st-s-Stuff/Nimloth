@@ -451,3 +451,7 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
 - 为避免空等，当前新增`6+4+2=12` fallback：两个TP4 worker各8条、三个节点world6×2卡，
   16-rollout/eval10/目标/冻结/resume合同全不变。当前静态门禁通过；待远端回归和test-only
   确认更早启动后，取消elapsed0的20卡job并只提交一个12卡batch-owned作业。
+- 已确认`504917+0..+3`四组件均为`PENDING/0:00`后执行取消；最终均为
+  `CANCELLED by 3738, elapsed=00:00:00, AllocTRES empty`。取消前没有formal output、W&B、
+  rollout或训练状态，故不可resume也没有新checkpoint；ID119 step10不变。20卡launch
+  contract已记录实际命令/资源/取消原因和12卡替换建议。
