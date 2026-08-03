@@ -3548,3 +3548,14 @@
   `CANCELLED by 3738, elapsed=00:00:00, AllocTRES empty`。没有output、W&B、rollout、
   optimizer、consumption或checkpoint；ID119 `iter_0010`仍是唯一恢复边界。该job合同已补记
   实际终态和替换原因为12卡更早启动。
+- 12卡formal job `504939+0/+1/+2`实际分配`dgx-51:6 + dgx-21:4 + dgx-29:2`并运行
+  7分10秒。`dgx-21`真实navigation prewarm 11.051秒通过并启动TP4；`dgx-51`只启动HTTP
+  env server，首次navigation prewarm在300秒硬门禁exit124，精确复现ID114同节点故障。
+  一个worker失败后strict merge/train已不可能成功，故主动取消全部组件并释放12卡。
+- 失败输出只有健康worker的局部`trajectories.jsonl`；没有global fresh manifest、W&B、
+  optimizer step、consumption或checkpoint，局部shard禁止复用。输出README和launch contract
+  已记录失败证据；下次必须新identity并同时排除`dgx-32,dgx-51`，仍从ID119 step10恢复。
+- 释放后normal可用GPU增至46张；排除`dgx-32,dgx-51`和planned `dgx-37`后，实时最大兼容
+  拓扑为`6+6+6+4+2=24`。当前增量新增24卡配置/batch：4个TP4 worker各4条、训练
+  world12×2 GPU，16-rollout/eval10/目标/冻结合同不变。4小时Slurm test-only接受请求并估计
+  04:10启动；静态shell/Python/diff门禁通过，待commit/push/远端回归后使用新ID122。

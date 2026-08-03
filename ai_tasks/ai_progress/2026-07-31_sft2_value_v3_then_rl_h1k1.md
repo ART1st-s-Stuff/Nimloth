@@ -455,3 +455,14 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `CANCELLED by 3738, elapsed=00:00:00, AllocTRES empty`。取消前没有formal output、W&B、
   rollout或训练状态，故不可resume也没有新checkpoint；ID119 step10不变。20卡launch
   contract已记录实际命令/资源/取消原因和12卡替换建议。
+- 12卡job `504939+0..+2`随后实际获得`dgx-51:6,dgx-21:4,dgx-29:2`。`dgx-21` prewarm
+  11.051秒通过并开始TP4 load；`dgx-51`在env health后首次navigation prewarm持续300秒并
+  exit124，复现ID114已知坏节点。controller无法再得到完整双shard global manifest，故在
+  7分10秒取消三组件释放资源。
+- 失败输出没有global fresh manifest/W&B/train/consumption/checkpoint；仅有的健康worker局部
+  trajectory不可复用。README/launch contract已补齐终态。后续retry需用新output/W&B identity、
+  排除`dgx-32,dgx-51`并再次从ID119 `iter_0010`开始iteration11 seed81--88。
+- 资源释放后normal共46张空闲GPU；剔除`dgx-32,dgx-51,dgx-37`后当前最大兼容拓扑是
+  `6+6+6+4+2=24`。已新增对应config和batch-owned入口：三张6卡节点与一张4卡节点形成
+  4个TP4 worker，每worker4条；五节点world12×2卡参与更新，另2卡节点只在rollout闲置。
+  4小时test-only已接受并预计04:10；静态门禁通过，远端回归/identity检查后以新ID122重提。
