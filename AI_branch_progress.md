@@ -3459,3 +3459,22 @@
   在全局rollout batch与评估合同变更后，不得复用未提交的iter11 rollout。实际运行
   commit已实现每条真实transition全局只归一个rank；先前根据旧checkout得出的
   “每rank重复全批”结论已失效。
+
+## 2026-08-03：128-rollout/eval10改造通过远程CPU回归
+
+- commit `61bd94b3`把32-GPU正式配置改为每iteration全局128条rollout：8个
+  TP4 worker各16条，`base_train/common_sense_train`每个独立seed stream各64条。合并器
+  以每shard的dataset/seed/count合同校验完整全局序列；后续world16训练继续使用
+  已有的全局唯一transition sharding和零loss graph padding。
+- `validation.external=true`把到期评估放在已commit的checkpoint之后；每10 iteration使用
+  greedy `temperature=0/top_p=1`、`navigation_profile=vagen_eval`评估held-out
+  `base/common_sense`各seeds1--60，独立写入`evaluation/eval_step_log.csv`和eval W&B run，
+  不进入optimizer。外层controller可在训练step已commit但eval未完成时先补齐eval再继续。
+- Qwen hidden-only state recompute现传`logits_to_keep=1`，仍通过final-norm hook读取
+  全prefix hidden states，但不再构造全序列vocabulary logits；含labels的supervised LM
+  forward保留完整logits/loss语义。该修复对应ID119 iter11的rank14 `lm_head` OOM。
+- 本地shell/Python语法与`git diff --check`通过；推送后服务器worktree
+  `/project/peilab/atst/nimloth/.worktree/rl32-ad04bb8e`已精确checkout `61bd94b3`。
+  superpod login/CPU定向回归`70 passed in 112.34s`，覆盖OOM修复、multi-episode
+  strict merge、eval10 continuation、config、Slurm topology和既有rank sharding。尚未证明
+  真实128-rollout vLLM、world16 GPU update或held-out120 GPU eval。

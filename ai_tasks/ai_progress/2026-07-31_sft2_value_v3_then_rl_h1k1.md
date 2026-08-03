@@ -383,3 +383,21 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   每iteration全局128条train-split rollout后更新一次，每10 iteration用当前checkpoint执行
   VAGEN heldout `base`/`common_sense`各seeds1--60、共120条的greedy eval。实现、回归、
   新output与资源门禁待完成。
+
+## 2026-08-03：128-rollout/eval10实现与CPU门禁完成
+
+- commit `61bd94b3`已推送并精确同步到server `rl32-ad04bb8e` worktree。配置现为
+  `envs_per_iteration=batch_size=128`；8个TP4 workers各16条，每worker对两个train
+  datasets各收8条，因此每个dataset每iteration各64个独立seed。strict merge逐shard
+  校验dataset/seed/count/record ID/policy-planner-processor identity后才产生唯一fresh manifest。
+- 每10 iteration在post-update checkpoint上并行运行held-out120 eval：`base/common_sense`
+  各seeds1--60，greedy temperature0/top-p1，`vagen_eval`环境profile，最多20 steps。评估结果
+  使用独立CSV、summary、done flag和W&B eval run；评估失败恢复会在收集下一批训练
+  rollout前补齐，不把eval trajectory传给optimizer。
+- ID119 OOM根因修复为hidden-only Qwen forward使用`logits_to_keep=1`；final norm
+  hook仍捕获全prefix hidden states，只避免对每个prefix token计算vocabulary logits。含
+  labels的supervised LM forward不裁剪，不改变LM loss。
+- 静态门禁为shell syntax、Python compile和`git diff --check`通过；服务器回归为
+  `70 passed in 112.34s`，覆盖latent OOM、multi-episode merge、external eval continuation、
+  config、Slurm allocation和rank sharding。证据边界是CPU/interface测试；真实32-GPU rollout、
+  world16 update和120条eval尚未启动。
