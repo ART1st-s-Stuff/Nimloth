@@ -3513,3 +3513,23 @@
 - 安全审查拒绝把`fa3ec5e6`及两条进度commit推送到private origin，要求人类明确授权新增
   载荷外发。远端runtime目前仍是`61bd94b3`；`4+2+2`增量完成静态与远端CPU回归且获得
   明确推送授权前，不得启动ID121训练。
+
+## 2026-08-03：ID121改为16-rollout并按实时normal资源使用22 GPU
+
+- 人类已明确授权本任务全部push。后续`089b0470`完成`4+2+2`通用化，`956cc701`把formal
+  launch tracked-clean门禁调整为只忽略submodule内未跟踪cache；远端runtime worktree已同步
+  到`956cc701`，定向CPU回归为`74 passed in 52.90s`。此前`504517+0/+1`等临时hold均已
+  取消或离开队列，没有formal output、W&B、rollout或checkpoint；2026-08-03 23:18 +08
+  再查用户`squeue`为空。
+- 人类判定128条rollout后单次更新过慢，最终指定全局16条rollout/update；held-out合同保持
+  每10 iteration在post-update checkpoint上执行`base/common_sense`各seeds1--60、共120条
+  greedy eval。训练目标仍为DINO监督、H=1/history1，并训练Qwen language、WM和ValueHead。
+- 同期normal实时空闲GPU为`1+1+3+7+8+7=27`。满足训练rank固定2 GPU、rollout TP4且让
+  16条平均分配的最大当前兼容拓扑为`8+6+6+2=22`：4个TP4 worker各4条；训练阶段11个
+  双卡rank使用全部22卡。6卡节点各有2卡、2卡节点全部GPU只在rollout阶段闲置，更新阶段
+  均参与训练。
+- 当前增量新增`planner_greedy_h1_full_16rollout_22gpu_8662.yaml`和batch-owned
+  `train_22gpu_8662.slurm`，并允许6卡节点按floor形成一个TP4 worker；配置为
+  `envs_per_iteration=batch_size=16, nodes=4, world_size=11, gpus_per_rank=2`。shell syntax、
+  Python test源码compile和diff whitespace门禁通过；本地没有pytest，完整回归须在提交同步后
+  使用服务器固定Python执行。尚未提交Slurm或占用GPU。

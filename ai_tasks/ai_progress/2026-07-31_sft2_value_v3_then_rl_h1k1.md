@@ -424,3 +424,18 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   三节点4个双卡rank使用全部8卡；eval10仍顺序覆盖held-out两数据集各60条。
 - local commit `fa3ec5e6`及当前`4+2+2`增量完成静态门禁；推送因安全门禁等待人类明确
   授权，远端仍为`61bd94b3`，训练尚未启动。
+
+## 2026-08-03：ID121最终改为16-rollout与22-GPU 8+6+6+2
+
+- 人类已授权本任务所有push；`4+2+2`支持和tracked-clean门禁已分别落在`089b0470`、
+  `956cc701`并同步远端，远端定向回归`74 passed in 52.90s`。所有先前临时hold均已退出；
+  2026-08-03 23:18 +08查询用户队列为空，因此没有活动ID121训练。
+- 根据ID119实际每轮83--160 transitions和Nimloth逐transition full-prefix backward再单次
+  optimizer step的语义，人类决定不继续128条rollout/update，改为全局16条。每10 iteration
+  的held-out120 eval不变；恢复边界仍为ID119完整`iter_0010`，不得复用失败iter11 rollout。
+- normal实时空闲27卡分布为`1+1+3+7+8+7`；当前最大兼容请求选为`8+6+6+2=22`。
+  rollout阶段4个TP4 worker各收4条，训练阶段11个双卡rank使用全部22卡；新配置精确为
+  `envs_per_iteration=batch_size=16, nodes=4, world_size=11, gpus_per_rank=2, TP=4`。
+- 已新增22卡heterogeneous batch入口和回归，并移除“单节点GPU数必须整除TP4”的错误限制；
+  6卡节点现在合法提供一个TP4 worker，余下2卡只在rollout阶段闲置。静态门禁通过；待commit、
+  push、远端固定Python回归、exact preflight与新identity非复用检查后才能正式提交。

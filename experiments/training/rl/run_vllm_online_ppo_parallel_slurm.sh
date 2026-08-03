@@ -183,10 +183,6 @@ for node_index in "${!NODES[@]}"; do
     echo "node ${node} has ${node_gpus} GPUs, not divisible by training rank size ${CONFIG_GPUS_PER_RANK}" >&2
     exit 1
   }
-  if (( node_gpus >= TP_SIZE && node_gpus % TP_SIZE != 0 )); then
-    echo "node ${node} cannot form whole rollout TP=${TP_SIZE} workers" >&2
-    exit 1
-  fi
   allocation_total_gpus=$((allocation_total_gpus + node_gpus))
   allocation_workers=$((allocation_workers + node_gpus / TP_SIZE))
   NODE_SPECS+=("${node}:${node_gpus}:${het_group}")

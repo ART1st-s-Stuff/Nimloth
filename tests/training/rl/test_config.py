@@ -312,6 +312,37 @@ def test_formal_h1_8gpu_422_config_changes_only_node_count_from_44() -> None:
     assert heterogeneous.training == uniform.training
 
 
+def test_formal_h1_16rollout_22gpu_8662_preserves_objective_and_eval() -> None:
+    root = Path(__file__).resolve().parents[3]
+    full32 = load_rl_config(
+        root / "configs/training/rl/planner_greedy_h1_full_32gpu.yaml"
+    )
+    config = load_rl_config(
+        root
+        / "configs/training/rl/planner_greedy_h1_full_16rollout_22gpu_8662.yaml"
+    )
+
+    assert config.agent == full32.agent
+    assert config.freeze == full32.freeze
+    assert config.gradient == full32.gradient
+    assert config.actor == full32.actor
+    assert config.predictor == full32.predictor
+    assert config.value_head == full32.value_head
+    assert config.rl.iterations == 60
+    assert config.rl.envs_per_iteration == config.rl.batch_size == 16
+    assert config.rl.max_steps_per_episode == full32.rl.max_steps_per_episode
+    assert config.rl.gamma == full32.rl.gamma
+    assert config.rl.truncated_bootstrap == full32.rl.truncated_bootstrap
+    assert config.rollout == full32.rollout
+    assert config.validation == full32.validation
+    assert config.training == full32.training
+    assert config.distributed.nodes == 4
+    assert config.distributed.world_size == 11
+    assert config.distributed.gpus_per_rank == 2
+    assert config.distributed.rollout_tensor_parallel_size == 4
+    assert config.distributed.total_gpus == 22
+
+
 def test_continuation_gate_uses_two_fresh_greedy_updates() -> None:
     root = Path(__file__).resolve().parents[3]
     config = load_rl_config(
