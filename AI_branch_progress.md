@@ -3478,3 +3478,19 @@
   superpod login/CPU定向回归`70 passed in 112.34s`，覆盖OOM修复、multi-episode
   strict merge、eval10 continuation、config、Slurm topology和既有rank sharding。尚未证明
   真实128-rollout vLLM、world16 GPU update或held-out120 GPU eval。
+
+## 2026-08-03：ID120 true32续训已提交并等待normal资源
+
+- 正式身份为
+  `120_full_true32_rl128_eval10x120_greedyh1_k16_dino05_qwenwmvalue_resume119s10_iter60_ep128x20_5n16r2g_8xtp4`；
+  runtime worktree继续固定在已推送commit `61bd94b3`，从ID119完整
+  `train/iter_0010`恢复global step11，不复用未提交iter11 rollout。提交前精确CPU
+  preflight输出`iteration=11/60, episodes=128, seed_offset=641, nodes=5, world=16,
+  total_gpus=32, tp=4`；新output和W&B train/eval identity均不存在。
+- Slurm heterogeneous job为`504478+0/+1`：normal `3x8 GPU + 2x4 GPU`，总32卡，
+  16个双卡训练rank、8个TP4 rollout workers、8小时时限、排除`dgx-32`。Slurm已正确
+  解析两组件为24+8 GPU且无dependency/config错误；batch controller拥有完整生命周期。
+- 提交时normal从31张空闲降到18张；`dgx-26`和`dgx-40`被新24小时作业占用后，调度器
+  给出的组件0预计启动时间为`2026-08-04T18:47:50+08:00`。当前状态仅为
+  `PENDING(Resources)`，尚未占用GPU、创建formal output、启动W&B、产生rollout或执行
+  optimizer update；真实GPU健康门禁仍待allocation开始后验证。

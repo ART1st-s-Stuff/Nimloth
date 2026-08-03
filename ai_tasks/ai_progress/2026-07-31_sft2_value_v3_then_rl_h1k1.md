@@ -401,3 +401,14 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `70 passed in 112.34s`，覆盖latent OOM、multi-episode merge、external eval continuation、
   config、Slurm allocation和rank sharding。证据边界是CPU/interface测试；真实32-GPU rollout、
   world16 update和120条eval尚未启动。
+
+## 2026-08-03：ID120已提交，等待32张normal GPU
+
+- ID120使用新output/W&B identity，从ID119 `iter_0010`恢复step11；server exact preflight
+  通过，runtime commit固定为`61bd94b3`，并把完整launch contract写在formal output同级。
+- heterogeneous Slurm job `504478+0/+1`请求`3x8 + 2x4=32`张normal GPU、8小时、排除
+  `dgx-32`。Slurm确认组件分别为3节点/24卡和2节点/8卡，无依赖或配置错误。
+- 提交后normal仅18张空闲，无法组成三个完整8卡节点；预计启动为
+  `2026-08-04T18:47:50+08:00`。当前只证明成功排队，未占GPU、未启动rollout/W&B、未更新
+  step11；allocation开始后仍需验证五节点拓扑、8个TP4 engine、128条fresh rollout和
+  world16 update。
