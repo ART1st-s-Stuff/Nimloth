@@ -3494,3 +3494,22 @@
   给出的组件0预计启动时间为`2026-08-04T18:47:50+08:00`。当前状态仅为
   `PENDING(Resources)`，尚未占用GPU、创建formal output、启动W&B、产生rollout或执行
   optimizer update；真实GPU健康门禁仍待allocation开始后验证。
+
+## 2026-08-03：ID120取消，ID121改为normal 4+2+2等待明确推送授权
+
+- 人类要求资源不足时先凑8卡后，重新查询确认ID120 `504478+0/+1`仍为纯
+  `PENDING(Resources)`；随后取消，两组件终态均为`CANCELLED by 3738`、elapsed
+  `00:00:00`、无AllocTRES。ID120没有formal output、W&B、rollout、optimizer step或
+  checkpoint，ID119 `iter_0010`仍是唯一有效恢复边界。
+- normal实时可用分布曾为`dgx-10:4, dgx-29:2, dgx-39:2, dgx-52:8`，但调度器没有立即
+  分配完整8卡节点。人类随后明确指定`4+2+2`；临时`1x8` hold `504487`和`4+4` hold
+  `504507`均在未分配时取消，elapsed均为0。当前heterogeneous hold `504517+0/+1`
+  精确请求`1 node x 4 GPU + 2 nodes x 2 GPU`，Slurm ReqTRES分别为4卡和4卡，总8卡，
+  组件0预计`2026-08-04T03:11:00+08:00`启动。
+- local commit `fa3ec5e6`是先前`4+4`通用化起点；当前未提交增量新增`4+2+2` config和
+  batch-owned入口。4卡节点提供一个node-local TP4 rollout worker，单独顺序收集全局128条
+  以及held-out `base/common_sense`各60条；三个节点在训练阶段组成4个双卡rank，8张卡均
+  参与Qwen/WM/ValueHead更新。训练目标/冻结模块和global transition sharding不变。
+- 安全审查拒绝把`fa3ec5e6`及两条进度commit推送到private origin，要求人类明确授权新增
+  载荷外发。远端runtime目前仍是`61bd94b3`；`4+2+2`增量完成静态与远端CPU回归且获得
+  明确推送授权前，不得启动ID121训练。

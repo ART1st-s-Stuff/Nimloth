@@ -412,3 +412,15 @@ ValueHead 接收 executed-action ValueHead 监督梯度。
   `2026-08-04T18:47:50+08:00`。当前只证明成功排队，未占GPU、未启动rollout/W&B、未更新
   step11；allocation开始后仍需验证五节点拓扑、8个TP4 engine、128条fresh rollout和
   world16 update。
+
+## 2026-08-03：切换为ID121 normal 8-GPU 4+2+2
+
+- ID120 `504478+0/+1`在没有allocation、formal output、W&B或训练活动时按人类要求取消；
+  两组件elapsed均为0，恢复点仍是ID119 `iter_0010`。临时`1x8` hold `504487`也在未分配
+  时取消。
+- 人类明确指定`4+2+2`后，未分配的`4+4` hold `504507`也取消。当前heterogeneous hold
+  `504517+0/+1`由一个4卡节点和两个2卡节点组成，Slurm正确解析为3 nodes/8 GPUs；预计
+  `2026-08-04T03:11:00+08:00`。rollout由4卡节点的单个TP4 worker顺序生成128条，训练由
+  三节点4个双卡rank使用全部8卡；eval10仍顺序覆盖held-out两数据集各60条。
+- local commit `fa3ec5e6`及当前`4+2+2`增量完成静态门禁；推送因安全门禁等待人类明确
+  授权，远端仍为`61bd94b3`，训练尚未启动。

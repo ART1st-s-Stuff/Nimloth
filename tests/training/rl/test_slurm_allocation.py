@@ -24,6 +24,12 @@ EIGHT_GPU_CONFIG = (
     REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_8gpu_44.yaml"
 )
 EIGHT_GPU_BATCH = REPO_ROOT / "experiments/training/rl/train_8gpu_44.slurm"
+HETERO_EIGHT_GPU_CONFIG = (
+    REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_8gpu_422.yaml"
+)
+HETERO_EIGHT_GPU_BATCH = (
+    REPO_ROOT / "experiments/training/rl/train_8gpu_422.slurm"
+)
 
 
 def _load_counts(job_details: str) -> list[str]:
@@ -141,8 +147,7 @@ def test_parallel_controller_derives_tp4_workers_and_world_from_config() -> None
     shard_runner = SHARD_RUNNER.read_text(encoding="utf-8")
 
     assert "CONFIG_TOTAL_GPUS == CONFIG_WORLD_SIZE * CONFIG_GPUS_PER_RANK" in controller
-    assert "EXPECTED_ROLLOUT_WORKERS=$((CONFIG_TOTAL_GPUS / TP_SIZE))" in controller
-    assert 'ROLLOUT_WORKERS:-${EXPECTED_ROLLOUT_WORKERS}' in controller
+    assert "ROLLOUT_WORKERS=$((CONFIG_TOTAL_GPUS / TP_SIZE))" in controller
     assert 'workers_per_node=$((node_gpus / TP_SIZE))' in controller
     assert 'global_worker=$((NIMLOTH_WORKER_OFFSET + local_worker))' in controller
     assert 'NODE_SPECS+=("${node}:${node_gpus}:${het_group}")' in controller
@@ -184,6 +189,23 @@ def test_true32_heterogeneous_topology_is_explicitly_routed_by_het_group() -> No
     assert 'test "${#HET_NODES_4[@]}" -eq 2' in batch
     assert "export NIMLOTH_HET_GPUS_PER_NODE=8,4" in batch
     assert 'exec bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_full.sh"' in batch
+
+
+def test_eight_gpu_422_routes_one_tp4_worker_and_four_training_ranks() -> None:
+    controller = PARALLEL_CONTROLLER.read_text(encoding="utf-8")
+    config = HETERO_EIGHT_GPU_CONFIG.read_text(encoding="utf-8")
+    batch = HETERO_EIGHT_GPU_BATCH.read_text(encoding="utf-8")
+
+    assert "nodes: 3" in config
+    assert "world_size: 4" in config
+    assert "gpus_per_rank: 2" in config
+    assert '[[ "${#HET_NODES_4[@]}" == 1 ]]' in batch
+    assert '[[ "${#HET_NODES_2[@]}" == 2 ]]' in batch
+    assert "export NIMLOTH_HET_GPUS_PER_NODE=4,2" in batch
+    assert "export ROLLOUT_WORKERS=1" in batch
+    assert "node_gpus % CONFIG_GPUS_PER_RANK" in controller
+    assert 'EVAL_ALL_DATASETS_PER_WORKER=true' in controller
+    assert 'dataset=${NIMLOTH_EVAL_DATASETS}' in controller
 
 
 def test_eight_gpu_44_batch_and_config_preserve_parallel_contract() -> None:

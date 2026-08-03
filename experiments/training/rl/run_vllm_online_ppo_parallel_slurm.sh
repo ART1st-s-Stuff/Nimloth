@@ -85,18 +85,15 @@ print(
   echo "parallel runner requires rollout TP=4" >&2
   exit 1
 }
-(( CONFIG_TOTAL_GPUS % TP_SIZE == 0 )) || {
-  echo "total GPUs must divide evenly into TP${TP_SIZE} rollout workers" >&2
-  exit 1
-}
-EXPECTED_ROLLOUT_WORKERS=$((CONFIG_TOTAL_GPUS / TP_SIZE))
-ROLLOUT_WORKERS=${ROLLOUT_WORKERS:-${EXPECTED_ROLLOUT_WORKERS}}
+if [[ -z "${ROLLOUT_WORKERS}" ]]; then
+  (( CONFIG_TOTAL_GPUS % TP_SIZE == 0 )) || {
+    echo "ROLLOUT_WORKERS is required when total GPUs do not divide into TP${TP_SIZE} workers" >&2
+    exit 1
+  }
+  ROLLOUT_WORKERS=$((CONFIG_TOTAL_GPUS / TP_SIZE))
+fi
 [[ "${ROLLOUT_WORKERS}" =~ ^[1-9][0-9]*$ ]] || {
   echo "ROLLOUT_WORKERS must be a positive integer" >&2
-  exit 1
-}
-(( ROLLOUT_WORKERS == EXPECTED_ROLLOUT_WORKERS )) || {
-  echo "parallel runner requires ${EXPECTED_ROLLOUT_WORKERS} TP${TP_SIZE} workers for ${CONFIG_TOTAL_GPUS} GPUs" >&2
   exit 1
 }
 (( NUM_EPISODES % ROLLOUT_WORKERS == 0 )) || {
@@ -182,10 +179,14 @@ for node_index in "${!NODES[@]}"; do
     echo "missing allocated GPU count for ${node}" >&2
     exit 1
   }
-  (( node_gpus % TP_SIZE == 0 )) || {
-    echo "node ${node} has ${node_gpus} GPUs, not divisible by rollout TP=${TP_SIZE}" >&2
+  (( node_gpus % CONFIG_GPUS_PER_RANK == 0 )) || {
+    echo "node ${node} has ${node_gpus} GPUs, not divisible by training rank size ${CONFIG_GPUS_PER_RANK}" >&2
     exit 1
   }
+  if (( node_gpus >= TP_SIZE && node_gpus % TP_SIZE != 0 )); then
+    echo "node ${node} cannot form whole rollout TP=${TP_SIZE} workers" >&2
+    exit 1
+  fi
   allocation_total_gpus=$((allocation_total_gpus + node_gpus))
   allocation_workers=$((allocation_workers + node_gpus / TP_SIZE))
   NODE_SPECS+=("${node}:${node_gpus}:${het_group}")
@@ -232,17 +233,28 @@ if [[ "${PIPELINE_MODE}" == eval ]]; then
     echo "fixed held-out eval requires 120 episodes" >&2
     exit 1
   }
-  (( ROLLOUT_WORKERS % ${#EVAL_DATASETS[@]} == 0 )) || {
-    echo "eval datasets must divide evenly across rollout workers" >&2
-    exit 1
-  }
-  EVAL_WORKERS_PER_DATASET=$((ROLLOUT_WORKERS / ${#EVAL_DATASETS[@]}))
   (( VALIDATION_ENVS % ROLLOUT_WORKERS == 0 )) || {
     echo "eval episodes must divide evenly across rollout workers" >&2
     exit 1
   }
   EVAL_EPISODES_PER_WORKER=$((VALIDATION_ENVS / ROLLOUT_WORKERS))
-  EVAL_SEEDS_PER_DATASET=$((EVAL_WORKERS_PER_DATASET * EVAL_EPISODES_PER_WORKER))
+  EVAL_ALL_DATASETS_PER_WORKER=false
+  if (( ROLLOUT_WORKERS == 1 )); then
+    (( EVAL_EPISODES_PER_WORKER % ${#EVAL_DATASETS[@]} == 0 )) || {
+      echo "single-worker eval episodes must divide evenly across datasets" >&2
+      exit 1
+    }
+    EVAL_WORKERS_PER_DATASET=1
+    EVAL_SEEDS_PER_DATASET=$((EVAL_EPISODES_PER_WORKER / ${#EVAL_DATASETS[@]}))
+    EVAL_ALL_DATASETS_PER_WORKER=true
+  else
+    (( ROLLOUT_WORKERS % ${#EVAL_DATASETS[@]} == 0 )) || {
+      echo "eval datasets must divide evenly across rollout workers" >&2
+      exit 1
+    }
+    EVAL_WORKERS_PER_DATASET=$((ROLLOUT_WORKERS / ${#EVAL_DATASETS[@]}))
+    EVAL_SEEDS_PER_DATASET=$((EVAL_WORKERS_PER_DATASET * EVAL_EPISODES_PER_WORKER))
+  fi
   (( EVAL_SEEDS_PER_DATASET == 60 )) || {
     echo "fixed held-out eval requires seeds 1..60 per dataset" >&2
     exit 1
@@ -304,6 +316,7 @@ if [[ "${PIPELINE_MODE}" == eval ]]; then
         NIMLOTH_EVAL_DATASETS="${EVAL_DATASETS_CSV}" \
         NIMLOTH_EVAL_WORKERS_PER_DATASET="${EVAL_WORKERS_PER_DATASET}" \
         NIMLOTH_EVAL_EPISODES_PER_WORKER="${EVAL_EPISODES_PER_WORKER}" \
+        NIMLOTH_EVAL_ALL_DATASETS_PER_WORKER="${EVAL_ALL_DATASETS_PER_WORKER}" \
         REPO="${REPO}" ENV_REPO="${ENV_REPO}" PYTHON="${PYTHON}" \
         MODEL="${MODEL}" WM_CKPT="${MODEL}" RL_CONFIG="${RL_CONFIG}" \
         SHARD_ROOT="${EVAL_SHARD_ROOT}" ENV_PORT_BASE="$((ENV_PORT_BASE + 100))" \
@@ -316,10 +329,15 @@ if [[ "${PIPELINE_MODE}" == eval ]]; then
         worker_pids=()
         for ((local_worker=0; local_worker<NIMLOTH_WORKERS_PER_NODE; local_worker++)); do
           global_worker=$((NIMLOTH_WORKER_OFFSET + local_worker))
-          dataset_index=$((global_worker / NIMLOTH_EVAL_WORKERS_PER_DATASET))
-          dataset_worker=$((global_worker % NIMLOTH_EVAL_WORKERS_PER_DATASET))
-          dataset=${eval_datasets[${dataset_index}]}
-          shard_seed=$((1 + dataset_worker * NIMLOTH_EVAL_EPISODES_PER_WORKER))
+          if [[ "${NIMLOTH_EVAL_ALL_DATASETS_PER_WORKER}" == true ]]; then
+            dataset=${NIMLOTH_EVAL_DATASETS}
+            shard_seed=1
+          else
+            dataset_index=$((global_worker / NIMLOTH_EVAL_WORKERS_PER_DATASET))
+            dataset_worker=$((global_worker % NIMLOTH_EVAL_WORKERS_PER_DATASET))
+            dataset=${eval_datasets[${dataset_index}]}
+            shard_seed=$((1 + dataset_worker * NIMLOTH_EVAL_EPISODES_PER_WORKER))
+          fi
           first_gpu=$((local_worker * NIMLOTH_TP_SIZE))
           shard_visible=""
           for ((offset=0; offset<NIMLOTH_TP_SIZE; offset++)); do
@@ -364,10 +382,15 @@ if [[ "${PIPELINE_MODE}" == eval ]]; then
 
   EVAL_MERGE_ARGS=()
   for ((shard_index=0; shard_index<ROLLOUT_WORKERS; shard_index++)); do
-    dataset_index=$((shard_index / EVAL_WORKERS_PER_DATASET))
-    dataset_worker=$((shard_index % EVAL_WORKERS_PER_DATASET))
-    dataset=${EVAL_DATASETS[${dataset_index}]}
-    shard_seed=$((1 + dataset_worker * EVAL_EPISODES_PER_WORKER))
+    if [[ "${EVAL_ALL_DATASETS_PER_WORKER}" == true ]]; then
+      dataset=${EVAL_DATASETS_CSV}
+      shard_seed=1
+    else
+      dataset_index=$((shard_index / EVAL_WORKERS_PER_DATASET))
+      dataset_worker=$((shard_index % EVAL_WORKERS_PER_DATASET))
+      dataset=${EVAL_DATASETS[${dataset_index}]}
+      shard_seed=$((1 + dataset_worker * EVAL_EPISODES_PER_WORKER))
+    fi
     shard_tag=$(printf 'shard_%02d' "${shard_index}")
     EVAL_MERGE_ARGS+=(
       --shard-manifest "${EVAL_SHARD_ROOT}/${shard_tag}/fresh_policy_manifest.json"
