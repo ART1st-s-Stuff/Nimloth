@@ -20,6 +20,10 @@ HETERO_32_CONFIG = (
     REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_32gpu_88844.yaml"
 )
 HETERO_32_BATCH = REPO_ROOT / "experiments/training/rl/train_true32_88844.slurm"
+EIGHT_GPU_CONFIG = (
+    REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_8gpu_44.yaml"
+)
+EIGHT_GPU_BATCH = REPO_ROOT / "experiments/training/rl/train_8gpu_44.slurm"
 
 
 def _load_counts(job_details: str) -> list[str]:
@@ -132,14 +136,13 @@ def test_current_vllm_pipeline_preserves_checkpoint_processor_resolution() -> No
     assert "--max-pixels" not in pipeline
 
 
-def test_parallel_controller_uses_eight_isolated_tp4_workers_then_world16() -> None:
+def test_parallel_controller_derives_tp4_workers_and_world_from_config() -> None:
     controller = PARALLEL_CONTROLLER.read_text(encoding="utf-8")
     shard_runner = SHARD_RUNNER.read_text(encoding="utf-8")
 
-    assert 'CONFIG_NODES}" == 4 || "${CONFIG_NODES}" == 5' in controller
-    assert 'CONFIG_WORLD_SIZE}" == 16' in controller
-    assert 'CONFIG_TOTAL_GPUS}" == 32' in controller
-    assert 'ROLLOUT_WORKERS:-8' in controller
+    assert "CONFIG_TOTAL_GPUS == CONFIG_WORLD_SIZE * CONFIG_GPUS_PER_RANK" in controller
+    assert "EXPECTED_ROLLOUT_WORKERS=$((CONFIG_TOTAL_GPUS / TP_SIZE))" in controller
+    assert 'ROLLOUT_WORKERS:-${EXPECTED_ROLLOUT_WORKERS}' in controller
     assert 'workers_per_node=$((node_gpus / TP_SIZE))' in controller
     assert 'global_worker=$((NIMLOTH_WORKER_OFFSET + local_worker))' in controller
     assert 'NODE_SPECS+=("${node}:${node_gpus}:${het_group}")' in controller
@@ -180,4 +183,18 @@ def test_true32_heterogeneous_topology_is_explicitly_routed_by_het_group() -> No
     assert 'test "${#HET_NODES_8[@]}" -eq 3' in batch
     assert 'test "${#HET_NODES_4[@]}" -eq 2' in batch
     assert "export NIMLOTH_HET_GPUS_PER_NODE=8,4" in batch
+    assert 'exec bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_full.sh"' in batch
+
+
+def test_eight_gpu_44_batch_and_config_preserve_parallel_contract() -> None:
+    config = EIGHT_GPU_CONFIG.read_text(encoding="utf-8")
+    batch = EIGHT_GPU_BATCH.read_text(encoding="utf-8")
+
+    assert "nodes: 2" in config
+    assert "world_size: 4" in config
+    assert "gpus_per_rank: 2" in config
+    assert "rollout_tensor_parallel_size: 4" in config
+    assert '[[ "${#ALLOCATED_NODES[@]}" == 2 ]]' in batch
+    assert '[[ "${GPU_COUNTS[${node}]:-}" == 4 ]]' in batch
+    assert "export ROLLOUT_WORKERS=2" in batch
     assert 'exec bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_full.sh"' in batch

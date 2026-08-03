@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# One formal iteration: eight isolated TP4 rollout workers, then a 16-rank update.
+# One formal iteration: configuration-matched isolated TP4 rollout workers,
+# followed by a globally sharded two-GPU-per-rank update.
 set -euo pipefail
 
 SLURM_BIN_DIR=${SLURM_BIN_DIR:-/cm/shared/apps/slurm/current/bin}
@@ -7,7 +8,7 @@ SLURM_CONF=${SLURM_CONF:-/cm/shared/apps/slurm/var/etc/slurm/slurm.conf}
 export SLURM_CONF
 export PATH="${SLURM_BIN_DIR}:${PATH}"
 
-HOLD_JOB=${HOLD_JOB:?set HOLD_JOB to one running 32-GPU allocation}
+HOLD_JOB=${HOLD_JOB:?set HOLD_JOB to the running allocation}
 REPO=${REPO:?set REPO to the committed server worktree}
 ENV_REPO=${ENV_REPO:?set ENV_REPO to the verified VAGEN worktree}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
@@ -25,7 +26,7 @@ SEED_OFFSET=${SEED_OFFSET:?set SEED_OFFSET}
 TRAIN_MASTER_PORT=${TRAIN_MASTER_PORT:-29800}
 ENV_PORT_BASE=${ENV_PORT:-8600}
 ENV_PREWARM_TIMEOUT=${ENV_PREWARM_TIMEOUT:-300}
-ROLLOUT_WORKERS=${ROLLOUT_WORKERS:-8}
+ROLLOUT_WORKERS=${ROLLOUT_WORKERS:-}
 NIMLOTH_HET_GPUS_PER_NODE=${NIMLOTH_HET_GPUS_PER_NODE:-}
 RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-}
 RUN_INITIAL_GLOBAL_STEP=${RUN_INITIAL_GLOBAL_STEP:-0}
@@ -68,20 +69,34 @@ print(
   echo "PIPELINE_MODE must be train or eval" >&2
   exit 1
 }
-[[ "${CONFIG_NODES}" == 4 || "${CONFIG_NODES}" == 5 ]] || {
-  echo "parallel runner requires four or five physical nodes" >&2
+(( CONFIG_NODES > 0 )) || {
+  echo "parallel runner requires at least one physical node" >&2
   exit 1
 }
-[[ "${CONFIG_WORLD_SIZE}" == 16 ]] || {
-  echo "parallel runner requires world_size=16" >&2
+[[ "${CONFIG_GPUS_PER_RANK}" == 2 ]] || {
+  echo "parallel runner requires two GPUs per training rank" >&2
   exit 1
 }
-[[ "${CONFIG_GPUS_PER_RANK}" == 2 && "${CONFIG_TOTAL_GPUS}" == 32 ]] || {
-  echo "parallel runner requires 16 two-GPU training ranks" >&2
+(( CONFIG_TOTAL_GPUS == CONFIG_WORLD_SIZE * CONFIG_GPUS_PER_RANK )) || {
+  echo "parallel runner config has inconsistent world size and total GPUs" >&2
   exit 1
 }
-[[ "${TP_SIZE}" == 4 && "${ROLLOUT_WORKERS}" == 8 ]] || {
-  echo "parallel runner requires eight TP4 rollout workers" >&2
+[[ "${TP_SIZE}" == 4 ]] || {
+  echo "parallel runner requires rollout TP=4" >&2
+  exit 1
+}
+(( CONFIG_TOTAL_GPUS % TP_SIZE == 0 )) || {
+  echo "total GPUs must divide evenly into TP${TP_SIZE} rollout workers" >&2
+  exit 1
+}
+EXPECTED_ROLLOUT_WORKERS=$((CONFIG_TOTAL_GPUS / TP_SIZE))
+ROLLOUT_WORKERS=${ROLLOUT_WORKERS:-${EXPECTED_ROLLOUT_WORKERS}}
+[[ "${ROLLOUT_WORKERS}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "ROLLOUT_WORKERS must be a positive integer" >&2
+  exit 1
+}
+(( ROLLOUT_WORKERS == EXPECTED_ROLLOUT_WORKERS )) || {
+  echo "parallel runner requires ${EXPECTED_ROLLOUT_WORKERS} TP${TP_SIZE} workers for ${CONFIG_TOTAL_GPUS} GPUs" >&2
   exit 1
 }
 (( NUM_EPISODES % ROLLOUT_WORKERS == 0 )) || {
@@ -417,7 +432,7 @@ COMMIT=$(git -C "${REPO}" rev-parse HEAD)
 ENV_COMMIT=$(git -C "${ENV_REPO}/external/VAGEN" rev-parse HEAD)
 if (( ITERATION == FIRST_ITERATION )); then
   cat > "${RUN_OUT}/README.md" <<EOF
-# vLLM online RL full run (32 GPUs)
+# vLLM online RL full run (${CONFIG_TOTAL_GPUS} GPUs)
 
 - status: running
 - Nimloth commit: ${COMMIT}
@@ -426,8 +441,8 @@ if (( ITERATION == FIRST_ITERATION )); then
 - data: ${TRAIN_DATASETS_CSV}; independent per-dataset seeds ${SEED_OFFSET}..${SEED_RANGE_END}
 - schedule: resume after global step ${RUN_INITIAL_GLOBAL_STEP}, train through ${TOTAL_ITERATIONS}; ${NUM_EPISODES} episodes/iteration, max ${MAX_STEPS} steps/episode
 - allocation: ${NIMLOTH_TRAIN_NODE_SPECS}
-- rollout: 8 independent workers x vLLM TP4, ${EPISODES_PER_WORKER} episodes/worker; workers are assigned from each node's allocated GPU count
-- update: ${CONFIG_NODES} nodes, 16 synchronized ranks x 2 GPUs/rank; every real transition is assigned to exactly one rank
+- rollout: ${ROLLOUT_WORKERS} independent workers x vLLM TP${TP_SIZE}, ${EPISODES_PER_WORKER} episodes/worker; workers are assigned from each node's allocated GPU count
+- update: ${CONFIG_NODES} nodes, ${CONFIG_WORLD_SIZE} synchronized ranks x ${CONFIG_GPUS_PER_RANK} GPUs/rank; every real transition is assigned to exactly one rank
 - uneven transition counts: equal-count graph padding with zero loss; DDP loss scale preserves the global transition mean
 - planning: DINO supervised H=1, history_size=1
 - frozen: Qwen vision, DINO teacher and StateProjector
