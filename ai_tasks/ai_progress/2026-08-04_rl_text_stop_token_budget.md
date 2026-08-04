@@ -41,8 +41,13 @@
 - Python compile of 16 changed source/test files, `bash -n` for both launch
   scripts, and `git diff --check` pass.
 - Local focused pytest was unavailable because neither local Python environment
-  contains pytest. The first remote focused run collected after initializing
-  the pinned LeWM submodule and found two test-fixture/config-consistency
-  failures; both are fixed and the focused rerun is pending.
+  contains pytest. On superpod with vLLM 0.11, the focused suite passes 78/78;
+  Agent/Qwen/rollout passes 106/106; RL passes 173/173 when split by file/case
+  to stay below the login-node process memory limit. The only warnings are the
+  existing single-item unbiased-std and optional gym deprecations.
+- A real ID122 tokenizer probe decoded
+  `[9860, 2115, 3918, 26865, 29]` as `Move left.</think>` while canonical
+  `</think>` remains `[522, 26865, 29]`. The actual vLLM adapter matched the
+  decoded text and forced next token ID 151665, the first latent query token.
 - No GPU experiment, Slurm submission, checkpoint update, or RL restart has
   been performed in this task.

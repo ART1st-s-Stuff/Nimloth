@@ -3585,5 +3585,7 @@
   formal H=1 two-GPU/rank topology configs carry the same cap.
 - Rollout truncates before an over-budget action and training independently
   rejects processor-built `input_ids` over the same cap before Qwen forward.
-  Static compile, shell syntax, and diff checks pass; focused remote tests are
-  pending. No GPU job or RL restart has occurred.
+  Static compile/shell/diff checks pass; remote focused tests are 78/78,
+  Agent/Qwen/rollout are 106/106, and RL is 173/173 split by file/case. A real
+  ID122 tokenizer/vLLM-adapter probe decoded the merged close and forced query
+  token 151665. No GPU job or RL restart has occurred.
