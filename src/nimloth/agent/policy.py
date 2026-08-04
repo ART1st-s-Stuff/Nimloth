@@ -8,6 +8,18 @@ from typing import Literal, Protocol
 
 import torch
 
+
+class PolicyStateTokenBudgetExceeded(RuntimeError):
+    """The complete generated policy state is too long for safe training."""
+
+    def __init__(self, *, actual_tokens: int, max_tokens: int) -> None:
+        self.actual_tokens = int(actual_tokens)
+        self.max_tokens = int(max_tokens)
+        super().__init__(
+            "policy state token budget exceeded: "
+            f"actual={self.actual_tokens}, max={self.max_tokens}"
+        )
+
 from nimloth.agent.template import AgentPrompt
 
 

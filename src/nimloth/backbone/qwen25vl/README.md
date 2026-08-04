@@ -26,3 +26,5 @@ vLLM turn mode 在一个多模态 request 中采样 CoT、约束注入 latent/ac
 reasoning finish reason 和 truncation 状态。训练 replay 用 `logits_to_keep` 只计算
 loss-mask 位置的 vocabulary logits，reasoning 使用屏蔽 Nimloth 注入 token 的词表，
 action 使用八 token 词表；注入或强制补全的 token 不进入 PPO。
+latent query的注入边界按tokenizer解码后的字面`</think>`匹配，而不是假设该文本只有
+一种token ID切分；达到reasoning上限时才强制补入canonical close token序列。

@@ -66,6 +66,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     ap.add_argument("--max-response-tokens", type=int, default=64)
     ap.add_argument(
+        "--max-state-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Hard cap on the processor-expanded Qwen state prefix used by RL "
+            "training; over-budget episodes truncate before that action."
+        ),
+    )
+    ap.add_argument(
         "--navigation-profile",
         choices=("current", "vagen_eval"),
         default="current",
@@ -209,6 +218,15 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError("rollout_env requires CUDA")
     if args.vllm_mm_processor_cache_gb < 0.0:
         raise ValueError("vllm_mm_processor_cache_gb must be non-negative")
+    if args.max_state_tokens is not None and args.max_state_tokens < 1:
+        raise ValueError("max_state_tokens must be positive")
+    if (
+        args.max_state_tokens is not None
+        and args.max_state_tokens + 2 > args.max_model_len
+    ):
+        raise ValueError(
+            "max_state_tokens plus action suffix must fit max_model_len"
+        )
     if args.planner_enabled:
         missing = [
             name
@@ -320,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
             latent_token_count=latent_token_count,
             credit_assignment=("token" if args.planner_enabled else args.credit_assignment),
             max_response_tokens=args.max_response_tokens,
+            max_state_tokens=args.max_state_tokens,
             distributed_executor_backend=args.vllm_distributed_executor_backend,
             enforce_eager=args.vllm_enforce_eager,
             capture_policy_state=args.planner_enabled,

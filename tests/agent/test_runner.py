@@ -13,6 +13,7 @@ from nimloth.agent import (
     NimlothPromptTemplate,
     PolicyDecision,
     PolicyState,
+    PolicyStateTokenBudgetExceeded,
     PolicyTokenTrace,
 )
 from nimloth.environment import EnvironmentObservation, EnvironmentStep
@@ -97,6 +98,13 @@ class _FakeNavigationSession:
         self.closed = True
 
 
+class _BudgetPolicy(_SequencePolicy):
+    def select_action(self, prompt: AgentPrompt) -> PolicyDecision:
+        if self.prompts:
+            raise PolicyStateTokenBudgetExceeded(actual_tokens=17, max_tokens=16)
+        return super().select_action(prompt)
+
+
 def _run_episode():
     policy = _SequencePolicy((0, 4))
     agent = AgentRuntime(
@@ -133,6 +141,27 @@ def test_episode_runner_uses_environment_prompt_and_closes_session() -> None:
         episode.actions[0].response,
         episode.actions[1].response,
     ]
+
+
+def test_episode_runner_truncates_before_over_budget_action() -> None:
+    policy = _BudgetPolicy((0,))
+    agent = AgentRuntime(
+        policy=policy,
+        action_space=NAVIGATION_ACTION_SPACE,
+        prompt_template=NimlothPromptTemplate(
+            latent_token_count=1,
+            action_count=len(NAVIGATION_ACTION_SPACE),
+        ),
+    )
+    session = _FakeNavigationSession()
+
+    episode = EpisodeRunner(agent).run(session, seed=17, max_steps=3)
+
+    assert session.closed
+    assert episode.done is False
+    assert len(episode.actions) == 1
+    assert len(episode.observations) == 2
+    assert len(episode.observations) == len(episode.actions) + 1
 
 
 def test_agent_episode_is_the_only_input_needed_to_build_rollout() -> None:

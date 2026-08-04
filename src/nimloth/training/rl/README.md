@@ -255,6 +255,9 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   reference checkpoint指纹。reward KL尚未实现，任何对应配置会被严格schema拒绝。
 - `actor.max_response_tokens`限制完整CoT+协议+action response；实现先扣除协议开销再得到
   reasoning预算。当前VAGEN对齐实验使用512，而不是把512误写成reasoning-only上限。
+- `actor.max_state_tokens`限制processor展开图片后的完整Qwen state prefix（截至
+  `action_start`）。rollout在超限action执行前截断，训练在Qwen forward前对实际
+  `input_ids`重复检查；该门禁不替代对并行拓扑和其他OOM来源的验证。
 - 在线 planning 必须从完整 RL resume 或显式 WM、StateProjector、ValueHead
   checkpoint 启动；随机初始化的 planner 不允许控制真实 environment。
 - SFT2 和 RL 对 `history_size` 使用相同的 LeWM 语义，warm-start checkpoint

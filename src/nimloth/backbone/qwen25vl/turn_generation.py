@@ -15,6 +15,7 @@ TURN_RESPONSE_EXTRA_ARG = "nimloth_turn_response"
 class TurnGenerationSpec:
     """Token protocol for one reasoning-plus-action continuation."""
 
+    close_text: str
     close_token_ids: tuple[int, ...]
     injected_token_ids: tuple[int, ...]
     action_token_ids: tuple[int, ...]
@@ -23,6 +24,8 @@ class TurnGenerationSpec:
     max_reasoning_tokens: int
 
     def __post_init__(self) -> None:
+        if not self.close_text:
+            raise ValueError("turn generation requires closing text")
         if not self.close_token_ids:
             raise ValueError("turn generation requires closing token ids")
         if not self.injected_token_ids:
@@ -37,6 +40,7 @@ class TurnGenerationSpec:
     def to_extra_args(self) -> dict[str, Any]:
         return {
             TURN_RESPONSE_EXTRA_ARG: {
+                "close_text": self.close_text,
                 "close_token_ids": list(self.close_token_ids),
                 "injected_token_ids": list(self.injected_token_ids),
                 "action_token_ids": list(self.action_token_ids),
@@ -56,6 +60,7 @@ class TurnGenerationSpec:
         if not isinstance(raw, Mapping):
             raise ValueError("turn response extra args must be a mapping")
         return cls(
+            close_text=str(raw["close_text"]),
             close_token_ids=tuple(int(value) for value in raw["close_token_ids"]),
             injected_token_ids=tuple(
                 int(value) for value in raw["injected_token_ids"]
@@ -104,17 +109,29 @@ def _close_prefix_length(output_ids: Sequence[int], close_ids: Sequence[int]) ->
 def allowed_turn_token_ids(
     output_ids: Sequence[int],
     spec: TurnGenerationSpec,
+    *,
+    decoded_close_end: int | None = None,
 ) -> tuple[int, ...] | None:
     """Return the constrained next-token set; ``None`` means reasoning vocab."""
 
-    close_start = find_token_subsequence(output_ids, spec.close_token_ids)
-    if close_start is None:
+    if decoded_close_end is not None:
+        if not 1 <= decoded_close_end <= len(output_ids):
+            raise ValueError("decoded close boundary is outside generated output")
+        close_end = decoded_close_end
+    else:
+        close_start = find_token_subsequence(output_ids, spec.close_token_ids)
+        close_end = (
+            close_start + len(spec.close_token_ids)
+            if close_start is not None
+            else None
+        )
+    if close_end is None:
         if len(output_ids) < spec.max_reasoning_tokens:
             return None
         matched = _close_prefix_length(output_ids, spec.close_token_ids)
         return (spec.close_token_ids[matched],)
 
-    suffix = output_ids[close_start + len(spec.close_token_ids) :]
+    suffix = output_ids[close_end:]
     if len(suffix) < len(spec.injected_token_ids):
         expected = spec.injected_token_ids[len(suffix)]
         if tuple(suffix) != spec.injected_token_ids[: len(suffix)]:
@@ -137,10 +154,15 @@ def apply_turn_response_logits(
     logits: torch.Tensor,
     *,
     spec: TurnGenerationSpec,
+    decoded_close_end: int | None = None,
 ) -> torch.Tensor:
     """Apply the turn protocol before temperature/top-p sampling."""
 
-    allowed = allowed_turn_token_ids(output_ids, spec)
+    allowed = allowed_turn_token_ids(
+        output_ids,
+        spec,
+        decoded_close_end=decoded_close_end,
+    )
     masked = logits.clone()
     if allowed is None:
         masked[

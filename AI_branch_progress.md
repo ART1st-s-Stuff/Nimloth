@@ -3572,3 +3572,17 @@
 - 00:14:37 +08时两个worker已分别durable写出2条和1条完整trajectory，正在继续后续episode，
   日志无Traceback/OOM/node error。当前只证明allocation/prewarm/TP4/真实rollout健康；
   16条strict merge、world6 optimizer step11、consumption/checkpoint和后续eval尚未完成。
+## 2026-08-04: decoded `</think>` query injection and 16,384-token RL state cap
+
+- Fix branch `fix/rl-text-stop-token-budget` replaces exact close-token-ID
+  detection in the vLLM turn state machine with artifact-tokenizer decoded text
+  matching. This covers the observed merged `.</` BPE and preserves the
+  single-request hidden/logit capture path.
+- ID122 artifact measurement found completed iteration 11 max state 6,765
+  tokens; failed episode states reached 16,677 at step14, 18,134 at step15, and
+  23,227 at step19. Formal 16-rollout configs therefore set
+  `actor.max_state_tokens=16384`, 9.7% below the first observed OOM state.
+- Rollout truncates before an over-budget action and training independently
+  rejects processor-built `input_ids` over the same cap before Qwen forward.
+  Static compile, shell syntax, and diff checks pass; focused remote tests are
+  pending. No GPU job or RL restart has occurred.

@@ -14,6 +14,7 @@ from nimloth.agent import (
     AgentTranscript,
     NimlothPromptTemplate,
     PolicyReplayOutput,
+    PolicyStateTokenBudgetExceeded,
 )
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
@@ -94,6 +95,24 @@ class _InputBuilder:
 
     def cache_key(self, messages, images) -> str:
         raise NotImplementedError
+
+
+class _TokenBudgetInputBuilder(_InputBuilder):
+    def __init__(self, token_count: int) -> None:
+        super().__init__()
+        self.token_count = int(token_count)
+
+    def build(self, messages, images, *, include_labels: bool) -> BackboneBatch:
+        batch = super().build(messages, images, include_labels=include_labels)
+        return BackboneBatch(
+            {
+                **batch.tensors,
+                "input_ids": torch.zeros(
+                    (len(messages), self.token_count),
+                    dtype=torch.long,
+                ),
+            }
+        )
 
 
 class _Predictor(torch.nn.Module):
@@ -333,6 +352,25 @@ def test_sequence_batch_preserves_trajectory_boundaries_and_alignment() -> None:
         assert replay_inputs[0].action_index == window.trajectory.action_indices[
             window.start_step
         ]
+
+
+def test_runtime_rejects_over_budget_state_before_backbone_forward() -> None:
+    _algorithm_impl, runtime, _builder, backbone, *_rest = _algorithm()
+    budget_builder = _TokenBudgetInputBuilder(token_count=17)
+    runtime = replace(
+        runtime,
+        input_builder=budget_builder,
+        max_state_tokens=16,
+    )
+    prompt = _trajectory("budget", 1).build_state_prompt(0)
+
+    with pytest.raises(PolicyStateTokenBudgetExceeded) as raised:
+        runtime.encode_state_prompts((prompt,))
+
+    assert raised.value.actual_tokens == 17
+    assert raised.value.max_tokens == 16
+    assert budget_builder.hidden_batches
+    assert backbone.language_model.weight.grad is None
 
 
 def test_rl_wm_blocks_supervision_hidden_gradient_but_trains_current_backbone() -> None:

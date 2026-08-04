@@ -57,6 +57,7 @@ class ActorConfig:
     clip_ratio: float = 0.2
     credit_assignment: str = "action"
     max_response_tokens: int = 64
+    max_state_tokens: int | None = None
     reference_kl_loss_weight: float = 0.0
     reference_kl_loss_type: str | None = None
 
@@ -202,6 +203,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "clip_ratio",
             "credit_assignment",
             "max_response_tokens",
+            "max_state_tokens",
             "reference_kl_loss_weight",
             "reference_kl_loss_type",
         },
@@ -311,6 +313,11 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         max_response_tokens=_positive_int(
             actor.get("max_response_tokens", 64),
             "actor.max_response_tokens",
+        ),
+        max_state_tokens=(
+            _positive_int(actor["max_state_tokens"], "actor.max_state_tokens")
+            if "max_state_tokens" in actor
+            else None
         ),
         reference_kl_loss_weight=_positive_float(
             actor.get("reference_kl_loss_weight", 0.0),

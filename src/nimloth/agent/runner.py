@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from nimloth.agent.runtime import AgentAction, AgentRuntime
+from nimloth.agent.policy import PolicyStateTokenBudgetExceeded
 from nimloth.agent.template import PromptTemplateSpec
 from nimloth.agent.transcript import AgentTranscript
 from nimloth.environment.common.session import (
@@ -88,13 +89,18 @@ class EpisodeRunner:
         rewards: list[float] = []
         success = False
         done = False
+        stopped_at_token_budget = False
         try:
             observation = session.reset(seed=seed)
             self._agent.reset(system_prompt=session.system_prompt)
             for _ in range(max_steps):
                 observations.append(observation)
                 self._agent.observe(text=observation.text, image=observation.image)
-                action = self._agent.act()
+                try:
+                    action = self._agent.act()
+                except PolicyStateTokenBudgetExceeded:
+                    stopped_at_token_budget = True
+                    break
                 actions.append(action)
 
                 result = session.step(
@@ -109,8 +115,9 @@ class EpisodeRunner:
                     break
 
             # 最后一帧用于 s_{t+1}，不会产生新的动作。
-            observations.append(observation)
-            self._agent.observe(text=observation.text, image=observation.image)
+            if not stopped_at_token_budget:
+                observations.append(observation)
+                self._agent.observe(text=observation.text, image=observation.image)
             return AgentEpisode(
                 system_prompt=session.system_prompt,
                 observations=tuple(observations),

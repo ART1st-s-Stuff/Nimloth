@@ -65,6 +65,7 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert config.actor.enabled is False
     assert config.actor.credit_assignment == "action"
     assert config.actor.max_response_tokens == 64
+    assert config.actor.max_state_tokens is None
     assert config.gradient.representation_to_backbone is True
     assert config.gradient.state_source == "recompute"
     assert config.agent.planning.enabled is False
@@ -397,6 +398,7 @@ def test_formal_h1_16rollout_12gpu_642_changes_only_distributed_layout() -> None
     assert config12.distributed.gpus_per_rank == 2
     assert config12.distributed.rollout_tensor_parallel_size == 4
     assert config12.distributed.total_gpus == 12
+    assert config12.actor.max_state_tokens == 16384
 
 
 def test_formal_h1_16rollout_24gpu_66642_changes_only_distributed_layout() -> None:
@@ -548,12 +550,14 @@ def test_rl_config_parses_turn_credit_assignment() -> None:
         "enabled": True,
         "credit_assignment": "turn",
         "max_response_tokens": 32,
+        "max_state_tokens": 16384,
     }
 
     config = parse_rl_config(raw)
 
     assert config.actor.credit_assignment == "turn"
     assert config.actor.max_response_tokens == 32
+    assert config.actor.max_state_tokens == 16384
 
 
 def test_rl_config_requires_explicit_token_credit_semantics() -> None:

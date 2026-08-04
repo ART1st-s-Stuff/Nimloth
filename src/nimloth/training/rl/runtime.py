@@ -6,7 +6,12 @@ from dataclasses import dataclass
 
 import torch
 
-from nimloth.agent import ActionLogProbReplay, Agent, AgentPrompt
+from nimloth.agent import (
+    ActionLogProbReplay,
+    Agent,
+    AgentPrompt,
+    PolicyStateTokenBudgetExceeded,
+)
 from nimloth.backbone import BackboneInputBuilder, DINOGridTargets
 from nimloth.util.module import evaluating
 
@@ -20,6 +25,7 @@ class RLModelRuntime:
     state_source: str
     representation_to_backbone: bool
     policy_replay: ActionLogProbReplay | None
+    max_state_tokens: int | None = None
     dino_grid_targets: DINOGridTargets | None = None
 
     def encode_state_prompts(
@@ -37,6 +43,16 @@ class RLModelRuntime:
             [prompt.images for prompt in prompts],
             include_labels=False,
         )
+        if self.max_state_tokens is not None:
+            input_ids = backbone_batch.tensors.get("input_ids")
+            if input_ids is None or input_ids.ndim != 2:
+                raise ValueError("token-budgeted RL batch requires 2D input_ids")
+            actual_tokens = int(input_ids.shape[-1])
+            if actual_tokens > self.max_state_tokens:
+                raise PolicyStateTokenBudgetExceeded(
+                    actual_tokens=actual_tokens,
+                    max_tokens=self.max_state_tokens,
+                )
         if self.representation_to_backbone:
             hidden = self.agent.backbone(
                 backbone_batch,

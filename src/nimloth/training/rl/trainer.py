@@ -854,6 +854,7 @@ def train_rl(
                 if actor_enabled
                 else None
             ),
+            max_state_tokens=config.actor.max_state_tokens,
             dino_grid_targets=dino_grid_targets,
         )
         optimization_runtime = OptimizationRuntime(

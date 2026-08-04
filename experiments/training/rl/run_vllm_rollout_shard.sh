@@ -72,7 +72,7 @@ done
   exit 1
 }
 
-read -r TP_SIZE MAX_STEPS TEMPERATURE TOP_P CREDIT MAX_RESPONSE_TOKENS ACTOR_ENABLED PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE < <(
+read -r TP_SIZE MAX_STEPS TEMPERATURE TOP_P CREDIT MAX_RESPONSE_TOKENS MAX_STATE_TOKENS ACTOR_ENABLED PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -85,6 +85,7 @@ print(
     config.rollout.top_p,
     config.actor.credit_assignment,
     config.actor.max_response_tokens,
+    config.actor.max_state_tokens,
     str(config.actor.enabled).lower(),
     str(config.agent.planning.enabled).lower(),
     config.agent.planning.horizon,
@@ -217,6 +218,10 @@ SEED_ARGS=()
 if [[ "${SHARD_SEED_PER_EVAL_SET}" == true ]]; then
   SEED_ARGS+=(--seed-per-eval-set)
 fi
+STATE_BUDGET_ARGS=()
+if [[ "${MAX_STATE_TOKENS}" != None ]]; then
+  STATE_BUDGET_ARGS+=(--max-state-tokens "${MAX_STATE_TOKENS}")
+fi
 
 "${PYTHON}" "${REPO}/experiments/training/rl/rollout_env.py" \
   --backend vllm \
@@ -236,6 +241,7 @@ fi
   --navigation-profile "${SHARD_NAVIGATION_PROFILE}" \
   --credit-assignment "${CREDIT}" \
   --max-response-tokens "${MAX_RESPONSE_TOKENS}" \
+  "${STATE_BUDGET_ARGS[@]}" \
   --vllm-enforce-eager \
   "${SEED_ARGS[@]}" \
   2>&1 | tee "${ROLLOUT_LOG}"

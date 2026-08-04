@@ -37,7 +37,7 @@ esac
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE ACTOR_ENABLED CREDIT_ASSIGNMENT MAX_RESPONSE_TOKENS REFERENCE_KL_WEIGHT CONFIG_ITERATIONS CONFIG_NUM_EPISODES CONFIG_MAX_STEPS ROLLOUT_TEMPERATURE ROLLOUT_TOP_P PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE TRAIN_DATASETS_CSV < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE ACTOR_ENABLED CREDIT_ASSIGNMENT MAX_RESPONSE_TOKENS MAX_STATE_TOKENS REFERENCE_KL_WEIGHT CONFIG_ITERATIONS CONFIG_NUM_EPISODES CONFIG_MAX_STEPS ROLLOUT_TEMPERATURE ROLLOUT_TOP_P PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE TRAIN_DATASETS_CSV < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -52,6 +52,7 @@ print(
     str(config.actor.enabled).lower(),
     config.actor.credit_assignment,
     config.actor.max_response_tokens,
+    config.actor.max_state_tokens,
     config.actor.reference_kl_loss_weight,
     config.rl.iterations,
     config.rl.envs_per_iteration,
@@ -70,6 +71,10 @@ print(
 NUM_EPISODES=${NUM_EPISODES:-${CONFIG_NUM_EPISODES}}
 MAX_STEPS=${MAX_STEPS:-${CONFIG_MAX_STEPS}}
 TOTAL_ITERATIONS=${TOTAL_ITERATIONS:-${CONFIG_ITERATIONS}}
+STATE_BUDGET_ARGS=()
+if [[ "${MAX_STATE_TOKENS}" != None ]]; then
+  STATE_BUDGET_ARGS+=(--max-state-tokens "${MAX_STATE_TOKENS}")
+fi
 if [[ "${RUN_REFERENCE}" == true && "${REFERENCE_KL_WEIGHT}" == 0.0 ]]; then
   echo "skipping frozen-reference replay because reference KL is disabled"
   RUN_REFERENCE=false
@@ -413,6 +418,7 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
     --temperature "${ROLLOUT_TEMPERATURE}" --top-p "${ROLLOUT_TOP_P}" \
     --credit-assignment "${CREDIT_ASSIGNMENT}" \
     --max-response-tokens "${MAX_RESPONSE_TOKENS}" \
+    "${STATE_BUDGET_ARGS[@]}" \
     --vllm-enforce-eager \
     2>&1 | tee -a "${LOG}"
   cleanup_env

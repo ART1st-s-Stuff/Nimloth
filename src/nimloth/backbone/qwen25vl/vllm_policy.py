@@ -6,7 +6,13 @@ import math
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal, Protocol
 
-from nimloth.agent import AgentPrompt, PolicyDecision, PolicyState, PolicyTokenTrace
+from nimloth.agent import (
+    AgentPrompt,
+    PolicyDecision,
+    PolicyState,
+    PolicyStateTokenBudgetExceeded,
+    PolicyTokenTrace,
+)
 from nimloth.backbone.qwen25vl.loading import qwen_processor_pixel_bounds
 from nimloth.backbone.qwen25vl.policy import (
     collect_policy_images,
@@ -57,6 +63,7 @@ class QwenVLLMAgentPolicy:
         latent_token_count: int = 1,
         credit_assignment: Literal["action", "turn", "token"] = "action",
         max_response_tokens: int = 64,
+        max_state_tokens: int | None = None,
         capture_policy_state: bool = False,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
@@ -66,6 +73,8 @@ class QwenVLLMAgentPolicy:
             )
         if max_response_tokens < 1:
             raise ValueError("max_response_tokens must be positive")
+        if max_state_tokens is not None and max_state_tokens < 1:
+            raise ValueError("max_state_tokens must be positive when set")
         self.engine = engine
         self.processor = processor
         self.temperature = float(temperature)
@@ -73,6 +82,9 @@ class QwenVLLMAgentPolicy:
         self.latent_token_count = int(latent_token_count)
         self.credit_assignment = credit_assignment
         self.max_response_tokens = int(max_response_tokens)
+        self.max_state_tokens = (
+            int(max_state_tokens) if max_state_tokens is not None else None
+        )
         self.capture_policy_state = bool(capture_policy_state)
         self._progress_callback = progress_callback
         if self.capture_policy_state and credit_assignment not in {"turn", "token"}:
@@ -105,6 +117,7 @@ class QwenVLLMAgentPolicy:
         latent_token_count: int,
         credit_assignment: Literal["action", "turn", "token"] = "action",
         max_response_tokens: int = 64,
+        max_state_tokens: int | None = None,
         distributed_executor_backend: str | None = None,
         enforce_eager: bool = False,
         capture_policy_state: bool = False,
@@ -166,6 +179,7 @@ class QwenVLLMAgentPolicy:
             latent_token_count=latent_token_count,
             credit_assignment=credit_assignment,
             max_response_tokens=max_response_tokens,
+            max_state_tokens=max_state_tokens,
             capture_policy_state=capture_policy_state,
             progress_callback=progress_callback,
         )
@@ -197,13 +211,18 @@ class QwenVLLMAgentPolicy:
         failed generation always clears worker state before the error escapes.
         """
 
-        return self._generate_response_with_state(prompt, stage_prefix="")
+        return self._generate_response_with_state(
+            prompt,
+            stage_prefix="",
+            enforce_state_token_budget=True,
+        )
 
     def _generate_response_with_state(
         self,
         prompt: AgentPrompt,
         *,
         stage_prefix: str,
+        enforce_state_token_budget: bool,
     ) -> QwenTurnGeneration:
         if not self.capture_policy_state:
             raise RuntimeError("this vLLM policy was not configured for state capture")
@@ -220,7 +239,10 @@ class QwenVLLMAgentPolicy:
         )
         try:
             self._progress(f"{stage_prefix}generation_start")
-            decision = self._select_response(prompt)
+            decision = self._select_response(
+                prompt,
+                enforce_state_token_budget=enforce_state_token_budget,
+            )
             self._progress(f"{stage_prefix}generation_done")
             self._progress(f"{stage_prefix}capture_pop_start")
             policy_state = pop_policy_state_capture(self.engine)
@@ -254,6 +276,7 @@ class QwenVLLMAgentPolicy:
             generated = self._generate_response_with_state(
                 prompt,
                 stage_prefix="terminal_",
+                enforce_state_token_budget=False,
             )
             decision = generated.qwen_decision
             latent_hidden = (
@@ -261,7 +284,10 @@ class QwenVLLMAgentPolicy:
             )
         else:
             self._progress("terminal_generation_start")
-            decision = self._select_response(prompt)
+            decision = self._select_response(
+                prompt,
+                enforce_state_token_budget=False,
+            )
             self._progress("terminal_generation_done")
             latent_hidden = None
         assert decision.response is not None
@@ -363,7 +389,12 @@ class QwenVLLMAgentPolicy:
             ),
         )
 
-    def _select_response(self, prompt: AgentPrompt) -> PolicyDecision:
+    def _select_response(
+        self,
+        prompt: AgentPrompt,
+        *,
+        enforce_state_token_budget: bool = True,
+    ) -> PolicyDecision:
         from vllm import SamplingParams
 
         if prompt.messages[-1].get("content") != "<think>":
@@ -395,6 +426,7 @@ class QwenVLLMAgentPolicy:
                 f"{self.max_response_tokens} <= {protocol_overhead}"
             )
         spec = TurnGenerationSpec(
+            close_text="</think>",
             close_token_ids=close_ids,
             injected_token_ids=injected_ids,
             action_token_ids=self.action_token_ids,
@@ -420,24 +452,46 @@ class QwenVLLMAgentPolicy:
         )[0]
         output = request_output.outputs[0]
         continuation_ids = tuple(int(value) for value in output.token_ids)
-        close_start = find_token_subsequence(continuation_ids, close_ids)
-        if close_start is None:
-            raise RuntimeError("vLLM turn response did not contain '</think>'")
+        close_end = find_token_subsequence(continuation_ids, injected_ids)
+        if close_end is None:
+            raise RuntimeError("vLLM turn response did not inject latent queries")
+        decoded_reasoning_close = self.processor.tokenizer.decode(
+            list(continuation_ids[:close_end]),
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+            spaces_between_special_tokens=False,
+        )
+        close_start = decoded_reasoning_close.find(spec.close_text)
+        if close_start < 0:
+            raise RuntimeError("vLLM turn response did not contain decoded '</think>'")
+        if decoded_reasoning_close[close_start:] != spec.close_text:
+            raise RuntimeError("vLLM decoded '</think>' did not end at query injection")
         forbidden_reasoning = set(spec.forbidden_reasoning_token_ids)
         invalid_reasoning_ids = sorted(
-            set(continuation_ids[:close_start]) & forbidden_reasoning
+            set(continuation_ids[:close_end]) & forbidden_reasoning
         )
         if invalid_reasoning_ids:
             raise RuntimeError(
                 "vLLM reasoning contained forbidden control token ids: "
                 f"{invalid_reasoning_ids}"
             )
-        close_end = close_start + len(close_ids)
         expected_prefix_end = close_end + len(injected_ids)
         if continuation_ids[close_end:expected_prefix_end] != injected_ids:
             raise RuntimeError("vLLM turn response has an invalid injected prefix")
         if len(continuation_ids) != expected_prefix_end + 2:
             raise RuntimeError("vLLM turn response has an invalid action suffix length")
+        if request_output.prompt_token_ids is None:
+            raise RuntimeError("vLLM did not return expanded prompt token ids")
+        state_tokens = len(request_output.prompt_token_ids) + expected_prefix_end
+        if (
+            enforce_state_token_budget
+            and self.max_state_tokens is not None
+            and state_tokens > self.max_state_tokens
+        ):
+            raise PolicyStateTokenBudgetExceeded(
+                actual_tokens=state_tokens,
+                max_tokens=self.max_state_tokens,
+            )
         action_token_id = continuation_ids[expected_prefix_end]
         action_end_id = continuation_ids[expected_prefix_end + 1]
         if action_end_id != spec.action_end_token_id:
@@ -489,12 +543,7 @@ class QwenVLLMAgentPolicy:
             else:
                 old_log_probs.append(self._sampled_log_prob(output, index, token_id))
 
-        thought = self.processor.tokenizer.decode(
-            list(continuation_ids[:close_start]),
-            skip_special_tokens=False,
-            clean_up_tokenization_spaces=False,
-            spaces_between_special_tokens=False,
-        )
+        thought = decoded_reasoning_close[:close_start]
 
         latent_block = "".join(latent_state_tokens(self.latent_token_count, tokens))
         response = (

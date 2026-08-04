@@ -47,6 +47,15 @@ class _Tokenizer:
             elif values[index : index + 2] == [700, 701]:
                 pieces.append("move left")
                 index += 2
+            elif values[index] == 504:
+                pieces.append(".</")
+                index += 1
+            elif values[index] == 502:
+                pieces.append("think")
+                index += 1
+            elif values[index] == 503:
+                pieces.append(">")
+                index += 1
             else:
                 pieces.append(reverse[values[index]])
                 index += 1
@@ -197,7 +206,11 @@ def test_policy_state_progress_identifies_generation_and_capture_boundaries(
             "<|action_(0)|><|action_end|>"
         ),
     )
-    monkeypatch.setattr(policy, "_select_response", lambda _prompt: decision)
+    monkeypatch.setattr(
+        policy,
+        "_select_response",
+        lambda _prompt, **_kwargs: decision,
+    )
     monkeypatch.setattr(
         module,
         "start_policy_state_capture",
@@ -432,6 +445,151 @@ def test_turn_credit_generates_reasoning_then_constrained_action(monkeypatch) ->
     assert set(action_ids).issubset(forbidden_ids)
 
 
+def test_turn_credit_accepts_decoded_close_with_merged_bpe(monkeypatch) -> None:
+    processor = SimpleNamespace(tokenizer=_Tokenizer())
+    tokens = LatentActionTokens()
+    action_ids = tuple(
+        processor.tokenizer.convert_tokens_to_ids(token)
+        for token in tokens.action_tokens
+    )
+
+    class Engine:
+        def generate(self, prompts, sampling_params, *, use_tqdm=False):
+            del prompts, sampling_params, use_tqdm
+            ids = [
+                700,
+                701,
+                504,
+                502,
+                503,
+                processor.tokenizer.convert_tokens_to_ids(tokens.latent_state),
+                processor.tokenizer.convert_tokens_to_ids(tokens.action_start),
+                action_ids[2],
+                processor.tokenizer.convert_tokens_to_ids(tokens.action_end),
+            ]
+            action_logprobs = {
+                token_id: SimpleNamespace(logprob=-math.log(len(action_ids)))
+                for token_id in action_ids
+            }
+            output = SimpleNamespace(
+                token_ids=ids,
+                logprobs=[
+                    {token_id: SimpleNamespace(logprob=-0.2)}
+                    if index < 5
+                    else action_logprobs
+                    if index == 7
+                    else {token_id: SimpleNamespace(logprob=0.0)}
+                    for index, token_id in enumerate(ids)
+                ],
+            )
+            return [
+                SimpleNamespace(outputs=[output], prompt_token_ids=[1, 2, 3])
+            ]
+
+    monkeypatch.setattr(module, "render_policy_messages", lambda *args, **kwargs: "prompt")
+    monkeypatch.setattr(module, "collect_policy_images", lambda messages: [])
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm",
+        SimpleNamespace(SamplingParams=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+    policy = QwenVLLMAgentPolicy(
+        engine=Engine(),
+        processor=processor,
+        temperature=0.7,
+        top_p=0.95,
+        latent_token_count=1,
+        credit_assignment="turn",
+        max_response_tokens=15,
+    )
+
+    decision = policy.select_action(
+        SimpleNamespace(
+            messages=({"role": "assistant", "content": "<think>"},),
+            bound_messages=lambda: [],
+        )
+    )
+
+    assert decision.response == (
+        "<think>move left.</think><|latent_state|><|action_start|>"
+        "<|action_(2)|><|action_end|>"
+    )
+    assert decision.token_trace is not None
+    assert decision.token_trace.reasoning_text == "move left."
+    assert decision.token_trace.reasoning_truncated is False
+
+
+def test_turn_credit_rejects_over_budget_complete_state(monkeypatch) -> None:
+    processor = SimpleNamespace(tokenizer=_Tokenizer())
+    tokens = LatentActionTokens()
+    action_ids = tuple(
+        processor.tokenizer.convert_tokens_to_ids(token)
+        for token in tokens.action_tokens
+    )
+
+    class Engine:
+        def generate(self, prompts, sampling_params, *, use_tqdm=False):
+            del prompts, sampling_params, use_tqdm
+            ids = [
+                700,
+                701,
+                501,
+                502,
+                503,
+                processor.tokenizer.convert_tokens_to_ids(tokens.latent_state),
+                processor.tokenizer.convert_tokens_to_ids(tokens.action_start),
+                action_ids[0],
+                processor.tokenizer.convert_tokens_to_ids(tokens.action_end),
+            ]
+            action_logprobs = {
+                token_id: SimpleNamespace(logprob=-math.log(len(action_ids)))
+                for token_id in action_ids
+            }
+            output = SimpleNamespace(
+                token_ids=ids,
+                logprobs=[
+                    {token_id: SimpleNamespace(logprob=-0.2)}
+                    if index < 5
+                    else action_logprobs
+                    if index == 7
+                    else {token_id: SimpleNamespace(logprob=0.0)}
+                    for index, token_id in enumerate(ids)
+                ],
+            )
+            return [
+                SimpleNamespace(outputs=[output], prompt_token_ids=list(range(10)))
+            ]
+
+    monkeypatch.setattr(module, "render_policy_messages", lambda *args, **kwargs: "prompt")
+    monkeypatch.setattr(module, "collect_policy_images", lambda messages: [])
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm",
+        SimpleNamespace(SamplingParams=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+    policy = QwenVLLMAgentPolicy(
+        engine=Engine(),
+        processor=processor,
+        temperature=0.7,
+        top_p=0.95,
+        latent_token_count=1,
+        credit_assignment="turn",
+        max_response_tokens=15,
+        max_state_tokens=16,
+    )
+
+    with pytest.raises(module.PolicyStateTokenBudgetExceeded) as raised:
+        policy.select_action(
+            SimpleNamespace(
+                messages=({"role": "assistant", "content": "<think>"},),
+                bound_messages=lambda: [],
+            )
+        )
+
+    assert raised.value.actual_tokens == 17
+    assert raised.value.max_tokens == 16
+
+
 def test_turn_credit_rejects_forbidden_control_token_in_reasoning(
     monkeypatch,
 ) -> None:
@@ -473,7 +631,8 @@ def test_turn_credit_rejects_forbidden_control_token_in_reasoning(
                                 for index, token_id in enumerate(ids)
                             ],
                         )
-                    ]
+                    ],
+                    prompt_token_ids=[1, 2],
                 )
             ]
 
@@ -561,7 +720,7 @@ def test_turn_credit_records_forced_reasoning_close_as_truncation(monkeypatch) -
                     else {token_id: SimpleNamespace(logprob=0.0)}
                     for index, token_id in enumerate(ids)
                 ],
-            )])]
+            )], prompt_token_ids=[1, 2])]
 
     monkeypatch.setattr(module, "render_policy_messages", lambda *args, **kwargs: "prompt")
     monkeypatch.setattr(module, "collect_policy_images", lambda messages: [])
