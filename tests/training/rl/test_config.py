@@ -429,6 +429,34 @@ def test_formal_h1_16rollout_8gpu_44_changes_only_distributed_layout() -> None:
     assert config8.distributed.total_gpus == 8
 
 
+def test_formal_h1_16rollout_12gpu_6222_changes_only_distributed_layout() -> None:
+    root = Path(__file__).resolve().parents[3]
+    config642 = load_rl_config(
+        root
+        / "configs/training/rl/planner_greedy_h1_full_16rollout_12gpu_642.yaml"
+    )
+    config6222 = load_rl_config(
+        root
+        / "configs/training/rl/planner_greedy_h1_full_16rollout_12gpu_6222.yaml"
+    )
+
+    assert config6222.agent == config642.agent
+    assert config6222.freeze == config642.freeze
+    assert config6222.gradient == config642.gradient
+    assert config6222.actor == config642.actor
+    assert config6222.predictor == config642.predictor
+    assert config6222.value_head == config642.value_head
+    assert config6222.rl == config642.rl
+    assert config6222.rollout == config642.rollout
+    assert config6222.validation == config642.validation
+    assert config6222.training == config642.training
+    assert config6222.distributed.nodes == 4
+    assert config6222.distributed.world_size == 6
+    assert config6222.distributed.gpus_per_rank == 2
+    assert config6222.distributed.rollout_tensor_parallel_size == 4
+    assert config6222.distributed.total_gpus == 12
+
+
 def test_formal_h1_16rollout_24gpu_66642_changes_only_distributed_layout() -> None:
     root = Path(__file__).resolve().parents[3]
     config12 = load_rl_config(
