@@ -46,3 +46,12 @@
   held-out evaluation exists yet, as the first 120-episode evaluation is
   scheduled after iteration 10; per-iteration success above is training-rollout
   success and is not `val_success_rate`.
+- By 23:31:42+08, iterations 3--8 had all completed finite updates. Their
+  train-rollout success counts were respectively 1, 0, 1, 3, 3, and 4 out of
+  16; iteration 8 merged 253 transitions and reported total loss 7.11003.
+  Slurm stderr remained zero bytes and the pipeline error scan found no
+  traceback, CUDA/NCCL/OOM, or non-finite report. Value loss rose from 1.97675
+  at iteration 4 to 9.04934 at iteration 7, then fell to 6.56204 at iteration
+  8; this is a finite but material fluctuation to monitor, not yet evidence of
+  divergence. No held-out evaluation artifact existed yet because iteration 10
+  had not completed.

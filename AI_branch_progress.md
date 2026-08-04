@@ -3634,5 +3634,9 @@
   engine warmup，stderr为空。随后iteration1/2均完成严格16-rollout merge、finite同步更新和
   `train/latest`持久化：iter1为320 transitions、train success 0/16、total loss 2.87047，
   iter2为305 transitions、train success 1/16、total loss 3.62398。22:48:49+08时iteration3
-  两个shard仍在正常rollout，job继续RUNNING且stderr为空。首次held-out 120条eval按合同在
-  iteration10后执行，当前train rollout success不能当作`val_success_rate`。
+  两个shard仍在正常rollout；至23:31:42+08，iteration3--8也均完成finite更新，对应train
+  success依次为1/16、0/16、1/16、3/16、3/16、4/16，iter8为253 transitions、total loss
+  7.11003。stderr仍为0 bytes且pipeline未检出traceback/CUDA/NCCL/OOM/non-finite。Value loss
+  从iter4的1.97675升至iter7的9.04934、iter8回落至6.56204，属于需继续观察的有限波动，
+  暂不能判定发散。首次held-out 120条eval按合同在iteration10后执行，当前train rollout
+  success不能当作`val_success_rate`。
