@@ -3631,5 +3631,8 @@
 - ID125以相同code/objective/SFT2源和新identity重试，corrected parent `ENV_REPO` exact
   preflight通过。job`505944`于22:26:26+08占用normal `dgx-39:8`；两套真实navigation
   prewarm约11.1秒通过，两个TP4/world4组均完成NCCL连接、8个worker权重读取、KV cache和
-  engine warmup，stderr为空。该证据确认model-service健康启动；尚未把episode merge、首次
-  finite optimizer step或checkpoint记录成已完成，继续只读监控。
+  engine warmup，stderr为空。随后iteration1/2均完成严格16-rollout merge、finite同步更新和
+  `train/latest`持久化：iter1为320 transitions、train success 0/16、total loss 2.87047，
+  iter2为305 transitions、train success 1/16、total loss 3.62398。22:48:49+08时iteration3
+  两个shard仍在正常rollout，job继续RUNNING且stderr为空。首次held-out 120条eval按合同在
+  iteration10后执行，当前train rollout success不能当作`val_success_rate`。

@@ -34,6 +34,15 @@
   loaded both safetensor shards on all eight workers in 57--60 seconds, created
   KV caches, and completed engine profile/warmup at 22:31:22+08 without
   CUDA/NCCL/OOM errors.
-- This is verified healthy model-service startup, not yet a completed RL
-  update. At the last readable log boundary, no episode manifest, strict
-  16-rollout merge, optimizer step, or checkpoint had been confirmed.
+- Iterations 1 and 2 subsequently completed strict 16-rollout merges, finite
+  synchronized updates, and durable `train/latest` checkpoints. Iteration 1
+  used 320 transitions with train-rollout success 0/16 and total loss 2.87047;
+  iteration 2 used 305 transitions with train-rollout success 1/16 and total
+  loss 3.62398. The corresponding WM/DINO/value losses were
+  0.10872/0.92707/2.29822 and 0.23518/0.91012/2.93374.
+- At 22:48:49+08, job `505944` remained healthy on `dgx-39:8` with empty Slurm
+  stderr and iteration 3 running in both rollout shards. One early iteration-3
+  episode had succeeded, but the merge and update were not yet complete. No
+  held-out evaluation exists yet, as the first 120-episode evaluation is
+  scheduled after iteration 10; per-iteration success above is training-rollout
+  success and is not `val_success_rate`.
