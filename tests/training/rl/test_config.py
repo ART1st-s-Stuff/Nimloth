@@ -401,6 +401,34 @@ def test_formal_h1_16rollout_12gpu_642_changes_only_distributed_layout() -> None
     assert config12.actor.max_state_tokens == 16384
 
 
+def test_formal_h1_16rollout_8gpu_44_changes_only_distributed_layout() -> None:
+    root = Path(__file__).resolve().parents[3]
+    config12 = load_rl_config(
+        root
+        / "configs/training/rl/planner_greedy_h1_full_16rollout_12gpu_642.yaml"
+    )
+    config8 = load_rl_config(
+        root
+        / "configs/training/rl/planner_greedy_h1_full_16rollout_8gpu_44.yaml"
+    )
+
+    assert config8.agent == config12.agent
+    assert config8.freeze == config12.freeze
+    assert config8.gradient == config12.gradient
+    assert config8.actor == config12.actor
+    assert config8.predictor == config12.predictor
+    assert config8.value_head == config12.value_head
+    assert config8.rl == config12.rl
+    assert config8.rollout == config12.rollout
+    assert config8.validation == config12.validation
+    assert config8.training == config12.training
+    assert config8.distributed.nodes == 2
+    assert config8.distributed.world_size == 4
+    assert config8.distributed.gpus_per_rank == 2
+    assert config8.distributed.rollout_tensor_parallel_size == 4
+    assert config8.distributed.total_gpus == 8
+
+
 def test_formal_h1_16rollout_24gpu_66642_changes_only_distributed_layout() -> None:
     root = Path(__file__).resolve().parents[3]
     config12 = load_rl_config(
