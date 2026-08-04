@@ -3628,3 +3628,8 @@
   submodule，controller再次拼接`external/VAGEN`后在Ray/prewarm/model前exit128。
   formal output未创建且无W&B/rollout/update/checkpoint；ID124不可resume，重试必须新ID并把
   `ENV_REPO`设为包含submodule的Nimloth父worktree。
+- ID125以相同code/objective/SFT2源和新identity重试，corrected parent `ENV_REPO` exact
+  preflight通过。job`505944`于22:26:26+08占用normal `dgx-39:8`；两套真实navigation
+  prewarm约11.1秒通过，两个TP4/world4组均完成NCCL连接、8个worker权重读取、KV cache和
+  engine warmup，stderr为空。该证据确认model-service健康启动；尚未把episode merge、首次
+  finite optimizer step或checkpoint记录成已完成，继续只读监控。
