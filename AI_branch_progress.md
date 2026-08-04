@@ -3622,3 +3622,9 @@
   controller允许空resume的合同冲突，且此前preflight没有执行exact empty-value batch gate。
   没有Ray/env/model/rollout/W&B/optimizer/consumption/checkpoint，正式output目录不存在；
   ID123不可resume，重试必须修复门禁、增加回归并使用新实验ID/空输出/W&B identity。
+- ID124改用当时完整idle的`dgx-39:8`，commit`f272d7d5`新增1x8正式拓扑并修复fresh
+  `INITIAL_RESUME_CHECKPOINT`空值门禁；远端65个回归通过，数据split/W&B/output/checkpoint
+  preflight通过。job`505936`于22:19:53+08拿到8卡，但提交时误把`ENV_REPO`设为VAGEN
+  submodule，controller再次拼接`external/VAGEN`后在Ray/prewarm/model前exit128。
+  formal output未创建且无W&B/rollout/update/checkpoint；ID124不可resume，重试必须新ID并把
+  `ENV_REPO`设为包含submodule的Nimloth父worktree。
