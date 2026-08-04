@@ -3609,3 +3609,10 @@
   2026-08-05 06:13:42+08启动。30分钟至8小时test-only均没有更早backfill窗口。
 - 当前没有ID123 output、W&B、rollout、optimizer step或checkpoint；必须等allocation后
   继续监控到真实4+4映射、两个navigation prewarm、两个TP4 engine和首个finite update。
+- 人类询问是否改为normal物理`6+2+2+2`。commit`a48d6f34`新增纯拓扑配置/batch：
+  一个TP4 worker收集全部16条，训练world6×2卡使用全部12卡；远端exact-commit回归59项
+  exit0。非定向heterogeneous test-only会把6卡和一个2卡component放到同一物理节点，
+  仅分配3台机器，故batch保留4个唯一物理节点硬门禁。定向
+  `dgx-39:6 + dgx-14/23/40:2+2+2`被接受但预计08-05 15:13+08启动，晚于现有4+4
+  job`505716`的06:13且rollout worker减半；因此未提交替代job、未取消elapsed0的505716，
+  等待人类决定是否仍强制切换。

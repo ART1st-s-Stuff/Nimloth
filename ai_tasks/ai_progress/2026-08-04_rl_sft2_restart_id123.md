@@ -111,3 +111,19 @@
 - The old 4+4 job must not be cancelled until the new topology has passed those
   gates and a replacement job is ready to submit. No replacement job, output,
   W&B run, rollout, or optimizer step exists at this checkpoint.
+- Server worktree
+  `/project/peilab/atst/nimloth/.worktree/rl-id123-6222-4db4cedf` is clean at
+  `4db4cedf`; VAGEN and LeWM remain pinned to `192c35a9` and `8edfeb3`.
+  Remote shell/config/Slurm/continuation regression passed 59 test cases with
+  exit 0.
+- An unpinned heterogeneous `6 + 3x2` Slurm test-only request was accepted but
+  scheduled only three physical nodes: Slurm co-located a two-GPU component on
+  the six-GPU node. The four-unique-node batch gate would correctly reject it.
+- A physically exact pinned request using `dgx-39:6` and
+  `dgx-14/23/40:2+2+2` was accepted. Both one-hour and four-hour variants were
+  estimated for 2026-08-05 15:13 Asia/Hong_Kong.
+- The retained 4+4 job `505716` remained pending with elapsed 0 and a materially
+  earlier estimate of 2026-08-05 06:13. It also has two rollout workers instead
+  of one. Therefore no replacement was submitted and `505716` was not
+  cancelled; switching now requires an explicit human choice to accept the
+  later estimate and lower rollout throughput.
