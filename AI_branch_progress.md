@@ -3616,3 +3616,9 @@
   `dgx-39:6 + dgx-14/23/40:2+2+2`被接受但预计08-05 15:13+08启动，晚于现有4+4
   job`505716`的06:13且rollout worker减半；因此未提交替代job、未取消elapsed0的505716，
   等待人类决定是否仍强制切换。
+- 后续状态检查确认`505716`已于20:18:42+08获得真实`dgx-14/23:4+4`、8 GPU/128 CPU，
+  但batch在0秒首个环境门禁因`INITIAL_RESUME_CHECKPOINT: parameter null or not set`退出1。
+  ID123从SFT2 fresh/global step0本应合法传空值；`train_8gpu_44.slurm`的`${...:?}`与full
+  controller允许空resume的合同冲突，且此前preflight没有执行exact empty-value batch gate。
+  没有Ray/env/model/rollout/W&B/optimizer/consumption/checkpoint，正式output目录不存在；
+  ID123不可resume，重试必须修复门禁、增加回归并使用新实验ID/空输出/W&B identity。

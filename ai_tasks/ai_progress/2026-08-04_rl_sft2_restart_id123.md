@@ -127,3 +127,27 @@
   of one. Therefore no replacement was submitted and `505716` was not
   cancelled; switching now requires an explicit human choice to accept the
   later estimate and lower rollout throughput.
+
+## ID123 terminal status
+
+- Job `505716` received a real normal-partition allocation at
+  2026-08-04 20:18:42 Asia/Hong_Kong: `dgx-14:4 + dgx-23:4`, eight GPUs and
+  128 CPUs total. This confirms the queued 4+4 request was eventually
+  schedulable.
+- The batch exited in zero seconds with `FAILED 1:0` at its first shell
+  environment gate:
+  `INITIAL_RESUME_CHECKPOINT: parameter null or not set`.
+- ID123 intentionally set `INITIAL_RESUME_CHECKPOINT` to the empty string
+  because it starts fresh from SFT2 at RL global step 0. The batch entrypoint
+  used `${INITIAL_RESUME_CHECKPOINT:?}`, which incorrectly rejects that valid
+  fresh-initialization value even though `run_vllm_online_ppo_full.sh` supports
+  it. The preflight checked variable presence and controller semantics
+  separately but did not execute this exact empty-value batch gate.
+- Failure phase was allocation -> batch shell gate. Ray, environment, model
+  loading, rollout, W&B, optimizer, consumption, and checkpoint code never
+  started. The formal output directory is absent and there are no metrics or
+  model-quality conclusions.
+- The adjacent final result document records the actual command contract,
+  allocation, error, artifacts, and recovery boundary. ID123 is not resumable;
+  any retry must fix the gate, execute a fresh-init regression, and use a new
+  ID/W&B name/empty output.

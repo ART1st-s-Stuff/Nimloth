@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -24,6 +26,13 @@ EIGHT_GPU_CONFIG = (
     REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_8gpu_44.yaml"
 )
 EIGHT_GPU_BATCH = REPO_ROOT / "experiments/training/rl/train_8gpu_44.slurm"
+ONE_NODE_EIGHT_GPU_CONFIG = (
+    REPO_ROOT
+    / "configs/training/rl/planner_greedy_h1_full_16rollout_8gpu_1x8.yaml"
+)
+ONE_NODE_EIGHT_GPU_BATCH = (
+    REPO_ROOT / "experiments/training/rl/train_8gpu_1x8.slurm"
+)
 HETERO_EIGHT_GPU_CONFIG = (
     REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_8gpu_422.yaml"
 )
@@ -275,6 +284,50 @@ def test_16rollout_8gpu_44_routes_two_tp4_workers_and_four_training_ranks() -> N
     assert '[[ "${#ALLOCATED_NODES[@]}" == 2 ]]' in batch
     assert '[[ "${GPU_COUNTS[${node}]:-}" == 4 ]]' in batch
     assert "export ROLLOUT_WORKERS=2" in batch
+
+
+def test_16rollout_8gpu_1x8_routes_two_tp4_workers_and_four_training_ranks() -> None:
+    config = ONE_NODE_EIGHT_GPU_CONFIG.read_text(encoding="utf-8")
+    batch = ONE_NODE_EIGHT_GPU_BATCH.read_text(encoding="utf-8")
+
+    assert "envs_per_iteration: 16" in config
+    assert "batch_size: 16" in config
+    assert "max_state_tokens: 16384" in config
+    assert "nodes: 1" in config
+    assert "world_size: 4" in config
+    assert "gpus_per_rank: 2" in config
+    assert '[[ "${#ALLOCATED_NODES[@]}" == 1 ]]' in batch
+    assert '[[ "${GPU_COUNTS[${node}]:-}" == 8 ]]' in batch
+    assert "export ROLLOUT_WORKERS=2" in batch
+
+
+def test_formal_batches_allow_empty_fresh_resume_checkpoint() -> None:
+    batches = []
+    for batch_path in sorted(
+        (REPO_ROOT / "experiments/training/rl").glob("*.slurm")
+    ):
+        if "INITIAL_RESUME_CHECKPOINT" in batch_path.read_text(encoding="utf-8"):
+            batches.append(batch_path)
+
+    assert batches
+    for batch_path in batches:
+        batch = batch_path.read_text(encoding="utf-8")
+        assert ': "${INITIAL_RESUME_CHECKPOINT?}"' in batch, batch_path.name
+        assert ': "${INITIAL_RESUME_CHECKPOINT:?}"' not in batch, batch_path.name
+
+        gate = batch.split("export SLURM_CONF", maxsplit=1)[0]
+        required_names = re.findall(r'^: "\$\{([A-Z0-9_]+)[^}]*\}"$', gate, re.MULTILINE)
+        environment = os.environ.copy()
+        environment.update({name: "set" for name in required_names})
+        environment["INITIAL_RESUME_CHECKPOINT"] = ""
+        result = subprocess.run(
+            ["bash"],
+            input=gate,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (batch_path.name, result.stderr)
 
 
 def test_22gpu_8662_routes_four_tp4_workers_and_eleven_training_ranks() -> None:
