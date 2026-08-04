@@ -3581,7 +3581,8 @@
 - ID122 artifact measurement found completed iteration 11 max state 6,765
   tokens; failed episode states reached 16,677 at step14, 18,134 at step15, and
   23,227 at step19. Formal 16-rollout configs therefore set
-  `actor.max_state_tokens=16384`, 9.7% below the first observed OOM state.
+  `actor.max_state_tokens=16384`, 9.7% below the first observed OOM state; all
+  formal H=1 two-GPU/rank topology configs carry the same cap.
 - Rollout truncates before an over-budget action and training independently
   rejects processor-built `input_ids` over the same cap before Qwen forward.
   Static compile, shell syntax, and diff checks pass; focused remote tests are

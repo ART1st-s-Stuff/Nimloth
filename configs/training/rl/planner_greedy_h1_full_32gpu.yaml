@@ -23,6 +23,7 @@ actor:
   clip_ratio: 0.2
   credit_assignment: action
   max_response_tokens: 512
+  max_state_tokens: 16384
   reference_kl_loss_weight: 0.0
 
 predictor:

@@ -56,6 +56,9 @@ class _Tokenizer:
             elif values[index] == 503:
                 pieces.append(">")
                 index += 1
+            elif values[index] in self.all_special_ids:
+                pieces.append(f"<special_{values[index]}>")
+                index += 1
             else:
                 pieces.append(reverse[values[index]])
                 index += 1
