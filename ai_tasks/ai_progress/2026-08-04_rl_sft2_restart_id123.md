@@ -62,6 +62,28 @@
   partition had 12 free GPUs, but at most three on any one node, so the 4+4
   request cannot start immediately and must queue until two nodes each expose
   four GPUs.
-- No ID123 output, W&B run, rollout, optimizer step, checkpoint, or Slurm job
-  has been created yet. Remote exact-commit regression and the final launch
-  preflight remain required before submission.
+- Server runtime is fixed at clean commit
+  `dfa8323ba5fe8a65511c65023828f583f47aedd9` in
+  `/project/peilab/atst/nimloth/.worktree/rl-id123-dfa8323b`; VAGEN is
+  `192c35a9` and LeWM is `8edfeb3`.
+- Remote shell syntax and config/Slurm/continuation regression passed 58 test
+  cases with exit 0. Exact config, dataset-count, W&B-name, clean-worktree,
+  empty-output, and checkpoint preflight all passed.
+- The adjacent immutable launch contract has SHA256
+  `4f1cda32aedfd4242a7fb0a48fe2837ff12f6dab188d37914b29ca1591eeb1f9`.
+- Formal normal-partition job `505716` was submitted with two nodes, four GPUs
+  per node, 64 CPUs and 48 GiB per node, eight-hour limit, and exclusions
+  `dgx-32,dgx-37,dgx-51`. `scontrol` reports
+  `ReqTRES=cpu=128,mem=96G,node=2,gres/gpu=8`,
+  `TresPerNode=gres:gpu:4`, and no allocation yet.
+- At 2026-08-04 19:04 Asia/Hong_Kong, job `505716` was
+  `PENDING(Priority)`, elapsed 0, with a scheduler start estimate of
+  2026-08-05 06:13:42. The normal partition had 22 free GPUs, including six
+  on `dgx-14` and seven on `dgx-39`, but fair-share priority prevented
+  allocation. There was no active reservation.
+- Slurm `--test-only` for 30 minutes, one hour, two hours, four hours, and eight
+  hours did not expose an earlier backfill window, so the submitted eight-hour
+  job was retained. No alternate or duplicate job was created.
+- ID123 currently has no output directory, W&B run, rollout, optimizer step,
+  checkpoint, or health evidence. The next required evidence is allocation,
+  exact 4+4 mapping, two navigation prewarms, and two TP4 engine startups.

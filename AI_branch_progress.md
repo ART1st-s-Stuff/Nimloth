@@ -3589,3 +3589,23 @@
   Agent/Qwen/rollout are 106/106, and RL is 173/173 split by file/case. A real
   ID122 tokenizer/vLLM-adapter probe decoded the merged close and forced query
   token 151665. No GPU job or RL restart has occurred.
+
+## 2026-08-04: ID123从corrected SFT2 epoch1提交normal 4+4 RL
+
+- 人类明确要求从corrected SFT2 checkpoint重新开始RL，并确认使用normal分区物理
+  `4+4`、共8张H800；不得加载ID119/122的RL optimizer、rollout或consumption。
+- commit`6b3cc921`新增与12卡正式目标完全相同的16-rollout 8卡配置，只把布局改为
+  两节点、world4、每rank两卡、两个TP4 worker；runtime固定为clean commit
+  `dfa8323b`。远端shell syntax及配置/Slurm/continuation回归58项exit0，exact config、
+  四个VAGEN资产计数、W&B唯一性、空输出、checkpoint和objective门禁全部通过。
+- 初始化checkpoint为ID74完整`train_ws16/epoch_001`：SFT2 step776、epoch1 complete、
+  H=1/T=4、DINO0.5、ValueHead objective `decision_state_executed_action_mc_v3`。
+  RL从global step0 fresh开始；训练Qwen language、WM predictor和ValueHead，冻结vision、
+  StateProjector、DINO teacher与latent query；每轮16条、每10轮held-out 120条eval，
+  decoded `</think>`注入及16,384 state-token hard cap已启用。
+- formal job`505716`请求normal两节点各4 GPU、各64 CPU/48 GiB、8小时，排除
+  `dgx-32,dgx-37,dgx-51`。`scontrol`确认ReqTRES为8 GPU/128 CPU/96 GiB且
+  TresPerNode为gpu:4；当前纯`PENDING(Priority)`、Elapsed0、无AllocTRES，预计
+  2026-08-05 06:13:42+08启动。30分钟至8小时test-only均没有更早backfill窗口。
+- 当前没有ID123 output、W&B、rollout、optimizer step或checkpoint；必须等allocation后
+  继续监控到真实4+4映射、两个navigation prewarm、两个TP4 engine和首个finite update。
