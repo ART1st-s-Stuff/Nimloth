@@ -87,3 +87,27 @@
 - ID123 currently has no output directory, W&B run, rollout, optimizer step,
   checkpoint, or health evidence. The next required evidence is allocation,
   exact 4+4 mapping, two navigation prewarms, and two TP4 engine startups.
+
+## Proposed normal 6+2+2+2 replacement
+
+- At 2026-08-04 19:18 Asia/Hong_Kong, human requested replacing the pending
+  physical 4+4 layout with normal-partition 6+2+2+2. Existing job `505716`
+  remained `PENDING`, elapsed 0, with no allocation or experiment artifacts.
+- The live normal snapshot had a compatible shape: seven free GPUs on
+  `dgx-39`, plus at least three other nodes with two or more free GPUs.
+- Commit `a48d6f34` adds
+  `planner_greedy_h1_full_16rollout_12gpu_6222.yaml` and
+  `train_12gpu_6222.slurm`. It changes only the distributed/resource layout:
+  four physical nodes, world size 6, two GPUs per training rank, and one TP4
+  rollout worker on the six-GPU node. All 12 GPUs participate in training.
+- The one rollout worker collects all 16 episodes sequentially, so rollout and
+  held-out evaluation are expected to be slower than the two-worker 4+4 or
+  6+4+2 layouts. The optimizer objective, initialization, splits, 60-iteration
+  schedule, eval10x120 contract, and token safety limits are unchanged.
+- The batch hard-gates one six-GPU node, three two-GPU nodes, four unique
+  physical nodes, clean exact commit, `NIMLOTH_HET_GPUS_PER_NODE=6,2`, and
+  `ROLLOUT_WORKERS=1`. Local shell syntax, Python test compile, and diff checks
+  passed. Remote exact-commit tests and Slurm `--test-only` remain required.
+- The old 4+4 job must not be cancelled until the new topology has passed those
+  gates and a replacement job is ready to submit. No replacement job, output,
+  W&B run, rollout, or optimizer step exists at this checkpoint.
