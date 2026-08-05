@@ -74,8 +74,10 @@
   resolves its pinned `external/VAGEN` exactly once.
 - Slurm: account `peilab`, partition `normal`, one node, eight GPUs, 128 CPUs,
   96 GiB RAM, eight-hour walltime. Maximum cost for one allocation is 64
-  GPU-hours. The job is not pinned to a particular node and must not count
-  `DOWN+NOT_RESPONDING` nodes as available capacity.
+  GPU-hours. The job is not pinned to a particular node; it excludes
+  `dgx-32,dgx-37,dgx-51` according to the established navigation-node health and
+  scheduling gate, and must not count `DOWN+NOT_RESPONDING` nodes as available
+  capacity.
 - A single allocation may not finish all 60 iterations. Any continuation must
   use the latest crash-consistent committed checkpoint, a new Slurm job, and the
   same formal run identity; it must not replay an already consumed rollout.

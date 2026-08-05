@@ -3787,7 +3787,8 @@
 - 每10轮运行完整held-out 120条（`base`/`common_sense`各60）；训练rollout
   success不能替代`val_success_rate`。训练Qwen language body、WM predictor和
   ValueHead，冻结vision/StateProjector/`lm_head`/DINO teacher。
-- 资源合同为`normal` 1 node/8 H800/128 CPU/96 GiB/8 hours，最多64 GPU-hours；
+- 资源合同为`normal` 1 node/8 H800/128 CPU/96 GiB/8 hours，最多64 GPU-hours，
+  沿用navigation节点门禁排除`dgx-32,dgx-37,dgx-51`；
   四个2-GPU训练rank与两个TP4 rollout worker共用整节点。实时资源检查没有健康的
   整节点8卡空闲，因此预期先进入pending。正式identity、输出、W&B和所有启动门禁见
   `ai_tasks/ai_progress/2026-08-05_ppo_value_critic_full_id132.md`。
