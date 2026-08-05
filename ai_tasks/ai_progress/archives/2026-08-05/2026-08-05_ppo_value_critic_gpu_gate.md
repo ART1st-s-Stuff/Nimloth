@@ -2,8 +2,10 @@
 
 ## Status
 
-- Human confirmed the exact resource contract. ID126 was submitted and failed
-  before backward; a corrected retry must use a new output identity.
+- Complete. Human confirmed the exact resource contract; failures ID126--129
+  were preserved under unique output identities, ID130 passed the dynamic-graph
+  fix, and final production candidate ID131 passed without the unnecessary
+  unused-parameter traversal.
 - PPO critic implementation commit: `46be9368`.
 - GPU gate harness commit: `64726911`.
 - ID126 submitted commit: `5d02fb1e`.
@@ -181,3 +183,27 @@ actual full-prefix Qwen -> StateProjector -> ValueHead graph requested by the us
   The final production form can retain `static_graph=False` and set
   `find_unused_parameters=False` to remove needless per-epoch graph traversal,
   followed by the same GPU assertions.
+
+## ID131 final status
+
+- Runtime commit `88e533ad` used planner Backbone
+  `DDP(find_unused_parameters=False, static_graph=False)` while preserving the
+  direct-Qwen actor's raw-model static DDP boundary. Remote focused CPU
+  regression passed again: 3 distributed-boundary tests plus 88
+  PPO/loop/config/checkpoint tests.
+- Slurm Job `506868` ran on `preempt/dgx-16:4` from
+  `2026-08-05T19:30:36+08:00` to `19:31:20+08:00` and completed `0:0` in 44
+  seconds. It emitted no unused-parameter traversal warning.
+- The single-GPU phase reproduced Qwen/ValueHead gradient maxima
+  `0.0107421875` and `0.651180624961853`. The two-rank/two-GPU-per-rank phase
+  completed all four PPO epochs and four AdamW steps. Qwen and ValueHead gradient
+  replica differences and post-step parameter replica differences were all
+  exactly zero. Qwen gradient max was `0.007781982421875`; ValueHead gradient max
+  was `0.3230861723423004`; ValueHead parameter delta was
+  `0.00026123039424419403`; clip fraction was 0.5 on epochs 2--4.
+- The Qwen final-norm BF16 witness parameter delta remained zero at LR `1e-6`.
+  The nonzero exactly synchronized gradient proves critic-to-language-body
+  backward connectivity, not a measurable update for every Qwen parameter.
+- W&B was disabled; no new rollout or checkpoint was written. Result hashes and
+  the mechanics-only evidence boundary are recorded in the ID131 output README.
+  This gate provides no held-out or policy-quality conclusion.

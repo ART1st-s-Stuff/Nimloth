@@ -3760,3 +3760,20 @@
 - PyTorch运行期确认所有`requires_grad`的Qwen参数都已使用，`lm_head`实际
   冻结。生产收敛为`find_unused_parameters=False, static_graph=False`可去掉每轮多余
   遍历；保留全部GPU replica assertion后用同合同做最后门禁。
+
+## 2026-08-05：ID131最终planner PPO ValueHead生产候选通过
+
+- 最终运行commit`88e533ad`使用planner Backbone
+  `DDP(find_unused_parameters=False, static_graph=False)`，direct-Qwen actor继续使用
+  返回logits的HF-model static DDP。远程CPU定向回归再次`3 + 88 passed`。
+- ID131 Job`506868`在`preempt/dgx-16:4`运行44秒并`COMPLETED 0:0`。
+  单卡阶段Qwen/ValueHead梯度分别为`0.0107421875`/`0.651180625`；
+  2-rank×2-GPU阶段完成全4轮PPO/4次AdamW，Qwen/ValueHead梯度replica差和
+  step后参数replica差全部为`0.0`，ValueHead delta为`2.6123039e-4`，
+  epoch2--4 clip fraction为`0.5`。
+- 最终无unused-parameter traversal警告，无手工gradient averaging。Qwen
+  final-norm BF16 witness参数delta仍为0，但非零梯度`0.0077819824`已跨rank
+  精确同步。这是critic-to-language-body backward与ValueHead optimizer/clipping机制证据；
+  不是每个Qwen参数可测更新、长程稳定性、policy quality或held-out success证据。
+- W&B禁用，没有新rollout或checkpoint。最终输出说明和result SHA256位于
+  ID131输出README；本PPO ValueHead实现与GPU mechanics gate阶段完成。

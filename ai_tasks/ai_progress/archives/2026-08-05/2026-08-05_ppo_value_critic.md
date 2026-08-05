@@ -95,3 +95,8 @@
   变化，但非零梯度`0.00778198`已跨rank精确同步。运行期同时确认没有
   未使用的trainable Qwen参数，因此最终生产设置收敛为
   `find_unused_parameters=False, static_graph=False`并保留同一GPU梯度门禁。
+- 最终commit`88e533ad`的ID131 Job`506868`已完成：CPU定向`3 + 88 passed`，
+  真实4-H800单卡梯度及2-rank×2-GPU四轮PPO/AdamW全通过，Qwen/ValueHead
+  梯度和参数replica差全为0，且没有unused traversal警告。本阶段完成；
+  证据边界仍为PPO ValueHead机制与分布式同步，不包含新rollout/checkpoint、
+  held-out或policy-quality结论。
