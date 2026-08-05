@@ -3792,3 +3792,8 @@
   四个2-GPU训练rank与两个TP4 rollout worker共用整节点。实时资源检查没有健康的
   整节点8卡空闲，因此预期先进入pending。正式identity、输出、W&B和所有启动门禁见
   `ai_tasks/ai_progress/2026-08-05_ppo_value_critic_full_id132.md`。
+- exact runtime commit `6acd0d7c`的远端99项回归、iteration-1 dry preflight、SFT2
+  完整性、VAGEN `192c35a9`资产计数/scene split、空output及W&B唯一性均通过。
+  Job `506953`已正式提交；`scontrol`确认单节点8卡、128 CPU、96 GiB、8小时和节点
+  排除合同。20:44+08时为`PENDING(Resources)`、elapsed0，预计22:05:37+08但尚无
+  allocation；output/progress/W&B仍不存在，当前没有rollout、update或质量证据。

@@ -2,12 +2,18 @@
 
 ## Status
 
-- Approved for submission by the human. The requested resource is one physical
-  eight-H800 node in the `normal` partition. Live resource inspection found no
-  healthy fully idle normal node, so the expected initial Slurm state is pending.
-- This document is the immutable pre-submission contract. The exact runtime
-  commit is the commit containing this contract and is supplied to the batch as
-  `EXPECTED_COMMIT`; the batch records and enforces it before creating the run.
+- Submitted as Slurm Job `506953`. At `2026-08-05T20:44:00+08:00` it was
+  `PENDING(Resources)`, elapsed `0:00`, with scheduler estimate
+  `2026-08-05T22:05:37+08:00`. This is a scheduling estimate, not an allocation.
+- Exact submitted runtime commit:
+  `6acd0d7cd804e71682079c964ad4818f2d25cbd7`. The batch receives this as
+  `EXPECTED_COMMIT` and enforces it before creating the formal run.
+- `scontrol` confirms `ReqTRES=cpu=128,mem=96G,node=1,gres/gpu=8`,
+  `TresPerNode=gres:gpu:8`, eight-hour limit, and exclusions
+  `dgx-[32,37,51]`. There is no allocation yet.
+- The formal output, adjacent iteration-progress log, and W&B ID132 run were all
+  absent after submission. No rollout, optimizer step, checkpoint, metric, or
+  GPU runtime evidence exists while the job remains pending.
 
 ## Scientific purpose and evidence boundary
 
@@ -92,3 +98,22 @@
 - After submission, record Slurm job ID/state/reason. If allocated, require both
   AI2-THOR prewarms, both TP4 vLLM groups, the first strict 16-rollout merge, and
   the first finite synchronized PPO update before describing runtime health.
+
+## Completed launch validation
+
+- Live normal resources had no healthy fully idle eight-GPU node; `dgx-35` was
+  `DOWN+NOT_RESPONDING` and was not counted. W&B credentials resolved the live
+  entity and found zero existing ID132 names.
+- Runtime worktree was clean at the submitted commit. VAGEN was initialized at
+  exact gitlink `192c35a91f3941b72d5e1272af6603ef7a7d93e0`; LeWM matched
+  `8edfeb336732b5f3ce7b8b210d0ba370a09e2cac`.
+- Server Python targeted regression passed 99 tests. Shell syntax and config
+  parsing passed. Iteration-1 dry preflight reported 16 episodes, 20 steps,
+  one node, world size four, two GPUs per rank, eight total GPUs, and TP4.
+- Actual assets contain 1,200 tasks each for `base_train` and
+  `common_sense_train`, 60 each for held-out `base` and `common_sense`, and zero
+  train/eval scene overlap. Required SFT2 files are non-empty and the root has no
+  `rl_state.pt`, confirming fresh RL initialization.
+- `sbatch --test-only` accepted the exact resource and environment contract.
+  Formal submission then created Job `506953`; only the batch-owned controller
+  owns the future experiment lifecycle.
