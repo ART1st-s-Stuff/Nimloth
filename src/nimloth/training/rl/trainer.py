@@ -304,11 +304,11 @@ def _wrap_model_parallel_backbone_ddp(
             backbone,
             device_ids=None,
             output_device=None,
-            # PyTorch 2.8 static_graph calls prepare_for_backward([]) and relies
-            # on its first-iteration sink.  Qwen critic forwards intentionally
-            # leave lm_head unused and return a hook-derived hidden tensor, so
-            # force the reducer to traverse that returned graph every epoch.
-            find_unused_parameters=True,
+            # PyTorch 2.8 static_graph relies on its first-iteration sink, which
+            # did not synchronize this hook-derived hidden graph. All trainable
+            # Qwen language parameters participate in the critic forward (the
+            # unused lm_head is frozen), so dynamic DDP needs no unused traversal.
+            find_unused_parameters=False,
             static_graph=False,
         )
     )

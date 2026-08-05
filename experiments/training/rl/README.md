@@ -73,9 +73,9 @@ planner Backbone forward边界的官方`DistributedDataParallel(device_ids=None)
 同步各rank梯度。DDP forward直接返回critic消费的
 `BackboneOutput.hidden`；
 不能只包住HF Qwen后在外层消费forward-hook hidden，否则reducer无法可靠
-跟踪该反向图。planner Backbone DDP使用`find_unused_parameters=True`和
-`static_graph=False`，令PyTorch 2.8每轮显式从hidden返回值跟踪语言模型图并
-识别critic未使用的`lm_head`。direct-Qwen actor路径的loss直接消费model logits，因此
+跟踪该反向图。planner Backbone DDP使用`static_graph=False`；其所有
+`requires_grad`的Qwen language参数都参与critic forward，未使用的`lm_head`已冻结，
+因此`find_unused_parameters=False`以避免每轮多余图遍历。direct-Qwen actor路径的loss直接消费model logits，因此
 仍保留包住HF model的DDP边界。两条路径都没有手工gradient averaging。
 后者要求每个节点分配的 GPU 数能被 2 整除，不支持跨节点拼接一个模型副本。
 下一个 optimizer step 必须从新 checkpoint 重新 rollout。均匀两节点四卡也统一使用

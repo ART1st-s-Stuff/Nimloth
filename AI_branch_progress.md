@@ -3739,3 +3739,24 @@
   Qwen critic又有预期不使用的`lm_head`。下一步将planner Backbone限定为
   `find_unused_parameters=True, static_graph=False`，保留direct actor旧设置和GPU梯度
   replica assertion。
+
+## 2026-08-05：ID130完成真实4-H800 PPO ValueHead同步门禁
+
+- commit`26377d40`将planner Backbone DDP改为
+  `find_unused_parameters=True, static_graph=False`；远程直接分布式包装用例
+  3 passed，PPO/loop/config/checkpoint定向套件88 passed。
+- ID130 Job`506862`在`preempt/dgx-16:4`运行41秒并`COMPLETED 0:0`。
+  单卡真实`lookup`transition再次得到Qwen梯度`0.0107421875`和ValueHead
+  梯度`0.651180625`，`lm_head`/冻结StateProjector/vision无参数梯度。
+- 2-rank×2-GPU阶段分别消费真实`base_train lookup`和
+  `common_sense_train moveahead` transition，完成全4个PPO critic epoch和4次AdamW
+  step。Qwen/ValueHead梯度replica最大差和step后参数replica最大差均为
+  `0.0`；ValueHead参数变化`0.00026123039424419403`，epoch2--4 clip
+  fraction为`0.5`，证明frozen-old clipping在更新后实际生效。
+- Qwen final-norm witness的BF16参数变化为`0.0`；在LR`1e-6`下该近1
+  权重没有可表示增量。其非零梯度`0.007781982421875`且跨rank精确
+  同步，足以证明critic-to-Qwen backward，但本门禁不宣称每个Qwen参数都
+  发生可测更新，也不是质量或held-out证据。
+- PyTorch运行期确认所有`requires_grad`的Qwen参数都已使用，`lm_head`实际
+  冻结。生产收敛为`find_unused_parameters=False, static_graph=False`可去掉每轮多余
+  遍历；保留全部GPU replica assertion后用同合同做最后门禁。

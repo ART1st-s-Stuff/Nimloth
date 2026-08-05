@@ -88,3 +88,10 @@
   `find_unused_parameters=True, static_graph=False`以显式跟踪hidden与unused
   `lm_head`，direct actor保留原静态logits DDP。ID129在optimizer前失败，无
   checkpoint且不可resume。
+- ID130 Job`506862`在dynamic Backbone DDP下完成单卡真实backward和
+  2-rank×2-GPU全4个PPO epoch/4次AdamW step；Qwen/ValueHead梯度与参数
+  replica最大差均为0，ValueHead delta为`2.6123e-4`，epoch2--4 clip
+  fraction为0.5。Qwen final-norm BF16 witness因LR`1e-6`未发生可表示参数
+  变化，但非零梯度`0.00778198`已跨rank精确同步。运行期同时确认没有
+  未使用的trainable Qwen参数，因此最终生产设置收敛为
+  `find_unused_parameters=False, static_graph=False`并保留同一GPU梯度门禁。

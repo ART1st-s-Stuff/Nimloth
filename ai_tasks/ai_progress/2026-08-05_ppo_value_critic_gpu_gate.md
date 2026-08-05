@@ -155,3 +155,29 @@ actual full-prefix Qwen -> StateProjector -> ValueHead graph requested by the us
   DDP, so each epoch explicitly traverses `BackboneOutput.hidden`. Direct actor
   logits DDP retains its existing static settings. The GPU replica assertion is
   unchanged.
+
+## ID130 end status
+
+- Commit `26377d40` used dynamic planner Backbone DDP and passed expanded remote
+  CPU regression: 3 distributed-boundary tests plus 88 PPO/loop/config/checkpoint
+  tests.
+- Slurm Job `506862` ran on `preempt/dgx-16:4` from
+  `2026-08-05T19:24:58+08:00` to `19:25:39+08:00` and completed `0:0` in 41
+  seconds. The single-GPU phase reproduced the real `lookup` transition gradient
+  evidence.
+- The production phase used real `base_train/lookup` and
+  `common_sense_train/moveahead` transitions, completed all four PPO critic
+  epochs and four AdamW steps, and reported exactly zero maximum replica
+  difference for Qwen/ValueHead gradients and post-step parameter witnesses.
+  Qwen gradient max was `0.007781982421875`; ValueHead gradient max was
+  `0.3230861723423004`; ValueHead parameter delta was
+  `0.00026123039424419403`. Clip fraction was 0.0 on epoch 1 and 0.5 on epochs
+  2--4, so clipping became active after the first update.
+- The BF16 Qwen final-norm witness parameter delta was 0.0 at LR `1e-6`; that
+  near-one tensor had no representable update. Its nonzero exactly synchronized
+  gradient proves backward connectivity, but the gate does not claim every Qwen
+  parameter moved measurably.
+- Runtime warned that no trainable Qwen parameter was unused; `lm_head` is frozen.
+  The final production form can retain `static_graph=False` and set
+  `find_unused_parameters=False` to remove needless per-epoch graph traversal,
+  followed by the same GPU assertions.

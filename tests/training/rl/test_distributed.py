@@ -101,7 +101,7 @@ def test_pair_parallel_wraps_actual_parameter_modules(monkeypatch) -> None:
     assert distributed_backbone.module is backbone
     assert distributed_backbone.kwargs["device_ids"] is None
     assert distributed_backbone.kwargs["output_device"] is None
-    assert distributed_backbone.kwargs["find_unused_parameters"] is True
+    assert distributed_backbone.kwargs["find_unused_parameters"] is False
     assert distributed_backbone.kwargs["static_graph"] is False
     assert wrapped.model is model
     assert wrapped.backbone.synchronized_modules == (distributed_backbone,)
