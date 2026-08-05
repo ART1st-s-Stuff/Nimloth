@@ -55,3 +55,23 @@
   8; this is a finite but material fluctuation to monitor, not yet evidence of
   divergence. No held-out evaluation artifact existed yet because iteration 10
   had not completed.
+
+## ID125 stop, evaluation, and recovery boundary
+
+- Iterations 9--13 also completed committed finite updates. The iteration-10
+  held-out evaluation is `ALL_OK` on the full 120-episode contract: 31/120
+  overall success (25.8333%), with base 16/60 (26.6667%) and common_sense 15/60
+  (25.0%); average reward was -0.464417 and average steps 16.8917.
+- Job `505944` ended `FAILED (NonZeroExitCode, 1:0)` at 00:44:01+08 after
+  2:17:35. Iteration 14 had started both environment services and the two TP4
+  vLLM engine initializations, but stopped before model-shard loading completed
+  and before any episode, merge, consumption, or update. Slurm stderr is empty,
+  and the pipeline/shard logs contain no traceback, CUDA/NCCL error, OOM, or
+  non-finite report; the underlying cause remains undiagnosed.
+- The run is crash-consistently resumable. Iteration 13 consumption is committed
+  and points to `train/policy_inputs/iter_0014`; mmap inspection of its
+  `rl_state.pt` confirms iteration/global step 13 and objective
+  `receding_horizon_decision_state_mc_v2`. Iteration 14 has no consumption
+  record, so the same controller should archive its partial attempt and retry
+  iteration 14 from that snapshot. Periodic `train/iter_0010` would discard
+  updates 11--13 and is not the correct latest recovery point.

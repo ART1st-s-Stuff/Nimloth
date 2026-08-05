@@ -3640,3 +3640,12 @@
   从iter4的1.97675升至iter7的9.04934、iter8回落至6.56204，属于需继续观察的有限波动，
   暂不能判定发散。首次held-out 120条eval按合同在iteration10后执行，当前train rollout
   success不能当作`val_success_rate`。
+- ID125随后完成iteration9--13和iteration10的完整held-out 120条eval：overall 31/120
+  (25.8333%)，base 16/60 (26.6667%)，common_sense 15/60 (25.0%)，avg reward
+  -0.464417，avg steps 16.8917。job`505944`于00:44:01+08在iteration14启动阶段以
+  `FAILED/exit1`结束；两个env service已启动且两个TP4 vLLM engine开始初始化，但尚未完成
+  model shard load，也没有episode/merge/consumption/update。stderr为空，pipeline/shard无
+  traceback、CUDA/NCCL/OOM或non-finite证据，根因仍未诊断。iter13 consumption已committed并
+  指向`train/policy_inputs/iter_0014`；其`rl_state.pt`确认global step13和objective
+  `receding_horizon_decision_state_mc_v2`，iter14无consumption，因此同一controller可安全归档
+  partial attempt并从iter13重跑iter14；不能退回会丢失11--13更新的周期checkpoint iter10。
