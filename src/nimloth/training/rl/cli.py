@@ -195,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             eval_sets=train_datasets,
             split="train",
             agent_config=config.agent,
+            max_episode_attempts=config.rollout.max_episode_attempts,
         )
         eval_collector = None
         if config.validation.enabled:
@@ -211,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
                 eval_sets=config.rollout.eval_datasets,
                 split="eval",
                 agent_config=config.agent,
+                max_episode_attempts=config.rollout.max_episode_attempts,
             )
         if is_main():
             print(json.dumps({"rollout_mode": "env", "env_url": args.env_url,

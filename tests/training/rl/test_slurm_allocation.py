@@ -299,6 +299,12 @@ def test_16rollout_8gpu_1x8_routes_two_tp4_workers_and_four_training_ranks() -> 
     assert '[[ "${#ALLOCATED_NODES[@]}" == 1 ]]' in batch
     assert '[[ "${GPU_COUNTS[${node}]:-}" == 8 ]]' in batch
     assert "export ROLLOUT_WORKERS=2" in batch
+    assert "run_vllm_online_ppo_parallel_slurm.sh" in batch
+    assert "requires the two-TP4 parallel runner" in batch
+    assert "max_episode_attempts: 3" in config
+    assert '--max-episode-attempts "${MAX_EPISODE_ATTEMPTS}"' in (
+        SHARD_RUNNER.read_text(encoding="utf-8")
+    )
 
 
 def test_formal_batches_allow_empty_fresh_resume_checkpoint() -> None:

@@ -37,7 +37,7 @@ esac
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE ACTOR_ENABLED CREDIT_ASSIGNMENT MAX_RESPONSE_TOKENS MAX_STATE_TOKENS REFERENCE_KL_WEIGHT CONFIG_ITERATIONS CONFIG_NUM_EPISODES CONFIG_MAX_STEPS ROLLOUT_TEMPERATURE ROLLOUT_TOP_P PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE TRAIN_DATASETS_CSV < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE ACTOR_ENABLED CREDIT_ASSIGNMENT MAX_RESPONSE_TOKENS MAX_STATE_TOKENS REFERENCE_KL_WEIGHT CONFIG_ITERATIONS CONFIG_NUM_EPISODES CONFIG_MAX_STEPS MAX_EPISODE_ATTEMPTS ROLLOUT_TEMPERATURE ROLLOUT_TOP_P PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE TRAIN_DATASETS_CSV < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -57,6 +57,7 @@ print(
     config.rl.iterations,
     config.rl.envs_per_iteration,
     config.rl.max_steps_per_episode,
+    config.rollout.max_episode_attempts,
     config.rollout.temperature,
     config.rollout.top_p,
     str(config.agent.planning.enabled).lower(),
@@ -414,6 +415,7 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
     --fresh-manifest "${MANIFEST}" \
     --num-episodes "${NUM_EPISODES}" \
     --max-steps "${MAX_STEPS}" \
+    --max-episode-attempts "${MAX_EPISODE_ATTEMPTS}" \
     --eval-sets "${TRAIN_DATASETS[@]}" --split train --seed-offset "${SEED_OFFSET}" \
     --temperature "${ROLLOUT_TEMPERATURE}" --top-p "${ROLLOUT_TOP_P}" \
     --credit-assignment "${CREDIT_ASSIGNMENT}" \

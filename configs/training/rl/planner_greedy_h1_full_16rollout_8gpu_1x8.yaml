@@ -62,6 +62,7 @@ rollout:
     - common_sense
   temperature: 0.7
   top_p: 0.95
+  max_episode_attempts: 3
 
 validation:
   enabled: false

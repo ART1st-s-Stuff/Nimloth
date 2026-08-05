@@ -43,6 +43,7 @@ class VAGENNavigationRolloutCollector:
         latent_token_count: int = 1,
         seed_per_eval_set: bool = False,
         navigation_profile: str = "current",
+        max_episode_attempts: int = 1,
     ) -> None:
         if not eval_sets:
             raise ValueError("rollout collector requires at least one eval_set")
@@ -51,6 +52,8 @@ class VAGENNavigationRolloutCollector:
                 "training rollout requires *_train datasets; "
                 f"got eval_sets={eval_sets}"
             )
+        if max_episode_attempts < 1:
+            raise ValueError("max_episode_attempts must be positive")
         self._env_url = env_url.rstrip("/")
         self._episode_counter = seed_offset
         self._seed_per_eval_set = bool(seed_per_eval_set)
@@ -66,6 +69,7 @@ class VAGENNavigationRolloutCollector:
         self._policy = policy
         self._latent_token_count = int(latent_token_count)
         self._navigation_profile = navigation_profile
+        self._max_episode_attempts = int(max_episode_attempts)
 
     def _next_episode_identity(self, episode_index: int) -> tuple[str, str, int]:
         eval_set = self._eval_sets[episode_index % len(self._eval_sets)]
@@ -106,6 +110,7 @@ class VAGENNavigationRolloutCollector:
         *,
         num_episodes: int,
         max_steps_per_episode: int = 20,
+        max_episode_attempts: int | None = None,
         output_dir: Path | None = None,
         resume_existing: bool = False,
     ) -> list[RolloutTrajectory]:
@@ -113,6 +118,13 @@ class VAGENNavigationRolloutCollector:
             raise RuntimeError("rollout collector has no bound Agent")
         if num_episodes < 0:
             raise ValueError("num_episodes must be non-negative")
+        episode_attempts = (
+            self._max_episode_attempts
+            if max_episode_attempts is None
+            else int(max_episode_attempts)
+        )
+        if episode_attempts < 1:
+            raise ValueError("max_episode_attempts must be positive")
 
         target_dir = output_dir or Path(".")
         image_dir = target_dir / "images"
@@ -137,71 +149,93 @@ class VAGENNavigationRolloutCollector:
         for episode_index in range(len(trajectories), num_episodes):
             episode_id, eval_set, seed = self._next_episode_identity(episode_index)
             started_at = time.monotonic()
-            self._log(rl_ep=episode_index, id=episode_id, eval_set=eval_set)
-
-            runtime = AgentRuntime(
-                policy=self._policy,
-                action_space=NAVIGATION_ACTION_SPACE,
-                prompt_template=create_prompt_template(
-                    self._agent_config.prompt_spec(
-                        latent_token_count=self._latent_token_count,
-                    ),
-                    action_count=len(NAVIGATION_ACTION_SPACE),
-                ),
-            )
-            session = VAGENNavigationSession(
-                client=self.client,
-                episode_id=episode_id,
+            self._log(
+                rl_ep=episode_index,
+                id=episode_id,
                 eval_set=eval_set,
-                navigation_profile=self._navigation_profile,
+                max_attempts=episode_attempts,
             )
-            try:
-                episode = EpisodeRunner(runtime).run(
-                    session,
-                    seed=seed,
-                    max_steps=max_steps_per_episode,
+
+            for attempt in range(1, episode_attempts + 1):
+                runtime = AgentRuntime(
+                    policy=self._policy,
+                    action_space=NAVIGATION_ACTION_SPACE,
+                    prompt_template=create_prompt_template(
+                        self._agent_config.prompt_spec(
+                            latent_token_count=self._latent_token_count,
+                        ),
+                        action_count=len(NAVIGATION_ACTION_SPACE),
+                    ),
                 )
-                if not episode.actions:
-                    raise RuntimeError("environment episode produced no actions")
-                image_paths = self._save_images(
-                    episode_id,
-                    episode.observations,
-                    image_dir,
+                session = VAGENNavigationSession(
+                    client=self.client,
+                    episode_id=episode_id,
+                    eval_set=eval_set,
+                    navigation_profile=self._navigation_profile,
                 )
-                observation_texts = [
-                    observation.text for observation in episode.observations
-                ]
-                trajectory = trajectory_from_agent_episode(
-                    episode,
-                    record_id=episode_id,
-                    image_paths=image_paths,
-                    instruction=instruction_from_observation(observation_texts[0]),
-                    split=self._split,
-                    sampling_temperature=self._temperature,
-                    sampling_top_p=self._top_p,
-                    terminal_state=runtime.terminal_state(),
-                )
-                trajectories.append(trajectory)
-                # 每个真实episode完成后立即原子重写短JSONL前缀，确保抢占不会丢失
-                # 已完成样本，也不会留下半行JSON。
-                save_trajectories(trajectories, target_dir)
-                self._log(
-                    rl_ep=episode_index,
-                    done=True,
-                    steps=len(episode.actions),
-                    success=trajectory.success,
-                    reward=round(trajectory.reward, 2),
-                    elapsed_s=round(time.monotonic() - started_at, 1),
-                )
-            except Exception as error:
-                traceback.print_exc()
-                self._log(
-                    rl_ep=episode_index,
-                    warning="discarding failed trajectory",
-                    error=str(error),
-                )
-                if resume_existing:
-                    raise
+                try:
+                    episode = EpisodeRunner(runtime).run(
+                        session,
+                        seed=seed,
+                        max_steps=max_steps_per_episode,
+                    )
+                    if not episode.actions:
+                        raise RuntimeError("environment episode produced no actions")
+                    image_paths = self._save_images(
+                        episode_id,
+                        episode.observations,
+                        image_dir,
+                    )
+                    observation_texts = [
+                        observation.text for observation in episode.observations
+                    ]
+                    trajectory = trajectory_from_agent_episode(
+                        episode,
+                        record_id=episode_id,
+                        image_paths=image_paths,
+                        instruction=instruction_from_observation(observation_texts[0]),
+                        split=self._split,
+                        sampling_temperature=self._temperature,
+                        sampling_top_p=self._top_p,
+                        terminal_state=runtime.terminal_state(),
+                    )
+                    trajectories.append(trajectory)
+                    # 每个真实episode完成后立即原子重写短JSONL前缀，确保抢占不会丢失
+                    # 已完成样本，也不会留下半行JSON。
+                    save_trajectories(trajectories, target_dir)
+                    self._log(
+                        rl_ep=episode_index,
+                        done=True,
+                        attempt=attempt,
+                        steps=len(episode.actions),
+                        success=trajectory.success,
+                        reward=round(trajectory.reward, 2),
+                        elapsed_s=round(time.monotonic() - started_at, 1),
+                    )
+                    break
+                except Exception as error:
+                    traceback.print_exc()
+                    self._log(
+                        rl_ep=episode_index,
+                        warning="trajectory attempt failed",
+                        attempt=attempt,
+                        max_attempts=episode_attempts,
+                        error=str(error),
+                    )
+                    if attempt == episode_attempts:
+                        raise RuntimeError(
+                            "trajectory failed after bounded retries: "
+                            f"id={episode_id}, eval_set={eval_set}, seed={seed}, "
+                            f"attempts={episode_attempts}"
+                        ) from error
+                    self._log(
+                        rl_ep=episode_index,
+                        retrying=True,
+                        id=episode_id,
+                        eval_set=eval_set,
+                        seed=seed,
+                        next_attempt=attempt + 1,
+                    )
 
         jsonl_path = save_trajectories(trajectories, target_dir)
         self._log(

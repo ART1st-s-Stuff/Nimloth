@@ -26,6 +26,7 @@ class RolloutConfig:
     jsonl_eval_sources: tuple[str, ...] = ()
     temperature: float = 1.0
     top_p: float = 1.0
+    max_episode_attempts: int = 1
 
 
 def parse_rollout_config(raw: Mapping[str, Any] | None) -> RolloutConfig:
@@ -41,16 +42,20 @@ def parse_rollout_config(raw: Mapping[str, Any] | None) -> RolloutConfig:
         "jsonl_eval_sources",
         "temperature",
         "top_p",
+        "max_episode_attempts",
     }
     unknown = sorted(set(values) - allowed)
     if unknown:
         raise ValueError(f"unknown rollout config field: {unknown[0]}")
     temperature = float(values.get("temperature", 1.0))
     top_p = float(values.get("top_p", 1.0))
+    max_episode_attempts = int(values.get("max_episode_attempts", 1))
     if temperature < 0.0:
         raise ValueError("rollout.temperature must be >= 0")
     if not 0.0 < top_p <= 1.0:
         raise ValueError("rollout.top_p must be in (0, 1]")
+    if max_episode_attempts < 1:
+        raise ValueError("rollout.max_episode_attempts must be positive")
     return RolloutConfig(
         train_datasets=_string_tuple(
             values.get("train_datasets"),
@@ -70,4 +75,5 @@ def parse_rollout_config(raw: Mapping[str, Any] | None) -> RolloutConfig:
         ),
         temperature=temperature,
         top_p=top_p,
+        max_episode_attempts=max_episode_attempts,
     )

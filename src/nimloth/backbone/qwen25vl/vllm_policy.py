@@ -461,7 +461,12 @@ class QwenVLLMAgentPolicy:
             clean_up_tokenization_spaces=False,
             spaces_between_special_tokens=False,
         )
-        close_start = decoded_reasoning_close.find(spec.close_text)
+        # A merged BPE token may decode to an interior ``</think>`` followed by
+        # ordinary text. The logits processor waits for a clean terminal close,
+        # so validate and split at that final close rather than the first literal
+        # occurrence. The strict continuation round-trip below still rejects any
+        # dropped or rewritten text.
+        close_start = decoded_reasoning_close.rfind(spec.close_text)
         if close_start < 0:
             raise RuntimeError("vLLM turn response did not contain decoded '</think>'")
         if decoded_reasoning_close[close_start:] != spec.close_text:

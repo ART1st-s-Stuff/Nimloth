@@ -65,6 +65,7 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert overridden.rl.envs_per_iteration == 3
     assert overridden.training.seed == 7
     assert overridden.rollout.train_datasets == ("base_train",)
+    assert config.rollout.max_episode_attempts == 1
     assert config.predictor.lambda_sigreg == 0.1
     assert config.predictor.lambda_wm == 1.0
     assert config.predictor.lambda_dino == 0.0
@@ -82,6 +83,14 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert config.distributed.gpus_per_rank == 1
     assert config.distributed.total_gpus == 1
     assert config.distributed.rollout_tensor_parallel_size == 1
+
+
+def test_rollout_config_requires_positive_episode_attempts() -> None:
+    raw = _raw_config()
+    raw["rollout"]["max_episode_attempts"] = 0
+
+    with pytest.raises(ValueError, match="max_episode_attempts must be positive"):
+        parse_rl_config(raw)
 
 
 def test_external_validation_is_explicit_and_excludes_builtin_validation() -> None:

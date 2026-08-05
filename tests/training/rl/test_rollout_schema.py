@@ -15,6 +15,7 @@ from experiments.training.rl.rollout_env import (
 )
 from nimloth.agent import AgentTranscript, NimlothPromptTemplate
 from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
+from nimloth.environment.navigation import collector as collector_module
 from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
 from nimloth.environment.navigation.vagen import (
     navigation_environment_config,
@@ -264,6 +265,108 @@ def test_eval_collector_rejects_noncontiguous_resume_prefix(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="contiguous requested seed prefix"):
         collector._load_resume_prefix(tmp_path, num_episodes=4)
+
+
+def _install_collector_attempt_fakes(monkeypatch, *, failures: int):
+    attempts: list[tuple[str, str, int]] = []
+
+    class FakeRuntime:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def terminal_state(self):
+            return None
+
+    class FakeSession:
+        def __init__(self, *, episode_id, eval_set, **_kwargs) -> None:
+            self.episode_id = episode_id
+            self.eval_set = eval_set
+
+    class FakeRunner:
+        def __init__(self, _runtime) -> None:
+            pass
+
+        def run(self, session, *, seed, max_steps):
+            del max_steps
+            attempts.append((session.episode_id, session.eval_set, seed))
+            if len(attempts) <= failures:
+                raise RuntimeError("synthetic trajectory failure")
+            observations = (
+                SimpleNamespace(text="Human Instruction: move near the couch"),
+                SimpleNamespace(text="Feedback: done"),
+            )
+            return SimpleNamespace(actions=(object(),), observations=observations)
+
+    def fake_trajectory(_episode, *, record_id, **_kwargs):
+        trajectory = _trajectory()
+        trajectory.record_id = record_id
+        return trajectory
+
+    monkeypatch.setattr(collector_module, "AgentRuntime", FakeRuntime)
+    monkeypatch.setattr(collector_module, "VAGENNavigationSession", FakeSession)
+    monkeypatch.setattr(collector_module, "EpisodeRunner", FakeRunner)
+    monkeypatch.setattr(
+        collector_module,
+        "trajectory_from_agent_episode",
+        fake_trajectory,
+    )
+    return attempts
+
+
+def test_env_collector_retries_same_episode_identity(tmp_path, monkeypatch) -> None:
+    attempts = _install_collector_attempt_fakes(monkeypatch, failures=1)
+    collector = VAGENNavigationRolloutCollector(
+        object(),  # type: ignore[arg-type]
+        "http://env",
+        eval_sets=("base_train",),
+        split="train",
+        seed_offset=5,
+    )
+    collector._client = object()
+    monkeypatch.setattr(
+        collector,
+        "_save_images",
+        lambda *_args: ["before.png", "after.png"],
+    )
+
+    trajectories = collector.collect(
+        num_episodes=1,
+        max_episode_attempts=2,
+        output_dir=tmp_path,
+    )
+
+    assert attempts == [
+        ("rl_000005", "base_train", 5),
+        ("rl_000005", "base_train", 5),
+    ]
+    assert [trajectory.record_id for trajectory in trajectories] == ["rl_000005"]
+
+
+def test_env_collector_fails_after_bounded_same_identity_attempts(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    attempts = _install_collector_attempt_fakes(monkeypatch, failures=2)
+    collector = VAGENNavigationRolloutCollector(
+        object(),  # type: ignore[arg-type]
+        "http://env",
+        eval_sets=("base_train",),
+        split="train",
+        seed_offset=5,
+    )
+    collector._client = object()
+
+    with pytest.raises(RuntimeError, match="id=rl_000005.*seed=5.*attempts=2"):
+        collector.collect(
+            num_episodes=1,
+            max_episode_attempts=2,
+            output_dir=tmp_path,
+        )
+
+    assert attempts == [
+        ("rl_000005", "base_train", 5),
+        ("rl_000005", "base_train", 5),
+    ]
 
 
 def test_rollout_metrics_report_overall_and_each_eval_set() -> None:

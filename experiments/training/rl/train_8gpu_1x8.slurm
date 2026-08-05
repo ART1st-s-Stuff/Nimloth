@@ -56,6 +56,11 @@ actual_commit=$(git -C "${REPO}" rev-parse HEAD)
   echo "tracked worktree is dirty" >&2
   exit 1
 }
+EXPECTED_ITERATION_RUNNER=${REPO}/experiments/training/rl/run_vllm_online_ppo_parallel_slurm.sh
+[[ "${ITERATION_RUNNER}" == "${EXPECTED_ITERATION_RUNNER}" ]] || {
+  echo "8-GPU 1x8 entrypoint requires the two-TP4 parallel runner" >&2
+  exit 1
+}
 
 export ROLLOUT_WORKERS=2
 export WANDB_MODE_OVERRIDE=${WANDB_MODE_OVERRIDE:-online}

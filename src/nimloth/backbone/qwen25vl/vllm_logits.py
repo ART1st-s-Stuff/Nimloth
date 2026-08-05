@@ -42,16 +42,21 @@ class TurnResponseLogitsProcessor(AdapterLogitsProcessor):
         # signature explicitly two-argument: output IDs followed by logits.
         def processor(output_token_ids: list[int], logits: Any):
             nonlocal decoded_close_end
-            if decoded_close_end is None and spec.close_text in self._tokenizer.decode(
-                output_token_ids,
-                skip_special_tokens=False,
-                clean_up_tokenization_spaces=False,
-                spaces_between_special_tokens=False,
-            ):
-                # This callback runs before every next-token sample. Therefore
-                # the first decoded match ends at the current token boundary;
-                # the latent queries are forced immediately after it.
-                decoded_close_end = len(output_token_ids)
+            if decoded_close_end is None:
+                decoded_output = self._tokenizer.decode(
+                    output_token_ids,
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                    spaces_between_special_tokens=False,
+                )
+                if decoded_output.endswith(spec.close_text):
+                    # This callback runs before every next-token sample. Therefore
+                    # a decoded suffix match ends exactly at the current token
+                    # boundary; the latent queries are forced immediately after it.
+                    # An interior match can be produced by a merged BPE token such
+                    # as ``</think> text`` and must remain part of reasoning until
+                    # a clean closing boundary is generated.
+                    decoded_close_end = len(output_token_ids)
             return apply_turn_response_logits(
                 output_token_ids,
                 logits,

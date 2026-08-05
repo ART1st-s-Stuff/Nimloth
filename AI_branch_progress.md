@@ -3814,3 +3814,23 @@
   `run_vllm_online_ppo_slurm.sh`，所以仅有一个TP4 engine；`ROLLOUT_WORKERS=2`只由
   parallel runner消费。它降低并行度且违背两个TP4 worker合同，但不是本次
   decoded-`</think>`失败的直接原因。远端输出README已完成on-experiment-end归档。
+
+## 2026-08-06：ID132 decoded-close修复与同身份有界重试
+
+- vLLM request processor改为只有当已解码前缀以`</think>`结尾时才注入latent query；
+  interior close（例如merged BPE同时解码出`</think>`和尾随文本）继续作为真实reasoning，
+  policy在最终terminal close处分割，并继续执行完整token continuation round-trip校验，
+  不丢弃或改写模型实际生成文本。
+- navigation collector新增同一`episode_id/eval_set/seed`的有界重试。正式1x8配置固定
+  `max_episode_attempts: 3`；每次attempt重新构造runtime/session，成功后只持久化一条，
+  耗尽后带完整identity fail closed。16/16完整批次、fresh manifest和一次性消费门禁未放宽。
+- 单节点8卡batch现在硬性要求
+  `run_vllm_online_ppo_parallel_slurm.sh`，并由两个TP4 worker各采8条；串行runner会在任何
+  rollout前被拒绝。配置字段同时接入独立shard、serial runner和直接env collector。
+- 服务器精确diff与本地SHA256一致；shell syntax和diff检查通过。针对性回归
+  `9 passed`，扩展Qwen/rollout/config/Slurm/loop/fresh套件`156 passed`；无测试失败，
+  只有既有第三方依赖告警。当前仍没有新GPU rollout、optimizer step、checkpoint或质量证据；
+  下一步先提交精确runtime commit，再按新ID/空output/SFT2 epoch1 fresh重新排队。
+- `on-progress` memory复核确认local M0007/M0008/M0012的evidence仍支持训练split、W&B
+  entity门禁和planner Backbone dynamic DDP合同；它们仍处于pending，CLI按协议拒绝AI
+  upvote。没有新增durable memory，因为本次稳定合同已经由源码、测试和本进度段直接记录。

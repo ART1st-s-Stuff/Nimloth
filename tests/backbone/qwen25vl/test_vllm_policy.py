@@ -50,6 +50,9 @@ class _Tokenizer:
             elif values[index] == 504:
                 pieces.append(".</")
                 index += 1
+            elif values[index] == 505:
+                pieces.append("</think> trailing ")
+                index += 1
             elif values[index] == 502:
                 pieces.append("think")
                 index += 1
@@ -448,7 +451,19 @@ def test_turn_credit_generates_reasoning_then_constrained_action(monkeypatch) ->
     assert set(action_ids).issubset(forbidden_ids)
 
 
-def test_turn_credit_accepts_decoded_close_with_merged_bpe(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("reasoning_close_ids", "expected_reasoning"),
+    [
+        ([700, 701, 504, 502, 503], "move left."),
+        ([700, 701, 505, 501, 502, 503], "move left</think> trailing "),
+    ],
+    ids=("merged_terminal_close", "interior_close_then_terminal_close"),
+)
+def test_turn_credit_accepts_decoded_close_with_merged_bpe(
+    monkeypatch,
+    reasoning_close_ids,
+    expected_reasoning,
+) -> None:
     processor = SimpleNamespace(tokenizer=_Tokenizer())
     tokens = LatentActionTokens()
     action_ids = tuple(
@@ -460,11 +475,7 @@ def test_turn_credit_accepts_decoded_close_with_merged_bpe(monkeypatch) -> None:
         def generate(self, prompts, sampling_params, *, use_tqdm=False):
             del prompts, sampling_params, use_tqdm
             ids = [
-                700,
-                701,
-                504,
-                502,
-                503,
+                *reasoning_close_ids,
                 processor.tokenizer.convert_tokens_to_ids(tokens.latent_state),
                 processor.tokenizer.convert_tokens_to_ids(tokens.action_start),
                 action_ids[2],
@@ -478,9 +489,9 @@ def test_turn_credit_accepts_decoded_close_with_merged_bpe(monkeypatch) -> None:
                 token_ids=ids,
                 logprobs=[
                     {token_id: SimpleNamespace(logprob=-0.2)}
-                    if index < 5
+                    if index < len(reasoning_close_ids)
                     else action_logprobs
-                    if index == 7
+                    if index == len(reasoning_close_ids) + 2
                     else {token_id: SimpleNamespace(logprob=0.0)}
                     for index, token_id in enumerate(ids)
                 ],
@@ -514,11 +525,11 @@ def test_turn_credit_accepts_decoded_close_with_merged_bpe(monkeypatch) -> None:
     )
 
     assert decision.response == (
-        "<think>move left.</think><|latent_state|><|action_start|>"
+        f"<think>{expected_reasoning}</think><|latent_state|><|action_start|>"
         "<|action_(2)|><|action_end|>"
     )
     assert decision.token_trace is not None
-    assert decision.token_trace.reasoning_text == "move left."
+    assert decision.token_trace.reasoning_text == expected_reasoning
     assert decision.token_trace.reasoning_truncated is False
 
 

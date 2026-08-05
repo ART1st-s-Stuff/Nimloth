@@ -72,7 +72,7 @@ done
   exit 1
 }
 
-read -r TP_SIZE MAX_STEPS TEMPERATURE TOP_P CREDIT MAX_RESPONSE_TOKENS MAX_STATE_TOKENS ACTOR_ENABLED PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE < <(
+read -r TP_SIZE MAX_STEPS MAX_EPISODE_ATTEMPTS TEMPERATURE TOP_P CREDIT MAX_RESPONSE_TOKENS MAX_STATE_TOKENS ACTOR_ENABLED PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -81,6 +81,7 @@ config = load_rl_config(Path(sys.argv[1]))
 print(
     config.distributed.rollout_tensor_parallel_size,
     config.rl.max_steps_per_episode,
+    config.rollout.max_episode_attempts,
     config.rollout.temperature,
     config.rollout.top_p,
     config.actor.credit_assignment,
@@ -234,6 +235,7 @@ fi
   --fresh-manifest "${SHARD_OUT}/fresh_policy_manifest.json" \
   --num-episodes "${SHARD_NUM_EPISODES}" \
   --max-steps "${MAX_STEPS}" \
+  --max-episode-attempts "${MAX_EPISODE_ATTEMPTS}" \
   --eval-sets "${SHARD_DATASETS[@]}" --split "${SHARD_SPLIT}" \
   --seed-offset "${SHARD_SEED}" \
   --temperature "${SHARD_TEMPERATURE:-${TEMPERATURE}}" \

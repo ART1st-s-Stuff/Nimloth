@@ -42,6 +42,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     ap.add_argument("--num-episodes", type=int, default=8)
     ap.add_argument("--max-steps", type=int, default=20)
+    ap.add_argument(
+        "--max-episode-attempts",
+        type=int,
+        default=1,
+        help="Bounded attempts for the same episode id, dataset, and seed",
+    )
     dataset_group = ap.add_mutually_exclusive_group(required=True)
     dataset_group.add_argument("--eval-set", choices=_NAV_DATASETS)
     dataset_group.add_argument(
@@ -420,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
     trajectories = collector.collect(
         num_episodes=args.num_episodes,
         max_steps_per_episode=args.max_steps,
+        max_episode_attempts=args.max_episode_attempts,
         output_dir=args.output_dir,
         resume_existing=args.resume_existing_rollouts,
     )
