@@ -231,7 +231,7 @@ class Agent(nn.Module):
         """返回可能提供 DDP/FSDP ``no_sync`` 的实际包装模块。"""
 
         return (
-            self.backbone.model,
+            *self.backbone.synchronized_modules,
             *self.wm.synchronized_modules,
         )
 

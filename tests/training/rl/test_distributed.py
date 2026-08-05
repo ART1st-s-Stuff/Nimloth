@@ -3,6 +3,12 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from nimloth.backbone import (
+    Backbone,
+    BackboneBatch,
+    BackboneOutput,
+    DistributedBackbone,
+)
 from nimloth.training.rl.trainer import (
     _wrap_distributed_modules,
     _wrap_world_model_ddp,
@@ -18,6 +24,31 @@ class _FakeDDP(nn.Module):
 
     def forward(self, *args, **kwargs):
         return self.module(*args, **kwargs)
+
+
+class _Backbone(Backbone):
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.language_model = model
+
+    @property
+    def model(self) -> nn.Module:
+        return self.language_model
+
+    def forward(
+        self,
+        batch: BackboneBatch,
+        *,
+        include_lm_loss: bool = False,
+    ) -> BackboneOutput:
+        del include_lm_loss
+        return BackboneOutput(hidden=self.model(batch.tensors["hidden"]))
+
+    def with_model(self, model: nn.Module) -> "_Backbone":
+        return _Backbone(model)
+
+    def save_pretrained(self, *args, **kwargs) -> None:
+        del args, kwargs
 
 
 def test_world_model_ddp_wraps_only_trainable_modules(monkeypatch) -> None:
@@ -46,6 +77,7 @@ def test_world_model_ddp_wraps_only_trainable_modules(monkeypatch) -> None:
 def test_pair_parallel_wraps_actual_parameter_modules(monkeypatch) -> None:
     monkeypatch.setattr(torch.nn.parallel, "DistributedDataParallel", _FakeDDP)
     model = nn.Linear(4, 4)
+    backbone = _Backbone(model)
     token_value_head = nn.Linear(4, 1)
     world_model = WorldModel(
         state_proj=nn.Linear(4, 4),
@@ -54,20 +86,25 @@ def test_pair_parallel_wraps_actual_parameter_modules(monkeypatch) -> None:
     )
 
     wrapped = _wrap_distributed_modules(
-        model,
+        backbone,
         world_model,
         token_value_head,
         world_size=4,
         model_parallel=True,
+        synchronize_backbone_hidden=True,
         training_device=torch.device("cuda:1"),
     )
 
-    assert isinstance(wrapped.model, _FakeDDP)
-    assert wrapped.model.module is model
-    assert wrapped.model.kwargs["device_ids"] is None
-    assert wrapped.model.kwargs["output_device"] is None
-    assert wrapped.model.kwargs["find_unused_parameters"] is False
-    assert wrapped.model.kwargs["static_graph"] is True
+    assert isinstance(wrapped.backbone, DistributedBackbone)
+    distributed_backbone = wrapped.backbone.wrapped
+    assert isinstance(distributed_backbone, _FakeDDP)
+    assert distributed_backbone.module is backbone
+    assert distributed_backbone.kwargs["device_ids"] is None
+    assert distributed_backbone.kwargs["output_device"] is None
+    assert distributed_backbone.kwargs["find_unused_parameters"] is False
+    assert distributed_backbone.kwargs["static_graph"] is True
+    assert wrapped.model is model
+    assert wrapped.backbone.synchronized_modules == (distributed_backbone,)
     assert isinstance(wrapped.world_model.state_proj, _FakeDDP)
     assert isinstance(wrapped.world_model.wm_predictor, _FakeDDP)
     assert isinstance(wrapped.world_model.value_head, _FakeDDP)
@@ -76,3 +113,29 @@ def test_pair_parallel_wraps_actual_parameter_modules(monkeypatch) -> None:
     assert wrapped.token_value_head.module is token_value_head
     assert wrapped.strategy == "model_parallel_ddp"
     assert wrapped.optimizer_state_sharded is False
+
+
+def test_pair_parallel_actor_keeps_logits_model_inside_ddp(monkeypatch) -> None:
+    monkeypatch.setattr(torch.nn.parallel, "DistributedDataParallel", _FakeDDP)
+    model = nn.Linear(4, 4)
+    backbone = _Backbone(model)
+    world_model = WorldModel(
+        state_proj=nn.Linear(4, 4),
+        wm_predictor=nn.Linear(4, 4),
+        value_head=nn.Linear(4, 8),
+    )
+
+    wrapped = _wrap_distributed_modules(
+        backbone,
+        world_model,
+        None,
+        world_size=4,
+        model_parallel=True,
+        synchronize_backbone_hidden=False,
+        training_device=torch.device("cuda:1"),
+    )
+
+    assert not isinstance(wrapped.backbone, DistributedBackbone)
+    assert isinstance(wrapped.model, _FakeDDP)
+    assert wrapped.model.module is model
+    assert wrapped.backbone.synchronized_modules == (wrapped.model,)

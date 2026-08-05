@@ -13,7 +13,9 @@ import torch
 
 from nimloth.agent import Agent
 from nimloth.backbone import (
+    Backbone,
     DINOV2_LARGE_IDENTITY,
+    DistributedBackbone,
     FrozenDINOGridTargets,
     backbone_hidden_size,
     build_action_log_prob_replay,
@@ -76,11 +78,17 @@ class RLResumeState:
 class RLDistributedModules:
     """分布式包装后的 Agent 参数边界与 checkpoint 布局。"""
 
-    model: torch.nn.Module
+    backbone: Backbone
     world_model: WorldModel
     token_value_head: torch.nn.Module | None
     optimizer_state_sharded: bool
     strategy: str
+
+    @property
+    def model(self) -> torch.nn.Module:
+        """返回 optimizer、EMA 与 checkpoint 共享的底层语言模型。"""
+
+        return self.backbone.model
 
 
 def _is_grid_predictor_checkpoint(path: Path) -> bool:
@@ -280,12 +288,34 @@ def _wrap_trainable_ddp(
     )
 
 
+def _wrap_model_parallel_backbone_ddp(
+    backbone: Backbone,
+    *,
+    world_size: int,
+) -> Backbone:
+    """用 DDP 同步直接返回 critic hidden 的 Backbone forward。"""
+
+    if world_size <= 1:
+        return backbone
+    from torch.nn.parallel import DistributedDataParallel as DDP
+
+    return DistributedBackbone(
+        DDP(
+            backbone,
+            device_ids=None,
+            output_device=None,
+            find_unused_parameters=False,
+            static_graph=True,
+        )
+    )
+
+
 def _wrap_model_parallel_llm_ddp(
     llm: torch.nn.Module,
     *,
     world_size: int,
 ) -> torch.nn.Module:
-    """用官方 DDP 同步一个跨多张 GPU 放置的 Qwen 模型。"""
+    """用 DDP 同步直接返回 actor logits 的底层语言模型。"""
 
     if world_size <= 1:
         return llm
@@ -325,18 +355,31 @@ def _wrap_world_model_ddp(
 
 
 def _wrap_distributed_modules(
-    llm: torch.nn.Module,
+    backbone: Backbone,
     world_model: WorldModel,
     token_value_head: torch.nn.Module | None,
     *,
     world_size: int,
     model_parallel: bool,
+    synchronize_backbone_hidden: bool,
     training_device: torch.device,
 ) -> RLDistributedModules:
     if model_parallel:
-        # Qwen 横跨多张 GPU，因此使用 device_ids=None；WM 各子模块仍位于
-        # training_device，由单设备 DDP 分别同步。算法层不承担分布式分派。
-        llm = _wrap_model_parallel_llm_ddp(llm, world_size=world_size)
+        if synchronize_backbone_hidden:
+            # Planner critic 直接消费 Backbone hidden，DDP 必须包住
+            # 这个forward边界；只包HF model会让hook hidden绕过reducer。
+            backbone = _wrap_model_parallel_backbone_ddp(
+                backbone,
+                world_size=world_size,
+            )
+        else:
+            # Direct-Qwen actor 的 loss 消费底层 model logits，保留原有
+            # DDP 边界，防止修复 planner 时绕过 actor reducer。
+            llm = _wrap_model_parallel_llm_ddp(
+                backbone.model,
+                world_size=world_size,
+            )
+            backbone = backbone.with_model(llm)
         world_model = _wrap_world_model_ddp(
             world_model,
             device=training_device,
@@ -350,7 +393,9 @@ def _wrap_distributed_modules(
         strategy = "model_parallel_ddp" if world_size > 1 else "model_parallel"
         optimizer_state_sharded = False
     else:
+        llm = backbone.model
         llm = _wrap_llm_fsdp(llm, world_size=world_size)
+        backbone = backbone.with_model(llm)
         strategy = "fsdp" if world_size > 1 else "single_gpu"
         optimizer_state_sharded = world_size > 1
         world_model = _wrap_world_model_ddp(
@@ -374,7 +419,7 @@ def _wrap_distributed_modules(
             )
         )
     return RLDistributedModules(
-        model=llm,
+        backbone=backbone,
         world_model=world_model,
         token_value_head=token_value_head,
         optimizer_state_sharded=optimizer_state_sharded,
@@ -695,11 +740,12 @@ def train_rl(
             device=device,
         )
         distributed_modules = _wrap_distributed_modules(
-            model,
+            loaded.backbone,
             world_model,
             token_value_head,
             world_size=world,
             model_parallel=loaded.pair_parallel,
+            synchronize_backbone_hidden=planning_enabled,
             training_device=training_device,
         )
         model = distributed_modules.model
@@ -741,7 +787,7 @@ def train_rl(
             expected_train_world_model=config.predictor.train_wm,
         )
         agent = Agent(
-            backbone=loaded.backbone.with_model(model),
+            backbone=distributed_modules.backbone,
             wm=world_model,
         )
         input_builder = build_input_builder(

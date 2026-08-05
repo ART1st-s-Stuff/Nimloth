@@ -3708,3 +3708,19 @@
   精确相等，ValueHead witness跨rank差`1.024e-7`，但门禁按bit equality误报失败并在
   epoch1后终止。ID127无checkpoint且不可resume；修复为显式FP32容差并记录梯度/参数最大
   replica差后使用新ID128完成四轮门禁。
+
+## 2026-08-05：ID128梯度门禁发现真实Qwen DDP同步缺陷
+
+- ID128 Job `506831`在`preempt/dgx-16:4`运行44秒后exit1。单卡真实
+  critic backward再次通过；2-rank×2-GPU阶段完成均衡Qwen放置和
+  `model_parallel_ddp`初始化，但首个backward后Qwen final-norm梯度见证
+  跨rank最大差为`0.002227783203125`，远超显式容差
+  `5.01953125e-07`。门禁在optimizer step前fail closed，未运行epoch2--4，
+  无checkpoint且不可resume。
+- 源码检查确认原因：旧路径只用DDP包住HF Qwen，critic却消费
+  Backbone在final-norm forward hook中捕获的hidden；该tensor不在DDP forward
+  返回值中，reducer无法可靠地跟踪这条反向图。ID127首步AdamW后近似
+  相等的parameter witness不能代替直接梯度校验。
+- ID128输出README已保留完整失败边界。下一步修复必须让DDP包住直接
+  返回`BackboneOutput.hidden`的Backbone forward边界，保留梯度replica
+  assertion，不能放宽容差或把该失败当作浮点噪声。

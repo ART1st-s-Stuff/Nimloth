@@ -245,16 +245,17 @@ def main() -> int:
             broadcast_module_state(world_model.wm_predictor)
             broadcast_module_state(world_model.value_head)
         distributed = _wrap_distributed_modules(
-            model,
+            loaded.backbone,
             world_model,
             None,
             world_size=world_size,
             model_parallel=loaded.pair_parallel,
+            synchronize_backbone_hidden=True,
             training_device=training_device,
         )
         model = distributed.model
         world_model = distributed.world_model
-        agent = Agent(backbone=loaded.backbone.with_model(model), wm=world_model)
+        agent = Agent(backbone=distributed.backbone, wm=world_model)
         runtime = RLModelRuntime(
             agent=agent,
             input_builder=build_input_builder(

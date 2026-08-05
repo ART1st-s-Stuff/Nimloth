@@ -76,3 +76,9 @@
   Qwen witness精确同步，ValueHead witness仅有`1.024e-7`跨设备舍入差，但门禁错误要求
   bit equality而终止，未完成epoch2--4。ID127无checkpoint且不可resume；显式FP32容差和
   梯度/参数差值记录后用新ID128重试。
+- ID128 Job `506831`的新梯度assertion排除了“只是ValueHead浮点舍入”
+  的旧解释：首个2-rank critic backward后Qwen final-norm梯度差为
+  `0.002227783203125`，在optimizer前fail closed。根因是旧DDP只包HF Qwen，
+  critic消费的forward-hook hidden不在DDP返回值中；修复必须包住直接返回
+  `BackboneOutput.hidden`的Backbone forward。ID128无optimizer step/checkpoint、
+  不可resume，不能通过放宽容差绕过。

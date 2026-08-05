@@ -68,8 +68,13 @@ GPU 总数。控制器为每个物理节点启动一个持有该节点全部已�
 step，再按节点内 GPU 数启动 local ranks，因此允许各节点 GPU 数不同。
 `world_size` 是训练进程数，物理 GPU 总数为
 `world_size * gpus_per_rank`。`gpus_per_rank=1` 使用 FSDP；`gpus_per_rank=2`
-让每个 Qwen 副本均衡分布在同一节点的两张 GPU 上，再由包住完整training-step模块的
-官方`DistributedDataParallel(device_ids=None)`同步各rank梯度；没有手工gradient averaging。
+让每个 Qwen 副本均衡分布在同一节点的两张 GPU 上，再由包住完整
+planner Backbone forward边界的官方`DistributedDataParallel(device_ids=None)`
+同步各rank梯度。DDP forward直接返回critic消费的
+`BackboneOutput.hidden`；
+不能只包住HF Qwen后在外层消费forward-hook hidden，否则reducer无法可靠
+跟踪该反向图。direct-Qwen actor路径的loss直接消费model logits，因此
+仍保留包住HF model的DDP边界。两条路径都没有手工gradient averaging。
 后者要求每个节点分配的 GPU 数能被 2 整除，不支持跨节点拼接一个模型副本。
 下一个 optimizer step 必须从新 checkpoint 重新 rollout。均匀两节点四卡也统一使用
 `run_vllm_online_ppo_slurm.sh`，不维护固定节点拓扑的另一套入口。

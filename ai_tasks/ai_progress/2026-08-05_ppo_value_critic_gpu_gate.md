@@ -113,3 +113,24 @@ actual full-prefix Qwen -> StateProjector -> ValueHead graph requested by the us
   complete four-epoch distributed update. It is not resumable and saved no model
   checkpoint. ID128 will replace the bit-equality assertion with an explicit FP32
   tolerance and will persist maximum gradient/parameter replica differences.
+
+## ID128 end status
+
+- Slurm Job `506831` ran on `preempt/dgx-16:4` from
+  `2026-08-05T18:59:53+08:00` to `19:00:37+08:00`, then ended
+  `FAILED (exit 1:0)` after 44 seconds. Runtime commit was `9d91a5e8`.
+- The single-GPU phase passed again with the same real-transition critic gradient
+  evidence as ID127. In the two-rank/two-GPU-per-rank phase, both balanced Qwen
+  replicas entered production `model_parallel_ddp`, but the first backward
+  produced a Qwen final-norm gradient witness maximum replica difference of
+  `0.002227783203125`. The allowed bound was only `5.01953125e-07`.
+- The gradient assertion stopped the run before its first DDP optimizer step and
+  before PPO epochs 2--4. ID128 saved no model checkpoint and is not resumable.
+  Its output README records the failure and the single-phase JSON remains only
+  mechanics evidence.
+- Source inspection localized a production defect: raw-HF DDP returned the
+  language-model output, while the critic consumed a final-norm hidden tensor
+  captured by a Backbone forward hook. Because that consumed tensor was not in
+  the DDP forward return, the reducer did not reliably synchronize its backward
+  graph. The correction must wrap the Backbone forward boundary that directly
+  returns `BackboneOutput.hidden`; the gradient assertion must remain unchanged.

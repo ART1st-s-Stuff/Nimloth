@@ -6,6 +6,7 @@ from nimloth.backbone.base import (
     BackboneEMA,
     BackboneInputBuilder,
     BackboneOutput,
+    DistributedBackbone,
     LoadedBackbone,
 )
 from nimloth.backbone.dino_grid import (
@@ -74,6 +75,7 @@ __all__ = [
     "BackboneEMA",
     "BackboneInputBuilder",
     "BackboneOutput",
+    "DistributedBackbone",
     "CachedDINOGridTargets",
     "DINOGridTargets",
     "DINOIdentity",

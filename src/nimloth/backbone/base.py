@@ -61,6 +61,69 @@ class Backbone(nn.Module, ABC):
     ) -> None:
         """保存 backbone 的模型 artifact。"""
 
+    @property
+    def synchronized_modules(self) -> tuple[nn.Module, ...]:
+        """返回为该 Backbone forward 提供梯度同步的包装模块。"""
+
+        return (self.model,)
+
+
+class DistributedBackbone(Backbone):
+    """保留 Backbone 语义的分布式 forward 包装。
+
+    DDP 必须直接包住产生下游 loss 所消费 tensor 的 forward 边界。
+    如果只包住底层语言模型、而 Backbone 通过 forward hook 取出隐状态，
+    该隐状态不是 DDP forward 返回值，reducer 无法可靠地跟踪这条反向图。
+    """
+
+    def __init__(self, wrapped: nn.Module) -> None:
+        super().__init__()
+        inner = getattr(wrapped, "module", None)
+        if not isinstance(inner, Backbone):
+            raise TypeError("DistributedBackbone requires a wrapped Backbone module")
+        self.wrapped = wrapped
+
+    @property
+    def inner(self) -> Backbone:
+        inner = getattr(self.wrapped, "module", None)
+        if not isinstance(inner, Backbone):
+            raise TypeError("distributed wrapper no longer contains a Backbone")
+        return inner
+
+    @property
+    def model(self) -> nn.Module:
+        return self.inner.model
+
+    def forward(
+        self,
+        batch: BackboneBatch,
+        *,
+        include_lm_loss: bool = False,
+    ) -> BackboneOutput:
+        return self.wrapped(batch, include_lm_loss=include_lm_loss)
+
+    def with_model(self, model: nn.Module) -> Backbone:
+        """返回解除分布式包装后、替换底层模型的视图。"""
+
+        return self.inner.with_model(model)
+
+    def save_pretrained(
+        self,
+        output_dir: Path,
+        *,
+        metadata: Mapping[str, Any] | None = None,
+        state_dict: dict[str, torch.Tensor] | None = None,
+    ) -> None:
+        self.inner.save_pretrained(
+            output_dir,
+            metadata=metadata,
+            state_dict=state_dict,
+        )
+
+    @property
+    def synchronized_modules(self) -> tuple[nn.Module, ...]:
+        return (self.wrapped,)
+
 
 class BackboneEMA(Protocol):
     """训练运行期使用的 backbone 参数 EMA 契约。"""
@@ -121,5 +184,6 @@ __all__ = [
     "BackboneEMA",
     "BackboneInputBuilder",
     "BackboneOutput",
+    "DistributedBackbone",
     "LoadedBackbone",
 ]
