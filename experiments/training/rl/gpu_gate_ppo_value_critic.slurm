@@ -3,6 +3,7 @@
 # Required exports: RUNTIME_REPO, EXPECTED_COMMIT, OUTPUT_DIR, SFT2_CHECKPOINT,
 # TRAJECTORY_JSONL, FRESH_ROLLOUT_MANIFEST.
 #SBATCH --job-name=ppo-value-gpu-gate
+#SBATCH --account=peilab
 #SBATCH --partition=preempt
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
