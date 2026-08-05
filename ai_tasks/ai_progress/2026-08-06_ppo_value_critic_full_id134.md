@@ -2,7 +2,8 @@
 
 ## Status
 
-- Preflight in progress; no ID134 Slurm job has been submitted yet.
+- Formally submitted as Slurm Job `507599`; it started ten seconds later on
+  `normal/dgx-54:8` at `2026-08-06T02:00:57+08:00`.
 - Human authorization remains the explicitly requested corrected retry of the
   full-scale single-node/eight-GPU experiment.
 - Exact runtime commit:
@@ -83,3 +84,35 @@
 - After submission record the exact job/allocation. If allocated, require two
   navigation prewarms and two distinct TP4 engines, then the strict 16-rollout
   merge and first finite synchronized PPO update before declaring health.
+
+## Completed launch validation
+
+- Server runtime was tracked-clean at exact commit `f95b8c33`; pinned VAGEN and
+  LeWM gitlinks matched. Required SFT2 files remained complete and no root
+  `rl_state.pt` exists.
+- Exact config/data validation again reported attempts 3, one node/world4 x
+  two GPUs, total eight/TP4, counts 1200/1200/60/60, and zero train/eval scene
+  overlap. Shell syntax, login dry preflight, W&B uniqueness, absent output and
+  adjacent progress path all passed.
+- Exact corrected runtime focused regression passed `157 tests`. Live resources
+  contained multiple healthy idle eight-GPU normal nodes; test-only accepted the
+  8 GPU/128 CPU/96 GiB/eight-hour request. Formal Job `507599` uses the same
+  environment, parallel runner, exclusions, and port bases recorded above.
+- Runtime passed ID133's parent-path boundary and durably wrote iteration-1
+  `starting`. Two distinct shard directories/environment services came up on
+  ports 9641/9642, and both real `base_train` navigation prewarms passed in
+  12.439 seconds (shard 0 seed 1, shard 1 seed 5).
+- Two distinct EngineCore processes (`1237571`, `1237572`) each initialized a
+  four-rank TP group, loaded both safetensor shards, reported 57.81 GiB/GPU
+  available KV memory and completed warmup. Both collectors then started real
+  eight-episode shards with `max_attempts=3`: shard 0 from
+  `rl_base_train_000001`, shard 1 from `rl_base_train_000005`.
+- At the last live log read, shard 0 had durably completed its first three
+  trajectories on attempt 1 (20, 20, and 20 steps); shard 1 was still generating
+  its first episode. No retry, decoded-close error, traceback, CUDA/NCCL/OOM, or
+  Slurm stderr was present. This proves corrected startup and real double-TP4
+  rollout, not the strict 16-trajectory merge, PPO update, checkpoint, or quality.
+- Subsequent SSH ProxyJump attempts were closed with `UNKNOWN port 65535` twice.
+  Monitoring stopped rather than repeatedly reconnecting; the batch-owned
+  controller is independent of the SSH session and remains responsible for the
+  live job.

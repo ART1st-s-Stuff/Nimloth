@@ -3853,3 +3853,22 @@
 - `on-experiment-end`复核local M0013的batch-owned controller证据仍正确；M0014的旧行号已
   漂移，已修正为两次dgx-51 prewarm超时的当前证据段。两条memory仍为pending，CLI拒绝AI
   upvote；需人类之后执行memory审批。没有新增memory，避免重复known error和进度记录。
+
+## 2026-08-06：ID134 corrected full retry已进入双TP4真实rollout
+
+- exact runtime commit`f95b8c33`通过扩展定向回归`157 passed`；新ID134/W&B/output、
+  checkpoint/split/config、dry preflight、实时资源和test-only门禁均重新通过。Job`507599`
+  于02:00:57+08分配`normal/dgx-54:8`、128 CPU、96 GiB，8小时；排除
+  `dgx-32,dgx-37,dgx-51`，由batch-owned controller持有生命周期。
+- ID133父目录修复已越过：adjacent progress durable写出iteration1 starting。两个独立env
+  service分别使用9641/9642，`base_train` seed1/seed5真实prewarm均12.439秒通过。两个不同
+  EngineCore PID`1237571/1237572`各自建立world4 TP、读取两份safetensor shard、获得
+  57.81 GiB/GPU KV cache并完成warmup，确认不是ID132的单TP4偏差。
+- 两个collector随后各启动8条且日志明确`max_attempts=3`：shard0从
+  `rl_base_train_000001`、shard1从`rl_base_train_000005`开始。最后live证据中shard0已连续
+  以attempt1完整持久化前三条20-step trajectory，shard1仍在第一条生成；未见retry、
+  decoded-close、traceback、CUDA/NCCL/OOM或Slurm stderr。
+- 该状态只证明corrected startup和双TP4真实rollout，尚无strict 16条merge、PPO
+  forward/backward、optimizer step、consumption、checkpoint或质量证据。随后SSH ProxyJump
+  连续两次以`UNKNOWN port 65535`关闭，按服务器规则停止反复重连；Slurm batch不依赖SSH，
+  job继续由controller运行，后续恢复连接后必须先查终态/日志再采取动作。
