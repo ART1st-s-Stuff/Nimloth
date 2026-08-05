@@ -82,3 +82,9 @@
   critic消费的forward-hook hidden不在DDP返回值中；修复必须包住直接返回
   `BackboneOutput.hidden`的Backbone forward。ID128无optimizer step/checkpoint、
   不可resume，不能通过放宽容差绕过。
+- ID129 Job`506846`证明只把DDP移到Backbone返回边界仍不足：新包装确已
+  进入`model_parallel_ddp`，但首轮Qwen梯度差仍为`0.002227783203125`。
+  PyTorch 2.8源码进一步显示`static_graph=True`不遍历返回图；planner路径改为
+  `find_unused_parameters=True, static_graph=False`以显式跟踪hidden与unused
+  `lm_head`，direct actor保留原静态logits DDP。ID129在optimizer前失败，无
+  checkpoint且不可resume。

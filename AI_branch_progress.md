@@ -3724,3 +3724,18 @@
 - ID128输出README已保留完整失败边界。下一步修复必须让DDP包住直接
   返回`BackboneOutput.hidden`的Backbone forward边界，保留梯度replica
   assertion，不能放宽容差或把该失败当作浮点噪声。
+
+## 2026-08-05：ID129证明Backbone返回边界仍需显式unused-parameter遍历
+
+- commit`35a6f207`将planner路径DDP移到直接返回
+  `BackboneOutput.hidden`的Backbone，并保留direct-Qwen actor的logits DDP边界。
+  远程CPU定向套件31项exit0，新分布式包装用例3 passed。
+- ID129 Job`506846`立即分配`preempt/dgx-16:4`，运行42秒。单卡critic梯度
+  再次通过；2-rank阶段确认新Backbone DDP已构造，但首个backward的
+  Qwen梯度差仍精确为`0.002227783203125`，因此在optimizer前exit1。无
+  checkpoint、不可resume，输出README已归档。
+- 固定PyTorch 2.8源码显示：`static_graph=True`时DDP调用
+  `prepare_for_backward([])`，不会把Backbone返回的hidden传入unused-parameter图遍历；
+  Qwen critic又有预期不使用的`lm_head`。下一步将planner Backbone限定为
+  `find_unused_parameters=True, static_graph=False`，保留direct actor旧设置和GPU梯度
+  replica assertion。

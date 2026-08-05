@@ -101,8 +101,8 @@ def test_pair_parallel_wraps_actual_parameter_modules(monkeypatch) -> None:
     assert distributed_backbone.module is backbone
     assert distributed_backbone.kwargs["device_ids"] is None
     assert distributed_backbone.kwargs["output_device"] is None
-    assert distributed_backbone.kwargs["find_unused_parameters"] is False
-    assert distributed_backbone.kwargs["static_graph"] is True
+    assert distributed_backbone.kwargs["find_unused_parameters"] is True
+    assert distributed_backbone.kwargs["static_graph"] is False
     assert wrapped.model is model
     assert wrapped.backbone.synchronized_modules == (distributed_backbone,)
     assert isinstance(wrapped.world_model.state_proj, _FakeDDP)
@@ -138,4 +138,6 @@ def test_pair_parallel_actor_keeps_logits_model_inside_ddp(monkeypatch) -> None:
     assert not isinstance(wrapped.backbone, DistributedBackbone)
     assert isinstance(wrapped.model, _FakeDDP)
     assert wrapped.model.module is model
+    assert wrapped.model.kwargs["find_unused_parameters"] is False
+    assert wrapped.model.kwargs["static_graph"] is True
     assert wrapped.backbone.synchronized_modules == (wrapped.model,)

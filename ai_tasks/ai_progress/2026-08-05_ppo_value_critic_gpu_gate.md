@@ -134,3 +134,24 @@ actual full-prefix Qwen -> StateProjector -> ValueHead graph requested by the us
   the DDP forward return, the reducer did not reliably synchronize its backward
   graph. The correction must wrap the Backbone forward boundary that directly
   returns `BackboneOutput.hidden`; the gradient assertion must remain unchanged.
+
+## ID129 end status
+
+- Commit `35a6f207` moved planner Qwen synchronization to the Backbone forward
+  return while retaining raw-model DDP for the direct-Qwen actor path. Remote
+  focused CPU regression exited zero (31 tests), including three expanded DDP
+  boundary tests.
+- Slurm Job `506846` ran on `preempt/dgx-16:4` from
+  `2026-08-05T19:16:38+08:00` to `19:17:20+08:00`, then ended
+  `FAILED (exit 1:0)` after 42 seconds. The single-GPU phase passed. The DDP phase
+  constructed the new Backbone wrapper, but its first Qwen gradient replicas
+  still differed by `0.002227783203125`; it stopped before optimizer step or
+  epochs 2--4. It saved no checkpoint and is not resumable.
+- PyTorch 2.8 source inspection refined the diagnosis. With `static_graph=True`,
+  DDP invokes `prepare_for_backward([])` instead of traversing the returned
+  tensor graph. This critic forward has an intentionally unused `lm_head` plus a
+  hook-derived hidden return. The next correction uses
+  `find_unused_parameters=True, static_graph=False` only for planner Backbone
+  DDP, so each epoch explicitly traverses `BackboneOutput.hidden`. Direct actor
+  logits DDP retains its existing static settings. The GPU replica assertion is
+  unchanged.
