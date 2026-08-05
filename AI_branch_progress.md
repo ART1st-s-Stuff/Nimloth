@@ -3777,3 +3777,17 @@
   不是每个Qwen参数可测更新、长程稳定性、policy quality或held-out success证据。
 - W&B禁用，没有新rollout或checkpoint。最终输出说明和result SHA256位于
   ID131输出README；本PPO ValueHead实现与GPU mechanics gate阶段完成。
+
+## 2026-08-05：PPO ValueHead全规模实验ID132启动合同
+
+- 人类批准为新PPO ValueHead目标排队一个`normal`单节点8卡全规模实验。合同固定为
+  SFT2 epoch1 fresh init、60 iterations、每轮16条`base_train/common_sense_train`
+  新rollout、H=1 greedy K16/DINO-grid、ValueHead PPO clip 0.2和4 critic epochs；
+  direct-Qwen actor PPO关闭，planner继续拥有执行动作。
+- 每10轮运行完整held-out 120条（`base`/`common_sense`各60）；训练rollout
+  success不能替代`val_success_rate`。训练Qwen language body、WM predictor和
+  ValueHead，冻结vision/StateProjector/`lm_head`/DINO teacher。
+- 资源合同为`normal` 1 node/8 H800/128 CPU/96 GiB/8 hours，最多64 GPU-hours；
+  四个2-GPU训练rank与两个TP4 rollout worker共用整节点。实时资源检查没有健康的
+  整节点8卡空闲，因此预期先进入pending。正式identity、输出、W&B和所有启动门禁见
+  `ai_tasks/ai_progress/2026-08-05_ppo_value_critic_full_id132.md`。
