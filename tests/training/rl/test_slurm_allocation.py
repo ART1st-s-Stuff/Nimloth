@@ -184,6 +184,76 @@ def test_full_runner_uses_one_fresh_manifest_per_resumed_update() -> None:
     assert 'PREFLIGHT_OK commit=${COMMIT}' in pipeline
 
 
+def test_full_runner_creates_new_date_parent_before_first_progress_write(
+    tmp_path,
+) -> None:
+    formal_root = tmp_path / "formal"
+    run_out = formal_root / "2026-08-06" / "id134"
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text("{}", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text("test: true\n", encoding="utf-8")
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "-c" ]]; then
+  printf '%s\n' '60 16 1 2 false true 10 120 base,common_sense'
+  exit 0
+fi
+if [[ "$1 $2 $3" == "-m nimloth.training.rl.continuation prepare-run" ]]; then
+  printf '%s\n' '0 1 0 -'
+  exit 0
+fi
+exit 91
+""",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+    iteration_runner = tmp_path / "iteration-runner.sh"
+    iteration_runner.write_text(
+        "#!/usr/bin/env bash\nexit 42\n",
+        encoding="utf-8",
+    )
+    iteration_runner.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update({
+        "HOLD_JOB": "123",
+        "REPO": str(REPO_ROOT),
+        "ENV_REPO": str(REPO_ROOT),
+        "PYTHON": str(fake_python),
+        "RL_CONFIG": str(config),
+        "RUN_OUT": str(run_out),
+        "FORMAL_OUTPUT_ROOT": str(formal_root),
+        "ITERATION_RUNNER": str(iteration_runner),
+        "INITIAL_MODEL": str(model),
+        "INITIAL_WM_CKPT": str(model),
+        "INITIAL_RESUME_CHECKPOINT": "",
+        "INITIAL_GLOBAL_STEP": "0",
+        "TOTAL_ITERATIONS": "60",
+        "REFERENCE_MODEL": str(model),
+        "WANDB_PROJECT": "nimloth-rl",
+        "WANDB_RUN_NAME": "id134",
+    })
+
+    result = subprocess.run(
+        ["bash", str(FULL_RUNNER)],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 42, result.stderr
+    assert not run_out.exists()
+    progress = Path(f"{run_out}.iteration_progress.log")
+    assert progress.is_file()
+    assert "iteration=1 status=starting" in progress.read_text(encoding="utf-8")
+    assert "iteration=1 status=controller_failed exit=42" in progress.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_current_vllm_pipeline_preserves_checkpoint_processor_resolution() -> None:
     pipeline = PIPELINE.read_text(encoding="utf-8")
 

@@ -130,7 +130,11 @@ FIRST_ITERATION=$((INITIAL_GLOBAL_STEP + 1))
 TRAIN_OUT=${RUN_OUT}/train
 POLICY_INPUT_ROOT=${TRAIN_OUT}/policy_inputs
 PROGRESS_LOG=${RUN_OUT}.iteration_progress.log
-mkdir -p "${FORMAL_OUTPUT_ROOT}"
+RUN_PARENT=${RUN_OUT%/*}
+# The progress log is adjacent to RUN_OUT and is written before the iteration
+# runner creates RUN_OUT itself. Preserve the empty-output gate while ensuring a
+# previously unused date parent can receive that first durable status record.
+mkdir -p "${RUN_PARENT}"
 CURRENT_ITERATION=0
 
 record_exit() {

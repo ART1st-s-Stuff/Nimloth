@@ -2,7 +2,9 @@
 
 ## Status
 
-- Preflight in progress. No Slurm job has been submitted yet.
+- Failed before experiment setup and is not resumable. Slurm Job `507576` ran
+  on `normal/dgx-54:8` from `2026-08-06T01:50:02+08:00` to `01:50:33+08:00`,
+  then ended `FAILED (exit 1:0)` after 31 seconds.
 - Human authorization is the existing full-scale one-node/eight-GPU contract,
   followed after the ID132 diagnosis by the explicit instruction to modify and
   retry.
@@ -111,3 +113,44 @@
 - After submission record the Slurm job and current reason. If allocated, require
   both navigation prewarms, both TP4 engines, the strict 16-rollout merge, and
   the first finite synchronized PPO update before calling the run healthy.
+
+## Completed preflight and submission
+
+- Exact runtime commit, tracked-clean server worktree, VAGEN
+  `192c35a91f3941b72d5e1272af6603ef7a7d93e0`, LeWM
+  `8edfeb336732b5f3ce7b8b210d0ba370a09e2cac`, shell syntax, Python, checkpoint
+  files, output absence, and W&B uniqueness all passed.
+- The SFT2 checkpoint was re-read as complete epoch 1, step 776, K16 inject,
+  H=1/T=4, DINO-grid 0.5, and ValueHead objective
+  `decision_state_executed_action_mc_v3`; its root contains no `rl_state.pt`.
+- Actual assets contain 1,200 `base_train`, 1,200 `common_sense_train`, 60
+  `base`, and 60 `common_sense` tasks. Train/eval scene overlap is zero for
+  both paired datasets.
+- Parsed config reported attempts 3, 16 episodes, 20 steps, batch 16, world
+  4 x 2 GPUs, total 8 GPUs, TP4, four ValueHead PPO epochs, and external
+  120-episode evaluation every ten iterations. Login dry preflight passed.
+- Immediately before submission, the exact W&B name remained unused and the
+  output/progress paths were absent. Live normal resources showed several
+  eight-GPU idle nodes. `sbatch --test-only` accepted the contract; formal Job
+  `507576` requested and received 8 GPUs, 128 CPUs, and 96 GiB on `dgx-54`.
+
+## ID133 failure boundary
+
+- The full controller defines the adjacent progress file as
+  `RUN_OUT.iteration_progress.log`, but runtime commit `54399159` created only
+  `FORMAL_OUTPUT_ROOT`. The new date parent `.../2026-08-06/` did not exist.
+  The first iteration-start progress write therefore failed with
+  `No such file or directory`; the EXIT trap repeated the same failed write.
+- Failure occurred before Ray, environment startup, either navigation prewarm,
+  vLLM/model loading, trajectory collection, fresh manifest, W&B initialization,
+  PPO forward/backward, optimizer, consumption, checkpoint, or evaluation.
+  Slurm stdout is empty; stderr is 718 bytes and contains only the two parent-path
+  errors. Live W&B query still returns zero exact-name matches.
+- The server output README archives this boundary with SHA256
+  `2f3db44fee40b0e43b38272ee13a1c805cf0e337c9366dd9955be97e8e1714cd`.
+  ID133 has no checkpoint or rollout and cannot resume or reuse its identity.
+- The correction creates only `RUN_OUT`'s parent before the first progress write,
+  preserving the empty `RUN_OUT` guard. A real shell execution regression uses a
+  previously absent date parent and confirms the adjacent progress log is
+  durable before an injected iteration-runner failure; the Slurm suite passes
+  `20 passed`. Retry requires a new ID134/W&B/output and repeated launch gates.

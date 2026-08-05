@@ -3834,3 +3834,21 @@
 - `on-progress` memory复核确认local M0007/M0008/M0012的evidence仍支持训练split、W&B
   entity门禁和planner Backbone dynamic DDP合同；它们仍处于pending，CLI按协议拒绝AI
   upvote。没有新增durable memory，因为本次稳定合同已经由源码、测试和本进度段直接记录。
+
+## 2026-08-06：ID133在新日期父目录门禁失败
+
+- corrected runtime commit`54399159`及ID133 launch contract通过exact worktree、checkpoint、
+  split、W&B/output、配置、CPU dry preflight和`sbatch --test-only`门禁。Job`507576`于
+  01:50:02+08立即获得`normal/dgx-54:8`、128 CPU、96 GiB，但31秒后exit1。
+- full controller把progress写到`RUN_OUT.iteration_progress.log`，却只创建
+  `FORMAL_OUTPUT_ROOT`；首次使用的日期父目录`.../2026-08-06`不存在，因此iteration-start
+  和EXIT trap两次写入都报`No such file or directory`。没有Ray/env/prewarm/vLLM/model load、
+  trajectory、manifest、W&B、PPO forward/backward、optimizer、consumption或checkpoint；
+  ID133不可resume，输出README SHA256为`2f3db44f...e1714cd`。
+- 修复只在首次progress写入前创建`RUN_OUT`父目录，不提前创建`RUN_OUT`，所以empty-output
+  门禁不变。新增真实执行full controller的tmp-date-parent回归：fake iteration runner exit42前
+  adjacent progress已记录starting，trap再记录controller_failed，且`RUN_OUT`仍不存在；
+  Slurm定向套件`20 passed`。下一次必须新ID134/空output/W&B identity并重做全部preflight。
+- `on-experiment-end`复核local M0013的batch-owned controller证据仍正确；M0014的旧行号已
+  漂移，已修正为两次dgx-51 prewarm超时的当前证据段。两条memory仍为pending，CLI拒绝AI
+  upvote；需人类之后执行memory审批。没有新增memory，避免重复known error和进度记录。
