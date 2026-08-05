@@ -3696,3 +3696,15 @@
   `FreshJSONLRolloutCollector`，实际API属于`FreshRolloutManifest`。失败发生在任何
   state forward、backward、optimizer构造/step或DDP phase之前；无梯度证据、result JSON
   或checkpoint。ID126保留为失败artifact且不可resume，修复后使用新ID127。
+
+## 2026-08-05：PPO ValueHead单卡梯度通过，ID127 DDP门禁过严
+
+- processor API修复后，ID127 Job `506813`在`preempt/dgx-16:4`运行。单卡真实Qwen
+  critic backward通过：planner执行`lookup`，Qwen final-norm最大梯度`0.0107421875`，
+  ValueHead最大梯度`0.651180625`，`lm_head.grad=None`，frozen StateProjector/vision
+  无参数梯度，峰值显存14.78 GB。该结果直接证明planner执行动作无需是Qwen action-token
+  argmax，ValueHead PPO critic梯度仍能回传Qwen语言模型。
+- 2-rank×2-GPU正式`model_parallel_ddp`完成首个backward和AdamW step；Qwen witness
+  精确相等，ValueHead witness跨rank差`1.024e-7`，但门禁按bit equality误报失败并在
+  epoch1后终止。ID127无checkpoint且不可resume；修复为显式FP32容差并记录梯度/参数最大
+  replica差后使用新ID128完成四轮门禁。

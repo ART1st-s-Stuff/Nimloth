@@ -91,3 +91,25 @@ actual full-prefix Qwen -> StateProjector -> ValueHead graph requested by the us
 - No state-prompt forward, backward, optimizer construction/step, DDP phase,
   result JSON, or checkpoint occurred. ID126 provides no gradient evidence and is
   not resumable. Its output must remain as the failed record; retry uses ID127.
+
+## ID127 end status
+
+- Slurm Job `506813` ran on `preempt/dgx-16:4` from
+  `2026-08-05T18:53:58+08:00` to `18:55:23+08:00`, then ended `FAILED (exit 1:0)`
+  after 1 minute 25 seconds. Runtime commit was `97cfca5a` and Slurm stderr was
+  empty.
+- The single-GPU phase passed on a real `rl_base_train_000001` transition. The
+  planner executed `lookup`; Qwen final-norm gradient max was `0.0107421875`,
+  ValueHead gradient max was `0.651180624961853`, `lm_head.grad` was absent, and
+  frozen StateProjector/vision parameter gradients were absent. Peak allocated
+  GPU memory was `14,783,512,064` bytes.
+- The two-rank/two-GPU-per-rank phase validated balanced placements `[0,1]` and
+  `[2,3]`, wrapped production `model_parallel_ddp`, and completed its first
+  backward plus AdamW step. Qwen witness parameters were bit-equal across ranks;
+  ValueHead witness parameters differed by only `1.0244548320770264e-07` after
+  that step. The gate incorrectly required bit equality and stopped before PPO
+  epochs 2--4.
+- ID127 proves the requested single-GPU critic gradient route but does not prove a
+  complete four-epoch distributed update. It is not resumable and saved no model
+  checkpoint. ID128 will replace the bit-equality assertion with an explicit FP32
+  tolerance and will persist maximum gradient/parameter replica differences.

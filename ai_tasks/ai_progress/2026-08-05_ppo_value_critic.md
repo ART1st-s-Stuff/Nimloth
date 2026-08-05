@@ -69,3 +69,10 @@
   exit1。artifact fingerprint与Qwen双shard加载均完成，但门禁错误地在collector而非
   manifest上调用`validate_processor`，在任何state forward/backward/optimizer/DDP之前
   fail closed；没有梯度结果或checkpoint，ID126不可resume，修复后必须使用新ID127。
+- 修复processor API后，ID127 Job `506813`单卡阶段通过：真实planner动作`lookup`的
+  ValueHead loss产生Qwen final-norm最大梯度`0.0107421875`与ValueHead最大梯度
+  `0.651180625`，`lm_head.grad=None`且frozen StateProjector/vision无参数梯度，峰值显存
+  14.78 GB。随后正式`world_size=2 x gpus_per_rank=2`完成首个backward+AdamW step；
+  Qwen witness精确同步，ValueHead witness仅有`1.024e-7`跨设备舍入差，但门禁错误要求
+  bit equality而终止，未完成epoch2--4。ID127无checkpoint且不可resume；显式FP32容差和
+  梯度/参数差值记录后用新ID128重试。

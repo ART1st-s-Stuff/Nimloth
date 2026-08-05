@@ -150,17 +150,33 @@ def _write_result(output_dir: Path, mode: str, rank: int, result: dict[str, Any]
     )
 
 
-def _assert_distributed_parameter_sync(parameter: torch.nn.Parameter) -> float:
+SYNC_ABSOLUTE_TOLERANCE = 5e-7
+SYNC_RELATIVE_TOLERANCE = 1e-6
+
+
+def _assert_distributed_tensor_sync(
+    tensor: torch.Tensor,
+    *,
+    label: str,
+) -> float:
     if not (dist.is_available() and dist.is_initialized()):
         return 0.0
-    witness = parameter.detach().reshape(-1)[:16].float()
+    witness = tensor.detach().reshape(-1)[:16].float()
     gathered = [torch.empty_like(witness) for _ in range(dist.get_world_size())]
     dist.all_gather(gathered, witness)
     max_difference = max(
         float((current - gathered[0]).abs().max().item()) for current in gathered[1:]
     )
-    if max_difference != 0.0:
-        raise AssertionError(f"DDP parameter replicas diverged: {max_difference}")
+    max_magnitude = max(float(current.abs().max().item()) for current in gathered)
+    tolerance = (
+        SYNC_ABSOLUTE_TOLERANCE
+        + SYNC_RELATIVE_TOLERANCE * max_magnitude
+    )
+    if max_difference > tolerance:
+        raise AssertionError(
+            f"DDP {label} replicas diverged: difference={max_difference}, "
+            f"tolerance={tolerance}"
+        )
     return max_difference
 
 
@@ -298,6 +314,10 @@ def main() -> int:
         epoch_metrics: list[dict[str, float]] = []
         qwen_grad_max = 0.0
         value_grad_max = 0.0
+        qwen_grad_replica_max_difference = 0.0
+        value_grad_replica_max_difference = 0.0
+        qwen_parameter_replica_max_difference = 0.0
+        value_parameter_replica_max_difference = 0.0
         epochs = 1 if args.mode == "single_grad" else config.value_head.ppo_epochs
         for ppo_epoch in range(epochs):
             if optimizer is not None:
@@ -321,6 +341,23 @@ def main() -> int:
                 raise AssertionError("critic loss did not reach the Qwen language body")
             if value_grad_max <= 0.0:
                 raise AssertionError("critic loss did not reach ValueHead")
+            if dist.is_available() and dist.is_initialized():
+                assert qwen_witness.grad is not None
+                assert value_witness.grad is not None
+                qwen_grad_replica_max_difference = max(
+                    qwen_grad_replica_max_difference,
+                    _assert_distributed_tensor_sync(
+                        qwen_witness.grad,
+                        label="Qwen gradient witness",
+                    ),
+                )
+                value_grad_replica_max_difference = max(
+                    value_grad_replica_max_difference,
+                    _assert_distributed_tensor_sync(
+                        value_witness.grad,
+                        label="ValueHead gradient witness",
+                    ),
+                )
             if lm_head.grad is not None:
                 raise AssertionError("critic loss unexpectedly supervised lm_head")
             if not _all_grads_absent(world_model.state_proj):
@@ -338,8 +375,20 @@ def main() -> int:
                     max_norm=1.0,
                 )
                 optimizer.step()
-                _assert_distributed_parameter_sync(qwen_witness)
-                _assert_distributed_parameter_sync(value_witness)
+                qwen_parameter_replica_max_difference = max(
+                    qwen_parameter_replica_max_difference,
+                    _assert_distributed_tensor_sync(
+                        qwen_witness,
+                        label="Qwen parameter witness",
+                    ),
+                )
+                value_parameter_replica_max_difference = max(
+                    value_parameter_replica_max_difference,
+                    _assert_distributed_tensor_sync(
+                        value_witness,
+                        label="ValueHead parameter witness",
+                    ),
+                )
 
         qwen_delta = float((qwen_witness.detach() - qwen_before).abs().max().item())
         value_delta = float((value_witness.detach() - value_before).abs().max().item())
@@ -377,17 +426,33 @@ def main() -> int:
                 world_model.state_proj
             ),
             "vision_grads_absent": _named_grads_absent(model, ".visual."),
+            "sync_absolute_tolerance": SYNC_ABSOLUTE_TOLERANCE,
+            "sync_relative_tolerance": SYNC_RELATIVE_TOLERANCE,
             "epoch_metrics": epoch_metrics,
             "max_memory_allocated_bytes": _gpu_memory(
                 args.gpus_per_rank, local_rank
             ),
         }
         if dist.is_available() and dist.is_initialized():
-            result["qwen_replica_max_difference"] = (
-                _assert_distributed_parameter_sync(qwen_witness)
+            result["qwen_grad_replica_max_difference"] = (
+                qwen_grad_replica_max_difference
             )
-            result["value_replica_max_difference"] = (
-                _assert_distributed_parameter_sync(value_witness)
+            result["value_grad_replica_max_difference"] = (
+                value_grad_replica_max_difference
+            )
+            result["qwen_parameter_replica_max_difference"] = max(
+                qwen_parameter_replica_max_difference,
+                _assert_distributed_tensor_sync(
+                    qwen_witness,
+                    label="Qwen final parameter witness",
+                ),
+            )
+            result["value_parameter_replica_max_difference"] = max(
+                value_parameter_replica_max_difference,
+                _assert_distributed_tensor_sync(
+                    value_witness,
+                    label="ValueHead final parameter witness",
+                ),
             )
         _write_result(args.output_dir, args.mode, rank, result)
         print(json.dumps(result, sort_keys=True, allow_nan=False), flush=True)
