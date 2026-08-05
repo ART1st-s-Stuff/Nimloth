@@ -3686,3 +3686,13 @@
   moveahead占比均约81--82%，不是单个held-out subset造成。iter10训练batch只有16条且
   pre-update，moveahead为141/208 (67.79%)，不能与120条eval混用。该结果确认强烈的前进动作
   集中，但没有matched SFT2/iteration0同集对照，暂不能把成因归于RL。
+
+## 2026-08-05：PPO ValueHead GPU门禁ID126在backward前失败
+
+- 人类确认`preempt`单节点4张H800、20分钟合同后，PPO ValueHead GPU mechanics gate
+  ID126 Job `506808`在`dgx-16:4`运行。exact commit为`5d02fb1e`，SFT2 epoch1和ID125
+  iteration1真实轨迹/manifest fingerprint通过，Qwen两个shard完成单卡加载。
+- Job运行2分44秒后exit1：脚本把processor校验错误调用到
+  `FreshJSONLRolloutCollector`，实际API属于`FreshRolloutManifest`。失败发生在任何
+  state forward、backward、optimizer构造/step或DDP phase之前；无梯度证据、result JSON
+  或checkpoint。ID126保留为失败artifact且不可resume，修复后使用新ID127。

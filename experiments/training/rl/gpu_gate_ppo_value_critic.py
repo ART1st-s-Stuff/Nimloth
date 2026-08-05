@@ -212,7 +212,7 @@ def main() -> int:
             model_parallel_size=args.gpus_per_rank,
         )
         if args.mode == "single_grad":
-            freshness_validator.validate_processor(loaded.processor)
+            manifest.validate_processor(loaded.processor)
         model = loaded.backbone.model
         training_device = model_output_device(model, default=device)
         world_model = _build_world_model(

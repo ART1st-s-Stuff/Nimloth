@@ -2,11 +2,11 @@
 
 ## Status
 
-- Preflight complete; Slurm submission is waiting for the exact resource contract
-  confirmation below.
+- Human confirmed the exact resource contract. ID126 was submitted and failed
+  before backward; a corrected retry must use a new output identity.
 - PPO critic implementation commit: `46be9368`.
 - GPU gate harness commit: `64726911`.
-- The final submitted commit and Slurm job ID must be appended after submission.
+- ID126 submitted commit: `5d02fb1e`.
 
 ## Purpose and evidence boundary
 
@@ -51,10 +51,11 @@
   `ppo_clip_range=0.2`, `ppo_epochs=4`, Qwen LR `1e-6`, and ValueHead LR `1e-4`.
 - Slurm: `preempt`, one node, four H800 GPUs, 32 CPUs, 128 GiB RAM, 20-minute
   walltime. Maximum allocation cost is 1.33 GPU-hours.
-- Planned ID/output:
+- Initial ID/output:
   `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-05/126_gpu_gate_ppo_value_critic_sft2ep1_realtraj1_1g_then_2r2g`.
   Live preflight confirmed this path is absent and the highest existing numeric RL
-  output ID is 125.
+  output ID was 125. After the recorded ID126 failure, the corrected retry output is
+  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-05/127_gpu_gate_ppo_value_critic_sft2ep1_realtraj1_1g_then_2r2g`.
 - Resume: none. A preemption or failure uses a new empty output identity; the gate
   never writes a training checkpoint.
 
@@ -73,3 +74,20 @@
 WM predictor, DINO teacher, Qwen vision, StateProjector, actor/token policy, and
 `lm_head` are excluded from optimization in this focused gate. The test retains the
 actual full-prefix Qwen -> StateProjector -> ValueHead graph requested by the user.
+
+## ID126 end status
+
+- Slurm Job `506808` ran on `preempt` node `dgx-16` with the requested four H800s,
+  32 CPUs, and 20-minute limit. It started at `2026-08-05T18:46:30+08:00` and
+  ended `FAILED (exit 1:0)` after 2 minutes 44 seconds.
+- Exact runtime commit was `5d02fb1e0514a7556196397cd18c2573df8ae826`.
+  The contract log confirms the intended SFT2 checkpoint, ID125 iteration-1
+  trajectory and manifest, Python 3.12, and four visible H800s. Slurm stderr was
+  empty.
+- The run completed immutable policy/trajectory/planner fingerprint validation
+  and loaded both Qwen checkpoint shards on GPU0. It then failed at the processor
+  check because the gate called `freshness_validator.validate_processor(...)` on
+  `FreshJSONLRolloutCollector`; the method belongs to `FreshRolloutManifest`.
+- No state-prompt forward, backward, optimizer construction/step, DDP phase,
+  result JSON, or checkpoint occurred. ID126 provides no gradient evidence and is
+  not resumable. Its output must remain as the failed record; retry uses ID127.

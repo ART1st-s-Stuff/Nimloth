@@ -65,3 +65,7 @@
 - 完整资源、输入、冻结边界、成功判据和证据边界见
   `ai_tasks/ai_progress/2026-08-05_ppo_value_critic_gpu_gate.md`。当前仅完成preflight和
   静态校验，尚未提交Slurm job或产生GPU结果。
+- 人类确认4卡合同后提交ID126 Job `506808`，实际在`preempt/dgx-16:4`运行2分44秒后
+  exit1。artifact fingerprint与Qwen双shard加载均完成，但门禁错误地在collector而非
+  manifest上调用`validate_processor`，在任何state forward/backward/optimizer/DDP之前
+  fail closed；没有梯度结果或checkpoint，ID126不可resume，修复后必须使用新ID127。
