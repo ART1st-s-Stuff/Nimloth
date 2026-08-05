@@ -3797,3 +3797,20 @@
   Job `506953`已正式提交；`scontrol`确认单节点8卡、128 CPU、96 GiB、8小时和节点
   排除合同。20:44+08时为`PENDING(Resources)`、elapsed0，预计22:05:37+08但尚无
   allocation；output/progress/W&B仍不存在，当前没有rollout、update或质量证据。
+
+## 2026-08-06：ID132在iteration1 rollout完整性门禁失败
+
+- Job `506953`随后获得`normal/dgx-52:8`，20:59:22--21:12:03+08运行12分41秒后
+  `FAILED (NonZeroExitCode, 1:0)`。navigation prewarm以11.064秒通过，Ray及实际一个
+  TP4 vLLM engine完成checkpoint/NCCL/KV初始化并开始真实planner rollout。
+- `rl_000005`在第5个动作生成时触发
+  `vLLM decoded '</think>' did not end at query injection`，collector fail-closed丢弃该
+  trajectory。最终只持久化其余15条/277 transitions/partial success 2条，随后严格
+  `15 != 16`完整批次门禁退出。该2/15不是训练指标或质量结果。
+- 无fresh manifest、consumption、PPO forward/backward、optimizer step、checkpoint、
+  held-out eval或W&B run；不完整JSONL不可消费，ID132无checkpoint且不可resume。重试
+  必须先修复边界并使用新identity/空output，从相同SFT2 epoch1 fresh init开始。
+- 同时确认独立launch偏差：提交的`ITERATION_RUNNER`为串行
+  `run_vllm_online_ppo_slurm.sh`，所以仅有一个TP4 engine；`ROLLOUT_WORKERS=2`只由
+  parallel runner消费。它降低并行度且违背两个TP4 worker合同，但不是本次
+  decoded-`</think>`失败的直接原因。远端输出README已完成on-experiment-end归档。

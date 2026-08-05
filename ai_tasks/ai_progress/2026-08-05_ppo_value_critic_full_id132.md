@@ -2,18 +2,19 @@
 
 ## Status
 
-- Submitted as Slurm Job `506953`. At `2026-08-05T20:44:00+08:00` it was
-  `PENDING(Resources)`, elapsed `0:00`, with scheduler estimate
-  `2026-08-05T22:05:37+08:00`. This is a scheduling estimate, not an allocation.
+- Failed before the first PPO update. Slurm Job `506953` ran on
+  `normal/dgx-52:8` from `2026-08-05T20:59:22+08:00` to `21:12:03+08:00`, then
+  ended `FAILED (NonZeroExitCode, 1:0)` after 12 minutes 41 seconds.
 - Exact submitted runtime commit:
-  `6acd0d7cd804e71682079c964ad4818f2d25cbd7`. The batch receives this as
-  `EXPECTED_COMMIT` and enforces it before creating the formal run.
+  `6acd0d7cd804e71682079c964ad4818f2d25cbd7`. The batch enforced this as
+  `EXPECTED_COMMIT` before creating the formal run.
 - `scontrol` confirms `ReqTRES=cpu=128,mem=96G,node=1,gres/gpu=8`,
   `TresPerNode=gres:gpu:8`, eight-hour limit, and exclusions
-  `dgx-[32,37,51]`. There is no allocation yet.
-- The formal output, adjacent iteration-progress log, and W&B ID132 run were all
-  absent after submission. No rollout, optimizer step, checkpoint, metric, or
-  GPU runtime evidence exists while the job remains pending.
+  `dgx-[32,37,51]`; the actual allocation was all eight GPUs on `dgx-52`.
+- Navigation prewarm and one TP4 vLLM engine completed. Iteration 1 persisted 15
+  of 16 attempted trajectories, then failed the strict complete-batch gate. No
+  fresh manifest, consumption, optimizer step, checkpoint, held-out evaluation,
+  or W&B run exists. ID132 is not resumable.
 
 ## Scientific purpose and evidence boundary
 
@@ -117,3 +118,31 @@
 - `sbatch --test-only` accepted the exact resource and environment contract.
   Formal submission then created Job `506953`; only the batch-owned controller
   owns the future experiment lifecycle.
+
+## ID132 failure boundary
+
+- AI2-THOR navigation prewarm passed on `base_train` seed 1 in 11.064 seconds.
+  Ray started cleanly; the actual TP4 engine completed both checkpoint shards,
+  NCCL/Gloo setup, KV-cache initialization, and real planner rollout generation.
+- Episode `rl_000005` (`base_train`) failed after its fifth action with
+  `RuntimeError: vLLM decoded '</think>' did not end at query injection`.
+  The collector correctly discarded that incomplete trajectory and continued.
+- The immutable JSONL contains 15 trajectories, IDs `rl_000001` through
+  `rl_000016` excluding `rl_000005`, with 277 executed transitions and two
+  successes. This incomplete-batch success count is not a training metric.
+- Final failure was the strict guard
+  `rollout produced an incomplete trajectory batch: 15 != 16`. There is no
+  `fresh_policy_manifest.json`, rollout-consumption record, `train/latest`, PPO
+  forward/backward, optimizer step, held-out evaluation, or W&B run.
+- The partial rollout is unmanifested and must not be consumed or reused. No RL
+  checkpoint exists, so retry cannot resume ID132; it requires a corrected code
+  and runner contract, a new experiment identity, and an empty output initialized
+  from the same SFT2 epoch-1 checkpoint.
+- A separate launch-contract deviation was also confirmed. Submission set
+  `ITERATION_RUNNER=run_vllm_online_ppo_slurm.sh`, so only one TP4 engine ran.
+  `ROLLOUT_WORKERS=2` is consumed only by
+  `run_vllm_online_ppo_parallel_slurm.sh`. This reduced rollout parallelism and
+  violated the recorded two-worker topology, although it did not directly cause
+  the decoded-`</think>` failure.
+- The output README now records the exact job, command, commit, configuration,
+  data/checkpoint contract, artifacts, cause, and non-resumable boundary.
