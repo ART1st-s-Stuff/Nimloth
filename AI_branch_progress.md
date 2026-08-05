@@ -3649,3 +3649,10 @@
   指向`train/policy_inputs/iter_0014`；其`rl_state.pt`确认global step13和objective
   `receding_horizon_decision_state_mc_v2`，iter14无consumption，因此同一controller可安全归档
   partial attempt并从iter13重跑iter14；不能退回会丢失11--13更新的周期checkpoint iter10。
+- 对ID125 iteration10持久化轨迹统计真实执行动作：held-out 120条共2,027 actions，
+  moveahead 1,657 (81.75%)，其余依次为moveback 67、moveright 36、moveleft 63、
+  rotateright 75、rotateleft 68、lookup 45、lookdown 16；translation/rotation/look占
+  89.94%/7.05%/3.01%，normalized 8-action entropy为0.392。base与common_sense的
+  moveahead占比均约81--82%，不是单个held-out subset造成。iter10训练batch只有16条且
+  pre-update，moveahead为141/208 (67.79%)，不能与120条eval混用。该结果确认强烈的前进动作
+  集中，但没有matched SFT2/iteration0同集对照，暂不能把成因归于RL。

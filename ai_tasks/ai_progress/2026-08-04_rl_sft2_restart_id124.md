@@ -75,3 +75,19 @@
   record, so the same controller should archive its partial attempt and retry
   iteration 14 from that snapshot. Periodic `train/iter_0010` would discard
   updates 11--13 and is not the correct latest recovery point.
+
+## Iteration-10 executed-action distribution
+
+- Streaming the persisted `action_indices`/`action_names` found zero schema
+  mismatches. The 120-episode held-out eval contains 2,027 executed actions:
+  moveahead 1,657 (81.75%), moveback 67 (3.31%), moveright 36 (1.78%), moveleft
+  63 (3.11%), rotateright 75 (3.70%), rotateleft 68 (3.35%), lookup 45 (2.22%),
+  and lookdown 16 (0.79%). Translation/rotation/look are 89.94%/7.05%/3.01%;
+  normalized eight-action entropy is 0.392.
+- The moveahead share is similar on base (821/1,010, 81.29%) and common_sense
+  (836/1,017, 82.20%), so the concentration is not isolated to one held-out
+  subset. The 16-episode pre-update train batch differs: 141/208 moveahead
+  (67.79%), 64/208 rotations (30.77%), and only three other actions.
+- This establishes strong forward-action concentration at iteration 10 but does
+  not identify its cause. A matched SFT2/iteration-0 distribution on the same
+  120 held-out episodes is needed before attributing it to RL.
