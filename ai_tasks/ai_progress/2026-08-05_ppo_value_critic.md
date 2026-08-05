@@ -53,3 +53,15 @@
 - `py_compile`、`git diff --check`通过；19个启用planner的YAML全部同时包含
   `ppo_clip_range: 0.2`与`ppo_epochs: 4`。
 - 未运行GPU、Slurm、rollout或训练实验。
+
+## GPU mechanics gate preflight
+
+- 人类随后明确要求使用GPU测试。正式planner拓扑的每个训练rank跨2张GPU，因此跨rank
+  `model_parallel_ddp`最小真实门禁是`world_size=2 x gpus_per_rank=2`，总计4张GPU；
+  2张GPU只能覆盖单rank模型并行，不能证明DDP同步。
+- commit `64726911`新增单卡真实Qwen critic backward和4卡正式拓扑AdamW多epoch门禁；
+  使用ID125 iteration1中与SFT2 epoch1 fingerprint精确匹配的真实轨迹，只读验证其
+  manifest，不生成fixed CoT、不保存checkpoint、不把该门禁当作新鲜rollout或质量实验。
+- 完整资源、输入、冻结边界、成功判据和证据边界见
+  `ai_tasks/ai_progress/2026-08-05_ppo_value_critic_gpu_gate.md`。当前仅完成preflight和
+  静态校验，尚未提交Slurm job或产生GPU结果。
