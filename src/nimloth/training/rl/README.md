@@ -27,7 +27,7 @@ by the shared Agent template.
 | Mode | `--env-url` | `--use-jsonl-rollout` | Intended use |
 |------|-------------|-----------------------|--------------|
 | Single-GPU online | required | no | local integration and online training |
-| Static JSONL | not required | yes | offline WM/value training from migrated current-format trajectories |
+| Static JSONL | not required | yes | non-planner offline WM/value training from migrated current-format trajectories |
 | Fresh vLLM JSONL | not required | yes | one multi-rank RL update after exact-policy vLLM rollout |
 
 Direct `VAGENNavigationRolloutCollector` use is rejected when `world > 1`: different
@@ -43,7 +43,9 @@ Static JSONL is rejected when online actor provenance is required. A
 the exact policy, planner, trajectory, and optional reference artifacts by content
 fingerprint. Consumption is marked in-progress before optimization and committed
 only after a resumable post-update checkpoint exists. Train and validation use
-separate collector sources.
+separate collector sources. Planner PPO critic rejects ordinary static JSONL because
+its saved decision state cannot prove a match with the current Qwen、StateProjector
+and ValueHead checkpoints; planner JSONL must use the fresh manifest contract.
 
 ## Data flow
 
@@ -63,9 +65,9 @@ environment system_prompt + obs_str + images
  RolloutTrajectory (每步真实Qwen state + 独立search trace)
                          |
                          v
-      完整prefix Qwen -> current-state ValueHead MC + WM预测next state
+      完整prefix Qwen -> PPO-clipped ValueHead critic + WM预测next state
                          |
-                  one optimizer step
+                  multiple critic epochs
 ```
 
 For every step `t`, a complete trajectory stores:
@@ -93,35 +95,49 @@ Planner在每个真实environment step重新运行Qwen和搜索。设`P = planni
 保存每一步真实CoT、Qwen hidden、投影state和独立search trace，不把上一轮候选尾部
 当作下一步的真实state或实际动作。
 
-训练使用完整episode，不采样window：
+训练使用完整episode，不采样window。每个fresh rollout batch先用update前的
+ValueHead在trajectory保存的真实decision state上计算并冻结
+`old_Q_t = Q_old(s_t, executed_action_t)`。这个值不是MCTS root score，也不是Qwen
+action-token log-prob。随后对同一batch执行显式配置的多个critic epoch：
 
 ```text
-for each real transition t:
-    prefix_t = persisted prompt + all previous real history + current real CoT
-    hidden_t = qwen(prefix_t)                     # current differentiable graph
-    state_t = state_proj(hidden_t)
-    context = detached_real_states[-history_size:]
-    context[-1] = state_t
-    predicted_next = wm(context, previous_actions + executed_action_t)[-1]
+old_Q = frozen(value_head(saved_rollout_decision_state)[executed_action])
 
-    expected_next = saved_real_state[t+1]         # fixed target
-    L_state = mse(predicted_next, expected_next)
-    L_dino = mse(predicted_next, frozen_dino(next_image_t))
-    action_values = value_head(state_t)
-    L_value = mse(action_values[executed_action_t], full_episode_return_t)
-    backward((lambda_wm * L_state + lambda_dino * L_dino
-              + L_value) / total_real_transitions)
+for ppo_epoch in range(value_head.ppo_epochs):
+    for each real transition t:
+        prefix_t = persisted prompt + all previous real history + current real CoT
+        hidden_t = qwen(prefix_t)                  # current differentiable graph
+        state_t = state_proj(hidden_t)
+        Q_t = value_head(state_t)[executed_action_t]
+        Q_clip_t = old_Q_t + clamp(Q_t - old_Q_t,
+                                   -ppo_clip_range, +ppo_clip_range)
+        L_value = max((Q_t - return_t)^2, (Q_clip_t - return_t)^2)
 
-optimizer.step()  # exactly once after all transition backward calls
+        if ppo_epoch == 0:
+            context = detached_real_states[-history_size:]
+            context[-1] = state_t
+            predicted_next = wm(context, previous_actions + executed_action_t)[-1]
+            L_state = mse(predicted_next, saved_real_state[t+1])
+            L_dino = mse(predicted_next, frozen_dino(next_image_t))
+        else:
+            L_state = L_dino = 0
+
+        backward((lambda_wm * L_state + lambda_dino * L_dino
+                  + L_value) / total_real_transitions)
+    optimizer.step()
 ```
 
 `history_size`只限制WM predictor在一个预测位置最多读取多少个真实过去state；它不决定
 Qwen调用次数或搜索长度。每个transition重新构建一次完整prefix的Qwen graph：历史
 token/CoT是固定输入，但这次forward中处理历史的激活参与反传。backward结束后释放该
 step的graph，不连接以前step已经释放的graph。ValueHead输入是可微的当前`state_t`，
-所以MC value梯度经过ValueHead、StateProjector和本次完整Qwen prefix；WM predictor
+所以clipped critic梯度经过ValueHead、StateProjector和本次完整Qwen prefix；它不经过
+Qwen的`lm_head`，也不要求执行动作是action-token logit最大的动作。WM predictor
 由独立的state/DINO loss以及多步rollout中后续decision-state value训练。planner配置固定
-`value_head.lambda_rank=0`，MC项只直接监督执行action的slot。
+`value_head.lambda_rank=0`，critic只直接监督执行action的slot。`ppo_clip_range`和
+`ppo_epochs>=2`必须在planner配置中显式给出；首个epoch在参数尚未变化时等价于普通
+MC regression，后续epoch才使frozen-old clipping生效。一个fresh rollout batch完成后
+`global_step`只增加一次，内部每个critic epoch各执行一次`optimizer.step()`。
 SFT2 与 RL 的 state MSE 和 predicted-state DINO MSE 由同一个公共 objective 计算；
 SFT2 从离线 cache 读取 DINO target，RL 按轨迹中的真实 next-image 路径使用固定
 revision 的 frozen DINOv2 teacher，并缓存已计算的 target。RL loop 在 objective
@@ -129,7 +145,8 @@ revision 的 frozen DINOv2 teacher，并缓存已计算的 target。RL loop 在 
 sequence next observation 对齐的 tensor，不读取其他 step 的图像。
 
 planner不包含Qwen action objective：不重放Qwen action logits，也不蒸馏或PPO训练
-Qwen action prior。`actor.enabled`只表示未启用planner时的直接Qwen PPO路线。
+Qwen action prior。这里的PPO只指ValueHead critic的frozen-old clipped regression；
+`actor.enabled`只表示未启用planner时的直接Qwen actor PPO路线。
 
 以下连续window路径只服务于未启用planner的离线/直接policy训练。With
 `H = predictor.history_size`, it selects `H` consecutive actions and `H + 1`
@@ -192,6 +209,7 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
 | `nimloth.rollout.windows` | 原始 trajectory 的连续窗口计数与采样 |
 | `nimloth.rollout.fresh` | policy/planner/trajectory指纹、fresh manifest和事务式消费契约 |
 | `algorithm.py` | planner transition或连续sequence的WM/value/PPO计算图；不持有模型或optimizer |
+| `value.py` | planner执行动作的frozen-old PPO clipped critic objective |
 | `runtime.py` | prompt→Backbone hidden 的 joint/frozen 模式与可选 policy replay |
 | `loop.py` | collect→sample→forward/backward→validate→save 生命周期 |
 | `evaluation.py` | Held-out rollout collection and checkpoint metric selection |
@@ -249,7 +267,8 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   simulation数和exploration常数。历史H=2
   exhaustive smoke仅是旧实验事实，不是后续默认方案。
 - planner behavior是首动作上的确定性分布。所有planner response token的PPO mask均关闭；
-  action token不参加蒸馏、PPO或reference KL。Qwen的训练信号来自可微的value/WM state路径。
+  action token不参加蒸馏、actor PPO或reference KL。Qwen的训练信号来自可微的
+  ValueHead critic/WM state路径；critic PPO不直接更新`lm_head`。
 - reference KL是actor loss，不改变environment reward、return、advantage或value
   target。冻结reference在独立重放阶段只为采样CoT token写入log-prob；manifest绑定
   reference checkpoint指纹。reward KL尚未实现，任何对应配置会被严格schema拒绝。

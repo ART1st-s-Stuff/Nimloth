@@ -28,6 +28,14 @@ def _raw_config() -> dict:
     }
 
 
+def _configure_planner_value_ppo(raw: dict, *, epochs: int = 4) -> None:
+    raw["value_head"] = {
+        "lambda_rank": 0.0,
+        "ppo_clip_range": 0.2,
+        "ppo_epochs": epochs,
+    }
+
+
 def test_rl_config_rejects_unimplemented_fields() -> None:
     raw = _raw_config()
     raw["qwen"] = {"model": "ignored-before"}
@@ -161,6 +169,8 @@ def test_h1_smoke_trains_qwen_wm_and_value_without_direct_ppo() -> None:
     assert config.predictor.lambda_wm == 1.0
     assert config.predictor.lambda_dino == 0.5
     assert config.value_head.lambda_rank == 0.0
+    assert config.value_head.ppo_clip_range == 0.2
+    assert config.value_head.ppo_epochs == 4
     assert config.rl.iterations == 1
     assert config.rl.envs_per_iteration == config.rl.batch_size == 4
     assert config.rl.max_steps_per_episode == 20
@@ -184,6 +194,8 @@ def test_formal_h1_config_preserves_corrected_online_contract() -> None:
     assert config.predictor.lambda_wm == 1.0
     assert config.predictor.lambda_dino == 0.5
     assert config.value_head.lambda_rank == 0.0
+    assert config.value_head.ppo_clip_range == 0.2
+    assert config.value_head.ppo_epochs == 4
     assert config.rl.iterations == 60
     assert config.rl.envs_per_iteration == config.rl.batch_size == 8
     assert config.rl.max_steps_per_episode == 20
@@ -554,6 +566,7 @@ def test_rl_config_parses_agent_planning() -> None:
             "device": "cpu",
         }
     }
+    _configure_planner_value_ppo(raw)
 
     config = parse_rl_config(raw)
 
@@ -578,6 +591,7 @@ def test_planner_episode_training_requires_every_collected_episode() -> None:
             "device": "cpu",
         }
     }
+    _configure_planner_value_ppo(raw)
 
     with pytest.raises(ValueError, match="batch_size to equal rl.envs_per_iteration"):
         parse_rl_config(raw)
@@ -595,6 +609,7 @@ def test_planner_rejects_direct_qwen_ppo() -> None:
             "device": "cpu",
         }
     }
+    _configure_planner_value_ppo(raw)
 
     with pytest.raises(ValueError, match="actor.enabled must be false"):
         parse_rl_config(raw)
@@ -654,6 +669,7 @@ def test_planner_requires_explicit_search_and_trainable_world_model() -> None:
             "search_mode": "exhaustive",
         }
     }
+    _configure_planner_value_ppo(raw)
     raw["actor"] = {"enabled": False, "credit_assignment": "action"}
     raw["rl"]["truncated_bootstrap"] = "zero"
 
@@ -687,6 +703,7 @@ def test_planner_beam_width_matches_search_mode() -> None:
             "device": "cpu",
         }
     }
+    _configure_planner_value_ppo(raw)
     raw["actor"] = {
         "enabled": False,
         "credit_assignment": "action",
@@ -702,6 +719,36 @@ def test_planner_beam_width_matches_search_mode() -> None:
 
     raw["agent"]["planning"]["search_mode"] = "exhaustive"
     with pytest.raises(ValueError, match="only valid for beam"):
+        parse_rl_config(raw)
+
+
+def test_planner_value_ppo_requires_explicit_clip_and_multiple_epochs() -> None:
+    raw = _raw_config()
+    raw["rl"]["batch_size"] = raw["rl"].get("envs_per_iteration", 8)
+    raw["actor"] = {"enabled": False, "credit_assignment": "action"}
+    raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 1,
+            "search_mode": "greedy",
+            "device": "cpu",
+        }
+    }
+
+    with pytest.raises(ValueError, match="explicit value_head.ppo_clip_range"):
+        parse_rl_config(raw)
+
+    _configure_planner_value_ppo(raw, epochs=1)
+    with pytest.raises(ValueError, match="ppo_epochs>=2"):
+        parse_rl_config(raw)
+
+
+def test_nonplanner_rejects_unused_value_ppo_fields() -> None:
+    raw = _raw_config()
+    _configure_planner_value_ppo(raw)
+
+    with pytest.raises(ValueError, match="only valid for planner"):
         parse_rl_config(raw)
 
 

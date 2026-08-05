@@ -15,6 +15,7 @@ def test_static_jsonl_cannot_drive_online_actor_training() -> None:
     with pytest.raises(ValueError, match="actor training requires fresh trajectories"):
         validate_collector_configuration(
             actor_enabled=True,
+            planning_enabled=False,
             train_collector=JSONLRolloutCollector(),
             eval_collector=None,
             validation_enabled=False,
@@ -25,6 +26,27 @@ def test_fresh_jsonl_can_drive_ppo_actor_without_direct_env() -> None:
     collector = object.__new__(FreshJSONLRolloutCollector)
     validate_collector_configuration(
         actor_enabled=True,
+        planning_enabled=False,
+        train_collector=collector,
+        eval_collector=None,
+        validation_enabled=False,
+    )
+
+
+def test_static_jsonl_cannot_supply_planner_ppo_old_values() -> None:
+    with pytest.raises(ValueError, match="planner PPO critic requires fresh"):
+        validate_collector_configuration(
+            actor_enabled=False,
+            planning_enabled=True,
+            train_collector=JSONLRolloutCollector(),
+            eval_collector=None,
+            validation_enabled=False,
+        )
+
+    collector = object.__new__(FreshJSONLRolloutCollector)
+    validate_collector_configuration(
+        actor_enabled=False,
+        planning_enabled=True,
         train_collector=collector,
         eval_collector=None,
         validation_enabled=False,
@@ -35,6 +57,7 @@ def test_validation_requires_an_independent_collector() -> None:
     with pytest.raises(ValueError, match="separate eval collector"):
         validate_collector_configuration(
             actor_enabled=False,
+            planning_enabled=False,
             train_collector=JSONLRolloutCollector(),
             eval_collector=None,
             validation_enabled=True,

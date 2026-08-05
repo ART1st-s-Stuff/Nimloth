@@ -40,6 +40,8 @@ value_head:
   lr: 0.0001
   rank_margin: 0.1
   lambda_rank: 0.0
+  ppo_clip_range: 0.2
+  ppo_epochs: 4
 
 rl:
   iterations: 60

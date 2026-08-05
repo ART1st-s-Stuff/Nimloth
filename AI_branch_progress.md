@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
+
+- 新分支/worktree `feat/ppo-value-critic` 基于当前 active RL source `13b3c711`实现，
+  保留receding-horizon planner/MCTS对environment action的ownership；没有把planner
+  已执行动作当作Qwen action-token policy sample，也没有启用planner actor PPO。
+- 每批fresh planner rollout在optimizer update前，用保存的真实rollout decision state和
+  同一ValueHead checkpoint计算一次执行动作的frozen `Q_old(s_t,a_t)`。训练每个epoch
+  重算完整prefix Qwen和当前`Q(s_t,a_t)`，objective为
+  `max((Q-R)^2, (Q_old+clip(Q-Q_old)-R)^2)`；只监督执行action slot，old value detach。
+- planner配置现在要求显式`value_head.ppo_clip_range>0`和`ppo_epochs>=2`。首个epoch同时
+  训练WM/DINO和critic，后续epoch只训练critic、StateProjector及其上游Qwen表征；每个
+  epoch有独立optimizer step，但一批fresh rollout的`global_step`仍只加一。所有19个正式
+  planner YAML当前暂定`ppo_clip_range=0.2`、`ppo_epochs=4`，真实训练前仍需确认资源与
+  超参数合同。
+- ValueHead critic梯度继续走`ValueHead -> StateProjector -> Qwen hidden/backbone`，因此
+  不要求执行动作是action-token logit最大的动作；该梯度不经过Qwen `lm_head`，也不直接
+  监督action-token分布。首轮WM/DINO loss在多epoch指标汇总中只计一次，不被epoch数除薄。
+- planner checkpoint objective更新为
+  `receding_horizon_decision_state_ppo_value_v1`，并保存/严格校验完整ValueHead配置；旧planner
+  objective或不同clip/epoch配置的resume fail closed。新增old/current value差、critic clip
+  fraction和PPO epoch数等训练指标。普通静态planner JSONL也会fail closed；planner只接受
+  同进程在线rollout或绑定Qwen/StateProjector/WM/ValueHead指纹的fresh manifest，避免用
+  checkpoint不匹配的saved state伪造`Q_old`。
+- CPU验证：PPO critic、公共WM objective、config/resume/transition gradient/loop及
+  rollout freshness门禁的直接相关套件`80 passed`；当前完整`tests/training/rl`为
+  `183 passed, 1 failed`，唯一失败是测试环境
+  缺少VAGEN传递依赖`gym`，发生在未改动的source-prompt wording测试。`py_compile`、
+  `git diff --check`和19/19 planner配置字段覆盖通过。尚未运行真实multi-rank GPU/DDP、
+  vLLM rollout、optimizer质量实验或held-out success-rate评估。
+
 ## 2026-07-31：corrected ValueHead SFT2 重训启动准备
 
 - 人类批准先重训 corrected SFT2，再进入 H=1/K=1 RL。SFT2 使用

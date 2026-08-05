@@ -452,6 +452,7 @@ def _load_resume_state(
     expected_truncated_bootstrap: str | None,
     expected_planner_config: dict[str, Any],
     expected_planner_training_objective: str | None,
+    expected_planner_value_config: dict[str, Any] | None,
     expected_reference_kl_config: dict[str, Any],
     expected_train_world_model: bool,
 ) -> RLResumeState:
@@ -517,6 +518,8 @@ def _load_resume_state(
         raise ValueError("resume planner config mismatch")
     if state.get("planner_training_objective") != expected_planner_training_objective:
         raise ValueError("resume planner training objective mismatch")
+    if state.get("planner_value_config") != expected_planner_value_config:
+        raise ValueError("resume planner value config mismatch")
     saved_reference_kl_config = state.get(
         "reference_kl_config",
         {"weight": 0.0, "type": None},
@@ -566,6 +569,7 @@ def train_rl(
         )
     validate_collector_configuration(
         actor_enabled=actor_enabled,
+        planning_enabled=planning_enabled,
         train_collector=train_collector,
         eval_collector=eval_collector,
         validation_enabled=config.validation.enabled,
@@ -727,6 +731,9 @@ def train_rl(
                 if planning_enabled
                 else None
             ),
+            expected_planner_value_config=(
+                asdict(config.value_head) if planning_enabled else None
+            ),
             expected_reference_kl_config={
                 "weight": config.actor.reference_kl_loss_weight,
                 "type": config.actor.reference_kl_loss_type,
@@ -817,6 +824,7 @@ def train_rl(
             sigreg_weight=config.predictor.lambda_sigreg,
             value_rank_margin=config.value_head.rank_margin,
             value_rank_weight=config.value_head.lambda_rank,
+            value_ppo_clip_range=config.value_head.ppo_clip_range,
             ppo_clip_ratio=config.actor.clip_ratio,
             entropy_weight=config.actor.entropy_coeff,
             credit_assignment=config.actor.credit_assignment,

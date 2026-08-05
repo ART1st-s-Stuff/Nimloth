@@ -80,6 +80,11 @@ class RLCheckpointManager:
                 if self._config.agent.planning.enabled
                 else None
             ),
+            planner_value_config=(
+                asdict(self._config.value_head)
+                if self._config.agent.planning.enabled
+                else None
+            ),
             reference_kl_config={
                 "weight": self._config.actor.reference_kl_loss_weight,
                 "type": self._config.actor.reference_kl_loss_type,

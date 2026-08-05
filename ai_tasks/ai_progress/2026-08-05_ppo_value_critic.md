@@ -1,0 +1,55 @@
+# 2026-08-05 PPO ValueHead critic
+
+## 目标
+
+- 保留当前 receding-horizon planner/MCTS 对 environment action 的 ownership。
+- 将 planner RL 的执行动作 `Q(s_t,a_t)` 从单次 Monte Carlo MSE 改为带 frozen
+  old-value 的 PPO-style clipped critic objective。
+- ValueHead critic 梯度继续经过当前 decision state、StateProjector 和完整 Qwen
+  prefix；不把 planner action 冒充为 Qwen action-token policy PPO。
+
+## 基线与边界
+
+- feature branch：`feat/ppo-value-critic`。
+- 实现基线：`13b3c711`，包含 ID122/ID125 使用的 rank-aware transition sharding、
+  fresh rollout lifecycle 与 decoded-text stop 修复；不基于本地较旧的 `2007c661`
+  training loop 直接修改。
+- SFT2 warm-start 的 outgoing `Q(s_t,a_t)` 时序保持不变。
+- 不启动 GPU、Slurm、rollout 或训练实验。
+
+## 当前计划
+
+1. 定义 frozen old-value、clipped critic loss、PPO update epoch 与指标合同。
+2. 修改配置、algorithm、loop、checkpoint objective/invariants 和正式 planner 配置。
+3. 增加 clipping、Qwen梯度、multi-rank padding、fresh-consumption、config/checkpoint 回归。
+4. 运行本地定向测试、compile/static check，审查并提交相关文件。
+
+## 待验证风险
+
+- 只有同一 frozen rollout batch 上至少两个 optimizer epoch 时，old-value clipping
+  才会在参数更新后产生实际约束；单 epoch 与原 MC MSE 的首步行为等价。
+- 多个 critic epoch 会增加 Qwen full-prefix forward/backward 成本；实现必须用显式配置，
+  后续真实资源合同需单独确认。
+- old value 必须来自 update 前的 rollout decision state 和同一 ValueHead checkpoint；
+  不使用 action-token log-prob，也不把 MCTS root score当作 direct `Q(s_t,a_t)`。
+
+## 状态
+
+- 已建立独立 worktree，并 fast-forward 到当前 active RL source `13b3c711`。
+- 已实现frozen rollout old value、执行动作的clipped critic objective和多critic epoch；
+  首个epoch同时训练WM/DINO，后续epoch只训练critic及其上游Qwen表征。
+- 已将planner objective标记更新为`receding_horizon_decision_state_ppo_value_v1`，
+  checkpoint保存并严格校验完整ValueHead配置，旧objective checkpoint fail closed。
+- planner PPO拒绝普通静态JSONL；只有同进程在线rollout或精确fingerprint匹配的fresh
+  manifest能提供有效的behavior-checkpoint decision state与frozen old value。
+- 所有正式planner YAML显式使用`ppo_clip_range: 0.2`和`ppo_epochs: 4`；这些是待真实
+  实验确认的超参数，不视为质量结论。
+- 已增加loss、Qwen梯度、saved-state old value、loop epoch、配置与resume回归。
+- CPU测试：包含PPO critic、原公共WM objective、config/resume/transition/loop及freshness
+  门禁的直接相关套件`80 passed`。当前完整RL套件为`183 passed, 1 failed`；唯一失败
+  来自VAGEN测试导入
+  时缺少未安装的`gym`传递依赖，失败路径未经过本次修改代码。该环境失败不算回归通过，
+  但本次所有直接相关测试均已通过。
+- `py_compile`、`git diff --check`通过；19个启用planner的YAML全部同时包含
+  `ppo_clip_range: 0.2`与`ppo_epochs: 4`。
+- 未运行GPU、Slurm、rollout或训练实验。

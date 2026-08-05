@@ -19,11 +19,12 @@ from nimloth.training.common import (
 from nimloth.training.rl.credit import expand_step_advantages, token_level_gae
 from nimloth.training.rl.episodes import ExecutedTransition
 from nimloth.training.rl.runtime import RLModelRuntime
+from nimloth.training.rl.value import ppo_action_value_loss
 from nimloth.util.module import move_to_device
 from nimloth.wm import SequenceSIGReg
 
 
-PLANNER_TRAINING_OBJECTIVE = "receding_horizon_decision_state_mc_v2"
+PLANNER_TRAINING_OBJECTIVE = "receding_horizon_decision_state_ppo_value_v1"
 
 
 @dataclass(frozen=True)
@@ -203,6 +204,7 @@ class RLAlgorithm:
         value_rank_weight: float,
         ppo_clip_ratio: float,
         entropy_weight: float,
+        value_ppo_clip_range: float | None = None,
         credit_assignment: Literal["action", "turn", "token"] = "action",
         token_gamma: float | None = None,
         token_gae_lambda: float | None = None,
@@ -219,6 +221,7 @@ class RLAlgorithm:
         self.sigreg_weight = float(sigreg_weight)
         self.value_rank_margin = float(value_rank_margin)
         self.value_rank_weight = float(value_rank_weight)
+        self.value_ppo_clip_range = value_ppo_clip_range
         self.ppo_clip_ratio = float(ppo_clip_ratio)
         self.entropy_weight = float(entropy_weight)
         self.credit_assignment = credit_assignment
@@ -230,14 +233,43 @@ class RLAlgorithm:
         self.world_model_weight = float(world_model_weight)
         self.dino_grid_weight = float(dino_grid_weight)
 
+    @torch.no_grad()
+    def planner_old_action_value(
+        self,
+        runtime: RLModelRuntime,
+        transition: ExecutedTransition,
+    ) -> torch.Tensor:
+        """Evaluate frozen rollout `Q_old(s_t,a_t)` without recomputing Qwen.
+
+        Planner trajectories persist the actual projected decision state produced by
+        the behavior checkpoint.  Fresh-policy validation guarantees the trainer uses
+        the same ValueHead checkpoint, so evaluating that saved state before any update
+        gives the old critic value without confusing MCTS root scores or action-token
+        probabilities with direct outgoing `Q(s_t,a_t)`.
+        """
+
+        rollout_state = move_to_device(
+            transition.rollout_decision_state().unsqueeze(0),
+            runtime.agent.wm.value_head,
+        )
+        action_values = runtime.agent.wm.predict_action_values(rollout_state)
+        action = torch.tensor(
+            [[transition.action_index]],
+            dtype=torch.long,
+            device=action_values.device,
+        )
+        return action_values.gather(-1, action).reshape(()).detach().cpu()
+
     def actor_transition_step(
         self,
         runtime: RLModelRuntime,
         transition: ExecutedTransition,
         *,
         return_target: torch.Tensor,
+        old_action_value: torch.Tensor,
         total_transitions: int,
         dino_grid_target: torch.Tensor | None = None,
+        include_world_model: bool = True,
     ) -> RLStepOutput:
         """Train one executed transition through Qwen, WM, and ValueHead.
 
@@ -283,17 +315,16 @@ class RLAlgorithm:
                 ),
             )
         ).unsqueeze(0)
-        predicted_next_state = runtime.agent.wm.predict_state_sequence(
-            state_context,
-            action_context,
-        )[:, -1]
-
-        expected_next_state = move_to_device(
-            transition.actual_next_state(),
-            predicted_next_state,
-        ).unsqueeze(0).detach()
         wm_objective = None
-        if self.train_world_model:
+        if self.train_world_model and include_world_model:
+            predicted_next_state = runtime.agent.wm.predict_state_sequence(
+                state_context,
+                action_context,
+            )[:, -1]
+            expected_next_state = move_to_device(
+                transition.actual_next_state(),
+                predicted_next_state,
+            ).unsqueeze(0).detach()
             current_dino_target = (
                 dino_grid_target.to(
                     device=predicted_next_state.device,
@@ -313,7 +344,7 @@ class RLAlgorithm:
             weighted_wm_loss = wm_objective.loss
             wm_mse = wm_objective.state_mse
         else:
-            weighted_wm_loss = predicted_next_state.sum() * 0.0
+            weighted_wm_loss = current_state.new_zeros(())
             wm_mse = weighted_wm_loss
 
         action_values = runtime.agent.wm.predict_action_values(current_state)
@@ -322,12 +353,14 @@ class RLAlgorithm:
             dtype=torch.long,
             device=action_values.device,
         )
-        value_objective = action_value_loss(
+        if self.value_ppo_clip_range is None:
+            raise RuntimeError("planner PPO critic requires value_ppo_clip_range")
+        value_objective = ppo_action_value_loss(
             action_values,
             executed_action,
             return_target.reshape(1).to(device=action_values.device),
-            ranking_margin=self.value_rank_margin,
-            ranking_weight=self.value_rank_weight,
+            old_action_value.reshape(1),
+            clip_range=self.value_ppo_clip_range,
         )
 
         normalized_wm_loss = weighted_wm_loss / total_transitions
@@ -364,13 +397,34 @@ class RLAlgorithm:
                 "sigreg_loss": 0.0,
                 "value_loss": float(normalized_value_loss.detach().item()),
                 "value_mc_mse": float(
-                    (value_objective.monte_carlo_mse / total_transitions)
+                    (value_objective.unclipped_mse / total_transitions)
                     .detach()
                     .item()
                 ),
-                "value_rank": float(
-                    (value_objective.ranking / total_transitions).detach().item()
+                "value_clipped_mse": float(
+                    (value_objective.clipped_mse / total_transitions).detach().item()
                 ),
+                "value_clip_fraction": float(
+                    (value_objective.clip_fraction / total_transitions)
+                    .detach()
+                    .item()
+                ),
+                "value_old_mean": float(
+                    (old_action_value / total_transitions).detach().item()
+                ),
+                "value_delta_abs_mean": float(
+                    (
+                        (
+                            value_objective.selected_action_values.detach()
+                            - old_action_value.to(
+                                device=value_objective.selected_action_values.device,
+                                dtype=value_objective.selected_action_values.dtype,
+                            )
+                        ).abs().mean()
+                        / total_transitions
+                    ).item()
+                ),
+                "value_rank": 0.0,
                 "total_loss": float(total.detach().item()),
                 "actor_loss": 0.0,
                 "token_value_loss": 0.0,

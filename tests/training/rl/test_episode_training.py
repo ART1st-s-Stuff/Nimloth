@@ -220,13 +220,19 @@ def _runtime() -> tuple[
     return runtime, backbone, builder, projector, predictor, value_head
 
 
-def _algorithm(*, train_world_model: bool = False, dino_weight: float = 0.0) -> RLAlgorithm:
+def _algorithm(
+    *,
+    train_world_model: bool = False,
+    dino_weight: float = 0.0,
+    value_clip_range: float = 0.2,
+) -> RLAlgorithm:
     return RLAlgorithm(
         history_size=4,
         sigreg=None,
         sigreg_weight=0.0,
         value_rank_margin=0.1,
         value_rank_weight=0.0,
+        value_ppo_clip_range=value_clip_range,
         ppo_clip_ratio=0.2,
         entropy_weight=0.0,
         train_world_model=train_world_model,
@@ -285,10 +291,11 @@ def test_value_loss_on_current_state_reaches_full_prefix_qwen_but_not_wm() -> No
     runtime, backbone, builder, projector, predictor, value_head = _runtime()
     transition = episode.transitions[2]
 
-    output = _algorithm().actor_transition_step(
+    output = _algorithm(value_clip_range=100.0).actor_transition_step(
         runtime,
         transition,
         return_target=torch.tensor(5.0),
+        old_action_value=torch.tensor(0.0),
         total_transitions=1,
     )
     output.losses["value"].backward()
@@ -329,6 +336,7 @@ def test_transition_wm_target_is_saved_next_state_not_a_second_qwen_forward() ->
         runtime,
         episode.transitions[1],
         return_target=episode.return_targets[1],
+        old_action_value=torch.tensor(0.0),
         total_transitions=1,
     )
 
@@ -349,6 +357,7 @@ def test_transition_adds_dino_loss_for_each_real_next_observation() -> None:
             runtime,
             transition,
             return_target=episode.return_targets[index],
+            old_action_value=torch.tensor(0.0),
             total_transitions=len(episode.transitions),
             dino_grid_target=torch.full((1, 2), float(index + 1)),
         )
@@ -378,5 +387,25 @@ def test_transition_rejects_detached_rollout_qwen_mode() -> None:
             detached_runtime,
             episode.transitions[0],
             return_target=episode.return_targets[0],
+            old_action_value=torch.tensor(0.0),
             total_transitions=1,
         )
+
+
+def test_planner_old_value_uses_saved_rollout_state_without_qwen_recompute() -> None:
+    episode = build_episode_training_batches(
+        [_planner_trajectory()],
+        gamma=1.0,
+        truncated_bootstrap=0.0,
+    )[0]
+    runtime, _backbone, builder, _projector, _predictor, _value_head = _runtime()
+
+    old_value = _algorithm().planner_old_action_value(
+        runtime,
+        episode.transitions[2],
+    )
+
+    torch.testing.assert_close(old_value, torch.tensor(1.25))
+    assert old_value.device.type == "cpu"
+    assert old_value.grad_fn is None
+    assert builder.assistant_counts == []

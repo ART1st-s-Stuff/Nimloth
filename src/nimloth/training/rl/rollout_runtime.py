@@ -18,11 +18,12 @@ from nimloth.util.distributed import is_main
 def validate_collector_configuration(
     *,
     actor_enabled: bool,
+    planning_enabled: bool,
     train_collector: RolloutCollector,
     eval_collector: RolloutCollector | None,
     validation_enabled: bool,
 ) -> None:
-    """在加载模型前拒绝静态 actor 数据和缺失 validation source。"""
+    """在加载模型前拒绝没有当前checkpoint provenance的policy数据。"""
 
     if (
         actor_enabled
@@ -32,6 +33,16 @@ def validate_collector_configuration(
         raise ValueError(
             "actor training requires fresh trajectories from the current policy; "
             "static JSONL rollout is only supported for WM/value training"
+        )
+    if (
+        planning_enabled
+        and isinstance(train_collector, JSONLRolloutCollector)
+        and not isinstance(train_collector, FreshJSONLRolloutCollector)
+    ):
+        raise ValueError(
+            "planner PPO critic requires fresh trajectories from the current "
+            "Qwen/StateProjector/ValueHead checkpoints; static JSONL cannot "
+            "provide a valid frozen old value"
         )
     if validation_enabled and eval_collector is None:
         raise ValueError("validation.enabled requires a separate eval collector")

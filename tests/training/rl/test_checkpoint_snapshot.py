@@ -60,6 +60,10 @@ def test_resume_rejects_old_incoming_action_planner_objective(
             expected_truncated_bootstrap=None,
             expected_planner_config={"enabled": True},
             expected_planner_training_objective=PLANNER_TRAINING_OBJECTIVE,
+            expected_planner_value_config={
+                "ppo_clip_range": 0.2,
+                "ppo_epochs": 4,
+            },
             expected_reference_kl_config={"weight": 0.0, "type": None},
             expected_train_world_model=True,
         )
@@ -74,6 +78,7 @@ def test_replicated_optimizer_can_resume_across_training_world_sizes(
     source_parameter.square().backward()
     source_optimizer.step()
     planner_config = {"enabled": True}
+    planner_value_config = {"ppo_clip_range": 0.2, "ppo_epochs": 4}
     state = {
         "iteration": 5,
         "global_step": 5,
@@ -83,6 +88,7 @@ def test_replicated_optimizer_can_resume_across_training_world_sizes(
         "optimizer_state_layout": "replicated",
         "planner_config": planner_config,
         "planner_training_objective": PLANNER_TRAINING_OBJECTIVE,
+        "planner_value_config": planner_value_config,
         "reference_kl_config": {"weight": 0.0, "type": None},
         "train_world_model": True,
     }
@@ -107,6 +113,7 @@ def test_replicated_optimizer_can_resume_across_training_world_sizes(
         expected_truncated_bootstrap=None,
         expected_planner_config=planner_config,
         expected_planner_training_objective=PLANNER_TRAINING_OBJECTIVE,
+        expected_planner_value_config=planner_value_config,
         expected_reference_kl_config={"weight": 0.0, "type": None},
         expected_train_world_model=True,
     )
@@ -115,3 +122,46 @@ def test_replicated_optimizer_can_resume_across_training_world_sizes(
     assert resumed.start_iteration == 6
     assert resumed.global_step == 5
     assert resumed_optimizer.state_dict()["state"]
+
+
+def test_resume_rejects_changed_planner_value_ppo_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = torch.optim.AdamW([parameter])
+    state = {
+        "optimizer": optimizer.state_dict(),
+        "planner_config": {"enabled": True},
+        "planner_training_objective": PLANNER_TRAINING_OBJECTIVE,
+        "planner_value_config": {"ppo_clip_range": 0.2, "ppo_epochs": 2},
+        "reference_kl_config": {"weight": 0.0, "type": None},
+        "train_world_model": True,
+    }
+    monkeypatch.setattr(
+        "nimloth.training.rl.trainer.load_rl_wm_checkpoint",
+        lambda *_args, **_kwargs: state,
+    )
+
+    with pytest.raises(ValueError, match="planner value config mismatch"):
+        _load_resume_state(
+            checkpoint_dir=tmp_path,
+            world_model=object(),  # type: ignore[arg-type]
+            optimizer=optimizer,
+            device=torch.device("cpu"),
+            rank=0,
+            world_size=1,
+            optimizer_state_sharded=False,
+            expected_checkpoint_metric="success_rate",
+            expected_credit_assignment="none",
+            expected_token_credit_config={},
+            expected_truncated_bootstrap=None,
+            expected_planner_config={"enabled": True},
+            expected_planner_training_objective=PLANNER_TRAINING_OBJECTIVE,
+            expected_planner_value_config={
+                "ppo_clip_range": 0.2,
+                "ppo_epochs": 4,
+            },
+            expected_reference_kl_config={"weight": 0.0, "type": None},
+            expected_train_world_model=True,
+        )

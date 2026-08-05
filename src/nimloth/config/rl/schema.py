@@ -106,6 +106,8 @@ class ValueHeadConfig:
     lr: float = 1e-3
     rank_margin: float = 0.1
     lambda_rank: float = 0.0
+    ppo_clip_range: float | None = None
+    ppo_epochs: int = 1
 
 
 @dataclass(frozen=True)
@@ -242,7 +244,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     value_head = _section(
         raw,
         "value_head",
-        {"lr", "rank_margin", "lambda_rank"},
+        {"lr", "rank_margin", "lambda_rank", "ppo_clip_range", "ppo_epochs"},
     )
     loop = _section(
         raw,
@@ -427,6 +429,19 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "value_head.lambda_rank",
         allow_zero=True,
     )
+    value_ppo_clip_range = (
+        _positive_float(
+            value_head["ppo_clip_range"],
+            "value_head.ppo_clip_range",
+        )
+        if "ppo_clip_range" in value_head
+        else None
+    )
+    value_ppo_epochs = (
+        _positive_int(value_head["ppo_epochs"], "value_head.ppo_epochs")
+        if "ppo_epochs" in value_head
+        else 1
+    )
     agent_config = parse_agent_config(raw.get("agent"))
     if agent_config.planning.enabled:
         if actor_config.enabled:
@@ -488,6 +503,20 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             raise ValueError(
                 "planner episode training requires value_head.lambda_rank=0"
             )
+        if value_ppo_clip_range is None or "ppo_epochs" not in value_head:
+            raise ValueError(
+                "planner PPO critic requires explicit value_head.ppo_clip_range "
+                "and value_head.ppo_epochs"
+            )
+        if value_ppo_epochs < 2:
+            raise ValueError(
+                "planner PPO critic requires value_head.ppo_epochs>=2 so frozen "
+                "old-value clipping can affect an update"
+            )
+    elif value_ppo_clip_range is not None or "ppo_epochs" in value_head:
+        raise ValueError(
+            "value_head PPO critic fields are only valid for planner training"
+        )
 
     rollout_config = parse_rollout_config(raw.get("rollout"))
     if (
@@ -623,6 +652,8 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 allow_zero=True,
             ),
             lambda_rank=value_rank_weight,
+            ppo_clip_range=value_ppo_clip_range,
+            ppo_epochs=value_ppo_epochs,
         ),
         rollout=rollout_config,
         rl=RLLoopConfig(

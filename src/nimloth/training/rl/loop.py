@@ -163,8 +163,8 @@ class RLTrainingLoop:
         )
 
         # planner 路线保留完整 episode，并对每个真实环境 transition 重算完整
-        # Qwen prefix，再联合计算一步 WM 与 MC value loss。无 planner 路线继续
-        # 使用固定长度 sequence objective。两条路线都只执行一次 optimizer.step()。
+        # Qwen prefix。第一个 PPO epoch联合计算WM与clipped critic，后续epoch只更新
+        # critic及其上游Qwen表征；无planner路线继续使用固定长度sequence objective。
         episode_batches = None
         batch = None
         actor_transitions: tuple[ExecutedTransition, ...] = ()
@@ -264,42 +264,68 @@ class RLTrainingLoop:
             else None
         )
 
-        # 一个 iteration 内累积所有 objective 的梯度，最后统一更新参数。只有在
-        # optimizer.step() 尚未开始时，异常才可以确定参数未变并安全释放 fresh
-        # rollout；step 一旦开始，消费记录必须保留为 in_progress 供恢复逻辑处理。
+        # 一个 planner iteration 对同一 frozen old value执行多个PPO epoch。只有在首个
+        # optimizer.step()尚未开始时，异常才可以确定参数未变并安全释放fresh rollout；
+        # 任一step开始后，消费记录必须保留为in_progress供恢复逻辑处理。
         optimizer_step_started = False
         try:
-            self.optimization_runtime.zero_grad()
             step_metrics: dict[str, float] = {}
             if episode_batches is not None:
                 total_actor_transitions = len(actor_transitions)
                 _, training_world_size = self._distributed_rank_world()
-                for work, transition, return_target, dino_grid_target in zip(
-                    planner_work,
-                    local_actor_transitions,
-                    local_transition_returns,
-                    transition_dino_grid_targets,
-                    strict=True,
-                ):
-                    output = self.algorithm.actor_transition_step(
+                local_old_action_values = tuple(
+                    self.algorithm.planner_old_action_value(
                         self.model_runtime,
                         transition,
-                        return_target=return_target,
-                        total_transitions=total_actor_transitions,
-                        dino_grid_target=dino_grid_target,
                     )
-                    loss_weight = (
-                        0.0 if work.is_padding else float(training_world_size)
+                    for transition in local_actor_transitions
+                )
+                epoch_metrics: list[dict[str, float]] = []
+                for ppo_epoch in range(self.config.value_head.ppo_epochs):
+                    self.optimization_runtime.zero_grad()
+                    current_metrics: dict[str, float] = {}
+                    for (
+                        work,
+                        transition,
+                        return_target,
+                        old_action_value,
+                        dino_grid_target,
+                    ) in zip(
+                        planner_work,
+                        local_actor_transitions,
+                        local_transition_returns,
+                        local_old_action_values,
+                        transition_dino_grid_targets,
+                        strict=True,
+                    ):
+                        output = self.algorithm.actor_transition_step(
+                            self.model_runtime,
+                            transition,
+                            return_target=return_target,
+                            old_action_value=old_action_value,
+                            total_transitions=total_actor_transitions,
+                            dino_grid_target=dino_grid_target,
+                            include_world_model=ppo_epoch == 0,
+                        )
+                        loss_weight = (
+                            0.0 if work.is_padding else float(training_world_size)
+                        )
+                        self.optimization_runtime.backward(output.loss * loss_weight)
+                        self._accumulate_metrics(
+                            current_metrics,
+                            output.metrics,
+                            include=not work.is_padding,
+                        )
+                        del output
+                    optimizer_step_started = True
+                    self.optimization_runtime.step()
+                    epoch_metrics.append(
+                        self._reduce_planner_step_metrics(current_metrics)
                     )
-                    self.optimization_runtime.backward(output.loss * loss_weight)
-                    self._accumulate_metrics(
-                        step_metrics,
-                        output.metrics,
-                        include=not work.is_padding,
-                    )
-                    del output
+                step_metrics = self._summarize_planner_ppo_epochs(epoch_metrics)
             else:
                 assert batch is not None
+                self.optimization_runtime.zero_grad()
                 output = self.algorithm.sequence_step(
                     self.model_runtime,
                     batch,
@@ -307,18 +333,16 @@ class RLTrainingLoop:
                 self.optimization_runtime.backward(output.loss)
                 self._accumulate_metrics(step_metrics, output.metrics)
                 del output
-            optimizer_step_started = True
-            self.optimization_runtime.step()
-            if episode_batches is not None:
-                step_metrics = self._reduce_planner_step_metrics(step_metrics)
+                optimizer_step_started = True
+                self.optimization_runtime.step()
         except Exception:
             if consumption_id is not None and not optimizer_step_started:
                 assert abort_consumption is not None
                 abort_consumption(consumption_id)
             raise
 
-        # global_step 统计成功完成的 optimizer update，而不是 rollout 或 backward
-        # 次数，因此每个成功 iteration 只递增一次。
+        # global_step统计完整消费的一批fresh rollout；planner内部的多个critic optimizer
+        # epoch共享同一个global_step，因此每个成功iteration仍只递增一次。
         self.state.global_step += 1
         rollout_metrics = summarize_rollouts(trajectories)
         metrics = {
@@ -441,6 +465,39 @@ class RLTrainingLoop:
             )
             for index, name in enumerate(names)
         }
+
+    @staticmethod
+    def _summarize_planner_ppo_epochs(
+        epochs: list[dict[str, float]],
+    ) -> dict[str, float]:
+        """Keep first-epoch WM metrics and average critic metrics across PPO epochs."""
+
+        if len(epochs) < 2:
+            raise ValueError("planner PPO critic requires at least two epoch metrics")
+        summary = dict(epochs[0])
+        averaged = {
+            "value_loss",
+            "value_mc_mse",
+            "value_clipped_mse",
+            "value_clip_fraction",
+            "value_old_mean",
+            "value_delta_abs_mean",
+        }
+        for name in averaged:
+            if any(name not in metrics for metrics in epochs):
+                raise RuntimeError(f"planner PPO epoch metric is missing {name!r}")
+            summary[name] = sum(metrics[name] for metrics in epochs) / len(epochs)
+        # WM/DINO只在首个epoch计算；total_loss保留该首轮辅助objective，再加上
+        # 各critic epoch的平均value loss，避免将WM项错误地除以PPO epoch数。
+        if any("total_loss" not in metrics for metrics in epochs):
+            raise RuntimeError("planner PPO epoch metric is missing 'total_loss'")
+        summary["total_loss"] = (
+            epochs[0]["total_loss"]
+            - epochs[0]["value_loss"]
+            + summary["value_loss"]
+        )
+        summary["value_ppo_epochs"] = float(len(epochs))
+        return summary
 
     @staticmethod
     def _distributed_rank_world() -> tuple[int, int]:

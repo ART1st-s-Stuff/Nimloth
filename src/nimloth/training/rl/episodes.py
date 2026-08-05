@@ -72,6 +72,14 @@ class ExecutedTransition:
             dtype=torch.float32,
         )
 
+    def rollout_decision_state(self) -> torch.Tensor:
+        """Return the frozen rollout state on which the executed action was chosen."""
+
+        return torch.tensor(
+            self.trajectory.world_model_states[self.step_index],
+            dtype=torch.float32,
+        )
+
     @property
     def next_image_path(self) -> str:
         return self.trajectory.image_paths[self.step_index + 1]

@@ -76,6 +76,7 @@ def save_rl_checkpoint(
     truncated_bootstrap: str | None = None,
     planner_config: dict[str, Any] | None = None,
     planner_training_objective: str | None = None,
+    planner_value_config: dict[str, Any] | None = None,
     reference_kl_config: dict[str, Any] | None = None,
     train_world_model: bool = True,
 ) -> None:
@@ -149,6 +150,7 @@ def save_rl_checkpoint(
             "truncated_bootstrap": truncated_bootstrap,
             "planner_config": planner_config,
             "planner_training_objective": planner_training_objective,
+            "planner_value_config": planner_value_config,
             "reference_kl_config": reference_kl_config,
             "train_world_model": bool(train_world_model),
         }
