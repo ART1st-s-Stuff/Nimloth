@@ -153,4 +153,6 @@
   preserving the empty `RUN_OUT` guard. A real shell execution regression uses a
   previously absent date parent and confirms the adjacent progress log is
   durable before an injected iteration-runner failure; the Slurm suite passes
-  `20 passed`. Retry requires a new ID134/W&B/output and repeated launch gates.
+  `20 passed`. Exact corrected runtime commit `f95b8c33` subsequently passed the
+  expanded Qwen/rollout/config/Slurm/loop/fresh suite with `157 passed`. Retry
+  requires a new ID134/W&B/output and repeated launch gates.

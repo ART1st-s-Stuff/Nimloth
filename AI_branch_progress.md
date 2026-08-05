@@ -3848,7 +3848,8 @@
 - 修复只在首次progress写入前创建`RUN_OUT`父目录，不提前创建`RUN_OUT`，所以empty-output
   门禁不变。新增真实执行full controller的tmp-date-parent回归：fake iteration runner exit42前
   adjacent progress已记录starting，trap再记录controller_failed，且`RUN_OUT`仍不存在；
-  Slurm定向套件`20 passed`。下一次必须新ID134/空output/W&B identity并重做全部preflight。
+  Slurm定向套件`20 passed`，exact runtime commit`f95b8c33`的扩展Qwen/rollout/config/Slurm/
+  loop/fresh套件`157 passed`。下一次必须新ID134/空output/W&B identity并重做全部preflight。
 - `on-experiment-end`复核local M0013的batch-owned controller证据仍正确；M0014的旧行号已
   漂移，已修正为两次dgx-51 prewarm超时的当前证据段。两条memory仍为pending，CLI拒绝AI
   upvote；需人类之后执行memory审批。没有新增memory，避免重复known error和进度记录。
