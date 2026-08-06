@@ -3963,3 +3963,16 @@
 - 服务器README和RL组progress已写终态，SHA256分别为`c10129a1...cd1286`和
   `9f20178c...6e53eb`。hold Job`508268`于17:00:00+08释放，总时长22分22秒；当前没有
   ID135或fallback任务仍在排队/运行。
+
+## 2026-08-06：ID135终止后的兼容1x8节点已占住
+
+- 人类要求先排一个新的兼容1x8节点。资源占位Job`508346`于17:27:26+08提交到normal：
+  单节点8 GPU、128 CPU、96 GiB、8小时，继续排除`dgx-32/37/51`；batch只运行hold循环，
+  不加载模型/checkpoint、不创建W&B、不开始正式训练。
+- 提交前服务器受跟踪内容在exact`d6197e84`保持clean，VAGEN/LeWM仍固定为
+  `192c35a9/8edfeb33`；LeWM只有保留未删的运行时`__pycache__/`。test-only原先非绑定估算
+  08-07 22:22在`dgx-52`启动，但真实Job仅4秒后即于17:27:30获得`normal/dgx-52:8`并
+  进入RUNNING，实际占住8 GPU/128 CPU/96 GiB。
+- ID135终态不变且identity禁止复用。正式srun前必须建立新ID/空output/未用W&B identity，
+  从ID134 step15不可变checkpoint恢复，并先按known error E0085使用正式单卡可见性合同
+  复验dgx-52的AI2-THOR renderer映射。

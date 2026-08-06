@@ -236,3 +236,24 @@
   their SHA256 values are `c10129a1...cd1286` and `9f20178c...6e53eb`.
   Hold Job `508268` was released at `2026-08-06T17:00:00+08:00` after 22m22s;
   no ID135 or fallback Slurm job remains queued or running.
+
+## Post-ID135 compatible 1x8 resource hold
+
+- The human requested queueing one new compatible 1x8 node. Resource-only Job
+  `508346` was submitted at `2026-08-06T17:27:26+08:00` to `normal` for one
+  node, eight GPUs, 128 CPUs, 96 GiB and eight hours, excluding
+  `dgx-32,dgx-37,dgx-51`. It runs only the batch-owned hold loop and does not
+  load a model, read a checkpoint, create a W&B run or start formal training.
+- Immediately before submission, the server worktree tracked content was clean
+  at exact runtime commit `d6197e84`; VAGEN and LeWM remained pinned at
+  `192c35a9` and `8edfeb33`. LeWM contained only an untracked runtime
+  `__pycache__/`, which was preserved and not treated as a source modification.
+- `sbatch --test-only` gave a non-binding `2026-08-07T22:22:26+08:00` estimate
+  on `dgx-52`, but the real job obtained `normal/dgx-52:8` almost immediately
+  and entered `RUNNING` at `2026-08-06T17:27:30+08:00`. The scheduler contract
+  reports `AllocTRES=cpu=128,node=1,gres/gpu=8` and
+  `MinMemoryNode=96G`; the hold log confirms `nodes=dgx-52`.
+- ID135 remains terminal and non-resumable. Before any formal `srun`, recovery
+  still requires a new experiment ID, unused W&B name and empty output rooted
+  at the immutable ID134 step-15 checkpoint. The allocated node must first pass
+  the exact single-visible-GPU AI2-THOR preflight required by known error E0085.
