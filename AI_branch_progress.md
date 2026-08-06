@@ -3941,5 +3941,13 @@
   3--4秒通过。因此不能只因GPU空闲就把节点视为AI2-THOR可用。
 - 按人类要求的“先占节点再srun”，计划提交唯一的`normal/dgx-32:8` batch-owned hold，保留
   `508170`原队列位置，并在hold内以150秒外层限制对8张GPU执行真实CloudRendering probe；
-  正式1x8所用renderer ordinal0/4必须通过。失败则释放hold并保留4+4排队；全部复验通过后
+  正式1x8所用renderer ordinal0/4必须通过。失败则释放hold并保留4+4排队；必要槽位通过后
   才切换新1x8 identity、取消旧pending job并在同一allocation用`srun`启动。
+- 唯一hold Job`508268`于16:37:38+08获得`normal/dgx-32:8`。8卡隔离HOME并行复验中，
+  ordinal0/4分别37.132/37.334秒输出`AI2THOR_RENDER_OK`、dynamic range246；其余
+  1/2/3/5/6/7均触发150秒exit124。该结果只放行当前1x8 runner的精确映射：两个TP4组
+  0--3/4--7都用组内首卡0/4承载env，不能声称dgx-32所有GPU均可渲染。
+- 新1x8 identity的W&B匹配数0、output/progress不存在；config解析为nodes1/world4/
+  2GPU per rank/total8/TP4/strict16/attempts3，step15 checkpoint和exact`d6197e84`均通过，
+  probe后无残留Unity/Ray/vLLM/GPU进程。下一步仅在正式srun开始前取消旧pending`508170`，
+  并监控到真实prewarm、双TP4、strict merge及首个finite update/checkpoint。

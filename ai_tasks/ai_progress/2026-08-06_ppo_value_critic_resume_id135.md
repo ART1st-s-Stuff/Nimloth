@@ -2,9 +2,12 @@
 
 ## Status
 
-- Submitted as Slurm Job `508170` after ID134 ended at global step 15; currently
-  `PENDING(Priority)` with elapsed zero and no allocation. The stale 4+2+2
-  contract was never submitted; ID135 uses the replacement 4+4 contract.
+- Replacement hold Job `508268` is running on `normal/dgx-32:8`; the original
+  4+4 Job `508170` remains pending until the 1x8 launch begins. Direct render
+  qualification passed the exact two renderer slots used by the 1x8 runner.
+- ID134 ended at global step 15. The stale 4+2+2 contract was never submitted;
+  the pending 4+4 contract is now a fallback while the held 1x8 replacement is
+  prepared.
 - Human authorized up to eight GPUs. An initial 2026-08-06 resource query found
   `dgx-50` unavailable and five free GPUs on each of normal `dgx-14` and
   `dgx-31`, motivating a 4+4 topology. The final pre-submit refresh found those
@@ -68,9 +71,9 @@
   `art2nd-hong-kong-university-of-science-and-technology`.
 - Project: `nimloth-rl`.
 - Candidate run ID/name:
-  `135_ppo_value_syncfix_resume15_rl16_eval10x120_greedyh1_k16_dino05_ppo4_iter60_2n4r2g_2xtp4_normal2x4`.
+  `135_ppo_value_syncfix_dgx32qual_resume15_rl16_eval10x120_greedyh1_k16_dino05_ppo4_iter60_1n4r2g_2xtp4_normal1x8`.
 - Candidate output:
-  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-06/135_ppo_value_syncfix_resume15_rl16_eval10x120_greedyh1_k16_dino05_ppo4_iter60_2n4r2g_2xtp4_normal2x4`.
+  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-06/135_ppo_value_syncfix_dgx32qual_resume15_rl16_eval10x120_greedyh1_k16_dino05_ppo4_iter60_1n4r2g_2xtp4_normal1x8`.
 - Submission is allowed only after confirming this exact W&B name is unused and
   both output and adjacent iteration-progress paths are absent.
 
@@ -179,3 +182,29 @@
   superseded pending 4+4 job, and launch the existing
   `planner_greedy_h1_full_16rollout_8gpu_1x8.yaml` contract in the same hold via
   `srun`.
+
+## dgx-32 qualification result and 1x8 launch gate
+
+- Hold Job `508268` started at `2026-08-06T16:37:38+08:00` on `dgx-32` with
+  8 GPUs, 128 CPUs, 96 GiB and an eight-hour limit. Job `508170` was deliberately
+  kept pending during qualification.
+- All eight allocated ordinals were probed in parallel with isolated AI2-THOR
+  homes. Ordinals 0 and 4 emitted `AI2THOR_RENDER_OK` in 37.132 and 37.334
+  seconds with dynamic range 246; ordinals 1/2/3/5/6/7 reached the 150-second
+  shell timeout. Artifacts are under
+  `outputs/experiments/training/rl/preflight/2026-08-06/135_dgx32_render_requalification_508268`.
+- This is a layout-specific qualification, not a claim that the whole node is
+  render-healthy. The 1x8 parallel runner forms TP4 groups 0--3 and 4--7 and
+  starts each environment on the group's first GPU, exactly ordinals 0 and 4;
+  the other six GPUs serve policy inference/training and need not render.
+- Replacement config/entrypoint:
+  `configs/training/rl/planner_greedy_h1_full_16rollout_8gpu_1x8.yaml` and
+  `experiments/training/rl/train_8gpu_1x8.slurm`. Exact config parsed as nodes 1,
+  world 4, two GPUs/rank, total 8, TP4, strict batch 16 and attempts 3.
+- The new 1x8 W&B display name above had zero matches, its output and adjacent
+  progress path were absent, the immutable step-15 checkpoint files remained
+  nonempty, the server worktree was clean at `d6197e84`, and no probe/Ray/vLLM
+  GPU processes remained. Immediately before launch, cancel only the superseded
+  pending Job `508170`, then run the batch-owned 1x8 controller as a Slurm step
+  in hold `508268` and monitor through prewarm, two TP4 engines, strict merge and
+  the first finite update/checkpoint.
