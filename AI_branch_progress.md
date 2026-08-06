@@ -4197,3 +4197,25 @@
 - 顶层8卡step将用detached `nohup`、PID和durable log启动；正式成功仍要求step16、ID141
   consumption、完整final checkpoint和finished W&B。合同见
   `ai_tasks/ai_progress/2026-08-07_ppo_value_critic_detached_id141.md`。
+
+## 2026-08-07：ID141完成fresh rollout、16k门禁和formal PPO ValueHead step16
+
+- detached staged step `508866.16`在8分32秒内`COMPLETED 0:0`，stage log终态
+  `complete/all_passed`；rollout step `508866.17`在3分32秒完成。新formal数据为
+  `base_train/common_sense_train` seed `145..152`各8条，strict merge共16 trajectories、283
+  environment steps；trainer报告204个eligible actor transitions。
+- 非消费gate明确读取ID138 diagnostic corpus，formal路径为ID141 fresh merge。单卡/双rank都
+  使用真实16184-token prefix；两组2-GPU rank完成4个PPO/AdamW epoch，ValueHead参数delta
+  `0.00039300043135881424`，梯度/参数witness同步，gate通过后才开始formal train。
+- Formal iteration/global step精确为16/16，耗时95.2秒；`wm_mse=0.20356984884710982`、
+  `dino_grid_mse=0.8987376613076776`、`value_loss=48.13194083637665`、
+  `total_loss=48.78487959849189`、`value_ppo_epochs=4`，全部finite；actor/token loss和
+  policy tokens为0，符合critic-only合同。
+- ID141 consumption已从starting step15提交到committed step16。`train/final`含13.09 GB
+  `rl_state.pt`、完整Qwen、StateProjector、ValueHead和WM predictor；metadata为
+  `receding_horizon_decision_state_ppo_value_v1`、clip0.2、4 epochs、zero bootstrap、
+  training world size4、replicated optimizer、Qwen full/vision freeze。
+- W&B `ifzt62xg`已finished：
+  `https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth-rl/runs/ifzt62xg`。
+  训练rollout `success_rate=0.6875`不是held-out policy-quality证据；iteration16不需要120-episode
+  held-out eval。收尾检查8卡与ports 9760/9761/32860无残留，output README已标记completed。

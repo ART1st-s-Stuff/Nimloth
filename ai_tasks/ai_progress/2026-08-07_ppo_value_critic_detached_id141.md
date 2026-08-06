@@ -47,3 +47,33 @@
 - Any stage failure terminates ID141 and forbids formal reuse of its rollout.
   Monitor durable srun/stage logs, Slurm step, rollout counts, all gate JSONs,
   formal train logs, consumption, final metadata, W&B and cleanup.
+
+## Completed result
+
+- Detached staged step `508866.16` completed `0:0` in 8 minutes 32 seconds and
+  the stage log ends `complete/all_passed`. Rollout step `508866.17` completed
+  in 3 minutes 32 seconds. The fresh strict merge contains 16 trajectories and
+  283 raw environment steps; the trainer reported 204 eligible actor
+  transitions.
+- The gate contract read the separate ID138 diagnostic trajectory/manifest.
+  Single/DDP modes used the real 16,184-token prefix; both two-GPU ranks
+  completed four PPO/AdamW epochs with synchronized witnesses and a ValueHead
+  parameter delta of `0.00039300043135881424`.
+- Formal training completed iteration/global step 16/16 in 95.2 seconds. Final
+  metrics were finite: `wm_mse=0.20356984884710982`,
+  `dino_grid_mse=0.8987376613076776`,
+  `value_loss=48.13194083637665`, and
+  `total_loss=48.78487959849189`; critic PPO epochs were 4 and actor/token loss
+  plus policy tokens remained zero.
+- The ID141 consumption sidecar is committed from starting global step 15 to
+  committed step 16. `train/final` contains a 13,090,012,345-byte `rl_state.pt`,
+  full Qwen weights, StateProjector, ValueHead and WM predictor. Checkpoint
+  metadata records objective `receding_horizon_decision_state_ppo_value_v1`,
+  value clip 0.2/four epochs, zero bootstrap, training world size 4, replicated
+  optimizer state, Qwen full tune and frozen vision.
+- W&B run `ifzt62xg` is `finished`:
+  `https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth-rl/runs/ifzt62xg`.
+  Its train-rollout success rate 0.6875 is not held-out policy-quality evidence;
+  no 120-episode held-out evaluation was due at iteration 16.
+- Post-run cleanup found no GPU compute process or listener on ports 9760, 9761
+  or 32860. The server output README is marked completed.
