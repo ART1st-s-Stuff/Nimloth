@@ -76,4 +76,6 @@
   Its train-rollout success rate 0.6875 is not held-out policy-quality evidence;
   no 120-episode held-out evaluation was due at iteration 16.
 - Post-run cleanup found no GPU compute process or listener on ports 9760, 9761
-  or 32860. The server output README is marked completed.
+  or 32860. The server output README is marked completed. Hold `508866` was
+  then released; it is absent from `squeue`, while completed ID141 steps remain
+  recorded `COMPLETED 0:0` in Slurm accounting.

@@ -4218,4 +4218,5 @@
 - W&B `ifzt62xg`已finished：
   `https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth-rl/runs/ifzt62xg`。
   训练rollout `success_rate=0.6875`不是held-out policy-quality证据；iteration16不需要120-episode
-  held-out eval。收尾检查8卡与ports 9760/9761/32860无残留，output README已标记completed。
+  held-out eval。收尾检查8卡与ports 9760/9761/32860无残留，output README已标记completed；
+  hold `508866`随后释放，`squeue`无该job，已完成的ID141 steps保持`COMPLETED 0:0`。
