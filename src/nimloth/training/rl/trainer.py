@@ -27,6 +27,7 @@ from nimloth.backbone import (
     resolve_tune_modes,
     resolve_vision_ema,
 )
+from nimloth.backbone.qwen25vl.checkpoint import find_visual_module
 from nimloth.config.rl import RLConfig
 from nimloth.rollout import FreshJSONLRolloutCollector, RolloutCollector
 from nimloth.training.rl.algorithm import PLANNER_TRAINING_OBJECTIVE, RLAlgorithm
@@ -89,6 +90,49 @@ class RLDistributedModules:
         """返回 optimizer、EMA 与 checkpoint 共享的底层语言模型。"""
 
         return self.backbone.model
+
+
+def _prepare_planner_qwen_training(
+    model: torch.nn.Module,
+    *,
+    gradient_checkpointing: bool,
+    eval_modules: tuple[torch.nn.Module, ...] = (),
+) -> int:
+    """Put the planner's differentiable Qwen recompute in real train mode.
+
+    ``transformers.PreTrainedModel.from_pretrained`` returns an eval-mode model.
+    Qwen only executes an enabled gradient-checkpointing function while the
+    corresponding module is also in train mode.  Planner rollout is handled by
+    an independent vLLM process, so this model exists solely for the
+    differentiable critic/WM update and must use training semantics before DDP
+    wrapping.
+
+    Return the number of modules on which checkpointing is effectively active
+    so the launch log and tests can fail closed instead of trusting the CLI flag.
+    """
+
+    model.train()
+    for module in eval_modules:
+        module.eval()
+    checkpointed_modules = tuple(
+        module
+        for module in model.modules()
+        if bool(getattr(module, "gradient_checkpointing", False))
+        and any(parameter.requires_grad for parameter in module.parameters())
+    )
+    if gradient_checkpointing and not checkpointed_modules:
+        raise RuntimeError(
+            "planner requested Qwen gradient checkpointing, but the loaded model "
+            "has no checkpoint-enabled module"
+        )
+    inactive_modules = tuple(
+        module for module in checkpointed_modules if not module.training
+    )
+    if inactive_modules:
+        raise RuntimeError(
+            "planner Qwen gradient checkpointing is disabled by eval-mode modules"
+        )
+    return len(checkpointed_modules)
 
 
 def _is_grid_predictor_checkpoint(path: Path) -> bool:
@@ -751,6 +795,34 @@ def train_rl(
             resume_path=(resume_dir / "vision_ema.pt") if args.resume else None,
             device=device,
         )
+        if planning_enabled:
+            eval_modules = (
+                (find_visual_module(model),)
+                if vision_tune == "freeze"
+                else ()
+            )
+            checkpointed_modules = _prepare_planner_qwen_training(
+                model,
+                gradient_checkpointing=bool(args.gradient_checkpointing),
+                eval_modules=eval_modules,
+            )
+            if is_main():
+                print(
+                    json.dumps(
+                        {
+                            "planner_qwen_training_mode": "train",
+                            "gradient_checkpointing_requested": bool(
+                                args.gradient_checkpointing
+                            ),
+                            "gradient_checkpointing_active_modules": (
+                                checkpointed_modules
+                            ),
+                            "frozen_vision_mode": (
+                                "eval" if vision_tune == "freeze" else None
+                            ),
+                        }
+                    )
+                )
         distributed_modules = _wrap_distributed_modules(
             loaded.backbone,
             world_model,

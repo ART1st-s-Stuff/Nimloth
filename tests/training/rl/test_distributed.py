@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 from torch import nn
 
@@ -10,6 +11,7 @@ from nimloth.backbone import (
     DistributedBackbone,
 )
 from nimloth.training.rl.trainer import (
+    _prepare_planner_qwen_training,
     _wrap_distributed_modules,
     _wrap_world_model_ddp,
 )
@@ -50,6 +52,43 @@ class _Backbone(Backbone):
 
     def save_pretrained(self, *args, **kwargs) -> None:
         del args, kwargs
+
+
+class _CheckpointedBlock(nn.Module):
+    def __init__(self, *, enabled: bool) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(()))
+        self.gradient_checkpointing = enabled
+
+
+def test_planner_qwen_training_activates_requested_gradient_checkpointing() -> None:
+    checkpointed = _CheckpointedBlock(enabled=True)
+    frozen_checkpointed = _CheckpointedBlock(enabled=True).requires_grad_(False)
+    model = nn.Sequential(checkpointed, frozen_checkpointed).eval()
+
+    active_modules = _prepare_planner_qwen_training(
+        model,
+        gradient_checkpointing=True,
+        eval_modules=(frozen_checkpointed,),
+    )
+
+    assert model.training is True
+    assert checkpointed.training is True
+    assert frozen_checkpointed.training is False
+    assert active_modules == 1
+
+
+def test_planner_qwen_training_rejects_ineffective_checkpointing_flag() -> None:
+    model = nn.Sequential(_CheckpointedBlock(enabled=False)).eval()
+
+    with pytest.raises(
+        RuntimeError,
+        match="no checkpoint-enabled module",
+    ):
+        _prepare_planner_qwen_training(
+            model,
+            gradient_checkpointing=True,
+        )
 
 
 def test_failed_distributed_cleanup_does_not_enter_barrier(monkeypatch) -> None:

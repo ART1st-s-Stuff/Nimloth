@@ -7,26 +7,26 @@
 forward buffer `BROADCAST`；相同 NCCL sequence number 因 collective 类型不同而在
 watchdog timeout 后失败。
 
-## 已知机制与未决根因
+## 已知机制与根因边界
 
 planner 的 Backbone、WM predictor 和 ValueHead 分别由 DDP 包装，并共享默认 process
-group。ID134证明不同rank能在同一sequence进入forward侧的one-element `BROADCAST`和
-ValueHead backward `ALLREDUCE`。当时将该broadcast归因于DDP buffer同步，但ID136已在所有
-已知planner wrapper使用`broadcast_buffers=False`、并在每条transition backward后barrier的
-版本上复现同类分叉。因此此前归因不完整；剩余one-element broadcast的精确发起位置和
-rank间控制流边界仍未定位。
+group。ID134/ID136曾显示不同rank在相同NCCL sequence进入one-element `BROADCAST`和
+ValueHead `ALLREDUCE`，当时被误判为正常训练路径的独立collective-order根因。
+
+ID137保留rank-local原始异常后，rank1/rank2先在Qwen language MLP forward发生CUDA OOM，
+其余rank才进入监控barrier或被torchrun终止。由此可知先前的one-element broadcast属于
+rank-local训练失败后的异常清理分叉，会掩盖原始错误；当前没有证据证明健康forward/
+backward路径仍存在独立ValueHead/DDP collective-order bug。
 
 ## 防复发
 
-- `broadcast_buffers=False`和逐transition backward后的barrier可以保留为已验证的配置约束，
-  但不得再声称它们已经修复此错误。barrier发生在backward之后，无法单独证明此前forward/
-  backward内部发起的collective顺序已对齐。
-- 在定位one-element `BROADCAST`的实际调用栈、确认所有rank在首条transition内的collective
-  序列一致前，禁止再次直接启动全规模训练。
-- 修复必须先通过production-shaped多rank GPU门禁：使用真实planner wrappers、不同rank的
-  可变prefix长度、至少一个完整PPO critic epoch，并检查collective序列、finite loss和完整
-  optimizer step。CPU/Gloo、参数断言、forward/backward计数或同步次数回归只能作为补充，
-  不能替代该门禁。
+- 分布式异常路径不得再进入要求所有rank参与的fresh-rollout abort/broadcast；必须先记录
+  rank、异常类型和原始错误，并让consumption fail closed保持`in_progress`。
+- `broadcast_buffers=False`和逐transition backward后的barrier继续作为当前wrapper配置约束，
+  但不能单独证明健康路径。production-shaped门禁仍需完成至少一个真实、finite的PPO critic
+  epoch和optimizer step，才能证明当前collective序列。
+- 遇到one-element broadcast/allreduce分叉时，必须先查找更早的rank-local CUDA、processor、
+  输入或控制流异常；不得把watchdog末端的collective mismatch直接当作首因。
 
 ## 证据边界
 
@@ -39,5 +39,9 @@ ID136使用exact runtime commit`d6197e84`，其中已知planner DDP wrapper均�
 `broadcast_buffers=False`且训练循环每条transition backward后执行barrier。正式rollout完整
 合并16条/319 transitions后，首个PPO critic epoch仍在sequence6046记录rank0/3的
 1,057,800-element ValueHead `ALLREDUCE`与rank1/2的one-element `BROADCAST`，600秒后watchdog
-失败；没有optimizer step或checkpoint。该证据将旧防复发结论降级为“不充分”，但尚不足以
-断言新的唯一根因。
+失败；没有optimizer step或checkpoint。
+
+ID137在commit`c3215592`移除分布式异常清理collective后，同形状16条/319 transitions运行
+直接暴露rank1/rank2的Qwen activation OOM：分别在GPU3/GPU5的language MLP forward失败，
+均早于optimizer。rank0随后才报告failed peer。该证据把ID136末端collective mismatch降级为
+次生异常路径，同时把后续门禁的首要问题转为E0086记录的实际梯度检查点失效。

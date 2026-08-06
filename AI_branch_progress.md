@@ -4023,3 +4023,17 @@
   worker/adapter并保留atomic manifest/checkpoint语义。另发现pinned VAGEN记录verl gitlink
   `65316156`，当前server venv却从main checkout commit`138a1d17`导入verl0.6.1；迁移前必须先
   固定唯一exact verl source，禁止用该漂移环境作兼容性结论。
+
+## 2026-08-06：确认ID137梯度检查点因eval mode未实际生效
+
+- 远端正式环境Transformers 4.55.4源码确认：`from_pretrained()`末尾执行
+  `model.eval()`，Qwen2.5-VL text forward只在`gradient_checkpointing and training`
+  同时为真时进入checkpoint路径。原RL loader虽然调用
+  `gradient_checkpointing_enable()`，planner trainer却未把底层Qwen切回train mode。
+- 本地修复在planner Qwen进入DDP前显式启用train mode，并枚举实际
+  checkpoint-enabled module；用户请求checkpointing而运行时无有效module时fail closed。
+  独立vLLM rollout、executed-action `Q(s_t,a_t)`、WM/DINO/ValueHead联合目标、actor关闭和
+  fresh-manifest/checkpoint语义均未改变。
+- 当前只有源码和静态编译证据，定向CPU接口回归仍待可用依赖环境执行，尚无真实GPU
+  backward结果。恢复训练前必须使用新identity和非消费型真实长prefix门禁记录峰值显存、
+  finite loss、backward与optimizer step；ID137 rollout仍禁止复用。

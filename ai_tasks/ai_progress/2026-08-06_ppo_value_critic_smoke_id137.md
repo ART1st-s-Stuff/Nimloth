@@ -152,3 +152,22 @@
   executed-action planner PPO. First gate the custom backend on the same 319
   transition shape with synthetic/non-consumable inputs, then run a new-ID
   fresh-rollout production smoke.
+
+## Follow-up root fix (local, GPU gate pending)
+
+- The formal environment's Transformers 4.55.4 source was checked directly.
+  `PreTrainedModel.from_pretrained()` ends by calling `model.eval()`, while the
+  Qwen2.5-VL text forward enters its checkpoint function only under
+  `self.gradient_checkpointing and self.training`.
+- The RL loader called `gradient_checkpointing_enable()` but the planner trainer
+  never restored the loaded Qwen to train mode. Thus ID137's configured
+  checkpointing was not effective; the observed 77 GiB activation allocation is
+  explained without changing the executed-action `Q(s_t,a_t)` objective.
+- The local fix puts the differentiable planner Qwen in train mode before DDP
+  wrapping, counts runtime checkpoint-enabled modules, and fails closed if the
+  requested mode is ineffective. The independent vLLM behavior-policy process
+  is unchanged.
+- This is source and interface evidence only. A fresh, non-consumable,
+  production-shaped GPU memory gate must still complete a real long-prefix
+  forward/backward/optimizer step before training is resumed. ID137 and its
+  in-progress consumption record remain forbidden from reuse.
