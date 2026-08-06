@@ -3891,3 +3891,20 @@
   13,090,012,345 bytes）。失败iteration16的rollout不跨identity复用；下一次从该checkpoint
   新ID、空output、fresh seeds121--128继续。人类指定先用`dgx-50:4 + 两个2卡节点`，对应
   corrected 16-rollout 4+2+2配置、1个TP4 rollout worker和4个两卡训练rank。
+
+## 2026-08-06：ID135 4+2+2恢复任务已完成静态门禁但尚未提交
+
+- collective修复commit`8f77fdc5`已用私有Git bundle直接同步到服务器worktree；定向
+  `83 passed`，完整RL加vLLM logits/policy边界套件`208 passed`，仅两项已知第三方/
+  显式std warning。新16-rollout 4+2+2配置解析为nodes3/world4/2GPU per rank/total8/
+  TP4、attempts3、actor关闭、ValueHead clip0.2×4epochs和每10步120 held-out。
+- ID134不可变`policy_inputs/iter_0016`通过mmap元数据与完整文件核验：iteration/global
+  step15、world4、`receding_horizon_decision_state_ppo_value_v1`及planner/value配置均匹配，
+  model/WM/ValueHead/optimizer state完整。VAGEN实际计数1200/1200 train与60/60 held-out，
+  两组train/eval scene overlap均为0。
+- ID135 exact W&B name无匹配，output/progress不存在，当前用户无Slurm job。最后资源快照
+  有`preempt/dgx-50:4`，normal的dgx-10/14/21/30均至少可给2卡；dgx-37继续排除。
+- 完整heterogeneous `sbatch --test-only`的SSH会话在进入Slurm前被ProxyJump以
+  `UNKNOWN port 65535`关闭。按服务器规则停止反复重连；ID135尚无job、allocation、W&B、
+  output、rollout或optimizer。连接恢复后必须重查易漂移的资源/W&B/output，再执行test-only
+  和正式提交，不能把当前静态preflight误报为训练已经开始。
