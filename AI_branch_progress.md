@@ -4049,3 +4049,24 @@
 - 该结果只证明mode fail-closed、ValueHead/PPO/fresh-consumption/checkpoint/controller等接口
   未回归；它不证明真实Qwen长prefix峰值显存、DDP/NCCL、GPU backward或optimizer step。
   GPU门禁仍必须先于任何fresh-rollout正式续训。
+
+## 2026-08-06：长prefix门禁已具备fresh rollout分阶段控制，ID138等待确认
+
+- 长prefix gate提交`d9355cfe`从真实behavior-matched轨迹为每个gate rank选择最长final
+  transition，并要求至少14,000 state tokens、有效gradient-checkpoint module、Qwen/
+  ValueHead非零梯度、冻结边界、4个PPO critic epoch/AdamW step及DDP同步结果。
+- 续训首轮目录语义修复`71945c54`以`RUN_INITIAL_GLOBAL_STEP+1`判断新identity首轮，不再把
+  resume到iteration16错误当成必须已有README的普通后续轮。双TP4 parallel runner提交
+  `4c7fbdf3`新增显式`all|rollout|train`阶段；train-only拒绝缺失manifest/trajectory、缺失
+  step15 resume或任何已有consumption sidecar。
+- batch-step顶层控制器提交`66a7afde`把fresh two-TP4 rollout/strict merge、非消费GPU gate和
+  gate通过后的正式train串成唯一顺序，并用相邻日志记录phase终态。服务器新增静态门禁
+  `4 passed`、distributed mode`7 passed`，shell syntax与exact Git同步均通过。
+- ID138合同使用step15不可变checkpoint、新`base_train/common_sense_train`各8条且每数据集
+  seeds121--128，只执行iteration16。实时核验train任务各1200、heldout各60、同类scene
+  overlap0；新W&B名称匹配0且output/controller/gate路径不存在。
+- 外层hold`508346`仍在`normal/dgx-52:8`运行，22:38+08快照剩余2:49:09；GPU无compute
+  process，端口9730/9731/29346/32830无监听，精确进程名无Ray/vLLM/Unity/Python残留。
+  ID138预计rollout10--20分钟、gate最多20分钟、train10--90分钟，组合硬上限2小时/
+  16 GPU-hours。当前尚未运行renderer probe、rollout、gate或train，必须等待人类确认精确
+  合同后才能启动；完整说明见`ai_tasks/ai_progress/2026-08-06_ppo_value_critic_gc_gate_id138.md`。
