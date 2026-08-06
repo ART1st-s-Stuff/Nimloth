@@ -4116,3 +4116,18 @@
   新identity和fresh rollout重试。修复方向是让非消费显存门禁对所有DDP rank使用满足合同的
   真实长prefix样本，同时显式记录候选数与是否复用，避免把随机rank局部分片长度误当成训练
   正确性条件；immutable resume边界仍为ID134 committed global step15。
+
+## 2026-08-07：global-qualified门禁修复通过真实16k prefix双rank GPU验证
+
+- commit `9db5bea1ff536c45a59af4c76e5b6380917c133c`把门禁选样改为扫描完整fresh
+  trajectory集合：按token长度优先分配满足最低长度的不同真实final prefix；候选少于rank时
+  才确定性复用，并在JSON中记录`selection_qualifying_candidate_count`和
+  `selection_reused_candidate`。无真实prefix满足合同时仍fail closed。
+- 服务器定向CPU/静态测试7项通过。随后hold `508866`内的诊断step `508866.7`只读取ID138
+  未消费轨迹，在63秒内通过：全局只有1个>=14000-token候选，两rank都使用record2
+  `rl_base_train_000122`的16184-token final prefix，rank1透明记录复用。
+- 双rank各2 GPU、4个PPO/AdamW epoch均为finite；Qwen/ValueHead梯度非零，ValueHead参数
+  delta为`0.00039884448051452637`，梯度/参数replica差异均0。每rank两卡峰值allocated显存
+  分别`14514740736/25156721664` bytes；vision/StateProjector/lm_head梯度为空。
+- 该步骤是mechanics-only诊断，不建立W&B、不消费轨迹，也不改变ID138失败终态。ID138轨迹
+  继续禁止训练复用；完整重试必须使用新ID、新output和fresh rollout。

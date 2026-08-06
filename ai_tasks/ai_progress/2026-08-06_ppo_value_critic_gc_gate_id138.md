@@ -197,3 +197,26 @@
   and is forbidden from training reuse. A retry requires a new identity, a
   corrected non-consuming gate selection contract, and fresh rollout from the
   unchanged ID134 committed-global-step-15 boundary.
+
+## Selection-fix diagnostic evidence
+
+- Commit `9db5bea1ff536c45a59af4c76e5b6380917c133c` scans the complete fresh
+  trajectory set for real final prefixes meeting the memory threshold. It
+  prefers distinct longest candidates across ranks and deterministically reuses
+  a qualifying real candidate only when there are fewer candidates than ranks;
+  result JSON exposes the qualifying count and reuse decision. With no
+  qualifying real prefix, the gate still fails closed.
+- Seven focused CPU/static tests passed in the server runtime. Diagnostic Slurm
+  step `508866.7` then read the terminal ID138 rollout without consuming it and
+  completed in 63 seconds. There was exactly one qualifying real prefix:
+  record 2, `rl_base_train_000122`, 16,184 tokens. Rank 1 explicitly recorded
+  candidate reuse.
+- Both two-GPU ranks completed all four PPO/AdamW epochs with finite metrics,
+  nonzero Qwen/ValueHead gradients, a ValueHead parameter delta of
+  `0.00039884448051452637`, and zero measured gradient/parameter replica
+  differences. Peak per-rank allocations were 14,514,740,736 and
+  25,156,721,664 bytes on the two model GPUs. Frozen vision, StateProjector and
+  lm_head gradients remained absent.
+- This was a mechanics-only, W&B-disabled diagnostic. It did not alter ID138's
+  terminal state or authorize its rollout for training; no consumption sidecar
+  was created.
