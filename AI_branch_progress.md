@@ -3994,3 +3994,32 @@
 - W&B run`f5otsqrv`已终结为`failed`，服务器output README、相邻progress和RL组progress均已
   完成on-experiment-end归档。dgx-52无Unity/VAGEN/Ray/vLLM/GPU残留；外层8卡hold
   Job`508346`继续保留，可用于有界定位和production-shaped多rank GPU复验，不能直接重复训练。
+
+## 2026-08-06：ID137解开异常掩码并定位真实Qwen activation OOM
+
+- 新identity ID137以runtime commit`c3215592`在hold`508346`内运行有界iteration16 smoke。
+  dgx-52物理GPU0/4精确可见性probe以9.685/9.259秒通过、dynamic range均246；两组正式
+  navigation prewarm以3.457/3.406秒通过，两个独立TP4 EngineCore均完成model、57.81GiB/GPU
+  KV cache和warmup。严格merge收齐16条fresh train trajectory、319 transitions、两数据集
+  seeds121--128。
+- 首次optimizer前，rank1在Qwen language MLP forward的GPU3申请338MiB时仅余316.06MiB而
+  OOM（进程总用78.86GiB，PyTorch allocated77.15GiB）；rank2在GPU5申请64MiB时仅余
+  32.06MiB而独立OOM（进程总用79.14GiB，PyTorch allocated77.38GiB）。rank0随后在
+  monitored barrier检测到失败peer，torchrun终止其余rank。
+- 新异常记录证明ID136的1-element`BROADCAST`来自异常清理并掩盖了rank-local activation
+  OOM；当前证据没有证明正常路径仍存在ValueHead/DDP collective-order bug。该结论来自真实
+  1x8、real long-prefix、4-rank production-shaped执行，不是CPU/FakeDDP代理。
+- formal step`508346.14`以exit1失败；无optimizer、metric row、`rl_state.pt`、policy checkpoint
+  或held-out eval，train CSV只有header，consumption保持`in_progress`。W&B`tc2o89q8`已明确
+  标为`failed_rank_local_cuda_oom_before_optimizer`；ID137及其rollout不可复用，唯一恢复边界仍是
+  ID134 committed global step15。
+- on-experiment-end已确认dgx-52无GPU、Unity/VAGEN、vLLM、Ray、training process或选定端口
+  残留；服务器output README/run progress/RL progress均已归档。外层hold`508346`继续保留，
+  下一次必须先实现并GPU验证memory-safe训练路径，再用新ID/空output/fresh rollout重试。
+- VAGEN rollout/env已经实际复用；stock VAGEN/verl critic是Qwen token-classification上的
+  response-token value PPO，不能直接替代当前真实decision-state prefix、executed-action
+  `Q(s_t,a_t)`、WM/DINO/ValueHead联合目标。verl的FSDP、gradient checkpointing、offload、
+  dynamic token micro-batch和Ulysses可作为memory-safe backend组件复用，但需Nimloth custom
+  worker/adapter并保留atomic manifest/checkpoint语义。另发现pinned VAGEN记录verl gitlink
+  `65316156`，当前server venv却从main checkout commit`138a1d17`导入verl0.6.1；迁移前必须先
+  固定唯一exact verl source，禁止用该漂移环境作兼容性结论。

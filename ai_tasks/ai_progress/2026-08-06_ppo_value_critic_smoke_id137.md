@@ -2,10 +2,13 @@
 
 ## Status
 
-- Authorized and prepared for launch in the existing resource-only Slurm hold
-  Job `508346` on `normal/dgx-52:8`.
+- Terminal failure before the first optimizer step. Formal step `508346.14`
+  ran inside resource-only hold Job `508346` on `normal/dgx-52:8` and exposed
+  rank-local Qwen activation OOMs that ID136's exception cleanup had masked.
+- ID137 and its fresh rollout are non-resumable and forbidden from reuse. The
+  only valid recovery boundary remains ID134 global step 15.
 - Exact runtime commit:
-  `c3215592b7b3084d4fc2b9b33be90f0259974eed`.
+  `c321559271df0c3f01230e99401bdf6593aabc0e`.
 - This is a bounded production-shaped diagnostic, not a policy-quality or
   held-out-evaluation claim.
 
@@ -84,3 +87,68 @@
   Failure before the optimizer must produce no checkpoint and must retain the
   original traceback. Either terminal outcome must run the experiment-end hook
   and record cleanup evidence; neither outcome alone establishes policy quality.
+
+## Terminal result
+
+- Concurrent exact-visibility physical GPU 0/4 probes passed in 9.685/9.259
+  seconds with dynamic range 246 after isolated homes reused the verified
+  shared AI2-THOR release cache. The first probe attempt had timed out only
+  while downloading an uncached 797 MiB build and produced no GPU-0 render
+  conclusion. Both formal navigation prewarms then passed in 3.457/3.406
+  seconds, and two distinct TP4 EngineCore workers completed model load,
+  57.81 GiB/GPU KV-cache allocation and warmup.
+- Strict merge completed all 16 fresh train-split trajectories / 319
+  transitions for per-dataset seeds 121--128. Training-batch success was 0/16,
+  average reward -0.425 and average length 19.9375; these are rollout
+  observations, not held-out model-quality evidence.
+- Before optimizer, rank 1 OOMed in Qwen language MLP forward on physical GPU 3
+  while requesting 338 MiB with only 316.06 MiB free. Its process used 78.86
+  GiB total and PyTorch had allocated 77.15 GiB. Rank 2 independently OOMed on
+  physical GPU 5 while requesting 64 MiB with 32.06 MiB free; its process used
+  79.14 GiB total and PyTorch had allocated 77.38 GiB. Rank 0 then detected the
+  failed peers at the monitored barrier and torchrun terminated the remaining
+  ranks.
+- The new failure records prove that ID136's one-element `BROADCAST` came from
+  the exception-cleanup path and was secondary to rank-local activation OOM.
+  They do not show a ValueHead/DDP collective-order bug in the successful
+  execution path.
+- Formal step `508346.14` ran from `19:10:36` to `19:19:41+08:00` and failed
+  with exit `1:0`; rollout step `508346.15` completed normally. There is no
+  optimizer step, metric row, `rl_state.pt`, policy checkpoint or held-out
+  evaluation. The train CSV contains only its header and merged-manifest
+  consumption remains fail-closed as `in_progress` from global step 15.
+- W&B run `tc2o89q8` is finalized as `failed` with terminal status
+  `failed_rank_local_cuda_oom_before_optimizer`. Server output README,
+  run-level progress and RL-group progress SHA256 values are respectively
+  `1772aa0e...8740`, `5a9ec31f...b3e` and `30698d1c...ade8`.
+- Post-failure checks found no GPU compute process, Unity/VAGEN, vLLM, Ray,
+  training process or selected-port listener on dgx-52. Hold Job `508346`
+  remains running for a later memory-safe diagnostic; this failure does not
+  authorize reusing ID137 or restarting full-scale training unchanged.
+
+## VAGEN/verl reuse boundary
+
+- The rollout/environment side already reuses the pinned VAGEN navigation
+  assets and protocol. Its strict fresh-manifest and real-CoT contract should
+  remain unchanged.
+- verl provides useful memory mechanisms: FSDP-sharded Qwen construction,
+  gradient checkpointing, parameter/optimizer offload, token-budgeted dynamic
+  micro-batches and optional Ulysses sequence parallelism. Those mechanisms are
+  relevant to the activation OOM exposed by ID137.
+- The stock VAGEN/verl critic is not a drop-in replacement for this objective.
+  It builds `Qwen2_5_VLForTokenClassification`, predicts response-token values
+  and applies the standard token-value PPO loss. Nimloth instead recomputes the
+  real decision-state prefix, selects executed-action `Q(s_t,a_t)`, jointly
+  trains WM/DINO/ValueHead, keeps actor PPO disabled and must retain the current
+  atomic manifest/checkpoint lineage.
+- Runtime provenance also needs correction before reuse: pinned VAGEN commit
+  `192c35a9` records verl gitlink `65316156`, but the current server venv imports
+  editable verl 0.6.1 from the main server checkout at commit `138a1d17` rather
+  than the runtime worktree gitlink. A new backend must pin and verify one exact
+  verl source before any GPU claim.
+- Recommendation: reuse verl's FSDP/sharding and micro-batch components behind a
+  Nimloth-specific critic worker/adapter; do not switch to the unmodified
+  VAGEN `RayPPOTrainer` or report its standard token critic as the requested
+  executed-action planner PPO. First gate the custom backend on the same 319
+  transition shape with synthetic/non-consumable inputs, then run a new-ID
+  fresh-rollout production smoke.
