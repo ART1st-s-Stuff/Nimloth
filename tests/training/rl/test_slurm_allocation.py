@@ -18,6 +18,9 @@ PARALLEL_CONTROLLER = (
 )
 SHARD_RUNNER = REPO_ROOT / "experiments/training/rl/run_vllm_rollout_shard.sh"
 CONTINUATION = REPO_ROOT / "src/nimloth/training/rl/continuation.py"
+PPO_VALUE_GPU_GATE = (
+    REPO_ROOT / "experiments/training/rl/gpu_gate_ppo_value_critic.slurm"
+)
 HETERO_32_CONFIG = (
     REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_32gpu_88844.yaml"
 )
@@ -118,6 +121,15 @@ JOB_GRES=gpu:8
 """
 
     assert _load_counts(details) == ["dgx-40=4", "dgx-48=4"]
+
+
+def test_ppo_value_gpu_gate_requires_real_long_prefixes() -> None:
+    gate = PPO_VALUE_GPU_GATE.read_text(encoding="utf-8")
+
+    assert "MINIMUM_STATE_TOKENS=${MINIMUM_STATE_TOKENS:-14000}" in gate
+    assert gate.count("--select-longest-final-transition") == 2
+    assert gate.count('--minimum-state-tokens "${MINIMUM_STATE_TOKENS}"') == 2
+    assert "transition_selection=rank-owned-longest-final" in gate
 
 
 def test_loads_heterogeneous_per_node_gpu_counts() -> None:

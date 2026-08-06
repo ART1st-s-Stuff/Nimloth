@@ -30,6 +30,7 @@ WM_CHECKPOINT=${SFT2_CHECKPOINT}/wm_predictor
 STATE_PROJ_CHECKPOINT=${SFT2_CHECKPOINT}/state_proj.pt
 VALUE_HEAD_CHECKPOINT=${SFT2_CHECKPOINT}/value_head
 MASTER_PORT=$((21000 + SLURM_JOB_ID % 20000))
+MINIMUM_STATE_TOKENS=${MINIMUM_STATE_TOKENS:-14000}
 
 test "$(git -C "${RUNTIME_REPO}" rev-parse HEAD)" = "${EXPECTED_COMMIT}"
 test -z "$(git -C "${RUNTIME_REPO}" status --porcelain --untracked-files=no --ignore-submodules=dirty)"
@@ -62,6 +63,8 @@ export WANDB_MODE=disabled
   echo "checkpoint=${SFT2_CHECKPOINT}"
   echo "trajectory=${TRAJECTORY_JSONL}"
   echo "manifest=${FRESH_ROLLOUT_MANIFEST}"
+  echo "transition_selection=rank-owned-longest-final"
+  echo "minimum_state_tokens=${MINIMUM_STATE_TOKENS}"
   echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-unset}"
   "${PYTHON}" --version
   nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
@@ -78,6 +81,8 @@ CUDA_VISIBLE_DEVICES=0 "${PYTHON}" "${GATE}" \
   --fresh-rollout-manifest "${FRESH_ROLLOUT_MANIFEST}" \
   --output-dir "${OUTPUT_DIR}" \
   --gpus-per-rank 1 \
+  --select-longest-final-transition \
+  --minimum-state-tokens "${MINIMUM_STATE_TOKENS}" \
   2>&1 | tee "${OUTPUT_DIR}/single_grad.log"
 
 NIMLOTH_DDP_GPU_STRIDE=2 CUDA_VISIBLE_DEVICES=0,1,2,3 "${PYTHON}" \
@@ -95,6 +100,8 @@ NIMLOTH_DDP_GPU_STRIDE=2 CUDA_VISIBLE_DEVICES=0,1,2,3 "${PYTHON}" \
   --fresh-rollout-manifest "${FRESH_ROLLOUT_MANIFEST}" \
   --output-dir "${OUTPUT_DIR}" \
   --gpus-per-rank 2 \
+  --select-longest-final-transition \
+  --minimum-state-tokens "${MINIMUM_STATE_TOKENS}" \
   2>&1 | tee "${OUTPUT_DIR}/ddp_step.log"
 
 echo "end_utc=$(date -u +%FT%TZ)" | tee -a "${OUTPUT_DIR}/contract.log"

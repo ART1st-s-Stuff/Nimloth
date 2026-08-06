@@ -1,9 +1,9 @@
 """Real-GPU integration gate for the planner PPO ValueHead critic.
 
-This is a mechanics gate, not a policy-quality experiment.  It reads one real
-planner transition whose persisted decision state was produced by the supplied
-behavior checkpoint.  ``single_grad`` proves the critic-only graph reaches the
-Qwen language body without supervising ``lm_head``.  ``ddp_step`` exercises the
+This is a mechanics gate, not a policy-quality experiment.  Each rank selects
+the longest final-step prefix among its real, behavior-checkpoint-matched
+trajectories.  ``single_grad`` proves the critic-only graph reaches the Qwen
+language body without supervising ``lm_head``.  ``ddp_step`` exercises the
 production two-rank, two-GPU-per-rank wrapping and AdamW update for all configured
 critic PPO epochs.
 """
@@ -26,6 +26,7 @@ from nimloth.backbone import (
     load_backbone,
     model_output_device,
 )
+from nimloth.backbone.qwen25vl.checkpoint import find_visual_module
 from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 from nimloth.config.rl import load_rl_config
 from nimloth.rollout import (
@@ -40,6 +41,7 @@ from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.training.rl.trainer import (
     _build_optimizer,
     _build_world_model,
+    _prepare_planner_qwen_training,
     _wrap_distributed_modules,
 )
 from nimloth.util.distributed import (
@@ -61,6 +63,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--gpus-per-rank", type=int, required=True)
     parser.add_argument("--step-index", type=int, default=0)
+    parser.add_argument("--select-longest-final-transition", action="store_true")
+    parser.add_argument("--minimum-state-tokens", type=int, default=0)
     parser.add_argument("--attn-implementation", default="sdpa")
     return parser.parse_args()
 
@@ -95,6 +99,57 @@ def _load_trajectory(path: Path, record_index: int) -> RolloutTrajectory:
             validate_rollout_trajectory(trajectory)
             return trajectory
     raise IndexError(f"trajectory record {record_index} is absent from {path}")
+
+
+def _state_token_count(
+    runtime: RLModelRuntime,
+    transition: Any,
+) -> int:
+    prompt = transition.state_prompt
+    batch = runtime.input_builder.build(
+        [prompt.unbound_messages()],
+        [prompt.images],
+        include_labels=False,
+    )
+    input_ids = batch.tensors.get("input_ids")
+    if input_ids is None or input_ids.ndim != 2 or input_ids.shape[0] != 1:
+        raise RuntimeError("GPU gate state prompt did not produce one input_ids row")
+    return int(input_ids.shape[-1])
+
+
+def _select_longest_final_transition(
+    path: Path,
+    *,
+    runtime: RLModelRuntime,
+    rank: int,
+    world_size: int,
+    gamma: float,
+    truncated_bootstrap: float | None,
+) -> tuple[RolloutTrajectory, Any, int, int]:
+    """Choose the longest real final-step prefix owned by this gate rank."""
+
+    selected: tuple[RolloutTrajectory, Any, int, int] | None = None
+    with path.open("r", encoding="utf-8") as stream:
+        for record_index, line in enumerate(stream):
+            if record_index % world_size != rank:
+                continue
+            trajectory = RolloutTrajectory.from_record(json.loads(line))
+            validate_rollout_trajectory(trajectory)
+            episode = build_episode_training_batches(
+                (trajectory,),
+                gamma=gamma,
+                truncated_bootstrap=truncated_bootstrap,
+            )[0]
+            step_index = len(episode.transitions) - 1
+            state_tokens = _state_token_count(
+                runtime,
+                episode.transitions[step_index],
+            )
+            if selected is None or state_tokens > selected[-1]:
+                selected = (trajectory, episode, step_index, state_tokens)
+    if selected is None:
+        raise RuntimeError(f"rank {rank} owns no trajectory in {path}")
+    return selected
 
 
 def _parameter_with_suffix(
@@ -240,6 +295,11 @@ def main() -> int:
         # This gate isolates the critic.  The production loop's first-epoch WM/DINO
         # branch already has CPU coverage and would obscure the requested gradient.
         world_model.wm_predictor.requires_grad_(False).eval()
+        checkpointed_modules = _prepare_planner_qwen_training(
+            model,
+            gradient_checkpointing=bool(loading_args.gradient_checkpointing),
+            eval_modules=(find_visual_module(model),),
+        )
         if world_size > 1:
             broadcast_module_state(world_model.state_proj)
             broadcast_module_state(world_model.wm_predictor)
@@ -283,17 +343,37 @@ def main() -> int:
             dino_grid_weight=0.0,
         )
 
-        trajectory = _load_trajectory(args.trajectory_jsonl, rank)
         truncated_bootstrap = (
             0.0 if config.rl.truncated_bootstrap == "zero" else None
         )
-        episode = build_episode_training_batches(
-            (trajectory,),
-            gamma=config.rl.gamma,
-            truncated_bootstrap=truncated_bootstrap,
-        )[0]
-        transition = episode.transitions[args.step_index]
-        return_target = episode.return_targets[args.step_index]
+        if args.select_longest_final_transition:
+            trajectory, episode, step_index, state_tokens = (
+                _select_longest_final_transition(
+                    args.trajectory_jsonl,
+                    runtime=runtime,
+                    rank=rank,
+                    world_size=world_size,
+                    gamma=config.rl.gamma,
+                    truncated_bootstrap=truncated_bootstrap,
+                )
+            )
+        else:
+            trajectory = _load_trajectory(args.trajectory_jsonl, rank)
+            episode = build_episode_training_batches(
+                (trajectory,),
+                gamma=config.rl.gamma,
+                truncated_bootstrap=truncated_bootstrap,
+            )[0]
+            step_index = args.step_index
+            transition = episode.transitions[step_index]
+            state_tokens = _state_token_count(runtime, transition)
+        if state_tokens < args.minimum_state_tokens:
+            raise RuntimeError(
+                "GPU gate state prefix is shorter than its memory contract: "
+                f"tokens={state_tokens}, minimum={args.minimum_state_tokens}"
+            )
+        transition = episode.transitions[step_index]
+        return_target = episode.return_targets[step_index]
         old_action_value = algorithm.planner_old_action_value(runtime, transition)
 
         qwen_name, qwen_witness = _parameter_with_suffix(
@@ -405,12 +485,14 @@ def main() -> int:
             "world_size": world_size,
             "gpus_per_rank": args.gpus_per_rank,
             "distributed_strategy": distributed.strategy,
+            "gradient_checkpointing_active_modules": checkpointed_modules,
             "trajectory_id": trajectory.record_id,
-            "transition_step": args.step_index,
+            "transition_step": step_index,
+            "state_tokens": state_tokens,
             "executed_action_index": transition.action_index,
-            "executed_action_name": trajectory.action_names[args.step_index],
+            "executed_action_name": trajectory.action_names[step_index],
             "planner_search_mode": trajectory.planner_policy_traces[
-                args.step_index
+                step_index
             ].search_mode,
             "old_action_value": float(old_action_value.item()),
             "return_target": float(return_target.item()),
