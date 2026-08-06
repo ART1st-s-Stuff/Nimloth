@@ -132,6 +132,14 @@ def test_ppo_value_gpu_gate_requires_real_long_prefixes() -> None:
     assert "transition_selection=rank-owned-longest-final" in gate
 
 
+def test_resumed_staged_pipeline_creates_a_new_first_iteration_output() -> None:
+    pipeline = PIPELINE.read_text(encoding="utf-8")
+
+    assert "FIRST_ITERATION=$((RUN_INITIAL_GLOBAL_STEP + 1))" in pipeline
+    assert pipeline.count("ITERATION == FIRST_ITERATION") == 2
+    assert "ITERATION == 1" not in pipeline
+
+
 def test_loads_heterogeneous_per_node_gpu_counts() -> None:
     details = """
 JOB_GRES=gpu:5
