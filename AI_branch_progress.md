@@ -4131,3 +4131,16 @@
   分别`14514740736/25156721664` bytes；vision/StateProjector/lm_head梯度为空。
 - 该步骤是mechanics-only诊断，不建立W&B、不消费轨迹，也不改变ID138失败终态。ID138轨迹
   继续禁止训练复用；完整重试必须使用新ID、新output和fresh rollout。
+
+## 2026-08-07：ID139完整fresh重试合同已冻结
+
+- 新identity为
+  `139_smoke_gc_longprefix_gate_resume15_rl16_fresh16_greedyh1_k16_dino05_ppo4_1n4r2g_2xtp4`，
+  W&B `nimloth-rl` exact-name实时查询0命中；runtime固定为
+  `fddbaef867ed9656538c8e6fff140d3851dd6813`。
+- 继续使用已占的normal hold `508866` / `dgx-26:8`，不新排allocation。ID139必须新建output，
+  重新采集`base_train/common_sense_train`各8条、每数据集seed `129..136`；ID138 rollout只允许
+  diagnostics，禁止训练复用。
+- staged流程仍为fresh two-TP4 rollout -> 非消费>=14k真实prefix gate -> 仅gate成功后从ID134
+  committed step15 checkpoint执行step16。train/freeze、objective、失败终止和consumption合同均
+  记录在`ai_tasks/ai_progress/2026-08-07_ppo_value_critic_gc_gate_id139.md`。
