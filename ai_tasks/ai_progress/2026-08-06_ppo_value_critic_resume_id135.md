@@ -2,8 +2,9 @@
 
 ## Status
 
-- Submitted as Slurm Job `508170` after ID134 ended at global step 15. The stale
-  4+2+2 contract was never submitted; ID135 uses the replacement 4+4 contract.
+- Submitted as Slurm Job `508170` after ID134 ended at global step 15; currently
+  `PENDING(Priority)` with elapsed zero and no allocation. The stale 4+2+2
+  contract was never submitted; ID135 uses the replacement 4+4 contract.
 - Human authorized up to eight GPUs. An initial 2026-08-06 resource query found
   `dgx-50` unavailable and five free GPUs on each of normal `dgx-14` and
   `dgx-31`, motivating a 4+4 topology. The final pre-submit refresh found those
@@ -98,7 +99,7 @@
 
 ## Required launch gates
 
-1. Server worktree clean at exact commit `8f77fdc5`; pinned VAGEN/LeWM gitlinks
+1. Server worktree clean at exact commit `d6197e84`; pinned VAGEN/LeWM gitlinks
    and explicit Python path match the corrected runtime.
 2. Focused server tests and the broader Qwen/rollout/config/Slurm/loop/fresh
    regression pass at the exact commit.
