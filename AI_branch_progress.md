@@ -3930,3 +3930,16 @@
   `PENDING(Priority)`、elapsed0；`scontrol -dd`确认normal两节点×4GPU、总128 CPU/96 GiB、
   8小时和排除合同。尚无allocation/output/W&B/rollout/optimizer，获得资源后必须核对实际
   节点并监控至双TP4、strict merge和首个finite update/checkpoint。
+
+## 2026-08-06：dgx-32完整8卡出现，先复验而不直接放行
+
+- 实时资源显示`normal/dgx-32`为`IDLE 8/8 GPU`；现有Job`508170`已变为
+  `PENDING(Resources)`，其4+4合同需要两个物理节点且明确排除dgx-32，所以不会自动使用该
+  整节点。
+- 排除不是旧快照猜测：ID116唯一失败shard在dgx-32真实navigation prewarm超过300秒；
+  ID117把renderer换到两组内另一GPU后，dgx-32两组仍停在首次observation前，而其余六组
+  3--4秒通过。因此不能只因GPU空闲就把节点视为AI2-THOR可用。
+- 按人类要求的“先占节点再srun”，计划提交唯一的`normal/dgx-32:8` batch-owned hold，保留
+  `508170`原队列位置，并在hold内以150秒外层限制对8张GPU执行真实CloudRendering probe；
+  正式1x8所用renderer ordinal0/4必须通过。失败则释放hold并保留4+4排队；全部复验通过后
+  才切换新1x8 identity、取消旧pending job并在同一allocation用`srun`启动。

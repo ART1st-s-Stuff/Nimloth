@@ -154,3 +154,28 @@
   exclusions `dgx-[32,37,51]`. It has no allocation, output, W&B run, rollout or
   optimizer evidence yet. After allocation, verify actual nodes and monitor
   through prewarm, two TP4 engines, strict merge and the first finite update.
+
+## dgx-32 requalification and possible 1x8 replacement
+
+- A later live query found `normal/dgx-32` fully `IDLE` with 8/8 GPUs, 224/224
+  CPUs and about 1892 GiB free memory. Job `508170` cannot use it because its 4+4
+  contract excludes `dgx-32` and requires two physical nodes.
+- The exclusion is evidence-based: ID116's only failed shard exceeded the
+  300-second AI2-THOR navigation prewarm on `dgx-32`; ID117 moved the renderer
+  within both TP4 groups and both groups still stopped before the first
+  navigation observation while six non-`dgx-32` renderers passed in 3--4 seconds.
+- Before changing the formal topology, submit exactly one batch-owned hold for
+  `normal/dgx-32:8`, 128 CPUs, 96 GiB and eight hours. Keep Job `508170` pending
+  until the replacement allocation and render qualification are proven.
+- In the hold, run the real `CloudRendering` direct render probe on every
+  allocated GPU with the established 60-second AI2-THOR internal timeouts and
+  150-second shell limit. A 1x8 formal launch requires at minimum both renderer
+  slots used by the two TP4 groups (allocated ordinals 0 and 4) to emit
+  `AI2THOR_RENDER_OK`; probing all eight avoids hiding another broken mapping.
+- The probe does not train or freeze any module, consume a dataset/checkpoint,
+  create a W&B run or write into the formal ID135 output. Its artifacts use a
+  separate requalification directory. If it fails, release the hold and retain
+  Job `508170`; if it passes, recheck a new 1x8 W&B/output identity, cancel the
+  superseded pending 4+4 job, and launch the existing
+  `planner_greedy_h1_full_16rollout_8gpu_1x8.yaml` contract in the same hold via
+  `srun`.
