@@ -4037,3 +4037,15 @@
 - 当前只有源码和静态编译证据，定向CPU接口回归仍待可用依赖环境执行，尚无真实GPU
   backward结果。恢复训练前必须使用新identity和非消费型真实长prefix门禁记录峰值显存、
   finite loss、backward与optimizer step；ID137 rollout仍禁止复用。
+
+## 2026-08-06：Qwen train-mode修复通过远端197项RL CPU回归
+
+- 修复commit`92625028`已推送，服务器worktree精确detached checkout
+  `926250286aec9cf8d98389b959b7c88f5a51ef30`；VAGEN/LeWM仍固定
+  `192c35a9/8edfeb33`，LeWM只有既有未跟踪`__pycache__/`。
+- 新增分布式mode测试`7 passed`；排除shell full-runner的普通RL回归`190 passed`、两条预期
+  warning。full-runner的7个控制器恢复测试在共享pytest进程中会切断SSH进程组，因此逐项以
+  `setsid`隔离运行，7项均分别`1 passed`并正常退出。完整CPU/接口计数为`197/197`。
+- 该结果只证明mode fail-closed、ValueHead/PPO/fresh-consumption/checkpoint/controller等接口
+  未回归；它不证明真实Qwen长prefix峰值显存、DDP/NCCL、GPU backward或optimizer step。
+  GPU门禁仍必须先于任何fresh-rollout正式续训。

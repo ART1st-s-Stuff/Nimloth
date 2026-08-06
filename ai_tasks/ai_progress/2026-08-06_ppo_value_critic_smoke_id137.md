@@ -171,3 +171,18 @@
   production-shaped GPU memory gate must still complete a real long-prefix
   forward/backward/optimizer step before training is resumed. ID137 and its
   in-progress consumption record remain forbidden from reuse.
+
+## CPU regression after the root fix
+
+- Commit `926250286aec9cf8d98389b959b7c88f5a51ef30` was pushed and the server
+  worktree was checked out to that exact detached commit. Pinned VAGEN and LeWM
+  remained at `192c35a9` and `8edfeb33`; LeWM's pre-existing untracked
+  `__pycache__/` was not modified.
+- The new distributed-mode tests passed `7/7`. The remaining RL suite passed
+  `190/190` with two expected warnings. `test_full_runner.py` terminates a
+  shared SSH process group when several recovery cases run in one pytest
+  process, so its seven cases were also rerun one at a time under independent
+  `setsid` process groups; all seven completed with `1 passed` and exit zero.
+- The complete CPU/interface accounting is therefore `197/197`. This verifies
+  the train/eval fail-closed contract and adjacent RL interfaces, not GPU memory,
+  real DDP/NCCL execution, or a completed optimizer/checkpoint boundary.
