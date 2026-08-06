@@ -235,6 +235,11 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   only a fresh manifest whose current policy/planner and immutable trajectory
   fingerprints all match; a committed or unresolved in-progress consumption
   cannot be reused for another optimizer update.
+- A multi-rank exception leaves fresh consumption `in_progress` and exits
+  without an abort broadcast or cleanup barrier. This fail-closed behavior
+  preserves the first rank-local traceback instead of hiding it behind a new
+  mismatched collective. Single-rank failures before `optimizer.step()` may
+  still release the claim synchronously.
 - `latest/` records resumable progress. `best/` is updated only by the explicit
   held-out `validation.checkpoint_metric` (`success_rate` or `avg_reward`).
 - LoRA plus full Vision saves `vision_full_state.pt` next to the adapter and

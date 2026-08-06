@@ -252,6 +252,29 @@ def test_fresh_consumption_aborts_when_failure_precedes_optimizer_step(
     assert collector.events == ["collect", "begin", "abort"]
 
 
+def test_distributed_failure_leaves_consumption_in_progress_and_reports_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    loop, collector = _training_loop(
+        tmp_path,
+        monkeypatch,
+        fail_forward=True,
+    )
+    monkeypatch.setattr(loop, "_distributed_rank_world", lambda: (2, 4))
+
+    with pytest.raises(RuntimeError, match="forward failed"):
+        loop._run_iteration(1)
+
+    assert collector.events == ["collect", "begin"]
+    error = capsys.readouterr().err
+    assert '"rank": 2' in error
+    assert '"exception_type": "RuntimeError"' in error
+    assert '"exception": "forward failed"' in error
+    assert '"consumption_state": "left_in_progress_after_rank_local_failure"' in error
+
+
 def test_fresh_consumption_stays_in_progress_after_optimizer_step_starts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

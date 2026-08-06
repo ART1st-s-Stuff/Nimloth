@@ -44,9 +44,16 @@ def setup_dist(
     return 0, 1, 0, torch.device("cpu")
 
 
-def cleanup_dist() -> None:
+def cleanup_dist(*, synchronize: bool = True) -> None:
+    """Destroy the default process group, optionally synchronizing healthy ranks.
+
+    Exception paths must not enter a new collective: another rank may still be
+    unwinding from the original failure or may already have exited.
+    """
+
     if dist.is_available() and dist.is_initialized():
-        dist.barrier()
+        if synchronize:
+            dist.barrier()
         dist.destroy_process_group()
 
 

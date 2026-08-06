@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -336,10 +337,36 @@ class RLTrainingLoop:
                 del output
                 optimizer_step_started = True
                 self.optimization_runtime.step()
-        except Exception:
+        except Exception as error:
             if consumption_id is not None and not optimizer_step_started:
                 assert abort_consumption is not None
-                abort_consumption(consumption_id)
+                rank, world_size = self._distributed_rank_world()
+                print(
+                    json.dumps(
+                        {
+                            "phase": "planner_optimizer_update",
+                            "rank": rank,
+                            "world_size": world_size,
+                            "exception_type": type(error).__name__,
+                            "exception": str(error),
+                            "optimizer_step_started": False,
+                            "consumption_state": (
+                                "aborting"
+                                if world_size == 1
+                                else "left_in_progress_after_rank_local_failure"
+                            ),
+                        },
+                        default=str,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                # A distributed exception is not a safe point for another
+                # collective. Calling the rank-zero consumption transaction here
+                # previously hid the original rank-local error behind a mismatched
+                # one-element broadcast. Leave the claim fail-closed instead.
+                if world_size == 1:
+                    abort_consumption(consumption_id)
             raise
 
         # global_step统计完整消费的一批fresh rollout；planner内部的多个critic optimizer

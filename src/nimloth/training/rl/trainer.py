@@ -680,6 +680,7 @@ def train_rl(
         config=config,
     )
 
+    synchronize_cleanup = False
     try:
         from transformers import AutoConfig
         from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
@@ -953,7 +954,10 @@ def train_rl(
             ),
         )
         loop.run()
+        synchronize_cleanup = True
         return 0
     finally:
-        reporter.finish()
-        cleanup_dist()
+        try:
+            reporter.finish()
+        finally:
+            cleanup_dist(synchronize=synchronize_cleanup)

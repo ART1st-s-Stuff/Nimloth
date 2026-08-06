@@ -13,6 +13,7 @@ from nimloth.training.rl.trainer import (
     _wrap_distributed_modules,
     _wrap_world_model_ddp,
 )
+from nimloth.util import distributed as distributed_module
 from nimloth.wm import WorldModel
 
 
@@ -49,6 +50,46 @@ class _Backbone(Backbone):
 
     def save_pretrained(self, *args, **kwargs) -> None:
         del args, kwargs
+
+
+def test_failed_distributed_cleanup_does_not_enter_barrier(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(distributed_module.dist, "is_available", lambda: True)
+    monkeypatch.setattr(distributed_module.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(
+        distributed_module.dist,
+        "barrier",
+        lambda: calls.append("barrier"),
+    )
+    monkeypatch.setattr(
+        distributed_module.dist,
+        "destroy_process_group",
+        lambda: calls.append("destroy"),
+    )
+
+    distributed_module.cleanup_dist(synchronize=False)
+
+    assert calls == ["destroy"]
+
+
+def test_healthy_distributed_cleanup_synchronizes_before_destroy(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(distributed_module.dist, "is_available", lambda: True)
+    monkeypatch.setattr(distributed_module.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(
+        distributed_module.dist,
+        "barrier",
+        lambda: calls.append("barrier"),
+    )
+    monkeypatch.setattr(
+        distributed_module.dist,
+        "destroy_process_group",
+        lambda: calls.append("destroy"),
+    )
+
+    distributed_module.cleanup_dist()
+
+    assert calls == ["barrier", "destroy"]
 
 
 def test_world_model_ddp_wraps_only_trainable_modules(monkeypatch) -> None:
