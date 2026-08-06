@@ -151,3 +151,25 @@
   five non-excluded idle 8-GPU candidates (`dgx-26/31/35/52/54`). This is a
   volatile availability observation, not a reservation; no new job has been
   submitted.
+
+## Confirmed relaunch allocation and renderer gate
+
+- Human explicitly confirmed this exact ID138 contract. A fresh live W&B query
+  again returned zero exact-name matches and all ID138 output/controller paths
+  remained absent. The only submitted hold is Job `508866`: normal one node,
+  eight GPUs, 128 CPUs, 96 GiB and 2:30 walltime, excluding
+  `dgx-32/37/51`. It started on `dgx-26:8` at
+  `2026-08-07T02:48:38+08:00`.
+- Renderer attempt 1 stopped before importing AI2-THOR because the one-off
+  command omitted `PYTHONPATH=${REPO}/src`; its logs were preserved and it
+  created no ID138 output, W&B, rollout or GPU conclusion. This was a launch
+  command environment error, not a node/render failure.
+- Corrected attempt 2 used isolated homes, the shared verified AI2-THOR release
+  cache and the exact formal visibility contract. Physical GPU0 and GPU4 each
+  exposed only itself as `CUDA_VISIBLE_DEVICES=0/4` with relative
+  `gpu_device=0`; both emitted `AI2THOR_RENDER_OK` in 16.862/17.115 seconds with
+  255x255 frames and dynamic range 246. Evidence is under
+  `outputs/experiments/training/rl/preflight/2026-08-07/138_dgx26_exact_visibility_508866/attempt2`.
+- ID138 itself is still not started at this checkpoint. Immediately before the
+  staged step, refresh hold state, exact runtime commit, GPU/process/port state,
+  W&B uniqueness and output absence once more.

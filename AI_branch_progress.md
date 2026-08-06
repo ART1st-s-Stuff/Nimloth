@@ -4084,3 +4084,17 @@
   后续需人类确认后先占一个1x8 hold，再重复exact renderer、W&B/output、端口和残留进程门禁。
 - 本次只产生易漂移的调度终态与进度，没有新增durable memory；服务器experiment output并未
   创建，因此没有可更新的ID138 README/metadata。
+
+## 2026-08-07：ID138确认后取得dgx-26整机并通过renderer门禁
+
+- 人类确认精确ID138合同后，W&B exact-name仍匹配0且output/controller路径不存在。唯一新hold
+  Job`508866`请求normal 1节点8 GPU/128 CPU/96 GiB/2:30并排除`dgx-32/37/51`，于
+  02:48:38+08立即获得`dgx-26:8`；未提交第二个占位任务。
+- renderer attempt1的一次性命令漏传`PYTHONPATH=${REPO}/src`，在导入AI2-THOR前
+  `ModuleNotFoundError:nimloth`，没有render结论、W&B或ID138 output；失败日志保留且无GPU
+  残留。修正使用新的attempt2目录，不覆盖失败证据。
+- attempt2按正式单卡可见合同并行复验物理GPU0/4：相对`gpu_device=0`，分别16.862/
+  17.115秒输出`AI2THOR_RENDER_OK`，255x255 frame动态范围均246。该结果只放行当前双TP4
+  环境slot映射，尚无fresh rollout、长prefix gate、optimizer或checkpoint证据。
+- 下一步在同一hold内刷新exact runtime/output/W&B/端口/GPU残留后，以唯一batch-step控制器
+  串行执行two-TP4 fresh rollout、非消费长prefix gate，并仅在gate成功后执行step16 train。
