@@ -2,9 +2,8 @@
 
 ## Status
 
-- Prepared after ID134 ended at global step 15; not submitted under the stale
-  4+2+2 contract. The earlier `sbatch --test-only` connection was closed by the
-  SSH ProxyJump before Slurm executed.
+- Submitted as Slurm Job `508170` after ID134 ended at global step 15. The stale
+  4+2+2 contract was never submitted; ID135 uses the replacement 4+4 contract.
 - Human authorized up to eight GPUs. An initial 2026-08-06 resource query found
   `dgx-50` unavailable and five free GPUs on each of normal `dgx-14` and
   `dgx-31`, motivating a 4+4 topology. The final pre-submit refresh found those
@@ -119,10 +118,10 @@
 
 ## Completed preflight and live resource change
 
-- The server runtime worktree was clean at exact commit `8f77fdc5` under the
-  tracked-files/submodule-untracked gate. VAGEN remained `192c35a9` and LeWM
-  remained `8edfeb33`.
-- Fixed-runtime focused regression passed `83 tests`; the full RL plus vLLM
+- The server runtime worktree is clean at exact commit `d6197e84`, containing
+  the collective fix from `8f77fdc5` plus the 4+4 retry config and regression.
+  VAGEN remains `192c35a9` and LeWM remains `8edfeb33`.
+- Collective-fix focused regression passed `83 tests`; the full RL plus vLLM
   logits/policy boundary suite passed `208 tests` with only two known third-party
   or explicit-std warnings.
 - The replacement 4+4 config parsed at exact commit `d6197e84` as iterations
@@ -145,5 +144,12 @@
   scheduler-flexible and is expected to pend rather than use an incompatible
   topology or the excluded `dgx-37`.
 - No job ID, allocation, W&B run, output, rollout or optimizer work exists for
-  ID135 yet. The corrected commit is synchronized and all gates except the
-  final live resource refresh and `sbatch --test-only` have passed.
+  ID135 before formal submission. The exact scheduler-flexible
+  `sbatch --test-only` passed with an estimated `2026-08-08T12:56:41` start on
+  `dgx-[09,21]`; this estimate did not allocate resources.
+- Formal Job `508170` was submitted at `2026-08-06T15:37:51+08:00` and is
+  `PENDING(Priority)`, elapsed zero. `scontrol -dd` confirms normal QOS, two
+  nodes, two tasks, 64 CPUs/task, four GPUs/node, 48 GiB/node, eight hours and
+  exclusions `dgx-[32,37,51]`. It has no allocation, output, W&B run, rollout or
+  optimizer evidence yet. After allocation, verify actual nodes and monitor
+  through prewarm, two TP4 engines, strict merge and the first finite update.

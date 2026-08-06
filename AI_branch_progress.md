@@ -3925,3 +3925,8 @@
   2/2卡分散空闲，没有节点能立即承载TP4。4+4请求因此不固定过期节点名，改为normal任意
   两个兼容4卡节点并继续排除`dgx-32/37/51`，预期先`PENDING(Resources)`，资源释放后由
   Slurm启动；不会用不兼容的碎片卡或把排队误报为训练已开始。
+- scheduler-flexible exact `sbatch --test-only`通过，给出的非绑定估算为
+  `2026-08-08T12:56:41`在`dgx-[09,21]`启动。正式Job`508170`于15:37:51+08提交，当前
+  `PENDING(Priority)`、elapsed0；`scontrol -dd`确认normal两节点×4GPU、总128 CPU/96 GiB、
+  8小时和排除合同。尚无allocation/output/W&B/rollout/optimizer，获得资源后必须核对实际
+  节点并监控至双TP4、strict merge和首个finite update/checkpoint。
