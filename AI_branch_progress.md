@@ -4172,3 +4172,17 @@
 - 目标仍是从ID134 committed step15精确更新到step16；formal成功必须有ID140 consumption、
   完整`train/final`和finished W&B。详细合同见
   `ai_tasks/ai_progress/2026-08-07_ppo_value_critic_diag_gate_id140.md`。
+
+## 2026-08-07：ID140路径隔离实证通过，但attached SSH关闭取消Slurm step
+
+- ID140 staged step `508866.12`与rollout step `508866.13`启动；fresh rollout在4分4秒内
+  完成seed `137..144`各8条，严格合并16 trajectories / 283 transitions。
+- 运行日志确认隔离正确：stage log同时记录ID138 diagnostic trajectory与ID140 formal
+  trajectory，`gpu_gate_longprefix/contract.log`实际读取ID138 trajectory/manifest。单卡16184-token
+  gate通过；双rank正在checkpoint load时，提交`srun`的attached交互SSH会话关闭，step被
+  `CANCELLED by 3738`，exit `0:9`，没有产生DDP result。
+- 该终止不是OOM、数据验证或PPO失败。Formal train没有启动；没有train step、W&B、checkpoint
+  或consumption，GPU清理后为空。ID140 README已记录`cancelled_before_train`，identity终止，
+  其rollout禁止训练复用。
+- 后续必须继续“先hold再srun”，但将srun client用`nohup`脱离SSH并落盘PID/log；先通过短
+  detached srun probe证明SSH退出后step仍完成，再用新identity和fresh rollout启动正式流程。

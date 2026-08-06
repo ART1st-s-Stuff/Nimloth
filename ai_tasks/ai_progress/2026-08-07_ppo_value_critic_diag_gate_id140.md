@@ -80,3 +80,25 @@
   consumption sidecar, final checkpoint metadata and W&B run state. After any
   terminal state, update the output README and progress files and clean GPU
   processes/ports before releasing the hold.
+
+## Terminal result
+
+- Staged step `508866.12` and rollout step `508866.13` started. The fresh ID140
+  rollout completed in 4 minutes 4 seconds and strictly merged 16 trajectories
+  / 283 transitions for seeds 137 through 144.
+- Runtime evidence confirmed strict path separation: the stage log records the
+  ID138 diagnostic and ID140 formal trajectory paths, and the gate contract
+  actually reads the ID138 trajectory/manifest. The single-GPU 16,184-token
+  gate passed.
+- While the two-rank gate was loading checkpoint shards, the interactive SSH
+  session that owned the attached `srun` closed. Slurm marked step `508866.12`
+  `CANCELLED by 3738`, exit `0:9`, at
+  `2026-08-07T03:38:36+08:00`. This was not an OOM, data validation failure, or
+  PPO failure.
+- Formal training never started. There is no DDP result, train step, W&B run,
+  checkpoint or consumption sidecar, and GPUs were clean after cancellation.
+  ID140 is terminal; its rollout is forbidden from training reuse.
+- A retry must retain the hold-then-srun workflow but detach the `srun` client
+  from SSH with durable PID/log files. A short detached probe must first prove
+  that the step survives SSH exit; the formal retry then requires a new ID and
+  fresh rollout.
