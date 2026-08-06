@@ -3908,3 +3908,16 @@
   `UNKNOWN port 65535`关闭。按服务器规则停止反复重连；ID135尚无job、allocation、W&B、
   output、rollout或optimizer。连接恢复后必须重查易漂移的资源/W&B/output，再执行test-only
   和正式提交，不能把当前静态preflight误报为训练已经开始。
+
+## 2026-08-06：实时资源变化后ID135切换为4+4恢复合同
+
+- 恢复SSH后实时查询确认资源已变化：`dgx-50`不再有空闲GPU；`normal/dgx-14`和
+  `dgx-31`各有5卡空闲，当前用户无Slurm job。人类已授权总计8卡，因此ID135改为
+  两节点各4卡的homogeneous合同，不再沿用过期的4+2+2快照。
+- 4+4配置补齐与其他正式配置一致的`max_episode_attempts: 3`，保持单轨迹同identity
+  有界重试、严格16/16批次、world4×2GPU训练rank和两个TP4 rollout worker；checkpoint、
+  objective、held-out 120集合同不变。
+- 新exact runtime commit`d6197e84`已同步到服务器；4+4 config/Slurm定向回归
+  `64 passed`，配置解析、恢复文件、空output/progress及新W&B名称0匹配均通过。正式提交前
+  只剩实时资源刷新、`sbatch --test-only`和分配后的两节点GPU映射。当前尚无ID135 job、
+  output、W&B、rollout或optimizer工作。

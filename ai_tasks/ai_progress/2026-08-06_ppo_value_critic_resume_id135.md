@@ -1,14 +1,15 @@
-# 2026-08-06: PPO ValueHead resume ID135 on 4+2+2 GPUs
+# 2026-08-06: PPO ValueHead resume ID135 on 4+4 GPUs
 
 ## Status
 
-- Prepared after ID134 ended at global step 15; not submitted. The final
-  `sbatch --test-only` connection was closed by the SSH ProxyJump with
-  `UNKNOWN port 65535` before Slurm executed.
-- Human explicitly authorized starting training with `dgx-50` and two additional
-  two-GPU nodes.
+- Prepared after ID134 ended at global step 15; not submitted under the stale
+  4+2+2 contract. The earlier `sbatch --test-only` connection was closed by the
+  SSH ProxyJump before Slurm executed.
+- Human authorized up to eight GPUs. A fresh 2026-08-06 resource query found
+  `dgx-50` unavailable and instead found five free GPUs on each of normal
+  `dgx-14` and `dgx-31`; ID135 therefore uses four GPUs on each node.
 - Exact candidate runtime commit:
-  `8f77fdc577b0061c68c93119555da2c9104f36d4`.
+  `d6197e843fcbfbfe59185b0280c1e6c1acccbfdc`.
 
 ## Purpose and objective
 
@@ -51,7 +52,7 @@
 ## Data, config and evaluation
 
 - Config:
-  `configs/training/rl/planner_greedy_h1_full_16rollout_8gpu_422.yaml`.
+  `configs/training/rl/planner_greedy_h1_full_16rollout_8gpu_44.yaml`.
 - Training split: actual VAGEN `base_train` and `common_sense_train` assets only;
   eight episodes per dataset per update, maximum 20 actions, same-identity
   collection retry at most three times.
@@ -65,9 +66,9 @@
   `art2nd-hong-kong-university-of-science-and-technology`.
 - Project: `nimloth-rl`.
 - Candidate run ID/name:
-  `135_ppo_value_syncfix_resume15_rl16_eval10x120_greedyh1_k16_dino05_ppo4_iter60_3n4r2g_1xtp4_preempt4_normal2x2`.
+  `135_ppo_value_syncfix_resume15_rl16_eval10x120_greedyh1_k16_dino05_ppo4_iter60_2n4r2g_2xtp4_normal2x4`.
 - Candidate output:
-  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-06/135_ppo_value_syncfix_resume15_rl16_eval10x120_greedyh1_k16_dino05_ppo4_iter60_3n4r2g_1xtp4_preempt4_normal2x2`.
+  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-06/135_ppo_value_syncfix_resume15_rl16_eval10x120_greedyh1_k16_dino05_ppo4_iter60_2n4r2g_2xtp4_normal2x4`.
 - Submission is allowed only after confirming this exact W&B name is unused and
   both output and adjacent iteration-progress paths are absent.
 
@@ -78,20 +79,18 @@
 - Python:
   `/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3`.
 - Batch-owned entrypoint:
-  `experiments/training/rl/train_8gpu_422.slurm`; iteration/evaluation runner:
+  `experiments/training/rl/train_8gpu_44.slurm`; iteration/evaluation runner:
   `experiments/training/rl/run_vllm_online_ppo_parallel_slurm.sh`.
-- Heterogeneous component 0: `preempt/dgx-50`, one node, four GPUs, 64 CPUs,
-  48 GiB. Component 1: `normal`, two nodes, two GPUs/32 CPUs/24 GiB each; exclude
-  `dgx-32,dgx-37,dgx-51` and use two currently compatible nodes.
-- Total: three nodes, eight GPUs, four two-GPU synchronized training ranks. Only
-  the four-GPU node can host the single TP4 rollout/evaluation worker; all eight
-  GPUs participate in training updates.
+- Homogeneous allocation: `normal/dgx-14,dgx-31`, two nodes, four GPUs,
+  64 CPUs and 48 GiB per node; exclude `dgx-32,dgx-37,dgx-51`.
+- Total: two nodes, eight GPUs, four two-GPU synchronized training ranks. Each
+  node hosts one TP4 rollout/evaluation worker; all eight GPUs participate in
+  training updates.
 - Walltime: eight hours, maximum 64 GPU-hours for this segment. Based on ID134's
-  measured iteration/evaluation times and the reduction from two TP4 workers to
-  one, the remaining 45 updates are expected to require roughly 11--14 hours.
-  This segment is therefore expected to stop at a committed intermediate
-  checkpoint unless preempted earlier; it is not represented as a full-horizon
-  completion request.
+  measured iteration/evaluation times with two TP4 workers, the remaining 45
+  updates are expected to require roughly 8--10 hours. This segment may stop at
+  a committed intermediate checkpoint; it is not represented as guaranteed
+  full-horizon completion.
 - Candidate port bases: Ray 7580, environment 9680, train rendezvous 32720.
 - Lifecycle is owned by the Slurm batch. External monitoring is read-only.
 
@@ -105,18 +104,17 @@
    `rl_state.pt` whose global step is exactly 15; config objective/checkpoint
    metadata match.
 4. Actual dataset counts/split/scene disjointness are rechecked; config parses as
-   nodes 3, world 4, two GPUs/rank, total 8, TP4, 16 episodes and attempts 3.
+   nodes 2, world 4, two GPUs/rank, total 8, TP4, 16 episodes and attempts 3.
 5. Exact W&B identity/output/progress are unused; ports are unique; shell syntax,
-   login dry preflight and every heterogeneous component's `sbatch --test-only`
-   request pass.
+   login dry preflight and the homogeneous `sbatch --test-only` request pass.
 6. Immediately before submission re-query all jobs/resources. Require component
-   0 to resolve to `dgx-50:4` and component 1 to two distinct compatible 2-GPU
-   nodes. After allocation, verify the expanded node/GPU/rank mapping.
+   nodes to resolve to `dgx-14:4` and `dgx-31:4`. After allocation, verify the
+   expanded node/GPU/rank mapping.
 7. Monitor through real AI2-THOR prewarm, TP4 model warmup, strict 16-rollout
    merge and the first finite synchronized PPO update/checkpoint before declaring
    the resumed training healthy.
 
-## Completed preflight and current blocker
+## Completed preflight and live resource change
 
 - The server runtime worktree was clean at exact commit `8f77fdc5` under the
   tracked-files/submodule-untracked gate. VAGEN remained `192c35a9` and LeWM
@@ -124,23 +122,21 @@
 - Fixed-runtime focused regression passed `83 tests`; the full RL plus vLLM
   logits/policy boundary suite passed `208 tests` with only two known third-party
   or explicit-std warnings.
-- Exact config parsed as iterations 60, strict episodes/batch 16, attempts 3,
-  nodes 3, world 4, two GPUs/rank, total 8, TP4, actor disabled, ValueHead clip
-  0.2/four epochs and external 120-episode validation every ten updates.
+- The replacement 4+4 config parsed at exact commit `d6197e84` as iterations
+  60, strict batch 16, attempts 3, nodes 2, world 4, two GPUs/rank, total 8,
+  TP4, actor disabled, ValueHead clip 0.2/four epochs and external 120-episode
+  validation every ten updates. Config and Slurm regression passed `64 tests`.
 - Mmap checkpoint inspection confirmed iteration/global step 15, training world
   4, objective `receding_horizon_decision_state_ppo_value_v1`, matching planner
   and ValueHead metadata, replicated optimizer state, and all required model,
   processor, StateProjector, WM predictor, ValueHead and `rl_state.pt` files.
 - Actual VAGEN assets contained 1200/1200 training tasks and 60/60 held-out
   tasks. The corresponding train/eval scene intersections were both empty.
-- The exact W&B display name had zero matches. Candidate output and adjacent
-  progress paths were absent, and the current user had no Slurm jobs.
-- Last resource snapshot before the connection failure showed
-  `preempt/dgx-50:4` free and compatible two-GPU capacity on normal nodes
-  `dgx-10`, `dgx-14`, `dgx-21` and `dgx-30`; `dgx-37` remained excluded.
-- The subsequent exact heterogeneous `sbatch --test-only` SSH session closed
-  before reaching Slurm. Per server rules, no repeated reconnect was attempted.
-  No job ID, allocation, W&B run, output, rollout or optimizer work exists for
-  ID135. After VPN/ProxyJump recovery, re-run live jobs/resources, exact W&B and
-  empty-output checks because those facts can drift, then execute test-only and
-  the same formal submission.
+- The new 4+4 W&B display name had zero matches; its output and adjacent
+  progress paths were absent. All required files in the immutable ID134
+  checkpoint remained nonempty.
+- The live resource query now reports `normal/dgx-14:5` and `dgx-31:5`, while
+  `preempt/dgx-50` is no longer available. The current user has no Slurm jobs.
+- No job ID, allocation, W&B run, output, rollout or optimizer work exists for
+  ID135 yet. The corrected commit is synchronized and all gates except the
+  final live resource refresh and `sbatch --test-only` have passed.
