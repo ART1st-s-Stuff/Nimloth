@@ -4070,3 +4070,17 @@
   ID138预计rollout10--20分钟、gate最多20分钟、train10--90分钟，组合硬上限2小时/
   16 GPU-hours。当前尚未运行renderer probe、rollout、gate或train，必须等待人类确认精确
   合同后才能启动；完整说明见`ai_tasks/ai_progress/2026-08-06_ppo_value_critic_gc_gate_id138.md`。
+
+## 2026-08-07：hold 508346超时释放，ID138实际从未启动
+
+- 只读终态核验确认resource-only Job`508346`于01:27:42+08达到8小时walltime，最终
+  `TIMEOUT`、elapsed8:00:12、allocation exit0:0；当前已不在`squeue`。
+- ID138 output、相邻`staged_controller.log`和`iteration_progress.log`全部不存在，未创建
+  W&B、未运行renderer probe/rollout/gate/train、无manifest consumption或checkpoint。
+  因此这是hold终止，不是ID138实验失败；ID138 identity仍可在重新核验W&B/output后使用，
+  恢复边界仍是ID134 committed global step15。
+- 终态后的实时资源有normal 68/88 GPU空闲，`dgx-26/31/35/37/52/54`均显示整机8卡idle；
+  继续排除已知`dgx-37/51`后仍有`dgx-26/31/35/52/54`候选。当前没有重新占节点或提交任务；
+  后续需人类确认后先占一个1x8 hold，再重复exact renderer、W&B/output、端口和残留进程门禁。
+- 本次只产生易漂移的调度终态与进度，没有新增durable memory；服务器experiment output并未
+  创建，因此没有可更新的ID138 README/metadata。

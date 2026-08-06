@@ -2,14 +2,20 @@
 
 ## Status
 
-- Awaiting exact human confirmation. No ID138 GPU probe, rollout, gate, W&B
-  run, consumption, optimizer step or checkpoint has started.
+- The resource-only hold expired before exact human confirmation. Job `508346`
+  reached its eight-hour limit at `2026-08-07T01:27:42+08:00` and ended
+  `TIMEOUT` after 8:00:12 with allocation exit code 0:0.
+- No ID138 GPU probe, rollout, gate, W&B run, consumption, optimizer step or
+  checkpoint ever started. The exclusive output, adjacent staged-controller
+  log and iteration-progress path are all absent, so ID138 itself did not fail
+  and remains an unused identity subject to a fresh W&B/output check.
 - Functional runtime commit:
   `66a7afde822547a4517a2c5b7e18c2e2a9ef62b9`. The server worktree is detached
   at this commit; VAGEN/LeWM are pinned to `192c35a9`/`8edfeb33`.
-- Existing resource-only hold Job `508346` is RUNNING on
-  `normal/dgx-52:8`, 128 CPUs and 96 GiB. At the 22:38+08 preflight it had
-  2:49:09 remaining. ID138 does not submit or replace an allocation.
+- A new 1x8 hold and a repeated live preflight are required before launch.
+  The post-timeout resource snapshot found idle normal 8-GPU nodes
+  `dgx-26/31/35/37/52/54`; known exclusions `dgx-37/51` remain, and any newly
+  selected node still requires the exact renderer probe.
 
 ## Purpose and objective
 
@@ -131,3 +137,17 @@
 - Remaining pre-launch actions are the concurrent renderer probes, immediate
   resource/output/W&B refresh, and explicit human confirmation of this exact
   two-hour/16-GPU-hour contract.
+
+## Hold terminal update
+
+- The `508346` timeout was only the terminal state of the resource reservation;
+  it produced no ID138 output and consumed no trajectory. There is no ID138
+  README/metadata under server `outputs/` to update.
+- The recovery boundary remains the immutable ID134 global-step-15
+  `policy_inputs/iter_0016` checkpoint. Launching later requires a new hold but
+  not a new experiment ID, because the exact ID138 W&B/output identity was
+  never created.
+- The current live resource snapshot reports 68/88 normal GPUs free, including
+  five non-excluded idle 8-GPU candidates (`dgx-26/31/35/52/54`). This is a
+  volatile availability observation, not a reservation; no new job has been
+  submitted.
