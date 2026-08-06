@@ -140,6 +140,20 @@ def test_resumed_staged_pipeline_creates_a_new_first_iteration_output() -> None:
     assert "ITERATION == 1" not in pipeline
 
 
+def test_parallel_controller_can_gate_between_rollout_and_training() -> None:
+    controller = PARALLEL_CONTROLLER.read_text(encoding="utf-8")
+
+    assert "PIPELINE_PHASE=${PIPELINE_PHASE:-all}" in controller
+    assert "rollout) RUN_ROLLOUT=true; RUN_TRAIN=false ;;" in controller
+    assert "train) RUN_ROLLOUT=false; RUN_TRAIN=true ;;" in controller
+    assert '[[ -s "${MANIFEST}" ]]' in controller
+    assert '[[ -s "${TRAJECTORY_JSONL}" ]]' in controller
+    assert '[[ ! -e "${CONSUMPTION}" ]]' in controller
+    assert '[[ -s "${RESUME_CHECKPOINT}/rl_state.pt" ]]' in controller
+    assert 'if [[ "${RUN_TRAIN}" == true ]]; then' in controller
+    assert "ROLLOUT_STAGE_OK manifest=${MANIFEST}" in controller
+
+
 def test_loads_heterogeneous_per_node_gpu_counts() -> None:
     details = """
 JOB_GRES=gpu:5

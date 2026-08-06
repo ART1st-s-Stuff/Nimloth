@@ -31,6 +31,7 @@ NIMLOTH_HET_GPUS_PER_NODE=${NIMLOTH_HET_GPUS_PER_NODE:-}
 RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-}
 RUN_INITIAL_GLOBAL_STEP=${RUN_INITIAL_GLOBAL_STEP:-0}
 PIPELINE_MODE=${PIPELINE_MODE:-train}
+PIPELINE_PHASE=${PIPELINE_PHASE:-all}
 
 source "${REPO}/experiments/training/rl/slurm_allocation.sh"
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
@@ -69,6 +70,16 @@ print(
   echo "PIPELINE_MODE must be train or eval" >&2
   exit 1
 }
+case "${PIPELINE_PHASE}" in
+  all) RUN_ROLLOUT=true; RUN_TRAIN=true ;;
+  rollout) RUN_ROLLOUT=true; RUN_TRAIN=false ;;
+  train) RUN_ROLLOUT=false; RUN_TRAIN=true ;;
+  *) echo "PIPELINE_PHASE must be all, rollout, or train" >&2; exit 1 ;;
+esac
+if [[ "${PIPELINE_MODE}" == eval && "${PIPELINE_PHASE}" != all ]]; then
+  echo "staged PIPELINE_PHASE is only supported for training rollouts" >&2
+  exit 1
+fi
 (( CONFIG_NODES > 0 )) || {
   echo "parallel runner requires at least one physical node" >&2
   exit 1
@@ -422,34 +433,55 @@ fi
 ITERATION_TAG=$(printf 'iter_%04d' "${ITERATION}")
 ROLLOUT_OUT=${RUN_OUT}/rollouts/${ITERATION_TAG}
 SHARD_ROOT=${ROLLOUT_OUT}/shards
+MANIFEST=${ROLLOUT_OUT}/fresh_policy_manifest.json
+TRAJECTORY_JSONL=${ROLLOUT_OUT}/trajectories.jsonl
+CONSUMPTION=${MANIFEST}.consumption.json
 LOG=${RUN_OUT}/pipeline.log
-if [[ -e "${ROLLOUT_OUT}" ]] && find "${ROLLOUT_OUT}" -mindepth 1 -print -quit | grep -q .; then
-  echo "refusing to reuse non-empty iteration rollout: ${ROLLOUT_OUT}" >&2
-  exit 1
-fi
-if (( ITERATION == FIRST_ITERATION )); then
-  if [[ -e "${RUN_OUT}" ]] && find "${RUN_OUT}" -mindepth 1 -print -quit | grep -q .; then
-    echo "refusing to reuse non-empty formal output: ${RUN_OUT}" >&2
+if [[ "${RUN_ROLLOUT}" == true ]]; then
+  if [[ -e "${ROLLOUT_OUT}" ]] && find "${ROLLOUT_OUT}" -mindepth 1 -print -quit | grep -q .; then
+    echo "refusing to reuse non-empty iteration rollout: ${ROLLOUT_OUT}" >&2
     exit 1
   fi
-  if (( RUN_INITIAL_GLOBAL_STEP > 0 )); then
+  if (( ITERATION == FIRST_ITERATION )); then
+    if [[ -e "${RUN_OUT}" ]] && find "${RUN_OUT}" -mindepth 1 -print -quit | grep -q .; then
+      echo "refusing to reuse non-empty formal output: ${RUN_OUT}" >&2
+      exit 1
+    fi
+    if (( RUN_INITIAL_GLOBAL_STEP > 0 )); then
+      [[ -s "${RESUME_CHECKPOINT}/rl_state.pt" ]] || {
+        echo "initial optimizer resume checkpoint is missing" >&2
+        exit 1
+      }
+    fi
+  else
+    [[ -s "${RUN_OUT}/README.md" ]] || { echo "formal README is missing" >&2; exit 1; }
     [[ -s "${RESUME_CHECKPOINT}/rl_state.pt" ]] || {
-      echo "initial optimizer resume checkpoint is missing" >&2
+      echo "resume checkpoint is missing before iteration ${ITERATION}" >&2
       exit 1
     }
   fi
 else
-  [[ -s "${RUN_OUT}/README.md" ]] || { echo "formal README is missing" >&2; exit 1; }
+  [[ -s "${RUN_OUT}/README.md" ]] || { echo "staged rollout README is missing" >&2; exit 1; }
+  [[ -s "${MANIFEST}" ]] || { echo "staged fresh manifest is missing" >&2; exit 1; }
+  [[ -s "${TRAJECTORY_JSONL}" ]] || { echo "staged trajectory JSONL is missing" >&2; exit 1; }
+  [[ ! -e "${CONSUMPTION}" ]] || {
+    echo "staged fresh manifest already has consumption state: ${CONSUMPTION}" >&2
+    exit 1
+  }
   [[ -s "${RESUME_CHECKPOINT}/rl_state.pt" ]] || {
-    echo "resume checkpoint is missing before iteration ${ITERATION}" >&2
+    echo "staged train resume checkpoint is missing" >&2
     exit 1
   }
 fi
-mkdir -p "${SHARD_ROOT}" "${RUN_OUT}/train"
+if [[ "${RUN_ROLLOUT}" == true ]]; then
+  mkdir -p "${SHARD_ROOT}" "${RUN_OUT}/train"
+else
+  mkdir -p "${RUN_OUT}/train"
+fi
 
 COMMIT=$(git -C "${REPO}" rev-parse HEAD)
 ENV_COMMIT=$(git -C "${ENV_REPO}/external/VAGEN" rev-parse HEAD)
-if (( ITERATION == FIRST_ITERATION )); then
+if [[ "${RUN_ROLLOUT}" == true ]] && (( ITERATION == FIRST_ITERATION )); then
   cat > "${RUN_OUT}/README.md" <<EOF
 # vLLM online RL full run (${CONFIG_TOTAL_GPUS} GPUs)
 
@@ -471,9 +503,10 @@ if (( ITERATION == FIRST_ITERATION )); then
 EOF
 fi
 
-NODE_STEP_PIDS=()
-worker_offset=0
-for node_index in "${!NODES[@]}"; do
+if [[ "${RUN_ROLLOUT}" == true ]]; then
+  NODE_STEP_PIDS=()
+  worker_offset=0
+  for node_index in "${!NODES[@]}"; do
   node=${NODES[${node_index}]}
   node_gpus=${NODE_GPU_COUNTS[${node_index}]}
   het_group=${NODE_HET_GROUPS[${node_index}]}
@@ -536,53 +569,58 @@ for node_index in "${!NODES[@]}"; do
       done
       exit "${status}"
     ' >"${node_log}" 2>&1 &
-  NODE_STEP_PIDS+=("$!")
-  worker_offset=$((worker_offset + workers_per_node))
-done
-(( worker_offset == ROLLOUT_WORKERS )) || {
-  echo "internal rollout worker assignment ended at ${worker_offset}" >&2
-  exit 1
-}
+    NODE_STEP_PIDS+=("$!")
+    worker_offset=$((worker_offset + workers_per_node))
+  done
+  (( worker_offset == ROLLOUT_WORKERS )) || {
+    echo "internal rollout worker assignment ended at ${worker_offset}" >&2
+    exit 1
+  }
 
-rollout_status=0
-for pid in "${NODE_STEP_PIDS[@]}"; do
-  wait "${pid}" || rollout_status=$?
-done
-if (( rollout_status != 0 )); then
-  tail -n 200 "${SHARD_ROOT}"/node_*.log >&2
-  exit "${rollout_status}"
+  rollout_status=0
+  for pid in "${NODE_STEP_PIDS[@]}"; do
+    wait "${pid}" || rollout_status=$?
+  done
+  if (( rollout_status != 0 )); then
+    tail -n 200 "${SHARD_ROOT}"/node_*.log >&2
+    exit "${rollout_status}"
+  fi
+
+  MERGE_ARGS=()
+  for ((shard_index=0; shard_index<ROLLOUT_WORKERS; shard_index++)); do
+    shard_tag=$(printf 'shard_%02d' "${shard_index}")
+    shard_seed=$((SEED_OFFSET + shard_index * SEEDS_PER_DATASET_PER_WORKER))
+    MERGE_ARGS+=(
+      --shard-manifest "${SHARD_ROOT}/${shard_tag}/fresh_policy_manifest.json"
+      --shard-eval-sets "${TRAIN_DATASETS_CSV}"
+      --shard-seed-offset "${shard_seed}"
+      --shard-num-episodes "${EPISODES_PER_WORKER}"
+    )
+  done
+  PYTHONPATH="${REPO}/src:${ENV_REPO}/external/VAGEN" "${PYTHON}" \
+    "${REPO}/experiments/training/rl/merge_rollout_shards.py" \
+    "${MERGE_ARGS[@]}" \
+    --output-dir "${ROLLOUT_OUT}" \
+    --split train \
+    --seed-per-eval-set \
+    2>&1 | tee -a "${LOG}"
 fi
 
-MERGE_ARGS=()
-for ((shard_index=0; shard_index<ROLLOUT_WORKERS; shard_index++)); do
-  shard_tag=$(printf 'shard_%02d' "${shard_index}")
-  shard_seed=$((SEED_OFFSET + shard_index * SEEDS_PER_DATASET_PER_WORKER))
-  MERGE_ARGS+=(
-    --shard-manifest "${SHARD_ROOT}/${shard_tag}/fresh_policy_manifest.json"
-    --shard-eval-sets "${TRAIN_DATASETS_CSV}"
-    --shard-seed-offset "${shard_seed}"
-    --shard-num-episodes "${EPISODES_PER_WORKER}"
-  )
-done
-PYTHONPATH="${REPO}/src:${ENV_REPO}/external/VAGEN" "${PYTHON}" \
-  "${REPO}/experiments/training/rl/merge_rollout_shards.py" \
-  "${MERGE_ARGS[@]}" \
-  --output-dir "${ROLLOUT_OUT}" \
-  --split train \
-  --seed-per-eval-set \
-  2>&1 | tee -a "${LOG}"
-
-env SLURM_JOB_ID="${HOLD_JOB}" SLURM_JOB_NODELIST="${NIMLOTH_TRAIN_NODELIST}" \
-  NIMLOTH_TRAIN_NODE_SPECS="${NIMLOTH_TRAIN_NODE_SPECS}" \
-  PIPELINE_PHASE=train \
-  REPO="${REPO}" RUN_OUT="${RUN_OUT}" RL_CONFIG="${RL_CONFIG}" \
-  ENV_REPO="${ENV_REPO}" MODEL="${MODEL}" WM_CKPT="${WM_CKPT}" \
-  REFERENCE_MODEL="${REFERENCE_MODEL}" RESUME_CHECKPOINT="${RESUME_CHECKPOINT}" \
-  ITERATION="${ITERATION}" TOTAL_ITERATIONS="${TOTAL_ITERATIONS}" \
-  RUN_MODE=full SEED_OFFSET="${SEED_OFFSET}" \
-  SEED_RANGE_DESCRIPTION="per-dataset ${SEED_OFFSET}..${SEED_RANGE_END}" \
-  RUN_INITIAL_GLOBAL_STEP="${RUN_INITIAL_GLOBAL_STEP}" \
-  WANDB_PROJECT="${WANDB_PROJECT}" WANDB_RUN_NAME="${WANDB_RUN_NAME}" \
-  WANDB_MODE_OVERRIDE="${WANDB_MODE_OVERRIDE}" \
-  TRAIN_MASTER_PORT="${TRAIN_MASTER_PORT}" \
-  bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_smoke.sh"
+if [[ "${RUN_TRAIN}" == true ]]; then
+  env SLURM_JOB_ID="${HOLD_JOB}" SLURM_JOB_NODELIST="${NIMLOTH_TRAIN_NODELIST}" \
+    NIMLOTH_TRAIN_NODE_SPECS="${NIMLOTH_TRAIN_NODE_SPECS}" \
+    PIPELINE_PHASE=train \
+    REPO="${REPO}" RUN_OUT="${RUN_OUT}" RL_CONFIG="${RL_CONFIG}" \
+    ENV_REPO="${ENV_REPO}" MODEL="${MODEL}" WM_CKPT="${WM_CKPT}" \
+    REFERENCE_MODEL="${REFERENCE_MODEL}" RESUME_CHECKPOINT="${RESUME_CHECKPOINT}" \
+    ITERATION="${ITERATION}" TOTAL_ITERATIONS="${TOTAL_ITERATIONS}" \
+    RUN_MODE=full SEED_OFFSET="${SEED_OFFSET}" \
+    SEED_RANGE_DESCRIPTION="per-dataset ${SEED_OFFSET}..${SEED_RANGE_END}" \
+    RUN_INITIAL_GLOBAL_STEP="${RUN_INITIAL_GLOBAL_STEP}" \
+    WANDB_PROJECT="${WANDB_PROJECT}" WANDB_RUN_NAME="${WANDB_RUN_NAME}" \
+    WANDB_MODE_OVERRIDE="${WANDB_MODE_OVERRIDE}" \
+    TRAIN_MASTER_PORT="${TRAIN_MASTER_PORT}" \
+    bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_smoke.sh"
+else
+  echo "ROLLOUT_STAGE_OK manifest=${MANIFEST} trajectories=${TRAJECTORY_JSONL}" | tee -a "${LOG}"
+fi
