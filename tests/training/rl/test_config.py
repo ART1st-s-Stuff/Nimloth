@@ -455,6 +455,31 @@ def test_formal_h1_16rollout_8gpu_44_changes_only_distributed_layout() -> None:
     assert config8.distributed.total_gpus == 8
 
 
+def test_h1_iter16_smoke_changes_only_training_horizon() -> None:
+    root = Path(__file__).resolve().parents[3]
+    formal = load_rl_config(
+        root
+        / "configs/training/rl/planner_greedy_h1_full_16rollout_8gpu_1x8.yaml"
+    )
+    smoke = load_rl_config(
+        root
+        / "configs/training/rl/planner_greedy_h1_smoke_iter16_16rollout_8gpu_1x8.yaml"
+    )
+
+    assert smoke.agent == formal.agent
+    assert smoke.freeze == formal.freeze
+    assert smoke.gradient == formal.gradient
+    assert smoke.actor == formal.actor
+    assert smoke.predictor == formal.predictor
+    assert smoke.value_head == formal.value_head
+    assert smoke.rl.iterations == 16
+    assert replace(smoke.rl, iterations=formal.rl.iterations) == formal.rl
+    assert smoke.rollout == formal.rollout
+    assert smoke.validation == formal.validation
+    assert smoke.training == formal.training
+    assert smoke.distributed == formal.distributed
+
+
 def test_formal_h1_16rollout_8gpu_422_changes_only_distributed_layout() -> None:
     root = Path(__file__).resolve().parents[3]
     config1x8 = load_rl_config(
