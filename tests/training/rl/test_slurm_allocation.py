@@ -21,6 +21,10 @@ CONTINUATION = REPO_ROOT / "src/nimloth/training/rl/continuation.py"
 PPO_VALUE_GPU_GATE = (
     REPO_ROOT / "experiments/training/rl/gpu_gate_ppo_value_critic.slurm"
 )
+PPO_VALUE_STAGED_RUNNER = (
+    REPO_ROOT
+    / "experiments/training/rl/run_ppo_value_gc_gate_then_train_on_hold.sh"
+)
 HETERO_32_CONFIG = (
     REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_32gpu_88844.yaml"
 )
@@ -152,6 +156,21 @@ def test_parallel_controller_can_gate_between_rollout_and_training() -> None:
     assert '[[ -s "${RESUME_CHECKPOINT}/rl_state.pt" ]]' in controller
     assert 'if [[ "${RUN_TRAIN}" == true ]]; then' in controller
     assert "ROLLOUT_STAGE_OK manifest=${MANIFEST}" in controller
+
+
+def test_ppo_value_staged_runner_gates_before_consuming_fresh_rollout() -> None:
+    runner = PPO_VALUE_STAGED_RUNNER.read_text(encoding="utf-8")
+
+    rollout = runner.index("run_parallel_phase rollout disabled")
+    gate = runner.index('bash "${GPU_GATE}"')
+    train = runner.index("run_parallel_phase train online")
+    assert rollout < gate < train
+    assert 'TRAJECTORY_JSONL="${TRAJECTORY_JSONL}"' in runner
+    assert 'FRESH_ROLLOUT_MANIFEST="${FRESH_ROLLOUT_MANIFEST}"' in runner
+    assert "MINIMUM_STATE_TOKENS=${MINIMUM_STATE_TOKENS:-14000}" in runner
+    assert runner.count("stage=gpu_gate status=passed") == 1
+    assert '[[ ! -e "${RUN_OUT}" ]]' in runner
+    assert '[[ ! -e "${STAGE_LOG}" ]]' in runner
 
 
 def test_loads_heterogeneous_per_node_gpu_counts() -> None:
