@@ -133,7 +133,7 @@ def test_ppo_value_gpu_gate_requires_real_long_prefixes() -> None:
     assert "MINIMUM_STATE_TOKENS=${MINIMUM_STATE_TOKENS:-14000}" in gate
     assert gate.count("--select-longest-final-transition") == 2
     assert gate.count('--minimum-state-tokens "${MINIMUM_STATE_TOKENS}"') == 2
-    assert "transition_selection=rank-owned-longest-final" in gate
+    assert "transition_selection=global-qualified-longest-final" in gate
 
 
 def test_resumed_staged_pipeline_creates_a_new_first_iteration_output() -> None:

@@ -4098,3 +4098,21 @@
   环境slot映射，尚无fresh rollout、长prefix gate、optimizer或checkpoint证据。
 - 下一步在同一hold内刷新exact runtime/output/W&B/端口/GPU残留后，以唯一batch-step控制器
   串行执行two-TP4 fresh rollout、非消费长prefix gate，并仅在gate成功后执行step16 train。
+
+## 2026-08-07：ID138 fresh rollout完成，DDP长prefix门禁因rank局部选样失败
+
+- 人类确认后在hold `508866` / `dgx-26:8`启动唯一staged step `508866.3`，runtime为
+  `66a7afde822547a4517a2c5b7e18c2e2a9ef62b9`。two-TP4 rollout正常完成，
+  `base_train/common_sense_train`各8条、每数据集seed `121..128`，严格合并为16条并写出
+  `fresh_policy_manifest.json`；没有trajectory consumption。
+- 单卡long-prefix gate在真实final prefix上通过：`state_tokens=16184`、37个Qwen
+  checkpoint模块生效、Qwen/ValueHead梯度非零，vision/StateProjector/lm_head梯度为空，
+  峰值allocated显存`17095888384` bytes。
+- 双rank gate在任何optimizer step前fail closed：rank1按`record_index % world_size`只扫描
+  自己的轨迹子集，其最长final prefix只有`11332` tokens，低于`14000`合同；这不是OOM，也
+  不是PPO梯度失败。staged step于`2026-08-07T03:05:03+08:00`以exit 1结束，formal train、
+  W&B run、step16 checkpoint和consumption均未发生。
+- ID138 output README已记录终态；该identity不可恢复、其rollout禁止训练复用。下一次必须以
+  新identity和fresh rollout重试。修复方向是让非消费显存门禁对所有DDP rank使用满足合同的
+  真实长prefix样本，同时显式记录候选数与是否复用，避免把随机rank局部分片长度误当成训练
+  正确性条件；immutable resume边界仍为ID134 committed global step15。

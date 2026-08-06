@@ -173,3 +173,27 @@
 - ID138 itself is still not started at this checkpoint. Immediately before the
   staged step, refresh hold state, exact runtime commit, GPU/process/port state,
   W&B uniqueness and output absence once more.
+
+## Terminal ID138 result
+
+- After human confirmation, staged step `508866.3` started under hold `508866`
+  on `dgx-26:8` from immutable runtime
+  `66a7afde822547a4517a2c5b7e18c2e2a9ef62b9`.
+- Two TP4 workers completed a fresh strict 16-trajectory merge: eight
+  `base_train` and eight `common_sense_train` episodes with independent
+  per-dataset seeds 121 through 128. The fresh manifest exists and no
+  consumption sidecar was committed.
+- The single-GPU gate passed on a real 16,184-token final prefix. It observed 37
+  active gradient-checkpointed Qwen modules, nonzero Qwen and ValueHead
+  gradients, absent vision/StateProjector/lm_head gradients, and a
+  17,095,888,384-byte peak allocation.
+- The two-rank gate failed closed before its first optimizer step. Rank 1's
+  rank-owned trajectory subset had a longest final prefix of only 11,332
+  tokens, below the 14,000-token memory contract. This was neither an OOM nor a
+  PPO gradient-path failure. The staged step ended at
+  `2026-08-07T03:05:03+08:00`; formal training, W&B, global step 16 and
+  trajectory consumption never started.
+- ID138 is terminal and cannot be resumed. Its rollout remains diagnostic-only
+  and is forbidden from training reuse. A retry requires a new identity, a
+  corrected non-consuming gate selection contract, and fresh rollout from the
+  unchanged ID134 committed-global-step-15 boundary.

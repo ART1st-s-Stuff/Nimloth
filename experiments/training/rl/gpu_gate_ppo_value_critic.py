@@ -1,17 +1,20 @@
 """Real-GPU integration gate for the planner PPO ValueHead critic.
 
-This is a mechanics gate, not a policy-quality experiment.  Each rank selects
-the longest final-step prefix among its real, behavior-checkpoint-matched
-trajectories.  ``single_grad`` proves the critic-only graph reaches the Qwen
-language body without supervising ``lm_head``.  ``ddp_step`` exercises the
-production two-rank, two-GPU-per-rank wrapping and AdamW update for all configured
-critic PPO epochs.
+This is a mechanics gate, not a policy-quality experiment.  Ranks select from
+the longest qualifying final-step prefixes in the complete set of real,
+behavior-checkpoint-matched trajectories.  Distinct qualifying prefixes are
+preferred, but a real long prefix is reused deterministically when there are
+fewer qualifying prefixes than gate ranks.  ``single_grad`` proves the
+critic-only graph reaches the Qwen language body without supervising
+``lm_head``.  ``ddp_step`` exercises the production two-rank,
+two-GPU-per-rank wrapping and AdamW update for all configured critic PPO epochs.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -117,6 +120,47 @@ def _state_token_count(
     return int(input_ids.shape[-1])
 
 
+@dataclass(frozen=True)
+class _GateTransitionSelection:
+    trajectory: RolloutTrajectory
+    episode: Any
+    step_index: int
+    state_tokens: int
+    record_index: int
+    qualifying_candidate_count: int
+    reused_candidate: bool
+
+
+def _assigned_qualifying_candidate(
+    state_tokens_by_record: list[int],
+    *,
+    rank: int,
+    minimum_state_tokens: int,
+) -> tuple[int, int, bool]:
+    """Assign a real qualifying prefix, reusing only when ranks outnumber it."""
+
+    qualifying = sorted(
+        (
+            (record_index, state_tokens)
+            for record_index, state_tokens in enumerate(state_tokens_by_record)
+            if state_tokens >= minimum_state_tokens
+        ),
+        key=lambda item: (-item[1], item[0]),
+    )
+    if not qualifying:
+        maximum = max(state_tokens_by_record, default=0)
+        raise RuntimeError(
+            "GPU gate has no real final prefix satisfying its memory contract: "
+            f"maximum_tokens={maximum}, minimum={minimum_state_tokens}"
+        )
+    assigned_position = rank % len(qualifying)
+    return (
+        qualifying[assigned_position][0],
+        len(qualifying),
+        rank >= len(qualifying),
+    )
+
+
 def _select_longest_final_transition(
     path: Path,
     *,
@@ -125,14 +169,15 @@ def _select_longest_final_transition(
     world_size: int,
     gamma: float,
     truncated_bootstrap: float | None,
-) -> tuple[RolloutTrajectory, Any, int, int]:
-    """Choose the longest real final-step prefix owned by this gate rank."""
+    minimum_state_tokens: int,
+) -> _GateTransitionSelection:
+    """Choose a qualifying real final prefix from the global gate sample pool."""
 
-    selected: tuple[RolloutTrajectory, Any, int, int] | None = None
+    if rank < 0 or rank >= world_size:
+        raise ValueError(f"rank {rank} is outside world_size {world_size}")
+    candidates: list[tuple[RolloutTrajectory, Any, int, int]] = []
     with path.open("r", encoding="utf-8") as stream:
-        for record_index, line in enumerate(stream):
-            if record_index % world_size != rank:
-                continue
+        for line in stream:
             trajectory = RolloutTrajectory.from_record(json.loads(line))
             validate_rollout_trajectory(trajectory)
             episode = build_episode_training_batches(
@@ -145,11 +190,24 @@ def _select_longest_final_transition(
                 runtime,
                 episode.transitions[step_index],
             )
-            if selected is None or state_tokens > selected[-1]:
-                selected = (trajectory, episode, step_index, state_tokens)
-    if selected is None:
-        raise RuntimeError(f"rank {rank} owns no trajectory in {path}")
-    return selected
+            candidates.append((trajectory, episode, step_index, state_tokens))
+    selected_index, qualifying_count, reused_candidate = (
+        _assigned_qualifying_candidate(
+            [candidate[-1] for candidate in candidates],
+            rank=rank,
+            minimum_state_tokens=minimum_state_tokens,
+        )
+    )
+    trajectory, episode, step_index, state_tokens = candidates[selected_index]
+    return _GateTransitionSelection(
+        trajectory=trajectory,
+        episode=episode,
+        step_index=step_index,
+        state_tokens=state_tokens,
+        record_index=selected_index,
+        qualifying_candidate_count=qualifying_count,
+        reused_candidate=reused_candidate,
+    )
 
 
 def _parameter_with_suffix(
@@ -347,16 +405,25 @@ def main() -> int:
             0.0 if config.rl.truncated_bootstrap == "zero" else None
         )
         if args.select_longest_final_transition:
-            trajectory, episode, step_index, state_tokens = (
-                _select_longest_final_transition(
-                    args.trajectory_jsonl,
-                    runtime=runtime,
-                    rank=rank,
-                    world_size=world_size,
-                    gamma=config.rl.gamma,
-                    truncated_bootstrap=truncated_bootstrap,
-                )
+            selection = _select_longest_final_transition(
+                args.trajectory_jsonl,
+                runtime=runtime,
+                rank=rank,
+                world_size=world_size,
+                gamma=config.rl.gamma,
+                truncated_bootstrap=truncated_bootstrap,
+                minimum_state_tokens=args.minimum_state_tokens,
             )
+            trajectory = selection.trajectory
+            episode = selection.episode
+            step_index = selection.step_index
+            state_tokens = selection.state_tokens
+            selection_record_index = selection.record_index
+            selection_qualifying_candidate_count = (
+                selection.qualifying_candidate_count
+            )
+            selection_reused_candidate = selection.reused_candidate
+            selection_policy = "global-qualified-longest-final"
         else:
             trajectory = _load_trajectory(args.trajectory_jsonl, rank)
             episode = build_episode_training_batches(
@@ -367,6 +434,10 @@ def main() -> int:
             step_index = args.step_index
             transition = episode.transitions[step_index]
             state_tokens = _state_token_count(runtime, transition)
+            selection_record_index = rank
+            selection_qualifying_candidate_count = 1
+            selection_reused_candidate = False
+            selection_policy = "explicit-record-step"
         if state_tokens < args.minimum_state_tokens:
             raise RuntimeError(
                 "GPU gate state prefix is shorter than its memory contract: "
@@ -487,6 +558,12 @@ def main() -> int:
             "distributed_strategy": distributed.strategy,
             "gradient_checkpointing_active_modules": checkpointed_modules,
             "trajectory_id": trajectory.record_id,
+            "selection_policy": selection_policy,
+            "selection_record_index": selection_record_index,
+            "selection_qualifying_candidate_count": (
+                selection_qualifying_candidate_count
+            ),
+            "selection_reused_candidate": selection_reused_candidate,
             "transition_step": step_index,
             "state_tokens": state_tokens,
             "executed_action_index": transition.action_index,

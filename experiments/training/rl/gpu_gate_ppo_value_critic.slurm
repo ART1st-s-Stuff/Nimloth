@@ -63,7 +63,7 @@ export WANDB_MODE=disabled
   echo "checkpoint=${SFT2_CHECKPOINT}"
   echo "trajectory=${TRAJECTORY_JSONL}"
   echo "manifest=${FRESH_ROLLOUT_MANIFEST}"
-  echo "transition_selection=rank-owned-longest-final"
+  echo "transition_selection=global-qualified-longest-final"
   echo "minimum_state_tokens=${MINIMUM_STATE_TOKENS}"
   echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-unset}"
   "${PYTHON}" --version
