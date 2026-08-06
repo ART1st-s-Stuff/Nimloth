@@ -3960,3 +3960,6 @@
   残留。ID135没有global manifest、consumption、optimizer、train log、checkpoint或W&B run；
   7条局部轨迹禁止消费，identity不可复用。旧4+4 Job`508170`已在1x8启动前取消；hold仅用于
   归档后释放，下一次必须新ID/空output/W&B并仍从ID134 step15恢复。
+- 服务器README和RL组progress已写终态，SHA256分别为`c10129a1...cd1286`和
+  `9f20178c...6e53eb`。hold Job`508268`于17:00:00+08释放，总时长22分22秒；当前没有
+  ID135或fallback任务仍在排队/运行。

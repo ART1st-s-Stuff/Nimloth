@@ -232,3 +232,7 @@
   The W&B display name still has zero matches. ID135 is failed/non-resumable;
   recovery must use a new ID, W&B name and empty output from the unchanged
   immutable ID134 step-15 checkpoint.
+- Server output README and the RL experiment-group `progress.md` were updated;
+  their SHA256 values are `c10129a1...cd1286` and `9f20178c...6e53eb`.
+  Hold Job `508268` was released at `2026-08-06T17:00:00+08:00` after 22m22s;
+  no ID135 or fallback Slurm job remains queued or running.
