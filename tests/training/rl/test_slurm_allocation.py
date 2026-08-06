@@ -165,8 +165,21 @@ def test_ppo_value_staged_runner_gates_before_consuming_fresh_rollout() -> None:
     gate = runner.index('bash "${GPU_GATE}"')
     train = runner.index("run_parallel_phase train online")
     assert rollout < gate < train
-    assert 'TRAJECTORY_JSONL="${TRAJECTORY_JSONL}"' in runner
-    assert 'FRESH_ROLLOUT_MANIFEST="${FRESH_ROLLOUT_MANIFEST}"' in runner
+    assert (
+        'TRAJECTORY_JSONL="${GATE_DIAGNOSTIC_TRAJECTORY_JSONL}"' in runner
+    )
+    assert 'FRESH_ROLLOUT_MANIFEST="${GATE_DIAGNOSTIC_MANIFEST}"' in runner
+    assert (
+        ': "${GATE_DIAGNOSTIC_TRAJECTORY_JSONL:?set the fixed long-prefix gate corpus}"'
+        in runner
+    )
+    assert (
+        ': "${GATE_DIAGNOSTIC_MANIFEST:?set the fixed gate corpus manifest}"'
+        in runner
+    )
+    assert "gate diagnostic trajectory must be outside the formal RUN_OUT" in runner
+    assert "gate diagnostic manifest must be outside the formal RUN_OUT" in runner
+    assert "formal_train_trajectory=%s" in runner
     assert "MINIMUM_STATE_TOKENS=${MINIMUM_STATE_TOKENS:-14000}" in runner
     assert runner.count("stage=gpu_gate status=passed") == 1
     assert '[[ ! -e "${RUN_OUT}" ]]' in runner

@@ -75,3 +75,21 @@
 - Monitor stage log, both rollout shards, strict merge/manifest, all three gate
   result JSONs, train step log, consumption sidecar, final `rl_state.pt`, W&B
   run state and Slurm/process/port cleanup.
+
+## Terminal result
+
+- Staged step `508866.9` started from the documented runtime. The two-TP4
+  rollout step `508866.10` completed in 4 minutes 5 seconds and produced a
+  strict fresh 8+8 merge for seeds 129 through 136.
+- The corrected global-qualified gate failed closed in `single_grad` selection:
+  every fresh trajectory was short and the maximum real final-prefix length was
+  4,120 tokens, below the 14,000-token memory contract. This was neither an OOM
+  nor a PPO gradient-path failure.
+- The staged step ended with exit 1 at `2026-08-07T03:27:30+08:00`. Formal
+  training never started. `train/` is only an empty directory skeleton; no W&B
+  run, optimizer step, checkpoint, or consumption sidecar exists.
+- ID139 is terminal and its rollout cannot be reused for training. The next
+  controller revision must use an explicit behavior-checkpoint-matched long
+  diagnostic corpus for the non-consuming mechanics gate while keeping the new
+  identity fresh rollout as the only formal training input. Tests must prevent
+  the two paths from being mixed.

@@ -4144,3 +4144,18 @@
 - staged流程仍为fresh two-TP4 rollout -> 非消费>=14k真实prefix gate -> 仅gate成功后从ID134
   committed step15 checkpoint执行step16。train/freeze、objective、失败终止和consumption合同均
   记录在`ai_tasks/ai_progress/2026-08-07_ppo_value_critic_gc_gate_id139.md`。
+
+## 2026-08-07：ID139因fresh batch无14k样本在formal train前终止
+
+- ID139 staged step `508866.9`从runtime `fddbaef867ed9656538c8e6fff140d3851dd6813`
+  启动；two-TP4 rollout step `508866.10`在4分5秒内完成`base_train/common_sense_train`
+  seed `129..136`各8条并严格合并16条。
+- 修复后的global-qualified gate正确fail closed，但该fresh batch全部短轨迹，真实final prefix最大仅
+  `4120` tokens，无法满足`14000`显存合同。staged step于03:27:30+08以exit1结束；这不是
+  OOM或PPO梯度失败。
+- Formal train从未启动：`train/`只有空目录骨架，没有W&B run、optimizer step、checkpoint或
+  consumption。ID139 README已记录终态；identity不可恢复，rollout禁止训练复用。
+- 这证明“从每次formal fresh batch中抽>=14k显存门禁样本”仍是随机条件。下一修复必须显式
+  分离两个数据入口：门禁读取同一behavior checkpoint产生、已GPU验证的真实长prefix诊断
+  corpus；formal train只读取新identity的fresh rollout。控制器和测试必须证明两条路径不会
+  混用，ID138诊断轨迹绝不进入formal train。

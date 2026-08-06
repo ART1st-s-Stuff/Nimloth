@@ -11,6 +11,8 @@ set -euo pipefail
 : "${RL_CONFIG:?set RL_CONFIG to the one-iteration resume config}"
 : "${RUN_OUT:?set RUN_OUT to a new exclusive output directory}"
 : "${WANDB_RUN_NAME:?set WANDB_RUN_NAME}"
+: "${GATE_DIAGNOSTIC_TRAJECTORY_JSONL:?set the fixed long-prefix gate corpus}"
+: "${GATE_DIAGNOSTIC_MANIFEST:?set the fixed gate corpus manifest}"
 
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
 WANDB_PROJECT=${WANDB_PROJECT:-nimloth-rl}
@@ -34,6 +36,16 @@ STAGE_LOG=${RUN_OUT}.staged_controller.log
 [[ -f "${PARALLEL_RUNNER}" ]] || { echo "missing parallel runner" >&2; exit 1; }
 [[ -f "${GPU_GATE}" ]] || { echo "missing GPU gate" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config" >&2; exit 1; }
+[[ -s "${GATE_DIAGNOSTIC_TRAJECTORY_JSONL}" ]] || {
+  echo "missing long-prefix gate diagnostic trajectory" >&2
+  exit 1
+}
+[[ -s "${GATE_DIAGNOSTIC_MANIFEST}" ]] || {
+  echo "missing long-prefix gate diagnostic manifest" >&2
+  exit 1
+}
+GATE_DIAGNOSTIC_TRAJECTORY_JSONL=$(realpath "${GATE_DIAGNOSTIC_TRAJECTORY_JSONL}")
+GATE_DIAGNOSTIC_MANIFEST=$(realpath "${GATE_DIAGNOSTIC_MANIFEST}")
 [[ -s "${RESUME_CHECKPOINT}/rl_state.pt" ]] || {
   echo "resume checkpoint has no rl_state.pt" >&2
   exit 1
@@ -48,6 +60,18 @@ STAGE_LOG=${RUN_OUT}.staged_controller.log
 }
 [[ ! -e "${RUN_OUT}" ]] || { echo "RUN_OUT already exists" >&2; exit 1; }
 [[ ! -e "${STAGE_LOG}" ]] || { echo "stage log already exists" >&2; exit 1; }
+case "${GATE_DIAGNOSTIC_TRAJECTORY_JSONL}" in
+  "${RUN_OUT}"/*)
+    echo "gate diagnostic trajectory must be outside the formal RUN_OUT" >&2
+    exit 1
+    ;;
+esac
+case "${GATE_DIAGNOSTIC_MANIFEST}" in
+  "${RUN_OUT}"/*)
+    echo "gate diagnostic manifest must be outside the formal RUN_OUT" >&2
+    exit 1
+    ;;
+esac
 
 mkdir -p "${RUN_OUT%/*}"
 CURRENT_STAGE=preflight
@@ -92,13 +116,14 @@ printf '%s stage=rollout status=passed manifest=%s\n' \
   "$(date -Iseconds)" "${FRESH_ROLLOUT_MANIFEST}" >> "${STAGE_LOG}"
 
 CURRENT_STAGE=gpu_gate
-printf '%s stage=gpu_gate status=starting min_state_tokens=%s\n' \
-  "$(date -Iseconds)" "${MINIMUM_STATE_TOKENS}" >> "${STAGE_LOG}"
+printf '%s stage=gpu_gate status=starting min_state_tokens=%s diagnostic_trajectory=%s formal_train_trajectory=%s\n' \
+  "$(date -Iseconds)" "${MINIMUM_STATE_TOKENS}" \
+  "${GATE_DIAGNOSTIC_TRAJECTORY_JSONL}" "${TRAJECTORY_JSONL}" >> "${STAGE_LOG}"
 env \
   RUNTIME_REPO="${REPO}" EXPECTED_COMMIT="${EXPECTED_COMMIT}" \
   OUTPUT_DIR="${GATE_OUT}" SFT2_CHECKPOINT="${RESUME_CHECKPOINT}" \
-  TRAJECTORY_JSONL="${TRAJECTORY_JSONL}" \
-  FRESH_ROLLOUT_MANIFEST="${FRESH_ROLLOUT_MANIFEST}" \
+  TRAJECTORY_JSONL="${GATE_DIAGNOSTIC_TRAJECTORY_JSONL}" \
+  FRESH_ROLLOUT_MANIFEST="${GATE_DIAGNOSTIC_MANIFEST}" \
   MINIMUM_STATE_TOKENS="${MINIMUM_STATE_TOKENS}" \
   bash "${GPU_GATE}"
 for result in \
