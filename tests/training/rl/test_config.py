@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -440,7 +441,11 @@ def test_formal_h1_16rollout_8gpu_44_changes_only_distributed_layout() -> None:
     assert config8.predictor == config12.predictor
     assert config8.value_head == config12.value_head
     assert config8.rl == config12.rl
-    assert config8.rollout == config12.rollout
+    assert config8.rollout.max_episode_attempts == 3
+    assert replace(
+        config8.rollout,
+        max_episode_attempts=config12.rollout.max_episode_attempts,
+    ) == config12.rollout
     assert config8.validation == config12.validation
     assert config8.training == config12.training
     assert config8.distributed.nodes == 2

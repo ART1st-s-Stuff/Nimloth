@@ -369,6 +369,7 @@ def test_16rollout_8gpu_44_routes_two_tp4_workers_and_four_training_ranks() -> N
     assert "envs_per_iteration: 16" in config
     assert "batch_size: 16" in config
     assert "max_state_tokens: 16384" in config
+    assert "max_episode_attempts: 3" in config
     assert "nodes: 2" in config
     assert "world_size: 4" in config
     assert "gpus_per_rank: 2" in config
