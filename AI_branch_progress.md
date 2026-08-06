@@ -3951,3 +3951,12 @@
   2GPU per rank/total8/TP4/strict16/attempts3，step15 checkpoint和exact`d6197e84`均通过，
   probe后无残留Unity/Ray/vLLM/GPU进程。下一步仅在正式srun开始前取消旧pending`508170`，
   并监控到真实prewarm、双TP4、strict merge及首个finite update/checkpoint。
+- 正式iteration16随后否定该probe推断：shard0在物理GPU0以4.924秒通过、完成一个TP4
+  EngineCore/model warmup并写7条局部轨迹；shard1的真实合同为
+  `CUDA_VISIBLE_DEVICES=4 + navigation.devices=[0]`，超过300秒仍无首次observation，清理也
+  卡住，0条轨迹且没有第二个EngineCore。全8卡可见时`gpu_device=4`通过不等价于该单卡可见
+  合同，已登记known error E0085。
+- strict16 merge已不可能，故取消steps`508268.2/.3`并确认无Unity/VAGEN/Ray/vLLM/GPU
+  残留。ID135没有global manifest、consumption、optimizer、train log、checkpoint或W&B run；
+  7条局部轨迹禁止消费，identity不可复用。旧4+4 Job`508170`已在1x8启动前取消；hold仅用于
+  归档后释放，下一次必须新ID/空output/W&B并仍从ID134 step15恢复。

@@ -2,12 +2,12 @@
 
 ## Status
 
-- Replacement hold Job `508268` is running on `normal/dgx-32:8`; the original
-  4+4 Job `508170` remains pending until the 1x8 launch begins. Direct render
-  qualification passed the exact two renderer slots used by the 1x8 runner.
-- ID134 ended at global step 15. The stale 4+2+2 contract was never submitted;
-  the pending 4+4 contract is now a fallback while the held 1x8 replacement is
-  prepared.
+- The 1x8 ID135 attempt failed before global merge and was cancelled at the
+  affected Slurm steps. It is not resumable and its output/W&B identity cannot
+  be reused.
+- Original 4+4 Job `508170` was cancelled before the 1x8 attempt. Hold Job
+  `508268` remained running only long enough to verify cleanup and archive the
+  failed output, then must be released.
 - Human authorized up to eight GPUs. An initial 2026-08-06 resource query found
   `dgx-50` unavailable and five free GPUs on each of normal `dgx-14` and
   `dgx-31`, motivating a 4+4 topology. The final pre-submit refresh found those
@@ -208,3 +208,27 @@
   pending Job `508170`, then run the batch-owned 1x8 controller as a Slurm step
   in hold `508268` and monitor through prewarm, two TP4 engines, strict merge and
   the first finite update/checkpoint.
+
+## 1x8 terminal result
+
+- The launch began iteration 16 at `2026-08-06T16:47:00+08:00`. Shard 0's
+  formal environment on physical GPU 0 passed real navigation prewarm in 4.924
+  seconds, initialized one TP4 EngineCore, loaded both model shards, completed
+  vLLM warmup and wrote seven local trajectories.
+- Shard 1's formal environment used the actual runner contract
+  `CUDA_VISIBLE_DEVICES=4` with relative `navigation.devices=[0]`. It never
+  returned the first observation, exceeded the 300-second prewarm gate and then
+  hung during environment cleanup. It initialized no TP4 engine and wrote zero
+  trajectories.
+- This invalidates the earlier qualification inference. The passing direct
+  probe used all eight GPUs visible with `gpu_device=4`, which is not equivalent
+  to the formal single-visible mapping. Known error E0085 records the required
+  exact-visibility probe contract.
+- Strict 16-shard merge was impossible. Slurm steps `508268.2` and `.3` were
+  cancelled after the hard gate; all Unity, VAGEN, Ray, vLLM and GPU processes
+  were then absent. The hold itself was not a training success.
+- Output contains seven local shard-0 trajectories and no shard-1 trajectory,
+  global fresh manifest, consumption, optimizer update, train log or checkpoint.
+  The W&B display name still has zero matches. ID135 is failed/non-resumable;
+  recovery must use a new ID, W&B name and empty output from the unchanged
+  immutable ID134 step-15 checkpoint.
