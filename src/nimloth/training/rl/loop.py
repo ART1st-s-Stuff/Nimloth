@@ -311,6 +311,7 @@ class RLTrainingLoop:
                             0.0 if work.is_padding else float(training_world_size)
                         )
                         self.optimization_runtime.backward(output.loss * loss_weight)
+                        self._synchronize_planner_backward()
                         self._accumulate_metrics(
                             current_metrics,
                             output.metrics,
@@ -611,6 +612,18 @@ class RLTrainingLoop:
                     {"iteration": iteration, "warning": f"{reason}, skipping"}
                 )
             )
+
+    @staticmethod
+    def _synchronize_planner_backward() -> None:
+        """让多个DDP wrapper共享明确的逐transition通信边界。
+
+        完整Qwen prefix的计算时间随rank而异。缺少此边界时，快rank可能在慢rank
+        仍归约上一次backward时进入另一个wrapper的forward，最终让相同NCCL序号
+        对应不同collective类型。
+        """
+
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
 
     @staticmethod
     def _barrier() -> None:

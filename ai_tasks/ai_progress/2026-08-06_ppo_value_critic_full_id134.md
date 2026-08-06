@@ -2,8 +2,12 @@
 
 ## Status
 
-- Formally submitted as Slurm Job `507599`; it started ten seconds later on
-  `normal/dgx-54:8` at `2026-08-06T02:00:57+08:00`.
+- Slurm Job `507599` ran on `normal/dgx-54:8` from
+  `2026-08-06T02:00:57+08:00` to `05:09:42+08:00`, then ended
+  `FAILED (exit 1:0)` during update 16.
+- Updates 1--15 completed with finite metrics, committed fresh consumption and
+  complete checkpoints. The immutable recovery boundary is
+  `train/policy_inputs/iter_0016`, representing iteration/global step 15.
 - Human authorization remains the explicitly requested corrected retry of the
   full-scale single-node/eight-GPU experiment.
 - Exact runtime commit:
@@ -116,3 +120,29 @@
   Monitoring stopped rather than repeatedly reconnecting; the batch-owned
   controller is independent of the SSH session and remains responsible for the
   live job.
+
+## Final result and recovery boundary
+
+- The controller durably completed iterations 1--15. Their transition counts
+  were 313, 270, 304, 320, 301, 320, 302, 301, 268, 264, 320, 307, 292, 320,
+  and 320. Every recorded PPO/WM/DINO metric was finite. This establishes real
+  repeated update/checkpoint mechanics, not policy improvement.
+- Held-out iteration-10 evaluation completed all 120 standard episodes:
+  base success `5/60 = 0.08333`, common-sense success `6/60 = 0.10`, overall
+  `11/120 = 0.09167`; overall average reward was `-0.665`.
+- Iteration 16 produced a strict `16/16` fresh rollout with 319 transitions and
+  zero training successes, but failed before any optimizer step or new
+  checkpoint. The failed iteration's manifest/trajectory must not be carried
+  into another experiment identity.
+- NCCL sequence 6099 diverged: ranks 0/3 were reducing all 1,057,800 ValueHead
+  parameters while ranks 1/2 entered a one-element broadcast. Ten minutes later
+  the watchdog aborted all ranks. The state-token diagnostic reconstructed all
+  319 exact trainer prefixes; rank maxima were 14,441/16,005/16,178/14,268,
+  all below 16,384, excluding the token-budget hypothesis.
+- Root cause is asynchronous collective ordering across separately wrapped
+  planner Backbone/WM/ValueHead modules when rank-local Qwen prefix lengths
+  differ. The correction disables training-unneeded DDP buffer broadcasts and
+  adds a rank boundary after every planner transition backward. ID134 itself is
+  not resumed in place: the next run uses a new output/W&B identity, fresh seed
+  121--128 rollout, and initializes model/WM/optimizer from
+  `train/policy_inputs/iter_0016` with `INITIAL_GLOBAL_STEP=15`.

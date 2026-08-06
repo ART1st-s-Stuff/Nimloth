@@ -3872,3 +3872,22 @@
   forward/backward、optimizer step、consumption、checkpoint或质量证据。随后SSH ProxyJump
   连续两次以`UNKNOWN port 65535`关闭，按服务器规则停止反复重连；Slurm batch不依赖SSH，
   job继续由controller运行，后续恢复连接后必须先查终态/日志再采取动作。
+
+## 2026-08-06：ID134完成15次更新后在第16轮DDP collective分叉
+
+- Job`507599`最终于05:09:42+08以`FAILED 1:0`结束；此前iteration1--15均完成finite
+  PPO/WM/DINO更新、fresh consumption commit和完整checkpoint。标准iteration10 held-out
+  120集评估为base`5/60`、common_sense`6/60`、overall`11/120=0.09167`，只属于当前
+  checkpoint质量观测，不证明提升。
+- iteration16已严格采满16条/319 transitions，但训练未产生optimizer step或新checkpoint。
+  NCCL sequence6099中rank0/3进入ValueHead全部1,057,800参数的`ALLREDUCE`，rank1/2
+  进入1-element `BROADCAST`，十分钟watchdog后终止。精确processor重放319个prefix得到
+  各rank最大token`14441/16005/16178/14268`，均小于16384，排除token budget超限。
+- 根因为多个planner DDP wrapper共享process group时，rank间prefix长度差使逐forward
+  buffer broadcast越过另一wrapper的backward all-reduce。修复关闭这些无训练期可变
+  buffer模块的`broadcast_buffers`，并在每条transition backward后显式barrier；新增CPU
+  回归断言wrapper参数与每epoch逐transition同步次数。
+- 唯一恢复边界为`train/policy_inputs/iter_0016`（iteration/global step15，`rl_state.pt`
+  13,090,012,345 bytes）。失败iteration16的rollout不跨identity复用；下一次从该checkpoint
+  新ID、空output、fresh seeds121--128继续。人类指定先用`dgx-50:4 + 两个2卡节点`，对应
+  corrected 16-rollout 4+2+2配置、1个TP4 rollout worker和4个两卡训练rank。

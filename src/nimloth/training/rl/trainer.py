@@ -283,6 +283,11 @@ def _wrap_trainable_ddp(
         module,
         device_ids=[device_index],
         output_device=device_index,
+        # Planner每条transition会依次调用多个独立DDP wrapper。各rank的Qwen
+        # prefix长度不同，逐forward buffer broadcast可能越过慢rank仍在执行的
+        # backward all-reduce。这些模块没有随训练变化的buffer，初始state也已
+        # 在wrap前显式同步，因此禁用该额外collective。
+        broadcast_buffers=False,
         find_unused_parameters=False,
         static_graph=True,
     )
@@ -304,6 +309,7 @@ def _wrap_model_parallel_backbone_ddp(
             backbone,
             device_ids=None,
             output_device=None,
+            broadcast_buffers=False,
             # PyTorch 2.8 static_graph relies on its first-iteration sink, which
             # did not synchronize this hook-derived hidden graph. All trainable
             # Qwen language parameters participate in the critic forward (the
@@ -329,6 +335,7 @@ def _wrap_model_parallel_llm_ddp(
         llm,
         device_ids=None,
         output_device=None,
+        broadcast_buffers=False,
         find_unused_parameters=False,
         static_graph=True,
     )

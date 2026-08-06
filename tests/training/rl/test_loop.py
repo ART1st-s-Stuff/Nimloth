@@ -313,6 +313,12 @@ def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     loop.model_runtime = SimpleNamespace(  # type: ignore[assignment]
         dino_grid_targets=source
     )
+    synchronized_backwards: list[str] = []
+    monkeypatch.setattr(
+        loop,
+        "_synchronize_planner_backward",
+        lambda: synchronized_backwards.append("backward"),
+    )
 
     loop._run_iteration(1)
 
@@ -325,6 +331,7 @@ def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     assert len(algorithm.received_targets) == 2
     assert algorithm.old_value_calls == 2
     assert algorithm.include_world_model == [True, True, False, False]
+    assert synchronized_backwards == ["backward"] * 4
     torch.testing.assert_close(
         algorithm.received_targets[0],
         torch.tensor([[1.0, 1.0]]),

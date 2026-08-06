@@ -36,6 +36,10 @@ ONE_NODE_EIGHT_GPU_BATCH = (
 HETERO_EIGHT_GPU_CONFIG = (
     REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_8gpu_422.yaml"
 )
+SIXTEEN_ROLLOUT_HETERO_EIGHT_GPU_CONFIG = (
+    REPO_ROOT
+    / "configs/training/rl/planner_greedy_h1_full_16rollout_8gpu_422.yaml"
+)
 HETERO_EIGHT_GPU_BATCH = (
     REPO_ROOT / "experiments/training/rl/train_8gpu_422.slurm"
 )
@@ -339,6 +343,23 @@ def test_eight_gpu_44_batch_and_config_preserve_parallel_contract() -> None:
     assert '[[ "${GPU_COUNTS[${node}]:-}" == 4 ]]' in batch
     assert "export ROLLOUT_WORKERS=2" in batch
     assert 'exec bash "${REPO}/experiments/training/rl/run_vllm_online_ppo_full.sh"' in batch
+
+
+def test_16rollout_8gpu_422_routes_one_tp4_worker_and_four_training_ranks() -> None:
+    config = SIXTEEN_ROLLOUT_HETERO_EIGHT_GPU_CONFIG.read_text(encoding="utf-8")
+    batch = HETERO_EIGHT_GPU_BATCH.read_text(encoding="utf-8")
+
+    assert "envs_per_iteration: 16" in config
+    assert "batch_size: 16" in config
+    assert "max_state_tokens: 16384" in config
+    assert "max_episode_attempts: 3" in config
+    assert "nodes: 3" in config
+    assert "world_size: 4" in config
+    assert "gpus_per_rank: 2" in config
+    assert '[[ "${#HET_NODES_4[@]}" == 1 ]]' in batch
+    assert '[[ "${#HET_NODES_2[@]}" == 2 ]]' in batch
+    assert "export NIMLOTH_HET_GPUS_PER_NODE=4,2" in batch
+    assert "export ROLLOUT_WORKERS=1" in batch
 
 
 def test_16rollout_8gpu_44_routes_two_tp4_workers_and_four_training_ranks() -> None:
