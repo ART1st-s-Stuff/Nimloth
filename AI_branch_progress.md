@@ -4186,3 +4186,14 @@
   其rollout禁止训练复用。
 - 后续必须继续“先hold再srun”，但将srun client用`nohup`脱离SSH并落盘PID/log；先通过短
   detached srun probe证明SSH退出后step仍完成，再用新identity和fresh rollout启动正式流程。
+
+## 2026-08-07：detached srun探针通过，ID141合同冻结
+
+- hold `508866`内用`nohup srun ... </dev/null`启动probe；SSH返回后step `508866.15`继续
+  在dgx-26运行16秒并`COMPLETED 0:0`，durable log输出`DETACHED_SRUN_OK`，证明srun client
+  已与SSH lifetime解耦。
+- ID141 W&B exact-name查询0命中；runtime继续固定`dbcadc53`，用ID138真实16184-token
+  diagnostic corpus做非消费gate，重新采集seed `145..152`各8条作为唯一formal input。
+- 顶层8卡step将用detached `nohup`、PID和durable log启动；正式成功仍要求step16、ID141
+  consumption、完整final checkpoint和finished W&B。合同见
+  `ai_tasks/ai_progress/2026-08-07_ppo_value_critic_detached_id141.md`。
