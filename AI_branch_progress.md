@@ -3976,3 +3976,21 @@
 - ID135终态不变且identity禁止复用。正式srun前必须建立新ID/空output/未用W&B identity，
   从ID134 step15不可变checkpoint恢复，并先按known error E0085使用正式单卡可见性合同
   复验dgx-52的AI2-THOR renderer映射。
+
+## 2026-08-06：ID136首个PPO epoch再次发生collective分叉
+
+- 新identity ID136在hold Job`508346`内以step`508346.3`于17:40:26+08正式启动。
+  dgx-52两组正式navigation prewarm均约5秒通过，两个独立TP4 EngineCore完成model/KV/
+  warmup，随后严格合并16条fresh trajectory、319 transitions、seeds121--128；启动、环境
+  和rollout链路均已越过。
+- 首个PPO critic epoch在NCCL sequence6046再次分叉：rank0/3进入ValueHead全量
+  1,057,800-element`ALLREDUCE`，rank1/2进入1-element`BROADCAST`，600秒watchdog后失败。
+  这直接否定“`broadcast_buffers=False`加逐transition backward后barrier已经修复根因”的
+  旧结论；当前证据尚不能定位剩余broadcast的具体发起点，禁止凭猜测再次全规模启动。
+- step于18:00:43+08取消并完成清理；无optimizer step、metric row、`rl_state.pt`、policy
+  checkpoint或held-out eval。consumption仍为`in_progress`，因此ID136及其iteration16 rollout
+  均不可复用；唯一恢复边界仍为ID134 committed step15，下一次必须新identity、空output、
+  fresh rollout。
+- W&B run`f5otsqrv`已终结为`failed`，服务器output README、相邻progress和RL组progress均已
+  完成on-experiment-end归档。dgx-52无Unity/VAGEN/Ray/vLLM/GPU残留；外层8卡hold
+  Job`508346`继续保留，可用于有界定位和production-shaped多rank GPU复验，不能直接重复训练。

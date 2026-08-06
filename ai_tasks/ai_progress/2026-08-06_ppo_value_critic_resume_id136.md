@@ -2,8 +2,10 @@
 
 ## Status
 
-- Ready for formal launch inside resource-only hold Job `508346` on
-  `normal/dgx-52:8`. ID135 is terminal and none of its partial rollout is
+- Terminal failure before the first optimizer step. Formal Slurm step
+  `508346.3` ran on the resource-only hold Job `508346` at
+  `normal/dgx-52:8`, then hit a repeated NCCL collective mismatch during the
+  first PPO critic epoch. ID136 is non-resumable and none of its rollout is
   reusable.
 - Exact runtime commit:
   `d6197e843fcbfbfe59185b0280c1e6c1acccbfdc`.
@@ -82,3 +84,37 @@
   navigation prewarms, both TP4 model warmups, strict 16-trajectory merge and
   the first finite synchronized PPO update/checkpoint before being called
   healthy.
+
+## Terminal result
+
+- Slurm step `508346.3` started at `2026-08-06T17:40:26+08:00`. Both formal
+  navigation prewarms passed in 4.957/4.948 seconds, and two distinct TP4
+  EngineCore processes loaded the model, allocated 57.81 GiB KV cache per GPU
+  and completed warmup. The strict merge then produced all 16 fresh
+  trajectories / 319 transitions for seeds 121--128.
+- During PPO critic epoch 1, NCCL sequence 6046 diverged: ranks 0 and 3 entered
+  the 1,057,800-element ValueHead `ALLREDUCE`, while ranks 1 and 2 entered a
+  one-element `BROADCAST`. The watchdog fired after 600 seconds. This proves
+  that `broadcast_buffers=False` plus the post-transition backward barrier did
+  not remove the production failure; it does not yet identify which remaining
+  code path issued that broadcast.
+- The stuck Slurm step was cancelled after the watchdog at
+  `2026-08-06T18:00:43+08:00`; `sacct` records `CANCELLED+`, exit `0:9`.
+  Post-cleanup checks found no Unity, VAGEN, Ray, vLLM or GPU compute process on
+  `dgx-52`. The outer hold Job `508346` remains running and reserved for a
+  bounded diagnostic or corrected GPU gate.
+- No optimizer step, metric row, `rl_state.pt`, policy checkpoint or held-out
+  evaluation was produced. `train/train_step_log.csv` contains only its
+  header. The fresh manifest consumption record remains `in_progress`, so
+  ID136 and its iteration-16 rollout are forbidden from reuse.
+- The only valid recovery boundary remains ID134
+  `train/policy_inputs/iter_0016` at committed iteration/global step 15. Any
+  later retry requires a new identity, empty output, unused W&B identity and a
+  fresh iteration-16 rollout.
+- W&B run `f5otsqrv` was finalized as `failed` with
+  `terminal_status=failed_collective_timeout_before_optimizer`. The immutable
+  output README and adjacent/RL-group progress records contain the same
+  terminal boundary; their SHA256 values are respectively
+  `b9ebf8da6409c09473938ca1ff8e339586b8782016c55bf605342a3f8f35abdc`,
+  `226c99872aee55510fc2c5c37e3690331195f2df11f2003a4c37103bcab89227` and
+  `2fb2794d81c5922e4d2b4bb877546ba95b05fdb0a8276ce7f1b0ee8db12f5674`.
