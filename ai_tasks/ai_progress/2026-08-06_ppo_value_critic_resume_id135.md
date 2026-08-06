@@ -5,9 +5,11 @@
 - Prepared after ID134 ended at global step 15; not submitted under the stale
   4+2+2 contract. The earlier `sbatch --test-only` connection was closed by the
   SSH ProxyJump before Slurm executed.
-- Human authorized up to eight GPUs. A fresh 2026-08-06 resource query found
-  `dgx-50` unavailable and instead found five free GPUs on each of normal
-  `dgx-14` and `dgx-31`; ID135 therefore uses four GPUs on each node.
+- Human authorized up to eight GPUs. An initial 2026-08-06 resource query found
+  `dgx-50` unavailable and five free GPUs on each of normal `dgx-14` and
+  `dgx-31`, motivating a 4+4 topology. The final pre-submit refresh found those
+  GPUs already consumed and no node with four immediately free GPUs, so the
+  request remains 4+4 but does not pin stale node names.
 - Exact candidate runtime commit:
   `d6197e843fcbfbfe59185b0280c1e6c1acccbfdc`.
 
@@ -81,8 +83,9 @@
 - Batch-owned entrypoint:
   `experiments/training/rl/train_8gpu_44.slurm`; iteration/evaluation runner:
   `experiments/training/rl/run_vllm_online_ppo_parallel_slurm.sh`.
-- Homogeneous allocation: `normal/dgx-14,dgx-31`, two nodes, four GPUs,
-  64 CPUs and 48 GiB per node; exclude `dgx-32,dgx-37,dgx-51`.
+- Homogeneous allocation: `normal`, any two compatible nodes, four GPUs,
+  64 CPUs and 48 GiB per node; exclude `dgx-32,dgx-37,dgx-51`. The request is
+  expected to remain `PENDING(Resources)` until two such nodes are available.
 - Total: two nodes, eight GPUs, four two-GPU synchronized training ranks. Each
   node hosts one TP4 rollout/evaluation worker; all eight GPUs participate in
   training updates.
@@ -107,9 +110,9 @@
    nodes 2, world 4, two GPUs/rank, total 8, TP4, 16 episodes and attempts 3.
 5. Exact W&B identity/output/progress are unused; ports are unique; shell syntax,
    login dry preflight and the homogeneous `sbatch --test-only` request pass.
-6. Immediately before submission re-query all jobs/resources. Require component
-   nodes to resolve to `dgx-14:4` and `dgx-31:4`. After allocation, verify the
-   expanded node/GPU/rank mapping.
+6. Immediately before submission re-query all jobs/resources. Do not pin node
+   names from a stale snapshot. After allocation, require two distinct compatible
+   nodes with exactly four GPUs each and verify the expanded node/GPU/rank map.
 7. Monitor through real AI2-THOR prewarm, TP4 model warmup, strict 16-rollout
    merge and the first finite synchronized PPO update/checkpoint before declaring
    the resumed training healthy.
@@ -135,8 +138,12 @@
 - The new 4+4 W&B display name had zero matches; its output and adjacent
   progress paths were absent. All required files in the immutable ID134
   checkpoint remained nonempty.
-- The live resource query now reports `normal/dgx-14:5` and `dgx-31:5`, while
-  `preempt/dgx-50` is no longer available. The current user has no Slurm jobs.
+- The first refreshed resource query reported `normal/dgx-14:5` and `dgx-31:5`,
+  while `preempt/dgx-50` was unavailable. The final pre-submit refresh reported
+  only 1/1/2 free GPUs on normal `dgx-29/30/37` and 2/2 on preempt
+  `dgx-16/22`; there is no immediately schedulable TP4 node. The request must be
+  scheduler-flexible and is expected to pend rather than use an incompatible
+  topology or the excluded `dgx-37`.
 - No job ID, allocation, W&B run, output, rollout or optimizer work exists for
   ID135 yet. The corrected commit is synchronized and all gates except the
   final live resource refresh and `sbatch --test-only` have passed.

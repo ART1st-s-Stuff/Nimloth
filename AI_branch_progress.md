@@ -3921,3 +3921,7 @@
   `64 passed`，配置解析、恢复文件、空output/progress及新W&B名称0匹配均通过。正式提交前
   只剩实时资源刷新、`sbatch --test-only`和分配后的两节点GPU映射。当前尚无ID135 job、
   output、W&B、rollout或optimizer工作。
+- 最终提交前刷新时`dgx-14/31`空闲卡已被占用；当前normal仅有1/1/2卡、preempt仅有
+  2/2卡分散空闲，没有节点能立即承载TP4。4+4请求因此不固定过期节点名，改为normal任意
+  两个兼容4卡节点并继续排除`dgx-32/37/51`，预期先`PENDING(Resources)`，资源释放后由
+  Slurm启动；不会用不兼容的碎片卡或把排队误报为训练已开始。
