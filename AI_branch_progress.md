@@ -4159,3 +4159,16 @@
   分离两个数据入口：门禁读取同一behavior checkpoint产生、已GPU验证的真实长prefix诊断
   corpus；formal train只读取新identity的fresh rollout。控制器和测试必须证明两条路径不会
   混用，ID138诊断轨迹绝不进入formal train。
+
+## 2026-08-07：诊断门禁与formal fresh输入已强制分离，ID140合同冻结
+
+- commit `dbcadc53938d05e3ada56a3a2e6006164c502dcc`要求显式传入
+  `GATE_DIAGNOSTIC_TRAJECTORY_JSONL/GATE_DIAGNOSTIC_MANIFEST`，拒绝这两个路径位于formal
+  `RUN_OUT`内；stage log同时记录diagnostic/formal trajectory，train phase仍只从本identity
+  output读取fresh merge。服务器定向测试8项通过。
+- ID140 W&B exact-name实时查询0命中。它将ID138同checkpoint的16184-token真实prefix只用于
+  非消费mechanics gate，并重新采集`base_train/common_sense_train` seed `137..144`各8条作为
+  唯一formal输入。runtime固定为`dbcadc53`，继续使用hold `508866` / `dgx-26:8`。
+- 目标仍是从ID134 committed step15精确更新到step16；formal成功必须有ID140 consumption、
+  完整`train/final`和finished W&B。详细合同见
+  `ai_tasks/ai_progress/2026-08-07_ppo_value_critic_diag_gate_id140.md`。
