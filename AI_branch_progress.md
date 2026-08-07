@@ -4264,3 +4264,21 @@
   其VAGEN/LeWM pins分别为`192c35a9`/`8edfeb33`。
 - 4+4 batch正在增加`ENV_REPO`依赖路径与exact submodule commit前置门禁；重提前也将在login
   node执行同一检查，使错误checkout在请求GPU allocation前失败。
+
+## 2026-08-07：ID143 preempt 4+4重试合同通过launch preflight
+
+- commit `e75e8942`为4+4 batch新增VAGEN/LeWM路径与exact commit门禁；该门禁位于W&B、
+  renderer和controller之前。远端bash syntax、outer-runner 8项与Slurm静态27项均通过；
+  login-node双向检查确认Nimloth worktree通过、旧Flower路径被拒绝。
+- ID141 consumption仍精确commit step15→16并指向`train/latest`；只读核对发现`latest`与
+  `final`的完整checkpoint fileset/size/inode相同，13,090,012,345-byte `rl_state.pt`为同一
+  inode，且记录global step16、PPO ValueHead objective/clip0.2/4 epochs/world4/zero bootstrap。
+  因此ID143可从`final`初始化，ID142空骨架不参与任何reuse。
+- 新identity
+  `143_continue16_rl20_eval20x120_greedyh1_k16_dino05_ppo4_ep16x20_2n4r2g_2xtp4`
+  及其`-eval`实时W&B exact query均0命中；output、adjacent progress和preflight root均不存在。
+  数据、seeds153..184、step16→20、train/freeze、objective和held-out 120合同不变。
+- 人类指定preempt 4+4：2节点各4GPU/64CPU/48GiB、3小时/requeue，排除32/37/51。实时
+  `sbatch --test-only`接受请求并暂估18:48:42+08在`dgx-01,dgx-16`启动；该估计可变且formal
+  batch不固定节点。详细合同见
+  `ai_tasks/ai_progress/2026-08-07_ppo_value_critic_continue20_eval_id143.md`。
