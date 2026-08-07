@@ -12,6 +12,9 @@ HELPER = REPO_ROOT / "experiments/training/rl/slurm_allocation.sh"
 CONTROLLER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_slurm.sh"
 PIPELINE = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_smoke.sh"
 FULL_RUNNER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_full.sh"
+WAIT_LAUNCHER = (
+    REPO_ROOT / "experiments/training/rl/wait_for_1x8_hold_and_launch.sh"
+)
 PARALLEL_CONTROLLER = (
     REPO_ROOT
     / "experiments/training/rl/run_vllm_online_ppo_parallel_slurm.sh"
@@ -125,6 +128,30 @@ JOB_GRES=gpu:8
 """
 
     assert _load_counts(details) == ["dgx-40=4", "dgx-48=4"]
+
+
+def test_wait_launcher_gates_and_detaches_one_existing_1x8_hold() -> None:
+    launcher = WAIT_LAUNCHER.read_text(encoding="utf-8")
+
+    assert 'PENDING) sleep "${POLL_SECONDS}"' in launcher
+    assert '[[ "${gpu_counts[${node}]:-}" == 8 ]]' in launcher
+    assert 'for slot in 0 4; do' in launcher
+    assert '"status": "AI2THOR_RENDER_OK"' in launcher
+    assert "NODE_CLEAN_OK" in launcher
+    assert 'nohup timeout --signal=TERM --kill-after=30s' in launcher
+    assert 'srun --jobid="${HOLD_JOB}" --overlap' in launcher
+    assert 'bash "${REPO}/experiments/training/rl/train_8gpu_1x8.slurm"' in launcher
+    assert "scancel" not in launcher
+
+    assert launcher.index("WANDB_IDENTITIES_OK") < launcher.index(
+        "LAUNCH_PREFLIGHT_OK"
+    )
+    assert launcher.index("AI2THOR_RENDER_OK") < launcher.index(
+        "LAUNCH_PREFLIGHT_OK"
+    )
+    assert launcher.index("NODE_CLEAN_OK") < launcher.index(
+        "DETACHED_SRUN_LAUNCHED"
+    )
 
 
 def test_ppo_value_gpu_gate_requires_real_long_prefixes() -> None:
