@@ -4235,6 +4235,8 @@
   greedy evaluation；train `success_rate`与held-out结果继续严格区分。
 - 服务器精确config load通过；outer-runner回归8项、Slurm静态回归25项通过。新W&B名称
   `142_continue16_rl20_eval20x120_greedyh1_k16_dino05_ppo4_ep16x20_1n4r2g_2xtp4`
-  0命中且新output不存在。当前没有整机8卡idle，下一步只提交一个normal 1x8 hold并检查预计
-  开始时间；尚未启动训练或评估。详细合同见
+  0命中且新output不存在。唯一resource-only hold Job`509316`已请求normal 1x8、128 CPU、
+  96 GiB、2:30并排除`dgx-32/37/51`；当前`PENDING(Priority)`、无AllocTRES且正式start time
+  unknown。提交前test-only曾估计`2026-08-09T04:56:05+08:00`在dgx-26开始，但该值不是
+  reservation。尚无ID142 output/W&B/rollout/optimizer/consumption/checkpoint。详细合同见
   `ai_tasks/ai_progress/2026-08-07_ppo_value_critic_continue20_eval_id142.md`。

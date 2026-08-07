@@ -95,8 +95,14 @@
 
 ## Current status
 
-- Contract frozen and code pushed. The 1x8 hold, training and evaluation have
-  not yet been submitted.
+- Contract frozen and code pushed. The sole 1x8 resource-only hold is Slurm Job
+  `509316`: normal, 8 GPUs, 128 CPUs, 96 GiB, 2:30, excluding
+  `dgx-32/37/51`. It is `PENDING(Priority)` with no `AllocTRES`; `squeue
+  --start` currently reports no start time. The immediately preceding test-only
+  request estimated `2026-08-09T04:56:05+08:00` on `dgx-26`, which is only a
+  volatile scheduler estimate and not a reservation.
+- Training and evaluation have not started. There is no ID142 output, W&B run,
+  rollout, optimizer step, consumption or checkpoint yet.
 - No new durable memory is proposed: the held-out evaluation contract is
   already documented, and the seed offset is a run-specific continuation
   detail.
