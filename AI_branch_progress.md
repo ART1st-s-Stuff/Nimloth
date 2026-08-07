@@ -4312,3 +4312,15 @@
 - 完整13,090,012,345-byte checkpoint写出，consumption commit17→18并relocate至immutable
   `train/policy_inputs/iter_0019`。14:59:44+08 outer controller用seed offset169启动step19，
   Job`509368`继续运行于`dgx-01,dgx-16`。
+
+## 2026-08-07：ID143 committed global step19，step20已启动
+
+- step19 two-TP4 strict merge为16 trajectories/307 transitions，精确覆盖每数据集
+  seed169..176，train-batch success0.0625；该数字仍是在线训练轨迹诊断，不是held-out结果。
+- global step19 finite：WM0.15173824、DINO-grid0.89505217、ValueHead3.75384768、
+  total4.35311204，PPO4 epochs、clip fraction0、value delta0.02976424；307个transition均
+  critic-eligible，actor/token loss与policy tokens为0。训练elapsed358.4秒。
+- 完整13,090,012,345-byte checkpoint写出，consumption commit18→19并relocate至immutable
+  `train/policy_inputs/iter_0020`。15:13:23+08 outer controller以seed offset177启动step20，
+  Job`509368`继续运行于`dgx-01,dgx-16`；step20提交后才进入标准120条
+  held-out evaluation。

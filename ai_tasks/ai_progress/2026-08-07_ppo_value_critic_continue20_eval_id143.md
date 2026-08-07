@@ -170,3 +170,21 @@ name, online W&B mode, and a fresh renderer attempt root ending
   `train/policy_inputs/iter_0019`.
 - Step 19 started at `14:59:44+08:00` from that immutable policy with
   per-dataset seed offset 169. Job `509368` remains on `dgx-01,dgx-16`.
+
+## Step 19 completed; step 20 running
+
+- Step-19 two-TP4 rollout strict-merged 16 trajectories and 307 transitions
+  with exact per-dataset seeds 169--176. Train-batch success rate was 0.0625;
+  this remains an online training diagnostic rather than held-out evaluation.
+- The finite global-step-19 row records `wm_mse=0.15173823993245605`,
+  `dino_grid_mse=0.8950521727092564`, `value_loss=3.753847680677234`,
+  `total_loss=4.3531120397786065`, PPO epochs 4, value clip fraction 0 and mean
+  absolute value delta `0.02976424116526033`. All 307 transitions were
+  critic-eligible; actor/token loss and policy tokens remain zero. Training
+  elapsed time was 358.4 seconds.
+- The complete 13,090,012,345-byte checkpoint and required files were written.
+  Consumption is committed from global step 18 to 19 and relocated to immutable
+  `train/policy_inputs/iter_0020`.
+- Step 20 started at `15:13:23+08:00` from that immutable policy with
+  per-dataset seed offset 177. Job `509368` remains on `dgx-01,dgx-16`; the
+  standard 120-episode held-out evaluation is due only after step 20 commits.
