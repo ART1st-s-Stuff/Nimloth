@@ -9,20 +9,21 @@
   `art2nd-hong-kong-university-of-science-and-technology/nimloth-rl`.
 - ID/comment/run name:
   `142`, comment `continue16`,
-  `142_continue16_rl20_eval20x120_greedyh1_k16_dino05_ppo4_ep16x20_1n4r2g_2xtp4`.
+  `142_continue16_rl20_eval20x120_greedyh1_k16_dino05_ppo4_ep16x20_2n4r2g_2xtp4`.
   Before launch, the exact training run name has zero W&B matches; evaluation
   will use the corresponding `-eval` suffix.
 - Output:
-  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-07/142_continue16_rl20_eval20x120_greedyh1_k16_dino05_ppo4_ep16x20_1n4r2g_2xtp4`.
+  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-07/142_continue16_rl20_eval20x120_greedyh1_k16_dino05_ppo4_ep16x20_2n4r2g_2xtp4`.
   The output and adjacent iteration-progress log were absent before launch.
-- Runtime commit: `5ab8896493ae796e07271c03fe5c14b1c5f84396`;
+- Runtime commit: `bc73ddf1a5bf66982c1dfb5666d896ee75eacbe6`;
   server worktree
   `/project/peilab/atst/nimloth/.worktree/ppo-value-critic-9ef56fc9`.
-- Entrypoints:
+- Entrypoints: batch-owned
+  `experiments/training/rl/train_8gpu_44.slurm`,
   `experiments/training/rl/run_vllm_online_ppo_full.sh` and
   `experiments/training/rl/run_vllm_online_ppo_parallel_slurm.sh`.
 - Config:
-  `configs/training/rl/planner_greedy_h1_continue16_to20_eval20_16rollout_8gpu_1x8.yaml`.
+  `configs/training/rl/planner_greedy_h1_continue16_to20_eval20_16rollout_8gpu_44.yaml`.
 
 ## Initialization, data, and objective
 
@@ -68,17 +69,20 @@
 
 ## Resource and launch plan
 
-- Request one normal-partition node with eight H800 GPUs, 128 CPUs and 96 GiB
-  RAM for 2 hours 30 minutes. This is at most 20 GPU-hours. At contract freeze
-  no complete eight-GPU node was idle, so submit exactly one resource-only hold
-  and inspect its expected start time instead of creating competing holds.
-- After allocation, run one detached eight-GPU `srun` client with `nohup`, stdin
-  `/dev/null`, and durable PID/client/controller logs. This preserves the
-  previous detached-lifetime fix and allows reattachment without tying the
-  Slurm step to SSH.
+- Per the human's updated topology instruction, request preempt partition with
+  two nodes x four H800 GPUs, 64 CPUs and 48 GiB RAM per node, for three hours.
+  Total allocation is 8 GPUs/128 CPUs/96 GiB and at most 24 GPU-hours.
+- Use the existing batch-owned 4+4 controller so allocation, renderer preflight,
+  rollout, cleanup, multi-node train and evaluation share one Slurm lifecycle
+  and do not depend on an SSH client. Enable Slurm requeue; the outer runner
+  recovers only the contiguous committed prefix.
+- Before formal output/W&B creation, the batch rechecks the exact train and eval
+  identities and probes the actual rollout renderer slot 0 on both allocated
+  nodes with exact single-GPU visibility. A requeue creates a new per-node
+  preflight attempt and does not reuse an old-node result.
 - Expected runtime is approximately 35--60 minutes for four rollout/update
-  iterations plus roughly 20--40 minutes for the 120 held-out episodes; the
-  2.5-hour hold includes recovery margin.
+  iterations plus roughly 20--40 minutes for the 120 held-out episodes. The
+  three-hour request leaves preflight and recovery margin.
 
 ## Pre-launch validation
 
@@ -86,8 +90,9 @@
 - Server config load confirms iterations 20, built-in validation disabled,
   external validation enabled every 10 steps, 120 episodes, and held-out
   datasets `(base, common_sense)`.
-- Server tests passed: `tests/training/rl/test_full_runner.py` 8/8 and
-  `tests/training/rl/test_slurm_allocation.py` 25/25.
+- Server tests passed after the 4+4 change:
+  `tests/training/rl/test_full_runner.py` 8/8 and
+  `tests/training/rl/test_slurm_allocation.py` 27/27.
 - Commit `5ab88964` adds an explicit first-iteration seed offset while retaining
   the original formula by default. The new regression proves a resumed output
   can start at seed 153, preventing overlap with ID141's noncanonical retry
@@ -95,12 +100,14 @@
 
 ## Current status
 
-- Contract frozen and code pushed. The sole 1x8 resource-only hold is Slurm Job
-  `509316`: normal, 8 GPUs, 128 CPUs, 96 GiB, 2:30, excluding
-  `dgx-32/37/51`. It is `PENDING(Priority)` with no `AllocTRES`; `squeue
-  --start` currently reports no start time. The immediately preceding test-only
-  request estimated `2026-08-09T04:56:05+08:00` on `dgx-26`, which is only a
-  volatile scheduler estimate and not a reservation.
+- The superseded normal 1x8 resource-only hold Job `509316` was cancelled at
+  elapsed zero before allocation (`AllocTRES` empty). It never ran code or
+  created output/W&B/rollout/optimizer state, so this is a resource-plan change,
+  not an ID142 experiment failure.
+- The preempt 4+4 test-only request is accepted and estimates
+  `2026-08-07T18:19:43+08:00` on `dgx-16,dgx-42`. The exact updated train and
+  `-eval` W&B names both have zero matches, and the updated output is absent.
+- The formal preempt batch has not yet been submitted.
 - Training and evaluation have not started. There is no ID142 output, W&B run,
   rollout, optimizer step, consumption or checkpoint yet.
 - No new durable memory is proposed: the held-out evaluation contract is

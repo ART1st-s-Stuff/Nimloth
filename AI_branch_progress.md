@@ -4233,10 +4233,16 @@
   vision/StateProjector/lm_head/DINO teacher/actor/token PPO冻结。
 - step20提交后在同一allocation自动运行标准held-out `base/common_sense`各60条、seed1--60、
   greedy evaluation；train `success_rate`与held-out结果继续严格区分。
-- 服务器精确config load通过；outer-runner回归8项、Slurm静态回归25项通过。新W&B名称
-  `142_continue16_rl20_eval20x120_greedyh1_k16_dino05_ppo4_ep16x20_1n4r2g_2xtp4`
-  0命中且新output不存在。唯一resource-only hold Job`509316`已请求normal 1x8、128 CPU、
-  96 GiB、2:30并排除`dgx-32/37/51`；当前`PENDING(Priority)`、无AllocTRES且正式start time
-  unknown。提交前test-only曾估计`2026-08-09T04:56:05+08:00`在dgx-26开始，但该值不是
-  reservation。尚无ID142 output/W&B/rollout/optimizer/consumption/checkpoint。详细合同见
+- 服务器精确config load通过；outer-runner回归8项、Slurm静态回归25项通过；此前1x8
+  identity保持0命中且output不存在。
+- 人类随后改为`preempt 4+4`。normal 1x8 resource-only Job`509316`在elapsed0、AllocTRES空时
+  取消，未运行任何实验代码。新config保持world4×2GPU、两个TP4 worker和全部训练/评估合同，
+  只把物理拓扑改为2节点各4GPU；batch-owned入口会在每次allocation/requeue先对两个实际节点
+  的rollout slot0做exact single-visible renderer probe，再进入outer runner。
+- runtime `bc73ddf1`的server config load为iterations20/nodes2/world4/2GPU-per-rank，
+  outer-runner 8项与Slurm/renderer静态回归27项通过。新identity
+  `142_continue16_rl20_eval20x120_greedyh1_k16_dino05_ppo4_ep16x20_2n4r2g_2xtp4`
+  及其`-eval`均0命中，output不存在；preempt 4+4 test-only接受请求并估计
+  `2026-08-07T18:19:43+08:00`在`dgx-16,dgx-42`开始。尚未提交formal batch，亦无ID142
+  output/W&B/rollout/optimizer/consumption/checkpoint。详细合同见
   `ai_tasks/ai_progress/2026-08-07_ppo_value_critic_continue20_eval_id142.md`。
