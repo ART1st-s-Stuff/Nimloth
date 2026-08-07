@@ -97,8 +97,11 @@
 - 已将本次错误结论登记为
   `ai_rules/known_errors/E0087_validate_planner_policy_both_states.md`：后续必须分别验证
   持久化 rollout state 的 behavior freshness 和完整 prefix 重算 state 的 PPO 梯度。
-- 当前执行层仍拒绝已获人类授权的 Git index 写操作，因此没有绕过 Git 去远端改代码。
-  必须先把本地第二轮三文件修正提交并同步，才能放行 GPU gate。
+- 第二轮修正提交 `82cda7f3` 已推送并通过 Git 线性同步到服务器干净 worktree；同一
+  10 文件 focused suite 最终为 `128 passed, 1 warning`（31.99 秒）。唯一 warning
+  来自测试显式验证单样本 `std(unbiased=True)` 产生 NaN，与 PlannerPolicyHead 改动无关。
+- 人类已将审批切换到 user approval；Git index 写操作现在直接交由人类审核，后续可以
+  恢复本地提交、推送和服务器 Git 同步，无需再由人类手工执行每个提交。
 
 ## 待确认问题
 
