@@ -17,8 +17,8 @@
 
 ## Launch contract
 
-- Runtime worktree: server `dev` worktree synchronized through Git to the
-  committed local `dev` revision recorded at launch.
+- Code/config commit: `4fbc0ce3` on `dev`; the server worktree was synchronized
+  through Git and verified tracked-clean at that revision.
 - Both allocated nodes must pass a fresh AI2-THOR rendered-frame preflight
   before rollout starts.
 - Entrypoints: `initialize_planner_policy_head.py`, then
@@ -54,6 +54,8 @@
   preempt GPUs, respectively, so a flexible two-node 4+4 request fit at that
   snapshot without a fixed node constraint. Resources must be refreshed at
   submission time.
+- Refreshed preempt snapshot immediately before submission showed no free GPU
+  nodes; ID144 must therefore enter the queue as one two-node 4+4 hold.
 - Project memory search found no reusable checkpoint/gate memory; this contract
   is derived from current code, current progress evidence and live server state.
 - Pending: commit the 4+4 config/launcher/metadata change, synchronize the
