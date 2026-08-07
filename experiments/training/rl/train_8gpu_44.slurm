@@ -64,7 +64,7 @@ actual_commit=$(git -C "${REPO}" rev-parse HEAD)
   exit 1
 }
 
-if [[ -n "${WANDB_ENTITY:-}" ]]; then
+if [[ -n "${WANDB_ENTITY:-}" && ! -e "${RUN_OUT}" ]]; then
   NIMLOTH_WANDB_ENTITY="${WANDB_ENTITY}" \
     NIMLOTH_WANDB_PROJECT="${WANDB_PROJECT}" \
     NIMLOTH_WANDB_RUN_NAME="${WANDB_RUN_NAME}" \
@@ -85,14 +85,16 @@ print("WANDB_IDENTITIES_OK", flush=True)
 fi
 
 if [[ -n "${RENDER_PREFLIGHT_OUT:-}" ]]; then
-  [[ ! -e "${RENDER_PREFLIGHT_OUT}" ]] || {
-    echo "renderer preflight output already exists: ${RENDER_PREFLIGHT_OUT}" >&2
+  node_tag=$(IFS=_; echo "${ALLOCATED_NODES[*]}")
+  render_attempt=${RENDER_PREFLIGHT_OUT}/restart_${SLURM_RESTART_COUNT:-0}_${node_tag}
+  [[ ! -e "${render_attempt}" ]] || {
+    echo "renderer preflight attempt already exists: ${render_attempt}" >&2
     exit 1
   }
-  mkdir -p "${RENDER_PREFLIGHT_OUT}"
+  mkdir -p "${render_attempt}"
   RENDER_STEP_PIDS=()
   for node in "${ALLOCATED_NODES[@]}"; do
-    node_out=${RENDER_PREFLIGHT_OUT}/${node}
+    node_out=${render_attempt}/${node}
     mkdir -p "${node_out}"
     srun --jobid="${SLURM_JOB_ID}" --overlap --nodes=1 --ntasks=1 \
       -w "${node}" --gres=gpu:4 \
@@ -120,7 +122,7 @@ timeout --signal=TERM --kill-after=10s "${RENDER_PREFLIGHT_TIMEOUT}s" \
     wait "${pid}" || render_status=$?
   done
   for node in "${ALLOCATED_NODES[@]}"; do
-    node_log=${RENDER_PREFLIGHT_OUT}/${node}/gpu0.log
+    node_log=${render_attempt}/${node}/gpu0.log
     cat "${node_log}"
     grep -Fq '"status": "AI2THOR_RENDER_OK"' "${node_log}" || render_status=1
   done

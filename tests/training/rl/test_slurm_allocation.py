@@ -158,6 +158,7 @@ def test_4plus4_batch_gates_each_rollout_node_renderer_before_training() -> None
     batch = EIGHT_GPU_BATCH.read_text(encoding="utf-8")
 
     assert 'for node in "${ALLOCATED_NODES[@]}"; do' in batch
+    assert "SLURM_RESTART_COUNT" in batch
     assert '(( ${#allocated_gpus[@]} == 4 ))' in batch
     assert 'export CUDA_VISIBLE_DEVICES="${allocated_gpus[0]}"' in batch
     assert "nimloth.environment.navigation.direct_render_probe" in batch
