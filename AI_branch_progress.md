@@ -4243,6 +4243,8 @@
   outer-runner 8项与Slurm/renderer静态回归27项通过。新identity
   `142_continue16_rl20_eval20x120_greedyh1_k16_dino05_ppo4_ep16x20_2n4r2g_2xtp4`
   及其`-eval`均0命中，output不存在；preempt 4+4 test-only接受请求并估计
-  `2026-08-07T18:19:43+08:00`在`dgx-16,dgx-42`开始。尚未提交formal batch，亦无ID142
-  output/W&B/rollout/optimizer/consumption/checkpoint。详细合同见
+  `2026-08-07T18:19:43+08:00`在`dgx-16,dgx-42`开始。正式batch Job`509332`已提交：
+  preempt 2节点各4GPU/64CPU/48GiB、3小时、requeue，并排除`dgx-32/37/51`；`scontrol`
+  确认为总8GPU/128CPU/96GiB，当前`PENDING(Priority)`、elapsed0、AllocTRES空且start time
+  unknown。尚无ID142 output/W&B/rollout/optimizer/consumption/checkpoint。详细合同见
   `ai_tasks/ai_progress/2026-08-07_ppo_value_critic_continue20_eval_id142.md`。

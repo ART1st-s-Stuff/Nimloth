@@ -107,7 +107,13 @@
 - The preempt 4+4 test-only request is accepted and estimates
   `2026-08-07T18:19:43+08:00` on `dgx-16,dgx-42`. The exact updated train and
   `-eval` W&B names both have zero matches, and the updated output is absent.
-- The formal preempt batch has not yet been submitted.
+- Formal preempt batch Job `509332` is submitted with the exact 4+4 contract:
+  two nodes, four GPUs/64 CPUs/48 GiB per node, three hours, requeue enabled and
+  known incompatible nodes `dgx-32/37/51` excluded. `scontrol -dd` confirms
+  total `cpu=128,mem=96G,node=2,gres/gpu=8` and `TresPerNode=gres/gpu:4`.
+- Job `509332` is currently `PENDING(Priority)`, elapsed zero, with empty
+  `AllocTRES` and no formal start-time estimate. The preceding test-only
+  estimate remains volatile and does not prove the job will use those nodes.
 - Training and evaluation have not started. There is no ID142 output, W&B run,
   rollout, optimizer step, consumption or checkpoint yet.
 - No new durable memory is proposed: the held-out evaluation contract is
