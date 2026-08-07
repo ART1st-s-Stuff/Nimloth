@@ -6,8 +6,8 @@ behavior-checkpoint-matched trajectories.  Distinct qualifying prefixes are
 preferred, but a real long prefix is reused deterministically when there are
 fewer qualifying prefixes than gate ranks.  ``single_grad`` proves the
 selected loss reaches the Qwen language body without supervising ``lm_head``.
-``ddp_step`` exercises the production two-rank, two-GPU-per-rank wrapping and
-AdamW update for all configured PPO epochs.
+``ddp_step`` exercises the config-declared distributed world with two GPUs per
+rank and an AdamW update for all configured PPO epochs.
 """
 
 from __future__ import annotations
@@ -305,8 +305,14 @@ def main() -> int:
         raise ValueError(
             "PlannerPolicyHead GPU gate requires --planner-policy-head-checkpoint"
         )
-    expected_world = 1 if args.mode == "single_grad" else 2
-    expected_gpus_per_rank = 1 if args.mode == "single_grad" else 2
+    expected_world = (
+        1 if args.mode == "single_grad" else config.distributed.world_size
+    )
+    expected_gpus_per_rank = (
+        1 if args.mode == "single_grad" else config.distributed.gpus_per_rank
+    )
+    if args.mode == "ddp_step" and expected_world < 2:
+        raise ValueError("ddp_step requires distributed.world_size >= 2")
     if args.gpus_per_rank != expected_gpus_per_rank:
         raise ValueError(
             f"{args.mode} requires --gpus-per-rank={expected_gpus_per_rank}"

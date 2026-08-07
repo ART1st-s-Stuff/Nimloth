@@ -28,6 +28,10 @@ PPO_VALUE_STAGED_RUNNER = (
     REPO_ROOT
     / "experiments/training/rl/run_ppo_value_gc_gate_then_train_on_hold.sh"
 )
+PLANNER_POLICY_GPU_GATE_4X4 = (
+    REPO_ROOT
+    / "experiments/training/rl/run_planner_policy_gpu_gate_4x4_on_hold.sh"
+)
 HETERO_32_CONFIG = (
     REPO_ROOT / "configs/training/rl/planner_greedy_h1_full_32gpu_88844.yaml"
 )
@@ -186,6 +190,30 @@ def test_ppo_value_gpu_gate_requires_real_long_prefixes() -> None:
     assert gate.count("--select-longest-final-transition") == 2
     assert gate.count('--minimum-state-tokens "${MINIMUM_STATE_TOKENS}"') == 2
     assert "transition_selection=global-qualified-longest-final" in gate
+
+
+def test_planner_policy_gpu_gate_uses_every_gpu_in_4plus4_hold() -> None:
+    runner = PLANNER_POLICY_GPU_GATE_4X4.read_text(encoding="utf-8")
+
+    assert '[[ "${#NODES[@]}" == 2 ]]' in runner
+    assert '[[ "${GPU_COUNTS[${node}]:-}" == 4 ]]' in runner
+    assert '"2 4 2 8 4"' in runner
+    assert "nimloth.environment.navigation.direct_render_probe" in runner
+    assert '"status": "AI2THOR_RENDER_OK"' in runner
+    assert (
+        'ROLLOUT_WORKERS=2 PIPELINE_MODE=train PIPELINE_PHASE=rollout'
+        in runner
+    )
+    assert 'WORLD_SIZE=4 bash -lc' in runner
+    assert 'for local_rank in 0 1; do' in runner
+    assert '--gpus-per-rank 2' in runner
+    assert 'for rank in range(4)' in runner
+    assert runner.index('stage=rollout status=starting') < runner.index(
+        'stage=single_grad status=starting'
+    )
+    assert runner.index('stage=single_grad status=starting') < runner.index(
+        'stage=ddp_step status=starting'
+    )
 
 
 def test_resumed_staged_pipeline_creates_a_new_first_iteration_output() -> None:

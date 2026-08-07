@@ -492,11 +492,12 @@ if [[ "${RUN_ROLLOUT}" == true ]] && (( ITERATION == FIRST_ITERATION )); then
 - Nimloth commit: ${COMMIT}
 - VAGEN commit: ${ENV_COMMIT}
 - model/WM initialization: ${MODEL}
+- PlannerPolicyHead initialization: ${PLANNER_POLICY_HEAD_CKPT}
 - data: ${TRAIN_DATASETS_CSV}; independent per-dataset seeds ${SEED_OFFSET}..${SEED_RANGE_END}
 - schedule: resume after global step ${RUN_INITIAL_GLOBAL_STEP}, train through ${TOTAL_ITERATIONS}; ${NUM_EPISODES} episodes/iteration, max ${MAX_STEPS} steps/episode
 - allocation: ${NIMLOTH_TRAIN_NODE_SPECS}
 - rollout: ${ROLLOUT_WORKERS} independent workers x vLLM TP${TP_SIZE}, ${EPISODES_PER_WORKER} episodes/worker; workers are assigned from each node's allocated GPU count
-- update: ${CONFIG_NODES} nodes, ${CONFIG_WORLD_SIZE} synchronized ranks x ${CONFIG_GPUS_PER_RANK} GPUs/rank; every real transition is assigned to exactly one rank
+- update: ${CONFIG_NODES} nodes, ${CONFIG_WORLD_SIZE} synchronized ranks x ${CONFIG_GPUS_PER_RANK} GPUs/rank; every real transition is assigned to exactly one rank; PlannerPolicyHead PPO follows the config
 - uneven transition counts: equal-count graph padding with zero loss; DDP loss scale preserves the global transition mean
 - planning: DINO supervised H=1, history_size=1
 - frozen: Qwen vision, DINO teacher and StateProjector

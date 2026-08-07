@@ -241,13 +241,14 @@ if [[ "${RUN_ROLLOUT}" == true ]] && (( ITERATION == FIRST_ITERATION )); then
 - rollout: vLLM TP=${TENSOR_PARALLEL_SIZE}, backend=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-local}
 - config: ${RL_CONFIG}
 - planning: enabled=${PLANNING_ENABLED}, horizon=${PLANNING_HORIZON}, search=${PLANNING_SEARCH_MODE}, beam_width=${PLANNING_BEAM_WIDTH}
+- planner policy PPO: enabled=${PLANNER_POLICY_ENABLED}, checkpoint=${PLANNER_POLICY_HEAD_CKPT}, temperature=${PLANNER_POLICY_TEMPERATURE}
 - direct Qwen PPO enabled: ${ACTOR_ENABLED}; credit=${CREDIT_ASSIGNMENT}; max Qwen response tokens=${MAX_RESPONSE_TOKENS}
 - reference KL actor loss: weight=${REFERENCE_KL_WEIGHT}; no reward KL
 - reference model: ${REFERENCE_MODEL}
 - freshness: policy/planner/trajectory content fingerprints; consumption commits only after a post-update checkpoint
-- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank; one differentiable full-prefix Qwen→WM→ValueHead backward per real transition, then one optimizer step
+- update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank; differentiable full-prefix Qwen→WM/ValueHead and optional PlannerPolicyHead PPO backward per real transition, then one optimizer step
 - frozen: vision tower and the configured grid StateProjector
-- trainable: Qwen language body, WM predictor and ValueHead
+- trainable: Qwen language body, WM predictor, ValueHead and PlannerPolicyHead when enabled
 - W&B: ${WANDB_PROJECT_REQUESTED}/${WANDB_RUN_NAME_REQUESTED}
 - output: ${RUN_OUT}
 EOF
