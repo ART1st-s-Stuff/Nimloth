@@ -126,6 +126,14 @@ fi
   exit 1
 }
 FIRST_ITERATION=$((INITIAL_GLOBAL_STEP + 1))
+DEFAULT_FIRST_ITERATION_SEED_OFFSET=$((
+  INITIAL_GLOBAL_STEP * SEEDS_PER_DATASET_PER_ITERATION + 1
+))
+FIRST_ITERATION_SEED_OFFSET=${FIRST_ITERATION_SEED_OFFSET:-${DEFAULT_FIRST_ITERATION_SEED_OFFSET}}
+[[ "${FIRST_ITERATION_SEED_OFFSET}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "FIRST_ITERATION_SEED_OFFSET must be a positive integer" >&2
+  exit 1
+}
 
 TRAIN_OUT=${RUN_OUT}/train
 POLICY_INPUT_ROOT=${TRAIN_OUT}/policy_inputs
@@ -223,7 +231,10 @@ fi
 for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
   CURRENT_ITERATION=${iteration}
   iteration_tag=$(printf 'iter_%04d' "${iteration}")
-  seed_offset=$(( (iteration - 1) * SEEDS_PER_DATASET_PER_ITERATION + 1 ))
+  seed_offset=$((
+    FIRST_ITERATION_SEED_OFFSET
+    + (iteration - FIRST_ITERATION) * SEEDS_PER_DATASET_PER_ITERATION
+  ))
   resume_checkpoint=""
   if (( iteration == FIRST_ITERATION )); then
     model=${INITIAL_MODEL}

@@ -50,6 +50,8 @@ failure_marker = root.parent / f"fake_failure_{failure_mode}.done"
 
 with (root.parent / "fake_calls.txt").open("a", encoding="utf-8") as stream:
     stream.write(f"{iteration}\\n")
+with (root.parent / "fake_seed_offsets.txt").open("a", encoding="utf-8") as stream:
+    stream.write(f"{iteration}:{os.environ['SEED_OFFSET']}\\n")
 
 if iteration == initial_global_step + 1:
     assert Path(os.environ["MODEL"]) == Path(os.environ["INITIAL_MODEL"])
@@ -295,6 +297,26 @@ def test_full_runner_can_continue_optimizer_state_in_a_new_output(tmp_path: Path
     )
     assert consumption["starting_global_step"] == 1
     assert consumption["committed_global_step"] == 2
+
+
+def test_full_runner_can_continue_after_noncanonical_consumed_seeds(
+    tmp_path: Path,
+) -> None:
+    environment = _runner_environment(tmp_path)
+    initial_resume = tmp_path / "initial_resume"
+    initial_resume.mkdir()
+    torch.save(
+        {"iteration": 1, "global_step": 1},
+        initial_resume / "rl_state.pt",
+    )
+    environment["INITIAL_RESUME_CHECKPOINT"] = str(initial_resume)
+    environment["FIRST_ITERATION_SEED_OFFSET"] = "153"
+
+    subprocess.run([str(FULL_RUNNER)], check=True, env=environment)
+
+    assert (tmp_path / "formal/fake_seed_offsets.txt").read_text(
+        encoding="utf-8"
+    ) == "2:153\n"
 
 
 def test_full_runner_runs_external_eval_once_at_iteration_ten(tmp_path: Path) -> None:
