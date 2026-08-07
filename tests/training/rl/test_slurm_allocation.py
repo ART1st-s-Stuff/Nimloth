@@ -136,7 +136,7 @@ def test_wait_launcher_gates_and_detaches_one_existing_1x8_hold() -> None:
     assert 'PENDING) sleep "${POLL_SECONDS}"' in launcher
     assert '[[ "${gpu_counts[${node}]:-}" == 8 ]]' in launcher
     assert 'for slot in 0 4; do' in launcher
-    assert '"status": "AI2THOR_RENDER_OK"' in launcher
+    assert 'grep -Fq "\\"status\\": \\"AI2THOR_RENDER_OK\\""' in launcher
     assert "NODE_CLEAN_OK" in launcher
     assert 'nohup timeout --signal=TERM --kill-after=30s' in launcher
     assert 'srun --jobid="${HOLD_JOB}" --overlap' in launcher

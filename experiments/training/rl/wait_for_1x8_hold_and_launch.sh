@@ -191,7 +191,7 @@ for pid in "${pids[@]}"; do
 done
 for slot in 0 4; do
   cat "${PREFLIGHT_OUT}/gpu${slot}.log"
-  grep -q "\"status\": \"AI2THOR_RENDER_OK\"" \
+  grep -Fq "\"status\": \"AI2THOR_RENDER_OK\"" \
     "${PREFLIGHT_OUT}/gpu${slot}.log" || status=1
 done
 exit "${status}"
