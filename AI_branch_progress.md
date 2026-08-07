@@ -4324,3 +4324,15 @@
   `train/policy_inputs/iter_0020`。15:13:23+08 outer controller以seed offset177启动step20，
   Job`509368`继续运行于`dgx-01,dgx-16`；step20提交后才进入标准120条
   held-out evaluation。
+
+## 2026-08-07：ID143 committed global step20，标准held-out 120已启动
+
+- step20 two-TP4 strict merge为16 trajectories/278 transitions，精确覆盖每数据集
+  seed177..184，train-batch success0.1875（base0.25/common_sense0.125），仍仅是训练诊断。
+- global step20 finite：WM0.27691257、DINO-grid0.93849443、ValueHead6.37869803、
+  total7.12485779，PPO4 epochs、clip fraction0、value delta0.03080908；278个transition均
+  critic-eligible，actor/token loss与policy tokens为0，elapsed326.3秒。
+- consumption已commit19→20。`train/final`、`latest`和`iter_0020`均指向完整
+  13,090,012,345-byte `rl_state.pt`及所有必需组件。15:26:16+08 outer controller在
+  同一`dgx-01 + dgx-16` allocation启动标准held-out evaluation：`base/common_sense`
+  各60条、seed1..60、总计120条。

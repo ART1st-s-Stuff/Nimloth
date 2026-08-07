@@ -188,3 +188,23 @@ name, online W&B mode, and a fresh renderer attempt root ending
 - Step 20 started at `15:13:23+08:00` from that immutable policy with
   per-dataset seed offset 177. Job `509368` remains on `dgx-01,dgx-16`; the
   standard 120-episode held-out evaluation is due only after step 20 commits.
+
+## Step 20 completed; standard held-out evaluation running
+
+- Step-20 two-TP4 rollout strict-merged 16 trajectories and 278 transitions
+  with exact per-dataset seeds 177--184. Train-batch success was 0.1875
+  (base_train 0.25, common_sense_train 0.125); these remain online training
+  diagnostics.
+- The finite global-step-20 row records `wm_mse=0.27691256953403354`,
+  `dino_grid_mse=0.9384944306220859`, `value_loss=6.378698027984914`,
+  `total_loss=7.124857793570474`, PPO epochs 4, value clip fraction 0 and mean
+  absolute value delta `0.030809084661505892`. All 278 transitions were
+  critic-eligible; actor/token loss and policy tokens remain zero. Training
+  elapsed time was 326.3 seconds.
+- Consumption committed global step 19 to 20. `train/final`, `latest` and
+  `iter_0020` expose the complete 13,090,012,345-byte `rl_state.pt` and required
+  checkpoint components.
+- At `15:26:16+08:00`, the controller started the standard held-out evaluation
+  on the same `dgx-01 + dgx-16` allocation: 60 `base` plus 60 `common_sense`
+  episodes, per-split seeds 1--60, exactly 120 total. Evaluation success and
+  `eval_done.flag` remain pending.
