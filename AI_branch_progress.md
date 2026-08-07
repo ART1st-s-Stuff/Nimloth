@@ -4220,3 +4220,21 @@
   训练rollout `success_rate=0.6875`不是held-out policy-quality证据；iteration16不需要120-episode
   held-out eval。收尾检查8卡与ports 9760/9761/32860无残留，output README已标记completed；
   hold `508866`随后释放，`squeue`无该job，已完成的ID141 steps保持`COMPLETED 0:0`。
+
+## 2026-08-07：ID142 step16→20续训与held-out evaluate合同冻结
+
+- 发现outer runner按iteration绝对编号推导seed会使新output的step19重用ID141已经消费的
+  per-dataset seed `145..152`。commit `5ab88964`新增
+  `FIRST_ITERATION_SEED_OFFSET`且保留原默认公式；ID142显式从153开始，因此step17--20依次
+  使用每个train dataset的`153..160`、`161..168`、`169..176`、`177..184`。
+- 新config固定从ID141 complete/committed global step16训练到20；每步
+  `base_train/common_sense_train`各8条fresh trajectory，目标仍是executed-action
+  `Q(s_t,a_t)`的ValueHead PPO（clip0.2、4 epochs），Qwen language/WM/ValueHead可训练，
+  vision/StateProjector/lm_head/DINO teacher/actor/token PPO冻结。
+- step20提交后在同一allocation自动运行标准held-out `base/common_sense`各60条、seed1--60、
+  greedy evaluation；train `success_rate`与held-out结果继续严格区分。
+- 服务器精确config load通过；outer-runner回归8项、Slurm静态回归25项通过。新W&B名称
+  `142_continue16_rl20_eval20x120_greedyh1_k16_dino05_ppo4_ep16x20_1n4r2g_2xtp4`
+  0命中且新output不存在。当前没有整机8卡idle，下一步只提交一个normal 1x8 hold并检查预计
+  开始时间；尚未启动训练或评估。详细合同见
+  `ai_tasks/ai_progress/2026-08-07_ppo_value_critic_continue20_eval_id142.md`。
