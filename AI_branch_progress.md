@@ -4301,3 +4301,14 @@
 - 13,090,012,345-byte完整checkpoint及Qwen/StateProjector/ValueHead/WM文件已写出；
   consumption commit16→17并relocate到immutable `train/policy_inputs/iter_0018`。W&B为
   `d2uqjplu`；outer controller已用seed offset161启动step18，同allocation继续运行。
+
+## 2026-08-07：ID143 committed global step18，step19已启动
+
+- step18 two-TP4 strict merge为16 trajectories/222 transitions，精确覆盖每数据集
+  seed161..168，train-batch success0.4375；两个rollout steps均4分37秒`COMPLETED 0:0`。
+- global step18 finite：WM0.18922209、DINO-grid0.89841857、ValueHead18.67776810、
+  total19.31619954，PPO4 epochs、clip fraction0.08108108、value delta0.06832195；222个
+  transition均critic-eligible，actor/token loss与policy tokens为0。
+- 完整13,090,012,345-byte checkpoint写出，consumption commit17→18并relocate至immutable
+  `train/policy_inputs/iter_0019`。14:59:44+08 outer controller用seed offset169启动step19，
+  Job`509368`继续运行于`dgx-01,dgx-16`。

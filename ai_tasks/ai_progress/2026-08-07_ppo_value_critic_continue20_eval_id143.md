@@ -153,3 +153,20 @@ name, online W&B mode, and a fresh renderer attempt root ending
 - The outer controller started step 18 at `14:48:35+08:00` from that immutable
   policy with per-dataset seed offset 161. The same allocation remains running;
   no evaluation is due before committed step 20.
+
+## Step 18 completed; step 19 running
+
+- Step-18 two-TP4 rollout strict-merged 16 trajectories and 222 transitions
+  with exact per-dataset seeds 161--168. Train-batch success rate was 0.4375;
+  rollout node steps both completed `0:0` in 4m37s.
+- The finite global-step-18 row records `wm_mse=0.1892220934969373`,
+  `dino_grid_mse=0.898418570170179`, `value_loss=18.67776809585093`,
+  `total_loss=19.316199544613923`, PPO epochs 4, value clip fraction
+  `0.08108108304440975` and mean absolute value delta
+  `0.06832195155006104`. All 222 transitions were critic-eligible; actor/token
+  loss and policy tokens remain zero.
+- The complete 13,090,012,345-byte checkpoint and required files were written.
+  Consumption is committed from global step 17 to 18 and relocated to immutable
+  `train/policy_inputs/iter_0019`.
+- Step 19 started at `14:59:44+08:00` from that immutable policy with
+  per-dataset seed offset 169. Job `509368` remains on `dgx-01,dgx-16`.
