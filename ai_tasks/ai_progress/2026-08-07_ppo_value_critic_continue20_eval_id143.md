@@ -118,7 +118,7 @@ and dependency commit gates above, the exact config/output/checkpoint paths,
 name, online W&B mode, and a fresh renderer attempt root ending
 `143_preempt44`.
 
-## Current status
+## Submission status at launch
 
 - Formal Job `509368` was submitted at `2026-08-07T14:31:17+08:00` with the
   exact command and exports above. Slurm confirms `Requeue=1`, two requested
@@ -128,3 +128,28 @@ name, online W&B mode, and a fresh renderer attempt root ending
   `AllocTRES=(null)`. No output, W&B run, renderer, rollout, optimizer,
   consumption or checkpoint has started. The monitor will use the actual
   allocation, not the earlier test-only estimate.
+
+## Step 17 completed; step 18 running
+
+- Job `509368` started at `14:31:40+08:00` on actual allocation
+  `dgx-01:gpu[0-3] + dgx-16:gpu[4-7]`. The dependency/W&B gates passed. Exact
+  single-visible renderer probes passed on both nodes: 67.096 seconds on
+  `dgx-01` and 57.891 seconds on `dgx-16`, both 255x255 and dynamic range 246.
+- Step-17 prewarm passed in 7.939/10.335 seconds. Two TP4 workers produced eight
+  trajectories each and strict merge passed with 16 trajectories, 247
+  transitions, exact `base_train/common_sense_train` seed coverage 153--160,
+  and fresh policy/trajectory fingerprints. Train-batch success rate was
+  0.3125; this is not a held-out result.
+- World4 x two-GPU training wrote a finite global-step-17 row:
+  `wm_mse=0.20778004798921756`, `dino_grid_mse=0.8703812449239194`,
+  `value_loss=10.934709915333038`, `total_loss=11.577680663245857`, PPO epochs
+  4, value clip fraction `0.11437247251160443` and mean absolute value delta
+  `0.07786137633267742`. Actor/token loss and policy tokens remain zero.
+- The complete 13,090,012,345-byte checkpoint and required Qwen/StateProjector/
+  ValueHead/WM files were written. Step-17 consumption is committed from global
+  step 16 to 17 and relocated to immutable
+  `train/policy_inputs/iter_0018`. Both training node steps completed `0:0` in
+  6m56s. W&B training run is `d2uqjplu`.
+- The outer controller started step 18 at `14:48:35+08:00` from that immutable
+  policy with per-dataset seed offset 161. The same allocation remains running;
+  no evaluation is due before committed step 20.

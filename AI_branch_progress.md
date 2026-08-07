@@ -4286,3 +4286,18 @@
   总8GPU/128CPU/96GiB、每节点`gres:gpu:4`并排除32/37/51。当前AllocTRES与NodeList为空，
   尚未创建output/W&B/renderer/rollout/optimizer/consumption/checkpoint；监控将以实际allocation
   为准。
+
+## 2026-08-07：ID143 committed global step17，step18已启动
+
+- Job`509368`于14:31:40+08实际获得`dgx-01:gpu0-3 + dgx-16:gpu4-7`；依赖/W&B gate
+  通过。两节点exact single-visible renderer分别67.096/57.891秒通过，255x255、dynamic
+  range246；step17 env prewarm分别7.939/10.335秒。
+- two-TP4各完成8条，strict merge为16 trajectories/247 transitions，精确覆盖
+  `base_train/common_sense_train`每数据集seed153..160，fresh fingerprints存在；train-batch
+  success0.3125不作为held-out结果。
+- global step17 finite：WM0.20778005、DINO-grid0.87038124、ValueHead10.93470992、
+  total11.57768066，PPO4 epochs、clip fraction0.11437247、value delta0.07786138；actor/token
+  loss与policy tokens为0。两个训练steps均6分56秒`COMPLETED 0:0`。
+- 13,090,012,345-byte完整checkpoint及Qwen/StateProjector/ValueHead/WM文件已写出；
+  consumption commit16→17并relocate到immutable `train/policy_inputs/iter_0018`。W&B为
+  `d2uqjplu`；outer controller已用seed offset161启动step18，同allocation继续运行。
