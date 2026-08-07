@@ -68,8 +68,26 @@
 - 人类随后明确授权 `git add/commit/push`，但执行层再次拒绝，说明当前审批策略禁止
   所有 `require_escalated` 请求，即使已有用户授权也不放行。需要人类直接提交，或由
   环境管理员开放该 worktree 的共享 Git index 写权限。
-- 服务器 focused pytest、Git commit/push 和远端 dev worktree 更新仍未完成；当前没有
-  运行 GPU gate、训练或评估。
+- 初始迁移阶段尚未运行服务器 focused pytest；当前仍没有运行 GPU gate、训练或评估。
+- `7f12c79f` 已推送到 `origin/dev`；服务器保留原本名为 `.worktree/dev` 但实际检出
+  `fix/sft2-review-bugs` 且含未跟踪文件的旧目录，另建干净的
+  `.worktree/dev-7f12c79f` 检出真正 `dev@7f12c79f`。LeWM/VAGEN 分别按 gitlink
+  初始化为 `8edfeb33`/`192c35a9`。
+- 服务器首轮 10 文件 focused suite 为 `125 passed, 3 failed`。三项失败均定位到测试
+  构造：full-prefix 梯度用例把 PolicyHead 权重全置零，数学上必然切断输入梯度；两个
+  legacy loop fixture 缺少新增 `planner_policy.enabled=false` 字段，并且 fake algorithm
+  尚未接收两个可选 policy 参数。生产 traceback 未显示运行时实现失败。测试现已改为在
+  当前 state 上产生相同 logits 但具有不同权重的 head，并补齐 legacy fixture；待提交后
+  在同一服务器 worktree 重跑 focused suite。
+- 两项测试修正与本进度文件通过 `git diff --check` 和独立 `py_compile`；再次核对
+  `RLAlgorithm.train_episode_transition()` 与 loop 调用方后，新增的两个可选参数和
+  legacy `planner_policy.enabled=false` fixture 与生产接口一致。
+- 服务器 PyTorch 独立数学 probe 验证修正后的 PolicyHead 权重在 state `[2, 1]` 上仍
+  产生 8 个完全相同的零 logits 和 PPO ratio `1.0`，同时 state/input gradient 为
+  `[0.5, -1.0]`（非零）；因此该测试修正保留精确 behavior 概率并真实覆盖梯度回传。
+- 当前执行层仍拒绝已获人类授权的 `git add` 提权请求，因此没有绕过 Git 去远端改代码。
+  服务器干净 worktree 已只读确认仍为 `dev@7f12c79f` 且与 `origin/dev` 一致；必须先把
+  本地三文件修正提交并通过 Git 同步，才能重跑 focused suite 和放行 GPU gate。
 
 ## 待确认问题
 

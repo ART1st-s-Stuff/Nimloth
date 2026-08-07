@@ -135,12 +135,16 @@ class _PlannerAlgorithm:
         *,
         return_target: torch.Tensor,
         old_action_value: torch.Tensor,
+        old_policy_log_prob: torch.Tensor | None,
+        policy_advantage: torch.Tensor | None,
         total_transitions: int,
         dino_grid_target: torch.Tensor,
         include_world_model: bool,
     ):  # type: ignore[no-untyped-def]
         assert total_transitions == 2
         assert return_target.ndim == 0
+        assert old_policy_log_prob is None
+        assert policy_advantage is None
         torch.testing.assert_close(old_action_value, torch.tensor(0.5))
         self.include_world_model.append(include_world_model)
         if include_world_model:
@@ -209,6 +213,7 @@ def _training_loop(
         ),
         predictor=SimpleNamespace(history_size=1),
         value_head=SimpleNamespace(ppo_epochs=2),
+        planner_policy=SimpleNamespace(enabled=False),
         training=SimpleNamespace(seed=1, log_interval=1, save_interval=2),
         validation=SimpleNamespace(enabled=False, interval=1),
     )
