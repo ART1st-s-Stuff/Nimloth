@@ -4336,3 +4336,19 @@
   13,090,012,345-byte `rl_state.pt`及所有必需组件。15:26:16+08 outer controller在
   同一`dgx-01 + dgx-16` allocation启动标准held-out evaluation：`base/common_sense`
   各60条、seed1..60、总计120条。
+
+## 2026-08-07：ID143 step20与标准held-out 120全部完成
+
+- evaluation strict merge为精确120 trajectories/2,151 transitions；`base`和
+  `common_sense`各60条，record IDs/seeds分别精确1..60，`eval_done.flag=ALL_OK`。
+- held-out overall success为21/120=0.175，avg reward -0.43991667，avg steps17.925。
+  `base` 11/60=0.18333333（avg reward -0.4165）；`common_sense` 10/60=0.16666667
+  （avg reward -0.46333333）。这是标准policy-quality测量，但没有matched baseline时
+  不单独宣称训练带来提升。
+- W&B train `d2uqjplu`和eval `ddnebwck`均通过API实时验证为`finished`。
+  Job`509368`及全部33个Slurm steps均`COMPLETED 0:0`，总elapsed1:27:57；
+  `squeue` 无该job，allocation已释放。服务器runtime source仍为精确`e75e8942`
+  tracked-clean，VAGEN/LeWM pins未变。
+- 远程output README已补全终态命令、lineage、metrics、分析与resume说明。本实验
+  已完成，不需要resume；未来续训必须使用新identity、从committed step20
+  `train/final`开始，并选择不重叠的fresh training seeds。

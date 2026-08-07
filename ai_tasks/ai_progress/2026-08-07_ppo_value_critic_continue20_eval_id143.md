@@ -208,3 +208,40 @@ name, online W&B mode, and a fresh renderer attempt root ending
   on the same `dgx-01 + dgx-16` allocation: 60 `base` plus 60 `common_sense`
   episodes, per-split seeds 1--60, exactly 120 total. Evaluation success and
   `eval_done.flag` remain pending.
+
+## Terminal result
+
+- Evaluation strict merge completed `ALL_OK` with exactly 120 trajectories and
+  2,151 transitions. `base` and `common_sense` each contain exactly 60 unique
+  record IDs/seeds 1--60; `evaluation/iter_0020/eval_done.flag` is present.
+- Standard held-out results are:
+
+  | split | success | rate | average reward | average steps |
+  | --- | ---: | ---: | ---: | ---: |
+  | base | 11/60 | 0.1833333333 | -0.4165 | 17.85 |
+  | common_sense | 10/60 | 0.1666666667 | -0.4633333333 | 18.0 |
+  | overall | 21/120 | 0.175 | -0.4399166667 | 17.925 |
+
+- W&B training run [`d2uqjplu`](https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth-rl/runs/d2uqjplu)
+  and evaluation run [`ddnebwck`](https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth-rl/runs/ddnebwck)
+  were both verified through the API as `finished`, with global/eval iteration
+  20 and matching terminal metrics.
+- Slurm Job `509368` and all 33 recorded steps completed `0:0`; job elapsed time
+  was `01:27:57`. It is absent from `squeue`, so the 4+4 allocation has been
+  released. Direct post-allocation SSH to the compute nodes was unavailable;
+  Slurm terminal state and cgroup teardown are the cleanup evidence.
+- The final `rl_state.pt` audit confirms global step/iteration 20, objective
+  `receding_horizon_decision_state_ppo_value_v1`, clip 0.2, four PPO critic
+  epochs, greedy horizon one, zero truncated bootstrap, training world size
+  four and replicated optimizer state. It has 526 optimizer state entries and
+  three parameter groups. Complete checkpoint files were verified in
+  `train/final`, `latest` and `iter_0020`.
+- The remote output README now contains the terminal command, runtime pins,
+  checkpoint/consumption lineage, metrics, analysis and recovery status. The
+  experiment achieved the requested step-20 and held-out-evaluation objectives
+  and requires no resume. Any later continuation must use a new identity and
+  fresh non-overlapping seeds from the committed step-20 `train/final`.
+- The held-out 17.5% is a valid policy-quality measurement. It does not by
+  itself establish improvement without a matched baseline evaluated under this
+  exact 120-episode contract. No memory was modified because current higher-level
+  instructions require an explicit human request for memory updates.
