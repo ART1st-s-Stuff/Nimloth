@@ -24,11 +24,12 @@ set -euo pipefail
 : "${FRESH_ROLLOUT_MANIFEST:?FRESH_ROLLOUT_MANIFEST is required}"
 
 PYTHON=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
-CONFIG=${RUNTIME_REPO}/configs/training/rl/planner_greedy_h1_full.yaml
+CONFIG=${RL_CONFIG:-${RUNTIME_REPO}/configs/training/rl/planner_greedy_h1_full.yaml}
 GATE=${RUNTIME_REPO}/experiments/training/rl/gpu_gate_ppo_value_critic.py
 WM_CHECKPOINT=${SFT2_CHECKPOINT}/wm_predictor
 STATE_PROJ_CHECKPOINT=${SFT2_CHECKPOINT}/state_proj.pt
 VALUE_HEAD_CHECKPOINT=${SFT2_CHECKPOINT}/value_head
+PLANNER_POLICY_HEAD_CHECKPOINT=${PLANNER_POLICY_HEAD_CHECKPOINT:-}
 MASTER_PORT=$((21000 + SLURM_JOB_ID % 20000))
 MINIMUM_STATE_TOKENS=${MINIMUM_STATE_TOKENS:-14000}
 
@@ -43,6 +44,13 @@ test -f "${STATE_PROJ_CHECKPOINT}"
 test -f "${VALUE_HEAD_CHECKPOINT}/value_head.pt"
 test -s "${TRAJECTORY_JSONL}"
 test -s "${FRESH_ROLLOUT_MANIFEST}"
+POLICY_HEAD_ARGS=()
+if [[ -n "${PLANNER_POLICY_HEAD_CHECKPOINT}" ]]; then
+  test -s "${PLANNER_POLICY_HEAD_CHECKPOINT}/planner_policy_head.pt"
+  POLICY_HEAD_ARGS+=(
+    --planner-policy-head-checkpoint "${PLANNER_POLICY_HEAD_CHECKPOINT}"
+  )
+fi
 test ! -e "${OUTPUT_DIR}"
 mkdir -p "${OUTPUT_DIR}"
 
@@ -77,6 +85,7 @@ CUDA_VISIBLE_DEVICES=0 "${PYTHON}" "${GATE}" \
   --wm-checkpoint "${WM_CHECKPOINT}" \
   --state-proj-checkpoint "${STATE_PROJ_CHECKPOINT}" \
   --value-head-checkpoint "${VALUE_HEAD_CHECKPOINT}" \
+  "${POLICY_HEAD_ARGS[@]}" \
   --trajectory-jsonl "${TRAJECTORY_JSONL}" \
   --fresh-rollout-manifest "${FRESH_ROLLOUT_MANIFEST}" \
   --output-dir "${OUTPUT_DIR}" \
@@ -96,6 +105,7 @@ NIMLOTH_DDP_GPU_STRIDE=2 CUDA_VISIBLE_DEVICES=0,1,2,3 "${PYTHON}" \
   --wm-checkpoint "${WM_CHECKPOINT}" \
   --state-proj-checkpoint "${STATE_PROJ_CHECKPOINT}" \
   --value-head-checkpoint "${VALUE_HEAD_CHECKPOINT}" \
+  "${POLICY_HEAD_ARGS[@]}" \
   --trajectory-jsonl "${TRAJECTORY_JSONL}" \
   --fresh-rollout-manifest "${FRESH_ROLLOUT_MANIFEST}" \
   --output-dir "${OUTPUT_DIR}" \

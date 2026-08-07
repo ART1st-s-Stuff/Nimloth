@@ -20,6 +20,7 @@ ITERATION_RUNNER=${ITERATION_RUNNER:-${REPO}/experiments/training/rl/run_vllm_on
 EVALUATION_RUNNER=${EVALUATION_RUNNER:-${ITERATION_RUNNER}}
 INITIAL_MODEL=${INITIAL_MODEL:?set INITIAL_MODEL to the complete SFT2 HF checkpoint}
 INITIAL_WM_CKPT=${INITIAL_WM_CKPT:-${INITIAL_MODEL}}
+INITIAL_PLANNER_POLICY_HEAD_CKPT=${INITIAL_PLANNER_POLICY_HEAD_CKPT:-}
 INITIAL_RESUME_CHECKPOINT=${INITIAL_RESUME_CHECKPOINT:-}
 REFERENCE_MODEL=${REFERENCE_MODEL:-${INITIAL_MODEL}}
 WANDB_PROJECT=${WANDB_PROJECT:-nimloth-rl}
@@ -47,7 +48,7 @@ esac
   exit 1
 }
 
-read -r CONFIG_ITERATIONS CONFIG_EPISODES CONFIG_LOG_INTERVAL TRAIN_DATASET_COUNT VALIDATION_ENABLED VALIDATION_EXTERNAL VALIDATION_INTERVAL VALIDATION_ENVS EVAL_DATASETS_CSV < <(
+read -r CONFIG_ITERATIONS CONFIG_EPISODES CONFIG_LOG_INTERVAL TRAIN_DATASET_COUNT VALIDATION_ENABLED VALIDATION_EXTERNAL VALIDATION_INTERVAL VALIDATION_ENVS EVAL_DATASETS_CSV PLANNER_POLICY_ENABLED < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -63,9 +64,16 @@ print(
     config.validation.interval,
     config.validation.envs,
     ",".join(config.rollout.eval_datasets),
+    str(config.planner_policy.enabled).lower(),
 )
 ' "${RL_CONFIG}"
 )
+if [[ "${PLANNER_POLICY_ENABLED}" == true ]]; then
+  [[ -s "${INITIAL_PLANNER_POLICY_HEAD_CKPT}/planner_policy_head.pt" ]] || {
+    echo "planner policy run requires INITIAL_PLANNER_POLICY_HEAD_CKPT" >&2
+    exit 1
+  }
+fi
 TOTAL_ITERATIONS=${TOTAL_ITERATIONS:-${CONFIG_ITERATIONS}}
 [[ "${TOTAL_ITERATIONS}" == "${CONFIG_ITERATIONS}" ]] || {
   echo "TOTAL_ITERATIONS disagrees with rl.iterations" >&2
@@ -191,6 +199,7 @@ run_due_evaluation() {
     RUN_OUT="${RUN_OUT}"
     MODEL="${evaluated_checkpoint}"
     WM_CKPT="${evaluated_checkpoint}"
+    PLANNER_POLICY_HEAD_CKPT="${evaluated_checkpoint}/planner_policy_head"
     REFERENCE_MODEL="${REFERENCE_MODEL}"
     RESUME_CHECKPOINT="${evaluated_checkpoint}"
     WANDB_PROJECT="${WANDB_PROJECT}"
@@ -239,6 +248,7 @@ for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
   if (( iteration == FIRST_ITERATION )); then
     model=${INITIAL_MODEL}
     wm_checkpoint=${INITIAL_WM_CKPT}
+    planner_policy_head_checkpoint=${INITIAL_PLANNER_POLICY_HEAD_CKPT}
     resume_checkpoint=${INITIAL_RESUME_CHECKPOINT}
   else
     snapshot=$(PYTHONPATH="${REPO}/src" "${PYTHON}" \
@@ -246,6 +256,7 @@ for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
       prepare-policy "${RUN_OUT}" "${iteration}")
     model=${snapshot}
     wm_checkpoint=${snapshot}
+    planner_policy_head_checkpoint=${snapshot}/planner_policy_head
     resume_checkpoint=${snapshot}
   fi
 
@@ -261,6 +272,7 @@ for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
     RUN_OUT="${RUN_OUT}"
     MODEL="${model}"
     WM_CKPT="${wm_checkpoint}"
+    PLANNER_POLICY_HEAD_CKPT="${planner_policy_head_checkpoint}"
     REFERENCE_MODEL="${REFERENCE_MODEL}"
     RESUME_CHECKPOINT="${resume_checkpoint}"
     WANDB_PROJECT="${WANDB_PROJECT}"

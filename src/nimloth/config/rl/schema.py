@@ -111,6 +111,18 @@ class ValueHeadConfig:
 
 
 @dataclass(frozen=True)
+class PlannerPolicyConfig:
+    """Action-level PPO policy owned by PlannerPolicyHead."""
+
+    enabled: bool = False
+    lr: float = 1e-4
+    clip_ratio: float = 0.2
+    entropy_coeff: float = 0.0
+    temperature: float = 1.0
+    ppo_epochs: int = 1
+
+
+@dataclass(frozen=True)
 class RLLoopConfig:
     iterations: int = 1000
     envs_per_iteration: int = 8
@@ -163,6 +175,7 @@ class RLConfig:
     gradient: GradientConfig
     predictor: PredictorConfig
     value_head: ValueHeadConfig
+    planner_policy: PlannerPolicyConfig
     rollout: RolloutConfig
     rl: RLLoopConfig
     validation: ValidationConfig
@@ -186,6 +199,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "gradient",
         "predictor",
         "value_head",
+        "planner_policy",
         "rollout",
         "rl",
         "validation",
@@ -245,6 +259,18 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         raw,
         "value_head",
         {"lr", "rank_margin", "lambda_rank", "ppo_clip_range", "ppo_epochs"},
+    )
+    planner_policy = _section(
+        raw,
+        "planner_policy",
+        {
+            "enabled",
+            "lr",
+            "clip_ratio",
+            "entropy_coeff",
+            "temperature",
+            "ppo_epochs",
+        },
     )
     loop = _section(
         raw,
@@ -442,12 +468,42 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         if "ppo_epochs" in value_head
         else 1
     )
+    planner_policy_config = PlannerPolicyConfig(
+        enabled=_boolean(
+            planner_policy.get("enabled", False),
+            "planner_policy.enabled",
+        ),
+        lr=_positive_float(
+            planner_policy.get("lr", 1e-4),
+            "planner_policy.lr",
+        ),
+        clip_ratio=float(planner_policy.get("clip_ratio", 0.2)),
+        entropy_coeff=_positive_float(
+            planner_policy.get("entropy_coeff", 0.0),
+            "planner_policy.entropy_coeff",
+            allow_zero=True,
+        ),
+        temperature=_positive_float(
+            planner_policy.get("temperature", 1.0),
+            "planner_policy.temperature",
+        ),
+        ppo_epochs=(
+            _positive_int(
+                planner_policy["ppo_epochs"],
+                "planner_policy.ppo_epochs",
+            )
+            if "ppo_epochs" in planner_policy
+            else 1
+        ),
+    )
+    if not 0.0 < planner_policy_config.clip_ratio < 1.0:
+        raise ValueError("planner_policy.clip_ratio must be in (0, 1)")
     agent_config = parse_agent_config(raw.get("agent"))
     if agent_config.planning.enabled:
         if actor_config.enabled:
             raise ValueError(
                 "world-model planning owns behavior; actor.enabled must be false "
-                "because Qwen receives value gradients instead of policy supervision"
+                "because planner heads own action selection and supervision"
             )
         raw_agent = raw.get("agent")
         raw_planning = (
@@ -503,20 +559,61 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             raise ValueError(
                 "planner episode training requires value_head.lambda_rank=0"
             )
-        if value_ppo_clip_range is None or "ppo_epochs" not in value_head:
-            raise ValueError(
-                "planner PPO critic requires explicit value_head.ppo_clip_range "
-                "and value_head.ppo_epochs"
+        if planner_policy_config.enabled:
+            if agent_config.planning.search_mode != "policy":
+                raise ValueError(
+                    "planner_policy.enabled=true requires "
+                    "agent.planning.search_mode=policy"
+                )
+            if agent_config.planning.horizon != 1:
+                raise ValueError("PlannerPolicyHead PPO currently requires horizon=1")
+            required_policy_fields = {
+                "enabled",
+                "lr",
+                "clip_ratio",
+                "entropy_coeff",
+                "temperature",
+                "ppo_epochs",
+            }
+            missing_policy_fields = sorted(
+                required_policy_fields - set(planner_policy)
             )
-        if value_ppo_epochs < 2:
-            raise ValueError(
-                "planner PPO critic requires value_head.ppo_epochs>=2 so frozen "
-                "old-value clipping can affect an update"
-            )
+            if missing_policy_fields:
+                raise ValueError(
+                    "PlannerPolicyHead PPO requires explicit planner_policy fields: "
+                    + ", ".join(missing_policy_fields)
+                )
+            if planner_policy_config.ppo_epochs < 2:
+                raise ValueError(
+                    "PlannerPolicyHead PPO requires planner_policy.ppo_epochs>=2"
+                )
+            if value_ppo_clip_range is not None or "ppo_epochs" in value_head:
+                raise ValueError(
+                    "PlannerPolicyHead PPO uses ordinary critic regression; "
+                    "remove value_head.ppo_clip_range and value_head.ppo_epochs"
+                )
+        else:
+            if agent_config.planning.search_mode == "policy":
+                raise ValueError(
+                    "agent.planning.search_mode=policy requires "
+                    "planner_policy.enabled=true"
+                )
+            if value_ppo_clip_range is None or "ppo_epochs" not in value_head:
+                raise ValueError(
+                    "legacy planner critic clipping requires explicit "
+                    "value_head.ppo_clip_range and value_head.ppo_epochs"
+                )
+            if value_ppo_epochs < 2:
+                raise ValueError(
+                    "legacy planner critic clipping requires "
+                    "value_head.ppo_epochs>=2"
+                )
     elif value_ppo_clip_range is not None or "ppo_epochs" in value_head:
         raise ValueError(
             "value_head PPO critic fields are only valid for planner training"
         )
+    elif planner_policy_config.enabled:
+        raise ValueError("planner_policy.enabled=true requires planner training")
 
     rollout_config = parse_rollout_config(raw.get("rollout"))
     if (
@@ -655,6 +752,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             ppo_clip_range=value_ppo_clip_range,
             ppo_epochs=value_ppo_epochs,
         ),
+        planner_policy=planner_policy_config,
         rollout=rollout_config,
         rl=RLLoopConfig(
             iterations=_positive_int(loop.get("iterations", 1000), "rl.iterations"),

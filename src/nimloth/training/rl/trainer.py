@@ -30,7 +30,11 @@ from nimloth.backbone import (
 from nimloth.backbone.qwen25vl.checkpoint import find_visual_module
 from nimloth.config.rl import RLConfig
 from nimloth.rollout import FreshJSONLRolloutCollector, RolloutCollector
-from nimloth.training.rl.algorithm import PLANNER_TRAINING_OBJECTIVE, RLAlgorithm
+from nimloth.training.rl.algorithm import (
+    PLANNER_POLICY_TRAINING_OBJECTIVE,
+    PLANNER_TRAINING_OBJECTIVE,
+    RLAlgorithm,
+)
 from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
@@ -55,6 +59,7 @@ from nimloth.util.optim import OptimizationRuntime
 from nimloth.wm import (
     LeWMConfig,
     LatentWMPredictor,
+    PlannerPolicyHead,
     StateProjector,
     SequenceSIGReg,
     ValueHead,
@@ -193,10 +198,26 @@ def _build_grid_world_model(
         emb_dim=predictor.config.emb_dim,
         map_location="cpu",
     )
+    planner_policy_head = None
+    if config.planner_policy.enabled:
+        if args.planner_policy_head_checkpoint is None and not args.resume:
+            raise ValueError(
+                "fresh planner-policy RL requires "
+                "--planner-policy-head-checkpoint"
+            )
+        planner_policy_head = PlannerPolicyHead(emb_dim=predictor.config.emb_dim)
+        if args.planner_policy_head_checkpoint is not None:
+            loaded_policy_head = PlannerPolicyHead.load_checkpoint(
+                args.planner_policy_head_checkpoint,
+                emb_dim=predictor.config.emb_dim,
+                map_location="cpu",
+            )
+            planner_policy_head.load_state_dict(loaded_policy_head.state_dict())
     world_model = GridWorldModel(
         state_proj=state_proj,
         wm_predictor=predictor,
         value_head=value_head,
+        planner_policy_head=planner_policy_head,
     )
     if config.freeze.state_proj:
         world_model.state_proj.requires_grad_(False).eval()
@@ -255,6 +276,14 @@ def _build_world_model(
         lewm_emb_dim=wm_predictor.emb_dim,
     )
     value_head = ValueHead(emb_dim=wm_predictor.emb_dim)
+    planner_policy_head = None
+    if config.planner_policy.enabled:
+        if args.planner_policy_head_checkpoint is None and not args.resume:
+            raise ValueError(
+                "fresh planner-policy RL requires "
+                "--planner-policy-head-checkpoint"
+            )
+        planner_policy_head = PlannerPolicyHead(emb_dim=wm_predictor.emb_dim)
 
     if args.state_proj_checkpoint is not None:
         state_proj.load_state_dict(
@@ -270,6 +299,16 @@ def _build_world_model(
             emb_dim=wm_predictor.emb_dim,
         )
         value_head.load_state_dict(loaded_head.state_dict())
+    if args.planner_policy_head_checkpoint is not None:
+        if planner_policy_head is None:
+            raise ValueError(
+                "--planner-policy-head-checkpoint requires planner_policy.enabled"
+            )
+        loaded_policy_head = PlannerPolicyHead.load_checkpoint(
+            args.planner_policy_head_checkpoint,
+            emb_dim=wm_predictor.emb_dim,
+        )
+        planner_policy_head.load_state_dict(loaded_policy_head.state_dict())
 
     if config.freeze.state_proj:
         state_proj.eval()
@@ -280,6 +319,11 @@ def _build_world_model(
         state_proj=state_proj.to(device),
         wm_predictor=wm_predictor.to(device),
         value_head=value_head.to(device),
+        planner_policy_head=(
+            planner_policy_head.to(device)
+            if planner_policy_head is not None
+            else None
+        ),
     )
 
 
@@ -396,16 +440,23 @@ def _wrap_world_model_ddp(
     state_proj = _wrap_trainable_ddp(world_model.state_proj, device=device)
     wm_predictor = _wrap_trainable_ddp(world_model.wm_predictor, device=device)
     value_head = _wrap_trainable_ddp(world_model.value_head, device=device)
+    planner_policy_head = (
+        _wrap_trainable_ddp(world_model.planner_policy_head, device=device)
+        if world_model.planner_policy_head is not None
+        else None
+    )
     if isinstance(world_model, GridWorldModel):
         return GridWorldModel(
             state_proj=state_proj,  # type: ignore[arg-type]
             wm_predictor=wm_predictor,  # type: ignore[arg-type]
             value_head=value_head,  # type: ignore[arg-type]
+            planner_policy_head=planner_policy_head,
         )
     return WorldModel(
         state_proj=state_proj,
         wm_predictor=wm_predictor,
         value_head=value_head,
+        planner_policy_head=planner_policy_head,
     )
 
 
@@ -517,6 +568,20 @@ def _build_optimizer(
             parameter_groups.append(
                 {"params": parameters, "lr": learning_rate, "name": name}
             )
+    if world_model.planner_policy_head is not None:
+        policy_parameters = [
+            parameter
+            for parameter in world_model.planner_policy_head.parameters()
+            if parameter.requires_grad
+        ]
+        if policy_parameters:
+            parameter_groups.append(
+                {
+                    "params": policy_parameters,
+                    "lr": config.planner_policy.lr,
+                    "name": "planner_policy_head",
+                }
+            )
     if token_value_head is not None:
         assert config.token_credit.value_lr is not None
         token_value_parameters = [
@@ -553,6 +618,7 @@ def _load_resume_state(
     expected_planner_config: dict[str, Any],
     expected_planner_training_objective: str | None,
     expected_planner_value_config: dict[str, Any] | None,
+    expected_planner_policy_config: dict[str, Any] | None = None,
     expected_reference_kl_config: dict[str, Any],
     expected_train_world_model: bool,
 ) -> RLResumeState:
@@ -620,6 +686,8 @@ def _load_resume_state(
         raise ValueError("resume planner training objective mismatch")
     if state.get("planner_value_config") != expected_planner_value_config:
         raise ValueError("resume planner value config mismatch")
+    if state.get("planner_policy_config") != expected_planner_policy_config:
+        raise ValueError("resume planner policy config mismatch")
     saved_reference_kl_config = state.get(
         "reference_kl_config",
         {"weight": 0.0, "type": None},
@@ -696,6 +764,8 @@ def train_rl(
             wm_checkpoint=args.wm_checkpoint,
             state_proj_checkpoint=args.state_proj_checkpoint,
             value_head_checkpoint=args.value_head_checkpoint,
+            planner_policy_enabled=config.planner_policy.enabled,
+            planner_policy_head_checkpoint=args.planner_policy_head_checkpoint,
         )
 
     rank, world, _, device = setup_dist(
@@ -781,6 +851,8 @@ def train_rl(
             broadcast_module_state(world_model.state_proj)
             broadcast_module_state(world_model.wm_predictor)
             broadcast_module_state(world_model.value_head)
+            if world_model.planner_policy_head is not None:
+                broadcast_module_state(world_model.planner_policy_head)
             if token_value_head is not None:
                 broadcast_module_state(token_value_head)
         vision_ema_enabled = resolve_vision_ema(args, vision_tune)
@@ -857,12 +929,21 @@ def train_rl(
             expected_truncated_bootstrap=config.rl.truncated_bootstrap,
             expected_planner_config=asdict(config.agent.planning),
             expected_planner_training_objective=(
-                PLANNER_TRAINING_OBJECTIVE
+                (
+                    PLANNER_POLICY_TRAINING_OBJECTIVE
+                    if config.planner_policy.enabled
+                    else PLANNER_TRAINING_OBJECTIVE
+                )
                 if planning_enabled
                 else None
             ),
             expected_planner_value_config=(
                 asdict(config.value_head) if planning_enabled else None
+            ),
+            expected_planner_policy_config=(
+                asdict(config.planner_policy)
+                if config.planner_policy.enabled
+                else None
             ),
             expected_reference_kl_config={
                 "weight": config.actor.reference_kl_loss_weight,
@@ -888,6 +969,8 @@ def train_rl(
             wm_checkpoint=args.wm_checkpoint,
             state_proj_checkpoint=args.state_proj_checkpoint,
             value_head_checkpoint=args.value_head_checkpoint,
+            planner_policy_enabled=config.planner_policy.enabled,
+            planner_policy_head_checkpoint=args.planner_policy_head_checkpoint,
         )
         if needs_online_policy:
             if planning_enabled:
@@ -955,6 +1038,10 @@ def train_rl(
             value_rank_margin=config.value_head.rank_margin,
             value_rank_weight=config.value_head.lambda_rank,
             value_ppo_clip_range=config.value_head.ppo_clip_range,
+            planner_policy_enabled=config.planner_policy.enabled,
+            planner_policy_clip_ratio=config.planner_policy.clip_ratio,
+            planner_policy_entropy_weight=config.planner_policy.entropy_coeff,
+            planner_policy_temperature=config.planner_policy.temperature,
             ppo_clip_ratio=config.actor.clip_ratio,
             entropy_weight=config.actor.entropy_coeff,
             credit_assignment=config.actor.credit_assignment,

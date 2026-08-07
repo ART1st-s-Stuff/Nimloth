@@ -41,8 +41,9 @@ def validate_collector_configuration(
     ):
         raise ValueError(
             "planner PPO critic requires fresh trajectories from the current "
-            "Qwen/StateProjector/ValueHead checkpoints; static JSONL cannot "
-            "provide a valid frozen old value"
+            "Qwen/StateProjector/ValueHead and, when enabled, PlannerPolicyHead "
+            "checkpoints; static JSONL cannot provide valid frozen old-policy "
+            "statistics"
         )
     if validation_enabled and eval_collector is None:
         raise ValueError("validation.enabled requires a separate eval collector")
@@ -79,6 +80,8 @@ def validate_planning_initialization(
     wm_checkpoint: Path | None,
     state_proj_checkpoint: Path | None,
     value_head_checkpoint: Path | None,
+    planner_policy_enabled: bool = False,
+    planner_policy_head_checkpoint: Path | None = None,
 ) -> None:
     """在线规划不能用尚未训练的随机 WM/Value 模块选择真实动作。"""
 
@@ -92,10 +95,19 @@ def validate_planning_initialization(
             value_head_checkpoint,
         )
     )
+    if planner_policy_enabled:
+        explicit_modules = (
+            explicit_modules and planner_policy_head_checkpoint is not None
+        )
     if not resume_loaded and not explicit_modules:
         raise ValueError(
             "online WM planning requires a resumed RL checkpoint or explicit "
             "--wm-checkpoint, --state-proj-checkpoint and --value-head-checkpoint"
+            + (
+                ", plus --planner-policy-head-checkpoint"
+                if planner_policy_enabled
+                else ""
+            )
         )
 
 

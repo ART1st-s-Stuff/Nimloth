@@ -22,6 +22,7 @@ from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
+from nimloth.wm.planner_policy_head import PlannerPolicyHead
 from nimloth.wm.model import WorldModel
 from nimloth.wm.grid import TemporalSpatialGridPredictor
 from nimloth.training.rl.token_value import TokenValueHead
@@ -77,6 +78,7 @@ def save_rl_checkpoint(
     planner_config: dict[str, Any] | None = None,
     planner_training_objective: str | None = None,
     planner_value_config: dict[str, Any] | None = None,
+    planner_policy_config: dict[str, Any] | None = None,
     reference_kl_config: dict[str, Any] | None = None,
     train_world_model: bool = True,
 ) -> None:
@@ -84,6 +86,7 @@ def save_rl_checkpoint(
     state_proj = agent.wm.state_proj
     wm_predictor = agent.wm.wm_predictor
     value_head = agent.wm.value_head
+    planner_policy_head = agent.wm.planner_policy_head
     rank, world = _rank_world()
     fsdp_model = _is_fsdp(model)
 
@@ -115,6 +118,13 @@ def save_rl_checkpoint(
         torch.save(_unwrap(state_proj).state_dict(), out_dir / "state_proj.pt")
         _unwrap(wm_predictor).save_checkpoint(out_dir / "wm_predictor")
         _unwrap(value_head).save_checkpoint(out_dir / "value_head")
+        if planner_policy_head is not None:
+            policy_head = _unwrap(planner_policy_head)
+            if not isinstance(policy_head, PlannerPolicyHead):
+                raise TypeError(
+                    "planner_policy_head must unwrap to PlannerPolicyHead"
+                )
+            policy_head.save_checkpoint(out_dir / "planner_policy_head")
         if token_value_head is not None:
             token_head = _unwrap(token_value_head)
             if not isinstance(token_head, TokenValueHead):
@@ -151,6 +161,7 @@ def save_rl_checkpoint(
             "planner_config": planner_config,
             "planner_training_objective": planner_training_objective,
             "planner_value_config": planner_value_config,
+            "planner_policy_config": planner_policy_config,
             "reference_kl_config": reference_kl_config,
             "train_world_model": bool(train_world_model),
         }
@@ -217,6 +228,7 @@ def load_rl_wm_checkpoint(
     state_proj = wm.state_proj
     wm_predictor = wm.wm_predictor
     value_head = wm.value_head
+    planner_policy_head = wm.planner_policy_head
     sp_path = ckpt_dir / "state_proj.pt"
     if sp_path.is_file():
         _unwrap(state_proj).load_state_dict(
@@ -243,6 +255,25 @@ def load_rl_wm_checkpoint(
             head_dir, emb_dim=head.net[0].in_features, map_location=device
         )
         head.load_state_dict(loaded_head.state_dict())
+    policy_head_dir = ckpt_dir / "planner_policy_head"
+    if planner_policy_head is not None:
+        if not policy_head_dir.is_dir():
+            raise FileNotFoundError(
+                f"resume checkpoint is missing PlannerPolicyHead: {policy_head_dir}"
+            )
+        policy_head = _unwrap(planner_policy_head)
+        if not isinstance(policy_head, PlannerPolicyHead):
+            raise TypeError("world model policy head must unwrap to PlannerPolicyHead")
+        loaded_policy_head = PlannerPolicyHead.load_checkpoint(
+            policy_head_dir,
+            emb_dim=policy_head.net[0].in_features,
+            map_location=device,
+        )
+        policy_head.load_state_dict(loaded_policy_head.state_dict())
+    elif policy_head_dir.is_dir():
+        raise ValueError(
+            "resume checkpoint contains PlannerPolicyHead but runtime disabled it"
+        )
 
     state_path = ckpt_dir / "rl_state.pt"
     if state_path.is_file():

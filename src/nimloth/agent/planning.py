@@ -479,20 +479,45 @@ class PlanningPolicy:
         mcts_num_simulations: int | None = None,
         mcts_exploration_constant: float | None = None,
         planner_device: torch.device,
+        policy_temperature: float | None = None,
+        sample_policy: bool = False,
+        policy_generator: torch.Generator | None = None,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         if turn_policy.credit_assignment not in {"turn", "token"}:
             raise ValueError("planner policy requires real Qwen response generation")
         self.turn_policy = turn_policy
         self.world_model = world_model
-        self.planner = WorldModelPlanner(
-            world_model,
-            horizon=horizon,
-            search_mode=search_mode,
-            beam_width=beam_width,
-            mcts_num_simulations=mcts_num_simulations,
-            mcts_exploration_constant=mcts_exploration_constant,
-        )
+        self.horizon = int(horizon)
+        self.search_mode = search_mode
+        self.policy_temperature = policy_temperature
+        self.sample_policy = bool(sample_policy)
+        self.policy_generator = policy_generator
+        if search_mode == "policy":
+            if horizon != 1:
+                raise ValueError("PlannerPolicyHead action selection requires horizon=1")
+            if (
+                beam_width is not None
+                or mcts_num_simulations is not None
+                or mcts_exploration_constant is not None
+            ):
+                raise ValueError("PlannerPolicyHead action selection has no search parameters")
+            if policy_temperature is None or policy_temperature <= 0.0:
+                raise ValueError("PlannerPolicyHead requires positive policy_temperature")
+            if world_model.planner_policy_head is None:
+                raise ValueError("policy search requires a PlannerPolicyHead")
+            self.planner: WorldModelPlanner | None = None
+        else:
+            if policy_temperature is not None or sample_policy or policy_generator is not None:
+                raise ValueError("policy sampling arguments require search_mode=policy")
+            self.planner = WorldModelPlanner(
+                world_model,
+                horizon=horizon,
+                search_mode=search_mode,
+                beam_width=beam_width,
+                mcts_num_simulations=mcts_num_simulations,
+                mcts_exploration_constant=mcts_exploration_constant,
+            )
         self.planner_device = planner_device
         self._progress_callback = progress_callback
         predictor = world_model.wm_predictor
@@ -534,13 +559,67 @@ class PlanningPolicy:
                 dtype=torch.long,
                 device=state.device,
             )
-            plan = self.planner.plan(state_history, previous_actions)
+            if self.search_mode == "policy":
+                plan, behavior_log_probs = self._policy_plan(state)
+            else:
+                assert self.planner is not None
+                plan = self.planner.plan(state_history, previous_actions)
+                behavior_log_probs = None
             action_index = int(plan.selected_action_index)
             self._action_history.append(action_index)
         if self._progress_callback is not None:
             self._progress_callback("planner_done")
 
-        return self._decision_from_plan(generated, plan, action_index, state)
+        return self._decision_from_plan(
+            generated,
+            plan,
+            action_index,
+            state,
+            behavior_log_probs=behavior_log_probs,
+        )
+
+    def _policy_plan(
+        self,
+        state: torch.Tensor,
+    ) -> tuple[WorldModelPlan, tuple[float, ...]]:
+        assert self.policy_temperature is not None
+        logits = self.world_model.predict_action_logits(state)
+        if logits.ndim != 2 or logits.shape[0] != 1:
+            raise ValueError(
+                "PlannerPolicyHead must return one action-logit row, "
+                f"got {tuple(logits.shape)}"
+            )
+        if not torch.isfinite(logits).all():
+            raise ValueError("PlannerPolicyHead produced non-finite logits")
+        scaled_logits = logits / self.policy_temperature
+        log_probs = torch.log_softmax(scaled_logits, dim=-1)
+        if self.sample_policy:
+            probabilities = log_probs.exp().squeeze(0).detach().cpu()
+            action_index = int(
+                torch.multinomial(
+                    probabilities,
+                    num_samples=1,
+                    generator=self.policy_generator,
+                ).item()
+            )
+        else:
+            action_index = int(log_probs.argmax(dim=-1).item())
+        action_count = int(logits.shape[-1])
+        sequences = torch.arange(
+            action_count,
+            dtype=torch.long,
+            device=logits.device,
+        ).unsqueeze(-1)
+        scores = logits.squeeze(0)
+        return (
+            WorldModelPlan(
+                candidate_sequences=sequences,
+                candidate_scores=scores,
+                root_action_scores=scores,
+                selected_action_index=action_index,
+            ),
+            tuple(float(value) for value in log_probs.squeeze(0).cpu().tolist()),
+        )
 
     def _project_hidden(self, latent_hidden: torch.Tensor) -> torch.Tensor:
         state = self.world_model.project_state(
@@ -564,12 +643,15 @@ class PlanningPolicy:
         plan: WorldModelPlan,
         action_index: int,
         state: torch.Tensor,
+        *,
+        behavior_log_probs: tuple[float, ...] | None = None,
     ) -> PolicyDecision:
         action_count = int(plan.root_action_scores.shape[0])
-        behavior_log_probs = tuple(
-            0.0 if index == action_index else float("-inf")
-            for index in range(action_count)
-        )
+        if behavior_log_probs is None:
+            behavior_log_probs = tuple(
+                0.0 if index == action_index else float("-inf")
+                for index in range(action_count)
+            )
         world_model_state = state.squeeze(0).detach().cpu().float().clone()
         qwen_decision = generated.qwen_decision
 
@@ -604,9 +686,9 @@ class PlanningPolicy:
                 float(value) for value in plan.root_action_scores.cpu().tolist()
             ),
             executed_action_index=action_index,
-            horizon=self.planner.horizon,
-            search_mode=self.planner.search_mode,
-            beam_width=self.planner.beam_width,
+            horizon=self.horizon,
+            search_mode=self.search_mode,
+            beam_width=self.planner.beam_width if self.planner is not None else None,
             candidate_visit_counts=(
                 tuple(
                     int(value)
@@ -623,8 +705,24 @@ class PlanningPolicy:
                 if plan.root_visit_counts is not None
                 else None
             ),
-            num_simulations=self.planner.mcts_num_simulations,
-            exploration_constant=self.planner.mcts_exploration_constant,
+            num_simulations=(
+                self.planner.mcts_num_simulations if self.planner is not None else None
+            ),
+            exploration_constant=(
+                self.planner.mcts_exploration_constant
+                if self.planner is not None
+                else None
+            ),
+            selection_mode=(
+                "policy_sample"
+                if self.search_mode == "policy" and self.sample_policy
+                else "policy_argmax"
+                if self.search_mode == "policy"
+                else "value_argmax"
+            ),
+            policy_action_log_probs=(
+                behavior_log_probs if self.search_mode == "policy" else None
+            ),
         )
         return PolicyDecision(
             action_index=action_index,

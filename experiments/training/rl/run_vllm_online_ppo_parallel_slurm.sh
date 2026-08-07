@@ -14,6 +14,7 @@ ENV_REPO=${ENV_REPO:?set ENV_REPO to the verified VAGEN worktree}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
 MODEL=${MODEL:?set MODEL to the immutable rollout policy}
 WM_CKPT=${WM_CKPT:-${MODEL}}
+PLANNER_POLICY_HEAD_CKPT=${PLANNER_POLICY_HEAD_CKPT:-${WM_CKPT}/planner_policy_head}
 REFERENCE_MODEL=${REFERENCE_MODEL:-${MODEL}}
 RL_CONFIG=${RL_CONFIG:?set RL_CONFIG}
 RUN_OUT=${RUN_OUT:?set RUN_OUT}
@@ -354,7 +355,9 @@ if [[ "${PIPELINE_MODE}" == eval ]]; then
           done
           shard_tag=$(printf "shard_%02d" "${global_worker}")
           env REPO="${REPO}" ENV_REPO="${ENV_REPO}" PYTHON="${PYTHON}" \
-            MODEL="${MODEL}" WM_CKPT="${WM_CKPT}" RL_CONFIG="${RL_CONFIG}" \
+            MODEL="${MODEL}" WM_CKPT="${WM_CKPT}" \
+            PLANNER_POLICY_HEAD_CKPT="${PLANNER_POLICY_HEAD_CKPT}" \
+            RL_CONFIG="${RL_CONFIG}" \
             SHARD_INDEX="${global_worker}" SHARD_SEED="${shard_seed}" \
             SHARD_EVAL_SETS="${dataset}" SHARD_SPLIT=eval \
             SHARD_NUM_EPISODES="${NIMLOTH_EVAL_EPISODES_PER_WORKER}" \
@@ -526,7 +529,9 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
       NIMLOTH_SEEDS_PER_DATASET_PER_WORKER="${SEEDS_PER_DATASET_PER_WORKER}" \
       NIMLOTH_DATASETS="${TRAIN_DATASETS_CSV}" \
       REPO="${REPO}" ENV_REPO="${ENV_REPO}" PYTHON="${PYTHON}" \
-      MODEL="${MODEL}" WM_CKPT="${WM_CKPT}" RL_CONFIG="${RL_CONFIG}" \
+      MODEL="${MODEL}" WM_CKPT="${WM_CKPT}" \
+      PLANNER_POLICY_HEAD_CKPT="${PLANNER_POLICY_HEAD_CKPT}" \
+      RL_CONFIG="${RL_CONFIG}" \
       SHARD_ROOT="${SHARD_ROOT}" ENV_PORT_BASE="${ENV_PORT_BASE}" \
       ENV_PREWARM_TIMEOUT="${ENV_PREWARM_TIMEOUT}" \
       bash -lc '
@@ -612,6 +617,7 @@ if [[ "${RUN_TRAIN}" == true ]]; then
     PIPELINE_PHASE=train \
     REPO="${REPO}" RUN_OUT="${RUN_OUT}" RL_CONFIG="${RL_CONFIG}" \
     ENV_REPO="${ENV_REPO}" MODEL="${MODEL}" WM_CKPT="${WM_CKPT}" \
+    PLANNER_POLICY_HEAD_CKPT="${PLANNER_POLICY_HEAD_CKPT}" \
     REFERENCE_MODEL="${REFERENCE_MODEL}" RESUME_CHECKPOINT="${RESUME_CHECKPOINT}" \
     ITERATION="${ITERATION}" TOTAL_ITERATIONS="${TOTAL_ITERATIONS}" \
     RUN_MODE=full SEED_OFFSET="${SEED_OFFSET}" \

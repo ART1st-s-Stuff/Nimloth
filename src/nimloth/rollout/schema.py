@@ -66,8 +66,15 @@ def _planner_trace_from_record(raw: dict[str, Any]) -> PlannerPolicyTrace:
         "num_simulations",
         "exploration_constant",
     }
+    policy_fields = {"selection_mode", "policy_action_log_probs"}
     actual_fields = set(raw)
-    if actual_fields not in (required_fields, required_fields | mcts_fields):
+    accepted_fields = (
+        required_fields,
+        required_fields | mcts_fields,
+        required_fields | policy_fields,
+        required_fields | mcts_fields | policy_fields,
+    )
+    if actual_fields not in accepted_fields:
         legacy_fields = {
             "action_training",
             "behavior_action_log_probs",
@@ -83,6 +90,8 @@ def _planner_trace_from_record(raw: dict[str, Any]) -> PlannerPolicyTrace:
         expected_fields = (
             required_fields | mcts_fields
             if raw.get("search_mode") == "mcts"
+            else required_fields | policy_fields
+            if raw.get("search_mode") == "policy"
             else required_fields
         )
         missing = sorted(expected_fields - actual_fields)
@@ -121,6 +130,12 @@ def _planner_trace_from_record(raw: dict[str, Any]) -> PlannerPolicyTrace:
         exploration_constant=(
             float(raw["exploration_constant"])
             if raw.get("exploration_constant") is not None
+            else None
+        ),
+        selection_mode=str(raw.get("selection_mode", "value_argmax")),
+        policy_action_log_probs=(
+            _decode_log_probabilities(raw["policy_action_log_probs"])
+            if raw.get("policy_action_log_probs") is not None
             else None
         ),
     )
@@ -452,6 +467,12 @@ class RolloutTrajectory:
                     ),
                     "num_simulations": trace.num_simulations,
                     "exploration_constant": trace.exploration_constant,
+                    "selection_mode": trace.selection_mode,
+                    "policy_action_log_probs": (
+                        _encode_log_probabilities(trace.policy_action_log_probs)
+                        if trace.policy_action_log_probs is not None
+                        else None
+                    ),
                 }
                 for trace in self.planner_policy_traces
             ],

@@ -7,6 +7,7 @@ ENV_REPO=${ENV_REPO:?set ENV_REPO to the verified VAGEN worktree}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
 MODEL=${MODEL:?set MODEL to the immutable rollout policy}
 WM_CKPT=${WM_CKPT:-${MODEL}}
+PLANNER_POLICY_HEAD_CKPT=${PLANNER_POLICY_HEAD_CKPT:-${WM_CKPT}/planner_policy_head}
 RL_CONFIG=${RL_CONFIG:?set RL_CONFIG}
 SHARD_INDEX=${SHARD_INDEX:?set SHARD_INDEX}
 SHARD_SEED=${SHARD_SEED:?set SHARD_SEED}
@@ -72,7 +73,7 @@ done
   exit 1
 }
 
-read -r TP_SIZE MAX_STEPS MAX_EPISODE_ATTEMPTS TEMPERATURE TOP_P CREDIT MAX_RESPONSE_TOKENS MAX_STATE_TOKENS ACTOR_ENABLED PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE < <(
+read -r TP_SIZE MAX_STEPS MAX_EPISODE_ATTEMPTS TEMPERATURE TOP_P CREDIT MAX_RESPONSE_TOKENS MAX_STATE_TOKENS ACTOR_ENABLED PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE PLANNER_POLICY_ENABLED PLANNER_POLICY_TEMPERATURE < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -93,6 +94,8 @@ print(
     config.agent.planning.search_mode,
     config.agent.planning.beam_width,
     config.agent.planning.device,
+    str(config.planner_policy.enabled).lower(),
+    config.planner_policy.temperature,
 )
 ' "${RL_CONFIG}"
 )
@@ -112,6 +115,12 @@ IFS=',' read -r -a SHARD_GPUS <<< "${SHARD_GPU_VISIBLE}"
 for path in "${WM_CKPT}/state_proj.pt" "${WM_CKPT}/wm_predictor/predictor.pt" "${WM_CKPT}/value_head/value_head.pt"; do
   [[ -s "${path}" ]] || { echo "missing planner checkpoint: ${path}" >&2; exit 1; }
 done
+if [[ "${PLANNER_POLICY_ENABLED}" == true ]]; then
+  [[ -s "${PLANNER_POLICY_HEAD_CKPT}/planner_policy_head.pt" ]] || {
+    echo "missing PlannerPolicyHead checkpoint: ${PLANNER_POLICY_HEAD_CKPT}" >&2
+    exit 1
+  }
+fi
 for dataset in "${SHARD_DATASETS[@]}"; do
   [[ -f "${ENV_REPO}/external/VAGEN/vagen/env/navigation/datasets/${dataset}.json" ]] || {
     echo "missing rollout dataset: ${dataset}" >&2
@@ -208,6 +217,12 @@ PLANNER_ARGS=(
   --state-proj-checkpoint "${WM_CKPT}/state_proj.pt"
   --value-head-checkpoint "${WM_CKPT}/value_head"
 )
+if [[ "${PLANNER_POLICY_ENABLED}" == true ]]; then
+  PLANNER_ARGS+=(
+    --planner-policy-head-checkpoint "${PLANNER_POLICY_HEAD_CKPT}"
+    --planner-policy-temperature "${PLANNER_POLICY_TEMPERATURE}"
+  )
+fi
 if [[ "${PLANNING_SEARCH_MODE}" == beam ]]; then
   [[ "${PLANNING_BEAM_WIDTH}" != None ]] || {
     echo "beam planner requires a beam width" >&2

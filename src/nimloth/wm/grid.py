@@ -485,11 +485,26 @@ class GridWorldModel(WorldModel):
             )
         return self.value_head(state.mean(dim=-2)).float()
 
+    def predict_action_logits(self, state: torch.Tensor) -> torch.Tensor:
+        if state.ndim < 3:
+            raise ValueError(
+                "grid policy input must have shape (...,N,D), "
+                f"got {tuple(state.shape)}"
+            )
+        if self.planner_policy_head is None:
+            raise RuntimeError("grid world model has no PlannerPolicyHead")
+        return self.planner_policy_head(state.mean(dim=-2)).float()
+
     def unwrapped(self) -> "GridWorldModel":
         return GridWorldModel(
             state_proj=_unwrap(self.state_proj),
             wm_predictor=_unwrap(self.wm_predictor),
             value_head=_unwrap(self.value_head),
+            planner_policy_head=(
+                _unwrap(self.planner_policy_head)
+                if self.planner_policy_head is not None
+                else None
+            ),
         )
 
 

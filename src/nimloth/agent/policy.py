@@ -127,6 +127,8 @@ class PlannerPolicyTrace:
     root_visit_counts: tuple[int, ...] | None = None
     num_simulations: int | None = None
     exploration_constant: float | None = None
+    selection_mode: str = "value_argmax"
+    policy_action_log_probs: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         action_count = len(self.root_action_scores)
@@ -134,10 +136,36 @@ class PlannerPolicyTrace:
             raise ValueError("planner trace requires at least two actions")
         if self.horizon < 1:
             raise ValueError("planner trace horizon must be positive")
-        if self.search_mode not in {"greedy", "exhaustive", "beam", "mcts"}:
+        if self.search_mode not in {
+            "greedy",
+            "exhaustive",
+            "beam",
+            "mcts",
+            "policy",
+        }:
             raise ValueError(
-                "planner trace search_mode must be greedy, exhaustive, beam, or mcts"
+                "planner trace search_mode must be greedy, exhaustive, beam, "
+                "mcts, or policy"
             )
+        policy_controlled = self.search_mode == "policy"
+        if policy_controlled:
+            if self.horizon != 1:
+                raise ValueError("PlannerPolicyHead trace currently requires horizon=1")
+            if self.selection_mode not in {"policy_sample", "policy_argmax"}:
+                raise ValueError(
+                    "policy planner trace requires policy_sample or policy_argmax"
+                )
+            if self.policy_action_log_probs is None:
+                raise ValueError("policy planner trace requires action log probabilities")
+            validate_action_log_probs(
+                self.executed_action_index,
+                self.policy_action_log_probs,
+                action_count=action_count,
+            )
+        elif self.selection_mode != "value_argmax":
+            raise ValueError("value planner trace requires selection_mode=value_argmax")
+        elif self.policy_action_log_probs is not None:
+            raise ValueError("value planner trace cannot store policy action log-probs")
         if self.search_mode == "beam":
             if self.beam_width is None or self.beam_width < 1:
                 raise ValueError("beam planner trace requires a positive beam_width")
@@ -174,11 +202,11 @@ class PlannerPolicyTrace:
         if self.search_mode == "greedy" and len(self.candidate_sequences) != 1:
             raise ValueError("greedy planner trace requires exactly one candidate")
         if (
-            self.search_mode == "exhaustive"
+            self.search_mode in {"exhaustive", "policy"}
             and len(self.candidate_sequences) != action_count**self.horizon
         ):
             raise ValueError(
-                "exhaustive planner trace must contain every action sequence"
+                "exhaustive/policy planner trace must contain every action sequence"
             )
         if (
             self.search_mode == "beam"
@@ -218,10 +246,24 @@ class PlannerPolicyTrace:
                 )
             if tuple(expected_root_scores) != self.root_action_scores:
                 raise ValueError("planner root scores do not match candidate scores")
-            if self.executed_action_index != self.selected_candidate_sequence[0]:
+            if (
+                not policy_controlled
+                and self.executed_action_index != self.selected_candidate_sequence[0]
+            ):
                 raise ValueError(
                     "planner must execute the best candidate's first action"
                 )
+            if policy_controlled and self.selection_mode == "policy_argmax":
+                assert self.policy_action_log_probs is not None
+                selected = max(
+                    range(action_count),
+                    key=lambda action: (
+                        self.policy_action_log_probs[action],
+                        -action,
+                    ),
+                )
+                if self.executed_action_index != selected:
+                    raise ValueError("policy_argmax did not execute the highest logit")
 
     def _validate_mcts_statistics(self, action_count: int) -> None:
         assert self.candidate_visit_counts is not None
@@ -289,6 +331,8 @@ class PlannerPolicyTrace:
     def selected_candidate_sequence(self) -> tuple[int, ...]:
         """Return the candidate selected by the planner's stable argmax rule."""
 
+        if self.search_mode == "policy":
+            return (self.executed_action_index,)
         if self.search_mode == "mcts":
             candidates = [
                 index
@@ -318,6 +362,8 @@ class PlannerPolicyTrace:
 
     @property
     def behavior_action_log_probs(self) -> tuple[float, ...]:
+        if self.policy_action_log_probs is not None:
+            return self.policy_action_log_probs
         return tuple(
             0.0 if index == self.executed_action_index else float("-inf")
             for index in range(len(self.root_action_scores))

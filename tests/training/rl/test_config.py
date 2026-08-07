@@ -37,6 +37,18 @@ def _configure_planner_value_ppo(raw: dict, *, epochs: int = 4) -> None:
     }
 
 
+def _configure_planner_policy_ppo(raw: dict, *, epochs: int = 4) -> None:
+    raw["value_head"] = {"lambda_rank": 0.0}
+    raw["planner_policy"] = {
+        "enabled": True,
+        "lr": 1e-4,
+        "clip_ratio": 0.2,
+        "entropy_coeff": 0.01,
+        "temperature": 1.0,
+        "ppo_epochs": epochs,
+    }
+
+
 def test_rl_config_rejects_unimplemented_fields() -> None:
     raw = _raw_config()
     raw["qwen"] = {"model": "ignored-before"}
@@ -816,6 +828,57 @@ def test_nonplanner_rejects_unused_value_ppo_fields() -> None:
     _configure_planner_value_ppo(raw)
 
     with pytest.raises(ValueError, match="only valid for planner"):
+        parse_rl_config(raw)
+
+
+def test_planner_policy_ppo_requires_h1_policy_search_and_explicit_fields() -> None:
+    raw = _raw_config()
+    raw["rl"].update({"envs_per_iteration": 2, "batch_size": 2})
+    raw["actor"] = {"enabled": False, "credit_assignment": "action"}
+    raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 1,
+            "search_mode": "policy",
+            "device": "cpu",
+        }
+    }
+    _configure_planner_policy_ppo(raw)
+
+    config = parse_rl_config(raw)
+
+    assert config.planner_policy.enabled is True
+    assert config.planner_policy.ppo_epochs == 4
+    assert config.value_head.ppo_clip_range is None
+
+    raw["agent"]["planning"]["horizon"] = 2
+    with pytest.raises(ValueError, match="requires horizon=1"):
+        parse_rl_config(raw)
+
+    raw["agent"]["planning"]["horizon"] = 1
+    raw["planner_policy"].pop("temperature")
+    with pytest.raises(ValueError, match="explicit planner_policy fields"):
+        parse_rl_config(raw)
+
+
+def test_planner_policy_ppo_rejects_critic_clipping_fields() -> None:
+    raw = _raw_config()
+    raw["rl"].update({"envs_per_iteration": 2, "batch_size": 2})
+    raw["actor"] = {"enabled": False, "credit_assignment": "action"}
+    raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 1,
+            "search_mode": "policy",
+            "device": "cpu",
+        }
+    }
+    _configure_planner_policy_ppo(raw)
+    raw["value_head"]["ppo_clip_range"] = 0.2
+
+    with pytest.raises(ValueError, match="ordinary critic regression"):
         parse_rl_config(raw)
 
 

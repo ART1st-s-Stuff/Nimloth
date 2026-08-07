@@ -80,6 +80,14 @@ class ExecutedTransition:
             dtype=torch.float32,
         )
 
+    def behavior_action_log_probs(self) -> torch.Tensor:
+        """Return the complete frozen planner behavior distribution."""
+
+        return torch.tensor(
+            self.trajectory.action_log_probs[self.step_index],
+            dtype=torch.float32,
+        )
+
     @property
     def next_image_path(self) -> str:
         return self.trajectory.image_paths[self.step_index + 1]

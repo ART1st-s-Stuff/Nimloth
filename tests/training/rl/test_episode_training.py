@@ -225,6 +225,7 @@ def _algorithm(
     train_world_model: bool = False,
     dino_weight: float = 0.0,
     value_clip_range: float = 0.2,
+    planner_policy_enabled: bool = False,
 ) -> RLAlgorithm:
     return RLAlgorithm(
         history_size=4,
@@ -238,6 +239,10 @@ def _algorithm(
         train_world_model=train_world_model,
         world_model_weight=0.75,
         dino_grid_weight=dino_weight,
+        planner_policy_enabled=planner_policy_enabled,
+        planner_policy_clip_ratio=0.2,
+        planner_policy_entropy_weight=0.0,
+        planner_policy_temperature=1.0,
     )
 
 
@@ -322,6 +327,58 @@ def test_value_loss_on_current_state_reaches_full_prefix_qwen_but_not_wm() -> No
         )
     )
     assert torch.count_nonzero(other_rows) == 0
+
+
+def test_planner_policy_ppo_reaches_full_prefix_qwen_and_policy_head() -> None:
+    trajectory = _planner_trajectory()
+    step_index = 2
+    action_index = trajectory.action_indices[step_index]
+    uniform_log_prob = -float(torch.log(torch.tensor(8.0)).item())
+    behavior_log_probs = (uniform_log_prob,) * 8
+    trajectory.action_log_probs[step_index] = list(behavior_log_probs)
+    trajectory.planner_policy_traces[step_index] = PlannerPolicyTrace(
+        candidate_sequences=tuple((action,) for action in range(8)),
+        candidate_scores=(0.0,) * 8,
+        root_action_scores=(0.0,) * 8,
+        executed_action_index=action_index,
+        horizon=1,
+        search_mode="policy",
+        selection_mode="policy_sample",
+        policy_action_log_probs=behavior_log_probs,
+    )
+    episode = build_episode_training_batches(
+        [trajectory],
+        gamma=1.0,
+        truncated_bootstrap=0.0,
+    )[0]
+    runtime, backbone, _builder, projector, predictor, value_head = _runtime()
+    policy_head = torch.nn.Linear(2, 8, bias=False)
+    with torch.no_grad():
+        policy_head.weight.zero_()
+    runtime.agent.wm.planner_policy_head = policy_head
+    algorithm = _algorithm(planner_policy_enabled=True)
+    transition = episode.transitions[step_index]
+    old = algorithm.planner_old_policy_statistics(runtime, transition)
+
+    output = algorithm.actor_transition_step(
+        runtime,
+        transition,
+        return_target=torch.tensor(5.0),
+        old_action_value=old.selected_action_value,
+        old_policy_log_prob=old.selected_log_prob,
+        policy_advantage=torch.tensor(5.0) - old.state_value,
+        total_transitions=1,
+    )
+    assert output.losses["policy"] is not None
+    output.losses["policy"].backward()
+
+    assert policy_head.weight.grad is not None
+    assert torch.count_nonzero(policy_head.weight.grad) > 0
+    assert projector.weight.grad is not None
+    assert backbone.module.weight.grad is not None
+    assert torch.count_nonzero(backbone.module.weight.grad[:, 0]) > 0
+    assert value_head.weight.grad is None
+    assert predictor.state.weight.grad is None
 
 
 def test_transition_wm_target_is_saved_next_state_not_a_second_qwen_forward() -> None:

@@ -24,11 +24,13 @@ class WorldModel(nn.Module):
         state_proj: nn.Module,
         wm_predictor: nn.Module,
         value_head: nn.Module,
+        planner_policy_head: nn.Module | None = None,
     ) -> None:
         super().__init__()
         self.state_proj = state_proj
         self.wm_predictor = wm_predictor
         self.value_head = value_head
+        self.planner_policy_head = planner_policy_head
 
     def forward(
         self,
@@ -99,6 +101,13 @@ class WorldModel(nn.Module):
 
         return self.value_head(state).float()
 
+    def predict_action_logits(self, state: torch.Tensor) -> torch.Tensor:
+        """Return PlannerPolicyHead logits without conflating them with Q values."""
+
+        if self.planner_policy_head is None:
+            raise RuntimeError("world model has no PlannerPolicyHead")
+        return self.planner_policy_head(state).float()
+
     def simulate_action_sequences(
         self,
         state_history: torch.Tensor,
@@ -163,7 +172,10 @@ class WorldModel(nn.Module):
     def trainable_modules(self) -> tuple[nn.Module, ...]:
         """SFT2 应统一切换 train/eval 的 WM 子模块。"""
 
-        return (self.state_proj, self.wm_predictor, self.value_head)
+        modules = (self.state_proj, self.wm_predictor, self.value_head)
+        if self.planner_policy_head is not None:
+            return (*modules, self.planner_policy_head)
+        return modules
 
     @property
     def synchronized_modules(self) -> tuple[nn.Module, ...]:
@@ -178,6 +190,11 @@ class WorldModel(nn.Module):
             state_proj=_unwrap(self.state_proj),
             wm_predictor=_unwrap(self.wm_predictor),
             value_head=_unwrap(self.value_head),
+            planner_policy_head=(
+                _unwrap(self.planner_policy_head)
+                if self.planner_policy_head is not None
+                else None
+            ),
         )
 
 __all__ = ["WorldModel"]

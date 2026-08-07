@@ -164,8 +164,8 @@ class RLTrainingLoop:
         )
 
         # planner 路线保留完整 episode，并对每个真实环境 transition 重算完整
-        # Qwen prefix。第一个 PPO epoch联合计算WM与clipped critic，后续epoch只更新
-        # critic及其上游Qwen表征；无planner路线继续使用固定长度sequence objective。
+        # Qwen prefix。第一个 PPO epoch联合计算WM，后续epoch继续更新critic；policy
+        # 模式还会在每个epoch更新PlannerPolicyHead clipped surrogate。
         episode_batches = None
         batch = None
         actor_transitions: tuple[ExecutedTransition, ...] = ()
@@ -274,15 +274,48 @@ class RLTrainingLoop:
             if episode_batches is not None:
                 total_actor_transitions = len(actor_transitions)
                 _, training_world_size = self._distributed_rank_world()
-                local_old_action_values = tuple(
-                    self.algorithm.planner_old_action_value(
-                        self.model_runtime,
-                        transition,
+                if self.config.planner_policy.enabled:
+                    local_old_statistics = tuple(
+                        self.algorithm.planner_old_policy_statistics(
+                            self.model_runtime,
+                            transition,
+                        )
+                        for transition in local_actor_transitions
                     )
-                    for transition in local_actor_transitions
-                )
+                    local_old_action_values = tuple(
+                        statistics.selected_action_value
+                        for statistics in local_old_statistics
+                    )
+                    local_old_policy_log_probs = tuple(
+                        statistics.selected_log_prob
+                        for statistics in local_old_statistics
+                    )
+                    local_policy_advantages = tuple(
+                        return_target - statistics.state_value
+                        for return_target, statistics in zip(
+                            local_transition_returns,
+                            local_old_statistics,
+                            strict=True,
+                        )
+                    )
+                    ppo_epochs = self.config.planner_policy.ppo_epochs
+                else:
+                    local_old_action_values = tuple(
+                        self.algorithm.planner_old_action_value(
+                            self.model_runtime,
+                            transition,
+                        )
+                        for transition in local_actor_transitions
+                    )
+                    local_old_policy_log_probs = (None,) * len(
+                        local_actor_transitions
+                    )
+                    local_policy_advantages = (None,) * len(
+                        local_actor_transitions
+                    )
+                    ppo_epochs = self.config.value_head.ppo_epochs
                 epoch_metrics: list[dict[str, float]] = []
-                for ppo_epoch in range(self.config.value_head.ppo_epochs):
+                for ppo_epoch in range(ppo_epochs):
                     self.optimization_runtime.zero_grad()
                     current_metrics: dict[str, float] = {}
                     for (
@@ -290,12 +323,16 @@ class RLTrainingLoop:
                         transition,
                         return_target,
                         old_action_value,
+                        old_policy_log_prob,
+                        policy_advantage,
                         dino_grid_target,
                     ) in zip(
                         planner_work,
                         local_actor_transitions,
                         local_transition_returns,
                         local_old_action_values,
+                        local_old_policy_log_probs,
+                        local_policy_advantages,
                         transition_dino_grid_targets,
                         strict=True,
                     ):
@@ -304,6 +341,8 @@ class RLTrainingLoop:
                             transition,
                             return_target=return_target,
                             old_action_value=old_action_value,
+                            old_policy_log_prob=old_policy_log_prob,
+                            policy_advantage=policy_advantage,
                             total_transitions=total_actor_transitions,
                             dino_grid_target=dino_grid_target,
                             include_world_model=ppo_epoch == 0,
@@ -324,7 +363,13 @@ class RLTrainingLoop:
                     epoch_metrics.append(
                         self._reduce_planner_step_metrics(current_metrics)
                     )
-                step_metrics = self._summarize_planner_ppo_epochs(epoch_metrics)
+                step_metrics = self._summarize_planner_ppo_epochs(
+                    epoch_metrics,
+                    planner_policy_enabled=self.config.planner_policy.enabled,
+                    planner_policy_entropy_coeff=(
+                        self.config.planner_policy.entropy_coeff
+                    ),
+                )
             else:
                 assert batch is not None
                 self.optimization_runtime.zero_grad()
@@ -497,11 +542,14 @@ class RLTrainingLoop:
     @staticmethod
     def _summarize_planner_ppo_epochs(
         epochs: list[dict[str, float]],
+        *,
+        planner_policy_enabled: bool = False,
+        planner_policy_entropy_coeff: float = 0.0,
     ) -> dict[str, float]:
-        """Keep first-epoch WM metrics and average critic metrics across PPO epochs."""
+        """Keep first-epoch WM metrics and average actor/critic PPO metrics."""
 
         if len(epochs) < 2:
-            raise ValueError("planner PPO critic requires at least two epoch metrics")
+            raise ValueError("planner PPO requires at least two epoch metrics")
         summary = dict(epochs[0])
         averaged = {
             "value_loss",
@@ -515,16 +563,46 @@ class RLTrainingLoop:
             if any(name not in metrics for metrics in epochs):
                 raise RuntimeError(f"planner PPO epoch metric is missing {name!r}")
             summary[name] = sum(metrics[name] for metrics in epochs) / len(epochs)
+        if planner_policy_enabled:
+            policy_averaged = {
+                "planner_policy_loss",
+                "planner_policy_entropy",
+                "planner_policy_clip_fraction",
+                "planner_policy_mean_ratio",
+                "planner_policy_mean_advantage",
+                "planner_policy_actions",
+            }
+            for name in policy_averaged:
+                if any(name not in metrics for metrics in epochs):
+                    raise RuntimeError(
+                        f"planner policy PPO epoch metric is missing {name!r}"
+                    )
+                summary[name] = sum(
+                    metrics[name] for metrics in epochs
+                ) / len(epochs)
         # WM/DINO只在首个epoch计算；total_loss保留该首轮辅助objective，再加上
         # 各critic epoch的平均value loss，避免将WM项错误地除以PPO epoch数。
         if any("total_loss" not in metrics for metrics in epochs):
             raise RuntimeError("planner PPO epoch metric is missing 'total_loss'")
-        summary["total_loss"] = (
-            epochs[0]["total_loss"]
-            - epochs[0]["value_loss"]
-            + summary["value_loss"]
-        )
-        summary["value_ppo_epochs"] = float(len(epochs))
+        auxiliary_loss = epochs[0]["total_loss"] - epochs[0]["value_loss"]
+        if planner_policy_enabled:
+            auxiliary_loss -= epochs[0]["planner_policy_loss"]
+            auxiliary_loss += planner_policy_entropy_coeff * epochs[0][
+                "planner_policy_entropy"
+            ]
+            summary["total_loss"] = (
+                auxiliary_loss
+                + summary["value_loss"]
+                + summary["planner_policy_loss"]
+                - planner_policy_entropy_coeff
+                * summary["planner_policy_entropy"]
+            )
+            summary["planner_policy_ppo_epochs"] = float(len(epochs))
+            summary["value_ppo_epochs"] = 0.0
+        else:
+            summary["total_loss"] = auxiliary_loss + summary["value_loss"]
+            summary["value_ppo_epochs"] = float(len(epochs))
+            summary["planner_policy_ppo_epochs"] = 0.0
         return summary
 
     @staticmethod

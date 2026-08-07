@@ -1,13 +1,13 @@
-"""Real-GPU integration gate for the planner PPO ValueHead critic.
+"""Real-GPU integration gate for planner critic or PlannerPolicyHead PPO.
 
 This is a mechanics gate, not a policy-quality experiment.  Ranks select from
 the longest qualifying final-step prefixes in the complete set of real,
 behavior-checkpoint-matched trajectories.  Distinct qualifying prefixes are
 preferred, but a real long prefix is reused deterministically when there are
 fewer qualifying prefixes than gate ranks.  ``single_grad`` proves the
-critic-only graph reaches the Qwen language body without supervising
-``lm_head``.  ``ddp_step`` exercises the production two-rank,
-two-GPU-per-rank wrapping and AdamW update for all configured critic PPO epochs.
+selected loss reaches the Qwen language body without supervising ``lm_head``.
+``ddp_step`` exercises the production two-rank, two-GPU-per-rank wrapping and
+AdamW update for all configured PPO epochs.
 """
 
 from __future__ import annotations
@@ -61,6 +61,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--wm-checkpoint", type=Path, required=True)
     parser.add_argument("--state-proj-checkpoint", type=Path, required=True)
     parser.add_argument("--value-head-checkpoint", type=Path, required=True)
+    parser.add_argument("--planner-policy-head-checkpoint", type=Path)
     parser.add_argument("--trajectory-jsonl", type=Path, required=True)
     parser.add_argument("--fresh-rollout-manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -78,6 +79,7 @@ def _model_args(args: argparse.Namespace) -> SimpleNamespace:
         wm_checkpoint=args.wm_checkpoint,
         state_proj_checkpoint=args.state_proj_checkpoint,
         value_head_checkpoint=args.value_head_checkpoint,
+        planner_policy_head_checkpoint=args.planner_policy_head_checkpoint,
         llm_tune="full",
         vision_tune="freeze",
         vision_ema=False,
@@ -296,6 +298,13 @@ def _assert_distributed_tensor_sync(
 def main() -> int:
     args = _parse_args()
     config = load_rl_config(args.config)
+    if (
+        config.planner_policy.enabled
+        and args.planner_policy_head_checkpoint is None
+    ):
+        raise ValueError(
+            "PlannerPolicyHead GPU gate requires --planner-policy-head-checkpoint"
+        )
     expected_world = 1 if args.mode == "single_grad" else 2
     expected_gpus_per_rank = 1 if args.mode == "single_grad" else 2
     if args.gpus_per_rank != expected_gpus_per_rank:
@@ -325,6 +334,15 @@ def main() -> int:
                 "state_projector": args.state_proj_checkpoint,
                 "value_head": args.value_head_checkpoint,
                 "wm_predictor": args.wm_checkpoint,
+                **(
+                    {
+                        "planner_policy_head": (
+                            args.planner_policy_head_checkpoint
+                        )
+                    }
+                    if args.planner_policy_head_checkpoint is not None
+                    else {}
+                ),
             },
         )
         # Hashing the immutable behavior artifacts once is sufficient.  This gate
@@ -362,6 +380,8 @@ def main() -> int:
             broadcast_module_state(world_model.state_proj)
             broadcast_module_state(world_model.wm_predictor)
             broadcast_module_state(world_model.value_head)
+            if world_model.planner_policy_head is not None:
+                broadcast_module_state(world_model.planner_policy_head)
         distributed = _wrap_distributed_modules(
             loaded.backbone,
             world_model,
@@ -399,6 +419,10 @@ def main() -> int:
             train_world_model=False,
             world_model_weight=0.0,
             dino_grid_weight=0.0,
+            planner_policy_enabled=config.planner_policy.enabled,
+            planner_policy_clip_ratio=config.planner_policy.clip_ratio,
+            planner_policy_entropy_weight=config.planner_policy.entropy_coeff,
+            planner_policy_temperature=config.planner_policy.temperature,
         )
 
         truncated_bootstrap = (
@@ -445,7 +469,21 @@ def main() -> int:
             )
         transition = episode.transitions[step_index]
         return_target = episode.return_targets[step_index]
-        old_action_value = algorithm.planner_old_action_value(runtime, transition)
+        old_policy_log_prob = None
+        policy_advantage = None
+        if config.planner_policy.enabled:
+            old_statistics = algorithm.planner_old_policy_statistics(
+                runtime,
+                transition,
+            )
+            old_action_value = old_statistics.selected_action_value
+            old_policy_log_prob = old_statistics.selected_log_prob
+            policy_advantage = return_target - old_statistics.state_value
+        else:
+            old_action_value = algorithm.planner_old_action_value(
+                runtime,
+                transition,
+            )
 
         qwen_name, qwen_witness = _parameter_with_suffix(
             model, "model.language_model.norm.weight"
@@ -458,6 +496,16 @@ def main() -> int:
         )
         qwen_before = qwen_witness.detach().clone()
         value_before = value_witness.detach().clone()
+        policy_name = None
+        policy_witness = None
+        policy_before = None
+        if world_model.planner_policy_head is not None:
+            policy_name, policy_witness = next(
+                (name, parameter)
+                for name, parameter in world_model.planner_policy_head.named_parameters()
+                if parameter.requires_grad
+            )
+            policy_before = policy_witness.detach().clone()
 
         optimizer = None
         if args.mode == "ddp_step":
@@ -466,22 +514,32 @@ def main() -> int:
         epoch_metrics: list[dict[str, float]] = []
         qwen_grad_max = 0.0
         value_grad_max = 0.0
+        policy_grad_max = 0.0
         qwen_grad_replica_max_difference = 0.0
         value_grad_replica_max_difference = 0.0
         qwen_parameter_replica_max_difference = 0.0
         value_parameter_replica_max_difference = 0.0
-        epochs = 1 if args.mode == "single_grad" else config.value_head.ppo_epochs
+        policy_grad_replica_max_difference = 0.0
+        policy_parameter_replica_max_difference = 0.0
+        configured_epochs = (
+            config.planner_policy.ppo_epochs
+            if config.planner_policy.enabled
+            else config.value_head.ppo_epochs
+        )
+        epochs = 1 if args.mode == "single_grad" else configured_epochs
         for ppo_epoch in range(epochs):
             if optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)
             else:
                 model.zero_grad(set_to_none=True)
-                world_model.value_head.zero_grad(set_to_none=True)
+                world_model.zero_grad(set_to_none=True)
             output = algorithm.actor_transition_step(
                 runtime,
                 transition,
                 return_target=return_target,
                 old_action_value=old_action_value,
+                old_policy_log_prob=old_policy_log_prob,
+                policy_advantage=policy_advantage,
                 total_transitions=world_size,
                 include_world_model=False,
             )
@@ -489,10 +547,16 @@ def main() -> int:
             (output.loss * world_size).backward()
             qwen_grad_max = max(qwen_grad_max, _grad_max(qwen_witness))
             value_grad_max = max(value_grad_max, _grad_max(value_witness))
+            if policy_witness is not None:
+                policy_grad_max = max(policy_grad_max, _grad_max(policy_witness))
             if qwen_grad_max <= 0.0:
                 raise AssertionError("critic loss did not reach the Qwen language body")
             if value_grad_max <= 0.0:
                 raise AssertionError("critic loss did not reach ValueHead")
+            if policy_witness is not None and policy_grad_max <= 0.0:
+                raise AssertionError(
+                    "policy loss did not reach PlannerPolicyHead"
+                )
             if dist.is_available() and dist.is_initialized():
                 assert qwen_witness.grad is not None
                 assert value_witness.grad is not None
@@ -510,6 +574,15 @@ def main() -> int:
                         label="ValueHead gradient witness",
                     ),
                 )
+                if policy_witness is not None:
+                    assert policy_witness.grad is not None
+                    policy_grad_replica_max_difference = max(
+                        policy_grad_replica_max_difference,
+                        _assert_distributed_tensor_sync(
+                            policy_witness.grad,
+                            label="PlannerPolicyHead gradient witness",
+                        ),
+                    )
             if lm_head.grad is not None:
                 raise AssertionError("critic loss unexpectedly supervised lm_head")
             if not _all_grads_absent(world_model.state_proj):
@@ -541,12 +614,33 @@ def main() -> int:
                         label="ValueHead parameter witness",
                     ),
                 )
+                if policy_witness is not None:
+                    policy_parameter_replica_max_difference = max(
+                        policy_parameter_replica_max_difference,
+                        _assert_distributed_tensor_sync(
+                            policy_witness,
+                            label="PlannerPolicyHead parameter witness",
+                        ),
+                    )
 
         qwen_delta = float((qwen_witness.detach() - qwen_before).abs().max().item())
         value_delta = float((value_witness.detach() - value_before).abs().max().item())
+        policy_delta = (
+            float((policy_witness.detach() - policy_before).abs().max().item())
+            if policy_witness is not None and policy_before is not None
+            else 0.0
+        )
         if args.mode == "ddp_step" and value_delta <= 0.0:
             raise AssertionError(
                 f"optimizer produced no ValueHead parameter change: value={value_delta}"
+            )
+        if (
+            args.mode == "ddp_step"
+            and policy_witness is not None
+            and policy_delta <= 0.0
+        ):
+            raise AssertionError(
+                "optimizer produced no PlannerPolicyHead parameter change"
             )
 
         result: dict[str, Any] = {
@@ -580,6 +674,9 @@ def main() -> int:
             "value_witness": value_name,
             "value_grad_max": value_grad_max,
             "value_parameter_delta_max": value_delta,
+            "planner_policy_witness": policy_name,
+            "planner_policy_grad_max": policy_grad_max,
+            "planner_policy_parameter_delta_max": policy_delta,
             "lm_head_witness": lm_head_name,
             "lm_head_grad_is_none": lm_head.grad is None,
             "state_projector_grads_absent": _all_grads_absent(
@@ -614,6 +711,17 @@ def main() -> int:
                     label="ValueHead final parameter witness",
                 ),
             )
+            if policy_witness is not None:
+                result["planner_policy_grad_replica_max_difference"] = (
+                    policy_grad_replica_max_difference
+                )
+                result["planner_policy_parameter_replica_max_difference"] = max(
+                    policy_parameter_replica_max_difference,
+                    _assert_distributed_tensor_sync(
+                        policy_witness,
+                        label="PlannerPolicyHead final parameter witness",
+                    ),
+                )
         _write_result(args.output_dir, args.mode, rank, result)
         print(json.dumps(result, sort_keys=True, allow_nan=False), flush=True)
         return 0

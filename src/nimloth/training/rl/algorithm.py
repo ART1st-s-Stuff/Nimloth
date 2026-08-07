@@ -18,6 +18,10 @@ from nimloth.training.common import (
 )
 from nimloth.training.rl.credit import expand_step_advantages, token_level_gae
 from nimloth.training.rl.episodes import ExecutedTransition
+from nimloth.training.rl.policy import (
+    ppo_action_policy_loss,
+    ppo_clipped_policy_loss,
+)
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.training.rl.value import ppo_action_value_loss
 from nimloth.util.module import move_to_device
@@ -25,6 +29,16 @@ from nimloth.wm import SequenceSIGReg
 
 
 PLANNER_TRAINING_OBJECTIVE = "receding_horizon_decision_state_ppo_value_v1"
+PLANNER_POLICY_TRAINING_OBJECTIVE = "receding_horizon_planner_policy_ppo_v1"
+
+
+@dataclass(frozen=True)
+class PlannerOldPolicyStatistics:
+    """Frozen behavior-policy and critic statistics for one real transition."""
+
+    selected_action_value: torch.Tensor
+    selected_log_prob: torch.Tensor
+    state_value: torch.Tensor
 
 
 @dataclass(frozen=True)
@@ -213,6 +227,10 @@ class RLAlgorithm:
         train_world_model: bool = True,
         world_model_weight: float = 1.0,
         dino_grid_weight: float = 0.0,
+        planner_policy_enabled: bool = False,
+        planner_policy_clip_ratio: float = 0.2,
+        planner_policy_entropy_weight: float = 0.0,
+        planner_policy_temperature: float = 1.0,
     ) -> None:
         """消费已经由 ``RLConfig`` 校验过的算法参数。"""
 
@@ -232,6 +250,10 @@ class RLAlgorithm:
         self.train_world_model = bool(train_world_model)
         self.world_model_weight = float(world_model_weight)
         self.dino_grid_weight = float(dino_grid_weight)
+        self.planner_policy_enabled = bool(planner_policy_enabled)
+        self.planner_policy_clip_ratio = float(planner_policy_clip_ratio)
+        self.planner_policy_entropy_weight = float(planner_policy_entropy_weight)
+        self.planner_policy_temperature = float(planner_policy_temperature)
 
     @torch.no_grad()
     def planner_old_action_value(
@@ -260,6 +282,57 @@ class RLAlgorithm:
         )
         return action_values.gather(-1, action).reshape(()).detach().cpu()
 
+    @torch.no_grad()
+    def planner_old_policy_statistics(
+        self,
+        runtime: RLModelRuntime,
+        transition: ExecutedTransition,
+    ) -> PlannerOldPolicyStatistics:
+        """Evaluate the frozen behavior actor and state-only critic baseline."""
+
+        if not self.planner_policy_enabled:
+            raise RuntimeError("PlannerPolicyHead statistics require policy PPO")
+        policy_head = runtime.agent.wm.planner_policy_head
+        if policy_head is None:
+            raise RuntimeError("policy PPO runtime has no PlannerPolicyHead")
+        rollout_state = move_to_device(
+            transition.rollout_decision_state().unsqueeze(0),
+            policy_head,
+        )
+        action_values = runtime.agent.wm.predict_action_values(rollout_state)
+        logits = runtime.agent.wm.predict_action_logits(rollout_state)
+        old_log_probs = torch.log_softmax(
+            logits / self.planner_policy_temperature,
+            dim=-1,
+        ).squeeze(0)
+        stored_log_probs = transition.behavior_action_log_probs().to(
+            device=old_log_probs.device,
+            dtype=old_log_probs.dtype,
+        )
+        if not torch.allclose(
+            old_log_probs,
+            stored_log_probs,
+            rtol=1e-5,
+            atol=1e-6,
+        ):
+            raise ValueError(
+                "fresh rollout PlannerPolicyHead log-probs do not match the "
+                "training checkpoint"
+            )
+        selected_action = torch.tensor(
+            transition.action_index,
+            dtype=torch.long,
+            device=old_log_probs.device,
+        )
+        state_value = (old_log_probs.exp() * action_values.squeeze(0)).sum()
+        return PlannerOldPolicyStatistics(
+            selected_action_value=action_values.squeeze(0)[selected_action]
+            .detach()
+            .cpu(),
+            selected_log_prob=old_log_probs[selected_action].detach().cpu(),
+            state_value=state_value.detach().cpu(),
+        )
+
     def actor_transition_step(
         self,
         runtime: RLModelRuntime,
@@ -267,6 +340,8 @@ class RLAlgorithm:
         *,
         return_target: torch.Tensor,
         old_action_value: torch.Tensor,
+        old_policy_log_prob: torch.Tensor | None = None,
+        policy_advantage: torch.Tensor | None = None,
         total_transitions: int,
         dino_grid_target: torch.Tensor | None = None,
         include_world_model: bool = True,
@@ -353,15 +428,45 @@ class RLAlgorithm:
             dtype=torch.long,
             device=action_values.device,
         )
-        if self.value_ppo_clip_range is None:
-            raise RuntimeError("planner PPO critic requires value_ppo_clip_range")
-        value_objective = ppo_action_value_loss(
-            action_values,
-            executed_action,
-            return_target.reshape(1).to(device=action_values.device),
-            old_action_value.reshape(1),
-            clip_range=self.value_ppo_clip_range,
+        target = return_target.reshape(1).to(
+            device=action_values.device,
+            dtype=action_values.dtype,
         )
+        selected_action_values = action_values.gather(
+            -1,
+            executed_action.unsqueeze(-1),
+        ).squeeze(-1)
+        planner_policy_objective = None
+        if self.planner_policy_enabled:
+            if old_policy_log_prob is None or policy_advantage is None:
+                raise RuntimeError(
+                    "PlannerPolicyHead PPO requires old log-prob and advantage"
+                )
+            value_loss = F.mse_loss(selected_action_values, target)
+            action_logits = runtime.agent.wm.predict_action_logits(current_state)
+            planner_policy_objective = ppo_action_policy_loss(
+                action_logits=action_logits,
+                executed_actions=executed_action,
+                old_log_probs=old_policy_log_prob.reshape(1),
+                advantages=policy_advantage.reshape(1),
+                temperature=self.planner_policy_temperature,
+                clip_ratio=self.planner_policy_clip_ratio,
+            )
+        else:
+            if old_policy_log_prob is not None or policy_advantage is not None:
+                raise RuntimeError(
+                    "planner policy statistics require PlannerPolicyHead PPO"
+                )
+            if self.value_ppo_clip_range is None:
+                raise RuntimeError("planner critic clipping requires value_ppo_clip_range")
+            value_objective = ppo_action_value_loss(
+                action_values,
+                executed_action,
+                target,
+                old_action_value.reshape(1),
+                clip_range=self.value_ppo_clip_range,
+            )
+            value_loss = value_objective.loss
 
         normalized_wm_loss = weighted_wm_loss / total_transitions
         normalized_wm_mse = wm_mse / total_transitions
@@ -370,9 +475,23 @@ class RLAlgorithm:
             if wm_objective is not None and wm_objective.dino_grid_mse is not None
             else None
         )
-        normalized_value_loss = value_objective.loss / total_transitions
+        normalized_value_loss = value_loss / total_transitions
+        normalized_policy_loss = (
+            planner_policy_objective.loss / total_transitions
+            if planner_policy_objective is not None
+            else current_state.new_zeros(())
+        )
+        normalized_policy_entropy = (
+            planner_policy_objective.entropy / total_transitions
+            if planner_policy_objective is not None
+            else current_state.new_zeros(())
+        )
         total = normalized_wm_loss + normalized_value_loss.to(
             device=normalized_wm_loss.device
+        )
+        total = total + normalized_policy_loss.to(device=total.device)
+        total = total - self.planner_policy_entropy_weight * (
+            normalized_policy_entropy.to(device=total.device)
         )
         return RLStepOutput(
             loss=total,
@@ -381,7 +500,11 @@ class RLAlgorithm:
                 "dino": normalized_dino_mse,
                 "sigreg": None,
                 "value": normalized_value_loss,
-                "policy": None,
+                "policy": (
+                    normalized_policy_loss
+                    if planner_policy_objective is not None
+                    else None
+                ),
                 "token_value": None,
                 "reference_kl": None,
             },
@@ -396,16 +519,22 @@ class RLAlgorithm:
                 "lambda_dino": self.dino_grid_weight,
                 "sigreg_loss": 0.0,
                 "value_loss": float(normalized_value_loss.detach().item()),
-                "value_mc_mse": float(
-                    (value_objective.unclipped_mse / total_transitions)
+                "value_mc_mse": float(normalized_value_loss.detach().item()),
+                "value_clipped_mse": float(
+                    (
+                        value_objective.clipped_mse / total_transitions
+                        if not self.planner_policy_enabled
+                        else selected_action_values.new_zeros(())
+                    )
                     .detach()
                     .item()
                 ),
-                "value_clipped_mse": float(
-                    (value_objective.clipped_mse / total_transitions).detach().item()
-                ),
                 "value_clip_fraction": float(
-                    (value_objective.clip_fraction / total_transitions)
+                    (
+                        value_objective.clip_fraction / total_transitions
+                        if not self.planner_policy_enabled
+                        else selected_action_values.new_zeros(())
+                    )
                     .detach()
                     .item()
                 ),
@@ -415,10 +544,10 @@ class RLAlgorithm:
                 "value_delta_abs_mean": float(
                     (
                         (
-                            value_objective.selected_action_values.detach()
+                            selected_action_values.detach()
                             - old_action_value.to(
-                                device=value_objective.selected_action_values.device,
-                                dtype=value_objective.selected_action_values.dtype,
+                                device=selected_action_values.device,
+                                dtype=selected_action_values.dtype,
                             )
                         ).abs().mean()
                         / total_transitions
@@ -427,6 +556,42 @@ class RLAlgorithm:
                 "value_rank": 0.0,
                 "total_loss": float(total.detach().item()),
                 "actor_loss": 0.0,
+                "planner_policy_loss": float(
+                    normalized_policy_loss.detach().item()
+                ),
+                "planner_policy_entropy": float(
+                    normalized_policy_entropy.detach().item()
+                ),
+                "planner_policy_clip_fraction": (
+                    float(
+                        (
+                            planner_policy_objective.clip_fraction
+                            / total_transitions
+                        ).item()
+                    )
+                    if planner_policy_objective is not None
+                    else 0.0
+                ),
+                "planner_policy_mean_ratio": (
+                    float(
+                        (
+                            planner_policy_objective.probability_ratio.mean()
+                            / total_transitions
+                        ).detach().item()
+                    )
+                    if planner_policy_objective is not None
+                    else 0.0
+                ),
+                "planner_policy_mean_advantage": (
+                    float((policy_advantage / total_transitions).detach().item())
+                    if policy_advantage is not None
+                    else 0.0
+                ),
+                "planner_policy_actions": (
+                    1.0 / total_transitions
+                    if planner_policy_objective is not None
+                    else 0.0
+                ),
                 "token_value_loss": 0.0,
                 "reference_kl_loss": 0.0,
                 "policy_tokens": 0.0,
@@ -724,44 +889,26 @@ class RLAlgorithm:
     ) -> dict[str, torch.Tensor]:
         """计算逐 loss-mask token PPO clipped surrogate 与实际 behavior entropy。"""
 
-        shapes = {
-            tuple(new_log_probs.shape),
-            tuple(old_log_probs.shape),
-            tuple(entropies.shape),
-            tuple(advantages.shape),
-        }
-        if len(shapes) != 1 or new_log_probs.ndim != 1:
-            raise ValueError("PPO token log-probs, entropy and advantages must align")
-
-        probability_ratio = torch.exp(new_log_probs - old_log_probs)
-        clipped_ratio = torch.clamp(
-            probability_ratio,
-            1.0 - self.ppo_clip_ratio,
-            1.0 + self.ppo_clip_ratio,
+        objective = ppo_clipped_policy_loss(
+            new_log_probs=new_log_probs,
+            old_log_probs=old_log_probs,
+            entropies=entropies,
+            advantages=advantages,
+            clip_ratio=self.ppo_clip_ratio,
         )
-        loss = -torch.min(
-            probability_ratio * advantages,
-            clipped_ratio * advantages,
-        ).mean()
-        with torch.no_grad():
-            clip_fraction = (
-                (probability_ratio - 1.0)
-                .abs()
-                .gt(self.ppo_clip_ratio)
-                .float()
-                .mean()
-            )
         return {
-            "loss": loss,
-            "entropy": entropies.mean(),
+            "loss": objective.loss,
+            "entropy": objective.entropy,
             "advantages": advantages,
-            "probability_ratio": probability_ratio,
-            "clip_fraction": clip_fraction,
+            "probability_ratio": objective.probability_ratio,
+            "clip_fraction": objective.clip_fraction,
         }
 
 
 __all__ = [
     "PLANNER_TRAINING_OBJECTIVE",
+    "PLANNER_POLICY_TRAINING_OBJECTIVE",
+    "PlannerOldPolicyStatistics",
     "RLAlgorithm",
     "RLBatch",
     "RLStepOutput",

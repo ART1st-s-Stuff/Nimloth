@@ -95,9 +95,9 @@ def parse_agent_config(raw: Mapping[str, Any] | None) -> AgentConfig:
         if "search_mode" in planning_raw
         else None
     )
-    if search_mode not in {None, "beam", "exhaustive", "greedy"}:
+    if search_mode not in {None, "beam", "exhaustive", "greedy", "policy"}:
         raise ValueError(
-            "agent.planning.search_mode must be beam, exhaustive, or greedy"
+            "agent.planning.search_mode must be beam, exhaustive, greedy, or policy"
         )
     device = str(planning_raw["device"]) if "device" in planning_raw else None
     if device is not None and not device.strip():

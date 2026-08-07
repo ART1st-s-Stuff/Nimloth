@@ -109,7 +109,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--planning-horizon", type=int, default=None)
     ap.add_argument(
         "--planning-search-mode",
-        choices=("greedy", "exhaustive", "beam", "mcts"),
+        choices=("greedy", "exhaustive", "beam", "mcts", "policy"),
         default=None,
     )
     ap.add_argument("--planning-beam-width", type=int, default=None)
@@ -119,6 +119,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--wm-checkpoint", type=Path, default=None)
     ap.add_argument("--state-proj-checkpoint", type=Path, default=None)
     ap.add_argument("--value-head-checkpoint", type=Path, default=None)
+    ap.add_argument("--planner-policy-head-checkpoint", type=Path, default=None)
+    ap.add_argument("--planner-policy-temperature", type=float, default=None)
     ap.add_argument(
         "--fresh-manifest",
         type=Path,
@@ -258,6 +260,27 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("planner rollout requires --vllm-enforce-eager")
         if args.planning_horizon is not None and args.planning_horizon < 1:
             raise ValueError("planning_horizon must be positive")
+        if args.planning_search_mode == "policy":
+            if args.planning_horizon != 1:
+                raise ValueError("PlannerPolicyHead rollout requires horizon=1")
+            if args.planner_policy_head_checkpoint is None:
+                raise ValueError(
+                    "policy planner rollout requires planner_policy_head_checkpoint"
+                )
+            if (
+                args.planner_policy_temperature is None
+                or args.planner_policy_temperature <= 0.0
+            ):
+                raise ValueError(
+                    "policy planner rollout requires positive policy temperature"
+                )
+        elif (
+            args.planner_policy_head_checkpoint is not None
+            or args.planner_policy_temperature is not None
+        ):
+            raise ValueError(
+                "PlannerPolicyHead arguments require planning_search_mode=policy"
+            )
         if args.planning_search_mode == "beam":
             if args.planning_beam_width is None or args.planning_beam_width < 1:
                 raise ValueError("beam planner requires a positive beam width")
@@ -290,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
             args.wm_checkpoint,
             args.state_proj_checkpoint,
             args.value_head_checkpoint,
+            args.planner_policy_head_checkpoint,
+            args.planner_policy_temperature,
             args.mcts_num_simulations,
             args.mcts_exploration_constant,
         )
@@ -371,6 +396,9 @@ def main(argv: list[str] | None = None) -> int:
                 wm_checkpoint=args.wm_checkpoint,
                 state_proj_checkpoint=args.state_proj_checkpoint,
                 value_head_checkpoint=args.value_head_checkpoint,
+                planner_policy_head_checkpoint=(
+                    args.planner_policy_head_checkpoint
+                ),
                 device=planner_device,
             )
             assert args.planning_horizon is not None
@@ -384,6 +412,14 @@ def main(argv: list[str] | None = None) -> int:
                 mcts_num_simulations=args.mcts_num_simulations,
                 mcts_exploration_constant=args.mcts_exploration_constant,
                 planner_device=planner_device,
+                policy_temperature=args.planner_policy_temperature,
+                sample_policy=args.split == "train",
+                policy_generator=(
+                    torch.Generator(device="cpu").manual_seed(args.seed_offset)
+                    if args.planning_search_mode == "policy"
+                    and args.split == "train"
+                    else None
+                ),
                 progress_callback=report_policy_progress,
             )
     else:
@@ -443,6 +479,15 @@ def main(argv: list[str] | None = None) -> int:
                     "wm_predictor": args.wm_checkpoint,
                     "state_projector": args.state_proj_checkpoint,
                     "value_head": args.value_head_checkpoint,
+                    **(
+                        {
+                            "planner_policy_head": (
+                                args.planner_policy_head_checkpoint
+                            )
+                        }
+                        if args.planner_policy_head_checkpoint is not None
+                        else {}
+                    ),
                 }
                 if args.planner_enabled
                 else None

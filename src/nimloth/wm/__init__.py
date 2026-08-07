@@ -3,6 +3,7 @@
 from nimloth.wm.lewm import LeWMConfig, action_one_hot, freeze_module
 from nimloth.wm._vendor_lewm import SIGReg
 from nimloth.wm.model import WorldModel
+from nimloth.wm.planner_policy_head import PlannerPolicyHead
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.reconstruction import WMImageDecoder, WMImageDecoderConfig
 from nimloth.wm.sigreg import SequenceSIGReg
@@ -12,6 +13,7 @@ from nimloth.wm.value_head import ValueHead
 __all__ = [
     "LatentWMPredictor",
     "LeWMConfig",
+    "PlannerPolicyHead",
     "SequenceSIGReg",
     "SIGReg",
     "StateProjector",

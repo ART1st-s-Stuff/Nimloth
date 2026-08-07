@@ -57,6 +57,12 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
                     help="Warm-start StateProjector checkpoint (.pt file)")
     ap.add_argument("--value-head-checkpoint", type=Path, default=None,
                     help="Warm-start ValueHead checkpoint dir")
+    ap.add_argument(
+        "--planner-policy-head-checkpoint",
+        type=Path,
+        default=None,
+        help="Warm-start PlannerPolicyHead checkpoint dir",
+    )
 
     # Rollout 数据来源
     ap.add_argument("--env-url", default=None,
@@ -165,6 +171,20 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(
                 "planner fresh rollout requires " + ", ".join(missing)
             )
+        if (
+            config.planner_policy.enabled
+            and args.planner_policy_head_checkpoint is None
+        ):
+            raise ValueError(
+                "PlannerPolicyHead PPO requires --planner-policy-head-checkpoint"
+            )
+        if (
+            not config.planner_policy.enabled
+            and args.planner_policy_head_checkpoint is not None
+        ):
+            raise ValueError(
+                "--planner-policy-head-checkpoint requires planner_policy.enabled=true"
+            )
 
     output_dir = Path(args.output_dir).resolve()
 
@@ -238,6 +258,15 @@ def main(argv: list[str] | None = None) -> int:
                         "wm_predictor": args.wm_checkpoint,
                         "state_projector": args.state_proj_checkpoint,
                         "value_head": args.value_head_checkpoint,
+                        **(
+                            {
+                                "planner_policy_head": (
+                                    args.planner_policy_head_checkpoint
+                                )
+                            }
+                            if args.planner_policy_head_checkpoint is not None
+                            else {}
+                        ),
                     }
                     if config.agent.planning.enabled
                     else None

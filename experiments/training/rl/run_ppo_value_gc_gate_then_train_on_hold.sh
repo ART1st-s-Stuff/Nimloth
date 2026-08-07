@@ -119,12 +119,20 @@ CURRENT_STAGE=gpu_gate
 printf '%s stage=gpu_gate status=starting min_state_tokens=%s diagnostic_trajectory=%s formal_train_trajectory=%s\n' \
   "$(date -Iseconds)" "${MINIMUM_STATE_TOKENS}" \
   "${GATE_DIAGNOSTIC_TRAJECTORY_JSONL}" "${TRAJECTORY_JSONL}" >> "${STAGE_LOG}"
+GATE_POLICY_ENV=()
+if [[ -s "${RESUME_CHECKPOINT}/planner_policy_head/planner_policy_head.pt" ]]; then
+  GATE_POLICY_ENV+=(
+    PLANNER_POLICY_HEAD_CHECKPOINT="${RESUME_CHECKPOINT}/planner_policy_head"
+  )
+fi
 env \
   RUNTIME_REPO="${REPO}" EXPECTED_COMMIT="${EXPECTED_COMMIT}" \
   OUTPUT_DIR="${GATE_OUT}" SFT2_CHECKPOINT="${RESUME_CHECKPOINT}" \
+  RL_CONFIG="${RL_CONFIG}" \
   TRAJECTORY_JSONL="${GATE_DIAGNOSTIC_TRAJECTORY_JSONL}" \
   FRESH_ROLLOUT_MANIFEST="${GATE_DIAGNOSTIC_MANIFEST}" \
   MINIMUM_STATE_TOKENS="${MINIMUM_STATE_TOKENS}" \
+  "${GATE_POLICY_ENV[@]}" \
   bash "${GPU_GATE}"
 for result in \
   "${GATE_OUT}/single_grad_rank_00.json" \

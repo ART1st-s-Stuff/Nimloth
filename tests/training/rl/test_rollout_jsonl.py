@@ -305,6 +305,33 @@ def test_mcts_trace_roundtrips_visit_and_value_statistics() -> None:
     assert trace.executed_action_index == action_count - 1
 
 
+def test_planner_policy_trace_roundtrips_behavior_distribution() -> None:
+    action_count = len(NAVIGATION_ACTION_SPACE)
+    trajectory = _make_traj("planner_policy", num_steps=1)
+    log_prob = -math.log(action_count)
+    behavior = (log_prob,) * action_count
+    trajectory.action_log_probs[0] = list(behavior)
+    trajectory.planner_policy_traces = [
+        PlannerPolicyTrace(
+            candidate_sequences=tuple((action,) for action in range(action_count)),
+            candidate_scores=tuple(float(action) for action in range(action_count)),
+            root_action_scores=tuple(float(action) for action in range(action_count)),
+            executed_action_index=3,
+            horizon=1,
+            search_mode="policy",
+            selection_mode="policy_sample",
+            policy_action_log_probs=behavior,
+        )
+    ]
+
+    restored = RolloutTrajectory.from_record(trajectory.to_record())
+    trace = restored.planner_policy_traces[0]
+
+    assert trace.selection_mode == "policy_sample"
+    assert trace.policy_action_log_probs == behavior
+    assert trace.behavior_action_log_probs == behavior
+
+
 def test_failed_serialization_does_not_replace_existing_jsonl(tmp_path: Path) -> None:
     jsonl_path = tmp_path / "trajectories.jsonl"
     jsonl_path.write_text("existing\n", encoding="utf-8")

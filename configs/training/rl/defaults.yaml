@@ -29,6 +29,12 @@ actor:
   credit_assignment: action
   max_response_tokens: 64
 
+# --- PlannerPolicyHead PPO ---
+# Enable only with agent.planning.search_mode=policy and horizon=1. Training
+# samples this categorical policy; evaluation uses argmax.
+planner_policy:
+  enabled: false
+
 # --- Predictor ---
 predictor:
   lr: 1e-3

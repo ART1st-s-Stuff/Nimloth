@@ -11,7 +11,10 @@ import torch
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
 from nimloth.config.rl import RLConfig
-from nimloth.training.rl.algorithm import PLANNER_TRAINING_OBJECTIVE
+from nimloth.training.rl.algorithm import (
+    PLANNER_POLICY_TRAINING_OBJECTIVE,
+    PLANNER_TRAINING_OBJECTIVE,
+)
 from nimloth.training.rl.checkpoint import (
     link_checkpoint_snapshot,
     save_rl_checkpoint,
@@ -76,13 +79,22 @@ class RLCheckpointManager:
             truncated_bootstrap=self._config.rl.truncated_bootstrap,
             planner_config=asdict(self._config.agent.planning),
             planner_training_objective=(
-                PLANNER_TRAINING_OBJECTIVE
+                (
+                    PLANNER_POLICY_TRAINING_OBJECTIVE
+                    if self._config.planner_policy.enabled
+                    else PLANNER_TRAINING_OBJECTIVE
+                )
                 if self._config.agent.planning.enabled
                 else None
             ),
             planner_value_config=(
                 asdict(self._config.value_head)
                 if self._config.agent.planning.enabled
+                else None
+            ),
+            planner_policy_config=(
+                asdict(self._config.planner_policy)
+                if self._config.planner_policy.enabled
                 else None
             ),
             reference_kl_config={

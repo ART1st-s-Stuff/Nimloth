@@ -378,6 +378,61 @@ def test_planning_policy_uses_batched_lookahead_and_excludes_action_from_ppo() -
     assert stages == ["planner_start", "planner_done"]
 
 
+class _FixedPolicyHead(torch.nn.Module):
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        logits = torch.arange(
+            len(NAVIGATION_ACTION_SPACE),
+            dtype=state.dtype,
+            device=state.device,
+        )
+        return logits.unsqueeze(0).expand(state.shape[0], -1)
+
+
+def test_planner_policy_head_samples_train_and_uses_argmax_eval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world_model, _predictor = _planning_world_model()
+    world_model.planner_policy_head = _FixedPolicyHead()
+    prompt = AgentPrompt(
+        messages=({"role": "assistant", "content": "<think>"},),
+        images=(),
+        template=PromptTemplateSpec("test", "v1"),
+    )
+    monkeypatch.setattr(
+        torch,
+        "multinomial",
+        lambda *_args, **_kwargs: torch.tensor([1]),
+    )
+    training_policy = PlanningPolicy(
+        turn_policy=_TurnPolicy(),
+        world_model=world_model,
+        horizon=1,
+        search_mode="policy",
+        planner_device=torch.device("cpu"),
+        policy_temperature=0.5,
+        sample_policy=True,
+        policy_generator=torch.Generator().manual_seed(3),
+    )
+    evaluation_policy = PlanningPolicy(
+        turn_policy=_TurnPolicy(),
+        world_model=world_model,
+        horizon=1,
+        search_mode="policy",
+        planner_device=torch.device("cpu"),
+        policy_temperature=0.5,
+        sample_policy=False,
+    )
+
+    sampled = training_policy.select_action(prompt)
+    greedy = evaluation_policy.select_action(prompt)
+
+    assert sampled.action_index == 1
+    assert sampled.planner_trace.selection_mode == "policy_sample"
+    assert sampled.action_log_probs == sampled.planner_trace.policy_action_log_probs
+    assert greedy.action_index == len(NAVIGATION_ACTION_SPACE) - 1
+    assert greedy.planner_trace.selection_mode == "policy_argmax"
+
+
 def test_planning_policy_records_mcts_visits_and_executes_selected_root() -> None:
     world_model = WorldModel(
         state_proj=_ZeroMCTSProjector(),

@@ -8,9 +8,18 @@ from pathlib import Path
 import torch
 
 from nimloth.backbone import backbone_hidden_size
-from nimloth.training.rl.algorithm import PLANNER_TRAINING_OBJECTIVE
+from nimloth.training.rl.algorithm import (
+    PLANNER_POLICY_TRAINING_OBJECTIVE,
+    PLANNER_TRAINING_OBJECTIVE,
+)
 from nimloth.training.sft2.algorithm import SFT2_VALUE_OBJECTIVE
-from nimloth.wm import LatentWMPredictor, StateProjector, ValueHead, WorldModel
+from nimloth.wm import (
+    LatentWMPredictor,
+    PlannerPolicyHead,
+    StateProjector,
+    ValueHead,
+    WorldModel,
+)
 from nimloth.wm.grid import (
     SharedSlotProjector,
     TemporalSpatialGridPredictor,
@@ -27,6 +36,16 @@ class _PlanningGridWorldModel(WorldModel):
                 f"got {tuple(state.shape)}"
             )
         return self.value_head(state.mean(dim=-2)).float()
+
+    def predict_action_logits(self, state: torch.Tensor) -> torch.Tensor:
+        if state.ndim < 3:
+            raise ValueError(
+                "grid policy input must have shape (...,N,D), "
+                f"got {tuple(state.shape)}"
+            )
+        if self.planner_policy_head is None:
+            raise RuntimeError("grid world model has no PlannerPolicyHead")
+        return self.planner_policy_head(state.mean(dim=-2)).float()
 
 
 def _is_grid_predictor_checkpoint(path: Path) -> bool:
@@ -84,10 +103,14 @@ def validate_planning_value_semantics(
             mmap=True,
         )
         actual = state.get("planner_training_objective") if isinstance(state, dict) else None
-        if actual != PLANNER_TRAINING_OBJECTIVE:
+        compatible_objectives = {
+            PLANNER_TRAINING_OBJECTIVE,
+            PLANNER_POLICY_TRAINING_OBJECTIVE,
+        }
+        if actual not in compatible_objectives:
             raise ValueError(
                 "planning checkpoint uses an incompatible RL value objective: "
-                f"expected={PLANNER_TRAINING_OBJECTIVE!r}, actual={actual!r}"
+                f"expected one of {sorted(compatible_objectives)!r}, actual={actual!r}"
             )
         return root
     raise FileNotFoundError(
@@ -102,6 +125,7 @@ def load_planning_world_model(
     wm_checkpoint: Path,
     state_proj_checkpoint: Path,
     value_head_checkpoint: Path,
+    planner_policy_head_checkpoint: Path | None = None,
     device: torch.device,
 ) -> WorldModel:
     """加载 rollout planning 所需的 projector、predictor 和动作 ValueHead。"""
@@ -167,11 +191,21 @@ def load_planning_world_model(
         emb_dim=emb_dim,
         map_location="cpu",
     )
+    planner_policy_head = (
+        PlannerPolicyHead.load_checkpoint(
+            planner_policy_head_checkpoint,
+            emb_dim=emb_dim,
+            map_location="cpu",
+        )
+        if planner_policy_head_checkpoint is not None
+        else None
+    )
     world_model_type = _PlanningGridWorldModel if is_grid else WorldModel
     world_model = world_model_type(
         state_proj=state_proj,
         wm_predictor=predictor,
         value_head=value_head,
+        planner_policy_head=planner_policy_head,
     ).to(device)
     world_model.requires_grad_(False).eval()
     return world_model
