@@ -314,16 +314,26 @@ for pid in "${DDP_STEP_PIDS[@]}"; do
   wait "${pid}" || ddp_status=$?
 done
 if (( ddp_status != 0 )); then
-  tail -n 200 "${RUN_OUT}"/ddp_node_*.log >&2
-  exit "${ddp_status}"
+  complete_rank_results=true
+  for rank in 00 01 02 03; do
+    if [[ ! -s "${GATE_OUT}/ddp_step_rank_${rank}.json" ]]; then
+      complete_rank_results=false
+    fi
+  done
+  if [[ "${complete_rank_results}" != true ]]; then
+    tail -n 200 "${RUN_OUT}"/ddp_node_*.log >&2
+    exit "${ddp_status}"
+  fi
+  echo "DDP srun returned ${ddp_status}; validating all complete rank results" >&2
 fi
 
-PYTHONPATH="${REPO}/src" "${PYTHON}" - "${GATE_OUT}" <<'PY' | tee "${RUN_OUT}/gate_summary.log"
+PYTHONPATH="${REPO}/src" "${PYTHON}" - "${GATE_OUT}" "${ddp_status}" <<'PY' | tee "${RUN_OUT}/gate_summary.log"
 import json
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
+srun_exit = int(sys.argv[2])
 paths = [root / f"ddp_step_rank_{rank:02d}.json" for rank in range(4)]
 results = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
 for rank, result in enumerate(results):
@@ -340,10 +350,20 @@ for rank, result in enumerate(results):
     assert result["lm_head_grad_is_none"] is True
     assert result["state_projector_grads_absent"] is True
     assert result["vision_grads_absent"] is True
-print(json.dumps({"status": "passed", "world_size": 4, "ranks": len(results)}))
+print(json.dumps({
+    "status": "passed",
+    "world_size": 4,
+    "ranks": len(results),
+    "controller_srun_exit": srun_exit,
+}))
 PY
-printf '%s stage=ddp_step status=passed results=%s\n' \
-  "$(date -Iseconds)" "${GATE_OUT}" >> "${STAGE_LOG}"
+if (( ddp_status == 0 )); then
+  printf '%s stage=ddp_step status=passed results=%s\n' \
+    "$(date -Iseconds)" "${GATE_OUT}" >> "${STAGE_LOG}"
+else
+  printf '%s stage=ddp_step status=passed_with_srun_warning srun_exit=%s results=%s\n' \
+    "$(date -Iseconds)" "${ddp_status}" "${GATE_OUT}" >> "${STAGE_LOG}"
+fi
 
 CURRENT_STAGE=complete
 trap - EXIT

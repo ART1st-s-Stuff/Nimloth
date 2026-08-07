@@ -213,6 +213,9 @@ def test_planner_policy_gpu_gate_uses_every_gpu_in_4plus4_hold() -> None:
     assert "reused fresh rollout already has consumption state" in runner
     assert "reused fresh rollout must be outside the new gate output" in runner
     assert "stage=rollout status=reused" in runner
+    assert "validating all complete rank results" in runner
+    assert '"controller_srun_exit": srun_exit' in runner
+    assert "stage=ddp_step status=passed_with_srun_warning" in runner
     assert runner.index('stage=rollout status=starting') < runner.index(
         'stage=single_grad status=starting'
     )
