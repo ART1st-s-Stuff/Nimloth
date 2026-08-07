@@ -4282,3 +4282,7 @@
   `sbatch --test-only`接受请求并暂估18:48:42+08在`dgx-01,dgx-16`启动；该估计可变且formal
   batch不固定节点。详细合同见
   `ai_tasks/ai_progress/2026-08-07_ppo_value_critic_continue20_eval_id143.md`。
+- Formal Job`509368`已按该合同提交；Slurm确认`PENDING(Priority)`、requeue、2节点/
+  总8GPU/128CPU/96GiB、每节点`gres:gpu:4`并排除32/37/51。当前AllocTRES与NodeList为空，
+  尚未创建output/W&B/renderer/rollout/optimizer/consumption/checkpoint；监控将以实际allocation
+  为准。

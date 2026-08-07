@@ -118,3 +118,13 @@ and dependency commit gates above, the exact config/output/checkpoint paths,
 name, online W&B mode, and a fresh renderer attempt root ending
 `143_preempt44`.
 
+## Current status
+
+- Formal Job `509368` was submitted at `2026-08-07T14:31:17+08:00` with the
+  exact command and exports above. Slurm confirms `Requeue=1`, two requested
+  nodes, 128 CPUs, 96 GiB total RAM, eight GPUs total,
+  `TresPerNode=gres:gpu:4`, and exclusions `dgx-32,dgx-37,dgx-51`.
+- The job is currently `PENDING(Priority)`, elapsed zero, with no node list and
+  `AllocTRES=(null)`. No output, W&B run, renderer, rollout, optimizer,
+  consumption or checkpoint has started. The monitor will use the actual
+  allocation, not the earlier test-only estimate.
