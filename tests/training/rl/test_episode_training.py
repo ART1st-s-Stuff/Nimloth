@@ -354,12 +354,13 @@ def test_planner_policy_ppo_reaches_full_prefix_qwen_and_policy_head() -> None:
     runtime, backbone, _builder, projector, predictor, value_head = _runtime()
     policy_head = torch.nn.Linear(2, 8, bias=False)
     with torch.no_grad():
-        # The current projected state is [2, 1].  These distinct rows all produce
-        # the same zero logit on that state, so the saved uniform behavior remains
-        # exact while the policy loss still has a non-zero state/input gradient.
-        rows = torch.arange(8, dtype=policy_head.weight.dtype)
-        policy_head.weight[:, 0].copy_(rows)
-        policy_head.weight[:, 1].copy_(-2.0 * rows)
+        # The persisted rollout decision state is [1, 1.5].  These distinct rows
+        # are orthogonal to it, preserving the exact uniform behavior log-probs.
+        # Their small scale keeps the full-prefix recomputed state [2, 1] inside
+        # the unclipped PPO region while retaining a non-zero input gradient.
+        rows = 0.01 * torch.arange(8, dtype=policy_head.weight.dtype)
+        policy_head.weight[:, 0].copy_(1.5 * rows)
+        policy_head.weight[:, 1].copy_(-rows)
     runtime.agent.wm.planner_policy_head = policy_head
     algorithm = _algorithm(planner_policy_enabled=True)
     transition = episode.transitions[step_index]

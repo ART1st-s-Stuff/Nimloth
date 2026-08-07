@@ -213,7 +213,7 @@ def _training_loop(
         ),
         predictor=SimpleNamespace(history_size=1),
         value_head=SimpleNamespace(ppo_epochs=2),
-        planner_policy=SimpleNamespace(enabled=False),
+        planner_policy=SimpleNamespace(enabled=False, entropy_coeff=0.0),
         training=SimpleNamespace(seed=1, log_interval=1, save_interval=2),
         validation=SimpleNamespace(enabled=False, interval=1),
     )

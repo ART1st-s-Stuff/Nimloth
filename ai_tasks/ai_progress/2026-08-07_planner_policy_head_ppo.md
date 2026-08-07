@@ -82,12 +82,23 @@
 - 两项测试修正与本进度文件通过 `git diff --check` 和独立 `py_compile`；再次核对
   `RLAlgorithm.train_episode_transition()` 与 loop 调用方后，新增的两个可选参数和
   legacy `planner_policy.enabled=false` fixture 与生产接口一致。
-- 服务器 PyTorch 独立数学 probe 验证修正后的 PolicyHead 权重在 state `[2, 1]` 上仍
-  产生 8 个完全相同的零 logits 和 PPO ratio `1.0`，同时 state/input gradient 为
-  `[0.5, -1.0]`（非零）；因此该测试修正保留精确 behavior 概率并真实覆盖梯度回传。
-- 当前执行层仍拒绝已获人类授权的 `git add` 提权请求，因此没有绕过 Git 去远端改代码。
-  服务器干净 worktree 已只读确认仍为 `dev@7f12c79f` 且与 `origin/dev` 一致；必须先把
-  本地三文件修正提交并通过 Git 同步，才能重跑 focused suite 和放行 GPU gate。
+- 人类提交并推送测试修正 `4c226504` 后，服务器干净 worktree 通过 Git 线性快进到该
+  commit；同一 10 文件 suite 仍为 `125 passed, 3 failed`。这次 traceback 进一步暴露：
+  独立数学 probe 只检查了完整 prefix 重算 state `[2, 1]`，但 freshness 门禁先在持久化
+  rollout decision state `[1, 1.5]` 上校验 behavior log-probs，因此此前“精确保留
+  behavior 概率”的结论无效；两个 legacy loop fixture 还缺无条件读取的
+  `planner_policy.entropy_coeff`。
+- 第二轮测试修正将 PolicyHead 行设置为 rollout state `[1, 1.5]` 的小幅正交方向：old
+  logits 精确相同，同时完整 prefix 重算 state `[2, 1]` 上保留未裁剪的非零 PPO 梯度；
+  legacy fixture 补入 `entropy_coeff=0.0`。本轮再次通过 `git diff --check` 和独立
+  `py_compile`。服务器 PyTorch 数学 probe 得到 old logits 数值误差不超过 `4e-9`、
+  当前 selected-action PPO ratio `0.9694273`（位于 `[0.8, 1.2]` 内）以及非零 state
+  gradient `[0.0233383, -0.0155589]`；待提交后重跑同一 suite。
+- 已将本次错误结论登记为
+  `ai_rules/known_errors/E0087_validate_planner_policy_both_states.md`：后续必须分别验证
+  持久化 rollout state 的 behavior freshness 和完整 prefix 重算 state 的 PPO 梯度。
+- 当前执行层仍拒绝已获人类授权的 Git index 写操作，因此没有绕过 Git 去远端改代码。
+  必须先把本地第二轮三文件修正提交并同步，才能放行 GPU gate。
 
 ## 待确认问题
 
