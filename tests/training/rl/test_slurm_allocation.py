@@ -198,6 +198,7 @@ def test_planner_policy_gpu_gate_uses_every_gpu_in_4plus4_hold() -> None:
     assert '[[ "${#NODES[@]}" == 2 ]]' in runner
     assert '[[ "${GPU_COUNTS[${node}]:-}" == 4 ]]' in runner
     assert '"2 4 2 8 4"' in runner
+    assert "MINIMUM_STATE_TOKENS=${MINIMUM_STATE_TOKENS:-1}" in runner
     assert "nimloth.environment.navigation.direct_render_probe" in runner
     assert '"status": "AI2THOR_RENDER_OK"' in runner
     assert (
@@ -208,6 +209,10 @@ def test_planner_policy_gpu_gate_uses_every_gpu_in_4plus4_hold() -> None:
     assert 'for local_rank in 0 1; do' in runner
     assert '--gpus-per-rank 2' in runner
     assert 'for rank in range(4)' in runner
+    assert 'FRESH_ROLLOUT_SOURCE=${FRESH_ROLLOUT_SOURCE:-}' in runner
+    assert "reused fresh rollout already has consumption state" in runner
+    assert "reused fresh rollout must be outside the new gate output" in runner
+    assert "stage=rollout status=reused" in runner
     assert runner.index('stage=rollout status=starting') < runner.index(
         'stage=single_grad status=starting'
     )

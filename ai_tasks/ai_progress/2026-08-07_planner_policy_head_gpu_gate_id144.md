@@ -61,3 +61,18 @@
 - Pending: commit the 4+4 config/launcher/metadata change, synchronize the
   server worktree, verify ID143 files and output absence, initialize the head,
   submit/attach the hold, and monitor rollout plus both gate phases.
+
+## Terminal result
+
+- Job `509867` obtained `dgx-01 + dgx-16` with four GPUs per node. Both real
+  renderer probes and environment prewarms passed.
+- The two TP4 workers strictly merged eight `base_train` trajectories, seeds
+  185--192, with 144 transitions and success 2/8. The manifest is complete,
+  behavior-checkpoint matched and unconsumed.
+- `single_grad` failed before forward/backward because the longest real final
+  prefix was 4,136 tokens, below an inherited 14,000-token diagnostic
+  threshold. There was no OOM, DDP launch, optimizer step or checkpoint.
+- ID144 is terminal failed and must not resume. ID145 may reuse only its
+  immutable unconsumed rollout, while writing all gate evidence to a new output
+  identity and selecting the longest real prefix without the unrelated legacy
+  stress threshold.

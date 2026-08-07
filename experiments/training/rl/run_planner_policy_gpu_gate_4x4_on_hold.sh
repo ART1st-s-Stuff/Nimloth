@@ -19,10 +19,11 @@ SEED_OFFSET=${SEED_OFFSET:-185}
 ENV_PORT_BASE=${ENV_PORT_BASE:-9860}
 TRAIN_MASTER_PORT=${TRAIN_MASTER_PORT:-32940}
 GATE_MASTER_PORT=${GATE_MASTER_PORT:-32941}
-MINIMUM_STATE_TOKENS=${MINIMUM_STATE_TOKENS:-14000}
+MINIMUM_STATE_TOKENS=${MINIMUM_STATE_TOKENS:-1}
+FRESH_ROLLOUT_SOURCE=${FRESH_ROLLOUT_SOURCE:-}
 PARALLEL_RUNNER=${REPO}/experiments/training/rl/run_vllm_online_ppo_parallel_slurm.sh
 GATE=${REPO}/experiments/training/rl/gpu_gate_ppo_value_critic.py
-ROLLOUT_OUT=${RUN_OUT}/rollouts/iter_0001
+ROLLOUT_OUT=${FRESH_ROLLOUT_SOURCE:-${RUN_OUT}/rollouts/iter_0001}
 TRAJECTORY_JSONL=${ROLLOUT_OUT}/trajectories.jsonl
 FRESH_ROLLOUT_MANIFEST=${ROLLOUT_OUT}/fresh_policy_manifest.json
 GATE_OUT=${RUN_OUT}/gpu_gate
@@ -104,6 +105,26 @@ print(
   echo "gate config does not declare eight episodes and four PlannerPolicyHead PPO epochs" >&2
   exit 1
 }
+if [[ -n "${FRESH_ROLLOUT_SOURCE}" ]]; then
+  FRESH_ROLLOUT_SOURCE=$(realpath "${FRESH_ROLLOUT_SOURCE}")
+  ROLLOUT_OUT=${FRESH_ROLLOUT_SOURCE}
+  TRAJECTORY_JSONL=${ROLLOUT_OUT}/trajectories.jsonl
+  FRESH_ROLLOUT_MANIFEST=${ROLLOUT_OUT}/fresh_policy_manifest.json
+  [[ -s "${TRAJECTORY_JSONL}" && -s "${FRESH_ROLLOUT_MANIFEST}" ]] || {
+    echo "reused fresh rollout is incomplete" >&2
+    exit 1
+  }
+  [[ ! -e "${FRESH_ROLLOUT_MANIFEST}.consumption.json" ]] || {
+    echo "reused fresh rollout already has consumption state" >&2
+    exit 1
+  }
+  case "${ROLLOUT_OUT}" in
+    "${RUN_OUT}"/*)
+      echo "reused fresh rollout must be outside the new gate output" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 mkdir -p "${RUN_OUT%/*}"
 CURRENT_STAGE=preflight
@@ -118,62 +139,85 @@ trap record_exit EXIT
 printf '%s stage=preflight status=passed hold=%s nodes=%s commit=%s\n' \
   "$(date -Iseconds)" "${HOLD_JOB}" "${NODES[*]}" "${EXPECTED_COMMIT}" > "${STAGE_LOG}"
 
-CURRENT_STAGE=render_preflight
-printf '%s stage=render_preflight status=starting\n' "$(date -Iseconds)" >> "${STAGE_LOG}"
-mkdir -p "${RENDER_PREFLIGHT_OUT}"
-RENDER_STEP_PIDS=()
-for node in "${NODES[@]}"; do
-  node_out=${RENDER_PREFLIGHT_OUT}/${node}
-  mkdir -p "${node_out}"
-  srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
-    -w "${node}" --gres=gpu:1 \
-    env REPO="${REPO}" ENV_REPO="${ENV_REPO}" PYTHON="${PYTHON}" \
-      NODE_OUT="${node_out}" RENDER_PREFLIGHT_TIMEOUT="${RENDER_PREFLIGHT_TIMEOUT}" \
-    bash -lc '
-      set -euo pipefail
-      export AI2THOR_HOME_ROOT="${NODE_OUT}/home"
-      source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh"
-      export PYTHONPATH="${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${ENV_REPO}/external/le-wm"
-      timeout --signal=TERM --kill-after=10s "${RENDER_PREFLIGHT_TIMEOUT}s" \
-        "${PYTHON}" -m nimloth.environment.navigation.direct_render_probe \
-          --gpu-device 0
-    ' >"${node_out}/gpu0.log" 2>&1 &
-  RENDER_STEP_PIDS+=("$!")
-done
-render_status=0
-for pid in "${RENDER_STEP_PIDS[@]}"; do
-  wait "${pid}" || render_status=$?
-done
-for node in "${NODES[@]}"; do
-  grep -Fq '"status": "AI2THOR_RENDER_OK"' \
-    "${RENDER_PREFLIGHT_OUT}/${node}/gpu0.log" || render_status=1
-done
-if (( render_status != 0 )); then
-  tail -n 100 "${RENDER_PREFLIGHT_OUT}"/*/gpu0.log >&2
-  exit "${render_status}"
-fi
-printf '%s stage=render_preflight status=passed nodes=%s\n' \
-  "$(date -Iseconds)" "${NODES[*]}" >> "${STAGE_LOG}"
+if [[ -z "${FRESH_ROLLOUT_SOURCE}" ]]; then
+  CURRENT_STAGE=render_preflight
+  printf '%s stage=render_preflight status=starting\n' "$(date -Iseconds)" >> "${STAGE_LOG}"
+  mkdir -p "${RENDER_PREFLIGHT_OUT}"
+  RENDER_STEP_PIDS=()
+  for node in "${NODES[@]}"; do
+    node_out=${RENDER_PREFLIGHT_OUT}/${node}
+    mkdir -p "${node_out}"
+    srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+      -w "${node}" --gres=gpu:1 \
+      env REPO="${REPO}" ENV_REPO="${ENV_REPO}" PYTHON="${PYTHON}" \
+        NODE_OUT="${node_out}" RENDER_PREFLIGHT_TIMEOUT="${RENDER_PREFLIGHT_TIMEOUT}" \
+      bash -lc '
+        set -euo pipefail
+        export AI2THOR_HOME_ROOT="${NODE_OUT}/home"
+        source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh"
+        export PYTHONPATH="${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${ENV_REPO}/external/le-wm"
+        timeout --signal=TERM --kill-after=10s "${RENDER_PREFLIGHT_TIMEOUT}s" \
+          "${PYTHON}" -m nimloth.environment.navigation.direct_render_probe \
+            --gpu-device 0
+      ' >"${node_out}/gpu0.log" 2>&1 &
+    RENDER_STEP_PIDS+=("$!")
+  done
+  render_status=0
+  for pid in "${RENDER_STEP_PIDS[@]}"; do
+    wait "${pid}" || render_status=$?
+  done
+  for node in "${NODES[@]}"; do
+    grep -Fq '"status": "AI2THOR_RENDER_OK"' \
+      "${RENDER_PREFLIGHT_OUT}/${node}/gpu0.log" || render_status=1
+  done
+  if (( render_status != 0 )); then
+    tail -n 100 "${RENDER_PREFLIGHT_OUT}"/*/gpu0.log >&2
+    exit "${render_status}"
+  fi
+  printf '%s stage=render_preflight status=passed nodes=%s\n' \
+    "$(date -Iseconds)" "${NODES[*]}" >> "${STAGE_LOG}"
 
-CURRENT_STAGE=rollout
-printf '%s stage=rollout status=starting\n' "$(date -Iseconds)" >> "${STAGE_LOG}"
-env \
-  HOLD_JOB="${HOLD_JOB}" REPO="${REPO}" ENV_REPO="${ENV_REPO}" \
-  PYTHON="${PYTHON}" MODEL="${MODEL}" WM_CKPT="${MODEL}" \
-  PLANNER_POLICY_HEAD_CKPT="${PLANNER_POLICY_HEAD_CKPT}" \
-  REFERENCE_MODEL="${MODEL}" RL_CONFIG="${RL_CONFIG}" RUN_OUT="${RUN_OUT}" \
-  WANDB_PROJECT="${WANDB_PROJECT}" WANDB_RUN_NAME="${WANDB_RUN_NAME}" \
-  WANDB_MODE_OVERRIDE=disabled ITERATION=1 TOTAL_ITERATIONS=1 \
-  RUN_INITIAL_GLOBAL_STEP=0 SEED_OFFSET="${SEED_OFFSET}" \
-  ENV_PORT_BASE="${ENV_PORT_BASE}" TRAIN_MASTER_PORT="${TRAIN_MASTER_PORT}" \
-  ROLLOUT_WORKERS=2 PIPELINE_MODE=train PIPELINE_PHASE=rollout \
-  bash "${PARALLEL_RUNNER}"
-[[ -s "${TRAJECTORY_JSONL}" && -s "${FRESH_ROLLOUT_MANIFEST}" ]] || {
-  echo "rollout stage returned without merged fresh artifacts" >&2
-  exit 1
-}
-printf '%s stage=rollout status=passed manifest=%s\n' \
-  "$(date -Iseconds)" "${FRESH_ROLLOUT_MANIFEST}" >> "${STAGE_LOG}"
+  CURRENT_STAGE=rollout
+  printf '%s stage=rollout status=starting\n' "$(date -Iseconds)" >> "${STAGE_LOG}"
+  env \
+    HOLD_JOB="${HOLD_JOB}" REPO="${REPO}" ENV_REPO="${ENV_REPO}" \
+    PYTHON="${PYTHON}" MODEL="${MODEL}" WM_CKPT="${MODEL}" \
+    PLANNER_POLICY_HEAD_CKPT="${PLANNER_POLICY_HEAD_CKPT}" \
+    REFERENCE_MODEL="${MODEL}" RL_CONFIG="${RL_CONFIG}" RUN_OUT="${RUN_OUT}" \
+    WANDB_PROJECT="${WANDB_PROJECT}" WANDB_RUN_NAME="${WANDB_RUN_NAME}" \
+    WANDB_MODE_OVERRIDE=disabled ITERATION=1 TOTAL_ITERATIONS=1 \
+    RUN_INITIAL_GLOBAL_STEP=0 SEED_OFFSET="${SEED_OFFSET}" \
+    ENV_PORT_BASE="${ENV_PORT_BASE}" TRAIN_MASTER_PORT="${TRAIN_MASTER_PORT}" \
+    ROLLOUT_WORKERS=2 PIPELINE_MODE=train PIPELINE_PHASE=rollout \
+    bash "${PARALLEL_RUNNER}"
+  [[ -s "${TRAJECTORY_JSONL}" && -s "${FRESH_ROLLOUT_MANIFEST}" ]] || {
+    echo "rollout stage returned without merged fresh artifacts" >&2
+    exit 1
+  }
+  printf '%s stage=rollout status=passed manifest=%s\n' \
+    "$(date -Iseconds)" "${FRESH_ROLLOUT_MANIFEST}" >> "${STAGE_LOG}"
+else
+  mkdir -p "${RUN_OUT}"
+  cat > "${RUN_OUT}/README.md" <<EOF
+# PlannerPolicyHead PPO 4+4 mechanics gate retry
+
+- status: running
+- Nimloth commit: ${EXPECTED_COMMIT}
+- model/WM/ValueHead initialization: ${MODEL}
+- PlannerPolicyHead initialization: ${PLANNER_POLICY_HEAD_CKPT}
+- immutable unconsumed fresh rollout: ${ROLLOUT_OUT}
+- selection: longest real final prefixes; minimum ${MINIMUM_STATE_TOKENS} token
+- update: 2 nodes, 4 synchronized ranks x 2 GPUs/rank, 4 PPO epochs
+- trainable: Qwen language body, ValueHead and PlannerPolicyHead
+- frozen: Qwen vision, lm_head, StateProjector and WM predictor
+- W&B: disabled; reserved identity ${WANDB_PROJECT}/${WANDB_RUN_NAME}
+- output: ${RUN_OUT}
+EOF
+  printf '%s stage=render_preflight status=reused source_allocation=%s\n' \
+    "$(date -Iseconds)" "${HOLD_JOB}" >> "${STAGE_LOG}"
+  printf '%s stage=rollout status=reused manifest=%s\n' \
+    "$(date -Iseconds)" "${FRESH_ROLLOUT_MANIFEST}" >> "${STAGE_LOG}"
+fi
 
 COMMON_ENV=(
   PYTHON="${PYTHON}"
