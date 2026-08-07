@@ -157,12 +157,23 @@ def test_wait_launcher_gates_and_detaches_one_existing_1x8_hold() -> None:
 def test_4plus4_batch_gates_each_rollout_node_renderer_before_training() -> None:
     batch = EIGHT_GPU_BATCH.read_text(encoding="utf-8")
 
+    assert ': "${EXPECTED_VAGEN_COMMIT:?}"' in batch
+    assert ': "${EXPECTED_LEWM_COMMIT:?}"' in batch
+    assert 'git -C "${ENV_REPO}/external/VAGEN" rev-parse HEAD' in batch
+    assert 'git -C "${ENV_REPO}/external/le-wm" rev-parse HEAD' in batch
+    assert "ENV_DEPENDENCIES_OK" in batch
     assert 'for node in "${ALLOCATED_NODES[@]}"; do' in batch
     assert "SLURM_RESTART_COUNT" in batch
     assert '(( ${#allocated_gpus[@]} == 4 ))' in batch
     assert 'export CUDA_VISIBLE_DEVICES="${allocated_gpus[0]}"' in batch
     assert "nimloth.environment.navigation.direct_render_probe" in batch
     assert "grep -Fq '\"status\": \"AI2THOR_RENDER_OK\"'" in batch
+    assert batch.index("ENV_DEPENDENCIES_OK") < batch.index(
+        "WANDB_IDENTITIES_OK"
+    )
+    assert batch.index("ENV_DEPENDENCIES_OK") < batch.index(
+        "RENDER_PREFLIGHT_ALL_OK"
+    )
     assert batch.index("RENDER_PREFLIGHT_ALL_OK") < batch.index(
         "run_vllm_online_ppo_full.sh"
     )

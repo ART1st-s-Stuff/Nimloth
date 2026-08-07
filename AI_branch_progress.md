@@ -4248,3 +4248,19 @@
   确认为总8GPU/128CPU/96GiB，当前`PENDING(Priority)`、elapsed0、AllocTRES空且start time
   unknown。尚无ID142 output/W&B/rollout/optimizer/consumption/checkpoint。详细合同见
   `ai_tasks/ai_progress/2026-08-07_ppo_value_critic_continue20_eval_id142.md`。
+
+## 2026-08-07：ID142 preempt 4+4在rollout前因ENV_REPO错误终止
+
+- Job`509332`于14:04:37+08获得`dgx-16,dgx-22`，实际合同为preempt 2节点各4GPU/
+  64CPU/48GiB。两节点rollout slot0的exact single-visible renderer probe均通过：
+  `dgx-16` 92.340秒、`dgx-22` 105.056秒，均输出255x255、dynamic range246的
+  `AI2THOR_RENDER_OK`。
+- batch随后在任何rollout/model load/W&B/optimizer之前失败：提交环境误设
+  `ENV_REPO=/project/peilab/atst/flower`，controller找不到其下的`external/VAGEN`并以
+  exit128退出。Job终态`FAILED`、elapsed2分10秒；两个renderer steps均`COMPLETED 0:0`。
+- ID142 output只有空`rollouts/iter_0017/shards`与`train`骨架，没有trajectory、manifest、
+  W&B run、optimizer step、consumption或checkpoint；该identity终止且不可resume。下一次以
+  新ID/空output从ID141 committed global step16重试，并显式使用server Nimloth worktree；
+  其VAGEN/LeWM pins分别为`192c35a9`/`8edfeb33`。
+- 4+4 batch正在增加`ENV_REPO`依赖路径与exact submodule commit前置门禁；重提前也将在login
+  node执行同一检查，使错误checkout在请求GPU allocation前失败。

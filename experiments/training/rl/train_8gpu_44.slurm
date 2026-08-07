@@ -11,6 +11,8 @@ set -euo pipefail
 : "${ENV_REPO:?}"
 : "${PYTHON:?}"
 : "${EXPECTED_COMMIT:?}"
+: "${EXPECTED_VAGEN_COMMIT:?}"
+: "${EXPECTED_LEWM_COMMIT:?}"
 : "${RL_CONFIG:?}"
 : "${ITERATION_RUNNER:?}"
 : "${RUN_OUT:?}"
@@ -63,6 +65,24 @@ actual_commit=$(git -C "${REPO}" rev-parse HEAD)
   echo "tracked worktree is dirty" >&2
   exit 1
 }
+
+for dependency in VAGEN le-wm; do
+  [[ -e "${ENV_REPO}/external/${dependency}/.git" ]] || {
+    echo "missing ${dependency} worktree: ${ENV_REPO}/external/${dependency}" >&2
+    exit 1
+  }
+done
+vagen_commit=$(git -C "${ENV_REPO}/external/VAGEN" rev-parse HEAD)
+[[ "${vagen_commit}" == "${EXPECTED_VAGEN_COMMIT}" ]] || {
+  echo "VAGEN commit gate failed: ${vagen_commit} != ${EXPECTED_VAGEN_COMMIT}" >&2
+  exit 1
+}
+lewm_commit=$(git -C "${ENV_REPO}/external/le-wm" rev-parse HEAD)
+[[ "${lewm_commit}" == "${EXPECTED_LEWM_COMMIT}" ]] || {
+  echo "LeWM commit gate failed: ${lewm_commit} != ${EXPECTED_LEWM_COMMIT}" >&2
+  exit 1
+}
+echo "ENV_DEPENDENCIES_OK VAGEN=${vagen_commit} LeWM=${lewm_commit}"
 
 if [[ -n "${WANDB_ENTITY:-}" && ! -e "${RUN_OUT}" ]]; then
   NIMLOTH_WANDB_ENTITY="${WANDB_ENTITY}" \

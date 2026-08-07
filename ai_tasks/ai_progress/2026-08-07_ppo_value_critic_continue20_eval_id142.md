@@ -104,18 +104,32 @@
   elapsed zero before allocation (`AllocTRES` empty). It never ran code or
   created output/W&B/rollout/optimizer state, so this is a resource-plan change,
   not an ID142 experiment failure.
-- The preempt 4+4 test-only request is accepted and estimates
-  `2026-08-07T18:19:43+08:00` on `dgx-16,dgx-42`. The exact updated train and
-  `-eval` W&B names both have zero matches, and the updated output is absent.
-- Formal preempt batch Job `509332` is submitted with the exact 4+4 contract:
-  two nodes, four GPUs/64 CPUs/48 GiB per node, three hours, requeue enabled and
-  known incompatible nodes `dgx-32/37/51` excluded. `scontrol -dd` confirms
-  total `cpu=128,mem=96G,node=2,gres/gpu=8` and `TresPerNode=gres/gpu:4`.
-- Job `509332` is currently `PENDING(Priority)`, elapsed zero, with empty
-  `AllocTRES` and no formal start-time estimate. The preceding test-only
-  estimate remains volatile and does not prove the job will use those nodes.
-- Training and evaluation have not started. There is no ID142 output, W&B run,
-  rollout, optimizer step, consumption or checkpoint yet.
+- Formal preempt batch Job `509332` received `dgx-16,dgx-22` at
+  `2026-08-07T14:04:37+08:00`, with two nodes x four GPUs/64 CPUs/48 GiB and
+  requeue enabled. Both exact single-visible renderer probes passed before the
+  controller: `dgx-16` reported `AI2THOR_RENDER_OK` in 92.340 seconds and
+  `dgx-22` in 105.056 seconds, both with a 255x255 frame and dynamic range 246.
+- The batch then failed at `2026-08-07T14:06:47+08:00`, before rollout, because
+  its submitted `ENV_REPO=/project/peilab/atst/flower` made the controller run
+  `git -C /project/peilab/atst/flower/external/VAGEN ...`; that directory does
+  not exist. The correct environment checkout is the same pinned Nimloth
+  server worktree as `REPO`, whose VAGEN and LeWM commits are respectively
+  `192c35a91f3941b72d5e1272af6603ef7a7d93e0` and
+  `8edfeb336732b5f3ce7b8b210d0ba370a09e2cac`.
+- Slurm records Job `509332` and its batch step as `FAILED` after 2m10s;
+  renderer steps `509332.0` and `509332.1` are `COMPLETED 0:0`. The adjacent
+  iteration log records step 17 starting with seed offset 153 and immediately
+  ending `controller_failed exit=128`.
+- The output contains only empty `rollouts/iter_0017/shards` and `train`
+  directories. There is no trajectory, manifest, W&B run, optimizer step,
+  consumption sidecar or checkpoint. ID142 is terminal and cannot be resumed;
+  its retry must use a new ID, new W&B identity and empty output while resuming
+  the unchanged committed ID141 global-step-16 checkpoint.
+- Before retry, the 4+4 batch entrypoint is being changed to require and verify
+  the VAGEN and LeWM worktree paths and exact commits before W&B, renderer or
+  controller launch. The same dependency gate will also be run on the login
+  node before `sbatch`, so this class of path error is rejected before a GPU
+  allocation is requested.
 - No new durable memory is proposed: the held-out evaluation contract is
   already documented, and the seed offset is a run-specific continuation
   detail.
