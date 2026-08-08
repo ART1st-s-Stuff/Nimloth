@@ -1,0 +1,85 @@
+# 2026-08-07: ID146 PlannerPolicyHead PPO from corrected SFT2 epoch 1
+
+## Purpose and evidence boundary
+
+- Start a fresh RL run at global step 0 from the corrected SFT2 epoch-1
+  checkpoint, train the H=1 PlannerPolicyHead with action-level PPO through
+  global step 20, and then run the standard 120-episode held-out evaluation.
+- This is the first formal training run for the PlannerPolicyHead objective.
+  The completed ID145 4+4 gate is mechanics evidence only; ID143 and all other
+  RL checkpoints, optimizer states, rollout batches and consumption records are
+  excluded from initialization.
+- Training-rollout success is an optimization diagnostic. Policy quality is
+  measured only by the final held-out `base/common_sense` evaluation and must
+  not be described as an improvement without a compatible baseline comparison.
+
+## Initialization and supervision contract
+
+- SFT2 checkpoint:
+  `/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001`.
+- The server preflight re-read non-empty Qwen, StateProjector, WM predictor,
+  ValueHead and SFT2 training-state files. The root has no `rl_state.pt`, so the
+  run begins without an RL optimizer or consumption state.
+- PlannerPolicyHead is initialized independently with seed 42 using the exact
+  SFT2 ValueHead architecture. No ValueHead parameter is copied into the policy
+  head.
+- For each training environment step, the H=1 policy planner samples the
+  executed action from the PlannerPolicyHead categorical distribution and
+  persists its real behavior log-probabilities. Four clipped-ratio PPO epochs
+  supervise PlannerPolicyHead; the state-only ValueHead supplies the advantage
+  baseline and is trained against MC returns. PPO gradients use differentiable
+  full-prefix Qwen recomputation through the frozen StateProjector.
+- Trainable: Qwen language body, WM predictor, ValueHead and PlannerPolicyHead.
+  Frozen: Qwen vision, `lm_head`, StateProjector, DINO teacher and direct-Qwen
+  token actor. No fixed or invented CoT is introduced.
+
+## Data, schedule and evaluation
+
+- Config:
+  `configs/training/rl/planner_policy_h1_full_16rollout_8gpu_44_step20.yaml`.
+- Entrypoints: batch-owned `experiments/training/rl/train_8gpu_44.slurm`, outer
+  `run_vllm_online_ppo_full.sh`, and two-worker
+  `run_vllm_online_ppo_parallel_slurm.sh`.
+- Each of 20 iterations collects 16 fresh episodes, split evenly across
+  `base_train` and `common_sense_train`, with at most 20 environment steps and
+  bounded per-episode retries. The server assets contain 1,200 tasks each.
+- After committed global step 20, external evaluation uses held-out `base` and
+  `common_sense`, 60 tasks/seeds each and 120 total. These assets contain 60
+  tasks each and never enter the optimizer.
+- PlannerPolicyHead PPO: clip ratio 0.2, entropy coefficient 0.01, temperature
+  1.0 and four epochs. Qwen backbone LR is `1e-6`; WM, ValueHead and
+  PlannerPolicyHead LRs are `1e-4`. DINO-grid auxiliary weight is 0.5.
+
+## Identity, output and recovery
+
+- Code/config commit: `42e29ee25efae03ce89909f76fc2a954b7231782`.
+- W&B project/run:
+  `nimloth-rl/146_plannerpolicy_sft2ep1_rl16_eval20x120_policyh1_k16_dino05_ppo4_iter20_2n4r2g_2xtp4_preempt44`.
+- Live W&B exact-name queries for the training and `-eval` names returned zero
+  matches before submission.
+- Formal output:
+  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-07/146_plannerpolicy_sft2ep1_rl16_eval20x120_policyh1_k16_dino05_ppo4_iter20_2n4r2g_2xtp4_preempt44`.
+- Every committed iteration writes a complete checkpoint, atomically commits
+  the matching fresh-rollout consumption record and preserves the next policy
+  input. A preempted job may resume only from the latest complete committed
+  checkpoint. It must never consume an uncommitted or stale rollout.
+
+## Resources and completed launch validation
+
+- Requested topology: `preempt`, two physical nodes with four H800 GPUs each,
+  four synchronized two-GPU training ranks, and two TP4 rollout workers. The
+  top-level controller is owned by the Slurm batch rather than the login SSH
+  session.
+- Expected elapsed time is roughly 5--7 hours (40--56 GPU-hours). The batch may
+  be preempted and requeued; the allocation must be revalidated on every start.
+- Resource snapshot before submission showed 32 free preempt GPUs, including
+  one idle eight-GPU node and several nodes able to satisfy a flexible 4+4
+  request. Submission must refresh this snapshot and must not pin stale nodes.
+- Remote worktree was tracked-clean at the code/config commit (apart from
+  ignored submodule untracked content). Shell syntax and the focused config,
+  full-runner, Slurm, PlannerPolicyHead PPO, checkpoint and rollout suite passed:
+  `133 passed, 1 expected warning in 114.10s`.
+- Pending: commit this launch record, synchronize the server worktree, create
+  and hash the fresh PlannerPolicyHead artifact, run exact login-node preflight,
+  submit one flexible preempt 4+4 batch, and monitor allocation, renderer,
+  rollout and the first finite synchronized PPO update.
