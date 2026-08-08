@@ -4352,3 +4352,15 @@
 - 远程output README已补全终态命令、lineage、metrics、分析与resume说明。本实验
   已完成，不需要resume；未来续训必须使用新identity、从committed step20
   `train/final`开始，并选择不重叠的fresh training seeds。
+
+## 2026-08-09：确认PlannerPolicyHead复用VERL/VAGEN的算法边界
+
+- pinned VAGEN配置与worker源码确认默认`ppo_epochs=1`，critic继承actor；现有baseline
+  launcher未覆盖该值。每个epoch仍遍历全部mini-batch，因此epoch数不等于optimizer-step数。
+- 人类确认保留PlannerPolicyHead环境动作PPO、executed-action `Q(s,a)`、WM/DINO和
+  fresh-consumption/checkpoint语义，只迁移VERL/VAGEN的DataProto、动态batch、FSDP、
+  checkpoint/offload、Ray资源编排和并发rollout能力；禁止用stock token PPO替代后声称等价。
+- ID147 Job`511059`继续跑完且不改变runtime。本任务从`79f12f06`创建独立
+  `feat/planner-verl-vagen-scaffold` worktree；旧`feat/fsdp-dynamic-rollout`只作为经门禁的
+  组件来源，不整分支合并。详细计划见
+  `ai_tasks/ai_progress/2026-08-09_planner_verl_vagen_scaffold.md`。
