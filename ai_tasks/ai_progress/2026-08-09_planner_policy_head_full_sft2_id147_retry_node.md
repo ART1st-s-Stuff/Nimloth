@@ -97,6 +97,29 @@
   20 evaluation with 120 held-out episodes, PlannerPolicyHead enabled, PPO four
   epochs and clip 0.2.
 - No user Slurm job was active at the login preflight snapshot.
-- Pending before submission: exact `sbatch --test-only` with the new exclusion,
-  immediate resource/state refresh, one formal submission, then monitoring of
-  actual-node renderer, rollout, optimizer, consumption and checkpoint health.
+- Exact `sbatch --test-only` accepted the full request and estimated
+  `dgx-38,dgx-44`. The immediate pre-submit resource refresh still showed 26
+  free preempt GPUs, including four on `dgx-38` and eight on `dgx-44`.
+
+## Submission status
+
+- Formal Job `511059` was submitted at `2026-08-09T01:40:02+08:00` with job name
+  `id147-pp-sft2-node`. Its Slurm contract is two nodes x four GPUs, 64 CPUs and
+  48 GiB per node, eight hours, `Requeue=1`, and exclusions
+  `dgx-17,dgx-32,dgx-37,dgx-51`.
+- The first observation was `PENDING(Priority)` with empty `NodeList` and
+  `AllocTRES`. Ten seconds later Slurm allocated `dgx-38,dgx-44`; the job began
+  at `01:40:12+08:00` with the full eight GPUs/128 CPUs. The absolute batch
+  command and exported `REPO` contract are used even though Slurm recorded the
+  submission working directory as `/home/csejzhang`.
+- Runtime/dependency and W&B uniqueness gates passed. Both exact cold-home
+  renderer probes then passed within the unchanged 150-second gate: `dgx-38`
+  emitted `AI2THOR_RENDER_OK` in 74.200 seconds and `dgx-44` in 76.360 seconds;
+  both frames were 255x255 with dynamic range 246. Slurm recorded both renderer
+  steps `COMPLETED 0:0`.
+- The outer controller started iteration 1 at `01:42:24+08:00` from the corrected
+  SFT2 checkpoint with seed offset 1. It created the formal README/train/rollout
+  skeleton and launched one TP4 rollout step on each node. This proves allocation
+  and renderer health only; no claim of healthy rollout or training is made
+  until both TP4 rollouts, strict merge, synchronized PPO update, consumption
+  commit and complete checkpoint are verified.
