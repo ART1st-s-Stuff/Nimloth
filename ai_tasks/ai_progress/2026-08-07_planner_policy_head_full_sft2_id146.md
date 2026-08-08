@@ -83,3 +83,65 @@
   and hash the fresh PlannerPolicyHead artifact, run exact login-node preflight,
   submit one flexible preempt 4+4 batch, and monitor allocation, renderer,
   rollout and the first finite synchronized PPO update.
+
+## Submission status
+
+- Runtime worktree is pinned and tracked-clean at
+  `082e24f1a966781c2f57ff30a415e143a4c76c59`; VAGEN and LeWM are pinned to
+  `192c35a91f3941b72d5e1272af6603ef7a7d93e0` and
+  `8edfeb336732b5f3ce7b8b210d0ba370a09e2cac`.
+- Fresh PlannerPolicyHead artifact:
+  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-07/146_plannerpolicy_head_seed42_from_sft2ep1`.
+  Its weight SHA256 is
+  `f8577c9a25d8587208b08024a1b0fd7c13e60f012a4a545335dbd9aefc9e9a42`;
+  metadata SHA256 is
+  `ca919e00eafc330327a7a9fc207a157f634ee42aa3a1d0134c16807108a1f60c`.
+- Exact-name W&B queries for the corrected `eval20x120` training and evaluation
+  identities returned zero matches. The full Slurm `--test-only` contract was
+  accepted before submission.
+- Formal batch Job `510253` was submitted to `preempt` as one batch-owned 4+4
+  allocation: two nodes, four GPUs/node, 64 CPUs/node, 48 GiB/node, eight-hour
+  limit and `Requeue=1`; exclusions remain `dgx-32,dgx-37,dgx-51`.
+- Immediately after submission, Slurm reported `PENDING(Priority)`, elapsed 0,
+  `AllocTRES=(null)`, empty NodeList and unknown start time. No formal output,
+  W&B run, renderer, rollout, PPO step, consumption record or RL checkpoint
+  existed at that observation. Monitoring had to use the eventual real
+  allocation rather than the earlier test-only estimate.
+
+## Terminal status: cold isolated renderer preflight timed out
+
+- A fresh Slurm query after handoff established that Job `510253` had already
+  ended. It received `dgx-16,dgx-17`, four GPUs and 64 CPUs per node, at
+  `2026-08-08T13:50:41+08:00` and ended at `13:53:24+08:00` after 2m43s.
+  Slurm records the job as `FAILED 1:0`, derived exit `124:0`; renderer steps
+  were `dgx-16 COMPLETED 0:0` and `dgx-17 FAILED 124:0`.
+- Runtime commit, VAGEN/LeWM pins and W&B uniqueness gates passed. Both nodes
+  used exact single-visible-GPU renderer contracts with fresh isolated homes,
+  so each cold-downloaded and unpacked the 797 MiB AI2-THOR CloudRendering
+  release. `dgx-16` emitted `AI2THOR_RENDER_OK` in 72.467 seconds with a
+  255x255 frame and dynamic range 246. `dgx-17` reached 100% download, unpacked
+  the 1.2 GiB release, initialized Vulkan on its H800 and created a render
+  texture, but emitted no result before the 150-second outer timeout.
+- The batch correctly failed closed before the outer controller. The formal
+  output and adjacent iteration-progress log did not exist at failure time;
+  there is no rollout, trajectory, fresh manifest, behavior fingerprint, W&B
+  run, optimizer step, consumption state, RL checkpoint or held-out evaluation.
+  The failure is therefore a cold renderer-preflight wall-clock failure, not a
+  model, PPO or policy-quality result; `dgx-17` is not renderer-qualified by
+  this attempt.
+- The required terminal README was created at the formal output path and the
+  RL experiment-group `progress.md` was updated. Their SHA256 values are
+  `af17f2e0fd2a8025d21e51f7935ae4d1c0f6be8d6792c4a7eb4b9c85d3bd090f`
+  and `3299918d47efb3af99ee95434ef2e31358c623f33475cca5ca16a4c55b51d279`.
+  Post-terminal W&B API queries still returned zero exact-name matches for both
+  the training and `-eval` identities.
+- ID146 has no resumable state and its identity/output must not be reused. A
+  retry requires a new experiment ID, W&B names and empty output, beginning
+  again at RL global step 0 from the corrected SFT2 epoch-1 checkpoint plus a
+  revalidated immutable PlannerPolicyHead seed artifact. Before resubmission,
+  the cold-start renderer contract must be fixed and validated without
+  exceeding the project-wide 300-second AI2-THOR limit; subsequent phases must
+  still be checked independently rather than assumed healthy.
+- This terminal boundary is recorded in existing progress/output documentation;
+  no new durable memory was created because the next action requires a concrete
+  launcher fix and human approval for another expensive formal attempt.
