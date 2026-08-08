@@ -4360,6 +4360,10 @@
 - 人类确认保留PlannerPolicyHead环境动作PPO、executed-action `Q(s,a)`、WM/DINO和
   fresh-consumption/checkpoint语义，只迁移VERL/VAGEN的DataProto、动态batch、FSDP、
   checkpoint/offload、Ray资源编排和并发rollout能力；禁止用stock token PPO替代后声称等价。
+- 源码进一步确认两个直接复用阻塞：pinned VERL检测到多模态输入时绕过dynamic-bsz而走
+  固定micro-batch；当前vLLM policy-state capture明确为串行单请求且没有request identity。
+  因此训练端需要custom多模态packing/FSDP worker，rollout端需先实现逐request hidden对齐，
+  不能只切换配置或直接套stock manager。
 - ID147 Job`511059`继续跑完且不改变runtime。本任务从`79f12f06`创建独立
   `feat/planner-verl-vagen-scaffold` worktree；旧`feat/fsdp-dynamic-rollout`只作为经门禁的
   组件来源，不整分支合并。详细计划见

@@ -15,7 +15,10 @@
 - 当前 pinned VAGEN 默认 `actor_rollout_ref.actor.ppo_epochs: 1`；critic 继承同一值。现有 Nimloth VAGEN baseline launcher 没有覆盖它，因此不是4 epochs。
 - VERL actor/critic 的每个 epoch 会遍历全部 PPO mini-batch；一个 global step 的 optimizer-step 数还取决于 train batch / mini-batch，而不能只看 `ppo_epochs`。
 - 当前 PlannerPolicyHead run 配置为每个 fresh rollout batch 做4 epochs；这是 Nimloth 自定义训练语义，不是从 VAGEN 默认值继承。
-- VERL可复用能力包括 DataProto、token-budgeted dynamic micro-batch、FSDP、gradient checkpointing、offload、worker/resource orchestration、checkpoint；VAGEN可复用多轮 navigation rollout manager、env client/protocol和并发调度。
+- VERL可复用能力包括 DataProto、FSDP、gradient checkpointing、offload、worker/resource orchestration、checkpoint和序列长度平衡。
+- pinned VERL 的 actor/critic 只有非多模态 batch 才进入 `rearrange_micro_batches`；检测到 `multi_modal_inputs` 时会优先按固定 micro-batch chunk。因此当前 Qwen-VL planner 不能仅打开 `use_dynamic_bsz`就获得动态 token batching，custom worker必须显式补齐多模态分桶/packing并做显存门禁。
+- VAGEN rollout manager会把当前仍active的多个env组成一次 generation batch，并通过 `BatchEnvClient`批量reset/step，这是可复用的并发骨架。
+- 当前 Nimloth `PolicyStateCaptureWorkerExtension`明确只支持串行单请求；它不保存request/sequence ID。直接把多条请求交给VAGEN manager会混合latent hidden，不能声称正确。rollout迁移的首个P0是实现并验证per-request vLLM state capture与输出对齐。
 - stock VAGEN/VERL actor/critic训练 response token policy/value，不能直接表达当前环境动作分布、完整 decision prefix、PlannerPolicyHead 和 `Q(s,a)`。
 
 ## 既有资产
@@ -28,9 +31,9 @@
 
 1. 记录 ID147 的 rollout、训练、保存分项耗时，建立不改变算法的性能基线。
 2. 写 RED contract tests：同一 batch 下 old log-prob、advantage、clipped actor loss、executed-action value、WM/DINO eligibility 和 consumption 边界必须与当前实现一致。
-3. 定义 Planner decision batch/DataProto adapter；对可变长 prefix 做 token-budgeted pack，禁止截断、补默认 action 或丢弃 terminal CoT。
-4. 实现 Nimloth custom VERL worker：复用 FSDP/checkpointing/offload/dynamic micro-batch，但调用当前 PlannerPolicyHead、ValueHead、WM/DINO loss。
-5. 接入 VAGEN rollout manager 的 active-env 并发和 Ray 资源编排；保留当前真实 CoT、严格 manifest、seed ownership 和两路 TP rollout 的可审计输出。
+3. 定义 Planner decision batch/DataProto adapter；对可变长多模态 prefix 做显式 token/image-aware packing，禁止截断、补默认 action 或丢弃 terminal CoT。每个FSDP rank必须执行相同数量的forward/backward micro-batch。
+4. 实现单一 Nimloth custom VERL FSDP worker/root module：复用worker/resource/checkpoint/offload机制，但调用当前 PlannerPolicyHead、ValueHead、WM/DINO loss，避免多个独立DDP wrapper再次产生collective顺序风险。
+5. 为vLLM hidden capture加入per-request identity并先做batch generation↔latent hidden↔action log-prob逐row对齐门禁；通过后再接VAGEN rollout manager的active-env并发和Ray资源编排。保留当前真实 CoT、严格 manifest、seed ownership和可审计输出。
 6. 依次通过 CPU parity、单GPU非消费型 batch、分布式非消费型 mechanics、fresh rollout smoke；通过前不替换正式 runner。
 7. 用 wall-clock、GPU峰值、transition/s、trajectory/s 和逐项数值 parity 比较旧/新后端，再决定默认 `ppo_epochs`。VAGEN默认1只能作为性能对照，不能未经批准改变 ID147 的4-epoch算法。
 
