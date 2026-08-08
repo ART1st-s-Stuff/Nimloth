@@ -147,7 +147,7 @@ from pathlib import Path
 assert os.environ["PIPELINE_MODE"] == "eval"
 iteration = int(os.environ["ITERATION"])
 root = Path(os.environ["RUN_OUT"])
-assert iteration == 10
+assert iteration == int(os.environ.get("EXPECTED_EVALUATION_ITERATION", "10"))
 assert Path(os.environ["MODEL"]) == root / "train/latest"
 target = root / "evaluation" / f"iter_{iteration:04d}"
 target.mkdir(parents=True)
@@ -346,4 +346,39 @@ def test_full_runner_runs_external_eval_once_at_iteration_ten(tmp_path: Path) ->
     ) == "10\n"
     assert (
         Path(environment["RUN_OUT"]) / "evaluation/iter_0010/eval_done.flag"
+    ).is_file()
+
+
+def test_full_runner_allows_one_external_eval_at_final_iteration_twenty(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "external_eval_at_twenty.yaml"
+    config_text = CONTINUATION_CONFIG.read_text(encoding="utf-8")
+    config_text = config_text.replace("iterations: 2", "iterations: 20")
+    config_text = config_text.replace(
+        "  temperature: 0.7",
+        "  eval_datasets:\n    - base\n    - common_sense\n  temperature: 0.7",
+    )
+    config_text = config_text.replace(
+        "validation:\n  enabled: false\n  interval: 2\n  envs: 0",
+        "validation:\n  enabled: false\n  external: true\n  interval: 20\n  envs: 120",
+    )
+    config_path.write_text(config_text, encoding="utf-8")
+    evaluation_runner = tmp_path / "fake_evaluation.py"
+    _write_fake_evaluation_runner(evaluation_runner)
+    environment = _runner_environment(tmp_path)
+    environment["RL_CONFIG"] = str(config_path)
+    environment["EVALUATION_RUNNER"] = str(evaluation_runner)
+    environment["EXPECTED_EVALUATION_ITERATION"] = "20"
+
+    subprocess.run([str(FULL_RUNNER)], check=True, env=environment)
+
+    assert (tmp_path / "formal/fake_eval_calls.txt").read_text(
+        encoding="utf-8"
+    ) == "20\n"
+    assert not (
+        Path(environment["RUN_OUT"]) / "evaluation/iter_0010/eval_done.flag"
+    ).exists()
+    assert (
+        Path(environment["RUN_OUT"]) / "evaluation/iter_0020/eval_done.flag"
     ).is_file()

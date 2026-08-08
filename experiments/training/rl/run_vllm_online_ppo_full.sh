@@ -93,8 +93,16 @@ if [[ "${VALIDATION_EXTERNAL}" == true ]]; then
     echo "external validation requires built-in validation to be disabled" >&2
     exit 1
   }
-  [[ "${VALIDATION_INTERVAL}" == 10 && "${VALIDATION_ENVS}" == 120 ]] || {
-    echo "formal external validation requires 120 episodes every 10 iterations" >&2
+  [[ "${VALIDATION_INTERVAL}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "external validation interval must be positive" >&2
+    exit 1
+  }
+  (( TOTAL_ITERATIONS % VALIDATION_INTERVAL == 0 )) || {
+    echo "external validation interval must divide the configured training horizon" >&2
+    exit 1
+  }
+  [[ "${VALIDATION_ENVS}" == 120 ]] || {
+    echo "formal external validation requires 120 episodes" >&2
     exit 1
   }
   [[ "${EVAL_DATASETS_CSV}" == base,common_sense ]] || {

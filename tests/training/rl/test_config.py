@@ -222,6 +222,40 @@ def test_planner_policy_gpu_gate_uses_two_four_gpu_nodes() -> None:
     assert config.distributed.total_gpus == 8
 
 
+def test_formal_planner_policy_trains_to_step_twenty_then_evaluates() -> None:
+    root = Path(__file__).resolve().parents[3]
+    config = load_rl_config(
+        root
+        / "configs/training/rl/planner_policy_h1_full_16rollout_8gpu_44_step20.yaml"
+    )
+
+    assert config.agent.planning.horizon == 1
+    assert config.agent.planning.search_mode == "policy"
+    assert config.planner_policy.enabled is True
+    assert config.planner_policy.ppo_epochs == 4
+    assert config.planner_policy.clip_ratio == 0.2
+    assert config.planner_policy.entropy_coeff == 0.01
+    assert config.actor.enabled is False
+    assert config.freeze.state_proj is True
+    assert config.gradient.representation_to_backbone is True
+    assert config.predictor.train_wm is True
+    assert config.rl.iterations == 20
+    assert config.rl.envs_per_iteration == config.rl.batch_size == 16
+    assert config.rollout.train_datasets == (
+        "base_train",
+        "common_sense_train",
+    )
+    assert config.rollout.eval_datasets == ("base", "common_sense")
+    assert config.validation.enabled is False
+    assert config.validation.external is True
+    assert config.validation.interval == 20
+    assert config.validation.envs == 120
+    assert config.distributed.nodes == 2
+    assert config.distributed.world_size == 4
+    assert config.distributed.gpus_per_rank == 2
+    assert config.distributed.total_gpus == 8
+
+
 def test_formal_h1_config_preserves_corrected_online_contract() -> None:
     root = Path(__file__).resolve().parents[3]
     config = load_rl_config(

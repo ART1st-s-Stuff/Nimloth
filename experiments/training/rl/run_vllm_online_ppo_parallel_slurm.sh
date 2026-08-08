@@ -41,7 +41,7 @@ source "${REPO}/experiments/training/rl/slurm_allocation.sh"
   exit 1
 }
 
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS TP_SIZE CONFIG_ITERATIONS NUM_EPISODES MAX_STEPS ACTOR_ENABLED REFERENCE_KL_WEIGHT TRAIN_DATASETS_CSV VALIDATION_ENABLED VALIDATION_EXTERNAL VALIDATION_INTERVAL VALIDATION_ENVS EVAL_DATASETS_CSV < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS TP_SIZE CONFIG_ITERATIONS NUM_EPISODES MAX_STEPS ACTOR_ENABLED REFERENCE_KL_WEIGHT TRAIN_DATASETS_CSV VALIDATION_ENABLED VALIDATION_EXTERNAL VALIDATION_INTERVAL VALIDATION_ENVS EVAL_DATASETS_CSV PLANNER_POLICY_ENABLED < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -64,6 +64,7 @@ print(
     config.validation.interval,
     config.validation.envs,
     ",".join(config.rollout.eval_datasets),
+    str(config.planner_policy.enabled).lower(),
 )
 ' "${RL_CONFIG}"
 )
@@ -485,6 +486,10 @@ fi
 COMMIT=$(git -C "${REPO}" rev-parse HEAD)
 ENV_COMMIT=$(git -C "${ENV_REPO}/external/VAGEN" rev-parse HEAD)
 if [[ "${RUN_ROLLOUT}" == true ]] && (( ITERATION == FIRST_ITERATION )); then
+  TRAINABLE_MODULES="Qwen language body, WM predictor and ValueHead"
+  if [[ "${PLANNER_POLICY_ENABLED}" == true ]]; then
+    TRAINABLE_MODULES+=", PlannerPolicyHead"
+  fi
   cat > "${RUN_OUT}/README.md" <<EOF
 # vLLM online RL full run (${CONFIG_TOTAL_GPUS} GPUs)
 
@@ -501,7 +506,7 @@ if [[ "${RUN_ROLLOUT}" == true ]] && (( ITERATION == FIRST_ITERATION )); then
 - uneven transition counts: equal-count graph padding with zero loss; DDP loss scale preserves the global transition mean
 - planning: DINO supervised H=1, history_size=1
 - frozen: Qwen vision, DINO teacher and StateProjector
-- trainable: Qwen language body, WM predictor and ValueHead
+- trainable: ${TRAINABLE_MODULES}
 - W&B: ${WANDB_PROJECT}/${WANDB_RUN_NAME}
 - output: ${RUN_OUT}
 EOF
