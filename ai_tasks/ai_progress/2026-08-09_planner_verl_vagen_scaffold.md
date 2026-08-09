@@ -201,5 +201,11 @@
   `gate_planner_verl_fsdp_ray_1x8.slurm`，不依赖login watcher，静态合同与bash syntax通过。
 - 候选W&B为project`nimloth-rl`、run`150_smoke_rayfsdp8_ckptrng_resumeparity`；候选output为
   `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-09/150_smoke_rayfsdp8_ckptrng_resumeparity`。
-  SSH恢复后必须先查询live entity/API确认ID和名称未占用、output不存在、commit/pins/server回归及当前
-  单节点8卡资源，再生成显式W&B run ID并提交。当前仍没有创建output/W&B/Slurm job或占用GPU。
+  SSH恢复后已确认live entity为`art2nd-hong-kong-university-of-science-and-technology`，ID150/name均0匹配，
+  output不存在，server worktree clean且commit/pins正确；定向`33 passed`，扩大server回归`254 passed`。
+- 人类批准8卡后，W&B run ID固定为`4zura4lr`并API核验unused。完整launch contract写在output日期目录的
+  邻接`150_smoke_rayfsdp8_ckptrng_resumeparity.launch_contract.md`；runtime不读ID147/ID149或任何数据。
+- batch-owned Slurm Job`512162`已提交：`preempt`、1 node、8×H800、64 CPU、512 GiB、30分钟，command和
+  ReqTRES均核验。当前`PENDING(Resources)`、AllocTRES为空、未占GPU；scheduler暂列`dgx-34`且估计
+  2026-08-10 23:24:50启动，该估计不作保证。output仍不存在，W&B run尚未创建。分配后必须持续监控
+  Ray/NCCL/FSDP、checkpoint branch parity、W&B finish和terminal artifact。

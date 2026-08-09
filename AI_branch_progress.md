@@ -33,8 +33,9 @@
 - `945729f6`新增ID150候选tiny-model真实Ray/FSDP mechanics gate：双rank DataProto identity、真实GPU
   ownership、完整sharded参数SHA256、CPU/CUDA RNG、model/AdamW checkpoint回载及相同next-step parity。
   该gate不读取ID147、不消费ID149且不产生正式策略；CPU定向`19 passed`。人类已改为批准
-  preempt单节点8×H800/30分钟；batch-owned 1×8 launcher及静态测试已完成。SSH仍timeout，故尚未同步
-  server、核验W&B ID/output/资源或提交Slurm。
+  preempt单节点8×H800/30分钟；batch-owned 1×8 launcher及静态测试已完成。SSH恢复后server定向
+  `33 passed`、扩大`254 passed`。W&B `4zura4lr`/run name确认unused、output确认不存在；Job`512162`
+  已按1 node/8 H800/30分钟提交，当前`PENDING(Resources)`且AllocTRES为空，尚未创建output/W&B或占GPU。
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 
