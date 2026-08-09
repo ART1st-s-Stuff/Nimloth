@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+import hashlib
 import importlib
+import os
 from pathlib import Path
+import socket
 from typing import Any
 
 import torch
@@ -454,11 +457,68 @@ class PlannerVERLFSDPWorker(PlannerVERLWorkerMixin, Worker):
             model=bundle.root,
             optimizer=bundle.core.optimization_runtime.optimizer,
         )
+        import ray
+
+        properties = torch.cuda.get_device_properties(torch.cuda.current_device())
         return {
             "rank": self.rank,
             "world_size": self.world_size,
             "verl_commit": source.commit,
             "root_type": type(bundle.root).__name__,
+            "hostname": socket.gethostname(),
+            "ray_node_id": ray.get_runtime_context().get_node_id(),
+            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+            "cuda_device_uuid": str(getattr(properties, "uuid", "")),
+            "cuda_device_name": properties.name,
+        }
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def planner_parameter_norm(self) -> float:
+        root = self._planner_root
+        if root is None:
+            raise RuntimeError("planner FSDP root is not initialized")
+        local_squared = torch.zeros(
+            (),
+            dtype=torch.float64,
+            device=torch.cuda.current_device(),
+        )
+        for parameter in root.parameters():
+            local_squared.add_(parameter.detach().double().square().sum())
+        torch.distributed.all_reduce(local_squared)
+        return float(local_squared.sqrt().cpu().item())
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def planner_parameter_fingerprint(self) -> str:
+        root = self._planner_root
+        if root is None:
+            raise RuntimeError("planner FSDP root is not initialized")
+        local = hashlib.sha256()
+        for name, parameter in root.named_parameters():
+            value = parameter.detach().contiguous()
+            local.update(name.encode("utf-8"))
+            local.update(str(tuple(value.shape)).encode("ascii"))
+            local.update(str(value.dtype).encode("ascii"))
+            local.update(value.view(torch.uint8).cpu().numpy().tobytes())
+        rank_digests: list[str | None] = [None] * torch.distributed.get_world_size()
+        torch.distributed.all_gather_object(rank_digests, local.hexdigest())
+        combined = hashlib.sha256()
+        for rank, digest in enumerate(rank_digests):
+            if not isinstance(digest, str):
+                raise RuntimeError("planner parameter fingerprint gather failed")
+            combined.update(f"rank={rank}:".encode("ascii"))
+            combined.update(digest.encode("ascii"))
+        return combined.hexdigest()
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def planner_rng_sample(self, count: int = 4) -> dict[str, list[float]]:
+        if count < 1:
+            raise ValueError("planner RNG sample count must be positive")
+        return {
+            "cpu": torch.rand(count, device="cpu").tolist(),
+            "cuda": torch.rand(
+                count,
+                device=torch.cuda.current_device(),
+            ).cpu().tolist(),
         }
 
     def _require_checkpoint_manager(self) -> Any:

@@ -220,6 +220,7 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
 | `planner_verl_adapter.py` | action-level Planner DataProto schema和等长rank batch packing输入 |
 | `planner_verl_worker.py` | 单一complete-objective FSDP root、Ray worker和不可逆optimizer生命周期 |
 | `planner_verl_factory.py` | 从显式weights-only artifacts装配未包装Agent与分组optimizer factory |
+| `planner_verl_gate_factory.py` | 仅供真实Ray/FSDP mechanics gate使用的tiny可导入模型 |
 | `planner_verl_checkpoint.py` | exact-world-size FSDP model/optimizer/RNG sharded checkpoint |
 | `planner_verl_driver.py` | checkpoint atomic publish→fresh consumption commit事务边界 |
 | `loop.py` | collect→sample→forward/backward→validate→save 生命周期 |
