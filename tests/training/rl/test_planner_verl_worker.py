@@ -77,6 +77,35 @@ class _ObjectiveAlgorithm:
         )
 
 
+def test_manual_fsdp_boundary_replacement_handles_module_lists() -> None:
+    class DecoderLayer(torch.nn.Linear):
+        pass
+
+    root = torch.nn.Module()
+    root.layers = torch.nn.ModuleList(
+        (DecoderLayer(2, 2), DecoderLayer(2, 2))
+    )
+    root.other = torch.nn.Linear(2, 2)
+    wrapped_ids: list[int] = []
+
+    def wrap(module: torch.nn.Module) -> torch.nn.Module:
+        wrapped_ids.append(id(module))
+        container = torch.nn.Module()
+        container.wrapped = module
+        return container
+
+    counts = planner_worker._replace_modules_by_class_name(
+        root,
+        ("DecoderLayer",),
+        wrap,
+    )
+
+    assert counts == {"DecoderLayer": 2}
+    assert len(wrapped_ids) == 2
+    assert all(hasattr(layer, "wrapped") for layer in root.layers)
+    assert isinstance(root.other, torch.nn.Linear)
+
+
 def test_complete_root_parameter_component_classification() -> None:
     classify = planner_worker._planner_parameter_component
     language_model = torch.nn.Module()

@@ -68,6 +68,34 @@ def _worker_args(raw: Mapping[str, Any]) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
+def _planner_fsdp_wrap_policy(
+    model: torch.nn.Module,
+    world_model: torch.nn.Module,
+) -> dict[str, Any]:
+    """Declare BF16 Qwen and FP32 auxiliary FSDP boundaries separately."""
+
+    qwen_layers = getattr(model, "_no_split_modules", None)
+    if not qwen_layers:
+        raise RuntimeError("Qwen model does not declare FSDP transformer layers")
+    auxiliary_modules = (
+        world_model.state_proj,
+        world_model.wm_predictor,
+        world_model.value_head,
+        world_model.planner_policy_head,
+    )
+    if any(module is None for module in auxiliary_modules):
+        raise RuntimeError("planner FSDP root is missing an auxiliary module")
+    return {
+        "transformer_layer_cls_to_wrap": tuple(str(name) for name in qwen_layers),
+        "fp32_module_paths": (
+            "agent.wm.state_proj",
+            "agent.wm.wm_predictor",
+            "agent.wm.value_head",
+            "agent.wm.planner_policy_head",
+        ),
+    }
+
+
 def build_planner_worker_components(
     *,
     config: Mapping[str, Any],
@@ -195,15 +223,10 @@ def build_planner_worker_components(
             rl_config,
         )
 
-    layer_classes = getattr(model, "_no_split_modules", None)
-    if not layer_classes:
-        raise RuntimeError("Qwen model does not declare FSDP transformer layers")
     return PlannerWorkerModelComponents(
         objective_module=objective,
         optimizer_factory=optimizer_factory,
-        wrap_policy={
-            "transformer_layer_cls_to_wrap": tuple(layer_classes),
-        },
+        wrap_policy=_planner_fsdp_wrap_policy(model, world_model),
         max_grad_norm=1.0,
     )
 

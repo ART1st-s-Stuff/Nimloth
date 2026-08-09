@@ -93,6 +93,27 @@ class PlannerObjectiveModule(nn.Module):
         return output.loss, dict(output.metrics)
 
 
+def _replace_modules_by_class_name(
+    root: nn.Module,
+    class_names: tuple[str, ...],
+    wrapper: Callable[[nn.Module], nn.Module],
+) -> dict[str, int]:
+    """Replace matching descendants without descending through replacements."""
+
+    expected = set(class_names)
+    counts = {name: 0 for name in class_names}
+    for child_name, child in tuple(root.named_children()):
+        class_name = type(child).__name__
+        if class_name in expected:
+            setattr(root, child_name, wrapper(child))
+            counts[class_name] += 1
+            continue
+        nested = _replace_modules_by_class_name(child, class_names, wrapper)
+        for name, count in nested.items():
+            counts[name] += count
+    return counts
+
+
 def wrap_planner_objective_fsdp(
     objective_module: PlannerObjectiveModule,
     *,
@@ -130,10 +151,79 @@ def wrap_planner_objective_fsdp(
             raise ValueError(
                 "planner FSDP root requires an unwrapped Agent hierarchy"
             )
-    auto_wrap_policy = get_fsdp_wrap_policy(
-        module=objective_module,
-        config=dict(wrap_policy),
-    )
+    policy_config = dict(wrap_policy)
+    fp32_module_paths = tuple(policy_config.pop("fp32_module_paths", ()))
+    for path in fp32_module_paths:
+        if not isinstance(path, str) or not path:
+            raise ValueError("planner FP32 FSDP module paths must be nonempty strings")
+        parent: nn.Module = objective_module
+        segments = path.split(".")
+        for segment in segments[:-1]:
+            child = getattr(parent, segment, None)
+            if not isinstance(child, nn.Module):
+                raise ValueError(f"planner FP32 FSDP module path is invalid: {path}")
+            parent = child
+        attribute = segments[-1]
+        module = getattr(parent, attribute, None)
+        if not isinstance(module, nn.Module):
+            raise ValueError(f"planner FP32 FSDP module path is invalid: {path}")
+        setattr(
+            parent,
+            attribute,
+            FSDP(
+                module,
+                device_id=torch.cuda.current_device(),
+                sharding_strategy=ShardingStrategy.FULL_SHARD,
+                sync_module_states=True,
+                use_orig_params=True,
+                mixed_precision=MixedPrecision(
+                    param_dtype=torch.float32,
+                    reduce_dtype=torch.float32,
+                    buffer_dtype=torch.float32,
+                ),
+                forward_prefetch=False,
+            ),
+        )
+    if fp32_module_paths:
+        qwen_class_names = tuple(
+            policy_config.pop("transformer_layer_cls_to_wrap", ())
+        )
+        if not qwen_class_names or policy_config:
+            raise ValueError(
+                "planner heterogeneous FSDP requires only explicit Qwen layer "
+                "classes and FP32 module paths"
+            )
+        qwen_counts = _replace_modules_by_class_name(
+            objective_module,
+            qwen_class_names,
+            lambda module: FSDP(
+                module,
+                device_id=torch.cuda.current_device(),
+                sharding_strategy=ShardingStrategy.FULL_SHARD,
+                sync_module_states=True,
+                use_orig_params=True,
+                mixed_precision=MixedPrecision(
+                    param_dtype=param_dtype,
+                    reduce_dtype=reduce_dtype,
+                    buffer_dtype=buffer_dtype,
+                ),
+                forward_prefetch=False,
+            ),
+        )
+        missing = sorted(
+            name for name, count in qwen_counts.items() if count < 1
+        )
+        if missing:
+            raise RuntimeError(
+                "planner FSDP did not find Qwen wrap classes: "
+                + ", ".join(missing)
+            )
+        auto_wrap_policy = None
+    else:
+        auto_wrap_policy = get_fsdp_wrap_policy(
+            module=objective_module,
+            config=policy_config,
+        )
     return FSDP(
         objective_module,
         device_id=torch.cuda.current_device(),

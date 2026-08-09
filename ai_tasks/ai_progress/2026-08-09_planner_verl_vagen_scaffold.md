@@ -237,3 +237,19 @@
 - output README已写完。ID151关闭真实8卡Ray/NCCL/FSDP worker lifecycle及exact sharded checkpoint/reload
   mechanics gate；仍不证明production Qwen/WM/DINO/ValueHead/PlannerPolicyHead complete objective、long-prefix
   memory/numerical parity或吞吐，这些必须由后续独立门禁验证。
+
+### ID152 production complete-objective gate terminal result
+
+- commit`9acd715e`新增behavior-matched batch准备、rank rounds、component fingerprint/gradient诊断和
+  production factory 1x8 gate；本地84项、server 257项通过。人类确认后，normal Job`512207`
+  立即获得`dgx-40:8`，W&B`nimloth-rl/jh3xa5d2`身份正确。
+- ID149 format-5/hash/count/processor/无consumption门禁与DINO target准备完成，8个Ray actor均加载
+  ID147完整层级并进入NCCL，但在任何objective forward前FSDP outer root构造失败：
+  `Must flatten tensors with uniform dtype but got torch.bfloat16 and torch.float32`。
+- 根因是Qwen decoder layers已有独立wrap，但outer root仍同时持有residual BF16 Qwen参数与FP32
+  StateProjector/WM/ValueHead/PlannerPolicyHead。FSDP1同一flat handle要求uniform dtype。
+- Job 4分47秒`FAILED 1:0`，W&B API核验`failed/FAILED`；没有forward/backward/optimizer、参数变化、
+  checkpoint或consumption，ID149 sidecar仍不存在。output README已记录；ID152不可resume/复用。
+- 修复必须把FP32 auxiliary modules设为显式FSDP wrap boundaries，同时保留Qwen layer boundaries和
+  单一complete-objective root；禁止为绕过结构错误而把全部auxiliary weights草率转BF16。严格重试用
+  新ID/output/W&B identity。

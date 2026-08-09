@@ -44,6 +44,11 @@
   完整参数/RNG reload与next-step parity再次精确通过，W&B`nimloth-rl/ncs28ec7`由API核验
   `finished/ALL_OK`且norm error0；8卡已释放。ID151关闭真实Ray/NCCL/FSDP+sharded checkpoint mechanics，
   但不覆盖production complete objective、long-prefix numerical parity或吞吐。
+- ID152首次production complete-objective 1x8 gate在`normal/dgx-40`启动；ID149严格manifest和DINO
+  target通过、8 actors加载ID147并进入NCCL，但FSDP outer root因同一flat handle混合BF16 Qwen
+  residual与FP32 auxiliary参数而在forward前失败。Job`512207` 4分47秒FAILED，W&B
+  `nimloth-rl/jh3xa5d2` failed；无参数变化/checkpoint/consumption。需显式wrap FP32 auxiliary modules后
+  用新identity重试，不能用草率全BF16 cast掩盖结构错误。
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 

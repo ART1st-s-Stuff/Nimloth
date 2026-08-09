@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 from nimloth.training.rl.planner_verl_factory import (
+    _planner_fsdp_wrap_policy,
     build_planner_worker_components,
 )
 
@@ -23,6 +25,42 @@ def _trainer_args() -> dict[str, object]:
         "value_head_checkpoint": "/weights/id147/train/latest/value_head",
         "planner_policy_head_checkpoint": (
             "/weights/id147/train/latest/planner_policy_head"
+        ),
+    }
+
+
+class StateProjector(torch.nn.Module):
+    pass
+
+
+class WMPredictor(torch.nn.Module):
+    pass
+
+
+class ValueHead(torch.nn.Module):
+    pass
+
+
+class PlannerPolicyHead(torch.nn.Module):
+    pass
+
+
+def test_planner_fsdp_wrap_policy_separates_fp32_auxiliary_owners() -> None:
+    model = SimpleNamespace(_no_split_modules=("QwenDecoderLayer",))
+    world_model = SimpleNamespace(
+        state_proj=StateProjector(),
+        wm_predictor=WMPredictor(),
+        value_head=ValueHead(),
+        planner_policy_head=PlannerPolicyHead(),
+    )
+
+    assert _planner_fsdp_wrap_policy(model, world_model) == {
+        "transformer_layer_cls_to_wrap": ("QwenDecoderLayer",),
+        "fp32_module_paths": (
+            "agent.wm.state_proj",
+            "agent.wm.wm_predictor",
+            "agent.wm.value_head",
+            "agent.wm.planner_policy_head",
         ),
     }
 
