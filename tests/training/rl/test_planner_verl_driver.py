@@ -12,8 +12,18 @@ from nimloth.training.rl.planner_verl_driver import (
 
 
 class _Batch:
-    def __init__(self, update_id: str, rows: int = 1) -> None:
-        self.meta_info = {"update_id": update_id}
+    def __init__(
+        self,
+        update_id: str,
+        rows: int = 1,
+        *,
+        diagnostic_only: bool = False,
+    ) -> None:
+        self.meta_info = {
+            "update_id": update_id,
+            "behavior_matched": not diagnostic_only,
+            "diagnostic_only": diagnostic_only,
+        }
         self.rows = rows
 
     def __len__(self) -> int:
@@ -124,6 +134,28 @@ def test_validate_planner_fsdp_checkpoint_requires_every_rank(tmp_path: Path) ->
             global_step=1,
             update_id="update-1",
         )
+
+
+def test_driver_rejects_nonbehavior_diagnostic_before_claim(tmp_path: Path) -> None:
+    events: list[object] = []
+    driver = PlannerVERLUpdateDriver(
+        worker_group=_Workers(events),
+        collector=_Collector(events),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="reject nonbehavior diagnostics"):
+        driver.run_update(
+            output_dir=tmp_path,
+            current_global_step=0,
+            rank_rounds=(
+                (
+                    _Batch("diagnostic", diagnostic_only=True),
+                    _Batch("diagnostic", diagnostic_only=True),
+                ),
+            ),
+        )
+
+    assert events == []
 
 
 def test_driver_publishes_checkpoint_before_consumption_commit(

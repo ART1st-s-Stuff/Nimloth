@@ -51,6 +51,8 @@ def test_planner_dataproto_roundtrips_action_level_update_rows() -> None:
         "total_transitions": 17,
         "has_dino_grid_targets": True,
         "update_id": "update-17",
+        "behavior_matched": True,
+        "diagnostic_only": False,
     }
     assert set(data.batch.keys()) == {
         "return_targets",
@@ -68,6 +70,8 @@ def test_planner_dataproto_roundtrips_action_level_update_rows() -> None:
     assert restored.update_id == "update-17"
     assert tuple(item.identity for item in restored.transitions) == ("a", "b")
     assert restored.total_transitions == 17
+    assert restored.behavior_matched is True
+    assert restored.diagnostic_only is False
     assert restored.token_counts == (100, 200)
     torch.testing.assert_close(
         torch.stack(restored.dino_grid_targets),

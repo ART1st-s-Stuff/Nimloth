@@ -14,7 +14,7 @@ import torch
 from nimloth.training.rl.episodes import ExecutedTransition
 
 
-PLANNER_VERL_SCHEMA_VERSION = 3
+PLANNER_VERL_SCHEMA_VERSION = 4
 PINNED_VERL_COMMIT = "65316156d1011d71d62e0542e4b954f9499e872e"
 PLANNER_POLICY_OBJECTIVE = "receding_horizon_planner_policy_ppo_v1"
 
@@ -37,6 +37,8 @@ class PlannerVERLUpdateInputs:
     token_counts: tuple[int, ...]
     dino_grid_targets: tuple[torch.Tensor | None, ...]
     total_transitions: int
+    behavior_matched: bool
+    diagnostic_only: bool
 
 
 @lru_cache(maxsize=4)
@@ -101,6 +103,8 @@ def build_planner_update_dataproto(
     total_transitions: int,
     update_id: str,
     dino_grid_targets: tuple[torch.Tensor | None, ...] | None = None,
+    behavior_matched: bool = True,
+    diagnostic_only: bool = False,
 ) -> Any:
     """Build one strict action-level update batch without inventing CoT/state."""
 
@@ -114,6 +118,10 @@ def build_planner_update_dataproto(
     batch_size = len(transitions)
     if total_transitions < 1:
         raise ValueError("total_transitions must be positive")
+    if bool(behavior_matched) == bool(diagnostic_only):
+        raise ValueError(
+            "planner batch must be behavior-matched or explicitly diagnostic"
+        )
     tensors = {
         "return_targets": _finite_scalar_rows(
             return_targets,
@@ -182,6 +190,8 @@ def build_planner_update_dataproto(
             "total_transitions": int(total_transitions),
             "has_dino_grid_targets": bool(all(has_dino)),
             "update_id": update_id,
+            "behavior_matched": bool(behavior_matched),
+            "diagnostic_only": bool(diagnostic_only),
         },
     )
 
@@ -283,6 +293,14 @@ def planner_update_inputs(data: Any) -> PlannerVERLUpdateInputs:
     total_transitions = int(data.meta_info.get("total_transitions", 0))
     if total_transitions < 1:
         raise ValueError("planner VERL total_transitions must be positive")
+    behavior_matched = data.meta_info.get("behavior_matched")
+    diagnostic_only = data.meta_info.get("diagnostic_only")
+    if not isinstance(behavior_matched, bool) or not isinstance(
+        diagnostic_only, bool
+    ):
+        raise ValueError("planner VERL provenance metadata must be boolean")
+    if behavior_matched == diagnostic_only:
+        raise ValueError("planner VERL provenance metadata is contradictory")
     update_id = data.meta_info.get("update_id")
     if not isinstance(update_id, str) or not update_id:
         raise ValueError("planner VERL update_id must not be empty")
@@ -317,6 +335,8 @@ def planner_update_inputs(data: Any) -> PlannerVERLUpdateInputs:
         token_counts=token_counts,
         dino_grid_targets=dino_rows,
         total_transitions=total_transitions,
+        behavior_matched=behavior_matched,
+        diagnostic_only=diagnostic_only,
     )
 
 

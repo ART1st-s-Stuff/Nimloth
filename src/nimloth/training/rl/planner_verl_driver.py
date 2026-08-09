@@ -217,8 +217,18 @@ class PlannerVERLUpdateDriver:
                         meta_info.get("objective"),
                         meta_info.get("total_transitions"),
                         meta_info.get("has_dino_grid_targets"),
+                        meta_info.get("behavior_matched"),
+                        meta_info.get("diagnostic_only"),
                     )
                 )
+                if (
+                    meta_info.get("behavior_matched") is not True
+                    or meta_info.get("diagnostic_only") is not False
+                ):
+                    raise ValueError(
+                        "transactional planner updates reject nonbehavior "
+                        f"diagnostics: round={round_index}, rank={rank}"
+                    )
             if len(provisional_ids) != 1:
                 raise ValueError(
                     "planner rank batches disagree on provisional update identity: "

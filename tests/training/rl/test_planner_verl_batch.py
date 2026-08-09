@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
 import torch
 
 from nimloth.training.rl.planner_verl_adapter import planner_update_inputs
@@ -10,6 +11,7 @@ from nimloth.training.rl.planner_verl_batch import (
     build_planner_rank_rounds,
     build_replicated_planner_gate_round,
     prepare_planner_behavior_row,
+    prepare_planner_nonbehavior_diagnostic_row,
 )
 from nimloth.wm import PlannerPolicyHead, ValueHead
 
@@ -52,6 +54,8 @@ def _row(name: str = "real") -> PreparedPlannerRow:
         old_action_value=torch.tensor(0.25),
         old_policy_log_prob=torch.tensor(-0.5),
         policy_advantage=torch.tensor(1.75),
+        behavior_matched=True,
+        diagnostic_only=False,
     )
 
 
@@ -104,6 +108,57 @@ def test_behavior_row_rejects_mismatched_stored_policy() -> None:
         assert "do not match" in str(error)
     else:  # pragma: no cover
         raise AssertionError("mismatched behavior policy was accepted")
+
+
+def test_nonbehavior_diagnostic_uses_current_heads_without_claiming_match() -> None:
+    value, policy = _heads()
+    transition = _Transition(
+        name="old-checkpoint-prefix",
+        state=torch.ones(2, 3),
+        action_index=0,
+        behavior=torch.log(torch.tensor([0.9, 0.1])),
+    )
+
+    row = prepare_planner_nonbehavior_diagnostic_row(
+        transition,  # type: ignore[arg-type]
+        return_target=torch.tensor(1.0),
+        value_head=value,
+        planner_policy_head=policy,
+        temperature=1.0,
+    )
+
+    assert torch.isfinite(row.old_action_value)
+    assert torch.isfinite(row.old_policy_log_prob)
+    assert torch.isfinite(row.policy_advantage)
+    assert row.behavior_matched is False
+    assert row.diagnostic_only is True
+    with pytest.raises(ValueError, match="transactional"):
+        build_planner_rank_rounds(
+            (row,),
+            token_counts=(16_184,),
+            dino_grid_targets=(torch.ones(1, 2),),
+            world_size=2,
+            provisional_update_id="must-not-train",
+        )
+    with pytest.raises(ValueError, match="explicit diagnostic"):
+        build_replicated_planner_gate_round(
+            row,
+            token_count=16_184,
+            dino_grid_target=torch.ones(1, 2),
+            world_size=2,
+            provisional_update_id="must-opt-in",
+        )
+    diagnostic = build_replicated_planner_gate_round(
+        row,
+        token_count=16_184,
+        dino_grid_target=torch.ones(1, 2),
+        world_size=2,
+        provisional_update_id="diagnostic-only",
+        allow_nonbehavior_diagnostic=True,
+    )
+    restored = planner_update_inputs(diagnostic[0][0])
+    assert restored.behavior_matched is False
+    assert restored.diagnostic_only is True
 
 
 def test_rank_rounds_pad_only_missing_ranks_with_zero_weight() -> None:

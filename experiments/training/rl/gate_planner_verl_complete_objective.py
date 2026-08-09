@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import time
 from tempfile import NamedTemporaryFile
 from typing import Any
 
@@ -32,11 +33,17 @@ from nimloth.rollout import (
     FreshJSONLRolloutCollector,
     FreshRolloutManifest,
 )
+from nimloth.rollout.fresh import (
+    auxiliary_artifact_fingerprint,
+    file_artifact_fingerprint,
+    policy_artifact_fingerprint,
+)
 from nimloth.training.rl.episodes import build_episode_training_batches
 from nimloth.training.rl.planner_verl_batch import (
     build_replicated_planner_gate_round,
     load_planner_behavior_heads,
     prepare_planner_behavior_row,
+    prepare_planner_nonbehavior_diagnostic_row,
 )
 from nimloth.training.rl.planner_verl_worker import PlannerVERLFSDPWorker
 
@@ -71,6 +78,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--world-size", type=int, default=8)
     parser.add_argument("--minimum-state-tokens", type=int, default=6000)
+    parser.add_argument("--diagnostic-nonbehavior-prefix", action="store_true")
+    parser.add_argument("--expected-manifest-sha256")
+    parser.add_argument("--expected-trajectory-count", type=int)
+    parser.add_argument("--expected-selected-record-id")
+    parser.add_argument("--expected-selected-state-tokens", type=int)
+    parser.add_argument("--expected-current-policy-sha256")
+    parser.add_argument("--expected-current-state-projector-sha256")
+    parser.add_argument("--expected-current-wm-predictor-sha256")
+    parser.add_argument("--expected-current-value-head-sha256")
+    parser.add_argument("--expected-current-planner-policy-head-sha256")
     parser.add_argument("--wandb-project", default="nimloth-rl")
     parser.add_argument("--wandb-run-name", required=True)
     parser.add_argument("--wandb-run-id", required=True)
@@ -93,6 +110,115 @@ def _state_token_count(
     return int(input_ids.shape[-1])
 
 
+def _source_policy_provenance(
+    manifest: FreshRolloutManifest,
+) -> dict[str, Any]:
+    actual_policy = policy_artifact_fingerprint(Path(manifest.policy_path))
+    if actual_policy != manifest.policy_fingerprint:
+        raise ValueError("diagnostic source policy fingerprint mismatch")
+    actual_planner = {
+        name: auxiliary_artifact_fingerprint(Path(manifest.planner_paths[name]))
+        for name in sorted(manifest.planner_fingerprints)
+    }
+    if actual_planner != {
+        name: manifest.planner_fingerprints[name]
+        for name in sorted(manifest.planner_fingerprints)
+    }:
+        raise ValueError("diagnostic source planner fingerprint mismatch")
+    return {
+        "policy_path": manifest.policy_path,
+        "policy_fingerprint": actual_policy,
+        "planner_paths": {
+            name: manifest.planner_paths[name] for name in sorted(actual_planner)
+        },
+        "planner_fingerprints": actual_planner,
+    }
+
+
+def _current_objective_provenance(args: argparse.Namespace) -> dict[str, Any]:
+    provenance = {
+        "policy_path": str(args.model.resolve()),
+        "policy_fingerprint": policy_artifact_fingerprint(args.model),
+        "planner_paths": {
+            "state_projector": str(args.state_proj_checkpoint.resolve()),
+            "wm_predictor": str(args.wm_checkpoint.resolve()),
+            "value_head": str(args.value_head_checkpoint.resolve()),
+            "planner_policy_head": str(
+                args.planner_policy_head_checkpoint.resolve()
+            ),
+        },
+        "planner_fingerprints": {
+            "state_projector": auxiliary_artifact_fingerprint(
+                args.state_proj_checkpoint
+            ),
+            "wm_predictor": auxiliary_artifact_fingerprint(args.wm_checkpoint),
+            "value_head": auxiliary_artifact_fingerprint(
+                args.value_head_checkpoint
+            ),
+            "planner_policy_head": auxiliary_artifact_fingerprint(
+                args.planner_policy_head_checkpoint
+            ),
+        },
+    }
+    if args.diagnostic_nonbehavior_prefix:
+        expected = {
+            "policy_fingerprint": args.expected_current_policy_sha256,
+            "planner_fingerprints": {
+                "state_projector": (
+                    args.expected_current_state_projector_sha256
+                ),
+                "wm_predictor": args.expected_current_wm_predictor_sha256,
+                "value_head": args.expected_current_value_head_sha256,
+                "planner_policy_head": (
+                    args.expected_current_planner_policy_head_sha256
+                ),
+            },
+        }
+        if any(
+            value in (None, "")
+            for value in (
+                expected["policy_fingerprint"],
+                *expected["planner_fingerprints"].values(),
+            )
+        ):
+            raise ValueError(
+                "nonbehavior diagnostic requires expected current artifact hashes"
+            )
+        if provenance["policy_fingerprint"] != expected["policy_fingerprint"]:
+            raise ValueError("current policy fingerprint differs from contract")
+        if provenance["planner_fingerprints"] != expected["planner_fingerprints"]:
+            raise ValueError(
+                "current planner artifact fingerprints differ from contract"
+            )
+    return provenance
+
+
+def _revalidate_gate_source(
+    args: argparse.Namespace,
+    source_metadata: dict[str, Any],
+) -> None:
+    manifest = FreshRolloutManifest.read(args.fresh_rollout_manifest)
+    manifest.validate_trajectory_artifacts()
+    if file_artifact_fingerprint(args.fresh_rollout_manifest) != source_metadata[
+        "manifest_fingerprint"
+    ]:
+        raise RuntimeError("gate source manifest changed during execution")
+    if manifest.trajectory_fingerprint != source_metadata["trajectory_fingerprint"]:
+        raise RuntimeError("gate source trajectory changed during execution")
+    if args.fresh_rollout_manifest.with_suffix(
+        args.fresh_rollout_manifest.suffix + ".consumption.json"
+    ).exists():
+        raise RuntimeError("gate source was consumed during diagnostic execution")
+    if _source_policy_provenance(manifest) != source_metadata[
+        "source_policy_provenance"
+    ]:
+        raise RuntimeError("gate source policy artifacts changed during execution")
+    if _current_objective_provenance(args) != source_metadata[
+        "current_objective_provenance"
+    ]:
+        raise RuntimeError("gate objective artifacts changed during execution")
+
+
 def _prepare_gate_row(args: argparse.Namespace) -> tuple[Any, int, torch.Tensor, dict[str, Any]]:
     config = load_rl_config(args.config)
     if config.distributed.world_size != args.world_size:
@@ -107,16 +233,52 @@ def _prepare_gate_row(args: argparse.Namespace) -> tuple[Any, int, torch.Tensor,
     manifest = FreshRolloutManifest.read(args.fresh_rollout_manifest)
     if Path(manifest.trajectory_path).resolve() != args.trajectory_jsonl.resolve():
         raise ValueError("manifest trajectory path differs from gate trajectory")
-    freshness = FreshJSONLRolloutCollector(
-        args.fresh_rollout_manifest,
-        model_path=args.model,
-        planner_artifacts={
-            "state_projector": args.state_proj_checkpoint,
-            "wm_predictor": args.wm_checkpoint,
-            "value_head": args.value_head_checkpoint,
-            "planner_policy_head": args.planner_policy_head_checkpoint,
-        },
-    )
+    manifest_fingerprint = file_artifact_fingerprint(args.fresh_rollout_manifest)
+    if args.diagnostic_nonbehavior_prefix:
+        expected = {
+            "manifest_sha256": args.expected_manifest_sha256,
+            "trajectory_count": args.expected_trajectory_count,
+            "selected_record_id": args.expected_selected_record_id,
+            "selected_state_tokens": args.expected_selected_state_tokens,
+            "current_policy_sha256": args.expected_current_policy_sha256,
+            "current_state_projector_sha256": (
+                args.expected_current_state_projector_sha256
+            ),
+            "current_wm_predictor_sha256": (
+                args.expected_current_wm_predictor_sha256
+            ),
+            "current_value_head_sha256": args.expected_current_value_head_sha256,
+            "current_planner_policy_head_sha256": (
+                args.expected_current_planner_policy_head_sha256
+            ),
+        }
+        if any(value in (None, "") for value in expected.values()):
+            raise ValueError(
+                "nonbehavior diagnostic requires every explicit source expectation"
+            )
+        if manifest_fingerprint != args.expected_manifest_sha256:
+            raise ValueError("diagnostic manifest SHA256 differs from contract")
+        if manifest.num_trajectories != args.expected_trajectory_count:
+            raise ValueError("diagnostic trajectory count differs from contract")
+        freshness = FreshJSONLRolloutCollector(
+            args.fresh_rollout_manifest,
+            model_path=Path(manifest.policy_path),
+            planner_artifacts={
+                name: Path(manifest.planner_paths[name])
+                for name in manifest.planner_fingerprints
+            },
+        )
+    else:
+        freshness = FreshJSONLRolloutCollector(
+            args.fresh_rollout_manifest,
+            model_path=args.model,
+            planner_artifacts={
+                "state_projector": args.state_proj_checkpoint,
+                "wm_predictor": args.wm_checkpoint,
+                "value_head": args.value_head_checkpoint,
+                "planner_policy_head": args.planner_policy_head_checkpoint,
+            },
+        )
     freshness.validate_policy()
     if freshness.consumption_path.exists():
         raise RuntimeError(
@@ -166,10 +328,18 @@ def _prepare_gate_row(args: argparse.Namespace) -> tuple[Any, int, torch.Tensor,
     if not qualifying:
         maximum = max((candidate[2] for candidate in candidates), default=0)
         raise RuntimeError(
-            "complete-objective gate has no behavior-matched real prefix meeting "
-            f"its contract: maximum={maximum}, minimum={args.minimum_state_tokens}"
+            "complete-objective gate has no real prefix meeting its contract: "
+            f"maximum={maximum}, minimum={args.minimum_state_tokens}"
         )
     transition, return_target, token_count = qualifying[0]
+    if args.diagnostic_nonbehavior_prefix and (
+        transition.trajectory.record_id != args.expected_selected_record_id
+        or token_count != args.expected_selected_state_tokens
+    ):
+        raise RuntimeError(
+            "selected long-prefix record/tokens differ from explicit contract: "
+            f"record={transition.trajectory.record_id}, tokens={token_count}"
+        )
     if token_count > config.actor.max_state_tokens:
         raise RuntimeError(
             "selected real prefix exceeds actor.max_state_tokens: "
@@ -181,7 +351,12 @@ def _prepare_gate_row(args: argparse.Namespace) -> tuple[Any, int, torch.Tensor,
         planner_policy_head_checkpoint=args.planner_policy_head_checkpoint,
         emb_dim=config.predictor.emb_dim,
     )
-    row = prepare_planner_behavior_row(
+    prepare_row = (
+        prepare_planner_nonbehavior_diagnostic_row
+        if args.diagnostic_nonbehavior_prefix
+        else prepare_planner_behavior_row
+    )
+    row = prepare_row(
         transition,
         return_target=return_target,
         value_head=value_head,
@@ -204,6 +379,15 @@ def _prepare_gate_row(args: argparse.Namespace) -> tuple[Any, int, torch.Tensor,
     gc.collect()
     metadata = {
         "trajectory_id": transition.trajectory.record_id,
+        "behavior_matched": not args.diagnostic_nonbehavior_prefix,
+        "source_policy_path": manifest.policy_path,
+        "diagnostic_only": bool(args.diagnostic_nonbehavior_prefix),
+        "manifest_path": str(args.fresh_rollout_manifest.resolve()),
+        "manifest_fingerprint": manifest_fingerprint,
+        "trajectory_fingerprint": manifest.trajectory_fingerprint,
+        "trajectory_count": manifest.num_trajectories,
+        "source_policy_provenance": _source_policy_provenance(manifest),
+        "current_objective_provenance": _current_objective_provenance(args),
         "transition_step": transition.step_index,
         "executed_action_index": transition.action_index,
         "state_tokens": token_count,
@@ -211,9 +395,23 @@ def _prepare_gate_row(args: argparse.Namespace) -> tuple[Any, int, torch.Tensor,
         "candidate_final_state_tokens": {
             candidate[0].trajectory.record_id: candidate[2] for candidate in candidates
         },
-        "old_action_value": float(row.old_action_value.item()),
-        "old_policy_log_prob": float(row.old_policy_log_prob.item()),
-        "policy_advantage": float(row.policy_advantage.item()),
+        **(
+            {
+                "current_head_action_value": float(row.old_action_value.item()),
+                "current_head_policy_log_prob": float(
+                    row.old_policy_log_prob.item()
+                ),
+                "current_head_diagnostic_advantage": float(
+                    row.policy_advantage.item()
+                ),
+            }
+            if args.diagnostic_nonbehavior_prefix
+            else {
+                "old_action_value": float(row.old_action_value.item()),
+                "old_policy_log_prob": float(row.old_policy_log_prob.item()),
+                "policy_advantage": float(row.policy_advantage.item()),
+            }
+        ),
         "return_target": float(row.return_target.item()),
         "dino_identity": {
             "source": DINOV2_LARGE_IDENTITY.source,
@@ -225,6 +423,7 @@ def _prepare_gate_row(args: argparse.Namespace) -> tuple[Any, int, torch.Tensor,
     }
     if freshness.consumption_path.exists():
         raise RuntimeError("diagnostic unexpectedly created a consumption sidecar")
+    _revalidate_gate_source(args, metadata)
     return row, token_count, dino_target, metadata
 
 
@@ -249,6 +448,31 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def _update_finished_wandb_status(
+    *,
+    entity: str,
+    project: str,
+    run_id: str,
+    status: str,
+) -> None:
+    import wandb
+
+    last_error: Exception | None = None
+    for _ in range(6):
+        try:
+            remote = wandb.Api().run(f"{entity}/{project}/{run_id}")
+            remote.summary["gate/status"] = status
+            remote.update()
+            confirmed = wandb.Api().run(f"{entity}/{project}/{run_id}")
+            if confirmed.summary.get("gate/status") != status:
+                raise RuntimeError("W&B summary status update did not persist")
+            return
+        except Exception as error:  # pragma: no cover - network retry
+            last_error = error
+            time.sleep(5)
+    raise RuntimeError("could not finalize W&B gate status") from last_error
 
 
 def _validate_worker_placement(rows: list[dict[str, Any]], world_size: int) -> None:
@@ -318,6 +542,7 @@ def run_gate(args: argparse.Namespace) -> dict[str, Any]:
         dino_grid_target=dino_target,
         world_size=args.world_size,
         provisional_update_id="complete-objective-gate",
+        allow_nonbehavior_diagnostic=args.diagnostic_nonbehavior_prefix,
     )
     worker_config = {
         "model_factory": (
@@ -409,6 +634,7 @@ def run_gate(args: argparse.Namespace) -> dict[str, Any]:
             int(value) <= 0 for value in peak_memory
         ):
             raise RuntimeError("complete-objective peak-memory rows are invalid")
+        _revalidate_gate_source(args, source_metadata)
         return {
             "objective_status": "passed",
             "world_size": args.world_size,
@@ -433,6 +659,13 @@ def main() -> int:
         raise ValueError("complete-objective Ray/FSDP gate requires at least two GPUs")
     if args.minimum_state_tokens < 1:
         raise ValueError("minimum state tokens must be positive")
+    if (
+        args.diagnostic_nonbehavior_prefix
+        and args.minimum_state_tokens < 14_000
+    ):
+        raise ValueError(
+            "nonbehavior long-prefix diagnostic requires at least 14000 tokens"
+        )
 
     import wandb
 
@@ -442,12 +675,19 @@ def main() -> int:
         id=args.wandb_run_id,
         resume="never",
         config={
-            "gate": "planner_verl_complete_objective_id147_id149",
+            "gate": (
+                "planner_verl_complete_objective_nonbehavior_long_prefix"
+                if args.diagnostic_nonbehavior_prefix
+                else "planner_verl_complete_objective_id147_id149"
+            ),
             "world_size": args.world_size,
             "minimum_state_tokens": args.minimum_state_tokens,
+            "diagnostic_nonbehavior_prefix": args.diagnostic_nonbehavior_prefix,
         },
     )
     output = args.output_dir.resolve()
+    wandb_finished = False
+    wandb_entity = str(run.entity)
     try:
         result = run_gate(args)
         run.log(
@@ -464,22 +704,39 @@ def main() -> int:
             }
         )
         payload = {
-            "status": "COMPUTE_OK_PENDING_WANDB",
+            "status": "COMPUTE_OK_PENDING_FINAL_PROVENANCE",
             "wandb_project": args.wandb_project,
             "wandb_run_name": args.wandb_run_name,
             "wandb_run_id": args.wandb_run_id,
             **result,
         }
         _write_json_atomic(output / "result.json", payload)
-        run.summary["gate/status"] = "ALL_OK"
+        _revalidate_gate_source(args, result["source"])
+        run.summary["gate/status"] = "COMPUTE_OK_PENDING_FINAL_PROVENANCE"
         run.finish(exit_code=0)
+        wandb_finished = True
+        _revalidate_gate_source(args, result["source"])
+        _update_finished_wandb_status(
+            entity=wandb_entity,
+            project=args.wandb_project,
+            run_id=args.wandb_run_id,
+            status="ALL_OK",
+        )
         payload["status"] = "ALL_OK"
         _write_json_atomic(output / "result.json", payload)
         return 0
     except Exception as error:
         try:
-            run.summary["gate/status"] = "FAILED"
-            run.finish(exit_code=1)
+            if wandb_finished:
+                _update_finished_wandb_status(
+                    entity=wandb_entity,
+                    project=args.wandb_project,
+                    run_id=args.wandb_run_id,
+                    status="FAILED_FINALIZATION",
+                )
+            else:
+                run.summary["gate/status"] = "FAILED"
+                run.finish(exit_code=1)
         finally:
             _write_json_atomic(
                 output / "terminal.json",

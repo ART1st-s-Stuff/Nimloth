@@ -25,6 +25,35 @@ set -euo pipefail
 : "${WANDB_PROJECT:?WANDB_PROJECT is required}"
 : "${WANDB_RUN_NAME:?WANDB_RUN_NAME is required}"
 : "${WANDB_RUN_ID:?WANDB_RUN_ID is required}"
+GATE_MINIMUM_STATE_TOKENS=${GATE_MINIMUM_STATE_TOKENS:-6000}
+GATE_DIAGNOSTIC_NONBEHAVIOR_PREFIX=${GATE_DIAGNOSTIC_NONBEHAVIOR_PREFIX:-false}
+GATE_EXPECTED_MANIFEST_SHA256=${GATE_EXPECTED_MANIFEST_SHA256:-}
+GATE_EXPECTED_TRAJECTORY_COUNT=${GATE_EXPECTED_TRAJECTORY_COUNT:-}
+GATE_EXPECTED_SELECTED_RECORD_ID=${GATE_EXPECTED_SELECTED_RECORD_ID:-}
+GATE_EXPECTED_SELECTED_STATE_TOKENS=${GATE_EXPECTED_SELECTED_STATE_TOKENS:-}
+GATE_EXPECTED_CURRENT_POLICY_SHA256=${GATE_EXPECTED_CURRENT_POLICY_SHA256:-}
+GATE_EXPECTED_CURRENT_STATE_PROJECTOR_SHA256=${GATE_EXPECTED_CURRENT_STATE_PROJECTOR_SHA256:-}
+GATE_EXPECTED_CURRENT_WM_PREDICTOR_SHA256=${GATE_EXPECTED_CURRENT_WM_PREDICTOR_SHA256:-}
+GATE_EXPECTED_CURRENT_VALUE_HEAD_SHA256=${GATE_EXPECTED_CURRENT_VALUE_HEAD_SHA256:-}
+GATE_EXPECTED_CURRENT_PLANNER_POLICY_HEAD_SHA256=${GATE_EXPECTED_CURRENT_PLANNER_POLICY_HEAD_SHA256:-}
+if [[ "${GATE_DIAGNOSTIC_NONBEHAVIOR_PREFIX}" == true ]]; then
+  (( GATE_MINIMUM_STATE_TOKENS >= 14000 )) || {
+    echo "nonbehavior diagnostic requires >=14000 real state tokens" >&2
+    exit 2
+  }
+  : "${GATE_EXPECTED_MANIFEST_SHA256:?diagnostic manifest SHA256 is required}"
+  : "${GATE_EXPECTED_TRAJECTORY_COUNT:?diagnostic trajectory count is required}"
+  : "${GATE_EXPECTED_SELECTED_RECORD_ID:?diagnostic selected record is required}"
+  : "${GATE_EXPECTED_SELECTED_STATE_TOKENS:?diagnostic selected tokens are required}"
+  : "${GATE_EXPECTED_CURRENT_POLICY_SHA256:?current policy SHA256 is required}"
+  : "${GATE_EXPECTED_CURRENT_STATE_PROJECTOR_SHA256:?current StateProjector SHA256 is required}"
+  : "${GATE_EXPECTED_CURRENT_WM_PREDICTOR_SHA256:?current WM SHA256 is required}"
+  : "${GATE_EXPECTED_CURRENT_VALUE_HEAD_SHA256:?current ValueHead SHA256 is required}"
+  : "${GATE_EXPECTED_CURRENT_PLANNER_POLICY_HEAD_SHA256:?current PlannerPolicyHead SHA256 is required}"
+elif [[ "${GATE_DIAGNOSTIC_NONBEHAVIOR_PREFIX}" != false ]]; then
+  echo "GATE_DIAGNOSTIC_NONBEHAVIOR_PREFIX must be true or false" >&2
+  exit 2
+fi
 
 PYTHON=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
 CONFIG=${REPO}/configs/training/rl/planner_policy_h1_complete_objective_fsdp_gate.yaml
@@ -68,8 +97,24 @@ export NCCL_DEBUG=WARN
 export RAY_DEDUP_LOGS=0
 export PYTHONUNBUFFERED=1
 
-echo "PLANNER_COMPLETE_FSDP_START commit=${EXPECTED_COMMIT} job=${SLURM_JOB_ID} node=$(hostname)"
+echo "PLANNER_COMPLETE_FSDP_START commit=${EXPECTED_COMMIT} job=${SLURM_JOB_ID} node=$(hostname) diagnostic_nonbehavior=${GATE_DIAGNOSTIC_NONBEHAVIOR_PREFIX} minimum_tokens=${GATE_MINIMUM_STATE_TOKENS}"
 nvidia-smi --query-gpu=index,uuid,name,memory.total --format=csv,noheader
+
+GATE_EXTRA_ARGS=()
+if [[ "${GATE_DIAGNOSTIC_NONBEHAVIOR_PREFIX}" == true ]]; then
+  GATE_EXTRA_ARGS+=(
+    --diagnostic-nonbehavior-prefix
+    --expected-manifest-sha256 "${GATE_EXPECTED_MANIFEST_SHA256}"
+    --expected-trajectory-count "${GATE_EXPECTED_TRAJECTORY_COUNT}"
+    --expected-selected-record-id "${GATE_EXPECTED_SELECTED_RECORD_ID}"
+    --expected-selected-state-tokens "${GATE_EXPECTED_SELECTED_STATE_TOKENS}"
+    --expected-current-policy-sha256 "${GATE_EXPECTED_CURRENT_POLICY_SHA256}"
+    --expected-current-state-projector-sha256 "${GATE_EXPECTED_CURRENT_STATE_PROJECTOR_SHA256}"
+    --expected-current-wm-predictor-sha256 "${GATE_EXPECTED_CURRENT_WM_PREDICTOR_SHA256}"
+    --expected-current-value-head-sha256 "${GATE_EXPECTED_CURRENT_VALUE_HEAD_SHA256}"
+    --expected-current-planner-policy-head-sha256 "${GATE_EXPECTED_CURRENT_PLANNER_POLICY_HEAD_SHA256}"
+  )
+fi
 
 srun --nodes=1 --ntasks=1 --gpus-per-task=8 --cpus-per-task=64 \
   "${PYTHON}" experiments/training/rl/gate_planner_verl_complete_objective.py \
@@ -83,7 +128,8 @@ srun --nodes=1 --ntasks=1 --gpus-per-task=8 --cpus-per-task=64 \
   --fresh-rollout-manifest "${FRESH_ROLLOUT_MANIFEST}" \
   --output-dir "${OUTPUT_DIR}" \
   --world-size 8 \
-  --minimum-state-tokens 6000 \
+  --minimum-state-tokens "${GATE_MINIMUM_STATE_TOKENS}" \
+  "${GATE_EXTRA_ARGS[@]}" \
   --wandb-project "${WANDB_PROJECT}" \
   --wandb-run-name "${WANDB_RUN_NAME}" \
   --wandb-run-id "${WANDB_RUN_ID}"

@@ -59,7 +59,12 @@ def test_complete_objective_launcher_is_strict_weights_only_one_by_eight() -> No
     assert "#SBATCH --nodes=1" in launcher
     assert "#SBATCH --gpus-per-task=8" in launcher
     assert "--world-size 8" in launcher
-    assert "--minimum-state-tokens 6000" in launcher
+    assert 'GATE_MINIMUM_STATE_TOKENS=${GATE_MINIMUM_STATE_TOKENS:-6000}' in launcher
+    assert "GATE_MINIMUM_STATE_TOKENS >= 14000" in launcher
+    assert "--diagnostic-nonbehavior-prefix" in launcher
+    assert "GATE_EXPECTED_MANIFEST_SHA256" in launcher
+    assert "GATE_EXPECTED_CURRENT_POLICY_SHA256" in launcher
+    assert "--expected-current-planner-policy-head-sha256" in launcher
     assert "--fresh-rollout-manifest" in launcher
     assert "--planner-policy-head-checkpoint" in launcher
     assert "--resume" not in launcher

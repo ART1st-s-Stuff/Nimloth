@@ -22,6 +22,15 @@ class PreparedPlannerRow:
     old_action_value: torch.Tensor
     old_policy_log_prob: torch.Tensor
     policy_advantage: torch.Tensor
+    behavior_matched: bool
+    diagnostic_only: bool
+
+    def __post_init__(self) -> None:
+        if self.behavior_matched == self.diagnostic_only:
+            raise ValueError(
+                "planner row must be either behavior-matched training data or "
+                "an explicit nonbehavior diagnostic"
+            )
 
 
 def load_planner_behavior_heads(
@@ -48,20 +57,15 @@ def load_planner_behavior_heads(
 
 
 @torch.no_grad()
-def prepare_planner_behavior_row(
+def _prepare_planner_head_row(
     transition: ExecutedTransition,
     *,
     return_target: torch.Tensor,
     value_head: ValueHead,
     planner_policy_head: PlannerPolicyHead,
     temperature: float,
+    require_behavior_match: bool,
 ) -> PreparedPlannerRow:
-    """Reconstruct Q_old and pi_old from the persisted real decision state.
-
-    This deliberately reads the trajectory's actual state and behavior log-probs.
-    It never creates a thought, prompt suffix, state, or action trace.
-    """
-
     if temperature <= 0.0:
         raise ValueError("planner policy temperature must be positive")
     state = transition.rollout_decision_state().unsqueeze(0)
@@ -74,24 +78,25 @@ def prepare_planner_behavior_row(
     action_values = value_head(pooled).float().squeeze(0)
     logits = planner_policy_head(pooled).float().squeeze(0)
     old_log_probs = torch.log_softmax(logits / temperature, dim=-1)
-    stored_log_probs = transition.behavior_action_log_probs().to(
-        dtype=old_log_probs.dtype
-    )
-    if old_log_probs.shape != stored_log_probs.shape or not torch.allclose(
-        old_log_probs,
-        stored_log_probs,
-        rtol=1e-5,
-        atol=1e-6,
-    ):
-        maximum_error = (
-            float((old_log_probs - stored_log_probs).abs().max().item())
-            if old_log_probs.shape == stored_log_probs.shape
-            else float("inf")
+    if require_behavior_match:
+        stored_log_probs = transition.behavior_action_log_probs().to(
+            dtype=old_log_probs.dtype
         )
-        raise ValueError(
-            "fresh rollout PlannerPolicyHead log-probs do not match the "
-            f"behavior checkpoint: max_error={maximum_error}"
-        )
+        if old_log_probs.shape != stored_log_probs.shape or not torch.allclose(
+            old_log_probs,
+            stored_log_probs,
+            rtol=1e-5,
+            atol=1e-6,
+        ):
+            maximum_error = (
+                float((old_log_probs - stored_log_probs).abs().max().item())
+                if old_log_probs.shape == stored_log_probs.shape
+                else float("inf")
+            )
+            raise ValueError(
+                "fresh rollout PlannerPolicyHead log-probs do not match the "
+                f"behavior checkpoint: max_error={maximum_error}"
+            )
     selected = int(transition.action_index)
     state_value = (old_log_probs.exp() * action_values).sum()
     target = return_target.detach().reshape(()).float().cpu()
@@ -103,6 +108,53 @@ def prepare_planner_behavior_row(
         old_action_value=action_values[selected].detach().cpu(),
         old_policy_log_prob=old_log_probs[selected].detach().cpu(),
         policy_advantage=(target - state_value.detach().cpu()),
+        behavior_matched=require_behavior_match,
+        diagnostic_only=not require_behavior_match,
+    )
+
+
+def prepare_planner_behavior_row(
+    transition: ExecutedTransition,
+    *,
+    return_target: torch.Tensor,
+    value_head: ValueHead,
+    planner_policy_head: PlannerPolicyHead,
+    temperature: float,
+) -> PreparedPlannerRow:
+    """Reconstruct statistics and require the persisted behavior policy to match."""
+
+    return _prepare_planner_head_row(
+        transition,
+        return_target=return_target,
+        value_head=value_head,
+        planner_policy_head=planner_policy_head,
+        temperature=temperature,
+        require_behavior_match=True,
+    )
+
+
+def prepare_planner_nonbehavior_diagnostic_row(
+    transition: ExecutedTransition,
+    *,
+    return_target: torch.Tensor,
+    value_head: ValueHead,
+    planner_policy_head: PlannerPolicyHead,
+    temperature: float,
+) -> PreparedPlannerRow:
+    """Build current-head targets for a real prefix used only as a memory probe.
+
+    The transition remains actual recorded data, including its real CoT and state.
+    Its behavior checkpoint differs from the initialized policy, so this row must
+    never be consumed, checkpointed, or represented as a valid PPO training row.
+    """
+
+    return _prepare_planner_head_row(
+        transition,
+        return_target=return_target,
+        value_head=value_head,
+        planner_policy_head=planner_policy_head,
+        temperature=temperature,
+        require_behavior_match=False,
     )
 
 
@@ -121,6 +173,10 @@ def build_planner_rank_rounds(
     dino = tuple(dino_grid_targets)
     if not prepared:
         raise ValueError("planner rank rounds require real transitions")
+    if any(not row.behavior_matched or row.diagnostic_only for row in prepared):
+        raise ValueError(
+            "transactional planner rank rounds reject nonbehavior diagnostics"
+        )
     if world_size < 2:
         raise ValueError("planner rank rounds require distributed world_size >= 2")
     if len(tokens) != len(prepared) or len(dino) != len(prepared):
@@ -151,6 +207,8 @@ def build_planner_rank_rounds(
                     total_transitions=total,
                     update_id=provisional_update_id,
                     dino_grid_targets=(dino[source_index],),
+                    behavior_matched=True,
+                    diagnostic_only=False,
                 )
             )
         rounds.append(tuple(rank_batches))
@@ -164,11 +222,16 @@ def build_replicated_planner_gate_round(
     dino_grid_target: torch.Tensor,
     world_size: int,
     provisional_update_id: str,
+    allow_nonbehavior_diagnostic: bool = False,
 ) -> tuple[tuple[object, ...], ...]:
     """Replicate one real row so every nested FSDP rank executes the same graph."""
 
     if world_size < 2:
         raise ValueError("planner FSDP gate requires world_size >= 2")
+    if row.diagnostic_only and not allow_nonbehavior_diagnostic:
+        raise ValueError(
+            "nonbehavior row requires an explicit diagnostic gate allowance"
+        )
     batches = tuple(
         build_planner_update_dataproto(
             transitions=(row.transition,),
@@ -181,6 +244,8 @@ def build_replicated_planner_gate_round(
             total_transitions=1,
             update_id=provisional_update_id,
             dino_grid_targets=(dino_grid_target,),
+            behavior_matched=row.behavior_matched,
+            diagnostic_only=row.diagnostic_only,
         )
         for _ in range(world_size)
     )
@@ -193,4 +258,5 @@ __all__ = [
     "build_replicated_planner_gate_round",
     "load_planner_behavior_heads",
     "prepare_planner_behavior_row",
+    "prepare_planner_nonbehavior_diagnostic_row",
 ]
