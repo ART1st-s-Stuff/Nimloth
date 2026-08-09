@@ -82,6 +82,26 @@ def test_navigation_agent_runs_real_history_through_one_policy() -> None:
     )
 
 
+def test_navigation_agent_can_record_an_externally_batched_decision() -> None:
+    policy = _RecordingPolicy()
+    agent = AgentRuntime(
+        policy=policy,
+        action_space=NAVIGATION_ACTION_SPACE,
+        prompt_template=_template(),
+    )
+    agent.reset(system_prompt="system")
+    agent.observe(text="first <image>", image="image-0")
+
+    prompt = agent.pending_policy_prompt()
+    decision = policy.select_action(prompt)
+    action = agent.record_policy_decision(prompt, decision)
+
+    assert action.policy_prompt is prompt
+    assert action.action_index == 0
+    assert agent.action_indices == (0,)
+    assert agent.transcript().assistant_responses == (decision.response,)
+
+
 def test_navigation_agent_serializes_only_completed_turns() -> None:
     agent = AgentRuntime(
         policy=_RecordingPolicy(),

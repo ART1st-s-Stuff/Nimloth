@@ -108,19 +108,33 @@ class AgentRuntime:
         self._observation_texts.append(text)
         self._observation_images.append(image)
 
-    def act(self) -> AgentAction:
+    def pending_policy_prompt(self) -> AgentPrompt:
+        """Build the unacted observation prompt for serial or batch policy use."""
+
+        if len(self._observation_texts) != len(self._action_indices) + 1:
+            raise RuntimeError("policy prompt requires one unacted observation")
         prompt_mode = getattr(self._policy, "prompt_mode", "action")
         if prompt_mode == "action":
-            policy_prompt = self._prompt_template.build_policy_prompt(
+            return self._prompt_template.build_policy_prompt(self.transcript())
+        if prompt_mode == "response":
+            return self._prompt_template.build_response_policy_prompt(
                 self.transcript()
             )
-        elif prompt_mode == "response":
-            policy_prompt = self._prompt_template.build_response_policy_prompt(
-                self.transcript()
-            )
-        else:
-            raise ValueError(f"unknown Agent policy prompt mode: {prompt_mode!r}")
-        decision = self._policy.select_action(policy_prompt)
+        raise ValueError(f"unknown Agent policy prompt mode: {prompt_mode!r}")
+
+    def record_policy_decision(
+        self,
+        policy_prompt: AgentPrompt,
+        decision: PolicyDecision,
+    ) -> AgentAction:
+        """Commit one real policy result produced from ``pending_policy_prompt``."""
+
+        expected = self.pending_policy_prompt()
+        if (
+            policy_prompt.messages != expected.messages
+            or policy_prompt.images != expected.images
+        ):
+            raise ValueError("policy decision prompt is stale or belongs to another env")
         action_log_probs = validate_action_log_probs(
             decision.action_index,
             decision.action_log_probs,
@@ -152,6 +166,11 @@ class AgentRuntime:
             credit_assignment=credit_assignment,
         )
 
+    def act(self) -> AgentAction:
+        policy_prompt = self.pending_policy_prompt()
+        decision = self._policy.select_action(policy_prompt)
+        return self.record_policy_decision(policy_prompt, decision)
+
     def transcript(self) -> AgentTranscript:
         if not self._system_prompt:
             raise RuntimeError("Agent has not been reset")
@@ -168,23 +187,31 @@ class AgentRuntime:
 
         return self._prompt_template.build_supervised_prompt(self.transcript())
 
-    def terminal_state(self) -> PolicyState:
-        """生成最后 observation 的真实 CoT 和同一次 Qwen forward state。"""
+    def terminal_policy_prompt(self) -> AgentPrompt:
+        """Build the final unacted observation prompt for terminal CoT batching."""
 
         if len(self._observation_texts) != len(self._action_indices) + 1:
             raise RuntimeError("terminal state prefix requires one unacted observation")
-        generate = getattr(self._policy, "generate_state", None)
-        if generate is None:
-            raise RuntimeError("policy cannot generate a terminal Qwen state")
-        prompt = self._prompt_template.build_response_policy_prompt(
+        return self._prompt_template.build_response_policy_prompt(
             self.transcript()
         )
-        state = generate(prompt)
+
+    @staticmethod
+    def validate_terminal_state(state: PolicyState) -> PolicyState:
         if not isinstance(state, PolicyState) or not state.assistant_prefix.startswith(
             "<think>"
         ):
             raise RuntimeError("policy returned an invalid terminal state")
         return state
+
+    def terminal_state(self) -> PolicyState:
+        """生成最后 observation 的真实 CoT 和同一次 Qwen forward state。"""
+
+        generate = getattr(self._policy, "generate_state", None)
+        if generate is None:
+            raise RuntimeError("policy cannot generate a terminal Qwen state")
+        state = generate(self.terminal_policy_prompt())
+        return self.validate_terminal_state(state)
 
     def policy_prompt_for_step(self, step_index: int) -> AgentPrompt:
         """按历史位置重建可审计的 policy prompt。"""

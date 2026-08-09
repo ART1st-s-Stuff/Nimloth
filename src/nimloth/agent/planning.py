@@ -37,6 +37,11 @@ class VLLMTurnStatePolicy(Protocol):
 
     def generate_state(self, prompt: AgentPrompt) -> PolicyState: ...
 
+    def generate_states(
+        self,
+        prompts: tuple[AgentPrompt, ...],
+    ) -> tuple[PolicyState, ...]: ...
+
 
 @dataclass(frozen=True)
 class WorldModelPlan:
@@ -809,6 +814,41 @@ class PlanningPolicy:
                 actual_state.squeeze(0).detach().cpu().float().clone()
             ),
         )
+
+    def generate_states(
+        self,
+        prompts: tuple[AgentPrompt, ...],
+    ) -> tuple[PolicyState, ...]:
+        """Batch terminal CoT/state generation for independent H=1 envs."""
+
+        if self.search_mode != "policy":
+            raise RuntimeError(
+                "batched terminal planning currently requires search_mode=policy"
+            )
+        qwen_states = self.turn_policy.generate_states(prompts)
+        if len(qwen_states) != len(prompts):
+            raise RuntimeError(
+                "batched terminal states do not align with prompts: "
+                f"{len(qwen_states)} != {len(prompts)}"
+            )
+        results: list[PolicyState] = []
+        with evaluating(self.world_model), torch.no_grad():
+            for qwen_state in qwen_states:
+                if qwen_state.latent_hidden is None:
+                    raise RuntimeError(
+                        "batched planner terminal state has no captured Qwen hidden"
+                    )
+                actual_state = self._project_hidden(qwen_state.latent_hidden)
+                results.append(
+                    PolicyState(
+                        assistant_prefix=qwen_state.assistant_prefix,
+                        latent_hidden=qwen_state.latent_hidden,
+                        world_model_state=(
+                            actual_state.squeeze(0).detach().cpu().float().clone()
+                        ),
+                    )
+                )
+        return tuple(results)
 
 
 __all__ = ["PlanningPolicy", "WorldModelPlan", "WorldModelPlanner"]

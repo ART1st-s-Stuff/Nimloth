@@ -129,6 +129,22 @@ def test_rollout_cli_accepts_multiple_training_datasets() -> None:
     assert args.eval_set is None
     assert args.eval_sets == ["base_train", "common_sense_train"]
     assert args.max_pixels is None
+    assert args.batched_active_envs is False
+
+
+def test_rollout_cli_exposes_opt_in_active_env_batching() -> None:
+    args = parse_args(
+        [
+            "--model", "model",
+            "--env-url", "http://env",
+            "--output-dir", "output",
+            "--eval-set", "base_train",
+            "--split", "train",
+            "--batched-active-envs",
+        ]
+    )
+
+    assert args.batched_active_envs is True
 
 
 def test_vagen_eval_navigation_profile_is_an_explicit_rollout_setting() -> None:

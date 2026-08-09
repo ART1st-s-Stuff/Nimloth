@@ -40,6 +40,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Resume a contiguous atomically persisted trajectory prefix",
     )
+    ap.add_argument(
+        "--batched-active-envs",
+        action="store_true",
+        help=(
+            "Use identity-aligned vLLM/VAGEN active-env batching. Currently "
+            "requires PlannerPolicyHead, max_episode_attempts=1, and no resume."
+        ),
+    )
     ap.add_argument("--num-episodes", type=int, default=8)
     ap.add_argument("--max-steps", type=int, default=20)
     ap.add_argument(
@@ -332,7 +340,10 @@ def main(argv: list[str] | None = None) -> int:
         qwen_processor_pixel_bounds,
     )
     from nimloth.backbone.qwen25vl.vllm_policy import QwenVLLMAgentPolicy
-    from nimloth.environment.navigation.collector import VAGENNavigationRolloutCollector
+    from nimloth.environment.navigation.collector import (
+        VAGENBatchedNavigationRolloutCollector,
+        VAGENNavigationRolloutCollector,
+    )
     from nimloth.rollout import FreshRolloutManifest
 
     def report_policy_progress(stage: str) -> None:
@@ -447,7 +458,23 @@ def main(argv: list[str] | None = None) -> int:
             top_p=args.top_p,
             latent_token_count=latent_token_count,
         )
-    collector = VAGENNavigationRolloutCollector(
+    if args.batched_active_envs:
+        if not args.planner_enabled or args.planning_search_mode != "policy":
+            raise ValueError(
+                "batched active envs currently require PlannerPolicyHead rollout"
+            )
+        if args.max_episode_attempts != 1:
+            raise ValueError(
+                "batched active envs currently require max_episode_attempts=1"
+            )
+        if args.resume_existing_rollouts:
+            raise ValueError("batched active envs do not yet support resume")
+    collector_class = (
+        VAGENBatchedNavigationRolloutCollector
+        if args.batched_active_envs
+        else VAGENNavigationRolloutCollector
+    )
+    collector = collector_class(
         policy=policy,
         env_url=args.env_url,
         seed_offset=args.seed_offset,

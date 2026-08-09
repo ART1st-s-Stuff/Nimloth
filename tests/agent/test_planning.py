@@ -348,6 +348,9 @@ class _TurnPolicy:
             latent_hidden=torch.tensor([[0.5, -0.5]]),
         )
 
+    def generate_states(self, prompts):  # type: ignore[no-untyped-def]
+        return tuple(self.generate_state(prompt) for prompt in prompts)
+
 
 def test_planning_policy_uses_batched_lookahead_and_excludes_action_from_ppo() -> None:
     world_model, predictor = _planning_world_model()
@@ -471,6 +474,11 @@ def test_planner_policy_head_batches_active_environment_decisions() -> None:
     assert decisions[0].state_latent_hidden.tolist() == [[0.25, -0.25]]
     assert decisions[1].state_latent_hidden.tolist() == [[0.5, -0.5]]
     assert stages == ["planner_start", "planner_done"]
+
+    terminal_states = policy.generate_states(prompts)
+    assert len(terminal_states) == 2
+    assert turn_policy.terminal_calls == 2
+    assert all(state.world_model_state is not None for state in terminal_states)
 
 
 def test_planning_policy_records_mcts_visits_and_executes_selected_root() -> None:

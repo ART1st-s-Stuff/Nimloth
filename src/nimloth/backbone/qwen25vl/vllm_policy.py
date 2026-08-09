@@ -224,12 +224,25 @@ class QwenVLLMAgentPolicy:
     ) -> tuple[QwenTurnGeneration, ...]:
         """Generate one identity-aligned state for every active environment."""
 
+        return self._generate_responses_with_state(
+            prompts,
+            stage_prefix="batch_",
+            enforce_state_token_budget=True,
+        )
+
+    def _generate_responses_with_state(
+        self,
+        prompts: tuple[AgentPrompt, ...],
+        *,
+        stage_prefix: str,
+        enforce_state_token_budget: bool,
+    ) -> tuple[QwenTurnGeneration, ...]:
         if not self.capture_policy_state:
             raise RuntimeError("this vLLM policy was not configured for state capture")
         if not prompts:
             raise ValueError("batched policy-state generation requires prompts")
         tokens = LatentActionTokens()
-        self._progress("batch_capture_start")
+        self._progress(f"{stage_prefix}capture_start")
         start_policy_state_capture(
             self.engine,
             latent_token_ids=tuple(
@@ -240,23 +253,23 @@ class QwenVLLMAgentPolicy:
             action_token_ids=self.action_token_ids,
         )
         try:
-            self._progress("batch_generation_start")
+            self._progress(f"{stage_prefix}generation_start")
             generated = self._select_responses(
                 prompts,
-                enforce_state_token_budget=True,
+                enforce_state_token_budget=enforce_state_token_budget,
             )
-            self._progress("batch_generation_done")
+            self._progress(f"{stage_prefix}generation_done")
             request_ids = tuple(request_id for request_id, _decision in generated)
-            self._progress("batch_capture_pop_start")
+            self._progress(f"{stage_prefix}capture_pop_start")
             states = pop_policy_state_captures(
                 self.engine,
                 request_ids=request_ids,
             )
-            self._progress("batch_capture_pop_done")
+            self._progress(f"{stage_prefix}capture_pop_done")
         except Exception:
-            self._progress("batch_capture_abort_start")
+            self._progress(f"{stage_prefix}capture_abort_start")
             abort_policy_state_capture(self.engine)
-            self._progress("batch_capture_abort_done")
+            self._progress(f"{stage_prefix}capture_abort_done")
             raise
         results: list[QwenTurnGeneration] = []
         for request_id, decision in generated:
@@ -363,6 +376,38 @@ class QwenVLLMAgentPolicy:
             ],
             latent_hidden=latent_hidden,
         )
+
+    def generate_states(
+        self,
+        prompts: tuple[AgentPrompt, ...],
+    ) -> tuple[PolicyState, ...]:
+        """Batch terminal CoT/state generation without executing draft actions."""
+
+        generated_rows = self._generate_responses_with_state(
+            prompts,
+            stage_prefix="terminal_batch_",
+            enforce_state_token_budget=False,
+        )
+        states: list[PolicyState] = []
+        action_start = LatentActionTokens().action_start
+        for generated in generated_rows:
+            decision = generated.qwen_decision
+            if decision.response is None:
+                raise RuntimeError("terminal Qwen response is missing")
+            boundary = decision.response.rfind(action_start)
+            if boundary < 0:
+                raise RuntimeError("terminal Qwen response has no action boundary")
+            states.append(
+                PolicyState(
+                    assistant_prefix=decision.response[
+                        : boundary + len(action_start)
+                    ],
+                    latent_hidden=(
+                        generated.policy_state.latent_hidden.detach().cpu().clone()
+                    ),
+                )
+            )
+        return tuple(states)
 
     def _request(self, prompt: AgentPrompt) -> tuple[dict[str, Any], list[Any]]:
         bound_messages = prompt.bound_messages()

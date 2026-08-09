@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 import time
 import traceback
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from nimloth.agent import (
+    AgentAction,
+    AgentEpisode,
     AgentPolicy,
     AgentRuntime,
     EpisodeRunner,
+    PolicyState,
     create_prompt_template,
 )
 from nimloth.config.agent import AgentConfig
@@ -20,7 +24,13 @@ from nimloth.environment.navigation.vagen import (
     NAVIGATION_REQUEST_TIMEOUT_SECONDS,
     VAGENNavigationSession,
     instruction_from_observation,
+    navigation_environment_config,
+    observation_image,
+    observation_text,
+    vagen_eval_nimloth_observation_text,
+    vagen_eval_nimloth_system_prompt,
 )
+from nimloth.environment.common.session import EnvironmentObservation
 from nimloth.rollout.from_agent import trajectory_from_agent_episode
 from nimloth.rollout.schema import RolloutTrajectory
 from nimloth.rollout.storage import load_trajectories, save_trajectories
@@ -295,4 +305,306 @@ class VAGENNavigationRolloutCollector:
         print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
-__all__ = ["VAGENNavigationRolloutCollector"]
+@dataclass
+class _BatchedEpisodeState:
+    index: int
+    episode_id: str
+    eval_set: str
+    seed: int
+    system_prompt: str
+    runtime: AgentRuntime
+    observations: list[EnvironmentObservation] = field(default_factory=list)
+    actions: list[AgentAction] = field(default_factory=list)
+    rewards: list[float] = field(default_factory=list)
+    success: bool = False
+    done: bool = False
+
+
+class VAGENBatchedNavigationRolloutCollector(VAGENNavigationRolloutCollector):
+    """VAGEN active-env batching with identity-aligned PlannerPolicyHead calls."""
+
+    def __init__(self, *args: Any, client: Any | None = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        if client is not None:
+            self._client = client
+
+    def _batch_observation(
+        self,
+        raw_observation: Any,
+        info: Any,
+        *,
+        initial: bool,
+    ) -> EnvironmentObservation:
+        return EnvironmentObservation(
+            text=(
+                vagen_eval_nimloth_observation_text(
+                    raw_observation,
+                    initial=initial,
+                )
+                if self._navigation_profile == "vagen_eval"
+                else observation_text(raw_observation)
+            ),
+            image=observation_image(raw_observation),
+            info=dict(info) if isinstance(info, dict) else {},
+        )
+
+    def _persist_completed_prefix(
+        self,
+        completed: dict[int, Any],
+        target_dir: Path,
+    ) -> list[Any]:
+        prefix = []
+        for index in range(len(completed)):
+            trajectory = completed.get(index)
+            if trajectory is None:
+                break
+            prefix.append(trajectory)
+        if prefix:
+            save_trajectories(prefix, target_dir)
+        return prefix
+
+    def collect(
+        self,
+        *,
+        num_episodes: int,
+        max_steps_per_episode: int = 20,
+        max_episode_attempts: int | None = None,
+        output_dir: Path | None = None,
+        resume_existing: bool = False,
+    ) -> list[RolloutTrajectory]:
+        if self._policy is None:
+            raise RuntimeError("rollout collector has no bound Agent")
+        if num_episodes < 0:
+            raise ValueError("num_episodes must be non-negative")
+        if max_steps_per_episode < 1:
+            raise ValueError("max_steps_per_episode must be positive")
+        attempts = (
+            self._max_episode_attempts
+            if max_episode_attempts is None
+            else int(max_episode_attempts)
+        )
+        if attempts != 1:
+            raise ValueError(
+                "batched rollout retries require a future per-request replay "
+                "protocol; max_episode_attempts must currently be 1"
+            )
+        if resume_existing:
+            raise ValueError(
+                "batched rollout resume requires active-env identity replay and "
+                "is not implemented"
+            )
+        target_dir = output_dir or Path(".")
+        image_dir = target_dir / "images"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        if num_episodes == 0:
+            save_trajectories([], target_dir)
+            return []
+
+        identities = tuple(
+            (index, *self._next_episode_identity(index))
+            for index in range(num_episodes)
+        )
+        env_ids = [episode_id for _index, episode_id, _eval_set, _seed in identities]
+        open_env_ids: set[str] = set()
+        completed: dict[int, RolloutTrajectory] = {}
+        states: dict[str, _BatchedEpisodeState] = {}
+        try:
+            self.client.create_environments_batch(
+                {
+                    episode_id: navigation_environment_config(
+                        eval_set,
+                        profile=self._navigation_profile,
+                    )
+                    for _index, episode_id, eval_set, _seed in identities
+                }
+            )
+            open_env_ids.update(env_ids)
+            system_prompts = self.client.get_system_prompts_batch(env_ids)
+            reset_rows = self.client.reset_batch(
+                {
+                    episode_id: seed
+                    for _index, episode_id, _eval_set, seed in identities
+                }
+            )
+            if set(system_prompts) != set(env_ids) or set(reset_rows) != set(env_ids):
+                raise RuntimeError(
+                    "VAGEN batch reset did not return every requested environment"
+                )
+            for index, episode_id, eval_set, seed in identities:
+                system_prompt = str(system_prompts.get(episode_id, ""))
+                if self._navigation_profile == "vagen_eval":
+                    system_prompt = vagen_eval_nimloth_system_prompt()
+                if not system_prompt:
+                    raise RuntimeError(
+                        f"environment {episode_id} returned an empty system prompt"
+                    )
+                runtime = AgentRuntime(
+                    policy=self._policy,
+                    action_space=NAVIGATION_ACTION_SPACE,
+                    prompt_template=create_prompt_template(
+                        self._agent_config.prompt_spec(
+                            latent_token_count=self._latent_token_count,
+                        ),
+                        action_count=len(NAVIGATION_ACTION_SPACE),
+                    ),
+                )
+                runtime.reset(system_prompt=system_prompt)
+                raw_observation, info = reset_rows[episode_id]
+                observation = self._batch_observation(
+                    raw_observation,
+                    info,
+                    initial=True,
+                )
+                runtime.observe(text=observation.text, image=observation.image)
+                states[episode_id] = _BatchedEpisodeState(
+                    index=index,
+                    episode_id=episode_id,
+                    eval_set=eval_set,
+                    seed=seed,
+                    system_prompt=system_prompt,
+                    runtime=runtime,
+                    observations=[observation],
+                )
+
+            for _step in range(max_steps_per_episode):
+                active = tuple(
+                    state
+                    for state in states.values()
+                    if not state.done and len(state.actions) < max_steps_per_episode
+                )
+                if not active:
+                    break
+                prompts = tuple(
+                    state.runtime.pending_policy_prompt() for state in active
+                )
+                select_actions = getattr(self._policy, "select_actions", None)
+                if select_actions is None:
+                    raise RuntimeError("batched collector policy has no select_actions")
+                decisions = tuple(select_actions(prompts))
+                if len(decisions) != len(active):
+                    raise RuntimeError(
+                        "batched planner decisions do not align with active envs"
+                    )
+                actions = tuple(
+                    state.runtime.record_policy_decision(prompt, decision)
+                    for state, prompt, decision in zip(
+                        active,
+                        prompts,
+                        decisions,
+                        strict=True,
+                    )
+                )
+                step_rows = self.client.step_batch(
+                    {
+                        state.episode_id: action.response
+                        for state, action in zip(active, actions, strict=True)
+                    }
+                )
+                if set(step_rows) != {state.episode_id for state in active}:
+                    raise RuntimeError(
+                        "VAGEN batch step did not return every active environment"
+                    )
+                finished: list[_BatchedEpisodeState] = []
+                for state, action in zip(active, actions, strict=True):
+                    raw_observation, reward, done, info = step_rows[state.episode_id]
+                    info_dict = dict(info) if isinstance(info, dict) else {}
+                    adjusted_reward = float(reward)
+                    if not info_dict.get("last_action_success", True):
+                        adjusted_reward -= 0.1
+                    success = bool(info_dict.get("task_success", False)) or (
+                        adjusted_reward >= 10.0
+                    )
+                    observation = self._batch_observation(
+                        raw_observation,
+                        info_dict,
+                        initial=False,
+                    )
+                    state.actions.append(action)
+                    state.rewards.append(adjusted_reward)
+                    state.observations.append(observation)
+                    state.success = state.success or success
+                    state.done = bool(done)
+                    state.runtime.observe(
+                        text=observation.text,
+                        image=observation.image,
+                    )
+                    if state.done or len(state.actions) >= max_steps_per_episode:
+                        finished.append(state)
+
+                if finished:
+                    terminal_prompts = tuple(
+                        state.runtime.terminal_policy_prompt() for state in finished
+                    )
+                    generate_states = getattr(self._policy, "generate_states", None)
+                    if generate_states is None:
+                        raise RuntimeError(
+                            "batched collector policy has no generate_states"
+                        )
+                    terminal_states = tuple(generate_states(terminal_prompts))
+                    if len(terminal_states) != len(finished):
+                        raise RuntimeError(
+                            "batched terminal states do not align with finished envs"
+                        )
+                    closed_now: list[str] = []
+                    for state, terminal_state in zip(
+                        finished,
+                        terminal_states,
+                        strict=True,
+                    ):
+                        if not state.actions:
+                            raise RuntimeError(
+                                f"environment {state.episode_id} produced no actions"
+                            )
+                        terminal_state = AgentRuntime.validate_terminal_state(
+                            terminal_state
+                        )
+                        episode = AgentEpisode(
+                            system_prompt=state.system_prompt,
+                            observations=tuple(state.observations),
+                            actions=tuple(state.actions),
+                            rewards=tuple(state.rewards),
+                            success=state.success,
+                            done=state.done,
+                            prompt_template=state.runtime.prompt_template_spec,
+                            action_space_id=NAVIGATION_ACTION_SPACE.identifier,
+                            action_space_version=NAVIGATION_ACTION_SPACE.version,
+                        )
+                        image_paths = self._save_images(
+                            state.episode_id,
+                            episode.observations,
+                            image_dir,
+                        )
+                        completed[state.index] = trajectory_from_agent_episode(
+                            episode,
+                            record_id=state.episode_id,
+                            image_paths=image_paths,
+                            instruction=instruction_from_observation(
+                                episode.observations[0].text
+                            ),
+                            split=self._split,
+                            sampling_temperature=self._temperature,
+                            sampling_top_p=self._top_p,
+                            terminal_state=terminal_state,
+                        )
+                        closed_now.append(state.episode_id)
+                    self.client.close_batch(closed_now)
+                    open_env_ids.difference_update(closed_now)
+                    self._persist_completed_prefix(completed, target_dir)
+
+            if len(completed) != num_episodes:
+                raise RuntimeError(
+                    "batched rollout did not finalize every requested episode: "
+                    f"{len(completed)} != {num_episodes}"
+                )
+            trajectories = [completed[index] for index in range(num_episodes)]
+            save_trajectories(trajectories, target_dir)
+            return trajectories
+        finally:
+            if open_env_ids:
+                self.client.close_batch(sorted(open_env_ids))
+
+
+__all__ = [
+    "VAGENBatchedNavigationRolloutCollector",
+    "VAGENNavigationRolloutCollector",
+]

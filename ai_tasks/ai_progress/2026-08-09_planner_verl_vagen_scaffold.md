@@ -51,6 +51,8 @@
 - 多模态packer按实际padded cost `max(sequence tokens) * rows`做deterministic first-fit-decreasing，直接补足pinned VERL在`multi_modal_inputs`分支绕过dynamic-bsz的缺口；单条prefix超budget时fail closed。
 - `PlannerVERLUpdateCore`实现begin→多个DataProto backward→单optimizer step→abort生命周期；`PlannerVERLWorkerMixin`使用VERL原生`ONE_TO_ALL`与`DP_COMPUTE_METRIC` decorator暴露Ray worker调用边界。driver仍拥有fresh consumption，不会被worker提前commit。
 - `PlanningPolicy.select_actions()`已支持H=1 PlannerPolicyHead active-env batch，一次调用turn policy的batched Qwen generation并逐row保留真实CoT/state/action trace；非policy search显式拒绝batch。
-- 当前跨rollout/adapter/worker/planner/loop/config定向回归`116 passed`。仍缺真实FSDP worker的模型装配/checkpoint、VAGEN batch env生命周期、terminal CoT batch和GPU门禁；未门禁前禁止把正式config默认值改大。
+- active-env生命周期已接通：`AgentRuntime`拆出pending prompt/record decision/terminal prompt边界；Planner与Qwen均支持batch terminal CoT；新collector复用VAGEN `BatchEnvClient`的batch create/reset/step/close，只向仍active env发请求，按显式identity对齐decision/state，且只持久化已完成的连续episode prefix。
+- rollout CLI新增显式`--batched-active-envs`，默认关闭；当前只允许H=1 PlannerPolicyHead、`max_episode_attempts=1`且禁止resume，避免把尚未实现的per-request retry/replay伪装成正式等价路径。两env fake VAGEN门禁覆盖1步/2步错峰结束、action batch 2→1、terminal batch、5张图和atomic JSONL。
+- 当前跨rollout/adapter/worker/planner/loop/config定向回归`159 passed, 1 deselected`；唯一deselect是本地临时venv缺完整VAGEN transitive env依赖所影响的既有`vagen_eval` wording测试，与改动路径无关。仍缺真实FSDP worker的模型装配/checkpoint、真实VAGEN/vLLM GPU门禁以及batched per-request retry/resume；未门禁前禁止开启正式flag或把config默认值改大。
 - 本地workspace初始可用空间不足导致worktree内测试venv安装失败；已立即删除该venv恢复空间，测试环境改放`/tmp/nimloth-test-venv`，没有删除项目artifact或共享数据。人类随后释放空间，submodule已恢复到exact pins。
 - 未提交GPU实验、未改变ID147。最近多次查询ID147时SSH连接均在登录入口被关闭，未取得新状态；不能把此前iteration 2状态当作当前状态。

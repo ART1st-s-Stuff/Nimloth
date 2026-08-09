@@ -4405,3 +4405,15 @@
   `PlanningPolicy.select_actions()`，一次batched turn-policy调用逐row保留真实state/trace。
 - 跨vLLM/planner/adapter/worker/loop/config定向`116 passed`。真实FSDP模型装配/checkpoint、
   VAGEN batch env/terminal CoT和GPU门禁仍待完成，当前不作吞吐改善声明。
+
+## 2026-08-09：VAGEN active-env batch生命周期接通为显式opt-in
+
+- AgentRuntime新增pending prompt→record decision及terminal prompt边界；Qwen/PlanningPolicy均支持
+  batch terminal真实CoT/state。新collector复用VAGEN BatchEnvClient的batch
+  create/reset/step/close，只请求active env，并按request/env identity对齐，完成顺序不同时只
+  原子持久化连续episode prefix。
+- 两fake env分别1/2步结束，验证action batch2→1、terminal batch、5张真实非纯色图片、
+  JSONL和close ownership。rollout CLI新增默认关闭的`--batched-active-envs`。
+- 当前flag只允许H1 PlannerPolicyHead、attempts1、无resume；正式配置仍是attempts3，因此本次
+  没有静默改变ID147或production retry语义。相关广集`159 passed, 1 deselected`；deselect为
+  临时本地venv缺完整VAGEN传递依赖的既有vagen_eval wording测试。真实GPU吞吐尚未证明。

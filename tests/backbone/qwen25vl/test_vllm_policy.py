@@ -341,6 +341,11 @@ def test_batched_turn_capture_preserves_request_identity(monkeypatch) -> None:
     assert outputs[0].policy_state.latent_hidden[0, 0].item() == 2.0
     assert outputs[1].policy_state.latent_hidden[0, 0].item() == 1.0
 
+    terminal = policy.generate_states((SimpleNamespace(), SimpleNamespace()))
+    assert terminal[0].assistant_prefix.endswith("<|action_start|>")
+    assert terminal[0].latent_hidden[0, 0].item() == 2.0
+    assert terminal[1].latent_hidden[0, 0].item() == 1.0
+
 
 def test_from_model_registers_turn_logits_adapter_and_eager_mode(monkeypatch) -> None:
     captured = {}
