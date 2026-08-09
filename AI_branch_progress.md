@@ -30,6 +30,10 @@
 - `774ed47f`已推送，但同步server时VPN/跳板再次报`Connection timed out`及
   `Connection closed by UNKNOWN port 65535`，所以新driver尚未完成server CPU回归。真实Ray/NCCL、
   multi-rank FSDP数值、sharded checkpoint round-trip和long-prefix显存门禁仍未运行，禁止声称迁移完成。
+- `945729f6`新增ID150候选tiny-model真实Ray/FSDP mechanics gate：双rank DataProto identity、真实GPU
+  ownership、完整sharded参数SHA256、CPU/CUDA RNG、model/AdamW checkpoint回载及相同next-step parity。
+  该gate不读取ID147、不消费ID149且不产生正式策略；CPU定向`19 passed`。SSH仍timeout，且人类未确认
+  preempt单节点2×H800/30分钟资源选项，因此尚未同步server、创建W&B/output或提交Slurm。
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 

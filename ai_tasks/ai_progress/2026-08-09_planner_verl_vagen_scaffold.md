@@ -183,3 +183,18 @@
 - 新commit已推送，但server同步时SSH再次报timeout/UNKNOWN65535，因此`774ed47f` server回归未完成。
   仍缺真实Ray actor construction、NCCL/FSDP complete-objective数值、checkpoint save/recreate/load/next-step
   parity和long-prefix显存门禁；这些GPU证据通过前不能声称真实FSDP worker完成。
+
+## ID150 Ray/FSDP mechanics gate preparation
+
+- commit`945729f6`新增非正式tiny-model gate入口
+  `experiments/training/rl/gate_planner_verl_fsdp_ray.py`。它计划在单节点多GPU上用真实pinned
+  RayWorkerGroup/NCCL/FSDP执行一步更新、sharded model/AdamW/RNG checkpoint、第二步、回载第一步、
+  重放第二步，并比较完整rank-sharded parameter SHA256而不只比较norm。
+- gate同时验证每rank真实hostname/Ray node/CUDA_VISIBLE_DEVICES/GPU UUID、DataProto non-tensor transition
+  identity、CPU/CUDA RNG逐rank恢复、checkpoint atomic publish与transaction commit顺序。tiny factory已移入
+  可导入的`nimloth.training.rl.planner_verl_gate_factory`；W&B要求显式run ID和`resume=never`，只有
+  W&B finish成功后才写`result.json ALL_OK`。
+- CPU定向`19 passed`、compile和diff-check通过，review修复了nested BF16 Linear输入dtype问题。该gate
+  不读取ID147、不消费ID149、不训练正式模型，不能替代后续long-prefix complete-objective门禁。
+- SSH持续在banner阶段timeout，`945729f6`尚未同步server。按实验规则已请求preempt单节点2×H800、
+  30分钟上限批准，但人类未选择资源选项；因此没有查询/占用GPU、没有创建ID150 output/W&B/Slurm job。
