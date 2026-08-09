@@ -19,8 +19,17 @@
   已完成identity拒绝重放及从validated checkpoint恢复已完成identity的接口。
 - 定向adapter/worker/optimization测试`21 passed`；扩大training RL+optimization为`241 passed, 1 failed`，唯一
   失败仍是本地临时venv缺VAGEN传递依赖SciPy的既有wording测试。compile、diagnostics和diff-check
-  通过。当前只是经CPU验证的FSDP-safe装配边界；真实Ray worker model factory、sharded checkpoint、
-  driver consumption transaction及multi-rank GPU numerical gate仍未实现，禁止声称FSDP迁移完成。
+  通过。server已同步`6c6cb731`并用固定`.venv-vagen-main`完成`242 passed`，补足本地缺失的
+  VAGEN/SciPy测试。
+- 后续`774ed47f`新增可实例化的`PlannerVERLFSDPWorker`、生产weights-only model factory、
+  exact-world-size FSDP model/optimizer/RNG sharded checkpoint，以及driver-owned atomic publish→fresh
+  consumption commit事务。rank batch要求每轮等row数和相同objective metadata；update identity固定为
+  collector返回的consumption ID。checkpoint I/O错误在进入后续collective前跨rank汇总，optimizer使用
+  `FSDP.optim_state_dict`/`optim_state_dict_to_load`。本地扩大回归`251 passed, 1 failed`，唯一失败仍是
+  本地VAGEN/SciPy环境；定向31项通过。
+- `774ed47f`已推送，但同步server时VPN/跳板再次报`Connection timed out`及
+  `Connection closed by UNKNOWN port 65535`，所以新driver尚未完成server CPU回归。真实Ray/NCCL、
+  multi-rank FSDP数值、sharded checkpoint round-trip和long-prefix显存门禁仍未运行，禁止声称迁移完成。
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 

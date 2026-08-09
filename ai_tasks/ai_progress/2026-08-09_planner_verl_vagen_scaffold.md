@@ -159,6 +159,27 @@
 - 测试：adapter/worker/common optimization定向`21 passed`；扩大training RL+optimization为
   `241 passed, 1 failed`，唯一失败是临时本地环境缺VAGEN/SciPy导致传递import失败，与本改动无关。
   VS Code diagnostics、compileall、`git diff --check`通过。
-- 尚缺：真实Ray worker中的模型factory、每rank相同forward/backward轮数的driver packer、sharded
-  checkpoint及atomic publish、completed identity持久化、fresh consumption commit，以及multi-rank
-  CUDA/FSDP数值门禁。以上通过前不能声称真实FSDP worker已完成。
+- server同步`6c6cb731`后，固定`.venv-vagen-main`定向`21 passed`、扩大
+  `tests/training/rl + optimization`为`242 passed`，本地缺失的VAGEN/SciPy wording测试也通过。
+
+## Concrete Ray worker / checkpoint transaction（CPU contract complete）
+
+- `774ed47f`新增具体`PlannerVERLFSDPWorker`。Ray actor内初始化NCCL、校验pinned VERL、调用显式
+  `module:factory`装配未包装Agent，再建立single-root FSDP和optimizer；不继承stock response-token
+  PPO worker，也不调用其actor/critic objective。
+- 生产factory只接受显式ID147类weights-only artifact位置；`resume=true`或resume checkpoint在模型加载前
+  fail closed。它要求PlannerPolicyHead、single complete epoch、完整prefix recompute、一GPU一FSDP rank、
+  frozen vision，并从Qwen声明的transformer classes构造wrap policy。旧optimizer绝不加载。
+- driver每轮要求每rank恰有一个非空且等row数batch，并校验schema/objective/total transitions/DINO
+  metadata一致，避免nested FSDP因逐transition调用次数不同而collective错序。provisional DataProto identity
+  在fresh claim后统一替换为collector的`consumption_id`，该ID同时进入worker replay guard、checkpoint和
+  consumption记录。
+- 新sharded checkpoint使用`FSDP.optim_state_dict`与`optim_state_dict_to_load`保存/恢复exact-world-size
+  model/AdamW/RNG shards。rank-local目录/写入/sidecar/load preflight错误会在后续collective前跨rank汇总。
+  driver仅在全部shard验证、临时目录fsync和atomic rename后commit fresh consumption；commit成功后才把
+  worker从STEPPED释放到IDLE。
+- 本地定向adapter/worker/driver/factory/optimization为`31 passed`；扩大training RL+optimization为
+  `251 passed, 1 failed`，唯一失败是本地缺VAGEN/SciPy。review确认可提交和server非GPU回归。
+- 新commit已推送，但server同步时SSH再次报timeout/UNKNOWN65535，因此`774ed47f` server回归未完成。
+  仍缺真实Ray actor construction、NCCL/FSDP complete-objective数值、checkpoint save/recreate/load/next-step
+  parity和long-prefix显存门禁；这些GPU证据通过前不能声称真实FSDP worker完成。
