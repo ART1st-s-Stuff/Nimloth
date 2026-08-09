@@ -345,6 +345,7 @@ class RLAlgorithm:
         total_transitions: int,
         dino_grid_target: torch.Tensor | None = None,
         include_world_model: bool = True,
+        precomputed_hidden: torch.Tensor | None = None,
     ) -> RLStepOutput:
         """Train one executed transition through Qwen, WM, and ValueHead.
 
@@ -364,7 +365,16 @@ class RLAlgorithm:
                 "Qwen recomputation"
             )
 
-        hidden = runtime.encode_state_prompts((transition.state_prompt,))
+        hidden = (
+            runtime.encode_state_prompts((transition.state_prompt,))
+            if precomputed_hidden is None
+            else precomputed_hidden
+        )
+        if hidden.ndim not in (2, 3) or hidden.shape[0] != 1:
+            raise ValueError(
+                "planner transition hidden must have one batch row, "
+                f"got {tuple(hidden.shape)}"
+            )
         hidden = move_to_device(hidden, runtime.agent.wm.state_proj)
         current_state = runtime.agent.wm.project_state(hidden)
 
@@ -595,6 +605,129 @@ class RLAlgorithm:
                 "token_value_loss": 0.0,
                 "reference_kl_loss": 0.0,
                 "policy_tokens": 0.0,
+            },
+        )
+
+    def actor_transition_batch_step(
+        self,
+        runtime: RLModelRuntime,
+        transitions: tuple[ExecutedTransition, ...],
+        *,
+        return_targets: tuple[torch.Tensor, ...],
+        old_action_values: tuple[torch.Tensor, ...],
+        old_policy_log_probs: tuple[torch.Tensor | None, ...] | None = None,
+        policy_advantages: tuple[torch.Tensor | None, ...] | None = None,
+        total_transitions: int,
+        dino_grid_targets: tuple[torch.Tensor | None, ...] | None = None,
+        loss_weights: tuple[float, ...] | None = None,
+        include_world_model: bool = True,
+    ) -> RLStepOutput:
+        """Share one padded Qwen forward across a planner micro-batch.
+
+        Downstream WM/value/policy objectives retain the proven scalar transition
+        path.  Summing those normalized outputs gives exact loss/gradient parity
+        while removing repeated full-prefix Qwen calls inside each micro-batch.
+        """
+
+        if not transitions:
+            raise ValueError("planner transition batch must not be empty")
+        batch_size = len(transitions)
+        fields = {
+            "return_targets": return_targets,
+            "old_action_values": old_action_values,
+            "old_policy_log_probs": (
+                old_policy_log_probs
+                if old_policy_log_probs is not None
+                else (None,) * batch_size
+            ),
+            "policy_advantages": (
+                policy_advantages
+                if policy_advantages is not None
+                else (None,) * batch_size
+            ),
+            "dino_grid_targets": (
+                dino_grid_targets
+                if dino_grid_targets is not None
+                else (None,) * batch_size
+            ),
+            "loss_weights": (
+                loss_weights if loss_weights is not None else (1.0,) * batch_size
+            ),
+        }
+        for name, values in fields.items():
+            if len(values) != batch_size:
+                raise ValueError(
+                    f"planner batch {name} must have {batch_size} rows, "
+                    f"got {len(values)}"
+                )
+
+        hidden_batch = runtime.encode_state_prompts(
+            tuple(transition.state_prompt for transition in transitions)
+        )
+        if hidden_batch.ndim not in (2, 3) or hidden_batch.shape[0] != batch_size:
+            raise ValueError(
+                "planner Qwen batch output does not align with transitions: "
+                f"hidden={tuple(hidden_batch.shape)}, transitions={batch_size}"
+            )
+        outputs = tuple(
+            self.actor_transition_step(
+                runtime,
+                transition,
+                return_target=return_target,
+                old_action_value=old_action_value,
+                old_policy_log_prob=old_policy_log_prob,
+                policy_advantage=policy_advantage,
+                total_transitions=total_transitions,
+                dino_grid_target=dino_grid_target,
+                include_world_model=include_world_model,
+                precomputed_hidden=hidden_batch[index : index + 1],
+            )
+            for index, (
+                transition,
+                return_target,
+                old_action_value,
+                old_policy_log_prob,
+                policy_advantage,
+                dino_grid_target,
+            ) in enumerate(
+                zip(
+                    transitions,
+                    fields["return_targets"],
+                    fields["old_action_values"],
+                    fields["old_policy_log_probs"],
+                    fields["policy_advantages"],
+                    fields["dino_grid_targets"],
+                    strict=True,
+                )
+            )
+        )
+        weights = tuple(float(value) for value in fields["loss_weights"])
+        total_loss = torch.stack(
+            tuple(
+                output.loss * weight
+                for output, weight in zip(outputs, weights, strict=True)
+            )
+        ).sum()
+        combined_losses: dict[str, torch.Tensor | None] = {}
+        for name in outputs[0].losses:
+            weighted_values = tuple(
+                output.losses[name].to(device=total_loss.device) * weight
+                for output, weight in zip(outputs, weights, strict=True)
+                if output.losses[name] is not None
+            )
+            combined_losses[name] = (
+                torch.stack(weighted_values).sum() if weighted_values else None
+            )
+        return RLStepOutput(
+            loss=total_loss,
+            losses=combined_losses,
+            metrics={
+                name: sum(
+                    output.metrics[name]
+                    for output, weight in zip(outputs, weights, strict=True)
+                    if weight != 0.0
+                )
+                for name in outputs[0].metrics
             },
         )
 

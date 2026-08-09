@@ -77,6 +77,7 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert overridden.rl.iterations == 20
     assert overridden.rl.envs_per_iteration == 3
     assert overridden.training.seed == 7
+    assert config.training.planner_micro_batch_size == 1
     assert overridden.rollout.train_datasets == ("base_train",)
     assert config.rollout.max_episode_attempts == 1
     assert config.predictor.lambda_sigreg == 0.1
@@ -96,6 +97,17 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert config.distributed.gpus_per_rank == 1
     assert config.distributed.total_gpus == 1
     assert config.distributed.rollout_tensor_parallel_size == 1
+
+
+def test_planner_micro_batch_size_must_be_positive() -> None:
+    raw = _raw_config()
+    raw["training"] = {"planner_micro_batch_size": 2}
+
+    assert parse_rl_config(raw).training.planner_micro_batch_size == 2
+
+    raw["training"]["planner_micro_batch_size"] = 0
+    with pytest.raises(ValueError, match="planner_micro_batch_size must be >= 1"):
+        parse_rl_config(raw)
 
 
 def test_rollout_config_requires_positive_episode_attempts() -> None:

@@ -146,6 +146,7 @@ class TrainingConfig:
     seed: int = 42
     log_interval: int = 1
     save_interval: int = 50
+    planner_micro_batch_size: int = 1
 
 
 @dataclass(frozen=True)
@@ -289,7 +290,11 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "validation",
         {"enabled", "external", "interval", "envs", "checkpoint_metric"},
     )
-    training = _section(raw, "training", {"seed", "log_interval", "save_interval"})
+    training = _section(
+        raw,
+        "training",
+        {"seed", "log_interval", "save_interval", "planner_micro_batch_size"},
+    )
     distributed = _section(
         raw,
         "distributed",
@@ -784,6 +789,10 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             save_interval=_positive_int(
                 training.get("save_interval", 50),
                 "training.save_interval",
+            ),
+            planner_micro_batch_size=_positive_int(
+                training.get("planner_micro_batch_size", 1),
+                "training.planner_micro_batch_size",
             ),
         ),
         distributed=distributed_config,

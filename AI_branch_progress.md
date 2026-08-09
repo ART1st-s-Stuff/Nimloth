@@ -4379,3 +4379,15 @@
   回归与既有policy tests合计`21 passed`；compileall/diff-check通过。
 - 这仍是CPU fake-vLLM接口证据；真实vLLM0.11 TP4多模态门禁前不接正式VAGEN runner，
   不声称已有rollout吞吐提升。ID147未改变。
+
+## 2026-08-09：Planner transition Qwen micro-batch seam通过数值与梯度parity
+
+- 新`actor_transition_batch_step()`把多个完整decision prefix合并为一次Qwen forward；其后
+  WM/value/PlannerPolicyHead继续调用原scalar transition目标并求和。两条transition的batch
+  与scalar loss、全部metrics及五类module gradients逐项一致，fake builder的Qwen build从2次
+  降到1次。
+- loop新增默认1的`training.planner_micro_batch_size`；大于1时每micro-batch只执行一次
+  backward/barrier，DDP padding仍zero-weight且不进入metrics。episode/loop/config定向
+  `75 passed`，compileall/diff-check通过。
+- 默认1保证ID147和旧config不变；真实长prefix显存、VERL FSDP custom worker与多模态
+  token/image packing尚未门禁，禁止现在把formal config改成大batch并声称已加速。

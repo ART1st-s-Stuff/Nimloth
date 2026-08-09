@@ -114,9 +114,11 @@ class _PrefixInputBuilder:
 
     def __init__(self) -> None:
         self.assistant_counts: list[int] = []
+        self.build_calls = 0
 
     def build(self, messages, _images, *, include_labels):  # type: ignore[no-untyped-def]
         assert include_labels is False
+        self.build_calls += 1
         rows = []
         for prompt_messages in messages:
             assistant_count = sum(
@@ -405,6 +407,116 @@ def test_transition_wm_target_is_saved_next_state_not_a_second_qwen_forward() ->
 
     assert output.losses["wm"] is not None
     assert builder.assistant_counts == [2]
+
+
+def test_batched_planner_transition_matches_scalar_losses_and_gradients() -> None:
+    trajectory = _planner_trajectory()
+    uniform_log_prob = -float(torch.log(torch.tensor(8.0)).item())
+    behavior_log_probs = (uniform_log_prob,) * 8
+    for step_index in (2, 3):
+        action_index = trajectory.action_indices[step_index]
+        trajectory.action_log_probs[step_index] = list(behavior_log_probs)
+        trajectory.planner_policy_traces[step_index] = PlannerPolicyTrace(
+            candidate_sequences=tuple((action,) for action in range(8)),
+            candidate_scores=(0.0,) * 8,
+            root_action_scores=(0.0,) * 8,
+            executed_action_index=action_index,
+            horizon=1,
+            search_mode="policy",
+            selection_mode="policy_sample",
+            policy_action_log_probs=behavior_log_probs,
+        )
+    episode = build_episode_training_batches(
+        [trajectory],
+        gamma=1.0,
+        truncated_bootstrap=0.0,
+    )[0]
+    transitions = episode.transitions[2:4]
+    return_targets = (torch.tensor(5.0), torch.tensor(2.0))
+
+    def prepare():  # type: ignore[no-untyped-def]
+        runtime, backbone, builder, projector, predictor, value_head = _runtime()
+        policy_head = torch.nn.Linear(2, 8, bias=False)
+        with torch.no_grad():
+            policy_head.weight.zero_()
+        runtime.agent.wm.planner_policy_head = policy_head
+        algorithm = _algorithm(
+            train_world_model=True,
+            planner_policy_enabled=True,
+        )
+        old = tuple(
+            algorithm.planner_old_policy_statistics(runtime, transition)
+            for transition in transitions
+        )
+        return (
+            runtime,
+            backbone,
+            builder,
+            projector,
+            predictor,
+            value_head,
+            policy_head,
+            algorithm,
+            old,
+        )
+
+    scalar = prepare()
+    scalar_outputs = tuple(
+        scalar[7].actor_transition_step(
+            scalar[0],
+            transition,
+            return_target=return_target,
+            old_action_value=statistics.selected_action_value,
+            old_policy_log_prob=statistics.selected_log_prob,
+            policy_advantage=return_target - statistics.state_value,
+            total_transitions=2,
+        )
+        for transition, return_target, statistics in zip(
+            transitions,
+            return_targets,
+            scalar[8],
+            strict=True,
+        )
+    )
+    scalar_loss = sum(output.loss for output in scalar_outputs)
+    scalar_loss.backward()
+
+    batched = prepare()
+    batched_output = batched[7].actor_transition_batch_step(
+        batched[0],
+        transitions,
+        return_targets=return_targets,
+        old_action_values=tuple(item.selected_action_value for item in batched[8]),
+        old_policy_log_probs=tuple(item.selected_log_prob for item in batched[8]),
+        policy_advantages=tuple(
+            target - item.state_value
+            for target, item in zip(return_targets, batched[8], strict=True)
+        ),
+        total_transitions=2,
+    )
+    batched_output.loss.backward()
+
+    torch.testing.assert_close(batched_output.loss, scalar_loss)
+    for key in scalar_outputs[0].metrics:
+        assert batched_output.metrics[key] == pytest.approx(
+            sum(output.metrics[key] for output in scalar_outputs)
+        )
+    assert scalar[2].build_calls == 2
+    assert batched[2].build_calls == 1
+    for scalar_module, batched_module in zip(
+        scalar[1:2] + scalar[3:7],
+        batched[1:2] + batched[3:7],
+        strict=True,
+    ):
+        for scalar_parameter, batched_parameter in zip(
+            scalar_module.parameters(),
+            batched_module.parameters(),
+            strict=True,
+        ):
+            torch.testing.assert_close(
+                batched_parameter.grad,
+                scalar_parameter.grad,
+            )
 
 
 def test_transition_adds_dino_loss_for_each_real_next_observation() -> None:

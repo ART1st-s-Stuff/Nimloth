@@ -314,49 +314,103 @@ class RLTrainingLoop:
                         local_actor_transitions
                     )
                     ppo_epochs = self.config.value_head.ppo_epochs
+                planner_micro_batch_size = int(
+                    getattr(
+                        self.config.training,
+                        "planner_micro_batch_size",
+                        1,
+                    )
+                )
+                if planner_micro_batch_size < 1:
+                    raise ValueError("planner_micro_batch_size must be positive")
                 epoch_metrics: list[dict[str, float]] = []
                 for ppo_epoch in range(ppo_epochs):
                     self.optimization_runtime.zero_grad()
                     current_metrics: dict[str, float] = {}
-                    for (
-                        work,
-                        transition,
-                        return_target,
-                        old_action_value,
-                        old_policy_log_prob,
-                        policy_advantage,
-                        dino_grid_target,
-                    ) in zip(
-                        planner_work,
-                        local_actor_transitions,
-                        local_transition_returns,
-                        local_old_action_values,
-                        local_old_policy_log_probs,
-                        local_policy_advantages,
-                        transition_dino_grid_targets,
-                        strict=True,
+                    planner_rows = tuple(
+                        zip(
+                            planner_work,
+                            local_actor_transitions,
+                            local_transition_returns,
+                            local_old_action_values,
+                            local_old_policy_log_probs,
+                            local_policy_advantages,
+                            transition_dino_grid_targets,
+                            strict=True,
+                        )
+                    )
+                    for offset in range(
+                        0,
+                        len(planner_rows),
+                        planner_micro_batch_size,
                     ):
-                        output = self.algorithm.actor_transition_step(
-                            self.model_runtime,
-                            transition,
-                            return_target=return_target,
-                            old_action_value=old_action_value,
-                            old_policy_log_prob=old_policy_log_prob,
-                            policy_advantage=policy_advantage,
-                            total_transitions=total_actor_transitions,
-                            dino_grid_target=dino_grid_target,
-                            include_world_model=ppo_epoch == 0,
-                        )
-                        loss_weight = (
-                            0.0 if work.is_padding else float(training_world_size)
-                        )
-                        self.optimization_runtime.backward(output.loss * loss_weight)
+                        micro_batch = planner_rows[
+                            offset : offset + planner_micro_batch_size
+                        ]
+                        if planner_micro_batch_size == 1:
+                            (
+                                work,
+                                transition,
+                                return_target,
+                                old_action_value,
+                                old_policy_log_prob,
+                                policy_advantage,
+                                dino_grid_target,
+                            ) = micro_batch[0]
+                            output = self.algorithm.actor_transition_step(
+                                self.model_runtime,
+                                transition,
+                                return_target=return_target,
+                                old_action_value=old_action_value,
+                                old_policy_log_prob=old_policy_log_prob,
+                                policy_advantage=policy_advantage,
+                                total_transitions=total_actor_transitions,
+                                dino_grid_target=dino_grid_target,
+                                include_world_model=ppo_epoch == 0,
+                            )
+                            loss_weight = (
+                                0.0
+                                if work.is_padding
+                                else float(training_world_size)
+                            )
+                            self.optimization_runtime.backward(
+                                output.loss * loss_weight
+                            )
+                            self._accumulate_metrics(
+                                current_metrics,
+                                output.metrics,
+                                include=not work.is_padding,
+                            )
+                        else:
+                            output = self.algorithm.actor_transition_batch_step(
+                                self.model_runtime,
+                                tuple(row[1] for row in micro_batch),
+                                return_targets=tuple(row[2] for row in micro_batch),
+                                old_action_values=tuple(row[3] for row in micro_batch),
+                                old_policy_log_probs=tuple(
+                                    row[4] for row in micro_batch
+                                ),
+                                policy_advantages=tuple(
+                                    row[5] for row in micro_batch
+                                ),
+                                total_transitions=total_actor_transitions,
+                                dino_grid_targets=tuple(
+                                    row[6] for row in micro_batch
+                                ),
+                                loss_weights=tuple(
+                                    0.0
+                                    if row[0].is_padding
+                                    else float(training_world_size)
+                                    for row in micro_batch
+                                ),
+                                include_world_model=ppo_epoch == 0,
+                            )
+                            self.optimization_runtime.backward(output.loss)
+                            self._accumulate_metrics(
+                                current_metrics,
+                                output.metrics,
+                            )
                         self._synchronize_planner_backward()
-                        self._accumulate_metrics(
-                            current_metrics,
-                            output.metrics,
-                            include=not work.is_padding,
-                        )
                         del output
                     optimizer_step_started = True
                     self.optimization_runtime.step()

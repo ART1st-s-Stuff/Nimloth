@@ -119,6 +119,7 @@ class _PlannerAlgorithm:
         self.received_targets: list[torch.Tensor] = []
         self.old_value_calls = 0
         self.include_world_model: list[bool] = []
+        self.batch_sizes: list[int] = []
 
     def planner_old_action_value(
         self,
@@ -163,6 +164,65 @@ class _PlannerAlgorithm:
                 "value_old_mean": 0.5,
                 "value_delta_abs_mean": 0.0,
                 "total_loss": 1.0,
+            },
+        )
+
+    def actor_transition_batch_step(
+        self,
+        runtime,
+        transitions,
+        *,
+        return_targets,
+        old_action_values,
+        old_policy_log_probs,
+        policy_advantages,
+        total_transitions,
+        dino_grid_targets,
+        loss_weights,
+        include_world_model,
+    ):  # type: ignore[no-untyped-def]
+        self.batch_sizes.append(len(transitions))
+        outputs = tuple(
+            self.actor_transition_step(
+                runtime,
+                transition,
+                return_target=return_target,
+                old_action_value=old_action_value,
+                old_policy_log_prob=old_policy_log_prob,
+                policy_advantage=policy_advantage,
+                total_transitions=total_transitions,
+                dino_grid_target=dino_grid_target,
+                include_world_model=include_world_model,
+            )
+            for (
+                transition,
+                return_target,
+                old_action_value,
+                old_policy_log_prob,
+                policy_advantage,
+                dino_grid_target,
+            ) in zip(
+                transitions,
+                return_targets,
+                old_action_values,
+                old_policy_log_probs,
+                policy_advantages,
+                dino_grid_targets,
+                strict=True,
+            )
+        )
+        return SimpleNamespace(
+            loss=sum(
+                output.loss * weight
+                for output, weight in zip(outputs, loss_weights, strict=True)
+            ),
+            metrics={
+                name: sum(
+                    output.metrics[name]
+                    for output, weight in zip(outputs, loss_weights, strict=True)
+                    if weight != 0.0
+                )
+                for name in outputs[0].metrics
             },
         )
 
@@ -315,6 +375,7 @@ def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     loop, _collector = _training_loop(tmp_path, monkeypatch)
     loop.config.agent.planning.enabled = True
     loop.config.agent.planning.horizon = 2
+    loop.config.training.planner_micro_batch_size = 2
     episode_a_transition = SimpleNamespace(
         next_image_path="episode_a_step_1.png",
     )
@@ -359,7 +420,8 @@ def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     assert len(algorithm.received_targets) == 2
     assert algorithm.old_value_calls == 2
     assert algorithm.include_world_model == [True, True, False, False]
-    assert synchronized_backwards == ["backward"] * 4
+    assert algorithm.batch_sizes == [2, 2]
+    assert synchronized_backwards == ["backward"] * 2
     torch.testing.assert_close(
         algorithm.received_targets[0],
         torch.tensor([[1.0, 1.0]]),

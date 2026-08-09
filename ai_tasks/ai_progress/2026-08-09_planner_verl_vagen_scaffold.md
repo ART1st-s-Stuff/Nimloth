@@ -45,5 +45,8 @@
 - 已完成 rollout P0 的CPU接口实现：`PolicyStateCaptureWorkerExtension`使用vLLM V1 `req_ids + query_start_loc`把flattened hidden/token rows按request分流；frontend按显式request ID恢复、检查TP rank parity并拒绝缺失/重复/misaligned identity。`QwenVLLMAgentPolicy.select_responses_with_state()`用一次`engine.generate(requests)`返回逐row CoT、latent hidden和action logits。
 - 定向CPU回归：`tests/backbone/qwen25vl/test_vllm_{hidden,policy}.py`为`21 passed`。覆盖两个request在decode forward中换序交错、请求顺序恢复和既有串行capture兼容；`compileall`与`git diff --check`通过。
 - 上述结果尚未经过真实vLLM 0.11 TP4多模态generation；在GPU门禁前不能接入正式VAGEN active-env runner或声称rollout提速。
-- 本地workspace初始可用空间不足导致worktree内测试venv安装失败；已立即删除该venv恢复空间，测试环境改放`/tmp/nimloth-test-venv`，没有删除项目artifact或共享数据。
-- 未提交GPU实验、未改变ID147。最近两次查询ID147时SSH连接均在登录入口被关闭，未取得新状态；不能把此前iteration 2状态当作当前状态。
+- 训练端完成第一层可逆batch seam：`actor_transition_batch_step()`只把多个完整prefix合并成一次Qwen forward，WM/value/PlannerPolicyHead继续逐transition走原有已验证目标并求和。两条transition的scalar-vs-batch loss、全部metrics及Qwen/StateProjector/WM/ValueHead/PlannerPolicyHead gradients逐项一致；fake builder确认Qwen build/forward从2次降为1次。
+- loop新增`training.planner_micro_batch_size`，默认1，故既有ID147/旧config语义不变；大于1时每个micro-batch只做一次backward/barrier，padding row仍zero-weight且不进入metrics。episode/loop/config定向回归`75 passed`。
+- 该batch seam仍在当前DDP/model-parallel trainer内，尚未完成VERL FSDP worker、token/image-aware packing或真实长prefix显存门禁。未门禁前禁止把正式config默认值改大。
+- 本地workspace初始可用空间不足导致worktree内测试venv安装失败；已立即删除该venv恢复空间，测试环境改放`/tmp/nimloth-test-venv`，没有删除项目artifact或共享数据。人类随后释放空间，submodule已恢复到exact pins。
+- 未提交GPU实验、未改变ID147。最近多次查询ID147时SSH连接均在登录入口被关闭，未取得新状态；不能把此前iteration 2状态当作当前状态。
