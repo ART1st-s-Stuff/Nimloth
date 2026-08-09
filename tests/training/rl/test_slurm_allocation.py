@@ -140,6 +140,14 @@ def test_planner_fsdp_ray_gate_is_batch_owned_one_node_eight_gpu() -> None:
     assert ".venv-vagen-main/bin/python3" in batch
     assert "--world-size 8" in batch
     assert "--wandb-run-id" in batch
+    assert 'REQUESTED_WANDB_PROJECT="${WANDB_PROJECT}"' in batch
+    assert 'export WANDB_PROJECT="${REQUESTED_WANDB_PROJECT}"' in batch
+    assert batch.index("REQUESTED_WANDB_PROJECT") < batch.index(
+        "source /project/peilab/atst/flower/.env"
+    )
+    assert batch.index("source /project/peilab/atst/flower/.env") < batch.index(
+        'export WANDB_PROJECT="${REQUESTED_WANDB_PROJECT}"'
+    )
     assert "--gpus-per-task=8" in batch
     assert '"status": "ALL_OK"' in batch
     assert "while true" not in batch

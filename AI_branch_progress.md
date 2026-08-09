@@ -35,7 +35,11 @@
   该gate不读取ID147、不消费ID149且不产生正式策略；CPU定向`19 passed`。人类已改为批准
   preempt单节点8×H800/30分钟；batch-owned 1×8 launcher及静态测试已完成。SSH恢复后server定向
   `33 passed`、扩大`254 passed`。W&B `4zura4lr`/run name确认unused、output确认不存在；Job`512162`
-  已按1 node/8 H800/30分钟提交，当前`PENDING(Resources)`且AllocTRES为空，尚未创建output/W&B或占GPU。
+  原preempt Job`512162`无allocation取消后切换normal；Job`512174`立即在`dgx-23:8`完成3分12秒。
+  8-rank Ray/NCCL/FSDP、完整参数/RNG checkpoint reload和next-step parity均通过、error0.0。但credentials
+  env把请求的`nimloth-rl`覆盖为`flower`，所以ID150为mechanics ALL_OK、launch contract failed；actual
+  W&B`flower/4zura4lr` finished。已写output README/audit、登记E0091并修复source后恢复W&B identity；
+  严格重试必须新ID/output/run。
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 

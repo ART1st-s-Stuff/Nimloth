@@ -36,12 +36,18 @@ PYTHON=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
 [[ "${SLURM_GPUS_ON_NODE}" == "8" ]]
 
 mkdir -p /project/peilab/atst/nimloth/outputs/experiments/training/rl/slurm
+REQUESTED_WANDB_PROJECT="${WANDB_PROJECT}"
+REQUESTED_WANDB_RUN_NAME="${WANDB_RUN_NAME}"
+REQUESTED_WANDB_RUN_ID="${WANDB_RUN_ID}"
 if [[ -f /project/peilab/atst/flower/.env ]]; then
   set -a
   source /project/peilab/atst/flower/.env
   set +a
 fi
 : "${WANDB_API_KEY:?WANDB_API_KEY is required}"
+export WANDB_PROJECT="${REQUESTED_WANDB_PROJECT}"
+export WANDB_RUN_NAME="${REQUESTED_WANDB_RUN_NAME}"
+export WANDB_RUN_ID="${REQUESTED_WANDB_RUN_ID}"
 
 export PYTHONPATH="${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}"
 export TOKENIZERS_PARALLELISM=false

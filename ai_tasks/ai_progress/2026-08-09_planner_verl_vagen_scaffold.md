@@ -209,3 +209,17 @@
   ReqTRES均核验。当前`PENDING(Resources)`、AllocTRES为空、未占GPU；scheduler暂列`dgx-34`且估计
   2026-08-10 23:24:50启动，该估计不作保证。output仍不存在，W&B run尚未创建。分配后必须持续监控
   Ray/NCCL/FSDP、checkpoint branch parity、W&B finish和terminal artifact。
+
+### ID150 terminal result
+
+- 人类批准切换到`normal`后，pending preempt Job`512162`在elapsed0/无AllocTRES时取消；同identity
+  normal Job`512174`立即取得`dgx-23:8`并在3分12秒内`COMPLETED 0:0`。
+- mechanics全部通过：8 ranks/8 distinct H800 UUID、同一hostname/Ray node、per-rank DataProto object
+  identity、FSDP model/AdamW/CPU+CUDA RNG shards、step1 reload完整参数SHA256一致、branch A/B相同next-step
+  SHA256一致，norm error`0.0`。所有checkpoint与consumption sidecar完整。
+- 但launch contract失败：launcher在接收`WANDB_PROJECT=nimloth-rl`后source `flower/.env`，env内的
+  `WANDB_PROJECT=flower`覆盖请求。run`4zura4lr`实际在`flower`中API核验`finished/ALL_OK`，
+  `nimloth-rl`中不存在。output `result.json`也诚实记录actual project=`flower`。
+- ID150 README和`audit.json`已标记`CONTRACT_FAILED`/mechanics`ALL_OK`；不得把ID150称为整体成功，
+  但其真实8卡mechanics证据可保留。已登记E0091并修复launcher：source前保存project/name/id，source后
+  显式恢复；静态回归和bash syntax通过。严格重试必须使用新ID/W&B run ID/空output。
