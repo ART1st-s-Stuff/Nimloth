@@ -9,10 +9,12 @@ import nimloth.training.rl.planner_verl_worker as planner_worker
 from nimloth.training.rl.planner_verl_worker import (
     PlannerObjectiveModule,
     PlannerUpdatePhase,
+    PlannerVERLFSDPWorker,
     PlannerVERLUpdateCore,
     PlannerVERLWorkerMixin,
     initialize_planner_fsdp_update,
 )
+from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import (
     Dispatch,
     MAGIC_ATTR,
@@ -193,6 +195,28 @@ def test_verl_worker_core_accumulates_micro_batches_before_one_step() -> None:
     assert core.phase is PlannerUpdatePhase.IDLE
 
 
+def test_concrete_planner_worker_exposes_ray_init_and_checkpoint_contract() -> None:
+    assert issubclass(PlannerVERLFSDPWorker, Worker)
+    assert (
+        getattr(PlannerVERLFSDPWorker.init_model, MAGIC_ATTR)["dispatch_mode"]
+        is Dispatch.ONE_TO_ALL
+    )
+    assert (
+        getattr(
+            PlannerVERLFSDPWorker.save_planner_checkpoint,
+            MAGIC_ATTR,
+        )["dispatch_mode"]
+        is Dispatch.ONE_TO_ALL
+    )
+    assert (
+        getattr(
+            PlannerVERLFSDPWorker.load_planner_checkpoint,
+            MAGIC_ATTR,
+        )["dispatch_mode"]
+        is Dispatch.ONE_TO_ALL
+    )
+
+
 def test_verl_worker_mixin_exposes_native_dispatch_contract() -> None:
     objective, _, agent = _objective()
     optimization = _Optimization(agent.weight)
@@ -297,6 +321,42 @@ def test_verl_worker_core_rejects_replayed_completed_update_identity() -> None:
         raise AssertionError("completed update identity must not be replayed")
 
 
+def test_concrete_worker_checkpoint_method_passes_path_and_completed_ids(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    objective, _, agent = _objective()
+    core = PlannerVERLUpdateCore(
+        objective_module=objective,
+        optimization_runtime=_Optimization(agent.weight),  # type: ignore[arg-type]
+    )
+    core.begin_update("update-1")
+    core.backward_micro_batch(_batch(1))
+    core.finish_update("update-1")
+    saved: list[dict] = []
+
+    class Manager:
+        def save(self, path, **kwargs):  # type: ignore[no-untyped-def]
+            saved.append({"path": path, **kwargs})
+
+    worker = object.__new__(PlannerVERLFSDPWorker)
+    worker._planner_update_core = core
+    worker._planner_checkpoint_manager = Manager()
+
+    assert worker.save_planner_checkpoint(
+        str(tmp_path / "checkpoint"),
+        "update-1",
+        1,
+    ) is True
+    assert saved == [
+        {
+            "path": tmp_path / "checkpoint",
+            "update_id": "update-1",
+            "global_step": 1,
+            "completed_update_ids": ("update-1",),
+        }
+    ]
+
+
 def test_verl_worker_core_restores_completed_identities_from_checkpoint() -> None:
     objective, _, agent = _objective()
     core = PlannerVERLUpdateCore(
@@ -311,6 +371,19 @@ def test_verl_worker_core_restores_completed_identities_from_checkpoint() -> Non
         assert "already completed" in str(error)
     else:
         raise AssertionError("restored update identity must not be replayed")
+
+
+def test_checkpoint_restore_replaces_newer_completed_identities() -> None:
+    objective, _, agent = _objective()
+    core = PlannerVERLUpdateCore(
+        objective_module=objective,
+        optimization_runtime=_Optimization(agent.weight),  # type: ignore[arg-type]
+    )
+    core.restore_completed_update_ids(("newer-update",))
+    core.restore_completed_update_ids(("older-update",))
+
+    core.begin_update("newer-update")
+    assert core.update_id == "newer-update"
 
 
 def test_verl_worker_core_rejects_stale_update_identity() -> None:

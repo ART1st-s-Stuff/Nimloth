@@ -217,6 +217,11 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
 | `algorithm.py` | planner transition或连续sequence的WM/value/PPO计算图；不持有模型或optimizer |
 | `value.py` | planner执行动作的frozen-old PPO clipped critic objective |
 | `runtime.py` | prompt→Backbone hidden 的 joint/frozen 模式与可选 policy replay |
+| `planner_verl_adapter.py` | action-level Planner DataProto schema和等长rank batch packing输入 |
+| `planner_verl_worker.py` | 单一complete-objective FSDP root、Ray worker和不可逆optimizer生命周期 |
+| `planner_verl_factory.py` | 从显式weights-only artifacts装配未包装Agent与分组optimizer factory |
+| `planner_verl_checkpoint.py` | exact-world-size FSDP model/optimizer/RNG sharded checkpoint |
+| `planner_verl_driver.py` | checkpoint atomic publish→fresh consumption commit事务边界 |
 | `loop.py` | collect→sample→forward/backward→validate→save 生命周期 |
 | `evaluation.py` | Held-out rollout collection and checkpoint metric selection |
 | `rollout_runtime.py` | Collector startup constraints and online policy binding |

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from collections.abc import Callable, Mapping
+import importlib
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -19,6 +21,7 @@ from nimloth.training.rl.planner_verl_adapter import (
 )
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.util.optim import OptimizationRuntime
+from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, register
 
 
@@ -142,6 +145,16 @@ def wrap_planner_objective_fsdp(
         ),
         forward_prefetch=False,
     )
+
+
+@dataclass(frozen=True)
+class PlannerWorkerModelComponents:
+    """Unwrapped model and optimizer factory produced inside a Ray worker."""
+
+    objective_module: PlannerObjectiveModule
+    optimizer_factory: Callable[[nn.Module], torch.optim.Optimizer]
+    wrap_policy: Mapping[str, Any]
+    max_grad_norm: float
 
 
 @dataclass(frozen=True)
@@ -274,6 +287,17 @@ class PlannerVERLUpdateCore:
         self._metrics = {}
         return metrics
 
+    def checkpoint_completed_update_ids(self, update_id: str) -> tuple[str, ...]:
+        """Return identities that the next durable checkpoint must persist."""
+
+        self._require_identity(update_id)
+        if self._phase is not PlannerUpdatePhase.STEPPED:
+            raise RuntimeError(
+                "planner VERL checkpoint save requires STEPPED, got "
+                f"{self._phase.name}"
+            )
+        return tuple(sorted((*self._completed_update_ids, update_id)))
+
     def checkpoint_succeeded(self, update_id: str) -> None:
         """Close a stepped transaction only after its checkpoint is durable."""
 
@@ -297,7 +321,7 @@ class PlannerVERLUpdateCore:
             for update_id in update_ids
         ):
             raise ValueError("completed planner update identities must not be empty")
-        self._completed_update_ids.update(update_ids)
+        self._completed_update_ids = set(update_ids)
 
     def abort_update(self, update_id: str) -> None:
         self._require_identity(update_id)
@@ -310,6 +334,18 @@ class PlannerVERLUpdateCore:
         self._update_id = None
         self._micro_batches = 0
         self._metrics = {}
+
+
+def _resolve_planner_worker_factory(path: str) -> Callable[..., Any]:
+    if not isinstance(path, str) or ":" not in path:
+        raise ValueError("planner worker factory must use module:callable syntax")
+    module_name, attribute_name = path.split(":", 1)
+    if not module_name or not attribute_name:
+        raise ValueError("planner worker factory must use module:callable syntax")
+    factory = getattr(importlib.import_module(module_name), attribute_name, None)
+    if not callable(factory):
+        raise ValueError(f"planner worker factory is not callable: {path}")
+    return factory
 
 
 class PlannerVERLWorkerMixin:
@@ -360,12 +396,118 @@ class PlannerVERLWorkerMixin:
         return True
 
 
+class PlannerVERLFSDPWorker(PlannerVERLWorkerMixin, Worker):
+    """Concrete Ray/VERL worker for the composite planner FSDP root."""
+
+    def __init__(
+        self,
+        config: Mapping[str, Any],
+        cuda_visible_devices: str | None = None,
+    ) -> None:
+        super().__init__(cuda_visible_devices=cuda_visible_devices)
+        self._planner_worker_config = dict(config)
+        self._planner_root: nn.Module | None = None
+        self._planner_checkpoint_manager: Any | None = None
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def init_model(self) -> dict[str, Any]:
+        if hasattr(self, "_planner_update_core"):
+            raise RuntimeError("planner VERL worker model is already initialized")
+        if not torch.cuda.is_available():
+            raise RuntimeError("planner VERL FSDP worker requires CUDA")
+        torch.cuda.set_device(0)
+        if not torch.distributed.is_initialized():
+            torch.distributed.init_process_group(backend="nccl")
+
+        from nimloth.training.rl.planner_verl_adapter import (
+            _runtime_verl_root,
+            assert_pinned_verl_source,
+        )
+        from nimloth.training.rl.planner_verl_checkpoint import (
+            PlannerFSDPCheckpointManager,
+        )
+
+        source = assert_pinned_verl_source(_runtime_verl_root())
+        factory_path = self._planner_worker_config.get("model_factory")
+        if not isinstance(factory_path, str):
+            raise ValueError("planner worker config requires string model_factory")
+        factory = _resolve_planner_worker_factory(factory_path)
+        components = factory(
+            config=dict(self._planner_worker_config),
+            device=torch.device("cuda", torch.cuda.current_device()),
+            rank=torch.distributed.get_rank(),
+            world_size=torch.distributed.get_world_size(),
+        )
+        if not isinstance(components, PlannerWorkerModelComponents):
+            raise TypeError(
+                "planner worker factory must return PlannerWorkerModelComponents"
+            )
+        bundle = initialize_planner_fsdp_update(
+            components.objective_module,
+            optimizer_factory=components.optimizer_factory,
+            max_grad_norm=components.max_grad_norm,
+            wrap_policy=components.wrap_policy,
+        )
+        self._planner_root = bundle.root
+        self.configure_planner_update_core(bundle.core)
+        self._planner_checkpoint_manager = PlannerFSDPCheckpointManager(
+            model=bundle.root,
+            optimizer=bundle.core.optimization_runtime.optimizer,
+        )
+        return {
+            "rank": self.rank,
+            "world_size": self.world_size,
+            "verl_commit": source.commit,
+            "root_type": type(bundle.root).__name__,
+        }
+
+    def _require_checkpoint_manager(self) -> Any:
+        manager = self._planner_checkpoint_manager
+        if manager is None:
+            raise RuntimeError("planner checkpoint manager is not initialized")
+        return manager
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def save_planner_checkpoint(
+        self,
+        path: str,
+        update_id: str,
+        global_step: int,
+    ) -> bool:
+        core = self._require_planner_update_core()
+        completed = core.checkpoint_completed_update_ids(update_id)
+        self._require_checkpoint_manager().save(
+            Path(path),
+            update_id=update_id,
+            global_step=global_step,
+            completed_update_ids=completed,
+        )
+        return True
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def load_planner_checkpoint(self, path: str) -> dict[str, Any]:
+        core = self._require_planner_update_core()
+        if core.phase is not PlannerUpdatePhase.IDLE:
+            raise RuntimeError("planner checkpoint load requires an idle worker")
+        state = self._require_checkpoint_manager().load(Path(path))
+        core.restore_completed_update_ids(
+            tuple(state["completed_update_ids"])
+        )
+        return {
+            "rank": self.rank,
+            "global_step": int(state["global_step"]),
+            "update_id": str(state["update_id"]),
+        }
+
+
 __all__ = [
     "PlannerFSDPUpdateBundle",
     "PlannerObjectiveModule",
+    "PlannerVERLFSDPWorker",
     "PlannerUpdatePhase",
     "PlannerVERLUpdateCore",
     "PlannerVERLWorkerMixin",
+    "PlannerWorkerModelComponents",
     "initialize_planner_fsdp_update",
     "wrap_planner_objective_fsdp",
 ]
