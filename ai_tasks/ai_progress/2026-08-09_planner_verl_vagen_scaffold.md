@@ -56,4 +56,4 @@
 - 更宽本地CPU回归：`tests/training/rl`为`228 passed, 1 deselected`；`tests/agent + tests/backbone/qwen25vl + batched collector`在忽略需要真实本地vLLM包的既有`test_vllm_logits.py`后为`89 passed`，合计317 passed。唯一deselect是本地临时venv缺完整VAGEN transitive env依赖所影响的既有`vagen_eval` wording测试，与改动路径无关。
 - 仍缺真实FSDP worker的模型装配/checkpoint、真实VAGEN/vLLM GPU门禁以及batched per-request retry/resume；未门禁前禁止开启正式flag或把config默认值改大。
 - 本地workspace初始可用空间不足导致worktree内测试venv安装失败；已立即删除该venv恢复空间，测试环境改放`/tmp/nimloth-test-venv`，没有删除项目artifact或共享数据。人类随后释放空间，submodule已恢复到exact pins。
-- 未提交GPU实验、未改变ID147。最近多次查询ID147时SSH连接均在登录入口被关闭，未取得新状态；不能把此前iteration 2状态当作当前状态。
+- 本分支未改变ID147。SSH恢复后确认ID147 Job`511059`已在06:53:30+08 `COMPLETED 0:0`：global step0→20全部committed并完成held-out120；overall success21/120=0.175。稳态iteration约10.7--15.5分钟，其中two-TP4 rollout关键路径约4.5--8.2分钟、四epoch训练rank关键路径约4.5--6.8分钟，是新脚手架需对照的实际wall-clock基线。

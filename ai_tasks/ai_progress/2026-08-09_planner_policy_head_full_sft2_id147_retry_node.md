@@ -123,3 +123,32 @@
   and renderer health only; no claim of healthy rollout or training is made
   until both TP4 rollouts, strict merge, synchronized PPO update, consumption
   commit and complete checkpoint are verified.
+
+## Terminal result
+
+- Job `511059` finished `COMPLETED 0:0` at `2026-08-09T06:53:30+08:00`, elapsed
+  `05:13:18`. Every formal iteration completed with 16 fresh trajectories; all
+  20 consumption sidecars are committed and form exact global-step lineage
+  `0 -> 20`. Per-dataset training seeds are exactly `1..160`.
+- Step 20 used 259 transitions and produced finite four-epoch metrics:
+  `wm_mse=0.2463575894`, `dino_grid_mse=0.8953118226`,
+  `value_loss=26.5014698212`, `planner_policy_loss=-1.6011937615`, entropy
+  `1.4336167960`, clip fraction `0.0289575284`, mean ratio `1.0033764586`, and
+  total loss `25.5799533766`. Its train-rollout success `7/16=0.4375` is only a
+  batch diagnostic.
+- `train/latest`, `train/final`, and `train/iter_0020` expose complete
+  `13,098,478,473`-byte `rl_state.pt` checkpoints and required components.
+- Standard held-out evaluation is `ALL_OK`: exactly 120 trajectories / 2,157
+  transitions; `base/common_sense` seeds `1..60` each. Overall success is
+  `21/120=0.175`, average reward `-0.6419166667`, average steps `17.975`.
+  `base` is `11/60=0.1833333333`; `common_sense` is
+  `10/60=0.1666666667`.
+- Training W&B `i1g3w8b7` and eval W&B `n929fhah` both printed successful sync
+  completion. Login-node API credentials resolve to another default entity, so
+  independent API state lookup was not claimed.
+- The requested corrected-SFT2-epoch1 -> RL-step20 -> held-out120 mechanics goal
+  is complete. There is no matched step-0 held-out evaluation, so the final
+  success rate does not prove PPO quality improvement. ID143 also measured
+  `21/120`, but it is not a matched initialization/objective control.
+- No resume is needed. A future continuation must use a new identity, start from
+  committed `train/final`, and use fresh non-overlapping training seeds.

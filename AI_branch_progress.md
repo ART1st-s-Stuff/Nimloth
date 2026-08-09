@@ -4419,3 +4419,18 @@
   agent/Qwen/collector`89 passed`，共317 passed；deselect为临时本地venv缺完整VAGEN传递
   依赖的既有vagen_eval wording测试，另一个既有vLLM logits文件因本地无vLLM包而未收集。
   真实GPU吞吐尚未证明。
+
+## 2026-08-09：ID147 committed step20与标准held-out 120完成
+
+- Job`511059`于06:53:30+08以`COMPLETED 0:0`结束，总elapsed5:13:18。20轮各严格
+  16条fresh trajectory，全部consumption committed，global step精确0→20；每dataset训练
+  seeds1..160。
+- step20为259 transitions，train-rollout success7/16仅诊断；四epoch finite：WM0.24635759、
+  DINO-grid0.89531182、Value26.50146982、PlannerPolicy loss-1.60119376、entropy1.43361680、
+  clip0.02895753、mean ratio1.00337646、total25.57995338。
+- `train/latest/final/iter_0020`均有完整13,098,478,473-byte `rl_state.pt`及必需组件。
+  标准held-out为精确120 trajectories/2,157 transitions、base/common_sense各seeds1..60；overall
+  21/120=0.175、reward-0.64191667、steps17.975；base11/60，common_sense10/60。
+- W&B train`i1g3w8b7`/eval`n929fhah`控制台均完成sync；登录API credential属于另一default
+  entity，故不虚报独立API状态。没有matched step0 held-out，不能据终值声称PPO提升；ID143
+  同为21/120也不是matched initialization/objective control。实验完成且无需resume。
