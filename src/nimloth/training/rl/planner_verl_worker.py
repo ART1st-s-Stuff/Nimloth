@@ -399,6 +399,115 @@ class PlannerVERLWorkerMixin:
         return True
 
 
+_PLANNER_COMPONENTS = (
+    "qwen_language",
+    "wm_predictor",
+    "value_head",
+    "planner_policy_head",
+    "state_projector",
+    "vision",
+    "lm_head",
+)
+
+
+def _planner_parameter_component(name: str) -> str | None:
+    """Classify one complete-root parameter without depending on FSDP prefixes."""
+
+    if "agent.wm.wm_predictor." in name:
+        return "wm_predictor"
+    if "agent.wm.value_head." in name:
+        return "value_head"
+    if "agent.wm.planner_policy_head." in name:
+        return "planner_policy_head"
+    if "agent.wm.state_proj." in name:
+        return "state_projector"
+    if "agent.backbone.language_model." not in name:
+        return None
+    if ".visual." in name:
+        return "vision"
+    if name.endswith("lm_head.weight") or ".lm_head." in name:
+        return "lm_head"
+    return "qwen_language"
+
+
+def _planner_component_gradient_norms(root: nn.Module) -> dict[str, float]:
+    """Return global FSDP-shard gradient norms for every objective component."""
+
+    squared = {
+        component: torch.zeros((), dtype=torch.float64, device=torch.cuda.current_device())
+        for component in _PLANNER_COMPONENTS
+    }
+    matched = {component: 0 for component in _PLANNER_COMPONENTS}
+    for name, parameter in root.named_parameters():
+        component = _planner_parameter_component(name)
+        if component is None:
+            continue
+        matched[component] += int(parameter.numel())
+        if parameter.grad is not None:
+            squared[component].add_(parameter.grad.detach().double().square().sum())
+    values = torch.stack(tuple(squared[name] for name in _PLANNER_COMPONENTS))
+    counts = torch.tensor(
+        [matched[name] for name in _PLANNER_COMPONENTS],
+        dtype=torch.long,
+        device=torch.cuda.current_device(),
+    )
+    torch.distributed.all_reduce(values)
+    torch.distributed.all_reduce(counts)
+    if any(int(value) < 1 for value in counts.cpu().tolist()):
+        raise RuntimeError(
+            "planner complete root is missing a required parameter component: "
+            f"{dict(zip(_PLANNER_COMPONENTS, counts.cpu().tolist(), strict=True))}"
+        )
+    if not torch.isfinite(values).all():
+        raise RuntimeError("planner complete-objective gradients are non-finite")
+    return {
+        name: float(values[index].sqrt().cpu().item())
+        for index, name in enumerate(_PLANNER_COMPONENTS)
+    }
+
+
+def _planner_component_fingerprints(root: nn.Module) -> dict[str, str]:
+    """Hash each complete-root component across all rank-local FSDP shards."""
+
+    local = {component: hashlib.sha256() for component in _PLANNER_COMPONENTS}
+    matched = {component: 0 for component in _PLANNER_COMPONENTS}
+    for name, parameter in root.named_parameters():
+        component = _planner_parameter_component(name)
+        if component is None:
+            continue
+        matched[component] += int(parameter.numel())
+        value = parameter.detach().contiguous()
+        local[component].update(name.encode("utf-8"))
+        local[component].update(str(tuple(value.shape)).encode("ascii"))
+        local[component].update(str(value.dtype).encode("ascii"))
+        local[component].update(value.view(torch.uint8).cpu().numpy().tobytes())
+    payload = {
+        component: (local[component].hexdigest(), matched[component])
+        for component in _PLANNER_COMPONENTS
+    }
+    gathered: list[dict[str, tuple[str, int]] | None] = [
+        None
+    ] * torch.distributed.get_world_size()
+    torch.distributed.all_gather_object(gathered, payload)
+    combined: dict[str, str] = {}
+    for component in _PLANNER_COMPONENTS:
+        digest = hashlib.sha256()
+        global_count = 0
+        for rank, row in enumerate(gathered):
+            if not isinstance(row, dict) or component not in row:
+                raise RuntimeError("planner component fingerprint gather failed")
+            rank_digest, rank_count = row[component]
+            global_count += int(rank_count)
+            digest.update(f"rank={rank}:".encode("ascii"))
+            digest.update(rank_digest.encode("ascii"))
+        if global_count < 1:
+            raise RuntimeError(
+                f"planner complete root is missing component {component!r}"
+            )
+        combined[component] = digest.hexdigest()
+    return combined
+
+
 class PlannerVERLFSDPWorker(PlannerVERLWorkerMixin, Worker):
     """Concrete Ray/VERL worker for the composite planner FSDP root."""
 
@@ -508,6 +617,31 @@ class PlannerVERLFSDPWorker(PlannerVERLWorkerMixin, Worker):
             combined.update(f"rank={rank}:".encode("ascii"))
             combined.update(digest.encode("ascii"))
         return combined.hexdigest()
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def planner_component_fingerprints(self) -> dict[str, str]:
+        root = self._planner_root
+        if root is None:
+            raise RuntimeError("planner FSDP root is not initialized")
+        return _planner_component_fingerprints(root)
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def planner_component_gradient_norms(self) -> dict[str, float]:
+        root = self._planner_root
+        if root is None:
+            raise RuntimeError("planner FSDP root is not initialized")
+        core = self._require_planner_update_core()
+        if core.phase is not PlannerUpdatePhase.ACCUMULATING:
+            raise RuntimeError(
+                "planner gradient diagnostics require ACCUMULATING phase"
+            )
+        return _planner_component_gradient_norms(root)
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def planner_peak_memory_allocated(self) -> int:
+        if self._planner_root is None:
+            raise RuntimeError("planner FSDP root is not initialized")
+        return int(torch.cuda.max_memory_allocated(torch.cuda.current_device()))
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def planner_rng_sample(self, count: int = 4) -> dict[str, list[float]]:

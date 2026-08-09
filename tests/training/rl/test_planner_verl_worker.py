@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import torch
 
+from nimloth.backbone.qwen25vl.model import Qwen25VLBackbone
 from nimloth.training.rl.planner_verl_adapter import build_planner_update_dataproto
 import nimloth.training.rl.planner_verl_worker as planner_worker
 from nimloth.training.rl.planner_verl_worker import (
@@ -74,6 +75,43 @@ class _ObjectiveAlgorithm:
             loss=runtime.agent.weight.square() * sum(kwargs["loss_weights"]),
             metrics={"loss": float(runtime.agent.weight.detach().square().item())},
         )
+
+
+def test_complete_root_parameter_component_classification() -> None:
+    classify = planner_worker._planner_parameter_component
+    language_model = torch.nn.Module()
+    language_model.model = torch.nn.Module()
+    language_model.model.language_model = torch.nn.Linear(2, 2)
+    language_model.model.visual = torch.nn.Linear(2, 2)
+    language_model.lm_head = torch.nn.Linear(2, 2, bias=False)
+    backbone = Qwen25VLBackbone(
+        language_model,
+        token_id_map={},
+        device=torch.device("cpu"),
+        latent_token_count=1,
+        lora=False,
+        vision_tune="freeze",
+    )
+    classified = {
+        name: classify(f"_fsdp_wrapped_module.agent.backbone.{name}")
+        for name, _ in backbone.named_parameters()
+    }
+    assert classified["language_model.model.language_model.weight"] == "qwen_language"
+    assert classified["language_model.model.visual.weight"] == "vision"
+    assert classified["language_model.lm_head.weight"] == "lm_head"
+    prefix = "_fsdp_wrapped_module.agent"
+    assert (
+        classify(f"{prefix}.wm.wm_predictor.layer.weight") == "wm_predictor"
+    )
+    assert classify(f"{prefix}.wm.value_head.net.0.weight") == "value_head"
+    assert (
+        classify(f"{prefix}.wm.planner_policy_head.net.0.weight")
+        == "planner_policy_head"
+    )
+    assert (
+        classify(f"{prefix}.wm.state_proj.proj.weight") == "state_projector"
+    )
+    assert classify("unrelated.weight") is None
 
 
 def _batch(identity: int):  # type: ignore[no-untyped-def]
