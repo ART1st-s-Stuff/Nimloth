@@ -442,6 +442,8 @@ def test_parallel_controller_derives_tp4_workers_and_world_from_config() -> None
     assert 'export VLLM_WORKER_MULTIPROC_METHOD=spawn' in shard_runner
     assert '--num-episodes "${SHARD_NUM_EPISODES}"' in shard_runner
     assert '--navigation-profile "${SHARD_NAVIGATION_PROFILE}"' in shard_runner
+    assert 'SHARD_BATCHED_ACTIVE_ENVS=${SHARD_BATCHED_ACTIVE_ENVS:-false}' in shard_runner
+    assert 'ACTIVE_ENV_ARGS+=(--batched-active-envs)' in shard_runner
 
 
 def test_true32_heterogeneous_topology_is_explicitly_routed_by_het_group() -> None:

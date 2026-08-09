@@ -234,6 +234,28 @@ def test_planner_policy_gpu_gate_uses_two_four_gpu_nodes() -> None:
     assert config.distributed.total_gpus == 8
 
 
+def test_active_env_rollout_gate_uses_single_epoch_and_attempt() -> None:
+    root = Path(__file__).resolve().parents[3]
+    config = load_rl_config(
+        root / "configs/training/rl/planner_policy_h1_active_env_rollout_gate.yaml"
+    )
+
+    assert config.agent.planning.horizon == 1
+    assert config.agent.planning.search_mode == "policy"
+    assert config.planner_policy.enabled is True
+    assert config.planner_policy.ppo_epochs == 1
+    assert config.rl.envs_per_iteration == config.rl.batch_size == 2
+    assert config.rl.max_steps_per_episode == 20
+    assert config.rollout.max_episode_attempts == 1
+    assert config.rollout.train_datasets == (
+        "base_train",
+        "common_sense_train",
+    )
+    assert config.distributed.nodes == 1
+    assert config.distributed.total_gpus == 4
+    assert config.distributed.rollout_tensor_parallel_size == 4
+
+
 def test_formal_planner_policy_trains_to_step_twenty_then_evaluates() -> None:
     root = Path(__file__).resolve().parents[3]
     config = load_rl_config(

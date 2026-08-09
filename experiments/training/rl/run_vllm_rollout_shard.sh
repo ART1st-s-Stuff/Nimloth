@@ -16,6 +16,7 @@ SHARD_SPLIT=${SHARD_SPLIT:-train}
 SHARD_NUM_EPISODES=${SHARD_NUM_EPISODES:-1}
 SHARD_SEED_PER_EVAL_SET=${SHARD_SEED_PER_EVAL_SET:-false}
 SHARD_NAVIGATION_PROFILE=${SHARD_NAVIGATION_PROFILE:-current}
+SHARD_BATCHED_ACTIVE_ENVS=${SHARD_BATCHED_ACTIVE_ENVS:-false}
 SHARD_GPU_VISIBLE=${SHARD_GPU_VISIBLE:?set SHARD_GPU_VISIBLE}
 SHARD_OUT=${SHARD_OUT:?set SHARD_OUT}
 ENV_PORT=${ENV_PORT:?set ENV_PORT}
@@ -42,6 +43,10 @@ VLLM_MM_PROCESSOR_CACHE_GB=${VLLM_MM_PROCESSOR_CACHE_GB:-0}
 }
 [[ "${SHARD_NAVIGATION_PROFILE}" == current || "${SHARD_NAVIGATION_PROFILE}" == vagen_eval ]] || {
   echo "unsupported navigation profile: ${SHARD_NAVIGATION_PROFILE}" >&2
+  exit 1
+}
+[[ "${SHARD_BATCHED_ACTIVE_ENVS}" == false || "${SHARD_BATCHED_ACTIVE_ENVS}" == true ]] || {
+  echo "SHARD_BATCHED_ACTIVE_ENVS must be true or false" >&2
   exit 1
 }
 IFS=',' read -r -a SHARD_DATASETS <<< "${SHARD_EVAL_SETS}"
@@ -118,6 +123,16 @@ done
 if [[ "${PLANNER_POLICY_ENABLED}" == true ]]; then
   [[ -s "${PLANNER_POLICY_HEAD_CKPT}/planner_policy_head.pt" ]] || {
     echo "missing PlannerPolicyHead checkpoint: ${PLANNER_POLICY_HEAD_CKPT}" >&2
+    exit 1
+  }
+fi
+if [[ "${SHARD_BATCHED_ACTIVE_ENVS}" == true ]]; then
+  [[ "${PLANNER_POLICY_ENABLED} ${PLANNING_HORIZON} ${PLANNING_SEARCH_MODE}" == "true 1 policy" ]] || {
+    echo "active-env batching requires H=1 PlannerPolicyHead rollout" >&2
+    exit 1
+  }
+  [[ "${MAX_EPISODE_ATTEMPTS}" == 1 ]] || {
+    echo "active-env batching requires max_episode_attempts=1" >&2
     exit 1
   }
 fi
@@ -238,10 +253,15 @@ STATE_BUDGET_ARGS=()
 if [[ "${MAX_STATE_TOKENS}" != None ]]; then
   STATE_BUDGET_ARGS+=(--max-state-tokens "${MAX_STATE_TOKENS}")
 fi
+ACTIVE_ENV_ARGS=()
+if [[ "${SHARD_BATCHED_ACTIVE_ENVS}" == true ]]; then
+  ACTIVE_ENV_ARGS+=(--batched-active-envs)
+fi
 
 "${PYTHON}" "${REPO}/experiments/training/rl/rollout_env.py" \
   --backend vllm \
   --tensor-parallel-size "${TP_SIZE}" \
+  "${ACTIVE_ENV_ARGS[@]}" \
   "${VLLM_ARGS[@]}" \
   "${PLANNER_ARGS[@]}" \
   --model "${MODEL}" \

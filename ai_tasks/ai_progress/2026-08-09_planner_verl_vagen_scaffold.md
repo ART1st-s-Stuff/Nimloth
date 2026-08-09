@@ -107,3 +107,7 @@
   不兼容。后续如使用ID147权重，必须明确作为weights-only初始化而非resume。
 - RED定向套件先得到22个预期失败；GREEN后config/loop/adapter/worker定向`75 passed`，扩大回归
   `269 passed, 1 failed`，唯一失败是临时本地环境缺VAGEN传递依赖SciPy，非本次改动路径。
+- ID149 rollout门禁准备新增`planner_policy_h1_active_env_rollout_gate.yaml`：H=1、batch2、
+  base_train/common_sense_train、max attempts1、max20 steps、TP4和single epoch。shard launcher新增
+  默认关闭的`SHARD_BATCHED_ACTIVE_ENVS`，打开时严格要求H1/policy/attempt1并传递
+  `--batched-active-envs`。相关config/launcher与单epoch套件合计`134 passed`。
