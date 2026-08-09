@@ -253,3 +253,19 @@
 - 修复必须把FP32 auxiliary modules设为显式FSDP wrap boundaries，同时保留Qwen layer boundaries和
   单一complete-objective root；禁止为绕过结构错误而把全部auxiliary weights草率转BF16。严格重试用
   新ID/output/W&B identity。
+
+### ID153 dtype-boundary retry terminal result
+
+- commit`9b82a348`将Qwen decoder手动包为BF16 nested FSDP、四个auxiliary owner手动包为FP32
+  nested FSDP，再建立无auto-wrap的outer complete root；server 259项与reviewer PASS后，人类确认
+  normal Job`512232`，立即取得`dgx-23:8`。
+- ID152结构错误已解决：8 actors生产模型/FSDP初始化成功；真实ID149 6332-token row完成联合Qwen +
+  WM/DINO + executed-action ValueHead + PlannerPolicyHead forward/backward，并完成component gradient
+  diagnostics。没有flat-handle或auxiliary forward dtype异常。
+- optimizer入口的现有`root.clip_grad_norm_`随后失败：PyTorch FSDP1在跨全部nested handles计算global
+  norm时仍要求所有gradient同dtype，实际合法地含BF16 Qwen与FP32 auxiliary gradients。
+- Job 2分20秒`FAILED 1:0`，W&B`nimloth-rl/7bxgs23e` API核验failed/FAILED。clip发生在
+  `optimizer.step()`之前，因此无AdamW step/checkpoint/consumption，ID149 sidecar仍不存在；README已写。
+- 正确修复是对所有rank-local FULL_SHARD gradients以高精度累计平方和、跨rank all-reduce得到单一
+  global L2 norm，再用同一个coefficient缩放所有dtype的grad；禁止逐module独立clip改变objective。
+  新ID重试前需加mixed-BF16/FP32 deterministic测试和review。

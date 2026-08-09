@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from nimloth.backbone.qwen25vl.model import Qwen25VLBackbone
@@ -185,6 +186,32 @@ def test_planner_objective_module_owns_agent_and_complete_forward() -> None:
     assert algorithm.calls[0]["total_transitions"] == 2
 
 
+def test_mixed_dtype_fsdp_clipper_uses_one_global_l2_coefficient(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    module = torch.nn.Module()
+    module.bf16 = torch.nn.Parameter(torch.tensor([0.0], dtype=torch.bfloat16))
+    module.fp32 = torch.nn.Parameter(torch.tensor([0.0], dtype=torch.float32))
+    module.bf16.grad = torch.tensor([3.0], dtype=torch.bfloat16)
+    module.fp32.grad = torch.tensor([4.0], dtype=torch.float32)
+    reductions: list[torch.Tensor] = []
+
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+
+    def all_reduce(value, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        reductions.append(value.detach().clone())
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", all_reduce)
+    norm = planner_worker.clip_mixed_dtype_fsdp_grad_norm_(module, 2.5)
+
+    assert norm.item() == 5.0
+    assert len(reductions) == 1
+    assert reductions[0].item() == 25.0
+    assert module.bf16.grad.item() == 1.5
+    assert module.fp32.grad.item() == pytest.approx(2.0, abs=1e-6)
+
+
 def test_fsdp_update_assembly_wraps_before_optimizer_and_wires_clipper(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -214,6 +241,16 @@ def test_fsdp_update_assembly_wraps_before_optimizer_and_wires_clipper(
         return torch.optim.SGD(root.parameters(), lr=0.1)
 
     monkeypatch.setattr(planner_worker, "wrap_planner_objective_fsdp", wrap)
+
+    def clip(root, max_norm):  # type: ignore[no-untyped-def]
+        events.append(("clip", root, max_norm))
+        return torch.tensor(0.0)
+
+    monkeypatch.setattr(
+        planner_worker,
+        "clip_mixed_dtype_fsdp_grad_norm_",
+        clip,
+    )
     bundle = initialize_planner_fsdp_update(
         objective,
         optimizer_factory=optimizer_factory,
@@ -231,7 +268,7 @@ def test_fsdp_update_assembly_wraps_before_optimizer_and_wires_clipper(
         {"wrap_policy": {"min_num_params": 100}},
     )
     assert events[1] == ("optimizer", fake_root)
-    assert events[2] == ("clip", 0.25)
+    assert events[2] == ("clip", fake_root, 0.25)
     assert agent.weight.item() < 2.0
 
 

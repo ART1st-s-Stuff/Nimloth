@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import hashlib
 import importlib
+import math
 import os
 from pathlib import Path
 import socket
@@ -240,6 +241,45 @@ def wrap_planner_objective_fsdp(
     )
 
 
+@torch.no_grad()
+def clip_mixed_dtype_fsdp_grad_norm_(
+    root: nn.Module,
+    max_norm: float,
+) -> torch.Tensor:
+    """Clip one global L2 norm across mixed-dtype FULL_SHARD gradients."""
+
+    if not math.isfinite(float(max_norm)) or max_norm <= 0.0:
+        raise ValueError("planner max_grad_norm must be finite and positive")
+    if not torch.distributed.is_initialized():
+        raise RuntimeError("planner global FSDP gradient clipping requires distributed")
+    gradients = tuple(
+        parameter.grad
+        for parameter in root.parameters()
+        if parameter.grad is not None
+    )
+    if not gradients:
+        raise RuntimeError("planner optimizer step has no gradients")
+    devices = {gradient.device for gradient in gradients}
+    if len(devices) != 1:
+        raise RuntimeError(
+            f"planner FSDP gradients span multiple local devices: {devices}"
+        )
+    device = next(iter(devices))
+    local_squared = torch.zeros((), dtype=torch.float64, device=device)
+    for gradient in gradients:
+        if gradient.is_sparse:
+            raise RuntimeError("planner FSDP does not support sparse gradients")
+        local_squared.add_(gradient.detach().double().square().sum())
+    torch.distributed.all_reduce(local_squared, op=torch.distributed.ReduceOp.SUM)
+    total_norm = local_squared.sqrt()
+    if not torch.isfinite(total_norm):
+        raise RuntimeError("planner complete-objective gradient norm is non-finite")
+    coefficient = (float(max_norm) / (total_norm + 1e-6)).clamp(max=1.0)
+    for gradient in gradients:
+        gradient.mul_(coefficient.to(device=gradient.device, dtype=gradient.dtype))
+    return total_norm
+
+
 @dataclass(frozen=True)
 class PlannerWorkerModelComponents:
     """Unwrapped model and optimizer factory produced inside a Ray worker."""
@@ -272,14 +312,14 @@ def initialize_planner_fsdp_update(
         wrap_policy=wrap_policy,
     )
     optimizer = optimizer_factory(root)
-    clip_grad_norm = getattr(root, "clip_grad_norm_", None)
-    if not callable(clip_grad_norm):
-        raise RuntimeError("planner FSDP root does not expose clip_grad_norm_")
     optimization_runtime = OptimizationRuntime(
         optimizer=optimizer,
         synchronized_modules=(root,),
         max_grad_norm=max_grad_norm,
-        gradient_clipper=clip_grad_norm,
+        gradient_clipper=lambda max_norm: clip_mixed_dtype_fsdp_grad_norm_(
+            root,
+            max_norm,
+        ),
     )
     return PlannerFSDPUpdateBundle(
         root=root,
@@ -792,6 +832,7 @@ __all__ = [
     "PlannerVERLUpdateCore",
     "PlannerVERLWorkerMixin",
     "PlannerWorkerModelComponents",
+    "clip_mixed_dtype_fsdp_grad_norm_",
     "initialize_planner_fsdp_update",
     "wrap_planner_objective_fsdp",
 ]

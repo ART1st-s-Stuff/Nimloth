@@ -49,6 +49,10 @@
   residual与FP32 auxiliary参数而在forward前失败。Job`512207` 4分47秒FAILED，W&B
   `nimloth-rl/jh3xa5d2` failed；无参数变化/checkpoint/consumption。需显式wrap FP32 auxiliary modules后
   用新identity重试，不能用草率全BF16 cast掩盖结构错误。
+- ID153 commit`9b82a348`的nested BF16-Qwen/FP32-aux FSDP修复使真实生产层级初始化及6332-token
+  complete-objective forward/backward成功；随后root `clip_grad_norm_`因跨handles gradients混合
+  BF16/FP32而在AdamW前失败。Job`512232` 2分20秒FAILED、W&B`7bxgs23e` failed；无step/
+  checkpoint/consumption。需实现跨全部shards高精度all-reduce的单一global L2 clip，不能逐module clip。
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 
