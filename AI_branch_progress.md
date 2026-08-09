@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-08-09：Planner VERL 单根 FSDP objective 边界
+
+- ID149后开始训练端下一阶段。新增`PlannerObjectiveModule`，把完整`Agent`作为唯一注册子树，且
+  只有该root的`forward()`调用现有`actor_transition_batch_step()`；因此后续FSDP包装可在同一
+  forward边界内执行完整prefix Qwen、WM/DINO、executed-action ValueHead和PlannerPolicyHead
+  objective，禁止包root后绕过它直接调用child。
+- 新增实际FSDP装配原语：要求已初始化CUDA process group、显式enabled transformer wrap policy、
+  未预先DDP/FSDP包装的Agent；使用FULL_SHARD、`use_orig_params=True`和mixed precision。optimizer
+  必须在FSDP后创建，梯度裁剪固定调用root `clip_grad_norm_`，不能在local shard上静默计算错误norm。
+- VERL DataProto升级schema3并绑定非空`update_id`。backward改用`DP_COMPUTE`的一rank一DataProto
+  list调用，不再把scalar identity误传给该dispatch。worker lifecycle为IDLE→ACCUMULATING→
+  STEP_ENTERED→STEPPED；进入optimizer前先标记不可逆，checkpoint成功前不能abort或开始下一update。
+  已完成identity拒绝重放及从validated checkpoint恢复已完成identity的接口。
+- 定向adapter/worker/optimization测试`21 passed`；扩大training RL+optimization为`241 passed, 1 failed`，唯一
+  失败仍是本地临时venv缺VAGEN传递依赖SciPy的既有wording测试。compile、diagnostics和diff-check
+  通过。当前只是经CPU验证的FSDP-safe装配边界；真实Ray worker model factory、sharded checkpoint、
+  driver consumption transaction及multi-rank GPU numerical gate仍未实现，禁止声称FSDP迁移完成。
+
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 
 > **2026-08-09失效声明：**下述多epoch/首轮WM+DINO/后续仅critic的`1+3`语义不是人类要求，

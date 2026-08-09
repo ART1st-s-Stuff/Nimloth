@@ -56,6 +56,7 @@ class OptimizationRuntime:
     max_grad_norm: float = 1.0
     enable_no_sync: bool = False
     after_step: Callable[[], None] | None = None
+    gradient_clipper: Callable[[float], object] | None = None
 
     def zero_grad(self) -> None:
         self.optimizer.zero_grad(set_to_none=True)
@@ -87,7 +88,11 @@ class OptimizationRuntime:
             for group in self.optimizer.param_groups
             for parameter in group["params"]
         ]
-        torch.nn.utils.clip_grad_norm_(parameters, self.max_grad_norm)
+        if self.gradient_clipper is not None:
+            # FSDP must reduce the sharded gradient norm through its root.
+            self.gradient_clipper(self.max_grad_norm)
+        else:
+            torch.nn.utils.clip_grad_norm_(parameters, self.max_grad_norm)
         self.optimizer.step()
         if self.after_step is not None:
             self.after_step()

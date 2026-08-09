@@ -142,3 +142,23 @@
   持久化，不是fixed/invented CoT。
 - W&B`zady597f`完成sync且API独立核验`finished/ALL_OK`。active-env rollout P0关闭；仍未验证
   real VERL FSDP worker、single-complete-objective optimizer epoch或吞吐。
+
+## Single-root FSDP objective seam（CPU verified）
+
+- `PlannerObjectiveModule`现在注册完整`Agent`且由自身`forward()`执行既有
+  `actor_transition_batch_step()`。后续FSDP root必须调用这个forward，禁止从root外直接调用Qwen或
+  WM/head child；这样才能让完整prefix Qwen、WM/DINO、executed-action Q和PlannerPolicyHead PPO
+  位于同一FSDP all-gather/reshard边界。
+- `wrap_planner_objective_fsdp()`要求CUDA distributed已初始化、显式enabled wrap policy和未预包装的
+  Agent，使用FULL_SHARD/`use_orig_params=True`。`initialize_planner_fsdp_update()`保证先wrap后建
+  optimizer，并把gradient clipping固定接到root `clip_grad_norm_`。
+- DataProto schema升到3并绑定`update_id`。backward dispatch改为仅接收一rank一DataProto list的
+  `DP_COMPUTE`合法签名；identity从每个rank batch metadata读取。生命周期显式区分
+  ACCUMULATING/STEP_ENTERED/STEPPED，optimizer入口后禁止abort，durable checkpoint前禁止开始下一步，
+  同一worker内拒绝completed identity重放，并提供validated checkpoint identity恢复接口。
+- 测试：adapter/worker/common optimization定向`21 passed`；扩大training RL+optimization为
+  `241 passed, 1 failed`，唯一失败是临时本地环境缺VAGEN/SciPy导致传递import失败，与本改动无关。
+  VS Code diagnostics、compileall、`git diff --check`通过。
+- 尚缺：真实Ray worker中的模型factory、每rank相同forward/backward轮数的driver packer、sharded
+  checkpoint及atomic publish、completed identity持久化、fresh consumption commit，以及multi-rank
+  CUDA/FSDP数值门禁。以上通过前不能声称真实FSDP worker已完成。

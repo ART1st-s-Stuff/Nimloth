@@ -41,6 +41,22 @@ def test_optimization_runtime_owns_backward_step_and_callback() -> None:
     assert all(parameter.grad is None for parameter in module.parameters())
 
 
+def test_optimization_runtime_uses_distributed_gradient_clipper() -> None:
+    module = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.SGD(module.parameters(), lr=0.1)
+    clipped: list[float] = []
+    runtime = OptimizationRuntime(
+        optimizer=optimizer,
+        gradient_clipper=lambda max_norm: clipped.append(max_norm),
+        max_grad_norm=0.25,
+    )
+
+    runtime.backward(module(torch.ones(1, 2)).sum())
+    runtime.step()
+
+    assert clipped == [0.25]
+
+
 def test_optimization_runtime_enters_no_sync_only_during_accumulation() -> None:
     class DistributedModule(torch.nn.Linear):
         def __init__(self) -> None:

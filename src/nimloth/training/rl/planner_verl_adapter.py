@@ -14,7 +14,7 @@ import torch
 from nimloth.training.rl.episodes import ExecutedTransition
 
 
-PLANNER_VERL_SCHEMA_VERSION = 2
+PLANNER_VERL_SCHEMA_VERSION = 3
 PINNED_VERL_COMMIT = "65316156d1011d71d62e0542e4b954f9499e872e"
 PLANNER_POLICY_OBJECTIVE = "receding_horizon_planner_policy_ppo_v1"
 
@@ -27,6 +27,7 @@ class VerlSource:
 
 @dataclass(frozen=True)
 class PlannerVERLUpdateInputs:
+    update_id: str
     transitions: tuple[ExecutedTransition, ...]
     return_targets: tuple[torch.Tensor, ...]
     old_action_values: tuple[torch.Tensor, ...]
@@ -98,6 +99,7 @@ def build_planner_update_dataproto(
     loss_weights: tuple[float, ...],
     token_counts: tuple[int, ...],
     total_transitions: int,
+    update_id: str,
     dino_grid_targets: tuple[torch.Tensor | None, ...] | None = None,
 ) -> Any:
     """Build one strict action-level update batch without inventing CoT/state."""
@@ -107,6 +109,8 @@ def build_planner_update_dataproto(
 
     if not transitions:
         raise ValueError("planner VERL batch must not be empty")
+    if not isinstance(update_id, str) or not update_id:
+        raise ValueError("planner VERL update_id must not be empty")
     batch_size = len(transitions)
     if total_transitions < 1:
         raise ValueError("total_transitions must be positive")
@@ -177,6 +181,7 @@ def build_planner_update_dataproto(
             "objective": PLANNER_POLICY_OBJECTIVE,
             "total_transitions": int(total_transitions),
             "has_dino_grid_targets": bool(all(has_dino)),
+            "update_id": update_id,
         },
     )
 
@@ -278,6 +283,9 @@ def planner_update_inputs(data: Any) -> PlannerVERLUpdateInputs:
     total_transitions = int(data.meta_info.get("total_transitions", 0))
     if total_transitions < 1:
         raise ValueError("planner VERL total_transitions must be positive")
+    update_id = data.meta_info.get("update_id")
+    if not isinstance(update_id, str) or not update_id:
+        raise ValueError("planner VERL update_id must not be empty")
 
     def rows(name: str) -> tuple[torch.Tensor, ...]:
         tensor = data.batch[name]
@@ -299,6 +307,7 @@ def planner_update_inputs(data: Any) -> PlannerVERLUpdateInputs:
         else (None,) * batch_size
     )
     return PlannerVERLUpdateInputs(
+        update_id=update_id,
         transitions=transitions,
         return_targets=rows("return_targets"),
         old_action_values=rows("old_action_values"),

@@ -23,6 +23,7 @@ class _Transition:
 def _rows():  # type: ignore[no-untyped-def]
     transitions = (_Transition("a"), _Transition("b"))
     return {
+        "update_id": "update-17",
         "transitions": transitions,
         "return_targets": (torch.tensor(1.0), torch.tensor(2.0)),
         "old_action_values": (torch.tensor(0.1), torch.tensor(0.2)),
@@ -49,6 +50,7 @@ def test_planner_dataproto_roundtrips_action_level_update_rows() -> None:
         "objective": "receding_horizon_planner_policy_ppo_v1",
         "total_transitions": 17,
         "has_dino_grid_targets": True,
+        "update_id": "update-17",
     }
     assert set(data.batch.keys()) == {
         "return_targets",
@@ -63,6 +65,7 @@ def test_planner_dataproto_roundtrips_action_level_update_rows() -> None:
 
     restored = planner_update_inputs(data)
 
+    assert restored.update_id == "update-17"
     assert tuple(item.identity for item in restored.transitions) == ("a", "b")
     assert restored.total_transitions == 17
     assert restored.token_counts == (100, 200)
