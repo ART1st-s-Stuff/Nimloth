@@ -6,6 +6,10 @@
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 
+> **2026-08-09失效声明：**下述多epoch/首轮WM+DINO/后续仅critic的`1+3`语义不是人类要求，
+> 已由人类明确否决。当前权威语义是每个fresh rollout global step只有一个optimizer epoch，且
+> WM、DINO、ValueHead和PlannerPolicyHead在该次共同更新；见`E0090`及文末最新进展。
+
 - 新分支/worktree `feat/ppo-value-critic` 基于当前 active RL source `13b3c711`实现，
   保留receding-horizon planner/MCTS对environment action的ownership；没有把planner
   已执行动作当作Qwen action-token policy sample，也没有启用planner actor PPO。
@@ -4445,3 +4449,15 @@
   0.015625/12.0625。由此真实证实当前batched capture未交换request identity。
 - W&B`7n4pwjq8`已API核验`finished/ALL_OK`。尚未证明完整active-env trajectory、长prefix
   FSDP update或吞吐提升。
+
+## 2026-08-09：删除未经要求的1+3 optimizer-epoch设计
+
+- 人类明确指出1 global step内“首轮WM/DINO+PPO、后三轮仅PPO”的1+3设计从未被要求，并选择
+  替代语义：每个fresh rollout global step只做一个optimizer epoch；WM、DINO、ValueHead和
+  PlannerPolicyHead在这一次共同更新。
+- 新`E0090`登记该agent错误。planner schema和runtime都fail closed拒绝`ppo_epochs!=1`；全部
+  planner YAML改为显式1。loop不再按epoch关闭WM/DINO，也删除多epoch指标平均/auxiliary重组；
+  VERL DataProto不再携带可关闭WM的`include_world_model`开关，worker固定执行完整objective。
+- 旧ID147及其他四epoch checkpoint仍是历史事实，但与新optimizer语义不兼容；只能经明确边界
+  作为weights initialization，禁止加载原optimizer状态伪装resume。任何依赖训练的完整GPU验证
+  都必须基于新语义重新做数值门禁。

@@ -56,7 +56,6 @@ def _batch(identity: int):  # type: ignore[no-untyped-def]
         loss_weights=(1.0,),
         token_counts=(100 + identity,),
         total_transitions=2,
-        include_world_model=identity == 1,
     )
 
 
@@ -80,7 +79,7 @@ def test_verl_worker_core_accumulates_micro_batches_before_one_step() -> None:
     assert second == {"loss": 4.0}
     assert metrics == {"loss": 8.0, "planner_micro_batches": 2.0}
     assert algorithm.calls[0]["include_world_model"] is True
-    assert algorithm.calls[1]["include_world_model"] is False
+    assert algorithm.calls[1]["include_world_model"] is True
     assert algorithm.calls[0]["total_transitions"] == 2
 
 

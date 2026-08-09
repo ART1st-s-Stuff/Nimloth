@@ -164,8 +164,8 @@ class RLTrainingLoop:
         )
 
         # planner 路线保留完整 episode，并对每个真实环境 transition 重算完整
-        # Qwen prefix。第一个 PPO epoch联合计算WM，后续epoch继续更新critic；policy
-        # 模式还会在每个epoch更新PlannerPolicyHead clipped surrogate。
+        # Qwen prefix。每个fresh batch只有一个optimizer epoch，在同一次更新中联合
+        # 计算WM、DINO、ValueHead和可选PlannerPolicyHead objective。
         episode_batches = None
         batch = None
         actor_transitions: tuple[ExecutedTransition, ...] = ()
@@ -314,6 +314,11 @@ class RLTrainingLoop:
                         local_actor_transitions
                     )
                     ppo_epochs = self.config.value_head.ppo_epochs
+                if ppo_epochs != 1:
+                    raise ValueError(
+                        "each fresh planner rollout batch requires exactly one "
+                        "optimizer epoch"
+                    )
                 planner_micro_batch_size = int(
                     getattr(
                         self.config.training,
@@ -366,7 +371,7 @@ class RLTrainingLoop:
                                 policy_advantage=policy_advantage,
                                 total_transitions=total_actor_transitions,
                                 dino_grid_target=dino_grid_target,
-                                include_world_model=ppo_epoch == 0,
+                                include_world_model=True,
                             )
                             loss_weight = (
                                 0.0
@@ -403,7 +408,7 @@ class RLTrainingLoop:
                                     else float(training_world_size)
                                     for row in micro_batch
                                 ),
-                                include_world_model=ppo_epoch == 0,
+                                include_world_model=True,
                             )
                             self.optimization_runtime.backward(output.loss)
                             self._accumulate_metrics(
@@ -417,12 +422,9 @@ class RLTrainingLoop:
                     epoch_metrics.append(
                         self._reduce_planner_step_metrics(current_metrics)
                     )
-                step_metrics = self._summarize_planner_ppo_epochs(
+                step_metrics = self._summarize_planner_update(
                     epoch_metrics,
                     planner_policy_enabled=self.config.planner_policy.enabled,
-                    planner_policy_entropy_coeff=(
-                        self.config.planner_policy.entropy_coeff
-                    ),
                 )
             else:
                 assert batch is not None
@@ -594,68 +596,23 @@ class RLTrainingLoop:
         }
 
     @staticmethod
-    def _summarize_planner_ppo_epochs(
+    def _summarize_planner_update(
         epochs: list[dict[str, float]],
         *,
         planner_policy_enabled: bool = False,
-        planner_policy_entropy_coeff: float = 0.0,
     ) -> dict[str, float]:
-        """Keep first-epoch WM metrics and average actor/critic PPO metrics."""
+        """Return the one complete-objective optimizer epoch unchanged."""
 
-        if len(epochs) < 2:
-            raise ValueError("planner PPO requires at least two epoch metrics")
-        summary = dict(epochs[0])
-        averaged = {
-            "value_loss",
-            "value_mc_mse",
-            "value_clipped_mse",
-            "value_clip_fraction",
-            "value_old_mean",
-            "value_delta_abs_mean",
-        }
-        for name in averaged:
-            if any(name not in metrics for metrics in epochs):
-                raise RuntimeError(f"planner PPO epoch metric is missing {name!r}")
-            summary[name] = sum(metrics[name] for metrics in epochs) / len(epochs)
-        if planner_policy_enabled:
-            policy_averaged = {
-                "planner_policy_loss",
-                "planner_policy_entropy",
-                "planner_policy_clip_fraction",
-                "planner_policy_mean_ratio",
-                "planner_policy_mean_advantage",
-                "planner_policy_actions",
-            }
-            for name in policy_averaged:
-                if any(name not in metrics for metrics in epochs):
-                    raise RuntimeError(
-                        f"planner policy PPO epoch metric is missing {name!r}"
-                    )
-                summary[name] = sum(
-                    metrics[name] for metrics in epochs
-                ) / len(epochs)
-        # WM/DINO只在首个epoch计算；total_loss保留该首轮辅助objective，再加上
-        # 各critic epoch的平均value loss，避免将WM项错误地除以PPO epoch数。
-        if any("total_loss" not in metrics for metrics in epochs):
-            raise RuntimeError("planner PPO epoch metric is missing 'total_loss'")
-        auxiliary_loss = epochs[0]["total_loss"] - epochs[0]["value_loss"]
-        if planner_policy_enabled:
-            auxiliary_loss -= epochs[0]["planner_policy_loss"]
-            auxiliary_loss += planner_policy_entropy_coeff * epochs[0][
-                "planner_policy_entropy"
-            ]
-            summary["total_loss"] = (
-                auxiliary_loss
-                + summary["value_loss"]
-                + summary["planner_policy_loss"]
-                - planner_policy_entropy_coeff
-                * summary["planner_policy_entropy"]
+        if len(epochs) != 1:
+            raise ValueError(
+                "planner update requires exactly one optimizer epoch metric"
             )
-            summary["planner_policy_ppo_epochs"] = float(len(epochs))
+        summary = dict(epochs[0])
+        if planner_policy_enabled:
+            summary["planner_policy_ppo_epochs"] = 1.0
             summary["value_ppo_epochs"] = 0.0
         else:
-            summary["total_loss"] = auxiliary_loss + summary["value_loss"]
-            summary["value_ppo_epochs"] = float(len(epochs))
+            summary["value_ppo_epochs"] = 1.0
             summary["planner_policy_ppo_epochs"] = 0.0
         return summary
 

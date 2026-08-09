@@ -93,3 +93,17 @@
   不能据本次success忽略性能影响。
 - request-identity P0已被真实GPU证实；这仍不证明完整VAGEN active-env trajectory、长prefix FSDP
   update或吞吐提升。下一步门禁保持这三项边界。
+
+## Human correction: one complete-objective epoch per global step
+
+- 人类明确否决此前未经要求的`1+3`设计，并确认每个fresh rollout global step只做一个optimizer
+  epoch；该次同时训练WM、DINO、ValueHead和PlannerPolicyHead。已登记
+  `ai_rules/known_errors/E0090_do_not_invent_ppo_epoch_objective_schedule.md`。
+- planner config/schema/runtime统一要求`ppo_epochs=1`并拒绝其他值；全部planner YAML同步为1。
+  loop固定`include_world_model=True`，删除多epochmetric平均和auxiliary loss重组。
+- VERL DataProto删除`include_world_model`控制字段，custom worker每个micro-batch固定执行完整objective，
+  所有micro-batch仅汇成一个optimizer step。
+- 旧ID147的四epoch运行与checkpoint是历史事实，不得改写；新语义与其optimizer/checkpoint config
+  不兼容。后续如使用ID147权重，必须明确作为weights-only初始化而非resume。
+- RED定向套件先得到22个预期失败；GREEN后config/loop/adapter/worker定向`75 passed`，扩大回归
+  `269 passed, 1 failed`，唯一失败是临时本地环境缺VAGEN传递依赖SciPy，非本次改动路径。

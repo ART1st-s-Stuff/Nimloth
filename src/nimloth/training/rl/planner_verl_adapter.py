@@ -14,7 +14,7 @@ import torch
 from nimloth.training.rl.episodes import ExecutedTransition
 
 
-PLANNER_VERL_SCHEMA_VERSION = 1
+PLANNER_VERL_SCHEMA_VERSION = 2
 PINNED_VERL_COMMIT = "65316156d1011d71d62e0542e4b954f9499e872e"
 PLANNER_POLICY_OBJECTIVE = "receding_horizon_planner_policy_ppo_v1"
 
@@ -36,7 +36,6 @@ class PlannerVERLUpdateInputs:
     token_counts: tuple[int, ...]
     dino_grid_targets: tuple[torch.Tensor | None, ...]
     total_transitions: int
-    include_world_model: bool
 
 
 @lru_cache(maxsize=4)
@@ -99,7 +98,6 @@ def build_planner_update_dataproto(
     loss_weights: tuple[float, ...],
     token_counts: tuple[int, ...],
     total_transitions: int,
-    include_world_model: bool,
     dino_grid_targets: tuple[torch.Tensor | None, ...] | None = None,
 ) -> Any:
     """Build one strict action-level update batch without inventing CoT/state."""
@@ -178,7 +176,6 @@ def build_planner_update_dataproto(
             "schema_version": PLANNER_VERL_SCHEMA_VERSION,
             "objective": PLANNER_POLICY_OBJECTIVE,
             "total_transitions": int(total_transitions),
-            "include_world_model": bool(include_world_model),
             "has_dino_grid_targets": bool(all(has_dino)),
         },
     )
@@ -311,7 +308,6 @@ def planner_update_inputs(data: Any) -> PlannerVERLUpdateInputs:
         token_counts=token_counts,
         dino_grid_targets=dino_rows,
         total_transitions=total_transitions,
-        include_world_model=bool(data.meta_info.get("include_world_model", False)),
     )
 
 

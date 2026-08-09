@@ -588,9 +588,9 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                     "PlannerPolicyHead PPO requires explicit planner_policy fields: "
                     + ", ".join(missing_policy_fields)
                 )
-            if planner_policy_config.ppo_epochs < 2:
+            if planner_policy_config.ppo_epochs != 1:
                 raise ValueError(
-                    "PlannerPolicyHead PPO requires planner_policy.ppo_epochs>=2"
+                    "PlannerPolicyHead update requires planner_policy.ppo_epochs=1"
                 )
             if value_ppo_clip_range is not None or "ppo_epochs" in value_head:
                 raise ValueError(
@@ -608,10 +608,9 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                     "legacy planner critic clipping requires explicit "
                     "value_head.ppo_clip_range and value_head.ppo_epochs"
                 )
-            if value_ppo_epochs < 2:
+            if value_ppo_epochs != 1:
                 raise ValueError(
-                    "legacy planner critic clipping requires "
-                    "value_head.ppo_epochs>=2"
+                    "planner update requires value_head.ppo_epochs=1"
                 )
     elif value_ppo_clip_range is not None or "ppo_epochs" in value_head:
         raise ValueError(

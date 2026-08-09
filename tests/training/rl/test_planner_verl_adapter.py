@@ -41,7 +41,6 @@ def test_planner_dataproto_roundtrips_action_level_update_rows() -> None:
     data = build_planner_update_dataproto(
         **_rows(),
         total_transitions=17,
-        include_world_model=True,
     )
 
     assert len(data) == 2
@@ -49,7 +48,6 @@ def test_planner_dataproto_roundtrips_action_level_update_rows() -> None:
         "schema_version": PLANNER_VERL_SCHEMA_VERSION,
         "objective": "receding_horizon_planner_policy_ppo_v1",
         "total_transitions": 17,
-        "include_world_model": True,
         "has_dino_grid_targets": True,
     }
     assert set(data.batch.keys()) == {
@@ -67,7 +65,6 @@ def test_planner_dataproto_roundtrips_action_level_update_rows() -> None:
 
     assert tuple(item.identity for item in restored.transitions) == ("a", "b")
     assert restored.total_transitions == 17
-    assert restored.include_world_model is True
     assert restored.token_counts == (100, 200)
     torch.testing.assert_close(
         torch.stack(restored.dino_grid_targets),
@@ -83,7 +80,6 @@ def test_planner_dataproto_rejects_partial_or_nonfinite_rows() -> None:
         build_planner_update_dataproto(
             **rows,
             total_transitions=2,
-            include_world_model=False,
         )
 
     rows = _rows()
@@ -92,7 +88,6 @@ def test_planner_dataproto_rejects_partial_or_nonfinite_rows() -> None:
         build_planner_update_dataproto(
             **rows,
             total_transitions=2,
-            include_world_model=False,
         )
 
 
@@ -103,7 +98,6 @@ def test_planner_dataproto_keeps_dino_targets_all_or_none() -> None:
         build_planner_update_dataproto(
             **rows,
             total_transitions=2,
-            include_world_model=True,
         )
 
     rows = _rows()
@@ -111,7 +105,6 @@ def test_planner_dataproto_keeps_dino_targets_all_or_none() -> None:
     data = build_planner_update_dataproto(
         **rows,
         total_transitions=2,
-        include_world_model=False,
     )
     assert "dino_grid_targets" not in data.batch
     assert data.meta_info["has_dino_grid_targets"] is False
@@ -131,7 +124,6 @@ def test_planner_verl_packing_budgets_actual_padded_tokens() -> None:
     data = build_planner_update_dataproto(
         **rows,
         total_transitions=4,
-        include_world_model=False,
     )
 
     batches = planner_verl_micro_batches(
@@ -158,7 +150,6 @@ def test_planner_verl_packing_rejects_one_over_budget_prefix() -> None:
     data = build_planner_update_dataproto(
         **_rows(),
         total_transitions=2,
-        include_world_model=False,
     )
 
     with pytest.raises(ValueError, match="exceeds max_padded_tokens"):

@@ -50,7 +50,7 @@ class PlannerVERLUpdateCore:
             total_transitions=inputs.total_transitions,
             dino_grid_targets=inputs.dino_grid_targets,
             loss_weights=inputs.loss_weights,
-            include_world_model=inputs.include_world_model,
+            include_world_model=True,
         )
         self.optimization_runtime.backward(output.loss)
         self._micro_batches += 1

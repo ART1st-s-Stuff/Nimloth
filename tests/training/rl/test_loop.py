@@ -272,7 +272,7 @@ def _training_loop(
             truncated_bootstrap="zero",
         ),
         predictor=SimpleNamespace(history_size=1),
-        value_head=SimpleNamespace(ppo_epochs=2),
+        value_head=SimpleNamespace(ppo_epochs=1),
         planner_policy=SimpleNamespace(enabled=False, entropy_coeff=0.0),
         training=SimpleNamespace(seed=1, log_interval=1, save_interval=2),
         validation=SimpleNamespace(enabled=False, interval=1),
@@ -414,14 +414,14 @@ def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     assert source.loaded_paths == [
         ("episode_a_step_1.png", "episode_b_step_1.png")
     ]
-    assert loop.optimization_runtime.zero_grad_calls == 2
-    assert loop.optimization_runtime.step_calls == 2
+    assert loop.optimization_runtime.zero_grad_calls == 1
+    assert loop.optimization_runtime.step_calls == 1
     assert loop.state.global_step == 1
     assert len(algorithm.received_targets) == 2
     assert algorithm.old_value_calls == 2
-    assert algorithm.include_world_model == [True, True, False, False]
-    assert algorithm.batch_sizes == [2, 2]
-    assert synchronized_backwards == ["backward"] * 2
+    assert algorithm.include_world_model == [True, True]
+    assert algorithm.batch_sizes == [2]
+    assert synchronized_backwards == ["backward"]
     torch.testing.assert_close(
         algorithm.received_targets[0],
         torch.tensor([[1.0, 1.0]]),
@@ -432,8 +432,8 @@ def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     )
 
 
-def test_planner_ppo_summary_preserves_first_epoch_wm_loss() -> None:
-    first = {
+def test_planner_update_summary_preserves_single_epoch_metrics() -> None:
+    epoch = {
         "value_loss": 2.0,
         "value_mc_mse": 2.0,
         "value_clipped_mse": 2.0,
@@ -443,24 +443,14 @@ def test_planner_ppo_summary_preserves_first_epoch_wm_loss() -> None:
         "total_loss": 5.0,
         "wm_mse": 3.0,
     }
-    second = {
-        "value_loss": 4.0,
-        "value_mc_mse": 4.0,
-        "value_clipped_mse": 4.0,
-        "value_clip_fraction": 1.0,
-        "value_old_mean": 0.5,
-        "value_delta_abs_mean": 0.3,
-        "total_loss": 4.0,
-        "wm_mse": 0.0,
-    }
 
-    summary = RLTrainingLoop._summarize_planner_ppo_epochs([first, second])
+    summary = RLTrainingLoop._summarize_planner_update([epoch])
 
     assert summary["wm_mse"] == 3.0
-    assert summary["value_loss"] == 3.0
-    assert summary["total_loss"] == 6.0
-    assert summary["value_clip_fraction"] == 0.5
-    assert summary["value_ppo_epochs"] == 2.0
+    assert summary["value_loss"] == 2.0
+    assert summary["total_loss"] == 5.0
+    assert summary["value_clip_fraction"] == 0.0
+    assert summary["value_ppo_epochs"] == 1.0
 
 
 def test_planner_dino_targets_load_only_the_rank_local_transition_shard(
@@ -496,7 +486,7 @@ def test_planner_dino_targets_load_only_the_rank_local_transition_shard(
     assert source.loaded_paths == [("episode_b_step_1.png",)]
     assert len(algorithm.received_targets) == 1
     assert algorithm.old_value_calls == 1
-    assert algorithm.include_world_model == [True, False]
+    assert algorithm.include_world_model == [True]
     torch.testing.assert_close(
         algorithm.received_targets[0],
         torch.tensor([[1.0, 1.0]]),

@@ -101,8 +101,8 @@ print(
   echo "gate config is not a true 4+4 topology" >&2
   exit 1
 }
-[[ "${CONFIG_EPISODES} ${POLICY_ENABLED} ${POLICY_EPOCHS}" == "8 true 4" ]] || {
-  echo "gate config does not declare eight episodes and four PlannerPolicyHead PPO epochs" >&2
+[[ "${CONFIG_EPISODES} ${POLICY_ENABLED} ${POLICY_EPOCHS}" == "8 true 1" ]] || {
+  echo "gate config does not declare eight episodes and one complete-objective optimizer epoch" >&2
   exit 1
 }
 if [[ -n "${FRESH_ROLLOUT_SOURCE}" ]]; then
@@ -199,7 +199,7 @@ if [[ -z "${FRESH_ROLLOUT_SOURCE}" ]]; then
 else
   mkdir -p "${RUN_OUT}"
   cat > "${RUN_OUT}/README.md" <<EOF
-# PlannerPolicyHead PPO 4+4 mechanics gate retry
+# PlannerPolicyHead 4+4 single-epoch mechanics gate retry
 
 - status: running
 - Nimloth commit: ${EXPECTED_COMMIT}
@@ -207,7 +207,7 @@ else
 - PlannerPolicyHead initialization: ${PLANNER_POLICY_HEAD_CKPT}
 - immutable unconsumed fresh rollout: ${ROLLOUT_OUT}
 - selection: longest real final prefixes; minimum ${MINIMUM_STATE_TOKENS} token
-- update: 2 nodes, 4 synchronized ranks x 2 GPUs/rank, 4 PPO epochs
+- update: 2 nodes, 4 synchronized ranks x 2 GPUs/rank, 1 optimizer epoch
 - trainable: Qwen language body, ValueHead and PlannerPolicyHead
 - frozen: Qwen vision, lm_head, StateProjector and WM predictor
 - W&B: disabled; reserved identity ${WANDB_PROJECT}/${WANDB_RUN_NAME}
@@ -341,7 +341,7 @@ for rank, result in enumerate(results):
     assert result["rank"] == rank
     assert result["world_size"] == 4
     assert result["gpus_per_rank"] == 2
-    assert result["ppo_epochs"] == 4
+    assert result["ppo_epochs"] == 1
     assert result["qwen_grad_max"] > 0
     assert result["value_grad_max"] > 0
     assert result["planner_policy_grad_max"] > 0

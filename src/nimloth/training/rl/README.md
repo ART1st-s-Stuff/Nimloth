@@ -65,9 +65,9 @@ environment system_prompt + obs_str + images
  RolloutTrajectory (每步真实Qwen state + 独立search trace)
                          |
                          v
-      完整prefix Qwen -> PPO-clipped ValueHead critic + WM预测next state
+      完整prefix Qwen -> PlannerPolicyHead + ValueHead + WM/DINO objective
                          |
-                  multiple critic epochs
+              one optimizer epoch per fresh batch
 ```
 
 For every step `t`, a complete trajectory stores:
@@ -97,34 +97,40 @@ Planner在每个真实environment step重新运行Qwen和搜索。设`P = planni
 
 训练使用完整episode，不采样window。每个fresh rollout batch先用update前的
 ValueHead在trajectory保存的真实decision state上计算并冻结
-`old_Q_t = Q_old(s_t, executed_action_t)`。这个值不是MCTS root score，也不是Qwen
-action-token log-prob。随后对同一batch执行显式配置的多个critic epoch：
+`old_Q_t = Q_old(s_t, executed_action_t)`；PlannerPolicyHead同时冻结实际执行动作的
+behavior log-prob。`old_Q`不是MCTS root score，也不是Qwen action-token log-prob。
+每个fresh rollout batch只执行一个包含全部objective的optimizer epoch：
 
 ```text
 old_Q = frozen(value_head(saved_rollout_decision_state)[executed_action])
+old_logp = persisted PlannerPolicyHead behavior log-prob
 
-for ppo_epoch in range(value_head.ppo_epochs):
-    for each real transition t:
-        prefix_t = persisted prompt + all previous real history + current real CoT
-        hidden_t = qwen(prefix_t)                  # current differentiable graph
-        state_t = state_proj(hidden_t)
-        Q_t = value_head(state_t)[executed_action_t]
-        Q_clip_t = old_Q_t + clamp(Q_t - old_Q_t,
-                                   -ppo_clip_range, +ppo_clip_range)
-        L_value = max((Q_t - return_t)^2, (Q_clip_t - return_t)^2)
+for each real transition t:
+    prefix_t = persisted prompt + all previous real history + current real CoT
+    hidden_t = qwen(prefix_t)                  # current differentiable graph
+    state_t = state_proj(hidden_t)
+    Q_t = value_head(state_t)[executed_action_t]
+    Q_clip_t = old_Q_t + clamp(Q_t - old_Q_t,
+                               -ppo_clip_range, +ppo_clip_range)
+    L_value = max((Q_t - return_t)^2, (Q_clip_t - return_t)^2)
 
-        if ppo_epoch == 0:
-            context = detached_real_states[-history_size:]
-            context[-1] = state_t
-            predicted_next = wm(context, previous_actions + executed_action_t)[-1]
-            L_state = mse(predicted_next, saved_real_state[t+1])
-            L_dino = mse(predicted_next, frozen_dino(next_image_t))
-        else:
-            L_state = L_dino = 0
+    context = detached_real_states[-history_size:]
+    context[-1] = state_t
+    predicted_next = wm(context, previous_actions + executed_action_t)[-1]
+    L_state = mse(predicted_next, saved_real_state[t+1])
+    L_dino = mse(predicted_next, frozen_dino(next_image_t))
 
-        backward((lambda_wm * L_state + lambda_dino * L_dino
-                  + L_value) / total_real_transitions)
-    optimizer.step()
+    if PlannerPolicyHead is enabled:
+        logp = planner_policy(state_t)[executed_action_t]
+        ratio = exp(logp - old_logp)
+        L_policy = clipped_action_policy_loss(ratio, frozen_MC_advantage)
+    else:
+        L_policy = 0
+
+    backward((lambda_wm * L_state + lambda_dino * L_dino
+              + L_value + L_policy) / total_real_transitions)
+optimizer.step()       # exactly once
+global_step += 1       # only after checkpoint + fresh-consumption commit
 ```
 
 `history_size`只限制WM predictor在一个预测位置最多读取多少个真实过去state；它不决定
@@ -134,10 +140,10 @@ step的graph，不连接以前step已经释放的graph。ValueHead输入是可�
 所以clipped critic梯度经过ValueHead、StateProjector和本次完整Qwen prefix；它不经过
 Qwen的`lm_head`，也不要求执行动作是action-token logit最大的动作。WM predictor
 由独立的state/DINO loss以及多步rollout中后续decision-state value训练。planner配置固定
-`value_head.lambda_rank=0`，critic只直接监督执行action的slot。`ppo_clip_range`和
-`ppo_epochs>=2`必须在planner配置中显式给出；首个epoch在参数尚未变化时等价于普通
-MC regression，后续epoch才使frozen-old clipping生效。一个fresh rollout batch完成后
-`global_step`只增加一次，内部每个critic epoch各执行一次`optimizer.step()`。
+`value_head.lambda_rank=0`，critic只直接监督执行action的slot。所有planner配置必须显式
+`ppo_epochs=1`；schema和runtime都拒绝其他值。由于同一fresh batch不再做参数更新后的重复
+pass，严格同checkpoint rollout下的首轮policy ratio应为1、clip fraction应为0；clipped
+公式仍用于验证behavior/current分布一致性，但不得再据此引入额外epoch。
 SFT2 与 RL 的 state MSE 和 predicted-state DINO MSE 由同一个公共 objective 计算；
 SFT2 从离线 cache 读取 DINO target，RL 按轨迹中的真实 next-image 路径使用固定
 revision 的 frozen DINOv2 teacher，并缓存已计算的 target。RL loop 在 objective

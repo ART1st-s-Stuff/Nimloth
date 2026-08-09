@@ -29,7 +29,7 @@ def _raw_config() -> dict:
     }
 
 
-def _configure_planner_value_ppo(raw: dict, *, epochs: int = 4) -> None:
+def _configure_planner_value_ppo(raw: dict, *, epochs: int = 1) -> None:
     raw["value_head"] = {
         "lambda_rank": 0.0,
         "ppo_clip_range": 0.2,
@@ -37,7 +37,7 @@ def _configure_planner_value_ppo(raw: dict, *, epochs: int = 4) -> None:
     }
 
 
-def _configure_planner_policy_ppo(raw: dict, *, epochs: int = 4) -> None:
+def _configure_planner_policy_ppo(raw: dict, *, epochs: int = 1) -> None:
     raw["value_head"] = {"lambda_rank": 0.0}
     raw["planner_policy"] = {
         "enabled": True,
@@ -204,7 +204,7 @@ def test_h1_smoke_trains_qwen_wm_and_value_without_direct_ppo() -> None:
     assert config.predictor.lambda_dino == 0.5
     assert config.value_head.lambda_rank == 0.0
     assert config.value_head.ppo_clip_range == 0.2
-    assert config.value_head.ppo_epochs == 4
+    assert config.value_head.ppo_epochs == 1
     assert config.rl.iterations == 1
     assert config.rl.envs_per_iteration == config.rl.batch_size == 4
     assert config.rl.max_steps_per_episode == 20
@@ -220,7 +220,7 @@ def test_planner_policy_gpu_gate_uses_two_four_gpu_nodes() -> None:
     assert config.agent.planning.horizon == 1
     assert config.agent.planning.search_mode == "policy"
     assert config.planner_policy.enabled is True
-    assert config.planner_policy.ppo_epochs == 4
+    assert config.planner_policy.ppo_epochs == 1
     assert config.actor.enabled is False
     assert config.freeze.state_proj is True
     assert config.gradient.representation_to_backbone is True
@@ -244,7 +244,7 @@ def test_formal_planner_policy_trains_to_step_twenty_then_evaluates() -> None:
     assert config.agent.planning.horizon == 1
     assert config.agent.planning.search_mode == "policy"
     assert config.planner_policy.enabled is True
-    assert config.planner_policy.ppo_epochs == 4
+    assert config.planner_policy.ppo_epochs == 1
     assert config.planner_policy.clip_ratio == 0.2
     assert config.planner_policy.entropy_coeff == 0.01
     assert config.actor.enabled is False
@@ -286,7 +286,7 @@ def test_formal_h1_config_preserves_corrected_online_contract() -> None:
     assert config.predictor.lambda_dino == 0.5
     assert config.value_head.lambda_rank == 0.0
     assert config.value_head.ppo_clip_range == 0.2
-    assert config.value_head.ppo_epochs == 4
+    assert config.value_head.ppo_epochs == 1
     assert config.rl.iterations == 60
     assert config.rl.envs_per_iteration == config.rl.batch_size == 8
     assert config.rl.max_steps_per_episode == 20
@@ -870,7 +870,7 @@ def test_planner_beam_width_matches_search_mode() -> None:
         parse_rl_config(raw)
 
 
-def test_planner_value_ppo_requires_explicit_clip_and_multiple_epochs() -> None:
+def test_planner_value_update_requires_explicit_clip_and_single_epoch() -> None:
     raw = _raw_config()
     raw["rl"]["batch_size"] = raw["rl"].get("envs_per_iteration", 8)
     raw["actor"] = {"enabled": False, "credit_assignment": "action"}
@@ -887,9 +887,12 @@ def test_planner_value_ppo_requires_explicit_clip_and_multiple_epochs() -> None:
     with pytest.raises(ValueError, match="explicit value_head.ppo_clip_range"):
         parse_rl_config(raw)
 
-    _configure_planner_value_ppo(raw, epochs=1)
-    with pytest.raises(ValueError, match="ppo_epochs>=2"):
+    _configure_planner_value_ppo(raw, epochs=2)
+    with pytest.raises(ValueError, match="ppo_epochs=1"):
         parse_rl_config(raw)
+
+    _configure_planner_value_ppo(raw, epochs=1)
+    assert parse_rl_config(raw).value_head.ppo_epochs == 1
 
 
 def test_nonplanner_rejects_unused_value_ppo_fields() -> None:
@@ -918,8 +921,13 @@ def test_planner_policy_ppo_requires_h1_policy_search_and_explicit_fields() -> N
     config = parse_rl_config(raw)
 
     assert config.planner_policy.enabled is True
-    assert config.planner_policy.ppo_epochs == 4
+    assert config.planner_policy.ppo_epochs == 1
     assert config.value_head.ppo_clip_range is None
+
+    raw["planner_policy"]["ppo_epochs"] = 2
+    with pytest.raises(ValueError, match="ppo_epochs=1"):
+        parse_rl_config(raw)
+    raw["planner_policy"]["ppo_epochs"] = 1
 
     raw["agent"]["planning"]["horizon"] = 2
     with pytest.raises(ValueError, match="requires horizon=1"):
