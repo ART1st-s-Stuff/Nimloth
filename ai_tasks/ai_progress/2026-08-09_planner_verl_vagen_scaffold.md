@@ -196,5 +196,10 @@
   W&B finish成功后才写`result.json ALL_OK`。
 - CPU定向`19 passed`、compile和diff-check通过，review修复了nested BF16 Linear输入dtype问题。该gate
   不读取ID147、不消费ID149、不训练正式模型，不能替代后续long-prefix complete-objective门禁。
-- SSH持续在banner阶段timeout，`945729f6`尚未同步server。按实验规则已请求preempt单节点2×H800、
-  30分钟上限批准，但人类未选择资源选项；因此没有查询/占用GPU、没有创建ID150 output/W&B/Slurm job。
+- SSH持续在banner阶段timeout，`945729f6`尚未同步server。人类随后明确改为使用8卡，因此ID150
+  资源合同为`preempt`单节点8×H800、30分钟硬上限；预计实际5分钟内。已新增batch-owned
+  `gate_planner_verl_fsdp_ray_1x8.slurm`，不依赖login watcher，静态合同与bash syntax通过。
+- 候选W&B为project`nimloth-rl`、run`150_smoke_rayfsdp8_ckptrng_resumeparity`；候选output为
+  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-09/150_smoke_rayfsdp8_ckptrng_resumeparity`。
+  SSH恢复后必须先查询live entity/API确认ID和名称未占用、output不存在、commit/pins/server回归及当前
+  单节点8卡资源，再生成显式W&B run ID并提交。当前仍没有创建output/W&B/Slurm job或占用GPU。

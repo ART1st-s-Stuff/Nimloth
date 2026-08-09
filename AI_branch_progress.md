@@ -32,8 +32,9 @@
   multi-rank FSDP数值、sharded checkpoint round-trip和long-prefix显存门禁仍未运行，禁止声称迁移完成。
 - `945729f6`新增ID150候选tiny-model真实Ray/FSDP mechanics gate：双rank DataProto identity、真实GPU
   ownership、完整sharded参数SHA256、CPU/CUDA RNG、model/AdamW checkpoint回载及相同next-step parity。
-  该gate不读取ID147、不消费ID149且不产生正式策略；CPU定向`19 passed`。SSH仍timeout，且人类未确认
-  preempt单节点2×H800/30分钟资源选项，因此尚未同步server、创建W&B/output或提交Slurm。
+  该gate不读取ID147、不消费ID149且不产生正式策略；CPU定向`19 passed`。人类已改为批准
+  preempt单节点8×H800/30分钟；batch-owned 1×8 launcher及静态测试已完成。SSH仍timeout，故尚未同步
+  server、核验W&B ID/output/资源或提交Slurm。
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 

@@ -96,6 +96,9 @@ SIXTEEN_ROLLOUT_24_GPU_CONFIG = (
 SIXTEEN_ROLLOUT_24_GPU_BATCH = (
     REPO_ROOT / "experiments/training/rl/train_24gpu_66642.slurm"
 )
+PLANNER_FSDP_RAY_GATE_1X8 = (
+    REPO_ROOT / "experiments/training/rl/gate_planner_verl_fsdp_ray_1x8.slurm"
+)
 
 
 def _load_counts(job_details: str) -> list[str]:
@@ -123,6 +126,23 @@ done | sort
         text=True,
     )
     return result.stdout.splitlines()
+
+
+def test_planner_fsdp_ray_gate_is_batch_owned_one_node_eight_gpu() -> None:
+    batch = PLANNER_FSDP_RAY_GATE_1X8.read_text(encoding="utf-8")
+
+    assert "#SBATCH --partition=preempt" in batch
+    assert "#SBATCH --nodes=1" in batch
+    assert "#SBATCH --gres=gpu:8" in batch
+    assert "#SBATCH --time=00:30:00" in batch
+    assert ': "${EXPECTED_COMMIT:?EXPECTED_COMMIT is required}"' in batch
+    assert '[[ ! -e "${OUTPUT_DIR}" ]]' in batch
+    assert ".venv-vagen-main/bin/python3" in batch
+    assert "--world-size 8" in batch
+    assert "--wandb-run-id" in batch
+    assert "--gpus-per-task=8" in batch
+    assert '"status": "ALL_OK"' in batch
+    assert "while true" not in batch
 
 
 def test_loads_gpu_counts_from_compressed_node_expression() -> None:
