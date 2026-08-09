@@ -57,3 +57,21 @@
 - 仍缺真实FSDP worker的模型装配/checkpoint、真实VAGEN/vLLM GPU门禁以及batched per-request retry/resume；未门禁前禁止开启正式flag或把config默认值改大。
 - 本地workspace初始可用空间不足导致worktree内测试venv安装失败；已立即删除该venv恢复空间，测试环境改放`/tmp/nimloth-test-venv`，没有删除项目artifact或共享数据。人类随后释放空间，submodule已恢复到exact pins。
 - 本分支未改变ID147。SSH恢复后确认ID147 Job`511059`已在06:53:30+08 `COMPLETED 0:0`：global step0→20全部committed并完成held-out120；overall success21/120=0.175。稳态iteration约10.7--15.5分钟，其中two-TP4 rollout关键路径约4.5--8.2分钟、四epoch训练rank关键路径约4.5--6.8分钟，是新脚手架需对照的实际wall-clock基线。
+
+## ID148 real TP4 multimodal request-state gate
+
+- 人类已确认启动`preempt`单节点4×H800门禁。W&B project/run为
+  `nimloth-rl/148_smoke_tp4_mm_policy_state_batch2_k16_vllm011`，输出目录为
+  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-09/148_smoke_tp4_mm_policy_state_batch2_k16_vllm011`。
+- 门禁代码commit为`7d290728abb2f654d44bbb5ecf96bcc70bf8defd`，服务器使用独立detached worktree
+  `/project/peilab/atst/nimloth/.worktree/feat-planner-verl-vagen-scaffold-8cbc0360`；VAGEN/VERL/le-wm仍固定
+  `192c35a9/65316156/8edfeb33`。
+- 只读ID147 committed `train/latest` Qwen与其held-out trajectories中两个不同首步
+  multimodal prefix。所有模型冻结，无optimizer、无训练、无新rollout或consumption；held-out输入仅用于
+  inference integration test。
+- `gate_vllm_policy_state_tp4.py`在一个vLLM 0.11 TP4 batch生成两个请求，强制
+  temperature/top-p=1，逐请求验证16×hidden latent、8 action logits、finite、TP-rank parity，且
+  captured action logits的log-softmax必须在`atol=rtol=2e-3`内复现同请求behavior log-probs；两个请求
+  state必须可区分，从而直接检验request identity未交换。
+- 资源上限为preempt单节点4 H800、1小时；预计实际5--15分钟。短门禁没有checkpoint/resume；若失败，
+  ID148按terminal记录且用新身份重试，绝不修改或续写ID147。
