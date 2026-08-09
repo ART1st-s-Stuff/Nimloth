@@ -223,3 +223,17 @@
 - ID150 README和`audit.json`已标记`CONTRACT_FAILED`/mechanics`ALL_OK`；不得把ID150称为整体成功，
   但其真实8卡mechanics证据可保留。已登记E0091并修复launcher：source前保存project/name/id，source后
   显式恢复；静态回归和bash syntax通过。严格重试必须使用新ID/W&B run ID/空output。
+
+### ID151 strict retry terminal result
+
+- 新commit`c5694805`在server定向2项通过；ID151使用新output、run name和W&B ID`ncs28ec7`，
+  `normal` Job`512177`立即分配同一`dgx-23:8`并在49秒内`COMPLETED 0:0`，资源随后确认释放。
+- 全部ID150 mechanics证据严格复现：8个distinct UUID、rank DataProto identity、每rank model/AdamW/RNG
+  shards、step1 reload SHA256精确一致、branch A/B resumed-next-step SHA256精确一致、CPU/CUDA RNG精确恢复、
+  norm error`0.0`、transaction sidecar已commit。
+- W&B修复真实生效：API核验
+  `art2nd-hong-kong-university-of-science-and-technology/nimloth-rl/ncs28ec7`为
+  `finished`、summary`gate/status=ALL_OK`、norm error0；`result.json`记录actual project=`nimloth-rl`。
+- output README已写完。ID151关闭真实8卡Ray/NCCL/FSDP worker lifecycle及exact sharded checkpoint/reload
+  mechanics gate；仍不证明production Qwen/WM/DINO/ValueHead/PlannerPolicyHead complete objective、long-prefix
+  memory/numerical parity或吞吐，这些必须由后续独立门禁验证。

@@ -40,6 +40,10 @@
   env把请求的`nimloth-rl`覆盖为`flower`，所以ID150为mechanics ALL_OK、launch contract failed；actual
   W&B`flower/4zura4lr` finished。已写output README/audit、登记E0091并修复source后恢复W&B identity；
   严格重试必须新ID/output/run。
+- 修复commit`c5694805`后，ID151 Job`512177`在`normal/dgx-23:8`用49秒完成并`COMPLETED 0:0`。
+  完整参数/RNG reload与next-step parity再次精确通过，W&B`nimloth-rl/ncs28ec7`由API核验
+  `finished/ALL_OK`且norm error0；8卡已释放。ID151关闭真实Ray/NCCL/FSDP+sharded checkpoint mechanics，
+  但不覆盖production complete objective、long-prefix numerical parity或吞吐。
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 
