@@ -42,5 +42,8 @@
 - 独立 worktree：`/workspace/remote2/nimloth-feat-planner-verl-vagen-scaffold`
 - 分支：`feat/planner-verl-vagen-scaffold`
 - 起点：`79f12f06601ce514dabe8fac957317007804506d`
-- 尚未修改生产代码、未提交GPU实验、未改变ID147。
-- 最近一次查询 ID147 时 SSH 连接在登录入口被关闭，未取得新状态；不能把此前 iteration 2 状态当作当前状态。
+- 已完成 rollout P0 的CPU接口实现：`PolicyStateCaptureWorkerExtension`使用vLLM V1 `req_ids + query_start_loc`把flattened hidden/token rows按request分流；frontend按显式request ID恢复、检查TP rank parity并拒绝缺失/重复/misaligned identity。`QwenVLLMAgentPolicy.select_responses_with_state()`用一次`engine.generate(requests)`返回逐row CoT、latent hidden和action logits。
+- 定向CPU回归：`tests/backbone/qwen25vl/test_vllm_{hidden,policy}.py`为`21 passed`。覆盖两个request在decode forward中换序交错、请求顺序恢复和既有串行capture兼容；`compileall`与`git diff --check`通过。
+- 上述结果尚未经过真实vLLM 0.11 TP4多模态generation；在GPU门禁前不能接入正式VAGEN active-env runner或声称rollout提速。
+- 本地workspace初始可用空间不足导致worktree内测试venv安装失败；已立即删除该venv恢复空间，测试环境改放`/tmp/nimloth-test-venv`，没有删除项目artifact或共享数据。
+- 未提交GPU实验、未改变ID147。最近两次查询ID147时SSH连接均在登录入口被关闭，未取得新状态；不能把此前iteration 2状态当作当前状态。

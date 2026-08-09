@@ -284,6 +284,64 @@ def test_captured_turn_action_carries_same_forward_state(monkeypatch) -> None:
     assert decision.state_latent_hidden is not latent_hidden
 
 
+def test_batched_turn_capture_preserves_request_identity(monkeypatch) -> None:
+    processor = SimpleNamespace(tokenizer=_Tokenizer())
+    policy = QwenVLLMAgentPolicy(
+        engine=SimpleNamespace(),
+        processor=processor,
+        temperature=0.7,
+        top_p=0.95,
+        latent_token_count=16,
+        credit_assignment="token",
+        capture_policy_state=True,
+    )
+    decisions = tuple(
+        module.PolicyDecision(
+            action_index=index,
+            action_log_probs=tuple(
+                0.0 if action == index else float("-inf")
+                for action in range(8)
+            ),
+            response=(
+                f"<think>cot {index}</think><|latent_state|><|action_start|>"
+                f"<|action_({index})|><|action_end|>"
+            ),
+        )
+        for index in range(2)
+    )
+    monkeypatch.setattr(
+        policy,
+        "_select_responses",
+        lambda _prompts, **_kwargs: (
+            ("request-b", decisions[0]),
+            ("request-a", decisions[1]),
+        ),
+    )
+    monkeypatch.setattr(module, "start_policy_state_capture", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module,
+        "pop_policy_state_captures",
+        lambda _engine, *, request_ids: {
+            request_id: module.VLLMPolicyState(
+                latent_hidden=torch.full(
+                    (16, 4),
+                    1.0 if request_id == "request-a" else 2.0,
+                ),
+                action_logits=torch.zeros(8),
+            )
+            for request_id in request_ids
+        },
+    )
+
+    outputs = policy.select_responses_with_state(
+        (SimpleNamespace(), SimpleNamespace())
+    )
+
+    assert [item.qwen_decision.action_index for item in outputs] == [0, 1]
+    assert outputs[0].policy_state.latent_hidden[0, 0].item() == 2.0
+    assert outputs[1].policy_state.latent_hidden[0, 0].item() == 1.0
+
+
 def test_from_model_registers_turn_logits_adapter_and_eager_mode(monkeypatch) -> None:
     captured = {}
 

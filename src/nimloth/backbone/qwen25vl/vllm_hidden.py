@@ -62,12 +62,68 @@ def _runner_input_ids(model_runner: Any, row_count: int) -> torch.Tensor | None:
     return input_buffer[:row_count]
 
 
-class PolicyStateCaptureWorkerExtension:
-    """vLLM ``worker_extension_cls`` for one serial Nimloth rollout request.
+def _cpu_offsets(value: Any, count: int) -> tuple[int, ...] | None:
+    """Normalize vLLM's Tensor/CpuGpuBuffer query offsets."""
 
-    The rollout process generates one request at a time.  A forward hook records
-    selected rows in decode order.  ``collective_rpc`` then asks every TP worker
-    to resolve the final complete latent block and the following action boundary.
+    cpu_value = getattr(value, "cpu", None)
+    if isinstance(cpu_value, torch.Tensor):
+        value = cpu_value
+    elif callable(cpu_value):
+        value = cpu_value()
+    elif isinstance(getattr(value, "gpu", None), torch.Tensor):
+        value = value.gpu.cpu()
+    if not isinstance(value, torch.Tensor) or value.ndim != 1:
+        return None
+    if value.numel() < count:
+        return None
+    return tuple(int(item) for item in value[:count].tolist())
+
+
+def _request_segments(
+    model_runner: Any,
+    row_count: int,
+) -> tuple[tuple[str, int, int], ...]:
+    """Map flattened vLLM forward rows back to request identities."""
+
+    input_batch = getattr(model_runner, "input_batch", None)
+    request_ids = getattr(input_batch, "req_ids", None)
+    if request_ids is None:
+        return (("__serial__", 0, row_count),)
+    num_reqs = int(getattr(input_batch, "num_reqs", len(request_ids)))
+    request_ids = tuple(str(value) for value in list(request_ids)[:num_reqs])
+    if len(request_ids) != num_reqs or len(set(request_ids)) != num_reqs:
+        raise RuntimeError("vLLM capture requires unique active request IDs")
+    offsets = None
+    for candidate in (
+        getattr(input_batch, "query_start_loc", None),
+        getattr(model_runner, "query_start_loc", None),
+    ):
+        offsets = _cpu_offsets(candidate, num_reqs + 1)
+        if offsets is not None:
+            break
+    if offsets is None:
+        raise RuntimeError("vLLM capture cannot read per-request query offsets")
+    if (
+        offsets[0] != 0
+        or offsets[-1] > row_count
+        or any(left > right for left, right in zip(offsets, offsets[1:]))
+    ):
+        raise RuntimeError(
+            "vLLM request offsets do not align with captured hidden rows: "
+            f"offsets={offsets}, rows={row_count}"
+        )
+    return tuple(
+        (request_id, offsets[index], offsets[index + 1])
+        for index, request_id in enumerate(request_ids)
+    )
+
+
+class PolicyStateCaptureWorkerExtension:
+    """vLLM ``worker_extension_cls`` for identity-safe Nimloth state capture.
+
+    V1 flattens active requests into one token tensor.  The hook uses the
+    runner's request IDs and query offsets to retain a separate decode stream
+    per request; this is required before VAGEN may batch active environments.
     """
 
     def nimloth_start_policy_state_capture(
@@ -92,7 +148,9 @@ class PolicyStateCaptureWorkerExtension:
         self._nimloth_action_start_token_id = action_start_id
         self._nimloth_action_token_ids = action_ids
         self._nimloth_capture_token_ids = frozenset((*latent_ids, action_start_id))
-        self._nimloth_capture_entries: list[tuple[int, torch.Tensor]] = []
+        self._nimloth_capture_entries_by_request: dict[
+            str, list[tuple[int, torch.Tensor]]
+        ] = {}
         self._nimloth_capture_active = True
         if getattr(self, "_nimloth_capture_handle", None) is None:
             model_runner = getattr(self, "model_runner", None)
@@ -127,21 +185,27 @@ class PolicyStateCaptureWorkerExtension:
                 f"{flat_ids.numel()} != {hidden.shape[0]}"
             )
         wanted = self._nimloth_capture_token_ids
-        for index in range(flat_ids.numel()):
-            token_id = int(flat_ids[index].item())
-            if token_id in wanted:
-                # The selected state is tiny (K latent rows plus one action row).
-                # Keep it on-device until the LM head has consumed action_hidden.
-                self._nimloth_capture_entries.append(
-                    (token_id, hidden[index].detach().clone())
-                )
+        entries_by_request = self._nimloth_capture_entries_by_request
+        for request_id, start, end in _request_segments(
+            self.model_runner,
+            hidden.shape[0],
+        ):
+            request_entries = entries_by_request.setdefault(request_id, [])
+            for index in range(start, end):
+                token_id = int(flat_ids[index].item())
+                if token_id in wanted:
+                    # The selected state is tiny (K latent rows plus one action row).
+                    # Keep it on-device until the LM head has consumed action_hidden.
+                    request_entries.append(
+                        (token_id, hidden[index].detach().clone())
+                    )
 
-    def nimloth_pop_policy_state_capture(
+    def _nimloth_resolve_policy_state(
         self,
+        entries: list[tuple[int, torch.Tensor]],
+        *,
+        request_id: str,
     ) -> dict[str, list[float] | list[list[float]]]:
-        self._nimloth_capture_active = False
-        entries = list(getattr(self, "_nimloth_capture_entries", []))
-        self._nimloth_capture_entries = []
         latent_ids = self._nimloth_latent_token_ids
         expected = (*latent_ids, self._nimloth_action_start_token_id)
         captured_ids = tuple(token_id for token_id, _hidden in entries)
@@ -154,7 +218,8 @@ class PolicyStateCaptureWorkerExtension:
         if start is None:
             raise RuntimeError(
                 "vLLM did not capture the generated policy state sequence: "
-                f"expected={expected}, captured={captured_ids}"
+                f"request_id={request_id!r}, expected={expected}, "
+                f"captured={captured_ids}"
             )
 
         selected = entries[start : start + width]
@@ -183,9 +248,38 @@ class PolicyStateCaptureWorkerExtension:
             "action_logits": action_logits.float().cpu().tolist(),
         }
 
+    def nimloth_pop_policy_state_captures(
+        self,
+    ) -> dict[str, dict[str, list[float] | list[list[float]]]]:
+        self._nimloth_capture_active = False
+        entries_by_request = dict(
+            getattr(self, "_nimloth_capture_entries_by_request", {})
+        )
+        self._nimloth_capture_entries_by_request = {}
+        if not entries_by_request:
+            raise RuntimeError("vLLM captured no policy-state requests")
+        return {
+            request_id: self._nimloth_resolve_policy_state(
+                entries,
+                request_id=request_id,
+            )
+            for request_id, entries in entries_by_request.items()
+        }
+
+    def nimloth_pop_policy_state_capture(
+        self,
+    ) -> dict[str, list[float] | list[list[float]]]:
+        results = self.nimloth_pop_policy_state_captures()
+        if len(results) != 1:
+            raise RuntimeError(
+                "serial policy-state capture received multiple requests: "
+                f"{sorted(results)}"
+            )
+        return next(iter(results.values()))
+
     def nimloth_abort_policy_state_capture(self) -> bool:
         self._nimloth_capture_active = False
-        self._nimloth_capture_entries = []
+        self._nimloth_capture_entries_by_request = {}
         return True
 
 
@@ -196,7 +290,7 @@ def start_policy_state_capture(
     action_start_token_id: int,
     action_token_ids: Sequence[int],
 ) -> None:
-    """Enable one serial capture on every vLLM tensor-parallel worker."""
+    """Enable identity-aware capture on every vLLM tensor-parallel worker."""
 
     results = engine.collective_rpc(
         "nimloth_start_policy_state_capture",
@@ -210,12 +304,11 @@ def start_policy_state_capture(
         raise RuntimeError("not every vLLM worker enabled policy state capture")
 
 
-def pop_policy_state_capture(engine: Any) -> VLLMPolicyState:
-    """Return TP-consistent latent hidden states and raw action logits."""
-
-    results = engine.collective_rpc("nimloth_pop_policy_state_capture")
-    if not results or not all(isinstance(value, dict) for value in results):
-        raise RuntimeError("vLLM workers returned incomplete policy states")
+def _validated_policy_state(
+    results: list[dict[str, Any]],
+    *,
+    request_id: str,
+) -> VLLMPolicyState:
     tensors: list[dict[str, torch.Tensor]] = []
     for rank, result in enumerate(results):
         rank_tensors: dict[str, torch.Tensor] = {}
@@ -225,8 +318,8 @@ def pop_policy_state_capture(engine: Any) -> VLLMPolicyState:
                 tensor = torch.as_tensor(value, dtype=torch.float32)
             except (TypeError, ValueError, RuntimeError) as exc:
                 raise RuntimeError(
-                    f"vLLM TP rank {rank} returned invalid {field}: "
-                    f"{type(value).__name__}"
+                    f"vLLM TP rank {rank} returned invalid {field} for "
+                    f"request {request_id!r}: {type(value).__name__}"
                 ) from exc
             if field == "latent_hidden" and tensor.ndim != 2:
                 raise RuntimeError(
@@ -256,12 +349,52 @@ def pop_policy_state_capture(engine: Any) -> VLLMPolicyState:
             ):
                 raise RuntimeError(
                     f"vLLM TP rank {rank} policy state field {field} differs "
-                    "from rank 0"
+                    f"from rank 0 for request {request_id!r}"
                 )
     return VLLMPolicyState(
         latent_hidden=reference["latent_hidden"],
         action_logits=reference["action_logits"],
     )
+
+
+def pop_policy_state_captures(
+    engine: Any,
+    *,
+    request_ids: Sequence[str],
+) -> dict[str, VLLMPolicyState]:
+    """Return TP-consistent states aligned to explicit vLLM request IDs."""
+
+    expected = tuple(str(value) for value in request_ids)
+    if not expected or len(set(expected)) != len(expected):
+        raise ValueError("policy-state capture requires unique request IDs")
+    worker_results = engine.collective_rpc("nimloth_pop_policy_state_captures")
+    if not worker_results or not all(
+        isinstance(value, dict) for value in worker_results
+    ):
+        raise RuntimeError("vLLM workers returned incomplete policy states")
+    expected_set = set(expected)
+    for rank, result in enumerate(worker_results):
+        if set(result) != expected_set:
+            raise RuntimeError(
+                f"vLLM TP rank {rank} request IDs differ from generation: "
+                f"expected={sorted(expected_set)}, actual={sorted(result)}"
+            )
+    return {
+        request_id: _validated_policy_state(
+            [result[request_id] for result in worker_results],
+            request_id=request_id,
+        )
+        for request_id in expected
+    }
+
+
+def pop_policy_state_capture(engine: Any) -> VLLMPolicyState:
+    """Return one serial TP-consistent latent state and raw action logits."""
+
+    results = engine.collective_rpc("nimloth_pop_policy_state_capture")
+    if not results or not all(isinstance(value, dict) for value in results):
+        raise RuntimeError("vLLM workers returned incomplete policy states")
+    return _validated_policy_state(results, request_id="__serial__")
 
 
 def abort_policy_state_capture(engine: Any) -> None:
@@ -275,5 +408,6 @@ __all__ = [
     "VLLMPolicyState",
     "abort_policy_state_capture",
     "pop_policy_state_capture",
+    "pop_policy_state_captures",
     "start_policy_state_capture",
 ]

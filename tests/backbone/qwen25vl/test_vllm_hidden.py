@@ -8,6 +8,7 @@ import torch
 from nimloth.backbone.qwen25vl.vllm_hidden import (
     PolicyStateCaptureWorkerExtension,
     pop_policy_state_capture,
+    pop_policy_state_captures,
     start_policy_state_capture,
 )
 
@@ -118,3 +119,73 @@ def test_worker_reads_v1_multimodal_runner_token_buffer() -> None:
         [102.0, 102.5],
     ]
     assert result["action_logits"] == [1030.0, 2060.0]
+
+
+def _batched_decode(worker: _Worker, rows: dict[str, list[int]]) -> None:
+    request_ids = list(rows)
+    flat_ids = torch.tensor(
+        [token_id for request_id in request_ids for token_id in rows[request_id]]
+    )
+    offsets = [0]
+    for request_id in request_ids:
+        offsets.append(offsets[-1] + len(rows[request_id]))
+    worker.model_runner.input_batch = type(
+        "InputBatch",
+        (),
+        {
+            "req_ids": request_ids,
+            "num_reqs": len(request_ids),
+            "query_start_loc": torch.tensor(offsets),
+        },
+    )()
+    worker.model_runner.input_ids.gpu = flat_ids
+    worker.model_runner.model(
+        input_ids=None,
+        inputs_embeds=flat_ids.float().unsqueeze(-1),
+    )
+
+
+def test_worker_separates_interleaved_policy_states_by_vllm_request() -> None:
+    worker = _Worker()
+    _start(worker)
+    _batched_decode(worker, {"request-a": [101], "request-b": [101]})
+    _batched_decode(worker, {"request-b": [102], "request-a": [102]})
+    _batched_decode(worker, {"request-a": [103], "request-b": [103]})
+
+    results = worker.nimloth_pop_policy_state_captures()
+
+    assert list(results) == ["request-a", "request-b"]
+    assert results["request-a"]["latent_hidden"] == [
+        [101.0, 101.5],
+        [102.0, 102.5],
+    ]
+    assert results["request-b"]["latent_hidden"] == [
+        [101.0, 101.5],
+        [102.0, 102.5],
+    ]
+    assert results["request-a"]["action_logits"] == [1030.0, 2060.0]
+    assert results["request-b"]["action_logits"] == [1030.0, 2060.0]
+
+
+def test_frontend_returns_batched_states_in_requested_identity_order() -> None:
+    workers = [_Worker(), _Worker()]
+    engine = _Engine(workers)
+    start_policy_state_capture(
+        engine,
+        latent_token_ids=(101, 102),
+        action_start_token_id=103,
+        action_token_ids=(10, 20),
+    )
+    for worker in workers:
+        _batched_decode(worker, {"request-a": [101], "request-b": [101]})
+        _batched_decode(worker, {"request-b": [102], "request-a": [102]})
+        _batched_decode(worker, {"request-a": [103], "request-b": [103]})
+
+    states = pop_policy_state_captures(
+        engine,
+        request_ids=("request-b", "request-a"),
+    )
+
+    assert list(states) == ["request-b", "request-a"]
+    assert states["request-b"].latent_hidden.shape == (2, 2)
+    assert states["request-a"].action_logits.tolist() == [1030.0, 2060.0]

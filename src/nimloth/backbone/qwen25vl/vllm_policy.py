@@ -27,6 +27,7 @@ from nimloth.backbone.qwen25vl.vllm_hidden import (
     VLLMPolicyState,
     abort_policy_state_capture,
     pop_policy_state_capture,
+    pop_policy_state_captures,
     start_policy_state_capture,
 )
 from nimloth.latent import (
@@ -217,6 +218,68 @@ class QwenVLLMAgentPolicy:
             enforce_state_token_budget=True,
         )
 
+    def select_responses_with_state(
+        self,
+        prompts: tuple[AgentPrompt, ...],
+    ) -> tuple[QwenTurnGeneration, ...]:
+        """Generate one identity-aligned state for every active environment."""
+
+        if not self.capture_policy_state:
+            raise RuntimeError("this vLLM policy was not configured for state capture")
+        if not prompts:
+            raise ValueError("batched policy-state generation requires prompts")
+        tokens = LatentActionTokens()
+        self._progress("batch_capture_start")
+        start_policy_state_capture(
+            self.engine,
+            latent_token_ids=tuple(
+                self.token_id_map[token]
+                for token in latent_state_tokens(self.latent_token_count, tokens)
+            ),
+            action_start_token_id=self.token_id_map[tokens.action_start],
+            action_token_ids=self.action_token_ids,
+        )
+        try:
+            self._progress("batch_generation_start")
+            generated = self._select_responses(
+                prompts,
+                enforce_state_token_budget=True,
+            )
+            self._progress("batch_generation_done")
+            request_ids = tuple(request_id for request_id, _decision in generated)
+            self._progress("batch_capture_pop_start")
+            states = pop_policy_state_captures(
+                self.engine,
+                request_ids=request_ids,
+            )
+            self._progress("batch_capture_pop_done")
+        except Exception:
+            self._progress("batch_capture_abort_start")
+            abort_policy_state_capture(self.engine)
+            self._progress("batch_capture_abort_done")
+            raise
+        results: list[QwenTurnGeneration] = []
+        for request_id, decision in generated:
+            state = states[request_id]
+            if state.latent_hidden.shape[0] != self.latent_token_count:
+                raise RuntimeError(
+                    "vLLM returned the wrong number of latent hidden rows for "
+                    f"request {request_id!r}: "
+                    f"{state.latent_hidden.shape[0]} != {self.latent_token_count}"
+                )
+            if state.action_logits.shape != (len(self.action_token_ids),):
+                raise RuntimeError(
+                    "vLLM returned invalid restricted action logits for request "
+                    f"{request_id!r}: {tuple(state.action_logits.shape)}"
+                )
+            results.append(
+                QwenTurnGeneration(
+                    qwen_decision=decision,
+                    policy_state=state,
+                )
+            )
+        return tuple(results)
+
     def _generate_response_with_state(
         self,
         prompt: AgentPrompt,
@@ -389,17 +452,7 @@ class QwenVLLMAgentPolicy:
             ),
         )
 
-    def _select_response(
-        self,
-        prompt: AgentPrompt,
-        *,
-        enforce_state_token_budget: bool = True,
-    ) -> PolicyDecision:
-        from vllm import SamplingParams
-
-        if prompt.messages[-1].get("content") != "<think>":
-            raise ValueError("turn-credit policy prompt must end with '<think>'")
-        request, _images = self._request(prompt)
+    def _response_generation_spec(self) -> TurnGenerationSpec:
         tokens = LatentActionTokens()
         close_ids = tuple(
             int(value)
@@ -425,7 +478,7 @@ class QwenVLLMAgentPolicy:
                 "max_response_tokens is too small for the turn protocol: "
                 f"{self.max_response_tokens} <= {protocol_overhead}"
             )
-        spec = TurnGenerationSpec(
+        return TurnGenerationSpec(
             close_text="</think>",
             close_token_ids=close_ids,
             injected_token_ids=injected_ids,
@@ -434,7 +487,11 @@ class QwenVLLMAgentPolicy:
             forbidden_reasoning_token_ids=forbidden_reasoning_ids,
             max_reasoning_tokens=max_reasoning_tokens,
         )
-        params = SamplingParams(
+
+    def _response_sampling_params(self, spec: TurnGenerationSpec) -> Any:
+        from vllm import SamplingParams
+
+        return SamplingParams(
             temperature=self.temperature,
             top_p=self.top_p,
             max_tokens=spec.max_output_tokens,
@@ -445,11 +502,71 @@ class QwenVLLMAgentPolicy:
             detokenize=False,
             skip_special_tokens=False,
         )
-        request_output = self.engine.generate(
-            [request],
-            params,
+
+    def _select_responses(
+        self,
+        prompts: tuple[AgentPrompt, ...],
+        *,
+        enforce_state_token_budget: bool = True,
+    ) -> tuple[tuple[str, PolicyDecision], ...]:
+        if not prompts:
+            raise ValueError("batched response generation requires prompts")
+        for prompt in prompts:
+            if prompt.messages[-1].get("content") != "<think>":
+                raise ValueError("turn-credit policy prompt must end with '<think>'")
+        requests = [self._request(prompt)[0] for prompt in prompts]
+        spec = self._response_generation_spec()
+        request_outputs = self.engine.generate(
+            requests,
+            self._response_sampling_params(spec),
             use_tqdm=False,
-        )[0]
+        )
+        if len(request_outputs) != len(prompts):
+            raise RuntimeError(
+                "vLLM response batch size differs from prompt batch: "
+                f"{len(request_outputs)} != {len(prompts)}"
+            )
+        generated: list[tuple[str, PolicyDecision]] = []
+        for prompt, request_output in zip(prompts, request_outputs, strict=True):
+            request_id = getattr(request_output, "request_id", None)
+            if not isinstance(request_id, str) or not request_id:
+                raise RuntimeError("vLLM batched response has no request identity")
+            generated.append(
+                (
+                    request_id,
+                    self._select_response(
+                        prompt,
+                        enforce_state_token_budget=enforce_state_token_budget,
+                        request_output=request_output,
+                        spec=spec,
+                    ),
+                )
+            )
+        request_ids = [request_id for request_id, _decision in generated]
+        if len(set(request_ids)) != len(request_ids):
+            raise RuntimeError("vLLM returned duplicate request identities")
+        return tuple(generated)
+
+    def _select_response(
+        self,
+        prompt: AgentPrompt,
+        *,
+        enforce_state_token_budget: bool = True,
+        request_output: Any | None = None,
+        spec: TurnGenerationSpec | None = None,
+    ) -> PolicyDecision:
+        if prompt.messages[-1].get("content") != "<think>":
+            raise ValueError("turn-credit policy prompt must end with '<think>'")
+        tokens = LatentActionTokens()
+        spec = spec or self._response_generation_spec()
+        injected_ids = tuple(spec.injected_token_ids)
+        if request_output is None:
+            request, _images = self._request(prompt)
+            request_output = self.engine.generate(
+                [request],
+                self._response_sampling_params(spec),
+                use_tqdm=False,
+            )[0]
         output = request_output.outputs[0]
         continuation_ids = tuple(int(value) for value in output.token_ids)
         close_end = find_token_subsequence(continuation_ids, injected_ids)

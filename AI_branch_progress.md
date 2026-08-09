@@ -4368,3 +4368,14 @@
   `feat/planner-verl-vagen-scaffold` worktree；旧`feat/fsdp-dynamic-rollout`只作为经门禁的
   组件来源，不整分支合并。详细计划见
   `ai_tasks/ai_progress/2026-08-09_planner_verl_vagen_scaffold.md`。
+
+## 2026-08-09：rollout批量request-state capture通过CPU接口门禁
+
+- vLLM worker extension现按V1 runner的`req_ids + query_start_loc`分流flattened hidden/token
+  rows；frontend按显式request identity恢复并检查全部TP rank shape/value parity，拒绝请求缺失、
+  重复或错配。既有单请求API保留。
+- `QwenVLLMAgentPolicy.select_responses_with_state()`现在用一次batched`engine.generate`返回
+  逐request CoT、latent hidden和action logits。两个request在decode forward内换序交错的定向
+  回归与既有policy tests合计`21 passed`；compileall/diff-check通过。
+- 这仍是CPU fake-vLLM接口证据；真实vLLM0.11 TP4多模态门禁前不接正式VAGEN runner，
+  不声称已有rollout吞吐提升。ID147未改变。
