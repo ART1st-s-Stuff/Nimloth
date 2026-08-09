@@ -111,3 +111,18 @@
   base_train/common_sense_train、max attempts1、max20 steps、TP4和single epoch。shard launcher新增
   默认关闭的`SHARD_BATCHED_ACTIVE_ENVS`，打开时严格要求H1/policy/attempt1并传递
   `--batched-active-envs`。相关config/launcher与单epoch套件合计`134 passed`。
+
+## ID149 active-env rollout launch contract
+
+- 人类确认`preempt`单节点4×H800、1小时上限。W&B project/run为
+  `nimloth-rl/149_smoke_activeenv2_basecs_seed161_h1_k16_tp4_singleep_t20`；输出为
+  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-09/149_smoke_activeenv2_basecs_seed161_h1_k16_tp4_singleep_t20`。
+- runtime commit必须是`215f3a40`或仅增加本launch contract的后继commit；VAGEN/VERL/le-wm保持
+  `192c35a9/65316156/8edfeb33`。入口为`run_vllm_rollout_shard.sh`并显式
+  `SHARD_BATCHED_ACTIVE_ENVS=true`。
+- 模型与planner artifacts只读ID147 committed `train/latest`。全部模块冻结，无optimizer、无
+  consumption；这不是对ID147 resume。数据为`base_train/common_sense_train`各一条，
+  `seed_per_eval_set=true`、未消费seed161、max20 steps、attempt1、current navigation profile。
+- 门禁必须得到两条完整trajectory及terminal真实CoT/state、逐step planner trace、不同record ID、
+  严格fresh manifest和batch active-env无丢失证据；W&B只记录rollout summary。短门禁无checkpoint/
+  resume，失败时ID149 terminal并使用新identity重试。
