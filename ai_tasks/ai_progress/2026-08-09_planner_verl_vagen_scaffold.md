@@ -75,3 +75,18 @@
   state必须可区分，从而直接检验request identity未交换。
 - 资源上限为preempt单节点4 H800、1小时；预计实际5--15分钟。短门禁没有checkpoint/resume；若失败，
   ID148按terminal记录且用新身份重试，绝不修改或续写ID147。
+
+### ID148 terminal result
+
+- Slurm hold Job`511432`分配`preempt/dgx-38:4`。真实gate step`511432.0`在1分31秒内
+  `COMPLETED 0:0`；确认成功后主动scancel hold释放四卡，因此parent显示
+  `CANCELLED by 3738`是资源清理，不是实验失败。
+- vLLM 0.11 TP4、BF16、eager、无prefix cache的batch2实跑通过。两个request分别选择action7/2；
+  每个都得到finite latent`[16,2048]`和action logits`[8]`，四个TP rank严格副本parity通过。
+- 对两个request，captured action logits的log-softmax与同request behavior action log-probs的
+  max error均精确`0.0`。两个request的action-logit最大差为`0.015625`、latent最大差为
+  `12.0625`，证明本门禁输入下state可区分且没有request交换。
+- W&B run`7n4pwjq8`完成sync，并由正确entity API独立核验为`finished`、summary
+  `gate/status=ALL_OK`。输出`result.json`、完整command与日志均在ID148目录。
+- request-identity P0已被真实GPU证实；这仍不证明完整VAGEN active-env trajectory、长prefix FSDP
+  update或吞吐提升。下一步门禁保持这三项边界。

@@ -4434,3 +4434,14 @@
 - W&B train`i1g3w8b7`/eval`n929fhah`控制台均完成sync；登录API credential属于另一default
   entity，故不虚报独立API状态。没有matched step0 held-out，不能据终值声称PPO提升；ID143
   同为21/120也不是matched initialization/objective control。实验完成且无需resume。
+
+## 2026-08-09：ID148真实vLLM 0.11 TP4 request-state门禁通过
+
+- commit`38f41c18`在`preempt/dgx-38:4`用ID147 committed Qwen和两个不同held-out首步
+  multimodal prefix实跑batch2；gate step`511432.0`为`COMPLETED 0:0`/1:31。随后主动取消
+  hold`511432`释放GPU，parent CANCELLED仅为清理。
+- 每request均finite latent`[16,2048]`、action logits`[8]`且四TP rank parity通过；两个request
+  captured logits→behavior log-probs max error均0.0，pairwise action-logit/latent差为
+  0.015625/12.0625。由此真实证实当前batched capture未交换request identity。
+- W&B`7n4pwjq8`已API核验`finished/ALL_OK`。尚未证明完整active-env trajectory、长prefix
+  FSDP update或吞吐提升。
