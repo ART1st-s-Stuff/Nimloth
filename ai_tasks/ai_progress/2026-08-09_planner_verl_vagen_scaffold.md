@@ -47,6 +47,10 @@
 - 上述结果尚未经过真实vLLM 0.11 TP4多模态generation；在GPU门禁前不能接入正式VAGEN active-env runner或声称rollout提速。
 - 训练端完成第一层可逆batch seam：`actor_transition_batch_step()`只把多个完整prefix合并成一次Qwen forward，WM/value/PlannerPolicyHead继续逐transition走原有已验证目标并求和。两条transition的scalar-vs-batch loss、全部metrics及Qwen/StateProjector/WM/ValueHead/PlannerPolicyHead gradients逐项一致；fake builder确认Qwen build/forward从2次降为1次。
 - loop新增`training.planner_micro_batch_size`，默认1，故既有ID147/旧config语义不变；大于1时每个micro-batch只做一次backward/barrier，padding row仍zero-weight且不进入metrics。episode/loop/config定向回归`75 passed`。
-- 该batch seam仍在当前DDP/model-parallel trainer内，尚未完成VERL FSDP worker、token/image-aware packing或真实长prefix显存门禁。未门禁前禁止把正式config默认值改大。
+- 新增严格Planner VERL adapter：运行时必须从当前worktree `external/VAGEN/verl`导入且commit精确为gitlink `65316156...`；DataProto schema保存真实`ExecutedTransition`、MC return、old Q/action log-prob、advantage、loss weight、token count和可选DINO target，不构造或替换CoT。
+- 多模态packer按实际padded cost `max(sequence tokens) * rows`做deterministic first-fit-decreasing，直接补足pinned VERL在`multi_modal_inputs`分支绕过dynamic-bsz的缺口；单条prefix超budget时fail closed。
+- `PlannerVERLUpdateCore`实现begin→多个DataProto backward→单optimizer step→abort生命周期；`PlannerVERLWorkerMixin`使用VERL原生`ONE_TO_ALL`与`DP_COMPUTE_METRIC` decorator暴露Ray worker调用边界。driver仍拥有fresh consumption，不会被worker提前commit。
+- `PlanningPolicy.select_actions()`已支持H=1 PlannerPolicyHead active-env batch，一次调用turn policy的batched Qwen generation并逐row保留真实CoT/state/action trace；非policy search显式拒绝batch。
+- 当前跨rollout/adapter/worker/planner/loop/config定向回归`116 passed`。仍缺真实FSDP worker的模型装配/checkpoint、VAGEN batch env生命周期、terminal CoT batch和GPU门禁；未门禁前禁止把正式config默认值改大。
 - 本地workspace初始可用空间不足导致worktree内测试venv安装失败；已立即删除该venv恢复空间，测试环境改放`/tmp/nimloth-test-venv`，没有删除项目artifact或共享数据。人类随后释放空间，submodule已恢复到exact pins。
 - 未提交GPU实验、未改变ID147。最近多次查询ID147时SSH连接均在登录入口被关闭，未取得新状态；不能把此前iteration 2状态当作当前状态。

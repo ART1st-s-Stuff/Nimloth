@@ -30,6 +30,11 @@ class VLLMTurnStatePolicy(Protocol):
 
     def select_response_with_state(self, prompt: AgentPrompt) -> Any: ...
 
+    def select_responses_with_state(
+        self,
+        prompts: tuple[AgentPrompt, ...],
+    ) -> tuple[Any, ...]: ...
+
     def generate_state(self, prompt: AgentPrompt) -> PolicyState: ...
 
 
@@ -577,6 +582,49 @@ class PlanningPolicy:
             state,
             behavior_log_probs=behavior_log_probs,
         )
+
+    def select_actions(
+        self,
+        prompts: tuple[AgentPrompt, ...],
+    ) -> tuple[PolicyDecision, ...]:
+        """Select H=1 PlannerPolicyHead actions for active envs in one Qwen call."""
+
+        if self.search_mode != "policy":
+            raise RuntimeError(
+                "batched planning currently requires search_mode=policy"
+            )
+        if not prompts:
+            raise ValueError("batched planning requires at least one prompt")
+        generated_rows = self.turn_policy.select_responses_with_state(prompts)
+        if len(generated_rows) != len(prompts):
+            raise RuntimeError(
+                "batched Qwen states do not align with planner prompts: "
+                f"{len(generated_rows)} != {len(prompts)}"
+            )
+        if self._progress_callback is not None:
+            self._progress_callback("planner_start")
+        decisions: list[PolicyDecision] = []
+        with evaluating(self.world_model), torch.no_grad():
+            for generated in generated_rows:
+                qwen_decision = generated.qwen_decision
+                if qwen_decision.token_trace is None or qwen_decision.response is None:
+                    raise RuntimeError(
+                        "batched vLLM planning turn lacks token/response provenance"
+                    )
+                state = self._project_hidden(generated.policy_state.latent_hidden)
+                plan, behavior_log_probs = self._policy_plan(state)
+                decisions.append(
+                    self._decision_from_plan(
+                        generated,
+                        plan,
+                        int(plan.selected_action_index),
+                        state,
+                        behavior_log_probs=behavior_log_probs,
+                    )
+                )
+        if self._progress_callback is not None:
+            self._progress_callback("planner_done")
+        return tuple(decisions)
 
     def _policy_plan(
         self,

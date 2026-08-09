@@ -301,6 +301,7 @@ class _TurnPolicy:
 
     def __init__(self) -> None:
         self.action_calls = 0
+        self.batch_calls = 0
         self.terminal_calls = 0
 
     def reset_episode(self) -> None:
@@ -333,6 +334,10 @@ class _TurnPolicy:
                 action_logits=torch.arange(8, dtype=torch.float32),
             ),
         )
+
+    def select_responses_with_state(self, prompts):  # type: ignore[no-untyped-def]
+        self.batch_calls += 1
+        return tuple(self.select_response_with_state(prompt) for prompt in prompts)
 
     def generate_state(self, _prompt):
         self.terminal_calls += 1
@@ -431,6 +436,41 @@ def test_planner_policy_head_samples_train_and_uses_argmax_eval(
     assert sampled.action_log_probs == sampled.planner_trace.policy_action_log_probs
     assert greedy.action_index == len(NAVIGATION_ACTION_SPACE) - 1
     assert greedy.planner_trace.selection_mode == "policy_argmax"
+
+
+def test_planner_policy_head_batches_active_environment_decisions() -> None:
+    world_model, _predictor = _planning_world_model()
+    world_model.planner_policy_head = _FixedPolicyHead()
+    turn_policy = _TurnPolicy()
+    stages: list[str] = []
+    policy = PlanningPolicy(
+        turn_policy=turn_policy,
+        world_model=world_model,
+        horizon=1,
+        search_mode="policy",
+        planner_device=torch.device("cpu"),
+        policy_temperature=1.0,
+        sample_policy=False,
+        progress_callback=stages.append,
+    )
+    prompts = tuple(
+        AgentPrompt(
+            messages=({"role": "assistant", "content": "<think>"},),
+            images=(),
+            template=PromptTemplateSpec("test", "v1"),
+        )
+        for _ in range(2)
+    )
+
+    decisions = policy.select_actions(prompts)
+
+    assert len(decisions) == 2
+    assert turn_policy.batch_calls == 1
+    assert turn_policy.action_calls == 2
+    assert [decision.action_index for decision in decisions] == [7, 7]
+    assert decisions[0].state_latent_hidden.tolist() == [[0.25, -0.25]]
+    assert decisions[1].state_latent_hidden.tolist() == [[0.5, -0.5]]
+    assert stages == ["planner_start", "planner_done"]
 
 
 def test_planning_policy_records_mcts_visits_and_executes_selected_root() -> None:

@@ -4391,3 +4391,17 @@
   `75 passed`，compileall/diff-check通过。
 - 默认1保证ID147和旧config不变；真实长prefix显存、VERL FSDP custom worker与多模态
   token/image packing尚未门禁，禁止现在把formal config改成大batch并声称已加速。
+
+## 2026-08-09：Planner DataProto、VERL dispatch与多模态packer接口完成
+
+- 新strict adapter只接受真实`ExecutedTransition`及MC return/old Q/old action log-prob/
+  advantage/loss weight/token count/DINO target，schema与objective显式；运行时强制Python从当前
+  worktree gitlink导入VERL commit`65316156...`，拒绝此前editable source漂移。
+- pinned VERL对多模态绕过dynamic-bsz，因此custom packer按
+  `max(sequence_tokens) * rows`预算实际padding成本并deterministic分桶，任何单prefix超budget
+  fail closed。没有截断、默认动作或fixed CoT。
+- `PlannerVERLUpdateCore`实现多micro-batch梯度累积到单optimizer step；worker mixin使用VERL
+  `ONE_TO_ALL`/`DP_COMPUTE_METRIC`原生decorator，fresh consumption仍归driver。另新增H=1
+  `PlanningPolicy.select_actions()`，一次batched turn-policy调用逐row保留真实state/trace。
+- 跨vLLM/planner/adapter/worker/loop/config定向`116 passed`。真实FSDP模型装配/checkpoint、
+  VAGEN batch env/terminal CoT和GPU门禁仍待完成，当前不作吞吐改善声明。
