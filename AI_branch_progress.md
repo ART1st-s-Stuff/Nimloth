@@ -4461,3 +4461,15 @@
 - 旧ID147及其他四epoch checkpoint仍是历史事实，但与新optimizer语义不兼容；只能经明确边界
   作为weights initialization，禁止加载原optimizer状态伪装resume。任何依赖训练的完整GPU验证
   都必须基于新语义重新做数值门禁。
+
+## 2026-08-09：ID149完整active-env TP4 rollout门禁通过
+
+- commit`3da24609`在`preempt/dgx-16:4`通过69.403秒renderer gate后，真实并发
+  base_train/common_sense_train seed161环境；gate step`511694.1`为`COMPLETED 0:0`/3:27，
+  成功后主动取消hold释放GPU。
+- 输出精确2 trajectories/34 transitions。每动作有真实CoT与policy trace，每条均有steps+1
+  state anchor、k16 `[16,2048]` latent及terminal真实CoT/state；第一环境关闭后第二环境继续，
+  active request缩减和两个terminal batch边界均通过。
+- strict format5 manifest绑定ID147 policy和四份planner fingerprint，无consumption。W&B
+  `zady597f`已API核验`finished/ALL_OK`。该结果关闭active-env rollout P0，但没有运行optimizer、
+  FSDP或吞吐比较。

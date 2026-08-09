@@ -126,3 +126,19 @@
 - 门禁必须得到两条完整trajectory及terminal真实CoT/state、逐step planner trace、不同record ID、
   严格fresh manifest和batch active-env无丢失证据；W&B只记录rollout summary。短门禁无checkpoint/
   resume，失败时ID149 terminal并使用新identity重试。
+
+### ID149 terminal result
+
+- hold Job`511694`分配`preempt/dgx-16:4`。renderer step`511694.0`以69.403秒通过且
+  `COMPLETED 0:0`；gate step`511694.1`为`COMPLETED 0:0`/3:27。成功后主动取消hold释放
+  四卡，parent CANCELLED只表示清理。
+- 真实active-env batch得到精确2 trajectories/34 transitions：base_train seed161为20步、reward
+  -0.7、失败；common_sense_train seed161为14步、reward9.9、成功。聚合success0.5只是门禁诊断。
+- 每动作均有真实assistant response与policy planner trace；两条记录均有steps+1 state anchors、
+  k16 `[16,2048]` latent和terminal真实CoT/state。日志有连续batch capture；第一环境关闭后，
+  第二环境继续单active request，两个结束边界各有terminal batch capture。
+- format5 fresh manifest严格绑定ID147 policy fingerprint及WM/StateProjector/ValueHead/
+  PlannerPolicyHead四份fingerprint；无consumption。common_sense中3次reasoning按真实length边界截断并
+  持久化，不是fixed/invented CoT。
+- W&B`zady597f`完成sync且API独立核验`finished/ALL_OK`。active-env rollout P0关闭；仍未验证
+  real VERL FSDP worker、single-complete-objective optimizer epoch或吞吐。
