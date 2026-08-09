@@ -4415,5 +4415,7 @@
 - 两fake env分别1/2步结束，验证action batch2→1、terminal batch、5张真实非纯色图片、
   JSONL和close ownership。rollout CLI新增默认关闭的`--batched-active-envs`。
 - 当前flag只允许H1 PlannerPolicyHead、attempts1、无resume；正式配置仍是attempts3，因此本次
-  没有静默改变ID147或production retry语义。相关广集`159 passed, 1 deselected`；deselect为
-  临时本地venv缺完整VAGEN传递依赖的既有vagen_eval wording测试。真实GPU吞吐尚未证明。
+  没有静默改变ID147或production retry语义。更宽回归为RL`228 passed, 1 deselected`加
+  agent/Qwen/collector`89 passed`，共317 passed；deselect为临时本地venv缺完整VAGEN传递
+  依赖的既有vagen_eval wording测试，另一个既有vLLM logits文件因本地无vLLM包而未收集。
+  真实GPU吞吐尚未证明。
