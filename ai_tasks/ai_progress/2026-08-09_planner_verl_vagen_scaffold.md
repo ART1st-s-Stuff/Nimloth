@@ -88,5 +88,8 @@
   `12.0625`，证明本门禁输入下state可区分且没有request交换。
 - W&B run`7n4pwjq8`完成sync，并由正确entity API独立核验为`finished`、summary
   `gate/status=ALL_OK`。输出`result.json`、完整command与日志均在ID148目录。
+- runtime打印了可选`torch-c-dlpack`/TVM-FFI extension不可用以及其建议Torch>=2.11的警告；固定环境
+  Torch2.8/vLLM0.11仍完成全部generation与parity。该警告不影响本门禁正确性，但在吞吐门禁中需单独记录，
+  不能据本次success忽略性能影响。
 - request-identity P0已被真实GPU证实；这仍不证明完整VAGEN active-env trajectory、长prefix FSDP
   update或吞吐提升。下一步门禁保持这三项边界。
