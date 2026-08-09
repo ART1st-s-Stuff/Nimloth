@@ -269,3 +269,20 @@
 - 正确修复是对所有rank-local FULL_SHARD gradients以高精度累计平方和、跨rank all-reduce得到单一
   global L2 norm，再用同一个coefficient缩放所有dtype的grad；禁止逐module独立clip改变objective。
   新ID重试前需加mixed-BF16/FP32 deterministic测试和review。
+
+### ID154 production complete-objective gate ALL_OK
+
+- commit`f4b31c88`实现跨所有rank-local FULL_SHARD gradients的FP64平方和、SUM all-reduce和单一
+  `max_grad_norm=1.0` coefficient；所有BF16/FP32 grad用同系数缩放后才AdamW。server 260项与
+  reviewer PASS后，人类确认normal Job`512238`，在`dgx-23:8`用1分18秒`COMPLETED 0:0`。
+- 真实ID149 `common_sense_train` seed161 final transition（6332 tokens、return10、executed action0）
+  在ID147 weights-only生产层级完成complete forward/backward/global clip/恰好一个AdamW epoch。
+- finite averaged metrics：WM MSE`0.2209451`、DINO MSE`0.9662055`、executed-action value loss
+  `50.0869484`、PlannerPolicyHead loss`-7.4174166`、entropy`0.9113606`、total`43.3644667`。
+- global pre-clip grad norms：Qwen`1427.0666`、WM`0.2938192`、ValueHead`239.7776`、
+  PlannerPolicyHead`31.18357`；StateProjector/vision/lm_head严格0。四个trainable complete-shard
+  fingerprints均改变，三个frozen均精确不变。8 ranks peak allocated均`11,011,836,416` bytes。
+- W&B`nimloth-rl/uiq2a2yg` API核验`finished/ALL_OK`；无policy checkpoint、无source consumption，
+  ID149 sidecar仍不存在；资源释放，output README完成。
+- ID154关闭8-rank behavior-matched production complete-objective wiring与mixed-dtype global clip门禁。
+  仍需单独>=14k real-prefix memory gate、production hierarchy checkpoint以及1--2 transactional steps。

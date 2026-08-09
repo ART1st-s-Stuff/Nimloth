@@ -53,6 +53,11 @@
   complete-objective forward/backward成功；随后root `clip_grad_norm_`因跨handles gradients混合
   BF16/FP32而在AdamW前失败。Job`512232` 2分20秒FAILED、W&B`7bxgs23e` failed；无step/
   checkpoint/consumption。需实现跨全部shards高精度all-reduce的单一global L2 clip，不能逐module clip。
+- ID154 commit`f4b31c88`实现单一mixed-dtype global L2 clip后，Job`512238`在`dgx-23:8`
+  1分18秒`COMPLETED 0:0`。真实ID149 6332-token complete objective的WM/DINO/value/policy均finite；
+  Qwen/WM/ValueHead/PlannerPolicyHead global grad非零且fingerprint改变，StateProjector/vision/lm_head
+  grad0且精确不变；每rank peak 11.01GB。W&B`uiq2a2yg` finished/ALL_OK，source未消费。
+  仍需>=14k memory gate、production checkpoint与1--2 transactional steps。
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 
