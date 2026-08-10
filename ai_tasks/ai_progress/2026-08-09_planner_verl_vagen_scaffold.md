@@ -286,3 +286,26 @@
   ID149 sidecar仍不存在；资源释放，output README完成。
 - ID154关闭8-rank behavior-matched production complete-objective wiring与mixed-dtype global clip门禁。
   仍需单独>=14k real-prefix memory gate、production hierarchy checkpoint以及1--2 transactional steps。
+
+### ID155 Ray readiness failure and ID156 world4 long-prefix ALL_OK
+
+- ID155 Job`512685`取得preempt `dgx-01:4 + dgx-16:4`，但2×4 launcher直接调用复制venv的
+  `bin/ray`。其旧shebang用Python3.10启动raylets，而显式gate解释器为Python3.12；readiness报
+  version mismatch。失败在模型加载前，无W&B/forward/backward/AdamW/checkpoint/consumption；
+  ID138 sidecar仍不存在。ID155不可resume，output只补写terminal README。已登记E0092并将多节点
+  launcher修为`<venv>/bin/python3 -m ray.scripts.scripts start`。
+- 人类随后要求使用preempt单节点4卡。新ID156/W&B`p4udxa6d`/空output使用commit`c6e4cb43`、
+  world4 FULL_SHARD及ID147 weights-only。Job`512750`在`dgx-16:4`用2分49秒`COMPLETED 0:0`。
+- source为ID138严格format-5 manifest的16条train-scene trajectory；唯一选择固定为真实
+  `rl_base_train_000122` final transition step18/action5，state 16184 tokens。该source与ID147不
+  behavior-match，schema4显式保存`behavior_matched=false, diagnostic_only=true`，transactional
+  rank builder/driver均拒绝该row；只有non-consuming replicated gate显式放行。ID138 source artifacts、
+  trajectory/manifest以及当前ID147五组artifact hashes在GPU前后和W&B结束后均通过复核。
+- finite metrics：total`1.9883425`、WM MSE`1.2383783`、DINO MSE`1.2891733`、value loss
+  `0.0373673`、planner policy loss`0.0865751`、entropy`1.8564780`。Qwen/WM/ValueHead/
+  PlannerPolicyHead global grad norm为`19.49999/0.81222/4.74800/1.32933`且四个fingerprint改变；
+  vision/StateProjector/lm_head grad0且精确不变。每rank peak allocated为`17,555,061,248` bytes。
+- W&B API核验`nimloth-rl/p4udxa6d`为`finished/ALL_OK`。无policy checkpoint、无source consumption，
+  ID138 sidecar仍不存在。该结果关闭真实>=14k prefix在world4 FULL_SHARD上的complete-objective
+  执行/显存门禁；它不是behavior-matched PPO证据，也不代表world8显存。下一步为1--2 transactional
+  fresh global-step smoke及production checkpoint/consumption lineage。

@@ -144,3 +144,5 @@ def test_complete_objective_launcher_supports_preempt_two_by_four() -> None:
     assert '--expected-node-count 2' in launcher
     assert 'counts != [4.0, 4.0]' in launcher
     assert 'export RAY_ADDRESS=' in launcher
+    assert 'RAY_MODULE=ray.scripts.scripts' in launcher
+    assert '.venv-vagen-main/bin/ray' not in launcher

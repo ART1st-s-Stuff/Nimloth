@@ -58,6 +58,19 @@
   Qwen/WM/ValueHead/PlannerPolicyHead global grad非零且fingerprint改变，StateProjector/vision/lm_head
   grad0且精确不变；每rank peak 11.01GB。W&B`uiq2a2yg` finished/ALL_OK，source未消费。
   仍需>=14k memory gate、production checkpoint与1--2 transactional steps。
+- ID155尝试preempt 2×4长prefix门禁。Job`512685`取得`dgx-01:4 + dgx-16:4`，但launcher
+  直接调用复制venv的`bin/ray`，错误shebang用Python3.10启动raylets，而显式gate Python为3.12；
+  readiness在模型前报version mismatch。无W&B/model/forward/step/checkpoint/consumption，ID138未消费；
+  已登记E0092并改为显式Python module启动Ray。
+- 人类要求先用preempt 4卡后，ID156 commit`c6e4cb43`的world4 FULL_SHARD门禁Job`512750`
+  在`dgx-16:4`用2分49秒`COMPLETED 0:0`。真实ID138 `rl_base_train_000122` final transition
+  恰为16184 tokens，并严格标记`behavior_matched=false/diagnostic_only=true`；ID147 current artifacts和
+  ID138 source provenance在W&B结束后仍重新hash通过。
+- ID156完整objective finite：total`1.9883425`、WM`1.2383783`、DINO`1.2891733`、value
+  `0.0373673`、planner loss`0.0865751`。Qwen/WM/ValueHead/PlannerPolicyHead grad norm分别
+  `19.49999/0.81222/4.74800/1.32933`且fingerprint改变；vision/StateProjector/lm_head grad0且不变。
+  四rank peak allocated均`17,555,061,248` bytes。W&B`p4udxa6d` API核验finished/ALL_OK；无checkpoint、
+  无consumption。该结果关闭world4 >=14k执行/显存门禁，但不是behavior PPO证据或world8显存测量。
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 

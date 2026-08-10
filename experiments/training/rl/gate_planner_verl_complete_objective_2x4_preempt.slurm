@@ -57,7 +57,7 @@ elif [[ "${GATE_DIAGNOSTIC_NONBEHAVIOR_PREFIX}" != false ]]; then
 fi
 
 PYTHON=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
-RAY=/project/peilab/atst/nimloth/.venv-vagen-main/bin/ray
+RAY_MODULE=ray.scripts.scripts
 CONFIG=${REPO}/configs/training/rl/planner_policy_h1_complete_objective_fsdp_gate_2x4.yaml
 mkdir -p /project/peilab/atst/nimloth/outputs/experiments/training/rl/slurm
 
@@ -83,7 +83,7 @@ cd "${REPO}"
 [[ "$(git -C external/le-wm rev-parse HEAD)" == "8edfeb336732b5f3ce7b8b210d0ba370a09e2cac" ]]
 [[ ! -e "${OUTPUT_DIR}" ]]
 [[ -x "${PYTHON}" ]]
-[[ -x "${RAY}" ]]
+"${PYTHON}" -c 'import ray; import ray.scripts.scripts'
 [[ -f "${CONFIG}" ]]
 [[ -d "${MODEL}" ]]
 [[ -d "${WM_CHECKPOINT}" ]]
@@ -177,7 +177,7 @@ srun --overlap --nodes=2 --ntasks=2 --ntasks-per-node=1 \
 
 srun --overlap --nodes=1 --ntasks=1 --nodelist="${HEAD_NODE}" \
   --gres=gpu:4 --cpus-per-task=32 \
-  "${RAY}" start --block --head \
+  "${PYTHON}" -m "${RAY_MODULE}" start --block --head \
     --node-ip-address="${HEAD_IP}" \
     --port="${RAY_PORT}" \
     --temp-dir="${RAY_TEMP_DIR}" \
@@ -186,7 +186,7 @@ RAY_STEP_PIDS+=("$!")
 sleep 5
 srun --overlap --nodes=1 --ntasks=1 --nodelist="${WORKER_NODE}" \
   --gres=gpu:4 --cpus-per-task=32 \
-  "${RAY}" start --block --address="${RAY_ADDRESS}" \
+  "${PYTHON}" -m "${RAY_MODULE}" start --block --address="${RAY_ADDRESS}" \
     --node-ip-address="${WORKER_IP}" \
     --temp-dir="${RAY_TEMP_DIR}" \
     --num-cpus=32 --num-gpus=4 &
