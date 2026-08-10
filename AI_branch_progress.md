@@ -4,23 +4,6 @@
 
 ---
 
-## 2026-08-10：RL planner algorithm 可读性重构
-
-- 在当前 `dev` 的 `dee93027` 基础上，仅重构
-  `src/nimloth/training/rl/algorithm.py` 内的 planner transition 路径；未改变 public API、配置、
-  PPO/WM/value 数学、detach 边界或 rollout/checkpoint/VERL worker 语义。
-- `actor_transition_step()` 现在按「runtime 校验 → hidden → current state/context → objective
-  分项 → normalized output/metrics」组织。新增内部 dataclass 明确 transition context、未归一化
-  loss、互斥的 critic/policy 分项和 batch row，避免原有的长函数及七元 positional loss tuple。
-- `actor_transition_batch_step()` 保持一次 shared Qwen prefix forward、逐 row 原 objective 和
-  zero-weight padding 语义；输入对齐与加权输出聚合改为具名 helper，未改变 batch/scalar parity。
-- 验证：`python -m py_compile src/nimloth/training/rl/algorithm.py`、`git diff --check`，以及
-  `PYTHONPATH=src /tmp/nimloth-test-venv/bin/python -m pytest
-  tests/training/rl/test_episode_training.py tests/training/rl/test_loop.py
-  tests/training/rl/test_algorithm.py` 均通过（`43 passed`）。本 worktree 的默认 Python/.venv
-  缺 pytest；扩展 VERL suite 在该 test venv 因 `verl` 未安装而 collection fail，未把它计作
-  algorithm 回归失败。
-
 ## 2026-08-09：Planner VERL 单根 FSDP objective 边界
 
 - ID149后开始训练端下一阶段。新增`PlannerObjectiveModule`，把完整`Agent`作为唯一注册子树，且
