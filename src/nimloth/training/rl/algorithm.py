@@ -439,7 +439,7 @@ class RLAlgorithm:
             )
             value_loss = value_objective.loss
 
-        # 5. 合并 objective；policy 未启用时使用普通标量 0，而非伪造 tensor。
+        # 5. 合并 objective
         normalized_wm_loss = weighted_wm_loss / total_transitions
         normalized_wm_mse = wm_mse / total_transitions
         normalized_dino_mse = (
