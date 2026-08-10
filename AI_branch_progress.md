@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-10：RL planner algorithm 第一轮可读性整理
+
+- 提交`254033aa`将 `RLAlgorithm` 改为直接接收已校验的 `RLConfig` 与可选 `SIGReg`，删除
+  trainer 和算法构造函数之间重复展开的二十余个配置参数；算法按 config 原属主读取超参数。
+- planner 的训练入口重命名为 `planner_transition_step()` 与
+  `planner_transition_batch_step()`，避免把同时训练 WM、ValueHead 和 PlannerPolicyHead 的路径
+  误称为 actor transition。主函数恢复为带五段注释的直线式计算图，删除此前多层 helper/dataclass
+  方案以及重复的 transition 数、hidden shape、batch 字段长度兜底。
+- planner policy 未启用时，loss 和 entropy 使用普通标量`0`参与 tensor 算术；不再构造
+  `current_state.new_zeros(())` 作为默认值。planner CSV/W&B 指标的字段命名、标量转换和固定零值
+  集中到 `reporting.py::planner_step_metrics()`，algorithm 只构造 objective loss 和其诊断输入。
+- 定向验证：`62 passed`，覆盖 algorithm、episode transition、loop、Planner VERL worker/factory；
+  `py_compile` 与 `git diff --check`通过。尚未重跑完整 RL suite；此前在本地 test venv 的完整套件为
+  `257 passed, 1 failed`，唯一失败是 VAGEN 的 SciPy 传递依赖缺失，和本轮改动无关。
+
 ## 2026-08-10：RL planner algorithm 可读性重构待重新设计
 
 - `7b1d0de9`将 planner transition 路径拆为多层 helper/dataclass，相关 CPU 回归为`43 passed`，
