@@ -309,3 +309,18 @@
   ID138 sidecar仍不存在。该结果关闭真实>=14k prefix在world4 FULL_SHARD上的complete-objective
   执行/显存门禁；它不是behavior-matched PPO证据，也不代表world8显存。下一步为1--2 transactional
   fresh global-step smoke及production checkpoint/consumption lineage。
+
+### ID157 cancelled pending and ID158 held normal world4 ALL_OK
+
+- ID157 normal 1×8 Job`512843`尚未allocation即按人类改用normal 1×4的指令取消；无W&B、model、
+  output或source状态变化。新ID158使用batch-owned hold handshake：Job`512852`在`dgx-40:4`
+  allocation后先原子发布READY、验证恰好4张GPU可见、hold 2秒后由同一batch controller原子GO；
+  无login-owned执行或无人看守的held allocation。Job 3分11秒`COMPLETED 0:0`，READY/GO均清理。
+- ID158重复真实ID138 16184-token diagnostic-only row与ID147 weights-only world4 complete objective。
+  finite total`1.9904490`、WM`1.2415607`、DINO`1.2870215`、value`0.0373673`、planner
+  loss`0.0865751`；Qwen/WM/ValueHead/PlannerPolicyHead grad norm为`19.65153/0.80949/4.74800/
+  1.32933`且fingerprint改变，三frozen组件grad0且不变。每rank peak allocated仍为
+  `17,555,061,248` bytes。
+- W&B`nimloth-rl/sq17o21j` API核验`finished/ALL_OK`。无checkpoint/consumption，ID138 sidecar仍
+  不存在。normal结果复现ID156 world4门禁，下一步不再重复memory diagnostic，转向1--2个
+  transactional fresh global steps和production checkpoint→consumption lineage。

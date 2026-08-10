@@ -71,6 +71,11 @@
   `19.49999/0.81222/4.74800/1.32933`且fingerprint改变；vision/StateProjector/lm_head grad0且不变。
   四rank peak allocated均`17,555,061,248` bytes。W&B`p4udxa6d` API核验finished/ALL_OK；无checkpoint、
   无consumption。该结果关闭world4 >=14k执行/显存门禁，但不是behavior PPO证据或world8显存测量。
+- 人类先要求normal 1×8后又改为normal 1×4；ID157 Job`512843`未allocation即取消，无W&B/output/
+  source变化。ID158 Job`512852`使用batch-owned hold handshake，在`dgx-40:4`分配后验证4张可见GPU、
+  hold 2秒并自动GO，3分11秒`COMPLETED 0:0`。真实16184-token world4 complete objective再次
+  ALL_OK：每rank peak仍`17,555,061,248` bytes，四trainable组件grad非零/fingerprint改变，三frozen
+  组件grad0/不变；W&B`sq17o21j` API核验finished/ALL_OK，无checkpoint/consumption且handshake清理。
 
 ## 2026-08-05：planner RL 改为 PPO-clipped ValueHead critic
 
