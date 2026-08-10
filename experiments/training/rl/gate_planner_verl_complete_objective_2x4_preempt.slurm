@@ -58,7 +58,7 @@ fi
 
 PYTHON=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
 RAY=/project/peilab/atst/nimloth/.venv-vagen-main/bin/ray
-CONFIG=${REPO}/configs/training/rl/planner_policy_h1_complete_objective_fsdp_gate.yaml
+CONFIG=${REPO}/configs/training/rl/planner_policy_h1_complete_objective_fsdp_gate_2x4.yaml
 mkdir -p /project/peilab/atst/nimloth/outputs/experiments/training/rl/slurm
 
 REQUESTED_WANDB_PROJECT="${WANDB_PROJECT}"

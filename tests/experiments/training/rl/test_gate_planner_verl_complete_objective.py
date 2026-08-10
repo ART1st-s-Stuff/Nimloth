@@ -103,6 +103,13 @@ def test_complete_objective_launcher_is_strict_weights_only_one_by_eight() -> No
 
 
 def test_complete_objective_launcher_supports_preempt_two_by_four() -> None:
+    config = load_rl_config(
+        ROOT
+        / "configs/training/rl/"
+        "planner_policy_h1_complete_objective_fsdp_gate_2x4.yaml"
+    )
+    assert config.distributed.nodes == 2
+    assert config.distributed.world_size == 8
     launcher = (
         ROOT
         / "experiments/training/rl/"
@@ -111,6 +118,7 @@ def test_complete_objective_launcher_supports_preempt_two_by_four() -> None:
     assert "#SBATCH --partition=preempt" in launcher
     assert "#SBATCH --nodes=2" in launcher
     assert "#SBATCH --gres=gpu:4" in launcher
+    assert "planner_policy_h1_complete_objective_fsdp_gate_2x4.yaml" in launcher
     assert '--num-gpus=4' in launcher
     assert '--workers-per-node 4' in launcher
     assert '--expected-node-count 2' in launcher
