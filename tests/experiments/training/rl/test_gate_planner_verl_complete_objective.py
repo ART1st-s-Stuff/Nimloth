@@ -122,6 +122,19 @@ def test_complete_objective_launcher_supports_preempt_one_by_four() -> None:
     assert "--world-size 4" in launcher
 
 
+def test_complete_objective_launcher_supports_held_normal_one_by_four() -> None:
+    launcher = (
+        ROOT
+        / "experiments/training/rl/"
+        "gate_planner_verl_complete_objective_1x4_normal.slurm"
+    ).read_text(encoding="utf-8")
+    assert "#SBATCH --partition=normal" in launcher
+    assert "#SBATCH --gres=gpu:4" in launcher
+    assert 'HOLD_READY_FILE=${HOLD_READY_FILE:-}' in launcher
+    assert 'while [[ ! -e "${HOLD_GO_FILE}" ]]' in launcher
+    assert 'state=held' in launcher
+
+
 def test_complete_objective_launcher_supports_preempt_two_by_four() -> None:
     config = load_rl_config(
         ROOT

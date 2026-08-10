@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=planner-complete-fsdp
-#SBATCH --partition=preempt
+#SBATCH --partition=normal
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:4
