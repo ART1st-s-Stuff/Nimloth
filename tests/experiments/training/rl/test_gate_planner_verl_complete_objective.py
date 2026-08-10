@@ -133,6 +133,9 @@ def test_complete_objective_launcher_supports_held_normal_one_by_four() -> None:
     assert 'HOLD_READY_FILE=${HOLD_READY_FILE:-}' in launcher
     assert 'while [[ ! -e "${HOLD_GO_FILE}" ]]' in launcher
     assert 'state=held' in launcher
+    assert 'HOLD_AUTO_RELEASE_SECONDS=${HOLD_AUTO_RELEASE_SECONDS:-}' in launcher
+    assert '"$(nvidia-smi -L | wc -l)" -eq 4' in launcher
+    assert 'state=auto_released' in launcher
 
 
 def test_complete_objective_launcher_supports_preempt_two_by_four() -> None:

@@ -29,6 +29,7 @@ GATE_MINIMUM_STATE_TOKENS=${GATE_MINIMUM_STATE_TOKENS:-6000}
 GATE_DIAGNOSTIC_NONBEHAVIOR_PREFIX=${GATE_DIAGNOSTIC_NONBEHAVIOR_PREFIX:-false}
 HOLD_READY_FILE=${HOLD_READY_FILE:-}
 HOLD_GO_FILE=${HOLD_GO_FILE:-}
+HOLD_AUTO_RELEASE_SECONDS=${HOLD_AUTO_RELEASE_SECONDS:-}
 if [[ -n "${HOLD_READY_FILE}" || -n "${HOLD_GO_FILE}" ]]; then
   : "${HOLD_READY_FILE:?both hold handshake files are required}"
   : "${HOLD_GO_FILE:?both hold handshake files are required}"
@@ -38,6 +39,14 @@ if [[ -n "${HOLD_READY_FILE}" || -n "${HOLD_GO_FILE}" ]]; then
     > "${HOLD_READY_FILE}.tmp"
   mv "${HOLD_READY_FILE}.tmp" "${HOLD_READY_FILE}"
   trap 'rm -f "${HOLD_READY_FILE}"' EXIT
+  if [[ -n "${HOLD_AUTO_RELEASE_SECONDS}" ]]; then
+    [[ "${HOLD_AUTO_RELEASE_SECONDS}" =~ ^[0-9]+$ ]]
+    [[ "$(nvidia-smi -L | wc -l)" -eq 4 ]]
+    sleep "${HOLD_AUTO_RELEASE_SECONDS}"
+    printf '%s\n' "job=${SLURM_JOB_ID} state=auto_released" \
+      > "${HOLD_GO_FILE}.tmp"
+    mv "${HOLD_GO_FILE}.tmp" "${HOLD_GO_FILE}"
+  fi
   while [[ ! -e "${HOLD_GO_FILE}" ]]; do
     sleep 1
   done
