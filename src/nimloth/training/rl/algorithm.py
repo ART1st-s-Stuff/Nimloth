@@ -108,6 +108,58 @@ class RLStepOutput:
     metrics: dict[str, float]
 
 
+@dataclass(frozen=True)
+class _PlannerTransitionContext:
+    """一个真实 planner transition 的当前可微 state 与 WM 输入。"""
+
+    current_state: torch.Tensor
+    state_context: torch.Tensor
+    action_context: torch.Tensor
+
+
+@dataclass(frozen=True)
+class _PlannerTransitionLosses:
+    """Planner transition 在归一化前的 objective 分项。"""
+
+    weighted_wm_loss: torch.Tensor
+    wm_mse: torch.Tensor
+    dino_grid_mse: torch.Tensor | None
+    value_loss: torch.Tensor
+    selected_action_values: torch.Tensor
+    value_clipped_mse: torch.Tensor
+    value_clip_fraction: torch.Tensor
+    policy_loss: torch.Tensor | None
+    policy_entropy: torch.Tensor | None
+    policy_clip_fraction: torch.Tensor | None
+    policy_probability_ratio: torch.Tensor | None
+
+
+@dataclass(frozen=True)
+class _PlannerValueAndPolicyLosses:
+    """互斥的 planner critic / PlannerPolicyHead PPO 分项。"""
+
+    value_loss: torch.Tensor
+    value_clipped_mse: torch.Tensor
+    value_clip_fraction: torch.Tensor
+    policy_loss: torch.Tensor | None
+    policy_entropy: torch.Tensor | None
+    policy_clip_fraction: torch.Tensor | None
+    policy_probability_ratio: torch.Tensor | None
+
+
+@dataclass(frozen=True)
+class _PlannerBatchRow:
+    """共享 Qwen micro-batch 中一个 transition 的监督与权重。"""
+
+    transition: ExecutedTransition
+    return_target: torch.Tensor
+    old_action_value: torch.Tensor
+    old_policy_log_prob: torch.Tensor | None
+    policy_advantage: torch.Tensor | None
+    dino_grid_target: torch.Tensor | None
+    loss_weight: float
+
+
 def low_variance_kl(log_ratio: torch.Tensor) -> torch.Tensor:
     """计算 VAGEN 截断后的低方差 KL，并避免 ``exp`` 溢出。
 
@@ -347,15 +399,44 @@ class RLAlgorithm:
         include_world_model: bool = True,
         precomputed_hidden: torch.Tensor | None = None,
     ) -> RLStepOutput:
-        """Train one executed transition through Qwen, WM, and ValueHead.
+        """计算一个真实 planner transition 的完整训练 objective。
 
-        Qwen is recomputed on the complete persisted prefix for this environment
-        step.  The previous-history tokens are fixed inputs, while every activation
-        in this current forward remains in the graph.  The value target is applied
-        to the executed-action slot on the current decision state.  Its gradient
-        reaches ValueHead -> StateProjector -> the complete Qwen prefix; WM and DINO
-        losses independently supervise the predicted successor state.
+        当前 state 必须由完整、可微的 Qwen prefix forward 产生。WM/DINO 使用
+        rollout 持久化的 next-state target；value 与 PlannerPolicyHead 则只监督本次
+        实际执行的 environment action。
         """
+
+        self._validate_planner_transition_runtime(runtime, total_transitions)
+        hidden = self._planner_transition_hidden(
+            runtime,
+            transition,
+            precomputed_hidden=precomputed_hidden,
+        )
+        context = self._planner_transition_context(runtime, transition, hidden)
+        losses = self._planner_transition_losses(
+            runtime,
+            transition,
+            context,
+            return_target=return_target,
+            old_action_value=old_action_value,
+            old_policy_log_prob=old_policy_log_prob,
+            policy_advantage=policy_advantage,
+            dino_grid_target=dino_grid_target,
+            include_world_model=include_world_model,
+        )
+        return self._planner_step_output(
+            losses,
+            old_action_value=old_action_value,
+            policy_advantage=policy_advantage,
+            total_transitions=total_transitions,
+        )
+
+    def _validate_planner_transition_runtime(
+        self,
+        runtime: RLModelRuntime,
+        total_transitions: int,
+    ) -> None:
+        """拒绝无法将 planner objective 反传到完整 Qwen prefix 的 runtime。"""
 
         if total_transitions < 1:
             raise ValueError("total_transitions must be positive")
@@ -364,6 +445,15 @@ class RLAlgorithm:
                 "planner transition training requires differentiable full-prefix "
                 "Qwen recomputation"
             )
+
+    def _planner_transition_hidden(
+        self,
+        runtime: RLModelRuntime,
+        transition: ExecutedTransition,
+        *,
+        precomputed_hidden: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """取得恰好一个 transition 的 Qwen hidden，并校验 batch 对齐。"""
 
         hidden = (
             runtime.encode_state_prompts((transition.state_prompt,))
@@ -375,9 +465,17 @@ class RLAlgorithm:
                 "planner transition hidden must have one batch row, "
                 f"got {tuple(hidden.shape)}"
             )
-        hidden = move_to_device(hidden, runtime.agent.wm.state_proj)
-        current_state = runtime.agent.wm.project_state(hidden)
+        return move_to_device(hidden, runtime.agent.wm.state_proj)
 
+    def _planner_transition_context(
+        self,
+        runtime: RLModelRuntime,
+        transition: ExecutedTransition,
+        hidden: torch.Tensor,
+    ) -> _PlannerTransitionContext:
+        """拼接持久化历史与当前可微 state，供 WM 预测最后一个 next state。"""
+
+        current_state = runtime.agent.wm.project_state(hidden)
         stored_history = move_to_device(
             transition.state_history(self.history_size),
             runtime.agent.wm.wm_predictor,
@@ -390,49 +488,40 @@ class RLAlgorithm:
         previous_actions = transition.previous_actions(self.history_size).to(
             device=state_context.device
         )
-        action_context = torch.cat(
-            (
-                previous_actions,
-                torch.tensor(
-                    [transition.action_index],
-                    dtype=torch.long,
-                    device=state_context.device,
-                ),
-            )
-        ).unsqueeze(0)
-        wm_objective = None
-        if self.train_world_model and include_world_model:
-            predicted_next_state = runtime.agent.wm.predict_state_sequence(
-                state_context,
-                action_context,
-            )[:, -1]
-            expected_next_state = move_to_device(
-                transition.actual_next_state(),
-                predicted_next_state,
-            ).unsqueeze(0).detach()
-            current_dino_target = (
-                dino_grid_target.to(
-                    device=predicted_next_state.device,
-                    dtype=torch.float32,
-                    non_blocking=True,
-                )
-                if dino_grid_target is not None
-                else None
-            )
-            wm_objective = world_model_loss(
-                predicted_next_state,
-                expected_next_state,
-                state_weight=self.world_model_weight,
-                dino_grid_target=current_dino_target,
-                dino_grid_weight=self.dino_grid_weight,
-            )
-            weighted_wm_loss = wm_objective.loss
-            wm_mse = wm_objective.state_mse
-        else:
-            weighted_wm_loss = current_state.new_zeros(())
-            wm_mse = weighted_wm_loss
+        executed_action = torch.tensor(
+            [transition.action_index],
+            dtype=torch.long,
+            device=state_context.device,
+        )
+        return _PlannerTransitionContext(
+            current_state=current_state,
+            state_context=state_context,
+            action_context=torch.cat((previous_actions, executed_action)).unsqueeze(0),
+        )
 
-        action_values = runtime.agent.wm.predict_action_values(current_state)
+    def _planner_transition_losses(
+        self,
+        runtime: RLModelRuntime,
+        transition: ExecutedTransition,
+        context: _PlannerTransitionContext,
+        *,
+        return_target: torch.Tensor,
+        old_action_value: torch.Tensor,
+        old_policy_log_prob: torch.Tensor | None,
+        policy_advantage: torch.Tensor | None,
+        dino_grid_target: torch.Tensor | None,
+        include_world_model: bool,
+    ) -> _PlannerTransitionLosses:
+        """计算未归一化的 WM/DINO、executed-action value 与可选 policy loss。"""
+
+        weighted_wm_loss, wm_mse, dino_grid_mse = self._planner_wm_losses(
+            runtime,
+            transition,
+            context,
+            dino_grid_target=dino_grid_target,
+            include_world_model=include_world_model,
+        )
+        action_values = runtime.agent.wm.predict_action_values(context.current_state)
         executed_action = torch.tensor(
             [transition.action_index],
             dtype=torch.long,
@@ -446,55 +535,157 @@ class RLAlgorithm:
             -1,
             executed_action.unsqueeze(-1),
         ).squeeze(-1)
-        planner_policy_objective = None
+        value_and_policy = self._planner_value_and_policy_losses(
+            runtime,
+            current_state=context.current_state,
+            action_values=action_values,
+            executed_action=executed_action,
+            target=target,
+            selected_action_values=selected_action_values,
+            old_action_value=old_action_value,
+            old_policy_log_prob=old_policy_log_prob,
+            policy_advantage=policy_advantage,
+        )
+        return _PlannerTransitionLosses(
+            weighted_wm_loss=weighted_wm_loss,
+            wm_mse=wm_mse,
+            dino_grid_mse=dino_grid_mse,
+            value_loss=value_and_policy.value_loss,
+            selected_action_values=selected_action_values,
+            value_clipped_mse=value_and_policy.value_clipped_mse,
+            value_clip_fraction=value_and_policy.value_clip_fraction,
+            policy_loss=value_and_policy.policy_loss,
+            policy_entropy=value_and_policy.policy_entropy,
+            policy_clip_fraction=value_and_policy.policy_clip_fraction,
+            policy_probability_ratio=value_and_policy.policy_probability_ratio,
+        )
+
+    def _planner_wm_losses(
+        self,
+        runtime: RLModelRuntime,
+        transition: ExecutedTransition,
+        context: _PlannerTransitionContext,
+        *,
+        dino_grid_target: torch.Tensor | None,
+        include_world_model: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """计算 WM/DINO 监督；保存的 next state 永远是 detach 后的 target。"""
+
+        if not self.train_world_model or not include_world_model:
+            zero = context.current_state.new_zeros(())
+            return zero, zero, None
+        predicted_next_state = runtime.agent.wm.predict_state_sequence(
+            context.state_context,
+            context.action_context,
+        )[:, -1]
+        expected_next_state = move_to_device(
+            transition.actual_next_state(),
+            predicted_next_state,
+        ).unsqueeze(0).detach()
+        current_dino_target = (
+            dino_grid_target.to(
+                device=predicted_next_state.device,
+                dtype=torch.float32,
+                non_blocking=True,
+            )
+            if dino_grid_target is not None
+            else None
+        )
+        objective = world_model_loss(
+            predicted_next_state,
+            expected_next_state,
+            state_weight=self.world_model_weight,
+            dino_grid_target=current_dino_target,
+            dino_grid_weight=self.dino_grid_weight,
+        )
+        return objective.loss, objective.state_mse, objective.dino_grid_mse
+
+    def _planner_value_and_policy_losses(
+        self,
+        runtime: RLModelRuntime,
+        *,
+        current_state: torch.Tensor,
+        action_values: torch.Tensor,
+        executed_action: torch.Tensor,
+        target: torch.Tensor,
+        selected_action_values: torch.Tensor,
+        old_action_value: torch.Tensor,
+        old_policy_log_prob: torch.Tensor | None,
+        policy_advantage: torch.Tensor | None,
+    ) -> _PlannerValueAndPolicyLosses:
+        """选择互斥的 planner critic 或 PlannerPolicyHead PPO objective。"""
+
         if self.planner_policy_enabled:
             if old_policy_log_prob is None or policy_advantage is None:
                 raise RuntimeError(
                     "PlannerPolicyHead PPO requires old log-prob and advantage"
                 )
-            value_loss = F.mse_loss(selected_action_values, target)
-            action_logits = runtime.agent.wm.predict_action_logits(current_state)
-            planner_policy_objective = ppo_action_policy_loss(
-                action_logits=action_logits,
+            policy_objective = ppo_action_policy_loss(
+                action_logits=runtime.agent.wm.predict_action_logits(current_state),
                 executed_actions=executed_action,
                 old_log_probs=old_policy_log_prob.reshape(1),
                 advantages=policy_advantage.reshape(1),
                 temperature=self.planner_policy_temperature,
                 clip_ratio=self.planner_policy_clip_ratio,
             )
-        else:
-            if old_policy_log_prob is not None or policy_advantage is not None:
-                raise RuntimeError(
-                    "planner policy statistics require PlannerPolicyHead PPO"
-                )
-            if self.value_ppo_clip_range is None:
-                raise RuntimeError("planner critic clipping requires value_ppo_clip_range")
-            value_objective = ppo_action_value_loss(
-                action_values,
-                executed_action,
-                target,
-                old_action_value.reshape(1),
-                clip_range=self.value_ppo_clip_range,
+            return _PlannerValueAndPolicyLosses(
+                value_loss=F.mse_loss(selected_action_values, target),
+                value_clipped_mse=selected_action_values.new_zeros(()),
+                value_clip_fraction=selected_action_values.new_zeros(()),
+                policy_loss=policy_objective.loss,
+                policy_entropy=policy_objective.entropy,
+                policy_clip_fraction=policy_objective.clip_fraction,
+                policy_probability_ratio=policy_objective.probability_ratio,
             )
-            value_loss = value_objective.loss
+        if old_policy_log_prob is not None or policy_advantage is not None:
+            raise RuntimeError("planner policy statistics require PlannerPolicyHead PPO")
+        if self.value_ppo_clip_range is None:
+            raise RuntimeError("planner critic clipping requires value_ppo_clip_range")
+        value_objective = ppo_action_value_loss(
+            action_values,
+            executed_action,
+            target,
+            old_action_value.reshape(1),
+            clip_range=self.value_ppo_clip_range,
+        )
+        return _PlannerValueAndPolicyLosses(
+            value_loss=value_objective.loss,
+            value_clipped_mse=value_objective.clipped_mse,
+            value_clip_fraction=value_objective.clip_fraction,
+            policy_loss=None,
+            policy_entropy=None,
+            policy_clip_fraction=None,
+            policy_probability_ratio=None,
+        )
 
-        normalized_wm_loss = weighted_wm_loss / total_transitions
-        normalized_wm_mse = wm_mse / total_transitions
+    def _planner_step_output(
+        self,
+        losses: _PlannerTransitionLosses,
+        *,
+        old_action_value: torch.Tensor,
+        policy_advantage: torch.Tensor | None,
+        total_transitions: int,
+    ) -> RLStepOutput:
+        """归一化一条 transition 的 loss，并在图外构造日志指标。"""
+
+        normalized_wm_loss = losses.weighted_wm_loss / total_transitions
+        normalized_wm_mse = losses.wm_mse / total_transitions
         normalized_dino_mse = (
-            wm_objective.dino_grid_mse / total_transitions
-            if wm_objective is not None and wm_objective.dino_grid_mse is not None
+            losses.dino_grid_mse / total_transitions
+            if losses.dino_grid_mse is not None
             else None
         )
-        normalized_value_loss = value_loss / total_transitions
+        normalized_value_loss = losses.value_loss / total_transitions
+        zero = losses.selected_action_values.new_zeros(())
         normalized_policy_loss = (
-            planner_policy_objective.loss / total_transitions
-            if planner_policy_objective is not None
-            else current_state.new_zeros(())
+            losses.policy_loss / total_transitions
+            if losses.policy_loss is not None
+            else zero
         )
         normalized_policy_entropy = (
-            planner_policy_objective.entropy / total_transitions
-            if planner_policy_objective is not None
-            else current_state.new_zeros(())
+            losses.policy_entropy / total_transitions
+            if losses.policy_entropy is not None
+            else zero
         )
         total = normalized_wm_loss + normalized_value_loss.to(
             device=normalized_wm_loss.device
@@ -510,103 +701,105 @@ class RLAlgorithm:
                 "dino": normalized_dino_mse,
                 "sigreg": None,
                 "value": normalized_value_loss,
-                "policy": (
-                    normalized_policy_loss
-                    if planner_policy_objective is not None
-                    else None
-                ),
+                "policy": normalized_policy_loss if losses.policy_loss is not None else None,
                 "token_value": None,
                 "reference_kl": None,
             },
-            metrics={
-                "wm_mse": float(normalized_wm_mse.detach().item()),
-                "dino_grid_mse": (
-                    float(normalized_dino_mse.detach().item())
-                    if normalized_dino_mse is not None
-                    else 0.0
-                ),
-                "lambda_wm": self.world_model_weight,
-                "lambda_dino": self.dino_grid_weight,
-                "sigreg_loss": 0.0,
-                "value_loss": float(normalized_value_loss.detach().item()),
-                "value_mc_mse": float(normalized_value_loss.detach().item()),
-                "value_clipped_mse": float(
-                    (
-                        value_objective.clipped_mse / total_transitions
-                        if not self.planner_policy_enabled
-                        else selected_action_values.new_zeros(())
-                    )
-                    .detach()
-                    .item()
-                ),
-                "value_clip_fraction": float(
-                    (
-                        value_objective.clip_fraction / total_transitions
-                        if not self.planner_policy_enabled
-                        else selected_action_values.new_zeros(())
-                    )
-                    .detach()
-                    .item()
-                ),
-                "value_old_mean": float(
-                    (old_action_value / total_transitions).detach().item()
-                ),
-                "value_delta_abs_mean": float(
-                    (
-                        (
-                            selected_action_values.detach()
-                            - old_action_value.to(
-                                device=selected_action_values.device,
-                                dtype=selected_action_values.dtype,
-                            )
-                        ).abs().mean()
-                        / total_transitions
-                    ).item()
-                ),
-                "value_rank": 0.0,
-                "total_loss": float(total.detach().item()),
-                "actor_loss": 0.0,
-                "planner_policy_loss": float(
-                    normalized_policy_loss.detach().item()
-                ),
-                "planner_policy_entropy": float(
-                    normalized_policy_entropy.detach().item()
-                ),
-                "planner_policy_clip_fraction": (
-                    float(
-                        (
-                            planner_policy_objective.clip_fraction
-                            / total_transitions
-                        ).item()
-                    )
-                    if planner_policy_objective is not None
-                    else 0.0
-                ),
-                "planner_policy_mean_ratio": (
-                    float(
-                        (
-                            planner_policy_objective.probability_ratio.mean()
-                            / total_transitions
-                        ).detach().item()
-                    )
-                    if planner_policy_objective is not None
-                    else 0.0
-                ),
-                "planner_policy_mean_advantage": (
-                    float((policy_advantage / total_transitions).detach().item())
-                    if policy_advantage is not None
-                    else 0.0
-                ),
-                "planner_policy_actions": (
-                    1.0 / total_transitions
-                    if planner_policy_objective is not None
-                    else 0.0
-                ),
-                "token_value_loss": 0.0,
-                "reference_kl_loss": 0.0,
-                "policy_tokens": 0.0,
-            },
+            metrics=self._planner_step_metrics(
+                total=total,
+                losses=losses,
+                old_action_value=old_action_value,
+                policy_advantage=policy_advantage,
+                total_transitions=total_transitions,
+                normalized_wm_mse=normalized_wm_mse,
+                normalized_dino_mse=normalized_dino_mse,
+                normalized_value_loss=normalized_value_loss,
+                normalized_policy_loss=normalized_policy_loss,
+                normalized_policy_entropy=normalized_policy_entropy,
+            ),
         )
+
+    def _planner_step_metrics(
+        self,
+        *,
+        total: torch.Tensor,
+        losses: _PlannerTransitionLosses,
+        old_action_value: torch.Tensor,
+        policy_advantage: torch.Tensor | None,
+        total_transitions: int,
+        normalized_wm_mse: torch.Tensor,
+        normalized_dino_mse: torch.Tensor | None,
+        normalized_value_loss: torch.Tensor,
+        normalized_policy_loss: torch.Tensor,
+        normalized_policy_entropy: torch.Tensor,
+    ) -> dict[str, float]:
+        """将 planner loss 分项转为与 loop/reporting 兼容的标量指标。"""
+
+        policy_enabled = losses.policy_loss is not None
+        return {
+            "wm_mse": float(normalized_wm_mse.detach().item()),
+            "dino_grid_mse": (
+                float(normalized_dino_mse.detach().item())
+                if normalized_dino_mse is not None
+                else 0.0
+            ),
+            "lambda_wm": self.world_model_weight,
+            "lambda_dino": self.dino_grid_weight,
+            "sigreg_loss": 0.0,
+            "value_loss": float(normalized_value_loss.detach().item()),
+            "value_mc_mse": float(normalized_value_loss.detach().item()),
+            "value_clipped_mse": float(
+                (losses.value_clipped_mse / total_transitions).detach().item()
+            ),
+            "value_clip_fraction": float(
+                (losses.value_clip_fraction / total_transitions).detach().item()
+            ),
+            "value_old_mean": float(
+                (old_action_value / total_transitions).detach().item()
+            ),
+            "value_delta_abs_mean": float(
+                (
+                    (
+                        losses.selected_action_values.detach()
+                        - old_action_value.to(
+                            device=losses.selected_action_values.device,
+                            dtype=losses.selected_action_values.dtype,
+                        )
+                    ).abs().mean()
+                    / total_transitions
+                ).item()
+            ),
+            "value_rank": 0.0,
+            "total_loss": float(total.detach().item()),
+            "actor_loss": 0.0,
+            "planner_policy_loss": float(normalized_policy_loss.detach().item()),
+            "planner_policy_entropy": float(
+                normalized_policy_entropy.detach().item()
+            ),
+            "planner_policy_clip_fraction": (
+                float((losses.policy_clip_fraction / total_transitions).item())
+                if losses.policy_clip_fraction is not None
+                else 0.0
+            ),
+            "planner_policy_mean_ratio": (
+                float(
+                    (
+                        losses.policy_probability_ratio.mean() / total_transitions
+                    ).detach().item()
+                )
+                if losses.policy_probability_ratio is not None
+                else 0.0
+            ),
+            "planner_policy_mean_advantage": (
+                float((policy_advantage / total_transitions).detach().item())
+                if policy_advantage is not None
+                else 0.0
+            ),
+            "planner_policy_actions": 1.0 / total_transitions if policy_enabled else 0.0,
+            "token_value_loss": 0.0,
+            "reference_kl_loss": 0.0,
+            "policy_tokens": 0.0,
+        }
 
     def actor_transition_batch_step(
         self,
@@ -622,12 +815,54 @@ class RLAlgorithm:
         loss_weights: tuple[float, ...] | None = None,
         include_world_model: bool = True,
     ) -> RLStepOutput:
-        """Share one padded Qwen forward across a planner micro-batch.
+        """共享一次 padded Qwen forward，逐 row 计算原有 planner transition objective。"""
 
-        Downstream WM/value/policy objectives retain the proven scalar transition
-        path.  Summing those normalized outputs gives exact loss/gradient parity
-        while removing repeated full-prefix Qwen calls inside each micro-batch.
-        """
+        rows = self._planner_batch_rows(
+            transitions,
+            return_targets=return_targets,
+            old_action_values=old_action_values,
+            old_policy_log_probs=old_policy_log_probs,
+            policy_advantages=policy_advantages,
+            dino_grid_targets=dino_grid_targets,
+            loss_weights=loss_weights,
+        )
+        hidden_batch = runtime.encode_state_prompts(
+            tuple(row.transition.state_prompt for row in rows)
+        )
+        if hidden_batch.ndim not in (2, 3) or hidden_batch.shape[0] != len(rows):
+            raise ValueError(
+                "planner Qwen batch output does not align with transitions: "
+                f"hidden={tuple(hidden_batch.shape)}, transitions={len(rows)}"
+            )
+        outputs = tuple(
+            self.actor_transition_step(
+                runtime,
+                row.transition,
+                return_target=row.return_target,
+                old_action_value=row.old_action_value,
+                old_policy_log_prob=row.old_policy_log_prob,
+                policy_advantage=row.policy_advantage,
+                total_transitions=total_transitions,
+                dino_grid_target=row.dino_grid_target,
+                include_world_model=include_world_model,
+                precomputed_hidden=hidden_batch[index : index + 1],
+            )
+            for index, row in enumerate(rows)
+        )
+        return self._aggregate_planner_outputs(outputs, rows)
+
+    def _planner_batch_rows(
+        self,
+        transitions: tuple[ExecutedTransition, ...],
+        *,
+        return_targets: tuple[torch.Tensor, ...],
+        old_action_values: tuple[torch.Tensor, ...],
+        old_policy_log_probs: tuple[torch.Tensor | None, ...] | None,
+        policy_advantages: tuple[torch.Tensor | None, ...] | None,
+        dino_grid_targets: tuple[torch.Tensor | None, ...] | None,
+        loss_weights: tuple[float, ...] | None,
+    ) -> tuple[_PlannerBatchRow, ...]:
+        """验证并对齐 planner micro-batch 的每个逐 transition 输入字段。"""
 
         if not transitions:
             raise ValueError("planner transition batch must not be empty")
@@ -660,59 +895,54 @@ class RLAlgorithm:
                     f"planner batch {name} must have {batch_size} rows, "
                     f"got {len(values)}"
                 )
-
-        hidden_batch = runtime.encode_state_prompts(
-            tuple(transition.state_prompt for transition in transitions)
-        )
-        if hidden_batch.ndim not in (2, 3) or hidden_batch.shape[0] != batch_size:
-            raise ValueError(
-                "planner Qwen batch output does not align with transitions: "
-                f"hidden={tuple(hidden_batch.shape)}, transitions={batch_size}"
-            )
-        outputs = tuple(
-            self.actor_transition_step(
-                runtime,
-                transition,
+        return tuple(
+            _PlannerBatchRow(
+                transition=transition,
                 return_target=return_target,
                 old_action_value=old_action_value,
                 old_policy_log_prob=old_policy_log_prob,
                 policy_advantage=policy_advantage,
-                total_transitions=total_transitions,
                 dino_grid_target=dino_grid_target,
-                include_world_model=include_world_model,
-                precomputed_hidden=hidden_batch[index : index + 1],
+                loss_weight=float(loss_weight),
             )
-            for index, (
+            for (
                 transition,
                 return_target,
                 old_action_value,
                 old_policy_log_prob,
                 policy_advantage,
                 dino_grid_target,
-            ) in enumerate(
-                zip(
-                    transitions,
-                    fields["return_targets"],
-                    fields["old_action_values"],
-                    fields["old_policy_log_probs"],
-                    fields["policy_advantages"],
-                    fields["dino_grid_targets"],
-                    strict=True,
-                )
+                loss_weight,
+            ) in zip(
+                transitions,
+                fields["return_targets"],
+                fields["old_action_values"],
+                fields["old_policy_log_probs"],
+                fields["policy_advantages"],
+                fields["dino_grid_targets"],
+                fields["loss_weights"],
+                strict=True,
             )
         )
-        weights = tuple(float(value) for value in fields["loss_weights"])
+
+    def _aggregate_planner_outputs(
+        self,
+        outputs: tuple[RLStepOutput, ...],
+        rows: tuple[_PlannerBatchRow, ...],
+    ) -> RLStepOutput:
+        """按 loss weight 合并 row objective；零权重 padding 不进入 metrics。"""
+
         total_loss = torch.stack(
             tuple(
-                output.loss * weight
-                for output, weight in zip(outputs, weights, strict=True)
+                output.loss * row.loss_weight
+                for output, row in zip(outputs, rows, strict=True)
             )
         ).sum()
         combined_losses: dict[str, torch.Tensor | None] = {}
         for name in outputs[0].losses:
             weighted_values = tuple(
-                output.losses[name].to(device=total_loss.device) * weight
-                for output, weight in zip(outputs, weights, strict=True)
+                output.losses[name].to(device=total_loss.device) * row.loss_weight
+                for output, row in zip(outputs, rows, strict=True)
                 if output.losses[name] is not None
             )
             combined_losses[name] = (
@@ -724,8 +954,8 @@ class RLAlgorithm:
             metrics={
                 name: sum(
                     output.metrics[name]
-                    for output, weight in zip(outputs, weights, strict=True)
-                    if weight != 0.0
+                    for output, row in zip(outputs, rows, strict=True)
+                    if row.loss_weight != 0.0
                 )
                 for name in outputs[0].metrics
             },
