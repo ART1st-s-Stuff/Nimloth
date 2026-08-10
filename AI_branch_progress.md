@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-08-10：撤回失败的 RL algorithm 可读性重构
+
+- 提交`7b1d0de9`曾把 planner transition 路径拆为多层 helper/dataclass。虽然相关 CPU
+  回归为`43 passed`，但它将同一条 loss/gradient 路径分散到更多参数和中间类型，
+  `algorithm.py`净增约247行；人类明确指出结果仍然难读。
+- 已以`7f9e70a2`完整回退，当前实现恢复到`dee93027`的算法内容；没有保留该次重构的
+  代码或进度结论。新增`ai_rules/known_errors/E0093_do_not_equate_more_helpers_with_readability.md`
+  防止再次把“函数更短/更多 helper”误作可读性证据。
+- 后续如重做，应先获得或提出可审查的单一主流程形状，并以减少同时活跃概念、重复逻辑与
+  跨函数跳转为标准；不能仅凭语义测试通过继续扩大抽象。
+
 ## 2026-08-09：Planner VERL 单根 FSDP objective 边界
 
 - ID149后开始训练端下一阶段。新增`PlannerObjectiveModule`，把完整`Agent`作为唯一注册子树，且
