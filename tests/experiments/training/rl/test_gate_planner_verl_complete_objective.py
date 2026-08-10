@@ -102,6 +102,26 @@ def test_complete_objective_launcher_is_strict_weights_only_one_by_eight() -> No
     assert launcher.index(source) < launcher.index(restore)
 
 
+def test_complete_objective_launcher_supports_preempt_one_by_four() -> None:
+    config = load_rl_config(
+        ROOT
+        / "configs/training/rl/"
+        "planner_policy_h1_complete_objective_fsdp_gate_1x4.yaml"
+    )
+    assert config.distributed.nodes == 1
+    assert config.distributed.world_size == 4
+    launcher = (
+        ROOT
+        / "experiments/training/rl/"
+        "gate_planner_verl_complete_objective_1x4_preempt.slurm"
+    ).read_text(encoding="utf-8")
+    assert "#SBATCH --partition=preempt" in launcher
+    assert "#SBATCH --nodes=1" in launcher
+    assert "#SBATCH --gres=gpu:4" in launcher
+    assert "planner_policy_h1_complete_objective_fsdp_gate_1x4.yaml" in launcher
+    assert "--world-size 4" in launcher
+
+
 def test_complete_objective_launcher_supports_preempt_two_by_four() -> None:
     config = load_rl_config(
         ROOT
