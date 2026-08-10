@@ -77,6 +77,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fresh-rollout-manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--world-size", type=int, default=8)
+    parser.add_argument("--workers-per-node", type=int, default=0)
+    parser.add_argument("--expected-node-count", type=int, default=1)
     parser.add_argument("--minimum-state-tokens", type=int, default=6000)
     parser.add_argument("--diagnostic-nonbehavior-prefix", action="store_true")
     parser.add_argument("--expected-manifest-sha256")
@@ -475,15 +477,35 @@ def _update_finished_wandb_status(
     raise RuntimeError("could not finalize W&B gate status") from last_error
 
 
-def _validate_worker_placement(rows: list[dict[str, Any]], world_size: int) -> None:
+def _validate_worker_placement(
+    rows: list[dict[str, Any]],
+    world_size: int,
+    *,
+    expected_node_count: int,
+    workers_per_node: int,
+) -> None:
     if len(rows) != world_size:
         raise RuntimeError("complete-objective gate did not initialize every rank")
     if sorted(int(row["rank"]) for row in rows) != list(range(world_size)):
         raise RuntimeError("complete-objective gate rank identities are invalid")
-    if len({row["hostname"] for row in rows}) != 1:
-        raise RuntimeError("complete-objective workers span multiple Slurm nodes")
-    if len({row["ray_node_id"] for row in rows}) != 1:
-        raise RuntimeError("complete-objective workers span multiple Ray nodes")
+    host_counts: dict[str, int] = {}
+    ray_node_counts: dict[str, int] = {}
+    for row in rows:
+        hostname = str(row["hostname"])
+        ray_node_id = str(row["ray_node_id"])
+        host_counts[hostname] = host_counts.get(hostname, 0) + 1
+        ray_node_counts[ray_node_id] = ray_node_counts.get(ray_node_id, 0) + 1
+    expected_counts = [workers_per_node] * expected_node_count
+    if sorted(host_counts.values()) != expected_counts:
+        raise RuntimeError(
+            "complete-objective Slurm worker placement differs from contract: "
+            f"counts={sorted(host_counts.values())}, expected={expected_counts}"
+        )
+    if sorted(ray_node_counts.values()) != expected_counts:
+        raise RuntimeError(
+            "complete-objective Ray worker placement differs from contract: "
+            f"counts={sorted(ray_node_counts.values())}, expected={expected_counts}"
+        )
     if len({row["cuda_device_uuid"] for row in rows}) != world_size:
         raise RuntimeError("complete-objective workers do not own distinct GPUs")
 
@@ -528,12 +550,28 @@ def run_gate(args: argparse.Namespace) -> dict[str, Any]:
         RayWorkerGroup,
     )
 
+    workers_per_node = args.workers_per_node or args.world_size
+    if (
+        workers_per_node < 1
+        or args.expected_node_count < 1
+        or workers_per_node * args.expected_node_count != args.world_size
+    ):
+        raise ValueError(
+            "worker topology must exactly cover world_size: "
+            f"workers_per_node={workers_per_node}, "
+            f"expected_node_count={args.expected_node_count}, "
+            f"world_size={args.world_size}"
+        )
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    if int(os.environ.get("SLURM_JOB_NUM_NODES", "0")) != 1:
-        raise RuntimeError("complete-objective gate requires one Slurm node")
-    if torch.cuda.device_count() != args.world_size:
-        raise RuntimeError("driver-visible GPU count differs from gate world size")
+    if int(os.environ.get("SLURM_JOB_NUM_NODES", "0")) != (
+        args.expected_node_count
+    ):
+        raise RuntimeError("Slurm node count differs from gate topology")
+    if torch.cuda.device_count() != workers_per_node:
+        raise RuntimeError(
+            "driver-visible GPU count differs from per-node gate topology"
+        )
 
     row, token_count, dino_target, source_metadata = _prepare_gate_row(args)
     rank_rounds = build_replicated_planner_gate_round(
@@ -568,15 +606,19 @@ def run_gate(args: argparse.Namespace) -> dict[str, Any]:
         },
     }
 
-    ray.init(
-        num_cpus=max(8, args.world_size * 4),
-        num_gpus=args.world_size,
-        include_dashboard=False,
-    )
+    ray_address = os.environ.get("RAY_ADDRESS")
+    if ray_address:
+        ray.init(address=ray_address)
+    else:
+        ray.init(
+            num_cpus=max(8, args.world_size * 4),
+            num_gpus=args.world_size,
+            include_dashboard=False,
+        )
     try:
         remote_worker = ray.remote(PlannerVERLFSDPWorker)
         resource_pool = RayResourcePool(
-            process_on_nodes=[args.world_size],
+            process_on_nodes=[workers_per_node] * args.expected_node_count,
             use_gpu=True,
             name_prefix="planner-complete-objective-",
             max_colocate_count=1,
@@ -587,7 +629,12 @@ def run_gate(args: argparse.Namespace) -> dict[str, Any]:
             name_prefix="planner_complete_objective",
         )
         init_rows = workers.init_model()
-        _validate_worker_placement(init_rows, args.world_size)
+        _validate_worker_placement(
+            init_rows,
+            args.world_size,
+            expected_node_count=args.expected_node_count,
+            workers_per_node=workers_per_node,
+        )
         before = _replicated_dict(
             workers.planner_component_fingerprints(),
             "initial component fingerprints",
@@ -681,6 +728,8 @@ def main() -> int:
                 else "planner_verl_complete_objective_id147_id149"
             ),
             "world_size": args.world_size,
+            "workers_per_node": args.workers_per_node or args.world_size,
+            "expected_node_count": args.expected_node_count,
             "minimum_state_tokens": args.minimum_state_tokens,
             "diagnostic_nonbehavior_prefix": args.diagnostic_nonbehavior_prefix,
         },

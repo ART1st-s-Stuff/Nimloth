@@ -6,6 +6,7 @@ import pytest
 
 from experiments.training.rl.gate_planner_verl_complete_objective import (
     _finite_metrics,
+    _validate_worker_placement,
 )
 from nimloth.config.rl import load_rl_config
 
@@ -50,6 +51,33 @@ def test_complete_objective_gate_requires_every_finite_loss_component() -> None:
         _finite_metrics([invalid, dict(invalid)])
 
 
+def test_complete_objective_worker_placement_supports_strict_two_by_four() -> None:
+    rows = [
+        {
+            "rank": rank,
+            "hostname": f"node-{rank // 4}",
+            "ray_node_id": f"ray-{rank // 4}",
+            "cuda_device_uuid": f"gpu-{rank}",
+        }
+        for rank in range(8)
+    ]
+    _validate_worker_placement(
+        rows,
+        8,
+        expected_node_count=2,
+        workers_per_node=4,
+    )
+
+    rows[-1]["hostname"] = "node-0"
+    with pytest.raises(RuntimeError, match="Slurm worker placement"):
+        _validate_worker_placement(
+            rows,
+            8,
+            expected_node_count=2,
+            workers_per_node=4,
+        )
+
+
 def test_complete_objective_launcher_is_strict_weights_only_one_by_eight() -> None:
     launcher = (
         ROOT
@@ -72,3 +100,19 @@ def test_complete_objective_launcher_is_strict_weights_only_one_by_eight() -> No
     source = "source /project/peilab/atst/flower/.env"
     restore = 'export WANDB_PROJECT="${REQUESTED_WANDB_PROJECT}"'
     assert launcher.index(source) < launcher.index(restore)
+
+
+def test_complete_objective_launcher_supports_preempt_two_by_four() -> None:
+    launcher = (
+        ROOT
+        / "experiments/training/rl/"
+        "gate_planner_verl_complete_objective_2x4_preempt.slurm"
+    ).read_text(encoding="utf-8")
+    assert "#SBATCH --partition=preempt" in launcher
+    assert "#SBATCH --nodes=2" in launcher
+    assert "#SBATCH --gpus-per-task=4" in launcher
+    assert '--num-gpus=4' in launcher
+    assert '--workers-per-node 4' in launcher
+    assert '--expected-node-count 2' in launcher
+    assert 'counts != [4.0, 4.0]' in launcher
+    assert 'export RAY_ADDRESS=' in launcher
