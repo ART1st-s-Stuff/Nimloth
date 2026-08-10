@@ -4,7 +4,7 @@
 #SBATCH --nodes=2
 #SBATCH --ntasks=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-task=4
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=256G
 #SBATCH --time=00:30:00
@@ -176,7 +176,7 @@ srun --overlap --nodes=2 --ntasks=2 --ntasks-per-node=1 \
   nvidia-smi --query-gpu=index,uuid,name,memory.total --format=csv,noheader
 
 srun --overlap --nodes=1 --ntasks=1 --nodelist="${HEAD_NODE}" \
-  --gpus-per-task=4 --cpus-per-task=32 \
+  --gres=gpu:4 --cpus-per-task=32 \
   "${RAY}" start --block --head \
     --node-ip-address="${HEAD_IP}" \
     --port="${RAY_PORT}" \
@@ -185,7 +185,7 @@ srun --overlap --nodes=1 --ntasks=1 --nodelist="${HEAD_NODE}" \
 RAY_STEP_PIDS+=("$!")
 sleep 5
 srun --overlap --nodes=1 --ntasks=1 --nodelist="${WORKER_NODE}" \
-  --gpus-per-task=4 --cpus-per-task=32 \
+  --gres=gpu:4 --cpus-per-task=32 \
   "${RAY}" start --block --address="${RAY_ADDRESS}" \
     --node-ip-address="${WORKER_IP}" \
     --temp-dir="${RAY_TEMP_DIR}" \

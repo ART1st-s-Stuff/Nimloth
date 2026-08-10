@@ -110,7 +110,7 @@ def test_complete_objective_launcher_supports_preempt_two_by_four() -> None:
     ).read_text(encoding="utf-8")
     assert "#SBATCH --partition=preempt" in launcher
     assert "#SBATCH --nodes=2" in launcher
-    assert "#SBATCH --gpus-per-task=4" in launcher
+    assert "#SBATCH --gres=gpu:4" in launcher
     assert '--num-gpus=4' in launcher
     assert '--workers-per-node 4' in launcher
     assert '--expected-node-count 2' in launcher
