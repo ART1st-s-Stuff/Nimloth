@@ -129,7 +129,7 @@ class _PlannerAlgorithm:
         self.old_value_calls += 1
         return torch.tensor(0.5)
 
-    def actor_transition_step(
+    def planner_transition_step(
         self,
         _runtime,
         _transition,
@@ -167,7 +167,7 @@ class _PlannerAlgorithm:
             },
         )
 
-    def actor_transition_batch_step(
+    def planner_transition_batch_step(
         self,
         runtime,
         transitions,
@@ -183,7 +183,7 @@ class _PlannerAlgorithm:
     ):  # type: ignore[no-untyped-def]
         self.batch_sizes.append(len(transitions))
         outputs = tuple(
-            self.actor_transition_step(
+            self.planner_transition_step(
                 runtime,
                 transition,
                 return_target=return_target,

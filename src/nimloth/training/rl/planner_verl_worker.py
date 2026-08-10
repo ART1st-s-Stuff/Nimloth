@@ -79,7 +79,7 @@ class PlannerObjectiveModule(nn.Module):
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """Compute all configured planner losses through this root forward."""
 
-        output = self._algorithm.actor_transition_batch_step(
+        output = self._algorithm.planner_transition_batch_step(
             self._runtime,
             inputs.transitions,
             return_targets=inputs.return_targets,

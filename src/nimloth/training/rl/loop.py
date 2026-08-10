@@ -362,7 +362,7 @@ class RLTrainingLoop:
                                 policy_advantage,
                                 dino_grid_target,
                             ) = micro_batch[0]
-                            output = self.algorithm.actor_transition_step(
+                            output = self.algorithm.planner_transition_step(
                                 self.model_runtime,
                                 transition,
                                 return_target=return_target,
@@ -387,7 +387,7 @@ class RLTrainingLoop:
                                 include=not work.is_padding,
                             )
                         else:
-                            output = self.algorithm.actor_transition_batch_step(
+                            output = self.algorithm.planner_transition_batch_step(
                                 self.model_runtime,
                                 tuple(row[1] for row in micro_batch),
                                 return_targets=tuple(row[2] for row in micro_batch),

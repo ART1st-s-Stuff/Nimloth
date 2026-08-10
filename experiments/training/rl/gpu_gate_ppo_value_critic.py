@@ -539,7 +539,7 @@ def main() -> int:
             else:
                 model.zero_grad(set_to_none=True)
                 world_model.zero_grad(set_to_none=True)
-            output = algorithm.actor_transition_step(
+            output = algorithm.planner_transition_step(
                 runtime,
                 transition,
                 return_target=return_target,

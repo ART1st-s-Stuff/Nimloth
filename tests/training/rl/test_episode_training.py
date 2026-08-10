@@ -12,6 +12,22 @@ from nimloth.agent import (
     PlannerPolicyTrace,
 )
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
+from nimloth.config.agent import AgentConfig, AgentPlanningConfig
+from nimloth.config.rl import (
+    ActorConfig,
+    DistributedConfig,
+    FreezeConfig,
+    GradientConfig,
+    PlannerPolicyConfig,
+    PredictorConfig,
+    RLConfig,
+    RLLoopConfig,
+    TokenCreditConfig,
+    TrainingConfig,
+    ValidationConfig,
+    ValueHeadConfig,
+)
+from nimloth.config.rollout import RolloutConfig
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
 from nimloth.rollout import RolloutTrajectory
 from nimloth.rollout.record_format import STEP_REWARD_PROVENANCE
@@ -229,22 +245,43 @@ def _algorithm(
     value_clip_range: float = 0.2,
     planner_policy_enabled: bool = False,
 ) -> RLAlgorithm:
+    search_mode = "policy" if planner_policy_enabled else "greedy"
     return RLAlgorithm(
-        history_size=4,
+        config=RLConfig(
+            agent=AgentConfig(
+                planning=AgentPlanningConfig(
+                    enabled=True,
+                    horizon=1,
+                    search_mode=search_mode,
+                    device="cpu",
+                )
+            ),
+            actor=ActorConfig(entropy_coeff=0.0),
+            token_credit=TokenCreditConfig(),
+            freeze=FreezeConfig(),
+            gradient=GradientConfig(state_source="recompute"),
+            predictor=PredictorConfig(
+                history_size=4,
+                lambda_sigreg=0.0,
+                train_wm=train_world_model,
+                lambda_wm=0.75,
+                lambda_dino=dino_weight,
+            ),
+            value_head=ValueHeadConfig(
+                rank_margin=0.1,
+                lambda_rank=0.0,
+                ppo_clip_range=(
+                    None if planner_policy_enabled else value_clip_range
+                ),
+            ),
+            planner_policy=PlannerPolicyConfig(enabled=planner_policy_enabled),
+            rollout=RolloutConfig(),
+            rl=RLLoopConfig(),
+            validation=ValidationConfig(),
+            training=TrainingConfig(),
+            distributed=DistributedConfig(),
+        ),
         sigreg=None,
-        sigreg_weight=0.0,
-        value_rank_margin=0.1,
-        value_rank_weight=0.0,
-        value_ppo_clip_range=value_clip_range,
-        ppo_clip_ratio=0.2,
-        entropy_weight=0.0,
-        train_world_model=train_world_model,
-        world_model_weight=0.75,
-        dino_grid_weight=dino_weight,
-        planner_policy_enabled=planner_policy_enabled,
-        planner_policy_clip_ratio=0.2,
-        planner_policy_entropy_weight=0.0,
-        planner_policy_temperature=1.0,
     )
 
 
@@ -298,7 +335,7 @@ def test_value_loss_on_current_state_reaches_full_prefix_qwen_but_not_wm() -> No
     runtime, backbone, builder, projector, predictor, value_head = _runtime()
     transition = episode.transitions[2]
 
-    output = _algorithm(value_clip_range=100.0).actor_transition_step(
+    output = _algorithm(value_clip_range=100.0).planner_transition_step(
         runtime,
         transition,
         return_target=torch.tensor(5.0),
@@ -368,7 +405,7 @@ def test_planner_policy_ppo_reaches_full_prefix_qwen_and_policy_head() -> None:
     transition = episode.transitions[step_index]
     old = algorithm.planner_old_policy_statistics(runtime, transition)
 
-    output = algorithm.actor_transition_step(
+    output = algorithm.planner_transition_step(
         runtime,
         transition,
         return_target=torch.tensor(5.0),
@@ -397,7 +434,7 @@ def test_transition_wm_target_is_saved_next_state_not_a_second_qwen_forward() ->
     )[0]
     runtime, _backbone, builder, _projector, _predictor, _value_head = _runtime()
 
-    output = _algorithm(train_world_model=True).actor_transition_step(
+    output = _algorithm(train_world_model=True).planner_transition_step(
         runtime,
         episode.transitions[1],
         return_target=episode.return_targets[1],
@@ -462,7 +499,7 @@ def test_batched_planner_transition_matches_scalar_losses_and_gradients() -> Non
 
     scalar = prepare()
     scalar_outputs = tuple(
-        scalar[7].actor_transition_step(
+        scalar[7].planner_transition_step(
             scalar[0],
             transition,
             return_target=return_target,
@@ -482,7 +519,7 @@ def test_batched_planner_transition_matches_scalar_losses_and_gradients() -> Non
     scalar_loss.backward()
 
     batched = prepare()
-    batched_output = batched[7].actor_transition_batch_step(
+    batched_output = batched[7].planner_transition_batch_step(
         batched[0],
         transitions,
         return_targets=return_targets,
@@ -528,7 +565,7 @@ def test_transition_adds_dino_loss_for_each_real_next_observation() -> None:
     runtime, *_rest = _runtime()
 
     outputs = [
-        _algorithm(train_world_model=True, dino_weight=0.25).actor_transition_step(
+        _algorithm(train_world_model=True, dino_weight=0.25).planner_transition_step(
             runtime,
             transition,
             return_target=episode.return_targets[index],
@@ -558,7 +595,7 @@ def test_transition_rejects_detached_rollout_qwen_mode() -> None:
     )
 
     with pytest.raises(RuntimeError, match="full-prefix Qwen recomputation"):
-        _algorithm().actor_transition_step(
+        _algorithm().planner_transition_step(
             detached_runtime,
             episode.transitions[0],
             return_target=episode.return_targets[0],

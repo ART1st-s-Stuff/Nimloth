@@ -17,6 +17,22 @@ from nimloth.agent import (
     PolicyStateTokenBudgetExceeded,
 )
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
+from nimloth.config.agent import AgentConfig
+from nimloth.config.rl import (
+    ActorConfig,
+    DistributedConfig,
+    FreezeConfig,
+    GradientConfig,
+    PlannerPolicyConfig,
+    PredictorConfig,
+    RLConfig,
+    RLLoopConfig,
+    TokenCreditConfig,
+    TrainingConfig,
+    ValidationConfig,
+    ValueHeadConfig,
+)
+from nimloth.config.rollout import RolloutConfig
 from nimloth.environment.navigation import NAVIGATION_ACTION_SPACE
 from nimloth.rollout import (
     RolloutTrajectory,
@@ -276,6 +292,53 @@ def _batch() -> RLBatch:
     return build_rl_batch(windows, gamma=0.99, device=torch.device("cpu"))
 
 
+def _rl_config(
+    *,
+    history_size: int = 2,
+    sigreg_weight: float = 0.0,
+    value_rank_weight: float = 1.0,
+    credit_assignment: str = "action",
+    token_gamma: float | None = None,
+    token_gae_lambda: float | None = None,
+    token_value_loss_weight: float | None = None,
+    reference_kl_loss_weight: float = 0.0,
+    world_model_weight: float = 1.0,
+    dino_grid_weight: float = 0.0,
+) -> RLConfig:
+    return RLConfig(
+        agent=AgentConfig(),
+        actor=ActorConfig(
+            clip_ratio=0.2,
+            entropy_coeff=0.0,
+            credit_assignment=credit_assignment,
+            reference_kl_loss_weight=reference_kl_loss_weight,
+        ),
+        token_credit=TokenCreditConfig(
+            gamma=token_gamma,
+            gae_lambda=token_gae_lambda,
+            value_loss_weight=token_value_loss_weight,
+        ),
+        freeze=FreezeConfig(),
+        gradient=GradientConfig(state_source="recompute"),
+        predictor=PredictorConfig(
+            history_size=history_size,
+            lambda_sigreg=sigreg_weight,
+            lambda_wm=world_model_weight,
+            lambda_dino=dino_grid_weight,
+        ),
+        value_head=ValueHeadConfig(
+            rank_margin=0.1,
+            lambda_rank=value_rank_weight,
+        ),
+        planner_policy=PlannerPolicyConfig(),
+        rollout=RolloutConfig(),
+        rl=RLLoopConfig(),
+        validation=ValidationConfig(),
+        training=TrainingConfig(),
+        distributed=DistributedConfig(),
+    )
+
+
 def _algorithm(
     *,
     sigreg: SequenceSIGReg | None = None,
@@ -305,13 +368,8 @@ def _algorithm(
     )
     return (
         RLAlgorithm(
-            history_size=2,
+            config=_rl_config(sigreg_weight=0.1 if sigreg is not None else 0.0),
             sigreg=sigreg,
-            sigreg_weight=0.1 if sigreg is not None else 0.0,
-            value_rank_margin=0.1,
-            value_rank_weight=1.0,
-            ppo_clip_ratio=0.2,
-            entropy_weight=0.0,
         ),
         RLModelRuntime(
             agent=agent,
@@ -539,15 +597,7 @@ def test_rl_preserves_multiple_latent_tokens_until_state_projection() -> None:
             value_head=ValueHead(emb_dim=2, num_actions=8, hidden_dim=2),
         ),
     )
-    algorithm = RLAlgorithm(
-        history_size=2,
-        sigreg=None,
-        sigreg_weight=0.0,
-        value_rank_margin=0.1,
-        value_rank_weight=1.0,
-        ppo_clip_ratio=0.2,
-        entropy_weight=0.0,
-    )
+    algorithm = RLAlgorithm(config=_rl_config(), sigreg=None)
     runtime = RLModelRuntime(
         agent=agent,
         input_builder=input_builder,
@@ -590,15 +640,12 @@ def test_grid_rl_uses_same_state_and_dino_losses_as_sft2() -> None:
     agent = Agent(backbone=backbone, wm=world_model)
     recording = _RecordingSIGReg()
     algorithm = RLAlgorithm(
-        history_size=2,
+        config=_rl_config(
+            sigreg_weight=0.1,
+            world_model_weight=0.75,
+            dino_grid_weight=0.25,
+        ),
         sigreg=SequenceSIGReg(regularizer=recording),
-        sigreg_weight=0.1,
-        value_rank_margin=0.1,
-        value_rank_weight=1.0,
-        ppo_clip_ratio=0.2,
-        entropy_weight=0.0,
-        world_model_weight=0.75,
-        dino_grid_weight=0.25,
     )
     batch = _batch()
     flat_dino_targets = torch.stack(
@@ -685,17 +732,14 @@ def test_token_credit_trains_policy_and_token_critic_separately() -> None:
     _, base_runtime, *_ = _algorithm()
     runtime = replace(base_runtime, policy_replay=token_replay)
     algorithm = RLAlgorithm(
-        history_size=2,
+        config=_rl_config(
+            value_rank_weight=0.0,
+            credit_assignment="token",
+            token_gamma=1.0,
+            token_gae_lambda=1.0,
+            token_value_loss_weight=1.0,
+        ),
         sigreg=None,
-        sigreg_weight=0.0,
-        value_rank_margin=0.1,
-        value_rank_weight=0.0,
-        ppo_clip_ratio=0.2,
-        entropy_weight=0.0,
-        credit_assignment="token",
-        token_gamma=1.0,
-        token_gae_lambda=1.0,
-        token_value_loss_weight=1.0,
     )
 
     output = algorithm.sequence_step(runtime, batch)
@@ -728,18 +772,15 @@ def test_reference_kl_is_actor_loss_only_and_uses_reasoning_tokens() -> None:
     _, base_runtime, *_ = _algorithm()
     runtime = replace(base_runtime, policy_replay=token_replay)
     algorithm = RLAlgorithm(
-        history_size=2,
+        config=_rl_config(
+            value_rank_weight=0.0,
+            credit_assignment="token",
+            token_gamma=1.0,
+            token_gae_lambda=1.0,
+            token_value_loss_weight=1.0,
+            reference_kl_loss_weight=0.001,
+        ),
         sigreg=None,
-        sigreg_weight=0.0,
-        value_rank_margin=0.1,
-        value_rank_weight=0.0,
-        ppo_clip_ratio=0.2,
-        entropy_weight=0.0,
-        credit_assignment="token",
-        token_gamma=1.0,
-        token_gae_lambda=1.0,
-        token_value_loss_weight=1.0,
-        reference_kl_loss_weight=0.001,
     )
 
     output = algorithm.sequence_step(runtime, batch)

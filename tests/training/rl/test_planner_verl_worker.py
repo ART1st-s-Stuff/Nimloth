@@ -30,7 +30,7 @@ class _Algorithm:
         self.weight = torch.nn.Parameter(torch.tensor(2.0))
         self.calls: list[dict] = []
 
-    def actor_transition_batch_step(self, _runtime, transitions, **kwargs):  # type: ignore[no-untyped-def]
+    def planner_transition_batch_step(self, _runtime, transitions, **kwargs):  # type: ignore[no-untyped-def]
         self.calls.append({"transitions": transitions, **kwargs})
         return SimpleNamespace(
             loss=self.weight.square() * sum(kwargs["loss_weights"]),
@@ -70,7 +70,7 @@ class _ObjectiveAlgorithm:
         self.calls: list[dict] = []
         self.sigreg = None
 
-    def actor_transition_batch_step(self, runtime, transitions, **kwargs):  # type: ignore[no-untyped-def]
+    def planner_transition_batch_step(self, runtime, transitions, **kwargs):  # type: ignore[no-untyped-def]
         self.calls.append({"runtime": runtime, "transitions": transitions, **kwargs})
         return SimpleNamespace(
             loss=runtime.agent.weight.square() * sum(kwargs["loss_weights"]),

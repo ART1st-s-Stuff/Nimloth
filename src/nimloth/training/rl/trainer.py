@@ -1025,7 +1025,7 @@ def train_rl(
             token_value_head=token_value_head,
         )
         algorithm = RLAlgorithm(
-            history_size=config.predictor.history_size,
+            config=config,
             sigreg=(
                 SequenceSIGReg(
                     knots=config.predictor.sigreg_knots,
@@ -1034,24 +1034,6 @@ def train_rl(
                 if config.predictor.lambda_sigreg > 0.0
                 else None
             ),
-            sigreg_weight=config.predictor.lambda_sigreg,
-            value_rank_margin=config.value_head.rank_margin,
-            value_rank_weight=config.value_head.lambda_rank,
-            value_ppo_clip_range=config.value_head.ppo_clip_range,
-            planner_policy_enabled=config.planner_policy.enabled,
-            planner_policy_clip_ratio=config.planner_policy.clip_ratio,
-            planner_policy_entropy_weight=config.planner_policy.entropy_coeff,
-            planner_policy_temperature=config.planner_policy.temperature,
-            ppo_clip_ratio=config.actor.clip_ratio,
-            entropy_weight=config.actor.entropy_coeff,
-            credit_assignment=config.actor.credit_assignment,
-            token_gamma=config.token_credit.gamma,
-            token_gae_lambda=config.token_credit.gae_lambda,
-            token_value_loss_weight=config.token_credit.value_loss_weight,
-            reference_kl_loss_weight=config.actor.reference_kl_loss_weight,
-            train_world_model=config.predictor.train_wm,
-            world_model_weight=config.predictor.lambda_wm,
-            dino_grid_weight=config.predictor.lambda_dino,
         )
         dino_grid_targets = None
         if config.predictor.train_wm and config.predictor.lambda_dino > 0.0:

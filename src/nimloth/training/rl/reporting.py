@@ -5,12 +5,104 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+import torch
 
 from nimloth.config.rl import RLConfig
+from nimloth.training.rl.policy import PPOPolicyLoss
+from nimloth.training.rl.value import PPOActionValueLoss
 from nimloth.util.csv_log import CSVRecordWriter
 from nimloth.util.distributed import is_main
 from nimloth.util.wandb import init_wandb_run, log_metrics
+
+
+def planner_step_metrics(
+    *,
+    losses: dict[str, torch.Tensor | None],
+    total_loss: torch.Tensor,
+    old_action_value: torch.Tensor,
+    selected_action_values: torch.Tensor,
+    value_objective: PPOActionValueLoss | None,
+    policy_objective: PPOPolicyLoss | None,
+    policy_advantage: torch.Tensor | None,
+    total_transitions: int,
+    world_model_weight: float,
+    dino_grid_weight: float,
+) -> dict[str, float]:
+    """从 planner objective 计算 CSV/W&B 指标，不参与训练计算图。"""
+
+    def scalar(value: torch.Tensor | int | float) -> float:
+        if isinstance(value, torch.Tensor):
+            return float(value.detach().item())
+        return float(value)
+
+    value_loss = cast(torch.Tensor, losses["value"])
+    policy_loss = losses["policy"]
+    return {
+        "wm_mse": scalar(losses["wm"]),
+        "dino_grid_mse": scalar(
+            losses["dino"] if losses["dino"] is not None else 0
+        ),
+        "lambda_wm": world_model_weight,
+        "lambda_dino": dino_grid_weight,
+        "sigreg_loss": 0.0,
+        "value_loss": scalar(value_loss),
+        "value_mc_mse": scalar(value_loss),
+        "value_clipped_mse": scalar(
+            value_objective.clipped_mse / total_transitions
+            if value_objective is not None
+            else 0
+        ),
+        "value_clip_fraction": scalar(
+            value_objective.clip_fraction / total_transitions
+            if value_objective is not None
+            else 0
+        ),
+        "value_old_mean": scalar(old_action_value / total_transitions),
+        "value_delta_abs_mean": scalar(
+            (
+                selected_action_values.detach()
+                - old_action_value.to(
+                    device=selected_action_values.device,
+                    dtype=selected_action_values.dtype,
+                )
+            ).abs().mean()
+            / total_transitions
+        ),
+        "value_rank": 0.0,
+        "total_loss": scalar(total_loss),
+        "actor_loss": 0.0,
+        "planner_policy_loss": scalar(
+            policy_loss if policy_loss is not None else 0
+        ),
+        "planner_policy_entropy": scalar(
+            policy_objective.entropy / total_transitions
+            if policy_objective is not None
+            else 0
+        ),
+        "planner_policy_clip_fraction": scalar(
+            policy_objective.clip_fraction / total_transitions
+            if policy_objective is not None
+            else 0
+        ),
+        "planner_policy_mean_ratio": scalar(
+            policy_objective.probability_ratio.mean() / total_transitions
+            if policy_objective is not None
+            else 0
+        ),
+        "planner_policy_mean_advantage": scalar(
+            policy_advantage / total_transitions
+            if policy_advantage is not None
+            else 0
+        ),
+        "planner_policy_actions": (
+            1.0 / total_transitions if policy_objective is not None else 0.0
+        ),
+        "token_value_loss": 0.0,
+        "reference_kl_loss": 0.0,
+        "policy_tokens": 0.0,
+    }
 
 
 _LOG_COLUMNS = (

@@ -33,7 +33,7 @@ class GateAlgorithm:
     def __init__(self, *, rank: int) -> None:
         self.rank = rank
 
-    def actor_transition_batch_step(
+    def planner_transition_batch_step(
         self,
         runtime: Any,
         transitions: tuple[GateTransition, ...],
