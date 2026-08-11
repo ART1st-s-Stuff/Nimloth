@@ -2,6 +2,22 @@
 
 > Trellis 迁移后，新任务的详细要求、设计、执行状态和检查写入 `.trellis/tasks/`。本文件在迁移期只新增简短的 branch-level milestone；以下旧内容保留为历史证据，不再作为每个 AI 会话的默认任务入口。
 
+## 2026-08-11：VAGEN-Lite actor-agnostic joint-policy scaffold M1
+
+- 新建 Nimloth 分支/worktree `feat/vagen-lite-joint-policy-scaffold`，并将 `external/VAGEN` 从 legacy gitlink 切到项目 fork 的 VAGEN-Lite `origin/main@a6b8c8d`，子模块分支为 `nimloth/vagen-lite-joint-policy-scaffold`；没有复用仍绑定 legacy PlannerPolicyHead 的旧 scaffold 分支。
+- actor logits、action prior 随机变量语义、多步执行方式和 PPO ratio 均保持未决；计划保存在 VAGEN `docs/joint_policy_scaffold.md`。M1 只实现 opt-in async/no-concat decision ledger，不新增 actor logits、behavior log-prob、PPO loss、trainable module 或 checkpoint state。
+- `vagen_decision_ledger_v1`保存 versioned action-space、每个 turn 的完整实际执行动作、来源、明确为 false 的 actor-policy ownership、turn reward 与 terminal/truncated 状态；Navigation producer、AgentLoopOutput/DataProto 透传以及 trainer pre-replay 严格校验/覆盖指标已接通。
+- system-injected fallback token 不再冒充 LLM sampled token；turn reward 改锚定最后一个真实 policy token，避免 no-concat GAE 丢失 fallback turn reward。latent fallback 只对 `prompt_format=latent_plan`启用；remote step 的 reward/done/info 改为严格类型检查，不再静默强转。
+- 本地 dependency-light 单元/wiring 回归`30 passed`，7个生产文件`py_compile`、`git diff --check`和定向 diagnostics 通过。当前环境缺少完整 VAGEN 依赖，尚未运行真实 Ray/DataProto、多模态 rollout、PPO、checkpoint 或 GPU 门禁，不能称 joint PPO 已完成。
+
+## 2026-08-10：新版 VAGEN-Lite 与当前 RL 的只读迁移评估
+
+- 已核验 `external/VAGEN` 当前检出 `192c35a` 属于 `vagen-legacy` 谱系；新版是同一仓库 `main` 的 VAGEN-Lite（包版本 `26.2.5`），两者没有 merge-base。当前 checkout 因而不能作为新版 API 的运行验证环境。
+- 当前正式 RL 入口仍是 Nimloth 自己的 `CLI → train_rl() → RLTrainingLoop`；仓库中的 Planner VERL/FSDP worker 只由 mechanics/complete-objective gate 调用，尚未接入正式 CLI/launcher。
+- 新版 VAGEN-Lite 可承担异步 Gym 环境/agent-loop、Ray/VERL rollout 调度以及标准 token PPO 的外壳，但当前 planner RL 的完整联合 FSDP objective、8-way `PlannerPolicyHead` 行为分布、真实 CoT/terminal state 审计、fresh rollout exactly-once 消费和原子 checkpoint 事务都不能交给其标准 actor/critic 流程。
+- 结论：可以做“新版 VAGEN-Lite 作为环境与 rollout 层、Nimloth 保留 planner/训练事务层”的适配迁移；不可无损地把当前完整 RL 主路径直接迁入新版 VAGEN 标准 PPO trainer。尚未修改代码、依赖或 submodule，亦未执行训练/实验。
+
+
 ---
 
 ## 2026-08-25：Trellis 三平台初始化
