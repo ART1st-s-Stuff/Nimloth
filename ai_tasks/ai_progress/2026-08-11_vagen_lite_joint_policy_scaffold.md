@@ -11,6 +11,7 @@
 - VAGEN：`nimloth/vagen-lite-joint-policy-scaffold`
 - VAGEN 起点：`a6b8c8d03cedca169637a2e8cec9d868f5b5ad35`
 - VAGEN M1 commit：`45cb9928a8d9316037e1fb86c0dff3d004705097`
+- VAGEN M2 contract commit：`25da71df5f1408d54b4b761ff40c985d9118c99c`
 - VERL gitlink：`ae269bda8ef43fad44796254146471e89d89894a`
 
 ## 当前计划
@@ -20,7 +21,8 @@
 3. action prior 是 LLM action-token boundary logits 的 softmax；实际采样的 prior action token log-prob 属于 `pi_LLM`，完整 prior 分布作为 guided policy 条件。
 4. M2 暂采用 scheme B：旧 ValueHead 保持 critic，guided logits 为 `alpha * l_prior + beta * stopgrad(frozen_Q)`，没有独立 actor module。
 5. rollout/update 内复用 rollout-time frozen critic 的 all-action guidance scores；critic 更新后禁止重算同一批 behavior guidance。
-6. 待人类确认 guided-policy loss 是否通过 `l_prior`反传 LLM，随后再实现 ledger v2、behavior/replay log-prob、joint ratio 和 checkpoint snapshot boundary。
+6. `backprop_to_llm`保持无默认值并成为必填合同；ledger v2、versioned behavior record、reference/Torch guided math 和 contract identity 已实现。
+7. `joint_policy.enabled=true`当前显式 fail closed，直到人类决定旧 ValueHead 接收哪一种 state，并完成 Q owner、rollout sampler、replay 和 checkpoint snapshot boundary。
 
 ## 已完成
 
@@ -31,7 +33,9 @@
 - Navigation 输出可核验的 0-based action-space contract；no-concat agent-loop 将 ledger 原样传入 DataProto，trainer 在 old-log-prob replay 前严格校验并记录覆盖指标。
 - system fallback token 从 LLM response mask 排除，同时把 turn reward 锚定到最后一个真实 policy token，避免 reward 被 mask 丢弃。
 - latent fallback adapter 仅在 `prompt_format=latent_plan` 启用；remote step transport 不再把字符串 done、布尔 reward 或缺失字段静默强转成合法值。
-- 两轮独立 code review 的 P1/P2 均已逐项修复；最终独立复审结论为 `APPROVED`，无 blocker。
+- M1 两轮独立 code review 的 P1/P2 均已逐项修复；最终独立复审结论为 `APPROVED`。
+- M2 合同层新增显式 Scheme-B 配置、dtype-aware 数值合同、Torch 公式、严格 behavior schema/round-trip、action-token/contract/snapshot 绑定与 ledger v2。三轮 review 修复了 silent stock-PPO fallback、伪造 ownership、logprob 容差和 overflow 等问题；最终复审无 blocker。
+- 只读核验确认 VAGEN 现有 token critic 不是 `[B,8] Q(s,a)`，transition reward predictor 也不是旧 ValueHead。旧 Nimloth ValueHead 输入 state 与 VAGEN `LatentStateEncoder` state 不同，未获人类决定前禁止直接加载旧权重或用其他模块冒充。
 
 ## 文件修改
 
@@ -41,22 +45,24 @@
 - `external/VAGEN/vagen/envs/navigation/navigation_env.py`：versioned action-space 与完整 executed action 字段。
 - `external/VAGEN/vagen/envs_remote/gym_image_env_client.py`、`vagen/utils/remote_step_protocol.py`：严格 remote step 解码。
 - `external/VAGEN/vagen/ray_trainer.py`、`vagen/configs/vagen_multiturn.yaml`：opt-in gate、pre-replay validation 和 metrics。
-- `external/VAGEN/tests/test_decision_ledger*.py`、`test_remote_step_protocol.py`：单元与 wiring 回归。
+- `external/VAGEN/vagen/joint_policy/`：Scheme-B config、contract id、behavior schema、reference/Torch math；README明确未完成 ownership。
+- `external/VAGEN/tests/test_decision_ledger*.py`、`test_joint_policy_*.py`、`test_remote_step_protocol.py`：单元、可选autograd与 wiring 回归。
 - 本文件：任务实时进度。
 
 ## 验证
 
 - RED：初次运行因 `vagen.agent_loop.decision_ledger` 不存在失败；review 后新增 action-space/type/reward-anchor 与 remote protocol RED 均先失败。
-- GREEN：`PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_*.py' -v`：`30 passed`。
-- `python3 -m py_compile`：7 个受影响生产 Python 文件通过。
+- M1 GREEN：最初为`30 passed`。
+- M2合同最终：`46 passed, 3 skipped`；3项skip均为当前环境缺torch的真实autograd/reference parity/overflow测试。
+- `python3 -m py_compile`：受影响生产 Python 文件通过。
 - `git diff --check`：通过。
 - VS Code diagnostics：ledger、gym no-concat 和 trainer 0 diagnostics。
 - 当前本地环境缺少 torch/Ray/OmegaConf/httpx/PIL，未运行真实 DataProto/Ray、多模态 rollout、PPO、checkpoint 或 GPU 测试；禁止把本阶段表述为 joint PPO 已完成。
 
 ## 待确认问题
 
-- guided-policy factor 是否通过 `l_prior` 反传 LLM；若 detach，则 scheme B 在一次 PPO update 内没有可训练 actor 参数，guided ratio 恒为1。
-- `alpha`、`beta`、prior temperature、warmup/KL target。
+- 旧 ValueHead 在 VAGEN 中接收哪种 state：完整复用 Nimloth StateProjector/WM state，还是改用 VAGEN world state 并重新初始化；两者不可伪装为等价。
+- `backprop_to_llm`、`alpha`、`beta`、prior temperature、score dtype、warmup/KL target 的正式实验值。
 - 未执行 action slot 的 Q 校准与探索保护。
 - frozen critic snapshot 的刷新和 checkpoint 边界。
 - 模拟尾部 action 的生成方式及其非 PPO 辅助目标。
