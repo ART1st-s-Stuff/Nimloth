@@ -9,6 +9,7 @@
 - `vagen_decision_ledger_v1`保存 versioned action-space、每个 turn 的完整实际执行动作、来源、明确为 false 的 actor-policy ownership、turn reward 与 terminal/truncated 状态；Navigation producer、AgentLoopOutput/DataProto 透传以及 trainer pre-replay 严格校验/覆盖指标已接通。
 - system-injected fallback token 不再冒充 LLM sampled token；turn reward 改锚定最后一个真实 policy token，避免 no-concat GAE 丢失 fallback turn reward。latent fallback 只对 `prompt_format=latent_plan`启用；remote step 的 reward/done/info 改为严格类型检查，不再静默强转。
 - 本地 dependency-light 单元/wiring 回归`30 passed`，7个生产文件`py_compile`、`git diff --check`和定向 diagnostics 通过。当前环境缺少完整 VAGEN 依赖，尚未运行真实 Ray/DataProto、多模态 rollout、PPO、checkpoint 或 GPU 门禁，不能称 joint PPO 已完成。
+- 人类随后确认 provisional policy：每个turn只执行第一动作并从下一真实observation重规划；action prior来自LLM action-token boundary logits的softmax，实际采样prior token属于`pi_LLM`；M2先采用scheme B，以旧ValueHead作为critic，通过`softmax(alpha*l_prior + beta*stopgrad(frozen_Q))`定义guided policy。rollout/update必须复用rollout-time frozen Q guidance，禁止critic更新后重算同一behavior。尚待确认guided-policy loss是否经`l_prior`反传LLM；若detach，本轮guided ratio没有可训练参数而恒为1。
 
 ## 2026-08-10：新版 VAGEN-Lite 与当前 RL 的只读迁移评估
 

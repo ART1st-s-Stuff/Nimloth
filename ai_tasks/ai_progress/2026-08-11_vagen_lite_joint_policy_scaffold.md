@@ -15,12 +15,12 @@
 
 ## 当前计划
 
-1. 保存 joint-policy scaffold 设计和明确的 deferred decisions。
-2. 先用失败测试定义 no-concat decision ledger。
-3. 记录每个 turn 的完整实际执行动作、来源、actor-policy ownership、reward 与终止语义。
-4. 贯通 `AgentLoopOutput.extra_fields → DataProto.non_tensor_batch → trainer` 严格校验和指标。
-5. 不实现 actor logits、joint behavior log-prob、PPO loss 或新的可训练模块。
-6. 完成定向单元测试、编译和 diff 检查后分别提交 VAGEN 与 Nimloth gitlink。
+1. M1 decision ledger 已完成并保持不变。
+2. 人类已确认每个真实 turn 只执行 guided policy 的第一动作，随后从真实 observation 重新规划；模拟尾部不进入 environment PPO。
+3. action prior 是 LLM action-token boundary logits 的 softmax；实际采样的 prior action token log-prob 属于 `pi_LLM`，完整 prior 分布作为 guided policy 条件。
+4. M2 暂采用 scheme B：旧 ValueHead 保持 critic，guided logits 为 `alpha * l_prior + beta * stopgrad(frozen_Q)`，没有独立 actor module。
+5. rollout/update 内复用 rollout-time frozen critic 的 all-action guidance scores；critic 更新后禁止重算同一批 behavior guidance。
+6. 待人类确认 guided-policy loss 是否通过 `l_prior`反传 LLM，随后再实现 ledger v2、behavior/replay log-prob、joint ratio 和 checkpoint snapshot boundary。
 
 ## 已完成
 
@@ -55,4 +55,8 @@
 
 ## 待确认问题
 
-actor logits、action prior 的随机变量语义、多步 action 的真实执行方式、PPO ratio 粒度和新增状态的 checkpoint ownership 均留待人类后续决定。
+- guided-policy factor 是否通过 `l_prior` 反传 LLM；若 detach，则 scheme B 在一次 PPO update 内没有可训练 actor 参数，guided ratio 恒为1。
+- `alpha`、`beta`、prior temperature、warmup/KL target。
+- 未执行 action slot 的 Q 校准与探索保护。
+- frozen critic snapshot 的刷新和 checkpoint 边界。
+- 模拟尾部 action 的生成方式及其非 PPO 辅助目标。
