@@ -12,6 +12,7 @@
 - VAGEN 起点：`a6b8c8d03cedca169637a2e8cec9d868f5b5ad35`
 - VAGEN M1 commit：`45cb9928a8d9316037e1fb86c0dff3d004705097`
 - VAGEN M2 contract commit：`25da71df5f1408d54b4b761ff40c985d9118c99c`
+- VAGEN confirmed gradient/Q-target contract commit：`0a23ab3923bcef4cbda89380353c312dab77319a`
 - VERL gitlink：`ae269bda8ef43fad44796254146471e89d89894a`
 
 ## 当前计划
@@ -21,8 +22,10 @@
 3. action prior 是 LLM action-token boundary logits 的 softmax；实际采样的 prior action token log-prob 属于 `pi_LLM`，完整 prior 分布作为 guided policy 条件。
 4. M2 暂采用 scheme B：旧 ValueHead 保持 critic，guided logits 为 `alpha * l_prior + beta * stopgrad(frozen_Q)`，没有独立 actor module。
 5. rollout/update 内复用 rollout-time frozen critic 的 all-action guidance scores；critic 更新后禁止重算同一批 behavior guidance。
-6. `backprop_to_llm`保持无默认值并成为必填合同；ledger v2、versioned behavior record、reference/Torch guided math 和 contract identity 已实现。
-7. `joint_policy.enabled=true`当前显式 fail closed，直到人类决定旧 ValueHead 接收哪一种 state，并完成 Q owner、rollout sampler、replay 和 checkpoint snapshot boundary。
+6. 人类已确认 guided actor loss 必须经`l_prior`反传LLM；`backprop_to_llm`保留为可审计合同字段但启用时只能为`true`。Q在actor loss中始终stop-gradient。
+7. 人类已确认Q用真实环境reward构造的discounted return训练：只回归实际执行的第一动作，target stop-gradient，首版使用Huber；不把即时reward或advantage本身当Q target，不伪造未执行action监督。terminal bootstrap为0；truncation需rollout-time frozen critic bootstrap。
+8. ledger v2、versioned behavior record、reference/Torch guided math 和 contract identity 已实现。
+9. `joint_policy.enabled=true`当前显式 fail closed，直到人类决定旧 ValueHead 接收哪一种 state，并完成 Q owner、rollout sampler、replay 和 checkpoint snapshot boundary。
 
 ## 已完成
 
@@ -53,7 +56,8 @@
 
 - RED：初次运行因 `vagen.agent_loop.decision_ledger` 不存在失败；review 后新增 action-space/type/reward-anchor 与 remote protocol RED 均先失败。
 - M1 GREEN：最初为`30 passed`。
-- M2合同最终：`46 passed, 3 skipped`；3项skip均为当前环境缺torch的真实autograd/reference parity/overflow测试。
+- M2合同初版：`46 passed, 3 skipped`。
+- 人类确认梯度/Q target后：`47 passed, 3 skipped`；3项skip均为当前环境缺torch的真实autograd/reference parity/overflow测试。review发现并修复`alpha=0`会切断LLM梯度；启用合同现要求`alpha>0`，最终复审无blocker。
 - `python3 -m py_compile`：受影响生产 Python 文件通过。
 - `git diff --check`：通过。
 - VS Code diagnostics：ledger、gym no-concat 和 trainer 0 diagnostics。
@@ -62,7 +66,7 @@
 ## 待确认问题
 
 - 旧 ValueHead 在 VAGEN 中接收哪种 state：完整复用 Nimloth StateProjector/WM state，还是改用 VAGEN world state 并重新初始化；两者不可伪装为等价。
-- `backprop_to_llm`、`alpha`、`beta`、prior temperature、score dtype、warmup/KL target 的正式实验值。
+- `alpha`、`beta`、prior temperature、`gamma`、score dtype、critic loss coefficient、warmup/KL target 的正式实验值。
 - 未执行 action slot 的 Q 校准与探索保护。
-- frozen critic snapshot 的刷新和 checkpoint 边界。
+- frozen critic snapshot 的刷新/checkpoint边界，以及truncation bootstrap所引用的snapshot identity。
 - 模拟尾部 action 的生成方式及其非 PPO 辅助目标。
