@@ -49,9 +49,11 @@ def observation_image(raw_observation: Any) -> Image.Image:
         if key in raw_observation:
             return validate_navigation_image(_image_value(raw_observation[key]))
 
-    multi_modal_data = raw_observation.get("multi_modal_data", {})
-    if isinstance(multi_modal_data, dict):
-        preferred_keys = ("image", "images", "rgb", "pixels")
+    for container_key in ("multi_modal_input", "multi_modal_data"):
+        multi_modal_data = raw_observation.get(container_key, {})
+        if not isinstance(multi_modal_data, dict):
+            continue
+        preferred_keys = ("<image>", "image", "images", "rgb", "pixels")
         values_by_priority = [
             multi_modal_data[key]
             for key in preferred_keys
@@ -91,28 +93,20 @@ def navigation_image_dynamic_range(image: Image.Image) -> int:
     return max(high - low for low, high in extrema)
 
 
-def vagen_eval_nimloth_system_prompt() -> str:
-    """Rebuild the parent VAGEN eval prompt with Nimloth action tokens."""
+def vagen_eval_nimloth_system_prompt(
+    *,
+    latent_token_count: int = 16,
+) -> str:
+    """Rebuild the source-eval wording on the upstream Nimloth protocol."""
 
-    from vagen.env.navigation.nimloth_format import NIMLOTH_EVAL_FORMAT_INSTRUCTION
-    from vagen.env.navigation.prompt import _SOURCE_EVAL_BASE_SYSTEM_PROMPT
+    from vagen.envs.navigation.utils.prompt import system_prompt
 
-    hints = """\
-Hints:
-1. Choose exactly one valid action for the current step. Do not combine actions.
-2. If the target object is far away, move toward it one step at a time across multiple turns.
-3. If you seem to be stuck, use one action such as look_down, turn_left, or turn_right to inspect another view.
-4. Output the action only inside the required <|action_start|><|action_(idx)|><|action_end|> XML tag."""
-    action_count = (
-        "You must take exactly one action in each response. "
-        "Do not output multiple actions and do not use '|'."
-    )
-    return "\n\n".join(
-        (
-            _SOURCE_EVAL_BASE_SYSTEM_PROMPT,
-            hints,
-            f"{action_count}\n{NIMLOTH_EVAL_FORMAT_INSTRUCTION}",
-        )
+    return system_prompt(
+        format_name="nimloth",
+        max_actions_per_step=1,
+        action_sep="|",
+        example_count=0,
+        latent_token_count=latent_token_count,
     )
 
 
@@ -120,6 +114,7 @@ def vagen_eval_nimloth_observation_text(
     raw_observation: Any,
     *,
     initial: bool,
+    latent_token_count: int = 16,
 ) -> str:
     """Match the SFT1-converted source-eval observation wording exactly."""
 
@@ -131,17 +126,18 @@ def vagen_eval_nimloth_observation_text(
     instruction = instruction_from_observation(text)
     if not instruction:
         raise ValueError("VAGEN initial observation has no navigation instruction")
-    from vagen.env.navigation.nimloth_format import NIMLOTH_EVAL_FORMAT_INSTRUCTION
+    from vagen.envs.navigation.utils.prompt import get_format_instruction
 
-    action_count = (
-        "You must take exactly one action in each response. "
-        "Do not output multiple actions and do not use '|'."
-    )
     return (
         "[Initial Observation]:\n<image>\n"
         f"Human Instruction: {instruction}\n"
         "Decide your next action(s).\n"
-        f"{action_count}\n{NIMLOTH_EVAL_FORMAT_INSTRUCTION}"
+        + get_format_instruction(
+            "nimloth",
+            max_actions_per_step=1,
+            action_sep="|",
+            latent_token_count=latent_token_count,
+        )
     )
 
 
@@ -151,9 +147,12 @@ def _image_value(value: Any) -> Image.Image:
     if hasattr(value, "shape"):
         return Image.fromarray(value).convert("RGB")
     if isinstance(value, dict) and "__pil_image__" in value:
-        from vagen.server.serial import deserialize_pil_image
+        import base64
+        import io
 
-        return deserialize_pil_image(value).convert("RGB")
+        return Image.open(
+            io.BytesIO(base64.b64decode(value["__pil_image__"]))
+        ).convert("RGB")
     raise ValueError(f"unsupported environment image value: {type(value)}")
 
 
@@ -161,35 +160,35 @@ def navigation_environment_config(
     eval_set: str,
     *,
     profile: str = "current",
+    latent_token_count: int = 16,
 ) -> dict[str, Any]:
     """构造当前 Nimloth navigation rollout 使用的 VAGEN 配置。"""
 
     if profile not in {"current", "vagen_eval"}:
         raise ValueError(f"unknown navigation profile: {profile!r}")
+    if (
+        isinstance(latent_token_count, bool)
+        or not isinstance(latent_token_count, int)
+        or latent_token_count < 1
+    ):
+        raise ValueError("latent_token_count must be a positive int")
     config = {
-        "env_name": "navigation",
-        "env_config": {
-            "render_mode": "vision",
-            "prompt_format": "nimloth",
-            "use_state_reward": False,
-            "eval_set": eval_set,
-            "max_actions_per_step": 1,
-            "max_action_penalty": -0.1,
-            "format_reward": 0.0,
-            "success_threshold": 1.5,
-            "step_length": 0.5,
-            "grounding_reward_weight": 0.5,
-            "worldmodeling_reward_weight": 0.5,
-            "gpu_device": 0,
-        },
+        "prompt_format": "nimloth",
+        "latent_token_count": latent_token_count,
+        "eval_set": eval_set,
+        "max_actions_per_step": 1,
+        "action_sep": "|",
+        "example_count": 0,
+        "format_reward": 0.0,
+        "per_turn_format_reward": 0.0,
+        "success_reward": 10.0,
+        "success_threshold": 1.5,
+        "step_length": 0.5,
+        "gpu_device": 0,
     }
     if profile == "vagen_eval":
-        config["env_config"].update(
+        config.update(
             {
-                "action_sep": "|",
-                "example_count": 0,
-                # The current server applies format_reward on non-source modes;
-                # 0.01 reproduces source VAGEN's per-turn effective reward.
                 "format_reward": 0.01,
                 "per_turn_format_reward": 0.01,
                 "success_reward": 1.0,
@@ -211,12 +210,14 @@ class VAGENNavigationSession:
         eval_set: str,
         failure_penalty: float = 0.1,
         navigation_profile: str = "current",
+        latent_token_count: int = 16,
     ) -> None:
         self._client = client
         self._episode_id = episode_id
         self._eval_set = eval_set
         self._failure_penalty = failure_penalty
         self._navigation_profile = navigation_profile
+        self._latent_token_count = int(latent_token_count)
         self._system_prompt = ""
         self._created = False
 
@@ -236,24 +237,31 @@ class VAGENNavigationSession:
                 self._episode_id: navigation_environment_config(
                     self._eval_set,
                     profile=self._navigation_profile,
+                    latent_token_count=self._latent_token_count,
                 )
             }
         )
         self._created = True
+        raw_observation, info = self._client.reset_batch(
+            {self._episode_id: seed}
+        )[self._episode_id]
         prompts = self._client.get_system_prompts_batch([self._episode_id])
         self._system_prompt = str(prompts.get(self._episode_id, ""))
         if self._navigation_profile == "vagen_eval":
-            self._system_prompt = vagen_eval_nimloth_system_prompt()
+            self._system_prompt = vagen_eval_nimloth_system_prompt(
+                latent_token_count=self._latent_token_count
+            )
         if not self._system_prompt:
             raise RuntimeError(
                 f"environment {self._episode_id} returned an empty system prompt"
             )
-        raw_observation, info = self._client.reset_batch(
-            {self._episode_id: seed}
-        )[self._episode_id]
         return EnvironmentObservation(
             text=(
-                vagen_eval_nimloth_observation_text(raw_observation, initial=True)
+                vagen_eval_nimloth_observation_text(
+                    raw_observation,
+                    initial=True,
+                    latent_token_count=self._latent_token_count,
+                )
                 if self._navigation_profile == "vagen_eval"
                 else observation_text(raw_observation)
             ),
@@ -275,7 +283,11 @@ class VAGENNavigationSession:
         return EnvironmentStep(
             observation=EnvironmentObservation(
                 text=(
-                    vagen_eval_nimloth_observation_text(raw_observation, initial=False)
+                    vagen_eval_nimloth_observation_text(
+                        raw_observation,
+                        initial=False,
+                        latent_token_count=self._latent_token_count,
+                    )
                     if self._navigation_profile == "vagen_eval"
                     else observation_text(raw_observation)
                 ),

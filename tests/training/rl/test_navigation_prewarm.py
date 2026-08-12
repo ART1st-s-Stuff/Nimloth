@@ -62,12 +62,13 @@ def test_navigation_prewarm_validates_real_lifecycle() -> None:
     assert result.image_dynamic_range == 255
     assert [name for name, _ in client.calls] == [
         "create",
-        "prompt",
         "reset",
+        "prompt",
         "close",
     ]
     create_config = client.calls[0][1]
-    assert create_config["prewarm"]["env_config"]["eval_set"] == "base_train"
+    assert create_config["prewarm"]["eval_set"] == "base_train"
+    assert create_config["prewarm"]["latent_token_count"] == 16
 
 
 def test_navigation_prewarm_closes_environment_after_validation_failure() -> None:
@@ -81,7 +82,12 @@ def test_navigation_prewarm_closes_environment_after_validation_failure() -> Non
             env_id="prewarm",
         )
 
-    assert [name for name, _ in client.calls] == ["create", "prompt", "close"]
+    assert [name for name, _ in client.calls] == [
+        "create",
+        "reset",
+        "prompt",
+        "close",
+    ]
 
 
 def test_navigation_prewarm_rejects_uniform_render_and_closes() -> None:
@@ -97,7 +103,7 @@ def test_navigation_prewarm_rejects_uniform_render_and_closes() -> None:
 
     assert [name for name, _ in client.calls] == [
         "create",
-        "prompt",
         "reset",
+        "prompt",
         "close",
     ]

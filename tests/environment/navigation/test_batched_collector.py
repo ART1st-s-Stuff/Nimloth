@@ -5,6 +5,7 @@ from pathlib import Path
 from PIL import Image
 
 from nimloth.agent import PolicyDecision, PolicyState, PolicyTokenTrace
+from nimloth.latent import latent_state_tokens
 from nimloth.environment.navigation.collector import (
     VAGENBatchedNavigationRolloutCollector,
 )
@@ -32,6 +33,7 @@ class _Client:
         self.steps.update({env_id: 0 for env_id in ids2configs})
 
     def get_system_prompts_batch(self, env_ids):  # type: ignore[no-untyped-def]
+        assert all(env_id in self.steps for env_id in env_ids)
         return {env_id: "Navigate." for env_id in env_ids}
 
     def reset_batch(self, ids2seeds):  # type: ignore[no-untyped-def]
@@ -81,8 +83,9 @@ class _BatchPolicy:
                 action_index=0,
                 action_log_probs=(0.0, *([float("-inf")] * 7)),
                 response=(
-                    "<think>real batch cot</think><|latent_state|>"
-                    "<|action_start|><|action_(0)|><|action_end|>"
+                    "<think>real batch cot</think>"
+                    + "".join(latent_state_tokens(16))
+                    + "<|action_start|><|action_(0)|><|action_end|>"
                 ),
                 token_trace=PolicyTokenTrace(
                     token_ids=(5, 10, 20),
@@ -102,8 +105,9 @@ class _BatchPolicy:
         return tuple(
             PolicyState(
                 assistant_prefix=(
-                    "<think>real terminal cot</think><|latent_state|>"
-                    "<|action_start|>"
+                    "<think>real terminal cot</think>"
+                    + "".join(latent_state_tokens(16))
+                    + "<|action_start|>"
                 )
             )
             for _ in prompts
@@ -124,7 +128,7 @@ def test_batched_collector_steps_only_active_envs_and_persists_prefix(
         top_p=0.95,
         eval_sets=("base_train",),
         split="train",
-        latent_token_count=1,
+        latent_token_count=16,
         max_episode_attempts=1,
     )
 
