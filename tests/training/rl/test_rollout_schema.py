@@ -20,6 +20,7 @@ from nimloth.environment.navigation.collector import VAGENNavigationRolloutColle
 from nimloth.environment.navigation.vagen import (
     navigation_environment_config,
     vagen_eval_nimloth_observation_text,
+    vagen_eval_nimloth_system_prompt,
 )
 from nimloth.rollout import RolloutTrajectory, save_trajectories
 from nimloth.rollout.record_format import STEP_REWARD_PROVENANCE
