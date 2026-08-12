@@ -15,7 +15,7 @@ from nimloth.training.rl.episodes import ExecutedTransition
 
 
 PLANNER_VERL_SCHEMA_VERSION = 4
-PINNED_VERL_COMMIT = "65316156d1011d71d62e0542e4b954f9499e872e"
+PINNED_VERL_COMMIT = "3fe0a29975e1b02ae2bd1dec249f7807dd7966f5"
 PLANNER_POLICY_OBJECTIVE = "receding_horizon_planner_policy_ppo_v1"
 
 
