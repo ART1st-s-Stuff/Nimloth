@@ -182,7 +182,7 @@ for dataset in "${TRAIN_DATASETS[@]}"; do
     echo "training rollout dataset must end in _train: ${dataset}" >&2
     exit 1
   }
-  [[ -f "${ENV_REPO}/external/VAGEN/vagen/env/navigation/datasets/${dataset}.json" ]] || {
+  [[ -f "${ENV_REPO}/external/VAGEN/vagen/envs/navigation/assets/${dataset}.json" ]] || {
     echo "ENV_REPO does not contain ${dataset}" >&2
     exit 1
   }
@@ -323,9 +323,11 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
     export PYTHONPATH=${ENV_REPO}/external/VAGEN
     source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh"
     cd "${ENV_REPO}/external/VAGEN"
-    exec "${PYTHON}" -m vagen.server.server \
-      server.host=0.0.0.0 server.port=${ENV_PORT} use_state_reward=False \
-      navigation.devices=[0] navigation.max_workers=1
+    exec "${PYTHON}" -m vagen.envs.navigation.serve \
+      --host=0.0.0.0 --port="${ENV_PORT}" --devices='[0]' \
+      --max_envs="$((NUM_EPISODES + 1))" \
+      --max_inflight="$((NUM_EPISODES + 1))" \
+      --thread_pool_size="$((NUM_EPISODES + 1))"
   ) >"${ENV_LOG}" 2>&1 &
   ENV_PID=$!
   for i in $(seq 1 300); do
