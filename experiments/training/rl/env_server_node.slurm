@@ -16,7 +16,7 @@
 
 set -euo pipefail
 : "${REPO:?export REPO as the pinned Nimloth worktree before sbatch}"
-EXPECTED_VAGEN_COMMIT=${EXPECTED_VAGEN_COMMIT:-042df30}
+EXPECTED_VAGEN_COMMIT=${EXPECTED_VAGEN_COMMIT:-316d9d7}
 [[ "$(git -C "${REPO}/external/VAGEN" rev-parse --short=7 HEAD)" == "${EXPECTED_VAGEN_COMMIT}" ]] || {
     echo "unexpected VAGEN revision; expected ${EXPECTED_VAGEN_COMMIT}" >&2
     exit 1
