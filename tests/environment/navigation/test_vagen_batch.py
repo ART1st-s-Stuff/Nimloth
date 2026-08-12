@@ -82,6 +82,19 @@ def test_batch_adapter_preserves_identity_and_upstream_lifecycle() -> None:
     assert all(len(set(instance.loop_ids)) == 1 for instance in _FakeAsyncClient.instances)
 
 
+def test_batch_adapter_supports_sequential_episode_lifecycles() -> None:
+    client = VAGENBatchEnvClient(base_url="http://env", timeout=1)
+    for env_id, seed in (("a", 1), ("b", 2)):
+        client.create_environments_batch({env_id: {}})
+        client.reset_batch({env_id: seed})
+        client.get_system_prompts_batch([env_id])
+        client.close_batch([env_id])
+    client.shutdown()
+    assert not client._loop_thread.is_alive()
+    assert len(_FakeAsyncClient.instances) == 2
+    assert all(instance.closed for instance in _FakeAsyncClient.instances)
+
+
 def test_batch_adapter_rejects_unknown_or_duplicate_identity() -> None:
     client = VAGENBatchEnvClient(base_url="http://env", timeout=1)
     client.create_environments_batch({"a": {}})
@@ -89,6 +102,29 @@ def test_batch_adapter_rejects_unknown_or_duplicate_identity() -> None:
         client.create_environments_batch({"a": {}})
     with pytest.raises(KeyError, match="unknown"):
         client.reset_batch({"missing": 0})
+    client.shutdown()
+
+
+def test_batch_failure_waits_for_all_operations_to_settle() -> None:
+    client = VAGENBatchEnvClient(base_url="http://env", timeout=1)
+    client.create_environments_batch({"a": {}, "b": {}})
+    settled: list[str] = []
+
+    async def fail(_seed: int):
+        raise RuntimeError("synthetic reset failure")
+
+    async def delayed(seed: int):
+        await asyncio.sleep(0.01)
+        settled.append(str(seed))
+        return ({"obs_str": "ok <image>"}, {})
+
+    client._clients["a"].reset = fail
+    client._clients["b"].reset = delayed
+    with pytest.raises(RuntimeError, match="batch reset failed"):
+        client.reset_batch({"a": 1, "b": 2})
+    assert settled == ["2"]
+    client.shutdown()
+    assert all(instance.closed for instance in _FakeAsyncClient.instances)
 
 
 def test_sync_batch_calls_work_from_thread_with_running_event_loop() -> None:

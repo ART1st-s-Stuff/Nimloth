@@ -189,7 +189,7 @@ def navigation_environment_config(
     if profile == "vagen_eval":
         config.update(
             {
-                "format_reward": 0.01,
+                "format_reward": 0.0,
                 "per_turn_format_reward": 0.01,
                 "success_reward": 1.0,
                 "success_threshold": 1.0,

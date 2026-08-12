@@ -71,10 +71,11 @@ class VAGENBatchEnvClient:
 
         async def reset_all():
             return await asyncio.gather(
-                *(client.reset(int(ids2seeds[env_id])) for env_id, client in clients)
+                *(client.reset(int(ids2seeds[env_id])) for env_id, client in clients),
+                return_exceptions=True,
             )
 
-        rows = self._run(reset_all())
+        rows = self._settled_rows(self._run(reset_all()), operation="reset")
         return {
             env_id: row
             for (env_id, _client), row in zip(clients, rows, strict=True)
@@ -88,10 +89,11 @@ class VAGENBatchEnvClient:
 
         async def prompt_all():
             return await asyncio.gather(
-                *(client.system_prompt() for _env_id, client in clients)
+                *(client.system_prompt() for _env_id, client in clients),
+                return_exceptions=True,
             )
 
-        rows = self._run(prompt_all())
+        rows = self._settled_rows(self._run(prompt_all()), operation="system_prompt")
         result: dict[str, str] = {}
         for (env_id, _client), row in zip(clients, rows, strict=True):
             text = row.get("obs_str") if isinstance(row, Mapping) else None
@@ -109,10 +111,11 @@ class VAGENBatchEnvClient:
                 *(
                     client.step(str(ids2actions[env_id]))
                     for env_id, client in clients
-                )
+                ),
+                return_exceptions=True,
             )
 
-        rows = self._run(step_all())
+        rows = self._settled_rows(self._run(step_all()), operation="step")
         return {
             env_id: row
             for (env_id, _client), row in zip(clients, rows, strict=True)
@@ -132,12 +135,26 @@ class VAGENBatchEnvClient:
         for env_id, _client in clients:
             self._clients.pop(env_id, None)
         failures = [value for value in results if isinstance(value, BaseException)]
-        if not self._clients:
-            self._stop_loop()
         if failures:
             raise RuntimeError(
                 f"failed to close {len(failures)} VAGEN environment session(s)"
             ) from failures[0]
+
+    def shutdown(self) -> None:
+        """Close remaining sessions and release the adapter event-loop thread."""
+
+        if self._clients:
+            self.close_batch()
+        self._stop_loop()
+
+    @staticmethod
+    def _settled_rows(values: list[Any], *, operation: str) -> list[Any]:
+        failures = [value for value in values if isinstance(value, BaseException)]
+        if failures:
+            raise RuntimeError(
+                f"VAGEN batch {operation} failed for {len(failures)} session(s)"
+            ) from failures[0]
+        return values
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)

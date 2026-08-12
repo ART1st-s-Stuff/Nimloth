@@ -123,6 +123,21 @@ class VAGENNavigationRolloutCollector:
             )
         return self._client
 
+    def close(self) -> None:
+        """Release the cached upstream client after the collector is retired."""
+
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        shutdown = getattr(client, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        else:
+            close_batch = getattr(client, "close_batch", None)
+            if callable(close_batch):
+                close_batch()
+
     def collect(
         self,
         *,
