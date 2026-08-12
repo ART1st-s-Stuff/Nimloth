@@ -5,7 +5,7 @@ set -euo pipefail
 : "${REPO:?set REPO to the pinned Nimloth worktree}"
 ENV_REPO=${ENV_REPO:-${REPO}}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
-EXPECTED_VAGEN_COMMIT=${EXPECTED_VAGEN_COMMIT:-042df30}
+EXPECTED_VAGEN_COMMIT=${EXPECTED_VAGEN_COMMIT:-316d9d7}
 SFT2_ROOT=${SFT2_ROOT:-/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-06-22/sft2_llmlora_visionfull_1epoch_gamma1_ckpt100_keep2_stride2}
 RUN_OUT=${RUN_OUT:-/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-07-11/post_fsdp_fix_e2e_smoke_retry1}
 ENV_PORT=${ENV_PORT:-8500}
