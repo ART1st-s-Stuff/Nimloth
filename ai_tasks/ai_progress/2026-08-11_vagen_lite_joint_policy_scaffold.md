@@ -78,7 +78,8 @@
 - 人类随后批准开始单GPU、无optimizer、无训练的一真实turn smoke。代码审计确认stock `main_ppo val_only`仍构造optimizer、validation丢弃ledger，而generic no-concat loop没有ID74的真实CoT→K16→action生成约束；因此新增专用optimizer-free standalone bridge，而没有运行不可判定的近似smoke。
 - VAGEN `1f8ed5f`新增`nimloth_vllm` custom replica和`standalone_one_turn_smoke`：复用Nimloth `TurnGenerationSpec`/`TurnResponseLogitsProcessor`，prompt只预填`<think>`，保留模型实际CoT；K16/action protocol强制token的response mask为0，真实sampled CoT/action为1。输出原子绑定完整environment response、Navigation action-space/source/action token、M1 ledger、reward anchor和finite aligned rollout log-probs；无actor/critic/FSDP/optimizer/checkpoint。
 - 本地dependency-light为`84 tests`，服务器完整依赖为`96 passed, 25 subtests`；custom Ray actor继承、registry时序和numpy seed remote JSON序列化等review问题均已修复，最终review`APPROVED`。该VAGEN commit已push，父仓库gitlink待launch contract一并推进。
-- GPU未启动：实时资源查询只报告dgx-21/23/37为`DOWN+NOT_RESPONDING`，不能视为可用GPU；还需人类确认1-GPU合同是Unity+vLLM同一H800，还是另给environment GPU。smoke拟使用held-out `base` seed0（FloorPlan11/Bread），与`base_train`任务和scene均无重叠；dgx-51按既有两次300秒prewarm超时证据继续排除。
+- 后续runtime/profile加固形成VAGEN`3fc2509`与父`6103945a`：remote config显式等于current Navigation profile以保证prewarm cache identity，standalone强制独立local Ray/temp root并显式传播runtime env；服务器完整依赖`98 passed, 25 subtests`，review批准。1-GPU launch合同固定normal、1×H800同卡Unity+vLLM、16CPU/128GiB/30min、max_envs1、held-out `base` seed0（FloorPlan11/Bread）、ID74内容hash和scoped cleanup。
+- ID159 Job`516698.2`在`normal/dgx-52`运行4分28秒后于首token前失败：direct render`5.166s/dynamic246`、real remote prewarm`5.660s/dynamic255`、exact FloorPlan11 cache reuse和ID74 BF16 TP1 vLLM load均通过；fresh parent worktree未初始化tracked `external/le-wm@8edfeb3`，Nimloth policy import经`_vendor_lewm.py`报缺`module.py`。无response/action/environment step/ledger result、optimizer、checkpoint、W&B；cleanup后port/owned processes为空且VRAM回289MiB。ID159不可resume，重试为ID160空输出，需初始化/pin le-wm并在GPU前真实import `nimloth.backbone.qwen25vl.policy`。
 
 ## 待确认问题
 
