@@ -39,6 +39,7 @@
 - M1 两轮独立 code review 的 P1/P2 均已逐项修复；最终独立复审结论为 `APPROVED`。
 - M2 合同层新增显式 Scheme-B 配置、dtype-aware 数值合同、Torch 公式、严格 behavior schema/round-trip、action-token/contract/snapshot 绑定与 ledger v2。三轮 review 修复了 silent stock-PPO fallback、伪造 ownership、logprob 容差和 overflow 等问题；最终复审无 blocker。
 - 只读核验确认 VAGEN 现有 token critic 不是 `[B,8] Q(s,a)`，transition reward predictor 也不是旧 ValueHead。旧 Nimloth ValueHead 输入 state 与 VAGEN `LatentStateEncoder` state 不同，未获人类决定前禁止直接加载旧权重或用其他模块冒充。
+- Git history进一步确认这条`latent z -> LatentStateEncoder -> world_state -> TransitionRewardNet`并非本分支新增：基础类由ARTI5T在嵌套VERL commit `2f291ea`（2026-03-27，`MCTS`）引入；canonical latent提取由`0ca14e2`（2026-04-13，`Step 1&2 prototype`）加入；当前可配置`WorldStatePredictor`及actor wiring由`ae269bd`（2026-04-14，`Add LeWM predictor`）完成。VAGEN顶层由同作者commit `517da7a`固定该gitlink，当前VAGEN-Lite基线`a6b8c8d`继承它。因此它是ARTI5T fork历史中的既有实验路径，不应被当作旧Nimloth ValueHead的输入定义。
 
 ## 文件修改
 
