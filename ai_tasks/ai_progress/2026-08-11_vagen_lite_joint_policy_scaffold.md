@@ -74,7 +74,7 @@
 - 远程session现在粘定connect server，state-mutating `step`不做可能重复执行的自动重试；Navigation cache按去除server-owned `gpu_device`后的完整配置隔离，构造/reset失败和agent-loop异常均释放env slot/session。Qwen trailing EOS/PAD只从送入严格environment parser的解码副本移除，原始response IDs/mask/log-probs继续保留给PPO。
 - Scheme-B behavior record现在同时绑定action table/token IDs、prior logits、采样prior action的LLM log-prob、rollout-time frozen-Q、guided log-prob和snapshot identity；trainer在最终reward tensor赋值前再次校验ledger reward anchor。`joint_policy.enabled=true`仍在Q owner/guided rollout/replay未接通时fail closed。
 - `vagen_eval`兼容profile恢复canonical source-eval wording，仅替换成K16单动作格式；SFT1 converter使用format body避免重复注入“exactly one action”。RL/env launchers不再默认为旧worktree，并校验精确VAGEN短commit。
-- 人类已批准push；VAGEN `nimloth/upstream-joint-policy-scaffold@316d9d7`已发布并核对远端SHA，`.gitmodules`已更新为该分支。父仓库feature branch发布完成前不宣称发布闭环；未合并或修改main。
+- 人类已批准并完成push：VAGEN `nimloth/upstream-joint-policy-scaffold@316d9d7`和Nimloth `feat/vagen-lite-joint-policy-scaffold@27c812fb`远端SHA均与本地一致；`.gitmodules`跟踪新VAGEN分支。临时fresh clone成功checkout精确父commit和VAGEN gitlink，发布闭环完成；未合并或修改main。
 
 ## 待确认问题
 
