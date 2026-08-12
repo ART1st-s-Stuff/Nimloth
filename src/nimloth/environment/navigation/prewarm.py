@@ -42,14 +42,14 @@ def prewarm_navigation_client(
 
     started_at = time.monotonic()
     client.create_environments_batch(
-        {env_id: navigation_environment_config(eval_set)}
+        {env_id: navigation_environment_config(eval_set, latent_token_count=16)}
     )
     try:
+        raw_observation, _ = client.reset_batch({env_id: seed})[env_id]
         prompts = client.get_system_prompts_batch([env_id])
         prompt = prompts.get(env_id)
         if not isinstance(prompt, str) or not prompt.strip():
             raise RuntimeError("navigation prewarm returned an empty system prompt")
-        raw_observation, _ = client.reset_batch({env_id: seed})[env_id]
         text = observation_text(raw_observation)
         image = observation_image(raw_observation)
         return NavigationPrewarmResult(
@@ -86,10 +86,10 @@ def main() -> int:
             f"{NAVIGATION_REQUEST_TIMEOUT_SECONDS}"
         )
 
-    from vagen.server.client import BatchEnvClient
+    from nimloth.environment.navigation.vagen_batch import VAGENBatchEnvClient
 
     result = prewarm_navigation_client(
-        BatchEnvClient(
+        VAGENBatchEnvClient(
             base_url=args.env_url,
             timeout=args.timeout_seconds,
         ),

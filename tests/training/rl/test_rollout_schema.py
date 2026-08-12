@@ -160,12 +160,14 @@ def test_vagen_eval_navigation_profile_is_an_explicit_rollout_setting() -> None:
     )
 
     assert args.navigation_profile == "vagen_eval"
-    current = navigation_environment_config("base")["env_config"]
-    historical = navigation_environment_config("base", profile="vagen_eval")[
-        "env_config"
-    ]
+    current = navigation_environment_config("base")
+    historical = navigation_environment_config("base", profile="vagen_eval")
     assert current["step_length"] == 0.5
     assert current["success_threshold"] == 1.5
+    assert current["prompt_format"] == "nimloth"
+    assert current["latent_token_count"] == 16
+    assert current["max_actions_per_step"] == 1
+    assert current["success_reward"] == 10.0
     assert historical["step_length"] == 0.3
     assert historical["success_threshold"] == 1.0
     assert historical["format_reward"] == 0.01
