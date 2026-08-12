@@ -14,6 +14,7 @@
 - 接worker前确认新的设计阻塞：VAGEN现有token critic是逐response-token标量V，transition reward predictor是immediate reward model，都不是旧Nimloth `[B,8] Q(s,a)`；VAGEN world state也不等于旧ValueHead的输入state。禁止直接加载旧ValueHead权重，需人类先确认是完整复用Nimloth state路径，还是接受VAGEN state并重新初始化新Q head。
 - 人类已确认Scheme-B guided actor loss必须经`l_prior`反传LLM；Q在actor loss中始终stop-gradient。启用合同现在拒绝`backprop_to_llm != true`，避免产生没有可训练actor路径的配置。
 - 人类已确认ValueHead Q使用真实环境reward的discounted return做critic回归：仅监督实际执行第一动作，target stop-gradient，首版Huber；不把即时reward或advantage本身作为Q target，不给未执行action伪造监督。terminal bootstrap为0；truncation需rollout-time frozen critic bootstrap，具体snapshot owner仍待state路径确定后实现。
+- Git history确认VAGEN的`latent z -> LatentStateEncoder -> world_state -> TransitionRewardNet`是ARTI5T fork既有实验代码，并非本M2新增或通用上游约束：基础类始于嵌套VERL `2f291ea`（2026-03-27），canonical latent提取见`0ca14e2`（2026-04-13），完整`WorldStatePredictor`与actor wiring见当前gitlink `ae269bd`（2026-04-14）；VAGEN顶层`517da7a`固定该gitlink，当前Lite基线继承。禁止据此自动替换旧Nimloth ValueHead的StateProjector输入。
 
 ## 2026-08-10：新版 VAGEN-Lite 与当前 RL 的只读迁移评估
 
