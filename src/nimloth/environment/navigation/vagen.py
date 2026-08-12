@@ -93,20 +93,54 @@ def navigation_image_dynamic_range(image: Image.Image) -> int:
     return max(high - low for low, high in extrema)
 
 
+_SOURCE_EVAL_BASE_SYSTEM_PROMPT = """\
+You are a home robot and perform navigation tasks according to instructions.
+Actions you can take: move_forward, move_backward, move_right, move_left, turn_right, turn_left, look_up, look_down.
+move_forward: Move forward by some distance
+move_backward: Move backward by some distance
+move_right: Move rightward by some distance
+move_left: Move leftward by some distance
+turn_right: Rotate to the right by 90 degrees
+turn_left: Rotate to the left by 90 degrees
+look_up: Tilt the camera upward by 30 degrees
+look_down: Tilt the camera downward by 30 degrees
+The instruction will be provided in the first observation. Look at the image carefully and navigate to complete the instruction."""
+
+_SOURCE_EVAL_NIMLOTH_HINTS = """\
+Hints:
+1. Choose exactly one valid action for the current step. Do not combine actions.
+2. If the target object is far away, move toward it one step at a time across multiple turns.
+3. If you seem to be stuck, use one action such as look_down, turn_left, or turn_right to inspect another view.
+4. Output the action only inside the required <|action_start|><|action_(idx)|><|action_end|> XML tag."""
+
+
+def _source_eval_nimloth_format_instruction(latent_token_count: int) -> str:
+    from vagen.envs.navigation.utils.nimloth_format import ACTION_NAMES, action_block
+
+    legend = ", ".join(
+        f"{index}={name}" for index, name in enumerate(ACTION_NAMES)
+    )
+    return (
+        "You must take exactly one action in each response. "
+        "Do not output multiple actions and do not use '|'.\n"
+        "You can optionally think first, then give your action. Respond in this format:\n"
+        f"<think>...</think>{action_block(latent_token_count=latent_token_count)}\n"
+        f"where idx is one of: {legend}."
+    )
+
+
 def vagen_eval_nimloth_system_prompt(
     *,
     latent_token_count: int = 16,
 ) -> str:
-    """Rebuild the source-eval wording on the upstream Nimloth protocol."""
+    """Rebuild canonical source-eval wording with the exact K-slot block."""
 
-    from vagen.envs.navigation.utils.prompt import system_prompt
-
-    return system_prompt(
-        format_name="nimloth",
-        max_actions_per_step=1,
-        action_sep="|",
-        example_count=0,
-        latent_token_count=latent_token_count,
+    return "\n\n".join(
+        (
+            _SOURCE_EVAL_BASE_SYSTEM_PROMPT,
+            _SOURCE_EVAL_NIMLOTH_HINTS,
+            _source_eval_nimloth_format_instruction(latent_token_count),
+        )
     )
 
 
@@ -126,18 +160,11 @@ def vagen_eval_nimloth_observation_text(
     instruction = instruction_from_observation(text)
     if not instruction:
         raise ValueError("VAGEN initial observation has no navigation instruction")
-    from vagen.envs.navigation.utils.prompt import get_format_instruction
-
     return (
         "[Initial Observation]:\n<image>\n"
         f"Human Instruction: {instruction}\n"
         "Decide your next action(s).\n"
-        + get_format_instruction(
-            "nimloth",
-            max_actions_per_step=1,
-            action_sep="|",
-            latent_token_count=latent_token_count,
-        )
+        + _source_eval_nimloth_format_instruction(latent_token_count)
     )
 
 

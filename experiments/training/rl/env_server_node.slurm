@@ -15,7 +15,12 @@
 # After it starts, note the IP:PORT and pass as ENV_URL to the training job.
 
 set -euo pipefail
-REPO=/project/peilab/atst/nimloth-feat-rl
+: "${REPO:?export REPO as the pinned Nimloth worktree before sbatch}"
+EXPECTED_VAGEN_COMMIT=${EXPECTED_VAGEN_COMMIT:-e4507cc}
+[[ "$(git -C "${REPO}/external/VAGEN" rev-parse --short=7 HEAD)" == "${EXPECTED_VAGEN_COMMIT}" ]] || {
+    echo "unexpected VAGEN revision; expected ${EXPECTED_VAGEN_COMMIT}" >&2
+    exit 1
+}
 
 export PATH=/project/peilab/atst/nimloth/.venv-vagen-main/bin:$PATH
 source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh"
