@@ -47,11 +47,12 @@ LATENT_STATE_TOKENS = latent_state_tokens(16)
 ACTION_NAMES = list(ACTION_NAMES)
 ACTION_TO_IDX = {name: index for index, name in enumerate(ACTION_NAMES)}
 NIMLOTH_ACTION_BLOCK = action_block(latent_token_count=16)
-NIMLOTH_FORMAT_INSTRUCTION = get_format_instruction(
-    "nimloth",
-    max_actions_per_step=1,
-    action_sep="|",
-    latent_token_count=16,
+NIMLOTH_FORMAT_BODY = (
+    "Respond in this format:\n"
+    f"<think>...</think>{NIMLOTH_ACTION_BLOCK}\n"
+    "where idx is one of: "
+    + ", ".join(f"{index}={name}" for index, name in enumerate(ACTION_NAMES))
+    + "."
 )
 SPECIAL_TOKENS = [
     *LATENT_STATE_TOKENS,
@@ -110,11 +111,11 @@ def rewrite_prompt_instruction(content: str) -> str:
         (
             "You can optionally think first, then give your action. Respond in this format:\n"
             "<think>...</think><action>some_action</action>",
-            "You can optionally think first, then give your action. " + NIMLOTH_FORMAT_INSTRUCTION,
+            "You can optionally think first, then give your action. " + NIMLOTH_FORMAT_BODY,
         ),
         (
             "Respond in this format:\n<think>...</think><action>some_action</action>",
-            NIMLOTH_FORMAT_INSTRUCTION,
+            NIMLOTH_FORMAT_BODY,
         ),
         (
             "<think>...</think><action>some_action</action>",
