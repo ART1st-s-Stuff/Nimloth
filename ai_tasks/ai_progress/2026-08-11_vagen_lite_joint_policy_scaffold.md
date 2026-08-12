@@ -2,18 +2,21 @@
 
 ## 目标
 
-在 actor 参数化尚未确定时，从项目 fork 的 VAGEN-Lite `origin/main@a6b8c8d`
-建立不会提前选择 logits/PPO 公式的训练框架，并把计划保存在 VAGEN 子模块。
+在真正上游 VAGEN-Lite `mll-lab-nu/VAGEN main@2936322` 及其固定
+`JamesKrW/verl@3fe0a299` 上建立 frozen-Q guided Scheme-B 的可审计训练框架；
+旧项目 fork 仅作为移植来源，不再作为运行基线。
 
 ## 分支
 
 - Nimloth：`feat/vagen-lite-joint-policy-scaffold`
-- VAGEN：`nimloth/vagen-lite-joint-policy-scaffold`
-- VAGEN 起点：`a6b8c8d03cedca169637a2e8cec9d868f5b5ad35`
+- VAGEN：`nimloth/upstream-joint-policy-scaffold`
+- VAGEN 上游起点：`2936322a6f6c02fbd29ca28e4b6ec37eefefc081`
 - VAGEN M1 commit：`45cb9928a8d9316037e1fb86c0dff3d004705097`
 - VAGEN M2 contract commit：`25da71df5f1408d54b4b761ff40c985d9118c99c`
 - VAGEN confirmed gradient/Q-target contract commit：`0a23ab3923bcef4cbda89380353c312dab77319a`
-- VERL gitlink：`ae269bda8ef43fad44796254146471e89d89894a`
+- 当前父仓库commit：`7b13d622a6361d2e6844b86ef2077b03f8f7e3ee`
+- 当前VAGEN commit：`316d9d7bc2a153bd1cecc34d04f752231458892d`
+- VERL gitlink：`3fe0a29975e1b02ae2bd1dec249f7807dd7966f5`
 
 ## 当前计划
 
@@ -67,7 +70,11 @@
 - `python3 -m py_compile`：受影响生产 Python 文件通过。
 - `git diff --check`：通过。
 - VS Code diagnostics：ledger、gym no-concat 和 trainer 0 diagnostics。
-- 当前本地环境缺少 torch/Ray/OmegaConf/httpx/PIL，未运行真实 DataProto/Ray、多模态 rollout、PPO、checkpoint 或 GPU 测试；禁止把本阶段表述为 joint PPO 已完成。
+- 旧本地环境的dependency-light门禁已由服务器完整依赖回归补足：精确VAGEN `316d9d7`为`88 passed, 23 subtests`，精确父仓库`7b13d622`的RL/navigation/SFT1 prompt定向为`269 passed`；仅有1条Ray弃用warning和1条既有单样本std warning。未运行真实GPU、多模态rollout、PPO或checkpoint测试，禁止把本阶段表述为joint PPO已完成。
+- 远程session现在粘定connect server，state-mutating `step`不做可能重复执行的自动重试；Navigation cache按去除server-owned `gpu_device`后的完整配置隔离，构造/reset失败和agent-loop异常均释放env slot/session。Qwen trailing EOS/PAD只从送入严格environment parser的解码副本移除，原始response IDs/mask/log-probs继续保留给PPO。
+- Scheme-B behavior record现在同时绑定action table/token IDs、prior logits、采样prior action的LLM log-prob、rollout-time frozen-Q、guided log-prob和snapshot identity；trainer在最终reward tensor赋值前再次校验ledger reward anchor。`joint_policy.enabled=true`仍在Q owner/guided rollout/replay未接通时fail closed。
+- `vagen_eval`兼容profile恢复canonical source-eval wording，仅替换成K16单动作格式；SFT1 converter使用format body避免重复注入“exactly one action”。RL/env launchers不再默认为旧worktree，并校验精确VAGEN短commit。
+- 发布仍未完成：`.gitmodules`指向fork的`nimloth/main`，而`316d9d7`尚未push到可获取远端；新clone当前不能可靠解析gitlink。需要人类批准push后再更新submodule branch并发布父分支。
 
 ## 待确认问题
 

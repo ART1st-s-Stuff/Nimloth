@@ -4,7 +4,7 @@
 
 ## 2026-08-11：VAGEN-Lite actor-agnostic joint-policy scaffold M1
 
-- 新建 Nimloth 分支/worktree `feat/vagen-lite-joint-policy-scaffold`，并将 `external/VAGEN` 从 legacy gitlink 切到项目 fork 的 VAGEN-Lite `origin/main@a6b8c8d`，子模块分支为 `nimloth/vagen-lite-joint-policy-scaffold`；没有复用仍绑定 legacy PlannerPolicyHead 的旧 scaffold 分支。
+- 新建 Nimloth 分支/worktree `feat/vagen-lite-joint-policy-scaffold`。最初曾从项目 fork `a6b8c8d` 起步；人类澄清上游身份后已废弃该基线。当前 `external/VAGEN` gitlink 为真正上游 `mll-lab-nu/VAGEN main@2936322` 之上的集成提交 `316d9d7`，嵌套 VERL 固定 `JamesKrW/verl@3fe0a299`；旧 fork M1/M2 仅作为移植来源，不再代表当前运行基线。
 - actor logits、action prior 随机变量语义、多步执行方式和 PPO ratio 均保持未决；计划保存在 VAGEN `docs/joint_policy_scaffold.md`。M1 只实现 opt-in async/no-concat decision ledger，不新增 actor logits、behavior log-prob、PPO loss、trainable module 或 checkpoint state。
 - `vagen_decision_ledger_v1`保存 versioned action-space、每个 turn 的完整实际执行动作、来源、明确为 false 的 actor-policy ownership、turn reward 与 terminal/truncated 状态；Navigation producer、AgentLoopOutput/DataProto 透传以及 trainer pre-replay 严格校验/覆盖指标已接通。
 - system-injected fallback token 不再冒充 LLM sampled token；turn reward 改锚定最后一个真实 policy token，避免 no-concat GAE 丢失 fallback turn reward。latent fallback 只对 `prompt_format=latent_plan`启用；remote step 的 reward/done/info 改为严格类型检查，不再静默强转。
@@ -16,6 +16,9 @@
 - 人类已确认ValueHead Q使用真实环境reward的discounted return做critic回归：仅监督实际执行第一动作，target stop-gradient，首版Huber；不把即时reward或advantage本身作为Q target，不给未执行action伪造监督。terminal bootstrap为0；truncation需rollout-time frozen critic bootstrap，具体snapshot owner仍待state路径确定后实现。
 - Git history确认VAGEN的`latent z -> LatentStateEncoder -> world_state -> TransitionRewardNet`是ARTI5T fork既有实验代码，并非本M2新增或通用上游约束：基础类始于嵌套VERL `2f291ea`（2026-03-27），canonical latent提取见`0ca14e2`（2026-04-13），完整`WorldStatePredictor`与actor wiring见当前gitlink `ae269bd`（2026-04-14）；VAGEN顶层`517da7a`固定该gitlink，当前Lite基线继承。禁止据此自动替换旧Nimloth ValueHead的StateProjector输入。
 - 人类澄清上述ARTI5T fork提交是其本人修改，后续必须改从真正上游最新`mll-lab-nu/VAGEN main@2936322`继续；该commit固定`JamesKrW/verl@3fe0a29`，没有fork LeWM predictor。VPN恢复后已完成corrected ID74 `epoch_001`真实CPU只读preflight：2个HF shards/825 tensors、BF16 Qwen2.5-VL hidden2048/vocab151691/untied head、K16 inject和26个单token special IDs均完整；Transformers 4.55.4完整实载missing/unexpected/mismatched/error全空且embedding/head storage独立；vLLM0.11 `ModelConfig`解析为multimodal Qwen2.5-VL generate runner。该SFT2为`query_tune=freeze`，所以special-token rows是checkpoint自包含的继承权重，不应误称为本轮adapter折叠结果。sidecar实物为逐slot`SharedSlotProjector 2048→2048→1024`、slot mean-pool后的`ValueHead 1024→1024→8`、16-slot/history1 Grid WM；Nimloth loader真实完成`[1,16,2048]→[1,16,1024]→[1,8]` finite CPU forward。结论：完整复用旧decision-state/mean-pooling/ValueHead checkpoint只需局部adapter，无需SFT2重训或退回legacy；缺口仍是自定义agent-loop、同forward state/logit capture、sidecar Q owner、guided replay/snapshot/checkpoint。此次未重跑GPU vLLM load，GPU边界继续引用历史TP4 rollout证据。
+- 真上游迁移与适配已落到父仓库 `7b13d622` / VAGEN `316d9d7` / VERL `3fe0a299`：包括K16单动作prompt/parser、persistent async-session batch adapter、remote sticky routing、decision-ledger reward/ownership绑定、Scheme-B合同和stock-PPO fail-closed。最终审查修复了异常生命周期回收、reset/constructor slot泄漏、shutdown顺序、cache配置身份、state-mutating step重复重试、EOS污染严格parser、source-eval prompt漂移、launcher旧worktree默认及behavior prior log-prob未绑定等问题；最终review结论`APPROVED`。
+- 服务器在精确最终commit上通过VAGEN `88 passed, 23 subtests`（1条Ray deprecation warning）和父仓库RL/navigation/SFT1 prompt定向`269 passed`（1条既有单样本std warning）；shell syntax、`py_compile`、`git diff --check`与定向diagnostics通过。本阶段未申请GPU或启动训练。
+- 当前发布阻塞：父仓库`.gitmodules`仍指向`ART1st-s-Stuff/VAGEN.git`的`nimloth/main`，但gitlink `316d9d7`只存在本地分支；在VAGEN提交发布到可获取远端并更新submodule branch前，新clone无法可靠checkout。push尚未获得人类批准。
 
 ## 2026-08-10：新版 VAGEN-Lite 与当前 RL 的只读迁移评估
 
