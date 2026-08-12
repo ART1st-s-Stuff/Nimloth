@@ -40,6 +40,10 @@
 - M2 合同层新增显式 Scheme-B 配置、dtype-aware 数值合同、Torch 公式、严格 behavior schema/round-trip、action-token/contract/snapshot 绑定与 ledger v2。三轮 review 修复了 silent stock-PPO fallback、伪造 ownership、logprob 容差和 overflow 等问题；最终复审无 blocker。
 - 只读核验确认 VAGEN 现有 token critic 不是 `[B,8] Q(s,a)`，transition reward predictor 也不是旧 ValueHead。旧 Nimloth ValueHead 输入 state 与 VAGEN `LatentStateEncoder` state 不同，未获人类决定前禁止直接加载旧权重或用其他模块冒充。
 - Git history进一步确认这条`latent z -> LatentStateEncoder -> world_state -> TransitionRewardNet`并非本分支新增：基础类由ARTI5T在嵌套VERL commit `2f291ea`（2026-03-27，`MCTS`）引入；canonical latent提取由`0ca14e2`（2026-04-13，`Step 1&2 prototype`）加入；当前可配置`WorldStatePredictor`及actor wiring由`ae269bd`（2026-04-14，`Add LeWM predictor`）完成。VAGEN顶层由同作者commit `517da7a`固定该gitlink，当前VAGEN-Lite基线`a6b8c8d`继承它。因此它是ARTI5T fork历史中的既有实验路径，不应被当作旧Nimloth ValueHead的输入定义。
+- 人类澄清上述fork提交是其本人修改，要求后续以真正上游最新main为基线。只读远端核验：`mll-lab-nu/VAGEN main@2936322a6f6c02fbd29ca28e4b6ec37eefefc081`（2026-07-23）固定`JamesKrW/verl@3fe0a29975e1b02ae2bd1dec249f7807dd7966f5`；该上游不含fork的LeWM predictor路径。
+- SFT2兼容性静态审计的初步结论是可小规模适配，不需重训或转换checkpoint，也不构成退回`vagen-legacy`的理由：SFT2保存的是标准Qwen2.5-VL完整HF目录，query adapter在保存时已materialize到embedding rows，16个latent token及8个action token保存在tokenizer/config中；最新上游同样固定torch2.8/vLLM0.11并原生加载Qwen2.5-VL HF checkpoint。历史真实证据也表明corrected ID74 epoch1已被vLLM TP4加载并完成rollout，且ID147从同一checkpoint完成20轮训练。
+- 上游不原生理解Nimloth协议，仍需局部集成：自定义agent-loop强制真实CoT后的16个inject slots/action boundary；vLLM同次forward捕获16个hidden与8-action logits；加载`SharedSlotProjector`/`ValueHead` sidecar；guided replay、snapshot和checkpoint ownership。上游已有custom agent loop、`extra_fields`、external library/rollout registry与FSDP actor extension点，因此这是联合PPO功能接入，不是SFT2架构迁移。
+- 本轮尝试实时读取ID74 checkpoint文件、config、tensor shape和training invariants时，`ssh superpod-csejzhang`在banner阶段超时。按`.local/SERVER.md`推定VPN断开并停止重试；在VPN恢复并完成真实只读preflight前，不移动VAGEN gitlink或声称checkpoint实时验证完成。
 
 ## 文件修改
 

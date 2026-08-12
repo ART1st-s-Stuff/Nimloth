@@ -15,6 +15,7 @@
 - 人类已确认Scheme-B guided actor loss必须经`l_prior`反传LLM；Q在actor loss中始终stop-gradient。启用合同现在拒绝`backprop_to_llm != true`，避免产生没有可训练actor路径的配置。
 - 人类已确认ValueHead Q使用真实环境reward的discounted return做critic回归：仅监督实际执行第一动作，target stop-gradient，首版Huber；不把即时reward或advantage本身作为Q target，不给未执行action伪造监督。terminal bootstrap为0；truncation需rollout-time frozen critic bootstrap，具体snapshot owner仍待state路径确定后实现。
 - Git history确认VAGEN的`latent z -> LatentStateEncoder -> world_state -> TransitionRewardNet`是ARTI5T fork既有实验代码，并非本M2新增或通用上游约束：基础类始于嵌套VERL `2f291ea`（2026-03-27），canonical latent提取见`0ca14e2`（2026-04-13），完整`WorldStatePredictor`与actor wiring见当前gitlink `ae269bd`（2026-04-14）；VAGEN顶层`517da7a`固定该gitlink，当前Lite基线继承。禁止据此自动替换旧Nimloth ValueHead的StateProjector输入。
+- 人类澄清上述ARTI5T fork提交是其本人修改，后续必须改从真正上游最新`mll-lab-nu/VAGEN main@2936322`继续；该commit固定`JamesKrW/verl@3fe0a29`，没有fork LeWM predictor。静态审计表明corrected K16/inject DINO-grid SFT2可小规模适配最新上游：完整HF Qwen checkpoint已materialize query embedding，tokenizer/config保留latent/action tokens，上游同为torch2.8/vLLM0.11/Qwen2.5-VL；历史上该checkpoint已通过vLLM TP4 rollout并支撑ID147完成训练。缺口是局部Nimloth agent-loop、同forward state/logit capture、SharedSlotProjector/ValueHead sidecar和joint replay/checkpoint接入，不是SFT2重训/格式转换。实时checkpoint只读preflight因`ssh superpod-csejzhang` banner超时而未完成；按服务器规则推定VPN断开，恢复前不得移动gitlink或宣称实时验证完成。
 
 ## 2026-08-10：新版 VAGEN-Lite 与当前 RL 的只读迁移评估
 
