@@ -25,7 +25,8 @@ NVIDIA_PID=
 SMOKE_PID=
 STARTED_AT=$(date --iso-8601=seconds)
 
-[[ "${SLURM_JOB_NUM_NODES:-}" == "1" ]]
+ALLOCATED_NODES=${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-${SLURM_STEP_NUM_NODES:-}}}
+[[ "${ALLOCATED_NODES}" == "1" ]]
 [[ "${SLURM_JOB_PARTITION:-}" == "normal" ]]
 [[ "${SLURM_CPUS_PER_TASK:-}" == "16" ]]
 [[ "${SLURM_MEM_PER_NODE:-}" == "131072" ]]
