@@ -199,9 +199,14 @@ def test_vagen_eval_nimloth_observation_uses_source_prompt_wording() -> None:
         initial=False,
     )
 
+    system = vagen_eval_nimloth_system_prompt(latent_token_count=16)
+    assert system.startswith("You are a home robot")
+    assert "move_forward: Move forward by some distance" in system
+    assert "Choose exactly one valid action" in system
+    assert "Do not output multiple actions" in system
     assert "Human Instruction: go to the couch" in initial
     assert "Decide your next action(s)." in initial
-    assert "<|action_start|><|action_(idx)|><|action_end|>" in initial
+    assert "<|latent_state_15|><|action_start|><|action_(idx)|><|action_end|>" in initial
     assert "current format text" not in initial
     assert later.startswith("After your action,")
     assert later.endswith("Decide your next action(s).")
