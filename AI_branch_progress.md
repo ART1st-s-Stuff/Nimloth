@@ -12,6 +12,8 @@
 - 人类随后确认 provisional policy：每个turn只执行第一动作并从下一真实observation重规划；action prior来自LLM action-token boundary logits的softmax，实际采样prior token属于`pi_LLM`；M2先采用scheme B，以旧ValueHead作为critic，通过`softmax(alpha*l_prior + beta*stopgrad(frozen_Q))`定义guided policy。rollout/update必须复用rollout-time frozen Q guidance，禁止critic更新后重算同一behavior。尚待确认guided-policy loss是否经`l_prior`反传LLM；若detach，本轮guided ratio没有可训练参数而恒为1。
 - M2合同层已开始施工：新增无默认gradient choice的Scheme-B config、action/token/dtype绑定contract id、reference/Torch guided math、严格versioned behavior record和内嵌完整behavior证据的ledger v2；`joint_policy.enabled=true`在Q owner/rollout/replay未接通前主动拒绝运行stock PPO。dependency-light回归`46 passed`，3项真实Torch autograd/parity/overflow测试因本地无torch明确skip，最终review无合同层blocker。
 - 接worker前确认新的设计阻塞：VAGEN现有token critic是逐response-token标量V，transition reward predictor是immediate reward model，都不是旧Nimloth `[B,8] Q(s,a)`；VAGEN world state也不等于旧ValueHead的输入state。禁止直接加载旧ValueHead权重，需人类先确认是完整复用Nimloth state路径，还是接受VAGEN state并重新初始化新Q head。
+- 人类已确认Scheme-B guided actor loss必须经`l_prior`反传LLM；Q在actor loss中始终stop-gradient。启用合同现在拒绝`backprop_to_llm != true`，避免产生没有可训练actor路径的配置。
+- 人类已确认ValueHead Q使用真实环境reward的discounted return做critic回归：仅监督实际执行第一动作，target stop-gradient，首版Huber；不把即时reward或advantage本身作为Q target，不给未执行action伪造监督。terminal bootstrap为0；truncation需rollout-time frozen critic bootstrap，具体snapshot owner仍待state路径确定后实现。
 
 ## 2026-08-10：新版 VAGEN-Lite 与当前 RL 的只读迁移评估
 
