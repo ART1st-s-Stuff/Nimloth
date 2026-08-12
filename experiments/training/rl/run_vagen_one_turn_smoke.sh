@@ -11,12 +11,14 @@ PARENT_COMMIT=${EXPECTED_PARENT_COMMIT}
 VAGEN_COMMIT=3fc2509144bb8d1c1ebd57aab30dbece5c3794e4
 VERL_COMMIT=3fe0a29975e1b02ae2bd1dec249f7807dd7966f5
 MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
-RUN_NAME=159_smoke_vagenlite_id74_k16_oneturn_base0_1g
-RUN_OUT=${ROOT}/outputs/experiments/training/rl/2026-08-13/${RUN_NAME}
+EXPERIMENT_ID=${EXPERIMENT_ID:?EXPERIMENT_ID is required}
+RUN_NAME=${RUN_NAME:?RUN_NAME is required}
+RUN_DATE=${RUN_DATE:?RUN_DATE is required}
+RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
 RUN_RESULT=${RUN_OUT}/one_turn_result.json
 ENV_PORT=$((18300 + SLURM_JOB_ID % 500))
 ENV_URL=http://127.0.0.1:${ENV_PORT}
-RUNTIME_ROOT=/tmp/nvl159-${SLURM_JOB_ID}
+RUNTIME_ROOT=/tmp/nvl${EXPERIMENT_ID}-${SLURM_JOB_ID}
 RAY_TMPDIR=${RUNTIME_ROOT}/ray
 TMPDIR=${RUNTIME_ROOT}/tmp
 AI2THOR_HOME_ROOT=${RUNTIME_ROOT}/ai2thor
@@ -59,6 +61,7 @@ export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=${HF_HOME}
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
 export TOKENIZERS_PARALLELISM=true
+export PYTHONDONTWRITEBYTECODE=1
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_ALLREDUCE_USE_SYMM_MEM=0
@@ -128,7 +131,7 @@ except BaseException:
   except FileNotFoundError: pass
   raise
 PY
-  if [[ "${RUNTIME_ROOT}" == "/tmp/nvl159-${SLURM_JOB_ID}" ]]; then
+  if [[ "${RUNTIME_ROOT}" == "/tmp/nvl${EXPERIMENT_ID}-${SLURM_JOB_ID}" ]]; then
     rm -rf -- "${RUNTIME_ROOT}"
   fi
   exit "${status}"
@@ -136,7 +139,7 @@ PY
 trap cleanup EXIT
 
 {
-  echo "experiment_id=159"
+  echo "experiment_id=${EXPERIMENT_ID}"
   echo "project=nimloth-rl"
   echo "run_name=${RUN_NAME}"
   echo "wandb_mode=disabled_by_design_no_training_metrics"
@@ -174,7 +177,7 @@ trap cleanup EXIT
 
 {
   cat <<EOF
-# ID159 optimizer-free VAGEN-Lite one-turn smoke
+# ID${EXPERIMENT_ID} optimizer-free VAGEN-Lite one-turn smoke
 
 - Goal: ID74 HF policy load -> real held-out Navigation reset -> model-generated CoT -> forced K16 protocol -> one sampled action -> one real environment step -> reward/decision-ledger validation.
 - This is inference-only. It does not load StateProjector, WM predictor, ValueHead, frozen-Q guidance, actor/critic trainers, optimizer, FSDP, or checkpoints.
@@ -198,6 +201,13 @@ printf '\n' >>"${RUN_OUT}/command.txt"
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${PARENT_COMMIT}" ]]
 [[ "$(git -C "${VAGEN}" rev-parse HEAD)" == "${VAGEN_COMMIT}" ]]
 [[ "$(git -C "${VERL}" rev-parse HEAD)" == "${VERL_COMMIT}" ]]
+EXPECTED_LEWM_COMMIT=$(git -C "${REPO}" ls-tree HEAD external/le-wm | awk '{print $3}')
+[[ "${EXPECTED_LEWM_COMMIT}" == "8edfeb336732b5f3ce7b8b210d0ba370a09e2cac" ]]
+[[ "$(git -C "${REPO}/external/le-wm" rev-parse HEAD)" == "${EXPECTED_LEWM_COMMIT}" ]]
+[[ -f "${REPO}/external/le-wm/module.py" ]]
+git -C "${REPO}/external/le-wm" diff --quiet
+git -C "${REPO}/external/le-wm" diff --cached --quiet
+[[ -z "$(git -C "${REPO}/external/le-wm" status --porcelain --untracked-files=all)" ]]
 git -C "${REPO}" diff --quiet
 git -C "${REPO}" diff --cached --quiet
 git -C "${VAGEN}" diff --quiet
@@ -210,7 +220,7 @@ sha256sum -c - <<EOF | tee "${RUN_OUT}/checkpoint_sha256.log"
 32acf7bf413e8b87f295e816fe3d68c965e0ab196fbf30b32858b52df41cc97e  ${MODEL}/model.safetensors.index.json
 be27f6714980c2cf8f63e9f119a7fd3b055709e7f67c9523da108595f143eca3  ${MODEL}/tokenizer.json
 63c933b6ebadae3ee64a4663b5bd1ec71676f64629faf2cda6c15393e534e563  ${MODEL}/model-00001-of-00002.safetensors
-1939ec8a9b041c8142acdf5ac4043243ed018360a000420e2a711b9bea5000  ${MODEL}/model-00002-of-00002.safetensors
+1939ec8a9b041c8142acdf5acac4043243ed018360a000420e2a711b9bea5000  ${MODEL}/model-00002-of-00002.safetensors
 e789a67246022c785521324bbd800d903f46024d8e8d05c504fcbcdedd9d4063  ${MODEL}/state_proj.pt
 b0059ba1eb842cedcbba884dff88a67cd2da127583cea14a800f4215d835c87d  ${MODEL}/value_head/value_head.pt
 85cedd95e5fc6d89cdad7248a85e2dd51b10e1dcf8302d19d5cd3b489af82bb8  ${MODEL}/wm_predictor/predictor.pt
@@ -235,6 +245,12 @@ data=json.loads(asset.read_text())['tasks']
 task=data[0]
 assert (task['scene'],task['targetObjectType'])==('FloorPlan11','Bread')
 print(json.dumps({'status':'CHECKPOINT_PREFLIGHT_OK','model_type':cfg['model_type'],'latent_mode':cfg['nimloth_latent_query_mode'],'latent_count':cfg['nimloth_latent_token_count'],'query_tune':cfg['nimloth_query_tune'],'shards':shards,'asset_sha256':sha(asset),'task':{'scene':task['scene'],'target':task['targetObjectType'],'instruction':task['instruction']}}))
+PY
+"${PY}" - <<'PY' | tee "${RUN_OUT}/runtime_import_preflight.json"
+from nimloth.backbone.qwen25vl.policy import reasoning_forbidden_token_ids
+from nimloth.backbone.qwen25vl.turn_generation import TurnGenerationSpec
+from nimloth.wm._vendor_lewm import ARPredictor
+print('{"status":"RUNTIME_IMPORT_OK","imports":["reasoning_forbidden_token_ids","TurnGenerationSpec","ARPredictor"]}')
 PY
 
 # Keep a private AI2-THOR mapping file while sharing only immutable Unity releases.
@@ -280,7 +296,7 @@ done
 # Full create/reset/prompt/close wall clock is bounded to 300 seconds.
 timeout --signal=TERM --kill-after=10s 300s "${PY}" -m nimloth.environment.navigation.prewarm \
   --env-url "${ENV_URL}" --eval-set base --seed 0 --timeout-seconds 300 \
-  --env-id "nvl159-prewarm-${SLURM_JOB_ID}" | tee "${RUN_OUT}/prewarm.json"
+  --env-id "nvl${EXPERIMENT_ID}-prewarm-${SLURM_JOB_ID}" | tee "${RUN_OUT}/prewarm.json"
 
 # Record allocation-owned peak VRAM throughout vLLM load and one real turn.
 nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization.gpu \
