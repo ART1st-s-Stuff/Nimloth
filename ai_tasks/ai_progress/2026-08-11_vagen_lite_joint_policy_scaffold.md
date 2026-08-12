@@ -74,7 +74,11 @@
 - 远程session现在粘定connect server，state-mutating `step`不做可能重复执行的自动重试；Navigation cache按去除server-owned `gpu_device`后的完整配置隔离，构造/reset失败和agent-loop异常均释放env slot/session。Qwen trailing EOS/PAD只从送入严格environment parser的解码副本移除，原始response IDs/mask/log-probs继续保留给PPO。
 - Scheme-B behavior record现在同时绑定action table/token IDs、prior logits、采样prior action的LLM log-prob、rollout-time frozen-Q、guided log-prob和snapshot identity；trainer在最终reward tensor赋值前再次校验ledger reward anchor。`joint_policy.enabled=true`仍在Q owner/guided rollout/replay未接通时fail closed。
 - `vagen_eval`兼容profile恢复canonical source-eval wording，仅替换成K16单动作格式；SFT1 converter使用format body避免重复注入“exactly one action”。RL/env launchers不再默认为旧worktree，并校验精确VAGEN短commit。
-- 人类已批准并完成push：VAGEN `nimloth/upstream-joint-policy-scaffold@316d9d7`和Nimloth `feat/vagen-lite-joint-policy-scaffold@27c812fb`远端SHA均与本地一致；`.gitmodules`跟踪新VAGEN分支。临时fresh clone成功checkout精确父commit和VAGEN gitlink，发布闭环完成；未合并或修改main。
+- 人类已批准并完成首阶段push：VAGEN `nimloth/upstream-joint-policy-scaffold@316d9d7`和Nimloth `feat/vagen-lite-joint-policy-scaffold@a4d5bfad`远端SHA均与本地一致；`.gitmodules`跟踪新VAGEN分支。临时fresh clone成功checkout精确父commit和VAGEN gitlink；未合并或修改main。
+- 人类随后批准开始单GPU、无optimizer、无训练的一真实turn smoke。代码审计确认stock `main_ppo val_only`仍构造optimizer、validation丢弃ledger，而generic no-concat loop没有ID74的真实CoT→K16→action生成约束；因此新增专用optimizer-free standalone bridge，而没有运行不可判定的近似smoke。
+- VAGEN `1f8ed5f`新增`nimloth_vllm` custom replica和`standalone_one_turn_smoke`：复用Nimloth `TurnGenerationSpec`/`TurnResponseLogitsProcessor`，prompt只预填`<think>`，保留模型实际CoT；K16/action protocol强制token的response mask为0，真实sampled CoT/action为1。输出原子绑定完整environment response、Navigation action-space/source/action token、M1 ledger、reward anchor和finite aligned rollout log-probs；无actor/critic/FSDP/optimizer/checkpoint。
+- 本地dependency-light为`84 tests`，服务器完整依赖为`96 passed, 25 subtests`；custom Ray actor继承、registry时序和numpy seed remote JSON序列化等review问题均已修复，最终review`APPROVED`。该VAGEN commit已push，父仓库gitlink待launch contract一并推进。
+- GPU未启动：实时资源查询只报告dgx-21/23/37为`DOWN+NOT_RESPONDING`，不能视为可用GPU；还需人类确认1-GPU合同是Unity+vLLM同一H800，还是另给environment GPU。smoke拟使用held-out `base` seed0（FloorPlan11/Bread），与`base_train`任务和scene均无重叠；dgx-51按既有两次300秒prewarm超时证据继续排除。
 
 ## 待确认问题
 
