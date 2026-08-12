@@ -137,7 +137,7 @@ if [[ "${SHARD_BATCHED_ACTIVE_ENVS}" == true ]]; then
   }
 fi
 for dataset in "${SHARD_DATASETS[@]}"; do
-  [[ -f "${ENV_REPO}/external/VAGEN/vagen/env/navigation/datasets/${dataset}.json" ]] || {
+  [[ -f "${ENV_REPO}/external/VAGEN/vagen/envs/navigation/assets/${dataset}.json" ]] || {
     echo "missing rollout dataset: ${dataset}" >&2
     exit 1
   }
@@ -184,9 +184,11 @@ trap cleanup_env EXIT
   export PYTHONPATH=${ENV_REPO}/external/VAGEN
   source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh"
   cd "${ENV_REPO}/external/VAGEN"
-  exec "${PYTHON}" -m vagen.server.server \
-    server.host=0.0.0.0 server.port=${ENV_PORT} use_state_reward=False \
-    navigation.devices=[0] navigation.max_workers=1
+  exec "${PYTHON}" -m vagen.envs.navigation.serve \
+    --host=0.0.0.0 --port="${ENV_PORT}" --devices='[0]' \
+    --max_envs="$((SHARD_NUM_EPISODES + 1))" \
+    --max_inflight="$((SHARD_NUM_EPISODES + 1))" \
+    --thread_pool_size="$((SHARD_NUM_EPISODES + 1))"
 ) >"${ENV_LOG}" 2>&1 &
 ENV_PID=$!
 

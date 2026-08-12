@@ -28,9 +28,10 @@ echo "=== Env server on $(hostname) ${HEAD_IP}:${ENV_PORT} ==="
 echo "ENV_URL=http://${HEAD_IP}:${ENV_PORT}"
 
 cd "${REPO}/external/VAGEN"
-exec python3 -m vagen.server.server \
-    server.host=0.0.0.0 \
-    server.port=${ENV_PORT} \
-    use_state_reward=False \
-    navigation.devices=[0] \
-    navigation.max_workers=4
+exec python3 -m vagen.envs.navigation.serve \
+    --host=0.0.0.0 \
+    --port="${ENV_PORT}" \
+    --devices='[0]' \
+    --max_envs=4 \
+    --max_inflight=4 \
+    --thread_pool_size=4
