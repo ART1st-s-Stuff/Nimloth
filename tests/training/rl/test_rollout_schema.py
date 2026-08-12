@@ -170,7 +170,7 @@ def test_vagen_eval_navigation_profile_is_an_explicit_rollout_setting() -> None:
     assert current["success_reward"] == 10.0
     assert historical["step_length"] == 0.3
     assert historical["success_threshold"] == 1.0
-    assert historical["format_reward"] == 0.01
+    assert historical["format_reward"] == 0.0
     assert historical["per_turn_format_reward"] == 0.01
     assert historical["success_reward"] == 1.0
 
