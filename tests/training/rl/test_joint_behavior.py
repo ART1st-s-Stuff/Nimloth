@@ -9,7 +9,12 @@ import pytest
 from nimloth.backbone.qwen25vl.turn_generation import TurnGenerationSpec
 from nimloth.training.rl.joint_behavior import NimlothPolicyResponseTrace
 from nimloth.training.rl.joint_scoring import FrozenQScoringRecord
-from vagen.joint_policy import FrozenQGuidedPolicyConfig, GuidedActionExecutionRequest
+from vagen.joint_policy import (
+    FrozenQGuidedPolicyConfig,
+    GuidedActionExecutionRequest,
+    GuidedPolicyActionDrawRecord,
+    sample_frozen_q_guided_action,
+)
 
 
 _ACTION_NAMES = ("move_forward", "turn_right")
@@ -89,6 +94,26 @@ def _scoring_record(
     )
 
 
+def _draw(
+    *,
+    config: FrozenQGuidedPolicyConfig | None = None,
+    scoring_record: FrozenQScoringRecord | None = None,
+    uniform_draw: float = 0.5,
+    action_space_names=_ACTION_NAMES,
+) -> GuidedPolicyActionDrawRecord:
+    config = config or _config()
+    score = scoring_record or _scoring_record(config=config)
+    return sample_frozen_q_guided_action(
+        action_space="navigation_v1",
+        action_space_names=action_space_names,
+        action_token_ids=score.action_token_ids,
+        prior_logits=score.prior_logits,
+        frozen_all_action_q=score.frozen_all_action_q,
+        uniform_draw=uniform_draw,
+        config=config,
+    )
+
+
 def _response_logprobs(*, action_logprob: float = math.log(0.5)) -> tuple[float, ...]:
     return (-0.1, -0.2, -0.3, -0.4, 0.0, 0.0, 0.0, action_logprob, 0.0)
 
@@ -122,21 +147,24 @@ def _trace(
 def _build(**overrides):
     from nimloth.training.rl.joint_behavior import build_guided_execution_from_scoring
 
-    config = overrides.pop("config", _config())
-    scoring_record = overrides.pop("scoring_record", _scoring_record(config=config))
+    scoring_record = overrides.pop("scoring_record", _scoring_record())
+    action_draw = overrides.pop("action_draw", None)
+    if action_draw is None:
+        action_draw = _draw(scoring_record=scoring_record)
     kwargs = {
         "scoring_record": scoring_record,
+        "action_draw": action_draw,
         "response_trace": _trace(),
         "generation_spec": _spec(),
         "tokenizer": _Tokenizer(),
-        "action_space": "navigation_v1",
-        "action_space_names": _ACTION_NAMES,
-        "config": config,
-        "guided_action_id": 1,
         "expected_request_id": "session-17",
         "expected_generation_id": "generation-23",
         "expected_snapshot_id": "sha256:frozen-step-7",
-        "expected_contract_id": _scoring_record(config=config).contract_id,
+        "expected_contract_id": (
+            scoring_record.contract_id
+            if isinstance(scoring_record, FrozenQScoringRecord)
+            else scoring_record["contract_id"]
+        ),
         "expected_generation_spec_id": _trace().generation_spec_id,
     }
     kwargs.update(overrides)
@@ -162,8 +190,9 @@ def test_builds_identity_bound_behavior_without_selecting_action() -> None:
 
 
 def test_external_action_choice_is_deterministic_and_can_equal_prior() -> None:
-    first = _build(guided_action_id=0)
-    second = _build(guided_action_id=0)
+    draw = _draw(uniform_draw=0.0)
+    first = _build(action_draw=draw)
+    second = _build(action_draw=draw)
     assert first == second
     assert first.guided_action_id == first.prior_action_id == 0
 
@@ -190,14 +219,23 @@ def test_rejects_response_trace_identity_mismatch() -> None:
         _build(response_trace=_trace(generation_id="other-generation"))
 
 
-def test_rejects_config_score_dtype_or_action_table_mismatch() -> None:
-    with pytest.raises(ValueError, match="score_dtype"):
+def test_rejects_draw_score_dtype_or_action_table_mismatch() -> None:
+    score = _scoring_record()
+    other_config = _config(score_dtype="float32")
+    other_score = _scoring_record(config=other_config)
+    with pytest.raises(ValueError, match="score_dtype|contract"):
         _build(
-            config=_config(score_dtype="float32"),
-            scoring_record=_scoring_record(config=_config()),
+            scoring_record=score,
+            action_draw=_draw(config=other_config, scoring_record=other_score),
         )
     with pytest.raises(ValueError, match="action table|contract"):
-        _build(action_space_names=("turn_right", "move_forward"))
+        _build(
+            scoring_record=score,
+            action_draw=_draw(
+                scoring_record=score,
+                action_space_names=("turn_right", "move_forward"),
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -282,9 +320,10 @@ def test_sampled_prior_logprob_accepts_dtype_tolerance(score_dtype: str) -> None
     epsilon = {"float64": 2.0**-52, "float32": 2.0**-23, "bfloat16": 2.0**-7}[score_dtype]
     config = _config(score_dtype=score_dtype)
     trace = _trace(response_logprobs=_response_logprobs(action_logprob=math.log(0.5) + 4 * epsilon))
+    score = _scoring_record(config=config)
     request = _build(
-        config=config,
-        scoring_record=_scoring_record(config=config),
+        scoring_record=score,
+        action_draw=_draw(config=config, scoring_record=score),
         response_trace=trace,
     )
     assert request.behavior_record.guided_action_id == 1
@@ -296,16 +335,19 @@ def test_sampled_prior_logprob_rejects_outside_dtype_tolerance(score_dtype: str)
     config = _config(score_dtype=score_dtype)
     trace = _trace(response_logprobs=_response_logprobs(action_logprob=math.log(0.5) + 16 * epsilon))
     with pytest.raises(ValueError, match="LLM prior log-prob"):
+        score = _scoring_record(config=config)
         _build(
-            config=config,
-            scoring_record=_scoring_record(config=config),
+            scoring_record=score,
+            action_draw=_draw(config=config, scoring_record=score),
             response_trace=trace,
         )
 
 
-def test_rejects_invalid_action_choice_and_mapping_forgery() -> None:
+def test_rejects_draw_forgery_and_trace_mapping_forgery() -> None:
+    forged_draw = _draw().to_mapping()
+    forged_draw["guided_action_id"] = 0
     with pytest.raises(ValueError, match="guided_action_id"):
-        _build(guided_action_id=2)
+        _build(action_draw=forged_draw)
     forged = _trace().to_mapping()
     forged["response_logprobs"][0] = float("nan")
     with pytest.raises(ValueError, match="finite"):
@@ -317,7 +359,7 @@ def test_mapping_scoring_is_revalidated_and_no_current_q_is_accepted() -> None:
     forged = deepcopy(record)
     forged["frozen_all_action_q"][0] = float("nan")
     with pytest.raises(ValueError, match="frozen Q"):
-        _build(scoring_record=forged)
+        _build(scoring_record=forged, action_draw=_draw())
     with pytest.raises(TypeError, match="unexpected keyword"):
         _build(current_q=(1.0, 2.0))
 
