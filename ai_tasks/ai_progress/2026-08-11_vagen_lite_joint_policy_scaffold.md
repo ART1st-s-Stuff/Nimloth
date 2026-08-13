@@ -96,6 +96,10 @@
 - assembly重验scoring/trace的request+generation、snapshot、contract、score dtype、token table与expected generation spec；mask精确复现agent-loop语义，包括reasoning达到上限时forced close token为0；全部log-probs必须finite，sampled action log-prob按float64/float32/bfloat16合同容差核对prior logits。guided action只能作为外部显式ID输入，helper没有RNG、current Q或environment mutation。
 - review发现并修复旧helper可混入另一generation同形trace、raw文本未绑定IDs、reasoning prefix mask未全验、action-end由caller自由指定、forced logprob可非finite和dtype容差缺测；最终review`APPROVED`。fresh服务器VAGEN全套`118 passed,43 subtests`，parent critic/scoring/behavior/capture定向`77 passed`（最终新增expected spec identity后behavior组合定向`76 passed`）。
 - agent loop尚未构造response trace/scoring/behavior，也没有critic Ray owner、guided RNG或environment call接线；joint trainer继续fail closed。
+- VAGEN`6ff224e`新增纯external-draw Scheme-B sampler：调用者显式传`uniform_draw∈[0,1)`，helper以half-open inverse CDF选择action并记录config/contract/action table/tokens/prior logits/rollout frozen Q/guided log-probs/draw/action/logprob。模块不导入RNG、不接受current Q、不调用environment。
+- sampler使用probability-space CDF确保常见0.7边界归入下一区间，同时对draw=0单独保留数学上正但`exp`可能下溢的首action。direct/mapping构造均重算derived fields并严格校验类型；所有持久化float及公共config的`beta=-0.0`规范化为`+0.0`，保证相等record拥有相同contract/record ID。
+- 两轮review修复log-space边界误选、mapping预tuple化绕过strict sequence、signed-zero导致equal record不同hash及嵌套config signed-zero；最终review`APPROVED`。fresh服务器VAGEN全套`130 passed,65 subtests`。
+- RNG owner/seed/stream仍未决定，agent loop未提供draw，也未将draw record接入behavior assembly/environment；trainer继续fail closed。
 
 ## 待确认问题
 

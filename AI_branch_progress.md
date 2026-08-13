@@ -4662,3 +4662,10 @@
 - helper重验scoring/trace identity、snapshot/contract/score dtype/token table；完整mask精确复现agent-loop（含reasoning预算耗尽后forced close），全部log-probs finite，sampled prior log-prob按float64/float32/bfloat16容差核验。没有RNG、current Q或environment mutation输入。
 - review发现并修复跨generation同形trace混入、raw文本未绑定IDs、prefix mask漏验、action-end自由输入、forced logprob非finite及dtype容差缺测；最终review`APPROVED`。服务器VAGEN全套`118 passed,43 subtests`，parent相关`77 passed`。
 - agent loop仍未生产trace/behavior；critic Ray owner、guided sampler、actor replay、critic optimizer与checkpoint未接通，trainer继续fail closed。
+
+## 2026-08-13：外部 uniform draw 的纯 Scheme-B sampler 完成
+
+- VAGEN `6ff224e`新增纯inverse-CDF sampler：只消费调用者提供的`uniform_draw∈[0,1)`、prior logits与rollout frozen Q，输出完整audit record；不导入RNG、不接受current Q、不调用environment。
+- half-open区间在0.7等常见CDF边界正确进入下一action；draw=0仍可选择数学上正但`exp`下溢的首action。direct/mapping均严格重验derived fields；draw、prior/Q/logprob及公共config `beta`的signed zero统一规范化，equal record/contract拥有相同hash。
+- review依次修复log-space边界误选、mapping容器被预tuple化接受、signed-zero hash分裂与嵌套config signed-zero；最终`APPROVED`。服务器VAGEN全套`130 passed,65 subtests`。
+- agent loop尚无RNG owner/seed/stream，不提供draw，也未把draw record接入behavior/environment；trainer继续fail closed。
