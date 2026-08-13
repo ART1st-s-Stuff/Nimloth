@@ -92,6 +92,10 @@
 - remote transport为guided mutation使用独立`step_guided`方法；普通`step`携带guided payload会在mutation前拒绝，旧server不会静默执行raw prior。server与client都重验request，并在动作后核对environment echo中的raw response、action table、guided action id/name和完整request。`step`与`step_guided`均不自动重试；不支持Navigation专用`guided_step` capability的环境在mutation前拒绝。
 - review先发现同名free-think text action可冒充Nimloth token prior，现已要求guided override只能用于`prompt_format=nimloth`并有`_exec_action`前失败测试；最终review`APPROVED`。fresh服务器VAGEN全套CPU tests为`118 passed,43 subtests`，仅既有Ray/Swig warning。
 - execution envelope尚未由agent loop生产，Q owner/scorer尚未成为Ray rollout service，也未确定guided sampler RNG；actor replay、critic optimizer、snapshot refresh/checkpoint仍未接通。因此本里程碑只关闭“保留raw policy evidence同时执行另一个已授权action”的接口缺口，trainer继续fail closed。
+- VAGEN`2ac1dbd`将execution envelope显式升级为v2并加入`response_trace_id`，拒绝v1/missing-field artifact。父`f2f6ad63`新增`NimlothPolicyResponseTrace`和纯assembly helper：trace绑定sticky request、unique generation、caller-pinned generation-spec identity、完整response IDs/mask/log-probs和raw decode文本；trace全文hash进入execution envelope。
+- assembly重验scoring/trace的request+generation、snapshot、contract、score dtype、token table与expected generation spec；mask精确复现agent-loop语义，包括reasoning达到上限时forced close token为0；全部log-probs必须finite，sampled action log-prob按float64/float32/bfloat16合同容差核对prior logits。guided action只能作为外部显式ID输入，helper没有RNG、current Q或environment mutation。
+- review发现并修复旧helper可混入另一generation同形trace、raw文本未绑定IDs、reasoning prefix mask未全验、action-end由caller自由指定、forced logprob可非finite和dtype容差缺测；最终review`APPROVED`。fresh服务器VAGEN全套`118 passed,43 subtests`，parent critic/scoring/behavior/capture定向`77 passed`（最终新增expected spec identity后behavior组合定向`76 passed`）。
+- agent loop尚未构造response trace/scoring/behavior，也没有critic Ray owner、guided RNG或environment call接线；joint trainer继续fail closed。
 
 ## 待确认问题
 
