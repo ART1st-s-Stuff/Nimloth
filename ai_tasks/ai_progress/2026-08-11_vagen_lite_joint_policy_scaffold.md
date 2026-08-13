@@ -28,7 +28,8 @@
 6. 人类已确认 guided actor loss 必须经`l_prior`反传LLM；`backprop_to_llm`保留为可审计合同字段但启用时只能为`true`。Q在actor loss中始终stop-gradient。
 7. 人类已确认Q用真实环境reward构造的discounted return训练：只回归实际执行的第一动作，target stop-gradient，首版使用Huber；不把即时reward或advantage本身当Q target，不伪造未执行action监督。terminal bootstrap为0；truncation需rollout-time frozen critic bootstrap。
 8. ledger v2、versioned behavior record、reference/Torch guided math 和 contract identity 已实现。
-9. `joint_policy.enabled=true`当前显式 fail closed，直到人类决定旧 ValueHead 接收哪一种 state，并完成 Q owner、rollout sampler、replay 和 checkpoint snapshot boundary。
+9. `joint_policy.enabled=true`当前显式 fail closed，直到已确认的 Q owner、rollout sampler、replay、optimizer 和 checkpoint snapshot boundary 全部真实接通。
+10. 人类已确认生产ownership：rollout coordinator用无状态deterministic keyed draw，不使用worker-local或vLLM RNG；`AgentLoopManager`在workers前创建独立CPU Ray actor持有只读frozen critic snapshot；每个完整global joint update成功后为下一批rollout原子发布新snapshot，同batch/minibatch内不刷新。
 
 ## 已完成
 
@@ -102,12 +103,12 @@
 - RNG owner/seed/stream仍未决定，agent loop未提供draw，也未将draw record接入behavior assembly/environment；trainer继续fail closed。
 - VAGEN`3840f2c`把execution envelope升级为v3并新增`action_draw_record_id`。父`0a29e0b9`把behavior assembly收紧为只接受完整`GuidedPolicyActionDrawRecord`，删除裸`config/action_space/guided_action_id`输入；draw经mapping重验后与scoring的contract、action token table、prior logits、rollout frozen Q和score dtype逐项一致，behavior中的selected action/logprob只来自draw record。
 - execution envelope现同时持久化response trace与action draw两个audit ID，不能在assembly边界绕过外部draw选择或丢失draw provenance。review只发现文档仍写v2与旧action-table helper死代码，修复后最终`APPROVED`。
-- fresh服务器VAGEN全套`130 passed,65 subtests`，parent behavior/scoring/critic/capture相关`76 passed`。agent loop仍未创建snapshot scoring/trace/draw/behavior链，也未决定RNG owner，trainer继续fail closed。
+- fresh服务器VAGEN全套`130 passed,65 subtests`，parent behavior/scoring/critic/capture相关`76 passed`。agent loop仍未创建snapshot scoring/trace/draw/behavior链，trainer继续fail closed。
+- 人类确认此前待定的三个生产ownership：coordinator-owned deterministic keyed draw绑定run seed、global policy step、stable sample/repeat identity、turn、snapshot、contract和RNG schema，使调度/worker重启/基础设施重试不改变同一逻辑decision的draw；`AgentLoopManager`在agent-loop workers前创建独立CPU Ray actor持有active immutable snapshot；trainer在一个完整global joint update成功后stage并原子activate下一snapshot，同一rollout batch及其PPO minibatches不刷新，历史record继续只用持久化旧Q。实现仍按TDD分阶段进行，当前不因此解除fail-closed。
 
 ## 待确认问题
 
-- 旧 ValueHead 在 VAGEN 中接收哪种 state：完整复用 Nimloth StateProjector/WM state，还是改用 VAGEN world state 并重新初始化；两者不可伪装为等价。
 - `alpha`、`beta`、prior temperature、`gamma`、score dtype、critic loss coefficient、warmup/KL target 的正式实验值。
 - 未执行 action slot 的 Q 校准与探索保护。
-- frozen critic snapshot 的刷新/checkpoint边界，以及truncation bootstrap所引用的snapshot identity。
+- 磁盘checkpoint频率与truncation bootstrap完整return compiler；active snapshot必须随完整checkpoint保存，但磁盘落盘不要求每个global update一次。
 - 模拟尾部 action 的生成方式及其非 PPO 辅助目标。

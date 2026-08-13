@@ -4676,3 +4676,10 @@
 - assembly逐项核对draw与scoring的contract、token table、prior logits、rollout frozen Q及score dtype；selected action与behavior guided log-prob只来自draw record。execution envelope同时提交response trace和action draw两个audit ID。
 - review修复文档版本落后与死代码后`APPROVED`。服务器VAGEN全套`130 passed,65 subtests`，parent相关`76 passed`。
 - agent loop尚未创建scoring/trace/draw/behavior链，RNG owner仍未决定；trainer继续fail closed。
+
+## 2026-08-13：人类确认 guided rollout 的三个 production ownership
+
+- Guided action的随机数由rollout coordinator以无状态deterministic keyed draw生成；key绑定run seed、global policy step、stable sample/repeat identity、turn、snapshot、contract与RNG schema。同一逻辑decision在Ray调度变化、worker重启或基础设施重试后保持同一draw；不使用worker-local RNG或vLLM token RNG。
+- `AgentLoopManager`在agent-loop workers前创建独立CPU Ray actor，actor只读持有active frozen critic snapshot；current trainable critic和optimizer仍由trainer拥有。
+- 每个完整global joint update成功后，trainer stage并原子activate下一snapshot，供下一批rollout使用；同一rollout batch及其PPO minibatches内不刷新，历史behavior始终使用已持久化旧Q/snapshot。磁盘checkpoint可低频，但必须整体保存current critic/optimizer、active snapshot、global step与exact-resume所需draw-key状态。
+- 以上是实现决策，不代表生产owner已接通；TDD从keyed draw开始，`joint_policy.enabled=true`继续fail closed。
