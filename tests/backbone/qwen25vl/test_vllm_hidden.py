@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import torch
 
 from nimloth.backbone.qwen25vl.vllm_hidden import (
     PolicyStateCaptureWorkerExtension,
+    async_abort_policy_state_capture_for_request,
+    async_pop_policy_state_capture_for_request,
+    async_start_policy_state_capture_for_request,
     pop_policy_state_capture,
     pop_policy_state_captures,
     start_policy_state_capture,
@@ -189,3 +194,121 @@ def test_frontend_returns_batched_states_in_requested_identity_order() -> None:
     assert list(states) == ["request-b", "request-a"]
     assert states["request-b"].latent_hidden.shape == (2, 2)
     assert states["request-a"].action_logits.tolist() == [1030.0, 2060.0]
+
+
+class _AsyncEngine(_Engine):
+    async def collective_rpc(self, method, args=()):
+        return super().collective_rpc(method, args=args)
+
+
+def test_worker_request_scoped_capture_survives_out_of_order_pop() -> None:
+    worker = _Worker()
+    worker.nimloth_start_policy_state_capture_for_request(
+        "request-a", (101, 102), 103, (10, 20)
+    )
+    worker.nimloth_start_policy_state_capture_for_request(
+        "request-b", (101, 102), 103, (10, 20)
+    )
+    _batched_decode(worker, {"request-a": [101], "request-b": [101]})
+    _batched_decode(worker, {"request-b": [102], "request-a": [102]})
+    _batched_decode(worker, {"request-a": [103], "request-b": [103]})
+
+    prepared_b = worker.nimloth_prepare_policy_state_capture_for_request(
+        "request-b"
+    )
+    result_b = worker.nimloth_finish_policy_state_capture_for_request("request-b")
+    prepared_a = worker.nimloth_prepare_policy_state_capture_for_request(
+        "request-a"
+    )
+    result_a = worker.nimloth_finish_policy_state_capture_for_request("request-a")
+
+    assert prepared_b["latent_hidden"] == [[101.0, 101.5], [102.0, 102.5]]
+    assert result_b["action_logits"] == [1030.0, 2060.0]
+    assert prepared_a["latent_hidden"] == [[101.0, 101.5], [102.0, 102.5]]
+    assert result_a["action_logits"] == [1030.0, 2060.0]
+
+
+def test_worker_request_abort_does_not_clear_another_request() -> None:
+    worker = _Worker()
+    for request_id in ("request-a", "request-b"):
+        worker.nimloth_start_policy_state_capture_for_request(
+            request_id, (101, 102), 103, (10, 20)
+        )
+    _batched_decode(worker, {"request-a": [101], "request-b": [101, 102, 103]})
+
+    assert worker.nimloth_abort_policy_state_capture_for_request("request-a") is True
+    worker.nimloth_prepare_policy_state_capture_for_request("request-b")
+    result_b = worker.nimloth_finish_policy_state_capture_for_request("request-b")
+
+    assert result_b["action_logits"] == [1030.0, 2060.0]
+    with pytest.raises(RuntimeError, match="not active"):
+        worker.nimloth_prepare_policy_state_capture_for_request("request-a")
+
+
+def test_worker_prepare_failure_happens_before_any_rank_computes_logits() -> None:
+    workers = [_Worker(), _Worker()]
+    engine = _AsyncEngine(workers)
+    for worker in workers:
+        worker.nimloth_start_policy_state_capture_for_request(
+            "request-a", (101, 102), 103, (10, 20)
+        )
+    _batched_decode(workers[0], {"request-a": [101, 102, 103]})
+    _batched_decode(workers[1], {"request-a": [101, 102]})
+    calls = [0, 0]
+    for rank, worker in enumerate(workers):
+        original = worker.model_runner.model.compute_logits
+
+        def tracked(hidden, *, rank=rank, original=original):
+            calls[rank] += 1
+            return original(hidden)
+
+        worker.model_runner.model.compute_logits = tracked
+
+    with pytest.raises(RuntimeError, match="policy state sequence"):
+        asyncio.run(
+            async_pop_policy_state_capture_for_request(
+                engine,
+                request_id="request-a",
+            )
+        )
+
+    assert calls == [0, 0]
+
+
+def test_worker_rejects_duplicate_request_capture_identity() -> None:
+    worker = _Worker()
+    worker.nimloth_start_policy_state_capture_for_request(
+        "request-a", (101, 102), 103, (10, 20)
+    )
+
+    with pytest.raises(RuntimeError, match="already active"):
+        worker.nimloth_start_policy_state_capture_for_request(
+            "request-a", (101, 102), 103, (10, 20)
+        )
+
+
+def test_async_frontend_binds_capture_to_exact_request() -> None:
+    async def exercise() -> None:
+        workers = [_Worker(), _Worker()]
+        engine = _AsyncEngine(workers)
+        await async_start_policy_state_capture_for_request(
+            engine,
+            request_id="request-a",
+            latent_token_ids=(101, 102),
+            action_start_token_id=103,
+            action_token_ids=(10, 20),
+        )
+        for worker in workers:
+            _batched_decode(worker, {"request-a": [101, 102, 103]})
+        state = await async_pop_policy_state_capture_for_request(
+            engine,
+            request_id="request-a",
+        )
+        assert state.latent_hidden.shape == (2, 2)
+        assert state.action_logits.tolist() == [1030.0, 2060.0]
+        await async_abort_policy_state_capture_for_request(
+            engine,
+            request_id="request-a",
+        )
+
+    asyncio.run(exercise())
