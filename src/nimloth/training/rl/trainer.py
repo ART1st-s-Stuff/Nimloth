@@ -38,7 +38,7 @@ from nimloth.training.rl.algorithm import (
 from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
-from nimloth.training.rl.planning_loader import validate_planning_value_semantics
+from nimloth.training.common.value_semantics import validate_planning_value_semantics
 from nimloth.training.rl.reporting import RLReporter
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.training.rl.token_value import TokenValueHead

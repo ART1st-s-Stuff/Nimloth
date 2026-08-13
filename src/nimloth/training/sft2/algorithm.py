@@ -12,6 +12,7 @@ import torch
 import torch.distributed as dist
 
 from nimloth.training.common import action_value_loss, world_model_loss
+from nimloth.training.common.value_semantics import SFT2_VALUE_OBJECTIVE
 from nimloth.training.sft2.batch import SFT2Batch, SFT2RolloutBatch
 from nimloth.training.sft2.runtime import SFT2ModelRuntime
 from nimloth.wm import (
@@ -19,8 +20,6 @@ from nimloth.wm import (
     SequenceSIGReg,
 )
 
-
-SFT2_VALUE_OBJECTIVE = "decision_state_executed_action_mc_v3"
 
 
 def require_sft2_wm_history(
