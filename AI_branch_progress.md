@@ -4600,3 +4600,12 @@
 - strict format5 manifest绑定ID147 policy和四份planner fingerprint，无consumption。W&B
   `zady597f`已API核验`finished/ALL_OK`。该结果关闭active-env rollout P0，但没有运行optimizer、
   FSDP或吞吐比较。
+
+## 2026-08-13：capture v2 到 frozen-Q 纯 scoring bridge 完成
+
+- VAGEN `d9451fa`把policy-state capture升级为v2：episode `request_id`继续只做sticky server routing；`AsyncLLMServerManager`用进程随机namespace与同步单调counter为每次Nimloth forward生成唯一`generation_id`，该ID成为真实vLLM request/capture key。sidecar同时绑定session/generation/token identities，agent loop与standalone validator拒绝空、合并或错误identity。
+- 父仓库`e0b5ae81`新增纯`joint_scoring.py`，严格把same-generation K-slot capture送入rollout-time frozen `SharedSlotProjector → slot mean → ValueHead` snapshot。snapshot identity现在包含显式`source_step + contract_id + score_dtype`；scorer按snapshot参数dtype构造hidden输入，并把raw prior logits与all-action Q统一量化为contract-bound score dtype。
+- `FrozenQScoringRecord`为immutable身份记录；direct construction、`build`、`replace`和`from_mapping`全部重验schema、session/generation互异、token table、snapshot identity、finite/alignment和dtype量化，不能绕过scorer持久化更高精度值却声称BF16/FP32。critic forward不再无条件把FP64输出窄化为FP32。
+- 两轮独立review依次修复dtype history不一致、generation ID可复用、collapsed identity、真实TP launcher仍要求v1、record constructor绕过dtype量化等问题；最终结论`APPROVE`。
+- fresh服务器CPU验证：parent capture/critic/scoring/launcher `46 passed`；VAGEN capture/joint-policy/ledger/config `84 passed, 27 subtests`。`py_compile`、parent/VAGEN `git diff --check`、launcher `bash -n`均通过。
+- 本阶段没有新GPU实验，也没有接环境guided action、actor FSDP replay、critic optimizer、snapshot refresh或checkpoint/resume。`joint_policy.enabled=true`继续在worker创建前fail closed，禁止把本里程碑称为joint PPO已运行。
