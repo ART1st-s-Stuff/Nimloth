@@ -13,13 +13,15 @@ JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}" -o)
 grep -q "JobState=RUNNING" <<<"${JOB_DETAILS}"
 grep -q "Partition=normal" <<<"${JOB_DETAILS}"
 grep -q "NumNodes=1" <<<"${JOB_DETAILS}"
-grep -q "TimeLimit=00:30:00" <<<"${JOB_DETAILS}"
-grep -Eq "ReqTRES=[^ ]*mem=128G[^ ]*gres/gpu=1|ReqTRES=[^ ]*gres/gpu=1[^ ]*mem=128G" <<<"${JOB_DETAILS}"
+grep -q "TimeLimit=00:45:00" <<<"${JOB_DETAILS}"
+grep -Eq "ReqTRES=[^ ]*cpu=64([, ]|$)" <<<"${JOB_DETAILS}"
+grep -Eq "AllocTRES=[^ ]*cpu=64([, ]|$)" <<<"${JOB_DETAILS}"
+grep -Eq "ReqTRES=[^ ]*mem=256G[^ ]*gres/gpu=8|ReqTRES=[^ ]*gres/gpu=8[^ ]*mem=256G" <<<"${JOB_DETAILS}"
 NODE=$(squeue -h -j "${HOLD_JOB}" -o '%N')
 [[ -n "${NODE}" && "${NODE}" != "(null)" ]]
 
 exec srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
-  --cpus-per-task=16 --gres=gpu:1 --mem=128G -w "${NODE}" \
+  --cpus-per-task=64 --gres=gpu:8 --mem=256G -w "${NODE}" \
   env REPO="${REPO}" EXPECTED_PARENT_COMMIT="${EXPECTED_PARENT_COMMIT}" \
   EXPERIMENT_ID="${EXPERIMENT_ID}" RUN_NAME="${RUN_NAME}" RUN_DATE="${RUN_DATE}" \
   "${RUNNER}"
