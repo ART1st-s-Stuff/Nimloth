@@ -15,8 +15,13 @@ warm start；SFT2 本身不运行这条 rollout 路径。
 | `nimloth.rollout` | Trajectory schema、JSONL、锚点/预测 state 与 behavior provenance |
 | `nimloth.config.agent`, `nimloth.config.rollout` | Stage-independent Agent and rollout configuration |
 | `nimloth.config.rl` | Strict typed RL-phase configuration |
-| `nimloth.training.rl` | RL 算法、组件装配、optimizer、checkpoint 和训练循环 |
+| `nimloth.training.rl` | RL 算法、组件装配、optimizer、checkpoint 和训练循环；`joint_critic.py`保存VAGEN joint-policy尚未接线的current critic/frozen snapshot基础合同 |
 | `experiments/training/rl/rollout_env.py` | Thin standalone rollout entry point and pre-write validation |
+
+`joint_critic.py`严格复用`SharedSlotProjector -> slot mean -> ValueHead`，并可从同一
+SFT2/RL checkpoint root加载projector/head、创建显式`source_step + contract_id`绑定的
+内存frozen snapshot。该模块当前没有optimizer、refresh schedule、Ray owner、rollout
+scoring或checkpoint lifecycle；不得据此移除VAGEN trainer的joint-policy fail-closed门禁。
 
 RL code must not construct an independent navigation prompt. Online action
 selection, PPO replay, and WM state encoding all use the policy query produced
