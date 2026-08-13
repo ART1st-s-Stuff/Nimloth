@@ -4630,3 +4630,10 @@
 - half-open区间在0.7等常见CDF边界正确进入下一action；draw=0仍可选择数学上正但`exp`下溢的首action。direct/mapping均严格重验derived fields；draw、prior/Q/logprob及公共config `beta`的signed zero统一规范化，equal record/contract拥有相同hash。
 - review依次修复log-space边界误选、mapping容器被预tuple化接受、signed-zero hash分裂与嵌套config signed-zero；最终`APPROVED`。服务器VAGEN全套`130 passed,65 subtests`。
 - agent loop尚无RNG owner/seed/stream，不提供draw，也未把draw record接入behavior/environment；trainer继续fail closed。
+
+## 2026-08-13：behavior assembly 强制绑定完整 action-draw record
+
+- VAGEN `3840f2c`把execution envelope升级为v3并持久化`action_draw_record_id`。父`0a29e0b9`删除assembly的裸config/action table/guided action输入，改为只接受经重验的完整draw record。
+- assembly逐项核对draw与scoring的contract、token table、prior logits、rollout frozen Q及score dtype；selected action与behavior guided log-prob只来自draw record。execution envelope同时提交response trace和action draw两个audit ID。
+- review修复文档版本落后与死代码后`APPROVED`。服务器VAGEN全套`130 passed,65 subtests`，parent相关`76 passed`。
+- agent loop尚未创建scoring/trace/draw/behavior链，RNG owner仍未决定；trainer继续fail closed。
