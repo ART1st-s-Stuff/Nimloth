@@ -4655,3 +4655,10 @@
 - guided mutation使用独立remote方法`step_guided`：guided payload混入普通`step`会在动作前拒绝，未实现Navigation专用`guided_step` capability的环境也在动作前拒绝。server/client均校验执行回执中的raw response、action table、guided action id/name与完整request；两个step方法都禁用自动重试。
 - review发现并修复同名free-think text action可冒充Nimloth action-token prior；guided override现只允许`prompt_format=nimloth`，回归证明在`_exec_action`前失败。最终review`APPROVED`；fresh服务器VAGEN全套CPU tests `118 passed, 43 subtests`。
 - 该合同未接agent loop，也不创建behavior、不采样guided action、不拥有critic/snapshot/optimizer/checkpoint。`joint_policy.enabled=true`继续fail closed。
+
+## 2026-08-13：identity-bound response trace 与 behavior assembly 完成
+
+- VAGEN `2ac1dbd`把guided execution envelope升级为v2并提交`response_trace_id`。父`f2f6ad63`新增immutable `NimlothPolicyResponseTrace`与纯assembly helper：绑定request/generation、caller-pinned generation-spec identity、完整response IDs/mask/log-probs及由IDs真实decode的raw文本，随后把外部已选guided action组装成behavior/execution artifact。
+- helper重验scoring/trace identity、snapshot/contract/score dtype/token table；完整mask精确复现agent-loop（含reasoning预算耗尽后forced close），全部log-probs finite，sampled prior log-prob按float64/float32/bfloat16容差核验。没有RNG、current Q或environment mutation输入。
+- review发现并修复跨generation同形trace混入、raw文本未绑定IDs、prefix mask漏验、action-end自由输入、forced logprob非finite及dtype容差缺测；最终review`APPROVED`。服务器VAGEN全套`118 passed,43 subtests`，parent相关`77 passed`。
+- agent loop仍未生产trace/behavior；critic Ray owner、guided sampler、actor replay、critic optimizer与checkpoint未接通，trainer继续fail closed。
