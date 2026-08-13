@@ -8,20 +8,49 @@ EXPERIMENT_ID=${EXPERIMENT_ID:?EXPERIMENT_ID is required}
 RUN_NAME=${RUN_NAME:?RUN_NAME is required}
 RUN_DATE=${RUN_DATE:?RUN_DATE is required}
 RUNNER=${REPO}/experiments/training/rl/run_vagen_one_turn_smoke.sh
+EXPECTED_HOLD_GPUS=${EXPECTED_HOLD_GPUS:-8}
+EXPECTED_STEP_GPUS=${EXPECTED_STEP_GPUS:-8}
+TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-8}
+EXPECTED_HOLD_WALLTIME=${EXPECTED_HOLD_WALLTIME:-00:45:00}
+SMOKE_TIMEOUT_SECONDS=${SMOKE_TIMEOUT_SECONDS:-1500}
+EVIDENCE_MODE=${EVIDENCE_MODE:-tp8_gate}
+
+[[ "${EXPECTED_HOLD_GPUS}" =~ ^[1-9][0-9]*$ ]]
+[[ "${EXPECTED_STEP_GPUS}" =~ ^[1-9][0-9]*$ ]]
+[[ "${TENSOR_PARALLEL_SIZE}" =~ ^[1-9][0-9]*$ ]]
+[[ "${SMOKE_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]
+(( EXPECTED_STEP_GPUS <= EXPECTED_HOLD_GPUS ))
+(( TENSOR_PARALLEL_SIZE == EXPECTED_STEP_GPUS ))
+case "${EVIDENCE_MODE}" in
+  tp8_gate)
+    [[ "${EXPERIMENT_ID}" == "161" ]]
+    [[ "${EXPECTED_HOLD_GPUS}:${EXPECTED_STEP_GPUS}:${TENSOR_PARALLEL_SIZE}:${EXPECTED_HOLD_WALLTIME}:${SMOKE_TIMEOUT_SECONDS}" == "8:8:8:00:45:00:1500" ]]
+    ;;
+  tp4_interim_diagnostic)
+    [[ "${EXPERIMENT_ID}" == "162" ]]
+    [[ "${EXPECTED_HOLD_GPUS}:${EXPECTED_STEP_GPUS}:${TENSOR_PARALLEL_SIZE}:${EXPECTED_HOLD_WALLTIME}:${SMOKE_TIMEOUT_SECONDS}" == "7:4:4:00:20:00:900" ]]
+    ;;
+  *) echo "unsupported evidence mode: ${EVIDENCE_MODE}" >&2; exit 2 ;;
+esac
 
 JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}" -o)
 grep -q "JobState=RUNNING" <<<"${JOB_DETAILS}"
 grep -q "Partition=normal" <<<"${JOB_DETAILS}"
 grep -q "NumNodes=1" <<<"${JOB_DETAILS}"
-grep -q "TimeLimit=00:45:00" <<<"${JOB_DETAILS}"
+grep -q "TimeLimit=${EXPECTED_HOLD_WALLTIME}" <<<"${JOB_DETAILS}"
 grep -Eq "ReqTRES=[^ ]*cpu=64([, ]|$)" <<<"${JOB_DETAILS}"
 grep -Eq "AllocTRES=[^ ]*cpu=64([, ]|$)" <<<"${JOB_DETAILS}"
-grep -Eq "ReqTRES=[^ ]*mem=256G[^ ]*gres/gpu=8|ReqTRES=[^ ]*gres/gpu=8[^ ]*mem=256G" <<<"${JOB_DETAILS}"
+grep -Eq "ReqTRES=[^ ]*mem=256G[^ ]*gres/gpu=${EXPECTED_HOLD_GPUS}|ReqTRES=[^ ]*gres/gpu=${EXPECTED_HOLD_GPUS}[^ ]*mem=256G" <<<"${JOB_DETAILS}"
+grep -Eq "AllocTRES=[^ ]*gres/gpu=${EXPECTED_HOLD_GPUS}([, ]|$)" <<<"${JOB_DETAILS}"
 NODE=$(squeue -h -j "${HOLD_JOB}" -o '%N')
 [[ -n "${NODE}" && "${NODE}" != "(null)" ]]
 
 exec srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
-  --cpus-per-task=64 --gres=gpu:8 --mem=256G -w "${NODE}" \
+  --cpus-per-task=64 --gres="gpu:${EXPECTED_STEP_GPUS}" --mem=256G -w "${NODE}" \
   env REPO="${REPO}" EXPECTED_PARENT_COMMIT="${EXPECTED_PARENT_COMMIT}" \
   EXPERIMENT_ID="${EXPERIMENT_ID}" RUN_NAME="${RUN_NAME}" RUN_DATE="${RUN_DATE}" \
-  "${RUNNER}"
+  EXPECTED_HOLD_GPUS="${EXPECTED_HOLD_GPUS}" EXPECTED_STEP_GPUS="${EXPECTED_STEP_GPUS}" \
+  TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE}" \
+  EXPECTED_HOLD_WALLTIME="${EXPECTED_HOLD_WALLTIME}" \
+  SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS}" \
+  EVIDENCE_MODE="${EVIDENCE_MODE}" "${RUNNER}"
