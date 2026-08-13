@@ -8,8 +8,9 @@ VAGEN=${REPO}/external/VAGEN
 VERL=${VAGEN}/verl
 PY=${ROOT}/.venv-vagen-main/bin/python3
 PARENT_COMMIT=${EXPECTED_PARENT_COMMIT}
-VAGEN_COMMIT=3fc2509144bb8d1c1ebd57aab30dbece5c3794e4
-VERL_COMMIT=3fe0a29975e1b02ae2bd1dec249f7807dd7966f5
+VAGEN_COMMIT=6f32d2e3f83f4e3520677512e6ee7480e15d9c9c
+VERL_COMMIT=084f042b71b8fe03785a279cf227f4085def0391
+VERL_BASE_COMMIT=3fe0a29975e1b02ae2bd1dec249f7807dd7966f5
 MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
 EXPERIMENT_ID=${EXPERIMENT_ID:?EXPERIMENT_ID is required}
 RUN_NAME=${RUN_NAME:?RUN_NAME is required}
@@ -156,9 +157,11 @@ trap cleanup EXIT
   echo "parent_commit=${PARENT_COMMIT}"
   echo "vagen_commit=${VAGEN_COMMIT}"
   echo "verl_commit=${VERL_COMMIT}"
+  echo "verl_base_commit=${VERL_BASE_COMMIT}"
   echo "checkpoint=${MODEL}"
   echo "checkpoint_use=HF_policy_weights_only"
   echo "sidecars_not_loaded=state_proj,wm_predictor,value_head"
+  echo "capture=async_same_generation_K16x2048_raw8"
   echo "data=external/VAGEN/vagen/envs/navigation/assets/base.json"
   echo "data_sha256=6b575621a6b15e90e1040dd86d661a5e1ee70134f42fd7f3d61706347449c55a"
   echo "split=heldout_base_seed0_FloorPlan11_Bread"
@@ -179,9 +182,9 @@ trap cleanup EXIT
   cat <<EOF
 # ID${EXPERIMENT_ID} optimizer-free VAGEN-Lite one-turn smoke
 
-- Goal: ID74 HF policy load -> real held-out Navigation reset -> model-generated CoT -> forced K16 protocol -> one sampled action -> one real environment step -> reward/decision-ledger validation.
-- This is inference-only. It does not load StateProjector, WM predictor, ValueHead, frozen-Q guidance, actor/critic trainers, optimizer, FSDP, or checkpoints.
-- Source: Nimloth ${PARENT_COMMIT}; VAGEN ${VAGEN_COMMIT}; VERL ${VERL_COMMIT}.
+- Goal: ID74 HF policy load -> real held-out Navigation reset -> model-generated CoT -> forced K16 protocol -> same-generation K16 hidden/raw 8-action logit capture -> one sampled action -> one real environment step -> reward/decision-ledger validation.
+- This is inference-only. It does not load StateProjector, WM predictor, ValueHead, frozen-Q guidance, actor/critic trainers, optimizer, FSDP, or checkpoints; capture does not alter the environment action.
+- Source: Nimloth ${PARENT_COMMIT}; VAGEN ${VAGEN_COMMIT}; VERL ${VERL_COMMIT} (direct parent ${VERL_BASE_COMMIT}).
 - Data: held-out base seed 0, FloorPlan11 / Bread; base asset SHA256 6b575621a6b15e90e1040dd86d661a5e1ee70134f42fd7f3d61706347449c55a; no overlap with base_train tasks or scenes.
 - Checkpoint: ${MODEL}, HF policy weights only.
 - Resource: normal, one node, one H800 shared by Unity and vLLM, 16 CPU, 128 GiB, 30 minutes.
@@ -201,6 +204,7 @@ printf '\n' >>"${RUN_OUT}/command.txt"
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${PARENT_COMMIT}" ]]
 [[ "$(git -C "${VAGEN}" rev-parse HEAD)" == "${VAGEN_COMMIT}" ]]
 [[ "$(git -C "${VERL}" rev-parse HEAD)" == "${VERL_COMMIT}" ]]
+[[ "$(git -C "${VERL}" rev-parse HEAD^)" == "${VERL_BASE_COMMIT}" ]]
 EXPECTED_LEWM_COMMIT=$(git -C "${REPO}" ls-tree HEAD external/le-wm | awk '{print $3}')
 [[ "${EXPECTED_LEWM_COMMIT}" == "8edfeb336732b5f3ce7b8b210d0ba370a09e2cac" ]]
 [[ "$(git -C "${REPO}/external/le-wm" rev-parse HEAD)" == "${EXPECTED_LEWM_COMMIT}" ]]
@@ -327,6 +331,15 @@ assert x['status']=='passed'
 assert x['optimizer'] is None and x['checkpoint_output'] is None
 assert x['eval_set']=='base' and x['seed']==0 and x['latent_token_count']==16
 ledger=x['decision_ledger']
+state=x['policy_state']
+assert state['schema']=='nimloth_policy_state_v1'
+assert len(state['latent_token_ids'])==16 and len(set(state['latent_token_ids']))==16
+assert state['action_start_token_id'] not in state['latent_token_ids']
+assert len(state['action_token_ids'])==8 and len(set(state['action_token_ids']))==8
+assert len(state['latent_hidden'])==16
+assert all(len(row)==2048 and all(math.isfinite(float(v)) for v in row) for row in state['latent_hidden'])
+assert len(state['action_logits'])==8 and all(math.isfinite(float(v)) for v in state['action_logits'])
+assert len(state['request_id'])==32
 assert ledger['action_space']=='navigation_v1'
 assert ledger['decision_sources']==['llm_text']
 assert ledger['decision_is_policy_sampled']==[False]
@@ -336,5 +349,5 @@ assert math.isfinite(float(x['env_turn_reward']))
 assert '<think>' in x['environment_response']
 assert '<|action_start|>' in x['environment_response']
 assert '<|action_end|>' in x['environment_response']
-print(json.dumps({'status':'ALL_OK','response_tokens':x['response_token_count'],'action_id':ledger['executed_action_ids'][0],'reward':x['env_turn_reward'],'reward_anchor_index':x['reward_anchor_index']}))
+print(json.dumps({'status':'ALL_OK','response_tokens':x['response_token_count'],'action_id':ledger['executed_action_ids'][0],'reward':x['env_turn_reward'],'reward_anchor_index':x['reward_anchor_index'],'policy_state_shape':[len(state['latent_hidden']),len(state['latent_hidden'][0])],'action_logits_shape':[len(state['action_logits'])],'request_id':state['request_id']}))
 PY
