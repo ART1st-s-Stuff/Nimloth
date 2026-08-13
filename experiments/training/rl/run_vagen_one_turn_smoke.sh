@@ -401,14 +401,16 @@ evidence=x['launch_evidence']
 assert evidence['mode'] in {'tp8_gate','tp4_interim_diagnostic'}
 assert evidence['step_gpu_count']==evidence['tensor_parallel_size']
 assert evidence['does_not_substitute_for_tp8_gate']==(evidence['mode']=='tp4_interim_diagnostic')
-assert state['schema']=='nimloth_policy_state_v1'
+assert state['schema']=='nimloth_policy_state_v2'
 assert len(state['latent_token_ids'])==16 and len(set(state['latent_token_ids']))==16
 assert state['action_start_token_id'] not in state['latent_token_ids']
 assert len(state['action_token_ids'])==8 and len(set(state['action_token_ids']))==8
 assert len(state['latent_hidden'])==16
 assert all(len(row)==2048 and all(math.isfinite(float(v)) for v in row) for row in state['latent_hidden'])
 assert len(state['action_logits'])==8 and all(math.isfinite(float(v)) for v in state['action_logits'])
-assert len(state['request_id'])==32
+assert isinstance(state['request_id'],str) and state['request_id']
+assert isinstance(state['generation_id'],str) and state['generation_id']
+assert state['generation_id']!=state['request_id']
 assert ledger['action_space']=='navigation_v1'
 assert ledger['decision_sources']==['llm_text']
 assert ledger['decision_is_policy_sampled']==[False]
@@ -418,5 +420,5 @@ assert math.isfinite(float(x['env_turn_reward']))
 assert '<think>' in x['environment_response']
 assert '<|action_start|>' in x['environment_response']
 assert '<|action_end|>' in x['environment_response']
-print(json.dumps({'status':'ALL_OK','evidence_mode':evidence['mode'],'does_not_substitute_for_tp8_gate':evidence['does_not_substitute_for_tp8_gate'],'response_tokens':x['response_token_count'],'action_id':ledger['executed_action_ids'][0],'reward':x['env_turn_reward'],'reward_anchor_index':x['reward_anchor_index'],'policy_state_shape':[len(state['latent_hidden']),len(state['latent_hidden'][0])],'action_logits_shape':[len(state['action_logits'])],'request_id':state['request_id']}))
+print(json.dumps({'status':'ALL_OK','evidence_mode':evidence['mode'],'does_not_substitute_for_tp8_gate':evidence['does_not_substitute_for_tp8_gate'],'response_tokens':x['response_token_count'],'action_id':ledger['executed_action_ids'][0],'reward':x['env_turn_reward'],'reward_anchor_index':x['reward_anchor_index'],'policy_state_shape':[len(state['latent_hidden']),len(state['latent_hidden'][0])],'action_logits_shape':[len(state['action_logits'])],'request_id':state['request_id'],'generation_id':state['generation_id']}))
 PY

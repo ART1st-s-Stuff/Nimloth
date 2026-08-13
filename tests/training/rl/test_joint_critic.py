@@ -47,7 +47,7 @@ def _write_checkpoint(root: Path, *, value_objective: str = SFT2_VALUE_OBJECTIVE
 def test_joint_critic_matches_project_mean_pool_head_and_backpropagates() -> None:
     critic = _critic()
     hidden = torch.randn(4, 2, 3)
-    expected = critic.value_head(critic.state_projector(hidden).mean(dim=1)).float()
+    expected = critic.value_head(critic.state_projector(hidden).mean(dim=1))
     actual = critic(hidden)
     torch.testing.assert_close(actual, expected)
     assert actual.shape == (4, 3)
@@ -56,6 +56,12 @@ def test_joint_critic_matches_project_mean_pool_head_and_backpropagates() -> Non
     actual.sum().backward()
     assert critic.state_projector.net[0].weight.grad is not None
     assert critic.value_head.net[0].weight.grad is not None
+
+
+def test_joint_critic_preserves_parameter_dtype() -> None:
+    critic = _critic().double()
+    output = critic(torch.randn(2, 2, 3, dtype=torch.float64))
+    assert output.dtype == torch.float64
 
 
 def test_joint_critic_rejects_wrong_hidden_shape_and_mismatched_components() -> None:
@@ -85,15 +91,18 @@ def test_frozen_snapshot_is_deterministic_detached_and_independent() -> None:
         critic,
         source_step=11,
         contract_id="sha256:joint-contract",
+        score_dtype="float32",
     )
     same = create_frozen_critic_snapshot(
         critic,
         source_step=11,
         contract_id="sha256:joint-contract",
+        score_dtype="float32",
     )
     assert snapshot.snapshot_id == same.snapshot_id
     assert snapshot.source_step == 11
     assert snapshot.contract_id == "sha256:joint-contract"
+    assert snapshot.score_dtype == "float32"
     assert snapshot.training is False
     assert all(not parameter.requires_grad for parameter in snapshot.parameters())
 
@@ -111,6 +120,7 @@ def test_frozen_snapshot_is_deterministic_detached_and_independent() -> None:
         critic,
         source_step=11,
         contract_id="sha256:joint-contract",
+        score_dtype="float32",
     ).snapshot_id != snapshot.snapshot_id
 
 
@@ -121,9 +131,22 @@ def test_snapshot_rejects_bad_identity_nonfinite_weights_and_train_mode() -> Non
             critic,
             source_step=-1,
             contract_id="sha256:joint-contract",
+            score_dtype="float32",
         )
     with pytest.raises(ValueError, match="contract_id"):
-        create_frozen_critic_snapshot(critic, source_step=0, contract_id="")
+        create_frozen_critic_snapshot(
+            critic,
+            source_step=0,
+            contract_id="",
+            score_dtype="float32",
+        )
+    with pytest.raises(ValueError, match="score_dtype"):
+        create_frozen_critic_snapshot(
+            critic,
+            source_step=0,
+            contract_id="sha256:joint-contract",
+            score_dtype="float16",
+        )
 
     with torch.no_grad():
         next(critic.parameters()).flatten()[0] = float("nan")
@@ -132,6 +155,7 @@ def test_snapshot_rejects_bad_identity_nonfinite_weights_and_train_mode() -> Non
             critic,
             source_step=0,
             contract_id="sha256:joint-contract",
+            score_dtype="float32",
         )
 
 
@@ -140,6 +164,7 @@ def test_snapshot_rejects_attempt_to_enable_training() -> None:
         _critic(),
         source_step=0,
         contract_id="sha256:joint-contract",
+        score_dtype="float32",
     )
     with pytest.raises(RuntimeError, match="frozen"):
         snapshot.train(True)
@@ -170,6 +195,7 @@ def test_snapshot_detects_child_or_metadata_mutation(mutation: str) -> None:
         _critic(),
         source_step=0,
         contract_id="sha256:joint-contract",
+        score_dtype="float32",
     )
     if mutation == "parameter":
         with torch.no_grad():
@@ -198,22 +224,32 @@ def test_snapshot_identity_binds_source_step_contract_and_dtype() -> None:
         critic,
         source_step=0,
         contract_id="sha256:joint-contract",
+        score_dtype="float32",
     )
     assert create_frozen_critic_snapshot(
         critic,
         source_step=1,
         contract_id="sha256:joint-contract",
+        score_dtype="float32",
     ).snapshot_id != baseline.snapshot_id
     assert create_frozen_critic_snapshot(
         critic,
         source_step=0,
         contract_id="sha256:other-contract",
+        score_dtype="float32",
+    ).snapshot_id != baseline.snapshot_id
+    assert create_frozen_critic_snapshot(
+        critic,
+        source_step=0,
+        contract_id="sha256:joint-contract",
+        score_dtype="float64",
     ).snapshot_id != baseline.snapshot_id
     critic.double()
     assert create_frozen_critic_snapshot(
         critic,
         source_step=0,
         contract_id="sha256:joint-contract",
+        score_dtype="float32",
     ).snapshot_id != baseline.snapshot_id
 
 
