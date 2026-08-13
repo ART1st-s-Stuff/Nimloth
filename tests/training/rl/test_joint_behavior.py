@@ -11,6 +11,7 @@ from nimloth.training.rl.joint_behavior import NimlothPolicyResponseTrace
 from nimloth.training.rl.joint_scoring import FrozenQScoringRecord
 from vagen.joint_policy import (
     FrozenQGuidedPolicyConfig,
+    GuidedActionDrawKey,
     GuidedActionExecutionRequest,
     GuidedPolicyActionDrawRecord,
     sample_frozen_q_guided_action,
@@ -98,18 +99,35 @@ def _draw(
     *,
     config: FrozenQGuidedPolicyConfig | None = None,
     scoring_record: FrozenQScoringRecord | None = None,
-    uniform_draw: float = 0.5,
+    rollout_sample_id: str = "train-0",
+    draw_snapshot_id: str | None = None,
     action_space_names=_ACTION_NAMES,
 ) -> GuidedPolicyActionDrawRecord:
     config = config or _config()
     score = scoring_record or _scoring_record(config=config)
+    contract_id = config.contract_id(
+        "navigation_v1",
+        action_space_names,
+        score.action_token_ids,
+    )
     return sample_frozen_q_guided_action(
         action_space="navigation_v1",
         action_space_names=action_space_names,
         action_token_ids=score.action_token_ids,
         prior_logits=score.prior_logits,
         frozen_all_action_q=score.frozen_all_action_q,
-        uniform_draw=uniform_draw,
+        draw_key=GuidedActionDrawKey.build(
+            run_seed=1,
+            policy_step=score.snapshot_source_step,
+            rollout_sample_id=rollout_sample_id,
+            rollout_repeat_index=0,
+            turn_index=0,
+            is_validation=False,
+            snapshot_id=(
+                score.snapshot_id if draw_snapshot_id is None else draw_snapshot_id
+            ),
+            contract_id=contract_id,
+        ),
         config=config,
     )
 
@@ -153,6 +171,11 @@ def _build(**overrides):
         action_draw = _draw(scoring_record=scoring_record)
     kwargs = {
         "scoring_record": scoring_record,
+        "expected_draw_key": (
+            action_draw.draw_key
+            if isinstance(action_draw, GuidedPolicyActionDrawRecord)
+            else action_draw["draw_key"]
+        ),
         "action_draw": action_draw,
         "response_trace": _trace(),
         "generation_spec": _spec(),
@@ -189,12 +212,12 @@ def test_builds_identity_bound_behavior_without_selecting_action() -> None:
     request.validate_raw_response(_RAW_RESPONSE)
 
 
-def test_external_action_choice_is_deterministic_and_can_equal_prior() -> None:
-    draw = _draw(uniform_draw=0.0)
+def test_keyed_action_choice_is_deterministic() -> None:
+    draw = _draw(rollout_sample_id="train-6")
     first = _build(action_draw=draw)
     second = _build(action_draw=draw)
     assert first == second
-    assert first.guided_action_id == first.prior_action_id == 0
+    assert first.guided_action_id == draw.guided_action_id
 
 
 @pytest.mark.parametrize(
@@ -343,7 +366,37 @@ def test_sampled_prior_logprob_rejects_outside_dtype_tolerance(score_dtype: str)
         )
 
 
+def test_rejects_draw_from_wrong_coordinator_logical_decision() -> None:
+    actual = _draw(rollout_sample_id="train-0")
+    expected = _draw(rollout_sample_id="train-1").draw_key
+    with pytest.raises(ValueError, match="coordinator expected key"):
+        _build(action_draw=actual, expected_draw_key=expected)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"policy_step": 8},
+        {"rollout_repeat_index": 1},
+        {"turn_index": 1},
+        {"is_validation": True},
+    ],
+)
+def test_rejects_each_wrong_draw_context_field(override: dict[str, object]) -> None:
+    draw = _draw()
+    expected = replace(draw.draw_key, **override)
+    with pytest.raises(ValueError, match="coordinator expected key"):
+        _build(action_draw=draw, expected_draw_key=expected)
+
+
 def test_rejects_draw_forgery_and_trace_mapping_forgery() -> None:
+    wrong_snapshot = _draw(draw_snapshot_id="sha256:wrong-snapshot")
+    with pytest.raises(ValueError, match="snapshot"):
+        _build(
+            action_draw=wrong_snapshot,
+            expected_draw_key=wrong_snapshot.draw_key,
+        )
+
     forged_draw = _draw().to_mapping()
     forged_draw["guided_action_id"] = 0
     with pytest.raises(ValueError, match="guided_action_id"):

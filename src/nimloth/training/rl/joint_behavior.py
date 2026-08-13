@@ -13,6 +13,7 @@ from typing import Any
 from nimloth.backbone.qwen25vl.turn_generation import TurnGenerationSpec
 from nimloth.training.rl.joint_scoring import FrozenQScoringRecord
 from vagen.joint_policy import (
+    GuidedActionDrawKey,
     GuidedActionExecutionRequest,
     GuidedPolicyActionDrawRecord,
     GuidedPolicyBehaviorRecord,
@@ -198,6 +199,7 @@ class NimlothPolicyResponseTrace:
 def build_guided_execution_from_scoring(
     *,
     scoring_record: FrozenQScoringRecord | Mapping[str, Any],
+    expected_draw_key: GuidedActionDrawKey | Mapping[str, Any],
     action_draw: GuidedPolicyActionDrawRecord | Mapping[str, Any],
     response_trace: NimlothPolicyResponseTrace | Mapping[str, Any],
     generation_spec: TurnGenerationSpec,
@@ -211,6 +213,7 @@ def build_guided_execution_from_scoring(
     """Assemble behavior for an externally selected action without RNG/current Q."""
 
     score = _canonical_scoring_record(scoring_record)
+    expected_key = _canonical_draw_key(expected_draw_key)
     draw = _canonical_action_draw(action_draw)
     trace = _canonical_response_trace(response_trace)
     spec = _generation_spec(generation_spec)
@@ -237,6 +240,10 @@ def build_guided_execution_from_scoring(
         raise ValueError(
             "guided behavior generation spec identity mismatch: "
             f"actual={actual_spec_id!r}, expected={expected_spec_id!r}"
+        )
+    if draw.draw_key != expected_key:
+        raise ValueError(
+            "guided behavior action draw key does not match coordinator expected key"
         )
     if score.score_dtype != draw.policy_config.score_dtype:
         raise ValueError(
@@ -268,12 +275,13 @@ def build_guided_execution_from_scoring(
     if (
         draw.contract_id != score.contract_id
         or draw.contract_id != expected_contract
+        or draw.draw_key.snapshot_id != score.snapshot_id
         or draw.action_token_ids != score.action_token_ids
         or draw.prior_logits != score.prior_logits
         or draw.frozen_all_action_q != score.frozen_all_action_q
     ):
         raise ValueError(
-            "guided behavior action draw does not match scoring contract, tokens, prior logits, or frozen Q"
+            "guided behavior action draw does not match scoring contract, snapshot, tokens, prior logits, or frozen Q"
         )
 
     prior_response_idx = len(trace.response_ids) - 2
@@ -309,6 +317,15 @@ def _canonical_scoring_record(
     if not isinstance(raw, Mapping):
         raise ValueError("guided behavior scoring_record must be a mapping or record")
     return FrozenQScoringRecord.from_mapping(raw)
+
+
+def _canonical_draw_key(
+    value: GuidedActionDrawKey | Mapping[str, Any],
+) -> GuidedActionDrawKey:
+    raw = value.to_mapping() if isinstance(value, GuidedActionDrawKey) else value
+    if not isinstance(raw, Mapping):
+        raise ValueError("guided behavior expected_draw_key must be a mapping or key")
+    return GuidedActionDrawKey.from_mapping(raw)
 
 
 def _canonical_action_draw(
