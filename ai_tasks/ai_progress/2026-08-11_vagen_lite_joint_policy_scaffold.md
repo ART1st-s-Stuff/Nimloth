@@ -100,6 +100,9 @@
 - sampler使用probability-space CDF确保常见0.7边界归入下一区间，同时对draw=0单独保留数学上正但`exp`可能下溢的首action。direct/mapping构造均重算derived fields并严格校验类型；所有持久化float及公共config的`beta=-0.0`规范化为`+0.0`，保证相等record拥有相同contract/record ID。
 - 两轮review修复log-space边界误选、mapping预tuple化绕过strict sequence、signed-zero导致equal record不同hash及嵌套config signed-zero；最终review`APPROVED`。fresh服务器VAGEN全套`130 passed,65 subtests`。
 - RNG owner/seed/stream仍未决定，agent loop未提供draw，也未将draw record接入behavior assembly/environment；trainer继续fail closed。
+- VAGEN`3840f2c`把execution envelope升级为v3并新增`action_draw_record_id`。父`0a29e0b9`把behavior assembly收紧为只接受完整`GuidedPolicyActionDrawRecord`，删除裸`config/action_space/guided_action_id`输入；draw经mapping重验后与scoring的contract、action token table、prior logits、rollout frozen Q和score dtype逐项一致，behavior中的selected action/logprob只来自draw record。
+- execution envelope现同时持久化response trace与action draw两个audit ID，不能在assembly边界绕过外部draw选择或丢失draw provenance。review只发现文档仍写v2与旧action-table helper死代码，修复后最终`APPROVED`。
+- fresh服务器VAGEN全套`130 passed,65 subtests`，parent behavior/scoring/critic/capture相关`76 passed`。agent loop仍未创建snapshot scoring/trace/draw/behavior链，也未决定RNG owner，trainer继续fail closed。
 
 ## 待确认问题
 
