@@ -105,6 +105,8 @@
 - execution envelope现同时持久化response trace与action draw两个audit ID，不能在assembly边界绕过外部draw选择或丢失draw provenance。review只发现文档仍写v2与旧action-table helper死代码，修复后最终`APPROVED`。
 - fresh服务器VAGEN全套`130 passed,65 subtests`，parent behavior/scoring/critic/capture相关`76 passed`。agent loop仍未创建snapshot scoring/trace/draw/behavior链，trainer继续fail closed。
 - 人类确认此前待定的三个生产ownership：coordinator-owned deterministic keyed draw绑定run seed、global policy step、stable sample/repeat identity、turn、snapshot、contract和RNG schema，使调度/worker重启/基础设施重试不改变同一逻辑decision的draw；`AgentLoopManager`在agent-loop workers前创建独立CPU Ray actor持有active immutable snapshot；trainer在一个完整global joint update成功后stage并原子activate下一snapshot，同一rollout batch及其PPO minibatches不刷新，历史record继续只用持久化旧Q。实现仍按TDD分阶段进行，当前不因此解除fail-closed。
+- VAGEN`b8c6f55`实现keyed-draw合同：`GuidedActionDrawKey`完整绑定run seed/policy step/stable sample/repeat/turn/validation/snapshot/contract/schema，canonical JSON SHA-256前53位精确映射到`[0,1)`；public sampler删除裸`uniform_draw`参数，action-draw schema升v2并持久化完整key与derived draw，direct/mapping均重验。父`caefc381`要求assembly同时接收coordinator生成的`expected_draw_key`并做完整相等核验，随后再核对scoring snapshot/contract/tokens/prior/Q；不能把另一step/trajectory/repeat/turn/validation的自洽record混入。
+- review先发现assembly只核对snapshot而未核对完整logical decision、文档仍描述旧裸draw API；修复后`APPROVED`。fresh服务器VAGEN全套`137 passed,75 subtests`，parent behavior/scoring/critic/capture相关`81 passed`。生产agent loop尚未构造stable key，CPU Ray Q actor尚未实现，trainer继续fail closed。
 
 ## 待确认问题
 

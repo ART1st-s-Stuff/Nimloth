@@ -4644,3 +4644,10 @@
 - `AgentLoopManager`在agent-loop workers前创建独立CPU Ray actor，actor只读持有active frozen critic snapshot；current trainable critic和optimizer仍由trainer拥有。
 - 每个完整global joint update成功后，trainer stage并原子activate下一snapshot，供下一批rollout使用；同一rollout batch及其PPO minibatches内不刷新，历史behavior始终使用已持久化旧Q/snapshot。磁盘checkpoint可低频，但必须整体保存current critic/optimizer、active snapshot、global step与exact-resume所需draw-key状态。
 - 以上是实现决策，不代表生产owner已接通；TDD从keyed draw开始，`joint_policy.enabled=true`继续fail closed。
+
+## 2026-08-13：coordinator deterministic keyed draw 合同完成
+
+- VAGEN `b8c6f55`新增完整`GuidedActionDrawKey`：绑定run seed、policy step、stable sample/repeat identity、turn、validation、snapshot、contract与schema；canonical JSON SHA-256前53位映射为精确`[0,1)` draw。public sampler不再接受裸draw，action-draw schema v2持久化并重验完整key和derived draw。
+- Parent `caefc381`要求behavior assembly显式接收coordinator authoritative expected key并完整相等核验，再核对draw/scoring的snapshot、contract、tokens、prior logits与frozen Q，拒绝跨step/trajectory/repeat/turn/validation混入。
+- review修复只核对snapshot和旧API文档两项P1后`APPROVED`。服务器VAGEN全套`137 passed,75 subtests`，parent相关`81 passed`。
+- 生产agent loop尚未分配stable sample key；CPU Ray Q actor、optimizer/refresh/checkpoint仍未接通，trainer继续fail closed。
