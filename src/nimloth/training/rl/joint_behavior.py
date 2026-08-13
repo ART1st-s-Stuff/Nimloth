@@ -13,10 +13,9 @@ from typing import Any
 from nimloth.backbone.qwen25vl.turn_generation import TurnGenerationSpec
 from nimloth.training.rl.joint_scoring import FrozenQScoringRecord
 from vagen.joint_policy import (
-    FrozenQGuidedPolicyConfig,
     GuidedActionExecutionRequest,
+    GuidedPolicyActionDrawRecord,
     GuidedPolicyBehaviorRecord,
-    guided_log_probs_reference,
 )
 
 _RESPONSE_TRACE_SCHEMA = "nimloth_policy_response_trace_v1"
@@ -199,13 +198,10 @@ class NimlothPolicyResponseTrace:
 def build_guided_execution_from_scoring(
     *,
     scoring_record: FrozenQScoringRecord | Mapping[str, Any],
+    action_draw: GuidedPolicyActionDrawRecord | Mapping[str, Any],
     response_trace: NimlothPolicyResponseTrace | Mapping[str, Any],
     generation_spec: TurnGenerationSpec,
     tokenizer: Any,
-    action_space: str,
-    action_space_names: Sequence[str],
-    config: FrozenQGuidedPolicyConfig,
-    guided_action_id: int,
     expected_request_id: str,
     expected_generation_id: str,
     expected_snapshot_id: str,
@@ -215,10 +211,10 @@ def build_guided_execution_from_scoring(
     """Assemble behavior for an externally selected action without RNG/current Q."""
 
     score = _canonical_scoring_record(scoring_record)
+    draw = _canonical_action_draw(action_draw)
     trace = _canonical_response_trace(response_trace)
     spec = _generation_spec(generation_spec)
     trace.validate_protocol(generation_spec=spec, tokenizer=tokenizer)
-    policy_config = _canonical_config(config)
     expected_request = _nonempty_string(expected_request_id, "expected_request_id")
     expected_generation = _nonempty_string(
         expected_generation_id,
@@ -242,10 +238,10 @@ def build_guided_execution_from_scoring(
             "guided behavior generation spec identity mismatch: "
             f"actual={actual_spec_id!r}, expected={expected_spec_id!r}"
         )
-    if score.score_dtype != policy_config.score_dtype:
+    if score.score_dtype != draw.policy_config.score_dtype:
         raise ValueError(
             "guided behavior score_dtype mismatch: "
-            f"scoring={score.score_dtype}, config={policy_config.score_dtype}"
+            f"scoring={score.score_dtype}, draw={draw.policy_config.score_dtype}"
         )
     for actual, expected, field in (
         (score.request_id, expected_request, "scoring request"),
@@ -269,34 +265,23 @@ def build_guided_execution_from_scoring(
             "guided behavior scoring token table does not match generation spec"
         )
 
-    names = _action_names(action_space, action_space_names)
-    contract_id = policy_config.contract_id(
-        action_space,
-        names,
-        score.action_token_ids,
-    )
-    if contract_id != score.contract_id or contract_id != expected_contract:
-        raise ValueError(
-            "guided behavior action table or contract does not match scoring record"
-        )
     if (
-        isinstance(guided_action_id, bool)
-        or not isinstance(guided_action_id, int)
-        or not 0 <= guided_action_id < len(names)
+        draw.contract_id != score.contract_id
+        or draw.contract_id != expected_contract
+        or draw.action_token_ids != score.action_token_ids
+        or draw.prior_logits != score.prior_logits
+        or draw.frozen_all_action_q != score.frozen_all_action_q
     ):
-        raise ValueError("guided behavior guided_action_id is outside action space")
+        raise ValueError(
+            "guided behavior action draw does not match scoring contract, tokens, prior logits, or frozen Q"
+        )
 
     prior_response_idx = len(trace.response_ids) - 2
     prior_token_id = trace.response_ids[prior_response_idx]
     prior_action_id = score.action_token_ids.index(prior_token_id)
-    _prior_log_probs, guided_log_probs = guided_log_probs_reference(
-        score.prior_logits,
-        score.frozen_all_action_q,
-        policy_config,
-    )
     behavior = GuidedPolicyBehaviorRecord.build(
-        action_space=action_space,
-        action_space_names=names,
+        action_space=draw.action_space,
+        action_space_names=draw.action_space_names,
         action_token_ids=score.action_token_ids,
         snapshot_id=score.snapshot_id,
         prior_token_id=prior_token_id,
@@ -305,14 +290,15 @@ def build_guided_execution_from_scoring(
         behavior_llm_prior_logprob=trace.response_logprobs[prior_response_idx],
         prior_logits=score.prior_logits,
         frozen_all_action_q=score.frozen_all_action_q,
-        guided_action_id=guided_action_id,
-        behavior_guided_logprob=guided_log_probs[guided_action_id],
-        config=policy_config,
+        guided_action_id=draw.guided_action_id,
+        behavior_guided_logprob=draw.behavior_guided_logprob,
+        config=draw.policy_config,
     )
     return GuidedActionExecutionRequest.from_behavior(
         behavior,
         raw_response=trace.raw_response,
         response_trace_id=trace.trace_id(),
+        action_draw_record_id=draw.record_id(),
     )
 
 
@@ -325,6 +311,15 @@ def _canonical_scoring_record(
     return FrozenQScoringRecord.from_mapping(raw)
 
 
+def _canonical_action_draw(
+    value: GuidedPolicyActionDrawRecord | Mapping[str, Any],
+) -> GuidedPolicyActionDrawRecord:
+    raw = value.to_mapping() if isinstance(value, GuidedPolicyActionDrawRecord) else value
+    if not isinstance(raw, Mapping):
+        raise ValueError("guided behavior action_draw must be a mapping or record")
+    return GuidedPolicyActionDrawRecord.from_mapping(raw)
+
+
 def _canonical_response_trace(
     value: NimlothPolicyResponseTrace | Mapping[str, Any],
 ) -> NimlothPolicyResponseTrace:
@@ -332,14 +327,6 @@ def _canonical_response_trace(
     if not isinstance(raw, Mapping):
         raise ValueError("guided behavior response_trace must be a mapping or record")
     return NimlothPolicyResponseTrace.from_mapping(raw)
-
-
-def _canonical_config(
-    value: FrozenQGuidedPolicyConfig,
-) -> FrozenQGuidedPolicyConfig:
-    if not isinstance(value, FrozenQGuidedPolicyConfig):
-        raise ValueError("guided behavior config must be FrozenQGuidedPolicyConfig")
-    return FrozenQGuidedPolicyConfig.from_mapping(asdict(value))
 
 
 def _generation_spec(value: TurnGenerationSpec) -> TurnGenerationSpec:
@@ -373,22 +360,6 @@ def _nonempty_string(value: object, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"guided behavior {field} must be non-empty")
     return value
-
-
-def _action_names(
-    action_space: str,
-    values: Sequence[str],
-) -> tuple[str, ...]:
-    if not isinstance(action_space, str) or not action_space:
-        raise ValueError("guided behavior action_space must be non-empty")
-    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
-        raise ValueError("guided behavior action_space_names must be a sequence")
-    names = tuple(values)
-    if not names or any(not isinstance(name, str) or not name for name in names):
-        raise ValueError("guided behavior action_space_names must be non-empty strings")
-    if len(set(names)) != len(names):
-        raise ValueError("guided behavior action_space_names must be unique")
-    return names
 
 
 def _token_ids(values: Sequence[int], field: str) -> list[int]:
