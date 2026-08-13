@@ -8,7 +8,7 @@ VAGEN=${REPO}/external/VAGEN
 VERL=${VAGEN}/verl
 PY=${ROOT}/.venv-vagen-main/bin/python3
 PARENT_COMMIT=${EXPECTED_PARENT_COMMIT}
-VAGEN_COMMIT=6f32d2e3f83f4e3520677512e6ee7480e15d9c9c
+VAGEN_COMMIT=6ad75d687698bce923cada6e06350b63e19498c4
 VERL_COMMIT=084f042b71b8fe03785a279cf227f4085def0391
 VERL_BASE_COMMIT=3fe0a29975e1b02ae2bd1dec249f7807dd7966f5
 MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
@@ -31,23 +31,32 @@ STARTED_AT=$(date --iso-8601=seconds)
 ALLOCATED_NODES=${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-${SLURM_STEP_NUM_NODES:-}}}
 [[ "${ALLOCATED_NODES}" == "1" ]]
 [[ "${SLURM_JOB_PARTITION:-}" == "normal" ]]
-[[ "${SLURM_CPUS_PER_TASK:-}" == "16" ]]
-[[ "${SLURM_MEM_PER_NODE:-}" == "131072" ]]
+[[ "${SLURM_CPUS_PER_TASK:-}" == "64" ]]
+[[ "${SLURM_MEM_PER_NODE:-}" == "262144" ]]
 [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]
 IFS=, read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES}"
-(( ${#ALLOCATED_GPUS[@]} == 1 )) || {
-  echo "expected exactly one visible GPU, got ${CUDA_VISIBLE_DEVICES}" >&2
+(( ${#ALLOCATED_GPUS[@]} == 8 )) || {
+  echo "expected exactly eight visible GPUs, got ${CUDA_VISIBLE_DEVICES}" >&2
   exit 2
 }
-GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | xargs)
-[[ "${GPU_NAME}" == *H800* ]] || {
-  echo "expected one H800, got ${GPU_NAME}" >&2
+mapfile -t GPU_NAMES < <(nvidia-smi --query-gpu=name --format=csv,noheader)
+(( ${#GPU_NAMES[@]} == 8 )) || {
+  echo "expected eight allocated GPUs, got ${#GPU_NAMES[@]}" >&2
   exit 2
 }
+for name in "${GPU_NAMES[@]}"; do
+  [[ "${name}" == *H800* ]] || {
+    echo "expected only H800 GPUs, got ${name}" >&2
+    exit 2
+  }
+done
+GPU_NAME="8xNVIDIA H800"
 JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}" -o)
 grep -q "Partition=normal" <<<"${JOB_DETAILS}"
-grep -q "TimeLimit=00:30:00" <<<"${JOB_DETAILS}"
-grep -Eq "ReqTRES=[^ ]*mem=128G[^ ]*gres/gpu=1|ReqTRES=[^ ]*gres/gpu=1[^ ]*mem=128G" <<<"${JOB_DETAILS}"
+grep -q "TimeLimit=00:45:00" <<<"${JOB_DETAILS}"
+grep -Eq "ReqTRES=[^ ]*cpu=64([, ]|$)" <<<"${JOB_DETAILS}"
+grep -Eq "AllocTRES=[^ ]*cpu=64([, ]|$)" <<<"${JOB_DETAILS}"
+grep -Eq "ReqTRES=[^ ]*mem=256G[^ ]*gres/gpu=8|ReqTRES=[^ ]*gres/gpu=8[^ ]*mem=256G" <<<"${JOB_DETAILS}"
 [[ ! -e "${RUN_OUT}" ]] || {
   echo "refusing nonempty/reused output: ${RUN_OUT}" >&2
   exit 2
@@ -161,7 +170,7 @@ trap cleanup EXIT
   echo "checkpoint=${MODEL}"
   echo "checkpoint_use=HF_policy_weights_only"
   echo "sidecars_not_loaded=state_proj,wm_predictor,value_head"
-  echo "capture=async_same_generation_K16x2048_raw8"
+  echo "capture=async_same_generation_K16x2048_raw8_TP8_mm_encoder_data"
   echo "data=external/VAGEN/vagen/envs/navigation/assets/base.json"
   echo "data_sha256=6b575621a6b15e90e1040dd86d661a5e1ee70134f42fd7f3d61706347449c55a"
   echo "split=heldout_base_seed0_FloorPlan11_Bread"
@@ -170,10 +179,10 @@ trap cleanup EXIT
   echo "joint_policy=false"
   echo "checkpoint_output=none"
   echo "resume=none_retry_requires_new_id_and_empty_output"
-  echo "resources=normal_1node_1H800_16CPU_128GiB_30min_Unity_vLLM_same_gpu"
+  echo "resources=normal_1node_8H800_64CPU_256GiB_45min_Unity_vLLM_TP8"
   echo "env_url=${ENV_URL}"
   echo "env_profile=current_prompt_nimloth_K16_step0.5_threshold1.5_success10_format0"
-  echo "sampling=greedy_temp0_top_p1_response512_one_turn"
+  echo "sampling=greedy_temp0_top_p1_response512_one_turn_TP8"
   echo "vllm_gpu_memory_utilization=0.6"
   echo "ray_tmp=${RAY_TMPDIR}"
 } | tee "${RUN_OUT}/controller.log"
@@ -187,7 +196,7 @@ trap cleanup EXIT
 - Source: Nimloth ${PARENT_COMMIT}; VAGEN ${VAGEN_COMMIT}; VERL ${VERL_COMMIT} (direct parent ${VERL_BASE_COMMIT}).
 - Data: held-out base seed 0, FloorPlan11 / Bread; base asset SHA256 6b575621a6b15e90e1040dd86d661a5e1ee70134f42fd7f3d61706347449c55a; no overlap with base_train tasks or scenes.
 - Checkpoint: ${MODEL}, HF policy weights only.
-- Resource: normal, one node, one H800 shared by Unity and vLLM, 16 CPU, 128 GiB, 30 minutes.
+- Resource: normal, one node, eight H800; Unity uses allocated ordinal 0 and vLLM uses TP8 across the full allocation, with 64 CPU, 256 GiB, 45 minutes.
 - Resume: none. Existing output is never overwritten; any retry uses a new numeric ID and empty directory.
 - W&B identity: project nimloth-rl, run name ${RUN_NAME}. W&B logging is disabled because the smoke has no training metrics; identity was checked unused before launch.
 EOF
@@ -198,7 +207,7 @@ printf '%q ' "${PY}" -m vagen.standalone_one_turn_smoke \
   --run-name "${RUN_NAME}" --agent-loop-config "${VAGEN}/vagen/configs/agent_no_concat.yaml" \
   --eval-set base --seed 0 --latent-token-count 16 --prompt-length 9000 \
   --response-length 512 --temperature 0 --top-p 1 --gpu-memory-utilization 0.6 \
-  --env-timeout 300 >"${RUN_OUT}/command.txt"
+  --tensor-parallel-size 8 --env-timeout 300 >"${RUN_OUT}/command.txt"
 printf '\n' >>"${RUN_OUT}/command.txt"
 
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${PARENT_COMMIT}" ]]
@@ -307,12 +316,13 @@ nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization
   --format=csv,noheader,nounits -l 1 >"${RUN_OUT}/nvidia_smi.csv" 2>"${RUN_OUT}/nvidia_smi.err" &
 NVIDIA_PID=$!
 
-setsid "${PY}" -m vagen.standalone_one_turn_smoke \
+setsid timeout --signal=TERM --kill-after=20s 1500s \
+  "${PY}" -m vagen.standalone_one_turn_smoke \
   --model "${MODEL}" --env-url "${ENV_URL}" --output "${RUN_RESULT}" \
   --run-name "${RUN_NAME}" --agent-loop-config "${VAGEN}/vagen/configs/agent_no_concat.yaml" \
   --eval-set base --seed 0 --latent-token-count 16 --prompt-length 9000 \
   --response-length 512 --temperature 0 --top-p 1 --gpu-memory-utilization 0.6 \
-  --env-timeout 300 >"${RUN_OUT}/smoke.log" 2>&1 &
+  --tensor-parallel-size 8 --env-timeout 300 >"${RUN_OUT}/smoke.log" 2>&1 &
 SMOKE_PID=$!
 set +e
 wait "${SMOKE_PID}"
