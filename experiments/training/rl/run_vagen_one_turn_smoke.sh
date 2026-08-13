@@ -27,6 +27,31 @@ ENV_PID=
 NVIDIA_PID=
 SMOKE_PID=
 STARTED_AT=$(date --iso-8601=seconds)
+EXPECTED_HOLD_GPUS=${EXPECTED_HOLD_GPUS:-8}
+EXPECTED_STEP_GPUS=${EXPECTED_STEP_GPUS:-8}
+TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-8}
+EXPECTED_HOLD_WALLTIME=${EXPECTED_HOLD_WALLTIME:-00:45:00}
+SMOKE_TIMEOUT_SECONDS=${SMOKE_TIMEOUT_SECONDS:-1500}
+EVIDENCE_MODE=${EVIDENCE_MODE:-tp8_gate}
+
+[[ "${EXPECTED_HOLD_GPUS}" =~ ^[1-9][0-9]*$ ]]
+[[ "${EXPECTED_STEP_GPUS}" =~ ^[1-9][0-9]*$ ]]
+[[ "${TENSOR_PARALLEL_SIZE}" =~ ^[1-9][0-9]*$ ]]
+[[ "${SMOKE_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]
+(( EXPECTED_STEP_GPUS <= EXPECTED_HOLD_GPUS ))
+(( TENSOR_PARALLEL_SIZE == EXPECTED_STEP_GPUS ))
+case "${EVIDENCE_MODE}" in
+  tp8_gate)
+    [[ "${EXPERIMENT_ID}" == "161" ]]
+    [[ "${EXPECTED_HOLD_GPUS}:${EXPECTED_STEP_GPUS}:${TENSOR_PARALLEL_SIZE}:${EXPECTED_HOLD_WALLTIME}:${SMOKE_TIMEOUT_SECONDS}" == "8:8:8:00:45:00:1500" ]]
+    ;;
+  tp4_interim_diagnostic)
+    [[ "${EXPERIMENT_ID}" == "162" ]]
+    [[ "${EXPECTED_HOLD_GPUS}:${EXPECTED_STEP_GPUS}:${TENSOR_PARALLEL_SIZE}:${EXPECTED_HOLD_WALLTIME}:${SMOKE_TIMEOUT_SECONDS}" == "7:4:4:00:20:00:900" ]]
+    ;;
+  *) echo "unsupported evidence mode: ${EVIDENCE_MODE}" >&2; exit 2 ;;
+esac
+export EVIDENCE_MODE
 
 ALLOCATED_NODES=${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-${SLURM_STEP_NUM_NODES:-}}}
 [[ "${ALLOCATED_NODES}" == "1" ]]
@@ -35,13 +60,13 @@ ALLOCATED_NODES=${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-${SLURM_STEP_NUM_NODES:-}
 [[ "${SLURM_MEM_PER_NODE:-}" == "262144" ]]
 [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]
 IFS=, read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES}"
-(( ${#ALLOCATED_GPUS[@]} == 8 )) || {
-  echo "expected exactly eight visible GPUs, got ${CUDA_VISIBLE_DEVICES}" >&2
+(( ${#ALLOCATED_GPUS[@]} == EXPECTED_STEP_GPUS )) || {
+  echo "expected exactly ${EXPECTED_STEP_GPUS} visible GPUs, got ${CUDA_VISIBLE_DEVICES}" >&2
   exit 2
 }
 mapfile -t GPU_NAMES < <(nvidia-smi --query-gpu=name --format=csv,noheader)
-(( ${#GPU_NAMES[@]} == 8 )) || {
-  echo "expected eight allocated GPUs, got ${#GPU_NAMES[@]}" >&2
+(( ${#GPU_NAMES[@]} == EXPECTED_STEP_GPUS )) || {
+  echo "expected ${EXPECTED_STEP_GPUS} allocated GPUs, got ${#GPU_NAMES[@]}" >&2
   exit 2
 }
 for name in "${GPU_NAMES[@]}"; do
@@ -50,13 +75,14 @@ for name in "${GPU_NAMES[@]}"; do
     exit 2
   }
 done
-GPU_NAME="8xNVIDIA H800"
+GPU_NAME="${EXPECTED_STEP_GPUS}xNVIDIA H800"
 JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}" -o)
 grep -q "Partition=normal" <<<"${JOB_DETAILS}"
-grep -q "TimeLimit=00:45:00" <<<"${JOB_DETAILS}"
+grep -q "TimeLimit=${EXPECTED_HOLD_WALLTIME}" <<<"${JOB_DETAILS}"
 grep -Eq "ReqTRES=[^ ]*cpu=64([, ]|$)" <<<"${JOB_DETAILS}"
 grep -Eq "AllocTRES=[^ ]*cpu=64([, ]|$)" <<<"${JOB_DETAILS}"
-grep -Eq "ReqTRES=[^ ]*mem=256G[^ ]*gres/gpu=8|ReqTRES=[^ ]*gres/gpu=8[^ ]*mem=256G" <<<"${JOB_DETAILS}"
+grep -Eq "ReqTRES=[^ ]*mem=256G[^ ]*gres/gpu=${EXPECTED_HOLD_GPUS}|ReqTRES=[^ ]*gres/gpu=${EXPECTED_HOLD_GPUS}[^ ]*mem=256G" <<<"${JOB_DETAILS}"
+grep -Eq "AllocTRES=[^ ]*gres/gpu=${EXPECTED_HOLD_GPUS}([, ]|$)" <<<"${JOB_DETAILS}"
 [[ ! -e "${RUN_OUT}" ]] || {
   echo "refusing nonempty/reused output: ${RUN_OUT}" >&2
   exit 2
@@ -130,6 +156,8 @@ payload={
   'exit_code': status,
   'status': 'passed' if status == 0 and result.is_file() else 'failed',
   'result_exists': result.is_file(),
+  'evidence_mode': os.environ['EVIDENCE_MODE'],
+  'does_not_substitute_for_tp8_gate': os.environ['EVIDENCE_MODE'] == 'tp4_interim_diagnostic',
 }
 fd,name=tempfile.mkstemp(prefix='.final_status.',suffix='.tmp',dir=out)
 try:
@@ -170,7 +198,9 @@ trap cleanup EXIT
   echo "checkpoint=${MODEL}"
   echo "checkpoint_use=HF_policy_weights_only"
   echo "sidecars_not_loaded=state_proj,wm_predictor,value_head"
-  echo "capture=async_same_generation_K16x2048_raw8_TP8_mm_encoder_data"
+  echo "capture=async_same_generation_K16x2048_raw8_TP${TENSOR_PARALLEL_SIZE}_mm_encoder_data"
+  echo "evidence_mode=${EVIDENCE_MODE}"
+  echo "does_not_substitute_for_tp8_gate=$([[ "${EVIDENCE_MODE}" == tp4_interim_diagnostic ]] && echo true || echo false)"
   echo "data=external/VAGEN/vagen/envs/navigation/assets/base.json"
   echo "data_sha256=6b575621a6b15e90e1040dd86d661a5e1ee70134f42fd7f3d61706347449c55a"
   echo "split=heldout_base_seed0_FloorPlan11_Bread"
@@ -179,10 +209,10 @@ trap cleanup EXIT
   echo "joint_policy=false"
   echo "checkpoint_output=none"
   echo "resume=none_retry_requires_new_id_and_empty_output"
-  echo "resources=normal_1node_8H800_64CPU_256GiB_45min_Unity_vLLM_TP8"
+  echo "resources=normal_1node_hold${EXPECTED_HOLD_GPUS}H800_step${EXPECTED_STEP_GPUS}H800_64CPU_256GiB_${EXPECTED_HOLD_WALLTIME}_Unity_vLLM_TP${TENSOR_PARALLEL_SIZE}"
   echo "env_url=${ENV_URL}"
   echo "env_profile=current_prompt_nimloth_K16_step0.5_threshold1.5_success10_format0"
-  echo "sampling=greedy_temp0_top_p1_response512_one_turn_TP8"
+  echo "sampling=greedy_temp0_top_p1_response512_one_turn_TP${TENSOR_PARALLEL_SIZE}"
   echo "vllm_gpu_memory_utilization=0.6"
   echo "ray_tmp=${RAY_TMPDIR}"
 } | tee "${RUN_OUT}/controller.log"
@@ -193,10 +223,11 @@ trap cleanup EXIT
 
 - Goal: ID74 HF policy load -> real held-out Navigation reset -> model-generated CoT -> forced K16 protocol -> same-generation K16 hidden/raw 8-action logit capture -> one sampled action -> one real environment step -> reward/decision-ledger validation.
 - This is inference-only. It does not load StateProjector, WM predictor, ValueHead, frozen-Q guidance, actor/critic trainers, optimizer, FSDP, or checkpoints; capture does not alter the environment action.
+- Evidence mode: ${EVIDENCE_MODE}. A TP4 interim diagnostic does not substitute for the pending ID161 TP8 gate.
 - Source: Nimloth ${PARENT_COMMIT}; VAGEN ${VAGEN_COMMIT}; VERL ${VERL_COMMIT} (direct parent ${VERL_BASE_COMMIT}).
 - Data: held-out base seed 0, FloorPlan11 / Bread; base asset SHA256 6b575621a6b15e90e1040dd86d661a5e1ee70134f42fd7f3d61706347449c55a; no overlap with base_train tasks or scenes.
 - Checkpoint: ${MODEL}, HF policy weights only.
-- Resource: normal, one node, eight H800; Unity uses allocated ordinal 0 and vLLM uses TP8 across the full allocation, with 64 CPU, 256 GiB, 45 minutes.
+- Resource: normal, one node, hold owns ${EXPECTED_HOLD_GPUS} H800 and this step owns ${EXPECTED_STEP_GPUS}; Unity uses step-visible ordinal 0 and vLLM uses TP${TENSOR_PARALLEL_SIZE}, with 64 CPU, 256 GiB, walltime ${EXPECTED_HOLD_WALLTIME}.
 - Resume: none. Existing output is never overwritten; any retry uses a new numeric ID and empty directory.
 - W&B identity: project nimloth-rl, run name ${RUN_NAME}. W&B logging is disabled because the smoke has no training metrics; identity was checked unused before launch.
 EOF
@@ -207,7 +238,7 @@ printf '%q ' "${PY}" -m vagen.standalone_one_turn_smoke \
   --run-name "${RUN_NAME}" --agent-loop-config "${VAGEN}/vagen/configs/agent_no_concat.yaml" \
   --eval-set base --seed 0 --latent-token-count 16 --prompt-length 9000 \
   --response-length 512 --temperature 0 --top-p 1 --gpu-memory-utilization 0.6 \
-  --tensor-parallel-size 8 --env-timeout 300 >"${RUN_OUT}/command.txt"
+  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" --env-timeout 300 >"${RUN_OUT}/command.txt"
 printf '\n' >>"${RUN_OUT}/command.txt"
 
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${PARENT_COMMIT}" ]]
@@ -316,13 +347,13 @@ nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization
   --format=csv,noheader,nounits -l 1 >"${RUN_OUT}/nvidia_smi.csv" 2>"${RUN_OUT}/nvidia_smi.err" &
 NVIDIA_PID=$!
 
-setsid timeout --signal=TERM --kill-after=20s 1500s \
+setsid timeout --signal=TERM --kill-after=20s "${SMOKE_TIMEOUT_SECONDS}s" \
   "${PY}" -m vagen.standalone_one_turn_smoke \
   --model "${MODEL}" --env-url "${ENV_URL}" --output "${RUN_RESULT}" \
   --run-name "${RUN_NAME}" --agent-loop-config "${VAGEN}/vagen/configs/agent_no_concat.yaml" \
   --eval-set base --seed 0 --latent-token-count 16 --prompt-length 9000 \
   --response-length 512 --temperature 0 --top-p 1 --gpu-memory-utilization 0.6 \
-  --tensor-parallel-size 8 --env-timeout 300 >"${RUN_OUT}/smoke.log" 2>&1 &
+  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" --env-timeout 300 >"${RUN_OUT}/smoke.log" 2>&1 &
 SMOKE_PID=$!
 set +e
 wait "${SMOKE_PID}"
@@ -333,6 +364,30 @@ terminate_owned_process_group "${SMOKE_PID}"
 SMOKE_PID=
 (( SMOKE_STATUS == 0 )) || exit "${SMOKE_STATUS}"
 
+"${PY}" - "${RUN_RESULT}" "${EVIDENCE_MODE}" "${EXPECTED_HOLD_GPUS}" \
+  "${EXPECTED_STEP_GPUS}" "${TENSOR_PARALLEL_SIZE}" <<'PY'
+import json, os, sys, tempfile
+from pathlib import Path
+p=Path(sys.argv[1])
+x=json.loads(p.read_text())
+x['launch_evidence']={
+  'mode': sys.argv[2],
+  'hold_gpu_count': int(sys.argv[3]),
+  'step_gpu_count': int(sys.argv[4]),
+  'tensor_parallel_size': int(sys.argv[5]),
+  'does_not_substitute_for_tp8_gate': sys.argv[2] == 'tp4_interim_diagnostic',
+}
+fd,name=tempfile.mkstemp(prefix='.one_turn_result.',suffix='.tmp',dir=p.parent)
+try:
+  with os.fdopen(fd,'w',encoding='utf-8') as f:
+    json.dump(x,f,indent=2,allow_nan=False); f.write('\n')
+  os.replace(name,p)
+except BaseException:
+  try: os.unlink(name)
+  except FileNotFoundError: pass
+  raise
+PY
+
 "${PY}" - "${RUN_RESULT}" <<'PY' | tee "${RUN_OUT}/validator.json"
 import json, math, sys
 from pathlib import Path
@@ -342,6 +397,10 @@ assert x['optimizer'] is None and x['checkpoint_output'] is None
 assert x['eval_set']=='base' and x['seed']==0 and x['latent_token_count']==16
 ledger=x['decision_ledger']
 state=x['policy_state']
+evidence=x['launch_evidence']
+assert evidence['mode'] in {'tp8_gate','tp4_interim_diagnostic'}
+assert evidence['step_gpu_count']==evidence['tensor_parallel_size']
+assert evidence['does_not_substitute_for_tp8_gate']==(evidence['mode']=='tp4_interim_diagnostic')
 assert state['schema']=='nimloth_policy_state_v1'
 assert len(state['latent_token_ids'])==16 and len(set(state['latent_token_ids']))==16
 assert state['action_start_token_id'] not in state['latent_token_ids']
@@ -359,5 +418,5 @@ assert math.isfinite(float(x['env_turn_reward']))
 assert '<think>' in x['environment_response']
 assert '<|action_start|>' in x['environment_response']
 assert '<|action_end|>' in x['environment_response']
-print(json.dumps({'status':'ALL_OK','response_tokens':x['response_token_count'],'action_id':ledger['executed_action_ids'][0],'reward':x['env_turn_reward'],'reward_anchor_index':x['reward_anchor_index'],'policy_state_shape':[len(state['latent_hidden']),len(state['latent_hidden'][0])],'action_logits_shape':[len(state['action_logits'])],'request_id':state['request_id']}))
+print(json.dumps({'status':'ALL_OK','evidence_mode':evidence['mode'],'does_not_substitute_for_tp8_gate':evidence['does_not_substitute_for_tp8_gate'],'response_tokens':x['response_token_count'],'action_id':ledger['executed_action_ids'][0],'reward':x['env_turn_reward'],'reward_anchor_index':x['reward_anchor_index'],'policy_state_shape':[len(state['latent_hidden']),len(state['latent_hidden'][0])],'action_logits_shape':[len(state['action_logits'])],'request_id':state['request_id']}))
 PY
