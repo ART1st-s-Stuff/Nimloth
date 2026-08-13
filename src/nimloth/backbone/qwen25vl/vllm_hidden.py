@@ -22,6 +22,36 @@ class VLLMPolicyState:
     action_logits: torch.Tensor
 
 
+@dataclass(frozen=True)
+class _PolicyStateCaptureSpec:
+    latent_token_ids: tuple[int, ...]
+    action_start_token_id: int
+    action_token_ids: tuple[int, ...]
+    capture_token_ids: frozenset[int]
+
+
+def _policy_state_capture_spec(
+    latent_token_ids: Sequence[int],
+    action_start_token_id: int,
+    action_token_ids: Sequence[int],
+) -> _PolicyStateCaptureSpec:
+    latent_ids = tuple(int(value) for value in latent_token_ids)
+    action_ids = tuple(int(value) for value in action_token_ids)
+    action_start_id = int(action_start_token_id)
+    if not latent_ids or len(set(latent_ids)) != len(latent_ids):
+        raise ValueError("policy state capture requires unique latent token ids")
+    if not action_ids or len(set(action_ids)) != len(action_ids):
+        raise ValueError("policy state capture requires unique action token ids")
+    if action_start_id in latent_ids:
+        raise ValueError("action_start token must differ from latent tokens")
+    return _PolicyStateCaptureSpec(
+        latent_token_ids=latent_ids,
+        action_start_token_id=action_start_id,
+        action_token_ids=action_ids,
+        capture_token_ids=frozenset((*latent_ids, action_start_id)),
+    )
+
+
 def _hidden_tensor(model_output: Any) -> torch.Tensor:
     """Return the final hidden tensor from a normal vLLM model forward."""
 
@@ -126,41 +156,79 @@ class PolicyStateCaptureWorkerExtension:
     per request; this is required before VAGEN may batch active environments.
     """
 
+    def _nimloth_ensure_capture_hook(self) -> None:
+        if getattr(self, "_nimloth_capture_handle", None) is not None:
+            return
+        model_runner = getattr(self, "model_runner", None)
+        model = getattr(model_runner, "model", None)
+        if not isinstance(model, torch.nn.Module):
+            raise RuntimeError("vLLM worker has no loaded model_runner.model")
+        self._nimloth_capture_handle = model.register_forward_hook(
+            self._nimloth_capture_forward,
+            with_kwargs=True,
+        )
+
     def nimloth_start_policy_state_capture(
         self,
         latent_token_ids: Sequence[int],
         action_start_token_id: int,
         action_token_ids: Sequence[int],
     ) -> bool:
-        latent_ids = tuple(int(value) for value in latent_token_ids)
-        action_ids = tuple(int(value) for value in action_token_ids)
-        action_start_id = int(action_start_token_id)
-        if not latent_ids or len(set(latent_ids)) != len(latent_ids):
-            raise ValueError("policy state capture requires unique latent token ids")
-        if not action_ids or len(set(action_ids)) != len(action_ids):
-            raise ValueError("policy state capture requires unique action token ids")
-        if action_start_id in latent_ids:
-            raise ValueError("action_start token must differ from latent tokens")
-        if getattr(self, "_nimloth_capture_active", False):
+        spec = _policy_state_capture_spec(
+            latent_token_ids,
+            action_start_token_id,
+            action_token_ids,
+        )
+        request_specs = getattr(self, "_nimloth_request_capture_specs", {})
+        if getattr(self, "_nimloth_capture_active", False) or request_specs:
             raise RuntimeError("a vLLM policy state capture is already active")
 
-        self._nimloth_latent_token_ids = latent_ids
-        self._nimloth_action_start_token_id = action_start_id
-        self._nimloth_action_token_ids = action_ids
-        self._nimloth_capture_token_ids = frozenset((*latent_ids, action_start_id))
+        self._nimloth_ensure_capture_hook()
+        self._nimloth_latent_token_ids = spec.latent_token_ids
+        self._nimloth_action_start_token_id = spec.action_start_token_id
+        self._nimloth_action_token_ids = spec.action_token_ids
+        self._nimloth_capture_token_ids = spec.capture_token_ids
         self._nimloth_capture_entries_by_request: dict[
             str, list[tuple[int, torch.Tensor]]
         ] = {}
         self._nimloth_capture_active = True
-        if getattr(self, "_nimloth_capture_handle", None) is None:
-            model_runner = getattr(self, "model_runner", None)
-            model = getattr(model_runner, "model", None)
-            if not isinstance(model, torch.nn.Module):
-                raise RuntimeError("vLLM worker has no loaded model_runner.model")
-            self._nimloth_capture_handle = model.register_forward_hook(
-                self._nimloth_capture_forward,
-                with_kwargs=True,
+        return True
+
+    def nimloth_start_policy_state_capture_for_request(
+        self,
+        request_id: str,
+        latent_token_ids: Sequence[int],
+        action_start_token_id: int,
+        action_token_ids: Sequence[int],
+    ) -> bool:
+        """Enable capture for one active async vLLM request."""
+
+        identity = str(request_id)
+        if not identity:
+            raise ValueError("policy state capture requires a request id")
+        if getattr(self, "_nimloth_capture_active", False):
+            raise RuntimeError("serial policy state capture is already active")
+        specs = getattr(self, "_nimloth_request_capture_specs", None)
+        if specs is None:
+            specs = {}
+            self._nimloth_request_capture_specs = specs
+        prepared = getattr(self, "_nimloth_prepared_request_captures", {})
+        if identity in specs or identity in prepared:
+            raise RuntimeError(
+                f"policy state capture for request {identity!r} is already active"
             )
+        spec = _policy_state_capture_spec(
+            latent_token_ids,
+            action_start_token_id,
+            action_token_ids,
+        )
+        self._nimloth_ensure_capture_hook()
+        specs[identity] = spec
+        entries = getattr(self, "_nimloth_request_capture_entries", None)
+        if entries is None:
+            entries = {}
+            self._nimloth_request_capture_entries = entries
+        entries[identity] = []
         return True
 
     def _nimloth_capture_forward(
@@ -170,7 +238,9 @@ class PolicyStateCaptureWorkerExtension:
         kwargs: dict[str, Any],
         output: Any,
     ) -> None:
-        if not getattr(self, "_nimloth_capture_active", False):
+        serial_active = getattr(self, "_nimloth_capture_active", False)
+        request_specs = getattr(self, "_nimloth_request_capture_specs", {})
+        if not serial_active and not request_specs:
             return
         hidden = _hidden_tensor(output)
         input_ids = _input_ids(args, kwargs)
@@ -184,13 +254,29 @@ class PolicyStateCaptureWorkerExtension:
                 "vLLM input IDs do not align with captured hidden states: "
                 f"{flat_ids.numel()} != {hidden.shape[0]}"
             )
-        wanted = self._nimloth_capture_token_ids
-        entries_by_request = self._nimloth_capture_entries_by_request
+        serial_entries = getattr(
+            self,
+            "_nimloth_capture_entries_by_request",
+            {},
+        )
+        scoped_entries = getattr(
+            self,
+            "_nimloth_request_capture_entries",
+            {},
+        )
         for request_id, start, end in _request_segments(
             self.model_runner,
             hidden.shape[0],
         ):
-            request_entries = entries_by_request.setdefault(request_id, [])
+            scoped_spec = request_specs.get(request_id)
+            if scoped_spec is not None:
+                wanted = scoped_spec.capture_token_ids
+                request_entries = scoped_entries[request_id]
+            elif serial_active:
+                wanted = self._nimloth_capture_token_ids
+                request_entries = serial_entries.setdefault(request_id, [])
+            else:
+                continue
             for index in range(start, end):
                 token_id = int(flat_ids[index].item())
                 if token_id in wanted:
@@ -200,14 +286,14 @@ class PolicyStateCaptureWorkerExtension:
                         (token_id, hidden[index].detach().clone())
                     )
 
-    def _nimloth_resolve_policy_state(
+    def _nimloth_select_policy_state(
         self,
         entries: list[tuple[int, torch.Tensor]],
         *,
         request_id: str,
-    ) -> dict[str, list[float] | list[list[float]]]:
-        latent_ids = self._nimloth_latent_token_ids
-        expected = (*latent_ids, self._nimloth_action_start_token_id)
+        spec: _PolicyStateCaptureSpec,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        expected = (*spec.latent_token_ids, spec.action_start_token_id)
         captured_ids = tuple(token_id for token_id, _hidden in entries)
         start = None
         width = len(expected)
@@ -223,23 +309,54 @@ class PolicyStateCaptureWorkerExtension:
             )
 
         selected = entries[start : start + width]
-        latent_hidden = torch.stack(
-            [hidden for _token_id, hidden in selected[:-1]],
-            dim=0,
+        return (
+            torch.stack(
+                [hidden for _token_id, hidden in selected[:-1]],
+                dim=0,
+            ),
+            selected[-1][1].unsqueeze(0),
         )
-        action_hidden = selected[-1][1].unsqueeze(0)
+
+    def _nimloth_action_logits(
+        self,
+        action_hidden: torch.Tensor,
+        *,
+        spec: _PolicyStateCaptureSpec,
+    ) -> torch.Tensor:
         model = self.model_runner.model
         logits = model.compute_logits(action_hidden)
         if not isinstance(logits, torch.Tensor) or logits.shape[0] != 1:
             raise RuntimeError("vLLM compute_logits did not return one action row")
         action_indices = torch.tensor(
-            self._nimloth_action_token_ids,
+            spec.action_token_ids,
             dtype=torch.long,
             device=logits.device,
         )
         action_logits = logits[0].index_select(0, action_indices)
         if not torch.isfinite(action_logits).all():
             raise RuntimeError("vLLM returned non-finite raw action logits")
+        return action_logits
+
+    def _nimloth_resolve_policy_state(
+        self,
+        entries: list[tuple[int, torch.Tensor]],
+        *,
+        request_id: str,
+        spec: _PolicyStateCaptureSpec | None = None,
+    ) -> dict[str, list[float] | list[list[float]]]:
+        if spec is None:
+            spec = _PolicyStateCaptureSpec(
+                latent_token_ids=self._nimloth_latent_token_ids,
+                action_start_token_id=self._nimloth_action_start_token_id,
+                action_token_ids=self._nimloth_action_token_ids,
+                capture_token_ids=self._nimloth_capture_token_ids,
+            )
+        latent_hidden, action_hidden = self._nimloth_select_policy_state(
+            entries,
+            request_id=request_id,
+            spec=spec,
+        )
+        action_logits = self._nimloth_action_logits(action_hidden, spec=spec)
         # vLLM V1 UtilityResult intentionally omits arbitrary nested Python
         # type metadata unless insecure serialization is enabled. Return plain
         # numeric containers and rebuild tensors in the trusted frontend.
@@ -277,10 +394,110 @@ class PolicyStateCaptureWorkerExtension:
             )
         return next(iter(results.values()))
 
+    def nimloth_prepare_policy_state_capture_for_request(
+        self,
+        request_id: str,
+    ) -> dict[str, list[list[float]]]:
+        """Validate one rank before any TP LM-head collective is entered."""
+
+        identity = str(request_id)
+        specs = getattr(self, "_nimloth_request_capture_specs", {})
+        if identity not in specs:
+            raise RuntimeError(
+                f"policy state capture for request {identity!r} is not active"
+            )
+        entries = getattr(self, "_nimloth_request_capture_entries", {})
+        spec = specs[identity]
+        latent_hidden, action_hidden = self._nimloth_select_policy_state(
+            entries.get(identity, []),
+            request_id=identity,
+            spec=spec,
+        )
+        prepared = getattr(self, "_nimloth_prepared_request_captures", None)
+        if prepared is None:
+            prepared = {}
+            self._nimloth_prepared_request_captures = prepared
+        prepared[identity] = (spec, latent_hidden, action_hidden)
+        del specs[identity]
+        entries.pop(identity, None)
+        return {"latent_hidden": latent_hidden.float().cpu().tolist()}
+
+    def nimloth_finish_policy_state_capture_for_request(
+        self,
+        request_id: str,
+    ) -> dict[str, list[float]]:
+        """Compute raw action logits after every TP rank reported readiness."""
+
+        identity = str(request_id)
+        prepared = getattr(self, "_nimloth_prepared_request_captures", {})
+        if identity not in prepared:
+            raise RuntimeError(
+                f"prepared policy state for request {identity!r} is not active"
+            )
+        spec, _latent_hidden, action_hidden = prepared[identity]
+        try:
+            action_logits = self._nimloth_action_logits(
+                action_hidden,
+                spec=spec,
+            )
+            return {"action_logits": action_logits.float().cpu().tolist()}
+        finally:
+            prepared.pop(identity, None)
+
     def nimloth_abort_policy_state_capture(self) -> bool:
         self._nimloth_capture_active = False
         self._nimloth_capture_entries_by_request = {}
         return True
+
+    def nimloth_abort_policy_state_capture_for_request(
+        self,
+        request_id: str,
+    ) -> bool:
+        """Discard one async request without disturbing concurrent captures."""
+
+        identity = str(request_id)
+        specs = getattr(self, "_nimloth_request_capture_specs", {})
+        specs.pop(identity, None)
+        getattr(self, "_nimloth_request_capture_entries", {}).pop(identity, None)
+        getattr(self, "_nimloth_prepared_request_captures", {}).pop(identity, None)
+        # Cleanup is intentionally idempotent so a partially successful TP pop
+        # cannot mask the original generation/capture exception.
+        return True
+
+
+async def async_start_policy_state_capture_for_request(
+    engine: Any,
+    *,
+    request_id: str,
+    latent_token_ids: Sequence[int],
+    action_start_token_id: int,
+    action_token_ids: Sequence[int],
+) -> None:
+    """Enable one request-scoped capture on every async vLLM TP worker."""
+
+    identity = str(request_id)
+    if not identity:
+        raise ValueError("policy state capture requires a request id")
+    try:
+        results = await engine.collective_rpc(
+            "nimloth_start_policy_state_capture_for_request",
+            args=(
+                identity,
+                tuple(int(value) for value in latent_token_ids),
+                int(action_start_token_id),
+                tuple(int(value) for value in action_token_ids),
+            ),
+        )
+        if not results or not all(value is True for value in results):
+            raise RuntimeError(
+                f"not every vLLM worker enabled capture for request {identity!r}"
+            )
+    except BaseException:
+        await engine.collective_rpc(
+            "nimloth_abort_policy_state_capture_for_request",
+            args=(identity,),
+        )
+        raise
 
 
 def start_policy_state_capture(
@@ -388,6 +605,44 @@ def pop_policy_state_captures(
     }
 
 
+async def async_pop_policy_state_capture_for_request(
+    engine: Any,
+    *,
+    request_id: str,
+) -> VLLMPolicyState:
+    """Return one async state with a TP-safe two-phase LM-head protocol."""
+
+    identity = str(request_id)
+    prepared = await engine.collective_rpc(
+        "nimloth_prepare_policy_state_capture_for_request",
+        args=(identity,),
+    )
+    if not prepared or not all(isinstance(value, dict) for value in prepared):
+        raise RuntimeError(
+            f"vLLM workers did not prepare state for request {identity!r}"
+        )
+    logits = await engine.collective_rpc(
+        "nimloth_finish_policy_state_capture_for_request",
+        args=(identity,),
+    )
+    if not logits or not all(isinstance(value, dict) for value in logits):
+        raise RuntimeError(
+            f"vLLM workers returned incomplete logits for request {identity!r}"
+        )
+    if len(prepared) != len(logits):
+        raise RuntimeError(
+            f"vLLM TP worker count changed while capturing request {identity!r}"
+        )
+    results = [
+        {
+            "latent_hidden": hidden["latent_hidden"],
+            "action_logits": action["action_logits"],
+        }
+        for hidden, action in zip(prepared, logits, strict=True)
+    ]
+    return _validated_policy_state(results, request_id=identity)
+
+
 def pop_policy_state_capture(engine: Any) -> VLLMPolicyState:
     """Return one serial TP-consistent latent state and raw action logits."""
 
@@ -395,6 +650,24 @@ def pop_policy_state_capture(engine: Any) -> VLLMPolicyState:
     if not results or not all(isinstance(value, dict) for value in results):
         raise RuntimeError("vLLM workers returned incomplete policy states")
     return _validated_policy_state(results, request_id="__serial__")
+
+
+async def async_abort_policy_state_capture_for_request(
+    engine: Any,
+    *,
+    request_id: str,
+) -> None:
+    """Clear one failed async request while preserving other active captures."""
+
+    identity = str(request_id)
+    results = await engine.collective_rpc(
+        "nimloth_abort_policy_state_capture_for_request",
+        args=(identity,),
+    )
+    if not results or not all(value is True for value in results):
+        raise RuntimeError(
+            f"policy state capture for request {identity!r} is not active"
+        )
 
 
 def abort_policy_state_capture(engine: Any) -> None:
@@ -407,6 +680,9 @@ __all__ = [
     "PolicyStateCaptureWorkerExtension",
     "VLLMPolicyState",
     "abort_policy_state_capture",
+    "async_abort_policy_state_capture_for_request",
+    "async_pop_policy_state_capture_for_request",
+    "async_start_policy_state_capture_for_request",
     "pop_policy_state_capture",
     "pop_policy_state_captures",
     "start_policy_state_capture",
