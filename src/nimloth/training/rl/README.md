@@ -25,7 +25,10 @@ SFT2/RL checkpoint root加载projector/head、创建显式
 routing，每次forward另有唯一`generation_id`；两者与token table、raw prior logits及
 snapshot身份共同进入immutable scoring record。scorer按snapshot参数dtype构造输入，输出
 dtype只来自snapshot中已哈希的contract `score_dtype`，调用者不能临时覆盖。当前没有
-optimizer、refresh schedule、Ray owner、guided environment action或checkpoint lifecycle；
+`joint_behavior.py`另定义identity-bearing response trace与纯assembly helper：严格绑定
+request/generation/expected generation-spec、完整response IDs/mask/log-probs和真实decode文本，
+再把外部已选guided action组装成behavior/execution envelope；helper没有RNG或current-Q输入。
+当前仍没有optimizer、refresh schedule、Ray owner、agent-loop sampler或checkpoint lifecycle；
 不得据此移除VAGEN trainer的joint-policy fail-closed门禁。
 
 RL code must not construct an independent navigation prompt. Online action
