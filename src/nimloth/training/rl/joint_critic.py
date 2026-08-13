@@ -17,6 +17,7 @@ from nimloth.wm.grid import SharedSlotProjector
 from nimloth.wm.value_head import ValueHead
 
 _SNAPSHOT_SCHEMA = "nimloth_joint_critic_snapshot_v1"
+_SUPPORTED_SCORE_DTYPES = {"float32", "bfloat16", "float64"}
 _SUPPORTED_FLOAT_DTYPES = {
     torch.float16,
     torch.bfloat16,
@@ -71,7 +72,7 @@ class JointActionValueCritic(nn.Module):
                 f"(B, {expected[0]}, {expected[1]}), got {tuple(latent_hidden.shape)}"
             )
         projected = self.state_projector(latent_hidden)
-        action_values = self.value_head(projected.mean(dim=1)).float()
+        action_values = self.value_head(projected.mean(dim=1))
         if tuple(action_values.shape) != (
             latent_hidden.shape[0],
             self.spec.action_count,
@@ -95,12 +96,14 @@ class FrozenJointCriticSnapshot(nn.Module):
         source_step: int,
         contract_id: str,
         snapshot_id: str,
+        score_dtype: str,
     ) -> None:
         super().__init__()
         self.critic = critic
         self.source_step = source_step
         self.contract_id = contract_id
         self.snapshot_id = snapshot_id
+        self.score_dtype = score_dtype
         self.spec = critic.spec
         self.critic.requires_grad_(False)
         super().train(False)
@@ -115,6 +118,7 @@ class FrozenJointCriticSnapshot(nn.Module):
             "schema": _SNAPSHOT_SCHEMA,
             "source_step": self.source_step,
             "contract_id": self.contract_id,
+            "score_dtype": self.score_dtype,
             "critic_spec": asdict(live_spec),
         }
 
@@ -166,6 +170,7 @@ def create_frozen_critic_snapshot(
     *,
     source_step: int,
     contract_id: str,
+    score_dtype: str,
 ) -> FrozenJointCriticSnapshot:
     """Deep-copy and fingerprint the exact projector+ValueHead rollout Q."""
 
@@ -175,6 +180,10 @@ def create_frozen_critic_snapshot(
         raise ValueError("joint critic snapshot source_step must be a non-negative int")
     if not isinstance(contract_id, str) or not contract_id:
         raise ValueError("joint critic snapshot contract_id must be non-empty")
+    if score_dtype not in _SUPPORTED_SCORE_DTYPES:
+        raise ValueError(
+            "joint critic snapshot score_dtype must be float32, bfloat16, or float64"
+        )
     _require_finite_state(critic.state_dict(), context="joint critic snapshot source")
 
     frozen_critic = copy.deepcopy(critic)
@@ -183,6 +192,7 @@ def create_frozen_critic_snapshot(
         "schema": _SNAPSHOT_SCHEMA,
         "source_step": source_step,
         "contract_id": contract_id,
+        "score_dtype": score_dtype,
         "critic_spec": asdict(frozen_critic.spec),
     }
     snapshot_id = _state_fingerprint(metadata, frozen_critic.state_dict())
@@ -191,6 +201,7 @@ def create_frozen_critic_snapshot(
         source_step=source_step,
         contract_id=contract_id,
         snapshot_id=snapshot_id,
+        score_dtype=score_dtype,
     )
 
 
