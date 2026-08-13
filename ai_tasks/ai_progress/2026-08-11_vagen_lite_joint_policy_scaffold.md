@@ -88,6 +88,10 @@
 - 父`e0b5ae81`新增`joint_scoring.py`：严格校验capture v2、session/generation/token table、snapshot/contract/action count和finite shape；按snapshot参数dtype喂入K-slot hidden，并将raw prior logits与all-action Q统一量化为snapshot identity中已哈希的`score_dtype`。immutable `FrozenQScoringRecord`的direct/build/replace/from_mapping均重复校验identity/token/finite/alignment并统一量化，禁止绕过scorer伪造精度。
 - `FrozenJointCriticSnapshot`现在把`score_dtype`纳入实时identity fingerprint，构造时必须显式声明；critic forward不再无条件窄化FP64为FP32。两轮review先发现dtype/history、generation uniqueness、collapsed identity和launcher v1问题，修复后最终review`APPROVE`。
 - fresh服务器CPU回归：parent capture/critic/scoring/launcher为`46 passed`；VAGEN capture/joint-policy/ledger/config为`84 passed,27 subtests`（仅既有Ray/Swig弃用warning）。没有运行新GPU smoke，也没有guided sampling、actor/critic optimizer、snapshot refresh或checkpoint wiring；`joint_policy.enabled=true`继续在worker创建前fail closed。
+- VAGEN`3fded6a`完成Navigation-only guided execution授权合同：`GuidedActionExecutionRequest`绑定完整重验后的behavior record、record id和实际raw response UTF-8 SHA-256；环境仍先按Nimloth格式解析原始LLM response并核对prior action，只把behavior中guided action送给AI2-THOR，原始response evidence不被替换。
+- remote transport为guided mutation使用独立`step_guided`方法；普通`step`携带guided payload会在mutation前拒绝，旧server不会静默执行raw prior。server与client都重验request，并在动作后核对environment echo中的raw response、action table、guided action id/name和完整request。`step`与`step_guided`均不自动重试；不支持Navigation专用`guided_step` capability的环境在mutation前拒绝。
+- review先发现同名free-think text action可冒充Nimloth token prior，现已要求guided override只能用于`prompt_format=nimloth`并有`_exec_action`前失败测试；最终review`APPROVED`。fresh服务器VAGEN全套CPU tests为`118 passed,43 subtests`，仅既有Ray/Swig warning。
+- execution envelope尚未由agent loop生产，Q owner/scorer尚未成为Ray rollout service，也未确定guided sampler RNG；actor replay、critic optimizer、snapshot refresh/checkpoint仍未接通。因此本里程碑只关闭“保留raw policy evidence同时执行另一个已授权action”的接口缺口，trainer继续fail closed。
 
 ## 待确认问题
 
