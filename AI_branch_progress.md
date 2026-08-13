@@ -4648,3 +4648,10 @@
 - 两轮独立review依次修复dtype history不一致、generation ID可复用、collapsed identity、真实TP launcher仍要求v1、record constructor绕过dtype量化等问题；最终结论`APPROVE`。
 - fresh服务器CPU验证：parent capture/critic/scoring/launcher `46 passed`；VAGEN capture/joint-policy/ledger/config `84 passed, 27 subtests`。`py_compile`、parent/VAGEN `git diff --check`、launcher `bash -n`均通过。
 - 本阶段没有新GPU实验，也没有接环境guided action、actor FSDP replay、critic optimizer、snapshot refresh或checkpoint/resume。`joint_policy.enabled=true`继续在worker创建前fail closed，禁止把本里程碑称为joint PPO已运行。
+
+## 2026-08-13：Navigation guided action execution 授权合同完成
+
+- VAGEN `3fded6a`新增`GuidedActionExecutionRequest`，把完整重验后的Scheme-B behavior record、record id与实际raw LLM response SHA-256绑定。Navigation继续解析并保留原始Nimloth response/prior action证据，只把behavior中单独选择的guided action交给AI2-THOR；不改response IDs、mask或log-probs。
+- guided mutation使用独立remote方法`step_guided`：guided payload混入普通`step`会在动作前拒绝，未实现Navigation专用`guided_step` capability的环境也在动作前拒绝。server/client均校验执行回执中的raw response、action table、guided action id/name与完整request；两个step方法都禁用自动重试。
+- review发现并修复同名free-think text action可冒充Nimloth action-token prior；guided override现只允许`prompt_format=nimloth`，回归证明在`_exec_action`前失败。最终review`APPROVED`；fresh服务器VAGEN全套CPU tests `118 passed, 43 subtests`。
+- 该合同未接agent loop，也不创建behavior、不采样guided action、不拥有critic/snapshot/optimizer/checkpoint。`joint_policy.enabled=true`继续fail closed。
