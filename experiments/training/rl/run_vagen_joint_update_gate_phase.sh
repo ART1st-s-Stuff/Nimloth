@@ -166,9 +166,17 @@ for name in ('train','val'):
  assert 'http://127.0.0.1:8000' in text
  dst=out/f'{name}_navigation_joint_id165.yaml'
  dst.write_text(text.replace('http://127.0.0.1:8000',url))
+asset=vagen/'vagen/envs/navigation/assets/base_train.json'
+tasks=json.loads(asset.read_text())['tasks']
+assert len(tasks)==1200
+asset_sha=hashlib.sha256(asset.read_bytes()).hexdigest()
+assert asset_sha=='eb0aa69186604cedc6dc6c2a8874393beae09b7ac1dadae5458e87492b5e01e9'
 (out/'source_hashes.json').write_text(json.dumps({
  'train_config_sha256':hashlib.sha256((vagen/'examples/train/navigation/train_navigation_joint_id165.yaml').read_bytes()).hexdigest(),
  'val_config_sha256':hashlib.sha256((vagen/'examples/train/navigation/val_navigation_joint_id165.yaml').read_bytes()).hexdigest(),
+ 'base_train_sha256':asset_sha,
+ 'base_train_task_count':len(tasks),
+ 'first_train_task':{'scene':tasks[0]['scene'],'target':tasks[0]['targetObjectType']},
 },indent=2)+'\n')
 PY
 export ID165_TRAIN_CONFIG=${PHASE_OUT}/train_navigation_joint_id165.yaml
