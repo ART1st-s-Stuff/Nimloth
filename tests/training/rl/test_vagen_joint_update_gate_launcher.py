@@ -8,9 +8,9 @@ VAGEN = ROOT / "external" / "VAGEN"
 RUNNER = ROOT / "experiments" / "training" / "rl" / "run_vagen_joint_update_gate_phase.sh"
 LAUNCHER = ROOT / "experiments" / "training" / "rl" / "launch_vagen_joint_update_gate_on_hold.sh"
 HOLD = ROOT / "experiments" / "training" / "rl" / "hold_eight_gpu_60m.slurm"
-CONFIG = VAGEN / "vagen" / "configs" / "joint_id165_gate.yaml"
-TRAIN_DATA = VAGEN / "examples" / "train" / "navigation" / "train_navigation_joint_id165.yaml"
-VAL_DATA = VAGEN / "examples" / "train" / "navigation" / "val_navigation_joint_id165.yaml"
+CONFIG = VAGEN / "vagen" / "configs" / "joint_id166_gate.yaml"
+TRAIN_DATA = VAGEN / "examples" / "train" / "navigation" / "train_navigation_joint_id166.yaml"
+VAL_DATA = VAGEN / "examples" / "train" / "navigation" / "val_navigation_joint_id166.yaml"
 
 
 def test_shell_contracts_parse_and_use_target_allocation() -> None:
@@ -65,7 +65,7 @@ def test_runner_pins_exact_git_checkpoint_and_clean_worktrees() -> None:
 def test_human_approved_values_are_explicit_and_test_only() -> None:
     source = CONFIG.read_text()
     exact = (
-        "implementation: id165_dp8_resume_smoke_v1",
+        "implementation: id166_dp8_resume_smoke_v1",
         "run_seed: 42001",
         "gamma: 0.99",
         "gae_lambda: 0.95",
@@ -93,10 +93,10 @@ def test_human_approved_values_are_explicit_and_test_only() -> None:
     assert "eval_set: base" in VAL_DATA.read_text()
 
 
-def test_production_stays_closed_without_id165_escape_hatch() -> None:
+def test_production_stays_closed_without_id166_escape_hatch() -> None:
     trainer = (VAGEN / "vagen" / "ray_trainer.py").read_text()
     gate = (VAGEN / "vagen" / "joint_policy" / "integration_gate.py").read_text()
     assert "if self.joint_integration_gate is None:" in trainer
     assert "refusing production training" in trainer
-    assert 'experiment_id != 165' in gate
+    assert 'experiment_id != 166' in gate
     assert '{"update_1", "resume_update_2"}' in gate
