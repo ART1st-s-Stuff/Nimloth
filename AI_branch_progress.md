@@ -4695,3 +4695,8 @@
 - 修正controller identity后，fresh hold Job`519083`立即在`normal/dgx-26`获得8GPU/64CPU/256GiB allocation。strict launcher仍在`srun`前退出，因为它要求`AllocTRES`含`mem=256G`。
 - 真实`scontrol/sacct`显示`ReqTRES`含`mem=256G`、`MinMemoryNode=256G`、`ReqMem=256G`，但该cluster的`AllocTRES`只列CPU/GPU/node。hold在45秒后取消；仍未启动phase、Python、GPU process、output或W&B，ID165输出目录保持不存在。
 - launcher现改为以`ReqTRES + MinMemoryNode`核验memory，同时保留`AllocTRES` CPU/GPU门禁；RED/GREEN source test已覆盖。失败metadata在服务器`outputs/experiments/training/rl/slurm/id165-hold-519083.metadata.md`，已登记`E0102`。
+
+## 2026-08-14：ID165第三个hold发现runner重复memory gate
+
+- parent`04da40ef`的launcher已接受真实cluster memory字段并成功进入`srun`，但phase runner保留了第二处旧`AllocTRES mem=256G`断言。Job`519090.0`在output创建前1秒退出，hold总elapsed29秒；仍无Python/GPU workload、run output、checkpoint或W&B。
+- 同一修复现同步应用于launcher和runner；source RED/GREEN明确断言两个文件都使用`ReqTRES + MinMemoryNode`且不再要求`AllocTRES mem`。服务器metadata为`outputs/experiments/training/rl/slurm/id165-hold-519090.metadata.md`；`E0102`补充“共享合同必须搜索所有重复gate”。

@@ -29,6 +29,9 @@ def test_shell_contracts_parse_and_use_target_allocation() -> None:
     assert "ReqTRES=[^ ]*mem=256G" in launcher
     assert "MinMemoryNode=256G" in launcher
     assert "AllocTRES=[^ ]*mem=256G" not in launcher
+    assert "ReqTRES=[^ ]*mem=256G" in RUNNER.read_text()
+    assert "MinMemoryNode=256G" in RUNNER.read_text()
+    assert "AllocTRES=[^ ]*mem=256G" not in RUNNER.read_text()
 
 
 def test_embedded_python_blocks_compile_independently() -> None:

@@ -47,9 +47,10 @@ for name in "${GPU_NAMES[@]}"; do [[ "${name}" == *H800* ]]; done
 JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}" -o)
 grep -q 'Partition=normal' <<<"${JOB_DETAILS}"
 grep -q 'TimeLimit=01:00:00' <<<"${JOB_DETAILS}"
+grep -Eq 'ReqTRES=[^ ]*mem=256G([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*cpu=64([, ]|$)' <<<"${JOB_DETAILS}"
-grep -Eq 'AllocTRES=[^ ]*mem=256G' <<<"${JOB_DETAILS}"
+grep -q 'MinMemoryNode=256G' <<<"${JOB_DETAILS}"
 
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${EXPECTED_PARENT_COMMIT}" ]]
 [[ "$(git -C "${VAGEN}" rev-parse HEAD)" == "${EXPECTED_VAGEN_COMMIT}" ]]
