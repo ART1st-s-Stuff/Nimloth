@@ -4716,3 +4716,9 @@
 - worker随后在`_build_rollout()`失败：Nimloth模块只注册agent-loop的`RolloutReplicaRegistry`，而FSDP worker先查询另一套hard-coded `get_rollout_class(name,mode)` registry；`nimloth_vllm/async`不存在。未构造vLLM server，且无generation/rollout/backward/update/snapshot/checkpoint/W&B/phase2。Job elapsed5m40s，cleanup后owned process为空、dgx-39回8卡free。ID166 output已写README/failure analysis，不可resume/复用。
 - 已登记`E0104`。VERL RED`e43866c5`要求strict external registry与冲突拒绝；VAGEN RED`b1c8293`在fresh process经`import_external_libs`后解析custom worker class。GREEN为VERL`494f2644`新增public idempotent registration API，VAGEN`c8c048d`把`nimloth_vllm/async`映射到stock `vLLMAsyncRollout`，保留独立custom HTTP replica。fresh相关`7 passed`，扩大回归`319 passed,115 subtests`且四层clean。
 - 下一次GPU retry必须使用新数字ID与新空输出；需要人类另行批准。通用production joint trainer继续fail closed。
+
+## 2026-08-14：ID167首个hold在旧VERL SHA门禁退出
+
+- 人类批准ID167同参数/资源重试。candidate parent`bb9eb60d`/VAGEN`125a17b`/VERL`494f2644`通过fresh ID167 config/registry/完整trainer constructor与phase2 compose，production worktree四层clean。
+- batch-owned Job`519148`在`normal/dgx-23`只运行1秒：submission传入正确新VERL SHA，但launcher和phase runner仍硬编码registry修复前的`42cb2f12`，因此在`srun`及output创建前fail closed。无phase/Python/Ray/GPU workload/W&B/checkpoint；ID167 run目录仍不存在，可用fresh hold继续同一尚未启动的ID167实验。
+- 两处gate已更新为`494f2644`，source RED/GREEN新增完整SHA绑定。服务器metadata为`outputs/experiments/training/rl/slurm/id167-hold-519148.metadata.md`；登记`E0105`。
