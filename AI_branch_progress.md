@@ -4746,3 +4746,11 @@
 - ID169仍按本次smoke意图在train/val dataset config显式设`per_turn_format_reward=0`、`format_reward=0`、`success_reward=1`，并在launcher preflight核验；这不限制未来reward-shaping实验。
 - 新RED/GREEN覆盖intermediate reward折扣、Frozen-V GAE及task-failure保留shaping reward。integration escape hatch、全新输出与W&B identity迁移到ID169；人类已直接要求修复后重跑同资源两阶段smoke。
 - VAGEN candidate：`5582a70`；VERL不变`494f2644`。production trainer继续fail closed。
+
+## 2026-08-15：ID169首次真实DP8 joint update通过；phase2在Ray启动前失败
+
+- Job`519217`在`normal/dgx-39`完成phase1：8条base_train真实rollout、DP8 actor+critic backward/update、rank一致性、source step`776→777`、activation version1和atomic`global_step_1`均通过。actor loss`-0.0203722`、actor grad norm`51.3949`、critic Huber sum`0.0360972`、critic grad norm`1.15391`；validator`ALL_OK`。W&B恰有step1。
+- ID169显式format shaping=0生效，本batch全失败所以return0；通用compiler已按人类要求保留未来config指定的中间/final shaping reward。
+- phase2 render/prewarm通过，但`RUNTIME_ROOT=/tmp/id169-519217-phase2_resume_update`加Ray session/plasma socket后超过AF_UNIX 107-byte上限，在`ray.init`、worker/model/checkpoint load前失败。step1完整且hash不变，无step2，cleanup为空。
+- ID169不能复用；该结果证明target-DP8 update/checkpoint，不证明exact distributed resume。后续新ID必须使用短phase-specific Ray runtime root并静态验证worst-case socket长度。登记`E0108`。
+- 启动计划原记Aug15输出，launcher固定`RUN_DATE=2026-08-14`，实际使用fresh Aug14/ID169目录；已诚实补记，不影响run identity或训练合同。
