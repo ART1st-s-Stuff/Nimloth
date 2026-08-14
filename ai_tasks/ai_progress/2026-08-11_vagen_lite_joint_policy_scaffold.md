@@ -151,3 +151,8 @@
 - corrected controller向launcher传入完整repo/parent/VAGEN/VERL identity；Job`519083`在`normal/dgx-26`获得8GPU/64CPU/256GiB。
 - cluster把memory记录在`ReqTRES`、`MinMemoryNode`和`sacct ReqMem`，不放进`AllocTRES`。旧launcher因此在`srun`前退出，hold elapsed45秒后取消。无phase/output/GPU process/checkpoint/W&B。
 - launcher改为核验`ReqTRES mem=256G + MinMemoryNode=256G`，CPU/GPU继续核验`AllocTRES`；source RED/GREEN完成。服务器metadata为`outputs/experiments/training/rl/slurm/id165-hold-519083.metadata.md`，并登记`E0102`。
+
+## 2026-08-14：ID165 hold 519090发现phase runner重复gate
+
+- fixed launcher进入Slurm step`519090.0`，但runner的重复`AllocTRES mem`断言在output创建前退出；step `FAILED 1:0` elapsed1秒，hold29秒后取消。无phase runtime/GPU workload/output/checkpoint/W&B。
+- runner已同步改为`ReqTRES + MinMemoryNode`；source test现覆盖launcher和runner两处。metadata：`outputs/experiments/training/rl/slurm/id165-hold-519090.metadata.md`。
