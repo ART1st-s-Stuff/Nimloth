@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=nimloth-id165-dp8-hold
+#SBATCH --job-name=nimloth-id166-dp8-hold
 #SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/training/rl/slurm/%x_%j.out
 #SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/training/rl/slurm/%x_%j.err
 #SBATCH --time=01:00:00
