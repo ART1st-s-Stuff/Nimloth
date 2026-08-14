@@ -10,6 +10,7 @@ import torch
 from nimloth.backbone.qwen25vl.vllm_hidden import (
     PolicyStateCaptureWorkerExtension,
     async_abort_policy_state_capture_for_request,
+    async_pop_latent_state_capture_for_request,
     async_pop_policy_state_capture_for_request,
     async_start_policy_state_capture_for_request,
     pop_policy_state_capture,
@@ -243,6 +244,33 @@ def test_worker_request_abort_does_not_clear_another_request() -> None:
     assert result_b["action_logits"] == [1030.0, 2060.0]
     with pytest.raises(RuntimeError, match="not active"):
         worker.nimloth_prepare_policy_state_capture_for_request("request-a")
+
+
+def test_terminal_latent_capture_does_not_require_action_start_or_compute_logits() -> None:
+    async def exercise() -> None:
+        workers = [_Worker(), _Worker()]
+        engine = _AsyncEngine(workers)
+        calls = [0, 0]
+        for rank, worker in enumerate(workers):
+            worker.nimloth_start_policy_state_capture_for_request(
+                "terminal-a", (101, 102), 103, (10, 20)
+            )
+            original = worker.model_runner.model.compute_logits
+
+            def tracked(hidden, *, rank=rank, original=original):
+                calls[rank] += 1
+                return original(hidden)
+
+            worker.model_runner.model.compute_logits = tracked
+            _batched_decode(worker, {"terminal-a": [101, 102]})
+        hidden = await async_pop_latent_state_capture_for_request(
+            engine,
+            request_id="terminal-a",
+        )
+        assert hidden.tolist() == [[101.0, 101.5], [102.0, 102.5]]
+        assert calls == [0, 0]
+
+    asyncio.run(exercise())
 
 
 def test_worker_prepare_failure_happens_before_any_rank_computes_logits() -> None:
