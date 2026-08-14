@@ -145,3 +145,9 @@
 - 当前运行candidate为parent`52763b26ca68c62d524411aaeb7a095d91988986`、VAGEN`b6c60521a511904a120c490cbd57a06ac39f0611`、VERL`42cb2f129357ffdd2c58f338d78da4dc91e3412e`。runner固定`base_train`前8条、1200-task asset SHA256 `eb0aa691...`，并把两phase timeout各限制1600秒以适配60分钟hold。
 - Job`519040`在`normal/dgx-26`获得8GPU/64CPU后，queue controller遗漏strict launcher要求的`REPO`及三个expected commit env；launcher在`srun`前fail closed，hold 5秒后被controller取消。未启动任何phase/GPU process/output/W&B/checkpoint，ID165 run目录仍不存在；无resume点。
 - 服务器metadata：`outputs/experiments/training/rl/slurm/id165-hold-519040.metadata.md`。已登记`E0101_slurm_controller_must_pass_strict_launcher_identity.md`。下次controller必须显式传完整identity合同。
+
+## 2026-08-14：ID165 hold 519083在memory字段门禁失败
+
+- corrected controller向launcher传入完整repo/parent/VAGEN/VERL identity；Job`519083`在`normal/dgx-26`获得8GPU/64CPU/256GiB。
+- cluster把memory记录在`ReqTRES`、`MinMemoryNode`和`sacct ReqMem`，不放进`AllocTRES`。旧launcher因此在`srun`前退出，hold elapsed45秒后取消。无phase/output/GPU process/checkpoint/W&B。
+- launcher改为核验`ReqTRES mem=256G + MinMemoryNode=256G`，CPU/GPU继续核验`AllocTRES`；source RED/GREEN完成。服务器metadata为`outputs/experiments/training/rl/slurm/id165-hold-519083.metadata.md`，并登记`E0102`。

@@ -26,6 +26,9 @@ def test_shell_contracts_parse_and_use_target_allocation() -> None:
     assert "PHASE=resume_update_2" in launcher
     assert "--gres=gpu:8" in launcher
     assert "TimeLimit=01:00:00" in launcher
+    assert "ReqTRES=[^ ]*mem=256G" in launcher
+    assert "MinMemoryNode=256G" in launcher
+    assert "AllocTRES=[^ ]*mem=256G" not in launcher
 
 
 def test_embedded_python_blocks_compile_independently() -> None:
