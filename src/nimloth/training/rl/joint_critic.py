@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ from nimloth.wm.grid import SharedSlotProjector
 from nimloth.wm.value_head import ValueHead
 
 _SNAPSHOT_SCHEMA = "nimloth_joint_critic_snapshot_v1"
+FROZEN_CRITIC_SNAPSHOT_STATE_SCHEMA = "nimloth_frozen_critic_snapshot_state_v1"
 _SUPPORTED_SCORE_DTYPES = {"float32", "bfloat16", "float64"}
 _SUPPORTED_FLOAT_DTYPES = {
     torch.float16,
@@ -24,6 +26,9 @@ _SUPPORTED_FLOAT_DTYPES = {
     torch.float32,
     torch.float64,
 }
+_MAX_CRITIC_DIMENSION = 1_000_000
+_MAX_CRITIC_TENSOR_ELEMENTS = 100_000_000
+_MAX_CRITIC_STATE_ELEMENTS = 200_000_000
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,186 @@ class JointCriticSpec:
     grid_tokens: int
     value_hidden_dim: int
     action_count: int
+
+    def __post_init__(self) -> None:
+        for field in self.__dataclass_fields__:
+            value = _positive_int(getattr(self, field), field)
+            if value > _MAX_CRITIC_DIMENSION:
+                raise ValueError(
+                    f"joint critic {field} exceeds transport safety bound "
+                    f"{_MAX_CRITIC_DIMENSION}"
+                )
+            object.__setattr__(self, field, value)
+        matrix_elements = (
+            self.projector_hidden_dim * self.qwen_hidden_dim,
+            self.state_dim * self.projector_hidden_dim,
+            self.value_hidden_dim * self.state_dim,
+            self.action_count * self.value_hidden_dim,
+        )
+        total_elements = sum(matrix_elements) + (
+            4 * self.projector_hidden_dim
+            + self.state_dim
+            + self.value_hidden_dim
+            + self.action_count
+        )
+        if (
+            any(count > _MAX_CRITIC_TENSOR_ELEMENTS for count in matrix_elements)
+            or total_elements > _MAX_CRITIC_STATE_ELEMENTS
+        ):
+            raise ValueError(
+                "joint critic architecture exceeds transport safety bound"
+            )
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, object]) -> "JointCriticSpec":
+        if not isinstance(raw, Mapping):
+            raise ValueError("joint critic spec must be a mapping")
+        fields = frozenset(cls.__dataclass_fields__)
+        missing = fields - set(raw)
+        if missing:
+            raise ValueError(f"joint critic spec is missing fields: {sorted(missing)}")
+        unexpected = set(raw) - fields
+        if unexpected:
+            raise ValueError(
+                f"joint critic spec has unexpected fields: {sorted(unexpected)}"
+            )
+        return cls(**{field: raw[field] for field in fields})  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True, eq=False)
+class FrozenJointCriticSnapshotState:
+    """Self-contained CPU transport for one immutable rollout snapshot."""
+
+    schema: str
+    source_step: int
+    contract_id: str
+    snapshot_id: str
+    score_dtype: str
+    critic_spec: JointCriticSpec
+    critic_state: tuple[tuple[str, torch.Tensor], ...]
+
+    def __post_init__(self) -> None:
+        if self.schema != FROZEN_CRITIC_SNAPSHOT_STATE_SCHEMA:
+            raise ValueError(
+                f"unsupported frozen critic snapshot state schema: {self.schema!r}"
+            )
+        if (
+            isinstance(self.source_step, bool)
+            or not isinstance(self.source_step, int)
+            or self.source_step < 0
+        ):
+            raise ValueError("frozen critic snapshot state source_step must be non-negative int")
+        if not isinstance(self.contract_id, str) or not self.contract_id:
+            raise ValueError("frozen critic snapshot state contract_id must be non-empty")
+        if not isinstance(self.snapshot_id, str) or not self.snapshot_id:
+            raise ValueError("frozen critic snapshot state snapshot_id must be non-empty")
+        if self.score_dtype not in _SUPPORTED_SCORE_DTYPES:
+            raise ValueError(
+                "frozen critic snapshot state score_dtype must be float32, bfloat16, or float64"
+            )
+        spec = _canonical_critic_spec(self.critic_spec)
+        expected_shapes = _expected_critic_state_shapes(spec)
+        state = _canonical_cpu_state(
+            self.critic_state,
+            expected_shapes=expected_shapes,
+        )
+        if set(state) != set(expected_shapes):
+            raise ValueError(
+                "frozen critic snapshot state keys do not match critic architecture"
+            )
+        for name, expected_shape in expected_shapes.items():
+            actual_shape = tuple(state[name].shape)
+            if actual_shape != expected_shape:
+                raise ValueError(
+                    "frozen critic snapshot tensor shape does not match architecture: "
+                    f"name={name!r}, actual={actual_shape}, expected={expected_shape}"
+                )
+        metadata = {
+            "schema": _SNAPSHOT_SCHEMA,
+            "source_step": self.source_step,
+            "contract_id": self.contract_id,
+            "score_dtype": self.score_dtype,
+            "critic_spec": asdict(spec),
+        }
+        actual_id = _state_fingerprint(metadata, state)
+        if actual_id != self.snapshot_id:
+            raise ValueError(
+                "frozen critic snapshot state fingerprint does not match snapshot_id: "
+                f"recorded={self.snapshot_id}, actual={actual_id}"
+            )
+        object.__setattr__(self, "critic_spec", spec)
+        object.__setattr__(self, "critic_state", tuple(sorted(state.items())))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, FrozenJointCriticSnapshotState):
+            return NotImplemented
+        return (
+            self.schema == other.schema
+            and self.source_step == other.source_step
+            and self.contract_id == other.contract_id
+            and self.snapshot_id == other.snapshot_id
+            and self.score_dtype == other.score_dtype
+            and self.critic_spec == other.critic_spec
+            and tuple(name for name, _ in self.critic_state)
+            == tuple(name for name, _ in other.critic_state)
+            and all(
+                torch.equal(left, right)
+                for (_, left), (_, right) in zip(
+                    self.critic_state,
+                    other.critic_state,
+                    strict=True,
+                )
+            )
+        )
+
+    @classmethod
+    def from_mapping(
+        cls,
+        raw: Mapping[str, object],
+    ) -> "FrozenJointCriticSnapshotState":
+        if not isinstance(raw, Mapping):
+            raise ValueError("frozen critic snapshot state must be a mapping")
+        fields = frozenset(cls.__dataclass_fields__)
+        missing = fields - set(raw)
+        if missing:
+            raise ValueError(
+                f"frozen critic snapshot state is missing fields: {sorted(missing)}"
+            )
+        unexpected = set(raw) - fields
+        if unexpected:
+            raise ValueError(
+                "frozen critic snapshot state has unexpected fields: "
+                f"{sorted(unexpected)}"
+            )
+        state = raw["critic_state"]
+        if not isinstance(state, Mapping):
+            raise ValueError("frozen critic snapshot critic_state must be a mapping")
+        spec = raw["critic_spec"]
+        if not isinstance(spec, Mapping):
+            raise ValueError("frozen critic snapshot critic_spec must be a mapping")
+        return cls(
+            schema=raw["schema"],  # type: ignore[arg-type]
+            source_step=raw["source_step"],  # type: ignore[arg-type]
+            contract_id=raw["contract_id"],  # type: ignore[arg-type]
+            snapshot_id=raw["snapshot_id"],  # type: ignore[arg-type]
+            score_dtype=raw["score_dtype"],  # type: ignore[arg-type]
+            critic_spec=JointCriticSpec.from_mapping(spec),
+            critic_state=tuple(state.items()),  # type: ignore[arg-type]
+        )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "schema": self.schema,
+            "source_step": self.source_step,
+            "contract_id": self.contract_id,
+            "snapshot_id": self.snapshot_id,
+            "score_dtype": self.score_dtype,
+            "critic_spec": asdict(self.critic_spec),
+            "critic_state": {
+                name: tensor.detach().contiguous().clone()
+                for name, tensor in self.critic_state
+            },
+        }
 
 
 class JointActionValueCritic(nn.Module):
@@ -205,6 +390,63 @@ def create_frozen_critic_snapshot(
     )
 
 
+def export_frozen_critic_snapshot(
+    snapshot: FrozenJointCriticSnapshot,
+) -> FrozenJointCriticSnapshotState:
+    """Copy one validated snapshot into a self-contained CPU transport."""
+
+    if not isinstance(snapshot, FrozenJointCriticSnapshot):
+        raise TypeError("frozen critic snapshot export requires FrozenJointCriticSnapshot")
+    snapshot._validate_unchanged()
+    state = {
+        name: tensor.detach().contiguous().cpu().clone()
+        for name, tensor in snapshot.critic.state_dict().items()
+    }
+    return FrozenJointCriticSnapshotState(
+        schema=FROZEN_CRITIC_SNAPSHOT_STATE_SCHEMA,
+        source_step=snapshot.source_step,
+        contract_id=snapshot.contract_id,
+        snapshot_id=snapshot.snapshot_id,
+        score_dtype=snapshot.score_dtype,
+        critic_spec=snapshot.spec,
+        critic_state=tuple(state.items()),
+    )
+
+
+def restore_frozen_critic_snapshot(
+    value: FrozenJointCriticSnapshotState | Mapping[str, object],
+) -> FrozenJointCriticSnapshot:
+    """Strictly reconstruct an immutable CPU snapshot from transport state."""
+
+    raw = value.to_mapping() if isinstance(value, FrozenJointCriticSnapshotState) else value
+    if not isinstance(raw, Mapping):
+        raise ValueError("frozen critic snapshot restore input must be mapping or state")
+    state = FrozenJointCriticSnapshotState.from_mapping(raw)
+    tensor_state = dict(state.critic_state)
+    critic = _frozen_critic_from_spec(
+        state.critic_spec,
+        dtype=_state_dtype(tensor_state),
+    )
+    try:
+        critic.load_state_dict(tensor_state, strict=True)
+    except RuntimeError as exc:
+        raise ValueError(
+            "frozen critic snapshot state keys or tensor shapes are invalid"
+        ) from exc
+    restored = create_frozen_critic_snapshot(
+        critic,
+        source_step=state.source_step,
+        contract_id=state.contract_id,
+        score_dtype=state.score_dtype,
+    )
+    if restored.snapshot_id != state.snapshot_id:
+        raise ValueError(
+            "restored frozen critic fingerprint does not match snapshot_id: "
+            f"recorded={state.snapshot_id}, actual={restored.snapshot_id}"
+        )
+    return restored
+
+
 def load_joint_action_value_critic(
     *,
     checkpoint_root: Path,
@@ -333,6 +575,132 @@ def load_joint_action_value_critic(
     return critic
 
 
+def _expected_critic_state_shapes(
+    spec: JointCriticSpec,
+) -> dict[str, tuple[int, ...]]:
+    canonical = _canonical_critic_spec(spec)
+    shapes = {
+        "state_projector.net.0.weight": (
+            canonical.projector_hidden_dim,
+            canonical.qwen_hidden_dim,
+        ),
+        "state_projector.net.0.bias": (canonical.projector_hidden_dim,),
+        "state_projector.net.1.weight": (canonical.projector_hidden_dim,),
+        "state_projector.net.1.bias": (canonical.projector_hidden_dim,),
+        "state_projector.net.3.weight": (
+            canonical.state_dim,
+            canonical.projector_hidden_dim,
+        ),
+        "state_projector.net.3.bias": (canonical.state_dim,),
+        "value_head.net.0.weight": (
+            canonical.value_hidden_dim,
+            canonical.state_dim,
+        ),
+        "value_head.net.0.bias": (canonical.value_hidden_dim,),
+        "value_head.net.2.weight": (
+            canonical.action_count,
+            canonical.value_hidden_dim,
+        ),
+        "value_head.net.2.bias": (canonical.action_count,),
+    }
+    element_counts = {
+        name: math.prod(shape)
+        for name, shape in shapes.items()
+    }
+    oversized = {
+        name: count
+        for name, count in element_counts.items()
+        if count > _MAX_CRITIC_TENSOR_ELEMENTS
+    }
+    if oversized or sum(element_counts.values()) > _MAX_CRITIC_STATE_ELEMENTS:
+        raise ValueError(
+            "frozen critic snapshot architecture exceeds transport safety bound"
+        )
+    return shapes
+
+
+def _frozen_critic_from_spec(
+    spec: JointCriticSpec,
+    *,
+    dtype: torch.dtype,
+) -> JointActionValueCritic:
+    canonical = _canonical_critic_spec(spec)
+    if dtype not in _SUPPORTED_FLOAT_DTYPES:
+        raise ValueError(f"joint critic snapshot uses unsupported dtype: {dtype}")
+    critic = JointActionValueCritic(
+        state_projector=SharedSlotProjector(
+            input_dim=canonical.qwen_hidden_dim,
+            output_dim=canonical.state_dim,
+            hidden_dim=canonical.projector_hidden_dim,
+            grid_tokens=canonical.grid_tokens,
+        ).to(device=torch.device("cpu"), dtype=dtype),
+        value_head=ValueHead(
+            emb_dim=canonical.state_dim,
+            num_actions=canonical.action_count,
+            hidden_dim=canonical.value_hidden_dim,
+        ).to(device=torch.device("cpu"), dtype=dtype),
+    )
+    critic.requires_grad_(False).eval()
+    return critic
+
+
+def _canonical_critic_spec(value: JointCriticSpec) -> JointCriticSpec:
+    if not isinstance(value, JointCriticSpec):
+        raise ValueError("frozen critic snapshot critic_spec must be JointCriticSpec")
+    return JointCriticSpec.from_mapping(asdict(value))
+
+
+def _canonical_cpu_state(
+    values: object,
+    *,
+    expected_shapes: Mapping[str, tuple[int, ...]],
+) -> dict[str, torch.Tensor]:
+    if isinstance(values, Mapping):
+        items = values.items()
+    elif isinstance(values, (tuple, list)):
+        items = values
+    else:
+        raise ValueError("frozen critic snapshot critic_state must be named tensors")
+    unowned: dict[str, torch.Tensor] = {}
+    for item in items:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            raise ValueError("frozen critic snapshot critic_state must be named tensors")
+        name, tensor = item
+        if not isinstance(name, str) or not name or name in unowned:
+            raise ValueError("frozen critic snapshot state names must be unique strings")
+        if not isinstance(tensor, torch.Tensor):
+            raise ValueError("frozen critic snapshot state must contain tensors")
+        unowned[name] = tensor
+    if set(unowned) != set(expected_shapes):
+        raise ValueError(
+            "frozen critic snapshot state keys do not match critic architecture"
+        )
+    for name, tensor in unowned.items():
+        if tensor.device.type != "cpu":
+            raise ValueError("frozen critic snapshot transport tensors must be on CPU")
+        if tensor.requires_grad:
+            raise ValueError("frozen critic snapshot transport tensors cannot require gradients")
+        actual_shape = tuple(tensor.shape)
+        if actual_shape != expected_shapes[name]:
+            raise ValueError(
+                "frozen critic snapshot tensor shape does not match architecture: "
+                f"name={name!r}, actual={actual_shape}, expected={expected_shapes[name]}"
+            )
+    _state_dtype(unowned)
+    _require_finite_state(unowned, context="frozen critic snapshot transport")
+    return {
+        name: tensor.detach().contiguous().clone()
+        for name, tensor in unowned.items()
+    }
+
+
+def _state_dtype(state: Mapping[str, object]) -> torch.dtype:
+    return _validate_module_state_dtype(
+        state,
+        context="frozen critic snapshot transport",
+    )
+
+
 def _derive_critic_spec(critic: JointActionValueCritic) -> JointCriticSpec:
     state_projector = critic.state_projector
     value_head = critic.value_head
@@ -410,9 +778,13 @@ def _state_fingerprint(
 
 
 __all__ = [
+    "FROZEN_CRITIC_SNAPSHOT_STATE_SCHEMA",
     "FrozenJointCriticSnapshot",
+    "FrozenJointCriticSnapshotState",
     "JointActionValueCritic",
     "JointCriticSpec",
     "create_frozen_critic_snapshot",
+    "export_frozen_critic_snapshot",
     "load_joint_action_value_critic",
+    "restore_frozen_critic_snapshot",
 ]
