@@ -35,7 +35,7 @@ def test_one_turn_launcher_has_strict_guided_tp8_contract() -> None:
         / "experiments/training/rl/launch_vagen_one_turn_smoke_on_hold.sh"
     ).read_text(encoding="utf-8")
     assert "guided_tp8_gate" in source
-    assert '[[ "${EXPERIMENT_ID}" == "163" ]]' in source
+    assert '[[ "${EXPERIMENT_ID}" == "163" || "${EXPERIMENT_ID}" == "164" ]]' in source
     assert '"1:1:1:float32:42:776"' in source
     assert "--guided" in source
     assert 'SMOKE_COMMAND+=("${SMOKE_EXTRA_ARGS[@]}")' in source
@@ -52,3 +52,5 @@ def test_one_turn_launcher_has_strict_guided_tp8_contract() -> None:
     assert ': "${EXPECTED_VAGEN_COMMIT:?EXPECTED_VAGEN_COMMIT is required}"' in source
     assert "EXPECTED_VAGEN_COMMIT" in launch
     assert "JOINT_SNAPSHOT_SOURCE_STEP" in launch
+    assert '[[ "${EXPERIMENT_ID}" == "163" || "${EXPERIMENT_ID}" == "164" ]]' in launch
+    assert "export PYTHONDONTWRITEBYTECODE=1" in source
