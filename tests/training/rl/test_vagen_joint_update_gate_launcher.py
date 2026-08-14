@@ -1,0 +1,87 @@
+from pathlib import Path
+import subprocess
+
+
+ROOT = Path(__file__).resolve().parents[3]
+VAGEN = ROOT / "external" / "VAGEN"
+RUNNER = ROOT / "experiments" / "training" / "rl" / "run_vagen_joint_update_gate_phase.sh"
+LAUNCHER = ROOT / "experiments" / "training" / "rl" / "launch_vagen_joint_update_gate_on_hold.sh"
+HOLD = ROOT / "experiments" / "training" / "rl" / "hold_eight_gpu_60m.slurm"
+CONFIG = VAGEN / "vagen" / "configs" / "joint_id165_gate.yaml"
+TRAIN_DATA = VAGEN / "examples" / "train" / "navigation" / "train_navigation_joint_id165.yaml"
+VAL_DATA = VAGEN / "examples" / "train" / "navigation" / "val_navigation_joint_id165.yaml"
+
+
+def test_shell_contracts_parse_and_use_target_allocation() -> None:
+    for path in (RUNNER, LAUNCHER, HOLD):
+        subprocess.run(["bash", "-n", str(path)], check=True)
+    hold = HOLD.read_text()
+    assert "#SBATCH --partition=normal" in hold
+    assert "#SBATCH --gres=gpu:8" in hold
+    assert "#SBATCH --time=01:00:00" in hold
+    assert "dgx-51" in hold
+    launcher = LAUNCHER.read_text()
+    assert "PHASE=update_1" in launcher
+    assert "PHASE=resume_update_2" in launcher
+    assert "--gres=gpu:8" in launcher
+    assert "TimeLimit=01:00:00" in launcher
+
+
+def test_runner_pins_exact_git_checkpoint_and_clean_worktrees() -> None:
+    source = RUNNER.read_text()
+    for name in (
+        "EXPECTED_PARENT_COMMIT",
+        "EXPECTED_VAGEN_COMMIT",
+        "EXPECTED_VERL_COMMIT",
+    ):
+        assert name in source
+    assert "status --porcelain --untracked-files=all" in source
+    assert "PYTHONDONTWRITEBYTECODE=1" in source
+    assert "checkpoint_preflight.json" in source
+    assert "joint_checkpoint_complete.json" in source
+    assert "load_complete_joint_checkpoint" in source
+    assert "Setting global step to 1" in source
+    assert "rsync" not in source
+    assert "scp " not in source
+    assert 'COMMAND=(' in source
+    assert '"${COMMAND[@]}"' in source
+
+
+def test_human_approved_values_are_explicit_and_test_only() -> None:
+    source = CONFIG.read_text()
+    exact = (
+        "implementation: id165_dp8_resume_smoke_v1",
+        "run_seed: 42001",
+        "gamma: 0.99",
+        "gae_lambda: 0.95",
+        "ppo_clip_ratio: 0.2",
+        "token_kl_coefficient: 0.01",
+        "guided_entropy_coefficient: 0.01",
+        "checkpoint_frequency: 1",
+        "lr: 1.0e-7",
+        "lr: 1.0e-4",
+        "initial_snapshot_source_step: 776",
+        "tensor_model_parallel_size: 8",
+        "data_parallel_size: 1",
+        "mm_encoder_tp_mode: data",
+        "train_batch_size: 8",
+        "ppo_mini_batch_size: 8",
+        "ppo_micro_batch_size_per_gpu: 1",
+        "freeze_vision_tower: true",
+    )
+    for value in exact:
+        assert value in source
+    assert "non-production" in source
+    assert "base_train" in TRAIN_DATA.read_text()
+    assert "n_envs: 8" in TRAIN_DATA.read_text()
+    assert "max_turns: 2" in TRAIN_DATA.read_text()
+    assert "eval_set: base" in VAL_DATA.read_text()
+
+
+def test_production_stays_closed_without_id165_escape_hatch() -> None:
+    trainer = (VAGEN / "vagen" / "ray_trainer.py").read_text()
+    gate = (VAGEN / "vagen" / "joint_policy" / "integration_gate.py").read_text()
+    assert "if self.joint_integration_gate is None:" in trainer
+    assert "refusing production training" in trainer
+    assert 'experiment_id != 165' in gate
+    assert '{"update_1", "resume_update_2"}' in gate
