@@ -4769,3 +4769,11 @@
 - terminal observation正确生成真实CoT+K16并以`action_start` stop token结束；由于没有后续decode step，hidden hook只看到K16。旧terminal路径复用普通可执行turn capture，错误要求K16+action-start hidden并计算action logits；所有rank fail closed。无完整global batch/backward/update/snapshot/checkpoint/phase2，cleanup后owned process为空。ID167不可resume/复用。
 - 已登记`E0106`。RED明确要求仅K16时TP一致且compute_logits调用数为0，并测试terminal payload无任何action字段。GREEN parent`8962bd68`新增request-scoped TP latent-only pop，VAGEN`743eb16`新增`nimloth_terminal_latent_state_v1`和显式terminal capture mode；response trace仍保留action_start stop evidence，且terminal继续不Q-scoring/不执行/不进ledger。fresh定向`25 passed,7 subtests`，扩大回归`322 passed,115 subtests`，四层clean。
 - 再次GPU retry需新数字ID和人类批准；production trainer继续fail closed。
+
+## 2026-08-14：ID168完成真实rollout后在outcome-only reward gate失败
+
+- 人类批准ID168同合同重试。parent`8567eeff`/VAGEN`6cac4b0`/VERL`494f2644`通过fresh terminal/config定向`37 passed,7 subtests`及phase1/phase2 compose。
+- Job`519165`在`normal/dgx-28`通过8-rank actor/ref、TP8 vLLM、真实8-trajectory Navigation rollout、普通action capture和修正后的terminal latent-only capture；batch assembly进入`prepare_joint_training_batch`。
+- compiler在任何backward前正确拒绝nonzero intermediate rewards。根因是Navigation默认`per_turn_format_reward=0.01`，ID168 dataset config未显式覆盖；这与批准的纯结果return合同冲突。禁止让compiler静默丢弃shaping reward，修复应在后续新ID dataset config显式设per-turn/terminal format reward为0、success reward为1。
+- 无actor/critic optimizer、snapshot/checkpoint/phase2；cleanup为空。W&B run`nimloth-id168-joint-update-gate` API状态为`finished`，但仅表示logger有序关闭，不代表训练成功且无成功step。ID168不可resume/复用。已登记`E0107`。
+- 新GPU retry需要新数字ID与人类批准；production trainer继续fail closed。

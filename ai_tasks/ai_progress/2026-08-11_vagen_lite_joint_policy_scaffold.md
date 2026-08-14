@@ -182,3 +182,9 @@
 - 无完整batch/update/checkpoint/phase2；W&B run为`crashed`，cleanup完整，ID167不可resume/复用。
 - parent`8962bd68`/VAGEN`743eb16`新增独立terminal latent-only schema/pop，不执行LM head且严格拒绝action evidence；普通turn capture不变。fresh`25 passed,7 subtests`，扩大`322 passed,115 subtests`。登记`E0106`。
 - 新GPU retry需新数字ID与人类批准。
+
+## 2026-08-14：ID168在outcome-only intermediate reward gate失败
+
+- Job`519165`完成真实8-trajectory TP8 rollout及terminal latent-only capture，batch compiler随后在backward前拒绝Navigation默认`per_turn_format_reward=0.01`。
+- 纯结果合同要求intermediate reward0；正确修复是在新ID dataset config显式设置`per_turn_format_reward=0`、`format_reward=0`、`success_reward=1`，不放宽compiler。
+- 无update/checkpoint/phase2；W&B logger状态finished但实验失败。ID168不可复用。登记`E0107`，新GPU retry需人类批准。
