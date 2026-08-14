@@ -4738,3 +4738,11 @@
 - compiler在任何backward前正确拒绝nonzero intermediate rewards。根因是Navigation默认`per_turn_format_reward=0.01`，ID168 dataset config未显式覆盖；这与批准的纯结果return合同冲突。禁止让compiler静默丢弃shaping reward，修复应在后续新ID dataset config显式设per-turn/terminal format reward为0、success reward为1。
 - 无actor/critic optimizer、snapshot/checkpoint/phase2；cleanup为空。W&B run`nimloth-id168-joint-update-gate` API状态为`finished`，但仅表示logger有序关闭，不代表训练成功且无成功step。ID168不可resume/复用。已登记`E0107`。
 - 新GPU retry需要新数字ID与人类批准；production trainer继续fail closed。
+
+## 2026-08-14：人类修正reward ownership；准备ID169
+
+- 人类明确指出ID168暴露的通用“intermediate reward必须为0”gate设计不合理：未来实验可能保留中间reward。此前把纯结果reward实验选择硬编码到compiler的判断失效。
+- compiler现在保留每个真实turn的有限`env_turn_reward`，用于discounted return与Frozen-V GAE；只校验trajectory topology和terminal/truncation事实。success/failure reward数值也由环境配置拥有。
+- ID169仍按本次smoke意图在train/val dataset config显式设`per_turn_format_reward=0`、`format_reward=0`、`success_reward=1`，并在launcher preflight核验；这不限制未来reward-shaping实验。
+- 新RED/GREEN覆盖intermediate reward折扣、Frozen-V GAE及task-failure保留shaping reward。integration escape hatch、全新输出与W&B identity迁移到ID169；人类已直接要求修复后重跑同资源两阶段smoke。
+- VAGEN candidate：`5582a70`；VERL不变`494f2644`。production trainer继续fail closed。

@@ -188,3 +188,9 @@
 - Job`519165`完成真实8-trajectory TP8 rollout及terminal latent-only capture，batch compiler随后在backward前拒绝Navigation默认`per_turn_format_reward=0.01`。
 - 纯结果合同要求intermediate reward0；正确修复是在新ID dataset config显式设置`per_turn_format_reward=0`、`format_reward=0`、`success_reward=1`，不放宽compiler。
 - 无update/checkpoint/phase2；W&B logger状态finished但实验失败。ID168不可复用。登记`E0107`，新GPU retry需人类批准。
+
+## 2026-08-14：reward shaping改为config-owned，ID169待运行
+
+- 人类否决通用zero-intermediate-reward gate。compiler现保留所有真实有限环境reward并正常计算return/GAE，只验证trajectory事实。
+- ID169 smoke自身显式关闭format shaping并保留success reward1；launcher preflight校验这三个字段，未来其他实验可以选择中间reward。
+- 单元RED复现旧gate，GREEN覆盖intermediate success轨迹和带shaping的task-failure轨迹。VAGEN candidate `5582a70`；新ID169全新identity已准备，待exact-SHA server gate后提交。
