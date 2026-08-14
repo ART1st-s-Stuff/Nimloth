@@ -214,3 +214,9 @@
 ## 2026-08-15：ID171获批
 
 - 同合同fresh重试，Slurm/launcher/runner同时排除dgx-13，保留short Ray path和原timeout。VAGEN candidate`2aeecc7`。
+
+## 2026-08-15：ID171两阶段integration smoke通过
+
+- Job`519277`/dgx-18完成phase1 DP8 actor+critic update、source777、atomic step1；fresh phase2 exact恢复actor model/optimizer/RNG/scheduler与joint critic/snapshot/dataloader，完成source778和atomic step2。
+- 两个validator ALL_OK、final_status passed；W&B有steps1/2；每checkpoint含8 model+8 optimizer+8 extra shards；cleanup为空。
+- non-production update/resume gate已闭合。production仍fail closed，正式超参数和启用需另行人类决定。
