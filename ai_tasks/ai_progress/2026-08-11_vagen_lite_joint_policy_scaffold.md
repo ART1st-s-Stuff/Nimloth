@@ -200,3 +200,8 @@
 - Job`519217`完成首个真实target-DP8 actor+critic update、source777 snapshot与atomic step1；phase1 validator ALL_OK，W&B记录step1。
 - phase2在checkpoint load前因`/tmp/id169-...-phase2_resume_update/ray/session.../plasma_store`超过AF_UNIX 107-byte限制失败；无step2且cleanup完成。
 - ID169不可复用。新ID需缩短phase runtime root并加入worst-case full socket长度测试，随后才能验证exact resume。登记`E0108`。
+
+## 2026-08-15：ID170获批并修复Ray temp path
+
+- 人类批准同合同新ID170两阶段重跑。phase runtime root缩为`/tmp/i170-$JOB-p1|p2`且不再重复`/ray`；worst-case测试完整plasma socket 89 bytes <=107。
+- identity/config/dataset/W&B/output迁移到ID170，运行日期Aug15；VAGEN candidate`6428834`。

@@ -8,9 +8,9 @@ VAGEN = ROOT / "external" / "VAGEN"
 RUNNER = ROOT / "experiments" / "training" / "rl" / "run_vagen_joint_update_gate_phase.sh"
 LAUNCHER = ROOT / "experiments" / "training" / "rl" / "launch_vagen_joint_update_gate_on_hold.sh"
 HOLD = ROOT / "experiments" / "training" / "rl" / "hold_eight_gpu_60m.slurm"
-CONFIG = VAGEN / "vagen" / "configs" / "joint_id169_gate.yaml"
-TRAIN_DATA = VAGEN / "examples" / "train" / "navigation" / "train_navigation_joint_id169.yaml"
-VAL_DATA = VAGEN / "examples" / "train" / "navigation" / "val_navigation_joint_id169.yaml"
+CONFIG = VAGEN / "vagen" / "configs" / "joint_id170_gate.yaml"
+TRAIN_DATA = VAGEN / "examples" / "train" / "navigation" / "train_navigation_joint_id170.yaml"
+VAL_DATA = VAGEN / "examples" / "train" / "navigation" / "val_navigation_joint_id170.yaml"
 
 
 def test_shell_contracts_parse_and_use_target_allocation() -> None:
@@ -26,8 +26,8 @@ def test_shell_contracts_parse_and_use_target_allocation() -> None:
     assert "PHASE=resume_update_2" in launcher
     assert "--gres=gpu:8" in launcher
     assert "TimeLimit=01:00:00" in launcher
-    assert "169_smoke_vagenlite_jointupdate_dp8_tp8_" in launcher
-    assert "nimloth-id169-dp8-hold" in hold
+    assert "170_smoke_vagenlite_jointupdate_dp8_tp8_" in launcher
+    assert "nimloth-id170-dp8-hold" in hold
     assert "sleep infinity" not in hold
     assert "launch_vagen_joint_update_gate_on_hold.sh" in hold
     assert '"${SLURM_JOB_ID}"' in hold
@@ -68,12 +68,20 @@ def test_runner_pins_exact_git_checkpoint_and_clean_worktrees() -> None:
     assert "scp " not in source
     assert 'COMMAND=(' in source
     assert '"${COMMAND[@]}"' in source
+    assert "PHASE_TAG=$([[ \"${PHASE}\" == update_1 ]] && echo p1 || echo p2)" in source
+    assert "RUNTIME_ROOT=/tmp/i170-${SLURM_JOB_ID}-${PHASE_TAG}" in source
+    assert "RAY_TMPDIR=${RUNTIME_ROOT}" in source
+    worst_case_plasma_socket = (
+        "/tmp/i170-99999999-p2/ray/session_2026-08-15_00-40-07_"
+        "477970_1313372/sockets/plasma_store"
+    )
+    assert len(worst_case_plasma_socket.encode()) <= 107
 
 
 def test_human_approved_values_are_explicit_and_test_only() -> None:
     source = CONFIG.read_text()
     exact = (
-        "implementation: id169_dp8_resume_smoke_v1",
+        "implementation: id170_dp8_resume_smoke_v1",
         "run_seed: 42001",
         "gamma: 0.99",
         "gae_lambda: 0.95",
@@ -109,10 +117,10 @@ def test_human_approved_values_are_explicit_and_test_only() -> None:
         assert "success_reward: 1.0" in data_config
 
 
-def test_production_stays_closed_without_id169_escape_hatch() -> None:
+def test_production_stays_closed_without_id170_escape_hatch() -> None:
     trainer = (VAGEN / "vagen" / "ray_trainer.py").read_text()
     gate = (VAGEN / "vagen" / "joint_policy" / "integration_gate.py").read_text()
     assert "if self.joint_integration_gate is None:" in trainer
     assert "refusing production training" in trainer
-    assert 'experiment_id != 169' in gate
+    assert 'experiment_id != 170' in gate
     assert '{"update_1", "resume_update_2"}' in gate
