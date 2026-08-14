@@ -14,9 +14,9 @@
 - VAGEN M1 commit：`45cb9928a8d9316037e1fb86c0dff3d004705097`
 - VAGEN M2 contract commit：`25da71df5f1408d54b4b761ff40c985d9118c99c`
 - VAGEN confirmed gradient/Q-target contract commit：`0a23ab3923bcef4cbda89380353c312dab77319a`
-- 当前父仓库commit：`7b13d622a6361d2e6844b86ef2077b03f8f7e3ee`
-- 当前VAGEN commit：`316d9d7bc2a153bd1cecc34d04f752231458892d`
-- VERL gitlink：`3fe0a29975e1b02ae2bd1dec249f7807dd7966f5`
+- 当前父仓库commit：`fc53b592d683f6925362919a364068c812855870`
+- 当前VAGEN commit：`f4fdd83f6fb4f848f51ffdc89b0bc2366584d039`
+- VERL gitlink：`d952ad1634a9c2221bfebe7b817cc4324acac841`
 
 ## 当前计划
 
@@ -26,9 +26,9 @@
 4. M2 暂采用 scheme B：旧 ValueHead 保持 critic，guided logits 为 `alpha * l_prior + beta * stopgrad(frozen_Q)`，没有独立 actor module。
 5. rollout/update 内复用 rollout-time frozen critic 的 all-action guidance scores；critic 更新后禁止重算同一批 behavior guidance。
 6. 人类已确认 guided actor loss 必须经`l_prior`反传LLM；`backprop_to_llm`保留为可审计合同字段但启用时只能为`true`。Q在actor loss中始终stop-gradient。
-7. 人类已确认Q用真实环境reward构造的discounted return训练：只回归实际执行的第一动作，target stop-gradient，首版使用Huber；不把即时reward或advantage本身当Q target，不伪造未执行action监督。terminal bootstrap为0；truncation需rollout-time frozen critic bootstrap。
+7. 人类已确认Q用纯结果reward构造discounted return训练：只回归实际执行的guided action，target stop-gradient，首版使用Huber；不把即时reward或advantage本身当Q target，不伪造未执行action监督。success、environment failure和达到task turn limit均为terminal，后两者return为0；基础设施截断样本无效，不做truncation bootstrap。
 8. ledger v2、versioned behavior record、reference/Torch guided math 和 contract identity 已实现。
-9. `joint_policy.enabled=true`当前显式 fail closed，直到已确认的 Q owner、rollout sampler、replay、optimizer 和 checkpoint snapshot boundary 全部真实接通。
+9. Q owner、guided rollout、replay、DP8 current critic optimizer、snapshot publication和checkpoint/resume已有候选实现；`joint_policy.enabled=true`仍显式fail closed，直到Torch/Ray/DP8 short-update/interrupted-resume门禁全部通过。
 10. 人类已确认生产ownership：rollout coordinator用无状态deterministic keyed draw，不使用worker-local或vLLM RNG；`AgentLoopManager`在workers前创建独立CPU Ray actor持有只读frozen critic snapshot；每个完整global joint update成功后为下一批rollout原子发布新snapshot，同batch/minibatch内不刷新。
 
 ## 已完成
@@ -122,10 +122,17 @@
 - parent`d40b7bdc`仅扩展同一guided gate接受新数字ID164；fresh服务器test worktree用`PYTHONDONTWRITEBYTECODE=1`与禁用pytest cache得到launcher`3 passed`并保持所有repo clean，随后另建从未import/test过的production worktree。ID164沿用已批准参数和hold Job`518764`，step`518764.2`在`normal/dgx-18`以`COMPLETED 0:0`运行8分11秒；direct render`13.377s/dynamic246`、真实FloorPlan11 prewarm`5.801s/dynamic255`、ID74 TP8 eager/mm-encoder-data load均通过。
 - ID164模型实际生成24 tokens：`<think>move_left</think>`+K16+raw prior action0；capture为finite`[16,2048]`且8个raw logits均1.7890625。source-step776 frozen CPU critic Q为`[0.9332,0.453895,0.630065,0.281621,0.059329,0.092374,-0.143763,-0.026379]`；stable key绑定seed42/policy-step0/base0/repeat0/turn0/snapshot/contract，draw`0.46663597884312924`选择guided action2`move_right`。环境实际只执行action2；reward0.0锚定index22，nonterminal且one-turn truncated。
 - validator对capture、batch pin、scoring、trace、draw、behavior、execution、guided ledger与actual reward/action返回`ALL_OK`；result`610098`bytes、SHA256`ecd71ac012c369259a3ec2eb3008d54ea04d85977a5764f2e603537f55ba2fdd`。cleanup后owned process/runtime ports为空，8卡均0MiB；hold`518764`随后取消。输出目录`outputs/experiments/training/rl/2026-08-14/164_smoke_vagenlite_id74_k16_guided_tp8_a1b1t1_f32_seed42_base0_8g_retry_cleanworktree`已写完整summary。该gate关闭optimizer-free guided runtime路径，不是action质量/超参数结论；actor replay、critic optimizer、return/bootstrap、snapshot publication、checkpoint/resume仍未接通，trainer继续fail closed。
+- 人类随后确认current critic采用与actor共置的GPU DP8 replicated结构。候选实现新增terminal真实`CoT+K16`trace、task-failure/infrastructure-invalid stop合同、outcome-only return、rollout-time Frozen-V GAE和global advantage normalization；selected-action Q不再被错误用作state baseline，相关错误登记为`E0099`。
+- VERL`d952ad16`在current actor同次transformer replay中返回action-boundary raw logits，并支持严格custom actor class。VAGEN`f4fdd83f`的custom FSDP actor用rollout persisted frozen Q计算实际guided-action PPO ratio/clipping，另算token reference low-var KL和guided entropy；current `JointActionValueCritic`在8个actor rank复制并DDP all-reduce selected-action Huber梯度。
+- driver transaction只在所有rank update和critic/optimizer fingerprint一致后，由rank0导出source-step+1 snapshot；确认batch unpin后stage/CAS activate。checkpoint sidecar绑定完整训练合同、run seed、critic optimizer和active owner，stateful dataloader与sidecar原子落盘后才写completion marker；auto-resume忽略中途失败目录并重验digest/rank/activation/snapshot。
+- 正式数值参数无默认值：actor/critic AdamW、actor scheduler/grad clip、gamma/lambda/PPO clip、KL/entropy、Huber/critic clip和checkpoint frequency均须显式提供。物理门禁固定单节点actor DP8、rollout TP8/DP1、无sequence parallel；stock scalar critic/advantage/token PPO路径关闭。
+- 当前仅完成dependency-light/source验证：`40 passed,8 skipped`、636文件AST parse与`diff --check`；skip对应本地无Torch。两次server SSH均报`Connection closed by UNKNOWN port 65535`，尚未运行完整Torch、真实Ray、DP8 short update或interrupted-resume，所以production trainer继续fail closed，未启动任何训练/Slurm任务。
+- `E0100`记录本轮已发生的preflight错误：`compileall`即使设置`PYTHONDONTWRITEBYTECODE=1`也会写`.pyc`；误生成cache已排除既有`external/le-wm`后清理，后续clean-worktree只用`ast.parse`做只读语法检查。
 
 ## 待确认问题
 
 - `alpha`、`beta`、prior temperature、`gamma`、score dtype、critic loss coefficient、warmup/KL target 的正式实验值。
 - 未执行 action slot 的 Q 校准与探索保护。
-- 磁盘checkpoint频率与truncation bootstrap完整return compiler；active snapshot必须随完整checkpoint保存，但磁盘落盘不要求每个global update一次。
+- 正式训练的全部显式数值：Scheme-B、actor/critic AdamW、actor scheduler/grad clip、gamma/lambda/PPO clip、KL/entropy、Huber/critic clip和checkpoint频率。
+- checkpoint/resume的完整Torch/Ray/DP8 runtime门禁与中断恢复对照；通过前不得解除trainer fail-closed。
 - 模拟尾部 action 的生成方式及其非 PPO 辅助目标。
