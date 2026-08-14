@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import subprocess
 
 
@@ -25,6 +26,14 @@ def test_shell_contracts_parse_and_use_target_allocation() -> None:
     assert "PHASE=resume_update_2" in launcher
     assert "--gres=gpu:8" in launcher
     assert "TimeLimit=01:00:00" in launcher
+
+
+def test_embedded_python_blocks_compile_independently() -> None:
+    source = RUNNER.read_text()
+    blocks = re.findall(r"<<'PY'\n(.*?)\nPY", source, flags=re.DOTALL)
+    assert len(blocks) == 4
+    for index, block in enumerate(blocks):
+        compile(block, f"{RUNNER}:inline-{index}", "exec")
 
 
 def test_runner_pins_exact_git_checkpoint_and_clean_worktrees() -> None:
