@@ -163,3 +163,10 @@
 - 模型worker未创建；GPU保持environment-only约287MiB，无rollout/update/checkpoint/W&B/phase2。hold8m05s后取消，owned processes为空。ID165 output已写README/failure analysis且不可resume/复用。
 - TDD修复：VAGEN RED`777e23a`真实构造HF manager失败；GREEN`d69837c`显式disabled HF config。full composed manager preflight通过，fresh扩大回归`316 passed,115 subtests`、四层clean。登记`E0103`。
 - 下一次GPU运行需要人类批准新数字integration ID与新输出；通用production trainer继续fail closed。
+
+## 2026-08-14：ID166在worker rollout class lookup失败
+
+- batch-owned Job`519129`/`normal/dgx-39`通过allocation/render/base_train prewarm、trainer constructor，并在8 ranks加载/包装ID74 actor和构造optimizer；随后`get_rollout_class("nimloth_vllm","async")`因worker registry无entry失败。
+- custom HTTP replica registry与FSDP worker rollout-class registry是两套接口。此次未启动vLLM/generation/rollout/update/checkpoint/W&B/phase2；cleanup完整，ID166不可resume/复用。
+- TDD修复：VERL`494f2644`新增strict/idempotent external rollout class registration，VAGEN`c8c048d`在external lib import时把custom name映射到stock `vLLMAsyncRollout`并保留Nimloth HTTP replica。fresh-process和冲突测试通过；扩大回归`319 passed,115 subtests`。已登记`E0104`。
+- 再次GPU retry需新数字ID和人类批准；production gate不变。
