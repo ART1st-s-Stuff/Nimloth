@@ -292,13 +292,18 @@ else
 EOF
 fi
 
-printf '%q ' "${PY}" -m vagen.standalone_one_turn_smoke \
-  --model "${MODEL}" --env-url "${ENV_URL}" --output "${RUN_RESULT}" \
-  --run-name "${RUN_NAME}" --agent-loop-config "${VAGEN}/vagen/configs/agent_no_concat.yaml" \
-  --eval-set base --seed 0 --latent-token-count 16 --prompt-length 9000 \
-  --response-length 512 --temperature 0 --top-p 1 --gpu-memory-utilization 0.6 \
-  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" --env-timeout 300 \
-  "${SMOKE_EXTRA_ARGS[@]}" >"${RUN_OUT}/command.txt"
+SMOKE_COMMAND=(
+  "${PY}" -m vagen.standalone_one_turn_smoke
+  --model "${MODEL}" --env-url "${ENV_URL}" --output "${RUN_RESULT}"
+  --run-name "${RUN_NAME}" --agent-loop-config "${VAGEN}/vagen/configs/agent_no_concat.yaml"
+  --eval-set base --seed 0 --latent-token-count 16 --prompt-length 9000
+  --response-length 512 --temperature 0 --top-p 1 --gpu-memory-utilization 0.6
+  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" --env-timeout 300
+)
+if [[ "${GUIDED_MODE}" == true ]]; then
+  SMOKE_COMMAND+=("${SMOKE_EXTRA_ARGS[@]}")
+fi
+printf '%q ' "${SMOKE_COMMAND[@]}" >"${RUN_OUT}/command.txt"
 printf '\n' >>"${RUN_OUT}/command.txt"
 
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${PARENT_COMMIT}" ]]
@@ -408,13 +413,7 @@ nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization
 NVIDIA_PID=$!
 
 setsid timeout --signal=TERM --kill-after=20s "${SMOKE_TIMEOUT_SECONDS}s" \
-  "${PY}" -m vagen.standalone_one_turn_smoke \
-  --model "${MODEL}" --env-url "${ENV_URL}" --output "${RUN_RESULT}" \
-  --run-name "${RUN_NAME}" --agent-loop-config "${VAGEN}/vagen/configs/agent_no_concat.yaml" \
-  --eval-set base --seed 0 --latent-token-count 16 --prompt-length 9000 \
-  --response-length 512 --temperature 0 --top-p 1 --gpu-memory-utilization 0.6 \
-  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" --env-timeout 300 \
-  "${SMOKE_EXTRA_ARGS[@]}" >"${RUN_OUT}/smoke.log" 2>&1 &
+  "${SMOKE_COMMAND[@]}" >"${RUN_OUT}/smoke.log" 2>&1 &
 SMOKE_PID=$!
 set +e
 wait "${SMOKE_PID}"
@@ -474,7 +473,7 @@ assert evidence['mode'] in {'tp8_gate','tp4_interim_diagnostic','guided_tp8_gate
 assert evidence['step_gpu_count']==evidence['tensor_parallel_size']
 if guided:
   assert evidence['tensor_parallel_size']==8
-assert evidence['guided'] is guided and x['guided'] is guided
+assert evidence['guided']==guided and x['guided']==guided
 assert evidence['does_not_substitute_for_tp8_gate']==(evidence['mode']=='tp4_interim_diagnostic')
 assert state['schema']=='nimloth_policy_state_v2'
 assert len(state['latent_token_ids'])==16 and len(set(state['latent_token_ids']))==16

@@ -38,6 +38,8 @@ def test_one_turn_launcher_has_strict_guided_tp8_contract() -> None:
     assert '[[ "${EXPERIMENT_ID}" == "163" ]]' in source
     assert '"1:1:1:float32:42:776"' in source
     assert "--guided" in source
+    assert 'SMOKE_COMMAND+=("${SMOKE_EXTRA_ARGS[@]}")' in source
+    assert '"${SMOKE_COMMAND[@]}"' in source
     assert '--critic-qwen-hidden-dim 2048' in source
     assert '--critic-state-dim 1024' in source
     assert '--joint-snapshot-source-step "${JOINT_SNAPSHOT_SOURCE_STEP}"' in source
