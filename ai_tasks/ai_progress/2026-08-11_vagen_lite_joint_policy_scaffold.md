@@ -194,3 +194,9 @@
 - 人类否决通用zero-intermediate-reward gate。compiler现保留所有真实有限环境reward并正常计算return/GAE，只验证trajectory事实。
 - ID169 smoke自身显式关闭format shaping并保留success reward1；launcher preflight校验这三个字段，未来其他实验可以选择中间reward。
 - 单元RED复现旧gate，GREEN覆盖intermediate success轨迹和带shaping的task-failure轨迹。VAGEN candidate `5582a70`；新ID169全新identity已准备，待exact-SHA server gate后提交。
+
+## 2026-08-15：ID169 step1通过，phase2被Ray Unix socket路径阻断
+
+- Job`519217`完成首个真实target-DP8 actor+critic update、source777 snapshot与atomic step1；phase1 validator ALL_OK，W&B记录step1。
+- phase2在checkpoint load前因`/tmp/id169-...-phase2_resume_update/ray/session.../plasma_store`超过AF_UNIX 107-byte限制失败；无step2且cleanup完成。
+- ID169不可复用。新ID需缩短phase runtime root并加入worst-case full socket长度测试，随后才能验证exact resume。登记`E0108`。
