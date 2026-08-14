@@ -4811,3 +4811,13 @@
 - ID171同ID170全部训练合同，新增Slurm/launcher/runner三层排除`dgx-13`，仍不放宽150秒direct render或300秒prewarm门禁。
 - short Ray runtime root迁移到`/tmp/i171-$JOB-p1|p2`；identity/config/dataset/W&B/output全部为fresh ID171。
 - 本地launcher RED确认旧exclude不足，GREEN后shell和5项合同通过；VAGEN candidate`2aeecc7`、VERL`494f2644`。待fresh exact-SHA server gate。
+
+## 2026-08-15：ID171 target-DP8 joint update与exact resume两阶段全部通过
+
+- Job`519277`在`normal/dgx-18`以`COMPLETED 0:0`运行11分47秒。phase1完成8条真实base_train rollout、DP8 actor+critic update、rank一致性、source`776→777`、activation1及atomic`global_step_1`；validator`ALL_OK`。
+- fresh phase2 short-path Ray runtime成功启动，自动找到step1并打印`Setting global step to 1`/`Resuming from ...global_step_1`；恢复actor model/optimizer/RNG/scheduler shards及joint critic/optimizer、frozen-Q owner/snapshot、activation和dataloader state。随后完成第二batch/update、source`777→778`、activation2及atomic`global_step_2`；validator/final status`ALL_OK/passed`。
+- step1/step2均有8 model+8 optimizer+8 extra-state actor shards，完整目录各约43.57GB。step1 marker/sidecar SHA为`109e6b...`/`6ba553...`且mtime早于phase2；step2为`a23016...`/`6de764...`；latest iteration=2。snapshot IDs分别`814b13...`与`d98ff3...`。
+- W&B run`nimloth-id171-joint-update-gate` API状态finished且恰含step1/2、completed_updates1/2、source777/778。两个phase teardown在sync完成后出现ignored W&B BrokenPipe callback warning，但metrics/files已同步且phase/job均exit0。
+- 两个phase owned-process audit均空，Slurm allocation/nested step完成0。至此非生产target-DP8 update/snapshot/checkpoint/exact-resume integration gate闭合。
+- 通用production joint training继续fail closed：ID171参数仅smoke，正式数值尚无人类批准。后续是否开放production worker creation必须另行明确决定，不能自动把smoke配置当默认。
+- 运行代码为parent`dcd33371`/VAGEN`2aeecc73`/VERL`494f2644`；后续仅文档状态更新到VAGEN`c5c4741`。
