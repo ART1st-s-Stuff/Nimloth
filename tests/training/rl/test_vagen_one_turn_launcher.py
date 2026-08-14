@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -14,6 +15,17 @@ def test_one_turn_launcher_validates_capture_v2_generation_identity() -> None:
     assert "state['generation_id']!=state['request_id']" in source
     assert "'generation_id':state['generation_id']" in source
     assert "nimloth_policy_state_v1" not in source
+
+
+def test_one_turn_launcher_embedded_python_compiles() -> None:
+    programs = re.findall(
+        r"<<'PY'[^\n]*\n(.*?)\nPY",
+        _runner_source(),
+        flags=re.DOTALL,
+    )
+    assert len(programs) >= 4
+    for index, program in enumerate(programs):
+        compile(program, f"run_vagen_one_turn_smoke.sh:heredoc-{index}", "exec")
 
 
 def test_one_turn_launcher_has_strict_guided_tp8_contract() -> None:
