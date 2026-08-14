@@ -115,6 +115,7 @@
 - 后续改用Git candidate refs并为每轮修复创建全新clean服务器worktree。首轮milestone套件发现3项测试assertion问题，修复后为`167 passed,36 subtests`；扩大回归首轮的19项失败全部来自既有`planner_verl_adapter`仍固定capture直接父`3fe0a299`而当前runtime已是`084f042b`，更新exact runtime pin后相关`27 passed`且扩大套件为`513 passed,75 subtests`。
 - 独立Claude Opus只读review对parent/VAGEN完整diff结论为`APPROVED`、无P0/P1；提出的具体P2已统一修复：DataProto新增显式0-based`guided_turn_index`并与历史1-based`turn_idx`做运行时关系检查，Ray actor RPC严格拒绝额外字段，pin RPC结果不明时用预构造pin best-effort unpin，critic transport上界改为精确参数元素计数。修复后定向`29 passed`，最终扩大回归在parent`06b993b2`/VAGEN`3a01a2a0`/VERL`084f042b`为`514 passed,75 subtests`；真实local Ray actor lifecycle包含CPU/GPU/thread、pin/CAS/checkpoint和malformed request门禁。最终Opus复审`APPROVED`且无P0/P1/P2 finding。
 - 当前milestone的CPU/Ray/审查边界已关闭，TP8 optimizer-free guided one-turn GPU gate尚未运行。该gate需要caller显式给出`alpha/beta/prior_temperature/score_dtype/run_seed/source_step`；正式实验值仍未获人类确认，因此不能自行选择默认值启动。actor replay、critic optimizer、return compiler、global-update snapshot publication和完整checkpoint/resume仍未接通，trainer继续fail closed。
+- milestone已按Git发布策略推进feature branches且未修改任何main：测试/复审对应代码SHA为parent`06b993b2`、VAGEN`3a01a2a0`、VERL`084f042b`；随后仅追加验证文档，发布为VAGEN`nimloth/upstream-joint-policy-scaffold@18a04bb1`和parent`feat/vagen-lite-joint-policy-scaffold@007a0314`，parent gitlink精确指向`18a04bb1`，远端SHA已核对。
 
 ## 待确认问题
 
