@@ -58,7 +58,7 @@ class JointCriticSpec:
             self.action_count * self.value_hidden_dim,
         )
         total_elements = sum(matrix_elements) + (
-            4 * self.projector_hidden_dim
+            3 * self.projector_hidden_dim
             + self.state_dim
             + self.value_hidden_dim
             + self.action_count
