@@ -6,7 +6,7 @@ HOLD_JOB=${1:?usage: launch_vagen_joint_update_gate_on_hold.sh HOLD_JOB}
 : "${EXPECTED_PARENT_COMMIT:?EXPECTED_PARENT_COMMIT is required}"
 : "${EXPECTED_VAGEN_COMMIT:?EXPECTED_VAGEN_COMMIT is required}"
 : "${EXPECTED_VERL_COMMIT:?EXPECTED_VERL_COMMIT is required}"
-RUN_NAME=170_smoke_vagenlite_jointupdate_dp8_tp8_base_train8_t2_a1b1_g099_l095_clip02_akl001_ent001
+RUN_NAME=171_smoke_vagenlite_jointupdate_dp8_tp8_base_train8_t2_a1b1_g099_l095_clip02_akl001_ent001
 RUN_DATE=2026-08-15
 RUNNER=${REPO}/experiments/training/rl/run_vagen_joint_update_gate_phase.sh
 
@@ -23,7 +23,8 @@ grep -Eq 'AllocTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*cpu=64([, ]|$)' <<<"${JOB_DETAILS}"
 grep -q 'MinMemoryNode=256G' <<<"${JOB_DETAILS}"
 NODE=$(squeue -h -j "${HOLD_JOB}" -o '%N')
-[[ -n "${NODE}" && "${NODE}" != '(null)' && "${NODE}" != dgx-51 ]]
+[[ -n "${NODE}" && "${NODE}" != '(null)' ]]
+[[ "${NODE}" != dgx-13 && "${NODE}" != dgx-51 ]]
 
 exec srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=64 --gres=gpu:8 --mem=256G -w "${NODE}" \
