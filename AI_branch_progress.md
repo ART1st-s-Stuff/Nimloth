@@ -4805,3 +4805,9 @@
 - Job`519245`等待约1小时后获`normal/dgx-13` 8×H800/64CPU/256GiB，Vulkan setup通过，但FloorPlan1 direct AI2-THOR render 150秒内无输出，phase1以124失败。
 - 无env server、Ray、W&B、模型、rollout、update或checkpoint；cleanup为空。ID170不可复用，短Ray runtime-path修复尚未进入实际phase2验证。
 - 不放宽render timeout；立即新ID重试应在既有`dgx-32,dgx-37,dgx-51`外暂时排除`dgx-13`。单次事件不足以声明该节点永久故障。
+
+## 2026-08-15：人类批准ID171避开dgx-13重试
+
+- ID171同ID170全部训练合同，新增Slurm/launcher/runner三层排除`dgx-13`，仍不放宽150秒direct render或300秒prewarm门禁。
+- short Ray runtime root迁移到`/tmp/i171-$JOB-p1|p2`；identity/config/dataset/W&B/output全部为fresh ID171。
+- 本地launcher RED确认旧exclude不足，GREEN后shell和5项合同通过；VAGEN candidate`2aeecc7`、VERL`494f2644`。待fresh exact-SHA server gate。

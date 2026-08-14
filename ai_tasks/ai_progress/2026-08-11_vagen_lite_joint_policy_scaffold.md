@@ -210,3 +210,7 @@
 
 - Job`519245`在dgx-13的direct AI2-THOR render固定150秒门禁超时；无env/Ray/W&B/model/update/checkpoint且cleanup为空。
 - ID170不可复用；不延长timeout。新ID即时重试需排除dgx-13并保留short Ray path修复。
+
+## 2026-08-15：ID171获批
+
+- 同合同fresh重试，Slurm/launcher/runner同时排除dgx-13，保留short Ray path和原timeout。VAGEN candidate`2aeecc7`。
