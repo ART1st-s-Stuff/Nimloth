@@ -13,7 +13,14 @@
 #SBATCH --exclude=dgx-32,dgx-37,dgx-51
 
 set -euo pipefail
+: "${REPO:?REPO is required}"
+: "${EXPECTED_PARENT_COMMIT:?EXPECTED_PARENT_COMMIT is required}"
+: "${EXPECTED_VAGEN_COMMIT:?EXPECTED_VAGEN_COMMIT is required}"
+: "${EXPECTED_VERL_COMMIT:?EXPECTED_VERL_COMMIT is required}"
 printf 'hold_job=%s node=%s partition=%s cuda_visible_devices=%s\n' \
   "${SLURM_JOB_ID}" "$(hostname)" "${SLURM_JOB_PARTITION}" \
   "${CUDA_VISIBLE_DEVICES:-}"
-sleep infinity
+command -v scontrol >/dev/null
+command -v srun >/dev/null
+exec "${REPO}/experiments/training/rl/launch_vagen_joint_update_gate_on_hold.sh" \
+  "${SLURM_JOB_ID}"
