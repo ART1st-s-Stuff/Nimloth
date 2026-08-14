@@ -4681,3 +4681,11 @@
 - 实际server RED依次发现并修复三项问题：task-failure test fixture错误地同时标environment terminal；CPU same-forward test误走CUDA FlashAttention；真实TensorDict不能用`set(batch.batch)`取keys；随后critic optimizer export又发现0维Adam step不能直接`view(uint8)`。最终代码改用真实DataProto测试与flattened byte fingerprint，所有修复均在fresh exact-SHA worktree复验。
 - target DP8 FSDP/vLLM short update和分布式trainer interrupted-resume尚未运行，且正式数值参数仍未获确认。因此`RayPPOTrainer`继续在worker创建前明确拒绝production joint training；当前CPU checkpoint组件通过不等于production checkpoint/resume完成。
 - 本轮曾误用`PYTHONDONTWRITEBYTECODE=1 python -m compileall`做只读语法检查；`compileall`仍显式生成bytecode。新生成的parent/VAGEN/VERL `__pycache__`已清理，既有无关`external/le-wm`内容未动；已登记`E0100`，后续clean-worktree语法检查只用`ast.parse`。
+
+## 2026-08-14：ID165代码与配置门禁通过，首个hold在phase前编排失败
+
+- 人类批准ID165非生产DP8/TP8两阶段update/resume smoke。严格escape hatch、Hydra配置、两阶段runner/validator和60分钟`normal` hold已发布；ID165只允许`update_1`与`resume_update_2`，通用production joint trainer继续fail closed。
+- 配置compose预检发现wrapper config不能嵌套继承带Hydra search path的`vagen_multiturn`；VAGEN`b6c60521`改为在ID165 root config直接声明VERL search path和`ppo_trainer/env_registry` defaults，并显式保留AgenticDataset、多模态与trainer设置。真实server Hydra phase1/phase2 compose及runtime extension均通过。
+- 精确parent`52763b26`/VAGEN`b6c60521`/VERL`42cb2f12`的fresh preflight worktree通过扩大回归`315 passed,115 subtests`；production worktree未做import/test且四层repo clean。runner将两个phase timeout限制为各1600秒，并绑定`base_train.json` 1200 tasks及SHA256 `eb0aa691...`。
+- hold Job`519040`实际于`normal/dgx-26`获得单节点8GPU/64CPU allocation，但外部queue controller没有向strict launcher传`REPO`和三个expected Git SHA。launcher在`srun`前立即fail closed，controller取消hold；`sacct`为`CANCELLED`、elapsed 5秒。未启动phase runner、Python、Ray、vLLM、AI2-THOR、rollout、optimizer、checkpoint或W&B，ID165正式输出目录仍不存在。
+- 失败记录在服务器`outputs/experiments/training/rl/slurm/id165-hold-519040.metadata.md`；无checkpoint可resume。已登记`E0101`。后续fresh hold的controller必须显式传入四个required identity env；本次没有phase或run output，因此ID165两阶段gate仍完全未运行。
