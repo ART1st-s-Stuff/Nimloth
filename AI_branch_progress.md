@@ -4761,3 +4761,11 @@
 - 人类批准ID167同参数/资源重试。candidate parent`bb9eb60d`/VAGEN`125a17b`/VERL`494f2644`通过fresh ID167 config/registry/完整trainer constructor与phase2 compose，production worktree四层clean。
 - batch-owned Job`519148`在`normal/dgx-23`只运行1秒：submission传入正确新VERL SHA，但launcher和phase runner仍硬编码registry修复前的`42cb2f12`，因此在`srun`及output创建前fail closed。无phase/Python/Ray/GPU workload/W&B/checkpoint；ID167 run目录仍不存在，可用fresh hold继续同一尚未启动的ID167实验。
 - 两处gate已更新为`494f2644`，source RED/GREEN新增完整SHA绑定。服务器metadata为`outputs/experiments/training/rl/slurm/id167-hold-519148.metadata.md`；登记`E0105`。
+
+## 2026-08-14：ID167进入真实TP8 rollout后暴露terminal latent capture差异
+
+- 首个ID167 hold`519148`仅因strict scripts遗漏VERL新SHA而在`srun`前1秒退出，无output；更新两处gate后，batch-owned Job`519150`在`normal/dgx-23`进入真实运行。
+- Job`519150`通过8-rank actor/ref加载、worker rollout registry、TP8 eager vLLM、`mm_encoder_tp_mode=data`、custom logits/capture extension、AgentLoopManager和W&B创建，并进入真实Navigation rollout。W&B run`nimloth-id167-joint-update-gate`最终状态`crashed`。
+- terminal observation正确生成真实CoT+K16并以`action_start` stop token结束；由于没有后续decode step，hidden hook只看到K16。旧terminal路径复用普通可执行turn capture，错误要求K16+action-start hidden并计算action logits；所有rank fail closed。无完整global batch/backward/update/snapshot/checkpoint/phase2，cleanup后owned process为空。ID167不可resume/复用。
+- 已登记`E0106`。RED明确要求仅K16时TP一致且compute_logits调用数为0，并测试terminal payload无任何action字段。GREEN parent`8962bd68`新增request-scoped TP latent-only pop，VAGEN`743eb16`新增`nimloth_terminal_latent_state_v1`和显式terminal capture mode；response trace仍保留action_start stop evidence，且terminal继续不Q-scoring/不执行/不进ledger。fresh定向`25 passed,7 subtests`，扩大回归`322 passed,115 subtests`，四层clean。
+- 再次GPU retry需新数字ID和人类批准；production trainer继续fail closed。
