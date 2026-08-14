@@ -108,6 +108,11 @@
 - VAGEN`b8c6f55`实现keyed-draw合同：`GuidedActionDrawKey`完整绑定run seed/policy step/stable sample/repeat/turn/validation/snapshot/contract/schema，canonical JSON SHA-256前53位精确映射到`[0,1)`；public sampler删除裸`uniform_draw`参数，action-draw schema升v2并持久化完整key与derived draw，direct/mapping均重验。父`caefc381`要求assembly同时接收coordinator生成的`expected_draw_key`并做完整相等核验，随后再核对scoring snapshot/contract/tokens/prior/Q；不能把另一step/trajectory/repeat/turn/validation的自洽record混入。
 - review先发现assembly只核对snapshot而未核对完整logical decision、文档仍描述旧裸draw API；修复后`APPROVED`。fresh服务器VAGEN全套`137 passed,75 subtests`，parent behavior/scoring/critic/capture相关`81 passed`。生产agent loop尚未构造stable key，CPU Ray Q actor尚未实现，trainer继续fail closed。
 
+- 人类纠正执行方式：资源优化不是赶工或降低正确性。此前把相互依赖的内部helper拆成过多小milestone，并对每个helper重复完整测试/review/提交/push，导致生产主链路接通过晚；已登记`E0096`。后续把CPU owner、batch pin、stable identity和optimizer-free capture→score→draw→behavior→guided env/DataProto wiring组成一个有外部意义的milestone，中间只做必要定位检查，完成后统一跑全套/runtime/review/发布；trainer仍fail closed。
+- 该optimizer-free production guided rollout milestone现已形成未验证的完整实现候选：parent新增Ray-safe immutable snapshot transport和`FrozenQSnapshotOwner`，VAGEN新增1CPU/0GPU actor、真实parameter-dtype stage门禁、单线程PyTorch runtime、manager-before-workers lifecycle、整batch pin/unpin、CAS stage/activate与clean checkpoint RPC。dataset生成restart-stable sample id，trainer保留显式repeat index；manager按run seed/policy step/validation/sample/repeat/turn/snapshot/contract预分配全部draw key。
+- no-concat Gym loop现于same-generation capture校验后、环境mutation前执行CPU scoring→keyed Scheme-B draw→response trace/behavior/execution assembly，只调用`guided_step`，并将batch pin、scoring、trace、draw、execution、guided ledger、stable identity、原response IDs/mask/log-probs和实际reward持久化到DataProto。guided错误不再被普通environment fallback吞掉；disabled mode不向旧custom worker/agent-loop constructor额外传`None`。standalone one-turn新增显式guided入口，所有未定policy/run/critic参数必须由caller提供，无实验默认值；`RayPPOTrainer`仍在worker前fail closed。
+- milestone RED在实现前为`3 failed, 1 skipped`，缺口精确对应manager pin、stable identity和agent-loop production assembly。实现候选本地`py_compile`及parent/VAGEN `diff --check`通过；实现后的统一服务器测试尚未启动，因为首次同步时SSH中断。随后确认直接`rsync`源码违反`.local/SERVER.md`的Git同步规则，已登记`E0097`；旧远程测试worktree不再作为可信验证环境，后续必须以明确parent/VAGEN/VERL candidate SHA在干净worktree测试。
+
 ## 待确认问题
 
 - `alpha`、`beta`、prior temperature、`gamma`、score dtype、critic loss coefficient、warmup/KL target 的正式实验值。
