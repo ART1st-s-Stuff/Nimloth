@@ -26,6 +26,8 @@ def test_shell_contracts_parse_and_use_target_allocation() -> None:
     assert "PHASE=resume_update_2" in launcher
     assert "--gres=gpu:8" in launcher
     assert "TimeLimit=01:00:00" in launcher
+    assert "166_smoke_vagenlite_jointupdate_dp8_tp8_" in launcher
+    assert "nimloth-id166-dp8-hold" in hold
     assert "ReqTRES=[^ ]*mem=256G" in launcher
     assert "MinMemoryNode=256G" in launcher
     assert "AllocTRES=[^ ]*mem=256G" not in launcher
@@ -83,6 +85,8 @@ def test_human_approved_values_are_explicit_and_test_only() -> None:
         "ppo_mini_batch_size: 8",
         "ppo_micro_batch_size_per_gpu: 1",
         "freeze_vision_tower: true",
+        "huggingface_hub:",
+        "hf_save_freq: null",
     )
     for value in exact:
         assert value in source

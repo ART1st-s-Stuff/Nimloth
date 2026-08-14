@@ -19,7 +19,7 @@ PHASE_NAME=$([[ "${PHASE}" == update_1 ]] && echo phase1_update || echo phase2_r
 PHASE_OUT=${RUN_OUT}/${PHASE_NAME}
 ENV_PORT=$((18800 + SLURM_JOB_ID % 300 + ($([[ "${PHASE}" == update_1 ]] && echo 0 || echo 300))))
 ENV_URL=http://127.0.0.1:${ENV_PORT}
-RUNTIME_ROOT=/tmp/id165-${SLURM_JOB_ID}-${PHASE_NAME}
+RUNTIME_ROOT=/tmp/id166-${SLURM_JOB_ID}-${PHASE_NAME}
 RAY_TMPDIR=${RUNTIME_ROOT}/ray
 TMPDIR=${RUNTIME_ROOT}/tmp
 AI2THOR_HOME_ROOT=${RUNTIME_ROOT}/ai2thor
@@ -29,7 +29,7 @@ NVIDIA_PID=
 PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-1600}
 
 [[ "${PHASE}" == update_1 || "${PHASE}" == resume_update_2 ]]
-[[ "${RUN_NAME}" == 165_smoke_vagenlite_jointupdate_dp8_tp8_base_train8_t2_a1b1_g099_l095_clip02_akl001_ent001 ]]
+[[ "${RUN_NAME}" == 166_smoke_vagenlite_jointupdate_dp8_tp8_base_train8_t2_a1b1_g099_l095_clip02_akl001_ent001 ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 42cb2f129357ffdd2c58f338d78da4dc91e3412e ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
 [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-}}" == 1 ]]
@@ -63,7 +63,7 @@ done
 [[ -d "${MODEL}" ]]
 
 if [[ "${PHASE}" == update_1 ]]; then
-  [[ ! -e "${RUN_OUT}" ]] || { echo "ID165 output already exists" >&2; exit 2; }
+  [[ ! -e "${RUN_OUT}" ]] || { echo "ID166 output already exists" >&2; exit 2; }
   mkdir -p "${RUN_OUT}" "${CHECKPOINT_DIR}"
 else
   [[ -f "${CHECKPOINT_DIR}/global_step_1/joint_checkpoint_complete.json" ]]
@@ -90,7 +90,7 @@ source /project/peilab/atst/flower/.env
 set +a
 export WANDB_PROJECT=vagen
 export WANDB_NAME=${RUN_NAME}
-export WANDB_RUN_ID=nimloth-id165-joint-update-gate
+export WANDB_RUN_ID=nimloth-id166-joint-update-gate
 export WANDB_RESUME=allow
 export WANDB_DIR=${RUN_OUT}/wandb
 unset PYTORCH_CUDA_ALLOC_CONF 2>/dev/null || true
@@ -152,7 +152,7 @@ fd,name=tempfile.mkstemp(prefix='.phase_status.',suffix='.tmp',dir=out)
 with os.fdopen(fd,'w',encoding='utf-8') as f: json.dump(payload,f,indent=2); f.write('\n')
 os.replace(name,out/'phase_status.json')
 PY
-  [[ "${RUNTIME_ROOT}" == /tmp/id165-* ]] && rm -rf -- "${RUNTIME_ROOT}"
+  [[ "${RUNTIME_ROOT}" == /tmp/id166-* ]] && rm -rf -- "${RUNTIME_ROOT}"
   exit "${status}"
 }
 trap cleanup EXIT
@@ -162,10 +162,10 @@ import hashlib, json, sys
 from pathlib import Path
 vagen=Path(sys.argv[1]); out=Path(sys.argv[2]); url=sys.argv[3]
 for name in ('train','val'):
- src=vagen/'examples/train/navigation'/f'{name}_navigation_joint_id165.yaml'
+ src=vagen/'examples/train/navigation'/f'{name}_navigation_joint_id166.yaml'
  text=src.read_text()
  assert 'http://127.0.0.1:8000' in text
- dst=out/f'{name}_navigation_joint_id165.yaml'
+ dst=out/f'{name}_navigation_joint_id166.yaml'
  dst.write_text(text.replace('http://127.0.0.1:8000',url))
 asset=vagen/'vagen/envs/navigation/assets/base_train.json'
 tasks=json.loads(asset.read_text())['tasks']
@@ -173,23 +173,23 @@ assert len(tasks)==1200
 asset_sha=hashlib.sha256(asset.read_bytes()).hexdigest()
 assert asset_sha=='eb0aa69186604cedc6dc6c2a8874393beae09b7ac1dadae5458e87492b5e01e9'
 (out/'source_hashes.json').write_text(json.dumps({
- 'train_config_sha256':hashlib.sha256((vagen/'examples/train/navigation/train_navigation_joint_id165.yaml').read_bytes()).hexdigest(),
- 'val_config_sha256':hashlib.sha256((vagen/'examples/train/navigation/val_navigation_joint_id165.yaml').read_bytes()).hexdigest(),
+ 'train_config_sha256':hashlib.sha256((vagen/'examples/train/navigation/train_navigation_joint_id166.yaml').read_bytes()).hexdigest(),
+ 'val_config_sha256':hashlib.sha256((vagen/'examples/train/navigation/val_navigation_joint_id166.yaml').read_bytes()).hexdigest(),
  'base_train_sha256':asset_sha,
  'base_train_task_count':len(tasks),
  'first_train_task':{'scene':tasks[0]['scene'],'target':tasks[0]['targetObjectType']},
 },indent=2)+'\n')
 PY
-export ID165_TRAIN_CONFIG=${PHASE_OUT}/train_navigation_joint_id165.yaml
-export ID165_VAL_CONFIG=${PHASE_OUT}/val_navigation_joint_id165.yaml
-export ID165_MODEL=${MODEL}
-export ID165_AGENT_CONFIG=${VAGEN}/vagen/configs/agent_no_concat.yaml
-export ID165_RUN_NAME=${RUN_NAME}
-export ID165_RUN_OUT=${RUN_OUT}
+export ID166_TRAIN_CONFIG=${PHASE_OUT}/train_navigation_joint_id166.yaml
+export ID166_VAL_CONFIG=${PHASE_OUT}/val_navigation_joint_id166.yaml
+export ID166_MODEL=${MODEL}
+export ID166_AGENT_CONFIG=${VAGEN}/vagen/configs/agent_no_concat.yaml
+export ID166_RUN_NAME=${RUN_NAME}
+export ID166_RUN_OUT=${RUN_OUT}
 
 if [[ "${PHASE}" == update_1 ]]; then
   cat >"${RUN_OUT}/README.md" <<EOF
-# ID165 DP8 joint-update and exact-resume smoke
+# ID166 DP8 joint-update and exact-resume smoke
 
 - project/run: vagen / ${RUN_NAME}
 - purpose: non-production two-phase target-DP8 joint update and resume gate
@@ -236,7 +236,7 @@ for _ in $(seq 1 90); do
 done
 curl -fsS --max-time 5 "${ENV_URL}/health" >/dev/null
 
-timeout --signal=TERM --kill-after=10s 300s "${PY}" -m nimloth.environment.navigation.prewarm --env-url "${ENV_URL}" --eval-set base_train --seed 0 --timeout-seconds 300 --env-id "id165-prewarm-${PHASE}-${SLURM_JOB_ID}" | tee "${PHASE_OUT}/prewarm.json"
+timeout --signal=TERM --kill-after=10s 300s "${PY}" -m nimloth.environment.navigation.prewarm --env-url "${ENV_URL}" --eval-set base_train --seed 0 --timeout-seconds 300 --env-id "id166-prewarm-${PHASE}-${SLURM_JOB_ID}" | tee "${PHASE_OUT}/prewarm.json"
 
 nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits -l 1 >"${PHASE_OUT}/nvidia_smi.csv" 2>"${PHASE_OUT}/nvidia_smi.err" &
 NVIDIA_PID=$!
@@ -245,7 +245,7 @@ PHASE_OVERRIDES=()
 if [[ "${PHASE}" == resume_update_2 ]]; then
   PHASE_OVERRIDES+=(joint_integration_gate.phase=resume_update_2 trainer.total_training_steps=2 trainer.total_epochs=2 trainer.resume_mode=auto)
 fi
-COMMAND=("${PY}" -m vagen.main_ppo --config-path="${VAGEN}/vagen/configs" --config-name=joint_id165_gate "hydra.run.dir=${PHASE_OUT}/hydra" hydra.job.chdir=false "${PHASE_OVERRIDES[@]}")
+COMMAND=("${PY}" -m vagen.main_ppo --config-path="${VAGEN}/vagen/configs" --config-name=joint_id166_gate "hydra.run.dir=${PHASE_OUT}/hydra" hydra.job.chdir=false "${PHASE_OVERRIDES[@]}")
 printf '%q ' "${COMMAND[@]}" >"${PHASE_OUT}/command.sh"; printf '\n' >>"${PHASE_OUT}/command.sh"
 setsid timeout --signal=TERM --kill-after=30s "${PHASE_TIMEOUT_SECONDS}s" "${COMMAND[@]}" >"${PHASE_OUT}/train.log" 2>&1 &
 TRAIN_PID=$!
