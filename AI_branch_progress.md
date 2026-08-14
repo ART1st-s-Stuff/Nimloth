@@ -4697,3 +4697,10 @@
 - 人类指出资源优化不等于赶工或放弃正确性；应把相互依赖的内部实现组成较大且有外部意义的milestone，再统一执行完整测试/review/提交/push。
 - 已登记`E0096`。此前逐helper重复昂贵门禁的做法停止；正确性、审计、fail-closed和TDD不降低。
 - 下一个统一milestone为optimizer-free production guided rollout wiring：CPU frozen-Q owner/snapshot transport、batch pin/CAS、stable sample-repeat-turn identity、capture→score→keyed draw→behavior→`step_guided`及DataProto provenance一次接通；不含optimizer，不解除trainer fail-closed。中间仅做必要定位检查，完成后统一跑相关全套、真实Ray runtime和独立review。
+
+## 2026-08-14：optimizer-free production wiring 发布，ID163在clean gate失败
+
+- production wiring已在parent`3d964cee`/VAGEN`18a04bb1`完成并发布：same-generation capture→独立CPU frozen-Q Ray actor→batch pin→keyed Scheme-B draw→response/behavior/execution authorization→真实`step_guided`→ledger/DataProto provenance全部接通；扩大回归`514 passed,75 subtests`，两轮独立Opus review均`APPROVED`，trainer仍保持fail closed。
+- 人类批准TP8 held-out gate参数：alpha=1、beta=1、prior temperature=1、score dtype=float32、draw seed42、snapshot source step776。launch/result provenance加固发布为parent`7f0bb8c8`、VAGEN`3931dc0b`、VERL`084f042b`；定向`20 passed`，ID74 snapshot CPU preflight得到FP32 snapshot`sha256:af45df...`，held-out base/base_train scene overlap为0，launch review`APPROVED`。
+- ID163使用hold Job`518764`的`normal/dgx-18`单节点8×H800、64CPU、256GiB；8卡均0MiB且ECC0。实际run在clean-worktree preflight中退出，尚未执行checkpoint hash、AI2-THOR、Ray、vLLM/model、rollout或environment step：此前CPU snapshot preflight未设置`PYTHONDONTWRITEBYTECODE=1`，在正式worktree的`external/le-wm`生成了未跟踪`__pycache__/`，runner正确fail closed。
+- ID163无`one_turn_result.json`、无指标或guided-policy结论；`owned_processes_after.log`为空，输出状态与root cause已写入结果目录`failure_analysis.md`。该run不可resume，重试必须使用新数字ID、空输出目录和全新clean worktree；已登记`E0098`。hold`518764`仍保留用于按合同启动新ID。
