@@ -18,9 +18,10 @@ grep -q 'Partition=normal' <<<"${JOB_DETAILS}"
 grep -q 'NumNodes=1' <<<"${JOB_DETAILS}"
 grep -q 'TimeLimit=01:00:00' <<<"${JOB_DETAILS}"
 grep -Eq 'ReqTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
+grep -Eq 'ReqTRES=[^ ]*mem=256G([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*cpu=64([, ]|$)' <<<"${JOB_DETAILS}"
-grep -Eq 'AllocTRES=[^ ]*mem=256G' <<<"${JOB_DETAILS}"
+grep -q 'MinMemoryNode=256G' <<<"${JOB_DETAILS}"
 NODE=$(squeue -h -j "${HOLD_JOB}" -o '%N')
 [[ -n "${NODE}" && "${NODE}" != '(null)' && "${NODE}" != dgx-51 ]]
 

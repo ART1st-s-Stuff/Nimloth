@@ -4689,3 +4689,9 @@
 - 精确parent`52763b26`/VAGEN`b6c60521`/VERL`42cb2f12`的fresh preflight worktree通过扩大回归`315 passed,115 subtests`；production worktree未做import/test且四层repo clean。runner将两个phase timeout限制为各1600秒，并绑定`base_train.json` 1200 tasks及SHA256 `eb0aa691...`。
 - hold Job`519040`实际于`normal/dgx-26`获得单节点8GPU/64CPU allocation，但外部queue controller没有向strict launcher传`REPO`和三个expected Git SHA。launcher在`srun`前立即fail closed，controller取消hold；`sacct`为`CANCELLED`、elapsed 5秒。未启动phase runner、Python、Ray、vLLM、AI2-THOR、rollout、optimizer、checkpoint或W&B，ID165正式输出目录仍不存在。
 - 失败记录在服务器`outputs/experiments/training/rl/slurm/id165-hold-519040.metadata.md`；无checkpoint可resume。已登记`E0101`。后续fresh hold的controller必须显式传入四个required identity env；本次没有phase或run output，因此ID165两阶段gate仍完全未运行。
+
+## 2026-08-14：ID165第二个hold暴露Slurm memory字段差异
+
+- 修正controller identity后，fresh hold Job`519083`立即在`normal/dgx-26`获得8GPU/64CPU/256GiB allocation。strict launcher仍在`srun`前退出，因为它要求`AllocTRES`含`mem=256G`。
+- 真实`scontrol/sacct`显示`ReqTRES`含`mem=256G`、`MinMemoryNode=256G`、`ReqMem=256G`，但该cluster的`AllocTRES`只列CPU/GPU/node。hold在45秒后取消；仍未启动phase、Python、GPU process、output或W&B，ID165输出目录保持不存在。
+- launcher现改为以`ReqTRES + MinMemoryNode`核验memory，同时保留`AllocTRES` CPU/GPU门禁；RED/GREEN source test已覆盖。失败metadata在服务器`outputs/experiments/training/rl/slurm/id165-hold-519083.metadata.md`，已登记`E0102`。
