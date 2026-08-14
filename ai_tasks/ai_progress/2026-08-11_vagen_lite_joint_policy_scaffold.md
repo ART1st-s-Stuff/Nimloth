@@ -170,3 +170,8 @@
 - custom HTTP replica registry与FSDP worker rollout-class registry是两套接口。此次未启动vLLM/generation/rollout/update/checkpoint/W&B/phase2；cleanup完整，ID166不可resume/复用。
 - TDD修复：VERL`494f2644`新增strict/idempotent external rollout class registration，VAGEN`c8c048d`在external lib import时把custom name映射到stock `vLLMAsyncRollout`并保留Nimloth HTTP replica。fresh-process和冲突测试通过；扩大回归`319 passed,115 subtests`。已登记`E0104`。
 - 再次GPU retry需新数字ID和人类批准；production gate不变。
+
+## 2026-08-14：ID167 hold 519148在旧VERL SHA gate退出
+
+- ID167 preflight通过，但batch-owned Job`519148`在allocation后因launcher/runner仍硬编码旧VERL `42cb2f12`而1秒退出；candidate实际为`494f2644`。无phase/output/Python/GPU workload，ID167 identity未使用。
+- 两处strict gate和source test已同步当前完整SHA；metadata为`outputs/experiments/training/rl/slurm/id167-hold-519148.metadata.md`，登记`E0105`。

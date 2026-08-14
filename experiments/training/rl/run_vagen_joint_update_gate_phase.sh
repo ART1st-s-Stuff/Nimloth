@@ -30,7 +30,7 @@ PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-1600}
 
 [[ "${PHASE}" == update_1 || "${PHASE}" == resume_update_2 ]]
 [[ "${RUN_NAME}" == 167_smoke_vagenlite_jointupdate_dp8_tp8_base_train8_t2_a1b1_g099_l095_clip02_akl001_ent001 ]]
-[[ "${EXPECTED_VERL_COMMIT}" == 42cb2f129357ffdd2c58f338d78da4dc91e3412e ]]
+[[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
 [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-}}" == 1 ]]
 [[ "${SLURM_CPUS_PER_TASK:-}" == 64 ]]

@@ -10,7 +10,7 @@ RUN_NAME=167_smoke_vagenlite_jointupdate_dp8_tp8_base_train8_t2_a1b1_g099_l095_c
 RUN_DATE=2026-08-14
 RUNNER=${REPO}/experiments/training/rl/run_vagen_joint_update_gate_phase.sh
 
-[[ "${EXPECTED_VERL_COMMIT}" == 42cb2f129357ffdd2c58f338d78da4dc91e3412e ]]
+[[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ -x "${RUNNER}" ]]
 JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}" -o)
 grep -q 'JobState=RUNNING' <<<"${JOB_DETAILS}"
