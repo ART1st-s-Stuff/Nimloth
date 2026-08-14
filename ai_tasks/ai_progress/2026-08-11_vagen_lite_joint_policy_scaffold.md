@@ -175,3 +175,10 @@
 
 - ID167 preflight通过，但batch-owned Job`519148`在allocation后因launcher/runner仍硬编码旧VERL `42cb2f12`而1秒退出；candidate实际为`494f2644`。无phase/output/Python/GPU workload，ID167 identity未使用。
 - 两处strict gate和source test已同步当前完整SHA；metadata为`outputs/experiments/training/rl/slurm/id167-hold-519148.metadata.md`，登记`E0105`。
+
+## 2026-08-14：ID167真实rollout的terminal capture失败
+
+- Job`519150`通过actor/ref、TP8 vLLM、custom registry/capture与W&B并进入真实rollout；terminal生成以action_start stop token结束，但hidden forward只包含K16。普通capture错误要求action-start hidden/action logits，导致TP ranks fail closed。
+- 无完整batch/update/checkpoint/phase2；W&B run为`crashed`，cleanup完整，ID167不可resume/复用。
+- parent`8962bd68`/VAGEN`743eb16`新增独立terminal latent-only schema/pop，不执行LM head且严格拒绝action evidence；普通turn capture不变。fresh`25 passed,7 subtests`，扩大`322 passed,115 subtests`。登记`E0106`。
+- 新GPU retry需新数字ID与人类批准。
