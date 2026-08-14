@@ -14,9 +14,9 @@
 - VAGEN M1 commit：`45cb9928a8d9316037e1fb86c0dff3d004705097`
 - VAGEN M2 contract commit：`25da71df5f1408d54b4b761ff40c985d9118c99c`
 - VAGEN confirmed gradient/Q-target contract commit：`0a23ab3923bcef4cbda89380353c312dab77319a`
-- 当前父仓库commit：`fc53b592d683f6925362919a364068c812855870`
-- 当前VAGEN commit：`f4fdd83f6fb4f848f51ffdc89b0bc2366584d039`
-- VERL gitlink：`d952ad1634a9c2221bfebe7b817cc4324acac841`
+- 当前父仓库commit：`5f55967a7c61f2a3fd46cff3fa3f1102658b105f`
+- 当前VAGEN commit：`2a32f2f679ef296916f8743c9fbc4497ba65b749`
+- VERL gitlink：`42cb2f129357ffdd2c58f338d78da4dc91e3412e`
 
 ## 当前计划
 
@@ -126,7 +126,9 @@
 - VERL`d952ad16`在current actor同次transformer replay中返回action-boundary raw logits，并支持严格custom actor class。VAGEN`f4fdd83f`的custom FSDP actor用rollout persisted frozen Q计算实际guided-action PPO ratio/clipping，另算token reference low-var KL和guided entropy；current `JointActionValueCritic`在8个actor rank复制并DDP all-reduce selected-action Huber梯度。
 - driver transaction只在所有rank update和critic/optimizer fingerprint一致后，由rank0导出source-step+1 snapshot；确认batch unpin后stage/CAS activate。checkpoint sidecar绑定完整训练合同、run seed、critic optimizer和active owner，stateful dataloader与sidecar原子落盘后才写completion marker；auto-resume忽略中途失败目录并重验digest/rank/activation/snapshot。
 - 正式数值参数无默认值：actor/critic AdamW、actor scheduler/grad clip、gamma/lambda/PPO clip、KL/entropy、Huber/critic clip和checkpoint frequency均须显式提供。物理门禁固定单节点actor DP8、rollout TP8/DP1、无sequence parallel；stock scalar critic/advantage/token PPO路径关闭。
-- 当前仅完成dependency-light/source验证：`40 passed,8 skipped`、636文件AST parse与`diff --check`；skip对应本地无Torch。两次server SSH均报`Connection closed by UNKNOWN port 65535`，尚未运行完整Torch、真实Ray、DP8 short update或interrupted-resume，所以production trainer继续fail closed，未启动任何训练/Slurm任务。
+- VPN恢复后在每轮全新、精确SHA、四层clean的server test worktree完成真实依赖门禁：定向Torch/contract/DataProto/actor-update/checkpoint/Ray为`72 passed,40 subtests`，扩大VAGEN与parent相关回归为`309 passed,115 subtests`。覆盖same-forward action logits、真实DataProto target compiler、一次CPU gloo custom actor+DDP current critic update、critic/AdamW逐bit恢复、atomic sidecar/data digest、incomplete checkpoint排除、custom class resolution及local Ray frozen-owner restore。
+- server RED修复了真实TensorDict key迭代和0维Adam step fingerprint两个生产bug；另修正task-failure fixture及CPU测试误走CUDA FlashAttention。所有轮次使用`PYTHONDONTWRITEBYTECODE=1`与禁用pytest cache，结束后parent/VAGEN/VERL/le-wm均clean。
+- target DP8 FSDP/vLLM short update和分布式trainer interrupted-resume仍未运行，正式数值参数也未确认；production trainer继续fail closed。本阶段未申请Slurm或启动训练实验。
 - `E0100`记录本轮已发生的preflight错误：`compileall`即使设置`PYTHONDONTWRITEBYTECODE=1`也会写`.pyc`；误生成cache已排除既有`external/le-wm`后清理，后续clean-worktree只用`ast.parse`做只读语法检查。
 
 ## 待确认问题
