@@ -205,3 +205,8 @@
 
 - 人类批准同合同新ID170两阶段重跑。phase runtime root缩为`/tmp/i170-$JOB-p1|p2`且不再重复`/ray`；worst-case测试完整plasma socket 89 bytes <=107。
 - identity/config/dataset/W&B/output迁移到ID170，运行日期Aug15；VAGEN candidate`6428834`。
+
+## 2026-08-15：ID170 dgx-13 render preflight失败
+
+- Job`519245`在dgx-13的direct AI2-THOR render固定150秒门禁超时；无env/Ray/W&B/model/update/checkpoint且cleanup为空。
+- ID170不可复用；不延长timeout。新ID即时重试需排除dgx-13并保留short Ray path修复。

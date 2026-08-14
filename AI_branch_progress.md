@@ -4760,3 +4760,9 @@
 - ID170沿用ID169全部数值/数据/训练冻结/资源合同，从phase1重新运行；全新output和W&B identity。
 - 修复Ray AF_UNIX边界：phase tag缩为`p1|p2`，runtime root为`/tmp/i170-$JOB-$TAG`，`RAY_TMPDIR`直接使用该短root。代表性8位job id和Ray session suffix的完整plasma socket为89 bytes，小于107；保留phase隔离。
 - launcher运行日期同步为2026-08-15。shell与5项launcher合同本地通过；VAGEN candidate`6428834`，VERL不变`494f2644`。待exact-SHA server回归和fresh worktree后提交。
+
+## 2026-08-15：ID170在dgx-13 direct render preflight超时
+
+- Job`519245`等待约1小时后获`normal/dgx-13` 8×H800/64CPU/256GiB，Vulkan setup通过，但FloorPlan1 direct AI2-THOR render 150秒内无输出，phase1以124失败。
+- 无env server、Ray、W&B、模型、rollout、update或checkpoint；cleanup为空。ID170不可复用，短Ray runtime-path修复尚未进入实际phase2验证。
+- 不放宽render timeout；立即新ID重试应在既有`dgx-32,dgx-37,dgx-51`外暂时排除`dgx-13`。单次事件不足以声明该节点永久故障。
