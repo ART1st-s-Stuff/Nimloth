@@ -4754,3 +4754,9 @@
 - phase2 render/prewarm通过，但`RUNTIME_ROOT=/tmp/id169-519217-phase2_resume_update`加Ray session/plasma socket后超过AF_UNIX 107-byte上限，在`ray.init`、worker/model/checkpoint load前失败。step1完整且hash不变，无step2，cleanup为空。
 - ID169不能复用；该结果证明target-DP8 update/checkpoint，不证明exact distributed resume。后续新ID必须使用短phase-specific Ray runtime root并静态验证worst-case socket长度。登记`E0108`。
 - 启动计划原记Aug15输出，launcher固定`RUN_DATE=2026-08-14`，实际使用fresh Aug14/ID169目录；已诚实补记，不影响run identity或训练合同。
+
+## 2026-08-15：人类批准ID170 exact-resume重试
+
+- ID170沿用ID169全部数值/数据/训练冻结/资源合同，从phase1重新运行；全新output和W&B identity。
+- 修复Ray AF_UNIX边界：phase tag缩为`p1|p2`，runtime root为`/tmp/i170-$JOB-$TAG`，`RAY_TMPDIR`直接使用该短root。代表性8位job id和Ray session suffix的完整plasma socket为89 bytes，小于107；保留phase隔离。
+- launcher运行日期同步为2026-08-15。shell与5项launcher合同本地通过；VAGEN candidate`6428834`，VERL不变`494f2644`。待exact-SHA server回归和fresh worktree后提交。

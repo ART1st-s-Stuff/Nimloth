@@ -6,8 +6,8 @@ HOLD_JOB=${1:?usage: launch_vagen_joint_update_gate_on_hold.sh HOLD_JOB}
 : "${EXPECTED_PARENT_COMMIT:?EXPECTED_PARENT_COMMIT is required}"
 : "${EXPECTED_VAGEN_COMMIT:?EXPECTED_VAGEN_COMMIT is required}"
 : "${EXPECTED_VERL_COMMIT:?EXPECTED_VERL_COMMIT is required}"
-RUN_NAME=169_smoke_vagenlite_jointupdate_dp8_tp8_base_train8_t2_a1b1_g099_l095_clip02_akl001_ent001
-RUN_DATE=2026-08-14
+RUN_NAME=170_smoke_vagenlite_jointupdate_dp8_tp8_base_train8_t2_a1b1_g099_l095_clip02_akl001_ent001
+RUN_DATE=2026-08-15
 RUNNER=${REPO}/experiments/training/rl/run_vagen_joint_update_gate_phase.sh
 
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
