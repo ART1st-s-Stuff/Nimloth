@@ -156,3 +156,10 @@
 
 - fixed launcher进入Slurm step`519090.0`，但runner的重复`AllocTRES mem`断言在output创建前退出；step `FAILED 1:0` elapsed1秒，hold29秒后取消。无phase runtime/GPU workload/output/checkpoint/W&B。
 - runner已同步改为`ReqTRES + MinMemoryNode`；source test现覆盖launcher和runner两处。metadata：`outputs/experiments/training/rl/slurm/id165-hold-519090.metadata.md`。
+
+## 2026-08-14：ID165 phase1在HFUploadManager constructor失败
+
+- Job`519097.1`通过allocation/checkpoint/render/health/`base_train` prewarm与VERL config validation；`RayPPOTrainer`构造时因direct ID165 Hydra root遗漏`huggingface_hub`，普通dict fallback被`OmegaConf.to_container`拒绝。
+- 模型worker未创建；GPU保持environment-only约287MiB，无rollout/update/checkpoint/W&B/phase2。hold8m05s后取消，owned processes为空。ID165 output已写README/failure analysis且不可resume/复用。
+- TDD修复：VAGEN RED`777e23a`真实构造HF manager失败；GREEN`d69837c`显式disabled HF config。full composed manager preflight通过，fresh扩大回归`316 passed,115 subtests`、四层clean。登记`E0103`。
+- 下一次GPU运行需要人类批准新数字integration ID与新输出；通用production trainer继续fail closed。
