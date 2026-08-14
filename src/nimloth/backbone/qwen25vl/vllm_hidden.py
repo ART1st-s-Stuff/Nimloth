@@ -286,6 +286,32 @@ class PolicyStateCaptureWorkerExtension:
                         (token_id, hidden[index].detach().clone())
                     )
 
+    def _nimloth_select_latent_state(
+        self,
+        entries: list[tuple[int, torch.Tensor]],
+        *,
+        request_id: str,
+        spec: _PolicyStateCaptureSpec,
+    ) -> torch.Tensor:
+        expected = spec.latent_token_ids
+        captured_ids = tuple(token_id for token_id, _hidden in entries)
+        start = None
+        width = len(expected)
+        for index in range(len(captured_ids) - width, -1, -1):
+            if captured_ids[index : index + width] == expected:
+                start = index
+                break
+        if start is None:
+            raise RuntimeError(
+                "vLLM did not capture the generated terminal latent sequence: "
+                f"request_id={request_id!r}, expected={expected}, "
+                f"captured={captured_ids}"
+            )
+        return torch.stack(
+            [hidden for _token_id, hidden in entries[start : start + width]],
+            dim=0,
+        )
+
     def _nimloth_select_policy_state(
         self,
         entries: list[tuple[int, torch.Tensor]],
@@ -393,6 +419,34 @@ class PolicyStateCaptureWorkerExtension:
                 f"{sorted(results)}"
             )
         return next(iter(results.values()))
+
+    def nimloth_pop_latent_state_capture_for_request(
+        self,
+        request_id: str,
+    ) -> dict[str, list[list[float]]]:
+        """Return K latent rows without requiring or scoring action_start."""
+
+        identity = str(request_id)
+        specs = getattr(self, "_nimloth_request_capture_specs", {})
+        if identity not in specs:
+            raise RuntimeError(
+                f"policy state capture for request {identity!r} is not active"
+            )
+        entries = getattr(self, "_nimloth_request_capture_entries", {})
+        try:
+            latent_hidden = self._nimloth_select_latent_state(
+                entries.get(identity, []),
+                request_id=identity,
+                spec=specs[identity],
+            )
+            return {"latent_hidden": latent_hidden.float().cpu().tolist()}
+        finally:
+            specs.pop(identity, None)
+            entries.pop(identity, None)
+            getattr(self, "_nimloth_prepared_request_captures", {}).pop(
+                identity,
+                None,
+            )
 
     def nimloth_prepare_policy_state_capture_for_request(
         self,
@@ -605,6 +659,68 @@ def pop_policy_state_captures(
     }
 
 
+def _validated_latent_hidden(
+    results: list[dict[str, Any]],
+    *,
+    request_id: str,
+) -> torch.Tensor:
+    tensors: list[torch.Tensor] = []
+    for rank, result in enumerate(results):
+        if set(result) != {"latent_hidden"}:
+            raise RuntimeError(
+                f"vLLM TP rank {rank} returned terminal action evidence for "
+                f"request {request_id!r}"
+            )
+        try:
+            tensor = torch.as_tensor(result["latent_hidden"], dtype=torch.float32)
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"vLLM TP rank {rank} returned invalid terminal latent state"
+            ) from exc
+        if (
+            tensor.ndim != 2
+            or tensor.shape[0] < 1
+            or tensor.shape[1] < 1
+            or not torch.isfinite(tensor).all()
+        ):
+            raise RuntimeError(
+                f"vLLM TP rank {rank} returned invalid terminal latent state"
+            )
+        tensors.append(tensor)
+    reference = tensors[0]
+    for rank, value in enumerate(tensors[1:], start=1):
+        if value.shape != reference.shape or not torch.allclose(
+            value,
+            reference,
+            rtol=1e-4,
+            atol=1e-5,
+        ):
+            raise RuntimeError(
+                f"vLLM TP rank {rank} terminal latent state differs from rank 0 "
+                f"for request {request_id!r}"
+            )
+    return reference
+
+
+async def async_pop_latent_state_capture_for_request(
+    engine: Any,
+    *,
+    request_id: str,
+) -> torch.Tensor:
+    """Return TP-consistent K rows for a terminal trace without LM-head work."""
+
+    identity = str(request_id)
+    results = await engine.collective_rpc(
+        "nimloth_pop_latent_state_capture_for_request",
+        args=(identity,),
+    )
+    if not results or not all(isinstance(value, dict) for value in results):
+        raise RuntimeError(
+            f"vLLM workers returned incomplete terminal state for request {identity!r}"
+        )
+    return _validated_latent_hidden(results, request_id=identity)
+
+
 async def async_pop_policy_state_capture_for_request(
     engine: Any,
     *,
@@ -681,6 +797,7 @@ __all__ = [
     "VLLMPolicyState",
     "abort_policy_state_capture",
     "async_abort_policy_state_capture_for_request",
+    "async_pop_latent_state_capture_for_request",
     "async_pop_policy_state_capture_for_request",
     "async_start_policy_state_capture_for_request",
     "pop_policy_state_capture",
