@@ -8,7 +8,8 @@ VAGEN=${REPO}/external/VAGEN
 VERL=${VAGEN}/verl
 PY=${ROOT}/.venv-vagen-main/bin/python3
 PARENT_COMMIT=${EXPECTED_PARENT_COMMIT}
-VAGEN_COMMIT=6ad75d687698bce923cada6e06350b63e19498c4
+: "${EXPECTED_VAGEN_COMMIT:?EXPECTED_VAGEN_COMMIT is required}"
+VAGEN_COMMIT=${EXPECTED_VAGEN_COMMIT}
 VERL_COMMIT=084f042b71b8fe03785a279cf227f4085def0391
 VERL_BASE_COMMIT=3fe0a29975e1b02ae2bd1dec249f7807dd7966f5
 MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
@@ -33,6 +34,13 @@ TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-8}
 EXPECTED_HOLD_WALLTIME=${EXPECTED_HOLD_WALLTIME:-00:45:00}
 SMOKE_TIMEOUT_SECONDS=${SMOKE_TIMEOUT_SECONDS:-1500}
 EVIDENCE_MODE=${EVIDENCE_MODE:-tp8_gate}
+GUIDED_MODE=false
+JOINT_ALPHA=${JOINT_ALPHA:-}
+JOINT_BETA=${JOINT_BETA:-}
+JOINT_PRIOR_TEMPERATURE=${JOINT_PRIOR_TEMPERATURE:-}
+JOINT_SCORE_DTYPE=${JOINT_SCORE_DTYPE:-}
+JOINT_RUN_SEED=${JOINT_RUN_SEED:-}
+JOINT_SNAPSHOT_SOURCE_STEP=${JOINT_SNAPSHOT_SOURCE_STEP:-}
 
 [[ "${EXPECTED_HOLD_GPUS}" =~ ^[1-9][0-9]*$ ]]
 [[ "${EXPECTED_STEP_GPUS}" =~ ^[1-9][0-9]*$ ]]
@@ -49,9 +57,32 @@ case "${EVIDENCE_MODE}" in
     [[ "${EXPERIMENT_ID}" == "162" ]]
     [[ "${EXPECTED_HOLD_GPUS}:${EXPECTED_STEP_GPUS}:${TENSOR_PARALLEL_SIZE}:${EXPECTED_HOLD_WALLTIME}:${SMOKE_TIMEOUT_SECONDS}" == "7:4:4:00:20:00:900" ]]
     ;;
+  guided_tp8_gate)
+    [[ "${EXPERIMENT_ID}" == "163" ]]
+    [[ "${EXPECTED_HOLD_GPUS}:${EXPECTED_STEP_GPUS}:${TENSOR_PARALLEL_SIZE}:${EXPECTED_HOLD_WALLTIME}:${SMOKE_TIMEOUT_SECONDS}" == "8:8:8:00:45:00:1500" ]]
+    [[ "${JOINT_ALPHA}:${JOINT_BETA}:${JOINT_PRIOR_TEMPERATURE}:${JOINT_SCORE_DTYPE}:${JOINT_RUN_SEED}:${JOINT_SNAPSHOT_SOURCE_STEP}" == "1:1:1:float32:42:776" ]]
+    GUIDED_MODE=true
+    ;;
   *) echo "unsupported evidence mode: ${EVIDENCE_MODE}" >&2; exit 2 ;;
 esac
-export EVIDENCE_MODE
+export EVIDENCE_MODE GUIDED_MODE JOINT_ALPHA JOINT_BETA
+export JOINT_PRIOR_TEMPERATURE JOINT_SCORE_DTYPE JOINT_RUN_SEED
+export JOINT_SNAPSHOT_SOURCE_STEP
+SMOKE_EXTRA_ARGS=()
+if [[ "${GUIDED_MODE}" == true ]]; then
+  SMOKE_EXTRA_ARGS+=(
+    --guided
+    --critic-checkpoint "${MODEL}"
+    --critic-qwen-hidden-dim 2048
+    --critic-state-dim 1024
+    --joint-alpha "${JOINT_ALPHA}"
+    --joint-beta "${JOINT_BETA}"
+    --joint-prior-temperature "${JOINT_PRIOR_TEMPERATURE}"
+    --joint-score-dtype "${JOINT_SCORE_DTYPE}"
+    --joint-run-seed "${JOINT_RUN_SEED}"
+    --joint-snapshot-source-step "${JOINT_SNAPSHOT_SOURCE_STEP}"
+  )
+fi
 
 ALLOCATED_NODES=${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-${SLURM_STEP_NUM_NODES:-}}}
 [[ "${ALLOCATED_NODES}" == "1" ]]
@@ -157,6 +188,7 @@ payload={
   'status': 'passed' if status == 0 and result.is_file() else 'failed',
   'result_exists': result.is_file(),
   'evidence_mode': os.environ['EVIDENCE_MODE'],
+  'guided': os.environ['GUIDED_MODE'] == 'true',
   'does_not_substitute_for_tp8_gate': os.environ['EVIDENCE_MODE'] == 'tp4_interim_diagnostic',
 }
 fd,name=tempfile.mkstemp(prefix='.final_status.',suffix='.tmp',dir=out)
@@ -196,9 +228,16 @@ trap cleanup EXIT
   echo "verl_commit=${VERL_COMMIT}"
   echo "verl_base_commit=${VERL_BASE_COMMIT}"
   echo "checkpoint=${MODEL}"
-  echo "checkpoint_use=HF_policy_weights_only"
-  echo "sidecars_not_loaded=state_proj,wm_predictor,value_head"
-  echo "capture=async_same_generation_K16x2048_raw8_TP${TENSOR_PARALLEL_SIZE}_mm_encoder_data"
+  if [[ "${GUIDED_MODE}" == true ]]; then
+    echo "checkpoint_use=HF_policy_plus_frozen_state_proj_and_value_head"
+    echo "sidecars_loaded=state_proj,value_head"
+    echo "sidecars_not_loaded=wm_predictor"
+    echo "capture=async_same_generation_K16x2048_raw8_CPU_frozen_Q_guided_TP${TENSOR_PARALLEL_SIZE}_mm_encoder_data"
+  else
+    echo "checkpoint_use=HF_policy_weights_only"
+    echo "sidecars_not_loaded=state_proj,wm_predictor,value_head"
+    echo "capture=async_same_generation_K16x2048_raw8_TP${TENSOR_PARALLEL_SIZE}_mm_encoder_data"
+  fi
   echo "evidence_mode=${EVIDENCE_MODE}"
   echo "does_not_substitute_for_tp8_gate=$([[ "${EVIDENCE_MODE}" == tp4_interim_diagnostic ]] && echo true || echo false)"
   echo "data=external/VAGEN/vagen/envs/navigation/assets/base.json"
@@ -206,7 +245,13 @@ trap cleanup EXIT
   echo "split=heldout_base_seed0_FloorPlan11_Bread"
   echo "modules=all_frozen_inference_only"
   echo "optimizer=none"
-  echo "joint_policy=false"
+  echo "joint_policy=${GUIDED_MODE}"
+  if [[ "${GUIDED_MODE}" == true ]]; then
+    echo "joint_policy_config=alpha${JOINT_ALPHA}_beta${JOINT_BETA}_priorT${JOINT_PRIOR_TEMPERATURE}_${JOINT_SCORE_DTYPE}"
+    echo "joint_draw_run_seed=${JOINT_RUN_SEED}"
+    echo "joint_snapshot_source_step=${JOINT_SNAPSHOT_SOURCE_STEP}"
+    echo "joint_snapshot_refresh=none_optimizer_free_one_batch"
+  fi
   echo "checkpoint_output=none"
   echo "resume=none_retry_requires_new_id_and_empty_output"
   echo "resources=normal_1node_hold${EXPECTED_HOLD_GPUS}H800_step${EXPECTED_STEP_GPUS}H800_64CPU_256GiB_${EXPECTED_HOLD_WALLTIME}_Unity_vLLM_TP${TENSOR_PARALLEL_SIZE}"
@@ -217,8 +262,22 @@ trap cleanup EXIT
   echo "ray_tmp=${RAY_TMPDIR}"
 } | tee "${RUN_OUT}/controller.log"
 
-{
-  cat <<EOF
+if [[ "${GUIDED_MODE}" == true ]]; then
+  cat >"${RUN_OUT}/README.md" <<EOF
+# ID${EXPERIMENT_ID} optimizer-free guided VAGEN-Lite one-turn smoke
+
+- Goal: ID74 policy plus frozen StateProjector/ValueHead -> held-out Navigation reset -> real model CoT and K16 same-generation capture -> CPU frozen all-action Q -> manager-keyed Scheme-B draw -> response/behavior authorization -> one explicit guided environment action -> reward/ledger/DataProto validation.
+- This is inference-only. All model and critic modules are frozen; there is no actor/critic optimizer, backward, update, FSDP, snapshot refresh, training checkpoint, or W&B metric stream.
+- Scheme-B diagnostic contract: alpha=${JOINT_ALPHA}, beta=${JOINT_BETA}, prior_temperature=${JOINT_PRIOR_TEMPERATURE}, score_dtype=${JOINT_SCORE_DTYPE}, draw run seed=${JOINT_RUN_SEED}, snapshot source step=${JOINT_SNAPSHOT_SOURCE_STEP}. These protocol-gate values are not a training hyperparameter conclusion.
+- Source: Nimloth ${PARENT_COMMIT}; VAGEN ${VAGEN_COMMIT}; VERL ${VERL_COMMIT} (direct parent ${VERL_BASE_COMMIT}).
+- Data: held-out base seed 0, FloorPlan11 / Bread; base asset SHA256 6b575621a6b15e90e1040dd86d661a5e1ee70134f42fd7f3d61706347449c55a; no overlap with base_train tasks or scenes.
+- Checkpoint: ${MODEL}; HF policy, state_proj.pt, and value_head are loaded read-only. wm_predictor is not loaded.
+- Resource: normal, one node, hold owns ${EXPECTED_HOLD_GPUS} H800 and this step owns ${EXPECTED_STEP_GPUS}; Unity uses step-visible ordinal 0, vLLM uses TP${TENSOR_PARALLEL_SIZE}, and the frozen-Q Ray actor uses one CPU/zero GPU. Allocation is 64 CPU, 256 GiB, walltime ${EXPECTED_HOLD_WALLTIME}; expected execution is about 10--15 minutes based on ID161.
+- Resume: none. Existing output is never overwritten; any retry uses a new numeric ID and empty directory.
+- W&B identity: project nimloth-rl, run name ${RUN_NAME}. The project currently has no matching run; W&B logging stays disabled because this smoke has no training metrics.
+EOF
+else
+  cat >"${RUN_OUT}/README.md" <<EOF
 # ID${EXPERIMENT_ID} optimizer-free VAGEN-Lite one-turn smoke
 
 - Goal: ID74 HF policy load -> real held-out Navigation reset -> model-generated CoT -> forced K16 protocol -> same-generation K16 hidden/raw 8-action logit capture -> one sampled action -> one real environment step -> reward/decision-ledger validation.
@@ -231,14 +290,15 @@ trap cleanup EXIT
 - Resume: none. Existing output is never overwritten; any retry uses a new numeric ID and empty directory.
 - W&B identity: project nimloth-rl, run name ${RUN_NAME}. W&B logging is disabled because the smoke has no training metrics; identity was checked unused before launch.
 EOF
-} >"${RUN_OUT}/README.md"
+fi
 
 printf '%q ' "${PY}" -m vagen.standalone_one_turn_smoke \
   --model "${MODEL}" --env-url "${ENV_URL}" --output "${RUN_RESULT}" \
   --run-name "${RUN_NAME}" --agent-loop-config "${VAGEN}/vagen/configs/agent_no_concat.yaml" \
   --eval-set base --seed 0 --latent-token-count 16 --prompt-length 9000 \
   --response-length 512 --temperature 0 --top-p 1 --gpu-memory-utilization 0.6 \
-  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" --env-timeout 300 >"${RUN_OUT}/command.txt"
+  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" --env-timeout 300 \
+  "${SMOKE_EXTRA_ARGS[@]}" >"${RUN_OUT}/command.txt"
 printf '\n' >>"${RUN_OUT}/command.txt"
 
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${PARENT_COMMIT}" ]]
@@ -353,7 +413,8 @@ setsid timeout --signal=TERM --kill-after=20s "${SMOKE_TIMEOUT_SECONDS}s" \
   --run-name "${RUN_NAME}" --agent-loop-config "${VAGEN}/vagen/configs/agent_no_concat.yaml" \
   --eval-set base --seed 0 --latent-token-count 16 --prompt-length 9000 \
   --response-length 512 --temperature 0 --top-p 1 --gpu-memory-utilization 0.6 \
-  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" --env-timeout 300 >"${RUN_OUT}/smoke.log" 2>&1 &
+  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" --env-timeout 300 \
+  "${SMOKE_EXTRA_ARGS[@]}" >"${RUN_OUT}/smoke.log" 2>&1 &
 SMOKE_PID=$!
 set +e
 wait "${SMOKE_PID}"
@@ -375,8 +436,18 @@ x['launch_evidence']={
   'hold_gpu_count': int(sys.argv[3]),
   'step_gpu_count': int(sys.argv[4]),
   'tensor_parallel_size': int(sys.argv[5]),
+  'guided': os.environ['GUIDED_MODE'] == 'true',
   'does_not_substitute_for_tp8_gate': sys.argv[2] == 'tp4_interim_diagnostic',
 }
+if x['launch_evidence']['guided']:
+  x['launch_evidence']['joint_policy']={
+    'alpha': float(os.environ['JOINT_ALPHA']),
+    'beta': float(os.environ['JOINT_BETA']),
+    'prior_temperature': float(os.environ['JOINT_PRIOR_TEMPERATURE']),
+    'score_dtype': os.environ['JOINT_SCORE_DTYPE'],
+    'run_seed': int(os.environ['JOINT_RUN_SEED']),
+    'snapshot_source_step': int(os.environ['JOINT_SNAPSHOT_SOURCE_STEP']),
+  }
 fd,name=tempfile.mkstemp(prefix='.one_turn_result.',suffix='.tmp',dir=p.parent)
 try:
   with os.fdopen(fd,'w',encoding='utf-8') as f:
@@ -398,8 +469,12 @@ assert x['eval_set']=='base' and x['seed']==0 and x['latent_token_count']==16
 ledger=x['decision_ledger']
 state=x['policy_state']
 evidence=x['launch_evidence']
-assert evidence['mode'] in {'tp8_gate','tp4_interim_diagnostic'}
+guided=evidence['mode']=='guided_tp8_gate'
+assert evidence['mode'] in {'tp8_gate','tp4_interim_diagnostic','guided_tp8_gate'}
 assert evidence['step_gpu_count']==evidence['tensor_parallel_size']
+if guided:
+  assert evidence['tensor_parallel_size']==8
+assert evidence['guided'] is guided and x['guided'] is guided
 assert evidence['does_not_substitute_for_tp8_gate']==(evidence['mode']=='tp4_interim_diagnostic')
 assert state['schema']=='nimloth_policy_state_v2'
 assert len(state['latent_token_ids'])==16 and len(set(state['latent_token_ids']))==16
@@ -412,13 +487,61 @@ assert isinstance(state['request_id'],str) and state['request_id']
 assert isinstance(state['generation_id'],str) and state['generation_id']
 assert state['generation_id']!=state['request_id']
 assert ledger['action_space']=='navigation_v1'
-assert ledger['decision_sources']==['llm_text']
-assert ledger['decision_is_policy_sampled']==[False]
 assert ledger['format_valid'] is True
 assert len(ledger['executed_action_ids'])==1
 assert math.isfinite(float(x['env_turn_reward']))
 assert '<think>' in x['environment_response']
 assert '<|action_start|>' in x['environment_response']
 assert '<|action_end|>' in x['environment_response']
-print(json.dumps({'status':'ALL_OK','evidence_mode':evidence['mode'],'does_not_substitute_for_tp8_gate':evidence['does_not_substitute_for_tp8_gate'],'response_tokens':x['response_token_count'],'action_id':ledger['executed_action_ids'][0],'reward':x['env_turn_reward'],'reward_anchor_index':x['reward_anchor_index'],'policy_state_shape':[len(state['latent_hidden']),len(state['latent_hidden'][0])],'action_logits_shape':[len(state['action_logits'])],'request_id':state['request_id'],'generation_id':state['generation_id']}))
+prior_action_id=ledger['executed_action_ids'][0]
+if guided:
+  assert ledger['schema']=='vagen_decision_ledger_v2_frozen_q_guided'
+  assert ledger['decision_sources']==['frozen_q_guided']
+  assert ledger['decision_is_policy_sampled']==[True]
+  pin=x['joint_policy_batch_pin']
+  score=x['frozen_q_scoring']
+  trace=x['policy_response_trace']
+  draw=x['guided_action_draw']
+  execution=x['guided_action_execution']
+  behavior=ledger['behavior_record']
+  key=draw['draw_key']
+  config=draw['policy_config']
+  assert x['guided_turn_index']==0 and key['turn_index']==0
+  assert pin['schema']=='nimloth_frozen_q_batch_pin_v1'
+  assert pin['policy_step']==0 and pin['snapshot_source_step']==776
+  assert pin['snapshot_id']==score['snapshot_id']==draw['draw_key']['snapshot_id']==ledger['snapshot_id']
+  assert pin['contract_id']==score['contract_id']==draw['contract_id']==ledger['contract_id']
+  assert score['schema']=='nimloth_frozen_q_scoring_v1'
+  assert score['snapshot_source_step']==776 and score['score_dtype']=='float32'
+  assert score['request_id']==trace['request_id']==state['request_id']
+  assert score['generation_id']==trace['generation_id']==state['generation_id']
+  assert score['action_token_ids']==state['action_token_ids']==draw['action_token_ids']
+  assert len(score['prior_logits'])==len(score['frozen_all_action_q'])==8
+  assert all(math.isfinite(float(v)) for v in score['prior_logits']+score['frozen_all_action_q'])
+  assert all(math.isclose(float(a),float(b),rel_tol=0.0,abs_tol=1e-6) for a,b in zip(score['prior_logits'],state['action_logits'],strict=True))
+  assert trace['schema']=='nimloth_policy_response_trace_v1'
+  assert trace['raw_response']==x['environment_response']
+  assert len(trace['response_ids'])==len(trace['response_mask'])==len(trace['response_logprobs'])==x['response_token_count']
+  assert draw['schema']=='vagen_frozen_q_guided_action_draw_v2'
+  assert key['schema']=='vagen_guided_action_draw_key_v1'
+  assert key['run_seed']==42 and key['policy_step']==0
+  assert key['rollout_sample_id']=='standalone:navigation:base:0'
+  assert key['rollout_repeat_index']==0 and key['is_validation'] is True
+  assert config=={'implementation':'frozen_q_guided_v1','alpha':1.0,'beta':1.0,'prior_temperature':1.0,'backprop_to_llm':True,'score_dtype':'float32'}
+  assert draw['prior_logits']==score['prior_logits']
+  assert draw['frozen_all_action_q']==score['frozen_all_action_q']
+  assert 0.0<=float(draw['uniform_draw'])<1.0
+  assert draw['guided_action_id']==behavior['guided_action_id']==ledger['executed_action_ids'][0]
+  assert execution['schema']=='vagen_guided_action_execution_v3'
+  assert execution['behavior_record']==behavior
+  assert execution['behavior_record_id']==ledger['behavior_record_id']
+  assert behavior['snapshot_id']==pin['snapshot_id']
+  assert behavior['frozen_all_action_q']==score['frozen_all_action_q']
+  prior_action_id=behavior['prior_action_id']
+  assert evidence['joint_policy']=={'alpha':1.0,'beta':1.0,'prior_temperature':1.0,'score_dtype':'float32','run_seed':42,'snapshot_source_step':776}
+else:
+  assert ledger['schema']=='vagen_decision_ledger_v1'
+  assert ledger['decision_sources']==['llm_text']
+  assert ledger['decision_is_policy_sampled']==[False]
+print(json.dumps({'status':'ALL_OK','evidence_mode':evidence['mode'],'guided':guided,'does_not_substitute_for_tp8_gate':evidence['does_not_substitute_for_tp8_gate'],'response_tokens':x['response_token_count'],'prior_action_id':prior_action_id,'executed_action_id':ledger['executed_action_ids'][0],'reward':x['env_turn_reward'],'reward_anchor_index':x['reward_anchor_index'],'policy_state_shape':[len(state['latent_hidden']),len(state['latent_hidden'][0])],'action_logits_shape':[len(state['action_logits'])],'request_id':state['request_id'],'generation_id':state['generation_id']}))
 PY
