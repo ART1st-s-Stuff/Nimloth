@@ -4747,3 +4747,11 @@
 - hold elapsed8m05s后取消；owned process audit为空。输出`.../165_smoke.../failure_analysis.md`和README已记录，ID165无checkpoint且不可resume/复用。
 - VAGEN RED`777e23a`新增真实ID165 config→`HFUploadManager` constructor测试并按预期失败；GREEN`d69837c`显式加入disabled HF section。fresh server full composed config constructor通过，扩大回归`316 passed,115 subtests`且四层clean。已登记`E0103`。
 - 任何重试必须使用新数字实验ID与新空输出；当前strict escape hatch仍只允许ID165，因此再次申请GPU前必须由人类批准新的integration smoke ID并相应更新gate/run identity。
+
+## 2026-08-14：ID166进入8-rank actor init后暴露worker rollout registry缺口
+
+- 人类批准ID166沿用ID165 test-only数值与`normal` 1×8 H800资源。为避免login watcher误杀，顶层controller改由Slurm batch自身持有；ID166 candidate为parent`07c4b57d`/VAGEN`7475293`/VERL`42cb2f12`，full composed config、HF manager、dummy-dataset完整`RayPPOTrainer` constructor与扩大`316 passed,115 subtests`均通过。
+- batch-owned Job`519129`在`normal/dgx-39`通过exact SHA、checkpoint hash、direct render、base_train prewarm和trainer constructor；8个worker均加载ID74两片actor、冻结vision、建立FSDP root与optimizer/scheduler。
+- worker随后在`_build_rollout()`失败：Nimloth模块只注册agent-loop的`RolloutReplicaRegistry`，而FSDP worker先查询另一套hard-coded `get_rollout_class(name,mode)` registry；`nimloth_vllm/async`不存在。未构造vLLM server，且无generation/rollout/backward/update/snapshot/checkpoint/W&B/phase2。Job elapsed5m40s，cleanup后owned process为空、dgx-39回8卡free。ID166 output已写README/failure analysis，不可resume/复用。
+- 已登记`E0104`。VERL RED`e43866c5`要求strict external registry与冲突拒绝；VAGEN RED`b1c8293`在fresh process经`import_external_libs`后解析custom worker class。GREEN为VERL`494f2644`新增public idempotent registration API，VAGEN`c8c048d`把`nimloth_vllm/async`映射到stock `vLLMAsyncRollout`，保留独立custom HTTP replica。fresh相关`7 passed`，扩大回归`319 passed,115 subtests`且四层clean。
+- 下一次GPU retry必须使用新数字ID与新空输出；需要人类另行批准。通用production joint trainer继续fail closed。
