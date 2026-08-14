@@ -4700,3 +4700,11 @@
 
 - parent`04da40ef`的launcher已接受真实cluster memory字段并成功进入`srun`，但phase runner保留了第二处旧`AllocTRES mem=256G`断言。Job`519090.0`在output创建前1秒退出，hold总elapsed29秒；仍无Python/GPU workload、run output、checkpoint或W&B。
 - 同一修复现同步应用于launcher和runner；source RED/GREEN明确断言两个文件都使用`ReqTRES + MinMemoryNode`且不再要求`AllocTRES mem`。服务器metadata为`outputs/experiments/training/rl/slurm/id165-hold-519090.metadata.md`；`E0102`补充“共享合同必须搜索所有重复gate”。
+
+## 2026-08-14：ID165 phase1在trainer constructor失败，未到模型加载
+
+- Job`519097.1`在`normal/dgx-26`通过exact SHA/clean allocation、ID74 hash、AI2-THOR direct render、environment health和真实`base_train` seed0 prewarm。Ray与TaskRunner启动并通过VERL config validation，但`RayPPOTrainer` constructor在创建worker前失败。
+- root cause是ID165为修复Hydra search path改成direct `ppo_trainer + env_registry` root时遗漏`vagen_multiturn`原有的`huggingface_hub` section；`HFUploadManager`对缺失字段的普通dict fallback调用`OmegaConf.to_container`并报`ValueError`。GPU只见environment约287MiB，未加载模型；无rollout/update/snapshot/checkpoint/W&B/phase2。
+- hold elapsed8m05s后取消；owned process audit为空。输出`.../165_smoke.../failure_analysis.md`和README已记录，ID165无checkpoint且不可resume/复用。
+- VAGEN RED`777e23a`新增真实ID165 config→`HFUploadManager` constructor测试并按预期失败；GREEN`d69837c`显式加入disabled HF section。fresh server full composed config constructor通过，扩大回归`316 passed,115 subtests`且四层clean。已登记`E0103`。
+- 任何重试必须使用新数字实验ID与新空输出；当前strict escape hatch仍只允许ID165，因此再次申请GPU前必须由人类批准新的integration smoke ID并相应更新gate/run identity。
