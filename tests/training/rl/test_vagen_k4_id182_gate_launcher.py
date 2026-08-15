@@ -7,6 +7,10 @@ ROOT = Path(__file__).resolve().parents[3]
 RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id182_gate_phase.sh"
 LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_id182_gate_on_hold.sh"
 SLURM = ROOT / "experiments/training/rl/id182_k4_single_update_restore_gate.slurm"
+RESTORE_RETRY_LAUNCHER = (
+    ROOT / "experiments/training/rl/launch_vagen_k4_id182_restore_retry1_on_hold.sh"
+)
+RESTORE_RETRY_SLURM = ROOT / "experiments/training/rl/id182_k4_restore_retry1.slurm"
 VAGEN = ROOT / "external/VAGEN"
 CONFIG = VAGEN / "vagen/configs/joint_id182_gate.yaml"
 TRAIN = VAGEN / "examples/train/navigation/train_navigation_joint_id182.yaml"
@@ -14,7 +18,13 @@ VAL = VAGEN / "examples/train/navigation/val_navigation_joint_id182.yaml"
 
 
 def test_id182_shells_parse_and_bind_exact_allocation() -> None:
-    for path in (RUNNER, LAUNCHER, SLURM):
+    for path in (
+        RUNNER,
+        LAUNCHER,
+        SLURM,
+        RESTORE_RETRY_LAUNCHER,
+        RESTORE_RETRY_SLURM,
+    ):
         subprocess.run(["bash", "-n", str(path)], check=True)
     slurm = SLURM.read_text()
     launcher = LAUNCHER.read_text()
@@ -99,6 +109,22 @@ def test_id182_contract_is_one_update_then_restore_only() -> None:
     assert "all(buffer.device==device for buffer in module.buffers())" in source
     assert "ID181 reached actor update before the rank-local empty failure" in source
     assert "rank-local empty K4 shard fix" in source
+
+
+def test_id182_restore_retry_is_fresh_restore_only_and_preserves_evidence() -> None:
+    source = RUNNER.read_text()
+    launcher = RESTORE_RETRY_LAUNCHER.read_text()
+    slurm = RESTORE_RETRY_SLURM.read_text()
+    assert 'RESTORE_ATTEMPT=${RESTORE_ATTEMPT:-initial}' in source
+    assert "phase2_fresh_restore_only_retry1" in source
+    assert 'RESTORE_ATTEMPT=retry1 PHASE=restore_only' in launcher
+    assert "PHASE=update_1" not in launcher + slurm
+    assert "global_step_1/joint_checkpoint_complete.json" in source
+    assert "phase1_update/validator.json" in source
+    assert "not (root/'global_step_2').exists()" in source
+    assert '\ncd "${VAGEN}"\nCOMMAND=(' in source
+    assert '[[ ! -e "${PHASE_OUT}" ]]' in source
+    assert "ID182_K4_FRESH_RESTORE_ONLY_ALL_OK global_step=1" in source
 
 
 def test_id182_formal_values_and_three_split_data_are_explicit() -> None:
