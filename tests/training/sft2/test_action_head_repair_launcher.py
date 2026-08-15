@@ -4,11 +4,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 RUNNER = ROOT / "experiments/training/sft2/run_id74_action_head_repair.sh"
 SLURM = ROOT / "experiments/training/sft2/id175_action_head_repair.slurm"
+ENTRYPOINT = ROOT / "src/nimloth/training/sft2/action_head_repair_cli.py"
 
 
 def test_id175_launcher_locks_low_cost_repair_contract() -> None:
     runner = RUNNER.read_text(encoding="utf-8")
     slurm = SLURM.read_text(encoding="utf-8")
+    entrypoint = ENTRYPOINT.read_text(encoding="utf-8")
 
     assert "--time=01:30:00" in slurm
     assert "--gres=gpu:8" in slurm
@@ -38,7 +40,7 @@ def test_id175_launcher_locks_low_cost_repair_contract() -> None:
     assert "--extraction-batch-size 1" in runner
     assert "--latent-token-count 16" in runner
     assert "--expected-action-count 8" in runner
-    assert "model.safetensors.index.json" in runner
+    assert "model.safetensors.index.json" in entrypoint
     assert "train_terminal_cot_migrated.jsonl" in runner
     assert "val_terminal_cot_migrated.jsonl" in runner
     assert "3e501a0ccee9193676d69dd3590ae0d592c4fdee298810df2abff47d9f36a943" in runner
