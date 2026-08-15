@@ -51,11 +51,19 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 ## Current status
 
 - Contract approved.
-- Parent worktree: `feat/vagen-lite-joint-policy-scaffold` at `fce9c7e`, clean except the known nested `external/le-wm` untracked marker.
-- VAGEN branch worktree fast-forwarded cleanly to `c5c4741`; VERL reset to the exact `494f264` gitlink.
-- No code changes for K4 yet.
-- No calibration/Slurm/GPU work has started.
+- First implementation slice committed and pushed:
+  - Parent `6ba45207910e3e7a46af00b5fd2c472a33d194fd`.
+  - VAGEN `3efb0368aeb43f48301c232c1220664ddfe5ff52`.
+  - VERL remains the exact `494f264494b2525f2c13595f63ac4912963e6d2f` gitlink.
+- Added a full immutable projector/predictor/ValueHead K4 planning snapshot, exact file transport, direct-Q/MCTS scoring separation, K4 behavior/draw/execution/ledger schemas, TP-rank-zero worker install/score methods, a CPU lifecycle owner, and the optimizer-free balanced calibration entrypoint.
+- Legacy direct-Q schemas and ID171 paths remain separate.
+- Parent worktree is clean except this progress update and the known nested `external/le-wm` untracked marker; VAGEN worktree is clean.
+- No calibration, Slurm, Ray, model load, environment rollout, optimizer, or GPU work has started.
+- Remote CPU validation is currently blocked: two SSH attempts reached the proxy then closed with `Connection closed by UNKNOWN port 65535`; this was not a timeout and no remote command ran.
 
 ## Validation log
 
-- Pending.
+- Local AST parsing passed for every new/modified Python file.
+- `git diff --check` passed before both commits.
+- Dependency-light K4 config/draw and K4 decision-ledger manual checks passed under `PYTHONDONTWRITEBYTECODE=1`.
+- Full PyTorch/pytest validation is pending because the project worktree has no local runtime with its dependencies and superpod SSH is currently unavailable.

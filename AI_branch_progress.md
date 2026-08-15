@@ -4782,3 +4782,11 @@
 - 两个phase owned-process audit均空，Slurm allocation/nested step完成0。至此非生产target-DP8 update/snapshot/checkpoint/exact-resume integration gate闭合。
 - 通用production joint training继续fail closed：ID171参数仅smoke，正式数值尚无人类批准。后续是否开放production worker creation必须另行明确决定，不能自动把smoke配置当默认。
 - 运行代码为parent`dcd33371`/VAGEN`2aeecc73`/VERL`494f2644`；后续仅文档状态更新到VAGEN`c5c4741`。
+
+## 2026-08-15：人类批准K4 MCTS joint-policy与beta calibration合同
+
+- 人类要求正式策略必须复用ID74的`history_size=1/prediction_horizon=4` WM predictor做多步预测。逐项确认：每个非terminal turn固定K4 deterministic UCT-MCTS、100 simulations、exploration constant1、leaf为`Q(predicted_s3,a3)`、Scheme-B只以raw backed-up root mean引导并用coordinator key采样；direct root Q只用于Frozen-V GAE/critic。imagined tail不执行、不进ledger/return/critic target。
+- frozen planner与TP8 vLLM rank0共置；behavior持久化direct Q与MCTS scores，PPO不得用新WM重算旧guidance。ID74 projector/predictor作为初始化后在线更新，behavior snapshot projector提供固定1--4步target；WM不回传Qwen，保留DINO0.5/SIGReg0.1/state MSE1，projector/predictor/ValueHead统一AdamW分组且LR均1e-4。actor沿用LR1e-7/clip0.2/KL0.01/entropy0.01/1 epoch。
+- 正式数据/目标合同为三个train split均衡、24 trajectories/update、20 turns、CoT temperature0.7/top-p0.95、response512、per-turn format0.01/terminal format0/success1、gamma1/lambda0.95。首个canary为10 updates、step5 fresh resume、前后5×8 held-out验证，通过后5×60；长训练仍需另批。
+- beta必须先以24条均衡、beta0、无optimizer K4 rollout测量`median action-std(LLM logits)/median action-std(MCTS root mean)`，得到数值后停下请人类批准。人类已批准开始实现和该calibration，未批准自动启动10-update训练。
+- 第一实现切片已提交并推送parent`6ba45207`/VAGEN`3efb0368`/VERL`494f2644`：新增完整immutable projector/predictor/ValueHead snapshot、fingerprinted file transport、direct-Q/MCTS分离schema、TP-rank-zero install/score、CPU lifecycle owner和optimizer-free calibration入口；legacy ID171路径保持分离。当前仅AST/diff及dependency-light合同检查通过，完整PyTorch/pytest仍待服务器。两次SSH均在代理连接后报`Connection closed by UNKNOWN port 65535`，没有远程命令、Slurm、Ray、model/env/GPU/calibration活动。
