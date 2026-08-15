@@ -310,6 +310,123 @@ def build_guided_execution_from_scoring(
     )
 
 
+def build_k4_guided_execution_from_scoring(
+    *,
+    scoring_record: Any,
+    expected_draw_key: GuidedActionDrawKey | Mapping[str, Any],
+    action_draw: Any,
+    response_trace: NimlothPolicyResponseTrace | Mapping[str, Any],
+    generation_spec: TurnGenerationSpec,
+    tokenizer: Any,
+    expected_request_id: str,
+    expected_generation_id: str,
+    expected_snapshot_id: str,
+    expected_contract_id: str,
+    expected_generation_spec_id: str,
+) -> Any:
+    """Assemble one K4-guided real root action from rank-zero planning evidence."""
+
+    from nimloth.training.rl.joint_planning_scoring import (
+        FrozenK4PlanningScoringRecord,
+    )
+    from vagen.joint_policy.planning_contract import (
+        K4MCTSGuidedBehaviorRecord,
+    )
+    from vagen.joint_policy.planning_execution import (
+        K4MCTSGuidedActionExecutionRequest,
+    )
+    from vagen.joint_policy.planning_sampling import (
+        K4MCTSGuidedActionDrawRecord,
+    )
+
+    score = (
+        scoring_record
+        if isinstance(scoring_record, FrozenK4PlanningScoringRecord)
+        else FrozenK4PlanningScoringRecord.from_mapping(scoring_record)
+    )
+    key = _canonical_draw_key(expected_draw_key)
+    draw = (
+        action_draw
+        if isinstance(action_draw, K4MCTSGuidedActionDrawRecord)
+        else K4MCTSGuidedActionDrawRecord.from_mapping(action_draw)
+    )
+    trace = _canonical_response_trace(response_trace)
+    spec = _generation_spec(generation_spec)
+    trace.validate_protocol(generation_spec=spec, tokenizer=tokenizer)
+    expected_request = _nonempty_string(expected_request_id, "expected_request_id")
+    expected_generation = _nonempty_string(
+        expected_generation_id,
+        "expected_generation_id",
+    )
+    expected_snapshot = _nonempty_string(
+        expected_snapshot_id,
+        "expected_snapshot_id",
+    )
+    expected_contract = _nonempty_string(
+        expected_contract_id,
+        "expected_contract_id",
+    )
+    if expected_generation_spec_id != _generation_spec_id(spec):
+        raise ValueError("K4 guided behavior generation spec identity mismatch")
+    for actual, expected, field in (
+        (score.request_id, expected_request, "scoring request"),
+        (trace.request_id, expected_request, "response request"),
+        (score.generation_id, expected_generation, "scoring generation"),
+        (trace.generation_id, expected_generation, "response generation"),
+        (score.snapshot_id, expected_snapshot, "snapshot"),
+        (score.contract_id, expected_contract, "contract"),
+    ):
+        if actual != expected:
+            raise ValueError(
+                f"K4 guided behavior {field} identity mismatch: "
+                f"actual={actual!r}, expected={expected!r}"
+            )
+    if draw.draw_key != key:
+        raise ValueError("K4 guided behavior draw key mismatch")
+    if (
+        draw.contract_id != score.contract_id
+        or draw.draw_key.snapshot_id != score.snapshot_id
+        or draw.action_token_ids != score.action_token_ids
+        or draw.prior_logits != score.prior_logits
+        or draw.direct_all_action_q != score.direct_all_action_q
+        or draw.planner_root_mean_values != score.planner_root_mean_values
+        or draw.planner_root_visit_counts != score.planner_root_visit_counts
+    ):
+        raise ValueError("K4 guided action draw does not match planning evidence")
+    if (
+        score.latent_token_ids != spec.injected_token_ids[:-1]
+        or score.action_start_token_id != spec.injected_token_ids[-1]
+        or score.action_token_ids != spec.action_token_ids
+    ):
+        raise ValueError("K4 guided scoring token table does not match generation spec")
+    prior_response_idx = len(trace.response_ids) - 2
+    prior_token_id = trace.response_ids[prior_response_idx]
+    prior_action_id = score.action_token_ids.index(prior_token_id)
+    behavior = K4MCTSGuidedBehaviorRecord.build(
+        action_space=draw.action_space,
+        action_space_names=draw.action_space_names,
+        action_token_ids=score.action_token_ids,
+        snapshot_id=score.snapshot_id,
+        prior_token_id=prior_token_id,
+        prior_action_id=prior_action_id,
+        prior_response_idx=prior_response_idx,
+        behavior_llm_prior_logprob=trace.response_logprobs[prior_response_idx],
+        prior_logits=score.prior_logits,
+        direct_all_action_q=score.direct_all_action_q,
+        planner_root_mean_values=score.planner_root_mean_values,
+        planner_root_visit_counts=score.planner_root_visit_counts,
+        guided_action_id=draw.guided_action_id,
+        behavior_guided_logprob=draw.behavior_guided_logprob,
+        config=draw.policy_config,
+    )
+    return K4MCTSGuidedActionExecutionRequest.from_behavior(
+        behavior,
+        raw_response=trace.raw_response,
+        response_trace_id=trace.trace_id(),
+        action_draw_record_id=draw.record_id(),
+    )
+
+
 def _canonical_scoring_record(
     value: FrozenQScoringRecord | Mapping[str, Any],
 ) -> FrozenQScoringRecord:
@@ -422,4 +539,5 @@ def _response_logprobs(values: Sequence[Real]) -> list[float]:
 __all__ = [
     "NimlothPolicyResponseTrace",
     "build_guided_execution_from_scoring",
+    "build_k4_guided_execution_from_scoring",
 ]

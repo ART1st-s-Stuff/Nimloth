@@ -498,6 +498,151 @@ class PolicyStateCaptureWorkerExtension:
         finally:
             prepared.pop(identity, None)
 
+    def _nimloth_tensor_parallel_rank(self) -> int:
+        """Return the TP-local rank used to own the single planning replica."""
+
+        try:
+            from vllm.distributed.parallel_state import (
+                get_tensor_model_parallel_rank,
+            )
+
+            rank = int(get_tensor_model_parallel_rank())
+        except (ImportError, RuntimeError):
+            if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+                rank = 0
+            else:
+                rank = int(torch.distributed.get_rank())
+        if rank < 0:
+            raise RuntimeError("vLLM tensor-parallel rank must be non-negative")
+        return rank
+
+    def nimloth_install_frozen_k4_planner(
+        self,
+        transport_path: str,
+        expected_snapshot_id: str,
+        expected_source_step: int,
+        expected_contract_id: str,
+        expected_activation_version: int,
+    ) -> dict[str, Any]:
+        """Install one immutable full planning snapshot on TP rank zero only."""
+
+        from pathlib import Path
+
+        if not isinstance(transport_path, str) or not transport_path:
+            raise ValueError("frozen K4 planner transport_path must be non-empty")
+        if not isinstance(expected_snapshot_id, str) or not expected_snapshot_id:
+            raise ValueError("frozen K4 planner snapshot id must be non-empty")
+        if not isinstance(expected_contract_id, str) or not expected_contract_id:
+            raise ValueError("frozen K4 planner contract id must be non-empty")
+        for field, value in (
+            ("source_step", expected_source_step),
+            ("activation_version", expected_activation_version),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"frozen K4 planner {field} must be non-negative int")
+        rank = self._nimloth_tensor_parallel_rank()
+        snapshot = None
+        if rank == 0:
+            from nimloth.training.rl.joint_planner import (
+                load_frozen_planning_snapshot_file,
+            )
+
+            model = getattr(getattr(self, "model_runner", None), "model", None)
+            if not isinstance(model, torch.nn.Module):
+                raise RuntimeError("vLLM rank-zero planner has no loaded model")
+            parameter = next(model.parameters(), None)
+            if parameter is None:
+                raise RuntimeError("vLLM rank-zero model has no parameter device")
+            snapshot = load_frozen_planning_snapshot_file(
+                Path(transport_path),
+                device=parameter.device,
+            )
+            if (
+                snapshot.snapshot_id != expected_snapshot_id
+                or snapshot.source_step != expected_source_step
+                or snapshot.contract_id != expected_contract_id
+            ):
+                raise ValueError(
+                    "frozen K4 planner transport identity does not match install request"
+                )
+        self._nimloth_frozen_k4_planner = snapshot
+        self._nimloth_frozen_k4_planner_identity = {
+            "transport_path": str(Path(transport_path).resolve()),
+            "snapshot_id": expected_snapshot_id,
+            "source_step": expected_source_step,
+            "contract_id": expected_contract_id,
+            "activation_version": expected_activation_version,
+        }
+        return {
+            **self._nimloth_frozen_k4_planner_identity,
+            "tensor_parallel_rank": rank,
+            "owns_planner": rank == 0,
+        }
+
+    def nimloth_score_frozen_k4_planner(
+        self,
+        latent_hidden: Sequence[Sequence[float]],
+        expected_snapshot_id: str,
+        expected_activation_version: int,
+    ) -> dict[str, Any]:
+        """Run direct Q and K4 MCTS only on the installed TP-rank-zero model."""
+
+        import time
+
+        identity = getattr(self, "_nimloth_frozen_k4_planner_identity", None)
+        if not isinstance(identity, dict):
+            raise RuntimeError("frozen K4 planner is not installed")
+        if (
+            identity["snapshot_id"] != expected_snapshot_id
+            or identity["activation_version"] != expected_activation_version
+        ):
+            raise ValueError("frozen K4 planner score identity mismatch")
+        rank = self._nimloth_tensor_parallel_rank()
+        base = {
+            "snapshot_id": identity["snapshot_id"],
+            "source_step": identity["source_step"],
+            "contract_id": identity["contract_id"],
+            "activation_version": identity["activation_version"],
+            "tensor_parallel_rank": rank,
+        }
+        if rank != 0:
+            return {**base, "scored": False}
+        snapshot = getattr(self, "_nimloth_frozen_k4_planner", None)
+        if snapshot is None:
+            raise RuntimeError("TP rank zero has no frozen K4 planner module")
+        parameter = next(snapshot.parameters(), None)
+        if parameter is None:
+            raise RuntimeError("frozen K4 planner has no parameters")
+        hidden = torch.as_tensor(
+            latent_hidden,
+            dtype=torch.float32,
+            device=parameter.device,
+        ).unsqueeze(0)
+        if hidden.ndim != 3 or not torch.isfinite(hidden).all():
+            raise ValueError("frozen K4 planner latent hidden is invalid")
+        started = time.perf_counter()
+        score = snapshot.score(hidden)
+        latency = time.perf_counter() - started
+        return {
+            **base,
+            "scored": True,
+            "score_dtype": snapshot.score_dtype,
+            "planning_config": snapshot.planning_config.to_mapping(),
+            "direct_all_action_q": score.direct_all_action_q[0].float().cpu().tolist(),
+            "planner_root_mean_values": score.planner_root_mean_values[0]
+            .float()
+            .cpu()
+            .tolist(),
+            "planner_root_visit_counts": score.root_visit_counts[0].cpu().tolist(),
+            "candidate_sequences": score.candidate_sequences[0].cpu().tolist(),
+            "candidate_mean_values": score.candidate_mean_values[0]
+            .float()
+            .cpu()
+            .tolist(),
+            "candidate_visit_counts": score.candidate_visit_counts[0].cpu().tolist(),
+            "planner_latency_seconds": float(latency),
+        }
+
     def nimloth_abort_policy_state_capture(self) -> bool:
         self._nimloth_capture_active = False
         self._nimloth_capture_entries_by_request = {}
@@ -768,6 +913,80 @@ def pop_policy_state_capture(engine: Any) -> VLLMPolicyState:
     return _validated_policy_state(results, request_id="__serial__")
 
 
+async def async_install_frozen_k4_planner(
+    engine: Any,
+    *,
+    transport_path: str,
+    expected_snapshot_id: str,
+    expected_source_step: int,
+    expected_contract_id: str,
+    expected_activation_version: int,
+) -> dict[str, Any]:
+    """Install one shared-file transport and prove exactly TP rank zero owns it."""
+
+    results = await engine.collective_rpc(
+        "nimloth_install_frozen_k4_planner",
+        args=(
+            transport_path,
+            expected_snapshot_id,
+            expected_source_step,
+            expected_contract_id,
+            expected_activation_version,
+        ),
+    )
+    if not results or not all(isinstance(value, dict) for value in results):
+        raise RuntimeError("vLLM workers returned incomplete K4 planner install status")
+    owners = [value for value in results if value.get("owns_planner") is True]
+    if len(owners) != 1 or owners[0].get("tensor_parallel_rank") != 0:
+        raise RuntimeError("exactly TP rank zero must own the frozen K4 planner")
+    for value in results:
+        if (
+            value.get("snapshot_id") != expected_snapshot_id
+            or value.get("source_step") != expected_source_step
+            or value.get("contract_id") != expected_contract_id
+            or value.get("activation_version") != expected_activation_version
+        ):
+            raise RuntimeError("vLLM workers disagree on frozen K4 planner identity")
+    return owners[0]
+
+
+async def async_score_frozen_k4_planner(
+    engine: Any,
+    *,
+    latent_hidden: torch.Tensor,
+    expected_snapshot_id: str,
+    expected_activation_version: int,
+) -> dict[str, Any]:
+    """Score one captured real state and accept only TP-rank-zero output."""
+
+    if (
+        not isinstance(latent_hidden, torch.Tensor)
+        or latent_hidden.ndim != 2
+        or not torch.isfinite(latent_hidden).all()
+    ):
+        raise ValueError("K4 planner scoring requires finite rank-2 latent hidden")
+    results = await engine.collective_rpc(
+        "nimloth_score_frozen_k4_planner",
+        args=(
+            latent_hidden.float().cpu().tolist(),
+            expected_snapshot_id,
+            expected_activation_version,
+        ),
+    )
+    if not results or not all(isinstance(value, dict) for value in results):
+        raise RuntimeError("vLLM workers returned incomplete K4 planner results")
+    scored = [value for value in results if value.get("scored") is True]
+    if len(scored) != 1 or scored[0].get("tensor_parallel_rank") != 0:
+        raise RuntimeError("exactly TP rank zero must return K4 planning scores")
+    for value in results:
+        if (
+            value.get("snapshot_id") != expected_snapshot_id
+            or value.get("activation_version") != expected_activation_version
+        ):
+            raise RuntimeError("vLLM workers scored different K4 snapshot identities")
+    return scored[0]
+
+
 async def async_abort_policy_state_capture_for_request(
     engine: Any,
     *,
@@ -797,8 +1016,10 @@ __all__ = [
     "VLLMPolicyState",
     "abort_policy_state_capture",
     "async_abort_policy_state_capture_for_request",
+    "async_install_frozen_k4_planner",
     "async_pop_latent_state_capture_for_request",
     "async_pop_policy_state_capture_for_request",
+    "async_score_frozen_k4_planner",
     "async_start_policy_state_capture_for_request",
     "pop_policy_state_capture",
     "pop_policy_state_captures",
