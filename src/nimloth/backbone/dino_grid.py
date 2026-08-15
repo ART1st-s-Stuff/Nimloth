@@ -154,7 +154,7 @@ class FrozenDINOGridTargets:
         patch_width = int(pixel_values.shape[-1]) // patch_size
         patch_count = patch_height * patch_width
         spatial_tokens = hidden[:, -patch_count:, :].reshape(
-            len(paths),
+            len(images),
             patch_height,
             patch_width,
             self.identity.hidden_size,
