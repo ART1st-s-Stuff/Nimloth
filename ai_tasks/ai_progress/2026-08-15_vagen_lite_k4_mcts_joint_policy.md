@@ -88,4 +88,6 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 - 人类曾选择从corrected ID3完整重训SFT2，并要求正式SFT2保留原始action occupancy；AI错误建议对正式SFT2使用类别平衡action CE，已登记`E0112`。
 - 当前直接prompt随后改为先做低成本head repair再继续RL，并明确接受了`271/action train + 40/action validation`的隔离修复方案。该选择只适用于派生action-head repair checkpoint，不改变未来正式SFT2仍保留原始occupancy的规则。
 - parent`639b0f63`实现了冻结ID74 Qwen/vision/WM/projector/ValueHead的`8×2048` FP32 row delta；使用同forward最后`action_start` hidden和八动作restricted CE，只把delta合并回八个标准LM-head rows。分布式提取每batch原子保存rank shard并支持exact-prefix resume；fit有逐epoch CSV、heldout NLL和BF16 median-spread gate；derived checkpoint原样复制并hash验证ID74三个sidecar，completion marker最后写入。
-- ID175 launcher固定真实ID74/data/cache SHA、TP/DP-independent 8-GPU frozen extraction、271×8/40×8、seed42002、AdamW delta LR`1e-4`/WD0、最多500 epochs/patience50、NLL improvement≥0.05和BF16 median spread>0.001。无Qwen/WM/ValueHead optimizer、无W&B、无RL canary。服务器定向回归`35 passed`且五层clean；尚未启动GPU任务。
+- ID175 launcher固定真实ID74/data/cache SHA、TP/DP-independent 8-GPU frozen extraction、271×8/40×8、seed42002、AdamW delta LR`1e-4`/WD0、最多500 epochs/patience50、NLL improvement≥0.05和BF16 median spread>0.001。无Qwen/WM/ValueHead optimizer、无W&B、无RL canary。服务器定向回归`35 passed`且五层clean。
+- 人类批准后提交ID175 Job`519755`；它在`normal/dgx-28`获得8卡但于elapsed0秒`FAILED 1:0`。batch错误加载cluster不存在的`cuda/12.8` modulefile，因而在allocation capture/GPU monitor/srun/Python/model/data/optimizer/output之前退出。ID175不可resume/reuse，已登记`E0113`并写server SFT2 progress/control README。
+- corrected retry改为ID176并只加载已验证的`slurm` module；其余approved配置、数据、seed和门禁均不变。尚未提交ID176。

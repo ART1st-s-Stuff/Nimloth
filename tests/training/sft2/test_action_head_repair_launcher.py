@@ -3,11 +3,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 RUNNER = ROOT / "experiments/training/sft2/run_id74_action_head_repair.sh"
-SLURM = ROOT / "experiments/training/sft2/id175_action_head_repair.slurm"
+SLURM = ROOT / "experiments/training/sft2/id176_action_head_repair.slurm"
 ENTRYPOINT = ROOT / "src/nimloth/training/sft2/action_head_repair_cli.py"
 
 
-def test_id175_launcher_locks_low_cost_repair_contract() -> None:
+def test_id176_launcher_locks_low_cost_repair_contract() -> None:
     runner = RUNNER.read_text(encoding="utf-8")
     slurm = SLURM.read_text(encoding="utf-8")
     entrypoint = ENTRYPOINT.read_text(encoding="utf-8")
@@ -20,7 +20,7 @@ def test_id175_launcher_locks_low_cost_repair_contract() -> None:
     assert "MinMemoryNode=256G" in slurm
     assert "AllocTRES=" in slurm
     assert "EXPECTED_COMMIT" in slurm
-    assert "RUN_NAME=175_id74_action_head_repair_balanced271x8_val40x8" in slurm
+    assert "RUN_NAME=176_id74_action_head_repair_balanced271x8_val40x8" in slurm
 
     for value in (
         "TRAIN_EXAMPLES_PER_ACTION=271",
@@ -49,7 +49,7 @@ def test_id175_launcher_locks_low_cost_repair_contract() -> None:
     assert "wandb" not in slurm.lower()
 
 
-def test_id175_validator_preserves_id74_non_action_components() -> None:
+def test_id176_validator_preserves_id74_non_action_components() -> None:
     runner = RUNNER.read_text(encoding="utf-8")
 
     for component in (
