@@ -100,4 +100,5 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 - ID178 Job`519778`在`normal/dgx-28`以`COMPLETED 0:0`运行15m53s；24条trajectory/480 turns完整。prior spread min/median/max=`0.86982227/1.83056276/5.68992982`、zero0；MCTS spread=`0.00588510/0.02133947/0.09271607`、zero0；合同beta proposal=`85.78297006578457`，仍须人类批准。
 - 480行policy/scoring/behavior logits一致、root visits sum100；按temperature0.7/top-p0.95重构生成action logprob与response evidence max error`3.28e-7`，beta0 behavior logprob max error`1.78e-15`。planner latency mean/median/max=`1.30954/1.30482/2.80771s`。
 - beta0 guided action counts=`[350,4,8,21,6,3,35,53]`，MCTS argmax=`[10,47,5,77,311,0,30,0]`。24条均20-turn task failure、success0；success不是scale calibration gate。无optimizer/checkpoint/W&B/canary，cleanup通过。
-- ID178自动metadata曾因unquoted heredoc中的Markdown backticks被shell command-substitute而丢失两个flag名；on-experiment-end已重写完整README并登记`E0115`，不影响数值结果。当前必须停止等待人类批准beta；`calibration_accepted=true`不等于human approval。
+- ID178自动metadata曾因unquoted heredoc中的Markdown backticks被shell command-substitute而丢失两个flag名；on-experiment-end已重写完整README并登记`E0115`，不影响数值结果。
+- 人类现已明确批准将精确值`beta=85.78297006578457`固定为后续Scheme-B RL测试值。该批准只解除beta数值门禁，不批准canary/长训练；production仍需先完成在线WM 1--4步+DINO/SIGReg、统一optimizer、完整checkpoint/resume和显式opt-in接线。
