@@ -14,10 +14,10 @@ PY=${ROOT}/.venv-vagen-main/bin/python3
 MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
 RUN_META=${RUN_OUT}.metadata.md
-CONTROL=${ROOT}/outputs/experiments/training/rl/slurm/id172-k4-${SLURM_JOB_ID}
+CONTROL=${ROOT}/outputs/experiments/training/rl/slurm/id173-k4-${SLURM_JOB_ID}
 ENV_PORT=$((19400 + SLURM_JOB_ID % 400))
 ENV_URL=http://127.0.0.1:${ENV_PORT}
-RUNTIME_ROOT=/tmp/i172-${SLURM_JOB_ID}
+RUNTIME_ROOT=/tmp/i173-${SLURM_JOB_ID}
 RAY_TMPDIR=${RUNTIME_ROOT}
 TMPDIR=${RUNTIME_ROOT}/tmp
 AI2THOR_HOME_ROOT=${RUNTIME_ROOT}/ai2thor
@@ -26,7 +26,7 @@ CALIBRATION_PID=
 NVIDIA_PID=
 CALIBRATION_TIMEOUT_SECONDS=2700
 
-[[ "${RUN_NAME}" == 172_calibration_k4mcts_tp8_train3x8_t20_s100_c1_a1_b0_t1_cot07p095 ]]
+[[ "${RUN_NAME}" == 173_calibration_k4mcts_tp8_train3x8_t20_s100_c1_a1_b0_t1_cot07p095 ]]
 [[ "${RUN_DATE}" == 2026-08-15 ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
@@ -39,7 +39,7 @@ IFS=, read -r -a VISIBLE_GPUS <<<"${CUDA_VISIBLE_DEVICES}"
 mapfile -t GPU_NAMES < <(nvidia-smi --query-gpu=name --format=csv,noheader)
 (( ${#GPU_NAMES[@]} == 8 ))
 for name in "${GPU_NAMES[@]}"; do [[ "${name}" == *H800* ]]; done
-for excluded in dgx-13 dgx-32 dgx-37 dgx-51; do
+for excluded in dgx-13 dgx-23 dgx-32 dgx-37 dgx-51; do
   [[ "$(hostname)" != "${excluded}" ]]
 done
 
@@ -60,9 +60,9 @@ for source_repo in "${REPO}" "${VAGEN}" "${VERL}" "${REPO}/external/le-wm"; do
 done
 [[ -x "${PY}" ]]
 [[ -d "${MODEL}" ]]
-[[ ! -e "${RUN_OUT}" ]] || { echo "ID172 output already exists" >&2; exit 2; }
-[[ ! -e "${RUN_META}" ]] || { echo "ID172 metadata already exists" >&2; exit 2; }
-[[ ! -e "${CONTROL}" ]] || { echo "ID172 control output already exists" >&2; exit 2; }
+[[ ! -e "${RUN_OUT}" ]] || { echo "ID173 output already exists" >&2; exit 2; }
+[[ ! -e "${RUN_META}" ]] || { echo "ID173 metadata already exists" >&2; exit 2; }
+[[ ! -e "${CONTROL}" ]] || { echo "ID173 control output already exists" >&2; exit 2; }
 mkdir -p "${CONTROL}" "$(dirname "${RUN_OUT}")" "${RUNTIME_ROOT}" "${TMPDIR}" "${AI2THOR_HOME_ROOT}/.ai2thor"
 printf '%s\n' "${JOB_DETAILS}" >"${CONTROL}/allocation.txt"
 
@@ -135,7 +135,7 @@ import json, os, sys, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 control=Path(sys.argv[1]); run=Path(sys.argv[2]); status=int(sys.argv[3])
-payload={"experiment_id":172,"exit_code":status,"status":"passed" if status==0 else "failed","finished_at":datetime.now(timezone.utc).isoformat()}
+payload={"experiment_id":173,"exit_code":status,"status":"passed" if status==0 else "failed","finished_at":datetime.now(timezone.utc).isoformat()}
 for folder in (control, run if run.is_dir() else None):
     if folder is None:
         continue
@@ -144,16 +144,17 @@ for folder in (control, run if run.is_dir() else None):
         json.dump(payload,handle,indent=2); handle.write('\n')
     os.replace(name,folder/'controller_status.json')
 PY
-  [[ "${RUNTIME_ROOT}" == /tmp/i172-* ]] && rm -rf -- "${RUNTIME_ROOT}"
+  [[ "${RUNTIME_ROOT}" == /tmp/i173-* ]] && rm -rf -- "${RUNTIME_ROOT}"
   exit "${status}"
 }
 trap cleanup EXIT
 
 cat >"${RUN_META}" <<EOF
-# ID172 optimizer-free K4 beta calibration
+# ID173 optimizer-free K4 beta calibration retry
 
 - project/run identity: vagen / ${RUN_NAME}; W&B transport is disabled because this calibration has no optimizer or training metrics.
 - purpose: measure real same-generation action-axis LLM-logit and frozen K4-MCTS root-mean scales, then propose one fixed Scheme-B beta for human approval.
+- retry provenance: ID172 Job 519634 never reached environment service/model/Ray and failed only the fixed direct-render gate on dgx-23; ID173 keeps every calibration value and run seed unchanged, uses a fresh output, and temporarily excludes dgx-23.
 - parent/VAGEN/VERL: ${EXPECTED_PARENT_COMMIT} / ${EXPECTED_VAGEN_COMMIT} / ${EXPECTED_VERL_COMMIT}.
 - data: Navigation base_train, common_sense_train, and long_horizon_train; seeds 0..7 in each split; 24 complete trajectories; max 20 real actions each.
 - initialization: corrected ID74 epoch_001 Qwen plus SharedSlotProjector, history-1/horizon-4 wm_predictor, and 8-action ValueHead; source step 776.
@@ -162,9 +163,9 @@ cat >"${RUN_META}" <<EOF
 - behavior: calibration applies beta=0; alpha=1, prior temperature=1, float32; CoT temperature=0.7/top-p=0.95, response cap 512.
 - beta rule: median population std of 8 LLM logits divided by median population std of 8 MCTS root means; median MCTS spread must exceed 1e-8.
 - reward/environment: per-turn format 0.01, terminal format 0, success 1; only train-scene assets are used.
-- output: ${RUN_OUT}; a failed or interrupted ID172 is not resumable and must never be reused.
+- output: ${RUN_OUT}; a failed or interrupted ID173 is not resumable and must never be reused.
 - monitoring: trajectory/turn completion, terminal reasons, direct-Q/MCTS schema, visit sum, candidate trace, finite spreads, planner latency, GPU utilization, process/port cleanup.
-- resources: normal partition, one node, 8 H800, 64 CPU, 256 GiB, 60-minute batch-owned hold; calibration timeout 45 minutes; dgx-13/32/37/51 excluded.
+- resources: normal partition, one node, 8 H800, 64 CPU, 256 GiB, 60-minute batch-owned hold; calibration timeout 45 minutes; dgx-13/23/32/37/51 excluded.
 - stop boundary: after writing the calibrated beta, stop for human approval. This entrypoint cannot start the 10-update canary.
 EOF
 
@@ -221,7 +222,7 @@ timeout --signal=TERM --kill-after=10s 300s "${PY}" - "${ENV_URL}" "${SLURM_JOB_
 import subprocess,sys
 url,job=sys.argv[1:]
 for split in ('base_train','common_sense_train','long_horizon_train'):
- command=[sys.executable,'-m','nimloth.environment.navigation.prewarm','--env-url',url,'--eval-set',split,'--seed','0','--timeout-seconds','300','--env-id',f'id172-prewarm-{split}-{job}']
+ command=[sys.executable,'-m','nimloth.environment.navigation.prewarm','--env-url',url,'--eval-set',split,'--seed','0','--timeout-seconds','300','--env-id',f'id173-prewarm-{split}-{job}']
  subprocess.run(command,check=True)
 PY
 
@@ -300,7 +301,7 @@ assert len(rows)==summary['executed_turn_count']
 assert all(sum(row['scoring_record']['planner_root_visit_counts'])==100 for row in rows)
 assert all(len(row['scoring_record']['planner_root_mean_values'])==8 for row in rows)
 assert not (out/'checkpoints').exists()
-payload={'status':'passed','experiment_id':172,'calibrated_beta_requires_human_approval':beta,'optimizer':None,'checkpoint':None,'canary_started':False}
+payload={'status':'passed','experiment_id':173,'calibrated_beta_requires_human_approval':beta,'optimizer':None,'checkpoint':None,'canary_started':False}
 fd,name=tempfile.mkstemp(prefix='.final_status.',suffix='.tmp',dir=out)
 with os.fdopen(fd,'w',encoding='utf-8') as handle: json.dump(payload,handle,indent=2); handle.write('\n')
 os.replace(name,out/'final_status.json')

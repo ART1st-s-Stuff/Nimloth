@@ -21,8 +21,8 @@ def test_k4_calibration_shells_parse_and_bind_target_allocation() -> None:
     assert "#SBATCH --cpus-per-task=64" in hold
     assert "#SBATCH --mem=256G" in hold
     assert "#SBATCH --time=01:00:00" in hold
-    assert "dgx-13,dgx-32,dgx-37,dgx-51" in hold
-    assert "nimloth-id172-k4-calibration" in hold
+    assert "dgx-13,dgx-23,dgx-32,dgx-37,dgx-51" in hold
+    assert "nimloth-id173-k4-calibration" in hold
     assert "sleep infinity" not in hold
     assert "launch_vagen_k4_beta_calibration_on_hold.sh" in hold
     assert '"${SLURM_JOB_ID}"' in hold
@@ -63,10 +63,10 @@ def test_k4_calibration_pins_code_data_checkpoint_and_clean_worktrees() -> None:
     assert "rsync" not in source
     assert "scp " not in source
     assert 'COMMAND=(' in source and '"${COMMAND[@]}"' in source
-    assert "RUNTIME_ROOT=/tmp/i172-${SLURM_JOB_ID}" in source
+    assert "RUNTIME_ROOT=/tmp/i173-${SLURM_JOB_ID}" in source
     assert "RAY_TMPDIR=${RUNTIME_ROOT}" in source
     worst_case_socket = (
-        "/tmp/i172-99999999/ray/session_2026-08-15_00-40-07_"
+        "/tmp/i173-99999999/ray/session_2026-08-15_00-40-07_"
         "477970_1313372/sockets/plasma_store"
     )
     assert len(worst_case_socket.encode()) <= 107
