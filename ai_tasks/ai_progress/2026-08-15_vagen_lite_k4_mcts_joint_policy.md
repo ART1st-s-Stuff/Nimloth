@@ -51,19 +51,24 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 ## Current status
 
 - Contract approved.
-- First implementation slice committed and pushed:
-  - Parent `6ba45207910e3e7a46af00b5fd2c472a33d194fd`.
-  - VAGEN `3efb0368aeb43f48301c232c1220664ddfe5ff52`.
+- Candidate implementation and ID172 calibration gate committed and pushed:
+  - Parent `b758063efc6c89a1edff21178629622acf696944`.
+  - VAGEN `b7c45d9c085a3076bfe416f598bccd21e2c166e5`.
   - VERL remains the exact `494f264494b2525f2c13595f63ac4912963e6d2f` gitlink.
+  - le-wm remains `8edfeb336732b5f3ce7b8b210d0ba370a09e2cac`.
 - Added a full immutable projector/predictor/ValueHead K4 planning snapshot, exact file transport, direct-Q/MCTS scoring separation, K4 behavior/draw/execution/ledger schemas, TP-rank-zero worker install/score methods, a CPU lifecycle owner, and the optimizer-free balanced calibration entrypoint.
+- Added the batch-owned ID172 normal/1-node/8-H800/64-CPU/256-GiB/60-minute launcher with exact-SHA, clean-tree, asset-hash, ID74-hash, fixed render/prewarm, process cleanup, all-or-nothing output, and explicit no-optimizer/no-checkpoint/no-canary gates.
 - Legacy direct-Q schemas and ID171 paths remain separate.
-- Parent worktree is clean except this progress update and the known nested `external/le-wm` untracked marker; VAGEN worktree is clean.
-- No calibration, Slurm, Ray, model load, environment rollout, optimizer, or GPU work has started.
-- Remote CPU validation is currently blocked: two SSH attempts reached the proxy then closed with `Connection closed by UNKNOWN port 65535`; this was not a timeout and no remote command ran.
+- Fresh server worktree `/project/peilab/atst/nimloth/.worktrees/k4-mcts-c936682c` is now at exact candidate SHAs and clean at parent/VAGEN/VERL/le-wm/RCDM layers.
+- ID172 output, control output, metadata, and W&B display-name prefix are unused. Current resource query found four fully idle eligible normal 8-GPU nodes plus other partial capacity.
+- No calibration, Slurm, Ray, environment rollout, optimizer, checkpoint, W&B run, or GPU workload has started yet.
 
 ## Validation log
 
-- Local AST parsing passed for every new/modified Python file.
-- `git diff --check` passed before both commits.
-- Dependency-light K4 config/draw and K4 decision-ledger manual checks passed under `PYTHONDONTWRITEBYTECODE=1`.
-- Full PyTorch/pytest validation is pending because the project worktree has no local runtime with its dependencies and superpod SSH is currently unavailable.
+- Local AST/shell parsing, embedded Python compilation, and `git diff --check` passed.
+- Server focused K4/planning/capture/legacy-schema regressions passed (`136 passed, 19 subtests`; later same-generation/rank-zero additions `23 passed, 2 subtests`; final launcher/planner/K4 set `13 passed`).
+- Expanded VAGEN/VERL regression passed `199 passed, 115 subtests`.
+- Expanded parent RL/WM set had `353 passed` and 19 failures, all from legacy `planner_verl_adapter.py` hard-coding old VERL `084f042b` while this branch intentionally pins `494f2644`; no K4/ID172 target test failed. This pre-existing legacy planner path is not used by calibration.
+- Corrected ID74 real CPU load/export/restore plus one 100-simulation K4 score passed: direct shape `[1,8]`, root visits sum100, candidate shape `[1,100,4]`, snapshot fingerprint stable; CPU score took 10.828 seconds.
+- Live server asset checks confirmed all three `*_train` assets contain 1200 tasks and exact SHA256 values recorded in the launcher. CLI import and full composed calibration config preflight passed with TP8, 24 workers, K4/100/c1, beta0, CoT0.7/top-p0.95.
+- Every import/test used `PYTHONDONTWRITEBYTECODE=1`; all five server source layers remained clean afterward.
