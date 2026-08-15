@@ -88,6 +88,8 @@ def test_id181_contract_is_one_update_then_restore_only() -> None:
     assert "planning_optimizer_state']['state']" in source
     assert "Setting global step to 1" in source
     assert "ID181_K4_FRESH_RESTORE_ONLY_ALL_OK global_step=1" in source
+    assert "/tmp/i181-" in source
+    assert "/tmp/i180-" not in source
     trainer = (VAGEN / "vagen/ray_trainer.py").read_text()
     assert 'phase == "restore_only"' in trainer
     assert "restore-only gate did not load its complete target step" in trainer
