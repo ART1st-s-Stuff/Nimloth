@@ -17,8 +17,19 @@ ACTOR_MODEL=${REPAIR_ROOT}/checkpoint
 PLANNING_MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
 CHECKPOINT_DIR=${RUN_OUT}/checkpoints
-PHASE_NAME=$([[ "${PHASE}" == update_1 ]] && echo phase1_update || echo phase2_fresh_restore_only)
-PHASE_TAG=$([[ "${PHASE}" == update_1 ]] && echo p1 || echo p2)
+RESTORE_ATTEMPT=${RESTORE_ATTEMPT:-initial}
+if [[ "${PHASE}" == update_1 ]]; then
+  [[ "${RESTORE_ATTEMPT}" == initial ]]
+  PHASE_NAME=phase1_update
+  PHASE_TAG=p1
+elif [[ "${RESTORE_ATTEMPT}" == initial ]]; then
+  PHASE_NAME=phase2_fresh_restore_only
+  PHASE_TAG=p2
+else
+  [[ "${RESTORE_ATTEMPT}" == retry1 ]]
+  PHASE_NAME=phase2_fresh_restore_only_retry1
+  PHASE_TAG=p2r1
+fi
 PHASE_OUT=${RUN_OUT}/${PHASE_NAME}
 ENV_PORT=$((18800 + SLURM_JOB_ID % 300 + ($([[ "${PHASE}" == update_1 ]] && echo 0 || echo 300))))
 ENV_URL=http://127.0.0.1:${ENV_PORT}
@@ -80,6 +91,9 @@ if [[ "${PHASE}" == update_1 ]]; then
   mkdir -p "${RUN_OUT}" "${CHECKPOINT_DIR}"
 else
   [[ -f "${CHECKPOINT_DIR}/global_step_1/joint_checkpoint_complete.json" ]]
+  [[ -f "${RUN_OUT}/phase1_update/validator.json" ]]
+  grep -q '"status": "ALL_OK"' "${RUN_OUT}/phase1_update/validator.json"
+  grep -q '"global_step": 1' "${RUN_OUT}/phase1_update/validator.json"
   [[ ! -e "${CHECKPOINT_DIR}/global_step_2" ]]
 fi
 [[ ! -e "${PHASE_OUT}" ]]
@@ -360,6 +374,7 @@ PHASE_OVERRIDES=()
 if [[ "${PHASE}" == restore_only ]]; then
   PHASE_OVERRIDES+=(joint_integration_gate.phase=restore_only trainer.resume_mode=auto)
 fi
+cd "${VAGEN}"
 COMMAND=("${PY}" -m vagen.main_ppo --config-path="${VAGEN}/vagen/configs" --config-name=joint_id182_gate "hydra.run.dir=${PHASE_OUT}/hydra" hydra.job.chdir=false "${PHASE_OVERRIDES[@]}")
 printf '%q ' "${COMMAND[@]}" >"${PHASE_OUT}/command.sh"; printf '\n' >>"${PHASE_OUT}/command.sh"
 setsid timeout --signal=TERM --kill-after=30s "${PHASE_TIMEOUT_SECONDS}s" "${COMMAND[@]}" >"${PHASE_OUT}/train.log" 2>&1 &
