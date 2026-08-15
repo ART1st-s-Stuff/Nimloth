@@ -4,16 +4,16 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[3]
-RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id179_gate_phase.sh"
-LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_id179_gate_on_hold.sh"
-SLURM = ROOT / "experiments/training/rl/id179_k4_single_update_restore_gate.slurm"
+RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id180_gate_phase.sh"
+LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_id180_gate_on_hold.sh"
+SLURM = ROOT / "experiments/training/rl/id180_k4_single_update_restore_gate.slurm"
 VAGEN = ROOT / "external/VAGEN"
-CONFIG = VAGEN / "vagen/configs/joint_id179_gate.yaml"
-TRAIN = VAGEN / "examples/train/navigation/train_navigation_joint_id179.yaml"
-VAL = VAGEN / "examples/train/navigation/val_navigation_joint_id179.yaml"
+CONFIG = VAGEN / "vagen/configs/joint_id180_gate.yaml"
+TRAIN = VAGEN / "examples/train/navigation/train_navigation_joint_id180.yaml"
+VAL = VAGEN / "examples/train/navigation/val_navigation_joint_id180.yaml"
 
 
-def test_id179_shells_parse_and_bind_exact_allocation() -> None:
+def test_id180_shells_parse_and_bind_exact_allocation() -> None:
     for path in (RUNNER, LAUNCHER, SLURM):
         subprocess.run(["bash", "-n", str(path)], check=True)
     slurm = SLURM.read_text()
@@ -43,14 +43,14 @@ def test_id179_shells_parse_and_bind_exact_allocation() -> None:
     assert "TimeLimit=02:00:00" in launcher + runner
 
 
-def test_id179_embedded_python_compiles() -> None:
+def test_id180_embedded_python_compiles() -> None:
     blocks = re.findall(r"<<'PY'.*?\n(.*?)\nPY", RUNNER.read_text(), flags=re.DOTALL)
     assert len(blocks) >= 5
     for index, block in enumerate(blocks):
         compile(block, f"{RUNNER}:inline-{index}", "exec")
 
 
-def test_id179_pins_code_assets_and_two_separate_checkpoint_roots() -> None:
+def test_id180_pins_code_assets_and_two_separate_checkpoint_roots() -> None:
     source = RUNNER.read_text()
     for value in (
         "494f264494b2525f2c13595f63ac4912963e6d2f",
@@ -66,14 +66,14 @@ def test_id179_pins_code_assets_and_two_separate_checkpoint_roots() -> None:
         assert value in source
     assert "ACTOR_MODEL=${REPAIR_ROOT}/checkpoint" in source
     assert "PLANNING_MODEL=${ROOT}/outputs/experiments" in source
-    assert "ID179_ACTOR_MODEL=${ACTOR_MODEL}" in source
-    assert "ID179_PLANNING_CHECKPOINT=${PLANNING_MODEL}" in source
+    assert "ID180_ACTOR_MODEL=${ACTOR_MODEL}" in source
+    assert "ID180_PLANNING_CHECKPOINT=${PLANNING_MODEL}" in source
     assert "status --porcelain --untracked-files=all" in source
     assert "PYTHONDONTWRITEBYTECODE=1" in source
     assert "rsync" not in source and "scp " not in source
 
 
-def test_id179_contract_is_one_update_then_restore_only() -> None:
+def test_id180_contract_is_one_update_then_restore_only() -> None:
     source = RUNNER.read_text()
     launcher = LAUNCHER.read_text()
     config = CONFIG.read_text()
@@ -87,16 +87,18 @@ def test_id179_contract_is_one_update_then_restore_only() -> None:
     assert "initial.snapshot_id!=updated.snapshot_id" in source
     assert "planning_optimizer_state']['state']" in source
     assert "Setting global step to 1" in source
-    assert "ID179_K4_FRESH_RESTORE_ONLY_ALL_OK global_step=1" in source
+    assert "ID180_K4_FRESH_RESTORE_ONLY_ALL_OK global_step=1" in source
     trainer = (VAGEN / "vagen/ray_trainer.py").read_text()
     assert 'phase == "restore_only"' in trainer
-    assert 'f"ID{self.joint_integration_gate.experiment_id}_"' in trainer
-    assert '"K4_FRESH_RESTORE_ONLY_ALL_OK "' in trainer
     assert "restore-only gate did not load its complete target step" in trainer
+    assert 'f"ID{self.joint_integration_gate.experiment_id}_"' in trainer
     assert "no canary, validation rollout, second update, or long training" in source
+    assert "SIGREG_CUDA_FORWARD_BACKWARD_OK" in source
+    assert "all(buffer.device==device for buffer in module.buffers())" in source
+    assert "ID179 reached the first planning forward" in source
 
 
-def test_id179_formal_values_and_three_split_data_are_explicit() -> None:
+def test_id180_formal_values_and_three_split_data_are_explicit() -> None:
     config = CONFIG.read_text()
     train = TRAIN.read_text()
     for value in (
@@ -138,5 +140,5 @@ def test_general_production_gate_remains_closed() -> None:
     trainer = (VAGEN / "vagen/ray_trainer.py").read_text()
     gate = (VAGEN / "vagen/joint_policy/integration_gate.py").read_text()
     assert "refusing production training" in trainer
-    assert "id179_k4_single_update_restore_gate_v1" in gate
+    assert "id180_k4_single_update_restore_gate_v1" in gate
     assert "restricted to experiment {experiment_id}" in gate
