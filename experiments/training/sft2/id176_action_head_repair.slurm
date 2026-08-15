@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=nimloth-id175-action-head
+#SBATCH --job-name=nimloth-id176-action-head
 #SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/slurm/%x_%j.out
 #SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/slurm/%x_%j.err
 #SBATCH --time=01:30:00
@@ -16,16 +16,16 @@ set -euo pipefail
 
 : "${REPO:?REPO is required}"
 : "${EXPECTED_COMMIT:?EXPECTED_COMMIT is required}"
-module load cuda/12.8 slurm
+module load slurm
 
 CONTROL_ROOT=/project/peilab/atst/nimloth/outputs/experiments/training/sft2/slurm
 mkdir -p "${CONTROL_ROOT}"
-ALLOCATION=${CONTROL_ROOT}/nimloth-id175-action-head_${SLURM_JOB_ID}.allocation.txt
+ALLOCATION=${CONTROL_ROOT}/nimloth-id176-action-head_${SLURM_JOB_ID}.allocation.txt
 scontrol show job -dd "${SLURM_JOB_ID}" -o >"${ALLOCATION}"
 grep -Eq 'AllocTRES=.*cpu=64.*gres/gpu=8|AllocTRES=.*gres/gpu=8.*cpu=64' "${ALLOCATION}"
 grep -q 'MinMemoryNode=256G' "${ALLOCATION}"
 
-MONITOR=${CONTROL_ROOT}/nimloth-id175-action-head_${SLURM_JOB_ID}.nvidia_smi.csv
+MONITOR=${CONTROL_ROOT}/nimloth-id176-action-head_${SLURM_JOB_ID}.nvidia_smi.csv
 (
   while true; do
     nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits
@@ -41,7 +41,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-export RUN_NAME=175_id74_action_head_repair_balanced271x8_val40x8
+export RUN_NAME=176_id74_action_head_repair_balanced271x8_val40x8
 export TRAIN_EXAMPLES_PER_ACTION=271
 export VALIDATION_EXAMPLES_PER_ACTION=40
 export SELECTION_SEED=42002
