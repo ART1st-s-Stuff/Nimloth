@@ -125,7 +125,7 @@ def test_id179_formal_values_and_three_split_data_are_explicit() -> None:
     assert train.count("seed: [0, 8]") == 3
     assert train.count("max_turns: 20") == 3
     assert train.count("per_turn_format_reward: 0.01") == 3
-    assert train.count("format_reward: 0.0") == 3
+    assert train.count("\n      format_reward: 0.0") == 3
     assert train.count("success_reward: 1.0") == 3
     for split in ("base_train", "common_sense_train", "long_horizon_train"):
         assert f"eval_set: {split}" in train
@@ -137,4 +137,4 @@ def test_general_production_gate_remains_closed() -> None:
     gate = (VAGEN / "vagen/joint_policy/integration_gate.py").read_text()
     assert "refusing production training" in trainer
     assert "id179_k4_single_update_restore_gate_v1" in gate
-    assert "experiment_id != experiment_id" not in gate
+    assert "restricted to experiment {experiment_id}" in gate
