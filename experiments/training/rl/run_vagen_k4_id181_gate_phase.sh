@@ -22,7 +22,7 @@ PHASE_TAG=$([[ "${PHASE}" == update_1 ]] && echo p1 || echo p2)
 PHASE_OUT=${RUN_OUT}/${PHASE_NAME}
 ENV_PORT=$((18800 + SLURM_JOB_ID % 300 + ($([[ "${PHASE}" == update_1 ]] && echo 0 || echo 300))))
 ENV_URL=http://127.0.0.1:${ENV_PORT}
-RUNTIME_ROOT=/tmp/i180-${SLURM_JOB_ID}-${PHASE_TAG}
+RUNTIME_ROOT=/tmp/i181-${SLURM_JOB_ID}-${PHASE_TAG}
 RAY_TMPDIR=${RUNTIME_ROOT}
 TMPDIR=${RUNTIME_ROOT}/tmp
 AI2THOR_HOME_ROOT=${RUNTIME_ROOT}/ai2thor
@@ -165,7 +165,7 @@ fd,name=tempfile.mkstemp(prefix='.phase_status.',suffix='.tmp',dir=out)
 with os.fdopen(fd,'w',encoding='utf-8') as f: json.dump(payload,f,indent=2); f.write('\n')
 os.replace(name,out/'phase_status.json')
 PY
-  [[ "${RUNTIME_ROOT}" == /tmp/i180-* ]] && rm -rf -- "${RUNTIME_ROOT}"
+  [[ "${RUNTIME_ROOT}" == /tmp/i181-* ]] && rm -rf -- "${RUNTIME_ROOT}"
   exit "${status}"
 }
 trap cleanup EXIT
