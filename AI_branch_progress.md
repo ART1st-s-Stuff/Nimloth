@@ -4797,3 +4797,11 @@
 - batch-owned Job`519634`在`normal/dgx-23`获得8×H800/64CPU/256GiB。运行parent`37a4a940`/VAGEN`b7c45d9`/VERL`494f2644`/le-wm`8edfeb3`；SHA、clean、ReqTRES/AllocTRES、三asset及ID74文件hash全部通过。
 - FloorPlan1 direct AI2-THOR render在固定150秒内没有输出，以`FAILED 124:0`结束；elapsed2m50s。无env server、prewarm、Ray、vLLM、Qwen/planner GPU load、generation、MCTS、trajectory、beta、optimizer、checkpoint或W&B。planned run目录从未创建，control在`outputs/experiments/training/rl/slurm/id172-k4-519634`，cleanup owned-process为空且dgx-23恢复8/8 free。
 - ID172不可resume/复用，未产生beta，canary继续被阻塞。立即ID173 retry保持全部校准数值和run seed不变、使用新空identity、保留150秒render/总300秒prewarm门禁，并暂时排除dgx-23；一次事件不足以声明dgx-23永久故障。
+
+## 2026-08-15：ID173完成K4 calibration rollout但发现LLM action spread为0
+
+- Job`519648`在`normal/dgx-39`运行15分18秒。direct render6.1秒，三个train split prewarm均3.56--4.14秒；corrected ID74 TP8 eager vLLM、rank0 frozen K4 planner、24个agent-loop worker与24条均衡完整trajectory均运行。全部trajectory topology/ledger/reward/terminal/infrastructure校验通过，MCTS median action spread有限且大于`1e-8`。
+- 八个behavior LLM action logits的population-std中位数恰为0，所以批准的`median std(LLM)/median std(MCTS)`公式得到beta0。实现额外要求beta有限且正并以`RuntimeError`退出；Job状态`FAILED 1:0`。beta0会完全移除MCTS guidance，不能冒充有效K4 joint policy，因此没有批准正beta，也没有启动canary。
+- CPU实物诊断显示ID74 untied LM-head八个action rows几乎相同：max pairwise L2=`0.0001990821`、max element diff=`0.0001220703125`，其中action4/5与action0 exact equal；这与BF16 same-forward logits在至少半数state完全塌平一致。下一步需要人类决定是否改用同一hidden上的FP32 selected-token projection，或指定zero-prior spread fallback尺度。
+- 本轮无optimizer/backward/update/training checkpoint/resume/W&B/canary。399,129,661-byte `frozen_k4_planner.pt`只是immutable rollout输入，不是训练checkpoint。cleanup owned-process为空、port关闭、四层source clean、dgx-39恢复8/8 free；ID173不可resume/复用。
+- 实现错误：positive-beta检查早于summary/turn-record原子持久化，导致完整rollout的精确spread、latency和逐turn证据丢失，仅能从校验顺序确定prior median=0与MCTS median>1e-8。已登记`E0109`；任何后续calibration必须先持久化诊断再决定accept/reject。
