@@ -64,7 +64,11 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 - ID172 is consumed and non-resumable. ID173 kept every calibration value and run seed unchanged, used a new empty identity, and temporarily excluded dgx-23 while preserving the 150-second gate.
 - ID173 Job`519648` on `normal/dgx-39` reached real TP8 ID74 generation, rank-zero K4 scoring and 24 complete balanced trajectories. MCTS median spread was finite and above`1e-8`, while median std across the eight behavior LLM action logits was exactly0; the ratio therefore produced beta0 and the implementation rejected it as non-positive. Job failed`1:0` after15m18s.
 - ID74 untied LM-head action rows are nearly identical (maximum pairwise L2`0.0001990821`, max element difference one BF16 step), consistent with same-forward BF16 action logits collapsing. No positive beta is approved; beta0 would remove MCTS guidance.
-- No optimizer, update, training checkpoint, W&B run or canary exists. ID173 cleanup is empty and non-resumable. Further GPU work is stopped pending the human's zero-spread/precision decision.
+- No optimizer, update, training checkpoint, W&B run or canary exists. ID173 cleanup is empty and non-resumable.
+- 人类要求原实现重试。ID174 Job`519680`在`normal/dgx-30`以`COMPLETED 0:0`运行20m11s；行为/搜索参数与seed均不变，只修复了review证据持久化。24条trajectory各20 turns，得到480个真实turn，全部task-limit failure。
+- ID174精确结果：prior-logit action std min/median/max=`0/0/0.0078125`，365/480为0；MCTS root-mean std min/median/max=`0.00708058/0.02557723/0.09786277`，0/480为0；公式beta=`0.0`，`calibration_accepted=false`、`requires_human_review`。三个split的prior median都为0。
+- 每行policy-state action logits、scoring prior和behavior prior exact一致，排除scoring→behavior传递篡改。zero例是八个`1.421875`，max例也只有`2.078125/2.09375`两档，强烈指向BF16量化；但是否改精度仍需人类决定。planner latency mean/median/max=`1.2544/1.2425/4.0673s`。
+- ID174无optimizer/update/training checkpoint/W&B/canary；cleanup为空、port关闭、source clean。停止边界已到，禁止自动启动canary。
 
 ## Validation log
 
@@ -76,4 +80,5 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 - Live server asset checks confirmed all three `*_train` assets contain 1200 tasks and exact SHA256 values recorded in the launcher. CLI import and full composed calibration config preflight passed with TP8, 24 workers, K4/100/c1, beta0, CoT0.7/top-p0.95.
 - Every import/test used `PYTHONDONTWRITEBYTECODE=1`; all five server source layers remained clean afterward.
 - ID172 end hook updated its adjacent metadata and server RL progress. The fixed render gate failed before any scientific measurement, so no conclusion about K4 scale or quality can be drawn.
-- ID173 end hook updated run README/metadata and server RL progress. Because the positive-beta check ran before output persistence, exact spread/latency/turn records were lost despite full rollout; this is registered as`E0109`. The validation order proves all trajectories completed, MCTS spread exceeded threshold and median prior spread was0, but a new calibration must persist diagnostics before accepting/rejecting beta.
+- ID173 end hook updated run README/metadata and server RL progress. Because the positive-beta check ran before output persistence, exact spread/latency/turn records were lost despite full rollout; this is registered as`E0109`. The validation order proves all trajectories completed, MCTS spread exceeded threshold and median prior spread was0.
+- ID174修复`E0109`并持久化`summary.json`和5.57MB `turn_records.jsonl`后再分类review；launcher final validator、run README及server RL progress均完成。399MB frozen planner仍只是rollout输入，不是训练checkpoint。
