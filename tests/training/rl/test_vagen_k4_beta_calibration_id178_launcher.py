@@ -119,6 +119,7 @@ def test_id178_k4_calibration_values_are_explicit_and_optimizer_free() -> None:
     assert "No optimizer, backward, parameter update, checkpoint, resume" in source
     assert "completed ID176 Qwen action-row repair" in source
     assert "original corrected ID74 root owning training_state.pt" in source
+    assert "`--model`" not in source and "`--critic-checkpoint`" not in source
     assert "canary_started':False" in source
     entrypoint = ENTRYPOINT.read_text()
     assert '"optimizer": None' in entrypoint
