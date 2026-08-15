@@ -84,4 +84,5 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 - ID174修复`E0109`并持久化`summary.json`和5.57MB `turn_records.jsonl`后再分类review；launcher final validator、run README及server RL progress均完成。399MB frozen planner仍只是rollout输入，不是训练checkpoint。
 - 随后使用现有artifact/source完成实现审计：`action_start` hidden的causal位置正确；vLLM Qwen2.5-VL `compute_logits`调用正常language LM head并执行TP gather；ID174 capture logits与实际生成action log-prob的绝对误差median=`5.7e-9`、max=`0.005873`；480行policy→scoring→behavior prior逐值一致。没有发现boundary、TP或传递链导致zero spread。
 - 确认真正的实现/前提错误是把corrected ID74独立`lm_head`误当成已训练action prior。权威SFT1 epoch1--5的`adapter_config.modules_to_save=null`；26个Nimloth special-token input/head rows五个epoch逐bit不变且二者SHA相同；action-row max pairwise L2仅`0.0001990821`。ID74 action rows与corrected ID3逐bit相同，SFT2又冻结language/lm_head。已登记`E0111`。
-- 因此FP32 selected-token projection不能修复根因，只会放大未训练rows的微小初始化残差。当前ID74不能作为已训练LLM prior继续calibration；需人类批准新的action-prior训练/初始化方案。
+- 因此FP32 selected-token projection不能修复根因，只会放大未训练rows的微小初始化残差。当前ID74不能作为已训练LLM prior继续calibration。
+- 人类选择从corrected ID3完整重训SFT2，而不是从ID74 continuation或仅修head。现有train action counts为`[31272,1598,8590,13701,2699,729,271,409]`；这是环境/behavior产生的内生不平衡分布，必须原样保留，不加class weight或动作均衡采样。AI曾错误建议“类别平衡action CE”，人类纠正后已撤回并登记`E0112`。各动作可分项监测，但不能改变训练权重。
