@@ -136,7 +136,13 @@ class FrozenDINOGridTargets:
         for path in paths:
             with Image.open(path) as image:
                 images.append(image.convert("RGB"))
-        processed = self.image_processor(images=images, return_tensors="pt")
+        return self._encode_images(images)
+
+    def _encode_images(self, images: Sequence[Image.Image]) -> torch.Tensor:
+        if not images or any(not isinstance(image, Image.Image) for image in images):
+            raise ValueError("DINO grid image batch must contain PIL images")
+        rgb_images = [image.convert("RGB") for image in images]
+        processed = self.image_processor(images=rgb_images, return_tensors="pt")
         model_parameter = next(self.model.parameters())
         pixel_values = processed["pixel_values"].to(
             device=model_parameter.device,
@@ -158,9 +164,24 @@ class FrozenDINOGridTargets:
             (self.grid_size, self.grid_size),
         )
         return pooled.permute(0, 2, 3, 1).reshape(
-            len(paths),
+            len(images),
             self.grid_tokens,
             self.identity.hidden_size,
+        )
+
+    @torch.no_grad()
+    def load_images(
+        self,
+        images: Sequence[Image.Image],
+        *,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Encode in-memory rollout observations without temporary files."""
+
+        return self._encode_images(images).detach().to(
+            device=device,
+            dtype=torch.float32,
+            non_blocking=True,
         )
 
     @torch.no_grad()

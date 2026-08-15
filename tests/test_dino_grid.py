@@ -64,3 +64,31 @@ def test_frozen_dino_grid_targets_pool_row_major_and_cache_images(tmp_path) -> N
     torch.testing.assert_close(second, expected)
     assert model.calls == 1
     assert all(not parameter.requires_grad for parameter in model.parameters())
+
+
+def test_frozen_dino_grid_targets_encode_in_memory_rollout_images() -> None:
+    model = _DINO()
+    targets = FrozenDINOGridTargets(
+        model=model,
+        image_processor=_ImageProcessor(),
+        identity=DINOIdentity(
+            source="fake",
+            revision="fake",
+            processor_fingerprint="fake",
+            hidden_size=2,
+        ),
+        grid_size=2,
+    )
+    images = [Image.new("RGB", (4, 4)), Image.new("L", (4, 4))]
+    encoded = targets.load_images(images, device=torch.device("cpu"))
+    assert encoded.shape == (2, 4, 2)
+    assert encoded.dtype == torch.float32
+    assert model.calls == 1
+    with torch.no_grad():
+        expected = torch.tensor(
+            [
+                [[0.5, 0.5], [0.5, 2.5], [2.5, 0.5], [2.5, 2.5]],
+                [[0.5, 0.5], [0.5, 2.5], [2.5, 0.5], [2.5, 2.5]],
+            ]
+        )
+    torch.testing.assert_close(encoded, expected)
