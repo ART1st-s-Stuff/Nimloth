@@ -4845,11 +4845,15 @@
 - 本轮无optimizer/backward/update/training checkpoint/resume/W&B/canary。399,129,661-byte `frozen_k4_planner.pt`只是immutable rollout输入，不是训练checkpoint。cleanup owned-process为空、port关闭、四层source clean、dgx-39恢复8/8 free；ID173不可resume/复用。
 - 实现错误：positive-beta检查早于summary/turn-record原子持久化，导致完整rollout的精确spread、latency和逐turn证据丢失，仅能从校验顺序确定prior median=0与MCTS median>1e-8。已登记`E0109`；任何后续calibration必须先持久化诊断再决定accept/reject。
 
-## 2026-08-15：人类要求原实现重试；ID174确认BF16 action-logit zero spread
+## 2026-08-15：ID174错误重跑及随后实现根因审计
 
-- 重试没有引入FP32 projection或fallback scale。仅修复`E0109`：任何有限校准结果先原子持久化逐turn policy logits、prior/MCTS spread、scoring/behavior证据、latency和summary，再分类为accepted或requires-human-review。fresh parent`b8f1df42`/VAGEN`e67e49d1`/VERL`494f2644`定向`39 passed,2 subtests`且五层clean。
+- AI把“重试上一项工作”错误解释成重跑GPU calibration；人类要求的是继续研究实现本身是否错误。ID174因此不必要地消耗8×H800约20分钟，只能证明现象可复现，不能证明实现正确。已登记`E0110`。
+- ID174没有引入FP32 projection或fallback scale，仅修复`E0109`：任何有限校准结果先原子持久化逐turn policy logits、prior/MCTS spread、scoring/behavior证据、latency和summary，再分类为accepted或requires-human-review。fresh parent`b8f1df42`/VAGEN`e67e49d1`/VERL`494f2644`定向`39 passed,2 subtests`且五层clean。
 - Job`519680`在`normal/dgx-30`以`COMPLETED 0:0`运行20分11秒。direct render12.995秒，三split prewarm3.44--4.78秒；corrected ID74 TP8 eager、rank0 K4/100/c1和24条完整trajectory全部运行。每split8条×20 turns，共480个真实turn；456 continue+24 task-limit failure，success0。
 - 精确action-axis population-std：LLM prior min/median/max=`0/0/0.0078125`，365/480为0；MCTS root mean min/median/max=`0.0070805777/0.0255772287/0.0978627679`，0/480为0。因此合同公式得到beta=`0.0`，`calibration_accepted=false`，final status=`requires_human_review`。三个split各自prior median也均为0。
 - policy-state logits、FrozenK4 scoring prior及behavior prior在480行逐值exact一致，排除了scoring→behavior阶段覆盖。zero例为八个`1.421875`；最大spread例也只有`2.078125/2.09375`两档，结合ID74 action LM-head rows几乎相同，强烈支持BF16量化塌平，但精度策略仍由人类决定。
 - planner latency mean/median/max=`1.254372/1.242505/4.067268s`；每行root visits和为100。输出含5,565,725-byte `turn_records.jsonl`、summary/final status/README；snapshot=`sha256:fc987d...`、contract=`sha256:b8a39c...`。
 - 无optimizer/backward/update/training checkpoint/resume/W&B/canary。cleanup owned-process为空、port关闭、source clean；stop boundary已到，禁止自动启动10-update canary。
+- 使用已有ID174 evidence审计capture：实际生成action的behavior log-prob与captured raw action logits子集log-softmax绝对误差min/median=`5.7e-9`、max=`0.005873`，365个uniform rows在`1e-6`内exact；结合response suffix/token IDs和TP parity，`action_start` causal boundary位置正确。vLLM 0.11 Qwen2.5-VL `compute_logits`只是调用language model LM head，内部quant method matmul后执行TP gather。480行policy/scoring/behavior exact一致。因此没有发现boundary、TP汇聚或后续传递导致zero spread。
+- 找到真正的实现/前提错误：把corrected ID3/ID74中“独立可加载”的`lm_head`误当成“已训练action prior”。权威k16 SFT1 epoch1--5的`adapter_config.modules_to_save=null`；26个Nimloth special-token head rows五epoch逐bit不变，input rows也逐bit不变且与head rows SHA完全相同。八action rows最大pairwise L2仅`0.0001990821`；ID74 action rows又与ID3逐bit相同，SFT2配置明确冻结language/lm_head。
+- 所以ID74的action tokens虽能被protocol强制生成，其LM prior实际近乎均匀。FP32重投影只能显示未训练rows的微小初始化残差，不能修复prior。已登记`E0111`；当前checkpoint不得继续做Scheme-B beta calibration，待人类决定新的action-prior训练/初始化方案。
