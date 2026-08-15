@@ -4805,3 +4805,12 @@
 - CPU实物诊断显示ID74 untied LM-head八个action rows几乎相同：max pairwise L2=`0.0001990821`、max element diff=`0.0001220703125`，其中action4/5与action0 exact equal；这与BF16 same-forward logits在至少半数state完全塌平一致。下一步需要人类决定是否改用同一hidden上的FP32 selected-token projection，或指定zero-prior spread fallback尺度。
 - 本轮无optimizer/backward/update/training checkpoint/resume/W&B/canary。399,129,661-byte `frozen_k4_planner.pt`只是immutable rollout输入，不是训练checkpoint。cleanup owned-process为空、port关闭、四层source clean、dgx-39恢复8/8 free；ID173不可resume/复用。
 - 实现错误：positive-beta检查早于summary/turn-record原子持久化，导致完整rollout的精确spread、latency和逐turn证据丢失，仅能从校验顺序确定prior median=0与MCTS median>1e-8。已登记`E0109`；任何后续calibration必须先持久化诊断再决定accept/reject。
+
+## 2026-08-15：人类要求原实现重试；ID174确认BF16 action-logit zero spread
+
+- 重试没有引入FP32 projection或fallback scale。仅修复`E0109`：任何有限校准结果先原子持久化逐turn policy logits、prior/MCTS spread、scoring/behavior证据、latency和summary，再分类为accepted或requires-human-review。fresh parent`b8f1df42`/VAGEN`e67e49d1`/VERL`494f2644`定向`39 passed,2 subtests`且五层clean。
+- Job`519680`在`normal/dgx-30`以`COMPLETED 0:0`运行20分11秒。direct render12.995秒，三split prewarm3.44--4.78秒；corrected ID74 TP8 eager、rank0 K4/100/c1和24条完整trajectory全部运行。每split8条×20 turns，共480个真实turn；456 continue+24 task-limit failure，success0。
+- 精确action-axis population-std：LLM prior min/median/max=`0/0/0.0078125`，365/480为0；MCTS root mean min/median/max=`0.0070805777/0.0255772287/0.0978627679`，0/480为0。因此合同公式得到beta=`0.0`，`calibration_accepted=false`，final status=`requires_human_review`。三个split各自prior median也均为0。
+- policy-state logits、FrozenK4 scoring prior及behavior prior在480行逐值exact一致，排除了scoring→behavior阶段覆盖。zero例为八个`1.421875`；最大spread例也只有`2.078125/2.09375`两档，结合ID74 action LM-head rows几乎相同，强烈支持BF16量化塌平，但精度策略仍由人类决定。
+- planner latency mean/median/max=`1.254372/1.242505/4.067268s`；每行root visits和为100。输出含5,565,725-byte `turn_records.jsonl`、summary/final status/README；snapshot=`sha256:fc987d...`、contract=`sha256:b8a39c...`。
+- 无optimizer/backward/update/training checkpoint/resume/W&B/canary。cleanup owned-process为空、port关闭、source clean；stop boundary已到，禁止自动启动10-update canary。
