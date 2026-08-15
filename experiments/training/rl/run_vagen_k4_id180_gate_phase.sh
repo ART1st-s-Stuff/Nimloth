@@ -213,6 +213,38 @@ export ID180_AGENT_CONFIG=${VAGEN}/vagen/configs/agent_no_concat.yaml
 export ID180_RUN_NAME=${RUN_NAME}
 export ID180_RUN_OUT=${RUN_OUT}
 
+"${PY}" - "${ID180_TRAIN_CONFIG}" "${PHASE_OUT}" <<'PY'
+import json, sys
+from collections import Counter
+from pathlib import Path
+from vagen.gym_agent_dataset import AgenticDataset
+config_path=Path(sys.argv[1]); out=Path(sys.argv[2])
+dataset=AgenticDataset(data_files=str(config_path),config={'base_seed':0})
+rows=[]
+for index in range(len(dataset)):
+ item=dataset[index]
+ rows.append({
+  'dataset_index':index,
+  'data_source':str(item['data_source']),
+  'seed':int(item['seed']),
+  'rollout_sample_id':str(item['rollout_sample_id']),
+ })
+counts=Counter(row['data_source'] for row in rows)
+assert len(rows)==24
+assert counts=={
+ 'navigation_base_train_id180':8,
+ 'navigation_common_sense_train_id180':8,
+ 'navigation_long_horizon_train_id180':8,
+}
+assert len({row['rollout_sample_id'] for row in rows})==24
+(out/'dataset_manifest.json').write_text(json.dumps({
+ 'base_seed':0,
+ 'seed_directive':'inclusive [0,8] sampled deterministically with replacement',
+ 'counts':dict(sorted(counts.items())),
+ 'rows':rows,
+},indent=2)+'\n')
+PY
+
 if [[ "${PHASE}" == update_1 ]]; then
   cat >"${RUN_OUT}/README.md" <<EOF
 # ID180 corrected single-update K4 Scheme-B integration gate
@@ -221,7 +253,7 @@ if [[ "${PHASE}" == update_1 ]]; then
 - project/run: vagen / ${RUN_NAME}
 - approval: one optimizer update followed by fresh-runtime restore-only verification; no canary, validation rollout, second update, or long training.
 - parent/VAGEN/VERL: ${EXPECTED_PARENT_COMMIT} / ${EXPECTED_VAGEN_COMMIT} / ${EXPECTED_VERL_COMMIT}
-- data: base_train, common_sense_train, long_horizon_train seeds 0..7 each; 24 complete trajectories; max 20 real actions; per-turn format 0.01, terminal format 0, success 1.
+- data: base_train, common_sense_train, long_horizon_train, 8 deterministic instances per split from the inclusive seed directive [0,8]; 24 complete trajectories; max 20 real actions; per-turn format 0.01, terminal format 0, success 1.
 - actor initialization: immutable completed ID176 repaired Qwen checkpoint.
 - planning initialization: immutable corrected ID74 projector, horizon-4 predictor, and 8-action ValueHead at source step 776.
 - behavior: K4/100 UCT/c1, alpha1, approved beta85.78297006578457, prior temperature1, float32, keyed sampling, CoT temperature0.7/top-p0.95, response cap512.
