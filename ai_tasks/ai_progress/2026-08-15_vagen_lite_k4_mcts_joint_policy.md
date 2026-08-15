@@ -61,8 +61,10 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 - Legacy direct-Q schemas and ID171 paths remain separate.
 - Fresh server worktree `/project/peilab/atst/nimloth/.worktrees/k4-mcts-c936682c` is now at exact candidate SHAs and clean at parent/VAGEN/VERL/le-wm/RCDM layers.
 - ID172 Job`519634` ran on `normal/dgx-23` and failed `124:0` after2m50s at the unchanged 150-second FloorPlan1 direct-render gate. Exact SHA/clean/allocation/three-asset/ID74 hash gates passed; env service, prewarm, Ray, vLLM, model load, generation, MCTS and beta calculation never started. Planned run output was never created; control evidence is `outputs/experiments/training/rl/slurm/id172-k4-519634`, cleanup audit is empty, and dgx-23 returned 8/8 GPUs free.
-- ID172 is consumed and non-resumable. ID173 retry preparation keeps every calibration value and run seed unchanged, uses a new empty identity, and temporarily excludes dgx-23 while preserving the 150-second gate.
-- No optimizer, checkpoint, W&B run, beta result, or canary exists.
+- ID172 is consumed and non-resumable. ID173 kept every calibration value and run seed unchanged, used a new empty identity, and temporarily excluded dgx-23 while preserving the 150-second gate.
+- ID173 Job`519648` on `normal/dgx-39` reached real TP8 ID74 generation, rank-zero K4 scoring and 24 complete balanced trajectories. MCTS median spread was finite and above`1e-8`, while median std across the eight behavior LLM action logits was exactly0; the ratio therefore produced beta0 and the implementation rejected it as non-positive. Job failed`1:0` after15m18s.
+- ID74 untied LM-head action rows are nearly identical (maximum pairwise L2`0.0001990821`, max element difference one BF16 step), consistent with same-forward BF16 action logits collapsing. No positive beta is approved; beta0 would remove MCTS guidance.
+- No optimizer, update, training checkpoint, W&B run or canary exists. ID173 cleanup is empty and non-resumable. Further GPU work is stopped pending the human's zero-spread/precision decision.
 
 ## Validation log
 
@@ -74,3 +76,4 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 - Live server asset checks confirmed all three `*_train` assets contain 1200 tasks and exact SHA256 values recorded in the launcher. CLI import and full composed calibration config preflight passed with TP8, 24 workers, K4/100/c1, beta0, CoT0.7/top-p0.95.
 - Every import/test used `PYTHONDONTWRITEBYTECODE=1`; all five server source layers remained clean afterward.
 - ID172 end hook updated its adjacent metadata and server RL progress. The fixed render gate failed before any scientific measurement, so no conclusion about K4 scale or quality can be drawn.
+- ID173 end hook updated run README/metadata and server RL progress. Because the positive-beta check ran before output persistence, exact spread/latency/turn records were lost despite full rollout; this is registered as`E0109`. The validation order proves all trajectories completed, MCTS spread exceeded threshold and median prior spread was0, but a new calibration must persist diagnostics before accepting/rejecting beta.
