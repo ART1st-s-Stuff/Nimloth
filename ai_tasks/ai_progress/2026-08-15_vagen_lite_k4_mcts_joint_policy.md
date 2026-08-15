@@ -102,3 +102,4 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 - beta0 guided action counts=`[350,4,8,21,6,3,35,53]`，MCTS argmax=`[10,47,5,77,311,0,30,0]`。24条均20-turn task failure、success0；success不是scale calibration gate。无optimizer/checkpoint/W&B/canary，cleanup通过。
 - ID178自动metadata曾因unquoted heredoc中的Markdown backticks被shell command-substitute而丢失两个flag名；on-experiment-end已重写完整README并登记`E0115`，不影响数值结果。
 - 人类现已明确批准将精确值`beta=85.78297006578457`固定为后续Scheme-B RL测试值。该批准只解除beta数值门禁，不批准canary/长训练；production仍需先完成在线WM 1--4步+DINO/SIGReg、统一optimizer、完整checkpoint/resume和显式opt-in接线。
+- K4 production compiler首个CPU里程碑已实现：training contract接受ledger v3，Frozen-V严格用`softmax(LLM+beta*MCTS)`加权behavior-time direct Q；batch compiler分别生成frozen MCTS guidance与direct-Q tensors，并对embedded candidate/root/search identity逐项复核；legacy ledger v2 tensors保持兼容。Ray trainer ledger boundary也允许K4 schema，但production gate仍关闭。VAGEN提交`ce6de0c`，服务器torch回归待执行。
