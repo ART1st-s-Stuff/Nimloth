@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -50,6 +51,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "expected-validation-cache-manifest-sha256",
         "model-dtype",
         "attn-implementation",
+        "resume-mode",
+        "git-commit",
+        "experiment-purpose",
     ):
         parser.add_argument(f"--{flag}", required=True)
     for flag in (
@@ -106,6 +110,22 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
+def _atomic_csv(path: Path, rows: tuple[dict[str, float | int], ...]) -> None:
+    if not rows:
+        raise ValueError("action-head repair training log must not be empty")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=("epoch", "training_nll", "validation_nll"))
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(name, path)
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
+
+
 def _atomic_torch_save(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -116,6 +136,18 @@ def _atomic_torch_save(path: Path, payload: dict[str, Any]) -> None:
     except BaseException:
         Path(name).unlink(missing_ok=True)
         raise
+
+
+def _run_identity(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    raw = {
+        key: (str(Path(value).resolve()) if key in {
+            "model", "train_jsonl", "validation_jsonl", "cache_root", "output_dir"
+        } else value)
+        for key, value in vars(args).items()
+        if key != "resume_mode"
+    }
+    payload = json.dumps(raw, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}", raw
 
 
 def _setup_distributed(expected_world_size: int) -> tuple[int, int, torch.device]:
@@ -190,6 +222,7 @@ def _extract_rank_hidden(
     selected_indices: tuple[int, ...],
     cache_dir: Path,
     split: str,
+    checkpoint_path: Path,
 ) -> dict[str, Any]:
     dataset = CachedTransitionDataset(cache_dir, samples, max_open_shards=2)
     collator = CompactCachedTransitionCollator(cache_dir, max_open_shards=2)
@@ -204,10 +237,37 @@ def _extract_rank_hidden(
         latent_token_count=args.latent_token_count,
     )
     owned = selected_indices[rank::world_size]
+    expected_identities = _selection_payload(samples, owned)
     hidden_rows: list[torch.Tensor] = []
     targets: list[int] = []
     identities: list[dict[str, Any]] = []
-    for start in range(0, len(owned), args.extraction_batch_size):
+    if checkpoint_path.is_file():
+        existing = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        if (
+            existing.get("schema") != _HIDDEN_SCHEMA
+            or existing.get("split") != split
+            or existing.get("rank") != rank
+            or existing.get("world_size") != world_size
+        ):
+            raise ValueError(f"invalid resumable action hidden shard: {checkpoint_path}")
+        existing_hidden = existing.get("hidden")
+        existing_targets = existing.get("targets")
+        existing_identities = existing.get("identities")
+        if (
+            not isinstance(existing_hidden, torch.Tensor)
+            or existing_hidden.ndim != 2
+            or not isinstance(existing_targets, torch.Tensor)
+            or existing_targets.shape != (existing_hidden.shape[0],)
+            or not isinstance(existing_identities, list)
+            or existing_identities != expected_identities[: existing_hidden.shape[0]]
+            or existing_hidden.shape[0] > len(owned)
+        ):
+            raise ValueError(f"resumable action hidden shard is not an exact prefix: {checkpoint_path}")
+        hidden_rows.append(existing_hidden)
+        targets.extend(int(value) for value in existing_targets.tolist())
+        identities.extend(existing_identities)
+    completed = len(identities)
+    for start in range(completed, len(owned), args.extraction_batch_size):
         indices = owned[start : start + args.extraction_batch_size]
         entries = [dataset[index] for index in indices]
         raw = collator(entries)
@@ -234,11 +294,29 @@ def _extract_rank_hidden(
                     "action_index": int(sample.action_index),
                 }
             )
+        partial_hidden = torch.cat(hidden_rows, dim=0)
+        partial_targets = torch.tensor(targets, dtype=torch.long)
+        _atomic_torch_save(
+            checkpoint_path,
+            {
+                "schema": _HIDDEN_SCHEMA,
+                "split": split,
+                "rank": rank,
+                "world_size": world_size,
+                "identities": identities,
+                "hidden": partial_hidden,
+                "targets": partial_targets,
+            },
+        )
     result_hidden = torch.cat(hidden_rows, dim=0) if hidden_rows else torch.empty(0, 0)
     result_targets = torch.tensor(targets, dtype=torch.long)
-    if result_hidden.shape[0] != len(owned) or tuple(result_targets.shape) != (len(owned),):
+    if (
+        result_hidden.shape[0] != len(owned)
+        or tuple(result_targets.shape) != (len(owned),)
+        or identities != expected_identities
+    ):
         raise RuntimeError(f"{split} rank hidden extraction count mismatch")
-    return {
+    result = {
         "schema": _HIDDEN_SCHEMA,
         "split": split,
         "rank": rank,
@@ -247,6 +325,9 @@ def _extract_rank_hidden(
         "hidden": result_hidden,
         "targets": result_targets,
     }
+    if not checkpoint_path.is_file():
+        _atomic_torch_save(checkpoint_path, result)
+    return result
 
 
 def _combine_hidden_shards(
@@ -353,14 +434,34 @@ def run(args: argparse.Namespace) -> int:
     rank, world_size, device = _setup_distributed(args.expected_world_size)
     output_dir = Path(args.output_dir)
     model_path = Path(args.model)
+    if args.resume_mode != "allow-exact":
+        raise ValueError("action-head repair requires resume-mode=allow-exact")
+    run_id, run_config = _run_identity(args)
     train_path = Path(args.train_jsonl)
     validation_path = Path(args.validation_jsonl)
     cache_root = Path(args.cache_root)
     if rank == 0:
         if output_dir.exists():
-            raise FileExistsError(f"refusing to reuse action-head repair output: {output_dir}")
-        output_dir.mkdir(parents=True)
-        _atomic_json(output_dir / "status.json", {"schema": _SCHEMA, "status": "running"})
+            status_path = output_dir / "status.json"
+            if not status_path.is_file():
+                raise FileExistsError(
+                    f"action-head repair output exists without status: {output_dir}"
+                )
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            if (
+                status.get("schema") != _SCHEMA
+                or status.get("run_id") != run_id
+                or status.get("status") not in {"running", "extracting", "fitting"}
+                or (output_dir / "complete.marker").exists()
+            ):
+                raise ValueError("action-head repair output is not exact-resumable")
+        else:
+            output_dir.mkdir(parents=True)
+            _atomic_json(output_dir / "run_config.json", {"run_id": run_id, **run_config})
+            _atomic_json(
+                output_dir / "status.json",
+                {"schema": _SCHEMA, "run_id": run_id, "status": "running"},
+            )
     _barrier(world_size)
 
     _require_sha(
@@ -408,6 +509,11 @@ def run(args: argparse.Namespace) -> int:
             },
         )
 
+    if rank == 0:
+        _atomic_json(
+            output_dir / "status.json",
+            {"schema": _SCHEMA, "run_id": run_id, "status": "extracting"},
+        )
     model, processor = _load_model(args, device)
     action_token_ids = _action_token_ids(processor, args.latent_token_count)
     if len(action_token_ids) != args.expected_action_count:
@@ -436,7 +542,7 @@ def run(args: argparse.Namespace) -> int:
         ("train", train_samples, train_indices, cache_root / "train"),
         ("validation", validation_samples, validation_indices, cache_root / "val"),
     ):
-        shard = _extract_rank_hidden(
+        _extract_rank_hidden(
             args=args,
             rank=rank,
             world_size=world_size,
@@ -447,14 +553,17 @@ def run(args: argparse.Namespace) -> int:
             selected_indices=indices,
             cache_dir=cache_dir,
             split=split,
-        )
-        _atomic_torch_save(
-            output_dir / "hidden" / f"{split}_rank_{rank:03d}.pt",
-            shard,
+            checkpoint_path=(
+                output_dir / "hidden" / f"{split}_rank_{rank:03d}.pt"
+            ),
         )
     _barrier(world_size)
 
     if rank == 0:
+        _atomic_json(
+            output_dir / "status.json",
+            {"schema": _SCHEMA, "run_id": run_id, "status": "fitting"},
+        )
         train_hidden, train_targets = _combine_hidden_shards(
             output_dir,
             split="train",
@@ -515,8 +624,11 @@ def run(args: argparse.Namespace) -> int:
 
         checkpoint_tmp = output_dir / ".checkpoint.tmp"
         checkpoint = output_dir / "checkpoint"
-        if checkpoint_tmp.exists() or checkpoint.exists():
-            raise FileExistsError("action-head repair checkpoint path already exists")
+        for incomplete in (checkpoint_tmp, checkpoint):
+            if incomplete.exists():
+                if incomplete.parent.resolve() != output_dir.resolve():
+                    raise RuntimeError("refusing to clean checkpoint outside run output")
+                shutil.rmtree(incomplete)
         checkpoint_tmp.mkdir()
         model.config.nimloth_action_head_repair_schema = _SCHEMA
         model.config.nimloth_action_head_repair_source = str(model_path.resolve())
@@ -543,6 +655,8 @@ def run(args: argparse.Namespace) -> int:
             "source_model": str(model_path.resolve()),
             "checkpoint": str(checkpoint.resolve()),
             "world_size": world_size,
+            "git_commit": args.git_commit,
+            "experiment_purpose": args.experiment_purpose,
             "action_token_ids": list(action_token_ids),
             "base_action_rows_sha256": base_row_hash,
             "non_action_lm_head_digest": non_action_before,
@@ -582,10 +696,16 @@ def run(args: argparse.Namespace) -> int:
                 "value_head",
             ],
         }
+        _atomic_csv(output_dir / "train_step_log.csv", fit.epoch_history)
         _atomic_json(output_dir / "summary.json", summary)
         _atomic_json(
             output_dir / "status.json",
-            {"schema": _SCHEMA, "status": "passed", "checkpoint": str(checkpoint)},
+            {
+                "schema": _SCHEMA,
+                "run_id": run_id,
+                "status": "passed",
+                "checkpoint": str(checkpoint),
+            },
         )
         (output_dir / "complete.marker").write_text("complete\n", encoding="utf-8")
     _barrier(world_size)

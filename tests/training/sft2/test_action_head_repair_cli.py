@@ -8,6 +8,7 @@ import torch
 
 from nimloth.training.sft2.action_head_repair_cli import (
     _HIDDEN_SCHEMA,
+    _atomic_csv,
     _atomic_torch_save,
     _combine_hidden_shards,
     _parse_args,
@@ -56,6 +57,23 @@ def test_combine_hidden_shards_restores_selection_order(tmp_path: Path) -> None:
     assert targets.tolist() == [0, 1, 0]
 
 
+def test_atomic_training_log_has_one_row_per_epoch(tmp_path: Path) -> None:
+    path = tmp_path / "train_step_log.csv"
+    _atomic_csv(
+        path,
+        (
+            {"epoch": 1, "training_nll": 2.0, "validation_nll": 2.1},
+            {"epoch": 2, "training_nll": 1.8, "validation_nll": 1.9},
+        ),
+    )
+
+    assert path.read_text().splitlines() == [
+        "epoch,training_nll,validation_nll",
+        "1,2.0,2.1",
+        "2,1.8,1.9",
+    ]
+
+
 def test_per_action_metrics_reports_each_action_without_reweighting() -> None:
     logits = torch.tensor([[3.0, 0.0], [0.0, 2.0], [1.0, 0.0]])
     targets = torch.tensor([0, 1, 0])
@@ -84,6 +102,9 @@ def test_cli_has_no_joint_training_numeric_defaults() -> None:
         "fit-early-stopping-patience",
         "minimum-validation-nll-improvement",
         "minimum-bf16-median-spread",
+        "resume-mode",
+        "git-commit",
+        "experiment-purpose",
     ):
         assert f'"{flag}"' in source
     assert "required=True" in source
