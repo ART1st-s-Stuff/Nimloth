@@ -140,6 +140,8 @@ def test_fit_action_token_row_delta_improves_heldout_restricted_nll() -> None:
     assert result.validation_nll_after < result.validation_nll_before - 0.1
     assert result.delta.shape == (3, 3)
     assert torch.isfinite(result.delta).all()
+    assert len(result.epoch_history) == result.epochs_run
+    assert result.epoch_history[0]["epoch"] == 1
     assert population_action_spread(result.validation_logits_after).median() > 0
 
 

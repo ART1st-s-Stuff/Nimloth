@@ -136,6 +136,7 @@ class ActionHeadRepairFit:
     validation_nll_before: float
     validation_nll_after: float
     validation_logits_after: torch.Tensor
+    epoch_history: tuple[dict[str, float | int], ...]
 
 
 def _validated_balanced_features(
@@ -236,6 +237,7 @@ def fit_action_token_row_delta(
     best_validation = validation_nll_before
     stale_epochs = 0
     epochs_run = 0
+    epoch_history: list[dict[str, float | int]] = []
     for epoch in range(1, max_epochs + 1):
         optimizer.zero_grad(set_to_none=True)
         train_loss = restricted_action_cross_entropy(module(train_x), train_y)
@@ -246,6 +248,13 @@ def fit_action_token_row_delta(
                 restricted_action_cross_entropy(module(val_x), val_y).item()
             )
         epochs_run = epoch
+        epoch_history.append(
+            {
+                "epoch": epoch,
+                "training_nll": float(train_loss.detach().item()),
+                "validation_nll": validation,
+            }
+        )
         if validation < best_validation - 1e-12:
             best_validation = validation
             best_delta = module.delta.detach().clone()
@@ -284,6 +293,7 @@ def fit_action_token_row_delta(
         validation_nll_before=validation_nll_before,
         validation_nll_after=validation_nll_after,
         validation_logits_after=validation_logits_after,
+        epoch_history=tuple(epoch_history),
     )
 
 
