@@ -127,6 +127,14 @@ def test_id180_formal_values_and_three_split_data_are_explicit() -> None:
         assert value in config
     assert train.count("n_envs: 8") == 3
     assert train.count("seed: [0, 8]") == 3
+    runner = RUNNER.read_text()
+    assert "8 deterministic instances per split" in runner
+    assert "inclusive seed directive [0,8]" in runner
+    assert "seeds 0..7 each" not in runner
+    assert "dataset_manifest.json" in runner
+    assert "len(rows)==24" in runner
+    assert "len({row['rollout_sample_id'] for row in rows})==24" in runner
+    assert "sampled deterministically with replacement" in runner
     assert train.count("max_turns: 20") == 3
     assert train.count("per_turn_format_reward: 0.01") == 3
     assert train.count("\n      format_reward: 0.0") == 3
