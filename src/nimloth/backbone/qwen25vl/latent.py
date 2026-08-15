@@ -96,6 +96,40 @@ def forward_qwen_last_hidden(model, enc: dict[str, torch.Tensor], device: torch.
     return hidden
 
 
+def extract_qwen_action_boundary_hidden(
+    model,
+    enc: dict[str, torch.Tensor],
+    token_id_map: dict[str, int],
+    device: torch.device,
+) -> torch.Tensor:
+    """Return final-norm hidden rows at each sample's last ``action_start``.
+
+    Action-head repair freezes Qwen and must not materialize supervised
+    full-vocabulary logits.  Labels are therefore rejected and the ordinary
+    final-norm hook captures the causal boundary state in the same forward used
+    for the K-slot state prompt.
+    """
+
+    if "labels" in enc:
+        raise ValueError("action boundary extraction must not include labels")
+    model_inputs = {key: value.to(device, non_blocking=True) for key, value in enc.items()}
+    hidden, _output = _capture_last_hidden(model, model_inputs)
+    action_start_id = token_id_map[LatentActionTokens().action_start]
+    input_ids = enc["input_ids"].detach().cpu()
+    rows: list[torch.Tensor] = []
+    for row in range(hidden.shape[0]):
+        positions = (input_ids[row] == int(action_start_id)).nonzero(as_tuple=True)[0]
+        if positions.numel() < 1:
+            raise RuntimeError(
+                f"Qwen input row {row} has no action_start token for repair"
+            )
+        rows.append(hidden[row, int(positions[-1].item())])
+    boundary = torch.stack(rows, dim=0)
+    if boundary.ndim != 2 or not torch.isfinite(boundary).all():
+        raise RuntimeError("Qwen action boundary hidden is invalid")
+    return boundary
+
+
 def extract_qwen_latents(
     model,
     enc: dict[str, torch.Tensor],
