@@ -4874,4 +4874,5 @@
 - ID178 Job`519778`在`normal/dgx-28` 8×H800以`COMPLETED 0:0`运行15m53s，24 trajectories/480 real turns完整。prior spread min/median/max=`0.86982227/1.83056276/5.68992982`且zero0；MCTS=`0.00588510/0.02133947/0.09271607`且zero0。按合同提出beta=`85.78297006578457`，必须人类审批。
 - 480行policy/scoring/behavior prior logits逐值一致、root visits均sum100；temperature0.7/top-p0.95 processed action logprob可由captured raw logits重构，和response evidence max abs error=`3.28e-7`；beta0 behavior guided logprob max error=`1.78e-15`。planner latency mean/median/max=`1.30954/1.30482/2.80771s`。
 - beta0 guided counts0--7=`[350,4,8,21,6,3,35,53]`，MCTS argmax=`[10,47,5,77,311,0,30,0]`。全部24条在20 turns task_failure、success0；这不属于scale calibration acceptance gate。无optimizer/checkpoint/W&B/canary且cleanup clean。
-- ID178自动metadata中两个Markdown backtick flag被unquoted heredoc command-substitute而丢失；已重写server README、修复source并登记`E0115`，数值与runtime未受影响。`calibration_accepted=true`仅表示finite/nonzero数值门禁通过，production仍等待human beta approval。
+- ID178自动metadata中两个Markdown backtick flag被unquoted heredoc command-substitute而丢失；已重写server README、修复source并登记`E0115`，数值与runtime未受影响。`calibration_accepted=true`仅表示finite/nonzero数值门禁通过。
+- 人类已明确批准固定`beta=85.78297006578457`用于后续Scheme-B RL测试。审批不包含canary或长训练；production仍必须先补齐在线WM 1--4步/DINO/SIGReg、统一projector/predictor/ValueHead optimizer、完整checkpoint/resume及显式production opt-in。
