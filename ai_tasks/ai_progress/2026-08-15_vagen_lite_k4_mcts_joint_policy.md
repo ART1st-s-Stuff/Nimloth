@@ -113,4 +113,5 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 - corrected ID180 runner生成的README曾误写为每split固定seeds0..7；实际dataset合同一直是inclusive `seed: [0,8]`，由`AgenticDataset`按base seed确定性生成8个实例且允许重复。现只纠正文档与source test，不改变ID179→ID180的data/config/runtime语义。
 - 人类批准后提交ID180 Job`519889`至`normal/dgx-28`。exact code/checkpoint/data/allocation、CUDA SIGReg forward/backward、direct render5.764秒、三split prewarm、Ray与8-rank actor shard load均通过；TP8 vLLM进入V1 engine initialization并持续占用约47--55GiB/卡。
 - 初始化日志中的`/usr/bin/nvcc -> ModuleNotFoundError: colorama`来自`tvm_ffi`可选torch DLPack addon；其外层明确捕获异常、只禁用`EnvTensorAllocator`并返回`None`。Agent错误地把warning内嵌traceback与安静日志误判为fatal deadlock，在4200秒phase timeout前、elapsed13m47s主动取消仍有GPU活动的Job。已登记`E0118`。
-- ID180因此没有trajectory/K4 rollout/optimizer/source777/checkpoint/phase2或实现结论；W&B零metric row并已finalize为failed。该ID/output/W&B不可恢复或复用。新retry必须使用新数字ID并由人类明确批准；监控不得再用caught optional warning替代authoritative failed future/process/timeout证据。
+- ID180因此没有trajectory/K4 rollout/optimizer/source777/checkpoint/phase2或实现结论；W&B零metric row并已finalize为failed。该ID/output/W&B不可恢复或复用。监控不得再用caught optional warning替代authoritative failed future/process/timeout证据。
+- 人类随后明确批准以新ID181按完全相同的训练、数据和资源合同重试，只更换实验/output/W&B identity并修正监控行为。ID181 gate继续只允许one update→fresh restore-only；不含第二update、validation、canary或长训练。
