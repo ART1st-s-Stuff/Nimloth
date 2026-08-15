@@ -60,8 +60,9 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 - Added the batch-owned ID172 normal/1-node/8-H800/64-CPU/256-GiB/60-minute launcher with exact-SHA, clean-tree, asset-hash, ID74-hash, fixed render/prewarm, process cleanup, all-or-nothing output, and explicit no-optimizer/no-checkpoint/no-canary gates.
 - Legacy direct-Q schemas and ID171 paths remain separate.
 - Fresh server worktree `/project/peilab/atst/nimloth/.worktrees/k4-mcts-c936682c` is now at exact candidate SHAs and clean at parent/VAGEN/VERL/le-wm/RCDM layers.
-- ID172 output, control output, metadata, and W&B display-name prefix are unused. Current resource query found four fully idle eligible normal 8-GPU nodes plus other partial capacity.
-- No calibration, Slurm, Ray, environment rollout, optimizer, checkpoint, W&B run, or GPU workload has started yet.
+- ID172 Job`519634` ran on `normal/dgx-23` and failed `124:0` after2m50s at the unchanged 150-second FloorPlan1 direct-render gate. Exact SHA/clean/allocation/three-asset/ID74 hash gates passed; env service, prewarm, Ray, vLLM, model load, generation, MCTS and beta calculation never started. Planned run output was never created; control evidence is `outputs/experiments/training/rl/slurm/id172-k4-519634`, cleanup audit is empty, and dgx-23 returned 8/8 GPUs free.
+- ID172 is consumed and non-resumable. ID173 retry preparation keeps every calibration value and run seed unchanged, uses a new empty identity, and temporarily excludes dgx-23 while preserving the 150-second gate.
+- No optimizer, checkpoint, W&B run, beta result, or canary exists.
 
 ## Validation log
 
@@ -72,3 +73,4 @@ The first experimental endpoint is an optimizer-free TP8/rank-0-co-located beta 
 - Corrected ID74 real CPU load/export/restore plus one 100-simulation K4 score passed: direct shape `[1,8]`, root visits sum100, candidate shape `[1,100,4]`, snapshot fingerprint stable; CPU score took 10.828 seconds.
 - Live server asset checks confirmed all three `*_train` assets contain 1200 tasks and exact SHA256 values recorded in the launcher. CLI import and full composed calibration config preflight passed with TP8, 24 workers, K4/100/c1, beta0, CoT0.7/top-p0.95.
 - Every import/test used `PYTHONDONTWRITEBYTECODE=1`; all five server source layers remained clean afterward.
+- ID172 end hook updated its adjacent metadata and server RL progress. The fixed render gate failed before any scientific measurement, so no conclusion about K4 scale or quality can be drawn.

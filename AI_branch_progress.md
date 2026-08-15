@@ -4829,3 +4829,10 @@
 - 正式数据/目标合同为三个train split均衡、24 trajectories/update、20 turns、CoT temperature0.7/top-p0.95、response512、per-turn format0.01/terminal format0/success1、gamma1/lambda0.95。首个canary为10 updates、step5 fresh resume、前后5×8 held-out验证，通过后5×60；长训练仍需另批。
 - beta必须先以24条均衡、beta0、无optimizer K4 rollout测量`median action-std(LLM logits)/median action-std(MCTS root mean)`，得到数值后停下请人类批准。人类已批准开始实现和该calibration，未批准自动启动10-update训练。
 - 第一实现切片已提交并推送parent`6ba45207`/VAGEN`3efb0368`/VERL`494f2644`：新增完整immutable projector/predictor/ValueHead snapshot、fingerprinted file transport、direct-Q/MCTS分离schema、TP-rank-zero install/score、CPU lifecycle owner和optimizer-free calibration入口；legacy ID171路径保持分离。当前仅AST/diff及dependency-light合同检查通过，完整PyTorch/pytest仍待服务器。两次SSH均在代理连接后报`Connection closed by UNKNOWN port 65535`，没有远程命令、Slurm、Ray、model/env/GPU/calibration活动。
+
+## 2026-08-15：ID172 K4 calibration在dgx-23 direct render门禁失败
+
+- SSH恢复后，fresh exact-SHA server worktree完成K4/worker/same-generation/launcher定向回归、VAGEN扩大回归`199 passed,115 subtests`及ID74真实projector/predictor/ValueHead CPU snapshot export/restore和100-simulation K4 score。三份`*_train`资产均为1200 tasks并核对固定SHA；ID172输出与W&B前缀未占用。
+- batch-owned Job`519634`在`normal/dgx-23`获得8×H800/64CPU/256GiB。运行parent`37a4a940`/VAGEN`b7c45d9`/VERL`494f2644`/le-wm`8edfeb3`；SHA、clean、ReqTRES/AllocTRES、三asset及ID74文件hash全部通过。
+- FloorPlan1 direct AI2-THOR render在固定150秒内没有输出，以`FAILED 124:0`结束；elapsed2m50s。无env server、prewarm、Ray、vLLM、Qwen/planner GPU load、generation、MCTS、trajectory、beta、optimizer、checkpoint或W&B。planned run目录从未创建，control在`outputs/experiments/training/rl/slurm/id172-k4-519634`，cleanup owned-process为空且dgx-23恢复8/8 free。
+- ID172不可resume/复用，未产生beta，canary继续被阻塞。立即ID173 retry保持全部校准数值和run seed不变、使用新空identity、保留150秒render/总300秒prewarm门禁，并暂时排除dgx-23；一次事件不足以声明dgx-23永久故障。

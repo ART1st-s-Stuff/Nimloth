@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=nimloth-id172-k4-calibration
+#SBATCH --job-name=nimloth-id173-k4-calibration
 #SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/training/rl/slurm/%x_%j.out
 #SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/training/rl/slurm/%x_%j.err
 #SBATCH --time=01:00:00
@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=64
 #SBATCH --gres=gpu:8
 #SBATCH --mem=256G
-#SBATCH --exclude=dgx-13,dgx-32,dgx-37,dgx-51
+#SBATCH --exclude=dgx-13,dgx-23,dgx-32,dgx-37,dgx-51
 
 set -euo pipefail
 : "${REPO:?REPO is required}"
