@@ -330,6 +330,11 @@ def test_worker_installs_and_scores_k4_planner_only_on_tp_rank_zero(
             horizon=4,
             num_simulations=100,
             exploration_constant=1.0,
+            to_mapping=lambda: {
+                "horizon": 4,
+                "num_simulations": 100,
+                "exploration_constant": 1.0,
+            },
         ),
     )
 
