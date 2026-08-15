@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -313,6 +314,81 @@ def test_worker_rejects_duplicate_request_capture_identity() -> None:
         worker.nimloth_start_policy_state_capture_for_request(
             "request-a", (101, 102), 103, (10, 20)
         )
+
+
+def test_worker_installs_and_scores_k4_planner_only_on_tp_rank_zero(
+    monkeypatch,
+) -> None:
+    import nimloth.backbone.qwen25vl.vllm_hidden as hidden_module
+
+    snapshot = SimpleNamespace(
+        snapshot_id="sha256:" + "2" * 64,
+        source_step=776,
+        contract_id="contract-k4",
+        score_dtype="float32",
+        planning_config=SimpleNamespace(
+            horizon=4,
+            num_simulations=100,
+            exploration_constant=1.0,
+        ),
+    )
+
+    class _FrozenPlanner:
+        def __init__(self, loaded_snapshot, *, device):
+            assert loaded_snapshot is snapshot
+            assert device.type == "cpu"
+            self.snapshot = loaded_snapshot
+            self.device = device
+
+        def score(self, root):
+            assert root.shape == (2, 2)
+            return SimpleNamespace(
+                direct_all_action_q=torch.arange(8, dtype=torch.float32),
+                mcts=SimpleNamespace(
+                    root_mean_values=tuple(index / 10.0 for index in range(8)),
+                    root_visit_counts=(13, 13, 13, 13, 12, 12, 12, 12),
+                    candidate_action_sequences=((0, 1, 2, 3),) * 100,
+                    candidate_leaf_values=(0.5,) * 100,
+                ),
+            )
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        hidden_module,
+        "load_frozen_planning_snapshot_file",
+        lambda _path: snapshot,
+    )
+    monkeypatch.setattr(
+        hidden_module,
+        "FrozenJointWorldModelCriticSnapshot",
+        _FrozenPlanner,
+    )
+    transport = {
+        "transport_path": "/tmp/frozen-k4.pt",
+        "snapshot_id": snapshot.snapshot_id,
+        "snapshot_source_step": snapshot.source_step,
+        "contract_id": snapshot.contract_id,
+        "score_dtype": snapshot.score_dtype,
+        "planning_horizon": 4,
+        "mcts_num_simulations": 100,
+        "mcts_exploration_constant": 1.0,
+    }
+
+    rank_zero = _Worker()
+    monkeypatch.setattr(hidden_module, "_tensor_parallel_rank", lambda: 0)
+    installed = rank_zero.nimloth_install_frozen_k4_planner(transport)
+    scored = rank_zero.nimloth_score_frozen_k4_planner([[1.0, 2.0], [3.0, 4.0]])
+    assert installed["installed"] is True
+    assert installed["tp_rank"] == 0
+    assert scored["direct_all_action_q"] == [float(index) for index in range(8)]
+    assert scored["planner_root_visit_counts"] == [13, 13, 13, 13, 12, 12, 12, 12]
+
+    rank_one = _Worker()
+    monkeypatch.setattr(hidden_module, "_tensor_parallel_rank", lambda: 1)
+    skipped = rank_one.nimloth_install_frozen_k4_planner(transport)
+    assert skipped["installed"] is False
+    assert skipped["tp_rank"] == 1
+    assert rank_one.nimloth_score_frozen_k4_planner([[1.0, 2.0], [3.0, 4.0]]) is None
 
 
 def test_async_frontend_binds_capture_to_exact_request() -> None:
