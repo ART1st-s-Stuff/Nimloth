@@ -22,7 +22,7 @@ def test_k4_calibration_shells_parse_and_bind_target_allocation() -> None:
     assert "#SBATCH --mem=256G" in hold
     assert "#SBATCH --time=01:00:00" in hold
     assert "dgx-13,dgx-23,dgx-32,dgx-37,dgx-51" in hold
-    assert "nimloth-id173-k4-calibration" in hold
+    assert "nimloth-id174-k4-calibration" in hold
     assert "sleep infinity" not in hold
     assert "launch_vagen_k4_beta_calibration_on_hold.sh" in hold
     assert '"${SLURM_JOB_ID}"' in hold
@@ -63,10 +63,10 @@ def test_k4_calibration_pins_code_data_checkpoint_and_clean_worktrees() -> None:
     assert "rsync" not in source
     assert "scp " not in source
     assert 'COMMAND=(' in source and '"${COMMAND[@]}"' in source
-    assert "RUNTIME_ROOT=/tmp/i173-${SLURM_JOB_ID}" in source
+    assert "RUNTIME_ROOT=/tmp/i174-${SLURM_JOB_ID}" in source
     assert "RAY_TMPDIR=${RUNTIME_ROOT}" in source
     worst_case_socket = (
-        "/tmp/i173-99999999/ray/session_2026-08-15_00-40-07_"
+        "/tmp/i174-99999999/ray/session_2026-08-15_00-40-07_"
         "477970_1313372/sockets/plasma_store"
     )
     assert len(worst_case_socket.encode()) <= 107
@@ -108,4 +108,9 @@ def test_k4_calibration_values_are_explicit_and_optimizer_free() -> None:
     assert '"checkpoint_output": None' in entrypoint
     assert "calibrated_beta_requires_human_approval" in entrypoint
     assert "median_prior / median_planner" in entrypoint
+    assert '"requires_human_review"' in entrypoint
+    assert '"policy_action_logits"' in entrypoint
+    assert '"prior_action_spreads"' in entrypoint
+    assert "_atomic_write_jsonl(args.output_dir / \"turn_records.jsonl\"" in entrypoint
+    assert "atomic_write_json(args.output_dir / \"summary.json\"" in entrypoint
     assert "torch.optim" not in entrypoint

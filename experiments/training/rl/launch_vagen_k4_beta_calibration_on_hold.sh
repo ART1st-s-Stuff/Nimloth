@@ -6,7 +6,7 @@ HOLD_JOB=${1:?usage: launch_vagen_k4_beta_calibration_on_hold.sh HOLD_JOB}
 : "${EXPECTED_PARENT_COMMIT:?EXPECTED_PARENT_COMMIT is required}"
 : "${EXPECTED_VAGEN_COMMIT:?EXPECTED_VAGEN_COMMIT is required}"
 : "${EXPECTED_VERL_COMMIT:?EXPECTED_VERL_COMMIT is required}"
-RUN_NAME=173_calibration_k4mcts_tp8_train3x8_t20_s100_c1_a1_b0_t1_cot07p095
+RUN_NAME=174_calibration_k4mcts_tp8_train3x8_t20_s100_c1_a1_b0_t1_cot07p095
 RUN_DATE=2026-08-15
 RUNNER=${REPO}/experiments/training/rl/run_vagen_k4_beta_calibration.sh
 
