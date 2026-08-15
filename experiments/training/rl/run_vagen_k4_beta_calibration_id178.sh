@@ -163,7 +163,7 @@ cat >"${RUN_META}" <<EOF
 - provenance: ID174 proved the original ID74 action-token rows had median zero spread. ID176 repaired only those eight rows and passed heldout NLL/BF16-spread plus exact frozen-component gates. ID177 then failed before rollout because it incorrectly treated the Qwen repair export as the full planning root. ID178 keeps all approved behavior/search values and separately binds the immutable ID176 Qwen root and immutable ID74 planning root.
 - parent/VAGEN/VERL: ${EXPECTED_PARENT_COMMIT} / ${EXPECTED_VAGEN_COMMIT} / ${EXPECTED_VERL_COMMIT}.
 - data: Navigation base_train, common_sense_train, and long_horizon_train; seeds 0..7 in each split; 24 complete trajectories; max 20 real actions each.
-- initialization: `--model` is the completed ID176 Qwen action-row repair; `--critic-checkpoint` is the original corrected ID74 root owning training_state.pt, SharedSlotProjector, history-1/horizon-4 wm_predictor, and 8-action ValueHead; planning source step remains 776.
+- initialization: --model is the completed ID176 Qwen action-row repair; --critic-checkpoint is the original corrected ID74 root owning training_state.pt, SharedSlotProjector, history-1/horizon-4 wm_predictor, and 8-action ValueHead; planning source step remains 776.
 - frozen modules: Qwen, vision tower, projector, predictor, and ValueHead. No optimizer, backward, parameter update, checkpoint, resume, or W&B run is allowed.
 - planning: TP8 eager vLLM with mm_encoder_tp_mode=data; planner only on TP rank 0; fixed K4, 100 UCT simulations, exploration constant 1.0; direct Q remains separate.
 - behavior: calibration applies beta=0; alpha=1, prior temperature=1, float32; CoT temperature=0.7/top-p=0.95, response cap 512.
