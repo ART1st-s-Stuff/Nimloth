@@ -119,6 +119,15 @@ def test_launchers_build_exact_four_by_two_ray_cluster() -> None:
     assert '"${cleanup_empty}" != true && "${status}" -eq 0' in source
     assert "evidence=(entry/'environ').read_bytes()" in source
     assert "+(entry/'cmdline').read_bytes()" not in source
+    assert "persist_ray_logs()" in source
+    assert "persist_ray_logs pre_cleanup" in source
+    assert "persist_ray_logs post_cleanup" in source
+    assert "ray_process_exit.log" in source
+    assert "capture_manifest.json" in source
+    assert "max_total_bytes=16*1024*1024" in source
+    assert source.index("persist_ray_logs pre_cleanup") < source.index(
+        'for pid in "${RAY_STEP_PIDS[@]}"; do kill -TERM'
+    )
     runner = RUNNER.read_text()
     assert "ENV_URL=http://${ID183_HEAD_IP}:${ENV_PORT}" in runner
     assert '--host="${ID183_HEAD_IP}"' in runner
