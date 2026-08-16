@@ -231,10 +231,9 @@ for entry in Path('/proc').iterdir():
   continue
  try:
   environ=(entry/'environ').read_bytes()
-  cmdline=(entry/'cmdline').read_bytes()
  except (FileNotFoundError, PermissionError, ProcessLookupError):
   continue
- if root in environ or root in cmdline:
+ if root in environ:
   print(candidate)
 PY
 }
