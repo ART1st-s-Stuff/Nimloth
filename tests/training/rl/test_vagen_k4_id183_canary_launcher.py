@@ -53,7 +53,7 @@ def test_runner_has_exact_resume_and_checkpoint_boundaries() -> None:
         "phase1_train_to_5",
         "phase2_fresh_resume_to_10",
         "global_step_5/joint_checkpoint_complete.json",
-        "folder=root/f'global_step_{value}'",
+        "load_complete_joint_checkpoint(root/f'global_step_{value}')",
         "EXPECTED_STEP=5",
         "EXPECTED_STEP=10",
         "EXPECTED_SOURCE=781",
