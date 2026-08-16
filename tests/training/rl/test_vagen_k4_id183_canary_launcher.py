@@ -67,6 +67,7 @@ def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
             "GLOO_SOCKET_IFNAME",
             "VLLM_HOST_IP",
             "SLURM_BIN_DIR=/cm/shared/apps/slurm/current/bin",
+            "SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf",
             'PATH="${SLURM_BIN_DIR}:${ROOT}/.venv-vagen-main/bin:/usr/bin:/bin"',
             "HF_HOME=/project/peilab/atst/.cache/huggingface",
             "TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface",

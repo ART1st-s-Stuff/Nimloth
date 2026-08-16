@@ -14,7 +14,9 @@ PHASE=${2:?phase must be train_to_5 or resume_to_10}
 ROOT=/project/peilab/atst/nimloth
 PY=${ROOT}/.venv-vagen-main/bin/python3
 SLURM_BIN_DIR=/cm/shared/apps/slurm/current/bin
+SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 [[ -x "${SLURM_BIN_DIR}/scontrol" && -x "${SLURM_BIN_DIR}/srun" ]]
+[[ -r "${SLURM_CONF}" ]]
 RUN_NAME=183_canary_k4schemeb_jointupdate_dp8_tp8_u10_r5_train3x8_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8
 RUN_DATE=2026-08-16
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
@@ -215,6 +217,7 @@ trap cleanup_cluster EXIT
 # Ray's own resource accounting keeps the eight worker actors within 4+4 GPUs.
 COMMON_ENV=(
   PATH="${SLURM_BIN_DIR}:${ROOT}/.venv-vagen-main/bin:/usr/bin:/bin"
+  SLURM_CONF="${SLURM_CONF}"
   PYTHONPATH="${RAY_PYTHONPATH}"
   PYTHONDONTWRITEBYTECODE=1
   RAY_TMPDIR="${RAY_CLUSTER_ROOT}"
