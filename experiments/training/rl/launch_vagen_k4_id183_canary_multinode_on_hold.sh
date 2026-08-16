@@ -25,6 +25,9 @@ RAY_PORT=$((22000 + HOLD_JOB % 10000))
 RAY_CLUSTER_ROOT=/tmp/i183-ray-${HOLD_JOB}-${PHASE_TAG}
 RAY_LOG_ROOT=${ROOT}/outputs/experiments/training/rl/slurm/id183-ray-${HOLD_JOB}-${PHASE_TAG}
 RAY_PYTHONPATH=${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl
+mkdir -p "${ROOT}/outputs/experiments/training/rl/slurm"
+exec 9>"${ROOT}/outputs/experiments/training/rl/slurm/.id183-${HOLD_JOB}-${PHASE_TAG}.launch.lock"
+flock -n 9 || { echo "duplicate ID183 launcher for job ${HOLD_JOB} phase ${PHASE}" >&2; exit 94; }
 ACTOR_MODEL=${ROOT}/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint
 PLANNING_MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
 source "${REPO}/experiments/training/rl/slurm_allocation.sh"
@@ -168,7 +171,16 @@ cleanup_cluster() {
   trap - EXIT
   set +e
   for pid in "${RAY_STEP_PIDS[@]}"; do kill -TERM "${pid}" >/dev/null 2>&1 || true; done
-  for pid in "${RAY_STEP_PIDS[@]}"; do wait "${pid}" >/dev/null 2>&1 || true; done
+  for _ in $(seq 1 30); do
+    alive=false
+    for pid in "${RAY_STEP_PIDS[@]}"; do kill -0 "${pid}" >/dev/null 2>&1 && alive=true; done
+    [[ "${alive}" == false ]] && break
+    sleep 1
+  done
+  for pid in "${RAY_STEP_PIDS[@]}"; do
+    kill -KILL "${pid}" >/dev/null 2>&1 || true
+    wait "${pid}" >/dev/null 2>&1 || true
+  done
   node_runtime_processes TERM >/dev/null 2>&1 || true
   sleep 5
   node_runtime_processes KILL >/dev/null 2>&1 || true
@@ -187,6 +199,9 @@ cleanup_cluster() {
 }
 trap cleanup_cluster EXIT
 
+# These long-lived raylet and driver steps intentionally share the job's CPU,
+# memory and GRES allocation. Slurm --overlap is required on every such step;
+# Ray's own resource accounting keeps the eight worker actors within 4+4 GPUs.
 COMMON_ENV=(
   PATH="${ROOT}/.venv-vagen-main/bin:/usr/bin:/bin"
   PYTHONPATH="${RAY_PYTHONPATH}"
@@ -204,7 +219,6 @@ COMMON_ENV=(
   NIMLOTH_LATENT_TOKEN_COUNT=16
   NCCL_SOCKET_IFNAME="${FABRIC_IFACE}"
   GLOO_SOCKET_IFNAME="${FABRIC_IFACE}"
-  WANDB_API_KEY="${WANDB_API_KEY}"
   WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
   WANDB_PROJECT=vagen
   WANDB_NAME="${RUN_NAME}"
@@ -270,7 +284,7 @@ PY
 done
 [[ "${cluster_ready}" == true ]]
 
-timeout 60s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+timeout 120s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
   -w "${HEAD_NODE}" --gpus=0 env RAY_ADDRESS="${RAY_ADDRESS}" \
   RAY_EXPECTED_NODE_IPS="${RAY_EXPECTED_NODE_IPS}" \
   EXPECTED_WANDB_RESUME="${WANDB_RESUME}" "${PY}" - <<'PY' | tee "${RAY_LOG_ROOT}/cluster_probe.json"
