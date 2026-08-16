@@ -38,7 +38,7 @@ set +a
 WANDB_RESUME=$([[ "${PHASE}" == train_to_5 ]] && echo never || echo must)
 
 [[ -x "${PY}" && -x "${RUNNER}" ]]
-JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}" -o)
+JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")
 grep -q 'JobState=RUNNING' <<<"${JOB_DETAILS}"
 grep -q 'Partition=normal' <<<"${JOB_DETAILS}"
 grep -q 'NumNodes=2' <<<"${JOB_DETAILS}"

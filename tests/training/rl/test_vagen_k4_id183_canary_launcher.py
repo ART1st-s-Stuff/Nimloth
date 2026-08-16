@@ -84,6 +84,8 @@ def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
     assert "NumNodes=1" not in source
     assert "--gres=gpu:8" not in source
     assert "counts != [4.0, 4.0]" in source
+    assert 'JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")' in source
+    assert 'scontrol show job -dd "${HOLD_JOB}" -o' not in source
     assert "flock -n 9" in source
     assert "duplicate ID183 launcher" in source
     assert "--overlap" in source
