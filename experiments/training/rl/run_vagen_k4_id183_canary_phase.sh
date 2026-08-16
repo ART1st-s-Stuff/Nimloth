@@ -60,7 +60,7 @@ IFS=, read -r -a VISIBLE_GPUS <<<"${CUDA_VISIBLE_DEVICES}"
 mapfile -t GPU_NAMES < <(nvidia-smi --query-gpu=name --format=csv,noheader)
 (( ${#GPU_NAMES[@]} == 2 ))
 for name in "${GPU_NAMES[@]}"; do [[ "${name}" == *H800* ]]; done
-for excluded in dgx-13 dgx-23 dgx-32 dgx-37 dgx-51; do
+for excluded in dgx-13 dgx-32 dgx-51; do
   [[ "$(hostname)" != "${excluded}" ]]
 done
 
@@ -403,7 +403,7 @@ if [[ "${PHASE}" == train_to_5 ]]; then
 - behavior: K4/100 UCT/c1, alpha1, approved beta85.78297006578457, prior temperature1, float32, keyed sampling, CoT temperature0.7/top-p0.95, response cap512.
 - update: actor lr1e-7, PPO clip0.2, one epoch, token KL0.01, guided entropy0.01; unified projector/predictor/ValueHead AdamW lr1e-4, state/DINO/SIGReg weights1/0.5/0.1, selected Huber delta1, gamma1, lambda0.95.
 - checkpoint/resume: phase1 writes only complete step5/source781; phase2 is a separate fresh runtime that must load step5 and writes only complete step10/source786. Both step5 and step10 remain; no intermediate checkpoint is valid.
-- resources per separately approved phase: normal, four nodes, 2 H800 and 16 CPU and 64 GiB per node (8 H800/64 CPU/256 GiB total), five-hour allocation; external Ray exposes exactly 2+2+2+2 GPUs over the common 10.23 fabric, rollout remains one TP8/DP1 replica over TCP, and actor remains global DP8; excluded nodes dgx-13/23/32/37/51.
+- resources per separately approved phase: normal, four nodes, 2 H800 and 16 CPU and 64 GiB per node (8 H800/64 CPU/256 GiB total), five-hour allocation; external Ray exposes exactly 2+2+2+2 GPUs over the common 10.23 fabric, rollout remains one TP8/DP1 replica over TCP, and actor remains global DP8; temporarily excluded nodes dgx-13/32/51; dgx-23/37 are allowed by the current human instruction.
 EOF
 fi
 

@@ -11,7 +11,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:2
 #SBATCH --mem=64G
-#SBATCH --exclude=dgx-13,dgx-23,dgx-32,dgx-37,dgx-51
+#SBATCH --exclude=dgx-13,dgx-32,dgx-51
 
 set -euo pipefail
 : "${REPO:?REPO is required}"

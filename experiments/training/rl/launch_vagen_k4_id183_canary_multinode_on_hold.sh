@@ -61,7 +61,7 @@ HEAD_NODE=${NODES[0]}
 WORKER_NODES=("${NODES[@]:1}")
 [[ ${#WORKER_NODES[@]} -eq 3 ]]
 for node in "${NODES[@]}"; do
-  for excluded in dgx-13 dgx-23 dgx-32 dgx-37 dgx-51; do
+  for excluded in dgx-13 dgx-32 dgx-51; do
     [[ "${node}" != "${excluded}" ]]
   done
 done
