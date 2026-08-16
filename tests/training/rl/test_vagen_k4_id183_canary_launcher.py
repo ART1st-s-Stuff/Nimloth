@@ -125,6 +125,10 @@ def test_launchers_build_exact_four_by_two_ray_cluster() -> None:
     assert "ray_process_exit.log" in source
     assert "capture_manifest.json" in source
     assert "max_total_bytes=16*1024*1024" in source
+    assert '"${PY}" "${RAY_LOG_CAPTURE_SCRIPT}"' in source
+    assert '[[ -f "${manifest}" ]]' in source
+    assert "RAY_LOG_CAPTURE_COMPLETE=false" in source
+    assert '[[ "${RAY_LOG_CAPTURE_COMPLETE}" == true ]]' in source
     assert source.index("persist_ray_logs pre_cleanup") < source.index(
         'for pid in "${RAY_STEP_PIDS[@]}"; do kill -TERM'
     )
