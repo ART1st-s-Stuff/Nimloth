@@ -47,7 +47,7 @@ def test_shells_parse_and_neither_launcher_can_run_both_phases() -> None:
             "#SBATCH --cpus-per-task=16",
             "#SBATCH --mem=64G",
             "#SBATCH --time=05:00:00",
-            "dgx-13,dgx-23,dgx-32,dgx-37,dgx-51",
+            "dgx-13,dgx-32,dgx-51",
             "module load slurm",
         ):
             assert value in slurm
@@ -92,6 +92,9 @@ def test_launchers_build_exact_four_by_two_ray_cluster() -> None:
             'for node in "${WORKER_NODES[@]}"',
         ):
         assert value in source
+    assert "dgx-13 dgx-32 dgx-51" in source
+    assert "dgx-23" not in source
+    assert "dgx-37" not in source
     assert "NumNodes=1" not in source
     assert "--gres=gpu:8" not in source
     assert "--nodes=2 --ntasks=2" not in source
