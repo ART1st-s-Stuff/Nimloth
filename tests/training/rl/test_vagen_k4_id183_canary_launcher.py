@@ -53,6 +53,12 @@ def test_shells_parse_and_neither_launcher_can_run_both_phases() -> None:
             assert value in slurm
 
 
+def test_id183_names_the_actual_frozen_value_advantage_estimator() -> None:
+    config = yaml.safe_load(CONFIG.read_text())
+    assert config["algorithm"]["adv_estimator"] == "joint_frozen_v_gae"
+    assert "grpo" not in config["algorithm"]["adv_estimator"]
+
+
 def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
     source = COMMON_LAUNCHER.read_text()
     for value in (
