@@ -66,6 +66,8 @@ def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
             "NCCL_SOCKET_IFNAME",
             "GLOO_SOCKET_IFNAME",
             "VLLM_HOST_IP",
+            "SLURM_BIN_DIR=/cm/shared/apps/slurm/current/bin",
+            'PATH="${SLURM_BIN_DIR}:${ROOT}/.venv-vagen-main/bin:/usr/bin:/bin"',
             "HF_HOME=/project/peilab/atst/.cache/huggingface",
             "TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface",
             "TORCH_HOME=/project/peilab/atst/flower/.cache/torch",
@@ -90,6 +92,8 @@ def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
     assert "duplicate ID183 launcher" in source
     assert "--overlap" in source
     assert "timeout 120s srun" in source
+    assert "for _ in $(seq 1 20)" in source
+    assert '"${cleanup_empty}" != true && "${status}" -eq 0' in source
     runner = RUNNER.read_text()
     assert "ENV_URL=http://${ID183_HEAD_IP}:${ENV_PORT}" in runner
     assert '--host="${ID183_HEAD_IP}"' in runner

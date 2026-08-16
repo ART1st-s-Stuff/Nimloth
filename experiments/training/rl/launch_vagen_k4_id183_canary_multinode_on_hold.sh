@@ -13,6 +13,8 @@ PHASE=${2:?phase must be train_to_5 or resume_to_10}
 
 ROOT=/project/peilab/atst/nimloth
 PY=${ROOT}/.venv-vagen-main/bin/python3
+SLURM_BIN_DIR=/cm/shared/apps/slurm/current/bin
+[[ -x "${SLURM_BIN_DIR}/scontrol" && -x "${SLURM_BIN_DIR}/srun" ]]
 RUN_NAME=183_canary_k4schemeb_jointupdate_dp8_tp8_u10_r5_train3x8_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8
 RUN_DATE=2026-08-16
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
@@ -185,7 +187,16 @@ cleanup_cluster() {
   sleep 5
   node_runtime_processes KILL >/dev/null 2>&1 || true
   sleep 2
-  audit_node_runtime_empty >"${RAY_LOG_ROOT}/owned_processes_after.log" 2>&1 || status=93
+  cleanup_empty=false
+  for _ in $(seq 1 20); do
+    if audit_node_runtime_empty >"${RAY_LOG_ROOT}/owned_processes_after.log" 2>&1; then
+      cleanup_empty=true
+      break
+    fi
+    node_runtime_processes KILL >/dev/null 2>&1 || true
+    sleep 1
+  done
+  if [[ "${cleanup_empty}" != true && "${status}" -eq 0 ]]; then status=93; fi
   timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
     --ntasks-per-node=1 --gpus=0 \
     env RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" RUNTIME_ROOT="${RUNTIME_ROOT}" \
@@ -203,7 +214,7 @@ trap cleanup_cluster EXIT
 # memory and GRES allocation. Slurm --overlap is required on every such step;
 # Ray's own resource accounting keeps the eight worker actors within 4+4 GPUs.
 COMMON_ENV=(
-  PATH="${ROOT}/.venv-vagen-main/bin:/usr/bin:/bin"
+  PATH="${SLURM_BIN_DIR}:${ROOT}/.venv-vagen-main/bin:/usr/bin:/bin"
   PYTHONPATH="${RAY_PYTHONPATH}"
   PYTHONDONTWRITEBYTECODE=1
   RAY_TMPDIR="${RAY_CLUSTER_ROOT}"
