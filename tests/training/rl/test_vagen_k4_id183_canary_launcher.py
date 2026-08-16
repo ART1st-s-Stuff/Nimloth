@@ -264,8 +264,8 @@ def test_config_is_ten_update_canary_and_stops_before_full_evaluation() -> None:
         "max_actor_ckpt_to_keep: 2",
         "temperature: 0.7",
         "top_p: 0.95",
-        "nnodes: 2",
-        "n_gpus_per_node: 4",
+        "nnodes: 4",
+        "n_gpus_per_node: 2",
         "address: auto",
     ):
         assert value in source
