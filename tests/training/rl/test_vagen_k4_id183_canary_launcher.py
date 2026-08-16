@@ -93,8 +93,10 @@ def test_launchers_build_exact_four_by_two_ray_cluster() -> None:
         ):
         assert value in source
     assert "dgx-13 dgx-32 dgx-51" in source
-    assert "dgx-23" not in source
-    assert "dgx-37" not in source
+    assert "NAVIGATION_HEAD_EXCLUSIONS=(dgx-13 dgx-23 dgx-32 dgx-37 dgx-51)" in source
+    assert '[[ -n "${HEAD_NODE}" ]]' in source
+    assert 'CLUSTER_NODES=("${HEAD_NODE}" "${WORKER_NODES[@]}")' in source
+    assert "HEAD_NODE=${NODES[0]}" not in source
     assert "NumNodes=1" not in source
     assert "--gres=gpu:8" not in source
     assert "--nodes=2 --ntasks=2" not in source
@@ -103,7 +105,7 @@ def test_launchers_build_exact_four_by_two_ray_cluster() -> None:
     assert '"${WORKER_NODE}"' not in source
     assert 'WANDB_DIR="${RAY_LOG_ROOT}/wandb"' in source
     assert 'WANDB_DIR="${RUN_OUT}/wandb"' not in source
-    assert "RUN_OUTPUT_SUFFIX=_retry1" in source
+    assert "RUN_OUTPUT_SUFFIX=_retry2" in source
     assert "dataset_type" in source
     assert "pkg://vagen.gym_agent_dataset" in source
     assert "counts != [2.0, 2.0, 2.0, 2.0]" in source
@@ -115,6 +117,8 @@ def test_launchers_build_exact_four_by_two_ray_cluster() -> None:
     assert "timeout 120s srun" in source
     assert "for _ in $(seq 1 20)" in source
     assert '"${cleanup_empty}" != true && "${status}" -eq 0' in source
+    assert "evidence=(entry/'environ').read_bytes()" in source
+    assert "+(entry/'cmdline').read_bytes()" not in source
     runner = RUNNER.read_text()
     assert "ENV_URL=http://${ID183_HEAD_IP}:${ENV_PORT}" in runner
     assert '--host="${ID183_HEAD_IP}"' in runner
@@ -155,7 +159,7 @@ def test_runner_has_exact_resume_and_checkpoint_boundaries() -> None:
     assert "global_step_5" in source and "global_step_10" in source
     assert ': "${RUN_OUTPUT_SUFFIX:?RUN_OUTPUT_SUFFIX is required}"' in source
     assert 'RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}${RUN_OUTPUT_SUFFIX}' in source
-    assert '[[ "${RUN_OUTPUT_SUFFIX}" == _retry1 ]]' in source
+    assert '[[ "${RUN_OUTPUT_SUFFIX}" == _retry2 ]]' in source
     assert "5x60" in source
     assert "must not start" in source
 

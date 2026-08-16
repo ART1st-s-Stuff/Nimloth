@@ -19,7 +19,7 @@ SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 [[ -r "${SLURM_CONF}" ]]
 RUN_NAME=183_canary_k4schemeb_jointupdate_dp8_tp8_u10_r5_train3x8_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8
 RUN_DATE=2026-08-16
-RUN_OUTPUT_SUFFIX=_retry1
+RUN_OUTPUT_SUFFIX=_retry2
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}${RUN_OUTPUT_SUFFIX}
 RUNNER=${REPO}/experiments/training/rl/run_vagen_k4_id183_canary_phase.sh
 PHASE_TAG=$([[ "${PHASE}" == train_to_5 ]] && echo p1 || echo p2)
@@ -57,14 +57,27 @@ grep -q 'MinMemoryNode=64G' <<<"${JOB_DETAILS}"
 
 mapfile -t NODES < <(scontrol show hostnames "$(squeue -h -j "${HOLD_JOB}" -o '%N')")
 [[ ${#NODES[@]} -eq 4 ]]
-HEAD_NODE=${NODES[0]}
-WORKER_NODES=("${NODES[@]:1}")
-[[ ${#WORKER_NODES[@]} -eq 3 ]]
 for node in "${NODES[@]}"; do
   for excluded in dgx-13 dgx-32 dgx-51; do
     [[ "${node}" != "${excluded}" ]]
   done
 done
+NAVIGATION_HEAD_EXCLUSIONS=(dgx-13 dgx-23 dgx-32 dgx-37 dgx-51)
+HEAD_NODE=
+for node in "${NODES[@]}"; do
+  allowed=true
+  for excluded in "${NAVIGATION_HEAD_EXCLUSIONS[@]}"; do
+    if [[ "${node}" == "${excluded}" ]]; then allowed=false; break; fi
+  done
+  if [[ "${allowed}" == true ]]; then HEAD_NODE=${node}; break; fi
+done
+[[ -n "${HEAD_NODE}" ]]
+WORKER_NODES=()
+for node in "${NODES[@]}"; do
+  [[ "${node}" == "${HEAD_NODE}" ]] || WORKER_NODES+=("${node}")
+done
+[[ ${#WORKER_NODES[@]} -eq 3 ]]
+CLUSTER_NODES=("${HEAD_NODE}" "${WORKER_NODES[@]}")
 
 declare -A GPU_COUNTS
 nimloth_load_slurm_gpu_counts "${JOB_DETAILS}" GPU_COUNTS
@@ -91,14 +104,14 @@ done
 HEAD_IP=${NODE_IP[${HEAD_NODE}]}
 FABRIC_IFACE=${NODE_IFACE[${HEAD_NODE}]}
 EXPECTED_NODE_IPS=()
-for node in "${NODES[@]}"; do
+for node in "${CLUSTER_NODES[@]}"; do
   [[ -n "${NODE_IP[${node}]:-}" ]]
   [[ "${NODE_IFACE[${node}]}" == "${FABRIC_IFACE}" ]]
   EXPECTED_NODE_IPS+=("${NODE_IP[${node}]}")
 done
 RAY_ADDRESS=${HEAD_IP}:${RAY_PORT}
 RAY_EXPECTED_NODE_IPS=$(IFS=,; echo "${EXPECTED_NODE_IPS[*]}")
-ID183_CLUSTER_NODES=$(IFS=,; echo "${NODES[*]}")
+ID183_CLUSTER_NODES=$(IFS=,; echo "${CLUSTER_NODES[*]}")
 
 timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
   --ntasks-per-node=1 --gres=gpu:2 bash -lc '
@@ -145,7 +158,7 @@ while pid > 1 and pid not in ancestors:
     except (FileNotFoundError,PermissionError,ValueError,IndexError): break
 for entry in Path('/proc').iterdir():
     if not entry.name.isdigit() or int(entry.name) in ancestors: continue
-    try: evidence=(entry/'environ').read_bytes()+(entry/'cmdline').read_bytes()
+    try: evidence=(entry/'environ').read_bytes()
     except (FileNotFoundError,PermissionError,ProcessLookupError): continue
     if any(root in evidence for root in roots):
         try: os.kill(int(entry.name),sig)
@@ -167,7 +180,7 @@ while pid > 1 and pid not in ancestors:
     except (FileNotFoundError,PermissionError,ValueError,IndexError): break
 for entry in Path('/proc').iterdir():
     if not entry.name.isdigit() or int(entry.name) in ancestors: continue
-    try: evidence=(entry/'environ').read_bytes()+(entry/'cmdline').read_bytes()
+    try: evidence=(entry/'environ').read_bytes()
     except (FileNotFoundError,PermissionError,ProcessLookupError): continue
     if any(root in evidence for root in roots): found.append(int(entry.name))
 print(f'{socket.gethostname()} owned_pids={found}')

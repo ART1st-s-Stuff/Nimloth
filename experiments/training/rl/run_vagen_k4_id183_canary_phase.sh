@@ -46,7 +46,7 @@ PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-13200}
 
 [[ "${PHASE}" == train_to_5 || "${PHASE}" == resume_to_10 ]]
 [[ "${RUN_NAME}" == 183_canary_k4schemeb_jointupdate_dp8_tp8_u10_r5_train3x8_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8 ]]
-[[ "${RUN_OUTPUT_SUFFIX}" == _retry1 ]]
+[[ "${RUN_OUTPUT_SUFFIX}" == _retry2 ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
 [[ "${ID183_EXPECTED_NNODES}" == 4 ]]
@@ -403,7 +403,7 @@ if [[ "${PHASE}" == train_to_5 ]]; then
 - behavior: K4/100 UCT/c1, alpha1, approved beta85.78297006578457, prior temperature1, float32, keyed sampling, CoT temperature0.7/top-p0.95, response cap512.
 - update: actor lr1e-7, PPO clip0.2, one epoch, token KL0.01, guided entropy0.01; unified projector/predictor/ValueHead AdamW lr1e-4, state/DINO/SIGReg weights1/0.5/0.1, selected Huber delta1, gamma1, lambda0.95.
 - checkpoint/resume: phase1 writes only complete step5/source781; phase2 is a separate fresh runtime that must load step5 and writes only complete step10/source786. Both step5 and step10 remain; no intermediate checkpoint is valid.
-- resources per separately approved phase: normal, four nodes, 2 H800 and 16 CPU and 64 GiB per node (8 H800/64 CPU/256 GiB total), five-hour allocation; external Ray exposes exactly 2+2+2+2 GPUs over the common 10.23 fabric, rollout remains one TP8/DP1 replica over TCP, and actor remains global DP8; temporarily excluded nodes dgx-13/32/51; dgx-23/37 are allowed by the current human instruction.
+- resources per separately approved phase: normal, four nodes, 2 H800 and 16 CPU and 64 GiB per node (8 H800/64 CPU/256 GiB total), five-hour allocation; external Ray exposes exactly 2+2+2+2 GPUs over the common 10.23 fabric, rollout remains one TP8/DP1 replica over TCP, and actor remains global DP8; temporarily excluded nodes dgx-13/32/51; dgx-23/37 may serve as model workers but are forbidden as the Navigation head.
 EOF
 fi
 
