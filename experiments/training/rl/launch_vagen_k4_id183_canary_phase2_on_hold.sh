@@ -16,7 +16,7 @@ JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}" -o)
 grep -q 'JobState=RUNNING' <<<"${JOB_DETAILS}"
 grep -q 'Partition=normal' <<<"${JOB_DETAILS}"
 grep -q 'NumNodes=1' <<<"${JOB_DETAILS}"
-grep -q 'TimeLimit=04:00:00' <<<"${JOB_DETAILS}"
+grep -q 'TimeLimit=05:00:00' <<<"${JOB_DETAILS}"
 grep -Eq 'ReqTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'ReqTRES=[^ ]*mem=256G([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
