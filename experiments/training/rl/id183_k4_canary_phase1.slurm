@@ -2,7 +2,7 @@
 #SBATCH --job-name=nimloth-id183-k4-canary-p1
 #SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/training/rl/slurm/%x_%j.out
 #SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/training/rl/slurm/%x_%j.err
-#SBATCH --time=04:00:00
+#SBATCH --time=05:00:00
 #SBATCH --account=peilab
 #SBATCH --partition=normal
 #SBATCH --nodes=1

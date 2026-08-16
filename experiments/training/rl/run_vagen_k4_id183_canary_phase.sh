@@ -57,7 +57,7 @@ done
 
 JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}" -o)
 grep -q 'Partition=normal' <<<"${JOB_DETAILS}"
-grep -q 'TimeLimit=04:00:00' <<<"${JOB_DETAILS}"
+grep -q 'TimeLimit=05:00:00' <<<"${JOB_DETAILS}"
 grep -Eq 'ReqTRES=[^ ]*mem=256G([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*cpu=64([, ]|$)' <<<"${JOB_DETAILS}"
@@ -111,7 +111,11 @@ set +a
 export WANDB_PROJECT=vagen
 export WANDB_NAME=${RUN_NAME}
 export WANDB_RUN_ID=nimloth-id183-k4-10update-canary
-export WANDB_RESUME=allow
+if [[ "${PHASE}" == train_to_5 ]]; then
+  export WANDB_RESUME=never
+else
+  export WANDB_RESUME=must
+fi
 export WANDB_DIR=${RUN_OUT}/wandb
 unset PYTORCH_CUDA_ALLOC_CONF 2>/dev/null || true
 
@@ -332,7 +336,7 @@ if [[ "${PHASE}" == train_to_5 ]]; then
 - behavior: K4/100 UCT/c1, alpha1, approved beta85.78297006578457, prior temperature1, float32, keyed sampling, CoT temperature0.7/top-p0.95, response cap512.
 - update: actor lr1e-7, PPO clip0.2, one epoch, token KL0.01, guided entropy0.01; unified projector/predictor/ValueHead AdamW lr1e-4, state/DINO/SIGReg weights1/0.5/0.1, selected Huber delta1, gamma1, lambda0.95.
 - checkpoint/resume: phase1 writes only complete step5/source781; phase2 is a separate fresh runtime that must load step5 and writes only complete step10/source786. Both step5 and step10 remain; no intermediate checkpoint is valid.
-- resources per separately approved phase: normal, one node, 8 H800, 64 CPU, 256 GiB, four-hour allocation; excluded nodes dgx-13/23/32/37/51.
+- resources per separately approved phase: normal, one node, 8 H800, 64 CPU, 256 GiB, five-hour allocation; the 13200-second training cap plus all fixed prewarm/cleanup caps fits this walltime; excluded nodes dgx-13/23/32/37/51.
 EOF
 fi
 

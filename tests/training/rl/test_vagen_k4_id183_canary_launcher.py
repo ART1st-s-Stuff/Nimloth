@@ -41,6 +41,7 @@ def test_shells_parse_and_neither_launcher_can_run_both_phases() -> None:
             "#SBATCH --gres=gpu:8",
             "#SBATCH --cpus-per-task=64",
             "#SBATCH --mem=256G",
+            "#SBATCH --time=05:00:00",
             "dgx-13,dgx-23,dgx-32,dgx-37,dgx-51",
             "module load slurm",
         ):
@@ -76,6 +77,23 @@ def test_runner_has_exact_resume_and_checkpoint_boundaries() -> None:
     assert "global_step_5" in source and "global_step_10" in source
     assert "5x60" in source
     assert "must not start" in source
+
+
+def test_phase_walltime_contains_all_hard_timeout_budgets() -> None:
+    source = RUNNER.read_text()
+    # 5h allocation >= 13,200s train + 150s render + 180s health +
+    # eight 300s prewarms + 30s timeout kill + 37s cleanup margin.
+    assert "TimeLimit=05:00:00" in source
+    assert "PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-13200}" in source
+    assert 5 * 3600 >= 13200 + 150 + 180 + 8 * 300 + 30 + 37
+
+
+def test_wandb_identity_is_new_then_must_resume() -> None:
+    source = RUNNER.read_text()
+    assert "WANDB_RUN_ID=nimloth-id183-k4-10update-canary" in source
+    assert "export WANDB_RESUME=never" in source
+    assert "export WANDB_RESUME=must" in source
+    assert source.index("WANDB_RESUME=never") < source.index("WANDB_RESUME=must")
 
 
 def test_cleanup_tracks_runtime_processes_by_proc_environ() -> None:
