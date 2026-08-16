@@ -19,7 +19,8 @@ SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 [[ -r "${SLURM_CONF}" ]]
 RUN_NAME=183_canary_k4schemeb_jointupdate_dp8_tp8_u10_r5_train3x8_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8
 RUN_DATE=2026-08-16
-RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
+RUN_OUTPUT_SUFFIX=_retry1
+RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}${RUN_OUTPUT_SUFFIX}
 RUNNER=${REPO}/experiments/training/rl/run_vagen_k4_id183_canary_phase.sh
 PHASE_TAG=$([[ "${PHASE}" == train_to_5 ]] && echo p1 || echo p2)
 PHASE_NAME=$([[ "${PHASE}" == train_to_5 ]] && echo phase1_train_to_5 || echo phase2_fresh_resume_to_10)
@@ -318,6 +319,11 @@ rows=sorted(
 @ray.remote(num_cpus=0)
 def probe_node():
     import nimloth, vagen
+    from verl.utils.import_utils import load_extern_type
+    dataset_type=load_extern_type(
+        'pkg://vagen.gym_agent_dataset',
+        'AgenticDataset',
+    )
     address=ray.util.get_node_ip_address()
     return {
         'address':address,
@@ -332,6 +338,7 @@ def probe_node():
         'wandb_api_key_present':bool(os.environ.get('WANDB_API_KEY')),
         'nimloth':str(nimloth.__file__),
         'vagen':str(vagen.__file__),
+        'dataset_type':f'{dataset_type.__module__}.{dataset_type.__name__}',
     }
 probes=ray.get([
     probe_node.options(resources={f"node:{row['address']}":0.001}).remote()
@@ -353,6 +360,7 @@ assert all(row['id183_train_config'] for row in probes)
 assert all(row['wandb_run_id']=='nimloth-id183-k4-10update-canary' for row in probes)
 assert all(row['wandb_resume']==os.environ['EXPECTED_WANDB_RESUME'] for row in probes)
 assert all(row['wandb_api_key_present'] for row in probes)
+assert all(row['dataset_type']=='vagen.gym_agent_dataset.AgenticDataset' for row in probes)
 ray.shutdown()
 PY
 
@@ -365,5 +373,6 @@ srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
     REPO="${REPO}" EXPECTED_PARENT_COMMIT="${EXPECTED_PARENT_COMMIT}" \
     EXPECTED_VAGEN_COMMIT="${EXPECTED_VAGEN_COMMIT}" \
     EXPECTED_VERL_COMMIT="${EXPECTED_VERL_COMMIT}" \
-    RUN_NAME="${RUN_NAME}" RUN_DATE="${RUN_DATE}" PHASE="${PHASE}" \
+    RUN_NAME="${RUN_NAME}" RUN_DATE="${RUN_DATE}" \
+    RUN_OUTPUT_SUFFIX="${RUN_OUTPUT_SUFFIX}" PHASE="${PHASE}" \
     "${RUNNER}"

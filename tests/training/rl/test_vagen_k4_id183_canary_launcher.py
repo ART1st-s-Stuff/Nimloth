@@ -94,6 +94,9 @@ def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
     assert "--gres=gpu:8" not in source
     assert 'WANDB_DIR="${RAY_LOG_ROOT}/wandb"' in source
     assert 'WANDB_DIR="${RUN_OUT}/wandb"' not in source
+    assert "RUN_OUTPUT_SUFFIX=_retry1" in source
+    assert "dataset_type" in source
+    assert "pkg://vagen.gym_agent_dataset" in source
     assert "counts != [4.0, 4.0]" in source
     assert 'JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")' in source
     assert 'scontrol show job -dd "${HOLD_JOB}" -o' not in source
@@ -141,6 +144,9 @@ def test_runner_has_exact_resume_and_checkpoint_boundaries() -> None:
             source,
         )
     assert "global_step_5" in source and "global_step_10" in source
+    assert ': "${RUN_OUTPUT_SUFFIX:?RUN_OUTPUT_SUFFIX is required}"' in source
+    assert 'RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}${RUN_OUTPUT_SUFFIX}' in source
+    assert '[[ "${RUN_OUTPUT_SUFFIX}" == _retry1 ]]' in source
     assert "5x60" in source
     assert "must not start" in source
 

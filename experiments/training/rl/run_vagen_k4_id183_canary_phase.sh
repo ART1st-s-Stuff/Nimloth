@@ -9,13 +9,14 @@ ROOT=/project/peilab/atst/nimloth
 : "${PHASE:?PHASE must be train_to_5 or resume_to_10}"
 : "${RUN_NAME:?RUN_NAME is required}"
 : "${RUN_DATE:?RUN_DATE is required}"
+: "${RUN_OUTPUT_SUFFIX:?RUN_OUTPUT_SUFFIX is required}"
 VAGEN=${REPO}/external/VAGEN
 VERL=${VAGEN}/verl
 PY=${ROOT}/.venv-vagen-main/bin/python3
 REPAIR_ROOT=${ROOT}/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8
 ACTOR_MODEL=${REPAIR_ROOT}/checkpoint
 PLANNING_MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
-RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
+RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}${RUN_OUTPUT_SUFFIX}
 CHECKPOINT_DIR=${RUN_OUT}/checkpoints
 if [[ "${PHASE}" == train_to_5 ]]; then
   PHASE_NAME=phase1_train_to_5
@@ -45,6 +46,7 @@ PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-13200}
 
 [[ "${PHASE}" == train_to_5 || "${PHASE}" == resume_to_10 ]]
 [[ "${RUN_NAME}" == 183_canary_k4schemeb_jointupdate_dp8_tp8_u10_r5_train3x8_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8 ]]
+[[ "${RUN_OUTPUT_SUFFIX}" == _retry1 ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
 [[ "${ID183_EXPECTED_NNODES}" == 2 ]]
