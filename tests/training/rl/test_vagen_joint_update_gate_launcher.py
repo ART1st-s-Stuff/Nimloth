@@ -117,10 +117,12 @@ def test_human_approved_values_are_explicit_and_test_only() -> None:
         assert "success_reward: 1.0" in data_config
 
 
-def test_production_stays_closed_without_id171_escape_hatch() -> None:
+def test_production_stays_closed_without_an_exact_experiment_gate() -> None:
     trainer = (VAGEN / "vagen" / "ray_trainer.py").read_text()
     gate = (VAGEN / "vagen" / "joint_policy" / "integration_gate.py").read_text()
     assert "if self.joint_integration_gate is None:" in trainer
     assert "refusing production training" in trainer
-    assert 'experiment_id != 171' in gate
+    assert "contracts = {" in gate
+    assert "if self.implementation not in contracts:" in gate
+    assert "self.experiment_id != experiment_id" in gate
     assert '{"update_1", "resume_update_2"}' in gate
