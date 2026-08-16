@@ -77,6 +77,41 @@ done
 [[ -f "${REPAIR_ROOT}/complete.marker" ]]
 [[ -f "${PLANNING_MODEL}/training_state.pt" ]]
 
+set -a
+source /project/peilab/atst/flower/.env
+set +a
+export WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
+export WANDB_PROJECT=vagen
+export WANDB_NAME=${RUN_NAME}
+export WANDB_RUN_ID=nimloth-id183-k4-10update-canary
+WANDB_PREFLIGHT_JSON=$("${PY}" - "${PHASE}" "${WANDB_ENTITY}" "${WANDB_PROJECT}" "${WANDB_RUN_ID}" "${RUN_NAME}" <<'PY'
+import json, sys, wandb
+from wandb.errors import CommError
+phase,entity,project,run_id,run_name=sys.argv[1:]
+path=f'{entity}/{project}/{run_id}'
+try:
+ run=wandb.Api().run(path)
+except CommError as exc:
+ response=getattr(exc,'response',None)
+ status=getattr(response,'status_code',None)
+ missing=status==404 or 'not found' in str(exc).lower() or 'could not find run' in str(exc).lower()
+ if phase!='train_to_5' or not missing:
+  raise
+ print(json.dumps({'path':path,'exists':False,'phase':phase}))
+else:
+ if phase=='train_to_5':
+  raise RuntimeError(f'ID183 W&B identity already exists: {path}')
+ rows=list(run.scan_history())
+ steps=[int(row['_step']) for row in rows]
+ if run.name!=run_name or run.state!='finished' or steps!=list(range(6)):
+  raise RuntimeError(
+   f'ID183 phase2 W&B preflight mismatch: name={run.name!r} '
+   f'state={run.state!r} steps={steps!r}'
+  )
+ print(json.dumps({'path':path,'exists':True,'phase':phase,'state':run.state,'steps':steps}))
+PY
+)
+
 if [[ "${PHASE}" == train_to_5 ]]; then
   [[ ! -e "${RUN_OUT}" ]] || { echo "ID183 output already exists" >&2; exit 2; }
   mkdir -p "${RUN_OUT}" "${CHECKPOINT_DIR}"
@@ -92,6 +127,7 @@ fi
 [[ ! -e "${PHASE_OUT}" ]]
 mkdir -p "${PHASE_OUT}" "${RUNTIME_ROOT}" "${RAY_TMPDIR}" "${TMPDIR}" "${AI2THOR_HOME_ROOT}/.ai2thor"
 printf '%s\n' "${JOB_DETAILS}" >"${PHASE_OUT}/allocation.txt"
+printf '%s\n' "${WANDB_PREFLIGHT_JSON}" >"${PHASE_OUT}/wandb_preflight.json"
 
 export PATH=${ROOT}/.venv-vagen-main/bin:/usr/bin:/bin
 export PYTHONPATH=${REPO}/src:${VAGEN}:${VERL}
@@ -105,12 +141,6 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_ALLREDUCE_USE_SYMM_MEM=0
 export NIMLOTH_LATENT_TOKEN_COUNT=16
 export RAY_TMPDIR TMPDIR AI2THOR_HOME_ROOT
-set -a
-source /project/peilab/atst/flower/.env
-set +a
-export WANDB_PROJECT=vagen
-export WANDB_NAME=${RUN_NAME}
-export WANDB_RUN_ID=nimloth-id183-k4-10update-canary
 if [[ "${PHASE}" == train_to_5 ]]; then
   export WANDB_RESUME=never
 else
@@ -455,6 +485,33 @@ cat "${PHASE_OUT}/train.log"
 terminate_group "${TRAIN_PID}"
 TRAIN_PID=
 (( TRAIN_STATUS == 0 )) || exit "${TRAIN_STATUS}"
+
+if [[ "${PHASE}" == train_to_5 ]]; then
+  EXPECTED_WANDB_MAX_STEP=5
+else
+  EXPECTED_WANDB_MAX_STEP=10
+fi
+"${PY}" - "${WANDB_ENTITY}" "${WANDB_PROJECT}" "${WANDB_RUN_ID}" "${RUN_NAME}" "${EXPECTED_WANDB_MAX_STEP}" "${PHASE_OUT}" <<'PY'
+import json, os, sys, tempfile, time, wandb
+from pathlib import Path
+entity,project,run_id,run_name,max_step_raw,out_raw=sys.argv[1:]
+max_step=int(max_step_raw); out=Path(out_raw); path=f'{entity}/{project}/{run_id}'
+last=None
+for _ in range(13):
+ run=wandb.Api().run(path)
+ rows=list(run.scan_history())
+ steps=[int(row['_step']) for row in rows]
+ last={'path':path,'name':run.name,'state':run.state,'steps':steps}
+ if run.name==run_name and run.state=='finished' and steps==list(range(max_step+1)):
+  break
+ time.sleep(10)
+else:
+ raise RuntimeError(f'ID183 W&B completion mismatch: {last!r}')
+fd,name=tempfile.mkstemp(prefix='.wandb_final.',suffix='.tmp',dir=out)
+with os.fdopen(fd,'w',encoding='utf-8') as handle:
+ json.dump(last,handle,indent=2); handle.write('\n')
+os.replace(name,out/'wandb_final.json')
+PY
 
 if [[ "${PHASE}" == train_to_5 ]]; then
   EXPECTED_STEP=5

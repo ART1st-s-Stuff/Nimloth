@@ -81,16 +81,21 @@ def test_runner_has_exact_resume_and_checkpoint_boundaries() -> None:
 
 def test_phase_walltime_contains_all_hard_timeout_budgets() -> None:
     source = RUNNER.read_text()
-    # 5h allocation >= 13,200s train + 150s render + 180s health +
-    # eight 300s prewarms + 30s timeout kill + 37s cleanup margin.
+    # Conservative bound: 13,200s train, 30s timeout kill, 150s render,
+    # 90*(5s curl + 2s sleep) health, eight 300s prewarms, and 127s cleanup.
     assert "TimeLimit=05:00:00" in source
     assert "PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-13200}" in source
-    assert 5 * 3600 >= 13200 + 150 + 180 + 8 * 300 + 30 + 37
+    assert 5 * 3600 >= 13200 + 30 + 150 + 630 + 8 * 300 + 127
 
 
 def test_wandb_identity_is_new_then_must_resume() -> None:
     source = RUNNER.read_text()
     assert "WANDB_RUN_ID=nimloth-id183-k4-10update-canary" in source
+    assert "WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology" in source
+    assert "ID183 W&B identity already exists" in source
+    assert "ID183 phase2 W&B preflight mismatch" in source
+    assert "steps!=list(range(6))" in source
+    assert "steps==list(range(max_step+1))" in source
     assert "export WANDB_RESUME=never" in source
     assert "export WANDB_RESUME=must" in source
     assert source.index("WANDB_RESUME=never") < source.index("WANDB_RESUME=must")
