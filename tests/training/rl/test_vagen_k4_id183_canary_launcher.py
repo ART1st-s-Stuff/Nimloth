@@ -86,6 +86,8 @@ def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
         assert value in source
     assert "NumNodes=1" not in source
     assert "--gres=gpu:8" not in source
+    assert 'WANDB_DIR="${RAY_LOG_ROOT}/wandb"' in source
+    assert 'WANDB_DIR="${RUN_OUT}/wandb"' not in source
     assert "counts != [4.0, 4.0]" in source
     assert 'JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")' in source
     assert 'scontrol show job -dd "${HOLD_JOB}" -o' not in source
