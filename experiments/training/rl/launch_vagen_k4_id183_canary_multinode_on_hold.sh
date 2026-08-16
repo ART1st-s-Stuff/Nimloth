@@ -188,10 +188,80 @@ if found: raise SystemExit(1)
 PY
 }
 
+persist_ray_logs() {
+  local stage=${1:?capture stage required}
+  local capture_out=${RAY_LOG_ROOT}/ray_log_capture_${stage}.out
+  local capture_err=${RAY_LOG_ROOT}/ray_log_capture_${stage}.err
+  if ! timeout 60s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
+    --ntasks-per-node=1 --gpus=0 \
+    env CAPTURE_STAGE="${stage}" RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" \
+    SHARED_LOG_ROOT="${RAY_LOG_ROOT}" "${PY}" - \
+    >"${capture_out}" 2>"${capture_err}" <<'PY'
+import json, os, socket, tempfile
+from pathlib import Path
+stage=os.environ['CAPTURE_STAGE']
+root=Path(os.environ['RAY_CLUSTER_ROOT'])
+shared=Path(os.environ['SHARED_LOG_ROOT'])
+host=socket.gethostname().split('.')[0]
+destination=shared/'ray_internal'/stage/host
+destination.mkdir(parents=True,exist_ok=True)
+session=(root/'session_latest').resolve()
+logs=session/'logs'
+fixed=(
+ 'ray_process_exit.log','gcs_server.err','gcs_server.out',
+ 'raylet.err','raylet.out','monitor.err','monitor.out',
+ 'dashboard.err','dashboard.log','dashboard_agent.err','dashboard_agent.log',
+ 'runtime_env_agent.err','runtime_env_agent.log',
+)
+candidates=[]
+for name in fixed:
+ path=logs/name
+ if path.is_file(): candidates.append(path)
+if logs.is_dir():
+ for path in sorted(logs.glob('*.err')):
+  if path.is_file() and path not in candidates: candidates.append(path)
+max_file_bytes=2*1024*1024
+max_total_bytes=16*1024*1024
+captured_total=0
+files=[]
+for source in candidates:
+ if captured_total>=max_total_bytes: break
+ original=source.stat().st_size
+ take=min(original,max_file_bytes,max_total_bytes-captured_total)
+ with source.open('rb') as handle:
+  if original>take: handle.seek(original-take)
+  payload=handle.read(take)
+ target=destination/source.name
+ target.write_bytes(payload)
+ captured_total+=len(payload)
+ files.append({
+  'name':source.name,'original_bytes':original,
+  'captured_bytes':len(payload),'tail_truncated':original>len(payload),
+ })
+manifest={
+ 'stage':stage,'host':host,'root_exists':root.exists(),
+ 'session':str(session),'session_exists':session.exists(),
+ 'logs_exists':logs.is_dir(),'captured_total_bytes':captured_total,
+ 'max_total_bytes':max_total_bytes,'files':files,
+}
+fd,name=tempfile.mkstemp(prefix='.capture_manifest.',suffix='.tmp',dir=destination)
+with os.fdopen(fd,'w',encoding='utf-8') as handle:
+ json.dump(manifest,handle,indent=2); handle.write('\n')
+os.replace(name,destination/'capture_manifest.json')
+print(json.dumps(manifest,sort_keys=True),flush=True)
+PY
+  then
+    printf 'Ray log capture failed: stage=%s\n' "${stage}" \
+      >"${RAY_LOG_ROOT}/ray_log_capture_${stage}.failed"
+    return 1
+  fi
+}
+
 cleanup_cluster() {
   local status=$?
   trap - EXIT
   set +e
+  persist_ray_logs pre_cleanup || true
   for pid in "${RAY_STEP_PIDS[@]}"; do kill -TERM "${pid}" >/dev/null 2>&1 || true; done
   for _ in $(seq 1 30); do
     alive=false
@@ -217,6 +287,7 @@ cleanup_cluster() {
     sleep 1
   done
   if [[ "${cleanup_empty}" != true && "${status}" -eq 0 ]]; then status=93; fi
+  persist_ray_logs post_cleanup || true
   timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
     --ntasks-per-node=1 --gpus=0 \
     env RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" RUNTIME_ROOT="${RUNTIME_ROOT}" \
