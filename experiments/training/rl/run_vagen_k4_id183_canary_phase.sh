@@ -138,13 +138,43 @@ terminate_group() {
   kill -KILL -- "-${pid}" >/dev/null 2>&1 || true
 }
 
+runtime_process_ids() {
+  "${PY}" - "${RUNTIME_ROOT}" <<'PY'
+import os, sys
+from pathlib import Path
+root=sys.argv[1].encode()
+ancestors=set()
+pid=os.getpid()
+while pid > 1 and pid not in ancestors:
+ ancestors.add(pid)
+ try:
+  fields=(Path('/proc')/str(pid)/'stat').read_text().split()
+  pid=int(fields[3])
+ except (FileNotFoundError, PermissionError, ValueError, IndexError):
+  break
+for entry in Path('/proc').iterdir():
+ if not entry.name.isdigit():
+  continue
+ candidate=int(entry.name)
+ if candidate in ancestors:
+  continue
+ try:
+  environ=(entry/'environ').read_bytes()
+  cmdline=(entry/'cmdline').read_bytes()
+ except (FileNotFoundError, PermissionError, ProcessLookupError):
+  continue
+ if root in environ or root in cmdline:
+  print(candidate)
+PY
+}
+
 terminate_runtime_processes() {
   local signal=${1:-TERM}
   local pid
   while read -r pid; do
-    [[ -n "${pid}" && "${pid}" != "$$" && "${pid}" != "${PPID}" ]] || continue
+    [[ -n "${pid}" ]] || continue
     kill -"${signal}" "${pid}" >/dev/null 2>&1 || true
-  done < <(pgrep -f "${RUNTIME_ROOT}" || true)
+  done < <(runtime_process_ids)
 }
 
 cleanup() {
@@ -158,7 +188,12 @@ cleanup() {
   sleep 5
   terminate_runtime_processes KILL
   sleep 2
-  pgrep -af "${RUNTIME_ROOT}|vagen.envs.navigation.serve.*${ENV_PORT}" >"${PHASE_OUT}/owned_processes_after.log" 2>&1 || true
+  : >"${PHASE_OUT}/owned_processes_after.log"
+  while read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    ps -ww -p "${pid}" -o pid=,ppid=,args= >>"${PHASE_OUT}/owned_processes_after.log" 2>&1 || true
+  done < <(runtime_process_ids)
+  pgrep -af "vagen.envs.navigation.serve.*${ENV_PORT}" >>"${PHASE_OUT}/owned_processes_after.log" 2>&1 || true
   ss -ltnp >"${PHASE_OUT}/ports_after.log" 2>&1 || true
   if [[ -s "${PHASE_OUT}/owned_processes_after.log" ]]; then status=91; fi
   if ss -ltnH "sport = :${ENV_PORT}" | grep -q .; then status=92; fi

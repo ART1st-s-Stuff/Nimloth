@@ -78,6 +78,16 @@ def test_runner_has_exact_resume_and_checkpoint_boundaries() -> None:
     assert "must not start" in source
 
 
+def test_cleanup_tracks_runtime_processes_by_proc_environ() -> None:
+    source = RUNNER.read_text()
+    assert "runtime_process_ids()" in source
+    assert "Path('/proc').iterdir()" in source
+    assert "root in environ or root in cmdline" in source
+    assert 'pgrep -f "${RUNTIME_ROOT}"' not in source
+    assert "terminate_group \"${TRAIN_PID}\"" in source
+    assert "owned_processes_after.log" in source
+
+
 def test_embedded_python_compiles_and_hashes_all_assets() -> None:
     source = RUNNER.read_text()
     blocks = re.findall(r"<<'PY'.*?\n(.*?)\nPY", source, flags=re.DOTALL)
