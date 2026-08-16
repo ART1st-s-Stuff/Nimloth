@@ -188,15 +188,8 @@ if found: raise SystemExit(1)
 PY
 }
 
-persist_ray_logs() {
-  local stage=${1:?capture stage required}
-  local capture_out=${RAY_LOG_ROOT}/ray_log_capture_${stage}.out
-  local capture_err=${RAY_LOG_ROOT}/ray_log_capture_${stage}.err
-  if ! timeout 60s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
-    --ntasks-per-node=1 --gpus=0 \
-    env CAPTURE_STAGE="${stage}" RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" \
-    SHARED_LOG_ROOT="${RAY_LOG_ROOT}" "${PY}" - \
-    >"${capture_out}" 2>"${capture_err}" <<'PY'
+RAY_LOG_CAPTURE_SCRIPT=${RAY_LOG_ROOT}/capture_ray_session_logs.py
+cat >"${RAY_LOG_CAPTURE_SCRIPT}" <<'PY'
 import json, os, socket, tempfile
 from pathlib import Path
 stage=os.environ['CAPTURE_STAGE']
@@ -224,15 +217,20 @@ max_file_bytes=2*1024*1024
 max_total_bytes=16*1024*1024
 captured_total=0
 files=[]
+errors=[]
 for source in candidates:
  if captured_total>=max_total_bytes: break
- original=source.stat().st_size
- take=min(original,max_file_bytes,max_total_bytes-captured_total)
- with source.open('rb') as handle:
-  if original>take: handle.seek(original-take)
-  payload=handle.read(take)
- target=destination/source.name
- target.write_bytes(payload)
+ try:
+  original=source.stat().st_size
+  take=min(original,max_file_bytes,max_total_bytes-captured_total)
+  with source.open('rb') as handle:
+   if original>take: handle.seek(original-take)
+   payload=handle.read(take)
+  target=destination/source.name
+  target.write_bytes(payload)
+ except OSError as exc:
+  errors.append({'name':source.name,'error':repr(exc)})
+  continue
  captured_total+=len(payload)
  files.append({
   'name':source.name,'original_bytes':original,
@@ -242,16 +240,36 @@ manifest={
  'stage':stage,'host':host,'root_exists':root.exists(),
  'session':str(session),'session_exists':session.exists(),
  'logs_exists':logs.is_dir(),'captured_total_bytes':captured_total,
- 'max_total_bytes':max_total_bytes,'files':files,
+ 'max_total_bytes':max_total_bytes,'files':files,'errors':errors,
 }
 fd,name=tempfile.mkstemp(prefix='.capture_manifest.',suffix='.tmp',dir=destination)
 with os.fdopen(fd,'w',encoding='utf-8') as handle:
  json.dump(manifest,handle,indent=2); handle.write('\n')
 os.replace(name,destination/'capture_manifest.json')
 print(json.dumps(manifest,sort_keys=True),flush=True)
+if errors: raise SystemExit(1)
 PY
+RAY_LOG_CAPTURE_COMPLETE=true
+
+persist_ray_logs() {
+  local stage=${1:?capture stage required}
+  local capture_out=${RAY_LOG_ROOT}/ray_log_capture_${stage}.out
+  local capture_err=${RAY_LOG_ROOT}/ray_log_capture_${stage}.err
+  local failed=false
+  if ! timeout 60s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
+    --ntasks-per-node=1 --gpus=0 \
+    env CAPTURE_STAGE="${stage}" RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" \
+    SHARED_LOG_ROOT="${RAY_LOG_ROOT}" "${PY}" "${RAY_LOG_CAPTURE_SCRIPT}" \
+    >"${capture_out}" 2>"${capture_err}"
   then
-    printf 'Ray log capture failed: stage=%s\n' "${stage}" \
+    failed=true
+  fi
+  for node in "${NODES[@]}"; do
+    manifest=${RAY_LOG_ROOT}/ray_internal/${stage}/${node}/capture_manifest.json
+    [[ -f "${manifest}" ]] || failed=true
+  done
+  if [[ "${failed}" == true ]]; then
+    printf 'Ray log capture failed or incomplete: stage=%s\n' "${stage}" \
       >"${RAY_LOG_ROOT}/ray_log_capture_${stage}.failed"
     return 1
   fi
@@ -261,7 +279,7 @@ cleanup_cluster() {
   local status=$?
   trap - EXIT
   set +e
-  persist_ray_logs pre_cleanup || true
+  persist_ray_logs pre_cleanup || RAY_LOG_CAPTURE_COMPLETE=false
   for pid in "${RAY_STEP_PIDS[@]}"; do kill -TERM "${pid}" >/dev/null 2>&1 || true; done
   for _ in $(seq 1 30); do
     alive=false
@@ -287,14 +305,17 @@ cleanup_cluster() {
     sleep 1
   done
   if [[ "${cleanup_empty}" != true && "${status}" -eq 0 ]]; then status=93; fi
-  persist_ray_logs post_cleanup || true
+  persist_ray_logs post_cleanup || RAY_LOG_CAPTURE_COMPLETE=false
   timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
     --ntasks-per-node=1 --gpus=0 \
     env RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" RUNTIME_ROOT="${RUNTIME_ROOT}" \
-    bash -lc '
+    RAY_LOG_CAPTURE_COMPLETE="${RAY_LOG_CAPTURE_COMPLETE}" bash -lc '
       [[ "${RAY_CLUSTER_ROOT}" == /tmp/i183-ray-* ]]
       [[ "${RUNTIME_ROOT}" == /tmp/i183-* ]]
-      rm -rf -- "${RAY_CLUSTER_ROOT}" "${RUNTIME_ROOT}"
+      rm -rf -- "${RUNTIME_ROOT}"
+      if [[ "${RAY_LOG_CAPTURE_COMPLETE}" == true ]]; then
+        rm -rf -- "${RAY_CLUSTER_ROOT}"
+      fi
     ' \
     >/dev/null 2>&1 || true
   exit "${status}"
