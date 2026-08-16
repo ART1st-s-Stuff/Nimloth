@@ -70,7 +70,8 @@ def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
             "TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface",
             "TORCH_HOME=/project/peilab/atst/flower/.cache/torch",
             "VLLM_WORKER_MULTIPROC_METHOD=spawn",
-            "WANDB_API_KEY=\"${WANDB_API_KEY}\"",
+            'source /project/peilab/atst/flower/.env',
+            "wandb_api_key_present",
             "ID183_TRAIN_CONFIG=\"${PHASE_OUT}/train_navigation_joint_id183.yaml\"",
             "ray.scripts.scripts start --block --head",
             '--address="${RAY_ADDRESS}"',
@@ -83,6 +84,10 @@ def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
     assert "NumNodes=1" not in source
     assert "--gres=gpu:8" not in source
     assert "counts != [4.0, 4.0]" in source
+    assert "flock -n 9" in source
+    assert "duplicate ID183 launcher" in source
+    assert "--overlap" in source
+    assert "timeout 120s srun" in source
     runner = RUNNER.read_text()
     assert "ENV_URL=http://${ID183_HEAD_IP}:${ENV_PORT}" in runner
     assert '--host="${ID183_HEAD_IP}"' in runner
@@ -129,11 +134,11 @@ def test_phase_walltime_contains_all_hard_timeout_budgets() -> None:
     source = RUNNER.read_text()
     # Conservative bound: 13,200s train, 30s timeout kill, 150s render,
     # 90*(5s curl + 2s sleep) health, eight 300s+10s-kill prewarms,
-    # 127s phase cleanup, 130s W&B convergence, and a conservative 900s
+    # 127s phase cleanup, 130s W&B convergence, and a conservative 1000s
     # external-Ray fabric/bootstrap/probes/cluster-cleanup allowance.
     assert "TimeLimit=05:00:00" in source
     assert "PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-13200}" in source
-    assert 5 * 3600 >= 13200 + 30 + 150 + 630 + 8 * 310 + 127 + 130 + 900
+    assert 5 * 3600 >= 13200 + 30 + 150 + 630 + 8 * 310 + 127 + 130 + 1000
 
 
 def test_wandb_identity_is_new_then_must_resume() -> None:
