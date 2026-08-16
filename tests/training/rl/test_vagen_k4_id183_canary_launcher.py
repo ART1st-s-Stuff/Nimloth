@@ -192,7 +192,8 @@ def test_cleanup_tracks_runtime_processes_by_proc_environ() -> None:
     source = RUNNER.read_text()
     assert "runtime_process_ids()" in source
     assert "Path('/proc').iterdir()" in source
-    assert "root in environ or root in cmdline" in source
+    assert "if root in environ:" in source
+    assert "root in environ or root in cmdline" not in source
     assert 'pgrep -f "${RUNTIME_ROOT}"' not in source
     assert "terminate_group \"${TRAIN_PID}\"" in source
     assert "owned_processes_after.log" in source
