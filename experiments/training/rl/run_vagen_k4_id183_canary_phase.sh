@@ -26,8 +26,14 @@ else
   PHASE_TAG=p2
 fi
 PHASE_OUT=${RUN_OUT}/${PHASE_NAME}
+: "${ID183_HEAD_IP:?ID183_HEAD_IP is required}"
+: "${ID183_EXPECTED_NNODES:?ID183_EXPECTED_NNODES is required}"
+: "${ID183_EXPECTED_GPUS_PER_NODE:?ID183_EXPECTED_GPUS_PER_NODE is required}"
+: "${ID183_CLUSTER_NODES:?ID183_CLUSTER_NODES is required}"
+: "${RAY_ADDRESS:?RAY_ADDRESS is required}"
+: "${RAY_EXPECTED_NODE_IPS:?RAY_EXPECTED_NODE_IPS is required}"
 ENV_PORT=$((19100 + SLURM_JOB_ID % 300 + ($([[ "${PHASE}" == train_to_5 ]] && echo 0 || echo 300))))
-ENV_URL=http://127.0.0.1:${ENV_PORT}
+ENV_URL=http://${ID183_HEAD_IP}:${ENV_PORT}
 RUNTIME_ROOT=/tmp/i183-${SLURM_JOB_ID}-${PHASE_TAG}
 RAY_TMPDIR=${RUNTIME_ROOT}
 TMPDIR=${RUNTIME_ROOT}/tmp
@@ -41,15 +47,16 @@ PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-13200}
 [[ "${RUN_NAME}" == 183_canary_k4schemeb_jointupdate_dp8_tp8_u10_r5_train3x8_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8 ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
-[[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-}}" == 1 ]]
-[[ "${SLURM_CPUS_PER_TASK:-}" == 64 ]]
-[[ "${SLURM_MEM_PER_NODE:-}" == 262144 ]]
+[[ "${ID183_EXPECTED_NNODES}" == 2 ]]
+[[ "${ID183_EXPECTED_GPUS_PER_NODE}" == 4 ]]
+[[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-}}" == 2 ]]
+[[ "${SLURM_CPUS_PER_TASK:-}" == 32 ]]
 [[ "${PHASE_TIMEOUT_SECONDS}" == 13200 ]]
 [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]
 IFS=, read -r -a VISIBLE_GPUS <<<"${CUDA_VISIBLE_DEVICES}"
-(( ${#VISIBLE_GPUS[@]} == 8 ))
+(( ${#VISIBLE_GPUS[@]} == 4 ))
 mapfile -t GPU_NAMES < <(nvidia-smi --query-gpu=name --format=csv,noheader)
-(( ${#GPU_NAMES[@]} == 8 ))
+(( ${#GPU_NAMES[@]} == 4 ))
 for name in "${GPU_NAMES[@]}"; do [[ "${name}" == *H800* ]]; done
 for excluded in dgx-13 dgx-23 dgx-32 dgx-37 dgx-51; do
   [[ "$(hostname)" != "${excluded}" ]]
@@ -57,11 +64,15 @@ done
 
 JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}" -o)
 grep -q 'Partition=normal' <<<"${JOB_DETAILS}"
+grep -q 'NumNodes=2' <<<"${JOB_DETAILS}"
 grep -q 'TimeLimit=05:00:00' <<<"${JOB_DETAILS}"
 grep -Eq 'ReqTRES=[^ ]*mem=256G([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*cpu=64([, ]|$)' <<<"${JOB_DETAILS}"
-grep -q 'MinMemoryNode=256G' <<<"${JOB_DETAILS}"
+grep -q 'MinMemoryNode=128G' <<<"${JOB_DETAILS}"
+IFS=, read -r -a CLUSTER_NODES <<<"${ID183_CLUSTER_NODES}"
+(( ${#CLUSTER_NODES[@]} == 2 ))
+[[ "$(hostname -s)" == "${CLUSTER_NODES[0]}" ]]
 
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${EXPECTED_PARENT_COMMIT}" ]]
 [[ "$(git -C "${VAGEN}" rev-parse HEAD)" == "${EXPECTED_VAGEN_COMMIT}" ]]
@@ -76,6 +87,30 @@ done
 [[ -d "${PLANNING_MODEL}" ]]
 [[ -f "${REPAIR_ROOT}/complete.marker" ]]
 [[ -f "${PLANNING_MODEL}/training_state.pt" ]]
+IFS=, read -r -a EXPECTED_NODE_IPS <<<"${RAY_EXPECTED_NODE_IPS}"
+(( ${#EXPECTED_NODE_IPS[@]} == 2 ))
+[[ "${ID183_HEAD_IP}" == "${EXPECTED_NODE_IPS[0]}" ]]
+[[ "${RAY_ADDRESS}" == "${ID183_HEAD_IP}:"* ]]
+"${PY}" - "${RAY_ADDRESS}" "${RAY_EXPECTED_NODE_IPS}" <<'PY'
+import json, sys, ray
+address=sys.argv[1]; expected=sorted(sys.argv[2].split(','))
+ray.init(address=address)
+alive=[node for node in ray.nodes() if node['Alive']]
+rows=sorted(
+ [
+  {
+   'address':str(node['NodeManagerAddress']),
+   'gpus':float(node['Resources'].get('GPU',0)),
+  }
+  for node in alive
+ ],
+ key=lambda row:row['address'],
+)
+ray.shutdown()
+assert [row['address'] for row in rows]==expected, (rows,expected)
+assert [row['gpus'] for row in rows]==[4.0,4.0], rows
+print(json.dumps({'status':'ID183_RAY_2X4_OK','nodes':rows}))
+PY
 
 set -a
 source /project/peilab/atst/flower/.env
@@ -366,7 +401,7 @@ if [[ "${PHASE}" == train_to_5 ]]; then
 - behavior: K4/100 UCT/c1, alpha1, approved beta85.78297006578457, prior temperature1, float32, keyed sampling, CoT temperature0.7/top-p0.95, response cap512.
 - update: actor lr1e-7, PPO clip0.2, one epoch, token KL0.01, guided entropy0.01; unified projector/predictor/ValueHead AdamW lr1e-4, state/DINO/SIGReg weights1/0.5/0.1, selected Huber delta1, gamma1, lambda0.95.
 - checkpoint/resume: phase1 writes only complete step5/source781; phase2 is a separate fresh runtime that must load step5 and writes only complete step10/source786. Both step5 and step10 remain; no intermediate checkpoint is valid.
-- resources per separately approved phase: normal, one node, 8 H800, 64 CPU, 256 GiB, five-hour allocation; the 13200-second training cap plus all fixed prewarm/cleanup caps fits this walltime; excluded nodes dgx-13/23/32/37/51.
+- resources per separately approved phase: normal, two nodes, 4 H800 and 32 CPU and 128 GiB per node (8 H800/64 CPU/256 GiB total), five-hour allocation; external Ray exposes exactly 4+4 GPUs over the common 10.23 fabric, rollout remains one TP8/DP1 replica over TCP, and actor remains global DP8; excluded nodes dgx-13/23/32/37/51.
 EOF
 fi
 
@@ -446,7 +481,7 @@ source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh" > >(tee -a "
 timeout --signal=TERM --kill-after=10s 150s "${PY}" -m nimloth.environment.navigation.direct_render_probe --gpu-device 0 | tee "${PHASE_OUT}/render_probe.json"
 cd "${VAGEN}"
 ! ss -ltnH "sport = :${ENV_PORT}" | grep -q .
-"${PY}" -m vagen.envs.navigation.serve --host=127.0.0.1 --port="${ENV_PORT}" --devices='[0]' --max_envs=40 --max_inflight=40 --thread_pool_size=40 --session_timeout=14400 >"${PHASE_OUT}/env_server.log" 2>&1 &
+"${PY}" -m vagen.envs.navigation.serve --host="${ID183_HEAD_IP}" --port="${ENV_PORT}" --devices='[0]' --max_envs=40 --max_inflight=40 --thread_pool_size=40 --session_timeout=14400 >"${PHASE_OUT}/env_server.log" 2>&1 &
 ENV_PID=$!
 for _ in $(seq 1 90); do
   if curl -fsS --max-time 5 "${ENV_URL}/health" >"${PHASE_OUT}/health.json" 2>/dev/null; then break; fi
@@ -458,7 +493,10 @@ for split in base_train common_sense_train long_horizon_train base common_sense 
   timeout --signal=TERM --kill-after=10s 300s "${PY}" -m nimloth.environment.navigation.prewarm --env-url "${ENV_URL}" --eval-set "${split}" --seed 0 --timeout-seconds 300 --env-id "id183-prewarm-${split}-${SLURM_JOB_ID}" | tee "${PHASE_OUT}/prewarm_${split}.json"
 done
 
-nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits -l 1 >"${PHASE_OUT}/nvidia_smi.csv" 2>"${PHASE_OUT}/nvidia_smi.err" &
+srun --jobid="${SLURM_JOB_ID}" --overlap --nodes=2 --ntasks=2 \
+  --ntasks-per-node=1 --gres=gpu:4 --label \
+  nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits -l 1 \
+  >"${PHASE_OUT}/nvidia_smi.csv" 2>"${PHASE_OUT}/nvidia_smi.err" &
 NVIDIA_PID=$!
 
 PHASE_OVERRIDES=()
