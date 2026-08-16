@@ -82,10 +82,11 @@ def test_runner_has_exact_resume_and_checkpoint_boundaries() -> None:
 def test_phase_walltime_contains_all_hard_timeout_budgets() -> None:
     source = RUNNER.read_text()
     # Conservative bound: 13,200s train, 30s timeout kill, 150s render,
-    # 90*(5s curl + 2s sleep) health, eight 300s prewarms, and 127s cleanup.
+    # 90*(5s curl + 2s sleep) health, eight 300s+10s-kill prewarms,
+    # 127s cleanup, and the final 13*10s W&B convergence poll.
     assert "TimeLimit=05:00:00" in source
     assert "PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-13200}" in source
-    assert 5 * 3600 >= 13200 + 30 + 150 + 630 + 8 * 300 + 127
+    assert 5 * 3600 >= 13200 + 30 + 150 + 630 + 8 * 310 + 127 + 130
 
 
 def test_wandb_identity_is_new_then_must_resume() -> None:
