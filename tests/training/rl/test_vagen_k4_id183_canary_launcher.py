@@ -13,6 +13,7 @@ VAGEN = ROOT / "external/VAGEN"
 RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id183_canary_phase.sh"
 PHASE1_LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_id183_canary_phase1_on_hold.sh"
 PHASE2_LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_id183_canary_phase2_on_hold.sh"
+COMMON_LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_id183_canary_multinode_on_hold.sh"
 PHASE1_SLURM = ROOT / "experiments/training/rl/id183_k4_canary_phase1.slurm"
 PHASE2_SLURM = ROOT / "experiments/training/rl/id183_k4_canary_phase2.slurm"
 CONFIG = VAGEN / "vagen/configs/joint_id183_canary.yaml"
@@ -25,6 +26,7 @@ def test_shells_parse_and_neither_launcher_can_run_both_phases() -> None:
         RUNNER,
         PHASE1_LAUNCHER,
         PHASE2_LAUNCHER,
+        COMMON_LAUNCHER,
         PHASE1_SLURM,
         PHASE2_SLURM,
     ):
@@ -38,14 +40,58 @@ def test_shells_parse_and_neither_launcher_can_run_both_phases() -> None:
     for slurm in (PHASE1_SLURM.read_text(), PHASE2_SLURM.read_text()):
         for value in (
             "#SBATCH --partition=normal",
-            "#SBATCH --gres=gpu:8",
-            "#SBATCH --cpus-per-task=64",
-            "#SBATCH --mem=256G",
+            "#SBATCH --nodes=2",
+            "#SBATCH --ntasks=2",
+            "#SBATCH --ntasks-per-node=1",
+            "#SBATCH --gres=gpu:4",
+            "#SBATCH --cpus-per-task=32",
+            "#SBATCH --mem=128G",
             "#SBATCH --time=05:00:00",
             "dgx-13,dgx-23,dgx-32,dgx-37,dgx-51",
             "module load slurm",
         ):
             assert value in slurm
+
+
+def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
+    source = COMMON_LAUNCHER.read_text()
+    for value in (
+            "NumNodes=2",
+            "gres/gpu=8",
+            "cpu=64",
+            "mem=256G",
+            "MinMemoryNode=128G",
+            "nimloth_load_slurm_gpu_counts",
+            "RAY_EXPECTED_NODE_IPS",
+            "NCCL_SOCKET_IFNAME",
+            "GLOO_SOCKET_IFNAME",
+            "VLLM_HOST_IP",
+            "HF_HOME=/project/peilab/atst/.cache/huggingface",
+            "TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface",
+            "TORCH_HOME=/project/peilab/atst/flower/.cache/torch",
+            "VLLM_WORKER_MULTIPROC_METHOD=spawn",
+            "WANDB_API_KEY=\"${WANDB_API_KEY}\"",
+            "ID183_TRAIN_CONFIG=\"${PHASE_OUT}/train_navigation_joint_id183.yaml\"",
+            "ray.scripts.scripts start --block --head",
+            '--address="${RAY_ADDRESS}"',
+            "ray.init(address=os.environ['RAY_ADDRESS'])",
+            "counts != [4.0, 4.0]",
+            "ID183_EXPECTED_NNODES=2",
+            "ID183_EXPECTED_GPUS_PER_NODE=4",
+        ):
+        assert value in source
+    assert "NumNodes=1" not in source
+    assert "--gres=gpu:8" not in source
+    assert "counts != [4.0, 4.0]" in source
+    runner = RUNNER.read_text()
+    assert "ENV_URL=http://${ID183_HEAD_IP}:${ENV_PORT}" in runner
+    assert '--host="${ID183_HEAD_IP}"' in runner
+    assert '[[ "${ID183_EXPECTED_NNODES}" == 2 ]]' in runner
+    assert '[[ "${ID183_EXPECTED_GPUS_PER_NODE}" == 4 ]]' in runner
+    assert "SLURM_MEM_PER_NODE" not in runner
+    assert "MinMemoryNode=128G" in runner
+    assert "ID183_RAY_2X4_OK" in runner
+    assert '--ntasks-per-node=1 --gres=gpu:4 --label' in runner
 
 
 def test_runner_has_exact_resume_and_checkpoint_boundaries() -> None:
@@ -83,10 +129,11 @@ def test_phase_walltime_contains_all_hard_timeout_budgets() -> None:
     source = RUNNER.read_text()
     # Conservative bound: 13,200s train, 30s timeout kill, 150s render,
     # 90*(5s curl + 2s sleep) health, eight 300s+10s-kill prewarms,
-    # 127s cleanup, and the final 13*10s W&B convergence poll.
+    # 127s phase cleanup, 130s W&B convergence, and a conservative 900s
+    # external-Ray fabric/bootstrap/probes/cluster-cleanup allowance.
     assert "TimeLimit=05:00:00" in source
     assert "PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-13200}" in source
-    assert 5 * 3600 >= 13200 + 30 + 150 + 630 + 8 * 310 + 127 + 130
+    assert 5 * 3600 >= 13200 + 30 + 150 + 630 + 8 * 310 + 127 + 130 + 900
 
 
 def test_wandb_identity_is_new_then_must_resume() -> None:
@@ -118,6 +165,15 @@ def test_embedded_python_compiles_and_hashes_all_assets() -> None:
     assert len(blocks) >= 6
     for index, block in enumerate(blocks):
         compile(block, f"{RUNNER}:inline-{index}", "exec")
+    common_source = COMMON_LAUNCHER.read_text()
+    common_blocks = re.findall(
+        r"<<'PY'.*?\n(.*?)\nPY",
+        common_source,
+        flags=re.DOTALL,
+    )
+    assert len(common_blocks) >= 4
+    for index, block in enumerate(common_blocks):
+        compile(block, f"{COMMON_LAUNCHER}:inline-{index}", "exec")
     expected_hashes = {
         "base_train": "eb0aa69186604cedc6dc6c2a8874393beae09b7ac1dadae5458e87492b5e01e9",
         "common_sense_train": "dd74a0f02c48e59efda445a68dc717278ffe6fe828f0a431418f205eb67d403b",
@@ -176,6 +232,9 @@ def test_config_is_ten_update_canary_and_stops_before_full_evaluation() -> None:
         "max_actor_ckpt_to_keep: 2",
         "temperature: 0.7",
         "top_p: 0.95",
+        "nnodes: 2",
+        "n_gpus_per_node: 4",
+        "address: auto",
     ):
         assert value in source
     assert "production" not in source.lower()
