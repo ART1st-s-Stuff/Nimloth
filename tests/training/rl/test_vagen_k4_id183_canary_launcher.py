@@ -40,12 +40,12 @@ def test_shells_parse_and_neither_launcher_can_run_both_phases() -> None:
     for slurm in (PHASE1_SLURM.read_text(), PHASE2_SLURM.read_text()):
         for value in (
             "#SBATCH --partition=normal",
-            "#SBATCH --nodes=2",
-            "#SBATCH --ntasks=2",
+            "#SBATCH --nodes=4",
+            "#SBATCH --ntasks=4",
             "#SBATCH --ntasks-per-node=1",
-            "#SBATCH --gres=gpu:4",
-            "#SBATCH --cpus-per-task=32",
-            "#SBATCH --mem=128G",
+            "#SBATCH --gres=gpu:2",
+            "#SBATCH --cpus-per-task=16",
+            "#SBATCH --mem=64G",
             "#SBATCH --time=05:00:00",
             "dgx-13,dgx-23,dgx-32,dgx-37,dgx-51",
             "module load slurm",
@@ -59,14 +59,14 @@ def test_id183_names_the_actual_frozen_value_advantage_estimator() -> None:
     assert "grpo" not in config["algorithm"]["adv_estimator"]
 
 
-def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
+def test_launchers_build_exact_four_by_two_ray_cluster() -> None:
     source = COMMON_LAUNCHER.read_text()
     for value in (
-            "NumNodes=2",
+            "NumNodes=4",
             "gres/gpu=8",
             "cpu=64",
             "mem=256G",
-            "MinMemoryNode=128G",
+            "MinMemoryNode=64G",
             "nimloth_load_slurm_gpu_counts",
             "RAY_EXPECTED_NODE_IPS",
             "NCCL_SOCKET_IFNAME",
@@ -85,19 +85,25 @@ def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
             "ray.scripts.scripts start --block --head",
             '--address="${RAY_ADDRESS}"',
             "ray.init(address=os.environ['RAY_ADDRESS'])",
-            "counts != [4.0, 4.0]",
-            "ID183_EXPECTED_NNODES=2",
-            "ID183_EXPECTED_GPUS_PER_NODE=4",
+            "counts != [2.0, 2.0, 2.0, 2.0]",
+            "ID183_EXPECTED_NNODES=4",
+            "ID183_EXPECTED_GPUS_PER_NODE=2",
+            '--num-cpus=16 --num-gpus=2',
+            'for node in "${WORKER_NODES[@]}"',
         ):
         assert value in source
     assert "NumNodes=1" not in source
     assert "--gres=gpu:8" not in source
+    assert "--nodes=2 --ntasks=2" not in source
+    assert "--gres=gpu:4" not in source
+    assert "--num-gpus=4" not in source
+    assert '"${WORKER_NODE}"' not in source
     assert 'WANDB_DIR="${RAY_LOG_ROOT}/wandb"' in source
     assert 'WANDB_DIR="${RUN_OUT}/wandb"' not in source
     assert "RUN_OUTPUT_SUFFIX=_retry1" in source
     assert "dataset_type" in source
     assert "pkg://vagen.gym_agent_dataset" in source
-    assert "counts != [4.0, 4.0]" in source
+    assert "counts != [2.0, 2.0, 2.0, 2.0]" in source
     assert 'JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")' in source
     assert 'scontrol show job -dd "${HOLD_JOB}" -o' not in source
     assert "flock -n 9" in source
@@ -109,12 +115,12 @@ def test_launchers_build_exact_two_by_four_ray_cluster() -> None:
     runner = RUNNER.read_text()
     assert "ENV_URL=http://${ID183_HEAD_IP}:${ENV_PORT}" in runner
     assert '--host="${ID183_HEAD_IP}"' in runner
-    assert '[[ "${ID183_EXPECTED_NNODES}" == 2 ]]' in runner
-    assert '[[ "${ID183_EXPECTED_GPUS_PER_NODE}" == 4 ]]' in runner
+    assert '[[ "${ID183_EXPECTED_NNODES}" == 4 ]]' in runner
+    assert '[[ "${ID183_EXPECTED_GPUS_PER_NODE}" == 2 ]]' in runner
     assert "SLURM_MEM_PER_NODE" not in runner
-    assert "MinMemoryNode=128G" in runner
-    assert "ID183_RAY_2X4_OK" in runner
-    assert '--ntasks-per-node=1 --gres=gpu:4 --label' in runner
+    assert "MinMemoryNode=64G" in runner
+    assert "ID183_RAY_4X2_OK" in runner
+    assert '--ntasks-per-node=1 --gres=gpu:2 --label' in runner
 
 
 def test_runner_has_exact_resume_and_checkpoint_boundaries() -> None:

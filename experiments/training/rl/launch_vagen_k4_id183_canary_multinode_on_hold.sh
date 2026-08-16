@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch one ID183 phase on an exact two-node, four-H800-per-node allocation.
+# Launch one ID183 phase on an exact four-node, two-H800-per-node allocation.
 set -euo pipefail
 
 HOLD_JOB=${1:?usage: launch_vagen_k4_id183_canary_multinode_on_hold.sh HOLD_JOB PHASE}
@@ -46,20 +46,20 @@ WANDB_RESUME=$([[ "${PHASE}" == train_to_5 ]] && echo never || echo must)
 JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")
 grep -q 'JobState=RUNNING' <<<"${JOB_DETAILS}"
 grep -q 'Partition=normal' <<<"${JOB_DETAILS}"
-grep -q 'NumNodes=2' <<<"${JOB_DETAILS}"
+grep -q 'NumNodes=4' <<<"${JOB_DETAILS}"
 grep -q 'TimeLimit=05:00:00' <<<"${JOB_DETAILS}"
 grep -Eq 'ReqTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'ReqTRES=[^ ]*cpu=64([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'ReqTRES=[^ ]*mem=256G([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
 grep -Eq 'AllocTRES=[^ ]*cpu=64([, ]|$)' <<<"${JOB_DETAILS}"
-grep -q 'MinMemoryNode=128G' <<<"${JOB_DETAILS}"
+grep -q 'MinMemoryNode=64G' <<<"${JOB_DETAILS}"
 
 mapfile -t NODES < <(scontrol show hostnames "$(squeue -h -j "${HOLD_JOB}" -o '%N')")
-[[ ${#NODES[@]} -eq 2 ]]
+[[ ${#NODES[@]} -eq 4 ]]
 HEAD_NODE=${NODES[0]}
-WORKER_NODE=${NODES[1]}
-[[ "${HEAD_NODE}" != "${WORKER_NODE}" ]]
+WORKER_NODES=("${NODES[@]:1}")
+[[ ${#WORKER_NODES[@]} -eq 3 ]]
 for node in "${NODES[@]}"; do
   for excluded in dgx-13 dgx-23 dgx-32 dgx-37 dgx-51; do
     [[ "${node}" != "${excluded}" ]]
@@ -69,18 +69,18 @@ done
 declare -A GPU_COUNTS
 nimloth_load_slurm_gpu_counts "${JOB_DETAILS}" GPU_COUNTS
 for node in "${NODES[@]}"; do
-  [[ "${GPU_COUNTS[${node}]:-}" == 4 ]]
+  [[ "${GPU_COUNTS[${node}]:-}" == 2 ]]
 done
 
 mapfile -t FABRIC_ROWS < <(
-  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
+  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
     --ntasks-per-node=1 --gpus=0 bash -lc '
       row=$(ip -o -4 addr show | awk '\''$4 ~ /^10\.23\./ {split($4,a,"/"); print a[1],$2; exit}'\'')
       [[ -n "${row}" ]]
       printf "%s %s\n" "$(hostname -s)" "${row}"
     '
 )
-[[ ${#FABRIC_ROWS[@]} -eq 2 ]]
+[[ ${#FABRIC_ROWS[@]} -eq 4 ]]
 declare -A NODE_IP NODE_IFACE
 for row in "${FABRIC_ROWS[@]}"; do
   read -r node ip iface <<<"${row}"
@@ -88,24 +88,28 @@ for row in "${FABRIC_ROWS[@]}"; do
   NODE_IP[${node}]=${ip}
   NODE_IFACE[${node}]=${iface}
 done
-[[ -n "${NODE_IP[${HEAD_NODE}]:-}" && -n "${NODE_IP[${WORKER_NODE}]:-}" ]]
-[[ "${NODE_IFACE[${HEAD_NODE}]}" == "${NODE_IFACE[${WORKER_NODE}]}" ]]
 HEAD_IP=${NODE_IP[${HEAD_NODE}]}
-WORKER_IP=${NODE_IP[${WORKER_NODE}]}
 FABRIC_IFACE=${NODE_IFACE[${HEAD_NODE}]}
+EXPECTED_NODE_IPS=()
+for node in "${NODES[@]}"; do
+  [[ -n "${NODE_IP[${node}]:-}" ]]
+  [[ "${NODE_IFACE[${node}]}" == "${FABRIC_IFACE}" ]]
+  EXPECTED_NODE_IPS+=("${NODE_IP[${node}]}")
+done
 RAY_ADDRESS=${HEAD_IP}:${RAY_PORT}
-RAY_EXPECTED_NODE_IPS=${HEAD_IP},${WORKER_IP}
+RAY_EXPECTED_NODE_IPS=$(IFS=,; echo "${EXPECTED_NODE_IPS[*]}")
+ID183_CLUSTER_NODES=$(IFS=,; echo "${NODES[*]}")
 
-timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
-  --ntasks-per-node=1 --gres=gpu:4 bash -lc '
+timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
+  --ntasks-per-node=1 --gres=gpu:2 bash -lc '
     set -euo pipefail
     mapfile -t names < <(nvidia-smi --query-gpu=name --format=csv,noheader)
-    [[ ${#names[@]} -eq 4 ]]
+    [[ ${#names[@]} -eq 2 ]]
     for name in "${names[@]}"; do [[ "${name}" == *H800* ]]; done
     printf "%s gpu_count=%s names=%s\n" "$(hostname -s)" "${#names[@]}" "${names[*]}"
   '
 
-timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
+timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
   --ntasks-per-node=1 --gpus=0 \
   env RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" RUNTIME_ROOT="${RUNTIME_ROOT}" \
   bash -lc '
@@ -127,7 +131,7 @@ RAY_STEP_PIDS=()
 
 node_runtime_processes() {
   local signal=${1:?signal required}
-  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
+  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
     --ntasks-per-node=1 --gpus=0 \
     env TARGET_ROOTS="${RAY_CLUSTER_ROOT},${RUNTIME_ROOT}" SIGNAL="${signal}" "${PY}" - <<'PY'
 import os, signal
@@ -150,7 +154,7 @@ PY
 }
 
 audit_node_runtime_empty() {
-  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
+  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
     --ntasks-per-node=1 --gpus=0 \
     env TARGET_ROOTS="${RAY_CLUSTER_ROOT},${RUNTIME_ROOT}" "${PY}" - <<'PY'
 import os, socket
@@ -200,7 +204,7 @@ cleanup_cluster() {
     sleep 1
   done
   if [[ "${cleanup_empty}" != true && "${status}" -eq 0 ]]; then status=93; fi
-  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
+  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
     --ntasks-per-node=1 --gpus=0 \
     env RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" RUNTIME_ROOT="${RUNTIME_ROOT}" \
     bash -lc '
@@ -215,7 +219,7 @@ trap cleanup_cluster EXIT
 
 # These long-lived raylet and driver steps intentionally share the job's CPU,
 # memory and GRES allocation. Slurm --overlap is required on every such step;
-# Ray's own resource accounting keeps the eight worker actors within 4+4 GPUs.
+# Ray's own resource accounting keeps the eight worker actors within 2+2+2+2 GPUs.
 COMMON_ENV=(
   PATH="${SLURM_BIN_DIR}:${ROOT}/.venv-vagen-main/bin:/usr/bin:/bin"
   SLURM_CONF="${SLURM_CONF}"
@@ -251,11 +255,11 @@ COMMON_ENV=(
 )
 
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
-  -w "${HEAD_NODE}" --gres=gpu:4 --cpus-per-task=32 \
+  -w "${HEAD_NODE}" --gres=gpu:2 --cpus-per-task=16 \
   env "${COMMON_ENV[@]}" VLLM_HOST_IP="${HEAD_IP}" \
   "${PY}" -m ray.scripts.scripts start --block --head \
     --node-ip-address="${HEAD_IP}" --port="${RAY_PORT}" \
-    --temp-dir="${RAY_CLUSTER_ROOT}" --num-cpus=32 --num-gpus=4 \
+    --temp-dir="${RAY_CLUSTER_ROOT}" --num-cpus=16 --num-gpus=2 \
     --object-store-memory=10000000000 \
     --system-config='{"agent_register_timeout_ms":120000}' \
     --include-dashboard=false --disable-usage-stats \
@@ -269,15 +273,18 @@ for _ in $(seq 1 90); do
 done
 [[ "${head_ready}" == true ]]
 
-srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
-  -w "${WORKER_NODE}" --gres=gpu:4 --cpus-per-task=32 \
-  env "${COMMON_ENV[@]}" VLLM_HOST_IP="${WORKER_IP}" \
-  "${PY}" -m ray.scripts.scripts start --block \
-    --address="${RAY_ADDRESS}" --node-ip-address="${WORKER_IP}" \
-    --temp-dir="${RAY_CLUSTER_ROOT}" --num-cpus=32 --num-gpus=4 \
-    --object-store-memory=10000000000 --disable-usage-stats \
-  >"${RAY_LOG_ROOT}/${WORKER_NODE}.log" 2>&1 &
-RAY_STEP_PIDS+=("$!")
+for node in "${WORKER_NODES[@]}"; do
+  worker_ip=${NODE_IP[${node}]}
+  srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+    -w "${node}" --gres=gpu:2 --cpus-per-task=16 \
+    env "${COMMON_ENV[@]}" VLLM_HOST_IP="${worker_ip}" \
+    "${PY}" -m ray.scripts.scripts start --block \
+      --address="${RAY_ADDRESS}" --node-ip-address="${worker_ip}" \
+      --temp-dir="${RAY_CLUSTER_ROOT}" --num-cpus=16 --num-gpus=2 \
+      --object-store-memory=10000000000 --disable-usage-stats \
+    >"${RAY_LOG_ROOT}/${node}.log" 2>&1 &
+  RAY_STEP_PIDS+=("$!")
+done
 
 cluster_ready=false
 for _ in $(seq 1 30); do
@@ -290,7 +297,7 @@ alive=[node for node in ray.nodes() if node['Alive']]
 counts=sorted(float(node['Resources'].get('GPU',0)) for node in alive)
 addresses=sorted(str(node['NodeManagerAddress']) for node in alive)
 ray.shutdown()
-if counts != [4.0, 4.0] or addresses != sorted(os.environ['RAY_EXPECTED_NODE_IPS'].split(',')):
+if counts != [2.0, 2.0, 2.0, 2.0] or addresses != sorted(os.environ['RAY_EXPECTED_NODE_IPS'].split(',')):
     raise RuntimeError((counts,addresses))
 PY
   then cluster_ready=true; break; fi
@@ -349,7 +356,7 @@ print(json.dumps({
     'expected_addresses':sorted(os.environ['RAY_EXPECTED_NODE_IPS'].split(',')),
     'import_probes':sorted(probes,key=lambda row:row['address']),
 }))
-assert [row['gpus'] for row in rows] == [4.0,4.0]
+assert [row['gpus'] for row in rows] == [2.0,2.0,2.0,2.0]
 assert [row['address'] for row in rows] == sorted(os.environ['RAY_EXPECTED_NODE_IPS'].split(','))
 assert all(row['address']==row['vllm_host_ip'] for row in probes)
 assert all(row['nccl_socket_ifname'] for row in probes)
@@ -365,11 +372,11 @@ ray.shutdown()
 PY
 
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
-  -w "${HEAD_NODE}" --gres=gpu:4 --cpus-per-task=32 \
+  -w "${HEAD_NODE}" --gres=gpu:2 --cpus-per-task=16 \
   env "${COMMON_ENV[@]}" RAY_ADDRESS="${RAY_ADDRESS}" \
     RAY_EXPECTED_NODE_IPS="${RAY_EXPECTED_NODE_IPS}" VLLM_HOST_IP="${HEAD_IP}" \
-    ID183_HEAD_IP="${HEAD_IP}" ID183_EXPECTED_NNODES=2 \
-    ID183_EXPECTED_GPUS_PER_NODE=4 ID183_CLUSTER_NODES="${HEAD_NODE},${WORKER_NODE}" \
+    ID183_HEAD_IP="${HEAD_IP}" ID183_EXPECTED_NNODES=4 \
+    ID183_EXPECTED_GPUS_PER_NODE=2 ID183_CLUSTER_NODES="${ID183_CLUSTER_NODES}" \
     REPO="${REPO}" EXPECTED_PARENT_COMMIT="${EXPECTED_PARENT_COMMIT}" \
     EXPECTED_VAGEN_COMMIT="${EXPECTED_VAGEN_COMMIT}" \
     EXPECTED_VERL_COMMIT="${EXPECTED_VERL_COMMIT}" \
