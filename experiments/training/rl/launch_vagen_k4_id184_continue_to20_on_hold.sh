@@ -32,6 +32,7 @@ exec 9>"${ROOT}/outputs/experiments/training/rl/slurm/.id184-${HOLD_JOB}-${PHASE
 flock -n 9 || { echo "duplicate ID184 launcher for job ${HOLD_JOB}" >&2; exit 94; }
 ACTOR_MODEL=${ROOT}/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint
 PLANNING_MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
+ID184_SOURCE_CHECKPOINT=${ROOT}/outputs/experiments/training/rl/2026-08-16/183_canary_k4schemeb_jointupdate_dp8_tp8_u10_r5_train3x8_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8_retry2/checkpoints/global_step_10
 source "${REPO}/experiments/training/rl/slurm_allocation.sh"
 set -a
 source /project/peilab/atst/flower/.env
@@ -350,6 +351,7 @@ COMMON_ENV=(
   ID184_VAL_CONFIG="${PHASE_OUT}/val_navigation_joint_id184.yaml"
   ID184_ACTOR_MODEL="${ACTOR_MODEL}"
   ID184_PLANNING_CHECKPOINT="${PLANNING_MODEL}"
+  ID184_SOURCE_CHECKPOINT="${ID184_SOURCE_CHECKPOINT}"
   ID184_AGENT_CONFIG="${REPO}/external/VAGEN/vagen/configs/agent_no_concat.yaml"
   ID184_RUN_NAME="${RUN_NAME}"
   ID184_RUN_OUT="${RUN_OUT}"
@@ -442,6 +444,7 @@ def probe_node():
         'torch_home':os.environ.get('TORCH_HOME'),
         'vllm_worker_multiproc_method':os.environ.get('VLLM_WORKER_MULTIPROC_METHOD'),
         'id184_train_config':os.environ.get('ID184_TRAIN_CONFIG'),
+        'id184_source_checkpoint':os.environ.get('ID184_SOURCE_CHECKPOINT'),
         'wandb_run_id':os.environ.get('WANDB_RUN_ID'),
         'wandb_resume':os.environ.get('WANDB_RESUME'),
         'wandb_api_key_present':bool(os.environ.get('WANDB_API_KEY')),
@@ -466,6 +469,7 @@ assert all(row['hf_home']=='/project/peilab/atst/.cache/huggingface' for row in 
 assert all(row['torch_home']=='/project/peilab/atst/flower/.cache/torch' for row in probes)
 assert all(row['vllm_worker_multiproc_method']=='spawn' for row in probes)
 assert all(row['id184_train_config'] for row in probes)
+assert all(row['id184_source_checkpoint'].endswith('/global_step_10') for row in probes)
 assert all(row['wandb_run_id']=='nimloth-id184-k4-continue-to20' for row in probes)
 assert all(row['wandb_resume']==os.environ['EXPECTED_WANDB_RESUME'] for row in probes)
 assert all(row['wandb_api_key_present'] for row in probes)

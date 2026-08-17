@@ -37,6 +37,8 @@ def test_id184_shells_parse_and_request_exact_four_by_two() -> None:
     assert "NAVIGATION_HEAD_EXCLUSIONS=(dgx-13 dgx-23 dgx-32 dgx-37 dgx-51)" in launcher
     assert "ID184_EXPECTED_NNODES=4" in launcher
     assert "ID184_EXPECTED_GPUS_PER_NODE=2" in launcher
+    assert 'ID184_SOURCE_CHECKPOINT="${ID184_SOURCE_CHECKPOINT}"' in launcher
+    assert "id184_source_checkpoint" in launcher
     assert "ID184_RAY_4X2_OK" in RUNNER
     assert "persist_ray_logs pre_cleanup" in launcher
     assert "persist_ray_logs post_cleanup" in launcher
