@@ -17,7 +17,8 @@ SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 [[ -r "${SLURM_CONF}" ]]
 RUN_NAME=184_continue_k4schemeb_jointupdate_dp8_tp8_u20_from10_train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8
 RUN_DATE=2026-08-17
-RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
+RUN_OUTPUT_SUFFIX=_retry1
+RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}${RUN_OUTPUT_SUFFIX}
 RUNNER=${REPO}/experiments/training/rl/run_vagen_k4_id184_continue_to20.sh
 PHASE_TAG=c20
 PHASE_NAME=continue_step10_to20
@@ -56,11 +57,11 @@ grep -q 'MinMemoryNode=64G' <<<"${JOB_DETAILS}"
 mapfile -t NODES < <(scontrol show hostnames "$(squeue -h -j "${HOLD_JOB}" -o '%N')")
 [[ ${#NODES[@]} -eq 4 ]]
 for node in "${NODES[@]}"; do
-  for excluded in dgx-13 dgx-32 dgx-51; do
+  for excluded in dgx-09 dgx-13 dgx-32 dgx-51; do
     [[ "${node}" != "${excluded}" ]]
   done
 done
-NAVIGATION_HEAD_EXCLUSIONS=(dgx-13 dgx-23 dgx-32 dgx-37 dgx-51)
+NAVIGATION_HEAD_EXCLUSIONS=(dgx-09 dgx-13 dgx-23 dgx-32 dgx-37 dgx-51)
 HEAD_NODE=
 for node in "${NODES[@]}"; do
   allowed=true
@@ -344,7 +345,7 @@ COMMON_ENV=(
   WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
   WANDB_PROJECT=vagen
   WANDB_NAME="${RUN_NAME}"
-  WANDB_RUN_ID=nimloth-id184-k4-continue-to20
+  WANDB_RUN_ID=nimloth-id184-k4-continue-to20-retry1
   WANDB_RESUME="${WANDB_RESUME}"
   WANDB_DIR="${RAY_LOG_ROOT}/wandb"
   ID184_TRAIN_CONFIG="${PHASE_OUT}/train_navigation_joint_id184.yaml"
@@ -470,7 +471,7 @@ assert all(row['torch_home']=='/project/peilab/atst/flower/.cache/torch' for row
 assert all(row['vllm_worker_multiproc_method']=='spawn' for row in probes)
 assert all(row['id184_train_config'] for row in probes)
 assert all(row['id184_source_checkpoint'].endswith('/global_step_10') for row in probes)
-assert all(row['wandb_run_id']=='nimloth-id184-k4-continue-to20' for row in probes)
+assert all(row['wandb_run_id']=='nimloth-id184-k4-continue-to20-retry1' for row in probes)
 assert all(row['wandb_resume']==os.environ['EXPECTED_WANDB_RESUME'] for row in probes)
 assert all(row['wandb_api_key_present'] for row in probes)
 assert all(row['dataset_type']=='vagen.gym_agent_dataset.AgenticDataset' for row in probes)
@@ -487,4 +488,5 @@ srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
     EXPECTED_VAGEN_COMMIT="${EXPECTED_VAGEN_COMMIT}" \
     EXPECTED_VERL_COMMIT="${EXPECTED_VERL_COMMIT}" \
     RUN_NAME="${RUN_NAME}" RUN_DATE="${RUN_DATE}" \
+    RUN_OUTPUT_SUFFIX="${RUN_OUTPUT_SUFFIX}" \
     "${RUNNER}"

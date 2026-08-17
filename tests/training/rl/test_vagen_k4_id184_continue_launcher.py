@@ -30,11 +30,11 @@ def test_id184_shells_parse_and_request_exact_four_by_two() -> None:
         "#SBATCH --cpus-per-task=16",
         "#SBATCH --mem=64G",
         "#SBATCH --time=05:00:00",
-        "dgx-13,dgx-32,dgx-51",
+        "dgx-09,dgx-13,dgx-32,dgx-51",
     ):
         assert value in slurm
     launcher = LAUNCHER.read_text()
-    assert "NAVIGATION_HEAD_EXCLUSIONS=(dgx-13 dgx-23 dgx-32 dgx-37 dgx-51)" in launcher
+    assert "NAVIGATION_HEAD_EXCLUSIONS=(dgx-09 dgx-13 dgx-23 dgx-32 dgx-37 dgx-51)" in launcher
     assert "ID184_EXPECTED_NNODES=4" in launcher
     assert "ID184_EXPECTED_GPUS_PER_NODE=2" in launcher
     assert 'ID184_SOURCE_CHECKPOINT="${ID184_SOURCE_CHECKPOINT}"' in launcher
@@ -66,7 +66,9 @@ def test_id184_runner_has_exact_source_reset_and_output_boundaries() -> None:
         "summarize_canary_validation_rows",
     ):
         assert value in source
-    assert "WANDB_RUN_ID=nimloth-id184-k4-continue-to20" in source
+    assert "WANDB_RUN_ID=nimloth-id184-k4-continue-to20-retry1" in source
+    assert ': "${RUN_OUTPUT_SUFFIX:?RUN_OUTPUT_SUFFIX is required}"' in source
+    assert '[[ "${RUN_OUTPUT_SUFFIX}" == _retry1 ]]' in source
     assert "WANDB_RESUME=never" in source
     assert "WANDB_RESUME=must" not in source
     assert "steps==list(range(10,21))" in source
