@@ -39,7 +39,7 @@ def test_id184_shells_parse_and_request_exact_four_by_two() -> None:
     assert "ID184_EXPECTED_GPUS_PER_NODE=2" in launcher
     assert 'ID184_SOURCE_CHECKPOINT="${ID184_SOURCE_CHECKPOINT}"' in launcher
     assert "id184_source_checkpoint" in launcher
-    assert "ID184_RAY_4X2_OK" in RUNNER
+    assert "ID184_RAY_4X2_OK" in RUNNER.read_text()
     assert "persist_ray_logs pre_cleanup" in launcher
     assert "persist_ray_logs post_cleanup" in launcher
     assert "capture_manifest.json" in launcher
@@ -49,7 +49,7 @@ def test_id184_shells_parse_and_request_exact_four_by_two() -> None:
 def test_id184_runner_has_exact_source_reset_and_output_boundaries() -> None:
     source = RUNNER.read_text()
     for value in (
-        "global_step_10/joint_checkpoint_complete.json",
+        "SOURCE_CHECKPOINT=${ID183_SOURCE_RUN_OUT}/checkpoints/global_step_10",
         "trainer.resume_mode=resume_path",
         "trainer.total_training_steps=20",
         "trainer.total_epochs=20",
