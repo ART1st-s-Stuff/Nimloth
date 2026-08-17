@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=nimloth-id184-k4-continue20
+#SBATCH --job-name=nimloth-id184-k4-continue20-r1
 #SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/training/rl/slurm/%x_%j.out
 #SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/training/rl/slurm/%x_%j.err
 #SBATCH --time=05:00:00
@@ -11,7 +11,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:2
 #SBATCH --mem=64G
-#SBATCH --exclude=dgx-13,dgx-32,dgx-51
+#SBATCH --exclude=dgx-09,dgx-13,dgx-32,dgx-51
 
 set -euo pipefail
 : "${REPO:?REPO is required}"

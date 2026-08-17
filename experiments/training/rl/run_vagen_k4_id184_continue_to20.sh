@@ -8,6 +8,7 @@ ROOT=/project/peilab/atst/nimloth
 : "${EXPECTED_VERL_COMMIT:?EXPECTED_VERL_COMMIT is required}"
 : "${RUN_NAME:?RUN_NAME is required}"
 : "${RUN_DATE:?RUN_DATE is required}"
+: "${RUN_OUTPUT_SUFFIX:?RUN_OUTPUT_SUFFIX is required}"
 VAGEN=${REPO}/external/VAGEN
 VERL=${VAGEN}/verl
 PY=${ROOT}/.venv-vagen-main/bin/python3
@@ -16,7 +17,7 @@ ACTOR_MODEL=${REPAIR_ROOT}/checkpoint
 PLANNING_MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
 ID183_SOURCE_RUN_OUT=${ROOT}/outputs/experiments/training/rl/2026-08-16/183_canary_k4schemeb_jointupdate_dp8_tp8_u10_r5_train3x8_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8_retry2
 SOURCE_CHECKPOINT=${ID183_SOURCE_RUN_OUT}/checkpoints/global_step_10
-RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
+RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}${RUN_OUTPUT_SUFFIX}
 CHECKPOINT_DIR=${RUN_OUT}/checkpoints
 PHASE_NAME=continue_step10_to20
 PHASE_TAG=c20
@@ -40,6 +41,7 @@ PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-13200}
 
 [[ "${RUN_NAME}" == 184_continue_k4schemeb_jointupdate_dp8_tp8_u20_from10_train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8 ]]
 [[ "${RUN_DATE}" == 2026-08-17 ]]
+[[ "${RUN_OUTPUT_SUFFIX}" == _retry1 ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
 [[ "${ID184_EXPECTED_NNODES}" == 4 ]]
@@ -53,7 +55,7 @@ IFS=, read -r -a VISIBLE_GPUS <<<"${CUDA_VISIBLE_DEVICES}"
 mapfile -t GPU_NAMES < <(nvidia-smi --query-gpu=name --format=csv,noheader)
 (( ${#GPU_NAMES[@]} == 2 ))
 for name in "${GPU_NAMES[@]}"; do [[ "${name}" == *H800* ]]; done
-for excluded in dgx-13 dgx-32 dgx-51; do
+for excluded in dgx-09 dgx-13 dgx-32 dgx-51; do
   [[ "$(hostname)" != "${excluded}" ]]
 done
 
@@ -113,7 +115,7 @@ set +a
 export WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
 export WANDB_PROJECT=vagen
 export WANDB_NAME=${RUN_NAME}
-export WANDB_RUN_ID=nimloth-id184-k4-continue-to20
+export WANDB_RUN_ID=nimloth-id184-k4-continue-to20-retry1
 WANDB_PREFLIGHT_JSON=$("${PY}" - "${WANDB_ENTITY}" "${WANDB_PROJECT}" "${WANDB_RUN_ID}" "${RUN_NAME}" <<'PY'
 import json, sys, wandb
 from wandb.errors import CommError
@@ -399,7 +401,7 @@ cat >"${RUN_OUT}/README.md" <<EOF
 - validation data: held-out base/common_sense/long_horizon/complex_instruction/visual_appearance, explicit seeds0..7 per asset (5x8) at global steps10,15,20; held-out scenes remain disjoint from all train assets.
 - behavior/update: unchanged ID183 K4/100 UCT/c1 Scheme-B contract, alpha1, beta85.78297006578457, prior temperature1, float32, keyed sampling, CoT temperature0.7/top-p0.95; actor lr1e-7 and joint planning lr1e-4 objectives unchanged.
 - checkpoint: this output writes only complete step15/source791 and step20/source796. The immutable step10 source remains in the ID183 output.
-- W&B: new run id nimloth-id184-k4-continue-to20; expected explicit global steps10..20.
+- W&B: new retry run id nimloth-id184-k4-continue-to20-retry1; expected explicit global steps10..20.
 - resources: normal exact4x2 H800, 64 CPU/256 GiB, five-hour allocation; external Ray TP8/DP1 and actor DP8. Nodes13/32/51 excluded; nodes23/37 cannot be Navigation head.
 EOF
 
