@@ -37,7 +37,7 @@ TRAIN_PID=
 NVIDIA_PID=
 PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-16200}
 
-[[ "${RUN_NAME}" == 185_eval_k4schemeb_dp8_tp8_source20_test5x60_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095 ]]
+[[ "${RUN_NAME}" == 185_eval_k4schemeb_dp8_tp8_source20_test5x60_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_retry1 ]]
 [[ "${RUN_DATE}" == 2026-08-18 ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
@@ -112,7 +112,7 @@ set +a
 export WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
 export WANDB_PROJECT=vagen
 export WANDB_NAME=${RUN_NAME}
-export WANDB_RUN_ID=nimloth-id185-k4-full-eval-test300
+export WANDB_RUN_ID=nimloth-id185-k4-full-eval-test300-retry1
 WANDB_PREFLIGHT_JSON=$("${PY}" - "${WANDB_ENTITY}" "${WANDB_PROJECT}" "${WANDB_RUN_ID}" "${RUN_NAME}" <<'PY'
 import json, sys, wandb
 from wandb.errors import CommError
@@ -401,7 +401,7 @@ PY
 cat >"${RUN_OUT}/README.md" <<EOF
 # ID185 K4 Scheme-B full historical VAGEN test300 evaluation
 
-- project/run: vagen / ${RUN_NAME}; W&B run id nimloth-id185-k4-full-eval-test300.
+- project/run: vagen / ${RUN_NAME}; W&B run id nimloth-id185-k4-full-eval-test300-retry1.
 - approval: restore the complete ID184 step20/source796 policy and evaluate the historical VAGEN five-set test300 contract without any optimizer update.
 - parent/VAGEN/VERL: ${EXPECTED_PARENT_COMMIT} / ${EXPECTED_VAGEN_COMMIT} / ${EXPECTED_VERL_COMMIT}
 - source checkpoint: ${SOURCE_CHECKPOINT}; actor, optimizer, scheduler, rank RNG, joint projector/predictor/ValueHead state, and active frozen snapshot restore exactly. The train dataloader state restores exactly but is never consumed because val_only exits after evaluation.
