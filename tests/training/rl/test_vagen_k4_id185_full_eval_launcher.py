@@ -34,7 +34,7 @@ def test_id185_shells_parse_and_request_exact_four_by_two() -> None:
     ):
         assert value in slurm
     launcher = LAUNCHER.read_text()
-    assert "#SBATCH --job-name=nimloth-id185-k4-eval-test300-r3" in slurm
+    assert "#SBATCH --job-name=nimloth-id185-k4-eval-test300-r4" in slurm
     assert "NAVIGATION_HEAD_EXCLUSIONS=(dgx-09 dgx-10 dgx-13 dgx-23 dgx-32 dgx-37 dgx-51)" in launcher
     assert "ID185_DYNAMIC_HEAD_RENDER_OK" in launcher
     assert "head_candidate_results.tsv" in launcher
@@ -65,8 +65,10 @@ def test_id185_runner_is_full_eval_only_from_step20() -> None:
         "validation_seeds':'explicit historical VAGEN seeds 1..60",
     ):
         assert value in source
-    assert "RUN_NAME=185_eval_k4schemeb_dp8_tp8_source20_test5x60_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_retry3" in LAUNCHER.read_text()
-    assert "WANDB_RUN_ID=nimloth-id185-k4-full-eval-test300-retry3" in source
+    assert "RUN_NAME=185_eval_k4schemeb_dp8_tp8_source20_test5x60_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_retry4" in LAUNCHER.read_text()
+    assert "WANDB_RUN_ID=nimloth-id185-k4-full-eval-test300-retry4" in source
+    assert "VALIDATION_BATCH_JOURNAL_COMPLETE" in source
+    assert "validation_batch_journal" in source
     assert "steps==[20]" in source
     assert "global_step_15" not in source
     assert "global_step_10" not in source
