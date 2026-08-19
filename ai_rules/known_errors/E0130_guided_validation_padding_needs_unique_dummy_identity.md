@@ -14,7 +14,8 @@ ID185 retry2 Job `523996`运行完整test300时，前七个40-row validation bat
 - 仅对`pad_dataproto_to_divisor`明确新增的尾部padding rows，必须在generation前确定性改写为synthetic unique `uid/group_idx/rollout_sample_id`；原始rows不得改写。
 - synthetic UID必须不属于pre-padding original UID集合，使现有no-concat unpadding路径丢弃dummy outputs。
 - 必须覆盖nonzero pad、zero pad、真实duplicate仍失败、原始identity不变等回归。
-- 失败attempt不可拼接或覆盖；retry从全部300条重新运行并使用新output/W&B identity。
+- 昂贵validation必须在每个完整batch后原子写入append-only rows和hash marker；只有全batch、全identity、全row-count复核后才发布complete marker和正式指标。
+- partial journal仅用于诊断，失败attempt不可拼接或覆盖；retry从全部300条重新运行并使用新output/W&B identity。
 
 ## 证据
 
