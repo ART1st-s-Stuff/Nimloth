@@ -15,7 +15,7 @@ SLURM_BIN_DIR=/cm/shared/apps/slurm/current/bin
 SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 [[ -x "${SLURM_BIN_DIR}/scontrol" && -x "${SLURM_BIN_DIR}/srun" ]]
 [[ -r "${SLURM_CONF}" ]]
-RUN_NAME=185_eval_k4schemeb_dp8_tp8_source20_test5x60_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_retry1
+RUN_NAME=185_eval_k4schemeb_dp8_tp8_source20_test5x60_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_retry2
 RUN_DATE=2026-08-18
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
 RUNNER=${REPO}/experiments/training/rl/run_vagen_k4_id185_full_eval_test300.sh
@@ -61,21 +61,15 @@ for node in "${NODES[@]}"; do
   done
 done
 NAVIGATION_HEAD_EXCLUSIONS=(dgx-09 dgx-10 dgx-13 dgx-23 dgx-32 dgx-37 dgx-51)
-HEAD_NODE=
+HEAD_CANDIDATES=()
 for node in "${NODES[@]}"; do
   allowed=true
   for excluded in "${NAVIGATION_HEAD_EXCLUSIONS[@]}"; do
     if [[ "${node}" == "${excluded}" ]]; then allowed=false; break; fi
   done
-  if [[ "${allowed}" == true ]]; then HEAD_NODE=${node}; break; fi
+  if [[ "${allowed}" == true ]]; then HEAD_CANDIDATES+=("${node}"); fi
 done
-[[ -n "${HEAD_NODE}" ]]
-WORKER_NODES=()
-for node in "${NODES[@]}"; do
-  [[ "${node}" == "${HEAD_NODE}" ]] || WORKER_NODES+=("${node}")
-done
-[[ ${#WORKER_NODES[@]} -eq 3 ]]
-CLUSTER_NODES=("${HEAD_NODE}" "${WORKER_NODES[@]}")
+[[ ${#HEAD_CANDIDATES[@]} -ge 1 ]]
 
 declare -A GPU_COUNTS
 nimloth_load_slurm_gpu_counts "${JOB_DETAILS}" GPU_COUNTS
@@ -99,18 +93,6 @@ for row in "${FABRIC_ROWS[@]}"; do
   NODE_IP[${node}]=${ip}
   NODE_IFACE[${node}]=${iface}
 done
-HEAD_IP=${NODE_IP[${HEAD_NODE}]}
-FABRIC_IFACE=${NODE_IFACE[${HEAD_NODE}]}
-EXPECTED_NODE_IPS=()
-for node in "${CLUSTER_NODES[@]}"; do
-  [[ -n "${NODE_IP[${node}]:-}" ]]
-  [[ "${NODE_IFACE[${node}]}" == "${FABRIC_IFACE}" ]]
-  EXPECTED_NODE_IPS+=("${NODE_IP[${node}]}")
-done
-RAY_ADDRESS=${HEAD_IP}:${RAY_PORT}
-RAY_EXPECTED_NODE_IPS=$(IFS=,; echo "${EXPECTED_NODE_IPS[*]}")
-ID185_CLUSTER_NODES=$(IFS=,; echo "${CLUSTER_NODES[*]}")
-
 timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
   --ntasks-per-node=1 --gres=gpu:2 bash -lc '
     set -euo pipefail
@@ -127,6 +109,76 @@ timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=4 --ntasks=4 \
     [[ ! -e "${RAY_CLUSTER_ROOT}" && ! -e "${RUNTIME_ROOT}" ]]
     mkdir -p "${RUNTIME_ROOT}/tmp" "${RUNTIME_ROOT}/ai2thor"
   '
+mkdir -p "${RAY_LOG_ROOT}"
+printf '%s\n' "${JOB_DETAILS}" >"${RAY_LOG_ROOT}/allocation.txt"
+printf '%s\n' "${FABRIC_ROWS[@]}" >"${RAY_LOG_ROOT}/fabric.txt"
+printf 'candidate\tstatus\n' >"${RAY_LOG_ROOT}/head_candidate_results.tsv"
+HEAD_NODE=
+for candidate in "${HEAD_CANDIDATES[@]}"; do
+  CANDIDATE_ROOT=/tmp/i185-head-probe-${HOLD_JOB}-${candidate}
+  SETUP_LOG=${RAY_LOG_ROOT}/head_probe_${candidate}.setup.log
+  RENDER_LOG=${RAY_LOG_ROOT}/head_probe_${candidate}.render.json
+  set +e
+  timeout --signal=TERM --kill-after=10s 180s \
+    srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+      -w "${candidate}" --gres=gpu:2 \
+      env CANDIDATE_ROOT="${CANDIDATE_ROOT}" SETUP_LOG="${SETUP_LOG}" \
+        RENDER_LOG="${RENDER_LOG}" PY="${PY}" \
+        REPO="${REPO}" RAY_PYTHONPATH="${RAY_PYTHONPATH}" \
+      bash -lc '
+        set -euo pipefail
+        rm -rf "${CANDIDATE_ROOT}"
+        mkdir -p "${CANDIDATE_ROOT}/tmp" "${CANDIDATE_ROOT}/ai2thor/.ai2thor"
+        ln -s /project/peilab/atst/flower/.ai2thor-home/.ai2thor/releases \
+          "${CANDIDATE_ROOT}/ai2thor/.ai2thor/releases"
+        export TMPDIR="${CANDIDATE_ROOT}/tmp"
+        export AI2THOR_HOME_ROOT="${CANDIDATE_ROOT}/ai2thor"
+        export PYTHONPATH="${RAY_PYTHONPATH}"
+        export PATH="$(dirname "${PY}"):${PATH}"
+        source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh" \
+          >"${SETUP_LOG}" 2>&1
+        timeout --signal=TERM --kill-after=10s 150s "${PY}" \
+          -m nimloth.environment.navigation.direct_render_probe \
+          --gpu-device 0 >"${RENDER_LOG}"
+        [[ -s "${RENDER_LOG}" ]]
+      '
+  candidate_status=$?
+  set -e
+  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+    -w "${candidate}" --gpus=0 env CANDIDATE_ROOT="${CANDIDATE_ROOT}" \
+    bash -lc 'rm -rf "${CANDIDATE_ROOT}"' || true
+  if [[ ${candidate_status} -eq 0 ]]; then
+    printf '%s\tpassed\n' "${candidate}" >>"${RAY_LOG_ROOT}/head_candidate_results.tsv"
+    HEAD_NODE=${candidate}
+    echo "ID185_DYNAMIC_HEAD_RENDER_OK node=${HEAD_NODE}"
+    break
+  fi
+  printf '%s\tfailed_exit_%s\n' "${candidate}" "${candidate_status}" \
+    >>"${RAY_LOG_ROOT}/head_candidate_results.tsv"
+done
+[[ -n "${HEAD_NODE}" ]] || {
+  echo "ID185_DYNAMIC_HEAD_RENDER_FAILED candidates=${HEAD_CANDIDATES[*]}" >&2
+  exit 124
+}
+
+WORKER_NODES=()
+for node in "${NODES[@]}"; do
+  [[ "${node}" == "${HEAD_NODE}" ]] || WORKER_NODES+=("${node}")
+done
+[[ ${#WORKER_NODES[@]} -eq 3 ]]
+CLUSTER_NODES=("${HEAD_NODE}" "${WORKER_NODES[@]}")
+HEAD_IP=${NODE_IP[${HEAD_NODE}]}
+FABRIC_IFACE=${NODE_IFACE[${HEAD_NODE}]}
+EXPECTED_NODE_IPS=()
+for node in "${CLUSTER_NODES[@]}"; do
+  [[ -n "${NODE_IP[${node}]:-}" ]]
+  [[ "${NODE_IFACE[${node}]}" == "${FABRIC_IFACE}" ]]
+  EXPECTED_NODE_IPS+=("${NODE_IP[${node}]}")
+done
+RAY_ADDRESS=${HEAD_IP}:${RAY_PORT}
+RAY_EXPECTED_NODE_IPS=$(IFS=,; echo "${EXPECTED_NODE_IPS[*]}")
+ID185_CLUSTER_NODES=$(IFS=,; echo "${CLUSTER_NODES[*]}")
+
 timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
   -w "${HEAD_NODE}" --gpus=0 env HEAD_IP="${HEAD_IP}" RAY_PORT="${RAY_PORT}" \
   "${PY}" - <<'PY'
@@ -135,9 +187,6 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
     probe.bind((os.environ['HEAD_IP'], int(os.environ['RAY_PORT'])))
 PY
 
-mkdir -p "${RAY_LOG_ROOT}"
-printf '%s\n' "${JOB_DETAILS}" >"${RAY_LOG_ROOT}/allocation.txt"
-printf '%s\n' "${FABRIC_ROWS[@]}" >"${RAY_LOG_ROOT}/fabric.txt"
 RAY_STEP_PIDS=()
 
 node_runtime_processes() {
@@ -344,7 +393,7 @@ COMMON_ENV=(
   WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
   WANDB_PROJECT=vagen
   WANDB_NAME="${RUN_NAME}"
-  WANDB_RUN_ID=nimloth-id185-k4-full-eval-test300-retry1
+  WANDB_RUN_ID=nimloth-id185-k4-full-eval-test300-retry2
   WANDB_RESUME="${WANDB_RESUME}"
   WANDB_DIR="${RAY_LOG_ROOT}/wandb"
   ID185_TRAIN_CONFIG="${PHASE_OUT}/train_navigation_joint_id185.yaml"
@@ -470,7 +519,7 @@ assert all(row['torch_home']=='/project/peilab/atst/flower/.cache/torch' for row
 assert all(row['vllm_worker_multiproc_method']=='spawn' for row in probes)
 assert all(row['id185_train_config'] for row in probes)
 assert all(row['id185_source_checkpoint'].endswith('/global_step_20') for row in probes)
-assert all(row['wandb_run_id']=='nimloth-id185-k4-full-eval-test300-retry1' for row in probes)
+assert all(row['wandb_run_id']=='nimloth-id185-k4-full-eval-test300-retry2' for row in probes)
 assert all(row['wandb_resume']==os.environ['EXPECTED_WANDB_RESUME'] for row in probes)
 assert all(row['wandb_api_key_present'] for row in probes)
 assert all(row['dataset_type']=='vagen.gym_agent_dataset.AgenticDataset' for row in probes)

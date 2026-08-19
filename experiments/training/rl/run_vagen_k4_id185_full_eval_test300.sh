@@ -37,7 +37,7 @@ TRAIN_PID=
 NVIDIA_PID=
 PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-16200}
 
-[[ "${RUN_NAME}" == 185_eval_k4schemeb_dp8_tp8_source20_test5x60_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_retry1 ]]
+[[ "${RUN_NAME}" == 185_eval_k4schemeb_dp8_tp8_source20_test5x60_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_retry2 ]]
 [[ "${RUN_DATE}" == 2026-08-18 ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
@@ -112,7 +112,7 @@ set +a
 export WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
 export WANDB_PROJECT=vagen
 export WANDB_NAME=${RUN_NAME}
-export WANDB_RUN_ID=nimloth-id185-k4-full-eval-test300-retry1
+export WANDB_RUN_ID=nimloth-id185-k4-full-eval-test300-retry2
 WANDB_PREFLIGHT_JSON=$("${PY}" - "${WANDB_ENTITY}" "${WANDB_PROJECT}" "${WANDB_RUN_ID}" "${RUN_NAME}" <<'PY'
 import json, sys, wandb
 from wandb.errors import CommError
@@ -401,14 +401,14 @@ PY
 cat >"${RUN_OUT}/README.md" <<EOF
 # ID185 K4 Scheme-B full historical VAGEN test300 evaluation
 
-- project/run: vagen / ${RUN_NAME}; W&B run id nimloth-id185-k4-full-eval-test300-retry1.
+- project/run: vagen / ${RUN_NAME}; W&B run id nimloth-id185-k4-full-eval-test300-retry2.
 - approval: restore the complete ID184 step20/source796 policy and evaluate the historical VAGEN five-set test300 contract without any optimizer update.
 - parent/VAGEN/VERL: ${EXPECTED_PARENT_COMMIT} / ${EXPECTED_VAGEN_COMMIT} / ${EXPECTED_VERL_COMMIT}
 - source checkpoint: ${SOURCE_CHECKPOINT}; actor, optimizer, scheduler, rank RNG, joint projector/predictor/ValueHead state, and active frozen snapshot restore exactly. The train dataloader state restores exactly but is never consumed because val_only exits after evaluation.
 - evaluation data: base, common_sense, complex_instruction, visual_appearance and long_horizon; all60 tasks in each asset via the historical explicit seeds1..60, 300 episodes total, up to20 real actions each. Held-out scenes are disjoint from all three training assets.
 - policy: frozen ID184 K4/100 UCT/c1 Scheme-B, alpha1, beta85.78297006578457, prior temperature1, float32, coordinator-keyed action sampling, CoT temperature0.7/top-p0.95. No actor, critic, world-model, ValueHead, optimizer, scheduler, RNG, or snapshot update is permitted.
 - output/recovery: one validation dump at source global step20; no rollout training data and no checkpoint are written. A failed attempt restarts from the immutable source checkpoint in a new output; no partial episode is presented as resumed.
-- resources: normal exact4x2 H800, 64 CPU/256 GiB, five-hour allocation; external Ray rollout TP8/DP1 and actor restore DP8. Nodes09/13/32/51 excluded; nodes23/37 cannot be Navigation head.
+- resources: normal exact4x2 H800, 64 CPU/256 GiB, five-hour allocation; external Ray rollout TP8/DP1 and actor restore DP8. Nodes09/13/32/51 are allocation-excluded; nodes09/10/13/23/32/37/51 are head-excluded. The Navigation/Ray head must additionally pass a current-allocation FloorPlan1 direct-render gate within the unchanged 150-second limit before Ray starts.
 EOF
 
 "${PY}" - "${REPAIR_ROOT}" "${PHASE_OUT}" <<'PY'
