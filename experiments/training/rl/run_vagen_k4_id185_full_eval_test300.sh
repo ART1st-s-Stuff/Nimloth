@@ -37,7 +37,7 @@ TRAIN_PID=
 NVIDIA_PID=
 PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-16200}
 
-[[ "${RUN_NAME}" == 185_eval_k4schemeb_dp8_tp8_source20_test5x60_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_retry3 ]]
+[[ "${RUN_NAME}" == 185_eval_k4schemeb_dp8_tp8_source20_test5x60_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_retry4 ]]
 [[ "${RUN_DATE}" == 2026-08-18 ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
@@ -112,7 +112,7 @@ set +a
 export WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
 export WANDB_PROJECT=vagen
 export WANDB_NAME=${RUN_NAME}
-export WANDB_RUN_ID=nimloth-id185-k4-full-eval-test300-retry3
+export WANDB_RUN_ID=nimloth-id185-k4-full-eval-test300-retry4
 WANDB_PREFLIGHT_JSON=$("${PY}" - "${WANDB_ENTITY}" "${WANDB_PROJECT}" "${WANDB_RUN_ID}" "${RUN_NAME}" <<'PY'
 import json, sys, wandb
 from wandb.errors import CommError
@@ -401,13 +401,13 @@ PY
 cat >"${RUN_OUT}/README.md" <<EOF
 # ID185 K4 Scheme-B full historical VAGEN test300 evaluation
 
-- project/run: vagen / ${RUN_NAME}; W&B run id nimloth-id185-k4-full-eval-test300-retry3.
+- project/run: vagen / ${RUN_NAME}; W&B run id nimloth-id185-k4-full-eval-test300-retry4.
 - approval: restore the complete ID184 step20/source796 policy and evaluate the historical VAGEN five-set test300 contract without any optimizer update.
 - parent/VAGEN/VERL: ${EXPECTED_PARENT_COMMIT} / ${EXPECTED_VAGEN_COMMIT} / ${EXPECTED_VERL_COMMIT}
 - source checkpoint: ${SOURCE_CHECKPOINT}; actor, optimizer, scheduler, rank RNG, joint projector/predictor/ValueHead state, and active frozen snapshot restore exactly. The train dataloader state restores exactly but is never consumed because val_only exits after evaluation.
 - evaluation data: base, common_sense, complex_instruction, visual_appearance and long_horizon; all60 tasks in each asset via the historical explicit seeds1..60, 300 episodes total, up to20 real actions each. Held-out scenes are disjoint from all three training assets.
 - policy: frozen ID184 K4/100 UCT/c1 Scheme-B, alpha1, beta85.78297006578457, prior temperature1, float32, coordinator-keyed action sampling, CoT temperature0.7/top-p0.95. No actor, critic, world-model, ValueHead, optimizer, scheduler, RNG, or snapshot update is permitted.
-- output/recovery: one validation dump at source global step20; no rollout training data and no checkpoint are written. A failed attempt restarts from the immutable source checkpoint in a new output; no partial episode is presented as resumed.
+- output/recovery: every completed validation batch is atomically committed to an append-only journal with row/identity hashes; only all eight batches and exactly300 unique identities publish the journal complete marker and formal step20 validation dump. A failed attempt still restarts all300 episodes from the immutable source in a new output: partial journal rows are diagnostic evidence, never presented as a complete result or stitched into a retry. No rollout training data or checkpoint is written.
 - resources: normal exact4x2 H800, 64 CPU/256 GiB, five-hour allocation; external Ray rollout TP8/DP1 and actor restore DP8. Nodes09/13/32/51 are allocation-excluded; nodes09/10/13/23/32/37/51 are head-excluded. The Navigation/Ray head must additionally pass a current-allocation FloorPlan1 direct-render gate within the unchanged 150-second limit before Ray starts.
 EOF
 
@@ -558,7 +558,7 @@ PY
 EXPECTED_VALIDATION_ROWS=300
 EXPECTED_SOURCE=796
 "${PY}" - "${SOURCE_CHECKPOINT}" "${PHASE_OUT}" "${RUN_OUT}/planning_snapshots" "${RUN_OUT}" <<'PY'
-import json, os, sys, tempfile
+import hashlib, json, os, sys, tempfile
 from pathlib import Path
 import torch
 from vagen.joint_policy.canary import summarize_canary_validation_rows
@@ -596,6 +596,7 @@ log=(out/'train.log').read_text()
 assert 'Setting global step to 20' in log
 assert 'ID185_K4_FULL_EVAL_RESTORE_OK global_step=20' in log
 assert 'ID185_TRAINING_CONTRACT_PATH_MIGRATION_OK' in log
+assert 'VALIDATION_BATCH_JOURNAL_COMPLETE batches=8 rows=300' in log
 assert not list((run_out/'checkpoints').glob('global_step_*'))
 actual_validation_steps={
  int(path.stem) for path in (run_out/'validation').glob('*.jsonl')
@@ -614,6 +615,35 @@ rows=[
  if line
 ]
 assert len(rows)==300
+journal_dir=out/'validation_batch_journal'
+journal_complete=json.loads((journal_dir/'complete.json').read_text())
+assert journal_complete['schema']=='vagen_validation_batch_journal_complete_v1'
+assert journal_complete['global_step']==20
+assert journal_complete['batch_count']==8
+assert journal_complete['row_count']==300
+assert journal_complete['data_source_counts']=={source:60 for source in expected_sources}
+markers=sorted(journal_dir.glob('batch_*.complete.json'))
+assert len(markers)==8
+journal_rows=[]
+for batch_index,marker_path in enumerate(markers):
+ marker=json.loads(marker_path.read_text())
+ assert marker['schema']=='vagen_validation_batch_journal_v1'
+ assert marker['global_step']==20 and marker['batch_index']==batch_index
+ payload=(journal_dir/marker['rows_file']).read_bytes()
+ assert 'sha256:'+hashlib.sha256(payload).hexdigest()==marker['rows_sha256']
+ batch_rows=[json.loads(line) for line in payload.decode().splitlines() if line]
+ assert len(batch_rows)==marker['row_count']
+ journal_rows.extend(batch_rows)
+assert len(journal_rows)==300
+assert len({(row['rollout_sample_id'],row['rollout_repeat_index']) for row in journal_rows})==300
+assert not any(str(row['uid']).startswith('__vagen_validation_padding__') for row in journal_rows)
+final_by_id={row['rollout_sample_id']:row for row in rows}
+journal_by_id={row['rollout_sample_id']:row for row in journal_rows}
+assert len(final_by_id)==len(journal_by_id)==300
+assert set(final_by_id)==set(journal_by_id)
+for sample_id in final_by_id:
+ assert final_by_id[sample_id]['score']==journal_by_id[sample_id]['score']
+ assert final_by_id[sample_id]['data_source']==journal_by_id[sample_id]['data_source']
 validation=summarize_canary_validation_rows(
  rows,expected_data_sources=expected_sources,expected_rows_per_source=60,
  expected_step=20,
