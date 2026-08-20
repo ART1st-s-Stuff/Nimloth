@@ -19,6 +19,7 @@ def test_visualization_launcher_keeps_exact_tp8_topology() -> None:
     assert "ID185_DYNAMIC_HEAD_RENDER_OK" in launcher
     assert "--tensor_parallel_size" not in launcher
     assert "ID185_VIS_ROLLOUT_SAMPLE_ID" not in launcher
+    assert "ID185_VIS_SEED=2" in launcher
 
 
 def test_visualization_runner_is_one_read_only_failure_rollout() -> None:
@@ -29,7 +30,8 @@ def test_visualization_runner_is_one_read_only_failure_rollout() -> None:
     assert "audit['success'] is False" in source
     assert "assert not list((run/'checkpoints').glob('global_step_*'))" in source
     assert "row['data_source']=='navigation_base_test_id185'" in source
-    assert "row['seed']==1" in source
+    assert "row['seed']==expected_seed" in source
+    assert "export ID185_VIS_SEED=2" in source
     assert "render_id185_rollout_visualization.py" in source
     assert "rollout_audit/index.html" in source
     assert "optimizer update" in source

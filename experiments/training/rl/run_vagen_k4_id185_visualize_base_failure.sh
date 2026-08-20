@@ -37,7 +37,7 @@ TRAIN_PID=
 NVIDIA_PID=
 PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-16200}
 
-[[ "${RUN_NAME}" == 185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed1_retry1 ]]
+[[ "${RUN_NAME}" == 185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed2_retry2 ]]
 [[ "${RUN_DATE}" == 2026-08-20 ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
@@ -112,7 +112,7 @@ set +a
 export WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
 export WANDB_PROJECT=vagen
 export WANDB_NAME=${RUN_NAME}
-export WANDB_RUN_ID=nimloth-id185-k4-visualize-base-fail-seed1-retry1
+export WANDB_RUN_ID=nimloth-id185-k4-visualize-base-fail-seed2-retry2
 WANDB_PREFLIGHT_JSON=$("${PY}" - "${WANDB_ENTITY}" "${WANDB_PROJECT}" "${WANDB_RUN_ID}" "${RUN_NAME}" <<'PY'
 import json, sys, wandb
 from wandb.errors import CommError
@@ -344,6 +344,7 @@ export ID185_VIS_AGENT_CONFIG=${VAGEN}/vagen/configs/agent_no_concat.yaml
 export ID185_VIS_RUN_NAME=${RUN_NAME}
 export ID185_VIS_RUN_OUT=${RUN_OUT}
 export ID185_VIS_SOURCE_CHECKPOINT=${SOURCE_CHECKPOINT}
+export ID185_VIS_SEED=2
 
 "${PY}" - "${ID185_TRAIN_CONFIG}" "${ID185_VAL_CONFIG}" "${PHASE_OUT}" <<'PY'
 import json, sys
@@ -402,7 +403,7 @@ cat >"${RUN_OUT}/README.md" <<EOF
 # ID185 one-rollout interactive visualization
 
 - source: immutable ID184 step20/source796 and frozen snapshot sha256:6648780b3791cb4b937974b151b9e119ed9bf74602d1bc21dabfc30a3914d969.
-- selected episode: historical ID185 Base task seed1, which failed in the formal ID185 run. Selection is bound to data_source+seed because the current environment transport URL is intentionally excluded from semantic task selection and changes the derived rollout_sample_id.
+- selected episode: historical ID185 Base task seed2, which failed in the formal ID185 run. Selection is bound to data_source+seed because the current environment transport URL is intentionally excluded from semantic task selection and changes the derived rollout_sample_id.
 - execution: a new same-contract rollout (not a reconstruction of the old stochastic trajectory), val-only, K4/100 UCT/c1 Scheme-B alpha1 beta85.78297006578457, TP8/DP1 rollout and DP8 restore. No optimizer update or checkpoint.
 - audit: every real action step persists the true observation image, actual generated CoT, prior and executed action, direct all-action Q, Frozen-V current state value, MCTS root predictions/visits, and all candidate 4-action sequences.
 - result: visualization/rollout_audit/index.html. The validator requires this new rollout to be a failure; otherwise a different historical base-failure seed must be selected in a new output.
@@ -535,15 +536,15 @@ TRAIN_PID=
   --output "${PHASE_OUT}/rollout_audit/index.html"
 [[ -f "${PHASE_OUT}/rollout_audit/index.html" ]]
 
-"${PY}" - "${SOURCE_CHECKPOINT}" "${PHASE_OUT}" "${RUN_OUT}" <<'PY'
+"${PY}" - "${SOURCE_CHECKPOINT}" "${PHASE_OUT}" "${RUN_OUT}" "${ID185_VIS_SEED}" <<'PY'
 import json, os, sys, tempfile
 from pathlib import Path
 from vagen.joint_policy.checkpoint import load_complete_joint_checkpoint
-source=Path(sys.argv[1]); out=Path(sys.argv[2]); run=Path(sys.argv[3])
+source=Path(sys.argv[1]); out=Path(sys.argv[2]); run=Path(sys.argv[3]); expected_seed=int(sys.argv[4])
 manifest=json.loads((out/'dataset_manifest.json').read_text())
 selected=[
  row for row in manifest['validation_rows']
- if row['data_source']=='navigation_base_test_id185' and row['seed']==1
+ if row['data_source']=='navigation_base_test_id185' and row['seed']==expected_seed
 ]
 assert len(selected)==1
 expected_id=selected[0]['rollout_sample_id']
