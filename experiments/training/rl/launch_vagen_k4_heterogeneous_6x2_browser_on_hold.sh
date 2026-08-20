@@ -58,11 +58,9 @@ srun() {
   if [[ "${has_memory_request}" == false ]]; then
     args+=("--mem=$((GPU_COUNTS[${target_node}] * 32))G")
   fi
-  env \
-    -u SLURM_JOB_ID -u SLURM_JOBID -u SLURM_STEP_ID -u SLURM_HET_GROUP \
-    -u SLURM_JOB_NODELIST -u SLURM_NODELIST -u SLURM_NNODES \
-    -u SLURM_TASKS_PER_NODE -u SLURM_CPUS_PER_TASK -u SLURM_MEM_PER_NODE \
-    -u SLURM_GPUS -u SLURM_JOB_GPUS -u SLURM_GPUS_ON_NODE \
+  env -i \
+    HOME="${HOME}" USER="${USER}" LOGNAME="${LOGNAME:-${USER}}" \
+    PATH="${SLURM_BIN_DIR}:/usr/bin:/bin" SLURM_CONF="${SLURM_CONF}" \
     "${SLURM_BIN_DIR}/srun" --jobid="${HOLD_JOB}" --het-group="${het_group}" "${args[@]}"
 }
 RUN_NAME=${ID185_VIS_RUN_NAME_OVERRIDE:-185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed2_retry2}
