@@ -60,7 +60,7 @@ def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     assert "#SBATCH --partition=preempt" in source
     assert "ID185_VIS_EXPECTED_PARTITION=preempt" in source
     assert "ID185_VIS_SOURCE_BOUNDARY=20" in source
-    assert "preempt_retry21" in source
+    assert "preempt_retry22" in source
     assert "ID185_VIS_GPU_LAYOUT=8" in source
     assert "launch_vagen_k4_1x8_browser_on_hold.sh" in source
     launcher = ONE_NODE_LAUNCHER.read_text()
