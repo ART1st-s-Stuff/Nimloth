@@ -103,6 +103,19 @@ def test_id185_readonly_audit_accepts_one_complete_immutable_evaluation(
     assert len(result["source_artifacts"]) == 20
 
 
+def test_id185_readonly_audit_validates_wandb_against_rows(tmp_path: Path) -> None:
+    source = _build_complete_source(tmp_path / "source")
+    metrics = MODULE.validate_evaluation_artifacts(source)["metrics"]
+    history = {"_step": 20}
+    for name, values in metrics["by_data_source"].items():
+        history[f"val-core/{name}/reward/mean@1"] = values["reward_mean"]
+        history[f"val-aux/{name}/traj_success/mean@1"] = values["success_rate"]
+    MODULE._validate_wandb_metrics({"history": history}, metrics)
+    history[f"val-core/{MODULE.EXPECTED_SOURCES[0]}/reward/mean@1"] += 0.1
+    with pytest.raises(ValueError, match="W&B metric"):
+        MODULE._validate_wandb_metrics({"history": history}, metrics)
+
+
 def test_id185_readonly_audit_rejects_journal_corruption(tmp_path: Path) -> None:
     source = _build_complete_source(tmp_path / "source")
     with (source / "full_eval_test300/validation_batch_journal/batch_0007.jsonl").open("a") as handle:

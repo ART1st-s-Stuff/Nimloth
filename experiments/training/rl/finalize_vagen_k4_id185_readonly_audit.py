@@ -188,6 +188,24 @@ def _validate_external_evidence(
         raise ValueError("ID185 audit W&B evidence mismatch")
 
 
+def _validate_wandb_metrics(
+    wandb: dict[str, Any],
+    metrics: dict[str, Any],
+) -> None:
+    history = wandb.get("history")
+    if not isinstance(history, dict) or history.get("_step") != 20:
+        raise ValueError("ID185 audit W&B history evidence mismatch")
+    for source, source_metrics in metrics["by_data_source"].items():
+        expected = {
+            f"val-core/{source}/reward/mean@1": source_metrics["reward_mean"],
+            f"val-aux/{source}/traj_success/mean@1": source_metrics["success_rate"],
+        }
+        for key, value in expected.items():
+            actual = history.get(key)
+            if not isinstance(actual, (int, float)) or abs(actual - value) > 1e-12:
+                raise ValueError(f"ID185 audit W&B metric mismatch: {key}")
+
+
 def _publish_atomic_directory(destination: Path, files: dict[str, Any]) -> None:
     if destination.exists():
         raise FileExistsError(f"ID185 audit output already exists: {destination}")
@@ -226,6 +244,7 @@ def main() -> None:
     wandb = _read_json(args.wandb_evidence)
     _validate_external_evidence(slurm, wandb)
     artifact_audit = validate_evaluation_artifacts(args.source_run)
+    _validate_wandb_metrics(wandb, artifact_audit["metrics"])
 
     import torch
     from nimloth.training.rl.joint_planner import load_frozen_planning_snapshot_file
