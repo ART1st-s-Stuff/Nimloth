@@ -1,7 +1,7 @@
 # ID188 pre-RL step0 rollout browser comparison contract
 
 Date: 2026-08-21
-Status: approved by direct human instruction on 2026-08-21; run after ID187 preempt retry1 completes
+Status: approved; dependency-only Job 525598 cancelled unallocated after human correction; independent retry1 prepared
 
 ## Purpose
 
@@ -45,9 +45,9 @@ This is a stochastic cross-run comparison. The environment transport URL is part
 ## Identity and outputs
 
 - W&B project: `vagen`.
-- Run: `188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100`.
-- Run ID: `nimloth-id188-smoke-rollout-browser-k4-step0-seed2`; `resume=never`.
-- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100`.
+- Run: `188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry1`.
+- Run ID: `nimloth-id188-smoke-rollout-browser-k4-step0-seed2-r1`; `resume=never`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry1`.
 - Browser: `evaluation_browser/global_step_0/index.html`.
 - A failed retry requires a new output/W&B identity; partial evidence cannot be combined or resumed.
 
