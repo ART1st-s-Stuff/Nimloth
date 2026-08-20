@@ -1,7 +1,9 @@
 # ID187 rollout browser production canary contract
 
 Date: 2026-08-20
-Status: approved for submission by the human on 2026-08-20
+Status: normal Job 525468 cancelled pending; preempt retry1 approved by direct human instruction on 2026-08-21
+
+The original normal-partition Job `525468` remained `PENDING (Priority)` with no allocation, output, or W&B identity and was cancelled at `2026-08-21T01:09:15`. The replacement must use a fresh retry output/W&B identity on `preempt` 4x2.
 
 ## Purpose
 
@@ -9,8 +11,8 @@ Validate that one real frozen K4 Scheme-B Navigation evaluation rollout produces
 
 ## Immutable code and entrypoints
 
-- Parent implementation commit: `4b2372af023c93a22850d5c9ee0241d6bcab0d15` (the runtime Parent commit may additionally contain this contract/progress-only commit and is supplied through `EXPECTED_PARENT_COMMIT`).
-- VAGEN: `695d606544c17dd8343b6cfa4e1a2602c690cc3b`.
+- Parent implementation commit: `e2935530abb5b0913f9ba75b8fa5ddec0e765cae` (the runtime Parent commit may additionally contain contract/progress-only commits and is supplied through `EXPECTED_PARENT_COMMIT`).
+- VAGEN: `67df5944d3bbfe1928c18201c30b7e805740d951`.
 - VERL: `494f264494b2525f2c13595f63ac4912963e6d2f`.
 - Slurm entry: `experiments/training/rl/id187_rollout_browser_canary.slurm`.
 - Allocation launcher: `experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh`.
@@ -44,15 +46,15 @@ Validate that one real frozen K4 Scheme-B Navigation evaluation rollout produces
 ## Identity, output, and resume
 
 - W&B project: `vagen`.
-- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100`.
-- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2`; `resume=never`.
-- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-20/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100`.
+- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry1`.
+- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r1`; `resume=never`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry1`.
 - The output and W&B identities must not exist before launch. No resume or overwrite is allowed; a failed retry would require a new ID/name/output.
 - Unified browser target: `evaluation_browser/global_step_20/index.html`.
 
 ## Slurm and runtime ownership
 
-- Partition `normal`; 4 nodes; 2 H800 per node; 8 GPUs total; 16 CPU/node; 64 GiB/node; 5-hour limit.
+- Partition `preempt`; 4 nodes; 2 H800 per node; 8 GPUs total; 16 CPU/node; 64 GiB/node; 5-hour limit.
 - Expected healthy runtime: approximately 10--15 minutes after allocation.
 - Allocation exclusions: `dgx-09,dgx-13,dgx-32,dgx-51`.
 - Navigation/Ray head exclusions: `dgx-09,dgx-10,dgx-13,dgx-23,dgx-32,dgx-37,dgx-51`.
