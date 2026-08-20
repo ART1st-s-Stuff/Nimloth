@@ -23,17 +23,20 @@ def __getattr__(name: str) -> Any:
         }[name]
     if name in {
         "finalize_evaluation_browser",
+        "merge_evaluation_browsers",
         "write_evaluation_browser",
         "write_evaluation_browser_batch",
     }:
         from .storage import (
             finalize_evaluation_browser,
+            merge_evaluation_browsers,
             write_evaluation_browser,
             write_evaluation_browser_batch,
         )
 
         return {
             "finalize_evaluation_browser": finalize_evaluation_browser,
+            "merge_evaluation_browsers": merge_evaluation_browsers,
             "write_evaluation_browser": write_evaluation_browser,
             "write_evaluation_browser_batch": write_evaluation_browser_batch,
         }[name]
@@ -47,6 +50,7 @@ __all__ = [
     "rollout_trajectory_artifact",
     "validate_rollout_audit",
     "finalize_evaluation_browser",
+    "merge_evaluation_browsers",
     "write_evaluation_browser",
     "write_evaluation_browser_batch",
 ]

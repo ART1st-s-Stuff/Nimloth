@@ -253,6 +253,35 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _merge_sft1_rollout_browsers(
+    output_dir: Path,
+    *,
+    expected_rollouts: int,
+) -> Path:
+    from nimloth.eval.rollout_browser import merge_evaluation_browsers
+
+    sources = [
+        output_dir / "eval_sets" / eval_set / "evaluation_browser"
+        for eval_set in EVAL_SETS
+    ]
+    first_manifest = _read_json(sources[0] / "manifest.json")
+    destination = output_dir / "evaluation_browser"
+    merge_evaluation_browsers(
+        destination,
+        sources,
+        evaluation={
+            "evaluation_id": output_dir.name,
+            "policy_family": "sft_policy",
+            "global_step": first_manifest.get("global_step"),
+            "source_step": first_manifest.get("source_step"),
+            "checkpoint_identity": first_manifest["checkpoint_identity"],
+            "snapshot_identity": first_manifest.get("snapshot_identity"),
+        },
+        expected_rollouts=expected_rollouts,
+    )
+    return destination
+
+
 def main() -> int:
     args = parse_args()
     if args.episodes_per_set < 1:
@@ -310,6 +339,12 @@ def main() -> int:
         "contract": contract,
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if args.arm == "sft1":
+        browser = _merge_sft1_rollout_browsers(
+            args.output_dir,
+            expected_rollouts=summary["num_trajectories"],
+        )
+        summary["rollout_browser"] = str(browser / "index.html")
     summary_path = args.output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
