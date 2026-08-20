@@ -11,6 +11,7 @@ For this Slurm 23.02 cluster, do not treat comma-selected heterogeneous groups a
 - map each allocated node to its exact heterogeneous group;
 - use `srun --het-group=<group> -w <node>`;
 - run fabric probes, runtime setup/audit, Ray-log capture, and cleanup once per node;
+- explicitly set each node-scoped step's CPU request; otherwise a group1 step may inherit component0's larger `cpus-per-task` and become unschedulable;
 - aggregate their outputs and statuses in the controller.
 
 Ray may still combine both raylets into one logical 6+2 cluster after the component-local Slurm steps start them.
