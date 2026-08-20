@@ -65,6 +65,23 @@ def test_sft_adapter_preserves_task_images_and_capability_absence(
     }
 
 
+def test_sft_action_only_response_is_preserved_without_fake_cot(
+    tmp_path: Path,
+) -> None:
+    trajectory = _trajectory(tmp_path, planner=False)
+    trajectory.assistant_responses = ["<|action_start|><|action_(0)|><|action_end|>"]
+    artifact = rollout_trajectory_artifact(
+        trajectory,
+        policy_family="sft1_action_only",
+        image_root=tmp_path,
+    )
+    assert artifact.audit["capabilities"]["cot"] is False
+    assert artifact.audit["turns"][0]["cot"] is None
+    assert artifact.audit["turns"][0]["raw_response"].startswith(
+        "<|action_start|>"
+    )
+
+
 def test_sft_mcts_adapter_preserves_every_candidate_and_visit(
     tmp_path: Path,
 ) -> None:
