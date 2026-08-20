@@ -18,8 +18,8 @@
 
 尚未完成：
 
-- superpod SSH当前在banner阶段超时，尚未在固定服务器Python环境复跑回归；
-- 尚未运行真实1/40-rollout canary，因此GPU/Ray峰值、写盘耗时和实际容量仍未验证；
+- 已在superpod clean worktree和固定服务器Python完成Parent `84 passed`、VAGEN `112 passed, 33 subtests passed`；
+- ID187真实1-rollout canary Job`525468`已获人类批准并提交，但当前`PENDING (Priority)`；GPU/Ray峰值、写盘耗时和实际容量仍未验证；
 - 在canary通过前不得宣称production rollout路径已完成验收。
 
 ## 1. 目标
