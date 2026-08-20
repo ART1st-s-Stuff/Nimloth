@@ -19,8 +19,6 @@ PY=${ROOT}/.venv-vagen-main/bin/python3
 REPAIR_ROOT=${ROOT}/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8
 ACTOR_MODEL=${REPAIR_ROOT}/checkpoint
 PLANNING_MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
-ID184_SOURCE_RUN_OUT=${ROOT}/outputs/experiments/training/rl/2026-08-17/184_continue_k4schemeb_jointupdate_dp8_tp8_u20_from10_train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8_retry1
-SOURCE_CHECKPOINT=${ID184_SOURCE_RUN_OUT}/checkpoints/global_step_20
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
 PHASE_NAME=visualization
 PHASE_TAG=vis1
@@ -136,39 +134,16 @@ except CommError as exc:
  print(json.dumps({'path':path,'exists':False,'name':run_name}))
 else:
  raise RuntimeError(
-  f'ID185 W&B identity already exists: {path} '
+  f'ID188 W&B identity already exists: {path} '
   f'name={run.name!r} state={run.state!r}'
  )
 PY
 )
 
-[[ ! -e "${RUN_OUT}" ]] || { echo "ID185 output already exists" >&2; exit 2; }
-[[ -f "${SOURCE_CHECKPOINT}/joint_checkpoint_complete.json" ]]
-[[ -f "${SOURCE_CHECKPOINT}/data.pt" ]]
-[[ -f "${ID184_SOURCE_RUN_OUT}/final_status.json" ]]
-[[ -f "${ID184_SOURCE_RUN_OUT}/continue_step10_to20/validator.json" ]]
-[[ -f "${ID184_SOURCE_RUN_OUT}/continue_step10_to20/wandb_final.json" ]]
-"${PY}" - "${SOURCE_CHECKPOINT}" "${ID184_SOURCE_RUN_OUT}" <<'PY'
-import hashlib,json,sys
-from pathlib import Path
-source=Path(sys.argv[1]); run=Path(sys.argv[2])
-marker=json.loads((source/'joint_checkpoint_complete.json').read_text())
-def digest(path):
- h=hashlib.sha256()
- with path.open('rb') as handle:
-  for chunk in iter(lambda:handle.read(1024*1024),b''): h.update(chunk)
- return f'sha256:{h.hexdigest()}'
-assert digest(source/marker['sidecar'])==marker['sidecar_sha256']
-assert digest(source/'data.pt')==marker['dataloader_sha256']
-final=json.loads((run/'final_status.json').read_text())
-validator=json.loads((run/'continue_step10_to20/validator.json').read_text())
-wandb=json.loads((run/'continue_step10_to20/wandb_final.json').read_text())
-assert marker['global_step']==20 and marker['source_step']==796
-assert final['status']=='passed' and final['global_step']==20
-assert validator['status']=='ALL_OK' and validator['checkpoint_steps']==[15,20]
-assert wandb['state']=='finished' and wandb['steps']==list(range(10,21))
-print(json.dumps({'status':'ID185_SOURCE_STEP20_OK','marker':marker}))
-PY
+[[ ! -e "${RUN_OUT}" ]] || { echo "ID188 output already exists" >&2; exit 2; }
+[[ -d "${ACTOR_MODEL}" ]]
+[[ -d "${PLANNING_MODEL}" ]]
+[[ ! -e "${RUN_OUT}/checkpoints" ]]
 mkdir -p "${RUN_OUT}" "${PHASE_OUT}" "${RUNTIME_ROOT}" "${RAY_TMPDIR}" "${TMPDIR}" "${AI2THOR_HOME_ROOT}/.ai2thor"
 printf '%s\n' "${JOB_DETAILS}" >"${PHASE_OUT}/allocation.txt"
 printf '%s\n' "${WANDB_PREFLIGHT_JSON}" >"${PHASE_OUT}/wandb_preflight.json"
@@ -298,7 +273,7 @@ for reward_field in (
  'success_reward: 1.0',
 ):
  assert reward_field in train_text
-(out/'train_navigation_joint_id185.yaml').write_text(train_text)
+(out/'train_navigation_joint_id188.yaml').write_text(train_text)
 val_src=vagen/'examples/train/navigation/val_navigation_joint_id185.yaml'
 val_text=val_src.read_text()
 assert 'http://127.0.0.1:8000' in val_text
@@ -308,8 +283,8 @@ for reward_field in (
  'success_reward: 1.0',
 ):
  assert reward_field in val_text
-(out/'val_navigation_joint_id185.yaml').write_text(
- val_text.replace('http://127.0.0.1:8000',url)
+(out/'val_navigation_joint_id188.yaml').write_text(
+ val_text.replace('http://127.0.0.1:8000',url).replace('_id185','_id188')
 )
 expected={
  'base_train':(1200,'eb0aa69186604cedc6dc6c2a8874393beae09b7ac1dadae5458e87492b5e01e9'),
@@ -343,17 +318,16 @@ for name in ('base','common_sense','long_horizon','complex_instruction','visual_
  'assets':assets,
 },indent=2)+'\n')
 PY
-export ID185_VIS_TRAIN_CONFIG=${PHASE_OUT}/train_navigation_joint_id185.yaml
-export ID185_VIS_VAL_CONFIG=${PHASE_OUT}/val_navigation_joint_id185.yaml
-export ID185_VIS_ACTOR_MODEL=${ACTOR_MODEL}
-export ID185_VIS_PLANNING_CHECKPOINT=${PLANNING_MODEL}
-export ID185_VIS_AGENT_CONFIG=${VAGEN}/vagen/configs/agent_no_concat.yaml
-export ID185_VIS_RUN_NAME=${RUN_NAME}
-export ID185_VIS_RUN_OUT=${RUN_OUT}
-export ID185_VIS_SOURCE_CHECKPOINT=${SOURCE_CHECKPOINT}
-export ID185_VIS_SEED=${ID185_VIS_SEED:-2}
+export ID188_TRAIN_CONFIG=${PHASE_OUT}/train_navigation_joint_id188.yaml
+export ID188_VAL_CONFIG=${PHASE_OUT}/val_navigation_joint_id188.yaml
+export ID188_ACTOR_MODEL=${ACTOR_MODEL}
+export ID188_PLANNING_CHECKPOINT=${PLANNING_MODEL}
+export ID188_AGENT_CONFIG=${VAGEN}/vagen/configs/agent_no_concat.yaml
+export ID188_RUN_NAME=${RUN_NAME}
+export ID188_RUN_OUT=${RUN_OUT}
+export ID188_SEED=${ID188_SEED:-2}
 
-"${PY}" - "${ID185_TRAIN_CONFIG}" "${ID185_VAL_CONFIG}" "${PHASE_OUT}" <<'PY'
+"${PY}" - "${ID188_TRAIN_CONFIG}" "${ID188_VAL_CONFIG}" "${PHASE_OUT}" <<'PY'
 import json, sys
 from collections import Counter
 from pathlib import Path
@@ -381,11 +355,11 @@ assert all(
  for source in train_counts
 )
 expected_val_sources={
- 'navigation_base_test_id185',
- 'navigation_common_sense_test_id185',
- 'navigation_complex_instruction_test_id185',
- 'navigation_visual_appearance_test_id185',
- 'navigation_long_horizon_test_id185',
+ 'navigation_base_test_id188',
+ 'navigation_common_sense_test_id188',
+ 'navigation_complex_instruction_test_id188',
+ 'navigation_visual_appearance_test_id188',
+ 'navigation_long_horizon_test_id188',
 }
 assert len(val_rows)==300
 assert val_counts==Counter({source:60 for source in expected_val_sources})
@@ -407,14 +381,14 @@ assert len({row['rollout_sample_id'] for row in val_rows})==300
 PY
 
 cat >"${RUN_OUT}/README.md" <<EOF
-# One-rollout K4 evaluation evidence canary
+# ID188 pre-RL step0 one-rollout browser comparison
 
-- source: immutable ID184 step20/source796 and frozen snapshot sha256:6648780b3791cb4b937974b151b9e119ed9bf74602d1bc21dabfc30a3914d969.
-- selected episode: Base seed ${ID185_VIS_SEED}. Selection is bound to data_source+seed because the current environment transport URL is intentionally excluded from semantic task selection and changes the derived rollout_sample_id.
-- execution: a new same-contract rollout, val-only, K4/100 UCT/c1 Scheme-B alpha1 beta85.78297006578457, TP8/DP1 rollout and DP8 restore. All model modules are frozen; there is no optimizer update or checkpoint.
+- source: corrected ID176 SFT2 actor plus the ID74 planning sidecar, bootstrapped directly as frozen source step776 before any joint PPO update.
+- selected episode: Base seed ${ID188_SEED}. Selection is bound to data_source+seed; transport-derived rollout identity intentionally differs from the source20 run.
+- execution: a new val-only K4/100 UCT/c1 Scheme-B alpha1 beta85.78297006578457 rollout, TP8/DP1 rollout and DP8 initialization. All model modules are frozen; there is no optimizer update, resume, or checkpoint.
 - audit: every real action step persists the true observation image, actual generated CoT, prior and executed action, direct all-action Q, Frozen-V current state value, MCTS root predictions/visits, and all candidate 4-action sequences.
 - expected outcome: ${ID185_VIS_EXPECTED_OUTCOME}. This controls only final validation and never changes policy execution.
-- results: `evaluation_browser/global_step_20/index.html` is the unified browser; `visualization/rollout_audit/index.html` remains the legacy single-rollout view for cross-checking.
+- results: `evaluation_browser/global_step_0/index.html` is the unified browser; `visualization/rollout_audit/index.html` remains the legacy single-rollout view for cross-checking.
 - W&B: project `vagen`, run `${RUN_NAME}`, enabled=${ID185_VIS_ENABLE_WANDB}, identity `${WANDB_RUN_ID}`.
 EOF
 
@@ -516,17 +490,16 @@ cd "${VAGEN}"
 COMMAND=(
   "${PY}" -m vagen.main_ppo
   --config-path="${VAGEN}/vagen/configs"
-  --config-name=joint_id185_visualize_one
+  --config-name=joint_id188_step0_visualize_one
   "hydra.run.dir=${PHASE_OUT}/hydra"
   hydra.job.chdir=false
-  trainer.resume_mode=resume_path
-  trainer.total_training_steps=20
-  trainer.total_epochs=20
+  trainer.resume_mode=disable
+  trainer.total_training_steps=1
+  trainer.total_epochs=1
   trainer.val_before_train=true
   trainer.val_only=true
   trainer.test_freq=-1
   trainer.save_freq=5
-  trainer.joint_dataloader_resume_policy=exact
 )
 if [[ "${ID185_VIS_ENABLE_WANDB}" == true ]]; then
   COMMAND+=("trainer.logger=[console,wandb]")
@@ -548,17 +521,16 @@ TRAIN_PID=
   --output "${PHASE_OUT}/rollout_audit/index.html"
 [[ -f "${PHASE_OUT}/rollout_audit/index.html" ]]
 
-"${PY}" - "${SOURCE_CHECKPOINT}" "${PHASE_OUT}" "${RUN_OUT}" \
-  "${ID185_VIS_SEED}" "${ID185_VIS_EXPECTED_OUTCOME}" <<'PY'
-import json, os, sys, tempfile
+"${PY}" - "${PHASE_OUT}" "${RUN_OUT}" "${ID188_SEED}" \
+  "${ID185_VIS_EXPECTED_OUTCOME}" <<'PY'
+import hashlib, json, os, sys, tempfile
 from pathlib import Path
-from vagen.joint_policy.checkpoint import load_complete_joint_checkpoint
-source=Path(sys.argv[1]); out=Path(sys.argv[2]); run=Path(sys.argv[3]); expected_seed=int(sys.argv[4])
-expected_outcome=sys.argv[5]
+out=Path(sys.argv[1]); run=Path(sys.argv[2]); expected_seed=int(sys.argv[3])
+expected_outcome=sys.argv[4]
 manifest=json.loads((out/'dataset_manifest.json').read_text())
 selected=[
  row for row in manifest['validation_rows']
- if row['data_source']=='navigation_base_test_id185' and row['seed']==expected_seed
+ if row['data_source']=='navigation_base_test_id188' and row['seed']==expected_seed
 ]
 assert len(selected)==1
 expected_id=selected[0]['rollout_sample_id']
@@ -567,15 +539,9 @@ def atomic_json(path,payload):
  with os.fdopen(fd,'w',encoding='utf-8') as handle:
   json.dump(payload,handle,indent=2,allow_nan=False); handle.write('\n')
  os.replace(name,path)
-payload=load_complete_joint_checkpoint(source)
-active=payload['frozen_q_owner']['active_snapshot_state']
-assert payload['global_step']==20
-assert payload['actor_critic']['source_step']==796
-assert active['snapshot_source_step']==796
-assert active['snapshot_id']=='sha256:6648780b3791cb4b937974b151b9e119ed9bf74602d1bc21dabfc30a3914d969'
 assert not list((run/'checkpoints').glob('global_step_*'))
 log=(out/'train.log').read_text()
-assert 'ID185_K4_VISUALIZATION_RESTORE_OK global_step=20' in log
+assert 'ID188_K4_STEP0_BOOTSTRAP_OK global_step=0' in log
 assert 'SINGLE_ROLLOUT_VISUALIZATION_AUDIT_COMPLETE' in log
 assert 'VALIDATION_BATCH_JOURNAL_COMPLETE batches=1 rows=1' in log
 audit_dir=out/'rollout_audit'
@@ -583,8 +549,7 @@ audit=json.loads((audit_dir/'rollout_audit.json').read_text())
 assert audit['schema']=='vagen_single_rollout_visualization_audit_v1'
 assert audit['rollout_sample_id']==expected_id
 assert audit['rollout_repeat_index']==0
-assert audit['turn_count']==len(audit['turns'])
-assert audit['turn_count']>=1
+assert audit['turn_count']==len(audit['turns']) and audit['turn_count']>=1
 success=bool(audit['success'])
 if expected_outcome == 'failure':
  assert success is False
@@ -592,6 +557,7 @@ elif expected_outcome == 'success':
  assert success is True
 else:
  assert expected_outcome == 'any'
+snapshot_ids=set()
 for index,turn in enumerate(audit['turns']):
  assert turn['turn_index']==index and turn['turn_number']==index+1
  assert turn['cot'].startswith('<think>') and turn['cot'].endswith('</think>')
@@ -601,24 +567,25 @@ for index,turn in enumerate(audit['turns']):
  assert sum(row['visits'] for row in turn['predicted_action_sequences'])==100
  assert sum(row['is_executed_action'] for row in turn['action_ranking'])==1
  assert (audit_dir/turn['observation_image']).is_file()
- assert turn['snapshot_source_step']==796
- assert turn['snapshot_id']==active['snapshot_id']
+ assert turn['snapshot_source_step']==776
+ assert str(turn['snapshot_id']).startswith('sha256:')
+ snapshot_ids.add(turn['snapshot_id'])
+assert len(snapshot_ids)==1
+snapshot_id=next(iter(snapshot_ids))
 journal=out/'validation_batch_journal'
-complete=json.loads((journal/'complete.json').read_text())
-assert complete['batch_count']==1 and complete['row_count']==1
-rows=[json.loads(line) for line in (run/'validation/20.jsonl').read_text().splitlines() if line]
+journal_complete=json.loads((journal/'complete.json').read_text())
+assert journal_complete['batch_count']==1 and journal_complete['row_count']==1
+rows=[json.loads(line) for line in (run/'validation/0.jsonl').read_text().splitlines() if line]
 assert len(rows)==1 and rows[0]['rollout_sample_id']==expected_id
 assert bool(float(rows[0]['traj_success'])) is success
-assert (audit_dir/'index.html').is_file()
-browser=run/'evaluation_browser/global_step_20'
+browser=run/'evaluation_browser/global_step_0'
 complete=json.loads((browser/'complete.json').read_text())
 manifest_bytes=(browser/'manifest.json').read_bytes()
-import hashlib
 assert complete['manifest_sha256']=='sha256:'+hashlib.sha256(manifest_bytes).hexdigest()
-manifest=json.loads(manifest_bytes)
-assert manifest['status']=='complete' and manifest['rollout_count']==1
-assert manifest['expected_rollouts']==1 and len(manifest['rollouts'])==1
-browser_row=manifest['rollouts'][0]
+browser_manifest=json.loads(manifest_bytes)
+assert browser_manifest['status']=='complete' and browser_manifest['rollout_count']==1
+assert browser_manifest['global_step']==0 and browser_manifest['source_step']==776
+browser_row=browser_manifest['rollouts'][0]
 assert browser_row['identity']['rollout_sample_id']==expected_id
 assert bool(browser_row['success']) is success
 assert browser_row['turn_count']==audit['turn_count']
@@ -627,10 +594,10 @@ artifact=browser/browser_row['artifact']
 assert artifact.is_file()
 browser_audit=artifact.parent/'rollout.json'
 assert 'sha256:'+hashlib.sha256(browser_audit.read_bytes()).hexdigest()==browser_row['audit_sha256']
-assert (browser/'index.html').is_file()
+assert (browser/'index.html').is_file() and (audit_dir/'index.html').is_file()
 summary={
- 'status':'ALL_OK','phase':'visualization','global_step':20,'source_step':796,
- 'snapshot_id':active['snapshot_id'],'rollout_sample_id':expected_id,
+ 'status':'ALL_OK','phase':'step0_visualization','global_step':0,'source_step':776,
+ 'snapshot_id':snapshot_id,'rollout_sample_id':expected_id,
  'turn_count':audit['turn_count'],'success':success,'checkpoint_steps':[],
  'rollout_audit':str(audit_dir/'rollout_audit.json'),
  'html':str(audit_dir/'index.html'),
