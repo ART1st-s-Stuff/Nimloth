@@ -413,8 +413,8 @@ cat >"${RUN_OUT}/README.md" <<EOF
 - execution: a new same-contract rollout, val-only, K4/100 UCT/c1 Scheme-B alpha1 beta85.78297006578457, TP8/DP1 rollout and DP8 restore. All model modules are frozen; there is no optimizer update or checkpoint.
 - audit: every real action step persists the true observation image, actual generated CoT, prior and executed action, direct all-action Q, Frozen-V current state value, MCTS root predictions/visits, and all candidate 4-action sequences.
 - expected outcome: ${ID185_VIS_EXPECTED_OUTCOME}. This controls only final validation and never changes policy execution.
-- results: `evaluation_browser/global_step_20/index.html` is the unified browser; `visualization/rollout_audit/index.html` remains the legacy single-rollout view for cross-checking.
-- W&B: project `vagen`, run `${RUN_NAME}`, enabled=${ID185_VIS_ENABLE_WANDB}, identity `${WANDB_RUN_ID}`.
+- results: 'evaluation_browser/global_step_20/index.html' is the unified browser; 'visualization/rollout_audit/index.html' remains the legacy single-rollout view for cross-checking.
+- W&B: project 'vagen', run '${RUN_NAME}', enabled=${ID185_VIS_ENABLE_WANDB}, identity '${WANDB_RUN_ID}'.
 EOF
 
 "${PY}" - "${REPAIR_ROOT}" "${PHASE_OUT}" <<'PY'
@@ -506,15 +506,23 @@ for split in base common_sense complex_instruction visual_appearance long_horizo
 done
 
 /cm/shared/apps/slurm/current/bin/srun --overlap \
-  --het-group=0 --nodes=1 --ntasks=1 --gres=gpu:6 --label \
-  nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits -l 1 \
-  : --het-group=1 --nodes=1 --ntasks=1 --gres=gpu:2 --label \
+  --nodes=1 --ntasks=1 --gres=gpu:8 --label \
   nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits -l 1 \
   >"${PHASE_OUT}/nvidia_smi.csv" 2>"${PHASE_OUT}/nvidia_smi.err" &
 NVIDIA_PID=$!
 
 cd "${VAGEN}"
 COMMAND=(
+  env
+  "ID187_TRAIN_CONFIG=${ID187_TRAIN_CONFIG}"
+  "ID187_VAL_CONFIG=${ID187_VAL_CONFIG}"
+  "ID187_ACTOR_MODEL=${ID187_ACTOR_MODEL}"
+  "ID187_PLANNING_CHECKPOINT=${ID187_PLANNING_CHECKPOINT}"
+  "ID187_AGENT_CONFIG=${ID187_AGENT_CONFIG}"
+  "ID187_RUN_NAME=${ID187_RUN_NAME}"
+  "ID187_RUN_OUT=${ID187_RUN_OUT}"
+  "ID187_SOURCE_CHECKPOINT=${ID187_SOURCE_CHECKPOINT}"
+  "ID187_SEED=${ID187_SEED}"
   "${PY}" -m vagen.main_ppo
   --config-path="${VAGEN}/vagen/configs"
   --config-name=joint_id187_source20_visualize_one
