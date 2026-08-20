@@ -14,26 +14,29 @@
 #SBATCH --exclude=dgx-09,dgx-13,dgx-32,dgx-51
 
 # ID188: same Base seed2 evidence canary as ID187, initialized directly from
-# corrected SFT2 + ID74 planning weights before any joint PPO update.
+# corrected SFT2 + ID74 planning weights. Resource components are supplied on
+# sbatch CLI as one 6-GPU node plus one 2-GPU node.
 set -euo pipefail
 : "${REPO:?REPO is required}"
 : "${EXPECTED_PARENT_COMMIT:?EXPECTED_PARENT_COMMIT is required}"
 : "${EXPECTED_VAGEN_COMMIT:?EXPECTED_VAGEN_COMMIT is required}"
 : "${EXPECTED_VERL_COMMIT:?EXPECTED_VERL_COMMIT is required}"
 module load slurm
+[[ "${SLURM_HET_SIZE:-}" == 2 ]]
 
-export ID185_VIS_RUN_NAME_OVERRIDE=188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry2
+export ID185_VIS_RUN_NAME_OVERRIDE=188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry3
 export ID185_VIS_RUN_DATE_OVERRIDE=2026-08-21
 export ID185_VIS_SEED_OVERRIDE=2
 export ID185_VIS_EXPECTED_OUTCOME=any
 export ID185_VIS_ENABLE_WANDB=true
-export ID185_VIS_WANDB_RUN_ID=nimloth-id188-smoke-rollout-browser-k4-step0-seed2-r2
+export ID185_VIS_WANDB_RUN_ID=nimloth-id188-smoke-rollout-browser-k4-step0-seed2-r3
 export ID185_VIS_EXPECTED_PARTITION=preempt
 export ID185_VIS_SOURCE_BOUNDARY=0
+export ID185_VIS_GPU_LAYOUT=6,2
 export ID185_VIS_RUNNER_OVERRIDE=${REPO}/experiments/training/rl/run_vagen_k4_id188_step0_browser_canary.sh
 
 printf 'id188_step0_rollout_browser_job=%s node=%s partition=%s cuda_visible_devices=%s\n' \
   "${SLURM_JOB_ID}" "$(hostname)" "${SLURM_JOB_PARTITION}" \
   "${CUDA_VISIBLE_DEVICES:-}"
-exec "${REPO}/experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh" \
+exec "${REPO}/experiments/training/rl/launch_vagen_k4_heterogeneous_6x2_browser_on_hold.sh" \
   "${SLURM_JOB_ID}"

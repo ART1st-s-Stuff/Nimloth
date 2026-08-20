@@ -15,26 +15,28 @@
 
 # ID187: one frozen, val-only K4 rollout. This validates the unified rollout
 # browser on the production TP8/DP1 + actor DP8 restore path. It performs no
-# optimizer update and writes no checkpoint. The 5h limit preserves the exact
-# 4x2 launch contract; expected healthy runtime is approximately 10 minutes.
+# optimizer update and writes no checkpoint. Resource components are supplied
+# on sbatch CLI as one 6-GPU node plus one 2-GPU node.
 set -euo pipefail
 : "${REPO:?REPO is required}"
 : "${EXPECTED_PARENT_COMMIT:?EXPECTED_PARENT_COMMIT is required}"
 : "${EXPECTED_VAGEN_COMMIT:?EXPECTED_VAGEN_COMMIT is required}"
 : "${EXPECTED_VERL_COMMIT:?EXPECTED_VERL_COMMIT is required}"
 module load slurm
+[[ "${SLURM_HET_SIZE:-}" == 2 ]]
 
-export ID185_VIS_RUN_NAME_OVERRIDE=187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry7
+export ID185_VIS_RUN_NAME_OVERRIDE=187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry8
 export ID185_VIS_RUN_DATE_OVERRIDE=2026-08-21
 export ID185_VIS_SEED_OVERRIDE=2
 export ID185_VIS_EXPECTED_OUTCOME=any
 export ID185_VIS_ENABLE_WANDB=true
-export ID185_VIS_WANDB_RUN_ID=nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r7
+export ID185_VIS_WANDB_RUN_ID=nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r8
 export ID185_VIS_EXPECTED_PARTITION=preempt
 export ID185_VIS_SOURCE_BOUNDARY=20
+export ID185_VIS_GPU_LAYOUT=6,2
 
 printf 'id187_rollout_browser_canary_job=%s node=%s partition=%s cuda_visible_devices=%s\n' \
   "${SLURM_JOB_ID}" "$(hostname)" "${SLURM_JOB_PARTITION}" \
   "${CUDA_VISIBLE_DEVICES:-}"
-exec "${REPO}/experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh" \
+exec "${REPO}/experiments/training/rl/launch_vagen_k4_heterogeneous_6x2_browser_on_hold.sh" \
   "${SLURM_JOB_ID}"

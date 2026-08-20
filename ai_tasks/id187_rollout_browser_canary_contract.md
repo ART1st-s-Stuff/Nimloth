@@ -1,9 +1,9 @@
 # ID187 rollout browser production canary contract
 
 Date: 2026-08-21
-Status: Job 525594 cancelled unallocated for expanded state/process evidence; retry7 prepared
+Status: Job 525617 cancelled unallocated after human selected heterogeneous 6+2; retry8 prepared
 
-The original normal Job `525468` was cancelled pending. Preempt retries `525568`, `525570`, `525572`, and `525575` exposed and fixed the allocation-state/Slurm-client bootstrap. Retry5 Job `525581` passed exact4x2, dynamic head20, Ray, environment, all prewarms, checkpoint hashes, and model startup, then correctly failed before rollout because it reused the experiment-bound ID185 config with an ID187 W&B name. It created a partial diagnostic output but no browser, validation row, checkpoint, or W&B run. Retry6 added the dedicated `id187_k4_source20_browser_v1` gate, but Job `525594` was cancelled with zero allocation/output/W&B after the human required full current/predicted states and the chronological 100-simulation process. Retry7 uses the new audited state-process implementation and a fresh identity.
+The original normal Job `525468` was cancelled pending. Preempt retries `525568`, `525570`, `525572`, and `525575` exposed and fixed the allocation-state/Slurm-client bootstrap. Retry5 Job `525581` passed exact4x2, dynamic head20, Ray, environment, all prewarms, checkpoint hashes, and model startup, then correctly failed before rollout because it reused the experiment-bound ID185 config with an ID187 W&B name. It created a partial diagnostic output but no browser, validation row, checkpoint, or W&B run. Retry6 added the dedicated `id187_k4_source20_browser_v1` gate, but Job `525594` was cancelled with zero allocation/output/W&B after the human required full current/predicted states and the chronological 100-simulation process. Retry7 Jobs `525617/525618` were cancelled unallocated when the human directed use of one currently free 6-GPU node plus one 2-GPU node. Retry8 uses a fresh identity and a two-component preempt heterogeneous allocation; Ray exposes physical resources `[6,2]` while actor world size remains DP8 and rollout remains TP8/DP1.
 
 ## Purpose
 
@@ -12,7 +12,7 @@ Validate that one real frozen K4 Scheme-B Navigation evaluation rollout produces
 ## Immutable code and entrypoints
 
 - Parent state-process implementation commit: `4f76c926d1f41c62bb309d59f8d2a561a8cb5053` (runtime pin supplied through `EXPECTED_PARENT_COMMIT`).
-- VAGEN: `7ad77b58fa5bdb7e915e6746767e673a14ab203c`.
+- VAGEN: `af06b9288a504ccc739749a0e643dd01a28effcc`.
 - VERL: `494f264494b2525f2c13595f63ac4912963e6d2f`.
 - Slurm entry: `experiments/training/rl/id187_rollout_browser_canary.slurm`.
 - Allocation launcher: `experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh`.
@@ -46,15 +46,15 @@ Validate that one real frozen K4 Scheme-B Navigation evaluation rollout produces
 ## Identity, output, and resume
 
 - W&B project: `vagen`.
-- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry7`.
-- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r7`; `resume=never`.
-- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry7`.
+- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry8`.
+- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r8`; `resume=never`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry8`.
 - The output and W&B identities must not exist before launch. No resume or overwrite is allowed; a failed retry would require a new ID/name/output.
 - Unified browser target: `evaluation_browser/global_step_20/index.html`.
 
 ## Slurm and runtime ownership
 
-- Partition `preempt`; 4 nodes; 2 H800 per node; 8 GPUs total; 16 CPU/node; 64 GiB/node; 5-hour limit.
+- Partition `preempt`; heterogeneous component0=`1 node × 6 H800, 48 CPU, 192 GiB`, component1=`1 node × 2 H800, 16 CPU, 64 GiB`; 8 GPUs/64 CPU/256 GiB total; 5-hour limit.
 - Expected healthy runtime: approximately 10--15 minutes after allocation.
 - Allocation exclusions: `dgx-09,dgx-13,dgx-32,dgx-51`.
 - Navigation/Ray head exclusions: `dgx-09,dgx-10,dgx-13,dgx-23,dgx-32,dgx-37,dgx-51`.
