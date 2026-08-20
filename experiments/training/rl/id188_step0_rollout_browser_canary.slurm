@@ -22,12 +22,12 @@ set -euo pipefail
 : "${EXPECTED_VERL_COMMIT:?EXPECTED_VERL_COMMIT is required}"
 module load slurm
 
-export ID185_VIS_RUN_NAME_OVERRIDE=188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100
+export ID185_VIS_RUN_NAME_OVERRIDE=188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry1
 export ID185_VIS_RUN_DATE_OVERRIDE=2026-08-21
 export ID185_VIS_SEED_OVERRIDE=2
 export ID185_VIS_EXPECTED_OUTCOME=any
 export ID185_VIS_ENABLE_WANDB=true
-export ID185_VIS_WANDB_RUN_ID=nimloth-id188-smoke-rollout-browser-k4-step0-seed2
+export ID185_VIS_WANDB_RUN_ID=nimloth-id188-smoke-rollout-browser-k4-step0-seed2-r1
 export ID185_VIS_EXPECTED_PARTITION=preempt
 export ID185_VIS_SOURCE_BOUNDARY=0
 export ID185_VIS_RUNNER_OVERRIDE=${REPO}/experiments/training/rl/run_vagen_k4_id188_step0_browser_canary.sh
