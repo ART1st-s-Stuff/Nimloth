@@ -26,7 +26,13 @@ export PATH="${SLURM_BIN_DIR}:${PATH}"
 [[ -x "${SLURM_BIN_DIR}/scontrol" && -x "${SLURM_BIN_DIR}/srun" ]]
 [[ -r "${SLURM_CONF}" ]]
 srun() {
-  "${SLURM_BIN_DIR}/srun" --het-group=0,1 "$@"
+  local args=()
+  local argument
+  for argument in "$@"; do
+    [[ "${argument}" == --jobid=* ]] && continue
+    args+=("${argument}")
+  done
+  "${SLURM_BIN_DIR}/srun" --het-group=0,1 "${args[@]}"
 }
 RUN_NAME=${ID185_VIS_RUN_NAME_OVERRIDE:-185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed2_retry2}
 RUN_DATE=${ID185_VIS_RUN_DATE_OVERRIDE:-2026-08-20}
