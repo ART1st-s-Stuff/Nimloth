@@ -21,10 +21,22 @@ def __getattr__(name: str) -> Any:
             "RolloutBrowserArtifact": RolloutBrowserArtifact,
             "rollout_trajectory_artifact": rollout_trajectory_artifact,
         }[name]
-    if name == "write_evaluation_browser":
-        from .storage import write_evaluation_browser
+    if name in {
+        "finalize_evaluation_browser",
+        "write_evaluation_browser",
+        "write_evaluation_browser_batch",
+    }:
+        from .storage import (
+            finalize_evaluation_browser,
+            write_evaluation_browser,
+            write_evaluation_browser_batch,
+        )
 
-        return write_evaluation_browser
+        return {
+            "finalize_evaluation_browser": finalize_evaluation_browser,
+            "write_evaluation_browser": write_evaluation_browser,
+            "write_evaluation_browser_batch": write_evaluation_browser_batch,
+        }[name]
     raise AttributeError(name)
 
 
@@ -34,5 +46,7 @@ __all__ = [
     "RolloutBrowserArtifact",
     "rollout_trajectory_artifact",
     "validate_rollout_audit",
+    "finalize_evaluation_browser",
     "write_evaluation_browser",
+    "write_evaluation_browser_batch",
 ]

@@ -17,7 +17,7 @@ class RolloutBrowserArtifact:
     """One audit plus source files that must be copied into its archive."""
 
     audit: dict[str, Any]
-    image_sources: dict[str, Path]
+    image_sources: dict[str, Any]
 
 
 def _cot(raw_response: str) -> str:
@@ -134,6 +134,11 @@ def rollout_trajectory_artifact(
         raise ValueError("partial token trace coverage cannot be advertised")
     if any(trace is not None for trace in planner_traces) != has_planner:
         raise ValueError("partial planner trace coverage cannot be advertised")
+    if has_planner and any(
+        trace is not None and len(trace.root_action_scores) != len(action_names)
+        for trace in planner_traces
+    ):
+        raise ValueError("planner traces do not match trajectory action space")
     has_mcts = has_planner and all(
         trace is not None and trace.search_mode == "mcts"
         for trace in planner_traces
@@ -220,6 +225,11 @@ def rollout_trajectory_artifact(
             "record_id": trajectory.record_id,
         },
         "policy_family": policy_family,
+        "action_space": {
+            "id": trajectory.action_space_id,
+            "version": trajectory.action_space_version,
+            "names": list(action_names),
+        },
         "capabilities": {
             "task": True,
             "observations": True,
