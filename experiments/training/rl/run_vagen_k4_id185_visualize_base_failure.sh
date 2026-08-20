@@ -50,10 +50,10 @@ PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-16200}
 [[ "${ID185_VIS_ENABLE_WANDB}" =~ ^(true|false)$ ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == "${ID185_VIS_EXPECTED_PARTITION}" ]]
-[[ "${ID185_EXPECTED_NNODES}" == 2 ]]
-[[ "${ID185_EXPECTED_GPUS_PER_NODE}" == 4 ]]
-[[ "${ID185_EXPECTED_GPU_COUNTS}" == 6,2 ]]
-[[ "${ID185_HEAD_GPU_COUNT}" =~ ^(2|6)$ ]]
+[[ "${ID185_EXPECTED_NNODES}" == 1 ]]
+[[ "${ID185_EXPECTED_GPUS_PER_NODE}" == 8 ]]
+[[ "${ID185_EXPECTED_GPU_COUNTS}" == 8 ]]
+[[ "${ID185_HEAD_GPU_COUNT}" == 8 ]]
 [[ "${PHASE_TIMEOUT_SECONDS}" == 16200 ]]
 [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]
 IFS=, read -r -a VISIBLE_GPUS <<<"${CUDA_VISIBLE_DEVICES}"
@@ -65,15 +65,13 @@ for excluded in dgx-09 dgx-13 dgx-32 dgx-51; do
   [[ "$(hostname)" != "${excluded}" ]]
 done
 
-[[ "${SLURM_HET_SIZE:-}" == 2 ]]
-for group in 0 1; do
- JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}+${group}" -o)
- grep -q "Partition=${ID185_VIS_EXPECTED_PARTITION}" <<<"${JOB_DETAILS}"
- grep -q 'NumNodes=1' <<<"${JOB_DETAILS}"
- grep -q 'TimeLimit=05:00:00' <<<"${JOB_DETAILS}"
-done
+[[ -z "${SLURM_HET_SIZE:-}" ]]
+JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}" -o)
+grep -q "Partition=${ID185_VIS_EXPECTED_PARTITION}" <<<"${JOB_DETAILS}"
+grep -q 'NumNodes=1' <<<"${JOB_DETAILS}"
+grep -q 'TimeLimit=05:00:00' <<<"${JOB_DETAILS}"
 IFS=, read -r -a CLUSTER_NODES <<<"${ID185_CLUSTER_NODES}"
-(( ${#CLUSTER_NODES[@]} == 2 ))
+(( ${#CLUSTER_NODES[@]} == 1 ))
 [[ "$(hostname -s)" == "${CLUSTER_NODES[0]}" ]]
 
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${EXPECTED_PARENT_COMMIT}" ]]
