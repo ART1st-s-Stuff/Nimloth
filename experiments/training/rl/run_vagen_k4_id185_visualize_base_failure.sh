@@ -88,7 +88,7 @@ done
 [[ -f "${REPAIR_ROOT}/complete.marker" ]]
 [[ -f "${PLANNING_MODEL}/training_state.pt" ]]
 IFS=, read -r -a EXPECTED_NODE_IPS <<<"${RAY_EXPECTED_NODE_IPS}"
-(( ${#EXPECTED_NODE_IPS[@]} == 2 ))
+(( ${#EXPECTED_NODE_IPS[@]} == 1 ))
 [[ "${ID185_HEAD_IP}" == "${EXPECTED_NODE_IPS[0]}" ]]
 [[ "${RAY_ADDRESS}" == "${ID185_HEAD_IP}:"* ]]
 "${PY}" - "${RAY_ADDRESS}" "${RAY_EXPECTED_NODE_IPS}" <<'PY'
@@ -108,8 +108,8 @@ rows=sorted(
 )
 ray.shutdown()
 assert [row['address'] for row in rows]==expected, (rows,expected)
-assert sorted(row['gpus'] for row in rows)==[2.0,6.0], rows
-print(json.dumps({'status':'ID187_RAY_6X2_OK','nodes':rows}))
+assert sorted(row['gpus'] for row in rows)==[8.0], rows
+print(json.dumps({'status':'ID187_RAY_1X8_OK','nodes':rows}))
 PY
 
 set -a

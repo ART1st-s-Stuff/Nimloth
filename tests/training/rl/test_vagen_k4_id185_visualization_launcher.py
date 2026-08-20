@@ -60,7 +60,7 @@ def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     assert "#SBATCH --partition=preempt" in source
     assert "ID185_VIS_EXPECTED_PARTITION=preempt" in source
     assert "ID185_VIS_SOURCE_BOUNDARY=20" in source
-    assert "preempt_retry18" in source
+    assert "preempt_retry19" in source
     assert "ID185_VIS_GPU_LAYOUT=8" in source
     assert "launch_vagen_k4_1x8_browser_on_hold.sh" in source
     launcher = ONE_NODE_LAUNCHER.read_text()
@@ -76,6 +76,7 @@ def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     assert "counts != [8.0]" in launcher
     assert "ID185_EXPECTED_GPU_COUNTS=8" in launcher
     assert '[[ "${ID185_EXPECTED_GPU_COUNTS}" == 8 ]]' in runner
+    assert "ID187_RAY_1X8_OK" in runner
     assert "joint_process_on_nodes" not in launcher
     assert "JobState=RUNNING" not in launcher
     assert '"${SLURM_JOB_PARTITION:-}" == "${ID185_VIS_EXPECTED_PARTITION}"' in runner
