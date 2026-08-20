@@ -1,7 +1,26 @@
 # 统一 Evaluation Rollout Browser 设计
 
-状态：**需求已确认，尚未实现**  
+状态：**核心实现完成；真实服务器canary待执行**
 日期：2026-08-20
+
+## 实现进度（2026-08-20）
+
+已完成：
+
+- `nimloth_rollout_audit_v2` capability-aware schema及严格验证；
+- `RolloutTrajectory`无重算adapter，覆盖SFT/greedy/SFT2 MCTS；
+- 完整token/action/planner evidence和PNG归档；
+- 单batch及多batch原子写入、hash、identity与global complete门禁；
+- 静态总览搜索/筛选/rollout选择器和按需step页面；
+- SFT并行eval-set/shard browser合并；
+- VAGEN no-concat per-turn adapter、正式reward join和ID183–186 validation配置接入；
+- 本地CPU回归：Parent `78 passed`；VAGEN `112 passed, 33 subtests passed`；生成HTML的JavaScript通过`node --check`。
+
+尚未完成：
+
+- superpod SSH当前在banner阶段超时，尚未在固定服务器Python环境复跑回归；
+- 尚未运行真实1/40-rollout canary，因此GPU/Ray峰值、写盘耗时和实际容量仍未验证；
+- 在canary通过前不得宣称production rollout路径已完成验收。
 
 ## 1. 目标
 
