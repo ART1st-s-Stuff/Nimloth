@@ -21,6 +21,8 @@ ROOT=/project/peilab/atst/nimloth
 PY=${ROOT}/.venv-vagen-main/bin/python3
 SLURM_BIN_DIR=/cm/shared/apps/slurm/current/bin
 SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
+export SLURM_CONF
+export PATH="${SLURM_BIN_DIR}:${PATH}"
 [[ -x "${SLURM_BIN_DIR}/scontrol" && -x "${SLURM_BIN_DIR}/srun" ]]
 [[ -r "${SLURM_CONF}" ]]
 RUN_NAME=${ID185_VIS_RUN_NAME_OVERRIDE:-185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed2_retry2}
