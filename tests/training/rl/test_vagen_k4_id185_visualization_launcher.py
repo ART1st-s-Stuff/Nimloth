@@ -27,15 +27,15 @@ def test_visualization_launcher_keeps_exact_tp8_topology() -> None:
 
 def test_visualization_runner_is_one_read_only_failure_rollout() -> None:
     source = RUNNER.read_text()
-    assert "--config-name=joint_id185_visualize_one" in source
-    assert "ID185_K4_VISUALIZATION_RESTORE_OK global_step=20" in source
+    assert "--config-name=joint_id187_source20_visualize_one" in source
+    assert "ID187_K4_SOURCE20_RESTORE_OK global_step=20" in source
     assert "VALIDATION_BATCH_JOURNAL_COMPLETE batches=1 rows=1" in source
     assert "if expected_outcome == 'failure':" in source
     assert "elif expected_outcome == 'success':" in source
     assert "assert not list((run/'checkpoints').glob('global_step_*'))" in source
-    assert "row['data_source']=='navigation_base_test_id185'" in source
+    assert "row['data_source']=='navigation_base_test_id187'" in source
     assert "row['seed']==expected_seed" in source
-    assert "export ID185_VIS_SEED=${ID185_VIS_SEED:-2}" in source
+    assert "export ID187_SEED=${ID185_VIS_SEED:-2}" in source
     assert "evaluation_browser/global_step_20" in source
     assert "manifest_sha256" in source
     assert "render_id185_rollout_visualization.py" in source
@@ -56,7 +56,7 @@ def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     assert "#SBATCH --partition=preempt" in source
     assert "ID185_VIS_EXPECTED_PARTITION=preempt" in source
     assert "ID185_VIS_SOURCE_BOUNDARY=20" in source
-    assert "preempt_retry5" in source
+    assert "preempt_retry6" in source
     launcher = LAUNCHER.read_text()
     runner = RUNNER.read_text()
     assert "VIS_PARTITION=${ID185_VIS_EXPECTED_PARTITION:-normal}" in launcher

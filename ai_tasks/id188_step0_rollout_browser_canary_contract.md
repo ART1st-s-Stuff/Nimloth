@@ -12,7 +12,7 @@ This is a stochastic cross-run comparison. The environment transport URL is part
 ## Code and entrypoints
 
 - Parent implementation commit: `e2935530abb5b0913f9ba75b8fa5ddec0e765cae` (runtime may additionally contain contract/progress-only commits).
-- VAGEN: `67df5944d3bbfe1928c18201c30b7e805740d951`.
+- VAGEN: `8b003c6eef5aef94a341451c2c4acfd79fddc50f`.
 - VERL: `494f264494b2525f2c13595f63ac4912963e6d2f`.
 - Slurm: `experiments/training/rl/id188_step0_rollout_browser_canary.slurm`.
 - Allocation launcher: `experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh` with `ID185_VIS_SOURCE_BOUNDARY=0`.
