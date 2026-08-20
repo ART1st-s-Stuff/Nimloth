@@ -1,7 +1,7 @@
 # ID188 pre-RL step0 rollout browser comparison contract
 
 Date: 2026-08-21
-Status: approved; dependency-only Job 525598 cancelled unallocated after human correction; independent retry1 prepared
+Status: Jobs 525598/525603 cancelled unallocated; independent retry2 with full state/process evidence prepared
 
 ## Purpose
 
@@ -11,8 +11,8 @@ This is a stochastic cross-run comparison. The environment transport URL is part
 
 ## Code and entrypoints
 
-- Parent implementation commit: `e2935530abb5b0913f9ba75b8fa5ddec0e765cae` (runtime may additionally contain contract/progress-only commits).
-- VAGEN: `8b003c6eef5aef94a341451c2c4acfd79fddc50f`.
+- Parent state-process implementation commit: `4f76c926d1f41c62bb309d59f8d2a561a8cb5053`.
+- VAGEN: `7ad77b58fa5bdb7e915e6746767e673a14ab203c`.
 - VERL: `494f264494b2525f2c13595f63ac4912963e6d2f`.
 - Slurm: `experiments/training/rl/id188_step0_rollout_browser_canary.slurm`.
 - Allocation launcher: `experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh` with `ID185_VIS_SOURCE_BOUNDARY=0`.
@@ -45,9 +45,9 @@ This is a stochastic cross-run comparison. The environment transport URL is part
 ## Identity and outputs
 
 - W&B project: `vagen`.
-- Run: `188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry1`.
-- Run ID: `nimloth-id188-smoke-rollout-browser-k4-step0-seed2-r1`; `resume=never`.
-- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry1`.
+- Run: `188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry2`.
+- Run ID: `nimloth-id188-smoke-rollout-browser-k4-step0-seed2-r2`; `resume=never`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry2`.
 - Browser: `evaluation_browser/global_step_0/index.html`.
 - A failed retry requires a new output/W&B identity; partial evidence cannot be combined or resumed.
 
@@ -57,15 +57,15 @@ This is a stochastic cross-run comparison. The environment transport URL is part
 - Expected healthy runtime around 10--15 minutes after allocation.
 - Allocation exclusions: `dgx-09,dgx-13,dgx-32,dgx-51`.
 - Navigation/Ray head exclusions and dynamic 150-second FloorPlan1 qualification are identical to ID187.
-- ID187 and ID188 run sequentially; do not hold two 4-node jobs concurrently.
+- ID187 and ID188 are independent and have no Slurm dependency; each may start whenever one valid exact4×2 allocation is available.
 
 ## Completion and comparison gates
 
 1. Log contains `ID188_K4_STEP0_BOOTSTRAP_OK global_step=0` and no restore marker.
 2. Exactly one validation row and one globally unique identity are published.
 3. Every turn reports `snapshot_source_step=776` and one consistent SHA256 snapshot identity.
-4. Journal, manifest, rollout audit, PNGs, HTML, and complete marker pass all hashes.
-5. Browser and legacy audit agree on identity, outcome, turn count, action evidence, and full MCTS capability.
+4. Journal, manifest, rollout audit, PNGs, HTML, per-turn float32 state `.npz`, and complete marker pass tensor metadata/finite and hash gates.
+5. Browser and legacy audit agree on identity, outcome, turn count, action evidence, and full MCTS capability; browser additionally contains same-generation latent/current state, every unique predicted node state, and all 100 chronological UCT/leaf/backup traces.
 6. `validation/0.jsonl` exists; no `global_step_*` checkpoint exists.
 7. W&B contains only evaluation step0 and finishes.
 8. Cleanup leaves no runtime-owned process.

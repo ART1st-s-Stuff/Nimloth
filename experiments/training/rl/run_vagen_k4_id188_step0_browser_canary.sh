@@ -525,6 +525,7 @@ TRAIN_PID=
   "${ID185_VIS_EXPECTED_OUTCOME}" <<'PY'
 import hashlib, json, os, sys, tempfile
 from pathlib import Path
+import numpy as np
 out=Path(sys.argv[1]); run=Path(sys.argv[2]); expected_seed=int(sys.argv[3])
 expected_outcome=sys.argv[4]
 manifest=json.loads((out/'dataset_manifest.json').read_text())
@@ -589,11 +590,25 @@ browser_row=browser_manifest['rollouts'][0]
 assert browser_row['identity']['rollout_sample_id']==expected_id
 assert bool(browser_row['success']) is success
 assert browser_row['turn_count']==audit['turn_count']
-assert browser_row['capabilities']['mcts_candidates'] is True
+assert browser_row['capabilities']['mcts'] is True
+assert browser_row['capabilities']['model_state'] is True
+assert browser_row['capabilities']['mcts_process'] is True
 artifact=browser/browser_row['artifact']
 assert artifact.is_file()
 browser_audit=artifact.parent/'rollout.json'
 assert 'sha256:'+hashlib.sha256(browser_audit.read_bytes()).hexdigest()==browser_row['audit_sha256']
+browser_payload=json.loads(browser_audit.read_text())
+for turn in browser_payload['turns']:
+ state=turn['model_state']; archive=artifact.parent/state['archive']
+ assert 'sha256:'+hashlib.sha256(archive.read_bytes()).hexdigest()==state['sha256']
+ with np.load(archive,allow_pickle=False) as tensors:
+  assert tensors['latent_hidden'].shape==(16,2048)
+  assert tensors['current_state'].shape==(8,1024)
+  assert tensors['mcts_node_states'].ndim==3
+  assert tensors['mcts_node_states'].shape[1:]==(8,1024)
+ process=turn['planner']['mcts_process']
+ assert len(process['simulations'])==100
+ assert len(process['tree_nodes'])==state['arrays']['mcts_node_states']['shape'][0]+1
 assert (browser/'index.html').is_file() and (audit_dir/'index.html').is_file()
 summary={
  'status':'ALL_OK','phase':'step0_visualization','global_step':0,'source_step':776,
