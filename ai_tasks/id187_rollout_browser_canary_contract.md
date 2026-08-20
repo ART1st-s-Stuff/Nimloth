@@ -1,9 +1,9 @@
 # ID187 rollout browser production canary contract
 
 Date: 2026-08-21
-Status: heterogeneous retries8–10 resolved component step scoping; retry11 prepared
+Status: heterogeneous retries8–11 resolved component job addressing; retry12 prepared
 
-The original normal Job `525468` was cancelled pending. Preempt retries `525568`, `525570`, `525572`, and `525575` exposed and fixed the allocation-state/Slurm-client bootstrap. Retry5 Job `525581` passed exact4x2, dynamic head20, Ray, environment, all prewarms, checkpoint hashes, and model startup, then correctly failed before rollout because it reused the experiment-bound ID185 config with an ID187 W&B name. It created a partial diagnostic output but no browser, validation row, checkpoint, or W&B run. Retry6 added the dedicated `id187_k4_source20_browser_v1` gate, but Job `525594` was cancelled with zero allocation/output/W&B after the human required full current/predicted states and the chronological 100-simulation process. Retry7 Jobs `525617/525618` were cancelled unallocated when the human directed use of one currently free 6-GPU node plus one 2-GPU node. Retry8 Job `525644` successfully allocated `dgx-52=6` plus `dgx-20=2`, then failed in one second before output/W&B/Ray/environment because nested `srun --jobid=<base> --het-group=0,1` scoped itself to only component0. Retry9 Job `525646` showed that comma-selected `--het-group=0,1` still does not flatten two one-node components for a nested two-node step. Retry10 Job `525648` proved per-component node steps work on group0, then exposed inherited component0 `cpus-per-task=48` on the 2-GPU/16-CPU group1 step. Retry11 assigns every node-scoped step `8 CPU × allocated GPU` unless explicitly overridden. The two raylets still form one logical Ray `[6,2]` cluster; actor world size remains DP8 and rollout remains TP8/DP1.
+The original normal Job `525468` was cancelled pending. Preempt retries `525568`, `525570`, `525572`, and `525575` exposed and fixed the allocation-state/Slurm-client bootstrap. Retry5 Job `525581` passed exact4x2, dynamic head20, Ray, environment, all prewarms, checkpoint hashes, and model startup, then correctly failed before rollout because it reused the experiment-bound ID185 config with an ID187 W&B name. It created a partial diagnostic output but no browser, validation row, checkpoint, or W&B run. Retry6 added the dedicated `id187_k4_source20_browser_v1` gate, but Job `525594` was cancelled with zero allocation/output/W&B after the human required full current/predicted states and the chronological 100-simulation process. Retry7 Jobs `525617/525618` were cancelled unallocated when the human directed use of one currently free 6-GPU node plus one 2-GPU node. Retry8 Job `525644` successfully allocated `dgx-52=6` plus `dgx-20=2`, then failed in one second before output/W&B/Ray/environment because nested `srun --jobid=<base> --het-group=0,1` scoped itself to only component0. Retry9 Job `525646` showed that comma-selected `--het-group=0,1` still does not flatten two one-node components for a nested two-node step. Retry10 Job `525648` proved per-component node steps work on group0, then exposed inherited component0 `cpus-per-task=48` on the 2-GPU/16-CPU group1 step. Retry11 Job `525651` showed that `--het-group=1` from the component0 batch still cannot schedule the second component on this cluster, even with the correct 16-CPU request. Retry12 resolves each component's real Slurm JobId (`base` and sibling ID) and launches node-local steps with `srun --jobid=<component-job-id>`. The two raylets still form one logical Ray `[6,2]` cluster; actor world size remains DP8 and rollout remains TP8/DP1.
 
 ## Purpose
 
@@ -46,9 +46,9 @@ Validate that one real frozen K4 Scheme-B Navigation evaluation rollout produces
 ## Identity, output, and resume
 
 - W&B project: `vagen`.
-- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry11`.
-- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r11`; `resume=never`.
-- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry11`.
+- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry12`.
+- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r12`; `resume=never`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry12`.
 - The output and W&B identities must not exist before launch. No resume or overwrite is allowed; a failed retry would require a new ID/name/output.
 - Unified browser target: `evaluation_browser/global_step_20/index.html`.
 
