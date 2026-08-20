@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Launch ID185 one-rollout visualization from complete ID184 step20 on exact 4x2 H800.
-set -euo pipefail
+set -Eeuo pipefail
+
+preflight_error() {
+  local status=$?
+  printf 'ROLLOUT_BROWSER_LAUNCHER_ERROR status=%s line=%s command=%q\n' \
+    "${status}" "${BASH_LINENO[0]:-unknown}" "${BASH_COMMAND:-unknown}" >&2
+  return "${status}"
+}
+trap preflight_error ERR
 
 HOLD_JOB=${1:?usage: launch_vagen_k4_id185_visualize_base_failure_on_hold.sh HOLD_JOB}
 : "${REPO:?REPO is required}"

@@ -1,9 +1,9 @@
 # ID187 rollout browser production canary contract
 
 Date: 2026-08-20
-Status: normal Job 525468 cancelled pending; preempt retry1 approved by direct human instruction on 2026-08-21
+Status: normal Job 525468 cancelled pending; preempt retry1 Job 525568 failed in launcher preflight; retry2 prepared
 
-The original normal-partition Job `525468` remained `PENDING (Priority)` with no allocation, output, or W&B identity and was cancelled at `2026-08-21T01:09:15`. The replacement must use a fresh retry output/W&B identity on `preempt` 4x2.
+The original normal-partition Job `525468` remained `PENDING (Priority)` with no allocation, output, or W&B identity and was cancelled at `2026-08-21T01:09:15`. Preempt retry1 Job `525568` obtained `dgx-[11,20,24,30]` but exited `1:0` after one second before output/W&B/Ray/environment/model work; silent `set -e` preflight made the exact failing command unavailable. Retry2 adds a bounded ERR diagnostic and uses a fresh output/W&B identity.
 
 ## Purpose
 
@@ -46,9 +46,9 @@ Validate that one real frozen K4 Scheme-B Navigation evaluation rollout produces
 ## Identity, output, and resume
 
 - W&B project: `vagen`.
-- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry1`.
-- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r1`; `resume=never`.
-- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry1`.
+- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry2`.
+- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r2`; `resume=never`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry2`.
 - The output and W&B identities must not exist before launch. No resume or overwrite is allowed; a failed retry would require a new ID/name/output.
 - Unified browser target: `evaluation_browser/global_step_20/index.html`.
 
