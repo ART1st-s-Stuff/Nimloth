@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SLURM = ROOT / "experiments/training/rl/id185_k4_visualize_base_failure.slurm"
 LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh"
 HET_LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_heterogeneous_6x2_browser_on_hold.sh"
+ONE_NODE_LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_1x8_browser_on_hold.sh"
 RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id185_visualize_base_failure.sh"
 CANARY_SLURM = ROOT / "experiments/training/rl/id187_rollout_browser_canary.slurm"
 STEP0_SLURM = ROOT / "experiments/training/rl/id188_step0_rollout_browser_canary.slurm"
@@ -49,8 +50,8 @@ def test_visualization_runner_is_one_read_only_failure_rollout() -> None:
 def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     source = CANARY_SLURM.read_text()
     assert "#SBATCH --job-name=nimloth-id187-browser-canary" in source
-    assert "#SBATCH --nodes=4" in source
-    assert "#SBATCH --gres=gpu:2" in source
+    assert "#SBATCH --nodes=1" in source
+    assert "#SBATCH --gres=gpu:8" in source
     assert "#SBATCH --partition=preempt" in source
     assert "ID185_VIS_RUN_NAME_OVERRIDE=187_smoke_rollout_browser" in source
     assert "ID185_VIS_EXPECTED_OUTCOME=any" in source
@@ -59,24 +60,20 @@ def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     assert "#SBATCH --partition=preempt" in source
     assert "ID185_VIS_EXPECTED_PARTITION=preempt" in source
     assert "ID185_VIS_SOURCE_BOUNDARY=20" in source
-    assert "preempt_retry16" in source
-    assert "launch_vagen_k4_heterogeneous_6x2_browser_on_hold.sh" in source
-    launcher = HET_LAUNCHER.read_text()
+    assert "preempt_retry17" in source
+    assert "ID185_VIS_GPU_LAYOUT=8" in source
+    assert "launch_vagen_k4_1x8_browser_on_hold.sh" in source
+    launcher = ONE_NODE_LAUNCHER.read_text()
     runner = RUNNER.read_text()
     assert "VIS_PARTITION=${ID185_VIS_EXPECTED_PARTITION:-normal}" in launcher
     assert "export SLURM_CONF" in launcher
     assert 'export PATH="${SLURM_BIN_DIR}:${PATH}"' in launcher
     assert "ROLLOUT_BROWSER_LAUNCHER_ERROR" in launcher
     assert '[[ "${SLURM_JOB_ID:-}" == "${HOLD_JOB}" ]]' in launcher
-    assert "SLURM_HET_SIZE" in launcher
-    assert '[[ "${argument}" == --jobid=* ]] && continue' in launcher
-    assert '--jobid="${HOLD_JOB}" --het-group="${het_group}"' in launcher
-    assert "env -i" in launcher
-    assert 'GPU_COUNTS[${target_node}] * 8' in launcher
-    assert 'GPU_COUNTS[${target_node}] * 32' in launcher
-    assert "--het-group=0,1" not in launcher
-    assert "GPU_COUNTS[${NODES_0[0]}]=6" in launcher
-    assert "GPU_COUNTS[${NODES_1[0]}]=2" in launcher
+    assert "grep -q 'NumNodes=1'" in launcher
+    assert 'GPU_COUNTS[${node}]:-}" == 8' in launcher
+    assert "--num-gpus=8" in launcher
+    assert "counts != [8.0]" in launcher
     assert "joint_process_on_nodes" not in launcher
     assert "JobState=RUNNING" not in launcher
     assert '"${SLURM_JOB_PARTITION:-}" == "${ID185_VIS_EXPECTED_PARTITION}"' in runner
@@ -103,5 +100,5 @@ def test_id188_step0_canary_uses_sft2_initialization_without_resume() -> None:
 
 
 def test_visualization_scripts_are_executable() -> None:
-    for path in (SLURM, LAUNCHER, HET_LAUNCHER, RUNNER, CANARY_SLURM, STEP0_SLURM, STEP0_RUNNER):
+    for path in (SLURM, LAUNCHER, HET_LAUNCHER, ONE_NODE_LAUNCHER, RUNNER, CANARY_SLURM, STEP0_SLURM, STEP0_RUNNER):
         assert path.stat().st_mode & 0o111
