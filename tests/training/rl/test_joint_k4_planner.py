@@ -86,6 +86,16 @@ def test_frozen_k4_snapshot_scores_direct_q_and_mcts_root_means() -> None:
         snapshot.score(hidden).planner_root_mean_values,
     )
 
+    captured = snapshot.score(hidden, capture_mcts_trace=True)
+    assert captured.current_state.shape == (1, 2, 4)
+    assert captured.mcts_trace is not None
+    assert len(captured.mcts_trace["simulations"]) == 8
+    assert len(captured.mcts_trace["tree_nodes"]) > 4
+    assert all(
+        node["predicted_state"].shape == (2, 4)
+        for node in captured.mcts_trace["tree_nodes"][1:]
+    )
+
 
 def test_frozen_k4_snapshot_export_restore_is_exact_and_device_explicit() -> None:
     original = create_frozen_planning_snapshot(

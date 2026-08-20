@@ -12,6 +12,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .render import render_evaluation_index, render_rollout_html
 from .schema import EVALUATION_MANIFEST_SCHEMA, validate_rollout_audit
 from .sft_adapter import RolloutBrowserArtifact
@@ -93,6 +95,58 @@ def _install_images(
             observation["sha256"] = hashes[observation["image"]]
 
 
+def _install_binary_sources(
+    rollout_dir: Path,
+    audit: dict[str, Any],
+    binary_sources: Mapping[str, Any],
+) -> None:
+    expected_names = {
+        turn["model_state"]["archive"]
+        for turn in audit["turns"]
+        if "model_state" in turn
+    }
+    if expected_names != set(binary_sources):
+        raise ValueError("rollout binary source set does not match audit")
+    hashes: dict[str, str] = {}
+    for name in sorted(expected_names):
+        if Path(name).name != name or not name.endswith(".npz"):
+            raise ValueError(f"rollout binary name is unsafe: {name}")
+        source = binary_sources[name]
+        destination = rollout_dir / name
+        if isinstance(source, (bytes, bytearray, memoryview)):
+            _write_fsynced(destination, bytes(source))
+        else:
+            path = Path(source)
+            if not path.is_file():
+                raise FileNotFoundError(f"missing rollout binary: {path}")
+            with path.open("rb") as src, destination.open("xb") as dst:
+                shutil.copyfileobj(src, dst)
+                dst.flush()
+                os.fsync(dst.fileno())
+        turn = next(
+            item
+            for item in audit["turns"]
+            if item.get("model_state", {}).get("archive") == name
+        )
+        specs = turn["model_state"]["arrays"]
+        with np.load(destination, allow_pickle=False) as archive:
+            if set(archive.files) != set(specs):
+                raise ValueError("model state archive keys mismatch")
+            for key, spec in specs.items():
+                array = archive[key]
+                if (
+                    str(array.dtype) != spec["dtype"]
+                    or list(array.shape) != spec["shape"]
+                ):
+                    raise ValueError("model state archive tensor metadata mismatch")
+                if not np.isfinite(array).all():
+                    raise ValueError("model state archive contains non-finite tensor")
+        hashes[name] = _sha256(destination)
+    for turn in audit["turns"]:
+        if "model_state" in turn:
+            turn["model_state"]["sha256"] = hashes[turn["model_state"]["archive"]]
+
+
 def write_evaluation_browser_batch(
     root: Path,
     artifacts: Sequence[RolloutBrowserArtifact],
@@ -128,6 +182,7 @@ def write_evaluation_browser_batch(
             rollout_dir = rollouts_root / safe_id
             rollout_dir.mkdir()
             _install_images(rollout_dir, audit, artifact.image_sources)
+            _install_binary_sources(rollout_dir, audit, artifact.binary_sources)
             validate_rollout_audit(audit)
             audit_payload = _json_bytes(audit)
             _write_fsynced(rollout_dir / "rollout.json", audit_payload)
@@ -235,6 +290,12 @@ def finalize_evaluation_browser(
                 raise ValueError("evaluation browser audit hash mismatch")
             audit = json.loads(audit_payload)
             validate_rollout_audit(audit)
+            for turn in audit["turns"]:
+                model_state = turn.get("model_state")
+                if model_state is not None:
+                    archive_path = audit_path.parent / model_state["archive"]
+                    if not archive_path.is_file() or _sha256(archive_path) != model_state["sha256"]:
+                        raise ValueError("evaluation browser model state hash mismatch")
             identity = _identity_key(audit)
             if audit["identity"] != row["identity"]:
                 raise ValueError("evaluation browser audit identity mismatch")

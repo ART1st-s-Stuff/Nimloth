@@ -14,6 +14,18 @@ from typing import Any, Sequence
 import torch
 
 
+def _jsonable_planning_evidence(value: Any) -> Any:
+    """Detach behavior-time planner evidence without model recomputation."""
+
+    if isinstance(value, torch.Tensor):
+        return value.detach().float().cpu().tolist()
+    if isinstance(value, dict):
+        return {str(key): _jsonable_planning_evidence(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_jsonable_planning_evidence(item) for item in value]
+    return value
+
+
 @dataclass(frozen=True)
 class VLLMPolicyState:
     """Small rollout result returned by the vLLM tensor-parallel workers."""
@@ -584,6 +596,7 @@ class PolicyStateCaptureWorkerExtension:
         latent_hidden: Sequence[Sequence[float]],
         expected_snapshot_id: str,
         expected_activation_version: int,
+        capture_mcts_trace: bool = False,
     ) -> dict[str, Any]:
         """Run direct Q and K4 MCTS only on the installed TP-rank-zero model."""
 
@@ -621,13 +634,23 @@ class PolicyStateCaptureWorkerExtension:
         if hidden.ndim != 3 or not torch.isfinite(hidden).all():
             raise ValueError("frozen K4 planner latent hidden is invalid")
         started = time.perf_counter()
-        score = snapshot.score(hidden)
+        score = snapshot.score(hidden, capture_mcts_trace=capture_mcts_trace)
         latency = time.perf_counter() - started
         return {
             **base,
             "scored": True,
             "score_dtype": snapshot.score_dtype,
             "planning_config": snapshot.planning_config.to_mapping(),
+            "current_state": (
+                score.current_state[0].float().cpu().tolist()
+                if capture_mcts_trace
+                else None
+            ),
+            "mcts_trace": (
+                _jsonable_planning_evidence(score.mcts_trace)
+                if capture_mcts_trace
+                else None
+            ),
             "direct_all_action_q": score.direct_all_action_q[0].float().cpu().tolist(),
             "planner_root_mean_values": score.planner_root_mean_values[0]
             .float()
@@ -956,6 +979,7 @@ async def async_score_frozen_k4_planner(
     latent_hidden: torch.Tensor,
     expected_snapshot_id: str,
     expected_activation_version: int,
+    capture_mcts_trace: bool = False,
 ) -> dict[str, Any]:
     """Score one captured real state and accept only TP-rank-zero output."""
 
@@ -971,6 +995,7 @@ async def async_score_frozen_k4_planner(
             latent_hidden.float().cpu().tolist(),
             expected_snapshot_id,
             expected_activation_version,
+            capture_mcts_trace,
         ),
     )
     if not results or not all(isinstance(value, dict) for value in results):

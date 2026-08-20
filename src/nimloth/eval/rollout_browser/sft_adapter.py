@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ class RolloutBrowserArtifact:
 
     audit: dict[str, Any]
     image_sources: dict[str, Any]
+    binary_sources: dict[str, Any] = field(default_factory=dict)
 
 
 def _cot(raw_response: str) -> str | None:
@@ -245,6 +246,8 @@ def rollout_trajectory_artifact(
             "state_value": False,
             "planner": has_planner,
             "mcts": has_mcts,
+            "model_state": False,
+            "mcts_process": False,
         },
         "task": trajectory.instruction,
         "data_source": data_source,

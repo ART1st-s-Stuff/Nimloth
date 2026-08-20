@@ -139,12 +139,14 @@ class JointWorldModelCritic(GridWorldModel):
 class FrozenPlanningScore:
     """Direct root Q and audited MCTS results for one captured real state."""
 
+    current_state: torch.Tensor
     direct_all_action_q: torch.Tensor
     planner_root_mean_values: torch.Tensor
     root_visit_counts: torch.Tensor
     candidate_sequences: torch.Tensor
     candidate_mean_values: torch.Tensor
     candidate_visit_counts: torch.Tensor
+    mcts_trace: dict[str, Any] | None
 
 
 @dataclass(frozen=True, eq=False)
@@ -321,7 +323,12 @@ class FrozenJointPlanningSnapshot(nn.Module):
         return self
 
     @torch.no_grad()
-    def score(self, latent_hidden: torch.Tensor) -> FrozenPlanningScore:
+    def score(
+        self,
+        latent_hidden: torch.Tensor,
+        *,
+        capture_mcts_trace: bool = False,
+    ) -> FrozenPlanningScore:
         self._validate_unchanged()
         expected = (
             1,
@@ -350,12 +357,14 @@ class FrozenJointPlanningSnapshot(nn.Module):
             mcts_exploration_constant=(
                 self.planning_config.exploration_constant
             ),
+            capture_mcts_trace=capture_mcts_trace,
         )
         plan = planner.plan(state.unsqueeze(1), previous_actions)
         if plan.root_visit_counts is None or plan.candidate_visit_counts is None:
             raise RuntimeError("K4 MCTS did not return visit-count evidence")
         score_dtype = _SUPPORTED_SCORE_DTYPES[self.score_dtype]
         result = FrozenPlanningScore(
+            current_state=state.to(dtype=score_dtype),
             direct_all_action_q=direct_q.to(dtype=score_dtype),
             planner_root_mean_values=plan.root_action_scores.unsqueeze(0).to(
                 dtype=score_dtype
@@ -366,8 +375,10 @@ class FrozenJointPlanningSnapshot(nn.Module):
                 dtype=score_dtype
             ),
             candidate_visit_counts=plan.candidate_visit_counts.unsqueeze(0),
+            mcts_trace=plan.mcts_trace,
         )
         for value in (
+            result.current_state,
             result.direct_all_action_q,
             result.planner_root_mean_values,
             result.candidate_mean_values,

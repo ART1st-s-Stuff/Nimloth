@@ -6,7 +6,8 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-ROLLOUT_AUDIT_SCHEMA = "nimloth_rollout_audit_v2"
+ROLLOUT_AUDIT_SCHEMA = "nimloth_rollout_audit_v3"
+_LEGACY_ROLLOUT_AUDIT_SCHEMA = "nimloth_rollout_audit_v2"
 EVALUATION_MANIFEST_SCHEMA = "nimloth_evaluation_rollout_browser_manifest_v1"
 CAPABILITY_KEYS = frozenset(
     {
@@ -20,6 +21,8 @@ CAPABILITY_KEYS = frozenset(
         "state_value",
         "planner",
         "mcts",
+        "model_state",
+        "mcts_process",
     }
 )
 
@@ -55,8 +58,15 @@ def _finite_or_null_vector(value: Any, name: str) -> list[float | None]:
     return vector
 
 
-def validate_capabilities(raw: Any) -> dict[str, bool]:
+def validate_capabilities(
+    raw: Any,
+    *,
+    allow_legacy_state_absence: bool = False,
+) -> dict[str, bool]:
     capabilities = dict(_mapping(raw, "capabilities"))
+    legacy_keys = CAPABILITY_KEYS - {"model_state", "mcts_process"}
+    if allow_legacy_state_absence and set(capabilities) == legacy_keys:
+        capabilities.update({"model_state": False, "mcts_process": False})
     if set(capabilities) != CAPABILITY_KEYS:
         raise ValueError(
             "capability keys mismatch: "
@@ -69,6 +79,10 @@ def validate_capabilities(raw: Any) -> dict[str, bool]:
         raise ValueError("mcts capability requires planner capability")
     if capabilities["state_value"] and not capabilities["direct_q"]:
         raise ValueError("state_value capability requires direct_q capability")
+    if capabilities["mcts_process"] and not (
+        capabilities["mcts"] and capabilities["model_state"]
+    ):
+        raise ValueError("mcts_process capability requires mcts and model_state")
     return capabilities
 
 
@@ -81,7 +95,122 @@ def _validate_observation(raw: Any, name: str) -> None:
         raise ValueError(f"{name} image provenance is incomplete")
 
 
-def _validate_planner(raw: Any, turn_name: str, *, require_mcts: bool) -> None:
+def _validate_model_state(raw: Any, turn_name: str) -> None:
+    state = _mapping(raw, f"{turn_name}.model_state")
+    if state.get("schema") != "nimloth_k4_model_state_archive_v1":
+        raise ValueError("unsupported model state archive schema")
+    archive = state.get("archive")
+    digest = state.get("sha256")
+    if (
+        not isinstance(archive, str)
+        or not archive.endswith(".npz")
+        or not isinstance(digest, str)
+        or not digest.startswith("sha256:")
+    ):
+        raise ValueError("model state archive provenance is incomplete")
+    arrays = _mapping(state.get("arrays"), "model_state.arrays")
+    expected = {
+        "latent_hidden": [16, 2048],
+        "current_state": [8, 1024],
+        "mcts_node_states": None,
+    }
+    if set(arrays) != set(expected):
+        raise ValueError("model state archive arrays mismatch")
+    for key, fixed_shape in expected.items():
+        spec = _mapping(arrays[key], f"model_state.arrays.{key}")
+        shape = list(_sequence(spec.get("shape"), f"model_state.{key}.shape"))
+        if spec.get("key") != key or spec.get("dtype") != "float32":
+            raise ValueError("model state array key/dtype mismatch")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in shape):
+            raise ValueError("model state array shape is invalid")
+        if fixed_shape is not None and shape != fixed_shape:
+            raise ValueError(f"model state {key} shape mismatch")
+        if key == "mcts_node_states" and (
+            len(shape) != 3 or shape[0] < 1 or shape[1:] != [8, 1024]
+        ):
+            raise ValueError("MCTS node-state tensor shape mismatch")
+
+
+def _validate_mcts_process(raw: Any, turn_name: str, *, simulations: int, horizon: int) -> None:
+    process = _mapping(raw, f"{turn_name}.planner.mcts_process")
+    if process.get("schema") != "nimloth_k4_mcts_process_v1":
+        raise ValueError("unsupported MCTS process schema")
+    nodes = list(_sequence(process.get("tree_nodes"), "mcts_process.tree_nodes"))
+    traces = list(_sequence(process.get("simulations"), "mcts_process.simulations"))
+    if len(traces) != simulations or not nodes:
+        raise ValueError("MCTS process does not contain every simulation")
+    sequences: set[tuple[int, ...]] = set()
+    state_indices: set[int] = set()
+    for raw_node in nodes:
+        node = _mapping(raw_node, "mcts_process.tree_node")
+        sequence = tuple(_sequence(node.get("sequence"), "MCTS node sequence"))
+        if sequence in sequences or node.get("depth") != len(sequence):
+            raise ValueError("MCTS tree node identity mismatch")
+        sequences.add(sequence)
+        _finite(node.get("value_sum"), "MCTS node value_sum")
+        _finite(node.get("mean_value"), "MCTS node mean_value")
+        if not sequence:
+            if node.get("state_index") is not None:
+                raise ValueError("MCTS root must reference current_state")
+        else:
+            state_index = node.get("state_index")
+            if isinstance(state_index, bool) or not isinstance(state_index, int) or state_index < 0:
+                raise ValueError("predicted MCTS node requires state index")
+            state_indices.add(state_index)
+    if () not in sequences or state_indices != set(range(len(nodes) - 1)):
+        raise ValueError("MCTS predicted-state indices are incomplete")
+    for index, raw_trace in enumerate(traces):
+        trace = _mapping(raw_trace, "mcts_process.simulation")
+        if trace.get("simulation_index") != index:
+            raise ValueError("MCTS simulation indices must be contiguous")
+        steps = list(_sequence(trace.get("selection_steps"), "MCTS selection steps"))
+        backups = list(_sequence(trace.get("backups"), "MCTS backups"))
+        if len(steps) != horizon or len(backups) != horizon + 1:
+            raise ValueError("MCTS simulation path/backup length mismatch")
+        for depth, raw_step in enumerate(steps):
+            step = _mapping(raw_step, "MCTS selection step")
+            if step.get("depth") != depth or step.get("operation") not in {"expand", "select"}:
+                raise ValueError("MCTS selection step identity mismatch")
+            parent_sequence = tuple(_sequence(step.get("parent_sequence"), "MCTS parent sequence"))
+            child_sequence = tuple(_sequence(step.get("child_sequence"), "MCTS child sequence"))
+            if (
+                len(parent_sequence) != depth
+                or len(child_sequence) != depth + 1
+                or child_sequence[:-1] != parent_sequence
+                or child_sequence not in sequences
+            ):
+                raise ValueError("MCTS selection edge is not in the persisted tree")
+            candidates = list(_sequence(step.get("uct_candidates"), "MCTS UCT candidates"))
+            if step["operation"] == "select" and not candidates:
+                raise ValueError("MCTS select step requires UCT candidates")
+            for raw_candidate in candidates:
+                candidate = _mapping(raw_candidate, "MCTS UCT candidate")
+                for field in ("mean_value", "exploration_bonus", "uct_score"):
+                    _finite(candidate.get(field), f"MCTS UCT {field}")
+        leaf = _mapping(trace.get("leaf"), "MCTS leaf")
+        action_values = list(_sequence(leaf.get("action_values"), "MCTS leaf action values"))
+        if not action_values or any(not math.isfinite(float(value)) for value in action_values):
+            raise ValueError("MCTS leaf action values are incomplete")
+        leaf_value = _finite(leaf.get("value"), "MCTS leaf value")
+        for raw_backup in backups:
+            backup = _mapping(raw_backup, "MCTS backup")
+            before = backup.get("visit_count_before")
+            after = backup.get("visit_count_after")
+            if (
+                isinstance(before, bool)
+                or not isinstance(before, int)
+                or before < 0
+                or after != before + 1
+            ):
+                raise ValueError("MCTS backup visit increment mismatch")
+            before_sum = _finite(backup.get("value_sum_before"), "MCTS backup value_sum_before")
+            after_sum = _finite(backup.get("value_sum_after"), "MCTS backup value_sum_after")
+            if not math.isclose(after_sum, before_sum + leaf_value, rel_tol=0.0, abs_tol=1e-5):
+                raise ValueError("MCTS backup value increment mismatch")
+            _finite(backup.get("mean_value_after"), "MCTS backup mean_value_after")
+
+
+def _validate_planner(raw: Any, turn_name: str, *, require_mcts: bool, require_process: bool) -> None:
     planner = _mapping(raw, f"{turn_name}.planner")
     mode = planner.get("search_mode")
     if not isinstance(mode, str) or not mode:
@@ -139,13 +268,23 @@ def _validate_planner(raw: Any, turn_name: str, *, require_mcts: bool) -> None:
             raise ValueError("mcts root visits must align with root scores")
         if sum(root_visits) != simulations or visits_sum != simulations:
             raise ValueError("mcts candidate visits must sum to num_simulations")
+        if require_process:
+            _validate_mcts_process(
+                planner.get("mcts_process"),
+                turn_name,
+                simulations=simulations,
+                horizon=horizon,
+            )
+        elif "mcts_process" in planner:
+            raise ValueError("MCTS process exists without capability")
 
 
 def validate_rollout_audit(raw: Mapping[str, Any]) -> None:
     """Fail closed if a rollout browser audit is incomplete or contradictory."""
 
     audit = _mapping(raw, "rollout audit")
-    if audit.get("schema") != ROLLOUT_AUDIT_SCHEMA:
+    schema = audit.get("schema")
+    if schema not in {ROLLOUT_AUDIT_SCHEMA, _LEGACY_ROLLOUT_AUDIT_SCHEMA}:
         raise ValueError("unsupported rollout audit schema")
     identity = _mapping(audit.get("identity"), "identity")
     if not any(
@@ -159,7 +298,10 @@ def validate_rollout_audit(raw: Mapping[str, Any]) -> None:
     policy_family = audit.get("policy_family")
     if not isinstance(policy_family, str) or not policy_family:
         raise ValueError("policy_family must be non-empty")
-    capabilities = validate_capabilities(audit.get("capabilities"))
+    capabilities = validate_capabilities(
+        audit.get("capabilities"),
+        allow_legacy_state_absence=schema == _LEGACY_ROLLOUT_AUDIT_SCHEMA,
+    )
     task = audit.get("task")
     if capabilities["task"] and (not isinstance(task, str) or not task.strip()):
         raise ValueError("task capability requires a non-empty task")
@@ -222,9 +364,18 @@ def validate_rollout_audit(raw: Mapping[str, Any]) -> None:
         if capabilities["planner"]:
             if "planner" not in turn:
                 raise ValueError("planner capability requires planner evidence")
-            _validate_planner(turn["planner"], turn_name, require_mcts=capabilities["mcts"])
+            _validate_planner(
+                turn["planner"],
+                turn_name,
+                require_mcts=capabilities["mcts"],
+                require_process=capabilities["mcts_process"],
+            )
         elif "planner" in turn:
             raise ValueError("planner evidence exists without capability")
+        if capabilities["model_state"]:
+            _validate_model_state(turn.get("model_state"), turn_name)
+        elif "model_state" in turn:
+            raise ValueError("model state exists without capability")
         if capabilities["token_trace"] and "token_trace" not in turn:
             raise ValueError("token_trace capability requires token evidence")
         if "terminal" in turn:
