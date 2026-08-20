@@ -9,6 +9,7 @@ from PIL import Image
 from nimloth.eval.rollout_browser.sft_adapter import rollout_trajectory_artifact
 from nimloth.eval.rollout_browser.storage import (
     finalize_evaluation_browser,
+    merge_evaluation_browsers,
     write_evaluation_browser,
     write_evaluation_browser_batch,
 )
@@ -117,6 +118,45 @@ def test_multi_batch_writer_publishes_only_after_global_identity_gate(
         expected_batches=2,
     )
     assert manifest["rollout_count"] == 2
+    assert (destination / "complete.json").is_file()
+
+
+def test_merge_builds_one_selector_over_complete_shard_browsers(
+    tmp_path: Path,
+) -> None:
+    sources = []
+    for index in range(2):
+        source = tmp_path / "eval_sets" / f"shard-{index}" / "evaluation_browser"
+        write_evaluation_browser(
+            source,
+            [_artifact(tmp_path, f"episode-{index}", index == 1)],
+            evaluation={
+                "evaluation_id": f"shard-{index}",
+                "policy_family": "sft2_mcts",
+                "global_step": None,
+                "source_step": None,
+                "checkpoint_identity": "sha256:checkpoint",
+                "snapshot_identity": "sha256:planner",
+            },
+            expected_rollouts=1,
+        )
+        sources.append(source)
+    destination = tmp_path / "evaluation_browser"
+    manifest = merge_evaluation_browsers(
+        destination,
+        sources,
+        evaluation={
+            "evaluation_id": "combined",
+            "policy_family": "sft2_mcts",
+            "global_step": None,
+            "source_step": None,
+            "checkpoint_identity": "sha256:checkpoint",
+            "snapshot_identity": "sha256:planner",
+        },
+        expected_rollouts=2,
+    )
+    assert manifest["rollout_count"] == 2
+    assert "../eval_sets/" in (destination / "index.html").read_text()
     assert (destination / "complete.json").is_file()
 
 

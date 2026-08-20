@@ -296,6 +296,109 @@ def finalize_evaluation_browser(
     return manifest
 
 
+def merge_evaluation_browsers(
+    destination: Path,
+    sources: Sequence[Path],
+    *,
+    evaluation: Mapping[str, Any],
+    expected_rollouts: int,
+) -> dict[str, Any]:
+    """Create one selector over complete immutable shard browsers without copying evidence."""
+
+    destination = Path(destination)
+    if destination.exists():
+        raise FileExistsError(f"evaluation browser already exists: {destination}")
+    if not sources or expected_rollouts < 1:
+        raise ValueError("browser merge requires sources and a positive rollout count")
+    rows: list[dict[str, Any]] = []
+    identities: list[tuple[str, int]] = []
+    source_markers = []
+    success_count = 0
+    reward_sum = 0.0
+    source_counts: dict[str, int] = {}
+    for raw_source in sources:
+        source = Path(raw_source).resolve()
+        complete_path = source / "complete.json"
+        manifest_path = source / "manifest.json"
+        if not complete_path.is_file() or not manifest_path.is_file():
+            raise ValueError(f"source rollout browser is incomplete: {source}")
+        complete = json.loads(complete_path.read_text())
+        manifest_payload = manifest_path.read_bytes()
+        manifest_digest = "sha256:" + hashlib.sha256(manifest_payload).hexdigest()
+        if complete.get("manifest_sha256") != manifest_digest:
+            raise ValueError("source rollout browser manifest hash mismatch")
+        manifest = json.loads(manifest_payload)
+        if manifest.get("schema") != EVALUATION_MANIFEST_SCHEMA or manifest.get("status") != "complete":
+            raise ValueError("source rollout browser manifest is unsupported")
+        for field in ("policy_family", "checkpoint_identity", "snapshot_identity"):
+            if manifest.get(field) != evaluation.get(field):
+                raise ValueError(f"source rollout browser {field} mismatch")
+        source_markers.append(
+            {
+                "path": os.path.relpath(source, destination.parent),
+                "manifest_sha256": manifest_digest,
+                "rollout_count": int(manifest["rollout_count"]),
+            }
+        )
+        for raw_row in manifest["rollouts"]:
+            row = copy.deepcopy(raw_row)
+            identity_mapping = row["identity"]
+            primary = identity_mapping.get("rollout_sample_id") or identity_mapping.get("record_id")
+            identity = (str(primary), int(identity_mapping["rollout_repeat_index"]))
+            identities.append(identity)
+            target = source / row["artifact"]
+            if not target.is_file():
+                raise ValueError("source rollout browser artifact is missing")
+            row["artifact"] = os.path.relpath(target, destination).replace(os.sep, "/")
+            rows.append(row)
+            success_count += int(row["success"])
+            reward_sum += float(row["reward"])
+            source_key = str(row.get("data_source") or "unknown")
+            source_counts[source_key] = source_counts.get(source_key, 0) + 1
+    if len(rows) != expected_rollouts:
+        raise ValueError(
+            f"merged evaluation rollout count mismatch: {len(rows)} != {expected_rollouts}"
+        )
+    if len(set(identities)) != len(identities):
+        raise ValueError("merged evaluation browser contains duplicate identities")
+    manifest = {
+        "schema": EVALUATION_MANIFEST_SCHEMA,
+        "status": "complete",
+        **dict(evaluation),
+        "expected_rollouts": expected_rollouts,
+        "rollout_count": len(rows),
+        "summary": {
+            "success_count": success_count,
+            "reward_mean": reward_sum / len(rows),
+            "data_source_counts": dict(sorted(source_counts.items())),
+        },
+        "rollouts": rows,
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.parent / f".{destination.name}.{uuid.uuid4().hex}.tmp"
+    temporary.mkdir()
+    try:
+        manifest_payload = _json_bytes(manifest)
+        _write_fsynced(temporary / "manifest.json", manifest_payload)
+        _write_fsynced(
+            temporary / "index.html",
+            render_evaluation_index(manifest).encode("utf-8"),
+        )
+        complete = {
+            "schema": COMPLETE_MARKER_SCHEMA,
+            "evaluation_id": evaluation["evaluation_id"],
+            "rollout_count": len(rows),
+            "manifest_sha256": "sha256:" + hashlib.sha256(manifest_payload).hexdigest(),
+            "source_browsers": source_markers,
+        }
+        _write_fsynced(temporary / "complete.json", _json_bytes(complete))
+        os.rename(temporary, destination)
+        return manifest
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+
+
 def write_evaluation_browser(
     destination: Path,
     artifacts: Sequence[RolloutBrowserArtifact],
@@ -342,6 +445,7 @@ def write_evaluation_browser(
 
 __all__ = [
     "finalize_evaluation_browser",
+    "merge_evaluation_browsers",
     "write_evaluation_browser",
     "write_evaluation_browser_batch",
 ]

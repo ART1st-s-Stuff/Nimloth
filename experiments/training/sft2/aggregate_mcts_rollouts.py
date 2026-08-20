@@ -145,6 +145,45 @@ def aggregate(
     }
 
 
+def merge_rollout_browsers(
+    output_dir: Path,
+    eval_sets: tuple[str, ...],
+    *,
+    shards_per_eval_set: int,
+    expected_rollouts: int,
+) -> Path:
+    """Publish one selector over all already-complete SFT2 shard browsers."""
+
+    from nimloth.eval.rollout_browser import merge_evaluation_browsers
+
+    sources = []
+    for eval_set in eval_sets:
+        dataset_dir = output_dir / "eval_sets" / eval_set
+        for shard_index in range(shards_per_eval_set):
+            shard_dir = (
+                dataset_dir / f"shard_{shard_index:02d}"
+                if shards_per_eval_set > 1
+                else dataset_dir
+            )
+            sources.append(shard_dir / "evaluation_browser")
+    first_manifest = _read_json(sources[0] / "manifest.json")
+    destination = output_dir / "evaluation_browser"
+    merge_evaluation_browsers(
+        destination,
+        sources,
+        evaluation={
+            "evaluation_id": output_dir.name,
+            "policy_family": "sft2_mcts",
+            "global_step": first_manifest.get("global_step"),
+            "source_step": first_manifest.get("source_step"),
+            "checkpoint_identity": first_manifest["checkpoint_identity"],
+            "snapshot_identity": first_manifest.get("snapshot_identity"),
+        },
+        expected_rollouts=expected_rollouts,
+    )
+    return destination
+
+
 def main() -> int:
     args = parse_args()
     summary = aggregate(
@@ -154,6 +193,13 @@ def main() -> int:
         shards_per_eval_set=args.shards_per_eval_set,
         seed_offset=args.seed_offset,
     )
+    rollout_browser = merge_rollout_browsers(
+        args.output_dir,
+        tuple(args.eval_sets),
+        shards_per_eval_set=args.shards_per_eval_set,
+        expected_rollouts=summary["num_trajectories"],
+    )
+    summary["rollout_browser"] = str(rollout_browser / "index.html")
     summary_path = args.output_dir / "rollout_summary.json"
     summary_path.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
