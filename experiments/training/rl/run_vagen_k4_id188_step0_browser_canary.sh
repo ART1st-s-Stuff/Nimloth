@@ -481,7 +481,7 @@ for split in base common_sense complex_instruction visual_appearance long_horizo
   timeout --signal=TERM --kill-after=10s 300s "${PY}" -m nimloth.environment.navigation.prewarm --env-url "${ENV_URL}" --eval-set "${split}" --seed 0 --timeout-seconds 300 --env-id "id185-prewarm-${split}-${SLURM_JOB_ID}" | tee "${PHASE_OUT}/prewarm_${split}.json"
 done
 
-/cm/shared/apps/slurm/current/bin/srun --jobid="${SLURM_JOB_ID}" --overlap \
+/cm/shared/apps/slurm/current/bin/srun --overlap \
   --het-group=0 --nodes=1 --ntasks=1 --gres=gpu:6 --label \
   nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits -l 1 \
   : --het-group=1 --nodes=1 --ntasks=1 --gres=gpu:2 --label \
