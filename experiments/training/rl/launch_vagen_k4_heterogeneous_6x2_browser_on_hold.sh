@@ -53,7 +53,7 @@ srun() {
   if [[ "${has_cpu_request}" == false ]]; then
     args+=("--cpus-per-task=$((GPU_COUNTS[${target_node}] * 8))")
   fi
-  "${SLURM_BIN_DIR}/srun" --het-group="${het_group}" "${args[@]}"
+  "${SLURM_BIN_DIR}/srun" --jobid="${COMPONENT_JOB_IDS[${het_group}]}" "${args[@]}"
 }
 RUN_NAME=${ID185_VIS_RUN_NAME_OVERRIDE:-185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed2_retry2}
 RUN_DATE=${ID185_VIS_RUN_DATE_OVERRIDE:-2026-08-20}
@@ -99,6 +99,11 @@ WANDB_RESUME=never
 JOB_DETAILS_0=$(scontrol show job -dd "${HOLD_JOB}+0")
 JOB_DETAILS_1=$(scontrol show job -dd "${HOLD_JOB}+1")
 JOB_DETAILS="${JOB_DETAILS_0}"$'\n'"${JOB_DETAILS_1}"
+declare -A COMPONENT_JOB_IDS
+COMPONENT_JOB_IDS[0]=$(sed -n 's/^JobId=\([^ ]*\).*/\1/p' <<<"${JOB_DETAILS_0}" | head -1)
+COMPONENT_JOB_IDS[1]=$(sed -n 's/^JobId=\([^ ]*\).*/\1/p' <<<"${JOB_DETAILS_1}" | head -1)
+[[ "${COMPONENT_JOB_IDS[0]}" == "${HOLD_JOB}" ]]
+[[ -n "${COMPONENT_JOB_IDS[1]}" && "${COMPONENT_JOB_IDS[1]}" != "${HOLD_JOB}" ]]
 for details in "${JOB_DETAILS_0}" "${JOB_DETAILS_1}"; do
   grep -Eq 'NodeList=[^ (]+' <<<"${details}"
   grep -q "Partition=${VIS_PARTITION}" <<<"${details}"
