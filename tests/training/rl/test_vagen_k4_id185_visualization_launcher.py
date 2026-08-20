@@ -59,7 +59,7 @@ def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     assert "#SBATCH --partition=preempt" in source
     assert "ID185_VIS_EXPECTED_PARTITION=preempt" in source
     assert "ID185_VIS_SOURCE_BOUNDARY=20" in source
-    assert "preempt_retry14" in source
+    assert "preempt_retry15" in source
     assert "launch_vagen_k4_heterogeneous_6x2_browser_on_hold.sh" in source
     launcher = HET_LAUNCHER.read_text()
     runner = RUNNER.read_text()
@@ -71,6 +71,7 @@ def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     assert "SLURM_HET_SIZE" in launcher
     assert '[[ "${argument}" == --jobid=* ]] && continue' in launcher
     assert '--jobid="${HOLD_JOB}" --het-group="${het_group}"' in launcher
+    assert "-u SLURM_HET_GROUP" in launcher
     assert 'GPU_COUNTS[${target_node}] * 8' in launcher
     assert 'GPU_COUNTS[${target_node}] * 32' in launcher
     assert "--het-group=0,1" not in launcher

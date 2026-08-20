@@ -25,12 +25,12 @@ set -euo pipefail
 module load slurm
 [[ "${SLURM_HET_SIZE:-}" == 2 ]]
 
-export ID185_VIS_RUN_NAME_OVERRIDE=187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry14
+export ID185_VIS_RUN_NAME_OVERRIDE=187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry15
 export ID185_VIS_RUN_DATE_OVERRIDE=2026-08-21
 export ID185_VIS_SEED_OVERRIDE=2
 export ID185_VIS_EXPECTED_OUTCOME=any
 export ID185_VIS_ENABLE_WANDB=true
-export ID185_VIS_WANDB_RUN_ID=nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r14
+export ID185_VIS_WANDB_RUN_ID=nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r15
 export ID185_VIS_EXPECTED_PARTITION=preempt
 export ID185_VIS_SOURCE_BOUNDARY=20
 export ID185_VIS_GPU_LAYOUT=6,2
