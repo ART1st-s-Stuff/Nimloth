@@ -59,7 +59,7 @@ def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     assert "#SBATCH --partition=preempt" in source
     assert "ID185_VIS_EXPECTED_PARTITION=preempt" in source
     assert "ID185_VIS_SOURCE_BOUNDARY=20" in source
-    assert "preempt_retry12" in source
+    assert "preempt_retry13" in source
     assert "launch_vagen_k4_heterogeneous_6x2_browser_on_hold.sh" in source
     launcher = HET_LAUNCHER.read_text()
     runner = RUNNER.read_text()
@@ -72,6 +72,7 @@ def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     assert '[[ "${argument}" == --jobid=* ]] && continue' in launcher
     assert '--jobid="${COMPONENT_JOB_IDS[${het_group}]}"' in launcher
     assert 'GPU_COUNTS[${target_node}] * 8' in launcher
+    assert 'GPU_COUNTS[${target_node}] * 32' in launcher
     assert "--het-group=0,1" not in launcher
     assert "GPU_COUNTS[${NODES_0[0]}]=6" in launcher
     assert "GPU_COUNTS[${NODES_1[0]}]=2" in launcher

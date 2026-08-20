@@ -11,7 +11,7 @@ For this Slurm 23.02 cluster, do not treat comma-selected heterogeneous groups a
 - map each allocated node to its exact heterogeneous group;
 - resolve each component's real Slurm JobId and use `srun --jobid=<component-job-id> -w <node>`; on this cluster, `--het-group=1` inherited from the component0 batch was still unschedulable;
 - run fabric probes, runtime setup/audit, Ray-log capture, and cleanup once per node;
-- explicitly set each node-scoped step's CPU request; otherwise a group1 step may inherit component0's larger `cpus-per-task` and become unschedulable;
+- explicitly set each node-scoped step's CPU and memory requests; otherwise a group1 step may inherit component0's larger `cpus-per-task` or memory and become unschedulable;
 - aggregate their outputs and statuses in the controller.
 
 Ray may still combine both raylets into one logical 6+2 cluster after the component-local Slurm steps start them.

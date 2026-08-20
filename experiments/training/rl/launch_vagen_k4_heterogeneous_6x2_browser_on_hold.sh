@@ -27,7 +27,7 @@ export PATH="${SLURM_BIN_DIR}:${PATH}"
 [[ -r "${SLURM_CONF}" ]]
 srun() {
   local args=()
-  local argument target_node= expect_node=false has_cpu_request=false
+  local argument target_node= expect_node=false has_cpu_request=false has_memory_request=false
   for argument in "$@"; do
     [[ "${argument}" == --jobid=* ]] && continue
     if [[ "${expect_node}" == true ]]; then
@@ -37,6 +37,8 @@ srun() {
       expect_node=true
     elif [[ "${argument}" == --cpus-per-task=* ]]; then
       has_cpu_request=true
+    elif [[ "${argument}" == --mem=* ]]; then
+      has_memory_request=true
     fi
     args+=("${argument}")
   done
@@ -52,6 +54,9 @@ srun() {
   fi
   if [[ "${has_cpu_request}" == false ]]; then
     args+=("--cpus-per-task=$((GPU_COUNTS[${target_node}] * 8))")
+  fi
+  if [[ "${has_memory_request}" == false ]]; then
+    args+=("--mem=$((GPU_COUNTS[${target_node}] * 32))G")
   fi
   "${SLURM_BIN_DIR}/srun" --jobid="${COMPONENT_JOB_IDS[${het_group}]}" "${args[@]}"
 }
