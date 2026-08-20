@@ -27,12 +27,28 @@ export PATH="${SLURM_BIN_DIR}:${PATH}"
 [[ -r "${SLURM_CONF}" ]]
 srun() {
   local args=()
-  local argument
+  local argument target_node= expect_node=false
   for argument in "$@"; do
     [[ "${argument}" == --jobid=* ]] && continue
+    if [[ "${expect_node}" == true ]]; then
+      target_node=${argument}
+      expect_node=false
+    elif [[ "${argument}" == -w ]]; then
+      expect_node=true
+    fi
     args+=("${argument}")
   done
-  "${SLURM_BIN_DIR}/srun" --het-group=0,1 "${args[@]}"
+  [[ -n "${target_node}" ]]
+  local het_group
+  if [[ "${target_node}" == "${NODES_0[0]}" ]]; then
+    het_group=0
+  elif [[ "${target_node}" == "${NODES_1[0]}" ]]; then
+    het_group=1
+  else
+    echo "node is outside heterogeneous allocation: ${target_node}" >&2
+    return 2
+  fi
+  "${SLURM_BIN_DIR}/srun" --het-group="${het_group}" "${args[@]}"
 }
 RUN_NAME=${ID185_VIS_RUN_NAME_OVERRIDE:-185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed2_retry2}
 RUN_DATE=${ID185_VIS_RUN_DATE_OVERRIDE:-2026-08-20}
@@ -116,14 +132,16 @@ for node in "${NODES[@]}"; do
 done
 [[ ${#HEAD_CANDIDATES[@]} -ge 1 ]]
 
-mapfile -t FABRIC_ROWS < <(
-  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
-    --ntasks-per-node=1 --gpus=0 bash -lc '
+FABRIC_ROWS=()
+for node in "${NODES[@]}"; do
+  fabric_row=$(timeout 30s srun --jobid="${HOLD_JOB}" --overlap \
+    --nodes=1 --ntasks=1 -w "${node}" --gpus=0 bash -lc '
       row=$(ip -o -4 addr show | awk '\''$4 ~ /^10\.23\./ {split($4,a,"/"); print a[1],$2; exit}'\'')
       [[ -n "${row}" ]]
       printf "%s %s\n" "$(hostname -s)" "${row}"
-    '
-)
+    ')
+  FABRIC_ROWS+=("${fabric_row}")
+done
 [[ ${#FABRIC_ROWS[@]} -eq 2 ]]
 declare -A NODE_IP NODE_IFACE
 for row in "${FABRIC_ROWS[@]}"; do
@@ -145,13 +163,15 @@ for node in "${NODES[@]}"; do
     '
 done
 
-timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
-  --ntasks-per-node=1 --gpus=0 \
-  env RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" RUNTIME_ROOT="${RUNTIME_ROOT}" \
-  bash -lc '
-    [[ ! -e "${RAY_CLUSTER_ROOT}" && ! -e "${RUNTIME_ROOT}" ]]
-    mkdir -p "${RUNTIME_ROOT}/tmp" "${RUNTIME_ROOT}/ai2thor"
-  '
+for node in "${NODES[@]}"; do
+  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+    -w "${node}" --gpus=0 \
+    env RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" RUNTIME_ROOT="${RUNTIME_ROOT}" \
+    bash -lc '
+      [[ ! -e "${RAY_CLUSTER_ROOT}" && ! -e "${RUNTIME_ROOT}" ]]
+      mkdir -p "${RUNTIME_ROOT}/tmp" "${RUNTIME_ROOT}/ai2thor"
+    '
+done
 mkdir -p "${RAY_LOG_ROOT}"
 printf '%s\n' "${JOB_DETAILS}" >"${RAY_LOG_ROOT}/allocation.txt"
 printf '%s\n' "${FABRIC_ROWS[@]}" >"${RAY_LOG_ROOT}/fabric.txt"
@@ -234,9 +254,11 @@ RAY_STEP_PIDS=()
 
 node_runtime_processes() {
   local signal=${1:?signal required}
-  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
-    --ntasks-per-node=1 --gpus=0 \
-    env TARGET_ROOTS="${RAY_CLUSTER_ROOT},${RUNTIME_ROOT}" SIGNAL="${signal}" "${PY}" - <<'PY'
+  local node
+  for node in "${NODES[@]}"; do
+    timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+      -w "${node}" --gpus=0 \
+      env TARGET_ROOTS="${RAY_CLUSTER_ROOT},${RUNTIME_ROOT}" SIGNAL="${signal}" "${PY}" - <<'PY'
 import os, signal
 from pathlib import Path
 roots=[value.encode() for value in os.environ['TARGET_ROOTS'].split(',')]
@@ -254,12 +276,15 @@ for entry in Path('/proc').iterdir():
         try: os.kill(int(entry.name),sig)
         except (ProcessLookupError,PermissionError): pass
 PY
+  done
 }
 
 audit_node_runtime_empty() {
-  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
-    --ntasks-per-node=1 --gpus=0 \
-    env TARGET_ROOTS="${RAY_CLUSTER_ROOT},${RUNTIME_ROOT}" "${PY}" - <<'PY'
+  local node failed=false
+  for node in "${NODES[@]}"; do
+    if ! timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+      -w "${node}" --gpus=0 \
+      env TARGET_ROOTS="${RAY_CLUSTER_ROOT},${RUNTIME_ROOT}" "${PY}" - <<'PY'
 import os, socket
 from pathlib import Path
 roots=[value.encode() for value in os.environ['TARGET_ROOTS'].split(',')]
@@ -276,6 +301,11 @@ for entry in Path('/proc').iterdir():
 print(f'{socket.gethostname()} owned_pids={found}')
 if found: raise SystemExit(1)
 PY
+    then
+      failed=true
+    fi
+  done
+  [[ "${failed}" == false ]]
 }
 
 RAY_LOG_CAPTURE_SCRIPT=${RAY_LOG_ROOT}/capture_ray_session_logs.py
@@ -345,15 +375,19 @@ persist_ray_logs() {
   local stage=${1:?capture stage required}
   local capture_out=${RAY_LOG_ROOT}/ray_log_capture_${stage}.out
   local capture_err=${RAY_LOG_ROOT}/ray_log_capture_${stage}.err
-  local failed=false
-  if ! timeout 60s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
-    --ntasks-per-node=1 --gpus=0 \
-    env CAPTURE_STAGE="${stage}" RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" \
-    SHARED_LOG_ROOT="${RAY_LOG_ROOT}" "${PY}" "${RAY_LOG_CAPTURE_SCRIPT}" \
-    >"${capture_out}" 2>"${capture_err}"
-  then
-    failed=true
-  fi
+  local failed=false node
+  : >"${capture_out}"
+  : >"${capture_err}"
+  for node in "${NODES[@]}"; do
+    if ! timeout 60s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+      -w "${node}" --gpus=0 \
+      env CAPTURE_STAGE="${stage}" RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" \
+      SHARED_LOG_ROOT="${RAY_LOG_ROOT}" "${PY}" "${RAY_LOG_CAPTURE_SCRIPT}" \
+      >>"${capture_out}" 2>>"${capture_err}"
+    then
+      failed=true
+    fi
+  done
   for node in "${NODES[@]}"; do
     manifest=${RAY_LOG_ROOT}/ray_internal/${stage}/${node}/capture_manifest.json
     [[ -f "${manifest}" ]] || failed=true
@@ -396,25 +430,26 @@ cleanup_cluster() {
   done
   if [[ "${cleanup_empty}" != true && "${status}" -eq 0 ]]; then status=93; fi
   persist_ray_logs post_cleanup || RAY_LOG_CAPTURE_COMPLETE=false
-  timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=2 --ntasks=2 \
-    --ntasks-per-node=1 --gpus=0 \
-    env RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" RUNTIME_ROOT="${RUNTIME_ROOT}" \
-    RAY_LOG_CAPTURE_COMPLETE="${RAY_LOG_CAPTURE_COMPLETE}" bash -lc '
-      [[ "${RAY_CLUSTER_ROOT}" == /tmp/i185-ray-* ]]
-      [[ "${RUNTIME_ROOT}" == /tmp/i185-* ]]
-      rm -rf -- "${RUNTIME_ROOT}"
-      if [[ "${RAY_LOG_CAPTURE_COMPLETE}" == true ]]; then
-        rm -rf -- "${RAY_CLUSTER_ROOT}"
-      fi
-    ' \
-    >/dev/null 2>&1 || true
+  for node in "${NODES[@]}"; do
+    timeout 30s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
+      -w "${node}" --gpus=0 \
+      env RAY_CLUSTER_ROOT="${RAY_CLUSTER_ROOT}" RUNTIME_ROOT="${RUNTIME_ROOT}" \
+      RAY_LOG_CAPTURE_COMPLETE="${RAY_LOG_CAPTURE_COMPLETE}" bash -lc '
+        [[ "${RAY_CLUSTER_ROOT}" == /tmp/i185-ray-* ]]
+        [[ "${RUNTIME_ROOT}" == /tmp/i185-* ]]
+        rm -rf -- "${RUNTIME_ROOT}"
+        if [[ "${RAY_LOG_CAPTURE_COMPLETE}" == true ]]; then
+          rm -rf -- "${RAY_CLUSTER_ROOT}"
+        fi
+      ' >/dev/null 2>&1 || true
+  done
   exit "${status}"
 }
 trap cleanup_cluster EXIT
 
 # These long-lived raylet and driver steps intentionally share the job's CPU,
 # memory and GRES allocation. Slurm --overlap is required on every such step;
-# Ray's own resource accounting keeps the eight worker actors within 2+2+2+2 GPUs.
+# Ray's resource accounting keeps the eight worker actors within 6+2 GPUs.
 COMMON_ENV=(
   PATH="${SLURM_BIN_DIR}:${ROOT}/.venv-vagen-main/bin:/usr/bin:/bin"
   SLURM_CONF="${SLURM_CONF}"
