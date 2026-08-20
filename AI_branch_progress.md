@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-20：最新 RL planner 可读性重构审查发现阻断性 API 迁移遗漏
+
+- 审查范围为`671ccdc5..0111d0de`，主要代码改动是`254033aa`。当前实际
+  `RLAlgorithm`只保存`config`与`sigreg`，但`RLTrainingLoop._load_dino_grid_target_batch()`
+  仍读取已删除的`algorithm.train_world_model`和`algorithm.dino_grid_weight`；因此真实
+  planner 与 sequence iteration 都会在准备 DINO target 时先触发`AttributeError`，尚未进入
+  optimizer。现有loop测试使用自带旧字段的fake algorithm，未覆盖真实组合。
+- production `planner_verl_factory.py`和`gpu_gate_ppo_value_critic.py`仍以已删除的二十余个
+  keyword 构造`RLAlgorithm`，与当前只接受`config`/`sigreg`的签名不兼容，会在模型装配后
+  直接`TypeError`。factory测试仅覆盖模型加载前的fail-closed分支，没有成功构造门禁。
+- 静态AST调用点审计确认上述两个旧构造点；受影响文件`py_compile`通过，但该门禁无法发现
+  Python运行时keyword不匹配。本地`.venv`当前同时缺`torch`和`_pytest`，所以本次未能重跑
+  pytest。审查未修改生产代码；上述问题修复并增加真实algorithm+loop/factory happy-path回归前，
+  不能把最新重构视为可运行。
+
 ## 2026-08-10：RL planner algorithm 第一轮可读性整理
 
 - 提交`254033aa`将 `RLAlgorithm` 改为直接接收已校验的 `RLConfig` 与可选 `SIGReg`，删除
